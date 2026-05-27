@@ -1,0 +1,338 @@
+import * as React from "react";
+import {
+  CircleAlert,
+  Minus,
+  Monitor,
+  Moon,
+  Search,
+  Square,
+  Sun,
+  X,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
+import logoMarkUrl from "@/assets/images/logo-mark.png";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { useCommandPaletteStore } from "@/stores/command-palette-store";
+import type { AgentStatus } from "@/stores/types";
+import {
+  Quit,
+  WindowMinimise,
+  WindowToggleMaximise,
+} from "../../../wailsjs/runtime/runtime";
+
+import { StatusDot } from "./primitives";
+import { formatChord } from "./shortcuts/format";
+import { useOptionalShortcutsContext } from "./shortcuts/shortcuts-provider";
+
+type DesktopPlatform = "darwin" | "windows" | "linux" | "unknown";
+type AppTheme = "light" | "dark";
+type AppThemePreference = AppTheme | "system";
+
+const themePreferenceOrder: AppThemePreference[] = ["system", "light", "dark"];
+
+const themePreferenceMeta: Record<
+  AppThemePreference,
+  { icon: LucideIcon; label: string }
+> = {
+  system: { icon: Monitor, label: "跟随系统" },
+  light: { icon: Sun, label: "浅色模式" },
+  dark: { icon: Moon, label: "深色模式" },
+};
+
+function nextThemePreference(
+  themePreference: AppThemePreference,
+): AppThemePreference {
+  const currentIndex = themePreferenceOrder.indexOf(themePreference);
+  const nextIndex =
+    (currentIndex < 0 ? 0 : currentIndex + 1) % themePreferenceOrder.length;
+
+  return themePreferenceOrder[nextIndex];
+}
+
+function NativeWindowControlsInset({ className }: { className?: string }) {
+  return (
+    <div
+      data-slot="native-window-controls-inset"
+      aria-hidden="true"
+      className={cn("hidden w-[68px] shrink-0 sm:block", className)}
+    />
+  );
+}
+
+function runWindowAction(action: () => void) {
+  if (typeof window === "undefined" || !("runtime" in window)) {
+    return;
+  }
+
+  action();
+}
+
+function isNoDragTarget(
+  target: EventTarget | null,
+  currentTarget: HTMLElement,
+) {
+  if (typeof Element === "undefined" || !(target instanceof Element)) {
+    return false;
+  }
+
+  const noDragElement = target.closest(".wails-no-drag");
+
+  return noDragElement !== null && currentTarget.contains(noDragElement);
+}
+
+type WindowsWindowControlsProps = {
+  className?: string;
+};
+
+function WindowsWindowControls({ className }: WindowsWindowControlsProps) {
+  return (
+    <div
+      data-slot="windows-window-controls"
+      className={cn(
+        "wails-no-drag flex h-full shrink-0 items-stretch",
+        className,
+      )}
+    >
+      <button
+        type="button"
+        aria-label="最小化窗口"
+        className="wails-no-drag inline-flex w-11 cursor-pointer items-center justify-center text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
+        onClick={() => runWindowAction(WindowMinimise)}
+      >
+        <Minus className="size-4" aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        aria-label="最大化窗口"
+        className="wails-no-drag inline-flex w-11 cursor-pointer items-center justify-center text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
+        onClick={() => runWindowAction(WindowToggleMaximise)}
+      >
+        <Square className="size-3.5" aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        aria-label="关闭窗口"
+        className="wails-no-drag inline-flex w-11 cursor-pointer items-center justify-center text-muted-foreground outline-none transition-colors hover:bg-destructive hover:text-destructive-foreground focus-visible:bg-destructive focus-visible:text-destructive-foreground"
+        onClick={() => runWindowAction(Quit)}
+      >
+        <X className="size-4" aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+type CommandPaletteTriggerProps = React.ComponentProps<"button"> & {
+  placeholder?: string;
+};
+
+function CommandPaletteTrigger({
+  className,
+  placeholder = "搜索会话 · 跳转 · 执行命令",
+  onClick,
+  ...props
+}: CommandPaletteTriggerProps) {
+  const openPalette = useCommandPaletteStore((s) => s.setOpen);
+  // kbd 文案跟随用户重绑：从 shortcuts 上下文拿 palette.open 的当前绑定。
+  // 浮在 ShortcutsProvider 之外（极少数测试场景）时退回默认 ⌘P。
+  const shortcuts = useOptionalShortcutsContext();
+  const chord = shortcuts?.bindings.get("palette.open");
+  const shortcutLabel = chord ? formatChord(chord, shortcuts!.platform) : "⌘P";
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        onClick?.(event);
+        if (event.defaultPrevented) return;
+        openPalette(true);
+      }}
+      aria-label="打开命令面板"
+      title="打开命令面板"
+      className={cn(
+        "hidden h-[30px] w-[520px] max-w-[40vw] items-center gap-2 rounded-md border border-border bg-card/60 px-2 text-left text-xs text-muted-foreground shadow-xs outline-none transition-colors hover:bg-card hover:text-foreground md:flex",
+        "wails-no-drag cursor-text",
+        className,
+      )}
+      {...props}
+    >
+      <Search className="size-3.5 shrink-0" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">{placeholder}</span>
+      <kbd className="rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-2xs font-medium text-muted-foreground">
+        {shortcutLabel}
+      </kbd>
+    </button>
+  );
+}
+
+type ThemeToggleProps = {
+  className?: string;
+  effectiveTheme?: AppTheme;
+  onThemePreferenceChange?: (themePreference: AppThemePreference) => void;
+  themePreference?: AppThemePreference;
+};
+
+function ThemeToggle({
+  className,
+  effectiveTheme,
+  onThemePreferenceChange,
+  themePreference,
+}: ThemeToggleProps) {
+  if (!themePreference || !onThemePreferenceChange) {
+    return null;
+  }
+
+  const meta = themePreferenceMeta[themePreference];
+  const Icon = meta.icon;
+  const next = nextThemePreference(themePreference);
+  const nextMeta = themePreferenceMeta[next];
+  const currentDescription =
+    themePreference === "system" && effectiveTheme
+      ? `跟随系统（${effectiveTheme === "dark" ? "深色" : "浅色"}）`
+      : meta.label;
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className={cn(
+        "wails-no-drag group relative size-10 overflow-visible rounded-lg text-sidebar-icon hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&_svg:not([class*='size-'])]:size-[18px]",
+        className,
+      )}
+      aria-label={`切换主题（当前${currentDescription}，下一项${nextMeta.label}）`}
+      title={`${currentDescription} · 点击切换到${nextMeta.label}`}
+      onClick={() => onThemePreferenceChange(next)}
+    >
+      <Icon data-icon="only" aria-hidden="true" />
+    </Button>
+  );
+}
+
+type AppTopBarProps = React.ComponentProps<"header"> & {
+  appName?: string;
+  breadcrumb?: string;
+  platform?: DesktopPlatform;
+};
+
+function AppTopBar({
+  appName = "Agentre",
+  breadcrumb,
+  className,
+  onDoubleClick,
+  platform = "unknown",
+  ...props
+}: AppTopBarProps) {
+  function handleTitleBarDoubleClick(
+    event: React.MouseEvent<HTMLElement, MouseEvent>,
+  ) {
+    onDoubleClick?.(event);
+
+    if (
+      event.defaultPrevented ||
+      isNoDragTarget(event.target, event.currentTarget)
+    ) {
+      return;
+    }
+
+    runWindowAction(WindowToggleMaximise);
+  }
+
+  return (
+    <header
+      className={cn(
+        "wails-drag flex h-11 shrink-0 items-center gap-3 border-b border-border bg-rail px-3",
+        platform === "windows" && "pr-0",
+        className,
+      )}
+      {...props}
+      onDoubleClick={handleTitleBarDoubleClick}
+    >
+      {platform === "darwin" ? <NativeWindowControlsInset /> : null}
+
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="inline-flex size-[22px] shrink-0 items-center justify-center">
+          <img
+            src={logoMarkUrl}
+            alt=""
+            aria-hidden="true"
+            className="size-full object-contain"
+            draggable={false}
+          />
+        </span>
+        <span className="text-sm font-semibold">{appName}</span>
+        {breadcrumb ? (
+          <>
+            <span className="font-mono text-sm text-subtle-foreground">/</span>
+            <span className="min-w-0 truncate text-sm text-muted-foreground">
+              {breadcrumb}
+            </span>
+          </>
+        ) : null}
+      </div>
+
+      <div className="min-w-0 flex-1" />
+      <CommandPaletteTrigger />
+      <div className="min-w-0 flex-1" />
+
+      <div className="flex h-full shrink-0 items-center gap-2">
+        {platform === "windows" ? <WindowsWindowControls /> : null}
+      </div>
+    </header>
+  );
+}
+
+type AppStatusBarProps = React.ComponentProps<"footer"> & {
+  agentSummary: string;
+  attentionSummary?: string | null;
+  status: AgentStatus;
+  version: string;
+};
+
+function AppStatusBar({
+  agentSummary,
+  attentionSummary,
+  className,
+  status,
+  version,
+  ...props
+}: AppStatusBarProps) {
+  return (
+    <footer
+      className={cn(
+        "flex h-7 shrink-0 items-center gap-3 border-t border-border bg-rail px-3 font-mono text-2xs leading-none text-muted-foreground",
+        className,
+      )}
+      {...props}
+    >
+      <span className="flex items-center gap-1.5 font-medium">
+        <StatusDot status={status} size="xs" />
+        {agentSummary}
+      </span>
+      {attentionSummary ? (
+        <>
+          <span className="hidden text-border-strong sm:inline">·</span>
+          <span
+            className="flex min-w-0 items-center gap-1.5 font-medium text-status-waiting"
+            title={attentionSummary}
+          >
+            <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 truncate">{attentionSummary}</span>
+          </span>
+        </>
+      ) : null}
+      <span className="min-w-0 flex-1" />
+      <span className="text-subtle-foreground">{version}</span>
+    </footer>
+  );
+}
+
+export {
+  AppStatusBar,
+  AppTopBar,
+  CommandPaletteTrigger,
+  NativeWindowControlsInset,
+  ThemeToggle,
+  WindowsWindowControls,
+};
+export type { AppTheme, AppThemePreference, DesktopPlatform };

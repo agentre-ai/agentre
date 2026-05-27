@@ -1,0 +1,32 @@
+import { ChevronDown, History } from "lucide-react";
+import * as React from "react";
+
+import { Button } from "@/components/ui/button";
+
+// CompactHistoryFold 渲染 transcript 顶部"折叠的压缩前历史"提示条。
+// 点击按钮把状态委托回父组件 (ChatTranscript) 切换 expanded,展开后显示全部历史。
+//
+// count 是被折叠的消息条数(用户视角的"几条历史"),不含 boundary 当前消息。
+export function CompactHistoryFold({
+  count,
+  onExpand,
+}: {
+  count: number;
+  onExpand: () => void;
+}): React.ReactElement {
+  return (
+    <div className="flex justify-center py-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="gap-2 text-xs text-muted-foreground"
+        onClick={onExpand}
+      >
+        <History className="h-3.5 w-3.5" aria-hidden="true" />
+        <span>查看压缩前的 {count} 条消息</span>
+        <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+      </Button>
+    </div>
+  );
+}

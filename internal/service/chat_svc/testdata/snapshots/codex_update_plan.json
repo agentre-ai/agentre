@@ -1,0 +1,24 @@
+[
+  {
+    "type": "text",
+    "data": {
+      "text": "Updating plan."
+    }
+  },
+  {
+    "type": "plan",
+    "data": {
+      "steps": [
+        {
+          "step": "step 1",
+          "status": "completed"
+        },
+        {
+          "step": "step 2",
+          "status": "in_progress"
+        }
+      ],
+      "text": "- [x] step 1\n- [ ] step 2\n"
+    }
+  }
+]

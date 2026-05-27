@@ -1,0 +1,315 @@
+package chat_svc
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"agentre/internal/pkg/agentruntime/canonical"
+	"agentre/internal/service/chat_svc/blocks"
+	"agentre/internal/service/chat_svc/view"
+)
+
+// dispatcherEmitter 把 handlers 输出的 map[string]any{kind: ..., ...} 中间形态
+// 转成 typed ChatStreamEvent 后透传给 s.emitter。
+//
+// 设计:handlers/ 包不依赖 chat_svc(避免循环),所以它们 emit 抽象形态;
+// 转换在 chat_svc 边界完成,保留前端 wire schema 不变。
+//
+// 不识别的 kind → 丢弃(forward-compat,允许未来新增 kind 时 chat_svc 没更新也不崩)。
+type dispatcherEmitter struct {
+	svc *chatSvc
+}
+
+func (d *dispatcherEmitter) Emit(ctx context.Context, stream string, raw any) {
+	if d == nil || d.svc == nil {
+		return
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return
+	}
+	kind, _ := m["kind"].(string)
+	if kind == "" {
+		return
+	}
+
+	ev := ChatStreamEvent{Kind: ChatStreamEventKind(kind)}
+	switch kind {
+	case string(StreamChunk), string(StreamThinking):
+		ev.Delta, _ = m["delta"].(string)
+
+	case string(StreamToolUse):
+		ev.ToolUseID = stringOf(m, "toolUseId")
+		ev.ToolName = stringOf(m, "toolName")
+		ev.ToolInput = mapOf(m, "toolInput")
+		ev.ParentToolCallID = stringOf(m, "parentToolCallId")
+		// Canonical: runtime translator 算出的统一识别;handler 走 raw_tool.go 透传
+		// (m["canonical"] = tc2.Canonical, 类型 canonical.CanonicalTool)。
+		if c, ok := m["canonical"].(canonical.CanonicalTool); ok {
+			ev.Canonical = view.FromCanonical(c)
+		}
+
+	case string(StreamToolResult):
+		ev.ToolUseID = stringOf(m, "toolUseId")
+		ev.ToolResult, _ = m["toolResult"].(string)
+		ev.IsError, _ = m["isError"].(bool)
+		ev.ParentToolCallID = stringOf(m, "parentToolCallId")
+		ev.ToolResultMeta = mapOf(m, "toolResultMeta")
+
+	case string(StreamAskUserQuestion):
+		ev.AskUserQuestion = askUserQuestionFromMap(m)
+		// 同步 canonical:前端 CanonicalToolRouter 读 block.canonical 路径,
+		// 让 UserAsk 走与 FileWrite/FileEdit 一致的统一渲染入口。
+		// Answered 必须传,否则 resolved 帧到前端时 canonical.userAsk.answered 永远 false,
+		// UserAskCard 的 status pill 翻不到 ANSWERED(只有 SKIPPED 路径正常)。
+		ev.Canonical = view.FromCanonical(canonical.UserAsk{
+			RequestID: ev.AskUserQuestion.RequestID,
+			Questions: ev.AskUserQuestion.Questions,
+			Answers:   ev.AskUserQuestion.Answers,
+			Answered:  ev.AskUserQuestion.Answered,
+			Skipped:   ev.AskUserQuestion.Skipped,
+		})
+
+	case string(StreamPlanUpdate):
+		ev.Delta, _ = m["delta"].(string)
+		if c, ok := m["canonical"].(canonical.CanonicalTool); ok {
+			ev.Canonical = view.FromCanonical(c)
+		}
+
+	case string(StreamToolPermissionRequest):
+		ev.ToolPermission = toolPermissionFromMap(m)
+		// 优先吃 handler 预设的 canonical(handlers/tool_permission.go 已经按
+		// ExitPlanMode / 普通工具分支构造完毕,且 ExitPlanMode 带 Actions);
+		// 兜底走旧合成逻辑保历史 emitter 调用方(目前只剩这条 case 用兜底)。
+		if c, ok := m["canonical"].(canonical.CanonicalTool); ok {
+			ev.Canonical = view.FromCanonical(c)
+		} else if ev.ToolPermission != nil {
+			if ev.ToolPermission.ToolName == "ExitPlanMode" {
+				planText, _ := ev.ToolPermission.ToolInput["plan"].(string)
+				ev.Canonical = view.FromCanonical(canonical.PlanApproveRequest{
+					RequestID: ev.ToolPermission.RequestID,
+					PlanText:  planText,
+					Resolved:  ev.ToolPermission.Resolved,
+					Allowed:   ev.ToolPermission.Allowed,
+				})
+			} else {
+				ev.Canonical = view.FromCanonical(canonical.ToolPermission{
+					RequestID:   ev.ToolPermission.RequestID,
+					ToolName:    ev.ToolPermission.ToolName,
+					ToolInput:   ev.ToolPermission.ToolInput,
+					Resolved:    ev.ToolPermission.Resolved,
+					Allowed:     ev.ToolPermission.Allowed,
+					AlwaysAllow: ev.ToolPermission.AlwaysAllow,
+				})
+			}
+		}
+
+	case string(StreamSubagentStarted), string(StreamSubagentProgress), string(StreamSubagentDone):
+		ev.ToolUseID = stringOf(m, "toolUseId")
+		// info → ChatBlockSubagent (复用已有投影 subagentInfoToChatBlock)
+		ev.Subagent = subagentInfoMapToChatBlock(m["info"])
+		if ev.Subagent != nil {
+			ev.Canonical = view.FromCanonical(canonical.AgentSpawn{
+				TaskID:          ev.Subagent.TaskID,
+				SubagentType:    ev.Subagent.SubagentType,
+				TaskDescription: ev.Subagent.TaskDescription,
+				Prompt:          ev.Subagent.Prompt,
+				LastToolName:    ev.Subagent.LastToolName,
+				ToolUses:        ev.Subagent.ToolUses,
+				TotalTokens:     ev.Subagent.TotalTokens,
+				DurationMs:      ev.Subagent.DurationMs,
+				Status:          ev.Subagent.Status,
+			})
+		}
+
+	case string(StreamRetry):
+		ev.RetryAttempt = intOf(m, "retryAttempt")
+		ev.RetryMaxAttempts = intOf(m, "retryMaxAttempts")
+		ev.RetryMessage = stringOf(m, "retryMessage")
+		ev.RetryDetails = stringOf(m, "retryDetails")
+		ev.RetryAt = int64Of(m, "retryAt")
+		if ev.RetryAt == 0 {
+			ev.RetryAt = time.Now().UnixMilli()
+		}
+
+	case string(StreamSessionStatus):
+		ev.SessionStatus = sessionStatusFromMap(m["sessionStatus"])
+
+	case string(StreamUsage):
+		ev.Usage = usageFromMap(m["usage"])
+
+	case string(StreamCompactBoundary):
+		ev.Compact = &ChatCompactBoundary{
+			MessageID: int64Of(m, "messageId"),
+			Seq:       intOf(m, "seq"),
+			PreTokens: intOf(m, "preTokens"),
+			Trigger:   stringOf(m, "trigger"),
+			At:        int64Of(m, "at"),
+		}
+
+	case string(StreamRuntimeStatus):
+		ev.RuntimeStatus = &ChatRuntimeStatus{
+			Status:     stringOf(m, "status"),
+			Compacting: boolOf(m, "compacting"),
+		}
+
+	case string(StreamError):
+		ev.Error = stringOf(m, "error")
+
+	case "message_end":
+		// handlers DoneHandler emit "message_end" 中间形态,chat_svc 在 runTurn
+		// 收尾(finalize)统一 emit StreamDone/Aborted/Error;这里丢弃即可。
+		return
+
+	default:
+		return
+	}
+	d.svc.emitter.Emit(ctx, stream, ev)
+}
+
+func stringOf(m map[string]any, k string) string {
+	if v, ok := m[k].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func intOf(m map[string]any, k string) int {
+	switch v := m[k].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	}
+	return 0
+}
+
+func int64Of(m map[string]any, k string) int64 {
+	switch v := m[k].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	}
+	return 0
+}
+
+func mapOf(m map[string]any, k string) map[string]any {
+	if v, ok := m[k].(map[string]any); ok {
+		return v
+	}
+	return nil
+}
+
+func askUserQuestionFromMap(m map[string]any) *ChatBlockAskUserQuestion {
+	// handlers/user_ask.go emit 时携带原 block 引用 (blocks.UserAskBlock pointer)
+	// 通过 "askUserQuestion" key;若无则按 fallback 字段拼。
+	if blk, ok := m["askUserQuestion"].(*blocks.UserAskBlock); ok && blk != nil {
+		return &ChatBlockAskUserQuestion{
+			RequestID: blk.RequestID,
+			Questions: blk.Questions,
+			Answered:  blk.Answered,
+			Answers:   blk.Answers,
+			Skipped:   blk.Skipped,
+		}
+	}
+	out := &ChatBlockAskUserQuestion{
+		RequestID: stringOf(m, "requestId"),
+		Answered:  boolOf(m, "answered"),
+		Skipped:   boolOf(m, "skipped"),
+	}
+	return out
+}
+
+func toolPermissionFromMap(m map[string]any) *ChatBlockToolPermission {
+	if blk, ok := m["toolPermission"].(*blocks.ToolPermissionBlock); ok && blk != nil {
+		return &ChatBlockToolPermission{
+			RequestID:   blk.RequestID,
+			ToolName:    blk.ToolName,
+			ToolInput:   blk.ToolInput,
+			Resolved:    blk.Resolved,
+			Allowed:     blk.Allowed,
+			AlwaysAllow: blk.AlwaysAllow,
+		}
+	}
+	return &ChatBlockToolPermission{
+		RequestID:   stringOf(m, "requestId"),
+		ToolName:    stringOf(m, "toolName"),
+		ToolInput:   mapOf(m, "toolInput"),
+		Resolved:    boolOf(m, "resolved"),
+		Allowed:     boolOf(m, "allowed"),
+		AlwaysAllow: boolOf(m, "alwaysAllow"),
+	}
+}
+
+func boolOf(m map[string]any, k string) bool {
+	if v, ok := m[k].(bool); ok {
+		return v
+	}
+	return false
+}
+
+// subagentInfoMapToChatBlock 解析 handler emit 的 "info" 字段(agentruntime.SubagentInfo)
+// 到 ChatBlockSubagent 投影。
+func subagentInfoMapToChatBlock(raw any) *ChatBlockSubagent {
+	switch info := raw.(type) {
+	case nil:
+		return nil
+	default:
+		// 通过 JSON round-trip 跨包转(SubagentInfo 在 agentruntime,ChatBlockSubagent
+		// 在 chat_svc;字段同形)。性能可接受 —— Subagent 事件 turn 内频率低。
+		buf, err := json.Marshal(info)
+		if err != nil {
+			return nil
+		}
+		out := &ChatBlockSubagent{}
+		if err := json.Unmarshal(buf, out); err != nil {
+			return nil
+		}
+		return out
+	}
+}
+
+func sessionStatusFromMap(raw any) *ChatSessionStatusPatch {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := &ChatSessionStatusPatch{
+		AgentStatus:    stringOf(m, "agentStatus"),
+		NeedsAttention: boolOf(m, "needsAttention"),
+		PermissionMode: stringOf(m, "permissionMode"),
+	}
+	if v, ok := m["contextWindow"]; ok {
+		switch vv := v.(type) {
+		case int:
+			out.ContextWindow = vv
+		case int64:
+			out.ContextWindow = int(vv)
+		case float64:
+			out.ContextWindow = int(vv)
+		}
+	}
+	return out
+}
+
+func usageFromMap(raw any) *ChatStreamUsage {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return &ChatStreamUsage{
+		MessageID:           int64Of(m, "messageId"),
+		PromptTokens:        intOf(m, "promptTokens"),
+		CompletionTokens:    intOf(m, "completionTokens"),
+		CachedTokens:        intOf(m, "cachedTokens"),
+		CacheCreationTokens: intOf(m, "cacheCreationTokens"),
+		ReasoningTokens:     intOf(m, "reasoningTokens"),
+		TotalInputTokens:    intOf(m, "totalInputTokens"),
+	}
+}

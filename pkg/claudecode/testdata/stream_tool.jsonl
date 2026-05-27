@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"sess-tool","cwd":"/tmp","model":"m","tools":["Read"]}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"tu-1","name":"Read","input":{"file_path":"/etc/hosts"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"127.0.0.1 localhost","is_error":false}]}}
+{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"done"}]}}
+{"type":"result","subtype":"success","session_id":"sess-tool","usage":{"input_tokens":20,"output_tokens":3}}

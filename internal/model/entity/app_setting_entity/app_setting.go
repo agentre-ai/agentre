@@ -1,0 +1,105 @@
+// Package app_setting_entity 维护 App 全局 key-value 设置项的充血实体。
+//
+// 服务侧设置持久化到 SQLite；纯前端体验偏好（主题、窗口尺寸等）继续走 localStorage。
+package app_setting_entity
+
+import (
+	"context"
+	"net"
+	"strconv"
+	"strings"
+
+	"github.com/cago-frame/cago/pkg/i18n"
+
+	"agentre/internal/pkg/code"
+)
+
+// 预定义的 key 常量。新增 key 时在这里登记，避免 service 层散写魔法字符串。
+const (
+	KeyProxyListenHost = "proxy.listen_host"
+	KeyProxyListenPort = "proxy.listen_port"
+
+	// KeyUpdateChannel 自动更新通道：stable / beta / nightly。
+	KeyUpdateChannel = "update.channel"
+	// KeyDownloadMirror 下载镜像前缀；空串表示直连 GitHub。
+	KeyDownloadMirror = "update.download_mirror"
+	// KeyLastUpdateCheck 上次"检查更新"的 Unix 时间戳，启动自动检查用它做 24h 节流。
+	KeyLastUpdateCheck = "update.last_check"
+)
+
+// DefaultProxyListenHost 缺省监听地址 —— loopback，只允许本机访问。
+const DefaultProxyListenHost = "127.0.0.1"
+
+// DefaultProxyListenPort 缺省监听端口。
+// 选 52401 是为了避开常见服务端口段，新装实例与残留 seed='0' 的旧数据会被迁移到这里。
+const DefaultProxyListenPort = 52401
+
+// DefaultUpdateChannel 缺省更新通道。
+const DefaultUpdateChannel = "stable"
+
+// AppSetting 一行 key-value 设置项记录。
+type AppSetting struct {
+	Key        string `gorm:"column:key;primaryKey;type:text;not null"`
+	Value      string `gorm:"column:value;type:text;not null"`
+	Updatetime int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
+}
+
+// TableName 绑定表名。
+func (*AppSetting) TableName() string { return "app_settings" }
+
+// IsProxyKey 判断当前 key 是否属于本地 HTTP 代理段，service 层用它决定是否触发 Restart。
+func (s *AppSetting) IsProxyKey() bool {
+	if s == nil {
+		return false
+	}
+	return strings.HasPrefix(s.Key, "proxy.")
+}
+
+// ValidateProxyHost 校验 proxy.listen_host 取值是否为合法 IP。
+// 空字符串视为非法（service 层调用前已 TrimSpace）。
+func ValidateProxyHost(ctx context.Context, v string) error {
+	t := strings.TrimSpace(v)
+	if t == "" {
+		return i18n.NewError(ctx, code.AppSettingInvalidHost)
+	}
+	if net.ParseIP(t) == nil {
+		return i18n.NewError(ctx, code.AppSettingInvalidHost)
+	}
+	return nil
+}
+
+// ValidateProxyPort 校验 proxy.listen_port 取值是否为 [0, 65535] 的整数。
+// 0 表示随机分配。
+func ValidateProxyPort(ctx context.Context, v string) error {
+	t := strings.TrimSpace(v)
+	if t == "" {
+		return i18n.NewError(ctx, code.AppSettingInvalidPort)
+	}
+	n, err := strconv.Atoi(t)
+	if err != nil {
+		return i18n.NewError(ctx, code.AppSettingInvalidPort)
+	}
+	if n < 0 || n > 65535 {
+		return i18n.NewError(ctx, code.AppSettingInvalidPort)
+	}
+	return nil
+}
+
+// ParseProxyPort 帮助 bootstrap / svc 从 raw value 解析端口；解析失败返回 0。
+func ParseProxyPort(v string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 || n > 65535 {
+		return 0
+	}
+	return n
+}
+
+// ValidateUpdateChannel 校验 update.channel 取值是否为合法通道名。
+// 空串视为非法（service 层调用前已 TrimSpace）。
+func ValidateUpdateChannel(ctx context.Context, v string) error {
+	switch strings.TrimSpace(v) {
+	case "stable", "beta", "nightly":
+		return nil
+	}
+	return i18n.NewError(ctx, code.InvalidParameter)
+}

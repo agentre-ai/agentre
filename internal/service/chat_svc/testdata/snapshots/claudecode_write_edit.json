@@ -1,0 +1,59 @@
+[
+  {
+    "type": "text",
+    "data": {
+      "text": "Will create then edit a file."
+    }
+  },
+  {
+    "type": "tool_use",
+    "data": {
+      "id": "tu-1",
+      "name": "Write",
+      "input": {
+        "content": "hello",
+        "file_path": "/tmp/a.txt"
+      }
+    }
+  },
+  {
+    "type": "tool_result",
+    "data": {
+      "tool_use_id": "tu-1",
+      "content": [
+        {
+          "type": "text",
+          "data": {
+            "text": "wrote 5 bytes"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "tool_use",
+    "data": {
+      "id": "tu-2",
+      "name": "Edit",
+      "input": {
+        "file_path": "/tmp/a.txt",
+        "new_string": "world",
+        "old_string": "hello"
+      }
+    }
+  },
+  {
+    "type": "tool_result",
+    "data": {
+      "tool_use_id": "tu-2",
+      "content": [
+        {
+          "type": "text",
+          "data": {
+            "text": "ok"
+          }
+        }
+      ]
+    }
+  }
+]

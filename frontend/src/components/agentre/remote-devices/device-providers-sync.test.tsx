@@ -1,0 +1,134 @@
+// frontend/src/components/agentre/remote-devices/device-providers-sync.test.tsx
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+
+// Hoist mocks so the module factory can reference them.
+const appMocks = vi.hoisted(() => ({
+  RemoteDeviceListProviders: vi.fn(),
+  ListAgentBackends: vi.fn(),
+  ListLLMProviders: vi.fn(),
+}));
+
+vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
+
+import { DeviceProvidersSync } from "./device-providers-sync";
+
+const DEVICE_ID = 42;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Stub clipboard globally before each test.
+  vi.stubGlobal("navigator", {
+    ...navigator,
+    clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
+});
+
+describe("DeviceProvidersSync", () => {
+  it("shows synced row for key-a and missing row for key-b with fix command", async () => {
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([
+      { key: "k-a", name: "Anthropic Prod", type: "anthropic" },
+    ]);
+    appMocks.ListAgentBackends.mockResolvedValue({
+      items: [
+        {
+          deviceID: String(DEVICE_ID),
+          llmProviderKey: "k-a",
+          name: "backend-a",
+          type: "claudecode",
+        },
+        {
+          deviceID: String(DEVICE_ID),
+          llmProviderKey: "k-b",
+          name: "backend-b",
+          type: "builtin",
+        },
+        // different device — should be excluded
+        {
+          deviceID: "999",
+          llmProviderKey: "k-c",
+          name: "backend-c",
+          type: "builtin",
+        },
+      ],
+    });
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [
+        {
+          providerKey: "k-a",
+          name: "Anthropic Prod",
+          type: "anthropic",
+          baseUrl: "https://api.anthropic.com",
+        },
+        {
+          providerKey: "k-b",
+          name: "OpenAI Staging",
+          type: "openai-chat",
+          baseUrl: "https://api.openai.com/v1",
+          model: "gpt-4o",
+        },
+      ],
+    });
+
+    render(<DeviceProvidersSync deviceId={DEVICE_ID} />);
+
+    // Panel must appear
+    await waitFor(() =>
+      expect(screen.getByTestId("device-providers-sync")).toBeInTheDocument(),
+    );
+
+    // k-a should be synced (no missing badge, no fix cmd)
+    expect(screen.queryByTestId("missing-badge-k-a")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("fix-cmd-k-a")).not.toBeInTheDocument();
+
+    // k-b should be missing with fix command
+    expect(screen.getByTestId("missing-badge-k-b")).toBeInTheDocument();
+    const fixCmdEl = screen.getByTestId("fix-cmd-k-b");
+    expect(fixCmdEl).toBeInTheDocument();
+    const fixCmdText = fixCmdEl.textContent ?? "";
+    expect(fixCmdText).toContain("agentred llm add --key=k-b");
+    expect(fixCmdText).toContain('--name="OpenAI Staging"');
+    expect(fixCmdText).toContain("--type=openai-chat");
+    expect(fixCmdText).toContain("--api-key=<API_KEY>");
+    expect(fixCmdText).toContain("--base-url=https://api.openai.com/v1");
+    expect(fixCmdText).toContain("--model=gpt-4o");
+
+    // k-c (different device) should not appear
+    expect(screen.queryByTestId("missing-badge-k-c")).not.toBeInTheDocument();
+
+    // Copy button for k-b — use fireEvent.click to avoid pointer-events issues
+    const copyBtn = screen.getByLabelText(/复制修复命令 k-b/);
+    fireEvent.click(copyBtn);
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(fixCmdText),
+    );
+  });
+
+  it("shows empty message when no local backends on this device", async () => {
+    appMocks.RemoteDeviceListProviders.mockResolvedValue([]);
+    appMocks.ListAgentBackends.mockResolvedValue({ items: [] });
+    appMocks.ListLLMProviders.mockResolvedValue({ items: [] });
+
+    render(<DeviceProvidersSync deviceId={DEVICE_ID} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/没有关联任何本地 Agent 后端 Provider/),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("shows error state when the API call fails", async () => {
+    appMocks.RemoteDeviceListProviders.mockRejectedValue(
+      new Error("network timeout"),
+    );
+    appMocks.ListAgentBackends.mockResolvedValue({ items: [] });
+    appMocks.ListLLMProviders.mockResolvedValue({ items: [] });
+
+    render(<DeviceProvidersSync deviceId={DEVICE_ID} />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/network timeout/)).toBeInTheDocument(),
+    );
+  });
+});

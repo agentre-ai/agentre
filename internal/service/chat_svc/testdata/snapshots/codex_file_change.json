@@ -1,0 +1,37 @@
+[
+  {
+    "type": "tool_use",
+    "data": {
+      "id": "fc-1",
+      "name": "file_change",
+      "input": {
+        "changes": [
+          {
+            "diff": "+ hello\n",
+            "kind": "created",
+            "path": "/a"
+          },
+          {
+            "diff": "-old\n+new\n",
+            "kind": "modified",
+            "path": "/b"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "tool_result",
+    "data": {
+      "tool_use_id": "fc-1",
+      "content": [
+        {
+          "type": "text",
+          "data": {
+            "text": "applied"
+          }
+        }
+      ]
+    }
+  }
+]

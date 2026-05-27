@@ -1,0 +1,58 @@
+[
+  {
+    "type": "text",
+    "data": {
+      "text": "Delegating to subagent."
+    }
+  },
+  {
+    "type": "tool_use",
+    "data": {
+      "id": "task-1",
+      "name": "Task",
+      "input": {
+        "description": "find bug X",
+        "prompt": "explore repo",
+        "subagent_type": "general-purpose"
+      }
+    }
+  },
+  {
+    "type": "tool_use",
+    "data": {
+      "id": "nested-1",
+      "name": "Read",
+      "input": {
+        "file_path": "/tmp/x.go"
+      }
+    }
+  },
+  {
+    "type": "tool_result",
+    "data": {
+      "tool_use_id": "nested-1",
+      "content": [
+        {
+          "type": "text",
+          "data": {
+            "text": "file contents"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "tool_result",
+    "data": {
+      "tool_use_id": "task-1",
+      "content": [
+        {
+          "type": "text",
+          "data": {
+            "text": "subagent found X"
+          }
+        }
+      ]
+    }
+  }
+]

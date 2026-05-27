@@ -1,0 +1,46 @@
+[
+  {
+    "type": "text",
+    "data": {
+      "text": "Let me ask you a question first."
+    }
+  },
+  {
+    "type": "user_ask",
+    "data": {
+      "request_id": "req-1",
+      "questions": [
+        {
+          "id": "q1",
+          "question": "Which approach?",
+          "header": "Pick one",
+          "options": [
+            {
+              "label": "A",
+              "description": "first"
+            },
+            {
+              "label": "B",
+              "description": "second"
+            }
+          ]
+        }
+      ],
+      "answered": true,
+      "answers": [
+        {
+          "questionIndex": 0,
+          "labels": [
+            "A"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "type": "text",
+    "data": {
+      "text": "Thanks, proceeding with A."
+    }
+  }
+]

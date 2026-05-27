@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"sess-retry","cwd":"/tmp","model":"m","tools":[]}
+{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":585.8761681691873,"error_status":529,"error":"rate_limit","session_id":"sess-retry","uuid":"u1"}
+{"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"retry_delay_ms":1229.3,"error_status":529,"error":"rate_limit","session_id":"sess-retry","uuid":"u2"}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"ok"}]}}
+{"type":"result","subtype":"success","session_id":"sess-retry","usage":{"input_tokens":8,"output_tokens":2}}

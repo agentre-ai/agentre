@@ -1,0 +1,190 @@
+package code
+
+import "github.com/cago-frame/cago/pkg/i18n"
+
+func init() {
+	i18n.Register("en", enUS)
+}
+
+var enUS = map[int]string{
+	OperationFailed:  "Operation failed",
+	InvalidParameter: "Invalid parameter",
+	NotFound:         "Resource not found",
+	ServerError:      "Internal server error",
+
+	LLMProviderNotFound:       "LLM provider not found",
+	LLMProviderNameDuplicated: "LLM provider name already exists",
+	LLMProviderInvalidType:    "Unsupported LLM provider type",
+	LLMProviderFetchModels:    "Failed to fetch model list",
+
+	AgentBackendNotFound:            "Agent backend not found",
+	AgentBackendNameDuplicated:      "Agent backend name already exists",
+	AgentBackendInvalidType:         "Invalid agent backend type",
+	AgentBackendTypeUnsupported:     "This agent backend type is not supported yet",
+	AgentBackendLLMProviderRequired: "Please select an LLM provider for this backend",
+	AgentBackendCLIPathNotAllowed:   "Built-in agent backend does not accept a CLI path",
+	AgentBackendLLMProviderNotFound: "The selected LLM provider no longer exists",
+	AgentBackendLLMProviderInactive: "The selected LLM provider is disabled",
+	AgentBackendInUse:               "Agent backend is in use and cannot be deleted",
+
+	AgentBackendProviderTypeMismatch:   "Agent backend type does not match the LLM provider type",
+	AgentBackendUnknownAlias:           "Model route contains an unknown alias",
+	AgentBackendAliasProviderInvalid:   "Model route references an invalid LLM provider (missing / disabled / type mismatch)",
+	AgentBackendInvalidSandbox:         "Sandbox value is not in the allowed set",
+	AgentBackendInvalidApproval:        "Approval policy value is not in the allowed set",
+	AgentBackendInvalidEnvJSON:         "Custom environment variables JSON is malformed",
+	AgentBackendReservedEnvKey:         "Custom environment variables cannot override App-managed keys",
+	AgentBackendGatewayUnavailable:     "Local HTTP gateway is not running; please enable it in settings",
+	AgentBackendInvalidReasoningEffort: "Invalid reasoning effort; must be one of low / medium / high / xhigh / max, or empty",
+	AgentBackendInvalidDevice:          "The device this Agent backend is bound to does not exist or is offline",
+
+	AppSettingNotFound:      "App setting not found",
+	AppSettingInvalidPort:   "Port must be an integer between 0 and 65535",
+	AppSettingInvalidHost:   "Listen host is not a valid IP",
+	AppGatewayRestartFailed: "Failed to restart the local HTTP gateway; check port availability",
+
+	HookSourceNotFound:          "Hook source not found",
+	HookSourceNameDuplicated:    "Hook source name already exists",
+	HookInvalidSourceType:       "Unsupported hook source type",
+	HookInvalidConfig:           "Hook configuration or event data is malformed",
+	HookRuleNotFound:            "Hook routing rule not found",
+	HookRuleTargetAgentNotFound: "Routing target agent does not exist",
+	HookRuleFallbackImmutable:   "Fallback rule cannot be deleted",
+	HookEventNotFound:           "Hook event not found",
+	HookInvalidEventStatus:      "Invalid hook event status",
+
+	DepartmentNotFound:            "Department not found",
+	DepartmentNameDuplicated:      "A sibling department with this name already exists",
+	DepartmentInvalidColor:        "Invalid department accent color",
+	DepartmentParentNotFound:      "Parent department not found",
+	DepartmentParentInactive:      "Parent department is disabled",
+	DepartmentCircularReference:   "Cannot move a department under itself or its descendants",
+	DepartmentLeadNotInDepartment: "Lead must be an agent that belongs directly to this department",
+	DepartmentHasChildren:         "Department still has children",
+
+	AgentNotFound:           "Agent not found",
+	AgentNameDuplicated:     "Agent name already exists",
+	AgentInvalidColor:       "Invalid agent avatar color",
+	AgentInvalidPayload:     "Agent configuration payload is malformed",
+	AgentDepartmentRequired: "Please select a department for this agent",
+	AgentDepartmentNotFound: "Selected department does not exist",
+	AgentDepartmentInactive: "Selected department is disabled",
+	AgentBackendRequired:    "Please select an agent backend",
+	AgentBackendInvalidRef:  "Selected agent backend does not exist or is disabled",
+	AgentSystemImmutable:    "The default CEO assistant cannot change department, move, or be deleted",
+	AgentParentNotFound:     "Selected parent agent does not exist",
+	AgentCircularReference:  "Cannot move an agent under itself or its descendants",
+	AgentAvatarInvalid:      "Unsupported avatar format. Only PNG / JPEG / WEBP are accepted",
+	AgentAvatarTooLarge:     "Avatar exceeds the 2MB limit",
+
+	ChatSessionNotFound:   "Chat session not found",
+	ChatAgentNotChattable: "Agent has no usable builtin backend yet",
+	ChatBlocksMalformed:   "Failed to decode message blocks",
+	ChatSendInFlight:      "Session already has an in-flight turn",
+	ChatProviderFailed:    "LLM provider call failed",
+	ChatInvalidRole:       "Invalid message role",
+	ChatTextTooLong:       "Message text exceeds limit",
+	ChatTitleTooLong:      "Session title exceeds limit",
+
+	ChatBackendGatewayUnavailable:   "Local gateway is not running; CLI backend is temporarily unavailable",
+	ChatMessageNotFound:             "Message not found",
+	ChatRegenerateNotAssistant:      "Regenerate is only allowed on assistant messages",
+	ChatRegenerateNoUserAnchor:      "Cannot locate the user message preceding the target",
+	ChatRegenerateUnsupported:       "This backend does not yet support mid-history regenerate",
+	ChatEditNotUser:                 "Edit is only allowed on user messages",
+	ChatProviderSessionGone:         "The CLI conversation no longer exists. The session has been reset — please resend your message.",
+	ChatRemoteProviderNotConfigured: "Remote agentred does not have the LLM provider required by this Agent backend (provider key: %s). Sync it to the remote first, or run agentred llm add --key=%s --name=<NAME> --type=<TYPE> --api-key=<API_KEY> on the remote",
+
+	ChatSteerNoActive:     "No in-flight conversation to enqueue into",
+	ChatSteerUnsupported:  "This backend does not support enqueueing during a turn",
+	ChatSteerInternal:     "Failed to enqueue the message",
+	ChatCancelUnsupported: "This backend does not support canceling queued messages",
+	ChatCancelNotFound:    "Queued message is already processed or does not exist",
+	ChatStopNoActive:      "No in-flight turn to stop",
+	ChatStopInternal:      "Failed to stop the current turn",
+
+	ChatPermissionModeUnsupported: "This backend does not support switching permission mode",
+	ChatPermissionModeInvalid:     "Invalid permission mode (allowed: default / acceptEdits / plan / bypassPermissions)",
+	ChatPermissionModeNoActive:    "Send a message first so the session starts, then switch permission mode",
+	ChatPermissionModeInternal:    "Failed to switch permission mode",
+	ChatCompactUnsupported:        "This backend does not support context compaction",
+	ChatCompactNoSession:          "Send a message first so the Codex thread exists, then compact",
+	ChatCompactInternal:           "Failed to compact the context",
+
+	ChatLaunchCommandNotAvailable: "Launch command is unavailable for the current agent backend",
+
+	ChatPlanActionUnknown: "Unknown plan action — please refresh the session and try again",
+
+	ChatGitStateUnavailable: "Git state unavailable for this session's working directory",
+
+	ProjectNotFound:          "Project not found",
+	ProjectNameDuplicated:    "A sibling project with this name already exists",
+	ProjectInvalidColor:      "Invalid project accent color",
+	ProjectInvalidPath:       "Project local path is required",
+	ProjectPathNotExist:      "Project local path does not exist or cannot be accessed",
+	ProjectParentNotFound:    "Parent project not found",
+	ProjectParentInactive:    "Parent project is disabled",
+	ProjectCircularReference: "Cannot move a project under itself or its descendants",
+	ProjectAgentNotMember:    "Agent is not a member of this project",
+	ProjectAgentNotFound:     "Referenced agent does not exist",
+	ProjectHasChildren:       "Project still has child projects",
+	ProjectHasActiveSessions: "Project still has open sessions",
+
+	// Project Location (remote device path sub-table)
+	ProjectLocationNotFound:    "Project path not found",
+	ProjectLocationInvalidPath: "Project path must be absolute",
+	ProjectLocationMissing:     "Project has no path configured on the selected device; add it under Project Settings → Remote Paths",
+	ProjectLocationDuplicate:   "Project already has a path on this device",
+
+	// Server
+	ServerURLInvalid:          "invalid Server URL",
+	ServerUnreachable:         "Server unreachable",
+	ServerVersionMismatch:     "Server version mismatch",
+	ServerLoginPending:        "waiting for browser approval",
+	ServerLoginExpired:        "device code expired, please retry",
+	ServerLoginDenied:         "user denied authorization",
+	ServerRefreshFailed:       "failed to refresh Server credentials, please log in again",
+	ServerKeychainUnavailable: "system keychain unavailable",
+
+	// Remote Runner / cross-device approval
+	RemoteRunnerDialFailed:      "Could not connect to remote agentred",
+	RemoteRunnerCallFailed:      "Remote call failed",
+	RemoteRunnerConnectionLost:  "Connection to remote agentred lost; please start a new chat",
+	RemoteRunnerInvalidState:    "Remote session is in an invalid state",
+	ApprovalCrossDeviceMismatch: "Approval request ID did not match remote; may have timed out",
+
+	// Remote device (agentred LAN)
+	RemoteDeviceNotFound:         "Remote device not found",
+	RemoteDeviceURLInvalid:       "invalid agentred URL (must be ws:// or wss:// and end with /rpc)",
+	RemoteDeviceAlreadyPaired:    "this URL is already paired",
+	RemoteDevicePairingInvalid:   "pairing code invalid or expired; re-run agentred pair on the remote",
+	RemoteDeviceUnauthorized:     "credentials no longer valid; please re-pair",
+	RemoteDeviceDialFailed:       "could not reach agentred; check network and port",
+	RemoteDeviceTOFUMismatch:     "remote daemon fingerprint changed; possible impostor — please re-pair",
+	RemoteDeviceTLSConfigInvalid: "invalid TLS configuration (missing or malformed certificate PEM)",
+	RemoteDeviceKeychainFailed:   "OS keychain write failed; please check permissions",
+	RemoteDeviceTimeout:          "Remote device timed out",
+	RemoteCLIDetectFailed:        "Remote CLI detection failed: %s",
+	RemoteCLIProbeFailed:         "Remote backend test failed: %s",
+
+	// remotefs
+	RemoteFsPathRefused:      "remote path refused (system dir or invalid)",
+	RemoteFsPermDenied:       "remote permission denied",
+	RemoteFsNotFound:         "remote path not found",
+	RemoteFsNotDir:           "not a directory",
+	RemoteFsDeviceOffline:    "remote device offline",
+	RemoteFsMkdirExists:      "directory already exists",
+	RemoteFsMkdirInvalidName: "invalid folder name (no '/' or '..', non-empty, ≤255 chars)",
+
+	// data import/export
+	DataBundleFormatInvalid:      "Unrecognized file format. Please choose a JSON exported from Agentre",
+	DataBundleVersionUnsupported: "File version not supported, please upgrade Agentre",
+	DataBundleScopeUnknown:       "File contains unknown scope",
+	DataExportEncodeFailed:       "Export failed: JSON encoding error",
+	DataExportWriteFailed:        "Export failed: file write error",
+	DataImportReadFailed:         "Import failed: file read error",
+	DataImportDanglingRef:        "Cross-scope reference not included in this import",
+	DataImportDuplicateLocal:     "Multiple local records share the same name, cannot auto-overwrite",
+	DataImportRollback:           "Import failed, all changes rolled back",
+	DataImportInvalidAction:      "Unknown import action",
+}

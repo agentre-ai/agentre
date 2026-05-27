@@ -1,0 +1,47 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  filterByQuery,
+  listAvailable,
+  slashCommands,
+  type SlashExec,
+} from "../registry";
+
+describe("slash command registry", () => {
+  it("claudecode 可用 /compact", () => {
+    const xs = listAvailable("claudecode");
+    expect(xs.map((c) => c.name)).toContain("compact");
+    const compact = xs.find((c) => c.name === "compact")!;
+    const exec = compact.resolve("claudecode")!;
+    expect(exec.kind).toBe("literal_text");
+    expect((exec as Extract<SlashExec, { kind: "literal_text" }>).text).toBe(
+      "/compact",
+    );
+  });
+
+  it("codex /compact 也走 literal_text (Enter 时由 chat-panel 拦截转 Compact RPC)", () => {
+    const xs = listAvailable("codex");
+    expect(xs.map((c) => c.name)).toContain("compact");
+    const compact = xs.find((c) => c.name === "compact")!;
+    const exec = compact.resolve("codex")!;
+    expect(exec.kind).toBe("literal_text");
+    expect((exec as Extract<SlashExec, { kind: "literal_text" }>).text).toBe(
+      "/compact",
+    );
+  });
+
+  it("空 backend 返回空列表", () => {
+    expect(listAvailable("")).toEqual([]);
+  });
+
+  it("filterByQuery 大小写不敏感的前缀匹配", () => {
+    expect(filterByQuery(slashCommands, "")).toEqual(slashCommands);
+    expect(filterByQuery(slashCommands, "comp").map((c) => c.name)).toEqual([
+      "compact",
+    ]);
+    expect(filterByQuery(slashCommands, "COMP").map((c) => c.name)).toEqual([
+      "compact",
+    ]);
+    expect(filterByQuery(slashCommands, "xyz")).toEqual([]);
+  });
+});

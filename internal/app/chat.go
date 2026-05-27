@@ -1,0 +1,143 @@
+package app
+
+import (
+	"agentre/internal/service/chat_svc"
+	"agentre/internal/service/chat_svc/ipc"
+)
+
+// ListChatAgents 聚合返回左栏 Agent 列表（含每个 Agent 的最近会话和可对话状态）。
+func (a *App) ListChatAgents() (*chat_svc.ListAgentsResponse, error) {
+	return chat_svc.Chat().ListAgents(a.ctx, &chat_svc.ListAgentsRequest{})
+}
+
+// ListChatAgentSessions 给「查看全部 N 个会话」popover 翻页拉数据。
+func (a *App) ListChatAgentSessions(req *chat_svc.ListAgentSessionsRequest) (*chat_svc.ListAgentSessionsResponse, error) {
+	return chat_svc.Chat().ListAgentSessions(a.ctx, req)
+}
+
+// LoadChatSession 拉单个 session 的 detail + 全部消息。
+func (a *App) LoadChatSession(req *chat_svc.LoadSessionRequest) (*chat_svc.LoadSessionResponse, error) {
+	return chat_svc.Chat().LoadSession(a.ctx, req)
+}
+
+// GetChatLaunchCommand 把当前 session 的 CLI 后端配置拼成可在终端粘贴运行的命令。
+// 仅 claudecode / codex 有效；builtin 返回 ChatLaunchCommandNotAvailable。
+// 命令中的 gateway token 故意写成占位符 <TOKEN>，不发放实际 token，用户自行替换。
+func (a *App) GetChatLaunchCommand(req *chat_svc.LaunchCommandRequest) (*chat_svc.LaunchCommandResponse, error) {
+	return chat_svc.Chat().GetLaunchCommand(a.ctx, req)
+}
+
+// GetSessionGitState 拉某 session 对应 cwd 的 git 状态快照, 供右侧上下文侧栏的
+// branch / worktree / dirty / ahead·behind 几个 chip 用。远端 backend 当前
+// 返回 notARepo=true 让前端折叠 chip 区, daemon handler 留作 follow-up。
+func (a *App) GetSessionGitState(req *chat_svc.GetSessionGitStateRequest) (*chat_svc.GetSessionGitStateResponse, error) {
+	return chat_svc.Chat().GetSessionGitState(a.ctx, req)
+}
+
+// SendChatMessage 发一条用户消息并起异步 turn；返回 stream 事件名。
+func (a *App) SendChatMessage(req *chat_svc.SendRequest) (*chat_svc.SendResponse, error) {
+	return chat_svc.Chat().Send(a.ctx, req)
+}
+
+// CompactChatSession 触发 Codex app-server 原生 thread/compact/start。
+// 不创建用户消息；压缩完成后 runtime 会 emit compact_boundary 供前端折叠历史。
+func (a *App) CompactChatSession(req *chat_svc.CompactRequest) (*chat_svc.CompactResponse, error) {
+	return chat_svc.Chat().Compact(a.ctx, req)
+}
+
+// EnqueueChatMessage 在 AI 还在回答时把一条新的用户消息插入当前 turn。
+// claudecode 走 PreToolUse hook + additionalContext，codex 走 turn/steer RPC。
+// 没有 in-flight turn 时返回 ChatSteerNoActive。响应里带 queuedId + cancellable
+// 给前端，后续 CancelQueuedChatMessage 按 ID 撤回。
+func (a *App) EnqueueChatMessage(req *chat_svc.EnqueueRequest) (*chat_svc.EnqueueResponse, error) {
+	return chat_svc.Chat().Enqueue(a.ctx, req)
+}
+
+// CancelQueuedChatMessage 撤回 Enqueue 投递但尚未被 AI 消费的排队消息。
+// QueuedID 为空表示清空整条队列。codex 后端不支持撤回（turn/steer 一发即弃），
+// 返回 ChatCancelUnsupported。
+func (a *App) CancelQueuedChatMessage(req *chat_svc.CancelQueuedRequest) (*chat_svc.CancelQueuedResponse, error) {
+	return chat_svc.Chat().CancelQueued(a.ctx, req)
+}
+
+// StopChatMessage 软中断当前正在跑的 turn。claudecode 走 stream-json
+// control_request{interrupt}、codex 走 turn/interrupt RPC、builtin 走 ctx cancel —
+// 三个后端都保留子进程 / 内存状态，下一条消息直接续。
+// 无活跃 turn 时返 ChatStopNoActive，前端把按钮回灰。
+func (a *App) StopChatMessage(req *chat_svc.StopRequest) (*chat_svc.StopResponse, error) {
+	return chat_svc.Chat().Stop(a.ctx, req)
+}
+
+// SetChatPermissionMode 切换 claude code 会话的 permission mode（default /
+// acceptEdits / plan / bypassPermissions）。对齐 Claude TUI 的 Shift+Tab 行为。
+// 仅 claudecode 后端支持；codex / builtin 返 ChatPermissionModeUnsupported。
+// 会话尚未起（CLI 子进程不在 LRU）时返 ChatPermissionModeNoActive。
+func (a *App) SetChatPermissionMode(req *chat_svc.SetPermissionModeRequest) (*chat_svc.SetPermissionModeResponse, error) {
+	return chat_svc.Chat().SetPermissionMode(a.ctx, req)
+}
+
+// RegenerateChatMessage 截掉指定 assistant 消息之前的 user 锚点后，用同一段
+// user 文本重新走一遍 turn。Step 1：仅 builtin 后端实际工作；CLI 后端在 runner
+// 接入 Rewinder 之前返回 ChatRegenerateUnsupported。
+func (a *App) RegenerateChatMessage(req *chat_svc.RegenerateRequest) (*chat_svc.SendResponse, error) {
+	return chat_svc.Chat().Regenerate(a.ctx, req)
+}
+
+// EditChatMessage 编辑历史 user 消息后用新文本重跑 turn。
+// 截到 target user（含）开始的全部历史，replay 新文本；fork 路径与 Regenerate 共用。
+func (a *App) EditChatMessage(req *chat_svc.EditRequest) (*chat_svc.SendResponse, error) {
+	return chat_svc.Chat().Edit(a.ctx, req)
+}
+
+// RenameChatSession 重命名会话。
+func (a *App) RenameChatSession(req *chat_svc.RenameRequest) (*chat_svc.RenameResponse, error) {
+	return chat_svc.Chat().Rename(a.ctx, req)
+}
+
+// DeleteChatSession 软删会话。
+func (a *App) DeleteChatSession(req *chat_svc.DeleteRequest) (*chat_svc.DeleteResponse, error) {
+	return chat_svc.Chat().Delete(a.ctx, req)
+}
+
+// MarkChatSessionRead 推进会话「最后已读时间」(单调，旧 ts 自动忽略)。
+// 前端打开会话或 stream done 后调用一次，驱动 sidebar attention bubble 的未读判定。
+func (a *App) MarkChatSessionRead(req *chat_svc.MarkSessionReadRequest) (*chat_svc.MarkSessionReadResponse, error) {
+	return chat_svc.Chat().MarkSessionRead(a.ctx, req)
+}
+
+// AnswerUserQuestion 提交 AskUserQuestion 交互卡片的答案。RequestID 来自
+// stream 上的 StreamAskUserQuestion 事件；Skipped=true 时 Answers 可为空，
+// runner 会按后端协议回写跳过信号。当前 claudecode / codex 后端支持；
+// 其它 backend 接入需要实现 agentruntime.AskAnswerSink。
+func (a *App) AnswerUserQuestion(req *chat_svc.AnswerUserQuestionRequest) (*chat_svc.AnswerUserQuestionResponse, error) {
+	return chat_svc.Chat().AnswerUserQuestion(a.ctx, req)
+}
+
+// AnswerToolPermission 提交工具调用审批决策。RequestID 来自 stream 上的
+// StreamToolPermissionRequest 事件；Allow=true + AlwaysAllowSession=true 时
+// runner 会附加 updatedPermissions=[{addRules, [{toolName}], allow, session}]
+// 让 SDK 内化为后续 allow rule。当前仅 claudecode 后端支持。
+func (a *App) AnswerToolPermission(req *chat_svc.AnswerToolPermissionRequest) (*chat_svc.AnswerToolPermissionResponse, error) {
+	return chat_svc.Chat().AnswerToolPermission(a.ctx, req)
+}
+
+// ResolvePlanAction 计划审批/历史计划 actionId 的入口。前端按 provider-neutral
+// plan action 渲染按钮 + 拿到原 actionId 回传,不再分支 backendType/source;
+// 后端按 actionID 语义分发到 AnswerToolPermission / Send。
+func (a *App) ResolvePlanAction(req *chat_svc.ResolvePlanActionRequest) (*chat_svc.ResolvePlanActionResponse, error) {
+	return chat_svc.Chat().ResolvePlanAction(a.ctx, req)
+}
+
+// GetSessionCapabilities 把 session backend 的能力矩阵 + permission mode 元数据
+// 上行给前端做 capability gating / PermissionModePill metadata 等 UI 投影。
+// 取代之前散落在前端的"按 backend 字符串硬编码 caps"的开关。
+func (a *App) GetSessionCapabilities(req *ipc.GetSessionCapabilitiesRequest) (*ipc.GetSessionCapabilitiesResponse, error) {
+	return ipc.GetSessionCapabilities(a.ctx, req)
+}
+
+// GetBackendCapabilities 新对话场景下(尚无 sessionId)按 backend type 取能力矩阵,
+// 让前端在"还没 spawn"时也能正确渲染 PermissionModePill / 起手 mode。
+// 已有 session 走 GetSessionCapabilities,语义一致。
+func (a *App) GetBackendCapabilities(req *ipc.GetBackendCapabilitiesRequest) (*ipc.GetSessionCapabilitiesResponse, error) {
+	return ipc.GetBackendCapabilities(a.ctx, req)
+}

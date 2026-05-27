@@ -1,0 +1,32 @@
+.superpowers/
+.omc/
+.worktrees/
+.DS_Store
+.idea/
+.vscode/
+.claude/
+.agents/
+.opskat/
+.impeccable/
+*.tsbuildinfo
+
+# Go
+*.exe
+build/bin/
+dist/
+*.bak
+
+# Node
+node_modules/
+frontend/dist/
+frontend/wailsjs/
+frontend/package.json.md5
+frontend/test-results/
+
+# Local dev
+coverage.out
+coverage.html
+
+# Binary files
+/agentre
+/agentred

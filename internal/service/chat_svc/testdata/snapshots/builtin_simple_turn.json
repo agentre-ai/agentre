@@ -1,0 +1,38 @@
+[
+  {
+    "type": "text",
+    "data": {
+      "text": "Hello from builtin agent."
+    }
+  },
+  {
+    "type": "tool_use",
+    "data": {
+      "id": "tu-1",
+      "name": "Bash",
+      "input": {
+        "command": "echo hi"
+      }
+    }
+  },
+  {
+    "type": "tool_result",
+    "data": {
+      "tool_use_id": "tu-1",
+      "content": [
+        {
+          "type": "text",
+          "data": {
+            "text": "hi\n"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "text",
+    "data": {
+      "text": "Done."
+    }
+  }
+]

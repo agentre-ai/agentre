@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"sess-think","cwd":"/tmp","model":"m","tools":[]}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"thinking","thinking":"Let me consider...","signature":"sig-1"}]}}
+{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"answer"}]}}
+{"type":"result","subtype":"success","session_id":"sess-think","usage":{"input_tokens":8,"output_tokens":2}}

@@ -1,0 +1,190 @@
+package code
+
+import "github.com/cago-frame/cago/pkg/i18n"
+
+func init() {
+	i18n.Register("zh-cn", zhCN)
+}
+
+var zhCN = map[int]string{
+	OperationFailed:  "操作失败",
+	InvalidParameter: "参数错误",
+	NotFound:         "资源不存在",
+	ServerError:      "服务器内部错误",
+
+	LLMProviderNotFound:       "LLM 供应商不存在",
+	LLMProviderNameDuplicated: "LLM 供应商名称已存在",
+	LLMProviderInvalidType:    "暂不支持的 LLM 供应商类型",
+	LLMProviderFetchModels:    "拉取模型列表失败",
+
+	AgentBackendNotFound:            "Agent 后端不存在",
+	AgentBackendNameDuplicated:      "Agent 后端名称已存在",
+	AgentBackendInvalidType:         "Agent 后端类型不合法",
+	AgentBackendTypeUnsupported:     "该 Agent 后端类型暂未支持，敬请期待",
+	AgentBackendLLMProviderRequired: "请选择该后端使用的 LLM 供应商",
+	AgentBackendCLIPathNotAllowed:   "内置 Agent 后端不需要填写 CLI 路径",
+	AgentBackendLLMProviderNotFound: "所选 LLM 供应商不存在或已删除",
+	AgentBackendLLMProviderInactive: "所选 LLM 供应商已停用，请重新选择",
+	AgentBackendInUse:               "该 Agent 后端正在被 Agent 引用，不能删除",
+
+	AgentBackendProviderTypeMismatch:   "Agent 后端类型与 LLM 供应商类型不匹配",
+	AgentBackendUnknownAlias:           "模型分级路由包含未知的别名",
+	AgentBackendAliasProviderInvalid:   "模型分级路由引用的 LLM 供应商无效（不存在 / 已停用 / 类型不匹配）",
+	AgentBackendInvalidSandbox:         "Sandbox 取值不在允许范围",
+	AgentBackendInvalidApproval:        "Approval Policy 取值不在允许范围",
+	AgentBackendInvalidEnvJSON:         "自定义环境变量 JSON 解析失败",
+	AgentBackendReservedEnvKey:         "自定义环境变量不能覆盖 App 保留的键",
+	AgentBackendGatewayUnavailable:     "本地 HTTP 代理未启动，请先在设置中启用",
+	AgentBackendInvalidReasoningEffort: "思考力度取值不合法，仅支持 low / medium / high / xhigh / max 或留空",
+	AgentBackendInvalidDevice:          "Agent 后端绑定的设备不存在或已下线",
+
+	AppSettingNotFound:      "设置项不存在",
+	AppSettingInvalidPort:   "端口必须是 0~65535 之间的整数",
+	AppSettingInvalidHost:   "监听地址不是合法的 IP",
+	AppGatewayRestartFailed: "应用并重启本地代理失败，请检查端口占用",
+
+	HookSourceNotFound:          "信号源不存在",
+	HookSourceNameDuplicated:    "信号源名称已存在",
+	HookInvalidSourceType:       "暂不支持的信号源类型",
+	HookInvalidConfig:           "Hook 配置或事件数据格式不合法",
+	HookRuleNotFound:            "路由规则不存在",
+	HookRuleTargetAgentNotFound: "路由目标 Agent 不存在或已删除",
+	HookRuleFallbackImmutable:   "兜底规则不可删除",
+	HookEventNotFound:           "Hook 事件不存在",
+	HookInvalidEventStatus:      "Hook 事件状态不合法",
+
+	DepartmentNotFound:            "部门不存在",
+	DepartmentNameDuplicated:      "同级部门下已存在同名部门",
+	DepartmentInvalidColor:        "部门主题色不合法",
+	DepartmentParentNotFound:      "父部门不存在",
+	DepartmentParentInactive:      "父部门已停用",
+	DepartmentCircularReference:   "不能把部门移动到它自己或子部门下",
+	DepartmentLeadNotInDepartment: "部门长必须是本部门直接挂载的 Agent",
+	DepartmentHasChildren:         "部门下还有子项，无法删除",
+
+	AgentNotFound:           "Agent 不存在",
+	AgentNameDuplicated:     "Agent 名称已存在",
+	AgentInvalidColor:       "Agent 头像配色不合法",
+	AgentInvalidPayload:     "Agent 配置数据格式错误",
+	AgentDepartmentRequired: "请选择 Agent 所属部门",
+	AgentDepartmentNotFound: "所选部门不存在或已删除",
+	AgentDepartmentInactive: "所选部门已停用",
+	AgentBackendRequired:    "请选择 Agent 使用的后端",
+	AgentBackendInvalidRef:  "所选 Agent 后端不存在或已停用",
+	AgentSystemImmutable:    "默认 CEO 助手不可修改部门、移动或删除",
+	AgentParentNotFound:     "所选上级 Agent 不存在或已删除",
+	AgentCircularReference:  "不能把 Agent 移动到它自己或下级 Agent 下",
+	AgentAvatarInvalid:      "头像格式不支持，仅接受 PNG / JPEG / WEBP",
+	AgentAvatarTooLarge:     "头像文件过大，请上传 2MB 以内的图片",
+
+	ChatSessionNotFound:   "会话不存在",
+	ChatAgentNotChattable: "该 Agent 还没绑定可对话的内置后端",
+	ChatBlocksMalformed:   "消息内容块解码失败",
+	ChatSendInFlight:      "当前会话已有进行中的对话，请稍后再试",
+	ChatProviderFailed:    "LLM 供应商调用失败",
+	ChatInvalidRole:       "消息角色不合法",
+	ChatTextTooLong:       "单条消息长度超过限制",
+	ChatTitleTooLong:      "会话标题过长",
+
+	ChatBackendGatewayUnavailable:   "本地网关未启动，CLI 后端暂不可用",
+	ChatMessageNotFound:             "消息不存在",
+	ChatRegenerateNotAssistant:      "只能在 AI 回复上重新生成",
+	ChatRegenerateNoUserAnchor:      "找不到对应的用户消息，无法重新生成",
+	ChatRegenerateUnsupported:       "该后端暂未支持中段重新生成",
+	ChatEditNotUser:                 "只能编辑用户消息",
+	ChatProviderSessionGone:         "CLI 会话已过期或已被清理，本对话已重置，请重新发送消息",
+	ChatRemoteProviderNotConfigured: "远端 agentred 未配置该 Agent 后端绑定的 LLM 供应商（provider key: %s）。请先在本机同步到远端，或在远端执行 agentred llm add --key=%s --name=<NAME> --type=<TYPE> --api-key=<API_KEY>",
+
+	ChatSteerNoActive:     "没有进行中的对话可以插入消息",
+	ChatSteerUnsupported:  "当前后端不支持在 AI 回答时插入消息",
+	ChatSteerInternal:     "插入消息失败，请稍后再试",
+	ChatCancelUnsupported: "当前后端不支持撤回排队消息",
+	ChatCancelNotFound:    "排队消息已被处理或不存在",
+	ChatStopNoActive:      "没有正在进行的对话可停止",
+	ChatStopInternal:      "停止当前对话失败，请稍后再试",
+
+	ChatPermissionModeUnsupported: "当前 Agent 后端不支持切换权限模式",
+	ChatPermissionModeInvalid:     "无效的权限模式（可选：default / acceptEdits / plan / bypassPermissions）",
+	ChatPermissionModeNoActive:    "请先发送一条消息让会话启动后再切换权限模式",
+	ChatPermissionModeInternal:    "切换权限模式失败，请稍后再试",
+	ChatCompactUnsupported:        "当前 Agent 后端不支持上下文压缩",
+	ChatCompactNoSession:          "请先发送一条消息让 Codex 会话启动后再压缩",
+	ChatCompactInternal:           "压缩上下文失败，请稍后再试",
+
+	ChatLaunchCommandNotAvailable: "当前 Agent 后端不支持复制启动命令",
+
+	ChatPlanActionUnknown: "无法识别的 plan 操作，请刷新会话重试",
+
+	ChatGitStateUnavailable: "当前会话的工作目录无法读取 git 状态",
+
+	ProjectNotFound:          "项目不存在",
+	ProjectNameDuplicated:    "同级下已存在同名项目",
+	ProjectInvalidColor:      "项目主题色不合法",
+	ProjectInvalidPath:       "项目本地路径不能为空",
+	ProjectPathNotExist:      "项目本地路径不存在或无法访问",
+	ProjectParentNotFound:    "父项目不存在或已删除",
+	ProjectParentInactive:    "父项目已停用",
+	ProjectCircularReference: "不能把项目移动到它自己或下级项目下",
+	ProjectAgentNotMember:    "Agent 不是该项目成员",
+	ProjectAgentNotFound:     "引用的 Agent 不存在或已删除",
+	ProjectHasChildren:       "项目下还有子项目，无法删除",
+	ProjectHasActiveSessions: "项目下还有未归档的会话，无法删除",
+
+	// Project Location（远端 device 路径子表）
+	ProjectLocationNotFound:    "项目路径不存在",
+	ProjectLocationInvalidPath: "项目路径必须是绝对路径",
+	ProjectLocationMissing:     "该项目尚未在所选设备上配置路径，请到「项目设置 · 远端路径」补齐",
+	ProjectLocationDuplicate:   "该项目在此设备已有路径，无法重复添加",
+
+	// Server 接入
+	ServerURLInvalid:          "Server URL 不合法",
+	ServerUnreachable:         "Server 不可达",
+	ServerVersionMismatch:     "Server 版本不兼容",
+	ServerLoginPending:        "等待浏览器授权",
+	ServerLoginExpired:        "device code 已过期，请重试",
+	ServerLoginDenied:         "用户拒绝了授权",
+	ServerRefreshFailed:       "刷新 Server 凭证失败，请重新登录",
+	ServerKeychainUnavailable: "系统 keychain 不可用",
+
+	// Remote Runner / 跨端审批
+	RemoteRunnerDialFailed:      "无法连接到远端 agentred",
+	RemoteRunnerCallFailed:      "远端调用失败",
+	RemoteRunnerConnectionLost:  "与远端 agentred 的连接已断开，请重新发起对话",
+	RemoteRunnerInvalidState:    "远端会话状态异常",
+	ApprovalCrossDeviceMismatch: "工具审批的请求 ID 与远端不匹配，可能已超时",
+
+	// 远程设备（agentred LAN）
+	RemoteDeviceNotFound:         "远端设备不存在",
+	RemoteDeviceURLInvalid:       "agentred 地址不合法（需 ws://… 或 wss://… 且以 /rpc 结尾）",
+	RemoteDeviceAlreadyPaired:    "该地址已经配对过，无需重复添加",
+	RemoteDevicePairingInvalid:   "配对码无效或已过期，请在远端重新执行 agentred pair",
+	RemoteDeviceUnauthorized:     "凭据已失效，请重新配对",
+	RemoteDeviceDialFailed:       "无法连接到 agentred，请检查网络与端口",
+	RemoteDeviceTOFUMismatch:     "远端 agentred 身份指纹已变化，存在被替换风险，请重新配对",
+	RemoteDeviceTLSConfigInvalid: "TLS 配置不合法（证书 PEM 缺失或损坏）",
+	RemoteDeviceKeychainFailed:   "系统 keychain 写入失败，请确认权限",
+	RemoteDeviceTimeout:          "远端设备响应超时",
+	RemoteCLIDetectFailed:        "远端识别 CLI 失败：%s",
+	RemoteCLIProbeFailed:         "远端测试连接失败：%s",
+
+	// 远端文件系统(remotefs)
+	RemoteFsPathRefused:      "远端路径被拒绝(系统目录或非法路径)",
+	RemoteFsPermDenied:       "远端权限不足",
+	RemoteFsNotFound:         "远端路径不存在",
+	RemoteFsNotDir:           "目标不是目录",
+	RemoteFsDeviceOffline:    "远端设备不在线",
+	RemoteFsMkdirExists:      "同名目录已存在",
+	RemoteFsMkdirInvalidName: "文件夹名非法(不能含 / 或 .. 或为空,且 ≤255 字符)",
+
+	// 数据导入导出
+	DataBundleFormatInvalid:      "文件格式不识别,请选择 Agentre 导出的 JSON",
+	DataBundleVersionUnsupported: "文件版本不兼容,请升级 Agentre 后重试",
+	DataBundleScopeUnknown:       "文件含未知的导入范围",
+	DataExportEncodeFailed:       "导出失败:JSON 编码错误",
+	DataExportWriteFailed:        "导出失败:写入文件错误",
+	DataImportReadFailed:         "导入失败:读取文件错误",
+	DataImportDanglingRef:        "跨域引用不在本次导入范围内",
+	DataImportDuplicateLocal:     "本地存在多条同名记录,无法自动覆盖",
+	DataImportRollback:           "导入失败,所有改动已回滚",
+	DataImportInvalidAction:      "未知的导入 action 类型",
+}

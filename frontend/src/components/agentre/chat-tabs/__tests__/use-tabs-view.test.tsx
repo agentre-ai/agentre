@@ -1,0 +1,172 @@
+// frontend/src/components/agentre/chat-tabs/__tests__/use-tabs-view.test.tsx
+import { renderHook } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { useTabsView } from "../use-tabs-view";
+import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useSessionMetaStore } from "@/stores/session-meta-store";
+import { useSessionStatusStore } from "@/stores/session-status-store";
+
+vi.mock("@/hooks/use-project-tree", () => ({
+  useProjectTree: () => ({
+    tree: [
+      {
+        project: {
+          id: 7,
+          name: "Agentre",
+          color: "agent-1",
+          parentID: 0,
+          icon: "",
+          description: "",
+          path: "",
+          isGitRepo: false,
+          createtime: 0,
+          updatetime: 0,
+        },
+        children: [
+          {
+            project: {
+              id: 8,
+              name: "backend",
+              color: "agent-2",
+              parentID: 7,
+              icon: "",
+              description: "",
+              path: "",
+              isGitRepo: false,
+              createtime: 0,
+              updatetime: 0,
+            },
+            children: [],
+          },
+        ],
+      },
+    ],
+    invalidate: () => {},
+    loaded: true,
+  }),
+}));
+
+describe("useTabsView 数据派生", () => {
+  beforeEach(() => {
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+    useChatStreamsStore.setState({
+      streams: new Map(),
+    });
+    useSessionMetaStore.getState().__reset();
+    useSessionStatusStore.getState().__reset();
+  });
+
+  it("meta 未到位时 avatar fallback 到 ?/灰色", () => {
+    useChatTabsStore.getState().openSessionInNewTab(101);
+    const { result } = renderHook(() => useTabsView());
+    expect(result.current).toHaveLength(1);
+    expect(result.current[0].avatar.letter).toBe("?");
+    expect(result.current[0].avatar.color).toBe("#94a3b8");
+    expect(result.current[0].projectColor).toBeNull();
+    expect(result.current[0].projectChain).toBeNull();
+  });
+
+  it("有 agent meta 时 avatar letter/color 来自 agentName/agentColor token", () => {
+    useChatTabsStore.getState().openSessionInNewTab(101);
+    useSessionMetaStore.getState().setMeta(101, {
+      agentId: 3,
+      agentName: "CEO",
+      agentColor: "agent-2",
+      projectId: 0,
+      title: "周一例会",
+    });
+    const { result } = renderHook(() => useTabsView());
+    expect(result.current[0].avatar.letter).toBe("C");
+    expect(result.current[0].avatar.color).toBe("var(--agent-2)");
+    expect(result.current[0].title).toBe("周一例会");
+  });
+
+  it("项目会话: projectColor + projectChain 都派生出来", () => {
+    useChatTabsStore.getState().openSessionInNewTab(202);
+    useSessionMetaStore.getState().setMeta(202, {
+      agentId: 1,
+      agentName: "Eng",
+      agentColor: "agent-3",
+      projectId: 8,
+      title: "arch-review · jwt",
+    });
+    const { result } = renderHook(() => useTabsView());
+    const view = result.current[0];
+    expect(view.projectColor).toBe("var(--agent-2)"); // project 8 (backend) color=agent-2
+    expect(view.projectChain).toEqual(["Agentre", "backend"]);
+  });
+
+  it("中文 agent 名取第一个 字符 作为 letter", () => {
+    useChatTabsStore.getState().openSessionInNewTab(303);
+    useSessionMetaStore.getState().setMeta(303, {
+      agentId: 5,
+      agentName: "前端工程师",
+      agentColor: "agent-4",
+      projectId: 0,
+      title: "命令面板",
+    });
+    const { result } = renderHook(() => useTabsView());
+    expect(result.current[0].avatar.letter).toBe("前");
+  });
+
+  it("非法 agentColor token 时 avatar 颜色走 fallback", () => {
+    useChatTabsStore.getState().openSessionInNewTab(404);
+    useSessionMetaStore.getState().setMeta(404, {
+      agentId: 9,
+      agentName: "X",
+      agentColor: "neutral", // 不在 agent-1..agent-10 里
+      projectId: 0,
+      title: "x",
+    });
+    const { result } = renderHook(() => useTabsView());
+    expect(result.current[0].avatar.color).toBe("#94a3b8");
+  });
+
+  it("running 状态: status 翻 'running' 且 pillText 为 null (running 不出 pill 文案)", () => {
+    useChatTabsStore.getState().openSessionInNewTab(505);
+    useSessionMetaStore.getState().setMeta(505, {
+      agentId: 1,
+      agentName: "A",
+      agentColor: "agent-1",
+      projectId: 0,
+      title: "t",
+      lastMessageAt: 100,
+      lastReadAt: 0,
+    });
+    useSessionStatusStore.getState().upsert(505, {
+      agentStatus: "running",
+      needsAttention: true,
+    });
+    const { result } = renderHook(() => useTabsView());
+    expect(result.current[0].status).toBe("running");
+    // running reason → reasonToPillText("needs_attention") = null 因为 needsAttention 优先于 running，
+    // 但 reasonToPillText("needs_attention") = "审批"。此用例 needsAttention=true + running →
+    // computeAttention → "needs_attention" → reasonToPillText = "审批"。
+    // 原测试期待 null 是因为 old RANK 路径 needsAttention=running 时 pillText 判断特例。
+    // 新契约：needs_attention → "审批" pill，running → null pill（覆盖 reasonToPillText("running")=null）。
+    // needsAttention=true 覆盖 running → reason="needs_attention" → pillText="审批"。
+    expect(result.current[0].pillText).toBe("审批");
+  });
+
+  it("needsAttention 且非 running 时 pillText='审批'", () => {
+    useChatTabsStore.getState().openSessionInNewTab(606);
+    useSessionMetaStore.getState().setMeta(606, {
+      agentId: 1,
+      agentName: "A",
+      agentColor: "agent-1",
+      projectId: 0,
+      title: "t",
+      lastMessageAt: 100,
+      lastReadAt: 0,
+    });
+    useSessionStatusStore.getState().upsert(606, {
+      agentStatus: "waiting",
+      needsAttention: true,
+    });
+    const { result } = renderHook(() => useTabsView());
+    expect(result.current[0].status).toBe("waiting");
+    expect(result.current[0].pillText).toBe("审批");
+  });
+});

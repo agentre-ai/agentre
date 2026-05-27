@@ -1,0 +1,26 @@
+[
+  {
+    "type": "text",
+    "data": {
+      "text": "Plan ready for approval."
+    }
+  },
+  {
+    "type": "tool_permission",
+    "data": {
+      "request_id": "perm-1",
+      "tool_name": "ExitPlanMode",
+      "tool_input": {
+        "plan": "## Plan\n- step A\n- step B\n"
+      },
+      "resolved": true,
+      "allowed": true
+    }
+  },
+  {
+    "type": "text",
+    "data": {
+      "text": "Executing approved plan."
+    }
+  }
+]

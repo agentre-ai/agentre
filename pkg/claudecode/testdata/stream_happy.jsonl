@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"sess-abc","cwd":"/tmp","model":"claude-sonnet-4-6","tools":["Read","Bash"]}
+{"type":"assistant","message":{"id":"msg-1","content":[{"type":"text","text":"Hello, "}]}}
+{"type":"assistant","message":{"id":"msg-1","content":[{"type":"text","text":"world."}]}}
+{"type":"result","subtype":"success","session_id":"sess-abc","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}}

@@ -1,0 +1,37 @@
+[
+  {
+    "type": "text",
+    "data": {
+      "text": "Need input."
+    }
+  },
+  {
+    "type": "user_ask",
+    "data": {
+      "request_id": "rui-1",
+      "questions": [
+        {
+          "id": "q1",
+          "question": "Continue?",
+          "options": [
+            {
+              "label": "yes"
+            },
+            {
+              "label": "no"
+            }
+          ]
+        }
+      ],
+      "answered": true,
+      "answers": [
+        {
+          "questionIndex": 0,
+          "labels": [
+            "yes"
+          ]
+        }
+      ]
+    }
+  }
+]
