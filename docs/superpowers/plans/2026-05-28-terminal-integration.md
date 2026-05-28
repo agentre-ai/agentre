@@ -2968,7 +2968,111 @@ git commit -m "feat(frontend): topbar terminal toggle button bound to store"
 
 ---
 
-### Task 26: Frontend — chat-streams-host renders TerminalPanel when toggle is ON
+### Task 26: Frontend — Global ⌘` / Ctrl+` shortcut to toggle terminal
+
+Per spec §4 "键盘快捷键 (toggle)": register a global keydown listener on the chat shell. Fires `toggleTerminal(currentSessionID)` on backtick + Cmd (macOS) / Ctrl (Windows/Linux). Must also fire when focus is inside an `<input>` / `<textarea>` / xterm container (it's a toggle, not character input). No-op when there is no current session.
+
+**Files:**
+- Modify: `frontend/src/components/agentre/chat-page.tsx`
+- Create: `frontend/src/components/agentre/chat-page.test.tsx` (if no existing test file — confirm via `ls frontend/src/components/agentre/chat-page.test.*`)
+
+- [ ] **Step 1: Write the failing test**
+
+Create or append:
+
+```tsx
+import { render, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const toggleMock = vi.fn();
+vi.mock('@/stores/chat-terminal-store', () => ({
+  useChatTerminalStore: (selector: any) =>
+    selector({ openSessionID: null, toggle: toggleMock }),
+}));
+
+// Adapt this import to wherever the chat shell component actually lives.
+import { ChatPage } from './chat-page';
+
+describe('chat-page ⌘` shortcut', () => {
+  beforeEach(() => toggleMock.mockReset());
+
+  it('toggles terminal for current session on Meta+Backtick', () => {
+    render(<ChatPage sessionID={7} /* …minimal valid props… */ />);
+    fireEvent.keyDown(window, { key: '`', metaKey: true });
+    expect(toggleMock).toHaveBeenCalledWith(7);
+  });
+
+  it('toggles on Ctrl+Backtick as well', () => {
+    render(<ChatPage sessionID={7} />);
+    fireEvent.keyDown(window, { key: '`', ctrlKey: true });
+    expect(toggleMock).toHaveBeenCalledWith(7);
+  });
+
+  it('does not fire without modifier', () => {
+    render(<ChatPage sessionID={7} />);
+    fireEvent.keyDown(window, { key: '`' });
+    expect(toggleMock).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when there is no current session', () => {
+    render(<ChatPage sessionID={null as any} />);
+    fireEvent.keyDown(window, { key: '`', metaKey: true });
+    expect(toggleMock).not.toHaveBeenCalled();
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify FAIL**
+
+```bash
+cd /Users/codfrm/Code/agentre/agentre/frontend
+pnpm test -- chat-page
+```
+Expected: FAIL (handler not registered).
+
+- [ ] **Step 3: Implement the listener**
+
+In `chat-page.tsx`, add (next to where `toggleTerminal` is already pulled from the store in Task 25):
+
+```tsx
+import { useEffect } from 'react';
+
+useEffect(() => {
+  if (currentSessionID == null) return;
+  const handler = (e: KeyboardEvent) => {
+    if (e.key !== '`') return;
+    if (!(e.metaKey || e.ctrlKey)) return;
+    e.preventDefault();
+    toggleTerminal(currentSessionID);
+  };
+  window.addEventListener('keydown', handler);
+  return () => window.removeEventListener('keydown', handler);
+}, [currentSessionID, toggleTerminal]);
+```
+
+Notes for the implementer:
+- Use `window` (not `document`) so it survives any internal stopPropagation in nested handlers.
+- `preventDefault` avoids any accidental browser default (none for `` ` `` today, but cheap insurance).
+- **Do not** add a "skip if target is INPUT/TEXTAREA" guard — per spec the shortcut must fire from anywhere; backtick alone requires `Shift+\`` to type, so swallowing it on Cmd/Ctrl is safe.
+
+- [ ] **Step 4: Run to verify PASS**
+
+```bash
+pnpm test -- chat-page
+```
+Expected: PASS (all 4 cases green).
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd /Users/codfrm/Code/agentre/agentre
+git add frontend/src/components/agentre/chat-page.tsx frontend/src/components/agentre/chat-page.test.tsx
+git commit -m "feat(frontend): bind cmd/ctrl+backtick to terminal toggle"
+```
+
+---
+
+### Task 27: Frontend — chat-streams-host renders TerminalPanel when toggle is ON
 
 **Files:**
 - Modify: `frontend/src/components/agentre/chat-streams-host.tsx` (or wherever the chat body is rendered — confirm via `find frontend/src -name 'chat-streams-host.*'`)
@@ -3072,7 +3176,7 @@ git commit -m "feat(frontend): swap chat body for TerminalPanel when toggle is o
 
 ---
 
-### Task 27: Integration smoke test — local PTY through service
+### Task 28: Integration smoke test — local PTY through service
 
 **Files:**
 - Create: `internal/service/terminal_svc/integration_test.go`
@@ -3173,7 +3277,7 @@ git commit -m "test(terminal_svc): integration smoke covering Open→Write→dat
 
 ---
 
-### Task 28: Run full lint + test suite
+### Task 29: Run full lint + test suite
 
 **Files:** any drift found
 
@@ -3213,7 +3317,7 @@ git commit -m "chore: lint/build drift fixes after terminal integration"
 
 ---
 
-### Task 29: Manual UI verification
+### Task 30: Manual UI verification
 
 This task is non-automated. Do not declare the feature done until these pass.
 

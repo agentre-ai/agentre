@@ -221,7 +221,17 @@ PTY 输出可能含任意 byte（中文 UTF-8、ANSI escape、二进制 escape �
 - **session 切换**：在 A 开了终端 → 点 B → A 的 PTY 立即 Close。用户在 A 跑 `npm test` 切到 B 会被杀掉——本设计接受这个权衡（理由：MVP 不做后台保活，避免引入"哪些 PTY 该活、哪些该死"的复杂状态机；如果实际使用频繁踩坑再改）。
 - **多 session 不并存**：MVP 同时只一个活 PTY（current sessionID）。
 
-### 键盘 / 复制粘贴
+### 键盘快捷键（toggle）
+
+- **`Cmd+\`` (macOS) / `Ctrl+\`` (Windows/Linux)**：toggle 当前 session 的终端面板（等价于点 topbar 的 Terminal 按钮）。复用 VS Code 的约定，目标用户群眼熟。
+- 注册位置：chat shell 顶层全局监听 `keydown`（不在 xterm DOM 树内，避免和 terminal-internal key handling 冲突）。
+- 拦截规则：
+  - 焦点在 chat input / 任意 `<textarea>` / `<input>` 时**仍触发**——是 toggle 不是字符输入，反引号本来就需要 `Shift+\`` 才会被输入到 chat。
+  - 焦点在 xterm 容器里时**仍触发**——便于"快进/退出"终端而不必先 blur。
+  - 全局快捷键存在期间，session-switch / 没有当前 session 的状态下按下应静默（store 拿不到 sessionID 直接 return）。
+- 按钮上要透出 hint：idle 状态 hover tooltip 显示 `终端  ⌘\``；open 状态 toolbar 在关闭按钮前展示 `⌘\`` kbd chip 强化"再按一次就关"的回路。
+
+### 键盘 / 复制粘贴（terminal 内）
 
 - `Cmd+C` / `Ctrl+C`：有选区 → 复制 + `preventDefault`；无选区 → 让 xterm 发 SIGINT。VS Code/iTerm 通用约定。
 - `Cmd+V` / `Ctrl+V`：xterm 内置粘贴。
