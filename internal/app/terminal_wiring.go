@@ -64,9 +64,8 @@ func newTerminalService(appCtx context.Context) *terminal_svc.Service {
 		if err != nil {
 			return nil, err
 		}
-		// MVP: lease is borrowed here and never explicitly released —
-		// the lease stays alive for the daemon connection lifetime,
-		// cleaned up on app shutdown. Acceptable for single-user MVP.
+		// MVP: release intentionally discarded — pool evicts on app shutdown.
+		// See chat_svc.BorrowDeviceClient godoc for the leak rationale.
 		c, _, err := chat_svc.BorrowDeviceClient(appCtx, deviceID)
 		if err != nil {
 			return nil, err
