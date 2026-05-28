@@ -155,6 +155,9 @@ export const ProjectUpdate = windowBackedMock("ProjectUpdate", () =>
 export const ProjectDelete = windowBackedMock("ProjectDelete", () =>
   Promise.resolve({}),
 );
+export const ProjectReorder = windowBackedMock("ProjectReorder", () =>
+  Promise.resolve({}),
+);
 export const ProjectAddMember = windowBackedMock("ProjectAddMember", () =>
   Promise.resolve({}),
 );

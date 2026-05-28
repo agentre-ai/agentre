@@ -49,23 +49,37 @@ function fullTarget(kind: LinkClass): string {
   }
 }
 
-function KindIcon({ kind }: { kind: LinkClass["kind"] }) {
+function PathKindIcon({
+  pathKind,
+}: {
+  pathKind: Extract<LinkClass, { kind: "local-internal" }>["pathKind"];
+}) {
   const props = {
-    "data-testid": "rich-link-icon",
-    "data-kind": kind,
-    className: "inline-block size-3 align-text-bottom",
+    "data-testid": "rich-link-path-icon",
+    "data-path-kind": pathKind,
+    className: "inline-block size-3 shrink-0 align-text-bottom",
     "aria-hidden": true,
   } as const;
-  switch (kind) {
-    case "url":
-      return <ExternalLink {...props} />;
-    case "local-internal":
-      return <FileText {...props} />;
-    case "local-external":
-      return <Folder {...props} />;
-    case "unknown":
-      return null;
-  }
+  return pathKind === "folder" ? (
+    <Folder {...props} />
+  ) : (
+    <FileText {...props} />
+  );
+}
+
+function OpenLinkIcon({
+  kind,
+}: {
+  kind: Exclude<LinkClass["kind"], "unknown">;
+}) {
+  return (
+    <ExternalLink
+      data-testid="rich-link-open-icon"
+      data-link-kind={kind}
+      className="inline-block size-3 shrink-0 align-text-bottom opacity-70"
+      aria-hidden
+    />
+  );
 }
 
 async function copyToClipboard(text: string) {
@@ -141,11 +155,13 @@ function LocalInternalPopover({
   cwd: string;
 }) {
   const full = fullTarget(kind);
+  const PathIcon = kind.pathKind === "folder" ? Folder : FileText;
+  const label = kind.pathKind === "folder" ? "本地文件夹" : "本地文件";
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <span className="inline-flex items-center gap-1 rounded-full bg-agent-2 px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
-          <FileText className="size-3" aria-hidden /> 本地文件
+          <PathIcon className="size-3" aria-hidden /> {label}
         </span>
         <LineChip line={kind.line} col={kind.col} />
         <div className="flex-1" />
@@ -162,13 +178,15 @@ function LocalInternalPopover({
           <span className="w-12 shrink-0 text-[10px] font-semibold text-muted-foreground">
             项目根
           </span>
-          <code className="font-mono text-xs text-muted-foreground">{cwd}</code>
+          <code className="min-w-0 flex-1 break-all whitespace-normal font-mono text-xs text-muted-foreground">
+            {cwd}
+          </code>
         </div>
         <div className="flex items-baseline gap-2">
           <span className="w-12 shrink-0 text-[10px] font-semibold text-muted-foreground">
             相对
           </span>
-          <code className="font-mono text-xs font-semibold text-foreground">
+          <code className="min-w-0 flex-1 break-all whitespace-normal font-mono text-xs font-semibold text-foreground">
             {kind.relPath}
           </code>
         </div>
@@ -190,11 +208,14 @@ function LocalExternalPopover({
   kind: Extract<LinkClass, { kind: "local-external" }>;
 }) {
   const full = fullTarget(kind);
+  const PathIcon = kind.pathKind === "folder" ? Folder : FileText;
+  const label =
+    kind.pathKind === "folder" ? "本地文件夹 · 项目外" : "本地文件 · 项目外";
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <span className="inline-flex items-center gap-1 rounded-full bg-muted-foreground px-2 py-0.5 text-[10px] font-semibold text-background">
-          <Folder className="size-3" aria-hidden /> 本地文件 · 项目外
+          <PathIcon className="size-3" aria-hidden /> {label}
         </span>
         <LineChip line={kind.line} col={kind.col} />
         <div className="flex-1" />
@@ -254,17 +275,20 @@ export function RichLink({ href, className, cwd, children }: RichLinkProps) {
         <a
           href={fullTarget(kind)}
           className={cn(
-            "text-primary-text underline underline-offset-2 hover:opacity-80",
+            "inline-flex items-baseline gap-1 text-primary-text underline underline-offset-2 hover:opacity-80",
             className,
           )}
           onClick={onClick}
           rel="noreferrer noopener"
         >
+          {kind.kind === "local-internal" || kind.kind === "local-external" ? (
+            <PathKindIcon pathKind={kind.pathKind} />
+          ) : null}
           {children}
-          <KindIcon kind={kind.kind} />
+          <OpenLinkIcon kind={kind.kind} />
         </a>
       </HoverCardTrigger>
-      <HoverCardContent className="w-[28rem]">
+      <HoverCardContent className="w-[min(28rem,calc(100vw-2rem))]">
         {kind.kind === "url" ? (
           <URLPopover kind={kind} />
         ) : kind.kind === "local-internal" ? (

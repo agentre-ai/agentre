@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatPanelHost } from "../chat-panel-host";
@@ -31,6 +31,17 @@ vi.mock("../../chat-panel", () => ({
         fire
       </button>
       {newSessionAgent ? <span>new agent {newSessionAgent.name}</span> : null}
+      {newSessionAgent ? (
+        <div
+          role="textbox"
+          data-testid="composer-editor"
+          contentEditable
+          suppressContentEditableWarning
+          tabIndex={0}
+        >
+          editor
+        </div>
+      ) : null}
       session {sessionId}
     </div>
   ),
@@ -109,6 +120,40 @@ describe("ChatPanelHost", () => {
     expect(screen.getByText("Agent #99")).toBeInTheDocument();
     expect(screen.queryByTestId("chat-panel-0")).not.toBeInTheDocument();
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("Given a project new-session tab waits for agent data, When the agent resolves, Then focus lands on the composer editor", async () => {
+    vi.spyOn(useChatAgentsStore.getState(), "reload").mockResolvedValue();
+    useChatAgentsStore.setState({ agents: [], loading: true, error: null });
+    useChatTabsStore.getState().openNewSession(11, 99, "");
+
+    render(<ChatPanelHost />);
+    expect(screen.getByText("正在加载 Agent 信息…")).toBeInTheDocument();
+
+    act(() => {
+      useChatAgentsStore.setState({
+        agents: [
+          {
+            id: 99,
+            name: "Project Agent",
+            avatarColor: "agent-1",
+            backendType: "builtin",
+            chattable: true,
+            pinned: false,
+            sessions: [],
+            attentionSessions: [],
+            sessionIds: [],
+          },
+        ] as never,
+        loading: false,
+        error: null,
+      });
+    });
+
+    const editor = await screen.findByTestId("composer-editor");
+    await waitFor(() => {
+      expect(editor).toHaveFocus();
+    });
   });
 
   it("ChatPanel 触发 onSidebarShouldReload 同步刷新 chat-agents + project-sessions (修复新建会话不进左栏)", () => {

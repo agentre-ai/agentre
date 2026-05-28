@@ -309,9 +309,9 @@ func (s *Stream) handleServerRequest(ctx context.Context, in appInbound) error {
 	}
 	switch in.Method {
 	case appMethodItemCommandApprovalRequest, appMethodItemFileApprovalRequest:
-		return app.Respond(ctx, in.ID, map[string]any{"decision": "decline"})
+		return s.handleApprovalRequest(ctx, in)
 	case appMethodItemPermissionsRequest:
-		return app.Respond(ctx, in.ID, map[string]any{"permissions": map[string]any{}, "scope": "turn"})
+		return s.handleApprovalRequest(ctx, in)
 	case appMethodItemToolRequestUserInput:
 		ev, err := parseRequestUserInputParams(in.Params)
 		if err != nil {
@@ -336,6 +336,31 @@ func (s *Stream) handleServerRequest(ctx context.Context, in appInbound) error {
 	default:
 		return app.Respond(ctx, in.ID, map[string]any{})
 	}
+}
+
+func (s *Stream) handleApprovalRequest(ctx context.Context, in appInbound) error {
+	app := s.app
+	if app == nil {
+		return ErrNoActiveTurn
+	}
+	ev, err := parseApprovalRequest(in.Method, in.Params)
+	if err != nil {
+		s.emitError(err, in.Params)
+		return app.Respond(ctx, in.ID, approvalResponse(approvalRequest{method: in.Method, params: in.Params}, false, false))
+	}
+	ev.RequestID = s.registerApprovalRequest(in.ID, in.Method, in.Params)
+	if ev.RequestID == "" {
+		err := ErrNoActiveTurn
+		s.emitError(err, in.Params)
+		return app.Respond(ctx, in.ID, approvalResponse(approvalRequest{method: in.Method, params: in.Params}, false, false))
+	}
+	s.emit(Event{
+		Kind:      EventApprovalRequest,
+		SessionID: s.SessionID(),
+		Approval:  &ev,
+		Raw:       in.Params,
+	})
+	return nil
 }
 
 func (s *Stream) emit(ev Event) {

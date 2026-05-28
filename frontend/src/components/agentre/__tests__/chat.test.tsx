@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ChatTranscript } from "@/components/agentre/chat";
+import { ChatComposer, ChatTranscript } from "@/components/agentre/chat";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
@@ -88,6 +88,27 @@ function mockTextSelectionWithin(node: Node) {
     toString: () => "selected",
   } as unknown as Selection);
 }
+
+describe("ChatComposer context meter", () => {
+  it("renders warning-level context usage with defined waiting color tokens", () => {
+    render(
+      <ChatComposer
+        contextUsage={{ used: 206000, max: 258000 }}
+        onSubmit={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("206k")).toBeInTheDocument();
+    expect(screen.getByText("258k")).toBeInTheDocument();
+    const percent = screen.getByText("80%");
+    expect(percent).toHaveClass("text-status-waiting");
+
+    const progress = screen.getByRole("progressbar");
+    const fill = progress.firstElementChild;
+    expect(fill).toHaveClass("bg-status-waiting");
+    expect(fill).toHaveStyle({ width: "80%" });
+  });
+});
 
 describe("ChatTranscript message meta", () => {
   function assistantWithUsage(): chat_svc.ChatMessage {

@@ -976,6 +976,149 @@ func TestStream_RequestUserInputRoundTrip(t *testing.T) {
 	require.NoError(t, stream.Close(ctx))
 }
 
+func TestStream_ApprovalRequestRoundTrip(t *testing.T) {
+	tests := []struct {
+		name         string
+		method       string
+		params       map[string]any
+		allow        bool
+		alwaysAllow  bool
+		wantToolName string
+		wantResponse string
+	}{
+		{
+			name:   "Given command approval request, when user allows once, then accept is returned",
+			method: "item/commandExecution/requestApproval",
+			params: map[string]any{
+				"threadId":    "thr-approval",
+				"turnId":      "turn-approval",
+				"itemId":      "item-command",
+				"startedAtMs": float64(1700000000000),
+				"command":     "rm -rf build",
+				"cwd":         "/tmp/work",
+				"reason":      "needs cleanup",
+			},
+			allow:        true,
+			wantToolName: "Bash",
+			wantResponse: `{"id":"approval-1","result":{"decision":"accept"}}`,
+		},
+		{
+			name:   "Given command approval request, when user denies, then decline is returned",
+			method: "item/commandExecution/requestApproval",
+			params: map[string]any{
+				"threadId": "thr-approval",
+				"turnId":   "turn-approval",
+				"itemId":   "item-command",
+				"command":  "curl https://example.com",
+			},
+			allow:        false,
+			wantToolName: "Bash",
+			wantResponse: `{"id":"approval-1","result":{"decision":"decline"}}`,
+		},
+		{
+			name:   "Given file approval request, when user allows for session, then acceptForSession is returned",
+			method: "item/fileChange/requestApproval",
+			params: map[string]any{
+				"threadId":    "thr-approval",
+				"turnId":      "turn-approval",
+				"itemId":      "item-file",
+				"startedAtMs": float64(1700000000000),
+				"reason":      "needs write access",
+				"grantRoot":   "/tmp/work",
+			},
+			allow:        true,
+			alwaysAllow:  true,
+			wantToolName: "FileChange",
+			wantResponse: `{"id":"approval-1","result":{"decision":"acceptForSession"}}`,
+		},
+		{
+			name:   "Given permissions approval request, when user allows for session, then requested permissions are granted for session",
+			method: "item/permissions/requestApproval",
+			params: map[string]any{
+				"threadId":    "thr-approval",
+				"turnId":      "turn-approval",
+				"itemId":      "item-permissions",
+				"startedAtMs": float64(1700000000000),
+				"cwd":         "/tmp/work",
+				"reason":      "needs network and filesystem",
+				"permissions": map[string]any{
+					"network": map[string]any{"domains": []any{"example.com"}},
+					"fileSystem": map[string]any{
+						"writableRoots": []any{"/tmp/work"},
+					},
+				},
+			},
+			allow:        true,
+			alwaysAllow:  true,
+			wantToolName: "Permissions",
+			wantResponse: `{"id":"approval-1","result":{"permissions":{"network":{"domains":["example.com"]},"fileSystem":{"writableRoots":["/tmp/work"]}},"scope":"session"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeAppServerRunner{t: t}
+			responseCaptured := make(chan json.RawMessage, 1)
+			runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+				sc := bufio.NewScanner(h.stdinR)
+				respondRPC(h, readRPCReq(t, sc), map[string]any{})
+				_ = readRPCReq(t, sc) // initialized
+				respondRPC(h, readRPCReq(t, sc), map[string]any{"thread": map[string]any{"id": "thr-approval"}})
+				respondRPC(h, readRPCReq(t, sc), map[string]any{"turn": map[string]any{"id": "turn-approval", "status": "inProgress"}})
+
+				h.send(map[string]any{
+					"id":     "approval-1",
+					"method": tt.method,
+					"params": tt.params,
+				})
+
+				if !sc.Scan() {
+					t.Fatalf("server stdin closed before approval response: %v", sc.Err())
+				}
+				responseCaptured <- append(json.RawMessage(nil), sc.Bytes()...)
+				h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thr-approval", "turnId": "turn-approval", "turn": map[string]any{"id": "turn-approval", "status": "completed"}}})
+			}
+
+			client := New(WithAppServerRunnerForTesting(runner))
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			stream, err := client.Stream(ctx, "approval")
+			require.NoError(t, err)
+
+			require.True(t, stream.Next())
+			ev := stream.Event()
+			require.Equal(t, EventApprovalRequest, ev.Kind)
+			require.NotNil(t, ev.Approval)
+			assert.Equal(t, "approval-1", ev.Approval.RequestID)
+			assert.Equal(t, tt.wantToolName, ev.Approval.ToolName)
+
+			require.NoError(t, stream.SubmitApproval(ctx, ev.Approval.RequestID, tt.allow, tt.alwaysAllow))
+
+			select {
+			case raw := <-responseCaptured:
+				assert.JSONEq(t, tt.wantResponse, string(raw))
+			case <-time.After(2 * time.Second):
+				t.Fatal("approval response was not written")
+			}
+
+			for stream.Next() {
+			}
+			require.NoError(t, stream.Close(ctx))
+		})
+	}
+}
+
+func TestStream_SubmitApprovalUnknownRequestReturnsNoActiveTurn(t *testing.T) {
+	// Given a stream with no matching approval waiter.
+	stream := newStream(nil, 0, "thread", "turn", "")
+
+	// When the user tries to answer an unknown approval request.
+	err := stream.SubmitApproval(context.Background(), "missing", true, false)
+
+	// Then the request is rejected as no active approval turn.
+	require.ErrorIs(t, err, ErrNoActiveTurn)
+}
+
 func TestStream_SteerSendsTurnSteerRPC(t *testing.T) {
 	runner := &fakeAppServerRunner{t: t}
 	steerCaptured := make(chan json.RawMessage, 1)

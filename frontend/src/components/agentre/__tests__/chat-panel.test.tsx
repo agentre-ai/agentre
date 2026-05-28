@@ -55,6 +55,7 @@ vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
 
 const componentMocks = vi.hoisted(() => ({
   chatComposerProps: [] as Array<Record<string, unknown>>,
+  chatTranscriptProps: [] as Array<Record<string, unknown>>,
   permissionModePillProps: [] as Array<Record<string, unknown>>,
   permissionMode: "plan",
   cycleMode: vi.fn(),
@@ -128,10 +129,10 @@ vi.mock("../chat", async () => {
         props.permissionModeSlot,
       );
     },
-    // ChatTranscript 不再参与 codex plan approve/continue 流程
-    // (PlanCard 直接调 wailsResolvePlanAction,bypass chat-panel),
-    // 桩成空即可。
-    ChatTranscript: () => React.createElement("div", null),
+    ChatTranscript: (props: Record<string, unknown>) => {
+      componentMocks.chatTranscriptProps.push(props);
+      return React.createElement("div", null);
+    },
   };
 });
 
@@ -225,6 +226,7 @@ import { useChatStreamsStore } from "@/stores/chat-streams-store";
 function resetStore() {
   useChatStreamsStore.getState().streams.clear();
   componentMocks.chatComposerProps.length = 0;
+  componentMocks.chatTranscriptProps.length = 0;
   componentMocks.permissionModePillProps.length = 0;
   componentMocks.permissionMode = "plan";
   // 默认 claudecode-like caps(允许 turn 中切 mode);Codex 测试用例显式置 false。
@@ -319,6 +321,22 @@ describe("ChatPanel · T17 breadcrumb 派生", () => {
 
     expect(screen.queryByText(/Agentre/)).not.toBeInTheDocument();
     expect(screen.queryByText(/sess-/)).not.toBeInTheDocument();
+  });
+});
+
+describe("ChatPanel · transcript cwd", () => {
+  it("Given session has cwd, When transcript renders, Then cwd is passed through for local link classification", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      cwd: "/Users/codfrm/Code/agentre/agentre",
+      id: 42,
+    });
+
+    render(<ChatPanel sessionId={42} />);
+
+    expect(componentMocks.chatTranscriptProps.at(-1)?.cwd).toBe(
+      "/Users/codfrm/Code/agentre/agentre",
+    );
   });
 });
 

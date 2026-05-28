@@ -24,6 +24,7 @@ type Project struct {
 	Color       string `gorm:"column:color;type:text;not null;default:''"`
 	Description string `gorm:"column:description;type:text;not null;default:''"`
 	Path        string `gorm:"column:path;type:text;not null"`
+	SortOrder   int    `gorm:"column:sort_order;type:int;not null;default:0"`
 	Status      int    `gorm:"column:status;type:int;not null;default:1"`
 	Createtime  int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
 	Updatetime  int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`

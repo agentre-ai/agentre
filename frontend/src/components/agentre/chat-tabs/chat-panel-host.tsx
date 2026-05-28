@@ -73,10 +73,19 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
   // 强行跳到末尾。
   const wrapperRef = React.useRef<HTMLDivElement>(null);
   const prevActiveRef = React.useRef<boolean | null>(null);
+  const prevNewAgentReadyRef = React.useRef(false);
+  const newAgentReady = isNewTab && !!agent;
   React.useEffect(() => {
     const prev = prevActiveRef.current;
+    const prevNewAgentReady = prevNewAgentReadyRef.current;
     prevActiveRef.current = active;
-    if (!active || prev === true) return;
+    prevNewAgentReadyRef.current = newAgentReady;
+    if (
+      !active ||
+      (prev === true && (!isNewTab || prevNewAgentReady || !newAgentReady))
+    ) {
+      return;
+    }
     const editor = wrapperRef.current?.querySelector<HTMLElement>(
       "[contenteditable='true']",
     );
@@ -85,7 +94,7 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
     // 的焦点夺回也已让出,再 focus 才能稳稳落到编辑器上。
     const id = window.setTimeout(() => editor.focus(), 0);
     return () => window.clearTimeout(id);
-  }, [active]);
+  }, [active, isNewTab, newAgentReady]);
 
   React.useEffect(() => {
     if (!isNewTab || agent) return;

@@ -28,17 +28,21 @@ func init() {
 //   - stream:turn/steer 入口(*codex.Stream 实现)
 //   - interrupter:turn/interrupt 入口
 //   - userInput:request_user_input 反向投回入口
+//   - approval:requestApproval 反向投回入口
 //   - pending:本 turn 已发出但还没被 EventUserMessage echo 回来的 steer text
 //     (codex 协议 fire-and-forget,本地做 FIFO 配对)
 //   - askWaiters:request_user_input 阻塞中的 waiter
+//   - permWaiters:requestApproval 阻塞中的 waiter
 //   - out:Run() 期间登记的事件出口,SubmitAnswer 完成后用它 emit UserAskResolved
 type codexActive struct {
 	mu          sync.Mutex
 	stream      cxSteerStream
 	interrupter cxInterruptable
 	userInput   cxUserInputStream
+	approval    cxApprovalStream
 	pending     []agentruntime.ConsumedSteer
 	askWaiters  map[string]codexAskWaiter
+	permWaiters map[string]struct{}
 	outMu       sync.Mutex
 	out         chan<- agentruntime.Event
 }
@@ -62,7 +66,7 @@ func New() *Runtime {
 // 与 claudecode 的差异:
 //   - CapCancelSteer = false(codex turn/steer fire-and-forget,无 withdraw verb)
 //   - CapDrainSteer = false(无 hook 队列)
-//   - CapToolPermission = false(codex 无 can_use_tool 协议)
+//   - CapToolPermission = true(codex app-server requestApproval 协议)
 //   - CapForkSession = true(走 thread/rollback)
 //   - CapReportContextWindow = true(thread/tokenUsage/updated 推 modelContextWindow)
 //   - PermissionModeMeta:仅 default / plan;**禁运行时切换**(running/waiting 禁切)
@@ -73,6 +77,7 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			capability.CapAbort:               true,
 			capability.CapSetPermission:       true,
 			capability.CapAnswerUserAsk:       true,
+			capability.CapToolPermission:      true,
 			capability.CapForkSession:         true,
 			capability.CapReportContextWindow: true,
 			capability.CapCompact:             true,
@@ -166,8 +171,17 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		zap.String("collaborationMode", req.CollaborationMode))
 
 	active := &codexActive{stream: sess.ActiveStream(), interrupter: sess.ActiveInterruptor()}
-	if ui, ok := active.stream.(cxUserInputStream); ok {
+	if st, ok := stream.(cxSteerStream); ok {
+		active.stream = st
+	}
+	if intr, ok := stream.(cxInterruptable); ok {
+		active.interrupter = intr
+	}
+	if ui, ok := stream.(cxUserInputStream); ok {
 		active.userInput = ui
+	}
+	if ap, ok := stream.(cxApprovalStream); ok {
+		active.approval = ap
 	}
 	r.register(req.SessionID, active)
 
@@ -276,6 +290,30 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	return nil
 }
 
+func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, requestID string, allow, alwaysAllowSession bool, _ string) error {
+	if sessionID <= 0 {
+		return fmt.Errorf("agentruntime/runtimes/codex: invalid sessionID %d", sessionID)
+	}
+	if strings.TrimSpace(requestID) == "" {
+		return errors.New("agentruntime/runtimes/codex: empty requestID")
+	}
+	r.mu.Lock()
+	a := r.active[sessionID]
+	r.mu.Unlock()
+	if a == nil || a.approval == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	if !a.hasPermWaiter(requestID) {
+		return fmt.Errorf("agentruntime/runtimes/codex: no waiting approval for requestID %s", requestID)
+	}
+	if err := a.approval.SubmitApproval(ctx, requestID, allow, alwaysAllowSession); err != nil {
+		return err
+	}
+	a.removePermWaiter(requestID)
+	emitToolPermissionResolved(a, requestID, allow, alwaysAllowSession)
+	return nil
+}
+
 // drainStream 与顶层 drainCodexStream 同构,emit 类型升级到 sealed Event。
 func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *codexActive, collaborationMode string) {
 	for stream.Next() {
@@ -301,6 +339,9 @@ func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentru
 			if uar, ok := t.(agentruntime.UserAskRequest); ok && active != nil {
 				active.registerAskWaiter(uar.RequestID, uar.Questions)
 			}
+			if tpr, ok := t.(agentruntime.ToolPermissionRequest); ok && active != nil {
+				active.registerPermWaiter(tpr.RequestID)
+			}
 			out <- t
 		}
 		if usage != nil {
@@ -310,6 +351,37 @@ func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentru
 			result.StopErr = stopErr
 		}
 	}
+}
+
+func (a *codexActive) registerPermWaiter(requestID string) {
+	if a == nil || strings.TrimSpace(requestID) == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.permWaiters == nil {
+		a.permWaiters = map[string]struct{}{}
+	}
+	a.permWaiters[requestID] = struct{}{}
+}
+
+func (a *codexActive) hasPermWaiter(requestID string) bool {
+	if a == nil || strings.TrimSpace(requestID) == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.permWaiters[requestID]
+	return ok
+}
+
+func (a *codexActive) removePermWaiter(requestID string) {
+	if a == nil || strings.TrimSpace(requestID) == "" {
+		return
+	}
+	a.mu.Lock()
+	delete(a.permWaiters, requestID)
+	a.mu.Unlock()
 }
 
 func (a *codexActive) addPendingSteer(queuedID, text string) {
@@ -420,6 +492,22 @@ func emitUserAskResolved(a *codexActive, requestID string, skipped bool, answers
 		RequestID: requestID,
 		Skipped:   skipped,
 		Answers:   answers,
+	}
+	select {
+	case out <- ev:
+	default:
+	}
+}
+
+func emitToolPermissionResolved(a *codexActive, requestID string, allowed, alwaysAllow bool) {
+	out := a.outChan()
+	if out == nil {
+		return
+	}
+	ev := agentruntime.ToolPermissionResolved{
+		RequestID:   requestID,
+		Allowed:     allowed,
+		AlwaysAllow: alwaysAllow,
 	}
 	select {
 	case out <- ev:

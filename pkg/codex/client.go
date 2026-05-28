@@ -283,6 +283,7 @@ type Stream struct {
 
 	userInputMu       sync.Mutex
 	userInputRequests map[string]json.RawMessage
+	approvalRequests  map[string]approvalRequest
 	compactSeen       map[string]struct{}
 	compactTrigger    string
 
@@ -297,6 +298,7 @@ func newStream(app *appClient, killGrace time.Duration, threadID, turnID, compac
 		sessionID:         threadID,
 		turnID:            turnID,
 		userInputRequests: map[string]json.RawMessage{},
+		approvalRequests:  map[string]approvalRequest{},
 		compactSeen:       map[string]struct{}{},
 		compactTrigger:    compactTrigger,
 	}

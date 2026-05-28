@@ -8,6 +8,20 @@ import {
   Settings,
   X,
 } from "lucide-react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 
 import { useSessionStatusOverlay } from "@/hooks/use-live-session-status";
 import { reloadProjectTreeCache } from "@/hooks/use-project-tree";
@@ -42,7 +56,7 @@ import { ProjectSettingsDrawer } from "./project-settings-drawer";
 import { ResizableSidebar } from "./resizable-sidebar";
 import { SessionGroup } from "./session-group";
 import { SessionsPopover } from "./sessions-popover";
-import { ProjectGet, ProjectListSessions } from "../../../wailsjs/go/app/App";
+import * as WailsApp from "../../../wailsjs/go/app/App";
 import type { chat_svc, app } from "../../../wailsjs/go/models";
 import type { AgentColor, AgentStatus } from "./types";
 
@@ -55,6 +69,15 @@ type ProjectMemberItem = app.ProjectMemberItem & {
   avatarIcon?: string;
   avatarDataUrl?: string;
 };
+type ProjectReorderFn = (req: {
+  parentID: number;
+  orderedIDs: number[];
+}) => Promise<void>;
+const ProjectReorder = (
+  WailsApp as typeof WailsApp & {
+    ProjectReorder: ProjectReorderFn;
+  }
+).ProjectReorder;
 
 // 项目页激活会话的最低描述 —— 选中已有会话或新建。
 type ProjectSelection =
@@ -110,6 +133,13 @@ function ProjectsPage() {
   const [newDialogOpen, setNewDialogOpen] = React.useState(false);
   const [newDialogParent, setNewDialogParent] = React.useState(0);
   const [settingsProjectID, setSettingsProjectID] = React.useState(0);
+  const [reorderError, setReorderError] = React.useState<string | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
   const refresh = React.useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -232,6 +262,53 @@ function ProjectsPage() {
     void refresh();
   }, [refresh]);
 
+  const dragDisabled = filter.trim().length > 0;
+  const handleProjectDragEnd = React.useCallback(
+    (event: DragEndEvent) => {
+      if (dragDisabled) return;
+      const activeID = parseProjectDragID(event.active.id);
+      const overID = parseProjectDragID(event.over?.id);
+      if (activeID <= 0 || overID <= 0 || activeID === overID) return;
+      const activeGroup = findSiblingGroup(tree, activeID);
+      const overGroup = findSiblingGroup(tree, overID);
+      if (
+        !activeGroup ||
+        !overGroup ||
+        activeGroup.parentID !== overGroup.parentID
+      ) {
+        return;
+      }
+      const from = activeGroup.nodes.findIndex(
+        (n) => n.project?.id === activeID,
+      );
+      const to = activeGroup.nodes.findIndex((n) => n.project?.id === overID);
+      if (from < 0 || to < 0) return;
+      const reordered = moveItem(activeGroup.nodes, from, to);
+      const orderedIDs = reordered
+        .map((n) => n.project?.id ?? 0)
+        .filter((id) => id > 0);
+      const previous = tree;
+      setReorderError(null);
+      setTree(reorderSiblingGroup(tree, activeGroup.parentID, orderedIDs));
+      void Promise.resolve()
+        .then(() =>
+          ProjectReorder({
+            parentID: activeGroup.parentID,
+            orderedIDs,
+          }),
+        )
+        .then(() => {
+          setReorderError(null);
+          return refresh();
+        })
+        .catch((err) => {
+          setTree(previous);
+          setReorderError(`项目顺序保存失败：${String(err)}`);
+        });
+    },
+    [dragDisabled, refresh, tree],
+  );
+
   return (
     <>
       {/* ── 左侧 ProjectList ── */}
@@ -278,6 +355,11 @@ function ProjectsPage() {
               </button>
             ) : null}
           </div>
+          {reorderError ? (
+            <div role="status" className="px-0.5 text-2xs text-destructive">
+              {reorderError}
+            </div>
+          ) : null}
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
@@ -292,11 +374,10 @@ function ProjectsPage() {
           ) : tree.length === 0 ? (
             <EmptyTree onCreate={() => openCreateDialog(0)} />
           ) : (
-            <div className="flex flex-col gap-1">
-              {tree.map((node) => (
-                <ProjectCard
-                  key={node.project?.id ?? 0}
-                  node={node}
+            <DndContext sensors={sensors} onDragEnd={handleProjectDragEnd}>
+              <div className="flex flex-col gap-1">
+                <ProjectSortableList
+                  nodes={tree}
                   depth={0}
                   filter={filter}
                   sessions={sessions}
@@ -304,9 +385,10 @@ function ProjectsPage() {
                   onSelect={selectOnTab}
                   onOpenSettings={(id) => setSettingsProjectID(id)}
                   onAddSubProject={(id) => openCreateDialog(id)}
+                  dragDisabled={dragDisabled}
                 />
-              ))}
-            </div>
+              </div>
+            </DndContext>
           )}
         </div>
       </ResizableSidebar>
@@ -379,6 +461,73 @@ function nodeMatches(
   return false;
 }
 
+function projectDragID(id: number): string {
+  return `project-${id}`;
+}
+
+function parseProjectDragID(id: unknown): number {
+  const raw = String(id);
+  if (!raw.startsWith("project-")) return 0;
+  const n = Number(raw.slice("project-".length));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function moveItem<T>(items: T[], from: number, to: number): T[] {
+  const out = items.slice();
+  const [item] = out.splice(from, 1);
+  out.splice(to, 0, item);
+  return out;
+}
+
+function findSiblingGroup(
+  nodes: ProjectTreeNode[],
+  projectID: number,
+  parentID = 0,
+): { parentID: number; nodes: ProjectTreeNode[] } | null {
+  if (nodes.some((n) => n.project?.id === projectID)) {
+    return { parentID, nodes };
+  }
+  for (const n of nodes) {
+    const found = findSiblingGroup(
+      n.children ?? [],
+      projectID,
+      n.project?.id ?? 0,
+    );
+    if (found) return found;
+  }
+  return null;
+}
+
+function reorderSiblingGroup(
+  nodes: ProjectTreeNode[],
+  parentID: number,
+  orderedIDs: number[],
+): ProjectTreeNode[] {
+  if (parentID === 0) {
+    const byID = new Map(nodes.map((n) => [n.project?.id ?? 0, n]));
+    return orderedIDs
+      .map((id) => byID.get(id))
+      .filter(Boolean) as ProjectTreeNode[];
+  }
+  return nodes.map((n) => {
+    if (n.project?.id === parentID) {
+      const byID = new Map(
+        (n.children ?? []).map((c) => [c.project?.id ?? 0, c]),
+      );
+      return {
+        ...n,
+        children: orderedIDs
+          .map((id) => byID.get(id))
+          .filter(Boolean) as ProjectTreeNode[],
+      } as ProjectTreeNode;
+    }
+    return {
+      ...n,
+      children: reorderSiblingGroup(n.children ?? [], parentID, orderedIDs),
+    } as ProjectTreeNode;
+  });
+}
+
 type ProjectCardProps = {
   node: ProjectTreeNode;
   depth: number;
@@ -388,7 +537,90 @@ type ProjectCardProps = {
   onSelect: (sel: ProjectSelection | null, opts?: { newTab?: boolean }) => void;
   onOpenSettings: (id: number) => void;
   onAddSubProject: (parentID: number) => void;
+  drag?: ProjectDragState;
 };
+
+// 拖拽改造（2026-05-28）：整行即拖把手 —— 不再渲染独立 grip 按钮，
+// PointerSensor 的 distance:4 已经让点击与拖拽天然分流（<4px 是点击，
+// 否则才进入拖拽）。这里只暴露挂在 header 行上的最小集合。
+type ProjectDragState = {
+  listeners: React.HTMLAttributes<HTMLElement> | undefined;
+  setNodeRef: (node: HTMLDivElement | null) => void;
+  style: React.CSSProperties;
+  isDragging: boolean;
+};
+
+type ProjectSortableListProps = Omit<
+  ProjectCardProps,
+  "node" | "depth" | "drag"
+> & {
+  nodes: ProjectTreeNode[];
+  depth: number;
+  dragDisabled: boolean;
+};
+
+function ProjectSortableList({
+  nodes,
+  depth,
+  dragDisabled,
+  ...cardProps
+}: ProjectSortableListProps) {
+  return (
+    <SortableContext
+      items={nodes.map((node) => projectDragID(node.project?.id ?? 0))}
+      strategy={verticalListSortingStrategy}
+    >
+      {nodes.map((node) => (
+        <SortableProjectCard
+          key={node.project?.id ?? 0}
+          node={node}
+          depth={depth}
+          dragDisabled={dragDisabled}
+          {...cardProps}
+        />
+      ))}
+    </SortableContext>
+  );
+}
+
+type SortableProjectCardProps = ProjectCardProps & {
+  dragDisabled: boolean;
+};
+
+function SortableProjectCard({
+  node,
+  dragDisabled,
+  ...cardProps
+}: SortableProjectCardProps) {
+  const { listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({
+      id: projectDragID(node.project?.id ?? 0),
+      disabled: dragDisabled,
+    });
+  const style: React.CSSProperties = {
+    transform: transform
+      ? `translate3d(${transform.x}px, ${transform.y}px, 0) scaleX(${transform.scaleX}) scaleY(${transform.scaleY})`
+      : undefined,
+    transition,
+    opacity: isDragging ? 0.6 : undefined,
+  };
+  return (
+    <ProjectCard
+      node={node}
+      drag={
+        dragDisabled
+          ? undefined
+          : {
+              listeners,
+              setNodeRef,
+              style,
+              isDragging,
+            }
+      }
+      {...cardProps}
+    />
+  );
+}
 
 function ProjectCard({
   node,
@@ -399,6 +631,7 @@ function ProjectCard({
   onSelect,
   onOpenSettings,
   onAddSubProject,
+  drag,
 }: ProjectCardProps) {
   // 同 ChatPage 的 overlay 来源：服务端 lastReadAt 为持久化真值；
   // useChatSession.reload 写到 store 后，用 withReadOverlay 做本次渲染的乐观覆盖。
@@ -514,7 +747,11 @@ function ProjectCard({
   const isDeep = depth >= 2;
 
   return (
-    <div className={cn(isSub && "pl-1")}>
+    <div
+      ref={drag?.setNodeRef}
+      style={drag?.style}
+      className={cn(isSub && "pl-1", drag?.isDragging && "relative z-10")}
+    >
       <SessionGroup
         persistenceKey={`project:${project.id}`}
         defaultExpanded
@@ -535,7 +772,8 @@ function ProjectCard({
             }}
             loader={async ({ offset, limit }) => {
               // 后端 ProjectListSessions 暂不分页；客户端切片即可。
-              const all = (await ProjectListSessions(project.id)) ?? [];
+              const all =
+                (await WailsApp.ProjectListSessions(project.id)) ?? [];
               const slice = all.slice(offset, offset + limit);
               return {
                 sessions: slice.map((s) => ({
@@ -567,19 +805,17 @@ function ProjectCard({
         renderAfterSessions={
           children.length > 0 ? (
             <div className="mt-1 flex flex-col gap-0.5">
-              {children.map((child) => (
-                <ProjectCard
-                  key={child.project?.id ?? 0}
-                  node={child}
-                  depth={depth + 1}
-                  filter={filter}
-                  sessions={sessions}
-                  selection={selection}
-                  onSelect={onSelect}
-                  onOpenSettings={onOpenSettings}
-                  onAddSubProject={onAddSubProject}
-                />
-              ))}
+              <ProjectSortableList
+                nodes={children}
+                depth={depth + 1}
+                filter={filter}
+                sessions={sessions}
+                selection={selection}
+                onSelect={onSelect}
+                onOpenSettings={onOpenSettings}
+                onAddSubProject={onAddSubProject}
+                dragDisabled={!drag}
+              />
             </div>
           ) : undefined
         }
@@ -588,7 +824,9 @@ function ProjectCard({
             className={cn(
               "group/proj flex items-center gap-1.5 rounded-md text-xs hover:bg-sidebar-active-bg",
               isSub ? "px-1.5 py-1" : "px-2 py-1.5",
+              drag && "cursor-grab active:cursor-grabbing",
             )}
+            {...(drag?.listeners ?? {})}
           >
             <button
               type="button"
@@ -728,7 +966,7 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
   React.useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    void ProjectGet(project.id)
+    void WailsApp.ProjectGet(project.id)
       .then((detail) => {
         if (cancelled) return;
         setLoadState({

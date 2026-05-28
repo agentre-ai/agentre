@@ -47,6 +47,7 @@ describe("classifyLink", () => {
       expect(classifyLink("/Users/me/proj/src/foo.go", CWD)).toEqual({
         kind: "local-internal",
         fullPath: "/Users/me/proj/src/foo.go",
+        pathKind: "file",
         relPath: "src/foo.go",
       });
     });
@@ -55,6 +56,7 @@ describe("classifyLink", () => {
       expect(classifyLink("/Users/me/proj/src/foo.go:42", CWD)).toEqual({
         kind: "local-internal",
         fullPath: "/Users/me/proj/src/foo.go",
+        pathKind: "file",
         relPath: "src/foo.go",
         line: 42,
       });
@@ -64,6 +66,7 @@ describe("classifyLink", () => {
       expect(classifyLink("/Users/me/proj/src/foo.go:42:7", CWD)).toEqual({
         kind: "local-internal",
         fullPath: "/Users/me/proj/src/foo.go",
+        pathKind: "file",
         relPath: "src/foo.go",
         line: 42,
         col: 7,
@@ -74,6 +77,16 @@ describe("classifyLink", () => {
       expect(classifyLink("/usr/local/bin/agentred", CWD)).toEqual({
         kind: "local-external",
         fullPath: "/usr/local/bin/agentred",
+        pathKind: "file",
+      });
+    });
+
+    it("when POSIX absolute path ends with slash then pathKind=folder", () => {
+      expect(classifyLink("/Users/me/proj/docs/", CWD)).toEqual({
+        kind: "local-internal",
+        fullPath: "/Users/me/proj/docs/",
+        pathKind: "folder",
+        relPath: "docs/",
       });
     });
 
@@ -81,6 +94,7 @@ describe("classifyLink", () => {
       expect(classifyLink("/Users/me/proj/foo.go", undefined)).toEqual({
         kind: "local-external",
         fullPath: "/Users/me/proj/foo.go",
+        pathKind: "file",
       });
     });
 
@@ -89,6 +103,7 @@ describe("classifyLink", () => {
       expect(got).toEqual({
         kind: "local-external",
         fullPath: "C:\\Users\\x\\foo.go",
+        pathKind: "file",
         line: 10,
       });
     });
@@ -97,6 +112,7 @@ describe("classifyLink", () => {
       expect(classifyLink(CWD, CWD)).toEqual({
         kind: "local-internal",
         fullPath: CWD,
+        pathKind: "folder",
         relPath: "",
       });
     });
@@ -107,6 +123,7 @@ describe("classifyLink", () => {
       expect(classifyLink("file:///Users/me/proj/foo.go", CWD)).toEqual({
         kind: "local-internal",
         fullPath: "/Users/me/proj/foo.go",
+        pathKind: "file",
         relPath: "foo.go",
       });
     });
@@ -116,6 +133,7 @@ describe("classifyLink", () => {
         {
           kind: "local-internal",
           fullPath: "/Users/me/proj/a b.go",
+          pathKind: "file",
         },
       );
     });

@@ -14,7 +14,7 @@ import (
 )
 
 // TestCodexCapabilities 钉死 codex runtime 的能力矩阵 + permission mode 元数据。
-// 与 claudecode 的关键差异:CapCancelSteer/CapDrainSteer/CapToolPermission=false;
+// 与 claudecode 的关键差异:CapCancelSteer/CapDrainSteer=false;
 // CapReportContextWindow=true;PermissionModeMeta 仅 default/plan,SwitchableDuringTurn=false。
 func TestCodexCapabilities(t *testing.T) {
 	Convey("codex Capabilities 矩阵", t, func() {
@@ -26,7 +26,7 @@ func TestCodexCapabilities(t *testing.T) {
 		So(caps.Has(capability.CapAbort), ShouldBeTrue)
 		So(caps.Has(capability.CapSetPermission), ShouldBeTrue)
 		So(caps.Has(capability.CapAnswerUserAsk), ShouldBeTrue)
-		So(caps.Has(capability.CapToolPermission), ShouldBeFalse) // 无 can_use_tool
+		So(caps.Has(capability.CapToolPermission), ShouldBeTrue)
 		So(caps.Has(capability.CapForkSession), ShouldBeTrue)
 		So(caps.Has(capability.CapReportContextWindow), ShouldBeTrue)
 		So(caps.Has(capability.CapCompact), ShouldBeTrue)
@@ -40,6 +40,60 @@ func TestCodexCapabilities(t *testing.T) {
 		So(caps.PermissionModeMeta.Order, ShouldResemble, []string{"default", "plan"})
 		// LaunchDefaultMode="default":codex 协议每次 launch 必须显式 mode。
 		So(caps.PermissionModeMeta.LaunchDefaultMode, ShouldEqual, "default")
+	})
+}
+
+func TestSubmitToolPermission(t *testing.T) {
+	Convey("Given Codex approval request is active, when user allows for session, then approval is submitted and resolved event is emitted", t, func() {
+		stream := newApprovalRuntimeStream(pkgcodex.Event{
+			Kind: pkgcodex.EventApprovalRequest,
+			Approval: &pkgcodex.ApprovalRequestEvent{
+				RequestID: "approval-1",
+				ItemID:    "item-command",
+				ToolName:  "Bash",
+				Input:     []byte(`{"command":"rm -rf build"}`),
+			},
+		})
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			return &fakeRuntimeSession{stream: stream, sid: "thread-approval"}, nil
+		})
+		defer restore()
+
+		r := New()
+		events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex), EnvJSON: "{}"},
+			SessionID: 42,
+			Cwd:       t.TempDir(),
+			UserText:  "run it",
+		})
+		So(err, ShouldBeNil)
+
+		ev := <-events
+		req, ok := ev.(agentruntime.ToolPermissionRequest)
+		So(ok, ShouldBeTrue)
+		So(req.RequestID, ShouldEqual, "approval-1")
+
+		err = r.SubmitToolPermission(context.Background(), 42, "approval-1", true, true, "")
+		So(err, ShouldBeNil)
+		So(stream.submittedRequestID, ShouldEqual, "approval-1")
+		So(stream.submittedAllow, ShouldBeTrue)
+		So(stream.submittedAlways, ShouldBeTrue)
+
+		resolved := <-events
+		res, ok := resolved.(agentruntime.ToolPermissionResolved)
+		So(ok, ShouldBeTrue)
+		So(res.RequestID, ShouldEqual, "approval-1")
+		So(res.Allowed, ShouldBeTrue)
+		So(res.AlwaysAllow, ShouldBeTrue)
+
+		stream.finish()
+		for range events {
+		}
+	})
+
+	Convey("Given no active Codex approval request, when user answers, then no active turn is returned", t, func() {
+		err := New().SubmitToolPermission(context.Background(), 42, "missing", true, false, "")
+		So(err, ShouldEqual, agentruntime.ErrNoActiveTurn)
 	})
 }
 
@@ -160,3 +214,38 @@ func (s *eventRuntimeStream) Next() bool {
 
 func (s *eventRuntimeStream) Event() pkgcodex.Event { return s.events[s.idx-1] }
 func (s *eventRuntimeStream) SessionID() string     { return "" }
+
+type approvalRuntimeStream struct {
+	event pkgcodex.Event
+	done  chan struct{}
+	used  bool
+
+	submittedRequestID string
+	submittedAllow     bool
+	submittedAlways    bool
+}
+
+func newApprovalRuntimeStream(ev pkgcodex.Event) *approvalRuntimeStream {
+	return &approvalRuntimeStream{event: ev, done: make(chan struct{})}
+}
+
+func (s *approvalRuntimeStream) Next() bool {
+	if !s.used {
+		s.used = true
+		return true
+	}
+	<-s.done
+	return false
+}
+
+func (s *approvalRuntimeStream) Event() pkgcodex.Event { return s.event }
+func (s *approvalRuntimeStream) SessionID() string     { return "" }
+
+func (s *approvalRuntimeStream) SubmitApproval(_ context.Context, requestID string, allow, alwaysAllowSession bool) error {
+	s.submittedRequestID = requestID
+	s.submittedAllow = allow
+	s.submittedAlways = alwaysAllowSession
+	return nil
+}
+
+func (s *approvalRuntimeStream) finish() { close(s.done) }

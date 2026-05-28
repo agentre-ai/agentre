@@ -58,14 +58,14 @@ describe("RichLink", () => {
       expect(openPathMock).not.toHaveBeenCalled();
     });
 
-    it("renders external-link icon next to text", () => {
+    it("renders open-link icon after text", () => {
       render(
         <RichLink href="https://example.com" cwd={CWD}>
           example
         </RichLink>,
       );
-      expect(screen.getByTestId("rich-link-icon")).toHaveAttribute(
-        "data-kind",
+      expect(screen.getByTestId("rich-link-open-icon")).toHaveAttribute(
+        "data-link-kind",
         "url",
       );
     });
@@ -84,29 +84,38 @@ describe("RichLink", () => {
       expect(browserOpenURLMock).not.toHaveBeenCalled();
     });
 
-    it("renders file-text icon", () => {
+    it("renders file icon before text and open icon after text", () => {
       render(
         <RichLink href="/Users/me/proj/src/foo.go" cwd={CWD}>
           foo.go
         </RichLink>,
       );
-      expect(screen.getByTestId("rich-link-icon")).toHaveAttribute(
-        "data-kind",
+      const link = screen.getByRole("link", { name: /foo\.go/ });
+      expect(link.firstElementChild).toHaveAttribute(
+        "data-testid",
+        "rich-link-path-icon",
+      );
+      expect(screen.getByTestId("rich-link-path-icon")).toHaveAttribute(
+        "data-path-kind",
+        "file",
+      );
+      expect(screen.getByTestId("rich-link-open-icon")).toHaveAttribute(
+        "data-link-kind",
         "local-internal",
       );
     });
   });
 
   describe("Local file link — outside cwd", () => {
-    it("renders folder icon", () => {
+    it("renders file icon, not folder icon", () => {
       render(
         <RichLink href="/usr/local/bin/agentred" cwd={CWD}>
           agentred
         </RichLink>,
       );
-      expect(screen.getByTestId("rich-link-icon")).toHaveAttribute(
-        "data-kind",
-        "local-external",
+      expect(screen.getByTestId("rich-link-path-icon")).toHaveAttribute(
+        "data-path-kind",
+        "file",
       );
     });
 
@@ -121,6 +130,20 @@ describe("RichLink", () => {
     });
   });
 
+  describe("Local folder link", () => {
+    it("renders folder icon before text", () => {
+      render(
+        <RichLink href="/Users/me/proj/docs/" cwd={CWD}>
+          docs
+        </RichLink>,
+      );
+      expect(screen.getByTestId("rich-link-path-icon")).toHaveAttribute(
+        "data-path-kind",
+        "folder",
+      );
+    });
+  });
+
   describe("Unknown / fallback", () => {
     it("renders plain anchor without icon for relative paths", () => {
       render(
@@ -130,7 +153,12 @@ describe("RichLink", () => {
       );
       const link = screen.getByRole("link", { name: /rel/ });
       expect(link).toBeInTheDocument();
-      expect(screen.queryByTestId("rich-link-icon")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("rich-link-path-icon"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("rich-link-open-icon"),
+      ).not.toBeInTheDocument();
     });
 
     it("relative path click goes through default navigation (no mock called)", () => {
@@ -189,6 +217,31 @@ describe("RichLink", () => {
       fireEvent.focus(screen.getByRole("link", { name: /foo/ }));
       expect(await screen.findByText("/Users/me/proj")).toBeInTheDocument();
       expect(screen.getByText("src/foo.go")).toBeInTheDocument();
+    });
+
+    it("local-internal popover wraps long project root and relative path segments", async () => {
+      const cwd =
+        "/Users/codfrm/Code/agentre/agentre/a-very-long-project-root-name";
+      render(
+        <RichLink
+          href={`${cwd}/frontend/src/components/agentre/__tests__/chat.test.tsx:89`}
+          cwd={cwd}
+        >
+          chat.test.tsx:89
+        </RichLink>,
+      );
+      fireEvent.focus(screen.getByRole("link", { name: /chat\.test\.tsx:89/ }));
+
+      expect(await screen.findByText(cwd)).toHaveClass(
+        "min-w-0",
+        "break-all",
+        "whitespace-normal",
+      );
+      expect(
+        screen.getByText(
+          "frontend/src/components/agentre/__tests__/chat.test.tsx",
+        ),
+      ).toHaveClass("min-w-0", "break-all", "whitespace-normal");
     });
 
     it("local-external popover shows full path but no project root segment", async () => {

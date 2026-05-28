@@ -37,6 +37,10 @@ type cxUserInputStream interface {
 	SubmitUserInput(ctx context.Context, requestID string, answers map[string][]string) error
 }
 
+type cxApprovalStream interface {
+	SubmitApproval(ctx context.Context, requestID string, allow, alwaysAllowSession bool) error
+}
+
 type cxClientAdapter struct {
 	client *codex.Client
 	sid    string

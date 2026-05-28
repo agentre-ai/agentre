@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useChatAgentsStore } from "@/stores/chat-agents-store";
@@ -17,12 +18,50 @@ const appMocks = vi.hoisted(() => ({
   ProjectListTree: vi.fn(),
   ProjectLocationList: vi.fn(),
   ProjectRemoveMember: vi.fn(),
+  ProjectReorder: vi.fn(),
   ProjectUpdate: vi.fn(),
   RemoteDeviceList: vi.fn(),
   SelectDirectory: vi.fn(),
 }));
 
+const dndMocks = vi.hoisted(() => ({
+  onDragEnd: null as null | ((event: unknown) => void),
+}));
+
+type MockDndContextProps = {
+  children: React.ReactNode;
+  onDragEnd: (event: unknown) => void;
+};
+
+type MockSortableContextProps = {
+  children: React.ReactNode;
+};
+
 vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
+vi.mock("@dnd-kit/core", () => ({
+  DndContext: ({ children, onDragEnd }: MockDndContextProps) => {
+    dndMocks.onDragEnd = onDragEnd;
+    return children;
+  },
+  KeyboardSensor: vi.fn(),
+  PointerSensor: vi.fn(),
+  useSensor: vi.fn(() => ({})),
+  useSensors: vi.fn(() => []),
+}));
+vi.mock("@dnd-kit/sortable", () => ({
+  SortableContext: ({ children }: MockSortableContextProps) => children,
+  sortableKeyboardCoordinates: vi.fn(),
+  useSortable: vi.fn(() => ({
+    attributes: {},
+    isDragging: false,
+    listeners: {},
+    setActivatorNodeRef: vi.fn(),
+    setNodeRef: vi.fn(),
+    transform: null,
+    transition: undefined,
+  })),
+  verticalListSortingStrategy: {},
+}));
 
 import { ProjectsPage } from "../project-page";
 import { ProjectSettingsDrawer } from "../project-settings-drawer";
@@ -251,6 +290,168 @@ describe("ProjectsPage shell layout", () => {
 
     expect(sidebar.parentElement).toBe(container);
     expect(sidebar.parentElement).not.toHaveClass("flex-1");
+  });
+});
+
+describe("ProjectsPage project drag reorder", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dndMocks.onDragEnd = null;
+    localStorage.clear();
+    useSessionReadStore.setState({ overrides: new Map() });
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectGet.mockResolvedValue({
+      project: null,
+      directMembers: [],
+      inheritedMembers: [],
+    });
+    appMocks.ProjectListSessions.mockResolvedValue([]);
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.ProjectReorder.mockResolvedValue(undefined);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("Given root projects, When one root is dropped before another, Then it persists the new root order", async () => {
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: { id: 1, name: "Alpha", parentID: 0, path: "/tmp/a" },
+        children: [],
+      },
+      {
+        project: { id: 2, name: "Beta", parentID: 0, path: "/tmp/b" },
+        children: [],
+      },
+      {
+        project: { id: 3, name: "Gamma", parentID: 0, path: "/tmp/c" },
+        children: [],
+      },
+    ]);
+
+    renderProjectsPage();
+
+    await screen.findByText("Gamma");
+    dndMocks.onDragEnd?.({
+      active: { id: "project-3" },
+      over: { id: "project-1" },
+    });
+
+    await waitFor(() => {
+      expect(appMocks.ProjectReorder).toHaveBeenCalledWith({
+        parentID: 0,
+        orderedIDs: [3, 1, 2],
+      });
+    });
+  });
+
+  it("Given sub-projects, When one child is dropped before a sibling, Then it persists the child order under its parent", async () => {
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: { id: 1, name: "Root", parentID: 0, path: "/tmp/root" },
+        children: [
+          {
+            project: { id: 2, name: "Child A", parentID: 1, path: "/tmp/a" },
+            children: [],
+          },
+          {
+            project: { id: 3, name: "Child B", parentID: 1, path: "/tmp/b" },
+            children: [],
+          },
+        ],
+      },
+    ]);
+
+    renderProjectsPage();
+
+    await screen.findByText("Child B");
+    dndMocks.onDragEnd?.({
+      active: { id: "project-3" },
+      over: { id: "project-2" },
+    });
+
+    await waitFor(() => {
+      expect(appMocks.ProjectReorder).toHaveBeenCalledWith({
+        parentID: 1,
+        orderedIDs: [3, 2],
+      });
+    });
+  });
+
+  it("Given a project row, Then no explicit grip handle is rendered (the row itself is the drag activator)", async () => {
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: { id: 1, name: "Alpha", parentID: 0, path: "/tmp/a" },
+        children: [],
+      },
+    ]);
+
+    renderProjectsPage();
+
+    await screen.findByText("Alpha");
+    expect(
+      screen.queryByRole("button", { name: /Alpha 拖拽排序/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given a search filter, When a drag end event fires, Then it does not persist a partial visible order", async () => {
+    const user = setupUser();
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: { id: 1, name: "Alpha", parentID: 0, path: "/tmp/a" },
+        children: [],
+      },
+      {
+        project: { id: 2, name: "Beta", parentID: 0, path: "/tmp/b" },
+        children: [],
+      },
+    ]);
+
+    renderProjectsPage();
+    await user.type(await screen.findByLabelText("搜索项目 / 会话"), "Al");
+    dndMocks.onDragEnd?.({
+      active: { id: "project-2" },
+      over: { id: "project-1" },
+    });
+
+    expect(appMocks.ProjectReorder).not.toHaveBeenCalled();
+  });
+
+  it("Given reorder persistence fails, When a project is dropped, Then the visible order rolls back", async () => {
+    appMocks.ProjectReorder.mockRejectedValueOnce(new Error("boom"));
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: { id: 1, name: "Alpha", parentID: 0, path: "/tmp/a" },
+        children: [],
+      },
+      {
+        project: { id: 2, name: "Beta", parentID: 0, path: "/tmp/b" },
+        children: [],
+      },
+    ]);
+
+    renderProjectsPage();
+
+    await screen.findByText("Beta");
+    dndMocks.onDragEnd?.({
+      active: { id: "project-2" },
+      over: { id: "project-1" },
+    });
+
+    await waitFor(() => {
+      expect(appMocks.ProjectReorder).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      const labels = screen
+        .getAllByText(/Alpha|Beta/)
+        .map((el) => el.textContent);
+      expect(labels).toEqual(["Alpha", "Beta"]);
+    });
   });
 });
 

@@ -1124,6 +1124,7 @@ function ChatPanel({
                     agentColor={
                       (session?.agentColor as AgentColor) || "agent-1"
                     }
+                    cwd={session?.cwd}
                     sessionId={session?.id ?? 0}
                     messages={messages}
                     liveDelta={liveDelta}

@@ -3,6 +3,7 @@ export type LinkClass =
   | {
       kind: "local-internal";
       fullPath: string;
+      pathKind: LocalPathKind;
       relPath: string;
       line?: number;
       col?: number;
@@ -10,10 +11,13 @@ export type LinkClass =
   | {
       kind: "local-external";
       fullPath: string;
+      pathKind: LocalPathKind;
       line?: number;
       col?: number;
     }
   | { kind: "unknown"; href: string };
+
+export type LocalPathKind = "file" | "folder";
 
 const URL_PREFIX = /^(https?:|mailto:|tel:)/i;
 const WWW_PREFIX = /^www\./i;
@@ -50,6 +54,12 @@ function fileURLToPath(href: string): string {
   }
 }
 
+function classifyLocalPathKind(fullPath: string, cwd?: string): LocalPathKind {
+  if (cwd && fullPath === cwd) return "folder";
+  if (fullPath.endsWith("/") || /[\\/]$/.test(fullPath)) return "folder";
+  return "file";
+}
+
 export function classifyLink(
   href: string | undefined,
   cwd?: string,
@@ -69,12 +79,14 @@ export function classifyLink(
   }
 
   const { path: fullPath, line, col } = stripLineSuffix(rawPath);
+  const pathKind = classifyLocalPathKind(fullPath, cwd);
 
   if (cwd && (fullPath === cwd || fullPath.startsWith(cwd + "/"))) {
     const relPath = fullPath === cwd ? "" : fullPath.slice(cwd.length + 1);
     return {
       kind: "local-internal",
       fullPath,
+      pathKind,
       relPath,
       ...(line !== undefined ? { line } : {}),
       ...(col !== undefined ? { col } : {}),
@@ -84,6 +96,7 @@ export function classifyLink(
   return {
     kind: "local-external",
     fullPath,
+    pathKind,
     ...(line !== undefined ? { line } : {}),
     ...(col !== undefined ? { col } : {}),
   };
