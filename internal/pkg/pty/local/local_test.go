@@ -100,3 +100,23 @@ func TestLocalBackend_Close_EmitsKilledExit(t *testing.T) {
 		t.Fatal("did not receive exit info within 2s")
 	}
 }
+
+func TestLocalBackend_NaturalExit_EmitsNatural(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	be := local.NewBackend()
+	h, err := be.Open(ctx, pty.Spec{Cwd: os.TempDir(), Shell: "/bin/sh", Cols: 80, Rows: 24})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+
+	_, err = h.Write([]byte("exit 0\n"))
+	require.NoError(t, err)
+
+	select {
+	case info := <-h.Exit():
+		require.Equal(t, "natural", info.Reason)
+		require.Equal(t, 0, info.Code)
+	case <-time.After(3 * time.Second):
+		t.Fatal("did not receive natural exit within 3s")
+	}
+}
