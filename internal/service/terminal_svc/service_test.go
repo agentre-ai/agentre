@@ -2,7 +2,9 @@ package terminal_svc_test
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"agentre/internal/model/entity/agent_backend_entity"
 	"agentre/internal/model/entity/chat_entity"
@@ -126,4 +128,62 @@ func TestService_Shutdown_ClosesAll(t *testing.T) {
 
 	require.NoError(t, svc.Open(context.Background(), 1, 80, 24))
 	svc.Shutdown()
+}
+
+type recordingEmitter struct {
+	mu     sync.Mutex
+	events []recordedEvent
+}
+
+type recordedEvent struct {
+	Name    string
+	Payload any
+}
+
+func (r *recordingEmitter) Emit(_ context.Context, name string, payload any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, recordedEvent{name, payload})
+}
+
+func (r *recordingEmitter) Snapshot() []recordedEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]recordedEvent, len(r.events))
+	copy(out, r.events)
+	return out
+}
+
+func TestService_Pump_EmitsDataEvent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockBE := mocks.NewMockPTYBackend(ctrl)
+	mh := mocks.NewMockHandle(ctrl)
+	dataCh := make(chan []byte, 1)
+	exitCh := make(chan pty.ExitInfo)
+	mh.EXPECT().Data().AnyTimes().Return(dataCh)
+	mh.EXPECT().Exit().AnyTimes().Return(exitCh)
+	mockBE.EXPECT().Open(gomock.Any(), gomock.Any()).Return(mh, nil)
+
+	rec := &recordingEmitter{}
+	sel := terminal_svc.NewBackendSelector(mockBE, nil)
+	svc := terminal_svc.NewService(stubSessionLookup{
+		sess: &chat_entity.Session{ID: 7},
+		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
+		cwd:  "/tmp",
+	}, sel, rec)
+
+	require.NoError(t, svc.Open(context.Background(), 7, 80, 24))
+	dataCh <- []byte("abc")
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.Snapshot()) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	evs := rec.Snapshot()
+	require.Len(t, evs, 1)
+	assert.Equal(t, "terminal:7:data", evs[0].Name)
 }
