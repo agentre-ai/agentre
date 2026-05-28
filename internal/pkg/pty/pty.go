@@ -2,6 +2,8 @@
 // integration. Concrete implementations live under local/ and remote/.
 package pty
 
+//go:generate mockgen -source=pty.go -destination=../../service/terminal_svc/mocks/mock_handle.go -package=mocks
+
 import "context"
 
 // Spec is the parameters needed to spawn a PTY.
