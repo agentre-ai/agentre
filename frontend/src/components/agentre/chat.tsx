@@ -401,12 +401,35 @@ function formatTokens(n: number): string {
   return v >= 100 ? `${Math.round(v)}k` : `${v.toFixed(1)}k`;
 }
 
+// formatResetIn 把"距离 ISO 时间点还有多久"渲染成紧凑的 XdYh / Xh / Xd 形式
+// (e.g. "4d21h", "3h", "2d"),用于 QuotaMeter tooltip。
+//   - 空串 / 无法解析的输入 → 空串(调用方自己决定是否显示括号)
+//   - 已过期(diff<=0)→ "0h"
+//   - <24h → "Nh"(向下取整)
+//   - >=24h → "XdYh"(Yh=0 时省略,写 "Xd")
+// nowMs 可选(测试注入固定 now);省略走 Date.now()。
+// eslint-disable-next-line react-refresh/only-export-components
+export function formatResetIn(value: unknown, nowMs?: number): string {
+  if (value == null || value === "") return "";
+  const target =
+    value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (Number.isNaN(target)) return "";
+  const diffMs = target - (nowMs ?? Date.now());
+  if (diffMs <= 0) return "0h";
+  const totalHours = Math.floor(diffMs / 3_600_000);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  if (days <= 0) return `${hours}h`;
+  if (hours === 0) return `${days}d`;
+  return `${days}d${hours}h`;
+}
+
 // QuotaMeter 展示 Claude Code 订阅的 5h / 7d 配额。数据由 chat-panel 通过 useCCUsage
 // 拉取并传入(per-device, 不在这里订阅 store, 保证 Composer 可被纯 props 测试)。
 //
 // 渲染策略(与 cc_usage_svc.UsageState.reason 对齐):
 //   - undefined / 空 reason / "no_credentials" → 整块不渲染(API key 用户、未首探)
-//   - "ok" / "rate_limited"+stale / "network"+stale → 5h X% · 7d Y%, stale 时标 stale
+//   - "ok" / "rate_limited"+stale / "network"+stale → 5h X% · 7d Y%(stale 不可见标记,只在 tooltip 文案里提示)
 //   - "auth_expired" / "device_offline" / "network"无stale → 灰态占位 "5h —%"
 function QuotaMeter({
   data,
@@ -448,7 +471,6 @@ function QuotaMeter({
       <span>5h {showNumbers && fiveH !== null ? `${fiveH}%` : "—%"}</span>
       <span className="text-subtle-foreground">·</span>
       <span>7d {showNumbers && sevenD !== null ? `${sevenD}%` : "—%"}</span>
-      {data.stale ? <span className="text-status-waiting">·stale</span> : null}
     </div>
   );
 }
@@ -484,12 +506,10 @@ function describeQuotaTitle(
       lines.push(`Claude Code 配额 · ${device}`);
   }
   if (data.data) {
-    const five = data.data.fiveHourResetsAt
-      ? ` (重置 ${String(data.data.fiveHourResetsAt)})`
-      : "";
-    const seven = data.data.weeklyResetsAt
-      ? ` (重置 ${String(data.data.weeklyResetsAt)})`
-      : "";
+    const fiveIn = formatResetIn(data.data.fiveHourResetsAt);
+    const sevenIn = formatResetIn(data.data.weeklyResetsAt);
+    const five = fiveIn ? ` (重置剩 ${fiveIn})` : "";
+    const seven = sevenIn ? ` (重置剩 ${sevenIn})` : "";
     lines.push(`5h: ${Math.round(data.data.fiveHourPercent)}%${five}`);
     lines.push(`7d: ${Math.round(data.data.weeklyPercent)}%${seven}`);
     if (data.data.sonnetWeeklyPercent != null) {

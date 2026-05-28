@@ -111,6 +111,19 @@ vi.mock("@/hooks/use-chat-session", () => ({
   }),
 }));
 
+// useCCUsage: 捕获每次调用 deviceKey, 让测试断言 ChatPanel 把"哪台 device 的配额"
+// 派给了 ChatComposer。返回值固定 undefined(未首探), 测试只关心 key 路由。
+const ccUsageMock = vi.hoisted(() => ({
+  calls: [] as string[],
+}));
+
+vi.mock("@/hooks/use-cc-usage", () => ({
+  useCCUsage: (deviceKey: string) => {
+    ccUsageMock.calls.push(deviceKey);
+    return undefined;
+  },
+}));
+
 // ── child component mocks ──────────────────────────────────────────────────
 
 // ChatComposer / ChatTranscript 各自有大量依赖（TipTap / prism 等），mock 成最简桩。
@@ -241,6 +254,7 @@ function resetStore() {
   componentMocks.computeComposerContextUsage.mockClear();
   componentMocks.cycleMode.mockClear();
   componentMocks.setMode.mockClear();
+  ccUsageMock.calls.length = 0;
   appMocks.SendChatMessage.mockReset();
   appMocks.CompactChatSession.mockReset();
   appMocks.EnqueueChatMessage.mockReset();
@@ -338,6 +352,55 @@ describe("ChatPanel · transcript cwd", () => {
     expect(componentMocks.chatTranscriptProps.at(-1)?.cwd).toBe(
       "/Users/codfrm/Code/agentre/agentre",
     );
+  });
+});
+
+// QuotaMeter 路由回归: 新建会话(sessionId=0)还没首发前, quotaDeviceKey 不能
+// 一律落到 "local" —— 远端 agent 起的新对话必须取 newSessionAgent.deviceID 作为
+// "remote:<id>", 否则前端会把本机 5h/7d 配额错画在远端 chat 上(bug repro: 用户
+// 用远端 agent 新建会话, agentred 那台没登录, 但 HUD 显示桌面本机的配额数字)。
+describe("ChatPanel · 新对话 QuotaMeter 路由", () => {
+  it("Given 远端 claudecode agent 起的新会话, When 还没首发, Then useCCUsage 用 remote:<id> 而不是 local", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            deviceID: "5",
+            deviceName: "remote-box",
+          } as never
+        }
+      />,
+    );
+    expect(ccUsageMock.calls).toContain("remote:5");
+    expect(ccUsageMock.calls).not.toContain("local");
+  });
+
+  it("Given 本地 claudecode agent 起的新会话, When 还没首发, Then useCCUsage 用 local", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            // 本地 backend: deviceID 为空串
+            deviceID: "",
+          } as never
+        }
+      />,
+    );
+    expect(ccUsageMock.calls).toContain("local");
   });
 });
 

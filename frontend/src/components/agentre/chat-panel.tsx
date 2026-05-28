@@ -386,18 +386,21 @@ function ChatPanel({
   const activeBackendType =
     session?.backendType ?? newSessionAgent?.backendType ?? "";
 
-  // Claude Code OAuth 配额 HUD:仅 claudecode backend 显示。device 维度:
-  // session.deviceID 非空时走 "remote:<id>",否则 local。配额是账号级、跨 session 共享,
-  // 后端 cc_usage_svc 已按 deviceKey 缓存,前端 hook 第一次见到 key 时拉一次缓存。
+  // Claude Code OAuth 配额 HUD:仅 claudecode backend 显示。device 维度优先 session
+  // (已存在的会话),sessionId=0 新建态回退到 newSessionAgent —— 否则远端 agent 起的
+  // 新会话还没发送时,quotaDeviceKey 会落到 "local" 把桌面本机配额错画上去。
+  const activeDeviceID = session?.deviceID ?? newSessionAgent?.deviceID ?? "";
+  const activeDeviceName =
+    session?.deviceName ?? newSessionAgent?.deviceName ?? "";
   const quotaDeviceKey =
     activeBackendType === "claudecode"
-      ? session?.deviceID
-        ? `remote:${session.deviceID}`
+      ? activeDeviceID
+        ? `remote:${activeDeviceID}`
         : "local"
       : "";
   const quotaUsage = useCCUsage(quotaDeviceKey);
-  const quotaDeviceLabel = session?.deviceID
-    ? session?.deviceName || `device #${session.deviceID}`
+  const quotaDeviceLabel = activeDeviceID
+    ? activeDeviceName || `device #${activeDeviceID}`
     : "本机";
   // caps 来自后端 runtime 的 Capabilities — UI 不再按 backendType 硬分支。
   // 已有 session 走 GetSessionCapabilities;新对话(sessionId<=0)按

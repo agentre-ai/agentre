@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ChatComposer, ChatTranscript } from "@/components/agentre/chat";
+import {
+  ChatComposer,
+  ChatTranscript,
+  formatResetIn,
+} from "@/components/agentre/chat";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
@@ -110,6 +114,47 @@ describe("ChatComposer context meter", () => {
   });
 });
 
+describe("formatResetIn", () => {
+  const now = Date.parse("2026-05-28T00:00:00Z");
+
+  it("4d21h 后重置 → '4d21h'", () => {
+    const target = new Date(now + (4 * 24 + 21) * 3_600_000).toISOString();
+    expect(formatResetIn(target, now)).toBe("4d21h");
+  });
+
+  it("整 4 天后重置 → '4d'(省略 0h)", () => {
+    const target = new Date(now + 4 * 24 * 3_600_000).toISOString();
+    expect(formatResetIn(target, now)).toBe("4d");
+  });
+
+  it("3 小时后重置 → '3h'", () => {
+    const target = new Date(now + 3 * 3_600_000).toISOString();
+    expect(formatResetIn(target, now)).toBe("3h");
+  });
+
+  it("不到 1 小时(40min) → '0h'", () => {
+    const target = new Date(now + 40 * 60_000).toISOString();
+    expect(formatResetIn(target, now)).toBe("0h");
+  });
+
+  it("已经过期 → '0h'", () => {
+    const target = new Date(now - 60_000).toISOString();
+    expect(formatResetIn(target, now)).toBe("0h");
+  });
+
+  it("空 / null / 非法值 → ''", () => {
+    expect(formatResetIn(null, now)).toBe("");
+    expect(formatResetIn(undefined, now)).toBe("");
+    expect(formatResetIn("", now)).toBe("");
+    expect(formatResetIn("not-a-date", now)).toBe("");
+  });
+
+  it("Date 实例也兼容", () => {
+    const target = new Date(now + 25 * 3_600_000);
+    expect(formatResetIn(target, now)).toBe("1d1h");
+  });
+});
+
 describe("ChatComposer quota meter", () => {
   it("不渲染 QuotaMeter 当 quotaUsage 未传", () => {
     render(<ChatComposer onSubmit={() => undefined} />);
@@ -143,7 +188,7 @@ describe("ChatComposer quota meter", () => {
     expect(screen.getByText(/7d 18%/)).toBeInTheDocument();
   });
 
-  it("stale 标记可见 当 stale=true", () => {
+  it("stale=true 时仍显示上次数字, 但不渲染可见的 stale 角标", () => {
     render(
       <ChatComposer
         onSubmit={() => undefined}
@@ -157,7 +202,9 @@ describe("ChatComposer quota meter", () => {
         }
       />,
     );
-    expect(screen.getByText(/stale/)).toBeInTheDocument();
+    expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
+    expect(screen.getByText(/7d 10%/)).toBeInTheDocument();
+    expect(screen.queryByText(/stale/)).toBeNull();
   });
 
   it("auth_expired 时渲染占位文本而不是数字", () => {
