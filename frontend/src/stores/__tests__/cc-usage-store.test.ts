@@ -1,18 +1,20 @@
 import { act } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import type { UsageState } from "../cc-usage-store";
 import { useCCUsageStore } from "../cc-usage-store";
 
-const sample = (overrides: Partial<{ fiveHourPercent: number }> = {}) => ({
-  reason: "ok",
-  data: {
-    fiveHourPercent: 42,
-    weeklyPercent: 18,
-    ...overrides,
-  },
-  stale: false,
-  fetchedAtMs: 1_000_000,
-});
+const sample = (overrides: Partial<{ fiveHourPercent: number }> = {}) =>
+  ({
+    reason: "ok",
+    data: {
+      fiveHourPercent: 42,
+      weeklyPercent: 18,
+      ...overrides,
+    },
+    stale: false,
+    fetchedAtMs: 1_000_000,
+  }) as UsageState;
 
 describe("cc-usage-store", () => {
   beforeEach(() => {
@@ -30,7 +32,9 @@ describe("cc-usage-store", () => {
 
   it("不同 deviceKey 各自独立", () => {
     act(() => {
-      useCCUsageStore.getState().upsert("local", sample({ fiveHourPercent: 1 }));
+      useCCUsageStore
+        .getState()
+        .upsert("local", sample({ fiveHourPercent: 1 }));
       useCCUsageStore
         .getState()
         .upsert("remote:7", sample({ fiveHourPercent: 99 }));
@@ -55,11 +59,15 @@ describe("cc-usage-store", () => {
 
   it("不同值时换 Map 引用", () => {
     act(() => {
-      useCCUsageStore.getState().upsert("local", sample({ fiveHourPercent: 10 }));
+      useCCUsageStore
+        .getState()
+        .upsert("local", sample({ fiveHourPercent: 10 }));
     });
     const before = useCCUsageStore.getState().byDevice;
     act(() => {
-      useCCUsageStore.getState().upsert("local", sample({ fiveHourPercent: 11 }));
+      useCCUsageStore
+        .getState()
+        .upsert("local", sample({ fiveHourPercent: 11 }));
     });
     const after = useCCUsageStore.getState().byDevice;
     expect(after).not.toBe(before);
@@ -83,7 +91,7 @@ describe("cc-usage-store", () => {
       useCCUsageStore.getState().upsert("local", {
         reason: "",
         fetchedAtMs: 0,
-      });
+      } as UsageState);
     });
     const got = useCCUsageStore.getState().byDevice.get("local");
     expect(got?.reason).toBe("");

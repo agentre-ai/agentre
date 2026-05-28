@@ -141,6 +141,57 @@ func TestClientStream_ResumeThread(t *testing.T) {
 	assert.Equal(t, "thread-old", stream.SessionID())
 }
 
+func TestSessionStream_ReusesSingleAppServerAcrossTurns(t *testing.T) {
+	// Given a persistent Codex app-server session.
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		startReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/start", startReq.Method)
+		respondRPC(h, startReq, map[string]any{"thread": map[string]any{"id": "thread-reused"}})
+
+		firstTurn := readRPCReq(t, sc)
+		assert.Equal(t, "turn/start", firstTurn.Method)
+		assert.JSONEq(t, `{"threadId":"thread-reused","input":[{"type":"text","text":"first","text_elements":[]}]}`, string(firstTurn.Params))
+		respondRPC(h, firstTurn, map[string]any{"turn": map[string]any{"id": "turn-1", "status": "inProgress"}})
+		h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-reused", "turnId": "turn-1", "turn": map[string]any{"id": "turn-1", "status": "completed"}}})
+
+		secondTurn := readRPCReq(t, sc)
+		assert.Equal(t, "turn/start", secondTurn.Method)
+		assert.JSONEq(t, `{"threadId":"thread-reused","input":[{"type":"text","text":"second","text_elements":[]}]}`, string(secondTurn.Params))
+		respondRPC(h, secondTurn, map[string]any{"turn": map[string]any{"id": "turn-2", "status": "inProgress"}})
+		h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-reused", "turnId": "turn-2", "turn": map[string]any{"id": "turn-2", "status": "completed"}}})
+	}
+
+	client := New(WithAppServerRunnerForTesting(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	sess, err := client.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// When two turns are streamed through the same session.
+	first, err := sess.Stream(ctx, "first")
+	require.NoError(t, err)
+	for first.Next() {
+	}
+	require.NoError(t, first.Err())
+
+	second, err := sess.Stream(ctx, "second")
+	require.NoError(t, err)
+	for second.Next() {
+	}
+	require.NoError(t, second.Err())
+
+	// Then only one app-server process is started and the thread id is reused.
+	require.Len(t, runner.opts, 1)
+	assert.Equal(t, "thread-reused", sess.ID())
+	assert.Equal(t, "thread-reused", second.SessionID())
+}
+
 func TestClientCompact_SendsThreadCompactStartRPC(t *testing.T) {
 	// Given an existing Codex app-server thread.
 	runner := &fakeAppServerRunner{t: t}

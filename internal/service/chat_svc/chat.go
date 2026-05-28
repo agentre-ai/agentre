@@ -38,7 +38,7 @@ import (
 	// selectRunner 解析到。claudecodert 别名避免与 pkg/claudecode CLI 库名字撞车。
 	_ "agentre/internal/pkg/agentruntime/runtimes/builtin"
 	claudecodert "agentre/internal/pkg/agentruntime/runtimes/claudecode"
-	_ "agentre/internal/pkg/agentruntime/runtimes/codex"
+	codexrt "agentre/internal/pkg/agentruntime/runtimes/codex"
 	"agentre/internal/pkg/agentruntime/runtimes/remote"
 	"agentre/internal/pkg/code"
 	"agentre/internal/pkg/httpgateway"
@@ -1877,7 +1877,11 @@ func (s *chatSvc) runTurn(
 	)
 	for ev := range events {
 		if streamStopErr != nil {
-			continue
+			if eventShowsProgressAfterError(ev) {
+				streamStopErr = nil
+			} else {
+				continue
+			}
 		}
 		// SteerConsumed + ErrorEvent 不走 dispatcher:
 		//   - SteerConsumed:turn-segmentation 紧耦合 assistantMsg/segmentStart/acc/turnCtx
@@ -2087,6 +2091,29 @@ func (s *chatSvc) runTurn(
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
 	}
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
+}
+
+func eventShowsProgressAfterError(ev agentruntime.Event) bool {
+	switch ev.(type) {
+	case agentruntime.TextDelta,
+		agentruntime.ThinkingDelta,
+		agentruntime.ToolCall,
+		agentruntime.ToolResult,
+		agentruntime.UserAskRequest,
+		agentruntime.UserAskResolved,
+		agentruntime.ToolPermissionRequest,
+		agentruntime.ToolPermissionResolved,
+		agentruntime.SubagentStarted,
+		agentruntime.SubagentProgress,
+		agentruntime.SubagentDone,
+		agentruntime.Retry,
+		agentruntime.PlanUpdated,
+		agentruntime.CompactBoundary,
+		agentruntime.SteerConsumed:
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldCheckpointAssistantAfterEvent(ev agentruntime.Event) bool {
@@ -2486,9 +2513,9 @@ func (s *chatSvc) Delete(ctx context.Context, req *DeleteRequest) (*DeleteRespon
 	if err := chat_repo.Session().SoftDelete(ctx, req.SessionID); err != nil {
 		return nil, i18n.NewError(ctx, code.OperationFailed)
 	}
-	// DB 已删，释放该 session 的常驻 claude 子进程（best-effort，cache miss 时 no-op）。
-	// codex 还没常驻化，无需调；将来 codex 也有常驻 session 时这里要补一行。
+	// DB 已删，释放该 session 的常驻 CLI 子进程（best-effort，cache miss 时 no-op）。
 	claudecodert.Default().CloseSession(ctx, req.SessionID)
+	codexrt.Default().CloseSession(ctx, req.SessionID)
 	return &DeleteResponse{}, nil
 }
 

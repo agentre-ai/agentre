@@ -1026,7 +1026,13 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
           <Plus className="size-3" aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-[220px]">
+      <DropdownMenuContent
+        align="end"
+        className="min-w-[220px]"
+        // 阻止 Radix 默认把焦点还给 trigger —— 选完 agent 后新 tab 的输入框
+        // 已经被 ChatPanelHost 接管，让 Radix 抢回 trigger 会直接抹掉那次 focus。
+        onCloseAutoFocus={(e) => e.preventDefault()}
+      >
         <div className="px-2 py-1.5 font-mono text-2xs uppercase tracking-wider text-subtle-foreground">
           选一个 Agent
         </div>

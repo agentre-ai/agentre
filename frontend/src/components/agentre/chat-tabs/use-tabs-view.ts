@@ -82,7 +82,7 @@ export function useTabsView(): TabView[] {
           : agentStatus === "error"
             ? "error"
             : "idle";
-    const pillText = reasonToPillText(reason);
+    const pillText = status === "error" ? "出错" : reasonToPillText(reason);
     const meta = sid ? (metas.get(sid) ?? null) : null;
     const avatarColor = tokenToCssColor(meta?.agentColor) ?? "#94a3b8";
     const avatarLetter = firstLetter(meta?.agentName);

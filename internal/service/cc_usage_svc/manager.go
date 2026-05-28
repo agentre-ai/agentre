@@ -48,21 +48,21 @@ func NewManager(opts ManagerOpts) *Manager {
 	if now == nil {
 		now = time.Now
 	}
-	min := opts.RateLimitBackoffMin
-	if min <= 0 {
-		min = 60 * time.Second
+	backoffMin := opts.RateLimitBackoffMin
+	if backoffMin <= 0 {
+		backoffMin = 60 * time.Second
 	}
-	max := opts.RateLimitBackoffMax
-	if max <= 0 {
-		max = 5 * time.Minute
+	backoffMax := opts.RateLimitBackoffMax
+	if backoffMax <= 0 {
+		backoffMax = 5 * time.Minute
 	}
 	return &Manager{
 		states:     map[DeviceKey]UsageState{},
 		backoffs:   map[DeviceKey]*backoffState{},
 		tickers:    map[DeviceKey]*tickerEntry{},
 		now:        now,
-		backoffMin: min,
-		backoffMax: max,
+		backoffMin: backoffMin,
+		backoffMax: backoffMax,
 	}
 }
 

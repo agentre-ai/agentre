@@ -8,9 +8,52 @@ import type { ChatTab } from "@/stores/chat-tabs-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useChatAgentsStore } from "@/stores/chat-agents-store";
 
+type PanelOrderState = {
+  tabs: ChatTab[];
+  order: string[];
+};
+
+function reconcilePanelOrder(order: string[], tabs: ChatTab[]) {
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  const next = order.filter((id) => liveIds.has(id));
+  const knownIds = new Set(next);
+
+  for (const tab of tabs) {
+    if (knownIds.has(tab.id)) continue;
+    next.push(tab.id);
+    knownIds.add(tab.id);
+  }
+
+  return next;
+}
+
+function tabsByPanelOrder(tabs: ChatTab[], order: string[]) {
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  return order
+    .map((id) => byId.get(id))
+    .filter((tab): tab is ChatTab => Boolean(tab));
+}
+
 export function ChatPanelHost() {
   const tabs = useChatTabsStore((s) => s.tabs);
   const activeTabId = useChatTabsStore((s) => s.activeTabId);
+  const [panelOrderState, setPanelOrderState] = React.useState<PanelOrderState>(
+    () => ({
+      tabs,
+      order: reconcilePanelOrder([], tabs),
+    }),
+  );
+
+  let panelOrder = panelOrderState.order;
+  if (panelOrderState.tabs !== tabs) {
+    panelOrder = reconcilePanelOrder(panelOrderState.order, tabs);
+    setPanelOrderState({ tabs, order: panelOrder });
+  }
+
+  const panelTabs = React.useMemo(
+    () => tabsByPanelOrder(tabs, panelOrder),
+    [panelOrder, tabs],
+  );
 
   if (tabs.length === 0) {
     return (
@@ -44,7 +87,7 @@ export function ChatPanelHost() {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      {tabs.map((t) => (
+      {panelTabs.map((t) => (
         <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
       ))}
     </div>

@@ -18,11 +18,13 @@ import (
 	"agentre/pkg/codex"
 )
 
-var defaultRuntime = New()
+var defaultRuntime = NewWithPool(agentruntime.DefaultCLISessionPool())
 
 func init() {
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeCodex, defaultRuntime)
 }
+
+func Default() *Runtime { return defaultRuntime }
 
 // codexActive 一个 chat session 当前的 codex stream 状态。
 //   - stream:turn/steer 入口(*codex.Stream 实现)
@@ -43,6 +45,8 @@ type codexActive struct {
 	pending     []agentruntime.ConsumedSteer
 	askWaiters  map[string]codexAskWaiter
 	permWaiters map[string]struct{}
+	pool        *agentruntime.CLISessionPool
+	poolKey     string
 	outMu       sync.Mutex
 	out         chan<- agentruntime.Event
 }
@@ -55,10 +59,18 @@ type codexAskWaiter struct {
 type Runtime struct {
 	mu     sync.Mutex
 	active map[int64]*codexActive
+	pool   *agentruntime.CLISessionPool
 }
 
 func New() *Runtime {
-	return &Runtime{active: map[int64]*codexActive{}}
+	return NewWithPool(agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap))
+}
+
+func NewWithPool(pool *agentruntime.CLISessionPool) *Runtime {
+	if pool == nil {
+		pool = agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap)
+	}
+	return &Runtime{active: map[int64]*codexActive{}, pool: pool}
 }
 
 // Capabilities 返回 codex runtime 的能力矩阵。
@@ -111,6 +123,8 @@ func (r *Runtime) unregister(sessionID int64) {
 	r.mu.Unlock()
 }
 
+func sessionKey(id int64) string { return fmt.Sprintf("codex:%d", id) }
+
 // Run 启动一轮 codex CLI 发送。语义同顶层 codex.go.Run,emit 类型从
 // RuntimeEvent 改为 sealed agentruntime.Event。
 func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
@@ -135,7 +149,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		return nil, nil, err
 	}
 
-	sess, err := cxSessionFactory(req, env, cwd)
+	sess, err := r.acquireSession(req, env, cwd)
 	if err != nil {
 		logger.Ctx(ctx).Error("codex runtime: session factory failed",
 			zap.Int64("sessionID", req.SessionID),
@@ -170,7 +184,13 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		zap.String("providerSessionID", sess.ID()),
 		zap.String("collaborationMode", req.CollaborationMode))
 
-	active := &codexActive{stream: sess.ActiveStream(), interrupter: sess.ActiveInterruptor()}
+	key := sessionKey(req.SessionID)
+	active := &codexActive{
+		stream:      sess.ActiveStream(),
+		interrupter: sess.ActiveInterruptor(),
+		pool:        r.pool,
+		poolKey:     key,
+	}
 	if st, ok := stream.(cxSteerStream); ok {
 		active.stream = st
 	}
@@ -205,8 +225,42 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		if sid := stream.SessionID(); sid != "" {
 			result.ProviderSessionID = sid
 		}
+		if req.SessionID > 0 {
+			r.pool.MarkIdle(key)
+		}
 	}()
 	return out, result, nil
+}
+
+func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]string, cwd string) (cxSessionHandle, error) {
+	if req.SessionID > 0 {
+		key := sessionKey(req.SessionID)
+		if v, ok := r.pool.Get(key); ok {
+			r.pool.MarkActive(key)
+			return v.(cxSessionHandle), nil
+		}
+	}
+	sess, err := cxSessionFactory(req, env, cwd)
+	if err != nil {
+		return nil, err
+	}
+	if req.SessionID > 0 {
+		key := sessionKey(req.SessionID)
+		r.pool.Put(key, sess)
+		r.pool.MarkActive(key)
+	}
+	return sess, nil
+}
+
+func (r *Runtime) CloseSession(_ context.Context, sessionID int64) {
+	if sessionID <= 0 {
+		return
+	}
+	r.pool.Remove(sessionKey(sessionID))
+}
+
+func (r *Runtime) CloseAllSessions(_ context.Context) {
+	r.pool.RemoveAll()
 }
 
 // Abort 软中断当前 turn。语义同顶层 codex.go.Abort。
@@ -318,6 +372,9 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *codexActive, collaborationMode string) {
 	for stream.Next() {
 		ev := stream.Event()
+		if result.StopErr != nil && codexEventShowsProgressAfterError(ev.Kind) {
+			result.StopErr = nil
+		}
 		if ev.Kind == codex.EventUserMessage {
 			// codex 把 user message echo 回来 —— 对照 pending steer FIFO,
 			// 命中就 emit SteerConsumed,让 chat_svc 把对应 queued 状态推进到 consumed。
@@ -353,6 +410,24 @@ func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentru
 	}
 }
 
+func codexEventShowsProgressAfterError(kind codex.EventKind) bool {
+	switch kind {
+	case codex.EventTextDelta,
+		codex.EventThinkingDelta,
+		codex.EventPreToolUse,
+		codex.EventPostToolUse,
+		codex.EventUserMessage,
+		codex.EventRequestUserInput,
+		codex.EventApprovalRequest,
+		codex.EventPlanUpdated,
+		codex.EventRetry,
+		codex.EventCompactBoundary:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *codexActive) registerPermWaiter(requestID string) {
 	if a == nil || strings.TrimSpace(requestID) == "" {
 		return
@@ -363,6 +438,9 @@ func (a *codexActive) registerPermWaiter(requestID string) {
 		a.permWaiters = map[string]struct{}{}
 	}
 	a.permWaiters[requestID] = struct{}{}
+	if a.pool != nil && a.poolKey != "" {
+		a.pool.MarkWaiting(a.poolKey)
+	}
 }
 
 func (a *codexActive) hasPermWaiter(requestID string) bool {
@@ -381,7 +459,11 @@ func (a *codexActive) removePermWaiter(requestID string) {
 	}
 	a.mu.Lock()
 	delete(a.permWaiters, requestID)
+	waiting := len(a.permWaiters) > 0 || len(a.askWaiters) > 0
 	a.mu.Unlock()
+	if !waiting && a.pool != nil && a.poolKey != "" {
+		a.pool.MarkActive(a.poolKey)
+	}
 }
 
 func (a *codexActive) addPendingSteer(queuedID, text string) {
@@ -439,6 +521,9 @@ func (a *codexActive) registerAskWaiter(requestID string, questions []agentrunti
 		a.askWaiters = map[string]codexAskWaiter{}
 	}
 	a.askWaiters[requestID] = codexAskWaiter{questions: append([]agentruntime.AskQuestion(nil), questions...)}
+	if a.pool != nil && a.poolKey != "" {
+		a.pool.MarkWaiting(a.poolKey)
+	}
 }
 
 func (a *codexActive) askWaiter(requestID string) *codexAskWaiter {
@@ -460,7 +545,11 @@ func (a *codexActive) removeAskWaiter(requestID string) {
 	}
 	a.mu.Lock()
 	delete(a.askWaiters, requestID)
+	waiting := len(a.askWaiters) > 0 || len(a.permWaiters) > 0
 	a.mu.Unlock()
+	if !waiting && a.pool != nil && a.poolKey != "" {
+		a.pool.MarkActive(a.poolKey)
+	}
 }
 
 func (a *codexActive) setOut(out chan<- agentruntime.Event) {

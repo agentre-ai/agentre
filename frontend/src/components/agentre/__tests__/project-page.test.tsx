@@ -547,6 +547,38 @@ describe("ProjectsPage project new-session menu", () => {
     });
   });
 
+  it("Given a user picks an agent from the + menu, Then Radix does not steal focus back to the + trigger (so the new tab's editor can claim it)", async () => {
+    // 回归: 项目页新建会话时,输入框「获取到了焦点又丢失了」——
+    // Radix DropdownMenu 默认的 onCloseAutoFocus 在菜单关闭时把焦点还给
+    // trigger,抢走 ChatPanelHost setTimeout(0) 给编辑器的 focus。
+    // 修复后 onCloseAutoFocus 被 preventDefault,trigger 不再夺焦。
+    const user = setupUser();
+    appMocks.ProjectGet.mockResolvedValue({
+      project: { id: 1, name: "Agentre" },
+      directMembers: [
+        {
+          agentID: 5,
+          agentName: "Builder",
+          avatarColor: "agent-2",
+          inherited: false,
+        },
+      ],
+      inheritedMembers: [],
+    });
+
+    renderProjectsPage();
+
+    const trigger = await screen.findByRole("button", {
+      name: "Agentre 新建会话",
+    });
+    await user.click(trigger);
+    await user.click(await screen.findByText("Builder"));
+
+    await waitFor(() => {
+      expect(document.activeElement).not.toBe(trigger);
+    });
+  });
+
   it("refetches members on reopen instead of reusing a stale empty menu", async () => {
     const user = setupUser();
     appMocks.ProjectGet.mockResolvedValueOnce({

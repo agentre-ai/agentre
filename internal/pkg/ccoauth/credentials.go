@@ -41,6 +41,7 @@ type fileShape struct {
 // 文件不存在 / 文件存在但没 accessToken → ErrNoCredentials。
 // JSON 损坏 / 文件读失败 → 原生 error。
 func ReadFileCredentials(path string) (*Credentials, error) {
+	//nolint:gosec // G304: path is a CLAUDE_CONFIG_DIR-derived credentials.json, supplied by trusted caller (cc_usage_svc / agentred)
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

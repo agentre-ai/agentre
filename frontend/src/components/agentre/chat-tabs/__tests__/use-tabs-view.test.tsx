@@ -169,4 +169,24 @@ describe("useTabsView 数据派生", () => {
     expect(result.current[0].status).toBe("waiting");
     expect(result.current[0].pillText).toBe("审批");
   });
+
+  it("error 状态即使已读也显示出错 pill", () => {
+    useChatTabsStore.getState().openSessionInNewTab(707);
+    useSessionMetaStore.getState().setMeta(707, {
+      agentId: 1,
+      agentName: "A",
+      agentColor: "agent-1",
+      projectId: 0,
+      title: "t",
+      lastMessageAt: 100,
+      lastReadAt: 100,
+    });
+    useSessionStatusStore.getState().upsert(707, {
+      agentStatus: "error",
+      needsAttention: false,
+    });
+    const { result } = renderHook(() => useTabsView());
+    expect(result.current[0].status).toBe("error");
+    expect(result.current[0].pillText).toBe("出错");
+  });
 });

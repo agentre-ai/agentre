@@ -13,7 +13,9 @@ func (s *Stream) drain(ctx context.Context) {
 	defer close(s.events)
 	defer s.clearActiveTurn()
 	defer s.closeOnce.Do(func() {
-		_ = s.app.terminate(context.Background(), s.killGrace)
+		if s.closeAppOnDrain {
+			_ = s.app.terminate(context.Background(), s.killGrace)
+		}
 	})
 
 	preSeen := map[string]struct{}{}

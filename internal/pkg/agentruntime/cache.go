@@ -27,6 +27,167 @@ type sessionEntry struct {
 	val ctxCloser
 }
 
+type CLISessionState string
+
+const (
+	CLISessionActive  CLISessionState = "active"
+	CLISessionWaiting CLISessionState = "waiting"
+	CLISessionIdle    CLISessionState = "idle"
+)
+
+const DefaultCLISessionIdleCap = 8
+
+var defaultCLISessionPool = NewCLISessionPool(DefaultCLISessionIdleCap)
+
+// DefaultCLISessionPool returns the process-wide CLI session pool shared by
+// claudecode and codex runtimes. The desktop app has one instance; each
+// agentred daemon process has its own instance.
+func DefaultCLISessionPool() *CLISessionPool { return defaultCLISessionPool }
+
+// CLISessionPool keeps persistent CLI subprocess sessions across turns.
+// Only idle sessions count toward the cap. Active/waiting sessions are never
+// evicted by cap pruning, so busy turns cannot be killed by unrelated sessions.
+type CLISessionPool struct {
+	mu      sync.Mutex
+	idleCap int
+	ll      *list.List
+	index   map[string]*list.Element
+}
+
+type cliSessionEntry struct {
+	key   string
+	val   ctxCloser
+	state CLISessionState
+}
+
+func NewCLISessionPool(idleCap int) *CLISessionPool {
+	if idleCap <= 0 {
+		idleCap = 1
+	}
+	return &CLISessionPool{
+		idleCap: idleCap,
+		ll:      list.New(),
+		index:   map[string]*list.Element{},
+	}
+}
+
+func (p *CLISessionPool) Get(key string) (ctxCloser, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	el, ok := p.index[key]
+	if !ok {
+		return nil, false
+	}
+	p.ll.MoveToFront(el)
+	return el.Value.(*cliSessionEntry).val, true
+}
+
+func (p *CLISessionPool) Put(key string, v ctxCloser) {
+	p.mu.Lock()
+	if el, ok := p.index[key]; ok {
+		old := el.Value.(*cliSessionEntry).val
+		el.Value = &cliSessionEntry{key: key, val: v, state: CLISessionActive}
+		p.ll.MoveToFront(el)
+		p.mu.Unlock()
+		go closeWithTimeout(old)
+		return
+	}
+	el := p.ll.PushFront(&cliSessionEntry{key: key, val: v, state: CLISessionActive})
+	p.index[key] = el
+	p.mu.Unlock()
+}
+
+func (p *CLISessionPool) MarkActive(key string)  { p.mark(key, CLISessionActive, false) }
+func (p *CLISessionPool) MarkWaiting(key string) { p.mark(key, CLISessionWaiting, false) }
+func (p *CLISessionPool) MarkIdle(key string)    { p.mark(key, CLISessionIdle, true) }
+
+func (p *CLISessionPool) mark(key string, state CLISessionState, prune bool) {
+	var closing []ctxCloser
+	p.mu.Lock()
+	if el, ok := p.index[key]; ok {
+		el.Value.(*cliSessionEntry).state = state
+		p.ll.MoveToFront(el)
+	}
+	if prune {
+		closing = p.pruneLocked()
+	}
+	p.mu.Unlock()
+	for _, old := range closing {
+		go closeWithTimeout(old)
+	}
+}
+
+func (p *CLISessionPool) pruneLocked() []ctxCloser {
+	var closing []ctxCloser
+	for p.idleLenLocked() > p.idleCap {
+		var victim *list.Element
+		for el := p.ll.Back(); el != nil; el = el.Prev() {
+			if el.Value.(*cliSessionEntry).state == CLISessionIdle {
+				victim = el
+				break
+			}
+		}
+		if victim == nil {
+			break
+		}
+		ent := victim.Value.(*cliSessionEntry)
+		p.ll.Remove(victim)
+		delete(p.index, ent.key)
+		closing = append(closing, ent.val)
+	}
+	return closing
+}
+
+func (p *CLISessionPool) Remove(key string) {
+	p.mu.Lock()
+	el, ok := p.index[key]
+	if !ok {
+		p.mu.Unlock()
+		return
+	}
+	ent := el.Value.(*cliSessionEntry)
+	p.ll.Remove(el)
+	delete(p.index, key)
+	p.mu.Unlock()
+	go closeWithTimeout(ent.val)
+}
+
+func (p *CLISessionPool) RemoveAll() {
+	p.mu.Lock()
+	olds := make([]ctxCloser, 0, p.ll.Len())
+	for el := p.ll.Front(); el != nil; el = el.Next() {
+		olds = append(olds, el.Value.(*cliSessionEntry).val)
+	}
+	p.ll.Init()
+	p.index = map[string]*list.Element{}
+	p.mu.Unlock()
+	for _, v := range olds {
+		go closeWithTimeout(v)
+	}
+}
+
+func (p *CLISessionPool) Len() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ll.Len()
+}
+
+func (p *CLISessionPool) IdleLen() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.idleLenLocked()
+}
+
+func (p *CLISessionPool) idleLenLocked() int {
+	n := 0
+	for el := p.ll.Front(); el != nil; el = el.Next() {
+		if el.Value.(*cliSessionEntry).state == CLISessionIdle {
+			n++
+		}
+	}
+	return n
+}
+
 // NewSessionCache 构造 LRU 缓存；capacity<=0 自动按 1 处理。
 func NewSessionCache(capacity int) *SessionCache {
 	if capacity <= 0 {

@@ -14,7 +14,7 @@ import (
 
 	"agentre/internal/bootstrap"
 	"agentre/internal/buildinfo"
-	"agentre/internal/pkg/agentruntime/runtimes/claudecode"
+	"agentre/internal/pkg/agentruntime"
 	"agentre/internal/pkg/code"
 	"agentre/internal/service/chat_svc"
 	"agentre/internal/service/data_svc"
@@ -108,8 +108,8 @@ func (a *App) Shutdown(ctx context.Context) {
 			}
 		}
 	}
-	// 收尾常驻 claudecode 子进程；cache.RemoveAll 异步 close，不阻塞 wails 退出。
-	claudecode.Default().CloseAllSessions(ctx)
+	// 收尾常驻 CLI 子进程；pool.RemoveAll 异步 close，不阻塞 wails 退出。
+	agentruntime.DefaultCLISessionPool().RemoveAll()
 	logger.Ctx(ctx).Info("app shutdown")
 }
 

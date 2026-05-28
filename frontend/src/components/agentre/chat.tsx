@@ -432,7 +432,8 @@ function QuotaMeter({
         ? "text-status-waiting"
         : "text-muted-foreground";
 
-  const offline = data.reason === "auth_expired" || data.reason === "device_offline";
+  const offline =
+    data.reason === "auth_expired" || data.reason === "device_offline";
 
   return (
     <div
@@ -447,9 +448,7 @@ function QuotaMeter({
       <span>5h {showNumbers && fiveH !== null ? `${fiveH}%` : "—%"}</span>
       <span className="text-subtle-foreground">·</span>
       <span>7d {showNumbers && sevenD !== null ? `${sevenD}%` : "—%"}</span>
-      {data.stale ? (
-        <span className="text-status-waiting">·stale</span>
-      ) : null}
+      {data.stale ? <span className="text-status-waiting">·stale</span> : null}
     </div>
   );
 }
@@ -474,7 +473,9 @@ function describeQuotaTitle(
       lines.push(`Claude Code 配额 · ${device}(网络错误, 显示上次值)`);
       break;
     case "auth_expired":
-      lines.push(`Claude Code OAuth 已过期 · 请在 ${device} 上运行 'claude /login'`);
+      lines.push(
+        `Claude Code OAuth 已过期 · 请在 ${device} 上运行 'claude /login'`,
+      );
       break;
     case "device_offline":
       lines.push(`${device} 离线`);

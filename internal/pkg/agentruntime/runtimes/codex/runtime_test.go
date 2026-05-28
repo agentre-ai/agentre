@@ -2,7 +2,9 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/cago-frame/agents/provider"
 	. "github.com/smartystreets/goconvey/convey"
@@ -123,6 +125,84 @@ func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 	})
 }
 
+func TestRun_ReusesCachedSessionAcrossTurns(t *testing.T) {
+	Convey("Given a Codex chat session is idle after one turn, when Run is called again, then the cached CLI session is reused", t, func() {
+		pool := agentruntime.NewCLISessionPool(8)
+		cached := &countingRuntimeSession{
+			sid: "thread-cached",
+			streams: []cxStream{
+				&emptyRuntimeStream{},
+				&emptyRuntimeStream{},
+			},
+		}
+		factoryCalls := 0
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			factoryCalls++
+			return cached, nil
+		})
+		defer restore()
+
+		r := NewWithPool(pool)
+		req := agentruntime.RunRequest{
+			Backend: &agent_backend_entity.AgentBackend{
+				Type:    string(agent_backend_entity.TypeCodex),
+				EnvJSON: "{}",
+			},
+			SessionID: 77,
+			Cwd:       t.TempDir(),
+		}
+
+		events, _, err := r.Run(context.Background(), req)
+		So(err, ShouldBeNil)
+		for range events {
+		}
+
+		req.UserText = "again"
+		events, _, err = r.Run(context.Background(), req)
+		So(err, ShouldBeNil)
+		for range events {
+		}
+
+		So(factoryCalls, ShouldEqual, 1)
+		So(cached.streamCalls, ShouldEqual, 2)
+		So(cached.closed, ShouldBeFalse)
+		So(pool.Len(), ShouldEqual, 1)
+		So(pool.IdleLen(), ShouldEqual, 1)
+	})
+}
+
+func TestCloseSession_RemovesCachedCodexSession(t *testing.T) {
+	Convey("Given a cached idle Codex CLI session, when CloseSession is called, then the session is closed and evicted", t, func() {
+		pool := agentruntime.NewCLISessionPool(8)
+		cached := &countingRuntimeSession{
+			sid:      "thread-close",
+			streams:  []cxStream{&emptyRuntimeStream{}},
+			closedCh: make(chan struct{}),
+		}
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			return cached, nil
+		})
+		defer restore()
+
+		r := NewWithPool(pool)
+		events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex), EnvJSON: "{}"},
+			SessionID: 88,
+			Cwd:       t.TempDir(),
+		})
+		So(err, ShouldBeNil)
+		for range events {
+		}
+		So(pool.Len(), ShouldEqual, 1)
+
+		r.CloseSession(context.Background(), 88)
+
+		cached.waitClosed(t)
+		So(cached.closed, ShouldBeTrue)
+		So(pool.Len(), ShouldEqual, 0)
+	})
+}
+
 func TestRun_EmitsContextWindowUpdateFromTokenUsage(t *testing.T) {
 	Convey("codex runtime 在 token usage 帧上报 modelContextWindow 时实时 emit ContextWindowUpdated", t, func() {
 		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
@@ -178,6 +258,73 @@ func TestRun_EmitsContextWindowUpdateFromTokenUsage(t *testing.T) {
 	})
 }
 
+func TestRun_ErrorFollowedByProgressClearsStopErr(t *testing.T) {
+	Convey("codex runtime: EventError 后还有进展事件和完成时, StopErr 不应污染成功 turn", t, func() {
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			return &fakeRuntimeSession{stream: &eventRuntimeStream{
+				events: []pkgcodex.Event{
+					{Kind: pkgcodex.EventError, Err: errors.New("temporary upstream hiccup")},
+					{Kind: pkgcodex.EventTextDelta, Text: "recovered"},
+					{Kind: pkgcodex.EventDone},
+				},
+			}, sid: "thread-recovered"}, nil
+		})
+		defer restore()
+
+		events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+			Backend: &agent_backend_entity.AgentBackend{
+				Type:    string(agent_backend_entity.TypeCodex),
+				EnvJSON: "{}",
+			},
+			SessionID: 1,
+			Cwd:       t.TempDir(),
+			UserText:  "hello",
+		})
+		So(err, ShouldBeNil)
+
+		var text string
+		for ev := range events {
+			if td, ok := ev.(agentruntime.TextDelta); ok {
+				text += td.Text
+			}
+		}
+
+		So(text, ShouldEqual, "recovered")
+		So(result.StopErr, ShouldBeNil)
+	})
+}
+
+func TestRun_ErrorFollowedOnlyByMetadataKeepsStopErr(t *testing.T) {
+	Convey("codex runtime: EventError 后只有 metadata 和完成时, StopErr 仍应保留", t, func() {
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			return &fakeRuntimeSession{stream: &eventRuntimeStream{
+				events: []pkgcodex.Event{
+					{Kind: pkgcodex.EventError, Err: errors.New("temporary upstream hiccup")},
+					{Kind: pkgcodex.EventUsage},
+					{Kind: pkgcodex.EventDone},
+				},
+			}, sid: "thread-failed"}, nil
+		})
+		defer restore()
+
+		events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+			Backend: &agent_backend_entity.AgentBackend{
+				Type:    string(agent_backend_entity.TypeCodex),
+				EnvJSON: "{}",
+			},
+			SessionID: 1,
+			Cwd:       t.TempDir(),
+			UserText:  "hello",
+		})
+		So(err, ShouldBeNil)
+		for range events {
+		}
+
+		So(result.StopErr, ShouldNotBeNil)
+		So(result.StopErr.Error(), ShouldContainSubstring, "temporary upstream hiccup")
+	})
+}
+
 type fakeRuntimeSession struct {
 	stream cxStream
 	sid    string
@@ -192,6 +339,45 @@ func (s *fakeRuntimeSession) Compact(context.Context) (cxStream, error)        {
 func (s *fakeRuntimeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }
 func (s *fakeRuntimeSession) ActiveStream() cxSteerStream                      { return nil }
 func (s *fakeRuntimeSession) ActiveInterruptor() cxInterruptable               { return nil }
+
+type countingRuntimeSession struct {
+	streams     []cxStream
+	sid         string
+	streamCalls int
+	closed      bool
+	closedCh    chan struct{}
+}
+
+func (s *countingRuntimeSession) Close(context.Context) error {
+	if !s.closed {
+		s.closed = true
+		if s.closedCh != nil {
+			close(s.closedCh)
+		}
+	}
+	return nil
+}
+func (s *countingRuntimeSession) ID() string { return s.sid }
+func (s *countingRuntimeSession) Stream(context.Context, string, string) (cxStream, error) {
+	stream := s.streams[s.streamCalls]
+	s.streamCalls++
+	return stream, nil
+}
+func (s *countingRuntimeSession) Compact(context.Context) (cxStream, error) {
+	return s.Stream(context.Background(), "", "")
+}
+func (s *countingRuntimeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }
+func (s *countingRuntimeSession) ActiveStream() cxSteerStream                      { return nil }
+func (s *countingRuntimeSession) ActiveInterruptor() cxInterruptable               { return nil }
+
+func (s *countingRuntimeSession) waitClosed(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.closedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cached codex session was not closed")
+	}
+}
 
 type emptyRuntimeStream struct{}
 

@@ -175,4 +175,23 @@ describe("ChatPanelHost", () => {
     chatReload.mockRestore();
     projectReload.mockRestore();
   });
+
+  it("Given the active tab is scrolled, When tabs are reordered, Then the mounted panel keeps its DOM slot", () => {
+    useChatTabsStore.getState().openSessionInNewTab(1);
+    useChatTabsStore.getState().openSessionInNewTab(2);
+    useChatTabsStore.getState().openSessionInNewTab(3);
+    render(<ChatPanelHost />);
+
+    const activePanel = screen.getByTestId("chat-panel-3").parentElement!;
+    const host = activePanel.parentElement!;
+    const originalIndex = Array.from(host.children).indexOf(activePanel);
+    activePanel.scrollTop = 123;
+
+    act(() => {
+      useChatTabsStore.getState().moveTab(2, 0);
+    });
+
+    expect(Array.from(host.children).indexOf(activePanel)).toBe(originalIndex);
+    expect(activePanel.scrollTop).toBe(123);
+  });
 });

@@ -167,7 +167,10 @@ describe("RichLink", () => {
           rel
         </RichLink>,
       );
-      fireEvent.click(screen.getByRole("link", { name: /rel/ }));
+      const link = screen.getByRole("link", { name: /rel/ });
+      link.addEventListener("click", (event) => event.preventDefault());
+
+      fireEvent.click(link);
       expect(browserOpenURLMock).not.toHaveBeenCalled();
       expect(openPathMock).not.toHaveBeenCalled();
     });

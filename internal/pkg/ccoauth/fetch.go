@@ -2,7 +2,6 @@ package ccoauth
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -84,13 +83,10 @@ func readCredentialsChain(cfg FetcherConfig) (*Credentials, error) {
 			accounts = append(accounts, cfg.Username)
 		}
 		accounts = append(accounts, "") // 同时试无 account 的 entry,与 OMC 行为对齐
-		creds, err := ReadKeychainCredentials(cfg.Keychain, service, accounts)
-		if err == nil {
+		// keychain 命中 → 直接返回。任何错误(未找到 / JSON 坏 / OS 调用失败)
+		// 都降级到文件 fallback,避免一次性故障导致整个 HUD 挂掉。
+		if creds, err := ReadKeychainCredentials(cfg.Keychain, service, accounts); err == nil {
 			return creds, nil
-		}
-		if !errors.Is(err, ErrNoCredentials) {
-			// 非"未找到"的错误(JSON 坏 / OS 调用失败)也降级到文件 fallback,
-			// 避免一次性故障导致整个 HUD 挂掉。
 		}
 	}
 	if cfg.ClaudeConfigDir == "" {
