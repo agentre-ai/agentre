@@ -22,6 +22,7 @@ import (
 	"agentre/internal/service/remote_device_svc"
 	watcher "agentre/internal/service/remote_device_watcher_svc"
 	"agentre/internal/service/server_svc"
+	"agentre/internal/service/terminal_svc"
 
 	"github.com/cago-frame/cago/configs"
 	"github.com/cago-frame/cago/pkg/i18n"
@@ -35,6 +36,7 @@ type App struct {
 	ctx              context.Context
 	hookPollerCancel context.CancelFunc
 	ccUsageStop      func()
+	terminalSvc      *terminal_svc.Service
 
 	lastImportPath   string
 	lastImportPathMu sync.Mutex
@@ -79,6 +81,8 @@ func (a *App) Startup(ctx context.Context) {
 	// 推送给前端 QuotaMeter。Shutdown 时停所有 ticker。
 	a.ccUsageStop = a.startCCUsage()
 
+	a.terminalSvc = newTerminalService(a.ctx)
+
 	//nolint:gosec // G118: background poll deliberately outlives request scope
 	go a.startAutoUpdateCheck()
 
@@ -110,6 +114,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	}
 	// 收尾常驻 CLI 子进程；pool.RemoveAll 异步 close，不阻塞 wails 退出。
 	agentruntime.DefaultCLISessionPool().RemoveAll()
+	if a.terminalSvc != nil {
+		a.terminalSvc.Shutdown()
+	}
 	logger.Ctx(ctx).Info("app shutdown")
 }
 
