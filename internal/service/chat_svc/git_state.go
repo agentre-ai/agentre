@@ -64,7 +64,9 @@ func runGitState(ctx context.Context, cwd string) ChatSessionGitState {
 }
 
 func gitOutput(ctx context.Context, cwd string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// args 全部来自本文件内的硬编码 git 子命令,无 user input;binary "git" 固定。
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // G204: controlled args
+
 	cmd.Dir = cwd
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -120,7 +122,8 @@ func (s *chatSvc) getSessionGitStateForSession(ctx context.Context, sess *chat_e
 	}
 	cwd, err := resolveSessionCwd(ctx, sess, be)
 	if err != nil || cwd == "" {
-		return notARepoResponse(), nil
+		// by-design: cwd 解析失败时 UI chip 不应崩,降级为 notARepo 让前端折叠。
+		return notARepoResponse(), nil //nolint:nilerr // 见上方注释
 	}
 	st := runGitState(ctx, cwd)
 	return &GetSessionGitStateResponse{State: st}, nil

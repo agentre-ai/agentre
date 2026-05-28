@@ -8,20 +8,38 @@ type Msg = chat_svc.ChatMessage;
 
 function userMsg(id: number, text: string, t = 0): Msg {
   return {
-    id, role: "user", sessionId: 1, blocks: [{ type: "text", text }],
-    model: "", promptTokens: 0, completionTokens: 0, durationMs: 0,
-    errorText: "", seq: 0, createtime: t,
+    id,
+    role: "user",
+    sessionId: 1,
+    blocks: [{ type: "text", text }],
+    model: "",
+    promptTokens: 0,
+    completionTokens: 0,
+    durationMs: 0,
+    errorText: "",
+    seq: 0,
+    createtime: t,
   } as unknown as Msg;
 }
 
 function assistantWithEdits(id: number, files: string[], errored = false): Msg {
   const blocks = files.map((p) => ({
-    type: "tool_use", name: "Edit", input: { file_path: p },
+    type: "tool_use",
+    name: "Edit",
+    input: { file_path: p },
   }));
   return {
-    id, role: "assistant", sessionId: 1, blocks,
-    model: "", promptTokens: 0, completionTokens: 0, durationMs: 0,
-    errorText: errored ? "boom" : "", seq: 0, createtime: 0,
+    id,
+    role: "assistant",
+    sessionId: 1,
+    blocks,
+    model: "",
+    promptTokens: 0,
+    completionTokens: 0,
+    durationMs: 0,
+    errorText: errored ? "boom" : "",
+    seq: 0,
+    createtime: 0,
   } as unknown as Msg;
 }
 
@@ -61,8 +79,10 @@ describe("deriveOutline", () => {
 describe("deriveFiles", () => {
   it("aggregates Edit/Write/MultiEdit by file_path across turns", () => {
     const msgs = [
-      userMsg(1, "u1"), assistantWithEdits(2, ["a.go", "a.go", "b.go"]),
-      userMsg(3, "u2"), assistantWithEdits(4, ["a.go"]),
+      userMsg(1, "u1"),
+      assistantWithEdits(2, ["a.go", "a.go", "b.go"]),
+      userMsg(3, "u2"),
+      assistantWithEdits(4, ["a.go"]),
     ];
     const files = deriveFiles(msgs);
     const a = files.find((f: FileEntry) => f.path === "a.go")!;
@@ -75,8 +95,10 @@ describe("deriveFiles", () => {
 
   it("sorts files by edits desc, ties broken by recency (lastTurn desc)", () => {
     const msgs = [
-      userMsg(1, "u1"), assistantWithEdits(2, ["a.go"]),
-      userMsg(3, "u2"), assistantWithEdits(4, ["b.go"]),
+      userMsg(1, "u1"),
+      assistantWithEdits(2, ["a.go"]),
+      userMsg(3, "u2"),
+      assistantWithEdits(4, ["b.go"]),
     ];
     const files = deriveFiles(msgs);
     expect(files[0].path).toBe("b.go"); // tie on edits, b.go more recent

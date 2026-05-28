@@ -826,11 +826,7 @@ function AppLayout() {
         />
         <PaletteScopeBridge />
         <CommandPalette />
-        <Toaster
-          position="bottom-right"
-          richColors
-          theme={effectiveTheme}
-        />
+        <Toaster position="bottom-right" richColors theme={effectiveTheme} />
       </div>
     </ShortcutsProvider>
   );

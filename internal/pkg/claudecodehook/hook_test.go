@@ -97,7 +97,8 @@ func TestRunPostTool_WithMessages(t *testing.T) {
 // Given subagent 内层 tool 的 hook payload (含 agent_id) 且 inbox 有排队消息
 // When  RunPostTool 执行
 // Then  不调 fetchInbox (否则消息被 drain 给 subagent 上下文,
-//       且 chat_svc 会在 subagent 中间错误切分 turn),emit 空 additionalContext.
+//
+//	且 chat_svc 会在 subagent 中间错误切分 turn),emit 空 additionalContext.
 //
 // 正确的 drain 边界是主 agent 的下一个 tool —— 那次 hook payload 不带 agent_id,
 // 走 TestRunPostTool_WithMessages 路径正常 drain.

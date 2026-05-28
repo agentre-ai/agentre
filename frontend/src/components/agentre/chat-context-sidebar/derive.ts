@@ -30,8 +30,14 @@ function textOf(m: Msg): string {
   return "";
 }
 
-function extractToolPaths(block: unknown): { name: string; paths: string[] } | null {
-  const b = block as { type?: string; name?: string; input?: Record<string, unknown> };
+function extractToolPaths(
+  block: unknown,
+): { name: string; paths: string[] } | null {
+  const b = block as {
+    type?: string;
+    name?: string;
+    input?: Record<string, unknown>;
+  };
   if (b.type !== "tool_use" || !b.name) return null;
   const input = b.input ?? {};
   const paths: string[] = [];
@@ -55,7 +61,11 @@ export function deriveOutline(messages: Msg[]): OutlineItem[] {
     turn += 1;
     let edits = 0;
     let err = false;
-    for (let j = i + 1; j < messages.length && messages[j].role !== "user"; j++) {
+    for (
+      let j = i + 1;
+      j < messages.length && messages[j].role !== "user";
+      j++
+    ) {
       const peer = messages[j];
       if (peer.errorText) err = true;
       for (const block of peer.blocks ?? []) {
@@ -64,10 +74,12 @@ export function deriveOutline(messages: Msg[]): OutlineItem[] {
       }
     }
     out.push({
-      messageId: m.id, turn,
+      messageId: m.id,
+      turn,
       text: textOf(m).slice(0, 200),
       time: m.createtime ?? 0,
-      edits, err,
+      edits,
+      err,
     });
   }
   return out;

@@ -15,7 +15,7 @@ import (
 // runGit 在 dir 下执行 git args。测试 helper, 失败直接 t.Fatal。
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", args...) //nolint:gosec // G204: test helper, args 来自测试内常量
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -30,9 +30,9 @@ func TestRunGitState_HappyPath(t *testing.T) {
 		runGit(t, dir, "config", "user.name", "t")
 		runGit(t, dir, "commit", "--allow-empty", "-m", "init")
 
-		// 制造两个 untracked 文件
-		_ = exec.Command("touch", filepath.Join(dir, "a.txt")).Run()
-		_ = exec.Command("touch", filepath.Join(dir, "b.txt")).Run()
+		// 制造两个 untracked 文件 (dir 来自 t.TempDir, 路径可控)
+		_ = exec.Command("touch", filepath.Join(dir, "a.txt")).Run() //nolint:gosec // G204: test, path 来自 TempDir
+		_ = exec.Command("touch", filepath.Join(dir, "b.txt")).Run() //nolint:gosec // G204: test, path 来自 TempDir
 
 		Convey("When runGitState executes", func() {
 			st := runGitState(context.Background(), dir)

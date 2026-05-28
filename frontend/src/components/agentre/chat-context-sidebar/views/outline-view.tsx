@@ -13,12 +13,20 @@ type Props = {
 function formatTime(ms: number): string {
   if (!ms) return "";
   const d = new Date(ms);
-  return d.getHours().toString().padStart(2, "0") + ":" + d.getMinutes().toString().padStart(2, "0");
+  return (
+    d.getHours().toString().padStart(2, "0") +
+    ":" +
+    d.getMinutes().toString().padStart(2, "0")
+  );
 }
 
 export function OutlineView({ items, activeMessageId, onSelect }: Props) {
   if (items.length === 0) {
-    return <div className="px-3 py-6 text-center text-xs text-muted-foreground">本会话还没有消息</div>;
+    return (
+      <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+        本会话还没有消息
+      </div>
+    );
   }
   return (
     <div className="flex flex-col gap-0.5 px-2 py-2.5">
@@ -38,12 +46,24 @@ export function OutlineView({ items, activeMessageId, onSelect }: Props) {
                 : "border-l-2 border-transparent text-muted-foreground hover:bg-muted/50",
             )}
           >
-            <div className={cn("flex items-center gap-1.5 font-mono text-[10px]", active ? "text-primary" : "text-muted-foreground/80")}>
+            <div
+              className={cn(
+                "flex items-center gap-1.5 font-mono text-[10px]",
+                active ? "text-primary" : "text-muted-foreground/80",
+              )}
+            >
               <span>{formatTime(it.time)}</span>
               <span className="text-border-strong">·</span>
               <span>第 {it.turn} 轮</span>
             </div>
-            <p className={cn("line-clamp-2 leading-snug", active ? "font-medium" : "")}>{it.text}</p>
+            <p
+              className={cn(
+                "line-clamp-2 leading-snug",
+                active ? "font-medium" : "",
+              )}
+            >
+              {it.text}
+            </p>
             {it.edits > 0 || it.err ? (
               <div className="flex items-center gap-1.5">
                 {it.err ? (

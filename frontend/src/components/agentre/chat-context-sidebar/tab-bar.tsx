@@ -14,14 +14,41 @@ type Props = {
 
 export function TabBar({ active, onChange, outlineCount, filesCount }: Props) {
   return (
-    <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3" role="tablist">
-      <Tab icon={<List className="size-3" aria-hidden="true" />} label="Outline" count={outlineCount} active={active === "outline"} onClick={() => onChange("outline")} />
-      <Tab icon={<FileCode className="size-3" aria-hidden="true" />} label="Files" count={filesCount} active={active === "files"} onClick={() => onChange("files")} />
+    <div
+      className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3"
+      role="tablist"
+    >
+      <Tab
+        icon={<List className="size-3" aria-hidden="true" />}
+        label="Outline"
+        count={outlineCount}
+        active={active === "outline"}
+        onClick={() => onChange("outline")}
+      />
+      <Tab
+        icon={<FileCode className="size-3" aria-hidden="true" />}
+        label="Files"
+        count={filesCount}
+        active={active === "files"}
+        onClick={() => onChange("files")}
+      />
     </div>
   );
 }
 
-function Tab({ icon, label, count, active, onClick }: { icon: React.ReactNode; label: string; count: number; active: boolean; onClick: () => void }) {
+function Tab({
+  icon,
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
@@ -30,7 +57,9 @@ function Tab({ icon, label, count, active, onClick }: { icon: React.ReactNode; l
       onClick={onClick}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium",
-        active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted/50",
+        active
+          ? "bg-primary/10 text-primary"
+          : "text-muted-foreground hover:bg-muted/50",
       )}
     >
       {icon}

@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useChatSidebarStore, type ChatSidebarTab } from "../chat-sidebar-store";
+import {
+  useChatSidebarStore,
+  type ChatSidebarTab,
+} from "../chat-sidebar-store";
 
 describe("chat-sidebar-store", () => {
   beforeEach(() => {

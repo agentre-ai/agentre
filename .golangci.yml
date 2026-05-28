@@ -32,6 +32,10 @@ linters:
     misspell:
       locale: US
 
+  exclusions:
+    paths:
+      - frontend
+
 formatters:
   enable:
     - gofmt
@@ -40,6 +44,9 @@ formatters:
     goimports:
       local-prefixes:
         - agentre
+  exclusions:
+    paths:
+      - frontend
 
 run:
   timeout: 10m

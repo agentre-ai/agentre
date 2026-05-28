@@ -33,6 +33,7 @@ Two binaries ship from this repo:
 - [docs/development.md](docs/development.md) — TDD/BDD 工作流、SOLID、Fix Discipline、测试栈（sqlmock / mockgen / goconvey）、日志规范、linter 例外。
 - [docs/frontend.md](docs/frontend.md) — shadcn UI 强制约定、pnpm、格式化 / lint、commit 风格、模块路径。
 - [docs/debugging.md](docs/debugging.md) — 读 SQLite / 查日志 / 复现线上 bug 的命令清单。
+- [docs/agent-backend.md](docs/agent-backend.md) — 接入新 AI Agent backend 的路径：entity / migration / runtime / translator / capability / daemon import / 前端 gating，含 TDD 测试清单与常见坑。
 
 > 详见 cago skill (`/cago`) —— 完整的 controller / service / repo / cron / queue 单测样例。
 

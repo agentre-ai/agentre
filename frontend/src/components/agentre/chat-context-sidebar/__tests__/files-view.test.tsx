@@ -9,8 +9,18 @@ import { FilesView } from "../views/files-view";
 import type { FileEntry } from "../derive";
 
 const files: FileEntry[] = [
-  { path: "internal/service/chat_svc/chat.go", edits: 5, reads: 1, lastTurn: 3 },
-  { path: "frontend/src/components/chat-panel.tsx", edits: 2, reads: 0, lastTurn: 2 },
+  {
+    path: "internal/service/chat_svc/chat.go",
+    edits: 5,
+    reads: 1,
+    lastTurn: 3,
+  },
+  {
+    path: "frontend/src/components/chat-panel.tsx",
+    edits: 2,
+    reads: 0,
+    lastTurn: 2,
+  },
 ];
 
 describe("FilesView", () => {

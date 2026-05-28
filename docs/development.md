@@ -15,6 +15,19 @@
 
 **Coverage：** 新包 service/repository 层目标 ≥80%。`make test-cover` 查。
 
+## Commits
+
+Commit message 使用 gitmoji 开头，后面直接接变更内容，不需要模块 / 作用域前缀：
+
+```text
+✨ add chat tab drag reorder
+🐛 fix session cwd restore
+✅ test provider missing API key
+📄 update commit message discipline
+```
+
+常用 gitmoji：✨ feature、🐛 fix、♻️ refactor、🎨 UI、⚡️ perf、🔒 security、🔧 config、✅ tests、📄 docs、🚀 release。
+
 ## SOLID
 
 每个新 package / type / function 合并前过一遍：

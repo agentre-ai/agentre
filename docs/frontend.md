@@ -52,10 +52,6 @@ make lint-fix              # 自动修复（小范围用）
 
 前端：跟现有 TS/CSS 风格走，**不要**引入大块 formatting-only diff。
 
-## Commits
-
-gitmoji：✨ feature、🐛 fix、♻️ refactor、🎨 UI、⚡️ perf、🔒 security、🔧 config、✅ tests、📄 docs、🚀 release。
-
 ## 模块路径
 
 Go module 是 `agentre`，**不要**编造 `github.com/...` 前缀。
