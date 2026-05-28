@@ -144,7 +144,7 @@ function LocalInternalPopover({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
+        <span className="inline-flex items-center gap-1 rounded-full bg-agent-2 px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
           <FileText className="size-3" aria-hidden /> 本地文件
         </span>
         <LineChip line={kind.line} col={kind.col} />
@@ -229,7 +229,7 @@ export function RichLink({ href, className, cwd, children }: RichLinkProps) {
       <a
         href={kind.href || undefined}
         className={cn(
-          "text-primary underline underline-offset-2 hover:opacity-80",
+          "text-primary-text underline underline-offset-2 hover:opacity-80",
           className,
         )}
         target="_blank"
@@ -254,10 +254,11 @@ export function RichLink({ href, className, cwd, children }: RichLinkProps) {
         <a
           href={fullTarget(kind)}
           className={cn(
-            "text-primary underline underline-offset-2 hover:opacity-80",
+            "text-primary-text underline underline-offset-2 hover:opacity-80",
             className,
           )}
           onClick={onClick}
+          rel="noreferrer noopener"
         >
           {children}
           <KindIcon kind={kind.kind} />

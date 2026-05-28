@@ -35,12 +35,13 @@ func validateOpenPath(path string) (string, error) {
 	if !isAbsolutePath(path) {
 		return "", fmt.Errorf("OpenPath: path must be absolute: %s", path)
 	}
-	for _, part := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+	cleaned := lineSuffixRe.ReplaceAllString(path, "")
+	for _, part := range strings.FieldsFunc(cleaned, func(r rune) bool { return r == '/' || r == '\\' }) {
 		if part == ".." {
 			return "", fmt.Errorf("OpenPath: path contains '..' segment: %s", path)
 		}
 	}
-	return lineSuffixRe.ReplaceAllString(path, ""), nil
+	return cleaned, nil
 }
 
 func isAbsolutePath(p string) bool {

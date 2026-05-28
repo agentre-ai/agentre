@@ -22,6 +22,10 @@ func TestValidateOpenPath(t *testing.T) {
 			_, err := validateOpenPath("/foo/../bar.go")
 			So(err, ShouldNotBeNil)
 		})
+		Convey("when path has '..:line' suffix (potential bypass), then error", func() {
+			_, err := validateOpenPath("/foo/..:42")
+			So(err, ShouldNotBeNil)
+		})
 		Convey("when filename contains '..' but is not a '..' segment, then accept", func() {
 			got, err := validateOpenPath("/Users/x/File..Go")
 			So(err, ShouldBeNil)

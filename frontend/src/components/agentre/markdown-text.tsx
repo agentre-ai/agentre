@@ -51,7 +51,6 @@ const SAFE_HREF_PATTERNS: RegExp[] = [
   /^www\./i,
   /^\//, // POSIX 绝对
   /^[A-Za-z]:[\\/]/, // Windows 绝对
-  /^#/, // fragment
 ];
 
 function whitelistUrl(url: string): string {
