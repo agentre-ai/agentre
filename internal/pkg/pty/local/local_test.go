@@ -83,3 +83,20 @@ func TestLocalBackend_Resize_Reflected(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalBackend_Close_EmitsKilledExit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	be := local.NewBackend()
+	h, err := be.Open(ctx, pty.Spec{Cwd: os.TempDir(), Shell: "/bin/sh", Cols: 80, Rows: 24})
+	require.NoError(t, err)
+
+	require.NoError(t, h.Close())
+
+	select {
+	case info := <-h.Exit():
+		require.Equal(t, "killed", info.Reason)
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not receive exit info within 2s")
+	}
+}
