@@ -179,8 +179,7 @@ func (a *App) OpenPath(ctx context.Context, path string) error {
 
 ## 未来工作（不在本 spec 范围）
 
-- **Inline code path 增强**：把 `` `internal/foo.go` `` / `` `/Users/x/foo.go` `` 也变可点。需要在 `markdownComponents.code` 里加路径形态检测，包 RichLink。挑战是路径形态正则的精度（避免把代码片段里的 path-shape 字符串误识别为文件链接）；可以加 "调用 IPC 验路径在 cwd 下是否真实存在" 的二次确认，但 stream 中频繁问后端需要 debounce / cache，复杂度上升。
-- **编辑器跳转协议**：`OpenPath` 行号目前只 strip 后由 OS 默认 handler 打开；之后可加 setting `defaultEditorScheme: 'vscode' | 'cursor' | 'system'`，按 scheme 拼 `vscode://file/{path}:{line}` 这种形态。
+- **编辑器跳转协议**：`OpenPath` 行号目前只 strip 后由 OS 默认 handler 打开（macOS `open` 不支持 line:col 语法）；之后可加 setting `defaultEditorScheme: 'vscode' | 'cursor' | 'idea' | 'system'`，按 scheme 拼 `vscode://file/{path}:{line}:{col}` / `cursor://file/...` / `idea://open?file=...&line=...`，让点击真正跳到指定行。
 
 ## 风险 / Open Questions
 
