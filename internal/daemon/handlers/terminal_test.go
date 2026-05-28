@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 )
 
 type recordingEmitter struct {
+	mu     sync.Mutex
 	events []recordedEvent
 }
 type recordedEvent struct {
@@ -24,7 +26,23 @@ type recordedEvent struct {
 }
 
 func (e *recordingEmitter) Emit(_ context.Context, name string, payload any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.events = append(e.events, recordedEvent{name, payload})
+}
+
+func (e *recordingEmitter) len() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.events)
+}
+
+func (e *recordingEmitter) snapshot() []recordedEvent {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]recordedEvent, len(e.events))
+	copy(out, e.events)
+	return out
 }
 
 func TestTerminal_Open_RegistersHandleAndReturnsID(t *testing.T) {
@@ -122,15 +140,16 @@ func TestTerminal_Pump_EmitsDataEvent(t *testing.T) {
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if len(rec.events) > 0 {
+		if rec.len() > 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	require.Len(t, rec.events, 1)
-	assert.Equal(t, handlers.EventNameTerminalData, rec.events[0].Name)
-	pay := rec.events[0].Payload.(protocol.TerminalDataEvent)
+	events := rec.snapshot()
+	require.Len(t, events, 1)
+	assert.Equal(t, handlers.EventNameTerminalData, events[0].Name)
+	pay := events[0].Payload.(protocol.TerminalDataEvent)
 	assert.Equal(t, res.TerminalID, pay.TerminalID)
 	assert.Equal(t, "hello", pay.Data)
 }
@@ -155,14 +174,15 @@ func TestTerminal_Pump_EmitsExitAndClearsMap(t *testing.T) {
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if len(rec.events) > 0 {
+		if rec.len() > 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	require.Len(t, rec.events, 1)
-	assert.Equal(t, handlers.EventNameTerminalExit, rec.events[0].Name)
+	events := rec.snapshot()
+	require.Len(t, events, 1)
+	assert.Equal(t, handlers.EventNameTerminalExit, events[0].Name)
 
 	_, err := h.Write(context.Background(), protocol.TerminalWriteParams{TerminalID: res.TerminalID})
 	assert.ErrorIs(t, err, handlers.ErrTerminalNotFound)
