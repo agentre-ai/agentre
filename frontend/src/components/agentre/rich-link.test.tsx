@@ -80,9 +80,7 @@ describe("RichLink", () => {
       );
       const link = screen.getByRole("link", { name: /foo\.go:42/ });
       fireEvent.click(link);
-      expect(openPathMock).toHaveBeenCalledWith(
-        "/Users/me/proj/src/foo.go:42",
-      );
+      expect(openPathMock).toHaveBeenCalledWith("/Users/me/proj/src/foo.go:42");
       expect(browserOpenURLMock).not.toHaveBeenCalled();
     });
 
@@ -160,9 +158,7 @@ describe("RichLink", () => {
       const copyBtn = await screen.findByRole("button", { name: /复制/ });
       fireEvent.click(copyBtn);
       await waitFor(() => {
-        expect(writeText).toHaveBeenCalledWith(
-          "https://example.com/long/path",
-        );
+        expect(writeText).toHaveBeenCalledWith("https://example.com/long/path");
       });
       expect(sonnerMocks.toast.success).toHaveBeenCalled();
     });
@@ -178,9 +174,7 @@ describe("RichLink", () => {
       const copyBtn = await screen.findByRole("button", { name: /复制/ });
       fireEvent.click(copyBtn);
       await waitFor(() => {
-        expect(writeText).toHaveBeenCalledWith(
-          "/Users/me/proj/src/foo.go:42",
-        );
+        expect(writeText).toHaveBeenCalledWith("/Users/me/proj/src/foo.go:42");
       });
     });
   });

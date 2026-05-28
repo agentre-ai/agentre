@@ -72,7 +72,7 @@ async function copyToClipboard(text: string) {
   try {
     await navigator.clipboard.writeText(text);
     toast.success("已复制", { duration: 2000, position: "bottom-right" });
-  } catch (e) {
+  } catch {
     toast.error("复制失败");
   }
 }
@@ -246,7 +246,10 @@ export function RichLink({ href, className, cwd, children }: RichLinkProps) {
   };
 
   return (
-    <HoverCard openDelay={HOVER_OPEN_DELAY_MS} closeDelay={HOVER_CLOSE_DELAY_MS}>
+    <HoverCard
+      openDelay={HOVER_OPEN_DELAY_MS}
+      closeDelay={HOVER_CLOSE_DELAY_MS}
+    >
       <HoverCardTrigger asChild>
         <a
           href={fullTarget(kind)}
