@@ -184,6 +184,25 @@ export function ChatStreamsHost(): React.ReactElement | null {
           const hasMode = !!ev.sessionStatus.permissionMode;
           if (!hasStatus && !hasMode) return;
           const prev = useSessionStatusStore.getState().statuses.get(sessionId);
+          // 诊断: 收到 agentStatus="error" 但本 sid 仍有活跃 LiveStream entry,
+          // 说明后端在 events channel 关闭前就推了 error 帧 (理论上不该发生 ——
+          // 末端 emit 走在 StreamError 之前但 StreamClosed 之后流就应当结束)。
+          // 命中即埋根因证据, 一并打 prev/next/streamActive 让排查不用回放事件。
+          if (hasStatus && nextStatus === "error") {
+            const hasActiveStream =
+              useChatStreamsStore.getState().streams.has(sessionId);
+            if (hasActiveStream) {
+              console.warn(
+                "[chat-streams-host] session_status agentStatus=error received while LiveStream is still active",
+                {
+                  sessionId,
+                  prevAgentStatus: prev?.agentStatus,
+                  nextAgentStatus: nextStatus,
+                  needsAttention: ev.sessionStatus.needsAttention,
+                },
+              );
+            }
+          }
           if (
             hasStatus &&
             (ev.sessionStatus.needsAttention ||

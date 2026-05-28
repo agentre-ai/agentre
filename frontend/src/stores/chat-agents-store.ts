@@ -17,6 +17,7 @@ import { create } from "zustand";
 import { ListChatAgents } from "../../wailsjs/go/app/App";
 import type { chat_svc } from "../../wailsjs/go/models";
 
+import { useChatStreamsStore } from "./chat-streams-store";
 import {
   useSessionStatusStore,
   type SessionStatusPatch,
@@ -89,13 +90,40 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         // sidebar / toolbar 通过同一个 store 读到「running / waiting / idle」。
         // bulkUpsert 内部逐条同值短路, 一刷只在真有差异时才换 Map 引用。
         const entries: [number, SessionStatusPatch][] = [];
+        // 诊断: ListChatAgents 是远 DB 异步快照, 与 stream 内乐观写 / session_status
+        // 推帧之间存在 race。命中以下两类时打 warn, 是排查「tab 翻红但内容还在流」
+        // 的关键线索:
+        //   (a) sid 有活跃 LiveStream 但快照说 status="error" / "idle" —— 说明
+        //       响应是 Send 把 DB 翻 "running" 之前抓的旧快照, 即将覆盖乐观 "running"。
+        //   (b) sid 没有活跃 stream 但快照与 store 现值不一致, 仅 dev 调试观察用。
+        const streamsState = useChatStreamsStore.getState();
+        const statusesState = useSessionStatusStore.getState();
         for (const a of agents) {
           for (const s of listKnownSessions(a)) {
+            const snapshotStatus = (s.status as AgentStatus) || "idle";
+            const hasActiveStream = streamsState.streams.has(s.id);
+            if (hasActiveStream) {
+              const prev = statusesState.statuses.get(s.id);
+              if (
+                prev &&
+                prev.agentStatus !== snapshotStatus &&
+                snapshotStatus !== "running" &&
+                snapshotStatus !== "waiting"
+              ) {
+                console.warn(
+                  "[chat-agents-store] bulkUpsert about to override agentStatus while LiveStream is active",
+                  {
+                    sessionId: s.id,
+                    prevAgentStatus: prev.agentStatus,
+                    snapshotAgentStatus: snapshotStatus,
+                  },
+                );
+              }
+            }
             entries.push([
               s.id,
               {
-                // Wails boundary: ChatSessionLite.status is string; cast to AgentStatus.
-                agentStatus: (s.status as AgentStatus) || "idle",
+                agentStatus: snapshotStatus,
                 needsAttention: s.needsAttention ?? false,
               },
             ]);

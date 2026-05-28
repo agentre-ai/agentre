@@ -1729,6 +1729,12 @@ func (s *chatSvc) markSessionWaiting(ctx context.Context, sess *chat_entity.Sess
 	sess.AgentStatus = "waiting"
 	sess.NeedsAttention = true
 	_ = chat_repo.Session().Update(context.WithoutCancel(ctx), sess)
+	logger.Ctx(ctx).Info("chat_svc: session_status emit",
+		zap.Int64("sessionId", sess.ID),
+		zap.String("stream", stream),
+		zap.String("agentStatus", sess.AgentStatus),
+		zap.Bool("needsAttention", sess.NeedsAttention),
+		zap.String("source", "markSessionWaiting"))
 	s.emitter.Emit(ctx, stream, ChatStreamEvent{
 		Kind: StreamSessionStatus,
 		SessionStatus: &ChatSessionStatusPatch{
@@ -1747,6 +1753,12 @@ func (s *chatSvc) markSessionRunning(ctx context.Context, sess *chat_entity.Sess
 	sess.AgentStatus = "running"
 	sess.NeedsAttention = false
 	_ = chat_repo.Session().Update(context.WithoutCancel(ctx), sess)
+	logger.Ctx(ctx).Info("chat_svc: session_status emit",
+		zap.Int64("sessionId", sess.ID),
+		zap.String("stream", stream),
+		zap.String("agentStatus", sess.AgentStatus),
+		zap.Bool("needsAttention", sess.NeedsAttention),
+		zap.String("source", "markSessionRunning"))
 	s.emitter.Emit(ctx, stream, ChatStreamEvent{
 		Kind: StreamSessionStatus,
 		SessionStatus: &ChatSessionStatusPatch{
@@ -1878,6 +1890,11 @@ func (s *chatSvc) runTurn(
 	for ev := range events {
 		if streamStopErr != nil {
 			if eventShowsProgressAfterError(ev) {
+				logger.Ctx(ctx).Info("chat_svc: streamStopErr cleared by progress event",
+					zap.Int64("sessionId", sess.ID),
+					zap.Int64("assistantMsgId", assistantMsg.ID),
+					zap.String("clearedBy", fmt.Sprintf("%T", ev)),
+					zap.Error(streamStopErr))
 				streamStopErr = nil
 			} else {
 				continue
@@ -1896,6 +1913,10 @@ func (s *chatSvc) runTurn(
 				assistantMsg.Model, e.Steers,
 			)
 			if perr != nil {
+				logger.Ctx(ctx).Warn("chat_svc: streamStopErr set by persistConsumedSteers",
+					zap.Int64("sessionId", sess.ID),
+					zap.Int64("assistantMsgId", assistantMsg.ID),
+					zap.Error(perr))
 				streamStopErr = perr
 				continue
 			}
@@ -1909,6 +1930,11 @@ func (s *chatSvc) runTurn(
 			continue
 		case agentruntime.ErrorEvent:
 			if e.Err != nil {
+				logger.Ctx(ctx).Warn("chat_svc: ErrorEvent intercepted, streamStopErr set",
+					zap.Int64("sessionId", sess.ID),
+					zap.Int64("assistantMsgId", assistantMsg.ID),
+					zap.String("stream", stream),
+					zap.Error(e.Err))
 				streamStopErr = e.Err
 			}
 			continue
@@ -1962,6 +1988,11 @@ func (s *chatSvc) runTurn(
 		}
 		if stopErr == nil && result.StopErr != nil {
 			stopErr = s.mapTurnError(ctx, sess, be, result.StopErr)
+			logger.Ctx(ctx).Warn("chat_svc: stopErr promoted from RunResult.StopErr",
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("assistantMsgId", assistantMsg.ID),
+				zap.String("stream", stream),
+				zap.Error(stopErr))
 		}
 		// Send 时 sess 之前没有 session id，runner 返回新 id 落库；
 		// Regenerate-fork 时 sess 有旧 id 但 runner 返回 fork 出来的新 id，必须覆盖。
@@ -2036,6 +2067,16 @@ func (s *chatSvc) runTurn(
 	// 不补一刀 tab 红点要等下次 ListChatAgents 才同步。idle 不发 —— turn 正常收尾
 	// 走 StreamDone,前端 chat-panel doneTick effect 会 reloadSession 主动拉一次。
 	if (stopErr != nil && !aborted) || awaitingPlanAction {
+		logger.Ctx(finalCtx).Info("chat_svc: session_status emit",
+			zap.Int64("sessionId", sess.ID),
+			zap.Int64("assistantMsgId", assistantMsg.ID),
+			zap.String("stream", stream),
+			zap.String("agentStatus", sess.AgentStatus),
+			zap.Bool("needsAttention", sess.NeedsAttention),
+			zap.Bool("aborted", aborted),
+			zap.Bool("awaitingPlanAction", awaitingPlanAction),
+			zap.Error(stopErr),
+			zap.String("source", "finalize"))
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 			Kind: StreamSessionStatus,
 			SessionStatus: &ChatSessionStatusPatch{
@@ -2452,6 +2493,13 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 	// session_status 必须先于 StreamError emit:前端 chat-streams-host 收到 error
 	// 立刻 finishStream 删 LiveStream entry → StreamSubscriber 紧接着 unmount,后到
 	// 的 session_status 永远收不到。后台 session 出错时只靠 bumpDone 不会翻 tab 红点。
+	logger.Ctx(ctx).Info("chat_svc: session_status emit",
+		zap.Int64("sessionId", sess.ID),
+		zap.Int64("assistantMsgId", msg.ID),
+		zap.String("stream", stream),
+		zap.String("agentStatus", sess.AgentStatus),
+		zap.Bool("needsAttention", sess.NeedsAttention),
+		zap.String("source", "failTurn"))
 	s.emitter.Emit(ctx, stream, ChatStreamEvent{
 		Kind: StreamSessionStatus,
 		SessionStatus: &ChatSessionStatusPatch{

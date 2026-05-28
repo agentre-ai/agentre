@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
 	"agentre/internal/pkg/agentruntime/canonical"
 	"agentre/internal/service/chat_svc/blocks"
 	"agentre/internal/service/chat_svc/view"
@@ -135,6 +138,15 @@ func (d *dispatcherEmitter) Emit(ctx context.Context, stream string, raw any) {
 
 	case string(StreamSessionStatus):
 		ev.SessionStatus = sessionStatusFromMap(m["sessionStatus"])
+		// 防御日志:mid-stream 经由 handler 推 session_status 时,任何 agentStatus
+		// 都不应该是 "error" —— 末端错误走 chat.go finalize / failTurn 两条专用
+		// 路径,不走 dispatcher。这里出现 "error" 就是新路径漏标,必须捕获。
+		if ev.SessionStatus != nil && ev.SessionStatus.AgentStatus == "error" {
+			logger.Ctx(ctx).Warn("chat_svc: dispatcherEmitter forwarded session_status with agentStatus=error (unexpected mid-stream path)",
+				zap.String("stream", stream),
+				zap.Bool("needsAttention", ev.SessionStatus.NeedsAttention),
+				zap.String("permissionMode", ev.SessionStatus.PermissionMode))
+		}
 
 	case string(StreamUsage):
 		ev.Usage = usageFromMap(m["usage"])
@@ -156,6 +168,14 @@ func (d *dispatcherEmitter) Emit(ctx context.Context, stream string, raw any) {
 
 	case string(StreamError):
 		ev.Error = stringOf(m, "error")
+		// 防御日志:目前 chat.go runTurn 在 ErrorEvent case 用 continue 跳过
+		// dispatcher,所以 handlers.ErrorHandler.Apply 不会被触发,理论上不会
+		// 走到这里。若以后路径变了让 dispatcher 重新接管 ErrorEvent,这里就
+		// 能立刻看到 mid-stream "error" 帧泄出去,排查跟 finalize 重复 emit 时
+		// 不用再翻代码。
+		logger.Ctx(ctx).Warn("chat_svc: dispatcherEmitter forwarded mid-stream error (unexpected — ErrorHandler should not fire)",
+			zap.String("stream", stream),
+			zap.String("error", ev.Error))
 
 	case "message_end":
 		// handlers DoneHandler emit "message_end" 中间形态,chat_svc 在 runTurn
