@@ -110,3 +110,36 @@ func newTerminalID() string {
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
+
+type TerminalAck struct{}
+
+func (h *TerminalHandlers) Write(ctx context.Context, p protocol.TerminalWriteParams) (TerminalAck, error) {
+	h.mu.Lock()
+	hd, ok := h.terminals[p.TerminalID]
+	h.mu.Unlock()
+	if !ok {
+		return TerminalAck{}, ErrTerminalNotFound
+	}
+	_, err := hd.Write([]byte(p.Data))
+	return TerminalAck{}, err
+}
+
+func (h *TerminalHandlers) Resize(ctx context.Context, p protocol.TerminalResizeParams) (TerminalAck, error) {
+	h.mu.Lock()
+	hd, ok := h.terminals[p.TerminalID]
+	h.mu.Unlock()
+	if !ok {
+		return TerminalAck{}, ErrTerminalNotFound
+	}
+	return TerminalAck{}, hd.Resize(p.Cols, p.Rows)
+}
+
+func (h *TerminalHandlers) Close(ctx context.Context, p protocol.TerminalCloseParams) (TerminalAck, error) {
+	h.mu.Lock()
+	hd, ok := h.terminals[p.TerminalID]
+	h.mu.Unlock()
+	if !ok {
+		return TerminalAck{}, ErrTerminalNotFound
+	}
+	return TerminalAck{}, hd.Close()
+}
