@@ -407,13 +407,13 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
     warn === "error"
       ? "text-status-error"
       : warn === "warning"
-        ? "text-status-warning"
+        ? "text-status-waiting"
         : "text-primary-text";
   const fill =
     warn === "error"
       ? "bg-status-error"
       : warn === "warning"
-        ? "bg-status-warning"
+        ? "bg-status-waiting"
         : "bg-primary";
   return (
     <div
@@ -1266,7 +1266,7 @@ function renderMessageBlocks(
   return visibleItems.map((item, idx) => {
     switch (item.type) {
       case "text":
-        return <MarkdownText key={`text-${idx}`} text={item.text} />;
+        return <MarkdownText key={`text-${idx}`} cwd={cwd} text={item.text} />;
       case "plan":
         return (
           <PlanApproveCard
