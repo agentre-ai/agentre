@@ -43,3 +43,13 @@ func TestLocalBackend_OpenEchoRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalBackend_OpenBadCwd_Errors(t *testing.T) {
+	be := local.NewBackend()
+	_, err := be.Open(context.Background(), pty.Spec{
+		Cwd:   "/path/that/definitely/does/not/exist/xyzzy",
+		Shell: "/bin/sh",
+		Cols:  80, Rows: 24,
+	})
+	require.Error(t, err)
+}
