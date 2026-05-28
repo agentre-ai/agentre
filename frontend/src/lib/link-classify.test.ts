@@ -112,12 +112,12 @@ describe("classifyLink", () => {
     });
 
     it("when file:// with URL-encoded chars then decoded", () => {
-      expect(
-        classifyLink("file:///Users/me/proj/a%20b.go", CWD),
-      ).toMatchObject({
-        kind: "local-internal",
-        fullPath: "/Users/me/proj/a b.go",
-      });
+      expect(classifyLink("file:///Users/me/proj/a%20b.go", CWD)).toMatchObject(
+        {
+          kind: "local-internal",
+          fullPath: "/Users/me/proj/a b.go",
+        },
+      );
     });
   });
 
