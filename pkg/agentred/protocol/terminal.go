@@ -10,6 +10,8 @@ type TerminalOpenParams struct {
 	Rows      uint16   `json:"rows"`
 }
 
+// TerminalOpenResult returns the daemon-side PTY id which the desktop
+// uses opaquely for subsequent write/resize/close calls.
 type TerminalOpenResult struct {
 	TerminalID string `json:"terminalId"`
 }
@@ -29,6 +31,7 @@ type TerminalCloseParams struct {
 	TerminalID string `json:"terminalId"`
 }
 
+// TerminalDataEvent is the daemon→client push for stdout chunks.
 type TerminalDataEvent struct {
 	TerminalID string `json:"terminalId"`
 	Data       string `json:"data"`
