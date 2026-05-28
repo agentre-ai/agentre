@@ -53,3 +53,33 @@ func TestLocalBackend_OpenBadCwd_Errors(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestLocalBackend_Resize_Reflected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	be := local.NewBackend()
+	h, err := be.Open(ctx, pty.Spec{Cwd: os.TempDir(), Shell: "/bin/sh", Cols: 80, Rows: 24})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+
+	require.NoError(t, h.Resize(132, 40))
+	_, err = h.Write([]byte("stty size\n"))
+	require.NoError(t, err)
+
+	deadline := time.After(3 * time.Second)
+	var buf bytes.Buffer
+	for {
+		select {
+		case chunk, ok := <-h.Data():
+			if !ok {
+				t.Fatalf("data closed before stty output; got: %q", buf.String())
+			}
+			buf.Write(chunk)
+			if bytes.Contains(buf.Bytes(), []byte("40 132")) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timeout waiting for 40 132 in output; got: %q", buf.String())
+		}
+	}
+}
