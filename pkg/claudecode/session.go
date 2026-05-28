@@ -267,6 +267,7 @@ func (s *Session) parseLine(line []byte) ([]Event, bool) {
 			}
 			if f.Model != "" {
 				s.model = f.Model
+				return []Event{{Kind: EventInit, SessionID: s.sessionID, Model: f.Model}}, false
 			}
 		}
 		if ev, ok := parseSystemTask(f, s.sessionID); ok {

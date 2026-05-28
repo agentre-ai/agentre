@@ -34,6 +34,7 @@ import (
 type App struct {
 	ctx              context.Context
 	hookPollerCancel context.CancelFunc
+	ccUsageStop      func()
 
 	lastImportPath   string
 	lastImportPathMu sync.Mutex
@@ -66,11 +67,17 @@ func (a *App) Startup(ctx context.Context) {
 	bootstrap.ServerBoot(context.Background())
 
 	// Remote device watcher：注入 wails 事件 emitter,Boot 拉起所有 ACTIVE 设备的 watcher。
+	// 顺带把 device online/offline 事件接到 cc_usage_svc(动态起/停 per-device 配额 ticker)。
 	remoteDeviceEmit := watcher.EmitterFunc(func(p watcher.StateEvent) {
 		wailsruntime.EventsEmit(a.ctx, watcher.EventName, p)
+		a.onRemoteDeviceState(p.ID, p.Online)
 	})
 	bootstrap.InitRemoteDeviceWatcher(context.Background(), remoteDeviceEmit)
 	bootstrap.RemoteDeviceWatcherBoot(context.Background())
+
+	// Claude Code OAuth usage HUD:启动后台 60s 轮询,wails event "cc_usage:update"
+	// 推送给前端 QuotaMeter。Shutdown 时停所有 ticker。
+	a.ccUsageStop = a.startCCUsage()
 
 	//nolint:gosec // G118: background poll deliberately outlives request scope
 	go a.startAutoUpdateCheck()
@@ -83,6 +90,10 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.hookPollerCancel != nil {
 		a.hookPollerCancel()
 		a.hookPollerCancel = nil
+	}
+	if a.ccUsageStop != nil {
+		a.ccUsageStop()
+		a.ccUsageStop = nil
 	}
 	// 关停 remote device watcher：让长连守护 goroutine 全部退出。
 	if w := watcher.Default(); w != nil {

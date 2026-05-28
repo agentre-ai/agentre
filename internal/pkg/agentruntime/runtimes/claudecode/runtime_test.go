@@ -31,7 +31,10 @@ func TestClaudeCodeCapabilities(t *testing.T) {
 		So(caps.Has(capability.CapAnswerUserAsk), ShouldBeTrue)
 		So(caps.Has(capability.CapToolPermission), ShouldBeTrue)
 		So(caps.Has(capability.CapForkSession), ShouldBeTrue)
-		So(caps.Has(capability.CapReportContextWindow), ShouldBeFalse)
+		// CapReportContextWindow=true 由 translator EventInit 路径承担:
+		// system.init 帧带 model → llmcatalog.Lookup → emit ContextWindowUpdated。
+		// Claude Code SDK 自己不报窗口,这里靠 catalog 兜底,语义和 codex 对称。
+		So(caps.Has(capability.CapReportContextWindow), ShouldBeTrue)
 	})
 
 	Convey("claudecode PermissionModeMeta", t, func() {

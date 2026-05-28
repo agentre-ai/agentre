@@ -61,6 +61,17 @@ type Actions = {
 // in-flight reload promise: 并发调用 reload() 时复用, 避免重复 RPC。
 let inflight: Promise<void> | null = null;
 
+function listKnownSessions(a: chat_svc.ChatAgentItem) {
+  const out: chat_svc.ChatSessionLite[] = [];
+  const seen = new Set<number>();
+  for (const s of [...(a.sessions ?? []), ...(a.attentionSessions ?? [])]) {
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    out.push(s);
+  }
+  return out;
+}
+
 // 初始 loading=true: 反映「还没拉过, 别把空 agents 当成最终态」, 与原 hook 行为对齐
 // (原 useState(true))。这样命令面板在 useChatAgents 首次 mount 的那一帧不会闪「无结果」。
 export const useChatAgentsStore = create<State & Actions>((set) => ({
@@ -79,7 +90,7 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         // bulkUpsert 内部逐条同值短路, 一刷只在真有差异时才换 Map 引用。
         const entries: [number, SessionStatusPatch][] = [];
         for (const a of agents) {
-          for (const s of a.sessions ?? []) {
+          for (const s of listKnownSessions(a)) {
             entries.push([
               s.id,
               {
@@ -98,7 +109,7 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         // bulkUpsert 走 merge 语义, 不会清掉既有 projectId。
         const metaEntries: [number, Partial<SessionMeta>][] = [];
         for (const a of agents) {
-          for (const s of a.sessions ?? []) {
+          for (const s of listKnownSessions(a)) {
             metaEntries.push([
               s.id,
               {
@@ -118,7 +129,7 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         // 不用 spread —— spread 会丢失 class 方法 (convertValues), 触发 TS 错误。
         const slimAgents = agents.map((a) => {
           const ids = new Set<number>();
-          for (const s of a.sessions ?? []) ids.add(s.id);
+          for (const s of listKnownSessions(a)) ids.add(s.id);
           return Object.assign(a, { sessionIds: Array.from(ids) }) as AgentSlim;
         });
 

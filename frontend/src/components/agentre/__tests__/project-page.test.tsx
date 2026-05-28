@@ -585,6 +585,158 @@ describe("ProjectsPage project new-session menu", () => {
   });
 });
 
+describe("ProjectsPage active tab anchor", () => {
+  // 在 chat-tabs-store 里塞一个 active session tab，模拟外部（chat 页 / tab strip /
+  // 命令面板）切换了当前 tab —— project-page 不会自己触发 selectOnTab。
+  function selectSessionTab(sessionId: number) {
+    const tab = {
+      id: `seed-tab-${sessionId}`,
+      meta: { kind: "session" as const, sessionId },
+      isPreview: false,
+      isPinned: false,
+      pinAt: 0,
+      openedAt: 0,
+    };
+    useChatTabsStore.setState({ tabs: [tab], activeTabId: tab.id });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSessionReadStore.setState({ overrides: new Map() });
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectGet.mockResolvedValue({
+      project: null,
+      directMembers: [],
+      inheritedMembers: [],
+    });
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "Agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+        },
+        children: [],
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("Given an active chat tab whose session is outside the project Top 5, Then the active session is anchored into the project sidebar", async () => {
+    // 6 条会话, lastMessageAt 递减; idle-anchor 是最老的一条, 不在 Top 5 之内。
+    appMocks.ProjectListSessions.mockResolvedValue([
+      buildSession({ id: 101, title: "Session A", lastMessageAt: 6000 }),
+      buildSession({ id: 102, title: "Session B", lastMessageAt: 5000 }),
+      buildSession({ id: 103, title: "Session C", lastMessageAt: 4000 }),
+      buildSession({ id: 104, title: "Session D", lastMessageAt: 3000 }),
+      buildSession({ id: 105, title: "Session E", lastMessageAt: 2000 }),
+      buildSession({ id: 106, title: "Idle Anchor", lastMessageAt: 1000 }),
+    ]);
+    selectSessionTab(106);
+
+    renderProjectsPage();
+
+    const anchorRow = await screen.findByRole("button", {
+      name: /Idle Anchor/,
+    });
+    expect(anchorRow).toHaveAttribute("aria-current", "true");
+  });
+
+  it("Given an active session that belongs to another project, Then this project's sidebar does not surface that foreign session", async () => {
+    appMocks.ProjectListSessions.mockResolvedValue([
+      buildSession({ id: 201, title: "Local A", lastMessageAt: 2000 }),
+      buildSession({ id: 202, title: "Local B", lastMessageAt: 1000 }),
+    ]);
+    selectSessionTab(9999); // 不属于该 project 的 sessionId
+
+    renderProjectsPage();
+
+    await screen.findByRole("button", { name: /Local A/ });
+    // 9999 不在 ownSessions 里, 不应被锚定到列表
+    expect(
+      screen.queryByRole("button", { name: /9999/ }),
+    ).not.toBeInTheDocument();
+    // Local A 也不应被错误地标记为 selected
+    const localA = screen.getByRole("button", { name: /Local A/ });
+    expect(localA).not.toHaveAttribute("aria-current", "true");
+  });
+
+  it("Given the active tab is a 'new' (unsaved) tab, Then no extra anchor row is added to the project sidebar", async () => {
+    appMocks.ProjectListSessions.mockResolvedValue([
+      buildSession({ id: 301, title: "Only Session", lastMessageAt: 1000 }),
+    ]);
+    useChatTabsStore.setState({
+      tabs: [
+        {
+          id: "seed-new-tab",
+          meta: { kind: "new", projectId: 1, agentId: 5, workMode: "" },
+          isPreview: false,
+          isPinned: false,
+          pinAt: 0,
+          openedAt: 0,
+        },
+      ],
+      activeTabId: "seed-new-tab",
+    });
+
+    renderProjectsPage();
+
+    await screen.findByRole("button", { name: /Only Session/ });
+    // 只应该有这一条会话按钮, 不应该出现空标题的占位 row
+    const sessionButtons = screen
+      .getAllByRole("button")
+      .filter((btn) => btn.getAttribute("aria-current") === "true");
+    expect(sessionButtons).toHaveLength(0);
+  });
+
+  it("Given the active tab is in Top 5, Then the row is highlighted via aria-current without external selection clicks", async () => {
+    appMocks.ProjectListSessions.mockResolvedValue([
+      buildSession({ id: 401, title: "Top One", lastMessageAt: 5000 }),
+      buildSession({ id: 402, title: "Top Two", lastMessageAt: 4000 }),
+    ]);
+    selectSessionTab(402);
+
+    renderProjectsPage();
+
+    const topTwo = await screen.findByRole("button", { name: /Top Two/ });
+    expect(topTwo).toHaveAttribute("aria-current", "true");
+    const topOne = screen.getByRole("button", { name: /Top One/ });
+    expect(topOne).not.toHaveAttribute("aria-current", "true");
+  });
+});
+
+function buildSession({
+  id,
+  title,
+  lastMessageAt,
+}: {
+  id: number;
+  title: string;
+  lastMessageAt: number;
+}) {
+  return {
+    agentID: 7,
+    agentStatus: "idle",
+    id,
+    lastMessageAt,
+    lastReadAt: lastMessageAt, // 默认已读, 不让 unread 把行抢去 attention bubble
+    needsAttention: false,
+    title,
+  };
+}
+
 describe("ProjectSettingsDrawer members", () => {
   beforeEach(() => {
     vi.clearAllMocks();

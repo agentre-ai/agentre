@@ -110,6 +110,67 @@ describe("ChatComposer context meter", () => {
   });
 });
 
+describe("ChatComposer quota meter", () => {
+  it("不渲染 QuotaMeter 当 quotaUsage 未传", () => {
+    render(<ChatComposer onSubmit={() => undefined} />);
+    expect(screen.queryByLabelText(/Claude.*配额/)).toBeNull();
+  });
+
+  it("不渲染 QuotaMeter 当 reason='no_credentials' (API key 用户)", () => {
+    render(
+      <ChatComposer
+        onSubmit={() => undefined}
+        quotaUsage={{ reason: "no_credentials", fetchedAtMs: 1 } as never}
+      />,
+    );
+    expect(screen.queryByLabelText(/Claude.*配额/)).toBeNull();
+  });
+
+  it("正常渲染百分比文本 当 reason='ok'", () => {
+    render(
+      <ChatComposer
+        onSubmit={() => undefined}
+        quotaUsage={
+          {
+            reason: "ok",
+            data: { fiveHourPercent: 42.6, weeklyPercent: 18.2 },
+            fetchedAtMs: 1,
+          } as never
+        }
+      />,
+    );
+    expect(screen.getByText(/5h 43%/)).toBeInTheDocument();
+    expect(screen.getByText(/7d 18%/)).toBeInTheDocument();
+  });
+
+  it("stale 标记可见 当 stale=true", () => {
+    render(
+      <ChatComposer
+        onSubmit={() => undefined}
+        quotaUsage={
+          {
+            reason: "rate_limited",
+            stale: true,
+            data: { fiveHourPercent: 30, weeklyPercent: 10 },
+            fetchedAtMs: 1,
+          } as never
+        }
+      />,
+    );
+    expect(screen.getByText(/stale/)).toBeInTheDocument();
+  });
+
+  it("auth_expired 时渲染占位文本而不是数字", () => {
+    render(
+      <ChatComposer
+        onSubmit={() => undefined}
+        quotaUsage={{ reason: "auth_expired", fetchedAtMs: 1 } as never}
+      />,
+    );
+    expect(screen.getByText(/5h —%/)).toBeInTheDocument();
+  });
+});
+
 describe("ChatTranscript message meta", () => {
   function assistantWithUsage(): chat_svc.ChatMessage {
     return {

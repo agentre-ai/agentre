@@ -661,13 +661,19 @@ function ProjectCard({
   //
   // 注：既有 commit e4bb8b4 消息表述偏宽（"改用 useSessionAttentionList"），
   // 实际走的是 computeAttention 内联，原因见上。
-  const isSelectedInThisProject =
-    !!project &&
-    selection?.kind === "session" &&
-    selection.projectID === project.id;
+  // 当前激活 tab 的 session id —— 项目页 sidebar 直接订阅 chat-tabs-store，
+  // 与对话页 useBuildAttentionSessions 的 selected 锚点语义保持一致。
+  // 走本地 selection 时, 任何从外部 (tab strip / chat 页 / 命令面板) 触发的
+  // 切换都不会同步, sidebar 锚点会失效。
+  const activeSessionId = useChatTabsStore((s) => {
+    const id = s.activeTabId;
+    if (!id) return 0;
+    const tab = s.tabs.find((t) => t.id === id);
+    return tab?.meta.kind === "session" ? tab.meta.sessionId : 0;
+  });
   const selectedSessionIdForRank =
-    isSelectedInThisProject && selection?.kind === "session"
-      ? selection.session.id
+    activeSessionId && ownSessions.some((s) => s.id === activeSessionId)
+      ? activeSessionId
       : undefined;
 
   const attentionAgentSessions: AgentSession[] = React.useMemo(() => {
@@ -711,10 +717,19 @@ function ProjectCard({
   ).length;
 
   // 常规列表：所有会话按 lastMessageAt 倒序，前 5 条入侧栏；超 5 走 popover。
+  // 若当前激活 tab 对应的 session 不在 Top 5 里, 追加到末尾, 让外部切 tab 后
+  // 即使是空闲会话也始终可见 —— 与对话页 selected 锚点钉到末尾的行为对齐。
   const sortedAll = ownSessions
     .slice()
     .sort((a, b) => b.lastMessageAt - a.lastMessageAt);
   const top5 = sortedAll.slice(0, 5);
+  if (
+    selectedSessionIdForRank &&
+    !top5.some((s) => s.id === selectedSessionIdForRank)
+  ) {
+    const anchor = ownSessions.find((s) => s.id === selectedSessionIdForRank);
+    if (anchor) top5.push(anchor);
+  }
   const top5AgentSessions: AgentSession[] = top5.map((s) => {
     const lastReadAt = Math.max(
       s.lastReadAt ?? 0,
@@ -730,8 +745,8 @@ function ProjectCard({
     return projectSessionToAgentSession(s, reason);
   });
 
-  const selectedSessionIdStr = isSelectedInThisProject
-    ? String(selection.session.id)
+  const selectedSessionIdStr = selectedSessionIdForRank
+    ? String(selectedSessionIdForRank)
     : undefined;
 
   const handleSessionSelect = (sid: string, opts?: { newTab?: boolean }) => {

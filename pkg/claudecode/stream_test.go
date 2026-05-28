@@ -28,10 +28,15 @@ func TestStream_HappyEmitsTextDeltasAndDoneWithUsage(t *testing.T) {
 	assert.Equal(t, "sess-abc", sid)
 
 	require.GreaterOrEqual(t, len(events), 3)
-	assert.Equal(t, EventTextDelta, events[0].Kind)
-	assert.Equal(t, "Hello, ", events[0].Text)
-	assert.Equal(t, EventTextDelta, events[1].Kind)
-	assert.Equal(t, "world.", events[1].Text)
+	var deltas []Event
+	for _, e := range events {
+		if e.Kind == EventTextDelta {
+			deltas = append(deltas, e)
+		}
+	}
+	require.GreaterOrEqual(t, len(deltas), 2)
+	assert.Equal(t, "Hello, ", deltas[0].Text)
+	assert.Equal(t, "world.", deltas[1].Text)
 
 	last := events[len(events)-1]
 	assert.Equal(t, EventDone, last.Kind)
@@ -416,6 +421,47 @@ func TestStream_DoesNotEmitUsageWhenAssistantFrameHasNoUsage(t *testing.T) {
 	}
 	require.NoError(t, d.Err())
 	assert.False(t, sawUsage, "assistant 帧没带 usage 字段时不应当 emit EventUsage")
+}
+
+// TestStream_EmitsEventInitOnSystemInitWithModel —— system.init 帧带 model 时
+// 应 emit 一条 EventInit,把 SessionID + Model 透出来。语义:turn 开始时 CLI 已经
+// 告诉我们用的是哪个模型;上层(agentruntime/claudecode translator)拿这个 model
+// 名查 cago llmcatalog 兜底 context window 大小,不必等 EventDone 才知道窗口,
+// 避免前端"等一轮跑完上下文用量条才出现"。
+func TestStream_EmitsEventInitOnSystemInitWithModel(t *testing.T) {
+	line := `{"type":"system","subtype":"init","session_id":"sx","model":"claude-sonnet-4-6"}` + "\n" +
+		`{"type":"result","subtype":"success","session_id":"sx","usage":{"input_tokens":1,"output_tokens":1}}` + "\n"
+	d := newFrameDecoder(strings.NewReader(line))
+	var init *Event
+	for d.Next() {
+		e := d.Event()
+		if e.Kind == EventInit {
+			ev := e
+			init = &ev
+		}
+	}
+	require.NoError(t, d.Err())
+	require.NotNil(t, init, "system.init 帧带 model 时应 emit EventInit")
+	assert.Equal(t, "sx", init.SessionID)
+	assert.Equal(t, "claude-sonnet-4-6", init.Model)
+}
+
+// TestStream_DoesNotEmitEventInitWhenModelMissing —— 老 CLI 不在 system.init 上
+// 报 model 字段时(或字段空)不发 EventInit:下游靠 model 名查 catalog,空 model 没
+// 意义,emit 反而引导上层做无效查询。前向兼容靠"没 init 事件 → 走 EventDone.Model
+// 兜底"旧路径。
+func TestStream_DoesNotEmitEventInitWhenModelMissing(t *testing.T) {
+	line := `{"type":"system","subtype":"init","session_id":"sx"}` + "\n" +
+		`{"type":"result","subtype":"success","session_id":"sx"}` + "\n"
+	d := newFrameDecoder(strings.NewReader(line))
+	var sawInit bool
+	for d.Next() {
+		if d.Event().Kind == EventInit {
+			sawInit = true
+		}
+	}
+	require.NoError(t, d.Err())
+	assert.False(t, sawInit, "model 缺省时不应当 emit EventInit")
 }
 
 func TestStream_UnknownSystemSubtypeFailsSchemaCheck(t *testing.T) {

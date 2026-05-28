@@ -209,6 +209,7 @@ func (d *frameDecoder) decodeLine(line []byte) ([]Event, bool) {
 			}
 			if f.Model != "" {
 				d.model = f.Model
+				return []Event{{Kind: EventInit, SessionID: d.sessionID, Model: f.Model}}, true
 			}
 		}
 		if ev, ok := d.decodeSystemTask(f); ok {

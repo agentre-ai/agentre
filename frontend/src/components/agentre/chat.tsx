@@ -370,6 +370,11 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   topSlot?: React.ReactNode;
   /** 上下文用量。max <= 0 时整块不渲染（未知模型 / 后端未配置）。 */
   contextUsage?: { used: number; max: number };
+  /** Claude Code OAuth 5h/7d 配额。undefined / reason='no_credentials' 时整块不渲染。
+   *  由 chat-panel 通过 useCCUsage(deviceKey) 拉到后传入。 */
+  quotaUsage?: import("../../../wailsjs/go/models").cc_usage_svc.UsageState;
+  /** 配额对应的 device 友好名(local 或远端设备名),供 QuotaMeter HoverCard 文案使用。 */
+  quotaDeviceLabel?: string;
   /** Permission mode 控件，仅在 claudecode 后端时由 chat-panel 注入。null 时整块不渲染。 */
   permissionModeSlot?: React.ReactNode;
   /** 焦点在 composer 内时按下 Shift+Tab 的钩子（用于循环切换 permission mode）。 */
@@ -394,6 +399,106 @@ function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   const v = n / 1000;
   return v >= 100 ? `${Math.round(v)}k` : `${v.toFixed(1)}k`;
+}
+
+// QuotaMeter 展示 Claude Code 订阅的 5h / 7d 配额。数据由 chat-panel 通过 useCCUsage
+// 拉取并传入(per-device, 不在这里订阅 store, 保证 Composer 可被纯 props 测试)。
+//
+// 渲染策略(与 cc_usage_svc.UsageState.reason 对齐):
+//   - undefined / 空 reason / "no_credentials" → 整块不渲染(API key 用户、未首探)
+//   - "ok" / "rate_limited"+stale / "network"+stale → 5h X% · 7d Y%, stale 时标 stale
+//   - "auth_expired" / "device_offline" / "network"无stale → 灰态占位 "5h —%"
+function QuotaMeter({
+  data,
+  deviceLabel,
+}: {
+  data?: import("../../../wailsjs/go/models").cc_usage_svc.UsageState;
+  deviceLabel?: string;
+}) {
+  if (!data || !data.reason) return null;
+  if (data.reason === "no_credentials") return null;
+
+  const showNumbers = data.data && (data.reason === "ok" || !!data.stale);
+  const fiveH = data.data ? Math.round(data.data.fiveHourPercent) : null;
+  const sevenD = data.data ? Math.round(data.data.weeklyPercent) : null;
+
+  // 阈值色:超 90% 红, 超 75% 黄, 其余正常。两个窗口取较高的那个驱动颜色。
+  const peak =
+    fiveH !== null && sevenD !== null ? Math.max(fiveH, sevenD) : (fiveH ?? 0);
+  const tone =
+    peak >= 90
+      ? "text-status-error"
+      : peak >= 75
+        ? "text-status-waiting"
+        : "text-muted-foreground";
+
+  const offline = data.reason === "auth_expired" || data.reason === "device_offline";
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 font-mono text-[10px] tabular-nums",
+        offline ? "text-subtle-foreground" : tone,
+      )}
+      aria-label={`Claude Code 配额 5h ${fiveH ?? "—"}% 7d ${sevenD ?? "—"}% 来自 ${deviceLabel || "local"}`}
+      title={describeQuotaTitle(data, deviceLabel)}
+    >
+      <Gauge className="size-2.5" aria-hidden="true" />
+      <span>5h {showNumbers && fiveH !== null ? `${fiveH}%` : "—%"}</span>
+      <span className="text-subtle-foreground">·</span>
+      <span>7d {showNumbers && sevenD !== null ? `${sevenD}%` : "—%"}</span>
+      {data.stale ? (
+        <span className="text-status-waiting">·stale</span>
+      ) : null}
+    </div>
+  );
+}
+
+// describeQuotaTitle 给 HoverCard / native tooltip 提供"完整文案"。
+// 不引入 HoverCard 组件以避免 Composer 引入复杂 Popover 状态;native title
+// 已经够透露 reset 时间 + sonnet/opus 拆分这种次要信息。
+function describeQuotaTitle(
+  data: import("../../../wailsjs/go/models").cc_usage_svc.UsageState,
+  deviceLabel?: string,
+): string {
+  const lines: string[] = [];
+  const device = deviceLabel || "local";
+  switch (data.reason) {
+    case "ok":
+      lines.push(`Claude Code 配额 · ${device}`);
+      break;
+    case "rate_limited":
+      lines.push(`Claude Code 配额 · ${device}(429 退避中, 显示上次值)`);
+      break;
+    case "network":
+      lines.push(`Claude Code 配额 · ${device}(网络错误, 显示上次值)`);
+      break;
+    case "auth_expired":
+      lines.push(`Claude Code OAuth 已过期 · 请在 ${device} 上运行 'claude /login'`);
+      break;
+    case "device_offline":
+      lines.push(`${device} 离线`);
+      break;
+    default:
+      lines.push(`Claude Code 配额 · ${device}`);
+  }
+  if (data.data) {
+    const five = data.data.fiveHourResetsAt
+      ? ` (重置 ${String(data.data.fiveHourResetsAt)})`
+      : "";
+    const seven = data.data.weeklyResetsAt
+      ? ` (重置 ${String(data.data.weeklyResetsAt)})`
+      : "";
+    lines.push(`5h: ${Math.round(data.data.fiveHourPercent)}%${five}`);
+    lines.push(`7d: ${Math.round(data.data.weeklyPercent)}%${seven}`);
+    if (data.data.sonnetWeeklyPercent != null) {
+      lines.push(`  Sonnet 7d: ${Math.round(data.data.sonnetWeeklyPercent)}%`);
+    }
+    if (data.data.opusWeeklyPercent != null) {
+      lines.push(`  Opus 7d: ${Math.round(data.data.opusWeeklyPercent)}%`);
+    }
+  }
+  return lines.join("\n");
 }
 
 function ContextMeter({ used, max }: { used: number; max: number }) {
@@ -459,6 +564,8 @@ function ChatComposer({
   onCancelEdit,
   topSlot,
   contextUsage,
+  quotaUsage,
+  quotaDeviceLabel,
   permissionModeSlot,
   onShiftTab,
   autoFocusOnMount = false,
@@ -599,6 +706,9 @@ function ChatComposer({
               <div className="flex items-center">{permissionModeSlot}</div>
             ) : null}
             <div className="min-w-0 flex-1" />
+            {!editing ? (
+              <QuotaMeter data={quotaUsage} deviceLabel={quotaDeviceLabel} />
+            ) : null}
             {contextUsage && contextUsage.max > 0 && !editing ? (
               <ContextMeter used={contextUsage.used} max={contextUsage.max} />
             ) : null}

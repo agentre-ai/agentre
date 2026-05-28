@@ -1,12 +1,22 @@
 import * as React from "react";
 
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { StreamSubscriber } from "./stream-subscriber";
 
 import type { ChatStreamEvent } from "@/hooks/use-chat-stream";
 import type { AgentStatus } from "@/stores/types";
+
+function bumpSessionTabToAfterPinned(sessionId: number): void {
+  const tabsState = useChatTabsStore.getState();
+  const tab = tabsState.tabs.find(
+    (t) => t.meta.kind === "session" && t.meta.sessionId === sessionId,
+  );
+  if (!tab) return;
+  tabsState.bumpToAfterPinned(tab.id);
+}
 
 // ChatStreamsHost 是「无 DOM 的全局订阅器」。挂在 App 顶层、Routes 同级,
 // 跨路由 不会 unmount —— 即使 /chat 被切走,这里的 <StreamSubscriber> 依然
@@ -125,6 +135,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
               ev.canonical,
             );
           } else {
+            bumpSessionTabToAfterPinned(sessionId);
             appendLiveAskUserQuestion(
               sessionId,
               ev.askUserQuestion,
@@ -149,6 +160,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
               ev.canonical,
             );
           } else {
+            bumpSessionTabToAfterPinned(sessionId);
             appendLiveToolPermissionRequest(
               sessionId,
               ev.toolPermission,
@@ -172,6 +184,15 @@ export function ChatStreamsHost(): React.ReactElement | null {
           const hasMode = !!ev.sessionStatus.permissionMode;
           if (!hasStatus && !hasMode) return;
           const prev = useSessionStatusStore.getState().statuses.get(sessionId);
+          if (
+            hasStatus &&
+            (ev.sessionStatus.needsAttention ||
+              nextStatus === "running" ||
+              nextStatus === "waiting" ||
+              nextStatus === "error")
+          ) {
+            bumpSessionTabToAfterPinned(sessionId);
+          }
           useSessionStatusStore.getState().upsert(sessionId, {
             // Wails boundary: backend sends agentStatus as string; cast to AgentStatus.
             agentStatus: (hasStatus
@@ -218,6 +239,9 @@ export function ChatStreamsHost(): React.ReactElement | null {
         case "error":
         case "closed":
         case "aborted":
+          if (ev.kind !== "closed") {
+            bumpSessionTabToAfterPinned(sessionId);
+          }
           finishStream(sessionId, ev);
           return;
       }

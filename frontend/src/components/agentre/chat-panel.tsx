@@ -32,6 +32,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useCCUsage } from "@/hooks/use-cc-usage";
 import { useChatSession } from "@/hooks/use-chat-session";
 import type { ChatStreamEvent } from "@/hooks/use-chat-stream";
 import { useProjectTree } from "@/hooks/use-project-tree";
@@ -384,6 +385,20 @@ function ChatPanel({
   // 时先保存在本地 state，首发 Send payload 会把 mode 写入新 session 行。
   const activeBackendType =
     session?.backendType ?? newSessionAgent?.backendType ?? "";
+
+  // Claude Code OAuth 配额 HUD:仅 claudecode backend 显示。device 维度:
+  // session.deviceID 非空时走 "remote:<id>",否则 local。配额是账号级、跨 session 共享,
+  // 后端 cc_usage_svc 已按 deviceKey 缓存,前端 hook 第一次见到 key 时拉一次缓存。
+  const quotaDeviceKey =
+    activeBackendType === "claudecode"
+      ? session?.deviceID
+        ? `remote:${session.deviceID}`
+        : "local"
+      : "";
+  const quotaUsage = useCCUsage(quotaDeviceKey);
+  const quotaDeviceLabel = session?.deviceID
+    ? session?.deviceName || `device #${session.deviceID}`
+    : "本机";
   // caps 来自后端 runtime 的 Capabilities — UI 不再按 backendType 硬分支。
   // 已有 session 走 GetSessionCapabilities;新对话(sessionId<=0)按
   // newSessionAgent.backendType 走 GetBackendCapabilities — 这样 PermissionModePill
@@ -1180,6 +1195,8 @@ function ChatPanel({
                 // 用户一进来就能直接打字。续聊已有会话不抢焦点，避免打断侧栏切换的鼠标交互。
                 autoFocusOnMount={!!newSessionAgent}
                 contextUsage={composerContextUsage}
+                quotaUsage={quotaUsage}
+                quotaDeviceLabel={quotaDeviceLabel}
                 permissionModeSlot={
                   isModeSwitchable ? (
                     <PermissionModePill

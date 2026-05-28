@@ -28,6 +28,7 @@ const appMocks = vi.hoisted(() => ({
   DeleteChatSession: vi.fn(),
   EditChatMessage: vi.fn(),
   EnqueueChatMessage: vi.fn(),
+  GetCCUsage: vi.fn().mockResolvedValue({ reason: "" }),
   GetChatLaunchCommand: vi.fn(),
   LoadChatSession: vi.fn(),
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),

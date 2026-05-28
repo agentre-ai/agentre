@@ -413,6 +413,43 @@ func TestTranslate_RuntimeStatus(t *testing.T) {
 	})
 }
 
+// TestTranslate_InitEmitsContextWindowFromCatalog —— claudecode CLI 在 system.init
+// 帧告诉我们本轮用的是哪个模型。Claude Code SDK 不直接报上下文窗口大小,需要 translator
+// 拿 model 名查 cago llmcatalog 兜底,然后 emit ContextWindowUpdated 把窗口大小推给
+// chat_svc 实时刷新前端进度条总量,不必等 EventDone 才知道。
+//
+// 命中已知模型 → emit ContextWindowUpdated{Tokens: <catalog 窗口大小>}。
+func TestTranslate_InitEmitsContextWindowFromCatalog(t *testing.T) {
+	Convey("EventInit 已知 model → ContextWindowUpdated{Tokens: catalog window}", t, func() {
+		out, _, _ := translate(claudecode.Event{
+			Kind:  claudecode.EventInit,
+			Model: "claude-sonnet-4-6",
+		})
+		So(len(out), ShouldEqual, 1)
+		cw, ok := out[0].(agentruntime.ContextWindowUpdated)
+		So(ok, ShouldBeTrue)
+		So(cw.Tokens, ShouldBeGreaterThan, 0)
+	})
+}
+
+// TestTranslate_InitUnknownModelNoEmit —— catalog miss 时不 emit ContextWindowUpdated
+// (Tokens=0 会让前端"显示进度条但分母是 0"更难看)。下游 chat_svc resolveContextWindow*
+// 仍会用 provider.ContextWindow / provider.Model 兜底,不依赖本事件。
+func TestTranslate_InitUnknownModelNoEmit(t *testing.T) {
+	Convey("EventInit 未知 model → 不 emit", t, func() {
+		out, _, _ := translate(claudecode.Event{
+			Kind:  claudecode.EventInit,
+			Model: "totally-unknown-xyz-model",
+		})
+		So(out, ShouldBeNil)
+	})
+
+	Convey("EventInit 空 model → 不 emit (防御:pkg/claudecode 本身已经过滤,这里再守一道)", t, func() {
+		out, _, _ := translate(claudecode.Event{Kind: claudecode.EventInit})
+		So(out, ShouldBeNil)
+	})
+}
+
 // TestTranslate_Usage_PerCallAnthropicFamily TotalInputTokens 按 Anthropic family
 // 聚合:prompt + cached + cacheCreation。event.go:109 documented contract,
 // 前端不再做家族数学。

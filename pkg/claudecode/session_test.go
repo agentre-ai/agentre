@@ -246,9 +246,16 @@ func TestSession_Interrupt(t *testing.T) {
 	require.NoError(t, err)
 
 	// 等 partial 出来再 Interrupt，否则可能在 user frame 被 fake 处理之前就发 ctrl 帧。
-	first, ok := <-ch
-	require.True(t, ok, "expected at least one event before interrupt")
-	assert.Equal(t, EventTextDelta, first.Kind)
+	// init 帧先到 → EventInit;跳过非 text_delta 直到拿到 partial 文本。
+	var first Event
+	for {
+		ev, ok := <-ch
+		require.True(t, ok, "expected partial text_delta before interrupt")
+		if ev.Kind == EventTextDelta {
+			first = ev
+			break
+		}
+	}
 	assert.Equal(t, "partial:long-job", first.Text)
 
 	require.NoError(t, sess.Interrupt(ctx))
@@ -310,9 +317,14 @@ func TestSession_SetPermissionMode_MidTurn(t *testing.T) {
 	require.NoError(t, err)
 
 	// 等 partial 出来再切 mode，保证 Turn goroutine 已经在读 scanner。
-	first, ok := <-ch
-	require.True(t, ok, "expected at least one event before set-mode")
-	assert.Equal(t, EventTextDelta, first.Kind)
+	// init 帧先到 → EventInit;跳过非 text_delta 直到看到 partial 文本。
+	for {
+		ev, ok := <-ch
+		require.True(t, ok, "expected partial text_delta before set-mode")
+		if ev.Kind == EventTextDelta {
+			break
+		}
+	}
 
 	// 给 SetPermissionMode 一个紧凑的截止：当前实现卡在 turnMu 上会让本步超时。
 	setCtx, setCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
@@ -645,6 +657,29 @@ func TestSession_StreamEventMessageDeltaUsage(t *testing.T) {
 	// EventUsage(避免进度条骤降到 0)。
 	require.Len(t, usageEvents, 1, "应仅 message_delta emit 一条 EventUsage,merged assistant 帧的 0 usage 不该 emit")
 	assert.Equal(t, 1180, usageEvents[0].Usage.PromptTokens)
+}
+
+// TestSession_EmitsEventInitOnSystemInitWithModel —— 长 Session 多轮场景下,每个
+// turn 开头 CLI 都会发 system.init(model 可能变),parseLine 应当 emit 一条
+// EventInit 携带 SessionID + Model,让上层 agentruntime 实时刷新 catalog 兜底的
+// context window,而不是等 EventDone 才知道。
+func TestSession_EmitsEventInitOnSystemInitWithModel(t *testing.T) {
+	s := &Session{}
+	evs, _ := s.parseLine([]byte(`{"type":"system","subtype":"init","session_id":"sx","model":"claude-sonnet-4-6"}`))
+	require.Len(t, evs, 1, "system.init 帧带 model 时应 emit 一条 EventInit")
+	assert.Equal(t, EventInit, evs[0].Kind)
+	assert.Equal(t, "sx", evs[0].SessionID)
+	assert.Equal(t, "claude-sonnet-4-6", evs[0].Model)
+}
+
+// TestSession_DoesNotEmitEventInitWhenModelMissing —— init 帧不报 model 时不发
+// EventInit,避免引导上层用空 model 做无效 catalog 查询。
+func TestSession_DoesNotEmitEventInitWhenModelMissing(t *testing.T) {
+	s := &Session{}
+	evs, _ := s.parseLine([]byte(`{"type":"system","subtype":"init","session_id":"sx"}`))
+	for _, ev := range evs {
+		assert.NotEqual(t, EventInit, ev.Kind, "model 缺省时不应 emit EventInit")
+	}
 }
 
 // TestSession_ReplayRealRawLog 端到端回放:如果 AGENTRE_REPLAY_CC_RAW 指向一份

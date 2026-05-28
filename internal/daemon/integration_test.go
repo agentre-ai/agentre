@@ -30,6 +30,7 @@ import (
 	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/pkg/agentruntime/runtimes/remote"
 	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"agentre/internal/pkg/ccoauth"
 	remotefswire "agentre/internal/pkg/remotefs/wire"
 
 	"github.com/cago-frame/agents/provider"
@@ -718,6 +719,89 @@ func TestIntegration_HealthPing(t *testing.T) {
 	require.Error(t, err, "health.ping must be rejected without auth")
 	var rpcErr *rpc.Error
 	require.True(t, errors.As(err, &rpcErr), "error must be *rpc.Error")
+	assert.Equal(t, -32001, rpcErr.Code)
+}
+
+// TestIntegration_CCUsage 验证 claudecode.usage RPC 注册成功、走过 auth 鉴权、
+// 并把 CCUsageFetcher 注入的结果正确序列化回客户端。
+// (test 名故意保持短:macOS 单元 socket 路径上限 104 字节,t.TempDir 已经吃掉很多)
+func TestIntegration_CCUsage(t *testing.T) {
+	stub := func(_ context.Context) (*ccoauth.RateLimits, error) {
+		return &ccoauth.RateLimits{FiveHourPercent: 73, WeeklyPercent: 25}, nil
+	}
+	dir := t.TempDir()
+	d, err := New(Options{
+		DataDir:        dir,
+		LANHost:        "127.0.0.1",
+		LANPort:        0,
+		CCUsageFetcher: stub,
+	})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case <-errCh:
+		case <-time.After(3 * time.Second):
+		}
+	}()
+	require.Eventually(t, func() bool {
+		select {
+		case e := <-errCh:
+			t.Logf("daemon Run exited early: %v", e)
+			errCh <- e
+			return false
+		default:
+		}
+		d.mu.RLock()
+		ready := d.lan != nil && d.lan.Addr() != ""
+		d.mu.RUnlock()
+		return ready
+	}, 2*time.Second, 10*time.Millisecond)
+
+	pairBody := readLocalPair(t, d)
+	code, _ := pairBody["code"].(string)
+	require.Len(t, code, 6)
+
+	d.mu.RLock()
+	serverURL := d.lan.URL()
+	d.mu.RUnlock()
+
+	callCtx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ccancel()
+
+	c, err := client.Dial(callCtx, client.Options{URL: serverURL})
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	var pairResp struct {
+		DeviceToken string `json:"deviceToken"`
+	}
+	require.NoError(t, c.Call(callCtx, "auth.pair", map[string]any{
+		"code":              code,
+		"deviceName":        "test-cc",
+		"deviceFingerprint": "sha256:test-ccusage",
+	}, &pairResp))
+
+	var got handlers.CCUsageResult
+	err = c.Call(callCtx, "claudecode.usage", nil, &got)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got.Reason)
+	require.NotNil(t, got.Data)
+	assert.Equal(t, float64(73), got.Data.FiveHourPercent)
+	assert.Equal(t, float64(25), got.Data.WeeklyPercent)
+
+	// 鉴权门禁:裸连接(未 auth.pair)必须被拒,统一 -32001。
+	raw, err := client.Dial(callCtx, client.Options{URL: serverURL})
+	require.NoError(t, err)
+	defer func() { _ = raw.Close() }()
+	var any2 any
+	err = raw.Call(callCtx, "claudecode.usage", nil, &any2)
+	require.Error(t, err)
+	var rpcErr *rpc.Error
+	require.True(t, errors.As(err, &rpcErr))
 	assert.Equal(t, -32001, rpcErr.Code)
 }
 

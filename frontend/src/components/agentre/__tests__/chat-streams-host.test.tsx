@@ -2,6 +2,7 @@ import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { ChatStreamsHost } from "../chat-streams-host";
@@ -16,6 +17,7 @@ vi.mock("../../../../wailsjs/runtime/runtime", () => runtimeMocks);
 
 function resetStores() {
   useChatStreamsStore.setState({ streams: new Map() });
+  useChatTabsStore.setState({ tabs: [], activeTabId: null });
   useSessionStatusStore.getState().__reset();
   runtimeMocks.EventsOn.mockReset();
   runtimeMocks.EventsOn.mockImplementation(() => vi.fn());
@@ -31,6 +33,43 @@ function registeredHandler(): (ev: ChatStreamEvent) => void {
 describe("ChatStreamsHost", () => {
   beforeEach(() => {
     resetStores();
+  });
+
+  it("Given an open tab behind others, When a tool permission event arrives, Then the tab moves after pinned tabs", async () => {
+    useChatTabsStore.getState().openSessionInNewTab(1);
+    useChatTabsStore.getState().openSessionInNewTab(2);
+    useChatTabsStore.getState().openSessionInNewTab(42);
+    const pinnedId = useChatTabsStore.getState().tabs[0].id;
+    useChatTabsStore.getState().togglePin(pinnedId);
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+
+    render(<ChatStreamsHost />);
+
+    await waitFor(() => expect(runtimeMocks.EventsOn).toHaveBeenCalled());
+    const handler = registeredHandler();
+
+    act(() => {
+      handler({
+        kind: "tool_permission_request",
+        toolPermission: {
+          requestId: "perm-1",
+          toolName: "Bash",
+          toolInput: {},
+          resolved: false,
+        },
+      });
+    });
+
+    expect(
+      useChatTabsStore
+        .getState()
+        .tabs.map((t) => (t.meta as { sessionId: number }).sessionId),
+    ).toEqual([1, 42, 2]);
   });
 
   it("applies contextWindow-only session_status patches to the live stream without clearing status", async () => {

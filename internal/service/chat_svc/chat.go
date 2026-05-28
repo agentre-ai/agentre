@@ -2027,7 +2027,11 @@ func (s *chatSvc) runTurn(
 		}
 	}
 	_ = chat_repo.Session().Update(finalCtx, sess)
-	if awaitingPlanAction {
+	// 末端状态翻转主动推一帧 session_status:后台 session 出错/等审批时,前端 tab
+	// 只订阅本会话 stream,StreamError 走 finishStream→bumpDone 不动 agentStatus,
+	// 不补一刀 tab 红点要等下次 ListChatAgents 才同步。idle 不发 —— turn 正常收尾
+	// 走 StreamDone,前端 chat-panel doneTick effect 会 reloadSession 主动拉一次。
+	if (stopErr != nil && !aborted) || awaitingPlanAction {
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 			Kind: StreamSessionStatus,
 			SessionStatus: &ChatSessionStatusPatch{
@@ -2418,6 +2422,16 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 	sess.AgentStatus = "error"
 	sess.NeedsAttention = false
 	_ = chat_repo.Session().Update(ctx, sess)
+	// session_status 必须先于 StreamError emit:前端 chat-streams-host 收到 error
+	// 立刻 finishStream 删 LiveStream entry → StreamSubscriber 紧接着 unmount,后到
+	// 的 session_status 永远收不到。后台 session 出错时只靠 bumpDone 不会翻 tab 红点。
+	s.emitter.Emit(ctx, stream, ChatStreamEvent{
+		Kind: StreamSessionStatus,
+		SessionStatus: &ChatSessionStatusPatch{
+			AgentStatus:    sess.AgentStatus,
+			NeedsAttention: sess.NeedsAttention,
+		},
+	})
 	s.emitter.Emit(ctx, stream, ChatStreamEvent{
 		Kind:    StreamError,
 		Error:   err.Error(),

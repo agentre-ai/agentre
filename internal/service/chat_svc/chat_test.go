@@ -811,6 +811,13 @@ func (r streamErrorRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-
 	return events, &agentruntime.RunResult{}, nil
 }
 
+type failRunner struct{ err error }
+
+func (failRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+func (r failRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, r.err
+}
+
 type streamRetryRunner struct{}
 
 func (streamRetryRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
@@ -1911,6 +1918,151 @@ func TestSend_StreamErrorEventCarriesFinalAssistantMessage(t *testing.T) {
 		assert.Equal(t, "upstream failed", errorEvent.Message.ErrorText)
 		assert.Equal(t, "partial answer", errorEvent.Message.Blocks[0].Text)
 	}
+}
+
+// TestSend_StreamErrorAlsoEmitsSessionStatusError 回归:turn 内 ErrorEvent 触发
+// stopErr 末端把 DB 翻 "error" 后,必须 emit 一帧 StreamSessionStatus{agentStatus:
+// "error"}。否则后台 session 出错时,tab 的 status dot 翻红要等下次 ListChatAgents
+// 才同步 —— bumpDone 只动 doneTick,不改 agentStatus。session_status patch 必须
+// 在 StreamError 之前 emit,否则前端 finishStream 已经把 LiveStream entry 删了,
+// StreamSubscriber 紧接着 unmount,后到的 session_status 永远收不到。
+func TestSend_StreamErrorAlsoEmitsSessionStatusError(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, streamErrorRunner{})
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	patches := captureSessionStatusPatches(m.events)
+	require.NotEmpty(t, patches, "stopErr 末端必须 emit 一帧 StreamSessionStatus 给前端,否则 tab 不翻红")
+	last := patches[len(patches)-1]
+	assert.Equal(t, "error", last.AgentStatus)
+	assert.False(t, last.NeedsAttention, "error 态不需要 needsAttention")
+
+	// 顺序:session_status 必须先于 StreamError emit。
+	errorIdx, statusIdx := -1, -1
+	for i, ev := range m.events {
+		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+		if !ok {
+			continue
+		}
+		if statusIdx < 0 && payload.Kind == chat_svc.StreamSessionStatus &&
+			payload.SessionStatus != nil && payload.SessionStatus.AgentStatus == "error" {
+			statusIdx = i
+		}
+		if errorIdx < 0 && payload.Kind == chat_svc.StreamError {
+			errorIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, statusIdx, 0, "缺 session_status(error)")
+	require.GreaterOrEqual(t, errorIdx, 0, "缺 StreamError")
+	assert.Less(t, statusIdx, errorIdx,
+		"session_status 必须先于 StreamError,否则前端已经 finishStream 把订阅撤了")
+}
+
+// TestSend_FailTurnEmitsSessionStatusError 回归:runner.Run 直接同步返错走 failTurn,
+// failTurn 把 DB 翻 "error" 后必须 emit 一帧 StreamSessionStatus{agentStatus:"error"}
+// 给前端,语义与 stopErr 末端一致。同样要在 StreamError 之前 emit。
+func TestSend_FailTurnEmitsSessionStatusError(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(
+		agent_backend_entity.TypeBuiltin,
+		failRunner{err: errors.New("runner boom")},
+	)
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	patches := captureSessionStatusPatches(m.events)
+	require.NotEmpty(t, patches, "failTurn 必须 emit 一帧 StreamSessionStatus(error)")
+	last := patches[len(patches)-1]
+	assert.Equal(t, "error", last.AgentStatus)
+	assert.False(t, last.NeedsAttention)
+
+	errorIdx, statusIdx := -1, -1
+	for i, ev := range m.events {
+		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+		if !ok {
+			continue
+		}
+		if statusIdx < 0 && payload.Kind == chat_svc.StreamSessionStatus &&
+			payload.SessionStatus != nil && payload.SessionStatus.AgentStatus == "error" {
+			statusIdx = i
+		}
+		if errorIdx < 0 && payload.Kind == chat_svc.StreamError {
+			errorIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, statusIdx, 0, "缺 session_status(error)")
+	require.GreaterOrEqual(t, errorIdx, 0, "缺 StreamError")
+	assert.Less(t, statusIdx, errorIdx,
+		"session_status 必须先于 StreamError,否则前端已经 finishStream 把订阅撤了")
 }
 
 func TestSend_StreamRetryEventIsForwardedWithoutFailingTurn(t *testing.T) {

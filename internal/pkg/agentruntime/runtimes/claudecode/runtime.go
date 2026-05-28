@@ -70,6 +70,9 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			capability.CapAnswerUserAsk:  true,
 			capability.CapToolPermission: true,
 			capability.CapForkSession:    true,
+			// translator.EventInit 路径用 llmcatalog 兜底 emit ContextWindowUpdated;
+			// Claude Code SDK 协议本身不报窗口,这里靠 catalog 给前端 turn 内总量。
+			capability.CapReportContextWindow: true,
 		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},

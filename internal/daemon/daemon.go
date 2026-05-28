@@ -19,6 +19,7 @@ import (
 	"agentre/internal/daemon/sessions"
 	"agentre/internal/daemon/state"
 	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"agentre/internal/pkg/ccoauth"
 	"agentre/internal/pkg/httpgateway"
 )
 
@@ -29,6 +30,11 @@ type Options struct {
 	LANPort     int
 	TLSCertFile string
 	TLSKeyFile  string
+
+	// CCUsageFetcher 注入 claudecode.usage handler 用的 OAuth 拉取函数。
+	// 留空 → 走 ccoauth.NewLocalFetcher()(从当前机器环境读 token + 调真实 endpoint);
+	// 集成测试传入 stub 屏蔽真实网络 / 真实 keychain。
+	CCUsageFetcher handlers.CCUsageFetcher
 }
 
 // Daemon assembles and runs all agentred sub-systems.
@@ -152,6 +158,16 @@ func (d *Daemon) registerMethods() {
 
 	healthH := handlers.NewHealthHandlers(d.state.InstanceUUID(), d.state)
 	d.registry.Register("health.ping", wrapGuardedNoParams(healthH.Ping))
+
+	// claudecode.usage:agentred 在它自己所在机器上读 Claude Code 的 OAuth 凭证
+	// 并调 api.anthropic.com/api/oauth/usage,返回 5h/7d 配额给桌面 HUD。每台
+	// device 的配额是该机器登录账号的,所以必须就地读不能由桌面代理。
+	ccFetcher := d.opts.CCUsageFetcher
+	if ccFetcher == nil {
+		ccFetcher = ccoauth.NewLocalFetcher()
+	}
+	ccUsageH := handlers.NewCCUsageHandlers(ccFetcher)
+	d.registry.Register("claudecode.usage", wrapGuardedNoParams(ccUsageH.Get))
 
 	// runtime.* RPC 族 1:1 镜像 agentruntime.Runtime + 7 个可选子接口,
 	// 把远端 agentre 当成「本地」backend 跑。Handler 在 bindConn

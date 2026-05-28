@@ -48,7 +48,7 @@
 | `CapAnswerUserAsk` / `"answer_user_ask"` | `AskAnswerSink` | ❌ | ✅ | ✅ | 反向问用户问题（单选 / 多选 / Other / 密码框）；Skip 必须走 deny 而非空 map，否则 turn 静默挂死 |
 | `CapToolPermission` / `"tool_permission_gate"` | `ToolPermissionSink` | ❌ | ✅ `can_use_tool` | ❌ | 工具执行前 allow/deny 审批 + 「Remember for session」+ DenyReason 回灌 LLM；codex 无等价协议 |
 | `CapForkSession` / `"fork_session"` | `RunRequest.ForkAnchor` 内置 | ❌ | ✅ `--fork-session` | ✅ `thread/rollback` | 「重新生成」从某个 anchor 派生新 session 重跑 |
-| `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ❌ | ✅ | runtime 探到模型实际上下文窗口大小后 emit，前端展示用量条 |
+| `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ✅ | ✅ | runtime 探到模型实际上下文窗口大小后 emit，前端展示用量条；claudecode SDK 自己不报窗口，translator 在 `system.init` 帧上查 `llmcatalog` 兜底 |
 | `CapCompact` / `"compact"` | `RunRequest.Compact=true` | ❌ | ❌ | ✅ | 原生 compact turn——让 LLM 把历史摘要后清掉占用 |
 
 > **规则**：未声明 cap 调对应接口必须返 `agentruntime.ErrUnsupported`（sentinel 错误，跨进程透明，chat_svc 据此翻成 wire code）。声明 cap=true 但未实现接口会被 `TestXxxCapabilities` 矩阵测试卡掉（type-assert 失败）。
@@ -216,7 +216,7 @@ permission mode 是**会话级权限状态机**（不是 plan 内容）。三个
 | `CapAnswerUserAsk` | `AskAnswerSink` | 处理反向 ask_user_question |
 | `CapToolPermission` | `ToolPermissionSink` | 处理 `can_use_tool` 协议 |
 | `CapForkSession` | `RunRequest.ForkAnchor` 内置语义 | 「重新生成」走 fork |
-| `CapReportContextWindow` | emit `ContextWindowUpdated` | runtime 能探到模型实际窗口 |
+| `CapReportContextWindow` | emit `ContextWindowUpdated` | runtime 能探到模型实际窗口（codex 协议原生有；claudecode 靠 `llmcatalog.Lookup(model)` 兜底） |
 | `CapCompact` | `RunRequest.Compact=true` 内置语义 | 原生 compact turn |
 
 不实现的 cap：**chat_svc 拿到前端请求时返回 `ErrUnsupported`**——错误码已经在 wire 层 sentinel 化跨进程透明传递，**不要私造错误**。
