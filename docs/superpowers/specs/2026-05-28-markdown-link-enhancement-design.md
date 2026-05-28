@@ -13,7 +13,20 @@
 2. 长 URL / 长路径在 link 文本里被截短显示（如 `[file.go:42](...)`），用户看不到完整目标。
 3. 无法区分 URL、cwd 内路径、cwd 外路径三种语义。
 
-remark-gfm 自动 linkify 已经处理 `https://` / `www.` 裸文本，这次**不做**裸文本路径的 auto-linkify（AI 都用 markdown link 形式输出路径）。
+remark-gfm 自动 linkify 已经处理 `https://` / `www.` 裸文本，这次**不做**裸文本路径的 auto-linkify。
+
+### DB 实测 — AI 路径输出形态分布
+
+扫 `chat_messages.blocks_json` 里 assistant 文本，过滤出真实 AI 输出里的路径出现形态：
+
+| 形态 | 次数 | 渲染结果 | 本次是否处理 |
+|---|---|---|---|
+| `[name](/abs/path:line)` markdown link | 58 | `<a href="/abs/path:line">name</a>` | ✅ 本 spec 覆盖 |
+| `[name](relative/path)` markdown link | 0 | — | — |
+| `` `internal/foo.go` `` inline code | 49 | `<code>internal/foo.go</code>` | ❌ 不处理 |
+| 自由 prose 里裸路径 (无 link / 无 code) | 9 (全部在 ```text 围栏代码块里) | `<code>` block | ❌ 不处理 |
+
+结论：所有真实出现的"可点击需求"都对应 markdown link 形态，本 spec 处理完即可覆盖 ~95%（58/(58+49)）的可点击意图。Inline code path 的剩 49 次留作未来扩展（见 §未来工作）。
 
 ## 目标
 
@@ -164,13 +177,16 @@ func (a *App) OpenPath(ctx context.Context, path string) error {
 
 `exec.Command` 用 `internal/pkg/exec` 之类的 wrapper 抽象（如果有），方便 stub。
 
+## 未来工作（不在本 spec 范围）
+
+- **Inline code path 增强**：把 `` `internal/foo.go` `` / `` `/Users/x/foo.go` `` 也变可点。需要在 `markdownComponents.code` 里加路径形态检测，包 RichLink。挑战是路径形态正则的精度（避免把代码片段里的 path-shape 字符串误识别为文件链接）；可以加 "调用 IPC 验路径在 cwd 下是否真实存在" 的二次确认，但 stream 中频繁问后端需要 debounce / cache，复杂度上升。
+- **编辑器跳转协议**：`OpenPath` 行号目前只 strip 后由 OS 默认 handler 打开；之后可加 setting `defaultEditorScheme: 'vscode' | 'cursor' | 'system'`，按 scheme 拼 `vscode://file/{path}:{line}` 这种形态。
+
 ## 风险 / Open Questions
 
 1. **react-markdown urlTransform** 默认会 strip `file://`。需要在 `ReactMarkdown` 上加 `urlTransform={(url) => url}` 关掉 sanitization，**但这会让 `javascript:` 等危险协议也被透传**。Mitigation：`classify()` 里只对已知安全的几种 prefix 增强，其余 fallback 到原有 `<a>` —— 但原有 `<a>` 拿到 `javascript:` 仍然危险。所以我们的 `urlTransform` 要自己实现：放过 `http/https/mailto/tel/file/^/^[A-Za-z]:`，其他统一 strip。这个 transform 应该和 `classify()` 共用 prefix 表。
 2. **行号后缀的 `:` 在 Windows 盘符里的歧义** —— `C:\foo.go:42` 第一次 `:` 是盘符，第二次才是行号。正则要从末尾匹配，且只匹配 `:\d+` 形态。已经在 `classify` 里靠"末尾 anchor"正则规避。
 3. **复制按钮的可达性** —— popover 在 hover 离开 link 后会消失。需要 `HoverCard` 的 trigger delay = 200ms / closeDelay > 0，让用户能从 link 滑到 popover 里。shadcn `HoverCard` 默认 closeDelay 300ms，够用。
-4. **VS Code / 编辑器跳转**这次不做；之后若加，新增 setting `defaultEditorScheme: 'vscode' | 'cursor' | 'system'`，`OpenPath` 按 setting 拼 URL。
-
 ## 关键文件
 
 - `frontend/src/components/agentre/markdown-text.tsx` — `a` override 改成 `RichLink`，新增 `cwd` prop
