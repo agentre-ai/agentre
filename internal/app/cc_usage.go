@@ -85,7 +85,7 @@ func (a *App) startCCUsage() func() {
 		wailsruntime.EventsEmit(a.ctx, "cc_usage:update", p)
 	})
 	mgr.SetFetcherResolver(a.buildCCUsageResolver())
-	mgr.StartTicker(a.ctx, cc_usage_svc.LocalKey, 60*time.Second)
+	mgr.StartTicker(a.ctx, cc_usage_svc.LocalKey, 2*time.Minute)
 
 	go func() {
 		select {
@@ -102,7 +102,7 @@ func (a *App) startCCUsage() func() {
 				for _, v := range views {
 					if v.Online {
 						key := cc_usage_svc.DeviceKey(fmt.Sprintf("remote:%d", v.ID))
-						mgr.StartTicker(a.ctx, key, 60*time.Second)
+						mgr.StartTicker(a.ctx, key, 2*time.Minute)
 						mgr.Probe(a.ctx, key)
 					}
 				}
@@ -119,7 +119,7 @@ func (a *App) onRemoteDeviceState(id int64, online bool) {
 	key := cc_usage_svc.DeviceKey(fmt.Sprintf("remote:%d", id))
 	mgr := cc_usage_svc.CCUsage()
 	if online {
-		mgr.StartTicker(a.ctx, key, 60*time.Second)
+		mgr.StartTicker(a.ctx, key, 2*time.Minute)
 		go mgr.Probe(a.ctx, key)
 		return
 	}
