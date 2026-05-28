@@ -21,6 +21,8 @@ import (
 	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"agentre/internal/pkg/ccoauth"
 	"agentre/internal/pkg/httpgateway"
+	"agentre/internal/pkg/pty"
+	"agentre/internal/pkg/pty/local"
 )
 
 // Options configures the Daemon at construction time.
@@ -238,6 +240,19 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	d.registry.Register(wire.MethodSetPermissionMode, wrapGuardedSentinel(rh.SetPermissionMode))
 	d.registry.Register(wire.MethodSubmitAnswer, wrapGuardedSentinel(rh.SubmitAnswer))
 	d.registry.Register(wire.MethodSubmitToolPermission, wrapGuardedSentinel(rh.SubmitToolPermission))
+
+	// Terminal: local PTY backend; per-conn emitter pushes terminal.data /
+	// terminal.exit events back over this ws connection (same per-conn rationale
+	// as runtime.* above — events are scoped to whoever opened the terminal).
+	termBackend := localPTYBackendAdapter{be: local.NewBackend()}
+	termEmitter := handlers.EmitterFunc(func(_ context.Context, name string, payload any) {
+		_ = n.Notify(name, payload)
+	})
+	termH := handlers.NewTerminalHandlers(termBackend, termEmitter)
+	d.registry.Register("terminal.open", wrapGuarded(termH.Open))
+	d.registry.Register("terminal.write", wrapGuarded(termH.Write))
+	d.registry.Register("terminal.resize", wrapGuarded(termH.Resize))
+	d.registry.Register("terminal.close", wrapGuarded(termH.Close))
 }
 
 // wrapGuarded is wrap + requireAuth check. Use for any method except auth.*.
@@ -323,3 +338,16 @@ func ipFromContext(ctx context.Context) string {
 	}
 	return ""
 }
+
+// localPTYBackendAdapter bridges *local.Backend (returns pty.Handle) to
+// handlers.PTYBackend (returns handlers.PTYHandle). The returned pty.Handle
+// structurally satisfies handlers.PTYHandle (identical method set).
+type localPTYBackendAdapter struct {
+	be *local.Backend
+}
+
+func (a localPTYBackendAdapter) Open(ctx context.Context, spec pty.Spec) (handlers.PTYHandle, error) {
+	return a.be.Open(ctx, spec)
+}
+
+var _ handlers.PTYBackend = localPTYBackendAdapter{}
