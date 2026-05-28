@@ -102,3 +102,68 @@ func TestTerminal_Close_CallsHandleClose(t *testing.T) {
 	_, err := h.Close(context.Background(), protocol.TerminalCloseParams{TerminalID: res.TerminalID})
 	require.NoError(t, err)
 }
+
+func TestTerminal_Pump_EmitsDataEvent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mbe := mock_handlers.NewMockPTYBackend(ctrl)
+	mh := mock_handlers.NewMockPTYHandle(ctrl)
+	dataCh := make(chan []byte, 1)
+	exitCh := make(chan pty.ExitInfo)
+	mh.EXPECT().Data().AnyTimes().Return(dataCh)
+	mh.EXPECT().Exit().AnyTimes().Return(exitCh)
+	mbe.EXPECT().Open(gomock.Any(), gomock.Any()).Return(mh, nil)
+
+	rec := &recordingEmitter{}
+	h := handlers.NewTerminalHandlers(mbe, rec)
+	res, _ := h.Open(context.Background(), protocol.TerminalOpenParams{Cols: 80, Rows: 24})
+
+	dataCh <- []byte("hello")
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.events) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	require.Len(t, rec.events, 1)
+	assert.Equal(t, handlers.EventNameTerminalData, rec.events[0].Name)
+	pay := rec.events[0].Payload.(protocol.TerminalDataEvent)
+	assert.Equal(t, res.TerminalID, pay.TerminalID)
+	assert.Equal(t, "hello", pay.Data)
+}
+
+func TestTerminal_Pump_EmitsExitAndClearsMap(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mbe := mock_handlers.NewMockPTYBackend(ctrl)
+	mh := mock_handlers.NewMockPTYHandle(ctrl)
+	dataCh := make(chan []byte)
+	exitCh := make(chan pty.ExitInfo, 1)
+	mh.EXPECT().Data().AnyTimes().Return(dataCh)
+	mh.EXPECT().Exit().AnyTimes().Return(exitCh)
+	mbe.EXPECT().Open(gomock.Any(), gomock.Any()).Return(mh, nil)
+
+	rec := &recordingEmitter{}
+	h := handlers.NewTerminalHandlers(mbe, rec)
+	res, _ := h.Open(context.Background(), protocol.TerminalOpenParams{Cols: 80, Rows: 24})
+
+	exitCh <- pty.ExitInfo{Code: 0, Reason: "natural"}
+	close(exitCh)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.events) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	require.Len(t, rec.events, 1)
+	assert.Equal(t, handlers.EventNameTerminalExit, rec.events[0].Name)
+
+	_, err := h.Write(context.Background(), protocol.TerminalWriteParams{TerminalID: res.TerminalID})
+	assert.ErrorIs(t, err, handlers.ErrTerminalNotFound)
+}
