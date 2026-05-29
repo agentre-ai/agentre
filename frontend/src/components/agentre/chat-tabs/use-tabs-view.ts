@@ -19,6 +19,7 @@ import type { TabStatus } from "./tab";
 export type TabView = {
   id: string;
   title: string;
+  kind: "session" | "new" | "terminal";
   avatar: { letter: string; color: string };
   isPreview: boolean;
   isPinned: boolean;
@@ -93,6 +94,7 @@ export function useTabsView(): TabView[] {
     return {
       id: t.id,
       title: meta?.title ?? t.title ?? "(会话)",
+      kind: t.meta.kind,
       avatar: { letter: avatarLetter, color: avatarColor },
       isPreview: t.isPreview,
       isPinned: t.isPinned,

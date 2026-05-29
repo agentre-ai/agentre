@@ -211,6 +211,7 @@ const SortableTab = React.forwardRef<HTMLSpanElement, SortableTabProps>(
         >
           <Tab
             title={tab.title}
+            kind={tab.kind}
             avatar={tab.avatar}
             active={active}
             isPreview={tab.isPreview}

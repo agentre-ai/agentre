@@ -61,6 +61,16 @@ describe("Tab 组件", () => {
     );
   });
 
+  it("kind='terminal' 显示终端图标(替代头像) + title 用传入的 title", () => {
+    const { container } = render(
+      <Tab {...baseProps} kind="terminal" title="终端 · MacMini" />,
+    );
+    expect(
+      container.querySelector(".lucide-square-terminal"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("终端 · MacMini")).toBeInTheDocument();
+  });
+
   it("单击触发 onActivate", async () => {
     const user = userEvent.setup();
     const onActivate = vi.fn();

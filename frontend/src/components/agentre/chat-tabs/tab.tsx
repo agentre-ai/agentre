@@ -1,6 +1,6 @@
 // frontend/src/components/agentre/chat-tabs/tab.tsx
 import * as React from "react";
-import { Loader2, Pin, X } from "lucide-react";
+import { Loader2, Pin, TerminalSquare, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -8,6 +8,7 @@ export type TabStatus = "idle" | "running" | "waiting" | "error";
 
 export type TabProps = {
   title: string;
+  kind?: "session" | "new" | "terminal";
   avatar: { letter: string; color: string };
   active: boolean;
   isPreview: boolean;
@@ -38,6 +39,7 @@ export const Tab = React.forwardRef<
 >(function Tab(
   {
     title,
+    kind,
     avatar,
     active,
     isPreview,
@@ -86,14 +88,21 @@ export const Tab = React.forwardRef<
       {statusDotColor[status] ? (
         <span className={cn("size-1.5 rounded-full", statusDotColor[status])} />
       ) : null}
-      <span
-        className="inline-flex size-4 items-center justify-center rounded-sm"
-        style={{ backgroundColor: avatar.color }}
-      >
-        <span className="text-[9px] font-semibold text-white">
-          {avatar.letter}
+      {kind === "terminal" ? (
+        <TerminalSquare
+          className="size-4 text-muted-foreground"
+          aria-hidden="true"
+        />
+      ) : (
+        <span
+          className="inline-flex size-4 items-center justify-center rounded-sm"
+          style={{ backgroundColor: avatar.color }}
+        >
+          <span className="text-[9px] font-semibold text-white">
+            {avatar.letter}
+          </span>
         </span>
-      </span>
+      )}
       {isPinned ? (
         <Pin
           data-testid="tab-pin-icon"
