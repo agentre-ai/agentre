@@ -841,7 +841,10 @@ describe("chat-panel ⌘` shortcut", () => {
     // Cast is safe: the mock is only called with (sessionID: number) by the component.
     toggleMock = vi.fn() as ReturnType<typeof vi.fn> &
       ((sessionID: number) => void);
-    useChatTerminalStore.setState({ openSessionID: null, toggle: toggleMock });
+    useChatTerminalStore.setState({
+      openSessionIDs: new Set<number>(),
+      toggle: toggleMock,
+    });
   });
 
   it("toggles terminal on Meta+Backtick when session is active", () => {
@@ -899,21 +902,21 @@ describe("chat-panel ⌘` shortcut", () => {
 describe("chat-panel terminal body swap", () => {
   beforeEach(() => {
     resetStore();
-    useChatTerminalStore.setState({ openSessionID: null });
+    useChatTerminalStore.setState({ openSessionIDs: new Set<number>() });
   });
 
-  it("renders TerminalPanel when openSessionID matches current sessionId", () => {
+  it("renders TerminalPanel when openSessionIDs contains current sessionId", () => {
     mockSessionStore.session = makeSession({ id: 5 });
-    useChatTerminalStore.setState({ openSessionID: 5 });
+    useChatTerminalStore.setState({ openSessionIDs: new Set([5]) });
 
     render(<ChatPanel sessionId={5} />);
 
     expect(screen.getByTestId("terminal-panel")).toBeInTheDocument();
   });
 
-  it("renders chat body when openSessionID is null", () => {
+  it("renders chat body when openSessionIDs is empty", () => {
     mockSessionStore.session = makeSession({ id: 5 });
-    useChatTerminalStore.setState({ openSessionID: null });
+    useChatTerminalStore.setState({ openSessionIDs: new Set<number>() });
 
     render(<ChatPanel sessionId={5} />);
 

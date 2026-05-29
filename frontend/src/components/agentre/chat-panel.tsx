@@ -287,9 +287,9 @@ function ChatPanel({
   const doneTick = liveStatus?.doneTick ?? 0;
   const lastDoneEvent = liveStatus?.lastDoneEvent ?? null;
 
-  const openTerminalSessionID = useChatTerminalStore((s) => s.openSessionID);
+  const isTerminalOpen = useChatTerminalStore((s) => s.isOpen);
   const toggleTerminal = useChatTerminalStore((s) => s.toggle);
-  const terminalOn = openTerminalSessionID === sessionId;
+  const terminalOn = isTerminalOpen(sessionId);
 
   const [pendingRegenId, setPendingRegenId] = React.useState<number | null>(
     null,
