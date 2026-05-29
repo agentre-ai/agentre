@@ -6,6 +6,7 @@ import {
   Plus,
   Search,
   Settings,
+  TerminalSquare,
   X,
 } from "lucide-react";
 import {
@@ -35,6 +36,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -50,6 +55,7 @@ import { useSessionReadStore } from "@/stores/session-read-store";
 
 import type { AgentSession } from "./agent-list";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useRemoteDevices } from "./remote-devices/use-remote-devices";
 import { AgentAvatar } from "./primitives";
 import { ProjectNewDialog } from "./project-new-dialog";
 import { ProjectSettingsDrawer } from "./project-settings-drawer";
@@ -88,7 +94,12 @@ type ProjectSelection =
       projectID: number;
       agentID: number;
     }
-  | { kind: "open-terminal"; projectID: number; deviceID: string; deviceName?: string };
+  | {
+      kind: "open-terminal";
+      projectID: number;
+      deviceID: string;
+      deviceName?: string;
+    };
 
 // projectSessionToAgentSession —— 把 ProjectSessionItem + attention reason
 // 投影成 SessionGroup 需要的 AgentSession。
@@ -985,6 +996,17 @@ function ProjectCard({
                   <Plus className="size-3.5" aria-hidden="true" />
                   新建子项目
                 </DropdownMenuItem>
+                <NewTerminalSubMenu
+                  projectID={project.id}
+                  onPick={(deviceID, deviceName) =>
+                    onSelect({
+                      kind: "open-terminal",
+                      projectID: project.id,
+                      deviceID,
+                      deviceName,
+                    })
+                  }
+                />
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -1153,6 +1175,66 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+// NewTerminalSubMenu —— ProjectCard「更多操作」里的「新建终端」子菜单。
+// 打开时 lazy 加载该项目已配置的 location，结合 device 在线状态决定可选性。
+export function NewTerminalSubMenu({
+  projectID,
+  onPick,
+}: {
+  projectID: number;
+  onPick: (deviceID: string, deviceName?: string) => void;
+}) {
+  const { devices } = useRemoteDevices();
+  const [configured, setConfigured] = React.useState<Set<string> | null>(null);
+  const loadLocations = React.useCallback(() => {
+    void WailsApp.ProjectLocationList(projectID).then((rows) =>
+      setConfigured(new Set((rows ?? []).map((r) => r.deviceId))),
+    );
+  }, [projectID]);
+  return (
+    <DropdownMenuSub
+      onOpenChange={(open) => {
+        if (open && configured === null) loadLocations();
+      }}
+    >
+      <DropdownMenuSubTrigger>
+        <TerminalSquare className="size-3.5" aria-hidden="true" />
+        新建终端
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        <DropdownMenuItem onSelect={() => onPick("", undefined)}>
+          本地
+        </DropdownMenuItem>
+        {devices.length > 0 ? <DropdownMenuSeparator /> : null}
+        {devices.map((d) => {
+          const id = String(d.id);
+          const hasPath = configured?.has(id) ?? false;
+          const disabled = !d.online || !hasPath;
+          return (
+            <DropdownMenuItem
+              key={id}
+              disabled={disabled}
+              title={
+                !d.online
+                  ? "设备离线"
+                  : !hasPath
+                    ? "先在项目设置配置远端路径"
+                    : undefined
+              }
+              onSelect={() => {
+                if (!disabled) onPick(id, d.name);
+              }}
+            >
+              {d.name}
+              {!d.online ? " · 离线" : !hasPath ? " · 未配置路径" : ""}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   );
 }
 

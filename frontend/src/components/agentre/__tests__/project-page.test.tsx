@@ -1,7 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../../../wailsjs/runtime/runtime", () => ({
+  EventsOff: vi.fn(),
+  EventsOn: vi.fn(),
+}));
 
 import { useChatAgentsStore } from "@/stores/chat-agents-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
@@ -63,7 +68,7 @@ vi.mock("@dnd-kit/sortable", () => ({
   verticalListSortingStrategy: {},
 }));
 
-import { ProjectsPage } from "../project-page";
+import { ProjectsPage, NewTerminalSubMenu } from "../project-page";
 import { ProjectSettingsDrawer } from "../project-settings-drawer";
 
 function renderProjectsPage() {
@@ -1019,6 +1024,143 @@ function buildSession({
     title,
   };
 }
+
+// NewTerminalSubMenu 组件级测试（Task 10）
+// 策略：将组件包在 DropdownMenu(open) + DropdownMenuContent 里以满足 Radix 上下文要求，
+// hover DropdownMenuSubTrigger 展开子内容（Radix sub 在 hover 时 open）；
+// 用 pointerEventsCheck:0 绕开 jsdom 的 pointer-events:none 检查。
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+} from "@/components/ui/dropdown-menu";
+
+function SubMenuHarness({
+  projectID,
+  onPick,
+}: {
+  projectID: number;
+  onPick: (deviceID: string, deviceName?: string) => void;
+}) {
+  return (
+    <DropdownMenu open>
+      <DropdownMenuContent>
+        <NewTerminalSubMenu projectID={projectID} onPick={onPick} />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+describe("NewTerminalSubMenu", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+  });
+
+  function renderSubMenu(onPick = vi.fn()) {
+    return {
+      onPick,
+      ...render(<SubMenuHarness projectID={1} onPick={onPick} />),
+    };
+  }
+
+  // helper: hover SubTrigger to open the submenu, then wait for the sub content portal
+  async function openSub(user: ReturnType<typeof userEvent.setup>) {
+    const trigger = await screen.findByText("新建终端");
+    await user.hover(trigger);
+  }
+
+  it("Given the submenu trigger is rendered, Then it shows '新建终端' text", async () => {
+    renderSubMenu();
+    expect(await screen.findByText("新建终端")).toBeInTheDocument();
+  });
+
+  it("Given the submenu is opened, Then it shows a 本地 item", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderSubMenu();
+
+    await openSub(user);
+
+    expect(await screen.findByText("本地")).toBeInTheDocument();
+  });
+
+  it("Given 本地 item is clicked, Then onPick is called with empty deviceID", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const { onPick } = renderSubMenu();
+
+    await openSub(user);
+    // fireEvent 直接触发 Radix DropdownMenuItem onSelect（不产生 pointer-leave 关闭菜单）
+    fireEvent.click(await screen.findByText("本地"));
+
+    expect(onPick).toHaveBeenCalledWith("", undefined);
+  });
+
+  it("Given an online device with a configured location, When the item is clicked, Then onPick fires with correct deviceID and name", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      { id: 42, name: "MacMini", online: true },
+    ]);
+    appMocks.ProjectLocationList.mockResolvedValue([
+      {
+        id: 1,
+        projectId: 1,
+        deviceId: "42",
+        path: "/tmp/proj",
+        deviceName: "MacMini",
+        online: true,
+      },
+    ]);
+
+    const { onPick } = renderSubMenu();
+
+    await openSub(user);
+    const item = await screen.findByText("MacMini");
+    expect(item.closest("[data-disabled]")).toBeNull();
+
+    fireEvent.click(item);
+
+    expect(onPick).toHaveBeenCalledWith("42", "MacMini");
+  });
+
+  it("Given an online device without a configured location, Then the item is rendered disabled", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      { id: 7, name: "NAS", online: true },
+    ]);
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+
+    renderSubMenu();
+
+    await openSub(user);
+    const item = await screen.findByText(/NAS/);
+    // DropdownMenuItem with disabled=true 携带 data-disabled="true"
+    expect(item.closest("[data-disabled]")).not.toBeNull();
+  });
+
+  it("Given an offline device, Then the item is rendered disabled and shows 离线 label", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    appMocks.RemoteDeviceList.mockResolvedValue([
+      { id: 9, name: "OfflineBox", online: false },
+    ]);
+    appMocks.ProjectLocationList.mockResolvedValue([
+      {
+        id: 2,
+        projectId: 1,
+        deviceId: "9",
+        path: "/tmp/proj",
+        deviceName: "OfflineBox",
+        online: false,
+      },
+    ]);
+
+    renderSubMenu();
+
+    await openSub(user);
+    const item = await screen.findByText(/OfflineBox/);
+    expect(item).toHaveTextContent("离线");
+    expect(item.closest("[data-disabled]")).not.toBeNull();
+  });
+});
 
 describe("ProjectSettingsDrawer members", () => {
   beforeEach(() => {
