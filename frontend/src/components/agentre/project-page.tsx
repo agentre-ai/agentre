@@ -87,7 +87,8 @@ type ProjectSelection =
       kind: "new";
       projectID: number;
       agentID: number;
-    };
+    }
+  | { kind: "open-terminal"; projectID: number; deviceID: string; deviceName?: string };
 
 // projectSessionToAgentSession —— 把 ProjectSessionItem + attention reason
 // 投影成 SessionGroup 需要的 AgentSession。
@@ -227,19 +228,24 @@ function ProjectsPage() {
   const openSession = useChatTabsStore((s) => s.openSession);
   const openSessionInNewTab = useChatTabsStore((s) => s.openSessionInNewTab);
   const openNewSession = useChatTabsStore((s) => s.openNewSession);
+  const openTerminal = useChatTabsStore((s) => s.openTerminal);
 
   // selectOnTab: 写本地 selection + 同步推到 chat-tabs-store。
   // opts.newTab = true 时(cmd/ctrl+click)对 session 强制新开 tab,不复用 preview。
   const selectOnTab = React.useCallback(
     (next: ProjectSelection | null, opts?: { newTab?: boolean }) => {
       setSelection(next);
+      if (next?.kind === "open-terminal") {
+        openTerminal(next.projectID, next.deviceID, next.deviceName);
+        return;
+      }
       if (next?.kind === "session") {
         if (opts?.newTab) openSessionInNewTab(next.session.id);
         else openSession(next.session.id);
       } else if (next?.kind === "new")
         openNewSession(next.projectID, next.agentID, "");
     },
-    [openSession, openSessionInNewTab, openNewSession],
+    [openSession, openSessionInNewTab, openNewSession, openTerminal],
   );
 
   React.useEffect(() => {
