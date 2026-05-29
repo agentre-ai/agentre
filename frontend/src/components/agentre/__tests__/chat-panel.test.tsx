@@ -15,7 +15,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const sonnerMocks = vi.hoisted(() => ({
   toast: {
@@ -960,120 +960,36 @@ describe("ChatPanel · mark-read gated by active prop", () => {
   });
 });
 
-// ─── T26: ⌘` / Ctrl+` shortcut ──────────────────────────────────────────────
+// ─── T26: 会话内终端 toggle 已移除 ───────────────────────────────────────────
 
-import { useChatTerminalStore } from "@/stores/chat-terminal-store";
-
-describe("chat-panel ⌘` shortcut", () => {
-  let toggleMock: ReturnType<typeof vi.fn> & ((sessionID: number) => void);
-
-  beforeEach(() => {
+describe("chat-panel · 终端 toggle 已移除", () => {
+  it("渲染后不存在 title 含「终端」的 toggle 按钮", () => {
     resetStore();
-    // Cast is safe: the mock is only called with (sessionID: number) by the component.
-    toggleMock = vi.fn() as ReturnType<typeof vi.fn> &
-      ((sessionID: number) => void);
-    useChatTerminalStore.setState({
-      openSessionIDs: new Set<number>(),
-      toggle: toggleMock,
-    });
-  });
-
-  it("toggles terminal on Meta+Backtick when session is active", () => {
     mockSessionStore.session = makeSession({ id: 7 });
 
     render(<ChatPanel sessionId={7} />);
-    fireEvent.keyDown(window, { key: "`", metaKey: true });
 
-    expect(toggleMock).toHaveBeenCalledWith(7);
+    expect(screen.queryByTitle(/终端/)).not.toBeInTheDocument();
   });
 
-  it("toggles on Ctrl+Backtick as well", () => {
-    mockSessionStore.session = makeSession({ id: 7 });
-
-    render(<ChatPanel sessionId={7} />);
-    fireEvent.keyDown(window, { key: "`", ctrlKey: true });
-
-    expect(toggleMock).toHaveBeenCalledWith(7);
-  });
-
-  it("does not fire without modifier", () => {
-    mockSessionStore.session = makeSession({ id: 7 });
-
-    render(<ChatPanel sessionId={7} />);
-    fireEvent.keyDown(window, { key: "`" });
-
-    expect(toggleMock).not.toHaveBeenCalled();
-  });
-
-  it("no-ops when sessionId is 0", () => {
-    mockSessionStore.session = null;
-
-    render(<ChatPanel sessionId={0} />);
-    fireEvent.keyDown(window, { key: "`", metaKey: true });
-
-    expect(toggleMock).not.toHaveBeenCalled();
-  });
-
-  // Regression: ChatPanelHost mounts every open tab simultaneously and hides
-  // inactive ones via display:none. Without an `active` gate, every mounted
-  // ChatPanel's keydown handler fires in parallel — terminal can open for the
-  // wrong (background) tab. See chat-panel-host.tsx ~L559.
-  it("does not fire when panel is not active", () => {
-    mockSessionStore.session = makeSession({ id: 7 });
-
-    render(<ChatPanel sessionId={7} active={false} />);
-    fireEvent.keyDown(window, { key: "`", metaKey: true });
-
-    expect(toggleMock).not.toHaveBeenCalled();
-  });
-});
-
-// ─── T27: terminal body swap ──────────────────────────────────────────────────
-
-describe("chat-panel terminal body swap", () => {
-  beforeEach(() => {
+  it("⌘` 快捷键不再触发任何 terminal 动作", () => {
     resetStore();
-    useChatTerminalStore.setState({ openSessionIDs: new Set<number>() });
-  });
-
-  it("places the terminal toggle immediately after the stop button", () => {
     mockSessionStore.session = makeSession({ id: 7 });
 
     render(<ChatPanel sessionId={7} />);
+    // 触发原来的快捷键，不应抛错也不应改变任何可观测状态
+    fireEvent.keyDown(window, { key: "`", metaKey: true });
 
-    const stopButton = screen.getByRole("button", { name: /停止/ });
-    const terminalButton = screen.getByTitle("终端 (⌘`)");
-    expect(stopButton.nextElementSibling).toBe(terminalButton);
+    // 只要不报错且 TerminalPanel 不出现即为通过
+    expect(screen.queryByTestId("terminal-panel")).not.toBeInTheDocument();
   });
 
-  it("renders TerminalPanel when openSessionIDs contains current sessionId", () => {
+  it("不渲染 TerminalPanel（终端已移至独立 tab）", () => {
+    resetStore();
     mockSessionStore.session = makeSession({ id: 5 });
-    useChatTerminalStore.setState({ openSessionIDs: new Set([5]) });
-
-    render(<ChatPanel sessionId={5} />);
-
-    expect(screen.getByTestId("terminal-panel")).toBeInTheDocument();
-  });
-
-  it("renders chat body when openSessionIDs is empty", () => {
-    mockSessionStore.session = makeSession({ id: 5 });
-    useChatTerminalStore.setState({ openSessionIDs: new Set<number>() });
 
     render(<ChatPanel sessionId={5} />);
 
     expect(screen.queryByTestId("terminal-panel")).not.toBeInTheDocument();
-  });
-
-  it("toggle button is disabled while terminal is transitioning", () => {
-    mockSessionStore.session = makeSession({ id: 7 });
-    useChatTerminalStore.setState({
-      openSessionIDs: new Set([7]),
-      transitioningSessionIDs: new Set([7]),
-    });
-
-    render(<ChatPanel sessionId={7} />);
-
-    const button = screen.getByRole("button", { name: /终端/ });
-    expect(button).toBeDisabled();
   });
 });

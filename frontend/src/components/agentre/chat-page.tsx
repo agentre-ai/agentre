@@ -270,6 +270,7 @@ function ChatPage() {
   const selectedAgentId = React.useMemo(() => {
     if (!activeTab) return 0;
     if (activeTab.meta.kind === "new") return activeTab.meta.agentId;
+    if (activeTab.meta.kind !== "session") return 0;
     const sid = activeTab.meta.sessionId;
     for (const a of agents) {
       if (a.sessions.some((s) => s.id === sid)) return a.id;
