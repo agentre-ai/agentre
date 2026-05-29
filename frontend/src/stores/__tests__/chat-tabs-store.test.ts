@@ -543,6 +543,35 @@ describe("chat-tabs-store · moveTab", () => {
   });
 });
 
+describe("chat-tabs-store · openTerminal", () => {
+  beforeEach(() => {
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+    __setNowForTesting(() => 1000);
+  });
+
+  it("openTerminal 新增 terminal tab 并激活", () => {
+    let n = 0;
+    __setNextIdFactoryForTesting(() => `id-${++n}`);
+    useChatTabsStore.getState().openTerminal(7, "", undefined);
+    const s = useChatTabsStore.getState();
+    expect(s.tabs).toHaveLength(1);
+    expect(s.tabs[0].meta).toMatchObject({ kind: "terminal", projectId: 7, deviceId: "" });
+    expect((s.tabs[0].meta as { terminalId: string }).terminalId).toBeTruthy();
+    expect(s.tabs[0].title).toBe("终端");
+    expect(s.tabs[0].isPreview).toBe(false);
+    expect(s.activeTabId).toBe(s.tabs[0].id);
+  });
+
+  it("openTerminal 远端带设备名进标题", () => {
+    let n = 0;
+    __setNextIdFactoryForTesting(() => `id-${++n}`);
+    useChatTabsStore.getState().openTerminal(7, "42", "MacMini");
+    const tab = useChatTabsStore.getState().tabs.at(-1)!;
+    expect(tab.meta).toMatchObject({ kind: "terminal", deviceId: "42" });
+    expect(tab.title).toBe("终端 · MacMini");
+  });
+});
+
 describe("chat-tabs-store · bumpToAfterPinned", () => {
   beforeEach(() => {
     useChatTabsStore.setState({ tabs: [], activeTabId: null });
