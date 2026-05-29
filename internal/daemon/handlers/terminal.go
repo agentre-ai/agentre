@@ -141,7 +141,6 @@ stream:
 			if !ok {
 				// Data closed before we observed exit; block for the single
 				// exit value (real handles always deliver it).
-				dataCh = nil
 				exitInfo = <-exitCh
 				break stream
 			}

@@ -29,9 +29,9 @@ func TestLocalBackend_OutputNotTruncatedOnExit(t *testing.T) {
 		h, err := be.Open(ctx, pty.Spec{Cwd: os.TempDir(), Shell: "/bin/sh", Cols: 80, Rows: 24})
 		require.NoError(t, err)
 
-		_, err = h.Write([]byte(fmt.Sprintf(
+		_, err = fmt.Fprintf(h,
 			"i=0; while [ $i -lt %d ]; do echo line-$i; i=$((i+1)); done; echo %s; exit 0\n",
-			lines, marker)))
+			lines, marker)
 		require.NoError(t, err)
 
 		dataCh := h.Data()

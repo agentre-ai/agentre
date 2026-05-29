@@ -20,11 +20,11 @@ type fakeTermHandle struct {
 	exit chan pty.ExitInfo
 }
 
-func (f *fakeTermHandle) Write(p []byte) (int, error)   { return len(p), nil }
-func (f *fakeTermHandle) Resize(_, _ uint16) error      { return nil }
-func (f *fakeTermHandle) Close() error                  { return nil }
-func (f *fakeTermHandle) Data() <-chan []byte           { return f.data }
-func (f *fakeTermHandle) Exit() <-chan pty.ExitInfo     { return f.exit }
+func (f *fakeTermHandle) Write(p []byte) (int, error) { return len(p), nil }
+func (f *fakeTermHandle) Resize(_, _ uint16) error    { return nil }
+func (f *fakeTermHandle) Close() error                { return nil }
+func (f *fakeTermHandle) Data() <-chan []byte         { return f.data }
+func (f *fakeTermHandle) Exit() <-chan pty.ExitInfo   { return f.exit }
 
 type fakeTermBackend struct{ h handlers.PTYHandle }
 
