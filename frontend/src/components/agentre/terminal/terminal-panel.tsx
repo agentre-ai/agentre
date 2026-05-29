@@ -6,10 +6,12 @@ import "@xterm/xterm/css/xterm.css";
 import { toast } from "sonner";
 
 import { useTerminal } from "./use-terminal";
-import { useChatTerminalStore } from "@/stores/chat-terminal-store";
 
 export interface TerminalPanelProps {
-  sessionID: number;
+  terminalID: string;
+  projectId: number;
+  deviceId: string;
+  onClose: () => void;
 }
 
 function readTerminalTheme(): { background: string; foreground: string } {
@@ -23,18 +25,17 @@ function readTerminalTheme(): { background: string; foreground: string } {
   return { background: bg, foreground: fg };
 }
 
-export function TerminalPanel({ sessionID }: TerminalPanelProps) {
+export function TerminalPanel({ terminalID, projectId, deviceId, onClose }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
-  const toggle = useChatTerminalStore((s) => s.toggle);
 
-  // Stable dismiss for the banner — flips terminal off, which unmounts us.
+  // Stable dismiss for the banner — calls onClose, which unmounts us.
   const dismissAndClose = useCallback(() => {
     setConnectionLost(false);
-    toggle(sessionID);
-  }, [toggle, sessionID]);
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -98,7 +99,9 @@ export function TerminalPanel({ sessionID }: TerminalPanelProps) {
   }, []);
 
   const { state, write, resize } = useTerminal({
-    sessionID,
+    terminalID,
+    projectId,
+    deviceId,
     cols: 80,
     rows: 24,
     onData: (data) => {
@@ -112,19 +115,19 @@ export function TerminalPanel({ sessionID }: TerminalPanelProps) {
       }
       if (info.reason === "error") {
         toast.error(`终端启动失败: ${info.msg ?? "unknown"}`);
-        toggle(sessionID);
+        onClose();
         return;
       }
       if (info.reason === "daemon_shutdown") {
         toast.warning("agentred 已关闭");
-        toggle(sessionID);
+        onClose();
         return;
       }
       if (info.reason === "natural" && info.code !== 0) {
         toast.warning(`shell 退出 (code ${info.code})`);
       }
       // natural code=0 or killed → silent close.
-      toggle(sessionID);
+      onClose();
     },
   });
 
