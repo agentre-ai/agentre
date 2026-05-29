@@ -445,15 +445,26 @@ describe("detectInitialLanguage", () => {
     expect(storage.writes).toEqual([]);
   });
 
-  it("Given no stored language and a supported Chinese system locale, When language is detected, Then zh-CN is selected and stored", () => {
+  it("Given zh-CN is the stored language, When language is detected, Then the explicit Chinese preference wins", () => {
+    const storage = writableStorageWithLanguage("zh-CN");
+    const detected = detectInitialLanguage({
+      navigatorLanguage: "en-US",
+      storage,
+    });
+
+    expect(detected).toBe("zh-CN");
+    expect(storage.writes).toEqual([]);
+  });
+
+  it("Given no stored language and a supported Chinese system locale, When language is detected, Then English is selected and stored", () => {
     const storage = writableStorageWithLanguage(null);
     const detected = detectInitialLanguage({
       navigatorLanguages: ["zh-CN", "en-US"],
       storage,
     });
 
-    expect(detected).toBe("zh-CN");
-    expect(storage.writes).toEqual([[LANGUAGE_STORAGE_KEY, "zh-CN"]]);
+    expect(detected).toBe("en");
+    expect(storage.writes).toEqual([[LANGUAGE_STORAGE_KEY, "en"]]);
   });
 
   it("Given no stored language and an unsupported Chinese system locale, When language is detected, Then English is selected and stored", () => {
