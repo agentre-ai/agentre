@@ -753,11 +753,7 @@ function ProjectCard({
       });
     }
     return rows;
-  }, [
-    readOverrides,
-    selectedSubtreeSession,
-    subtreeSessions,
-  ]);
+  }, [readOverrides, selectedSubtreeSession, subtreeSessions]);
 
   const attentionAgentSessions: AgentSession[] = React.useMemo(
     () =>

@@ -240,16 +240,6 @@ vi.mock("../chat-panel-context-usage", () => ({
     componentMocks.computeComposerContextUsage(...args),
 }));
 
-// TerminalPanel: stub returning a testid div to keep xterm.js away from jsdom.
-vi.mock("../terminal/terminal-panel", () => ({
-  TerminalPanel: ({ sessionID }: { sessionID: number }) =>
-    React.createElement(
-      "div",
-      { "data-testid": "terminal-panel" },
-      `terminal-${sessionID}`,
-    ),
-}));
-
 // ── import after mocks ─────────────────────────────────────────────────────
 
 import { ChatPanel } from "../chat-panel";
