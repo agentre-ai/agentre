@@ -70,15 +70,18 @@ import { statusConfig } from "./types";
 
 import {
   CancelQueuedChatMessage,
+  ClearChatGoal,
   CompactChatSession,
   DeleteChatSession,
   EditChatMessage,
   EnqueueChatMessage,
+  GetChatGoal,
   GetChatLaunchCommand,
   MarkChatSessionRead,
   RegenerateChatMessage,
   RenameChatSession,
   SendChatMessage,
+  SetChatGoal,
   StopChatMessage,
 } from "../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../wailsjs/go/models";
@@ -118,6 +121,32 @@ function isChatStopNoActiveError(msg: string): boolean {
 
 function isExactCompactCommand(text: string): boolean {
   return text.trim() === "/compact";
+}
+
+type GoalCommand =
+  | { kind: "get" }
+  | { kind: "clear" }
+  | { kind: "set"; objective: string }
+  | { kind: "status"; status: "active" | "paused" | "complete" };
+
+function parseGoalCommand(text: string): GoalCommand | null {
+  const trimmed = text.trim();
+  if (trimmed === "/goal") return { kind: "get" };
+  if (!trimmed.startsWith("/goal ")) return null;
+  const arg = trimmed.slice("/goal ".length).trim();
+  if (!arg) return { kind: "get" };
+  switch (arg) {
+    case "clear":
+      return { kind: "clear" };
+    case "pause":
+      return { kind: "status", status: "paused" };
+    case "resume":
+      return { kind: "status", status: "active" };
+    case "complete":
+      return { kind: "status", status: "complete" };
+    default:
+      return { kind: "set", objective: arg };
+  }
 }
 
 function optimisticUser(
@@ -680,6 +709,41 @@ function ChatPanel({
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] compact failed", e);
       setNotice({ kind: "error", text: `压缩上下文失败：${msg}` });
+    }
+  }
+
+  async function doGoal(sid: number, cmd: GoalCommand) {
+    if (!sid) return;
+    try {
+      if (cmd.kind === "get") {
+        const resp = await GetChatGoal({ sessionId: sid });
+        const goal = resp.goal;
+        setNotice({
+          kind: "info",
+          text: goal
+            ? `当前目标：${goal.objective}（${goal.status}，${goal.tokensUsed ?? 0} tokens）`
+            : "当前没有目标",
+        });
+        return;
+      }
+      if (cmd.kind === "clear") {
+        await ClearChatGoal({ sessionId: sid });
+        setNotice({ kind: "info", text: "目标已清除" });
+        return;
+      }
+      const payload =
+        cmd.kind === "set"
+          ? { sessionId: sid, objective: cmd.objective, status: "active" }
+          : { sessionId: sid, status: cmd.status };
+      const resp = await SetChatGoal(payload);
+      setNotice({
+        kind: "info",
+        text: resp.goal ? `目标已更新：${resp.goal.objective}` : "目标已更新",
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[chat] goal failed", e);
+      setNotice({ kind: "error", text: `目标操作失败：${msg}` });
     }
   }
 
@@ -1280,6 +1344,28 @@ function ChatPanel({
                   }
                   if (activeEditing) {
                     void confirmEdit(text);
+                    return;
+                  }
+                  const goalCommand =
+                    activeBackendType === "codex"
+                      ? parseGoalCommand(text)
+                      : null;
+                  if (goalCommand) {
+                    if (!sessionId) {
+                      setNotice({
+                        kind: "info",
+                        text: "请先发送一条消息让 Codex 会话启动后再设置目标",
+                      });
+                      return;
+                    }
+                    if (images.length > 0) {
+                      setNotice({
+                        kind: "error",
+                        text: "/goal 不能和图片一起发送",
+                      });
+                      return;
+                    }
+                    void doGoal(sessionId, goalCommand);
                     return;
                   }
                   if (

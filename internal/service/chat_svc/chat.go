@@ -77,6 +77,9 @@ type ChatSvc interface {
 	GetSessionGitState(ctx context.Context, req *GetSessionGitStateRequest) (*GetSessionGitStateResponse, error)
 	Send(ctx context.Context, req *SendRequest) (*SendResponse, error)
 	Compact(ctx context.Context, req *CompactRequest) (*CompactResponse, error)
+	GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error)
+	SetGoal(ctx context.Context, req *SetGoalRequest) (*GoalResponse, error)
+	ClearGoal(ctx context.Context, req *ClearGoalRequest) (*ClearGoalResponse, error)
 	Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueResponse, error)
 	CancelQueued(ctx context.Context, req *CancelQueuedRequest) (*CancelQueuedResponse, error)
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
@@ -762,6 +765,165 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 		return nil, i18n.NewError(ctx, code.ChatCompactUnsupported)
 	}
 	return s.startCompactTurn(ctx, sess, a, be, prov)
+}
+
+func (s *chatSvc) GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error) {
+	if req == nil || req.SessionID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	controller, goalReq, release, err := s.goalController(ctx, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	goal, err := controller.GetGoal(ctx, goalReq)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.GetGoal: runner.GetGoal failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.Error(err))
+		return nil, i18n.NewError(ctx, code.ChatGoalInternal)
+	}
+	return &GoalResponse{Goal: chatGoalFromRuntime(goal)}, nil
+}
+
+func (s *chatSvc) SetGoal(ctx context.Context, req *SetGoalRequest) (*GoalResponse, error) {
+	if req == nil || req.SessionID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if req.Objective == nil && req.Status == nil && req.TokenBudget == nil {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	sess, a, be, prov, err := s.goalSessionContext(ctx, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	resp, release, err := s.setGoalOnSession(ctx, sess, a, be, prov, req)
+	defer release()
+	return resp, err
+}
+
+func (s *chatSvc) ClearGoal(ctx context.Context, req *ClearGoalRequest) (*ClearGoalResponse, error) {
+	if req == nil || req.SessionID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	controller, goalReq, release, err := s.goalController(ctx, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	cleared, err := controller.ClearGoal(ctx, goalReq)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.ClearGoal: runner.ClearGoal failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.Error(err))
+		return nil, i18n.NewError(ctx, code.ChatGoalInternal)
+	}
+	return &ClearGoalResponse{Cleared: cleared}, nil
+}
+
+func (s *chatSvc) goalSessionContext(ctx context.Context, sessionID int64) (*chat_entity.Session, *agent_entity.Agent, *agent_backend_entity.AgentBackend, *llm_provider_entity.LLMProvider, error) {
+	sess, err := chat_repo.Session().Find(ctx, sessionID)
+	if err != nil {
+		return nil, nil, nil, nil, i18n.NewError(ctx, code.OperationFailed)
+	}
+	if sess == nil {
+		return nil, nil, nil, nil, i18n.NewError(ctx, code.ChatSessionNotFound)
+	}
+	if strings.TrimSpace(sess.ProviderSessionID) == "" {
+		return nil, nil, nil, nil, i18n.NewError(ctx, code.ChatGoalNoSession)
+	}
+	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if !be.IsCodex() {
+		return nil, nil, nil, nil, i18n.NewError(ctx, code.ChatGoalUnsupported)
+	}
+	return sess, a, be, prov, nil
+}
+
+func (s *chatSvc) goalController(ctx context.Context, sessionID int64) (agentruntime.GoalController, agentruntime.GoalRequest, func(), error) {
+	sess, a, be, prov, err := s.goalSessionContext(ctx, sessionID)
+	if err != nil {
+		return nil, agentruntime.GoalRequest{}, func() {}, err
+	}
+	return s.goalControllerForSession(ctx, sess, a, be, prov)
+}
+
+func (s *chatSvc) goalControllerForSession(ctx context.Context, sess *chat_entity.Session, a *agent_entity.Agent, be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider) (agentruntime.GoalController, agentruntime.GoalRequest, func(), error) {
+	release := func() {}
+	runner, err := s.selectRunner(ctx, be, sess.ID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.goalController: selectRunner failed",
+			zap.Int64("sessionId", sess.ID),
+			zap.String("backendType", be.Type),
+			zap.Error(err))
+		return nil, agentruntime.GoalRequest{}, release, i18n.NewError(ctx, code.ChatGoalUnsupported)
+	}
+	if be.IsRemote() {
+		if deviceID, ok := be.DeviceIDInt(); ok {
+			released := false
+			release = func() {
+				if released {
+					return
+				}
+				released = true
+				s.releaseRemoteRuntime(deviceID, sess.ID)
+			}
+		}
+	}
+	if !runner.Capabilities().Has(capability.CapGoal) {
+		release()
+		return nil, agentruntime.GoalRequest{}, func() {}, i18n.NewError(ctx, code.ChatGoalUnsupported)
+	}
+	controller, ok := runner.(agentruntime.GoalController)
+	if !ok {
+		release()
+		return nil, agentruntime.GoalRequest{}, func() {}, i18n.NewError(ctx, code.ChatGoalUnsupported)
+	}
+	return controller, agentruntime.GoalRequest{
+		SessionID:         sess.ID,
+		ProviderSessionID: sess.ProviderSessionID,
+		Backend:           be,
+		Provider:          prov,
+		Cwd:               "", // existing codex session already pins cwd; runtime may reuse its pool entry.
+		AgentID:           a.ID,
+	}, release, nil
+}
+
+func (s *chatSvc) setGoalOnSession(ctx context.Context, sess *chat_entity.Session, a *agent_entity.Agent, be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider, req *SetGoalRequest) (*GoalResponse, func(), error) {
+	controller, goalReq, release, err := s.goalControllerForSession(ctx, sess, a, be, prov)
+	if err != nil {
+		return nil, release, err
+	}
+	goalReq.Objective = req.Objective
+	goalReq.Status = req.Status
+	goalReq.TokenBudget = req.TokenBudget
+	goal, err := controller.SetGoal(ctx, goalReq)
+	if err != nil {
+		release()
+		logger.Ctx(ctx).Warn("chat_svc.SetGoal: runner.SetGoal failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.Error(err))
+		return nil, func() {}, i18n.NewError(ctx, code.ChatGoalInternal)
+	}
+	return &GoalResponse{Goal: chatGoalFromRuntime(goal)}, release, nil
+}
+
+func chatGoalFromRuntime(goal *agentruntime.Goal) *ChatGoal {
+	if goal == nil {
+		return nil
+	}
+	return &ChatGoal{
+		ThreadID:        goal.ThreadID,
+		Objective:       goal.Objective,
+		Status:          goal.Status,
+		TokenBudget:     goal.TokenBudget,
+		TokensUsed:      goal.TokensUsed,
+		TimeUsedSeconds: goal.TimeUsedSeconds,
+		CreatedAt:       goal.CreatedAt,
+		UpdatedAt:       goal.UpdatedAt,
+	}
 }
 
 func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) (*SendResponse, error) {

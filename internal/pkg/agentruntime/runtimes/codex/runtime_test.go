@@ -339,7 +339,12 @@ func (s *fakeRuntimeSession) Stream(context.Context, string, string) (cxStream, 
 func (s *fakeRuntimeSession) StreamInput(context.Context, []pkgcodex.UserInput, string) (cxStream, error) {
 	return s.stream, nil
 }
-func (s *fakeRuntimeSession) Compact(context.Context) (cxStream, error)        { return s.stream, nil }
+func (s *fakeRuntimeSession) Compact(context.Context) (cxStream, error)       { return s.stream, nil }
+func (s *fakeRuntimeSession) GetGoal(context.Context) (*pkgcodex.Goal, error) { return nil, nil }
+func (s *fakeRuntimeSession) SetGoal(context.Context, pkgcodex.GoalUpdate) (*pkgcodex.Goal, error) {
+	return nil, nil
+}
+func (s *fakeRuntimeSession) ClearGoal(context.Context) (bool, error)          { return true, nil }
 func (s *fakeRuntimeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }
 func (s *fakeRuntimeSession) ActiveStream() cxSteerStream                      { return nil }
 func (s *fakeRuntimeSession) ActiveInterruptor() cxInterruptable               { return nil }
@@ -373,6 +378,11 @@ func (s *countingRuntimeSession) StreamInput(context.Context, []pkgcodex.UserInp
 func (s *countingRuntimeSession) Compact(context.Context) (cxStream, error) {
 	return s.Stream(context.Background(), "", "")
 }
+func (s *countingRuntimeSession) GetGoal(context.Context) (*pkgcodex.Goal, error) { return nil, nil }
+func (s *countingRuntimeSession) SetGoal(context.Context, pkgcodex.GoalUpdate) (*pkgcodex.Goal, error) {
+	return nil, nil
+}
+func (s *countingRuntimeSession) ClearGoal(context.Context) (bool, error)          { return true, nil }
 func (s *countingRuntimeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }
 func (s *countingRuntimeSession) ActiveStream() cxSteerStream                      { return nil }
 func (s *countingRuntimeSession) ActiveInterruptor() cxInterruptable               { return nil }

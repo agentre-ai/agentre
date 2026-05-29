@@ -489,6 +489,40 @@ type CompactResponse struct {
 	Stream             string `json:"stream"`
 }
 
+type ChatGoal struct {
+	ThreadID        string `json:"threadId"`
+	Objective       string `json:"objective"`
+	Status          string `json:"status"`
+	TokenBudget     *int   `json:"tokenBudget,omitempty"`
+	TokensUsed      int    `json:"tokensUsed"`
+	TimeUsedSeconds int    `json:"timeUsedSeconds"`
+	CreatedAt       int64  `json:"createdAt"`
+	UpdatedAt       int64  `json:"updatedAt"`
+}
+
+type GoalRequest struct {
+	SessionID int64 `json:"sessionId"`
+}
+
+type SetGoalRequest struct {
+	SessionID   int64   `json:"sessionId"`
+	Objective   *string `json:"objective,omitempty"`
+	Status      *string `json:"status,omitempty"`
+	TokenBudget *int    `json:"tokenBudget,omitempty"`
+}
+
+type ClearGoalRequest struct {
+	SessionID int64 `json:"sessionId"`
+}
+
+type GoalResponse struct {
+	Goal *ChatGoal `json:"goal,omitempty"`
+}
+
+type ClearGoalResponse struct {
+	Cleared bool `json:"cleared"`
+}
+
 type RenameRequest struct {
 	SessionID int64  `json:"sessionId"`
 	Title     string `json:"title"`

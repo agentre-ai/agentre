@@ -110,6 +110,9 @@ var enUS = map[int]string{
 	ChatCompactUnsupported:        "This backend does not support context compaction",
 	ChatCompactNoSession:          "Send a message first so the Codex thread exists, then compact",
 	ChatCompactInternal:           "Failed to compact the context",
+	ChatGoalUnsupported:           "This backend does not support goal state",
+	ChatGoalNoSession:             "Send a message first so the Codex thread exists, then set a goal",
+	ChatGoalInternal:              "Failed to update goal state",
 
 	ChatLaunchCommandNotAvailable: "Launch command is unavailable for the current agent backend",
 

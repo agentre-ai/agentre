@@ -36,12 +36,15 @@ const appMocks = vi.hoisted(() => ({
   EnqueueChatMessage: vi.fn(),
   GetCCUsage: vi.fn().mockResolvedValue({ reason: "" }),
   GetChatLaunchCommand: vi.fn(),
+  GetChatGoal: vi.fn(),
   LoadChatSession: vi.fn(),
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),
   RegenerateChatMessage: vi.fn(),
   RenameChatSession: vi.fn(),
   SendChatMessage: vi.fn(),
+  SetChatGoal: vi.fn(),
   StopChatMessage: vi.fn(),
+  ClearChatGoal: vi.fn(),
   GetSessionGitState: vi.fn().mockResolvedValue({
     state: {
       branch: "",
@@ -782,6 +785,64 @@ describe("ChatPanel · Codex collaboration mode", () => {
 
     await new Promise((r) => setTimeout(r, 0));
     expect(appMocks.CompactChatSession).not.toHaveBeenCalled();
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("/goal objective sets Codex thread goal instead of sending a user message", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = makeSession({
+      backendType: "codex",
+      id: 42,
+      permissionMode: "default",
+    });
+    appMocks.SetChatGoal.mockResolvedValue({
+      goal: { objective: "ship rpc", status: "active", tokensUsed: 0 },
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+
+    act(() => {
+      submit?.("/goal ship rpc");
+    });
+
+    await waitFor(() => {
+      expect(appMocks.SetChatGoal).toHaveBeenCalledWith({
+        sessionId: 42,
+        objective: "ship rpc",
+        status: "active",
+      });
+    });
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("/goal clear calls Codex clear goal RPC", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = makeSession({
+      backendType: "codex",
+      id: 42,
+      permissionMode: "default",
+    });
+    appMocks.ClearChatGoal.mockResolvedValue({ cleared: true });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+
+    act(() => {
+      submit?.("/goal clear");
+    });
+
+    await waitFor(() => {
+      expect(appMocks.ClearChatGoal).toHaveBeenCalledWith({ sessionId: 42 });
+    });
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
   });
 

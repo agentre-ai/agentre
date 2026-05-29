@@ -45,6 +45,12 @@ type cxApprovalStream interface {
 	SubmitApproval(ctx context.Context, requestID string, allow, alwaysAllowSession bool) error
 }
 
+type cxGoalSession interface {
+	GetGoal(ctx context.Context) (*codex.Goal, error)
+	SetGoal(ctx context.Context, update codex.GoalUpdate) (*codex.Goal, error)
+	ClearGoal(ctx context.Context) (bool, error)
+}
+
 type cxClientAdapter struct {
 	client *codex.Client
 	sid    string
@@ -141,6 +147,39 @@ func (a *cxClientAdapter) Compact(ctx context.Context) (cxStream, error) {
 	a.stream = s
 	a.streamMu.Unlock()
 	return s, nil
+}
+
+func (a *cxClientAdapter) GetGoal(ctx context.Context) (*codex.Goal, error) {
+	if strings.TrimSpace(a.sid) == "" {
+		return nil, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for goal")
+	}
+	sess, err := a.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return sess.GetGoal(ctx)
+}
+
+func (a *cxClientAdapter) SetGoal(ctx context.Context, update codex.GoalUpdate) (*codex.Goal, error) {
+	if strings.TrimSpace(a.sid) == "" {
+		return nil, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for goal")
+	}
+	sess, err := a.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return sess.SetGoal(ctx, update)
+}
+
+func (a *cxClientAdapter) ClearGoal(ctx context.Context) (bool, error) {
+	if strings.TrimSpace(a.sid) == "" {
+		return false, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for goal")
+	}
+	sess, err := a.ensureSession(ctx)
+	if err != nil {
+		return false, err
+	}
+	return sess.ClearGoal(ctx)
 }
 
 // RewindTo 走 thread/rollback,把 sid 推回 numTurns 之前的状态。anchor 是十进制
@@ -267,6 +306,9 @@ type cxSessionHandle interface {
 	Stream(ctx context.Context, prompt string, collaborationMode string) (cxStream, error)
 	StreamInput(ctx context.Context, input []codex.UserInput, collaborationMode string) (cxStream, error)
 	Compact(ctx context.Context) (cxStream, error)
+	GetGoal(ctx context.Context) (*codex.Goal, error)
+	SetGoal(ctx context.Context, update codex.GoalUpdate) (*codex.Goal, error)
+	ClearGoal(ctx context.Context) (bool, error)
 	RewindTo(ctx context.Context, anchor string) (string, error)
 	ActiveStream() cxSteerStream
 	ActiveInterruptor() cxInterruptable

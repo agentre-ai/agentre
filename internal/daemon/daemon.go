@@ -240,6 +240,9 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	d.registry.Register(wire.MethodSetPermissionMode, wrapGuardedSentinel(rh.SetPermissionMode))
 	d.registry.Register(wire.MethodSubmitAnswer, wrapGuardedSentinel(rh.SubmitAnswer))
 	d.registry.Register(wire.MethodSubmitToolPermission, wrapGuardedSentinel(rh.SubmitToolPermission))
+	d.registry.Register(wire.MethodGetGoal, wrapGuardedSentinel(rh.GetGoal))
+	d.registry.Register(wire.MethodSetGoal, wrapGuardedSentinel(rh.SetGoal))
+	d.registry.Register(wire.MethodClearGoal, wrapGuardedSentinel(rh.ClearGoal))
 
 	// Terminal: local PTY backend; per-conn emitter pushes terminal.data /
 	// terminal.exit events back over this ws connection (same per-conn rationale

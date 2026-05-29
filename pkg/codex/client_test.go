@@ -283,6 +283,105 @@ func TestClientCompact_SendsThreadCompactStartRPC(t *testing.T) {
 	assert.Equal(t, "thread-old", stream.SessionID())
 }
 
+func TestClientGoal_SendsThreadGoalRPCs(t *testing.T) {
+	// Given an existing Codex app-server thread.
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		resumeReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/resume", resumeReq.Method)
+		assert.JSONEq(t, `{"threadId":"thread-goal","excludeTurns":true,"cwd":"/tmp/work","approvalPolicy":"never"}`, string(resumeReq.Params))
+		respondRPC(h, resumeReq, map[string]any{"thread": map[string]any{"id": "thread-goal", "cwd": "/tmp/work"}})
+
+		goalReq := readRPCReq(t, sc)
+		switch goalReq.Method {
+		case "thread/goal/set":
+			assert.JSONEq(t, `{"threadId":"thread-goal","objective":"ship goal rpc","status":"active","tokenBudget":1234}`, string(goalReq.Params))
+			respondRPC(h, goalReq, map[string]any{"goal": map[string]any{
+				"threadId":        "thread-goal",
+				"objective":       "ship goal rpc",
+				"status":          "active",
+				"tokenBudget":     1234,
+				"tokensUsed":      0,
+				"timeUsedSeconds": 0,
+				"createdAt":       11,
+				"updatedAt":       12,
+			}})
+		case "thread/goal/get":
+			assert.JSONEq(t, `{"threadId":"thread-goal"}`, string(goalReq.Params))
+			respondRPC(h, goalReq, map[string]any{"goal": map[string]any{
+				"threadId":        "thread-goal",
+				"objective":       "ship goal rpc",
+				"status":          "active",
+				"tokenBudget":     1234,
+				"tokensUsed":      5,
+				"timeUsedSeconds": 6,
+				"createdAt":       11,
+				"updatedAt":       12,
+			}})
+		case "thread/goal/clear":
+			assert.JSONEq(t, `{"threadId":"thread-goal"}`, string(goalReq.Params))
+			respondRPC(h, goalReq, map[string]any{"cleared": true})
+		default:
+			t.Fatalf("unexpected goal method %q", goalReq.Method)
+		}
+	}
+
+	client := New(
+		WithCwd("/tmp/work"),
+		WithApproval(ApprovalNever),
+		WithAppServerRunnerForTesting(runner),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// When goal metadata is set, read, and cleared.
+	objective := "ship goal rpc"
+	status := GoalStatusActive
+	budget := 1234
+	setGoal, err := client.SetGoal(ctx, "thread-goal", GoalUpdate{
+		Objective:   &objective,
+		Status:      &status,
+		TokenBudget: &budget,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, setGoal)
+	assert.Equal(t, "ship goal rpc", setGoal.Objective)
+	assert.Equal(t, GoalStatusActive, setGoal.Status)
+	require.NotNil(t, setGoal.TokenBudget)
+	assert.Equal(t, 1234, *setGoal.TokenBudget)
+
+	gotGoal, err := client.GetGoal(ctx, "thread-goal")
+	require.NoError(t, err)
+	require.NotNil(t, gotGoal)
+	assert.Equal(t, 5, gotGoal.TokensUsed)
+
+	cleared, err := client.ClearGoal(ctx, "thread-goal")
+	require.NoError(t, err)
+	assert.True(t, cleared)
+}
+
+func TestClientGoal_RequiresThreadID(t *testing.T) {
+	client := New()
+	ctx := context.Background()
+
+	_, err := client.GetGoal(ctx, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "thread id is required")
+
+	objective := "x"
+	_, err = client.SetGoal(ctx, "", GoalUpdate{Objective: &objective})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "thread id is required")
+
+	_, err = client.ClearGoal(ctx, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "thread id is required")
+}
+
 func TestClientStream_PassesModelAndConfigOverrides(t *testing.T) {
 	runner := &fakeAppServerRunner{t: t}
 	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {

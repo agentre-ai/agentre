@@ -94,6 +94,7 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			capability.CapForkSession:         true,
 			capability.CapReportContextWindow: true,
 			capability.CapCompact:             true,
+			capability.CapGoal:                true,
 		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "plan"},
@@ -103,6 +104,97 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			// codex 协议要求 launch 时显式 collaboration mode,chat_svc 必须落非空。
 			LaunchDefaultMode: "default",
 		},
+	}
+}
+
+func (r *Runtime) GetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	sess, err := r.goalSession(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	goal, err := sess.GetGoal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return goalFromCodex(goal), nil
+}
+
+func (r *Runtime) SetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	sess, err := r.goalSession(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	update := codex.GoalUpdate{
+		Objective:   req.Objective,
+		TokenBudget: req.TokenBudget,
+	}
+	if req.Status != nil {
+		status := codex.GoalStatus(*req.Status)
+		update.Status = &status
+	}
+	goal, err := sess.SetGoal(ctx, update)
+	if err != nil {
+		return nil, err
+	}
+	return goalFromCodex(goal), nil
+}
+
+func (r *Runtime) ClearGoal(ctx context.Context, req agentruntime.GoalRequest) (bool, error) {
+	sess, err := r.goalSession(ctx, req)
+	if err != nil {
+		return false, err
+	}
+	return sess.ClearGoal(ctx)
+}
+
+func (r *Runtime) goalSession(ctx context.Context, req agentruntime.GoalRequest) (cxSessionHandle, error) {
+	if req.SessionID <= 0 {
+		return nil, fmt.Errorf("agentruntime/runtimes/codex: invalid sessionID %d", req.SessionID)
+	}
+	if strings.TrimSpace(req.ProviderSessionID) == "" {
+		return nil, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for goal")
+	}
+	cwd := req.Cwd
+	if cwd == "" {
+		var err error
+		cwd, err = agentruntime.AgentCwd(req.AgentID)
+		if err != nil {
+			logger.Ctx(ctx).Error("codex runtime: AgentCwd resolve failed for goal",
+				zap.Int64("sessionID", req.SessionID),
+				zap.Int64("agentID", req.AgentID), zap.Error(err))
+			return nil, err
+		}
+	}
+	runReq := agentruntime.RunRequest{
+		Backend:           req.Backend,
+		Provider:          req.Provider,
+		AgentID:           req.AgentID,
+		SessionID:         req.SessionID,
+		Cwd:               cwd,
+		ProviderSessionID: req.ProviderSessionID,
+		GatewayURL:        req.GatewayURL,
+		GatewayToken:      req.GatewayToken,
+	}
+	env, err := BuildCodexEnv(runReq.Backend, gatewayDeps(runReq))
+	if err != nil {
+		return nil, err
+	}
+	return r.acquireSession(runReq, env, cwd)
+}
+
+func goalFromCodex(goal *codex.Goal) *agentruntime.Goal {
+	if goal == nil {
+		return nil
+	}
+	return &agentruntime.Goal{
+		ThreadID:        goal.ThreadID,
+		Objective:       goal.Objective,
+		Status:          string(goal.Status),
+		TokenBudget:     goal.TokenBudget,
+		TokensUsed:      goal.TokensUsed,
+		TimeUsedSeconds: goal.TimeUsedSeconds,
+		CreatedAt:       goal.CreatedAt,
+		UpdatedAt:       goal.UpdatedAt,
 	}
 }
 

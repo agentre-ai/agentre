@@ -78,6 +78,9 @@ func TestMethodNames_Stable(t *testing.T) {
 		MethodSetPermissionMode:    "runtime.setPermissionMode",
 		MethodSubmitAnswer:         "runtime.submitAnswer",
 		MethodSubmitToolPermission: "runtime.submitToolPermission",
+		MethodGetGoal:              "runtime.goal.get",
+		MethodSetGoal:              "runtime.goal.set",
+		MethodClearGoal:            "runtime.goal.clear",
 		NotifyEvent:                "runtime.event",
 		NotifyRunResultDone:        "runtime.runResultDone",
 	} {
@@ -198,6 +201,13 @@ func TestParams_FieldShape(t *testing.T) {
 		{"submitToolPerm", SubmitToolPermissionParams{
 			SessionID: 1, RequestID: "r", Allow: true, AlwaysAllowSession: true, DenyReason: "x",
 		}, []string{`"sessionId":1`, `"requestId":"r"`, `"allow":true`, `"alwaysAllowSession":true`, `"denyReason":"x"`}},
+		{"goalGet", GoalParams{SessionID: 1, AgentID: 9, ProviderSessionID: "thread-1", Backend: json.RawMessage(`{"Type":"codex"}`)},
+			[]string{`"sessionId":1`, `"agentId":9`, `"providerSessionId":"thread-1"`, `"backend":`, `"Type":"codex"`}},
+		{"goalSet", GoalParams{SessionID: 1, AgentID: 9, ProviderSessionID: "thread-1", Backend: json.RawMessage(`{"Type":"codex"}`), Objective: ptrString("ship"), Status: ptrString("active"), TokenBudget: ptrInt(123)},
+			[]string{`"sessionId":1`, `"agentId":9`, `"providerSessionId":"thread-1"`, `"backend":`, `"Type":"codex"`, `"objective":"ship"`, `"status":"active"`, `"tokenBudget":123`}},
+		{"goalResult", GoalResult{Goal: &agentruntime.Goal{ThreadID: "thread-1", Objective: "ship", Status: "active"}},
+			[]string{`"goal":`, `"threadId":"thread-1"`, `"objective":"ship"`, `"status":"active"`}},
+		{"goalClearResult", GoalClearResult{Cleared: true}, []string{`"cleared":true`}},
 		{"capabilities", CapabilitiesParams{BackendType: "claudecode"},
 			[]string{`"backendType":"claudecode"`}},
 		{"runAck", RunAck{SessionID: 42}, []string{`"sessionId":42`}},
@@ -218,3 +228,6 @@ func TestParams_FieldShape(t *testing.T) {
 
 // 编译时确认 *jsonrpc.Error 满足 error,这样 ToJSONRPCError 返回的可以直接 return。
 var _ error = (*jsonrpc.Error)(nil)
+
+func ptrString(v string) *string { return &v }
+func ptrInt(v int) *int          { return &v }

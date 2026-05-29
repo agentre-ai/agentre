@@ -46,6 +46,17 @@ export const slashCommands: SlashCommand[] = [
       return null;
     },
   },
+  {
+    name: "goal",
+    label: "/goal",
+    description: "设置或查看 Codex 当前目标",
+    resolve(backend) {
+      if (backend === "codex") {
+        return { kind: "literal_text", text: "/goal " };
+      }
+      return null;
+    },
+  },
 ];
 
 // listAvailable 返回当前 backend 下可用的命令清单。UI 用它做下拉候选。

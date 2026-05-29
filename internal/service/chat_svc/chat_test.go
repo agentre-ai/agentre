@@ -959,6 +959,55 @@ func (r *compactRecordingRunner) Run(_ context.Context, req agentruntime.RunRequ
 	return events, &agentruntime.RunResult{ProviderSessionID: req.ProviderSessionID}, nil
 }
 
+type goalRecordingRunner struct {
+	*recordingRunner
+
+	getReq   agentruntime.GoalRequest
+	setReq   agentruntime.GoalRequest
+	clearReq agentruntime.GoalRequest
+
+	getErr   error
+	setErr   error
+	clearErr error
+}
+
+func (r *goalRecordingRunner) Capabilities() capability.Capabilities {
+	base := r.recordingRunner.Capabilities()
+	base.Set = map[capability.Capability]bool{
+		capability.CapGoal: true,
+	}
+	return base
+}
+
+func (r *goalRecordingRunner) GetGoal(_ context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	r.getReq = req
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	return &agentruntime.Goal{ThreadID: req.ProviderSessionID, Objective: "ship goal rpc", Status: "active", TokensUsed: 7}, nil
+}
+
+func (r *goalRecordingRunner) SetGoal(_ context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	r.setReq = req
+	if r.setErr != nil {
+		return nil, r.setErr
+	}
+	objective := ""
+	if req.Objective != nil {
+		objective = *req.Objective
+	}
+	status := ""
+	if req.Status != nil {
+		status = *req.Status
+	}
+	return &agentruntime.Goal{ThreadID: req.ProviderSessionID, Objective: objective, Status: status}, nil
+}
+
+func (r *goalRecordingRunner) ClearGoal(_ context.Context, req agentruntime.GoalRequest) (bool, error) {
+	r.clearReq = req
+	return r.clearErr == nil, r.clearErr
+}
+
 type blockingProviderSessionRunner struct {
 	started chan struct{}
 	release chan struct{}
@@ -1514,6 +1563,112 @@ func TestCompact_RequiresCodexProviderSessionAndCapability(t *testing.T) {
 		}, nil)
 
 		_, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
+		assert.Error(t, err)
+	})
+}
+
+func TestGoal_CodexRoutesToGoalController(t *testing.T) {
+	convey.Convey("Codex goal set/get/clear use provider thread metadata", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+		runner := &goalRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
+		t.Cleanup(restore)
+
+		expectCodexSession := func() {
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID:                100,
+				AgentID:           7,
+				AgentStatus:       "idle",
+				Status:            consts.ACTIVE,
+				ProviderSessionID: "codex-thread-123",
+			}, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
+			}, nil)
+		}
+
+		expectCodexSession()
+		objective := "ship goal rpc"
+		status := "active"
+		resp, err := m.svc.SetGoal(ctx, &chat_svc.SetGoalRequest{
+			SessionID: 100,
+			Objective: &objective,
+			Status:    &status,
+		})
+		assert.NoError(t, err)
+		require.NotNil(t, resp.Goal)
+		assert.Equal(t, "ship goal rpc", resp.Goal.Objective)
+		assert.Equal(t, "active", resp.Goal.Status)
+		require.NotNil(t, runner.setReq.Objective)
+		assert.Equal(t, "ship goal rpc", *runner.setReq.Objective)
+		assert.Equal(t, "codex-thread-123", runner.setReq.ProviderSessionID)
+
+		expectCodexSession()
+		getResp, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
+		assert.NoError(t, err)
+		require.NotNil(t, getResp.Goal)
+		assert.Equal(t, 7, getResp.Goal.TokensUsed)
+		assert.Equal(t, "codex-thread-123", runner.getReq.ProviderSessionID)
+
+		expectCodexSession()
+		clearResp, err := m.svc.ClearGoal(ctx, &chat_svc.ClearGoalRequest{SessionID: 100})
+		assert.NoError(t, err)
+		assert.True(t, clearResp.Cleared)
+		assert.Equal(t, "codex-thread-123", runner.clearReq.ProviderSessionID)
+	})
+}
+
+func TestGoal_RequiresCodexProviderSessionAndCapability(t *testing.T) {
+	t.Run("missing provider session", func(t *testing.T) {
+		m := setupChatTest(t)
+		ctx := context.Background()
+		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
+			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+		}, nil)
+
+		_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
+		assert.Error(t, err)
+	})
+
+	t.Run("non-codex backend", func(t *testing.T) {
+		m := setupChatTest(t)
+		ctx := context.Background()
+		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
+			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderSessionID: "thread-1",
+		}, nil)
+		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
+			ID: 7, Name: "Claude", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+		}, nil)
+		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
+			ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "", Status: consts.ACTIVE,
+		}, nil)
+
+		_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
+		assert.Error(t, err)
+	})
+
+	t.Run("codex runtime without goal capability", func(t *testing.T) {
+		m := setupChatTest(t)
+		ctx := context.Background()
+		runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
+		t.Cleanup(restore)
+
+		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
+			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderSessionID: "thread-1",
+		}, nil)
+		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
+			ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+		}, nil)
+		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
+			ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
+		}, nil)
+
+		_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
 		assert.Error(t, err)
 	})
 }
