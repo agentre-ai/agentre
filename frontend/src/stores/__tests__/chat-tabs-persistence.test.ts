@@ -42,10 +42,16 @@ describe("chat-tabs-persistence · write", () => {
     const raw = localStorage.getItem(CHAT_TABS_STORAGE_KEY);
     expect(raw).toBeTruthy();
     const parsed = JSON.parse(raw!);
-    expect(parsed).toEqual({
-      v: 1,
+    expect(parsed).toMatchObject({
+      v: 2,
       tabs: [
-        { id: "t1", sessionId: 1, isPinned: true, pinAt: 100, openedAt: 50 },
+        {
+          id: "t1",
+          meta: { kind: "session", sessionId: 1 },
+          isPinned: true,
+          pinAt: 100,
+          openedAt: 50,
+        },
       ],
       activeTabId: "t1",
     });
@@ -74,6 +80,7 @@ describe("chat-tabs-persistence · read", () => {
           isPinned: true,
           pinAt: 100,
           openedAt: 50,
+          title: undefined,
         },
       ],
       activeTabId: "t1",
@@ -83,7 +90,7 @@ describe("chat-tabs-persistence · read", () => {
   it("schema 版本不匹配返回 null", () => {
     localStorage.setItem(
       CHAT_TABS_STORAGE_KEY,
-      JSON.stringify({ v: 2, tabs: [] }),
+      JSON.stringify({ v: 99, tabs: [] }),
     );
     expect(readPersistedTabs()).toBeNull();
   });
@@ -95,5 +102,89 @@ describe("chat-tabs-persistence · read", () => {
 
   it("空 storage 返回 null", () => {
     expect(readPersistedTabs()).toBeNull();
+  });
+});
+
+describe("chat-tabs-persistence · v2 升级", () => {
+  it("terminal tab 往返持久化不被丢弃", () => {
+    const tab: ChatTab = {
+      id: "t1",
+      meta: {
+        kind: "terminal",
+        projectId: 7,
+        deviceId: "",
+        terminalId: "term-1",
+      },
+      isPreview: false,
+      isPinned: false,
+      pinAt: 0,
+      openedAt: 1,
+      title: "终端",
+    };
+    writePersistedTabs([tab], "t1");
+    const restored = readPersistedTabs();
+    expect(restored?.tabs).toHaveLength(1);
+    expect(restored?.tabs[0].meta).toMatchObject({
+      kind: "terminal",
+      projectId: 7,
+      deviceId: "",
+      terminalId: "term-1",
+    });
+  });
+
+  it("session tab 仍能往返", () => {
+    const tab: ChatTab = {
+      id: "s1",
+      meta: { kind: "session", sessionId: 9 },
+      isPreview: false,
+      isPinned: true,
+      pinAt: 5,
+      openedAt: 1,
+    };
+    writePersistedTabs([tab], "s1");
+    expect(readPersistedTabs()?.tabs[0].meta).toMatchObject({
+      kind: "session",
+      sessionId: 9,
+    });
+  });
+
+  it("旧 v1 数据仍可读为 session tab", () => {
+    localStorage.setItem(
+      CHAT_TABS_STORAGE_KEY,
+      JSON.stringify({
+        v: 1,
+        activeTabId: "x",
+        tabs: [
+          { id: "x", sessionId: 3, isPinned: false, pinAt: 0, openedAt: 1 },
+        ],
+      }),
+    );
+    expect(readPersistedTabs()?.tabs[0].meta).toMatchObject({
+      kind: "session",
+      sessionId: 3,
+    });
+  });
+
+  it("new / preview tab 不被持久化", () => {
+    const tabs: ChatTab[] = [
+      {
+        id: "n",
+        meta: { kind: "new", projectId: 1, agentId: 1, workMode: "code" },
+        isPreview: false,
+        isPinned: false,
+        pinAt: 0,
+        openedAt: 1,
+      },
+      {
+        id: "p",
+        meta: { kind: "session", sessionId: 5 },
+        isPreview: true,
+        isPinned: false,
+        pinAt: 0,
+        openedAt: 1,
+      },
+    ];
+    writePersistedTabs(tabs, "n");
+    expect(readPersistedTabs()?.tabs).toHaveLength(0);
   });
 });
