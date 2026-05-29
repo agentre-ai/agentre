@@ -3,8 +3,9 @@ import * as React from "react";
 import { Sparkles } from "lucide-react";
 
 import { ChatPanel } from "../chat-panel";
+import { TerminalPanel } from "../terminal/terminal-panel";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
-import type { ChatTab } from "@/stores/chat-tabs-store";
+import type { ChatTab, TabKind } from "@/stores/chat-tabs-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useChatAgentsStore } from "@/stores/chat-agents-store";
 
@@ -87,9 +88,13 @@ export function ChatPanelHost() {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      {panelTabs.map((t) => (
-        <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
-      ))}
+      {panelTabs.map((t) =>
+        t.meta.kind === "terminal" ? (
+          <HostedTerminalPanel key={t.id} tab={t} active={t.id === activeTabId} />
+        ) : (
+          <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
+        ),
+      )}
     </div>
   );
 }
@@ -177,6 +182,26 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function HostedTerminalPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
+  const closeTab = useChatTabsStore((s) => s.closeTab);
+  const meta = tab.meta as Extract<TabKind, { kind: "terminal" }>;
+  return (
+    <div
+      data-tab-id={tab.id}
+      data-active={active}
+      style={{ display: active ? "flex" : "none" }}
+      className="flex h-full min-h-0 flex-1 flex-col"
+    >
+      <TerminalPanel
+        terminalID={meta.terminalId}
+        projectId={meta.projectId}
+        deviceId={meta.deviceId}
+        onClose={() => closeTab(tab.id)}
+      />
     </div>
   );
 }

@@ -6,6 +6,14 @@ import { useChatAgentsStore } from "@/stores/chat-agents-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useProjectSessionsStore } from "@/stores/project-sessions-store";
 
+vi.mock("../../terminal/terminal-panel", () => ({
+  TerminalPanel: ({ terminalID }: { terminalID: string }) => (
+    <div data-testid="terminal-panel" data-terminal-id={terminalID}>
+      terminal {terminalID}
+    </div>
+  ),
+}));
+
 // 把 onSidebarShouldReload 通过 data-attribute 暴露到 DOM 上, 这样回归测试可以
 // 拿到这个回调并断言它真的去触发 store.reload (修复「新建会话不进左栏」的关键路径)。
 type ChatPanelStub = {
@@ -174,6 +182,13 @@ describe("ChatPanelHost", () => {
     expect(projectReload).toHaveBeenCalledTimes(projectCallsBeforeClick + 1);
     chatReload.mockRestore();
     projectReload.mockRestore();
+  });
+
+  it("Given a terminal tab is open, When ChatPanelHost renders, Then it shows terminal-panel not a ChatPanel", () => {
+    useChatTabsStore.getState().openTerminal(7, "", undefined);
+    render(<ChatPanelHost />);
+    expect(screen.getByTestId("terminal-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-panel-0")).not.toBeInTheDocument();
   });
 
   it("Given the active tab is scrolled, When tabs are reordered, Then the mounted panel keeps its DOM slot", () => {
