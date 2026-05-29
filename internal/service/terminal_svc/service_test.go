@@ -2,12 +2,11 @@ package terminal_svc_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/pkg/pty"
 	"agentre/internal/service/terminal_svc"
 	"agentre/internal/service/terminal_svc/mocks"
@@ -16,17 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
-
-type stubSessionLookup struct {
-	sess *chat_entity.Session
-	be   *agent_backend_entity.AgentBackend
-	cwd  string
-	err  error
-}
-
-func (s stubSessionLookup) Lookup(_ context.Context, _ int64) (*chat_entity.Session, *agent_backend_entity.AgentBackend, string, error) {
-	return s.sess, s.be, s.cwd, s.err
-}
 
 func TestService_Open_Local_RegistersHandle(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -42,42 +30,34 @@ func TestService_Open_Local_RegistersHandle(t *testing.T) {
 		t.Fatal("should not call remote factory for local")
 		return nil, nil
 	})
-	svc := terminal_svc.NewService(stubSessionLookup{
-		sess: &chat_entity.Session{ID: 1},
-		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
-		cwd:  "/tmp",
-	}, sel, terminal_svc.NoopEmitter{})
+	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
 
-	require.NoError(t, svc.Open(context.Background(), 1, 80, 24))
+	require.NoError(t, svc.Open(context.Background(), "t1", "", "/tmp", 80, 24))
 
 	mockH.EXPECT().Write([]byte("x")).Return(1, nil)
-	assert.NoError(t, svc.Write(context.Background(), 1, "x"))
-}
-
-func TestService_Open_SessionNotFound(t *testing.T) {
-	sel := terminal_svc.NewBackendSelector(nil, nil)
-	svc := terminal_svc.NewService(stubSessionLookup{}, sel, terminal_svc.NoopEmitter{})
-	err := svc.Open(context.Background(), 999, 80, 24)
-	require.ErrorIs(t, err, terminal_svc.ErrSessionNotFound)
+	assert.NoError(t, svc.Write(context.Background(), "t1", "x"))
 }
 
 func TestService_Write_NoOpenTerminal(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	sel := terminal_svc.NewBackendSelector(mocks.NewMockPTYBackend(ctrl), nil)
-	svc := terminal_svc.NewService(stubSessionLookup{
-		sess: &chat_entity.Session{ID: 1},
-		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
-		cwd:  "/tmp",
-	}, sel, terminal_svc.NoopEmitter{})
-	err := svc.Write(context.Background(), 1, "x")
+	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
+	err := svc.Write(context.Background(), "t1", "x")
 	require.ErrorIs(t, err, terminal_svc.ErrTerminalClosed)
 }
 
-func TestService_Close_UnknownSession(t *testing.T) {
-	sel := terminal_svc.NewBackendSelector(nil, nil)
-	svc := terminal_svc.NewService(stubSessionLookup{}, sel, terminal_svc.NoopEmitter{})
-	err := svc.Close(context.Background(), 999)
+func TestService_Write_UnknownTerminalReturnsClosed(t *testing.T) {
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(&fakeBackend{}, nil), terminal_svc.NoopEmitter{})
+	if err := svc.Write(context.Background(), "ghost", "x"); !errors.Is(err, terminal_svc.ErrTerminalClosed) {
+		t.Fatalf("want ErrTerminalClosed, got %v", err)
+	}
+}
+
+func TestService_Close_UnknownTerminal(t *testing.T) {
+	sel := terminal_svc.NewBackendSelector(&fakeBackend{}, nil)
+	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
+	err := svc.Close(context.Background(), "ghost")
 	require.ErrorIs(t, err, terminal_svc.ErrTerminalNotOpen)
 }
 
@@ -99,14 +79,10 @@ func TestService_Open_ReOpenClosesPrevious(t *testing.T) {
 	)
 
 	sel := terminal_svc.NewBackendSelector(mockBE, nil)
-	svc := terminal_svc.NewService(stubSessionLookup{
-		sess: &chat_entity.Session{ID: 1},
-		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
-		cwd:  "/tmp",
-	}, sel, terminal_svc.NoopEmitter{})
+	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
 
-	require.NoError(t, svc.Open(context.Background(), 1, 80, 24))
-	require.NoError(t, svc.Open(context.Background(), 1, 80, 24))
+	require.NoError(t, svc.Open(context.Background(), "t1", "", "/tmp", 80, 24))
+	require.NoError(t, svc.Open(context.Background(), "t1", "", "/tmp", 80, 24))
 }
 
 func TestService_Shutdown_ClosesAll(t *testing.T) {
@@ -120,13 +96,9 @@ func TestService_Shutdown_ClosesAll(t *testing.T) {
 	mh.EXPECT().Close().Return(nil)
 
 	sel := terminal_svc.NewBackendSelector(mockBE, nil)
-	svc := terminal_svc.NewService(stubSessionLookup{
-		sess: &chat_entity.Session{ID: 1},
-		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
-		cwd:  "/tmp",
-	}, sel, terminal_svc.NoopEmitter{})
+	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
 
-	require.NoError(t, svc.Open(context.Background(), 1, 80, 24))
+	require.NoError(t, svc.Open(context.Background(), "t1", "", "/tmp", 80, 24))
 	svc.Shutdown()
 }
 
@@ -148,24 +120,20 @@ func TestService_Open_CancelledByClose_NoLeakedHandle(t *testing.T) {
 		t.Fatal("should not call remote factory for local")
 		return nil, nil
 	})
-	svc := terminal_svc.NewService(stubSessionLookup{
-		sess: &chat_entity.Session{ID: 1},
-		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
-		cwd:  "/tmp",
-	}, sel, terminal_svc.NoopEmitter{})
+	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
 
 	openErrCh := make(chan error, 1)
 	go func() {
-		openErrCh <- svc.Open(context.Background(), 1, 80, 24)
+		openErrCh <- svc.Open(context.Background(), "t1", "", "/tmp", 80, 24)
 	}()
 	<-started
 	// Now preempt via Close
-	require.NoError(t, svc.Close(context.Background(), 1))
+	require.NoError(t, svc.Close(context.Background(), "t1"))
 	<-canceled // confirm cancel actually fired
 	err := <-openErrCh
 	require.ErrorIs(t, err, context.Canceled)
 	// Verify no handle leaked
-	require.ErrorIs(t, svc.Write(context.Background(), 1, "x"), terminal_svc.ErrTerminalClosed)
+	require.ErrorIs(t, svc.Write(context.Background(), "t1", "x"), terminal_svc.ErrTerminalClosed)
 }
 
 type recordingEmitter struct {
@@ -205,13 +173,9 @@ func TestService_Pump_EmitsDataEvent(t *testing.T) {
 
 	rec := &recordingEmitter{}
 	sel := terminal_svc.NewBackendSelector(mockBE, nil)
-	svc := terminal_svc.NewService(stubSessionLookup{
-		sess: &chat_entity.Session{ID: 7},
-		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
-		cwd:  "/tmp",
-	}, sel, rec)
+	svc := terminal_svc.NewService(sel, rec)
 
-	require.NoError(t, svc.Open(context.Background(), 7, 80, 24))
+	require.NoError(t, svc.Open(context.Background(), "t7", "", "/tmp", 80, 24))
 	dataCh <- []byte("abc")
 
 	deadline := time.Now().Add(time.Second)
@@ -223,5 +187,5 @@ func TestService_Pump_EmitsDataEvent(t *testing.T) {
 	}
 	evs := rec.Snapshot()
 	require.Len(t, evs, 1)
-	assert.Equal(t, "terminal:7:data", evs[0].Name)
+	assert.Equal(t, "terminal:t7:data", evs[0].Name)
 }

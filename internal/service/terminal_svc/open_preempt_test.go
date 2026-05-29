@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/pkg/pty"
 	"agentre/internal/service/terminal_svc"
 	"agentre/internal/service/terminal_svc/mocks"
@@ -39,20 +37,16 @@ func TestService_Open_SuccessAfterClose_ClosesHandleNotRegistered(t *testing.T) 
 	mockH.EXPECT().Close().Return(nil)
 
 	sel := terminal_svc.NewBackendSelector(mockBE, nil)
-	svc := terminal_svc.NewService(stubSessionLookup{
-		sess: &chat_entity.Session{ID: 1},
-		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
-		cwd:  "/tmp",
-	}, sel, terminal_svc.NoopEmitter{})
+	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
 
 	openErr := make(chan error, 1)
-	go func() { openErr <- svc.Open(context.Background(), 1, 80, 24) }()
+	go func() { openErr <- svc.Open(context.Background(), "t1", "", "/tmp", 80, 24) }()
 
 	<-started
-	require.NoError(t, svc.Close(context.Background(), 1)) // preempt the in-flight Open
-	close(proceed)                                         // backend.Open now returns success
+	require.NoError(t, svc.Close(context.Background(), "t1")) // preempt the in-flight Open
+	close(proceed)                                            // backend.Open now returns success
 	require.NoError(t, <-openErr)
 
 	// The handle must not be registered.
-	require.ErrorIs(t, svc.Write(context.Background(), 1, "x"), terminal_svc.ErrTerminalClosed)
+	require.ErrorIs(t, svc.Write(context.Background(), "t1", "x"), terminal_svc.ErrTerminalClosed)
 }

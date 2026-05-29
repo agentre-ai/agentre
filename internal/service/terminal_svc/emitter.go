@@ -22,11 +22,11 @@ type NoopEmitter struct{}
 func (NoopEmitter) Emit(context.Context, string, any) {}
 
 // DataEventName is the canonical Wails event name for stdout chunks of a
-// given sessionID. Frontend subscribes via EventsOn(DataEventName(id)).
-func DataEventName(sessionID int64) string {
-	return fmt.Sprintf("terminal:%d:data", sessionID)
+// given terminalID. Frontend subscribes via EventsOn(DataEventName(id)).
+func DataEventName(terminalID string) string {
+	return fmt.Sprintf("terminal:%s:data", terminalID)
 }
 
-func ExitEventName(sessionID int64) string {
-	return fmt.Sprintf("terminal:%d:exit", sessionID)
+func ExitEventName(terminalID string) string {
+	return fmt.Sprintf("terminal:%s:exit", terminalID)
 }

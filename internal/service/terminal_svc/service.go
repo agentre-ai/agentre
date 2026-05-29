@@ -5,33 +5,22 @@ import (
 	"errors"
 	"sync"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/pkg/pty"
 	"agentre/pkg/agentred/protocol"
 )
 
-// SessionLookup decouples Service from chat_repo so it can be unit tested.
-// Production binding lives in app.go and wraps chat_svc.ResolveSessionCwd
-// plus chat_repo Find / agent_backend_repo Find.
-type SessionLookup interface {
-	Lookup(ctx context.Context, sessionID int64) (*chat_entity.Session, *agent_backend_entity.AgentBackend, string, error)
-}
-
 var (
-	ErrSessionNotFound = errors.New("session not found")
 	ErrTerminalClosed  = errors.New("terminal closed")
-	ErrTerminalNotOpen = errors.New("terminal not open for this session")
+	ErrTerminalNotOpen = errors.New("terminal not open for this terminal")
 )
 
 type Service struct {
-	lookup   SessionLookup
 	selector *BackendSelector
 	emitter  Emitter
 
 	mu       sync.Mutex
-	sessions map[int64]pty.Handle
-	inFlight map[int64]*openAttempt // pending Opens, keyed by sessionID
+	sessions map[string]pty.Handle
+	inFlight map[string]*openAttempt // pending Opens, keyed by terminalID
 }
 
 // openAttempt tracks one in-flight backend.Open. Close cancels it; the Open
@@ -41,37 +30,29 @@ type openAttempt struct {
 	cancel context.CancelFunc
 }
 
-func NewService(lookup SessionLookup, sel *BackendSelector, emitter Emitter) *Service {
+func NewService(sel *BackendSelector, emitter Emitter) *Service {
 	if emitter == nil {
 		emitter = NoopEmitter{}
 	}
 	return &Service{
-		lookup:   lookup,
 		selector: sel,
 		emitter:  emitter,
-		sessions: map[int64]pty.Handle{},
-		inFlight: map[int64]*openAttempt{},
+		sessions: map[string]pty.Handle{},
+		inFlight: map[string]*openAttempt{},
 	}
 }
 
-func (s *Service) Open(ctx context.Context, sessionID int64, cols, rows uint16) error {
-	sess, be, cwd, err := s.lookup.Lookup(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	if sess == nil {
-		return ErrSessionNotFound
-	}
-	backend, err := s.selector.Pick(be)
+func (s *Service) Open(ctx context.Context, terminalID string, deviceID string, cwd string, cols, rows uint16) error {
+	backend, err := s.selector.Pick(deviceID)
 	if err != nil {
 		return err
 	}
 
 	// 1. Evict any existing handle.
 	s.mu.Lock()
-	old, hasOld := s.sessions[sessionID]
+	old, hasOld := s.sessions[terminalID]
 	if hasOld {
-		delete(s.sessions, sessionID)
+		delete(s.sessions, terminalID)
 	}
 	s.mu.Unlock()
 	if hasOld {
@@ -83,7 +64,7 @@ func (s *Service) Open(ctx context.Context, sessionID int64, cols, rows uint16) 
 	openCtx, cancel := context.WithCancel(ctx)
 	attempt := &openAttempt{cancel: cancel}
 	s.mu.Lock()
-	s.inFlight[sessionID] = attempt
+	s.inFlight[terminalID] = attempt
 	s.mu.Unlock()
 
 	h, err := backend.Open(openCtx, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows})
@@ -92,11 +73,11 @@ func (s *Service) Open(ctx context.Context, sessionID int64, cols, rows uint16) 
 	//    unless a concurrent Close (or newer Open) already removed/replaced our
 	//    attempt while backend.Open was running.
 	s.mu.Lock()
-	preempted := s.inFlight[sessionID] != attempt
+	preempted := s.inFlight[terminalID] != attempt
 	if !preempted {
-		delete(s.inFlight, sessionID)
+		delete(s.inFlight, terminalID)
 		if err == nil {
-			s.sessions[sessionID] = h
+			s.sessions[terminalID] = h
 		}
 	}
 	s.mu.Unlock()
@@ -114,12 +95,12 @@ func (s *Service) Open(ctx context.Context, sessionID int64, cols, rows uint16) 
 		return nil
 	}
 	// Use the original ctx for the pump so it survives openCtx cancellation.
-	go s.pump(ctx, sessionID, h)
+	go s.pump(ctx, terminalID, h)
 	return nil
 }
 
-func (s *Service) Write(ctx context.Context, sessionID int64, data string) error {
-	h := s.lookupHandle(sessionID)
+func (s *Service) Write(ctx context.Context, terminalID string, data string) error {
+	h := s.lookupHandle(terminalID)
 	if h == nil {
 		return ErrTerminalClosed
 	}
@@ -127,23 +108,23 @@ func (s *Service) Write(ctx context.Context, sessionID int64, data string) error
 	return err
 }
 
-func (s *Service) Resize(ctx context.Context, sessionID int64, cols, rows uint16) error {
-	h := s.lookupHandle(sessionID)
+func (s *Service) Resize(ctx context.Context, terminalID string, cols, rows uint16) error {
+	h := s.lookupHandle(terminalID)
 	if h == nil {
 		return ErrTerminalClosed
 	}
 	return h.Resize(cols, rows)
 }
 
-func (s *Service) Close(ctx context.Context, sessionID int64) error {
+func (s *Service) Close(ctx context.Context, terminalID string) error {
 	s.mu.Lock()
-	attempt, hadInFlight := s.inFlight[sessionID]
+	attempt, hadInFlight := s.inFlight[terminalID]
 	if hadInFlight {
-		delete(s.inFlight, sessionID)
+		delete(s.inFlight, terminalID)
 	}
-	h, hadHandle := s.sessions[sessionID]
+	h, hadHandle := s.sessions[terminalID]
 	if hadHandle {
-		delete(s.sessions, sessionID)
+		delete(s.sessions, terminalID)
 	}
 	s.mu.Unlock()
 
@@ -165,20 +146,20 @@ func (s *Service) Shutdown() {
 	for _, h := range s.sessions {
 		hs = append(hs, h)
 	}
-	s.sessions = map[int64]pty.Handle{}
+	s.sessions = map[string]pty.Handle{}
 	s.mu.Unlock()
 	for _, h := range hs {
 		_ = h.Close()
 	}
 }
 
-func (s *Service) lookupHandle(sessionID int64) pty.Handle {
+func (s *Service) lookupHandle(terminalID string) pty.Handle {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sessions[sessionID]
+	return s.sessions[terminalID]
 }
 
-func (s *Service) pump(ctx context.Context, sessionID int64, h pty.Handle) {
+func (s *Service) pump(ctx context.Context, terminalID string, h pty.Handle) {
 	// Data() and Exit() are independent channels with no ordering guarantee
 	// between them. We must drain every data chunk AND read the single exit
 	// value before emitting the exit event — otherwise a naive select that
@@ -199,7 +180,7 @@ stream:
 				exitInfo = <-exitCh
 				break stream
 			}
-			s.emitter.Emit(ctx, DataEventName(sessionID), map[string]string{"data": string(data)})
+			s.emitter.Emit(ctx, DataEventName(terminalID), map[string]string{"data": string(data)})
 		case info := <-exitCh:
 			exitInfo = info
 			// Drain any already-buffered data so trailing output is emitted
@@ -210,7 +191,7 @@ stream:
 					if !ok {
 						drained = true
 					} else {
-						s.emitter.Emit(ctx, DataEventName(sessionID), map[string]string{"data": string(data)})
+						s.emitter.Emit(ctx, DataEventName(terminalID), map[string]string{"data": string(data)})
 					}
 				default:
 					drained = true
@@ -221,11 +202,11 @@ stream:
 	}
 
 	s.mu.Lock()
-	if cur, exists := s.sessions[sessionID]; exists && cur == h {
-		delete(s.sessions, sessionID)
+	if cur, exists := s.sessions[terminalID]; exists && cur == h {
+		delete(s.sessions, terminalID)
 	}
 	s.mu.Unlock()
-	s.emitter.Emit(ctx, ExitEventName(sessionID), protocol.TerminalExitEvent{
+	s.emitter.Emit(ctx, ExitEventName(terminalID), protocol.TerminalExitEvent{
 		Code: exitInfo.Code, Reason: exitInfo.Reason, Msg: exitInfo.Msg,
 	})
 }

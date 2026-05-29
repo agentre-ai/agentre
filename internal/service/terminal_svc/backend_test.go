@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"agentre/internal/model/entity/agent_backend_entity"
 	"agentre/internal/pkg/pty"
 	"agentre/internal/service/terminal_svc"
 
@@ -18,30 +17,26 @@ func (f *fakeBackend) Open(_ context.Context, _ pty.Spec) (pty.Handle, error) {
 	return nil, nil
 }
 
-func TestBackendSelector_PicksLocal(t *testing.T) {
-	be := &agent_backend_entity.AgentBackend{DeviceID: ""}
-	sel := terminal_svc.NewBackendSelector(&fakeBackend{name: "local"}, func(string) (terminal_svc.PTYBackend, error) {
-		t.Fatal("should not call remote factory for local")
+func TestBackendSelector_Pick_LocalOnEmptyDeviceID(t *testing.T) {
+	local := &fakeBackend{name: "local"}
+	sel := terminal_svc.NewBackendSelector(local, func(string) (terminal_svc.PTYBackend, error) {
+		t.Fatal("remote factory must not be called for local")
 		return nil, nil
 	})
-	got, err := sel.Pick(be)
+	got, err := sel.Pick("")
 	require.NoError(t, err)
-	assert.Equal(t, "local", got.(*fakeBackend).name)
+	assert.Equal(t, local, got)
 }
 
-func TestBackendSelector_PicksRemote(t *testing.T) {
-	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
-	sel := terminal_svc.NewBackendSelector(&fakeBackend{name: "local"}, func(devID string) (terminal_svc.PTYBackend, error) {
-		assert.Equal(t, "7", devID)
-		return &fakeBackend{name: "remote"}, nil
+func TestBackendSelector_Pick_RemoteOnNonEmptyDeviceID(t *testing.T) {
+	remote := &fakeBackend{name: "remote"}
+	var gotID string
+	sel := terminal_svc.NewBackendSelector(&fakeBackend{name: "local"}, func(id string) (terminal_svc.PTYBackend, error) {
+		gotID = id
+		return remote, nil
 	})
-	got, err := sel.Pick(be)
+	got, err := sel.Pick("42")
 	require.NoError(t, err)
-	assert.Equal(t, "remote", got.(*fakeBackend).name)
-}
-
-func TestBackendSelector_NilBackend_ReturnsError(t *testing.T) {
-	sel := terminal_svc.NewBackendSelector(&fakeBackend{name: "local"}, nil)
-	_, err := sel.Pick(nil)
-	require.ErrorIs(t, err, terminal_svc.ErrNoBackend)
+	assert.Equal(t, remote, got)
+	assert.Equal(t, "42", gotID)
 }

@@ -2,9 +2,7 @@ package terminal_svc
 
 import (
 	"context"
-	"errors"
 
-	"agentre/internal/model/entity/agent_backend_entity"
 	"agentre/internal/pkg/pty"
 )
 
@@ -25,14 +23,9 @@ func NewBackendSelector(local PTYBackend, remote RemoteBackendFactory) *BackendS
 	return &BackendSelector{local: local, remoteFactor: remote}
 }
 
-var ErrNoBackend = errors.New("no backend on session agent")
-
-func (s *BackendSelector) Pick(be *agent_backend_entity.AgentBackend) (PTYBackend, error) {
-	if be == nil {
-		return nil, ErrNoBackend
-	}
-	if be.IsLocal() {
+func (s *BackendSelector) Pick(deviceID string) (PTYBackend, error) {
+	if deviceID == "" {
 		return s.local, nil
 	}
-	return s.remoteFactor(be.DeviceID)
+	return s.remoteFactor(deviceID)
 }

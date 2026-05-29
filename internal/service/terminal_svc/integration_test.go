@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/pkg/pty"
 	"agentre/internal/pkg/pty/local"
 	"agentre/internal/service/terminal_svc"
@@ -49,15 +47,11 @@ func TestIntegration_LocalPTY_HappyPath(t *testing.T) {
 		localBackendBridge{be: local.NewBackend()}, nil,
 	)
 	emit := &collectingEmitter{}
-	svc := terminal_svc.NewService(stubSessionLookup{
-		sess: &chat_entity.Session{ID: 1},
-		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
-		cwd:  "/tmp",
-	}, sel, emit)
+	svc := terminal_svc.NewService(sel, emit)
 	t.Cleanup(svc.Shutdown)
 
-	require.NoError(t, svc.Open(context.Background(), 1, 80, 24))
-	require.NoError(t, svc.Write(context.Background(), 1, "echo integ-test\n"))
+	require.NoError(t, svc.Open(context.Background(), "integ-1", "", "/tmp", 80, 24))
+	require.NoError(t, svc.Write(context.Background(), "integ-1", "echo integ-test\n"))
 
 	deadline := time.After(5 * time.Second)
 	for {

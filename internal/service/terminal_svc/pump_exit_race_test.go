@@ -1,3 +1,5 @@
+//go:build !windows
+
 package terminal_svc_test
 
 import (
@@ -5,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/pkg/pty"
 	"agentre/internal/service/terminal_svc"
 
@@ -22,11 +22,11 @@ type fakeExitHandle struct {
 	exit chan pty.ExitInfo
 }
 
-func (f *fakeExitHandle) Write(p []byte) (int, error)    { return len(p), nil }
-func (f *fakeExitHandle) Resize(_, _ uint16) error       { return nil }
-func (f *fakeExitHandle) Close() error                   { return nil }
-func (f *fakeExitHandle) Data() <-chan []byte            { return f.data }
-func (f *fakeExitHandle) Exit() <-chan pty.ExitInfo      { return f.exit }
+func (f *fakeExitHandle) Write(p []byte) (int, error) { return len(p), nil }
+func (f *fakeExitHandle) Resize(_, _ uint16) error    { return nil }
+func (f *fakeExitHandle) Close() error                { return nil }
+func (f *fakeExitHandle) Data() <-chan []byte         { return f.data }
+func (f *fakeExitHandle) Exit() <-chan pty.ExitInfo   { return f.exit }
 
 type fixedHandleBackend struct{ h pty.Handle }
 
@@ -36,7 +36,7 @@ func (b *fixedHandleBackend) Open(_ context.Context, _ pty.Spec) (pty.Handle, er
 
 func sawExitEvent(evs []recordedEvent) bool {
 	for _, e := range evs {
-		if e.Name == terminal_svc.ExitEventName(1) {
+		if e.Name == terminal_svc.ExitEventName("1") {
 			return true
 		}
 	}
@@ -64,13 +64,9 @@ func TestService_Pump_ExitNotDroppedWhenDataChannelClosed(t *testing.T) {
 		sel := terminal_svc.NewBackendSelector(
 			&fixedHandleBackend{h: &fakeExitHandle{data: data, exit: exit}}, nil,
 		)
-		svc := terminal_svc.NewService(stubSessionLookup{
-			sess: &chat_entity.Session{ID: 1},
-			be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
-			cwd:  "/tmp",
-		}, sel, rec)
+		svc := terminal_svc.NewService(sel, rec)
 
-		require.NoError(t, svc.Open(context.Background(), 1, 80, 24))
+		require.NoError(t, svc.Open(context.Background(), "1", "", "/tmp", 80, 24))
 
 		// Poll for the exit event rather than sleeping a fixed amount.
 		deadline := time.Now().Add(500 * time.Millisecond)

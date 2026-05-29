@@ -10,8 +10,8 @@ import (
 )
 
 func TestStreamName_DataAndExit(t *testing.T) {
-	assert.Equal(t, "terminal:42:data", terminal_svc.DataEventName(42))
-	assert.Equal(t, "terminal:42:exit", terminal_svc.ExitEventName(42))
+	assert.Equal(t, "terminal:t1:data", terminal_svc.DataEventName("t1"))
+	assert.Equal(t, "terminal:t1:exit", terminal_svc.ExitEventName("t1"))
 }
 
 func TestNoopEmitter_DoesNotPanic(t *testing.T) {
