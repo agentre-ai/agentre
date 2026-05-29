@@ -101,3 +101,38 @@ func TestRemoteBackend_ConnectionLost_EmitsConnectionLost(t *testing.T) {
 		t.Fatal("no exit info")
 	}
 }
+
+type slowClient struct {
+	delay time.Duration
+	fakeClient
+}
+
+func (s *slowClient) Call(ctx context.Context, method string, params any, out any) error {
+	if method == "terminal.open" {
+		select {
+		case <-time.After(s.delay):
+			return s.fakeClient.Call(ctx, method, params, out)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.fakeClient.Call(ctx, method, params, out)
+}
+
+func TestRemoteBackend_Open_TimesOutAfter5s(t *testing.T) {
+	fc := &slowClient{
+		delay: 10 * time.Second, // much longer than the 5s timeout
+		fakeClient: fakeClient{
+			openParams: make(chan protocol.TerminalOpenParams, 1),
+			dataPush:   make(chan protocol.TerminalDataEvent, 1),
+			exitPush:   make(chan protocol.TerminalExitEvent, 1),
+		},
+	}
+	be := remote.NewBackend(fc)
+	start := time.Now()
+	_, err := be.Open(context.Background(), pty.Spec{Cwd: "/r"})
+	elapsed := time.Since(start)
+	require.ErrorIs(t, err, remote.ErrDaemonTimeout)
+	// Should time out around 5s, not wait for 10s
+	require.Less(t, elapsed, 7*time.Second, "should time out near 5s, not wait full delay")
+}

@@ -6,10 +6,17 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	pkgpty "agentre/internal/pkg/pty"
 	"agentre/pkg/agentred/protocol"
 )
+
+const openTimeout = 5 * time.Second
+
+// ErrDaemonTimeout is returned by Backend.Open when agentred does not respond
+// within openTimeout.
+var ErrDaemonTimeout = errors.New("agentred did not respond within 5s")
 
 // Client is the minimal subset of the agentred ws client surface needed
 // here. In production this is the existing per-device ws client; tests
@@ -27,10 +34,15 @@ type Backend struct {
 func NewBackend(c Client) *Backend { return &Backend{client: c} }
 
 func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, error) {
+	openCtx, cancel := context.WithTimeout(ctx, openTimeout)
+	defer cancel()
 	var res protocol.TerminalOpenResult
-	if err := b.client.Call(ctx, "terminal.open", protocol.TerminalOpenParams{
+	if err := b.client.Call(openCtx, "terminal.open", protocol.TerminalOpenParams{
 		Cwd: spec.Cwd, Shell: spec.Shell, Env: spec.Env, Cols: spec.Cols, Rows: spec.Rows,
 	}, &res); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, ErrDaemonTimeout
+		}
 		return nil, err
 	}
 	h := &handleImpl{
