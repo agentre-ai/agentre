@@ -102,6 +102,45 @@ func TestService_Shutdown_ClosesAll(t *testing.T) {
 	svc.Shutdown()
 }
 
+// TestService_Shutdown_PreemptsInFlightOpen_ClosesHandleNotRegistered covers the
+// race where Shutdown runs while a backend.Open is still in flight. Shutdown must
+// preempt the pending attempt so that a handle returned after Shutdown is torn
+// down rather than registered into the just-cleared session map — otherwise the
+// PTY (and any remote daemon-side shell) leaks past app shutdown.
+func TestService_Shutdown_PreemptsInFlightOpen_ClosesHandleNotRegistered(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockBE := mocks.NewMockPTYBackend(ctrl)
+	mockH := mocks.NewMockHandle(ctrl)
+
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	mockBE.EXPECT().Open(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ pty.Spec) (pty.Handle, error) {
+			close(started)
+			<-proceed
+			return mockH, nil // spawn succeeded despite the concurrent Shutdown
+		})
+	// The preempted handle must be closed and never registered; no pump should
+	// start, so Data()/Exit() must NOT be consumed.
+	mockH.EXPECT().Close().Return(nil)
+
+	sel := terminal_svc.NewBackendSelector(mockBE, nil)
+	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
+
+	openErr := make(chan error, 1)
+	go func() { openErr <- svc.Open(context.Background(), "t1", "", "/tmp", 80, 24) }()
+
+	<-started
+	svc.Shutdown() // preempt the in-flight Open
+	close(proceed) // backend.Open now returns success
+	require.NoError(t, <-openErr)
+
+	// The handle must not be registered.
+	require.ErrorIs(t, svc.Write(context.Background(), "t1", "x"), terminal_svc.ErrTerminalClosed)
+}
+
 func TestService_Open_CancelledByClose_NoLeakedHandle(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

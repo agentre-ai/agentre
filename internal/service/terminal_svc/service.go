@@ -81,7 +81,7 @@ func (s *Service) Open(ctx context.Context, terminalID string, deviceID string, 
 		}
 	}
 	s.mu.Unlock()
-	// Release the cancel goroutine resources; idempotent if already cancelled.
+	// Release the cancel goroutine resources; idempotent if already canceled.
 	cancel()
 
 	if err != nil {
@@ -137,7 +137,7 @@ func (s *Service) Close(ctx context.Context, terminalID string) error {
 	if hadHandle {
 		return h.Close()
 	}
-	return nil // only inFlight was cancelled; no Handle to close
+	return nil // only inFlight was canceled; no Handle to close
 }
 
 func (s *Service) Shutdown() {
@@ -147,7 +147,20 @@ func (s *Service) Shutdown() {
 		hs = append(hs, h)
 	}
 	s.sessions = map[string]pty.Handle{}
+	// Clear and cancel in-flight Opens too: clearing inFlight makes each pending
+	// Open observe itself as preempted (so a handle returned after Shutdown is
+	// torn down, not registered), and canceling unblocks a backend.Open that is
+	// waiting on its context. Without this, a slow Open completing after Shutdown
+	// would leak a PTY and a pump goroutine past app shutdown.
+	attempts := make([]*openAttempt, 0, len(s.inFlight))
+	for _, a := range s.inFlight {
+		attempts = append(attempts, a)
+	}
+	s.inFlight = map[string]*openAttempt{}
 	s.mu.Unlock()
+	for _, a := range attempts {
+		a.cancel()
+	}
 	for _, h := range hs {
 		_ = h.Close()
 	}
@@ -176,7 +189,6 @@ stream:
 			if !ok {
 				// Data closed before we observed exit; block for the single
 				// exit value (real handles always deliver it).
-				dataCh = nil
 				exitInfo = <-exitCh
 				break stream
 			}
