@@ -90,7 +90,11 @@ export function ChatPanelHost() {
     <div className="flex h-full min-h-0 flex-1 flex-col">
       {panelTabs.map((t) =>
         t.meta.kind === "terminal" ? (
-          <HostedTerminalPanel key={t.id} tab={t} active={t.id === activeTabId} />
+          <HostedTerminalPanel
+            key={t.id}
+            tab={t}
+            active={t.id === activeTabId}
+          />
         ) : (
           <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ),
@@ -186,7 +190,13 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
   );
 }
 
-function HostedTerminalPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
+function HostedTerminalPanel({
+  tab,
+  active,
+}: {
+  tab: ChatTab;
+  active: boolean;
+}) {
   const closeTab = useChatTabsStore((s) => s.closeTab);
   const meta = tab.meta as Extract<TabKind, { kind: "terminal" }>;
   return (

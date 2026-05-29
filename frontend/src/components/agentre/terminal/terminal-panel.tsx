@@ -25,7 +25,12 @@ function readTerminalTheme(): { background: string; foreground: string } {
   return { background: bg, foreground: fg };
 }
 
-export function TerminalPanel({ terminalID, projectId, deviceId, onClose }: TerminalPanelProps) {
+export function TerminalPanel({
+  terminalID,
+  projectId,
+  deviceId,
+  onClose,
+}: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);

@@ -42,7 +42,13 @@ export function useTerminal(args: UseTerminalArgs) {
       },
     );
 
-    App.TerminalOpen(args.terminalID, args.projectId, args.deviceId, args.cols, args.rows).then(
+    App.TerminalOpen(
+      args.terminalID,
+      args.projectId,
+      args.deviceId,
+      args.cols,
+      args.rows,
+    ).then(
       () => {
         if (cancelled) {
           App.TerminalClose(args.terminalID);

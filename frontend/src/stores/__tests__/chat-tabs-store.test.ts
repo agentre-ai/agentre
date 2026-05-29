@@ -565,7 +565,11 @@ describe("chat-tabs-store · openTerminal", () => {
     useChatTabsStore.getState().openTerminal(7, "", undefined);
     const s = useChatTabsStore.getState();
     expect(s.tabs).toHaveLength(1);
-    expect(s.tabs[0].meta).toMatchObject({ kind: "terminal", projectId: 7, deviceId: "" });
+    expect(s.tabs[0].meta).toMatchObject({
+      kind: "terminal",
+      projectId: 7,
+      deviceId: "",
+    });
     expect((s.tabs[0].meta as { terminalId: string }).terminalId).toBeTruthy();
     expect(s.tabs[0].title).toBe("终端");
     expect(s.tabs[0].isPreview).toBe(false);

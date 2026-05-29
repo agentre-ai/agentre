@@ -78,7 +78,14 @@ beforeEach(() => {
 describe("TerminalPanel", () => {
   it("mounts xterm, opens hook with terminalID, writes incoming data", () => {
     const onClose = vi.fn();
-    render(<TerminalPanel terminalID="t1" projectId={42} deviceId="" onClose={onClose} />);
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
     expect(useTerminal).toHaveBeenCalled();
     const args = (
       useTerminal as unknown as {
@@ -96,7 +103,14 @@ describe("TerminalPanel", () => {
 
   it("proxies xterm onData to hook write()", () => {
     const onClose = vi.fn();
-    render(<TerminalPanel terminalID="t1" projectId={42} deviceId="" onClose={onClose} />);
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
     act(() => onDataMock("typed-key"));
     expect(writeProxy).toHaveBeenCalledWith("typed-key");
   });
@@ -112,7 +126,14 @@ describe("TerminalPanel", () => {
       return { state: "open", write: writeProxy, resize: resizeMock };
     });
     const onClose = vi.fn();
-    render(<TerminalPanel terminalID="t1" projectId={42} deviceId="" onClose={onClose} />);
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
     // The mocked xterm reports cols=80, rows=24; once "open" the panel must
     // push that size so the PTY is not stuck at the initial open dimensions
     // (the ResizeObserver-driven resize can race TerminalOpen and be dropped).
@@ -121,14 +142,28 @@ describe("TerminalPanel", () => {
 
   it("disposes xterm on unmount", () => {
     const onClose = vi.fn();
-    const { unmount } = render(<TerminalPanel terminalID="t1" projectId={42} deviceId="" onClose={onClose} />);
+    const { unmount } = render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
     unmount();
     expect(disposeMock).toHaveBeenCalled();
   });
 
   it("onExit with reason=error → toast.error and calls onClose", () => {
     const onClose = vi.fn();
-    render(<TerminalPanel terminalID="t1" projectId={42} deviceId="" onClose={onClose} />);
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
     act(() =>
       capturedArgs?.onExit?.({ code: -1, reason: "error", msg: "no such cwd" }),
     );
@@ -140,7 +175,14 @@ describe("TerminalPanel", () => {
 
   it("onExit with reason=natural code=0 → silent close, no toast", () => {
     const onClose = vi.fn();
-    render(<TerminalPanel terminalID="t1" projectId={42} deviceId="" onClose={onClose} />);
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
     act(() => capturedArgs?.onExit?.({ code: 0, reason: "natural" }));
     expect(toastMocks.toast.warning).not.toHaveBeenCalled();
     expect(toastMocks.toast.error).not.toHaveBeenCalled();
@@ -149,7 +191,14 @@ describe("TerminalPanel", () => {
 
   it("onExit with reason=natural code=2 → warning toast and calls onClose", () => {
     const onClose = vi.fn();
-    render(<TerminalPanel terminalID="t1" projectId={42} deviceId="" onClose={onClose} />);
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
     act(() => capturedArgs?.onExit?.({ code: 2, reason: "natural" }));
     expect(toastMocks.toast.warning).toHaveBeenCalledWith(
       expect.stringContaining("code 2"),
@@ -159,7 +208,14 @@ describe("TerminalPanel", () => {
 
   it("onExit with reason=connection_lost → shows red banner, does NOT call onClose automatically", () => {
     const onClose = vi.fn();
-    const { getByRole } = render(<TerminalPanel terminalID="t1" projectId={42} deviceId="" onClose={onClose} />);
+    const { getByRole } = render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
     act(() => capturedArgs?.onExit?.({ code: 0, reason: "connection_lost" }));
     expect(toastMocks.toast.error).toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
@@ -173,7 +229,14 @@ describe("TerminalPanel", () => {
     // re-theme behaviour is verified manually in Task 30.
     // Minimum assertion: render + MutationObserver registration throws no error.
     const onClose = vi.fn();
-    render(<TerminalPanel terminalID="t1" projectId={42} deviceId="" onClose={onClose} />);
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
     // Toggle dark class on/off; the MutationObserver callback fires synchronously
     // in jsdom's mutation queue so this exercises the handler without needing waitFor.
     act(() => {

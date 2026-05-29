@@ -4,7 +4,12 @@ export const CHAT_TABS_STORAGE_KEY = "agentre.chatTabs";
 
 type PersistMeta =
   | { kind: "session"; sessionId: number }
-  | { kind: "terminal"; projectId: number; deviceId: string; terminalId: string };
+  | {
+      kind: "terminal";
+      projectId: number;
+      deviceId: string;
+      terminalId: string;
+    };
 
 type PersistedTabV2 = {
   id: string;

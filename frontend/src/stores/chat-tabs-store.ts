@@ -4,7 +4,12 @@ import { writePersistedTabs, readPersistedTabs } from "./chat-tabs-persistence";
 export type TabKind =
   | { kind: "session"; sessionId: number }
   | { kind: "new"; projectId: number; agentId: number; workMode: string }
-  | { kind: "terminal"; projectId: number; deviceId: string; terminalId: string };
+  | {
+      kind: "terminal";
+      projectId: number;
+      deviceId: string;
+      terminalId: string;
+    };
 
 export type ChatTab = {
   id: string;
@@ -39,7 +44,11 @@ type Actions = {
   bumpToAfterPinned: (id: string) => void;
   resolveNewTab: (tabId: string, sessionId: number) => void;
   reconcileMissingSessions: (existingSessionIds: Set<number>) => void;
-  openTerminal: (projectId: number, deviceId: string, deviceName?: string) => void;
+  openTerminal: (
+    projectId: number,
+    deviceId: string,
+    deviceName?: string,
+  ) => void;
 };
 
 // nextId: 测试用例可以 stub。生产环境用 crypto.randomUUID。

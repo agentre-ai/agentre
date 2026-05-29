@@ -33,7 +33,13 @@ beforeEach(() => {
 describe("useTerminal", () => {
   it("calls TerminalOpen(terminalID, projectId, deviceId, cols, rows) on mount and subscribes to events", async () => {
     const { result } = renderHook(() =>
-      useTerminal({ terminalID: "t1", projectId: 7, deviceId: "", cols: 80, rows: 24 }),
+      useTerminal({
+        terminalID: "t1",
+        projectId: 7,
+        deviceId: "",
+        cols: 80,
+        rows: 24,
+      }),
     );
     await act(async () => {
       await Promise.resolve();
@@ -46,7 +52,16 @@ describe("useTerminal", () => {
 
   it("exposes incoming data via onData callback", async () => {
     const onData = vi.fn();
-    renderHook(() => useTerminal({ terminalID: "t1", projectId: 7, deviceId: "", cols: 80, rows: 24, onData }));
+    renderHook(() =>
+      useTerminal({
+        terminalID: "t1",
+        projectId: 7,
+        deviceId: "",
+        cols: 80,
+        rows: 24,
+        onData,
+      }),
+    );
     await act(async () => {
       await Promise.resolve();
     });
@@ -56,7 +71,13 @@ describe("useTerminal", () => {
 
   it("calls TerminalClose and EventsOff on unmount", async () => {
     const { unmount } = renderHook(() =>
-      useTerminal({ terminalID: "t1", projectId: 7, deviceId: "", cols: 80, rows: 24 }),
+      useTerminal({
+        terminalID: "t1",
+        projectId: 7,
+        deviceId: "",
+        cols: 80,
+        rows: 24,
+      }),
     );
     await act(async () => {
       await Promise.resolve();
@@ -69,7 +90,13 @@ describe("useTerminal", () => {
 
   it("write() proxies to App.TerminalWrite", async () => {
     const { result } = renderHook(() =>
-      useTerminal({ terminalID: "t1", projectId: 7, deviceId: "", cols: 80, rows: 24 }),
+      useTerminal({
+        terminalID: "t1",
+        projectId: 7,
+        deviceId: "",
+        cols: 80,
+        rows: 24,
+      }),
     );
     await act(async () => {
       await Promise.resolve();
@@ -82,7 +109,13 @@ describe("useTerminal", () => {
 
   it("resize() proxies to App.TerminalResize", async () => {
     const { result } = renderHook(() =>
-      useTerminal({ terminalID: "t1", projectId: 7, deviceId: "", cols: 80, rows: 24 }),
+      useTerminal({
+        terminalID: "t1",
+        projectId: 7,
+        deviceId: "",
+        cols: 80,
+        rows: 24,
+      }),
     );
     await act(async () => {
       await Promise.resolve();
