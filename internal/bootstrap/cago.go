@@ -59,7 +59,10 @@ func Init(ctx context.Context) (*Runtime, error) {
 		return nil, err
 	}
 
-	logsDir := filepath.Join(dataDir, "logs")
+	logsDir, err := LogsDir()
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create logs dir: %w", err)
 	}
@@ -98,6 +101,9 @@ func Init(ctx context.Context) (*Runtime, error) {
 	// 把 project_svc 的 cwd 解析注入 chat_svc —— chat_svc 不直接 import project_svc，
 	// 避免 project_svc → chat_repo 与 chat_svc → project_svc 形成环。
 	chat_svc.RegisterCwdResolver(project_svc.Default().ResolveSessionCwd)
+
+	// 启动时按持久化的开关恢复 Debug 日志级别（取代旧 AGENTRE_DEBUG 环境变量）。
+	applyDebugLoggingOnBoot(ctx)
 
 	// Server 接入：注册 keychain + server_state_repo + server_svc 默认实现。
 	// server_svc 此时的 emit 为 nil；app.go.startup 在 wails ctx 就绪后调 SetEmitter 绑定事件源。
@@ -192,18 +198,14 @@ func (r *Runtime) Close() {
 func AppDataDir() (string, error) { return paths.AppDataDir() }
 
 func defaultConfigValues(logsDir, dbPath string) map[string]interface{} {
-	debug := isDebugMode()
-	level := "info"
-	if debug {
-		level = "debug"
-	}
-
+	// 启动默认 info 级别；debug 日志改由「设置 → 版本 & 更新」开关在 Init 末尾按
+	// app_settings.logger.debug_enabled 热重载（见 applyDebugLoggingOnBoot）。
 	return map[string]interface{}{
 		"env":    string(appEnv()),
-		"debug":  debug,
+		"debug":  false,
 		"source": "file",
 		"logger": map[string]interface{}{
-			"level":          level,
+			"level":          "info",
 			"disableConsole": false,
 			"logFile": map[string]interface{}{
 				"enable":        true,
@@ -214,7 +216,7 @@ func defaultConfigValues(logsDir, dbPath string) map[string]interface{} {
 		"db": map[string]interface{}{
 			"driver": string(db.SQLite),
 			"dsn":    dbPath,
-			"debug":  debug,
+			"debug":  false,
 		},
 	}
 }
@@ -229,14 +231,5 @@ func appEnv() configs.Env {
 		return configs.TEST
 	default:
 		return configs.DEV
-	}
-}
-
-func isDebugMode() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENTRE_DEBUG"))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
 	}
 }

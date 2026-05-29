@@ -2,10 +2,13 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
+
+	"agentre/internal/bootstrap"
 )
 
 // runOpenCmd is the test seam for exec.Command. Tests swap it; production code
@@ -56,6 +59,19 @@ func isAbsolutePath(p string) bool {
 		}
 	}
 	return false
+}
+
+// OpenLogsDir 在系统文件管理器中打开 Agentre 的日志目录（不存在时先创建）。
+// 用于「设置 → 版本 & 更新 → 打开日志」，方便用户取日志附到 Bug 反馈里。
+func (a *App) OpenLogsDir() error {
+	dir, err := bootstrap.LogsDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("OpenLogsDir: create logs dir: %w", err)
+	}
+	return runOpenPlatform(dir)
 }
 
 func runOpenPlatform(path string) error {

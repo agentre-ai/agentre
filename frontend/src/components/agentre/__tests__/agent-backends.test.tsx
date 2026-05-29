@@ -131,7 +131,9 @@ describe("AgentBackendsPanel", () => {
     installAppMock();
     render(<AgentBackendsPanel />);
 
-    const table = await screen.findByRole("table", { name: "Agent backend list" });
+    const table = await screen.findByRole("table", {
+      name: "Agent backend list",
+    });
     await waitFor(() => {
       expect(within(table).getByText("默认助手")).toBeInTheDocument();
       expect(
@@ -165,7 +167,9 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    const table = await screen.findByRole("table", { name: "Agent backend list" });
+    const table = await screen.findByRole("table", {
+      name: "Agent backend list",
+    });
     await waitFor(() => {
       expect(within(table).getByText("孤儿后端")).toBeInTheDocument();
       expect(within(table).getByText("Needs action")).toBeInTheDocument();
@@ -212,7 +216,9 @@ describe("AgentBackendsPanel", () => {
     await screen.findByText("默认助手");
 
     const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: /Test connection/ }));
+    fireEvent.click(
+      within(row).getByRole("button", { name: /Test connection/ }),
+    );
 
     await waitFor(() => {
       expect(screen.getByText(/128ms/)).toBeInTheDocument();
@@ -244,7 +250,9 @@ describe("AgentBackendsPanel", () => {
     await screen.findByText("默认助手");
 
     const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: /Test connection/ }));
+    fireEvent.click(
+      within(row).getByRole("button", { name: /Test connection/ }),
+    );
 
     await waitFor(() =>
       expect(screen.getByText(/401 Unauthorized/)).toBeInTheDocument(),
@@ -266,7 +274,9 @@ describe("AgentBackendsPanel", () => {
       target: { value: "draft-name" },
     });
 
-    fireEvent.click(within(dialog).getByRole("button", { name: /Test Connection/ }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /Test Connection/ }),
+    );
 
     await waitFor(() =>
       expect(mocks.TestAgentBackend).toHaveBeenCalledWith(
@@ -296,7 +306,9 @@ describe("AgentBackendsPanel", () => {
     fireEvent.change(within(dialog).getByPlaceholderText(/Claude Code/), {
       target: { value: "draft-name" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: /Test Connection/ }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /Test Connection/ }),
+    );
 
     await waitFor(() => {
       expect(within(dialog).getByText(/87ms/)).toBeInTheDocument();
@@ -318,7 +330,9 @@ describe("AgentBackendsPanel", () => {
     fireEvent.change(within(dialog).getByPlaceholderText(/Claude Code/), {
       target: { value: "draft-name" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: /Test Connection/ }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /Test Connection/ }),
+    );
 
     const pong = await within(dialog).findByText(/pong/);
     const footer = dialog.querySelector(
@@ -358,7 +372,9 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    const table = await screen.findByRole("table", { name: "Agent backend list" });
+    const table = await screen.findByRole("table", {
+      name: "Agent backend list",
+    });
     await waitFor(() => {
       expect(
         within(table).getByText("无 provider 的 claude"),
@@ -714,17 +730,23 @@ describe("AgentBackendsPanel", () => {
     await waitFor(() => {
       expect(within(syncDialog).getByText("Sync Failed")).toBeInTheDocument();
       expect(
-        within(syncDialog).getByText(/older remote agentred is still writing to the system keychain/i),
+        within(syncDialog).getByText(
+          /older remote agentred is still writing to the system keychain/i,
+        ),
       ).toBeInTheDocument();
       expect(
-        within(syncDialog).getByText(/current version writes directly to the agentred state file/i),
+        within(syncDialog).getByText(
+          /current version writes directly to the agentred state file/i,
+        ),
       ).toBeInTheDocument();
       expect(
         within(syncDialog).getByText(/org\.freedesktop\.secrets/),
       ).toBeInTheDocument();
     });
     expect(
-      screen.queryAllByText(/older remote agentred is still writing to the system keychain/i),
+      screen.queryAllByText(
+        /older remote agentred is still writing to the system keychain/i,
+      ),
     ).toHaveLength(1);
   });
 
@@ -960,9 +982,7 @@ describe("AgentBackendsPanel", () => {
     // 用户手改了值，然后点按钮重识别 → 按钮要覆盖手填值。
     fireEvent.change(input, { target: { value: "/wrong/path" } });
     nextPath = "/second/claude";
-    await user.click(
-      within(dialog).getByRole("button", { name: /Detect/ }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: /Detect/ }));
 
     await waitFor(() => expect(input.value).toBe("/second/claude"));
     expect(resolveFn).toHaveBeenCalledTimes(2);
@@ -987,12 +1007,12 @@ describe("AgentBackendsPanel", () => {
     ) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "/manual/codex" } });
 
-    await user.click(
-      within(dialog).getByRole("button", { name: /Detect/ }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: /Detect/ }));
 
     await waitFor(() =>
-      expect(within(dialog).getByText(/codex was not found in \$PATH/)).toBeInTheDocument(),
+      expect(
+        within(dialog).getByText(/codex was not found in \$PATH/),
+      ).toBeInTheDocument(),
     );
     // miss 时不能覆盖用户手填的值。
     expect(input.value).toBe("/manual/codex");
@@ -1014,7 +1034,9 @@ describe("AgentBackendsPanel", () => {
     await screen.findByText("默认助手");
 
     const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: /Test connection/ }));
+    fireEvent.click(
+      within(row).getByRole("button", { name: /Test connection/ }),
+    );
 
     // 按钮 title 切换为"取消测试"
     const cancelBtn = await within(row).findByRole("button", {
@@ -1047,7 +1069,9 @@ describe("AgentBackendsPanel", () => {
     await screen.findByText("默认助手");
 
     const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: /Test connection/ }));
+    fireEvent.click(
+      within(row).getByRole("button", { name: /Test connection/ }),
+    );
 
     const banner = await screen.findByRole("status");
     // banner 文本应短于完整 message
@@ -1103,7 +1127,9 @@ describe("AgentBackendsPanel", () => {
     await user.click(addBtn);
 
     // 按钮变成「Configured in env_json」灰态
-    expect(within(dialog).getByText(/Configured in env_json/)).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Configured in env_json/),
+    ).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
@@ -1165,7 +1191,9 @@ describe("AgentBackendsPanel", () => {
     fireEvent.change(within(dialog).getByPlaceholderText(/Claude Code/), {
       target: { value: "draft-name" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: /Test Connection/ }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /Test Connection/ }),
+    );
 
     await waitFor(() =>
       expect(within(dialog).getByText(/401 Unauthorized/)).toBeInTheDocument(),

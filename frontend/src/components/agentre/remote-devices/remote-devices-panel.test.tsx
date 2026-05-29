@@ -27,7 +27,9 @@ describe("RemoteDevicesPanel", () => {
     mockList.mockResolvedValueOnce([]);
     render(<RemoteDevicesPanel />);
     await waitFor(() =>
-      expect(screen.getByText(/No agentred devices paired/)).toBeInTheDocument(),
+      expect(
+        screen.getByText(/No agentred devices paired/),
+      ).toBeInTheDocument(),
     );
   });
 

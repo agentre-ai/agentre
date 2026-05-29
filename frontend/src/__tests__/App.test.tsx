@@ -682,9 +682,9 @@ describe("App", () => {
       "aria-current",
       "page",
     );
-    expect(screen.getByRole("button", { name: "Settings" })).not.toHaveAttribute(
-      "aria-current",
-    );
+    expect(
+      screen.getByRole("button", { name: "Settings" }),
+    ).not.toHaveAttribute("aria-current");
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
 
@@ -692,7 +692,9 @@ describe("App", () => {
       "aria-current",
       "page",
     );
-    expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Appearance" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(
         "Adjust how Agentre is displayed. Theme and language preferences are saved on this device.",
@@ -930,9 +932,9 @@ describe("App", () => {
       "aria-current",
       "page",
     );
-    expect(screen.getByRole("button", { name: "Settings" })).not.toHaveAttribute(
-      "aria-current",
-    );
+    expect(
+      screen.getByRole("button", { name: "Settings" }),
+    ).not.toHaveAttribute("aria-current");
     expect(
       screen.getByRole("complementary", { name: "Agent list" }),
     ).toHaveStyle({ width: "320px" });
@@ -959,7 +961,9 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Chat" })).not.toHaveAttribute(
       "aria-current",
     );
-    expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Appearance" }),
+    ).toBeInTheDocument();
   });
 
   it("opens the implemented Issues workspace from the left rail", async () => {
@@ -987,10 +991,14 @@ describe("App", () => {
     expect(within(main).getByText("Author")).toBeInTheDocument();
     expect(within(main).getByText("Assigned Agent")).toBeInTheDocument();
     expect(
-      within(main).getByText("Fix OAuth callback losing the state parameter in Safari"),
+      within(main).getByText(
+        "Fix OAuth callback losing the state parameter in Safari",
+      ),
     ).toBeInTheDocument();
     expect(within(main).getByText("#142")).toBeInTheDocument();
-    expect(within(main).queryByText("Under construction")).not.toBeInTheDocument();
+    expect(
+      within(main).queryByText("Under construction"),
+    ).not.toBeInTheDocument();
 
     await user.click(within(main).getByRole("button", { name: "Board" }));
 
@@ -1061,7 +1069,9 @@ describe("App", () => {
 
     await user.clear(nameInput);
     await user.type(nameInput, "agentre-prod");
-    await user.click(screen.getByRole("button", { name: "Save Configuration" }));
+    await user.click(
+      screen.getByRole("button", { name: "Save Configuration" }),
+    );
 
     await waitFor(() => {
       expect(appBridge.UpdateHookSource).toHaveBeenCalledWith(
@@ -1136,9 +1146,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "Hooks" }));
     await user.click(await screen.findByRole("button", { name: /Event Log/ }));
-    expect(
-      screen.getByRole("button", { name: /All\s+1/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /All\s+1/ })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Failed\s+0/ }),
     ).toBeInTheDocument();
@@ -1150,7 +1158,9 @@ describe("App", () => {
         targetAgentId: 0,
       });
     });
-    expect(await screen.findByText("Redelivery request recorded")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Redelivery request recorded"),
+    ).toBeInTheDocument();
   });
 
   it("loads and lists departments + agents on the organization page", async () => {
@@ -1162,7 +1172,9 @@ describe("App", () => {
 
     // wait for LoadOrg promise to resolve
     await waitFor(() => {
-      expect(screen.queryByText("Loading org chart...")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Loading org chart..."),
+      ).not.toBeInTheDocument();
     });
 
     // department row from the mock
@@ -1179,7 +1191,9 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "Organization" }));
     await waitFor(() => {
-      expect(screen.queryByText("Loading org chart...")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Loading org chart..."),
+      ).not.toBeInTheDocument();
     });
 
     await user.click(screen.getByRole("button", { name: "New Department" }));
@@ -1217,7 +1231,9 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "Organization" }));
     await waitFor(() => {
-      expect(screen.queryByText("Loading org chart...")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Loading org chart..."),
+      ).not.toBeInTheDocument();
     });
 
     // initial state: empty detail panel
@@ -1243,7 +1259,9 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "Organization" }));
     await waitFor(() => {
-      expect(screen.queryByText("Loading org chart...")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Loading org chart..."),
+      ).not.toBeInTheDocument();
     });
 
     const detailPanel = container.querySelector(
@@ -1293,7 +1311,9 @@ describe("App", () => {
       ).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/Runtime options live on each agent/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Runtime options live on each agent/),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("table", { name: "LLM provider list" }),
     ).not.toBeInTheDocument();
@@ -1341,10 +1361,9 @@ describe("App", () => {
     });
 
     expectHorizontalTableScroll(providerTable);
-    expect(screen.getByRole("button", { name: "LLM Providers" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    expect(
+      screen.getByRole("button", { name: "LLM Providers" }),
+    ).toHaveAttribute("aria-current", "page");
     expect(
       screen.getByRole("button", { name: "Agent Backends" }),
     ).not.toHaveAttribute("aria-current");
@@ -1412,7 +1431,9 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(screen.getByRole("button", { name: "LLM Providers" }));
-    await user.click(await screen.findByRole("button", { name: "New Provider" }));
+    await user.click(
+      await screen.findByRole("button", { name: "New Provider" }),
+    );
 
     const dialog = await screen.findByRole("form", {
       name: "New LLM provider",
@@ -1445,13 +1466,19 @@ describe("App", () => {
       }),
     );
     expect(
-      await within(dialog).findByText("Call succeeded. Sent hi and received a model response."),
+      await within(dialog).findByText(
+        "Call succeeded. Sent hi and received a model response.",
+      ),
     ).toBeInTheDocument();
   });
 
   it("opens under construction pages from unimplemented settings items", async () => {
     const user = userEvent.setup();
-    const unimplementedSettingsItems = ["Notifications", "MCP Servers", "Skills / Tools"];
+    const unimplementedSettingsItems = [
+      "Notifications",
+      "MCP Servers",
+      "Skills / Tools",
+    ];
 
     mockDesktopViewport();
     render(<App />);
@@ -1506,7 +1533,9 @@ describe("App", () => {
     expect(
       within(main).getByRole("heading", { name: "Data & Backup" }),
     ).toBeInTheDocument();
-    expect(within(main).queryByText("Under construction")).not.toBeInTheDocument();
+    expect(
+      within(main).queryByText("Under construction"),
+    ).not.toBeInTheDocument();
   });
 
   it("restores the saved dark theme before user interaction", async () => {

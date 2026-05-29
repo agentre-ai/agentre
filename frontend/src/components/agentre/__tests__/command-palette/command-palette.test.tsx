@@ -84,7 +84,9 @@ describe("CommandPalette", () => {
     renderPalette();
     act(() => useCommandPaletteStore.getState().setOpen(true));
     await waitFor(() =>
-      expect(screen.getByPlaceholderText("Search sessions...")).toBeInTheDocument(),
+      expect(
+        screen.getByPlaceholderText("Search sessions..."),
+      ).toBeInTheDocument(),
     );
     expect(await screen.findByText("年度报告 v2")).toBeInTheDocument();
     expect(screen.getByText("周报草稿")).toBeInTheDocument();

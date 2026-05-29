@@ -17,7 +17,6 @@ func TestInitCreatesCagoRuntime(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("AGENTRE_DATA_DIR", dataDir)
 	t.Setenv("AGENTRE_ENV", "test")
-	t.Setenv("AGENTRE_DEBUG", "true")
 
 	runtime, err := Init(context.Background())
 	if err != nil {
@@ -35,20 +34,25 @@ func TestInitCreatesCagoRuntime(t *testing.T) {
 	if cfg.Env != configs.TEST {
 		t.Fatalf("Env = %q, want %q", cfg.Env, configs.TEST)
 	}
-	if !cfg.Debug {
-		t.Fatal("Debug = false, want true")
+	// 默认不开 debug —— debug 日志改由 app_settings 开关控制（见 applyDebugLoggingOnBoot）。
+	if cfg.Debug {
+		t.Fatal("Debug = true, want false (default)")
 	}
 	if got := runtime.DataDir(); got != dataDir {
 		t.Fatalf("DataDir = %q, want %q", got, dataDir)
 	}
 
 	var loggerCfg struct {
+		Level   string
 		LogFile struct {
 			Filename string
 		}
 	}
 	if err := cfg.Scan(context.Background(), "logger", &loggerCfg); err != nil {
 		t.Fatalf("Scan(logger) error = %v", err)
+	}
+	if loggerCfg.Level != "info" {
+		t.Fatalf("logger level = %q, want info", loggerCfg.Level)
 	}
 	wantLog := filepath.Join(dataDir, "logs", "agentre.log")
 	if loggerCfg.LogFile.Filename != wantLog {
@@ -71,6 +75,35 @@ func TestInitCreatesCagoRuntime(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dataDir, "config.json")); !os.IsNotExist(err) {
 		t.Fatalf("config.json should not be created, stat error = %v", err)
+	}
+}
+
+// TestInitIgnoresAGENTREDebugEnv 回归：旧的 AGENTRE_DEBUG 环境变量已被砍掉，
+// 改由「设置 → 版本 & 更新 → Debug 日志」开关控制。即使设置该变量，启动也必须
+// 保持默认 info 级别、cfg.Debug=false。
+func TestInitIgnoresAGENTREDebugEnv(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTRE_DATA_DIR", dataDir)
+	t.Setenv("AGENTRE_ENV", "test")
+	t.Setenv("AGENTRE_DEBUG", "true") // legacy var must be ignored
+
+	runtime, err := Init(context.Background())
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(runtime.Close)
+
+	cfg := runtime.Config()
+	if cfg.Debug {
+		t.Fatal("Debug = true; AGENTRE_DEBUG must be ignored (use the in-app Debug toggle)")
+	}
+
+	var loggerCfg struct{ Level string }
+	if err := cfg.Scan(context.Background(), "logger", &loggerCfg); err != nil {
+		t.Fatalf("Scan(logger) error = %v", err)
+	}
+	if loggerCfg.Level != "info" {
+		t.Fatalf("logger level = %q, want info", loggerCfg.Level)
 	}
 }
 

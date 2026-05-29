@@ -211,7 +211,9 @@ describe("PlanApproveCard", () => {
     expect(screen.getByText("Execute Plan")).toBeDefined();
     expect(screen.getByText("Refine Plan")).toBeDefined();
     expect(
-      screen.getByText("Choose the next action, or send feedback to keep planning"),
+      screen.getByText(
+        "Choose the next action, or send feedback to keep planning",
+      ),
     ).toBeDefined();
   });
 

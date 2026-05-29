@@ -30,7 +30,7 @@ Guidance for Codex when working in this repository.
 
 写代码 / 修 bug / 写测试前，先看：
 
-- [docs/architecture.md](docs/architecture.md) — repository layout、cago 分层约定（entity / repo / service / wails binding）、远端执行架构、`AppDataDir` 存储路径、`AGENTRE_DATA_DIR` / `AGENTRE_ENV` / `AGENTRE_DEBUG` 环境变量、迁移流程、生成文件清单。
+- [docs/architecture.md](docs/architecture.md) — repository layout、cago 分层约定（entity / repo / service / wails binding）、远端执行架构、`AppDataDir` 存储路径、`AGENTRE_DATA_DIR` / `AGENTRE_ENV` 环境变量（Debug 日志改由「设置 → 版本 & 更新」开关控制）、迁移流程、生成文件清单。
 - [docs/development.md](docs/development.md) — Red→Green→Refactor、SOLID、Fix Discipline、测试栈（`testutils.Database(t)` + sqlmock + mockgen + goconvey）、commit 风格、日志规范、`.golangci.yml` 例外。
 - [docs/frontend.md](docs/frontend.md) — shadcn `@/components/ui/*` 强制约定、pnpm、`make lint` / `gofmt` / `goimports`。
 - [docs/debugging.md](docs/debugging.md) — sqlite3 / jq / 日志过滤命令、table-to-feature 映射、常见踩坑（macOS `Application Support` 路径要引号）。

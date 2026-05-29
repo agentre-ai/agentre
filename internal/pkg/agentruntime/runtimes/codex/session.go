@@ -45,12 +45,6 @@ type cxApprovalStream interface {
 	SubmitApproval(ctx context.Context, requestID string, allow, alwaysAllowSession bool) error
 }
 
-type cxGoalSession interface {
-	GetGoal(ctx context.Context) (*codex.Goal, error)
-	SetGoal(ctx context.Context, update codex.GoalUpdate) (*codex.Goal, error)
-	ClearGoal(ctx context.Context) (bool, error)
-}
-
 type cxClientAdapter struct {
 	client *codex.Client
 	sid    string

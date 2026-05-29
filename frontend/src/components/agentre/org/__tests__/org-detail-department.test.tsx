@@ -87,20 +87,22 @@ describe("OrgDetailDepartment editor layout", () => {
     expect(
       screen.getAllByRole("radio", { name: /Theme color agent-/ }),
     ).toHaveLength(10);
-    expect(
-      screen.getByRole("combobox", { name: "Parent" }),
-    ).toHaveTextContent("工程部");
+    expect(screen.getByRole("combobox", { name: "Parent" })).toHaveTextContent(
+      "工程部",
+    );
     expect(screen.getByRole("heading", { name: "Leader" })).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "部门长" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Members" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Members" }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "成员速览" }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("combobox", { name: "Leader" }),
-    ).toHaveTextContent("Boris");
+    expect(screen.getByRole("combobox", { name: "Leader" })).toHaveTextContent(
+      "Boris",
+    );
     expect(screen.getAllByText("后端工程师").length).toBeGreaterThan(0);
   });
 });
@@ -124,7 +126,9 @@ describe("OrgDetailDepartment delete dialog", () => {
     await userEvent.click(
       screen.getAllByRole("button", { name: /Delete department/ })[0],
     );
-    await userEvent.click(screen.getByRole("button", { name: /Confirm Delete/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /Confirm Delete/ }),
+    );
     expect(onDelete).toHaveBeenCalledWith({ id: 1, strategy: "reparent" });
   });
 
@@ -147,7 +151,9 @@ describe("OrgDetailDepartment delete dialog", () => {
       screen.getAllByRole("button", { name: /Delete department/ })[0],
     );
     fireEvent.click(screen.getByLabelText(/Recursively delete/));
-    await userEvent.click(screen.getByRole("button", { name: /Confirm Delete/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /Confirm Delete/ }),
+    );
     expect(onDelete).toHaveBeenCalledWith({ id: 1, strategy: "cascade" });
   });
 });

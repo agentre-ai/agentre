@@ -560,7 +560,10 @@ describe("ProjectsPage project drag reorder", () => {
     ]);
 
     renderProjectsPage();
-    await user.type(await screen.findByLabelText("Search projects / sessions"), "Al");
+    await user.type(
+      await screen.findByLabelText("Search projects / sessions"),
+      "Al",
+    );
     dndMocks.onDragEnd?.({
       active: { id: "project-2" },
       over: { id: "project-1" },

@@ -1395,6 +1395,8 @@ describe("ChatTranscript compact_boundary fold", () => {
     expect(screen.getByText("q")).toBeInTheDocument();
     expect(screen.getByText("a")).toBeInTheDocument();
     expect(screen.queryByText("Context compacted")).toBeNull();
-    expect(screen.queryByRole("button", { name: /View .* before compaction/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /View .* before compaction/ }),
+    ).toBeNull();
   });
 });

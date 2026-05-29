@@ -2024,6 +2024,8 @@
       "downloadAndInstall": "Download and Install",
       "downloading": "Downloading...",
       "downloadingShort": "Downloading",
+      "openLogs": "Open Logs",
+      "reportBug": "Report Bug",
       "restartNow": "Restart Now"
     },
     "channel": {
@@ -2050,6 +2052,12 @@
     "currentVersion": {
       "description": "Check GitHub Releases and install a new version.",
       "title": "Current Version"
+    },
+    "debug": {
+      "description": "Lower the log level to debug for troubleshooting. Turn it off once you're done.",
+      "disabledToast": "Debug logging disabled",
+      "enabledToast": "Debug logging enabled",
+      "title": "Debug Logging"
     },
     "error": {
       "title": "Operation Failed"

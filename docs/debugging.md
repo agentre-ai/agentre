@@ -16,7 +16,7 @@ Override with env var `AGENTRE_DATA_DIR` (used in tests and isolated debug runs)
 <AppDataDir>/
   agentre.db          ← SQLite (pure-Go driver, no CGO)
   logs/
-    agentre.log       ← all levels (info+; debug+ when AGENTRE_DEBUG=1)
+    agentre.log       ← all levels (info+; debug+ when Debug Logging is on)
     error.log         ← error+ only
 ```
 
@@ -87,7 +87,7 @@ Every line is one JSON object. Common fields:
 - `error` — present on `warn`/`error` lines; may be a localized i18n message
 - ad-hoc fields (`source_id`, `agent_id`, `session_id`, …) — added at the call site
 
-Tip: `AGENTRE_DEBUG=1 make dev` enables debug-level logging — much more verbose, only use while reproducing a specific bug.
+Tip: toggle **Settings → Version & Update → Debug Logging** to enable debug-level logging — much more verbose, only use while reproducing a specific bug. It takes effect immediately (logger hot-reload) and survives restarts; the state lives in `app_settings.logger.debug_enabled`.
 
 ## Common Scenarios
 
@@ -109,6 +109,6 @@ Missing ids ⇒ relaunch the app to run `RunMigrations`; never hand-insert into 
 - **Forgetting to quote the macOS path.** The space in `Application Support` makes `sqlite3 $DB` open an empty in-memory DB silently — always `"$DB"`.
 - **Writing to the DB while the app is running.** SQLite holds a write lock; either close the app or use `BEGIN IMMEDIATE` and accept `database is locked`. Read-only is fine.
 - **Editing rows directly to "fix" a bug.** That hides the producer-side bug (CLAUDE.md Fix Discipline §2). Reproduce, then fix the Go code + add a regression test against sqlmock.
-- **Trusting `agentre.log` after a crash.** zap may buffer the last few lines. Prefer `error.log` for fatals, or re-run with `AGENTRE_DEBUG=1` and reproduce.
+- **Trusting `agentre.log` after a crash.** zap may buffer the last few lines. Prefer `error.log` for fatals, or turn on **Debug Logging** (Settings → Version & Update) and reproduce.
 - **Greppping with single quotes on a JSON field.** `grep '"caller":"hook_svc'` works; `grep "caller":"hook_svc"` does not (shell eats the quotes). Use `-F` for fixed strings.
 - **Confusing this DB with test DBs.** `make test` uses sqlmock / MySQL dialect in memory — it never touches `$DB`. Bugs you reproduce here are real runtime state, not test fixtures.

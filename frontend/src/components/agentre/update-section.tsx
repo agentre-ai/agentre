@@ -2,14 +2,17 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
+  Bug,
   CheckCircle2,
   Download,
   ExternalLink,
+  FolderOpen,
   Info,
   Loader2,
   RefreshCw,
   RotateCw,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
 import { Info as FetchAppInfo } from "../../../wailsjs/go/app/App";
@@ -44,9 +48,13 @@ import {
   checkForUpdate,
   downloadAndInstallUpdate,
   getAvailableMirrors,
+  getBugReportInfo,
+  getDebugLogging,
   getDownloadMirror,
   getUpdateChannel,
+  openLogsDir,
   restartApp,
+  setDebugLogging,
   setDownloadMirror,
   setUpdateChannel,
   type MirrorInfo,
@@ -117,6 +125,7 @@ export function UpdateSection() {
     React.useState<string>("github");
   const [customMirror, setCustomMirror] = React.useState<string>("");
   const [phase, setPhase] = React.useState<Phase>({ kind: "idle" });
+  const [debugEnabled, setDebugEnabled] = React.useState<boolean>(false);
   const [checksumPrompt, setChecksumPrompt] = React.useState<ChecksumPrompt>({
     open: false,
     reason: "",
@@ -148,6 +157,14 @@ export function UpdateSection() {
         setCustomMirror(picked.customDraft);
       } catch (err) {
         console.warn("fetch update settings failed", err);
+      }
+
+      try {
+        const on = await getDebugLogging();
+        if (cancelled) return;
+        setDebugEnabled(on);
+      } catch (err) {
+        console.warn("fetch debug logging failed", err);
       }
     })();
     return () => {
@@ -277,6 +294,49 @@ export function UpdateSection() {
     }
   }, []);
 
+  const handleReportBug = React.useCallback(async () => {
+    const params = new URLSearchParams({
+      template: "bug_report.yml",
+      labels: "bug",
+    });
+    try {
+      const info = await getBugReportInfo();
+      const version = info.version + (info.commit ? ` (${info.commit})` : "");
+      if (version.trim()) params.set("version", version);
+      if (info.osLabel) params.set("os", info.osLabel);
+    } catch (err) {
+      // 取不到诊断信息时仍然打开模板，让用户手动填写。
+      console.warn("fetch bug report info failed", err);
+    }
+    BrowserOpenURL(`${REPOSITORY_URL}/issues/new?${params.toString()}`);
+  }, []);
+
+  const handleOpenLogs = React.useCallback(async () => {
+    try {
+      await openLogsDir();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const handleDebugToggle = React.useCallback(
+    async (next: boolean) => {
+      setDebugEnabled(next);
+      try {
+        await setDebugLogging(next);
+        toast.success(
+          next
+            ? t("update.debug.enabledToast")
+            : t("update.debug.disabledToast"),
+        );
+      } catch (err) {
+        setDebugEnabled(!next);
+        toast.error(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [t],
+  );
+
   const checkButtonState = (() => {
     if (phase.kind === "checking") {
       return {
@@ -365,7 +425,17 @@ export function UpdateSection() {
                 {t("update.status.upToDate")}
               </span>
             ) : null}
+            <Button type="button" variant="outline" onClick={handleReportBug}>
+              <Bug aria-hidden="true" className="size-4" />
+              {t("update.actions.reportBug")}
+            </Button>
+            <Button type="button" variant="outline" onClick={handleOpenLogs}>
+              <FolderOpen aria-hidden="true" className="size-4" />
+              {t("update.actions.openLogs")}
+            </Button>
           </div>
+
+          <DebugRow enabled={debugEnabled} onToggle={handleDebugToggle} />
         </div>
       </section>
 
@@ -439,6 +509,34 @@ function RepositoryRow() {
         <span className="truncate">{REPOSITORY_URL}</span>
         <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
       </a>
+    </div>
+  );
+}
+
+function DebugRow({
+  enabled,
+  onToggle,
+}: {
+  enabled: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const labelId = React.useId();
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span id={labelId} className="text-sm font-medium">
+          {t("update.debug.title")}
+        </span>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {t("update.debug.description")}
+        </p>
+      </div>
+      <Switch
+        checked={enabled}
+        onCheckedChange={onToggle}
+        aria-labelledby={labelId}
+      />
     </div>
   );
 }

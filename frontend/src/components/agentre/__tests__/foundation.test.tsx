@@ -233,9 +233,9 @@ describe("Agentre foundation components", () => {
     expect(
       screen.getByRole("button", { name: /处理周一例会纪要/ }),
     ).toHaveClass("cursor-pointer");
-    expect(screen.getByRole("button", { name: /Open command palette/ })).toHaveClass(
-      "cursor-text",
-    );
+    expect(
+      screen.getByRole("button", { name: /Open command palette/ }),
+    ).toHaveClass("cursor-text");
     expect(screen.getByRole("button", { name: "Minimize window" })).toHaveClass(
       "cursor-pointer",
     );
@@ -275,9 +275,9 @@ describe("Agentre foundation components", () => {
     expect(screen.getByText("CEO 助手")).toBeInTheDocument();
     expect(screen.getByText("⌘P")).toBeInTheDocument();
     expect(screen.getByRole("banner")).toHaveClass("wails-drag");
-    expect(screen.getByRole("button", { name: /Open command palette/ })).toHaveClass(
-      "wails-no-drag",
-    );
+    expect(
+      screen.getByRole("button", { name: /Open command palette/ }),
+    ).toHaveClass("wails-no-drag");
     expect(
       container.querySelector('[data-slot="native-window-controls-inset"]'),
     ).not.toBeInTheDocument();
@@ -327,7 +327,9 @@ describe("Agentre foundation components", () => {
       <AppTopBar appName="Agentre" breadcrumb="CEO 助手" platform="darwin" />,
     );
 
-    await user.dblClick(screen.getByRole("button", { name: /Open command palette/ }));
+    await user.dblClick(
+      screen.getByRole("button", { name: /Open command palette/ }),
+    );
 
     expect(windowToggleMaximise).not.toHaveBeenCalled();
 

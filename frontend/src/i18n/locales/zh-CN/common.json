@@ -2024,6 +2024,8 @@
       "downloadAndInstall": "下载并安装",
       "downloading": "下载中...",
       "downloadingShort": "下载中",
+      "openLogs": "打开日志",
+      "reportBug": "Bug 反馈",
       "restartNow": "立即重启"
     },
     "channel": {
@@ -2050,6 +2052,12 @@
     "currentVersion": {
       "description": "通过 GitHub Releases 检查并安装新版本。",
       "title": "当前版本"
+    },
+    "debug": {
+      "description": "开启后日志级别降为 debug，便于排查问题；问题解决后建议关闭。",
+      "disabledToast": "Debug 日志已关闭",
+      "enabledToast": "Debug 日志已开启",
+      "title": "Debug 日志"
     },
     "error": {
       "title": "操作失败"

@@ -73,7 +73,9 @@ describe("DeviceRow", () => {
         onRemove={() => {}}
       />,
     );
-    expect(screen.getByText(/identity fingerprint changed/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/identity fingerprint changed/),
+    ).toBeInTheDocument();
   });
   it("fires onRemove from action menu", async () => {
     const user = userEvent.setup();

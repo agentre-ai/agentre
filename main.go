@@ -59,29 +59,6 @@ func main() {
 	}
 }
 
-func newWailsOptions(a *app.App, assets fs.FS) *options.App {
-	dataDir := ""
-	if runtime := bootstrap.Default(); runtime != nil {
-		dataDir = runtime.DataDir()
-	}
-	if dataDir == "" {
-		var err error
-		dataDir, err = bootstrap.AppDataDir()
-		if err != nil {
-			dataDir = "agentre"
-		}
-	}
-	return newWailsOptionsForDataDir(a, assets, stdruntime.GOOS, dataDir)
-}
-
-func newWailsOptionsForGOOS(a *app.App, assets fs.FS, goos string) *options.App {
-	dataDir, err := bootstrap.AppDataDir()
-	if err != nil {
-		dataDir = "agentre"
-	}
-	return newWailsOptionsForDataDir(a, assets, goos, dataDir)
-}
-
 func newWailsOptionsForDataDir(a *app.App, assets fs.FS, goos, dataDir string) *options.App {
 	appOptions := &options.App{
 		Title:       "Agentre",

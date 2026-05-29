@@ -100,7 +100,9 @@ describe("AIChatInput slash menu integration", () => {
     });
     // 给一拍时间让 selectionUpdate fire
     await new Promise((r) => setTimeout(r, 20));
-    expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
+    expect(
+      screen.queryByRole("listbox", { name: "Slash commands" }),
+    ).toBeNull();
   });
 
   it("点击 /compact 仅填入输入框,不直接发送 (literal_text 路径)", async () => {
