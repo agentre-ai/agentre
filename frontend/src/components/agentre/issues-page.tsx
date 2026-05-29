@@ -14,6 +14,8 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -54,6 +56,7 @@ type IssueItem = {
   meta: string;
   comments: number;
   agents: IssueAgent[];
+  closed?: boolean;
   dispatchable?: boolean;
   highlighted?: boolean;
 };
@@ -65,161 +68,6 @@ type BoardColumn = {
   tone: AgentStatus;
   title: string;
 };
-
-const issueRows: IssueItem[] = [
-  {
-    id: "#142",
-    title: "修复 OAuth 回调在 Safari 下丢失 state 参数",
-    labels: [
-      { name: "bug", tone: "bug" },
-      { name: "auth", tone: "auth" },
-    ],
-    status: "running",
-    meta: "由 邮件 Hook 创建 · 14:32 · 最近更新 3 分钟前",
-    comments: 4,
-    agents: [
-      { name: "Kai", initials: "K", color: "agent-2" },
-      { name: "Parker", initials: "P", color: "agent-1" },
-    ],
-  },
-  {
-    id: "#141",
-    title: "实现深色模式与 Slack 风格消息流",
-    labels: [
-      { name: "feature", tone: "feature" },
-      { name: "ui", tone: "ui" },
-    ],
-    status: "running",
-    meta: "由 手动创建 · 昨天 · 最近更新 12 分钟前",
-    comments: 12,
-    agents: [{ name: "Eva", initials: "E", color: "agent-3" }],
-  },
-  {
-    id: "#140",
-    title: "部门嵌套缩放下卡顿（≥ 4 层）",
-    labels: [{ name: "perf", tone: "perf" }],
-    status: "waiting",
-    meta: "由 手动创建 · 2 天前 · 等待用户审批",
-    comments: 7,
-    agents: [{ name: "Dora", initials: "D", color: "agent-4" }],
-  },
-  {
-    id: "#139",
-    title: "邮箱 Hook 重连重试间隔过短，频繁触发限流",
-    labels: [
-      { name: "hook", tone: "hook" },
-      { name: "ops", tone: "ops" },
-    ],
-    status: "waiting",
-    meta: "由 GitHub Webhook 创建 · 3 天前 · 等待 CEO 助手批准",
-    comments: 3,
-    agents: [{ name: "Bea", initials: "B", color: "agent-5" }],
-  },
-  {
-    id: "#138",
-    title: "[紧急] Codex CLI 调用偶发超时导致会话中断",
-    labels: [
-      { name: "bug", tone: "bug" },
-      { name: "critical", tone: "critical" },
-    ],
-    status: "error",
-    meta: "由 Sentry Webhook 创建 · 4 天前 · 调用失败 exit=124",
-    comments: 9,
-    agents: [{ name: "Kai", initials: "K", color: "agent-2" }],
-    highlighted: true,
-  },
-  {
-    id: "#137",
-    title: "文档：Agent 后端配置示例与常见错误",
-    labels: [{ name: "docs", tone: "docs" }],
-    status: "idle",
-    meta: "由 手动创建 · 5 天前 · 未派发",
-    comments: 0,
-    agents: [],
-    dispatchable: true,
-  },
-  {
-    id: "#136",
-    title: "重构 ChatArea 消息列表性能（虚拟滚动）",
-    labels: [
-      { name: "refactor", tone: "refactor" },
-      { name: "ui", tone: "ui" },
-    ],
-    status: "running",
-    meta: "由 手动创建 · 6 天前 · 最近更新 1 小时前",
-    comments: 18,
-    agents: [
-      { name: "Eva", initials: "E", color: "agent-3" },
-      { name: "Parker", initials: "P", color: "agent-1" },
-    ],
-  },
-];
-
-const backlogIssues: IssueItem[] = [
-  issueRows[5],
-  {
-    id: "#133",
-    title: "研究 LLM cost dashboard 方案",
-    labels: [{ name: "refactor", tone: "refactor" }],
-    status: "idle",
-    meta: "由 手动创建 · 7 天前 · 未派发",
-    comments: 0,
-    agents: [],
-    dispatchable: true,
-  },
-];
-
-const closedIssues: IssueItem[] = [
-  {
-    id: "#132",
-    title: "修复部门 banner 折叠状态丢失",
-    labels: [{ name: "bug", tone: "bug" }],
-    status: "idle",
-    meta: "已关闭 · 昨天",
-    comments: 2,
-    agents: [],
-  },
-  {
-    id: "#129",
-    title: "修复 Hook 路由匹配优先级",
-    labels: [],
-    status: "running",
-    meta: "已关闭 · 3 天前",
-    comments: 5,
-    agents: [],
-  },
-];
-
-const boardColumns: BoardColumn[] = [
-  {
-    id: "backlog",
-    title: "待派发",
-    count: 2,
-    tone: "idle",
-    issues: backlogIssues,
-  },
-  {
-    id: "running",
-    title: "进行中",
-    count: 4,
-    tone: "running",
-    issues: [issueRows[0], issueRows[1], issueRows[4], issueRows[6]],
-  },
-  {
-    id: "waiting",
-    title: "待审批",
-    count: 2,
-    tone: "waiting",
-    issues: [issueRows[2], issueRows[3]],
-  },
-  {
-    id: "closed",
-    title: "已关闭",
-    count: 47,
-    tone: "running",
-    issues: closedIssues,
-  },
-];
 
 const labelToneClassNames: Record<IssueLabelTone, string> = {
   auth: "bg-agent-1/10 text-agent-1",
@@ -266,12 +114,179 @@ const boardColumnToneClassNames: Record<
   },
 };
 
+function createIssueRows(t: TFunction): IssueItem[] {
+  return [
+    {
+      id: "#142",
+      title: t("issues.samples.142.title"),
+      labels: [
+        { name: "bug", tone: "bug" },
+        { name: "auth", tone: "auth" },
+      ],
+      status: "running",
+      meta: t("issues.samples.142.meta"),
+      comments: 4,
+      agents: [
+        { name: "Kai", initials: "K", color: "agent-2" },
+        { name: "Parker", initials: "P", color: "agent-1" },
+      ],
+    },
+    {
+      id: "#141",
+      title: t("issues.samples.141.title"),
+      labels: [
+        { name: "feature", tone: "feature" },
+        { name: "ui", tone: "ui" },
+      ],
+      status: "running",
+      meta: t("issues.samples.141.meta"),
+      comments: 12,
+      agents: [{ name: "Eva", initials: "E", color: "agent-3" }],
+    },
+    {
+      id: "#140",
+      title: t("issues.samples.140.title"),
+      labels: [{ name: "perf", tone: "perf" }],
+      status: "waiting",
+      meta: t("issues.samples.140.meta"),
+      comments: 7,
+      agents: [{ name: "Dora", initials: "D", color: "agent-4" }],
+    },
+    {
+      id: "#139",
+      title: t("issues.samples.139.title"),
+      labels: [
+        { name: "hook", tone: "hook" },
+        { name: "ops", tone: "ops" },
+      ],
+      status: "waiting",
+      meta: t("issues.samples.139.meta"),
+      comments: 3,
+      agents: [{ name: "Bea", initials: "B", color: "agent-5" }],
+    },
+    {
+      id: "#138",
+      title: t("issues.samples.138.title"),
+      labels: [
+        { name: "bug", tone: "bug" },
+        { name: "critical", tone: "critical" },
+      ],
+      status: "error",
+      meta: t("issues.samples.138.meta"),
+      comments: 9,
+      agents: [{ name: "Kai", initials: "K", color: "agent-2" }],
+      highlighted: true,
+    },
+    {
+      id: "#137",
+      title: t("issues.samples.137.title"),
+      labels: [{ name: "docs", tone: "docs" }],
+      status: "idle",
+      meta: t("issues.samples.137.meta"),
+      comments: 0,
+      agents: [],
+      dispatchable: true,
+    },
+    {
+      id: "#136",
+      title: t("issues.samples.136.title"),
+      labels: [
+        { name: "refactor", tone: "refactor" },
+        { name: "ui", tone: "ui" },
+      ],
+      status: "running",
+      meta: t("issues.samples.136.meta"),
+      comments: 18,
+      agents: [
+        { name: "Eva", initials: "E", color: "agent-3" },
+        { name: "Parker", initials: "P", color: "agent-1" },
+      ],
+    },
+  ];
+}
+
+function createBoardColumns(
+  t: TFunction,
+  issueRows: IssueItem[],
+): BoardColumn[] {
+  const backlogIssues: IssueItem[] = [
+    issueRows[5],
+    {
+      id: "#133",
+      title: t("issues.samples.133.title"),
+      labels: [{ name: "refactor", tone: "refactor" }],
+      status: "idle",
+      meta: t("issues.samples.133.meta"),
+      comments: 0,
+      agents: [],
+      dispatchable: true,
+    },
+  ];
+  const closedIssues: IssueItem[] = [
+    {
+      id: "#132",
+      title: t("issues.samples.132.title"),
+      labels: [{ name: "bug", tone: "bug" }],
+      status: "idle",
+      meta: t("issues.samples.132.meta"),
+      comments: 2,
+      agents: [],
+      closed: true,
+    },
+    {
+      id: "#129",
+      title: t("issues.samples.129.title"),
+      labels: [],
+      status: "running",
+      meta: t("issues.samples.129.meta"),
+      comments: 5,
+      agents: [],
+      closed: true,
+    },
+  ];
+
+  return [
+    {
+      id: "backlog",
+      title: t("issues.columns.backlog"),
+      count: 2,
+      tone: "idle",
+      issues: backlogIssues,
+    },
+    {
+      id: "running",
+      title: t("issues.columns.running"),
+      count: 4,
+      tone: "running",
+      issues: [issueRows[0], issueRows[1], issueRows[4], issueRows[6]],
+    },
+    {
+      id: "waiting",
+      title: t("issues.columns.waiting"),
+      count: 2,
+      tone: "waiting",
+      issues: [issueRows[2], issueRows[3]],
+    },
+    {
+      id: "closed",
+      title: t("issues.columns.closed"),
+      count: 47,
+      tone: "running",
+      issues: closedIssues,
+    },
+  ];
+}
+
 function IssuesPage() {
+  const { t } = useTranslation();
   const [view, setView] = React.useState<IssueView>("list");
+  const issueRows = React.useMemo(() => createIssueRows(t), [t]);
+  const boardColumns = React.useMemo(
+    () => createBoardColumns(t, issueRows),
+    [t, issueRows],
+  );
   const summary =
-    view === "list"
-      ? "12 个 Open · 47 个 Closed · 3 个 Agent 在跟进"
-      : "按状态分列 · 拖卡片可在列间流转";
+    view === "list" ? t("issues.summary.list") : t("issues.summary.board");
 
   return (
     <main
@@ -280,7 +295,11 @@ function IssuesPage() {
     >
       <IssuesHeader view={view} summary={summary} onViewChange={setView} />
       <IssueFilterBar />
-      {view === "list" ? <IssuesList /> : <IssuesBoard />}
+      {view === "list" ? (
+        <IssuesList issueRows={issueRows} />
+      ) : (
+        <IssuesBoard boardColumns={boardColumns} />
+      )}
     </main>
   );
 }
@@ -292,39 +311,41 @@ type IssuesHeaderProps = {
 };
 
 function IssuesHeader({ onViewChange, summary, view }: IssuesHeaderProps) {
+  const { t } = useTranslation();
+
   return (
     <header className="flex min-h-[60px] shrink-0 flex-wrap items-center gap-3 border-b border-border bg-background px-5 py-3 lg:h-[60px] lg:flex-nowrap lg:py-0">
       <div className="flex min-w-0 flex-col gap-0.5">
         <h1 className="truncate text-base font-semibold tracking-normal">
-          看板
+          {t("issues.title")}
         </h1>
         <p className="truncate text-2xs text-muted-foreground">{summary}</p>
       </div>
       <div className="min-w-0 flex-1" />
       <div
         className="flex h-[30px] shrink-0 items-center gap-0.5 rounded-md border border-border bg-secondary p-0.5"
-        aria-label="Issue 视图"
+        aria-label={t("issues.view.aria")}
       >
         <IssueViewButton
           active={view === "list"}
           icon={List}
-          label="List"
+          label={t("issues.view.list")}
           onClick={() => onViewChange("list")}
         />
         <IssueViewButton
           active={view === "board"}
           icon={Columns3}
-          label="Board"
+          label={t("issues.view.board")}
           onClick={() => onViewChange("board")}
         />
       </div>
       <Button type="button" variant="outline" size="sm" className="h-[30px]">
         <SlidersHorizontal data-icon="inline-start" aria-hidden="true" />
-        筛选
+        {t("issues.actions.filter")}
       </Button>
       <Button type="button" size="sm" className="h-[30px]">
         <Plus data-icon="inline-start" aria-hidden="true" />
-        新建 Issue
+        {t("issues.actions.newIssue")}
       </Button>
     </header>
   );
@@ -362,17 +383,28 @@ function IssueViewButton({
 }
 
 function IssueFilterBar() {
+  const { t } = useTranslation();
+
   return (
     <div className="flex min-h-12 shrink-0 items-center gap-2 overflow-x-auto border-b border-border bg-sidebar px-5 py-2">
       <div className="flex shrink-0 items-center gap-0.5">
-        <FilterTab active icon={CircleDot} label="Open" count={12} />
-        <FilterTab icon={CircleCheck} label="Closed" count={47} />
+        <FilterTab
+          active
+          icon={CircleDot}
+          label={t("issues.filters.open")}
+          count={12}
+        />
+        <FilterTab
+          icon={CircleCheck}
+          label={t("issues.filters.closed")}
+          count={47}
+        />
       </div>
       <div className="min-w-0 flex-1" />
-      <FilterChip label="作者" />
-      <FilterChip label="标签" />
-      <FilterChip label="分派 Agent" />
-      <FilterChip icon={ArrowDownUp} label="最新更新" />
+      <FilterChip label={t("issues.filters.author")} />
+      <FilterChip label={t("issues.filters.label")} />
+      <FilterChip label={t("issues.filters.assignedAgent")} />
+      <FilterChip icon={ArrowDownUp} label={t("issues.filters.latestUpdate")} />
     </div>
   );
 }
@@ -434,10 +466,12 @@ function FilterChip({ icon: Icon, label }: FilterChipProps) {
   );
 }
 
-function IssuesList() {
+function IssuesList({ issueRows }: { issueRows: IssueItem[] }) {
+  const { t } = useTranslation();
+
   return (
     <section
-      aria-label="Issue 列表"
+      aria-label={t("issues.list.aria")}
       className="min-h-0 flex-1 overflow-auto bg-background"
     >
       <div role="list" className="min-w-[760px]">
@@ -450,6 +484,7 @@ function IssuesList() {
 }
 
 function IssueListRow({ issue }: { issue: IssueItem }) {
+  const { t } = useTranslation();
   const StatusIcon = statusIconMeta[issue.status].icon;
 
   return (
@@ -493,7 +528,7 @@ function IssueListRow({ issue }: { issue: IssueItem }) {
             className="h-6 border-primary bg-primary-soft font-mono text-2xs font-semibold text-primary-text hover:bg-primary-soft hover:text-primary-text"
           >
             <Send data-icon="inline-start" aria-hidden="true" />
-            派发给 Agent
+            {t("issues.actions.dispatchToAgent")}
           </Button>
         ) : (
           <StatusPill status={issue.status} />
@@ -565,10 +600,12 @@ function IssueAssignees({ agents }: { agents: IssueAgent[] }) {
   );
 }
 
-function IssuesBoard() {
+function IssuesBoard({ boardColumns }: { boardColumns: BoardColumn[] }) {
+  const { t } = useTranslation();
+
   return (
     <section
-      aria-label="Issue 看板"
+      aria-label={t("issues.board.aria")}
       className="min-h-0 flex-1 overflow-auto bg-sidebar px-5 py-4"
     >
       <div className="flex min-w-max items-start gap-4">
@@ -581,6 +618,7 @@ function IssuesBoard() {
 }
 
 function IssueBoardColumn({ column }: { column: BoardColumn }) {
+  const { t } = useTranslation();
   const tone = boardColumnToneClassNames[column.tone];
 
   return (
@@ -604,7 +642,7 @@ function IssueBoardColumn({ column }: { column: BoardColumn }) {
           type="button"
           variant="ghost"
           size="icon-xs"
-          aria-label={`添加到${column.title}`}
+          aria-label={t("issues.board.addToColumn", { column: column.title })}
           className="text-muted-foreground"
         >
           <Plus data-icon="only" aria-hidden="true" />
@@ -620,7 +658,7 @@ function IssueBoardColumn({ column }: { column: BoardColumn }) {
             className="inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border bg-transparent px-2 py-2 text-2xs font-medium text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
           >
             <Plus className="size-3" aria-hidden="true" />
-            添加卡片
+            {t("issues.board.addCard")}
           </button>
         ) : null}
         {column.id === "closed" ? (
@@ -628,7 +666,7 @@ function IssueBoardColumn({ column }: { column: BoardColumn }) {
             type="button"
             className="inline-flex cursor-pointer items-center justify-center rounded-md px-2 py-1.5 font-mono text-2xs font-semibold text-primary-text outline-none transition-colors hover:bg-primary-soft focus-visible:ring-[3px] focus-visible:ring-ring/40"
           >
-            查看全部 47 个 →
+            {t("issues.board.viewAllClosed", { count: 47 })}
           </button>
         ) : null}
       </div>
@@ -637,6 +675,7 @@ function IssueBoardColumn({ column }: { column: BoardColumn }) {
 }
 
 function IssueBoardCard({ issue }: { issue: IssueItem }) {
+  const { t } = useTranslation();
   const StatusIcon = statusIconMeta[issue.status].icon;
   const isError = issue.status === "error";
 
@@ -688,7 +727,7 @@ function IssueBoardCard({ issue }: { issue: IssueItem }) {
       </h3>
       {isError ? (
         <p className="font-mono text-2xs leading-normal text-destructive">
-          exit=124 · last fail 12 分钟前
+          {t("issues.board.lastFailure", { code: 124, minutes: 12 })}
         </p>
       ) : null}
       <IssueLabels labels={issue.labels} />
@@ -696,7 +735,7 @@ function IssueBoardCard({ issue }: { issue: IssueItem }) {
         <IssueAssignees agents={issue.agents} />
         {issue.dispatchable && issue.agents.length === 0 ? (
           <span className="font-mono text-2xs font-medium text-muted-foreground">
-            未派发
+            {t("issues.status.unassigned")}
           </span>
         ) : null}
         <div className="min-w-0 flex-1" />
@@ -709,7 +748,7 @@ function IssueBoardCard({ issue }: { issue: IssueItem }) {
           variant="destructive"
           className="h-6 self-start font-mono text-2xs font-semibold"
         >
-          重新派发
+          {t("issues.actions.redispatch")}
         </Button>
       ) : null}
     </article>
@@ -717,7 +756,7 @@ function IssueBoardCard({ issue }: { issue: IssueItem }) {
 }
 
 function columnClosedIssue(issue: IssueItem) {
-  return issue.meta.startsWith("已关闭");
+  return issue.closed === true;
 }
 
 export { IssuesPage };

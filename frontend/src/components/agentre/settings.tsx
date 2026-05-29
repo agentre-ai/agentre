@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   Bell,
   Cable,
@@ -25,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { LANGUAGE_STORAGE_KEY, type SupportedLanguage } from "@/i18n";
 
 import type { AppTheme, AppThemePreference } from "./chrome";
 import { AgentBackendsPanel } from "./agent-backends";
@@ -37,11 +39,11 @@ import { UnderConstructionPage } from "./under-construction-page";
 import { UpdateSection } from "./update-section";
 
 type SettingsNavSection = {
-  label: string;
+  labelKey: string;
   items: {
     id?: SettingsPageId;
     icon: LucideIcon;
-    label: string;
+    labelKey: string;
   }[];
 };
 
@@ -60,33 +62,59 @@ type SettingsPageId =
 
 const settingsNavSections: SettingsNavSection[] = [
   {
-    label: "通用",
+    labelKey: "settings.nav.general",
     items: [
-      { icon: SunMoon, id: "appearance", label: "外观" },
-      { icon: Bell, id: "notifications", label: "通知" },
-      { icon: Keyboard, id: "keyboard-shortcuts", label: "键盘快捷键" },
-      { icon: Database, id: "data-backup", label: "数据 & 备份" },
+      { icon: SunMoon, id: "appearance", labelKey: "settings.nav.appearance" },
+      {
+        icon: Bell,
+        id: "notifications",
+        labelKey: "settings.nav.notifications",
+      },
+      {
+        icon: Keyboard,
+        id: "keyboard-shortcuts",
+        labelKey: "settings.nav.keyboardShortcuts",
+      },
+      {
+        icon: Database,
+        id: "data-backup",
+        labelKey: "settings.nav.dataBackup",
+      },
     ],
   },
   {
-    label: "引擎",
+    labelKey: "settings.nav.engine",
     items: [
-      { icon: Sparkles, id: "llm-providers", label: "LLM 供应商" },
-      { icon: Cpu, id: "agent-backend", label: "Agent 后端" },
+      {
+        icon: Sparkles,
+        id: "llm-providers",
+        labelKey: "settings.nav.llmProvider",
+      },
+      { icon: Cpu, id: "agent-backend", labelKey: "settings.nav.agentBackend" },
     ],
   },
   {
-    label: "集成",
+    labelKey: "settings.nav.integrations",
     items: [
-      { icon: Network, id: "local-proxy", label: "本地 HTTP 代理" },
-      { icon: Server, id: "mcp-servers", label: "MCP 服务器" },
-      { icon: Wrench, id: "skills-tools", label: "技能 / 工具" },
-      { icon: Cable, id: "remote-devices", label: "远端" },
+      { icon: Network, id: "local-proxy", labelKey: "settings.nav.localProxy" },
+      { icon: Server, id: "mcp-servers", labelKey: "settings.nav.mcpServers" },
+      {
+        icon: Wrench,
+        id: "skills-tools",
+        labelKey: "settings.nav.skillsTools",
+      },
+      {
+        icon: Cable,
+        id: "remote-devices",
+        labelKey: "settings.nav.remoteDevices",
+      },
     ],
   },
   {
-    label: "关于",
-    items: [{ icon: Info, id: "version-logs", label: "版本 & 更新" }],
+    labelKey: "settings.nav.about",
+    items: [
+      { icon: Info, id: "version-logs", labelKey: "settings.nav.versionLogs" },
+    ],
   },
 ];
 
@@ -103,26 +131,24 @@ const underConstructionSettingsPages: Record<
     | "data-backup"
   >,
   {
-    description: string;
+    descriptionKey: string;
     icon: LucideIcon;
-    title: string;
+    titleKey: string;
   }
 > = {
   "mcp-servers": {
-    title: "MCP 服务器",
-    description:
-      "MCP 服务器配置视图已预留，后续会在这里管理连接、授权和可用工具。",
+    titleKey: "settings.underConstruction.mcpServers.title",
+    descriptionKey: "settings.underConstruction.mcpServers.description",
     icon: Server,
   },
   notifications: {
-    title: "通知",
-    description: "通知设置视图已预留，后续会在这里调整提醒规则与通知触达渠道。",
+    titleKey: "settings.underConstruction.notifications.title",
+    descriptionKey: "settings.underConstruction.notifications.description",
     icon: Bell,
   },
   "skills-tools": {
-    title: "技能 / 工具",
-    description:
-      "技能和工具管理视图已预留，后续会在这里启用、停用和配置 Agent 能力。",
+    titleKey: "settings.underConstruction.skillsTools.title",
+    descriptionKey: "settings.underConstruction.skillsTools.description",
     icon: Wrench,
   },
 };
@@ -172,7 +198,7 @@ type SettingsNavButtonProps = {
   item: {
     icon: LucideIcon;
     id?: SettingsPageId;
-    label: string;
+    labelKey: string;
   };
   onPageChange: (page: SettingsPageId) => void;
 };
@@ -182,13 +208,15 @@ function SettingsNavButton({
   item,
   onPageChange,
 }: SettingsNavButtonProps) {
+  const { t } = useTranslation();
   const Icon = item.icon;
   const active = item.id === activePage;
   const pageId = item.id;
+  const label = t(item.labelKey);
 
   return (
     <Button
-      key={item.label}
+      key={item.labelKey}
       type="button"
       variant="ghost"
       aria-current={active ? "page" : undefined}
@@ -204,37 +232,45 @@ function SettingsNavButton({
         className={active ? "text-primary-text" : undefined}
         aria-hidden="true"
       />
-      {item.label}
+      {label}
     </Button>
   );
 }
 
 function SettingsNav({ activePage, onPageChange }: SettingsNavProps) {
+  const { t } = useTranslation();
   const showFullNav = useMediaQuery("(min-width: 1024px)");
 
   return (
     <aside
-      aria-label="设置导航"
+      aria-label={t("settings.nav.settings")}
       className="flex w-full shrink-0 flex-col gap-2 border-b border-border bg-sidebar px-3 py-3 lg:w-[220px] lg:gap-[18px] lg:border-b-0 lg:border-r lg:py-4"
     >
-      <div className="px-1.5 text-sm font-semibold lg:pb-2">设置</div>
+      <div className="px-1.5 text-sm font-semibold lg:pb-2">
+        {t("settings.nav.settings")}
+      </div>
       <div className="flex flex-wrap gap-1.5 pb-1 lg:flex-col lg:flex-nowrap lg:gap-[18px] lg:p-0">
         {(showFullNav
           ? settingsNavSections
-          : [{ label: "引擎", items: compactSettingsNavItems }]
+          : [
+              {
+                labelKey: "settings.nav.engine",
+                items: compactSettingsNavItems,
+              },
+            ]
         ).map((section) => (
           <div
-            key={section.label}
+            key={section.labelKey}
             className="flex min-w-0 flex-wrap gap-1 lg:flex-col lg:flex-nowrap lg:gap-0.5"
           >
             {showFullNav ? (
               <div className="hidden px-2 pb-1.5 pt-1 font-mono text-2xs font-semibold uppercase tracking-[0.12em] text-subtle-foreground lg:block">
-                {section.label}
+                {t(section.labelKey)}
               </div>
             ) : null}
             {section.items.map((item) => (
               <SettingsNavButton
-                key={item.label}
+                key={item.labelKey}
                 activePage={activePage}
                 item={item}
                 onPageChange={onPageChange}
@@ -248,15 +284,16 @@ function SettingsNav({ activePage, onPageChange }: SettingsNavProps) {
 }
 
 function RuntimeHint() {
+  const { t } = useTranslation();
+
   return (
     <Alert className="border-agent-1/30 bg-agent-1/10 py-3 text-agent-1">
       <Info className="size-4" aria-hidden="true" />
       <AlertTitle className="text-xs font-semibold text-agent-1">
-        运行时参数下放到每个 Agent
+        {t("settings.agentBackend.runtimeHint.title")}
       </AlertTitle>
       <AlertDescription className="text-2xs leading-relaxed text-agent-1">
-        工作目录、权限模式、额外 CLI 参数等按 Agent 单独配置（组织架构 → Agent →
-        配置），本页只管理共享后端实例。
+        {t("settings.agentBackend.runtimeHint.description")}
       </AlertDescription>
     </Alert>
   );
@@ -286,19 +323,19 @@ type AppearanceSettingsProps = {
 
 const themePreferenceOptions = [
   {
-    label: "跟随系统",
+    labelKey: "theme.system",
     value: "system",
   },
   {
-    label: "浅色",
+    labelKey: "theme.light",
     value: "light",
   },
   {
-    label: "深色",
+    labelKey: "theme.dark",
     value: "dark",
   },
 ] satisfies {
-  label: string;
+  labelKey: string;
   value: AppThemePreference;
 }[];
 
@@ -311,6 +348,7 @@ function ThemePreferenceSelect({
   onThemePreferenceChange,
   themePreference,
 }: ThemePreferenceSelectProps) {
+  const { t } = useTranslation();
   const labelId = React.useId();
 
   return (
@@ -318,10 +356,10 @@ function ThemePreferenceSelect({
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-col gap-0.5">
           <span id={labelId} className="text-sm font-medium">
-            主题模式
+            {t("settings.appearance.themeMode.label")}
           </span>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            选择界面外观偏好。
+            {t("settings.appearance.themeMode.description")}
           </p>
         </div>
         <div className="w-full sm:w-[220px]">
@@ -331,13 +369,16 @@ function ThemePreferenceSelect({
               onThemePreferenceChange(value as AppThemePreference)
             }
           >
-            <SelectTrigger aria-label="主题模式" aria-labelledby={labelId}>
+            <SelectTrigger
+              aria-label={t("settings.appearance.themeMode.label")}
+              aria-labelledby={labelId}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {themePreferenceOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
-                  {option.label}
+                  {t(option.labelKey)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -353,20 +394,38 @@ function AppearanceSettings({
   onThemePreferenceChange,
   themePreference,
 }: AppearanceSettingsProps) {
+  const { i18n, t } = useTranslation();
   const followsSystem = themePreference === "system";
+  const language =
+    i18n.resolvedLanguage === "zh-CN" || i18n.resolvedLanguage === "en"
+      ? i18n.resolvedLanguage
+      : "en";
+
+  function handleLanguageChange(next: string) {
+    const supportedLanguage = next as SupportedLanguage;
+    void i18n.changeLanguage(supportedLanguage);
+
+    try {
+      localStorage.setItem(LANGUAGE_STORAGE_KEY, supportedLanguage);
+    } catch {
+      // Embedded previews may block localStorage.
+    }
+  }
 
   return (
     <>
       <SettingsPageHeader
-        title="外观"
-        description="调整 Agentre 的界面显示方式。主题偏好会保存在当前设备。"
+        title={t("settings.appearance.title")}
+        description={t("settings.appearance.description")}
       />
       <section className="overflow-hidden rounded-lg border border-border bg-card">
         <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <h2 className="text-sm font-semibold">配色模式</h2>
+            <h2 className="text-sm font-semibold">
+              {t("settings.appearance.colorMode.title")}
+            </h2>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              跟随系统或手动固定浅色 / 深色界面。
+              {t("settings.appearance.colorMode.description")}
             </p>
           </div>
           <Badge
@@ -374,16 +433,37 @@ function AppearanceSettings({
             className="rounded-sm px-1.5 py-0 font-mono text-2xs font-medium"
           >
             {followsSystem
-              ? "SYSTEM"
+              ? t("theme.system")
               : effectiveTheme === "dark"
-                ? "DARK"
-                : "LIGHT"}
+                ? t("theme.dark")
+                : t("theme.light")}
           </Badge>
         </div>
         <ThemePreferenceSelect
           onThemePreferenceChange={onThemePreferenceChange}
           themePreference={themePreference}
         />
+        <div className="flex flex-col gap-2 border-t border-border p-4">
+          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-sm font-medium">{t("language.label")}</span>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {t("language.description")}
+              </p>
+            </div>
+            <div className="w-full sm:w-[220px]">
+              <Select value={language} onValueChange={handleLanguageChange}>
+                <SelectTrigger aria-label={t("language.label")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="zh-CN">{t("language.zh-CN")}</SelectItem>
+                  <SelectItem value="en">{t("language.en")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
       </section>
     </>
   );
@@ -394,11 +474,13 @@ function AgentBackendSettings({
 }: {
   onOpenProxySettings: () => void;
 }) {
+  const { t } = useTranslation();
+
   return (
     <>
       <SettingsPageHeader
-        title="Agent 后端"
-        description="配置 Agent 的执行引擎与对应模型。工作目录 / 权限模式等运行时参数下放到「组织架构 → Agent」单独配置。"
+        title={t("settings.agentBackend.title")}
+        description={t("settings.agentBackend.description")}
       />
       <div className="flex min-w-0 flex-col gap-3">
         <AgentBackendsPanel onOpenProxySettings={onOpenProxySettings} />
@@ -409,11 +491,13 @@ function AgentBackendSettings({
 }
 
 function LocalProxySettings() {
+  const { t } = useTranslation();
+
   return (
     <>
       <SettingsPageHeader
-        title="本地 HTTP 代理"
-        description="给 App 内置的 LLM Gateway。claudecode / codex 子进程把所有 HTTP 请求打到这里，App 用临时 token 鉴权后转发到真实 LLM 供应商，密钥不出 App。"
+        title={t("settings.localProxy.title")}
+        description={t("settings.localProxy.description")}
       />
       <SettingsProxyPanel />
     </>
@@ -421,11 +505,13 @@ function LocalProxySettings() {
 }
 
 function LlmProviderSettings() {
+  const { t } = useTranslation();
+
   return (
     <>
       <SettingsPageHeader
-        title="LLM 供应商"
-        description="配置可用模型来源。保存后可拉取该账号下的实际可用模型，模型能力（上下文窗口、是否支持 thinking 等）由 cago agents 内置目录补全。"
+        title={t("settings.llmProvider.title")}
+        description={t("settings.llmProvider.description")}
       />
       <LlmProvidersPanel />
     </>
@@ -433,6 +519,8 @@ function LlmProviderSettings() {
 }
 
 function SettingsUnderConstruction({ page }: { page: SettingsPageId }) {
+  const { t } = useTranslation();
+
   if (
     page === "appearance" ||
     page === "agent-backend" ||
@@ -451,9 +539,9 @@ function SettingsUnderConstruction({ page }: { page: SettingsPageId }) {
   return (
     <UnderConstructionPage
       className="px-0 py-0"
-      description={pageConfig.description}
+      description={t(pageConfig.descriptionKey)}
       icon={pageConfig.icon}
-      title={pageConfig.title}
+      title={t(pageConfig.titleKey)}
     />
   );
 }

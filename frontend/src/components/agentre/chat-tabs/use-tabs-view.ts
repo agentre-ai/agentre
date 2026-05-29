@@ -1,5 +1,6 @@
 // frontend/src/components/agentre/chat-tabs/use-tabs-view.ts
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { useProjectTree } from "@/hooks/use-project-tree";
 import { reasonToPillText } from "@/lib/attention-display";
@@ -48,6 +49,7 @@ function firstLetter(name: string | null | undefined): string {
 }
 
 export function useTabsView(): TabView[] {
+  const { t } = useTranslation();
   const tabs = useChatTabsStore((s) => s.tabs);
   const statuses = useSessionStatusStore((s) => s.statuses);
   const metas = useSessionMetaStore((s) => s.metas);
@@ -69,8 +71,8 @@ export function useTabsView(): TabView[] {
     return m;
   }, [attentionItems]);
 
-  return tabs.map((t) => {
-    const sid = t.meta.kind === "session" ? t.meta.sessionId : 0;
+  return tabs.map((tab) => {
+    const sid = tab.meta.kind === "session" ? tab.meta.sessionId : 0;
     const live = sid ? statuses.get(sid) : undefined;
     const reason = sid ? (attentionBySid.get(sid) ?? null) : null;
     const agentStatus = live?.agentStatus;
@@ -82,7 +84,10 @@ export function useTabsView(): TabView[] {
           : agentStatus === "error"
             ? "error"
             : "idle";
-    const pillText = status === "error" ? "出错" : reasonToPillText(reason);
+    const pillText =
+      status === "error"
+        ? t("chatTabs.status.errorLabel")
+        : reasonToPillText(reason);
     const meta = sid ? (metas.get(sid) ?? null) : null;
     const avatarColor = tokenToCssColor(meta?.agentColor) ?? "#94a3b8";
     const avatarLetter = firstLetter(meta?.agentName);
@@ -91,11 +96,11 @@ export function useTabsView(): TabView[] {
       pid > 0 ? tokenToCssColor(findProjectColorToken(tree, pid)) : null;
     const chain = pid > 0 ? projectChain(tree, pid) : [];
     return {
-      id: t.id,
-      title: meta?.title ?? t.title ?? "(会话)",
+      id: tab.id,
+      title: meta?.title ?? tab.title ?? t("chatTabs.fallbackSession"),
       avatar: { letter: avatarLetter, color: avatarColor },
-      isPreview: t.isPreview,
-      isPinned: t.isPinned,
+      isPreview: tab.isPreview,
+      isPinned: tab.isPinned,
       status,
       projectColor,
       worktree: false,

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { Hammer } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -18,6 +19,7 @@ function UnderConstructionPage({
   title,
   ...props
 }: UnderConstructionPageProps) {
+  const { t } = useTranslation();
   const titleId = React.useId();
 
   return (
@@ -55,7 +57,7 @@ function UnderConstructionPage({
               aria-hidden="true"
               className="inline-block size-1.5 animate-pulse rounded-full bg-status-waiting"
             />
-            建设中
+            {t("underConstruction.badge")}
           </Badge>
         </div>
         <div className="flex flex-col gap-2">
@@ -71,11 +73,11 @@ function UnderConstructionPage({
         </div>
         <div
           className="flex max-w-md flex-col gap-1.5 rounded-md border border-dashed border-border bg-card/40 px-3 py-2.5"
-          aria-label="设计进度"
+          aria-label={t("underConstruction.progressLabel")}
         >
           <div className="flex items-center justify-between font-mono text-2xs text-muted-foreground">
-            <span>设计进度</span>
-            <span>规划中</span>
+            <span>{t("underConstruction.progressLabel")}</span>
+            <span>{t("underConstruction.planning")}</span>
           </div>
           <div
             aria-hidden="true"

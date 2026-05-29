@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { TFunction } from "i18next";
 import {
   AlertCircle,
   CheckCircle2,
@@ -8,6 +9,7 @@ import {
   RotateCcw,
   ShieldCheck,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -35,52 +37,57 @@ const KEY_PORT = "proxy.listen_port";
 type RouteRow = {
   method: string;
   path: string;
-  description: string;
-  badge?: string;
+  descriptionKey: string;
+  badgeKey?: string;
 };
 
 const ROUTE_ROWS: RouteRow[] = [
   {
     method: "POST",
     path: "/v1/messages",
-    description: "Anthropic Messages（claudecode CLI）",
+    descriptionKey: "settingsProxy.routes.anthropicMessages",
   },
   {
     method: "POST",
     path: "/v1/responses",
-    description: "OpenAI Responses（codex CLI 默认）",
+    descriptionKey: "settingsProxy.routes.openAIResponses",
   },
   {
     method: "POST",
     path: "/v1/chat/completions",
-    description: "OpenAI Chat Completions（codex wire_api=chat）",
+    descriptionKey: "settingsProxy.routes.chatCompletions",
   },
   {
     method: "ALL",
     path: "/mcp/*",
-    description: "本地 MCP 服务接入预留（未注册服务时 404）",
-    badge: "预留",
+    descriptionKey: "settingsProxy.routes.mcpReserved",
+    badgeKey: "settingsProxy.routes.reserved",
   },
 ];
 
-function validateHost(v: string): string | null {
+function validateHost(v: string, t: TFunction): string | null {
   const s = v.trim();
-  if (s === "") return "监听地址不能为空";
+  if (s === "") return t("settingsProxy.validation.hostRequired");
   // 简单 IPv4 / 主机名校验：交由后端二次校验
-  if (!/^[0-9a-zA-Z.\-:]+$/.test(s)) return "监听地址格式不合法";
+  if (!/^[0-9a-zA-Z.\-:]+$/.test(s)) {
+    return t("settingsProxy.validation.hostInvalid");
+  }
   return null;
 }
 
-function validatePort(v: string): string | null {
+function validatePort(v: string, t: TFunction): string | null {
   const s = v.trim();
-  if (s === "") return "端口不能为空";
-  if (!/^\d+$/.test(s)) return "端口必须为数字";
+  if (s === "") return t("settingsProxy.validation.portRequired");
+  if (!/^\d+$/.test(s)) return t("settingsProxy.validation.portNumeric");
   const n = Number(s);
-  if (n < 0 || n > 65535) return "端口需在 0-65535 之间";
+  if (n < 0 || n > 65535) {
+    return t("settingsProxy.validation.portRange");
+  }
   return null;
 }
 
 export function SettingsProxyPanel() {
+  const { t } = useTranslation();
   const [host, setHost] = React.useState("");
   const [port, setPort] = React.useState("");
   const [savedHost, setSavedHost] = React.useState("");
@@ -110,7 +117,7 @@ export function SettingsProxyPanel() {
       })
       .catch((err: unknown) => {
         if (!mounted) return;
-        setFlash({ kind: "err", text: messageFromError(err) });
+        setFlash({ kind: "err", text: messageFromError(err, t) });
       })
       .finally(() => {
         if (!mounted) return;
@@ -119,10 +126,10 @@ export function SettingsProxyPanel() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [t]);
 
-  const hostErr = validateHost(host);
-  const portErr = validatePort(port);
+  const hostErr = validateHost(host, t);
+  const portErr = validatePort(port, t);
   const dirty = host !== savedHost || port !== savedPort;
   const canApply = !applying && !restarting && dirty && !hostErr && !portErr;
 
@@ -142,15 +149,17 @@ export function SettingsProxyPanel() {
       setSavedHost(host.trim());
       setSavedPort(port.trim());
       if (s?.status === "running") {
-        setFlash({ kind: "ok", text: "已应用并重启代理" });
+        setFlash({ kind: "ok", text: t("settingsProxy.flash.applied") });
       } else {
         setFlash({
           kind: "err",
-          text: `已保存设置，但代理未启动：${s?.reason || "未知错误"}`,
+          text: t("settingsProxy.flash.savedButStopped", {
+            reason: s?.reason || t("common.errorOccurred"),
+          }),
         });
       }
     } catch (err) {
-      setFlash({ kind: "err", text: messageFromError(err) });
+      setFlash({ kind: "err", text: messageFromError(err, t) });
     } finally {
       setApplying(false);
     }
@@ -164,15 +173,17 @@ export function SettingsProxyPanel() {
       const res = await RestartGateway();
       setStatus(res?.status ?? null);
       if (res?.status?.status === "running") {
-        setFlash({ kind: "ok", text: "已重启本地 HTTP 代理" });
+        setFlash({ kind: "ok", text: t("settingsProxy.flash.restarted") });
       } else {
         setFlash({
           kind: "err",
-          text: `代理仍未启动：${res?.status?.reason || "未知错误"}`,
+          text: t("settingsProxy.flash.restartFailed", {
+            reason: res?.status?.reason || t("common.errorOccurred"),
+          }),
         });
       }
     } catch (err) {
-      setFlash({ kind: "err", text: messageFromError(err) });
+      setFlash({ kind: "err", text: messageFromError(err, t) });
     } finally {
       setRestarting(false);
     }
@@ -181,8 +192,8 @@ export function SettingsProxyPanel() {
   async function handleCopy() {
     if (!status?.listenURL) return;
     await copyTextWithToast(status.listenURL, {
-      errorTitle: "复制 URL 失败",
-      successTitle: "已复制 URL",
+      errorTitle: t("settingsProxy.flash.copyUrlFailed"),
+      successTitle: t("settingsProxy.flash.copyUrlDone"),
     });
   }
 
@@ -195,10 +206,11 @@ export function SettingsProxyPanel() {
       <section className="overflow-hidden rounded-lg border border-border bg-card">
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
           <div className="flex min-w-0 flex-col gap-0.5">
-            <h2 className="text-sm font-semibold">监听器</h2>
+            <h2 className="text-sm font-semibold">
+              {t("settingsProxy.listener.title")}
+            </h2>
             <p className="text-2xs leading-relaxed text-muted-foreground">
-              claudecode / codex 子进程的所有 LLM 请求都打到这里，App 用 token
-              路由到真实 LLM 供应商。
+              {t("settingsProxy.listener.description")}
             </p>
           </div>
           <StatusPill status={status} loading={loading} />
@@ -206,8 +218,8 @@ export function SettingsProxyPanel() {
 
         <div className="grid grid-cols-1 gap-3 px-4 py-4 sm:grid-cols-3">
           <FormField
-            label="监听地址"
-            hint="默认 127.0.0.1，loopback 仅本机可访问"
+            label={t("settingsProxy.listener.host")}
+            hint={t("settingsProxy.listener.hostHint")}
             error={dirty ? hostErr : null}
           >
             <Input
@@ -219,8 +231,8 @@ export function SettingsProxyPanel() {
             />
           </FormField>
           <FormField
-            label="端口"
-            hint="默认 52401；0 = 每次启动随机端口"
+            label={t("settingsProxy.listener.port")}
+            hint={t("settingsProxy.listener.portHint")}
             error={dirty ? portErr : null}
           >
             <Input
@@ -232,7 +244,10 @@ export function SettingsProxyPanel() {
               inputMode="numeric"
             />
           </FormField>
-          <FormField label="当前 URL" hint="供 claudecode / codex 透传调用">
+          <FormField
+            label={t("settingsProxy.listener.currentUrl")}
+            hint={t("settingsProxy.listener.currentUrlHint")}
+          >
             <UrlReadout status={status} loading={loading} />
           </FormField>
         </div>
@@ -247,7 +262,7 @@ export function SettingsProxyPanel() {
             className="h-8 gap-1.5 px-3 text-xs"
           >
             <Copy className="size-3.5" aria-hidden="true" />
-            复制 URL
+            {t("settingsProxy.actions.copyUrl")}
           </Button>
           <Button
             type="button"
@@ -262,7 +277,7 @@ export function SettingsProxyPanel() {
             ) : (
               <RotateCcw className="size-3.5" aria-hidden="true" />
             )}
-            重启代理
+            {t("settingsProxy.actions.restart")}
           </Button>
           <Button
             type="button"
@@ -274,7 +289,7 @@ export function SettingsProxyPanel() {
             {applying ? (
               <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
             ) : null}
-            应用并重启
+            {t("settingsProxy.actions.applyAndRestart")}
           </Button>
         </footer>
       </section>
@@ -282,16 +297,20 @@ export function SettingsProxyPanel() {
       <section className="overflow-hidden rounded-lg border border-border bg-card">
         <header className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
           <div className="flex min-w-0 flex-col gap-0.5">
-            <h2 className="text-sm font-semibold">路由暴露</h2>
+            <h2 className="text-sm font-semibold">
+              {t("settingsProxy.routes.title")}
+            </h2>
             <p className="text-2xs leading-relaxed text-muted-foreground">
-              凭临时 token 验签后转发；token 仅在测试 / 运行期间内存存活。
+              {t("settingsProxy.routes.description")}
             </p>
           </div>
           <Badge
             variant="secondary"
             className="rounded-sm px-1.5 py-0 font-mono text-2xs"
           >
-            {status?.routes?.length ?? 0} 条
+            {t("settingsProxy.routes.count", {
+              count: status?.routes?.length ?? 0,
+            })}
           </Badge>
         </header>
         <ul className="divide-y divide-border">
@@ -313,14 +332,14 @@ export function SettingsProxyPanel() {
                 {r.path}
               </span>
               <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                {r.description}
+                {t(r.descriptionKey)}
               </span>
-              {r.badge ? (
+              {r.badgeKey ? (
                 <Badge
                   variant="secondary"
                   className="rounded-sm px-1.5 py-0 font-mono text-2xs"
                 >
-                  {r.badge}
+                  {t(r.badgeKey)}
                 </Badge>
               ) : null}
             </li>
@@ -330,11 +349,11 @@ export function SettingsProxyPanel() {
 
       <Alert className="border-primary-text/30 bg-primary-soft text-primary-text">
         <ShieldCheck className="size-4" aria-hidden="true" />
-        <AlertTitle className="text-xs font-semibold">密钥不出 App</AlertTitle>
+        <AlertTitle className="text-xs font-semibold">
+          {t("settingsProxy.security.title")}
+        </AlertTitle>
         <AlertDescription className="text-2xs leading-relaxed">
-          LLM 供应商的真实密钥只在主进程内存里，CLI 子进程拿到的是 App
-          颁发的临时 token；token 仅 60 秒有效、测试结束后立即撤销，绝不写到
-          .env / config / 进程参数。
+          {t("settingsProxy.security.description")}
         </AlertDescription>
       </Alert>
     </div>
@@ -348,11 +367,12 @@ function StatusPill({
   status: httpgateway.GatewayStatus | null;
   loading: boolean;
 }) {
+  const { t } = useTranslation();
   if (loading) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-sm bg-secondary px-2 py-0.5 font-mono text-2xs text-muted-foreground">
         <Loader2 className="size-3 animate-spin" aria-hidden="true" />
-        加载中
+        {t("common.loading")}
       </span>
     );
   }
@@ -373,7 +393,9 @@ function StatusPill({
         )}
         aria-hidden="true"
       />
-      {running ? "运行中" : "已停止"}
+      {running
+        ? t("settingsProxy.status.running")
+        : t("settingsProxy.status.stopped")}
     </span>
   );
 }
@@ -409,10 +431,11 @@ function UrlReadout({
   status: httpgateway.GatewayStatus | null;
   loading: boolean;
 }) {
+  const { t } = useTranslation();
   if (loading) {
     return (
       <div className="flex h-9 items-center rounded-md border border-border bg-secondary/40 px-3 font-mono text-2xs text-muted-foreground">
-        加载中…
+        {t("common.loading")}
       </div>
     );
   }
@@ -428,7 +451,9 @@ function UrlReadout({
   }
   return (
     <div className="flex h-9 items-center truncate rounded-md border border-destructive/40 bg-destructive-soft px-3 font-mono text-2xs text-destructive">
-      未启动{status?.reason ? ` · ${status.reason}` : ""}
+      {t("settingsProxy.status.notStarted", {
+        reason: status?.reason ? ` · ${status.reason}` : "",
+      })}
     </div>
   );
 }
@@ -440,6 +465,7 @@ function FlashBanner({
   state: Exclude<FlashState, null>;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation();
   const ok = state.kind === "ok";
   return (
     <div
@@ -462,7 +488,7 @@ function FlashBanner({
         variant="ghost"
         size="icon-xs"
         onClick={onDismiss}
-        aria-label="关闭提示"
+        aria-label={t("chatPanel.notice.close")}
       >
         <Info data-icon="only" aria-hidden="true" />
       </Button>
@@ -470,12 +496,12 @@ function FlashBanner({
   );
 }
 
-function messageFromError(err: unknown): string {
+function messageFromError(err: unknown, t: TFunction): string {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   try {
     return JSON.stringify(err);
   } catch {
-    return "未知错误";
+    return t("common.errorOccurred");
   }
 }

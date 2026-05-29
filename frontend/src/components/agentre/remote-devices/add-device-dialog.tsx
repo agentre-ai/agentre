@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +31,7 @@ type Props = {
 };
 
 export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
+  const { t } = useTranslation();
   const [url, setUrl] = useState("");
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
@@ -73,7 +75,11 @@ export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
       reset();
     } catch (e: unknown) {
       const msg =
-        typeof e === "string" ? e : e instanceof Error ? e.message : "配对失败";
+        typeof e === "string"
+          ? e
+          : e instanceof Error
+            ? e.message
+            : t("remoteDevices.add.errors.pairFailed");
       setError(msg);
       setSubmitting(false);
     }
@@ -86,27 +92,33 @@ export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
         onOpenChange={(o) => {
           if (!o) handleClose();
         }}
-        title="添加 agentred 设备"
-        description="LAN 直连"
+        title={t("remoteDevices.add.title")}
+        description={t("remoteDevices.add.description")}
         contentClassName="sm:max-w-[540px]"
         bodyClassName="flex flex-col gap-3.5"
         footer={
           <>
             <Button variant="ghost" onClick={handleClose} disabled={submitting}>
-              取消
+              {t("common.cancel")}
             </Button>
             <Button onClick={submit} disabled={!canSubmit}>
-              {submitting ? "配对中…" : "配对"}
+              {submitting
+                ? t("remoteDevices.add.pairing")
+                : t("remoteDevices.add.pair")}
             </Button>
           </>
         }
       >
         <div className="rounded-md bg-secondary/50 px-3 py-2 text-xs text-muted-foreground">
-          在远端执行 <code>agentred pair</code>，填入打印的 URL 和 6 位配对码。
+          {t("remoteDevices.add.instructions.prefix")}{" "}
+          <code>agentred pair</code>
+          {t("remoteDevices.add.instructions.suffix")}
         </div>
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">地址</span>
+          <span className="text-sm font-medium">
+            {t("remoteDevices.add.fields.url")}
+          </span>
           <Input
             value={url}
             onChange={(e) => setUrl(e.target.value.trim())}
@@ -117,7 +129,9 @@ export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
         </label>
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">配对码</span>
+          <span className="text-sm font-medium">
+            {t("remoteDevices.add.fields.pairingCode")}
+          </span>
           <Input
             value={code}
             onChange={(e) => setCode(limitCode(e.target.value))}
@@ -126,15 +140,19 @@ export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
             disabled={submitting}
             className="font-mono tracking-widest text-center text-lg"
           />
-          <span className="text-xs text-muted-foreground">6 字符配对码</span>
+          <span className="text-xs text-muted-foreground">
+            {t("remoteDevices.add.fields.pairingCodeHint")}
+          </span>
         </label>
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium">显示名称（可选）</span>
+          <span className="text-sm font-medium">
+            {t("remoteDevices.add.fields.displayName")}
+          </span>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="留空则自动从地址派生"
+            placeholder={t("remoteDevices.add.fields.displayNamePlaceholder")}
             disabled={submitting}
           />
         </label>
@@ -146,7 +164,12 @@ export function AddDeviceDialog({ open, onClose, onSubmit }: Props) {
           disabled={submitting}
         >
           <ChevronRight className="h-4 w-4" />
-          高级 — TLS 信任（{tlsMode === "default" ? "OS 默认" : tlsMode}）
+          {t("remoteDevices.add.advancedTls", {
+            mode:
+              tlsMode === "default"
+                ? t("remoteDevices.tls.modes.default.label")
+                : tlsMode,
+          })}
         </button>
 
         {error ? <div className="text-sm text-destructive">{error}</div> : null}

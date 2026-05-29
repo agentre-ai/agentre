@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { TFunction } from "i18next";
 import {
   Briefcase,
   ChevronDown,
@@ -8,6 +9,7 @@ import {
   Settings,
   X,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import {
   DndContext,
   KeyboardSensor,
@@ -94,8 +96,9 @@ type ProjectSelection =
 function projectSessionToAgentSession(
   s: ProjectSessionItem,
   reason: AttentionReason | "selected" | null,
+  t: TFunction,
 ): AgentSession {
-  const title = s.title || "(未命名会话)";
+  const title = s.title || t("projects.session.untitled");
   const attentionReason = reason === "selected" ? null : reason;
   const status = reasonToDisplayStatus(
     attentionReason,
@@ -120,6 +123,7 @@ function projectSessionToAgentSession(
 }
 
 function ProjectsPage() {
+  const { t } = useTranslation();
   const [tree, setTree] = React.useState<ProjectTreeNode[]>([]);
   // sessions 与 reload 都从 project-sessions-store 拿。这样 ChatPanelHost
   // 在新建会话 / turn 落定时调一次 reloadSidebarSources(), 本页 sidebar
@@ -305,19 +309,26 @@ function ProjectsPage() {
         })
         .catch((err) => {
           setTree(previous);
-          setReorderError(`项目顺序保存失败：${String(err)}`);
+          setReorderError(
+            t("projects.errors.reorderFailed", { error: String(err) }),
+          );
         });
     },
-    [dragDisabled, refresh, tree],
+    [dragDisabled, refresh, t, tree],
   );
 
   return (
     <>
       {/* ── 左侧 ProjectList ── */}
-      <ResizableSidebar persistenceKey="projects" ariaLabel="项目列表">
+      <ResizableSidebar
+        persistenceKey="projects"
+        ariaLabel={t("projects.sidebar.aria")}
+      >
         <div className="flex flex-col gap-2 border-b border-border px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold">Projects</span>
+            <span className="text-sm font-semibold">
+              {t("projects.sidebar.title")}
+            </span>
             <span className="font-mono text-2xs text-muted-foreground">
               {totalCount}
             </span>
@@ -327,8 +338,8 @@ function ProjectsPage() {
               variant="ghost"
               size="icon"
               className="size-7"
-              aria-label="新建项目"
-              title="新建项目"
+              aria-label={t("projects.actions.newProject")}
+              title={t("projects.actions.newProject")}
               onClick={() => openCreateDialog(0)}
             >
               <Plus className="size-4" aria-hidden="true" />
@@ -340,8 +351,8 @@ function ProjectsPage() {
               aria-hidden="true"
             />
             <Input
-              aria-label="搜索项目 / 会话"
-              placeholder="搜索项目 / 会话"
+              aria-label={t("projects.search.aria")}
+              placeholder={t("projects.search.placeholder")}
               className="h-[30px] bg-input-bg pl-8 pr-7 text-xs"
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
@@ -349,7 +360,7 @@ function ProjectsPage() {
             {filter ? (
               <button
                 type="button"
-                aria-label="清空筛选"
+                aria-label={t("projects.search.clear")}
                 className="absolute right-1.5 top-1/2 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 onClick={() => setFilter("")}
               >
@@ -367,11 +378,11 @@ function ProjectsPage() {
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
           {loading ? (
             <div className="px-2 py-6 text-center text-2xs text-muted-foreground">
-              加载中…
+              {t("common.loading")}
             </div>
           ) : loadError ? (
             <div className="px-2 py-6 text-center text-2xs text-destructive">
-              加载失败：{loadError}
+              {t("projects.errors.loadFailed", { error: loadError })}
             </div>
           ) : tree.length === 0 ? (
             <EmptyTree onCreate={() => openCreateDialog(0)} />
@@ -421,15 +432,14 @@ function ProjectsPage() {
 type EmptyTreeProps = { onCreate: () => void };
 
 function EmptyTree({ onCreate }: EmptyTreeProps) {
+  const { t } = useTranslation();
   return (
     <div className="mx-2 flex flex-col items-start gap-3 rounded-md border border-dashed border-border bg-card/40 px-3 py-4 text-xs">
       <div className="flex items-center gap-2 text-foreground">
         <Briefcase className="size-4 text-primary-text" aria-hidden="true" />
-        <span className="font-semibold">还没有项目</span>
+        <span className="font-semibold">{t("projects.empty.title")}</span>
       </div>
-      <p className="text-muted-foreground">
-        把一个本地代码仓库登记为项目，就可以让多个 Agent 在这里协作。
-      </p>
+      <p className="text-muted-foreground">{t("projects.empty.description")}</p>
       <Button
         type="button"
         size="sm"
@@ -438,7 +448,7 @@ function EmptyTree({ onCreate }: EmptyTreeProps) {
         onClick={onCreate}
       >
         <Plus className="size-3.5" aria-hidden="true" />
-        新建项目
+        {t("projects.actions.newProject")}
       </Button>
     </div>
   );
@@ -653,6 +663,7 @@ function ProjectCard({
   onAddSubProject,
   drag,
 }: ProjectCardProps) {
+  const { t } = useTranslation();
   // 同 ChatPage 的 overlay 来源：服务端 lastReadAt 为持久化真值；
   // useChatSession.reload 写到 store 后，用 withReadOverlay 做本次渲染的乐观覆盖。
   // hook 必须在所有 early return 之前调用，遵守 rules-of-hooks。
@@ -736,28 +747,24 @@ function ProjectCard({
       });
     }
     return rows;
-  }, [
-    readOverrides,
-    selectedSubtreeSession,
-    subtreeSessions,
-  ]);
+  }, [readOverrides, selectedSubtreeSession, subtreeSessions]);
 
   const attentionAgentSessions: AgentSession[] = React.useMemo(
     () =>
       attentionRows
         .filter(({ session }) => session.projectID === (node.project?.id ?? 0))
         .map(({ session, reason }) =>
-          projectSessionToAgentSession(session, reason),
+          projectSessionToAgentSession(session, reason, t),
         ),
-    [attentionRows, node.project?.id],
+    [attentionRows, node.project?.id, t],
   );
 
   const collapsedAttentionAgentSessions: AgentSession[] = React.useMemo(
     () =>
       attentionRows.map(({ session, reason }) =>
-        projectSessionToAgentSession(session, reason),
+        projectSessionToAgentSession(session, reason, t),
       ),
-    [attentionRows],
+    [attentionRows, t],
   );
 
   if (!project) return null;
@@ -795,7 +802,7 @@ function ProjectCard({
       lastMessageAt: s.lastMessageAt,
       lastReadAt,
     });
-    return projectSessionToAgentSession(s, reason);
+    return projectSessionToAgentSession(s, reason, t);
   });
 
   const selectedSessionIdStr = selectedOwnSessionId
@@ -829,8 +836,10 @@ function ProjectCard({
         onSessionSelect={handleSessionSelect}
         attentionSessions={attentionAgentSessions}
         collapsedAttentionSessions={collapsedAttentionAgentSessions}
-        attentionAriaLabel={`${project.name} 待处理会话`}
-        emptyLabel={children.length === 0 ? "暂无会话" : null}
+        attentionAriaLabel={t("projects.session.attentionAria", {
+          name: project.name,
+        })}
+        emptyLabel={children.length === 0 ? t("projects.session.empty") : null}
         renderSessionsPopover={(close) => (
           <SessionsPopover
             header={{
@@ -940,7 +949,9 @@ function ProjectCard({
               {activeCount > 0 ? (
                 <span
                   className="inline-flex items-center gap-1 font-mono text-2xs text-status-running"
-                  title={`${activeCount} 个活跃会话（含子项目）`}
+                  title={t("projects.session.activeCount", {
+                    count: activeCount,
+                  })}
                 >
                   <span
                     aria-hidden="true"
@@ -964,7 +975,9 @@ function ProjectCard({
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  aria-label={`${project.name} 更多操作`}
+                  aria-label={t("projects.actions.more", {
+                    name: project.name,
+                  })}
                   className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/proj:opacity-100 focus:opacity-100 focus-visible:opacity-100"
                 >
                   <MoreVertical className="size-3" aria-hidden="true" />
@@ -973,11 +986,11 @@ function ProjectCard({
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onSelect={() => onOpenSettings(project.id)}>
                   <Settings className="size-3.5" aria-hidden="true" />
-                  项目设置
+                  {t("projectSettings.title")}
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => onAddSubProject(project.id)}>
                   <Plus className="size-3.5" aria-hidden="true" />
-                  新建子项目
+                  {t("projects.actions.newSubProject")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -1007,6 +1020,7 @@ type MemberMenuLoadState =
     };
 
 function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const [loadState, setLoadState] = React.useState<MemberMenuLoadState>({
     status: "idle",
@@ -1079,8 +1093,10 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label={`${project.name} 新建会话`}
-          title="新建会话"
+          aria-label={t("projects.session.newForProject", {
+            name: project.name,
+          })}
+          title={t("projects.session.new")}
           className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/proj:opacity-100 focus:opacity-100 focus-visible:opacity-100"
         >
           <Plus className="size-3" aria-hidden="true" />
@@ -1094,19 +1110,21 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
         onCloseAutoFocus={(e) => e.preventDefault()}
       >
         <div className="px-2 py-1.5 font-mono text-2xs uppercase tracking-wider text-subtle-foreground">
-          选一个 Agent
+          {t("projects.session.pickAgent")}
         </div>
         {activeLoadState.status === "loading" ? (
           <div className="px-3 py-3 text-2xs text-muted-foreground">
-            加载成员中…
+            {t("projects.session.loadingMembers")}
           </div>
         ) : activeLoadState.status === "error" ? (
           <div className="px-3 py-3 text-2xs text-destructive">
-            加载成员失败：{activeLoadState.error}
+            {t("projects.session.loadMembersFailed", {
+              error: activeLoadState.error,
+            })}
           </div>
         ) : members.length === 0 ? (
           <div className="px-3 py-3 text-2xs text-muted-foreground">
-            还没添加成员，去项目设置加几个先。
+            {t("projects.session.noMembers")}
           </div>
         ) : (
           members.map((m) => {
@@ -1138,7 +1156,7 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
                 <span className="min-w-0 flex-1 truncate">{name}</span>
                 {m.inherited ? (
                   <span className="rounded-sm bg-secondary px-1.5 py-0.5 text-2xs text-muted-foreground">
-                    继承
+                    {t("projects.session.inherited")}
                   </span>
                 ) : null}
               </DropdownMenuItem>

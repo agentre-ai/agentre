@@ -1,6 +1,7 @@
 // frontend/src/components/agentre/chat-tabs/chat-panel-host.tsx
 import * as React from "react";
 import { Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { ChatPanel } from "../chat-panel";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
@@ -35,6 +36,7 @@ function tabsByPanelOrder(tabs: ChatTab[], order: string[]) {
 }
 
 export function ChatPanelHost() {
+  const { t } = useTranslation();
   const tabs = useChatTabsStore((s) => s.tabs);
   const activeTabId = useChatTabsStore((s) => s.activeTabId);
   const [panelOrderState, setPanelOrderState] = React.useState<PanelOrderState>(
@@ -62,24 +64,24 @@ export function ChatPanelHost() {
           <Sparkles className="size-6 text-primary" aria-hidden="true" />
         </span>
         <div className="text-base font-semibold">
-          选一个 Agent 或项目下的会话开始
+          {t("chatTabs.empty.title")}
         </div>
         <div className="text-xs text-muted-foreground">
-          在左侧 sidebar 选一个,或派发新任务给指定 Agent · ⌘P 打开命令面板
+          {t("chatTabs.empty.description")}
         </div>
         <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
           <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
             ⌘1..⌘9
           </kbd>
-          切换 Tab
+          {t("chatTabs.empty.shortcuts.switch")}
           <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
             ⌘W
           </kbd>
-          关闭 Tab
+          {t("chatTabs.empty.shortcuts.close")}
           <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
             ⌘ Click
           </kbd>
-          在新 Tab 打开
+          {t("chatTabs.empty.shortcuts.openInNewTab")}
         </div>
       </main>
     );
@@ -190,16 +192,17 @@ function MissingNewSessionAgent({
   loading: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const title = loading
-    ? "正在加载 Agent 信息…"
+    ? t("chatTabs.missingAgent.loading")
     : error
-      ? "加载 Agent 信息失败"
-      : "找不到这个 Agent";
+      ? t("chatTabs.missingAgent.loadFailed")
+      : t("chatTabs.missingAgent.notFound");
   const detail = error
     ? error
     : loading
       ? `Agent #${agentId}`
-      : `Agent #${agentId} 可能已被删除，或列表还没有同步。`;
+      : t("chatTabs.missingAgent.detail", { id: agentId });
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 bg-background px-8 text-center">

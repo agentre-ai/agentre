@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   ChevronRight,
@@ -59,6 +60,7 @@ export function RemoteFsPicker({
   initialPath,
   onPick,
 }: RemoteFsPickerProps) {
+  const { t } = useTranslation();
   const [currentPath, setCurrentPath] = React.useState<string>("");
   const [entries, setEntries] = React.useState<EntryView[]>([]);
   const [truncated, setTruncated] = React.useState(false);
@@ -126,7 +128,7 @@ export function RemoteFsPicker({
     setNewErr(null);
     const name = newName.trim();
     if (!name || INVALID_NAME_RE.test(name) || name.length > 255) {
-      setNewErr("非法名字");
+      setNewErr(t("remoteFs.errors.invalidName"));
       return;
     }
     try {
@@ -152,7 +154,7 @@ export function RemoteFsPicker({
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-sm">
-            选择目录
+            {t("remoteFs.title")}
             <span className="text-2xs text-muted-foreground">
               · {deviceName}
             </span>
@@ -182,9 +184,9 @@ export function RemoteFsPicker({
             <Input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="筛选当前目录…"
+              placeholder={t("remoteFs.filter.placeholder")}
               className="h-7 text-2xs"
-              aria-label="筛选当前目录"
+              aria-label={t("remoteFs.filter.ariaLabel")}
             />
             <Button
               type="button"
@@ -194,23 +196,22 @@ export function RemoteFsPicker({
               onClick={() => setCreating(true)}
               disabled={creating}
             >
-              <Plus className="size-3" /> 新建
+              <Plus className="size-3" /> {t("remoteFs.actions.newFolder")}
             </Button>
             <label className="flex items-center gap-1 text-2xs text-muted-foreground">
               <input
                 type="checkbox"
                 checked={showHidden}
                 onChange={(e) => setShowHidden(e.target.checked)}
-                aria-label="显示隐藏"
+                aria-label={t("remoteFs.hidden.ariaLabel")}
               />
-              隐藏
+              {t("remoteFs.hidden.label")}
             </label>
           </div>
 
           {truncated ? (
             <div className="flex items-center gap-1 rounded-md border border-destructive bg-destructive-soft px-2 py-1 text-2xs text-destructive">
-              <AlertTriangle className="size-3" />{" "}
-              还有未列出的项,请用筛选缩小范围
+              <AlertTriangle className="size-3" /> {t("remoteFs.truncated")}
             </div>
           ) : null}
 
@@ -237,7 +238,7 @@ export function RemoteFsPicker({
                     }
                   }}
                   className="h-6 flex-1 px-1.5 py-0.5 font-mono text-2xs"
-                  placeholder="folder name"
+                  placeholder={t("remoteFs.create.placeholder")}
                   autoFocus
                 />
                 <button
@@ -247,7 +248,7 @@ export function RemoteFsPicker({
                     setNewName("");
                     setNewErr(null);
                   }}
-                  aria-label="取消"
+                  aria-label={t("remoteFs.actions.cancel")}
                 >
                   <X className="size-3" />
                 </button>
@@ -260,11 +261,12 @@ export function RemoteFsPicker({
           <div className="min-h-[160px] overflow-auto rounded border border-border bg-card">
             {loading ? (
               <div className="flex items-center justify-center py-6 text-2xs text-muted-foreground">
-                <Loader2 className="mr-1.5 size-3 animate-spin" /> 加载中…
+                <Loader2 className="mr-1.5 size-3 animate-spin" />{" "}
+                {t("remoteFs.loading")}
               </div>
             ) : filtered.length === 0 ? (
               <div className="py-6 text-center text-2xs text-muted-foreground">
-                （空）
+                {t("remoteFs.empty")}
               </div>
             ) : (
               <ul>
@@ -296,7 +298,7 @@ export function RemoteFsPicker({
             variant="ghost"
             onClick={() => onOpenChange(false)}
           >
-            取消
+            {t("remoteFs.actions.cancel")}
           </Button>
           <Button
             type="button"
@@ -305,7 +307,7 @@ export function RemoteFsPicker({
               onOpenChange(false);
             }}
           >
-            选择此目录
+            {t("remoteFs.actions.selectCurrent")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -342,6 +344,7 @@ function EntryRow({
   onSelect: () => void;
   onEnter: () => void;
 }) {
+  const { t } = useTranslation();
   const dim = !entry.isDir;
   return (
     <li
@@ -358,7 +361,7 @@ function EntryRow({
       {entry.symlink ? (
         <LinkIcon
           className="size-3 shrink-0 text-cyan-500"
-          aria-label="symlink"
+          aria-label={t("remoteFs.entry.symlink")}
         />
       ) : entry.isDir ? (
         <FolderIcon className="size-3 shrink-0 text-amber-500" />
@@ -374,9 +377,9 @@ function EntryRow({
             onEnter();
           }}
           className="rounded px-1 py-0.5 text-2xs text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label={`进入 ${entry.name}`}
+          aria-label={t("remoteFs.entry.enterNamed", { name: entry.name })}
         >
-          进入
+          {t("remoteFs.entry.enter")}
         </button>
       ) : null}
     </li>

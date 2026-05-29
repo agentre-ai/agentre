@@ -1,4 +1,6 @@
 import * as React from "react";
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogBody,
@@ -29,7 +31,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ShieldAlert } from "lucide-react";
 
 import type { ItemAction, Scope } from "./types";
-import { SCOPE_LABELS } from "./types";
 
 export type PreviewItem = {
   scope: Scope;
@@ -53,12 +54,13 @@ export type ImportPreviewDialogProps = {
   ) => Promise<void>;
 };
 
-const ACTION_LABEL: Record<ItemAction, string> = {
-  create: "新建",
-  overwrite: "覆盖",
-  skip: "跳过",
-  duplicate: "复制为新",
-};
+function actionLabel(action: ItemAction, t: TFunction): string {
+  return t(`dataBackup.actions.${action}`);
+}
+
+function scopeLabel(scope: Scope, t: TFunction): string {
+  return t(`dataBackup.scopes.${scope}`);
+}
 
 export function ImportPreviewDialog({
   open,
@@ -66,6 +68,7 @@ export function ImportPreviewDialog({
   preview,
   onApply,
 }: ImportPreviewDialogProps) {
+  const { t } = useTranslation();
   const [global, setGlobal] = React.useState<ItemAction>("skip");
   const [actions, setActions] = React.useState<Record<string, ItemAction>>({});
 
@@ -101,9 +104,9 @@ export function ImportPreviewDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle>导入预览</DialogTitle>
+          <DialogTitle>{t("dataBackup.importPreview.title")}</DialogTitle>
           <DialogDescription>
-            选好策略后点「应用」执行，失败会整批回滚。
+            {t("dataBackup.importPreview.description")}
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="flex max-h-[70vh] flex-col gap-3 overflow-hidden">
@@ -111,13 +114,13 @@ export function ImportPreviewDialog({
             <Alert>
               <ShieldAlert className="size-4" />
               <AlertDescription>
-                此文件不含凭证，导入后需要手动重新填写 API Key 等敏感字段。
+                {t("dataBackup.importPreview.noSecrets")}
               </AlertDescription>
             </Alert>
           )}
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">
-              冲突项默认策略
+              {t("dataBackup.importPreview.defaultStrategy")}
             </span>
             <Select
               value={global}
@@ -127,12 +130,12 @@ export function ImportPreviewDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="skip">{ACTION_LABEL.skip}</SelectItem>
+                <SelectItem value="skip">{actionLabel("skip", t)}</SelectItem>
                 <SelectItem value="overwrite">
-                  {ACTION_LABEL.overwrite}
+                  {actionLabel("overwrite", t)}
                 </SelectItem>
                 <SelectItem value="duplicate">
-                  {ACTION_LABEL.duplicate}
+                  {actionLabel("duplicate", t)}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -141,10 +144,10 @@ export function ImportPreviewDialog({
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>范围</TableHead>
-                  <TableHead>名称</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>动作</TableHead>
+                  <TableHead>{t("dataBackup.importPreview.scope")}</TableHead>
+                  <TableHead>{t("org.department.name")}</TableHead>
+                  <TableHead>{t("org.list.sort.status")}</TableHead>
+                  <TableHead>{t("dataBackup.importPreview.action")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -154,16 +157,20 @@ export function ImportPreviewDialog({
                   return (
                     <TableRow key={key}>
                       <TableCell className="text-xs">
-                        {SCOPE_LABELS[it.scope]}
+                        {scopeLabel(it.scope, t)}
                       </TableCell>
                       <TableCell>{it.name}</TableCell>
                       <TableCell>
                         {it.dangling ? (
-                          <Badge variant="destructive">引用缺失</Badge>
+                          <Badge variant="destructive">
+                            {t("dataBackup.importPreview.dangling")}
+                          </Badge>
                         ) : it.conflict ? (
-                          <Badge variant="secondary">冲突</Badge>
+                          <Badge variant="secondary">
+                            {t("dataBackup.importPreview.conflict")}
+                          </Badge>
                         ) : (
-                          <Badge>新增</Badge>
+                          <Badge>{t("dataBackup.importPreview.new")}</Badge>
                         )}
                         {it.danglingHint && (
                           <div className="text-xs text-destructive mt-1">
@@ -183,20 +190,20 @@ export function ImportPreviewDialog({
                           <SelectContent>
                             {!it.conflict && (
                               <SelectItem value="create">
-                                {ACTION_LABEL.create}
+                                {actionLabel("create", t)}
                               </SelectItem>
                             )}
                             {it.conflict && (
                               <SelectItem value="overwrite">
-                                {ACTION_LABEL.overwrite}
+                                {actionLabel("overwrite", t)}
                               </SelectItem>
                             )}
                             <SelectItem value="skip">
-                              {ACTION_LABEL.skip}
+                              {actionLabel("skip", t)}
                             </SelectItem>
                             {!it.dangling && (
                               <SelectItem value="duplicate">
-                                {ACTION_LABEL.duplicate}
+                                {actionLabel("duplicate", t)}
                               </SelectItem>
                             )}
                           </SelectContent>
@@ -211,9 +218,11 @@ export function ImportPreviewDialog({
         </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
+            {t("common.cancel")}
           </Button>
-          <Button onClick={() => onApply(actions, global)}>应用</Button>
+          <Button onClick={() => onApply(actions, global)}>
+            {t("dataBackup.importPreview.apply")}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

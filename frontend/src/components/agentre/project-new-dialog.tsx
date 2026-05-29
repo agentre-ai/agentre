@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Check, FolderOpen, GitBranch, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -86,6 +87,7 @@ function ProjectNewDialog({
   initialParentID = 0,
   onCreated,
 }: ProjectNewDialogProps) {
+  const { t } = useTranslation();
   const [form, setForm] = React.useState<FormState>(() =>
     initialForm(initialParentID),
   );
@@ -130,7 +132,7 @@ function ProjectNewDialog({
 
   const handleBrowse = async () => {
     try {
-      const picked = await SelectDirectory("选择项目目录");
+      const picked = await SelectDirectory(t("projectNew.selectDirectory"));
       if (picked) {
         setForm((f) => ({
           ...f,
@@ -175,11 +177,11 @@ function ProjectNewDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[540px]">
         <DialogHeader>
-          <DialogTitle>新建项目</DialogTitle>
+          <DialogTitle>{t("projects.actions.newProject")}</DialogTitle>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3.5">
           {/* 路径 */}
-          <Field label="本地路径" required>
+          <Field label={t("projectNew.localPath")} required>
             <div className="flex items-stretch gap-2">
               <Input
                 value={form.path}
@@ -197,26 +199,26 @@ function ProjectNewDialog({
                 onClick={() => void handleBrowse()}
               >
                 <FolderOpen className="size-3.5" aria-hidden="true" />
-                浏览…
+                {t("projectNew.browse")}
               </Button>
             </div>
             {detecting ? (
               <div className="mt-2 flex items-center gap-1.5 text-2xs text-muted-foreground">
                 <Loader2 className="size-3 animate-spin" aria-hidden="true" />
-                检测 Git 仓库…
+                {t("projectNew.detectingGit")}
               </div>
             ) : git?.isGitRepo ? (
               <GitDetectedCallout info={git} />
             ) : form.path.trim() ? (
               <div className="mt-2 text-2xs text-muted-foreground">
-                未检测到 Git 仓库
+                {t("projectNew.noGit")}
               </div>
             ) : null}
           </Field>
 
           {/* 名字 + 父项目 */}
           <div className="grid grid-cols-2 gap-3">
-            <Field label="项目名" required>
+            <Field label={t("projectSettings.basic.name")} required>
               <Input
                 value={form.name}
                 onChange={(e) =>
@@ -226,7 +228,7 @@ function ProjectNewDialog({
                 className="h-9 text-xs"
               />
             </Field>
-            <Field label="父项目">
+            <Field label={t("projectNew.parentProject")}>
               <Select
                 value={String(form.parentID)}
                 onValueChange={(v) =>
@@ -234,10 +236,10 @@ function ProjectNewDialog({
                 }
               >
                 <SelectTrigger className="h-9 text-xs">
-                  <SelectValue placeholder="— 无 —" />
+                  <SelectValue placeholder={t("projectNew.none")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="0">— 顶级项目 —</SelectItem>
+                  <SelectItem value="0">{t("projectNew.topLevel")}</SelectItem>
                   {parentOptions.map((opt) => (
                     <SelectItem key={opt.id} value={String(opt.id)}>
                       {"  ".repeat(opt.depth)}
@@ -251,14 +253,14 @@ function ProjectNewDialog({
 
           {/* 图标 + 颜色 */}
           <div className="grid grid-cols-2 gap-3">
-            <Field label="图标">
+            <Field label={t("org.department.icon")}>
               <IconPicker
                 value={form.icon}
                 onChange={(icon) => setForm((f) => ({ ...f, icon }))}
                 accentColor={form.color}
               />
             </Field>
-            <Field label="主题色">
+            <Field label={t("org.department.themeColor")}>
               <div className="flex h-9 items-center gap-1.5">
                 {agentColorOrder.slice(0, 5).map((c) => (
                   <button
@@ -283,13 +285,13 @@ function ProjectNewDialog({
           </div>
 
           {/* 描述 */}
-          <Field label="描述">
+          <Field label={t("projectSettings.basic.description")}>
             <Textarea
               value={form.description}
               onChange={(e) =>
                 setForm((f) => ({ ...f, description: e.target.value }))
               }
-              placeholder="一句话讲清这个项目用来干什么（可选）"
+              placeholder={t("projectNew.descriptionPlaceholder")}
               className="min-h-[60px] text-xs"
             />
           </Field>
@@ -307,7 +309,7 @@ function ProjectNewDialog({
             onClick={() => onOpenChange(false)}
             disabled={submitting}
           >
-            取消
+            {t("common.cancel")}
           </Button>
           <Button
             type="button"
@@ -317,7 +319,7 @@ function ProjectNewDialog({
             {submitting ? (
               <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
             ) : null}
-            创建项目
+            {t("projectNew.create")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -346,6 +348,7 @@ function Field({
 }
 
 function GitDetectedCallout({ info }: { info: ProjectGitRepoInfo }) {
+  const { t } = useTranslation();
   return (
     <div className="mt-2 flex items-start gap-2 rounded-md border border-status-running/30 bg-status-running-bg/50 px-2.5 py-1.5 text-2xs">
       <GitBranch
@@ -353,10 +356,14 @@ function GitDetectedCallout({ info }: { info: ProjectGitRepoInfo }) {
         aria-hidden="true"
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="font-medium text-foreground">检测到 Git 仓库</span>
+        <span className="font-medium text-foreground">
+          {t("projectNew.gitDetected")}
+        </span>
         <span className="truncate font-mono text-2xs text-muted-foreground">
-          分支 {info.currentBranch || "(未知)"} ·{" "}
-          {info.origin || "无 origin remote"}
+          {t("projectNew.gitSummary", {
+            branch: info.currentBranch || t("projectNew.unknown"),
+            origin: info.origin || t("projectNew.noOrigin"),
+          })}
         </span>
       </div>
     </div>

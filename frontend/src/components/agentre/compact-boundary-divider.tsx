@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 // CompactBoundaryDivider 渲染 transcript 内嵌的"上下文已压缩"分隔卡片。
 // 文案:左右细线 + 中间 chip,chip 内含 trigger 标签、压缩前 token 数 (有则显示)、
@@ -15,16 +16,19 @@ export function CompactBoundaryDivider({
   trigger?: "auto" | "manual";
   at: number;
 }): React.ReactElement {
+  const { t } = useTranslation();
   const triggerLabel =
     trigger === "manual"
-      ? "手动 /compact"
+      ? t("compactBoundary.trigger.manual")
       : trigger === "auto"
-        ? "自动压缩"
-        : "已压缩";
+        ? t("compactBoundary.trigger.auto")
+        : t("compactBoundary.trigger.compressed");
 
   const tokenLabel =
     typeof preTokens === "number" && preTokens > 0
-      ? `压缩前 ${preTokens.toLocaleString()} tokens`
+      ? t("compactBoundary.tokensBefore", {
+          tokens: preTokens.toLocaleString(),
+        })
       : null;
 
   const timeLabel = at > 0 ? formatHHMM(at) : null;
@@ -33,11 +37,11 @@ export function CompactBoundaryDivider({
     <div
       className="flex items-center gap-3 py-2"
       role="separator"
-      aria-label="上下文压缩边界"
+      aria-label={t("compactBoundary.aria")}
     >
       <div className="h-px flex-1 bg-border" />
       <div className="flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs text-muted-foreground">
-        <span className="font-medium">上下文已压缩</span>
+        <span className="font-medium">{t("compactBoundary.label")}</span>
         <span aria-hidden="true">·</span>
         <span>{triggerLabel}</span>
         {tokenLabel ? (

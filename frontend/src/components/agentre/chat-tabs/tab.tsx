@@ -1,6 +1,7 @@
 // frontend/src/components/agentre/chat-tabs/tab.tsx
 import * as React from "react";
 import { Loader2, Pin, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -54,6 +55,8 @@ export const Tab = React.forwardRef<
   },
   ref,
 ) {
+  const { t } = useTranslation();
+
   return (
     <div
       ref={ref}
@@ -123,7 +126,7 @@ export const Tab = React.forwardRef<
       ) : (
         <button
           type="button"
-          aria-label="关闭 Tab"
+          aria-label={t("chatTabs.actions.closeTab")}
           className="inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
           onClick={(e) => {
             e.stopPropagation();

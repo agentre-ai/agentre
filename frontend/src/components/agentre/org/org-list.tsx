@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ArrowDown, ArrowUp, Puzzle, Search, Wrench, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -100,6 +101,7 @@ function expandLineage(
 }
 
 export function OrgList(props: OrgListProps) {
+  const { t } = useTranslation();
   const { departments, agents, backends, selected, onSelect } = props;
 
   const [search, setSearch] = React.useState("");
@@ -214,7 +216,7 @@ export function OrgList(props: OrgListProps) {
         <div className="flex-1 overflow-y-auto" data-slot="org-list-body">
           {rows.length === 0 ? (
             <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
-              未找到 Agent
+              {t("org.list.empty")}
             </div>
           ) : (
             rows.map((row) => {
@@ -257,16 +259,17 @@ type FilterBarProps = {
 };
 
 function FilterBar(props: FilterBarProps) {
+  const { t } = useTranslation();
   const backendLabel =
     props.backendFilter === 0
-      ? "全部"
+      ? t("common.all")
       : (props.backends.find((b) => b.id === props.backendFilter)?.name ??
-        "全部");
+        t("common.all"));
   const reportsLabel =
     props.reportsToFilter === 0
-      ? "全部"
+      ? t("common.all")
       : (props.parentOptions.find((a) => a.id === props.reportsToFilter)
-          ?.name ?? "全部");
+          ?.name ?? t("common.all"));
 
   return (
     <div
@@ -279,8 +282,8 @@ function FilterBar(props: FilterBarProps) {
           className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
         />
         <Input
-          aria-label="搜索 Agent"
-          placeholder="搜索 Agent 或描述"
+          aria-label={t("org.list.search.aria")}
+          placeholder={t("org.list.search.placeholder")}
           value={props.search}
           onChange={(e) => props.onSearch(e.target.value)}
           className="h-8 w-60 pl-7 text-xs"
@@ -292,7 +295,7 @@ function FilterBar(props: FilterBarProps) {
         onValueChange={(v) => props.onBackendFilter(Number(v))}
       >
         <SelectTrigger
-          aria-label="后端过滤"
+          aria-label={t("org.list.filters.backendAria")}
           size="sm"
           className={cn(
             "h-8 text-xs",
@@ -301,12 +304,14 @@ function FilterBar(props: FilterBarProps) {
           )}
         >
           <span>
-            <span className="text-muted-foreground">后端：</span>
+            <span className="text-muted-foreground">
+              {t("org.list.filters.backendPrefix")}
+            </span>
             <SelectValue placeholder={backendLabel}>{backendLabel}</SelectValue>
           </span>
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="0">全部</SelectItem>
+          <SelectItem value="0">{t("common.all")}</SelectItem>
           {props.backends.map((b) => (
             <SelectItem key={b.id} value={String(b.id)}>
               {b.name}
@@ -321,7 +326,7 @@ function FilterBar(props: FilterBarProps) {
         onValueChange={(v) => props.onReportsToFilter(Number(v))}
       >
         <SelectTrigger
-          aria-label="汇报给过滤"
+          aria-label={t("org.list.filters.reportsToAria")}
           size="sm"
           className={cn(
             "h-8 text-xs",
@@ -330,12 +335,14 @@ function FilterBar(props: FilterBarProps) {
           )}
         >
           <span>
-            <span className="text-muted-foreground">汇报给：</span>
+            <span className="text-muted-foreground">
+              {t("org.list.filters.reportsToPrefix")}
+            </span>
             <SelectValue placeholder={reportsLabel}>{reportsLabel}</SelectValue>
           </span>
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="0">全部</SelectItem>
+          <SelectItem value="0">{t("common.all")}</SelectItem>
           {props.parentOptions.map((a) => (
             <SelectItem key={a.id} value={String(a.id)}>
               {a.name}
@@ -348,7 +355,7 @@ function FilterBar(props: FilterBarProps) {
         <Button
           variant="ghost"
           size="icon"
-          aria-label="清除汇报给过滤"
+          aria-label={t("org.list.filters.clearReportsTo")}
           className="size-7 text-primary-text"
           onClick={() => props.onReportsToFilter(0)}
         >
@@ -359,28 +366,34 @@ function FilterBar(props: FilterBarProps) {
       <div className="flex-1" />
 
       <div className="flex items-center gap-1.5 text-2xs text-muted-foreground">
-        <span>排序</span>
+        <span>{t("org.list.sort.label")}</span>
         <Select
           value={props.sortKey}
           onValueChange={(v) => props.onSortKey(v as SortKey)}
         >
           <SelectTrigger
-            aria-label="排序方式"
+            aria-label={t("org.list.sort.aria")}
             size="sm"
             className="h-8 text-xs"
           >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="hierarchy">层级</SelectItem>
-            <SelectItem value="name">名称</SelectItem>
-            <SelectItem value="status">状态</SelectItem>
+            <SelectItem value="hierarchy">
+              {t("org.list.sort.hierarchy")}
+            </SelectItem>
+            <SelectItem value="name">{t("org.department.name")}</SelectItem>
+            <SelectItem value="status">{t("org.list.sort.status")}</SelectItem>
           </SelectContent>
         </Select>
         <Button
           variant="ghost"
           size="icon"
-          aria-label={props.sortDir === "asc" ? "升序" : "降序"}
+          aria-label={
+            props.sortDir === "asc"
+              ? t("org.list.sort.asc")
+              : t("org.list.sort.desc")
+          }
           className="size-7"
           onClick={() =>
             props.onSortDir(props.sortDir === "asc" ? "desc" : "asc")
@@ -404,6 +417,7 @@ type TableHeadProps = {
 };
 
 function TableHead(props: TableHeadProps) {
+  const { t } = useTranslation();
   return (
     <div
       className="sticky top-0 z-10 flex h-9 shrink-0 items-center gap-3 border-b bg-secondary px-5 font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground"
@@ -411,11 +425,11 @@ function TableHead(props: TableHeadProps) {
     >
       <button
         type="button"
-        aria-label="按 Agent 排序"
+        aria-label={t("org.list.table.sortByAgent")}
         onClick={props.onToggleNameSort}
         className="flex flex-1 items-center gap-1.5 text-left hover:text-foreground"
       >
-        <span>Agent</span>
+        <span>{t("org.list.table.agent")}</span>
         {props.sortKey === "name" &&
           (props.sortDir === "asc" ? (
             <ArrowDown className="size-3" />
@@ -423,10 +437,12 @@ function TableHead(props: TableHeadProps) {
             <ArrowUp className="size-3" />
           ))}
       </button>
-      <span className="w-[160px] shrink-0">后端</span>
-      <span className="w-[160px] shrink-0">汇报给</span>
-      <span className="w-[120px] shrink-0">技能</span>
-      <span className="w-[100px] shrink-0">活跃</span>
+      <span className="w-[160px] shrink-0">
+        {t("org.chart.newAgent.backend")}
+      </span>
+      <span className="w-[160px] shrink-0">{t("org.agent.reportsTo")}</span>
+      <span className="w-[120px] shrink-0">{t("org.agent.skills.title")}</span>
+      <span className="w-[100px] shrink-0">{t("org.list.table.active")}</span>
       <span className="w-12 shrink-0" aria-hidden="true" />
     </div>
   );
@@ -447,6 +463,7 @@ function ListRow({
   showIndentConnector,
   onClick,
 }: ListRowProps) {
+  const { t } = useTranslation();
   const { agent, depth } = row;
   const color = safeAgentColor(agent.avatarColor);
 
@@ -457,8 +474,11 @@ function ListRow({
     totalSkills === 0
       ? "—"
       : disabledSkills === 0
-        ? `${enabledSkills} 启用`
-        : `${enabledSkills} 启用 · ${disabledSkills} 禁用`;
+        ? t("org.list.skills.enabledOnly", { count: enabledSkills })
+        : t("org.agent.skills.summary", {
+            disabled: disabledSkills,
+            enabled: enabledSkills,
+          });
 
   const backendName = agent.backend?.name ?? "—";
   const BackendIcon = agent.backend?.type === "claude-code" ? Wrench : Puzzle;

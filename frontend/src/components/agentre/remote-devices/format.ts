@@ -1,17 +1,20 @@
+import type { TFunction } from "i18next";
+
 // frontend/src/components/agentre/remote-devices/format.ts
 export function relativeTime(
   thenMs: number,
-  nowMs: number = Date.now(),
+  nowMs: number,
+  t: TFunction,
 ): string {
-  if (!thenMs) return "从未";
+  if (!thenMs) return t("remoteDevices.time.never");
   const delta = Math.max(0, nowMs - thenMs);
-  if (delta < 60_000) return "刚刚";
+  if (delta < 60_000) return t("remoteDevices.time.justNow");
   const minutes = Math.floor(delta / 60_000);
-  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 60) return t("remoteDevices.time.minutesAgo", { minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
+  if (hours < 24) return t("remoteDevices.time.hoursAgo", { hours });
   const days = Math.floor(hours / 24);
-  return `${days} 天前`;
+  return t("remoteDevices.time.daysAgo", { days });
 }
 
 const IP_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
@@ -38,12 +41,13 @@ export function deriveDeviceName(
   }
 }
 
-export function friendlyLastError(le: string): string {
+export function friendlyLastError(le: string, t: TFunction): string {
   if (!le) return "";
-  if (le === "tofu_mismatch")
-    return "服务端身份指纹已变化，请确认安全后重新配对";
-  if (le === "unauthorized") return "凭据已失效，请重新配对";
+  if (le === "tofu_mismatch") return t("remoteDevices.errors.tofuMismatch");
+  if (le === "unauthorized") return t("remoteDevices.errors.unauthorized");
   if (le.startsWith("dial_failed:"))
-    return `连接失败：${le.slice("dial_failed:".length)}`;
+    return t("remoteDevices.errors.dialFailed", {
+      message: le.slice("dial_failed:".length),
+    });
   return le;
 }

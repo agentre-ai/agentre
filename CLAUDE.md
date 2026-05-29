@@ -25,6 +25,13 @@ Two binaries ship from this repo:
    - **禁止** drive-by refactor / 重命名 sweep / formatter pass / 死代码清理 / import 重排序 / 不相关 test churn —— 它们会埋掉真正的改动，破坏 `git bisect`。
    - 看到不相关的脏数据时，flag 给用户问一下，**不要顺手改**。
 
+4. **前端新增可见文案必须接 i18n。**
+   - 新 UI 文案用 `react-i18next` 的 `t(...)`，并同时更新 `frontend/src/i18n/locales/zh-CN/common.json` 和 `frontend/src/i18n/locales/en/common.json`。
+   - 不要新增写死中文；ESLint 通过 `eslint-plugin-i18next` 的 `i18next/no-literal-string` 拦截 JSX 文本和可见属性里的中文硬编码文案。
+   - 静态 `t("...")` key 和 locale 覆盖由 `frontend/src/__tests__/i18n.test.ts` 校验，改文案时同步跑相关测试。
+   - Agent / 用户 / 终端 / 代码 / markdown 等动态输出不要翻译；它们天然不会进入 `t(...)`，禁止用全局文本改写兜底。
+   - 所有产品 UI 文案都显式 `t(...)`。展开细节见 [docs/frontend.md](docs/frontend.md)。
+
 ## 开发规范（必读）
 
 写代码前先看这三份文档，规则在里面：

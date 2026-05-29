@@ -1,6 +1,8 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { useChatAgents, type ChatAgentItem } from "@/hooks/use-chat-agents";
+import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   readLastAgentId,
@@ -62,7 +64,9 @@ function useItems(): { items: NewChatItem[]; loading: boolean } {
 }
 
 function actionTitle(item: NewChatItem): string {
-  return `New chat with ${item.agent.name}`;
+  return i18n.t("commandPalette.newChat.itemTitle", {
+    agentName: item.agent.name,
+  });
 }
 
 const MULTI_TOKEN_SCORE = 25;
@@ -93,6 +97,7 @@ function renderItem(item: NewChatItem): React.ReactNode {
 type AgentRowProps = { item: NewChatItem };
 
 function AgentRow({ item }: AgentRowProps) {
+  const { t } = useTranslation();
   const a = item.agent;
   return (
     <div className="flex w-full items-center gap-3">
@@ -108,9 +113,11 @@ function AgentRow({ item }: AgentRowProps) {
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div
           className="truncate text-sm text-foreground"
-          title={`New chat with ${a.name}`}
+          title={t("commandPalette.newChat.itemTitle", { agentName: a.name })}
         >
-          <span className="text-muted-foreground">New chat with </span>
+          <span className="text-muted-foreground">
+            {t("commandPalette.newChat.itemPrefix")}{" "}
+          </span>
           <span className="font-medium">{a.name}</span>
         </div>
         {a.chattableHint ? (
@@ -154,7 +161,7 @@ function onSelect(item: NewChatItem, ctx: OnSelectCtx): void {
 
 export const newChatSource: CommandSource<NewChatItem> = {
   id: "new-chat",
-  heading: "新建对话",
+  heading: i18n.t("commandPalette.newChat.heading"),
   modes: ["command"],
   activeFor: (ctx) => !isProjectsRoute(ctx.pathname),
   useItems,

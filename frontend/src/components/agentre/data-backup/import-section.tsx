@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Upload } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ export function ImportSection({
 }: {
   onResult: (counts: Record<string, number>) => void;
 }) {
+  const { t } = useTranslation();
   const [preview, setPreview] = React.useState<{
     secretsIncluded: boolean;
     items: PreviewItem[];
@@ -34,7 +36,9 @@ export function ImportSection({
       });
       setOpen(true);
     } catch (e) {
-      toast.error("解析文件失败", { description: String(e) });
+      toast.error(t("dataBackup.import.parseFailed"), {
+        description: String(e),
+      });
     } finally {
       setBusy(false);
     }
@@ -52,21 +56,23 @@ export function ImportSection({
       setOpen(false);
       onResult(res.counts ?? {});
     } catch (e) {
-      toast.error("导入失败", { description: String(e) });
+      toast.error(t("dataBackup.import.failed"), { description: String(e) });
     }
   };
 
   return (
     <section className="rounded-lg border border-border bg-card p-4 space-y-3">
       <header>
-        <h2 className="text-sm font-semibold">导入</h2>
+        <h2 className="text-sm font-semibold">
+          {t("dataBackup.import.title")}
+        </h2>
         <p className="text-xs text-muted-foreground">
-          选择 Agentre 导出的 JSON 文件，预览后再写入。
+          {t("dataBackup.import.description")}
         </p>
       </header>
       <Button onClick={pick} disabled={busy}>
         <Upload className="size-4 mr-2" />
-        选择文件...
+        {t("dataBackup.import.chooseFile")}
       </Button>
       <ImportPreviewDialog
         open={open}

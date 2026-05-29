@@ -1,4 +1,6 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   Check,
   ChevronRight,
@@ -103,20 +105,35 @@ function statusFromSpawn(
 function buildStatusLabel(
   status: AgentStatus,
   spawnStatus: AgentSpawnDTO["status"] | undefined,
+  t: TFunction,
   durationMs?: number,
 ): string {
   const dur = durationMs ? formatDuration(durationMs) : "";
   if (spawnStatus === "canceled") {
-    return dur ? `STOPPED · ${dur}` : "STOPPED";
+    return dur
+      ? t("canonical.agentSpawn.status.withDuration", {
+          status: t("canonical.agentSpawn.status.stopped"),
+          duration: dur,
+        })
+      : t("canonical.agentSpawn.status.stopped");
   }
+  const label =
+    status === "error"
+      ? t("canonical.agentSpawn.status.error")
+      : status === "running" || status === "waiting"
+        ? t("canonical.agentSpawn.status.running")
+        : t("canonical.agentSpawn.status.done");
   switch (status) {
     case "error":
-      return dur ? `ERROR · ${dur}` : "ERROR";
     case "running":
     case "waiting":
-      return dur ? `RUNNING · ${dur}` : "RUNNING";
     default:
-      return dur ? `DONE · ${dur}` : "DONE";
+      return dur
+        ? t("canonical.agentSpawn.status.withDuration", {
+            status: label,
+            duration: dur,
+          })
+        : label;
   }
 }
 
@@ -146,6 +163,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
   cwd,
   childBlocks = [],
 }) => {
+  const { t } = useTranslation();
   const spawn = readSpawn(toolBlock);
   const [expanded, setExpanded] = React.useState(false);
 
@@ -161,7 +179,12 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
         : status === "running" || status === "waiting"
           ? LoaderCircle
           : Check;
-  const statusLabel = buildStatusLabel(status, spawn.status, spawn.durationMs);
+  const statusLabel = buildStatusLabel(
+    status,
+    spawn.status,
+    t,
+    spawn.durationMs,
+  );
 
   const description = spawn.taskDescription || "";
   const subagentType = spawn.subagentType || "";
@@ -173,7 +196,10 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
   return (
     <section
       data-testid="agent-spawn-card"
-      aria-label={`Subagent ${description || subagentType || "Agent"}`}
+      aria-label={t("canonical.agentSpawn.aria", {
+        name:
+          description || subagentType || t("canonical.agentSpawn.defaultName"),
+      })}
       data-selectable-text="true"
       className={cn(
         "w-full max-w-[720px] overflow-hidden rounded-md border bg-card font-mono text-xs",
@@ -204,7 +230,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
           data-copyable-control-text="true"
           className="shrink-0 font-semibold text-primary-text"
         >
-          Agent
+          {t("canonical.agentSpawn.defaultName")}
         </span>
         {description ? (
           <>
@@ -233,7 +259,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
           >
             <Wrench className="size-2.5" aria-hidden="true" />
             <span>
-              {toolUses} tool{toolUses === 1 ? "" : "s"}
+              {t("canonical.agentSpawn.toolCount", { count: toolUses })}
             </span>
           </span>
         ) : null}
@@ -274,26 +300,32 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
       >
         <div className="min-h-0 overflow-hidden">
           <div className="flex flex-col gap-3 border-t border-border px-3 py-3">
-            <AgentSpawnSection label="TASK PROMPT">
+            <AgentSpawnSection
+              label={t("canonical.agentSpawn.sections.prompt")}
+            >
               <div className="max-h-[160px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm bg-muted/40 px-2.5 py-2 text-foreground">
-                {prompt || (
-                  <span className="text-muted-foreground">无 prompt</span>
+                {prompt ? (
+                  <span>{prompt}</span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    {t("canonical.agentSpawn.emptyPrompt")}
+                  </span>
                 )}
               </div>
             </AgentSpawnSection>
             <AgentSpawnSection
-              label="STEPS"
+              label={t("canonical.agentSpawn.sections.steps")}
               meta={
                 steps.length === 0 && status === "running"
-                  ? "等待第一个子调用…"
+                  ? t("canonical.agentSpawn.waitingFirstStep")
                   : null
               }
             >
               {steps.length === 0 ? (
                 <div className="rounded-sm bg-muted/30 px-2.5 py-2 text-muted-foreground">
                   {status === "running"
-                    ? "subagent 还没调用任何工具…"
-                    : "无子步骤"}
+                    ? t("canonical.agentSpawn.emptyStepsRunning")
+                    : t("canonical.agentSpawn.emptySteps")}
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
@@ -307,8 +339,10 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
                 </div>
               )}
             </AgentSpawnSection>
-            <AgentSpawnSection label="SUMMARY">
-              {renderSummary(status, resultBlock)}
+            <AgentSpawnSection
+              label={t("canonical.agentSpawn.sections.summary")}
+            >
+              {renderSummary(status, t, resultBlock)}
             </AgentSpawnSection>
           </div>
         </div>
@@ -351,6 +385,7 @@ function AgentSpawnStepCard({
   cwd?: string;
   step: StepRow;
 }): React.ReactElement {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
   const tool = step.tool;
   const result = step.result;
@@ -383,7 +418,11 @@ function AgentSpawnStepCard({
     : isRunning
       ? LoaderCircle
       : Check;
-  const stepLabel = isError ? "FAIL" : isRunning ? "running" : "DONE";
+  const stepLabel = isError
+    ? t("canonical.agentSpawn.status.fail")
+    : isRunning
+      ? t("canonical.agentSpawn.status.runningLower")
+      : t("canonical.agentSpawn.status.done");
 
   return (
     <div
@@ -463,7 +502,13 @@ function AgentSpawnStepCard({
                   : "bg-muted/40",
               )}
             >
-              {result?.text || (isRunning ? "—" : "(empty result)")}
+              {result?.text ? (
+                <span>{result.text}</span>
+              ) : isRunning ? (
+                "—"
+              ) : (
+                t("canonical.agentSpawn.emptyResult")
+              )}
             </div>
           </div>
         </div>
@@ -474,6 +519,7 @@ function AgentSpawnStepCard({
 
 function renderSummary(
   status: AgentStatus,
+  t: TFunction,
   resultBlock?: ChatBlockData,
 ): React.ReactElement {
   if (!resultBlock || !resultBlock.text) {
@@ -481,13 +527,13 @@ function renderSummary(
       return (
         <div className="inline-flex items-center gap-2 rounded-sm bg-secondary px-2.5 py-2 text-muted-foreground">
           <Clock className="size-3" aria-hidden="true" />
-          subagent 还在跑，结果稍后返回…
+          {t("canonical.agentSpawn.summaryRunning")}
         </div>
       );
     }
     return (
       <div className="rounded-sm bg-muted/40 px-2.5 py-2 text-muted-foreground">
-        无 summary
+        {t("canonical.agentSpawn.emptySummary")}
       </div>
     );
   }

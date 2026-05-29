@@ -8,6 +8,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,9 +44,10 @@ export function IconPicker({
   value,
   onChange,
   accentColor,
-  ariaLabel = "图标",
+  ariaLabel,
   className,
 }: IconPickerProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const Icon = iconForKey(value);
   const meta = ICON_BY_KEY.get(value);
@@ -54,7 +56,7 @@ export function IconPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={ariaLabel}
+          aria-label={ariaLabel ?? t("org.department.icon")}
           className={cn(
             "flex w-full items-center gap-2.5 rounded-md border border-border bg-card px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent",
             className,
@@ -73,7 +75,7 @@ export function IconPicker({
             })}
           </span>
           <span className="flex-1 truncate font-mono text-2xs">
-            {meta?.label ?? value ?? "选择图标"}
+            {meta?.label ?? value ?? t("iconPicker.selectIcon")}
           </span>
           <ChevronDown
             className="size-3 shrink-0 text-muted-foreground"
@@ -137,9 +139,10 @@ export function AgentAvatarPicker({
   showImageMode = true,
   triggerClassName,
   triggerSize = "md",
-  triggerAriaLabel = "更改头像",
+  triggerAriaLabel,
   children,
 }: AgentAvatarPickerProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const effectiveMode: AvatarMode =
     showImageMode && avatarDataUrl ? "image" : avatarIcon ? "icon" : "letter";
@@ -158,7 +161,7 @@ export function AgentAvatarPicker({
         {children ?? (
           <button
             type="button"
-            aria-label={triggerAriaLabel}
+            aria-label={triggerAriaLabel ?? t("iconPicker.avatar.change")}
             className={cn(
               "group relative inline-flex shrink-0 items-center justify-center overflow-hidden font-semibold text-white outline-offset-2 focus-visible:outline-2 focus-visible:outline-primary",
               triggerSizeClassNames[triggerSize],
@@ -200,26 +203,31 @@ export function AgentAvatarPicker({
                 active={mode === "image"}
                 disabled={!allowUpload}
                 icon={ImageIcon}
-                label="图片"
-                hint={avatarDataUrl ? "已上传" : "未上传"}
+                label={t("iconPicker.avatar.image")}
+                hint={
+                  avatarDataUrl
+                    ? t("iconPicker.avatar.uploaded")
+                    : t("iconPicker.avatar.notUploaded")
+                }
                 onClick={() => allowUpload && setMode("image")}
               />
             )}
             <ModeChip
               active={mode === "icon"}
               icon={getModeIconForChip(avatarIcon)}
-              label="图标"
+              label={t("org.department.icon")}
               hint={
                 avatarIcon
-                  ? (ICON_BY_KEY.get(avatarIcon)?.label ?? "已选")
-                  : "未设置"
+                  ? (ICON_BY_KEY.get(avatarIcon)?.label ??
+                    t("iconPicker.avatar.selected"))
+                  : t("iconPicker.avatar.notSet")
               }
               onClick={() => setMode("icon")}
             />
             <ModeChip
               active={mode === "letter"}
               icon={Type}
-              label="字母"
+              label={t("iconPicker.avatar.letter")}
               hint={getInitials(name)}
               onClick={() => setMode("letter")}
             />
@@ -260,8 +268,8 @@ export function AgentAvatarPicker({
 
           {avatarDataUrl && mode !== "image" && (
             <div className="border-t border-border bg-secondary/40 px-3 py-2 font-mono text-2xs text-muted-foreground">
-              当前生效：上传图片。
-              {mode === "icon" ? "图标作为图片删除后的备用。" : ""}
+              {t("iconPicker.avatar.activeUpload")}
+              {mode === "icon" ? t("iconPicker.avatar.iconFallback") : ""}
             </div>
           )}
         </div>
@@ -287,15 +295,22 @@ function IconGridPanel({
   allowClear,
   onClear,
 }: IconGridPanelProps) {
+  const { t } = useTranslation();
   const [query, setQuery] = React.useState("");
   const trimmed = query.trim();
   const groups = React.useMemo(() => {
     if (trimmed) {
       const flat = searchIcons(trimmed);
-      return [{ category: "search", label: "搜索结果", items: flat }];
+      return [
+        {
+          category: "search",
+          label: t("iconPicker.search.results"),
+          items: flat,
+        },
+      ];
     }
     return iconsByCategory();
-  }, [trimmed]);
+  }, [t, trimmed]);
 
   return (
     <div className="flex flex-col">
@@ -308,8 +323,8 @@ function IconGridPanel({
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            aria-label="搜索图标"
-            placeholder="搜索图标…"
+            aria-label={t("iconPicker.search.aria")}
+            placeholder={t("iconPicker.search.placeholder")}
             className="h-8 pl-7 text-xs"
           />
         </div>
@@ -328,7 +343,7 @@ function IconGridPanel({
             )}
             {g.items.length === 0 ? (
               <div className="px-1 py-2 text-2xs text-muted-foreground">
-                没有匹配项
+                {t("iconPicker.search.noMatches")}
               </div>
             ) : (
               <div className="grid grid-cols-6 gap-1.5">
@@ -354,7 +369,7 @@ function IconGridPanel({
             onClick={() => onClear?.()}
           >
             <X className="size-3.5" aria-hidden="true" />
-            取消图标，回退到字母
+            {t("iconPicker.search.clearIcon")}
           </Button>
         </div>
       )}
@@ -469,10 +484,11 @@ function ImageModePanel({
   onDelete: () => void;
   allowUpload: boolean;
 }) {
+  const { t } = useTranslation();
   if (!allowUpload) {
     return (
       <div className="px-3 py-4 text-xs text-muted-foreground">
-        创建完成后才能上传头像图片，先选个图标或字母吧。
+        {t("iconPicker.avatar.uploadDisabled")}
       </div>
     );
   }
@@ -490,7 +506,7 @@ function ImageModePanel({
             />
           ) : (
             <span className="font-mono text-2xs text-muted-foreground">
-              未上传
+              {t("iconPicker.avatar.notUploaded")}
             </span>
           )}
         </div>
@@ -498,7 +514,11 @@ function ImageModePanel({
           avatarDataUrl={avatarDataUrl}
           onUpload={onUpload}
           onDelete={onDelete}
-          uploadLabel={avatarDataUrl ? "替换" : "上传"}
+          uploadLabel={
+            avatarDataUrl
+              ? t("iconPicker.avatar.replace")
+              : t("iconPicker.avatar.upload")
+          }
         />
       </div>
     </div>
@@ -520,19 +540,24 @@ export function AgentAvatarUploadActions({
   uploadLabel,
   className,
 }: AgentAvatarUploadActionsProps) {
+  const { t } = useTranslation();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   const handleSelect = async (file: File) => {
     setError(null);
     if (file.size > MAX_BYTES) {
-      setError("图片过大，请上传 2MB 以内的文件");
+      setError(t("iconPicker.avatar.errors.tooLarge"));
       return;
     }
     try {
       await onUpload(file);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "上传失败");
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("iconPicker.avatar.errors.uploadFailed"),
+      );
     }
   };
 
@@ -547,7 +572,10 @@ export function AgentAvatarUploadActions({
           onClick={() => fileInputRef.current?.click()}
         >
           <Upload className="size-3" />
-          {uploadLabel ?? (avatarDataUrl ? "替换" : "上传")}
+          {uploadLabel ??
+            (avatarDataUrl
+              ? t("iconPicker.avatar.replace")
+              : t("iconPicker.avatar.upload"))}
         </Button>
         {avatarDataUrl && onDelete && (
           <Button
@@ -555,16 +583,16 @@ export function AgentAvatarUploadActions({
             variant="ghost"
             size="sm"
             className="h-7 text-destructive"
-            aria-label="删除上传头像"
+            aria-label={t("iconPicker.avatar.deleteUpload")}
             onClick={() => void onDelete()}
           >
             <X className="size-3" />
-            删除
+            {t("common.delete")}
           </Button>
         )}
       </div>
       <p className="font-mono text-2xs text-muted-foreground">
-        PNG / JPG / WEBP · 最大 2MB
+        {t("iconPicker.avatar.uploadHint")}
       </p>
       {error && <p className="text-2xs text-destructive">{error}</p>}
       <input
@@ -587,6 +615,7 @@ export function AgentAvatarUploadActions({
 // ----------------------------------------------------------------------------
 
 function LetterModePanel({ name, color }: { name: string; color: AgentColor }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-3 px-3 py-3">
       <div
@@ -600,10 +629,12 @@ function LetterModePanel({ name, color }: { name: string; color: AgentColor }) {
       </div>
       <div className="flex flex-col gap-0.5">
         <span className="text-sm font-semibold">
-          {getInitials(name)} · 自动生成
+          {t("iconPicker.avatar.autoGenerated", {
+            initials: getInitials(name),
+          })}
         </span>
         <span className="font-mono text-2xs text-muted-foreground">
-          按名称首字母 + 主题色生成
+          {t("iconPicker.avatar.letterHint")}
         </span>
       </div>
     </div>

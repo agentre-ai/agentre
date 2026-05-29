@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   Bell,
@@ -230,6 +231,7 @@ type HooksData = LoadHooksResponse;
 type HookTab = "config" | "log";
 type StatusFilter = "all" | EventStatus;
 type FlashState = { kind: "ok" | "err"; text: string } | null;
+type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 type SourceDraft = {
   kind: SourceKind;
@@ -271,14 +273,38 @@ const maskedSecret = "********";
 
 const sourceKindMeta: Record<
   SourceKind,
-  { icon: LucideIcon; label: string; shortLabel: string }
+  { icon: LucideIcon; labelKey: string; shortLabelKey: string }
 > = {
-  email: { icon: Mail, label: "邮箱", shortLabel: "邮箱" },
-  github: { icon: Github, label: "GitHub Webhook", shortLabel: "GitHub" },
-  slack: { icon: MessageSquare, label: "Slack DM", shortLabel: "Slack" },
-  schedule: { icon: CalendarClock, label: "定时器", shortLabel: "定时器" },
-  webhook: { icon: Webhook, label: "自定义 Webhook", shortLabel: "Webhook" },
-  system: { icon: Bell, label: "系统通知", shortLabel: "系统" },
+  email: {
+    icon: Mail,
+    labelKey: "hooks.sourceKind.email.label",
+    shortLabelKey: "hooks.sourceKind.email.shortLabel",
+  },
+  github: {
+    icon: Github,
+    labelKey: "hooks.sourceKind.github.label",
+    shortLabelKey: "hooks.sourceKind.github.shortLabel",
+  },
+  slack: {
+    icon: MessageSquare,
+    labelKey: "hooks.sourceKind.slack.label",
+    shortLabelKey: "hooks.sourceKind.slack.shortLabel",
+  },
+  schedule: {
+    icon: CalendarClock,
+    labelKey: "hooks.sourceKind.schedule.label",
+    shortLabelKey: "hooks.sourceKind.schedule.shortLabel",
+  },
+  webhook: {
+    icon: Webhook,
+    labelKey: "hooks.sourceKind.webhook.label",
+    shortLabelKey: "hooks.sourceKind.webhook.shortLabel",
+  },
+  system: {
+    icon: Bell,
+    labelKey: "hooks.sourceKind.system.label",
+    shortLabelKey: "hooks.sourceKind.system.shortLabel",
+  },
 };
 
 const sourceKindOptions = Object.entries(sourceKindMeta).map(
@@ -291,28 +317,28 @@ const sourceKindOptions = Object.entries(sourceKindMeta).map(
 const connectionStatusMeta: Record<
   ConnectionStatus,
   {
-    label: string;
+    labelKey: string;
     className: string;
     icon: LucideIcon;
   }
 > = {
   connected: {
-    label: "已连接",
+    labelKey: "hooks.connectionStatus.connected",
     className: "bg-status-running-bg text-status-running",
     icon: CheckCircle2,
   },
   pending: {
-    label: "待验证",
+    labelKey: "hooks.connectionStatus.pending",
     className: "bg-status-waiting-bg text-status-waiting",
     icon: Clock3,
   },
   disabled: {
-    label: "已停用",
+    labelKey: "hooks.connectionStatus.disabled",
     className: "bg-secondary text-muted-foreground",
     icon: XCircle,
   },
   error: {
-    label: "连接失败",
+    labelKey: "hooks.connectionStatus.error",
     className: "bg-destructive-soft text-status-error",
     icon: AlertCircle,
   },
@@ -320,20 +346,20 @@ const connectionStatusMeta: Record<
 
 const eventStatusMeta: Record<
   EventStatus,
-  { label: string; dot: string; pill: string }
+  { labelKey: string; dot: string; pill: string }
 > = {
   dispatched: {
-    label: "已派发",
+    labelKey: "hooks.eventStatus.dispatched",
     dot: "bg-status-running",
     pill: "bg-status-running-bg text-status-running",
   },
   unmatched: {
-    label: "未匹配",
+    labelKey: "hooks.eventStatus.unmatched",
     dot: "bg-status-waiting",
     pill: "bg-status-waiting-bg text-status-waiting",
   },
   failed: {
-    label: "失败",
+    labelKey: "hooks.eventStatus.failed",
     dot: "bg-status-error",
     pill: "bg-destructive-soft text-status-error",
   },
@@ -484,7 +510,15 @@ function normaliseQuery(value: string) {
   return value.trim().toLowerCase();
 }
 
-function sourceSubtitle(source: HookSourceItem) {
+function sourceKindLabel(kind: SourceKind, t: Translate) {
+  return t(sourceKindMeta[kind].labelKey);
+}
+
+function sourceKindShortLabel(kind: SourceKind, t: Translate) {
+  return t(sourceKindMeta[kind].shortLabelKey);
+}
+
+function sourceSubtitle(source: HookSourceItem, t: Translate) {
   if (source.kind === "email")
     return source.config.emailAddress || source.identifier;
   if (source.kind === "schedule") {
@@ -495,9 +529,11 @@ function sourceSubtitle(source: HookSourceItem) {
   if (source.kind === "slack")
     return source.config.channel || source.identifier;
   if (source.kind === "system") {
-    return source.enabled ? "macOS 通知中心" : "macOS 通知中心 · 已禁用";
+    return source.enabled
+      ? t("hooks.source.subtitle.systemEnabled")
+      : t("hooks.source.subtitle.systemDisabled");
   }
-  return source.identifier || sourceKindMeta[source.kind].label;
+  return source.identifier || sourceKindLabel(source.kind, t);
 }
 
 function eventMatchesQuery(event: HookEventItem, query: string) {
@@ -516,13 +552,15 @@ function eventMatchesQuery(event: HookEventItem, query: string) {
     .includes(q);
 }
 
-function formatRelativeTime(seconds: number) {
-  if (!seconds) return "从未";
+function formatRelativeTime(seconds: number, t: Translate) {
+  if (!seconds) return t("hooks.time.never");
   const diff = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
+  if (diff < 60) return t("hooks.time.secondsAgo", { count: diff });
+  if (diff < 3600)
+    return t("hooks.time.minutesAgo", { count: Math.floor(diff / 60) });
+  if (diff < 86400)
+    return t("hooks.time.hoursAgo", { count: Math.floor(diff / 3600) });
+  return t("hooks.time.daysAgo", { count: Math.floor(diff / 86400) });
 }
 
 function formatDateTime(seconds: number) {
@@ -561,6 +599,7 @@ function prependUniqueEvents(
 }
 
 function StatusPill({ status }: { status: ConnectionStatus | EventStatus }) {
+  const { t } = useTranslation();
   if (status in connectionStatusMeta) {
     const meta = connectionStatusMeta[status as ConnectionStatus];
     const Icon = meta.icon;
@@ -572,7 +611,7 @@ function StatusPill({ status }: { status: ConnectionStatus | EventStatus }) {
         )}
       >
         <Icon aria-hidden="true" />
-        {meta.label}
+        {t(meta.labelKey)}
       </span>
     );
   }
@@ -585,7 +624,7 @@ function StatusPill({ status }: { status: ConnectionStatus | EventStatus }) {
       )}
     >
       <span className={cn("size-1.5 rounded-full", meta.dot)} />
-      {meta.label}
+      {t(meta.labelKey)}
     </span>
   );
 }
@@ -652,10 +691,16 @@ function SourceList({
   onQueryChange: (query: string) => void;
   onSelect: (sourceId: number) => void;
 }) {
+  const { t } = useTranslation();
   const filtered = sources.filter((source) => {
     const q = normaliseQuery(query);
     if (!q) return true;
-    return [source.name, source.identifier, sourceSubtitle(source), source.kind]
+    return [
+      source.name,
+      source.identifier,
+      sourceSubtitle(source, t),
+      source.kind,
+    ]
       .join(" ")
       .toLowerCase()
       .includes(q);
@@ -669,42 +714,44 @@ function SourceList({
 
   return (
     <aside
-      aria-label="信号源列表"
+      aria-label={t("hooks.sourceList.ariaLabel")}
       className="flex w-full shrink-0 flex-col border-b border-border bg-sidebar lg:w-[260px] lg:border-b-0 lg:border-r"
     >
       <div className="flex flex-col gap-3 border-b border-border px-3.5 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
-            <h2 className="text-sm font-semibold">信号源</h2>
+            <h2 className="text-sm font-semibold">
+              {t("hooks.sourceList.title")}
+            </h2>
             <span className="font-mono text-2xs text-muted-foreground">
               {sources.length}
             </span>
           </div>
           <Button size="sm" className="h-7 gap-1.5 px-2.5" onClick={onNew}>
             <Plus data-icon="inline-start" aria-hidden="true" />
-            新建
+            {t("common.create")}
           </Button>
         </div>
         <div className="flex h-8 min-w-0 items-center gap-2 rounded-md border border-input bg-input-bg px-2.5">
           <Search aria-hidden="true" className="text-muted-foreground" />
           <input
-            aria-label="搜索信号源"
+            aria-label={t("hooks.sourceList.searchAria")}
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
-            placeholder="搜索信号源"
+            placeholder={t("hooks.sourceList.searchPlaceholder")}
             className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
           />
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-2">
         <SourceGroup
-          label="消息源"
+          label={t("hooks.sourceList.messageSources")}
           sources={messageSources}
           activeId={activeId}
           onSelect={onSelect}
         />
         <SourceGroup
-          label="事件源"
+          label={t("hooks.sourceList.eventSources")}
           sources={systemSources}
           activeId={activeId}
           onSelect={onSelect}
@@ -725,6 +772,7 @@ function SourceGroup({
   onSelect: (sourceId: number) => void;
   sources: HookSourceItem[];
 }) {
+  const { t } = useTranslation();
   if (sources.length === 0) {
     return null;
   }
@@ -769,14 +817,17 @@ function SourceGroup({
                 {source.name}
               </span>
               <span className="truncate font-mono text-2xs text-muted-foreground">
-                {meta.shortLabel} · {source.totalCount || 0} 触发
+                {t("hooks.sourceList.triggerCount", {
+                  label: sourceKindShortLabel(source.kind, t),
+                  count: source.totalCount || 0,
+                })}
               </span>
             </span>
             {source.enabled ? (
               <span className="size-1.5 rounded-full bg-status-running" />
             ) : (
               <span className="font-mono text-2xs font-semibold text-muted-foreground">
-                OFF
+                {t("hooks.sourceList.off")}
               </span>
             )}
           </button>
@@ -807,22 +858,23 @@ function HooksPageHeader({
   onToggleEnabled: () => void;
   source: HookSourceItem | null;
 }) {
+  const { t } = useTranslation();
   const [actionsOpen, setActionsOpen] = React.useState(false);
 
   if (!source) {
     return (
       <div className="flex h-[120px] shrink-0 items-center justify-between border-b border-border px-6">
         <div className="flex min-w-0 flex-col gap-1">
-          <h1 className="text-lg font-semibold">Hook</h1>
+          <h1 className="text-lg font-semibold">
+            {t("hooks.header.emptyTitle")}
+          </h1>
           <p className="text-xs text-muted-foreground">
-            新建一个信号源后配置连接和路由规则。
+            {t("hooks.header.emptyDescription")}
           </p>
         </div>
       </div>
     );
   }
-
-  const meta = sourceKindMeta[source.kind];
 
   return (
     <div className="flex shrink-0 flex-col border-b border-border bg-background">
@@ -839,16 +891,24 @@ function HooksPageHeader({
               </h1>
               <span className="text-muted-foreground">·</span>
               <span className="text-sm font-medium text-muted-foreground">
-                {meta.label}
+                {sourceKindLabel(source.kind, t)}
               </span>
               <StatusPill status={source.connectionStatus} />
             </div>
             <div className="flex flex-wrap items-center gap-2 font-mono text-2xs text-muted-foreground">
-              <span>{sourceSubtitle(source) || "未配置标识"}</span>
+              <span>
+                {sourceSubtitle(source, t) || t("hooks.header.noIdentifier")}
+              </span>
               <span>·</span>
-              <span>总计 {source.totalCount}</span>
+              <span>
+                {t("hooks.header.totalCount", { count: source.totalCount })}
+              </span>
               <span>·</span>
-              <span>同步 {formatRelativeTime(source.lastSyncTime)}</span>
+              <span>
+                {t("hooks.header.lastSync", {
+                  time: formatRelativeTime(source.lastSyncTime, t),
+                })}
+              </span>
             </div>
           </div>
         </div>
@@ -863,7 +923,7 @@ function HooksPageHeader({
             ) : (
               <RefreshCw data-icon="inline-start" aria-hidden="true" />
             )}
-            测试连接
+            {t("hooks.actions.testConnection")}
           </Button>
           <Button
             variant="outline"
@@ -876,15 +936,15 @@ function HooksPageHeader({
             ) : (
               <Power data-icon="inline-start" aria-hidden="true" />
             )}
-            {source.enabled ? "停用" : "启用"}
+            {source.enabled ? t("common.disable") : t("common.enable")}
           </Button>
           <Popover open={actionsOpen} onOpenChange={setActionsOpen}>
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
                 size="icon-sm"
-                aria-label="更多操作"
-                title="更多操作"
+                aria-label={t("common.moreActions")}
+                title={t("common.moreActions")}
                 disabled={busy}
               >
                 <MoreHorizontal data-icon="only" aria-hidden="true" />
@@ -907,7 +967,7 @@ function HooksPageHeader({
                   disabled={busy || !source.enabled}
                 >
                   <Mail data-icon="inline-start" aria-hidden="true" />
-                  同步邮箱
+                  {t("hooks.actions.syncEmail")}
                 </Button>
               ) : null}
               <Button
@@ -921,7 +981,7 @@ function HooksPageHeader({
                 }}
               >
                 <Trash2 data-icon="inline-start" aria-hidden="true" />
-                删除
+                {t("common.delete")}
               </Button>
             </PopoverContent>
           </Popover>
@@ -932,13 +992,13 @@ function HooksPageHeader({
           active={activeTab === "config"}
           onClick={() => onTabChange("config")}
         >
-          配置
+          {t("hooks.tabs.config")}
         </TabButton>
         <TabButton
           active={activeTab === "log"}
           onClick={() => onTabChange("log")}
         >
-          事件日志
+          {t("hooks.tabs.eventLog")}
           <span
             className={cn(
               "ml-1 rounded-sm px-1.5 py-0.5 font-mono text-2xs",
@@ -1002,6 +1062,7 @@ function SourceConfigPanel({
   onSaveSource: (draft: SourceDraft) => void;
   onUpdateRule: (rule: HookRuleItem, patch: Partial<RuleDraft>) => void;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = React.useState<SourceDraft>(() =>
     sourceToDraft(source),
   );
@@ -1020,21 +1081,21 @@ function SourceConfigPanel({
   const enabledTitle =
     draft.kind === "email"
       ? draft.enabled
-        ? "自动轮询"
-        : "暂停轮询"
+        ? t("hooks.config.enabled.emailActive")
+        : t("hooks.config.enabled.emailPaused")
       : draft.enabled
-        ? "接收事件"
-        : "暂停接收";
+        ? t("hooks.config.enabled.receiveActive")
+        : t("hooks.config.enabled.receivePaused");
   const enabledDescription =
     draft.kind === "email"
-      ? "启用后按轮询间隔自动拉取未读邮件；停用后保留配置和历史日志。"
-      : "停用后保留配置和历史日志，不再触发路由。";
+      ? t("hooks.config.enabled.emailDescription")
+      : t("hooks.config.enabled.description");
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-background px-6 py-5">
       <div className="mx-auto flex max-w-5xl flex-col gap-5">
         <section
-          aria-label="连接配置"
+          aria-label={t("hooks.config.connection.ariaLabel")}
           className="flex min-w-0 flex-col gap-4 rounded-lg border border-border bg-card p-4"
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1043,9 +1104,13 @@ function SourceConfigPanel({
                 <ShieldCheck aria-hidden="true" />
               </span>
               <div className="flex min-w-0 flex-col gap-1">
-                <h2 className="text-sm font-semibold">连接配置</h2>
+                <h2 className="text-sm font-semibold">
+                  {t("hooks.config.connection.title")}
+                </h2>
                 <p className="text-2xs text-muted-foreground">
-                  {sourceKindMeta[draft.kind].label} 的入口参数和连接状态。
+                  {t("hooks.config.connection.description", {
+                    kind: sourceKindLabel(draft.kind, t),
+                  })}
                 </p>
               </div>
             </div>
@@ -1053,10 +1118,10 @@ function SourceConfigPanel({
           </div>
 
           <div className="flex flex-col gap-4">
-            <FormRow label="基础信息">
+            <FormRow label={t("hooks.config.basicInfo")}>
               <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2">
                 <Input
-                  aria-label="信号源名称"
+                  aria-label={t("hooks.config.sourceName")}
                   value={draft.name}
                   onChange={(event) =>
                     setDraft((current) => ({
@@ -1075,14 +1140,14 @@ function SourceConfigPanel({
                     }))
                   }
                 >
-                  <SelectTrigger aria-label="信号源类型">
+                  <SelectTrigger aria-label={t("hooks.config.sourceType")}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
                       {sourceKindOptions.map((option) => (
                         <SelectItem key={option.value} value={option.value}>
-                          {option.label}
+                          {sourceKindLabel(option.value, t)}
                         </SelectItem>
                       ))}
                     </SelectGroup>
@@ -1091,9 +1156,12 @@ function SourceConfigPanel({
               </div>
             </FormRow>
 
-            <FormRow label="显示标识" description="用于列表和事件来源摘要。">
+            <FormRow
+              label={t("hooks.config.identifier")}
+              description={t("hooks.config.identifierDescription")}
+            >
               <Input
-                aria-label="信号源标识"
+                aria-label={t("hooks.config.identifier")}
                 value={draft.identifier}
                 onChange={(event) =>
                   setDraft((current) => ({
@@ -1111,10 +1179,10 @@ function SourceConfigPanel({
               setConfig={setConfig}
             />
 
-            <FormRow label="启用状态">
+            <FormRow label={t("hooks.config.enabled.label")}>
               <div className="flex items-center gap-3 rounded-md border border-border bg-secondary/40 px-3 py-2">
                 <Switch
-                  aria-label="启用信号源"
+                  aria-label={t("hooks.config.enabled.ariaLabel")}
                   checked={draft.enabled}
                   onCheckedChange={(checked) =>
                     setDraft((current) => ({ ...current, enabled: checked }))
@@ -1141,13 +1209,13 @@ function SourceConfigPanel({
               ) : (
                 <Save data-icon="inline-start" aria-hidden="true" />
               )}
-              保存配置
+              {t("hooks.config.save")}
             </Button>
           </div>
         </section>
 
         <section
-          aria-label="路由规则"
+          aria-label={t("hooks.rules.ariaLabel")}
           className="flex min-w-0 flex-col gap-4 rounded-lg border border-border bg-card p-4"
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1157,19 +1225,21 @@ function SourceConfigPanel({
               </span>
               <div className="flex min-w-0 flex-col gap-1">
                 <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-semibold">路由规则</h2>
+                  <h2 className="text-sm font-semibold">
+                    {t("hooks.rules.title")}
+                  </h2>
                   <span className="font-mono text-2xs text-muted-foreground">
                     {rules.length}
                   </span>
                 </div>
                 <p className="text-2xs text-muted-foreground">
-                  所有匹配的规则都会执行；每个目标 Agent 生成独立派发记录。
+                  {t("hooks.rules.description")}
                 </p>
               </div>
             </div>
             <Button size="sm" onClick={onCreateRule}>
               <Plus data-icon="inline-start" aria-hidden="true" />
-              新建规则
+              {t("hooks.rules.newRule")}
             </Button>
           </div>
 
@@ -1188,7 +1258,7 @@ function SourceConfigPanel({
               ))}
             {rules.filter((rule) => !rule.isFallback).length === 0 ? (
               <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
-                暂无自定义规则。事件会落到兜底规则。
+                {t("hooks.rules.empty")}
               </div>
             ) : null}
             {rules
@@ -1208,15 +1278,15 @@ function SourceConfigPanel({
                         {rule.name}
                       </span>
                       <Badge variant="secondary" className="font-mono text-2xs">
-                        fallback
+                        {t("hooks.rules.fallbackBadge")}
                       </Badge>
                     </div>
                     <p className="mt-1 text-2xs text-muted-foreground">
-                      未命中任何规则时路由到{" "}
+                      {t("hooks.rules.fallbackPrefix")}{" "}
                       <span className="font-medium text-foreground">
-                        {rule.targetAgentName || "未指定 Agent"}
+                        {rule.targetAgentName || t("hooks.rules.noAgent")}
                       </span>
-                      。可编辑目标，但不可删除。
+                      {t("hooks.rules.fallbackSuffix")}
                     </p>
                   </div>
                   <Button
@@ -1224,7 +1294,7 @@ function SourceConfigPanel({
                     size="sm"
                     onClick={() => onRuleDialog(rule)}
                   >
-                    编辑
+                    {t("common.edit")}
                   </Button>
                 </div>
               ))}
@@ -1234,12 +1304,10 @@ function SourceConfigPanel({
         <Alert className="border-primary/30 bg-primary-soft py-3 text-primary-text">
           <ShieldCheck aria-hidden="true" />
           <AlertTitle className="text-xs font-semibold">
-            事件转化由目标 Agent 自己决定
+            {t("hooks.rules.agentDecidesTitle")}
           </AlertTitle>
           <AlertDescription className="text-2xs leading-relaxed text-primary-text">
-            一条事件可命中多条规则。建
-            issue、回复邮件或发桌面通知等动作不在此页配置；当前版本只记录派发意图，不启动
-            Agent runtime。
+            {t("hooks.rules.agentDecidesDescription")}
           </AlertDescription>
         </Alert>
       </div>
@@ -1259,28 +1327,29 @@ function KindSpecificFields({
     value: SourceConfig[K],
   ) => void;
 }) {
+  const { t } = useTranslation();
   if (draft.kind === "email") {
     return (
       <>
-        <FormRow label="IMAP 服务器">
+        <FormRow label={t("hooks.fields.imapServer")}>
           <Input
-            aria-label="IMAP 服务器"
+            aria-label={t("hooks.fields.imapServer")}
             value={draft.config.imapServer}
             onChange={(event) => setConfig("imapServer", event.target.value)}
             placeholder="imap.gmail.com"
           />
         </FormRow>
-        <FormRow label="邮箱地址">
+        <FormRow label={t("hooks.fields.emailAddress")}>
           <Input
-            aria-label="邮箱地址"
+            aria-label={t("hooks.fields.emailAddress")}
             value={draft.config.emailAddress}
             onChange={(event) => setConfig("emailAddress", event.target.value)}
             placeholder="tooru@gmail.com"
           />
         </FormRow>
-        <FormRow label="应用密码">
+        <FormRow label={t("hooks.fields.appPassword")}>
           <Input
-            aria-label="应用密码"
+            aria-label={t("hooks.fields.appPassword")}
             type="password"
             value={draft.config.appPassword}
             onChange={(event) => setConfig("appPassword", event.target.value)}
@@ -1289,12 +1358,12 @@ function KindSpecificFields({
                 setConfig("appPassword", "");
               }
             }}
-            placeholder="留空保持当前密码"
+            placeholder={t("hooks.fields.keepPasswordPlaceholder")}
           />
         </FormRow>
-        <FormRow label="轮询间隔">
+        <FormRow label={t("hooks.fields.pollingInterval")}>
           <Input
-            aria-label="轮询间隔"
+            aria-label={t("hooks.fields.pollingInterval")}
             value={draft.config.pollingInterval}
             onChange={(event) =>
               setConfig("pollingInterval", event.target.value)
@@ -1302,14 +1371,14 @@ function KindSpecificFields({
             placeholder="5m"
           />
         </FormRow>
-        <FormRow label="高级设置">
+        <FormRow label={t("hooks.fields.advanced")}>
           <details className="rounded-md border border-border bg-secondary/40 px-3 py-2">
             <summary className="cursor-pointer text-xs font-medium text-foreground">
-              端口、邮箱目录和 TLS
+              {t("hooks.fields.emailAdvancedSummary")}
             </summary>
             <div className="mt-3 grid min-w-0 grid-cols-1 gap-3 md:grid-cols-[120px_minmax(0,1fr)]">
               <Input
-                aria-label="IMAP 端口"
+                aria-label={t("hooks.fields.imapPort")}
                 type="number"
                 min={1}
                 max={65535}
@@ -1320,7 +1389,7 @@ function KindSpecificFields({
                 placeholder="993"
               />
               <Input
-                aria-label="邮箱目录"
+                aria-label={t("hooks.fields.mailbox")}
                 value={draft.config.imapMailbox}
                 onChange={(event) =>
                   setConfig("imapMailbox", event.target.value)
@@ -1329,12 +1398,14 @@ function KindSpecificFields({
               />
               <div className="flex items-center gap-3 md:col-span-2">
                 <Switch
-                  aria-label="使用 IMAP TLS"
+                  aria-label={t("hooks.fields.useTls")}
                   checked={draft.config.useTls}
                   onCheckedChange={(checked) => setConfig("useTls", checked)}
                 />
                 <span className="text-xs text-foreground">
-                  {draft.config.useTls ? "IMAPS / 993" : "明文 IMAP / 143"}
+                  {draft.config.useTls
+                    ? "IMAPS / 993"
+                    : t("hooks.fields.plainImap")}
                 </span>
               </div>
             </div>
@@ -1347,18 +1418,18 @@ function KindSpecificFields({
   if (draft.kind === "slack") {
     return (
       <>
-        <FormRow label="Bot Token">
+        <FormRow label={t("hooks.fields.botToken")}>
           <Input
-            aria-label="Slack Bot Token"
+            aria-label={t("hooks.fields.botToken")}
             type="password"
             value={draft.config.botToken}
             onChange={(event) => setConfig("botToken", event.target.value)}
             placeholder="xoxb-..."
           />
         </FormRow>
-        <FormRow label="监听频道">
+        <FormRow label={t("hooks.fields.listenChannel")}>
           <Input
-            aria-label="Slack 监听频道"
+            aria-label={t("hooks.fields.slackChannel")}
             value={draft.config.channel}
             onChange={(event) => setConfig("channel", event.target.value)}
             placeholder="#pm-bots"
@@ -1371,17 +1442,17 @@ function KindSpecificFields({
   if (draft.kind === "schedule") {
     return (
       <>
-        <FormRow label="cron 表达式">
+        <FormRow label={t("hooks.fields.cronExpr")}>
           <Input
-            aria-label="cron 表达式"
+            aria-label={t("hooks.fields.cronExpr")}
             value={draft.config.cronExpr}
             onChange={(event) => setConfig("cronExpr", event.target.value)}
             placeholder="0 9 * * 1-5"
           />
         </FormRow>
-        <FormRow label="时区">
+        <FormRow label={t("hooks.fields.timezone")}>
           <Input
-            aria-label="时区"
+            aria-label={t("hooks.fields.timezone")}
             value={draft.config.timezone}
             onChange={(event) => setConfig("timezone", event.target.value)}
             placeholder="Asia/Shanghai"
@@ -1393,9 +1464,9 @@ function KindSpecificFields({
 
   if (draft.kind === "system") {
     return (
-      <FormRow label="系统权限">
+      <FormRow label={t("hooks.fields.systemPermission")}>
         <Input
-          aria-label="系统权限"
+          aria-label={t("hooks.fields.systemPermission")}
           value={draft.config.systemPermission}
           onChange={(event) =>
             setConfig("systemPermission", event.target.value)
@@ -1409,12 +1480,12 @@ function KindSpecificFields({
   return (
     <>
       <FormRow
-        label="Webhook URL"
-        description="桌面本地模式下可以复制给外部系统；公网代理后续单独配置。"
+        label={t("hooks.fields.webhookUrl")}
+        description={t("hooks.fields.webhookDescription")}
       >
         <div className="flex min-w-0 gap-2">
           <Input
-            aria-label="Webhook URL"
+            aria-label={t("hooks.fields.webhookUrl")}
             value={draft.config.webhookUrl}
             onChange={(event) => setConfig("webhookUrl", event.target.value)}
             placeholder="https://agentre.local/hooks/abc"
@@ -1423,11 +1494,11 @@ function KindSpecificFields({
             type="button"
             variant="outline"
             size="icon"
-            aria-label="复制 Webhook URL"
+            aria-label={t("hooks.fields.copyWebhookUrl")}
             onClick={() =>
               void copyTextWithToast(draft.config.webhookUrl, {
-                errorTitle: "复制 Webhook URL 失败",
-                successTitle: "已复制 Webhook URL",
+                errorTitle: t("hooks.fields.copyWebhookUrlFailed"),
+                successTitle: t("hooks.fields.copyWebhookUrlDone"),
               })
             }
           >
@@ -1435,28 +1506,28 @@ function KindSpecificFields({
           </Button>
         </div>
       </FormRow>
-      <FormRow label="Secret">
+      <FormRow label={t("hooks.fields.webhookSecret")}>
         <Input
-          aria-label="Webhook Secret"
+          aria-label={t("hooks.fields.webhookSecret")}
           type="password"
           value={draft.config.secret}
           onChange={(event) => setConfig("secret", event.target.value)}
           placeholder="••••••••"
         />
       </FormRow>
-      <FormRow label="签名验证">
+      <FormRow label={t("hooks.fields.signatureVerification")}>
         <div className="flex items-center gap-3 rounded-md border border-border bg-secondary/40 px-3 py-2">
           <Switch
-            aria-label="启用签名验证"
+            aria-label={t("hooks.fields.enableSignature")}
             checked={draft.config.verifySignature}
             onCheckedChange={(checked) => setConfig("verifySignature", checked)}
           />
           <span className="text-xs text-foreground">HMAC-SHA256</span>
         </div>
       </FormRow>
-      <FormRow label="监听事件">
+      <FormRow label={t("hooks.fields.listenEvents")}>
         <Input
-          aria-label="监听事件"
+          aria-label={t("hooks.fields.listenEvents")}
           value={selectedEvents}
           onChange={(event) =>
             setConfig(
@@ -1487,11 +1558,12 @@ function RuleRow({
   onUpdate: (patch: Partial<RuleDraft>) => void;
   rule: HookRuleItem;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-md border border-border bg-background px-3 py-3 md:flex-row md:items-center">
       <div className="flex min-w-0 flex-1 items-start gap-3">
         <Switch
-          aria-label={`启用规则 ${rule.name}`}
+          aria-label={t("hooks.rules.enableNamed", { name: rule.name })}
           checked={rule.enabled}
           onCheckedChange={(checked) => onUpdate({ enabled: checked })}
           size="sm"
@@ -1506,11 +1578,11 @@ function RuleRow({
             </span>
             {rule.enabled ? (
               <Badge variant="secondary" className="font-mono text-2xs">
-                enabled
+                {t("hooks.rules.status.enabled")}
               </Badge>
             ) : (
               <Badge variant="outline" className="font-mono text-2xs">
-                paused
+                {t("hooks.rules.status.paused")}
               </Badge>
             )}
           </div>
@@ -1527,12 +1599,14 @@ function RuleRow({
           value={String(rule.targetAgentId || 0)}
           onValueChange={(value) => onUpdate({ targetAgentId: Number(value) })}
         >
-          <SelectTrigger aria-label={`规则 ${rule.name} 目标 Agent`}>
-            <SelectValue placeholder="目标 Agent" />
+          <SelectTrigger
+            aria-label={t("hooks.rules.targetNamed", { name: rule.name })}
+          >
+            <SelectValue placeholder={t("hooks.rules.targetPlaceholder")} />
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
-              <SelectItem value="0">暂不派发</SelectItem>
+              <SelectItem value="0">{t("hooks.rules.noDispatch")}</SelectItem>
               {agents.map((agent) => (
                 <SelectItem key={agent.id} value={String(agent.id)}>
                   {agent.name}
@@ -1542,12 +1616,12 @@ function RuleRow({
           </SelectContent>
         </Select>
         <Button variant="outline" size="sm" onClick={onEdit}>
-          编辑
+          {t("common.edit")}
         </Button>
         <Button
           variant="ghost"
           size="icon"
-          aria-label={`删除规则 ${rule.name}`}
+          aria-label={t("hooks.rules.deleteNamed", { name: rule.name })}
           onClick={onDelete}
         >
           <Trash2 data-icon="only" aria-hidden="true" />
@@ -1582,6 +1656,7 @@ function EventLogPanel({
   onSelectEvent: (eventId: number) => void;
   onStatusFilterChange: (status: StatusFilter) => void;
 }) {
+  const { t } = useTranslation();
   const sourceEvents = events.filter((event) => event.sourceId === source.id);
   const counts = {
     all: sourceEvents.length,
@@ -1609,10 +1684,10 @@ function EventLogPanel({
         <div className="flex h-9 min-w-[240px] flex-1 items-center gap-2 rounded-md border border-input bg-input-bg px-3">
           <Search className="text-muted-foreground" aria-hidden="true" />
           <input
-            aria-label="搜索事件"
+            aria-label={t("hooks.events.searchAria")}
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
-            placeholder="搜索事件标题 / 发件人 / payload…"
+            placeholder={t("hooks.events.searchPlaceholder")}
             className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
           />
         </div>
@@ -1631,7 +1706,9 @@ function EventLogPanel({
                     : "border-border bg-background text-foreground hover:bg-accent",
                 )}
               >
-                {status === "all" ? "全部" : eventStatusMeta[status].label}
+                {status === "all"
+                  ? t("common.all")
+                  : t(eventStatusMeta[status].labelKey)}
                 <span className="font-mono text-2xs">{counts[status]}</span>
               </button>
             ),
@@ -1642,7 +1719,7 @@ function EventLogPanel({
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[420px_minmax(0,1fr)]">
         <div
           role="list"
-          aria-label="事件日志列表"
+          aria-label={t("hooks.events.listAria")}
           className="min-h-0 overflow-y-auto border-b border-border lg:border-b-0 lg:border-r"
         >
           {visibleEvents.map((event) => (
@@ -1676,7 +1753,8 @@ function EventLogPanel({
                 </span>
                 <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
                   <span>
-                    {event.matchedRuleNames.join(", ") || "兜底 / 未匹配"}
+                    {event.matchedRuleNames.join(", ") ||
+                      t("hooks.events.fallbackUnmatched")}
                   </span>
                   {event.targetAgentNames.length > 0 ? (
                     <>
@@ -1687,16 +1765,18 @@ function EventLogPanel({
                 </span>
               </span>
               <span className="shrink-0 font-mono text-2xs text-muted-foreground">
-                {formatRelativeTime(event.receivedAt)}
+                {formatRelativeTime(event.receivedAt, t)}
               </span>
             </button>
           ))}
           {visibleEvents.length === 0 ? (
             <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 px-6 text-center">
               <Inbox className="text-muted-foreground" aria-hidden="true" />
-              <div className="text-sm font-medium">暂无事件</div>
+              <div className="text-sm font-medium">
+                {t("hooks.events.emptyTitle")}
+              </div>
               <p className="max-w-xs text-xs text-muted-foreground">
-                试试测试连接，或调整搜索和状态筛选。
+                {t("hooks.events.emptyDescription")}
               </p>
             </div>
           ) : null}
@@ -1725,12 +1805,13 @@ function EventDetail({
   event: HookEventItem | null;
   onRedeliver: (event: HookEventItem, agentId: number) => void;
 }) {
+  const { t } = useTranslation();
   const [targetAgentId, setTargetAgentId] = React.useState("0");
 
   if (!event) {
     return (
       <div className="flex min-h-0 items-center justify-center px-6 text-center text-sm text-muted-foreground">
-        选择一条事件查看 payload、规则匹配结果和派发记录。
+        {t("hooks.eventDetail.empty")}
       </div>
     );
   }
@@ -1756,7 +1837,9 @@ function EventDetail({
               {event.sender ? (
                 <>
                   <span>·</span>
-                  <span>作者：{event.sender}</span>
+                  <span>
+                    {t("hooks.eventDetail.author", { name: event.sender })}
+                  </span>
                 </>
               ) : null}
             </div>
@@ -1766,20 +1849,22 @@ function EventDetail({
             size="sm"
             onClick={() =>
               void copyTextWithToast(event.payloadJson, {
-                errorTitle: "复制 payload 失败",
-                successTitle: "已复制 payload",
+                errorTitle: t("hooks.eventDetail.copyPayloadFailed"),
+                successTitle: t("hooks.eventDetail.copyPayloadDone"),
               })
             }
           >
             <Copy data-icon="inline-start" aria-hidden="true" />
-            复制 payload
+            {t("hooks.eventDetail.copyPayload")}
           </Button>
         </div>
 
         <section className="rounded-lg border border-border bg-card">
           <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <Route className="text-primary-text" aria-hidden="true" />
-            <h3 className="text-sm font-semibold">规则匹配结果</h3>
+            <h3 className="text-sm font-semibold">
+              {t("hooks.eventDetail.ruleMatches")}
+            </h3>
           </div>
           <div className="flex flex-col gap-2 p-3">
             {event.matchedRules.map((match) => (
@@ -1818,7 +1903,7 @@ function EventDetail({
             ))}
             {event.matchedRules.length === 0 ? (
               <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
-                没有规则匹配记录。
+                {t("hooks.eventDetail.noRuleMatches")}
               </div>
             ) : null}
           </div>
@@ -1827,7 +1912,9 @@ function EventDetail({
         <section className="rounded-lg border border-border bg-card">
           <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <Send className="text-primary-text" aria-hidden="true" />
-            <h3 className="text-sm font-semibold">派发结果</h3>
+            <h3 className="text-sm font-semibold">
+              {t("hooks.eventDetail.dispatchResults")}
+            </h3>
           </div>
           <div className="flex flex-col gap-2 p-3">
             {event.dispatches.map((dispatch, index) => (
@@ -1851,17 +1938,21 @@ function EventDetail({
             ))}
             {event.dispatches.length === 0 ? (
               <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
-                尚未派发到 Agent。
+                {t("hooks.eventDetail.noDispatches")}
               </div>
             ) : null}
             <div className="mt-2 flex flex-col gap-2 rounded-md bg-secondary/40 p-3 sm:flex-row sm:items-center">
               <Select value={targetAgentId} onValueChange={setTargetAgentId}>
-                <SelectTrigger aria-label="重新派发目标 Agent">
-                  <SelectValue placeholder="选择目标 Agent" />
+                <SelectTrigger
+                  aria-label={t("hooks.eventDetail.redeliverTarget")}
+                >
+                  <SelectValue placeholder={t("hooks.rules.selectAgent")} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value="0">默认 Agent</SelectItem>
+                    <SelectItem value="0">
+                      {t("hooks.eventDetail.defaultAgent")}
+                    </SelectItem>
                     {agents.map((agent) => (
                       <SelectItem key={agent.id} value={String(agent.id)}>
                         {agent.name}
@@ -1886,7 +1977,7 @@ function EventDetail({
                 ) : (
                   <RefreshCw data-icon="inline-start" aria-hidden="true" />
                 )}
-                重新派发
+                {t("hooks.eventDetail.redeliver")}
               </Button>
             </div>
           </div>
@@ -1895,7 +1986,9 @@ function EventDetail({
         <section className="rounded-lg border border-border bg-card">
           <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <FileJson className="text-primary-text" aria-hidden="true" />
-            <h3 className="text-sm font-semibold">原始 JSON payload</h3>
+            <h3 className="text-sm font-semibold">
+              {t("hooks.eventDetail.rawPayload")}
+            </h3>
           </div>
           <pre
             data-selectable-text="true"
@@ -1918,20 +2011,21 @@ function SourceDialog({
   onOpenChange: (open: boolean) => void;
   onSubmit: (draft: SourceDraft) => void;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = React.useState<SourceDraft>(() => sourceToDraft());
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>新建信号源</DialogTitle>
+          <DialogTitle>{t("hooks.sourceDialog.title")}</DialogTitle>
           <DialogDescription>
-            先创建基础入口，再在详情页补充连接参数和路由规则。
+            {t("hooks.sourceDialog.description")}
           </DialogDescription>
         </DialogHeader>
         <DialogBody>
           <form
-            aria-label="新建信号源"
+            aria-label={t("hooks.sourceDialog.ariaLabel")}
             className="flex flex-col gap-4"
             onSubmit={(event) => {
               event.preventDefault();
@@ -1939,7 +2033,9 @@ function SourceDialog({
             }}
           >
             <div className="flex flex-col gap-2">
-              <TextLabel htmlFor="hook-source-name">名称</TextLabel>
+              <TextLabel htmlFor="hook-source-name">
+                {t("hooks.config.sourceName")}
+              </TextLabel>
               <Input
                 id="hook-source-name"
                 value={draft.name}
@@ -1953,7 +2049,7 @@ function SourceDialog({
               />
             </div>
             <div className="flex flex-col gap-2">
-              <TextLabel>类型</TextLabel>
+              <TextLabel>{t("hooks.config.sourceType")}</TextLabel>
               <Select
                 value={draft.kind}
                 onValueChange={(value) =>
@@ -1963,14 +2059,14 @@ function SourceDialog({
                   }))
                 }
               >
-                <SelectTrigger aria-label="新建信号源类型">
+                <SelectTrigger aria-label={t("hooks.sourceDialog.typeAria")}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
                     {sourceKindOptions.map((option) => (
                       <SelectItem key={option.value} value={option.value}>
-                        {option.label}
+                        {sourceKindLabel(option.value, t)}
                       </SelectItem>
                     ))}
                   </SelectGroup>
@@ -1978,7 +2074,9 @@ function SourceDialog({
               </Select>
             </div>
             <div className="flex flex-col gap-2">
-              <TextLabel htmlFor="hook-source-identifier">标识</TextLabel>
+              <TextLabel htmlFor="hook-source-identifier">
+                {t("hooks.config.identifier")}
+              </TextLabel>
               <Input
                 id="hook-source-identifier"
                 value={draft.identifier}
@@ -1995,9 +2093,9 @@ function SourceDialog({
         </DialogBody>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            取消
+            {t("common.cancel")}
           </Button>
-          <Button onClick={() => onSubmit(draft)}>创建</Button>
+          <Button onClick={() => onSubmit(draft)}>{t("common.create")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -2017,21 +2115,29 @@ function RuleDialog({
   onSubmit: (draft: RuleDraft) => void;
   rule: HookRuleItem | null;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = React.useState<RuleDraft>(() => ruleToDraft(rule));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{rule ? "编辑路由规则" : "新建路由规则"}</DialogTitle>
+          <DialogTitle>
+            {rule
+              ? t("hooks.ruleDialog.editTitle")
+              : t("hooks.ruleDialog.createTitle")}
+          </DialogTitle>
           <DialogDescription>
-            条件支持简单表达式，例如 subject contains "X" 或 event_type contains
-            "release"。
+            {t("hooks.ruleDialog.description")}
           </DialogDescription>
         </DialogHeader>
         <DialogBody>
           <form
-            aria-label={rule ? "编辑路由规则" : "新建路由规则"}
+            aria-label={
+              rule
+                ? t("hooks.ruleDialog.editAriaLabel")
+                : t("hooks.ruleDialog.createAriaLabel")
+            }
             className="flex flex-col gap-4"
             onSubmit={(event) => {
               event.preventDefault();
@@ -2039,7 +2145,9 @@ function RuleDialog({
             }}
           >
             <div className="flex flex-col gap-2">
-              <TextLabel htmlFor="hook-rule-name">名称</TextLabel>
+              <TextLabel htmlFor="hook-rule-name">
+                {t("hooks.config.sourceName")}
+              </TextLabel>
               <Input
                 id="hook-rule-name"
                 value={draft.name}
@@ -2053,7 +2161,9 @@ function RuleDialog({
               />
             </div>
             <div className="flex flex-col gap-2">
-              <TextLabel htmlFor="hook-rule-condition">条件表达式</TextLabel>
+              <TextLabel htmlFor="hook-rule-condition">
+                {t("hooks.ruleDialog.condition")}
+              </TextLabel>
               <Textarea
                 id="hook-rule-condition"
                 value={draft.conditionExpr}
@@ -2068,7 +2178,7 @@ function RuleDialog({
               />
             </div>
             <div className="flex flex-col gap-2">
-              <TextLabel>目标 Agent</TextLabel>
+              <TextLabel>{t("hooks.ruleDialog.targetAgent")}</TextLabel>
               <Select
                 value={String(draft.targetAgentId || 0)}
                 onValueChange={(value) =>
@@ -2078,12 +2188,14 @@ function RuleDialog({
                   }))
                 }
               >
-                <SelectTrigger aria-label="路由目标 Agent">
-                  <SelectValue placeholder="选择 Agent" />
+                <SelectTrigger aria-label={t("hooks.ruleDialog.targetAgent")}>
+                  <SelectValue placeholder={t("hooks.rules.selectAgent")} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value="0">暂不派发</SelectItem>
+                    <SelectItem value="0">
+                      {t("hooks.rules.noDispatch")}
+                    </SelectItem>
                     {agents.map((agent) => (
                       <SelectItem key={agent.id} value={String(agent.id)}>
                         {agent.name}
@@ -2095,7 +2207,7 @@ function RuleDialog({
             </div>
             <div className="flex items-center gap-3 rounded-md border border-border bg-secondary/40 px-3 py-2">
               <Switch
-                aria-label="启用规则"
+                aria-label={t("hooks.ruleDialog.enableRule")}
                 checked={draft.enabled}
                 disabled={rule?.isFallback}
                 onCheckedChange={(checked) =>
@@ -2103,16 +2215,18 @@ function RuleDialog({
                 }
               />
               <span className="text-xs">
-                {rule?.isFallback ? "兜底规则始终启用" : "启用此规则"}
+                {rule?.isFallback
+                  ? t("hooks.ruleDialog.fallbackAlwaysEnabled")
+                  : t("hooks.ruleDialog.enableThisRule")}
               </span>
             </div>
           </form>
         </DialogBody>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            取消
+            {t("common.cancel")}
           </Button>
-          <Button onClick={() => onSubmit(draft)}>保存</Button>
+          <Button onClick={() => onSubmit(draft)}>{t("common.save")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -2120,6 +2234,7 @@ function RuleDialog({
 }
 
 export function HooksPage() {
+  const { t } = useTranslation();
   const [data, setData] = React.useState<HooksData>({
     sources: [],
     rules: [],
@@ -2232,7 +2347,10 @@ export function HooksPage() {
       }));
       setSelectedSourceId(item.id);
       setSourceDialogOpen(false);
-      setFlash({ kind: "ok", text: `已创建信号源 ${item.name}` });
+      setFlash({
+        kind: "ok",
+        text: t("hooks.flash.sourceCreated", { name: item.name }),
+      });
       await reload();
     });
   };
@@ -2255,7 +2373,7 @@ export function HooksPage() {
         ...current,
         sources: replaceById(current.sources, item),
       }));
-      setFlash({ kind: "ok", text: "连接配置已保存" });
+      setFlash({ kind: "ok", text: t("hooks.flash.connectionSaved") });
     });
   };
 
@@ -2280,7 +2398,9 @@ export function HooksPage() {
       }));
       setFlash({
         kind: "ok",
-        text: nextEnabled ? "信号源已启用" : "信号源已停用",
+        text: nextEnabled
+          ? t("hooks.flash.sourceEnabled")
+          : t("hooks.flash.sourceDisabled"),
       });
     });
   };
@@ -2290,7 +2410,10 @@ export function HooksPage() {
     void runBusy(async () => {
       const DeleteHookSource = getBridgeMethod("DeleteHookSource");
       await DeleteHookSource({ id: selectedSource.id });
-      setFlash({ kind: "ok", text: `已删除信号源 ${selectedSource.name}` });
+      setFlash({
+        kind: "ok",
+        text: t("hooks.flash.sourceDeleted", { name: selectedSource.name }),
+      });
       await reload();
     });
   };
@@ -2337,7 +2460,7 @@ export function HooksPage() {
       }
       setRuleDialogOpen(false);
       setEditingRule(null);
-      setFlash({ kind: "ok", text: "路由规则已保存" });
+      setFlash({ kind: "ok", text: t("hooks.flash.ruleSaved") });
     });
   };
 
@@ -2366,7 +2489,10 @@ export function HooksPage() {
         ...current,
         rules: current.rules.filter((item) => item.id !== rule.id),
       }));
-      setFlash({ kind: "ok", text: `已删除规则 ${rule.name}` });
+      setFlash({
+        kind: "ok",
+        text: t("hooks.flash.ruleDeleted", { name: rule.name }),
+      });
     });
   };
 
@@ -2389,7 +2515,7 @@ export function HooksPage() {
       }));
       setSelectedEventId(event.id);
       setActiveTab("log");
-      setFlash({ kind: "ok", text: "测试事件已写入事件日志" });
+      setFlash({ kind: "ok", text: t("hooks.flash.testEventWritten") });
     });
   };
 
@@ -2414,9 +2540,10 @@ export function HooksPage() {
       setActiveTab("log");
       setFlash({
         kind: "ok",
-        text: `邮箱同步完成：新增 ${resp.created ?? events.length} 封，跳过 ${
-          resp.skipped ?? 0
-        } 封`,
+        text: t("hooks.flash.emailSyncDone", {
+          created: resp.created ?? events.length,
+          skipped: resp.skipped ?? 0,
+        }),
       });
     });
   };
@@ -2434,7 +2561,7 @@ export function HooksPage() {
         events: replaceById(current.events, item),
       }));
       setSelectedEventId(item.id);
-      setFlash({ kind: "ok", text: "已记录重新派发请求" });
+      setFlash({ kind: "ok", text: t("hooks.flash.redeliverRecorded") });
     });
   };
 
@@ -2481,7 +2608,9 @@ export function HooksPage() {
                 <CheckCircle2 aria-hidden="true" />
               )}
               <AlertTitle className="text-xs font-semibold">
-                {flash.kind === "err" ? "操作失败" : "操作完成"}
+                {flash.kind === "err"
+                  ? t("common.operationFailed")
+                  : t("common.operationCompleted")}
               </AlertTitle>
               <AlertDescription className="text-2xs">
                 {flash.text}
@@ -2493,7 +2622,7 @@ export function HooksPage() {
         {loading ? (
           <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="animate-spin" aria-hidden="true" />
-            正在加载 Hooks…
+            {t("hooks.loading")}
           </div>
         ) : selectedSource ? (
           activeTab === "config" ? (
@@ -2528,14 +2657,15 @@ export function HooksPage() {
           <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center">
             <div className="flex max-w-md flex-col items-center gap-3">
               <Webhook className="text-primary-text" aria-hidden="true" />
-              <h2 className="text-base font-semibold">还没有信号源</h2>
+              <h2 className="text-base font-semibold">
+                {t("hooks.empty.title")}
+              </h2>
               <p className="text-sm text-muted-foreground">
-                创建邮箱、Webhook、Slack
-                或定时器入口后，就能配置路由规则和查看事件日志。
+                {t("hooks.empty.description")}
               </p>
               <Button onClick={() => setSourceDialogOpen(true)}>
                 <Plus data-icon="inline-start" aria-hidden="true" />
-                新建信号源
+                {t("hooks.empty.createSource")}
               </Button>
             </div>
           </div>

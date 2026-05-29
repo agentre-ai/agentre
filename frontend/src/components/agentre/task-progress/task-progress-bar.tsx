@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   Check,
   ChevronDown,
@@ -24,14 +25,6 @@ function findRunning(tasks: Task[]): Task | undefined {
   return tasks.find((t) => t.status === "running");
 }
 
-const STATUS_LABEL: Record<Task["status"], string> = {
-  queued: "QUEUED",
-  running: "RUNNING",
-  completed: "DONE",
-  cancelled: "CANCELLED",
-  failed: "FAILED",
-};
-
 const STATUS_FILL: Record<Task["status"], string> = {
   queued: "text-muted-foreground",
   running: "text-status-waiting",
@@ -41,6 +34,7 @@ const STATUS_FILL: Record<Task["status"], string> = {
 };
 
 function TaskRow({ index, task }: { index: number; task: Task }) {
+  const { t } = useTranslation();
   const isRunning = task.status === "running";
   const Icon =
     task.status === "completed"
@@ -81,13 +75,14 @@ function TaskRow({ index, task }: { index: number; task: Task }) {
           STATUS_FILL[task.status],
         )}
       >
-        {STATUS_LABEL[task.status]}
+        {t(`taskProgress.status.${task.status}`)}
       </span>
     </li>
   );
 }
 
 export function TaskProgressBar({ progress }: Props) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
   const { tasks } = progress;
   const total = tasks.length;
@@ -109,7 +104,7 @@ export function TaskProgressBar({ progress }: Props) {
   return (
     <div
       role="region"
-      aria-label="任务进度"
+      aria-label={t("taskProgress.title")}
       className="flex flex-col border-b border-border bg-card"
     >
       <button
@@ -123,7 +118,7 @@ export function TaskProgressBar({ progress }: Props) {
           aria-hidden
         />
         <span className="shrink-0 text-[11px] font-bold text-primary-text">
-          任务进度
+          {t("taskProgress.title")}
         </span>
         <span className="inline-flex items-baseline gap-0.5 tabular-nums">
           <span className="text-[13px] font-bold text-status-running">
@@ -135,7 +130,9 @@ export function TaskProgressBar({ progress }: Props) {
           </span>
         </span>
         <span className="text-[10px] text-muted-foreground">
-          {allCompleted ? "全部完成" : "已完成"}
+          {allCompleted
+            ? t("taskProgress.allCompleted")
+            : t("taskProgress.completed")}
         </span>
         <span
           className="ml-2 h-1.5 w-28 overflow-hidden rounded-sm bg-border"
@@ -173,7 +170,7 @@ export function TaskProgressBar({ progress }: Props) {
             aria-hidden
           />
           <span className="font-sans text-[10px] font-bold text-muted-foreground">
-            当前
+            {t("taskProgress.current")}
           </span>
           <span className="text-muted-foreground">·</span>
           <span className="min-w-0 truncate text-foreground">

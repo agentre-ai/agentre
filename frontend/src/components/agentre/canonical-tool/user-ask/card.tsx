@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   Check,
   CheckCircle2,
@@ -54,6 +55,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
   toolBlock,
   sessionId,
 }) => {
+  const { t } = useTranslation();
   const payload = readUserAsk(toolBlock);
 
   const [collapsed, setCollapsed] = React.useState(false);
@@ -113,11 +115,11 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
         for (let i = 0; i < (payload.questions ?? []).length; i++) {
           const sel = selections[i];
           if (!sel || sel.labels.length === 0) {
-            setError("请先选择一个选项再提交");
+            setError(t("canonical.userAsk.errors.optionRequired"));
             return;
           }
           if (sel.labels.includes(OTHER_LABEL) && !sel.otherText.trim()) {
-            setError("已选「自定义答案」请填写内容");
+            setError(t("canonical.userAsk.errors.otherRequired"));
             return;
           }
         }
@@ -139,12 +141,16 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
         });
         setCollapsed(true);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "提交失败,请稍后再试");
+        setError(
+          err instanceof Error
+            ? err.message
+            : t("canonical.userAsk.errors.submitFailed"),
+        );
       } finally {
         setSubmitting(false);
       }
     },
-    [payload, sessionId, selections, isLocked],
+    [payload, sessionId, selections, isLocked, t],
   );
 
   const headerLabel = React.useMemo(() => {
@@ -231,7 +237,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
                 disabled={submitting}
                 onClick={() => void handleSubmit(true)}
               >
-                跳过
+                {t("common.skip")}
               </Button>
               <Button
                 type="button"
@@ -240,7 +246,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
                 onClick={() => void handleSubmit(false)}
                 className="gap-1.5"
               >
-                提交回复
+                {t("canonical.userAsk.submit")}
                 <CornerDownLeft className="h-3 w-3" />
               </Button>
             </div>
@@ -258,11 +264,12 @@ function StatusPill({
   answered: boolean;
   skipped: boolean;
 }) {
+  const { t } = useTranslation();
   if (skipped) {
     return (
       <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-muted-foreground">
         <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
-        SKIPPED
+        {t("canonical.userAsk.skipped")}
       </span>
     );
   }
@@ -270,14 +277,14 @@ function StatusPill({
     return (
       <span className="flex items-center gap-1.5 rounded-sm bg-emerald-500/15 px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-emerald-600 dark:text-emerald-400">
         <Check className="h-2.5 w-2.5" />
-        ANSWERED
+        {t("canonical.userAsk.answered")}
       </span>
     );
   }
   return (
     <span className="flex items-center gap-1.5 rounded-sm bg-amber-500/15 px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-amber-600 dark:text-amber-400">
       <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-      WAITING · 等待回复
+      {t("canonical.userAsk.waiting")}
     </span>
   );
 }
@@ -347,6 +354,7 @@ function QuestionGroup({
   onToggle: (qIdx: number, label: string, multi: boolean) => void;
   onOther: (qIdx: number, text: string) => void;
 }) {
+  const { t } = useTranslation();
   const labels = sel?.labels ?? [];
   const multi = !!q.multiSelect;
   return (
@@ -361,7 +369,7 @@ function QuestionGroup({
           ) : (
             <CircleDot className="h-2.5 w-2.5" />
           )}
-          {multi ? "多选" : "单选"}
+          {multi ? t("canonical.userAsk.multi") : t("canonical.userAsk.single")}
         </span>
       </div>
       <div className="flex flex-col gap-2">
@@ -422,7 +430,7 @@ function QuestionGroup({
           <Input
             type={q.isSecret ? "password" : "text"}
             disabled={locked}
-            placeholder="自定义答案 — 输入你自己的方案…"
+            placeholder={t("canonical.userAsk.otherPlaceholder")}
             value={sel?.otherText ?? ""}
             onChange={(e) => {
               const text = e.target.value;

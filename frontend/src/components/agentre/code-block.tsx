@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Copy } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
@@ -32,6 +33,7 @@ export function CodeBlock({
   language = "preview",
   ...props
 }: CodeBlockProps) {
+  const { t } = useTranslation();
   const [copyState, setCopyState] = React.useState<
     "copied" | "failed" | "idle"
   >("idle");
@@ -56,8 +58,8 @@ export function CodeBlock({
     }
     try {
       const copied = await copyTextWithToast(codeText, {
-        errorTitle: "复制代码失败",
-        successTitle: "已复制代码",
+        errorTitle: t("codeBlock.copyFailed"),
+        successTitle: t("codeBlock.copyDone"),
       });
       setCopyState(copied ? "copied" : "failed");
     } catch {
@@ -91,10 +93,10 @@ export function CodeBlock({
         >
           <Copy data-icon="inline-start" aria-hidden="true" />
           {copyState === "copied"
-            ? "已复制"
+            ? t("common.copied")
             : copyState === "failed"
-              ? "复制失败"
-              : "复制"}
+              ? t("common.copyFailed")
+              : t("common.copy")}
         </Button>
       </div>
       <pre

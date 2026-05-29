@@ -1,4 +1,5 @@
 import { CircleX, Pencil } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -21,10 +22,12 @@ function formatTime(ms: number): string {
 }
 
 export function OutlineView({ items, activeMessageId, onSelect }: Props) {
+  const { t } = useTranslation();
+
   if (items.length === 0) {
     return (
       <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-        本会话还没有消息
+        {t("chatContext.outline.empty")}
       </div>
     );
   }
@@ -54,7 +57,7 @@ export function OutlineView({ items, activeMessageId, onSelect }: Props) {
             >
               <span>{formatTime(it.time)}</span>
               <span className="text-border-strong">·</span>
-              <span>第 {it.turn} 轮</span>
+              <span>{t("chatContext.outline.turn", { turn: it.turn })}</span>
             </div>
             <p
               className={cn(

@@ -2,6 +2,7 @@
 // Inline provider-sync sub-panel rendered beneath a DeviceRow when expanded.
 import { useEffect, useState } from "react";
 import { CheckCircle2, Copy, Loader2, XCircle } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
@@ -69,6 +70,7 @@ type SyncState =
 type Props = { deviceId: number };
 
 export function DeviceProvidersSync({ deviceId }: Props) {
+  const { t } = useTranslation();
   const [state, setState] = useState<SyncState>({ phase: "idle" });
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -141,7 +143,7 @@ export function DeviceProvidersSync({ deviceId }: Props) {
     return (
       <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
         <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-        正在加载 Provider 同步状态…
+        {t("remoteDevices.providers.loading")}
       </div>
     );
   }
@@ -149,7 +151,7 @@ export function DeviceProvidersSync({ deviceId }: Props) {
   if (state.phase === "error") {
     return (
       <div className="px-3 py-2 text-xs text-destructive">
-        加载失败：{state.message}
+        {t("remoteDevices.providers.loadFailed", { message: state.message })}
       </div>
     );
   }
@@ -159,16 +161,16 @@ export function DeviceProvidersSync({ deviceId }: Props) {
   if (rows.length === 0) {
     return (
       <div className="px-3 py-2 text-xs text-muted-foreground">
-        该设备上没有关联任何本地 Agent 后端 Provider。
+        {t("remoteDevices.providers.empty")}
       </div>
     );
   }
 
   function handleCopy(cmd: string, key: string) {
     void copyTextWithToast(cmd, {
-      errorTitle: "复制修复命令失败",
-      successTitle: "已复制修复命令",
-      successDescription: "粘贴到远端 agentred 所在终端执行",
+      errorTitle: t("remoteDevices.providers.copyFailed"),
+      successTitle: t("remoteDevices.providers.copyDone"),
+      successDescription: t("remoteDevices.providers.copyDescription"),
     }).then((copied) => {
       if (!copied) return;
       setCopied(key);
@@ -182,7 +184,7 @@ export function DeviceProvidersSync({ deviceId }: Props) {
       className="flex flex-col gap-1.5 rounded-md border border-border bg-secondary/40 px-3 py-2"
     >
       <span className="text-2xs font-semibold text-muted-foreground uppercase tracking-wide">
-        Provider 同步状态
+        {t("remoteDevices.providers.title")}
       </span>
       <div className="flex flex-col gap-1">
         {rows.map((row) => {
@@ -200,12 +202,12 @@ export function DeviceProvidersSync({ deviceId }: Props) {
                 {row.synced ? (
                   <CheckCircle2
                     className="h-3.5 w-3.5 shrink-0 text-emerald-500"
-                    aria-label="已同步"
+                    aria-label={t("remoteDevices.providers.synced")}
                   />
                 ) : (
                   <XCircle
                     className="h-3.5 w-3.5 shrink-0 text-destructive"
-                    aria-label="未同步"
+                    aria-label={t("remoteDevices.providers.unsynced")}
                   />
                 )}
                 <span className="text-xs font-medium truncate">{row.name}</span>
@@ -217,7 +219,7 @@ export function DeviceProvidersSync({ deviceId }: Props) {
                     data-testid={`missing-badge-${row.key}`}
                     className="ml-auto font-mono text-2xs text-destructive"
                   >
-                    缺失
+                    {t("remoteDevices.providers.missing")}
                   </span>
                 ) : null}
               </div>
@@ -233,8 +235,14 @@ export function DeviceProvidersSync({ deviceId }: Props) {
                     type="button"
                     variant="ghost"
                     size="icon"
-                    aria-label={`复制修复命令 ${row.key}`}
-                    title={isCopied ? "已复制" : "复制命令"}
+                    aria-label={t("remoteDevices.providers.copyAria", {
+                      key: row.key,
+                    })}
+                    title={
+                      isCopied
+                        ? t("common.copied")
+                        : t("remoteDevices.providers.copyCommand")
+                    }
                     className="h-6 w-6 shrink-0 text-muted-foreground"
                     onClick={() => handleCopy(fixCmd, row.key)}
                   >

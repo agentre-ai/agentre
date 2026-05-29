@@ -1,5 +1,6 @@
 import * as React from "react";
 import { MapPin, Server, ServerOff } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -30,6 +31,8 @@ export function DeviceTag({
   lastSeen,
   ...props
 }: DeviceTagProps) {
+  const { t } = useTranslation();
+
   if (!deviceId) {
     return (
       <span
@@ -40,7 +43,7 @@ export function DeviceTag({
         {...props}
       >
         <MapPin className="size-3" aria-hidden="true" />
-        本地
+        {t("deviceTag.local")}
       </span>
     );
   }
@@ -67,7 +70,8 @@ export function DeviceTag({
       {...props}
     >
       <ServerOff className="size-3" aria-hidden="true" />
-      {deviceName} · offline{lastSeen ? ` ${lastSeen}` : ""}
+      {t("deviceTag.offline", { name: deviceName })}
+      {lastSeen ? ` ${lastSeen}` : ""}
     </span>
   );
 }

@@ -7,6 +7,7 @@ import {
   Trash2,
   Activity,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -26,30 +27,36 @@ type Props = {
 };
 
 export function DeviceActionMenu(props: Props) {
+  const { t } = useTranslation();
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="更多操作">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={t("common.moreActions")}
+        >
           <MoreHorizontal className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem onSelect={props.onRefresh}>
           <RotateCw className="mr-2 h-4 w-4" />
-          刷新状态
+          {t("remoteDevices.actions.refreshStatus")}
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={props.onRename}>
           <Edit3 className="mr-2 h-4 w-4" />
-          重命名
+          {t("remoteDevices.actions.rename")}
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={props.onEditTLS}>
           <Settings2 className="mr-2 h-4 w-4" />
-          编辑 TLS 信任
+          {t("remoteDevices.actions.editTls")}
         </DropdownMenuItem>
         {props.onToggleProviders ? (
           <DropdownMenuItem onSelect={props.onToggleProviders}>
             <Activity className="mr-2 h-4 w-4" />
-            Provider 同步状态
+            {t("remoteDevices.providers.title")}
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuSeparator />
@@ -58,7 +65,7 @@ export function DeviceActionMenu(props: Props) {
           className="text-destructive"
         >
           <Trash2 className="mr-2 h-4 w-4" />
-          解除配对
+          {t("remoteDevices.actions.removePairing")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

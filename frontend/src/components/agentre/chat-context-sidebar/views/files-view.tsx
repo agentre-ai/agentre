@@ -1,4 +1,5 @@
 import { FileCode, Pencil } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import type { FileEntry } from "../derive";
 
@@ -13,10 +14,12 @@ function shortPath(p: string): string {
 }
 
 export function FilesView({ files, onJumpToTurn }: Props) {
+  const { t } = useTranslation();
+
   if (files.length === 0) {
     return (
       <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-        本会话还没有改过任何文件
+        {t("chatContext.files.empty")}
       </div>
     );
   }

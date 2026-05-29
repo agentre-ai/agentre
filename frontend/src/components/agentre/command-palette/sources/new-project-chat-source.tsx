@@ -1,6 +1,8 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { useChatAgents, type ChatAgentItem } from "@/hooks/use-chat-agents";
+import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   readLastAgentId,
@@ -58,9 +60,13 @@ export function flattenAgents(
 ): NewProjectChatItem[] {
   const chattable = agents.filter((a) => a.chattable);
   const memberHeading = projectName
-    ? `在 ${projectName} 中新建 chat`
+    ? i18n.t("commandPalette.newProjectChat.memberHeading", {
+        projectName,
+      })
     : undefined;
-  const otherHeading = projectName ? "其它 Agent" : undefined;
+  const otherHeading = projectName
+    ? i18n.t("commandPalette.newProjectChat.otherHeading")
+    : undefined;
 
   const resolvePath = (agent: ChatAgentItem): string | undefined => {
     if (!paths) return undefined;
@@ -213,7 +219,9 @@ function useItems(): { items: NewProjectChatItem[]; loading: boolean } {
 }
 
 function actionTitle(item: NewProjectChatItem): string {
-  return `New project chat with ${item.agent.name}`;
+  return i18n.t("commandPalette.newProjectChat.itemTitle", {
+    agentName: item.agent.name,
+  });
 }
 
 const MULTI_TOKEN_SCORE = 25;
@@ -244,6 +252,7 @@ function renderItem(item: NewProjectChatItem): React.ReactNode {
 type AgentRowProps = { item: NewProjectChatItem };
 
 function AgentRow({ item }: AgentRowProps) {
+  const { t } = useTranslation();
   const a = item.agent;
   const offline = !!a.deviceID && a.online === false;
   return (
@@ -265,9 +274,13 @@ function AgentRow({ item }: AgentRowProps) {
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div
           className="truncate text-sm text-foreground"
-          title={`New project chat with ${a.name}`}
+          title={t("commandPalette.newProjectChat.itemTitle", {
+            agentName: a.name,
+          })}
         >
-          <span className="text-muted-foreground">New project chat with </span>
+          <span className="text-muted-foreground">
+            {t("commandPalette.newProjectChat.itemPrefix")}{" "}
+          </span>
           <span className="font-medium">{a.name}</span>
         </div>
         {/* Device chip + cwd preview on the subline */}
@@ -291,7 +304,7 @@ function AgentRow({ item }: AgentRowProps) {
       </div>
       {!item.isMember ? (
         <span className="rounded-sm border border-border bg-muted px-2 py-0.5 text-2xs text-muted-foreground">
-          不在该项目
+          {t("commandPalette.newProjectChat.notInProject")}
         </span>
       ) : null}
       <kbd
@@ -354,14 +367,19 @@ function onSelect(item: NewProjectChatItem, ctx: OnSelectCtx): void {
   const offline = !!a.deviceID && a.online === false;
   if (offline) {
     console.warn(
-      `[command-palette] 「${a.name}」所在的设备「${a.deviceName ?? a.deviceID}」当前离线，无法启动会话`,
+      i18n.t("commandPalette.newProjectChat.offlineWarning", {
+        agentName: a.name,
+        deviceName: a.deviceName ?? a.deviceID,
+      }),
     );
     return;
   }
   // Remote agent + no configured location → cannot start.
   if (a.deviceID && !item.locationPath) {
     console.warn(
-      `[command-palette] 「${a.name}」在该项目的远端机器上没有配置路径，请到「项目设置 · 成员」补齐`,
+      i18n.t("commandPalette.newProjectChat.missingRemotePathWarning", {
+        agentName: a.name,
+      }),
     );
     return;
   }
@@ -375,7 +393,10 @@ function onSelect(item: NewProjectChatItem, ctx: OnSelectCtx): void {
   // 非成员（或异常情况：handler 未注册）→ 静默兜底到 /chat 自由会话。
   if (!item.isMember) {
     console.info(
-      `[command-palette] 已为「${item.agent.name}」创建自由会话 · 该 agent 不在「${projectContext.projectName}」项目里`,
+      i18n.t("commandPalette.newProjectChat.freeChatInfo", {
+        agentName: item.agent.name,
+        projectName: projectContext.projectName,
+      }),
     );
   }
   store.clear();
@@ -384,7 +405,7 @@ function onSelect(item: NewProjectChatItem, ctx: OnSelectCtx): void {
 
 export const newProjectChatSource: CommandSource<NewProjectChatItem> = {
   id: "new-project-chat",
-  heading: "项目新对话",
+  heading: i18n.t("commandPalette.newProjectChat.heading"),
   modes: ["command"],
   activeFor: (ctx) => isProjectsRoute(ctx.pathname),
   useItems,
