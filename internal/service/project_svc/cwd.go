@@ -16,8 +16,8 @@ import (
 
 // ResolveProjectCwd 解析「某 device 下某项目」的终端工作目录。
 //
-//   deviceID == ""  → project.Path（本地）；项目不存在/软删 → ProjectNotFound
-//   deviceID != ""  → project_location.FindByProjectAndDevice；未配置 → ProjectLocationMissing
+//	deviceID == ""  → project.Path（本地）；项目不存在/软删 → ProjectNotFound
+//	deviceID != ""  → project_location.FindByProjectAndDevice；未配置 → ProjectLocationMissing
 func (s *projectSvc) ResolveProjectCwd(ctx context.Context, projectID int64, deviceID string) (string, error) {
 	if deviceID == "" {
 		p, err := project_repo.Project().Find(ctx, projectID)
