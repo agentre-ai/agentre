@@ -431,6 +431,16 @@ describe("chat-tabs-store · reconcileMissingSessions", () => {
     useChatTabsStore.getState().reconcileMissingSessions(new Set());
     expect(useChatTabsStore.getState().tabs).toHaveLength(1);
   });
+
+  it("保留 terminal tab(不因 session 缺失被移除)", () => {
+    useChatTabsStore.getState().openSessionInNewTab(1);
+    useChatTabsStore.getState().openTerminal(5, "", undefined);
+    useChatTabsStore.getState().openSessionInNewTab(2);
+    // session 2 gone; session 1 kept; terminal must also survive
+    useChatTabsStore.getState().reconcileMissingSessions(new Set([1]));
+    const s = useChatTabsStore.getState();
+    expect(s.tabs.map((t) => t.meta.kind)).toEqual(["session", "terminal"]);
+  });
 });
 
 describe("chat-tabs-store · hydrate from localStorage", () => {

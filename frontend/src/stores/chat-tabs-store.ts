@@ -258,7 +258,7 @@ export const useChatTabsStore = create<State & Actions>((set, _get) => ({
   reconcileMissingSessions: (existingSessionIds) =>
     set((state) => {
       const tabs = state.tabs.filter((t) => {
-        if (t.meta.kind === "new") return true;
+        if (t.meta.kind !== "session") return true;
         return existingSessionIds.has(t.meta.sessionId);
       });
       if (tabs.length === state.tabs.length) return state;
