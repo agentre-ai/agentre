@@ -41,6 +41,9 @@ type SessionGroupProps = React.ComponentProps<"article"> & {
 
   // Attention 气泡（折叠态也始终可见；展开态过滤掉 unread/selected 这类「软」rank）
   attentionSessions?: AgentSession[];
+  // 折叠态专用 attention 气泡。项目树用它把后代项目的 attention 汇总到
+  // 折叠父级；不传时保持旧行为。
+  collapsedAttentionSessions?: AgentSession[];
 
   // 子节点插槽：在 sessions 列表之后渲染（仍在 grid 展开动画容器内），
   // 主要给项目树的子项目递归用。
@@ -64,6 +67,7 @@ function SessionGroup({
   totalSessions,
   renderSessionsPopover,
   attentionSessions = [],
+  collapsedAttentionSessions,
   renderAfterSessions,
   emptyLabel = "暂无会话",
   attentionAriaLabel,
@@ -86,13 +90,13 @@ function SessionGroup({
   // 与对话页折叠态体验对齐（项目页默认展开,过去这条路径下未读永远拿不到 chip）。
   // 下方常规列表通过 attentionIds 自动去重,unread 不会重复出现。
   // 折叠态下 bubble 是侧栏唯一可见入口,所有 rank 都保留。
-  const visibleAttention = React.useMemo(
-    () =>
-      expanded
-        ? attentionSessions.filter((s) => s.attentionRank !== "selected")
-        : attentionSessions,
-    [attentionSessions, expanded],
-  );
+  const visibleAttention = React.useMemo(() => {
+    const base =
+      !expanded && collapsedAttentionSessions
+        ? collapsedAttentionSessions
+        : attentionSessions;
+    return expanded ? base.filter((s) => s.attentionRank !== "selected") : base;
+  }, [attentionSessions, collapsedAttentionSessions, expanded]);
   // 下方常规列表对已在 bubble 出现的 sessionId 去重，避免视觉重复。
   const attentionIds = React.useMemo(
     () => new Set(visibleAttention.map((s) => s.id)),

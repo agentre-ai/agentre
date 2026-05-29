@@ -185,6 +185,148 @@ describe("ProjectsPage session read state", () => {
   });
 });
 
+describe("ProjectsPage collapsed parent attention rollup", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSessionReadStore.setState({ overrides: new Map() });
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectGet.mockResolvedValue({
+      project: null,
+      directMembers: [],
+      inheritedMembers: [],
+    });
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "Agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+        },
+        children: [
+          {
+            project: {
+              color: "agent-2",
+              icon: "folder",
+              id: 2,
+              name: "backend",
+              parentID: 1,
+              path: "/tmp/agentre/backend",
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("Given a parent project is collapsed, When a child project has an unread session, Then the parent shows a clickable rollup bubble", async () => {
+    localStorage.setItem("agentre.agentExpanded.project:1", "0");
+    appMocks.ProjectListSessions.mockImplementation(
+      async (projectID: number) =>
+        projectID === 2
+          ? [
+              {
+                agentID: 7,
+                agentStatus: "idle",
+                id: 22,
+                lastMessageAt: 3000,
+                lastReadAt: 1000,
+                needsAttention: false,
+                title: "Child unread session",
+              },
+            ]
+          : [],
+    );
+
+    renderProjectsPage();
+
+    const bubble = await waitFor(() => {
+      const found = document.querySelector(
+        '[data-slot="agent-attention-bubble"]',
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    expect(bubble).toHaveTextContent("Child unread session");
+    expect(bubble).toHaveTextContent("未读");
+
+    await setupUser().click(
+      screen.getByRole("button", { name: /Child unread session/ }),
+    );
+
+    await waitFor(() => {
+      const active = useChatTabsStore
+        .getState()
+        .tabs.find((t) => t.id === useChatTabsStore.getState().activeTabId);
+      expect(active?.meta).toMatchObject({
+        kind: "session",
+        sessionId: 22,
+      });
+    });
+  });
+
+  it("Given a parent project is collapsed, When child projects need approval or are running, Then the parent reuses attention labels and active count", async () => {
+    localStorage.setItem("agentre.agentExpanded.project:1", "0");
+    appMocks.ProjectListSessions.mockImplementation(
+      async (projectID: number) =>
+        projectID === 2
+          ? [
+              {
+                agentID: 7,
+                agentStatus: "idle",
+                id: 23,
+                lastMessageAt: 4000,
+                lastReadAt: 4000,
+                needsAttention: true,
+                title: "Child approval session",
+              },
+              {
+                agentID: 7,
+                agentStatus: "running",
+                id: 24,
+                lastMessageAt: 5000,
+                lastReadAt: 5000,
+                needsAttention: false,
+                title: "Child running session",
+              },
+            ]
+          : [],
+    );
+
+    renderProjectsPage();
+
+    const bubble = await waitFor(() => {
+      const found = document.querySelector(
+        '[data-slot="agent-attention-bubble"]',
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    expect(bubble).toHaveTextContent("Child approval session");
+    expect(bubble).toHaveTextContent("审批");
+    expect(bubble).toHaveTextContent("Child running session");
+
+    const parentButton = screen
+      .getAllByRole("button", { name: /Agentre/ })
+      .find((button) => button.getAttribute("aria-expanded") !== null);
+    expect(parentButton).toBeTruthy();
+    expect(parentButton).toHaveTextContent("2");
+  });
+});
+
 describe("ProjectsPage nesting visuals (B1)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -498,6 +640,12 @@ describe("ProjectsPage project new-session menu", () => {
           avatarIcon: "hammer",
           inherited: false,
         },
+        {
+          agentID: 6,
+          agentName: "Reviewer",
+          avatarColor: "agent-3",
+          inherited: false,
+        },
       ],
       inheritedMembers: [],
     });
@@ -521,6 +669,12 @@ describe("ProjectsPage project new-session menu", () => {
           agentID: 5,
           agentName: "Builder",
           avatarColor: "agent-2",
+          inherited: false,
+        },
+        {
+          agentID: 6,
+          agentName: "Reviewer",
+          avatarColor: "agent-3",
           inherited: false,
         },
       ],
@@ -547,6 +701,42 @@ describe("ProjectsPage project new-session menu", () => {
     });
   });
 
+  it("Given a project has exactly one bound agent, When clicking new session, Then it opens the chat directly without asking the user to pick", async () => {
+    const user = setupUser();
+    appMocks.ProjectGet.mockResolvedValue({
+      project: { id: 1, name: "Agentre" },
+      directMembers: [
+        {
+          agentID: 5,
+          agentName: "Builder",
+          avatarColor: "agent-2",
+          inherited: false,
+        },
+      ],
+      inheritedMembers: [],
+    });
+
+    renderProjectsPage();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Agentre 新建会话" }),
+    );
+
+    await waitFor(() => {
+      const active = useChatTabsStore
+        .getState()
+        .tabs.find((t) => t.id === useChatTabsStore.getState().activeTabId);
+      expect(active?.meta).toMatchObject({
+        kind: "new",
+        projectId: 1,
+        agentId: 5,
+        workMode: "",
+      });
+    });
+    expect(screen.queryByText("选一个 Agent")).not.toBeInTheDocument();
+    expect(screen.queryByText("Builder")).not.toBeInTheDocument();
+  });
+
   it("Given a user picks an agent from the + menu, Then Radix does not steal focus back to the + trigger (so the new tab's editor can claim it)", async () => {
     // 回归: 项目页新建会话时,输入框「获取到了焦点又丢失了」——
     // Radix DropdownMenu 默认的 onCloseAutoFocus 在菜单关闭时把焦点还给
@@ -560,6 +750,12 @@ describe("ProjectsPage project new-session menu", () => {
           agentID: 5,
           agentName: "Builder",
           avatarColor: "agent-2",
+          inherited: false,
+        },
+        {
+          agentID: 6,
+          agentName: "Reviewer",
+          avatarColor: "agent-3",
           inherited: false,
         },
       ],
@@ -592,6 +788,12 @@ describe("ProjectsPage project new-session menu", () => {
           agentID: 6,
           agentName: "Reviewer",
           avatarColor: "agent-3",
+          inherited: false,
+        },
+        {
+          agentID: 7,
+          agentName: "Auditor",
+          avatarColor: "agent-4",
           inherited: false,
         },
       ],

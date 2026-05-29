@@ -62,6 +62,7 @@ import type { AgentColor, AgentStatus } from "./types";
 
 type ProjectTreeNode = app.ProjectTreeNode;
 type ProjectSessionItem = app.ProjectSessionItem;
+type ProjectSessionWithProject = ProjectSessionItem & { projectID: number };
 type ChatAgentItem = chat_svc.ChatAgentItem;
 type ProjectMemberItem = app.ProjectMemberItem & {
   agentName?: string;
@@ -461,6 +462,24 @@ function nodeMatches(
   return false;
 }
 
+function collectSubtreeSessions(
+  node: ProjectTreeNode,
+  sessions: Map<number, ProjectSessionItem[]>,
+): ProjectSessionWithProject[] {
+  const out: ProjectSessionWithProject[] = [];
+  const walk = (n: ProjectTreeNode) => {
+    const projectID = n.project?.id ?? 0;
+    if (projectID > 0) {
+      for (const session of sessions.get(projectID) ?? []) {
+        out.push({ ...session, projectID });
+      }
+    }
+    for (const child of n.children ?? []) walk(child);
+  };
+  walk(node);
+  return out;
+}
+
 function projectDragID(id: number): string {
   return `project-${id}`;
 }
@@ -642,6 +661,11 @@ function ProjectCard({
   // 实时跟着翻 waiting / running —— 没有活跃 stream 时返回原引用，零成本。
   const rawOwnSessions = sessions.get(node.project?.id ?? -1) ?? [];
   const ownSessions = useSessionStatusOverlay(rawOwnSessions);
+  const rawSubtreeSessions = React.useMemo(
+    () => collectSubtreeSessions(node, sessions),
+    [node, sessions],
+  );
+  const subtreeSessions = useSessionStatusOverlay(rawSubtreeSessions);
 
   const project = node.project;
   // ── 为何这里直接调用 computeAttention 而不走 useSessionAttentionList ──
@@ -676,10 +700,13 @@ function ProjectCard({
       ? activeSessionId
       : undefined;
 
-  const attentionAgentSessions: AgentSession[] = React.useMemo(() => {
-    const rows: { session: ProjectSessionItem; reason: AttentionReason }[] = [];
+  const attentionRows = React.useMemo(() => {
+    const rows: {
+      session: ProjectSessionWithProject;
+      reason: AttentionReason | "selected";
+    }[] = [];
     const seen = new Set<number>();
-    for (const s of ownSessions) {
+    for (const s of subtreeSessions) {
       const lastReadAt = Math.max(
         s.lastReadAt ?? 0,
         readOverrides.get(s.id) ?? 0,
@@ -697,23 +724,50 @@ function ProjectCard({
       }
     }
     rows.sort((a, b) => b.session.lastMessageAt - a.session.lastMessageAt);
-    const out: AgentSession[] = rows.map(({ session, reason }) =>
-      projectSessionToAgentSession(session, reason),
-    );
     // selected 锚点：当前打开的会话即使不在 attention 池，也钉到末尾
     if (selectedSessionIdForRank && !seen.has(selectedSessionIdForRank)) {
       const target = ownSessions.find((s) => s.id === selectedSessionIdForRank);
-      if (target) out.push(projectSessionToAgentSession(target, "selected"));
+      if (target) {
+        rows.push({
+          session: { ...target, projectID: node.project?.id ?? 0 },
+          reason: "selected",
+        });
+      }
     }
-    return out;
-  }, [ownSessions, readOverrides, selectedSessionIdForRank]);
+    return rows;
+  }, [
+    node.project?.id,
+    ownSessions,
+    readOverrides,
+    selectedSessionIdForRank,
+    subtreeSessions,
+  ]);
+
+  const attentionAgentSessions: AgentSession[] = React.useMemo(
+    () =>
+      attentionRows
+        .filter(({ session }) => session.projectID === (node.project?.id ?? 0))
+        .map(({ session, reason }) =>
+          projectSessionToAgentSession(session, reason),
+        ),
+    [attentionRows, node.project?.id],
+  );
+
+  const collapsedAttentionAgentSessions: AgentSession[] = React.useMemo(
+    () =>
+      attentionRows.map(({ session, reason }) =>
+        projectSessionToAgentSession(session, reason),
+      ),
+    [attentionRows],
+  );
 
   if (!project) return null;
   if (!nodeMatches(node, filter, sessions)) return null;
   const children = node.children ?? [];
-  // 活跃会话 = running / waiting，spec L0QoU 头部的绿点 + 数字。
-  const activeCount = ownSessions.filter(
-    (s) => s.agentStatus === "running" || s.agentStatus === "waiting",
+  // 头部活跃数包含当前项目与后代项目的 attention 会话；父项目折叠时也能提示
+  // 子项目里有 running / 审批 / 未读入口。
+  const activeCount = attentionRows.filter(
+    ({ reason }) => reason !== "selected",
   ).length;
 
   // 常规列表：所有会话按 lastMessageAt 倒序，前 5 条入侧栏；超 5 走 popover。
@@ -751,9 +805,9 @@ function ProjectCard({
 
   const handleSessionSelect = (sid: string, opts?: { newTab?: boolean }) => {
     const num = Number(sid);
-    const s = ownSessions.find((x) => x.id === num);
+    const s = subtreeSessions.find((x) => x.id === num);
     if (s)
-      onSelect({ kind: "session", projectID: project.id, session: s }, opts);
+      onSelect({ kind: "session", projectID: s.projectID, session: s }, opts);
   };
 
   // depth > 0 时仅靠 pl-1 (4px) 给一点缩进；层级表达全部由 renderHeader 里的
@@ -775,6 +829,7 @@ function ProjectCard({
         selectedSessionId={selectedSessionIdStr}
         onSessionSelect={handleSessionSelect}
         attentionSessions={attentionAgentSessions}
+        collapsedAttentionSessions={collapsedAttentionAgentSessions}
         attentionAriaLabel={`${project.name} 待处理会话`}
         emptyLabel={children.length === 0 ? "暂无会话" : null}
         renderSessionsPopover={(close) => (
@@ -803,12 +858,12 @@ function ProjectCard({
             }}
             onClose={close}
             onSelectSession={(sid, opts) => {
-              const s = ownSessions.find((x) => x.id === sid);
+              const s = subtreeSessions.find((x) => x.id === sid);
               if (s) {
                 onSelect(
                   {
                     kind: "session",
-                    projectID: project.id,
+                    projectID: s.projectID,
                     session: s,
                   },
                   opts,
@@ -886,7 +941,7 @@ function ProjectCard({
               {activeCount > 0 ? (
                 <span
                   className="inline-flex items-center gap-1 font-mono text-2xs text-status-running"
-                  title={`${activeCount} 个活跃会话`}
+                  title={`${activeCount} 个活跃会话（含子项目）`}
                 >
                   <span
                     aria-hidden="true"
@@ -984,13 +1039,19 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
     void WailsApp.ProjectGet(project.id)
       .then((detail) => {
         if (cancelled) return;
+        const members = [
+          ...((detail.directMembers ?? []) as ProjectMemberItem[]),
+          ...((detail.inheritedMembers ?? []) as ProjectMemberItem[]),
+        ];
+        if (members.length === 1) {
+          onPick(members[0].agentID);
+          setOpen(false);
+          return;
+        }
         setLoadState({
           status: "loaded",
           projectID: project.id,
-          members: [
-            ...((detail.directMembers ?? []) as ProjectMemberItem[]),
-            ...((detail.inheritedMembers ?? []) as ProjectMemberItem[]),
-          ],
+          members,
         });
       })
       .catch((err) => {
@@ -1006,7 +1067,7 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
     return () => {
       cancelled = true;
     };
-  }, [open, project.id]);
+  }, [onPick, open, project.id]);
 
   const activeLoadState =
     loadState.projectID === project.id
