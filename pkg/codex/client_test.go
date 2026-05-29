@@ -141,6 +141,46 @@ func TestClientStream_ResumeThread(t *testing.T) {
 	assert.Equal(t, "thread-old", stream.SessionID())
 }
 
+func TestClientStreamInput_SendsLocalImage(t *testing.T) {
+	// Given a Codex app-server that accepts multimodal user input,
+	// when the client starts a turn with text and a local image,
+	// then turn/start receives both input items.
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		startReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/start", startReq.Method)
+		respondRPC(h, startReq, map[string]any{"thread": map[string]any{"id": "thread-image"}})
+
+		turnReq := readRPCReq(t, sc)
+		assert.Equal(t, "turn/start", turnReq.Method)
+		assert.JSONEq(t, `{
+			"threadId":"thread-image",
+			"input":[
+				{"type":"text","text":"describe this","text_elements":[]},
+				{"type":"localImage","path":"/tmp/screenshot.png","detail":"high"}
+			]
+		}`, string(turnReq.Params))
+		respondRPC(h, turnReq, map[string]any{"turn": map[string]any{"id": "turn-image", "status": "inProgress"}})
+		h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-image", "turnId": "turn-image", "turn": map[string]any{"id": "turn-image", "status": "completed"}}})
+	}
+
+	client := New(WithAppServerRunnerForTesting(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	stream, err := client.StreamInput(ctx, []UserInput{
+		TextInput("describe this"),
+		LocalImageInput("/tmp/screenshot.png", ImageDetailHigh),
+	})
+	require.NoError(t, err)
+	for stream.Next() {
+	}
+	require.NoError(t, stream.Close(ctx))
+}
+
 func TestSessionStream_ReusesSingleAppServerAcrossTurns(t *testing.T) {
 	// Given a persistent Codex app-server session.
 	runner := &fakeAppServerRunner{t: t}

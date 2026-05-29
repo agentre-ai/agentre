@@ -264,6 +264,10 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 	if err != nil {
 		return wire.RunParams{}, err
 	}
+	userBlocks, err := blocks.EncodeAll(req.UserBlocks)
+	if err != nil {
+		return wire.RunParams{}, fmt.Errorf("encode user blocks: %w", err)
+	}
 	return wire.RunParams{
 		Backend:           backendJSON,
 		AgentID:           req.AgentID,
@@ -272,6 +276,7 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 		SystemPrompt:      req.SystemPrompt,
 		ProviderSessionID: req.ProviderSessionID,
 		UserText:          req.UserText,
+		UserBlocks:        userBlocks,
 		History:           history,
 		Compact:           req.Compact,
 		ForkAnchor:        req.ForkAnchor,

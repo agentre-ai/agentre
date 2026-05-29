@@ -70,6 +70,7 @@ const componentMocks = vi.hoisted(() => ({
   // 控制 useSessionCapabilities 桩返回的 caps;测试按 backend 切换 switchableDuringTurn。
   capsSwitchableDuringTurn: true,
   capsAllowedModes: ["default", "plan", "acceptEdits", "bypassPermissions"],
+  capsImageInput: true,
   computeComposerContextUsage: vi.fn((..._args: unknown[]) => ({
     max: 0,
     used: 0,
@@ -195,7 +196,9 @@ vi.mock("../permission-mode", async () => {
 // 路径走 useBackendCapabilities 分支。
 function makeCapsStub() {
   return {
-    has: (c: string) => c === "set_permission_mode",
+    has: (c: string) =>
+      c === "set_permission_mode" ||
+      (c === "image_input" && componentMocks.capsImageInput),
     permissionModeMeta: {
       allowedModes: componentMocks.capsAllowedModes,
       defaultMode: "default",
@@ -267,6 +270,7 @@ function resetStore() {
     "acceptEdits",
     "bypassPermissions",
   ];
+  componentMocks.capsImageInput = true;
   componentMocks.computeComposerContextUsage.mockClear();
   componentMocks.cycleMode.mockClear();
   componentMocks.setMode.mockClear();
@@ -562,6 +566,95 @@ describe("ChatPanel · Codex collaboration mode", () => {
     });
   });
 
+  it("sends image attachments in the SendChatMessage payload", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      backendType: "builtin",
+      id: 42,
+    });
+    appMocks.SendChatMessage.mockResolvedValue({
+      assistantMessageId: 1001,
+      sessionId: 42,
+      stream: "chat:event:42:1001",
+      userMessageId: 1000,
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((message: {
+          text: string;
+          images?: Array<{ dataUrl: string; mediaType: string; name: string }>;
+        }) => void)
+      | undefined;
+    expect(submit).toBeDefined();
+
+    act(() => {
+      submit?.({
+        text: "",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+    });
+
+    await waitFor(() => {
+      expect(appMocks.SendChatMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 42,
+          text: "",
+          images: [
+            {
+              dataUrl: "data:image/png;base64,AQID",
+              name: "shot.png",
+            },
+          ],
+        }),
+      );
+    });
+  });
+
+  it("blocks image payloads when the backend capability is absent", async () => {
+    resetStore();
+    componentMocks.capsImageInput = false;
+    mockSessionStore.session = makeSession({
+      backendType: "claudecode",
+      id: 42,
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    expect(componentMocks.chatComposerProps.at(-1)?.supportsImageInput).toBe(
+      false,
+    );
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((message: {
+          text: string;
+          images?: Array<{ dataUrl: string; mediaType: string; name: string }>;
+        }) => void)
+      | undefined;
+
+    act(() => {
+      submit?.({
+        text: "describe",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+    });
+
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText("当前 Agent 后端不支持图片输入"),
+    ).toBeInTheDocument();
+  });
+
   it("exact /compact starts Codex compact RPC instead of sending a user message", async () => {
     resetStore();
     componentMocks.capsSwitchableDuringTurn = false;
@@ -596,6 +689,44 @@ describe("ChatPanel · Codex collaboration mode", () => {
     expect(useChatStreamsStore.getState().streams.get(42)?.name).toBe(
       "chat:event:42:1001",
     );
+  });
+
+  it("rejects exact /compact when image attachments are present", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = makeSession({
+      backendType: "codex",
+      id: 42,
+      permissionMode: "default",
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((message: {
+          text: string;
+          images?: Array<{ dataUrl: string; mediaType: string; name: string }>;
+        }) => void)
+      | undefined;
+
+    act(() => {
+      submit?.({
+        text: "/compact",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+    });
+
+    expect(appMocks.CompactChatSession).not.toHaveBeenCalled();
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText("/compact 不能和图片一起发送"),
+    ).toBeInTheDocument();
   });
 
   it("exact /compact is rejected while the Codex turn is streaming", async () => {

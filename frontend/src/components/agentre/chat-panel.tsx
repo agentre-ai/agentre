@@ -53,7 +53,12 @@ import { useSessionStatusStore } from "@/stores/session-status-store";
 import { useBackendCapabilities } from "./capability/use-backend-capabilities";
 import { useSessionCapabilities } from "./capability/use-session-capabilities";
 import type { PlanActionStream } from "./canonical-tool/props";
-import { ChatComposer, ChatTranscript } from "./chat";
+import {
+  ChatComposer,
+  ChatTranscript,
+  type ChatComposerSubmit,
+  type ChatImageAttachment,
+} from "./chat";
 import { ChatContextSidebar } from "./chat-context-sidebar";
 import { TerminalPanel } from "./terminal/terminal-panel";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
@@ -79,7 +84,7 @@ import {
   SendChatMessage,
   StopChatMessage,
 } from "../../../wailsjs/go/app/App";
-import type { chat_svc } from "../../../wailsjs/go/models";
+import { chat_svc } from "../../../wailsjs/go/models";
 
 type SvcChatMessage = chat_svc.ChatMessage;
 type ChatAgentItem = chat_svc.ChatAgentItem;
@@ -118,12 +123,29 @@ function isExactCompactCommand(text: string): boolean {
   return text.trim() === "/compact";
 }
 
-function optimisticUser(id: number, sid: number, text: string): SvcChatMessage {
+function optimisticUser(
+  id: number,
+  sid: number,
+  text: string,
+  images: ChatImageAttachment[] = [],
+): SvcChatMessage {
+  const blocks: Array<Record<string, unknown>> = [];
+  if (text) blocks.push({ type: "text", text });
+  for (const image of images) {
+    blocks.push({
+      type: "image",
+      image: {
+        dataUrl: image.dataUrl,
+        mediaType: image.mediaType,
+        name: image.name,
+      },
+    });
+  }
   return {
     id,
     sessionId: sid,
     role: "user",
-    blocks: [{ type: "text", text }],
+    blocks,
     model: "",
     promptTokens: 0,
     completionTokens: 0,
@@ -425,6 +447,7 @@ function ChatPanel({
   );
   const caps = sessionCaps ?? backendCaps;
   const isModeSwitchable = !!caps?.has("set_permission_mode");
+  const supportsImageInput = !!caps?.has("image_input");
 
   // composerContextUsage：当前会话 inputBox 底栏的「上下文用量」数据。
   //   - max  = session.contextWindow（解析顺序见 chat_svc.resolveContextWindowWithRuntime；为 0 时整块隐藏）。
@@ -593,9 +616,11 @@ function ChatPanel({
   async function doSend(
     targetSessionId: number,
     agentId: number,
-    text: string,
+    message: ChatComposerSubmit,
     permissionModeOverride?: string,
   ) {
+    const text = message.text.trim();
+    const images = message.images ?? [];
     // 发送消息时强制跟随到底部，无论用户当前在哪里
     atBottomRef.current = true;
     // 调用点都是 void doSend(...) fire-and-forget；这里必须自吞错误成 notice，
@@ -604,7 +629,7 @@ function ChatPanel({
     try {
       // 新建会话路径：把项目上下文带上（仅 targetSessionId=0 时生效）；
       // 已存在会话续发：projectId 在 Send 端被忽略，传 0 也无害。
-      const resp = await SendChatMessage({
+      const sendPayload: Record<string, unknown> = {
         sessionId: targetSessionId,
         agentId,
         text,
@@ -613,14 +638,23 @@ function ChatPanel({
         permissionMode:
           permissionModeOverride ??
           (isModeSwitchable ? permissionMode.mode : ""),
-      });
+      };
+      if (images.length > 0) {
+        sendPayload.images = images.map((image) => ({
+          name: image.name,
+          dataUrl: image.dataUrl,
+        }));
+      }
+      const resp = await SendChatMessage(
+        chat_svc.SendRequest.createFrom(sendPayload),
+      );
       // 新建会话路径：通知父级把 selectedSessionId 切到新 id。
       if (targetSessionId === 0 && resp.sessionId) {
         onSessionCreated?.(resp.sessionId, agentId);
       }
       setMessages((prev) => [
         ...prev,
-        optimisticUser(resp.userMessageId, resp.sessionId, text),
+        optimisticUser(resp.userMessageId, resp.sessionId, text, images),
         optimisticAssistantPlaceholder(resp.assistantMessageId, resp.sessionId),
       ]);
       // 乐观写 running: 后端 Send 已把 sess.AgentStatus="running" 落库, 但 turn
@@ -732,7 +766,7 @@ function ChatPanel({
       const msg = e instanceof Error ? e.message : String(e);
       if (isChatSteerNoActiveError(msg)) {
         // turn 已结束（done/closed 事件即将到 / 已到），按普通 send 重新起一轮。
-        await doSend(sid, agentId, text);
+        await doSend(sid, agentId, { text });
         return;
       }
       console.error("[chat] enqueue failed", e);
@@ -1282,7 +1316,18 @@ function ChatPanel({
                       />
                     </>
                   }
-                  onSubmit={(text) => {
+                  onSubmit={(message: ChatComposerSubmit | string) => {
+                    message =
+                      typeof message === "string" ? { text: message } : message;
+                    const text = message.text.trim();
+                    const images = message.images ?? [];
+                    if (images.length > 0 && !supportsImageInput) {
+                      setNotice({
+                        kind: "error",
+                        text: "当前 Agent 后端不支持图片输入",
+                      });
+                      return;
+                    }
                     if (activeEditing) {
                       void confirmEdit(text);
                       return;
@@ -1299,23 +1344,38 @@ function ChatPanel({
                         notifyCompactWaitForTurn();
                         return;
                       }
+                      if (images.length > 0) {
+                        setNotice({
+                          kind: "error",
+                          text: "/compact 不能和图片一起发送",
+                        });
+                        return;
+                      }
                       void doCompact(sessionId);
                       return;
                     }
                     // 新建会话首发：targetSessionId=0，由 doSend 内的 RPC 返回真实 sessionId
                     // 并通过 onSessionCreated 回填到父 store；此时 composer 不会卸载（结构稳定）。
                     if (!sessionId && newSessionAgent) {
-                      void doSend(0, newSessionAgent.id, text);
+                      void doSend(0, newSessionAgent.id, message);
                       return;
                     }
                     if (streaming && sessionId > 0) {
+                      if (images.length > 0) {
+                        setNotice({
+                          kind: "error",
+                          text: "当前对话正在运行，图片请等本轮结束后发送",
+                        });
+                        return;
+                      }
                       // streaming 中：按回车走 Enqueue，把消息排队等下一个安全点注入。
                       void doEnqueue(sessionId, session?.agentId ?? 0, text);
                       return;
                     }
-                    void doSend(sessionId, session?.agentId ?? 0, text);
+                    void doSend(sessionId, session?.agentId ?? 0, message);
                   }}
                   backendType={activeBackendType}
+                  supportsImageInput={supportsImageInput}
                   onSlashRpc={(cmd) => {
                     console.warn(
                       `slash rpc not wired: cmd=${cmd.name} backend=${activeBackendType}`,

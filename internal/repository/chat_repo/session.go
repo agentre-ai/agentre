@@ -19,6 +19,7 @@ type SessionRepo interface {
 	Find(ctx context.Context, id int64) (*chat_entity.Session, error)
 	ListByAgent(ctx context.Context, agentID int64, limit int) ([]*chat_entity.Session, error)
 	ListByAgentPaged(ctx context.Context, agentID int64, offset, limit int) ([]*chat_entity.Session, error)
+	ListIDsByAgents(ctx context.Context, agentIDs []int64) (map[int64][]int64, error)
 	ListAttentionByAgent(ctx context.Context, agentID int64, limit int) ([]*chat_entity.Session, error)
 	ListByProject(ctx context.Context, projectID int64) ([]*chat_entity.Session, error)
 	CountByAgent(ctx context.Context, agentID int64) (int64, error)
@@ -93,6 +94,30 @@ func (r *sessionRepo) ListByAgentPaged(ctx context.Context, agentID int64, offse
 		Find(&rows).Error
 	applySessionDerivedFields(rows)
 	return rows, err
+}
+
+func (r *sessionRepo) ListIDsByAgents(ctx context.Context, agentIDs []int64) (map[int64][]int64, error) {
+	out := make(map[int64][]int64, len(agentIDs))
+	if len(agentIDs) == 0 {
+		return out, nil
+	}
+	rows := []struct {
+		AgentID int64 `gorm:"column:agent_id"`
+		ID      int64 `gorm:"column:id"`
+	}{}
+	err := db.Ctx(ctx).
+		Table("chat_sessions").
+		Select("agent_id, id").
+		Where("agent_id IN ? AND status = ?", agentIDs, consts.ACTIVE).
+		Order("agent_id ASC, last_message_at DESC, id DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.AgentID] = append(out[row.AgentID], row.ID)
+	}
+	return out, nil
 }
 
 // ListAttentionByAgent 给 sidebar 折叠态的 attention bubble 用：返回该 agent 下

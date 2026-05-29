@@ -25,6 +25,7 @@ func TestBuiltinCapabilities(t *testing.T) {
 		So(caps.Has(capability.CapCancelSteer), ShouldBeTrue)
 		So(caps.Has(capability.CapDrainSteer), ShouldBeFalse)
 		So(caps.Has(capability.CapAbort), ShouldBeTrue)
+		So(caps.Has(capability.CapImageInput), ShouldBeTrue)
 		So(caps.Has(capability.CapSetPermission), ShouldBeFalse)
 		So(caps.Has(capability.CapAnswerUserAsk), ShouldBeFalse)
 		So(caps.Has(capability.CapToolPermission), ShouldBeFalse)

@@ -3,6 +3,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Download,
+  ExternalLink,
   Info,
   Loader2,
   RefreshCw,
@@ -32,7 +33,11 @@ import {
 import { cn } from "@/lib/utils";
 
 import { Info as FetchAppInfo } from "../../../wailsjs/go/app/App";
-import { EventsOff, EventsOn } from "../../../wailsjs/runtime/runtime";
+import {
+  BrowserOpenURL,
+  EventsOff,
+  EventsOn,
+} from "../../../wailsjs/runtime/runtime";
 import {
   CHECKSUM_FETCH_ERROR_PREFIX,
   checkForUpdate,
@@ -59,6 +64,8 @@ const CHANNEL_DESC: Record<UpdateChannel, string> = {
   beta: "尝鲜新特性，可能含少量已知问题。",
   nightly: "每日构建，更新最快，稳定性最低。",
 };
+
+const REPOSITORY_URL = "https://github.com/agentre-ai/agentre";
 
 // MIRROR_CUSTOM_ID select 中"自定义"选项的特殊值；选中时显示 input。
 const MIRROR_CUSTOM_ID = "__custom__";
@@ -301,6 +308,7 @@ export function UpdateSection() {
         </div>
 
         <div className="flex flex-col gap-4 p-4">
+          <RepositoryRow />
           <ChannelRow
             channel={channel}
             onChange={handleChannelChange}
@@ -375,6 +383,37 @@ function SectionHeader() {
       <p className="text-sm leading-relaxed text-muted-foreground">
         启动时会自动后台检查一次新版本。也可以手动切换通道或选择下载镜像加速国内访问。
       </p>
+    </div>
+  );
+}
+
+function RepositoryRow() {
+  const handleClick = React.useCallback(
+    (event: React.MouseEvent<HTMLAnchorElement>) => {
+      event.preventDefault();
+      BrowserOpenURL(REPOSITORY_URL);
+    },
+    [],
+  );
+
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-sm font-medium">仓库地址</span>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          查看源码、发布记录和 issue。
+        </p>
+      </div>
+      <a
+        href={REPOSITORY_URL}
+        target="_blank"
+        rel="noreferrer"
+        onClick={handleClick}
+        className="inline-flex min-w-0 items-center gap-1.5 text-xs font-medium text-agent-1 underline-offset-4 hover:underline sm:max-w-[320px]"
+      >
+        <span className="truncate">{REPOSITORY_URL}</span>
+        <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
+      </a>
     </div>
   );
 }

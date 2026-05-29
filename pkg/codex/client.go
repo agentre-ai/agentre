@@ -55,6 +55,10 @@ func New(opts ...Option) *Client {
 }
 
 func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (*Stream, error) {
+	return c.StreamInput(ctx, userInput(prompt), opts...)
+}
+
+func (c *Client) StreamInput(ctx context.Context, input []UserInput, opts ...RunOption) (*Stream, error) {
 	spec := c.defaultRunSpec()
 	for _, o := range opts {
 		o(&spec)
@@ -75,7 +79,7 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 		cleanup()
 		return nil, err
 	}
-	turnParams, err := turnStartParams(thread, prompt, spec.collaborationMode, c.model)
+	turnParams, err := turnStartParamsInput(thread, input, spec.collaborationMode, c.model)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -161,6 +165,10 @@ func (s *Session) ID() string {
 }
 
 func (s *Session) Stream(ctx context.Context, prompt string, opts ...RunOption) (*Stream, error) {
+	return s.StreamInput(ctx, userInput(prompt), opts...)
+}
+
+func (s *Session) StreamInput(ctx context.Context, input []UserInput, opts ...RunOption) (*Stream, error) {
 	s.turnMu.Lock()
 	spec := s.client.defaultRunSpec()
 	for _, o := range opts {
@@ -177,7 +185,7 @@ func (s *Session) Stream(ctx context.Context, prompt string, opts ...RunOption) 
 		s.turnMu.Unlock()
 		return nil, err
 	}
-	turnParams, err := turnStartParams(thread, prompt, spec.collaborationMode, s.client.model)
+	turnParams, err := turnStartParamsInput(thread, input, spec.collaborationMode, s.client.model)
 	if err != nil {
 		s.turnMu.Unlock()
 		return nil, err

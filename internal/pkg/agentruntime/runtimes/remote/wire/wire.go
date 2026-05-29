@@ -153,6 +153,7 @@ type RunParams struct {
 	SystemPrompt      string               `json:"systemPrompt,omitempty"`
 	ProviderSessionID string               `json:"providerSessionId,omitempty"`
 	UserText          string               `json:"userText,omitempty"`
+	UserBlocks        []blocks.StoredBlock `json:"userBlocks,omitempty"`
 	History           []HistoryMessageWire `json:"history,omitempty"`
 	Compact           bool                 `json:"compact,omitempty"`
 	ForkAnchor        string               `json:"forkAnchor,omitempty"`

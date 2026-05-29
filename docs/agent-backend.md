@@ -22,9 +22,9 @@
 
 仓库目前内置三个 backend，定位差异明显，**新 backend 选档前先对号入座**：
 
-- **builtin** — in-process 跑 cago `app/coding`，直接吃 `llm_provider` 配置。定位是「轻量自带」，只暴露 steer / cancel / abort 这三种 in-process 单 provider 模式天生支持的能力，没有 CLI 子进程开销，也没有 plan / 工具审批等高级协议。
+- **builtin** — in-process 跑 cago `app/coding`，直接吃 `llm_provider` 配置。定位是「轻量自带」，暴露 steer / cancel / abort / image input 这几种 in-process 单 provider 模式天生支持的能力，没有 CLI 子进程开销，也没有 plan / 工具审批等高级协议。
 - **claudecode** — wrap 本地 `claude` CLI（Anthropic 家族），通过 stdout JSONL + `control_request` 帧双向通信，子进程常驻并 LRU 复用 session。功能最全：能跑 plan / `can_use_tool` / `AskUserQuestion` / Subagent / fork-session / mid-turn 切 permission mode。
-- **codex** — wrap 本地 `codex` CLI（OpenAI 家族），通过 JSON-RPC over stdio app-server 协议交互，每个 turn 起新进程（fire-and-forget）。原生支持 context window 上报和原生 compact turn，但没有 `can_use_tool` 协议、不能 mid-turn 切 mode、也不发 Subagent 事件。
+- **codex** — wrap 本地 `codex` CLI（OpenAI 家族），通过 JSON-RPC over stdio app-server 协议交互，每个 turn 起新进程（fire-and-forget）。原生支持 context window 上报、原生 compact turn 和图片输入，但没有 `can_use_tool` 协议、不能 mid-turn 切 mode、也不发 Subagent 事件。
 
 > 仓库里还有 `runtimes/remote/`，它**不是独立 backend**——而是 desktop 调远端 `agentred` daemon 时的代理，capability 通过 `Prefetch` 从 daemon 端真实 backend 同步过来，本节不单列。
 
@@ -50,6 +50,7 @@
 | `CapForkSession` / `"fork_session"` | `RunRequest.ForkAnchor` 内置 | ❌ | ✅ `--fork-session` | ✅ `thread/rollback` | 「重新生成」从某个 anchor 派生新 session 重跑 |
 | `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ✅ | ✅ | runtime 探到模型实际上下文窗口大小后 emit，前端展示用量条；claudecode SDK 自己不报窗口，translator 在 `system.init` 帧上查 `llmcatalog` 兜底 |
 | `CapCompact` / `"compact"` | `RunRequest.Compact=true` | ❌ | ❌ | ✅ | 原生 compact turn——让 LLM 把历史摘要后清掉占用 |
+| `CapImageInput` / `"image_input"` | `RunRequest.UserBlocks` 包含 `blocks.ImageBlock` | ✅ | ❌ | ✅ | 用户消息可携带 PNG / JPEG / WebP 图片。builtin 直接透传 cago blocks；codex 将 inline 图片物化为临时本地文件后走 app-server `localImage` |
 
 > **规则**：未声明 cap 调对应接口必须返 `agentruntime.ErrUnsupported`（sentinel 错误，跨进程透明，chat_svc 据此翻成 wire code）。声明 cap=true 但未实现接口会被 `TestXxxCapabilities` 矩阵测试卡掉（type-assert 失败）。
 
@@ -218,6 +219,7 @@ permission mode 是**会话级权限状态机**（不是 plan 内容）。三个
 | `CapForkSession` | `RunRequest.ForkAnchor` 内置语义 | 「重新生成」走 fork |
 | `CapReportContextWindow` | emit `ContextWindowUpdated` | runtime 能探到模型实际窗口（codex 协议原生有；claudecode 靠 `llmcatalog.Lookup(model)` 兜底） |
 | `CapCompact` | `RunRequest.Compact=true` 内置语义 | 原生 compact turn |
+| `CapImageInput` | `RunRequest.UserBlocks` image blocks | 支持多模态用户输入；不支持时 chat_svc 会在调 runtime 前拒绝带图 turn |
 
 不实现的 cap：**chat_svc 拿到前端请求时返回 `ErrUnsupported`**——错误码已经在 wire 层 sentinel 化跨进程透明传递，**不要私造错误**。
 

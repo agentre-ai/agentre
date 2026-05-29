@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -145,6 +146,34 @@ func TestRunParams_RawBackendOpaque(t *testing.T) {
 	assert.Equal(t, in.UserText, out.UserText)
 	assert.Equal(t, in.Compact, out.Compact)
 	assert.Equal(t, in.PermissionMode, out.PermissionMode)
+}
+
+func TestRunParams_UserBlocksRoundTrip(t *testing.T) {
+	// Given a multimodal user message crossing desktop -> agentred,
+	// when RunParams is marshaled, then text and inline image bytes survive.
+	stored, err := cagoblocks.EncodeAll([]cagoblocks.ContentBlock{
+		cagoblocks.TextBlock{Text: "what is this?"},
+		cagoblocks.ImageBlock{
+			MediaType: "image/png",
+			Source:    cagoblocks.BlobSource{Inline: []byte{0x89, 0x50, 0x4e, 0x47}},
+		},
+	})
+	require.NoError(t, err)
+
+	in := RunParams{SessionID: 42, UserText: "what is this?", UserBlocks: stored}
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"userBlocks"`)
+
+	var out RunParams
+	require.NoError(t, json.Unmarshal(b, &out))
+	decoded, err := cagoblocks.DecodeAll(out.UserBlocks)
+	require.NoError(t, err)
+	require.Len(t, decoded, 2)
+	assert.Equal(t, "what is this?", decoded[0].(cagoblocks.TextBlock).Text)
+	img := decoded[1].(cagoblocks.ImageBlock)
+	assert.Equal(t, "image/png", img.MediaType)
+	assert.Equal(t, []byte{0x89, 0x50, 0x4e, 0x47}, img.Source.Inline)
 }
 
 // TestParams_FieldShape spot-checks lowerCamelCase tagging by walking a

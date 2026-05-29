@@ -26,6 +26,7 @@ func TestCodexCapabilities(t *testing.T) {
 		So(caps.Has(capability.CapCancelSteer), ShouldBeFalse) // codex fire-and-forget
 		So(caps.Has(capability.CapDrainSteer), ShouldBeFalse)  // 无 hook 队列
 		So(caps.Has(capability.CapAbort), ShouldBeTrue)
+		So(caps.Has(capability.CapImageInput), ShouldBeTrue)
 		So(caps.Has(capability.CapSetPermission), ShouldBeTrue)
 		So(caps.Has(capability.CapAnswerUserAsk), ShouldBeTrue)
 		So(caps.Has(capability.CapToolPermission), ShouldBeTrue)
@@ -335,6 +336,9 @@ func (s *fakeRuntimeSession) ID() string                  { return s.sid }
 func (s *fakeRuntimeSession) Stream(context.Context, string, string) (cxStream, error) {
 	return s.stream, nil
 }
+func (s *fakeRuntimeSession) StreamInput(context.Context, []pkgcodex.UserInput, string) (cxStream, error) {
+	return s.stream, nil
+}
 func (s *fakeRuntimeSession) Compact(context.Context) (cxStream, error)        { return s.stream, nil }
 func (s *fakeRuntimeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }
 func (s *fakeRuntimeSession) ActiveStream() cxSteerStream                      { return nil }
@@ -362,6 +366,9 @@ func (s *countingRuntimeSession) Stream(context.Context, string, string) (cxStre
 	stream := s.streams[s.streamCalls]
 	s.streamCalls++
 	return stream, nil
+}
+func (s *countingRuntimeSession) StreamInput(context.Context, []pkgcodex.UserInput, string) (cxStream, error) {
+	return s.Stream(context.Background(), "", "")
 }
 func (s *countingRuntimeSession) Compact(context.Context) (cxStream, error) {
 	return s.Stream(context.Background(), "", "")

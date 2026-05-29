@@ -111,6 +111,7 @@ function projectSessionToAgentSession(
           : relativeTime(s.lastMessageAt);
   return {
     id: String(s.id),
+    ...(reason === "selected" ? { selected: true } : {}),
     status,
     title,
     trailingLabel: trailing,
@@ -695,10 +696,13 @@ function ProjectCard({
     const tab = s.tabs.find((t) => t.id === id);
     return tab?.meta.kind === "session" ? tab.meta.sessionId : 0;
   });
-  const selectedSessionIdForRank =
+  const selectedOwnSessionId =
     activeSessionId && ownSessions.some((s) => s.id === activeSessionId)
       ? activeSessionId
       : undefined;
+  const selectedSubtreeSession = activeSessionId
+    ? subtreeSessions.find((s) => s.id === activeSessionId)
+    : undefined;
 
   const attentionRows = React.useMemo(() => {
     const rows: {
@@ -725,21 +729,16 @@ function ProjectCard({
     }
     rows.sort((a, b) => b.session.lastMessageAt - a.session.lastMessageAt);
     // selected 锚点：当前打开的会话即使不在 attention 池，也钉到末尾
-    if (selectedSessionIdForRank && !seen.has(selectedSessionIdForRank)) {
-      const target = ownSessions.find((s) => s.id === selectedSessionIdForRank);
-      if (target) {
-        rows.push({
-          session: { ...target, projectID: node.project?.id ?? 0 },
-          reason: "selected",
-        });
-      }
+    if (selectedSubtreeSession && !seen.has(selectedSubtreeSession.id)) {
+      rows.push({
+        session: selectedSubtreeSession,
+        reason: "selected",
+      });
     }
     return rows;
   }, [
-    node.project?.id,
-    ownSessions,
     readOverrides,
-    selectedSessionIdForRank,
+    selectedSubtreeSession,
     subtreeSessions,
   ]);
 
@@ -778,10 +777,10 @@ function ProjectCard({
     .sort((a, b) => b.lastMessageAt - a.lastMessageAt);
   const top5 = sortedAll.slice(0, 5);
   if (
-    selectedSessionIdForRank &&
-    !top5.some((s) => s.id === selectedSessionIdForRank)
+    selectedOwnSessionId &&
+    !top5.some((s) => s.id === selectedOwnSessionId)
   ) {
-    const anchor = ownSessions.find((s) => s.id === selectedSessionIdForRank);
+    const anchor = ownSessions.find((s) => s.id === selectedOwnSessionId);
     if (anchor) top5.push(anchor);
   }
   const top5AgentSessions: AgentSession[] = top5.map((s) => {
@@ -799,8 +798,8 @@ function ProjectCard({
     return projectSessionToAgentSession(s, reason);
   });
 
-  const selectedSessionIdStr = selectedSessionIdForRank
-    ? String(selectedSessionIdForRank)
+  const selectedSessionIdStr = selectedOwnSessionId
+    ? String(selectedOwnSessionId)
     : undefined;
 
   const handleSessionSelect = (sid: string, opts?: { newTab?: boolean }) => {

@@ -175,6 +175,21 @@ func (mr *MockSessionRepoMockRecorder) ListByAgentPaged(ctx, agentID, offset, li
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByAgentPaged", reflect.TypeOf((*MockSessionRepo)(nil).ListByAgentPaged), ctx, agentID, offset, limit)
 }
 
+// ListIDsByAgents mocks base method.
+func (m *MockSessionRepo) ListIDsByAgents(ctx context.Context, agentIDs []int64) (map[int64][]int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListIDsByAgents", ctx, agentIDs)
+	ret0, _ := ret[0].(map[int64][]int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListIDsByAgents indicates an expected call of ListIDsByAgents.
+func (mr *MockSessionRepoMockRecorder) ListIDsByAgents(ctx, agentIDs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListIDsByAgents", reflect.TypeOf((*MockSessionRepo)(nil).ListIDsByAgents), ctx, agentIDs)
+}
+
 // ListByProject mocks base method.
 func (m *MockSessionRepo) ListByProject(ctx context.Context, projectID int64) ([]*chat_entity.Session, error) {
 	m.ctrl.T.Helper()

@@ -4,6 +4,7 @@ import {
   ArrowUp,
   Check,
   Gauge,
+  ImagePlus,
   LoaderCircle,
   Pencil,
   RefreshCw,
@@ -355,7 +356,7 @@ function ApprovalGate({
 }
 
 type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
-  onSubmit?: (message: string) => void;
+  onSubmit?: (message: ChatComposerSubmit) => void;
   placeholder?: string;
   /** 历史消息文本，按时间倒序排列（最新在前），方向键 ↑↓ 浏览。 */
   userMessageHistory?: string[];
@@ -385,6 +386,8 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   /** 当前会话 backend 类型;让 AIChatInput 启用 slash menu 并按 backend 过滤候选命令。
    *  空串/省略 → 不启用 slash menu。 */
   backendType?: string;
+  /** 当前 backend 是否支持图片输入。false 时不渲染图片附件入口。 */
+  supportsImageInput?: boolean;
   /** slash menu rpc 类命令的回调(literal_text 类由 AIChatInput 内部直接填回编辑器,
    *  不自动发送,也不会冒泡到这里)。省略则 slash menu 不启用。 */
   onSlashRpc?: (
@@ -392,6 +395,40 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
     exec: Extract<import("./slash-commands").SlashExec, { kind: "rpc" }>,
   ) => void;
 };
+
+export type ChatImageAttachment = {
+  dataUrl: string;
+  mediaType: string;
+  name: string;
+};
+
+export type ChatComposerSubmit = {
+  images?: ChatImageAttachment[];
+  text: string;
+};
+
+const CHAT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp";
+const MAX_CHAT_IMAGE_COUNT = 4;
+const MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function readImageFile(file: File): Promise<ChatImageAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("invalid image data"));
+        return;
+      }
+      resolve({
+        dataUrl: reader.result,
+        mediaType: file.type,
+        name: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 // 把 token 数显示成 "42.3k / 200k" 这种紧凑形式，跟 inline 底栏的 10px 字号匹配。
 // >= 1000 时按 k 缩写并保留 1 位小数；< 1000 时直接显示。
@@ -576,6 +613,29 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
   );
 }
 
+function ImageBlockView({ block }: { block: ChatBlockData }) {
+  const image = (
+    block as ChatBlockData & {
+      image?: { dataUrl?: string; mediaType?: string; name?: string };
+    }
+  ).image;
+  if (!image?.dataUrl) return null;
+  return (
+    <a
+      href={image.dataUrl}
+      target="_blank"
+      rel="noreferrer"
+      className="block w-fit overflow-hidden rounded-md border border-border bg-muted"
+    >
+      <img
+        src={image.dataUrl}
+        alt={image.name || image.mediaType || "图片"}
+        className="max-h-72 max-w-full object-contain"
+      />
+    </a>
+  );
+}
+
 const SEND_SHORTCUT_HINT = "↵ 发送 · ⇧↵ 换行";
 const EDIT_SHORTCUT_HINT = "↵ 保存 · Esc 取消";
 
@@ -595,11 +655,15 @@ function ChatComposer({
   onShiftTab,
   autoFocusOnMount = false,
   backendType,
+  supportsImageInput = true,
   onSlashRpc,
   ...props
 }: ChatComposerProps) {
   const inputRef = React.useRef<AIChatInputHandle>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [isEmpty, setIsEmpty] = React.useState(true);
+  const [images, setImages] = React.useState<ChatImageAttachment[]>([]);
+  const [imageError, setImageError] = React.useState("");
 
   // 切换到编辑模式（或换了编辑目标）时把目标文本载进 TipTap，并把光标抓回输入框；
   // 退出编辑模式时清空输入，免得上一次的编辑残留干扰下一条新消息。
@@ -613,6 +677,10 @@ function ChatComposer({
     } else if (wasEditingRef.current) {
       inputRef.current?.clear();
     }
+    if (editing) {
+      setImages([]);
+      setImageError("");
+    }
     wasEditingRef.current = editing;
   }, [editing, editDraft]);
 
@@ -624,15 +692,57 @@ function ChatComposer({
     inputRef.current?.focus();
   }, [autoFocusOnMount]);
 
+  React.useEffect(() => {
+    if (supportsImageInput) return;
+    setImages([]);
+    setImageError("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, [supportsImageInput]);
+
   function handleSend(text: string) {
     const trimmed = text.trim();
-    if (!trimmed) return;
-    onSubmit?.(trimmed);
+    if (!trimmed && images.length === 0) return;
+    onSubmit?.(
+      images.length > 0 ? { images, text: trimmed } : { text: trimmed },
+    );
+    setImages([]);
+    setImageError("");
   }
 
   function handleFormSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isEmpty && images.length > 0) {
+      handleSend("");
+      return;
+    }
     inputRef.current?.submit();
+  }
+
+  async function handleImageFiles(files: FileList | null) {
+    try {
+      if (!files || files.length === 0) return;
+      const nextFiles = Array.from(files);
+      if (images.length + nextFiles.length > MAX_CHAT_IMAGE_COUNT) {
+        setImageError(`最多添加 ${MAX_CHAT_IMAGE_COUNT} 张图片`);
+        return;
+      }
+      const bad = nextFiles.find(
+        (file) =>
+          !CHAT_IMAGE_ACCEPT.split(",").includes(file.type) ||
+          file.size > MAX_CHAT_IMAGE_BYTES,
+      );
+      if (bad) {
+        setImageError("仅支持 PNG、JPEG、WebP，单张不超过 5MB");
+        return;
+      }
+      const attachments = await Promise.all(nextFiles.map(readImageFile));
+      setImages((prev) => [...prev, ...attachments]);
+      setImageError("");
+    } catch {
+      setImageError("图片读取失败");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
   }
 
   // Esc 取消编辑。TipTap 的 handleKeyDown 不处理 Esc，所以这里在 form 层捕获；
@@ -708,6 +818,33 @@ function ChatComposer({
           </div>
         ) : null}
         <div className="flex flex-col gap-1 px-3.5 pt-2.5 pb-1">
+          {!editing && images.length > 0 ? (
+            <div className="flex flex-wrap gap-2 pb-1">
+              {images.map((img, idx) => (
+                <div
+                  key={`${img.name}-${idx}`}
+                  className="group relative h-16 w-20 overflow-hidden rounded-md border border-border bg-muted"
+                >
+                  <img
+                    src={img.dataUrl}
+                    alt={img.name || "图片附件"}
+                    className="h-full w-full object-cover"
+                  />
+                  <button
+                    type="button"
+                    aria-label={`移除图片 ${img.name || idx + 1}`}
+                    className="absolute top-1 right-1 inline-flex size-5 items-center justify-center rounded-sm bg-background/90 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                    onClick={() => {
+                      setImages((prev) => prev.filter((_, i) => i !== idx));
+                      setImageError("");
+                    }}
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <AIChatInput
             ref={inputRef}
             onSubmit={handleSend}
@@ -723,7 +860,37 @@ function ChatComposer({
               if (exec.kind === "rpc") onSlashRpc?.(cmd, exec);
             }}
           />
+          {imageError ? (
+            <div className="text-[11px] text-status-error" role="alert">
+              {imageError}
+            </div>
+          ) : null}
           <div className="flex items-center gap-2">
+            {!editing && supportsImageInput ? (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={CHAT_IMAGE_ACCEPT}
+                  multiple
+                  className="hidden"
+                  onChange={(event) =>
+                    void handleImageFiles(event.target.files)
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="添加图片"
+                  title="添加图片"
+                  disabled={images.length >= MAX_CHAT_IMAGE_COUNT}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <ImagePlus data-icon="only" aria-hidden="true" />
+                </Button>
+              </>
+            ) : null}
             <span className="font-mono text-[10px] leading-none text-subtle-foreground">
               {editing ? EDIT_SHORTCUT_HINT : SEND_SHORTCUT_HINT}
             </span>
@@ -750,7 +917,7 @@ function ChatComposer({
             ) : (
               <Button
                 type="submit"
-                disabled={isEmpty}
+                disabled={isEmpty && images.length === 0}
                 size="icon-sm"
                 aria-label="发送"
                 title="发送 (Enter)"
@@ -1206,6 +1373,10 @@ function renderMessageBlocks(
       }
     | {
         block: ChatBlockData;
+        type: "image";
+      }
+    | {
+        block: ChatBlockData;
         // _consumed 标记此条审批已被 merge 到某条 tool_use 卡上,渲染前会被过滤掉。
         // 未 resolved / resolved-denied 的审批不会被标记,保留为独立卡。
         _consumed?: boolean;
@@ -1257,6 +1428,9 @@ function renderMessageBlocks(
         break;
       case "thinking":
         items.push({ block: b, streaming: false, type: "thinking" });
+        break;
+      case "image":
+        items.push({ block: b, type: "image" });
         break;
       case "plan":
         // Most plan.update blocks are progress data for TaskProgressBar only.
@@ -1421,6 +1595,8 @@ function renderMessageBlocks(
             text={item.block.text ?? ""}
           />
         );
+      case "image":
+        return <ImageBlockView key={`image-${idx}`} block={item.block} />;
       case "tool": {
         // 工具卡统一走 CanonicalToolRouter:
         //   - block.canonical 非空且 kind 已注册 → 分发到 canonical-tool/<kind>/card.tsx

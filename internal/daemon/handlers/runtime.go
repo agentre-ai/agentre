@@ -142,6 +142,13 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		}
 		return wire.RunAck{}, fmt.Errorf("decode history: %w", err)
 	}
+	userBlocks, err := decodeUserBlocks(p.UserBlocks)
+	if err != nil {
+		if gatewayToken != "" {
+			h.deps.Gateway.RevokeToken(gatewayToken)
+		}
+		return wire.RunAck{}, fmt.Errorf("decode user blocks: %w", err)
+	}
 
 	req := agentruntime.RunRequest{
 		Backend:           &be,
@@ -152,6 +159,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		SystemPrompt:      p.SystemPrompt,
 		ProviderSessionID: p.ProviderSessionID,
 		UserText:          p.UserText,
+		UserBlocks:        userBlocks,
 		History:           history,
 		Compact:           p.Compact,
 		GatewayURL:        gatewayURL,
@@ -426,4 +434,11 @@ func decodeHistory(in []wire.HistoryMessageWire) ([]agentruntime.HistoryMessage,
 		out = append(out, agentruntime.HistoryMessage{Role: m.Role, Blocks: bs})
 	}
 	return out, nil
+}
+
+func decodeUserBlocks(in []blocks.StoredBlock) ([]blocks.ContentBlock, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	return blocks.DecodeAll(in)
 }

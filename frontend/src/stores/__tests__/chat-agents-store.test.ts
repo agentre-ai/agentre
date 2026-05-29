@@ -130,6 +130,35 @@ describe("chat-agents-store", () => {
     });
   });
 
+  it("Given backend returns full sessionIds, When recent sessions are truncated, Then reload preserves all ids for tab reconcile", async () => {
+    listChatAgents.mockResolvedValueOnce({
+      agents: [
+        {
+          id: 10,
+          name: "X",
+          avatarColor: "agent-3",
+          pinned: false,
+          chattable: true,
+          sessionIds: [1, 2, 3, 4, 5, 6],
+          sessions: [
+            { id: 1, status: "idle", needsAttention: false },
+            { id: 2, status: "idle", needsAttention: false },
+            { id: 3, status: "idle", needsAttention: false },
+            { id: 4, status: "idle", needsAttention: false },
+            { id: 5, status: "idle", needsAttention: false },
+          ],
+          attentionSessions: [],
+        },
+      ],
+    });
+
+    await useChatAgentsStore.getState().reload();
+
+    expect(useChatAgentsStore.getState().agents[0].sessionIds).toEqual([
+      1, 2, 3, 4, 5, 6,
+    ]);
+  });
+
   it("reload 把 sessions 的静态字段灌到 session-meta-store", async () => {
     // ChatSessionLite 不含 projectId, 所以这里不期望 meta.projectId 被设置。
     // projectId 由 useChatSession 在 LoadChatSession 后通过 setMeta 补全。

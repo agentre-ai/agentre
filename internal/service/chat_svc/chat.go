@@ -4,6 +4,7 @@ package chat_svc
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -55,6 +56,18 @@ import (
 	"agentre/internal/service/remote_device_svc"
 	"agentre/pkg/claudecode"
 )
+
+const (
+	maxSendImages      = 4
+	maxSendImageBytes  = 5 * 1024 * 1024
+	dataURLBase64Token = ";base64,"
+)
+
+var sendImageMediaTypes = map[string]struct{}{
+	"image/png":  {},
+	"image/jpeg": {},
+	"image/webp": {},
+}
 
 type ChatSvc interface {
 	ListAgents(ctx context.Context, req *ListAgentsRequest) (*ListAgentsResponse, error)
@@ -202,8 +215,16 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 	if err != nil {
 		return nil, i18n.NewError(ctx, code.OperationFailed)
 	}
+	sessionIDs, err := chat_repo.Session().ListIDsByAgents(ctx, agentIDs)
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.OperationFailed)
+	}
 
 	for _, a := range agents {
+		ids := sessionIDs[a.ID]
+		if ids == nil {
+			ids = []int64{}
+		}
 		item := ChatAgentItem{
 			ID:            a.ID,
 			Name:          a.Name,
@@ -213,6 +234,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 			Pinned:        a.IsSystem(),
 			ActiveCount:   counts[a.ID],
 			TotalSessions: totals[a.ID],
+			SessionIDs:    ids,
 		}
 		if be := backends[a.AgentBackendID]; be != nil {
 			item.BackendType = be.Type
@@ -558,6 +580,12 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "text", Text: tb.Text})
 		case *blocks.TextBlock:
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "text", Text: tb.Text})
+		case blocks.ImageBlock:
+			out.Blocks = append(out.Blocks, imageBlockToChatBlock(tb))
+		case *blocks.ImageBlock:
+			if tb != nil {
+				out.Blocks = append(out.Blocks, imageBlockToChatBlock(*tb))
+			}
 		case blocks.ThinkingBlock:
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "thinking", Text: tb.Text})
 		case *blocks.ThinkingBlock:
@@ -634,6 +662,16 @@ func toolUseToChatBlock(id, name string, input map[string]any) ChatBlock {
 	}
 	if c, ok := canonical.FromToolUse(name, input); ok {
 		cb.Canonical = view.FromCanonical(c)
+	}
+	return cb
+}
+
+func imageBlockToChatBlock(img blocks.ImageBlock) ChatBlock {
+	cb := ChatBlock{Type: "image", Image: &ChatBlockImage{MediaType: img.MediaType}}
+	if len(img.Source.Inline) > 0 {
+		cb.Image.DataURL = "data:" + img.MediaType + ";base64," + base64.StdEncoding.EncodeToString(img.Source.Inline)
+	} else if img.Source.URL != "" {
+		cb.Image.DataURL = img.Source.URL
 	}
 	return cb
 }
@@ -727,8 +765,15 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 }
 
 func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) (*SendResponse, error) {
+	if req == nil {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
 	text := strings.TrimSpace(req.Text)
-	if text == "" {
+	imageBlocks, err := blocksFromSendImages(ctx, req.Images)
+	if err != nil {
+		return nil, err
+	}
+	if text == "" && len(imageBlocks) == 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 	if len(text) > chat_entity.MessageTextMaxBytes {
@@ -760,6 +805,15 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	a, be, prov, err := s.resolveAgentBackend(ctx, targetAgentID)
 	if err != nil {
 		return nil, err
+	}
+	if len(imageBlocks) > 0 && be.IsLocal() {
+		runner, err := s.selectRunner(ctx, be, req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if !runner.Capabilities().Has(capability.CapImageInput) {
+			return nil, i18n.NewError(ctx, code.AgentBackendTypeUnsupported)
+		}
 	}
 
 	if req.SessionID == 0 {
@@ -799,7 +853,45 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		_ = chat_repo.Session().Update(ctx, sess)
 	}
 
-	return s.startTurn(ctx, sess, a, be, prov, text, nil /*preTxHook*/, "" /*forkAnchor*/)
+	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, "" /*forkAnchor*/)
+}
+
+func userBlocksForSend(text string, imageBlocks []blocks.ContentBlock) []blocks.ContentBlock {
+	out := make([]blocks.ContentBlock, 0, 1+len(imageBlocks))
+	if strings.TrimSpace(text) != "" {
+		out = append(out, &blocks.TextBlock{Text: text})
+	}
+	out = append(out, imageBlocks...)
+	return out
+}
+
+func blocksFromSendImages(ctx context.Context, images []SendImage) ([]blocks.ContentBlock, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	if len(images) > maxSendImages {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	out := make([]blocks.ContentBlock, 0, len(images))
+	for _, img := range images {
+		mediaType, payload, ok := strings.Cut(strings.TrimSpace(img.DataURL), dataURLBase64Token)
+		if !ok || !strings.HasPrefix(mediaType, "data:") {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		mediaType = strings.TrimPrefix(mediaType, "data:")
+		if _, ok := sendImageMediaTypes[mediaType]; !ok {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil || len(decoded) == 0 || len(decoded) > maxSendImageBytes {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		out = append(out, blocks.ImageBlock{
+			MediaType: mediaType,
+			Source:    blocks.BlobSource{Inline: decoded},
+		})
+	}
+	return out, nil
 }
 
 // resolveProjectContext 校验新建会话的项目参数。返回 (projectID, err)。
@@ -1416,7 +1508,10 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	if userAnchor == nil {
 		return nil, i18n.NewError(ctx, code.ChatRegenerateNoUserAnchor)
 	}
-	userText := textOfMessage(userAnchor)
+	userBlocks, err := userAnchor.GetBlocks()
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
+	}
 
 	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
 	if err != nil {
@@ -1441,7 +1536,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, userText, preTx, forkAnchor)
+	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, forkAnchor)
 }
 
 // Edit 编辑历史 user 消息后用新文本重跑 turn。截到目标 user 消息（含）开始的全部
@@ -1481,6 +1576,10 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 	if target.Role != "user" {
 		return nil, i18n.NewError(ctx, code.ChatEditNotUser)
 	}
+	targetBlocks, err := target.GetBlocks()
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
+	}
 
 	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
 	if err != nil {
@@ -1503,7 +1602,40 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, text, preTx, forkAnchor)
+	return s.startTurn(ctx, sess, a, be, prov, replaceTextPreserveImages(text, targetBlocks), preTx, forkAnchor)
+}
+
+func replaceTextPreserveImages(text string, old []blocks.ContentBlock) []blocks.ContentBlock {
+	out := []blocks.ContentBlock{&blocks.TextBlock{Text: text}}
+	for _, b := range old {
+		switch img := b.(type) {
+		case blocks.ImageBlock:
+			out = append(out, img)
+		case *blocks.ImageBlock:
+			if img != nil {
+				out = append(out, img)
+			}
+		}
+	}
+	return out
+}
+
+func messageHasImage(m *chat_entity.Message) bool {
+	bs, err := m.GetBlocks()
+	if err != nil {
+		return false
+	}
+	for _, b := range bs {
+		switch img := b.(type) {
+		case blocks.ImageBlock:
+			return true
+		case *blocks.ImageBlock:
+			if img != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // backendForkAnchor 是 Regenerate / Edit 共享的"按后端类型决定 fork 锚点"分流逻辑。
@@ -1562,7 +1694,7 @@ func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Ses
 //
 // Caller is responsible for resolving sess/a/be/prov consistently with the
 // session's actual agent (Send for new sessions, Regenerate for in-place
-// rewind). text is the user message body that will be re-played to the runtime.
+// rewind). userBlocks is the user message body that will be re-played to the runtime.
 //
 // preTx, if non-nil, runs at the very top of the transaction — before NextSeq —
 // so it can free up seq numbers by truncating older rows. Returning a non-nil
@@ -1573,7 +1705,7 @@ func (s *chatSvc) startTurn(
 	a *agent_entity.Agent,
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
-	text string,
+	userBlocks []blocks.ContentBlock,
 	preTx func(txCtx context.Context) error,
 	forkAnchor string,
 ) (*SendResponse, error) {
@@ -1583,7 +1715,7 @@ func (s *chatSvc) startTurn(
 	}
 
 	userMsg := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
-	_ = userMsg.SetBlocks([]blocks.ContentBlock{&blocks.TextBlock{Text: text}})
+	_ = userMsg.SetBlocks(userBlocks)
 
 	model := ""
 	if prov != nil {
@@ -1814,6 +1946,10 @@ func (s *chatSvc) runTurn(
 			defer s.releaseRemoteRuntime(deviceID, sess.ID)
 		}
 	}
+	if userMsg != nil && messageHasImage(userMsg) && !runner.Capabilities().Has(capability.CapImageInput) {
+		s.failTurn(ctx, sess, assistantMsg, stream, agentruntime.ErrUnsupported)
+		return
+	}
 
 	cwd, cwdErr := resolveSessionCwd(ctx, sess, be)
 	if cwdErr != nil {
@@ -1833,6 +1969,9 @@ func (s *chatSvc) runTurn(
 	}
 	if userMsg != nil {
 		req.UserText = textOfMessage(userMsg)
+		if bs, err := userMsg.GetBlocks(); err == nil {
+			req.UserBlocks = bs
+		}
 	}
 	if be.IsBuiltin() {
 		// builtin 没有持久化 session — 把历史从 chat_messages 重建后透传。
@@ -1877,6 +2016,9 @@ func (s *chatSvc) runTurn(
 	if err != nil {
 		s.failTurn(ctx, sess, assistantMsg, stream, s.mapTurnError(ctx, sess, be, err))
 		return
+	}
+	if result != nil && (be.IsClaudeCode() || be.IsCodex()) {
+		s.persistProviderSessionID(ctx, sess, result.ProviderSessionID, "runner-start")
 	}
 	// runtime spawn 新 CLI 子进程时把实际下发的 --permission-mode 同步回吐到
 	// result.LaunchPermissionMode(claudecode 专用,其它 runtime 留空);这里把
@@ -2158,6 +2300,21 @@ func (s *chatSvc) runTurn(
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
 	}
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
+}
+
+func (s *chatSvc) persistProviderSessionID(ctx context.Context, sess *chat_entity.Session, providerSessionID, reason string) {
+	sid := strings.TrimSpace(providerSessionID)
+	if sess == nil || sid == "" || sid == sess.ProviderSessionID {
+		return
+	}
+	sess.SetProviderSession(sid)
+	if err := chat_repo.Session().Update(context.WithoutCancel(ctx), sess); err != nil {
+		logger.Ctx(ctx).Warn("chat_svc: persist provider_session_id failed",
+			zap.Int64("sessionId", sess.ID),
+			zap.String("providerSessionID", sid),
+			zap.String("reason", reason),
+			zap.Error(err))
+	}
 }
 
 func eventShowsProgressAfterError(ev agentruntime.Event) bool {
@@ -2559,6 +2716,9 @@ func textOfMessage(m *chat_entity.Message) string {
 	bs, _ := m.GetBlocks()
 	for _, b := range bs {
 		if tb, ok := b.(blocks.TextBlock); ok {
+			return tb.Text
+		}
+		if tb, ok := b.(*blocks.TextBlock); ok && tb != nil {
 			return tb.Text
 		}
 	}

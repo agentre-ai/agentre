@@ -888,6 +888,55 @@ describe("ProjectsPage active tab anchor", () => {
     expect(anchorRow).toHaveAttribute("aria-current", "true");
   });
 
+  it("Given a collapsed parent project, When the active tab is an idle child-project session, Then the parent rollup shows the active session", async () => {
+    localStorage.setItem("agentre.agentExpanded.project:1", "0");
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "Agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+        },
+        children: [
+          {
+            project: {
+              color: "agent-2",
+              icon: "folder",
+              id: 2,
+              name: "backend",
+              parentID: 1,
+              path: "/tmp/agentre/backend",
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    appMocks.ProjectListSessions.mockImplementation(
+      async (projectID: number) =>
+        projectID === 2
+          ? [
+              buildSession({
+                id: 502,
+                title: "Child active idle",
+                lastMessageAt: 5000,
+              }),
+            ]
+          : [],
+    );
+    selectSessionTab(502);
+
+    renderProjectsPage();
+
+    const activeChild = await screen.findByRole("button", {
+      name: /Child active idle/,
+    });
+    expect(activeChild).toHaveAttribute("aria-current", "true");
+  });
+
   it("Given an active session that belongs to another project, Then this project's sidebar does not surface that foreign session", async () => {
     appMocks.ProjectListSessions.mockResolvedValue([
       buildSession({ id: 201, title: "Local A", lastMessageAt: 2000 }),

@@ -87,6 +87,7 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 		Set: map[capability.Capability]bool{
 			capability.CapSteer:               true,
 			capability.CapAbort:               true,
+			capability.CapImageInput:          true,
 			capability.CapSetPermission:       true,
 			capability.CapAnswerUserAsk:       true,
 			capability.CapToolPermission:      true,
@@ -167,8 +168,16 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	}
 
 	var stream cxStream
+	var cleanupInputs func()
 	if req.Compact {
 		stream, err = sess.Compact(ctx)
+	} else if len(req.UserBlocks) > 0 {
+		inputs, cleanup, ierr := userInputsFromBlocks(req.UserBlocks)
+		if ierr != nil {
+			return nil, nil, ierr
+		}
+		cleanupInputs = cleanup
+		stream, err = sess.StreamInput(ctx, inputs, req.CollaborationMode)
 	} else {
 		stream, err = sess.Stream(ctx, req.UserText, req.CollaborationMode)
 	}
@@ -219,6 +228,9 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 
 	go func() {
 		defer close(out)
+		if cleanupInputs != nil {
+			defer cleanupInputs()
+		}
 		defer r.unregister(req.SessionID)
 		defer active.setOut(nil)
 		drainStream(stream, out, result, active, req.CollaborationMode)

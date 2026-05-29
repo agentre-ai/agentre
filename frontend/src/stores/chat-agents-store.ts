@@ -73,6 +73,18 @@ function listKnownSessions(a: chat_svc.ChatAgentItem) {
   return out;
 }
 
+function listSessionIds(a: AgentSlim | chat_svc.ChatAgentItem) {
+  const provided = (a as { sessionIds?: unknown }).sessionIds;
+  if (Array.isArray(provided)) {
+    return provided.filter(
+      (id): id is number => typeof id === "number" && id > 0,
+    );
+  }
+  const ids = new Set<number>();
+  for (const s of listKnownSessions(a)) ids.add(s.id);
+  return Array.from(ids);
+}
+
 // 初始 loading=true: 反映「还没拉过, 别把空 agents 当成最终态」, 与原 hook 行为对齐
 // (原 useState(true))。这样命令面板在 useChatAgents 首次 mount 的那一帧不会闪「无结果」。
 export const useChatAgentsStore = create<State & Actions>((set) => ({
@@ -156,9 +168,9 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         // 构造 AgentSlim: 原地 Object.assign 给 Wails class 实例挂 sessionIds 字段,
         // 不用 spread —— spread 会丢失 class 方法 (convertValues), 触发 TS 错误。
         const slimAgents = agents.map((a) => {
-          const ids = new Set<number>();
-          for (const s of listKnownSessions(a)) ids.add(s.id);
-          return Object.assign(a, { sessionIds: Array.from(ids) }) as AgentSlim;
+          return Object.assign(a, {
+            sessionIds: listSessionIds(a),
+          }) as AgentSlim;
         });
 
         set({ agents: slimAgents, loading: false, error: null });

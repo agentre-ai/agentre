@@ -3,9 +3,13 @@ package codex
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
 	"agentre/internal/pkg/agentruntime"
 	"agentre/pkg/codex"
@@ -92,6 +96,10 @@ func (a *cxClientAdapter) ensureSession(ctx context.Context) (*codex.Session, er
 }
 
 func (a *cxClientAdapter) Stream(ctx context.Context, prompt string, collaborationMode string) (cxStream, error) {
+	return a.StreamInput(ctx, []codex.UserInput{codex.TextInput(prompt)}, collaborationMode)
+}
+
+func (a *cxClientAdapter) StreamInput(ctx context.Context, input []codex.UserInput, collaborationMode string) (cxStream, error) {
 	var opts []codex.RunOption
 	a.streamMu.Lock()
 	hasSession := a.sess != nil
@@ -106,7 +114,7 @@ func (a *cxClientAdapter) Stream(ctx context.Context, prompt string, collaborati
 	if err != nil {
 		return nil, err
 	}
-	s, err := sess.Stream(ctx, prompt, opts...)
+	s, err := sess.StreamInput(ctx, input, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -175,10 +183,89 @@ func (a *cxClientAdapter) ActiveInterruptor() cxInterruptable {
 	return a.stream
 }
 
+func userInputsFromBlocks(bs []cagoblocks.ContentBlock) ([]codex.UserInput, func(), error) {
+	if len(bs) == 0 {
+		return nil, nil, nil
+	}
+	var (
+		inputs []codex.UserInput
+		tmpDir string
+	)
+	for i, b := range bs {
+		switch v := b.(type) {
+		case cagoblocks.TextBlock:
+			inputs = append(inputs, codex.TextInput(v.Text))
+		case *cagoblocks.TextBlock:
+			if v != nil {
+				inputs = append(inputs, codex.TextInput(v.Text))
+			}
+		case cagoblocks.ImageBlock:
+			path, err := materializeImage(&tmpDir, i, v)
+			if err != nil {
+				if tmpDir != "" {
+					_ = os.RemoveAll(tmpDir)
+				}
+				return nil, nil, err
+			}
+			inputs = append(inputs, codex.LocalImageInput(path, codex.ImageDetailHigh))
+		case *cagoblocks.ImageBlock:
+			if v == nil {
+				continue
+			}
+			path, err := materializeImage(&tmpDir, i, *v)
+			if err != nil {
+				if tmpDir != "" {
+					_ = os.RemoveAll(tmpDir)
+				}
+				return nil, nil, err
+			}
+			inputs = append(inputs, codex.LocalImageInput(path, codex.ImageDetailHigh))
+		}
+	}
+	var cleanup func()
+	if tmpDir != "" {
+		cleanup = func() { _ = os.RemoveAll(tmpDir) }
+	}
+	return inputs, cleanup, nil
+}
+
+func materializeImage(tmpDir *string, idx int, img cagoblocks.ImageBlock) (string, error) {
+	if strings.TrimSpace(img.Source.URL) != "" {
+		return "", fmt.Errorf("agentruntime/runtimes/codex: image URL blocks are not supported yet")
+	}
+	if len(img.Source.Inline) == 0 {
+		return "", fmt.Errorf("agentruntime/runtimes/codex: empty image block")
+	}
+	if *tmpDir == "" {
+		dir, err := os.MkdirTemp("", "agentre-codex-images-*")
+		if err != nil {
+			return "", err
+		}
+		*tmpDir = dir
+	}
+	path := filepath.Join(*tmpDir, fmt.Sprintf("image-%d%s", idx, imageExt(img.MediaType)))
+	if err := os.WriteFile(path, img.Source.Inline, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func imageExt(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ".png"
+	}
+}
+
 type cxSessionHandle interface {
 	Close(context.Context) error
 	ID() string
 	Stream(ctx context.Context, prompt string, collaborationMode string) (cxStream, error)
+	StreamInput(ctx context.Context, input []codex.UserInput, collaborationMode string) (cxStream, error)
 	Compact(ctx context.Context) (cxStream, error)
 	RewindTo(ctx context.Context, anchor string) (string, error)
 	ActiveStream() cxSteerStream

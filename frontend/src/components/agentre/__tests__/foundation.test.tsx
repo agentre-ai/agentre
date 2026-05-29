@@ -356,7 +356,7 @@ describe("Agentre foundation components", () => {
     });
     await user.click(sendButton);
 
-    expect(onSubmit).toHaveBeenCalledWith("规划 Q3 路线图");
+    expect(onSubmit).toHaveBeenCalledWith({ text: "规划 Q3 路线图" });
     // 发送后编辑器被 clearContent，TipTap 会留一个空段落。
     expect(editor.textContent ?? "").toBe("");
   });

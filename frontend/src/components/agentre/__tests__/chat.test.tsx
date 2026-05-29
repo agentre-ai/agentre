@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -94,6 +100,79 @@ function mockTextSelectionWithin(node: Node) {
 }
 
 describe("ChatComposer context meter", () => {
+  it("submits an image-only message with image data URLs", async () => {
+    const onSubmit = vi.fn();
+    const { container } = render(<ChatComposer onSubmit={onSubmit} />);
+    const input = container.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+      type: "image/png",
+    });
+
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(screen.getByAltText("shot.png")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith({
+        text: "",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+    });
+  });
+
+  it("rejects unsupported image attachments before submit", async () => {
+    const onSubmit = vi.fn();
+    const { container } = render(<ChatComposer onSubmit={onSubmit} />);
+    const input = container.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    Object.defineProperty(input, "value", {
+      configurable: true,
+      value: "bad-file",
+      writable: true,
+    });
+
+    fireEvent.change(input, {
+      target: {
+        files: [
+          new File(["hello"], "note.txt", {
+            type: "text/plain",
+          }),
+        ],
+      },
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "仅支持 PNG、JPEG、WebP，单张不超过 5MB",
+    );
+    expect(input.value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("hides image attachment controls when image input is unsupported", () => {
+    const { container } = render(
+      <ChatComposer onSubmit={() => undefined} supportsImageInput={false} />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "添加图片" }),
+    ).not.toBeInTheDocument();
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+  });
+
   it("renders warning-level context usage with defined waiting color tokens", () => {
     render(
       <ChatComposer
@@ -111,6 +190,32 @@ describe("ChatComposer context meter", () => {
     const fill = progress.firstElementChild;
     expect(fill).toHaveClass("bg-status-waiting");
     expect(fill).toHaveStyle({ width: "80%" });
+  });
+});
+
+describe("ChatTranscript image blocks", () => {
+  it("renders persisted image blocks", () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          chatMessage([
+            {
+              type: "image",
+              image: {
+                dataUrl: "data:image/png;base64,AQID",
+                mediaType: "image/png",
+                name: "shot.png",
+              },
+            } as unknown as ChatBlockData,
+          ]),
+        ]}
+      />,
+    );
+
+    const image = screen.getByRole("img", { name: "shot.png" });
+    expect(image).toHaveAttribute("src", "data:image/png;base64,AQID");
   });
 });
 
