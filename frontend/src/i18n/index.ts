@@ -34,6 +34,42 @@ function normalizeStoredLanguage(value: string | null | undefined) {
   return null;
 }
 
+function normalizeNavigatorLanguage(value: string | null | undefined) {
+  if (!value) return null;
+
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "zh" ||
+    normalized === "zh-cn" ||
+    normalized.startsWith("zh-hans")
+  ) {
+    return "zh-CN";
+  }
+  if (normalized === "en" || normalized.startsWith("en-")) return "en";
+
+  return null;
+}
+
+function languageFromNavigator({
+  navigatorLanguage,
+  navigatorLanguages,
+}: Pick<
+  DetectInitialLanguageOptions,
+  "navigatorLanguage" | "navigatorLanguages"
+>): SupportedLanguage {
+  const candidates = [
+    ...(navigatorLanguages ?? []),
+    ...(navigatorLanguage ? [navigatorLanguage] : []),
+  ];
+
+  for (const candidate of candidates) {
+    const supportedLanguage = normalizeNavigatorLanguage(candidate);
+    if (supportedLanguage) return supportedLanguage;
+  }
+
+  return "en";
+}
+
 function readStoredLanguage(storage: LanguageStorage | null) {
   if (!storage) return null;
 
@@ -67,14 +103,31 @@ function getBrowserStorage() {
   }
 }
 
+function getNavigatorLanguage() {
+  if (typeof navigator === "undefined") return null;
+
+  return navigator.language;
+}
+
+function getNavigatorLanguages() {
+  if (typeof navigator === "undefined") return null;
+
+  return navigator.languages.length > 0 ? navigator.languages : null;
+}
+
 export function detectInitialLanguage({
+  navigatorLanguage,
+  navigatorLanguages,
   storage,
 }: DetectInitialLanguageOptions = {}): SupportedLanguage {
   const languageStorage = storage ?? null;
   const storedLanguage = readStoredLanguage(languageStorage);
   if (storedLanguage) return storedLanguage;
 
-  const detectedLanguage = "en";
+  const detectedLanguage = languageFromNavigator({
+    navigatorLanguage,
+    navigatorLanguages,
+  });
   writeStoredLanguage(languageStorage, detectedLanguage);
   return detectedLanguage;
 }
@@ -86,6 +139,8 @@ i18n.use(initReactI18next).init({
     escapeValue: false,
   },
   lng: detectInitialLanguage({
+    navigatorLanguage: getNavigatorLanguage(),
+    navigatorLanguages: getNavigatorLanguages(),
     storage: getBrowserStorage(),
   }),
   resources,
