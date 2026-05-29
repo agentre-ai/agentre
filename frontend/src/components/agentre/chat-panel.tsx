@@ -5,6 +5,7 @@ import {
   PanelRight,
   PanelRightClose,
   Square,
+  TerminalSquare,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -44,6 +45,7 @@ import { relativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
 import { useSessionAttention } from "@/stores/attention-store";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import { useChatTerminalStore } from "@/stores/chat-terminal-store";
 import { useQueuedMessagesStore } from "@/stores/queued-messages-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
@@ -283,6 +285,10 @@ function ChatPanel({
   );
   const doneTick = liveStatus?.doneTick ?? 0;
   const lastDoneEvent = liveStatus?.lastDoneEvent ?? null;
+
+  const openTerminalSessionID = useChatTerminalStore((s) => s.openSessionID);
+  const toggleTerminal = useChatTerminalStore((s) => s.toggle);
+  const terminalOn = openTerminalSessionID === sessionId;
 
   const [pendingRegenId, setPendingRegenId] = React.useState<number | null>(
     null,
@@ -1113,6 +1119,20 @@ function ChatPanel({
                     );
                   })()
                 : null}
+              <button
+                type="button"
+                title="终端 (⌘`)"
+                aria-pressed={terminalOn}
+                disabled={sessionId === 0}
+                onClick={() => toggleTerminal(sessionId)}
+                className={
+                  terminalOn
+                    ? "rounded-md bg-primary-soft px-2 py-1 text-primary"
+                    : "rounded-md border border-border px-2 py-1 text-muted-foreground hover:bg-accent"
+                }
+              >
+                <TerminalSquare className="h-4 w-4" aria-hidden="true" />
+              </button>
             </div>
           )}
 
