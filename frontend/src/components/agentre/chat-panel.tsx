@@ -1133,6 +1133,11 @@ function ChatPanel({
                     );
                   })()
                 : null}
+              {terminalOn ? (
+                <kbd className="hidden sm:inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+                  ⌘`
+                </kbd>
+              ) : null}
               <button
                 type="button"
                 title="终端 (⌘`)"
