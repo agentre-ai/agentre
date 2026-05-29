@@ -55,10 +55,13 @@ func NewApp() *App {
 	return &App{}
 }
 
+var resetStaleActiveSessions = bootstrap.ResetStaleActiveSessions
+
 // Startup is wired to wails OnStartup. The context is saved so we can call
 // the runtime methods.
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	a.resetStaleSessionsOnStartup(ctx)
 	a.registerChatService()
 	a.hookPollerCancel = hook_svc.StartEmailPoller(ctx)
 
@@ -87,6 +90,12 @@ func (a *App) Startup(ctx context.Context) {
 	go a.startAutoUpdateCheck()
 
 	logger.Default().Info("app startup", zap.Any("info", a.Info()))
+}
+
+func (a *App) resetStaleSessionsOnStartup(ctx context.Context) {
+	if err := resetStaleActiveSessions(ctx); err != nil {
+		logger.Ctx(ctx).Warn("app startup: reset stale active sessions", zap.Error(err))
+	}
 }
 
 // Shutdown is wired to wails OnShutdown.

@@ -132,6 +132,78 @@ describe("ChatComposer context meter", () => {
     });
   });
 
+  it("Given an image on the clipboard, When it is pasted into the composer, Then it is added as an attachment", async () => {
+    const onSubmit = vi.fn();
+    render(<ChatComposer onSubmit={onSubmit} />);
+    const editor = screen.getByRole("textbox");
+    const file = new File([new Uint8Array([1, 2, 3])], "clip.png", {
+      type: "image/png",
+    });
+
+    fireEvent.paste(editor, {
+      clipboardData: {
+        files: [file],
+        items: [
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => file,
+          },
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByAltText("clip.png")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith({
+        text: "",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "clip.png",
+          },
+        ],
+      });
+    });
+  });
+
+  it("Given too many images on the clipboard, When they are pasted, Then the composer rejects the paste", async () => {
+    const onSubmit = vi.fn();
+    render(<ChatComposer onSubmit={onSubmit} />);
+    const editor = screen.getByRole("textbox");
+    const files = Array.from(
+      { length: 5 },
+      (_, idx) =>
+        new File([new Uint8Array([idx])], `clip-${idx}.png`, {
+          type: "image/png",
+        }),
+    );
+
+    fireEvent.paste(editor, {
+      clipboardData: {
+        files,
+        items: files.map((file) => ({
+          kind: "file",
+          type: file.type,
+          getAsFile: () => file,
+        })),
+      },
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Add at most 4 images",
+    );
+    expect(screen.queryByAltText("clip-0.png")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("rejects unsupported image attachments before submit", async () => {
     const onSubmit = vi.fn();
     const { container } = render(<ChatComposer onSubmit={onSubmit} />);

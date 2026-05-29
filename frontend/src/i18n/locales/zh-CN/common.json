@@ -480,6 +480,10 @@
       "description": "在下方输入框输入消息，按 Enter 发送，Shift+Enter 换行",
       "title": "和 {{name}} 开始对话"
     },
+    "newProjectSession": {
+      "description": "首条消息会在该项目工作区中启动会话。",
+      "title": "在 {{projectName}} 中和 {{agentName}} 开始项目对话"
+    },
     "notice": {
       "close": "关闭提示"
     },

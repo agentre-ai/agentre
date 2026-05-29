@@ -448,6 +448,47 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
   });
 });
 
+describe("ChatPanel · 新对话空白态文案", () => {
+  const newSessionAgent = {
+    id: 7,
+    name: "Eng",
+    agentBackendId: 1,
+    backendType: "claudecode",
+  } as never;
+
+  it("Given a chat is created from a project, When it has no first message yet, Then the empty copy names the project context", () => {
+    resetStore();
+    mockSessionStore.session = null;
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={newSessionAgent}
+        newSessionContext={{ projectId: 2 }}
+      />,
+    );
+
+    expect(
+      screen.getByText("Start a project chat with Eng in Agentre / backend"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your first message will start this session in the project workspace.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("Given a free chat is created, When it has no first message yet, Then the empty copy stays generic", () => {
+    resetStore();
+    mockSessionStore.session = null;
+
+    render(<ChatPanel sessionId={0} newSessionAgent={newSessionAgent} />);
+
+    expect(screen.getByText("Start a chat with Eng")).toBeInTheDocument();
+    expect(screen.queryByText(/project workspace/)).not.toBeInTheDocument();
+  });
+});
+
 describe("ChatPanel · Codex collaboration mode", () => {
   it("uses live Codex contextWindow while session detail still has 0", () => {
     resetStore();

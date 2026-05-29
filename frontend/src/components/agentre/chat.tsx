@@ -448,6 +448,17 @@ function readImageFile(file: File): Promise<ChatImageAttachment> {
   });
 }
 
+function imageFilesFromClipboard(data: DataTransfer): File[] {
+  const itemFiles = Array.from(data.items ?? [])
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => !!file);
+  if (itemFiles.length > 0) return itemFiles;
+  return Array.from(data.files ?? []).filter((file) =>
+    file.type.startsWith("image/"),
+  );
+}
+
 // 把 token 数显示成 "42.3k / 200k" 这种紧凑形式，跟 inline 底栏的 10px 字号匹配。
 // >= 1000 时按 k 缩写并保留 1 位小数；< 1000 时直接显示。
 function formatTokens(n: number): string {
@@ -680,6 +691,7 @@ function ChatComposer({
   backendType,
   supportsImageInput = true,
   onSlashRpc,
+  onPasteCapture,
   ...props
 }: ChatComposerProps) {
   const { t } = useTranslation();
@@ -742,7 +754,7 @@ function ChatComposer({
     inputRef.current?.submit();
   }
 
-  async function handleImageFiles(files: FileList | null) {
+  async function handleImageFiles(files: FileList | readonly File[] | null) {
     try {
       if (!files || files.length === 0) return;
       const nextFiles = Array.from(files);
@@ -771,6 +783,15 @@ function ChatComposer({
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  }
+
+  function handlePasteCapture(event: React.ClipboardEvent<HTMLFormElement>) {
+    onPasteCapture?.(event);
+    if (event.defaultPrevented || editing || !supportsImageInput) return;
+    const pastedImages = imageFilesFromClipboard(event.clipboardData);
+    if (pastedImages.length === 0) return;
+    event.preventDefault();
+    void handleImageFiles(pastedImages);
   }
 
   // Esc 取消编辑。TipTap 的 handleKeyDown 不处理 Esc，所以这里在 form 层捕获；
@@ -807,6 +828,7 @@ function ChatComposer({
       )}
       onSubmit={handleFormSubmit}
       onKeyDown={handleFormKeyDown}
+      onPasteCapture={handlePasteCapture}
       {...props}
     >
       <div

@@ -480,6 +480,10 @@
       "description": "Type a message below, press Enter to send, or Shift+Enter for a new line.",
       "title": "Start a chat with {{name}}"
     },
+    "newProjectSession": {
+      "description": "Your first message will start this session in the project workspace.",
+      "title": "Start a project chat with {{agentName}} in {{projectName}}"
+    },
     "notice": {
       "close": "Close notice"
     },

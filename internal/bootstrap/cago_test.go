@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/cago-frame/cago/configs"
 	"github.com/cago-frame/cago/database/db"
@@ -122,5 +123,87 @@ func TestInitRegistersProjectLocationRepo(t *testing.T) {
 
 	if project_location_repo.ProjectLocation() == nil {
 		t.Fatal("project_location_repo.ProjectLocation() = nil after Init; bootstrap forgot to RegisterProjectLocation")
+	}
+}
+
+func TestInitDoesNotResetActiveSessions(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTRE_DATA_DIR", dataDir)
+	t.Setenv("AGENTRE_ENV", "test")
+
+	runtime, err := Init(context.Background())
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(runtime.Close)
+
+	gdb := db.Default()
+	now := time.Now().UnixMilli()
+	if err := gdb.Exec(`INSERT INTO chat_sessions (id, agent_id, title, agent_status, status, createtime, updatetime)
+VALUES (?, ?, ?, ?, ?, ?, ?)`, 9001, 1, "still running", "running", 1, now, now).Error; err != nil {
+		t.Fatalf("insert running session: %v", err)
+	}
+
+	runtime2, err := Init(context.Background())
+	if err != nil {
+		t.Fatalf("second Init() error = %v", err)
+	}
+	t.Cleanup(runtime2.Close)
+
+	var got string
+	if err := db.Default().Table("chat_sessions").Select("agent_status").Where("id = ?", 9001).Scan(&got).Error; err != nil {
+		t.Fatalf("load session status: %v", err)
+	}
+	if got != "running" {
+		t.Fatalf("agent_status after Init = %q, want running", got)
+	}
+}
+
+func TestResetStaleActiveSessionsMarksRunningAndWaitingAsError(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTRE_DATA_DIR", dataDir)
+	t.Setenv("AGENTRE_ENV", "test")
+
+	runtime, err := Init(context.Background())
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(runtime.Close)
+
+	gdb := db.Default()
+	now := time.Now().UnixMilli()
+	rows := []struct {
+		id     int64
+		status string
+	}{
+		{9101, "running"},
+		{9102, "waiting"},
+		{9103, "idle"},
+	}
+	for _, row := range rows {
+		if err := gdb.Exec(`INSERT INTO chat_sessions (id, agent_id, title, agent_status, status, createtime, updatetime)
+VALUES (?, ?, ?, ?, ?, ?, ?)`, row.id, 1, row.status, row.status, 1, now, now).Error; err != nil {
+			t.Fatalf("insert %s session: %v", row.status, err)
+		}
+	}
+
+	if err := ResetStaleActiveSessions(context.Background()); err != nil {
+		t.Fatalf("ResetStaleActiveSessions() error = %v", err)
+	}
+
+	got := map[int64]string{}
+	type row struct {
+		ID          int64
+		AgentStatus string
+	}
+	var out []row
+	if err := db.Default().Table("chat_sessions").Select("id, agent_status").Where("id IN ?", []int64{9101, 9102, 9103}).Scan(&out).Error; err != nil {
+		t.Fatalf("load statuses: %v", err)
+	}
+	for _, row := range out {
+		got[row.ID] = row.AgentStatus
+	}
+	if got[9101] != "error" || got[9102] != "error" || got[9103] != "idle" {
+		t.Fatalf("statuses after reset = %#v, want running/waiting error and idle unchanged", got)
 	}
 }

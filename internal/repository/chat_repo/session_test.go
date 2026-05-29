@@ -299,7 +299,7 @@ func TestSessionRepo_SoftDelete(t *testing.T) {
 
 // TestSessionRepo_ResetActiveSessions 钉死启动期残留清理 SQL:任何 agent_status
 // 是 running / waiting 的未软删 session 都翻成 error。
-// bootstrap.Init 启动时调一次,防止 app crash / restart 留下永远卡 RUNNING 的会话。
+// 主 Wails 实例 Startup 后调一次,防止 app crash / restart 留下永远卡 RUNNING 的会话。
 func TestSessionRepo_ResetActiveSessions(t *testing.T) {
 	t.Run("有残留时把 running / waiting 翻成 error 并返回受影响行数", func(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)

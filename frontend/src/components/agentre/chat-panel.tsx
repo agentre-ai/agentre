@@ -293,7 +293,7 @@ type NewSessionContext = {
 type ChatPanelProps = {
   /** 当前要渲染的会话；0 = 新建会话模式（需要配合 newSessionAgent）或空态。*/
   sessionId: number;
-  /** sessionId=0 时若提供，则渲染"和 X 开始对话"占位 + Composer，首发 RPC 后建立新会话。*/
+  /** sessionId=0 时若提供，则渲染新会话占位 + Composer，首发 RPC 后建立新会话。*/
   newSessionAgent?: ChatAgentItem | null;
   /** 新建会话时附加的项目上下文。仅 sessionId=0 路径生效。*/
   newSessionContext?: NewSessionContext;
@@ -386,6 +386,11 @@ function ChatPanel({
   const { tree } = useProjectTree();
   const sessionProjectId = session?.projectId ?? 0;
   const currentSessionId = session?.id ?? 0;
+  const newSessionProjectName = React.useMemo(() => {
+    const projectId = newSessionContext?.projectId ?? 0;
+    if (projectId <= 0) return "";
+    return projectChain(tree, projectId).join(" / ");
+  }, [newSessionContext?.projectId, tree]);
   const derivedBreadcrumb = React.useMemo(() => {
     if (sessionProjectId <= 0) return null;
     const chain = projectChain(tree, sessionProjectId);
@@ -1257,12 +1262,19 @@ function ChatPanel({
                 <div className="flex flex-1 items-center justify-center">
                   <div className="flex flex-col items-center gap-2 text-center">
                     <div className="text-sm font-semibold">
-                      {t("chatPanel.newSession.title", {
-                        name: newSessionAgent.name,
-                      })}
+                      {newSessionProjectName
+                        ? t("chatPanel.newProjectSession.title", {
+                            agentName: newSessionAgent.name,
+                            projectName: newSessionProjectName,
+                          })
+                        : t("chatPanel.newSession.title", {
+                            name: newSessionAgent.name,
+                          })}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      {t("chatPanel.newSession.description")}
+                      {newSessionProjectName
+                        ? t("chatPanel.newProjectSession.description")
+                        : t("chatPanel.newSession.description")}
                     </div>
                   </div>
                 </div>

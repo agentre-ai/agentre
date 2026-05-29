@@ -91,14 +91,6 @@ func Init(ctx context.Context) (*Runtime, error) {
 	hook_repo.RegisterHookEvent(hook_repo.NewHookEvent())
 	chat_repo.RegisterSession(chat_repo.NewSession())
 	chat_repo.RegisterMessage(chat_repo.NewMessage())
-	// app crash / 强制重启 / wails dev hot-reload 都会让正在跑的 turn goroutine
-	// 死掉,但 chat_sessions.agent_status 留在 running/waiting,sidebar 一直亮
-	// "运行中"。启动一进来先把残留翻成 error,让用户看到的状态真实。
-	if n, err := chat_repo.Session().ResetActiveSessions(ctx); err != nil {
-		logger.Default().Warn("reset stale active sessions", zap.Error(err))
-	} else if n > 0 {
-		logger.Default().Info("reset stale active sessions", zap.Int64("count", n))
-	}
 	project_repo.RegisterProject(project_repo.NewProject())
 	project_repo.RegisterProjectAgent(project_repo.NewProjectAgent())
 	project_location_repo.RegisterProjectLocation(project_location_repo.NewProjectLocation())
@@ -136,6 +128,21 @@ func Init(ctx context.Context) (*Runtime, error) {
 
 	runtime = &Runtime{config: cfg, dataDir: dataDir}
 	return runtime, nil
+}
+
+// ResetStaleActiveSessions turns persisted running/waiting sessions left by a
+// dead previous desktop process into error. Call this only after the Wails
+// single-instance lock has admitted the process as the primary instance.
+func ResetStaleActiveSessions(ctx context.Context) error {
+	n, err := chat_repo.Session().ResetActiveSessions(ctx)
+	if err != nil {
+		logger.Default().Warn("reset stale active sessions", zap.Error(err))
+		return err
+	}
+	if n > 0 {
+		logger.Default().Info("reset stale active sessions", zap.Int64("count", n))
+	}
+	return nil
 }
 
 // loadProxyAddr 从 app_settings 表读监听地址 / 端口；缺失走默认 127.0.0.1:DefaultProxyListenPort。
