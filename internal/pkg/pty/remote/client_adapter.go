@@ -84,7 +84,7 @@ func (a *ClientAdapter) ensureSubscription(terminalID string) *terminalSubscript
 func (a *ClientAdapter) handleData(_ context.Context, raw json.RawMessage) (any, error) {
 	var ev protocol.TerminalDataEvent
 	if err := json.Unmarshal(raw, &ev); err != nil {
-		return nil, nil
+		return nil, nil //nolint:nilerr // push-event handler; malformed events are silently discarded
 	}
 	a.mu.Lock()
 	sub := a.subs[ev.TerminalID]
@@ -103,7 +103,7 @@ func (a *ClientAdapter) handleData(_ context.Context, raw json.RawMessage) (any,
 func (a *ClientAdapter) handleExit(_ context.Context, raw json.RawMessage) (any, error) {
 	var ev protocol.TerminalExitEvent
 	if err := json.Unmarshal(raw, &ev); err != nil {
-		return nil, nil
+		return nil, nil //nolint:nilerr // push-event handler; malformed events are silently discarded
 	}
 	a.mu.Lock()
 	sub := a.subs[ev.TerminalID]

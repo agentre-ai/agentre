@@ -34,7 +34,7 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 			shell = "/bin/sh"
 		}
 	}
-	cmd := exec.CommandContext(ctx, shell, "-l")
+	cmd := exec.CommandContext(ctx, shell, "-l") //nolint:gosec // G204: shell is from user spec or $SHELL env; not from request input
 	cmd.Dir = spec.Cwd
 	cmd.Env = append(os.Environ(), append(spec.Env, "TERM=xterm-256color")...)
 

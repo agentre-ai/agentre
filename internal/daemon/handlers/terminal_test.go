@@ -117,7 +117,7 @@ func TestTerminal_Close_CallsHandleClose(t *testing.T) {
 
 	h := handlers.NewTerminalHandlers(mbe, &recordingEmitter{})
 	res, _ := h.Open(context.Background(), protocol.TerminalOpenParams{Cols: 80, Rows: 24})
-	_, err := h.Close(context.Background(), protocol.TerminalCloseParams{TerminalID: res.TerminalID})
+	_, err := h.Close(context.Background(), protocol.TerminalCloseParams(res))
 	require.NoError(t, err)
 }
 
