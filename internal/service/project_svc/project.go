@@ -36,6 +36,7 @@ type ProjectSvc interface {
 
 	// cwd
 	ResolveSessionCwd(ctx context.Context, session *chat_entity.Session) (string, error)
+	ResolveProjectCwd(ctx context.Context, projectID int64, deviceID string) (string, error)
 }
 
 type projectSvc struct {
