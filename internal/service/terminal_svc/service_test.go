@@ -130,6 +130,44 @@ func TestService_Shutdown_ClosesAll(t *testing.T) {
 	svc.Shutdown()
 }
 
+func TestService_Open_CancelledByClose_NoLeakedHandle(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockBE := mocks.NewMockPTYBackend(ctrl)
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	mockBE.EXPECT().Open(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(openCtx context.Context, _ pty.Spec) (pty.Handle, error) {
+			close(started)
+			<-openCtx.Done()
+			close(canceled)
+			return nil, openCtx.Err()
+		})
+
+	sel := terminal_svc.NewBackendSelector(mockBE, func(string) (terminal_svc.PTYBackend, error) {
+		t.Fatal("should not call remote factory for local")
+		return nil, nil
+	})
+	svc := terminal_svc.NewService(stubSessionLookup{
+		sess: &chat_entity.Session{ID: 1},
+		be:   &agent_backend_entity.AgentBackend{DeviceID: ""},
+		cwd:  "/tmp",
+	}, sel, terminal_svc.NoopEmitter{})
+
+	openErrCh := make(chan error, 1)
+	go func() {
+		openErrCh <- svc.Open(context.Background(), 1, 80, 24)
+	}()
+	<-started
+	// Now preempt via Close
+	require.NoError(t, svc.Close(context.Background(), 1))
+	<-canceled // confirm cancel actually fired
+	err := <-openErrCh
+	require.ErrorIs(t, err, context.Canceled)
+	// Verify no handle leaked
+	require.ErrorIs(t, svc.Write(context.Background(), 1, "x"), terminal_svc.ErrTerminalClosed)
+}
+
 type recordingEmitter struct {
 	mu     sync.Mutex
 	events []recordedEvent

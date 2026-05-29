@@ -31,6 +31,7 @@ type Service struct {
 
 	mu       sync.Mutex
 	sessions map[int64]pty.Handle
+	inFlight map[int64]context.CancelFunc // cancel fns for pending Opens
 }
 
 func NewService(lookup SessionLookup, sel *BackendSelector, emitter Emitter) *Service {
@@ -42,6 +43,7 @@ func NewService(lookup SessionLookup, sel *BackendSelector, emitter Emitter) *Se
 		selector: sel,
 		emitter:  emitter,
 		sessions: map[int64]pty.Handle{},
+		inFlight: map[int64]context.CancelFunc{},
 	}
 }
 
@@ -58,6 +60,7 @@ func (s *Service) Open(ctx context.Context, sessionID int64, cols, rows uint16) 
 		return err
 	}
 
+	// 1. Evict any existing handle.
 	s.mu.Lock()
 	old, hasOld := s.sessions[sessionID]
 	if hasOld {
@@ -68,14 +71,29 @@ func (s *Service) Open(ctx context.Context, sessionID int64, cols, rows uint16) 
 		_ = old.Close()
 	}
 
-	h, err := backend.Open(ctx, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows})
+	// 2. Register a cancel function so Close can preempt us while we wait on
+	//    the (potentially slow) backend.Open call.
+	openCtx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	s.inFlight[sessionID] = cancel
+	s.mu.Unlock()
+
+	h, err := backend.Open(openCtx, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows})
+
+	// 3. Atomically unregister inFlight and (on success) register handle.
+	s.mu.Lock()
+	delete(s.inFlight, sessionID)
+	if err == nil {
+		s.sessions[sessionID] = h
+	}
+	s.mu.Unlock()
+	// Release the cancel goroutine resources; idempotent if already cancelled.
+	cancel()
+
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.sessions[sessionID] = h
-	s.mu.Unlock()
-
+	// Use the original ctx for the pump so it survives openCtx cancellation.
 	go s.pump(ctx, sessionID, h)
 	return nil
 }
@@ -99,15 +117,26 @@ func (s *Service) Resize(ctx context.Context, sessionID int64, cols, rows uint16
 
 func (s *Service) Close(ctx context.Context, sessionID int64) error {
 	s.mu.Lock()
-	h, ok := s.sessions[sessionID]
-	if ok {
+	cancel, hadInFlight := s.inFlight[sessionID]
+	if hadInFlight {
+		delete(s.inFlight, sessionID)
+	}
+	h, hadHandle := s.sessions[sessionID]
+	if hadHandle {
 		delete(s.sessions, sessionID)
 	}
 	s.mu.Unlock()
-	if !ok {
+
+	if hadInFlight {
+		cancel() // preempt the in-flight Open
+	}
+	if !hadHandle && !hadInFlight {
 		return ErrTerminalNotOpen
 	}
-	return h.Close()
+	if hadHandle {
+		return h.Close()
+	}
+	return nil // only inFlight was cancelled; no Handle to close
 }
 
 func (s *Service) Shutdown() {
