@@ -220,7 +220,7 @@ describe("TerminalPanel", () => {
     expect(toastMocks.toast.error).toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
     // Banner should be rendered with role=alert
-    expect(getByRole("alert")).toHaveTextContent("连接已断开");
+    expect(getByRole("alert")).toHaveTextContent("Connection lost");
   });
 
   it("re-themes xterm when document root class changes (light↔dark toggle)", () => {

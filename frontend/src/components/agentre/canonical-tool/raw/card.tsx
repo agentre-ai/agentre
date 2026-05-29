@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   Check,
   ChevronRight,
@@ -27,6 +28,7 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
   cwd,
   sessionId,
 }) => {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
 
   const toolName = toolBlock.toolName ?? "tool";
@@ -65,10 +67,10 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
     typeof commandResult?.exitCode === "number"
       ? `EXIT ${commandResult.exitCode}`
       : isError
-        ? "ERROR"
+        ? t("canonical.status.error")
         : hasResult
-          ? "DONE"
-          : "RUNNING";
+          ? t("canonical.status.done")
+          : t("canonical.status.running");
   const StatusIcon = isError ? TriangleAlert : hasResult ? Check : LoaderCircle;
 
   const perm = (toolBlock as ChatBlockData).toolPermission;
@@ -76,26 +78,21 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
   const allowedBadge =
     perm?.resolved && perm.allowed
       ? perm.alwaysAllow
-        ? "Allowed · session"
-        : "Allowed"
+        ? t("canonical.raw.allowedSession")
+        : t("canonical.raw.allowed")
       : null;
 
   const params = React.useMemo(() => toolInputEntries(input), [input]);
-  const resultBody = commandResult
-    ? commandResult.output || "(empty output)"
-    : hasResult
-      ? resultBlock?.text || "(empty result)"
-      : "—";
   const resultMeta = commandResult
     ? formatCommandMeta(commandResult)
     : hasResult
       ? null
-      : "等待返回";
+      : t("canonical.raw.waitingResult");
 
   return (
     <section
       data-testid="raw-tool-card"
-      aria-label={`工具调用 ${toolName}`}
+      aria-label={t("canonical.raw.aria", { tool: toolName })}
       className={cn(
         "w-full max-w-[720px] overflow-hidden rounded-md border bg-card font-mono text-xs",
         isError ? "border-status-error/40" : "border-border",
@@ -133,7 +130,7 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
         {allowedBadge && (
           <span
             className="inline-flex shrink-0 items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-emerald-600 dark:text-emerald-400"
-            title="该工具调用已审批通过"
+            title={t("canonical.raw.approvedTitle")}
           >
             <Check className="size-2.5" aria-hidden="true" />
             {allowedBadge}
@@ -157,9 +154,11 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
       </button>
       {expanded && (
         <div className="flex flex-col gap-3 border-t border-border px-3 py-3">
-          <Section label="参数">
+          <Section label={t("canonical.raw.sections.params")}>
             {params.length === 0 ? (
-              <div className="text-muted-foreground">无参数</div>
+              <div className="text-muted-foreground">
+                {t("canonical.raw.emptyParams")}
+              </div>
             ) : (
               <dl className="grid max-h-[120px] grid-cols-[minmax(80px,auto)_1fr] gap-x-3 gap-y-1 overflow-y-auto overscroll-contain px-1">
                 {params.map(([key, value]) => (
@@ -174,7 +173,7 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
             )}
           </Section>
           <Section
-            label="结果"
+            label={t("canonical.raw.sections.result")}
             meta={
               resultMeta ? (
                 <span
@@ -193,7 +192,21 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
                   : "bg-muted/40 text-foreground",
               )}
             >
-              {resultBody}
+              {commandResult ? (
+                commandResult.output ? (
+                  <span>{commandResult.output}</span>
+                ) : (
+                  t("canonical.raw.emptyOutput")
+                )
+              ) : hasResult ? (
+                resultBlock?.text ? (
+                  <span>{resultBlock.text}</span>
+                ) : (
+                  t("canonical.raw.emptyResult")
+                )
+              ) : (
+                "—"
+              )}
             </div>
           </Section>
         </div>

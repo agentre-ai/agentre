@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, ChevronDown, ShieldAlert, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -46,6 +47,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
   toolBlock,
   sessionId,
 }) => {
+  const { t } = useTranslation();
   const payload = readPermission(toolBlock);
   const markToolPermissionResolved = useChatStreamsStore(
     (s) => s.markToolPermissionResolved,
@@ -90,12 +92,16 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
           allowed: false,
           alwaysAllow: false,
         } as chat_svc.ChatBlockToolPermission);
-        setError(err instanceof Error ? err.message : "审批提交失败");
+        setError(
+          err instanceof Error
+            ? err.message
+            : t("canonical.toolPermission.submitFailed"),
+        );
       } finally {
         setSubmitting(false);
       }
     },
-    [payload, sessionId, isResolved, submitting, markToolPermissionResolved],
+    [payload, sessionId, isResolved, submitting, markToolPermissionResolved, t],
   );
 
   if (!payload || !payload.requestId) return null;
@@ -161,9 +167,9 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
             >
               {payload.allowed
                 ? payload.alwaysAllow
-                  ? "已允许(本会话)"
-                  : "已允许"
-                : "已拒绝"}
+                  ? t("canonical.toolPermission.allowedSession")
+                  : t("canonical.toolPermission.allowed")
+                : t("canonical.toolPermission.denied")}
             </span>
           )}
           <ChevronDown
@@ -189,7 +195,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
             onClick={() => submit(true, false)}
           >
             <Check className="mr-1 h-3.5 w-3.5" />
-            仅本次允许
+            {t("canonical.toolPermission.allowOnce")}
           </Button>
           <Button
             size="sm"
@@ -197,7 +203,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
             disabled={submitting}
             onClick={() => submit(true, true)}
           >
-            本会话始终允许
+            {t("canonical.toolPermission.allowSession")}
           </Button>
           <Button
             size="sm"
@@ -206,7 +212,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
             onClick={() => submit(false, false)}
           >
             <X className="mr-1 h-3.5 w-3.5" />
-            拒绝
+            {t("common.reject")}
           </Button>
           {error && <span className="text-xs text-destructive">{error}</span>}
         </div>

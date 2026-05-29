@@ -1,3 +1,5 @@
+import i18n from "@/i18n";
+
 import type { KeyChord, ShortcutDef } from "./types";
 
 const navDef = (
@@ -15,12 +17,42 @@ const navDef = (
 });
 
 const NAV_REGISTRY: ShortcutDef[] = [
-  navDef("nav.chat", "切换到 对话", "Agent 对话主面板", "E"),
-  navDef("nav.projects", "切换到 项目", "项目与会话列表", "D"),
-  navDef("nav.issues", "切换到 Issues", "看板 / 工单列表", "B"),
-  navDef("nav.org", "切换到 组织", "组织架构与 Agent 角色", "G"),
-  navDef("nav.hooks", "切换到 Hooks", "Hook 触发规则", "Y"),
-  navDef("nav.settings", "打开 设置", "设置面板", ","),
+  navDef(
+    "nav.chat",
+    i18n.t("shortcuts.registry.nav.chat.label"),
+    i18n.t("shortcuts.registry.nav.chat.hint"),
+    "E",
+  ),
+  navDef(
+    "nav.projects",
+    i18n.t("shortcuts.registry.nav.projects.label"),
+    i18n.t("shortcuts.registry.nav.projects.hint"),
+    "D",
+  ),
+  navDef(
+    "nav.issues",
+    i18n.t("shortcuts.registry.nav.issues.label"),
+    i18n.t("shortcuts.registry.nav.issues.hint"),
+    "B",
+  ),
+  navDef(
+    "nav.org",
+    i18n.t("shortcuts.registry.nav.org.label"),
+    i18n.t("shortcuts.registry.nav.org.hint"),
+    "G",
+  ),
+  navDef(
+    "nav.hooks",
+    i18n.t("shortcuts.registry.nav.hooks.label"),
+    i18n.t("shortcuts.registry.nav.hooks.hint"),
+    "Y",
+  ),
+  navDef(
+    "nav.settings",
+    i18n.t("shortcuts.registry.nav.settings.label"),
+    i18n.t("shortcuts.registry.nav.settings.hint"),
+    ",",
+  ),
 ];
 
 // SESSION_CHIP_IDS —— 历史侧边栏会话快捷键 id。
@@ -33,8 +65,8 @@ export const SESSION_CHIP_IDS: string[] = Array.from(
 
 const SESSION_CHIP_REGISTRY: ShortcutDef[] = SESSION_CHIP_IDS.map((id, i) => ({
   id,
-  label: `切换到第 ${i + 1} 个会话`,
-  hint: "兼容旧版侧边栏快捷键",
+  label: i18n.t("shortcuts.registry.sessionChip.label", { index: i + 1 }),
+  hint: i18n.t("shortcuts.registry.sessionChip.hint"),
   scope: "session" as const,
   defaultBinding: { mod: "primary", key: String(i + 1) },
   rebindable: false,
@@ -53,16 +85,16 @@ export const TAB_CLOSE_ID = "chat.tab.close";
 const TABS_CHIP_REGISTRY: ShortcutDef[] = [
   ...TAB_CHIP_IDS.map((id, i) => ({
     id,
-    label: `切换到第 ${i + 1} 个 Tab`,
-    hint: "按 TabStrip 排列顺序（固定 + 普通 + 预览）",
+    label: i18n.t("shortcuts.registry.tabChip.label", { index: i + 1 }),
+    hint: i18n.t("shortcuts.registry.tabChip.hint"),
     scope: "tabs" as const,
     defaultBinding: { mod: "primary", key: String(i + 1) } as KeyChord,
     rebindable: false,
   })),
   {
     id: TAB_CLOSE_ID,
-    label: "关闭当前 Tab",
-    hint: "关闭激活中的 Tab（钉住的 Tab 不可关闭）",
+    label: i18n.t("shortcuts.registry.closeTab.label"),
+    hint: i18n.t("shortcuts.registry.closeTab.hint"),
     scope: "tabs" as const,
     defaultBinding: { mod: "primary", key: "W" } as KeyChord,
     rebindable: false,
@@ -80,16 +112,16 @@ export const NEW_CHAT_INITIAL_QUERY = "> ";
 const PALETTE_REGISTRY: ShortcutDef[] = [
   {
     id: PALETTE_OPEN_ID,
-    label: "命令面板",
-    hint: "搜索会话 · 跳转 · 执行动作",
+    label: i18n.t("shortcuts.registry.palette.label"),
+    hint: i18n.t("shortcuts.registry.palette.hint"),
     scope: "global",
     defaultBinding: { mod: "primary", key: "P" },
     rebindable: true,
   },
   {
     id: CMD_NEW_CHAT_ID,
-    label: "新建对话",
-    hint: "打开命令面板并定位到 New chat with …",
+    label: i18n.t("shortcuts.registry.newChat.label"),
+    hint: i18n.t("shortcuts.registry.newChat.hint"),
     scope: "global",
     defaultBinding: { mod: "primary", key: "N" },
     rebindable: true,

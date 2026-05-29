@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -31,6 +32,7 @@ export function TerminalPanel({
   deviceId,
   onClose,
 }: TerminalPanelProps) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -115,21 +117,25 @@ export function TerminalPanel({
     onExit: (info) => {
       if (info.reason === "connection_lost") {
         setConnectionLost(true);
-        toast.error("终端连接已断开");
+        toast.error(t("terminal.toast.connectionLost"));
         return; // banner is shown; user dismisses to close.
       }
       if (info.reason === "error") {
-        toast.error(`终端启动失败: ${info.msg ?? "unknown"}`);
+        toast.error(
+          t("terminal.toast.startFailed", {
+            message: info.msg ?? t("terminal.unknown"),
+          }),
+        );
         onClose();
         return;
       }
       if (info.reason === "daemon_shutdown") {
-        toast.warning("agentred 已关闭");
+        toast.warning(t("terminal.toast.agentredClosed"));
         onClose();
         return;
       }
       if (info.reason === "natural" && info.code !== 0) {
-        toast.warning(`shell 退出 (code ${info.code})`);
+        toast.warning(t("terminal.toast.shellExited", { code: info.code }));
       }
       // natural code=0 or killed → silent close.
       onClose();
@@ -181,13 +187,13 @@ export function TerminalPanel({
           role="alert"
           className="flex items-center justify-between border-b border-red-700 bg-red-950/60 px-3 py-2 text-xs text-red-100"
         >
-          <span>连接已断开 — 终端会话不可恢复</span>
+          <span>{t("terminal.banner.connectionLost")}</span>
           <button
             type="button"
             onClick={dismissAndClose}
             className="rounded border border-red-700 px-2 py-0.5 hover:bg-red-900"
           >
-            关闭
+            {t("common.close")}
           </button>
         </div>
       ) : null}

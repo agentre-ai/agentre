@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 import {
@@ -36,6 +37,7 @@ function ResizableSidebar({
   edge = "right",
   defaultWidth = SIDEBAR_DEFAULT_WIDTH,
 }: ResizableSidebarProps) {
+  const { t } = useTranslation();
   const [width, setWidth] = React.useState<number>(() =>
     readSidebarWidth(persistenceKey, defaultWidth),
   );
@@ -94,11 +96,11 @@ function ResizableSidebar({
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label={`调整${ariaLabel}宽度`}
+        aria-label={t("resizableSidebar.resizeAria", { label: ariaLabel })}
         aria-valuemin={SIDEBAR_MIN_WIDTH}
         aria-valuemax={SIDEBAR_MAX_WIDTH}
         aria-valuenow={width}
-        title="拖拽调整宽度"
+        title={t("resizableSidebar.resizeTitle")}
         onPointerDown={startDrag}
         className={cn(
           "absolute inset-y-0 z-20 hidden w-2 cursor-col-resize touch-none select-none lg:block",

@@ -1,5 +1,6 @@
 // frontend/src/components/agentre/chat-tabs/tab-overflow-menu.tsx
 import { ChevronDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import {
   DropdownMenu,
@@ -21,6 +22,7 @@ const STATUS_DOT_CLASS: Record<TabStatus, string | null> = {
 };
 
 export function TabOverflowMenu() {
+  const { t } = useTranslation();
   // Overflow menu shows tabs in stable openedAt order (not active-first),
   // so users get a consistent temporal list.
   const rawTabs = useChatTabsStore((s) => s.tabs);
@@ -38,7 +40,7 @@ export function TabOverflowMenu() {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label="打开 Tab 菜单"
+          aria-label={t("chatTabs.overflow.openMenu")}
           className="inline-flex size-7 items-center justify-center rounded-md hover:bg-accent"
         >
           <ChevronDown className="size-3.5" aria-hidden="true" />
@@ -46,7 +48,7 @@ export function TabOverflowMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4} className="w-96 p-0">
         <div className="px-3 py-2 font-mono text-2xs font-semibold uppercase tracking-wider text-subtle-foreground">
-          打开的 Tab ({sortedTabs.length})
+          {t("chatTabs.overflow.openTabs", { count: sortedTabs.length })}
         </div>
         <div className="flex flex-col py-1">
           {sortedTabs.map((t, idx) => {

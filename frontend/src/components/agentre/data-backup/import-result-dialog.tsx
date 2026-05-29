@@ -1,4 +1,5 @@
 import { CheckCircle2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -9,13 +10,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-const LABEL: Record<string, string> = {
-  created: "新建",
-  overwrote: "覆盖",
-  skipped: "跳过",
-  duplicated: "复制",
-};
-
 export function ImportResultDialog({
   counts,
   onClose,
@@ -23,6 +17,7 @@ export function ImportResultDialog({
   counts: Record<string, number> | null;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   if (!counts) return null;
   const open = counts !== null;
   return (
@@ -31,19 +26,21 @@ export function ImportResultDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <CheckCircle2 className="size-5 text-primary" />
-            导入完成
+            {t("dataBackup.importResult.title")}
           </DialogTitle>
         </DialogHeader>
         <ul className="space-y-1 text-sm">
           {Object.entries(counts).map(([k, v]) => (
             <li key={k}>
-              <span className="text-muted-foreground">{LABEL[k] ?? k}:</span>{" "}
+              <span className="text-muted-foreground">
+                {t(`dataBackup.importResult.${k}`, { defaultValue: k })}:
+              </span>{" "}
               {v}
             </li>
           ))}
         </ul>
         <DialogFooter>
-          <Button onClick={onClose}>知道了</Button>
+          <Button onClick={onClose}>{t("dataBackup.importResult.ok")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

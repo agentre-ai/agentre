@@ -644,7 +644,9 @@ describe("ChatPanel · Codex collaboration mode", () => {
 
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
     expect(
-      await screen.findByText("当前 Agent 后端不支持图片输入"),
+      await screen.findByText(
+        "The current agent backend does not support image input",
+      ),
     ).toBeInTheDocument();
   });
 
@@ -718,7 +720,7 @@ describe("ChatPanel · Codex collaboration mode", () => {
     expect(appMocks.CompactChatSession).not.toHaveBeenCalled();
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
     expect(
-      await screen.findByText("/compact 不能和图片一起发送"),
+      await screen.findByText("/compact cannot be sent with images"),
     ).toBeInTheDocument();
   });
 
@@ -888,7 +890,7 @@ describe("ChatPanel · doSend error surfacing", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/发送失败.*provider not configured/),
+        screen.getByText(/Send failed.*provider not configured/),
       ).toBeInTheDocument();
     });
   });
@@ -908,7 +910,7 @@ describe("ChatPanel · doSend error surfacing", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/发送失败.*backend down/)).toBeInTheDocument();
+      expect(screen.getByText(/Send failed.*backend down/)).toBeInTheDocument();
     });
   });
 });
@@ -933,8 +935,8 @@ describe("ChatPanel · launch command copy feedback", () => {
 
     render(<ChatPanel sessionId={42} />);
 
-    await user.click(screen.getByRole("button", { name: "更多操作" }));
-    await user.click(await screen.findByText("复制启动命令"));
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+    await user.click(await screen.findByText("Copy Launch Command"));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(
@@ -942,15 +944,15 @@ describe("ChatPanel · launch command copy feedback", () => {
       );
     });
     expect(sonnerMocks.toast.success).toHaveBeenCalledWith(
-      "已复制启动命令",
+      "Launch command copied",
       expect.objectContaining({
-        description: expect.stringContaining("含 token"),
+        description: expect.stringContaining("Includes a token"),
         duration: 5000,
         position: "bottom-right",
       }),
     );
     expect(
-      screen.queryByText(/已复制启动命令（含 token）/),
+      screen.queryByText(/Launch command copied.*Includes a token/),
     ).not.toBeInTheDocument();
   });
 });

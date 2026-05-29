@@ -43,9 +43,12 @@ if (
   });
 }
 
+const { default: i18n } = await import("@/i18n");
+
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  void i18n.changeLanguage("en");
   document.documentElement.classList.remove("dark");
   delete document.documentElement.dataset.theme;
   document.documentElement.style.colorScheme = "";

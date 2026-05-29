@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import i18n from "@/i18n";
 import { writePersistedTabs, readPersistedTabs } from "./chat-tabs-persistence";
 
 export type TabKind =
@@ -286,7 +287,9 @@ export const useChatTabsStore = create<State & Actions>((set, _get) => ({
         isPinned: false,
         pinAt: 0,
         openedAt: now(),
-        title: deviceName ? `终端 · ${deviceName}` : "终端",
+        title: deviceName
+          ? i18n.t("chatTabs.terminal.titleWithDevice", { deviceName })
+          : i18n.t("chatTabs.terminal.title"),
       };
       return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
     }),

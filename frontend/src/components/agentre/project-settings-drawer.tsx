@@ -10,6 +10,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -96,11 +97,11 @@ export type ProjectSettingsDrawerProps = {
 
 type TabKey = "basic" | "members" | "locations" | "danger";
 
-const tabs: { key: TabKey; label: string }[] = [
-  { key: "basic", label: "基本" },
-  { key: "members", label: "成员" },
-  { key: "locations", label: "远端路径" },
-  { key: "danger", label: "危险区" },
+const tabs: { key: TabKey; labelKey: string }[] = [
+  { key: "basic", labelKey: "projectSettings.tabs.basic" },
+  { key: "members", labelKey: "projectSettings.tabs.members" },
+  { key: "locations", labelKey: "projectSettings.tabs.locations" },
+  { key: "danger", labelKey: "projectSettings.tabs.danger" },
 ];
 
 function ProjectSettingsDrawer({
@@ -109,6 +110,7 @@ function ProjectSettingsDrawer({
   onChanged,
   onDeleted,
 }: ProjectSettingsDrawerProps) {
+  const { t } = useTranslation();
   const open = projectID > 0;
   const [detail, setDetail] = React.useState<ProjectDetailResponse | null>(
     null,
@@ -143,29 +145,29 @@ function ProjectSettingsDrawer({
       <DialogContent className="max-w-[460px]" showCloseButton>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            {detail?.project?.name ?? "项目设置"}
+            {detail?.project?.name ?? t("projectSettings.title")}
             <span className="font-mono text-2xs font-normal text-muted-foreground">
-              · 项目设置
+              {t("projectSettings.titleSuffix")}
             </span>
           </DialogTitle>
         </DialogHeader>
 
         {/* Tabs */}
         <div className="flex items-center gap-1 border-b border-border px-4">
-          {tabs.map((t) => (
+          {tabs.map((tab) => (
             <button
-              key={t.key}
+              key={tab.key}
               type="button"
-              onClick={() => setActiveTab(t.key)}
+              onClick={() => setActiveTab(tab.key)}
               className={cn(
                 "relative px-2 py-2 text-xs transition-colors",
-                activeTab === t.key
+                activeTab === tab.key
                   ? "font-semibold text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
-              {t.label}
-              {activeTab === t.key ? (
+              {t(tab.labelKey)}
+              {activeTab === tab.key ? (
                 <span
                   aria-hidden="true"
                   className="absolute inset-x-0 -bottom-px h-[2px] bg-primary"
@@ -182,7 +184,7 @@ function ProjectSettingsDrawer({
                 className="mr-2 size-3.5 animate-spin"
                 aria-hidden="true"
               />
-              加载中…
+              {t("common.loading")}
             </div>
           ) : activeTab === "basic" ? (
             <BasicTab
@@ -215,7 +217,7 @@ function ProjectSettingsDrawer({
 
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
-            关闭
+            {t("common.close")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -232,6 +234,7 @@ function BasicTab({
   detail: ProjectDetailResponse;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation();
   const p = detail.project!;
   const [name, setName] = React.useState(p.name);
   const [icon, setIcon] = React.useState(p.icon);
@@ -269,22 +272,22 @@ function BasicTab({
 
   return (
     <>
-      <Field label="项目名">
+      <Field label={t("projectSettings.basic.name")}>
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
           className="h-9 text-xs"
         />
       </Field>
-      <Field label="图标 key">
+      <Field label={t("projectSettings.basic.iconKey")}>
         <Input
           value={icon}
           onChange={(e) => setIcon(e.target.value)}
           className="h-9 font-mono text-xs"
-          placeholder="folder / briefcase / 自定义 emoji"
+          placeholder={t("projectSettings.basic.iconPlaceholder")}
         />
       </Field>
-      <Field label="主题色">
+      <Field label={t("org.department.themeColor")}>
         <div className="flex items-center gap-1.5">
           {agentColorOrder.slice(0, 5).map((c) => (
             <button
@@ -302,14 +305,14 @@ function BasicTab({
           ))}
         </div>
       </Field>
-      <Field label="描述">
+      <Field label={t("projectSettings.basic.description")}>
         <Textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           className="min-h-[60px] text-xs"
         />
       </Field>
-      <Field label="本地路径（只读）">
+      <Field label={t("projectSettings.basic.localPathReadonly")}>
         <Input
           value={p.path}
           readOnly
@@ -330,7 +333,7 @@ function BasicTab({
           {saving ? (
             <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
           ) : null}
-          保存
+          {t("common.save")}
         </Button>
       </div>
     </>
@@ -344,6 +347,7 @@ function MembersTab({
   detail: ProjectDetailResponse;
   onChanged: () => void;
 }) {
+  const { t } = useTranslation();
   const p = detail.project!;
   const { agents } = useChatAgents();
   const [picking, setPicking] = React.useState(false);
@@ -390,10 +394,12 @@ function MembersTab({
     <>
       <SectionLabel
         icon={<Users className="size-3.5" aria-hidden="true" />}
-        label={`直接成员 · ${detail.directMembers?.length ?? 0}`}
+        label={t("projectSettings.members.directCount", {
+          count: detail.directMembers?.length ?? 0,
+        })}
       />
       {(detail.directMembers ?? []).length === 0 ? (
-        <EmptyHint text="还没有直接成员；可以从下面候选里加。" />
+        <EmptyHint text={t("projectSettings.members.directEmpty")} />
       ) : (
         <ul className="flex flex-col gap-1">
           {(detail.directMembers ?? []).map((m) => {
@@ -419,7 +425,9 @@ function MembersTab({
       {detail.inheritedMembers && detail.inheritedMembers.length > 0 ? (
         <>
           <SectionLabel
-            label={`继承自父项目 · ${detail.inheritedMembers.length}`}
+            label={t("projectSettings.members.inheritedCount", {
+              count: detail.inheritedMembers.length,
+            })}
           />
           <ul className="flex flex-col gap-1">
             {detail.inheritedMembers.map((m) => {
@@ -446,9 +454,9 @@ function MembersTab({
       <div className="border-t border-border pt-2">
         {picking ? (
           <div className="flex flex-col gap-1.5">
-            <SectionLabel label="选择 Agent" />
+            <SectionLabel label={t("projectSettings.members.pickAgent")} />
             {candidates.length === 0 ? (
-              <EmptyHint text="所有 Agent 都已经在本项目（或父项目继承）。" />
+              <EmptyHint text={t("projectSettings.members.noCandidates")} />
             ) : (
               <ul className="flex max-h-40 flex-col gap-1 overflow-auto">
                 {candidates.map((a) => (
@@ -484,7 +492,7 @@ function MembersTab({
               className="h-7 text-2xs"
               onClick={() => setPicking(false)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
           </div>
         ) : (
@@ -497,10 +505,10 @@ function MembersTab({
               onClick={() => setPicking(true)}
             >
               <Plus className="size-3.5" aria-hidden="true" />
-              添加 Agent
+              {t("projectSettings.members.addAgent")}
             </Button>
             <span className="text-2xs text-muted-foreground">
-              远端 Agent 需要先在「远端路径」tab 配置该设备的路径
+              {t("projectSettings.members.remoteHint")}
             </span>
           </div>
         )}
@@ -529,6 +537,7 @@ function MemberRow({
   busy: boolean;
   inherited: boolean;
 }) {
+  const { t } = useTranslation();
   const color =
     (member.avatarColor as AgentColor) ||
     (agent?.avatarColor as AgentColor) ||
@@ -566,16 +575,19 @@ function MemberRow({
         {inherited ? (
           <span
             className="rounded-sm bg-secondary px-1.5 py-0.5 text-2xs text-muted-foreground"
-            title={`继承自 ${member.fromName ?? "父项目"}`}
+            title={t("projectSettings.members.inheritedFrom", {
+              name:
+                member.fromName ?? t("projectSettings.members.parentProject"),
+            })}
           >
-            ⋯ 继承
+            {t("projectSettings.members.inheritedBadge")}
           </span>
         ) : (
           <button
             type="button"
             onClick={onRemove}
             disabled={busy}
-            aria-label={`移除 ${name}`}
+            aria-label={t("projectSettings.members.removeAgent", { name })}
             className="inline-flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
           >
             <Trash2 className="size-3" aria-hidden="true" />
@@ -606,6 +618,7 @@ function CandidateRow({
   onAdd: () => Promise<void>;
   busy: boolean;
 }) {
+  const { t } = useTranslation();
   // STATE: local agent → 1-click
   if (!agent.deviceID) {
     return (
@@ -657,7 +670,7 @@ function CandidateRow({
   return (
     <div
       className="flex w-full cursor-not-allowed items-center gap-2 rounded-md border border-dashed border-border bg-card/40 px-2 py-1.5 text-xs opacity-65"
-      title="该设备未配置远端路径"
+      title={t("projectSettings.members.missingRemotePathTitle")}
     >
       <Avatar agent={agent} />
       <span className="min-w-0 flex-1 truncate">{agent.name}</span>
@@ -667,7 +680,7 @@ function CandidateRow({
         online={agent.online ?? false}
       />
       <span className="text-2xs text-amber-600 dark:text-amber-500">
-        ⚠ 先去「远端路径」配置
+        {t("projectSettings.members.configureRemotePath")}
       </span>
     </div>
   );
@@ -688,6 +701,7 @@ function Avatar({ agent }: { agent: ChatAgentItem }) {
 }
 
 function LocationsTab({ detail }: { detail: ProjectDetailResponse }) {
+  const { t } = useTranslation();
   const p = detail.project!;
   const [rows, setRows] = React.useState<ProjectLocationView[]>([]);
   const [devices, setDevices] = React.useState<DeviceView[]>([]);
@@ -735,15 +749,15 @@ function LocationsTab({ detail }: { detail: ProjectDetailResponse }) {
     <>
       <SectionLabel
         icon={<FolderTree className="size-3.5" aria-hidden="true" />}
-        label={`远端路径 · ${rows.length}`}
+        label={t("projectSettings.locations.count", { count: rows.length })}
       />
       {loading ? (
         <div className="flex items-center justify-center py-4 text-2xs text-muted-foreground">
           <Loader2 className="mr-1.5 size-3 animate-spin" aria-hidden="true" />
-          加载中…
+          {t("common.loading")}
         </div>
       ) : rows.length === 0 ? (
-        <EmptyHint text="还没有远端路径。加完路径后才能在「成员」tab 里添加该设备上的 Agent。" />
+        <EmptyHint text={t("projectSettings.locations.empty")} />
       ) : (
         <ul className="flex flex-col gap-1">
           {rows.map((r) =>
@@ -798,12 +812,12 @@ function LocationsTab({ detail }: { detail: ProjectDetailResponse }) {
             onClick={() => setAdding(true)}
             title={
               availableDevices.length === 0
-                ? "所有已配对的远端设备都已配置路径"
+                ? t("projectSettings.locations.allDevicesConfigured")
                 : undefined
             }
           >
             <Plus className="size-3.5" aria-hidden="true" />
-            添加远端路径
+            {t("projectSettings.locations.addRemotePath")}
           </Button>
         )}
       </div>
@@ -825,6 +839,7 @@ function LocationRow({
   onEdit: () => void;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <li
       className={cn(
@@ -842,7 +857,7 @@ function LocationRow({
         <button
           type="button"
           onClick={onEdit}
-          aria-label="编辑路径"
+          aria-label={t("projectSettings.locations.editPath")}
           className="inline-flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <Pencil className="size-3" aria-hidden="true" />
@@ -850,7 +865,7 @@ function LocationRow({
         <button
           type="button"
           onClick={onRemove}
-          aria-label="删除路径"
+          aria-label={t("projectSettings.locations.deletePath")}
           className="inline-flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
         >
           <Trash2 className="size-3" aria-hidden="true" />
@@ -878,6 +893,7 @@ function LocationEditRow(props: {
   onSaved: () => Promise<void> | void;
   onError: (msg: string) => void;
 }) {
+  const { t } = useTranslation();
   const isEdit = !!props.deviceId;
   const [deviceId, setDeviceId] = React.useState<string>(
     props.deviceId ?? props.availableDevices?.[0]?.id?.toString() ?? "",
@@ -919,10 +935,12 @@ function LocationEditRow(props: {
         ) : (
           <Select value={deviceId} onValueChange={setDeviceId}>
             <SelectTrigger
-              aria-label="远端设备"
+              aria-label={t("projectSettings.locations.remoteDevice")}
               className="h-7 min-w-[160px] text-2xs"
             >
-              <SelectValue placeholder="选择远端设备" />
+              <SelectValue
+                placeholder={t("projectSettings.locations.selectRemoteDevice")}
+              />
             </SelectTrigger>
             <SelectContent>
               {(props.availableDevices ?? []).map((d) => (
@@ -932,14 +950,16 @@ function LocationEditRow(props: {
                   disabled={!d.online}
                 >
                   📡 {d.name}
-                  {d.online ? "" : " · offline"}
+                  {d.online ? "" : t("projectSettings.locations.offlineSuffix")}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         )}
         <span className="ml-auto text-primary">
-          {isEdit ? "编辑路径" : "新增路径"}
+          {isEdit
+            ? t("projectSettings.locations.editPath")
+            : t("projectSettings.locations.newPath")}
         </span>
       </div>
       <div className="flex items-center gap-1">
@@ -950,15 +970,15 @@ function LocationEditRow(props: {
             if (e.key === "Enter" && canSave) void handleSave();
           }}
           className="flex-1 rounded-sm border border-border bg-background px-2 py-1 font-mono"
-          placeholder="/abs/path on remote (e.g. /home/me/proj)"
+          placeholder={t("projectSettings.locations.pathPlaceholder")}
           autoFocus
         />
         <button
           type="button"
           onClick={() => setPickerOpen(true)}
           disabled={!deviceId}
-          aria-label="浏览远端目录"
-          title="浏览远端目录"
+          aria-label={t("projectSettings.locations.browseRemoteDir")}
+          title={t("projectSettings.locations.browseRemoteDir")}
           className="inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
         >
           <Folder className="size-3.5" />
@@ -977,7 +997,9 @@ function LocationEditRow(props: {
       ) : null}
       <div className="flex items-center justify-between">
         <span className="text-2xs text-subtle-foreground">
-          {pathValid || path === "" ? "Enter 保存" : "必须是绝对路径 (/开头)"}
+          {pathValid || path === ""
+            ? t("projectSettings.locations.enterToSave")
+            : t("projectSettings.locations.absolutePathRequired")}
         </span>
         <div className="flex gap-1.5">
           <button
@@ -996,7 +1018,7 @@ function LocationEditRow(props: {
             {busy ? (
               <Loader2 className="size-3 animate-spin" aria-hidden="true" />
             ) : (
-              "保存"
+              t("common.save")
             )}
           </button>
         </div>
@@ -1012,6 +1034,7 @@ function DangerTab({
   detail: ProjectDetailResponse;
   onDeleted: () => void;
 }) {
+  const { t } = useTranslation();
   const p = detail.project!;
   const [confirm, setConfirm] = React.useState("");
   const [err, setErr] = React.useState<string | null>(null);
@@ -1037,13 +1060,13 @@ function DangerTab({
       <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive-soft px-3 py-2.5 text-2xs text-destructive">
         <AlertTriangle className="mt-0.5 size-3.5" aria-hidden="true" />
         <div className="flex flex-col gap-1">
-          <span className="font-semibold">删除项目</span>
-          <span>
-            软删除项目记录，**不会**删除本地代码仓库或会话内容。如果项目还有子项目或活跃会话，删除会被拒绝。
+          <span className="font-semibold">
+            {t("projectSettings.danger.deleteProject")}
           </span>
+          <span>{t("projectSettings.danger.deleteDescription")}</span>
         </div>
       </div>
-      <Field label={`输入项目名 "${p.name}" 以确认`}>
+      <Field label={t("projectSettings.danger.confirmName", { name: p.name })}>
         <Input
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
@@ -1068,7 +1091,7 @@ function DangerTab({
           ) : (
             <Trash2 className="size-3.5" aria-hidden="true" />
           )}
-          删除项目
+          {t("projectSettings.danger.deleteProject")}
         </Button>
       </div>
     </>

@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import i18n from "@/i18n";
+
 import {
   CreateAgent,
   CreateDepartment,
@@ -116,6 +118,6 @@ function messageOf(err: unknown): string {
   try {
     return JSON.stringify(err);
   } catch {
-    return "操作失败";
+    return i18n.t("common.operationFailed");
   }
 }

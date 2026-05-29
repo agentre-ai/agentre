@@ -6,6 +6,8 @@
 // 出现的 mode 字面量不在 PERMISSION_MODE_META_UI,会走兜底渲染(label = key,
 // 灰色 pill,无图标)。
 
+import i18n from "@/i18n";
+
 // PermissionMode 是动态字符串(由 caps.permissionModeMeta.allowedModes 决定);
 // 保留 type alias 仅为可读性。
 export type PermissionMode = string;
@@ -31,7 +33,7 @@ export const PERMISSION_MODE_META_UI: Record<string, PermissionModeMetaUI> = {
     key: "default",
     label: "Default",
     iconName: "circle-question",
-    desc: "工具调用前逐次询问，会触发 can_use_tool",
+    desc: i18n.t("permissionMode.meta.default.desc"),
     pillClass: "bg-muted text-foreground border-border",
     iconClass: "text-muted-foreground",
   },
@@ -39,7 +41,7 @@ export const PERMISSION_MODE_META_UI: Record<string, PermissionModeMetaUI> = {
     key: "acceptEdits",
     label: "Accept Edits",
     iconName: "shield-check",
-    desc: "自动接受文件编辑，其他工具仍走询问",
+    desc: i18n.t("permissionMode.meta.acceptEdits.desc"),
     pillClass: "bg-primary-soft text-primary-text border-primary-text/60",
     iconClass: "text-primary-text",
   },
@@ -47,7 +49,7 @@ export const PERMISSION_MODE_META_UI: Record<string, PermissionModeMetaUI> = {
     key: "plan",
     label: "Plan",
     iconName: "clipboard-list",
-    desc: "只读分析，不执行任何写入或副作用工具",
+    desc: i18n.t("permissionMode.meta.plan.desc"),
     pillClass:
       "bg-status-waiting-bg text-status-waiting border-status-waiting/60",
     iconClass: "text-status-waiting",
@@ -56,7 +58,7 @@ export const PERMISSION_MODE_META_UI: Record<string, PermissionModeMetaUI> = {
     key: "bypassPermissions",
     label: "Bypass",
     iconName: "shield-off",
-    desc: "跳过全部许可门；首发选中后 CLI 以 --permission-mode bypassPermissions 启动",
+    desc: i18n.t("permissionMode.meta.bypassPermissions.desc"),
     pillClass: "bg-destructive-soft text-destructive border-destructive/60",
     iconClass: "text-destructive",
   },
@@ -146,5 +148,5 @@ export function permissionModeDisabledReason(
   if (ctx?.permissionModeAtLaunch === "bypassPermissions") {
     return null;
   }
-  return "该会话启动时未选择 bypassPermissions；Claude CLI 不允许中途进入 bypass。新建会话时选 bypass 即可解锁双向切换。";
+  return i18n.t("permissionMode.disabled.bypassAfterLaunch");
 }

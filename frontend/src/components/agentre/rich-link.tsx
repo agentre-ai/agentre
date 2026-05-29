@@ -8,6 +8,8 @@ import {
   MousePointerClick,
 } from "lucide-react";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { toast } from "sonner";
 
 import {
@@ -82,16 +84,19 @@ function OpenLinkIcon({
   );
 }
 
-async function copyToClipboard(text: string) {
+async function copyToClipboard(text: string, t: TFunction) {
   try {
     await navigator.clipboard.writeText(text);
-    toast.success("已复制", { duration: 2000, position: "bottom-right" });
+    toast.success(t("common.copied"), {
+      duration: 2000,
+      position: "bottom-right",
+    });
   } catch {
-    toast.error("复制失败");
+    toast.error(t("common.copyFailed"));
   }
 }
 
-function dispatchClick(kind: LinkClass) {
+function dispatchClick(kind: LinkClass, t: TFunction) {
   switch (kind.kind) {
     case "url":
       BrowserOpenURL(kind.url);
@@ -100,7 +105,9 @@ function dispatchClick(kind: LinkClass) {
     case "local-external":
       OpenPath(fullTarget(kind)).catch((err: unknown) => {
         toast.error(
-          `打开失败: ${err instanceof Error ? err.message : String(err)}`,
+          t("richLink.openFailed", {
+            error: err instanceof Error ? err.message : String(err),
+          }),
         );
       });
       return;
@@ -111,19 +118,21 @@ function dispatchClick(kind: LinkClass) {
 }
 
 function URLPopover({ kind }: { kind: Extract<LinkClass, { kind: "url" }> }) {
+  const { t } = useTranslation();
+
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
-          <LinkIcon className="size-3" aria-hidden /> URL
+          <LinkIcon className="size-3" aria-hidden /> {t("richLink.url")}
         </span>
         <div className="flex-1" />
         <button
           type="button"
           className="inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs"
-          onClick={() => copyToClipboard(kind.url)}
+          onClick={() => copyToClipboard(kind.url, t)}
         >
-          <CopyIcon className="size-3" aria-hidden /> 复制
+          <CopyIcon className="size-3" aria-hidden /> {t("common.copy")}
         </button>
       </div>
       <code className="break-all font-mono text-xs text-foreground">
@@ -131,7 +140,7 @@ function URLPopover({ kind }: { kind: Extract<LinkClass, { kind: "url" }> }) {
       </code>
       <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-[11px] text-muted-foreground">
         <MousePointerClick className="size-3" aria-hidden />
-        点击在系统浏览器中打开
+        {t("richLink.openInBrowser")}
       </div>
     </div>
   );
@@ -154,9 +163,13 @@ function LocalInternalPopover({
   kind: Extract<LinkClass, { kind: "local-internal" }>;
   cwd: string;
 }) {
+  const { t } = useTranslation();
   const full = fullTarget(kind);
   const PathIcon = kind.pathKind === "folder" ? Folder : FileText;
-  const label = kind.pathKind === "folder" ? "本地文件夹" : "本地文件";
+  const label =
+    kind.pathKind === "folder"
+      ? t("richLink.localFolder")
+      : t("richLink.localFile");
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
@@ -168,15 +181,15 @@ function LocalInternalPopover({
         <button
           type="button"
           className="inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs"
-          onClick={() => copyToClipboard(full)}
+          onClick={() => copyToClipboard(full, t)}
         >
-          <CopyIcon className="size-3" aria-hidden /> 复制
+          <CopyIcon className="size-3" aria-hidden /> {t("common.copy")}
         </button>
       </div>
       <div className="flex flex-col gap-0.5 rounded-md bg-secondary px-2.5 py-1.5">
         <div className="flex items-baseline gap-2">
           <span className="w-12 shrink-0 text-[10px] font-semibold text-muted-foreground">
-            项目根
+            {t("richLink.projectRoot")}
           </span>
           <code className="min-w-0 flex-1 break-all whitespace-normal font-mono text-xs text-muted-foreground">
             {cwd}
@@ -184,7 +197,7 @@ function LocalInternalPopover({
         </div>
         <div className="flex items-baseline gap-2">
           <span className="w-12 shrink-0 text-[10px] font-semibold text-muted-foreground">
-            相对
+            {t("richLink.relative")}
           </span>
           <code className="min-w-0 flex-1 break-all whitespace-normal font-mono text-xs font-semibold text-foreground">
             {kind.relPath}
@@ -196,7 +209,7 @@ function LocalInternalPopover({
       </code>
       <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-[11px] text-muted-foreground">
         <MousePointerClick className="size-3" aria-hidden />
-        点击用系统默认应用打开
+        {t("richLink.openWithDefaultApp")}
       </div>
     </div>
   );
@@ -207,10 +220,13 @@ function LocalExternalPopover({
 }: {
   kind: Extract<LinkClass, { kind: "local-external" }>;
 }) {
+  const { t } = useTranslation();
   const full = fullTarget(kind);
   const PathIcon = kind.pathKind === "folder" ? Folder : FileText;
   const label =
-    kind.pathKind === "folder" ? "本地文件夹 · 项目外" : "本地文件 · 项目外";
+    kind.pathKind === "folder"
+      ? t("richLink.localFolderExternal")
+      : t("richLink.localFileExternal");
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
@@ -222,26 +238,27 @@ function LocalExternalPopover({
         <button
           type="button"
           className="inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs"
-          onClick={() => copyToClipboard(full)}
+          onClick={() => copyToClipboard(full, t)}
         >
-          <CopyIcon className="size-3" aria-hidden /> 复制
+          <CopyIcon className="size-3" aria-hidden /> {t("common.copy")}
         </button>
       </div>
       <code className="break-all font-mono text-xs font-semibold text-foreground">
         {full}
       </code>
       <div className="text-[11px] text-muted-foreground">
-        路径不在当前 cwd 之下，不展示项目根分段。
+        {t("richLink.outsideCwd")}
       </div>
       <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-[11px] text-muted-foreground">
         <MousePointerClick className="size-3" aria-hidden />
-        点击用系统默认应用打开
+        {t("richLink.openWithDefaultApp")}
       </div>
     </div>
   );
 }
 
 export function RichLink({ href, className, cwd, children }: RichLinkProps) {
+  const { t } = useTranslation();
   const kind = React.useMemo(() => classifyLink(href, cwd), [href, cwd]);
 
   if (kind.kind === "unknown") {
@@ -263,7 +280,7 @@ export function RichLink({ href, className, cwd, children }: RichLinkProps) {
 
   const onClick = (e: React.MouseEvent) => {
     e.preventDefault();
-    dispatchClick(kind);
+    dispatchClick(kind, t);
   };
 
   return (

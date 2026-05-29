@@ -1,6 +1,8 @@
 // frontend/src/components/agentre/remote-devices/device-row.tsx
 import { useState } from "react";
 import { Server } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -26,16 +28,16 @@ function tlsBadgeVariant(
   return "secondary";
 }
 
-function tlsBadgeLabel(mode: string): string {
+function tlsBadgeLabel(mode: string, t: TFunction): string {
   switch (mode) {
     case "default":
-      return "OS 默认";
+      return t("remoteDevices.tls.modes.default.label");
     case "pin-cert":
-      return "Pin 证书";
+      return t("remoteDevices.tls.modes.pinCert.label");
     case "ca-bundle":
-      return "CA 证书包";
+      return t("remoteDevices.tls.modes.caBundle.label");
     case "skip-verify":
-      return "跳过校验";
+      return t("remoteDevices.tls.modes.skipVerify.label");
     default:
       return mode;
   }
@@ -55,7 +57,8 @@ export function DeviceRow({
   onEditTLS,
   onRemove,
 }: Props) {
-  const friendlyErr = friendlyLastError(device.lastError);
+  const { t } = useTranslation();
+  const friendlyErr = friendlyLastError(device.lastError, t);
   const isTofu = device.lastError === "tofu_mismatch";
   const [showProviders, setShowProviders] = useState(false);
 
@@ -68,7 +71,11 @@ export function DeviceRow({
     >
       <div className="flex items-center gap-3">
         <span
-          aria-label={device.online ? "在线" : "离线"}
+          aria-label={
+            device.online
+              ? t("remoteDevices.status.online")
+              : t("remoteDevices.status.offline")
+          }
           className={`h-2 w-2 rounded-full ${dotColor(device)}`}
         />
         <div className="flex h-7 w-7 items-center justify-center rounded-md bg-secondary">
@@ -78,15 +85,17 @@ export function DeviceRow({
           <div className="flex items-center gap-2">
             <span className="font-medium truncate">{device.name}</span>
             <Badge variant={tlsBadgeVariant(device.tlsMode)}>
-              {tlsBadgeLabel(device.tlsMode)}
+              {tlsBadgeLabel(device.tlsMode, t)}
             </Badge>
           </div>
           <div className="text-xs text-muted-foreground truncate">
             {device.url}
             <span className="mx-2">·</span>
             {device.lastSeenAt > 0
-              ? `上次连接 ${relativeTime(device.lastSeenAt, now)}`
-              : "尚未连接"}
+              ? t("remoteDevices.status.lastConnected", {
+                  time: relativeTime(device.lastSeenAt, now, t),
+                })
+              : t("remoteDevices.status.neverConnected")}
           </div>
         </div>
         <DeviceActionMenu

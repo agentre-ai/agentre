@@ -1,5 +1,6 @@
 import React from "react";
 import { TriangleAlert } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -42,6 +43,7 @@ function ShortcutRow({
   onStartRecord: () => void;
   onCancelRecord: () => void;
 }) {
+  const { t } = useTranslation();
   const { platform } = useShortcutsContext();
   return (
     <div
@@ -65,14 +67,14 @@ function ShortcutRow({
           )}
         >
           {recording
-            ? "按下新组合键…"
+            ? t("shortcuts.recording")
             : chord
               ? formatChord(chord, platform)
-              : "未绑定"}
+              : t("shortcuts.unbound")}
         </span>
         {fixed ? (
           <span className="rounded-md bg-muted px-2 py-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-            固定
+            {t("shortcuts.fixed")}
           </span>
         ) : recording ? (
           <Button
@@ -81,7 +83,7 @@ function ShortcutRow({
             size="sm"
             onClick={onCancelRecord}
           >
-            取消
+            {t("common.cancel")}
           </Button>
         ) : (
           <Button
@@ -90,7 +92,7 @@ function ShortcutRow({
             size="sm"
             onClick={onStartRecord}
           >
-            录制
+            {t("shortcuts.record")}
           </Button>
         )}
       </div>
@@ -111,6 +113,7 @@ function ConflictBanner({ message }: { message: ConflictMessage }) {
 }
 
 export function KeyboardShortcutsPanel(): React.ReactElement {
+  const { t } = useTranslation();
   const {
     bindings,
     platform,
@@ -165,13 +168,15 @@ export function KeyboardShortcutsPanel(): React.ReactElement {
 
       const conflictResult = findChordConflict(chord, recordingId!);
       if (conflictResult?.type === "system") {
-        showConflict({ text: "该组合键由系统保留,请换一个" });
+        showConflict({ text: t("shortcuts.conflict.systemReserved") });
         return;
       }
       if (conflictResult?.type === "binding") {
         const other = getDef(conflictResult.id);
         showConflict({
-          text: `已被「${other?.label ?? conflictResult.id}」占用`,
+          text: t("shortcuts.conflict.inUse", {
+            label: other?.label ?? conflictResult.id,
+          }),
           highlightId: conflictResult.id,
         });
         return;
@@ -181,7 +186,7 @@ export function KeyboardShortcutsPanel(): React.ReactElement {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [recordingId, platform, findChordConflict, setBinding, showConflict]);
+  }, [recordingId, platform, findChordConflict, setBinding, showConflict, t]);
 
   const globalDefs = REGISTRY.filter((def) => def.scope === "global");
   const chatTabDef = getDef(TAB_CHIP_IDS[0]!)!;
@@ -197,15 +202,17 @@ export function KeyboardShortcutsPanel(): React.ReactElement {
   return (
     <>
       <div className="flex max-w-3xl flex-col gap-1.5">
-        <h1 className="text-2xl font-semibold tracking-normal">键盘快捷键</h1>
+        <h1 className="text-2xl font-semibold tracking-normal">
+          {t("shortcuts.title")}
+        </h1>
         <p className="text-sm leading-relaxed text-muted-foreground">
-          调整全局导航与对话页快捷键。
+          {t("shortcuts.description")}
         </p>
       </div>
 
       <section className="flex flex-col gap-3">
         <h2 className="text-2xs font-semibold uppercase tracking-[0.08em] text-subtle-foreground">
-          全局导航
+          {t("shortcuts.sections.global")}
         </h2>
         {globalDefs.map((def) => (
           <ShortcutRow
@@ -225,20 +232,20 @@ export function KeyboardShortcutsPanel(): React.ReactElement {
 
       <section className="flex flex-col gap-3">
         <h2 className="text-2xs font-semibold uppercase tracking-[0.08em] text-subtle-foreground">
-          对话页
+          {t("shortcuts.sections.chat")}
         </h2>
         <ShortcutRow
           fixed
           def={{
             ...chatTabDef,
-            label: "切换到第 N 个 Tab",
+            label: t("shortcuts.chatTab.label"),
             hint: `${formatChord(
               { mod: "primary", key: "1" },
               platform,
             )} - ${formatChord(
               { mod: "primary", key: "9" },
               platform,
-            )} · 按 TabStrip 排列顺序（固定 + 普通 + 预览）`,
+            )} · ${t("shortcuts.chatTab.hint")}`,
           }}
           chord={bindings.get(chatTabDef.id) ?? null}
           recording={false}
@@ -265,25 +272,25 @@ export function KeyboardShortcutsPanel(): React.ReactElement {
           size="sm"
           onClick={() => setResetOpen(true)}
         >
-          全部重置为默认
+          {t("shortcuts.resetAll")}
         </Button>
       </div>
 
       <Dialog open={resetOpen} onOpenChange={setResetOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>重置所有快捷键?</DialogTitle>
+            <DialogTitle>{t("shortcuts.resetDialog.title")}</DialogTitle>
             <DialogDescription>
-              所有自定义绑定将恢复为默认值,无法撤销。
+              {t("shortcuts.resetDialog.description")}
             </DialogDescription>
           </DialogHeader>
           <DialogBody>
             <p className="text-sm text-muted-foreground">
-              重置后浏览器本地保存的
+              {t("shortcuts.resetDialog.storagePrefix")}
               <code className="mx-1 rounded bg-muted px-1.5 py-0.5 font-mono text-2xs">
                 agentre.shortcuts
               </code>
-              将被清空。
+              {t("shortcuts.resetDialog.storageSuffix")}
             </p>
           </DialogBody>
           <DialogFooter>
@@ -293,7 +300,7 @@ export function KeyboardShortcutsPanel(): React.ReactElement {
               size="sm"
               onClick={() => setResetOpen(false)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               type="button"
@@ -301,7 +308,7 @@ export function KeyboardShortcutsPanel(): React.ReactElement {
               size="sm"
               onClick={performReset}
             >
-              重置
+              {t("shortcuts.reset")}
             </Button>
           </DialogFooter>
         </DialogContent>

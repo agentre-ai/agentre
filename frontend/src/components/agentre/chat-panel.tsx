@@ -8,6 +8,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,7 @@ import { useChatSession } from "@/hooks/use-chat-session";
 import type { ChatStreamEvent } from "@/hooks/use-chat-stream";
 import { useProjectTree } from "@/hooks/use-project-tree";
 import { useVisibleMessageId } from "@/hooks/use-visible-message-id";
+import i18n from "@/i18n";
 import { reasonToDisplayStatus } from "@/lib/attention-display";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
 import { projectChain } from "@/lib/project-chain";
@@ -104,8 +106,10 @@ function textOfChatMessage(m: SvcChatMessage): string {
 // i18n.NewError 透传成普通 Error，没有结构化 code，只能按字串识别。
 function isChatSteerNoActiveError(msg: string): boolean {
   return (
-    msg.includes("没有进行中的对话") ||
-    msg.includes("No in-flight conversation")
+    msg.includes(
+      i18n.t("chatPanel.errors.noActiveConversation", { lng: "zh-CN" }),
+    ) ||
+    msg.includes(i18n.t("chatPanel.errors.noActiveConversation", { lng: "en" }))
   );
 }
 
@@ -114,8 +118,10 @@ function isChatSteerNoActiveError(msg: string): boolean {
 // 会返这条；属于无害的「太晚了」，UI 不弹错。
 function isChatStopNoActiveError(msg: string): boolean {
   return (
-    msg.includes("没有正在进行的对话可停止") ||
-    msg.includes("No in-flight turn to stop")
+    msg.includes(
+      i18n.t("chatPanel.errors.noActiveTurnToStop", { lng: "zh-CN" }),
+    ) ||
+    msg.includes(i18n.t("chatPanel.errors.noActiveTurnToStop", { lng: "en" }))
   );
 }
 
@@ -316,6 +322,7 @@ function ChatPanel({
   emptyState,
   active = true,
 }: ChatPanelProps) {
+  const { t } = useTranslation();
   // 流式状态(streams / queuedBySession / liveBlocks ...)全部托管在跨路由长存的
   // zustand store 里。ChatPanel 只做「读 + 派发」,不再持有状态副本,这样切到 /projects
   // 等其它路由再切回来时,store 里累积的 liveDelta / liveBlocks / queued 都能直接还原。
@@ -452,7 +459,7 @@ function ChatPanel({
   const quotaUsage = useCCUsage(quotaDeviceKey);
   const quotaDeviceLabel = activeDeviceID
     ? activeDeviceName || `device #${activeDeviceID}`
-    : "本机";
+    : t("chatPanel.localDevice");
   // caps 来自后端 runtime 的 Capabilities — UI 不再按 backendType 硬分支。
   // 已有 session 走 GetSessionCapabilities;新对话(sessionId<=0)按
   // newSessionAgent.backendType 走 GetBackendCapabilities — 这样 PermissionModePill
@@ -678,7 +685,7 @@ function ChatPanel({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] send failed", e);
-      setNotice({ kind: "error", text: `发送失败：${msg}` });
+      setNotice({ kind: "error", text: t("chatPanel.errors.send", { msg }) });
     }
   }
 
@@ -708,7 +715,10 @@ function ChatPanel({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] compact failed", e);
-      setNotice({ kind: "error", text: `压缩上下文失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.compact", { msg }),
+      });
     }
   }
 
@@ -721,14 +731,18 @@ function ChatPanel({
         setNotice({
           kind: "info",
           text: goal
-            ? `当前目标：${goal.objective}（${goal.status}，${goal.tokensUsed ?? 0} tokens）`
-            : "当前没有目标",
+            ? t("chatPanel.goal.current", {
+                objective: goal.objective,
+                status: goal.status,
+                tokens: goal.tokensUsed ?? 0,
+              })
+            : t("chatPanel.goal.empty"),
         });
         return;
       }
       if (cmd.kind === "clear") {
         await ClearChatGoal({ sessionId: sid });
-        setNotice({ kind: "info", text: "目标已清除" });
+        setNotice({ kind: "info", text: t("chatPanel.goal.cleared") });
         return;
       }
       const payload =
@@ -738,24 +752,28 @@ function ChatPanel({
       const resp = await SetChatGoal(payload);
       setNotice({
         kind: "info",
-        text: resp.goal ? `目标已更新：${resp.goal.objective}` : "目标已更新",
+        text: resp.goal
+          ? t("chatPanel.goal.updatedWithObjective", {
+              objective: resp.goal.objective,
+            })
+          : t("chatPanel.goal.updated"),
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] goal failed", e);
-      setNotice({ kind: "error", text: `目标操作失败：${msg}` });
+      setNotice({ kind: "error", text: t("chatPanel.errors.goal", { msg }) });
     }
   }
 
   function notifyCompactNeedsSession() {
     setNotice({
       kind: "info",
-      text: "请先发送一条消息让 Codex 会话启动后再压缩",
+      text: t("chatPanel.compact.needsSession"),
     });
   }
 
   function notifyCompactWaitForTurn() {
-    setNotice({ kind: "info", text: "当前回复结束后再压缩" });
+    setNotice({ kind: "info", text: t("chatPanel.compact.waitForTurn") });
   }
 
   const handlePlanActionStarted = React.useCallback(
@@ -810,7 +828,10 @@ function ChatPanel({
         return;
       }
       console.error("[chat] enqueue failed", e);
-      setNotice({ kind: "error", text: `插入消息失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.enqueue", { msg }),
+      });
     }
   }
 
@@ -821,7 +842,10 @@ function ChatPanel({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] cancel queued failed", e);
-      setNotice({ kind: "error", text: `撤回失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.cancelQueued", { msg }),
+      });
     }
   }
 
@@ -840,7 +864,7 @@ function ChatPanel({
         return;
       }
       console.error("[chat] stop failed", e);
-      setNotice({ kind: "error", text: `停止失败：${msg}` });
+      setNotice({ kind: "error", text: t("chatPanel.errors.stop", { msg }) });
     }
   }
 
@@ -893,7 +917,10 @@ function ChatPanel({
     } catch (e: unknown) {
       console.error("[chat] regenerate failed", e);
       const msg = e instanceof Error ? e.message : String(e);
-      setNotice({ kind: "error", text: `重新生成失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.regenerate", { msg }),
+      });
     }
   }
 
@@ -912,7 +939,10 @@ function ChatPanel({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] rename failed", e);
-      setNotice({ kind: "error", text: `重命名失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.rename", { msg }),
+      });
     }
   }
 
@@ -924,15 +954,17 @@ function ChatPanel({
     try {
       const resp = await GetChatLaunchCommand({ sessionId: sid });
       await copyTextWithToast(resp.command, {
-        errorTitle: "复制启动命令失败",
-        successTitle: "已复制启动命令",
-        successDescription:
-          "含 token，直接粘贴到终端即可运行；本地网关重启后 token 失效需重新复制",
+        errorTitle: t("chatPanel.launchCommand.copyFailed"),
+        successTitle: t("chatPanel.launchCommand.copyDone"),
+        successDescription: t("chatPanel.launchCommand.copyDescription"),
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] copy launch command failed", e);
-      setNotice({ kind: "error", text: `复制启动命令失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.copyLaunchCommand", { msg }),
+      });
     }
   }
 
@@ -997,7 +1029,7 @@ function ChatPanel({
     } catch (e: unknown) {
       console.error("[chat] edit failed", e);
       const msg = e instanceof Error ? e.message : String(e);
-      setNotice({ kind: "error", text: `编辑失败：${msg}` });
+      setNotice({ kind: "error", text: t("chatPanel.errors.edit", { msg }) });
     }
   }
 
@@ -1028,7 +1060,7 @@ function ChatPanel({
           {showNewSessionPrompt ? null : (
             <div
               role="toolbar"
-              aria-label="会话工具栏"
+              aria-label={t("chatPanel.toolbar.aria")}
               className="flex min-h-[44px] shrink-0 items-center gap-3 border-b border-border px-5 py-1.5"
             >
               {session
@@ -1054,9 +1086,9 @@ function ChatPanel({
                         <div className="min-w-0 flex-1">
                           <div
                             className="line-clamp-2 break-words text-sm font-semibold leading-snug"
-                            title={session.title || "(未命名)"}
+                            title={session.title || t("chatPanel.untitled")}
                           >
-                            {session.title || "(未命名)"}
+                            {session.title || t("chatPanel.untitled")}
                           </div>
                           <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0 font-mono text-2xs text-muted-foreground">
                             {effectiveTopline ? (
@@ -1132,15 +1164,15 @@ function ChatPanel({
                               onClick={() => void doStop(session.id)}
                               title={
                                 canStop
-                                  ? "停止当前对话"
-                                  : "当前没有进行中的对话"
+                                  ? t("chatPanel.toolbar.stopActiveTitle")
+                                  : t("chatPanel.toolbar.stopInactiveTitle")
                               }
                             >
                               <Square
                                 data-icon="inline-start"
                                 aria-hidden="true"
                               />
-                              停止
+                              {t("chatPanel.toolbar.stop")}
                             </Button>
                           );
                         })()}
@@ -1148,10 +1180,12 @@ function ChatPanel({
                           type="button"
                           variant="outline"
                           size="icon-sm"
-                          aria-label="上下文侧栏"
+                          aria-label={t("chatPanel.toolbar.contextSidebar")}
                           onClick={() => setSidebarOpen(!sidebarOpen)}
                           title={
-                            sidebarOpen ? "隐藏上下文侧栏" : "显示上下文侧栏"
+                            sidebarOpen
+                              ? t("chatPanel.toolbar.hideContextSidebar")
+                              : t("chatPanel.toolbar.showContextSidebar")
                           }
                         >
                           {sidebarOpen ? (
@@ -1170,7 +1204,7 @@ function ChatPanel({
                               type="button"
                               variant="outline"
                               size="icon-sm"
-                              aria-label="更多操作"
+                              aria-label={t("common.moreActions")}
                             >
                               <MoreHorizontal
                                 data-icon="only"
@@ -1187,7 +1221,7 @@ function ChatPanel({
                                 })
                               }
                             >
-                              重命名
+                              {t("chatPanel.actions.rename")}
                             </DropdownMenuItem>
                             {(session.backendType === "claudecode" ||
                               session.backendType === "codex") && (
@@ -1196,14 +1230,14 @@ function ChatPanel({
                                   void handleCopyLaunchCommand(session.id)
                                 }
                               >
-                                复制启动命令
+                                {t("chatPanel.launchCommand.copy")}
                               </DropdownMenuItem>
                             )}
                             <DropdownMenuItem
                               className="text-destructive focus:text-destructive"
                               onClick={() => void handleDelete(session.id)}
                             >
-                              删除
+                              {t("common.delete")}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -1223,10 +1257,12 @@ function ChatPanel({
                 <div className="flex flex-1 items-center justify-center">
                   <div className="flex flex-col items-center gap-2 text-center">
                     <div className="text-sm font-semibold">
-                      和 {newSessionAgent.name} 开始对话
+                      {t("chatPanel.newSession.title", {
+                        name: newSessionAgent.name,
+                      })}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      在下方输入框输入消息，按 Enter 发送，Shift+Enter 换行
+                      {t("chatPanel.newSession.description")}
                     </div>
                   </div>
                 </div>
@@ -1277,7 +1313,7 @@ function ChatPanel({
                       </span>
                       <button
                         type="button"
-                        aria-label="关闭提示"
+                        aria-label={t("chatPanel.notice.close")}
                         onClick={() => setNotice(null)}
                         className="-mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-current opacity-70 transition-opacity hover:opacity-100"
                       >
@@ -1338,7 +1374,7 @@ function ChatPanel({
                   if (images.length > 0 && !supportsImageInput) {
                     setNotice({
                       kind: "error",
-                      text: "当前 Agent 后端不支持图片输入",
+                      text: t("chatPanel.errors.imageUnsupported"),
                     });
                     return;
                   }
@@ -1354,14 +1390,14 @@ function ChatPanel({
                     if (!sessionId) {
                       setNotice({
                         kind: "info",
-                        text: "请先发送一条消息让 Codex 会话启动后再设置目标",
+                        text: t("chatPanel.goal.needsSession"),
                       });
                       return;
                     }
                     if (images.length > 0) {
                       setNotice({
                         kind: "error",
-                        text: "/goal 不能和图片一起发送",
+                        text: t("chatPanel.goal.imageUnsupported"),
                       });
                       return;
                     }
@@ -1383,7 +1419,7 @@ function ChatPanel({
                     if (images.length > 0) {
                       setNotice({
                         kind: "error",
-                        text: "/compact 不能和图片一起发送",
+                        text: t("chatPanel.compact.imageUnsupported"),
                       });
                       return;
                     }
@@ -1400,7 +1436,7 @@ function ChatPanel({
                     if (images.length > 0) {
                       setNotice({
                         kind: "error",
-                        text: "当前对话正在运行，图片请等本轮结束后发送",
+                        text: t("chatPanel.errors.imageWhileStreaming"),
                       });
                       return;
                     }
@@ -1445,12 +1481,11 @@ function ChatPanel({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>重新生成回复</DialogTitle>
+            <DialogTitle>{t("chatPanel.regenerateDialog.title")}</DialogTitle>
           </DialogHeader>
           <DialogBody>
             <p className="text-sm text-muted-foreground">
-              这条回复及它之后的所有消息会被丢弃，agent 会基于上一条 user
-              消息重新生成新的回复。
+              {t("chatPanel.regenerateDialog.description")}
             </p>
           </DialogBody>
           <DialogFooter>
@@ -1459,10 +1494,10 @@ function ChatPanel({
               size="sm"
               onClick={() => setPendingRegenId(null)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
             <Button size="sm" onClick={() => void confirmRegenerate()}>
-              确认重新生成
+              {t("chatPanel.regenerateDialog.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1475,11 +1510,11 @@ function ChatPanel({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>删除会话</DialogTitle>
+            <DialogTitle>{t("chatPanel.deleteDialog.title")}</DialogTitle>
           </DialogHeader>
           <DialogBody>
             <p className="text-sm text-muted-foreground">
-              删除后此会话的所有消息会被一并清除，且无法恢复。
+              {t("chatPanel.deleteDialog.description")}
             </p>
           </DialogBody>
           <DialogFooter>
@@ -1488,14 +1523,14 @@ function ChatPanel({
               size="sm"
               onClick={() => setPendingDeleteId(null)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               size="sm"
               variant="destructive"
               onClick={() => void confirmDelete()}
             >
-              删除
+              {t("common.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1510,7 +1545,7 @@ function ChatPanel({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>重命名会话</DialogTitle>
+            <DialogTitle>{t("chatPanel.renameDialog.title")}</DialogTitle>
           </DialogHeader>
           <DialogBody>
             <form
@@ -1528,8 +1563,8 @@ function ChatPanel({
                     prev ? { ...prev, draft: e.target.value } : prev,
                   )
                 }
-                placeholder="输入新名称"
-                aria-label="会话名称"
+                placeholder={t("chatPanel.renameDialog.placeholder")}
+                aria-label={t("chatPanel.renameDialog.nameAria")}
               />
             </form>
           </DialogBody>
@@ -1539,7 +1574,7 @@ function ChatPanel({
               size="sm"
               onClick={() => setPendingRename(null)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               type="submit"
@@ -1549,7 +1584,7 @@ function ChatPanel({
                 !pendingRename || pendingRename.draft.trim().length === 0
               }
             >
-              保存
+              {t("common.save")}
             </Button>
           </DialogFooter>
         </DialogContent>

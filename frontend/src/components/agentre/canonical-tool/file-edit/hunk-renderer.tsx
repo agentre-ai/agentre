@@ -1,3 +1,5 @@
+import { useTranslation } from "react-i18next";
+
 import { cn } from "@/lib/utils";
 import type { DiffHunk, DiffLine, FileEditPatch } from "../types";
 
@@ -9,6 +11,7 @@ export function FileBlock({
   file: FileEditPatch;
   showHeader: boolean;
 }) {
+  const { t } = useTranslation();
   const empty = !file.hunks || file.hunks.length === 0;
   return (
     <div>
@@ -19,12 +22,12 @@ export function FileBlock({
           </span>
           {file.kind === "created" && (
             <span className="rounded-sm bg-status-running-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-status-running">
-              NEW
+              {t("canonical.fileEdit.badge.new")}
             </span>
           )}
           {file.kind === "deleted" && (
             <span className="rounded-sm bg-destructive-soft px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-destructive">
-              DELETED
+              {t("canonical.fileEdit.badge.deleted")}
             </span>
           )}
           <span className="ml-auto font-mono text-[10px] font-semibold text-status-running">
@@ -38,13 +41,18 @@ export function FileBlock({
         </div>
       )}
       {empty ? (
-        <div className="px-3 py-2 text-muted-foreground">无实际变更</div>
+        <div className="px-3 py-2 text-muted-foreground">
+          {t("canonical.fileEdit.noChanges")}
+        </div>
       ) : (
         file.hunks.map((hunk, hi) => <HunkBlock key={hi} hunk={hunk} />)
       )}
       {file.truncated && (
         <div className="border-t border-border bg-secondary px-3 py-1 text-[11px] text-muted-foreground">
-          部分行已截断 · 完整 diff 共 {file.plus + file.minus} 行(展示前 200 行)
+          {t("canonical.fileEdit.truncated", {
+            count: file.plus + file.minus,
+            shown: 200,
+          })}
         </div>
       )}
     </div>

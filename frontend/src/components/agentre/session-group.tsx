@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ArrowRight, Inbox } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Popover, PopoverTrigger } from "@/components/ui/popover";
 import { isOpenInNewTabModifier } from "@/lib/keyboard";
@@ -69,10 +70,12 @@ function SessionGroup({
   attentionSessions = [],
   collapsedAttentionSessions,
   renderAfterSessions,
-  emptyLabel = "暂无会话",
+  emptyLabel,
   attentionAriaLabel,
   ...props
 }: SessionGroupProps) {
+  const { t } = useTranslation();
+  const resolvedEmptyLabel = emptyLabel ?? t("sessionGroup.empty");
   const [popoverOpen, setPopoverOpen] = React.useState(false);
   const [expanded, setExpanded] = React.useState(
     () => readSidebarExpanded(persistenceKey ?? "") ?? defaultExpanded ?? false,
@@ -195,7 +198,7 @@ function SessionGroup({
                     disabled={!expanded}
                     className="flex cursor-pointer items-center gap-1 px-2 py-1.5 text-left text-2xs font-medium text-primary-text outline-none transition-colors hover:text-primary focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-default"
                   >
-                    查看全部 {totalSessions} 个会话
+                    {t("sessionGroup.viewAll", { count: totalSessions })}
                     <ArrowRight className="size-3" aria-hidden="true" />
                   </button>
                 </PopoverTrigger>
@@ -216,7 +219,7 @@ function SessionGroup({
                   className="size-3 text-subtle-foreground"
                   aria-hidden="true"
                 />
-                <span>{emptyLabel}</span>
+                <span>{resolvedEmptyLabel}</span>
               </div>
             ) : null}
           </div>

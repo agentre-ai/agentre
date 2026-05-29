@@ -1,6 +1,8 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { useChatAgents, type ChatAgentItem } from "@/hooks/use-chat-agents";
+import i18n from "@/i18n";
 import { reasonToDisplayStatus } from "@/lib/attention-display";
 import { relativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
@@ -41,7 +43,7 @@ export function flattenSessions(agents: ChatAgentItem[]): ChatSessionItem[] {
         key: `chat-session-${s.id}`,
         sessionId: s.id,
         agentId: a.id,
-        title: s.title || "(未命名会话)",
+        title: s.title || i18n.t("commandPalette.chatSessions.untitled"),
         agentName: a.name,
         agentColor: (a.avatarColor as AgentColor) || "agent-1",
         agentAvatarIcon: a.avatarIcon || undefined,
@@ -157,6 +159,7 @@ function SessionRow({ item }: SessionRowProps) {
 }
 
 function StatusBadge({ status }: { status: AgentStatus }) {
+  const { t } = useTranslation();
   const tone =
     status === "running"
       ? "bg-status-running-bg text-status-running"
@@ -167,11 +170,11 @@ function StatusBadge({ status }: { status: AgentStatus }) {
           : "bg-muted text-muted-foreground";
   const label =
     status === "running"
-      ? "运行中"
+      ? t("commandPalette.chatSessions.status.running")
       : status === "waiting"
-        ? "等待"
+        ? t("commandPalette.chatSessions.status.waiting")
         : status === "error"
-          ? "出错"
+          ? t("commandPalette.chatSessions.status.error")
           : "";
   if (!label) return null;
   return (
@@ -199,7 +202,7 @@ function onSelect(item: ChatSessionItem, ctx: OnSelectCtx): void {
 
 export const chatSessionsSource: CommandSource<ChatSessionItem> = {
   id: "chat-sessions",
-  heading: "聊天会话",
+  heading: i18n.t("commandPalette.chatSessions.heading"),
   modes: ["default"],
   useItems,
   getScore,

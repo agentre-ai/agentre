@@ -1,3 +1,5 @@
+import i18n from "@/i18n";
+
 export type Scope =
   | "llm-providers"
   | "agent-backends"
@@ -5,10 +7,10 @@ export type Scope =
   | "remote-devices";
 
 export const SCOPE_LABELS: Record<Scope, string> = {
-  "llm-providers": "LLM 供应商",
-  "agent-backends": "Agent 后端",
-  organization: "组织架构",
-  "remote-devices": "远端设备",
+  "llm-providers": i18n.t("dataBackup.scopes.llm-providers"),
+  "agent-backends": i18n.t("dataBackup.scopes.agent-backends"),
+  organization: i18n.t("dataBackup.scopes.organization"),
+  "remote-devices": i18n.t("dataBackup.scopes.remote-devices"),
 };
 
 export type ItemAction = "create" | "overwrite" | "skip" | "duplicate";

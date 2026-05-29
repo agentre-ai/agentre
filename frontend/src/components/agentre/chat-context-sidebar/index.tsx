@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 
@@ -26,6 +27,7 @@ export function ChatContextSidebar({
   activeMessageId,
   onJumpToMessage,
 }: Props) {
+  const { t } = useTranslation();
   const activeTab = useChatSidebarStore((s) => s.activeTab);
   const setActiveTab = useChatSidebarStore((s) => s.setActiveTab);
 
@@ -77,7 +79,7 @@ export function ChatContextSidebar({
   return (
     <ResizableSidebar
       persistenceKey="chat-context"
-      ariaLabel="对话上下文"
+      ariaLabel={t("chatContext.sidebar")}
       edge="left"
       defaultWidth={240}
       className="h-full"

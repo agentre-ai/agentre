@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   CheckCircle2,
@@ -37,6 +38,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import i18n from "@/i18n";
 import { cn } from "@/lib/utils";
 
 import { truncateFlashText } from "./agent-backends-utils";
@@ -73,29 +75,19 @@ type ProviderSummary = { key?: string; name?: string; type?: string };
 const backendTypeMeta: Record<
   BackendType,
   {
-    description: string;
     disabled: boolean;
     icon: typeof Puzzle;
-    label: string;
   }
 > = {
   builtin: {
-    label: "内置 Agent",
-    description: "由系统直接调 LLM 并执行工具调用（cago app/coding）",
     icon: Puzzle,
     disabled: false,
   },
   claudecode: {
-    label: "Claude Code CLI",
-    description:
-      "包装本地 claude CLI；通过 App 内置 HTTP 代理转发到 anthropic 类型 LLM 供应商",
     icon: Hammer,
     disabled: false,
   },
   codex: {
-    label: "Codex CLI",
-    description:
-      "包装本地 codex CLI；通过 OpenAI Responses API 匹配 openai-response 类型供应商",
     icon: Wand2,
     disabled: false,
   },
@@ -150,15 +142,6 @@ const REASONING_EFFORTS_CODEX: ReasoningEffortValue[] = [
   "high",
   "xhigh",
 ];
-const REASONING_EFFORT_LABELS: Record<ReasoningEffortValue, string> = {
-  "": "默认（由模型决定）",
-  low: "低 · low",
-  medium: "中 · medium",
-  high: "高 · high",
-  xhigh: "极高 · xhigh",
-  max: "顶格 · max",
-};
-
 function normalizeForCodex(v: ReasoningEffortValue): ReasoningEffortValue {
   return v === "max" ? "high" : v;
 }
@@ -170,12 +153,11 @@ type ClaudeTier = (typeof CLAUDE_TIERS)[number];
 
 const APPROVAL_OPTIONS: {
   value: Exclude<ApprovalValue, "">;
-  label: string;
 }[] = [
-  { value: "untrusted", label: "仅信任的工具自动执行" },
-  { value: "on-failure", label: "工具失败时人工确认" },
-  { value: "on-request", label: "模型请求时人工确认" },
-  { value: "never", label: "从不需要人工确认" },
+  { value: "untrusted" },
+  { value: "on-failure" },
+  { value: "on-request" },
+  { value: "never" },
 ];
 
 const SANDBOX_OPTIONS: {
@@ -310,6 +292,7 @@ export function AgentBackendsPanel({
 }: {
   onOpenProxySettings?: () => void;
 } = {}) {
+  const { t } = useTranslation();
   const [backends, setBackends] = React.useState<Backend[]>([]);
   const [providers, setProviders] = React.useState<Provider[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -427,20 +410,23 @@ export function AgentBackendsPanel({
         <FlashBanner state={flash} onDismiss={() => setFlash(null)} />
       ) : null}
       <div data-slot="table-container" className="min-w-0 overflow-x-auto">
-        <Table aria-label="Agent 后端列表" className="min-w-[980px]">
+        <Table
+          aria-label={t("agentBackends.table.ariaLabel")}
+          className="min-w-[980px]"
+        >
           <TableHeader>
             <TableRow className="bg-secondary hover:bg-secondary">
               <TableHead className="w-[260px] px-4 font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                名称
+                {t("agentBackends.table.name")}
               </TableHead>
               <TableHead className="w-[180px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                类型
+                {t("agentBackends.table.type")}
               </TableHead>
               <TableHead className="min-w-[260px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                CLI / 标识
+                {t("agentBackends.table.cli")}
               </TableHead>
               <TableHead className="w-[250px] font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                模型 / 供应商
+                {t("agentBackends.table.modelProvider")}
               </TableHead>
               <TableHead className="w-[100px]" />
             </TableRow>
@@ -456,7 +442,7 @@ export function AgentBackendsPanel({
                     className="mr-2 inline size-3.5 animate-spin"
                     aria-hidden="true"
                   />
-                  加载中...
+                  {t("common.loading")}
                 </TableCell>
               </TableRow>
             ) : backends.length === 0 ? (
@@ -466,7 +452,7 @@ export function AgentBackendsPanel({
                   className="py-8 text-center text-xs text-muted-foreground"
                 >
                   <span data-selectable-text="true">
-                    还没有 Agent 后端，点右上「+ 新增后端」开始配置
+                    {t("agentBackends.empty.table")}
                   </span>
                 </TableCell>
               </TableRow>
@@ -509,7 +495,7 @@ export function AgentBackendsPanel({
           onCancel={() => setPendingDelete(null)}
           onConfirmed={async () => {
             setPendingDelete(null);
-            setFlash({ kind: "ok", text: "已删除" });
+            setFlash({ kind: "ok", text: t("agentBackends.flash.deleted") });
             await reload();
           }}
           onError={(text) => {
@@ -523,11 +509,16 @@ export function AgentBackendsPanel({
 }
 
 function Toolbar({ count, onCreate }: { count: number; onCreate: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-3 sm:px-4">
       <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-sm font-semibold">已配置的后端</span>
-        <span className="text-2xs text-muted-foreground">共 {count} 个</span>
+        <span className="text-sm font-semibold">
+          {t("agentBackends.toolbar.title")}
+        </span>
+        <span className="text-2xs text-muted-foreground">
+          {t("agentBackends.toolbar.count", { count })}
+        </span>
       </div>
       <Button
         type="button"
@@ -536,7 +527,7 @@ function Toolbar({ count, onCreate }: { count: number; onCreate: () => void }) {
         onClick={onCreate}
       >
         <Plus data-icon="inline-start" aria-hidden="true" />
-        新增后端
+        {t("agentBackends.toolbar.add")}
       </Button>
     </div>
   );
@@ -559,6 +550,7 @@ function BackendRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const { t } = useTranslation();
   const typ = (backend.type as BackendType) ?? "builtin";
   const meta = backendTypeMeta[typ] ?? backendTypeMeta.builtin;
   const Icon = meta.icon;
@@ -568,10 +560,10 @@ function BackendRow({
     cliBased &&
     !((backend as unknown as { llmProviderKey?: string }).llmProviderKey ?? "");
   const providerLabel = unlinkedCli
-    ? "走 CLI 自身登录"
+    ? t("agentBackends.provider.cliLogin")
     : backend.llmProviderName
-      ? `${backend.llmProviderName} · ${backend.llmProviderModel || "（未选模型）"}`
-      : "未关联供应商";
+      ? `${backend.llmProviderName} · ${backend.llmProviderModel || t("agentBackends.provider.noModel")}`
+      : t("agentBackends.provider.unlinked");
   const warning = !unlinkedCli && !backend.llmProviderActive;
 
   return (
@@ -598,14 +590,16 @@ function BackendRow({
                   variant="secondary"
                   className="rounded-sm bg-status-waiting-bg px-1.5 py-0 font-mono text-2xs text-status-waiting"
                 >
-                  需处理
+                  {t("agentBackends.row.needsAction")}
                 </Badge>
               ) : null}
             </div>
             <span className="font-mono text-2xs text-subtle-foreground">
               {backend.agentCount > 0
-                ? `${backend.agentCount} agents 使用中`
-                : "暂未被 Agent 使用"}
+                ? t("agentBackends.row.agentCount", {
+                    count: backend.agentCount,
+                  })
+                : t("agentBackends.row.unused")}
             </span>
           </div>
         </div>
@@ -616,7 +610,7 @@ function BackendRow({
             className="size-3.5 shrink-0 text-primary-text"
             aria-hidden="true"
           />
-          {meta.label}
+          {t(`agentBackends.backendType.${typ}.label`)}
         </span>
       </TableCell>
       <TableCell className="py-3 text-xs text-muted-foreground">—</TableCell>
@@ -636,9 +630,17 @@ function BackendRow({
             size="icon-xs"
             // testing 时按钮变成"取消测试"，必须保持可点击；其它行 testDisabled 仍 disable。
             aria-label={
-              testing ? `取消测试 ${backend.name}` : `测试连接 ${backend.name}`
+              testing
+                ? t("agentBackends.actions.cancelTestNamed", {
+                    name: backend.name,
+                  })
+                : t("agentBackends.actions.testNamed", { name: backend.name })
             }
-            title={testing ? "取消测试" : "测试连接"}
+            title={
+              testing
+                ? t("agentBackends.actions.cancelTest")
+                : t("agentBackends.actions.test")
+            }
             className={cn(
               "size-[26px]",
               testing ? "text-status-error" : "text-muted-foreground",
@@ -656,8 +658,10 @@ function BackendRow({
             type="button"
             variant="ghost"
             size="icon-xs"
-            aria-label={`编辑 ${backend.name}`}
-            title="编辑"
+            aria-label={t("agentBackends.actions.editNamed", {
+              name: backend.name,
+            })}
+            title={t("common.edit")}
             className="size-[26px] text-muted-foreground"
             onClick={onEdit}
           >
@@ -667,8 +671,10 @@ function BackendRow({
             type="button"
             variant="ghost"
             size="icon-xs"
-            aria-label={`删除 ${backend.name}`}
-            title="删除"
+            aria-label={t("agentBackends.actions.deleteNamed", {
+              name: backend.name,
+            })}
+            title={t("common.delete")}
             className="size-[26px] text-status-error"
             onClick={onDelete}
           >
@@ -695,6 +701,7 @@ function BackendEditor({
   onError: (text: string) => void;
   onOpenProxySettings?: () => void;
 }) {
+  const { t } = useTranslation();
   const editing = state.kind === "edit" ? state.backend : null;
   const initialType: BackendType = (editing?.type as BackendType) ?? "builtin";
 
@@ -832,7 +839,9 @@ function BackendEditor({
         setCliPath(path);
       } else {
         setCliProbeMiss(
-          `$PATH 中未找到 ${type === "claudecode" ? "claude" : "codex"}，请手动填写`,
+          t("agentBackends.cli.notFound", {
+            bin: type === "claudecode" ? "claude" : "codex",
+          }),
         );
       }
     } catch (e) {
@@ -920,7 +929,7 @@ function BackendEditor({
       await CreateAgentBackend({
         ...draft,
       } as agent_backend_svc.CreateBackendRequest);
-      await onSaved("已新增 Agent 后端");
+      await onSaved(t("agentBackends.flash.created"));
     } else if (state.kind === "edit" && editing) {
       await UpdateAgentBackend({
         id: editing.id,
@@ -935,7 +944,7 @@ function BackendEditor({
         reasoningEffort: draft.reasoningEffort,
         defaultPermissionMode: draft.defaultPermissionMode,
       } as unknown as agent_backend_svc.UpdateBackendRequest);
-      await onSaved("已保存");
+      await onSaved(t("agentBackends.flash.saved"));
     }
   }
 
@@ -947,7 +956,9 @@ function BackendEditor({
     if (reservedOffenders.length > 0) {
       setTestResult({
         kind: "err",
-        text: `保留键禁用：${reservedOffenders.join(", ")}`,
+        text: t("agentBackends.env.reservedDisabled", {
+          keys: reservedOffenders.join(", "),
+        }),
       });
       setAdvancedOpen(true);
       return;
@@ -968,7 +979,10 @@ function BackendEditor({
       if (res.ok) {
         setTestResult({
           kind: "ok",
-          text: `测试通过 · ${res.latencyMs}ms · ${res.message}`,
+          text: t("agentBackends.test.passed", {
+            latency: res.latencyMs,
+            message: res.message,
+          }),
         });
       } else {
         setTestResult({ kind: "err", text: res.message });
@@ -1003,7 +1017,11 @@ function BackendEditor({
     e.preventDefault();
     if (submitting) return;
     if (reservedOffenders.length > 0) {
-      onError(`保留键禁用：${reservedOffenders.join(", ")}`);
+      onError(
+        t("agentBackends.env.reservedDisabled", {
+          keys: reservedOffenders.join(", "),
+        }),
+      );
       setAdvancedOpen(true);
       return;
     }
@@ -1044,7 +1062,7 @@ function BackendEditor({
         await saveDraft(draft);
       } else {
         setPendingProviderSync(null);
-        await onSaved("已同步远端 Provider");
+        await onSaved(t("agentBackends.flash.providerSynced"));
       }
     } catch (err) {
       setProviderSyncError(providerSyncMessageFromError(err));
@@ -1095,8 +1113,12 @@ function BackendEditor({
       <AgentreDialog
         open={open}
         onOpenChange={(o) => (!o ? onClose() : undefined)}
-        title={state.kind === "edit" ? "编辑 Agent 后端" : "新增 Agent 后端"}
-        description="选择执行引擎并关联 LLM 供应商；CLI 后端通过本地 HTTP 代理转发请求，无需 claude/codex login。"
+        title={
+          state.kind === "edit"
+            ? t("agentBackends.editor.editTitle")
+            : t("agentBackends.editor.createTitle")
+        }
+        description={t("agentBackends.editor.description")}
         contentClassName="max-w-xl"
         bodyClassName="flex flex-col gap-4"
         onSubmit={handleSubmit}
@@ -1113,7 +1135,7 @@ function BackendEditor({
                   className="gap-1.5 text-status-error"
                 >
                   <X className="size-3.5" aria-hidden="true" />
-                  取消测试
+                  {t("agentBackends.actions.cancelTest")}
                 </Button>
               ) : (
                 <Button
@@ -1124,7 +1146,7 @@ function BackendEditor({
                   className="gap-1.5"
                 >
                   <SendHorizontal className="size-3.5" aria-hidden="true" />
-                  测试连接
+                  {t("agentBackends.actions.test")}
                 </Button>
               )}
               <div className="ml-auto flex items-center gap-2">
@@ -1134,13 +1156,13 @@ function BackendEditor({
                   onClick={onClose}
                   disabled={submitting || syncingProvider}
                 >
-                  取消
+                  {t("common.cancel")}
                 </Button>
                 <Button
                   type="submit"
                   disabled={submitDisabled || syncingProvider}
                 >
-                  {submitting ? "保存中..." : "保存"}
+                  {submitting ? t("common.saving") : t("common.save")}
                 </Button>
               </div>
             </div>
@@ -1148,18 +1170,18 @@ function BackendEditor({
         }
       >
         <label className="flex flex-col gap-1.5 text-xs">
-          <span className="font-medium">名称</span>
+          <span className="font-medium">{t("agentBackends.fields.name")}</span>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="例如：本机 · Claude Code"
+            placeholder={t("agentBackends.fields.namePlaceholder")}
             required
             autoFocus
           />
         </label>
 
         <div className="flex flex-col gap-1.5 text-xs">
-          <span className="font-medium">类型</span>
+          <span className="font-medium">{t("agentBackends.fields.type")}</span>
           <BackendTypeSegmented
             value={type}
             onChange={handleTypeChange}
@@ -1168,18 +1190,22 @@ function BackendEditor({
         </div>
 
         <div className="flex flex-col gap-1.5 text-xs">
-          <span className="font-medium">运行设备</span>
+          <span className="font-medium">
+            {t("agentBackends.fields.device")}
+          </span>
           <Select
             value={deviceIdToSelectValue(deviceId)}
             onValueChange={(v) => setDeviceId(selectValueToDeviceId(v))}
             disabled={type === "builtin"}
           >
-            <SelectTrigger aria-label="运行设备">
-              <SelectValue placeholder="选择运行设备" />
+            <SelectTrigger aria-label={t("agentBackends.fields.device")}>
+              <SelectValue
+                placeholder={t("agentBackends.device.placeholder")}
+              />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={LOCAL_DEVICE_SELECT_VALUE}>
-                📍 本地（当前机器）
+                {t("agentBackends.device.local")}
               </SelectItem>
               {devices.map((d) => (
                 <SelectItem
@@ -1188,14 +1214,14 @@ function BackendEditor({
                   disabled={!d.online}
                 >
                   📡 {d.name}
-                  {d.online ? "" : " · offline"}
+                  {d.online ? "" : t("agentBackends.device.offlineSuffix")}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
           {type === "builtin" ? (
             <span className="text-2xs text-muted-foreground">
-              builtin 后端只能在本地运行
+              {t("agentBackends.device.builtinLocalOnly")}
             </span>
           ) : null}
         </div>
@@ -1212,12 +1238,11 @@ function BackendEditor({
         {showManualProviderSync ? (
           <Alert className="border-border bg-secondary text-xs">
             <Radar className="size-4" aria-hidden="true" />
-            <AlertTitle className="text-xs">远端 Provider 同步</AlertTitle>
+            <AlertTitle className="text-xs">
+              {t("agentBackends.providerSync.inlineTitle")}
+            </AlertTitle>
             <AlertDescription className="flex flex-col gap-2 text-2xs">
-              <span>
-                当前后端会在远端 agentred 运行；可先把所选 LLM Provider
-                同步到远端状态文件。
-              </span>
+              <span>{t("agentBackends.providerSync.inlineDescription")}</span>
               <Button
                 type="button"
                 variant="outline"
@@ -1226,7 +1251,7 @@ function BackendEditor({
                 disabled={syncingProvider}
                 onClick={handleManualProviderSync}
               >
-                同步到远端
+                {t("agentBackends.providerSync.syncRemote")}
               </Button>
             </AlertDescription>
           </Alert>
@@ -1318,11 +1343,11 @@ function BackendEditor({
           onOpenChange={(o) =>
             !o && !syncingProvider ? closeProviderSyncDialog() : undefined
           }
-          title="同步远端 LLM Provider"
+          title={t("agentBackends.providerSync.title")}
           description={
             pendingProviderSync.saveAfterSync
-              ? "所选远端 agentred 尚未配置这些 Provider。同步会把本机保存的 API Key 写入远端 agentred 状态文件，然后继续保存 Agent 后端。"
-              : "同步会把本机保存的 API Key 写入远端 agentred 状态文件；不会保存表单其它改动。"
+              ? t("agentBackends.providerSync.descriptionSave")
+              : t("agentBackends.providerSync.descriptionOnly")
           }
           bodyClassName="flex flex-col gap-3"
           footer={
@@ -1333,7 +1358,7 @@ function BackendEditor({
                 disabled={syncingProvider}
                 onClick={closeProviderSyncDialog}
               >
-                取消
+                {t("common.cancel")}
               </Button>
               <Button
                 type="button"
@@ -1347,26 +1372,29 @@ function BackendEditor({
                   />
                 ) : null}
                 {syncingProvider
-                  ? "同步中..."
+                  ? t("agentBackends.providerSync.syncing")
                   : pendingProviderSync.saveAfterSync
-                    ? "同步并保存"
-                    : "同步到远端"}
+                    ? t("agentBackends.providerSync.syncAndSave")
+                    : t("agentBackends.providerSync.syncRemote")}
               </Button>
             </div>
           }
         >
           <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
             <AlertCircle className="size-4" aria-hidden="true" />
-            <AlertTitle className="text-xs">需要先同步 Provider</AlertTitle>
+            <AlertTitle className="text-xs">
+              {t("agentBackends.providerSync.requiredTitle")}
+            </AlertTitle>
             <AlertDescription className="text-2xs">
-              远端运行时只能读取它自己状态文件中的 Provider；未同步时会触发
-              provider not configured。
+              {t("agentBackends.providerSync.requiredDescription")}
             </AlertDescription>
           </Alert>
           {providerSyncError ? (
             <Alert className="border-status-error/40 bg-status-error-bg text-xs">
               <AlertCircle className="size-4" aria-hidden="true" />
-              <AlertTitle className="text-xs">同步失败</AlertTitle>
+              <AlertTitle className="text-xs">
+                {t("agentBackends.providerSync.failedTitle")}
+              </AlertTitle>
               <AlertDescription className="whitespace-pre-line text-2xs">
                 {providerSyncError}
               </AlertDescription>
@@ -1402,19 +1430,20 @@ function BackendTypeSegmented({
   onChange: (v: BackendType) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const items = Object.keys(backendTypeMeta) as BackendType[];
   return (
     <div className="grid grid-cols-3 gap-0 rounded-md border border-border bg-secondary p-0.5">
-      {items.map((t) => {
-        const m = backendTypeMeta[t];
+      {items.map((backendType) => {
+        const m = backendTypeMeta[backendType];
         const Icon = m.icon;
-        const active = value === t;
+        const active = value === backendType;
         const itemDisabled = disabled || m.disabled;
         return (
           <button
-            key={t}
+            key={backendType}
             type="button"
-            onClick={() => !itemDisabled && onChange(t)}
+            onClick={() => !itemDisabled && onChange(backendType)}
             disabled={itemDisabled}
             aria-pressed={active}
             className={cn(
@@ -1427,7 +1456,7 @@ function BackendTypeSegmented({
             )}
           >
             <Icon className="size-3.5" aria-hidden="true" />
-            {m.label}
+            {t(`agentBackends.backendType.${backendType}.label`)}
           </button>
         );
       })}
@@ -1450,6 +1479,7 @@ function LlmProviderField({
   strictLabel: string | null;
   editing: boolean;
 }) {
+  const { t } = useTranslation();
   // claudecode / codex 允许「不关联」走 CLI 自身登录；builtin 必填。
   const optional = type === "claudecode" || type === "codex";
   // Match by providerKey (preferred) or fall back to string id for legacy data.
@@ -1465,13 +1495,17 @@ function LlmProviderField({
     return (
       <div className="flex flex-col gap-1.5 text-xs">
         <div className="flex items-center justify-between">
-          <span className="font-medium">LLM 供应商</span>
+          <span className="font-medium">
+            {t("agentBackends.provider.label")}
+          </span>
         </div>
         <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
-          <AlertTitle className="text-xs">暂无 LLM 供应商</AlertTitle>
+          <AlertTitle className="text-xs">
+            {t("agentBackends.provider.noneTitle")}
+          </AlertTitle>
           <AlertDescription className="text-2xs">
-            请先到「LLM 供应商」页面新增一个，再回来配置后端。
+            {t("agentBackends.provider.noneDescription")}
           </AlertDescription>
         </Alert>
       </div>
@@ -1482,10 +1516,10 @@ function LlmProviderField({
     <div className="flex flex-col gap-1.5 text-xs">
       <div className="flex items-center justify-between">
         <span className="font-medium">
-          LLM 供应商
+          {t("agentBackends.provider.label")}
           {optional ? (
             <span className="ml-1 font-mono text-2xs text-muted-foreground">
-              · 可选
+              {t("agentBackends.provider.optionalSuffix")}
             </span>
           ) : null}
         </span>
@@ -1494,7 +1528,7 @@ function LlmProviderField({
             variant="secondary"
             className="rounded-sm bg-primary-soft px-1.5 py-0 font-mono text-2xs text-primary-text"
           >
-            严格匹配 · {strictLabel}
+            {t("agentBackends.provider.strictMatch", { type: strictLabel })}
           </Badge>
         ) : null}
       </div>
@@ -1502,31 +1536,41 @@ function LlmProviderField({
         <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
           <AlertTitle className="text-xs">
-            原 LLM 供应商已停用或与当前类型不匹配
+            {t("agentBackends.provider.staleTitle")}
           </AlertTitle>
           <AlertDescription className="text-2xs">
-            请从下方重新挑选一个启用中的供应商
-            {optional ? "，或清除关联走 CLI 自身登录" : ""}。
+            {t("agentBackends.provider.staleDescription", {
+              optionalClause: optional
+                ? t("agentBackends.provider.staleOptionalClause")
+                : "",
+            })}
           </AlertDescription>
         </Alert>
       ) : null}
       {empty && optional ? (
         <Alert className="border-border bg-secondary text-xs">
           <AlertCircle className="size-4" aria-hidden="true" />
-          <AlertTitle className="text-xs">没有匹配类型的 LLM 供应商</AlertTitle>
+          <AlertTitle className="text-xs">
+            {t("agentBackends.provider.noMatchTitle")}
+          </AlertTitle>
           <AlertDescription className="text-2xs">
             {type === "claudecode"
-              ? "未关联将走 claude CLI 自身登录态；如需通过本机代理转发请先新增 anthropic 类型供应商。"
-              : "未关联将走 codex CLI 自身登录态；如需通过本机代理转发请先新增 openai-response 类型供应商。"}
+              ? t("agentBackends.provider.noMatchClaude")
+              : t("agentBackends.provider.noMatchCodex")}
           </AlertDescription>
         </Alert>
       ) : (
         <div className="flex items-center gap-1.5">
           <Select value={selected ? value : ""} onValueChange={onChange}>
-            <SelectTrigger aria-label="LLM 供应商" className="flex-1">
+            <SelectTrigger
+              aria-label={t("agentBackends.provider.label")}
+              className="flex-1"
+            >
               <SelectValue
                 placeholder={
-                  optional ? "不关联（走 CLI 自身登录）" : "请选择 LLM 供应商"
+                  optional
+                    ? t("agentBackends.provider.placeholderOptional")
+                    : t("agentBackends.provider.placeholderRequired")
                 }
               />
             </SelectTrigger>
@@ -1540,7 +1584,7 @@ function LlmProviderField({
                     />
                     <span>{p.name}</span>
                     <span className="font-mono text-2xs text-muted-foreground">
-                      {p.model || "未选模型"}
+                      {p.model || t("agentBackends.provider.noModel")}
                     </span>
                   </span>
                 </SelectItem>
@@ -1552,8 +1596,8 @@ function LlmProviderField({
               type="button"
               variant="ghost"
               size="icon-xs"
-              aria-label="清除供应商关联"
-              title="清除（走 CLI 自身登录）"
+              aria-label={t("agentBackends.provider.clear")}
+              title={t("agentBackends.provider.clearTitle")}
               onClick={() => onChange("")}
             >
               <X data-icon="only" aria-hidden="true" />
@@ -1580,13 +1624,16 @@ function CliPathField({
   detecting: boolean;
   missMessage: string | null;
 }) {
+  const { t } = useTranslation();
   const bin = type === "claudecode" ? "claude" : "codex";
   return (
     <div className="flex flex-col gap-1.5 text-xs">
       <div className="flex items-center justify-between">
-        <span className="font-medium">CLI 路径</span>
+        <span className="font-medium">{t("agentBackends.cli.label")}</span>
         <span className="font-mono text-2xs text-muted-foreground">
-          {value.trim() === "" ? `空 = $PATH 中的 ${bin}` : "显式 binary 路径"}
+          {value.trim() === ""
+            ? t("agentBackends.cli.emptyHint", { bin })
+            : t("agentBackends.cli.explicitHint")}
         </span>
       </div>
       <div className="flex items-center gap-1.5">
@@ -1603,15 +1650,15 @@ function CliPathField({
           className="h-9 shrink-0 gap-1 px-2 text-2xs"
           onClick={onDetect}
           disabled={detecting}
-          aria-label="自动识别 CLI 路径"
-          title={`在 $PATH 中查找 ${bin} 并覆盖填入`}
+          aria-label={t("agentBackends.cli.detect")}
+          title={t("agentBackends.cli.detectTitle", { bin })}
         >
           {detecting ? (
             <Loader2 className="size-3 animate-spin" aria-hidden="true" />
           ) : (
             <Radar className="size-3" aria-hidden="true" />
           )}
-          自动识别
+          {t("agentBackends.cli.detect")}
         </Button>
       </div>
       {missMessage ? (
@@ -1634,18 +1681,21 @@ function ModelRoutesField({
   onChange: (r: Record<ClaudeTier, string>) => void;
   mainProviderKey: string;
 }) {
+  const { t } = useTranslation();
   const inheritName =
     providers.find(
       (p) =>
         (p.providerKey && p.providerKey === mainProviderKey) ||
         String(p.id) === mainProviderKey,
-    )?.name ?? "继承主供应商";
+    )?.name ?? t("agentBackends.modelRoutes.inheritMain");
   return (
     <div className="flex flex-col gap-1.5 text-xs">
       <div className="flex items-center justify-between">
-        <span className="font-medium">模型分级路由</span>
+        <span className="font-medium">
+          {t("agentBackends.modelRoutes.label")}
+        </span>
         <span className="font-mono text-2xs text-muted-foreground">
-          ANTHROPIC_DEFAULT_*_MODEL，留空走主供应商
+          {t("agentBackends.modelRoutes.hint")}
         </span>
       </div>
       <div className="flex flex-col gap-1.5">
@@ -1672,12 +1722,16 @@ function ModelRoutesField({
                 }
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="选择供应商" />
+                  <SelectValue
+                    placeholder={t("agentBackends.provider.selectProvider")}
+                  />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__inherit__">
                     <span className="text-muted-foreground">
-                      继承主供应商 · {inheritName}
+                      {t("agentBackends.modelRoutes.inheritWithName", {
+                        name: inheritName,
+                      })}
                     </span>
                   </SelectItem>
                   {providers.map((p) => (
@@ -1688,7 +1742,7 @@ function ModelRoutesField({
                       <span className="inline-flex items-center gap-2">
                         <span>{p.name}</span>
                         <span className="font-mono text-2xs text-muted-foreground">
-                          {p.model || "未选模型"}
+                          {p.model || t("agentBackends.provider.noModel")}
                         </span>
                       </span>
                     </SelectItem>
@@ -1710,12 +1764,13 @@ function SandboxField({
   value: SandboxValue;
   onChange: (v: SandboxValue) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-1.5 text-xs">
       <div className="flex items-center justify-between">
-        <span className="font-medium">Sandbox</span>
+        <span className="font-medium">{t("agentBackends.sandbox.label")}</span>
         <span className="font-mono text-2xs text-muted-foreground">
-          codex 子进程文件系统隔离
+          {t("agentBackends.sandbox.hint")}
         </span>
       </div>
       <div className="grid grid-cols-3 gap-1 rounded-md border border-border bg-secondary p-0.5">
@@ -1741,7 +1796,7 @@ function SandboxField({
       </div>
       {value === "" ? (
         <span className="font-mono text-2xs text-muted-foreground">
-          空 = 走 codex CLI 默认
+          {t("agentBackends.sandbox.defaultHint")}
         </span>
       ) : null}
     </div>
@@ -1755,12 +1810,13 @@ function ApprovalField({
   value: ApprovalValue;
   onChange: (v: ApprovalValue) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-1.5 text-xs">
       <div className="flex items-center justify-between">
-        <span className="font-medium">Approval Policy</span>
+        <span className="font-medium">{t("agentBackends.approval.label")}</span>
         <span className="font-mono text-2xs text-muted-foreground">
-          工具执行前是否人工确认
+          {t("agentBackends.approval.hint")}
         </span>
       </div>
       <Select
@@ -1775,7 +1831,9 @@ function ApprovalField({
             <SelectItem key={opt.value} value={opt.value}>
               <span className="inline-flex items-center gap-2">
                 <span className="font-mono text-2xs">{opt.value}</span>
-                <span className="text-muted-foreground">{opt.label}</span>
+                <span className="text-muted-foreground">
+                  {t(`agentBackends.approval.options.${opt.value}`)}
+                </span>
               </span>
             </SelectItem>
           ))}
@@ -1800,12 +1858,15 @@ function ReasoningEffortField({
   value: ReasoningEffortValue;
   onChange: (v: ReasoningEffortValue) => void;
 }) {
+  const { t } = useTranslation();
   const options =
     type === "codex" ? REASONING_EFFORTS_CODEX : REASONING_EFFORTS_FULL;
   return (
     <div className="flex flex-col gap-1.5 text-xs">
       <div className="flex items-center justify-between">
-        <span className="font-medium">思考力度</span>
+        <span className="font-medium">
+          {t("agentBackends.reasoning.label")}
+        </span>
         <span className="font-mono text-2xs text-muted-foreground">
           reasoning_effort
         </span>
@@ -1816,7 +1877,7 @@ function ReasoningEffortField({
           onChange((v === "default" ? "" : v) as ReasoningEffortValue)
         }
       >
-        <SelectTrigger aria-label="思考力度">
+        <SelectTrigger aria-label={t("agentBackends.reasoning.label")}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -1828,7 +1889,7 @@ function ReasoningEffortField({
               <span className="inline-flex items-center gap-2">
                 <span className="font-mono text-2xs">{opt || "default"}</span>
                 <span className="text-muted-foreground">
-                  {REASONING_EFFORT_LABELS[opt]}
+                  {t(`agentBackends.reasoning.options.${opt || "default"}`)}
                 </span>
               </span>
             </SelectItem>
@@ -1837,7 +1898,7 @@ function ReasoningEffortField({
       </Select>
       {type === "codex" ? (
         <span className="text-2xs text-muted-foreground">
-          codex CLI 支持 low / medium / high / xhigh；max 将被折叠到 high。
+          {t("agentBackends.reasoning.codexHint")}
         </span>
       ) : null}
     </div>
@@ -1870,6 +1931,7 @@ function DefaultPermissionModeField({
   hasIsSandbox: boolean;
   onAddIsSandbox: () => void;
 }) {
+  const { t } = useTranslation();
   const isBypass = value === "bypassPermissions";
   const showRootHint = isBypass && isRemote;
   return (
@@ -1892,10 +1954,10 @@ function DefaultPermissionModeField({
             {isBypass ? (
               <AlertCircle className="size-3.5 shrink-0" aria-hidden="true" />
             ) : null}
-            默认权限模式
+            {t("agentBackends.permission.label")}
           </span>
           <span className="font-mono text-2xs text-muted-foreground">
-            --permission-mode · 新会话起手 mode
+            {t("agentBackends.permission.hint")}
           </span>
         </div>
         <Select
@@ -1903,44 +1965,48 @@ function DefaultPermissionModeField({
           onValueChange={(v) => onChange(v === "__inherit__" ? "" : v)}
         >
           <SelectTrigger
-            aria-label="默认权限模式"
+            aria-label={t("agentBackends.permission.label")}
             className="h-7 w-[170px] text-2xs"
           >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="__inherit__">
-              <span className="text-muted-foreground">默认 · acceptEdits</span>
+              <span className="text-muted-foreground">
+                {t("agentBackends.permission.options.inherit")}
+              </span>
             </SelectItem>
-            <SelectItem value="default">default · 每次询问</SelectItem>
+            <SelectItem value="default">
+              {t("agentBackends.permission.options.default")}
+            </SelectItem>
             <SelectItem value="acceptEdits">
-              acceptEdits · 自动接受编辑
+              {t("agentBackends.permission.options.acceptEdits")}
             </SelectItem>
-            <SelectItem value="plan">plan · 只读分析</SelectItem>
+            <SelectItem value="plan">
+              {t("agentBackends.permission.options.plan")}
+            </SelectItem>
             <SelectItem value="bypassPermissions">
-              bypassPermissions · 跳过审批
+              {t("agentBackends.permission.options.bypassPermissions")}
             </SelectItem>
           </SelectContent>
         </Select>
       </div>
       {isBypass ? (
         <span className="text-2xs text-destructive">
-          会话起手即跳过 permission gate；运行时可在 4
-          档之间自由切换。仅建议在隔离沙箱 / CI 中使用。
+          {t("agentBackends.permission.bypassWarning")}
         </span>
       ) : null}
       {showRootHint ? (
         <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-2xs text-amber-700 dark:text-amber-300">
           <span className="min-w-0 flex-1">
-            远端 agentred 若以 root/sudo 运行，claude CLI 会拒绝
-            bypassPermissions（视同 --dangerously-skip-permissions）。 设{" "}
-            <span className="font-mono">IS_SANDBOX=1</span> 可让 CLI
-            跳过该检查。
+            {t("agentBackends.permission.remoteRootHintPrefix")}{" "}
+            <span className="font-mono">IS_SANDBOX=1</span>{" "}
+            {t("agentBackends.permission.remoteRootHintSuffix")}
           </span>
           {hasIsSandbox ? (
             <span className="inline-flex items-center gap-1 font-mono text-2xs text-muted-foreground">
               <CheckCircle2 className="size-3" aria-hidden="true" />
-              已在 env_json 配置
+              {t("agentBackends.permission.isSandboxConfigured")}
             </span>
           ) : (
             <Button
@@ -1951,7 +2017,7 @@ function DefaultPermissionModeField({
               onClick={onAddIsSandbox}
             >
               <Plus className="size-3" aria-hidden="true" />
-              添加 IS_SANDBOX=1
+              {t("agentBackends.permission.addIsSandbox")}
             </Button>
           )}
         </div>
@@ -1973,6 +2039,7 @@ function EnvJsonField({
   onToggle: () => void;
   reservedOffenders: string[];
 }) {
+  const { t } = useTranslation();
   const filledCount = entries.filter((e) => e.key.trim() !== "").length;
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">
@@ -1988,22 +2055,24 @@ function EnvJsonField({
           ) : (
             <ChevronRight className="size-3.5" aria-hidden="true" />
           )}
-          高级 · 自定义环境变量
+          {t("agentBackends.env.title")}
         </span>
         <span className="font-mono text-2xs text-muted-foreground">
-          {filledCount} 项
+          {t("agentBackends.env.count", { count: filledCount })}
         </span>
       </button>
       {open ? (
         <div className="flex flex-col gap-1.5 pt-1.5">
           {reservedOffenders.length > 0 ? (
             <div className="rounded-sm bg-destructive-soft px-2 py-1 text-2xs text-destructive">
-              保留键禁用：{reservedOffenders.join(", ")}
+              {t("agentBackends.env.reservedDisabled", {
+                keys: reservedOffenders.join(", "),
+              })}
             </div>
           ) : null}
           {entries.length === 0 ? (
             <span className="text-2xs text-muted-foreground">
-              暂无键值；点下方「+ 新增」加一行。
+              {t("agentBackends.env.empty")}
             </span>
           ) : null}
           {entries.map((entry, i) => {
@@ -2045,7 +2114,7 @@ function EnvJsonField({
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  aria-label="删除此键"
+                  aria-label={t("agentBackends.env.deleteKey")}
                   onClick={() => onChange(entries.filter((_, j) => j !== i))}
                 >
                   <X data-icon="only" aria-hidden="true" />
@@ -2061,7 +2130,7 @@ function EnvJsonField({
             onClick={() => onChange([...entries, { key: "", value: "" }])}
           >
             <Plus className="size-3" aria-hidden="true" />
-            新增
+            {t("common.add")}
           </Button>
         </div>
       ) : null}
@@ -2078,6 +2147,7 @@ function ProxyNote({
   providerLinked: boolean;
   onOpenProxySettings?: () => void;
 }) {
+  const { t } = useTranslation();
   // 未关联 provider 时 CLI 走自身登录，本地代理不参与，无需提示其状态。
   if (!providerLinked) {
     return (
@@ -2087,7 +2157,7 @@ function ProxyNote({
           aria-hidden="true"
         />
         <span className="min-w-0 flex-1 truncate">
-          未关联供应商，将直接使用 CLI 自身的 login 状态，密钥不经 App。
+          {t("agentBackends.proxy.unlinked")}
         </span>
       </div>
     );
@@ -2096,7 +2166,7 @@ function ProxyNote({
   const running = status?.status === "running";
   const label = running
     ? status?.listenURL || "127.0.0.1"
-    : "本地 HTTP 代理未启动";
+    : t("agentBackends.proxy.notRunning");
   return (
     <div
       className={cn(
@@ -2115,8 +2185,11 @@ function ProxyNote({
       />
       <span className="min-w-0 flex-1 truncate">
         {running
-          ? `通过本地 HTTP 代理 (${label}) 转发请求，密钥不出 App`
-          : `${label}${status?.reason ? ` · ${status.reason}` : ""}`}
+          ? t("agentBackends.proxy.running", { url: label })
+          : t("agentBackends.proxy.stopped", {
+              label,
+              reasonSuffix: status?.reason ? ` · ${status.reason}` : "",
+            })}
       </span>
       {onOpenProxySettings ? (
         <button
@@ -2124,7 +2197,7 @@ function ProxyNote({
           onClick={onOpenProxySettings}
           className="inline-flex shrink-0 items-center gap-1 font-medium underline-offset-2 hover:underline"
         >
-          前往设置
+          {t("agentBackends.proxy.openSettings")}
           <ExternalLink className="size-3" aria-hidden="true" />
         </button>
       ) : null}
@@ -2172,13 +2245,16 @@ function DeleteDialog({
   onConfirmed: () => Promise<void> | void;
   onError: (text: string) => void;
 }) {
+  const { t } = useTranslation();
   const [submitting, setSubmitting] = React.useState(false);
   return (
     <AgentreDialog
       open
       onOpenChange={(o) => (!o ? onCancel() : undefined)}
-      title="删除 Agent 后端"
-      description={`确认删除「${backend.name}」？该操作仅软删，不影响已存在的 Agent 引用。`}
+      title={t("agentBackends.deleteDialog.title")}
+      description={t("agentBackends.deleteDialog.description", {
+        name: backend.name,
+      })}
       footer={
         <>
           <Button
@@ -2187,7 +2263,7 @@ function DeleteDialog({
             onClick={onCancel}
             disabled={submitting}
           >
-            取消
+            {t("common.cancel")}
           </Button>
           <Button
             type="button"
@@ -2207,7 +2283,7 @@ function DeleteDialog({
               }
             }}
           >
-            删除
+            {t("common.delete")}
           </Button>
         </>
       }
@@ -2222,6 +2298,7 @@ function FlashBanner({
   state: FlashState;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation();
   if (!state) return null;
   const ok = state.kind === "ok";
   const { display, full, truncated } = truncateFlashText(state.text);
@@ -2251,7 +2328,7 @@ function FlashBanner({
         variant="ghost"
         size="icon-xs"
         onClick={onDismiss}
-        aria-label="关闭提示"
+        aria-label={t("agentBackends.flash.close")}
       >
         <ChevronDown className="size-3.5 rotate-45" aria-hidden="true" />
       </Button>
@@ -2265,7 +2342,7 @@ function messageFromError(err: unknown): string {
   try {
     return JSON.stringify(err);
   } catch {
-    return "未知错误";
+    return i18n.t("common.unknownError");
   }
 }
 
@@ -2276,9 +2353,9 @@ function providerSyncMessageFromError(err: unknown): string {
     message.includes("Secret Service")
   ) {
     return [
-      "旧版远端 agentred 仍在写系统 keychain，但远端 Linux 没有可用的 Secret Service（org.freedesktop.secrets）。",
-      "处理方式：升级并重启远端 agentred；当前版本会直接写入 agentred 状态文件，不再使用 keychain。若暂时不能升级，请在远端安装并启动 gnome-keyring / KWallet 等 Secret Service。",
-      `原始错误：${message}`,
+      i18n.t("agentBackends.providerSync.secretServiceMissing"),
+      i18n.t("agentBackends.providerSync.secretServiceAction"),
+      i18n.t("agentBackends.providerSync.originalError", { message }),
     ].join("\n");
   }
   return message;

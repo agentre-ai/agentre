@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   CheckCircle2,
   ClipboardList,
@@ -77,7 +78,7 @@ function errorMessage(err: unknown): string {
   } catch {
     // fall through to generic text
   }
-  return "提交失败";
+  return "Submit failed";
 }
 
 function readPlanActionStream(resp: unknown): PlanActionStream | null {
@@ -107,10 +108,11 @@ function sendTextForAction(
   action: PlanActionDTO,
   requestId: string,
   feedbackText: string,
+  t: (key: string) => string,
 ): string {
   if (action.id === "plan.execute") return "Implement the plan.";
   if (action.id === "plan.refine" && !requestId) {
-    return feedbackText.trim() || "继续完善上述计划。";
+    return feedbackText.trim() || t("canonical.plan.refineDefaultPrompt");
   }
   return "";
 }
@@ -120,6 +122,7 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
   sessionId,
   onPlanActionStarted,
 }) => {
+  const { t } = useTranslation();
   const plan = readPlan(toolBlock);
   const streamActive = useChatStreamsStore((s) =>
     sessionId ? s.streams.has(sessionId) : false,
@@ -167,6 +170,7 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
         action,
         activePlan.requestId,
         feedbackText,
+        t,
       );
       const stream = userText ? readPlanActionStream(resp) : null;
       if (stream) {
@@ -191,22 +195,22 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
 
   const title = resolved
     ? approved
-      ? "已批准执行计划"
-      : "继续规划"
-    : "AI 提交了执行计划";
+      ? t("canonical.plan.title.approved")
+      : t("canonical.plan.title.refining")
+    : t("canonical.plan.title.pending");
   const subtitle = resolved
     ? approved
-      ? "开始执行计划"
-      : "AI 已收到反馈,继续规划"
+      ? t("canonical.plan.subtitle.approved")
+      : t("canonical.plan.subtitle.refining")
     : visibleActions.length > 0
-      ? "选择下一步操作,或反馈继续规划"
-      : "计划已保存";
+      ? t("canonical.plan.subtitle.chooseAction")
+      : t("canonical.plan.subtitle.saved");
 
   return (
     <section
       data-testid="plan-card"
       role="region"
-      aria-label="Plan"
+      aria-label={t("canonical.plan.aria")}
       className={cn(
         "w-full max-w-[720px] overflow-hidden rounded-md border bg-card",
         resolved
@@ -251,7 +255,9 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
         </div>
         {activePlan.text ? (
           <span className="rounded-sm border border-border bg-card px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
-            ~{activePlan.text.length} 字
+            {t("canonical.plan.charCount", {
+              count: activePlan.text.length,
+            })}
           </span>
         ) : null}
       </button>
@@ -261,7 +267,9 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
           {bodyText ? (
             <MarkdownText text={bodyText} />
           ) : (
-            <div className="text-xs text-muted-foreground">(plan 字段为空)</div>
+            <div className="text-xs text-muted-foreground">
+              {t("canonical.plan.empty")}
+            </div>
           )}
         </div>
       ) : null}
@@ -269,7 +277,7 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
       {visibleActions.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2.5">
           {primaryActions.map((action) => {
-            const meta = metaFor(action, activePlan);
+            const meta = metaFor(action, activePlan, t);
             const Icon = meta.icon;
             return (
               <Button
@@ -287,7 +295,7 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
           {refineAction ? (
             <Button
               size="sm"
-              variant={metaFor(refineAction, activePlan).variant}
+              variant={metaFor(refineAction, activePlan, t).variant}
               disabled={actionsDisabled}
               onClick={() => setFeedbackOpen((v) => !v)}
               aria-expanded={feedbackOpen}
@@ -296,13 +304,13 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
                 <X className="mr-1 size-3.5" aria-hidden />
               ) : (
                 (() => {
-                  const Icon = metaFor(refineAction, activePlan).icon;
+                  const Icon = metaFor(refineAction, activePlan, t).icon;
                   return <Icon className="mr-1 size-3.5" aria-hidden />;
                 })()
               )}
               {feedbackOpen
-                ? "收起反馈"
-                : metaFor(refineAction, activePlan).label}
+                ? t("canonical.plan.feedback.collapse")
+                : metaFor(refineAction, activePlan, t).label}
             </Button>
           ) : null}
           {error ? (
@@ -315,22 +323,26 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
         <div className="flex flex-col gap-2 border-t border-border bg-muted/50 px-4 py-3">
           <div className="flex items-center gap-1.5 text-xs text-foreground">
             <MessageSquareText className="size-3.5 text-muted-foreground" />
-            <span className="font-medium">附反馈继续规划</span>
+            <span className="font-medium">
+              {t("canonical.plan.feedback.title")}
+            </span>
             <span className="text-muted-foreground">
-              (可选,会作为反馈发送给当前 agent)
+              {t("canonical.plan.feedback.description")}
             </span>
           </div>
           <Textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="例如:步骤 2 不必要 / 漏了 lint 步骤 / 拆得太细..."
+            placeholder={t("canonical.plan.feedback.placeholder")}
             rows={3}
             disabled={actionsDisabled}
             className="text-sm"
           />
           <div className="flex items-center justify-between gap-2">
             <span className="font-mono text-[10px] text-subtle-foreground">
-              {feedback.length} 字
+              {t("canonical.plan.feedback.charCount", {
+                count: feedback.length,
+              })}
             </span>
             <Button
               size="sm"
@@ -338,7 +350,9 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
               onClick={() => void dispatchAction(refineAction, feedback.trim())}
             >
               <Send className="mr-1 size-3.5" aria-hidden />
-              {feedback.trim() ? "发送反馈并继续规划" : "不填反馈直接继续规划"}
+              {feedback.trim()
+                ? t("canonical.plan.feedback.sendWithFeedback")
+                : t("canonical.plan.feedback.sendWithoutFeedback")}
             </Button>
           </div>
         </div>

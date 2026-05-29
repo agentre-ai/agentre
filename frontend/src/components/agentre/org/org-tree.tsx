@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import * as React from "react";
 import { ChevronDown, ChevronUp, Puzzle, Wrench } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import {
   DndContext,
@@ -693,14 +694,18 @@ function TreeLayoutNode({
 }
 
 function EmptyOrgPlaceholder() {
+  const { t } = useTranslation();
+
   return (
     <div
       data-slot="org-empty-placeholder"
       className="h-[68px] w-[280px] rounded-lg border border-dashed border-border-strong bg-card/80 px-4 py-3 text-center shadow-xs"
     >
-      <div className="text-xs font-semibold text-foreground">未创建部门</div>
+      <div className="text-xs font-semibold text-foreground">
+        {t("org.tree.empty.title")}
+      </div>
       <div className="mt-1 max-w-[260px] text-2xs leading-5 text-muted-foreground">
-        可新建部门，或把新 Agent 挂到 CEO 助手下。
+        {t("org.tree.empty.description")}
       </div>
     </div>
   );
@@ -713,6 +718,7 @@ function DepartmentBanner({
   dept: OrgDepartment;
   all: OrgTreeProps;
 }) {
+  const { t } = useTranslation();
   const dragId: DragId = `dept-${dept.id}`;
   const dropId: DropId = `dept-${dept.id}`;
   const drag = useDraggable({ id: dragId });
@@ -788,13 +794,15 @@ function DepartmentBanner({
                   agentColorClassNames[accent],
                 )}
               />
-              <span className="truncate">Lead · {dept.leadAgentName}</span>
+              <span className="truncate">
+                {t("org.tree.lead", { name: dept.leadAgentName })}
+              </span>
             </span>
           )}
         </span>
         <span className="font-mono text-2xs text-muted-foreground">
-          {dept.memberCount} 名成员
-          {collapsed && "（已折叠）"}
+          {t("org.tree.memberCount", { count: dept.memberCount })}
+          {collapsed && t("org.tree.collapsedSuffix")}
         </span>
       </span>
       <button
@@ -805,7 +813,11 @@ function DepartmentBanner({
         }}
         onPointerDown={(e) => e.stopPropagation()}
         className="ml-auto inline-flex size-[22px] shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
-        aria-label={collapsed ? `展开 ${dept.name}` : `折叠 ${dept.name}`}
+        aria-label={
+          collapsed
+            ? t("org.tree.expand", { name: dept.name })
+            : t("org.tree.collapse", { name: dept.name })
+        }
       >
         {chevronNode}
       </button>
@@ -822,6 +834,7 @@ function AgentCard({
   all: OrgTreeProps;
   accented: boolean;
 }) {
+  const { t } = useTranslation();
   const dragId: DragId = `agent-${agent.id}`;
   const dropId: DragId = `agent-${agent.id}`;
   const drag = useDraggable({
@@ -894,7 +907,7 @@ function AgentCard({
                     agentColorClassNames[leadAccent],
                   )}
                 />
-                LEAD
+                {t("org.department.leadBadge")}
               </span>
             )}
             <span className="truncate text-2xs text-muted-foreground">

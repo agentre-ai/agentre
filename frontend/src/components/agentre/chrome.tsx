@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   CircleAlert,
   Minus,
@@ -34,11 +35,11 @@ const themePreferenceOrder: AppThemePreference[] = ["system", "light", "dark"];
 
 const themePreferenceMeta: Record<
   AppThemePreference,
-  { icon: LucideIcon; label: string }
+  { icon: LucideIcon; labelKey: string }
 > = {
-  system: { icon: Monitor, label: "跟随系统" },
-  light: { icon: Sun, label: "浅色模式" },
-  dark: { icon: Moon, label: "深色模式" },
+  system: { icon: Monitor, labelKey: "theme.system" },
+  light: { icon: Sun, labelKey: "theme.lightMode" },
+  dark: { icon: Moon, labelKey: "theme.darkMode" },
 };
 
 function nextThemePreference(
@@ -87,6 +88,8 @@ type WindowsWindowControlsProps = {
 };
 
 function WindowsWindowControls({ className }: WindowsWindowControlsProps) {
+  const { t } = useTranslation();
+
   return (
     <div
       data-slot="windows-window-controls"
@@ -97,7 +100,7 @@ function WindowsWindowControls({ className }: WindowsWindowControlsProps) {
     >
       <button
         type="button"
-        aria-label="最小化窗口"
+        aria-label={t("app.window.minimize")}
         className="wails-no-drag inline-flex w-11 cursor-pointer items-center justify-center text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
         onClick={() => runWindowAction(WindowMinimise)}
       >
@@ -105,7 +108,7 @@ function WindowsWindowControls({ className }: WindowsWindowControlsProps) {
       </button>
       <button
         type="button"
-        aria-label="最大化窗口"
+        aria-label={t("app.window.maximize")}
         className="wails-no-drag inline-flex w-11 cursor-pointer items-center justify-center text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
         onClick={() => runWindowAction(WindowToggleMaximise)}
       >
@@ -113,7 +116,7 @@ function WindowsWindowControls({ className }: WindowsWindowControlsProps) {
       </button>
       <button
         type="button"
-        aria-label="关闭窗口"
+        aria-label={t("app.window.close")}
         className="wails-no-drag inline-flex w-11 cursor-pointer items-center justify-center text-muted-foreground outline-none transition-colors hover:bg-destructive hover:text-destructive-foreground focus-visible:bg-destructive focus-visible:text-destructive-foreground"
         onClick={() => runWindowAction(Quit)}
       >
@@ -129,16 +132,21 @@ type CommandPaletteTriggerProps = React.ComponentProps<"button"> & {
 
 function CommandPaletteTrigger({
   className,
-  placeholder = "搜索会话 · 跳转 · 执行命令",
+  placeholder,
   onClick,
   ...props
 }: CommandPaletteTriggerProps) {
+  const { t } = useTranslation();
   const openPalette = useCommandPaletteStore((s) => s.setOpen);
   // kbd 文案跟随用户重绑：从 shortcuts 上下文拿 palette.open 的当前绑定。
   // 浮在 ShortcutsProvider 之外（极少数测试场景）时退回默认 ⌘P。
   const shortcuts = useOptionalShortcutsContext();
   const chord = shortcuts?.bindings.get("palette.open");
   const shortcutLabel = chord ? formatChord(chord, shortcuts!.platform) : "⌘P";
+  const resolvedPlaceholder =
+    placeholder ?? t("app.commandPalette.placeholder");
+  const openLabel = t("app.commandPalette.open");
+
   return (
     <button
       type="button"
@@ -147,8 +155,8 @@ function CommandPaletteTrigger({
         if (event.defaultPrevented) return;
         openPalette(true);
       }}
-      aria-label="打开命令面板"
-      title="打开命令面板"
+      aria-label={openLabel}
+      title={openLabel}
       className={cn(
         "hidden h-[30px] w-[520px] max-w-[40vw] items-center gap-2 rounded-md border border-border bg-card/60 px-2 text-left text-xs text-muted-foreground shadow-xs outline-none transition-colors hover:bg-card hover:text-foreground md:flex",
         "wails-no-drag cursor-text",
@@ -157,7 +165,7 @@ function CommandPaletteTrigger({
       {...props}
     >
       <Search className="size-3.5 shrink-0" aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate">{placeholder}</span>
+      <span className="min-w-0 flex-1 truncate">{resolvedPlaceholder}</span>
       <kbd className="rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-2xs font-medium text-muted-foreground">
         {shortcutLabel}
       </kbd>
@@ -178,6 +186,8 @@ function ThemeToggle({
   onThemePreferenceChange,
   themePreference,
 }: ThemeToggleProps) {
+  const { t } = useTranslation();
+
   if (!themePreference || !onThemePreferenceChange) {
     return null;
   }
@@ -188,8 +198,12 @@ function ThemeToggle({
   const nextMeta = themePreferenceMeta[next];
   const currentDescription =
     themePreference === "system" && effectiveTheme
-      ? `跟随系统（${effectiveTheme === "dark" ? "深色" : "浅色"}）`
-      : meta.label;
+      ? t("theme.systemWithResolved", {
+          resolved:
+            effectiveTheme === "dark" ? t("theme.dark") : t("theme.light"),
+        })
+      : t(meta.labelKey);
+  const nextDescription = t(nextMeta.labelKey);
 
   return (
     <Button
@@ -200,8 +214,14 @@ function ThemeToggle({
         "wails-no-drag group relative size-10 overflow-visible rounded-lg text-sidebar-icon hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&_svg:not([class*='size-'])]:size-[18px]",
         className,
       )}
-      aria-label={`切换主题（当前${currentDescription}，下一项${nextMeta.label}）`}
-      title={`${currentDescription} · 点击切换到${nextMeta.label}`}
+      aria-label={t("theme.toggle", {
+        current: currentDescription,
+        next: nextDescription,
+      })}
+      title={t("theme.toggleTitle", {
+        current: currentDescription,
+        next: nextDescription,
+      })}
       onClick={() => onThemePreferenceChange(next)}
     >
       <Icon data-icon="only" aria-hidden="true" />

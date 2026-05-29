@@ -1,5 +1,6 @@
 import { ChevronDown, History } from "lucide-react";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 
@@ -14,6 +15,8 @@ export function CompactHistoryFold({
   count: number;
   onExpand: () => void;
 }): React.ReactElement {
+  const { t } = useTranslation();
+
   return (
     <div className="flex justify-center py-2">
       <Button
@@ -24,7 +27,7 @@ export function CompactHistoryFold({
         onClick={onExpand}
       >
         <History className="h-3.5 w-3.5" aria-hidden="true" />
-        <span>查看压缩前的 {count} 条消息</span>
+        <span>{t("compactHistory.viewPrevious", { count })}</span>
         <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
       </Button>
     </div>

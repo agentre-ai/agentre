@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ChevronDown, Pin, Plus } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -153,6 +154,7 @@ function AgentGroup({
   renderSessionsPopover,
   ...props
 }: AgentGroupProps) {
+  const { t } = useTranslation();
   const hasActiveSessions = activeCount > 0;
   // expandedProp 仅作为「无持久化时的初始默认值」使用：
   // 之前会在 mount 后根据 expandedProp → true 强制展开，但用户明确希望
@@ -169,7 +171,7 @@ function AgentGroup({
       totalSessions={totalSessions}
       renderSessionsPopover={renderSessionsPopover}
       attentionSessions={attentionSessions}
-      attentionAriaLabel={`${name} 待处理会话`}
+      attentionAriaLabel={t("agentList.attentionAria", { name })}
       {...props}
       renderHeader={({ expanded, toggle }) => (
         <div
@@ -180,7 +182,9 @@ function AgentGroup({
           )}
           role={onHeaderClick ? "button" : undefined}
           tabIndex={onHeaderClick ? 0 : undefined}
-          aria-label={onHeaderClick ? `打开 ${name} 最近会话` : undefined}
+          aria-label={
+            onHeaderClick ? t("agentList.openRecent", { name }) : undefined
+          }
           onClick={onHeaderClick}
           onKeyDown={
             onHeaderClick
@@ -203,15 +207,15 @@ function AgentGroup({
           {pinned ? (
             <Pin
               className="size-3 -rotate-[30deg] text-primary-text"
-              aria-label="置顶"
+              aria-label={t("agentList.pinned")}
             />
           ) : null}
           <span className="min-w-0 flex-1" />
           {hasActiveSessions ? (
             <span
               className="flex shrink-0 items-center"
-              title="运行中"
-              aria-label={`${name} 有运行中的会话`}
+              title={t("agentList.running")}
+              aria-label={t("agentList.runningAria", { name })}
             >
               <StatusDot status="running" size="xs" className="animate-pulse" />
             </span>
@@ -220,8 +224,8 @@ function AgentGroup({
             type="button"
             variant="ghost"
             size="icon-xs"
-            aria-label={`新建 ${name} 会话`}
-            title={`新建 ${name} 会话`}
+            aria-label={t("agentList.newSession", { name })}
+            title={t("agentList.newSession", { name })}
             className="text-muted-foreground"
             onClick={(e) => {
               e.stopPropagation();
@@ -235,8 +239,16 @@ function AgentGroup({
             variant="ghost"
             size="icon-xs"
             aria-expanded={expanded}
-            aria-label={expanded ? `折叠 ${name}` : `展开 ${name}`}
-            title={expanded ? `折叠 ${name}` : `展开 ${name}`}
+            aria-label={
+              expanded
+                ? t("agentList.collapse", { name })
+                : t("agentList.expand", { name })
+            }
+            title={
+              expanded
+                ? t("agentList.collapse", { name })
+                : t("agentList.expand", { name })
+            }
             className={cn(
               "text-muted-foreground transition-colors",
               expanded && "bg-sidebar-active-bg text-foreground",
