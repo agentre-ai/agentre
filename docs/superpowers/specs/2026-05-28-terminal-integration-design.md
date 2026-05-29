@@ -14,7 +14,6 @@
 - Windows 支持（PTY 走 ConPTY，差异面大；先 macOS/Linux）
 - 多终端（一个 session 同时只能有一个活 PTY）
 - 持久化（scrollback、命令历史、audit log 都不入 SQLite）
-- 跨 session 共存（切走 session 即 kill 当前 PTY）
 - Local echo（远端 latency 在 LAN 场景可忽略，复杂度不值）
 - 终端 tab 复用（再次 Open = 全新 shell，不恢复上次）
 
@@ -218,8 +217,9 @@ PTY 输出可能含任意 byte（中文 UTF-8、ANSI escape、二进制 escape �
 ### 切换语义
 
 - **再点按钮 ≠ 隐藏**：真正 Close，PTY 立即 kill；再开就是 fresh shell。
-- **session 切换**：在 A 开了终端 → 点 B → A 的 PTY 立即 Close。用户在 A 跑 `npm test` 切到 B 会被杀掉——本设计接受这个权衡（理由：MVP 不做后台保活，避免引入"哪些 PTY 该活、哪些该死"的复杂状态机；如果实际使用频繁踩坑再改）。
-- **多 session 不并存**：MVP 同时只一个活 PTY（current sessionID）。
+- **session/tab 切换**：切到别的 tab 不影响已开的 PTY —— PTY 跟随 ChatPanel 的 mount 生命周期。`ChatPanelHost` 用 `display:none` 隐藏非活动 tab，ChatPanel 仍 mounted，TerminalPanel 也 mounted，PTY 继续跑。用户在 A 跑 `npm test` 切到 B 看代码再切回 A，输出还在。
+- **tab 关闭 = kill PTY**：关闭 tab 触发 ChatPanel unmount → TerminalPanel unmount → `useTerminal` cleanup 调 `Terminal.Close` → 后端 reaper SIGHUP→SIGKILL → emit exit。
+- **多 tab 终端共存**：每个 tab 独立 toggle；store 用 `Set<sessionID>` 管理；多个 PTY 可以同时活着，互不影响。后端 `terminal_svc.Service.sessions` map 天然支持。
 
 ### 键盘快捷键（toggle）
 
