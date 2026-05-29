@@ -109,16 +109,18 @@ func (s *Session) GetGoal(ctx context.Context) (*Goal, error) {
 
 func (s *Session) SetGoal(ctx context.Context, update GoalUpdate) (*Goal, error) {
 	threadID := strings.TrimSpace(s.ID())
-	if threadID == "" {
-		return nil, errors.New("codex: thread id is required for goal")
-	}
-	if _, err := s.ensureThread(ctx, runSpec{
+	thread, err := s.ensureThread(ctx, runSpec{
 		resumeID: threadID,
 		cwd:      s.client.cwd,
 		sandbox:  s.client.sandbox,
 		approval: s.client.approval,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
+	}
+	threadID = strings.TrimSpace(thread.ThreadID)
+	if threadID == "" {
+		return nil, errors.New("codex: thread id is required for goal")
 	}
 	raw, err := s.app.Call(ctx, appMethodThreadGoalSet, goalUpdateParams(threadID, update))
 	if err != nil {

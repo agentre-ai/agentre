@@ -511,6 +511,20 @@ type SetGoalRequest struct {
 	TokenBudget *int    `json:"tokenBudget,omitempty"`
 }
 
+type StartGoalRequest struct {
+	AgentID        int64   `json:"agentId"`
+	ProjectID      int64   `json:"projectId,omitempty"`
+	PermissionMode string  `json:"permissionMode,omitempty"`
+	Objective      *string `json:"objective,omitempty"`
+	Status         *string `json:"status,omitempty"`
+	TokenBudget    *int    `json:"tokenBudget,omitempty"`
+}
+
+type StartGoalResponse struct {
+	SessionID int64     `json:"sessionId"`
+	Goal      *ChatGoal `json:"goal,omitempty"`
+}
+
 type ClearGoalRequest struct {
 	SessionID int64 `json:"sessionId"`
 }

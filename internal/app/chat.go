@@ -53,6 +53,10 @@ func (a *App) SetChatGoal(req *chat_svc.SetGoalRequest) (*chat_svc.GoalResponse,
 	return chat_svc.Chat().SetGoal(a.ctx, req)
 }
 
+func (a *App) StartChatGoal(req *chat_svc.StartGoalRequest) (*chat_svc.StartGoalResponse, error) {
+	return chat_svc.Chat().StartGoal(a.ctx, req)
+}
+
 func (a *App) ClearChatGoal(req *chat_svc.ClearGoalRequest) (*chat_svc.ClearGoalResponse, error) {
 	return chat_svc.Chat().ClearGoal(a.ctx, req)
 }

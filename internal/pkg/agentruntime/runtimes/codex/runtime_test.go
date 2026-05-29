@@ -126,6 +126,39 @@ func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 	})
 }
 
+func TestSetGoal_CreatesProviderThreadBeforeFirstTurn(t *testing.T) {
+	Convey("Given a Codex chat session has no provider thread yet, when setting a goal, then runtime starts a session and returns the created thread id", t, func() {
+		fake := &fakeRuntimeSession{}
+		restore := SetSessionFactoryForTest(func(req agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			So(req.ProviderSessionID, ShouldEqual, "")
+			So(req.SessionID, ShouldEqual, int64(42))
+			return fake, nil
+		})
+		defer restore()
+
+		objective := "ship before first turn"
+		status := "active"
+		goal, err := New().SetGoal(context.Background(), agentruntime.GoalRequest{
+			Backend: &agent_backend_entity.AgentBackend{
+				Type:    string(agent_backend_entity.TypeCodex),
+				EnvJSON: "{}",
+			},
+			AgentID:   7,
+			SessionID: 42,
+			Cwd:       t.TempDir(),
+			Objective: &objective,
+			Status:    &status,
+		})
+
+		So(err, ShouldBeNil)
+		So(goal, ShouldNotBeNil)
+		So(goal.ThreadID, ShouldEqual, "thread-created-for-goal")
+		So(goal.Objective, ShouldEqual, "ship before first turn")
+		So(fake.setGoalReq.Objective, ShouldNotBeNil)
+		So(*fake.setGoalReq.Objective, ShouldEqual, "ship before first turn")
+	})
+}
+
 func TestRun_ReusesCachedSessionAcrossTurns(t *testing.T) {
 	Convey("Given a Codex chat session is idle after one turn, when Run is called again, then the cached CLI session is reused", t, func() {
 		pool := agentruntime.NewCLISessionPool(8)
@@ -329,6 +362,8 @@ func TestRun_ErrorFollowedOnlyByMetadataKeepsStopErr(t *testing.T) {
 type fakeRuntimeSession struct {
 	stream cxStream
 	sid    string
+
+	setGoalReq pkgcodex.GoalUpdate
 }
 
 func (s *fakeRuntimeSession) Close(context.Context) error { return nil }
@@ -341,8 +376,20 @@ func (s *fakeRuntimeSession) StreamInput(context.Context, []pkgcodex.UserInput, 
 }
 func (s *fakeRuntimeSession) Compact(context.Context) (cxStream, error)       { return s.stream, nil }
 func (s *fakeRuntimeSession) GetGoal(context.Context) (*pkgcodex.Goal, error) { return nil, nil }
-func (s *fakeRuntimeSession) SetGoal(context.Context, pkgcodex.GoalUpdate) (*pkgcodex.Goal, error) {
-	return nil, nil
+func (s *fakeRuntimeSession) SetGoal(_ context.Context, req pkgcodex.GoalUpdate) (*pkgcodex.Goal, error) {
+	s.setGoalReq = req
+	if s.sid == "" {
+		s.sid = "thread-created-for-goal"
+	}
+	objective := ""
+	if req.Objective != nil {
+		objective = *req.Objective
+	}
+	status := pkgcodex.GoalStatus("")
+	if req.Status != nil {
+		status = *req.Status
+	}
+	return &pkgcodex.Goal{ThreadID: s.sid, Objective: objective, Status: status}, nil
 }
 func (s *fakeRuntimeSession) ClearGoal(context.Context) (bool, error)          { return true, nil }
 func (s *fakeRuntimeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }

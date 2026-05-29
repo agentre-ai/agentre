@@ -161,14 +161,18 @@ func (a *cxClientAdapter) GetGoal(ctx context.Context) (*codex.Goal, error) {
 }
 
 func (a *cxClientAdapter) SetGoal(ctx context.Context, update codex.GoalUpdate) (*codex.Goal, error) {
-	if strings.TrimSpace(a.sid) == "" {
-		return nil, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for goal")
-	}
 	sess, err := a.ensureSession(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return sess.SetGoal(ctx, update)
+	goal, err := sess.SetGoal(ctx, update)
+	if err != nil {
+		return nil, err
+	}
+	a.streamMu.Lock()
+	a.sid = sess.ID()
+	a.streamMu.Unlock()
+	return goal, nil
 }
 
 func (a *cxClientAdapter) ClearGoal(ctx context.Context) (bool, error) {

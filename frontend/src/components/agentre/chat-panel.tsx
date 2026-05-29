@@ -84,6 +84,7 @@ import {
   RenameChatSession,
   SendChatMessage,
   SetChatGoal,
+  StartChatGoal,
   StopChatMessage,
 } from "../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../wailsjs/go/models";
@@ -770,6 +771,37 @@ function ChatPanel({
     }
   }
 
+  async function doStartGoal(
+    agentId: number,
+    cmd: Extract<GoalCommand, { kind: "set" }>,
+  ) {
+    try {
+      const resp = await StartChatGoal({
+        agentId,
+        projectId: newSessionContext?.projectId ?? 0,
+        objective: cmd.objective,
+        status: "active",
+        permissionMode: isModeSwitchable ? permissionMode.mode : "",
+      });
+      if (resp.sessionId) {
+        onSessionCreated?.(resp.sessionId, agentId);
+      }
+      onSidebarShouldReload?.();
+      setNotice({
+        kind: "info",
+        text: resp.goal
+          ? t("chatPanel.goal.updatedWithObjective", {
+              objective: resp.goal.objective,
+            })
+          : t("chatPanel.goal.updated"),
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[chat] start goal failed", e);
+      setNotice({ kind: "error", text: t("chatPanel.errors.goal", { msg }) });
+    }
+  }
+
   function notifyCompactNeedsSession() {
     setNotice({
       kind: "info",
@@ -1399,17 +1431,21 @@ function ChatPanel({
                       ? parseGoalCommand(text)
                       : null;
                   if (goalCommand) {
-                    if (!sessionId) {
-                      setNotice({
-                        kind: "info",
-                        text: t("chatPanel.goal.needsSession"),
-                      });
-                      return;
-                    }
                     if (images.length > 0) {
                       setNotice({
                         kind: "error",
                         text: t("chatPanel.goal.imageUnsupported"),
+                      });
+                      return;
+                    }
+                    if (!sessionId) {
+                      if (newSessionAgent && goalCommand.kind === "set") {
+                        void doStartGoal(newSessionAgent.id, goalCommand);
+                        return;
+                      }
+                      setNotice({
+                        kind: "info",
+                        text: t("chatPanel.goal.needsSession"),
                       });
                       return;
                     }

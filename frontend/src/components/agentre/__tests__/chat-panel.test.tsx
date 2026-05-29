@@ -43,6 +43,7 @@ const appMocks = vi.hoisted(() => ({
   RenameChatSession: vi.fn(),
   SendChatMessage: vi.fn(),
   SetChatGoal: vi.fn(),
+  StartChatGoal: vi.fn(),
   StopChatMessage: vi.fn(),
   ClearChatGoal: vi.fn(),
   GetSessionGitState: vi.fn().mockResolvedValue({
@@ -269,6 +270,10 @@ function resetStore() {
   componentMocks.setMode.mockClear();
   ccUsageMock.calls.length = 0;
   appMocks.SendChatMessage.mockReset();
+  appMocks.SetChatGoal.mockReset();
+  appMocks.GetChatGoal.mockReset();
+  appMocks.ClearChatGoal.mockReset();
+  appMocks.StartChatGoal.mockReset();
   appMocks.CompactChatSession.mockReset();
   appMocks.EnqueueChatMessage.mockReset();
   appMocks.GetChatLaunchCommand.mockReset();
@@ -887,6 +892,55 @@ describe("ChatPanel · Codex collaboration mode", () => {
       expect(appMocks.ClearChatGoal).toHaveBeenCalledWith({ sessionId: 42 });
     });
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("/goal objective in a new Codex chat starts a goal session before any user message", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = null;
+    const onSessionCreated = vi.fn();
+    appMocks.StartChatGoal.mockResolvedValue({
+      sessionId: 123,
+      goal: { objective: "ship rpc", status: "active", tokensUsed: 0 },
+    });
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Codex",
+            agentBackendId: 1,
+            backendType: "codex",
+            defaultPermissionMode: "default",
+          } as never
+        }
+        newSessionContext={{ projectId: 55 }}
+        onSessionCreated={onSessionCreated}
+      />,
+    );
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+
+    act(() => {
+      submit?.("/goal ship rpc");
+    });
+
+    await waitFor(() => {
+      expect(appMocks.StartChatGoal).toHaveBeenCalledWith({
+        agentId: 7,
+        projectId: 55,
+        objective: "ship rpc",
+        status: "active",
+        permissionMode: "plan",
+      });
+    });
+    expect(onSessionCreated).toHaveBeenCalledWith(123, 7);
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    expect(appMocks.SetChatGoal).not.toHaveBeenCalled();
   });
 
   // codex plan approve/continue 不再由 chat-panel 中转 SendChatMessage —— PlanCard

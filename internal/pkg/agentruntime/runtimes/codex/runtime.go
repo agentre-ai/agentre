@@ -108,7 +108,7 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 }
 
 func (r *Runtime) GetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
-	sess, err := r.goalSession(ctx, req)
+	sess, err := r.goalSession(ctx, req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func (r *Runtime) GetGoal(ctx context.Context, req agentruntime.GoalRequest) (*a
 }
 
 func (r *Runtime) SetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
-	sess, err := r.goalSession(ctx, req)
+	sess, err := r.goalSession(ctx, req, false)
 	if err != nil {
 		return nil, err
 	}
@@ -140,18 +140,18 @@ func (r *Runtime) SetGoal(ctx context.Context, req agentruntime.GoalRequest) (*a
 }
 
 func (r *Runtime) ClearGoal(ctx context.Context, req agentruntime.GoalRequest) (bool, error) {
-	sess, err := r.goalSession(ctx, req)
+	sess, err := r.goalSession(ctx, req, true)
 	if err != nil {
 		return false, err
 	}
 	return sess.ClearGoal(ctx)
 }
 
-func (r *Runtime) goalSession(ctx context.Context, req agentruntime.GoalRequest) (cxSessionHandle, error) {
+func (r *Runtime) goalSession(ctx context.Context, req agentruntime.GoalRequest, requireProviderSession bool) (cxSessionHandle, error) {
 	if req.SessionID <= 0 {
 		return nil, fmt.Errorf("agentruntime/runtimes/codex: invalid sessionID %d", req.SessionID)
 	}
-	if strings.TrimSpace(req.ProviderSessionID) == "" {
+	if requireProviderSession && strings.TrimSpace(req.ProviderSessionID) == "" {
 		return nil, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for goal")
 	}
 	cwd := req.Cwd

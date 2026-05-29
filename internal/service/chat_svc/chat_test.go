@@ -1000,7 +1000,11 @@ func (r *goalRecordingRunner) SetGoal(_ context.Context, req agentruntime.GoalRe
 	if req.Status != nil {
 		status = *req.Status
 	}
-	return &agentruntime.Goal{ThreadID: req.ProviderSessionID, Objective: objective, Status: status}, nil
+	threadID := req.ProviderSessionID
+	if threadID == "" {
+		threadID = "codex-thread-created"
+	}
+	return &agentruntime.Goal{ThreadID: threadID, Objective: objective, Status: status}, nil
 }
 
 func (r *goalRecordingRunner) ClearGoal(_ context.Context, req agentruntime.GoalRequest) (bool, error) {
@@ -1619,6 +1623,73 @@ func TestGoal_CodexRoutesToGoalController(t *testing.T) {
 		assert.NoError(t, err)
 		assert.True(t, clearResp.Cleared)
 		assert.Equal(t, "codex-thread-123", runner.clearReq.ProviderSessionID)
+	})
+}
+
+func TestStartGoal_CreatesCodexSessionAndSetsGoalBeforeFirstTurn(t *testing.T) {
+	convey.Convey("Given a new Codex chat, when setting /goal before the first message, then a provider thread is created and stored without creating chat messages", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+		runner := &goalRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
+		t.Cleanup(restore)
+
+		m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+			ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+		}, nil)
+		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+			ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
+		}, nil)
+		m.session.EXPECT().Create(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, sess *chat_entity.Session) error {
+				assert.Equal(t, int64(7), sess.AgentID)
+				assert.Equal(t, "ship goal rpc", sess.Title)
+				assert.Equal(t, "idle", sess.AgentStatus)
+				assert.Empty(t, sess.PermissionMode)
+				assert.Empty(t, sess.PermissionModeAtLaunch)
+				assert.Empty(t, sess.ProviderSessionID)
+				sess.ID = 100
+				return nil
+			})
+		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, sess *chat_entity.Session) error {
+				assert.Equal(t, int64(100), sess.ID)
+				assert.Equal(t, "codex-thread-created", sess.ProviderSessionID)
+				assert.Equal(t, "idle", sess.AgentStatus)
+				return nil
+			})
+		m.message.EXPECT().Create(gomock.Any(), gomock.Any()).Times(0)
+
+		objective := "ship goal rpc"
+		status := "active"
+		resp, err := m.svc.StartGoal(ctx, &chat_svc.StartGoalRequest{
+			AgentID:   7,
+			Objective: &objective,
+			Status:    &status,
+		})
+
+		assert.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, int64(100), resp.SessionID)
+		require.NotNil(t, resp.Goal)
+		assert.Equal(t, "ship goal rpc", resp.Goal.Objective)
+		assert.Equal(t, "codex-thread-created", resp.Goal.ThreadID)
+		require.NotNil(t, runner.setReq.Objective)
+		assert.Equal(t, "ship goal rpc", *runner.setReq.Objective)
+		assert.Empty(t, runner.setReq.ProviderSessionID)
+	})
+
+	convey.Convey("Given a new Codex chat, when /goal has no objective, then it is rejected before creating a session", t, func() {
+		m := setupChatTest(t)
+		blank := "   "
+
+		resp, err := m.svc.StartGoal(m.ctx, &chat_svc.StartGoalRequest{
+			AgentID:   7,
+			Objective: &blank,
+		})
+
+		assert.Error(t, err)
+		assert.Nil(t, resp)
 	})
 }
 

@@ -364,6 +364,57 @@ func TestClientGoal_SendsThreadGoalRPCs(t *testing.T) {
 	assert.True(t, cleared)
 }
 
+func TestSessionSetGoal_StartsThreadBeforeFirstTurn(t *testing.T) {
+	// Given a newly opened Codex session with no thread id yet.
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		startReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/start", startReq.Method)
+		assert.JSONEq(t, `{"cwd":"/tmp/work","approvalPolicy":"never"}`, string(startReq.Params))
+		respondRPC(h, startReq, map[string]any{"thread": map[string]any{"id": "thread-new-goal", "cwd": "/tmp/work"}})
+
+		goalReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/goal/set", goalReq.Method)
+		assert.JSONEq(t, `{"threadId":"thread-new-goal","objective":"ship before turn","status":"active"}`, string(goalReq.Params))
+		respondRPC(h, goalReq, map[string]any{"goal": map[string]any{
+			"threadId":        "thread-new-goal",
+			"objective":       "ship before turn",
+			"status":          "active",
+			"tokensUsed":      0,
+			"timeUsedSeconds": 0,
+			"createdAt":       11,
+			"updatedAt":       12,
+		}})
+	}
+
+	client := New(
+		WithCwd("/tmp/work"),
+		WithApproval(ApprovalNever),
+		WithAppServerRunnerForTesting(runner),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	sess, err := client.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// When setting a goal before the first turn, then the wrapper creates the
+	// Codex thread and sets the goal against it.
+	objective := "ship before turn"
+	status := GoalStatusActive
+	goal, err := sess.SetGoal(ctx, GoalUpdate{Objective: &objective, Status: &status})
+	require.NoError(t, err)
+	require.NotNil(t, goal)
+	assert.Equal(t, "thread-new-goal", sess.ID())
+	assert.Equal(t, "thread-new-goal", goal.ThreadID)
+	assert.Equal(t, "ship before turn", goal.Objective)
+}
+
 func TestClientGoal_RequiresThreadID(t *testing.T) {
 	client := New()
 	ctx := context.Background()
