@@ -101,50 +101,82 @@ func (h *TerminalHandlers) pump(ctx context.Context, id string, hd PTYHandle) {
 		}
 	}()
 
-	defer func() {
-		close(queue)
-		<-done // wait for forwarder to drain remaining items
-	}()
-
-	for {
+	enqueue := func(data []byte) {
 		select {
-		case data, ok := <-hd.Data():
-			if !ok {
-				return
+		case queue <- data:
+			// enqueued normally
+		default:
+			// Queue full: drop oldest, insert marker, then enqueue current.
+			select {
+			case <-queue:
+			default:
 			}
+			// Push marker (non-blocking; a racing consumer may have already
+			// taken the freed slot — silently drop marker if still full).
+			select {
+			case queue <- throttleMarker:
+			default:
+			}
+			// Try to enqueue the current chunk; drop if still full.
 			select {
 			case queue <- data:
-				// enqueued normally
 			default:
-				// Queue full: drop oldest, insert marker, then enqueue current.
-				select {
-				case <-queue:
-				default:
-				}
-				// Push marker (non-blocking; a racing consumer may have already
-				// taken the freed slot — silently drop marker if still full).
-				select {
-				case queue <- throttleMarker:
-				default:
-				}
-				// Try to enqueue the current chunk; drop if still full.
-				select {
-				case queue <- data:
-				default:
-				}
 			}
-		case info, ok := <-hd.Exit():
-			h.mu.Lock()
-			delete(h.terminals, id)
-			h.mu.Unlock()
-			if ok {
-				h.emitter.Emit(ctx, EventNameTerminalExit, protocol.TerminalExitEvent{
-					TerminalID: id, Code: info.Code, Reason: info.Reason, Msg: info.Msg,
-				})
-			}
-			return
 		}
 	}
+
+	// Data() and Exit() are independent channels with no ordering guarantee.
+	// Drain every data chunk AND read the single exit value before tearing
+	// down — a naive select that returns on a closed Data() channel races the
+	// buffered Exit() value and drops the exit ~50% of the time (remote
+	// terminal stuck "open"), or returns on Exit() while data is still
+	// buffered and drops the trailing output.
+	dataCh := hd.Data()
+	exitCh := hd.Exit()
+	var exitInfo pty.ExitInfo
+stream:
+	for {
+		select {
+		case data, ok := <-dataCh:
+			if !ok {
+				// Data closed before we observed exit; block for the single
+				// exit value (real handles always deliver it).
+				dataCh = nil
+				exitInfo = <-exitCh
+				break stream
+			}
+			enqueue(data)
+		case info := <-exitCh:
+			exitInfo = info
+			// Drain any already-buffered data so trailing output is queued
+			// before the exit event.
+			for drained := false; !drained; {
+				select {
+				case data, ok := <-dataCh:
+					if !ok {
+						drained = true
+					} else {
+						enqueue(data)
+					}
+				default:
+					drained = true
+				}
+			}
+			break stream
+		}
+	}
+
+	// Flush all queued data through the forwarder before emitting exit so
+	// trailing output never arrives after the exit event.
+	close(queue)
+	<-done
+
+	h.mu.Lock()
+	delete(h.terminals, id)
+	h.mu.Unlock()
+	h.emitter.Emit(ctx, EventNameTerminalExit, protocol.TerminalExitEvent{
+		TerminalID: id, Code: exitInfo.Code, Reason: exitInfo.Reason, Msg: exitInfo.Msg,
+	})
 }
 
 func newTerminalID() string {
@@ -174,6 +206,22 @@ func (h *TerminalHandlers) Resize(ctx context.Context, p protocol.TerminalResize
 		return TerminalAck{}, ErrTerminalNotFound
 	}
 	return TerminalAck{}, hd.Resize(p.Cols, p.Rows)
+}
+
+// CloseAll terminates every live PTY and clears the registry. The daemon
+// calls this when the owning ws connection drops so orphaned shells (and
+// whatever they are running) don't leak on the remote box.
+func (h *TerminalHandlers) CloseAll() {
+	h.mu.Lock()
+	hs := make([]PTYHandle, 0, len(h.terminals))
+	for _, hd := range h.terminals {
+		hs = append(hs, hd)
+	}
+	h.terminals = map[string]PTYHandle{}
+	h.mu.Unlock()
+	for _, hd := range hs {
+		_ = hd.Close()
+	}
 }
 
 func (h *TerminalHandlers) Close(ctx context.Context, p protocol.TerminalCloseParams) (TerminalAck, error) {

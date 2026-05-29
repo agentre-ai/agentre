@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { clientLog } from "@/lib/client-log";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
@@ -189,16 +190,17 @@ export function ChatStreamsHost(): React.ReactElement | null {
           // 末端 emit 走在 StreamError 之前但 StreamClosed 之后流就应当结束)。
           // 命中即埋根因证据, 一并打 prev/next/streamActive 让排查不用回放事件。
           if (hasStatus && nextStatus === "error") {
-            const hasActiveStream =
-              useChatStreamsStore.getState().streams.has(sessionId);
-            if (hasActiveStream) {
-              console.warn(
-                "[chat-streams-host] session_status agentStatus=error received while LiveStream is still active",
+            const live = useChatStreamsStore.getState().streams.get(sessionId);
+            if (live) {
+              clientLog.warn(
+                "chat-streams-host",
+                "session_status agentStatus=error received while LiveStream is still active",
                 {
                   sessionId,
                   prevAgentStatus: prev?.agentStatus,
                   nextAgentStatus: nextStatus,
                   needsAttention: ev.sessionStatus.needsAttention,
+                  streamAgeMs: Date.now() - live.streamStartedAt,
                 },
               );
             }

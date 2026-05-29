@@ -30,8 +30,19 @@ type ExitInfo struct {
 }
 
 // Handle is the runtime API of one live PTY. Implementations are safe for
-// concurrent Write/Resize/Close calls. Data and Exit channels are closed
-// exactly once (after Exit fires), so consumers can range over them.
+// concurrent Write/Resize/Close calls.
+//
+// Channel contract:
+//   - Data() streams stdout chunks and is closed exactly once when no more
+//     output will arrive.
+//   - Exit() delivers exactly one ExitInfo and is then closed.
+//   - The two channels are independent: there is NO ordering guarantee between
+//     "Data closed" and "Exit delivered". A consumer MUST drain Data() until it
+//     is closed AND read the single Exit() value before treating the PTY as
+//     gone — selecting on whichever is ready first and returning will either
+//     drop the exit event or truncate trailing output.
+//   - Consumers must drain Data() continuously; an implementation may block on
+//     the data channel while the PTY is producing output.
 type Handle interface {
 	Write(p []byte) (int, error)
 	Resize(cols, rows uint16) error

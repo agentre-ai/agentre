@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { LoadChatSession } from "../../wailsjs/go/app/App";
 import type { chat_svc } from "../../wailsjs/go/models";
+import { clientLog } from "@/lib/client-log";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
@@ -65,20 +66,21 @@ export function useChatSession(sessionId: number) {
       // 详情说 agentStatus="error"/"idle", 大概率是 reload 在 turn 起手前发起、
       // 响应到达时 Send 已经把 DB 翻 "running" —— 旧快照覆盖乐观值会让 tab
       // 翻红/翻灰而内容仍在流。命中即埋根因证据。
-      const hasActiveStream =
-        useChatStreamsStore.getState().streams.has(sessionId);
+      const live = useChatStreamsStore.getState().streams.get(sessionId);
       if (
-        hasActiveStream &&
+        live &&
         resp.session.agentStatus !== "running" &&
         resp.session.agentStatus !== "waiting"
       ) {
         const prev = useSessionStatusStore.getState().statuses.get(sessionId);
-        console.warn(
-          "[use-chat-session] LoadChatSession upsert about to override agentStatus while LiveStream is active",
+        clientLog.warn(
+          "use-chat-session",
+          "LoadChatSession upsert about to override agentStatus while LiveStream is active",
           {
             sessionId,
             prevAgentStatus: prev?.agentStatus,
             loadedAgentStatus: resp.session.agentStatus,
+            streamAgeMs: Date.now() - live.streamStartedAt,
           },
         );
       }

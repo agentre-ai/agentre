@@ -1070,6 +1070,29 @@ function ChatPanel({
                             </Button>
                           );
                         })()}
+                        <button
+                          type="button"
+                          title="终端 (⌘`)"
+                          aria-pressed={terminalOn}
+                          disabled={terminalTransitioning || sessionId === 0}
+                          onClick={() => toggleTerminal(sessionId)}
+                          className={cn(
+                            terminalOn
+                              ? "rounded-md bg-primary-soft px-2 py-1 text-primary"
+                              : "rounded-md border border-border px-2 py-1 text-muted-foreground hover:bg-accent",
+                            terminalTransitioning && "animate-pulse opacity-70",
+                          )}
+                        >
+                          <TerminalSquare
+                            className="h-4 w-4"
+                            aria-hidden="true"
+                          />
+                        </button>
+                        {terminalOn ? (
+                          <kbd className="hidden sm:inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+                            ⌘`
+                          </kbd>
+                        ) : null}
                         <Button
                           type="button"
                           variant="outline"
@@ -1137,26 +1160,6 @@ function ChatPanel({
                     );
                   })()
                 : null}
-              {terminalOn ? (
-                <kbd className="hidden sm:inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
-                  ⌘`
-                </kbd>
-              ) : null}
-              <button
-                type="button"
-                title="终端 (⌘`)"
-                aria-pressed={terminalOn}
-                disabled={terminalTransitioning || sessionId === 0}
-                onClick={() => toggleTerminal(sessionId)}
-                className={cn(
-                  terminalOn
-                    ? "rounded-md bg-primary-soft px-2 py-1 text-primary"
-                    : "rounded-md border border-border px-2 py-1 text-muted-foreground hover:bg-accent",
-                  terminalTransitioning && "animate-pulse opacity-70",
-                )}
-              >
-                <TerminalSquare className="h-4 w-4" aria-hidden="true" />
-              </button>
             </div>
           )}
 

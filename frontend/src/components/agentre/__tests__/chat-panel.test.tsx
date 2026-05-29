@@ -905,6 +905,16 @@ describe("chat-panel terminal body swap", () => {
     useChatTerminalStore.setState({ openSessionIDs: new Set<number>() });
   });
 
+  it("places the terminal toggle immediately after the stop button", () => {
+    mockSessionStore.session = makeSession({ id: 7 });
+
+    render(<ChatPanel sessionId={7} />);
+
+    const stopButton = screen.getByRole("button", { name: /停止/ });
+    const terminalButton = screen.getByTitle("终端 (⌘`)");
+    expect(stopButton.nextElementSibling).toBe(terminalButton);
+  });
+
   it("renders TerminalPanel when openSessionIDs contains current sessionId", () => {
     mockSessionStore.session = makeSession({ id: 5 });
     useChatTerminalStore.setState({ openSessionIDs: new Set([5]) });

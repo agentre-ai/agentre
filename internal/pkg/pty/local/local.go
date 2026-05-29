@@ -108,6 +108,10 @@ func (h *handleImpl) Data() <-chan []byte          { return h.data }
 func (h *handleImpl) Exit() <-chan pkgpty.ExitInfo { return h.exit }
 
 func (h *handleImpl) reader() {
+	// The reader is the SOLE closer of h.data: it both sends to and closes the
+	// channel, so there is never a concurrent send-and-close (which would panic
+	// "send on closed channel"). The reaper must NOT close h.data.
+	defer close(h.data)
 	buf := make([]byte, 8192)
 	for {
 		n, err := h.file.Read(buf)
@@ -150,7 +154,8 @@ func (h *handleImpl) reaper() {
 	}
 	h.exit <- info
 	close(h.exit)
-	close(h.data)
+	// h.data is closed by reader() (its sole owner), not here — closing it from
+	// two goroutines races the reader's send and panics.
 }
 
 func (h *handleImpl) wasKilled() bool {

@@ -110,6 +110,23 @@ describe("TerminalPanel", () => {
     expect(writeProxy).toHaveBeenCalledWith("typed-key");
   });
 
+  it("sizes the PTY to the fitted dimensions once the hook reports open", () => {
+    const resizeMock = vi.fn();
+    (
+      useTerminal as unknown as {
+        mockImplementation: (fn: (args: unknown) => unknown) => void;
+      }
+    ).mockImplementation((args) => {
+      capturedArgs = args as typeof capturedArgs;
+      return { state: "open", write: writeProxy, resize: resizeMock };
+    });
+    render(<TerminalPanel sessionID={42} />);
+    // The mocked xterm reports cols=80, rows=24; once "open" the panel must
+    // push that size so the PTY is not stuck at the initial open dimensions
+    // (the ResizeObserver-driven resize can race TerminalOpen and be dropped).
+    expect(resizeMock).toHaveBeenCalledWith(80, 24);
+  });
+
   it("disposes xterm on unmount", () => {
     const { unmount } = render(<TerminalPanel sessionID={42} />);
     unmount();

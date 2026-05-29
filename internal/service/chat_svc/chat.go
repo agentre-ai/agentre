@@ -379,6 +379,21 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		},
 		Messages: make([]ChatMessage, 0, len(msgs)),
 	}
+	// 诊断: 记录这次 serve 出去的 agentStatus + 后端此刻是否有活跃 turn。
+	// 前端「过期快照覆盖 running」竞态在 serve 端通常看着无辜(turn 还没起、DB 还是
+	// idle),但若 serve 时已有活跃 turn 却吐 非 running/waiting,就是后端侧能直接抓到
+	// 的不一致。配合前端 LogClient 上报的 apply 时刻能把竞态时间线对上。
+	if _, activeTurn := s.activeCancels.Load(sess.ID); activeTurn &&
+		sess.AgentStatus != "running" && sess.AgentStatus != "waiting" {
+		logger.Ctx(ctx).Warn("chat_svc: LoadSession served non-running status while turn active",
+			zap.Int64("sessionId", sess.ID),
+			zap.String("agentStatus", sess.AgentStatus),
+			zap.Bool("activeTurn", true))
+	} else {
+		logger.Ctx(ctx).Debug("chat_svc: LoadSession served",
+			zap.Int64("sessionId", sess.ID),
+			zap.String("agentStatus", sess.AgentStatus))
+	}
 	if a != nil {
 		resp.Session.AgentName = a.Name
 		resp.Session.AgentColor = a.AvatarColor
@@ -2062,6 +2077,17 @@ func (s *chatSvc) runTurn(
 		}
 	}
 	_ = chat_repo.Session().Update(finalCtx, sess)
+	// 诊断: 落库的最终(或自动接续中间态)agent_status。下面那段只在 error/waiting 时
+	// emit+log,idle 收尾历史上完全没日志 —— 这正是 agentre.log 里看不到 running→idle
+	// 翻转、排查「状态停在 running / 被过期快照盖回 idle」时无从对时间线的原因。这里补一条
+	// 覆盖所有终态(含 pending>0 自动接续仍 running 的中间态)。
+	logger.Ctx(finalCtx).Info("chat_svc: agent_status finalized",
+		zap.Int64("sessionId", sess.ID),
+		zap.Int64("assistantMsgId", assistantMsg.ID),
+		zap.String("agentStatus", sess.AgentStatus),
+		zap.Bool("needsAttention", sess.NeedsAttention),
+		zap.Bool("aborted", aborted),
+		zap.Int("pending", len(pending)))
 	// 末端状态翻转主动推一帧 session_status:后台 session 出错/等审批时,前端 tab
 	// 只订阅本会话 stream,StreamError 走 finishStream→bumpDone 不动 agentStatus,
 	// 不补一刀 tab 红点要等下次 ListChatAgents 才同步。idle 不发 —— turn 正常收尾

@@ -13,6 +13,20 @@ func TestLookup(t *testing.T) {
 		So(info.ContextWindow, ShouldEqual, 1_000_000)
 	})
 
+	Convey("当前主推模型 claude-opus-4-8 命中 catalog", t, func() {
+		// 回归:catalog 落后于在用模型时,claudecode 后端 system.init 查不到
+		// 窗口 → ContextWindowUpdated 不 emit → 前端 Composer 上下文用量条整块隐藏。
+		info, ok := Lookup("claude-opus-4-8")
+		So(ok, ShouldBeTrue)
+		So(info.ContextWindow, ShouldEqual, 1_000_000)
+
+		Convey("带日期后缀仍前缀命中", func() {
+			info, ok := Lookup("claude-opus-4-8-20260529")
+			So(ok, ShouldBeTrue)
+			So(info.ContextWindow, ShouldEqual, 1_000_000)
+		})
+	})
+
 	Convey("大小写不敏感", t, func() {
 		info, ok := Lookup("Claude-Opus-4-7")
 		So(ok, ShouldBeTrue)

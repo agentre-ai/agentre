@@ -253,6 +253,12 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	d.registry.Register("terminal.write", wrapGuarded(termH.Write))
 	d.registry.Register("terminal.resize", wrapGuarded(termH.Resize))
 	d.registry.Register("terminal.close", wrapGuarded(termH.Close))
+	// When this connection drops, kill the PTYs it opened — otherwise the
+	// remote shells (and whatever they run) leak until daemon shutdown.
+	go func() {
+		<-c.Done()
+		termH.CloseAll()
+	}()
 }
 
 // wrapGuarded is wrap + requireAuth check. Use for any method except auth.*.

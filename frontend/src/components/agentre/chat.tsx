@@ -401,10 +401,11 @@ function formatTokens(n: number): string {
   return v >= 100 ? `${Math.round(v)}k` : `${v.toFixed(1)}k`;
 }
 
-// formatResetIn 把"距离 ISO 时间点还有多久"渲染成紧凑的 XdYh / Xh / Xd 形式
-// (e.g. "4d21h", "3h", "2d"),用于 QuotaMeter tooltip。
+// formatResetIn 把"距离 ISO 时间点还有多久"渲染成紧凑的 XdYh / Xh / Xm 形式
+// (e.g. "4d21h", "3h", "40m"),用于 QuotaMeter tooltip。
 //   - 空串 / 无法解析的输入 → 空串(调用方自己决定是否显示括号)
-//   - 已过期(diff<=0)→ "0h"
+//   - 已过期(diff<=0)→ "0m"
+//   - <1h → "Nm"(向上取整,避免 30s 显示 0m)
 //   - <24h → "Nh"(向下取整)
 //   - >=24h → "XdYh"(Yh=0 时省略,写 "Xd")
 // nowMs 可选(测试注入固定 now);省略走 Date.now()。
@@ -415,7 +416,10 @@ export function formatResetIn(value: unknown, nowMs?: number): string {
     value instanceof Date ? value.getTime() : Date.parse(String(value));
   if (Number.isNaN(target)) return "";
   const diffMs = target - (nowMs ?? Date.now());
-  if (diffMs <= 0) return "0h";
+  if (diffMs <= 0) return "0m";
+  if (diffMs < 3_600_000) {
+    return `${Math.max(1, Math.ceil(diffMs / 60_000))}m`;
+  }
   const totalHours = Math.floor(diffMs / 3_600_000);
   const days = Math.floor(totalHours / 24);
   const hours = totalHours % 24;

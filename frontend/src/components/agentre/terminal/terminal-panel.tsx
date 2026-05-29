@@ -97,7 +97,7 @@ export function TerminalPanel({ sessionID }: TerminalPanelProps) {
     return () => observer.disconnect();
   }, []);
 
-  const { write, resize } = useTerminal({
+  const { state, write, resize } = useTerminal({
     sessionID,
     cols: 80,
     rows: 24,
@@ -136,6 +136,19 @@ export function TerminalPanel({ sessionID }: TerminalPanelProps) {
     });
     return () => sub.dispose();
   }, [write]);
+
+  // Once the PTY is confirmed open, push the real fitted size. Open is issued
+  // with placeholder dimensions, and the ResizeObserver-driven resize can land
+  // before the backend handle is registered (dropped as "terminal closed"), so
+  // without this the shell can stay stuck at the initial open size.
+  useEffect(() => {
+    if (state !== "open") return;
+    const f = fitRef.current;
+    const t = xtermRef.current;
+    if (!f || !t) return;
+    f.fit();
+    void resize(t.cols, t.rows);
+  }, [state, resize]);
 
   useEffect(() => {
     if (!containerRef.current) return;

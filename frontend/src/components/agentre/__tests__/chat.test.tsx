@@ -132,14 +132,19 @@ describe("formatResetIn", () => {
     expect(formatResetIn(target, now)).toBe("3h");
   });
 
-  it("不到 1 小时(40min) → '0h'", () => {
+  it("不到 1 小时(40min) → '40m'", () => {
     const target = new Date(now + 40 * 60_000).toISOString();
-    expect(formatResetIn(target, now)).toBe("0h");
+    expect(formatResetIn(target, now)).toBe("40m");
   });
 
-  it("已经过期 → '0h'", () => {
+  it("不到 1 分钟但尚未重置 → '1m'", () => {
+    const target = new Date(now + 30_000).toISOString();
+    expect(formatResetIn(target, now)).toBe("1m");
+  });
+
+  it("已经过期 → '0m'", () => {
     const target = new Date(now - 60_000).toISOString();
-    expect(formatResetIn(target, now)).toBe("0h");
+    expect(formatResetIn(target, now)).toBe("0m");
   });
 
   it("空 / null / 非法值 → ''", () => {
@@ -156,6 +161,8 @@ describe("formatResetIn", () => {
 });
 
 describe("ChatComposer quota meter", () => {
+  const resetNow = Date.parse("2026-05-28T00:00:00Z");
+
   it("不渲染 QuotaMeter 当 quotaUsage 未传", () => {
     render(<ChatComposer onSubmit={() => undefined} />);
     expect(screen.queryByLabelText(/Claude.*配额/)).toBeNull();
@@ -205,6 +212,35 @@ describe("ChatComposer quota meter", () => {
     expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
     expect(screen.getByText(/7d 10%/)).toBeInTheDocument();
     expect(screen.queryByText(/stale/)).toBeNull();
+  });
+
+  it("tooltip 展示 5h 重置还剩多少分钟", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(resetNow);
+    try {
+      render(
+        <ChatComposer
+          onSubmit={() => undefined}
+          quotaUsage={
+            {
+              reason: "ok",
+              data: {
+                fiveHourPercent: 42,
+                weeklyPercent: 18,
+                fiveHourResetsAt: new Date(resetNow + 40 * 60_000),
+              },
+              fetchedAtMs: 1,
+            } as never
+          }
+        />,
+      );
+      expect(screen.getByLabelText(/Claude.*配额/)).toHaveAttribute(
+        "title",
+        expect.stringContaining("重置剩 40m"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("auth_expired 时渲染占位文本而不是数字", () => {
