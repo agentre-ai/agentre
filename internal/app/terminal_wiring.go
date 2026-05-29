@@ -6,47 +6,12 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/pkg/pty"
 	"agentre/internal/pkg/pty/local"
 	"agentre/internal/pkg/pty/remote"
-	agentbackendrepo "agentre/internal/repository/agent_backend_repo"
-	agentrepo "agentre/internal/repository/agent_repo"
-	chatrepo "agentre/internal/repository/chat_repo"
 	"agentre/internal/service/chat_svc"
 	"agentre/internal/service/terminal_svc"
 )
-
-type sessionLookupAdapter struct{}
-
-func (sessionLookupAdapter) Lookup(ctx context.Context, sessionID int64) (
-	*chat_entity.Session, *agent_backend_entity.AgentBackend, string, error,
-) {
-	sess, err := chatrepo.Session().Find(ctx, sessionID)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	if sess == nil {
-		return nil, nil, "", terminal_svc.ErrSessionNotFound
-	}
-	agent, err := agentrepo.Agent().Find(ctx, sess.AgentID)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	var be *agent_backend_entity.AgentBackend
-	if agent != nil && agent.AgentBackendID > 0 {
-		be, err = agentbackendrepo.AgentBackend().Find(ctx, agent.AgentBackendID)
-		if err != nil {
-			return nil, nil, "", err
-		}
-	}
-	cwd, err := chat_svc.ResolveSessionCwd(ctx, sess, be)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	return sess, be, cwd, nil
-}
 
 // ptyBackendAdapter bridges pty.Backend → terminal_svc.PTYBackend (same
 // method set in different packages; explicit wrapper required by Go's
@@ -79,5 +44,5 @@ func newTerminalService(appCtx context.Context) *terminal_svc.Service {
 	emitter := terminal_svc.EmitterFunc(func(_ context.Context, name string, payload any) {
 		wailsruntime.EventsEmit(appCtx, name, payload)
 	})
-	return terminal_svc.NewService(sessionLookupAdapter{}, selector, emitter)
+	return terminal_svc.NewService(selector, emitter)
 }
