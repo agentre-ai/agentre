@@ -1162,6 +1162,65 @@ describe("NewTerminalSubMenu", () => {
   });
 });
 
+// 端到端守住「菜单点击 → 真的多一个 terminal tab」的整条路由:
+// ProjectCard 更多操作菜单 → 新建终端 子菜单 → 本地 → onSelect({kind:"open-terminal"})
+// → selectOnTab → openTerminal → chat-tabs-store。SubMenuHarness 那组只测到 onPick,
+// 这一组把 selectOnTab 的 open-terminal 分支也接上。
+describe("ProjectsPage 新建终端 end-to-end routing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSessionReadStore.setState({ overrides: new Map() });
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectListSessions.mockResolvedValue([]);
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "Agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+        },
+        children: [],
+      },
+    ]);
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("Given the project menu, When 新建终端 → 本地 is clicked, Then a local terminal tab is opened and activated", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderProjectsPage();
+
+    // 更多操作 → 新建终端 子菜单 → 本地
+    await user.click(
+      await screen.findByRole("button", { name: "Agentre 更多操作" }),
+    );
+    await user.hover(await screen.findByText("新建终端"));
+    // fireEvent.click 触发 Radix item 的 onSelect（userEvent.click 的 pointer-leave 会先关菜单）
+    fireEvent.click(await screen.findByText("本地"));
+
+    await waitFor(() => {
+      const state = useChatTabsStore.getState();
+      const active = state.tabs.find((t) => t.id === state.activeTabId);
+      expect(active?.meta).toMatchObject({
+        kind: "terminal",
+        projectId: 1,
+        deviceId: "",
+      });
+    });
+  });
+});
+
 describe("ProjectSettingsDrawer members", () => {
   beforeEach(() => {
     vi.clearAllMocks();
