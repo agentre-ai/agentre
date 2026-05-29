@@ -879,6 +879,19 @@ describe("chat-panel ⌘` shortcut", () => {
 
     expect(toggleMock).not.toHaveBeenCalled();
   });
+
+  // Regression: ChatPanelHost mounts every open tab simultaneously and hides
+  // inactive ones via display:none. Without an `active` gate, every mounted
+  // ChatPanel's keydown handler fires in parallel — terminal can open for the
+  // wrong (background) tab. See chat-panel-host.tsx ~L559.
+  it("does not fire when panel is not active", () => {
+    mockSessionStore.session = makeSession({ id: 7 });
+
+    render(<ChatPanel sessionId={7} active={false} />);
+    fireEvent.keyDown(window, { key: "`", metaKey: true });
+
+    expect(toggleMock).not.toHaveBeenCalled();
+  });
 });
 
 // ─── T27: terminal body swap ──────────────────────────────────────────────────

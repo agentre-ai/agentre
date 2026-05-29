@@ -574,6 +574,7 @@ function ChatPanel({
   }, [active, sessionId, sessionLastMessageAt]);
 
   React.useEffect(() => {
+    if (!active) return;
     if (sessionId == null || sessionId === 0) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "`") return;
@@ -583,7 +584,7 @@ function ChatPanel({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [sessionId, toggleTerminal]);
+  }, [active, sessionId, toggleTerminal]);
 
   async function doSend(
     targetSessionId: number,
