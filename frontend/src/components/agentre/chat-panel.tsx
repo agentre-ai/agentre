@@ -55,6 +55,7 @@ import { useSessionCapabilities } from "./capability/use-session-capabilities";
 import type { PlanActionStream } from "./canonical-tool/props";
 import { ChatComposer, ChatTranscript } from "./chat";
 import { ChatContextSidebar } from "./chat-context-sidebar";
+import { TerminalPanel } from "./terminal/terminal-panel";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
@@ -1151,159 +1152,164 @@ function ChatPanel({
           {/* ── Body row: 左栏 chat / 右栏 sidebar 占满整高 ──
               输入框宽度 = transcript 宽度,与对话流同列;sidebar 从 toolbar 下沿一路顶到底。 */}
           <div className="flex min-h-0 min-w-0 flex-1">
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-              {showNewSessionPrompt ? (
-                <div className="flex flex-1 items-center justify-center">
-                  <div className="flex flex-col items-center gap-2 text-center">
-                    <div className="text-sm font-semibold">
-                      和 {newSessionAgent.name} 开始对话
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      在下方输入框输入消息，按 Enter 发送，Shift+Enter 换行
+            {/* ── Body: terminal swap or chat ── */}
+            {terminalOn ? (
+              <TerminalPanel sessionID={sessionId} />
+            ) : (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                {showNewSessionPrompt ? (
+                  <div className="flex flex-1 items-center justify-center">
+                    <div className="flex flex-col items-center gap-2 text-center">
+                      <div className="text-sm font-semibold">
+                        和 {newSessionAgent.name} 开始对话
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        在下方输入框输入消息，按 Enter 发送，Shift+Enter 换行
+                      </div>
                     </div>
                   </div>
-                </div>
-              ) : (
-                <section
-                  ref={transcriptRef}
-                  onScroll={handleTranscriptScroll}
-                  className="min-h-0 flex-1 overflow-auto px-7 py-5"
-                >
-                  <ChatTranscript
-                    agentName={session?.agentName ?? "Agent"}
-                    agentColor={
-                      (session?.agentColor as AgentColor) || "agent-1"
-                    }
-                    cwd={session?.cwd}
-                    sessionId={session?.id ?? 0}
-                    messages={messages}
-                    liveDelta={liveDelta}
-                    liveThinking={liveThinking}
-                    liveBlocks={liveBlocks ?? undefined}
-                    liveRetry={liveRetry}
-                    liveStreamStartedAt={liveStreamStartedAt}
-                    liveTargetId={liveTargetId}
-                    streaming={streaming}
-                    liveCompacting={liveCompacting}
-                    onRerun={(messageId) => void handleRegenerate(messageId)}
-                    onEdit={(messageId) => handleEdit(messageId)}
-                    onPlanActionStarted={handlePlanActionStarted}
-                  />
-                </section>
-              )}
-
-              {/* ── Inline notice (取代 window.alert)。
-                  error / info 两种态共用一个 slot，最多挂一条；右侧 × 关闭。
-                  info 用 default Alert 样式（中性），error 用 destructive。 */}
-              {notice ? (
-                <div className="border-t border-border bg-background px-5 pt-2">
-                  <Alert
-                    variant={
-                      notice.kind === "error" ? "destructive" : "default"
-                    }
-                    className="py-2 pr-2"
+                ) : (
+                  <section
+                    ref={transcriptRef}
+                    onScroll={handleTranscriptScroll}
+                    className="min-h-0 flex-1 overflow-auto px-7 py-5"
                   >
-                    <TriangleAlert aria-hidden="true" />
-                    <AlertDescription className="flex min-w-0 items-start gap-2">
-                      <span className="min-w-0 flex-1 break-words text-xs leading-snug">
-                        {notice.text}
-                      </span>
-                      <button
-                        type="button"
-                        aria-label="关闭提示"
-                        onClick={() => setNotice(null)}
-                        className="-mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-current opacity-70 transition-opacity hover:opacity-100"
-                      >
-                        <X className="size-3" aria-hidden="true" />
-                      </button>
-                    </AlertDescription>
-                  </Alert>
-                </div>
-              ) : null}
-
-              {/* ── Composer ── */}
-              <ChatComposer
-                editing={activeEditing !== null}
-                editDraft={activeEditing?.text}
-                onCancelEdit={() => setEditingMessage(null)}
-                // 新建会话场景下，ChatPanel 的 key 变化让 Composer 重新挂载 → 自动抓焦点，
-                // 用户一进来就能直接打字。续聊已有会话不抢焦点，避免打断侧栏切换的鼠标交互。
-                autoFocusOnMount={!!newSessionAgent}
-                contextUsage={composerContextUsage}
-                quotaUsage={quotaUsage}
-                quotaDeviceLabel={quotaDeviceLabel}
-                permissionModeSlot={
-                  isModeSwitchable ? (
-                    <PermissionModePill
-                      mode={permissionMode.mode}
-                      modes={permissionModeMeta.order}
-                      onSelect={permissionMode.setMode}
-                      errorMessage={permissionMode.error}
-                      disabled={modeSwitchingDisabled}
-                      runtimeKey={activeBackendType}
-                      permissionModeAtLaunch={
-                        permissionMode.permissionModeAtLaunch
+                    <ChatTranscript
+                      agentName={session?.agentName ?? "Agent"}
+                      agentColor={
+                        (session?.agentColor as AgentColor) || "agent-1"
                       }
-                      hasActiveSession={permissionMode.hasActiveSession}
+                      cwd={session?.cwd}
+                      sessionId={session?.id ?? 0}
+                      messages={messages}
+                      liveDelta={liveDelta}
+                      liveThinking={liveThinking}
+                      liveBlocks={liveBlocks ?? undefined}
+                      liveRetry={liveRetry}
+                      liveStreamStartedAt={liveStreamStartedAt}
+                      liveTargetId={liveTargetId}
+                      streaming={streaming}
+                      liveCompacting={liveCompacting}
+                      onRerun={(messageId) => void handleRegenerate(messageId)}
+                      onEdit={(messageId) => handleEdit(messageId)}
+                      onPlanActionStarted={handlePlanActionStarted}
                     />
-                  ) : null
-                }
-                onShiftTab={
-                  isModeSwitchable && !modeSwitchingDisabled
-                    ? permissionMode.cycleMode
-                    : undefined
-                }
-                topSlot={
-                  <>
-                    <TaskProgressBar progress={taskProgress} />
-                    <QueuedMessagesBar
-                      queued={currentQueued ?? []}
-                      onCancel={(id) => void doCancelQueued(sessionId, id)}
-                      onClearAll={() => void doCancelQueued(sessionId, "")}
-                    />
-                  </>
-                }
-                onSubmit={(text) => {
-                  if (activeEditing) {
-                    void confirmEdit(text);
-                    return;
+                  </section>
+                )}
+
+                {/* ── Inline notice (取代 window.alert)。
+                    error / info 两种态共用一个 slot，最多挂一条；右侧 × 关闭。
+                    info 用 default Alert 样式（中性），error 用 destructive。 */}
+                {notice ? (
+                  <div className="border-t border-border bg-background px-5 pt-2">
+                    <Alert
+                      variant={
+                        notice.kind === "error" ? "destructive" : "default"
+                      }
+                      className="py-2 pr-2"
+                    >
+                      <TriangleAlert aria-hidden="true" />
+                      <AlertDescription className="flex min-w-0 items-start gap-2">
+                        <span className="min-w-0 flex-1 break-words text-xs leading-snug">
+                          {notice.text}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label="关闭提示"
+                          onClick={() => setNotice(null)}
+                          className="-mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-current opacity-70 transition-opacity hover:opacity-100"
+                        >
+                          <X className="size-3" aria-hidden="true" />
+                        </button>
+                      </AlertDescription>
+                    </Alert>
+                  </div>
+                ) : null}
+
+                {/* ── Composer ── */}
+                <ChatComposer
+                  editing={activeEditing !== null}
+                  editDraft={activeEditing?.text}
+                  onCancelEdit={() => setEditingMessage(null)}
+                  // 新建会话场景下，ChatPanel 的 key 变化让 Composer 重新挂载 → 自动抓焦点，
+                  // 用户一进来就能直接打字。续聊已有会话不抢焦点，避免打断侧栏切换的鼠标交互。
+                  autoFocusOnMount={!!newSessionAgent}
+                  contextUsage={composerContextUsage}
+                  quotaUsage={quotaUsage}
+                  quotaDeviceLabel={quotaDeviceLabel}
+                  permissionModeSlot={
+                    isModeSwitchable ? (
+                      <PermissionModePill
+                        mode={permissionMode.mode}
+                        modes={permissionModeMeta.order}
+                        onSelect={permissionMode.setMode}
+                        errorMessage={permissionMode.error}
+                        disabled={modeSwitchingDisabled}
+                        runtimeKey={activeBackendType}
+                        permissionModeAtLaunch={
+                          permissionMode.permissionModeAtLaunch
+                        }
+                        hasActiveSession={permissionMode.hasActiveSession}
+                      />
+                    ) : null
                   }
-                  if (
-                    activeBackendType === "codex" &&
-                    isExactCompactCommand(text)
-                  ) {
-                    if (!sessionId) {
-                      notifyCompactNeedsSession();
+                  onShiftTab={
+                    isModeSwitchable && !modeSwitchingDisabled
+                      ? permissionMode.cycleMode
+                      : undefined
+                  }
+                  topSlot={
+                    <>
+                      <TaskProgressBar progress={taskProgress} />
+                      <QueuedMessagesBar
+                        queued={currentQueued ?? []}
+                        onCancel={(id) => void doCancelQueued(sessionId, id)}
+                        onClearAll={() => void doCancelQueued(sessionId, "")}
+                      />
+                    </>
+                  }
+                  onSubmit={(text) => {
+                    if (activeEditing) {
+                      void confirmEdit(text);
                       return;
                     }
-                    if (streaming) {
-                      notifyCompactWaitForTurn();
+                    if (
+                      activeBackendType === "codex" &&
+                      isExactCompactCommand(text)
+                    ) {
+                      if (!sessionId) {
+                        notifyCompactNeedsSession();
+                        return;
+                      }
+                      if (streaming) {
+                        notifyCompactWaitForTurn();
+                        return;
+                      }
+                      void doCompact(sessionId);
                       return;
                     }
-                    void doCompact(sessionId);
-                    return;
-                  }
-                  // 新建会话首发：targetSessionId=0，由 doSend 内的 RPC 返回真实 sessionId
-                  // 并通过 onSessionCreated 回填到父 store；此时 composer 不会卸载（结构稳定）。
-                  if (!sessionId && newSessionAgent) {
-                    void doSend(0, newSessionAgent.id, text);
-                    return;
-                  }
-                  if (streaming && sessionId > 0) {
-                    // streaming 中：按回车走 Enqueue，把消息排队等下一个安全点注入。
-                    void doEnqueue(sessionId, session?.agentId ?? 0, text);
-                    return;
-                  }
-                  void doSend(sessionId, session?.agentId ?? 0, text);
-                }}
-                backendType={activeBackendType}
-                onSlashRpc={(cmd) => {
-                  console.warn(
-                    `slash rpc not wired: cmd=${cmd.name} backend=${activeBackendType}`,
-                  );
-                }}
-              />
-            </div>
+                    // 新建会话首发：targetSessionId=0，由 doSend 内的 RPC 返回真实 sessionId
+                    // 并通过 onSessionCreated 回填到父 store；此时 composer 不会卸载（结构稳定）。
+                    if (!sessionId && newSessionAgent) {
+                      void doSend(0, newSessionAgent.id, text);
+                      return;
+                    }
+                    if (streaming && sessionId > 0) {
+                      // streaming 中：按回车走 Enqueue，把消息排队等下一个安全点注入。
+                      void doEnqueue(sessionId, session?.agentId ?? 0, text);
+                      return;
+                    }
+                    void doSend(sessionId, session?.agentId ?? 0, text);
+                  }}
+                  backendType={activeBackendType}
+                  onSlashRpc={(cmd) => {
+                    console.warn(
+                      `slash rpc not wired: cmd=${cmd.name} backend=${activeBackendType}`,
+                    );
+                  }}
+                />
+              </div>
+            )}
             {!showNewSessionPrompt && sidebarOpen ? (
               <ChatContextSidebar
                 sessionId={session?.id ?? 0}

@@ -237,6 +237,16 @@ vi.mock("../chat-panel-context-usage", () => ({
     componentMocks.computeComposerContextUsage(...args),
 }));
 
+// TerminalPanel: stub returning a testid div to keep xterm.js away from jsdom.
+vi.mock("../terminal/terminal-panel", () => ({
+  TerminalPanel: ({ sessionID }: { sessionID: number }) =>
+    React.createElement(
+      "div",
+      { "data-testid": "terminal-panel" },
+      `terminal-${sessionID}`,
+    ),
+}));
+
 // ── import after mocks ─────────────────────────────────────────────────────
 
 import { ChatPanel } from "../chat-panel";
@@ -868,5 +878,32 @@ describe("chat-panel ⌘` shortcut", () => {
     fireEvent.keyDown(window, { key: "`", metaKey: true });
 
     expect(toggleMock).not.toHaveBeenCalled();
+  });
+});
+
+// ─── T27: terminal body swap ──────────────────────────────────────────────────
+
+describe("chat-panel terminal body swap", () => {
+  beforeEach(() => {
+    resetStore();
+    useChatTerminalStore.setState({ openSessionID: null });
+  });
+
+  it("renders TerminalPanel when openSessionID matches current sessionId", () => {
+    mockSessionStore.session = makeSession({ id: 5 });
+    useChatTerminalStore.setState({ openSessionID: 5 });
+
+    render(<ChatPanel sessionId={5} />);
+
+    expect(screen.getByTestId("terminal-panel")).toBeInTheDocument();
+  });
+
+  it("renders chat body when openSessionID is null", () => {
+    mockSessionStore.session = makeSession({ id: 5 });
+    useChatTerminalStore.setState({ openSessionID: null });
+
+    render(<ChatPanel sessionId={5} />);
+
+    expect(screen.queryByTestId("terminal-panel")).not.toBeInTheDocument();
   });
 });
