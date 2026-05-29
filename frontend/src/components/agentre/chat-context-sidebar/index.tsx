@@ -63,7 +63,7 @@ export function ChatContextSidebar({
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
-  // resolvedActiveId 变化时把对应 outline 行 scrollIntoView，避免高亮跑到视野外。
+  // resolvedActiveId 变化时把对应 outline 行推到滚动区域底部，让右侧进度跟随 transcript。
   React.useEffect(() => {
     if (resolvedActiveId == null) return;
     const container = scrollRef.current;
@@ -71,7 +71,7 @@ export function ChatContextSidebar({
     const row = container.querySelector<HTMLElement>(
       `[data-outline-message-id="${resolvedActiveId}"]`,
     );
-    if (row) row.scrollIntoView({ block: "nearest" });
+    if (row) row.scrollIntoView({ block: "end", inline: "nearest" });
   }, [resolvedActiveId, activeTab]);
 
   return (
