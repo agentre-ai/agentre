@@ -6,10 +6,16 @@
  * 自身的派生逻辑可测而不拉全量组件树。
  */
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sonnerMocks = vi.hoisted(() => ({
   toast: {
@@ -810,5 +816,57 @@ describe("ChatPanel · mark-read gated by active prop", () => {
         expect.objectContaining({ sessionId: 7, timestamp: 1500 }),
       );
     });
+  });
+});
+
+// ─── T26: ⌘` / Ctrl+` shortcut ──────────────────────────────────────────────
+
+import { useChatTerminalStore } from "@/stores/chat-terminal-store";
+
+describe("chat-panel ⌘` shortcut", () => {
+  let toggleMock: ReturnType<typeof vi.fn> & ((sessionID: number) => void);
+
+  beforeEach(() => {
+    resetStore();
+    // Cast is safe: the mock is only called with (sessionID: number) by the component.
+    toggleMock = vi.fn() as ReturnType<typeof vi.fn> &
+      ((sessionID: number) => void);
+    useChatTerminalStore.setState({ openSessionID: null, toggle: toggleMock });
+  });
+
+  it("toggles terminal on Meta+Backtick when session is active", () => {
+    mockSessionStore.session = makeSession({ id: 7 });
+
+    render(<ChatPanel sessionId={7} />);
+    fireEvent.keyDown(window, { key: "`", metaKey: true });
+
+    expect(toggleMock).toHaveBeenCalledWith(7);
+  });
+
+  it("toggles on Ctrl+Backtick as well", () => {
+    mockSessionStore.session = makeSession({ id: 7 });
+
+    render(<ChatPanel sessionId={7} />);
+    fireEvent.keyDown(window, { key: "`", ctrlKey: true });
+
+    expect(toggleMock).toHaveBeenCalledWith(7);
+  });
+
+  it("does not fire without modifier", () => {
+    mockSessionStore.session = makeSession({ id: 7 });
+
+    render(<ChatPanel sessionId={7} />);
+    fireEvent.keyDown(window, { key: "`" });
+
+    expect(toggleMock).not.toHaveBeenCalled();
+  });
+
+  it("no-ops when sessionId is 0", () => {
+    mockSessionStore.session = null;
+
+    render(<ChatPanel sessionId={0} />);
+    fireEvent.keyDown(window, { key: "`", metaKey: true });
+
+    expect(toggleMock).not.toHaveBeenCalled();
   });
 });

@@ -572,6 +572,18 @@ function ChatPanel({
     useSessionReadStore.getState().markRead(sessionId, sessionLastMessageAt);
   }, [active, sessionId, sessionLastMessageAt]);
 
+  React.useEffect(() => {
+    if (sessionId == null || sessionId === 0) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "`") return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      toggleTerminal(sessionId);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [sessionId, toggleTerminal]);
+
   async function doSend(
     targetSessionId: number,
     agentId: number,
