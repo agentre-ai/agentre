@@ -11,7 +11,7 @@ import (
 
 var (
 	ErrTerminalClosed  = errors.New("terminal closed")
-	ErrTerminalNotOpen = errors.New("terminal not open for this terminal")
+	ErrTerminalNotOpen = errors.New("terminal not open")
 )
 
 type Service struct {
