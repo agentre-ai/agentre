@@ -82,15 +82,57 @@ func (h *TerminalHandlers) Open(ctx context.Context, p protocol.TerminalOpenPara
 }
 
 func (h *TerminalHandlers) pump(ctx context.Context, id string, hd PTYHandle) {
+	// 256-cap buffered channel: pump reads from hd.Data() and forwards to
+	// this queue. If full, drop the oldest chunk, insert a throttle marker,
+	// then enqueue the new chunk. Avoids blocking PTY stdout under
+	// bursty/slow-consumer load.
+	const bufCap = 256
+	queue := make(chan []byte, bufCap)
+	throttleMarker := []byte("\r\n[--- output throttled ---]\r\n")
+
+	// forwarder goroutine: drains queue → emitter.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for data := range queue {
+			h.emitter.Emit(ctx, EventNameTerminalData, protocol.TerminalDataEvent{
+				TerminalID: id, Data: string(data),
+			})
+		}
+	}()
+
+	defer func() {
+		close(queue)
+		<-done // wait for forwarder to drain remaining items
+	}()
+
 	for {
 		select {
 		case data, ok := <-hd.Data():
 			if !ok {
 				return
 			}
-			h.emitter.Emit(ctx, EventNameTerminalData, protocol.TerminalDataEvent{
-				TerminalID: id, Data: string(data),
-			})
+			select {
+			case queue <- data:
+				// enqueued normally
+			default:
+				// Queue full: drop oldest, insert marker, then enqueue current.
+				select {
+				case <-queue:
+				default:
+				}
+				// Push marker (non-blocking; a racing consumer may have already
+				// taken the freed slot — silently drop marker if still full).
+				select {
+				case queue <- throttleMarker:
+				default:
+				}
+				// Try to enqueue the current chunk; drop if still full.
+				select {
+				case queue <- data:
+				default:
+				}
+			}
 		case info, ok := <-hd.Exit():
 			h.mu.Lock()
 			delete(h.terminals, id)

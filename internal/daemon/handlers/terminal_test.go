@@ -2,6 +2,8 @@ package handlers_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -186,4 +188,84 @@ func TestTerminal_Pump_EmitsExitAndClearsMap(t *testing.T) {
 
 	_, err := h.Write(context.Background(), protocol.TerminalWriteParams{TerminalID: res.TerminalID})
 	assert.ErrorIs(t, err, handlers.ErrTerminalNotFound)
+}
+
+// blockingEmitter starts in blocked state. Emit calls queue the event but
+// block until unblock() is called.
+type blockingEmitter struct {
+	mu      sync.Mutex
+	blocked bool
+	cond    *sync.Cond
+	events  []recordedEvent
+}
+
+func newBlockingEmitter() *blockingEmitter {
+	e := &blockingEmitter{blocked: true}
+	e.cond = sync.NewCond(&e.mu)
+	return e
+}
+
+func (e *blockingEmitter) Emit(_ context.Context, name string, payload any) {
+	e.mu.Lock()
+	for e.blocked {
+		e.cond.Wait()
+	}
+	e.events = append(e.events, recordedEvent{name, payload})
+	e.mu.Unlock()
+}
+
+func (e *blockingEmitter) unblock() {
+	e.mu.Lock()
+	e.blocked = false
+	e.cond.Broadcast()
+	e.mu.Unlock()
+}
+
+func (e *blockingEmitter) snapshot() []recordedEvent {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]recordedEvent, len(e.events))
+	copy(out, e.events)
+	return out
+}
+
+func TestTerminal_Pump_DropsOldestAndInsertsThrottleMarkerWhenBufferFull(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mbe := mock_handlers.NewMockPTYBackend(ctrl)
+	mh := mock_handlers.NewMockPTYHandle(ctrl)
+	dataCh := make(chan []byte, 1000) // big enough that we control the rate
+	exitCh := make(chan pty.ExitInfo)
+	mh.EXPECT().Data().AnyTimes().Return(dataCh)
+	mh.EXPECT().Exit().AnyTimes().Return(exitCh)
+	mbe.EXPECT().Open(gomock.Any(), gomock.Any()).Return(mh, nil)
+
+	blockEmit := newBlockingEmitter()
+	h := handlers.NewTerminalHandlers(mbe, blockEmit)
+	_, err := h.Open(context.Background(), protocol.TerminalOpenParams{Cols: 80, Rows: 24})
+	require.NoError(t, err)
+
+	// Flood with 400 chunks while emitter is blocked. Buffer cap is 256.
+	for i := 0; i < 400; i++ {
+		dataCh <- []byte(fmt.Sprintf("chunk-%d", i))
+	}
+
+	// Let the pump goroutine queue up to cap before unblocking.
+	time.Sleep(50 * time.Millisecond)
+	blockEmit.unblock()
+	time.Sleep(200 * time.Millisecond) // let drain complete
+
+	events := blockEmit.snapshot()
+	var sawThrottle bool
+	for _, ev := range events {
+		if pay, ok := ev.Payload.(protocol.TerminalDataEvent); ok {
+			if strings.Contains(pay.Data, "--- output throttled ---") {
+				sawThrottle = true
+				break
+			}
+		}
+	}
+	require.True(t, sawThrottle, "expected throttle marker in emitted events")
+	// And total events < 400 (i.e., we dropped chunks)
+	require.Less(t, len(events), 400, "expected drops below input rate")
 }
