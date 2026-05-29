@@ -2,7 +2,12 @@ import { useEffect, useState, useCallback } from "react";
 import * as App from "@/../wailsjs/go/app/App";
 import { EventsOn, EventsOff } from "@/../wailsjs/runtime/runtime";
 
-type Reason = "natural" | "killed" | "connection_lost" | "daemon_shutdown" | "error";
+type Reason =
+  | "natural"
+  | "killed"
+  | "connection_lost"
+  | "daemon_shutdown"
+  | "error";
 export type TerminalState = "opening" | "open" | "idle";
 
 export interface UseTerminalArgs {
@@ -25,12 +30,15 @@ export function useTerminal(args: UseTerminalArgs) {
     EventsOn(dataEvent, (payload: { data: string }) => {
       args.onData?.(payload.data);
     });
-    EventsOn(exitEvent, (payload: { code: number; reason: Reason; msg?: string }) => {
-      args.onExit?.(payload);
-      setState("idle");
-      EventsOff(dataEvent);
-      EventsOff(exitEvent);
-    });
+    EventsOn(
+      exitEvent,
+      (payload: { code: number; reason: Reason; msg?: string }) => {
+        args.onExit?.(payload);
+        setState("idle");
+        EventsOff(dataEvent);
+        EventsOff(exitEvent);
+      },
+    );
 
     App.TerminalOpen(args.sessionID, args.cols, args.rows).then(
       () => {
@@ -47,7 +55,7 @@ export function useTerminal(args: UseTerminalArgs) {
         }
         EventsOff(dataEvent);
         EventsOff(exitEvent);
-      }
+      },
     );
 
     return () => {
@@ -61,12 +69,13 @@ export function useTerminal(args: UseTerminalArgs) {
 
   const write = useCallback(
     (data: string) => App.TerminalWrite(args.sessionID, data),
-    [args.sessionID]
+    [args.sessionID],
   );
 
   const resize = useCallback(
-    (cols: number, rows: number) => App.TerminalResize(args.sessionID, cols, rows),
-    [args.sessionID]
+    (cols: number, rows: number) =>
+      App.TerminalResize(args.sessionID, cols, rows),
+    [args.sessionID],
   );
 
   return { state, write, resize };

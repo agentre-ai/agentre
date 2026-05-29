@@ -9,9 +9,10 @@ vi.mock("@/../wailsjs/go/app/App", () => ({
   TerminalClose: vi.fn().mockResolvedValue(undefined),
 }));
 
-const onHandlers: Record<string, (payload: any) => void> = {};
+type EventHandler = (payload: unknown) => void;
+const onHandlers: Record<string, EventHandler> = {};
 vi.mock("@/../wailsjs/runtime/runtime", () => ({
-  EventsOn: vi.fn((name: string, cb: (payload: any) => void) => {
+  EventsOn: vi.fn((name: string, cb: EventHandler) => {
     onHandlers[name] = cb;
     return () => {
       delete onHandlers[name];
@@ -32,7 +33,7 @@ beforeEach(() => {
 describe("useTerminal", () => {
   it("calls TerminalOpen(sessionID, cols, rows) on mount and subscribes to events", async () => {
     const { result } = renderHook(() =>
-      useTerminal({ sessionID: 7, cols: 80, rows: 24 })
+      useTerminal({ sessionID: 7, cols: 80, rows: 24 }),
     );
     await act(async () => {
       await Promise.resolve();
@@ -45,9 +46,7 @@ describe("useTerminal", () => {
 
   it("exposes incoming data via onData callback", async () => {
     const onData = vi.fn();
-    renderHook(() =>
-      useTerminal({ sessionID: 7, cols: 80, rows: 24, onData })
-    );
+    renderHook(() => useTerminal({ sessionID: 7, cols: 80, rows: 24, onData }));
     await act(async () => {
       await Promise.resolve();
     });
@@ -57,7 +56,7 @@ describe("useTerminal", () => {
 
   it("calls TerminalClose and EventsOff on unmount", async () => {
     const { unmount } = renderHook(() =>
-      useTerminal({ sessionID: 7, cols: 80, rows: 24 })
+      useTerminal({ sessionID: 7, cols: 80, rows: 24 }),
     );
     await act(async () => {
       await Promise.resolve();
@@ -69,7 +68,7 @@ describe("useTerminal", () => {
 
   it("write() proxies to App.TerminalWrite", async () => {
     const { result } = renderHook(() =>
-      useTerminal({ sessionID: 7, cols: 80, rows: 24 })
+      useTerminal({ sessionID: 7, cols: 80, rows: 24 }),
     );
     await act(async () => {
       await Promise.resolve();
