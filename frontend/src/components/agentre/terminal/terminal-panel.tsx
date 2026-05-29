@@ -12,6 +12,17 @@ export interface TerminalPanelProps {
   sessionID: number;
 }
 
+function readTerminalTheme(): { background: string; foreground: string } {
+  if (typeof document === "undefined") {
+    return { background: "#17191c", foreground: "#e6e8eb" };
+  }
+  const root = document.documentElement;
+  const styles = getComputedStyle(root);
+  const bg = styles.getPropertyValue("--background").trim() || "#17191c";
+  const fg = styles.getPropertyValue("--foreground").trim() || "#e6e8eb";
+  return { background: bg, foreground: fg };
+}
+
 export function TerminalPanel({ sessionID }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -30,7 +41,7 @@ export function TerminalPanel({ sessionID }: TerminalPanelProps) {
     const term = new Terminal({
       fontFamily: "'JetBrains Mono', 'Menlo', 'Monaco', monospace",
       fontSize: 13,
-      theme: { background: "#0b1220", foreground: "#e2e8f0" },
+      theme: readTerminalTheme(),
       scrollback: 500,
       cursorBlink: true,
     });
@@ -66,6 +77,24 @@ export function TerminalPanel({ sessionID }: TerminalPanelProps) {
       xtermRef.current = null;
       fitRef.current = null;
     };
+  }, []);
+
+  // Re-theme xterm when the app switches between light and dark mode.
+  // jsdom does not implement getComputedStyle for CSS custom properties, so
+  // this effect is verified manually (Task 30) rather than via a DOM assertion.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const applyTheme = () => {
+      const term = xtermRef.current;
+      if (!term) return;
+      term.options.theme = readTerminalTheme();
+    };
+    const observer = new MutationObserver(applyTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    return () => observer.disconnect();
   }, []);
 
   const { write, resize } = useTerminal({
@@ -123,7 +152,7 @@ export function TerminalPanel({ sessionID }: TerminalPanelProps) {
 
   return (
     <div
-      className="flex flex-1 min-h-0 flex-col bg-[#0b1220]"
+      className="flex flex-1 min-h-0 flex-col bg-background"
       data-testid="terminal-panel"
     >
       {connectionLost ? (
