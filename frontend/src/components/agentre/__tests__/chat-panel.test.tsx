@@ -922,4 +922,17 @@ describe("chat-panel terminal body swap", () => {
 
     expect(screen.queryByTestId("terminal-panel")).not.toBeInTheDocument();
   });
+
+  it("toggle button is disabled while terminal is transitioning", () => {
+    mockSessionStore.session = makeSession({ id: 7 });
+    useChatTerminalStore.setState({
+      openSessionIDs: new Set([7]),
+      transitioningSessionIDs: new Set([7]),
+    });
+
+    render(<ChatPanel sessionId={7} />);
+
+    const button = screen.getByRole("button", { name: /终端/ });
+    expect(button).toBeDisabled();
+  });
 });

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import * as App from "@/../wailsjs/go/app/App";
 import { EventsOn, EventsOff } from "@/../wailsjs/runtime/runtime";
+import { useChatTerminalStore } from "@/stores/chat-terminal-store";
 
 type Reason =
   | "natural"
@@ -8,7 +9,7 @@ type Reason =
   | "connection_lost"
   | "daemon_shutdown"
   | "error";
-export type TerminalState = "opening" | "open" | "idle";
+export type TerminalState = "opening" | "open" | "closing" | "idle";
 
 export interface UseTerminalArgs {
   sessionID: number;
@@ -20,12 +21,15 @@ export interface UseTerminalArgs {
 
 export function useTerminal(args: UseTerminalArgs) {
   const [state, setState] = useState<TerminalState>("opening");
+  const setTransitioning = useChatTerminalStore((s) => s.setTransitioning);
 
   const dataEvent = `terminal:${args.sessionID}:data`;
   const exitEvent = `terminal:${args.sessionID}:exit`;
 
   useEffect(() => {
     let cancelled = false;
+
+    setTransitioning(args.sessionID, true); // OPENING begins
 
     EventsOn(dataEvent, (payload: { data: string }) => {
       args.onData?.(payload.data);
@@ -47,10 +51,12 @@ export function useTerminal(args: UseTerminalArgs) {
           return;
         }
         setState("open");
+        setTransitioning(args.sessionID, false); // OPENING done
       },
       (err) => {
         if (!cancelled) {
           setState("idle");
+          setTransitioning(args.sessionID, false); // OPENING failed
           args.onExit?.({ code: -1, reason: "error", msg: String(err) });
         }
         EventsOff(dataEvent);
@@ -62,10 +68,13 @@ export function useTerminal(args: UseTerminalArgs) {
       cancelled = true;
       EventsOff(dataEvent);
       EventsOff(exitEvent);
-      App.TerminalClose(args.sessionID).catch(() => {});
+      setTransitioning(args.sessionID, true); // CLOSING begins
+      App.TerminalClose(args.sessionID)
+        .catch(() => {})
+        .finally(() => setTransitioning(args.sessionID, false)); // CLOSING done
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args.sessionID]);
+  }, [args.sessionID, setTransitioning]);
 
   const write = useCallback(
     (data: string) => App.TerminalWrite(args.sessionID, data),

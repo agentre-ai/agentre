@@ -3,7 +3,10 @@ import { useChatTerminalStore } from "../chat-terminal-store";
 
 describe("useChatTerminalStore", () => {
   beforeEach(() => {
-    useChatTerminalStore.setState({ openSessionIDs: new Set<number>() });
+    useChatTerminalStore.setState({
+      openSessionIDs: new Set<number>(),
+      transitioningSessionIDs: new Set<number>(),
+    });
   });
 
   it("defaults to empty set", () => {
@@ -35,5 +38,24 @@ describe("useChatTerminalStore", () => {
     useChatTerminalStore.getState().toggle(8);
     useChatTerminalStore.getState().closeAll();
     expect(useChatTerminalStore.getState().openSessionIDs.size).toBe(0);
+  });
+
+  it("setTransitioning(7, true) adds to transitioning set", () => {
+    useChatTerminalStore.getState().setTransitioning(7, true);
+    expect(useChatTerminalStore.getState().isTransitioning(7)).toBe(true);
+  });
+
+  it("setTransitioning(7, false) removes from transitioning set", () => {
+    useChatTerminalStore.getState().setTransitioning(7, true);
+    useChatTerminalStore.getState().setTransitioning(7, false);
+    expect(useChatTerminalStore.getState().isTransitioning(7)).toBe(false);
+  });
+
+  it("closeAll also clears transitioningSessionIDs", () => {
+    useChatTerminalStore.getState().setTransitioning(7, true);
+    useChatTerminalStore.getState().closeAll();
+    expect(useChatTerminalStore.getState().transitioningSessionIDs.size).toBe(
+      0,
+    );
   });
 });

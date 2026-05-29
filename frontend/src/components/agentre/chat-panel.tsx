@@ -288,8 +288,12 @@ function ChatPanel({
   const lastDoneEvent = liveStatus?.lastDoneEvent ?? null;
 
   const isTerminalOpen = useChatTerminalStore((s) => s.isOpen);
+  const isTerminalTransitioning = useChatTerminalStore(
+    (s) => s.isTransitioning,
+  );
   const toggleTerminal = useChatTerminalStore((s) => s.toggle);
   const terminalOn = isTerminalOpen(sessionId);
+  const terminalTransitioning = isTerminalTransitioning(sessionId);
 
   const [pendingRegenId, setPendingRegenId] = React.useState<number | null>(
     null,
@@ -1142,13 +1146,14 @@ function ChatPanel({
                 type="button"
                 title="终端 (⌘`)"
                 aria-pressed={terminalOn}
-                disabled={sessionId === 0}
+                disabled={terminalTransitioning || sessionId === 0}
                 onClick={() => toggleTerminal(sessionId)}
-                className={
+                className={cn(
                   terminalOn
                     ? "rounded-md bg-primary-soft px-2 py-1 text-primary"
-                    : "rounded-md border border-border px-2 py-1 text-muted-foreground hover:bg-accent"
-                }
+                    : "rounded-md border border-border px-2 py-1 text-muted-foreground hover:bg-accent",
+                  terminalTransitioning && "animate-pulse opacity-70",
+                )}
               >
                 <TerminalSquare className="h-4 w-4" aria-hidden="true" />
               </button>

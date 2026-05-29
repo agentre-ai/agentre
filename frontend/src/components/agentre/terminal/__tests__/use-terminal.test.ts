@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useTerminal } from "../use-terminal";
 
+// Mock the store so use-terminal tests stay isolated from store side-effects.
+const setTransitioningMock = vi.fn();
+vi.mock("@/stores/chat-terminal-store", () => ({
+  useChatTerminalStore: (selector: (s: unknown) => unknown) =>
+    selector({ setTransitioning: setTransitioningMock }),
+}));
+
 vi.mock("@/../wailsjs/go/app/App", () => ({
   TerminalOpen: vi.fn().mockResolvedValue(undefined),
   TerminalWrite: vi.fn().mockResolvedValue(undefined),
@@ -27,6 +34,7 @@ import * as App from "@/../wailsjs/go/app/App";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  setTransitioningMock.mockReset();
   for (const k of Object.keys(onHandlers)) delete onHandlers[k];
 });
 
