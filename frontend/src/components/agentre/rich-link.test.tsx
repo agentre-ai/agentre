@@ -186,7 +186,7 @@ describe("RichLink", () => {
       );
       const link = screen.getByRole("link", { name: /ex/ });
       fireEvent.focus(link);
-      const copyBtn = await screen.findByRole("button", { name: /复制/ });
+      const copyBtn = await screen.findByRole("button", { name: /Copy/ });
       fireEvent.click(copyBtn);
       await waitFor(() => {
         expect(writeText).toHaveBeenCalledWith("https://example.com/long/path");
@@ -202,7 +202,7 @@ describe("RichLink", () => {
         </RichLink>,
       );
       fireEvent.focus(screen.getByRole("link", { name: /foo\.go:42/ }));
-      const copyBtn = await screen.findByRole("button", { name: /复制/ });
+      const copyBtn = await screen.findByRole("button", { name: /Copy/ });
       fireEvent.click(copyBtn);
       await waitFor(() => {
         expect(writeText).toHaveBeenCalledWith("/Users/me/proj/src/foo.go:42");

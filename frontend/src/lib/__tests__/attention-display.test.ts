@@ -22,9 +22,9 @@ describe("reasonToDisplayStatus", () => {
 
 describe("reasonToPillText", () => {
   it.each<[AttentionReason, string | null]>([
-    ["needs_attention", "审批"],
-    ["error", "出错"],
-    ["unread", "未读"],
+    ["needs_attention", "Approval"],
+    ["error", "Error"],
+    ["unread", "Unread"],
     ["running", null],
   ])("%s → %s", (reason, expected) => {
     expect(reasonToPillText(reason)).toBe(expected);

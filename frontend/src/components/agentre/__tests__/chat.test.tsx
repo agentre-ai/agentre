@@ -116,7 +116,7 @@ describe("ChatComposer context meter", () => {
       expect(screen.getByAltText("shot.png")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith({
@@ -155,10 +155,10 @@ describe("ChatComposer context meter", () => {
     });
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "仅支持 PNG、JPEG、WebP，单张不超过 5MB",
+      "Only PNG, JPEG, and WebP are supported. Each image must be under 5 MB.",
     );
     expect(input.value).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -168,7 +168,7 @@ describe("ChatComposer context meter", () => {
     );
 
     expect(
-      screen.queryByRole("button", { name: "添加图片" }),
+      screen.queryByRole("button", { name: "Add Image" }),
     ).not.toBeInTheDocument();
     expect(container.querySelector('input[type="file"]')).toBeNull();
   });
@@ -270,7 +270,7 @@ describe("ChatComposer quota meter", () => {
 
   it("不渲染 QuotaMeter 当 quotaUsage 未传", () => {
     render(<ChatComposer onSubmit={() => undefined} />);
-    expect(screen.queryByLabelText(/Claude.*配额/)).toBeNull();
+    expect(screen.queryByLabelText(/Claude.*quota/)).toBeNull();
   });
 
   it("不渲染 QuotaMeter 当 reason='no_credentials' (API key 用户)", () => {
@@ -280,7 +280,7 @@ describe("ChatComposer quota meter", () => {
         quotaUsage={{ reason: "no_credentials", fetchedAtMs: 1 } as never}
       />,
     );
-    expect(screen.queryByLabelText(/Claude.*配额/)).toBeNull();
+    expect(screen.queryByLabelText(/Claude.*quota/)).toBeNull();
   });
 
   it("正常渲染百分比文本 当 reason='ok'", () => {
@@ -339,9 +339,9 @@ describe("ChatComposer quota meter", () => {
           }
         />,
       );
-      expect(screen.getByLabelText(/Claude.*配额/)).toHaveAttribute(
+      expect(screen.getByLabelText(/Claude.*quota/)).toHaveAttribute(
         "title",
-        expect.stringContaining("重置剩 40m"),
+        expect.stringContaining("resets in 40m"),
       );
     } finally {
       vi.useRealTimers();
@@ -389,7 +389,7 @@ describe("ChatTranscript message meta", () => {
       />,
     );
 
-    const trigger = screen.getByRole("button", { name: "token 用量明细" });
+    const trigger = screen.getByRole("button", { name: "Token usage details" });
     expect(trigger).toHaveTextContent("claude-sonnet-4-6");
     expect(trigger).toHaveTextContent("100");
     expect(trigger).toHaveTextContent("50");
@@ -410,7 +410,7 @@ describe("ChatTranscript message meta", () => {
       />,
     );
 
-    const trigger = screen.getByRole("button", { name: "token 用量明细" });
+    const trigger = screen.getByRole("button", { name: "Token usage details" });
     const metaContainer = trigger.parentElement!.parentElement!;
     const tokens = metaContainer.className.split(/\s+/);
 
@@ -434,7 +434,7 @@ describe("ChatTranscript message meta", () => {
       />,
     );
 
-    const trigger = screen.getByRole("button", { name: "token 用量明细" });
+    const trigger = screen.getByRole("button", { name: "Token usage details" });
     const contentColumn = trigger.parentElement!.parentElement!.parentElement!;
 
     expect(contentColumn.tagName).toBe("DIV");
@@ -454,7 +454,7 @@ describe("ChatTranscript message meta", () => {
     );
 
     expect(screen.queryByText("重跑")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /重新生成/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Regenerate/ }));
     expect(calls).toEqual([7]);
   });
 
@@ -481,7 +481,7 @@ describe("ChatTranscript message meta", () => {
       />,
     );
 
-    const buttons = screen.getAllByRole("button", { name: /重新生成/ });
+    const buttons = screen.getAllByRole("button", { name: /Regenerate/ });
     expect(buttons).toHaveLength(2);
     fireEvent.click(buttons[0]);
     fireEvent.click(buttons[1]);
@@ -508,10 +508,10 @@ describe("ChatTranscript message meta", () => {
     );
 
     expect(
-      screen.getByRole("button", { name: /重新生成/ }),
+      screen.getByRole("button", { name: /Regenerate/ }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "token 用量明细" }),
+      screen.getByRole("button", { name: "Token usage details" }),
     ).toHaveTextContent("1.2s");
   });
 
@@ -530,7 +530,7 @@ describe("ChatTranscript message meta", () => {
       />,
     );
 
-    const trigger = screen.getByRole("button", { name: "token 用量明细" });
+    const trigger = screen.getByRole("button", { name: "Token usage details" });
     expect(trigger).not.toHaveTextContent("claude-sonnet-4-6");
     // 第一个 token chip 应该紧贴左边、不带 leading 「·」 分隔符
     expect(trigger.textContent ?? "").not.toMatch(/^\s*·/);
@@ -583,7 +583,7 @@ describe("ChatTranscript typing indicator", () => {
       />,
     );
 
-    expect(screen.getByLabelText("正在生成")).toBeInTheDocument();
+    expect(screen.getByLabelText("Generating")).toBeInTheDocument();
   });
 
   it("places the indicator after the live tail text in DOM order", () => {
@@ -598,7 +598,7 @@ describe("ChatTranscript typing indicator", () => {
       />,
     );
 
-    const indicator = screen.getByLabelText("正在生成");
+    const indicator = screen.getByLabelText("Generating");
     const tail = screen.getByText("streaming chunk");
     expect(
       tail.compareDocumentPosition(indicator) &
@@ -615,7 +615,7 @@ describe("ChatTranscript typing indicator", () => {
       />,
     );
 
-    expect(screen.queryByLabelText("正在生成")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Generating")).not.toBeInTheDocument();
   });
 
   it("does not render the indicator when the trailing message is a user one", () => {
@@ -633,7 +633,7 @@ describe("ChatTranscript typing indicator", () => {
       />,
     );
 
-    expect(screen.queryByLabelText("正在生成")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Generating")).not.toBeInTheDocument();
   });
 
   it("renders the indicator only on the last assistant message", () => {
@@ -653,7 +653,7 @@ describe("ChatTranscript typing indicator", () => {
       />,
     );
 
-    const indicators = screen.getAllByLabelText("正在生成");
+    const indicators = screen.getAllByLabelText("Generating");
     expect(indicators).toHaveLength(1);
     const second = screen.getByText("second");
     expect(second.closest("article")).toContainElement(indicators[0]);
@@ -695,10 +695,10 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    expect(screen.getByText("思考完成")).toBeInTheDocument();
-    expect(screen.getByText(`· ${reasoning.length} 字`)).toBeInTheDocument();
+    expect(screen.getByText("Thought complete")).toBeInTheDocument();
+    expect(screen.getByText(`· ${reasoning.length} chars`)).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "切换思考完成展开/收起" }),
+      screen.getByRole("button", { name: "Toggle completed thought" }),
     ).toHaveAttribute("aria-expanded", "false");
   });
 
@@ -714,7 +714,7 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    expect(screen.getByText("思考中…")).toBeInTheDocument();
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
     expect(screen.getByText("正在分析问题…")).toBeInTheDocument();
   });
 
@@ -741,8 +741,8 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    // tool_use 已经进入 liveBlocks → 思考阶段算结束,文案是「思考完成」。
-    const thinking = screen.getByText("思考完成");
+    // tool_use 已经进入 liveBlocks → 思考阶段算结束,文案是「Thought complete」。
+    const thinking = screen.getByText("Thought complete");
     // Plan C 后,非 canonical 工具走 RawToolCard(data-testid=raw-tool-card)。
     const tool = screen.getByTestId("raw-tool-card");
     expect(
@@ -763,9 +763,9 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    // Thinking header collapsed to '思考完成', not '思考中…'
-    expect(screen.getByText("思考完成")).toBeInTheDocument();
-    expect(screen.queryByText("思考中…")).not.toBeInTheDocument();
+    // Thinking header collapsed to 'Thought complete', not 'Thinking…'
+    expect(screen.getByText("Thought complete")).toBeInTheDocument();
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
     // Live text appears
     expect(screen.getByText("结果是")).toBeInTheDocument();
   });
@@ -793,8 +793,8 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    expect(screen.getByText("思考完成")).toBeInTheDocument();
-    expect(screen.queryByText("思考中…")).not.toBeInTheDocument();
+    expect(screen.getByText("Thought complete")).toBeInTheDocument();
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
   });
 });
 
@@ -826,12 +826,12 @@ describe("ChatTranscript subagent blocks", () => {
     expect(within(card).getByText("Agent")).toBeInTheDocument();
     expect(within(card).getByText("probe")).toBeInTheDocument();
     expect(within(card).getByText("general-purpose")).toBeInTheDocument();
-    expect(within(card).getByText(/^1 tool$/)).toBeInTheDocument();
+    expect(within(card).getByText(/^1 tools$/)).toBeInTheDocument();
     expect(within(card).queryByText(/last:/)).toBeNull();
     expect(within(card).getByText(/DONE · 7\.8s/)).toBeInTheDocument();
 
     // 子 Bash 不应出现在与 Agent 同级的位置 —— 没有独立的 Bash 工具卡。
-    expect(screen.queryByRole("region", { name: "工具调用 Bash" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Tool call Bash" })).toBeNull();
   });
 
   it("expanded card lists subagent inner Bash step + final summary", () => {
@@ -901,7 +901,7 @@ describe("ChatTranscript permission + tool merge", () => {
       "data-copyable-control-text",
       "true",
     );
-    expect(screen.getByText("仅本次允许")).not.toHaveAttribute(
+    expect(screen.getByText("Allow Once")).not.toHaveAttribute(
       "data-copyable-control-text",
     );
   });
@@ -946,10 +946,10 @@ describe("ChatTranscript permission + tool merge", () => {
       />,
     );
 
-    // ToolPermissionCard 仍渲染 (only header 显示 toolName 和 已拒绝 pill)
-    expect(screen.getByText("已拒绝")).toBeInTheDocument();
+    // ToolPermissionCard 仍渲染 (only header 显示 toolName 和 Denied pill)
+    expect(screen.getByText("Denied")).toBeInTheDocument();
     // 没有 tool_use 卡
-    expect(screen.queryByRole("region", { name: "工具调用 Bash" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Tool call Bash" })).toBeNull();
   });
 
   it("keeps pending (unresolved) permissions as a standalone card", () => {
@@ -983,9 +983,9 @@ describe("ChatTranscript permission + tool merge", () => {
     );
 
     // 待审批态留三个操作按钮,confirm 卡片确实出现。
-    expect(screen.getByText("仅本次允许")).toBeInTheDocument();
-    expect(screen.getByText("本会话始终允许")).toBeInTheDocument();
-    expect(screen.getByText("拒绝")).toBeInTheDocument();
+    expect(screen.getByText("Allow Once")).toBeInTheDocument();
+    expect(screen.getByText("Always Allow This Session")).toBeInTheDocument();
+    expect(screen.getByText("Reject")).toBeInTheDocument();
   });
 });
 
@@ -1056,7 +1056,7 @@ describe("ChatTranscript hides AskUserQuestion tool_use", () => {
     expect(screen.getByText("user_ask")).toBeInTheDocument();
     // 不存在 AskUserQuestion 的独立 tool_use 卡片
     expect(
-      screen.queryByRole("region", { name: /工具调用 AskUserQuestion/ }),
+      screen.queryByRole("region", { name: /Tool call AskUserQuestion/ }),
     ).toBeNull();
   });
 });
@@ -1111,7 +1111,7 @@ describe("ChatTranscript hides ExitPlanMode tool_use", () => {
     expect(screen.getByTestId("plan-card")).toBeInTheDocument();
     // ExitPlanMode 没有独立 tool_use 卡
     expect(
-      screen.queryByRole("region", { name: /工具调用 ExitPlanMode/ }),
+      screen.queryByRole("region", { name: /Tool call ExitPlanMode/ }),
     ).toBeNull();
     // 也不应出现 RawToolCard 把 toolName="ExitPlanMode" 暴露出来。
     expect(screen.queryByText("ExitPlanMode")).toBeNull();
@@ -1183,8 +1183,8 @@ describe("ChatTranscript plan.update rendering", () => {
     );
 
     expect(screen.getByTestId("plan-card")).toBeInTheDocument();
-    expect(screen.getByText("执行计划")).toBeInTheDocument();
-    expect(screen.getByText("继续完善")).toBeInTheDocument();
+    expect(screen.getByText("Execute Plan")).toBeInTheDocument();
+    expect(screen.getByText("Refine Plan")).toBeInTheDocument();
   });
 
   it("renders plan.update tool_use as an ordinary raw tool card", () => {
@@ -1274,10 +1274,10 @@ describe("ChatTranscript compact_boundary fold", () => {
     expect(screen.queryByText("old-question")).toBeNull();
     expect(screen.queryByText("old-answer")).toBeNull();
     expect(screen.getByText("fresh-answer")).toBeInTheDocument();
-    expect(screen.getByText("上下文已压缩")).toBeInTheDocument();
+    expect(screen.getByText("Context compacted")).toBeInTheDocument();
     // 折叠条:文案"查看压缩前的 2 条消息"
     const expandBtn = screen.getByRole("button", {
-      name: /查看压缩前的 2 条消息/,
+      name: /View 2 messages before compaction/,
     });
     expect(expandBtn).toBeInTheDocument();
   });
@@ -1302,7 +1302,7 @@ describe("ChatTranscript compact_boundary fold", () => {
 
     expect(screen.queryByText("old-question")).toBeNull();
     fireEvent.click(
-      screen.getByRole("button", { name: /查看压缩前的 1 条消息/ }),
+      screen.getByRole("button", { name: /View 1 messages before compaction/ }),
     );
     expect(screen.getByText("old-question")).toBeInTheDocument();
     expect(screen.getByText("fresh-answer")).toBeInTheDocument();
@@ -1322,7 +1322,7 @@ describe("ChatTranscript compact_boundary fold", () => {
 
     expect(screen.getByText("q")).toBeInTheDocument();
     expect(screen.getByText("a")).toBeInTheDocument();
-    expect(screen.queryByText("上下文已压缩")).toBeNull();
-    expect(screen.queryByRole("button", { name: /查看压缩前/ })).toBeNull();
+    expect(screen.queryByText("Context compacted")).toBeNull();
+    expect(screen.queryByRole("button", { name: /View .* before compaction/ })).toBeNull();
   });
 });

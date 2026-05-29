@@ -36,19 +36,19 @@ describe("MarkdownText", () => {
 
     render(<MarkdownText text={"结果如下：\n\n```\npnpm test\n```\n"} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("pnpm test\n");
     });
     expect(sonnerMocks.toast.success).toHaveBeenCalledWith(
-      "已复制代码",
+      "Code copied",
       expect.objectContaining({
         duration: 5000,
         position: "bottom-right",
       }),
     );
-    expect(screen.getByRole("button", { name: "已复制" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 });
 

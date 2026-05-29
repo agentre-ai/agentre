@@ -6,7 +6,7 @@ import { DeviceTag } from "../device-tag";
 describe("DeviceTag", () => {
   it("本地: deviceId 为空时显示 '本地' chip", () => {
     render(<DeviceTag deviceId="" deviceName="" online={false} />);
-    expect(screen.getByText("本地")).toBeInTheDocument();
+    expect(screen.getByText("Local")).toBeInTheDocument();
   });
 
   it("远端 online: 显示 deviceName, 不显示 offline", () => {

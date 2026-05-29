@@ -28,7 +28,7 @@ describe("ThinkingBlock", () => {
   describe("streaming state", () => {
     it("marks thinking text as selectable/copyable", () => {
       render(<ThinkingBlock text="正在分析这个问题" streaming />);
-      const label = screen.getByText("思考中…");
+      const label = screen.getByText("Thinking…");
 
       expect(label.closest("[data-selectable-text='true']")).not.toBeNull();
       expect(label).toHaveAttribute("data-copyable-control-text", "true");
@@ -40,7 +40,7 @@ describe("ThinkingBlock", () => {
 
     it("shows '思考中…' header and the streaming content", () => {
       render(<ThinkingBlock text="正在分析这个问题" streaming />);
-      expect(screen.getByText("思考中…")).toBeInTheDocument();
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
       expect(screen.getByText("正在分析这个问题")).toBeInTheDocument();
     });
 
@@ -76,7 +76,7 @@ describe("ThinkingBlock", () => {
     it("does not collapse when the click is finishing a text selection", () => {
       render(<ThinkingBlock text="x" streaming />);
       const btn = screen.getByRole("button");
-      const label = screen.getByText("思考中…");
+      const label = screen.getByText("Thinking…");
       const textNode = label.firstChild;
       if (!textNode) throw new Error("Expected thinking label text node");
       const selection = mockTextSelectionWithin(textNode);
@@ -99,8 +99,8 @@ describe("ThinkingBlock", () => {
   describe("done state (never streamed)", () => {
     it("shows '思考完成' header and char-count meta only", () => {
       render(<ThinkingBlock text="你好世界abc" streaming={false} />);
-      expect(screen.getByText("思考完成")).toBeInTheDocument();
-      expect(screen.getByText("· 7 字")).toBeInTheDocument();
+      expect(screen.getByText("Thought complete")).toBeInTheDocument();
+      expect(screen.getByText("· 7 chars")).toBeInTheDocument();
     });
 
     it("collapsed by default", () => {
@@ -151,8 +151,8 @@ describe("ThinkingBlock", () => {
       rerender(<ThinkingBlock text="abc" streaming={false} />);
       const btn = screen.getByRole("button");
       expect(btn).toHaveAttribute("aria-expanded", "false");
-      expect(screen.getByText("思考完成")).toBeInTheDocument();
-      expect(screen.getByText("· 12s · 3 字")).toBeInTheDocument();
+      expect(screen.getByText("Thought complete")).toBeInTheDocument();
+      expect(screen.getByText("· 12s · 3 chars")).toBeInTheDocument();
     });
 
     it("auto-collapses even when user expanded mid-stream", () => {
@@ -202,7 +202,7 @@ describe("ThinkingBlock", () => {
       // 9 秒后文字开始流式,合成块转 done
       vi.setSystemTime(T0 + 9300);
       rerender(<ThinkingBlock text="abc" streaming={false} startedAt={T0} />);
-      expect(screen.getByText("· 9s · 3 字")).toBeInTheDocument();
+      expect(screen.getByText("· 9s · 3 chars")).toBeInTheDocument();
     });
   });
 });

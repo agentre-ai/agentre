@@ -18,7 +18,7 @@ describe("TLSTrustDialog", () => {
         onApply={onApply}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "应用" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(onApply).toHaveBeenCalledWith("default", ""));
   });
 
@@ -34,10 +34,10 @@ describe("TLSTrustDialog", () => {
         onApply={onApply}
       />,
     );
-    await user.click(screen.getByText("Pin 证书"));
-    await user.click(screen.getByRole("button", { name: "应用" }));
+    await user.click(screen.getByText("Pin Certificate"));
+    await user.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() =>
-      expect(screen.getByText("请粘贴 PEM 内容")).toBeInTheDocument(),
+      expect(screen.getByText("Paste PEM content")).toBeInTheDocument(),
     );
     expect(onApply).not.toHaveBeenCalled();
   });
@@ -55,7 +55,7 @@ describe("TLSTrustDialog", () => {
     );
     const ta = screen.getByPlaceholderText(/BEGIN CERTIFICATE/);
     fireEvent.change(ta, { target: { value: PEM } });
-    fireEvent.click(screen.getByRole("button", { name: "应用" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(onApply).toHaveBeenCalledWith("pin-cert", PEM));
   });
 
@@ -69,7 +69,7 @@ describe("TLSTrustDialog", () => {
         onApply={() => {}}
       />,
     );
-    expect(screen.getByText("不推荐")).toBeInTheDocument();
+    expect(screen.getByText("Not recommended")).toBeInTheDocument();
   });
 
   it("switching to ca-bundle without PEM blocks apply", async () => {
@@ -84,10 +84,10 @@ describe("TLSTrustDialog", () => {
         onApply={onApply}
       />,
     );
-    await user.click(screen.getByText("CA 证书包"));
-    await user.click(screen.getByRole("button", { name: "应用" }));
+    await user.click(screen.getByText("CA Bundle"));
+    await user.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() =>
-      expect(screen.getByText("请粘贴 PEM 内容")).toBeInTheDocument(),
+      expect(screen.getByText("Paste PEM content")).toBeInTheDocument(),
     );
     expect(onApply).not.toHaveBeenCalled();
   });

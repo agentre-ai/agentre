@@ -69,7 +69,7 @@ describe("TaskProgressBar", () => {
       expect(
         screen.getByRole("button", { expanded: false }),
       ).toBeInTheDocument();
-      expect(screen.getByText(/全部完成/)).toBeInTheDocument();
+      expect(screen.getByText(/All done/)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

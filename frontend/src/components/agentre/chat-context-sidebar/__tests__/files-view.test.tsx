@@ -39,6 +39,8 @@ describe("FilesView", () => {
 
   it("shows empty state when files is empty", () => {
     render(<FilesView files={[]} onJumpToTurn={() => {}} />);
-    expect(screen.getByText(/没有文件|没有改过任何文件/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No files have been changed in this session/),
+    ).toBeInTheDocument();
   });
 });

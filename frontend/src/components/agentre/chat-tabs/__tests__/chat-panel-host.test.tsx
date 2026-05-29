@@ -66,7 +66,7 @@ describe("ChatPanelHost", () => {
   it("空 tab 显示统一空态 hero", () => {
     render(<ChatPanelHost />);
     expect(
-      screen.getByText(/选一个 Agent 或项目下的会话开始/),
+      screen.getByText(/Choose an Agent or project session to start/),
     ).toBeInTheDocument();
   });
 
@@ -124,7 +124,7 @@ describe("ChatPanelHost", () => {
 
     render(<ChatPanelHost />);
 
-    expect(screen.getByText("正在加载 Agent 信息…")).toBeInTheDocument();
+    expect(screen.getByText("Loading Agent info...")).toBeInTheDocument();
     expect(screen.getByText("Agent #99")).toBeInTheDocument();
     expect(screen.queryByTestId("chat-panel-0")).not.toBeInTheDocument();
     expect(reload).toHaveBeenCalledTimes(1);
@@ -136,7 +136,7 @@ describe("ChatPanelHost", () => {
     useChatTabsStore.getState().openNewSession(11, 99, "");
 
     render(<ChatPanelHost />);
-    expect(screen.getByText("正在加载 Agent 信息…")).toBeInTheDocument();
+    expect(screen.getByText("Loading Agent info...")).toBeInTheDocument();
 
     act(() => {
       useChatAgentsStore.setState({

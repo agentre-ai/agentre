@@ -97,18 +97,18 @@ describe("FileWriteCard", () => {
 
     render(<FileWriteCard toolBlock={block} />);
     fireEvent.click(screen.getByRole("button", { expanded: false }));
-    fireEvent.click(screen.getByRole("button", { name: "复制完整内容" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy Full Content" }));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("hello\nworld");
     });
     expect(sonnerMocks.toast.success).toHaveBeenCalledWith(
-      "已复制完整内容",
+      "Full content copied",
       expect.objectContaining({
         duration: 5000,
         position: "bottom-right",
       }),
     );
-    expect(screen.getByRole("button", { name: "已复制" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 });

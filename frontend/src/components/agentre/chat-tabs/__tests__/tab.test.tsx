@@ -39,7 +39,7 @@ describe("Tab 组件", () => {
   it("status='running' 时 close X 被替换成 spinner", () => {
     render(<Tab {...baseProps} status="running" />);
     expect(screen.getByTestId("tab-spinner")).toBeInTheDocument();
-    expect(screen.queryByLabelText("关闭 Tab")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Close Tab")).not.toBeInTheDocument();
   });
 
   it("pillText='审批' 渲染 pill", () => {
@@ -50,7 +50,7 @@ describe("Tab 组件", () => {
   it("isPinned=true 显示 pin 图标 + 仍有 close X", () => {
     render(<Tab {...baseProps} isPinned />);
     expect(screen.getByTestId("tab-pin-icon")).toBeInTheDocument();
-    expect(screen.getByLabelText("关闭 Tab")).toBeInTheDocument();
+    expect(screen.getByLabelText("Close Tab")).toBeInTheDocument();
   });
 
   it("projectColor 设置 data-project-color", () => {
@@ -102,7 +102,7 @@ describe("Tab 组件", () => {
     const onActivate = vi.fn();
     const onClose = vi.fn();
     render(<Tab {...baseProps} onActivate={onActivate} onClose={onClose} />);
-    await user.click(screen.getByLabelText("关闭 Tab"));
+    await user.click(screen.getByLabelText("Close Tab"));
     expect(onClose).toHaveBeenCalled();
     expect(onActivate).not.toHaveBeenCalled();
   });

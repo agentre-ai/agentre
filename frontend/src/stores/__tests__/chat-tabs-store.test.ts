@@ -571,7 +571,7 @@ describe("chat-tabs-store · openTerminal", () => {
       deviceId: "",
     });
     expect((s.tabs[0].meta as { terminalId: string }).terminalId).toBeTruthy();
-    expect(s.tabs[0].title).toBe("终端");
+    expect(s.tabs[0].title).toBe("Terminal");
     expect(s.tabs[0].isPreview).toBe(false);
     expect(s.activeTabId).toBe(s.tabs[0].id);
   });
@@ -582,7 +582,7 @@ describe("chat-tabs-store · openTerminal", () => {
     useChatTabsStore.getState().openTerminal(7, "42", "MacMini");
     const tab = useChatTabsStore.getState().tabs.at(-1)!;
     expect(tab.meta).toMatchObject({ kind: "terminal", deviceId: "42" });
-    expect(tab.title).toBe("终端 · MacMini");
+    expect(tab.title).toBe("Terminal · MacMini");
   });
 });
 

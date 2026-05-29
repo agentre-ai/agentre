@@ -20,19 +20,21 @@ describe("KeyboardShortcutsPanel", () => {
     renderPanel();
 
     const chatSection = screen
-      .getByRole("heading", { name: "对话页" })
+      .getByRole("heading", { name: "Chat Page" })
       .closest("section");
 
     expect(chatSection).not.toBeNull();
     const scope = within(chatSection!);
 
-    expect(scope.getByText("切换到第 N 个 Tab")).toBeInTheDocument();
+    expect(scope.getByText("Switch to Tab N")).toBeInTheDocument();
     expect(
-      scope.getByText("⌘1 - ⌘9 · 按 TabStrip 排列顺序（固定 + 普通 + 预览）"),
+      scope.getByText(
+        "⌘1 - ⌘9 · Uses TabStrip order (pinned + normal + preview)",
+      ),
     ).toBeInTheDocument();
-    expect(scope.getByText("关闭当前 Tab")).toBeInTheDocument();
+    expect(scope.getByText("Close Current Tab")).toBeInTheDocument();
     expect(
-      scope.getByText("关闭激活中的 Tab（钉住的 Tab 不可关闭）"),
+      scope.getByText("Close the active tab (pinned tabs cannot be closed)"),
     ).toBeInTheDocument();
     expect(scope.queryByText(/attention 会话/)).not.toBeInTheDocument();
     expect(scope.queryByText(/sidebar 自上而下/)).not.toBeInTheDocument();

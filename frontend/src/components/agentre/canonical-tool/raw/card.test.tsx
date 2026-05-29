@@ -166,7 +166,7 @@ describe("RawToolCard expansion", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button"));
-    expect(screen.getByText("无参数")).toBeDefined();
+    expect(screen.getByText("No parameters")).toBeDefined();
   });
 });
 

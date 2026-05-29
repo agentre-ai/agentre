@@ -100,7 +100,9 @@ describe("ChatContextSidebar", () => {
       />,
     );
     await userEvent.click(screen.getByRole("tab", { name: /files/i }));
-    expect(screen.getByText(/没有改过任何文件|没有文件/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No files have been changed in this session/),
+    ).toBeInTheDocument();
     expect(useChatSidebarStore.getState().activeTab).toBe("files");
   });
 

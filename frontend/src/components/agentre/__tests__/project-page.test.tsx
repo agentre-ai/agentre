@@ -132,7 +132,7 @@ describe("ProjectsPage session read state", () => {
 
     await screen.findByRole("button", { name: /Read after restart/ });
 
-    expect(screen.queryByText("未读")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unread")).not.toBeInTheDocument();
     expect(
       document.querySelector('[data-slot="agent-attention-bubble"]'),
     ).toBeNull();
@@ -157,7 +157,7 @@ describe("ProjectsPage session read state", () => {
     await screen.findByRole("button", { name: /Optimistically read/ });
 
     await waitFor(() => {
-      expect(screen.queryByText("未读")).not.toBeInTheDocument();
+      expect(screen.queryByText("Unread")).not.toBeInTheDocument();
     });
     expect(
       document.querySelector('[data-slot="agent-attention-bubble"]'),
@@ -186,7 +186,7 @@ describe("ProjectsPage session read state", () => {
     );
     expect(bubble).not.toBeNull();
     expect(bubble!).toHaveTextContent("Unread project session");
-    expect(bubble!).toHaveTextContent("未读");
+    expect(bubble!).toHaveTextContent("Unread");
   });
 });
 
@@ -266,7 +266,7 @@ describe("ProjectsPage collapsed parent attention rollup", () => {
       return found!;
     });
     expect(bubble).toHaveTextContent("Child unread session");
-    expect(bubble).toHaveTextContent("未读");
+    expect(bubble).toHaveTextContent("Unread");
 
     await setupUser().click(
       screen.getByRole("button", { name: /Child unread session/ }),
@@ -321,7 +321,7 @@ describe("ProjectsPage collapsed parent attention rollup", () => {
       return found!;
     });
     expect(bubble).toHaveTextContent("Child approval session");
-    expect(bubble).toHaveTextContent("审批");
+    expect(bubble).toHaveTextContent("Approval");
     expect(bubble).toHaveTextContent("Child running session");
 
     const parentButton = screen
@@ -432,7 +432,7 @@ describe("ProjectsPage shell layout", () => {
     const { container } = renderProjectsPage();
 
     const sidebar = await screen.findByRole("complementary", {
-      name: "项目列表",
+      name: "Project list",
     });
 
     expect(sidebar.parentElement).toBe(container);
@@ -560,7 +560,7 @@ describe("ProjectsPage project drag reorder", () => {
     ]);
 
     renderProjectsPage();
-    await user.type(await screen.findByLabelText("搜索项目 / 会话"), "Al");
+    await user.type(await screen.findByLabelText("Search projects / sessions"), "Al");
     dndMocks.onDragEnd?.({
       active: { id: "project-2" },
       over: { id: "project-1" },
@@ -658,11 +658,11 @@ describe("ProjectsPage project new-session menu", () => {
     renderProjectsPage();
 
     await user.click(
-      await screen.findByRole("button", { name: "Agentre 新建会话" }),
+      await screen.findByRole("button", { name: "New session in Agentre" }),
     );
 
     expect(await screen.findByText("Builder")).toBeInTheDocument();
-    expect(screen.queryByText(/还没添加成员/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No members yet/)).not.toBeInTheDocument();
   });
 
   it("opens a project-scoped new-session tab with the selected member id", async () => {
@@ -689,7 +689,7 @@ describe("ProjectsPage project new-session menu", () => {
     renderProjectsPage();
 
     await user.click(
-      await screen.findByRole("button", { name: "Agentre 新建会话" }),
+      await screen.findByRole("button", { name: "New session in Agentre" }),
     );
     await user.click(await screen.findByText("Builder"));
 
@@ -724,7 +724,7 @@ describe("ProjectsPage project new-session menu", () => {
     renderProjectsPage();
 
     await user.click(
-      await screen.findByRole("button", { name: "Agentre 新建会话" }),
+      await screen.findByRole("button", { name: "New session in Agentre" }),
     );
 
     await waitFor(() => {
@@ -738,7 +738,7 @@ describe("ProjectsPage project new-session menu", () => {
         workMode: "",
       });
     });
-    expect(screen.queryByText("选一个 Agent")).not.toBeInTheDocument();
+    expect(screen.queryByText("Choose an Agent")).not.toBeInTheDocument();
     expect(screen.queryByText("Builder")).not.toBeInTheDocument();
   });
 
@@ -770,7 +770,7 @@ describe("ProjectsPage project new-session menu", () => {
     renderProjectsPage();
 
     const trigger = await screen.findByRole("button", {
-      name: "Agentre 新建会话",
+      name: "New session in Agentre",
     });
     await user.click(trigger);
     await user.click(await screen.findByText("Builder"));
@@ -808,14 +808,14 @@ describe("ProjectsPage project new-session menu", () => {
     renderProjectsPage();
 
     const trigger = await screen.findByRole("button", {
-      name: "Agentre 新建会话",
+      name: "New session in Agentre",
     });
     await user.click(trigger);
-    expect(await screen.findByText(/还没添加成员/)).toBeInTheDocument();
+    expect(await screen.findByText(/No members yet/)).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
     await waitFor(() => {
-      expect(screen.queryByText(/还没添加成员/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/No members yet/)).not.toBeInTheDocument();
     });
     await user.click(trigger);
 
@@ -1066,13 +1066,13 @@ describe("NewTerminalSubMenu", () => {
 
   // helper: hover SubTrigger to open the submenu, then wait for the sub content portal
   async function openSub(user: ReturnType<typeof userEvent.setup>) {
-    const trigger = await screen.findByText("新建终端");
+    const trigger = await screen.findByText("New Terminal");
     await user.hover(trigger);
   }
 
   it("Given the submenu trigger is rendered, Then it shows '新建终端' text", async () => {
     renderSubMenu();
-    expect(await screen.findByText("新建终端")).toBeInTheDocument();
+    expect(await screen.findByText("New Terminal")).toBeInTheDocument();
   });
 
   it("Given the submenu is opened, Then it shows a 本地 item", async () => {
@@ -1081,7 +1081,7 @@ describe("NewTerminalSubMenu", () => {
 
     await openSub(user);
 
-    expect(await screen.findByText("本地")).toBeInTheDocument();
+    expect(await screen.findByText("Local")).toBeInTheDocument();
   });
 
   it("Given 本地 item is clicked, Then onPick is called with empty deviceID", async () => {
@@ -1090,7 +1090,7 @@ describe("NewTerminalSubMenu", () => {
 
     await openSub(user);
     // fireEvent 直接触发 Radix DropdownMenuItem onSelect（不产生 pointer-leave 关闭菜单）
-    fireEvent.click(await screen.findByText("本地"));
+    fireEvent.click(await screen.findByText("Local"));
 
     expect(onPick).toHaveBeenCalledWith("", undefined);
   });
@@ -1157,7 +1157,7 @@ describe("NewTerminalSubMenu", () => {
 
     await openSub(user);
     const item = await screen.findByText(/OfflineBox/);
-    expect(item).toHaveTextContent("离线");
+    expect(item).toHaveTextContent("offline");
     expect(item.closest("[data-disabled]")).not.toBeNull();
   });
 });
@@ -1203,11 +1203,11 @@ describe("ProjectsPage 新建终端 end-to-end routing", () => {
 
     // 更多操作 → 新建终端 子菜单 → 本地
     await user.click(
-      await screen.findByRole("button", { name: "Agentre 更多操作" }),
+      await screen.findByRole("button", { name: "More actions for Agentre" }),
     );
-    await user.hover(await screen.findByText("新建终端"));
+    await user.hover(await screen.findByText("New Terminal"));
     // fireEvent.click 触发 Radix item 的 onSelect（userEvent.click 的 pointer-leave 会先关菜单）
-    fireEvent.click(await screen.findByText("本地"));
+    fireEvent.click(await screen.findByText("Local"));
 
     await waitFor(() => {
       const state = useChatTabsStore.getState();
@@ -1267,7 +1267,7 @@ describe("ProjectSettingsDrawer members", () => {
       />,
     );
 
-    await user.click(await screen.findByRole("button", { name: "成员" }));
+    await user.click(await screen.findByRole("button", { name: "Members" }));
 
     expect(await screen.findByText("Builder")).toBeInTheDocument();
     expect(screen.queryByText("Agent #5")).not.toBeInTheDocument();

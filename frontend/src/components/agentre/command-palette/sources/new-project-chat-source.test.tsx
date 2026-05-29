@@ -215,8 +215,8 @@ describe("flattenAgents (NewProjectChatSource · 项目分组)", () => {
       const members = new Set([1]);
       const items = flattenAgents(agents, members, null, undefined, "foo");
       expect(items.map((i) => i.subHeading)).toEqual([
-        "在 foo 中新建 chat",
-        "其它 Agent",
+        "New chat in foo",
+        "Other Agents",
       ]);
     });
 
@@ -283,7 +283,7 @@ describe("newProjectChatSource.renderItem — shows 'New project chat with <name
     expect(container.textContent).toContain("CEO 助手");
   });
 
-  it("non-member rows show '不在该项目' badge", () => {
+  it("non-member rows show 'Not in this project' badge", () => {
     const item = mkItem({
       agent: mkAgent({ id: 5, name: "Designer" }),
       isMember: false,
@@ -291,7 +291,7 @@ describe("newProjectChatSource.renderItem — shows 'New project chat with <name
     const { container } = render(
       <>{newProjectChatSource.renderItem(item, { active: false })}</>,
     );
-    expect(container.textContent).toContain("不在该项目");
+    expect(container.textContent).toContain("Not in this project");
   });
 });
 

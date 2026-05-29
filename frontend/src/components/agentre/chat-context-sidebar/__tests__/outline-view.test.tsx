@@ -65,6 +65,6 @@ describe("OutlineView", () => {
     render(
       <OutlineView items={[]} activeMessageId={null} onSelect={() => {}} />,
     );
-    expect(screen.getByText(/还没有消息/)).toBeInTheDocument();
+    expect(screen.getByText(/No messages in this session/)).toBeInTheDocument();
   });
 });
