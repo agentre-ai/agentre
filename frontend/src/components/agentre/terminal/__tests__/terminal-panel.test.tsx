@@ -1,6 +1,7 @@
-import { render, act, waitFor } from "@testing-library/react";
+import { render, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TerminalPanel } from "../terminal-panel";
+import type { UseTerminalArgs } from "../use-terminal";
 
 // --- sonner mock (must be hoisted) ---
 const toastMocks = vi.hoisted(() => ({
@@ -17,7 +18,9 @@ const onDataMock = vi.fn();
 const openMock = vi.fn();
 const disposeMock = vi.fn();
 const focusMock = vi.fn();
+const fitMock = vi.fn();
 const getSelectionMock = vi.fn(() => "");
+let capturedKeyHandler: ((ev: KeyboardEvent) => boolean) | null = null;
 vi.mock("@xterm/xterm", () => ({
   Terminal: vi.fn().mockImplementation(function () {
     return {
@@ -33,11 +36,13 @@ vi.mock("@xterm/xterm", () => ({
       cols: 80,
       rows: 24,
       getSelection: getSelectionMock,
-      attachCustomKeyEventHandler: vi.fn(),
+      attachCustomKeyEventHandler: (cb: (ev: KeyboardEvent) => boolean) => {
+        capturedKeyHandler = cb;
+      },
+      textarea: undefined,
       options: {
-        theme: undefined as
-          | { background: string; foreground: string }
-          | undefined,
+        theme: undefined as Record<string, string> | undefined,
+        screenReaderMode: false,
       },
     };
   }),
@@ -46,7 +51,7 @@ import { Terminal } from "@xterm/xterm";
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: vi.fn().mockImplementation(function () {
     return {
-      fit: vi.fn(),
+      fit: fitMock,
       proposeDimensions: () => ({ cols: 80, rows: 24 }),
     };
   }),
@@ -55,27 +60,35 @@ vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: vi.fn() }));
 
 // --- use-terminal mock (captures args for onExit testing) ---
 let capturedArgs: {
-  terminalID: string;
-  projectId: number;
-  deviceId: string;
-  onData?: (d: string) => void;
-  onExit?: (info: { code: number; reason: string; msg?: string }) => void;
+  terminalID: UseTerminalArgs["terminalID"];
+  projectId: UseTerminalArgs["projectId"];
+  deviceId: UseTerminalArgs["deviceId"];
+  onData?: UseTerminalArgs["onData"];
+  onExit?: UseTerminalArgs["onExit"];
 } | null = null;
 const writeProxy = vi.fn();
+const resizeProxy = vi.fn();
 vi.mock("../use-terminal", () => ({
   useTerminal: vi.fn().mockImplementation((args) => {
     capturedArgs = args;
-    return { state: "open", write: writeProxy, resize: vi.fn() };
+    return { state: "open", write: writeProxy, resize: resizeProxy };
   }),
 }));
 import { useTerminal } from "../use-terminal";
 
 beforeEach(() => {
   capturedArgs = null;
+  capturedKeyHandler = null;
+  vi.mocked(useTerminal).mockImplementation((args) => {
+    capturedArgs = args;
+    return { state: "open", write: writeProxy, resize: resizeProxy };
+  });
   toastMocks.toast.error.mockClear();
   toastMocks.toast.warning.mockClear();
   writeProxy.mockClear();
+  resizeProxy.mockClear();
   focusMock.mockClear();
+  fitMock.mockClear();
   vi.mocked(Terminal).mockClear();
   getSelectionMock.mockReturnValue("");
 });
@@ -106,7 +119,7 @@ describe("TerminalPanel", () => {
     expect(writeMock).toHaveBeenCalledWith("hello");
   });
 
-  it("Given a terminal tab is mounted active, When xterm opens, Then focus lands on the terminal", async () => {
+  it("Given a terminal tab is mounted active, When xterm opens, Then focus lands on the terminal before the next macrotask", () => {
     const onClose = vi.fn();
     render(
       <TerminalPanel
@@ -117,12 +130,10 @@ describe("TerminalPanel", () => {
         onClose={onClose}
       />,
     );
-    await waitFor(() => {
-      expect(focusMock).toHaveBeenCalled();
-    });
+    expect(focusMock).toHaveBeenCalled();
   });
 
-  it("Given an inactive terminal tab, When it becomes active, Then focus lands on the terminal", async () => {
+  it("Given an inactive terminal tab, When it becomes active, Then focus lands on the terminal before the next macrotask", () => {
     const onClose = vi.fn();
     const { rerender } = render(
       <TerminalPanel
@@ -143,9 +154,7 @@ describe("TerminalPanel", () => {
         onClose={onClose}
       />,
     );
-    await waitFor(() => {
-      expect(focusMock).toHaveBeenCalled();
-    });
+    expect(focusMock).toHaveBeenCalled();
   });
 
   it("Given terminal glyph output, When xterm is created, Then the font stack includes Nerd Font fallbacks", () => {
@@ -161,6 +170,70 @@ describe("TerminalPanel", () => {
     const options = vi.mocked(Terminal).mock.calls[0][0]!;
     expect(options.fontFamily).toContain("JetBrainsMono Nerd Font");
     expect(options.fontFamily).toContain("Symbols Nerd Font Mono");
+  });
+
+  it("Given a Nerd Font lacks a Bold face, When the font stack is built, Then a platform mono comes before any Nerd Font so the line is not faux-bold mosaic", () => {
+    const onClose = vi.fn();
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
+    const fontFamily = vi.mocked(Terminal).mock.calls[0][0]!.fontFamily!;
+    const platformMonoIdx = fontFamily.indexOf("Menlo");
+    const nerdFontIdx = fontFamily.indexOf("Nerd Font");
+    expect(platformMonoIdx).toBeGreaterThanOrEqual(0);
+    expect(nerdFontIdx).toBeGreaterThanOrEqual(0);
+    expect(platformMonoIdx).toBeLessThan(nerdFontIdx);
+  });
+
+  it("Given the terminal mounts, When xterm is created, Then it gets a full ANSI palette (not just bg/fg)", () => {
+    const onClose = vi.fn();
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
+    const theme = vi.mocked(Terminal).mock.calls[0][0]!.theme!;
+    expect(theme.background).toBeTruthy();
+    expect(theme.red).toBeTruthy();
+    expect(theme.brightWhite).toBeTruthy();
+    expect(theme.selectionForeground).toBeTruthy();
+  });
+
+  it("Given IME composition is active, When a Cmd/Ctrl+C combo fires, Then the custom key handler does not swallow it (lets the IME/xterm path run)", () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    });
+    getSelectionMock.mockReturnValue("has-selection");
+    const onClose = vi.fn();
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
+    const result = capturedKeyHandler?.({
+      type: "keydown",
+      metaKey: true,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      key: "c",
+      keyCode: 67,
+      isComposing: true,
+    } as unknown as KeyboardEvent);
+    expect(result).toBe(true);
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
   });
 
   it("proxies xterm onData to hook write()", () => {
@@ -200,6 +273,49 @@ describe("TerminalPanel", () => {
     // push that size so the PTY is not stuck at the initial open dimensions
     // (the ResizeObserver-driven resize can race TerminalOpen and be dropped).
     expect(resizeMock).toHaveBeenCalledWith(80, 24);
+  });
+
+  it("Given an inactive terminal tab mounts, When the PTY reports open, Then it does not fit or resize while hidden", () => {
+    const onClose = vi.fn();
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        active={false}
+        onClose={onClose}
+      />,
+    );
+    expect(fitMock).not.toHaveBeenCalled();
+    expect(resizeProxy).not.toHaveBeenCalled();
+  });
+
+  it("Given an inactive terminal tab, When it becomes active, Then it fits and resizes once visible", () => {
+    const onClose = vi.fn();
+    const { rerender } = render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        active={false}
+        onClose={onClose}
+      />,
+    );
+    expect(fitMock).not.toHaveBeenCalled();
+    expect(resizeProxy).not.toHaveBeenCalled();
+
+    rerender(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        active
+        onClose={onClose}
+      />,
+    );
+
+    expect(fitMock).toHaveBeenCalled();
+    expect(resizeProxy).toHaveBeenCalledWith(80, 24);
   });
 
   it("disposes xterm on unmount", () => {

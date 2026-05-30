@@ -1,12 +1,20 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { toast } from "sonner";
 
 import { useTerminal } from "./use-terminal";
+import { resolveTerminalTheme } from "./terminal-theme";
+import { attachXtermRolloverGuard } from "./xterm-rollover-guard";
 
 export interface TerminalPanelProps {
   terminalID: string;
@@ -16,28 +24,35 @@ export interface TerminalPanelProps {
   onClose: () => void;
 }
 
+// 平台等宽字体放最前，Nerd Font 仅作图标/powerline 兜底。把 Nerd Font 排在前面时，
+// 若某个变体缺 Bold 字面，浏览器会对一行里部分字符合成 faux-bold → 出现粗细混杂的
+// 马赛克；平台 mono(mac→Menlo / win→Consolas / linux→DejaVu)自带匹配的 Bold，放前面
+// 可消除这个问题。CJK 字体兜底中文等宽。
 const TERMINAL_FONT_FAMILY = [
-  "'JetBrainsMono Nerd Font'",
+  "Menlo",
+  "Consolas",
+  "'DejaVu Sans Mono'",
+  "'JetBrainsMono NFM'",
   "'JetBrainsMono Nerd Font Mono'",
-  "'JetBrains Mono NL'",
   "'JetBrains Mono'",
-  "'MesloLGS NF'",
   "'Symbols Nerd Font Mono'",
   "'Noto Sans Mono CJK SC'",
-  "'Menlo'",
-  "'Monaco'",
   "monospace",
 ].join(", ");
 
-function readTerminalTheme(): { background: string; foreground: string } {
+// 跟随应用主题：用 .dark class 选 light/dark 调色板，并把应用实时的 --background/
+// --foreground 叠加为终端底色，使终端与周围 UI 一致；完整 16 色 ANSI 由 resolveTerminalTheme
+// 提供，避免只设 bg/fg 时浅色模式下 ANSI 亮色发白看不清。
+function readTerminalTheme(): ITheme {
   if (typeof document === "undefined") {
-    return { background: "#17191c", foreground: "#e6e8eb" };
+    return resolveTerminalTheme(true);
   }
   const root = document.documentElement;
+  const isDark = root.classList.contains("dark");
   const styles = getComputedStyle(root);
-  const bg = styles.getPropertyValue("--background").trim() || "#17191c";
-  const fg = styles.getPropertyValue("--foreground").trim() || "#e6e8eb";
-  return { background: bg, foreground: fg };
+  const bg = styles.getPropertyValue("--background").trim();
+  const fg = styles.getPropertyValue("--foreground").trim();
+  return resolveTerminalTheme(isDark, bg, fg);
 }
 
 export function TerminalPanel({
@@ -58,75 +73,6 @@ export function TerminalPanel({
     setConnectionLost(false);
     onClose();
   }, [onClose]);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const term = new Terminal({
-      fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: 13,
-      theme: readTerminalTheme(),
-      scrollback: 500,
-      cursorBlink: true,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
-    term.open(containerRef.current);
-    fit.fit();
-
-    // Cmd+C/Ctrl+C: copy selection if any, else fall through to xterm SIGINT default.
-    term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== "keydown") return true;
-      const isCopyCombo =
-        (ev.ctrlKey || ev.metaKey) &&
-        !ev.shiftKey &&
-        !ev.altKey &&
-        (ev.key === "c" || ev.key === "C");
-      if (!isCopyCombo) return true;
-      const selection = term.getSelection();
-      if (!selection) return true; // no selection → let xterm send SIGINT
-      // Has selection → copy + swallow event so SIGINT does not fire.
-      void navigator.clipboard.writeText(selection).catch(() => {
-        // Clipboard permission may be blocked; intentionally silent.
-      });
-      return false;
-    });
-
-    xtermRef.current = term;
-    fitRef.current = fit;
-
-    return () => {
-      term.dispose();
-      xtermRef.current = null;
-      fitRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!active) return;
-    const id = window.setTimeout(() => {
-      xtermRef.current?.focus();
-    }, 0);
-    return () => window.clearTimeout(id);
-  }, [active]);
-
-  // Re-theme xterm when the app switches between light and dark mode.
-  // jsdom does not implement getComputedStyle for CSS custom properties, so
-  // this effect is verified manually (Task 30) rather than via a DOM assertion.
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const applyTheme = () => {
-      const term = xtermRef.current;
-      if (!term) return;
-      term.options.theme = readTerminalTheme();
-    };
-    const observer = new MutationObserver(applyTheme);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
 
   const { state, write, resize } = useTerminal({
     terminalID,
@@ -165,40 +111,108 @@ export function TerminalPanel({
     },
   });
 
-  useEffect(() => {
-    const term = xtermRef.current;
-    if (!term) return;
-    const sub = term.onData((d) => {
-      void write(d);
-    });
-    return () => sub.dispose();
-  }, [write]);
-
-  // Once the PTY is confirmed open, push the real fitted size. Open is issued
-  // with placeholder dimensions, and the ResizeObserver-driven resize can land
-  // before the backend handle is registered (dropped as "terminal closed"), so
-  // without this the shell can stay stuck at the initial open size.
-  useEffect(() => {
-    if (state !== "open") return;
+  const fitAndResize = useCallback(() => {
     const f = fitRef.current;
     const t = xtermRef.current;
     if (!f || !t) return;
     f.fit();
     void resize(t.cols, t.rows);
-  }, [state, resize]);
+  }, [resize]);
+
+  useLayoutEffect(() => {
+    if (!containerRef.current) return;
+    const term = new Terminal({
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: 13,
+      theme: readTerminalTheme(),
+      scrollback: 500,
+      cursorBlink: true,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon());
+    term.open(containerRef.current);
+
+    // Cmd+C/Ctrl+C: copy selection if any, else fall through to xterm SIGINT default.
+    term.attachCustomKeyEventHandler((ev) => {
+      // 在 IME composition / keyCode=229 时早返回，别吞掉应交给 IME / xterm 内部
+      // 处理的按键，否则可能导致字符丢失 (W3C UI Events §5.4.3)。
+      if (ev.isComposing || ev.keyCode === 229) return true;
+      if (ev.type !== "keydown") return true;
+      const isCopyCombo =
+        (ev.ctrlKey || ev.metaKey) &&
+        !ev.shiftKey &&
+        !ev.altKey &&
+        (ev.key === "c" || ev.key === "C");
+      if (!isCopyCombo) return true;
+      const selection = term.getSelection();
+      if (!selection) return true; // no selection → let xterm send SIGINT
+      // Has selection → copy + swallow event so SIGINT does not fire.
+      void navigator.clipboard.writeText(selection).catch(() => {
+        // Clipboard permission may be blocked; intentionally silent.
+      });
+      return false;
+    });
+
+    xtermRef.current = term;
+    fitRef.current = fit;
+
+    return () => {
+      term.dispose();
+      xtermRef.current = null;
+      fitRef.current = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!active) return;
+    xtermRef.current?.focus();
+    if (state === "open") {
+      fitAndResize();
+    }
+  }, [active, state, fitAndResize]);
+
+  // Re-theme xterm when the app switches between light and dark mode.
+  // jsdom does not implement getComputedStyle for CSS custom properties, so
+  // this effect is verified manually (Task 30) rather than via a DOM assertion.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const applyTheme = () => {
+      const term = xtermRef.current;
+      if (!term) return;
+      term.options.theme = readTerminalTheme();
+    };
+    const observer = new MutationObserver(applyTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const term = xtermRef.current;
+    if (!term) return;
+    const send = (d: string) => void write(d);
+    const sub = term.onData(send);
+    // IME 快速输入丢字符旁路：xterm 在 key-rollover 时会把中间字符当重复输入丢掉，
+    // 这里在 textarea 的 input 事件上补发被丢的字符 (详见 xterm-rollover-guard.ts)。
+    const guard = attachXtermRolloverGuard(term, send);
+    return () => {
+      sub.dispose();
+      guard.dispose();
+    };
+  }, [write]);
 
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver(() => {
-      const f = fitRef.current;
-      const t = xtermRef.current;
-      if (!f || !t) return;
-      f.fit();
-      void resize(t.cols, t.rows);
+      if (!active || state !== "open") return;
+      fitAndResize();
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
-  }, [resize]);
+  }, [active, state, fitAndResize]);
 
   return (
     <div
