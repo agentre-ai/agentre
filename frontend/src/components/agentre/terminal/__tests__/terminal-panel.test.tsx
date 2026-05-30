@@ -1,4 +1,4 @@
-import { render, act } from "@testing-library/react";
+import { render, act, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TerminalPanel } from "../terminal-panel";
 
@@ -16,12 +16,14 @@ const writeMock = vi.fn();
 const onDataMock = vi.fn();
 const openMock = vi.fn();
 const disposeMock = vi.fn();
+const focusMock = vi.fn();
 const getSelectionMock = vi.fn(() => "");
 vi.mock("@xterm/xterm", () => ({
   Terminal: vi.fn().mockImplementation(function () {
     return {
       open: openMock,
       write: writeMock,
+      focus: focusMock,
       onData: (cb: (s: string) => void) => {
         onDataMock.mockImplementation(cb);
         return { dispose: () => {} };
@@ -40,6 +42,7 @@ vi.mock("@xterm/xterm", () => ({
     };
   }),
 }));
+import { Terminal } from "@xterm/xterm";
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: vi.fn().mockImplementation(function () {
     return {
@@ -72,6 +75,8 @@ beforeEach(() => {
   toastMocks.toast.error.mockClear();
   toastMocks.toast.warning.mockClear();
   writeProxy.mockClear();
+  focusMock.mockClear();
+  vi.mocked(Terminal).mockClear();
   getSelectionMock.mockReturnValue("");
 });
 
@@ -99,6 +104,63 @@ describe("TerminalPanel", () => {
     expect(args.terminalID).toBe("t1");
     act(() => args.onData("hello"));
     expect(writeMock).toHaveBeenCalledWith("hello");
+  });
+
+  it("Given a terminal tab is mounted active, When xterm opens, Then focus lands on the terminal", async () => {
+    const onClose = vi.fn();
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        active
+        onClose={onClose}
+      />,
+    );
+    await waitFor(() => {
+      expect(focusMock).toHaveBeenCalled();
+    });
+  });
+
+  it("Given an inactive terminal tab, When it becomes active, Then focus lands on the terminal", async () => {
+    const onClose = vi.fn();
+    const { rerender } = render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        active={false}
+        onClose={onClose}
+      />,
+    );
+    expect(focusMock).not.toHaveBeenCalled();
+    rerender(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        active
+        onClose={onClose}
+      />,
+    );
+    await waitFor(() => {
+      expect(focusMock).toHaveBeenCalled();
+    });
+  });
+
+  it("Given terminal glyph output, When xterm is created, Then the font stack includes Nerd Font fallbacks", () => {
+    const onClose = vi.fn();
+    render(
+      <TerminalPanel
+        terminalID="t1"
+        projectId={42}
+        deviceId=""
+        onClose={onClose}
+      />,
+    );
+    const options = vi.mocked(Terminal).mock.calls[0][0]!;
+    expect(options.fontFamily).toContain("JetBrainsMono Nerd Font");
+    expect(options.fontFamily).toContain("Symbols Nerd Font Mono");
   });
 
   it("proxies xterm onData to hook write()", () => {

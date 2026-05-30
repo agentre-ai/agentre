@@ -101,25 +101,32 @@ func fakeSetMode(stdin io.Reader, stdout io.Writer) {
 // fakeMidTurnSetMode 模拟"长 turn 飞行中切 mode"：user frame 触发 init+partial
 // （不发 result）；control_request{set_permission_mode} → success +
 // status{permissionMode} + result{success}（结束本轮）。
-func fakeMidTurnSetMode(stdin io.Reader, stdout io.Writer) {
-	const sid = "sess-mid-turn-set-mode"
-	sc := bufio.NewScanner(stdin)
-	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
-	turn := 0
-	for sc.Scan() {
-		line := sc.Text()
-		switch {
-		case strings.Contains(line, `"type":"user"`):
-			turn++
-			reply := extractTextField(line)
-			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
-			writeFrame(stdout, `{"type":"assistant","message":{"id":"m%d","content":[{"type":"text","text":"partial:%s"}]}}`, turn, reply)
-		case strings.Contains(line, `"type":"control_request"`) && strings.Contains(line, `"subtype":"set_permission_mode"`):
-			reqID := extractStringField(line, "request_id")
-			mode := extractStringField(line, "mode")
-			writeFrame(stdout, `{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":{"mode":%q}}}`, reqID, mode)
-			writeFrame(stdout, `{"type":"system","subtype":"status","session_id":%q,"permissionMode":%q}`, sid, mode)
-			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+func fakeMidTurnSetMode(readyForControl chan<- struct{}) fakeCLIFunc {
+	return func(stdin io.Reader, stdout io.Writer) {
+		const sid = "sess-mid-turn-set-mode"
+		sc := bufio.NewScanner(stdin)
+		sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+		turn := 0
+		notifiedReady := false
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.Contains(line, `"type":"user"`):
+				turn++
+				reply := extractTextField(line)
+				writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+				writeFrame(stdout, `{"type":"assistant","message":{"id":"m%d","content":[{"type":"text","text":"partial:%s"}]}}`, turn, reply)
+				if !notifiedReady {
+					close(readyForControl)
+					notifiedReady = true
+				}
+			case strings.Contains(line, `"type":"control_request"`) && strings.Contains(line, `"subtype":"set_permission_mode"`):
+				reqID := extractStringField(line, "request_id")
+				mode := extractStringField(line, "mode")
+				writeFrame(stdout, `{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":{"mode":%q}}}`, reqID, mode)
+				writeFrame(stdout, `{"type":"system","subtype":"status","session_id":%q,"permissionMode":%q}`, sid, mode)
+				writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+			}
 		}
 	}
 }
@@ -308,7 +315,8 @@ func TestSession_SetPermissionMode_MidTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c := New(WithBinary("fake"), pipeSpawner(t, fakeMidTurnSetMode))
+	readyForControl := make(chan struct{})
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeMidTurnSetMode(readyForControl)))
 	sess, err := c.OpenSession(ctx)
 	require.NoError(t, err)
 	defer func() { _ = sess.Close(context.Background()) }()
@@ -324,6 +332,11 @@ func TestSession_SetPermissionMode_MidTurn(t *testing.T) {
 		if ev.Kind == EventTextDelta {
 			break
 		}
+	}
+	select {
+	case <-readyForControl:
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err(), "fake CLI should be ready to receive control_request")
 	}
 
 	// 给 SetPermissionMode 一个紧凑的截止：当前实现卡在 turnMu 上会让本步超时。

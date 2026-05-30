@@ -212,6 +212,7 @@ function HostedTerminalPanel({
         terminalID={meta.terminalId}
         projectId={meta.projectId}
         deviceId={meta.deviceId}
+        active={active}
         onClose={() => closeTab(tab.id)}
       />
     </div>

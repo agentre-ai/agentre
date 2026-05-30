@@ -12,8 +12,22 @@ export interface TerminalPanelProps {
   terminalID: string;
   projectId: number;
   deviceId: string;
+  active?: boolean;
   onClose: () => void;
 }
+
+const TERMINAL_FONT_FAMILY = [
+  "'JetBrainsMono Nerd Font'",
+  "'JetBrainsMono Nerd Font Mono'",
+  "'JetBrains Mono NL'",
+  "'JetBrains Mono'",
+  "'MesloLGS NF'",
+  "'Symbols Nerd Font Mono'",
+  "'Noto Sans Mono CJK SC'",
+  "'Menlo'",
+  "'Monaco'",
+  "monospace",
+].join(", ");
 
 function readTerminalTheme(): { background: string; foreground: string } {
   if (typeof document === "undefined") {
@@ -30,6 +44,7 @@ export function TerminalPanel({
   terminalID,
   projectId,
   deviceId,
+  active = true,
   onClose,
 }: TerminalPanelProps) {
   const { t } = useTranslation();
@@ -47,7 +62,7 @@ export function TerminalPanel({
   useEffect(() => {
     if (!containerRef.current) return;
     const term = new Terminal({
-      fontFamily: "'JetBrains Mono', 'Menlo', 'Monaco', monospace",
+      fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 13,
       theme: readTerminalTheme(),
       scrollback: 500,
@@ -86,6 +101,14 @@ export function TerminalPanel({
       fitRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setTimeout(() => {
+      xtermRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [active]);
 
   // Re-theme xterm when the app switches between light and dark mode.
   // jsdom does not implement getComputedStyle for CSS custom properties, so

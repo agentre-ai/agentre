@@ -7,9 +7,15 @@ import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useProjectSessionsStore } from "@/stores/project-sessions-store";
 
 vi.mock("../../terminal/terminal-panel", () => ({
-  TerminalPanel: ({ terminalID }: { terminalID: string }) => (
+  TerminalPanel: ({
+    terminalID,
+    active,
+  }: {
+    terminalID: string;
+    active: boolean;
+  }) => (
     <div data-testid="terminal-panel" data-terminal-id={terminalID}>
-      terminal {terminalID}
+      terminal {terminalID} {active ? "active" : "inactive"}
     </div>
   ),
 }));
@@ -86,6 +92,26 @@ describe("ChatPanelHost", () => {
     render(<ChatPanelHost />);
     const wrap2 = screen.getByTestId("chat-panel-2").parentElement!;
     expect(wrap2).toHaveStyle({ display: "none" });
+  });
+
+  it("Given terminal tabs, When the active tab changes, Then TerminalPanel receives active for focus management", () => {
+    useChatTabsStore.getState().openTerminal(7, "", undefined);
+    useChatTabsStore.getState().openTerminal(8, "", undefined);
+    const firstId = useChatTabsStore.getState().tabs[0].id;
+
+    const { rerender } = render(<ChatPanelHost />);
+    const panels = screen.getAllByTestId("terminal-panel");
+    expect(panels[0]).toHaveTextContent("inactive");
+    expect(panels[1]).toHaveTextContent("active");
+
+    act(() => {
+      useChatTabsStore.getState().setActive(firstId);
+    });
+    rerender(<ChatPanelHost />);
+
+    const nextPanels = screen.getAllByTestId("terminal-panel");
+    expect(nextPanels[0]).toHaveTextContent("active");
+    expect(nextPanels[1]).toHaveTextContent("inactive");
   });
 
   it("kind:'new' tab 从 chat-agents-store 取 agent 并渲染新会话面板", () => {
