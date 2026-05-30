@@ -31,6 +31,12 @@ type UpdateProjectRequest struct {
 	Description string
 }
 
+// ReorderProjectsRequest 调整同一 parent 下项目展示顺序。
+type ReorderProjectsRequest struct {
+	ParentID   int64
+	OrderedIDs []int64
+}
+
 // ProjectAgentMember 项目成员视图，区分直接成员 vs 继承成员。
 type ProjectAgentMember struct {
 	AgentID       int64

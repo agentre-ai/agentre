@@ -9,12 +9,14 @@ const (
 	CapCancelSteer         Capability = "cancel_steer"
 	CapDrainSteer          Capability = "drain_steer"
 	CapAbort               Capability = "abort"
+	CapImageInput          Capability = "image_input"
 	CapSetPermission       Capability = "set_permission_mode"
 	CapAnswerUserAsk       Capability = "answer_user_ask"
 	CapToolPermission      Capability = "tool_permission_gate"
 	CapForkSession         Capability = "fork_session"
 	CapReportContextWindow Capability = "report_context_window"
 	CapCompact             Capability = "compact"
+	CapGoal                Capability = "goal"
 )
 
 // Capabilities 一个 runtime 的能力矩阵 + permission mode 元数据。

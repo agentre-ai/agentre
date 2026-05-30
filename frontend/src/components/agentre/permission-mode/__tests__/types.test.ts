@@ -111,7 +111,7 @@ describe("permissionModeDisabledReason", () => {
     );
     expect(reason).not.toBeNull();
     expect(reason!.length).toBeGreaterThan(0);
-    expect(reason).toContain("启动时");
+    expect(reason).toContain("did not start with bypassPermissions");
   });
 
   it("claudecode + non-bypass modes → never disabled", () => {

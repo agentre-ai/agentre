@@ -1,16 +1,62 @@
 // frontend/src/components/agentre/chat-tabs/chat-panel-host.tsx
 import * as React from "react";
 import { Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { ChatPanel } from "../chat-panel";
+import { TerminalPanel } from "../terminal/terminal-panel";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
-import type { ChatTab } from "@/stores/chat-tabs-store";
+import type { ChatTab, TabKind } from "@/stores/chat-tabs-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useChatAgentsStore } from "@/stores/chat-agents-store";
 
+type PanelOrderState = {
+  tabs: ChatTab[];
+  order: string[];
+};
+
+function reconcilePanelOrder(order: string[], tabs: ChatTab[]) {
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  const next = order.filter((id) => liveIds.has(id));
+  const knownIds = new Set(next);
+
+  for (const tab of tabs) {
+    if (knownIds.has(tab.id)) continue;
+    next.push(tab.id);
+    knownIds.add(tab.id);
+  }
+
+  return next;
+}
+
+function tabsByPanelOrder(tabs: ChatTab[], order: string[]) {
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  return order
+    .map((id) => byId.get(id))
+    .filter((tab): tab is ChatTab => Boolean(tab));
+}
+
 export function ChatPanelHost() {
+  const { t } = useTranslation();
   const tabs = useChatTabsStore((s) => s.tabs);
   const activeTabId = useChatTabsStore((s) => s.activeTabId);
+  const [panelOrderState, setPanelOrderState] = React.useState<PanelOrderState>(
+    () => ({
+      tabs,
+      order: reconcilePanelOrder([], tabs),
+    }),
+  );
+
+  let panelOrder = panelOrderState.order;
+  if (panelOrderState.tabs !== tabs) {
+    panelOrder = reconcilePanelOrder(panelOrderState.order, tabs);
+    setPanelOrderState({ tabs, order: panelOrder });
+  }
+
+  const panelTabs = React.useMemo(
+    () => tabsByPanelOrder(tabs, panelOrder),
+    [panelOrder, tabs],
+  );
 
   if (tabs.length === 0) {
     return (
@@ -19,24 +65,24 @@ export function ChatPanelHost() {
           <Sparkles className="size-6 text-primary" aria-hidden="true" />
         </span>
         <div className="text-base font-semibold">
-          选一个 Agent 或项目下的会话开始
+          {t("chatTabs.empty.title")}
         </div>
         <div className="text-xs text-muted-foreground">
-          在左侧 sidebar 选一个,或派发新任务给指定 Agent · ⌘P 打开命令面板
+          {t("chatTabs.empty.description")}
         </div>
         <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
           <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
             ⌘1..⌘9
           </kbd>
-          切换 Tab
+          {t("chatTabs.empty.shortcuts.switch")}
           <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
             ⌘W
           </kbd>
-          关闭 Tab
+          {t("chatTabs.empty.shortcuts.close")}
           <kbd className="rounded-md border border-border bg-card px-2 py-1 font-mono">
             ⌘ Click
           </kbd>
-          在新 Tab 打开
+          {t("chatTabs.empty.shortcuts.openInNewTab")}
         </div>
       </main>
     );
@@ -44,9 +90,17 @@ export function ChatPanelHost() {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      {tabs.map((t) => (
-        <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
-      ))}
+      {panelTabs.map((t) =>
+        t.meta.kind === "terminal" ? (
+          <HostedTerminalPanel
+            key={t.id}
+            tab={t}
+            active={t.id === activeTabId}
+          />
+        ) : (
+          <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
+        ),
+      )}
     </div>
   );
 }
@@ -73,10 +127,19 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
   // 强行跳到末尾。
   const wrapperRef = React.useRef<HTMLDivElement>(null);
   const prevActiveRef = React.useRef<boolean | null>(null);
+  const prevNewAgentReadyRef = React.useRef(false);
+  const newAgentReady = isNewTab && !!agent;
   React.useEffect(() => {
     const prev = prevActiveRef.current;
+    const prevNewAgentReady = prevNewAgentReadyRef.current;
     prevActiveRef.current = active;
-    if (!active || prev === true) return;
+    prevNewAgentReadyRef.current = newAgentReady;
+    if (
+      !active ||
+      (prev === true && (!isNewTab || prevNewAgentReady || !newAgentReady))
+    ) {
+      return;
+    }
     const editor = wrapperRef.current?.querySelector<HTMLElement>(
       "[contenteditable='true']",
     );
@@ -85,7 +148,7 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
     // 的焦点夺回也已让出,再 focus 才能稳稳落到编辑器上。
     const id = window.setTimeout(() => editor.focus(), 0);
     return () => window.clearTimeout(id);
-  }, [active]);
+  }, [active, isNewTab, newAgentReady]);
 
   React.useEffect(() => {
     if (!isNewTab || agent) return;
@@ -129,6 +192,33 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
   );
 }
 
+function HostedTerminalPanel({
+  tab,
+  active,
+}: {
+  tab: ChatTab;
+  active: boolean;
+}) {
+  const closeTab = useChatTabsStore((s) => s.closeTab);
+  const meta = tab.meta as Extract<TabKind, { kind: "terminal" }>;
+  return (
+    <div
+      data-tab-id={tab.id}
+      data-active={active}
+      style={{ display: active ? "flex" : "none" }}
+      className="flex h-full min-h-0 flex-1 flex-col"
+    >
+      <TerminalPanel
+        terminalID={meta.terminalId}
+        projectId={meta.projectId}
+        deviceId={meta.deviceId}
+        active={active}
+        onClose={() => closeTab(tab.id)}
+      />
+    </div>
+  );
+}
+
 function MissingNewSessionAgent({
   agentId,
   loading,
@@ -138,16 +228,17 @@ function MissingNewSessionAgent({
   loading: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const title = loading
-    ? "正在加载 Agent 信息…"
+    ? t("chatTabs.missingAgent.loading")
     : error
-      ? "加载 Agent 信息失败"
-      : "找不到这个 Agent";
+      ? t("chatTabs.missingAgent.loadFailed")
+      : t("chatTabs.missingAgent.notFound");
   const detail = error
     ? error
     : loading
       ? `Agent #${agentId}`
-      : `Agent #${agentId} 可能已被删除，或列表还没有同步。`;
+      : t("chatTabs.missingAgent.detail", { id: agentId });
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 bg-background px-8 text-center">

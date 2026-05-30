@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,21 @@ type Client struct {
 	runner       appServerRunner
 }
 
+// Session is a persistent codex app-server process that can host multiple
+// turns for one Agentre chat session. Turns are still serialized and exposed as
+// Stream values; closing the Session terminates the underlying app-server.
+type Session struct {
+	client *Client
+	app    *appClient
+
+	mu          sync.Mutex
+	turnMu      sync.Mutex
+	sid         string
+	threadReady bool
+	closed      bool
+	active      *Stream
+}
+
 func New(opts ...Option) *Client {
 	c := &Client{
 		binary:    "codex",
@@ -39,6 +55,10 @@ func New(opts ...Option) *Client {
 }
 
 func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (*Stream, error) {
+	return c.StreamInput(ctx, userInput(prompt), opts...)
+}
+
+func (c *Client) StreamInput(ctx context.Context, input []UserInput, opts ...RunOption) (*Stream, error) {
 	spec := c.defaultRunSpec()
 	for _, o := range opts {
 		o(&spec)
@@ -59,7 +79,7 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 		cleanup()
 		return nil, err
 	}
-	turnParams, err := turnStartParams(thread, prompt, spec.collaborationMode, c.model)
+	turnParams, err := turnStartParamsInput(thread, input, spec.collaborationMode, c.model)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -117,6 +137,183 @@ func (c *Client) Compact(ctx context.Context, threadID string) (*Stream, error) 
 	stream := newStream(app, c.killGrace, thread.ThreadID, "", "manual")
 	go stream.drain(ctx)
 	return stream, nil
+}
+
+func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, error) {
+	spec := c.defaultRunSpec()
+	for _, o := range opts {
+		o(&spec)
+	}
+	app, err := c.startApp(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func() {
+		_ = app.terminate(context.Background(), c.killGrace)
+	}
+	if err := initializeApp(ctx, app); err != nil {
+		cleanup()
+		return nil, err
+	}
+	return &Session{client: c, app: app, sid: spec.resumeID}, nil
+}
+
+func (s *Session) ID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sid
+}
+
+func (s *Session) Stream(ctx context.Context, prompt string, opts ...RunOption) (*Stream, error) {
+	return s.StreamInput(ctx, userInput(prompt), opts...)
+}
+
+func (s *Session) StreamInput(ctx context.Context, input []UserInput, opts ...RunOption) (*Stream, error) {
+	s.turnMu.Lock()
+	spec := s.client.defaultRunSpec()
+	for _, o := range opts {
+		o(&spec)
+	}
+	if strings.TrimSpace(spec.resumeID) != "" {
+		s.mu.Lock()
+		s.sid = strings.TrimSpace(spec.resumeID)
+		s.threadReady = false
+		s.mu.Unlock()
+	}
+	thread, err := s.ensureThread(ctx, spec)
+	if err != nil {
+		s.turnMu.Unlock()
+		return nil, err
+	}
+	turnParams, err := turnStartParamsInput(thread, input, spec.collaborationMode, s.client.model)
+	if err != nil {
+		s.turnMu.Unlock()
+		return nil, err
+	}
+	raw, err := s.app.Call(ctx, appMethodTurnStart, turnParams)
+	if err != nil {
+		s.turnMu.Unlock()
+		return nil, err
+	}
+	var turn appTurnStartResponse
+	if err := json.Unmarshal(raw, &turn); err != nil {
+		s.turnMu.Unlock()
+		return nil, err
+	}
+	if turn.Turn.ID == "" {
+		s.turnMu.Unlock()
+		return nil, errors.New("codex: turn/start response missing id")
+	}
+	stream := newStream(s.app, s.client.killGrace, thread.ThreadID, turn.Turn.ID, "")
+	stream.closeAppOnDrain = false
+	s.setActive(stream)
+	go func() {
+		defer s.turnMu.Unlock()
+		stream.drain(ctx)
+		s.clearActive(stream)
+		if sid := stream.SessionID(); sid != "" {
+			s.mu.Lock()
+			s.sid = sid
+			s.threadReady = true
+			s.mu.Unlock()
+		}
+	}()
+	return stream, nil
+}
+
+func (s *Session) Compact(ctx context.Context) (*Stream, error) {
+	s.turnMu.Lock()
+	threadID := strings.TrimSpace(s.ID())
+	if threadID == "" {
+		s.turnMu.Unlock()
+		return nil, errors.New("codex: compact thread id is required")
+	}
+	thread, err := s.ensureThread(ctx, runSpec{
+		resumeID: threadID,
+		cwd:      s.client.cwd,
+		sandbox:  s.client.sandbox,
+		approval: s.client.approval,
+	})
+	if err != nil {
+		s.turnMu.Unlock()
+		return nil, err
+	}
+	if _, err := s.app.Call(ctx, appMethodThreadCompact, map[string]any{
+		"threadId": thread.ThreadID,
+	}); err != nil {
+		s.turnMu.Unlock()
+		return nil, err
+	}
+	stream := newStream(s.app, s.client.killGrace, thread.ThreadID, "", "manual")
+	stream.closeAppOnDrain = false
+	s.setActive(stream)
+	go func() {
+		defer s.turnMu.Unlock()
+		stream.drain(ctx)
+		s.clearActive(stream)
+	}()
+	return stream, nil
+}
+
+func (s *Session) RewindTo(ctx context.Context, anchor string) (string, error) {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	if strings.TrimSpace(s.ID()) == "" {
+		return "", errors.New("codex: missing thread id for rollback")
+	}
+	numTurns, err := strconv.Atoi(strings.TrimSpace(anchor))
+	if err != nil || numTurns <= 0 {
+		return "", errors.New("codex: thread/rollback numTurns must be >= 1")
+	}
+	thread, err := s.ensureThread(ctx, runSpec{
+		resumeID: s.ID(),
+		cwd:      s.client.cwd,
+		sandbox:  s.client.sandbox,
+		approval: s.client.approval,
+	})
+	if err != nil {
+		return "", err
+	}
+	raw, err := s.app.Call(ctx, appMethodThreadRollback, map[string]any{
+		"threadId": thread.ThreadID,
+		"numTurns": numTurns,
+	})
+	if err != nil {
+		return "", err
+	}
+	var res appThreadResponse
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", err
+	}
+	if res.Thread.ID == "" {
+		return "", errors.New("codex: thread/rollback response missing id")
+	}
+	s.mu.Lock()
+	s.sid = res.Thread.ID
+	s.threadReady = true
+	s.mu.Unlock()
+	return res.Thread.ID, nil
+}
+
+func (s *Session) ActiveStream() *Stream {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active
+}
+
+func (s *Session) Close(ctx context.Context) error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	app := s.app
+	s.mu.Unlock()
+	if app == nil {
+		return nil
+	}
+	return app.terminate(ctx, s.client.killGrace)
 }
 
 func (c *Client) Text(ctx context.Context, prompt string, opts ...RunOption) (string, error) {
@@ -268,6 +465,47 @@ func (c *Client) startOrResumeThread(ctx context.Context, app *appClient, spec r
 	return appThreadStartResult{}, errors.New("codex: thread response missing id")
 }
 
+func (s *Session) ensureThread(ctx context.Context, spec runSpec) (appThreadStartResult, error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return appThreadStartResult{}, errors.New("codex: session closed")
+	}
+	if s.threadReady && strings.TrimSpace(s.sid) != "" {
+		thread := appThreadStartResult{ThreadID: s.sid}
+		s.mu.Unlock()
+		return thread, nil
+	}
+	if spec.resumeID == "" {
+		spec.resumeID = s.sid
+	}
+	s.mu.Unlock()
+
+	thread, err := s.client.startOrResumeThread(ctx, s.app, spec)
+	if err != nil {
+		return appThreadStartResult{}, err
+	}
+	s.mu.Lock()
+	s.sid = thread.ThreadID
+	s.threadReady = true
+	s.mu.Unlock()
+	return thread, nil
+}
+
+func (s *Session) setActive(stream *Stream) {
+	s.mu.Lock()
+	s.active = stream
+	s.mu.Unlock()
+}
+
+func (s *Session) clearActive(stream *Stream) {
+	s.mu.Lock()
+	if s.active == stream {
+		s.active = nil
+	}
+	s.mu.Unlock()
+}
+
 type Stream struct {
 	app       *appClient
 	killGrace time.Duration
@@ -283,10 +521,12 @@ type Stream struct {
 
 	userInputMu       sync.Mutex
 	userInputRequests map[string]json.RawMessage
+	approvalRequests  map[string]approvalRequest
 	compactSeen       map[string]struct{}
 	compactTrigger    string
 
-	closeOnce sync.Once
+	closeOnce       sync.Once
+	closeAppOnDrain bool
 }
 
 func newStream(app *appClient, killGrace time.Duration, threadID, turnID, compactTrigger string) *Stream {
@@ -297,8 +537,10 @@ func newStream(app *appClient, killGrace time.Duration, threadID, turnID, compac
 		sessionID:         threadID,
 		turnID:            turnID,
 		userInputRequests: map[string]json.RawMessage{},
+		approvalRequests:  map[string]approvalRequest{},
 		compactSeen:       map[string]struct{}{},
 		compactTrigger:    compactTrigger,
+		closeAppOnDrain:   true,
 	}
 }
 
@@ -326,6 +568,9 @@ func (s *Stream) Err() error {
 }
 
 func (s *Stream) Close(ctx context.Context) error {
+	if !s.closeAppOnDrain {
+		return s.Err()
+	}
 	var err error
 	s.closeOnce.Do(func() {
 		err = s.app.terminate(ctx, s.killGrace)

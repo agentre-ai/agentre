@@ -46,7 +46,7 @@ describe("DeviceRow", () => {
         onRemove={() => {}}
       />,
     );
-    expect(screen.getByText("OS 默认")).toBeInTheDocument();
+    expect(screen.getByText("OS Default")).toBeInTheDocument();
   });
   it("renders 尚未连接 when LastSeenAt = 0", () => {
     render(
@@ -59,7 +59,7 @@ describe("DeviceRow", () => {
         onRemove={() => {}}
       />,
     );
-    expect(screen.getByText(/尚未连接/)).toBeInTheDocument();
+    expect(screen.getByText(/Never connected/)).toBeInTheDocument();
   });
   it("renders friendly error for tofu_mismatch in destructive style", () => {
     const d = { ...baseDevice, lastError: "tofu_mismatch" };
@@ -73,7 +73,9 @@ describe("DeviceRow", () => {
         onRemove={() => {}}
       />,
     );
-    expect(screen.getByText(/身份指纹/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/identity fingerprint changed/),
+    ).toBeInTheDocument();
   });
   it("fires onRemove from action menu", async () => {
     const user = userEvent.setup();
@@ -88,8 +90,8 @@ describe("DeviceRow", () => {
         onRemove={onRemove}
       />,
     );
-    await user.click(screen.getByLabelText("更多操作"));
-    await user.click(await screen.findByText("解除配对"));
+    await user.click(screen.getByLabelText("More actions"));
+    await user.click(await screen.findByText("Unpair"));
     expect(onRemove).toHaveBeenCalled();
   });
 });

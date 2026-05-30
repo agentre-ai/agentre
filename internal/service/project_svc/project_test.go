@@ -43,8 +43,10 @@ func TestProjectSvcCreate_Happy(t *testing.T) {
 		ctx, mp, _, _, svc := setupProjectSvc(t)
 		tmp := t.TempDir()
 		mp.EXPECT().FindByName(ctx, int64(0), "Agentre").Return(nil, nil)
+		mp.EXPECT().NextSortOrder(ctx, int64(0)).Return(3, nil)
 		mp.EXPECT().Create(ctx, gomock.Any()).DoAndReturn(func(_ context.Context, p *project_entity.Project) error {
 			p.ID = 42
+			convey.So(p.SortOrder, convey.ShouldEqual, 3)
 			return nil
 		})
 
@@ -67,6 +69,53 @@ func TestProjectSvcCreate_DuplicateName(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "项目")
+}
+
+func TestProjectSvcReorder(t *testing.T) {
+	convey.Convey("Reorder 按同级完整 ID 列表持久化排序", t, func() {
+		ctx, mp, _, _, svc := setupProjectSvc(t)
+		mp.EXPECT().ListByParent(ctx, int64(7)).Return([]*project_entity.Project{
+			{ID: 1, ParentID: 7, Name: "A"},
+			{ID: 2, ParentID: 7, Name: "B"},
+			{ID: 3, ParentID: 7, Name: "C"},
+		}, nil)
+		mp.EXPECT().ReorderSiblings(ctx, int64(7), []int64{3, 1, 2}).Return(nil)
+
+		err := svc.Reorder(ctx, &project_svc.ReorderProjectsRequest{
+			ParentID:   7,
+			OrderedIDs: []int64{3, 1, 2},
+		})
+		require.NoError(t, err)
+	})
+
+	convey.Convey("Reorder 拒绝缺失 sibling 的局部列表", t, func() {
+		ctx, mp, _, _, svc := setupProjectSvc(t)
+		mp.EXPECT().ListByParent(ctx, int64(7)).Return([]*project_entity.Project{
+			{ID: 1, ParentID: 7, Name: "A"},
+			{ID: 2, ParentID: 7, Name: "B"},
+			{ID: 3, ParentID: 7, Name: "C"},
+		}, nil)
+
+		err := svc.Reorder(ctx, &project_svc.ReorderProjectsRequest{
+			ParentID:   7,
+			OrderedIDs: []int64{3, 1},
+		})
+		require.Error(t, err)
+	})
+
+	convey.Convey("Reorder 拒绝重复 ID", t, func() {
+		ctx, mp, _, _, svc := setupProjectSvc(t)
+		mp.EXPECT().ListByParent(ctx, int64(7)).Return([]*project_entity.Project{
+			{ID: 1, ParentID: 7, Name: "A"},
+			{ID: 2, ParentID: 7, Name: "B"},
+		}, nil)
+
+		err := svc.Reorder(ctx, &project_svc.ReorderProjectsRequest{
+			ParentID:   7,
+			OrderedIDs: []int64{1, 1},
+		})
+		require.Error(t, err)
+	})
 }
 
 func TestProjectSvcCreate_PathNotExist(t *testing.T) {

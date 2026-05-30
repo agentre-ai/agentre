@@ -84,7 +84,7 @@ describe("flattenSessions", () => {
     const items = flattenSessions([
       mkAgent({ sessions: [mkSession({ id: 7, title: "" })] }),
     ]);
-    expect(items[0].title).toBe("(未命名会话)");
+    expect(items[0].title).toBe("(Untitled session)");
   });
 });
 

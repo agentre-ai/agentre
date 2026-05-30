@@ -80,20 +80,22 @@ describe("LlmProvidersPanel", () => {
     });
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("table", { name: "LLM 供应商列表" });
-    await user.click(screen.getByRole("button", { name: "新增供应商" }));
+    await screen.findByRole("table", { name: "LLM provider list" });
+    await user.click(screen.getByRole("button", { name: "New Provider" }));
 
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(
-      screen.getByPlaceholderText("例如：production / 本地 Ollama"),
+      screen.getByPlaceholderText("Example: production / local Ollama"),
       { target: { value: "Test" } },
     );
     fireEvent.change(
-      screen.getByPlaceholderText("sk-... 或自托管 token，留空走匿名"),
+      screen.getByPlaceholderText(
+        "sk-... or self-hosted token. Leave empty for anonymous access.",
+      ),
       { target: { value: "sk-test" } },
     );
 
-    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(mocks.CreateLLMProvider).toHaveBeenCalled();
@@ -105,7 +107,7 @@ describe("LlmProvidersPanel", () => {
 
     // Copy button should be present
     expect(
-      within(dialog).getByRole("button", { name: /复制 Provider Key/ }),
+      within(dialog).getByRole("button", { name: /Copy Provider Key/ }),
     ).toBeInTheDocument();
   });
 
@@ -143,12 +145,12 @@ describe("LlmProvidersPanel", () => {
     render(<LlmProvidersPanel />);
 
     // Open edit dialog for the existing provider (which has a providerKey).
-    const editBtn = await screen.findByRole("button", { name: /编辑 Prod/ });
+    const editBtn = await screen.findByRole("button", { name: /Edit Prod/ });
     await user.click(editBtn);
 
     const dialog = await screen.findByRole("dialog");
     const copyBtn = within(dialog).getByRole("button", {
-      name: /复制 Provider Key/,
+      name: /Copy Provider Key/,
     });
     await user.click(copyBtn);
 
@@ -160,34 +162,36 @@ describe("LlmProvidersPanel", () => {
     const mocks = installAppMock();
     render(<LlmProvidersPanel />);
 
-    await screen.findByRole("table", { name: "LLM 供应商列表" });
-    await user.click(screen.getByRole("button", { name: "新增供应商" }));
+    await screen.findByRole("table", { name: "LLM provider list" });
+    await user.click(screen.getByRole("button", { name: "New Provider" }));
 
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(
-      screen.getByPlaceholderText("例如：production / 本地 Ollama"),
+      screen.getByPlaceholderText("Example: production / local Ollama"),
       {
         target: { value: "Claude" },
       },
     );
     fireEvent.change(
-      screen.getByPlaceholderText("sk-... 或自托管 token，留空走匿名"),
+      screen.getByPlaceholderText(
+        "sk-... or self-hosted token. Leave empty for anonymous access.",
+      ),
       {
         target: { value: "sk-test" },
       },
     );
     fireEvent.change(
-      screen.getByPlaceholderText("例如：claude-opus-4-7 / gpt-4o-mini"),
+      screen.getByPlaceholderText("Example: claude-opus-4-7 / gpt-4o-mini"),
       {
         target: { value: "claude-sonnet-4-6" },
       },
     );
 
     const contextWindow = screen.getByLabelText(
-      "上下文窗口",
+      "Context Window",
     ) as HTMLInputElement;
     const maxOutput = screen.getByLabelText(
-      "最大输出 Token",
+      "Max Output Tokens",
     ) as HTMLInputElement;
     fireEvent.change(contextWindow, { target: { value: "200000" } });
     fireEvent.change(maxOutput, { target: { value: "64000" } });
@@ -195,7 +199,7 @@ describe("LlmProvidersPanel", () => {
     expect(contextWindow).toBeValid();
     expect(maxOutput).toBeValid();
 
-    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(mocks.CreateLLMProvider).toHaveBeenCalledWith(
@@ -208,6 +212,6 @@ describe("LlmProvidersPanel", () => {
       );
     });
 
-    expect(dialog).not.toHaveTextContent("保存失败");
+    expect(dialog).not.toHaveTextContent("Save failed");
   });
 });

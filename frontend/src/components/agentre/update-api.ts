@@ -31,6 +31,15 @@ export type MirrorInfo = {
   url: string;
 };
 
+// BugReportInfo 与后端 app.BugReportInfo 对齐，用于预填 GitHub Bug 反馈模板。
+export type BugReportInfo = {
+  version: string;
+  commit: string;
+  os: string;
+  arch: string;
+  osLabel: string;
+};
+
 // 校验文件下载失败的错误前缀，与后端 update_svc.ChecksumFetchError 一致。
 export const CHECKSUM_FETCH_ERROR_PREFIX = "CHECKSUM_FETCH_FAILED:";
 
@@ -72,4 +81,20 @@ export function setDownloadMirror(mirror: string): Promise<void> {
 
 export function restartApp(): Promise<void> {
   return call<void>("RestartApp");
+}
+
+export function getBugReportInfo(): Promise<BugReportInfo> {
+  return call<BugReportInfo>("GetBugReportInfo");
+}
+
+export function openLogsDir(): Promise<void> {
+  return call<void>("OpenLogsDir");
+}
+
+export function getDebugLogging(): Promise<boolean> {
+  return call<boolean>("GetDebugLogging");
+}
+
+export function setDebugLogging(enabled: boolean): Promise<void> {
+  return call<void>("SetDebugLogging", enabled);
 }

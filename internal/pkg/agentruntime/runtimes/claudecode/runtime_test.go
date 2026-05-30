@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -31,7 +32,10 @@ func TestClaudeCodeCapabilities(t *testing.T) {
 		So(caps.Has(capability.CapAnswerUserAsk), ShouldBeTrue)
 		So(caps.Has(capability.CapToolPermission), ShouldBeTrue)
 		So(caps.Has(capability.CapForkSession), ShouldBeTrue)
-		So(caps.Has(capability.CapReportContextWindow), ShouldBeFalse)
+		// CapReportContextWindow=true 由 translator EventInit 路径承担:
+		// system.init 帧带 model → llmcatalog.Lookup → emit ContextWindowUpdated。
+		// Claude Code SDK 自己不报窗口,这里靠 catalog 兜底,语义和 codex 对称。
+		So(caps.Has(capability.CapReportContextWindow), ShouldBeTrue)
 	})
 
 	Convey("claudecode PermissionModeMeta", t, func() {
@@ -60,6 +64,7 @@ type fakeCCHandle struct {
 	id                     string
 	setPermissionModeCalls []string
 	setPermissionModeErr   error
+	stream                 ccStream
 }
 
 func (f *fakeCCHandle) ID() string                      { return f.id }
@@ -74,6 +79,9 @@ func (f *fakeCCHandle) RespondToControl(context.Context, string, claudecode.Perm
 }
 func (f *fakeCCHandle) ExitErr() error { return nil }
 func (f *fakeCCHandle) Stream(context.Context, string) (ccStream, error) {
+	if f.stream != nil {
+		return f.stream, nil
+	}
 	return &fakeCCStream{}, nil
 }
 
@@ -82,6 +90,22 @@ type fakeCCStream struct{}
 func (s *fakeCCStream) Next() bool              { return false }
 func (s *fakeCCStream) Event() claudecode.Event { return claudecode.Event{} }
 func (s *fakeCCStream) SessionID() string       { return "" }
+
+type eventCCStream struct {
+	events []claudecode.Event
+	idx    int
+}
+
+func (s *eventCCStream) Next() bool {
+	if s.idx >= len(s.events) {
+		return false
+	}
+	s.idx++
+	return true
+}
+
+func (s *eventCCStream) Event() claudecode.Event { return s.events[s.idx-1] }
+func (s *eventCCStream) SessionID() string       { return "" }
 
 // TestRun_NoChatRepoRegistered 回归 daemon 路径下的 nil panic:
 // agentred daemon 不 bootstrap cago/chat_repo,Runtime.acquireSession 旧实现
@@ -141,6 +165,75 @@ func TestRun_NoChatRepoRegistered(t *testing.T) {
 		for range events {
 		}
 		So(launchMode, ShouldEqual, "bypassPermissions")
+		r.CloseAllSessions(ctx)
+	})
+}
+
+func TestRun_ErrorFollowedByProgressClearsStopErr(t *testing.T) {
+	Convey("claudecode runtime: EventError 后还有进展事件和完成时, StopErr 不应污染成功 turn", t, func() {
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			return &fakeCCHandle{
+				id: "fake-sid",
+				stream: &eventCCStream{events: []claudecode.Event{
+					{Kind: claudecode.EventError, Err: errors.New("temporary upstream hiccup")},
+					{Kind: claudecode.EventTextDelta, Text: "recovered"},
+					{Kind: claudecode.EventDone},
+				}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		events, result, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 42,
+			Cwd:       t.TempDir(),
+			UserText:  "hello",
+		})
+		So(err, ShouldBeNil)
+
+		var text string
+		for ev := range events {
+			if td, ok := ev.(agentruntime.TextDelta); ok {
+				text += td.Text
+			}
+		}
+
+		So(text, ShouldEqual, "recovered")
+		So(result.StopErr, ShouldBeNil)
+		r.CloseAllSessions(ctx)
+	})
+}
+
+func TestRun_ErrorFollowedOnlyByMetadataKeepsStopErr(t *testing.T) {
+	Convey("claudecode runtime: EventError 后只有 metadata 和完成时, StopErr 仍应保留", t, func() {
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			return &fakeCCHandle{
+				id: "fake-sid",
+				stream: &eventCCStream{events: []claudecode.Event{
+					{Kind: claudecode.EventError, Err: errors.New("temporary upstream hiccup")},
+					{Kind: claudecode.EventUsage},
+					{Kind: claudecode.EventDone},
+				}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		events, result, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 42,
+			Cwd:       t.TempDir(),
+			UserText:  "hello",
+		})
+		So(err, ShouldBeNil)
+		for range events {
+		}
+
+		So(result.StopErr, ShouldNotBeNil)
+		So(result.StopErr.Error(), ShouldContainSubstring, "temporary upstream hiccup")
 		r.CloseAllSessions(ctx)
 	})
 }

@@ -131,7 +131,9 @@ describe("AgentBackendsPanel", () => {
     installAppMock();
     render(<AgentBackendsPanel />);
 
-    const table = await screen.findByRole("table", { name: "Agent 后端列表" });
+    const table = await screen.findByRole("table", {
+      name: "Agent backend list",
+    });
     await waitFor(() => {
       expect(within(table).getByText("默认助手")).toBeInTheDocument();
       expect(
@@ -165,10 +167,12 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    const table = await screen.findByRole("table", { name: "Agent 后端列表" });
+    const table = await screen.findByRole("table", {
+      name: "Agent backend list",
+    });
     await waitFor(() => {
       expect(within(table).getByText("孤儿后端")).toBeInTheDocument();
-      expect(within(table).getByText("需处理")).toBeInTheDocument();
+      expect(within(table).getByText("Needs action")).toBeInTheDocument();
     });
   });
 
@@ -177,18 +181,18 @@ describe("AgentBackendsPanel", () => {
     const mocks = installAppMock();
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
     // The Input is inside a <label> whose text node says "名称". Use placeholder
     // to grab it directly since shadcn Input doesn't tie label via htmlFor here.
     const nameInput = within(dialog).getByPlaceholderText(
-      "例如：本机 · Claude Code",
+      "Example: Local · Claude Code",
     );
     fireEvent.change(nameInput, { target: { value: "新助手" } });
 
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(mocks.CreateAgentBackend).toHaveBeenCalledWith(
@@ -212,7 +216,9 @@ describe("AgentBackendsPanel", () => {
     await screen.findByText("默认助手");
 
     const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: /测试连接/ }));
+    fireEvent.click(
+      within(row).getByRole("button", { name: /Test connection/ }),
+    );
 
     await waitFor(() => {
       expect(screen.getByText(/128ms/)).toBeInTheDocument();
@@ -244,7 +250,9 @@ describe("AgentBackendsPanel", () => {
     await screen.findByText("默认助手");
 
     const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: /测试连接/ }));
+    fireEvent.click(
+      within(row).getByRole("button", { name: /Test connection/ }),
+    );
 
     await waitFor(() =>
       expect(screen.getByText(/401 Unauthorized/)).toBeInTheDocument(),
@@ -260,13 +268,15 @@ describe("AgentBackendsPanel", () => {
     render(<AgentBackendsPanel />);
     await screen.findByText("默认助手");
 
-    fireEvent.click(screen.getByRole("button", { name: /新增/ }));
+    fireEvent.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByPlaceholderText(/Claude Code/), {
       target: { value: "draft-name" },
     });
 
-    fireEvent.click(within(dialog).getByRole("button", { name: /测试连接/ }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /Test Connection/ }),
+    );
 
     await waitFor(() =>
       expect(mocks.TestAgentBackend).toHaveBeenCalledWith(
@@ -291,12 +301,14 @@ describe("AgentBackendsPanel", () => {
     render(<AgentBackendsPanel />);
     await screen.findByText("默认助手");
 
-    fireEvent.click(screen.getByRole("button", { name: /新增/ }));
+    fireEvent.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByPlaceholderText(/Claude Code/), {
       target: { value: "draft-name" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: /测试连接/ }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /Test Connection/ }),
+    );
 
     await waitFor(() => {
       expect(within(dialog).getByText(/87ms/)).toBeInTheDocument();
@@ -313,12 +325,14 @@ describe("AgentBackendsPanel", () => {
     render(<AgentBackendsPanel />);
     await screen.findByText("默认助手");
 
-    fireEvent.click(screen.getByRole("button", { name: /新增/ }));
+    fireEvent.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByPlaceholderText(/Claude Code/), {
       target: { value: "draft-name" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: /测试连接/ }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /Test Connection/ }),
+    );
 
     const pong = await within(dialog).findByText(/pong/);
     const footer = dialog.querySelector(
@@ -358,13 +372,15 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    const table = await screen.findByRole("table", { name: "Agent 后端列表" });
+    const table = await screen.findByRole("table", {
+      name: "Agent backend list",
+    });
     await waitFor(() => {
       expect(
         within(table).getByText("无 provider 的 claude"),
       ).toBeInTheDocument();
-      expect(within(table).getByText(/走 CLI 自身登录/)).toBeInTheDocument();
-      expect(within(table).queryByText("需处理")).not.toBeInTheDocument();
+      expect(within(table).getByText(/Use CLI login/)).toBeInTheDocument();
+      expect(within(table).queryByText("Needs action")).not.toBeInTheDocument();
     });
   });
 
@@ -424,14 +440,14 @@ describe("AgentBackendsPanel", () => {
 
       await screen.findByText(name);
       const row = screen.getByText(name).closest("tr") as HTMLElement;
-      await user.click(within(row).getByRole("button", { name: /编辑/ }));
+      await user.click(within(row).getByRole("button", { name: /Edit/ }));
 
       const dialog = await screen.findByRole("dialog");
       expect(
-        within(dialog).queryByText(/原 LLM 供应商已停用/),
+        within(dialog).queryByText(/original LLM provider is disabled/),
       ).not.toBeInTheDocument();
       expect(
-        within(dialog).getByText(/不关联（走 CLI 自身登录）/),
+        within(dialog).getByText(/No link \(use CLI login\)/),
       ).toBeInTheDocument();
     },
   );
@@ -441,12 +457,12 @@ describe("AgentBackendsPanel", () => {
     const mocks = installAppMock();
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(
-      within(dialog).getByPlaceholderText("例如：本机 · Claude Code"),
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "claude 走自身登录" } },
     );
 
@@ -455,7 +471,7 @@ describe("AgentBackendsPanel", () => {
       within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
     );
 
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(mocks.CreateAgentBackend).toHaveBeenCalledWith(
@@ -477,19 +493,19 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(
-      within(dialog).getByPlaceholderText("例如：本机 · Claude Code"),
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "本地 claude" } },
     );
     await user.click(
       within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
     );
 
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(mocks.CreateAgentBackend).toHaveBeenCalledWith(
@@ -512,12 +528,12 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(
-      within(dialog).getByPlaceholderText("例如：本机 · Claude Code"),
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "远端 claude" } },
     );
     await user.click(
@@ -525,27 +541,27 @@ describe("AgentBackendsPanel", () => {
     );
 
     await user.click(
-      within(dialog).getByRole("combobox", { name: "运行设备" }),
+      within(dialog).getByRole("combobox", { name: "Runtime Device" }),
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
 
     await user.click(
-      within(dialog).getByRole("combobox", { name: "LLM 供应商" }),
+      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
 
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     const syncDialog = await screen.findByRole("dialog", {
-      name: /同步远端 LLM Provider/,
+      name: /Sync Remote LLM Provider/,
     });
     expect(
-      within(syncDialog).getByText(/API Key 写入远端 agentred 状态文件/),
+      within(syncDialog).getByText(/API key to the remote agentred state file/),
     ).toBeInTheDocument();
     expect(mocks.CreateAgentBackend).not.toHaveBeenCalled();
 
     await user.click(
-      within(syncDialog).getByRole("button", { name: "同步并保存" }),
+      within(syncDialog).getByRole("button", { name: "Sync and Save" }),
     );
 
     await waitFor(() => {
@@ -570,44 +586,44 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const editorDialog = await screen.findByRole("dialog");
     fireEvent.change(
-      within(editorDialog).getByPlaceholderText("例如：本机 · Claude Code"),
+      within(editorDialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "远端 claude" } },
     );
     await user.click(
       within(editorDialog).getByRole("button", { name: /Claude Code CLI/ }),
     );
     await user.click(
-      within(editorDialog).getByRole("combobox", { name: "运行设备" }),
+      within(editorDialog).getByRole("combobox", { name: "Runtime Device" }),
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(editorDialog).getByRole("combobox", { name: "LLM 供应商" }),
+      within(editorDialog).getByRole("combobox", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
 
     expect(
-      within(editorDialog).getByText("远端 Provider 同步"),
+      within(editorDialog).getByText("Remote Provider Sync"),
     ).toBeInTheDocument();
     await user.click(
-      within(editorDialog).getByRole("button", { name: "同步到远端" }),
+      within(editorDialog).getByRole("button", { name: "Sync to Remote" }),
     );
 
     const syncDialog = await screen.findByRole("dialog", {
-      name: /同步远端 LLM Provider/,
+      name: /Sync Remote LLM Provider/,
     });
     await user.click(
-      within(syncDialog).getByRole("button", { name: "同步到远端" }),
+      within(syncDialog).getByRole("button", { name: "Sync to Remote" }),
     );
 
     await waitFor(() => {
       expect(mocks.RemoteDeviceSyncProvider).toHaveBeenCalledWith(7, "key-1");
       expect(mocks.CreateAgentBackend).not.toHaveBeenCalled();
-      expect(screen.getByText(/已同步远端 Provider/)).toBeInTheDocument();
+      expect(screen.getByText(/Remote provider synced/)).toBeInTheDocument();
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
   });
@@ -624,39 +640,39 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const editorDialog = await screen.findByRole("dialog");
     fireEvent.change(
-      within(editorDialog).getByPlaceholderText("例如：本机 · Claude Code"),
+      within(editorDialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "远端 claude" } },
     );
     await user.click(
       within(editorDialog).getByRole("button", { name: /Claude Code CLI/ }),
     );
     await user.click(
-      within(editorDialog).getByRole("combobox", { name: "运行设备" }),
+      within(editorDialog).getByRole("combobox", { name: "Runtime Device" }),
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(editorDialog).getByRole("combobox", { name: "LLM 供应商" }),
+      within(editorDialog).getByRole("combobox", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
     await user.click(
-      within(editorDialog).getByRole("button", { name: "同步到远端" }),
+      within(editorDialog).getByRole("button", { name: "Sync to Remote" }),
     );
 
     const syncDialog = await screen.findByRole("dialog", {
-      name: /同步远端 LLM Provider/,
+      name: /Sync Remote LLM Provider/,
     });
     await user.click(
-      within(syncDialog).getByRole("button", { name: "同步到远端" }),
+      within(syncDialog).getByRole("button", { name: "Sync to Remote" }),
     );
 
     await waitFor(() => {
       expect(mocks.RemoteDeviceSyncProvider).toHaveBeenCalledWith(7, "key-1");
-      expect(within(syncDialog).getByText("同步失败")).toBeInTheDocument();
+      expect(within(syncDialog).getByText("Sync Failed")).toBeInTheDocument();
       expect(
         within(syncDialog).getByText(/remote sync failed/),
       ).toBeInTheDocument();
@@ -681,50 +697,56 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const editorDialog = await screen.findByRole("dialog");
     fireEvent.change(
-      within(editorDialog).getByPlaceholderText("例如：本机 · Claude Code"),
+      within(editorDialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "远端 claude" } },
     );
     await user.click(
       within(editorDialog).getByRole("button", { name: /Claude Code CLI/ }),
     );
     await user.click(
-      within(editorDialog).getByRole("combobox", { name: "运行设备" }),
+      within(editorDialog).getByRole("combobox", { name: "Runtime Device" }),
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(editorDialog).getByRole("combobox", { name: "LLM 供应商" }),
+      within(editorDialog).getByRole("combobox", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
     await user.click(
-      within(editorDialog).getByRole("button", { name: "同步到远端" }),
+      within(editorDialog).getByRole("button", { name: "Sync to Remote" }),
     );
 
     const syncDialog = await screen.findByRole("dialog", {
-      name: /同步远端 LLM Provider/,
+      name: /Sync Remote LLM Provider/,
     });
     await user.click(
-      within(syncDialog).getByRole("button", { name: "同步到远端" }),
+      within(syncDialog).getByRole("button", { name: "Sync to Remote" }),
     );
 
     await waitFor(() => {
-      expect(within(syncDialog).getByText("同步失败")).toBeInTheDocument();
+      expect(within(syncDialog).getByText("Sync Failed")).toBeInTheDocument();
       expect(
-        within(syncDialog).getByText(/旧版远端 agentred 仍在写系统 keychain/),
+        within(syncDialog).getByText(
+          /older remote agentred is still writing to the system keychain/i,
+        ),
       ).toBeInTheDocument();
       expect(
-        within(syncDialog).getByText(/当前版本会直接写入 agentred 状态文件/),
+        within(syncDialog).getByText(
+          /current version writes directly to the agentred state file/i,
+        ),
       ).toBeInTheDocument();
       expect(
         within(syncDialog).getByText(/org\.freedesktop\.secrets/),
       ).toBeInTheDocument();
     });
     expect(
-      screen.queryAllByText(/旧版远端 agentred 仍在写系统 keychain/),
+      screen.queryAllByText(
+        /older remote agentred is still writing to the system keychain/i,
+      ),
     ).toHaveLength(1);
   });
 
@@ -742,27 +764,27 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(
-      within(dialog).getByPlaceholderText("例如：本机 · Claude Code"),
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "已同步 claude" } },
     );
     await user.click(
       within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
     );
     await user.click(
-      within(dialog).getByRole("combobox", { name: "运行设备" }),
+      within(dialog).getByRole("combobox", { name: "Runtime Device" }),
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
     await user.click(
-      within(dialog).getByRole("combobox", { name: "LLM 供应商" }),
+      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
     );
     await user.click(screen.getByRole("option", { name: /Anthropic/ }));
 
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(mocks.CreateAgentBackend).toHaveBeenCalledWith(
@@ -774,7 +796,7 @@ describe("AgentBackendsPanel", () => {
     });
     expect(mocks.RemoteDeviceSyncProvider).not.toHaveBeenCalled();
     expect(
-      screen.queryByRole("dialog", { name: /同步远端 LLM Provider/ }),
+      screen.queryByRole("dialog", { name: /Sync Remote LLM Provider/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -808,13 +830,13 @@ describe("AgentBackendsPanel", () => {
     const row = screen
       .getByText("走 gateway 的 claude")
       .closest("tr") as HTMLElement;
-    await user.click(within(row).getByRole("button", { name: /编辑/ }));
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
 
     const dialog = await screen.findByRole("dialog");
     await user.click(
-      within(dialog).getByRole("button", { name: /清除供应商关联/ }),
+      within(dialog).getByRole("button", { name: /Clear provider link/ }),
     );
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(mocks.UpdateAgentBackend).toHaveBeenCalledWith(
@@ -834,8 +856,8 @@ describe("AgentBackendsPanel", () => {
     installAppMock({ ResolveAgentBackendCLIPath: resolveFn });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
       within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
@@ -860,8 +882,8 @@ describe("AgentBackendsPanel", () => {
     installAppMock({ ResolveAgentBackendCLIPath: resolveFn });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
 
@@ -881,18 +903,18 @@ describe("AgentBackendsPanel", () => {
     const mocks = installAppMock();
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(
-      within(dialog).getByPlaceholderText("例如：本机 · Claude Code"),
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "codex xhigh" } },
     );
     await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
 
     await user.click(
-      within(dialog).getByRole("combobox", { name: "思考力度" }),
+      within(dialog).getByRole("combobox", { name: "Reasoning Effort" }),
     );
     expect(screen.getByRole("option", { name: /xhigh/ })).toBeInTheDocument();
     expect(
@@ -900,7 +922,7 @@ describe("AgentBackendsPanel", () => {
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole("option", { name: /xhigh/ }));
 
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(mocks.CreateAgentBackend).toHaveBeenCalledWith(
@@ -922,8 +944,8 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
       within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
@@ -945,8 +967,8 @@ describe("AgentBackendsPanel", () => {
     installAppMock({ ResolveAgentBackendCLIPath: resolveFn });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(
       within(dialog).getByRole("button", { name: /Claude Code CLI/ }),
@@ -960,9 +982,7 @@ describe("AgentBackendsPanel", () => {
     // 用户手改了值，然后点按钮重识别 → 按钮要覆盖手填值。
     fireEvent.change(input, { target: { value: "/wrong/path" } });
     nextPath = "/second/claude";
-    await user.click(
-      within(dialog).getByRole("button", { name: /自动识别 CLI 路径/ }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: /Detect/ }));
 
     await waitFor(() => expect(input.value).toBe("/second/claude"));
     expect(resolveFn).toHaveBeenCalledTimes(2);
@@ -977,8 +997,8 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
 
@@ -987,12 +1007,12 @@ describe("AgentBackendsPanel", () => {
     ) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "/manual/codex" } });
 
-    await user.click(
-      within(dialog).getByRole("button", { name: /自动识别 CLI 路径/ }),
-    );
+    await user.click(within(dialog).getByRole("button", { name: /Detect/ }));
 
     await waitFor(() =>
-      expect(within(dialog).getByText(/未找到 codex/)).toBeInTheDocument(),
+      expect(
+        within(dialog).getByText(/codex was not found in \$PATH/),
+      ).toBeInTheDocument(),
     );
     // miss 时不能覆盖用户手填的值。
     expect(input.value).toBe("/manual/codex");
@@ -1014,11 +1034,13 @@ describe("AgentBackendsPanel", () => {
     await screen.findByText("默认助手");
 
     const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: /测试连接/ }));
+    fireEvent.click(
+      within(row).getByRole("button", { name: /Test connection/ }),
+    );
 
     // 按钮 title 切换为"取消测试"
     const cancelBtn = await within(row).findByRole("button", {
-      name: /取消测试/,
+      name: /Cancel test/,
     });
     expect(capturedRequestId).not.toBe("");
     fireEvent.click(cancelBtn);
@@ -1028,10 +1050,10 @@ describe("AgentBackendsPanel", () => {
         expect.objectContaining({ requestId: capturedRequestId }),
       ),
     );
-    // UI 应恢复成"测试连接"
+    // UI 应恢复成"Test Connection"
     await waitFor(() =>
       expect(
-        within(row).getByRole("button", { name: /测试连接/ }),
+        within(row).getByRole("button", { name: /Test connection/ }),
       ).toBeInTheDocument(),
     );
   });
@@ -1047,7 +1069,9 @@ describe("AgentBackendsPanel", () => {
     await screen.findByText("默认助手");
 
     const row = screen.getByText("默认助手").closest("tr") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: /测试连接/ }));
+    fireEvent.click(
+      within(row).getByRole("button", { name: /Test connection/ }),
+    );
 
     const banner = await screen.findByRole("status");
     // banner 文本应短于完整 message
@@ -1068,12 +1092,12 @@ describe("AgentBackendsPanel", () => {
     });
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(
-      within(dialog).getByPlaceholderText("例如：本机 · Claude Code"),
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
       { target: { value: "远端 claude" } },
     );
     await user.click(
@@ -1082,30 +1106,32 @@ describe("AgentBackendsPanel", () => {
 
     // 选远端 device
     await user.click(
-      within(dialog).getByRole("combobox", { name: "运行设备" }),
+      within(dialog).getByRole("combobox", { name: "Runtime Device" }),
     );
     await user.click(screen.getByRole("option", { name: /linux-srv/ }));
 
     // 选 bypassPermissions
     await user.click(
-      within(dialog).getByRole("combobox", { name: "默认权限模式" }),
+      within(dialog).getByRole("combobox", { name: "Default Permission Mode" }),
     );
     await user.click(screen.getByRole("option", { name: /bypassPermissions/ }));
 
     // 提示出现 + 按钮可点
     expect(
-      within(dialog).getByText(/agentred 若以 root\/sudo 运行/),
+      within(dialog).getByText(/remote agentred runs as root\/sudo/),
     ).toBeInTheDocument();
     const addBtn = within(dialog).getByRole("button", {
-      name: /添加 IS_SANDBOX=1/,
+      name: /Add IS_SANDBOX=1/,
     });
 
     await user.click(addBtn);
 
-    // 按钮变成「已配置」灰态
-    expect(within(dialog).getByText(/已在 env_json 配置/)).toBeInTheDocument();
+    // 按钮变成「Configured in env_json」灰态
+    expect(
+      within(dialog).getByText(/Configured in env_json/),
+    ).toBeInTheDocument();
 
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(mocks.CreateAgentBackend).toHaveBeenCalledWith(
@@ -1124,8 +1150,8 @@ describe("AgentBackendsPanel", () => {
     installAppMock();
     render(<AgentBackendsPanel />);
 
-    await screen.findByRole("table", { name: "Agent 后端列表" });
-    await user.click(screen.getByRole("button", { name: /新增后端/ }));
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
 
     const dialog = await screen.findByRole("dialog");
     await user.click(
@@ -1134,16 +1160,16 @@ describe("AgentBackendsPanel", () => {
 
     // 不改 device → 保持本地
     await user.click(
-      within(dialog).getByRole("combobox", { name: "默认权限模式" }),
+      within(dialog).getByRole("combobox", { name: "Default Permission Mode" }),
     );
     await user.click(screen.getByRole("option", { name: /bypassPermissions/ }));
 
     // 危险提示仍在(沙箱/CI 那句),但 root/sudo 提示不应出现
     expect(
-      within(dialog).queryByText(/agentred 若以 root\/sudo 运行/),
+      within(dialog).queryByText(/remote agentred runs as root\/sudo/),
     ).not.toBeInTheDocument();
     expect(
-      within(dialog).queryByRole("button", { name: /添加 IS_SANDBOX=1/ }),
+      within(dialog).queryByRole("button", { name: /Add IS_SANDBOX=1/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -1160,12 +1186,14 @@ describe("AgentBackendsPanel", () => {
     render(<AgentBackendsPanel />);
     await screen.findByText("默认助手");
 
-    fireEvent.click(screen.getByRole("button", { name: /新增/ }));
+    fireEvent.click(screen.getByRole("button", { name: /New Backend/ }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByPlaceholderText(/Claude Code/), {
       target: { value: "draft-name" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: /测试连接/ }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: /Test Connection/ }),
+    );
 
     await waitFor(() =>
       expect(within(dialog).getByText(/401 Unauthorized/)).toBeInTheDocument(),

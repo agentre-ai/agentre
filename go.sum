@@ -31,8 +31,8 @@ github.com/bytedance/sonic v1.12.5/go.mod h1:B8Gt/XvtZ3Fqj+iSKMypzymZxw/FVwgIGKz
 github.com/bytedance/sonic/loader v0.1.1/go.mod h1:ncP89zfokxS5LZrJxl5z0UJcsk4M4yY2JpfqGeCtNLU=
 github.com/bytedance/sonic/loader v0.2.1 h1:1GgorWTqf12TA8mma4DDSbaQigE2wOgQo7iCjjJv3+E=
 github.com/bytedance/sonic/loader v0.2.1/go.mod h1:ncP89zfokxS5LZrJxl5z0UJcsk4M4yY2JpfqGeCtNLU=
-github.com/cago-frame/agents v0.0.0-20260516161421-330241fa1b07 h1:tdVINP3w+CQcyrxszBUz0QOKpWsXlIAirKO5+IOFufs=
-github.com/cago-frame/agents v0.0.0-20260516161421-330241fa1b07/go.mod h1:s72XmeaSoa3ysdqSTc4qliGqLHH6iBBGW6b8bFi0QRk=
+github.com/cago-frame/agents v0.0.0-20260529062759-8158e363e912 h1:cxeRVXsGlmdpmYuIQRO0sY6hZC10pC8HddzYTXIdkE4=
+github.com/cago-frame/agents v0.0.0-20260529062759-8158e363e912/go.mod h1:s72XmeaSoa3ysdqSTc4qliGqLHH6iBBGW6b8bFi0QRk=
 github.com/cago-frame/cago v0.0.0-20260423074423-9a4902409f48 h1:sTkPF1sq/O285geBLCxZ2KM0zKi+APAST5phiBCmsPQ=
 github.com/cago-frame/cago v0.0.0-20260423074423-9a4902409f48/go.mod h1:Z1Ej4kHLccX0njPnJA5K0eawJLC7VgwtcLegt38IjQA=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
@@ -52,6 +52,8 @@ github.com/coreos/go-semver v0.3.0/go.mod h1:nnelYz7RCh+5ahJtPPxZlU+153eP4D4r3Ee
 github.com/coreos/go-systemd/v22 v22.5.0 h1:RrqgGjYQKalulkV8NGVIfkXQf6YYmOyiJKk8iXXhfZs=
 github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
 github.com/cpuguy83/go-md2man/v2 v2.0.3/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
+github.com/creack/pty v1.1.21 h1:1/QdRyBaHHJP61QkWMXlOIBfsgdDeeKfK8SYVUWJKf0=
+github.com/creack/pty v1.1.21/go.mod h1:MOBLtS5ELjhRRrroQr9kyvTxUAFNvYEK993ew/Vr4O4=
 github.com/danieljoos/wincred v1.2.3 h1:v7dZC2x32Ut3nEfRH+vhoZGvN72+dQ/snVXo/vMFLdQ=
 github.com/danieljoos/wincred v1.2.3/go.mod h1:6qqX0WNrS4RzPZ1tnroDzq9kY3fu1KwE7MRLQK4X0bs=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

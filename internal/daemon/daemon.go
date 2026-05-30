@@ -19,7 +19,10 @@ import (
 	"agentre/internal/daemon/sessions"
 	"agentre/internal/daemon/state"
 	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"agentre/internal/pkg/ccoauth"
 	"agentre/internal/pkg/httpgateway"
+	"agentre/internal/pkg/pty"
+	"agentre/internal/pkg/pty/local"
 )
 
 // Options configures the Daemon at construction time.
@@ -29,6 +32,11 @@ type Options struct {
 	LANPort     int
 	TLSCertFile string
 	TLSKeyFile  string
+
+	// CCUsageFetcher 注入 claudecode.usage handler 用的 OAuth 拉取函数。
+	// 留空 → 走 ccoauth.NewLocalFetcher()(从当前机器环境读 token + 调真实 endpoint);
+	// 集成测试传入 stub 屏蔽真实网络 / 真实 keychain。
+	CCUsageFetcher handlers.CCUsageFetcher
 }
 
 // Daemon assembles and runs all agentred sub-systems.
@@ -153,6 +161,16 @@ func (d *Daemon) registerMethods() {
 	healthH := handlers.NewHealthHandlers(d.state.InstanceUUID(), d.state)
 	d.registry.Register("health.ping", wrapGuardedNoParams(healthH.Ping))
 
+	// claudecode.usage:agentred 在它自己所在机器上读 Claude Code 的 OAuth 凭证
+	// 并调 api.anthropic.com/api/oauth/usage,返回 5h/7d 配额给桌面 HUD。每台
+	// device 的配额是该机器登录账号的,所以必须就地读不能由桌面代理。
+	ccFetcher := d.opts.CCUsageFetcher
+	if ccFetcher == nil {
+		ccFetcher = ccoauth.NewLocalFetcher()
+	}
+	ccUsageH := handlers.NewCCUsageHandlers(ccFetcher)
+	d.registry.Register("claudecode.usage", wrapGuardedNoParams(ccUsageH.Get))
+
 	// runtime.* RPC 族 1:1 镜像 agentruntime.Runtime + 7 个可选子接口,
 	// 把远端 agentre 当成「本地」backend 跑。Handler 在 bindConn
 	// 里按连接挂载（要 NotifierPort）。MVP 单客户端假设下 registry 是全局,
@@ -222,6 +240,28 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	d.registry.Register(wire.MethodSetPermissionMode, wrapGuardedSentinel(rh.SetPermissionMode))
 	d.registry.Register(wire.MethodSubmitAnswer, wrapGuardedSentinel(rh.SubmitAnswer))
 	d.registry.Register(wire.MethodSubmitToolPermission, wrapGuardedSentinel(rh.SubmitToolPermission))
+	d.registry.Register(wire.MethodGetGoal, wrapGuardedSentinel(rh.GetGoal))
+	d.registry.Register(wire.MethodSetGoal, wrapGuardedSentinel(rh.SetGoal))
+	d.registry.Register(wire.MethodClearGoal, wrapGuardedSentinel(rh.ClearGoal))
+
+	// Terminal: local PTY backend; per-conn emitter pushes terminal.data /
+	// terminal.exit events back over this ws connection (same per-conn rationale
+	// as runtime.* above — events are scoped to whoever opened the terminal).
+	termBackend := localPTYBackendAdapter{be: local.NewBackend()}
+	termEmitter := handlers.EmitterFunc(func(_ context.Context, name string, payload any) {
+		_ = n.Notify(name, payload)
+	})
+	termH := handlers.NewTerminalHandlers(termBackend, termEmitter)
+	d.registry.Register("terminal.open", wrapGuarded(termH.Open))
+	d.registry.Register("terminal.write", wrapGuarded(termH.Write))
+	d.registry.Register("terminal.resize", wrapGuarded(termH.Resize))
+	d.registry.Register("terminal.close", wrapGuarded(termH.Close))
+	// When this connection drops, kill the PTYs it opened — otherwise the
+	// remote shells (and whatever they run) leak until daemon shutdown.
+	go func() {
+		<-c.Done()
+		termH.CloseAll()
+	}()
 }
 
 // wrapGuarded is wrap + requireAuth check. Use for any method except auth.*.
@@ -307,3 +347,16 @@ func ipFromContext(ctx context.Context) string {
 	}
 	return ""
 }
+
+// localPTYBackendAdapter bridges *local.Backend (returns pty.Handle) to
+// handlers.PTYBackend (returns handlers.PTYHandle). The returned pty.Handle
+// structurally satisfies handlers.PTYHandle (identical method set).
+type localPTYBackendAdapter struct {
+	be *local.Backend
+}
+
+func (a localPTYBackendAdapter) Open(ctx context.Context, spec pty.Spec) (handlers.PTYHandle, error) {
+	return a.be.Open(ctx, spec)
+}
+
+var _ handlers.PTYBackend = localPTYBackendAdapter{}

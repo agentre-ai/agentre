@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Command as CommandPrimitive } from "cmdk";
+import type { TFunction } from "i18next";
 import {
   Check,
   ChevronDown,
@@ -10,6 +11,7 @@ import {
   Terminal,
   X,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import {
@@ -59,6 +61,7 @@ const SOURCES: CommandSource<any>[] = [
 ];
 
 export function CommandPalette(): React.ReactElement {
+  const { t } = useTranslation();
   const open = useCommandPaletteStore((s) => s.open);
   const initialQuery = useCommandPaletteStore((s) => s.initialQuery);
   const setOpen = useCommandPaletteStore((s) => s.setOpen);
@@ -146,16 +149,18 @@ export function CommandPalette(): React.ReactElement {
           "w-[640px] max-w-[92vw] translate-y-0 top-[96px] grid-rows-[auto_1fr_auto] gap-0 overflow-hidden rounded-xl border border-border bg-popover p-0 text-popover-foreground shadow-[0_8px_16px_rgba(10,10,10,0.15),0_24px_60px_rgba(10,10,10,0.25)]",
         )}
       >
-        <DialogTitle className="sr-only">命令面板</DialogTitle>
+        <DialogTitle className="sr-only">
+          {t("commandPalette.title")}
+        </DialogTitle>
         <DialogDescription className="sr-only">
-          搜索会话 · 跳转 · 执行动作
+          {t("commandPalette.description")}
         </DialogDescription>
 
         <CommandPrimitive
           // 关掉 cmdk 内置 filter / sort —— 我们用 source.getScore 自己排
           shouldFilter={false}
           loop
-          label="命令面板"
+          label={t("commandPalette.title")}
           className="flex h-full flex-col overflow-hidden"
         >
           <SearchRow
@@ -170,7 +175,7 @@ export function CommandPalette(): React.ReactElement {
           {isProjectMode ? <ContextBar projects={projects} /> : null}
           <CommandPrimitive.List className="max-h-[60vh] overflow-y-auto px-2 pb-2 pt-1">
             <CommandPrimitive.Empty className="px-4 py-10 text-center text-xs text-muted-foreground">
-              {emptyText(mode, payload)}
+              {emptyText(mode, payload, t)}
             </CommandPrimitive.Empty>
             {activeSources.map((source) => (
               <SourceGroup
@@ -207,6 +212,7 @@ function SearchRow({
   onQueryChange,
   onClose,
 }: SearchRowProps) {
+  const { t } = useTranslation();
   // Input value 在 command 模式下显示 payload（不含 prefix），保证光标位置干净；
   // onValueChange 反向加回 prefix 写到 query state。底层 query 始终以 prefix 开头 → parseMode 单一真相。
   const inputValue = mode === "command" ? payload : query;
@@ -263,16 +269,20 @@ function SearchRow({
       {mode === "command" ? (
         <span
           className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-sm border border-primary bg-primary/10 px-2 font-mono text-2xs font-semibold text-primary"
-          aria-label="命令模式"
-          title="命令模式（输入 > 进入）"
+          aria-label={t("commandPalette.search.commandMode")}
+          title={t("commandPalette.search.commandModeTitle")}
         >
           <Terminal className="size-3" aria-hidden="true" />
-          命令
+          {t("commandPalette.search.command")}
         </span>
       ) : null}
       <CommandPrimitive.Input
         autoFocus
-        placeholder={mode === "command" ? "输入命令…" : "搜索会话…"}
+        placeholder={
+          mode === "command"
+            ? t("commandPalette.search.commandPlaceholder")
+            : t("commandPalette.search.sessionPlaceholder")
+        }
         value={inputValue}
         onValueChange={handleChange}
         onKeyDown={handleKeyDown}
@@ -281,8 +291,8 @@ function SearchRow({
       {query ? (
         <button
           type="button"
-          aria-label="清空查询"
-          title="清空查询"
+          aria-label={t("commandPalette.search.clear")}
+          title={t("commandPalette.search.clear")}
           onClick={() => onQueryChange("")}
           className="inline-flex size-[22px] shrink-0 items-center justify-center rounded-sm bg-secondary text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
@@ -293,7 +303,7 @@ function SearchRow({
         type="button"
         onClick={onClose}
         className="inline-flex h-5 shrink-0 items-center justify-center rounded-sm border border-border bg-secondary px-1.5 font-mono text-2xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        aria-label="关闭命令面板"
+        aria-label={t("commandPalette.close")}
       >
         Esc
       </button>
@@ -301,12 +311,16 @@ function SearchRow({
   );
 }
 
-function emptyText(mode: PaletteMode, payload: string): string {
+function emptyText(mode: PaletteMode, payload: string, t: TFunction): string {
   const hasPayload = payload.trim().length > 0;
   if (mode === "command") {
-    return hasPayload ? "未找到匹配的命令" : "输入命令名（例：New chat with）";
+    return hasPayload
+      ? t("commandPalette.empty.noCommands")
+      : t("commandPalette.empty.commandHint");
   }
-  return hasPayload ? "未找到匹配的会话" : "暂无会话 · 先开一个 Agent 对话";
+  return hasPayload
+    ? t("commandPalette.empty.noSessions")
+    : t("commandPalette.empty.sessionHint");
 }
 
 type SourceGroupProps<T extends CommandItemBase> = {
@@ -320,6 +334,7 @@ function SourceGroup<T extends CommandItemBase>({
   query,
   ctx,
 }: SourceGroupProps<T>) {
+  const { t } = useTranslation();
   const { items, loading } = source.useItems();
   const q = query.trim();
   const ranked = React.useMemo(() => {
@@ -348,13 +363,13 @@ function SourceGroup<T extends CommandItemBase>({
   }, [items, q, source]);
 
   const heading = q
-    ? `${ranked.length} 条匹配`
-    : `活跃优先 · 共 ${ranked.length} 条`;
+    ? t("commandPalette.group.matches", { count: ranked.length })
+    : t("commandPalette.group.activeFirst", { count: ranked.length });
 
   if (loading && ranked.length === 0 && !q) {
     return (
       <div className="px-5 py-8 text-center text-xs text-muted-foreground">
-        加载中…
+        {t("common.loading")}
       </div>
     );
   }
@@ -441,13 +456,14 @@ type ContextBarProps = {
 };
 
 function ContextBar({ projects }: ContextBarProps) {
+  const { t } = useTranslation();
   const projectContext = useNewChatContextStore((s) => s.projectContext);
   const setContext = useNewChatContextStore((s) => s.setContext);
 
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-5 text-2xs">
       <span className="font-mono text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-        上下文
+        {t("commandPalette.context.title")}
       </span>
 
       <ProjectChipPicker
@@ -470,9 +486,11 @@ function ContextBar({ projects }: ContextBarProps) {
 
       <div className="ml-auto flex items-center gap-3">
         <span className="text-2xs text-muted-foreground">
-          {projectContext ? "成员优先 · 非成员置灰" : "新会话挂在自由会话"}
+          {projectContext
+            ? t("commandPalette.context.projectModeHint")
+            : t("commandPalette.context.freeModeHint")}
         </span>
-        <KbdHint kbd="Tab" label="切项目" />
+        <KbdHint kbd="Tab" label={t("commandPalette.context.switchProject")} />
       </div>
     </div>
   );
@@ -507,18 +525,22 @@ function ProjectChipPicker({
   projects,
   onPick,
 }: ProjectChipPickerProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const label = projectContext
-    ? projectContext.projectName || `项目 #${projectContext.projectID}`
-    : "无项目";
+    ? projectContext.projectName ||
+      t("commandPalette.project.fallbackName", {
+        id: projectContext.projectID,
+      })
+    : t("commandPalette.project.none");
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label="切换项目上下文"
-          title="点击切换项目 / Tab 也行"
+          aria-label={t("commandPalette.project.switchAria")}
+          title={t("commandPalette.project.switchTitle")}
           className={cn(
             "inline-flex h-[22px] items-center gap-1.5 rounded-sm border bg-card px-2 text-xs font-medium text-foreground outline-none transition-colors hover:bg-accent",
             projectContext
@@ -552,8 +574,8 @@ function ProjectChipPicker({
               aria-hidden="true"
             />
           }
-          label="无项目"
-          subtitle="新会话挂在自由会话"
+          label={t("commandPalette.project.none")}
+          subtitle={t("commandPalette.context.freeModeHint")}
           selected={!projectContext}
           onSelect={() => {
             onPick(null);
@@ -565,7 +587,7 @@ function ProjectChipPicker({
         ) : null}
         {projects.length === 0 ? (
           <div className="px-2 py-3 text-center text-2xs text-muted-foreground">
-            （还没有项目）
+            {t("commandPalette.project.empty")}
           </div>
         ) : (
           projects.map((p) => (
@@ -639,19 +661,31 @@ function ProjectPickerItem({
 }
 
 function Footer({ mode }: { mode: PaletteMode }) {
+  const { t } = useTranslation();
   // 命令模式下 Tab 切上下文的提示放在 ContextBar 右侧（与 chip 同行）；
   // Footer 只承担命令面板通用提示 + 命令模式专属的 ⌫ 清上下文。
   const isCommand = mode === "command";
   return (
     <div className="flex h-9 shrink-0 items-center gap-3 overflow-hidden border-t border-border bg-muted px-4">
-      <FooterHint kbd="↑↓" label="导航" />
-      <FooterHint kbd="↵" label={isCommand ? "创建" : "打开"} />
-      {isCommand ? <FooterHint kbd="⌫" label="清上下文" /> : null}
-      <FooterHint kbd="Esc" label="关闭" />
+      <FooterHint kbd="↑↓" label={t("commandPalette.footer.navigate")} />
+      <FooterHint
+        kbd="↵"
+        label={
+          isCommand
+            ? t("commandPalette.footer.create")
+            : t("commandPalette.footer.open")
+        }
+      />
+      {isCommand ? (
+        <FooterHint kbd="⌫" label={t("commandPalette.footer.clearContext")} />
+      ) : null}
+      <FooterHint kbd="Esc" label={t("common.close")} />
       <div className="flex-1" />
       <span className="flex shrink-0 items-center gap-1 text-2xs font-medium text-muted-foreground">
         <Sparkles className="size-[11px] text-primary" aria-hidden="true" />
-        {isCommand ? "命令模式" : "命令面板"}
+        {isCommand
+          ? t("commandPalette.search.commandMode")
+          : t("commandPalette.title")}
       </span>
     </div>
   );

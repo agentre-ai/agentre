@@ -431,6 +431,16 @@ describe("chat-tabs-store · reconcileMissingSessions", () => {
     useChatTabsStore.getState().reconcileMissingSessions(new Set());
     expect(useChatTabsStore.getState().tabs).toHaveLength(1);
   });
+
+  it("保留 terminal tab(不因 session 缺失被移除)", () => {
+    useChatTabsStore.getState().openSessionInNewTab(1);
+    useChatTabsStore.getState().openTerminal(5, "", undefined);
+    useChatTabsStore.getState().openSessionInNewTab(2);
+    // session 2 gone; session 1 kept; terminal must also survive
+    useChatTabsStore.getState().reconcileMissingSessions(new Set([1]));
+    const s = useChatTabsStore.getState();
+    expect(s.tabs.map((t) => t.meta.kind)).toEqual(["session", "terminal"]);
+  });
 });
 
 describe("chat-tabs-store · hydrate from localStorage", () => {
@@ -540,6 +550,39 @@ describe("chat-tabs-store · moveTab", () => {
     const tabs = useChatTabsStore.getState().tabs;
     expect(tabs[0].isPinned).toBe(false);
     expect((tabs[0].meta as { sessionId: number }).sessionId).toBe(3);
+  });
+});
+
+describe("chat-tabs-store · openTerminal", () => {
+  beforeEach(() => {
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+    __setNowForTesting(() => 1000);
+  });
+
+  it("openTerminal 新增 terminal tab 并激活", () => {
+    let n = 0;
+    __setNextIdFactoryForTesting(() => `id-${++n}`);
+    useChatTabsStore.getState().openTerminal(7, "", undefined);
+    const s = useChatTabsStore.getState();
+    expect(s.tabs).toHaveLength(1);
+    expect(s.tabs[0].meta).toMatchObject({
+      kind: "terminal",
+      projectId: 7,
+      deviceId: "",
+    });
+    expect((s.tabs[0].meta as { terminalId: string }).terminalId).toBeTruthy();
+    expect(s.tabs[0].title).toBe("Terminal");
+    expect(s.tabs[0].isPreview).toBe(false);
+    expect(s.activeTabId).toBe(s.tabs[0].id);
+  });
+
+  it("openTerminal 远端带设备名进标题", () => {
+    let n = 0;
+    __setNextIdFactoryForTesting(() => `id-${++n}`);
+    useChatTabsStore.getState().openTerminal(7, "42", "MacMini");
+    const tab = useChatTabsStore.getState().tabs.at(-1)!;
+    expect(tab.meta).toMatchObject({ kind: "terminal", deviceId: "42" });
+    expect(tab.title).toBe("Terminal · MacMini");
   });
 });
 

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { LoadChatSession } from "../../wailsjs/go/app/App";
 import type { chat_svc } from "../../wailsjs/go/models";
+import { clientLog } from "@/lib/client-log";
+import { useChatStreamsStore } from "@/stores/chat-streams-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 import { useSessionWithOverlays } from "./use-session-with-overlays";
@@ -59,6 +61,29 @@ export function useChatSession(sessionId: number) {
       // 把详情快照里的 agentStatus / needsAttention / permissionMode 灌进
       // session-status-store, 让其它读路径(tab / sidebar / use-tabs-view)拿到
       // 最新值, 不依赖独立 reload。
+      //
+      // 诊断: LoadChatSession 是异步 DB 快照。若本 sid 仍有活跃 LiveStream 而
+      // 详情说 agentStatus="error"/"idle", 大概率是 reload 在 turn 起手前发起、
+      // 响应到达时 Send 已经把 DB 翻 "running" —— 旧快照覆盖乐观值会让 tab
+      // 翻红/翻灰而内容仍在流。命中即埋根因证据。
+      const live = useChatStreamsStore.getState().streams.get(sessionId);
+      if (
+        live &&
+        resp.session.agentStatus !== "running" &&
+        resp.session.agentStatus !== "waiting"
+      ) {
+        const prev = useSessionStatusStore.getState().statuses.get(sessionId);
+        clientLog.warn(
+          "use-chat-session",
+          "LoadChatSession upsert about to override agentStatus while LiveStream is active",
+          {
+            sessionId,
+            prevAgentStatus: prev?.agentStatus,
+            loadedAgentStatus: resp.session.agentStatus,
+            streamAgeMs: Date.now() - live.streamStartedAt,
+          },
+        );
+      }
       useSessionStatusStore.getState().upsert(sessionId, {
         // Wails boundary: backend sends agentStatus as string; cast to AgentStatus.
         agentStatus: resp.session.agentStatus as AgentStatus,

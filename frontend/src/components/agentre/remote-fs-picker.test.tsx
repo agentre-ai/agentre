@@ -68,7 +68,7 @@ describe("<RemoteFsPicker>", () => {
     });
     setup();
     await waitFor(() =>
-      expect(screen.getByText(/还有未列出/)).toBeInTheDocument(),
+      expect(screen.getByText(/Some items are not listed/)).toBeInTheDocument(),
     );
   });
 
@@ -85,7 +85,7 @@ describe("<RemoteFsPicker>", () => {
     await waitFor(() =>
       expect(screen.getByTestId("entry-alpha")).toBeInTheDocument(),
     );
-    fireEvent.change(screen.getByLabelText("筛选当前目录"), {
+    fireEvent.change(screen.getByLabelText("Filter current folder"), {
       target: { value: "bet" },
     });
     expect(screen.queryByTestId("entry-alpha")).not.toBeInTheDocument();
@@ -101,7 +101,7 @@ describe("<RemoteFsPicker>", () => {
     });
     setup();
     await waitFor(() => expect(mockedList).toHaveBeenCalled());
-    fireEvent.click(screen.getByLabelText("显示隐藏"));
+    fireEvent.click(screen.getByLabelText("Show hidden files"));
     expect(screen.getByTestId("entry-.secret")).toBeInTheDocument();
   });
 
@@ -120,7 +120,7 @@ describe("<RemoteFsPicker>", () => {
     mockedMkdir.mockResolvedValueOnce({ path: "/home/me/newdir" });
     const { onPick, onOpenChange } = setup();
     await waitFor(() => expect(mockedList).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("button", { name: /新建/ }));
+    fireEvent.click(screen.getByRole("button", { name: /New/ }));
     fireEvent.change(screen.getByPlaceholderText("folder name"), {
       target: { value: "newdir" },
     });
@@ -133,7 +133,7 @@ describe("<RemoteFsPicker>", () => {
     await waitFor(() =>
       expect(screen.getByTestId("entry-newdir")).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "选择此目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select This Folder" }));
     expect(onPick).toHaveBeenCalledWith("/home/me/newdir");
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
@@ -146,7 +146,7 @@ describe("<RemoteFsPicker>", () => {
     });
     setup();
     await waitFor(() => expect(mockedList).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole("button", { name: /新建/ }));
+    fireEvent.click(screen.getByRole("button", { name: /New/ }));
     fireEvent.change(screen.getByPlaceholderText("folder name"), {
       target: { value: "a/b" },
     });
@@ -154,7 +154,7 @@ describe("<RemoteFsPicker>", () => {
       key: "Enter",
     });
     expect(mockedMkdir).not.toHaveBeenCalled();
-    expect(screen.getByText("非法名字")).toBeInTheDocument();
+    expect(screen.getByText("Invalid name")).toBeInTheDocument();
   });
 
   it("mkdir accepts internal spaces (matches backend pathguard)", async () => {
@@ -172,7 +172,7 @@ describe("<RemoteFsPicker>", () => {
     mockedMkdir.mockResolvedValueOnce({ path: "/home/me/my projects" });
     setup();
     await waitFor(() => expect(mockedList).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole("button", { name: /新建/ }));
+    fireEvent.click(screen.getByRole("button", { name: /New/ }));
     fireEvent.change(screen.getByPlaceholderText("folder name"), {
       target: { value: "my projects" },
     });
@@ -200,10 +200,10 @@ describe("<RemoteFsPicker>", () => {
     await waitFor(() =>
       expect(screen.getByTestId("entry-Work")).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "选择此目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select This Folder" }));
     expect(onPick).toHaveBeenLastCalledWith("/home/me");
     fireEvent.click(screen.getByTestId("entry-Work"));
-    fireEvent.click(screen.getByRole("button", { name: "选择此目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "Select This Folder" }));
     expect(onPick).toHaveBeenLastCalledWith("/home/me/Work");
   });
 });

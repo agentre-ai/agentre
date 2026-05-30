@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { FileCode, List } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -13,6 +14,7 @@ type Props = {
 };
 
 export function TabBar({ active, onChange, outlineCount, filesCount }: Props) {
+  const { t } = useTranslation();
   return (
     <div
       className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3"
@@ -20,14 +22,14 @@ export function TabBar({ active, onChange, outlineCount, filesCount }: Props) {
     >
       <Tab
         icon={<List className="size-3" aria-hidden="true" />}
-        label="Outline"
+        label={t("chatContext.outline.label")}
         count={outlineCount}
         active={active === "outline"}
         onClick={() => onChange("outline")}
       />
       <Tab
         icon={<FileCode className="size-3" aria-hidden="true" />}
-        label="Files"
+        label={t("chatContext.files.label")}
         count={filesCount}
         active={active === "files"}
         onClick={() => onChange("files")}

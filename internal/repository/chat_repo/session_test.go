@@ -140,6 +140,33 @@ func TestSessionRepo_ListByAgentPaged(t *testing.T) {
 	})
 }
 
+func TestSessionRepo_ListIDsByAgents(t *testing.T) {
+	t.Run("Given multiple agents and active sessions, When listing ids, Then groups active ids by agent in sidebar order", func(t *testing.T) {
+		ctx, _, mock := testutils.Database(t)
+
+		mock.ExpectQuery("SELECT agent_id, id FROM `chat_sessions` WHERE agent_id IN \\(\\?,\\?\\) AND status = \\? ORDER BY agent_id ASC, last_message_at DESC, id DESC").
+			WithArgs(int64(7), int64(8), consts.ACTIVE).
+			WillReturnRows(sqlmock.NewRows([]string{"agent_id", "id"}).
+				AddRow(7, 12).
+				AddRow(7, 11).
+				AddRow(8, 21))
+
+		got, err := chat_repo.NewSession().ListIDsByAgents(ctx, []int64{7, 8})
+		assert.NoError(t, err)
+		assert.Equal(t, []int64{12, 11}, got[7])
+		assert.Equal(t, []int64{21}, got[8])
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("Given no agent ids, When listing ids, Then it returns empty map without SQL", func(t *testing.T) {
+		ctx, _, _ := testutils.Database(t)
+
+		got, err := chat_repo.NewSession().ListIDsByAgents(ctx, nil)
+		assert.NoError(t, err)
+		assert.Empty(t, got)
+	})
+}
+
 func TestSessionRepo_CountByAgents(t *testing.T) {
 	t.Run("批量返回每个 agent 的会话数；缺席 agent 在 map 里读出 0", func(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)
@@ -272,7 +299,7 @@ func TestSessionRepo_SoftDelete(t *testing.T) {
 
 // TestSessionRepo_ResetActiveSessions 钉死启动期残留清理 SQL:任何 agent_status
 // 是 running / waiting 的未软删 session 都翻成 error。
-// bootstrap.Init 启动时调一次,防止 app crash / restart 留下永远卡 RUNNING 的会话。
+// 主 Wails 实例 Startup 后调一次,防止 app crash / restart 留下永远卡 RUNNING 的会话。
 func TestSessionRepo_ResetActiveSessions(t *testing.T) {
 	t.Run("有残留时把 running / waiting 翻成 error 并返回受影响行数", func(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)

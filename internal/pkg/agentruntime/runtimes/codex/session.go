@@ -3,9 +3,13 @@ package codex
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
 	"agentre/internal/pkg/agentruntime"
 	"agentre/pkg/codex"
@@ -37,31 +41,86 @@ type cxUserInputStream interface {
 	SubmitUserInput(ctx context.Context, requestID string, answers map[string][]string) error
 }
 
+type cxApprovalStream interface {
+	SubmitApproval(ctx context.Context, requestID string, allow, alwaysAllowSession bool) error
+}
+
 type cxClientAdapter struct {
 	client *codex.Client
 	sid    string
 
 	streamMu sync.Mutex
 	stream   *codex.Stream
+	sess     *codex.Session
 }
 
-func (a *cxClientAdapter) ID() string                      { return a.sid }
-func (a *cxClientAdapter) Close(ctx context.Context) error { return a.client.Close(ctx) }
+func (a *cxClientAdapter) ID() string { return a.sid }
+func (a *cxClientAdapter) Close(ctx context.Context) error {
+	a.streamMu.Lock()
+	sess := a.sess
+	a.stream = nil
+	a.sess = nil
+	a.streamMu.Unlock()
+	if sess != nil {
+		return sess.Close(ctx)
+	}
+	return a.client.Close(ctx)
+}
 
-func (a *cxClientAdapter) Stream(ctx context.Context, prompt string, collaborationMode string) (cxStream, error) {
+func (a *cxClientAdapter) ensureSession(ctx context.Context) (*codex.Session, error) {
+	a.streamMu.Lock()
+	if a.sess != nil {
+		sess := a.sess
+		a.streamMu.Unlock()
+		return sess, nil
+	}
+	a.streamMu.Unlock()
+
 	var opts []codex.RunOption
 	if a.sid != "" {
+		opts = append(opts, codex.Resume(a.sid))
+	}
+	sess, err := a.client.OpenSession(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	a.streamMu.Lock()
+	if a.sess != nil {
+		_ = sess.Close(context.Background())
+		sess = a.sess
+	} else {
+		a.sess = sess
+	}
+	a.streamMu.Unlock()
+	return sess, nil
+}
+
+func (a *cxClientAdapter) Stream(ctx context.Context, prompt string, collaborationMode string) (cxStream, error) {
+	return a.StreamInput(ctx, []codex.UserInput{codex.TextInput(prompt)}, collaborationMode)
+}
+
+func (a *cxClientAdapter) StreamInput(ctx context.Context, input []codex.UserInput, collaborationMode string) (cxStream, error) {
+	var opts []codex.RunOption
+	a.streamMu.Lock()
+	hasSession := a.sess != nil
+	a.streamMu.Unlock()
+	if a.sid != "" && !hasSession {
 		opts = append(opts, codex.Resume(a.sid))
 	}
 	if strings.TrimSpace(collaborationMode) != "" {
 		opts = append(opts, codex.RunCollaborationMode(codex.CollaborationMode(strings.TrimSpace(collaborationMode))))
 	}
-	s, err := a.client.Stream(ctx, prompt, opts...)
+	sess, err := a.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s, err := sess.StreamInput(ctx, input, opts...)
 	if err != nil {
 		return nil, err
 	}
 	a.streamMu.Lock()
 	a.stream = s
+	a.sid = sess.ID()
 	a.streamMu.Unlock()
 	return s, nil
 }
@@ -70,7 +129,11 @@ func (a *cxClientAdapter) Compact(ctx context.Context) (cxStream, error) {
 	if strings.TrimSpace(a.sid) == "" {
 		return nil, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for compact")
 	}
-	s, err := a.client.Compact(ctx, a.sid)
+	sess, err := a.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s, err := sess.Compact(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +141,43 @@ func (a *cxClientAdapter) Compact(ctx context.Context) (cxStream, error) {
 	a.stream = s
 	a.streamMu.Unlock()
 	return s, nil
+}
+
+func (a *cxClientAdapter) GetGoal(ctx context.Context) (*codex.Goal, error) {
+	if strings.TrimSpace(a.sid) == "" {
+		return nil, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for goal")
+	}
+	sess, err := a.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return sess.GetGoal(ctx)
+}
+
+func (a *cxClientAdapter) SetGoal(ctx context.Context, update codex.GoalUpdate) (*codex.Goal, error) {
+	sess, err := a.ensureSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	goal, err := sess.SetGoal(ctx, update)
+	if err != nil {
+		return nil, err
+	}
+	a.streamMu.Lock()
+	a.sid = sess.ID()
+	a.streamMu.Unlock()
+	return goal, nil
+}
+
+func (a *cxClientAdapter) ClearGoal(ctx context.Context) (bool, error) {
+	if strings.TrimSpace(a.sid) == "" {
+		return false, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for goal")
+	}
+	sess, err := a.ensureSession(ctx)
+	if err != nil {
+		return false, err
+	}
+	return sess.ClearGoal(ctx)
 }
 
 // RewindTo 走 thread/rollback,把 sid 推回 numTurns 之前的状态。anchor 是十进制
@@ -90,11 +190,15 @@ func (a *cxClientAdapter) RewindTo(ctx context.Context, anchor string) (string, 
 	if err != nil || numTurns <= 0 {
 		return "", fmt.Errorf("agentruntime/runtimes/codex: invalid rollback anchor %q", anchor)
 	}
-	res, err := a.client.RollbackThread(ctx, a.sid, numTurns)
+	sess, err := a.ensureSession(ctx)
 	if err != nil {
 		return "", err
 	}
-	a.sid = res.ThreadID
+	sid, err := sess.RewindTo(ctx, strconv.Itoa(numTurns))
+	if err != nil {
+		return "", err
+	}
+	a.sid = sid
 	return a.sid, nil
 }
 
@@ -116,11 +220,93 @@ func (a *cxClientAdapter) ActiveInterruptor() cxInterruptable {
 	return a.stream
 }
 
+func userInputsFromBlocks(bs []cagoblocks.ContentBlock) ([]codex.UserInput, func(), error) {
+	if len(bs) == 0 {
+		return nil, nil, nil
+	}
+	var (
+		inputs []codex.UserInput
+		tmpDir string
+	)
+	for i, b := range bs {
+		switch v := b.(type) {
+		case cagoblocks.TextBlock:
+			inputs = append(inputs, codex.TextInput(v.Text))
+		case *cagoblocks.TextBlock:
+			if v != nil {
+				inputs = append(inputs, codex.TextInput(v.Text))
+			}
+		case cagoblocks.ImageBlock:
+			path, err := materializeImage(&tmpDir, i, v)
+			if err != nil {
+				if tmpDir != "" {
+					_ = os.RemoveAll(tmpDir)
+				}
+				return nil, nil, err
+			}
+			inputs = append(inputs, codex.LocalImageInput(path, codex.ImageDetailHigh))
+		case *cagoblocks.ImageBlock:
+			if v == nil {
+				continue
+			}
+			path, err := materializeImage(&tmpDir, i, *v)
+			if err != nil {
+				if tmpDir != "" {
+					_ = os.RemoveAll(tmpDir)
+				}
+				return nil, nil, err
+			}
+			inputs = append(inputs, codex.LocalImageInput(path, codex.ImageDetailHigh))
+		}
+	}
+	var cleanup func()
+	if tmpDir != "" {
+		cleanup = func() { _ = os.RemoveAll(tmpDir) }
+	}
+	return inputs, cleanup, nil
+}
+
+func materializeImage(tmpDir *string, idx int, img cagoblocks.ImageBlock) (string, error) {
+	if strings.TrimSpace(img.Source.URL) != "" {
+		return "", fmt.Errorf("agentruntime/runtimes/codex: image URL blocks are not supported yet")
+	}
+	if len(img.Source.Inline) == 0 {
+		return "", fmt.Errorf("agentruntime/runtimes/codex: empty image block")
+	}
+	if *tmpDir == "" {
+		dir, err := os.MkdirTemp("", "agentre-codex-images-*")
+		if err != nil {
+			return "", err
+		}
+		*tmpDir = dir
+	}
+	path := filepath.Join(*tmpDir, fmt.Sprintf("image-%d%s", idx, imageExt(img.MediaType)))
+	if err := os.WriteFile(path, img.Source.Inline, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func imageExt(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ".png"
+	}
+}
+
 type cxSessionHandle interface {
 	Close(context.Context) error
 	ID() string
 	Stream(ctx context.Context, prompt string, collaborationMode string) (cxStream, error)
+	StreamInput(ctx context.Context, input []codex.UserInput, collaborationMode string) (cxStream, error)
 	Compact(ctx context.Context) (cxStream, error)
+	GetGoal(ctx context.Context) (*codex.Goal, error)
+	SetGoal(ctx context.Context, update codex.GoalUpdate) (*codex.Goal, error)
+	ClearGoal(ctx context.Context) (bool, error)
 	RewindTo(ctx context.Context, anchor string) (string, error)
 	ActiveStream() cxSteerStream
 	ActiveInterruptor() cxInterruptable

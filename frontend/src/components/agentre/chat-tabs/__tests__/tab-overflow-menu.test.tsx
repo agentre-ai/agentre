@@ -11,7 +11,7 @@ function setupUser() {
 }
 
 async function openMenu(user: ReturnType<typeof setupUser>) {
-  await user.click(screen.getByLabelText("打开 Tab 菜单"));
+  await user.click(screen.getByLabelText("Open Tab menu"));
   await waitFor(() => {
     expect(screen.queryAllByRole("menuitem").length).toBeGreaterThan(0);
   });

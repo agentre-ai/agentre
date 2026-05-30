@@ -1,9 +1,16 @@
 import { create } from "zustand";
+import i18n from "@/i18n";
 import { writePersistedTabs, readPersistedTabs } from "./chat-tabs-persistence";
 
 export type TabKind =
   | { kind: "session"; sessionId: number }
-  | { kind: "new"; projectId: number; agentId: number; workMode: string };
+  | { kind: "new"; projectId: number; agentId: number; workMode: string }
+  | {
+      kind: "terminal";
+      projectId: number;
+      deviceId: string;
+      terminalId: string;
+    };
 
 export type ChatTab = {
   id: string;
@@ -38,6 +45,11 @@ type Actions = {
   bumpToAfterPinned: (id: string) => void;
   resolveNewTab: (tabId: string, sessionId: number) => void;
   reconcileMissingSessions: (existingSessionIds: Set<number>) => void;
+  openTerminal: (
+    projectId: number,
+    deviceId: string,
+    deviceName?: string,
+  ) => void;
 };
 
 // nextId: 测试用例可以 stub。生产环境用 crypto.randomUUID。
@@ -256,7 +268,7 @@ export const useChatTabsStore = create<State & Actions>((set, _get) => ({
   reconcileMissingSessions: (existingSessionIds) =>
     set((state) => {
       const tabs = state.tabs.filter((t) => {
-        if (t.meta.kind === "new") return true;
+        if (t.meta.kind !== "session") return true;
         return existingSessionIds.has(t.meta.sessionId);
       });
       if (tabs.length === state.tabs.length) return state;
@@ -265,6 +277,21 @@ export const useChatTabsStore = create<State & Actions>((set, _get) => ({
         activeTabId = tabs[0]?.id ?? null;
       }
       return { tabs, activeTabId };
+    }),
+  openTerminal: (projectId, deviceId, deviceName) =>
+    set((state) => {
+      const newTab: ChatTab = {
+        id: nextId(),
+        meta: { kind: "terminal", projectId, deviceId, terminalId: nextId() },
+        isPreview: false,
+        isPinned: false,
+        pinAt: 0,
+        openedAt: now(),
+        title: deviceName
+          ? i18n.t("chatTabs.terminal.titleWithDevice", { deviceName })
+          : i18n.t("chatTabs.terminal.title"),
+      };
+      return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
     }),
 }));
 

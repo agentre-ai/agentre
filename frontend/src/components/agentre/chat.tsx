@@ -1,9 +1,11 @@
 import * as React from "react";
+import type { TFunction } from "i18next";
 import {
   ArrowDown,
   ArrowUp,
   Check,
   Gauge,
+  ImagePlus,
   LoaderCircle,
   Pencil,
   RefreshCw,
@@ -12,6 +14,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -88,16 +91,17 @@ function ChatMessage({
   variant = "assistant",
   ...props
 }: ChatMessageProps) {
+  const { t } = useTranslation();
   const isUser = variant === "user";
   return (
     <article className={cn("flex gap-3 text-sm", className)} {...props}>
       {isUser ? (
         <span
-          aria-label="我"
+          aria-label={t("chat.message.me")}
           role="img"
           className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-[11px] font-semibold text-muted-foreground"
         >
-          我
+          {t("chat.message.me")}
         </span>
       ) : (
         <AgentAvatar
@@ -203,27 +207,40 @@ function MessageMeta({
   promptTokens,
   reasoningTokens = 0,
 }: MessageMetaProps) {
+  const { t } = useTranslation();
   const durationLabel = `${(durationMs / 1000).toFixed(1)}s`;
 
   // tooltip 里需要拆分展示，所以这里给一个稳定的 row 渲染器避免重复。
   const rows: { label: string; value: string }[] = [
-    { label: "模型", value: model || "—" },
-    { label: "发送 (prompt)", value: promptTokens.toLocaleString() },
-    { label: "接收 (completion)", value: completionTokens.toLocaleString() },
+    { label: t("chat.meta.model"), value: model || "—" },
+    {
+      label: t("chat.meta.prompt"),
+      value: promptTokens.toLocaleString(),
+    },
+    {
+      label: t("chat.meta.completion"),
+      value: completionTokens.toLocaleString(),
+    },
   ];
   if (cachedTokens > 0) {
-    rows.push({ label: "缓存命中", value: cachedTokens.toLocaleString() });
+    rows.push({
+      label: t("chat.meta.cacheHit"),
+      value: cachedTokens.toLocaleString(),
+    });
   }
   if (cacheCreationTokens > 0) {
     rows.push({
-      label: "缓存写入",
+      label: t("chat.meta.cacheWrite"),
       value: cacheCreationTokens.toLocaleString(),
     });
   }
   if (reasoningTokens > 0) {
-    rows.push({ label: "思考", value: reasoningTokens.toLocaleString() });
+    rows.push({
+      label: t("chat.meta.reasoning"),
+      value: reasoningTokens.toLocaleString(),
+    });
   }
-  rows.push({ label: "耗时", value: durationLabel });
+  rows.push({ label: t("chat.meta.duration"), value: durationLabel });
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -232,7 +249,7 @@ function MessageMeta({
           <button
             type="button"
             className="inline-flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-muted/60"
-            aria-label="token 用量明细"
+            aria-label={t("chat.meta.tokenDetails")}
           >
             {model ? (
               <>
@@ -276,7 +293,7 @@ function MessageMeta({
           onClick={onRerun}
         >
           <RefreshCw data-icon="inline-start" aria-hidden="true" />
-          重新生成
+          {t("chat.actions.regenerate")}
         </Button>
       ) : null}
     </div>
@@ -286,6 +303,7 @@ function MessageMeta({
 // UserMessageActions 渲染 user 气泡的 action 行：目前只有「编辑」。
 // 作为 `meta` prop 传入 ChatMessage，常驻显示在消息下方。
 function UserMessageActions({ onEdit }: { onEdit: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-1.5">
       <Button
@@ -296,7 +314,7 @@ function UserMessageActions({ onEdit }: { onEdit: () => void }) {
         onClick={onEdit}
       >
         <Pencil data-icon="inline-start" aria-hidden="true" />
-        编辑
+        {t("common.edit")}
       </Button>
     </div>
   );
@@ -317,6 +335,7 @@ function ApprovalGate({
   title,
   ...props
 }: ApprovalGateProps) {
+  const { t } = useTranslation();
   return (
     <section
       className={cn(
@@ -340,7 +359,7 @@ function ApprovalGate({
         className="h-8"
         onClick={onReject}
       >
-        拒绝
+        {t("common.reject")}
       </Button>
       <Button
         type="button"
@@ -348,14 +367,14 @@ function ApprovalGate({
         className="h-8 bg-status-running text-status-running-foreground hover:bg-status-running/90"
         onClick={onApprove}
       >
-        批准
+        {t("chat.actions.approve")}
       </Button>
     </section>
   );
 }
 
 type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
-  onSubmit?: (message: string) => void;
+  onSubmit?: (message: ChatComposerSubmit) => void;
   placeholder?: string;
   /** 历史消息文本，按时间倒序排列（最新在前），方向键 ↑↓ 浏览。 */
   userMessageHistory?: string[];
@@ -370,6 +389,11 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   topSlot?: React.ReactNode;
   /** 上下文用量。max <= 0 时整块不渲染（未知模型 / 后端未配置）。 */
   contextUsage?: { used: number; max: number };
+  /** Claude Code OAuth 5h/7d 配额。undefined / reason='no_credentials' 时整块不渲染。
+   *  由 chat-panel 通过 useCCUsage(deviceKey) 拉到后传入。 */
+  quotaUsage?: import("../../../wailsjs/go/models").cc_usage_svc.UsageState;
+  /** 配额对应的 device 友好名(local 或远端设备名),供 QuotaMeter HoverCard 文案使用。 */
+  quotaDeviceLabel?: string;
   /** Permission mode 控件，仅在 claudecode 后端时由 chat-panel 注入。null 时整块不渲染。 */
   permissionModeSlot?: React.ReactNode;
   /** 焦点在 composer 内时按下 Shift+Tab 的钩子（用于循环切换 permission mode）。 */
@@ -380,6 +404,8 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   /** 当前会话 backend 类型;让 AIChatInput 启用 slash menu 并按 backend 过滤候选命令。
    *  空串/省略 → 不启用 slash menu。 */
   backendType?: string;
+  /** 当前 backend 是否支持图片输入。false 时不渲染图片附件入口。 */
+  supportsImageInput?: boolean;
   /** slash menu rpc 类命令的回调(literal_text 类由 AIChatInput 内部直接填回编辑器,
    *  不自动发送,也不会冒泡到这里)。省略则 slash menu 不启用。 */
   onSlashRpc?: (
@@ -387,6 +413,51 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
     exec: Extract<import("./slash-commands").SlashExec, { kind: "rpc" }>,
   ) => void;
 };
+
+export type ChatImageAttachment = {
+  dataUrl: string;
+  mediaType: string;
+  name: string;
+};
+
+export type ChatComposerSubmit = {
+  images?: ChatImageAttachment[];
+  text: string;
+};
+
+const CHAT_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp";
+const MAX_CHAT_IMAGE_COUNT = 4;
+const MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function readImageFile(file: File): Promise<ChatImageAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("invalid image data"));
+        return;
+      }
+      resolve({
+        dataUrl: reader.result,
+        mediaType: file.type,
+        name: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function imageFilesFromClipboard(data: DataTransfer): File[] {
+  const itemFiles = Array.from(data.items ?? [])
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => !!file);
+  if (itemFiles.length > 0) return itemFiles;
+  return Array.from(data.files ?? []).filter((file) =>
+    file.type.startsWith("image/"),
+  );
+}
 
 // 把 token 数显示成 "42.3k / 200k" 这种紧凑形式，跟 inline 底栏的 10px 字号匹配。
 // >= 1000 时按 k 缩写并保留 1 位小数；< 1000 时直接显示。
@@ -396,7 +467,139 @@ function formatTokens(n: number): string {
   return v >= 100 ? `${Math.round(v)}k` : `${v.toFixed(1)}k`;
 }
 
+// formatResetIn 把"距离 ISO 时间点还有多久"渲染成紧凑的 XdYh / Xh / Xm 形式
+// (e.g. "4d21h", "3h", "40m"),用于 QuotaMeter tooltip。
+//   - 空串 / 无法解析的输入 → 空串(调用方自己决定是否显示括号)
+//   - 已过期(diff<=0)→ "0m"
+//   - <1h → "Nm"(向上取整,避免 30s 显示 0m)
+//   - <24h → "Nh"(向下取整)
+//   - >=24h → "XdYh"(Yh=0 时省略,写 "Xd")
+// nowMs 可选(测试注入固定 now);省略走 Date.now()。
+// eslint-disable-next-line react-refresh/only-export-components
+export function formatResetIn(value: unknown, nowMs?: number): string {
+  if (value == null || value === "") return "";
+  const target =
+    value instanceof Date ? value.getTime() : Date.parse(String(value));
+  if (Number.isNaN(target)) return "";
+  const diffMs = target - (nowMs ?? Date.now());
+  if (diffMs <= 0) return "0m";
+  if (diffMs < 3_600_000) {
+    return `${Math.max(1, Math.ceil(diffMs / 60_000))}m`;
+  }
+  const totalHours = Math.floor(diffMs / 3_600_000);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  if (days <= 0) return `${hours}h`;
+  if (hours === 0) return `${days}d`;
+  return `${days}d${hours}h`;
+}
+
+// QuotaMeter 展示 Claude Code 订阅的 5h / 7d 配额。数据由 chat-panel 通过 useCCUsage
+// 拉取并传入(per-device, 不在这里订阅 store, 保证 Composer 可被纯 props 测试)。
+//
+// 渲染策略(与 cc_usage_svc.UsageState.reason 对齐):
+//   - undefined / 空 reason / "no_credentials" → 整块不渲染(API key 用户、未首探)
+//   - "ok" / "rate_limited"+stale / "network"+stale → 5h X% · 7d Y%(stale 不可见标记,只在 tooltip 文案里提示)
+//   - "auth_expired" / "device_offline" / "network"无stale → 灰态占位 "5h —%"
+function QuotaMeter({
+  data,
+  deviceLabel,
+}: {
+  data?: import("../../../wailsjs/go/models").cc_usage_svc.UsageState;
+  deviceLabel?: string;
+}) {
+  const { t } = useTranslation();
+  if (!data || !data.reason) return null;
+  if (data.reason === "no_credentials") return null;
+
+  const showNumbers = data.data && (data.reason === "ok" || !!data.stale);
+  const fiveH = data.data ? Math.round(data.data.fiveHourPercent) : null;
+  const sevenD = data.data ? Math.round(data.data.weeklyPercent) : null;
+
+  // 阈值色:超 90% 红, 超 75% 黄, 其余正常。两个窗口取较高的那个驱动颜色。
+  const peak =
+    fiveH !== null && sevenD !== null ? Math.max(fiveH, sevenD) : (fiveH ?? 0);
+  const tone =
+    peak >= 90
+      ? "text-status-error"
+      : peak >= 75
+        ? "text-status-waiting"
+        : "text-muted-foreground";
+
+  const offline =
+    data.reason === "auth_expired" || data.reason === "device_offline";
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 font-mono text-[10px] tabular-nums",
+        offline ? "text-subtle-foreground" : tone,
+      )}
+      aria-label={t("chat.quota.aria", {
+        device: deviceLabel || "local",
+        five: fiveH ?? "—",
+        seven: sevenD ?? "—",
+      })}
+      title={describeQuotaTitle(data, deviceLabel, t)}
+    >
+      <Gauge className="size-2.5" aria-hidden="true" />
+      <span>5h {showNumbers && fiveH !== null ? `${fiveH}%` : "—%"}</span>
+      <span className="text-subtle-foreground">·</span>
+      <span>7d {showNumbers && sevenD !== null ? `${sevenD}%` : "—%"}</span>
+    </div>
+  );
+}
+
+// describeQuotaTitle 给 HoverCard / native tooltip 提供"完整文案"。
+// 不引入 HoverCard 组件以避免 Composer 引入复杂 Popover 状态;native title
+// 已经够透露 reset 时间 + sonnet/opus 拆分这种次要信息。
+function describeQuotaTitle(
+  data: import("../../../wailsjs/go/models").cc_usage_svc.UsageState,
+  deviceLabel: string | undefined,
+  t: TFunction,
+): string {
+  const lines: string[] = [];
+  const device = deviceLabel || "local";
+  switch (data.reason) {
+    case "ok":
+      lines.push(t("chat.quota.title.ok", { device }));
+      break;
+    case "rate_limited":
+      lines.push(t("chat.quota.title.rateLimited", { device }));
+      break;
+    case "network":
+      lines.push(t("chat.quota.title.network", { device }));
+      break;
+    case "auth_expired":
+      lines.push(t("chat.quota.title.authExpired", { device }));
+      break;
+    case "device_offline":
+      lines.push(t("chat.quota.title.deviceOffline", { device }));
+      break;
+    default:
+      lines.push(t("chat.quota.title.ok", { device }));
+  }
+  if (data.data) {
+    const fiveIn = formatResetIn(data.data.fiveHourResetsAt);
+    const sevenIn = formatResetIn(data.data.weeklyResetsAt);
+    const five = fiveIn ? t("chat.quota.resetRemaining", { time: fiveIn }) : "";
+    const seven = sevenIn
+      ? t("chat.quota.resetRemaining", { time: sevenIn })
+      : "";
+    lines.push(`5h: ${Math.round(data.data.fiveHourPercent)}%${five}`);
+    lines.push(`7d: ${Math.round(data.data.weeklyPercent)}%${seven}`);
+    if (data.data.sonnetWeeklyPercent != null) {
+      lines.push(`  Sonnet 7d: ${Math.round(data.data.sonnetWeeklyPercent)}%`);
+    }
+    if (data.data.opusWeeklyPercent != null) {
+      lines.push(`  Opus 7d: ${Math.round(data.data.opusWeeklyPercent)}%`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function ContextMeter({ used, max }: { used: number; max: number }) {
+  const { t } = useTranslation();
   const safeUsed = Math.max(0, used);
   const ratio = max > 0 ? Math.min(1, safeUsed / max) : 0;
   const pct = Math.round(ratio * 100);
@@ -407,21 +610,21 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
     warn === "error"
       ? "text-status-error"
       : warn === "warning"
-        ? "text-status-warning"
+        ? "text-status-waiting"
         : "text-primary-text";
   const fill =
     warn === "error"
       ? "bg-status-error"
       : warn === "warning"
-        ? "bg-status-warning"
+        ? "bg-status-waiting"
         : "bg-primary";
   return (
     <div
       className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground"
-      aria-label={`上下文用量 ${safeUsed} / ${max}`}
+      aria-label={t("chat.context.aria", { max, used: safeUsed })}
     >
       <Gauge className="size-2.5" aria-hidden="true" />
-      <span className="font-sans">上下文</span>
+      <span className="font-sans">{t("chat.context.label")}</span>
       <span className="inline-flex items-center gap-0.5 tabular-nums">
         <span className="font-medium text-foreground">
           {formatTokens(safeUsed)}
@@ -446,28 +649,57 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
   );
 }
 
-const SEND_SHORTCUT_HINT = "↵ 发送 · ⇧↵ 换行";
-const EDIT_SHORTCUT_HINT = "↵ 保存 · Esc 取消";
+function ImageBlockView({ block }: { block: ChatBlockData }) {
+  const { t } = useTranslation();
+  const image = (
+    block as ChatBlockData & {
+      image?: { dataUrl?: string; mediaType?: string; name?: string };
+    }
+  ).image;
+  if (!image?.dataUrl) return null;
+  return (
+    <a
+      href={image.dataUrl}
+      target="_blank"
+      rel="noreferrer"
+      className="block w-fit overflow-hidden rounded-md border border-border bg-muted"
+    >
+      <img
+        src={image.dataUrl}
+        alt={image.name || image.mediaType || t("chat.image.alt")}
+        className="max-h-72 max-w-full object-contain"
+      />
+    </a>
+  );
+}
 
 function ChatComposer({
   className,
   onSubmit,
-  placeholder = "输入消息或 / 触发命令",
+  placeholder,
   userMessageHistory,
   editing = false,
   editDraft,
   onCancelEdit,
   topSlot,
   contextUsage,
+  quotaUsage,
+  quotaDeviceLabel,
   permissionModeSlot,
   onShiftTab,
   autoFocusOnMount = false,
   backendType,
+  supportsImageInput = true,
   onSlashRpc,
+  onPasteCapture,
   ...props
 }: ChatComposerProps) {
+  const { t } = useTranslation();
   const inputRef = React.useRef<AIChatInputHandle>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [isEmpty, setIsEmpty] = React.useState(true);
+  const [images, setImages] = React.useState<ChatImageAttachment[]>([]);
+  const [imageError, setImageError] = React.useState("");
 
   // 切换到编辑模式（或换了编辑目标）时把目标文本载进 TipTap，并把光标抓回输入框；
   // 退出编辑模式时清空输入，免得上一次的编辑残留干扰下一条新消息。
@@ -481,6 +713,10 @@ function ChatComposer({
     } else if (wasEditingRef.current) {
       inputRef.current?.clear();
     }
+    if (editing) {
+      setImages([]);
+      setImageError("");
+    }
     wasEditingRef.current = editing;
   }, [editing, editDraft]);
 
@@ -492,15 +728,70 @@ function ChatComposer({
     inputRef.current?.focus();
   }, [autoFocusOnMount]);
 
+  React.useEffect(() => {
+    if (supportsImageInput) return;
+    setImages([]);
+    setImageError("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, [supportsImageInput]);
+
   function handleSend(text: string) {
     const trimmed = text.trim();
-    if (!trimmed) return;
-    onSubmit?.(trimmed);
+    if (!trimmed && images.length === 0) return;
+    onSubmit?.(
+      images.length > 0 ? { images, text: trimmed } : { text: trimmed },
+    );
+    setImages([]);
+    setImageError("");
   }
 
   function handleFormSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isEmpty && images.length > 0) {
+      handleSend("");
+      return;
+    }
     inputRef.current?.submit();
+  }
+
+  async function handleImageFiles(files: FileList | readonly File[] | null) {
+    try {
+      if (!files || files.length === 0) return;
+      const nextFiles = Array.from(files);
+      if (images.length + nextFiles.length > MAX_CHAT_IMAGE_COUNT) {
+        setImageError(
+          t("chat.composer.imageErrors.tooMany", {
+            count: MAX_CHAT_IMAGE_COUNT,
+          }),
+        );
+        return;
+      }
+      const bad = nextFiles.find(
+        (file) =>
+          !CHAT_IMAGE_ACCEPT.split(",").includes(file.type) ||
+          file.size > MAX_CHAT_IMAGE_BYTES,
+      );
+      if (bad) {
+        setImageError(t("chat.composer.imageErrors.unsupported"));
+        return;
+      }
+      const attachments = await Promise.all(nextFiles.map(readImageFile));
+      setImages((prev) => [...prev, ...attachments]);
+      setImageError("");
+    } catch {
+      setImageError(t("chat.composer.imageErrors.readFailed"));
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function handlePasteCapture(event: React.ClipboardEvent<HTMLFormElement>) {
+    onPasteCapture?.(event);
+    if (event.defaultPrevented || editing || !supportsImageInput) return;
+    const pastedImages = imageFilesFromClipboard(event.clipboardData);
+    if (pastedImages.length === 0) return;
+    event.preventDefault();
+    void handleImageFiles(pastedImages);
   }
 
   // Esc 取消编辑。TipTap 的 handleKeyDown 不处理 Esc，所以这里在 form 层捕获；
@@ -537,6 +828,7 @@ function ChatComposer({
       )}
       onSubmit={handleFormSubmit}
       onKeyDown={handleFormKeyDown}
+      onPasteCapture={handlePasteCapture}
       {...props}
     >
       <div
@@ -552,22 +844,24 @@ function ChatComposer({
         {editing ? (
           <div
             role="status"
-            aria-label="正在编辑消息"
+            aria-label={t("chat.composer.editing.aria")}
             className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-[11px]"
           >
             <Pencil
               className="size-3 shrink-0 text-primary-text"
               aria-hidden="true"
             />
-            <span className="font-semibold text-primary-text">编辑消息</span>
+            <span className="font-semibold text-primary-text">
+              {t("chat.composer.editing.title")}
+            </span>
             <span className="text-muted-foreground">·</span>
             <span className="min-w-0 flex-1 truncate text-muted-foreground">
-              保存后此条之后的历史会被丢弃并重新生成
+              {t("chat.composer.editing.description")}
             </span>
             <button
               type="button"
-              aria-label="取消编辑"
-              title="取消编辑 (Esc)"
+              aria-label={t("chat.composer.editing.cancel")}
+              title={t("chat.composer.editing.cancelTitle")}
               className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               onClick={() => onCancelEdit?.()}
             >
@@ -576,13 +870,42 @@ function ChatComposer({
           </div>
         ) : null}
         <div className="flex flex-col gap-1 px-3.5 pt-2.5 pb-1">
+          {!editing && images.length > 0 ? (
+            <div className="flex flex-wrap gap-2 pb-1">
+              {images.map((img, idx) => (
+                <div
+                  key={`${img.name}-${idx}`}
+                  className="group relative h-16 w-20 overflow-hidden rounded-md border border-border bg-muted"
+                >
+                  <img
+                    src={img.dataUrl}
+                    alt={img.name || t("chat.image.attachmentAlt")}
+                    className="h-full w-full object-cover"
+                  />
+                  <button
+                    type="button"
+                    aria-label={t("chat.composer.removeImage", {
+                      name: img.name || idx + 1,
+                    })}
+                    className="absolute top-1 right-1 inline-flex size-5 items-center justify-center rounded-sm bg-background/90 text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                    onClick={() => {
+                      setImages((prev) => prev.filter((_, i) => i !== idx));
+                      setImageError("");
+                    }}
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <AIChatInput
             ref={inputRef}
             onSubmit={handleSend}
             onEmptyChange={setIsEmpty}
             sendOnEnter
             userMessageHistory={userMessageHistory}
-            placeholder={placeholder}
+            placeholder={placeholder ?? t("chat.composer.placeholder")}
             autoFocus={autoFocusOnMount}
             backendType={backendType}
             onSlashSelect={(cmd, exec) => {
@@ -591,14 +914,49 @@ function ChatComposer({
               if (exec.kind === "rpc") onSlashRpc?.(cmd, exec);
             }}
           />
+          {imageError ? (
+            <div className="text-[11px] text-status-error" role="alert">
+              {imageError}
+            </div>
+          ) : null}
           <div className="flex items-center gap-2">
+            {!editing && supportsImageInput ? (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={CHAT_IMAGE_ACCEPT}
+                  multiple
+                  className="hidden"
+                  onChange={(event) =>
+                    void handleImageFiles(event.target.files)
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t("chat.composer.addImage")}
+                  title={t("chat.composer.addImage")}
+                  disabled={images.length >= MAX_CHAT_IMAGE_COUNT}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <ImagePlus data-icon="only" aria-hidden="true" />
+                </Button>
+              </>
+            ) : null}
             <span className="font-mono text-[10px] leading-none text-subtle-foreground">
-              {editing ? EDIT_SHORTCUT_HINT : SEND_SHORTCUT_HINT}
+              {editing
+                ? t("chat.composer.shortcuts.edit")
+                : t("chat.composer.shortcuts.send")}
             </span>
             {!editing && permissionModeSlot ? (
               <div className="flex items-center">{permissionModeSlot}</div>
             ) : null}
             <div className="min-w-0 flex-1" />
+            {!editing ? (
+              <QuotaMeter data={quotaUsage} deviceLabel={quotaDeviceLabel} />
+            ) : null}
             {contextUsage && contextUsage.max > 0 && !editing ? (
               <ContextMeter used={contextUsage.used} max={contextUsage.max} />
             ) : null}
@@ -607,18 +965,18 @@ function ChatComposer({
                 type="submit"
                 disabled={isEmpty}
                 size="xs"
-                aria-label="保存编辑"
+                aria-label={t("chat.composer.saveEdit")}
               >
                 <Check data-icon="inline-start" aria-hidden="true" />
-                保存
+                {t("common.save")}
               </Button>
             ) : (
               <Button
                 type="submit"
-                disabled={isEmpty}
+                disabled={isEmpty && images.length === 0}
                 size="icon-sm"
-                aria-label="发送"
-                title="发送 (Enter)"
+                aria-label={t("chat.composer.send")}
+                title={t("chat.composer.sendTitle")}
               >
                 <SendHorizontal data-icon="only" aria-hidden="true" />
               </Button>
@@ -647,6 +1005,7 @@ function formatHHmmss(ms: number): string {
 // ─── ErrorCard ───────────────────────────────────────────────────────────────
 
 function ErrorCard({ text, onRerun }: { text: string; onRerun?: () => void }) {
+  const { t } = useTranslation();
   return (
     <section
       data-selectable-text="true"
@@ -657,11 +1016,11 @@ function ErrorCard({ text, onRerun }: { text: string; onRerun?: () => void }) {
         aria-hidden="true"
       />
       <span className="min-w-0 flex-1 text-xs text-status-error">
-        Agent 调用失败：{text}
+        {t("chat.errorCard.message", { text })}
       </span>
       {onRerun ? (
         <Button type="button" size="xs" variant="outline" onClick={onRerun}>
-          ↻ 重新生成
+          {t("chat.errorCard.regenerate")}
         </Button>
       ) : null}
     </section>
@@ -669,20 +1028,24 @@ function ErrorCard({ text, onRerun }: { text: string; onRerun?: () => void }) {
 }
 
 function RetryNoticeCard({ retry }: { retry: RetryNotice }) {
+  const { t } = useTranslation();
   const hasCount = retry.attempt > 0 && retry.maxAttempts > 0;
   const title = hasCount
-    ? `正在重试 ${retry.attempt}/${retry.maxAttempts}`
+    ? t("chat.retry.titleWithMax", {
+        attempt: retry.attempt,
+        max: retry.maxAttempts,
+      })
     : retry.attempt > 0
-      ? `正在重试 ${retry.attempt}`
-      : "正在重试";
-  const message = retry.message || "上游连接暂时中断";
+      ? t("chat.retry.titleWithAttempt", { attempt: retry.attempt })
+      : t("chat.retry.title");
+  const message = retry.message || t("chat.retry.defaultMessage");
   const at = formatHHmmss(retry.at);
 
   return (
     <section
       data-selectable-text="true"
       role="status"
-      aria-label="正在重试"
+      aria-label={t("chat.retry.aria")}
       className="flex w-full max-w-[720px] items-start gap-3 rounded-md border border-status-warning/45 bg-status-warning/10 px-4 py-2.5"
     >
       <RefreshCw
@@ -930,6 +1293,7 @@ const MessageItem = React.memo(function MessageItem({
   onEdit,
   onPlanActionStarted,
 }: MessageItemProps) {
+  const { t } = useTranslation();
   const isAssistant = m.role === "assistant";
   // 每条 assistant 都允许重新生成；后端按消息 id 截断后重跑。
   const rerunHandler = isAssistant ? () => onRerun(m.id) : undefined;
@@ -972,6 +1336,7 @@ const MessageItem = React.memo(function MessageItem({
         liveBlocks,
         sessionId,
         onPlanActionStarted,
+        t,
       )}
       {liveRetry ? <RetryNoticeCard retry={liveRetry} /> : null}
       {showIndicator ? (
@@ -989,6 +1354,7 @@ const MessageItem = React.memo(function MessageItem({
 });
 
 function TypingIndicator() {
+  const { t } = useTranslation();
   // keyframe 自己控制 opacity (0.2 ↔ 1)，dot 颜色不再叠 /60，避免叠加后整体太淡看不见。
   // 6px 三点 + 1.5 gap 是「克制但可感知」的尺寸；动画通过 @theme 的 --animate-typing-dot 注册，
   // class 名 animate-typing-dot 由 Tailwind v4 解析为 animation: typing-dot 1.2s ease-in-out infinite。
@@ -996,7 +1362,7 @@ function TypingIndicator() {
     "size-1.5 rounded-full bg-muted-foreground animate-typing-dot motion-reduce:animate-none";
   return (
     <div
-      aria-label="正在生成"
+      aria-label={t("chat.typing.aria")}
       role="status"
       aria-live="polite"
       className="flex items-center gap-1.5 py-1"
@@ -1012,11 +1378,12 @@ function TypingIndicator() {
 // 让用户知道这段时间不是普通回答,而是在压缩上下文 (manual 或 auto)。文案旁
 // 复用 TypingIndicator 的 dot 动画做"还在跑"的视觉信号。
 function CompactingIndicator() {
+  const { t } = useTranslation();
   const dotClass =
     "size-1.5 rounded-full bg-muted-foreground animate-typing-dot motion-reduce:animate-none";
   return (
     <div
-      aria-label="正在压缩上下文"
+      aria-label={t("chat.compacting.aria")}
       role="status"
       aria-live="polite"
       className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
@@ -1026,7 +1393,7 @@ function CompactingIndicator() {
         <span className={cn(dotClass, "[animation-delay:0.15s]")} />
         <span className={cn(dotClass, "[animation-delay:0.3s]")} />
       </div>
-      <span>正在压缩上下文…</span>
+      <span>{t("chat.compacting.label")}</span>
     </div>
   );
 }
@@ -1050,6 +1417,7 @@ function renderMessageBlocks(
   // AskUserQuestionCard 提交答案时要带它去 Wails 绑定。
   sessionId: number = 0,
   onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void,
+  t?: TFunction,
 ): React.ReactNode {
   type RenderItem =
     | { text: string; type: "text" }
@@ -1068,6 +1436,10 @@ function renderMessageBlocks(
         // childBlocks 仅 canonical.agent.spawn 需要(parent-child 归集),其它工具留空。
         childBlocks?: ChatBlockData[];
         type: "tool";
+      }
+    | {
+        block: ChatBlockData;
+        type: "image";
       }
     | {
         block: ChatBlockData;
@@ -1122,6 +1494,9 @@ function renderMessageBlocks(
         break;
       case "thinking":
         items.push({ block: b, streaming: false, type: "thinking" });
+        break;
+      case "image":
+        items.push({ block: b, type: "image" });
         break;
       case "plan":
         // Most plan.update blocks are progress data for TaskProgressBar only.
@@ -1266,7 +1641,7 @@ function renderMessageBlocks(
   return visibleItems.map((item, idx) => {
     switch (item.type) {
       case "text":
-        return <MarkdownText key={`text-${idx}`} text={item.text} />;
+        return <MarkdownText key={`text-${idx}`} cwd={cwd} text={item.text} />;
       case "plan":
         return (
           <PlanApproveCard
@@ -1286,6 +1661,8 @@ function renderMessageBlocks(
             text={item.block.text ?? ""}
           />
         );
+      case "image":
+        return <ImageBlockView key={`image-${idx}`} block={item.block} />;
       case "tool": {
         // 工具卡统一走 CanonicalToolRouter:
         //   - block.canonical 非空且 kind 已注册 → 分发到 canonical-tool/<kind>/card.tsx
@@ -1337,7 +1714,8 @@ function renderMessageBlocks(
             key={`unknown-${idx}`}
             className="rounded-md border border-dashed border-border px-3 py-2 font-mono text-xs text-muted-foreground"
           >
-            (debug) 未实现 block 类型：{item.block.type}
+            {t?.("chat.debug.unknownBlock", { type: item.block.type }) ??
+              `(debug) unknown block type: ${item.block.type}`}
           </div>
         );
       default:

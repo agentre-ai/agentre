@@ -267,6 +267,7 @@ func (s *Session) parseLine(line []byte) ([]Event, bool) {
 			}
 			if f.Model != "" {
 				s.model = f.Model
+				return []Event{{Kind: EventInit, SessionID: s.sessionID, Model: f.Model}}, false
 			}
 		}
 		if ev, ok := parseSystemTask(f, s.sessionID); ok {
@@ -504,6 +505,10 @@ func (s *Session) SetPermissionMode(ctx context.Context, mode string) error {
 
 	defer s.forgetControlRequest(reqID)
 
+	if resp, ok := receiveControlResponse(ch); ok {
+		return setPermissionModeResponseErr(resp)
+	}
+
 	// Reader 选择：
 	//   - turnMu 可获取 → Turn 不在飞，没有别的 reader。我们独占 scanner 自己 drain。
 	//   - turnMu 抢不到 → Turn goroutine 在 routeUntilResult 里读 scanner，
@@ -517,6 +522,10 @@ func (s *Session) SetPermissionMode(ctx context.Context, mode string) error {
 		}
 	}
 	defer s.turnMu.Unlock()
+
+	if resp, ok := receiveControlResponse(ch); ok {
+		return setPermissionModeResponseErr(resp)
+	}
 
 	for s.scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -536,6 +545,15 @@ func (s *Session) SetPermissionMode(ctx context.Context, mode string) error {
 		return err
 	}
 	return io.EOF
+}
+
+func receiveControlResponse(ch <-chan controlResponse) (controlResponse, bool) {
+	select {
+	case resp := <-ch:
+		return resp, true
+	default:
+		return controlResponse{}, false
+	}
 }
 
 // setPermissionModeResponseErr 把 control_response 翻译成 SetPermissionMode 的

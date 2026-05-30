@@ -13,6 +13,7 @@ MACOS_APP_INSTALL_DIR ?= /Applications
 PREFIX ?= /usr/local
 WAILS_PLATFORM ?=
 WAILS_BUILD_FLAGS ?=
+WAILS ?= $(shell command -v wails 2>/dev/null || printf "%s/bin/wails" "$$(go env GOPATH)")
 WINDOWS_PLATFORM ?= windows/amd64
 AGENTRED_BUILD_DIR ?= build/bin
 AGENTRED_LOCAL_BINARY := $(AGENTRED_BUILD_DIR)/agentred
@@ -29,11 +30,11 @@ AGENTRED_RESTART_CMD ?= pkill -x agentred || true; sleep 1; nohup $(AGENTRED_REM
 # 开发模式(前后端热重载)
 dev:
 	@mkdir -p $(FRONTEND_DIR)/dist && [ -e $(FRONTEND_DIR)/dist/.keep ] || touch $(FRONTEND_DIR)/dist/.keep
-	wails dev
+	"$(WAILS)" dev
 
 # 构建生产版本(默认当前平台；可用 WAILS_PLATFORM=windows/amd64 跨平台构建)
 build:
-	wails build -ldflags="$(LDFLAGS)" $(if $(strip $(WAILS_PLATFORM)),-platform "$(WAILS_PLATFORM)") $(WAILS_BUILD_FLAGS)
+	"$(WAILS)" build -ldflags="$(LDFLAGS)" $(if $(strip $(WAILS_PLATFORM)),-platform "$(WAILS_PLATFORM)") $(WAILS_BUILD_FLAGS)
 
 # 构建 Windows 版本(默认 windows/amd64，可覆盖 WINDOWS_PLATFORM=windows/arm64)
 build-windows:
@@ -69,7 +70,7 @@ agentred-local-coding: agentred-deploy-local-coding
 
 # 生成 Wails 前端绑定
 generate:
-	wails generate module
+	"$(WAILS)" generate module
 
 # 直接启动应用(生产构建,不监听文件变动)
 run: build
@@ -109,7 +110,7 @@ test: test-backend test-frontend
 
 # 运行后端测试
 test-backend:
-	go test -race $(BACKEND_PKGS)
+	go test ./...
 
 # 运行前端测试
 test-frontend: generate

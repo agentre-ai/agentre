@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -77,6 +78,9 @@ func TestMethodNames_Stable(t *testing.T) {
 		MethodSetPermissionMode:    "runtime.setPermissionMode",
 		MethodSubmitAnswer:         "runtime.submitAnswer",
 		MethodSubmitToolPermission: "runtime.submitToolPermission",
+		MethodGetGoal:              "runtime.goal.get",
+		MethodSetGoal:              "runtime.goal.set",
+		MethodClearGoal:            "runtime.goal.clear",
 		NotifyEvent:                "runtime.event",
 		NotifyRunResultDone:        "runtime.runResultDone",
 	} {
@@ -147,6 +151,34 @@ func TestRunParams_RawBackendOpaque(t *testing.T) {
 	assert.Equal(t, in.PermissionMode, out.PermissionMode)
 }
 
+func TestRunParams_UserBlocksRoundTrip(t *testing.T) {
+	// Given a multimodal user message crossing desktop -> agentred,
+	// when RunParams is marshaled, then text and inline image bytes survive.
+	stored, err := cagoblocks.EncodeAll([]cagoblocks.ContentBlock{
+		cagoblocks.TextBlock{Text: "what is this?"},
+		cagoblocks.ImageBlock{
+			MediaType: "image/png",
+			Source:    cagoblocks.BlobSource{Inline: []byte{0x89, 0x50, 0x4e, 0x47}},
+		},
+	})
+	require.NoError(t, err)
+
+	in := RunParams{SessionID: 42, UserText: "what is this?", UserBlocks: stored}
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"userBlocks"`)
+
+	var out RunParams
+	require.NoError(t, json.Unmarshal(b, &out))
+	decoded, err := cagoblocks.DecodeAll(out.UserBlocks)
+	require.NoError(t, err)
+	require.Len(t, decoded, 2)
+	assert.Equal(t, "what is this?", decoded[0].(cagoblocks.TextBlock).Text)
+	img := decoded[1].(cagoblocks.ImageBlock)
+	assert.Equal(t, "image/png", img.MediaType)
+	assert.Equal(t, []byte{0x89, 0x50, 0x4e, 0x47}, img.Source.Inline)
+}
+
 // TestParams_FieldShape spot-checks lowerCamelCase tagging by walking a
 // representative param set. Adding a struct field without a json tag is a
 // common drift; an UPPER-cased key in the wire output would surface here.
@@ -169,6 +201,13 @@ func TestParams_FieldShape(t *testing.T) {
 		{"submitToolPerm", SubmitToolPermissionParams{
 			SessionID: 1, RequestID: "r", Allow: true, AlwaysAllowSession: true, DenyReason: "x",
 		}, []string{`"sessionId":1`, `"requestId":"r"`, `"allow":true`, `"alwaysAllowSession":true`, `"denyReason":"x"`}},
+		{"goalGet", GoalParams{SessionID: 1, AgentID: 9, ProviderSessionID: "thread-1", Backend: json.RawMessage(`{"Type":"codex"}`)},
+			[]string{`"sessionId":1`, `"agentId":9`, `"providerSessionId":"thread-1"`, `"backend":`, `"Type":"codex"`}},
+		{"goalSet", GoalParams{SessionID: 1, AgentID: 9, ProviderSessionID: "thread-1", Backend: json.RawMessage(`{"Type":"codex"}`), Objective: ptrString("ship"), Status: ptrString("active"), TokenBudget: ptrInt(123)},
+			[]string{`"sessionId":1`, `"agentId":9`, `"providerSessionId":"thread-1"`, `"backend":`, `"Type":"codex"`, `"objective":"ship"`, `"status":"active"`, `"tokenBudget":123`}},
+		{"goalResult", GoalResult{Goal: &agentruntime.Goal{ThreadID: "thread-1", Objective: "ship", Status: "active"}},
+			[]string{`"goal":`, `"threadId":"thread-1"`, `"objective":"ship"`, `"status":"active"`}},
+		{"goalClearResult", GoalClearResult{Cleared: true}, []string{`"cleared":true`}},
 		{"capabilities", CapabilitiesParams{BackendType: "claudecode"},
 			[]string{`"backendType":"claudecode"`}},
 		{"runAck", RunAck{SessionID: 42}, []string{`"sessionId":42`}},
@@ -189,3 +228,6 @@ func TestParams_FieldShape(t *testing.T) {
 
 // 编译时确认 *jsonrpc.Error 满足 error,这样 ToJSONRPCError 返回的可以直接 return。
 var _ error = (*jsonrpc.Error)(nil)
+
+func ptrString(v string) *string { return &v }
+func ptrInt(v int) *int          { return &v }

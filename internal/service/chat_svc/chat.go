@@ -4,6 +4,7 @@ package chat_svc
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -38,7 +39,7 @@ import (
 	// selectRunner 解析到。claudecodert 别名避免与 pkg/claudecode CLI 库名字撞车。
 	_ "agentre/internal/pkg/agentruntime/runtimes/builtin"
 	claudecodert "agentre/internal/pkg/agentruntime/runtimes/claudecode"
-	_ "agentre/internal/pkg/agentruntime/runtimes/codex"
+	codexrt "agentre/internal/pkg/agentruntime/runtimes/codex"
 	"agentre/internal/pkg/agentruntime/runtimes/remote"
 	"agentre/internal/pkg/code"
 	"agentre/internal/pkg/httpgateway"
@@ -56,6 +57,18 @@ import (
 	"agentre/pkg/claudecode"
 )
 
+const (
+	maxSendImages      = 4
+	maxSendImageBytes  = 5 * 1024 * 1024
+	dataURLBase64Token = ";base64,"
+)
+
+var sendImageMediaTypes = map[string]struct{}{
+	"image/png":  {},
+	"image/jpeg": {},
+	"image/webp": {},
+}
+
 type ChatSvc interface {
 	ListAgents(ctx context.Context, req *ListAgentsRequest) (*ListAgentsResponse, error)
 	ListAgentSessions(ctx context.Context, req *ListAgentSessionsRequest) (*ListAgentSessionsResponse, error)
@@ -64,6 +77,10 @@ type ChatSvc interface {
 	GetSessionGitState(ctx context.Context, req *GetSessionGitStateRequest) (*GetSessionGitStateResponse, error)
 	Send(ctx context.Context, req *SendRequest) (*SendResponse, error)
 	Compact(ctx context.Context, req *CompactRequest) (*CompactResponse, error)
+	GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error)
+	SetGoal(ctx context.Context, req *SetGoalRequest) (*GoalResponse, error)
+	StartGoal(ctx context.Context, req *StartGoalRequest) (*StartGoalResponse, error)
+	ClearGoal(ctx context.Context, req *ClearGoalRequest) (*ClearGoalResponse, error)
 	Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueResponse, error)
 	CancelQueued(ctx context.Context, req *CancelQueuedRequest) (*CancelQueuedResponse, error)
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
@@ -202,8 +219,16 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 	if err != nil {
 		return nil, i18n.NewError(ctx, code.OperationFailed)
 	}
+	sessionIDs, err := chat_repo.Session().ListIDsByAgents(ctx, agentIDs)
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.OperationFailed)
+	}
 
 	for _, a := range agents {
+		ids := sessionIDs[a.ID]
+		if ids == nil {
+			ids = []int64{}
+		}
 		item := ChatAgentItem{
 			ID:            a.ID,
 			Name:          a.Name,
@@ -213,6 +238,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 			Pinned:        a.IsSystem(),
 			ActiveCount:   counts[a.ID],
 			TotalSessions: totals[a.ID],
+			SessionIDs:    ids,
 		}
 		if be := backends[a.AgentBackendID]; be != nil {
 			item.BackendType = be.Type
@@ -379,6 +405,21 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		},
 		Messages: make([]ChatMessage, 0, len(msgs)),
 	}
+	// 诊断: 记录这次 serve 出去的 agentStatus + 后端此刻是否有活跃 turn。
+	// 前端「过期快照覆盖 running」竞态在 serve 端通常看着无辜(turn 还没起、DB 还是
+	// idle),但若 serve 时已有活跃 turn 却吐 非 running/waiting,就是后端侧能直接抓到
+	// 的不一致。配合前端 LogClient 上报的 apply 时刻能把竞态时间线对上。
+	if _, activeTurn := s.activeCancels.Load(sess.ID); activeTurn &&
+		sess.AgentStatus != "running" && sess.AgentStatus != "waiting" {
+		logger.Ctx(ctx).Warn("chat_svc: LoadSession served non-running status while turn active",
+			zap.Int64("sessionId", sess.ID),
+			zap.String("agentStatus", sess.AgentStatus),
+			zap.Bool("activeTurn", true))
+	} else {
+		logger.Ctx(ctx).Debug("chat_svc: LoadSession served",
+			zap.Int64("sessionId", sess.ID),
+			zap.String("agentStatus", sess.AgentStatus))
+	}
 	if a != nil {
 		resp.Session.AgentName = a.Name
 		resp.Session.AgentColor = a.AvatarColor
@@ -543,6 +584,12 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "text", Text: tb.Text})
 		case *blocks.TextBlock:
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "text", Text: tb.Text})
+		case blocks.ImageBlock:
+			out.Blocks = append(out.Blocks, imageBlockToChatBlock(tb))
+		case *blocks.ImageBlock:
+			if tb != nil {
+				out.Blocks = append(out.Blocks, imageBlockToChatBlock(*tb))
+			}
 		case blocks.ThinkingBlock:
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "thinking", Text: tb.Text})
 		case *blocks.ThinkingBlock:
@@ -619,6 +666,16 @@ func toolUseToChatBlock(id, name string, input map[string]any) ChatBlock {
 	}
 	if c, ok := canonical.FromToolUse(name, input); ok {
 		cb.Canonical = view.FromCanonical(c)
+	}
+	return cb
+}
+
+func imageBlockToChatBlock(img blocks.ImageBlock) ChatBlock {
+	cb := ChatBlock{Type: "image", Image: &ChatBlockImage{MediaType: img.MediaType}}
+	if len(img.Source.Inline) > 0 {
+		cb.Image.DataURL = "data:" + img.MediaType + ";base64," + base64.StdEncoding.EncodeToString(img.Source.Inline)
+	} else if img.Source.URL != "" {
+		cb.Image.DataURL = img.Source.URL
 	}
 	return cb
 }
@@ -711,9 +768,242 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	return s.startCompactTurn(ctx, sess, a, be, prov)
 }
 
+func (s *chatSvc) GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error) {
+	if req == nil || req.SessionID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	controller, goalReq, release, err := s.goalController(ctx, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	goal, err := controller.GetGoal(ctx, goalReq)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.GetGoal: runner.GetGoal failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.Error(err))
+		return nil, i18n.NewError(ctx, code.ChatGoalInternal)
+	}
+	return &GoalResponse{Goal: chatGoalFromRuntime(goal)}, nil
+}
+
+func (s *chatSvc) SetGoal(ctx context.Context, req *SetGoalRequest) (*GoalResponse, error) {
+	if req == nil || req.SessionID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if req.Objective == nil && req.Status == nil && req.TokenBudget == nil {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	sess, a, be, prov, err := s.goalSessionContext(ctx, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	resp, release, err := s.setGoalOnSession(ctx, sess, a, be, prov, req)
+	defer release()
+	return resp, err
+}
+
+func (s *chatSvc) StartGoal(ctx context.Context, req *StartGoalRequest) (*StartGoalResponse, error) {
+	if req == nil || req.AgentID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if req.Objective == nil || strings.TrimSpace(*req.Objective) == "" {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	a, be, prov, err := s.resolveAgentBackend(ctx, req.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	if !be.IsCodex() {
+		return nil, i18n.NewError(ctx, code.ChatGoalUnsupported)
+	}
+	projectID, err := s.resolveProjectContext(ctx, req.ProjectID, req.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	permissionMode, err := createPermissionMode(ctx, be, req.PermissionMode)
+	if err != nil {
+		return nil, err
+	}
+	objective := strings.TrimSpace(*req.Objective)
+	sess := &chat_entity.Session{
+		AgentID:                req.AgentID,
+		ProjectID:              projectID,
+		PermissionMode:         permissionMode,
+		PermissionModeAtLaunch: permissionMode,
+		Title:                  sessionTitleFromFirstMessage(objective),
+		AgentStatus:            "idle",
+		Status:                 consts.ACTIVE,
+	}
+	if err := chat_repo.Session().Create(ctx, sess); err != nil {
+		return nil, i18n.NewError(ctx, code.OperationFailed)
+	}
+	setReq := &SetGoalRequest{
+		SessionID:   sess.ID,
+		Objective:   &objective,
+		Status:      req.Status,
+		TokenBudget: req.TokenBudget,
+	}
+	resp, release, err := s.setGoalOnSession(ctx, sess, a, be, prov, setReq)
+	defer release()
+	if err != nil {
+		return nil, err
+	}
+	if resp != nil && resp.Goal != nil {
+		providerSessionID := strings.TrimSpace(resp.Goal.ThreadID)
+		if providerSessionID == "" {
+			return nil, i18n.NewError(ctx, code.ChatGoalInternal)
+		}
+		sess.SetProviderSession(providerSessionID)
+		if err := chat_repo.Session().Update(ctx, sess); err != nil {
+			logger.Ctx(ctx).Warn("chat_svc.StartGoal: persist provider_session_id failed",
+				zap.Int64("sessionId", sess.ID),
+				zap.String("providerSessionID", providerSessionID),
+				zap.Error(err))
+			return nil, i18n.NewError(ctx, code.OperationFailed)
+		}
+	}
+	return &StartGoalResponse{SessionID: sess.ID, Goal: resp.Goal}, nil
+}
+
+func (s *chatSvc) ClearGoal(ctx context.Context, req *ClearGoalRequest) (*ClearGoalResponse, error) {
+	if req == nil || req.SessionID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	controller, goalReq, release, err := s.goalController(ctx, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	cleared, err := controller.ClearGoal(ctx, goalReq)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.ClearGoal: runner.ClearGoal failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.Error(err))
+		return nil, i18n.NewError(ctx, code.ChatGoalInternal)
+	}
+	return &ClearGoalResponse{Cleared: cleared}, nil
+}
+
+func (s *chatSvc) goalSessionContext(ctx context.Context, sessionID int64) (*chat_entity.Session, *agent_entity.Agent, *agent_backend_entity.AgentBackend, *llm_provider_entity.LLMProvider, error) {
+	sess, err := chat_repo.Session().Find(ctx, sessionID)
+	if err != nil {
+		return nil, nil, nil, nil, i18n.NewError(ctx, code.OperationFailed)
+	}
+	if sess == nil {
+		return nil, nil, nil, nil, i18n.NewError(ctx, code.ChatSessionNotFound)
+	}
+	if strings.TrimSpace(sess.ProviderSessionID) == "" {
+		return nil, nil, nil, nil, i18n.NewError(ctx, code.ChatGoalNoSession)
+	}
+	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if !be.IsCodex() {
+		return nil, nil, nil, nil, i18n.NewError(ctx, code.ChatGoalUnsupported)
+	}
+	return sess, a, be, prov, nil
+}
+
+func (s *chatSvc) goalController(ctx context.Context, sessionID int64) (agentruntime.GoalController, agentruntime.GoalRequest, func(), error) {
+	sess, a, be, prov, err := s.goalSessionContext(ctx, sessionID)
+	if err != nil {
+		return nil, agentruntime.GoalRequest{}, func() {}, err
+	}
+	return s.goalControllerForSession(ctx, sess, a, be, prov)
+}
+
+func (s *chatSvc) goalControllerForSession(ctx context.Context, sess *chat_entity.Session, a *agent_entity.Agent, be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider) (agentruntime.GoalController, agentruntime.GoalRequest, func(), error) {
+	release := func() {}
+	runner, err := s.selectRunner(ctx, be, sess.ID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.goalController: selectRunner failed",
+			zap.Int64("sessionId", sess.ID),
+			zap.String("backendType", be.Type),
+			zap.Error(err))
+		return nil, agentruntime.GoalRequest{}, release, i18n.NewError(ctx, code.ChatGoalUnsupported)
+	}
+	if be.IsRemote() {
+		if deviceID, ok := be.DeviceIDInt(); ok {
+			released := false
+			release = func() {
+				if released {
+					return
+				}
+				released = true
+				s.releaseRemoteRuntime(deviceID, sess.ID)
+			}
+		}
+	}
+	if !runner.Capabilities().Has(capability.CapGoal) {
+		release()
+		return nil, agentruntime.GoalRequest{}, func() {}, i18n.NewError(ctx, code.ChatGoalUnsupported)
+	}
+	controller, ok := runner.(agentruntime.GoalController)
+	if !ok {
+		release()
+		return nil, agentruntime.GoalRequest{}, func() {}, i18n.NewError(ctx, code.ChatGoalUnsupported)
+	}
+	cwd, err := resolveSessionCwd(ctx, sess, be)
+	if err != nil {
+		return nil, agentruntime.GoalRequest{}, release, err
+	}
+	return controller, agentruntime.GoalRequest{
+		SessionID:         sess.ID,
+		ProviderSessionID: sess.ProviderSessionID,
+		Backend:           be,
+		Provider:          prov,
+		Cwd:               cwd,
+		AgentID:           a.ID,
+	}, release, nil
+}
+
+func (s *chatSvc) setGoalOnSession(ctx context.Context, sess *chat_entity.Session, a *agent_entity.Agent, be *agent_backend_entity.AgentBackend, prov *llm_provider_entity.LLMProvider, req *SetGoalRequest) (*GoalResponse, func(), error) {
+	controller, goalReq, release, err := s.goalControllerForSession(ctx, sess, a, be, prov)
+	if err != nil {
+		return nil, release, err
+	}
+	goalReq.Objective = req.Objective
+	goalReq.Status = req.Status
+	goalReq.TokenBudget = req.TokenBudget
+	goal, err := controller.SetGoal(ctx, goalReq)
+	if err != nil {
+		release()
+		logger.Ctx(ctx).Warn("chat_svc.SetGoal: runner.SetGoal failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.Error(err))
+		return nil, func() {}, i18n.NewError(ctx, code.ChatGoalInternal)
+	}
+	return &GoalResponse{Goal: chatGoalFromRuntime(goal)}, release, nil
+}
+
+func chatGoalFromRuntime(goal *agentruntime.Goal) *ChatGoal {
+	if goal == nil {
+		return nil
+	}
+	return &ChatGoal{
+		ThreadID:        goal.ThreadID,
+		Objective:       goal.Objective,
+		Status:          goal.Status,
+		TokenBudget:     goal.TokenBudget,
+		TokensUsed:      goal.TokensUsed,
+		TimeUsedSeconds: goal.TimeUsedSeconds,
+		CreatedAt:       goal.CreatedAt,
+		UpdatedAt:       goal.UpdatedAt,
+	}
+}
+
 func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) (*SendResponse, error) {
+	if req == nil {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
 	text := strings.TrimSpace(req.Text)
-	if text == "" {
+	imageBlocks, err := blocksFromSendImages(ctx, req.Images)
+	if err != nil {
+		return nil, err
+	}
+	if text == "" && len(imageBlocks) == 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 	if len(text) > chat_entity.MessageTextMaxBytes {
@@ -745,6 +1035,15 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	a, be, prov, err := s.resolveAgentBackend(ctx, targetAgentID)
 	if err != nil {
 		return nil, err
+	}
+	if len(imageBlocks) > 0 && be.IsLocal() {
+		runner, err := s.selectRunner(ctx, be, req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if !runner.Capabilities().Has(capability.CapImageInput) {
+			return nil, i18n.NewError(ctx, code.AgentBackendTypeUnsupported)
+		}
 	}
 
 	if req.SessionID == 0 {
@@ -784,7 +1083,45 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		_ = chat_repo.Session().Update(ctx, sess)
 	}
 
-	return s.startTurn(ctx, sess, a, be, prov, text, nil /*preTxHook*/, "" /*forkAnchor*/)
+	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, "" /*forkAnchor*/)
+}
+
+func userBlocksForSend(text string, imageBlocks []blocks.ContentBlock) []blocks.ContentBlock {
+	out := make([]blocks.ContentBlock, 0, 1+len(imageBlocks))
+	if strings.TrimSpace(text) != "" {
+		out = append(out, &blocks.TextBlock{Text: text})
+	}
+	out = append(out, imageBlocks...)
+	return out
+}
+
+func blocksFromSendImages(ctx context.Context, images []SendImage) ([]blocks.ContentBlock, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	if len(images) > maxSendImages {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	out := make([]blocks.ContentBlock, 0, len(images))
+	for _, img := range images {
+		mediaType, payload, ok := strings.Cut(strings.TrimSpace(img.DataURL), dataURLBase64Token)
+		if !ok || !strings.HasPrefix(mediaType, "data:") {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		mediaType = strings.TrimPrefix(mediaType, "data:")
+		if _, ok := sendImageMediaTypes[mediaType]; !ok {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil || len(decoded) == 0 || len(decoded) > maxSendImageBytes {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		out = append(out, blocks.ImageBlock{
+			MediaType: mediaType,
+			Source:    blocks.BlobSource{Inline: decoded},
+		})
+	}
+	return out, nil
 }
 
 // resolveProjectContext 校验新建会话的项目参数。返回 (projectID, err)。
@@ -1401,7 +1738,10 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	if userAnchor == nil {
 		return nil, i18n.NewError(ctx, code.ChatRegenerateNoUserAnchor)
 	}
-	userText := textOfMessage(userAnchor)
+	userBlocks, err := userAnchor.GetBlocks()
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
+	}
 
 	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
 	if err != nil {
@@ -1426,7 +1766,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, userText, preTx, forkAnchor)
+	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, forkAnchor)
 }
 
 // Edit 编辑历史 user 消息后用新文本重跑 turn。截到目标 user 消息（含）开始的全部
@@ -1466,6 +1806,10 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 	if target.Role != "user" {
 		return nil, i18n.NewError(ctx, code.ChatEditNotUser)
 	}
+	targetBlocks, err := target.GetBlocks()
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
+	}
 
 	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
 	if err != nil {
@@ -1488,7 +1832,40 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, text, preTx, forkAnchor)
+	return s.startTurn(ctx, sess, a, be, prov, replaceTextPreserveImages(text, targetBlocks), preTx, forkAnchor)
+}
+
+func replaceTextPreserveImages(text string, old []blocks.ContentBlock) []blocks.ContentBlock {
+	out := []blocks.ContentBlock{&blocks.TextBlock{Text: text}}
+	for _, b := range old {
+		switch img := b.(type) {
+		case blocks.ImageBlock:
+			out = append(out, img)
+		case *blocks.ImageBlock:
+			if img != nil {
+				out = append(out, img)
+			}
+		}
+	}
+	return out
+}
+
+func messageHasImage(m *chat_entity.Message) bool {
+	bs, err := m.GetBlocks()
+	if err != nil {
+		return false
+	}
+	for _, b := range bs {
+		switch img := b.(type) {
+		case blocks.ImageBlock:
+			return true
+		case *blocks.ImageBlock:
+			if img != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // backendForkAnchor 是 Regenerate / Edit 共享的"按后端类型决定 fork 锚点"分流逻辑。
@@ -1547,7 +1924,7 @@ func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Ses
 //
 // Caller is responsible for resolving sess/a/be/prov consistently with the
 // session's actual agent (Send for new sessions, Regenerate for in-place
-// rewind). text is the user message body that will be re-played to the runtime.
+// rewind). userBlocks is the user message body that will be re-played to the runtime.
 //
 // preTx, if non-nil, runs at the very top of the transaction — before NextSeq —
 // so it can free up seq numbers by truncating older rows. Returning a non-nil
@@ -1558,7 +1935,7 @@ func (s *chatSvc) startTurn(
 	a *agent_entity.Agent,
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
-	text string,
+	userBlocks []blocks.ContentBlock,
 	preTx func(txCtx context.Context) error,
 	forkAnchor string,
 ) (*SendResponse, error) {
@@ -1568,7 +1945,7 @@ func (s *chatSvc) startTurn(
 	}
 
 	userMsg := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
-	_ = userMsg.SetBlocks([]blocks.ContentBlock{&blocks.TextBlock{Text: text}})
+	_ = userMsg.SetBlocks(userBlocks)
 
 	model := ""
 	if prov != nil {
@@ -1729,6 +2106,12 @@ func (s *chatSvc) markSessionWaiting(ctx context.Context, sess *chat_entity.Sess
 	sess.AgentStatus = "waiting"
 	sess.NeedsAttention = true
 	_ = chat_repo.Session().Update(context.WithoutCancel(ctx), sess)
+	logger.Ctx(ctx).Info("chat_svc: session_status emit",
+		zap.Int64("sessionId", sess.ID),
+		zap.String("stream", stream),
+		zap.String("agentStatus", sess.AgentStatus),
+		zap.Bool("needsAttention", sess.NeedsAttention),
+		zap.String("source", "markSessionWaiting"))
 	s.emitter.Emit(ctx, stream, ChatStreamEvent{
 		Kind: StreamSessionStatus,
 		SessionStatus: &ChatSessionStatusPatch{
@@ -1747,6 +2130,12 @@ func (s *chatSvc) markSessionRunning(ctx context.Context, sess *chat_entity.Sess
 	sess.AgentStatus = "running"
 	sess.NeedsAttention = false
 	_ = chat_repo.Session().Update(context.WithoutCancel(ctx), sess)
+	logger.Ctx(ctx).Info("chat_svc: session_status emit",
+		zap.Int64("sessionId", sess.ID),
+		zap.String("stream", stream),
+		zap.String("agentStatus", sess.AgentStatus),
+		zap.Bool("needsAttention", sess.NeedsAttention),
+		zap.String("source", "markSessionRunning"))
 	s.emitter.Emit(ctx, stream, ChatStreamEvent{
 		Kind: StreamSessionStatus,
 		SessionStatus: &ChatSessionStatusPatch{
@@ -1787,6 +2176,10 @@ func (s *chatSvc) runTurn(
 			defer s.releaseRemoteRuntime(deviceID, sess.ID)
 		}
 	}
+	if userMsg != nil && messageHasImage(userMsg) && !runner.Capabilities().Has(capability.CapImageInput) {
+		s.failTurn(ctx, sess, assistantMsg, stream, agentruntime.ErrUnsupported)
+		return
+	}
 
 	cwd, cwdErr := resolveSessionCwd(ctx, sess, be)
 	if cwdErr != nil {
@@ -1806,6 +2199,9 @@ func (s *chatSvc) runTurn(
 	}
 	if userMsg != nil {
 		req.UserText = textOfMessage(userMsg)
+		if bs, err := userMsg.GetBlocks(); err == nil {
+			req.UserBlocks = bs
+		}
 	}
 	if be.IsBuiltin() {
 		// builtin 没有持久化 session — 把历史从 chat_messages 重建后透传。
@@ -1851,6 +2247,9 @@ func (s *chatSvc) runTurn(
 		s.failTurn(ctx, sess, assistantMsg, stream, s.mapTurnError(ctx, sess, be, err))
 		return
 	}
+	if result != nil && (be.IsClaudeCode() || be.IsCodex()) {
+		s.persistProviderSessionID(ctx, sess, result.ProviderSessionID, "runner-start")
+	}
 	// runtime spawn 新 CLI 子进程时把实际下发的 --permission-mode 同步回吐到
 	// result.LaunchPermissionMode(claudecode 专用,其它 runtime 留空);这里把
 	// 它落库到 session.PermissionModeAtLaunch。历史上由 runtime 直接 chat_repo
@@ -1877,7 +2276,16 @@ func (s *chatSvc) runTurn(
 	)
 	for ev := range events {
 		if streamStopErr != nil {
-			continue
+			if eventShowsProgressAfterError(ev) {
+				logger.Ctx(ctx).Info("chat_svc: streamStopErr cleared by progress event",
+					zap.Int64("sessionId", sess.ID),
+					zap.Int64("assistantMsgId", assistantMsg.ID),
+					zap.String("clearedBy", fmt.Sprintf("%T", ev)),
+					zap.Error(streamStopErr))
+				streamStopErr = nil
+			} else {
+				continue
+			}
 		}
 		// SteerConsumed + ErrorEvent 不走 dispatcher:
 		//   - SteerConsumed:turn-segmentation 紧耦合 assistantMsg/segmentStart/acc/turnCtx
@@ -1892,6 +2300,10 @@ func (s *chatSvc) runTurn(
 				assistantMsg.Model, e.Steers,
 			)
 			if perr != nil {
+				logger.Ctx(ctx).Warn("chat_svc: streamStopErr set by persistConsumedSteers",
+					zap.Int64("sessionId", sess.ID),
+					zap.Int64("assistantMsgId", assistantMsg.ID),
+					zap.Error(perr))
 				streamStopErr = perr
 				continue
 			}
@@ -1905,6 +2317,11 @@ func (s *chatSvc) runTurn(
 			continue
 		case agentruntime.ErrorEvent:
 			if e.Err != nil {
+				logger.Ctx(ctx).Warn("chat_svc: ErrorEvent intercepted, streamStopErr set",
+					zap.Int64("sessionId", sess.ID),
+					zap.Int64("assistantMsgId", assistantMsg.ID),
+					zap.String("stream", stream),
+					zap.Error(e.Err))
 				streamStopErr = e.Err
 			}
 			continue
@@ -1958,6 +2375,11 @@ func (s *chatSvc) runTurn(
 		}
 		if stopErr == nil && result.StopErr != nil {
 			stopErr = s.mapTurnError(ctx, sess, be, result.StopErr)
+			logger.Ctx(ctx).Warn("chat_svc: stopErr promoted from RunResult.StopErr",
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("assistantMsgId", assistantMsg.ID),
+				zap.String("stream", stream),
+				zap.Error(stopErr))
 		}
 		// Send 时 sess 之前没有 session id，runner 返回新 id 落库；
 		// Regenerate-fork 时 sess 有旧 id 但 runner 返回 fork 出来的新 id，必须覆盖。
@@ -2027,7 +2449,32 @@ func (s *chatSvc) runTurn(
 		}
 	}
 	_ = chat_repo.Session().Update(finalCtx, sess)
-	if awaitingPlanAction {
+	// 诊断: 落库的最终(或自动接续中间态)agent_status。下面那段只在 error/waiting 时
+	// emit+log,idle 收尾历史上完全没日志 —— 这正是 agentre.log 里看不到 running→idle
+	// 翻转、排查「状态停在 running / 被过期快照盖回 idle」时无从对时间线的原因。这里补一条
+	// 覆盖所有终态(含 pending>0 自动接续仍 running 的中间态)。
+	logger.Ctx(finalCtx).Info("chat_svc: agent_status finalized",
+		zap.Int64("sessionId", sess.ID),
+		zap.Int64("assistantMsgId", assistantMsg.ID),
+		zap.String("agentStatus", sess.AgentStatus),
+		zap.Bool("needsAttention", sess.NeedsAttention),
+		zap.Bool("aborted", aborted),
+		zap.Int("pending", len(pending)))
+	// 末端状态翻转主动推一帧 session_status:后台 session 出错/等审批时,前端 tab
+	// 只订阅本会话 stream,StreamError 走 finishStream→bumpDone 不动 agentStatus,
+	// 不补一刀 tab 红点要等下次 ListChatAgents 才同步。idle 不发 —— turn 正常收尾
+	// 走 StreamDone,前端 chat-panel doneTick effect 会 reloadSession 主动拉一次。
+	if (stopErr != nil && !aborted) || awaitingPlanAction {
+		logger.Ctx(finalCtx).Info("chat_svc: session_status emit",
+			zap.Int64("sessionId", sess.ID),
+			zap.Int64("assistantMsgId", assistantMsg.ID),
+			zap.String("stream", stream),
+			zap.String("agentStatus", sess.AgentStatus),
+			zap.Bool("needsAttention", sess.NeedsAttention),
+			zap.Bool("aborted", aborted),
+			zap.Bool("awaitingPlanAction", awaitingPlanAction),
+			zap.Error(stopErr),
+			zap.String("source", "finalize"))
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 			Kind: StreamSessionStatus,
 			SessionStatus: &ChatSessionStatusPatch{
@@ -2083,6 +2530,44 @@ func (s *chatSvc) runTurn(
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
 	}
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
+}
+
+func (s *chatSvc) persistProviderSessionID(ctx context.Context, sess *chat_entity.Session, providerSessionID, reason string) {
+	sid := strings.TrimSpace(providerSessionID)
+	if sess == nil || sid == "" || sid == sess.ProviderSessionID {
+		return
+	}
+	sess.SetProviderSession(sid)
+	if err := chat_repo.Session().Update(context.WithoutCancel(ctx), sess); err != nil {
+		logger.Ctx(ctx).Warn("chat_svc: persist provider_session_id failed",
+			zap.Int64("sessionId", sess.ID),
+			zap.String("providerSessionID", sid),
+			zap.String("reason", reason),
+			zap.Error(err))
+	}
+}
+
+func eventShowsProgressAfterError(ev agentruntime.Event) bool {
+	switch ev.(type) {
+	case agentruntime.TextDelta,
+		agentruntime.ThinkingDelta,
+		agentruntime.ToolCall,
+		agentruntime.ToolResult,
+		agentruntime.UserAskRequest,
+		agentruntime.UserAskResolved,
+		agentruntime.ToolPermissionRequest,
+		agentruntime.ToolPermissionResolved,
+		agentruntime.SubagentStarted,
+		agentruntime.SubagentProgress,
+		agentruntime.SubagentDone,
+		agentruntime.Retry,
+		agentruntime.PlanUpdated,
+		agentruntime.CompactBoundary,
+		agentruntime.SteerConsumed:
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldCheckpointAssistantAfterEvent(ev agentruntime.Event) bool {
@@ -2418,6 +2903,23 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 	sess.AgentStatus = "error"
 	sess.NeedsAttention = false
 	_ = chat_repo.Session().Update(ctx, sess)
+	// session_status 必须先于 StreamError emit:前端 chat-streams-host 收到 error
+	// 立刻 finishStream 删 LiveStream entry → StreamSubscriber 紧接着 unmount,后到
+	// 的 session_status 永远收不到。后台 session 出错时只靠 bumpDone 不会翻 tab 红点。
+	logger.Ctx(ctx).Info("chat_svc: session_status emit",
+		zap.Int64("sessionId", sess.ID),
+		zap.Int64("assistantMsgId", msg.ID),
+		zap.String("stream", stream),
+		zap.String("agentStatus", sess.AgentStatus),
+		zap.Bool("needsAttention", sess.NeedsAttention),
+		zap.String("source", "failTurn"))
+	s.emitter.Emit(ctx, stream, ChatStreamEvent{
+		Kind: StreamSessionStatus,
+		SessionStatus: &ChatSessionStatusPatch{
+			AgentStatus:    sess.AgentStatus,
+			NeedsAttention: sess.NeedsAttention,
+		},
+	})
 	s.emitter.Emit(ctx, stream, ChatStreamEvent{
 		Kind:    StreamError,
 		Error:   err.Error(),
@@ -2446,6 +2948,9 @@ func textOfMessage(m *chat_entity.Message) string {
 		if tb, ok := b.(blocks.TextBlock); ok {
 			return tb.Text
 		}
+		if tb, ok := b.(*blocks.TextBlock); ok && tb != nil {
+			return tb.Text
+		}
 	}
 	return ""
 }
@@ -2472,9 +2977,9 @@ func (s *chatSvc) Delete(ctx context.Context, req *DeleteRequest) (*DeleteRespon
 	if err := chat_repo.Session().SoftDelete(ctx, req.SessionID); err != nil {
 		return nil, i18n.NewError(ctx, code.OperationFailed)
 	}
-	// DB 已删，释放该 session 的常驻 claude 子进程（best-effort，cache miss 时 no-op）。
-	// codex 还没常驻化，无需调；将来 codex 也有常驻 session 时这里要补一行。
+	// DB 已删，释放该 session 的常驻 CLI 子进程（best-effort，cache miss 时 no-op）。
 	claudecodert.Default().CloseSession(ctx, req.SessionID)
+	codexrt.Default().CloseSession(ctx, req.SessionID)
 	return &DeleteResponse{}, nil
 }
 

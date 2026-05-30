@@ -16,9 +16,9 @@ const themeStorageKey = "agentre.theme";
 const windowSizeStorageKey = "agentre.windowSize";
 const lastPathStorageKey = "agentre.lastPath";
 const themeLabelByValue: Record<"system" | "light" | "dark", string> = {
-  dark: "深色",
-  light: "浅色",
-  system: "跟随系统",
+  dark: "Dark",
+  light: "Light",
+  system: "System",
 };
 let restoreMatchMedia: (() => void) | undefined;
 
@@ -678,35 +678,37 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByText("Agentre")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "对话" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(screen.getByRole("button", { name: "设置" })).not.toHaveAttribute(
-      "aria-current",
-    );
+    expect(
+      screen.getByRole("button", { name: "Settings" }),
+    ).not.toHaveAttribute("aria-current");
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
-    expect(screen.getByRole("button", { name: "设置" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(screen.getByRole("heading", { name: "外观" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Appearance" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "调整 Agentre 的界面显示方式。主题偏好会保存在当前设备。",
+        "Adjust how Agentre is displayed. Theme and language preferences are saved on this device.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "外观" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Appearance" })).toHaveAttribute(
       "aria-current",
       "page",
     );
     expect(
-      screen.getByRole("complementary", { name: "设置导航" }),
+      screen.getByRole("complementary", { name: "Settings" }),
     ).not.toHaveClass("hidden");
     expect(
-      screen.getByRole("combobox", { name: "主题模式" }),
+      screen.getByRole("combobox", { name: "Theme Mode" }),
     ).toBeInTheDocument();
   });
 
@@ -716,12 +718,12 @@ describe("App", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "项目" })).toHaveAttribute(
+      expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute(
         "aria-current",
         "page",
       );
     });
-    expect(screen.getByRole("button", { name: "对话" })).not.toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Chat" })).not.toHaveAttribute(
       "aria-current",
     );
   });
@@ -732,7 +734,7 @@ describe("App", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "对话" })).toHaveAttribute(
+      expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute(
         "aria-current",
         "page",
       );
@@ -744,13 +746,13 @@ describe("App", () => {
 
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
     await waitFor(() => {
       expect(localStorage.getItem(lastPathStorageKey)).toBe("/settings");
     });
 
-    await user.click(screen.getByRole("button", { name: "对话" }));
+    await user.click(screen.getByRole("button", { name: "Chat" }));
 
     await waitFor(() => {
       expect(localStorage.getItem(lastPathStorageKey)).toBe("/chat");
@@ -760,12 +762,14 @@ describe("App", () => {
   it("keeps the theme toggle directly above settings in the left rail", () => {
     render(<App />);
 
-    const navRail = screen.getByRole("complementary", { name: "主导航" });
+    const navRail = screen.getByRole("complementary", {
+      name: "Primary navigation",
+    });
     const settingsButton = within(navRail).getByRole("button", {
-      name: "设置",
+      name: "Settings",
     });
     const themeToggle = within(navRail).getByRole("button", {
-      name: /切换主题/,
+      name: /Toggle theme/,
     });
 
     expect(navRail).toHaveClass("w-14", "px-2");
@@ -885,10 +889,10 @@ describe("App", () => {
     expect(ctrlEvent.defaultPrevented).toBe(false);
     expect(metaEvent.defaultPrevented).toBe(true);
 
-    await user.click(screen.getByRole("button", { name: "对话" }));
+    await user.click(screen.getByRole("button", { name: "Chat" }));
 
     const textareaEvent = fireSelectAllKey(
-      screen.getByPlaceholderText("搜索 Agent / 会话"),
+      screen.getByPlaceholderText("Search Agent / session"),
       "meta",
     );
 
@@ -922,42 +926,44 @@ describe("App", () => {
 
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "对话" }));
+    await user.click(screen.getByRole("button", { name: "Chat" }));
 
-    expect(screen.getByRole("button", { name: "对话" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Chat" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(screen.getByRole("button", { name: "设置" })).not.toHaveAttribute(
-      "aria-current",
-    );
     expect(
-      screen.getByRole("complementary", { name: "Agent 列表" }),
+      screen.getByRole("button", { name: "Settings" }),
+    ).not.toHaveAttribute("aria-current");
+    expect(
+      screen.getByRole("complementary", { name: "Agent list" }),
     ).toHaveStyle({ width: "320px" });
     expect(
-      screen.getByPlaceholderText("搜索 Agent / 会话"),
+      screen.getByPlaceholderText("Search Agent / session"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("选一个 Agent 或项目下的会话开始"),
+      screen.getByText("Choose an Agent or project session to start"),
     ).toBeInTheDocument();
     // TabStrip + ChatPanelHost right pane is visible on /chat
     expect(
       document.querySelector('[data-page-has-chat="true"]'),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("heading", { name: "Agent 后端" }),
+      screen.queryByRole("heading", { name: "Agent Backends" }),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
-    expect(screen.getByRole("button", { name: "设置" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(screen.getByRole("button", { name: "对话" })).not.toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Chat" })).not.toHaveAttribute(
       "aria-current",
     );
-    expect(screen.getByRole("heading", { name: "外观" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Appearance" }),
+    ).toBeInTheDocument();
   });
 
   it("opens the implemented Issues workspace from the left rail", async () => {
@@ -974,38 +980,42 @@ describe("App", () => {
       "page",
     );
     expect(
-      within(main).getByRole("heading", { name: "看板" }),
+      within(main).getByRole("heading", { name: "Board" }),
     ).toBeInTheDocument();
     expect(
-      within(main).getByText("12 个 Open · 47 个 Closed · 3 个 Agent 在跟进"),
+      within(main).getByText("12 Open · 47 Closed · 3 Agents following up"),
     ).toBeInTheDocument();
     expect(
-      within(main).getByRole("button", { name: "新建 Issue" }),
+      within(main).getByRole("button", { name: "New Issue" }),
     ).toBeInTheDocument();
-    expect(within(main).getByText("作者")).toBeInTheDocument();
-    expect(within(main).getByText("分派 Agent")).toBeInTheDocument();
+    expect(within(main).getByText("Author")).toBeInTheDocument();
+    expect(within(main).getByText("Assigned Agent")).toBeInTheDocument();
     expect(
-      within(main).getByText("修复 OAuth 回调在 Safari 下丢失 state 参数"),
+      within(main).getByText(
+        "Fix OAuth callback losing the state parameter in Safari",
+      ),
     ).toBeInTheDocument();
     expect(within(main).getByText("#142")).toBeInTheDocument();
-    expect(within(main).queryByText("建设中")).not.toBeInTheDocument();
+    expect(
+      within(main).queryByText("Under construction"),
+    ).not.toBeInTheDocument();
 
     await user.click(within(main).getByRole("button", { name: "Board" }));
 
     expect(
-      within(main).getByText("按状态分列 · 拖卡片可在列间流转"),
+      within(main).getByText("Grouped by status · drag cards between columns"),
     ).toBeInTheDocument();
     expect(
-      within(main).getByRole("heading", { name: "待派发" }),
+      within(main).getByRole("heading", { name: "Backlog" }),
     ).toBeInTheDocument();
     expect(
-      within(main).getByRole("heading", { name: "进行中" }),
+      within(main).getByRole("heading", { name: "In Progress" }),
     ).toBeInTheDocument();
     expect(
-      within(main).getByRole("heading", { name: "待审批" }),
+      within(main).getByRole("heading", { name: "Waiting" }),
     ).toBeInTheDocument();
     expect(
-      within(main).getByRole("heading", { name: "已关闭" }),
+      within(main).getByRole("heading", { name: "Closed" }),
     ).toBeInTheDocument();
   });
 
@@ -1022,12 +1032,12 @@ describe("App", () => {
       "page",
     );
     expect(
-      await screen.findByRole("complementary", { name: "信号源列表" }),
+      await screen.findByRole("complementary", { name: "Source list" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "agentre-bot" }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("建设中")).not.toBeInTheDocument();
+    expect(screen.queryByText("Under construction")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Webhook URL")).toHaveDisplayValue(
       "https://agentre.local/hooks/g-RuP8X3kQwLm2N",
     );
@@ -1045,7 +1055,7 @@ describe("App", () => {
     expect(
       await screen.findByRole("heading", { name: "agentre-bot" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("监听事件")).toHaveDisplayValue("");
+    expect(screen.getByLabelText("Listening Events")).toHaveDisplayValue("");
   });
 
   it("saves Hook source config and writes a test event to the log", async () => {
@@ -1055,11 +1065,13 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Hooks" }));
-    const nameInput = await screen.findByLabelText("信号源名称");
+    const nameInput = await screen.findByLabelText("Name");
 
     await user.clear(nameInput);
     await user.type(nameInput, "agentre-prod");
-    await user.click(screen.getByRole("button", { name: "保存配置" }));
+    await user.click(
+      screen.getByRole("button", { name: "Save Configuration" }),
+    );
 
     await waitFor(() => {
       expect(appBridge.UpdateHookSource).toHaveBeenCalledWith(
@@ -1067,7 +1079,7 @@ describe("App", () => {
       );
     });
 
-    await user.click(screen.getByRole("button", { name: "测试连接" }));
+    await user.click(screen.getByRole("button", { name: "Test Connection" }));
 
     await waitFor(() => {
       expect(appBridge.TestHookSource).toHaveBeenCalledWith({ id: 2 });
@@ -1075,7 +1087,7 @@ describe("App", () => {
     expect(
       (await screen.findAllByText("连接测试 · agentre-bot")).length,
     ).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /事件日志/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /Event Log/ })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -1104,12 +1116,12 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Hooks" }));
-    expect(await screen.findByLabelText("IMAP 服务器")).toHaveDisplayValue(
+    expect(await screen.findByLabelText("IMAP Server")).toHaveDisplayValue(
       "imap.example.com",
     );
 
-    await user.click(screen.getByRole("button", { name: "更多操作" }));
-    await user.click(screen.getByRole("button", { name: "同步邮箱" }));
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+    await user.click(screen.getByRole("button", { name: "Sync Email" }));
 
     await waitFor(() => {
       expect(appBridge.SyncHookEmailSource).toHaveBeenCalledWith({
@@ -1120,7 +1132,7 @@ describe("App", () => {
     expect(
       (await screen.findAllByText("Invoice approved")).length,
     ).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /事件日志/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /Event Log/ })).toHaveAttribute(
       "aria-current",
       "page",
     );
@@ -1133,14 +1145,12 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Hooks" }));
-    await user.click(await screen.findByRole("button", { name: /事件日志/ }));
+    await user.click(await screen.findByRole("button", { name: /Event Log/ }));
+    expect(screen.getByRole("button", { name: /All\s+1/ })).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /全部\s+1/ }),
+      screen.getByRole("button", { name: /Failed\s+0/ }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /失败\s+0/ }),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "重新派发" }));
+    await user.click(screen.getByRole("button", { name: "Redeliver" }));
 
     await waitFor(() => {
       expect(appBridge.RedeliverHookEvent).toHaveBeenCalledWith({
@@ -1148,7 +1158,9 @@ describe("App", () => {
         targetAgentId: 0,
       });
     });
-    expect(await screen.findByText("已记录重新派发请求")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Redelivery request recorded"),
+    ).toBeInTheDocument();
   });
 
   it("loads and lists departments + agents on the organization page", async () => {
@@ -1156,11 +1168,13 @@ describe("App", () => {
     mockOrgData();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "组织" }));
+    await user.click(screen.getByRole("button", { name: "Organization" }));
 
     // wait for LoadOrg promise to resolve
     await waitFor(() => {
-      expect(screen.queryByText("正在加载组织架构…")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Loading org chart..."),
+      ).not.toBeInTheDocument();
     });
 
     // department row from the mock
@@ -1175,32 +1189,34 @@ describe("App", () => {
     mockOrgData();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "组织" }));
+    await user.click(screen.getByRole("button", { name: "Organization" }));
     await waitFor(() => {
-      expect(screen.queryByText("正在加载组织架构…")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Loading org chart..."),
+      ).not.toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole("button", { name: "新建部门" }));
+    await user.click(screen.getByRole("button", { name: "New Department" }));
 
     let dialog = await screen.findByRole("dialog");
     let body = within(dialog)
-      .getByLabelText("new-dept-name")
+      .getByLabelText("Name")
       .closest("[data-slot='dialog-body']");
     let footer = dialog.querySelector("[data-slot='dialog-footer']");
 
     expect(body).toHaveClass("px-5", "py-4");
     expect(footer).toHaveClass("border-t", "border-border");
 
-    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole("button", { name: "新建 Agent" }));
+    await user.click(screen.getByRole("button", { name: "New Agent" }));
 
     dialog = await screen.findByRole("dialog");
     body = within(dialog)
-      .getByLabelText("new-agent-name")
+      .getByLabelText("Name")
       .closest("[data-slot='dialog-body']");
     footer = dialog.querySelector("[data-slot='dialog-footer']");
 
@@ -1213,14 +1229,16 @@ describe("App", () => {
     mockOrgData();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "组织" }));
+    await user.click(screen.getByRole("button", { name: "Organization" }));
     await waitFor(() => {
-      expect(screen.queryByText("正在加载组织架构…")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Loading org chart..."),
+      ).not.toBeInTheDocument();
     });
 
     // initial state: empty detail panel
     expect(
-      screen.getByText("选择一个部门或 Agent 查看详情"),
+      screen.getByText("Select a department or agent to view details"),
     ).toBeInTheDocument();
 
     // click Eva row
@@ -1239,9 +1257,11 @@ describe("App", () => {
     mockOrgData();
     const { container } = render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "组织" }));
+    await user.click(screen.getByRole("button", { name: "Organization" }));
     await waitFor(() => {
-      expect(screen.queryByText("正在加载组织架构…")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Loading org chart..."),
+      ).not.toBeInTheDocument();
     });
 
     const detailPanel = container.querySelector(
@@ -1254,7 +1274,7 @@ describe("App", () => {
     ).toBeNull();
     expect(
       within(detailPanel as HTMLElement).getByText(
-        "选择一个部门或 Agent 查看详情",
+        "Select a department or agent to view details",
       ),
     ).toBeInTheDocument();
 
@@ -1275,11 +1295,11 @@ describe("App", () => {
     mockLlmProviders();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
-    await user.click(screen.getByRole("button", { name: "Agent 后端" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Agent Backends" }));
 
     const backendTable = await screen.findByRole("table", {
-      name: "Agent 后端列表",
+      name: "Agent backend list",
     });
 
     expectHorizontalTableScroll(backendTable);
@@ -1291,12 +1311,14 @@ describe("App", () => {
       ).toBeInTheDocument();
     });
 
-    expect(screen.getByText("运行时参数下放到每个 Agent")).toBeInTheDocument();
     expect(
-      screen.queryByRole("table", { name: "LLM 供应商列表" }),
+      screen.getByText(/Runtime options live on each agent/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("table", { name: "LLM provider list" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "新增供应商" }),
+      screen.queryByRole("button", { name: "New Provider" }),
     ).not.toBeInTheDocument();
   });
 
@@ -1308,11 +1330,11 @@ describe("App", () => {
     mockAgentBackends();
     mockLlmProviders();
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
-    await user.click(screen.getByRole("button", { name: "Agent 后端" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Agent Backends" }));
 
     const backendTable = await screen.findByRole("table", {
-      name: "Agent 后端列表",
+      name: "Agent backend list",
     });
     await waitFor(() => {
       expect(within(backendTable).getByText("默认助手")).toBeInTheDocument();
@@ -1331,26 +1353,25 @@ describe("App", () => {
     mockLlmProviders();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
-    await user.click(screen.getByRole("button", { name: "LLM 供应商" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "LLM Providers" }));
 
     const providerTable = await screen.findByRole("table", {
-      name: "LLM 供应商列表",
+      name: "LLM provider list",
     });
 
     expectHorizontalTableScroll(providerTable);
-    expect(screen.getByRole("button", { name: "LLM 供应商" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
     expect(
-      screen.getByRole("button", { name: "Agent 后端" }),
+      screen.getByRole("button", { name: "LLM Providers" }),
+    ).toHaveAttribute("aria-current", "page");
+    expect(
+      screen.getByRole("button", { name: "Agent Backends" }),
     ).not.toHaveAttribute("aria-current");
     expect(
-      screen.queryByRole("table", { name: "Agent 后端列表" }),
+      screen.queryByRole("table", { name: "Agent backend list" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("list", { name: "LLM 供应商紧凑列表" }),
+      screen.queryByRole("list", { name: "LLM provider compact list" }),
     ).not.toBeInTheDocument();
     await waitFor(() => {
       expect(within(providerTable).getByText("Production")).toBeInTheDocument();
@@ -1362,7 +1383,7 @@ describe("App", () => {
       ).toBeInTheDocument();
     });
     expect(
-      screen.getByRole("button", { name: "新增供应商" }),
+      screen.getByRole("button", { name: "New Provider" }),
     ).toBeInTheDocument();
   });
 
@@ -1372,18 +1393,18 @@ describe("App", () => {
     mockLlmProviders();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
-    await user.click(screen.getByRole("button", { name: "LLM 供应商" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "LLM Providers" }));
 
     const providerTable = await screen.findByRole("table", {
-      name: "LLM 供应商列表",
+      name: "LLM provider list",
     });
     await waitFor(() => {
       expect(within(providerTable).getByText("Production")).toBeInTheDocument();
     });
 
     await user.click(
-      within(providerTable).getByRole("button", { name: "测试 Production" }),
+      within(providerTable).getByRole("button", { name: "Test Production" }),
     );
 
     const appBridge = (
@@ -1397,7 +1418,7 @@ describe("App", () => {
     );
     expect(
       await screen.findByText(
-        '"Production" 调用成功，已发送 hi 并收到模型响应',
+        '"Production" call succeeded. Sent hi and received a model response.',
       ),
     ).toBeInTheDocument();
   });
@@ -1408,14 +1429,16 @@ describe("App", () => {
     mockLlmProviders();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
-    await user.click(screen.getByRole("button", { name: "LLM 供应商" }));
-    await user.click(await screen.findByRole("button", { name: "新增供应商" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "LLM Providers" }));
+    await user.click(
+      await screen.findByRole("button", { name: "New Provider" }),
+    );
 
     const dialog = await screen.findByRole("form", {
-      name: "新增 LLM 供应商",
+      name: "New LLM provider",
     });
-    await user.type(within(dialog).getByLabelText("名称"), "Draft Anthropic");
+    await user.type(within(dialog).getByLabelText("Name"), "Draft Anthropic");
     await user.type(
       within(dialog).getByPlaceholderText(/sk-\.\.\./),
       "sk-draft",
@@ -1425,7 +1448,7 @@ describe("App", () => {
       "claude-sonnet-4-6",
     );
 
-    await user.click(within(dialog).getByRole("button", { name: "测试调用" }));
+    await user.click(within(dialog).getByRole("button", { name: "Test Call" }));
 
     const appBridge = (
       window as unknown as {
@@ -1443,21 +1466,27 @@ describe("App", () => {
       }),
     );
     expect(
-      await within(dialog).findByText("调用成功，已发送 hi 并收到模型响应"),
+      await within(dialog).findByText(
+        "Call succeeded. Sent hi and received a model response.",
+      ),
     ).toBeInTheDocument();
   });
 
   it("opens under construction pages from unimplemented settings items", async () => {
     const user = userEvent.setup();
-    const unimplementedSettingsItems = ["通知", "MCP 服务器", "技能 / 工具"];
+    const unimplementedSettingsItems = [
+      "Notifications",
+      "MCP Servers",
+      "Skills / Tools",
+    ];
 
     mockDesktopViewport();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
     const settingsNav = screen.getByRole("complementary", {
-      name: "设置导航",
+      name: "Settings",
     });
 
     for (const label of unimplementedSettingsItems) {
@@ -1473,9 +1502,9 @@ describe("App", () => {
       expect(
         within(main).getByRole("heading", { name: label }),
       ).toBeInTheDocument();
-      expect(within(main).getByText("建设中")).toBeInTheDocument();
+      expect(within(main).getByText("Under construction")).toBeInTheDocument();
       expect(
-        within(main).queryByRole("combobox", { name: "主题模式" }),
+        within(main).queryByRole("combobox", { name: "Theme Mode" }),
       ).not.toBeInTheDocument();
     }
   });
@@ -1486,25 +1515,27 @@ describe("App", () => {
     mockDesktopViewport();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
     const settingsNav = screen.getByRole("complementary", {
-      name: "设置导航",
+      name: "Settings",
     });
 
     await user.click(
-      within(settingsNav).getByRole("button", { name: "数据 & 备份" }),
+      within(settingsNav).getByRole("button", { name: "Data & Backup" }),
     );
 
     const main = screen.getByRole("main");
 
     expect(
-      within(settingsNav).getByRole("button", { name: "数据 & 备份" }),
+      within(settingsNav).getByRole("button", { name: "Data & Backup" }),
     ).toHaveAttribute("aria-current", "page");
     expect(
-      within(main).getByRole("heading", { name: "数据 & 备份" }),
+      within(main).getByRole("heading", { name: "Data & Backup" }),
     ).toBeInTheDocument();
-    expect(within(main).queryByText("建设中")).not.toBeInTheDocument();
+    expect(
+      within(main).queryByText("Under construction"),
+    ).not.toBeInTheDocument();
   });
 
   it("restores the saved dark theme before user interaction", async () => {
@@ -1515,13 +1546,13 @@ describe("App", () => {
 
     expect(document.documentElement).toHaveClass("dark");
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
     const settingsMain = screen.getByRole("main");
 
     expect(
-      within(settingsMain).getByRole("combobox", { name: "主题模式" }),
-    ).toHaveTextContent("深色");
+      within(settingsMain).getByRole("combobox", { name: "Theme Mode" }),
+    ).toHaveTextContent("Dark");
   });
 
   it("selects manual light and dark themes from settings appearance", async () => {
@@ -1531,38 +1562,40 @@ describe("App", () => {
 
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
     const settingsMain = screen.getByRole("main");
-    const navRail = screen.getByRole("complementary", { name: "主导航" });
+    const navRail = screen.getByRole("complementary", {
+      name: "Primary navigation",
+    });
     const topBar = screen.getByRole("banner");
     const themeSelect = within(settingsMain).getByRole("combobox", {
-      name: "主题模式",
+      name: "Theme Mode",
     });
 
     expect(document.documentElement).not.toHaveClass("dark");
     expect(
-      within(topBar).queryByRole("combobox", { name: "主题模式" }),
+      within(topBar).queryByRole("combobox", { name: "Theme Mode" }),
     ).not.toBeInTheDocument();
     expect(
-      within(topBar).queryByRole("button", { name: /切换主题/ }),
+      within(topBar).queryByRole("button", { name: /Toggle theme/ }),
     ).not.toBeInTheDocument();
     expect(
-      within(navRail).getByRole("button", { name: /切换主题/ }),
+      within(navRail).getByRole("button", { name: /Toggle theme/ }),
     ).toBeInTheDocument();
-    expect(themeSelect).toHaveTextContent("浅色");
+    expect(themeSelect).toHaveTextContent("Light");
 
     await selectThemeOption(user, themeSelect, "dark");
 
     expect(document.documentElement).toHaveClass("dark");
     expect(localStorage.getItem(themeStorageKey)).toBe("dark");
-    expect(themeSelect).toHaveTextContent("深色");
+    expect(themeSelect).toHaveTextContent("Dark");
 
     await selectThemeOption(user, themeSelect, "light");
 
     expect(document.documentElement).not.toHaveClass("dark");
     expect(localStorage.getItem(themeStorageKey)).toBe("light");
-    expect(themeSelect).toHaveTextContent("浅色");
+    expect(themeSelect).toHaveTextContent("Light");
   });
 
   it("follows the saved system theme and reacts to system color-scheme changes", async () => {
@@ -1572,15 +1605,15 @@ describe("App", () => {
 
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
     const settingsMain = screen.getByRole("main");
     const themeSelect = within(settingsMain).getByRole("combobox", {
-      name: "主题模式",
+      name: "Theme Mode",
     });
 
     expect(document.documentElement).not.toHaveClass("dark");
-    expect(themeSelect).toHaveTextContent("跟随系统");
+    expect(themeSelect).toHaveTextContent("System");
 
     act(() => {
       systemColorScheme.setDark(true);
@@ -1588,7 +1621,7 @@ describe("App", () => {
 
     expect(document.documentElement).toHaveClass("dark");
     expect(localStorage.getItem(themeStorageKey)).toBe("system");
-    expect(themeSelect).toHaveTextContent("跟随系统");
+    expect(themeSelect).toHaveTextContent("System");
   });
 
   it("can switch between following the system and manual preferences", async () => {
@@ -1598,26 +1631,26 @@ describe("App", () => {
 
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
 
     const settingsMain = screen.getByRole("main");
     const themeSelect = within(settingsMain).getByRole("combobox", {
-      name: "主题模式",
+      name: "Theme Mode",
     });
 
     expect(document.documentElement).not.toHaveClass("dark");
-    expect(themeSelect).toHaveTextContent("浅色");
+    expect(themeSelect).toHaveTextContent("Light");
 
     await selectThemeOption(user, themeSelect, "system");
 
     expect(document.documentElement).toHaveClass("dark");
     expect(localStorage.getItem(themeStorageKey)).toBe("system");
-    expect(themeSelect).toHaveTextContent("跟随系统");
+    expect(themeSelect).toHaveTextContent("System");
 
     await selectThemeOption(user, themeSelect, "light");
 
     expect(document.documentElement).not.toHaveClass("dark");
     expect(localStorage.getItem(themeStorageKey)).toBe("light");
-    expect(themeSelect).toHaveTextContent("浅色");
+    expect(themeSelect).toHaveTextContent("Light");
   });
 });

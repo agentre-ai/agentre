@@ -17,24 +17,30 @@ export type PlanActionMeta = {
   icon: LucideIcon;
 };
 
-const META: Record<string, PlanActionMeta> = {
+type PlanActionMetaTemplate = Omit<PlanActionMeta, "label"> & {
+  labelKey: string;
+};
+
+type Translate = (key: string) => string;
+
+const META: Record<string, PlanActionMetaTemplate> = {
   "plan.approve.bypass_permissions": {
-    label: "批准并跳过权限确认",
+    labelKey: "canonical.plan.actions.approveBypass",
     variant: "default",
     icon: ShieldOff,
   },
   "plan.approve.accept_edits": {
-    label: "批准并切换自动模式",
+    labelKey: "canonical.plan.actions.approveAcceptEdits",
     variant: "default",
     icon: FastForward,
   },
   "plan.approve.manual": {
-    label: "批准,手动确认编辑",
+    labelKey: "canonical.plan.actions.approveManual",
     variant: "outline",
     icon: ShieldCheck,
   },
   "plan.execute": {
-    label: "执行计划",
+    labelKey: "canonical.plan.actions.execute",
     variant: "default",
     icon: CheckCircle2,
   },
@@ -48,25 +54,30 @@ type MetaContext = {
 export function metaFor(
   action: PlanActionDTO,
   context?: MetaContext,
+  t: Translate = (key) => key,
 ): PlanActionMeta {
   if (action.id === "plan.refine" || action.kind === "refine") {
     return {
-      label: context?.requestId ? "继续规划" : "继续完善",
+      label: context?.requestId
+        ? t("canonical.plan.actions.refine")
+        : t("canonical.plan.actions.refineStandalone"),
       variant: context?.requestId ? "ghost" : "outline",
       icon: PencilLine,
     };
   }
   const exact = META[action.id];
-  if (exact) return exact;
+  if (exact) return { ...exact, label: t(exact.labelKey) };
   if (action.kind === "approve") {
     return {
-      label: context?.requestId ? "批准计划" : "执行计划",
+      label: context?.requestId
+        ? t("canonical.plan.actions.approve")
+        : t("canonical.plan.actions.execute"),
       variant: "default",
       icon: CheckCircle2,
     };
   }
   return {
-    label: "继续",
+    label: t("canonical.plan.actions.continue"),
     variant: "outline",
     icon: Send,
   };

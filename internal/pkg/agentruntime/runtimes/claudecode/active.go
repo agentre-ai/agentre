@@ -24,6 +24,8 @@ type claudeActive struct {
 	sessionUUID string
 	handle      ccSessionHandle
 	steer       *httpgateway.SteerInbox
+	pool        *agentruntime.CLISessionPool
+	poolKey     string
 	inTurn      atomic.Bool
 	// launchedEffort 记录 spawn 时下发给 claude CLI 的 --effort <level>。
 	// --effort 是启动期 flag,运行时改不掉;下一轮如果 backend.ReasoningEffort
@@ -108,6 +110,9 @@ func (a *claudeActive) registerPermWaiter(reqID, toolName string, rawInput json.
 		a.permWaiters = make(map[string]*permWaiter)
 	}
 	a.permWaiters[reqID] = &permWaiter{toolName: toolName, rawInput: rawInput}
+	if a.pool != nil && a.poolKey != "" {
+		a.pool.MarkWaiting(a.poolKey)
+	}
 }
 
 func (a *claudeActive) takePermWaiter(reqID string) *permWaiter {
@@ -116,6 +121,9 @@ func (a *claudeActive) takePermWaiter(reqID string) *permWaiter {
 	w := a.permWaiters[reqID]
 	if w != nil {
 		delete(a.permWaiters, reqID)
+	}
+	if a.pool != nil && a.poolKey != "" {
+		a.pool.MarkActive(a.poolKey)
 	}
 	return w
 }
@@ -127,6 +135,9 @@ func (a *claudeActive) registerAskWaiter(reqID string, questions []agentruntime.
 		a.askWaiters = make(map[string]*askWaiter)
 	}
 	a.askWaiters[reqID] = &askWaiter{questions: questions, rawInput: rawInput}
+	if a.pool != nil && a.poolKey != "" {
+		a.pool.MarkWaiting(a.poolKey)
+	}
 }
 
 func (a *claudeActive) takeAskWaiter(reqID string) *askWaiter {
@@ -135,6 +146,9 @@ func (a *claudeActive) takeAskWaiter(reqID string) *askWaiter {
 	w := a.askWaiters[reqID]
 	if w != nil {
 		delete(a.askWaiters, reqID)
+	}
+	if a.pool != nil && a.poolKey != "" {
+		a.pool.MarkActive(a.poolKey)
 	}
 	return w
 }

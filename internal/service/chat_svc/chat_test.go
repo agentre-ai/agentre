@@ -140,6 +140,7 @@ func TestRegisterGatewayBeforeNewChatMakesCLIBackendsChattable(t *testing.T) {
 	}, nil)
 	m.session.EXPECT().CountRunningByAgents(ctx, []int64{7}).Return(map[int64]int{}, nil)
 	m.session.EXPECT().CountByAgents(ctx, []int64{7}).Return(map[int64]int64{}, nil)
+	m.session.EXPECT().ListIDsByAgents(ctx, []int64{7}).Return(map[int64][]int64{}, nil)
 	m.session.EXPECT().ListByAgent(ctx, int64(7), 5).Return(nil, nil)
 	m.session.EXPECT().ListAttentionByAgent(ctx, int64(7), 20).Return(nil, nil)
 
@@ -174,6 +175,7 @@ func TestListAgents(t *testing.T) {
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{3}).Return(map[int64]int{}, nil)
 			m.session.EXPECT().CountByAgents(ctx, []int64{3}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgents(ctx, []int64{3}).Return(map[int64][]int64{}, nil)
 			m.session.EXPECT().ListByAgent(ctx, int64(3), 5).Return(nil, nil)
 			m.session.EXPECT().ListAttentionByAgent(ctx, int64(3), 20).Return(nil, nil)
 
@@ -200,6 +202,7 @@ func TestListAgents(t *testing.T) {
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{4}).Return(map[int64]int{}, nil)
 			m.session.EXPECT().CountByAgents(ctx, []int64{4}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgents(ctx, []int64{4}).Return(map[int64][]int64{}, nil)
 			m.session.EXPECT().ListByAgent(ctx, int64(4), 5).Return(nil, nil)
 			m.session.EXPECT().ListAttentionByAgent(ctx, int64(4), 20).Return(nil, nil)
 
@@ -223,6 +226,9 @@ func TestListAgents(t *testing.T) {
 			}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{1, 2}).Return(map[int64]int{1: 0, 2: 3}, nil)
 			m.session.EXPECT().CountByAgents(ctx, []int64{1, 2}).Return(map[int64]int64{1: 0, 2: 12}, nil)
+			m.session.EXPECT().ListIDsByAgents(ctx, []int64{1, 2}).Return(map[int64][]int64{
+				2: {99, 50, 49, 48, 47, 46},
+			}, nil)
 			m.session.EXPECT().ListAttentionByAgent(ctx, int64(1), 20).Return(nil, nil)
 			m.session.EXPECT().ListAttentionByAgent(ctx, int64(2), 20).Return([]*chat_entity.Session{
 				{ID: 50, AgentID: 2, Title: "approve me", AgentStatus: "waiting", LastMessageAt: 1700000005000},
@@ -239,11 +245,42 @@ func TestListAgents(t *testing.T) {
 			assert.False(t, resp.Agents[0].Chattable)
 			assert.True(t, resp.Agents[1].Chattable)
 			assert.Equal(t, 3, resp.Agents[1].ActiveCount)
+			assert.Equal(t, []int64{99, 50, 49, 48, 47, 46}, resp.Agents[1].SessionIDs)
 			assert.Equal(t, "修复 #142", resp.Agents[1].Sessions[0].Title)
 			assert.Len(t, resp.Agents[0].AttentionSessions, 0, "CEO 没 attention session")
 			if assert.Len(t, resp.Agents[1].AttentionSessions, 1) {
 				assert.Equal(t, int64(50), resp.Agents[1].AttentionSessions[0].ID)
 				assert.True(t, resp.Agents[1].AttentionSessions[0].NeedsAttention)
+			}
+		})
+
+		convey.Convey("Given an agent has more sessions than the recent sidebar limit, when ListAgents, then SessionIDs contains all active ids", func() {
+			m.agent.EXPECT().List(ctx).Return([]*agent_entity.Agent{
+				{ID: 9, Name: "Deep History", AgentBackendID: 19, Status: consts.ACTIVE},
+			}, nil)
+			m.backend.EXPECT().BatchFind(ctx, []int64{19}).Return(map[int64]*agent_backend_entity.AgentBackend{
+				19: {ID: 19, Type: string(agent_backend_entity.TypeCodex), Status: consts.ACTIVE},
+			}, nil)
+			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
+			m.session.EXPECT().CountRunningByAgents(ctx, []int64{9}).Return(map[int64]int{}, nil)
+			m.session.EXPECT().CountByAgents(ctx, []int64{9}).Return(map[int64]int64{9: 6}, nil)
+			m.session.EXPECT().ListIDsByAgents(ctx, []int64{9}).Return(map[int64][]int64{
+				9: {6, 5, 4, 3, 2, 1},
+			}, nil)
+			m.session.EXPECT().ListByAgent(ctx, int64(9), 5).Return([]*chat_entity.Session{
+				{ID: 6, AgentID: 9, Title: "s6", AgentStatus: "idle"},
+				{ID: 5, AgentID: 9, Title: "s5", AgentStatus: "idle"},
+				{ID: 4, AgentID: 9, Title: "s4", AgentStatus: "idle"},
+				{ID: 3, AgentID: 9, Title: "s3", AgentStatus: "idle"},
+				{ID: 2, AgentID: 9, Title: "s2", AgentStatus: "idle"},
+			}, nil)
+			m.session.EXPECT().ListAttentionByAgent(ctx, int64(9), 20).Return(nil, nil)
+
+			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
+			assert.NoError(t, err)
+			if assert.Len(t, resp.Agents, 1) {
+				assert.Len(t, resp.Agents[0].Sessions, 5)
+				assert.Equal(t, []int64{6, 5, 4, 3, 2, 1}, resp.Agents[0].SessionIDs)
 			}
 		})
 	})
@@ -271,6 +308,7 @@ func TestListAgents_PopulatesDeviceFields(t *testing.T) {
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{5}).Return(map[int64]int{}, nil)
 			m.session.EXPECT().CountByAgents(ctx, []int64{5}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgents(ctx, []int64{5}).Return(map[int64][]int64{}, nil)
 			m.session.EXPECT().ListByAgent(ctx, int64(5), 5).Return(nil, nil)
 			m.session.EXPECT().ListAttentionByAgent(ctx, int64(5), 20).Return(nil, nil)
 			// 本地 backend 不触发 remote_device_svc.Get
@@ -294,6 +332,7 @@ func TestListAgents_PopulatesDeviceFields(t *testing.T) {
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{6}).Return(map[int64]int{}, nil)
 			m.session.EXPECT().CountByAgents(ctx, []int64{6}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgents(ctx, []int64{6}).Return(map[int64][]int64{}, nil)
 			m.session.EXPECT().ListByAgent(ctx, int64(6), 5).Return(nil, nil)
 			m.session.EXPECT().ListAttentionByAgent(ctx, int64(6), 20).Return(nil, nil)
 			mockRDS.EXPECT().Get(ctx, int64(7)).Return(&remote_device_svc.DeviceView{
@@ -319,6 +358,7 @@ func TestListAgents_PopulatesDeviceFields(t *testing.T) {
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{7}).Return(map[int64]int{}, nil)
 			m.session.EXPECT().CountByAgents(ctx, []int64{7}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgents(ctx, []int64{7}).Return(map[int64][]int64{}, nil)
 			m.session.EXPECT().ListByAgent(ctx, int64(7), 5).Return(nil, nil)
 			m.session.EXPECT().ListAttentionByAgent(ctx, int64(7), 20).Return(nil, nil)
 			mockRDS.EXPECT().Get(ctx, int64(9)).Return(nil, errors.New("device not found"))
@@ -765,6 +805,9 @@ type recordingRunner struct {
 // SwitchableDuringTurn=true 保证不会误命中"飞行中拒切"分支。
 func (*recordingRunner) Capabilities() capability.Capabilities {
 	return capability.Capabilities{
+		Set: map[capability.Capability]bool{
+			capability.CapImageInput: true,
+		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},
 			DefaultMode:          "acceptEdits",
@@ -778,6 +821,122 @@ func (r *recordingRunner) Run(_ context.Context, req agentruntime.RunRequest) (<
 	events <- agentruntime.TextDelta{Text: "ok"}
 	close(events)
 	return events, &agentruntime.RunResult{ProviderSessionID: "builtin-100"}, nil
+}
+
+func TestSend_ImageInput(t *testing.T) {
+	convey.Convey("Send image input", t, func() {
+		convey.Convey("Given image-only message on image-capable builtin backend, when Send, then user blocks and RunRequest carry ImageBlock", func() {
+			t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+			m := setupChatTest(t)
+			ctx := m.ctx
+			runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
+			t.Cleanup(restore)
+
+			sess := &chat_entity.Session{ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE}
+			backend := &agent_backend_entity.AgentBackend{
+				ID:             12,
+				Type:           string(agent_backend_entity.TypeBuiltin),
+				LLMProviderKey: "key-11",
+				Status:         consts.ACTIVE,
+			}
+			agent := &agent_entity.Agent{ID: 7, Name: "Builtin", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+			provider := &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Model: "m", Status: consts.ACTIVE}
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(agent, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
+			m.provider.EXPECT().FindByKey(gomock.Any(), "key-11").Return(provider, nil)
+			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+			m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+			var userBlocks []blocks.ContentBlock
+			m.dbMock.ExpectBegin()
+			m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						msg.ID = 1000
+						var err error
+						userBlocks, err = msg.GetBlocks()
+						require.NoError(t, err)
+					} else {
+						msg.ID = 1001
+					}
+					return nil
+				}).Times(2)
+			m.dbMock.ExpectCommit()
+
+			resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{
+				SessionID: 100,
+				AgentID:   7,
+				Images: []chat_svc.SendImage{{
+					Name:    "shot.png",
+					DataURL: "data:image/png;base64,iVBORw0KGgo=",
+				}},
+			})
+			require.NoError(t, err)
+			var req agentruntime.RunRequest
+			select {
+			case req = <-runner.requests:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for runtime request")
+			}
+			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+			require.Len(t, userBlocks, 1)
+			img, ok := userBlocks[0].(blocks.ImageBlock)
+			require.True(t, ok)
+			assert.Equal(t, "image/png", img.MediaType)
+			assert.Equal(t, []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}, img.Source.Inline)
+			assert.Empty(t, req.UserText)
+			require.Len(t, req.UserBlocks, 1)
+			reqImg, ok := req.UserBlocks[0].(blocks.ImageBlock)
+			require.True(t, ok)
+			assert.Equal(t, img.MediaType, reqImg.MediaType)
+			assert.Equal(t, img.Source.Inline, reqImg.Source.Inline)
+		})
+
+		convey.Convey("Given invalid image data URL, when Send, then it fails before repository calls", func() {
+			m := setupChatTest(t)
+			_, err := m.svc.Send(context.Background(), &chat_svc.SendRequest{
+				AgentID: 7,
+				Images: []chat_svc.SendImage{{
+					Name:    "bad.txt",
+					DataURL: "data:text/plain;base64,aGVsbG8=",
+				}},
+			})
+			assert.Error(t, err)
+		})
+
+		convey.Convey("Given image message on backend without image capability, when Send, then it fails before persisting the turn", func() {
+			m := setupChatTest(t)
+			ctx := m.ctx
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, failRunner{err: errors.New("must not run")})
+			t.Cleanup(restore)
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Claude", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
+			}, nil)
+
+			_, err := m.svc.Send(ctx, &chat_svc.SendRequest{
+				SessionID: 100,
+				AgentID:   7,
+				Images: []chat_svc.SendImage{{
+					Name:    "shot.png",
+					DataURL: "data:image/png;base64,iVBORw0KGgo=",
+				}},
+			})
+			assert.Error(t, err)
+		})
+	})
 }
 
 type compactRecordingRunner struct {
@@ -800,6 +959,177 @@ func (r *compactRecordingRunner) Run(_ context.Context, req agentruntime.RunRequ
 	return events, &agentruntime.RunResult{ProviderSessionID: req.ProviderSessionID}, nil
 }
 
+type goalRecordingRunner struct {
+	*recordingRunner
+
+	getReq   agentruntime.GoalRequest
+	setReq   agentruntime.GoalRequest
+	clearReq agentruntime.GoalRequest
+
+	getErr   error
+	setErr   error
+	clearErr error
+}
+
+func (r *goalRecordingRunner) Capabilities() capability.Capabilities {
+	base := r.recordingRunner.Capabilities()
+	base.Set = map[capability.Capability]bool{
+		capability.CapGoal: true,
+	}
+	return base
+}
+
+func (r *goalRecordingRunner) GetGoal(_ context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	r.getReq = req
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	return &agentruntime.Goal{ThreadID: req.ProviderSessionID, Objective: "ship goal rpc", Status: "active", TokensUsed: 7}, nil
+}
+
+func (r *goalRecordingRunner) SetGoal(_ context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	r.setReq = req
+	if r.setErr != nil {
+		return nil, r.setErr
+	}
+	objective := ""
+	if req.Objective != nil {
+		objective = *req.Objective
+	}
+	status := ""
+	if req.Status != nil {
+		status = *req.Status
+	}
+	threadID := req.ProviderSessionID
+	if threadID == "" {
+		threadID = "codex-thread-created"
+	}
+	return &agentruntime.Goal{ThreadID: threadID, Objective: objective, Status: status}, nil
+}
+
+func (r *goalRecordingRunner) ClearGoal(_ context.Context, req agentruntime.GoalRequest) (bool, error) {
+	r.clearReq = req
+	return r.clearErr == nil, r.clearErr
+}
+
+type blockingProviderSessionRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingProviderSessionRunner) Capabilities() capability.Capabilities {
+	return (&recordingRunner{}).Capabilities()
+}
+
+func (r *blockingProviderSessionRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	events := make(chan agentruntime.Event)
+	close(r.started)
+	go func() {
+		<-r.release
+		events <- agentruntime.TextDelta{Text: "done"}
+		close(events)
+	}()
+	return events, &agentruntime.RunResult{ProviderSessionID: "early-sid"}, nil
+}
+
+func TestSend_PersistsProviderSessionIDBeforeStreamDrains(t *testing.T) {
+	// Given 第一轮 Claude Code turn 已经 spawn 出 provider session,但 assistant
+	// stream 还没结束,
+	// When 用户立刻复制启动命令,
+	// Then DB 中应已经有 provider session id,命令必须带 --resume。
+	t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+	m := setupChatTest(t)
+	ctx := m.ctx
+
+	runner := &blockingProviderSessionRunner{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID:          100,
+		AgentID:     7,
+		AgentStatus: "idle",
+		Status:      consts.ACTIVE,
+	}
+	backend := &agent_backend_entity.AgentBackend{
+		ID:     12,
+		Type:   string(agent_backend_entity.TypeClaudeCode),
+		Status: consts.ACTIVE,
+	}
+	agent := &agent_entity.Agent{
+		ID:             7,
+		Name:           "Claude Local",
+		AgentBackendID: 12,
+		Status:         consts.ACTIVE,
+		PromptJSON:     `[]`,
+	}
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(agent, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	persistedEarly := make(chan struct{})
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
+			if s.ProviderSessionID == "early-sid" {
+				select {
+				case <-persistedEarly:
+				default:
+					close(persistedEarly)
+				}
+			}
+			return nil
+		}).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		close(runner.release)
+		t.Fatal("timed out waiting for runtime to start")
+	}
+
+	persistedBeforeDrain := false
+	select {
+	case <-persistedEarly:
+		persistedBeforeDrain = true
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	if persistedBeforeDrain {
+		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+		m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(agent, nil)
+		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
+
+		launch, lerr := m.svc.GetLaunchCommand(ctx, &chat_svc.LaunchCommandRequest{SessionID: 100})
+		require.NoError(t, lerr)
+		assert.Contains(t, launch.Command, "--resume early-sid")
+	}
+
+	close(runner.release)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+	assert.True(t, persistedBeforeDrain, "provider session id must be persisted before the runtime event stream drains")
+}
+
 type streamErrorRunner struct{}
 
 func (streamErrorRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
@@ -809,6 +1139,41 @@ func (r streamErrorRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-
 	events <- agentruntime.ErrorEvent{Err: errors.New("upstream failed")}
 	close(events)
 	return events, &agentruntime.RunResult{}, nil
+}
+
+type streamErrorThenRecoverRunner struct{}
+
+func (streamErrorThenRecoverRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{}
+}
+func (r streamErrorThenRecoverRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	events := make(chan agentruntime.Event, 3)
+	events <- agentruntime.ErrorEvent{Err: errors.New("temporary upstream hiccup")}
+	events <- agentruntime.TextDelta{Text: "recovered answer"}
+	events <- agentruntime.Done{}
+	close(events)
+	return events, &agentruntime.RunResult{}, nil
+}
+
+type streamErrorThenMetadataRunner struct{}
+
+func (streamErrorThenMetadataRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{}
+}
+func (r streamErrorThenMetadataRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	events := make(chan agentruntime.Event, 3)
+	events <- agentruntime.ErrorEvent{Err: errors.New("temporary upstream hiccup")}
+	events <- agentruntime.UsageUpdate{Usage: &provider.Usage{PromptTokens: 1}}
+	events <- agentruntime.Done{}
+	close(events)
+	return events, &agentruntime.RunResult{}, nil
+}
+
+type failRunner struct{ err error }
+
+func (failRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+func (r failRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, r.err
 }
 
 type streamRetryRunner struct{}
@@ -1202,6 +1567,179 @@ func TestCompact_RequiresCodexProviderSessionAndCapability(t *testing.T) {
 		}, nil)
 
 		_, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
+		assert.Error(t, err)
+	})
+}
+
+func TestGoal_CodexRoutesToGoalController(t *testing.T) {
+	convey.Convey("Codex goal set/get/clear use provider thread metadata", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+		runner := &goalRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
+		t.Cleanup(restore)
+
+		expectCodexSession := func() {
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID:                100,
+				AgentID:           7,
+				AgentStatus:       "idle",
+				Status:            consts.ACTIVE,
+				ProviderSessionID: "codex-thread-123",
+			}, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
+			}, nil)
+		}
+
+		expectCodexSession()
+		objective := "ship goal rpc"
+		status := "active"
+		resp, err := m.svc.SetGoal(ctx, &chat_svc.SetGoalRequest{
+			SessionID: 100,
+			Objective: &objective,
+			Status:    &status,
+		})
+		assert.NoError(t, err)
+		require.NotNil(t, resp.Goal)
+		assert.Equal(t, "ship goal rpc", resp.Goal.Objective)
+		assert.Equal(t, "active", resp.Goal.Status)
+		require.NotNil(t, runner.setReq.Objective)
+		assert.Equal(t, "ship goal rpc", *runner.setReq.Objective)
+		assert.Equal(t, "codex-thread-123", runner.setReq.ProviderSessionID)
+
+		expectCodexSession()
+		getResp, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
+		assert.NoError(t, err)
+		require.NotNil(t, getResp.Goal)
+		assert.Equal(t, 7, getResp.Goal.TokensUsed)
+		assert.Equal(t, "codex-thread-123", runner.getReq.ProviderSessionID)
+
+		expectCodexSession()
+		clearResp, err := m.svc.ClearGoal(ctx, &chat_svc.ClearGoalRequest{SessionID: 100})
+		assert.NoError(t, err)
+		assert.True(t, clearResp.Cleared)
+		assert.Equal(t, "codex-thread-123", runner.clearReq.ProviderSessionID)
+	})
+}
+
+func TestStartGoal_CreatesCodexSessionAndSetsGoalBeforeFirstTurn(t *testing.T) {
+	convey.Convey("Given a new Codex chat, when setting /goal before the first message, then a provider thread is created and stored without creating chat messages", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+		runner := &goalRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
+		t.Cleanup(restore)
+
+		m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+			ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+		}, nil)
+		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+			ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
+		}, nil)
+		m.session.EXPECT().Create(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, sess *chat_entity.Session) error {
+				assert.Equal(t, int64(7), sess.AgentID)
+				assert.Equal(t, "ship goal rpc", sess.Title)
+				assert.Equal(t, "idle", sess.AgentStatus)
+				assert.Empty(t, sess.PermissionMode)
+				assert.Empty(t, sess.PermissionModeAtLaunch)
+				assert.Empty(t, sess.ProviderSessionID)
+				sess.ID = 100
+				return nil
+			})
+		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, sess *chat_entity.Session) error {
+				assert.Equal(t, int64(100), sess.ID)
+				assert.Equal(t, "codex-thread-created", sess.ProviderSessionID)
+				assert.Equal(t, "idle", sess.AgentStatus)
+				return nil
+			})
+		m.message.EXPECT().Create(gomock.Any(), gomock.Any()).Times(0)
+
+		objective := "ship goal rpc"
+		status := "active"
+		resp, err := m.svc.StartGoal(ctx, &chat_svc.StartGoalRequest{
+			AgentID:   7,
+			Objective: &objective,
+			Status:    &status,
+		})
+
+		assert.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, int64(100), resp.SessionID)
+		require.NotNil(t, resp.Goal)
+		assert.Equal(t, "ship goal rpc", resp.Goal.Objective)
+		assert.Equal(t, "codex-thread-created", resp.Goal.ThreadID)
+		require.NotNil(t, runner.setReq.Objective)
+		assert.Equal(t, "ship goal rpc", *runner.setReq.Objective)
+		assert.Empty(t, runner.setReq.ProviderSessionID)
+	})
+
+	convey.Convey("Given a new Codex chat, when /goal has no objective, then it is rejected before creating a session", t, func() {
+		m := setupChatTest(t)
+		blank := "   "
+
+		resp, err := m.svc.StartGoal(m.ctx, &chat_svc.StartGoalRequest{
+			AgentID:   7,
+			Objective: &blank,
+		})
+
+		assert.Error(t, err)
+		assert.Nil(t, resp)
+	})
+}
+
+func TestGoal_RequiresCodexProviderSessionAndCapability(t *testing.T) {
+	t.Run("missing provider session", func(t *testing.T) {
+		m := setupChatTest(t)
+		ctx := context.Background()
+		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
+			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+		}, nil)
+
+		_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
+		assert.Error(t, err)
+	})
+
+	t.Run("non-codex backend", func(t *testing.T) {
+		m := setupChatTest(t)
+		ctx := context.Background()
+		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
+			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderSessionID: "thread-1",
+		}, nil)
+		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
+			ID: 7, Name: "Claude", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+		}, nil)
+		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
+			ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "", Status: consts.ACTIVE,
+		}, nil)
+
+		_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
+		assert.Error(t, err)
+	})
+
+	t.Run("codex runtime without goal capability", func(t *testing.T) {
+		m := setupChatTest(t)
+		ctx := context.Background()
+		runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
+		t.Cleanup(restore)
+
+		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
+			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderSessionID: "thread-1",
+		}, nil)
+		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
+			ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+		}, nil)
+		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
+			ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
+		}, nil)
+
+		_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
 		assert.Error(t, err)
 	})
 }
@@ -1913,6 +2451,286 @@ func TestSend_StreamErrorEventCarriesFinalAssistantMessage(t *testing.T) {
 	}
 }
 
+// TestSend_StreamErrorAlsoEmitsSessionStatusError 回归:turn 内 ErrorEvent 触发
+// stopErr 末端把 DB 翻 "error" 后,必须 emit 一帧 StreamSessionStatus{agentStatus:
+// "error"}。否则后台 session 出错时,tab 的 status dot 翻红要等下次 ListChatAgents
+// 才同步 —— bumpDone 只动 doneTick,不改 agentStatus。session_status patch 必须
+// 在 StreamError 之前 emit,否则前端 finishStream 已经把 LiveStream entry 删了,
+// StreamSubscriber 紧接着 unmount,后到的 session_status 永远收不到。
+func TestSend_StreamErrorAlsoEmitsSessionStatusError(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, streamErrorRunner{})
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	patches := captureSessionStatusPatches(m.events)
+	require.NotEmpty(t, patches, "stopErr 末端必须 emit 一帧 StreamSessionStatus 给前端,否则 tab 不翻红")
+	last := patches[len(patches)-1]
+	assert.Equal(t, "error", last.AgentStatus)
+	assert.False(t, last.NeedsAttention, "error 态不需要 needsAttention")
+
+	// 顺序:session_status 必须先于 StreamError emit。
+	errorIdx, statusIdx := -1, -1
+	for i, ev := range m.events {
+		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+		if !ok {
+			continue
+		}
+		if statusIdx < 0 && payload.Kind == chat_svc.StreamSessionStatus &&
+			payload.SessionStatus != nil && payload.SessionStatus.AgentStatus == "error" {
+			statusIdx = i
+		}
+		if errorIdx < 0 && payload.Kind == chat_svc.StreamError {
+			errorIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, statusIdx, 0, "缺 session_status(error)")
+	require.GreaterOrEqual(t, errorIdx, 0, "缺 StreamError")
+	assert.Less(t, statusIdx, errorIdx,
+		"session_status 必须先于 StreamError,否则前端已经 finishStream 把订阅撤了")
+}
+
+func TestSend_StreamErrorFollowedByProgressDoesNotFailTurn(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, streamErrorThenRecoverRunner{})
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	var assistantSnaps []chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg != nil && msg.Role == "assistant" {
+				assistantSnaps = append(assistantSnaps, *msg)
+			}
+			return nil
+		}).AnyTimes()
+	var sessionSnaps []chat_entity.Session
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
+			sessionSnaps = append(sessionSnaps, *s)
+			return nil
+		}).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	var sawDone, sawError bool
+	for _, ev := range m.events {
+		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+		if !ok {
+			continue
+		}
+		switch payload.Kind {
+		case chat_svc.StreamDone:
+			sawDone = true
+			require.NotNil(t, payload.Message)
+			assert.Empty(t, payload.Message.ErrorText)
+			require.Len(t, payload.Message.Blocks, 1)
+			assert.Equal(t, "recovered answer", payload.Message.Blocks[0].Text)
+		case chat_svc.StreamError:
+			sawError = true
+		}
+	}
+	assert.True(t, sawDone)
+	assert.False(t, sawError, "recoverable error followed by progress must not fail the turn")
+	require.NotEmpty(t, sessionSnaps)
+	assert.Equal(t, "idle", sessionSnaps[len(sessionSnaps)-1].AgentStatus)
+	require.NotEmpty(t, assistantSnaps)
+	assert.Empty(t, assistantSnaps[len(assistantSnaps)-1].ErrorText)
+}
+
+func TestSend_StreamErrorFollowedOnlyByMetadataStillFailsTurn(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, streamErrorThenMetadataRunner{})
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	var sessionSnaps []chat_entity.Session
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
+			sessionSnaps = append(sessionSnaps, *s)
+			return nil
+		}).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	var sawError bool
+	for _, ev := range m.events {
+		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+		if ok && payload.Kind == chat_svc.StreamError {
+			sawError = true
+			assert.Contains(t, payload.Error, "temporary upstream hiccup")
+		}
+	}
+	assert.True(t, sawError)
+	require.NotEmpty(t, sessionSnaps)
+	assert.Equal(t, "error", sessionSnaps[len(sessionSnaps)-1].AgentStatus)
+}
+
+// TestSend_FailTurnEmitsSessionStatusError 回归:runner.Run 直接同步返错走 failTurn,
+// failTurn 把 DB 翻 "error" 后必须 emit 一帧 StreamSessionStatus{agentStatus:"error"}
+// 给前端,语义与 stopErr 末端一致。同样要在 StreamError 之前 emit。
+func TestSend_FailTurnEmitsSessionStatusError(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(
+		agent_backend_entity.TypeBuiltin,
+		failRunner{err: errors.New("runner boom")},
+	)
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	patches := captureSessionStatusPatches(m.events)
+	require.NotEmpty(t, patches, "failTurn 必须 emit 一帧 StreamSessionStatus(error)")
+	last := patches[len(patches)-1]
+	assert.Equal(t, "error", last.AgentStatus)
+	assert.False(t, last.NeedsAttention)
+
+	errorIdx, statusIdx := -1, -1
+	for i, ev := range m.events {
+		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+		if !ok {
+			continue
+		}
+		if statusIdx < 0 && payload.Kind == chat_svc.StreamSessionStatus &&
+			payload.SessionStatus != nil && payload.SessionStatus.AgentStatus == "error" {
+			statusIdx = i
+		}
+		if errorIdx < 0 && payload.Kind == chat_svc.StreamError {
+			errorIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, statusIdx, 0, "缺 session_status(error)")
+	require.GreaterOrEqual(t, errorIdx, 0, "缺 StreamError")
+	assert.Less(t, statusIdx, errorIdx,
+		"session_status 必须先于 StreamError,否则前端已经 finishStream 把订阅撤了")
+}
+
 func TestSend_StreamRetryEventIsForwardedWithoutFailingTurn(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := m.ctx
@@ -2209,6 +3027,59 @@ func standardSendMocksWithoutMessageUpdate(t *testing.T, m *chatMocks, sessionID
 			return nil
 		}).AnyTimes()
 	return &captured
+}
+
+func TestSend_ErrorSessionMarksRunningAtTurnStart(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, scriptedRunner{
+		events: []agentruntime.RuntimeEvent{{Kind: agentruntime.EventDone}},
+	})
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "error", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	captured := make([]chat_entity.Session, 0, 2)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
+			captured = append(captured, *s)
+			return nil
+		}).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	require.NotEmpty(t, captured, "startTurn must persist a running snapshot before the async turn")
+	assert.Equal(t, "running", captured[0].AgentStatus)
+	assert.False(t, captured[0].NeedsAttention)
+	assert.Equal(t, "idle", captured[len(captured)-1].AgentStatus)
 }
 
 // TestSend_AskUserQuestionFlipsSessionToWaiting:

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -80,6 +81,7 @@ const leadTextColorClassNames: Record<AgentColor, string> = {
 };
 
 export function OrgDetailDepartment(props: Props) {
+  const { t } = useTranslation();
   const [name, setName] = React.useState(props.department.name);
   const [description, setDescription] = React.useState(
     props.department.description,
@@ -170,7 +172,7 @@ export function OrgDetailDepartment(props: Props) {
           </span>
           <div className="flex-1 min-w-0">
             <div className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-              编辑部门
+              {t("org.department.editEyebrow")}
             </div>
             <div className="truncate text-base font-semibold">
               {props.department.name}
@@ -181,7 +183,7 @@ export function OrgDetailDepartment(props: Props) {
               variant="outline"
               size="icon"
               className="size-8"
-              aria-label="删除部门"
+              aria-label={t("org.department.deleteDepartment")}
               onClick={() => setDeletePromptOpen(true)}
             >
               <Trash2 className="size-4 text-destructive" />
@@ -190,7 +192,7 @@ export function OrgDetailDepartment(props: Props) {
               variant="outline"
               size="icon"
               className="size-8"
-              aria-label="关闭"
+              aria-label={t("common.close")}
               onClick={props.onClose}
             >
               <X className="size-4" />
@@ -199,7 +201,7 @@ export function OrgDetailDepartment(props: Props) {
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
           <CornerDownRight className="size-3" aria-hidden="true" />
-          <span>路径</span>
+          <span>{t("org.department.path")}</span>
           {path.map((node, i) => (
             <React.Fragment key={node.id}>
               {i > 0 && (
@@ -226,27 +228,31 @@ export function OrgDetailDepartment(props: Props) {
       <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
         <section className="space-y-4" data-slot="dept-section-basic">
           <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-            基本信息
+            {t("org.department.basicInfo")}
           </h3>
           <div className="space-y-1.5">
-            <label className="block text-2xs text-muted-foreground">名称</label>
+            <label className="block text-2xs text-muted-foreground">
+              {t("org.department.name")}
+            </label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              aria-label="dept-name"
+              aria-label={t("org.department.name")}
             />
           </div>
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2">
-              <label className="text-2xs text-muted-foreground">简介</label>
+              <label className="text-2xs text-muted-foreground">
+                {t("org.department.description")}
+              </label>
               <span className="font-mono text-2xs text-muted-foreground">
-                可选
+                {t("common.optional")}
               </span>
             </div>
             <Input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              aria-label="dept-description"
+              aria-label={t("org.department.description")}
             />
           </div>
           <div
@@ -255,24 +261,24 @@ export function OrgDetailDepartment(props: Props) {
           >
             <div className="flex w-[150px] shrink-0 flex-col gap-1.5">
               <label className="block text-2xs text-muted-foreground">
-                图标
+                {t("org.department.icon")}
               </label>
               <IconPicker
                 value={icon}
                 onChange={setIcon}
                 accentColor={accentColor}
-                ariaLabel="部门图标"
+                ariaLabel={t("org.department.icon")}
                 className="h-[38px] px-2.5 py-1.5"
               />
             </div>
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <label className="block text-2xs text-muted-foreground">
-                主题色
+                {t("org.department.themeColor")}
               </label>
               <div
                 className="grid grid-cols-5 gap-2"
                 role="radiogroup"
-                aria-label="主题色"
+                aria-label={t("org.department.themeColor")}
               >
                 {agentColorOrder.map((c) => (
                   <button
@@ -280,7 +286,9 @@ export function OrgDetailDepartment(props: Props) {
                     type="button"
                     role="radio"
                     aria-checked={accentColor === c}
-                    aria-label={`主题色 ${c}`}
+                    aria-label={t("org.department.themeColorNamed", {
+                      color: c,
+                    })}
                     onClick={() => setAccentColor(c)}
                     className={cn(
                       "size-6 rounded-full ring-offset-2 transition-all",
@@ -299,13 +307,16 @@ export function OrgDetailDepartment(props: Props) {
           data-slot="dept-section-parent"
         >
           <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-            归属
+            {t("org.department.parent")}
           </h3>
           <Select
             value={String(parentId)}
             onValueChange={(v) => setParentId(Number(v))}
           >
-            <SelectTrigger aria-label="dept-parent" className="h-auto py-2">
+            <SelectTrigger
+              aria-label={t("org.department.parent")}
+              className="h-auto py-2"
+            >
               {selectedParent ? (
                 <DepartmentSelectPreview department={selectedParent} />
               ) : (
@@ -317,7 +328,7 @@ export function OrgDetailDepartment(props: Props) {
                     <Crown className="size-3" />
                   </span>
                   <span className="truncate text-sm font-medium">
-                    公司顶层（CEO 之下）
+                    {t("org.department.topLevel")}
                   </span>
                 </div>
               )}
@@ -330,7 +341,7 @@ export function OrgDetailDepartment(props: Props) {
                 >
                   <Crown className="size-3" />
                 </span>
-                <span>公司顶层（CEO 之下）</span>
+                <span>{t("org.department.topLevel")}</span>
               </SelectItem>
               {parentOptions.map((d) => (
                 <SelectItem key={d.id} value={String(d.id)}>
@@ -350,25 +361,30 @@ export function OrgDetailDepartment(props: Props) {
         <section className="flex flex-col gap-2" data-slot="dept-section-lead">
           <div className="flex items-center justify-between">
             <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Leader
+              {t("org.department.leader")}
             </h3>
             <span className="font-mono text-2xs text-muted-foreground">
-              从直属 Agent 中选
+              {t("org.department.leadHint")}
             </span>
           </div>
           <Select
             value={String(leadAgentId)}
             onValueChange={(v) => setLeadAgentId(Number(v))}
           >
-            <SelectTrigger aria-label="dept-lead" className="h-auto py-2">
+            <SelectTrigger
+              aria-label={t("org.department.leader")}
+              className="h-auto py-2"
+            >
               {selectedLead ? (
                 <LeaderSelectPreview agent={selectedLead} />
               ) : (
-                <span className="text-xs text-muted-foreground">未指定</span>
+                <span className="text-xs text-muted-foreground">
+                  {t("common.unassigned")}
+                </span>
               )}
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="0">未指定</SelectItem>
+              <SelectItem value="0">{t("common.unassigned")}</SelectItem>
               {props.leadCandidates.map((a) => (
                 <SelectItem key={a.id} value={String(a.id)}>
                   {a.name}
@@ -385,10 +401,13 @@ export function OrgDetailDepartment(props: Props) {
         >
           <div className="flex items-center justify-between">
             <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-              成员
+              {t("org.department.members")}
             </h3>
             <span className="font-mono text-2xs text-muted-foreground">
-              {directAgents.length} 直属 Agent · {directDepts.length} 子部门
+              {t("org.department.memberSummary", {
+                agents: directAgents.length,
+                departments: directDepts.length,
+              })}
             </span>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -401,7 +420,7 @@ export function OrgDetailDepartment(props: Props) {
                   type="button"
                   onClick={() => props.onSelect({ kind: "agent", id: a.id })}
                   className="flex w-full items-center gap-2.5 rounded-md border border-border bg-card px-3 py-2 text-left text-sm hover:bg-accent"
-                  aria-label={`查看 Agent ${a.name}`}
+                  aria-label={t("org.department.viewAgent", { name: a.name })}
                 >
                   <AgentAvatar
                     name={a.name}
@@ -434,7 +453,9 @@ export function OrgDetailDepartment(props: Props) {
                 type="button"
                 onClick={() => props.onSelect({ kind: "department", id: d.id })}
                 className="flex w-full items-center gap-2.5 rounded-md border border-border bg-card px-3 py-2 text-left text-sm hover:bg-accent"
-                aria-label={`查看部门 ${d.name}`}
+                aria-label={t("org.department.viewDepartment", {
+                  name: d.name,
+                })}
               >
                 <DepartmentIconBadge
                   icon={d.icon}
@@ -447,7 +468,7 @@ export function OrgDetailDepartment(props: Props) {
                     {d.name}
                   </span>
                   <span className="truncate font-mono text-2xs text-muted-foreground">
-                    {departmentMemberDescription(d)}
+                    {departmentMemberDescription(d, t)}
                   </span>
                 </span>
                 <ArrowUpRight
@@ -458,13 +479,13 @@ export function OrgDetailDepartment(props: Props) {
             ))}
             {directAgents.length === 0 && directDepts.length === 0 && (
               <div className="rounded-md border border-dashed border-border px-3 py-2 text-center text-2xs text-muted-foreground">
-                暂无直属成员
+                {t("org.department.noDirectMembers")}
               </div>
             )}
             {(props.onAddAgent || props.onAddSubDepartment) && (
               <div
                 role="group"
-                aria-label="添加 Agent 或子部门"
+                aria-label={t("org.department.addGroup")}
                 className="flex min-h-[38px] items-center gap-1.5 rounded-md border border-dashed border-border bg-background/30 px-3 py-2"
               >
                 <Plus
@@ -472,7 +493,7 @@ export function OrgDetailDepartment(props: Props) {
                   aria-hidden="true"
                 />
                 <span className="flex-1 text-center text-xs text-muted-foreground">
-                  添加 Agent 或子部门
+                  {t("org.department.addGroup")}
                 </span>
                 {props.onAddAgent && (
                   <Button
@@ -483,7 +504,7 @@ export function OrgDetailDepartment(props: Props) {
                     onClick={props.onAddAgent}
                   >
                     <UserPlus className="size-3" aria-hidden="true" />
-                    Agent
+                    {t("org.department.addAgent")}
                   </Button>
                 )}
                 {props.onAddSubDepartment && (
@@ -495,7 +516,7 @@ export function OrgDetailDepartment(props: Props) {
                     onClick={props.onAddSubDepartment}
                   >
                     <FolderPlus className="size-3" aria-hidden="true" />
-                    子部门
+                    {t("org.department.subDepartment")}
                   </Button>
                 )}
               </div>
@@ -507,13 +528,13 @@ export function OrgDetailDepartment(props: Props) {
       <footer className="flex items-center gap-2 border-t border-border bg-secondary/40 px-5 py-3">
         <span className="flex flex-1 items-center gap-1.5 font-mono text-2xs text-muted-foreground">
           <History className="size-3" aria-hidden="true" />
-          {dirty ? "未保存的修改" : "已保存"}
+          {dirty ? t("common.unsavedChanges") : t("common.saved")}
         </span>
         <Button variant="outline" size="sm" onClick={props.onClose}>
-          取消
+          {t("common.cancel")}
         </Button>
         <Button size="sm" disabled={!dirty} onClick={handleSave}>
-          保存
+          {t("common.save")}
         </Button>
       </footer>
 
@@ -529,15 +550,19 @@ export function OrgDetailDepartment(props: Props) {
                   className="size-[18px] text-destructive"
                   aria-hidden="true"
                 />
-                <span>确认删除「{props.department.name}」？</span>
+                <span>
+                  {t("org.department.deleteDialog.title", {
+                    name: props.department.name,
+                  })}
+                </span>
               </DialogTitle>
               <DialogDescription>
-                将按所选策略递归处理，该操作不可撤销。
+                {t("org.department.deleteDialog.description")}
               </DialogDescription>
             </DialogHeader>
             <DialogBody className="space-y-2.5">
               <h4 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-                选择如何处理子项
+                {t("org.department.deleteDialog.strategyTitle")}
               </h4>
               <label
                 className={cn(
@@ -557,10 +582,10 @@ export function OrgDetailDepartment(props: Props) {
                 />
                 <div className="flex-1">
                   <div className="text-sm font-semibold text-foreground">
-                    成员上挂到父部门
+                    {t("org.department.deleteDialog.reparentTitle")}
                   </div>
                   <div className="text-2xs text-muted-foreground">
-                    推荐 / 安全 · 直属子项移动到当前部门的父级
+                    {t("org.department.deleteDialog.reparentDescription")}
                   </div>
                 </div>
               </label>
@@ -578,29 +603,29 @@ export function OrgDetailDepartment(props: Props) {
                   value="cascade"
                   checked={strategy === "cascade"}
                   onChange={() => setStrategy("cascade")}
-                  aria-label="递归删除整棵子树"
+                  aria-label={t("org.department.deleteDialog.cascadeTitle")}
                   className="mt-0.5"
                 />
                 <div className="flex-1">
                   <div className="text-sm font-semibold text-foreground">
-                    递归删除整棵子树
+                    {t("org.department.deleteDialog.cascadeTitle")}
                   </div>
                   <div className="text-2xs text-muted-foreground">
-                    连同所有子部门 / Agent 一并软删
+                    {t("org.department.deleteDialog.cascadeDescription")}
                   </div>
                 </div>
               </label>
             </DialogBody>
             <DialogFooter>
               <span className="mr-auto font-mono text-2xs text-muted-foreground">
-                该操作不可撤销
+                {t("org.department.deleteDialog.irreversible")}
               </span>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => setDeletePromptOpen(false)}
               >
-                取消
+                {t("common.cancel")}
               </Button>
               <Button
                 variant="destructive"
@@ -608,7 +633,7 @@ export function OrgDetailDepartment(props: Props) {
                 onClick={handleConfirmDelete}
               >
                 <Trash2 className="size-3.5" />
-                确认删除
+                {t("org.department.deleteDialog.confirm")}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -697,6 +722,8 @@ function LeadBadge({
   color: AgentColor;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
+
   return (
     <span
       className={cn(
@@ -706,7 +733,7 @@ function LeadBadge({
       )}
     >
       <Crown className={compact ? "size-2" : "size-2.5"} aria-hidden="true" />
-      LEAD
+      {t("org.department.leadBadge")}
     </span>
   );
 }
@@ -715,8 +742,13 @@ function agentMemberDescription(agent: OrgAgent): string {
   return agent.description || "";
 }
 
-function departmentMemberDescription(department: OrgDepartment): string {
-  return `${department.memberCount} 名成员`;
+function departmentMemberDescription(
+  department: OrgDepartment,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  return t("org.department.departmentMemberCount", {
+    count: department.memberCount,
+  });
 }
 
 function buildPath(dept: OrgDepartment, all: OrgDepartment[]): OrgDepartment[] {

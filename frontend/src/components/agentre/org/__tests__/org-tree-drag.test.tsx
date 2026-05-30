@@ -130,7 +130,7 @@ describe("OrgTree empty departments", () => {
       />,
     );
 
-    expect(screen.getByText(/未创建部门/)).toBeInTheDocument();
+    expect(screen.getByText(/No departments created/)).toBeInTheDocument();
   });
 
   it("does not render a separate top-level department drop zone", () => {

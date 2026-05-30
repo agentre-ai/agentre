@@ -54,6 +54,15 @@ func translate(ev codex.Event) (events []agentruntime.Event, usage *provider.Usa
 				Questions:  requestUserInputQuestionsToRuntime(ev.RequestUserInput.Questions),
 			})
 		}
+	case codex.EventApprovalRequest:
+		if ev.Approval != nil {
+			events = append(events, agentruntime.ToolPermissionRequest{
+				RequestID:  ev.Approval.RequestID,
+				ToolCallID: ev.Approval.ItemID,
+				ToolName:   ev.Approval.ToolName,
+				Input:      ev.Approval.Input,
+			})
+		}
 	case codex.EventPlanUpdated:
 		// codex 同时支持两种 wire 形态:item/plan delta 带完整 PlanText;
 		// turn/plan/updated 带 []PlanStep。translator 都收编到 canonical.PlanUpdate,

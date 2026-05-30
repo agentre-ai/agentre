@@ -101,25 +101,32 @@ func fakeSetMode(stdin io.Reader, stdout io.Writer) {
 // fakeMidTurnSetMode 模拟"长 turn 飞行中切 mode"：user frame 触发 init+partial
 // （不发 result）；control_request{set_permission_mode} → success +
 // status{permissionMode} + result{success}（结束本轮）。
-func fakeMidTurnSetMode(stdin io.Reader, stdout io.Writer) {
-	const sid = "sess-mid-turn-set-mode"
-	sc := bufio.NewScanner(stdin)
-	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
-	turn := 0
-	for sc.Scan() {
-		line := sc.Text()
-		switch {
-		case strings.Contains(line, `"type":"user"`):
-			turn++
-			reply := extractTextField(line)
-			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
-			writeFrame(stdout, `{"type":"assistant","message":{"id":"m%d","content":[{"type":"text","text":"partial:%s"}]}}`, turn, reply)
-		case strings.Contains(line, `"type":"control_request"`) && strings.Contains(line, `"subtype":"set_permission_mode"`):
-			reqID := extractStringField(line, "request_id")
-			mode := extractStringField(line, "mode")
-			writeFrame(stdout, `{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":{"mode":%q}}}`, reqID, mode)
-			writeFrame(stdout, `{"type":"system","subtype":"status","session_id":%q,"permissionMode":%q}`, sid, mode)
-			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+func fakeMidTurnSetMode(readyForControl chan<- struct{}) fakeCLIFunc {
+	return func(stdin io.Reader, stdout io.Writer) {
+		const sid = "sess-mid-turn-set-mode"
+		sc := bufio.NewScanner(stdin)
+		sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+		turn := 0
+		notifiedReady := false
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.Contains(line, `"type":"user"`):
+				turn++
+				reply := extractTextField(line)
+				writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+				writeFrame(stdout, `{"type":"assistant","message":{"id":"m%d","content":[{"type":"text","text":"partial:%s"}]}}`, turn, reply)
+				if !notifiedReady {
+					close(readyForControl)
+					notifiedReady = true
+				}
+			case strings.Contains(line, `"type":"control_request"`) && strings.Contains(line, `"subtype":"set_permission_mode"`):
+				reqID := extractStringField(line, "request_id")
+				mode := extractStringField(line, "mode")
+				writeFrame(stdout, `{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":{"mode":%q}}}`, reqID, mode)
+				writeFrame(stdout, `{"type":"system","subtype":"status","session_id":%q,"permissionMode":%q}`, sid, mode)
+				writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+			}
 		}
 	}
 }
@@ -246,9 +253,16 @@ func TestSession_Interrupt(t *testing.T) {
 	require.NoError(t, err)
 
 	// 等 partial 出来再 Interrupt，否则可能在 user frame 被 fake 处理之前就发 ctrl 帧。
-	first, ok := <-ch
-	require.True(t, ok, "expected at least one event before interrupt")
-	assert.Equal(t, EventTextDelta, first.Kind)
+	// init 帧先到 → EventInit;跳过非 text_delta 直到拿到 partial 文本。
+	var first Event
+	for {
+		ev, ok := <-ch
+		require.True(t, ok, "expected partial text_delta before interrupt")
+		if ev.Kind == EventTextDelta {
+			first = ev
+			break
+		}
+	}
 	assert.Equal(t, "partial:long-job", first.Text)
 
 	require.NoError(t, sess.Interrupt(ctx))
@@ -298,10 +312,11 @@ func TestSession_SetPermissionMode(t *testing.T) {
 // SetPermissionMode 必须能立刻把 control_request 写下去并在 control_response
 // 回来后返 nil；不能一直阻塞到 Turn 自然 done。
 func TestSession_SetPermissionMode_MidTurn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c := New(WithBinary("fake"), pipeSpawner(t, fakeMidTurnSetMode))
+	readyForControl := make(chan struct{})
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeMidTurnSetMode(readyForControl)))
 	sess, err := c.OpenSession(ctx)
 	require.NoError(t, err)
 	defer func() { _ = sess.Close(context.Background()) }()
@@ -310,9 +325,19 @@ func TestSession_SetPermissionMode_MidTurn(t *testing.T) {
 	require.NoError(t, err)
 
 	// 等 partial 出来再切 mode，保证 Turn goroutine 已经在读 scanner。
-	first, ok := <-ch
-	require.True(t, ok, "expected at least one event before set-mode")
-	assert.Equal(t, EventTextDelta, first.Kind)
+	// init 帧先到 → EventInit;跳过非 text_delta 直到看到 partial 文本。
+	for {
+		ev, ok := <-ch
+		require.True(t, ok, "expected partial text_delta before set-mode")
+		if ev.Kind == EventTextDelta {
+			break
+		}
+	}
+	select {
+	case <-readyForControl:
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err(), "fake CLI should be ready to receive control_request")
+	}
 
 	// 给 SetPermissionMode 一个紧凑的截止：当前实现卡在 turnMu 上会让本步超时。
 	setCtx, setCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
@@ -645,6 +670,29 @@ func TestSession_StreamEventMessageDeltaUsage(t *testing.T) {
 	// EventUsage(避免进度条骤降到 0)。
 	require.Len(t, usageEvents, 1, "应仅 message_delta emit 一条 EventUsage,merged assistant 帧的 0 usage 不该 emit")
 	assert.Equal(t, 1180, usageEvents[0].Usage.PromptTokens)
+}
+
+// TestSession_EmitsEventInitOnSystemInitWithModel —— 长 Session 多轮场景下,每个
+// turn 开头 CLI 都会发 system.init(model 可能变),parseLine 应当 emit 一条
+// EventInit 携带 SessionID + Model,让上层 agentruntime 实时刷新 catalog 兜底的
+// context window,而不是等 EventDone 才知道。
+func TestSession_EmitsEventInitOnSystemInitWithModel(t *testing.T) {
+	s := &Session{}
+	evs, _ := s.parseLine([]byte(`{"type":"system","subtype":"init","session_id":"sx","model":"claude-sonnet-4-6"}`))
+	require.Len(t, evs, 1, "system.init 帧带 model 时应 emit 一条 EventInit")
+	assert.Equal(t, EventInit, evs[0].Kind)
+	assert.Equal(t, "sx", evs[0].SessionID)
+	assert.Equal(t, "claude-sonnet-4-6", evs[0].Model)
+}
+
+// TestSession_DoesNotEmitEventInitWhenModelMissing —— init 帧不报 model 时不发
+// EventInit,避免引导上层用空 model 做无效 catalog 查询。
+func TestSession_DoesNotEmitEventInitWhenModelMissing(t *testing.T) {
+	s := &Session{}
+	evs, _ := s.parseLine([]byte(`{"type":"system","subtype":"init","session_id":"sx"}`))
+	for _, ev := range evs {
+		assert.NotEqual(t, EventInit, ev.Kind, "model 缺省时不应 emit EventInit")
+	}
 }
 
 // TestSession_ReplayRealRawLog 端到端回放:如果 AGENTRE_REPLAY_CC_RAW 指向一份

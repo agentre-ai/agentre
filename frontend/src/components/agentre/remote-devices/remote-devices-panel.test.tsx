@@ -27,7 +27,9 @@ describe("RemoteDevicesPanel", () => {
     mockList.mockResolvedValueOnce([]);
     render(<RemoteDevicesPanel />);
     await waitFor(() =>
-      expect(screen.getByText(/尚未配对任何 agentred/)).toBeInTheDocument(),
+      expect(
+        screen.getByText(/No agentred devices paired/),
+      ).toBeInTheDocument(),
     );
   });
 
@@ -54,6 +56,6 @@ describe("RemoteDevicesPanel", () => {
     await waitFor(() =>
       expect(screen.getAllByTestId("device-row")).toHaveLength(2),
     );
-    expect(screen.getByText("2 已配对 · 1 在线")).toBeInTheDocument();
+    expect(screen.getByText("2 paired · 1 online")).toBeInTheDocument();
   });
 });

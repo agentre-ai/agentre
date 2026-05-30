@@ -33,6 +33,9 @@ const (
 	MethodSetPermissionMode    = "runtime.setPermissionMode"
 	MethodSubmitAnswer         = "runtime.submitAnswer"
 	MethodSubmitToolPermission = "runtime.submitToolPermission"
+	MethodGetGoal              = "runtime.goal.get"
+	MethodSetGoal              = "runtime.goal.set"
+	MethodClearGoal            = "runtime.goal.clear"
 
 	// daemon → client 通知。
 	NotifyEvent         = "runtime.event"
@@ -119,6 +122,25 @@ type ProviderSummary struct {
 // 是「成功无 payload」。
 type OK struct{}
 
+type GoalParams struct {
+	SessionID         int64           `json:"sessionId"`
+	AgentID           int64           `json:"agentId,omitempty"`
+	ProviderSessionID string          `json:"providerSessionId"`
+	Backend           json.RawMessage `json:"backend,omitempty"`
+	Cwd               string          `json:"cwd,omitempty"`
+	Objective         *string         `json:"objective,omitempty"`
+	Status            *string         `json:"status,omitempty"`
+	TokenBudget       *int            `json:"tokenBudget,omitempty"`
+}
+
+type GoalResult struct {
+	Goal *agentruntime.Goal `json:"goal,omitempty"`
+}
+
+type GoalClearResult struct {
+	Cleared bool `json:"cleared"`
+}
+
 // CapabilitiesParams 按 BackendType 查 daemon 端 runtime 的能力矩阵。
 type CapabilitiesParams struct {
 	BackendType string `json:"backendType"`
@@ -153,6 +175,7 @@ type RunParams struct {
 	SystemPrompt      string               `json:"systemPrompt,omitempty"`
 	ProviderSessionID string               `json:"providerSessionId,omitempty"`
 	UserText          string               `json:"userText,omitempty"`
+	UserBlocks        []blocks.StoredBlock `json:"userBlocks,omitempty"`
 	History           []HistoryMessageWire `json:"history,omitempty"`
 	Compact           bool                 `json:"compact,omitempty"`
 	ForkAnchor        string               `json:"forkAnchor,omitempty"`

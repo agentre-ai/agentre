@@ -14,6 +14,21 @@ React 19 + TS + Vite + Tailwind v4。Wails 绑定从 `internal/app` 生成到 `f
 
 新增组件前先看 `frontend/src/components/ui` 和 `frontend/src/components/agentre` 是否已经有原语。
 
+## i18n
+
+前端新增用户可见文案必须显式接 i18n，不要新增写死中文。
+
+- 新 UI 文案用 `react-i18next` 的 `useTranslation()` / `t("...")`，key 放在 `frontend/src/i18n/locales/{zh-CN,en}/common.json`，两种语言必须同时补齐。
+- 不要引入旁路文本改写机制；静态 UI 文案必须在组件或模块里显式接 `t(...)`。
+- Agent 输出、用户输入、终端输出、文件内容、diff、代码块、markdown 渲染等动态内容不要翻译；它们天然不会进入 `t(...)`。
+- `eslint-plugin-i18next` 的 `i18next/no-literal-string` 会拦 JSX 文本和 `aria-label` / `title` / `placeholder` / `alt` 等可见属性里的中文硬编码文案；需要展示文案就改成 `t(...)`。
+- 改 i18n 资源后跑：
+
+```bash
+cd frontend && pnpm test -- src/__tests__/i18n.test.ts src/__tests__/eslint-i18n.test.ts
+cd frontend && pnpm exec eslint src
+```
+
 ## 项目结构
 
 - `frontend/components.json` 定义 alias：`@/components`、`@/components/ui`、`@/lib`、`@/hooks`。

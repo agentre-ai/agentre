@@ -1,5 +1,7 @@
 import * as React from "react";
 import { Search, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 import { Input } from "@/components/ui/input";
 import { useChatAgents, type ChatAgentItem } from "@/hooks/use-chat-agents";
@@ -33,6 +35,7 @@ function agentSessionFromMeta(
   lastMessageAt: number,
   agentStatus: string,
   reason: AttentionReason | null,
+  t: TFunction,
   attentionRank?: AttentionReason | "selected",
 ): AgentSession {
   const status = reasonToDisplayStatus(
@@ -50,7 +53,7 @@ function agentSessionFromMeta(
   return {
     id: String(sid),
     status,
-    title: title || "(未命名会话)",
+    title: title || t("chatPage.untitledSession"),
     trailingLabel,
     ...(attentionRank !== undefined ? { attentionRank } : {}),
   };
@@ -63,6 +66,7 @@ function useBuildAttentionSessions(
   selectedAgentId: number,
   selectedSessionId: number,
 ): AgentSession[] {
+  const { t } = useTranslation();
   const sessionIds = React.useMemo(
     () => agent.sessionIds ?? agent.sessions.map((s) => s.id),
     [agent],
@@ -88,6 +92,7 @@ function useBuildAttentionSessions(
           meta.lastMessageAt ?? 0,
           status?.agentStatus ?? "idle",
           reason,
+          t,
           reason,
         ),
       );
@@ -109,6 +114,7 @@ function useBuildAttentionSessions(
             meta.lastMessageAt ?? 0,
             status?.agentStatus ?? "idle",
             null,
+            t,
             "selected",
           ),
         );
@@ -122,11 +128,13 @@ function useBuildAttentionSessions(
     selectedAgentId,
     selectedSessionId,
     agent.id,
+    t,
   ]);
 }
 
 // buildSessions: 投影展开态侧栏常规列表（从 meta/status store 读，无需 attentionSessions）。
 function useBuildSessions(agent: ChatAgentItem): AgentSession[] {
+  const { t } = useTranslation();
   const metas = useSessionMetaStore((s) => s.metas);
   const statuses = useSessionStatusStore((s) => s.statuses);
   const attentionItems = useSessionAttentionList(
@@ -152,9 +160,10 @@ function useBuildSessions(agent: ChatAgentItem): AgentSession[] {
         meta?.lastMessageAt ?? s.lastMessageAt,
         status?.agentStatus ?? s.status,
         reason,
+        t,
       );
     });
-  }, [agent.sessions, metas, statuses, attentionMap]);
+  }, [agent.sessions, metas, statuses, attentionMap, t]);
 }
 
 // ─── AgentGroupRow ────────────────────────────────────────────────────────────
@@ -180,6 +189,7 @@ function AgentGroupRow({
   openNewSession,
   showNotChattableNotice,
 }: AgentGroupRowProps) {
+  const { t } = useTranslation();
   const sessions = useBuildSessions(a);
   const attentionSessions = useBuildAttentionSessions(
     a,
@@ -205,7 +215,7 @@ function AgentGroupRow({
         if (!a.chattable) {
           showNotChattableNotice(
             a.name,
-            a.chattableHint || "请先在组织架构页给该 Agent 绑定一个内置后端",
+            a.chattableHint || t("chatPage.notChattable.defaultHint"),
           );
           return;
         }
@@ -255,6 +265,7 @@ function AgentGroupRow({
 // ─── Main ChatPage ───────────────────────────────────────────────────────────
 
 function ChatPage() {
+  const { t } = useTranslation();
   const { agents } = useChatAgents();
   const metas = useSessionMetaStore((s) => s.metas);
   // 选中态完全派生自 chat-tabs-store(single source of truth):
@@ -270,6 +281,7 @@ function ChatPage() {
   const selectedAgentId = React.useMemo(() => {
     if (!activeTab) return 0;
     if (activeTab.meta.kind === "new") return activeTab.meta.agentId;
+    if (activeTab.meta.kind !== "session") return 0;
     const sid = activeTab.meta.sessionId;
     for (const a of agents) {
       if (a.sessions.some((s) => s.id === sid)) return a.id;
@@ -365,10 +377,12 @@ function ChatPage() {
   return (
     <>
       {/* ── Left sidebar ── */}
-      <ResizableSidebar persistenceKey="chat" ariaLabel="Agent 列表">
+      <ResizableSidebar persistenceKey="chat" ariaLabel={t("chatPage.sidebar")}>
         <div className="flex flex-col gap-2 border-b border-border px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold">Agents</span>
+            <span className="text-sm font-semibold">
+              {t("chatPage.agents")}
+            </span>
             <span className="font-mono text-2xs text-muted-foreground">
               {agents.length}
             </span>
@@ -380,8 +394,8 @@ function ChatPage() {
               aria-hidden="true"
             />
             <Input
-              aria-label="筛选 agent 与会话"
-              placeholder="搜索 Agent / 会话"
+              aria-label={t("chatPage.search.aria")}
+              placeholder={t("chatPage.search.placeholder")}
               className="h-[30px] bg-input-bg pl-8 pr-7 text-xs"
               value={agentFilter}
               onChange={(event) => setAgentFilter(event.target.value)}
@@ -389,8 +403,8 @@ function ChatPage() {
             {agentFilter ? (
               <button
                 type="button"
-                aria-label="清空筛选"
-                title="清空筛选"
+                aria-label={t("chatPage.search.clear")}
+                title={t("chatPage.search.clear")}
                 className="absolute right-1.5 top-1/2 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 onClick={() => setAgentFilter("")}
               >
@@ -410,26 +424,33 @@ function ChatPage() {
             <span className="font-semibold text-foreground">
               {notChattableNotice.name}
             </span>{" "}
-            暂不可对话 — {notChattableNotice.hint}
+            {t("chatPage.notChattable.message", {
+              hint: notChattableNotice.hint,
+            })}
           </div>
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
           {pinned.length > 0 ? (
             <>
-              <AgentPanelSection label="PINNED" icon="pin" />
+              <AgentPanelSection
+                label={t("chatPage.sections.pinned")}
+                icon="pin"
+              />
               {pinned.map(renderAgentGroup)}
             </>
           ) : null}
           {hasResults ? (
             <>
-              <AgentPanelSection label="AGENTS" />
+              <AgentPanelSection label={t("chatPage.sections.agents")} />
               {others.map(renderAgentGroup)}
             </>
           ) : null}
           {filterIsActive && !hasResults ? (
             <div className="px-2 py-6 text-center text-2xs text-muted-foreground">
-              没有匹配 "{agentFilter.trim()}" 的 Agent 或会话
+              {t("chatPage.search.noMatches", {
+                query: agentFilter.trim(),
+              })}
             </div>
           ) : null}
         </div>

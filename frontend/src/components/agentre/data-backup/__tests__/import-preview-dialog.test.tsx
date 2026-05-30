@@ -38,7 +38,7 @@ describe("ImportPreviewDialog", () => {
         onApply={apply}
       />,
     );
-    expect(screen.getByText("引用缺失")).toBeInTheDocument();
+    expect(screen.getByText("Missing Reference")).toBeInTheDocument();
     expect(screen.getByText("所属后端不在范围内")).toBeInTheDocument();
   });
 
@@ -52,7 +52,7 @@ describe("ImportPreviewDialog", () => {
         onApply={apply}
       />,
     );
-    fireEvent.click(screen.getByText("应用"));
+    fireEvent.click(screen.getByText("Apply"));
     expect(apply).toHaveBeenCalledWith(
       { "llm-providers:k1": "create" },
       "skip",

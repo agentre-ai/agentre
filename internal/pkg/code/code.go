@@ -142,6 +142,9 @@ const (
 	ChatCompactUnsupported                       // 当前后端不支持原生压缩
 	ChatCompactNoSession                         // Codex 尚无 provider thread 可压缩
 	ChatCompactInternal                          // 压缩失败
+	ChatGoalUnsupported                          // 当前后端不支持目标状态
+	ChatGoalNoSession                            // Codex 尚无 provider thread 可设置目标
+	ChatGoalInternal                             // 目标状态操作失败
 )
 
 // Chat 启动命令 17080~

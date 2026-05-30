@@ -45,6 +45,22 @@ func (a *App) CompactChatSession(req *chat_svc.CompactRequest) (*chat_svc.Compac
 	return chat_svc.Chat().Compact(a.ctx, req)
 }
 
+func (a *App) GetChatGoal(req *chat_svc.GoalRequest) (*chat_svc.GoalResponse, error) {
+	return chat_svc.Chat().GetGoal(a.ctx, req)
+}
+
+func (a *App) SetChatGoal(req *chat_svc.SetGoalRequest) (*chat_svc.GoalResponse, error) {
+	return chat_svc.Chat().SetGoal(a.ctx, req)
+}
+
+func (a *App) StartChatGoal(req *chat_svc.StartGoalRequest) (*chat_svc.StartGoalResponse, error) {
+	return chat_svc.Chat().StartGoal(a.ctx, req)
+}
+
+func (a *App) ClearChatGoal(req *chat_svc.ClearGoalRequest) (*chat_svc.ClearGoalResponse, error) {
+	return chat_svc.Chat().ClearGoal(a.ctx, req)
+}
+
 // EnqueueChatMessage 在 AI 还在回答时把一条新的用户消息插入当前 turn。
 // claudecode 走 PreToolUse hook + additionalContext，codex 走 turn/steer RPC。
 // 没有 in-flight turn 时返回 ChatSteerNoActive。响应里带 queuedId + cancellable

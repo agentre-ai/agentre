@@ -36,18 +36,56 @@ describe("MarkdownText", () => {
 
     render(<MarkdownText text={"结果如下：\n\n```\npnpm test\n```\n"} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("pnpm test\n");
     });
     expect(sonnerMocks.toast.success).toHaveBeenCalledWith(
-      "已复制代码",
+      "Code copied",
       expect.objectContaining({
         duration: 5000,
         position: "bottom-right",
       }),
     );
-    expect(screen.getByRole("button", { name: "已复制" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+});
+
+describe("MarkdownText URL whitelist", () => {
+  it("preserves https href as-is", () => {
+    const { container } = render(
+      <MarkdownText text="[ex](https://example.com)" />,
+    );
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(
+      "https://example.com",
+    );
+  });
+
+  it("preserves absolute POSIX path href as-is", () => {
+    const { container } = render(
+      <MarkdownText text="[f](/Users/me/foo.go:42)" cwd="/Users/me" />,
+    );
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(
+      "/Users/me/foo.go:42",
+    );
+  });
+
+  it("resolves file:// href to local path (RichLink handles it)", () => {
+    const { container } = render(
+      <MarkdownText text="[f](file:///Users/me/foo.go)" />,
+    );
+    const a = container.querySelector("a");
+    // RichLink resolves file:// → local path via classifyLink/fullTarget
+    expect(a?.getAttribute("href")).toBe("/Users/me/foo.go");
+  });
+
+  it("strips javascript: href", () => {
+    const { container } = render(
+      <MarkdownText text="[x](javascript:alert(1))" />,
+    );
+    const a = container.querySelector("a");
+    // After url whitelist strips href, RichLink renders plain anchor with no href.
+    expect(a?.getAttribute("href")).toBeFalsy();
   });
 });

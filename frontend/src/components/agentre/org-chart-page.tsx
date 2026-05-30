@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { TFunction } from "i18next";
 import {
   FolderPlus,
   List,
@@ -8,6 +9,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,6 +39,7 @@ import { useOrgData } from "./org/use-org-data";
 import { useOrgTreeView } from "./org/use-org-tree-view";
 
 export function OrgChartPage() {
+  const { t } = useTranslation();
   const {
     loading,
     error,
@@ -83,12 +86,16 @@ export function OrgChartPage() {
   const summaryText = React.useMemo(() => {
     const totalAgents = agents.length;
     if (view.viewMode === "list") {
-      return `${totalAgents} 个 Agent · 列表视图`;
+      return t("org.chart.summary.list", { count: totalAgents });
     }
     const top = departments.filter((d) => d.parentId === 0).length;
     const sub = departments.length - top;
-    return `${top} 部门 · ${sub} 子部门 · ${totalAgents} Agent`;
-  }, [departments, agents, view.viewMode]);
+    return t("org.chart.summary.tree", {
+      agents: totalAgents,
+      departments: top,
+      subDepartments: sub,
+    });
+  }, [departments, agents, t, view.viewMode]);
 
   const zoomPct = Math.round(view.zoom * 100);
 
@@ -98,7 +105,7 @@ export function OrgChartPage() {
         className="flex min-h-0 min-w-0 flex-1 items-center justify-center text-muted-foreground"
         data-slot="org-chart-loading"
       >
-        正在加载组织架构…
+        {t("org.chart.loading")}
       </div>
     );
   }
@@ -130,6 +137,7 @@ export function OrgChartPage() {
     deleteAgent,
     uploadAgentAvatar,
     deleteAgentAvatar,
+    t,
     onAddAgent: (deptId) => {
       setNewAgentParentDeptId(deptId);
       setNewAgentOpen(true);
@@ -150,7 +158,9 @@ export function OrgChartPage() {
         data-slot="org-header"
       >
         <div className="flex flex-col">
-          <span className="text-base font-semibold">组织架构</span>
+          <span className="text-base font-semibold">
+            {t("org.chart.title")}
+          </span>
           <span className="font-mono text-2xs text-muted-foreground">
             {summaryText}
           </span>
@@ -162,7 +172,7 @@ export function OrgChartPage() {
               variant="ghost"
               size="icon"
               className="size-7"
-              aria-label="缩小"
+              aria-label={t("org.chart.zoom.out")}
               onClick={view.zoomOut}
             >
               <ZoomOut className="size-3.5" />
@@ -174,7 +184,7 @@ export function OrgChartPage() {
               variant="ghost"
               size="icon"
               className="size-7"
-              aria-label="放大"
+              aria-label={t("org.chart.zoom.in")}
               onClick={view.zoomIn}
             >
               <ZoomIn className="size-3.5" />
@@ -183,7 +193,7 @@ export function OrgChartPage() {
               variant="ghost"
               size="icon"
               className="size-7"
-              aria-label="重置缩放"
+              aria-label={t("org.chart.zoom.reset")}
               onClick={view.zoomReset}
             >
               <RotateCcw className="size-3.5" />
@@ -194,7 +204,7 @@ export function OrgChartPage() {
           <button
             type="button"
             aria-pressed={view.viewMode === "tree"}
-            aria-label="树状视图"
+            aria-label={t("org.chart.view.treeAria")}
             onClick={() => view.setViewMode("tree")}
             className={cn(
               "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-2xs font-medium transition-colors",
@@ -204,12 +214,12 @@ export function OrgChartPage() {
             )}
           >
             <Network className="size-3" />
-            树状
+            {t("org.chart.view.tree")}
           </button>
           <button
             type="button"
             aria-pressed={view.viewMode === "list"}
-            aria-label="列表视图"
+            aria-label={t("org.chart.view.listAria")}
             onClick={() => view.setViewMode("list")}
             className={cn(
               "inline-flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-2xs font-medium transition-colors",
@@ -219,7 +229,7 @@ export function OrgChartPage() {
             )}
           >
             <List className="size-3" />
-            列表
+            {t("org.chart.view.list")}
           </button>
         </div>
         {view.viewMode === "tree" && (
@@ -232,7 +242,7 @@ export function OrgChartPage() {
             }}
           >
             <FolderPlus className="size-3.5 mr-1" />
-            新建部门
+            {t("org.chart.actions.newDepartment")}
           </Button>
         )}
         <Button
@@ -240,7 +250,7 @@ export function OrgChartPage() {
           disabled={departments.length === 0 && agents.length === 0}
           title={
             departments.length === 0 && agents.length === 0
-              ? "暂无可挂载节点"
+              ? t("org.chart.empty.noMountNodes")
               : undefined
           }
           onClick={() => {
@@ -249,7 +259,7 @@ export function OrgChartPage() {
           }}
         >
           <Plus className="size-3.5 mr-1" />
-          新建 Agent
+          {t("org.chart.actions.newAgent")}
         </Button>
       </header>
 
@@ -347,6 +357,7 @@ type RenderDetailArgs = {
   deleteAgent: ReturnType<typeof useOrgData>["deleteAgent"];
   uploadAgentAvatar: ReturnType<typeof useOrgData>["uploadAgentAvatar"];
   deleteAgentAvatar: ReturnType<typeof useOrgData>["deleteAgentAvatar"];
+  t: TFunction;
   onAddAgent: (deptId: number) => void;
   onAddSubDepartment: (deptId: number) => void;
 };
@@ -397,7 +408,7 @@ function renderDetail(args: RenderDetailArgs): React.ReactNode {
       className="flex h-full items-center justify-center p-8 text-center text-sm text-muted-foreground"
       data-slot="org-detail-empty"
     >
-      选择一个部门或 Agent 查看详情
+      {args.t("org.chart.detail.empty")}
     </div>
   );
 }
@@ -423,6 +434,7 @@ function NewDepartmentDialog(props: NewDeptProps) {
 }
 
 function NewDepartmentDialogBody(props: NewDeptProps) {
+  const { t } = useTranslation();
   const [name, setName] = React.useState("");
   const [icon, setIcon] = React.useState("hammer");
   const [accentColor, setAccentColor] = React.useState<AgentColor>("agent-2");
@@ -448,41 +460,45 @@ function NewDepartmentDialogBody(props: NewDeptProps) {
     <AgentreDialog
       open={props.open}
       onOpenChange={(o) => !o && props.onClose()}
-      title="新建部门"
-      description="选择父级、图标和主题色，创建后会出现在组织架构中。"
+      title={t("org.chart.actions.newDepartment")}
+      description={t("org.chart.newDepartment.description")}
       bodyClassName="flex flex-col gap-4"
       onSubmit={handleSubmit}
       footer={
         <>
           <Button type="button" variant="outline" onClick={props.onClose}>
-            取消
+            {t("common.cancel")}
           </Button>
           <Button type="submit" disabled={!canSubmit}>
-            创建
+            {t("common.create")}
           </Button>
         </>
       }
     >
       <label className="flex flex-col gap-1 text-xs">
-        <span className="text-2xs text-muted-foreground">名称</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("org.department.name")}
+        </span>
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
           autoFocus
-          aria-label="new-dept-name"
+          aria-label={t("org.department.name")}
         />
       </label>
       <label className="flex flex-col gap-1 text-xs">
-        <span className="text-2xs text-muted-foreground">父部门</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("org.department.parent")}
+        </span>
         <Select
           value={String(parentId)}
           onValueChange={(v) => setParentId(Number(v))}
         >
-          <SelectTrigger aria-label="new-dept-parent">
+          <SelectTrigger aria-label={t("org.department.parent")}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="0">公司顶层</SelectItem>
+            <SelectItem value="0">{t("org.department.topLevel")}</SelectItem>
             {props.departments.map((d) => (
               <SelectItem key={d.id} value={String(d.id)}>
                 {d.name}
@@ -492,20 +508,24 @@ function NewDepartmentDialogBody(props: NewDeptProps) {
         </Select>
       </label>
       <div className="flex flex-col gap-2">
-        <span className="text-2xs text-muted-foreground">图标</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("org.department.icon")}
+        </span>
         <IconPicker
           value={icon}
           onChange={setIcon}
           accentColor={accentColor}
-          ariaLabel="新部门图标"
+          ariaLabel={t("org.chart.newDepartment.iconAria")}
         />
       </div>
       <div className="flex flex-col gap-2">
-        <span className="text-2xs text-muted-foreground">主题色</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("org.department.themeColor")}
+        </span>
         <div
           className="grid grid-cols-5 gap-2"
           role="radiogroup"
-          aria-label="主题色"
+          aria-label={t("org.department.themeColor")}
         >
           {agentColorOrder.map((c) => (
             <button
@@ -513,7 +533,7 @@ function NewDepartmentDialogBody(props: NewDeptProps) {
               type="button"
               role="radio"
               aria-checked={accentColor === c}
-              aria-label={`主题色 ${c}`}
+              aria-label={t("org.department.themeColorNamed", { color: c })}
               onClick={() => setAccentColor(c)}
               className={cn(
                 "size-6 rounded-full ring-offset-2 transition-all",
@@ -554,6 +574,7 @@ function NewAgentDialog(props: NewAgentProps) {
 }
 
 function NewAgentDialogBody(props: NewAgentProps) {
+  const { t } = useTranslation();
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [avatarColor, setAvatarColor] = React.useState<AgentColor>("agent-1");
@@ -562,14 +583,14 @@ function NewAgentDialogBody(props: NewAgentProps) {
     () => [
       ...props.departments.map((d) => ({
         value: `department:${d.id}`,
-        label: `部门 · ${d.name}`,
+        label: t("org.chart.newAgent.departmentOption", { name: d.name }),
       })),
       ...props.agents.map((a) => ({
         value: `agent:${a.id}`,
-        label: `Agent · ${a.name}`,
+        label: t("org.chart.newAgent.agentOption", { name: a.name }),
       })),
     ],
-    [props.departments, props.agents],
+    [props.departments, props.agents, t],
   );
   const initialPlacement = React.useMemo(() => {
     const preset = props.defaultDepartmentId
@@ -611,45 +632,52 @@ function NewAgentDialogBody(props: NewAgentProps) {
     <AgentreDialog
       open={props.open}
       onOpenChange={(o) => !o && props.onClose()}
-      title="新建 Agent"
-      description="设置 Agent 的名称、挂载位置和执行后端。"
+      title={t("org.chart.actions.newAgent")}
+      description={t("org.chart.newAgent.description")}
       bodyClassName="flex flex-col gap-4"
       onSubmit={handleSubmit}
       footer={
         <>
           <Button type="button" variant="outline" onClick={props.onClose}>
-            取消
+            {t("common.cancel")}
           </Button>
           <Button type="submit" disabled={!canSubmit}>
-            创建
+            {t("common.create")}
           </Button>
         </>
       }
     >
       <label className="flex flex-col gap-1 text-xs">
-        <span className="text-2xs text-muted-foreground">名称</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("org.department.name")}
+        </span>
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
           autoFocus
-          aria-label="new-agent-name"
+          aria-label={t("org.department.name")}
         />
       </label>
       <label className="flex flex-col gap-1.5 text-xs">
         <span className="text-2xs text-muted-foreground">
-          简介 <span className="opacity-60">（可选）</span>
+          {t("org.department.description")}{" "}
+          <span className="opacity-60">
+            {t("org.chart.newAgent.optionalSuffix")}
+          </span>
         </span>
         <Input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          aria-label="new-agent-description"
+          aria-label={t("org.department.description")}
         />
       </label>
       <div className="flex flex-col gap-1.5">
-        <span className="text-2xs text-muted-foreground">头像</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("org.chart.newAgent.avatar")}
+        </span>
         <div className="flex items-center gap-3">
           <AgentAvatarPicker
-            name={name || "Agent"}
+            name={name || t("org.agent.fallbackName")}
             avatarColor={avatarColor}
             avatarIcon={avatarIcon}
             avatarDataUrl=""
@@ -658,16 +686,18 @@ function NewAgentDialogBody(props: NewAgentProps) {
             triggerSize="lg"
           />
           <span className="font-mono text-2xs text-muted-foreground">
-            点击头像选图标，创建后可在详情页上传图片
+            {t("org.chart.newAgent.avatarHint")}
           </span>
         </div>
       </div>
       <div className="flex flex-col gap-1.5">
-        <span className="text-2xs text-muted-foreground">头像配色</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("org.chart.newAgent.avatarColor")}
+        </span>
         <div
           className="grid grid-cols-5 gap-2"
           role="radiogroup"
-          aria-label="头像配色"
+          aria-label={t("org.chart.newAgent.avatarColor")}
         >
           {agentColorOrder.map((c) => (
             <button
@@ -675,7 +705,9 @@ function NewAgentDialogBody(props: NewAgentProps) {
               type="button"
               role="radio"
               aria-checked={avatarColor === c}
-              aria-label={`头像配色 ${c}`}
+              aria-label={t("org.chart.newAgent.avatarColorNamed", {
+                color: c,
+              })}
               onClick={() => setAvatarColor(c)}
               className={cn(
                 "size-6 rounded-full ring-offset-2 transition-all",
@@ -687,10 +719,12 @@ function NewAgentDialogBody(props: NewAgentProps) {
         </div>
       </div>
       <label className="flex flex-col gap-1 text-xs">
-        <span className="text-2xs text-muted-foreground">挂载到</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("org.chart.newAgent.placement")}
+        </span>
         <Select value={placement} onValueChange={setPlacement}>
-          <SelectTrigger aria-label="new-agent-placement">
-            <SelectValue placeholder="选择部门或上级 Agent" />
+          <SelectTrigger aria-label={t("org.chart.newAgent.placement")}>
+            <SelectValue placeholder={t("org.chart.newAgent.placement")} />
           </SelectTrigger>
           <SelectContent>
             {placementOptions.map((option) => (
@@ -702,13 +736,15 @@ function NewAgentDialogBody(props: NewAgentProps) {
         </Select>
       </label>
       <label className="flex flex-col gap-1 text-xs">
-        <span className="text-2xs text-muted-foreground">后端</span>
+        <span className="text-2xs text-muted-foreground">
+          {t("org.chart.newAgent.backend")}
+        </span>
         <Select
           value={backendId > 0 ? String(backendId) : ""}
           onValueChange={(v) => setBackendId(Number(v))}
         >
-          <SelectTrigger aria-label="new-agent-backend">
-            <SelectValue placeholder="选择后端" />
+          <SelectTrigger aria-label={t("org.chart.newAgent.backend")}>
+            <SelectValue placeholder={t("org.chart.newAgent.backend")} />
           </SelectTrigger>
           <SelectContent>
             {props.backends.map((b) => (

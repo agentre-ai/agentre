@@ -18,27 +18,35 @@ import (
 	"agentre/pkg/codex"
 )
 
-var defaultRuntime = New()
+var defaultRuntime = NewWithPool(agentruntime.DefaultCLISessionPool())
 
 func init() {
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeCodex, defaultRuntime)
 }
 
+func Default() *Runtime { return defaultRuntime }
+
 // codexActive 一个 chat session 当前的 codex stream 状态。
 //   - stream:turn/steer 入口(*codex.Stream 实现)
 //   - interrupter:turn/interrupt 入口
 //   - userInput:request_user_input 反向投回入口
+//   - approval:requestApproval 反向投回入口
 //   - pending:本 turn 已发出但还没被 EventUserMessage echo 回来的 steer text
 //     (codex 协议 fire-and-forget,本地做 FIFO 配对)
 //   - askWaiters:request_user_input 阻塞中的 waiter
+//   - permWaiters:requestApproval 阻塞中的 waiter
 //   - out:Run() 期间登记的事件出口,SubmitAnswer 完成后用它 emit UserAskResolved
 type codexActive struct {
 	mu          sync.Mutex
 	stream      cxSteerStream
 	interrupter cxInterruptable
 	userInput   cxUserInputStream
+	approval    cxApprovalStream
 	pending     []agentruntime.ConsumedSteer
 	askWaiters  map[string]codexAskWaiter
+	permWaiters map[string]struct{}
+	pool        *agentruntime.CLISessionPool
+	poolKey     string
 	outMu       sync.Mutex
 	out         chan<- agentruntime.Event
 }
@@ -51,10 +59,18 @@ type codexAskWaiter struct {
 type Runtime struct {
 	mu     sync.Mutex
 	active map[int64]*codexActive
+	pool   *agentruntime.CLISessionPool
 }
 
 func New() *Runtime {
-	return &Runtime{active: map[int64]*codexActive{}}
+	return NewWithPool(agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap))
+}
+
+func NewWithPool(pool *agentruntime.CLISessionPool) *Runtime {
+	if pool == nil {
+		pool = agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap)
+	}
+	return &Runtime{active: map[int64]*codexActive{}, pool: pool}
 }
 
 // Capabilities 返回 codex runtime 的能力矩阵。
@@ -62,7 +78,7 @@ func New() *Runtime {
 // 与 claudecode 的差异:
 //   - CapCancelSteer = false(codex turn/steer fire-and-forget,无 withdraw verb)
 //   - CapDrainSteer = false(无 hook 队列)
-//   - CapToolPermission = false(codex 无 can_use_tool 协议)
+//   - CapToolPermission = true(codex app-server requestApproval 协议)
 //   - CapForkSession = true(走 thread/rollback)
 //   - CapReportContextWindow = true(thread/tokenUsage/updated 推 modelContextWindow)
 //   - PermissionModeMeta:仅 default / plan;**禁运行时切换**(running/waiting 禁切)
@@ -71,11 +87,14 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 		Set: map[capability.Capability]bool{
 			capability.CapSteer:               true,
 			capability.CapAbort:               true,
+			capability.CapImageInput:          true,
 			capability.CapSetPermission:       true,
 			capability.CapAnswerUserAsk:       true,
+			capability.CapToolPermission:      true,
 			capability.CapForkSession:         true,
 			capability.CapReportContextWindow: true,
 			capability.CapCompact:             true,
+			capability.CapGoal:                true,
 		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "plan"},
@@ -85,6 +104,97 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			// codex 协议要求 launch 时显式 collaboration mode,chat_svc 必须落非空。
 			LaunchDefaultMode: "default",
 		},
+	}
+}
+
+func (r *Runtime) GetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	sess, err := r.goalSession(ctx, req, true)
+	if err != nil {
+		return nil, err
+	}
+	goal, err := sess.GetGoal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return goalFromCodex(goal), nil
+}
+
+func (r *Runtime) SetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	sess, err := r.goalSession(ctx, req, false)
+	if err != nil {
+		return nil, err
+	}
+	update := codex.GoalUpdate{
+		Objective:   req.Objective,
+		TokenBudget: req.TokenBudget,
+	}
+	if req.Status != nil {
+		status := codex.GoalStatus(*req.Status)
+		update.Status = &status
+	}
+	goal, err := sess.SetGoal(ctx, update)
+	if err != nil {
+		return nil, err
+	}
+	return goalFromCodex(goal), nil
+}
+
+func (r *Runtime) ClearGoal(ctx context.Context, req agentruntime.GoalRequest) (bool, error) {
+	sess, err := r.goalSession(ctx, req, true)
+	if err != nil {
+		return false, err
+	}
+	return sess.ClearGoal(ctx)
+}
+
+func (r *Runtime) goalSession(ctx context.Context, req agentruntime.GoalRequest, requireProviderSession bool) (cxSessionHandle, error) {
+	if req.SessionID <= 0 {
+		return nil, fmt.Errorf("agentruntime/runtimes/codex: invalid sessionID %d", req.SessionID)
+	}
+	if requireProviderSession && strings.TrimSpace(req.ProviderSessionID) == "" {
+		return nil, fmt.Errorf("agentruntime/runtimes/codex: missing provider session id for goal")
+	}
+	cwd := req.Cwd
+	if cwd == "" {
+		var err error
+		cwd, err = agentruntime.AgentCwd(req.AgentID)
+		if err != nil {
+			logger.Ctx(ctx).Error("codex runtime: AgentCwd resolve failed for goal",
+				zap.Int64("sessionID", req.SessionID),
+				zap.Int64("agentID", req.AgentID), zap.Error(err))
+			return nil, err
+		}
+	}
+	runReq := agentruntime.RunRequest{
+		Backend:           req.Backend,
+		Provider:          req.Provider,
+		AgentID:           req.AgentID,
+		SessionID:         req.SessionID,
+		Cwd:               cwd,
+		ProviderSessionID: req.ProviderSessionID,
+		GatewayURL:        req.GatewayURL,
+		GatewayToken:      req.GatewayToken,
+	}
+	env, err := BuildCodexEnv(runReq.Backend, gatewayDeps(runReq))
+	if err != nil {
+		return nil, err
+	}
+	return r.acquireSession(runReq, env, cwd)
+}
+
+func goalFromCodex(goal *codex.Goal) *agentruntime.Goal {
+	if goal == nil {
+		return nil
+	}
+	return &agentruntime.Goal{
+		ThreadID:        goal.ThreadID,
+		Objective:       goal.Objective,
+		Status:          string(goal.Status),
+		TokenBudget:     goal.TokenBudget,
+		TokensUsed:      goal.TokensUsed,
+		TimeUsedSeconds: goal.TimeUsedSeconds,
+		CreatedAt:       goal.CreatedAt,
+		UpdatedAt:       goal.UpdatedAt,
 	}
 }
 
@@ -105,6 +215,8 @@ func (r *Runtime) unregister(sessionID int64) {
 	delete(r.active, sessionID)
 	r.mu.Unlock()
 }
+
+func sessionKey(id int64) string { return fmt.Sprintf("codex:%d", id) }
 
 // Run 启动一轮 codex CLI 发送。语义同顶层 codex.go.Run,emit 类型从
 // RuntimeEvent 改为 sealed agentruntime.Event。
@@ -130,7 +242,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		return nil, nil, err
 	}
 
-	sess, err := cxSessionFactory(req, env, cwd)
+	sess, err := r.acquireSession(req, env, cwd)
 	if err != nil {
 		logger.Ctx(ctx).Error("codex runtime: session factory failed",
 			zap.Int64("sessionID", req.SessionID),
@@ -148,8 +260,16 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	}
 
 	var stream cxStream
+	var cleanupInputs func()
 	if req.Compact {
 		stream, err = sess.Compact(ctx)
+	} else if len(req.UserBlocks) > 0 {
+		inputs, cleanup, ierr := userInputsFromBlocks(req.UserBlocks)
+		if ierr != nil {
+			return nil, nil, ierr
+		}
+		cleanupInputs = cleanup
+		stream, err = sess.StreamInput(ctx, inputs, req.CollaborationMode)
 	} else {
 		stream, err = sess.Stream(ctx, req.UserText, req.CollaborationMode)
 	}
@@ -165,9 +285,24 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		zap.String("providerSessionID", sess.ID()),
 		zap.String("collaborationMode", req.CollaborationMode))
 
-	active := &codexActive{stream: sess.ActiveStream(), interrupter: sess.ActiveInterruptor()}
-	if ui, ok := active.stream.(cxUserInputStream); ok {
+	key := sessionKey(req.SessionID)
+	active := &codexActive{
+		stream:      sess.ActiveStream(),
+		interrupter: sess.ActiveInterruptor(),
+		pool:        r.pool,
+		poolKey:     key,
+	}
+	if st, ok := stream.(cxSteerStream); ok {
+		active.stream = st
+	}
+	if intr, ok := stream.(cxInterruptable); ok {
+		active.interrupter = intr
+	}
+	if ui, ok := stream.(cxUserInputStream); ok {
 		active.userInput = ui
+	}
+	if ap, ok := stream.(cxApprovalStream); ok {
+		active.approval = ap
 	}
 	r.register(req.SessionID, active)
 
@@ -185,14 +320,51 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 
 	go func() {
 		defer close(out)
+		if cleanupInputs != nil {
+			defer cleanupInputs()
+		}
 		defer r.unregister(req.SessionID)
 		defer active.setOut(nil)
 		drainStream(stream, out, result, active, req.CollaborationMode)
 		if sid := stream.SessionID(); sid != "" {
 			result.ProviderSessionID = sid
 		}
+		if req.SessionID > 0 {
+			r.pool.MarkIdle(key)
+		}
 	}()
 	return out, result, nil
+}
+
+func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]string, cwd string) (cxSessionHandle, error) {
+	if req.SessionID > 0 {
+		key := sessionKey(req.SessionID)
+		if v, ok := r.pool.Get(key); ok {
+			r.pool.MarkActive(key)
+			return v.(cxSessionHandle), nil
+		}
+	}
+	sess, err := cxSessionFactory(req, env, cwd)
+	if err != nil {
+		return nil, err
+	}
+	if req.SessionID > 0 {
+		key := sessionKey(req.SessionID)
+		r.pool.Put(key, sess)
+		r.pool.MarkActive(key)
+	}
+	return sess, nil
+}
+
+func (r *Runtime) CloseSession(_ context.Context, sessionID int64) {
+	if sessionID <= 0 {
+		return
+	}
+	r.pool.Remove(sessionKey(sessionID))
+}
+
+func (r *Runtime) CloseAllSessions(_ context.Context) {
+	r.pool.RemoveAll()
 }
 
 // Abort 软中断当前 turn。语义同顶层 codex.go.Abort。
@@ -276,10 +448,37 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	return nil
 }
 
+func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, requestID string, allow, alwaysAllowSession bool, _ string) error {
+	if sessionID <= 0 {
+		return fmt.Errorf("agentruntime/runtimes/codex: invalid sessionID %d", sessionID)
+	}
+	if strings.TrimSpace(requestID) == "" {
+		return errors.New("agentruntime/runtimes/codex: empty requestID")
+	}
+	r.mu.Lock()
+	a := r.active[sessionID]
+	r.mu.Unlock()
+	if a == nil || a.approval == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	if !a.hasPermWaiter(requestID) {
+		return fmt.Errorf("agentruntime/runtimes/codex: no waiting approval for requestID %s", requestID)
+	}
+	if err := a.approval.SubmitApproval(ctx, requestID, allow, alwaysAllowSession); err != nil {
+		return err
+	}
+	a.removePermWaiter(requestID)
+	emitToolPermissionResolved(a, requestID, allow, alwaysAllowSession)
+	return nil
+}
+
 // drainStream 与顶层 drainCodexStream 同构,emit 类型升级到 sealed Event。
 func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *codexActive, collaborationMode string) {
 	for stream.Next() {
 		ev := stream.Event()
+		if result.StopErr != nil && codexEventShowsProgressAfterError(ev.Kind) {
+			result.StopErr = nil
+		}
 		if ev.Kind == codex.EventUserMessage {
 			// codex 把 user message echo 回来 —— 对照 pending steer FIFO,
 			// 命中就 emit SteerConsumed,让 chat_svc 把对应 queued 状态推进到 consumed。
@@ -301,6 +500,9 @@ func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentru
 			if uar, ok := t.(agentruntime.UserAskRequest); ok && active != nil {
 				active.registerAskWaiter(uar.RequestID, uar.Questions)
 			}
+			if tpr, ok := t.(agentruntime.ToolPermissionRequest); ok && active != nil {
+				active.registerPermWaiter(tpr.RequestID)
+			}
 			out <- t
 		}
 		if usage != nil {
@@ -309,6 +511,62 @@ func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentru
 		if stopErr != nil {
 			result.StopErr = stopErr
 		}
+	}
+}
+
+func codexEventShowsProgressAfterError(kind codex.EventKind) bool {
+	switch kind {
+	case codex.EventTextDelta,
+		codex.EventThinkingDelta,
+		codex.EventPreToolUse,
+		codex.EventPostToolUse,
+		codex.EventUserMessage,
+		codex.EventRequestUserInput,
+		codex.EventApprovalRequest,
+		codex.EventPlanUpdated,
+		codex.EventRetry,
+		codex.EventCompactBoundary:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *codexActive) registerPermWaiter(requestID string) {
+	if a == nil || strings.TrimSpace(requestID) == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.permWaiters == nil {
+		a.permWaiters = map[string]struct{}{}
+	}
+	a.permWaiters[requestID] = struct{}{}
+	if a.pool != nil && a.poolKey != "" {
+		a.pool.MarkWaiting(a.poolKey)
+	}
+}
+
+func (a *codexActive) hasPermWaiter(requestID string) bool {
+	if a == nil || strings.TrimSpace(requestID) == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.permWaiters[requestID]
+	return ok
+}
+
+func (a *codexActive) removePermWaiter(requestID string) {
+	if a == nil || strings.TrimSpace(requestID) == "" {
+		return
+	}
+	a.mu.Lock()
+	delete(a.permWaiters, requestID)
+	waiting := len(a.permWaiters) > 0 || len(a.askWaiters) > 0
+	a.mu.Unlock()
+	if !waiting && a.pool != nil && a.poolKey != "" {
+		a.pool.MarkActive(a.poolKey)
 	}
 }
 
@@ -367,6 +625,9 @@ func (a *codexActive) registerAskWaiter(requestID string, questions []agentrunti
 		a.askWaiters = map[string]codexAskWaiter{}
 	}
 	a.askWaiters[requestID] = codexAskWaiter{questions: append([]agentruntime.AskQuestion(nil), questions...)}
+	if a.pool != nil && a.poolKey != "" {
+		a.pool.MarkWaiting(a.poolKey)
+	}
 }
 
 func (a *codexActive) askWaiter(requestID string) *codexAskWaiter {
@@ -388,7 +649,11 @@ func (a *codexActive) removeAskWaiter(requestID string) {
 	}
 	a.mu.Lock()
 	delete(a.askWaiters, requestID)
+	waiting := len(a.askWaiters) > 0 || len(a.permWaiters) > 0
 	a.mu.Unlock()
+	if !waiting && a.pool != nil && a.poolKey != "" {
+		a.pool.MarkActive(a.poolKey)
+	}
 }
 
 func (a *codexActive) setOut(out chan<- agentruntime.Event) {
@@ -420,6 +685,22 @@ func emitUserAskResolved(a *codexActive, requestID string, skipped bool, answers
 		RequestID: requestID,
 		Skipped:   skipped,
 		Answers:   answers,
+	}
+	select {
+	case out <- ev:
+	default:
+	}
+}
+
+func emitToolPermissionResolved(a *codexActive, requestID string, allowed, alwaysAllow bool) {
+	out := a.outChan()
+	if out == nil {
+		return
+	}
+	ev := agentruntime.ToolPermissionResolved{
+		RequestID:   requestID,
+		Allowed:     allowed,
+		AlwaysAllow: alwaysAllow,
 	}
 	select {
 	case out <- ev:

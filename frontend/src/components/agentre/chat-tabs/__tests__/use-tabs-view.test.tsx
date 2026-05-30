@@ -142,15 +142,15 @@ describe("useTabsView 数据派生", () => {
     const { result } = renderHook(() => useTabsView());
     expect(result.current[0].status).toBe("running");
     // running reason → reasonToPillText("needs_attention") = null 因为 needsAttention 优先于 running，
-    // 但 reasonToPillText("needs_attention") = "审批"。此用例 needsAttention=true + running →
-    // computeAttention → "needs_attention" → reasonToPillText = "审批"。
+    // 但 reasonToPillText("needs_attention") = "Approval"。此用例 needsAttention=true + running →
+    // computeAttention → "needs_attention" → reasonToPillText = "Approval"。
     // 原测试期待 null 是因为 old RANK 路径 needsAttention=running 时 pillText 判断特例。
-    // 新契约：needs_attention → "审批" pill，running → null pill（覆盖 reasonToPillText("running")=null）。
-    // needsAttention=true 覆盖 running → reason="needs_attention" → pillText="审批"。
-    expect(result.current[0].pillText).toBe("审批");
+    // 新契约：needs_attention → "Approval" pill，running → null pill（覆盖 reasonToPillText("running")=null）。
+    // needsAttention=true 覆盖 running → reason="needs_attention" → pillText="Approval"。
+    expect(result.current[0].pillText).toBe("Approval");
   });
 
-  it("needsAttention 且非 running 时 pillText='审批'", () => {
+  it("needsAttention 且非 running 时 pillText='Approval'", () => {
     useChatTabsStore.getState().openSessionInNewTab(606);
     useSessionMetaStore.getState().setMeta(606, {
       agentId: 1,
@@ -167,6 +167,26 @@ describe("useTabsView 数据派生", () => {
     });
     const { result } = renderHook(() => useTabsView());
     expect(result.current[0].status).toBe("waiting");
-    expect(result.current[0].pillText).toBe("审批");
+    expect(result.current[0].pillText).toBe("Approval");
+  });
+
+  it("error 状态即使已读也显示出错 pill", () => {
+    useChatTabsStore.getState().openSessionInNewTab(707);
+    useSessionMetaStore.getState().setMeta(707, {
+      agentId: 1,
+      agentName: "A",
+      agentColor: "agent-1",
+      projectId: 0,
+      title: "t",
+      lastMessageAt: 100,
+      lastReadAt: 100,
+    });
+    useSessionStatusStore.getState().upsert(707, {
+      agentStatus: "error",
+      needsAttention: false,
+    });
+    const { result } = renderHook(() => useTabsView());
+    expect(result.current[0].status).toBe("error");
+    expect(result.current[0].pillText).toBe("Error");
   });
 });

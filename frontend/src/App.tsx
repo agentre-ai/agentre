@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Toaster } from "sonner";
 import {
   MemoryRouter,
@@ -59,51 +60,51 @@ import { Info as FetchAppInfo } from "../wailsjs/go/app/App";
 
 type NavItem = {
   icon: IconifyIcon;
+  labelKey: string;
   path?: string;
-  label: string;
 };
 
 const navItems: NavItem[] = [
   {
     path: "/chat",
-    label: "对话",
+    labelKey: "nav.chat",
     icon: messageCircleIcon,
   },
   {
     path: "/projects",
-    label: "项目",
+    labelKey: "nav.projects",
     icon: briefcaseIcon,
   },
   {
     path: "/issues",
-    label: "Issues",
+    labelKey: "nav.issues",
     icon: layoutKanbanIcon,
   },
   {
     path: "/org",
-    label: "组织",
+    labelKey: "nav.org",
     icon: buildingCommunityIcon,
   },
   {
     path: "/hooks",
-    label: "Hooks",
+    labelKey: "nav.hooks",
     icon: webhookIcon,
   },
 ];
 
 const settingsNavItem: NavItem = {
   path: "/settings",
-  label: "设置",
+  labelKey: "nav.settings",
   icon: settingsIcon,
 };
 
-const pageBreadcrumbs: Record<string, string> = {
-  "/chat": "CEO 助手",
-  "/projects": "项目",
-  "/hooks": "Hooks",
-  "/issues": "看板",
-  "/org": "组织",
-  "/settings": "设置",
+const pageBreadcrumbKeys: Record<string, string> = {
+  "/chat": "nav.chat",
+  "/projects": "nav.projects",
+  "/hooks": "nav.hooks",
+  "/issues": "nav.issues",
+  "/org": "nav.org",
+  "/settings": "nav.settings",
 };
 
 const themeStorageKey = "agentre.theme";
@@ -631,6 +632,7 @@ function usePersistedWindowSize() {
 }
 
 function AppLayout() {
+  const { t } = useTranslation();
   const [platform, setPlatform] = useState<DesktopPlatform>(
     detectBrowserPlatform,
   );
@@ -758,7 +760,8 @@ function AppLayout() {
     reconcileMissingSessions(existing);
   }, [agents, reconcileMissingSessions]);
 
-  const breadcrumb = pageBreadcrumbs[location.pathname] ?? "";
+  const breadcrumbKey = pageBreadcrumbKeys[location.pathname];
+  const breadcrumb = breadcrumbKey ? t(breadcrumbKey) : "";
   const hasChat =
     location.pathname === "/chat" || location.pathname === "/projects";
 
@@ -774,13 +777,13 @@ function AppLayout() {
 
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
-            aria-label="主导航"
+            aria-label={t("app.navigationLabel")}
             className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-border bg-rail px-2 py-3"
           >
             {navItems.map((item) => (
               <SidebarButton
-                key={item.label}
-                label={item.label}
+                key={item.labelKey}
+                label={t(item.labelKey)}
                 icon={item.icon}
                 active={isNavItemActive(location.pathname, item.path)}
                 onClick={item.path ? () => navigate(item.path!) : undefined}
@@ -793,7 +796,7 @@ function AppLayout() {
               onThemePreferenceChange={setThemePreference}
             />
             <SidebarButton
-              label={settingsNavItem.label}
+              label={t(settingsNavItem.labelKey)}
               icon={settingsNavItem.icon}
               active={isNavItemActive(location.pathname, settingsNavItem.path)}
               onClick={() => navigate(settingsNavItem.path!)}

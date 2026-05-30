@@ -74,8 +74,8 @@ describe("PlanApproveCard", () => {
       { id: "plan.refine", kind: "refine", requiresFeedback: true },
     ]);
     render(<PlanApproveCard toolBlock={block} sessionId={1} />);
-    expect(screen.getByText("AI 提交了执行计划")).toBeDefined();
-    expect(screen.getByText("继续规划")).toBeDefined();
+    expect(screen.getByText("AI Submitted an Execution Plan")).toBeDefined();
+    expect(screen.getByText("Continue Planning")).toBeDefined();
   });
 
   it("non-bypass actions: 渲染 accept_edits + manual + refine, 无 bypass", () => {
@@ -85,9 +85,9 @@ describe("PlanApproveCard", () => {
       { id: "plan.refine", kind: "refine", requiresFeedback: true },
     ]);
     render(<PlanApproveCard toolBlock={block} sessionId={1} />);
-    expect(screen.getByText("批准并切换自动模式")).toBeDefined();
-    expect(screen.getByText("批准,手动确认编辑")).toBeDefined();
-    expect(screen.queryByText("批准并跳过权限确认")).toBeNull();
+    expect(screen.getByText("Approve and Switch to Auto Mode")).toBeDefined();
+    expect(screen.getByText("Approve, Confirm Edits Manually")).toBeDefined();
+    expect(screen.queryByText("Approve and Bypass Permissions")).toBeNull();
   });
 
   it("bypass actions: 渲染 bypass + manual + refine, 无 accept_edits", () => {
@@ -97,9 +97,9 @@ describe("PlanApproveCard", () => {
       { id: "plan.refine", kind: "refine", requiresFeedback: true },
     ]);
     render(<PlanApproveCard toolBlock={block} sessionId={1} />);
-    expect(screen.getByText("批准并跳过权限确认")).toBeDefined();
-    expect(screen.getByText("批准,手动确认编辑")).toBeDefined();
-    expect(screen.queryByText("批准并切换自动模式")).toBeNull();
+    expect(screen.getByText("Approve and Bypass Permissions")).toBeDefined();
+    expect(screen.getByText("Approve, Confirm Edits Manually")).toBeDefined();
+    expect(screen.queryByText("Approve and Switch to Auto Mode")).toBeNull();
   });
 
   it("点 accept_edits → ResolvePlanAction(plan.approve.accept_edits)", async () => {
@@ -109,7 +109,7 @@ describe("PlanApproveCard", () => {
       { id: "plan.refine", kind: "refine", requiresFeedback: true },
     ]);
     render(<PlanApproveCard toolBlock={block} sessionId={1} />);
-    fireEvent.click(screen.getByText("批准并切换自动模式"));
+    fireEvent.click(screen.getByText("Approve and Switch to Auto Mode"));
     await waitFor(() => {
       expect(ResolvePlanAction).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -129,7 +129,7 @@ describe("PlanApproveCard", () => {
       { id: "plan.refine", kind: "refine", requiresFeedback: true },
     ]);
     render(<PlanApproveCard toolBlock={block} sessionId={1} />);
-    fireEvent.click(screen.getByText("批准,手动确认编辑"));
+    fireEvent.click(screen.getByText("Approve, Confirm Edits Manually"));
     await waitFor(() => {
       expect(ResolvePlanAction).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -148,7 +148,7 @@ describe("PlanApproveCard", () => {
       { id: "plan.refine", kind: "refine", requiresFeedback: true },
     ]);
     render(<PlanApproveCard toolBlock={block} sessionId={1} />);
-    fireEvent.click(screen.getByText("批准并跳过权限确认"));
+    fireEvent.click(screen.getByText("Approve and Bypass Permissions"));
     await waitFor(() => {
       expect(ResolvePlanAction).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -167,11 +167,11 @@ describe("PlanApproveCard", () => {
       { id: "plan.refine", kind: "refine", requiresFeedback: true },
     ]);
     render(<PlanApproveCard toolBlock={block} sessionId={1} />);
-    fireEvent.click(screen.getByText("继续规划"));
-    fireEvent.change(screen.getByPlaceholderText(/步骤 2/), {
+    fireEvent.click(screen.getByText("Continue Planning"));
+    fireEvent.change(screen.getByPlaceholderText(/step 2/), {
       target: { value: "再细一些" },
     });
-    fireEvent.click(screen.getByText("发送反馈并继续规划"));
+    fireEvent.click(screen.getByText("Send Feedback and Continue Planning"));
     await waitFor(() => {
       expect(ResolvePlanAction).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -199,23 +199,27 @@ describe("PlanApproveCard", () => {
       },
     } as unknown as ChatBlockData;
     render(<PlanApproveCard toolBlock={block} sessionId={1} />);
-    expect(screen.getByText("已批准执行计划")).toBeDefined();
-    expect(screen.getByText("开始执行计划")).toBeDefined();
-    expect(screen.queryByText("批准并切换自动模式")).toBeNull();
-    expect(screen.queryByText("继续规划")).toBeNull();
+    expect(screen.getByText("Plan Approved")).toBeDefined();
+    expect(screen.getByText("Start executing the plan")).toBeDefined();
+    expect(screen.queryByText("Approve and Switch to Auto Mode")).toBeNull();
+    expect(screen.queryByText("Continue Planning")).toBeNull();
   });
 
   it("renders type=plan block from canonical.plan.update actions", () => {
     render(<PlanApproveCard toolBlock={actionPlanBlock()} sessionId={1} />);
     expect(screen.getByTestId("plan-card")).toBeDefined();
-    expect(screen.getByText("执行计划")).toBeDefined();
-    expect(screen.getByText("继续完善")).toBeDefined();
-    expect(screen.getByText("选择下一步操作,或反馈继续规划")).toBeDefined();
+    expect(screen.getByText("Execute Plan")).toBeDefined();
+    expect(screen.getByText("Refine Plan")).toBeDefined();
+    expect(
+      screen.getByText(
+        "Choose the next action, or send feedback to keep planning",
+      ),
+    ).toBeDefined();
   });
 
   it("plan.execute action does not require a requestId", async () => {
     render(<PlanApproveCard toolBlock={actionPlanBlock()} sessionId={1} />);
-    fireEvent.click(screen.getByText("执行计划"));
+    fireEvent.click(screen.getByText("Execute Plan"));
     await waitFor(() => {
       expect(ResolvePlanAction).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -243,10 +247,10 @@ describe("PlanApproveCard", () => {
     render(<PlanApproveCard toolBlock={block} sessionId={1} />);
 
     const approveButton = screen
-      .getByText("批准并切换自动模式")
+      .getByText("Approve and Switch to Auto Mode")
       .closest("button") as HTMLButtonElement;
     const refineButton = screen
-      .getByText("继续规划")
+      .getByText("Continue Planning")
       .closest("button") as HTMLButtonElement;
     expect(approveButton.disabled).toBe(false);
     expect(refineButton.disabled).toBe(false);
@@ -263,7 +267,7 @@ describe("PlanApproveCard", () => {
     render(<PlanApproveCard toolBlock={actionPlanBlock()} sessionId={1} />);
 
     const executeButton = screen
-      .getByText("执行计划")
+      .getByText("Execute Plan")
       .closest("button") as HTMLButtonElement;
     expect(executeButton.disabled).toBe(true);
   });
@@ -284,7 +288,7 @@ describe("PlanApproveCard", () => {
         onPlanActionStarted={onPlanActionStarted}
       />,
     );
-    fireEvent.click(screen.getByText("执行计划"));
+    fireEvent.click(screen.getByText("Execute Plan"));
 
     await waitFor(() => {
       expect(onPlanActionStarted).toHaveBeenCalledWith(
@@ -308,12 +312,12 @@ describe("PlanApproveCard", () => {
     });
 
     render(<PlanApproveCard toolBlock={actionPlanBlock()} sessionId={1} />);
-    fireEvent.click(screen.getByText("执行计划"));
+    fireEvent.click(screen.getByText("Execute Plan"));
 
     await waitFor(() => {
-      expect(screen.queryByText("执行计划")).toBeNull();
+      expect(screen.queryByText("Execute Plan")).toBeNull();
     });
-    expect(screen.getByText("已批准执行计划")).toBeDefined();
+    expect(screen.getByText("Plan Approved")).toBeDefined();
   });
 
   it("shows backend error detail when plan action submission rejects", async () => {
@@ -325,7 +329,7 @@ describe("PlanApproveCard", () => {
     vi.mocked(ResolvePlanAction).mockRejectedValueOnce(err);
 
     render(<PlanApproveCard toolBlock={actionPlanBlock()} sessionId={1} />);
-    fireEvent.click(screen.getByText("执行计划"));
+    fireEvent.click(screen.getByText("Execute Plan"));
 
     expect(
       await screen.findByText("当前会话已有进行中的对话，请稍后再试"),
@@ -334,11 +338,11 @@ describe("PlanApproveCard", () => {
 
   it("requestless plan.refine action sends feedback through ResolvePlanAction", async () => {
     render(<PlanApproveCard toolBlock={actionPlanBlock()} sessionId={1} />);
-    fireEvent.click(screen.getByText("继续完善"));
-    fireEvent.change(screen.getByPlaceholderText(/步骤 2/), {
+    fireEvent.click(screen.getByText("Refine Plan"));
+    fireEvent.change(screen.getByPlaceholderText(/step 2/), {
       target: { value: "把测试写具体一点" },
     });
-    fireEvent.click(screen.getByText("发送反馈并继续规划"));
+    fireEvent.click(screen.getByText("Send Feedback and Continue Planning"));
     await waitFor(() => {
       expect(ResolvePlanAction).toHaveBeenCalledWith(
         expect.objectContaining({

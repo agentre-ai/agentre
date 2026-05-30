@@ -59,7 +59,10 @@ func Init(ctx context.Context) (*Runtime, error) {
 		return nil, err
 	}
 
-	logsDir := filepath.Join(dataDir, "logs")
+	logsDir, err := LogsDir()
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create logs dir: %w", err)
 	}
@@ -91,14 +94,6 @@ func Init(ctx context.Context) (*Runtime, error) {
 	hook_repo.RegisterHookEvent(hook_repo.NewHookEvent())
 	chat_repo.RegisterSession(chat_repo.NewSession())
 	chat_repo.RegisterMessage(chat_repo.NewMessage())
-	// app crash / 强制重启 / wails dev hot-reload 都会让正在跑的 turn goroutine
-	// 死掉,但 chat_sessions.agent_status 留在 running/waiting,sidebar 一直亮
-	// "运行中"。启动一进来先把残留翻成 error,让用户看到的状态真实。
-	if n, err := chat_repo.Session().ResetActiveSessions(ctx); err != nil {
-		logger.Default().Warn("reset stale active sessions", zap.Error(err))
-	} else if n > 0 {
-		logger.Default().Info("reset stale active sessions", zap.Int64("count", n))
-	}
 	project_repo.RegisterProject(project_repo.NewProject())
 	project_repo.RegisterProjectAgent(project_repo.NewProjectAgent())
 	project_location_repo.RegisterProjectLocation(project_location_repo.NewProjectLocation())
@@ -106,6 +101,9 @@ func Init(ctx context.Context) (*Runtime, error) {
 	// 把 project_svc 的 cwd 解析注入 chat_svc —— chat_svc 不直接 import project_svc，
 	// 避免 project_svc → chat_repo 与 chat_svc → project_svc 形成环。
 	chat_svc.RegisterCwdResolver(project_svc.Default().ResolveSessionCwd)
+
+	// 启动时按持久化的开关恢复 Debug 日志级别（取代旧 AGENTRE_DEBUG 环境变量）。
+	applyDebugLoggingOnBoot(ctx)
 
 	// Server 接入：注册 keychain + server_state_repo + server_svc 默认实现。
 	// server_svc 此时的 emit 为 nil；app.go.startup 在 wails ctx 就绪后调 SetEmitter 绑定事件源。
@@ -136,6 +134,21 @@ func Init(ctx context.Context) (*Runtime, error) {
 
 	runtime = &Runtime{config: cfg, dataDir: dataDir}
 	return runtime, nil
+}
+
+// ResetStaleActiveSessions turns persisted running/waiting sessions left by a
+// dead previous desktop process into error. Call this only after the Wails
+// single-instance lock has admitted the process as the primary instance.
+func ResetStaleActiveSessions(ctx context.Context) error {
+	n, err := chat_repo.Session().ResetActiveSessions(ctx)
+	if err != nil {
+		logger.Default().Warn("reset stale active sessions", zap.Error(err))
+		return err
+	}
+	if n > 0 {
+		logger.Default().Info("reset stale active sessions", zap.Int64("count", n))
+	}
+	return nil
 }
 
 // loadProxyAddr 从 app_settings 表读监听地址 / 端口；缺失走默认 127.0.0.1:DefaultProxyListenPort。
@@ -185,18 +198,14 @@ func (r *Runtime) Close() {
 func AppDataDir() (string, error) { return paths.AppDataDir() }
 
 func defaultConfigValues(logsDir, dbPath string) map[string]interface{} {
-	debug := isDebugMode()
-	level := "info"
-	if debug {
-		level = "debug"
-	}
-
+	// 启动默认 info 级别；debug 日志改由「设置 → 版本 & 更新」开关在 Init 末尾按
+	// app_settings.logger.debug_enabled 热重载（见 applyDebugLoggingOnBoot）。
 	return map[string]interface{}{
 		"env":    string(appEnv()),
-		"debug":  debug,
+		"debug":  false,
 		"source": "file",
 		"logger": map[string]interface{}{
-			"level":          level,
+			"level":          "info",
 			"disableConsole": false,
 			"logFile": map[string]interface{}{
 				"enable":        true,
@@ -207,7 +216,7 @@ func defaultConfigValues(logsDir, dbPath string) map[string]interface{} {
 		"db": map[string]interface{}{
 			"driver": string(db.SQLite),
 			"dsn":    dbPath,
-			"debug":  debug,
+			"debug":  false,
 		},
 	}
 }
@@ -222,14 +231,5 @@ func appEnv() configs.Env {
 		return configs.TEST
 	default:
 		return configs.DEV
-	}
-}
-
-func isDebugMode() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENTRE_DEBUG"))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
 	}
 }

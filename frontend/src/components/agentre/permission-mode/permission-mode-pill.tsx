@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   ChevronDown,
   CircleHelp,
@@ -66,6 +67,7 @@ export function PermissionModePill({
   permissionModeAtLaunch,
   hasActiveSession,
 }: PermissionModePillProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const meta =
     PERMISSION_MODE_META_UI[mode] ?? fallbackPermissionModeMetaUI(mode);
@@ -82,11 +84,11 @@ export function PermissionModePill({
         <button
           type="button"
           disabled={disabled}
-          aria-label={`权限模式：${meta.label}（Shift+Tab 切换）`}
+          aria-label={t("permissionMode.aria", { label: meta.label })}
           title={
             disabled
-              ? `权限模式 · ${meta.label}\n生成中不可切换`
-              : `权限模式 · ${meta.label}\nShift+Tab 循环切换`
+              ? t("permissionMode.titleDisabled", { label: meta.label })
+              : t("permissionMode.title", { label: meta.label })
           }
           className={cn(
             "inline-flex h-6 cursor-pointer items-center gap-1 rounded-md border px-2 text-2xs font-medium leading-none transition-colors",
@@ -116,7 +118,7 @@ export function PermissionModePill({
               aria-hidden="true"
             />
             <span className="text-xs font-semibold text-foreground">
-              Permission Mode
+              {t("permissionMode.heading")}
             </span>
           </div>
           <kbd className="inline-flex items-center gap-1 rounded-sm border border-border bg-muted px-1.5 py-0.5 font-mono text-2xs text-foreground">
@@ -178,7 +180,7 @@ export function PermissionModePill({
                       {active ? (
                         <span className="ml-auto inline-flex items-center gap-1 rounded-sm bg-primary-soft px-1.5 py-px font-mono text-2xs font-semibold tracking-wider text-primary-text">
                           <span className="size-1 rounded-full bg-primary" />
-                          ACTIVE
+                          {t("permissionMode.active")}
                         </span>
                       ) : null}
                     </span>
@@ -199,7 +201,7 @@ export function PermissionModePill({
           })}
         </ul>
         <div className="border-t border-border px-3.5 py-2 text-2xs text-muted-foreground">
-          生成中不可切换 · 发送前选择会用于下一轮 turn
+          {t("permissionMode.footer")}
         </div>
         {errorMessage ? (
           <div className="border-t border-destructive/40 bg-destructive-soft px-3.5 py-1.5 text-2xs text-destructive">

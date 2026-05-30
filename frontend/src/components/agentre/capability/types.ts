@@ -6,11 +6,14 @@ export type Capability =
   | "cancel_steer"
   | "drain_steer"
   | "abort"
+  | "image_input"
   | "set_permission_mode"
   | "answer_user_ask"
   | "tool_permission_gate"
   | "fork_session"
-  | "report_context_window";
+  | "report_context_window"
+  | "compact"
+  | "goal";
 
 // PermissionModeMeta 镜像后端 capability.PermissionModeMeta:
 //   - allowedModes: runtime 接受的 mode 集合(claudecode = 4 档, codex = 2 档,

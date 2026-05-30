@@ -91,9 +91,9 @@ describe("Agentre foundation components", () => {
     const user = userEvent.setup();
     render(<AgentGroup name="工程师" sessions={[]} />);
 
-    await user.click(screen.getByRole("button", { name: "展开 工程师" }));
+    await user.click(screen.getByRole("button", { name: "Expand 工程师" }));
 
-    expect(screen.getByText("暂无会话")).toBeInTheDocument();
+    expect(screen.getByText("No sessions")).toBeInTheDocument();
   });
 
   it("persists user-toggled expanded state to localStorage", async () => {
@@ -108,7 +108,7 @@ describe("Agentre foundation components", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "展开 工程师" }));
+    await user.click(screen.getByRole("button", { name: "Expand 工程师" }));
 
     expect(localStorage.getItem("agentre.agentExpanded.agent:42")).toBe("1");
 
@@ -126,10 +126,10 @@ describe("Agentre foundation components", () => {
     );
 
     expect(
-      screen.getByRole("button", { name: "折叠 工程师" }),
+      screen.getByRole("button", { name: "Collapse 工程师" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "折叠 工程师" }));
+    await user.click(screen.getByRole("button", { name: "Collapse 工程师" }));
 
     expect(localStorage.getItem("agentre.agentExpanded.agent:42")).toBe("0");
   });
@@ -148,13 +148,13 @@ describe("Agentre foundation components", () => {
 
     // expanded=true at mount → starts expanded.
     expect(
-      screen.getByRole("button", { name: "折叠 工程师" }),
+      screen.getByRole("button", { name: "Collapse 工程师" }),
     ).toBeInTheDocument();
 
     // User explicitly collapses it.
-    await user.click(screen.getByRole("button", { name: "折叠 工程师" }));
+    await user.click(screen.getByRole("button", { name: "Collapse 工程师" }));
     expect(
-      screen.getByRole("button", { name: "展开 工程师" }),
+      screen.getByRole("button", { name: "Expand 工程师" }),
     ).toBeInTheDocument();
 
     // Parent re-asserting expanded=true must NOT force re-expand — selecting
@@ -171,7 +171,7 @@ describe("Agentre foundation components", () => {
     );
 
     expect(
-      screen.getByRole("button", { name: "展开 工程师" }),
+      screen.getByRole("button", { name: "Expand 工程师" }),
     ).toBeInTheDocument();
   });
 
@@ -202,13 +202,13 @@ describe("Agentre foundation components", () => {
     );
     expect(content).toHaveStyle("grid-template-rows: 0fr");
 
-    await user.click(screen.getByRole("button", { name: "展开 工程师" }));
+    await user.click(screen.getByRole("button", { name: "Expand 工程师" }));
 
     expect(screen.getByText("规划新功能")).toBeInTheDocument();
     expect(content).toHaveAttribute("aria-hidden", "false");
     expect(content).toHaveStyle("grid-template-rows: 1fr");
 
-    await user.click(screen.getByRole("button", { name: "折叠 工程师" }));
+    await user.click(screen.getByRole("button", { name: "Collapse 工程师" }));
 
     expect(content).toHaveAttribute("aria-hidden", "true");
     expect(content).toHaveStyle("grid-template-rows: 0fr");
@@ -233,10 +233,10 @@ describe("Agentre foundation components", () => {
     expect(
       screen.getByRole("button", { name: /处理周一例会纪要/ }),
     ).toHaveClass("cursor-pointer");
-    expect(screen.getByRole("button", { name: /命令面板/ })).toHaveClass(
-      "cursor-text",
-    );
-    expect(screen.getByRole("button", { name: "最小化窗口" })).toHaveClass(
+    expect(
+      screen.getByRole("button", { name: /Open command palette/ }),
+    ).toHaveClass("cursor-text");
+    expect(screen.getByRole("button", { name: "Minimize window" })).toHaveClass(
       "cursor-pointer",
     );
   });
@@ -254,7 +254,7 @@ describe("Agentre foundation components", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText("你")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /命令面板/ }),
+      screen.getByRole("button", { name: /Open command palette/ }),
     ).toBeInTheDocument();
   });
 
@@ -275,23 +275,23 @@ describe("Agentre foundation components", () => {
     expect(screen.getByText("CEO 助手")).toBeInTheDocument();
     expect(screen.getByText("⌘P")).toBeInTheDocument();
     expect(screen.getByRole("banner")).toHaveClass("wails-drag");
-    expect(screen.getByRole("button", { name: /命令面板/ })).toHaveClass(
-      "wails-no-drag",
-    );
+    expect(
+      screen.getByRole("button", { name: /Open command palette/ }),
+    ).toHaveClass("wails-no-drag");
     expect(
       container.querySelector('[data-slot="native-window-controls-inset"]'),
     ).not.toBeInTheDocument();
     expect(
       container.querySelector('[data-slot="windows-window-controls"]'),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "最小化窗口" })).toHaveClass(
+    expect(screen.getByRole("button", { name: "Minimize window" })).toHaveClass(
       "wails-no-drag",
     );
     expect(
-      screen.getByRole("button", { name: "最大化窗口" }),
+      screen.getByRole("button", { name: "Maximize window" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "关闭窗口" }),
+      screen.getByRole("button", { name: "Close window" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /通知/ }),
@@ -327,7 +327,9 @@ describe("Agentre foundation components", () => {
       <AppTopBar appName="Agentre" breadcrumb="CEO 助手" platform="darwin" />,
     );
 
-    await user.dblClick(screen.getByRole("button", { name: /命令面板/ }));
+    await user.dblClick(
+      screen.getByRole("button", { name: /Open command palette/ }),
+    );
 
     expect(windowToggleMaximise).not.toHaveBeenCalled();
 
@@ -342,7 +344,7 @@ describe("Agentre foundation components", () => {
 
     render(<ChatComposer onSubmit={onSubmit} />);
 
-    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
 
     const editor = screen.getByRole("textbox");
     await user.click(editor);
@@ -350,13 +352,13 @@ describe("Agentre foundation components", () => {
     await waitFor(() => {
       expect(editor).toHaveTextContent("规划 Q3 路线图");
     });
-    const sendButton = screen.getByRole("button", { name: "发送" });
+    const sendButton = screen.getByRole("button", { name: "Send" });
     await waitFor(() => {
       expect(sendButton).toBeEnabled();
     });
     await user.click(sendButton);
 
-    expect(onSubmit).toHaveBeenCalledWith("规划 Q3 路线图");
+    expect(onSubmit).toHaveBeenCalledWith({ text: "规划 Q3 路线图" });
     // 发送后编辑器被 clearContent，TipTap 会留一个空段落。
     expect(editor.textContent ?? "").toBe("");
   });
@@ -373,7 +375,7 @@ describe("Agentre foundation components", () => {
     await waitFor(() => {
       expect(editor).toHaveTextContent("继续输入");
     });
-    const sendButton = screen.getByRole("button", { name: "发送" });
+    const sendButton = screen.getByRole("button", { name: "Send" });
     await waitFor(() => {
       expect(sendButton).toBeEnabled();
     });
@@ -430,7 +432,7 @@ describe("Agentre foundation components", () => {
 
     expect(emptyParagraph).toHaveAttribute(
       "data-placeholder",
-      "输入消息或 / 触发命令",
+      "Type a message or / for commands",
     );
   });
 
@@ -443,7 +445,7 @@ describe("Agentre foundation components", () => {
     );
 
     expect(screen.getByText("需要你的确认")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "拒绝" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "批准" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
   });
 });

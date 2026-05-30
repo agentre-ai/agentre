@@ -9,7 +9,12 @@ package agentruntime
 // 切完后再 dedupe(目前两套都有 caller)。
 // Steerer / Aborter / SteerCanceler / SteerDrainer / PermissionModeSetter 仍住 runner.go。
 
-import "context"
+import (
+	"context"
+
+	"agentre/internal/model/entity/agent_backend_entity"
+	"agentre/internal/model/entity/llm_provider_entity"
+)
 
 // UserAskAnswerer 反向投回用户答案。旧名 AskAnswerSink。签名严格一致。
 type UserAskAnswerer interface {
@@ -22,4 +27,35 @@ type UserAskAnswerer interface {
 type ToolPermissionResponder interface {
 	SubmitToolPermission(ctx context.Context, sessionID int64, requestID string,
 		allow, alwaysAllowSession bool, denyReason string) error
+}
+
+type Goal struct {
+	ThreadID        string `json:"threadId"`
+	Objective       string `json:"objective"`
+	Status          string `json:"status"`
+	TokenBudget     *int   `json:"tokenBudget,omitempty"`
+	TokensUsed      int    `json:"tokensUsed"`
+	TimeUsedSeconds int    `json:"timeUsedSeconds"`
+	CreatedAt       int64  `json:"createdAt"`
+	UpdatedAt       int64  `json:"updatedAt"`
+}
+
+type GoalRequest struct {
+	SessionID         int64
+	AgentID           int64
+	ProviderSessionID string
+	Backend           *agent_backend_entity.AgentBackend
+	Provider          *llm_provider_entity.LLMProvider
+	Cwd               string
+	GatewayURL        string
+	GatewayToken      string
+	Objective         *string
+	Status            *string
+	TokenBudget       *int
+}
+
+type GoalController interface {
+	GetGoal(ctx context.Context, req GoalRequest) (*Goal, error)
+	SetGoal(ctx context.Context, req GoalRequest) (*Goal, error)
+	ClearGoal(ctx context.Context, req GoalRequest) (bool, error)
 }

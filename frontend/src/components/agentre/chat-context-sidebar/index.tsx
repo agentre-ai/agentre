@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 
@@ -26,6 +27,7 @@ export function ChatContextSidebar({
   activeMessageId,
   onJumpToMessage,
 }: Props) {
+  const { t } = useTranslation();
   const activeTab = useChatSidebarStore((s) => s.activeTab);
   const setActiveTab = useChatSidebarStore((s) => s.setActiveTab);
 
@@ -63,7 +65,7 @@ export function ChatContextSidebar({
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
-  // resolvedActiveId 变化时把对应 outline 行 scrollIntoView，避免高亮跑到视野外。
+  // resolvedActiveId 变化时把对应 outline 行推到滚动区域底部，让右侧进度跟随 transcript。
   React.useEffect(() => {
     if (resolvedActiveId == null) return;
     const container = scrollRef.current;
@@ -71,13 +73,13 @@ export function ChatContextSidebar({
     const row = container.querySelector<HTMLElement>(
       `[data-outline-message-id="${resolvedActiveId}"]`,
     );
-    if (row) row.scrollIntoView({ block: "nearest" });
+    if (row) row.scrollIntoView({ block: "end", inline: "nearest" });
   }, [resolvedActiveId, activeTab]);
 
   return (
     <ResizableSidebar
       persistenceKey="chat-context"
-      ariaLabel="对话上下文"
+      ariaLabel={t("chatContext.sidebar")}
       edge="left"
       defaultWidth={240}
       className="h-full"

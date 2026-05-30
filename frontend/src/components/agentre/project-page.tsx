@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { TFunction } from "i18next";
 import {
   Briefcase,
   ChevronDown,
@@ -6,8 +7,24 @@ import {
   Plus,
   Search,
   Settings,
+  TerminalSquare,
   X,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 
 import { useSessionStatusOverlay } from "@/hooks/use-live-session-status";
 import { reloadProjectTreeCache } from "@/hooks/use-project-tree";
@@ -21,6 +38,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -36,18 +57,20 @@ import { useSessionReadStore } from "@/stores/session-read-store";
 
 import type { AgentSession } from "./agent-list";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useRemoteDevices } from "./remote-devices/use-remote-devices";
 import { AgentAvatar } from "./primitives";
 import { ProjectNewDialog } from "./project-new-dialog";
 import { ProjectSettingsDrawer } from "./project-settings-drawer";
 import { ResizableSidebar } from "./resizable-sidebar";
 import { SessionGroup } from "./session-group";
 import { SessionsPopover } from "./sessions-popover";
-import { ProjectGet, ProjectListSessions } from "../../../wailsjs/go/app/App";
+import * as WailsApp from "../../../wailsjs/go/app/App";
 import type { chat_svc, app } from "../../../wailsjs/go/models";
 import type { AgentColor, AgentStatus } from "./types";
 
 type ProjectTreeNode = app.ProjectTreeNode;
 type ProjectSessionItem = app.ProjectSessionItem;
+type ProjectSessionWithProject = ProjectSessionItem & { projectID: number };
 type ChatAgentItem = chat_svc.ChatAgentItem;
 type ProjectMemberItem = app.ProjectMemberItem & {
   agentName?: string;
@@ -55,6 +78,15 @@ type ProjectMemberItem = app.ProjectMemberItem & {
   avatarIcon?: string;
   avatarDataUrl?: string;
 };
+type ProjectReorderFn = (req: {
+  parentID: number;
+  orderedIDs: number[];
+}) => Promise<void>;
+const ProjectReorder = (
+  WailsApp as typeof WailsApp & {
+    ProjectReorder: ProjectReorderFn;
+  }
+).ProjectReorder;
 
 // 项目页激活会话的最低描述 —— 选中已有会话或新建。
 type ProjectSelection =
@@ -63,6 +95,12 @@ type ProjectSelection =
       kind: "new";
       projectID: number;
       agentID: number;
+    }
+  | {
+      kind: "open-terminal";
+      projectID: number;
+      deviceID: string;
+      deviceName?: string;
     };
 
 // projectSessionToAgentSession —— 把 ProjectSessionItem + attention reason
@@ -70,8 +108,9 @@ type ProjectSelection =
 function projectSessionToAgentSession(
   s: ProjectSessionItem,
   reason: AttentionReason | "selected" | null,
+  t: TFunction,
 ): AgentSession {
-  const title = s.title || "(未命名会话)";
+  const title = s.title || t("projects.session.untitled");
   const attentionReason = reason === "selected" ? null : reason;
   const status = reasonToDisplayStatus(
     attentionReason,
@@ -87,6 +126,7 @@ function projectSessionToAgentSession(
           : relativeTime(s.lastMessageAt);
   return {
     id: String(s.id),
+    ...(reason === "selected" ? { selected: true } : {}),
     status,
     title,
     trailingLabel: trailing,
@@ -95,6 +135,7 @@ function projectSessionToAgentSession(
 }
 
 function ProjectsPage() {
+  const { t } = useTranslation();
   const [tree, setTree] = React.useState<ProjectTreeNode[]>([]);
   // sessions 与 reload 都从 project-sessions-store 拿。这样 ChatPanelHost
   // 在新建会话 / turn 落定时调一次 reloadSidebarSources(), 本页 sidebar
@@ -110,6 +151,13 @@ function ProjectsPage() {
   const [newDialogOpen, setNewDialogOpen] = React.useState(false);
   const [newDialogParent, setNewDialogParent] = React.useState(0);
   const [settingsProjectID, setSettingsProjectID] = React.useState(0);
+  const [reorderError, setReorderError] = React.useState<string | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
   const refresh = React.useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -195,19 +243,24 @@ function ProjectsPage() {
   const openSession = useChatTabsStore((s) => s.openSession);
   const openSessionInNewTab = useChatTabsStore((s) => s.openSessionInNewTab);
   const openNewSession = useChatTabsStore((s) => s.openNewSession);
+  const openTerminal = useChatTabsStore((s) => s.openTerminal);
 
   // selectOnTab: 写本地 selection + 同步推到 chat-tabs-store。
   // opts.newTab = true 时(cmd/ctrl+click)对 session 强制新开 tab,不复用 preview。
   const selectOnTab = React.useCallback(
     (next: ProjectSelection | null, opts?: { newTab?: boolean }) => {
       setSelection(next);
+      if (next?.kind === "open-terminal") {
+        openTerminal(next.projectID, next.deviceID, next.deviceName);
+        return;
+      }
       if (next?.kind === "session") {
         if (opts?.newTab) openSessionInNewTab(next.session.id);
         else openSession(next.session.id);
       } else if (next?.kind === "new")
         openNewSession(next.projectID, next.agentID, "");
     },
-    [openSession, openSessionInNewTab, openNewSession],
+    [openSession, openSessionInNewTab, openNewSession, openTerminal],
   );
 
   React.useEffect(() => {
@@ -232,13 +285,67 @@ function ProjectsPage() {
     void refresh();
   }, [refresh]);
 
+  const dragDisabled = filter.trim().length > 0;
+  const handleProjectDragEnd = React.useCallback(
+    (event: DragEndEvent) => {
+      if (dragDisabled) return;
+      const activeID = parseProjectDragID(event.active.id);
+      const overID = parseProjectDragID(event.over?.id);
+      if (activeID <= 0 || overID <= 0 || activeID === overID) return;
+      const activeGroup = findSiblingGroup(tree, activeID);
+      const overGroup = findSiblingGroup(tree, overID);
+      if (
+        !activeGroup ||
+        !overGroup ||
+        activeGroup.parentID !== overGroup.parentID
+      ) {
+        return;
+      }
+      const from = activeGroup.nodes.findIndex(
+        (n) => n.project?.id === activeID,
+      );
+      const to = activeGroup.nodes.findIndex((n) => n.project?.id === overID);
+      if (from < 0 || to < 0) return;
+      const reordered = moveItem(activeGroup.nodes, from, to);
+      const orderedIDs = reordered
+        .map((n) => n.project?.id ?? 0)
+        .filter((id) => id > 0);
+      const previous = tree;
+      setReorderError(null);
+      setTree(reorderSiblingGroup(tree, activeGroup.parentID, orderedIDs));
+      void Promise.resolve()
+        .then(() =>
+          ProjectReorder({
+            parentID: activeGroup.parentID,
+            orderedIDs,
+          }),
+        )
+        .then(() => {
+          setReorderError(null);
+          return refresh();
+        })
+        .catch((err) => {
+          setTree(previous);
+          setReorderError(
+            t("projects.errors.reorderFailed", { error: String(err) }),
+          );
+        });
+    },
+    [dragDisabled, refresh, t, tree],
+  );
+
   return (
     <>
       {/* ── 左侧 ProjectList ── */}
-      <ResizableSidebar persistenceKey="projects" ariaLabel="项目列表">
+      <ResizableSidebar
+        persistenceKey="projects"
+        ariaLabel={t("projects.sidebar.aria")}
+      >
         <div className="flex flex-col gap-2 border-b border-border px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold">Projects</span>
+            <span className="text-sm font-semibold">
+              {t("projects.sidebar.title")}
+            </span>
             <span className="font-mono text-2xs text-muted-foreground">
               {totalCount}
             </span>
@@ -248,8 +355,8 @@ function ProjectsPage() {
               variant="ghost"
               size="icon"
               className="size-7"
-              aria-label="新建项目"
-              title="新建项目"
+              aria-label={t("projects.actions.newProject")}
+              title={t("projects.actions.newProject")}
               onClick={() => openCreateDialog(0)}
             >
               <Plus className="size-4" aria-hidden="true" />
@@ -261,8 +368,8 @@ function ProjectsPage() {
               aria-hidden="true"
             />
             <Input
-              aria-label="搜索项目 / 会话"
-              placeholder="搜索项目 / 会话"
+              aria-label={t("projects.search.aria")}
+              placeholder={t("projects.search.placeholder")}
               className="h-[30px] bg-input-bg pl-8 pr-7 text-xs"
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
@@ -270,7 +377,7 @@ function ProjectsPage() {
             {filter ? (
               <button
                 type="button"
-                aria-label="清空筛选"
+                aria-label={t("projects.search.clear")}
                 className="absolute right-1.5 top-1/2 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 onClick={() => setFilter("")}
               >
@@ -278,25 +385,29 @@ function ProjectsPage() {
               </button>
             ) : null}
           </div>
+          {reorderError ? (
+            <div role="status" className="px-0.5 text-2xs text-destructive">
+              {reorderError}
+            </div>
+          ) : null}
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
           {loading ? (
             <div className="px-2 py-6 text-center text-2xs text-muted-foreground">
-              加载中…
+              {t("common.loading")}
             </div>
           ) : loadError ? (
             <div className="px-2 py-6 text-center text-2xs text-destructive">
-              加载失败：{loadError}
+              {t("projects.errors.loadFailed", { error: loadError })}
             </div>
           ) : tree.length === 0 ? (
             <EmptyTree onCreate={() => openCreateDialog(0)} />
           ) : (
-            <div className="flex flex-col gap-1">
-              {tree.map((node) => (
-                <ProjectCard
-                  key={node.project?.id ?? 0}
-                  node={node}
+            <DndContext sensors={sensors} onDragEnd={handleProjectDragEnd}>
+              <div className="flex flex-col gap-1">
+                <ProjectSortableList
+                  nodes={tree}
                   depth={0}
                   filter={filter}
                   sessions={sessions}
@@ -304,9 +415,10 @@ function ProjectsPage() {
                   onSelect={selectOnTab}
                   onOpenSettings={(id) => setSettingsProjectID(id)}
                   onAddSubProject={(id) => openCreateDialog(id)}
+                  dragDisabled={dragDisabled}
                 />
-              ))}
-            </div>
+              </div>
+            </DndContext>
           )}
         </div>
       </ResizableSidebar>
@@ -337,15 +449,14 @@ function ProjectsPage() {
 type EmptyTreeProps = { onCreate: () => void };
 
 function EmptyTree({ onCreate }: EmptyTreeProps) {
+  const { t } = useTranslation();
   return (
     <div className="mx-2 flex flex-col items-start gap-3 rounded-md border border-dashed border-border bg-card/40 px-3 py-4 text-xs">
       <div className="flex items-center gap-2 text-foreground">
         <Briefcase className="size-4 text-primary-text" aria-hidden="true" />
-        <span className="font-semibold">还没有项目</span>
+        <span className="font-semibold">{t("projects.empty.title")}</span>
       </div>
-      <p className="text-muted-foreground">
-        把一个本地代码仓库登记为项目，就可以让多个 Agent 在这里协作。
-      </p>
+      <p className="text-muted-foreground">{t("projects.empty.description")}</p>
       <Button
         type="button"
         size="sm"
@@ -354,7 +465,7 @@ function EmptyTree({ onCreate }: EmptyTreeProps) {
         onClick={onCreate}
       >
         <Plus className="size-3.5" aria-hidden="true" />
-        新建项目
+        {t("projects.actions.newProject")}
       </Button>
     </div>
   );
@@ -379,6 +490,91 @@ function nodeMatches(
   return false;
 }
 
+function collectSubtreeSessions(
+  node: ProjectTreeNode,
+  sessions: Map<number, ProjectSessionItem[]>,
+): ProjectSessionWithProject[] {
+  const out: ProjectSessionWithProject[] = [];
+  const walk = (n: ProjectTreeNode) => {
+    const projectID = n.project?.id ?? 0;
+    if (projectID > 0) {
+      for (const session of sessions.get(projectID) ?? []) {
+        out.push({ ...session, projectID });
+      }
+    }
+    for (const child of n.children ?? []) walk(child);
+  };
+  walk(node);
+  return out;
+}
+
+function projectDragID(id: number): string {
+  return `project-${id}`;
+}
+
+function parseProjectDragID(id: unknown): number {
+  const raw = String(id);
+  if (!raw.startsWith("project-")) return 0;
+  const n = Number(raw.slice("project-".length));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function moveItem<T>(items: T[], from: number, to: number): T[] {
+  const out = items.slice();
+  const [item] = out.splice(from, 1);
+  out.splice(to, 0, item);
+  return out;
+}
+
+function findSiblingGroup(
+  nodes: ProjectTreeNode[],
+  projectID: number,
+  parentID = 0,
+): { parentID: number; nodes: ProjectTreeNode[] } | null {
+  if (nodes.some((n) => n.project?.id === projectID)) {
+    return { parentID, nodes };
+  }
+  for (const n of nodes) {
+    const found = findSiblingGroup(
+      n.children ?? [],
+      projectID,
+      n.project?.id ?? 0,
+    );
+    if (found) return found;
+  }
+  return null;
+}
+
+function reorderSiblingGroup(
+  nodes: ProjectTreeNode[],
+  parentID: number,
+  orderedIDs: number[],
+): ProjectTreeNode[] {
+  if (parentID === 0) {
+    const byID = new Map(nodes.map((n) => [n.project?.id ?? 0, n]));
+    return orderedIDs
+      .map((id) => byID.get(id))
+      .filter(Boolean) as ProjectTreeNode[];
+  }
+  return nodes.map((n) => {
+    if (n.project?.id === parentID) {
+      const byID = new Map(
+        (n.children ?? []).map((c) => [c.project?.id ?? 0, c]),
+      );
+      return {
+        ...n,
+        children: orderedIDs
+          .map((id) => byID.get(id))
+          .filter(Boolean) as ProjectTreeNode[],
+      } as ProjectTreeNode;
+    }
+    return {
+      ...n,
+      children: reorderSiblingGroup(n.children ?? [], parentID, orderedIDs),
+    } as ProjectTreeNode;
+  });
+}
+
 type ProjectCardProps = {
   node: ProjectTreeNode;
   depth: number;
@@ -388,7 +584,90 @@ type ProjectCardProps = {
   onSelect: (sel: ProjectSelection | null, opts?: { newTab?: boolean }) => void;
   onOpenSettings: (id: number) => void;
   onAddSubProject: (parentID: number) => void;
+  drag?: ProjectDragState;
 };
+
+// 拖拽改造（2026-05-28）：整行即拖把手 —— 不再渲染独立 grip 按钮，
+// PointerSensor 的 distance:4 已经让点击与拖拽天然分流（<4px 是点击，
+// 否则才进入拖拽）。这里只暴露挂在 header 行上的最小集合。
+type ProjectDragState = {
+  listeners: React.HTMLAttributes<HTMLElement> | undefined;
+  setNodeRef: (node: HTMLDivElement | null) => void;
+  style: React.CSSProperties;
+  isDragging: boolean;
+};
+
+type ProjectSortableListProps = Omit<
+  ProjectCardProps,
+  "node" | "depth" | "drag"
+> & {
+  nodes: ProjectTreeNode[];
+  depth: number;
+  dragDisabled: boolean;
+};
+
+function ProjectSortableList({
+  nodes,
+  depth,
+  dragDisabled,
+  ...cardProps
+}: ProjectSortableListProps) {
+  return (
+    <SortableContext
+      items={nodes.map((node) => projectDragID(node.project?.id ?? 0))}
+      strategy={verticalListSortingStrategy}
+    >
+      {nodes.map((node) => (
+        <SortableProjectCard
+          key={node.project?.id ?? 0}
+          node={node}
+          depth={depth}
+          dragDisabled={dragDisabled}
+          {...cardProps}
+        />
+      ))}
+    </SortableContext>
+  );
+}
+
+type SortableProjectCardProps = ProjectCardProps & {
+  dragDisabled: boolean;
+};
+
+function SortableProjectCard({
+  node,
+  dragDisabled,
+  ...cardProps
+}: SortableProjectCardProps) {
+  const { listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({
+      id: projectDragID(node.project?.id ?? 0),
+      disabled: dragDisabled,
+    });
+  const style: React.CSSProperties = {
+    transform: transform
+      ? `translate3d(${transform.x}px, ${transform.y}px, 0) scaleX(${transform.scaleX}) scaleY(${transform.scaleY})`
+      : undefined,
+    transition,
+    opacity: isDragging ? 0.6 : undefined,
+  };
+  return (
+    <ProjectCard
+      node={node}
+      drag={
+        dragDisabled
+          ? undefined
+          : {
+              listeners,
+              setNodeRef,
+              style,
+              isDragging,
+            }
+      }
+      {...cardProps}
+    />
+  );
+}
 
 function ProjectCard({
   node,
@@ -399,7 +678,9 @@ function ProjectCard({
   onSelect,
   onOpenSettings,
   onAddSubProject,
+  drag,
 }: ProjectCardProps) {
+  const { t } = useTranslation();
   // 同 ChatPage 的 overlay 来源：服务端 lastReadAt 为持久化真值；
   // useChatSession.reload 写到 store 后，用 withReadOverlay 做本次渲染的乐观覆盖。
   // hook 必须在所有 early return 之前调用，遵守 rules-of-hooks。
@@ -409,6 +690,11 @@ function ProjectCard({
   // 实时跟着翻 waiting / running —— 没有活跃 stream 时返回原引用，零成本。
   const rawOwnSessions = sessions.get(node.project?.id ?? -1) ?? [];
   const ownSessions = useSessionStatusOverlay(rawOwnSessions);
+  const rawSubtreeSessions = React.useMemo(
+    () => collectSubtreeSessions(node, sessions),
+    [node, sessions],
+  );
+  const subtreeSessions = useSessionStatusOverlay(rawSubtreeSessions);
 
   const project = node.project;
   // ── 为何这里直接调用 computeAttention 而不走 useSessionAttentionList ──
@@ -428,19 +714,31 @@ function ProjectCard({
   //
   // 注：既有 commit e4bb8b4 消息表述偏宽（"改用 useSessionAttentionList"），
   // 实际走的是 computeAttention 内联，原因见上。
-  const isSelectedInThisProject =
-    !!project &&
-    selection?.kind === "session" &&
-    selection.projectID === project.id;
-  const selectedSessionIdForRank =
-    isSelectedInThisProject && selection?.kind === "session"
-      ? selection.session.id
+  // 当前激活 tab 的 session id —— 项目页 sidebar 直接订阅 chat-tabs-store，
+  // 与对话页 useBuildAttentionSessions 的 selected 锚点语义保持一致。
+  // 走本地 selection 时, 任何从外部 (tab strip / chat 页 / 命令面板) 触发的
+  // 切换都不会同步, sidebar 锚点会失效。
+  const activeSessionId = useChatTabsStore((s) => {
+    const id = s.activeTabId;
+    if (!id) return 0;
+    const tab = s.tabs.find((t) => t.id === id);
+    return tab?.meta.kind === "session" ? tab.meta.sessionId : 0;
+  });
+  const selectedOwnSessionId =
+    activeSessionId && ownSessions.some((s) => s.id === activeSessionId)
+      ? activeSessionId
       : undefined;
+  const selectedSubtreeSession = activeSessionId
+    ? subtreeSessions.find((s) => s.id === activeSessionId)
+    : undefined;
 
-  const attentionAgentSessions: AgentSession[] = React.useMemo(() => {
-    const rows: { session: ProjectSessionItem; reason: AttentionReason }[] = [];
+  const attentionRows = React.useMemo(() => {
+    const rows: {
+      session: ProjectSessionWithProject;
+      reason: AttentionReason | "selected";
+    }[] = [];
     const seen = new Set<number>();
-    for (const s of ownSessions) {
+    for (const s of subtreeSessions) {
       const lastReadAt = Math.max(
         s.lastReadAt ?? 0,
         readOverrides.get(s.id) ?? 0,
@@ -458,30 +756,57 @@ function ProjectCard({
       }
     }
     rows.sort((a, b) => b.session.lastMessageAt - a.session.lastMessageAt);
-    const out: AgentSession[] = rows.map(({ session, reason }) =>
-      projectSessionToAgentSession(session, reason),
-    );
     // selected 锚点：当前打开的会话即使不在 attention 池，也钉到末尾
-    if (selectedSessionIdForRank && !seen.has(selectedSessionIdForRank)) {
-      const target = ownSessions.find((s) => s.id === selectedSessionIdForRank);
-      if (target) out.push(projectSessionToAgentSession(target, "selected"));
+    if (selectedSubtreeSession && !seen.has(selectedSubtreeSession.id)) {
+      rows.push({
+        session: selectedSubtreeSession,
+        reason: "selected",
+      });
     }
-    return out;
-  }, [ownSessions, readOverrides, selectedSessionIdForRank]);
+    return rows;
+  }, [readOverrides, selectedSubtreeSession, subtreeSessions]);
+
+  const attentionAgentSessions: AgentSession[] = React.useMemo(
+    () =>
+      attentionRows
+        .filter(({ session }) => session.projectID === (node.project?.id ?? 0))
+        .map(({ session, reason }) =>
+          projectSessionToAgentSession(session, reason, t),
+        ),
+    [attentionRows, node.project?.id, t],
+  );
+
+  const collapsedAttentionAgentSessions: AgentSession[] = React.useMemo(
+    () =>
+      attentionRows.map(({ session, reason }) =>
+        projectSessionToAgentSession(session, reason, t),
+      ),
+    [attentionRows, t],
+  );
 
   if (!project) return null;
   if (!nodeMatches(node, filter, sessions)) return null;
   const children = node.children ?? [];
-  // 活跃会话 = running / waiting，spec L0QoU 头部的绿点 + 数字。
-  const activeCount = ownSessions.filter(
-    (s) => s.agentStatus === "running" || s.agentStatus === "waiting",
+  // 头部活跃数包含当前项目与后代项目的 attention 会话；父项目折叠时也能提示
+  // 子项目里有 running / 审批 / 未读入口。
+  const activeCount = attentionRows.filter(
+    ({ reason }) => reason !== "selected",
   ).length;
 
   // 常规列表：所有会话按 lastMessageAt 倒序，前 5 条入侧栏；超 5 走 popover。
+  // 若当前激活 tab 对应的 session 不在 Top 5 里, 追加到末尾, 让外部切 tab 后
+  // 即使是空闲会话也始终可见 —— 与对话页 selected 锚点钉到末尾的行为对齐。
   const sortedAll = ownSessions
     .slice()
     .sort((a, b) => b.lastMessageAt - a.lastMessageAt);
   const top5 = sortedAll.slice(0, 5);
+  if (
+    selectedOwnSessionId &&
+    !top5.some((s) => s.id === selectedOwnSessionId)
+  ) {
+    const anchor = ownSessions.find((s) => s.id === selectedOwnSessionId);
+    if (anchor) top5.push(anchor);
+  }
   const top5AgentSessions: AgentSession[] = top5.map((s) => {
     const lastReadAt = Math.max(
       s.lastReadAt ?? 0,
@@ -494,18 +819,18 @@ function ProjectCard({
       lastMessageAt: s.lastMessageAt,
       lastReadAt,
     });
-    return projectSessionToAgentSession(s, reason);
+    return projectSessionToAgentSession(s, reason, t);
   });
 
-  const selectedSessionIdStr = isSelectedInThisProject
-    ? String(selection.session.id)
+  const selectedSessionIdStr = selectedOwnSessionId
+    ? String(selectedOwnSessionId)
     : undefined;
 
   const handleSessionSelect = (sid: string, opts?: { newTab?: boolean }) => {
     const num = Number(sid);
-    const s = ownSessions.find((x) => x.id === num);
+    const s = subtreeSessions.find((x) => x.id === num);
     if (s)
-      onSelect({ kind: "session", projectID: project.id, session: s }, opts);
+      onSelect({ kind: "session", projectID: s.projectID, session: s }, opts);
   };
 
   // depth > 0 时仅靠 pl-1 (4px) 给一点缩进；层级表达全部由 renderHeader 里的
@@ -514,7 +839,11 @@ function ProjectCard({
   const isDeep = depth >= 2;
 
   return (
-    <div className={cn(isSub && "pl-1")}>
+    <div
+      ref={drag?.setNodeRef}
+      style={drag?.style}
+      className={cn(isSub && "pl-1", drag?.isDragging && "relative z-10")}
+    >
       <SessionGroup
         persistenceKey={`project:${project.id}`}
         defaultExpanded
@@ -523,8 +852,11 @@ function ProjectCard({
         selectedSessionId={selectedSessionIdStr}
         onSessionSelect={handleSessionSelect}
         attentionSessions={attentionAgentSessions}
-        attentionAriaLabel={`${project.name} 待处理会话`}
-        emptyLabel={children.length === 0 ? "暂无会话" : null}
+        collapsedAttentionSessions={collapsedAttentionAgentSessions}
+        attentionAriaLabel={t("projects.session.attentionAria", {
+          name: project.name,
+        })}
+        emptyLabel={children.length === 0 ? t("projects.session.empty") : null}
         renderSessionsPopover={(close) => (
           <SessionsPopover
             header={{
@@ -535,7 +867,8 @@ function ProjectCard({
             }}
             loader={async ({ offset, limit }) => {
               // 后端 ProjectListSessions 暂不分页；客户端切片即可。
-              const all = (await ProjectListSessions(project.id)) ?? [];
+              const all =
+                (await WailsApp.ProjectListSessions(project.id)) ?? [];
               const slice = all.slice(offset, offset + limit);
               return {
                 sessions: slice.map((s) => ({
@@ -550,12 +883,12 @@ function ProjectCard({
             }}
             onClose={close}
             onSelectSession={(sid, opts) => {
-              const s = ownSessions.find((x) => x.id === sid);
+              const s = subtreeSessions.find((x) => x.id === sid);
               if (s) {
                 onSelect(
                   {
                     kind: "session",
-                    projectID: project.id,
+                    projectID: s.projectID,
                     session: s,
                   },
                   opts,
@@ -567,19 +900,17 @@ function ProjectCard({
         renderAfterSessions={
           children.length > 0 ? (
             <div className="mt-1 flex flex-col gap-0.5">
-              {children.map((child) => (
-                <ProjectCard
-                  key={child.project?.id ?? 0}
-                  node={child}
-                  depth={depth + 1}
-                  filter={filter}
-                  sessions={sessions}
-                  selection={selection}
-                  onSelect={onSelect}
-                  onOpenSettings={onOpenSettings}
-                  onAddSubProject={onAddSubProject}
-                />
-              ))}
+              <ProjectSortableList
+                nodes={children}
+                depth={depth + 1}
+                filter={filter}
+                sessions={sessions}
+                selection={selection}
+                onSelect={onSelect}
+                onOpenSettings={onOpenSettings}
+                onAddSubProject={onAddSubProject}
+                dragDisabled={!drag}
+              />
             </div>
           ) : undefined
         }
@@ -588,7 +919,9 @@ function ProjectCard({
             className={cn(
               "group/proj flex items-center gap-1.5 rounded-md text-xs hover:bg-sidebar-active-bg",
               isSub ? "px-1.5 py-1" : "px-2 py-1.5",
+              drag && "cursor-grab active:cursor-grabbing",
             )}
+            {...(drag?.listeners ?? {})}
           >
             <button
               type="button"
@@ -633,7 +966,9 @@ function ProjectCard({
               {activeCount > 0 ? (
                 <span
                   className="inline-flex items-center gap-1 font-mono text-2xs text-status-running"
-                  title={`${activeCount} 个活跃会话`}
+                  title={t("projects.session.activeCount", {
+                    count: activeCount,
+                  })}
                 >
                   <span
                     aria-hidden="true"
@@ -657,7 +992,9 @@ function ProjectCard({
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  aria-label={`${project.name} 更多操作`}
+                  aria-label={t("projects.actions.more", {
+                    name: project.name,
+                  })}
                   className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/proj:opacity-100 focus:opacity-100 focus-visible:opacity-100"
                 >
                   <MoreVertical className="size-3" aria-hidden="true" />
@@ -666,12 +1003,23 @@ function ProjectCard({
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onSelect={() => onOpenSettings(project.id)}>
                   <Settings className="size-3.5" aria-hidden="true" />
-                  项目设置
+                  {t("projectSettings.title")}
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => onAddSubProject(project.id)}>
                   <Plus className="size-3.5" aria-hidden="true" />
-                  新建子项目
+                  {t("projects.actions.newSubProject")}
                 </DropdownMenuItem>
+                <NewTerminalSubMenu
+                  projectID={project.id}
+                  onPick={(deviceID, deviceName) =>
+                    onSelect({
+                      kind: "open-terminal",
+                      projectID: project.id,
+                      deviceID,
+                      deviceName,
+                    })
+                  }
+                />
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -700,6 +1048,7 @@ type MemberMenuLoadState =
     };
 
 function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const [loadState, setLoadState] = React.useState<MemberMenuLoadState>({
     status: "idle",
@@ -728,16 +1077,22 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
   React.useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    void ProjectGet(project.id)
+    void WailsApp.ProjectGet(project.id)
       .then((detail) => {
         if (cancelled) return;
+        const members = [
+          ...((detail.directMembers ?? []) as ProjectMemberItem[]),
+          ...((detail.inheritedMembers ?? []) as ProjectMemberItem[]),
+        ];
+        if (members.length === 1) {
+          onPick(members[0].agentID);
+          setOpen(false);
+          return;
+        }
         setLoadState({
           status: "loaded",
           projectID: project.id,
-          members: [
-            ...((detail.directMembers ?? []) as ProjectMemberItem[]),
-            ...((detail.inheritedMembers ?? []) as ProjectMemberItem[]),
-          ],
+          members,
         });
       })
       .catch((err) => {
@@ -753,7 +1108,7 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
     return () => {
       cancelled = true;
     };
-  }, [open, project.id]);
+  }, [onPick, open, project.id]);
 
   const activeLoadState =
     loadState.projectID === project.id
@@ -766,28 +1121,38 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label={`${project.name} 新建会话`}
-          title="新建会话"
+          aria-label={t("projects.session.newForProject", {
+            name: project.name,
+          })}
+          title={t("projects.session.new")}
           className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/proj:opacity-100 focus:opacity-100 focus-visible:opacity-100"
         >
           <Plus className="size-3" aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-[220px]">
+      <DropdownMenuContent
+        align="end"
+        className="min-w-[220px]"
+        // 阻止 Radix 默认把焦点还给 trigger —— 选完 agent 后新 tab 的输入框
+        // 已经被 ChatPanelHost 接管，让 Radix 抢回 trigger 会直接抹掉那次 focus。
+        onCloseAutoFocus={(e) => e.preventDefault()}
+      >
         <div className="px-2 py-1.5 font-mono text-2xs uppercase tracking-wider text-subtle-foreground">
-          选一个 Agent
+          {t("projects.session.pickAgent")}
         </div>
         {activeLoadState.status === "loading" ? (
           <div className="px-3 py-3 text-2xs text-muted-foreground">
-            加载成员中…
+            {t("projects.session.loadingMembers")}
           </div>
         ) : activeLoadState.status === "error" ? (
           <div className="px-3 py-3 text-2xs text-destructive">
-            加载成员失败：{activeLoadState.error}
+            {t("projects.session.loadMembersFailed", {
+              error: activeLoadState.error,
+            })}
           </div>
         ) : members.length === 0 ? (
           <div className="px-3 py-3 text-2xs text-muted-foreground">
-            还没添加成员，去项目设置加几个先。
+            {t("projects.session.noMembers")}
           </div>
         ) : (
           members.map((m) => {
@@ -819,7 +1184,7 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
                 <span className="min-w-0 flex-1 truncate">{name}</span>
                 {m.inherited ? (
                   <span className="rounded-sm bg-secondary px-1.5 py-0.5 text-2xs text-muted-foreground">
-                    继承
+                    {t("projects.session.inherited")}
                   </span>
                 ) : null}
               </DropdownMenuItem>
@@ -828,6 +1193,71 @@ function NewSessionMenu({ project, onPick }: NewSessionMenuProps) {
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+// NewTerminalSubMenu —— ProjectCard「更多操作」里的「新建终端」子菜单。
+// 打开时 lazy 加载该项目已配置的 location，结合 device 在线状态决定可选性。
+export function NewTerminalSubMenu({
+  projectID,
+  onPick,
+}: {
+  projectID: number;
+  onPick: (deviceID: string, deviceName?: string) => void;
+}) {
+  const { t } = useTranslation();
+  const { devices } = useRemoteDevices();
+  const [configured, setConfigured] = React.useState<Set<string> | null>(null);
+  const loadLocations = React.useCallback(() => {
+    void WailsApp.ProjectLocationList(projectID).then((rows) =>
+      setConfigured(new Set((rows ?? []).map((r) => r.deviceId))),
+    );
+  }, [projectID]);
+  return (
+    <DropdownMenuSub
+      onOpenChange={(open) => {
+        if (open && configured === null) loadLocations();
+      }}
+    >
+      <DropdownMenuSubTrigger>
+        <TerminalSquare className="size-3.5" aria-hidden="true" />
+        {t("projects.terminal.new")}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        <DropdownMenuItem onSelect={() => onPick("", undefined)}>
+          {t("projects.terminal.local")}
+        </DropdownMenuItem>
+        {devices.length > 0 ? <DropdownMenuSeparator /> : null}
+        {devices.map((d) => {
+          const id = String(d.id);
+          const hasPath = configured?.has(id) ?? false;
+          const disabled = !d.online || !hasPath;
+          return (
+            <DropdownMenuItem
+              key={id}
+              disabled={disabled}
+              title={
+                !d.online
+                  ? t("projects.terminal.deviceOffline")
+                  : !hasPath
+                    ? t("projects.terminal.pathNotConfigured")
+                    : undefined
+              }
+              onSelect={() => {
+                if (!disabled) onPick(id, d.name);
+              }}
+            >
+              {d.name}
+              {!d.online
+                ? t("projects.terminal.offlineSuffix")
+                : !hasPath
+                  ? t("projects.terminal.pathMissingSuffix")
+                  : ""}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   );
 }
 

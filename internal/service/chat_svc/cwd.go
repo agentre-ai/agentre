@@ -63,3 +63,10 @@ func resolveSessionCwd(ctx context.Context, sess *chat_entity.Session, be *agent
 	}
 	return loc.Path, nil
 }
+
+// ResolveSessionCwd is the public adapter for resolveSessionCwd, exposed so
+// terminal_svc (and other future services) can reuse the same project /
+// device cwd resolution rules without re-implementing them.
+func ResolveSessionCwd(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) (string, error) {
+	return resolveSessionCwd(ctx, sess, be)
+}

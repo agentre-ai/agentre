@@ -18,17 +18,20 @@ const (
 	appServerListenStdio = "stdio://"
 	appServerConfigFlag  = "--config"
 
-	appMethodInitialize     = "initialize"
-	appMethodInitialized    = "initialized"
-	appMethodThreadStart    = "thread/start"
-	appMethodThreadResume   = "thread/resume"
-	appMethodThreadFork     = "thread/fork"
-	appMethodThreadRollback = "thread/rollback"
-	appMethodThreadCompact  = "thread/compact/start"
-	appMethodTurnStart      = "turn/start"
-	appMethodTurnSteer      = "turn/steer"
-	appMethodTurnInterrupt  = "turn/interrupt"
-	appMethodTurnCompleted  = "turn/completed"
+	appMethodInitialize      = "initialize"
+	appMethodInitialized     = "initialized"
+	appMethodThreadStart     = "thread/start"
+	appMethodThreadResume    = "thread/resume"
+	appMethodThreadFork      = "thread/fork"
+	appMethodThreadRollback  = "thread/rollback"
+	appMethodThreadCompact   = "thread/compact/start"
+	appMethodThreadGoalSet   = "thread/goal/set"
+	appMethodThreadGoalGet   = "thread/goal/get"
+	appMethodThreadGoalClear = "thread/goal/clear"
+	appMethodTurnStart       = "turn/start"
+	appMethodTurnSteer       = "turn/steer"
+	appMethodTurnInterrupt   = "turn/interrupt"
+	appMethodTurnCompleted   = "turn/completed"
 
 	appMethodItemStarted                   = "item/started"
 	appMethodItemCompleted                 = "item/completed"
@@ -74,6 +77,60 @@ type runSpec struct {
 	sandbox           SandboxMode
 	approval          ApprovalPolicy
 	collaborationMode CollaborationMode
+}
+
+type ImageDetail string
+
+const (
+	ImageDetailHigh     ImageDetail = "high"
+	ImageDetailOriginal ImageDetail = "original"
+)
+
+type UserInput struct {
+	Type         string      `json:"type"`
+	Text         string      `json:"text,omitempty"`
+	TextElements []any       `json:"text_elements"`
+	URL          string      `json:"url,omitempty"`
+	Path         string      `json:"path,omitempty"`
+	Detail       ImageDetail `json:"detail,omitempty"`
+}
+
+func (in UserInput) MarshalJSON() ([]byte, error) {
+	switch in.Type {
+	case "text":
+		return json.Marshal(struct {
+			Type         string `json:"type"`
+			Text         string `json:"text"`
+			TextElements []any  `json:"text_elements"`
+		}{Type: in.Type, Text: in.Text, TextElements: in.TextElements})
+	case "image":
+		return json.Marshal(struct {
+			Type   string      `json:"type"`
+			URL    string      `json:"url"`
+			Detail ImageDetail `json:"detail,omitempty"`
+		}{Type: in.Type, URL: in.URL, Detail: in.Detail})
+	case "localImage":
+		return json.Marshal(struct {
+			Type   string      `json:"type"`
+			Path   string      `json:"path"`
+			Detail ImageDetail `json:"detail,omitempty"`
+		}{Type: in.Type, Path: in.Path, Detail: in.Detail})
+	default:
+		type alias UserInput
+		return json.Marshal(alias(in))
+	}
+}
+
+func TextInput(text string) UserInput {
+	return UserInput{Type: "text", Text: text, TextElements: []any{}}
+}
+
+func ImageURLInput(url string, detail ImageDetail) UserInput {
+	return UserInput{Type: "image", URL: url, Detail: detail}
+}
+
+func LocalImageInput(path string, detail ImageDetail) UserInput {
+	return UserInput{Type: "localImage", Path: path, Detail: detail}
 }
 
 type appThread struct {
@@ -253,18 +310,21 @@ func threadParams(c *Client, spec runSpec) map[string]any {
 	return params
 }
 
-func userInput(text string) []map[string]any {
-	return []map[string]any{{
-		"type":          "text",
-		"text":          text,
-		"text_elements": []any{},
-	}}
+func userInput(text string) []UserInput {
+	return []UserInput{TextInput(text)}
 }
 
 func turnStartParams(thread appThreadStartResult, prompt string, mode CollaborationMode, fallbackModel string) (map[string]any, error) {
+	return turnStartParamsInput(thread, userInput(prompt), mode, fallbackModel)
+}
+
+func turnStartParamsInput(thread appThreadStartResult, input []UserInput, mode CollaborationMode, fallbackModel string) (map[string]any, error) {
+	if len(input) == 0 {
+		input = userInput("")
+	}
 	params := map[string]any{
 		"threadId": thread.ThreadID,
-		"input":    userInput(prompt),
+		"input":    input,
 	}
 	if mode == "" {
 		return params, nil

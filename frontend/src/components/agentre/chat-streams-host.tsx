@@ -1,12 +1,23 @@
 import * as React from "react";
 
+import { clientLog } from "@/lib/client-log";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { StreamSubscriber } from "./stream-subscriber";
 
 import type { ChatStreamEvent } from "@/hooks/use-chat-stream";
 import type { AgentStatus } from "@/stores/types";
+
+function bumpSessionTabToAfterPinned(sessionId: number): void {
+  const tabsState = useChatTabsStore.getState();
+  const tab = tabsState.tabs.find(
+    (t) => t.meta.kind === "session" && t.meta.sessionId === sessionId,
+  );
+  if (!tab) return;
+  tabsState.bumpToAfterPinned(tab.id);
+}
 
 // ChatStreamsHost 是「无 DOM 的全局订阅器」。挂在 App 顶层、Routes 同级,
 // 跨路由 不会 unmount —— 即使 /chat 被切走,这里的 <StreamSubscriber> 依然
@@ -125,6 +136,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
               ev.canonical,
             );
           } else {
+            bumpSessionTabToAfterPinned(sessionId);
             appendLiveAskUserQuestion(
               sessionId,
               ev.askUserQuestion,
@@ -149,6 +161,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
               ev.canonical,
             );
           } else {
+            bumpSessionTabToAfterPinned(sessionId);
             appendLiveToolPermissionRequest(
               sessionId,
               ev.toolPermission,
@@ -172,6 +185,35 @@ export function ChatStreamsHost(): React.ReactElement | null {
           const hasMode = !!ev.sessionStatus.permissionMode;
           if (!hasStatus && !hasMode) return;
           const prev = useSessionStatusStore.getState().statuses.get(sessionId);
+          // 诊断: 收到 agentStatus="error" 但本 sid 仍有活跃 LiveStream entry,
+          // 说明后端在 events channel 关闭前就推了 error 帧 (理论上不该发生 ——
+          // 末端 emit 走在 StreamError 之前但 StreamClosed 之后流就应当结束)。
+          // 命中即埋根因证据, 一并打 prev/next/streamActive 让排查不用回放事件。
+          if (hasStatus && nextStatus === "error") {
+            const live = useChatStreamsStore.getState().streams.get(sessionId);
+            if (live) {
+              clientLog.warn(
+                "chat-streams-host",
+                "session_status agentStatus=error received while LiveStream is still active",
+                {
+                  sessionId,
+                  prevAgentStatus: prev?.agentStatus,
+                  nextAgentStatus: nextStatus,
+                  needsAttention: ev.sessionStatus.needsAttention,
+                  streamAgeMs: Date.now() - live.streamStartedAt,
+                },
+              );
+            }
+          }
+          if (
+            hasStatus &&
+            (ev.sessionStatus.needsAttention ||
+              nextStatus === "running" ||
+              nextStatus === "waiting" ||
+              nextStatus === "error")
+          ) {
+            bumpSessionTabToAfterPinned(sessionId);
+          }
           useSessionStatusStore.getState().upsert(sessionId, {
             // Wails boundary: backend sends agentStatus as string; cast to AgentStatus.
             agentStatus: (hasStatus
@@ -218,6 +260,9 @@ export function ChatStreamsHost(): React.ReactElement | null {
         case "error":
         case "closed":
         case "aborted":
+          if (ev.kind !== "closed") {
+            bumpSessionTabToAfterPinned(sessionId);
+          }
           finishStream(sessionId, ev);
           return;
       }

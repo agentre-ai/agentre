@@ -33,6 +33,7 @@ var (
 	_ agentruntime.PermissionModeSetter = (*Runtime)(nil)
 	_ agentruntime.AskAnswerSink        = (*Runtime)(nil)
 	_ agentruntime.ToolPermissionSink   = (*Runtime)(nil)
+	_ agentruntime.GoalController       = (*Runtime)(nil)
 )
 
 // handlerCapture grabs the Handle("runtime.event"|"runtime.runResultDone")
@@ -546,4 +547,75 @@ func TestWatchClose_InjectsStopErrAndClosesEvents(t *testing.T) {
 		t.Fatal("events channel not closed after daemon disconnect")
 	}
 	assert.ErrorIs(t, runResult.StopErr, ErrDaemonDisconnected)
+}
+
+func TestGoal_DispatchesWireRPCsWithBackendMetadata(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	objective := "ship goal rpc"
+	status := "active"
+	budget := 123
+	req := agentruntime.GoalRequest{
+		SessionID:         42,
+		AgentID:           7,
+		ProviderSessionID: "thread-goal",
+		Backend:           &agent_backend_entity.AgentBackend{ID: 3, Type: string(agent_backend_entity.TypeCodex), Name: "codex"},
+		Cwd:               "/tmp/work",
+		Objective:         &objective,
+		Status:            &status,
+		TokenBudget:       &budget,
+	}
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodSetGoal, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			gp, ok := params.(wire.GoalParams)
+			require.True(t, ok, "expected wire.GoalParams, got %T", params)
+			assert.Equal(t, int64(42), gp.SessionID)
+			assert.Equal(t, int64(7), gp.AgentID)
+			assert.Equal(t, "thread-goal", gp.ProviderSessionID)
+			assert.Equal(t, "/tmp/work", gp.Cwd)
+			assert.Contains(t, string(gp.Backend), `"ID":3`)
+			assert.Contains(t, string(gp.Backend), `"Name":"codex"`)
+			assert.Contains(t, string(gp.Backend), `"Type":"codex"`)
+			require.NotNil(t, gp.Objective)
+			assert.Equal(t, "ship goal rpc", *gp.Objective)
+			require.NotNil(t, gp.Status)
+			assert.Equal(t, "active", *gp.Status)
+			require.NotNil(t, gp.TokenBudget)
+			assert.Equal(t, 123, *gp.TokenBudget)
+			*(result.(*wire.GoalResult)) = wire.GoalResult{Goal: &agentruntime.Goal{ThreadID: "thread-goal", Objective: "ship goal rpc", Status: "active"}}
+			return nil
+		})
+	goal, err := rt.SetGoal(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, goal)
+	assert.Equal(t, "ship goal rpc", goal.Objective)
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodGetGoal, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			gp, ok := params.(wire.GoalParams)
+			require.True(t, ok, "expected wire.GoalParams, got %T", params)
+			assert.Equal(t, "thread-goal", gp.ProviderSessionID)
+			assert.Contains(t, string(gp.Backend), `"ID":3`)
+			assert.Contains(t, string(gp.Backend), `"Name":"codex"`)
+			assert.Contains(t, string(gp.Backend), `"Type":"codex"`)
+			*(result.(*wire.GoalResult)) = wire.GoalResult{Goal: &agentruntime.Goal{ThreadID: "thread-goal", Objective: "ship goal rpc", Status: "active"}}
+			return nil
+		})
+	_, err = rt.GetGoal(context.Background(), req)
+	require.NoError(t, err)
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodClearGoal, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			gp, ok := params.(wire.GoalParams)
+			require.True(t, ok, "expected wire.GoalParams, got %T", params)
+			assert.Equal(t, "thread-goal", gp.ProviderSessionID)
+			assert.Contains(t, string(gp.Backend), `"ID":3`)
+			assert.Contains(t, string(gp.Backend), `"Name":"codex"`)
+			assert.Contains(t, string(gp.Backend), `"Type":"codex"`)
+			*(result.(*wire.GoalClearResult)) = wire.GoalClearResult{Cleared: true}
+			return nil
+		})
+	cleared, err := rt.ClearGoal(context.Background(), req)
+	require.NoError(t, err)
+	assert.True(t, cleared)
 }

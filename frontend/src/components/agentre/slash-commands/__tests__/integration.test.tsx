@@ -65,7 +65,7 @@ describe("AIChatInput slash menu integration", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("listbox", { name: "斜杠命令" }),
+        screen.getByRole("listbox", { name: "Slash commands" }),
       ).toBeInTheDocument();
     });
     expect(screen.getByText("/compact")).toBeInTheDocument();
@@ -100,7 +100,9 @@ describe("AIChatInput slash menu integration", () => {
     });
     // 给一拍时间让 selectionUpdate fire
     await new Promise((r) => setTimeout(r, 20));
-    expect(screen.queryByRole("listbox", { name: "斜杠命令" })).toBeNull();
+    expect(
+      screen.queryByRole("listbox", { name: "Slash commands" }),
+    ).toBeNull();
   });
 
   it("点击 /compact 仅填入输入框,不直接发送 (literal_text 路径)", async () => {
@@ -124,7 +126,9 @@ describe("AIChatInput slash menu integration", () => {
     // popover 关闭后,/compact 应作为草稿留在编辑器里 (而不是被立即发出去),
     // 由用户再决定是否回车发送。
     await waitFor(() =>
-      expect(screen.queryByRole("listbox", { name: "斜杠命令" })).toBeNull(),
+      expect(
+        screen.queryByRole("listbox", { name: "Slash commands" }),
+      ).toBeNull(),
     );
     expect(onSubmit).not.toHaveBeenCalled();
     // 编辑器里应当能看到完整的 /compact 文本
@@ -159,7 +163,9 @@ describe("AIChatInput slash menu integration", () => {
     });
 
     await waitFor(() =>
-      expect(screen.queryByRole("listbox", { name: "斜杠命令" })).toBeNull(),
+      expect(
+        screen.queryByRole("listbox", { name: "Slash commands" }),
+      ).toBeNull(),
     );
     // literal_text 由 AIChatInput 内部消化,不会冒泡到 onSlashSelect;
     // onSubmit 也不应被自动触发 —— 用户回车才执行(由 chat-panel 拦截 /compact 转 Compact RPC)。

@@ -264,6 +264,10 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 	if err != nil {
 		return wire.RunParams{}, err
 	}
+	userBlocks, err := blocks.EncodeAll(req.UserBlocks)
+	if err != nil {
+		return wire.RunParams{}, fmt.Errorf("encode user blocks: %w", err)
+	}
 	return wire.RunParams{
 		Backend:           backendJSON,
 		AgentID:           req.AgentID,
@@ -272,6 +276,7 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 		SystemPrompt:      req.SystemPrompt,
 		ProviderSessionID: req.ProviderSessionID,
 		UserText:          req.UserText,
+		UserBlocks:        userBlocks,
 		History:           history,
 		Compact:           req.Compact,
 		ForkAnchor:        req.ForkAnchor,
@@ -476,6 +481,63 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 		SessionID: sessionID, RequestID: requestID,
 		Allow: allow, AlwaysAllowSession: alwaysAllowSession, DenyReason: denyReason,
 	}, &wire.OK{})
+}
+
+func (r *Runtime) GetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	var res wire.GoalResult
+	params, err := goalParams(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.callSentinel(ctx, wire.MethodGetGoal, params, &res); err != nil {
+		return nil, err
+	}
+	return res.Goal, nil
+}
+
+func (r *Runtime) SetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	var res wire.GoalResult
+	params, err := goalParams(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.callSentinel(ctx, wire.MethodSetGoal, params, &res); err != nil {
+		return nil, err
+	}
+	return res.Goal, nil
+}
+
+func (r *Runtime) ClearGoal(ctx context.Context, req agentruntime.GoalRequest) (bool, error) {
+	var res wire.GoalClearResult
+	params, err := goalParams(req)
+	if err != nil {
+		return false, err
+	}
+	if err := r.callSentinel(ctx, wire.MethodClearGoal, params, &res); err != nil {
+		return false, err
+	}
+	return res.Cleared, nil
+}
+
+func goalParams(req agentruntime.GoalRequest) (wire.GoalParams, error) {
+	var backendJSON json.RawMessage
+	if req.Backend != nil {
+		raw, err := json.Marshal(req.Backend)
+		if err != nil {
+			return wire.GoalParams{}, fmt.Errorf("marshal backend: %w", err)
+		}
+		backendJSON = raw
+	}
+	return wire.GoalParams{
+		SessionID:         req.SessionID,
+		AgentID:           req.AgentID,
+		ProviderSessionID: req.ProviderSessionID,
+		Backend:           backendJSON,
+		Cwd:               req.Cwd,
+		Objective:         req.Objective,
+		Status:            req.Status,
+		TokenBudget:       req.TokenBudget,
+	}, nil
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

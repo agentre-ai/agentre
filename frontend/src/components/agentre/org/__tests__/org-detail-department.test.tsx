@@ -78,29 +78,31 @@ describe("OrgDetailDepartment editor layout", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "部门图标" })).toHaveTextContent(
-      "锤子",
+    expect(screen.getByRole("button", { name: "Icon" })).toHaveTextContent(
+      "Hammer",
     );
     expect(
-      screen.getByRole("radiogroup", { name: "主题色" }),
+      screen.getByRole("radiogroup", { name: "Theme Color" }),
     ).toBeInTheDocument();
     expect(
-      screen.getAllByRole("radio", { name: /主题色 agent-/ }),
+      screen.getAllByRole("radio", { name: /Theme color agent-/ }),
     ).toHaveLength(10);
-    expect(
-      screen.getByRole("combobox", { name: "dept-parent" }),
-    ).toHaveTextContent("工程部");
+    expect(screen.getByRole("combobox", { name: "Parent" })).toHaveTextContent(
+      "工程部",
+    );
     expect(screen.getByRole("heading", { name: "Leader" })).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "部门长" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "成员" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Members" }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "成员速览" }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("combobox", { name: "dept-lead" }),
-    ).toHaveTextContent("Boris");
+    expect(screen.getByRole("combobox", { name: "Leader" })).toHaveTextContent(
+      "Boris",
+    );
     expect(screen.getAllByText("后端工程师").length).toBeGreaterThan(0);
   });
 });
@@ -122,9 +124,11 @@ describe("OrgDetailDepartment delete dialog", () => {
       />,
     );
     await userEvent.click(
-      screen.getAllByRole("button", { name: /删除部门/ })[0],
+      screen.getAllByRole("button", { name: /Delete department/ })[0],
     );
-    await userEvent.click(screen.getByRole("button", { name: /确认删除/ }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /Confirm Delete/ }),
+    );
     expect(onDelete).toHaveBeenCalledWith({ id: 1, strategy: "reparent" });
   });
 
@@ -144,10 +148,12 @@ describe("OrgDetailDepartment delete dialog", () => {
       />,
     );
     await userEvent.click(
-      screen.getAllByRole("button", { name: /删除部门/ })[0],
+      screen.getAllByRole("button", { name: /Delete department/ })[0],
     );
-    fireEvent.click(screen.getByLabelText(/递归删除/));
-    await userEvent.click(screen.getByRole("button", { name: /确认删除/ }));
+    fireEvent.click(screen.getByLabelText(/Recursively delete/));
+    await userEvent.click(
+      screen.getByRole("button", { name: /Confirm Delete/ }),
+    );
     expect(onDelete).toHaveBeenCalledWith({ id: 1, strategy: "cascade" });
   });
 });

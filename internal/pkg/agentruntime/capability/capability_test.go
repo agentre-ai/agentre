@@ -48,5 +48,7 @@ func TestCapabilityWireStrings(t *testing.T) {
 		So(string(CapToolPermission), ShouldEqual, "tool_permission_gate")
 		So(string(CapForkSession), ShouldEqual, "fork_session")
 		So(string(CapReportContextWindow), ShouldEqual, "report_context_window")
+		So(string(CapCompact), ShouldEqual, "compact")
+		So(string(CapGoal), ShouldEqual, "goal")
 	})
 }

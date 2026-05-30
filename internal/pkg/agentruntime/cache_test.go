@@ -119,6 +119,66 @@ func TestSessionCache_PutReplacesAndClosesOld(t *testing.T) {
 	assert.False(t, a2.IsClosed())
 }
 
+func TestCLISessionPool_PrunesOnlyIdleSessions(t *testing.T) {
+	t.Run("Given more than cap idle sessions, when MarkIdle prunes, then oldest idle sessions close", func(t *testing.T) {
+		p := NewCLISessionPool(2)
+		a := newFakeSession("a")
+		b := newFakeSession("b")
+		c := newFakeSession("c")
+
+		p.Put("claudecode:1", a)
+		p.MarkIdle("claudecode:1")
+		p.Put("codex:2", b)
+		p.MarkIdle("codex:2")
+		p.Put("claudecode:3", c)
+		p.MarkIdle("claudecode:3")
+
+		a.WaitClosed(t)
+		assert.True(t, a.IsClosed(), "oldest idle CLI session should be closed")
+		assert.False(t, b.IsClosed())
+		assert.False(t, c.IsClosed())
+		assert.Equal(t, 2, p.Len())
+		assert.Equal(t, 2, p.IdleLen())
+	})
+
+	t.Run("Given all sessions are active or waiting, when pool exceeds cap, then no session closes", func(t *testing.T) {
+		p := NewCLISessionPool(1)
+		active := newFakeSession("active")
+		waiting := newFakeSession("waiting")
+
+		p.Put("claudecode:active", active)
+		p.MarkActive("claudecode:active")
+		p.Put("codex:waiting", waiting)
+		p.MarkWaiting("codex:waiting")
+
+		time.Sleep(50 * time.Millisecond)
+		assert.False(t, active.IsClosed())
+		assert.False(t, waiting.IsClosed())
+		assert.Equal(t, 2, p.Len())
+		assert.Equal(t, 0, p.IdleLen())
+	})
+
+	t.Run("Given active sessions exist and idle sessions exceed cap, when pruning, then only oldest idle closes", func(t *testing.T) {
+		p := NewCLISessionPool(1)
+		active := newFakeSession("active")
+		oldIdle := newFakeSession("old-idle")
+		newIdle := newFakeSession("new-idle")
+
+		p.Put("claudecode:active", active)
+		p.MarkActive("claudecode:active")
+		p.Put("codex:old-idle", oldIdle)
+		p.MarkIdle("codex:old-idle")
+		p.Put("codex:new-idle", newIdle)
+		p.MarkIdle("codex:new-idle")
+
+		oldIdle.WaitClosed(t)
+		assert.False(t, active.IsClosed())
+		assert.True(t, oldIdle.IsClosed())
+		assert.False(t, newIdle.IsClosed())
+		assert.Equal(t, 2, p.Len())
+	})
+}
+
 func TestRunnerCache_GetOrCreate(t *testing.T) {
 	c := NewRunnerCache()
 	r1 := newFakeSession("r1")

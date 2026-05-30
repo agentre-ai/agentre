@@ -66,6 +66,12 @@ const (
 	// 紧接着才发 compact_boundary 帧。我们刻意只 emit 非空状态;清理信号留给 compact_boundary
 	// / done / error 路径 —— 这样无法识别的未来 status:null 帧仍能保持前向兼容地被静默忽略。
 	EventStatus EventKind = "status"
+	// EventInit 来自 CLI 的 system{subtype:"init"} 帧。仅在该帧带 model 字段时 emit
+	// (老 CLI 不报 model → 不发,上层走 EventDone.Model 兜底)。携带 SessionID + Model,
+	// 让 agentruntime/claudecode translator 在 turn 开始时就能查 cago llmcatalog
+	// 兜底 context window 大小,而不是等 EventDone 才知道窗口——前端进度条因此能在
+	// turn 内实时显示用量占比,不必"等一轮跑完才出条"。
+	EventInit EventKind = "init"
 )
 
 // ToolEvent 在 EventPreToolUse / EventPostToolUse 上携带。

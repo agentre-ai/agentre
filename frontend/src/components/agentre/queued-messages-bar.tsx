@@ -1,4 +1,5 @@
 import { Hourglass, Lock, Trash2, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -27,13 +28,14 @@ type Props = {
 // 自己决定可见性。这样 ChatComposer 的 queueSlot prop 一直传 <QueuedMessagesBar/>
 // 也不会留空 DOM。
 export function QueuedMessagesBar({ queued, onCancel, onClearAll }: Props) {
+  const { t } = useTranslation();
   if (queued.length === 0) return null;
   const anyCancellable = queued.some((q) => q.cancellable);
 
   return (
     <div
       role="region"
-      aria-label="排队中的消息"
+      aria-label={t("queuedMessages.aria")}
       className="flex flex-col gap-1.5 border-b border-border bg-muted px-3 py-2"
     >
       <div className="flex items-center gap-2">
@@ -42,17 +44,23 @@ export function QueuedMessagesBar({ queued, onCancel, onClearAll }: Props) {
           aria-hidden="true"
         />
         <span className="text-2xs font-semibold text-foreground">
-          排队中 · {queued.length} 条
+          {t("queuedMessages.count", { count: queued.length })}
         </span>
         <span className="text-2xs text-muted-foreground">
-          {anyCancellable ? "AI 完成后插入" : "codex 不支持撤回"}
+          {anyCancellable
+            ? t("queuedMessages.insertAfterAI")
+            : t("queuedMessages.codexNoCancel")}
         </span>
         <div className="min-w-0 flex-1" />
         <button
           type="button"
           disabled={!anyCancellable}
-          aria-label="清空排队消息"
-          title={anyCancellable ? "清空全部排队消息" : "codex 后端不支持撤回"}
+          aria-label={t("queuedMessages.clearAria")}
+          title={
+            anyCancellable
+              ? t("queuedMessages.clearTitle")
+              : t("queuedMessages.codexNoCancelTitle")
+          }
           onClick={onClearAll}
           className={cn(
             "inline-flex h-6 cursor-pointer items-center gap-1 rounded-sm border border-border-strong px-2 text-2xs font-medium transition-colors",
@@ -61,7 +69,7 @@ export function QueuedMessagesBar({ queued, onCancel, onClearAll }: Props) {
           )}
         >
           <Trash2 className="size-3" aria-hidden="true" />
-          清空
+          {t("queuedMessages.clear")}
         </button>
       </div>
       <ul className="flex flex-col gap-1">
@@ -81,8 +89,8 @@ export function QueuedMessagesBar({ queued, onCancel, onClearAll }: Props) {
             {q.cancellable ? (
               <button
                 type="button"
-                aria-label="撤回这条排队消息"
-                title="撤回 (尚未被 AI 取走时有效)"
+                aria-label={t("queuedMessages.cancelOne")}
+                title={t("queuedMessages.cancelOneTitle")}
                 onClick={() => onCancel(q.id)}
                 className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
@@ -90,8 +98,8 @@ export function QueuedMessagesBar({ queued, onCancel, onClearAll }: Props) {
               </button>
             ) : (
               <span
-                aria-label="不可撤回（codex 后端）"
-                title="codex turn/steer 协议一发即不可撤"
+                aria-label={t("queuedMessages.notCancellable")}
+                title={t("queuedMessages.notCancellableTitle")}
                 className="inline-flex size-5 shrink-0 items-center justify-center text-subtle-foreground"
               >
                 <Lock className="size-3" aria-hidden="true" />

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -24,6 +25,8 @@ export function SlashPopover({
   onPick: (cmd: SlashCommand) => void;
   onHover: (idx: number) => void;
 }): React.ReactElement | null {
+  const { t } = useTranslation();
+
   if (!state.open || !state.anchorRect || state.items.length === 0) return null;
 
   // 弹层放在光标上方;留 4px 间距,避免遮住正在键入的 /xxx 文字。
@@ -37,7 +40,7 @@ export function SlashPopover({
   return (
     <div
       role="listbox"
-      aria-label="斜杠命令"
+      aria-label={t("slashCommands.aria")}
       style={style}
       className="min-w-[14rem] max-w-[20rem] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
     >

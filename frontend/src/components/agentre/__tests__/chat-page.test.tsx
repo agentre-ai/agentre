@@ -109,7 +109,7 @@ describe("ChatPage sidebar — attention bubble", () => {
     renderChatPage();
 
     const header = await screen.findByRole("button", {
-      name: "打开 Eng 最近会话",
+      name: "Open Eng recent session",
     });
 
     // 初始：bubble 隐藏（idle + 已读 + 未选中）。
@@ -306,7 +306,7 @@ describe("ChatPage attention bubble always visible + dedupe", () => {
       return node!;
     });
     expect(bubble).toHaveTextContent("Background done");
-    expect(bubble).toHaveTextContent("未读");
+    expect(bubble).toHaveTextContent("Unread");
     // bubble 里的 SessionRow 内 StatusDot 用 bg-status-waiting（橙）
     const dot = bubble.querySelector('[aria-label="waiting status"]');
     expect(dot).not.toBeNull();
@@ -346,7 +346,7 @@ describe("ChatPage attention bubble always visible + dedupe", () => {
 
     const row = await screen.findByRole("button", { name: /Background done/ });
     // 应该带 "未读" 标签 + waiting 颜色 dot（橙色）。
-    expect(row).toHaveTextContent("未读");
+    expect(row).toHaveTextContent("Unread");
     const dot = row.querySelector('[aria-label="waiting status"]');
     expect(dot).not.toBeNull();
   });
@@ -505,7 +505,7 @@ describe("ChatPage sidebar — 新建会话按钮接入 chat-tabs", () => {
   it('clicking the + button opens a kind:"new" tab for that agent', async () => {
     renderChatPage();
 
-    const plus = await screen.findByRole("button", { name: "新建 Eng 会话" });
+    const plus = await screen.findByRole("button", { name: "New Eng session" });
     fireEvent.click(plus);
 
     await waitFor(() => {

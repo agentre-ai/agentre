@@ -17,6 +17,7 @@ import { create } from "zustand";
 import { ListChatAgents } from "../../wailsjs/go/app/App";
 import type { chat_svc } from "../../wailsjs/go/models";
 
+import { useChatStreamsStore } from "./chat-streams-store";
 import {
   useSessionStatusStore,
   type SessionStatusPatch,
@@ -61,6 +62,29 @@ type Actions = {
 // in-flight reload promise: 并发调用 reload() 时复用, 避免重复 RPC。
 let inflight: Promise<void> | null = null;
 
+function listKnownSessions(a: chat_svc.ChatAgentItem) {
+  const out: chat_svc.ChatSessionLite[] = [];
+  const seen = new Set<number>();
+  for (const s of [...(a.sessions ?? []), ...(a.attentionSessions ?? [])]) {
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    out.push(s);
+  }
+  return out;
+}
+
+function listSessionIds(a: AgentSlim | chat_svc.ChatAgentItem) {
+  const provided = (a as { sessionIds?: unknown }).sessionIds;
+  if (Array.isArray(provided)) {
+    return provided.filter(
+      (id): id is number => typeof id === "number" && id > 0,
+    );
+  }
+  const ids = new Set<number>();
+  for (const s of listKnownSessions(a)) ids.add(s.id);
+  return Array.from(ids);
+}
+
 // 初始 loading=true: 反映「还没拉过, 别把空 agents 当成最终态」, 与原 hook 行为对齐
 // (原 useState(true))。这样命令面板在 useChatAgents 首次 mount 的那一帧不会闪「无结果」。
 export const useChatAgentsStore = create<State & Actions>((set) => ({
@@ -78,13 +102,40 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         // sidebar / toolbar 通过同一个 store 读到「running / waiting / idle」。
         // bulkUpsert 内部逐条同值短路, 一刷只在真有差异时才换 Map 引用。
         const entries: [number, SessionStatusPatch][] = [];
+        // 诊断: ListChatAgents 是远 DB 异步快照, 与 stream 内乐观写 / session_status
+        // 推帧之间存在 race。命中以下两类时打 warn, 是排查「tab 翻红但内容还在流」
+        // 的关键线索:
+        //   (a) sid 有活跃 LiveStream 但快照说 status="error" / "idle" —— 说明
+        //       响应是 Send 把 DB 翻 "running" 之前抓的旧快照, 即将覆盖乐观 "running"。
+        //   (b) sid 没有活跃 stream 但快照与 store 现值不一致, 仅 dev 调试观察用。
+        const streamsState = useChatStreamsStore.getState();
+        const statusesState = useSessionStatusStore.getState();
         for (const a of agents) {
-          for (const s of a.sessions ?? []) {
+          for (const s of listKnownSessions(a)) {
+            const snapshotStatus = (s.status as AgentStatus) || "idle";
+            const hasActiveStream = streamsState.streams.has(s.id);
+            if (hasActiveStream) {
+              const prev = statusesState.statuses.get(s.id);
+              if (
+                prev &&
+                prev.agentStatus !== snapshotStatus &&
+                snapshotStatus !== "running" &&
+                snapshotStatus !== "waiting"
+              ) {
+                console.warn(
+                  "[chat-agents-store] bulkUpsert about to override agentStatus while LiveStream is active",
+                  {
+                    sessionId: s.id,
+                    prevAgentStatus: prev.agentStatus,
+                    snapshotAgentStatus: snapshotStatus,
+                  },
+                );
+              }
+            }
             entries.push([
               s.id,
               {
-                // Wails boundary: ChatSessionLite.status is string; cast to AgentStatus.
-                agentStatus: (s.status as AgentStatus) || "idle",
+                agentStatus: snapshotStatus,
                 needsAttention: s.needsAttention ?? false,
               },
             ]);
@@ -98,7 +149,7 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         // bulkUpsert 走 merge 语义, 不会清掉既有 projectId。
         const metaEntries: [number, Partial<SessionMeta>][] = [];
         for (const a of agents) {
-          for (const s of a.sessions ?? []) {
+          for (const s of listKnownSessions(a)) {
             metaEntries.push([
               s.id,
               {
@@ -117,9 +168,9 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         // 构造 AgentSlim: 原地 Object.assign 给 Wails class 实例挂 sessionIds 字段,
         // 不用 spread —— spread 会丢失 class 方法 (convertValues), 触发 TS 错误。
         const slimAgents = agents.map((a) => {
-          const ids = new Set<number>();
-          for (const s of a.sessions ?? []) ids.add(s.id);
-          return Object.assign(a, { sessionIds: Array.from(ids) }) as AgentSlim;
+          return Object.assign(a, {
+            sessionIds: listSessionIds(a),
+          }) as AgentSlim;
         });
 
         set({ agents: slimAgents, loading: false, error: null });

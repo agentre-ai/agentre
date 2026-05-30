@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, beforeEach } from "vitest";
 
 function createMemoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -43,9 +43,16 @@ if (
   });
 }
 
+const { default: i18n } = await import("@/i18n");
+
+beforeEach(async () => {
+  await i18n.changeLanguage("en");
+});
+
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  void i18n.changeLanguage("en");
   document.documentElement.classList.remove("dark");
   delete document.documentElement.dataset.theme;
   document.documentElement.style.colorScheme = "";

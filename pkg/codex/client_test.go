@@ -141,6 +141,97 @@ func TestClientStream_ResumeThread(t *testing.T) {
 	assert.Equal(t, "thread-old", stream.SessionID())
 }
 
+func TestClientStreamInput_SendsLocalImage(t *testing.T) {
+	// Given a Codex app-server that accepts multimodal user input,
+	// when the client starts a turn with text and a local image,
+	// then turn/start receives both input items.
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		startReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/start", startReq.Method)
+		respondRPC(h, startReq, map[string]any{"thread": map[string]any{"id": "thread-image"}})
+
+		turnReq := readRPCReq(t, sc)
+		assert.Equal(t, "turn/start", turnReq.Method)
+		assert.JSONEq(t, `{
+			"threadId":"thread-image",
+			"input":[
+				{"type":"text","text":"describe this","text_elements":[]},
+				{"type":"localImage","path":"/tmp/screenshot.png","detail":"high"}
+			]
+		}`, string(turnReq.Params))
+		respondRPC(h, turnReq, map[string]any{"turn": map[string]any{"id": "turn-image", "status": "inProgress"}})
+		h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-image", "turnId": "turn-image", "turn": map[string]any{"id": "turn-image", "status": "completed"}}})
+	}
+
+	client := New(WithAppServerRunnerForTesting(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	stream, err := client.StreamInput(ctx, []UserInput{
+		TextInput("describe this"),
+		LocalImageInput("/tmp/screenshot.png", ImageDetailHigh),
+	})
+	require.NoError(t, err)
+	for stream.Next() {
+	}
+	require.NoError(t, stream.Close(ctx))
+}
+
+func TestSessionStream_ReusesSingleAppServerAcrossTurns(t *testing.T) {
+	// Given a persistent Codex app-server session.
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		startReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/start", startReq.Method)
+		respondRPC(h, startReq, map[string]any{"thread": map[string]any{"id": "thread-reused"}})
+
+		firstTurn := readRPCReq(t, sc)
+		assert.Equal(t, "turn/start", firstTurn.Method)
+		assert.JSONEq(t, `{"threadId":"thread-reused","input":[{"type":"text","text":"first","text_elements":[]}]}`, string(firstTurn.Params))
+		respondRPC(h, firstTurn, map[string]any{"turn": map[string]any{"id": "turn-1", "status": "inProgress"}})
+		h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-reused", "turnId": "turn-1", "turn": map[string]any{"id": "turn-1", "status": "completed"}}})
+
+		secondTurn := readRPCReq(t, sc)
+		assert.Equal(t, "turn/start", secondTurn.Method)
+		assert.JSONEq(t, `{"threadId":"thread-reused","input":[{"type":"text","text":"second","text_elements":[]}]}`, string(secondTurn.Params))
+		respondRPC(h, secondTurn, map[string]any{"turn": map[string]any{"id": "turn-2", "status": "inProgress"}})
+		h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-reused", "turnId": "turn-2", "turn": map[string]any{"id": "turn-2", "status": "completed"}}})
+	}
+
+	client := New(WithAppServerRunnerForTesting(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	sess, err := client.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// When two turns are streamed through the same session.
+	first, err := sess.Stream(ctx, "first")
+	require.NoError(t, err)
+	for first.Next() {
+	}
+	require.NoError(t, first.Err())
+
+	second, err := sess.Stream(ctx, "second")
+	require.NoError(t, err)
+	for second.Next() {
+	}
+	require.NoError(t, second.Err())
+
+	// Then only one app-server process is started and the thread id is reused.
+	require.Len(t, runner.opts, 1)
+	assert.Equal(t, "thread-reused", sess.ID())
+	assert.Equal(t, "thread-reused", second.SessionID())
+}
+
 func TestClientCompact_SendsThreadCompactStartRPC(t *testing.T) {
 	// Given an existing Codex app-server thread.
 	runner := &fakeAppServerRunner{t: t}
@@ -190,6 +281,156 @@ func TestClientCompact_SendsThreadCompactStartRPC(t *testing.T) {
 	assert.Equal(t, "thread-old", events[0].SessionID)
 	assert.Equal(t, EventDone, events[1].Kind)
 	assert.Equal(t, "thread-old", stream.SessionID())
+}
+
+func TestClientGoal_SendsThreadGoalRPCs(t *testing.T) {
+	// Given an existing Codex app-server thread.
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		resumeReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/resume", resumeReq.Method)
+		assert.JSONEq(t, `{"threadId":"thread-goal","excludeTurns":true,"cwd":"/tmp/work","approvalPolicy":"never"}`, string(resumeReq.Params))
+		respondRPC(h, resumeReq, map[string]any{"thread": map[string]any{"id": "thread-goal", "cwd": "/tmp/work"}})
+
+		goalReq := readRPCReq(t, sc)
+		switch goalReq.Method {
+		case "thread/goal/set":
+			assert.JSONEq(t, `{"threadId":"thread-goal","objective":"ship goal rpc","status":"active","tokenBudget":1234}`, string(goalReq.Params))
+			respondRPC(h, goalReq, map[string]any{"goal": map[string]any{
+				"threadId":        "thread-goal",
+				"objective":       "ship goal rpc",
+				"status":          "active",
+				"tokenBudget":     1234,
+				"tokensUsed":      0,
+				"timeUsedSeconds": 0,
+				"createdAt":       11,
+				"updatedAt":       12,
+			}})
+		case "thread/goal/get":
+			assert.JSONEq(t, `{"threadId":"thread-goal"}`, string(goalReq.Params))
+			respondRPC(h, goalReq, map[string]any{"goal": map[string]any{
+				"threadId":        "thread-goal",
+				"objective":       "ship goal rpc",
+				"status":          "active",
+				"tokenBudget":     1234,
+				"tokensUsed":      5,
+				"timeUsedSeconds": 6,
+				"createdAt":       11,
+				"updatedAt":       12,
+			}})
+		case "thread/goal/clear":
+			assert.JSONEq(t, `{"threadId":"thread-goal"}`, string(goalReq.Params))
+			respondRPC(h, goalReq, map[string]any{"cleared": true})
+		default:
+			t.Fatalf("unexpected goal method %q", goalReq.Method)
+		}
+	}
+
+	client := New(
+		WithCwd("/tmp/work"),
+		WithApproval(ApprovalNever),
+		WithAppServerRunnerForTesting(runner),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// When goal metadata is set, read, and cleared.
+	objective := "ship goal rpc"
+	status := GoalStatusActive
+	budget := 1234
+	setGoal, err := client.SetGoal(ctx, "thread-goal", GoalUpdate{
+		Objective:   &objective,
+		Status:      &status,
+		TokenBudget: &budget,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, setGoal)
+	assert.Equal(t, "ship goal rpc", setGoal.Objective)
+	assert.Equal(t, GoalStatusActive, setGoal.Status)
+	require.NotNil(t, setGoal.TokenBudget)
+	assert.Equal(t, 1234, *setGoal.TokenBudget)
+
+	gotGoal, err := client.GetGoal(ctx, "thread-goal")
+	require.NoError(t, err)
+	require.NotNil(t, gotGoal)
+	assert.Equal(t, 5, gotGoal.TokensUsed)
+
+	cleared, err := client.ClearGoal(ctx, "thread-goal")
+	require.NoError(t, err)
+	assert.True(t, cleared)
+}
+
+func TestSessionSetGoal_StartsThreadBeforeFirstTurn(t *testing.T) {
+	// Given a newly opened Codex session with no thread id yet.
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		startReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/start", startReq.Method)
+		assert.JSONEq(t, `{"cwd":"/tmp/work","approvalPolicy":"never"}`, string(startReq.Params))
+		respondRPC(h, startReq, map[string]any{"thread": map[string]any{"id": "thread-new-goal", "cwd": "/tmp/work"}})
+
+		goalReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/goal/set", goalReq.Method)
+		assert.JSONEq(t, `{"threadId":"thread-new-goal","objective":"ship before turn","status":"active"}`, string(goalReq.Params))
+		respondRPC(h, goalReq, map[string]any{"goal": map[string]any{
+			"threadId":        "thread-new-goal",
+			"objective":       "ship before turn",
+			"status":          "active",
+			"tokensUsed":      0,
+			"timeUsedSeconds": 0,
+			"createdAt":       11,
+			"updatedAt":       12,
+		}})
+	}
+
+	client := New(
+		WithCwd("/tmp/work"),
+		WithApproval(ApprovalNever),
+		WithAppServerRunnerForTesting(runner),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	sess, err := client.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// When setting a goal before the first turn, then the wrapper creates the
+	// Codex thread and sets the goal against it.
+	objective := "ship before turn"
+	status := GoalStatusActive
+	goal, err := sess.SetGoal(ctx, GoalUpdate{Objective: &objective, Status: &status})
+	require.NoError(t, err)
+	require.NotNil(t, goal)
+	assert.Equal(t, "thread-new-goal", sess.ID())
+	assert.Equal(t, "thread-new-goal", goal.ThreadID)
+	assert.Equal(t, "ship before turn", goal.Objective)
+}
+
+func TestClientGoal_RequiresThreadID(t *testing.T) {
+	client := New()
+	ctx := context.Background()
+
+	_, err := client.GetGoal(ctx, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "thread id is required")
+
+	objective := "x"
+	_, err = client.SetGoal(ctx, "", GoalUpdate{Objective: &objective})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "thread id is required")
+
+	_, err = client.ClearGoal(ctx, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "thread id is required")
 }
 
 func TestClientStream_PassesModelAndConfigOverrides(t *testing.T) {
@@ -974,6 +1215,149 @@ func TestStream_RequestUserInputRoundTrip(t *testing.T) {
 	for stream.Next() {
 	}
 	require.NoError(t, stream.Close(ctx))
+}
+
+func TestStream_ApprovalRequestRoundTrip(t *testing.T) {
+	tests := []struct {
+		name         string
+		method       string
+		params       map[string]any
+		allow        bool
+		alwaysAllow  bool
+		wantToolName string
+		wantResponse string
+	}{
+		{
+			name:   "Given command approval request, when user allows once, then accept is returned",
+			method: "item/commandExecution/requestApproval",
+			params: map[string]any{
+				"threadId":    "thr-approval",
+				"turnId":      "turn-approval",
+				"itemId":      "item-command",
+				"startedAtMs": float64(1700000000000),
+				"command":     "rm -rf build",
+				"cwd":         "/tmp/work",
+				"reason":      "needs cleanup",
+			},
+			allow:        true,
+			wantToolName: "Bash",
+			wantResponse: `{"id":"approval-1","result":{"decision":"accept"}}`,
+		},
+		{
+			name:   "Given command approval request, when user denies, then decline is returned",
+			method: "item/commandExecution/requestApproval",
+			params: map[string]any{
+				"threadId": "thr-approval",
+				"turnId":   "turn-approval",
+				"itemId":   "item-command",
+				"command":  "curl https://example.com",
+			},
+			allow:        false,
+			wantToolName: "Bash",
+			wantResponse: `{"id":"approval-1","result":{"decision":"decline"}}`,
+		},
+		{
+			name:   "Given file approval request, when user allows for session, then acceptForSession is returned",
+			method: "item/fileChange/requestApproval",
+			params: map[string]any{
+				"threadId":    "thr-approval",
+				"turnId":      "turn-approval",
+				"itemId":      "item-file",
+				"startedAtMs": float64(1700000000000),
+				"reason":      "needs write access",
+				"grantRoot":   "/tmp/work",
+			},
+			allow:        true,
+			alwaysAllow:  true,
+			wantToolName: "FileChange",
+			wantResponse: `{"id":"approval-1","result":{"decision":"acceptForSession"}}`,
+		},
+		{
+			name:   "Given permissions approval request, when user allows for session, then requested permissions are granted for session",
+			method: "item/permissions/requestApproval",
+			params: map[string]any{
+				"threadId":    "thr-approval",
+				"turnId":      "turn-approval",
+				"itemId":      "item-permissions",
+				"startedAtMs": float64(1700000000000),
+				"cwd":         "/tmp/work",
+				"reason":      "needs network and filesystem",
+				"permissions": map[string]any{
+					"network": map[string]any{"domains": []any{"example.com"}},
+					"fileSystem": map[string]any{
+						"writableRoots": []any{"/tmp/work"},
+					},
+				},
+			},
+			allow:        true,
+			alwaysAllow:  true,
+			wantToolName: "Permissions",
+			wantResponse: `{"id":"approval-1","result":{"permissions":{"network":{"domains":["example.com"]},"fileSystem":{"writableRoots":["/tmp/work"]}},"scope":"session"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeAppServerRunner{t: t}
+			responseCaptured := make(chan json.RawMessage, 1)
+			runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+				sc := bufio.NewScanner(h.stdinR)
+				respondRPC(h, readRPCReq(t, sc), map[string]any{})
+				_ = readRPCReq(t, sc) // initialized
+				respondRPC(h, readRPCReq(t, sc), map[string]any{"thread": map[string]any{"id": "thr-approval"}})
+				respondRPC(h, readRPCReq(t, sc), map[string]any{"turn": map[string]any{"id": "turn-approval", "status": "inProgress"}})
+
+				h.send(map[string]any{
+					"id":     "approval-1",
+					"method": tt.method,
+					"params": tt.params,
+				})
+
+				if !sc.Scan() {
+					t.Fatalf("server stdin closed before approval response: %v", sc.Err())
+				}
+				responseCaptured <- append(json.RawMessage(nil), sc.Bytes()...)
+				h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thr-approval", "turnId": "turn-approval", "turn": map[string]any{"id": "turn-approval", "status": "completed"}}})
+			}
+
+			client := New(WithAppServerRunnerForTesting(runner))
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			stream, err := client.Stream(ctx, "approval")
+			require.NoError(t, err)
+
+			require.True(t, stream.Next())
+			ev := stream.Event()
+			require.Equal(t, EventApprovalRequest, ev.Kind)
+			require.NotNil(t, ev.Approval)
+			assert.Equal(t, "approval-1", ev.Approval.RequestID)
+			assert.Equal(t, tt.wantToolName, ev.Approval.ToolName)
+
+			require.NoError(t, stream.SubmitApproval(ctx, ev.Approval.RequestID, tt.allow, tt.alwaysAllow))
+
+			select {
+			case raw := <-responseCaptured:
+				assert.JSONEq(t, tt.wantResponse, string(raw))
+			case <-time.After(2 * time.Second):
+				t.Fatal("approval response was not written")
+			}
+
+			for stream.Next() {
+			}
+			require.NoError(t, stream.Close(ctx))
+		})
+	}
+}
+
+func TestStream_SubmitApprovalUnknownRequestReturnsNoActiveTurn(t *testing.T) {
+	// Given a stream with no matching approval waiter.
+	stream := newStream(nil, 0, "thread", "turn", "")
+
+	// When the user tries to answer an unknown approval request.
+	err := stream.SubmitApproval(context.Background(), "missing", true, false)
+
+	// Then the request is rejected as no active approval turn.
+	require.ErrorIs(t, err, ErrNoActiveTurn)
 }
 
 func TestStream_SteerSendsTurnSteerRPC(t *testing.T) {

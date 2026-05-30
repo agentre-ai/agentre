@@ -10,6 +10,8 @@
 //     用户从菜单选中只补全文字,真正分发由 Enter 走 chat-panel 完成。
 //   - builtin / 其它: 暂不参与 slash 命令。
 
+import i18n from "@/i18n";
+
 export type SlashExec =
   | {
       // 直接以普通用户消息形式发送一段文本(典型例子:claudecode 的 /compact)。
@@ -38,10 +40,21 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "compact",
     label: "/compact",
-    description: "压缩对话上下文,只保留摘要",
+    description: i18n.t("slashCommands.compact.description"),
     resolve(backend) {
       if (backend === "claudecode" || backend === "codex") {
         return { kind: "literal_text", text: "/compact" };
+      }
+      return null;
+    },
+  },
+  {
+    name: "goal",
+    label: "/goal",
+    description: i18n.t("slashCommands.goal.description"),
+    resolve(backend) {
+      if (backend === "codex") {
+        return { kind: "literal_text", text: "/goal " };
       }
       return null;
     },

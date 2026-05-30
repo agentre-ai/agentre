@@ -1,6 +1,7 @@
 // frontend/src/components/agentre/chat-tabs/tab-tooltip.tsx
 import * as React from "react";
 import { Folder } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import {
   Tooltip,
@@ -44,14 +45,17 @@ export function TabTooltip({
   delayDuration = 600,
   children,
 }: Props) {
+  const { t } = useTranslation();
   const sLabel = statusLabel[status];
   const ago =
     lastMessageAt && lastMessageAt > 0 ? relativeTime(lastMessageAt) : "";
   const meta = [
-    sLabel.text,
-    ago ? `${ago} ago` : null,
-    `sess-${sessionId}`,
-    worktreeBranch ? `worktree ${worktreeBranch}` : null,
+    t(`chatTabs.status.${sLabel.text}`),
+    ago ? t("chatTabs.tooltip.ago", { time: ago }) : null,
+    t("chatTabs.tooltip.session", { id: sessionId }),
+    worktreeBranch
+      ? t("chatTabs.tooltip.worktree", { branch: worktreeBranch })
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -94,7 +98,7 @@ export function TabTooltip({
                 ⌘{keyboardIndex}
               </kbd>
             ) : null}
-            激活 · 点 ✕ 关闭
+            {t("chatTabs.tooltip.hint")}
           </div>
         </TooltipContent>
       </Tooltip>

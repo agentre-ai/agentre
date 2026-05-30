@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { Check, ChevronRight, LoaderCircle, Pencil } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ export const FileEditCard: React.FC<CanonicalCardProps> = ({
   resultBlock,
   cwd,
 }) => {
+  const { t } = useTranslation();
   const canonical = (toolBlock as { canonical?: CanonicalDTO }).canonical;
   const [expanded, setExpanded] = React.useState(false);
 
@@ -27,20 +29,24 @@ export const FileEditCard: React.FC<CanonicalCardProps> = ({
   const totalPlus = files.reduce((a, f) => a + (f.plus ?? 0), 0);
   const totalMinus = files.reduce((a, f) => a + (f.minus ?? 0), 0);
   const headerPath = isMulti
-    ? `${files.length} files`
+    ? t("canonical.fileEdit.fileCount", { count: files.length })
     : relativize(files[0].path, cwd);
 
   const hasResult = !!resultBlock;
   const isError = !!resultBlock?.isError;
   const status = isError ? "error" : "running";
-  const statusLabel = isError ? "ERROR" : hasResult ? "DONE" : "RUNNING";
+  const statusLabel = isError
+    ? t("canonical.status.error")
+    : hasResult
+      ? t("canonical.status.done")
+      : t("canonical.status.running");
   const pillConfig = statusConfig[status];
   const StatusIcon = hasResult || isError ? Check : LoaderCircle;
 
   return (
     <section
       data-testid="file-edit-card"
-      aria-label={`${toolBlock.toolName} tool call`}
+      aria-label={t("canonical.fileEdit.aria", { tool: toolBlock.toolName })}
       className={cn(
         "w-full max-w-[720px] overflow-hidden rounded-md border bg-card font-mono text-xs",
         isError ? "border-status-error/40" : "border-border",

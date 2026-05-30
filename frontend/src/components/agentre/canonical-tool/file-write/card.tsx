@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { Check, ChevronRight, Copy, LoaderCircle, Pencil } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
   resultBlock,
   cwd,
 }) => {
+  const { t } = useTranslation();
   const canonical = (toolBlock as { canonical?: CanonicalDTO }).canonical;
   const [expanded, setExpanded] = React.useState(false);
 
@@ -26,14 +28,18 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
   const hasResult = !!resultBlock;
   const isError = !!resultBlock?.isError;
   const status = isError ? "error" : "running";
-  const statusLabel = isError ? "ERROR" : hasResult ? "DONE" : "RUNNING";
+  const statusLabel = isError
+    ? t("canonical.status.error")
+    : hasResult
+      ? t("canonical.status.done")
+      : t("canonical.status.running");
   const pillConfig = statusConfig[status];
   const StatusIcon = hasResult || isError ? Check : LoaderCircle;
 
   return (
     <section
       data-testid="file-write-card"
-      aria-label="Write tool call"
+      aria-label={t("canonical.fileWrite.aria")}
       className={cn(
         "w-full max-w-[720px] overflow-hidden rounded-md border bg-card font-mono text-xs",
         isError ? "border-status-error/40" : "border-border",
@@ -56,11 +62,13 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
           className="size-3.5 shrink-0 text-primary-text"
           aria-hidden="true"
         />
-        <span className="shrink-0 font-semibold text-primary-text">Write</span>
+        <span className="shrink-0 font-semibold text-primary-text">
+          {t("canonical.fileWrite.title")}
+        </span>
         <span className="text-muted-foreground">·</span>
         <span className="min-w-0 truncate text-muted-foreground">{path}</span>
         <span className="rounded-sm bg-status-running-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-status-running">
-          NEW
+          {t("canonical.fileWrite.newBadge")}
         </span>
         {w.lines > 0 && (
           <span className="font-semibold text-status-running">+{w.lines}</span>
@@ -83,7 +91,9 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
       {expanded && (
         <div className="border-t border-border py-2">
           {w.content === "" ? (
-            <div className="px-3 py-1 text-muted-foreground">新建空文件</div>
+            <div className="px-3 py-1 text-muted-foreground">
+              {t("canonical.fileWrite.empty")}
+            </div>
           ) : (
             w.content.split("\n").map((text, i) => (
               <div key={i} className="flex items-center px-3 py-0.5">
@@ -108,6 +118,7 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
 };
 
 function TruncatedBar({ content, lines }: { content: string; lines: number }) {
+  const { t } = useTranslation();
   const [copyState, setCopyState] = React.useState<
     "copied" | "failed" | "idle"
   >("idle");
@@ -128,8 +139,8 @@ function TruncatedBar({ content, lines }: { content: string; lines: number }) {
     }
     try {
       const copied = await copyTextWithToast(content, {
-        errorTitle: "复制完整内容失败",
-        successTitle: "已复制完整内容",
+        errorTitle: t("canonical.fileWrite.copyFailed"),
+        successTitle: t("canonical.fileWrite.copyDone"),
       });
       setCopyState(copied ? "copied" : "failed");
     } catch {
@@ -144,7 +155,7 @@ function TruncatedBar({ content, lines }: { content: string; lines: number }) {
   return (
     <div className="mt-1 flex items-center gap-2 border-t border-border px-3 py-1">
       <span className="text-[11px] text-muted-foreground">
-        内容已截断 · 显示前 {lines} 行
+        {t("canonical.fileWrite.truncated", { lines })}
       </span>
       <span className="ml-auto" />
       <Button
@@ -156,10 +167,10 @@ function TruncatedBar({ content, lines }: { content: string; lines: number }) {
       >
         <Copy data-icon="inline-start" aria-hidden="true" />
         {copyState === "copied"
-          ? "已复制"
+          ? t("common.copied")
           : copyState === "failed"
-            ? "复制失败"
-            : "复制完整内容"}
+            ? t("common.copyFailed")
+            : t("canonical.fileWrite.copyFull")}
       </Button>
     </div>
   );

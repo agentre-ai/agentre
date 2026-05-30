@@ -97,7 +97,7 @@ describe("DeviceProvidersSync", () => {
     expect(screen.queryByTestId("missing-badge-k-c")).not.toBeInTheDocument();
 
     // Copy button for k-b — use fireEvent.click to avoid pointer-events issues
-    const copyBtn = screen.getByLabelText(/复制修复命令 k-b/);
+    const copyBtn = screen.getByLabelText(/Copy fix command k-b/);
     fireEvent.click(copyBtn);
     await waitFor(() =>
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(fixCmdText),
@@ -113,7 +113,9 @@ describe("DeviceProvidersSync", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText(/没有关联任何本地 Agent 后端 Provider/),
+        screen.getByText(
+          /No local Agent Backend providers are linked to this device/,
+        ),
       ).toBeInTheDocument(),
     );
   });

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"log"
 	"os"
@@ -49,7 +51,7 @@ func main() {
 	appInst := app.NewApp()
 
 	// Create application with options
-	err = wails.Run(newWailsOptions(appInst, assets))
+	err = wails.Run(newWailsOptionsForDataDir(appInst, assets, stdruntime.GOOS, runtime.DataDir()))
 
 	if err != nil {
 		logger.Default().Error("wails run failed", zap.Error(err))
@@ -57,11 +59,7 @@ func main() {
 	}
 }
 
-func newWailsOptions(a *app.App, assets fs.FS) *options.App {
-	return newWailsOptionsForGOOS(a, assets, stdruntime.GOOS)
-}
-
-func newWailsOptionsForGOOS(a *app.App, assets fs.FS, goos string) *options.App {
+func newWailsOptionsForDataDir(a *app.App, assets fs.FS, goos, dataDir string) *options.App {
 	appOptions := &options.App{
 		Title:       "Agentre",
 		Width:       defaultWindowWidth,
@@ -78,6 +76,14 @@ func newWailsOptionsForGOOS(a *app.App, assets fs.FS, goos string) *options.App 
 		Mac: &mac.Options{
 			TitleBar: mac.TitleBarHiddenInset(),
 		},
+		SingleInstanceLock: &options.SingleInstanceLock{
+			UniqueId: singleInstanceUniqueID(dataDir),
+			OnSecondInstanceLaunch: func(secondInstanceData options.SecondInstanceData) {
+				logger.Default().Info("second instance launch",
+					zap.Strings("args", secondInstanceData.Args),
+					zap.String("workingDirectory", secondInstanceData.WorkingDirectory))
+			},
+		},
 		Bind: []interface{}{
 			a,
 		},
@@ -86,6 +92,11 @@ func newWailsOptionsForGOOS(a *app.App, assets fs.FS, goos string) *options.App 
 	configurePlatformWindowOptions(appOptions, goos)
 
 	return appOptions
+}
+
+func singleInstanceUniqueID(dataDir string) string {
+	sum := sha256.Sum256([]byte(dataDir))
+	return "agentre-" + hex.EncodeToString(sum[:8])
 }
 
 func configurePlatformWindowOptions(appOptions *options.App, goos string) {

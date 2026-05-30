@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ChevronDown, Loader2, Search, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -71,6 +72,7 @@ function SessionRow({
   session: SessionsPopoverItem;
   onSelect: (id: number, opts?: { newTab?: boolean }) => void;
 }) {
+  const { t } = useTranslation();
   const effective = useEffectiveSessionStatus(session.id, {
     agentStatus: session.status,
     needsAttention: false,
@@ -88,7 +90,7 @@ function SessionRow({
       <StatusDot status={status} size="xs" className="mt-1.5" />
       <div className="min-w-0 flex-1">
         <div className="truncate text-xs font-medium text-foreground">
-          {session.title || "(未命名)"}
+          {session.title || t("sessionsPopover.untitled")}
         </div>
         <div className="mt-0.5 truncate font-mono text-2xs text-muted-foreground">
           {relativeTime(session.lastMessageAt)}
@@ -114,6 +116,7 @@ function SessionsPopover({
   onClose,
   onSelectSession,
 }: SessionsPopoverProps) {
+  const { t } = useTranslation();
   const [sessions, setSessions] = React.useState<SessionsPopoverItem[]>([]);
   const [total, setTotal] = React.useState(0);
   const [hasMore, setHasMore] = React.useState(false);
@@ -179,13 +182,15 @@ function SessionsPopover({
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-semibold">{header.name}</div>
           <div className="mt-0.5 flex items-center gap-1.5 font-mono text-2xs text-muted-foreground">
-            <span>{total} 个会话</span>
+            <span>{t("sessionsPopover.total", { count: total })}</span>
             {(header.activeCount ?? 0) > 0 ? (
               <>
                 <span className="text-border-strong">·</span>
                 <StatusDot status="running" size="xs" />
                 <span className="font-semibold text-status-running">
-                  {header.activeCount} 运行中
+                  {t("sessionsPopover.running", {
+                    count: header.activeCount,
+                  })}
                 </span>
               </>
             ) : null}
@@ -195,7 +200,7 @@ function SessionsPopover({
           type="button"
           variant="ghost"
           size="icon-xs"
-          aria-label="关闭"
+          aria-label={t("common.close")}
           onClick={onClose}
         >
           <X data-icon="only" aria-hidden="true" />
@@ -209,8 +214,8 @@ function SessionsPopover({
             aria-hidden="true"
           />
           <Input
-            aria-label="按标题筛选会话"
-            placeholder="标题搜索…"
+            aria-label={t("sessionsPopover.search.aria")}
+            placeholder={t("sessionsPopover.search.placeholder")}
             className="h-7 bg-input-bg pl-7 pr-2 text-xs"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -221,12 +226,12 @@ function SessionsPopover({
       <div className="min-h-0 flex-1 overflow-auto px-1.5 py-1.5">
         {error ? (
           <div className="px-3 py-4 text-center text-2xs text-status-error">
-            加载失败：{error}
+            {t("sessionsPopover.loadFailed", { error })}
           </div>
         ) : null}
         {!error && sessions.length === 0 && !loading ? (
           <div className="px-3 py-6 text-center text-2xs text-muted-foreground">
-            暂无会话
+            {t("sessionsPopover.empty")}
           </div>
         ) : null}
         {visibleSessions.map((s) => (
@@ -241,7 +246,7 @@ function SessionsPopover({
         ))}
         {filterValue && visibleSessions.length === 0 && sessions.length > 0 ? (
           <div className="px-3 py-4 text-center text-2xs text-muted-foreground">
-            未匹配到「{filter.trim()}」
+            {t("sessionsPopover.noMatches", { query: filter.trim() })}
           </div>
         ) : null}
       </div>
@@ -249,7 +254,10 @@ function SessionsPopover({
       {hasMore || loading ? (
         <footer className="flex items-center justify-center gap-2 border-t border-border bg-muted/40 px-3 py-1.5">
           <span className="font-mono text-2xs text-muted-foreground">
-            已加载 {sessions.length} / {total}
+            {t("sessionsPopover.loaded", {
+              loaded: sessions.length,
+              total,
+            })}
           </span>
           {hasMore ? (
             <>
@@ -267,7 +275,7 @@ function SessionsPopover({
                 ) : (
                   <ChevronDown className="size-3" aria-hidden="true" />
                 )}
-                加载更多
+                {t("sessionsPopover.loadMore")}
               </Button>
             </>
           ) : null}

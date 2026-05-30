@@ -2,6 +2,29 @@ import type { ChatTab } from "./chat-tabs-store";
 
 export const CHAT_TABS_STORAGE_KEY = "agentre.chatTabs";
 
+type PersistMeta =
+  | { kind: "session"; sessionId: number }
+  | {
+      kind: "terminal";
+      projectId: number;
+      deviceId: string;
+      terminalId: string;
+    };
+
+type PersistedTabV2 = {
+  id: string;
+  meta: PersistMeta;
+  isPinned: boolean;
+  pinAt: number;
+  openedAt: number;
+  title?: string;
+};
+type PersistedV2 = {
+  v: 2;
+  tabs: PersistedTabV2[];
+  activeTabId: string | null;
+};
+
 type PersistedV1 = {
   v: 1;
   tabs: Array<{
@@ -23,30 +46,52 @@ function getStorage(): Storage | null {
   }
 }
 
+function persistable(t: ChatTab): PersistMeta | null {
+  if (t.meta.kind === "session" && !t.isPreview) return t.meta;
+  if (t.meta.kind === "terminal") return t.meta;
+  return null;
+}
+
 export function writePersistedTabs(
   tabs: ChatTab[],
   activeTabId: string | null,
 ): void {
   const storage = getStorage();
   if (!storage) return;
-  const persisted: PersistedV1 = {
-    v: 1,
-    tabs: tabs
-      .filter((t) => t.meta.kind === "session" && !t.isPreview)
-      .map((t) => ({
-        id: t.id,
-        sessionId: (t.meta as { kind: "session"; sessionId: number }).sessionId,
-        isPinned: t.isPinned,
-        pinAt: t.pinAt,
-        openedAt: t.openedAt,
-      })),
+  const out: PersistedV2 = {
+    v: 2,
+    tabs: tabs.flatMap((t) => {
+      const meta = persistable(t);
+      if (!meta) return [];
+      return [
+        {
+          id: t.id,
+          meta,
+          isPinned: t.isPinned,
+          pinAt: t.pinAt,
+          openedAt: t.openedAt,
+          title: t.title,
+        },
+      ];
+    }),
     activeTabId,
   };
   try {
-    storage.setItem(CHAT_TABS_STORAGE_KEY, JSON.stringify(persisted));
+    storage.setItem(CHAT_TABS_STORAGE_KEY, JSON.stringify(out));
   } catch {
     /* quota / private mode */
   }
+}
+
+function toChatTab(
+  id: string,
+  meta: PersistMeta,
+  isPinned: boolean,
+  pinAt: number,
+  openedAt: number,
+  title?: string,
+): ChatTab {
+  return { id, meta, isPreview: false, isPinned, pinAt, openedAt, title };
 }
 
 export function readPersistedTabs(): {
@@ -68,23 +113,66 @@ export function readPersistedTabs(): {
   } catch {
     return null;
   }
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    (parsed as { v: number }).v !== 1
-  ) {
-    return null;
+  if (!parsed || typeof parsed !== "object") return null;
+  const v = (parsed as { v?: number }).v;
+
+  if (v === 2) {
+    const p = parsed as PersistedV2;
+    const tabs: ChatTab[] = [];
+    for (const r of p.tabs ?? []) {
+      const m = r.meta;
+      if (m?.kind === "session" && typeof m.sessionId === "number") {
+        tabs.push(
+          toChatTab(
+            r.id,
+            { kind: "session", sessionId: m.sessionId },
+            r.isPinned,
+            r.pinAt,
+            r.openedAt,
+            r.title,
+          ),
+        );
+      } else if (
+        m?.kind === "terminal" &&
+        typeof m.projectId === "number" &&
+        typeof m.deviceId === "string" &&
+        typeof m.terminalId === "string"
+      ) {
+        tabs.push(
+          toChatTab(
+            r.id,
+            {
+              kind: "terminal",
+              projectId: m.projectId,
+              deviceId: m.deviceId,
+              terminalId: m.terminalId,
+            },
+            r.isPinned,
+            r.pinAt,
+            r.openedAt,
+            r.title,
+          ),
+        );
+      }
+    }
+    return { tabs, activeTabId: p.activeTabId };
   }
-  const p = parsed as PersistedV1;
-  return {
-    tabs: p.tabs.map((r) => ({
-      id: r.id,
-      meta: { kind: "session" as const, sessionId: r.sessionId },
-      isPreview: false,
-      isPinned: r.isPinned,
-      pinAt: r.pinAt,
-      openedAt: r.openedAt,
-    })),
-    activeTabId: p.activeTabId,
-  };
+
+  if (v === 1) {
+    const p = parsed as PersistedV1;
+    return {
+      tabs: (p.tabs ?? []).map((r) =>
+        toChatTab(
+          r.id,
+          { kind: "session", sessionId: r.sessionId },
+          r.isPinned,
+          r.pinAt,
+          r.openedAt,
+        ),
+      ),
+      activeTabId: p.activeTabId,
+    };
+  }
+
+  return null;
 }

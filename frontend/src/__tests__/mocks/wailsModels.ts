@@ -2,6 +2,10 @@
 // Wails-generated model classes are just plain-object pass-through constructors.
 
 class ModelClass {
+  static createFrom(source: Record<string, unknown> = {}) {
+    return new this(source);
+  }
+
   constructor(init?: Record<string, unknown>) {
     if (init) Object.assign(this, init);
   }
@@ -27,3 +31,7 @@ export const agent_backend_svc = {
 };
 
 export const httpgateway = {};
+
+export const chat_svc = {
+  SendRequest: ModelClass,
+};

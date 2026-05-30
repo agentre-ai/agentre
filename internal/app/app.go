@@ -14,7 +14,7 @@ import (
 
 	"agentre/internal/bootstrap"
 	"agentre/internal/buildinfo"
-	"agentre/internal/pkg/agentruntime/runtimes/claudecode"
+	"agentre/internal/pkg/agentruntime"
 	"agentre/internal/pkg/code"
 	"agentre/internal/service/chat_svc"
 	"agentre/internal/service/data_svc"
@@ -22,6 +22,7 @@ import (
 	"agentre/internal/service/remote_device_svc"
 	watcher "agentre/internal/service/remote_device_watcher_svc"
 	"agentre/internal/service/server_svc"
+	"agentre/internal/service/terminal_svc"
 
 	"github.com/cago-frame/cago/configs"
 	"github.com/cago-frame/cago/pkg/i18n"
@@ -34,6 +35,8 @@ import (
 type App struct {
 	ctx              context.Context
 	hookPollerCancel context.CancelFunc
+	ccUsageStop      func()
+	terminalSvc      *terminal_svc.Service
 
 	lastImportPath   string
 	lastImportPathMu sync.Mutex
@@ -52,10 +55,13 @@ func NewApp() *App {
 	return &App{}
 }
 
+var resetStaleActiveSessions = bootstrap.ResetStaleActiveSessions
+
 // Startup is wired to wails OnStartup. The context is saved so we can call
 // the runtime methods.
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	a.resetStaleSessionsOnStartup(ctx)
 	a.registerChatService()
 	a.hookPollerCancel = hook_svc.StartEmailPoller(ctx)
 
@@ -66,11 +72,19 @@ func (a *App) Startup(ctx context.Context) {
 	bootstrap.ServerBoot(context.Background())
 
 	// Remote device watcher：注入 wails 事件 emitter,Boot 拉起所有 ACTIVE 设备的 watcher。
+	// 顺带把 device online/offline 事件接到 cc_usage_svc(动态起/停 per-device 配额 ticker)。
 	remoteDeviceEmit := watcher.EmitterFunc(func(p watcher.StateEvent) {
 		wailsruntime.EventsEmit(a.ctx, watcher.EventName, p)
+		a.onRemoteDeviceState(p.ID, p.Online)
 	})
 	bootstrap.InitRemoteDeviceWatcher(context.Background(), remoteDeviceEmit)
 	bootstrap.RemoteDeviceWatcherBoot(context.Background())
+
+	// Claude Code OAuth usage HUD:启动后台 60s 轮询,wails event "cc_usage:update"
+	// 推送给前端 QuotaMeter。Shutdown 时停所有 ticker。
+	a.ccUsageStop = a.startCCUsage()
+
+	a.terminalSvc = newTerminalService(a.ctx)
 
 	//nolint:gosec // G118: background poll deliberately outlives request scope
 	go a.startAutoUpdateCheck()
@@ -78,11 +92,21 @@ func (a *App) Startup(ctx context.Context) {
 	logger.Default().Info("app startup", zap.Any("info", a.Info()))
 }
 
+func (a *App) resetStaleSessionsOnStartup(ctx context.Context) {
+	if err := resetStaleActiveSessions(ctx); err != nil {
+		logger.Ctx(ctx).Warn("app startup: reset stale active sessions", zap.Error(err))
+	}
+}
+
 // Shutdown is wired to wails OnShutdown.
 func (a *App) Shutdown(ctx context.Context) {
 	if a.hookPollerCancel != nil {
 		a.hookPollerCancel()
 		a.hookPollerCancel = nil
+	}
+	if a.ccUsageStop != nil {
+		a.ccUsageStop()
+		a.ccUsageStop = nil
 	}
 	// 关停 remote device watcher：让长连守护 goroutine 全部退出。
 	if w := watcher.Default(); w != nil {
@@ -97,8 +121,11 @@ func (a *App) Shutdown(ctx context.Context) {
 			}
 		}
 	}
-	// 收尾常驻 claudecode 子进程；cache.RemoveAll 异步 close，不阻塞 wails 退出。
-	claudecode.Default().CloseAllSessions(ctx)
+	// 收尾常驻 CLI 子进程；pool.RemoveAll 异步 close，不阻塞 wails 退出。
+	agentruntime.DefaultCLISessionPool().RemoveAll()
+	if a.terminalSvc != nil {
+		a.terminalSvc.Shutdown()
+	}
 	logger.Ctx(ctx).Info("app shutdown")
 }
 

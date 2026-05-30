@@ -25,6 +25,10 @@ const (
 	KeyDownloadMirror = "update.download_mirror"
 	// KeyLastUpdateCheck 上次"检查更新"的 Unix 时间戳，启动自动检查用它做 24h 节流。
 	KeyLastUpdateCheck = "update.last_check"
+
+	// KeyDebugLogging 是否开启 debug 级别日志（"true"/"false"）；缺省关闭。
+	// 取代旧的 AGENTRE_DEBUG 环境变量，由「设置 → 版本 & 更新」开关写入。
+	KeyDebugLogging = "logger.debug_enabled"
 )
 
 // DefaultProxyListenHost 缺省监听地址 —— loopback，只允许本机访问。
@@ -92,6 +96,17 @@ func ParseProxyPort(v string) int {
 		return 0
 	}
 	return n
+}
+
+// ParseDebugLogging 解析 logger.debug_enabled 取值；"true"/"1"/"yes"/"on"（忽略大小写、
+// 前后空白）视为开启，其余一律关闭。给 bootstrap 启动恢复开关时复用。
+func ParseDebugLogging(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // ValidateUpdateChannel 校验 update.channel 取值是否为合法通道名。

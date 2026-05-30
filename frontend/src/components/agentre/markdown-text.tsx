@@ -9,6 +9,7 @@ import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 
 import { CodeBlock } from "./code-block";
+import { RichLink } from "./rich-link";
 
 type MarkdownElementNode = {
   tagName?: string;
@@ -42,25 +43,33 @@ function codeBlockLanguage(className: string): string {
   return match?.[1] ?? "code";
 }
 
-// markdownComponents 给 react-markdown 提供按 tailwind token 调过的元素映射。
+const SAFE_HREF_PATTERNS: RegExp[] = [
+  /^https?:/i,
+  /^mailto:/i,
+  /^tel:/i,
+  /^file:\/\//i,
+  /^www\./i,
+  /^\//, // POSIX 绝对
+  /^[A-Za-z]:[\\/]/, // Windows 绝对
+];
+
+function whitelistUrl(url: string): string {
+  for (const p of SAFE_HREF_PATTERNS) {
+    if (p.test(url)) return url;
+  }
+  return "";
+}
+
+// markdownComponentsStatic 给 react-markdown 提供按 tailwind token 调过的元素映射。
 // 没有装 @tailwindcss/typography，所以手工把常用块/行内元素的样式补上，
 // 保持和 chat 气泡内的字号 / 间距协调。
 //
 // 每个 component 都显式 destruct 出 `node` 扔掉:react-markdown 给 components
 // 传 props 时会带 hast 节点对象,直接 `{...props}` 会把它 spread 到 DOM,
 // 浏览器渲染成 <p node="[object Object]"> 这种垃圾属性。
-const markdownComponents: Components = {
-  a: ({ node: _node, className, ...props }) => (
-    <a
-      {...props}
-      className={cn(
-        "text-primary-text underline underline-offset-2 hover:opacity-80",
-        className,
-      )}
-      target="_blank"
-      rel="noreferrer noopener"
-    />
-  ),
+//
+// `a` 不在这里定义——它需要 cwd 上下文，所以在 MarkdownText 的 useMemo 里动态构建。
+const markdownComponentsStatic: Components = {
   blockquote: ({ node: _node, className, ...props }) => (
     <blockquote
       {...props}
@@ -201,15 +210,34 @@ const markdownRehypePlugins: ReactMarkdownOptions["rehypePlugins"] = [
 
 export const MarkdownText = React.memo(function MarkdownText({
   text,
+  cwd,
 }: {
   text: string;
+  cwd?: string;
 }) {
+  const components = React.useMemo<Components>(
+    () => ({
+      ...markdownComponentsStatic,
+      a: ({ node: _node, href, children, className }) => (
+        <RichLink
+          href={href}
+          className={typeof className === "string" ? className : undefined}
+          cwd={cwd}
+        >
+          {children}
+        </RichLink>
+      ),
+    }),
+    [cwd],
+  );
+
   return (
     <div className="markdown-body break-words text-sm leading-relaxed">
       <ReactMarkdown
-        components={markdownComponents}
+        components={components}
         remarkPlugins={markdownRemarkPlugins}
         rehypePlugins={markdownRehypePlugins}
+        urlTransform={whitelistUrl}
       >
         {text}
       </ReactMarkdown>

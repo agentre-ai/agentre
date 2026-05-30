@@ -1,13 +1,18 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
+  Bug,
   CheckCircle2,
   Download,
+  ExternalLink,
+  FolderOpen,
   Info,
   Loader2,
   RefreshCw,
   RotateCw,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -29,18 +34,27 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
 import { Info as FetchAppInfo } from "../../../wailsjs/go/app/App";
-import { EventsOff, EventsOn } from "../../../wailsjs/runtime/runtime";
+import {
+  BrowserOpenURL,
+  EventsOff,
+  EventsOn,
+} from "../../../wailsjs/runtime/runtime";
 import {
   CHECKSUM_FETCH_ERROR_PREFIX,
   checkForUpdate,
   downloadAndInstallUpdate,
   getAvailableMirrors,
+  getBugReportInfo,
+  getDebugLogging,
   getDownloadMirror,
   getUpdateChannel,
+  openLogsDir,
   restartApp,
+  setDebugLogging,
   setDownloadMirror,
   setUpdateChannel,
   type MirrorInfo,
@@ -49,16 +63,18 @@ import {
 } from "./update-api";
 
 const CHANNEL_LABEL: Record<UpdateChannel, string> = {
-  stable: "稳定版",
-  beta: "测试版",
-  nightly: "每夜构建",
+  stable: "update.channel.stable.label",
+  beta: "update.channel.beta.label",
+  nightly: "update.channel.nightly.label",
 };
 
 const CHANNEL_DESC: Record<UpdateChannel, string> = {
-  stable: "面向所有用户的正式版本，更新频率最低。",
-  beta: "尝鲜新特性，可能含少量已知问题。",
-  nightly: "每日构建，更新最快，稳定性最低。",
+  stable: "update.channel.stable.description",
+  beta: "update.channel.beta.description",
+  nightly: "update.channel.nightly.description",
 };
+
+const REPOSITORY_URL = "https://github.com/agentre-ai/agentre";
 
 // MIRROR_CUSTOM_ID select 中"自定义"选项的特殊值；选中时显示 input。
 const MIRROR_CUSTOM_ID = "__custom__";
@@ -74,8 +90,8 @@ type Phase =
 
 type ChecksumPrompt = { open: boolean; reason: string };
 
-function formatVersion(v: string): string {
-  if (!v) return "未知";
+function formatVersion(v: string, unknownLabel: string): string {
+  if (!v) return unknownLabel;
   return v.startsWith("v") ? v : `v${v}`;
 }
 
@@ -100,6 +116,7 @@ function pickMirrorOption(
 }
 
 export function UpdateSection() {
+  const { t } = useTranslation();
   const [appVersion, setAppVersion] = React.useState<string>("");
   const [appCommit, setAppCommit] = React.useState<string>("");
   const [channel, setChannel] = React.useState<UpdateChannel>("stable");
@@ -108,6 +125,7 @@ export function UpdateSection() {
     React.useState<string>("github");
   const [customMirror, setCustomMirror] = React.useState<string>("");
   const [phase, setPhase] = React.useState<Phase>({ kind: "idle" });
+  const [debugEnabled, setDebugEnabled] = React.useState<boolean>(false);
   const [checksumPrompt, setChecksumPrompt] = React.useState<ChecksumPrompt>({
     open: false,
     reason: "",
@@ -139,6 +157,14 @@ export function UpdateSection() {
         setCustomMirror(picked.customDraft);
       } catch (err) {
         console.warn("fetch update settings failed", err);
+      }
+
+      try {
+        const on = await getDebugLogging();
+        if (cancelled) return;
+        setDebugEnabled(on);
+      } catch (err) {
+        console.warn("fetch debug logging failed", err);
       }
     })();
     return () => {
@@ -268,16 +294,75 @@ export function UpdateSection() {
     }
   }, []);
 
+  const handleReportBug = React.useCallback(async () => {
+    const params = new URLSearchParams({
+      template: "bug_report.yml",
+      labels: "bug",
+    });
+    try {
+      const info = await getBugReportInfo();
+      const version = info.version + (info.commit ? ` (${info.commit})` : "");
+      if (version.trim()) params.set("version", version);
+      if (info.osLabel) params.set("os", info.osLabel);
+    } catch (err) {
+      // 取不到诊断信息时仍然打开模板，让用户手动填写。
+      console.warn("fetch bug report info failed", err);
+    }
+    BrowserOpenURL(`${REPOSITORY_URL}/issues/new?${params.toString()}`);
+  }, []);
+
+  const handleOpenLogs = React.useCallback(async () => {
+    try {
+      await openLogsDir();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const handleDebugToggle = React.useCallback(
+    async (next: boolean) => {
+      setDebugEnabled(next);
+      try {
+        await setDebugLogging(next);
+        toast.success(
+          next
+            ? t("update.debug.enabledToast")
+            : t("update.debug.disabledToast"),
+        );
+      } catch (err) {
+        setDebugEnabled(!next);
+        toast.error(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [t],
+  );
+
   const checkButtonState = (() => {
     if (phase.kind === "checking") {
-      return { disabled: true, label: "检查中...", icon: Loader2, spin: true };
+      return {
+        disabled: true,
+        label: t("update.actions.checking"),
+        icon: Loader2,
+        spin: true,
+      };
     }
     if (phase.kind === "downloading") {
-      return { disabled: true, label: "下载中...", icon: Loader2, spin: true };
+      return {
+        disabled: true,
+        label: t("update.actions.downloading"),
+        icon: Loader2,
+        spin: true,
+      };
     }
-    return { disabled: false, label: "检查更新", icon: RefreshCw, spin: false };
+    return {
+      disabled: false,
+      label: t("update.actions.check"),
+      icon: RefreshCw,
+      spin: false,
+    };
   })();
   const CheckIcon = checkButtonState.icon;
+  const unknownVersionLabel = t("update.version.unknown");
 
   return (
     <>
@@ -286,21 +371,24 @@ export function UpdateSection() {
       <section className="overflow-hidden rounded-lg border border-border bg-card">
         <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <h2 className="text-sm font-semibold">当前版本</h2>
+            <h2 className="text-sm font-semibold">
+              {t("update.currentVersion.title")}
+            </h2>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              通过 GitHub Releases 检查并安装新版本。
+              {t("update.currentVersion.description")}
             </p>
           </div>
           <Badge
             variant="secondary"
             className="rounded-sm px-1.5 py-0 font-mono text-2xs font-medium"
           >
-            {formatVersion(appVersion)}
+            {formatVersion(appVersion, unknownVersionLabel)}
             {appCommit ? ` · ${appCommit}` : ""}
           </Badge>
         </div>
 
         <div className="flex flex-col gap-4 p-4">
+          <RepositoryRow />
           <ChannelRow
             channel={channel}
             onChange={handleChannelChange}
@@ -334,10 +422,20 @@ export function UpdateSection() {
             {phase.kind === "uptodate" ? (
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                 <CheckCircle2 className="size-3.5 text-emerald-500" />
-                已是最新版本
+                {t("update.status.upToDate")}
               </span>
             ) : null}
+            <Button type="button" variant="outline" onClick={handleReportBug}>
+              <Bug aria-hidden="true" className="size-4" />
+              {t("update.actions.reportBug")}
+            </Button>
+            <Button type="button" variant="outline" onClick={handleOpenLogs}>
+              <FolderOpen aria-hidden="true" className="size-4" />
+              {t("update.actions.openLogs")}
+            </Button>
           </div>
+
+          <DebugRow enabled={debugEnabled} onToggle={handleDebugToggle} />
         </div>
       </section>
 
@@ -367,14 +465,78 @@ export function UpdateSection() {
 }
 
 function SectionHeader() {
+  const { t } = useTranslation();
+
   return (
     <div className="flex max-w-3xl flex-col gap-1.5">
       <h1 className="text-2xl font-semibold tracking-normal">
-        版本 &amp; 更新
+        {t("update.header.title")}
       </h1>
       <p className="text-sm leading-relaxed text-muted-foreground">
-        启动时会自动后台检查一次新版本。也可以手动切换通道或选择下载镜像加速国内访问。
+        {t("update.header.description")}
       </p>
+    </div>
+  );
+}
+
+function RepositoryRow() {
+  const { t } = useTranslation();
+  const handleClick = React.useCallback(
+    (event: React.MouseEvent<HTMLAnchorElement>) => {
+      event.preventDefault();
+      BrowserOpenURL(REPOSITORY_URL);
+    },
+    [],
+  );
+
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-sm font-medium">
+          {t("update.repository.title")}
+        </span>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {t("update.repository.description")}
+        </p>
+      </div>
+      <a
+        href={REPOSITORY_URL}
+        target="_blank"
+        rel="noreferrer"
+        onClick={handleClick}
+        className="inline-flex min-w-0 items-center gap-1.5 text-xs font-medium text-agent-1 underline-offset-4 hover:underline sm:max-w-[320px]"
+      >
+        <span className="truncate">{REPOSITORY_URL}</span>
+        <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
+      </a>
+    </div>
+  );
+}
+
+function DebugRow({
+  enabled,
+  onToggle,
+}: {
+  enabled: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const labelId = React.useId();
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span id={labelId} className="text-sm font-medium">
+          {t("update.debug.title")}
+        </span>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {t("update.debug.description")}
+        </p>
+      </div>
+      <Switch
+        checked={enabled}
+        onCheckedChange={onToggle}
+        aria-labelledby={labelId}
+      />
     </div>
   );
 }
@@ -388,15 +550,16 @@ function ChannelRow({
   onChange: (next: string) => void;
   disabled: boolean;
 }) {
+  const { t } = useTranslation();
   const labelId = React.useId();
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex min-w-0 flex-col gap-0.5">
         <span id={labelId} className="text-sm font-medium">
-          更新通道
+          {t("update.channel.title")}
         </span>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          {CHANNEL_DESC[channel]}
+          {t(CHANNEL_DESC[channel])}
         </p>
       </div>
       <div className="w-full sm:w-[220px]">
@@ -407,7 +570,7 @@ function ChannelRow({
           <SelectContent>
             {(["stable", "beta", "nightly"] as const).map((c) => (
               <SelectItem key={c} value={c}>
-                {CHANNEL_LABEL[c]}
+                {t(CHANNEL_LABEL[c])}
               </SelectItem>
             ))}
           </SelectContent>
@@ -434,16 +597,16 @@ function MirrorRow({
   onCustomBlur: () => void;
   disabled: boolean;
 }) {
+  const { t } = useTranslation();
   const labelId = React.useId();
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="flex min-w-0 flex-col gap-0.5 sm:max-w-[300px]">
         <span id={labelId} className="text-sm font-medium">
-          下载镜像
+          {t("update.mirror.title")}
         </span>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          国内访问 GitHub 慢时可以走加速镜像。自定义需保留协议头（例如
-          https://your.mirror/）。
+          {t("update.mirror.description")}
         </p>
       </div>
       <div className="flex w-full flex-col gap-2 sm:w-[260px]">
@@ -461,7 +624,9 @@ function MirrorRow({
                 {m.name}
               </SelectItem>
             ))}
-            <SelectItem value={MIRROR_CUSTOM_ID}>自定义...</SelectItem>
+            <SelectItem value={MIRROR_CUSTOM_ID}>
+              {t("update.mirror.custom")}
+            </SelectItem>
           </SelectContent>
         </Select>
         {selectValue === MIRROR_CUSTOM_ID ? (
@@ -492,15 +657,23 @@ function AvailableCard({
   progress: number;
   onDownload: () => void;
 }) {
+  const { t } = useTranslation();
+  const unknownTimeLabel = t("update.release.unknownTime");
+  const unknownVersionLabel = t("update.version.unknown");
+
   return (
     <section className="overflow-hidden rounded-lg border border-agent-1/30 bg-agent-1/5">
       <div className="flex flex-wrap items-center gap-3 border-b border-agent-1/20 px-4 py-3">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <h2 className="text-sm font-semibold text-agent-1">
-            发现新版本 {formatVersion(info.latestVersion)}
+            {t("update.release.available", {
+              version: formatVersion(info.latestVersion, unknownVersionLabel),
+            })}
           </h2>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            发布于 {info.publishedAt || "未知时间"}
+            {t("update.release.publishedAt", {
+              time: info.publishedAt || unknownTimeLabel,
+            })}
           </p>
         </div>
       </div>
@@ -511,7 +684,9 @@ function AvailableCard({
             {info.releaseNotes}
           </pre>
         ) : (
-          <p className="text-xs text-muted-foreground">本次发布暂无说明。</p>
+          <p className="text-xs text-muted-foreground">
+            {t("update.release.noNotes")}
+          </p>
         )}
 
         {downloading ? (
@@ -523,7 +698,7 @@ function AvailableCard({
               />
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>下载中</span>
+              <span>{t("update.actions.downloadingShort")}</span>
               <span className="font-mono">{formatProgress(progress)}</span>
             </div>
           </div>
@@ -531,7 +706,7 @@ function AvailableCard({
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" onClick={onDownload}>
               <Download aria-hidden="true" className="size-4" />
-              下载并安装
+              {t("update.actions.downloadAndInstall")}
             </Button>
           </div>
         )}
@@ -547,22 +722,27 @@ function InstalledCard({
   info: UpdateInfo;
   onRestart: () => void;
 }) {
+  const { t } = useTranslation();
+  const unknownVersionLabel = t("update.version.unknown");
+
   return (
     <section className="overflow-hidden rounded-lg border border-emerald-500/30 bg-emerald-500/5">
       <div className="flex flex-wrap items-center gap-3 border-b border-emerald-500/20 px-4 py-3">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <h2 className="text-sm font-semibold text-emerald-600">
-            {formatVersion(info.latestVersion)} 已安装
+            {t("update.installed.title", {
+              version: formatVersion(info.latestVersion, unknownVersionLabel),
+            })}
           </h2>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            重启应用以加载新版本。
+            {t("update.installed.description")}
           </p>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 p-4">
         <Button type="button" onClick={onRestart}>
           <RotateCw aria-hidden="true" className="size-4" />
-          立即重启
+          {t("update.actions.restartNow")}
         </Button>
       </div>
     </section>
@@ -570,10 +750,14 @@ function InstalledCard({
 }
 
 function ErrorCard({ message }: { message: string }) {
+  const { t } = useTranslation();
+
   return (
     <Alert variant="destructive">
       <AlertCircle className="size-4" aria-hidden="true" />
-      <AlertTitle className="text-xs font-semibold">操作失败</AlertTitle>
+      <AlertTitle className="text-xs font-semibold">
+        {t("update.error.title")}
+      </AlertTitle>
       <AlertDescription className="text-2xs leading-relaxed">
         {message}
       </AlertDescription>
@@ -592,6 +776,8 @@ function ChecksumDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
+
   return (
     <Dialog
       open={open}
@@ -601,10 +787,10 @@ function ChecksumDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Info className="size-4 text-amber-500" aria-hidden="true" />
-            校验文件下载失败
+            {t("update.checksum.title")}
           </DialogTitle>
           <DialogDescription>
-            SHA256SUMS.txt 获取不到，无法校验下载文件完整性。
+            {t("update.checksum.description")}
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="text-xs leading-relaxed">
@@ -612,15 +798,15 @@ function ChecksumDialog({
             {reason}
           </div>
           <p className="mt-3 text-muted-foreground">
-            继续下载将跳过完整性校验，请确认信任当前下载源。
+            {t("update.checksum.warning")}
           </p>
         </DialogBody>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onCancel}>
-            取消
+            {t("common.cancel")}
           </Button>
           <Button type="button" variant="destructive" onClick={onConfirm}>
-            跳过校验继续
+            {t("update.checksum.confirm")}
           </Button>
         </DialogFooter>
       </DialogContent>

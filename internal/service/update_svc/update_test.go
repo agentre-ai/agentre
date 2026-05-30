@@ -3,6 +3,7 @@ package update_svc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -170,6 +171,11 @@ func TestFetchChecksumsErrorPrefix(t *testing.T) {
 
 func TestReleaseInfoDownloadURL(t *testing.T) {
 	convey.Convey("release-info.json URL 构造", t, func() {
+		convey.Convey("使用当前发布仓库", func() {
+			assert.Equal(t, "agentre-ai/agentre", githubRepo)
+			assert.Equal(t, "https://api.github.com/repos/agentre-ai/agentre", apiBaseURL)
+		})
+
 		convey.Convey("stable 通道", func() {
 			url := releaseInfoURL(ChannelStable)
 			assert.Contains(t, url, "releases/latest/download/release-info.json")
@@ -183,6 +189,30 @@ func TestReleaseInfoDownloadURL(t *testing.T) {
 		convey.Convey("beta 通道返回空（不支持镜像回退）", func() {
 			url := releaseInfoURL(ChannelBeta)
 			assert.Equal(t, "", url)
+		})
+	})
+}
+
+func TestPickLatestStableRelease(t *testing.T) {
+	convey.Convey("stable 通道发布选择", t, func() {
+		convey.Convey("跳过 nightly 和 prerelease,选择第一个正式版本", func() {
+			release, err := pickLatestStableRelease([]ReleaseInfo{
+				{TagName: "nightly", Name: "v0.0.0-nightly.20260528", Prerelease: true},
+				{TagName: "v1.0.0-beta.1", Prerelease: true},
+				{TagName: "v0.9.0", Prerelease: false},
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, "v0.9.0", release.TagName)
+		})
+
+		convey.Convey("只有 nightly 时返回明确错误,不暴露 GitHub latest 404", func() {
+			release, err := pickLatestStableRelease([]ReleaseInfo{
+				{TagName: "nightly", Name: "v0.0.0-nightly.20260528", Prerelease: true},
+			})
+			assert.Nil(t, release)
+			assert.Error(t, err)
+			assert.True(t, errors.Is(err, errNoStableRelease))
+			assert.Contains(t, err.Error(), "no stable release found")
 		})
 	})
 }

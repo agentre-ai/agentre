@@ -186,8 +186,9 @@ type ChatSessionStatusPatch struct {
 // ChatBlock 是 backend → 前端的简化投影：把 cago/agents StoredBlock 拍平。
 // 已支持的 Type：text / thinking / tool_use / tool_result / ask_user_question / unknown（兜底）。
 type ChatBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"` // text / thinking / tool_result 文本
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"` // text / thinking / tool_result 文本
+	Image *ChatBlockImage `json:"image,omitempty"`
 
 	// tool_use:
 	ToolUseID string         `json:"toolUseId,omitempty"`
@@ -227,6 +228,12 @@ type ChatBlock struct {
 	Compact *ChatBlockCompactBoundary `json:"compact,omitempty"`
 
 	Raw map[string]any `json:"raw,omitempty"` // unknown 兜底
+}
+
+type ChatBlockImage struct {
+	Name      string `json:"name,omitempty"`
+	MediaType string `json:"mediaType"`
+	DataURL   string `json:"dataUrl"`
 }
 
 // ChatBlockCompactBoundary 是 type=compact_boundary block 的 wire payload,
@@ -386,6 +393,7 @@ type ChatAgentItem struct {
 	ActiveCount           int               `json:"activeCount"`
 	RecentCount           int               `json:"recentCount"`
 	TotalSessions         int64             `json:"totalSessions"`
+	SessionIDs            []int64           `json:"sessionIds"`
 	Sessions              []ChatSessionLite `json:"sessions"`
 	AttentionSessions     []ChatSessionLite `json:"attentionSessions"`
 
@@ -447,9 +455,10 @@ type ListAgentSessionsResponse struct {
 }
 
 type SendRequest struct {
-	SessionID int64  `json:"sessionId"` // 0 = 新建
-	AgentID   int64  `json:"agentId"`
-	Text      string `json:"text"`
+	SessionID int64       `json:"sessionId"` // 0 = 新建
+	AgentID   int64       `json:"agentId"`
+	Text      string      `json:"text"`
+	Images    []SendImage `json:"images,omitempty"`
 	// 新建会话路径（SessionID=0）专用：把会话挂到指定项目。
 	// 已存在的会话不应再传 ProjectID —— Send 会忽略它，project 在 Create 时定型。
 	ProjectID int64 `json:"projectId,omitempty"`
@@ -458,6 +467,10 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
+}
+type SendImage struct {
+	Name    string `json:"name,omitempty"`
+	DataURL string `json:"dataUrl"`
 }
 type SendResponse struct {
 	SessionID          int64  `json:"sessionId"`
@@ -474,6 +487,54 @@ type CompactResponse struct {
 	SessionID          int64  `json:"sessionId"`
 	AssistantMessageID int64  `json:"assistantMessageId"`
 	Stream             string `json:"stream"`
+}
+
+type ChatGoal struct {
+	ThreadID        string `json:"threadId"`
+	Objective       string `json:"objective"`
+	Status          string `json:"status"`
+	TokenBudget     *int   `json:"tokenBudget,omitempty"`
+	TokensUsed      int    `json:"tokensUsed"`
+	TimeUsedSeconds int    `json:"timeUsedSeconds"`
+	CreatedAt       int64  `json:"createdAt"`
+	UpdatedAt       int64  `json:"updatedAt"`
+}
+
+type GoalRequest struct {
+	SessionID int64 `json:"sessionId"`
+}
+
+type SetGoalRequest struct {
+	SessionID   int64   `json:"sessionId"`
+	Objective   *string `json:"objective,omitempty"`
+	Status      *string `json:"status,omitempty"`
+	TokenBudget *int    `json:"tokenBudget,omitempty"`
+}
+
+type StartGoalRequest struct {
+	AgentID        int64   `json:"agentId"`
+	ProjectID      int64   `json:"projectId,omitempty"`
+	PermissionMode string  `json:"permissionMode,omitempty"`
+	Objective      *string `json:"objective,omitempty"`
+	Status         *string `json:"status,omitempty"`
+	TokenBudget    *int    `json:"tokenBudget,omitempty"`
+}
+
+type StartGoalResponse struct {
+	SessionID int64     `json:"sessionId"`
+	Goal      *ChatGoal `json:"goal,omitempty"`
+}
+
+type ClearGoalRequest struct {
+	SessionID int64 `json:"sessionId"`
+}
+
+type GoalResponse struct {
+	Goal *ChatGoal `json:"goal,omitempty"`
+}
+
+type ClearGoalResponse struct {
+	Cleared bool `json:"cleared"`
 }
 
 type RenameRequest struct {

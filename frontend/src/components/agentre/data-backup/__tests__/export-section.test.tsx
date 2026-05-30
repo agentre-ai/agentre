@@ -37,6 +37,6 @@ describe("ExportSection", () => {
     render(<ExportSection />);
     const sw = screen.getByRole("switch");
     fireEvent.click(sw);
-    expect(screen.getByText(/明文凭证/)).toBeInTheDocument();
+    expect(screen.getByText(/plain-text secrets/)).toBeInTheDocument();
   });
 });

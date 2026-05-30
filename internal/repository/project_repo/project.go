@@ -4,6 +4,7 @@ package project_repo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/cago-frame/cago/database/db"
@@ -23,6 +24,8 @@ type ProjectRepo interface {
 	FindByName(ctx context.Context, parentID int64, name string) (*project_entity.Project, error)
 	List(ctx context.Context) ([]*project_entity.Project, error)
 	ListByParent(ctx context.Context, parentID int64) ([]*project_entity.Project, error)
+	NextSortOrder(ctx context.Context, parentID int64) (int, error)
+	ReorderSiblings(ctx context.Context, parentID int64, orderedIDs []int64) error
 	HasActiveChildren(ctx context.Context, id int64) (bool, error)
 	Delete(ctx context.Context, id int64) error
 }
@@ -86,7 +89,7 @@ func (r *projectRepo) List(ctx context.Context) ([]*project_entity.Project, erro
 	var rows []*project_entity.Project
 	err := db.Ctx(ctx).
 		Where("status = ?", consts.ACTIVE).
-		Order("parent_id ASC, id ASC").
+		Order("parent_id ASC, sort_order ASC, id ASC").
 		Find(&rows).Error
 	return rows, err
 }
@@ -95,9 +98,40 @@ func (r *projectRepo) ListByParent(ctx context.Context, parentID int64) ([]*proj
 	var rows []*project_entity.Project
 	err := db.Ctx(ctx).
 		Where("parent_id = ? AND status = ?", parentID, consts.ACTIVE).
-		Order("id ASC").
+		Order("sort_order ASC, id ASC").
 		Find(&rows).Error
 	return rows, err
+}
+
+func (r *projectRepo) NextSortOrder(ctx context.Context, parentID int64) (int, error) {
+	var maxOrder int
+	err := db.Ctx(ctx).Table("projects").
+		Where("parent_id = ? AND status = ?", parentID, consts.ACTIVE).
+		Select("COALESCE(MAX(sort_order), 0)").Row().Scan(&maxOrder)
+	if err != nil {
+		return 0, err
+	}
+	return maxOrder + 1, nil
+}
+
+func (r *projectRepo) ReorderSiblings(ctx context.Context, parentID int64, orderedIDs []int64) error {
+	now := time.Now().UnixMilli()
+	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+		for idx, id := range orderedIDs {
+			sortOrder := idx + 1
+			result := tx.Exec(
+				"UPDATE projects SET sort_order = ?, updatetime = ? WHERE id = ? AND parent_id = ? AND status = ?",
+				sortOrder, now, id, parentID, consts.ACTIVE,
+			)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("project reorder affected %d rows for id %d", result.RowsAffected, id)
+			}
+		}
+		return nil
+	})
 }
 
 // HasActiveChildren 删除项目前的预检 —— 有 active 子项目时拒绝。

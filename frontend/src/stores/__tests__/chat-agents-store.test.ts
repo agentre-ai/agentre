@@ -7,6 +7,7 @@ vi.mock("../../../wailsjs/go/app/App", () => ({
 import { ListChatAgents } from "../../../wailsjs/go/app/App";
 import { useChatAgentsStore } from "../chat-agents-store";
 import { useSessionMetaStore } from "../session-meta-store";
+import { useSessionStatusStore } from "../session-status-store";
 
 const listChatAgents = ListChatAgents as ReturnType<typeof vi.fn>;
 
@@ -15,6 +16,7 @@ describe("chat-agents-store", () => {
     listChatAgents.mockReset();
     useChatAgentsStore.getState().__reset();
     useSessionMetaStore.getState().__reset();
+    useSessionStatusStore.getState().__reset();
   });
 
   it("reload 拉新数据并写入 agents", async () => {
@@ -89,7 +91,7 @@ describe("chat-agents-store", () => {
     expect(useChatAgentsStore.getState().agents).toEqual([]);
   });
 
-  it("reload 后 agents[i].sessionIds 仅含 sessions 的 id（不再读 attentionSessions）", async () => {
+  it("reload 后 agents[i].sessionIds 合并 sessions 与 attentionSessions, 避免运行中老会话被 reconcile 清掉", async () => {
     listChatAgents.mockResolvedValueOnce({
       agents: [
         {
@@ -102,9 +104,14 @@ describe("chat-agents-store", () => {
             { id: 1, status: "idle", needsAttention: false },
             { id: 2, status: "idle", needsAttention: false },
           ],
-          // attentionSessions 字段存在但前端不再消费 —— sessionIds 只含 sessions 里的 id
           attentionSessions: [
-            { id: 3, status: "waiting", needsAttention: true },
+            {
+              id: 3,
+              title: "blocked",
+              status: "running",
+              needsAttention: false,
+              lastMessageAt: 300,
+            },
           ],
         },
       ],
@@ -112,7 +119,44 @@ describe("chat-agents-store", () => {
     await useChatAgentsStore.getState().reload();
     const a = useChatAgentsStore.getState().agents[0];
     expect(Array.isArray(a.sessionIds)).toBe(true);
-    expect(new Set(a.sessionIds)).toEqual(new Set([1, 2]));
+    expect(new Set(a.sessionIds)).toEqual(new Set([1, 2, 3]));
+    expect(useSessionStatusStore.getState().statuses.get(3)?.agentStatus).toBe(
+      "running",
+    );
+    expect(useSessionMetaStore.getState().metas.get(3)).toMatchObject({
+      agentId: 10,
+      title: "blocked",
+      lastMessageAt: 300,
+    });
+  });
+
+  it("Given backend returns full sessionIds, When recent sessions are truncated, Then reload preserves all ids for tab reconcile", async () => {
+    listChatAgents.mockResolvedValueOnce({
+      agents: [
+        {
+          id: 10,
+          name: "X",
+          avatarColor: "agent-3",
+          pinned: false,
+          chattable: true,
+          sessionIds: [1, 2, 3, 4, 5, 6],
+          sessions: [
+            { id: 1, status: "idle", needsAttention: false },
+            { id: 2, status: "idle", needsAttention: false },
+            { id: 3, status: "idle", needsAttention: false },
+            { id: 4, status: "idle", needsAttention: false },
+            { id: 5, status: "idle", needsAttention: false },
+          ],
+          attentionSessions: [],
+        },
+      ],
+    });
+
+    await useChatAgentsStore.getState().reload();
+
+    expect(useChatAgentsStore.getState().agents[0].sessionIds).toEqual([
+      1, 2, 3, 4, 5, 6,
+    ]);
   });
 
   it("reload 把 sessions 的静态字段灌到 session-meta-store", async () => {

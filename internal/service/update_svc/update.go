@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,7 +34,7 @@ import (
 const (
 	// githubRepo agentre 的 GitHub 仓库路径（owner/name）。
 	// 若仓库迁移需同步修改 release.yml 里的 gh api 路径。
-	githubRepo = "codfrm/agentre"
+	githubRepo = "agentre-ai/agentre"
 	apiBaseURL = "https://api.github.com/repos/" + githubRepo
 
 	// ChannelStable 稳定版更新通道
@@ -46,6 +47,8 @@ const (
 	// ChecksumFetchError 校验文件获取失败的错误前缀，前端用于识别此特定错误
 	ChecksumFetchError = "CHECKSUM_FETCH_FAILED:"
 )
+
+var errNoStableRelease = errors.New("no stable release found")
 
 // ReleaseAsset GitHub release 资产
 type ReleaseAsset struct {
@@ -61,6 +64,8 @@ type ReleaseInfo struct {
 	Body        string         `json:"body"`
 	HTMLURL     string         `json:"html_url"`
 	PublishedAt string         `json:"published_at"`
+	Prerelease  bool           `json:"prerelease"`
+	Draft       bool           `json:"draft"`
 	Assets      []ReleaseAsset `json:"assets"`
 }
 
@@ -82,7 +87,7 @@ func fetchRelease(channel string) (*ReleaseInfo, error) {
 	case ChannelBeta:
 		return fetchLatestBetaRelease()
 	default:
-		return fetchReleaseFromURL(apiBaseURL + "/releases/latest")
+		return fetchLatestStableRelease()
 	}
 }
 
@@ -116,19 +121,17 @@ func fetchReleaseFromURL(url string) (*ReleaseInfo, error) {
 	return &release, nil
 }
 
-// fetchLatestBetaRelease 获取最新的 beta 或 stable release（排除 nightly）
-func fetchLatestBetaRelease() (*ReleaseInfo, error) {
-	url := apiBaseURL + "/releases?per_page=20"
+func fetchReleasesFromURL(url string) ([]ReleaseInfo, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create request failed: %w", err)
+		return nil, fmt.Errorf("create releases request failed: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request GitHub API failed: %w", err)
+		return nil, fmt.Errorf("request GitHub releases API failed: %w", err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -137,16 +140,44 @@ func fetchLatestBetaRelease() (*ReleaseInfo, error) {
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("GitHub releases API returned status %d", resp.StatusCode)
 	}
 
 	var releases []ReleaseInfo
 	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return nil, fmt.Errorf("decode response failed: %w", err)
+		return nil, fmt.Errorf("decode releases response failed: %w", err)
 	}
+	return releases, nil
+}
 
+// fetchLatestStableRelease 获取最新正式版 release。GitHub /releases/latest 在仓库
+// 只有 prerelease/nightly 时会返回 404,所以这里列出 releases 后本地筛选。
+func fetchLatestStableRelease() (*ReleaseInfo, error) {
+	releases, err := fetchReleasesFromURL(apiBaseURL + "/releases?per_page=20")
+	if err != nil {
+		return nil, err
+	}
+	return pickLatestStableRelease(releases)
+}
+
+func pickLatestStableRelease(releases []ReleaseInfo) (*ReleaseInfo, error) {
 	for i := range releases {
-		if releases[i].TagName != "nightly" {
+		if releases[i].Draft || releases[i].Prerelease || releases[i].TagName == "nightly" {
+			continue
+		}
+		return &releases[i], nil
+	}
+	return nil, errNoStableRelease
+}
+
+// fetchLatestBetaRelease 获取最新的 beta 或 stable release（排除 nightly）
+func fetchLatestBetaRelease() (*ReleaseInfo, error) {
+	releases, err := fetchReleasesFromURL(apiBaseURL + "/releases?per_page=20")
+	if err != nil {
+		return nil, err
+	}
+	for i := range releases {
+		if !releases[i].Draft && releases[i].TagName != "nightly" {
 			return &releases[i], nil
 		}
 	}
@@ -203,6 +234,12 @@ func CheckForUpdate(channel, mirrorPrefix string) (*UpdateInfo, error) {
 	}
 
 	release, err := fetchRelease(channel)
+	if errors.Is(err, errNoStableRelease) {
+		return &UpdateInfo{
+			HasUpdate:      false,
+			CurrentVersion: configs.Version,
+		}, nil
+	}
 	if err != nil && mirrorPrefix != "" {
 		logger.Default().Info("GitHub API failed, trying mirror fallback",
 			zap.String("channel", channel), zap.Error(err))
@@ -274,6 +311,9 @@ func DownloadAndUpdate(channel, mirrorPrefix string, skipChecksum bool, onProgre
 	}
 
 	release, err := fetchRelease(channel)
+	if errors.Is(err, errNoStableRelease) {
+		return err
+	}
 	if err != nil && mirrorPrefix != "" {
 		logger.Default().Info("GitHub API failed, trying mirror fallback",
 			zap.String("channel", channel), zap.Error(err))

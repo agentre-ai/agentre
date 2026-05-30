@@ -21,7 +21,7 @@ import (
 )
 
 // defaultRuntime 是包级单例,init() 时登记到 agentruntime.RuntimeFor 注册表。
-var defaultRuntime = New()
+var defaultRuntime = NewWithPool(agentruntime.DefaultCLISessionPool())
 
 func init() {
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, defaultRuntime)
@@ -38,7 +38,7 @@ const sessionCacheCap = 8
 type Runtime struct {
 	// mu 仅用于 acquireSession 的 get-or-spawn 串行化兜底。
 	mu    sync.Mutex
-	cache *agentruntime.SessionCache
+	cache *agentruntime.CLISessionPool
 	steer *httpgateway.SteerInbox
 }
 
@@ -49,7 +49,14 @@ func New() *Runtime {
 
 // NewWithCap 仅供测试覆盖 LRU 触发场景(capacity=2 之类)。
 func NewWithCap(capacity int) *Runtime {
-	return &Runtime{cache: agentruntime.NewSessionCache(capacity)}
+	return NewWithPool(agentruntime.NewCLISessionPool(capacity))
+}
+
+func NewWithPool(pool *agentruntime.CLISessionPool) *Runtime {
+	if pool == nil {
+		pool = agentruntime.NewCLISessionPool(sessionCacheCap)
+	}
+	return &Runtime{cache: pool}
 }
 
 // SetSteerInbox 由 bootstrap 在 gateway.Start() 后注入。
@@ -70,6 +77,9 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			capability.CapAnswerUserAsk:  true,
 			capability.CapToolPermission: true,
 			capability.CapForkSession:    true,
+			// translator.EventInit 路径用 llmcatalog 兜底 emit ContextWindowUpdated;
+			// Claude Code SDK 协议本身不报窗口,这里靠 catalog 给前端 turn 内总量。
+			capability.CapReportContextWindow: true,
 		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},
@@ -129,11 +139,12 @@ func (r *Runtime) markIdle(sessionID int64) {
 	if sessionID <= 0 {
 		return
 	}
-	v, ok := r.cache.Get(sessionKey(sessionID))
-	if !ok {
-		return
+	key := sessionKey(sessionID)
+	v, ok := r.cache.Get(key)
+	if ok {
+		v.(*claudeActive).inTurn.Store(false)
 	}
-	v.(*claudeActive).inTurn.Store(false)
+	r.cache.MarkIdle(key)
 }
 
 // DrainPending 取走未消费的排队消息并清空,返非空时把 inTurn 重新置为 true
@@ -386,6 +397,7 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		// 复用现有 CLI 子进程:不重新 spawn,因此本轮没有新的 --permission-mode
 		// 下发。回吐当前缓存的 mode 让 chat_svc 写库幂等(值不变即 noop)。
 		cur.inTurn.Store(true)
+		r.cache.MarkActive(key)
 		return cur, cur.permissionMode, nil
 	}
 
@@ -457,12 +469,15 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		sessionUUID:    inboxKey,
 		handle:         handle,
 		steer:          r.steer,
+		pool:           r.cache,
+		poolKey:        key,
 		launchedEffort: req.Backend.ReasoningEffort,
 		permissionMode: runtimeMode,
 		tasks:          newTaskAggregator(),
 	}
 	if req.SessionID > 0 {
 		r.cache.Put(key, cur)
+		r.cache.MarkActive(key)
 	}
 	cur.inTurn.Store(true)
 	return cur, resolvedLaunchMode, nil
@@ -478,6 +493,9 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 func drainStream(stream ccStream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *claudeActive) {
 	for stream.Next() {
 		ev := stream.Event()
+		if result.StopErr != nil && claudeEventShowsProgressAfterError(ev.Kind) {
+			result.StopErr = nil
+		}
 		if ev.Kind == claudecode.EventControlRequest && ev.ControlRequest != nil && active != nil {
 			handleControlRequest(ev.ControlRequest, active, out)
 			continue
@@ -508,5 +526,23 @@ func drainStream(stream ccStream, out chan<- agentruntime.Event, result *agentru
 		if ev.Kind == claudecode.EventDone && ev.Model != "" {
 			result.Model = ev.Model
 		}
+	}
+}
+
+func claudeEventShowsProgressAfterError(kind claudecode.EventKind) bool {
+	switch kind {
+	case claudecode.EventTextDelta,
+		claudecode.EventThinkingDelta,
+		claudecode.EventPreToolUse,
+		claudecode.EventPostToolUse,
+		claudecode.EventTaskStarted,
+		claudecode.EventTaskProgress,
+		claudecode.EventTaskNotification,
+		claudecode.EventRetry,
+		claudecode.EventCompactBoundary,
+		claudecode.EventControlRequest:
+		return true
+	default:
+		return false
 	}
 }

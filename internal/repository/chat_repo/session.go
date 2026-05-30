@@ -19,6 +19,7 @@ type SessionRepo interface {
 	Find(ctx context.Context, id int64) (*chat_entity.Session, error)
 	ListByAgent(ctx context.Context, agentID int64, limit int) ([]*chat_entity.Session, error)
 	ListByAgentPaged(ctx context.Context, agentID int64, offset, limit int) ([]*chat_entity.Session, error)
+	ListIDsByAgents(ctx context.Context, agentIDs []int64) (map[int64][]int64, error)
 	ListAttentionByAgent(ctx context.Context, agentID int64, limit int) ([]*chat_entity.Session, error)
 	ListByProject(ctx context.Context, projectID int64) ([]*chat_entity.Session, error)
 	CountByAgent(ctx context.Context, agentID int64) (int64, error)
@@ -41,8 +42,9 @@ type SessionRepo interface {
 	// ResetActiveSessions 启动期把所有 agent_status IN ('running','waiting') 且
 	// 未软删除的 session 翻成 'error'。app crash / 强行
 	// 重启 / wails dev hot-reload 都会留下 turn goroutine 死了但 DB 状态没收
-	// 尾的"重启遗孤",前端 sidebar 会一直亮"运行中"。bootstrap.Init 启动时
-	// 调一次,确保进程启动后看到的状态是真实的。返回受影响行数,仅供日志使用。
+	// 尾的"重启遗孤",前端 sidebar 会一直亮"运行中"。该清理不能在 bootstrap.Init
+	// 里直接调用；主 Wails 实例 Startup 后再调,确保第二实例不会误伤仍在运行的 turn。
+	// 返回受影响行数,仅供日志使用。
 	ResetActiveSessions(ctx context.Context) (int64, error)
 }
 
@@ -93,6 +95,30 @@ func (r *sessionRepo) ListByAgentPaged(ctx context.Context, agentID int64, offse
 		Find(&rows).Error
 	applySessionDerivedFields(rows)
 	return rows, err
+}
+
+func (r *sessionRepo) ListIDsByAgents(ctx context.Context, agentIDs []int64) (map[int64][]int64, error) {
+	out := make(map[int64][]int64, len(agentIDs))
+	if len(agentIDs) == 0 {
+		return out, nil
+	}
+	rows := []struct {
+		AgentID int64 `gorm:"column:agent_id"`
+		ID      int64 `gorm:"column:id"`
+	}{}
+	err := db.Ctx(ctx).
+		Table("chat_sessions").
+		Select("agent_id, id").
+		Where("agent_id IN ? AND status = ?", agentIDs, consts.ACTIVE).
+		Order("agent_id ASC, last_message_at DESC, id DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.AgentID] = append(out[row.AgentID], row.ID)
+	}
+	return out, nil
 }
 
 // ListAttentionByAgent 给 sidebar 折叠态的 attention bubble 用：返回该 agent 下

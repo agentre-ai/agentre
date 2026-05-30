@@ -1,6 +1,7 @@
 // frontend/src/components/agentre/chat-tabs/tab-strip.tsx
 import * as React from "react";
 import { Pin, PinOff, X, XCircle, ArrowRightFromLine } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import {
   DndContext,
@@ -174,6 +175,7 @@ const SortableTab = React.forwardRef<HTMLSpanElement, SortableTabProps>(
     },
     forwardedRef,
   ) {
+    const { t } = useTranslation();
     const {
       attributes,
       listeners,
@@ -211,6 +213,7 @@ const SortableTab = React.forwardRef<HTMLSpanElement, SortableTabProps>(
         >
           <Tab
             title={tab.title}
+            kind={tab.kind}
             avatar={tab.avatar}
             active={active}
             isPreview={tab.isPreview}
@@ -227,20 +230,24 @@ const SortableTab = React.forwardRef<HTMLSpanElement, SortableTabProps>(
         <ContextMenuContent>
           <ContextMenuItem onSelect={onTogglePin}>
             {tab.isPinned ? <PinOff /> : <Pin />}
-            <span>{tab.isPinned ? "取消置顶" : "置顶"}</span>
+            <span>
+              {tab.isPinned
+                ? t("chatTabs.actions.unpin")
+                : t("chatTabs.actions.pin")}
+            </span>
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={onClose}>
             <X />
-            <span>关闭</span>
+            <span>{t("common.close")}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={onCloseOthers}>
             <XCircle />
-            <span>关闭其他</span>
+            <span>{t("chatTabs.actions.closeOthers")}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={onCloseToRight} disabled={isLast}>
             <ArrowRightFromLine />
-            <span>关闭右侧</span>
+            <span>{t("chatTabs.actions.closeRight")}</span>
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>

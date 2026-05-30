@@ -89,7 +89,8 @@ UI
 环境变量：
 
 - `AGENTRE_ENV` — `dev` / `test` / `pre` / `prod`，默认 `dev`。
-- `AGENTRE_DEBUG` — `1` / `true` / `yes` / `on` 开启调试日志和 DB debug 模式。
+
+Debug 日志不再走环境变量：由「设置 → 版本 & 更新 → Debug 日志」开关控制，持久化在 `app_settings` 表的 `logger.debug_enabled`，切换时热重载 logger（立即生效，无需重启），启动时按持久化值恢复。
 
 ## 数据库与迁移
 

@@ -6,7 +6,13 @@
  * 自身的派生逻辑可测而不拉全量组件树。
  */
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as React from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -28,13 +34,18 @@ const appMocks = vi.hoisted(() => ({
   DeleteChatSession: vi.fn(),
   EditChatMessage: vi.fn(),
   EnqueueChatMessage: vi.fn(),
+  GetCCUsage: vi.fn().mockResolvedValue({ reason: "" }),
   GetChatLaunchCommand: vi.fn(),
+  GetChatGoal: vi.fn(),
   LoadChatSession: vi.fn(),
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),
   RegenerateChatMessage: vi.fn(),
   RenameChatSession: vi.fn(),
   SendChatMessage: vi.fn(),
+  SetChatGoal: vi.fn(),
+  StartChatGoal: vi.fn(),
   StopChatMessage: vi.fn(),
+  ClearChatGoal: vi.fn(),
   GetSessionGitState: vi.fn().mockResolvedValue({
     state: {
       branch: "",
@@ -55,6 +66,7 @@ vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
 
 const componentMocks = vi.hoisted(() => ({
   chatComposerProps: [] as Array<Record<string, unknown>>,
+  chatTranscriptProps: [] as Array<Record<string, unknown>>,
   permissionModePillProps: [] as Array<Record<string, unknown>>,
   permissionMode: "plan",
   cycleMode: vi.fn(),
@@ -62,6 +74,7 @@ const componentMocks = vi.hoisted(() => ({
   // 控制 useSessionCapabilities 桩返回的 caps;测试按 backend 切换 switchableDuringTurn。
   capsSwitchableDuringTurn: true,
   capsAllowedModes: ["default", "plan", "acceptEdits", "bypassPermissions"],
+  capsImageInput: true,
   computeComposerContextUsage: vi.fn((..._args: unknown[]) => ({
     max: 0,
     used: 0,
@@ -109,6 +122,19 @@ vi.mock("@/hooks/use-chat-session", () => ({
   }),
 }));
 
+// useCCUsage: 捕获每次调用 deviceKey, 让测试断言 ChatPanel 把"哪台 device 的配额"
+// 派给了 ChatComposer。返回值固定 undefined(未首探), 测试只关心 key 路由。
+const ccUsageMock = vi.hoisted(() => ({
+  calls: [] as string[],
+}));
+
+vi.mock("@/hooks/use-cc-usage", () => ({
+  useCCUsage: (deviceKey: string) => {
+    ccUsageMock.calls.push(deviceKey);
+    return undefined;
+  },
+}));
+
 // ── child component mocks ──────────────────────────────────────────────────
 
 // ChatComposer / ChatTranscript 各自有大量依赖（TipTap / prism 等），mock 成最简桩。
@@ -128,10 +154,10 @@ vi.mock("../chat", async () => {
         props.permissionModeSlot,
       );
     },
-    // ChatTranscript 不再参与 codex plan approve/continue 流程
-    // (PlanCard 直接调 wailsResolvePlanAction,bypass chat-panel),
-    // 桩成空即可。
-    ChatTranscript: () => React.createElement("div", null),
+    ChatTranscript: (props: Record<string, unknown>) => {
+      componentMocks.chatTranscriptProps.push(props);
+      return React.createElement("div", null);
+    },
   };
 });
 
@@ -174,7 +200,9 @@ vi.mock("../permission-mode", async () => {
 // 路径走 useBackendCapabilities 分支。
 function makeCapsStub() {
   return {
-    has: (c: string) => c === "set_permission_mode",
+    has: (c: string) =>
+      c === "set_permission_mode" ||
+      (c === "image_input" && componentMocks.capsImageInput),
     permissionModeMeta: {
       allowedModes: componentMocks.capsAllowedModes,
       defaultMode: "default",
@@ -225,6 +253,7 @@ import { useChatStreamsStore } from "@/stores/chat-streams-store";
 function resetStore() {
   useChatStreamsStore.getState().streams.clear();
   componentMocks.chatComposerProps.length = 0;
+  componentMocks.chatTranscriptProps.length = 0;
   componentMocks.permissionModePillProps.length = 0;
   componentMocks.permissionMode = "plan";
   // 默认 claudecode-like caps(允许 turn 中切 mode);Codex 测试用例显式置 false。
@@ -235,10 +264,16 @@ function resetStore() {
     "acceptEdits",
     "bypassPermissions",
   ];
+  componentMocks.capsImageInput = true;
   componentMocks.computeComposerContextUsage.mockClear();
   componentMocks.cycleMode.mockClear();
   componentMocks.setMode.mockClear();
+  ccUsageMock.calls.length = 0;
   appMocks.SendChatMessage.mockReset();
+  appMocks.SetChatGoal.mockReset();
+  appMocks.GetChatGoal.mockReset();
+  appMocks.ClearChatGoal.mockReset();
+  appMocks.StartChatGoal.mockReset();
   appMocks.CompactChatSession.mockReset();
   appMocks.EnqueueChatMessage.mockReset();
   appMocks.GetChatLaunchCommand.mockReset();
@@ -322,6 +357,71 @@ describe("ChatPanel · T17 breadcrumb 派生", () => {
   });
 });
 
+describe("ChatPanel · transcript cwd", () => {
+  it("Given session has cwd, When transcript renders, Then cwd is passed through for local link classification", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      cwd: "/Users/codfrm/Code/agentre/agentre",
+      id: 42,
+    });
+
+    render(<ChatPanel sessionId={42} />);
+
+    expect(componentMocks.chatTranscriptProps.at(-1)?.cwd).toBe(
+      "/Users/codfrm/Code/agentre/agentre",
+    );
+  });
+});
+
+// QuotaMeter 路由回归: 新建会话(sessionId=0)还没首发前, quotaDeviceKey 不能
+// 一律落到 "local" —— 远端 agent 起的新对话必须取 newSessionAgent.deviceID 作为
+// "remote:<id>", 否则前端会把本机 5h/7d 配额错画在远端 chat 上(bug repro: 用户
+// 用远端 agent 新建会话, agentred 那台没登录, 但 HUD 显示桌面本机的配额数字)。
+describe("ChatPanel · 新对话 QuotaMeter 路由", () => {
+  it("Given 远端 claudecode agent 起的新会话, When 还没首发, Then useCCUsage 用 remote:<id> 而不是 local", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            deviceID: "5",
+            deviceName: "remote-box",
+          } as never
+        }
+      />,
+    );
+    expect(ccUsageMock.calls).toContain("remote:5");
+    expect(ccUsageMock.calls).not.toContain("local");
+  });
+
+  it("Given 本地 claudecode agent 起的新会话, When 还没首发, Then useCCUsage 用 local", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            // 本地 backend: deviceID 为空串
+            deviceID: "",
+          } as never
+        }
+      />,
+    );
+    expect(ccUsageMock.calls).toContain("local");
+  });
+});
+
 describe("ChatPanel · 新对话 PermissionModePill", () => {
   it("sessionId=0 + newSessionAgent 是 claudecode 时,按 backend caps 渲染 pill (回归: 此前因 caps 永为 null 而隐藏)", () => {
     resetStore();
@@ -350,6 +450,47 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
     expect(
       screen.queryByTestId("permission-mode-pill"),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ChatPanel · 新对话空白态文案", () => {
+  const newSessionAgent = {
+    id: 7,
+    name: "Eng",
+    agentBackendId: 1,
+    backendType: "claudecode",
+  } as never;
+
+  it("Given a chat is created from a project, When it has no first message yet, Then the empty copy names the project context", () => {
+    resetStore();
+    mockSessionStore.session = null;
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={newSessionAgent}
+        newSessionContext={{ projectId: 2 }}
+      />,
+    );
+
+    expect(
+      screen.getByText("Start a project chat with Eng in Agentre / backend"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your first message will start this session in the project workspace.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("Given a free chat is created, When it has no first message yet, Then the empty copy stays generic", () => {
+    resetStore();
+    mockSessionStore.session = null;
+
+    render(<ChatPanel sessionId={0} newSessionAgent={newSessionAgent} />);
+
+    expect(screen.getByText("Start a chat with Eng")).toBeInTheDocument();
+    expect(screen.queryByText(/project workspace/)).not.toBeInTheDocument();
   });
 });
 
@@ -464,6 +605,97 @@ describe("ChatPanel · Codex collaboration mode", () => {
     });
   });
 
+  it("sends image attachments in the SendChatMessage payload", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      backendType: "builtin",
+      id: 42,
+    });
+    appMocks.SendChatMessage.mockResolvedValue({
+      assistantMessageId: 1001,
+      sessionId: 42,
+      stream: "chat:event:42:1001",
+      userMessageId: 1000,
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((message: {
+          text: string;
+          images?: Array<{ dataUrl: string; mediaType: string; name: string }>;
+        }) => void)
+      | undefined;
+    expect(submit).toBeDefined();
+
+    act(() => {
+      submit?.({
+        text: "",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+    });
+
+    await waitFor(() => {
+      expect(appMocks.SendChatMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 42,
+          text: "",
+          images: [
+            {
+              dataUrl: "data:image/png;base64,AQID",
+              name: "shot.png",
+            },
+          ],
+        }),
+      );
+    });
+  });
+
+  it("blocks image payloads when the backend capability is absent", async () => {
+    resetStore();
+    componentMocks.capsImageInput = false;
+    mockSessionStore.session = makeSession({
+      backendType: "claudecode",
+      id: 42,
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    expect(componentMocks.chatComposerProps.at(-1)?.supportsImageInput).toBe(
+      false,
+    );
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((message: {
+          text: string;
+          images?: Array<{ dataUrl: string; mediaType: string; name: string }>;
+        }) => void)
+      | undefined;
+
+    act(() => {
+      submit?.({
+        text: "describe",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+    });
+
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        "The current agent backend does not support image input",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("exact /compact starts Codex compact RPC instead of sending a user message", async () => {
     resetStore();
     componentMocks.capsSwitchableDuringTurn = false;
@@ -498,6 +730,44 @@ describe("ChatPanel · Codex collaboration mode", () => {
     expect(useChatStreamsStore.getState().streams.get(42)?.name).toBe(
       "chat:event:42:1001",
     );
+  });
+
+  it("rejects exact /compact when image attachments are present", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = makeSession({
+      backendType: "codex",
+      id: 42,
+      permissionMode: "default",
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((message: {
+          text: string;
+          images?: Array<{ dataUrl: string; mediaType: string; name: string }>;
+        }) => void)
+      | undefined;
+
+    act(() => {
+      submit?.({
+        text: "/compact",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+    });
+
+    expect(appMocks.CompactChatSession).not.toHaveBeenCalled();
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText("/compact cannot be sent with images"),
+    ).toBeInTheDocument();
   });
 
   it("exact /compact is rejected while the Codex turn is streaming", async () => {
@@ -566,6 +836,113 @@ describe("ChatPanel · Codex collaboration mode", () => {
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
   });
 
+  it("/goal objective sets Codex thread goal instead of sending a user message", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = makeSession({
+      backendType: "codex",
+      id: 42,
+      permissionMode: "default",
+    });
+    appMocks.SetChatGoal.mockResolvedValue({
+      goal: { objective: "ship rpc", status: "active", tokensUsed: 0 },
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+
+    act(() => {
+      submit?.("/goal ship rpc");
+    });
+
+    await waitFor(() => {
+      expect(appMocks.SetChatGoal).toHaveBeenCalledWith({
+        sessionId: 42,
+        objective: "ship rpc",
+        status: "active",
+      });
+    });
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("/goal clear calls Codex clear goal RPC", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = makeSession({
+      backendType: "codex",
+      id: 42,
+      permissionMode: "default",
+    });
+    appMocks.ClearChatGoal.mockResolvedValue({ cleared: true });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+
+    act(() => {
+      submit?.("/goal clear");
+    });
+
+    await waitFor(() => {
+      expect(appMocks.ClearChatGoal).toHaveBeenCalledWith({ sessionId: 42 });
+    });
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("/goal objective in a new Codex chat starts a goal session before any user message", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = null;
+    const onSessionCreated = vi.fn();
+    appMocks.StartChatGoal.mockResolvedValue({
+      sessionId: 123,
+      goal: { objective: "ship rpc", status: "active", tokensUsed: 0 },
+    });
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Codex",
+            agentBackendId: 1,
+            backendType: "codex",
+            defaultPermissionMode: "default",
+          } as never
+        }
+        newSessionContext={{ projectId: 55 }}
+        onSessionCreated={onSessionCreated}
+      />,
+    );
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+
+    act(() => {
+      submit?.("/goal ship rpc");
+    });
+
+    await waitFor(() => {
+      expect(appMocks.StartChatGoal).toHaveBeenCalledWith({
+        agentId: 7,
+        projectId: 55,
+        objective: "ship rpc",
+        status: "active",
+        permissionMode: "plan",
+      });
+    });
+    expect(onSessionCreated).toHaveBeenCalledWith(123, 7);
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    expect(appMocks.SetChatGoal).not.toHaveBeenCalled();
+  });
+
   // codex plan approve/continue 不再由 chat-panel 中转 SendChatMessage —— PlanCard
   // 直接调 wailsResolvePlanAction(canonical-tool/plan/card.test.tsx 覆盖)。
   // backend 端 plan_action_test.go 验证 actionId → Send 的入参映射。
@@ -608,7 +985,7 @@ describe("ChatPanel · doSend error surfacing", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/发送失败.*provider not configured/),
+        screen.getByText(/Send failed.*provider not configured/),
       ).toBeInTheDocument();
     });
   });
@@ -628,7 +1005,7 @@ describe("ChatPanel · doSend error surfacing", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/发送失败.*backend down/)).toBeInTheDocument();
+      expect(screen.getByText(/Send failed.*backend down/)).toBeInTheDocument();
     });
   });
 });
@@ -653,8 +1030,8 @@ describe("ChatPanel · launch command copy feedback", () => {
 
     render(<ChatPanel sessionId={42} />);
 
-    await user.click(screen.getByRole("button", { name: "更多操作" }));
-    await user.click(await screen.findByText("复制启动命令"));
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+    await user.click(await screen.findByText("Copy Launch Command"));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(
@@ -662,15 +1039,15 @@ describe("ChatPanel · launch command copy feedback", () => {
       );
     });
     expect(sonnerMocks.toast.success).toHaveBeenCalledWith(
-      "已复制启动命令",
+      "Launch command copied",
       expect.objectContaining({
-        description: expect.stringContaining("含 token"),
+        description: expect.stringContaining("Includes a token"),
         duration: 5000,
         position: "bottom-right",
       }),
     );
     expect(
-      screen.queryByText(/已复制启动命令（含 token）/),
+      screen.queryByText(/Launch command copied.*Includes a token/),
     ).not.toBeInTheDocument();
   });
 });
@@ -728,5 +1105,39 @@ describe("ChatPanel · mark-read gated by active prop", () => {
         expect.objectContaining({ sessionId: 7, timestamp: 1500 }),
       );
     });
+  });
+});
+
+// ─── T26: 会话内终端 toggle 已移除 ───────────────────────────────────────────
+
+describe("chat-panel · 终端 toggle 已移除", () => {
+  it("渲染后不存在 title 含「终端」的 toggle 按钮", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 7 });
+
+    render(<ChatPanel sessionId={7} />);
+
+    expect(screen.queryByTitle(/终端/)).not.toBeInTheDocument();
+  });
+
+  it("⌘` 快捷键不再触发任何 terminal 动作", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 7 });
+
+    render(<ChatPanel sessionId={7} />);
+    // 触发原来的快捷键，不应抛错也不应改变任何可观测状态
+    fireEvent.keyDown(window, { key: "`", metaKey: true });
+
+    // 只要不报错且 TerminalPanel 不出现即为通过
+    expect(screen.queryByTestId("terminal-panel")).not.toBeInTheDocument();
+  });
+
+  it("不渲染 TerminalPanel（终端已移至独立 tab）", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 5 });
+
+    render(<ChatPanel sessionId={5} />);
+
+    expect(screen.queryByTestId("terminal-panel")).not.toBeInTheDocument();
   });
 });

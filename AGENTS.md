@@ -4,7 +4,7 @@ Guidance for Codex when working in this repository.
 
 ## Project Facts
 
-- Agentre is a local-first Wails v2 desktop app for orchestrating AI coding agents across projects, sessions, and remote machines.
+- Agentre is a Wails v2 desktop app with a Go backend and a React/TypeScript frontend.
 - Go module path is `agentre`. Do not invent a `github.com/...` import prefix.
 - Primary stack: Go 1.26, Wails v2, React 19, TypeScript, Vite, Tailwind CSS v4, pnpm 10.33.
 - Frontend-to-backend IPC goes through Wails bindings in `internal/app`; generated bindings live under `frontend/wailsjs`.
@@ -30,7 +30,7 @@ Guidance for Codex when working in this repository.
 
 写代码 / 修 bug / 写测试前，先看：
 
-- [docs/architecture.md](docs/architecture.md) — repository layout、cago 分层约定（entity / repo / service / wails binding）、远端执行架构、`AppDataDir` 存储路径、`AGENTRE_DATA_DIR` / `AGENTRE_ENV` / `AGENTRE_DEBUG` 环境变量、迁移流程、生成文件清单。
+- [docs/architecture.md](docs/architecture.md) — repository layout、cago 分层约定（entity / repo / service / wails binding）、远端执行架构、`AppDataDir` 存储路径、`AGENTRE_DATA_DIR` / `AGENTRE_ENV` 环境变量（Debug 日志改由「设置 → 版本 & 更新」开关控制）、迁移流程、生成文件清单。
 - [docs/development.md](docs/development.md) — Red→Green→Refactor、SOLID、Fix Discipline、测试栈（`testutils.Database(t)` + sqlmock + mockgen + goconvey）、commit 风格、日志规范、`.golangci.yml` 例外。
 - [docs/frontend.md](docs/frontend.md) — shadcn `@/components/ui/*` 强制约定、pnpm、`make lint` / `gofmt` / `goimports`。
 - [docs/debugging.md](docs/debugging.md) — sqlite3 / jq / 日志过滤命令、table-to-feature 映射、常见踩坑（macOS `Application Support` 路径要引号）。
@@ -45,6 +45,7 @@ Guidance for Codex when working in this repository.
 - **新增迁移 append 到 `migrationList()` 末尾**，禁止改动既有迁移；DDL 优先原生 SQL，避免依赖 `AutoMigrate`。
 - **关键流程必打日志**：用 `logger.Ctx(ctx)`，message 用 `package.Method:` 前缀小写，动态值走 `zap.Xxx(...)` 字段。
 - **前端表单控件统一用 shadcn `@/components/ui/*`**，禁止新增原生 `<select>`。
+- **前端新增可见文案必须走 i18n**：用 `react-i18next` 的 `t(...)` 和 `frontend/src/i18n/locales/{zh-CN,en}/common.json`，不要新增写死中文；`i18next/no-literal-string` 会拦 JSX 中的中文硬编码文案。不要引入旁路文本改写机制。Agent / 用户 / 终端 / markdown 等动态内容不要翻译。详见 [docs/frontend.md](docs/frontend.md)。
 
 ## Useful Commands
 

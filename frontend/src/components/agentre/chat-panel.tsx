@@ -8,6 +8,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -32,10 +33,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useCCUsage } from "@/hooks/use-cc-usage";
 import { useChatSession } from "@/hooks/use-chat-session";
 import type { ChatStreamEvent } from "@/hooks/use-chat-stream";
 import { useProjectTree } from "@/hooks/use-project-tree";
 import { useVisibleMessageId } from "@/hooks/use-visible-message-id";
+import i18n from "@/i18n";
 import { reasonToDisplayStatus } from "@/lib/attention-display";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
 import { projectChain } from "@/lib/project-chain";
@@ -50,7 +53,12 @@ import { useSessionStatusStore } from "@/stores/session-status-store";
 import { useBackendCapabilities } from "./capability/use-backend-capabilities";
 import { useSessionCapabilities } from "./capability/use-session-capabilities";
 import type { PlanActionStream } from "./canonical-tool/props";
-import { ChatComposer, ChatTranscript } from "./chat";
+import {
+  ChatComposer,
+  ChatTranscript,
+  type ChatComposerSubmit,
+  type ChatImageAttachment,
+} from "./chat";
 import { ChatContextSidebar } from "./chat-context-sidebar";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
@@ -64,18 +72,22 @@ import { statusConfig } from "./types";
 
 import {
   CancelQueuedChatMessage,
+  ClearChatGoal,
   CompactChatSession,
   DeleteChatSession,
   EditChatMessage,
   EnqueueChatMessage,
+  GetChatGoal,
   GetChatLaunchCommand,
   MarkChatSessionRead,
   RegenerateChatMessage,
   RenameChatSession,
   SendChatMessage,
+  SetChatGoal,
+  StartChatGoal,
   StopChatMessage,
 } from "../../../wailsjs/go/app/App";
-import type { chat_svc } from "../../../wailsjs/go/models";
+import { chat_svc } from "../../../wailsjs/go/models";
 
 type SvcChatMessage = chat_svc.ChatMessage;
 type ChatAgentItem = chat_svc.ChatAgentItem;
@@ -95,8 +107,10 @@ function textOfChatMessage(m: SvcChatMessage): string {
 // i18n.NewError 透传成普通 Error，没有结构化 code，只能按字串识别。
 function isChatSteerNoActiveError(msg: string): boolean {
   return (
-    msg.includes("没有进行中的对话") ||
-    msg.includes("No in-flight conversation")
+    msg.includes(
+      i18n.t("chatPanel.errors.noActiveConversation", { lng: "zh-CN" }),
+    ) ||
+    msg.includes(i18n.t("chatPanel.errors.noActiveConversation", { lng: "en" }))
   );
 }
 
@@ -105,8 +119,10 @@ function isChatSteerNoActiveError(msg: string): boolean {
 // 会返这条；属于无害的「太晚了」，UI 不弹错。
 function isChatStopNoActiveError(msg: string): boolean {
   return (
-    msg.includes("没有正在进行的对话可停止") ||
-    msg.includes("No in-flight turn to stop")
+    msg.includes(
+      i18n.t("chatPanel.errors.noActiveTurnToStop", { lng: "zh-CN" }),
+    ) ||
+    msg.includes(i18n.t("chatPanel.errors.noActiveTurnToStop", { lng: "en" }))
   );
 }
 
@@ -114,12 +130,55 @@ function isExactCompactCommand(text: string): boolean {
   return text.trim() === "/compact";
 }
 
-function optimisticUser(id: number, sid: number, text: string): SvcChatMessage {
+type GoalCommand =
+  | { kind: "get" }
+  | { kind: "clear" }
+  | { kind: "set"; objective: string }
+  | { kind: "status"; status: "active" | "paused" | "complete" };
+
+function parseGoalCommand(text: string): GoalCommand | null {
+  const trimmed = text.trim();
+  if (trimmed === "/goal") return { kind: "get" };
+  if (!trimmed.startsWith("/goal ")) return null;
+  const arg = trimmed.slice("/goal ".length).trim();
+  if (!arg) return { kind: "get" };
+  switch (arg) {
+    case "clear":
+      return { kind: "clear" };
+    case "pause":
+      return { kind: "status", status: "paused" };
+    case "resume":
+      return { kind: "status", status: "active" };
+    case "complete":
+      return { kind: "status", status: "complete" };
+    default:
+      return { kind: "set", objective: arg };
+  }
+}
+
+function optimisticUser(
+  id: number,
+  sid: number,
+  text: string,
+  images: ChatImageAttachment[] = [],
+): SvcChatMessage {
+  const blocks: Array<Record<string, unknown>> = [];
+  if (text) blocks.push({ type: "text", text });
+  for (const image of images) {
+    blocks.push({
+      type: "image",
+      image: {
+        dataUrl: image.dataUrl,
+        mediaType: image.mediaType,
+        name: image.name,
+      },
+    });
+  }
   return {
     id,
     sessionId: sid,
     role: "user",
-    blocks: [{ type: "text", text }],
+    blocks,
     model: "",
     promptTokens: 0,
     completionTokens: 0,
@@ -235,7 +294,7 @@ type NewSessionContext = {
 type ChatPanelProps = {
   /** 当前要渲染的会话；0 = 新建会话模式（需要配合 newSessionAgent）或空态。*/
   sessionId: number;
-  /** sessionId=0 时若提供，则渲染"和 X 开始对话"占位 + Composer，首发 RPC 后建立新会话。*/
+  /** sessionId=0 时若提供，则渲染新会话占位 + Composer，首发 RPC 后建立新会话。*/
   newSessionAgent?: ChatAgentItem | null;
   /** 新建会话时附加的项目上下文。仅 sessionId=0 路径生效。*/
   newSessionContext?: NewSessionContext;
@@ -264,6 +323,7 @@ function ChatPanel({
   emptyState,
   active = true,
 }: ChatPanelProps) {
+  const { t } = useTranslation();
   // 流式状态(streams / queuedBySession / liveBlocks ...)全部托管在跨路由长存的
   // zustand store 里。ChatPanel 只做「读 + 派发」,不再持有状态副本,这样切到 /projects
   // 等其它路由再切回来时,store 里累积的 liveDelta / liveBlocks / queued 都能直接还原。
@@ -327,6 +387,11 @@ function ChatPanel({
   const { tree } = useProjectTree();
   const sessionProjectId = session?.projectId ?? 0;
   const currentSessionId = session?.id ?? 0;
+  const newSessionProjectName = React.useMemo(() => {
+    const projectId = newSessionContext?.projectId ?? 0;
+    if (projectId <= 0) return "";
+    return projectChain(tree, projectId).join(" / ");
+  }, [newSessionContext?.projectId, tree]);
   const derivedBreadcrumb = React.useMemo(() => {
     if (sessionProjectId <= 0) return null;
     const chain = projectChain(tree, sessionProjectId);
@@ -384,6 +449,23 @@ function ChatPanel({
   // 时先保存在本地 state，首发 Send payload 会把 mode 写入新 session 行。
   const activeBackendType =
     session?.backendType ?? newSessionAgent?.backendType ?? "";
+
+  // Claude Code OAuth 配额 HUD:仅 claudecode backend 显示。device 维度优先 session
+  // (已存在的会话),sessionId=0 新建态回退到 newSessionAgent —— 否则远端 agent 起的
+  // 新会话还没发送时,quotaDeviceKey 会落到 "local" 把桌面本机配额错画上去。
+  const activeDeviceID = session?.deviceID ?? newSessionAgent?.deviceID ?? "";
+  const activeDeviceName =
+    session?.deviceName ?? newSessionAgent?.deviceName ?? "";
+  const quotaDeviceKey =
+    activeBackendType === "claudecode"
+      ? activeDeviceID
+        ? `remote:${activeDeviceID}`
+        : "local"
+      : "";
+  const quotaUsage = useCCUsage(quotaDeviceKey);
+  const quotaDeviceLabel = activeDeviceID
+    ? activeDeviceName || `device #${activeDeviceID}`
+    : t("chatPanel.localDevice");
   // caps 来自后端 runtime 的 Capabilities — UI 不再按 backendType 硬分支。
   // 已有 session 走 GetSessionCapabilities;新对话(sessionId<=0)按
   // newSessionAgent.backendType 走 GetBackendCapabilities — 这样 PermissionModePill
@@ -396,6 +478,7 @@ function ChatPanel({
   );
   const caps = sessionCaps ?? backendCaps;
   const isModeSwitchable = !!caps?.has("set_permission_mode");
+  const supportsImageInput = !!caps?.has("image_input");
 
   // composerContextUsage：当前会话 inputBox 底栏的「上下文用量」数据。
   //   - max  = session.contextWindow（解析顺序见 chat_svc.resolveContextWindowWithRuntime；为 0 时整块隐藏）。
@@ -551,9 +634,11 @@ function ChatPanel({
   async function doSend(
     targetSessionId: number,
     agentId: number,
-    text: string,
+    message: ChatComposerSubmit,
     permissionModeOverride?: string,
   ) {
+    const text = message.text.trim();
+    const images = message.images ?? [];
     // 发送消息时强制跟随到底部，无论用户当前在哪里
     atBottomRef.current = true;
     // 调用点都是 void doSend(...) fire-and-forget；这里必须自吞错误成 notice，
@@ -562,7 +647,7 @@ function ChatPanel({
     try {
       // 新建会话路径：把项目上下文带上（仅 targetSessionId=0 时生效）；
       // 已存在会话续发：projectId 在 Send 端被忽略，传 0 也无害。
-      const resp = await SendChatMessage({
+      const sendPayload: Record<string, unknown> = {
         sessionId: targetSessionId,
         agentId,
         text,
@@ -571,14 +656,23 @@ function ChatPanel({
         permissionMode:
           permissionModeOverride ??
           (isModeSwitchable ? permissionMode.mode : ""),
-      });
+      };
+      if (images.length > 0) {
+        sendPayload.images = images.map((image) => ({
+          name: image.name,
+          dataUrl: image.dataUrl,
+        }));
+      }
+      const resp = await SendChatMessage(
+        chat_svc.SendRequest.createFrom(sendPayload),
+      );
       // 新建会话路径：通知父级把 selectedSessionId 切到新 id。
       if (targetSessionId === 0 && resp.sessionId) {
         onSessionCreated?.(resp.sessionId, agentId);
       }
       setMessages((prev) => [
         ...prev,
-        optimisticUser(resp.userMessageId, resp.sessionId, text),
+        optimisticUser(resp.userMessageId, resp.sessionId, text, images),
         optimisticAssistantPlaceholder(resp.assistantMessageId, resp.sessionId),
       ]);
       // 乐观写 running: 后端 Send 已把 sess.AgentStatus="running" 落库, 但 turn
@@ -597,7 +691,7 @@ function ChatPanel({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] send failed", e);
-      setNotice({ kind: "error", text: `发送失败：${msg}` });
+      setNotice({ kind: "error", text: t("chatPanel.errors.send", { msg }) });
     }
   }
 
@@ -627,19 +721,96 @@ function ChatPanel({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] compact failed", e);
-      setNotice({ kind: "error", text: `压缩上下文失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.compact", { msg }),
+      });
+    }
+  }
+
+  async function doGoal(sid: number, cmd: GoalCommand) {
+    if (!sid) return;
+    try {
+      if (cmd.kind === "get") {
+        const resp = await GetChatGoal({ sessionId: sid });
+        const goal = resp.goal;
+        setNotice({
+          kind: "info",
+          text: goal
+            ? t("chatPanel.goal.current", {
+                objective: goal.objective,
+                status: goal.status,
+                tokens: goal.tokensUsed ?? 0,
+              })
+            : t("chatPanel.goal.empty"),
+        });
+        return;
+      }
+      if (cmd.kind === "clear") {
+        await ClearChatGoal({ sessionId: sid });
+        setNotice({ kind: "info", text: t("chatPanel.goal.cleared") });
+        return;
+      }
+      const payload =
+        cmd.kind === "set"
+          ? { sessionId: sid, objective: cmd.objective, status: "active" }
+          : { sessionId: sid, status: cmd.status };
+      const resp = await SetChatGoal(payload);
+      setNotice({
+        kind: "info",
+        text: resp.goal
+          ? t("chatPanel.goal.updatedWithObjective", {
+              objective: resp.goal.objective,
+            })
+          : t("chatPanel.goal.updated"),
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[chat] goal failed", e);
+      setNotice({ kind: "error", text: t("chatPanel.errors.goal", { msg }) });
+    }
+  }
+
+  async function doStartGoal(
+    agentId: number,
+    cmd: Extract<GoalCommand, { kind: "set" }>,
+  ) {
+    try {
+      const resp = await StartChatGoal({
+        agentId,
+        projectId: newSessionContext?.projectId ?? 0,
+        objective: cmd.objective,
+        status: "active",
+        permissionMode: isModeSwitchable ? permissionMode.mode : "",
+      });
+      if (resp.sessionId) {
+        onSessionCreated?.(resp.sessionId, agentId);
+      }
+      onSidebarShouldReload?.();
+      setNotice({
+        kind: "info",
+        text: resp.goal
+          ? t("chatPanel.goal.updatedWithObjective", {
+              objective: resp.goal.objective,
+            })
+          : t("chatPanel.goal.updated"),
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[chat] start goal failed", e);
+      setNotice({ kind: "error", text: t("chatPanel.errors.goal", { msg }) });
     }
   }
 
   function notifyCompactNeedsSession() {
     setNotice({
       kind: "info",
-      text: "请先发送一条消息让 Codex 会话启动后再压缩",
+      text: t("chatPanel.compact.needsSession"),
     });
   }
 
   function notifyCompactWaitForTurn() {
-    setNotice({ kind: "info", text: "当前回复结束后再压缩" });
+    setNotice({ kind: "info", text: t("chatPanel.compact.waitForTurn") });
   }
 
   const handlePlanActionStarted = React.useCallback(
@@ -690,11 +861,14 @@ function ChatPanel({
       const msg = e instanceof Error ? e.message : String(e);
       if (isChatSteerNoActiveError(msg)) {
         // turn 已结束（done/closed 事件即将到 / 已到），按普通 send 重新起一轮。
-        await doSend(sid, agentId, text);
+        await doSend(sid, agentId, { text });
         return;
       }
       console.error("[chat] enqueue failed", e);
-      setNotice({ kind: "error", text: `插入消息失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.enqueue", { msg }),
+      });
     }
   }
 
@@ -705,7 +879,10 @@ function ChatPanel({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] cancel queued failed", e);
-      setNotice({ kind: "error", text: `撤回失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.cancelQueued", { msg }),
+      });
     }
   }
 
@@ -724,7 +901,7 @@ function ChatPanel({
         return;
       }
       console.error("[chat] stop failed", e);
-      setNotice({ kind: "error", text: `停止失败：${msg}` });
+      setNotice({ kind: "error", text: t("chatPanel.errors.stop", { msg }) });
     }
   }
 
@@ -777,7 +954,10 @@ function ChatPanel({
     } catch (e: unknown) {
       console.error("[chat] regenerate failed", e);
       const msg = e instanceof Error ? e.message : String(e);
-      setNotice({ kind: "error", text: `重新生成失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.regenerate", { msg }),
+      });
     }
   }
 
@@ -796,7 +976,10 @@ function ChatPanel({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] rename failed", e);
-      setNotice({ kind: "error", text: `重命名失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.rename", { msg }),
+      });
     }
   }
 
@@ -808,15 +991,17 @@ function ChatPanel({
     try {
       const resp = await GetChatLaunchCommand({ sessionId: sid });
       await copyTextWithToast(resp.command, {
-        errorTitle: "复制启动命令失败",
-        successTitle: "已复制启动命令",
-        successDescription:
-          "含 token，直接粘贴到终端即可运行；本地网关重启后 token 失效需重新复制",
+        errorTitle: t("chatPanel.launchCommand.copyFailed"),
+        successTitle: t("chatPanel.launchCommand.copyDone"),
+        successDescription: t("chatPanel.launchCommand.copyDescription"),
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] copy launch command failed", e);
-      setNotice({ kind: "error", text: `复制启动命令失败：${msg}` });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.copyLaunchCommand", { msg }),
+      });
     }
   }
 
@@ -881,7 +1066,7 @@ function ChatPanel({
     } catch (e: unknown) {
       console.error("[chat] edit failed", e);
       const msg = e instanceof Error ? e.message : String(e);
-      setNotice({ kind: "error", text: `编辑失败：${msg}` });
+      setNotice({ kind: "error", text: t("chatPanel.errors.edit", { msg }) });
     }
   }
 
@@ -912,7 +1097,7 @@ function ChatPanel({
           {showNewSessionPrompt ? null : (
             <div
               role="toolbar"
-              aria-label="会话工具栏"
+              aria-label={t("chatPanel.toolbar.aria")}
               className="flex min-h-[44px] shrink-0 items-center gap-3 border-b border-border px-5 py-1.5"
             >
               {session
@@ -938,9 +1123,9 @@ function ChatPanel({
                         <div className="min-w-0 flex-1">
                           <div
                             className="line-clamp-2 break-words text-sm font-semibold leading-snug"
-                            title={session.title || "(未命名)"}
+                            title={session.title || t("chatPanel.untitled")}
                           >
-                            {session.title || "(未命名)"}
+                            {session.title || t("chatPanel.untitled")}
                           </div>
                           <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0 font-mono text-2xs text-muted-foreground">
                             {effectiveTopline ? (
@@ -1016,15 +1201,15 @@ function ChatPanel({
                               onClick={() => void doStop(session.id)}
                               title={
                                 canStop
-                                  ? "停止当前对话"
-                                  : "当前没有进行中的对话"
+                                  ? t("chatPanel.toolbar.stopActiveTitle")
+                                  : t("chatPanel.toolbar.stopInactiveTitle")
                               }
                             >
                               <Square
                                 data-icon="inline-start"
                                 aria-hidden="true"
                               />
-                              停止
+                              {t("chatPanel.toolbar.stop")}
                             </Button>
                           );
                         })()}
@@ -1032,10 +1217,12 @@ function ChatPanel({
                           type="button"
                           variant="outline"
                           size="icon-sm"
-                          aria-label="上下文侧栏"
+                          aria-label={t("chatPanel.toolbar.contextSidebar")}
                           onClick={() => setSidebarOpen(!sidebarOpen)}
                           title={
-                            sidebarOpen ? "隐藏上下文侧栏" : "显示上下文侧栏"
+                            sidebarOpen
+                              ? t("chatPanel.toolbar.hideContextSidebar")
+                              : t("chatPanel.toolbar.showContextSidebar")
                           }
                         >
                           {sidebarOpen ? (
@@ -1054,7 +1241,7 @@ function ChatPanel({
                               type="button"
                               variant="outline"
                               size="icon-sm"
-                              aria-label="更多操作"
+                              aria-label={t("common.moreActions")}
                             >
                               <MoreHorizontal
                                 data-icon="only"
@@ -1071,7 +1258,7 @@ function ChatPanel({
                                 })
                               }
                             >
-                              重命名
+                              {t("chatPanel.actions.rename")}
                             </DropdownMenuItem>
                             {(session.backendType === "claudecode" ||
                               session.backendType === "codex") && (
@@ -1080,14 +1267,14 @@ function ChatPanel({
                                   void handleCopyLaunchCommand(session.id)
                                 }
                               >
-                                复制启动命令
+                                {t("chatPanel.launchCommand.copy")}
                               </DropdownMenuItem>
                             )}
                             <DropdownMenuItem
                               className="text-destructive focus:text-destructive"
                               onClick={() => void handleDelete(session.id)}
                             >
-                              删除
+                              {t("common.delete")}
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -1101,15 +1288,25 @@ function ChatPanel({
           {/* ── Body row: 左栏 chat / 右栏 sidebar 占满整高 ──
               输入框宽度 = transcript 宽度,与对话流同列;sidebar 从 toolbar 下沿一路顶到底。 */}
           <div className="flex min-h-0 min-w-0 flex-1">
+            {/* ── Body: chat ── */}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
               {showNewSessionPrompt ? (
                 <div className="flex flex-1 items-center justify-center">
                   <div className="flex flex-col items-center gap-2 text-center">
                     <div className="text-sm font-semibold">
-                      和 {newSessionAgent.name} 开始对话
+                      {newSessionProjectName
+                        ? t("chatPanel.newProjectSession.title", {
+                            agentName: newSessionAgent.name,
+                            projectName: newSessionProjectName,
+                          })
+                        : t("chatPanel.newSession.title", {
+                            name: newSessionAgent.name,
+                          })}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      在下方输入框输入消息，按 Enter 发送，Shift+Enter 换行
+                      {newSessionProjectName
+                        ? t("chatPanel.newProjectSession.description")
+                        : t("chatPanel.newSession.description")}
                     </div>
                   </div>
                 </div>
@@ -1124,6 +1321,7 @@ function ChatPanel({
                     agentColor={
                       (session?.agentColor as AgentColor) || "agent-1"
                     }
+                    cwd={session?.cwd}
                     sessionId={session?.id ?? 0}
                     messages={messages}
                     liveDelta={liveDelta}
@@ -1142,8 +1340,8 @@ function ChatPanel({
               )}
 
               {/* ── Inline notice (取代 window.alert)。
-                  error / info 两种态共用一个 slot，最多挂一条；右侧 × 关闭。
-                  info 用 default Alert 样式（中性），error 用 destructive。 */}
+                    error / info 两种态共用一个 slot，最多挂一条；右侧 × 关闭。
+                    info 用 default Alert 样式（中性），error 用 destructive。 */}
               {notice ? (
                 <div className="border-t border-border bg-background px-5 pt-2">
                   <Alert
@@ -1159,7 +1357,7 @@ function ChatPanel({
                       </span>
                       <button
                         type="button"
-                        aria-label="关闭提示"
+                        aria-label={t("chatPanel.notice.close")}
                         onClick={() => setNotice(null)}
                         className="-mr-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-sm text-current opacity-70 transition-opacity hover:opacity-100"
                       >
@@ -1179,6 +1377,8 @@ function ChatPanel({
                 // 用户一进来就能直接打字。续聊已有会话不抢焦点，避免打断侧栏切换的鼠标交互。
                 autoFocusOnMount={!!newSessionAgent}
                 contextUsage={composerContextUsage}
+                quotaUsage={quotaUsage}
+                quotaDeviceLabel={quotaDeviceLabel}
                 permissionModeSlot={
                   isModeSwitchable ? (
                     <PermissionModePill
@@ -1210,9 +1410,46 @@ function ChatPanel({
                     />
                   </>
                 }
-                onSubmit={(text) => {
+                onSubmit={(message: ChatComposerSubmit | string) => {
+                  message =
+                    typeof message === "string" ? { text: message } : message;
+                  const text = message.text.trim();
+                  const images = message.images ?? [];
+                  if (images.length > 0 && !supportsImageInput) {
+                    setNotice({
+                      kind: "error",
+                      text: t("chatPanel.errors.imageUnsupported"),
+                    });
+                    return;
+                  }
                   if (activeEditing) {
                     void confirmEdit(text);
+                    return;
+                  }
+                  const goalCommand =
+                    activeBackendType === "codex"
+                      ? parseGoalCommand(text)
+                      : null;
+                  if (goalCommand) {
+                    if (images.length > 0) {
+                      setNotice({
+                        kind: "error",
+                        text: t("chatPanel.goal.imageUnsupported"),
+                      });
+                      return;
+                    }
+                    if (!sessionId) {
+                      if (newSessionAgent && goalCommand.kind === "set") {
+                        void doStartGoal(newSessionAgent.id, goalCommand);
+                        return;
+                      }
+                      setNotice({
+                        kind: "info",
+                        text: t("chatPanel.goal.needsSession"),
+                      });
+                      return;
+                    }
+                    void doGoal(sessionId, goalCommand);
                     return;
                   }
                   if (
@@ -1227,23 +1464,38 @@ function ChatPanel({
                       notifyCompactWaitForTurn();
                       return;
                     }
+                    if (images.length > 0) {
+                      setNotice({
+                        kind: "error",
+                        text: t("chatPanel.compact.imageUnsupported"),
+                      });
+                      return;
+                    }
                     void doCompact(sessionId);
                     return;
                   }
                   // 新建会话首发：targetSessionId=0，由 doSend 内的 RPC 返回真实 sessionId
                   // 并通过 onSessionCreated 回填到父 store；此时 composer 不会卸载（结构稳定）。
                   if (!sessionId && newSessionAgent) {
-                    void doSend(0, newSessionAgent.id, text);
+                    void doSend(0, newSessionAgent.id, message);
                     return;
                   }
                   if (streaming && sessionId > 0) {
+                    if (images.length > 0) {
+                      setNotice({
+                        kind: "error",
+                        text: t("chatPanel.errors.imageWhileStreaming"),
+                      });
+                      return;
+                    }
                     // streaming 中：按回车走 Enqueue，把消息排队等下一个安全点注入。
                     void doEnqueue(sessionId, session?.agentId ?? 0, text);
                     return;
                   }
-                  void doSend(sessionId, session?.agentId ?? 0, text);
+                  void doSend(sessionId, session?.agentId ?? 0, message);
                 }}
                 backendType={activeBackendType}
+                supportsImageInput={supportsImageInput}
                 onSlashRpc={(cmd) => {
                   console.warn(
                     `slash rpc not wired: cmd=${cmd.name} backend=${activeBackendType}`,
@@ -1277,12 +1529,11 @@ function ChatPanel({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>重新生成回复</DialogTitle>
+            <DialogTitle>{t("chatPanel.regenerateDialog.title")}</DialogTitle>
           </DialogHeader>
           <DialogBody>
             <p className="text-sm text-muted-foreground">
-              这条回复及它之后的所有消息会被丢弃，agent 会基于上一条 user
-              消息重新生成新的回复。
+              {t("chatPanel.regenerateDialog.description")}
             </p>
           </DialogBody>
           <DialogFooter>
@@ -1291,10 +1542,10 @@ function ChatPanel({
               size="sm"
               onClick={() => setPendingRegenId(null)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
             <Button size="sm" onClick={() => void confirmRegenerate()}>
-              确认重新生成
+              {t("chatPanel.regenerateDialog.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1307,11 +1558,11 @@ function ChatPanel({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>删除会话</DialogTitle>
+            <DialogTitle>{t("chatPanel.deleteDialog.title")}</DialogTitle>
           </DialogHeader>
           <DialogBody>
             <p className="text-sm text-muted-foreground">
-              删除后此会话的所有消息会被一并清除，且无法恢复。
+              {t("chatPanel.deleteDialog.description")}
             </p>
           </DialogBody>
           <DialogFooter>
@@ -1320,14 +1571,14 @@ function ChatPanel({
               size="sm"
               onClick={() => setPendingDeleteId(null)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               size="sm"
               variant="destructive"
               onClick={() => void confirmDelete()}
             >
-              删除
+              {t("common.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1342,7 +1593,7 @@ function ChatPanel({
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>重命名会话</DialogTitle>
+            <DialogTitle>{t("chatPanel.renameDialog.title")}</DialogTitle>
           </DialogHeader>
           <DialogBody>
             <form
@@ -1360,8 +1611,8 @@ function ChatPanel({
                     prev ? { ...prev, draft: e.target.value } : prev,
                   )
                 }
-                placeholder="输入新名称"
-                aria-label="会话名称"
+                placeholder={t("chatPanel.renameDialog.placeholder")}
+                aria-label={t("chatPanel.renameDialog.nameAria")}
               />
             </form>
           </DialogBody>
@@ -1371,7 +1622,7 @@ function ChatPanel({
               size="sm"
               onClick={() => setPendingRename(null)}
             >
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               type="submit"
@@ -1381,7 +1632,7 @@ function ChatPanel({
                 !pendingRename || pendingRename.draft.trim().length === 0
               }
             >
-              保存
+              {t("common.save")}
             </Button>
           </DialogFooter>
         </DialogContent>

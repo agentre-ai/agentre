@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"strings"
 	"sync"
 
@@ -82,6 +83,7 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			capability.CapSteer:       true,
 			capability.CapCancelSteer: true,
 			capability.CapAbort:       true,
+			capability.CapImageInput:  true,
 		},
 	}
 }
@@ -238,7 +240,13 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	}
 
 	turnCtx, cancelTurn := context.WithCancel(ctx)
-	events, sendErr := runner.Send(turnCtx, req.UserText)
+	var events iter.Seq[agent.Event]
+	var sendErr error
+	if len(req.UserBlocks) > 0 {
+		events, sendErr = runner.Send(turnCtx, "", agent.WithBlocks(req.UserBlocks...))
+	} else {
+		events, sendErr = runner.Send(turnCtx, req.UserText)
+	}
 	if sendErr != nil {
 		logger.Ctx(ctx).Error("builtin runtime: runner.Send failed",
 			zap.Int64("sessionID", req.SessionID), zap.Error(sendErr))

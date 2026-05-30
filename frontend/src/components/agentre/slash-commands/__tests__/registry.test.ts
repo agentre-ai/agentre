@@ -30,6 +30,17 @@ describe("slash command registry", () => {
     );
   });
 
+  it("codex 可用 /goal，选择后只补全文字，Enter 时由 chat-panel 转 Goal RPC", () => {
+    const xs = listAvailable("codex");
+    expect(xs.map((c) => c.name)).toContain("goal");
+    const goal = xs.find((c) => c.name === "goal")!;
+    const exec = goal.resolve("codex")!;
+    expect(exec.kind).toBe("literal_text");
+    expect((exec as Extract<SlashExec, { kind: "literal_text" }>).text).toBe(
+      "/goal ",
+    );
+  });
+
   it("空 backend 返回空列表", () => {
     expect(listAvailable("")).toEqual([]);
   });
@@ -41,6 +52,9 @@ describe("slash command registry", () => {
     ]);
     expect(filterByQuery(slashCommands, "COMP").map((c) => c.name)).toEqual([
       "compact",
+    ]);
+    expect(filterByQuery(slashCommands, "go").map((c) => c.name)).toEqual([
+      "goal",
     ]);
     expect(filterByQuery(slashCommands, "xyz")).toEqual([]);
   });

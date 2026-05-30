@@ -1,0 +1,2100 @@
+{
+  "app": {
+    "commandPalette": {
+      "open": "Open command palette",
+      "placeholder": "Search sessions · Jump · Run command"
+    },
+    "navigationLabel": "Primary navigation",
+    "title": "Agentre",
+    "window": {
+      "close": "Close window",
+      "maximize": "Maximize window",
+      "minimize": "Minimize window"
+    }
+  },
+  "agentList": {
+    "attentionAria": "{{name}} sessions needing attention",
+    "collapse": "Collapse {{name}}",
+    "expand": "Expand {{name}}",
+    "newSession": "New {{name}} session",
+    "openRecent": "Open {{name}} recent session",
+    "pinned": "Pinned",
+    "running": "Running",
+    "runningAria": "{{name}} has running sessions"
+  },
+  "attention": {
+    "error": "Error",
+    "needsAttention": "Approval",
+    "unread": "Unread"
+  },
+  "agentBackends": {
+    "actions": {
+      "cancelTest": "Cancel Test",
+      "cancelTestNamed": "Cancel test for {{name}}",
+      "deleteNamed": "Delete {{name}}",
+      "editNamed": "Edit {{name}}",
+      "test": "Test Connection",
+      "testNamed": "Test connection for {{name}}"
+    },
+    "approval": {
+      "hint": "Whether tool execution needs human approval",
+      "label": "Approval Policy",
+      "options": {
+        "never": "Never ask for human approval",
+        "on-failure": "Ask when a tool fails",
+        "on-request": "Ask when the model requests approval",
+        "untrusted": "Auto-run trusted tools only"
+      }
+    },
+    "backendType": {
+      "builtin": {
+        "label": "Built-in Agent"
+      },
+      "claudecode": {
+        "label": "Claude Code CLI"
+      },
+      "codex": {
+        "label": "Codex CLI"
+      }
+    },
+    "cli": {
+      "detect": "Detect",
+      "detectTitle": "Find {{bin}} in $PATH and fill it in",
+      "emptyHint": "Empty = {{bin}} from $PATH",
+      "explicitHint": "Explicit binary path",
+      "label": "CLI Path",
+      "notFound": "{{bin}} was not found in $PATH. Fill it in manually."
+    },
+    "deleteDialog": {
+      "description": "Delete \"{{name}}\"? This is a soft delete and does not affect existing agent references.",
+      "title": "Delete Agent Backend"
+    },
+    "device": {
+      "builtinLocalOnly": "Built-in backends can only run locally",
+      "local": "📍 Local (this machine)",
+      "offlineSuffix": " · offline",
+      "placeholder": "Select runtime device"
+    },
+    "editor": {
+      "createTitle": "New Agent Backend",
+      "description": "Choose an execution engine and link an LLM provider. CLI backends route requests through the local HTTP proxy, so claude/codex login is not required.",
+      "editTitle": "Edit Agent Backend"
+    },
+    "empty": {
+      "table": "No agent backends yet. Use + New Backend in the top right to start."
+    },
+    "env": {
+      "count": "{{count}} items",
+      "deleteKey": "Delete this key",
+      "empty": "No key-value pairs. Use + Add below to create one.",
+      "reservedDisabled": "Reserved keys disabled: {{keys}}",
+      "title": "Advanced · Custom Environment Variables"
+    },
+    "fields": {
+      "device": "Runtime Device",
+      "name": "Name",
+      "namePlaceholder": "Example: Local · Claude Code",
+      "type": "Type"
+    },
+    "flash": {
+      "close": "Close notice",
+      "created": "Agent backend added",
+      "deleted": "Deleted",
+      "providerSynced": "Remote provider synced",
+      "saved": "Saved"
+    },
+    "modelRoutes": {
+      "hint": "ANTHROPIC_DEFAULT_*_MODEL. Leave empty to use the main provider.",
+      "inheritMain": "Inherit main provider",
+      "inheritWithName": "Inherit main provider · {{name}}",
+      "label": "Model Tier Routes"
+    },
+    "permission": {
+      "addIsSandbox": "Add IS_SANDBOX=1",
+      "bypassWarning": "New sessions start by bypassing the permission gate. Runtime can still switch among the 4 modes. Use only in isolated sandboxes or CI.",
+      "hint": "--permission-mode · initial mode for new sessions",
+      "isSandboxConfigured": "Configured in env_json",
+      "label": "Default Permission Mode",
+      "options": {
+        "acceptEdits": "acceptEdits · Auto-accept edits",
+        "bypassPermissions": "bypassPermissions · Skip approvals",
+        "default": "default · Ask every time",
+        "inherit": "Default · acceptEdits",
+        "plan": "plan · Read-only analysis"
+      },
+      "remoteRootHintPrefix": "When remote agentred runs as root/sudo, claude CLI rejects bypassPermissions as --dangerously-skip-permissions. Set",
+      "remoteRootHintSuffix": "to let the CLI skip that check."
+    },
+    "provider": {
+      "clear": "Clear provider link",
+      "clearTitle": "Clear and use CLI login",
+      "cliLogin": "Use CLI login",
+      "label": "LLM Provider",
+      "noMatchClaude": "Without a link, claude CLI uses its own login. Add an anthropic provider first if requests should route through the local proxy.",
+      "noMatchCodex": "Without a link, codex CLI uses its own login. Add an openai-response provider first if requests should route through the local proxy.",
+      "noMatchTitle": "No matching LLM providers",
+      "noModel": "(no model selected)",
+      "noneDescription": "Add an LLM provider on the LLM Providers page first, then return to configure the backend.",
+      "noneTitle": "No LLM providers",
+      "optionalSuffix": "· Optional",
+      "placeholderOptional": "No link (use CLI login)",
+      "placeholderRequired": "Select an LLM provider",
+      "selectProvider": "Select provider",
+      "staleDescription": "Choose an enabled provider below{{optionalClause}}.",
+      "staleOptionalClause": ", or clear the link to use CLI login",
+      "staleTitle": "The original LLM provider is disabled or does not match this type",
+      "strictMatch": "Strict match · {{type}}",
+      "unlinked": "No linked provider"
+    },
+    "providerSync": {
+      "descriptionOnly": "Sync writes the locally saved API key to the remote agentred state file. Other form changes are not saved.",
+      "descriptionSave": "The selected remote agentred does not have these providers configured. Sync writes the locally saved API key to the remote agentred state file, then continues saving the agent backend.",
+      "failedTitle": "Sync Failed",
+      "inlineDescription": "This backend will run on remote agentred. You can sync the selected LLM provider to the remote state file first.",
+      "inlineTitle": "Remote Provider Sync",
+      "originalError": "Original error: {{message}}",
+      "requiredDescription": "The remote runtime can only read providers from its own state file. Unsynced providers trigger provider not configured.",
+      "requiredTitle": "Provider Sync Required",
+      "secretServiceAction": "Fix: upgrade and restart remote agentred. The current version writes directly to the agentred state file and no longer uses the keychain. If you cannot upgrade yet, install and start a Secret Service such as gnome-keyring or KWallet on the remote machine.",
+      "secretServiceMissing": "An older remote agentred is still writing to the system keychain, but remote Linux has no available Secret Service (org.freedesktop.secrets).",
+      "syncAndSave": "Sync and Save",
+      "syncRemote": "Sync to Remote",
+      "syncing": "Syncing...",
+      "title": "Sync Remote LLM Provider"
+    },
+    "proxy": {
+      "notRunning": "Local HTTP proxy is not running",
+      "openSettings": "Open Settings",
+      "running": "Requests route through the local HTTP proxy ({{url}}). Secrets stay inside the app.",
+      "stopped": "{{label}}{{reasonSuffix}}",
+      "unlinked": "No provider is linked. The CLI uses its own login state, and secrets do not pass through the app."
+    },
+    "reasoning": {
+      "codexHint": "codex CLI supports low / medium / high / xhigh. max is folded down to high.",
+      "label": "Reasoning Effort",
+      "options": {
+        "default": "Default (model decides)",
+        "high": "High · high",
+        "low": "Low · low",
+        "max": "Maximum · max",
+        "medium": "Medium · medium",
+        "xhigh": "Very high · xhigh"
+      }
+    },
+    "row": {
+      "agentCount": "{{count}} agents in use",
+      "needsAction": "Needs action",
+      "unused": "Not used by any agent"
+    },
+    "sandbox": {
+      "defaultHint": "Empty = use codex CLI default",
+      "hint": "File-system isolation for codex subprocesses",
+      "label": "Sandbox"
+    },
+    "table": {
+      "ariaLabel": "Agent backend list",
+      "cli": "CLI / Identifier",
+      "modelProvider": "Model / Provider",
+      "name": "Name",
+      "type": "Type"
+    },
+    "test": {
+      "passed": "Test passed · {{latency}}ms · {{message}}"
+    },
+    "toolbar": {
+      "add": "New Backend",
+      "count": "{{count}} total",
+      "title": "Configured Backends"
+    }
+  },
+  "canonical": {
+    "status": {
+      "done": "DONE",
+      "error": "ERROR",
+      "running": "RUNNING"
+    },
+    "agentSpawn": {
+      "aria": "Subagent {{name}}",
+      "defaultName": "Agent",
+      "emptyPrompt": "No prompt",
+      "emptyResult": "(empty result)",
+      "emptySteps": "No child steps",
+      "emptyStepsRunning": "Subagent has not called any tools yet...",
+      "emptySummary": "No summary",
+      "sections": {
+        "prompt": "TASK PROMPT",
+        "steps": "STEPS",
+        "summary": "SUMMARY"
+      },
+      "status": {
+        "done": "DONE",
+        "error": "ERROR",
+        "fail": "FAIL",
+        "running": "RUNNING",
+        "runningLower": "running",
+        "stopped": "STOPPED",
+        "withDuration": "{{status}} · {{duration}}"
+      },
+      "summaryRunning": "Subagent is still running. Results will return later...",
+      "toolCount": "{{count}} tools",
+      "waitingFirstStep": "Waiting for the first child call..."
+    },
+    "fileEdit": {
+      "aria": "{{tool}} tool call",
+      "badge": {
+        "deleted": "DELETED",
+        "new": "NEW"
+      },
+      "fileCount": "{{count}} files",
+      "noChanges": "No actual changes",
+      "truncated": "Some lines are truncated · full diff has {{count}} lines (showing first {{shown}})"
+    },
+    "fileWrite": {
+      "aria": "Write tool call",
+      "copyDone": "Full content copied",
+      "copyFailed": "Failed to copy full content",
+      "copyFull": "Copy Full Content",
+      "empty": "Created empty file",
+      "newBadge": "NEW",
+      "title": "Write",
+      "truncated": "Content truncated · showing first {{lines}} lines"
+    },
+    "plan": {
+      "aria": "Plan",
+      "actions": {
+        "approve": "Approve Plan",
+        "approveAcceptEdits": "Approve and Switch to Auto Mode",
+        "approveBypass": "Approve and Bypass Permissions",
+        "approveManual": "Approve, Confirm Edits Manually",
+        "continue": "Continue",
+        "execute": "Execute Plan",
+        "refine": "Continue Planning",
+        "refineStandalone": "Refine Plan"
+      },
+      "charCount": "~{{count}} chars",
+      "empty": "(plan field is empty)",
+      "feedback": {
+        "charCount": "{{count}} chars",
+        "collapse": "Collapse Feedback",
+        "description": "(optional, sent to the current agent as feedback)",
+        "placeholder": "Example: step 2 is unnecessary / missing lint step / split too small...",
+        "sendWithFeedback": "Send Feedback and Continue Planning",
+        "sendWithoutFeedback": "Continue Planning Without Feedback",
+        "title": "Continue Planning with Feedback"
+      },
+      "refineDefaultPrompt": "Continue refining the plan above.",
+      "subtitle": {
+        "approved": "Start executing the plan",
+        "chooseAction": "Choose the next action, or send feedback to keep planning",
+        "refining": "AI received feedback and will keep planning",
+        "saved": "Plan saved"
+      },
+      "title": {
+        "approved": "Plan Approved",
+        "pending": "AI Submitted an Execution Plan",
+        "refining": "Continue Planning"
+      }
+    },
+    "raw": {
+      "allowed": "Allowed",
+      "allowedSession": "Allowed · session",
+      "approvedTitle": "This tool call has been approved",
+      "aria": "Tool call {{tool}}",
+      "emptyOutput": "(empty output)",
+      "emptyParams": "No parameters",
+      "emptyResult": "(empty result)",
+      "permission": {
+        "allow": "Allow",
+        "waiting": "Waiting for approval..."
+      },
+      "sections": {
+        "params": "Parameters",
+        "result": "Result"
+      },
+      "waitingResult": "Waiting for result"
+    },
+    "toolPermission": {
+      "allowOnce": "Allow Once",
+      "allowSession": "Always Allow This Session",
+      "allowed": "Allowed",
+      "allowedSession": "Allowed (this session)",
+      "denied": "Denied",
+      "submitFailed": "Approval submission failed"
+    },
+    "userAsk": {
+      "answered": "ANSWERED",
+      "errors": {
+        "optionRequired": "Select an option before submitting",
+        "otherRequired": "Fill in the custom answer you selected",
+        "submitFailed": "Submit failed. Try again later."
+      },
+      "multi": "Multiple",
+      "otherPlaceholder": "Custom answer - enter your own response...",
+      "skipped": "SKIPPED",
+      "single": "Single",
+      "submit": "Submit Reply",
+      "waiting": "WAITING · Awaiting reply"
+    }
+  },
+  "chat": {
+    "actions": {
+      "approve": "Approve",
+      "regenerate": "Regenerate"
+    },
+    "composer": {
+      "addImage": "Add Image",
+      "editing": {
+        "aria": "Editing message",
+        "cancel": "Cancel edit",
+        "cancelTitle": "Cancel edit (Esc)",
+        "description": "Saving discards later history and regenerates from this point.",
+        "title": "Edit Message"
+      },
+      "imageErrors": {
+        "readFailed": "Failed to read image",
+        "tooMany": "Add at most {{count}} images",
+        "unsupported": "Only PNG, JPEG, and WebP are supported. Each image must be under 5 MB."
+      },
+      "placeholder": "Type a message or / for commands",
+      "removeImage": "Remove image {{name}}",
+      "saveEdit": "Save edit",
+      "send": "Send",
+      "sendTitle": "Send (Enter)",
+      "shortcuts": {
+        "edit": "↵ Save · Esc Cancel",
+        "send": "↵ Send · ⇧↵ New line"
+      }
+    },
+    "compacting": {
+      "aria": "Compacting context",
+      "label": "Compacting context..."
+    },
+    "context": {
+      "aria": "Context usage {{used}} / {{max}}",
+      "label": "Context"
+    },
+    "debug": {
+      "unknownBlock": "(debug) unimplemented block type: {{type}}"
+    },
+    "errorCard": {
+      "message": "Agent call failed: {{text}}",
+      "regenerate": "↻ Regenerate"
+    },
+    "image": {
+      "alt": "Image",
+      "attachmentAlt": "Image attachment"
+    },
+    "message": {
+      "me": "Me"
+    },
+    "meta": {
+      "cacheHit": "Cache hit",
+      "cacheWrite": "Cache write",
+      "completion": "Received (completion)",
+      "duration": "Duration",
+      "model": "Model",
+      "prompt": "Sent (prompt)",
+      "reasoning": "Reasoning",
+      "tokenDetails": "Token usage details"
+    },
+    "quota": {
+      "aria": "Claude Code quota 5h {{five}}% 7d {{seven}}% from {{device}}",
+      "resetRemaining": " (resets in {{time}})",
+      "title": {
+        "authExpired": "Claude Code OAuth expired · run 'claude /login' on {{device}}",
+        "deviceOffline": "{{device}} offline",
+        "network": "Claude Code quota · {{device}} (network error, showing last value)",
+        "ok": "Claude Code quota · {{device}}",
+        "rateLimited": "Claude Code quota · {{device}} (429 backoff, showing last value)"
+      }
+    },
+    "retry": {
+      "aria": "Retrying",
+      "defaultMessage": "Upstream connection interrupted temporarily",
+      "title": "Retrying",
+      "titleWithAttempt": "Retrying {{attempt}}",
+      "titleWithMax": "Retrying {{attempt}}/{{max}}"
+    },
+    "typing": {
+      "aria": "Generating"
+    }
+  },
+  "chatContext": {
+    "files": {
+      "empty": "No files have been changed in this session",
+      "label": "Files"
+    },
+    "outline": {
+      "empty": "No messages in this session",
+      "label": "Outline",
+      "turn": "Turn {{turn}}"
+    },
+    "sidebar": "Chat context"
+  },
+  "chatPanel": {
+    "actions": {
+      "rename": "Rename"
+    },
+    "compact": {
+      "imageUnsupported": "/compact cannot be sent with images",
+      "needsSession": "Send one message first so the Codex session starts before compacting",
+      "waitForTurn": "Compact after the current response finishes"
+    },
+    "deleteDialog": {
+      "description": "Deleting this session also removes all of its messages and cannot be undone.",
+      "title": "Delete Session"
+    },
+    "errors": {
+      "cancelQueued": "Failed to cancel queued message: {{msg}}",
+      "compact": "Failed to compact context: {{msg}}",
+      "copyLaunchCommand": "Failed to copy launch command: {{msg}}",
+      "edit": "Edit failed: {{msg}}",
+      "enqueue": "Failed to insert message: {{msg}}",
+      "imageUnsupported": "The current agent backend does not support image input",
+      "imageWhileStreaming": "The current chat is running. Send images after this turn finishes.",
+      "goal": "Goal operation failed: {{msg}}",
+      "noActiveConversation": "No in-flight conversation",
+      "noActiveTurnToStop": "No in-flight turn to stop",
+      "regenerate": "Regeneration failed: {{msg}}",
+      "rename": "Rename failed: {{msg}}",
+      "send": "Send failed: {{msg}}",
+      "stop": "Stop failed: {{msg}}"
+    },
+    "launchCommand": {
+      "copy": "Copy Launch Command",
+      "copyDescription": "Includes a token. Paste it into a terminal to run. Copy again after the local gateway restarts because the token expires.",
+      "copyDone": "Launch command copied",
+      "copyFailed": "Failed to copy launch command"
+    },
+    "goal": {
+      "cleared": "Goal cleared",
+      "current": "Current goal: {{objective}} ({{status}}, {{tokens}} tokens)",
+      "empty": "No current goal",
+      "imageUnsupported": "/goal cannot be sent with images",
+      "needsSession": "Send one message first so the Codex session starts before setting a goal",
+      "updated": "Goal updated",
+      "updatedWithObjective": "Goal updated: {{objective}}"
+    },
+    "localDevice": "Local",
+    "newSession": {
+      "description": "Type a message below, press Enter to send, or Shift+Enter for a new line.",
+      "title": "Start a chat with {{name}}"
+    },
+    "newProjectSession": {
+      "description": "Your first message will start this session in the project workspace.",
+      "title": "Start a project chat with {{agentName}} in {{projectName}}"
+    },
+    "notice": {
+      "close": "Close notice"
+    },
+    "regenerateDialog": {
+      "confirm": "Regenerate",
+      "description": "This reply and every message after it will be discarded. The agent will generate a new response from the previous user message.",
+      "title": "Regenerate Reply"
+    },
+    "renameDialog": {
+      "nameAria": "Session name",
+      "placeholder": "Enter a new name",
+      "title": "Rename Session"
+    },
+    "toolbar": {
+      "aria": "Session toolbar",
+      "contextSidebar": "Context sidebar",
+      "hideContextSidebar": "Hide context sidebar",
+      "showContextSidebar": "Show context sidebar",
+      "stop": "Stop",
+      "stopActiveTitle": "Stop current chat",
+      "stopInactiveTitle": "No chat is currently running",
+      "terminalTitle": "Terminal (⌘`)"
+    },
+    "untitled": "(Untitled)"
+  },
+  "chatPage": {
+    "agents": "Agents",
+    "notChattable": {
+      "defaultHint": "Bind a built-in backend to this Agent on the org chart page first",
+      "message": "Not available for chat — {{hint}}"
+    },
+    "search": {
+      "aria": "Filter agents and sessions",
+      "clear": "Clear filter",
+      "noMatches": "No agents or sessions match \"{{query}}\"",
+      "placeholder": "Search Agent / session"
+    },
+    "sections": {
+      "agents": "AGENTS",
+      "pinned": "PINNED"
+    },
+    "sidebar": "Agent list",
+    "untitledSession": "(Untitled session)"
+  },
+  "chatTabs": {
+    "actions": {
+      "closeOthers": "Close Others",
+      "closeRight": "Close Tabs to the Right",
+      "closeTab": "Close Tab",
+      "pin": "Pin",
+      "unpin": "Unpin"
+    },
+    "empty": {
+      "description": "Choose one from the left sidebar, or dispatch a new task to an Agent · ⌘P opens the command palette",
+      "shortcuts": {
+        "close": "Close Tab",
+        "openInNewTab": "Open in New Tab",
+        "switch": "Switch Tab"
+      },
+      "title": "Choose an Agent or project session to start"
+    },
+    "fallbackSession": "(session)",
+    "missingAgent": {
+      "detail": "Agent #{{id}} may have been deleted, or the list has not synced yet.",
+      "loadFailed": "Failed to load Agent info",
+      "loading": "Loading Agent info...",
+      "notFound": "Agent not found"
+    },
+    "overflow": {
+      "openMenu": "Open Tab menu",
+      "openTabs": "Open Tabs ({{count}})"
+    },
+    "status": {
+      "error": "error",
+      "errorLabel": "Error",
+      "idle": "idle",
+      "running": "running",
+      "waiting": "waiting"
+    },
+    "terminal": {
+      "title": "Terminal",
+      "titleWithDevice": "Terminal · {{deviceName}}"
+    },
+    "tooltip": {
+      "ago": "{{time}} ago",
+      "hint": "Activate · click ✕ to close",
+      "session": "sess-{{id}}",
+      "worktree": "worktree {{branch}}"
+    }
+  },
+  "commandPalette": {
+    "chatSessions": {
+      "heading": "Chat Sessions",
+      "status": {
+        "error": "Error",
+        "running": "Running",
+        "waiting": "Waiting"
+      },
+      "untitled": "(Untitled session)"
+    },
+    "close": "Close command palette",
+    "context": {
+      "freeModeHint": "New chats go to free sessions",
+      "projectModeHint": "Members first · non-members dimmed",
+      "switchProject": "Switch project",
+      "title": "Context"
+    },
+    "description": "Search sessions · Jump · Run actions",
+    "empty": {
+      "commandHint": "Type a command name, for example: New chat with",
+      "noCommands": "No matching commands",
+      "noSessions": "No matching sessions",
+      "sessionHint": "No sessions yet · start an agent chat first"
+    },
+    "footer": {
+      "clearContext": "Clear context",
+      "create": "Create",
+      "navigate": "Navigate",
+      "open": "Open"
+    },
+    "group": {
+      "activeFirst": "Active first · {{count}} total",
+      "matches": "{{count}} matches"
+    },
+    "newProjectChat": {
+      "freeChatInfo": "[command-palette] Created a free chat for \"{{agentName}}\" · the agent is not in project \"{{projectName}}\"",
+      "heading": "New Project Chat",
+      "itemPrefix": "New project chat with",
+      "itemTitle": "New project chat with {{agentName}}",
+      "memberHeading": "New chat in {{projectName}}",
+      "missingRemotePathWarning": "[command-palette] \"{{agentName}}\" has no path configured on this project's remote machine. Fill it in under Project Settings · Members.",
+      "offlineWarning": "[command-palette] The device \"{{deviceName}}\" for \"{{agentName}}\" is offline, so a session cannot be started.",
+      "otherHeading": "Other Agents",
+      "notInProject": "Not in this project"
+    },
+    "newChat": {
+      "heading": "New Chat",
+      "itemPrefix": "New chat with",
+      "itemTitle": "New chat with {{agentName}}"
+    },
+    "project": {
+      "empty": "(no projects yet)",
+      "fallbackName": "Project #{{id}}",
+      "none": "No project",
+      "switchAria": "Switch project context",
+      "switchTitle": "Click to switch project, or press Tab"
+    },
+    "search": {
+      "clear": "Clear query",
+      "command": "Command",
+      "commandMode": "Command mode",
+      "commandModeTitle": "Command mode (type > to enter)",
+      "commandPlaceholder": "Type a command...",
+      "sessionPlaceholder": "Search sessions..."
+    },
+    "title": "Command Palette"
+  },
+  "dataBackup": {
+    "actions": {
+      "create": "Create",
+      "duplicate": "Duplicate as New",
+      "overwrite": "Overwrite",
+      "skip": "Skip"
+    },
+    "description": "Import and export Agentre configuration data across devices.",
+    "export": {
+      "action": "Export...",
+      "description": "Choose what to export and generate a JSON file.",
+      "failed": "Export failed",
+      "includeSecrets": "Include secrets",
+      "includeSecretsDescription": "Exports API keys, TLS certificates, and other secrets in plain text. Keep the file secure.",
+      "secretsWarning": "The export contains plain-text secrets. Anyone with this file can use your accounts.",
+      "selectOne": "Select at least one scope",
+      "success": "Exported {{count}} records",
+      "title": "Export"
+    },
+    "import": {
+      "chooseFile": "Choose File...",
+      "description": "Choose an Agentre export JSON file, preview it, then import.",
+      "failed": "Import failed",
+      "parseFailed": "Failed to parse file",
+      "title": "Import"
+    },
+    "importPreview": {
+      "action": "Action",
+      "apply": "Apply",
+      "conflict": "Conflict",
+      "dangling": "Missing Reference",
+      "defaultStrategy": "Default conflict strategy",
+      "description": "Choose strategies, then apply. Failures roll back the whole batch.",
+      "new": "New",
+      "noSecrets": "This file does not include secrets. Re-enter API keys and other sensitive fields after import.",
+      "scope": "Scope",
+      "title": "Import Preview"
+    },
+    "importResult": {
+      "created": "Created",
+      "duplicated": "Duplicated",
+      "ok": "Got it",
+      "overwrote": "Overwrote",
+      "skipped": "Skipped",
+      "title": "Import Complete"
+    },
+    "scopes": {
+      "agent-backends": "Agent Backends",
+      "llm-providers": "LLM Providers",
+      "organization": "Organization",
+      "remote-devices": "Remote Devices"
+    },
+    "title": "Data & Backup"
+  },
+  "deviceTag": {
+    "local": "Local",
+    "offline": "{{name}} · offline"
+  },
+  "common": {
+    "add": "Add",
+    "all": "All",
+    "cancel": "Cancel",
+    "close": "Close",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
+    "create": "Create",
+    "delete": "Delete",
+    "disable": "Disable",
+    "edit": "Edit",
+    "enable": "Enable",
+    "errorOccurred": "Something went wrong",
+    "loading": "Loading...",
+    "moreActions": "More actions",
+    "operationCompleted": "Operation completed",
+    "operationFailed": "Operation failed",
+    "operationSucceeded": "Operation succeeded",
+    "optional": "Optional",
+    "reject": "Reject",
+    "save": "Save",
+    "saved": "Saved",
+    "saving": "Saving...",
+    "skip": "Skip",
+    "unassigned": "Unassigned",
+    "unknownError": "Unknown error",
+    "unsavedChanges": "Unsaved changes"
+  },
+  "codeBlock": {
+    "copyDone": "Code copied",
+    "copyFailed": "Failed to copy code"
+  },
+  "clipboard": {
+    "unsupported": "Clipboard is not supported in this environment"
+  },
+  "compactBoundary": {
+    "aria": "Context compaction boundary",
+    "label": "Context compacted",
+    "tokensBefore": "{{tokens}} tokens before compaction",
+    "trigger": {
+      "auto": "Automatic compaction",
+      "compressed": "Compacted",
+      "manual": "Manual /compact"
+    }
+  },
+  "compactHistory": {
+    "viewPrevious": "View {{count}} messages before compaction"
+  },
+  "iconPicker": {
+    "avatar": {
+      "activeUpload": "Current: uploaded image.",
+      "autoGenerated": "{{initials}} · Auto-generated",
+      "change": "Change avatar",
+      "deleteUpload": "Delete uploaded avatar",
+      "errors": {
+        "tooLarge": "Image is too large. Upload a file under 2 MB.",
+        "uploadFailed": "Upload failed"
+      },
+      "iconFallback": "The icon is used as a fallback after the image is deleted.",
+      "image": "Image",
+      "letter": "Letter",
+      "letterHint": "Generated from the first letter and theme color",
+      "notSet": "Not set",
+      "notUploaded": "Not uploaded",
+      "replace": "Replace",
+      "selected": "Selected",
+      "upload": "Upload",
+      "uploadDisabled": "Create the agent before uploading an avatar image. Pick an icon or letter for now.",
+      "uploadHint": "PNG / JPG / WEBP · Max 2 MB",
+      "uploaded": "Uploaded"
+    },
+    "search": {
+      "aria": "Search icons",
+      "clearIcon": "Clear icon and fall back to letter",
+      "noMatches": "No matches",
+      "placeholder": "Search icons...",
+      "results": "Search results"
+    },
+    "selectIcon": "Select icon"
+  },
+  "iconRegistry": {
+    "aliases": {
+      "artifact": "artifact",
+      "coding": "coding",
+      "color": "color",
+      "construction": "construction",
+      "debugging": "debugging",
+      "direction": "direction",
+      "experiment": "experiment",
+      "fill": "fill",
+      "focus": "focus",
+      "hardware": "hardware",
+      "hierarchy": "hierarchy",
+      "intelligence": "intelligence",
+      "magic": "magic",
+      "measure": "measure",
+      "milestone": "milestone",
+      "module": "module",
+      "monitoring": "monitoring",
+      "notification": "notification",
+      "observe": "observe",
+      "painting": "painting",
+      "protection": "protection",
+      "release": "release",
+      "storage": "storage",
+      "thinking": "thinking",
+      "tools": "tools",
+      "topology": "topology",
+      "tradeoff": "tradeoff",
+      "trend": "trend"
+    },
+    "categories": {
+      "design": "Design",
+      "engineering": "Engineering",
+      "general": "General",
+      "ops": "Operations",
+      "qa": "Testing"
+    },
+    "icons": {
+      "beaker": "Beaker",
+      "bot": "Bot",
+      "brain": "Brain",
+      "brush": "Brush",
+      "chart": "Chart",
+      "code": "Code",
+      "compass": "Compass",
+      "cpu": "Processor",
+      "database": "Database",
+      "eye": "View",
+      "flag": "Flag",
+      "gauge": "Gauge",
+      "hammer": "Hammer",
+      "layers": "Layers",
+      "megaphone": "Broadcast",
+      "network": "Network",
+      "package": "Package",
+      "paintBucket": "Paint Bucket",
+      "palette": "Palette",
+      "puzzle": "Puzzle",
+      "rocket": "Launch",
+      "ruler": "Ruler",
+      "scale": "Scale",
+      "security": "Security",
+      "sparkles": "Sparkles",
+      "target": "Target",
+      "terminal": "Terminal",
+      "wandSparkles": "Magic Wand",
+      "wrench": "Wrench"
+    }
+  },
+  "issues": {
+    "actions": {
+      "dispatchToAgent": "Dispatch to Agent",
+      "filter": "Filter",
+      "newIssue": "New Issue",
+      "redispatch": "Redispatch"
+    },
+    "board": {
+      "addCard": "Add Card",
+      "addToColumn": "Add to {{column}}",
+      "aria": "Issue board",
+      "lastFailure": "exit={{code}} · last fail {{minutes}}m ago",
+      "viewAllClosed": "View all {{count}} →"
+    },
+    "columns": {
+      "backlog": "Backlog",
+      "closed": "Closed",
+      "running": "In Progress",
+      "waiting": "Waiting"
+    },
+    "filters": {
+      "assignedAgent": "Assigned Agent",
+      "author": "Author",
+      "closed": "Closed",
+      "label": "Label",
+      "latestUpdate": "Latest Update",
+      "open": "Open"
+    },
+    "list": {
+      "aria": "Issue list"
+    },
+    "samples": {
+      "129": {
+        "meta": "Closed · 3d ago",
+        "title": "Fix Hook route matching priority"
+      },
+      "132": {
+        "meta": "Closed · yesterday",
+        "title": "Fix department banner collapsed state"
+      },
+      "133": {
+        "meta": "Created manually · 7d ago · Unassigned",
+        "title": "Research LLM cost dashboard options"
+      },
+      "136": {
+        "meta": "Created manually · 6d ago · Updated 1h ago",
+        "title": "Refactor ChatArea message list performance with virtualization"
+      },
+      "137": {
+        "meta": "Created manually · 5d ago · Unassigned",
+        "title": "Docs: Agent backend examples and common errors"
+      },
+      "138": {
+        "meta": "Created by Sentry Webhook · 4d ago · Failed with exit=124",
+        "title": "[Urgent] Codex CLI intermittently times out and interrupts sessions"
+      },
+      "139": {
+        "meta": "Created by GitHub Webhook · 3d ago · Waiting for CEO assistant approval",
+        "title": "Email Hook reconnect retry interval is too short and hits rate limits"
+      },
+      "140": {
+        "meta": "Created manually · 2d ago · Waiting for user approval",
+        "title": "Department nesting stutters when zooming at 4+ levels"
+      },
+      "141": {
+        "meta": "Created manually · yesterday · Updated 12m ago",
+        "title": "Implement dark mode and Slack-style message stream"
+      },
+      "142": {
+        "meta": "Created by Mail Hook · 14:32 · Updated 3m ago",
+        "title": "Fix OAuth callback losing the state parameter in Safari"
+      }
+    },
+    "status": {
+      "unassigned": "Unassigned"
+    },
+    "summary": {
+      "board": "Grouped by status · drag cards between columns",
+      "list": "12 Open · 47 Closed · 3 Agents following up"
+    },
+    "title": "Board",
+    "view": {
+      "aria": "Issue view",
+      "board": "Board",
+      "list": "List"
+    }
+  },
+  "language": {
+    "description": "Choose the interface language.",
+    "en": "English",
+    "label": "Language",
+    "zh-CN": "中文"
+  },
+  "hooks": {
+    "actions": {
+      "syncEmail": "Sync Email",
+      "testConnection": "Test Connection"
+    },
+    "config": {
+      "basicInfo": "Basic Info",
+      "connection": {
+        "ariaLabel": "Connection Configuration",
+        "description": "Entry parameters and connection status for {{kind}}.",
+        "title": "Connection Configuration"
+      },
+      "enabled": {
+        "ariaLabel": "Enable source",
+        "description": "When disabled, configuration and history are kept, but routing no longer triggers.",
+        "emailActive": "Auto Polling",
+        "emailDescription": "When enabled, Agentre polls unread email by interval. When disabled, configuration and history are kept.",
+        "emailPaused": "Polling Paused",
+        "label": "Enabled State",
+        "receiveActive": "Receiving Events",
+        "receivePaused": "Receiving Paused"
+      },
+      "identifier": "Display Identifier",
+      "identifierDescription": "Used in lists and event source summaries.",
+      "save": "Save Configuration",
+      "sourceName": "Name",
+      "sourceType": "Type"
+    },
+    "connectionStatus": {
+      "connected": "Connected",
+      "disabled": "Disabled",
+      "error": "Connection failed",
+      "pending": "Pending verification"
+    },
+    "empty": {
+      "createSource": "New Source",
+      "description": "Create an email, Webhook, Slack, or scheduled source, then configure routing rules and inspect event logs.",
+      "title": "No sources yet"
+    },
+    "eventDetail": {
+      "author": "Author: {{name}}",
+      "copyPayload": "Copy payload",
+      "copyPayloadDone": "Payload copied",
+      "copyPayloadFailed": "Failed to copy payload",
+      "defaultAgent": "Default Agent",
+      "dispatchResults": "Dispatch Results",
+      "empty": "Select an event to inspect payload, rule matches, and dispatch records.",
+      "noDispatches": "Not dispatched to an agent yet.",
+      "noRuleMatches": "No rule match records.",
+      "rawPayload": "Raw JSON payload",
+      "redeliver": "Redeliver",
+      "redeliverTarget": "Redelivery target agent",
+      "ruleMatches": "Rule Match Results"
+    },
+    "eventStatus": {
+      "dispatched": "Dispatched",
+      "failed": "Failed",
+      "unmatched": "Unmatched"
+    },
+    "events": {
+      "emptyDescription": "Try testing the connection, or adjust search and status filters.",
+      "emptyTitle": "No events",
+      "fallbackUnmatched": "Fallback / unmatched",
+      "listAria": "Event log list",
+      "searchAria": "Search events",
+      "searchPlaceholder": "Search event title / sender / payload..."
+    },
+    "fields": {
+      "advanced": "Advanced Settings",
+      "appPassword": "App Password",
+      "botToken": "Bot Token",
+      "copyWebhookUrl": "Copy Webhook URL",
+      "copyWebhookUrlDone": "Webhook URL copied",
+      "copyWebhookUrlFailed": "Failed to copy Webhook URL",
+      "cronExpr": "cron Expression",
+      "emailAddress": "Email Address",
+      "emailAdvancedSummary": "Port, mailbox, and TLS",
+      "enableSignature": "Enable signature verification",
+      "imapPort": "IMAP Port",
+      "imapServer": "IMAP Server",
+      "keepPasswordPlaceholder": "Leave empty to keep current password",
+      "listenChannel": "Listening Channel",
+      "listenEvents": "Listening Events",
+      "mailbox": "Mailbox",
+      "plainImap": "Plain IMAP / 143",
+      "pollingInterval": "Polling Interval",
+      "signatureVerification": "Signature Verification",
+      "slackChannel": "Slack listening channel",
+      "systemPermission": "System Permission",
+      "timezone": "Timezone",
+      "useTls": "Use IMAP TLS",
+      "webhookSecret": "Webhook Secret",
+      "webhookUrl": "Webhook URL",
+      "webhookDescription": "In local desktop mode, copy this to external systems. Public proxy settings are configured separately later."
+    },
+    "flash": {
+      "connectionSaved": "Connection configuration saved",
+      "emailSyncDone": "Email sync complete: {{created}} new, {{skipped}} skipped",
+      "redeliverRecorded": "Redelivery request recorded",
+      "ruleDeleted": "Rule {{name}} deleted",
+      "ruleSaved": "Routing rule saved",
+      "sourceCreated": "Source {{name}} created",
+      "sourceDeleted": "Source {{name}} deleted",
+      "sourceDisabled": "Source disabled",
+      "sourceEnabled": "Source enabled",
+      "testEventWritten": "Test event written to the event log"
+    },
+    "header": {
+      "emptyDescription": "Create a source, then configure connection and routing rules.",
+      "emptyTitle": "Hook",
+      "lastSync": "Sync {{time}}",
+      "noIdentifier": "No identifier configured",
+      "totalCount": "Total {{count}}"
+    },
+    "loading": "Loading Hooks...",
+    "ruleDialog": {
+      "condition": "Condition Expression",
+      "createAriaLabel": "New routing rule",
+      "createTitle": "New Routing Rule",
+      "description": "Conditions support simple expressions such as subject contains \"X\" or event_type contains \"release\".",
+      "editAriaLabel": "Edit routing rule",
+      "editTitle": "Edit Routing Rule",
+      "enableRule": "Enable rule",
+      "enableThisRule": "Enable this rule",
+      "fallbackAlwaysEnabled": "Fallback rule is always enabled",
+      "targetAgent": "Target Agent"
+    },
+    "rules": {
+      "agentDecidesDescription": "One event can match multiple rules. Creating issues, replying to email, or sending desktop notifications is not configured here. This version only records dispatch intent and does not start the agent runtime.",
+      "agentDecidesTitle": "The target agent decides how to transform events",
+      "ariaLabel": "Routing Rules",
+      "deleteNamed": "Delete rule {{name}}",
+      "description": "All matching rules run. Each target agent gets an independent dispatch record.",
+      "empty": "No custom rules yet. Events fall through to the fallback rule.",
+      "enableNamed": "Enable rule {{name}}",
+      "fallbackBadge": "fallback",
+      "fallbackPrefix": "When no rules match, route to",
+      "fallbackSuffix": ". You can edit the target, but cannot delete it.",
+      "newRule": "New Rule",
+      "noAgent": "No agent selected",
+      "noDispatch": "Do not dispatch",
+      "selectAgent": "Select Agent",
+      "status": {
+        "enabled": "enabled",
+        "paused": "paused"
+      },
+      "targetNamed": "Target agent for rule {{name}}",
+      "targetPlaceholder": "Target Agent",
+      "title": "Routing Rules"
+    },
+    "source": {
+      "subtitle": {
+        "systemDisabled": "macOS Notification Center · Disabled",
+        "systemEnabled": "macOS Notification Center"
+      }
+    },
+    "sourceDialog": {
+      "ariaLabel": "New source",
+      "description": "Create the basic entry first, then fill in connection parameters and routing rules on the detail page.",
+      "title": "New Source",
+      "typeAria": "New source type"
+    },
+    "sourceKind": {
+      "email": {
+        "label": "Email",
+        "shortLabel": "Email"
+      },
+      "github": {
+        "label": "GitHub Webhook",
+        "shortLabel": "GitHub"
+      },
+      "schedule": {
+        "label": "Schedule",
+        "shortLabel": "Schedule"
+      },
+      "slack": {
+        "label": "Slack DM",
+        "shortLabel": "Slack"
+      },
+      "system": {
+        "label": "System Notification",
+        "shortLabel": "System"
+      },
+      "webhook": {
+        "label": "Custom Webhook",
+        "shortLabel": "Webhook"
+      }
+    },
+    "sourceList": {
+      "ariaLabel": "Source list",
+      "eventSources": "Event Sources",
+      "messageSources": "Message Sources",
+      "off": "OFF",
+      "searchAria": "Search sources",
+      "searchPlaceholder": "Search sources",
+      "title": "Sources",
+      "triggerCount": "{{label}} · {{count}} triggers"
+    },
+    "tabs": {
+      "config": "Config",
+      "eventLog": "Event Log"
+    },
+    "time": {
+      "daysAgo": "{{count}}d ago",
+      "hoursAgo": "{{count}}h ago",
+      "minutesAgo": "{{count}}m ago",
+      "never": "Never",
+      "secondsAgo": "{{count}}s ago"
+    }
+  },
+  "llmProviders": {
+    "actions": {
+      "confirmDelete": "Confirm delete?",
+      "confirmDeleteNamed": "Confirm deleting {{name}}",
+      "deleteNamed": "Delete {{name}}",
+      "deleteTitle": "Delete (requires confirmation)",
+      "editNamed": "Edit {{name}}",
+      "testCall": "Test Call",
+      "testNamed": "Test {{name}}",
+      "testTitle": "Test call (send hi)",
+      "testing": "Testing"
+    },
+    "empty": {
+      "addFirst": "Add First Provider",
+      "apiKeyHelp": "How to get an API key",
+      "description": "Add a provider such as Anthropic, OpenAI, or a compatible endpoint, then choose a default model.",
+      "title": "No LLM providers configured"
+    },
+    "fields": {
+      "apiKey": "API Key",
+      "apiKeyEdit": "API Key (leave empty to keep current value)",
+      "apiKeyEditPlaceholder": "******** (leave empty to keep current value)",
+      "apiKeyPlaceholder": "sk-... or self-hosted token. Leave empty for anonymous access.",
+      "baseUrl": "Base URL (optional)",
+      "baseUrlHint": "Leave empty to use default: {{url}}",
+      "contextWindow": "Context Window",
+      "copyProviderKey": "Copy Provider Key",
+      "copyProviderKeyDone": "Provider Key copied",
+      "copyProviderKeyFailed": "Failed to copy Provider Key",
+      "defaultModel": "Default Model",
+      "defaultModelHint": "Enter a model id manually, or fetch the provider list with the button on the right.",
+      "defaultModelNeedKey": "Enter an API Key before fetching models.",
+      "hideApiKey": "Hide API Key",
+      "maxOutput": "Max Output Tokens",
+      "name": "Name",
+      "namePlaceholder": "Example: production / local Ollama",
+      "providerDecides": "Provider decides",
+      "providerKey": "Provider Key",
+      "providerKeyHint": "Stable identifier used by agent backends and remote devices to reference this provider.",
+      "providerKeyPlaceholder": "Generated after saving",
+      "showApiKey": "Show API Key",
+      "type": "Type",
+      "typePlaceholder": "Select provider type"
+    },
+    "flash": {
+      "created": "Provider \"{{name}}\" added",
+      "deleteFailed": "Delete failed: {{message}}",
+      "deleted": "Provider \"{{name}}\" deleted",
+      "loadFailed": "Load failed: {{message}}",
+      "saveFailed": "Save failed: {{message}}",
+      "testFailed": "Test failed: {{message}}",
+      "updated": "Provider \"{{name}}\" updated"
+    },
+    "form": {
+      "createAriaLabel": "New LLM provider",
+      "createDescription": "Configure a set of LLM credentials. New providers can be used in chat immediately.",
+      "createTitle": "New LLM Provider",
+      "editAriaLabel": "Edit LLM provider",
+      "editDescription": "Update credentials or the default model. Leave API Key empty to keep the current value.",
+      "editTitle": "Edit: {{name}}"
+    },
+    "models": {
+      "empty": "The provider did not return any models. Enter the model id manually.",
+      "fetch": "Fetch provider models",
+      "needApiKey": "Enter an API Key first",
+      "noList": "Model list has not been fetched",
+      "placeholder": "Example: claude-opus-4-7 / gpt-4o-mini",
+      "viewList": "View model list"
+    },
+    "providerType": {
+      "anthropic": {
+        "description": "Native Claude API",
+        "label": "Anthropic"
+      },
+      "openai-chat": {
+        "description": "GPT or any OpenAI-compatible /v1/chat/completions protocol, including vLLM, Ollama, and Azure.",
+        "label": "OpenAI / Compatible (Chat)"
+      },
+      "openai-response": {
+        "description": "The newer /v1/responses protocol for o-series, gpt-5-codex, and other Responses-only models.",
+        "label": "OpenAI Responses"
+      }
+    },
+    "row": {
+      "noApiKey": "API Key not configured"
+    },
+    "table": {
+      "ariaLabel": "LLM provider list",
+      "endpointKey": "Endpoint / Key",
+      "name": "Name",
+      "type": "Type"
+    },
+    "test": {
+      "draftFailed": "Call failed",
+      "draftSuccess": "Call succeeded. Sent hi and received a model response.",
+      "failedTitle": "Test Failed",
+      "providerFailed": "\"{{name}}\" connection failed: {{message}}",
+      "providerSuccess": "\"{{name}}\" call succeeded. Sent hi and received a model response.",
+      "successTitle": "Test Passed"
+    },
+    "toolbar": {
+      "add": "New Provider",
+      "count": "{{count}} total",
+      "title": "Configured Providers"
+    },
+    "validation": {
+      "apiKeyRequired": "API Key is required",
+      "modelRequired": "Enter a default model first",
+      "nameRequired": "Name is required"
+    }
+  },
+  "nav": {
+    "chat": "Chat",
+    "hooks": "Hooks",
+    "issues": "Issues",
+    "org": "Organization",
+    "projects": "Projects",
+    "settings": "Settings"
+  },
+  "projectSettings": {
+    "basic": {
+      "description": "Description",
+      "iconKey": "Icon key",
+      "iconPlaceholder": "folder / briefcase / custom emoji",
+      "localPathReadonly": "Local path (read-only)",
+      "name": "Project name"
+    },
+    "danger": {
+      "confirmName": "Enter project name \"{{name}}\" to confirm",
+      "deleteDescription": "Soft-delete the project record. This does not delete the local repository or chat sessions. Deletion is refused if the project still has child projects or active sessions.",
+      "deleteProject": "Delete Project"
+    },
+    "locations": {
+      "absolutePathRequired": "Must be an absolute path (starts with /)",
+      "addRemotePath": "Add Remote Path",
+      "allDevicesConfigured": "All paired remote devices already have paths",
+      "browseRemoteDir": "Browse remote directory",
+      "count": "Remote Paths · {{count}}",
+      "deletePath": "Delete Path",
+      "editPath": "Edit Path",
+      "empty": "No remote paths yet. Add a path before adding agents from that device on the Members tab.",
+      "enterToSave": "Enter to save",
+      "newPath": "New Path",
+      "offlineSuffix": " · offline",
+      "pathPlaceholder": "/abs/path on remote (e.g. /home/me/proj)",
+      "remoteDevice": "Remote device",
+      "selectRemoteDevice": "Select remote device"
+    },
+    "members": {
+      "addAgent": "Add Agent",
+      "configureRemotePath": "⚠ Configure Remote Paths first",
+      "directCount": "Direct Members · {{count}}",
+      "directEmpty": "No direct members yet. Add one from the candidates below.",
+      "inheritedBadge": "⋯ inherited",
+      "inheritedCount": "Inherited from parent projects · {{count}}",
+      "inheritedFrom": "Inherited from {{name}}",
+      "missingRemotePathTitle": "This device has no remote path configured",
+      "noCandidates": "All agents are already in this project or inherited from a parent project.",
+      "parentProject": "parent project",
+      "pickAgent": "Choose Agent",
+      "remoteHint": "Remote agents need a path for that device configured on the Remote Paths tab first.",
+      "removeAgent": "Remove {{name}}"
+    },
+    "tabs": {
+      "basic": "Basic",
+      "danger": "Danger Zone",
+      "locations": "Remote Paths",
+      "members": "Members"
+    },
+    "title": "Project Settings",
+    "titleSuffix": "· Project Settings"
+  },
+  "projectNew": {
+    "browse": "Browse...",
+    "create": "Create Project",
+    "descriptionPlaceholder": "One sentence about what this project is for (optional)",
+    "detectingGit": "Detecting Git repository...",
+    "gitDetected": "Git repository detected",
+    "gitSummary": "Branch {{branch}} · {{origin}}",
+    "localPath": "Local path",
+    "noGit": "No Git repository detected",
+    "noOrigin": "No origin remote",
+    "none": "— None —",
+    "parentProject": "Parent project",
+    "selectDirectory": "Select project directory",
+    "topLevel": "— Top-level project —",
+    "unknown": "(unknown)"
+  },
+  "projects": {
+    "actions": {
+      "more": "More actions for {{name}}",
+      "newProject": "New Project",
+      "newSubProject": "New Sub-project"
+    },
+    "empty": {
+      "description": "Register a local code repository as a project so multiple agents can collaborate here.",
+      "title": "No projects yet"
+    },
+    "errors": {
+      "loadFailed": "Load failed: {{error}}",
+      "reorderFailed": "Failed to save project order: {{error}}"
+    },
+    "search": {
+      "aria": "Search projects / sessions",
+      "clear": "Clear filter",
+      "placeholder": "Search projects / sessions"
+    },
+    "session": {
+      "activeCount": "{{count}} active sessions including sub-projects",
+      "attentionAria": "{{name}} sessions needing attention",
+      "empty": "No sessions",
+      "inherited": "Inherited",
+      "loadMembersFailed": "Failed to load members: {{error}}",
+      "loadingMembers": "Loading members...",
+      "new": "New Session",
+      "newForProject": "New session in {{name}}",
+      "noMembers": "No members yet. Add a few in project settings first.",
+      "pickAgent": "Choose an Agent",
+      "untitled": "(Untitled session)"
+    },
+    "sidebar": {
+      "aria": "Project list",
+      "title": "Projects"
+    },
+    "terminal": {
+      "deviceOffline": "Device offline",
+      "local": "Local",
+      "new": "New Terminal",
+      "offlineSuffix": " · offline",
+      "pathMissingSuffix": " · no path",
+      "pathNotConfigured": "Configure the remote path in project settings first"
+    }
+  },
+  "queuedMessages": {
+    "aria": "Queued messages",
+    "cancelOne": "Cancel this queued message",
+    "cancelOneTitle": "Cancel before AI picks it up",
+    "clear": "Clear",
+    "clearAria": "Clear queued messages",
+    "clearTitle": "Clear all queued messages",
+    "codexNoCancel": "codex does not support cancel",
+    "codexNoCancelTitle": "codex backend does not support cancel",
+    "count": "Queued · {{count}}",
+    "insertAfterAI": "Inserted after AI finishes",
+    "notCancellable": "Not cancellable (codex backend)",
+    "notCancellableTitle": "codex turn/steer protocol is not cancellable after send"
+  },
+  "remoteFs": {
+    "actions": {
+      "cancel": "Cancel",
+      "newFolder": "New",
+      "selectCurrent": "Select This Folder"
+    },
+    "create": {
+      "placeholder": "folder name"
+    },
+    "empty": "(empty)",
+    "entry": {
+      "enter": "Open",
+      "enterNamed": "Open {{name}}",
+      "symlink": "Symbolic link"
+    },
+    "errors": {
+      "invalidName": "Invalid name"
+    },
+    "filter": {
+      "ariaLabel": "Filter current folder",
+      "placeholder": "Filter current folder..."
+    },
+    "hidden": {
+      "ariaLabel": "Show hidden files",
+      "label": "Hidden"
+    },
+    "loading": "Loading...",
+    "title": "Select Folder",
+    "truncated": "Some items are not listed. Use the filter to narrow the folder."
+  },
+  "remoteDevices": {
+    "actions": {
+      "addAgentred": "Add agentred",
+      "continueAddLan": "+ Add another agentred (LAN)",
+      "editTls": "Edit TLS Trust",
+      "refreshStatus": "Refresh Status",
+      "removeConfirm": "Unpair \"{{name}}\"? This desktop will clear the token and fingerprint pin for this agentred. The remote agentred state.json.pairedPeers will not be cleaned up automatically.",
+      "removePairing": "Unpair",
+      "rename": "Rename",
+      "renamePrompt": "Rename to"
+    },
+    "add": {
+      "advancedTls": "Advanced — TLS Trust ({{mode}})",
+      "description": "LAN direct",
+      "errors": {
+        "pairFailed": "Pairing failed"
+      },
+      "fields": {
+        "displayName": "Display Name (optional)",
+        "displayNamePlaceholder": "Leave empty to derive it from the address",
+        "pairingCode": "Pairing Code",
+        "pairingCodeHint": "6-character pairing code",
+        "url": "Address"
+      },
+      "instructions": {
+        "prefix": "Run",
+        "suffix": "on the remote machine, then enter the printed URL and 6-character pairing code."
+      },
+      "pair": "Pair",
+      "pairing": "Pairing...",
+      "title": "Add agentred Device"
+    },
+    "empty": {
+      "middle": ", then run",
+      "prefix": "Run",
+      "suffix": "to get a 6-character pairing code, then return here and choose Add agentred.",
+      "title": "No agentred devices paired"
+    },
+    "errors": {
+      "dialFailed": "Connection failed: {{message}}",
+      "tofuMismatch": "The server identity fingerprint changed. Verify it is safe, then pair again.",
+      "unauthorized": "Credentials expired. Pair again."
+    },
+    "panel": {
+      "description": "Manage remote agentred compute endpoints: desktop remote driver, direct LAN connections, and Cloud relay across networks (v0.3+).",
+      "lanAll": "LAN direct · All",
+      "stats": "{{paired}} paired · {{online}} online",
+      "title": "Remote"
+    },
+    "providers": {
+      "copyAria": "Copy fix command {{key}}",
+      "copyCommand": "Copy Command",
+      "copyDescription": "Paste it into the terminal running remote agentred",
+      "copyDone": "Fix command copied",
+      "copyFailed": "Failed to copy fix command",
+      "empty": "No local Agent Backend providers are linked to this device.",
+      "loadFailed": "Load failed: {{message}}",
+      "loading": "Loading Provider sync status...",
+      "missing": "Missing",
+      "synced": "Synced",
+      "title": "Provider Sync Status",
+      "unsynced": "Not synced"
+    },
+    "status": {
+      "lastConnected": "Last connected {{time}}",
+      "neverConnected": "Never connected",
+      "offline": "Offline",
+      "online": "Online"
+    },
+    "time": {
+      "daysAgo": "{{days}}d ago",
+      "hoursAgo": "{{hours}}h ago",
+      "justNow": "just now",
+      "minutesAgo": "{{minutes}}m ago",
+      "never": "never"
+    },
+    "tls": {
+      "apply": "Apply",
+      "badges": {
+        "notRecommended": "Not recommended",
+        "recommended": "Recommended"
+      },
+      "description": "How to verify agentred's TLS certificate",
+      "errors": {
+        "pemInvalid": "Invalid PEM: missing BEGIN/END CERTIFICATE markers",
+        "pemRequired": "Paste PEM content"
+      },
+      "modes": {
+        "caBundle": {
+          "description": "Trust certificates issued by a specific CA. Useful for enterprise PKI that is not installed in the OS trust store.",
+          "label": "CA Bundle"
+        },
+        "default": {
+          "description": "Use the OS trust store. Works with mkcert -install, Let's Encrypt, and enterprise CAs.",
+          "label": "OS Default"
+        },
+        "pinCert": {
+          "description": "Pin agentred's leaf certificate. Useful for self-signed certificates without a CA setup.",
+          "label": "Pin Certificate"
+        },
+        "skipVerify": {
+          "description": "Disable TLS verification. Anyone who can reach agentred can impersonate it. For debugging only.",
+          "label": "Skip Verification"
+        }
+      },
+      "pem": {
+        "caBundle": "CA Bundle (PEM)",
+        "cert": "Certificate (PEM)"
+      },
+      "title": "TLS Trust"
+    }
+  },
+  "richLink": {
+    "localFile": "Local File",
+    "localFileExternal": "Local File · Outside Project",
+    "localFolder": "Local Folder",
+    "localFolderExternal": "Local Folder · Outside Project",
+    "openFailed": "Open failed: {{error}}",
+    "openInBrowser": "Click to open in the system browser",
+    "openWithDefaultApp": "Click to open with the default system app",
+    "outsideCwd": "Path is outside the current cwd, so the project root segment is not shown.",
+    "projectRoot": "Project Root",
+    "relative": "Relative",
+    "url": "URL"
+  },
+  "org": {
+    "chart": {
+      "actions": {
+        "newAgent": "New Agent",
+        "newDepartment": "New Department"
+      },
+      "detail": {
+        "empty": "Select a department or agent to view details"
+      },
+      "empty": {
+        "noMountNodes": "No nodes available to mount"
+      },
+      "loading": "Loading org chart...",
+      "newAgent": {
+        "agentOption": "Agent · {{name}}",
+        "avatar": "Avatar",
+        "avatarColor": "Avatar Color",
+        "avatarColorNamed": "Avatar color {{color}}",
+        "avatarHint": "Click the avatar to pick an icon. Upload an image from the detail page after creation.",
+        "backend": "Backend",
+        "departmentOption": "Department · {{name}}",
+        "description": "Set the agent name, placement, and execution backend.",
+        "optionalSuffix": "(optional)",
+        "placement": "Select a department or parent agent"
+      },
+      "newDepartment": {
+        "description": "Choose the parent, icon, and theme color. It appears in the org chart after creation.",
+        "iconAria": "New department icon"
+      },
+      "summary": {
+        "list": "{{count}} agents · list view",
+        "tree": "{{departments}} departments · {{subDepartments}} sub-departments · {{agents}} agents"
+      },
+      "title": "Org Chart",
+      "view": {
+        "list": "List",
+        "listAria": "List view",
+        "tree": "Tree",
+        "treeAria": "Tree view"
+      },
+      "zoom": {
+        "in": "Zoom In",
+        "out": "Zoom Out",
+        "reset": "Reset Zoom"
+      }
+    },
+    "agent": {
+      "actions": {
+        "deleteAgent": "Delete Agent"
+      },
+      "avatar": {
+        "replaceImage": "Replace Image",
+        "uploadImage": "Upload Image"
+      },
+      "backend": {
+        "inactiveSuffix": " (disabled)",
+        "title": "Agent Backend",
+        "unlinkedProvider": "No linked LLM provider"
+      },
+      "backendHints": {
+        "builtin": "Uses the built-in SDK to call the LLM provider with embedded tools.",
+        "claudeCode": "Runs tasks through Claude Code CLI. Tool calls are routed through the CLI.",
+        "codex": "Runs tasks through Codex CLI. Tool calls are routed through the CLI.",
+        "default": "Choose an agent backend to execute tasks."
+      },
+      "basicInfo": "Basic Info",
+      "charCount": "{{count}} chars",
+      "deleteDialog": {
+        "description": "This also clears the agent's conversations, skills, and state records. This action cannot be undone.",
+        "title": "Delete agent \"{{name}}\"?"
+      },
+      "departmentLead": "{{name}} department lead",
+      "descriptionHint": "Optional · shown as the card subtitle",
+      "dragHierarchyHint": "· Drag cards to adjust hierarchy",
+      "fallbackName": "Agent",
+      "relativeTime": {
+        "daysAgo": "{{count}} days ago",
+        "hoursAgo": "{{count}} hours ago",
+        "justNow": "just now",
+        "minutesAgo": "{{count}} minutes ago"
+      },
+      "reportsTo": "Reports to",
+      "savedAt": "Saved · {{time}}",
+      "skills": {
+        "empty": "No skills yet. Add skills through Update settings.",
+        "item": "Skill {{label}}",
+        "list": "Skill list",
+        "summary": "{{enabled}} enabled · {{disabled}} disabled",
+        "title": "Skills / Tools"
+      },
+      "systemPrompt": "System Prompt",
+      "systemPromptHint": "Put style, tone, and boundaries in the system prompt. No separate fields are used.",
+      "unsaved": "Unsaved"
+    },
+    "department": {
+      "addGroup": "Add agent or sub-department",
+      "addAgent": "Agent",
+      "basicInfo": "Basic Info",
+      "deleteDepartment": "Delete department",
+      "deleteDialog": {
+        "cascadeDescription": "Soft-delete all sub-departments and agents as well",
+        "cascadeTitle": "Recursively delete the subtree",
+        "confirm": "Confirm Delete",
+        "description": "The selected strategy is applied recursively. This action cannot be undone.",
+        "irreversible": "This action cannot be undone",
+        "reparentDescription": "Recommended / safe · Move direct children to this department's parent",
+        "reparentTitle": "Move members to parent department",
+        "strategyTitle": "Choose how to handle children",
+        "title": "Delete \"{{name}}\"?"
+      },
+      "departmentMemberCount": "{{count}} members",
+      "description": "Description",
+      "editEyebrow": "Edit Department",
+      "icon": "Icon",
+      "leadHint": "Choose from direct agents",
+      "leadBadge": "LEAD",
+      "leader": "Leader",
+      "memberSummary": "{{agents}} direct agents · {{departments}} sub-departments",
+      "members": "Members",
+      "name": "Name",
+      "noDirectMembers": "No direct members",
+      "parent": "Parent",
+      "path": "Path",
+      "subDepartment": "Sub-department",
+      "themeColor": "Theme Color",
+      "themeColorNamed": "Theme color {{color}}",
+      "topLevel": "Company top level (under CEO)",
+      "viewAgent": "View agent {{name}}",
+      "viewDepartment": "View department {{name}}"
+    },
+    "list": {
+      "empty": "No agents found",
+      "filters": {
+        "backendAria": "Backend filter",
+        "backendPrefix": "Backend:",
+        "clearReportsTo": "Clear reports-to filter",
+        "reportsToAria": "Reports-to filter",
+        "reportsToPrefix": "Reports to:"
+      },
+      "search": {
+        "aria": "Search agents",
+        "placeholder": "Search agents or descriptions"
+      },
+      "skills": {
+        "enabledOnly": "{{count}} enabled"
+      },
+      "sort": {
+        "aria": "Sort mode",
+        "asc": "Ascending",
+        "desc": "Descending",
+        "hierarchy": "Hierarchy",
+        "label": "Sort",
+        "status": "Status"
+      },
+      "table": {
+        "active": "Active",
+        "agent": "Agent",
+        "sortByAgent": "Sort by agent"
+      }
+    },
+    "tree": {
+      "collapse": "Collapse {{name}}",
+      "collapsedSuffix": " (collapsed)",
+      "empty": {
+        "description": "Create a department, or attach new Agents under the CEO assistant.",
+        "title": "No departments created"
+      },
+      "expand": "Expand {{name}}",
+      "lead": "Lead · {{name}}",
+      "memberCount": "{{count}} members"
+    }
+  },
+  "permissionMode": {
+    "active": "ACTIVE",
+    "aria": "Permission mode: {{label}} (Shift+Tab to switch)",
+    "disabled": {
+      "bypassAfterLaunch": "This session did not start with bypassPermissions. Claude CLI does not allow entering bypass mid-session. Start a new session with bypass selected to unlock two-way switching."
+    },
+    "footer": "Cannot switch while generating · selection before send applies to the next turn",
+    "heading": "Permission Mode",
+    "meta": {
+      "acceptEdits": {
+        "desc": "Automatically accept file edits; other tools still ask"
+      },
+      "bypassPermissions": {
+        "desc": "Skip all permission gates; when selected before the first send, the CLI starts with --permission-mode bypassPermissions"
+      },
+      "default": {
+        "desc": "Ask before each tool call and trigger can_use_tool"
+      },
+      "plan": {
+        "desc": "Read-only analysis without write or side-effect tools"
+      }
+    },
+    "title": "Permission mode · {{label}}\nShift+Tab cycles modes",
+    "titleDisabled": "Permission mode · {{label}}\nCannot switch while generating"
+  },
+  "resizableSidebar": {
+    "resizeAria": "Resize {{label}} width",
+    "resizeTitle": "Drag to resize width"
+  },
+  "sessionGroup": {
+    "empty": "No sessions",
+    "viewAll": "View all {{count}} sessions"
+  },
+  "slashCommands": {
+    "aria": "Slash commands",
+    "compact": {
+      "description": "Compact the chat context and keep only the summary"
+    },
+    "goal": {
+      "description": "Set or view the current Codex goal"
+    }
+  },
+  "settings": {
+    "agentBackend": {
+      "description": "Configure agent execution engines and their models. Runtime options such as working directory and permission mode are configured per agent in Organization → Agent.",
+      "runtimeHint": {
+        "description": "Working directory, permission mode, extra CLI arguments, and related runtime options are configured per agent under Organization → Agent → Config. This page only manages shared backend instances.",
+        "title": "Runtime options live on each agent"
+      },
+      "title": "Agent Backends"
+    },
+    "appearance": {
+      "colorMode": {
+        "description": "Follow the system appearance or pin the interface to light or dark mode.",
+        "title": "Color Mode"
+      },
+      "description": "Adjust how Agentre is displayed. Theme and language preferences are saved on this device.",
+      "themeMode": {
+        "description": "Choose the interface appearance preference.",
+        "label": "Theme Mode"
+      },
+      "title": "Appearance"
+    },
+    "localProxy": {
+      "description": "Configure the app's built-in LLM Gateway. claudecode and codex subprocesses send HTTP requests here; the app authenticates them with a temporary token and forwards requests to the real LLM provider without exposing secrets outside the app.",
+      "title": "Local HTTP Proxy"
+    },
+    "llmProvider": {
+      "description": "Configure available model sources. After saving, Agentre can fetch the account's available models, while context window, thinking support, and other capabilities are filled from the built-in cago agents catalog.",
+      "title": "LLM Providers"
+    },
+    "nav": {
+      "about": "About",
+      "agentBackend": "Agent Backends",
+      "appearance": "Appearance",
+      "dataBackup": "Data & Backup",
+      "engine": "Engine",
+      "general": "General",
+      "integrations": "Integrations",
+      "keyboardShortcuts": "Keyboard Shortcuts",
+      "localProxy": "Local HTTP Proxy",
+      "llmProvider": "LLM Providers",
+      "mcpServers": "MCP Servers",
+      "notifications": "Notifications",
+      "remoteDevices": "Remote",
+      "settings": "Settings",
+      "skillsTools": "Skills / Tools",
+      "versionLogs": "Version & Updates"
+    },
+    "underConstruction": {
+      "mcpServers": {
+        "description": "The MCP server configuration view is reserved for managing connections, authorization, and available tools.",
+        "title": "MCP Servers"
+      },
+      "notifications": {
+        "description": "The notification settings view is reserved for reminder rules and delivery channels.",
+        "title": "Notifications"
+      },
+      "skillsTools": {
+        "description": "The skills and tools management view is reserved for enabling, disabling, and configuring agent capabilities.",
+        "title": "Skills / Tools"
+      }
+    }
+  },
+  "theme": {
+    "dark": "Dark",
+    "darkMode": "Dark mode",
+    "light": "Light",
+    "lightMode": "Light mode",
+    "system": "System",
+    "systemWithResolved": "System ({{resolved}})",
+    "toggle": "Toggle theme (current {{current}}, next {{next}})",
+    "toggleTitle": "{{current}} · Click to switch to {{next}}"
+  },
+  "thinking": {
+    "done": "Thought complete",
+    "meta": {
+      "charCount": "· {{count}} chars",
+      "withSeconds": "· {{seconds}}s · {{count}} chars"
+    },
+    "streaming": "Thinking…",
+    "toggleDone": "Toggle completed thought",
+    "toggleStreaming": "Toggle active thought"
+  },
+  "settingsProxy": {
+    "actions": {
+      "applyAndRestart": "Apply and Restart",
+      "copyUrl": "Copy URL",
+      "restart": "Restart Proxy"
+    },
+    "flash": {
+      "applied": "Applied and restarted proxy",
+      "copyUrlDone": "URL copied",
+      "copyUrlFailed": "Failed to copy URL",
+      "restarted": "Local HTTP proxy restarted",
+      "restartFailed": "Proxy is still not running: {{reason}}",
+      "savedButStopped": "Settings saved, but the proxy did not start: {{reason}}"
+    },
+    "listener": {
+      "currentUrl": "Current URL",
+      "currentUrlHint": "Forwarded by claudecode / codex",
+      "description": "All LLM requests from claudecode / codex subprocesses arrive here. The app routes them to real LLM providers with tokens.",
+      "host": "Listen host",
+      "hostHint": "Default 127.0.0.1. Loopback is local-only.",
+      "port": "Port",
+      "portHint": "Default 52401. Use 0 for a random port on each launch.",
+      "title": "Listener"
+    },
+    "routes": {
+      "anthropicMessages": "Anthropic Messages (claudecode CLI)",
+      "chatCompletions": "OpenAI Chat Completions (codex wire_api=chat)",
+      "count": "{{count}} routes",
+      "description": "Requests are forwarded after temporary token verification. Tokens live only in memory during tests or runtime.",
+      "mcpReserved": "Reserved local MCP service entry point (404 when no service is registered)",
+      "openAIResponses": "OpenAI Responses (codex CLI default)",
+      "reserved": "Reserved",
+      "title": "Exposed Routes"
+    },
+    "security": {
+      "description": "Real LLM provider secrets stay in main-process memory. CLI subprocesses receive temporary tokens issued by the app. Tokens are valid for only 60 seconds, revoked immediately after tests, and never written to .env, config, or process args.",
+      "title": "Secrets Stay in the App"
+    },
+    "status": {
+      "notStarted": "Not started{{reason}}",
+      "running": "Running",
+      "stopped": "Stopped"
+    },
+    "validation": {
+      "hostInvalid": "Listen host format is invalid",
+      "hostRequired": "Listen host is required",
+      "portNumeric": "Port must be numeric",
+      "portRange": "Port must be between 0 and 65535",
+      "portRequired": "Port is required"
+    }
+  },
+  "sessionsPopover": {
+    "empty": "No sessions",
+    "loadFailed": "Load failed: {{error}}",
+    "loaded": "Loaded {{loaded}} / {{total}}",
+    "loadMore": "Load More",
+    "noMatches": "No matches for \"{{query}}\"",
+    "running": "{{count}} running",
+    "search": {
+      "aria": "Filter sessions by title",
+      "placeholder": "Search titles..."
+    },
+    "total": "{{count}} sessions",
+    "untitled": "(Untitled)"
+  },
+  "shortcuts": {
+    "chatTab": {
+      "hint": "Uses TabStrip order (pinned + normal + preview)",
+      "label": "Switch to Tab N"
+    },
+    "conflict": {
+      "inUse": "Already used by \"{{label}}\"",
+      "systemReserved": "This chord is reserved by the system. Choose another one."
+    },
+    "description": "Adjust global navigation and chat page shortcuts.",
+    "fixed": "Fixed",
+    "record": "Record",
+    "recording": "Press a new shortcut...",
+    "reset": "Reset",
+    "registry": {
+      "closeTab": {
+        "hint": "Close the active tab (pinned tabs cannot be closed)",
+        "label": "Close Current Tab"
+      },
+      "nav": {
+        "chat": {
+          "hint": "Main Agent chat panel",
+          "label": "Switch to Chat"
+        },
+        "hooks": {
+          "hint": "Hook trigger rules",
+          "label": "Switch to Hooks"
+        },
+        "issues": {
+          "hint": "Board / issue list",
+          "label": "Switch to Issues"
+        },
+        "org": {
+          "hint": "Org chart and Agent roles",
+          "label": "Switch to Organization"
+        },
+        "projects": {
+          "hint": "Projects and sessions list",
+          "label": "Switch to Projects"
+        },
+        "settings": {
+          "hint": "Settings panel",
+          "label": "Open Settings"
+        }
+      },
+      "newChat": {
+        "hint": "Open the command palette and jump to New chat with ...",
+        "label": "New Chat"
+      },
+      "palette": {
+        "hint": "Search sessions · Jump · Run actions",
+        "label": "Command Palette"
+      },
+      "sessionChip": {
+        "hint": "Compatibility shortcut for the old sidebar",
+        "label": "Switch to session {{index}}"
+      },
+      "tabChip": {
+        "hint": "Uses TabStrip order (pinned + normal + preview)",
+        "label": "Switch to Tab {{index}}"
+      }
+    },
+    "resetAll": "Reset All to Defaults",
+    "resetDialog": {
+      "description": "All custom bindings will return to their defaults. This cannot be undone.",
+      "storagePrefix": "The browser-local",
+      "storageSuffix": "entry will be cleared after reset.",
+      "title": "Reset all shortcuts?"
+    },
+    "sections": {
+      "chat": "Chat Page",
+      "global": "Global Navigation"
+    },
+    "title": "Keyboard Shortcuts",
+    "unbound": "Unbound"
+  },
+  "terminal": {
+    "banner": {
+      "connectionLost": "Connection lost — terminal session cannot be recovered"
+    },
+    "toast": {
+      "agentredClosed": "agentred has shut down",
+      "connectionLost": "Terminal connection lost",
+      "shellExited": "Shell exited (code {{code}})",
+      "startFailed": "Terminal failed to start: {{message}}"
+    },
+    "unknown": "unknown"
+  },
+  "taskProgress": {
+    "allCompleted": "All done",
+    "completed": "Completed",
+    "current": "Current",
+    "status": {
+      "cancelled": "CANCELLED",
+      "completed": "DONE",
+      "failed": "FAILED",
+      "queued": "QUEUED",
+      "running": "RUNNING"
+    },
+    "title": "Task Progress"
+  },
+  "update": {
+    "actions": {
+      "check": "Check for Updates",
+      "checking": "Checking...",
+      "downloadAndInstall": "Download and Install",
+      "downloading": "Downloading...",
+      "downloadingShort": "Downloading",
+      "openLogs": "Open Logs",
+      "reportBug": "Report Bug",
+      "restartNow": "Restart Now"
+    },
+    "channel": {
+      "beta": {
+        "description": "Try new features early. May include a few known issues.",
+        "label": "Beta"
+      },
+      "nightly": {
+        "description": "Daily builds with the fastest updates and the lowest stability.",
+        "label": "Nightly"
+      },
+      "stable": {
+        "description": "Official releases for all users, with the lowest update frequency.",
+        "label": "Stable"
+      },
+      "title": "Update Channel"
+    },
+    "checksum": {
+      "confirm": "Skip Checksum and Continue",
+      "description": "SHA256SUMS.txt could not be fetched, so the downloaded file cannot be verified.",
+      "title": "Checksum File Download Failed",
+      "warning": "Continuing will skip integrity verification. Make sure you trust the current download source."
+    },
+    "currentVersion": {
+      "description": "Check GitHub Releases and install a new version.",
+      "title": "Current Version"
+    },
+    "debug": {
+      "description": "Lower the log level to debug for troubleshooting. Turn it off once you're done.",
+      "disabledToast": "Debug logging disabled",
+      "enabledToast": "Debug logging enabled",
+      "title": "Debug Logging"
+    },
+    "error": {
+      "title": "Operation Failed"
+    },
+    "header": {
+      "description": "Agentre automatically checks for new versions in the background on startup. You can also switch channels or choose a download mirror for faster access.",
+      "title": "Version & Updates"
+    },
+    "installed": {
+      "description": "Restart the app to load the new version.",
+      "title": "{{version}} installed"
+    },
+    "mirror": {
+      "custom": "Custom...",
+      "description": "Use an accelerated mirror when GitHub access is slow. Custom mirrors must keep the protocol prefix, for example https://your.mirror/.",
+      "title": "Download Mirror"
+    },
+    "release": {
+      "available": "New version available: {{version}}",
+      "noNotes": "This release has no notes.",
+      "publishedAt": "Published at {{time}}",
+      "unknownTime": "Unknown time"
+    },
+    "repository": {
+      "description": "View source code, releases, and issues.",
+      "title": "Repository"
+    },
+    "status": {
+      "upToDate": "You are on the latest version"
+    },
+    "version": {
+      "unknown": "Unknown"
+    }
+  },
+  "underConstruction": {
+    "badge": "Under construction",
+    "planning": "Planning",
+    "progressLabel": "Design progress"
+  }
+}

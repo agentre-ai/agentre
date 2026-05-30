@@ -11,7 +11,7 @@ describe("AddDeviceDialog", () => {
     render(
       <AddDeviceDialog open onClose={() => {}} onSubmit={async () => {}} />,
     );
-    const btn = screen.getByRole("button", { name: "配对" });
+    const btn = screen.getByRole("button", { name: "Pair" });
     expect(btn).toBeDisabled();
     fireEvent.change(screen.getByPlaceholderText(/192\.168/), {
       target: { value: "ws://h/rpc" },
@@ -34,7 +34,7 @@ describe("AddDeviceDialog", () => {
     fireEvent.change(codeInput, { target: { value: "O01I89" } });
 
     expect(codeInput.value).toBe("O01I89");
-    expect(screen.getByRole("button", { name: "配对" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Pair" })).not.toBeDisabled();
   });
 
   it("shows concise pairing code length help", () => {
@@ -42,7 +42,7 @@ describe("AddDeviceDialog", () => {
       <AddDeviceDialog open onClose={() => {}} onSubmit={async () => {}} />,
     );
 
-    expect(screen.getByText("6 字符配对码")).toBeInTheDocument();
+    expect(screen.getByText("6-character pairing code")).toBeInTheDocument();
   });
 
   it("submits the request and resets on success", async () => {
@@ -55,7 +55,7 @@ describe("AddDeviceDialog", () => {
     fireEvent.change(screen.getByPlaceholderText("ABC2DE"), {
       target: { value: "ABC2DE" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "配对" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pair" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     const payload = onSubmit.mock.calls[0][0];
     expect(payload.url).toBe("ws://linux-srv.local:7456/rpc");
@@ -73,7 +73,7 @@ describe("AddDeviceDialog", () => {
     fireEvent.change(screen.getByPlaceholderText("ABC2DE"), {
       target: { value: "ABC2DE" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "配对" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pair" }));
     await waitFor(() =>
       expect(screen.getByText("配对码已过期")).toBeInTheDocument(),
     );

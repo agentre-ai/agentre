@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Repository Facts
 
-Agentre — Wails v2 desktop app (Go 1.26 + React 19 + TS) for orchestrating multiple AI coding agents (Claude Code / Codex / built-in) across projects, sessions, and remote machines. IPC only via Wails bindings, no HTTP API. Go module: `agentre` (no VCS prefix). User-facing concepts (Agent / Department / Session / Project / Issue / Hook) and the remote-chat pairing flow are described in `README.md`.
+Agentre is a Wails v2 desktop app with a Go 1.26 backend and a React 19 + TypeScript frontend. Frontend-to-backend IPC goes through Wails bindings only; do not add HTTP-style app APIs. Go module path is `agentre` with no VCS prefix.
 
 Two binaries ship from this repo:
 - **`agentre`** (root `main.go`) — the desktop app. Also doubles as a CLI shim: `agentre claudecode …` short-circuits to `internal/cli/claudecodecmd` before booting wails/cago (used by Claude Code hook child processes).
@@ -25,9 +25,16 @@ Two binaries ship from this repo:
    - **禁止** drive-by refactor / 重命名 sweep / formatter pass / 死代码清理 / import 重排序 / 不相关 test churn —— 它们会埋掉真正的改动，破坏 `git bisect`。
    - 看到不相关的脏数据时，flag 给用户问一下，**不要顺手改**。
 
+4. **前端新增可见文案必须接 i18n。**
+   - 新 UI 文案用 `react-i18next` 的 `t(...)`，并同时更新 `frontend/src/i18n/locales/zh-CN/common.json` 和 `frontend/src/i18n/locales/en/common.json`。
+   - 不要新增写死中文；ESLint 通过 `eslint-plugin-i18next` 的 `i18next/no-literal-string` 拦截 JSX 文本和可见属性里的中文硬编码文案。
+   - 静态 `t("...")` key 和 locale 覆盖由 `frontend/src/__tests__/i18n.test.ts` 校验，改文案时同步跑相关测试。
+   - Agent / 用户 / 终端 / 代码 / markdown 等动态输出不要翻译；它们天然不会进入 `t(...)`，禁止用全局文本改写兜底。
+   - 所有静态 UI 文案都显式 `t(...)`。展开细节见 [docs/frontend.md](docs/frontend.md)。
+
 ## 开发规范（必读）
 
-写代码前先看这三份文档，规则在里面：
+写代码前先看这些文档，规则在里面：
 
 - [docs/architecture.md](docs/architecture.md) — 项目布局、cago 分层约定（entity / repo / service / wails 绑定）、远端 chat 架构、存储路径、数据库与迁移、生成文件。
 - [docs/development.md](docs/development.md) — TDD/BDD 工作流、SOLID、Fix Discipline、测试栈（sqlmock / mockgen / goconvey）、日志规范、linter 例外。

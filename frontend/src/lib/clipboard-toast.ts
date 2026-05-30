@@ -1,5 +1,7 @@
 import { toast } from "sonner";
 
+import i18n from "@/i18n";
+
 export const COPY_TOAST_DURATION_MS = 5000;
 export const COPY_TOAST_ERROR_DURATION_MS = 7000;
 
@@ -17,14 +19,14 @@ function errorMessage(err: unknown): string {
 export async function copyTextWithToast(
   text: string,
   {
-    errorTitle = "复制失败",
+    errorTitle = i18n.t("common.copyFailed"),
     successDescription,
     successTitle,
   }: CopyTextWithToastOptions,
 ): Promise<boolean> {
   try {
     if (!navigator.clipboard?.writeText) {
-      throw new Error("当前环境不支持剪贴板");
+      throw new Error(i18n.t("clipboard.unsupported"));
     }
     await navigator.clipboard.writeText(text);
     toast.success(successTitle, {

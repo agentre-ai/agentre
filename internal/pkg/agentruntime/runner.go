@@ -281,10 +281,11 @@ type RunRequest struct {
 	SystemPrompt      string
 	ProviderSessionID string // 空 = 新建；非空 = resume
 	UserText          string
-	History           []HistoryMessage // 仅 builtin
-	GatewayURL        string           // 关联 provider 的 CLI 后端要；builtin 不用
-	GatewayToken      string           // 同上，一次性 token
-	Compact           bool             // Codex 原生 compact turn；不创建普通 user prompt
+	UserBlocks        []blocks.ContentBlock // 非空时为本轮用户输入权威 blocks；UserText 仅保留文本索引/兼容
+	History           []HistoryMessage      // 仅 builtin
+	GatewayURL        string                // 关联 provider 的 CLI 后端要；builtin 不用
+	GatewayToken      string                // 同上，一次性 token
+	Compact           bool                  // Codex 原生 compact turn；不创建普通 user prompt
 
 	// ForkAnchor 非空时 = "重新生成"路径：runner 应当把 provider 会话从 ForkAnchor
 	// 之后的所有内容丢弃，再以 UserText 重发一次。

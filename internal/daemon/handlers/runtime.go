@@ -142,6 +142,13 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		}
 		return wire.RunAck{}, fmt.Errorf("decode history: %w", err)
 	}
+	userBlocks, err := decodeUserBlocks(p.UserBlocks)
+	if err != nil {
+		if gatewayToken != "" {
+			h.deps.Gateway.RevokeToken(gatewayToken)
+		}
+		return wire.RunAck{}, fmt.Errorf("decode user blocks: %w", err)
+	}
 
 	req := agentruntime.RunRequest{
 		Backend:           &be,
@@ -152,6 +159,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		SystemPrompt:      p.SystemPrompt,
 		ProviderSessionID: p.ProviderSessionID,
 		UserText:          p.UserText,
+		UserBlocks:        userBlocks,
 		History:           history,
 		Compact:           p.Compact,
 		GatewayURL:        gatewayURL,
@@ -367,6 +375,131 @@ func (h *RuntimeHandlers) SubmitToolPermission(ctx context.Context, p wire.Submi
 	return wire.OK{}, nil
 }
 
+func (h *RuntimeHandlers) GetGoal(ctx context.Context, p wire.GoalParams) (wire.GoalResult, error) {
+	rt, req, release, err := h.resolveGoalController(ctx, p)
+	if err != nil {
+		return wire.GoalResult{}, err
+	}
+	defer release()
+	g, ok := rt.(agentruntime.GoalController)
+	if !ok {
+		return wire.GoalResult{}, agentruntime.ErrUnsupported
+	}
+	goal, err := g.GetGoal(ctx, req)
+	if err != nil {
+		return wire.GoalResult{}, err
+	}
+	return wire.GoalResult{Goal: goal}, nil
+}
+
+func (h *RuntimeHandlers) SetGoal(ctx context.Context, p wire.GoalParams) (wire.GoalResult, error) {
+	rt, req, release, err := h.resolveGoalController(ctx, p)
+	if err != nil {
+		return wire.GoalResult{}, err
+	}
+	defer release()
+	g, ok := rt.(agentruntime.GoalController)
+	if !ok {
+		return wire.GoalResult{}, agentruntime.ErrUnsupported
+	}
+	goal, err := g.SetGoal(ctx, req)
+	if err != nil {
+		return wire.GoalResult{}, err
+	}
+	return wire.GoalResult{Goal: goal}, nil
+}
+
+func (h *RuntimeHandlers) ClearGoal(ctx context.Context, p wire.GoalParams) (wire.GoalClearResult, error) {
+	rt, req, release, err := h.resolveGoalController(ctx, p)
+	if err != nil {
+		return wire.GoalClearResult{}, err
+	}
+	defer release()
+	g, ok := rt.(agentruntime.GoalController)
+	if !ok {
+		return wire.GoalClearResult{}, agentruntime.ErrUnsupported
+	}
+	cleared, err := g.ClearGoal(ctx, req)
+	if err != nil {
+		return wire.GoalClearResult{}, err
+	}
+	return wire.GoalClearResult{Cleared: cleared}, nil
+}
+
+func (h *RuntimeHandlers) resolveGoalController(ctx context.Context, p wire.GoalParams) (agentruntime.Runtime, agentruntime.GoalRequest, func(), error) {
+	req, err := goalRequestFromWire(p)
+	if err != nil {
+		return nil, agentruntime.GoalRequest{}, func() {}, err
+	}
+	if req.Backend != nil {
+		release, err := h.hydrateGoalProvider(ctx, &req)
+		if err != nil {
+			return nil, agentruntime.GoalRequest{}, func() {}, err
+		}
+		rt := h.lookupRuntimeByType(agent_backend_entity.BackendType(req.Backend.Type))
+		if rt == nil {
+			release()
+			return nil, agentruntime.GoalRequest{}, func() {}, agentruntime.ErrNoActiveTurn
+		}
+		return rt, req, release, nil
+	}
+	rt, err := h.resolveSession(p.SessionID)
+	if err != nil {
+		return nil, agentruntime.GoalRequest{}, func() {}, err
+	}
+	return rt, req, func() {}, nil
+}
+
+func (h *RuntimeHandlers) hydrateGoalProvider(ctx context.Context, req *agentruntime.GoalRequest) (func(), error) {
+	release := func() {}
+	if req.Backend == nil || req.Backend.LLMProviderKey == "" {
+		return release, nil
+	}
+	if h.deps.Lookup != nil {
+		pv, err := h.deps.Lookup.FindByKey(ctx, req.Backend.LLMProviderKey)
+		if err != nil {
+			return release, &rpc.Error{
+				Code:    rpc.ErrProviderMissing.Code,
+				Message: fmt.Sprintf("LLM provider %q not configured on remote daemon: %v", req.Backend.LLMProviderKey, err),
+			}
+		}
+		req.Provider = pv
+	}
+	if req.Provider != nil && h.deps.Gateway != nil {
+		req.GatewayURL = h.deps.Gateway.URL()
+		if req.GatewayURL != "" {
+			tok, err := h.deps.Gateway.IssueToken(ctx, req.Backend, time.Hour)
+			if err != nil {
+				return release, fmt.Errorf("gateway token: %w", err)
+			}
+			req.GatewayToken = tok
+			release = func() { h.deps.Gateway.RevokeToken(tok) }
+		}
+	}
+	return release, nil
+}
+
+func goalRequestFromWire(p wire.GoalParams) (agentruntime.GoalRequest, error) {
+	var be *agent_backend_entity.AgentBackend
+	if len(p.Backend) > 0 {
+		var parsed agent_backend_entity.AgentBackend
+		if err := json.Unmarshal(p.Backend, &parsed); err != nil {
+			return agentruntime.GoalRequest{}, fmt.Errorf("parse backend: %w", err)
+		}
+		be = &parsed
+	}
+	return agentruntime.GoalRequest{
+		SessionID:         p.SessionID,
+		AgentID:           p.AgentID,
+		ProviderSessionID: p.ProviderSessionID,
+		Backend:           be,
+		Cwd:               p.Cwd,
+		Objective:         p.Objective,
+		Status:            p.Status,
+		TokenBudget:       p.TokenBudget,
+	}, nil
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 func (h *RuntimeHandlers) lookupRuntimeByType(bt agent_backend_entity.BackendType) agentruntime.Runtime {
@@ -426,4 +559,11 @@ func decodeHistory(in []wire.HistoryMessageWire) ([]agentruntime.HistoryMessage,
 		out = append(out, agentruntime.HistoryMessage{Role: m.Role, Blocks: bs})
 	}
 	return out, nil
+}
+
+func decodeUserBlocks(in []blocks.StoredBlock) ([]blocks.ContentBlock, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	return blocks.DecodeAll(in)
 }

@@ -32,7 +32,7 @@ describe("TabStrip", () => {
 
   it("空 tabs 时不渲染 chevron 菜单", () => {
     render(<TabStrip />);
-    expect(screen.queryByLabelText("打开 Tab 菜单")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Open Tab menu")).not.toBeInTheDocument();
   });
 
   it("有 tabs 时按 sortedTabs 顺序渲染", () => {
@@ -46,7 +46,7 @@ describe("TabStrip", () => {
   it("有 tabs 时渲染 chevron", () => {
     useChatTabsStore.getState().openSessionInNewTab(1);
     render(<TabStrip />);
-    expect(screen.getByLabelText("打开 Tab 菜单")).toBeInTheDocument();
+    expect(screen.getByLabelText("Open Tab menu")).toBeInTheDocument();
   });
 
   it("Given many tabs, When tab strip overflows, Then it keeps a fixed height and only scrolls horizontally", () => {
@@ -83,13 +83,13 @@ describe("TabStrip", () => {
     render(<TabStrip />);
     const firstTab = screen.getAllByRole("tab")[0];
     await user.pointer({ keys: "[MouseRight]", target: firstTab });
-    expect(screen.getByRole("menuitem", { name: /置顶/ })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "关闭" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Pin/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Close" })).toBeInTheDocument();
     expect(
-      screen.getByRole("menuitem", { name: "关闭其他" }),
+      screen.getByRole("menuitem", { name: "Close Others" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("menuitem", { name: "关闭右侧" }),
+      screen.getByRole("menuitem", { name: "Close Tabs to the Right" }),
     ).toBeInTheDocument();
   });
 
@@ -102,7 +102,7 @@ describe("TabStrip", () => {
     render(<TabStrip />);
     const targetTab = screen.getByRole("tab", { name: /Session 1/ });
     await user.pointer({ keys: "[MouseRight]", target: targetTab });
-    await user.click(screen.getByRole("menuitem", { name: /置顶/ }));
+    await user.click(screen.getByRole("menuitem", { name: /Pin/ }));
     // 右键命中的 tab 在 store 里被 pin。
     const t = useChatTabsStore
       .getState()
@@ -118,7 +118,7 @@ describe("TabStrip", () => {
     render(<TabStrip />);
     const secondTab = screen.getAllByRole("tab")[1];
     await user.pointer({ keys: "[MouseRight]", target: secondTab });
-    await user.click(screen.getByRole("menuitem", { name: "关闭其他" }));
+    await user.click(screen.getByRole("menuitem", { name: "Close Others" }));
     expect(useChatTabsStore.getState().tabs).toHaveLength(1);
   });
 
@@ -129,9 +129,9 @@ describe("TabStrip", () => {
     render(<TabStrip />);
     const lastTab = screen.getAllByRole("tab")[1];
     await user.pointer({ keys: "[MouseRight]", target: lastTab });
-    expect(screen.getByRole("menuitem", { name: "关闭右侧" })).toHaveAttribute(
-      "data-disabled",
-    );
+    expect(
+      screen.getByRole("menuitem", { name: "Close Tabs to the Right" }),
+    ).toHaveAttribute("data-disabled");
   });
 
   // NOTE: dnd-kit's KeyboardSensor does not fire onDragEnd in jsdom even with

@@ -110,4 +110,24 @@ describe("SessionGroup attention bubble in expanded state", () => {
     expect(within(bubble!).getByText("selected-2")).toBeTruthy();
     expect(within(bubble!).getByText("approve-3")).toBeTruthy();
   });
+
+  it("Given a collapsed group has collapsed-only attention, Then it renders that bubble without affecting expanded state", () => {
+    const own = unreadSession(1);
+    const child = needsAttentionSession(2);
+
+    const { container } = render(
+      <SessionGroup
+        defaultExpanded={false}
+        sessions={[own]}
+        attentionSessions={[own]}
+        collapsedAttentionSessions={[own, child]}
+        renderHeader={() => <div data-testid="header" />}
+      />,
+    );
+
+    const bubble = queryBubble(container);
+    expect(bubble).not.toBeNull();
+    expect(within(bubble!).getByText("unread-1")).toBeTruthy();
+    expect(within(bubble!).getByText("approve-2")).toBeTruthy();
+  });
 });

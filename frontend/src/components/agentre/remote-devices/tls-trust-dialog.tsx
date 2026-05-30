@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -17,11 +19,11 @@ type Props = {
 const PEM_HEADER = "-----BEGIN CERTIFICATE-----";
 const PEM_FOOTER = "-----END CERTIFICATE-----";
 
-function validatePEM(pem: string): string | null {
+function validatePEM(pem: string, t: TFunction): string | null {
   const trimmed = pem.trim();
-  if (!trimmed) return "请粘贴 PEM 内容";
+  if (!trimmed) return t("remoteDevices.tls.errors.pemRequired");
   if (!trimmed.includes(PEM_HEADER) || !trimmed.includes(PEM_FOOTER)) {
-    return "PEM 格式不正确：缺少 BEGIN/END CERTIFICATE 标记";
+    return t("remoteDevices.tls.errors.pemInvalid");
   }
   return null;
 }
@@ -29,26 +31,25 @@ function validatePEM(pem: string): string | null {
 const MODES = [
   {
     value: "default",
-    label: "默认",
-    badge: "推荐",
-    description: "走 OS 信任库；适用 mkcert -install / Let's Encrypt / 企业 CA",
+    labelKey: "remoteDevices.tls.modes.default.label",
+    badgeKey: "remoteDevices.tls.badges.recommended",
+    descriptionKey: "remoteDevices.tls.modes.default.description",
   },
   {
     value: "pin-cert",
-    label: "Pin 证书",
-    description: "Pin agentred 的 leaf 证书；适合自签证书，不走 CA 框架",
+    labelKey: "remoteDevices.tls.modes.pinCert.label",
+    descriptionKey: "remoteDevices.tls.modes.pinCert.description",
   },
   {
     value: "ca-bundle",
-    label: "CA 证书包",
-    description: "信任指定 CA 签发的证书；适合企业 PKI 未装到 OS 信任库",
+    labelKey: "remoteDevices.tls.modes.caBundle.label",
+    descriptionKey: "remoteDevices.tls.modes.caBundle.description",
   },
   {
     value: "skip-verify",
-    label: "跳过校验",
-    badge: "不推荐",
-    description:
-      "禁用 TLS 校验；任何能访问到 agentred 的人都能冒充它，仅调试用",
+    labelKey: "remoteDevices.tls.modes.skipVerify.label",
+    badgeKey: "remoteDevices.tls.badges.notRecommended",
+    descriptionKey: "remoteDevices.tls.modes.skipVerify.description",
     danger: true,
   },
 ];
@@ -60,6 +61,7 @@ export function TLSTrustDialog({
   onClose,
   onApply,
 }: Props) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState(initialMode || "default");
   const [pem, setPem] = useState(initialPEM ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +79,7 @@ export function TLSTrustDialog({
   const apply = async () => {
     setError(null);
     if (needsPEM) {
-      const e = validatePEM(pem);
+      const e = validatePEM(pem, t);
       if (e) {
         setError(e);
         return;
@@ -92,16 +94,16 @@ export function TLSTrustDialog({
       onOpenChange={(o) => {
         if (!o) onClose();
       }}
-      title="TLS 信任"
-      description="如何验证 agentred 的 TLS 证书"
+      title={t("remoteDevices.tls.title")}
+      description={t("remoteDevices.tls.description")}
       contentClassName="sm:max-w-[540px]"
       bodyClassName="flex flex-col gap-3.5"
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            取消
+            {t("common.cancel")}
           </Button>
-          <Button onClick={apply}>应用</Button>
+          <Button onClick={apply}>{t("remoteDevices.tls.apply")}</Button>
         </>
       }
     >
@@ -120,8 +122,8 @@ export function TLSTrustDialog({
             <RadioGroupItem value={m.value} className="mt-1" />
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">{m.label}</span>
-                {m.badge ? (
+                <span className="text-sm font-medium">{t(m.labelKey)}</span>
+                {m.badgeKey ? (
                   <span
                     className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${
                       m.danger
@@ -129,11 +131,13 @@ export function TLSTrustDialog({
                         : "bg-secondary text-secondary-foreground"
                     }`}
                   >
-                    {m.badge}
+                    {t(m.badgeKey)}
                   </span>
                 ) : null}
               </div>
-              <p className="text-xs text-muted-foreground">{m.description}</p>
+              <p className="text-xs text-muted-foreground">
+                {t(m.descriptionKey)}
+              </p>
             </div>
           </label>
         ))}
@@ -142,7 +146,9 @@ export function TLSTrustDialog({
       {needsPEM ? (
         <label className="flex flex-col gap-1.5">
           <span className="text-sm font-medium">
-            {mode === "pin-cert" ? "证书（PEM）" : "CA 证书包（PEM）"}
+            {mode === "pin-cert"
+              ? t("remoteDevices.tls.pem.cert")
+              : t("remoteDevices.tls.pem.caBundle")}
           </span>
           <Textarea
             value={pem}

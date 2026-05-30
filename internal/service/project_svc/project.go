@@ -25,6 +25,7 @@ import (
 type ProjectSvc interface {
 	Create(ctx context.Context, req *CreateProjectRequest) (*project_entity.Project, error)
 	Update(ctx context.Context, req *UpdateProjectRequest) (*project_entity.Project, error)
+	Reorder(ctx context.Context, req *ReorderProjectsRequest) error
 	Delete(ctx context.Context, id int64) error
 	Get(ctx context.Context, id int64) (*ProjectDetail, error)
 	ListTree(ctx context.Context) ([]*ProjectNode, error)
@@ -35,6 +36,7 @@ type ProjectSvc interface {
 
 	// cwd
 	ResolveSessionCwd(ctx context.Context, session *chat_entity.Session) (string, error)
+	ResolveProjectCwd(ctx context.Context, projectID int64, deviceID string) (string, error)
 }
 
 type projectSvc struct {
@@ -99,6 +101,11 @@ func (s *projectSvc) Create(ctx context.Context, req *CreateProjectRequest) (*pr
 	if dup != nil {
 		return nil, i18n.NewError(ctx, code.ProjectNameDuplicated)
 	}
+	next, err := project_repo.Project().NextSortOrder(ctx, p.ParentID)
+	if err != nil {
+		return nil, err
+	}
+	p.SortOrder = next
 
 	if err := project_repo.Project().Create(ctx, p); err != nil {
 		return nil, err
@@ -147,6 +154,37 @@ func (s *projectSvc) Update(ctx context.Context, req *UpdateProjectRequest) (*pr
 		return nil, err
 	}
 	return existing, nil
+}
+
+func (s *projectSvc) Reorder(ctx context.Context, req *ReorderProjectsRequest) error {
+	if req == nil || req.ParentID < 0 || len(req.OrderedIDs) == 0 {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	siblings, err := project_repo.Project().ListByParent(ctx, req.ParentID)
+	if err != nil {
+		return err
+	}
+	if len(siblings) != len(req.OrderedIDs) {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	allowed := make(map[int64]struct{}, len(siblings))
+	for _, p := range siblings {
+		allowed[p.ID] = struct{}{}
+	}
+	seen := make(map[int64]struct{}, len(req.OrderedIDs))
+	for _, id := range req.OrderedIDs {
+		if id <= 0 {
+			return i18n.NewError(ctx, code.InvalidParameter)
+		}
+		if _, ok := allowed[id]; !ok {
+			return i18n.NewError(ctx, code.InvalidParameter)
+		}
+		if _, ok := seen[id]; ok {
+			return i18n.NewError(ctx, code.InvalidParameter)
+		}
+		seen[id] = struct{}{}
+	}
+	return project_repo.Project().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs)
 }
 
 func (s *projectSvc) Delete(ctx context.Context, id int64) error {

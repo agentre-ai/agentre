@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { Brain, ChevronDown } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -22,6 +23,7 @@ export function ThinkingBlock({
   streaming,
   startedAt: externalStartedAt,
 }: ThinkingBlockProps) {
+  const { t } = useTranslation();
   // streaming 期间默认展开,纯历史(streaming=false 渲染)默认折叠,完成时再强制收回(见下方 effect)。
   const [expanded, setExpanded] = React.useState(streaming);
   // 自计时回退:仅当外部没传 startedAt 时使用。
@@ -85,8 +87,11 @@ export function ThinkingBlock({
   if (!streaming) {
     metaText =
       finalSeconds !== null
-        ? `· ${finalSeconds}s · ${charCount} 字`
-        : `· ${charCount} 字`;
+        ? t("thinking.meta.withSeconds", {
+            seconds: finalSeconds,
+            count: charCount,
+          })
+        : t("thinking.meta.charCount", { count: charCount });
   }
 
   const handleToggle = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -103,7 +108,9 @@ export function ThinkingBlock({
         type="button"
         onClick={handleToggle}
         aria-expanded={expanded}
-        aria-label={streaming ? "切换思考中展开/收起" : "切换思考完成展开/收起"}
+        aria-label={
+          streaming ? t("thinking.toggleStreaming") : t("thinking.toggleDone")
+        }
         className="flex w-full cursor-pointer items-center gap-2 px-3.5 py-2.5 text-left hover:bg-muted/40"
       >
         <Brain
@@ -117,7 +124,7 @@ export function ThinkingBlock({
           data-copyable-control-text="true"
           className="text-sm font-medium text-foreground"
         >
-          {streaming ? "思考中…" : "思考完成"}
+          {streaming ? t("thinking.streaming") : t("thinking.done")}
         </span>
         {streaming ? (
           <span

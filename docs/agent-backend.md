@@ -18,6 +18,73 @@
 
 ---
 
+## 0.5 现有 backend 速查（接口 / 能力 / Permission Mode）
+
+仓库目前内置三个 backend，定位差异明显，**新 backend 选档前先对号入座**：
+
+- **builtin** — in-process 跑 cago `app/coding`，直接吃 `llm_provider` 配置。定位是「轻量自带」，暴露 steer / cancel / abort / image input 这几种 in-process 单 provider 模式天生支持的能力，没有 CLI 子进程开销，也没有 plan / 工具审批等高级协议。
+- **claudecode** — wrap 本地 `claude` CLI（Anthropic 家族），通过 stdout JSONL + `control_request` 帧双向通信，子进程常驻并 LRU 复用 session。功能最全：能跑 plan / `can_use_tool` / `AskUserQuestion` / Subagent / fork-session / mid-turn 切 permission mode。
+- **codex** — wrap 本地 `codex` CLI（OpenAI 家族），通过 JSON-RPC over stdio app-server 协议交互，每个 turn 起新进程（fire-and-forget）。原生支持 context window 上报、原生 compact turn 和图片输入，但没有 `can_use_tool` 协议、不能 mid-turn 切 mode、也不发 Subagent 事件。
+
+> 仓库里还有 `runtimes/remote/`，它**不是独立 backend**——而是 desktop 调远端 `agentred` daemon 时的代理，capability 通过 `Prefetch` 从 daemon 端真实 backend 同步过来，本节不单列。
+
+数据来源（schema 改动必须三处同步）：
+
+- `internal/pkg/agentruntime/runtimes/{builtin,claudecode,codex}/runtime.go` 的 `Capabilities()` 实现
+- `internal/pkg/agentruntime/capability/capability.go` 的 cap 常量
+- `runtime_test.go::TestXxxCapabilities` 矩阵断言
+
+### 能力矩阵（Capabilities）
+
+每行 = 一个反向通道。最右列给出该能力的语义和「为什么 ❌」——照搬前先确认你的 backend 是否真有同类协议，没有就老实返 `ErrUnsupported`，不要硬塞模拟实现。
+
+| Capability（常量 / wire string） | 子接口 | builtin | claudecode | codex | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `CapSteer` / `"steer"` | `Steerer` | ✅ | ✅ | ✅ | mid-turn 注入用户消息；chat_svc 生成 queuedID，backend 真正消费后必须 emit `SteerConsumed` |
+| `CapCancelSteer` / `"cancel_steer"` | `SteerCanceler` | ✅ | ✅ | ❌ | 注入后撤回；codex 的 `Stream.Steer` 是 fire-and-forget，进协议后无法回收 |
+| `CapDrainSteer` / `"drain_steer"` | `SteerDrainer` | ❌ | ✅ | ❌ | turn 间 leftover 自动续投到下一 turn；仅 claudecode 维护本地 hook 队列 |
+| `CapAbort` / `"abort"` | `Aborter` | ✅ | ✅ | ✅ | 「停止」按钮；必须幂等 + 必须 unblock 所有阻塞 I/O，否则前端永远停在「生成中」 |
+| `CapSetPermission` / `"set_permission_mode"` | `PermissionModeSetter` | ❌ | ✅ mid-turn | ✅ 仅 launch | 运行时切 permission mode；codex 协议不允许 mid-turn 切，DB 落库后下次 spawn 生效 |
+| `CapAnswerUserAsk` / `"answer_user_ask"` | `AskAnswerSink` | ❌ | ✅ | ✅ | 反向问用户问题（单选 / 多选 / Other / 密码框）；Skip 必须走 deny 而非空 map，否则 turn 静默挂死 |
+| `CapToolPermission` / `"tool_permission_gate"` | `ToolPermissionSink` | ❌ | ✅ `can_use_tool` | ❌ | 工具执行前 allow/deny 审批 + 「Remember for session」+ DenyReason 回灌 LLM；codex 无等价协议 |
+| `CapForkSession` / `"fork_session"` | `RunRequest.ForkAnchor` 内置 | ❌ | ✅ `--fork-session` | ✅ `thread/rollback` | 「重新生成」从某个 anchor 派生新 session 重跑 |
+| `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ✅ | ✅ | runtime 探到模型实际上下文窗口大小后 emit，前端展示用量条；claudecode SDK 自己不报窗口，translator 在 `system.init` 帧上查 `llmcatalog` 兜底 |
+| `CapCompact` / `"compact"` | `RunRequest.Compact=true` | ❌ | ❌ | ✅ | 原生 compact turn——让 LLM 把历史摘要后清掉占用 |
+| `CapImageInput` / `"image_input"` | `RunRequest.UserBlocks` 包含 `blocks.ImageBlock` | ✅ | ❌ | ✅ | 用户消息可携带 PNG / JPEG / WebP 图片。builtin 直接透传 cago blocks；codex 将 inline 图片物化为临时本地文件后走 app-server `localImage` |
+
+> **规则**：未声明 cap 调对应接口必须返 `agentruntime.ErrUnsupported`（sentinel 错误，跨进程透明，chat_svc 据此翻成 wire code）。声明 cap=true 但未实现接口会被 `TestXxxCapabilities` 矩阵测试卡掉（type-assert 失败）。
+
+### 运行特性
+
+这张表回答「跑起来长什么样」——进程形态、session 寿命、translator 设计、plan / Subagent 事件来源。新 backend 落到哪一档基本由你选的协议形态决定，**先选定再写代码**，不要中途换。
+
+| 维度 | builtin | claudecode | codex | 备注 |
+| --- | --- | --- | --- | --- |
+| 运行形态 | in-process（cago app/coding + LLMProvider） | CLI 子进程（stdout JSONL） | CLI 子进程（JSON-RPC over stdio app-server） | 决定 Prober / cli_path 校验 / env 装配路径 |
+| ProviderType 绑定 | 任意 LLM provider | Anthropic 家族（含网关代理） | OpenAI / Codex 家族 | entity `BackendKind.ProviderTypeMatch` 实现 |
+| Session 模式 | turn-scoped cago `Runner`，turn 结束即销毁 | 子进程常驻 + LRU 缓存复用，跨 turn 复用 session | 每个 turn 起新进程，无本地复用 | 复用要管 idle evict / abort 解锁 / 跨 turn 状态 |
+| Translator | 纯函数（cago events → sealed） | 纯函数 + `task_aggregator` 跨 turn 维护 Subagent 列表 | 纯函数 | 状态聚合统一在 `Run` drain 循环里做；translator 必须能在表驱动测试里独立跑 |
+| Plan 来源 | 不发 | `TodoWrite` 工具内联（canonical）+ `Task*` 增量聚合（PlanUpdated 快照） | `turn/plan/updated`（Steps）+ `item/plan/delta`（Text）合并到单一 PlanUpdated | 下游 chat_svc 看到的都是同一个 sealed `agentruntime.PlanUpdated` |
+| 反向问答 | 不支持 | control_request `can_use_tool` + `AskUserQuestion` 工具 | app-server `item/tool/requestUserInput` JSON-RPC | claudecode 用 question 文本做 key，codex 用 question ID 做 key |
+| Subagent 事件 | ❌ | ✅ `SubagentStarted/Progress/Done` | ❌ | 只 claudecode 有原生 `Task` 工具协议 |
+| 远端 daemon | ✅ | ✅ | ✅ | runtime 不得依赖 desktop-only 服务（chat_repo / GUI），状态走 `RunResult` 回吐 |
+
+### PermissionModeMeta
+
+permission mode 是**会话级权限状态机**（不是 plan 内容）。三个 backend 的 mode 集合和 mid-turn 切换能力完全不同——前端 `PermissionModePill` 直接读这张 meta 决定渲染。
+
+| 字段 | builtin | claudecode | codex | 字段含义 |
+| --- | --- | --- | --- | --- |
+| `AllowedModes` | —（未声明 CapSetPermission） | `default, acceptEdits, plan, bypassPermissions` | `default, plan` | 该 backend 合法的 mode 名集合，service 层做白名单 |
+| `DefaultMode` | — | `"acceptEdits"` | `"default"` | UI 展示 / 计算用的默认 mode（chat_svc 落库默认值） |
+| `LaunchDefaultMode` | — | `""`（不附 `--permission-mode`，pkg/claudecode 内部兜底成 acceptEdits） | `"default"`（协议要求 launch 显式 collaborationMode，**不能空**） | spawn 时 wire 层兜底字符串；空 vs 非空决定「用户未显式选」vs「显式选了 default」 |
+| `SwitchableDuringTurn` | — | `true`（写 control_request 即时切） | `false`（落库后下次 spawn 生效） | 前端 pill 在 `agentStatus=="waiting"` 时是否可点 |
+| `Order` | — | 同 AllowedModes | 同 AllowedModes | pill 循环顺序，UI 直接按顺序 next |
+
+> **易混字段**：`chat_sessions.permission_mode` = CLI 运行时当前 mode（被 SetPermissionMode 修改）；`chat_sessions.permission_mode_at_launch` = spawn 时下发的快照（由 runtime 经 `RunResult.LaunchPermissionMode` 回吐）。前者前端用于显示当前状态，后者决定 `bypassPermissions` 是否出现在 pill 里——只有 launch 时显式选过 bypass 才会显示该项，避免事后被滥用。
+
+---
+
 ## 1. 整体接入路径（必经的 7 层）
 
 新 backend = 沿着以下 7 层各加一刀，缺一不可：
@@ -150,8 +217,9 @@
 | `CapAnswerUserAsk` | `AskAnswerSink` | 处理反向 ask_user_question |
 | `CapToolPermission` | `ToolPermissionSink` | 处理 `can_use_tool` 协议 |
 | `CapForkSession` | `RunRequest.ForkAnchor` 内置语义 | 「重新生成」走 fork |
-| `CapReportContextWindow` | emit `ContextWindowUpdated` | runtime 能探到模型实际窗口 |
+| `CapReportContextWindow` | emit `ContextWindowUpdated` | runtime 能探到模型实际窗口（codex 协议原生有；claudecode 靠 `llmcatalog.Lookup(model)` 兜底） |
 | `CapCompact` | `RunRequest.Compact=true` 内置语义 | 原生 compact turn |
+| `CapImageInput` | `RunRequest.UserBlocks` image blocks | 支持多模态用户输入；不支持时 chat_svc 会在调 runtime 前拒绝带图 turn |
 
 不实现的 cap：**chat_svc 拿到前端请求时返回 `ErrUnsupported`**——错误码已经在 wire 层 sentinel 化跨进程透明传递，**不要私造错误**。
 

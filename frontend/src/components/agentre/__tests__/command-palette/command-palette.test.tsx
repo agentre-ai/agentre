@@ -77,14 +77,16 @@ function renderPalette() {
 describe("CommandPalette", () => {
   it("renders nothing when palette is closed", () => {
     renderPalette();
-    expect(screen.queryByPlaceholderText("搜索会话…")).toBeNull();
+    expect(screen.queryByPlaceholderText("Search sessions...")).toBeNull();
   });
 
   it("opens via store and lists active-first sessions", async () => {
     renderPalette();
     act(() => useCommandPaletteStore.getState().setOpen(true));
     await waitFor(() =>
-      expect(screen.getByPlaceholderText("搜索会话…")).toBeInTheDocument(),
+      expect(
+        screen.getByPlaceholderText("Search sessions..."),
+      ).toBeInTheDocument(),
     );
     expect(await screen.findByText("年度报告 v2")).toBeInTheDocument();
     expect(screen.getByText("周报草稿")).toBeInTheDocument();
@@ -93,7 +95,7 @@ describe("CommandPalette", () => {
   it("filters by pinyin (ndbg → 年度报告)", async () => {
     renderPalette();
     act(() => useCommandPaletteStore.getState().setOpen(true));
-    const input = await screen.findByPlaceholderText("搜索会话…");
+    const input = await screen.findByPlaceholderText("Search sessions...");
     await screen.findByText("年度报告 v2");
     await userEvent.type(input, "ndbg");
     await waitFor(() => {

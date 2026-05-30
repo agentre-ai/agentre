@@ -17,9 +17,11 @@ import (
 
 	daemonrpc "agentre/internal/daemon/rpc"
 	"agentre/internal/model/entity/agent_backend_entity"
+	"agentre/internal/model/entity/agent_entity"
 	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/model/entity/project_location_entity"
 	"agentre/internal/pkg/agentruntime"
+	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/pkg/agentruntime/runtimes/remote"
 	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"agentre/internal/pkg/code"
@@ -387,16 +389,25 @@ func (*noopDaemonClient) Close() error            { return nil }
 type recordingDaemonClient struct {
 	mu    sync.Mutex
 	calls map[string]int
+	queue map[string][]func(params, result any) error
 }
 
 func newRecordingDaemonClient() *recordingDaemonClient {
-	return &recordingDaemonClient{calls: map[string]int{}}
+	return &recordingDaemonClient{calls: map[string]int{}, queue: map[string][]func(params, result any) error{}}
 }
 
-func (c *recordingDaemonClient) Call(_ context.Context, method string, _, _ any) error {
+func (c *recordingDaemonClient) Call(_ context.Context, method string, params, result any) error {
 	c.mu.Lock()
 	c.calls[method]++
+	var fn func(params, result any) error
+	if xs := c.queue[method]; len(xs) > 0 {
+		fn = xs[0]
+		c.queue[method] = xs[1:]
+	}
 	c.mu.Unlock()
+	if fn != nil {
+		return fn(params, result)
+	}
 	return nil
 }
 func (*recordingDaemonClient) Notify(_ string, _ any) error { return nil }
@@ -409,6 +420,12 @@ func (c *recordingDaemonClient) count(method string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls[method]
+}
+
+func (c *recordingDaemonClient) expect(method string, fn func(params, result any) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.queue[method] = append(c.queue[method], fn)
 }
 
 // poolLeaseMocks 把 Pool/Lease/Client 三件套打包,简化各远端缓存测试的注入。
@@ -491,6 +508,67 @@ func TestBorrowRemoteRuntime_PrefetchesCapabilities_OncePerDevice(t *testing.T) 
 	_, err = svc.borrowRemoteRuntime(context.Background(), be, 101)
 	require.NoError(t, err)
 	assert.Equal(t, 1, rec.count(wire.MethodCapabilities), "cache hit must not re-prefetch")
+}
+
+func TestGoal_RemoteReleasesRuntimeAfterOneShotRPC(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	rec := newRecordingDaemonClient()
+	rec.expect(wire.MethodCapabilities, func(_, result any) error {
+		*(result.(*wire.CapabilitiesResult)) = wire.CapabilitiesResult{
+			Capabilities: capability.Capabilities{Set: map[capability.Capability]bool{capability.CapGoal: true}},
+		}
+		return nil
+	})
+	rec.expect(wire.MethodSetGoal, func(params, result any) error {
+		gp, ok := params.(wire.GoalParams)
+		require.True(t, ok, "expected wire.GoalParams, got %T", params)
+		assert.Equal(t, int64(100), gp.SessionID)
+		assert.Equal(t, "codex-thread-123", gp.ProviderSessionID)
+		*(result.(*wire.GoalResult)) = wire.GoalResult{Goal: &agentruntime.Goal{
+			ThreadID:  "codex-thread-123",
+			Objective: "ship remote goal",
+			Status:    "active",
+		}}
+		return nil
+	})
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease, nil)
+	lease.EXPECT().Client().Return(rec).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease.EXPECT().Release().AnyTimes()
+
+	svc := &chatSvc{}
+	svc.setConnPoolForTest(pool)
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, nil)
+	t.Cleanup(restore)
+
+	be := &agent_backend_entity.AgentBackend{
+		ID:       12,
+		Type:     string(agent_backend_entity.TypeCodex),
+		DeviceID: "7",
+		Status:   1,
+	}
+	sess := &chat_entity.Session{ID: 100, AgentID: 7, ProviderSessionID: "codex-thread-123"}
+	objective := "ship remote goal"
+	status := "active"
+
+	resp, release, err := svc.setGoalOnSession(context.Background(), sess, &agent_entity.Agent{ID: 7}, be, nil, &SetGoalRequest{
+		SessionID: 100,
+		Objective: &objective,
+		Status:    &status,
+	})
+	require.NoError(t, err)
+	defer release()
+	require.NotNil(t, resp.Goal)
+	assert.Equal(t, "ship remote goal", resp.Goal.Objective)
+
+	release()
+	assert.Equal(t, 0, svc.remoteRuntimeCount(7), "one-shot remote goal RPC must release its remote runtime lease")
+	assert.Equal(t, 1, rec.count(wire.MethodSetGoal))
 }
 
 // TestBorrowRemoteRuntime_InvalidDevice 当 be.DeviceIDInt() 解析失败时立即返回

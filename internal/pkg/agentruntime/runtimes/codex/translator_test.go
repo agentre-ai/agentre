@@ -216,6 +216,32 @@ func TestTranslate_RequestUserInput(t *testing.T) {
 	})
 }
 
+func TestTranslate_ApprovalRequest(t *testing.T) {
+	Convey("EventApprovalRequest → ToolPermissionRequest", t, func() {
+		out, _, _ := translate(codex.Event{
+			Kind: codex.EventApprovalRequest,
+			Approval: &codex.ApprovalRequestEvent{
+				RequestID: "approval-1",
+				ItemID:    "item-command",
+				ToolName:  "Bash",
+				Input:     json.RawMessage(`{"command":"rm -rf build"}`),
+			},
+		})
+		So(len(out), ShouldEqual, 1)
+		req, ok := out[0].(agentruntime.ToolPermissionRequest)
+		So(ok, ShouldBeTrue)
+		So(req.RequestID, ShouldEqual, "approval-1")
+		So(req.ToolCallID, ShouldEqual, "item-command")
+		So(req.ToolName, ShouldEqual, "Bash")
+		So(string(req.Input), ShouldEqual, `{"command":"rm -rf build"}`)
+	})
+
+	Convey("EventApprovalRequest without payload → no event", t, func() {
+		out, _, _ := translate(codex.Event{Kind: codex.EventApprovalRequest})
+		So(out, ShouldBeNil)
+	})
+}
+
 // TestTranslate_Usage_OpenAIFamily TotalInputTokens 按 OpenAI family 聚合 =
 // PromptTokens(不区分 cached / cacheCreation)。spec §A token contract。
 func TestTranslate_Usage_OpenAIFamily(t *testing.T) {

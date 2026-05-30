@@ -14,6 +14,7 @@ const (
 	EventUserMessage      EventKind = "user_message"
 	EventPreToolUse       EventKind = "pre_tool_use"
 	EventPostToolUse      EventKind = "post_tool_use"
+	EventApprovalRequest  EventKind = "approval_request"
 	EventRequestUserInput EventKind = "request_user_input"
 	EventPlanUpdated      EventKind = "plan_updated"
 	EventUsage            EventKind = "usage"
@@ -38,6 +39,15 @@ type ToolEvent struct {
 	Response json.RawMessage
 	Err      error
 	Source   ToolSource
+}
+
+type ApprovalRequestEvent struct {
+	RequestID string
+	ThreadID  string
+	TurnID    string
+	ItemID    string
+	ToolName  string
+	Input     json.RawMessage
 }
 
 type RetryEvent struct {
@@ -84,6 +94,7 @@ type Event struct {
 	SessionID        string
 	Text             string
 	Tool             *ToolEvent
+	Approval         *ApprovalRequestEvent
 	RequestUserInput *RequestUserInputEvent
 	Plan             []PlanStep
 	PlanText         string

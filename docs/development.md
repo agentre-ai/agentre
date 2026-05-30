@@ -70,7 +70,7 @@ cago tool handlers 把 error 包成 `tool.ErrorResult` 然后 return `(*ToolResu
 
 ## 日志（关键流程必打）
 
-cago zap 封装 `github.com/cago-frame/cago/pkg/logger`，落到 `<AppDataDir>/logs/agentre.log`（`AGENTRE_DEBUG=1` 降为 debug+）。读日志、查 SQLite、复现线上 bug 的命令清单见 [debugging.md](debugging.md)。
+cago zap 封装 `github.com/cago-frame/cago/pkg/logger`，落到 `<AppDataDir>/logs/agentre.log`（开「设置 → 版本 & 更新 → Debug 日志」开关后降为 debug+）。读日志、查 SQLite、复现线上 bug 的命令清单见 [debugging.md](debugging.md)。
 
 - **调用方式：** 有 ctx 用 `logger.Ctx(ctx)`，否则 `logger.Default()`（bootstrap / `gogo.Go` 里）。字段一律 `zap.Xxx(...)` 结构化，**禁止** `fmt.Sprintf` 拼 message。
 - **Message 格式：** 小写 + `package.Method:` 前缀，动态值放字段，便于 grep。例：

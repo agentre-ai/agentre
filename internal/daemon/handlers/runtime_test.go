@@ -16,6 +16,7 @@ import (
 	"agentre/internal/daemon/handlers/mock_handlers"
 	"agentre/internal/daemon/rpc"
 	"agentre/internal/model/entity/agent_backend_entity"
+	"agentre/internal/model/entity/llm_provider_entity"
 	"agentre/internal/pkg/agentruntime"
 	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
@@ -59,6 +60,11 @@ type fullRT struct {
 
 	submitToolPermErr   error
 	submitToolPermCalls []submitToolPermCall
+
+	goalErr        error
+	getGoalCalls   []goalCall
+	setGoalCalls   []goalCall
+	clearGoalCalls []goalCall
 }
 
 type steerCall struct {
@@ -91,6 +97,10 @@ type submitToolPermCall struct {
 	allow              bool
 	alwaysAllowSession bool
 	denyReason         string
+}
+
+type goalCall struct {
+	req agentruntime.GoalRequest
 }
 
 func (r *fullRT) Capabilities() capability.Capabilities { return r.cap }
@@ -161,6 +171,27 @@ func (r *fullRT) SubmitToolPermission(_ context.Context, sid int64, requestID st
 	defer r.mu.Unlock()
 	r.submitToolPermCalls = append(r.submitToolPermCalls, submitToolPermCall{sid, requestID, allow, always, deny})
 	return r.submitToolPermErr
+}
+
+func (r *fullRT) GetGoal(_ context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.getGoalCalls = append(r.getGoalCalls, goalCall{req: req})
+	return &agentruntime.Goal{ThreadID: req.ProviderSessionID, Objective: "ship goal rpc", Status: "active"}, r.goalErr
+}
+
+func (r *fullRT) SetGoal(_ context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.setGoalCalls = append(r.setGoalCalls, goalCall{req: req})
+	return &agentruntime.Goal{ThreadID: req.ProviderSessionID, Objective: "ship goal rpc", Status: "active"}, r.goalErr
+}
+
+func (r *fullRT) ClearGoal(_ context.Context, req agentruntime.GoalRequest) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearGoalCalls = append(r.clearGoalCalls, goalCall{req: req})
+	return true, r.goalErr
 }
 
 // bareRT only implements Runtime — type-asserting any sub-interface fails.
@@ -281,6 +312,105 @@ func TestRuntime_Capabilities_Unknown(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRuntime_GoalRoutesWithoutActiveTurn(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+	objective := "ship goal rpc"
+	status := "active"
+	budget := 123
+	params := wire.GoalParams{
+		SessionID:         42,
+		AgentID:           7,
+		ProviderSessionID: "thread-goal",
+		Backend:           backendJSON(t, agent_backend_entity.AgentBackend{ID: 3, Type: string(agent_backend_entity.TypeCodex), Name: "codex"}),
+		Cwd:               "/tmp/work",
+		Objective:         &objective,
+		Status:            &status,
+		TokenBudget:       &budget,
+	}
+
+	setOut, err := h.SetGoal(ctx, params)
+	require.NoError(t, err)
+	require.NotNil(t, setOut.Goal)
+	assert.Equal(t, "thread-goal", setOut.Goal.ThreadID)
+	require.Len(t, rt.setGoalCalls, 1)
+	setReq := rt.setGoalCalls[0].req
+	assert.Equal(t, int64(42), setReq.SessionID)
+	assert.Equal(t, int64(7), setReq.AgentID)
+	assert.Equal(t, "thread-goal", setReq.ProviderSessionID)
+	assert.Equal(t, "/tmp/work", setReq.Cwd)
+	require.NotNil(t, setReq.Backend)
+	assert.Equal(t, string(agent_backend_entity.TypeCodex), setReq.Backend.Type)
+	require.NotNil(t, setReq.Objective)
+	assert.Equal(t, "ship goal rpc", *setReq.Objective)
+	require.NotNil(t, setReq.Status)
+	assert.Equal(t, "active", *setReq.Status)
+	require.NotNil(t, setReq.TokenBudget)
+	assert.Equal(t, 123, *setReq.TokenBudget)
+
+	getOut, err := h.GetGoal(ctx, params)
+	require.NoError(t, err)
+	require.NotNil(t, getOut.Goal)
+	assert.Equal(t, "thread-goal", getOut.Goal.ThreadID)
+	require.Len(t, rt.getGoalCalls, 1)
+	require.NotNil(t, rt.getGoalCalls[0].req.Backend)
+	assert.Equal(t, string(agent_backend_entity.TypeCodex), rt.getGoalCalls[0].req.Backend.Type)
+
+	clearOut, err := h.ClearGoal(ctx, params)
+	require.NoError(t, err)
+	assert.True(t, clearOut.Cleared)
+	require.Len(t, rt.clearGoalCalls, 1)
+	require.NotNil(t, rt.clearGoalCalls[0].req.Backend)
+	assert.Equal(t, string(agent_backend_entity.TypeCodex), rt.clearGoalCalls[0].req.Backend.Type)
+}
+
+func TestRuntime_GoalWithProviderUsesDaemonProviderAndGateway(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		ID:             3,
+		Type:           string(agent_backend_entity.TypeCodex),
+		Name:           "codex",
+		LLMProviderKey: "provider-key",
+	}
+	lookup.EXPECT().FindByKey(ctx, "provider-key").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "provider-key",
+		Type:        string(llm_provider_entity.TypeOpenAIResponse),
+		Model:       "gpt-5-codex",
+	}, nil)
+	gw.EXPECT().URL().Return("http://127.0.0.1:12345")
+	gw.EXPECT().IssueToken(ctx, gomock.Any(), time.Hour).DoAndReturn(
+		func(_ context.Context, got *agent_backend_entity.AgentBackend, _ time.Duration) (string, error) {
+			assert.Equal(t, int64(3), got.ID)
+			assert.Equal(t, "provider-key", got.LLMProviderKey)
+			return "goal-token", nil
+		})
+	gw.EXPECT().RevokeToken("goal-token")
+
+	_, err := h.GetGoal(ctx, wire.GoalParams{
+		SessionID:         42,
+		AgentID:           7,
+		ProviderSessionID: "thread-goal",
+		Backend:           backendJSON(t, be),
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.getGoalCalls, 1)
+	req := rt.getGoalCalls[0].req
+	require.NotNil(t, req.Provider)
+	assert.Equal(t, "provider-key", req.Provider.ProviderKey)
+	assert.Equal(t, "gpt-5-codex", req.Provider.Model)
+	assert.Equal(t, "http://127.0.0.1:12345", req.GatewayURL)
+	assert.Equal(t, "goal-token", req.GatewayToken)
+}
+
+func TestRuntime_GoalMissingBackendReturnsNoActiveTurn(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+
+	_, err := h.GetGoal(ctx, wire.GoalParams{SessionID: 42, ProviderSessionID: "thread-goal"})
+	require.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 
 func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
@@ -338,8 +468,10 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 
 	// Session must be cleared after fanout finishes so subsequent Steer
 	// returns ErrNoActiveTurn — exercised by a follow-up call.
-	_, err = h.Steer(ctx, wire.SteerParams{SessionID: 42, Text: "late"})
-	require.Error(t, err)
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		_, err = h.Steer(ctx, wire.SteerParams{SessionID: 42, Text: "late"})
+		assert.Error(c, err)
+	}, time.Second, 10*time.Millisecond)
 	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 

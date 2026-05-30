@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 
@@ -46,6 +46,10 @@ describe("ChatContextSidebar", () => {
   beforeEach(() => {
     localStorage.clear();
     useChatSidebarStore.setState({ open: true, activeTab: "outline" });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("shows OutlineView by default", () => {
@@ -96,7 +100,9 @@ describe("ChatContextSidebar", () => {
       />,
     );
     await userEvent.click(screen.getByRole("tab", { name: /files/i }));
-    expect(screen.getByText(/没有改过任何文件|没有文件/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No files have been changed in this session/),
+    ).toBeInTheDocument();
     expect(useChatSidebarStore.getState().activeTab).toBe("files");
   });
 
@@ -171,5 +177,42 @@ describe("ChatContextSidebar", () => {
     expect(
       document.querySelector('[data-outline-message-id="22"]'),
     ).toHaveAttribute("data-active", "true");
+  });
+
+  it("Given the transcript focus reaches the last turn, When the active row changes, Then the outline scrolls that row to the bottom edge", () => {
+    const scrollIntoView = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+
+    render(
+      <ChatContextSidebar
+        sessionId={1}
+        messages={[userM(11, "first"), userM(22, "second")]}
+        activeMessageId={22}
+        onJumpToMessage={() => {}}
+      />,
+    );
+
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      block: "end",
+      inline: "nearest",
+    });
+  });
+
+  it("Given no transcript message is active, When the outline renders, Then it does not adjust scroll position", () => {
+    const scrollIntoView = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+
+    render(
+      <ChatContextSidebar
+        sessionId={1}
+        messages={[userM(11, "first"), userM(22, "second")]}
+        activeMessageId={null}
+        onJumpToMessage={() => {}}
+      />,
+    );
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 });

@@ -28,6 +28,12 @@ type ProjectUpdateRequest struct {
 	Description string `json:"description"`
 }
 
+// ProjectReorderRequest 调整同级项目展示顺序。
+type ProjectReorderRequest struct {
+	ParentID   int64   `json:"parentID"`
+	OrderedIDs []int64 `json:"orderedIDs"`
+}
+
 // ProjectItem 项目摘要 —— 树节点 / 列表 / 详情共用。
 type ProjectItem struct {
 	ID          int64  `json:"id"`
@@ -38,6 +44,7 @@ type ProjectItem struct {
 	Description string `json:"description"`
 	Path        string `json:"path"`
 	IsGitRepo   bool   `json:"isGitRepo"`
+	SortOrder   int    `json:"sortOrder"`
 	Createtime  int64  `json:"createtime"`
 	Updatetime  int64  `json:"updatetime"`
 }
@@ -116,6 +123,18 @@ func (a *App) ProjectUpdate(req *ProjectUpdateRequest) (*ProjectItem, error) {
 		return nil, err
 	}
 	return toProjectItem(p), nil
+}
+
+// ProjectReorder 持久化同一父项目下的项目顺序。
+func (a *App) ProjectReorder(req *ProjectReorderRequest) error {
+	var svcReq *project_svc.ReorderProjectsRequest
+	if req != nil {
+		svcReq = &project_svc.ReorderProjectsRequest{
+			ParentID:   req.ParentID,
+			OrderedIDs: req.OrderedIDs,
+		}
+	}
+	return project_svc.Default().Reorder(a.ctx, svcReq)
 }
 
 // ProjectDelete 软删除项目；有子项目 / 活跃会话时拒绝。
@@ -206,6 +225,7 @@ func toProjectItem(p *project_entity.Project) *ProjectItem {
 		Description: p.Description,
 		Path:        p.Path,
 		IsGitRepo:   p.IsGitRepo(),
+		SortOrder:   p.SortOrder,
 		Createtime:  p.Createtime,
 		Updatetime:  p.Updatetime,
 	}

@@ -105,43 +105,45 @@ describe("OrgDetailAgent", () => {
 
   it("renders only the four design-aligned basic fields", () => {
     renderPanel();
-    expect(screen.getByLabelText("agent-name")).toBeInTheDocument();
-    expect(screen.getByLabelText("agent-description")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Description")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "上传图片" }),
+      screen.getByRole("button", { name: "Upload Image" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("PNG / JPG / WEBP · 最大 2MB")).toBeInTheDocument();
+    expect(screen.getByText("PNG / JPG / WEBP · Max 2 MB")).toBeInTheDocument();
     expect(
-      screen.getByRole("radiogroup", { name: "头像配色" }),
+      screen.getByRole("radiogroup", { name: "Avatar Color" }),
     ).toBeInTheDocument();
     expect(
-      screen.getAllByRole("radio", { name: /头像配色 agent-/ }),
+      screen.getAllByRole("radio", { name: /Avatar color agent-/ }),
     ).toHaveLength(10);
     // 头像编辑入口仍用于选择图标 / 字母备用头像。
-    expect(screen.getAllByLabelText("更改头像").length).toBeGreaterThan(0);
+    expect(screen.getAllByLabelText("Change avatar").length).toBeGreaterThan(0);
   });
 
   it("keeps image upload out of the avatar popover", async () => {
     const user = userEvent.setup();
     renderPanel();
-    await user.click(screen.getAllByLabelText("更改头像")[0]);
+    await user.click(screen.getAllByLabelText("Change avatar")[0]);
     expect(
-      await screen.findByRole("tab", { name: /图标/ }),
+      await screen.findByRole("tab", { name: /Icon/ }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /字母/ })).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: /图片/ })).toBeNull();
+    expect(screen.getByRole("tab", { name: /Letter/ })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Image/ })).toBeNull();
   });
 
   it("renders the Agent backend section like the Pencil detail card", () => {
     renderPanel({ agentBackendId: 5 }, [backend()]);
     expect(
-      screen.getByRole("heading", { name: "AGENT 后端" }),
+      screen.getByRole("heading", { name: "Agent Backend" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("agent-backend")).toBeInTheDocument();
+    expect(screen.getByLabelText("Agent Backend")).toBeInTheDocument();
     expect(screen.getByText("Claude Code")).toBeInTheDocument();
     expect(screen.getByText("Anthropic 官方 · Sonnet 4.6")).toBeInTheDocument();
     expect(
-      screen.getByText("通过 Claude Code CLI 执行任务，工具调用经 CLI 中转。"),
+      screen.getByText(
+        "Runs tasks through Claude Code CLI. Tool calls are routed through the CLI.",
+      ),
     ).toBeInTheDocument();
   });
 
@@ -164,15 +166,15 @@ describe("OrgDetailAgent", () => {
   it("counts non-whitespace chars in system prompt", async () => {
     const user = userEvent.setup();
     renderPanel({ prompt: [] });
-    const ta = screen.getByLabelText("agent-prompt");
+    const ta = screen.getByLabelText("System Prompt");
     await user.type(ta, "hello 世界");
-    expect(screen.getByText(/7 字/)).toBeInTheDocument();
+    expect(screen.getByText(/7 chars/)).toBeInTheDocument();
   });
 
   it("uploads avatar from the inline detail row control", async () => {
     const { onUploadAvatar } = renderPanel();
     expect(
-      screen.getByRole("button", { name: "上传图片" }),
+      screen.getByRole("button", { name: "Upload Image" }),
     ).toBeInTheDocument();
     const file = new File([new Uint8Array([1, 2, 3])], "a.png", {
       type: "image/png",
@@ -194,7 +196,9 @@ describe("OrgDetailAgent", () => {
     const { onDeleteAvatar } = renderPanel({
       avatarDataUrl: "data:image/png;base64,aGVsbG8=",
     });
-    await user.click(screen.getByRole("button", { name: "删除上传头像" }));
+    await user.click(
+      screen.getByRole("button", { name: "Delete uploaded avatar" }),
+    );
     expect(onDeleteAvatar).toHaveBeenCalledWith({ id: 7 });
   });
 
@@ -209,7 +213,7 @@ describe("OrgDetailAgent", () => {
     if (!input) throw new Error("file input not found");
     fireEvent.change(input, { target: { files: [file] } });
     expect(
-      await screen.findByText("图片过大，请上传 2MB 以内的文件"),
+      await screen.findByText("Image is too large. Upload a file under 2 MB."),
     ).toBeInTheDocument();
     expect(onUploadAvatar).not.toHaveBeenCalled();
   });
@@ -217,8 +221,8 @@ describe("OrgDetailAgent", () => {
   it("toggles skill enabled state and updates counter", async () => {
     const user = userEvent.setup();
     renderPanel();
-    expect(screen.getByText(/1 启用 · 1 禁用/)).toBeInTheDocument();
+    expect(screen.getByText(/1 enabled · 1 disabled/)).toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: /write_file/ }));
-    expect(screen.getByText(/2 启用 · 0 禁用/)).toBeInTheDocument();
+    expect(screen.getByText(/2 enabled · 0 disabled/)).toBeInTheDocument();
   });
 });
