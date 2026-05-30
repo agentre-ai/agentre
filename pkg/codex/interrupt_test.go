@@ -17,7 +17,9 @@ import (
 //   - 服务端回 ack 后，发 turn/completed{status=interrupted}
 //   - drain 看到 turn/completed 自然返回（不 emit error，emit Done）
 func TestStream_InterruptForwardsRPC(t *testing.T) {
-	interruptCaptured := make(chan json.RawMessage, 1)
+	turnStarted := make(chan struct{})
+	interruptCaptured := make(chan rpcReq, 1)
+	allowComplete := make(chan struct{})
 
 	runner := &fakeAppServerRunner{t: t}
 	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
@@ -26,14 +28,14 @@ func TestStream_InterruptForwardsRPC(t *testing.T) {
 		_ = readRPCReq(t, sc)                              // initialized notification
 		respondRPC(h, readRPCReq(t, sc), map[string]any{"thread": map[string]any{"id": "thr-1"}})
 		respondRPC(h, readRPCReq(t, sc), map[string]any{"turn": map[string]any{"id": "turn-1", "status": "inProgress"}})
+		close(turnStarted)
 
-		// 等 turn/interrupt
 		interruptReq := readRPCReq(t, sc)
 		assert.Equal(t, "turn/interrupt", interruptReq.Method)
-		interruptCaptured <- interruptReq.Params
+		interruptCaptured <- interruptReq
 		respondRPC(h, interruptReq, map[string]any{})
 
-		// 服务端发 turn/completed{status=interrupted}
+		<-allowComplete
 		h.send(map[string]any{
 			"method": "turn/completed",
 			"params": map[string]any{
@@ -50,17 +52,29 @@ func TestStream_InterruptForwardsRPC(t *testing.T) {
 	stream, err := client.Stream(ctx, "long-job")
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Interrupt(ctx))
+	select {
+	case <-turnStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("turn/start never completed")
+	}
 
 	select {
-	case params := <-interruptCaptured:
+	case err := <-interruptStream(ctx, stream):
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Interrupt did not return")
+	}
+
+	select {
+	case interruptReq := <-interruptCaptured:
 		var got map[string]any
-		require.NoError(t, json.Unmarshal(params, &got))
+		require.NoError(t, json.Unmarshal(interruptReq.Params, &got))
 		assert.Equal(t, "thr-1", got["threadId"])
 		assert.Equal(t, "turn-1", got["turnId"])
 	case <-time.After(2 * time.Second):
 		t.Fatalf("turn/interrupt never captured")
 	}
+	close(allowComplete)
 
 	// drain 自然退出且不 emit error
 	sawError := false
@@ -71,6 +85,14 @@ func TestStream_InterruptForwardsRPC(t *testing.T) {
 	}
 	assert.False(t, sawError, "interrupted turn should not emit EventError")
 	require.NoError(t, stream.Close(ctx))
+}
+
+func interruptStream(ctx context.Context, stream *Stream) <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- stream.Interrupt(ctx)
+	}()
+	return errCh
 }
 
 // TestStream_InterruptAfterTurnCompletedReturnsNoActive 验证：turn 已结束后调
