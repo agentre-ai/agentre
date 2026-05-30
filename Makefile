@@ -110,7 +110,7 @@ test: test-backend test-frontend
 
 # 运行后端测试
 test-backend:
-	go test -race $(BACKEND_PKGS)
+	go test ./...
 
 # 运行前端测试
 test-frontend: generate

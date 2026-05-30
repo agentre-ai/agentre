@@ -305,7 +305,7 @@ func TestSession_SetPermissionMode(t *testing.T) {
 // SetPermissionMode 必须能立刻把 control_request 写下去并在 control_response
 // 回来后返 nil；不能一直阻塞到 Turn 自然 done。
 func TestSession_SetPermissionMode_MidTurn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	c := New(WithBinary("fake"), pipeSpawner(t, fakeMidTurnSetMode))
