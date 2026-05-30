@@ -173,8 +173,6 @@ export function TerminalPanel({
   }, [active, state, fitAndResize]);
 
   // Re-theme xterm when the app switches between light and dark mode.
-  // jsdom does not implement getComputedStyle for CSS custom properties, so
-  // this effect is verified manually (Task 30) rather than via a DOM assertion.
   useEffect(() => {
     if (typeof document === "undefined") return;
     const applyTheme = () => {
@@ -182,6 +180,13 @@ export function TerminalPanel({
       if (!term) return;
       term.options.theme = readTerminalTheme();
     };
+    // Apply once on mount. App toggles the `.dark` class in its own layout
+    // effect; on a same-commit mount (a restored terminal tab on app startup)
+    // that runs AFTER this terminal's xterm was constructed but BEFORE this
+    // observer registers, so the MutationObserver never sees that initial class
+    // and the terminal would stay light. This passive effect runs after all
+    // layout effects, so re-reading here picks up the resolved theme.
+    applyTheme();
     const observer = new MutationObserver(applyTheme);
     observer.observe(document.documentElement, {
       attributes: true,

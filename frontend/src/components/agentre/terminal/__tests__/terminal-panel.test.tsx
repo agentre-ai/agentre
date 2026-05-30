@@ -401,6 +401,30 @@ describe("TerminalPanel", () => {
     expect(getByRole("alert")).toHaveTextContent("Connection lost");
   });
 
+  it("Given dark mode was applied before this terminal's observer registers, When it mounts, Then it re-applies the theme on mount instead of waiting for a class change", () => {
+    // Repro for the app-restart race: App adds `.dark` in its layout effect,
+    // which on a same-commit mount runs after the terminal's xterm is built but
+    // before this MutationObserver is registered. The observer only sees future
+    // class changes, so without an on-mount apply the terminal stays white.
+    document.documentElement.classList.add("dark");
+    try {
+      const onClose = vi.fn();
+      render(
+        <TerminalPanel
+          terminalID="t1"
+          projectId={42}
+          deviceId=""
+          onClose={onClose}
+        />,
+      );
+      const term = vi.mocked(Terminal).mock.results[0].value;
+      expect(term.options.theme).toBeTruthy();
+      expect(term.options.theme.background).toBe("#17191c");
+    } finally {
+      document.documentElement.classList.remove("dark");
+    }
+  });
+
   it("re-themes xterm when document root class changes (light↔dark toggle)", () => {
     // jsdom's getComputedStyle does not resolve CSS custom properties (--background,
     // --foreground), so we cannot assert the exact theme values here. The actual

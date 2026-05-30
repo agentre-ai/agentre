@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	stdruntime "runtime"
+	"strings"
 
 	"agentre/internal/app"
 	"agentre/internal/bootstrap"
@@ -76,22 +77,29 @@ func newWailsOptionsForDataDir(a *app.App, assets fs.FS, goos, dataDir string) *
 		Mac: &mac.Options{
 			TitleBar: mac.TitleBarHiddenInset(),
 		},
-		SingleInstanceLock: &options.SingleInstanceLock{
+		Bind: []interface{}{
+			a,
+		},
+	}
+
+	if !isWailsDevMode() {
+		appOptions.SingleInstanceLock = &options.SingleInstanceLock{
 			UniqueId: singleInstanceUniqueID(dataDir),
 			OnSecondInstanceLaunch: func(secondInstanceData options.SecondInstanceData) {
 				logger.Default().Info("second instance launch",
 					zap.Strings("args", secondInstanceData.Args),
 					zap.String("workingDirectory", secondInstanceData.WorkingDirectory))
 			},
-		},
-		Bind: []interface{}{
-			a,
-		},
+		}
 	}
 
 	configurePlatformWindowOptions(appOptions, goos)
 
 	return appOptions
+}
+
+func isWailsDevMode() bool {
+	return strings.TrimSpace(os.Getenv("devserver")) != ""
 }
 
 func singleInstanceUniqueID(dataDir string) string {

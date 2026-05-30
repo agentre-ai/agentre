@@ -22,6 +22,8 @@ func TestSingleInstanceUniqueID(t *testing.T) {
 }
 
 func TestNewWailsOptionsConfiguresSingleInstanceLock(t *testing.T) {
+	t.Setenv("devserver", "")
+
 	var assets fs.FS = fstest.MapFS{}
 	opts := newWailsOptionsForDataDir(app.NewApp(), assets, "darwin", "/tmp/agentre-test")
 	if opts.SingleInstanceLock == nil {
@@ -33,4 +35,26 @@ func TestNewWailsOptionsConfiguresSingleInstanceLock(t *testing.T) {
 	if opts.SingleInstanceLock.OnSecondInstanceLaunch == nil {
 		t.Fatal("OnSecondInstanceLaunch is nil")
 	}
+}
+
+func TestNewWailsOptionsOmitsSingleInstanceLockInWailsDev(t *testing.T) {
+	t.Run("Given Wails dev sets devserver When options are built Then single instance lock is disabled", func(t *testing.T) {
+		t.Setenv("devserver", "localhost:34115")
+
+		var assets fs.FS = fstest.MapFS{}
+		opts := newWailsOptionsForDataDir(app.NewApp(), assets, "darwin", "/tmp/agentre-test")
+		if opts.SingleInstanceLock != nil {
+			t.Fatal("SingleInstanceLock should be nil in Wails dev mode")
+		}
+	})
+
+	t.Run("Given devserver is blank When options are built Then single instance lock remains enabled", func(t *testing.T) {
+		t.Setenv("devserver", " \t ")
+
+		var assets fs.FS = fstest.MapFS{}
+		opts := newWailsOptionsForDataDir(app.NewApp(), assets, "darwin", "/tmp/agentre-test")
+		if opts.SingleInstanceLock == nil {
+			t.Fatal("SingleInstanceLock should remain enabled when devserver is blank")
+		}
+	})
 }
