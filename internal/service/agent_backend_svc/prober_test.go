@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	. "github.com/smartystreets/goconvey/convey"
+
 	"github.com/cago-frame/agents/provider"
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/stretchr/testify/assert"
@@ -147,6 +149,19 @@ func (p *modelCapturingProvider) Model() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.seenModel
+}
+
+func TestBuildPiAgentProbeModel(t *testing.T) {
+	Convey("Given a pi-agent backend using ~/.pi/agent config", t, func() {
+		Convey("When testing with reasoning_effort, then Agentre leaves model empty so pi uses user defaultProvider/defaultModel and thinking stays separate", func() {
+			model := buildPiAgentProbeModel(&agent_backend_entity.AgentBackend{
+				Type:            string(agent_backend_entity.TypePiAgent),
+				ReasoningEffort: "high",
+			})
+
+			So(model, ShouldEqual, "")
+		})
+	})
 }
 
 func TestBuiltinProber_PassesProviderModelToAgent(t *testing.T) {

@@ -55,6 +55,9 @@
       },
       "codex": {
         "label": "Codex CLI"
+      },
+      "piagent": {
+        "label": "Pi Agent CLI"
       }
     },
     "cli": {
@@ -137,6 +140,9 @@
       "noneDescription": "请先到「LLM 供应商」页面新增一个，再回来配置后端。",
       "noneTitle": "暂无 LLM 供应商",
       "optionalSuffix": "· 可选",
+      "piAgentDescription": "Pi Agent 会读取本机 Pi 配置与认证，不关联 Agentre LLM Provider。",
+      "piAgentSource": "使用 ~/.pi/agent",
+      "piAgentTitle": "Pi Agent 独立配置",
       "placeholderOptional": "不关联（走 CLI 自身登录）",
       "placeholderRequired": "请选择 LLM 供应商",
       "selectProvider": "选择供应商",

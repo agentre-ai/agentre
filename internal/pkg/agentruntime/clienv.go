@@ -97,6 +97,22 @@ func BuildCodexEnv(b *agent_backend_entity.AgentBackend, deps CLIDeps) (map[stri
 	return env, nil
 }
 
+// BuildPiAgentEnv 装配 pi-agent 子进程环境变量：
+//   - 默认 PI_OFFLINE=1，避免桌面启动路径触发 update/network startup；
+//   - Pi 自行读取 ~/.pi/agent/models.json / settings.json / auth.json，不走 Agentre gateway；
+//   - 用户自定义 env_json 追加（保留键已被 entity.Check 拒入）。
+func BuildPiAgentEnv(b *agent_backend_entity.AgentBackend) (map[string]string, error) {
+	env := map[string]string{"PI_OFFLINE": "1"}
+	user, err := agent_backend_entity.ParseEnvJSON(b.EnvJSON)
+	if err != nil {
+		return nil, fmt.Errorf("parse env_json: %w", err)
+	}
+	for k, v := range user {
+		env[k] = v
+	}
+	return env, nil
+}
+
 // codexReasoningEffortConfigValue 把落库的 reasoning_effort 映射为 codex CLI 配置值。
 // codex 支持 low / medium / high / xhigh；entity 层允许的 max 在这里向下并到 high，
 // 让用户跨后端切换时不丢档位语义。off / 非法值（含大小写错、含空格）→ "" 表示不下发，

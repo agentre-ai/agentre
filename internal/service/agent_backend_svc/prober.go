@@ -13,6 +13,7 @@ import (
 	"agentre/internal/model/entity/agent_backend_entity"
 	"agentre/internal/pkg/agentprovider"
 	"agentre/internal/pkg/agentruntime"
+	"agentre/internal/pkg/cliprober"
 	"agentre/internal/repository/llm_provider_repo"
 )
 
@@ -21,7 +22,10 @@ import (
 // 默认注册表只包含 builtin in-process 路径；单测可临时替换这个包级 var
 // 验证 Test() 的 BackendType 派发。
 var proberRegistry = map[agent_backend_entity.BackendType]Prober{
-	agent_backend_entity.TypeBuiltin: builtinProber{},
+	agent_backend_entity.TypeBuiltin:    builtinProber{},
+	agent_backend_entity.TypeClaudeCode: cliProber{},
+	agent_backend_entity.TypeCodex:      cliProber{},
+	agent_backend_entity.TypePiAgent:    cliProber{},
 }
 
 // providerBuilder 是 agentprovider.Build 的间接引用，让单测能把 fake provider
@@ -99,6 +103,64 @@ func buildCodexEnv(b *agent_backend_entity.AgentBackend, deps ProbeDeps) (map[st
 		Token:      deps.Token,
 		GatewayURL: deps.GatewayURL,
 	})
+}
+
+// buildPiAgentEnv 委托到 agentruntime.BuildPiAgentEnv；同其它 CLI env builder。
+func buildPiAgentEnv(b *agent_backend_entity.AgentBackend) (map[string]string, error) {
+	return agentruntime.BuildPiAgentEnv(b)
+}
+
+// cliProber 通过 cliprober fork 对应 CLI 子进程跑固定 ping。
+type cliProber struct{}
+
+func (cliProber) Run(ctx context.Context, b *agent_backend_entity.AgentBackend, deps ProbeDeps) (string, error) {
+	if b == nil {
+		return "", errors.New("nil backend")
+	}
+	env, configs, err := buildCLIProbeEnv(b, deps)
+	if err != nil {
+		return "", err
+	}
+	model := deps.Model
+	if b.IsPiAgent() {
+		model = buildPiAgentProbeModel(b)
+	}
+	resp, err := cliprober.Probe(ctx, cliprober.ProbeRequest{
+		Type:         b.Type,
+		CLIPath:      b.CLIPath,
+		Sandbox:      b.Sandbox,
+		Approval:     b.Approval,
+		Model:        model,
+		Env:          env,
+		CodexConfigs: configs,
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Text, nil
+}
+
+func buildPiAgentProbeModel(*agent_backend_entity.AgentBackend) string {
+	return ""
+}
+
+func buildCLIProbeEnv(b *agent_backend_entity.AgentBackend, deps ProbeDeps) (map[string]string, []string, error) {
+	switch agent_backend_entity.BackendType(b.Type) {
+	case agent_backend_entity.TypeClaudeCode:
+		env, err := buildClaudeCodeEnv(b, deps)
+		return env, nil, err
+	case agent_backend_entity.TypeCodex:
+		env, err := buildCodexEnv(b, deps)
+		if err != nil {
+			return nil, nil, err
+		}
+		return env, agentruntime.BuildCodexConfig(agentruntime.CLIDeps{Token: deps.Token, GatewayURL: deps.GatewayURL}), nil
+	case agent_backend_entity.TypePiAgent:
+		env, err := buildPiAgentEnv(b)
+		return env, nil, err
+	default:
+		return nil, nil, errors.New("unsupported CLI backend")
+	}
 }
 
 // lastAssistantText 拼接末尾一条 assistant message 的所有 TextBlock 内容。

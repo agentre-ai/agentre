@@ -98,7 +98,7 @@ func (h *CLIHandlers) Probe(ctx context.Context, p CLIProbeParams) (CLIProbeResu
 	// 先做 backend type 合法性判断，免去后续 provider / gateway 调用都白跑。
 	bt := strings.TrimSpace(p.BackendType)
 	switch bt {
-	case string(agent_backend_entity.TypeClaudeCode), string(agent_backend_entity.TypeCodex):
+	case string(agent_backend_entity.TypeClaudeCode), string(agent_backend_entity.TypeCodex), string(agent_backend_entity.TypePiAgent):
 		// ok
 	default:
 		return CLIProbeResult{}, fmt.Errorf("invalid backend type: %q", p.BackendType)
@@ -149,6 +149,8 @@ func (h *CLIHandlers) Probe(ctx context.Context, p CLIProbeParams) (CLIProbeResu
 		if envErr == nil {
 			codexConfigs = agentruntime.BuildCodexConfig(deps)
 		}
+	case string(agent_backend_entity.TypePiAgent):
+		env, envErr = agentruntime.BuildPiAgentEnv(be)
 	}
 	if envErr != nil {
 		return CLIProbeResult{}, fmt.Errorf("env build: %w", envErr)

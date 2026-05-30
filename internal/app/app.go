@@ -15,6 +15,7 @@ import (
 	"agentre/internal/bootstrap"
 	"agentre/internal/buildinfo"
 	"agentre/internal/pkg/agentruntime"
+	_ "agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"agentre/internal/pkg/code"
 	"agentre/internal/service/chat_svc"
 	"agentre/internal/service/data_svc"

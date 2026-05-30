@@ -18,6 +18,7 @@ var ErrInvalidType = errors.New("cliprober: invalid backend type")
 var cliBinaryForType = map[string]string{
 	"claudecode": "claude",
 	"codex":      "codex",
+	"piagent":    "pi",
 }
 
 // ResolveCLIPath 在本机 $PATH 中查找 type 对应 binary 的绝对路径。

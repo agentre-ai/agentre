@@ -234,22 +234,23 @@ func TestCreateBackend(t *testing.T) {
 			assert.False(t, resp.Item.LLMProviderActive)
 		})
 
-		convey.Convey("codex 不关联供应商可成功创建", func() {
-			backendMock.EXPECT().FindByName(gomock.Any(), "cx").Return(nil, nil)
+		convey.Convey("pi-agent 不关联供应商可成功创建", func() {
+			backendMock.EXPECT().FindByName(gomock.Any(), "pi").Return(nil, nil)
 			backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
 				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
+					assert.Equal(t, string(agent_backend_entity.TypePiAgent), b.Type)
 					assert.Equal(t, "", b.LLMProviderKey)
-					b.ID = 46
+					b.ID = 47
 					return nil
 				})
 
 			resp, err := svc.Create(ctx, &CreateBackendRequest{
-				Type:           string(agent_backend_entity.TypeCodex),
-				Name:           "cx",
+				Type:           string(agent_backend_entity.TypePiAgent),
+				Name:           "pi",
 				LLMProviderKey: "",
 			})
 			assert.NoError(t, err)
-			assert.Equal(t, int64(46), resp.Item.ID)
+			assert.Equal(t, int64(47), resp.Item.ID)
 		})
 	})
 }
@@ -640,6 +641,7 @@ func spyAllTypes(seen *agent_backend_entity.BackendType) map[agent_backend_entit
 		agent_backend_entity.TypeBuiltin:    proberSpy{typ: agent_backend_entity.TypeBuiltin, seen: seen, reply: "pong"},
 		agent_backend_entity.TypeClaudeCode: proberSpy{typ: agent_backend_entity.TypeClaudeCode, seen: seen, reply: "pong"},
 		agent_backend_entity.TypeCodex:      proberSpy{typ: agent_backend_entity.TypeCodex, seen: seen, reply: "pong"},
+		agent_backend_entity.TypePiAgent:    proberSpy{typ: agent_backend_entity.TypePiAgent, seen: seen, reply: "pong"},
 	}
 }
 

@@ -55,6 +55,8 @@ func BuildLaunchCommand(spec LaunchCommandSpec) (string, error) {
 		return buildClaudeCodeShellCommand(spec, cwd)
 	case agent_backend_entity.TypeCodex:
 		return buildCodexShellCommand(spec, cwd)
+	case agent_backend_entity.TypePiAgent:
+		return buildPiAgentShellCommand(spec, cwd)
 	default:
 		return "", fmt.Errorf("agentruntime: backend %q has no shell command", spec.Backend.Type)
 	}

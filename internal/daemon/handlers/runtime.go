@@ -216,16 +216,15 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 		}
 	}
 	frame := runResultToFrame(sid, result)
+	row, _ := h.unregister(sid)
+	if row.gatewayToken != "" && h.deps.Gateway != nil {
+		h.deps.Gateway.RevokeToken(row.gatewayToken)
+	}
 	if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
 		log.Printf("runtime.runResultDone: notify failed sid=%d err=%v", sid, perr)
 	}
 	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
 		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
-
-	row, _ := h.unregister(sid)
-	if row.gatewayToken != "" && h.deps.Gateway != nil {
-		h.deps.Gateway.RevokeToken(row.gatewayToken)
-	}
 }
 
 // isNoisyEventKind 标记单 turn 内可能上百次出现的事件类型,逐条 log 会刷屏。

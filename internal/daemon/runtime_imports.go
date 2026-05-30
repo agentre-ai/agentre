@@ -12,4 +12,5 @@ import (
 	_ "agentre/internal/pkg/agentruntime/runtimes/builtin"
 	_ "agentre/internal/pkg/agentruntime/runtimes/claudecode"
 	_ "agentre/internal/pkg/agentruntime/runtimes/codex"
+	_ "agentre/internal/pkg/agentruntime/runtimes/piagent"
 )

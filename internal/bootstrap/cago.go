@@ -9,6 +9,7 @@ import (
 
 	"agentre/internal/model/entity/app_setting_entity"
 	"agentre/internal/pkg/agentruntime/runtimes/claudecode"
+	_ "agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"agentre/internal/pkg/httpgateway"
 	"agentre/internal/pkg/paths"
 	"agentre/internal/repository/agent_backend_repo"

@@ -29,6 +29,8 @@ const (
 	TypeClaudeCode BackendType = "claudecode"
 	// TypeCodex 包装本地 codex CLI（agentre/pkg/codex），默认走 OpenAI Responses API。
 	TypeCodex BackendType = "codex"
+	// TypePiAgent 包装本地 pi CLI（@earendil-works/pi-coding-agent RPC mode）。
+	TypePiAgent BackendType = "piagent"
 )
 
 // AgentBackend 一条 Agent 后端配置记录。
@@ -79,6 +81,10 @@ func (b *AgentBackend) IsClaudeCode() bool {
 
 func (b *AgentBackend) IsCodex() bool {
 	return b != nil && BackendType(b.Type) == TypeCodex
+}
+
+func (b *AgentBackend) IsPiAgent() bool {
+	return b != nil && BackendType(b.Type) == TypePiAgent
 }
 
 // IsLocal DeviceID 为空时为本地模式；nil receiver 返回 false。

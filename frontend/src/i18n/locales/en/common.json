@@ -55,6 +55,9 @@
       },
       "codex": {
         "label": "Codex CLI"
+      },
+      "piagent": {
+        "label": "Pi Agent CLI"
       }
     },
     "cli": {
@@ -137,6 +140,9 @@
       "noneDescription": "Add an LLM provider on the LLM Providers page first, then return to configure the backend.",
       "noneTitle": "No LLM providers",
       "optionalSuffix": "· Optional",
+      "piAgentDescription": "Pi Agent reads local Pi configuration and authentication. It is not linked to an Agentre LLM Provider.",
+      "piAgentSource": "Uses ~/.pi/agent",
+      "piAgentTitle": "Pi Agent standalone config",
       "placeholderOptional": "No link (use CLI login)",
       "placeholderRequired": "Select an LLM provider",
       "selectProvider": "Select provider",

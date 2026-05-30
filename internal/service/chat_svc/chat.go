@@ -40,6 +40,7 @@ import (
 	_ "agentre/internal/pkg/agentruntime/runtimes/builtin"
 	claudecodert "agentre/internal/pkg/agentruntime/runtimes/claudecode"
 	codexrt "agentre/internal/pkg/agentruntime/runtimes/codex"
+	_ "agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"agentre/internal/pkg/agentruntime/runtimes/remote"
 	"agentre/internal/pkg/code"
 	"agentre/internal/pkg/httpgateway"
@@ -261,7 +262,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 				} else {
 					item.ChattableHint = "请先在设置 → LLM 供应商激活该 Agent 后端关联的供应商"
 				}
-			case agent_backend_entity.TypeClaudeCode, agent_backend_entity.TypeCodex:
+			case agent_backend_entity.TypeClaudeCode, agent_backend_entity.TypeCodex, agent_backend_entity.TypePiAgent:
 				if be.LLMProviderKey == "" {
 					// 走 CLI 自身 login；这里不做可达性探测，启动失败由 chat turn 兜底报错。
 					item.Chattable = true
@@ -1218,7 +1219,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 		if prov == nil || !prov.IsActive() {
 			return nil, nil, nil, i18n.NewError(ctx, code.ChatAgentNotChattable)
 		}
-	case agent_backend_entity.TypeClaudeCode, agent_backend_entity.TypeCodex:
+	case agent_backend_entity.TypeClaudeCode, agent_backend_entity.TypeCodex, agent_backend_entity.TypePiAgent:
 		if be.LLMProviderKey != "" {
 			prov, err = llm_provider_repo.LLMProvider().FindByKey(ctx, be.LLMProviderKey)
 			if err != nil {
@@ -1891,6 +1892,8 @@ func (s *chatSvc) backendForkAnchor(
 		return anchor, nil
 	case agent_backend_entity.TypeCodex:
 		return s.codexRollbackAnchor(ctx, sess, userMsg)
+	case agent_backend_entity.TypePiAgent:
+		return "", i18n.NewError(ctx, code.ChatRegenerateUnsupported)
 	default:
 		runner := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
 		if _, ok := runner.(agentruntime.Rewinder); !ok {
@@ -2143,6 +2146,36 @@ func (s *chatSvc) markSessionRunning(ctx context.Context, sess *chat_entity.Sess
 			NeedsAttention: sess.NeedsAttention,
 		},
 	})
+}
+
+// persistSessionStatus 持久化 turn 收尾的 session 状态翻转(idle/error/waiting)：
+// 写失败时重试一次,仍失败则把错误返回出来 —— 不再像旧的 `_ = Update` 那样静默吞掉。
+//
+// 背景:状态写丢失会让会话永久停在 running(turn 其实已 finalize 成 idle),
+// 唯一兜底是下次启动 ResetActiveSessions 把残留 running 翻成 error。session 162
+// 正是 abort finalize 成 idle 后这一刀写库失败被 `_` 吞掉,结果 DB 卡在 running、
+// updatetime 停在写丢失之前。这里做到「重试 + 不静默」,并把真实失败原因(锁竞争 /
+// 收尾期连接关闭等)暴露到日志,便于后续定位根因。
+func (s *chatSvc) persistSessionStatus(ctx context.Context, sess *chat_entity.Session) error {
+	if sess == nil {
+		return nil
+	}
+	err := chat_repo.Session().Update(ctx, sess)
+	if err == nil {
+		return nil
+	}
+	logger.Ctx(ctx).Warn("chat_svc: session status persist failed, retrying",
+		zap.Int64("sessionId", sess.ID),
+		zap.String("agentStatus", sess.AgentStatus),
+		zap.Error(err))
+	if err := chat_repo.Session().Update(ctx, sess); err != nil {
+		logger.Ctx(ctx).Error("chat_svc: session status persist failed after retry",
+			zap.Int64("sessionId", sess.ID),
+			zap.String("agentStatus", sess.AgentStatus),
+			zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 func (s *chatSvc) runTurn(
@@ -2448,7 +2481,7 @@ func (s *chatSvc) runTurn(
 			sess.NeedsAttention = false
 		}
 	}
-	_ = chat_repo.Session().Update(finalCtx, sess)
+	_ = s.persistSessionStatus(finalCtx, sess)
 	// 诊断: 落库的最终(或自动接续中间态)agent_status。下面那段只在 error/waiting 时
 	// emit+log,idle 收尾历史上完全没日志 —— 这正是 agentre.log 里看不到 running→idle
 	// 翻转、排查「状态停在 running / 被过期快照盖回 idle」时无从对时间线的原因。这里补一条
@@ -2488,7 +2521,7 @@ func (s *chatSvc) runTurn(
 		nextUser, nextAssistant, payload, perr := s.persistAutoContinueTurn(finalCtx, sess, be, assistantMsg, assistantMsg.Model, pending)
 		if perr == nil {
 			s.emitter.Emit(finalCtx, stream, *payload)
-			if be.IsClaudeCode() || be.IsCodex() {
+			if be.IsClaudeCode() || be.IsCodex() || be.IsPiAgent() {
 				s.refreshPermissionModeForAutoContinue(finalCtx, sess)
 			}
 			// 同 goroutine + 同锁 + 同 stream 名递归跑下一轮：runTurn 内部
@@ -2513,7 +2546,7 @@ func (s *chatSvc) runTurn(
 		})
 		sess.AgentStatus = "idle"
 		sess.NeedsAttention = false
-		_ = chat_repo.Session().Update(finalCtx, sess)
+		_ = s.persistSessionStatus(finalCtx, sess)
 	}
 
 	final := chatMessageForEvent(sess, assistantMsg)

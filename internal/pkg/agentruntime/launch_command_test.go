@@ -247,6 +247,47 @@ func TestBuildLaunchCommand_CodexReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestBuildLaunchCommand_PiAgentWithThinking(t *testing.T) {
+	cwd := agentCwdFor(t, 44)
+
+	cmd, err := BuildLaunchCommand(LaunchCommandSpec{
+		Backend: &agent_backend_entity.AgentBackend{
+			Type:            string(agent_backend_entity.TypePiAgent),
+			Name:            "pi",
+			ReasoningEffort: "high",
+			EnvJSON:         `{"PI_CODING_AGENT_DIR":"/tmp/pi-agentre"}`,
+		},
+		AgentID: 44,
+	})
+	require.NoError(t, err)
+
+	assert.NotContains(t, cmd, "\n", "命令必须是单行")
+	assert.True(t, strings.HasPrefix(cmd, "cd '"+cwd+"' && "), "前缀应为 cd '<cwd>' && ，got %q", cmd)
+	assert.Contains(t, cmd, "PI_OFFLINE='1'")
+	assert.Contains(t, cmd, "PI_CODING_AGENT_DIR='/tmp/pi-agentre'")
+	assert.Contains(t, cmd, "pi --mode rpc --no-context-files --thinking high")
+	assert.NotContains(t, cmd, "--model", "pi backend should use the user's ~/.pi/agent default model unless explicitly configured")
+	assert.NotContains(t, cmd, "gpt-5.5:high", "thinking level should be passed only once")
+	assert.NotContains(t, cmd, "AGENTRE_GATEWAY_TOKEN")
+	assert.NotContains(t, cmd, "OPENAI_API_KEY")
+	assert.NotContains(t, cmd, "ANTHROPIC_AUTH_TOKEN")
+}
+
+func TestBuildLaunchCommand_PiAgentMaxThinkingClampsToXHigh(t *testing.T) {
+	_ = agentCwdFor(t, 45)
+	cmd, err := BuildLaunchCommand(LaunchCommandSpec{
+		Backend: &agent_backend_entity.AgentBackend{
+			Type:            string(agent_backend_entity.TypePiAgent),
+			Name:            "pi",
+			ReasoningEffort: "max",
+		},
+		AgentID: 45,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, cmd, "--thinking xhigh")
+	assert.NotContains(t, cmd, "--thinking max")
+}
+
 func TestBuildLaunchCommand_BuiltinRejected(t *testing.T) {
 	_ = agentCwdFor(t, 5)
 	_, err := BuildLaunchCommand(LaunchCommandSpec{

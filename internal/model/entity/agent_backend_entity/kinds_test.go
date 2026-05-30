@@ -19,7 +19,7 @@ func TestKindForReturnsCorrectKind(t *testing.T) {
 	}{
 		{"builtin", TypeBuiltin, TypeBuiltin, false},
 		{"claudecode", TypeClaudeCode, TypeClaudeCode, false},
-		{"codex", TypeCodex, TypeCodex, false},
+		{"piagent", TypePiAgent, TypePiAgent, false},
 		{"unknown", BackendType("foo"), "", true},
 	}
 	for _, tc := range cases {
@@ -51,6 +51,7 @@ func TestProviderTypeMatch(t *testing.T) {
 		{"codex rejects openai-chat", codexKind{}, llm_provider_entity.TypeOpenAIChat, false},
 		{"codex matches openai-response", codexKind{}, llm_provider_entity.TypeOpenAIResponse, true},
 		{"codex rejects anthropic", codexKind{}, llm_provider_entity.TypeAnthropic, false},
+		{"piagent rejects anthropic", piAgentKind{}, llm_provider_entity.TypeAnthropic, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,12 +64,14 @@ func TestKnownAliases(t *testing.T) {
 	assert.Empty(t, builtinKind{}.KnownAliases())
 	assert.Equal(t, []string{"OPUS", "SONNET", "HAIKU"}, claudeCodeKind{}.KnownAliases())
 	assert.Empty(t, codexKind{}.KnownAliases())
+	assert.Empty(t, piAgentKind{}.KnownAliases())
 }
 
 func TestAllowsCLIPath(t *testing.T) {
 	assert.False(t, builtinKind{}.AllowsCLIPath())
 	assert.True(t, claudeCodeKind{}.AllowsCLIPath())
 	assert.True(t, codexKind{}.AllowsCLIPath())
+	assert.True(t, piAgentKind{}.AllowsCLIPath())
 }
 
 func TestIsReservedEnvKey(t *testing.T) {
@@ -76,6 +79,8 @@ func TestIsReservedEnvKey(t *testing.T) {
 		key  string
 		want bool
 	}{
+		{"AGENTRE_GATEWAY_URL", true},
+		{"AGENTRE_GATEWAY_TOKEN", true},
 		{"ANTHROPIC_BASE_URL", true},
 		{"ANTHROPIC_API_KEY", true},
 		{"ANTHROPIC_AUTH_TOKEN", true},
@@ -86,6 +91,9 @@ func TestIsReservedEnvKey(t *testing.T) {
 		{"OPENAI_API_KEY", true},
 		{"OPENAI_BASE_URL", true},
 		{"OPENAI_API_BASE", true},
+		{"PI_OFFLINE", true},
+		{"PI_CODING_AGENT_DIR", true},
+		{"PI_CODING_AGENT_SESSION_DIR", true},
 		{"ANTHROPIC_LOG", false},
 		{"OPENAI_ORGANIZATION", false},
 		{"FOO", false},

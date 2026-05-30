@@ -9,6 +9,7 @@ import (
 
 	"agentre/pkg/claudecode"
 	"agentre/pkg/codex"
+	"agentre/pkg/piagent"
 )
 
 // ProbeRequest 调用方装配好的 CLI 子进程参数。Env 必须完整 —— 包括
@@ -40,6 +41,8 @@ func Probe(ctx context.Context, req ProbeRequest) (*ProbeResponse, error) {
 		return probeClaudeCode(ctx, req)
 	case "codex":
 		return probeCodex(ctx, req)
+	case "piagent":
+		return probePiAgent(ctx, req)
 	default:
 		return nil, ErrInvalidType
 	}
@@ -102,6 +105,26 @@ func formatCLIProberError(err error) (string, bool) {
 			msg = err.Error()
 		}
 		return "codex 进程退出: " + truncateStderr(msg), true
+	}
+	var px *piagent.ExitError
+	if errors.As(err, &px) {
+		inner := ""
+		if px.Err != nil {
+			inner = px.Err.Error()
+		}
+		code := -1
+		var ee *exec.ExitError
+		if errors.As(px.Err, &ee) {
+			code = ee.ExitCode()
+		}
+		if code >= 0 {
+			return formatExitDetail("piagent 进程", code, joinNonEmpty(inner, px.Stderr)), true
+		}
+		msg := strings.TrimSpace(joinNonEmpty(inner, px.Stderr))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "piagent 进程退出: " + truncateStderr(msg), true
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {

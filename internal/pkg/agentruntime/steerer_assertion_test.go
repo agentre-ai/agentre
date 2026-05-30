@@ -10,6 +10,7 @@ import (
 	_ "agentre/internal/pkg/agentruntime/runtimes/builtin"
 	_ "agentre/internal/pkg/agentruntime/runtimes/claudecode"
 	_ "agentre/internal/pkg/agentruntime/runtimes/codex"
+	_ "agentre/internal/pkg/agentruntime/runtimes/piagent"
 )
 
 // TestAllRegisteredRunnersImplementSteerer 守护契约:每个 backend type 注册的
@@ -20,6 +21,7 @@ func TestAllRegisteredRunnersImplementSteerer(t *testing.T) {
 		agent_backend_entity.TypeBuiltin,
 		agent_backend_entity.TypeClaudeCode,
 		agent_backend_entity.TypeCodex,
+		agent_backend_entity.TypePiAgent,
 	} {
 		r := agentruntime.RuntimeFor(bt)
 		if r == nil {

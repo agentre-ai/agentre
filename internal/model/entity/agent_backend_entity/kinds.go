@@ -42,6 +42,7 @@ var backendKinds = map[BackendType]BackendKind{
 	TypeBuiltin:    builtinKind{},
 	TypeClaudeCode: claudeCodeKind{},
 	TypeCodex:      codexKind{},
+	TypePiAgent:    piAgentKind{},
 }
 
 // KindFor 查表，找不到返 nil。Service 在 Test/Create/Update 前用它分派 Prober。
@@ -56,6 +57,8 @@ func KindFor(t BackendType) BackendKind {
 // 用户在 env_json 里设置以下键将被 entity.Check 拒绝（AgentBackendReservedEnvKey）；
 // 其它 ANTHROPIC_* / OPENAI_* 键（如 ANTHROPIC_LOG）可自由覆盖。
 var reservedEnvKeys = map[string]struct{}{
+	"AGENTRE_GATEWAY_URL":            {},
+	"AGENTRE_GATEWAY_TOKEN":          {},
 	"ANTHROPIC_BASE_URL":             {},
 	"ANTHROPIC_API_KEY":              {},
 	"ANTHROPIC_AUTH_TOKEN":           {},
@@ -66,6 +69,9 @@ var reservedEnvKeys = map[string]struct{}{
 	"OPENAI_API_KEY":                 {},
 	"OPENAI_BASE_URL":                {},
 	"OPENAI_API_BASE":                {},
+	"PI_OFFLINE":                     {},
+	"PI_CODING_AGENT_DIR":            {},
+	"PI_CODING_AGENT_SESSION_DIR":    {},
 }
 
 // IsReservedEnvKey 提供给 service / 前端预校验。
@@ -146,6 +152,28 @@ func (codexKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
 	// default_permission_mode 是 claudecode 专属字段；codex 自有 sandbox/approval 通道，
 	// 不复用该字段。
 	if strings.TrimSpace(b.DefaultPermissionMode) != "" {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	return nil
+}
+
+// piAgentKind 走 Pi coding agent RPC mode。Pi 自己读取 ~/.pi/agent 的模型与认证配置，
+// Agentre 不把它绑定到 LLMProvider gateway。
+type piAgentKind struct{}
+
+func (piAgentKind) Type() BackendType      { return TypePiAgent }
+func (piAgentKind) KnownAliases() []string { return nil }
+func (piAgentKind) ProviderTypeMatch(llm_provider_entity.ProviderType) bool {
+	return false
+}
+func (piAgentKind) AllowsCLIPath() bool { return true }
+
+func (piAgentKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
+	if strings.TrimSpace(b.LLMProviderKey) != "" ||
+		!isEmptyJSONObject(b.ModelRoutes) ||
+		strings.TrimSpace(b.Sandbox) != "" ||
+		strings.TrimSpace(b.Approval) != "" ||
+		strings.TrimSpace(b.DefaultPermissionMode) != "" {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
 	return nil
