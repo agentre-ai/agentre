@@ -36,6 +36,7 @@ type AgentBackendSvc interface {
 	Test(ctx context.Context, req *TestBackendRequest) (*TestBackendResponse, error)
 	CancelTest(ctx context.Context, req *CancelTestBackendRequest) (*CancelTestBackendResponse, error)
 	ResolveCLIPath(ctx context.Context, req *ResolveCLIPathRequest) (*ResolveCLIPathResponse, error)
+	ScanAndCreateAgentBackends(ctx context.Context, req *ScanAndCreateAgentBackendsRequest) (*ScanAndCreateAgentBackendsResponse, error)
 }
 
 type agentBackendSvc struct {

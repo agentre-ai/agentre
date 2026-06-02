@@ -12,7 +12,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/agent_entity"
 	"agentre/internal/model/entity/llm_provider_entity"
 	"agentre/internal/pkg/httpgateway"
 	"agentre/internal/repository/agent_backend_repo"
@@ -328,7 +327,7 @@ func TestUpdateBackend(t *testing.T) {
 
 func TestDeleteBackend(t *testing.T) {
 	convey.Convey("Delete Agent backend", t, func() {
-		ctx, backendMock, _, agentMock, _, svc := setupSvcTest(t)
+		ctx, backendMock, _, _, _, svc := setupSvcTest(t)
 
 		convey.Convey("成功软删", func() {
 			backendMock.EXPECT().Find(gomock.Any(), int64(3)).Return(

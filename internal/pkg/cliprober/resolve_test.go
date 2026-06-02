@@ -52,6 +52,48 @@ func TestResolveCLIPath_InvalidType(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestScanAllCLIs_ReturnsAllThreeTypes(t *testing.T) {
+	results := ScanAllCLIs()
+	require.Len(t, results, 3)
+
+	// Must be in sorted order.
+	assert.Equal(t, "claudecode", results[0].BackendType)
+	assert.Equal(t, "codex", results[1].BackendType)
+	assert.Equal(t, "piagent", results[2].BackendType)
+
+	// All must have correct binary names.
+	assert.Equal(t, "claude", results[0].BinaryName)
+	assert.Equal(t, "codex", results[1].BinaryName)
+	assert.Equal(t, "pi", results[2].BinaryName)
+
+	// At minimum Found/Path must be consistent: Found=true → Path != ""
+	for _, r := range results {
+		if r.Found {
+			assert.NotEmpty(t, r.Path, "%s: Found=true but Path is empty", r.BackendType)
+		} else {
+			assert.Empty(t, r.Path, "%s: Found=false but Path is %q", r.BackendType, r.Path)
+		}
+	}
+}
+
+func TestScanAllCLIs_FoundIsConsistentWithResolveCLIPath(t *testing.T) {
+	for _, bt := range []string{"claudecode", "codex", "piagent"} {
+		wantPath, wantFound, err := ResolveCLIPath(bt)
+		require.NoError(t, err)
+
+		results := ScanAllCLIs()
+		var got CLIProbeResult
+		for _, r := range results {
+			if r.BackendType == bt {
+				got = r
+				break
+			}
+		}
+		assert.Equal(t, wantFound, got.Found, "%s: Found mismatch", bt)
+		assert.Equal(t, wantPath, got.Path, "%s: Path mismatch", bt)
+	}
+}
+
 func TestResolveCLIPath_SkipAppBundleWrapper(t *testing.T) {
 	wrapperDir := filepath.Join(t.TempDir(), "Claude.app", "Contents", "MacOS")
 	require.NoError(t, os.MkdirAll(wrapperDir, 0o755))

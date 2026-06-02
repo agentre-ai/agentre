@@ -21,6 +21,33 @@ var cliBinaryForType = map[string]string{
 	"piagent":    "pi",
 }
 
+// CLIProbeResult 描述一次按类型在 $PATH 中查找 CLI binary 的结果。
+type CLIProbeResult struct {
+	BackendType string `json:"backendType"` // "claudecode" / "codex" / "piagent"
+	BinaryName  string `json:"binaryName"`  // "claude" / "codex" / "pi"
+	Path        string `json:"path"`        // 找到时的绝对路径
+	Found       bool   `json:"found"`
+}
+
+// ScanAllCLIs 遍历 cliprober 已知的全部 CLI 后端类型,逐个在 $PATH 中查找 binary。
+// 结果按 BackendType 排序,即使某个类型未找到也不报错(仅标记 Found=false)。
+// 调用方可根据 Found 字段决定是否创建 backend 记录。
+func ScanAllCLIs() []CLIProbeResult {
+	types := []string{"claudecode", "codex", "piagent"}
+	results := make([]CLIProbeResult, 0, len(types))
+	for _, bt := range types {
+		binary := cliBinaryForType[bt]
+		path, found := clienv.ResolveBinary(binary)
+		results = append(results, CLIProbeResult{
+			BackendType: bt,
+			BinaryName:  binary,
+			Path:        path,
+			Found:       found,
+		})
+	}
+	return results
+}
+
 // ResolveCLIPath 在本机 $PATH 中查找 type 对应 binary 的绝对路径。
 //
 // 行为:

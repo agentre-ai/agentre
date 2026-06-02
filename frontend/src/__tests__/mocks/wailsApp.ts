@@ -81,6 +81,10 @@ export const ResolveAgentBackendCLIPath = windowBackedMock(
   "ResolveAgentBackendCLIPath",
   () => Promise.resolve({ path: "", found: false }),
 );
+export const ScanAndCreateAgentBackends = windowBackedMock(
+  "ScanAndCreateAgentBackends",
+  () => Promise.resolve({ results: [] }),
+);
 export const GetGatewayStatus = windowBackedMock("GetGatewayStatus", () =>
   Promise.resolve({ status: "stopped", listenURL: "", reason: "", routes: [] }),
 );
