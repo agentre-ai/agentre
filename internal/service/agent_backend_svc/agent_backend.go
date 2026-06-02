@@ -371,13 +371,6 @@ func (s *agentBackendSvc) Delete(ctx context.Context, req *DeleteBackendRequest)
 	if existing == nil {
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
-	inUse, err := agent_repo.Agent().ListByBackend(ctx, existing.ID)
-	if err != nil {
-		return nil, err
-	}
-	if len(inUse) > 0 {
-		return nil, i18n.NewError(ctx, code.AgentBackendInUse)
-	}
 	if err := agent_backend_repo.AgentBackend().Delete(ctx, existing.ID); err != nil {
 		return nil, err
 	}

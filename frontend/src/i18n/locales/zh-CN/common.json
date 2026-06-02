@@ -518,7 +518,7 @@
   "chatPage": {
     "agents": "Agents",
     "notChattable": {
-      "defaultHint": "请先在组织架构页给该 Agent 绑定一个内置后端",
+      "defaultHint": "该 Agent 还没配置后端，请在组织架构页选择一个 Agent 后端",
       "message": "暂不可对话 — {{hint}}"
     },
     "search": {

@@ -609,8 +609,7 @@ function NewAgentDialogBody(props: NewAgentProps) {
 
   const canSubmit =
     name.trim().length > 0 &&
-    (parsedPlacement.departmentId > 0 || parsedPlacement.parentAgentId > 0) &&
-    backendId > 0;
+    (parsedPlacement.departmentId > 0 || parsedPlacement.parentAgentId > 0);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();

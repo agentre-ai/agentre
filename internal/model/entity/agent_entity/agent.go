@@ -129,9 +129,7 @@ func (a *Agent) Check(ctx context.Context) error {
 		if hasDepartment && hasParentAgent {
 			return i18n.NewError(ctx, code.InvalidParameter)
 		}
-		if a.AgentBackendID <= 0 {
-			return i18n.NewError(ctx, code.AgentBackendRequired)
-		}
+		// AgentBackendID == 0 表示"未配置后端"，对话时引导用户选择即可。
 	}
 
 	if !isValidJSONArray(a.PromptJSON) {

@@ -20,7 +20,7 @@ func TestAgentCheck(t *testing.T) {
 		{"invalid avatar color", &Agent{Name: "x", AvatarColor: "rainbow", DepartmentID: 1, AgentBackendID: 1}, true},
 		{"non-system missing placement", &Agent{Name: "x", AgentBackendID: 1}, true},
 		{"non-system with both department and parent", &Agent{Name: "x", DepartmentID: 1, ParentAgentID: 2, AgentBackendID: 1}, true},
-		{"non-system missing backend", &Agent{Name: "x", DepartmentID: 1}, true},
+		{"non-system without backend ok", &Agent{Name: "x", DepartmentID: 1}, false},
 		{"non-system happy", &Agent{Name: "Eva", AvatarColor: "agent-2", DepartmentID: 1, AgentBackendID: 1, PromptJSON: "[]", SkillsJSON: "[]"}, false},
 		{"non-system extended color happy", &Agent{Name: "Eva", AvatarColor: "agent-10", DepartmentID: 1, AgentBackendID: 1, PromptJSON: "[]", SkillsJSON: "[]"}, false},
 		{"non-system parent agent happy", &Agent{Name: "Eva", AvatarColor: "agent-2", ParentAgentID: 1, AgentBackendID: 1, PromptJSON: "[]", SkillsJSON: "[]"}, false},
