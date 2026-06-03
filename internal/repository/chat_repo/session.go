@@ -17,6 +17,8 @@ import (
 
 type SessionRepo interface {
 	Find(ctx context.Context, id int64) (*chat_entity.Session, error)
+	// FindByGroupAndAgent 查某 agent 在某群的 active backing session, 无则返回 nil。
+	FindByGroupAndAgent(ctx context.Context, groupID, agentID int64) (*chat_entity.Session, error)
 	ListByAgent(ctx context.Context, agentID int64, limit int) ([]*chat_entity.Session, error)
 	ListByAgentPaged(ctx context.Context, agentID int64, offset, limit int) ([]*chat_entity.Session, error)
 	ListIDsByAgents(ctx context.Context, agentIDs []int64) (map[int64][]int64, error)
@@ -72,6 +74,18 @@ func (r *sessionRepo) Find(ctx context.Context, id int64) (*chat_entity.Session,
 		return nil, err
 	}
 	out.ApplyDerivedFields()
+	return out, nil
+}
+
+func (r *sessionRepo) FindByGroupAndAgent(ctx context.Context, groupID, agentID int64) (*chat_entity.Session, error) {
+	out := &chat_entity.Session{}
+	err := db.Ctx(ctx).Where("group_id = ? AND agent_id = ? AND status = ?", groupID, agentID, consts.ACTIVE).First(out).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 

@@ -94,6 +94,9 @@ type ChatSvc interface {
 	AnswerUserQuestion(ctx context.Context, req *AnswerUserQuestionRequest) (*AnswerUserQuestionResponse, error)
 	AnswerToolPermission(ctx context.Context, req *AnswerToolPermissionRequest) (*AnswerToolPermissionResponse, error)
 	ResolvePlanAction(ctx context.Context, req *ResolvePlanActionRequest) (*ResolvePlanActionResponse, error)
+	// EnsureGroupMemberSession 创建/返回某 agent 在指定群的 backing session(带 group_id)。
+	// 幂等: 同 (groupID, agentID) 的 active session 已存在则复用。
+	EnsureGroupMemberSession(ctx context.Context, agentID, projectID, groupID int64) (int64, error)
 }
 
 var defaultChat ChatSvc
@@ -3280,4 +3283,39 @@ func (s *chatSvc) selectRunner(ctx context.Context, be *agent_backend_entity.Age
 		return r, nil
 	}
 	return s.borrowRemoteRuntime(ctx, be, sessionID)
+}
+
+// EnsureGroupMemberSession 创建/返回某 agent 在指定群的 backing session(带 group_id)。
+// 幂等: 同 (groupID, agentID) 的 active session 已存在则复用。
+func (s *chatSvc) EnsureGroupMemberSession(ctx context.Context, agentID, projectID, groupID int64) (int64, error) {
+	if agentID <= 0 || groupID <= 0 {
+		return 0, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	existing, err := chat_repo.Session().FindByGroupAndAgent(ctx, groupID, agentID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.EnsureGroupMemberSession: find failed",
+			zap.Int64("agentId", agentID),
+			zap.Int64("groupId", groupID),
+			zap.Error(err))
+		return 0, i18n.NewError(ctx, code.OperationFailed)
+	}
+	if existing != nil {
+		return existing.ID, nil
+	}
+	sess := &chat_entity.Session{
+		AgentID:   agentID,
+		ProjectID: projectID,
+		GroupID:   groupID,
+		// Title intentionally empty: 群成员 backing session 无首条用户消息, 标题由群聊层展示。
+		AgentStatus: "idle",
+		Status:      consts.ACTIVE,
+	}
+	if err := chat_repo.Session().Create(ctx, sess); err != nil {
+		logger.Ctx(ctx).Error("chat_svc.EnsureGroupMemberSession: create failed",
+			zap.Int64("agentId", agentID),
+			zap.Int64("groupId", groupID),
+			zap.Error(err))
+		return 0, i18n.NewError(ctx, code.OperationFailed)
+	}
+	return sess.ID, nil
 }
