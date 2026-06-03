@@ -10,6 +10,7 @@ const (
 	EventPreToolUse      EventKind = "pre_tool_use"
 	EventPostToolUse     EventKind = "post_tool_use"
 	EventUsage           EventKind = "usage"
+	EventContextWindow   EventKind = "context_window"
 	EventCompactBoundary EventKind = "compact_boundary"
 	EventRuntimeStatus   EventKind = "runtime_status"
 	// EventUserMessage Pi 把用户消息（首条 prompt 或 mid-turn steer 注入）回显
@@ -21,13 +22,14 @@ const (
 )
 
 type Event struct {
-	Kind      EventKind
-	Text      string
-	Tool      ToolEvent
-	Usage     provider.Usage
-	Model     string
-	SessionID string
-	Err       error
+	Kind          EventKind
+	Text          string
+	Tool          ToolEvent
+	Usage         provider.Usage
+	Model         string
+	ContextWindow int
+	SessionID     string
+	Err           error
 }
 
 type ToolEvent struct {

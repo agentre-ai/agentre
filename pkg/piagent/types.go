@@ -56,6 +56,14 @@ type usageWire struct {
 	Cost       *costWire `json:"cost,omitempty"`
 }
 
+type sessionStatsWire struct {
+	ContextUsage *contextUsageWire `json:"contextUsage,omitempty"`
+}
+
+type contextUsageWire struct {
+	ContextWindow int `json:"contextWindow"`
+}
+
 type costWire struct {
 	Total float64 `json:"total"`
 }

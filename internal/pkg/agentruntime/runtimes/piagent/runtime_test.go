@@ -22,6 +22,7 @@ func TestPiAgentCapabilities(t *testing.T) {
 			So(caps.Has(capability.CapAbort), ShouldBeTrue)
 			So(caps.Has(capability.CapImageInput), ShouldBeTrue)
 			So(caps.Has(capability.CapCompact), ShouldBeTrue)
+			So(caps.Has(capability.CapReportContextWindow), ShouldBeTrue)
 			So(caps.Has(capability.CapSetPermission), ShouldBeFalse)
 			So(caps.Has(capability.CapCancelSteer), ShouldBeFalse)
 			So(caps.Has(capability.CapDrainSteer), ShouldBeFalse)
@@ -82,6 +83,29 @@ func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 	})
 }
 
+func TestRun_ClosesSessionAfterDrain(t *testing.T) {
+	Convey("Given a pi-agent session", t, func() {
+		sess := &fakeSession{stream: &emptyStream{}, sid: "pi-session"}
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+			return sess, nil
+		})
+		defer restore()
+
+		Convey("When Run drains Then the session is closed", func() {
+			events, _, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			So(sess.closed, ShouldBeTrue)
+		})
+	})
+}
+
 func TestRun_ForwardsUserBlockImagesToStream(t *testing.T) {
 	Convey("Given a pi-agent turn carrying an inline image block", t, func() {
 		sess := &fakeSession{stream: &emptyStream{}, sid: "pi-session"}
@@ -117,9 +141,10 @@ type fakeSession struct {
 	gotImages  []pkgpiagent.Image
 	gotPrompt  string
 	streamCall int
+	closed     bool
 }
 
-func (s *fakeSession) Close(context.Context) error { return nil }
+func (s *fakeSession) Close(context.Context) error { s.closed = true; return nil }
 func (s *fakeSession) ID() string                  { return s.sid }
 func (s *fakeSession) Stream(_ context.Context, prompt, _ string, images []pkgpiagent.Image) (stream, error) {
 	s.streamCall++

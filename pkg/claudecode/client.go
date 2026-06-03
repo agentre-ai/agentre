@@ -2,7 +2,6 @@ package claudecode
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -76,12 +75,10 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 		return nil, err
 	}
 
-	// stdin 喂一个 user frame：与 cago 协议保持一致。
-	frame := map[string]any{
-		"type":    "user",
-		"message": map[string]any{"role": "user", "content": []map[string]any{{"type": "text", "text": prompt}}},
-	}
-	enc, err := json.Marshal(frame)
+	// stdin 喂一个 user frame：与 cago 协议保持一致。一次性 Stream 是 probe /
+	// 简单问答路径,不接受图片;buildUserFrame 收到 nil images → text-only frame,
+	// 与历史实现字节级一致。
+	enc, err := buildUserFrame(prompt, nil)
 	if err != nil {
 		_ = p.stdin.Close()
 		_, _ = p.wait(ctx)

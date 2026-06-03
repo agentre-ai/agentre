@@ -42,3 +42,39 @@ func TestStreamEmitsSingleToolCallPerExecution(t *testing.T) {
 	require.Len(t, post, 1)
 	assert.Equal(t, "hi", post[0].Tool.Content)
 }
+
+// Pi can emit agent_end after an assistant message whose stopReason is
+// toolUse. That frame only closes the current model/tool sub-step; the RPC
+// stream may continue with tool results and another assistant message. Agentre
+// must not treat that intermediate agent_end as terminal, otherwise long Pi
+// turns stop after every tool batch and the user has to send "continue".
+func TestStreamContinuesAfterToolUseAgentEnd(t *testing.T) {
+	script := strings.Join([]string{
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","toolCall":{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}}}`,
+		`{"type":"tool_execution_start","toolCallId":"call_1","toolName":"bash","args":{"command":"echo hi"}}`,
+		`{"type":"tool_execution_end","toolCallId":"call_1","toolName":"bash","result":{"content":[{"type":"text","text":"hi"}]},"isError":false}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}],"stopReason":"toolUse"}]}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"done"}}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}`,
+		"",
+	}, "\n")
+	client, _ := newCaptureClient(script)
+
+	s, err := client.Stream(context.Background(), "run echo")
+	require.NoError(t, err)
+
+	var text string
+	var done bool
+	for s.Next() {
+		switch s.Event().Kind {
+		case EventTextDelta:
+			text += s.Event().Text
+		case EventDone:
+			done = true
+		}
+	}
+
+	assert.Equal(t, "done", text)
+	assert.True(t, done)
+}

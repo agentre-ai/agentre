@@ -73,6 +73,19 @@ func TestTranslate_Usage(t *testing.T) {
 	assert.Equal(t, 3, update.Usage.CompletionTokens)
 }
 
+func TestTranslate_ContextWindow(t *testing.T) {
+	out, usage, err := translate(pkgpi.Event{Kind: pkgpi.EventContextWindow, ContextWindow: 200000})
+	require.NoError(t, err)
+	require.Nil(t, usage)
+	require.Len(t, out, 1)
+	assert.Equal(t, agentruntime.ContextWindowUpdated{Tokens: 200000}, out[0])
+
+	out, usage, err = translate(pkgpi.Event{Kind: pkgpi.EventContextWindow})
+	require.NoError(t, err)
+	require.Nil(t, usage)
+	assert.Empty(t, out)
+}
+
 func TestTranslate_RuntimeStatusAndCompactBoundary(t *testing.T) {
 	out, usage, err := translate(pkgpi.Event{Kind: pkgpi.EventRuntimeStatus, Text: "compacting"})
 	require.NoError(t, err)

@@ -198,11 +198,13 @@ vi.mock("../permission-mode", async () => {
 // 模拟"turn 中不允许切 mode"行为(原走 backendType === 'codex' 硬分支)。
 // 真实 hook 在 sessionId<=0 时返 null caps;桩同样按真实行为返 null,让"新对话"
 // 路径走 useBackendCapabilities 分支。
-function makeCapsStub() {
+function makeCapsStub(backendType?: string | null) {
+  const supportsCompact = backendType === "codex" || backendType === "piagent";
   return {
     has: (c: string) =>
       c === "set_permission_mode" ||
-      (c === "image_input" && componentMocks.capsImageInput),
+      (c === "image_input" && componentMocks.capsImageInput) ||
+      (c === "compact" && supportsCompact),
     permissionModeMeta: {
       allowedModes: componentMocks.capsAllowedModes,
       defaultMode: "default",
@@ -214,7 +216,10 @@ function makeCapsStub() {
 
 vi.mock("../capability/use-session-capabilities", () => ({
   useSessionCapabilities: (sessionId?: number | null) => ({
-    caps: sessionId && sessionId > 0 ? makeCapsStub() : null,
+    caps:
+      sessionId && sessionId > 0
+        ? makeCapsStub(String(mockSessionStore.session?.backendType ?? ""))
+        : null,
   }),
 }));
 
@@ -222,7 +227,7 @@ vi.mock("../capability/use-session-capabilities", () => ({
 // 让 PermissionModePill 在首发前就能渲染。
 vi.mock("../capability/use-backend-capabilities", () => ({
   useBackendCapabilities: (backendType?: string | null) => ({
-    caps: backendType ? makeCapsStub() : null,
+    caps: backendType ? makeCapsStub(backendType) : null,
   }),
 }));
 
@@ -696,41 +701,44 @@ describe("ChatPanel · Codex collaboration mode", () => {
     ).toBeInTheDocument();
   });
 
-  it("exact /compact starts Codex compact RPC instead of sending a user message", async () => {
-    resetStore();
-    componentMocks.capsSwitchableDuringTurn = false;
-    componentMocks.capsAllowedModes = ["default", "plan"];
-    mockSessionStore.session = makeSession({
-      backendType: "codex",
-      id: 42,
-      permissionMode: "default",
-    });
-    appMocks.CompactChatSession.mockResolvedValue({
-      assistantMessageId: 1001,
-      sessionId: 42,
-      stream: "chat:event:42:1001",
-    });
-
-    render(<ChatPanel sessionId={42} />);
-    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
-      | ((text: string) => void)
-      | undefined;
-    expect(submit).toBeDefined();
-
-    act(() => {
-      submit?.("/compact");
-    });
-
-    await waitFor(() => {
-      expect(appMocks.CompactChatSession).toHaveBeenCalledWith({
-        sessionId: 42,
+  it.each(["codex", "piagent"])(
+    "exact /compact starts %s compact RPC instead of sending a user message",
+    async (backendType) => {
+      resetStore();
+      componentMocks.capsSwitchableDuringTurn = false;
+      componentMocks.capsAllowedModes = ["default", "plan"];
+      mockSessionStore.session = makeSession({
+        backendType,
+        id: 42,
+        permissionMode: "default",
       });
-    });
-    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
-    expect(useChatStreamsStore.getState().streams.get(42)?.name).toBe(
-      "chat:event:42:1001",
-    );
-  });
+      appMocks.CompactChatSession.mockResolvedValue({
+        assistantMessageId: 1001,
+        sessionId: 42,
+        stream: "chat:event:42:1001",
+      });
+
+      render(<ChatPanel sessionId={42} />);
+      const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+        | ((text: string) => void)
+        | undefined;
+      expect(submit).toBeDefined();
+
+      act(() => {
+        submit?.("/compact");
+      });
+
+      await waitFor(() => {
+        expect(appMocks.CompactChatSession).toHaveBeenCalledWith({
+          sessionId: 42,
+        });
+      });
+      expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+      expect(useChatStreamsStore.getState().streams.get(42)?.name).toBe(
+        "chat:event:42:1001",
+      );
+    },
+  );
 
   it("rejects exact /compact when image attachments are present", async () => {
     resetStore();
@@ -1011,6 +1019,38 @@ describe("ChatPanel · doSend error surfacing", () => {
 });
 
 describe("ChatPanel · launch command copy feedback", () => {
+  it("Given the backend is Pi Agent, When the menu opens, Then copy launch command is available", async () => {
+    const user = userEvent.setup();
+    resetStore();
+    mockSessionStore.session = makeSession({
+      backendType: "piagent",
+      id: 42,
+      title: "Pi turn",
+    });
+
+    render(<ChatPanel sessionId={42} />);
+
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+
+    expect(await screen.findByText("Copy Launch Command")).toBeInTheDocument();
+  });
+
+  it("Given the backend is built-in, When the menu opens, Then copy launch command is unavailable", async () => {
+    const user = userEvent.setup();
+    resetStore();
+    mockSessionStore.session = makeSession({
+      backendType: "builtin",
+      id: 42,
+      title: "Built-in turn",
+    });
+
+    render(<ChatPanel sessionId={42} />);
+
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+
+    expect(screen.queryByText("Copy Launch Command")).not.toBeInTheDocument();
+  });
+
   it("Given the launch command is copied, When the user selects the copy action, Then feedback appears as a timed bottom-right Sonner toast", async () => {
     const user = userEvent.setup();
     resetStore();

@@ -142,7 +142,7 @@ func (s *Session) SessionID() string { return s.sessionID }
 //
 // 并发约束：同一时刻只能有一个 Turn 在飞。第二个 Turn 调用会阻塞直到上一个 Turn
 // 的事件 channel 被完全 drain（result 帧出现 → goroutine 关 channel → 释放 mu）。
-func (s *Session) Turn(ctx context.Context, prompt string) (<-chan Event, error) {
+func (s *Session) Turn(ctx context.Context, prompt string, images ...Image) (<-chan Event, error) {
 	s.turnMu.Lock() // 抢 turn slot —— 上一个 turn 没收尾不让进
 	// 防御性清当前 turn 的瞬态：正常情况下 parseLine 看到 result 帧时会清
 	// lastAssistantUsage；但 ctx 取消 / scanner EOF 出现在 result 之前时，
@@ -156,11 +156,8 @@ func (s *Session) Turn(ctx context.Context, prompt string) (<-chan Event, error)
 		return nil, errors.New("claudecode: session closed")
 	}
 
-	frame := map[string]any{
-		"type":    "user",
-		"message": map[string]any{"role": "user", "content": []map[string]any{{"type": "text", "text": prompt}}},
-	}
-	enc, err := json.Marshal(frame)
+	// images 非空时 user frame 携带 base64 image content block(图片在前,文本在后)。
+	enc, err := buildUserFrame(prompt, images)
 	if err != nil {
 		s.stdinMu.Unlock()
 		s.turnMu.Unlock()

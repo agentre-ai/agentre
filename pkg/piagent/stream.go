@@ -110,7 +110,7 @@ func (s *Stream) drain(ctx context.Context) {
 			}
 			// compact turn 不发 agent_end —— compact response 即终止信号。
 			if resp.Command == "compact" {
-				s.emit(Event{Kind: EventDone})
+				s.finish(ctx)
 				return
 			}
 			continue
@@ -125,8 +125,8 @@ func (s *Stream) drain(ctx context.Context) {
 			continue
 		}
 		s.handleRPCEvent(ev)
-		if isTerminalEvent(ev.Type) {
-			s.emit(Event{Kind: EventDone})
+		if isTerminalEvent(ev) {
+			s.finish(ctx)
 			return
 		}
 	}
@@ -134,6 +134,85 @@ func (s *Stream) drain(ctx context.Context) {
 		s.setErr(err)
 		s.emit(Event{Kind: EventError, Err: err})
 	}
+}
+
+func (s *Stream) finish(ctx context.Context) {
+	s.emitSessionStats(ctx)
+	s.emit(Event{Kind: EventDone})
+}
+
+const sessionStatsTimeout = 2 * time.Second
+
+func (s *Stream) emitSessionStats(ctx context.Context) {
+	if s == nil || s.proc == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	if err := s.send(ctx, map[string]any{"type": "get_session_stats"}); err != nil {
+		return
+	}
+
+	// get_session_stats 是增强信息，不能因为旧版/异常 Pi RPC 没有及时返回而卡住
+	// terminal Done。超时后 runtime 会照常结束 turn 并关闭进程，下面的扫描 goroutine
+	// 会随 stdout 关闭退出；它只写本地 buffered channel，不直接 emit，避免 late send 到
+	// 已关闭的 events channel。
+	resultC := make(chan int, 1)
+	go func() {
+		cw := s.readSessionStatsContextWindow()
+		select {
+		case resultC <- cw:
+		default:
+		}
+	}()
+
+	timer := time.NewTimer(sessionStatsTimeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+		return
+	case cw := <-resultC:
+		if cw > 0 {
+			s.emit(Event{Kind: EventContextWindow, ContextWindow: cw})
+		}
+	}
+}
+
+func (s *Stream) readSessionStatsContextWindow() int {
+	for s.proc.lines.Scan() {
+		line := strings.TrimSpace(s.proc.lines.Text())
+		if line == "" {
+			continue
+		}
+		var resp rpcResponse
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			continue
+		}
+		if resp.Type != "response" || resp.Command != "get_session_stats" {
+			continue
+		}
+		if !resp.Success {
+			return 0
+		}
+		return contextWindowFromSessionStats(resp.Data)
+	}
+	return 0
+}
+
+func contextWindowFromSessionStats(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var stats sessionStatsWire
+	if err := json.Unmarshal(raw, &stats); err != nil || stats.ContextUsage == nil {
+		return 0
+	}
+	return stats.ContextUsage.ContextWindow
 }
 
 func (s *Stream) handleRPCEvent(ev rpcEvent) {

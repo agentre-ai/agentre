@@ -36,8 +36,19 @@ type clientAdapter struct {
 	stream   *piagent.Stream
 }
 
-func (a *clientAdapter) ID() string                      { return a.sid }
-func (a *clientAdapter) Close(ctx context.Context) error { return a.client.Close(ctx) }
+func (a *clientAdapter) ID() string { return a.sid }
+func (a *clientAdapter) Close(ctx context.Context) error {
+	a.streamMu.Lock()
+	stream := a.stream
+	a.stream = nil
+	a.streamMu.Unlock()
+	if stream != nil {
+		if err := stream.Close(ctx); err != nil {
+			return err
+		}
+	}
+	return a.client.Close(ctx)
+}
 
 func (a *clientAdapter) Stream(ctx context.Context, prompt string, mode string, images []piagent.Image) (stream, error) {
 	// Resume 不在这里下发：会话复用走 Client 级 --session（WithSession），这里只

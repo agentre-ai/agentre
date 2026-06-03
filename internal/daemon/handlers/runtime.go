@@ -53,11 +53,17 @@ type RuntimeHandlers struct {
 	// SwapRuntimeFor (used by tests that need to flip the runtime registry
 	// after a session is already live).
 	runtimeFor func(agent_backend_entity.BackendType) agentruntime.Runtime
+	// sessionTokens 缓存每个 session 的常驻 gateway token(sessionID int64 → token string)。
+	// 该 token 在 spawn 时烤进 daemon spawn 的 claude 子进程 env,子进程跨轮复用时
+	// env 不重建 —— 所以 token 必须签成永久(ttl=0)、跨轮稳定、且 **不在轮末撤销**。
+	// 旧实现每轮签 time.Hour token 并在 fanout 轮末撤销,而子进程手里还是首轮那个
+	// (已撤销)token → 第二轮起 PostToolUse hook 撞 401、SteerInbox drain 不到。
+	// daemon 侧没有 session 关闭钩子,token 随 daemon 进程退出释放(内存级、有界)。
+	sessionTokens sync.Map
 }
 
 type runtimeSession struct {
-	backendType  agent_backend_entity.BackendType
-	gatewayToken string
+	backendType agent_backend_entity.BackendType
 }
 
 // NewRuntimeHandlers wires the dependencies and prepares the session map.
@@ -124,29 +130,23 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	}
 
 	var gatewayURL, gatewayToken string
-	if provider != nil && h.deps.Gateway != nil {
-		gatewayURL = h.deps.Gateway.URL()
-		if gatewayURL != "" {
-			tok, err := h.deps.Gateway.IssueToken(ctx, &be, time.Hour)
-			if err != nil {
-				return wire.RunAck{}, fmt.Errorf("gateway token: %w", err)
-			}
-			gatewayToken = tok
+	if provider != nil {
+		var terr error
+		// 会话级常驻 token:首轮签、后续轮复用同一个,**不在轮末撤销**(见
+		// sessionTokens 注释)。decode/Run 失败也不撤销 —— token 留着给下一轮重试复用,
+		// 没用上的也只是随 daemon 退出释放(有界)。
+		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, p.SessionID, &be)
+		if terr != nil {
+			return wire.RunAck{}, terr
 		}
 	}
 
 	history, err := decodeHistory(p.History)
 	if err != nil {
-		if gatewayToken != "" {
-			h.deps.Gateway.RevokeToken(gatewayToken)
-		}
 		return wire.RunAck{}, fmt.Errorf("decode history: %w", err)
 	}
 	userBlocks, err := decodeUserBlocks(p.UserBlocks)
 	if err != nil {
-		if gatewayToken != "" {
-			h.deps.Gateway.RevokeToken(gatewayToken)
-		}
 		return wire.RunAck{}, fmt.Errorf("decode user blocks: %w", err)
 	}
 
@@ -171,13 +171,10 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 
 	events, result, err := rt.Run(ctx, req)
 	if err != nil {
-		if gatewayToken != "" {
-			h.deps.Gateway.RevokeToken(gatewayToken)
-		}
 		return wire.RunAck{}, err
 	}
 
-	h.register(p.SessionID, runtimeSession{backendType: bt, gatewayToken: gatewayToken})
+	h.register(p.SessionID, runtimeSession{backendType: bt})
 	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
 		p.SessionID, be.Type, p.AgentID, p.Cwd, len(p.UserText))
 	go h.fanout(p.SessionID, events, result)
@@ -216,10 +213,10 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 		}
 	}
 	frame := runResultToFrame(sid, result)
-	row, _ := h.unregister(sid)
-	if row.gatewayToken != "" && h.deps.Gateway != nil {
-		h.deps.Gateway.RevokeToken(row.gatewayToken)
-	}
+	// 只清 active-turn 记录;**不撤销 gateway token** —— token 是会话级常驻,
+	// 跨轮复用,寿命跟随子进程(见 sessionTokens 注释),轮末撤销会让下一轮复用
+	// 的子进程手里 token 失效。
+	h.unregister(sid)
 	if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
 		log.Printf("runtime.runResultDone: notify failed sid=%d err=%v", sid, perr)
 	}
@@ -527,6 +524,38 @@ func (h *RuntimeHandlers) resolveSession(sid int64) (agentruntime.Runtime, error
 		return nil, agentruntime.ErrNoActiveTurn
 	}
 	return rt, nil
+}
+
+// ensureSessionToken 返回某 session 的 gateway URL + 常驻 token:首轮签一个永久
+// (ttl=0)token 并缓存,后续轮复用同一个。该 token 在 spawn 时烤进 claude 子进程
+// env,子进程跨轮复用时 env 不重建,所以必须整段会话稳定且永不过期 —— 否则下一轮
+// 复用的子进程手里的 token 失效,PostToolUse hook 撞 401、SteerInbox drain 不到。
+// Gateway 不可用 / URL 为空时返回空串,调用方按"不签"处理。
+func (h *RuntimeHandlers) ensureSessionToken(ctx context.Context, sid int64, be *agent_backend_entity.AgentBackend) (string, string, error) {
+	if h.deps.Gateway == nil {
+		return "", "", nil
+	}
+	url := h.deps.Gateway.URL()
+	if url == "" {
+		return "", "", nil
+	}
+	if sid > 0 {
+		if v, ok := h.sessionTokens.Load(sid); ok {
+			return url, v.(string), nil
+		}
+	}
+	tok, err := h.deps.Gateway.IssueToken(ctx, be, 0)
+	if err != nil {
+		return "", "", fmt.Errorf("gateway token: %w", err)
+	}
+	if sid > 0 {
+		// 并发首轮兜底:别的 goroutine 抢先签好就用它的,撤掉自己这条避免泄漏。
+		if actual, loaded := h.sessionTokens.LoadOrStore(sid, tok); loaded {
+			h.deps.Gateway.RevokeToken(tok)
+			return url, actual.(string), nil
+		}
+	}
+	return url, tok, nil
 }
 
 func (h *RuntimeHandlers) register(sid int64, row runtimeSession) {

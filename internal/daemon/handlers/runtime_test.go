@@ -525,6 +525,51 @@ func TestRuntime_Run_RuntimeReturnsErr_RevokesToken(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestRuntime_Run_WithProvider_ReusesPermanentTokenAcrossTurns pins the daemon
+// analog of the local "long session steer dies" fix: the gateway token is baked
+// into the persistent claude subprocess at spawn and reused across turns, so it
+// must be minted ONCE per session, be PERMANENT (ttl=0), and NEVER be revoked at
+// turn end. The old code minted a fresh time.Hour token every turn and revoked
+// it in fanout, leaving the reused subprocess holding a dead token from turn 2.
+func TestRuntime_Run_WithProvider_ReusesPermanentTokenAcrossTurns(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid"}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		ID:             3,
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "pk",
+	}
+	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+	}, nil).Times(2)
+	gw.EXPECT().URL().Return("http://gw").AnyTimes()
+	// ttl=0 (permanent), minted exactly once; NO RevokeToken EXPECT → gomock
+	// fails if anything revokes it (e.g. a leftover turn-end revoke).
+	gw.EXPECT().IssueToken(ctx, gomock.Any(), time.Duration(0)).Return("sess-token", nil).Times(1)
+
+	runOnce := func() {
+		_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42, UserText: "hi"})
+		require.NoError(t, err)
+		// Let the async fanout settle (session unregisters) before the next turn.
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			_, serr := h.Steer(ctx, wire.SteerParams{SessionID: 42, Text: "x"})
+			assert.ErrorIs(c, serr, agentruntime.ErrNoActiveTurn)
+		}, time.Second, 10*time.Millisecond)
+	}
+	runOnce() // turn 1 mints sess-token
+	runOnce() // turn 2 must reuse it
+
+	require.Len(t, rt.runReqs, 2)
+	assert.Equal(t, "sess-token", rt.runReqs[0].req.GatewayToken)
+	assert.Equal(t, "sess-token", rt.runReqs[1].req.GatewayToken, "turn 2 must reuse the same permanent token")
+}
+
 func TestRuntime_Run_StopErrAborted_RehydratesCode(t *testing.T) {
 	rt := &fullRT{}
 	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {

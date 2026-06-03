@@ -80,6 +80,9 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			// translator.EventInit 路径用 llmcatalog 兜底 emit ContextWindowUpdated;
 			// Claude Code SDK 协议本身不报窗口,这里靠 catalog 给前端 turn 内总量。
 			capability.CapReportContextWindow: true,
+			// user frame 携带 base64 image content block(CLI stream-json 原生支持);
+			// extractImages 从 RunRequest.UserBlocks 抽 inline 图片经 handle.Stream 透传。
+			capability.CapImageInput: true,
 		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},
@@ -94,7 +97,7 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 
 // Steer 把 (queuedID, text) 投入到当前 turn 对应的 claude session UUID 的
 // SteerInbox。语义同顶层 claudecode.go.Steer。
-func (r *Runtime) Steer(_ context.Context, sessionID int64, queuedID, text string) error {
+func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID, text string) error {
 	v, ok := r.cache.Get(sessionKey(sessionID))
 	if !ok {
 		return agentruntime.ErrNoActiveTurn
@@ -107,6 +110,13 @@ func (r *Runtime) Steer(_ context.Context, sessionID int64, queuedID, text strin
 		return errors.New("agentruntime/runtimes/claudecode: steer inbox not configured")
 	}
 	r.steer.Push(a.sessionUUID, queuedID, text)
+	// 诊断 steer 投递路径: 消息 push 进 inbox 的 key(inboxKey)。要和
+	// httpgateway.serveHookInbox 的 sid 完全一致, hook 才能在工具边界 drain 到。
+	// 不一致 → mid-turn 永远 drain 不到 → 只能等 turn 末 DrainPending。
+	logger.Ctx(ctx).Debug("claudecode runtime: steer enqueued to inbox",
+		zap.Int64("sessionID", sessionID),
+		zap.String("inboxKey", a.sessionUUID),
+		zap.String("queuedID", queuedID))
 	return nil
 }
 
@@ -149,7 +159,7 @@ func (r *Runtime) markIdle(sessionID int64) {
 
 // DrainPending 取走未消费的排队消息并清空,返非空时把 inTurn 重新置为 true
 // (关 markIdle→acquireSession 之间的 race 窗口)。语义同顶层 DrainPending。
-func (r *Runtime) DrainPending(_ context.Context, sessionID int64) []agentruntime.ConsumedSteer {
+func (r *Runtime) DrainPending(ctx context.Context, sessionID int64) []agentruntime.ConsumedSteer {
 	if sessionID <= 0 || r.steer == nil {
 		return nil
 	}
@@ -164,6 +174,13 @@ func (r *Runtime) DrainPending(_ context.Context, sessionID int64) []agentruntim
 	out := consumedSteersFromInbox(r.steer.Drain(a.sessionUUID))
 	if len(out) > 0 {
 		a.inTurn.Store(true)
+		// 诊断 steer "等整轮才发出去" 的烟枪: 走到这里 = 消息整轮都没被 PostToolUse
+		// hook drain 到(纯文字轮 / 子 agent 期 / 末工具之后发), 直到 turn 收尾才被
+		// 扫出来当下一轮 prompt。count>0 出现一次 = 用户体感的那次"延迟"。
+		logger.Ctx(ctx).Debug("claudecode runtime: steer drained at TURN END (was not delivered mid-turn)",
+			zap.Int64("sessionID", sessionID),
+			zap.String("inboxKey", a.sessionUUID),
+			zap.Int("count", len(out)))
 	}
 	return out
 }
@@ -240,7 +257,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		zap.String("launchPermissionMode", launchMode),
 		zap.String("providerSessionID", a.handle.ID()))
 
-	stream, err := a.handle.Stream(ctx, req.UserText)
+	stream, err := a.handle.Stream(ctx, req.UserText, extractImages(req.UserBlocks))
 	if err != nil {
 		logger.Ctx(ctx).Error("claudecode runtime: handle.Stream failed",
 			zap.Int64("sessionID", req.SessionID),

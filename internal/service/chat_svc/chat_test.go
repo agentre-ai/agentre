@@ -1520,12 +1520,64 @@ func TestCompact_CodexStartsCompactTurnWithoutUserMessage(t *testing.T) {
 	assert.True(t, sawCompactBoundary, "compact turn should emit compact boundary divider")
 }
 
+func TestCompact_PiAgentDoesNotRequireProviderSession(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	runner := &compactRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID:          100,
+		AgentID:     7,
+		AgentStatus: "idle",
+		Status:      consts.ACTIVE,
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), LLMProviderKey: "", EnvJSON: "{}", Status: consts.ACTIVE,
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(3, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			msg.ID = 1001
+			return nil
+		}).Times(1)
+	m.dbMock.ExpectCommit()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
+	assert.NoError(t, err)
+	assert.Equal(t, int64(100), resp.SessionID)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	select {
+	case req := <-runner.requests:
+		assert.True(t, req.Compact)
+		assert.Empty(t, req.ProviderSessionID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runtime request")
+	}
+}
+
 func TestCompact_RequiresCodexProviderSessionAndCapability(t *testing.T) {
 	t.Run("missing provider session", func(t *testing.T) {
 		m := setupChatTest(t)
 		ctx := context.Background()
 		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
 			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+		}, nil)
+		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
+			ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+		}, nil)
+		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
+			ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
 		}, nil)
 
 		_, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
@@ -3915,10 +3967,19 @@ func TestSend_Errors(t *testing.T) {
 			// providerBuilder doesn't race with the goroutine's read.
 			providerCalled := make(chan struct{})
 
-			// never-closing stream keeps the first turn "in flight"
+			releaseStream := make(chan struct{})
+			// controlled stream keeps the first turn "in flight" until this test
+			// has asserted the second Send failure, then closes so the goroutine
+			// cannot leak into following tests that replace the package-level repos.
 			fp := providertest.New().QueueStreamFunc(func(pCtx context.Context) <-chan provider.StreamChunk {
 				ch := make(chan provider.StreamChunk)
-				go func() { <-pCtx.Done(); close(ch) }()
+				go func() {
+					select {
+					case <-releaseStream:
+					case <-pCtx.Done():
+					}
+					close(ch)
+				}()
 				return ch
 			})
 			chat_svc.SetProviderBuilderForTest(func(p *llm_provider_entity.LLMProvider) (provider.Provider, error) {
@@ -3963,9 +4024,10 @@ func TestSend_Errors(t *testing.T) {
 
 			// List is called inside runTurn (before stream blocks), so mock it
 			m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 			// First Send — acquires lock, spawns goroutine that blocks on stream
-			_, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+			resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
 			assert.NoError(t, err)
 
 			// Second Send — TryLock fails immediately → ChatSendInFlight
@@ -3979,8 +4041,8 @@ func TestSend_Errors(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatal("timed out waiting for providerBuilder to be called")
 			}
-			// The in-flight goroutine is now blocked on the never-closing stream channel.
-			// The lock it holds will remain until process exit — acceptable for this test.
+			close(releaseStream)
+			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 		})
 	})
 }

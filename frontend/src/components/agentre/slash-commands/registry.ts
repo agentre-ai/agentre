@@ -5,9 +5,9 @@
 // 已知后端:
 //   - claudecode: CLI 自己识别 / 前缀,绝大多数命令都走 literal_text(把命令字符串
 //     当普通 user 文本送过去 SendChatMessage)。
-//   - codex: CLI 协议没有内置 slash command,但 chat-panel 的 onSubmit 会拦截
-//     `/compact` 文本转走 CompactChatSession RPC —— 所以这里也只需要 literal_text,
-//     用户从菜单选中只补全文字,真正分发由 Enter 走 chat-panel 完成。
+//   - codex / piagent: chat-panel 的 onSubmit 会拦截 `/compact` 文本转走
+//     CompactChatSession RPC —— 所以这里也只需要 literal_text,用户从菜单选中
+//     只补全文字,真正分发由 Enter 走 chat-panel 完成。
 //   - builtin / 其它: 暂不参与 slash 命令。
 
 import i18n from "@/i18n";
@@ -42,7 +42,11 @@ export const slashCommands: SlashCommand[] = [
     label: "/compact",
     description: i18n.t("slashCommands.compact.description"),
     resolve(backend) {
-      if (backend === "claudecode" || backend === "codex") {
+      if (
+        backend === "claudecode" ||
+        backend === "codex" ||
+        backend === "piagent"
+      ) {
         return { kind: "literal_text", text: "/compact" };
       }
       return null;

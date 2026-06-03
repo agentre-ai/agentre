@@ -122,8 +122,10 @@ type UsageUpdate struct {
 	TotalInputTokens int
 }
 
-// ContextWindowUpdated runtime 探到模型实际可用窗口大小变化时 emit
-// (codex modelContextWindow);claudecode / builtin 不发。Tokens=0 视为"未探到"。
+// ContextWindowUpdated runtime 探到模型实际可用窗口大小变化时 emit。
+// Codex 读 app-server modelContextWindow；Claude Code 用模型 id 查 llmcatalog；
+// Pi Agent 优先读 Pi RPC get_session_stats.contextUsage.contextWindow,再用模型 id
+// 查 llmcatalog 兜底。Tokens=0 视为"未探到"。
 type ContextWindowUpdated struct{ Tokens int }
 
 // PlanUpdated runtime 上报的计划更新(claudecode TodoWrite / codex update_plan +

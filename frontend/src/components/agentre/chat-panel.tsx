@@ -479,6 +479,9 @@ function ChatPanel({
   const caps = sessionCaps ?? backendCaps;
   const isModeSwitchable = !!caps?.has("set_permission_mode");
   const supportsImageInput = !!caps?.has("image_input");
+  const supportsCompactRPC = caps
+    ? caps.has("compact")
+    : activeBackendType === "codex" || activeBackendType === "piagent";
 
   // composerContextUsage：当前会话 inputBox 底栏的「上下文用量」数据。
   //   - max  = session.contextWindow（解析顺序见 chat_svc.resolveContextWindowWithRuntime；为 0 时整块隐藏）。
@@ -1261,7 +1264,8 @@ function ChatPanel({
                               {t("chatPanel.actions.rename")}
                             </DropdownMenuItem>
                             {(session.backendType === "claudecode" ||
-                              session.backendType === "codex") && (
+                              session.backendType === "codex" ||
+                              session.backendType === "piagent") && (
                               <DropdownMenuItem
                                 onClick={() =>
                                   void handleCopyLaunchCommand(session.id)
@@ -1452,10 +1456,7 @@ function ChatPanel({
                     void doGoal(sessionId, goalCommand);
                     return;
                   }
-                  if (
-                    activeBackendType === "codex" &&
-                    isExactCompactCommand(text)
-                  ) {
+                  if (supportsCompactRPC && isExactCompactCommand(text)) {
                     if (!sessionId) {
                       notifyCompactNeedsSession();
                       return;

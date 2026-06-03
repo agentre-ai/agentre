@@ -25,6 +25,10 @@ func translate(ev pkgpi.Event) (events []agentruntime.Event, usage *provider.Usa
 		u := ev.Usage
 		usage = &u
 		events = append(events, agentruntime.UsageUpdate{Usage: usage, TotalInputTokens: u.PromptTokens + u.CachedTokens + u.CacheCreationTokens})
+	case pkgpi.EventContextWindow:
+		if ev.ContextWindow > 0 {
+			events = append(events, agentruntime.ContextWindowUpdated{Tokens: ev.ContextWindow})
+		}
 	case pkgpi.EventCompactBoundary:
 		events = append(events, agentruntime.CompactBoundary{Trigger: "manual"})
 	case pkgpi.EventRuntimeStatus:

@@ -224,8 +224,15 @@ func isAcceptedPromptResponse(r rpcResponse) bool {
 	return r.Type == "response" && r.Command == "prompt" && r.Success
 }
 
-func isTerminalEvent(t string) bool {
-	return t == "agent_end"
+func isTerminalEvent(ev rpcEvent) bool {
+	if ev.Type != "agent_end" {
+		return false
+	}
+	msg := lastAssistantFromAgentEnd(ev.Messages)
+	if msg == nil {
+		return true
+	}
+	return strings.TrimSpace(msg.StopReason) != "toolUse"
 }
 
 func parseAssistantMessage(raw json.RawMessage) (*assistantMessage, error) {

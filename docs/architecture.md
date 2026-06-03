@@ -1,116 +1,118 @@
 # Architecture
 
-Agentre 的代码组织、分层约定、远端执行架构与持久化布局。新写代码前先看这一份。
+Agentre's code organization, layering conventions, remote execution architecture, and persistence layout. Read this before writing new code.
 
-## 项目布局
+## Project layout
 
 ```text
 main.go                        (wails bootstrap + `agentre claudecode …` CLI shim)
 cmd/agentred/                  (headless daemon binary — root.go / run.go / pair.go / status.go / client.go)
 internal/
-  app/                         (Wails bindings — 每个 domain 一个文件：app.go / agent.go / chat.go / project.go / …，
-                                方法只做 parse → svc.Xxx().Method(ctx, …) → return)
-  bootstrap/                   (启动顺序：dataDir → cago memory config → logger → SQLite → migrations)
-  cli/claudecodecmd/           (agentre 二进制的 CLI 子命令，被 hook 子进程调用)
-  daemon/                      (agentred 端 daemon：ipc / handlers / sessions / pairing / rpc / remotefs / notifier / state)
-  service/<domain>_svc/        (业务逻辑；接口 + 单例访问器 + 私有实现)
-  repository/<domain>_repo/    (数据访问；接口 + Register/accessor，统一走 db.Ctx(ctx))
-    mock_<domain>_repo/        (mockgen 产物，供 service 单测注入)
-  model/entity/<domain>_entity/(充血实体；GORM tag + 业务方法)
-  pkg/                         (cross-cutting 内部包：agentprovider / agentruntime / claudecodehook / cliprober /
-                                code (i18n 错误码) / diff / httpgateway / jsonrpc / keychain / llmcatalog / paths / remotefs)
+  app/                         (Wails bindings — one file per domain: app.go / agent.go / chat.go / project.go / …,
+                                methods only do parse → svc.Xxx().Method(ctx, …) → return)
+  bootstrap/                   (startup order: dataDir → cago memory config → logger → SQLite → migrations)
+  cli/claudecodecmd/           (CLI subcommands of the agentre binary, invoked by hook subprocesses)
+  daemon/                      (agentred-side daemon: client / handlers / sessions / pairing / rpc / remotefs / notifier / state)
+  service/<domain>_svc/        (business logic; interface + singleton accessor + private implementation)
+  repository/<domain>_repo/    (data access; interface + Register/accessor, uniformly going through db.Ctx(ctx))
+    mock_<domain>_repo/        (mockgen output, injected into service unit tests)
+  model/entity/<domain>_entity/(rich domain entity; GORM tag + business methods)
+  pkg/                         (cross-cutting internal packages: agentprovider / agentruntime / ccoauth / claudecodehook / clienv /
+                                cliprober / code (i18n error codes) / diff / httpgateway / jsonrpc / keychain / llmcatalog /
+                                paths / pty / remotefs)
   buildinfo/                   (CommitID ldflag target)
-migrations/                    (gormigrate 顺序迁移，文件名前缀 YYYYMMDDNNNN)
-pkg/                           (对外可复用包：claudecode、codex —— 各自维护的 CLI 子进程封装)
-frontend/                      (React 19 + TS + Vite + Tailwind；wailsjs/ 由 wails 生成，gitignored)
+migrations/                    (gormigrate sequential migrations, filename prefix YYYYMMDDNNNN)
+pkg/                           (externally reusable packages: claudecode / codex / piagent —— independently maintained CLI subprocess wrappers;
+                                agentred/protocol —— shared agentred wire protocol)
+frontend/                      (React 19 + TS + Vite + Tailwind; wailsjs/ is wails-generated, gitignored)
 ```
 
-`App` struct 在 `internal/app/app.go`（生命周期 + 通用方法），domain 方法散在 sibling 文件（`agent.go`、`chat.go`、……）。**Keep these bindings thin — logic inside `App` is unreachable from `go test`，业务一律放 `service/`。**
+The `App` struct lives in `internal/app/app.go` (lifecycle + common methods), with domain methods spread across sibling files (`agent.go`, `chat.go`, …). **Keep these bindings thin — logic inside `App` is unreachable from `go test`; always put business logic in `service/`.**
 
-## 远端执行（remote chat）
+## Remote execution (remote chat)
 
-桌面端可以把单个 chat 投到 LAN 上的 `agentred` 守护进程执行：
+The desktop app can dispatch a single chat to an `agentred` daemon on the LAN for execution:
 
 ```
 UI
-  → internal/app Wails 绑定
+  → internal/app Wails binding
   → chat_svc
   → internal/daemon/client (JSON-RPC client)
   → agentred (internal/daemon/{ipc,handlers,sessions})
-  → claude-code / codex 子进程
+  → claude-code / codex subprocess
 ```
 
-- Tool approval / ask-user-question 仍由桌面端 UI 渲染。
-- 断线会 abort 整个 chat。
-- pairing / 设备状态走 `internal/pkg/remotefs` + `remote_device_svc`。
+- Tool approval / ask-user-question are still rendered by the desktop UI.
+- A disconnect aborts the entire chat.
+- pairing / device status go through `internal/pkg/remotefs` + `remote_device_svc`.
 
-## 分层约定（cago 框架风格）
+## Layering conventions (cago framework style)
 
-- **Entity（充血模型）** — 围绕单个实体的校验（`Check(ctx)`）、状态判断（`IsActive()`）、字段序列化（`GetXxx/SetXxx`）方法都放在 entity 上。Service 只做跨实体协调与外部依赖编排。**不要把规则一股脑堆进 service。**
-- **Repository** — 消费方约束模式：`type XxxRepo interface { ... }` + `func Xxx() XxxRepo` + `RegisterXxx(impl)`。查询统一 `db.Ctx(ctx).…`。事务：
+- **Entity (rich model)** — validation around a single entity (`Check(ctx)`), state checks (`IsActive()`), and field serialization (`GetXxx/SetXxx`) methods all live on the entity. The service only coordinates across entities and orchestrates external dependencies. **Do not cram all the rules into the service.**
+- **Repository** — consumer-defined pattern: `type XxxRepo interface { ... }` + `func Xxx() XxxRepo` + `RegisterXxx(impl)`. Queries uniformly use `db.Ctx(ctx).…`. Transactions:
 
   ```go
   db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
       ctx = db.WithContextDB(ctx, tx)
-      // … 事务里所有 repo 调用透明走 tx
+      // … all repo calls inside the transaction transparently go through tx
   })
   ```
 
-- **Service** — 接口 + 单例 + 私有实现；service 只依赖 repository 接口（依赖倒置），便于 mockgen 单测。后台任务用 `gogo.Go(func() error { … })`，**不要把请求 ctx 透传进 goroutine**。
-- **Error / i18n** — 错误码定义在 `internal/pkg/code/code.go`（分段分配 10000+），文案在 `zh_cn.go` / `en.go`，调用 `i18n.NewError(ctx, code.Xxx)` 返回；HTTP 状态可用 `i18n.NewForbiddenError` / `i18n.NewErrorWithStatus`。
-- **Wails 绑定层** — `internal/app/*.go` 的方法只做：解析 → 调 `svc.Xxx().Method(ctx, …)` → 返回。**不要往 App 结构里塞业务**，否则 go test 覆盖不到。新增一个 domain 就开一个新文件。
-- **Entity 优先于硬编码** — 用持久化字段（type/status/icon/color/config）作 source of truth，避免 service 里硬编码默认值绕过 entity。
+- **Service** — interface + singleton + private implementation; the service depends only on the repository interface (dependency inversion), which makes mockgen unit testing easy. Use `gogo.Go(func() error { … })` for background tasks, and **do not pass the request ctx into the goroutine.**
+- **Error / i18n** — error codes are defined in `internal/pkg/code/code.go` (allocated in segments of 10000+), with copy in `zh_cn.go` / `en.go`; call `i18n.NewError(ctx, code.Xxx)` to return them; for the HTTP status use `i18n.NewForbiddenError` / `i18n.NewErrorWithStatus`.
+- **Wails binding layer** — methods in `internal/app/*.go` only do: parse → call `svc.Xxx().Method(ctx, …)` → return. **Do not stuff business logic into the App struct**, otherwise go test will not cover it. Open a new file for each new domain.
+- **Entity over hardcoding** — use persisted fields (type/status/icon/color/config) as the source of truth, avoiding hardcoded default values in the service that bypass the entity.
 
-## 存储与路径
+## Storage and paths
 
-桌面端所有持久化都集中在 **AppDataDir**：
+All desktop persistence is centralized in **AppDataDir**:
 
-| 平台    | AppDataDir                                              |
+| Platform | AppDataDir                                              |
 | ------- | ------------------------------------------------------- |
 | macOS   | `~/Library/Application Support/agentre/`                |
 | Windows | `%LOCALAPPDATA%\agentre\`                               |
 | Linux   | `~/.config/agentre/`                                    |
 
-测试或排查时用 `AGENTRE_DATA_DIR` 覆盖。
+Use `AGENTRE_DATA_DIR` to override during testing or troubleshooting.
 
 ```text
 <AppDataDir>/
-  agentre.db          ← SQLite 业务数据库（gorm + gormigrate）
+  agentre.db          ← SQLite business database (gorm + gormigrate)
   logs/
-    agentre.log       ← 全量日志（info+，DebugMode 时降为 debug+）
-    error.log         ← 仅 error+
+    agentre.log       ← full log (info+, dropped to debug+ in DebugMode)
+    error.log         ← error+ only
 ```
 
-- **业务数据** → SQLite，走 `internal/repository/*_repo`。
-- **cago 运行时配置** → 内存 source（`configs.WithSource(...)`），**不落盘 `config.json`**。
-- **前端体验偏好（主题、窗口大小等）** → 浏览器 localStorage。现有 key 包括 `agentre.theme`、`agentre.windowSize`、`agentre.lastPath`。
-- **agentred** 用独立目录 `agentred`，可用 `AGENTRED_DATA_DIR` 覆盖。
+- **Business data** → SQLite, via `internal/repository/*_repo`.
+- **cago runtime config** → in-memory source (`configs.WithSource(...)`), **not persisted to `config.json`**.
+- **Frontend experience preferences (theme, window size, etc.)** → browser localStorage. Existing keys include `agentre.theme`, `agentre.windowSize`, `agentre.lastPath`.
+- **agentred** uses a separate directory `agentred`, which can be overridden with `AGENTRED_DATA_DIR`.
 
-环境变量：
+Environment variables:
 
-- `AGENTRE_ENV` — `dev` / `test` / `pre` / `prod`，默认 `dev`。
+- `AGENTRE_ENV` — `dev` / `test` / `pre` / `prod`, defaults to `dev`.
 
-Debug 日志不再走环境变量：由「设置 → 版本 & 更新 → Debug 日志」开关控制，持久化在 `app_settings` 表的 `logger.debug_enabled`，切换时热重载 logger（立即生效，无需重启），启动时按持久化值恢复。
+Debug logging no longer goes through an environment variable: it is controlled by the "Settings → Version & Updates → Debug logging" toggle, persisted as `logger.debug_enabled` in the `app_settings` table; toggling it hot-reloads the logger (takes effect immediately, no restart needed), and on startup it is restored from the persisted value.
 
-## 数据库与迁移
+## Database and migrations
 
-- 驱动：纯 Go SQLite（`github.com/glebarez/sqlite`，无需 CGO），通过匿名导入 `_ "github.com/cago-frame/cago/database/db/sqlite"` 注册到 cago 的 `db` 组件。
-- 初始化由 `internal/bootstrap.Init` 统一完成：注册 `db.Database()` 组件 → 调 `migrations.RunMigrations(db.Default())`。运行时取库走 `db.Ctx(ctx)`，跨函数事务用 `db.WithContextDB(ctx, tx)`。
+- Driver: pure-Go SQLite (`github.com/glebarez/sqlite`, no CGO required), registered to cago's `db` component via the anonymous import `_ "github.com/cago-frame/cago/database/db/sqlite"`.
+- Initialization is handled uniformly by `internal/bootstrap.Init`: register the `db.Database()` component → call `migrations.RunMigrations(db.Default())`. At runtime, get the database via `db.Ctx(ctx)`, and use `db.WithContextDB(ctx, tx)` for transactions spanning functions.
 
-新增迁移：
+Adding a migration:
 
-1. 在 `migrations/` 新建 `YYYYMMDDNNNN_xxx.go`，导出 `migrationYYYYMMDDNNNN() *gormigrate.Migration`。
-2. 在 `migrations/migrations.go` 的 `migrationList()` **末尾**追加。**禁止改动既有迁移**，需要修复时新增补丁迁移。
-3. DDL 优先用原生 SQL（`tx.Exec(…)`），不要依赖 `AutoMigrate` 的隐式行为。
+1. Create `YYYYMMDDNNNN_xxx.go` under `migrations/`, exporting `migrationYYYYMMDDNNNN() *gormigrate.Migration`.
+2. Append it to the **end** of `migrationList()` in `migrations/migrations.go`. **Do not modify existing migrations**; add a patch migration when a fix is needed.
+3. Prefer raw SQL for DDL (`tx.Exec(…)`), and do not rely on the implicit behavior of `AutoMigrate`.
 
-## 生成 / 自管理文件
+## Generated / self-managed files
 
 | Path                                | Producer                                 | Regenerate                  |
 | ----------------------------------- | ---------------------------------------- | --------------------------- |
 | `frontend/wailsjs/**`               | Wails (from `App` bindings + Go structs) | `make dev` / `wails build`  |
 | `internal/**/mock_*/`               | `mockgen`                                | `make mock`                 |
 | `frontend/dist/`                    | Vite (embedded via `//go:embed`)         | `wails build`               |
-| `<AppDataDir>/agentre.db`           | gorm + gormigrate                        | 启动时自动迁移              |
-| `<AppDataDir>/logs/*.log`           | cago logger                              | 运行时滚动                  |
+| `<AppDataDir>/agentre.db`           | gorm + gormigrate                        | auto-migrated on startup    |
+| `<AppDataDir>/logs/*.log`           | cago logger                              | rolled at runtime           |
 
-Lockfiles —— 永不手编，用 `go mod tidy` / `pnpm add|remove|install`。`frontend/wailsjs/` 是 gitignored。
+Lockfiles —— never hand-edit; use `go mod tidy` / `pnpm add|remove|install`. `frontend/wailsjs/` is gitignored.

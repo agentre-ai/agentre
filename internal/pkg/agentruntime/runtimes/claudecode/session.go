@@ -21,7 +21,9 @@ type ccStream interface {
 type ccSessionHandle interface {
 	Close(context.Context) error
 	ID() string
-	Stream(ctx context.Context, prompt string) (ccStream, error)
+	// Stream 发起一轮 Turn。images 非空时透传到 user frame 的 base64 image
+	// content block(CLI stream-json 原生支持);为空时退化成 text-only。
+	Stream(ctx context.Context, prompt string, images []claudecode.Image) (ccStream, error)
 	// RespondToControl 配对响应 claude 端发的 control_request{subtype:"can_use_tool"}。
 	// 由 control dispatcher / answer sink 触发;其它场景不调用。
 	RespondToControl(ctx context.Context, requestID string, result claudecode.PermissionResult) error
@@ -111,8 +113,8 @@ func (a *ccClientAdapter) RespondToControl(ctx context.Context, requestID string
 
 // Stream 在持久化 session 上发起一轮 Turn,把 Session.Turn 返回的 <-chan Event
 // 转成 ccStream iterator,让 drain 逻辑那侧不动。
-func (a *ccClientAdapter) Stream(ctx context.Context, prompt string) (ccStream, error) {
-	ch, err := a.sess.Turn(ctx, prompt)
+func (a *ccClientAdapter) Stream(ctx context.Context, prompt string, images []claudecode.Image) (ccStream, error) {
+	ch, err := a.sess.Turn(ctx, prompt, images...)
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 	. "github.com/smartystreets/goconvey/convey"
 
 	"agentre/internal/model/entity/agent_backend_entity"
@@ -36,6 +37,10 @@ func TestClaudeCodeCapabilities(t *testing.T) {
 		// system.init 帧带 model → llmcatalog.Lookup → emit ContextWindowUpdated。
 		// Claude Code SDK 自己不报窗口,这里靠 catalog 兜底,语义和 codex 对称。
 		So(caps.Has(capability.CapReportContextWindow), ShouldBeTrue)
+		// CapImageInput=true:user frame 携带 base64 image content block(CLI
+		// stream-json 原生支持)。extractImages 从 RunRequest.UserBlocks 抽 inline
+		// 图片,Run 经 handle.Stream 透传。
+		So(caps.Has(capability.CapImageInput), ShouldBeTrue)
 	})
 
 	Convey("claudecode PermissionModeMeta", t, func() {
@@ -54,6 +59,42 @@ func TestClaudeCodeCapabilities(t *testing.T) {
 	})
 }
 
+// TestRun_ForwardsUserBlockImages 钉死多模态透传:RunRequest.UserBlocks 里的
+// inline ImageBlock 被 extractImages 抽出后,经 handle.Stream 透传给底层 CLI
+// session(进而进 stream-json user frame 的 base64 image block)。非图片 block
+// (TextBlock)不进 images;prompt 仍走 req.UserText。
+func TestRun_ForwardsUserBlockImages(t *testing.T) {
+	Convey("Run 把 UserBlocks 里的 inline 图片透传给 handle.Stream", t, func() {
+		var captured *fakeCCHandle
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			captured = &fakeCCHandle{id: "fake-sid"}
+			return captured, nil
+		})
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		events, _, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 77,
+			Cwd:       t.TempDir(),
+			UserText:  "describe",
+			UserBlocks: []cagoblocks.ContentBlock{
+				cagoblocks.TextBlock{Text: "describe"},
+				cagoblocks.ImageBlock{MediaType: "image/png", Source: cagoblocks.BlobSource{Inline: []byte{0x01, 0x02}}},
+			},
+		})
+		So(err, ShouldBeNil)
+		for range events {
+		}
+		So(captured.gotPrompt, ShouldEqual, "describe")
+		So(captured.gotImages, ShouldResemble, []claudecode.Image{
+			{Data: []byte{0x01, 0x02}, MediaType: "image/png"},
+		})
+		r.CloseAllSessions(ctx)
+	})
+}
+
 // fakeCCHandle 是 ccSessionHandle 的最简 stub:Stream 返回一个立即 close 的
 // 空事件流;其他控制方法 no-op。仅供 Run() 路径不需要真实 CLI 子进程的单测。
 //
@@ -65,6 +106,9 @@ type fakeCCHandle struct {
 	setPermissionModeCalls []string
 	setPermissionModeErr   error
 	stream                 ccStream
+	// gotPrompt / gotImages 记录最近一次 Stream 收到的入参,Run 透传断言用。
+	gotPrompt string
+	gotImages []claudecode.Image
 }
 
 func (f *fakeCCHandle) ID() string                      { return f.id }
@@ -78,7 +122,9 @@ func (f *fakeCCHandle) RespondToControl(context.Context, string, claudecode.Perm
 	return nil
 }
 func (f *fakeCCHandle) ExitErr() error { return nil }
-func (f *fakeCCHandle) Stream(context.Context, string) (ccStream, error) {
+func (f *fakeCCHandle) Stream(_ context.Context, prompt string, images []claudecode.Image) (ccStream, error) {
+	f.gotPrompt = prompt
+	f.gotImages = images
 	if f.stream != nil {
 		return f.stream, nil
 	}

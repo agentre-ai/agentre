@@ -13,6 +13,7 @@ import (
 	"agentre/internal/model/entity/agent_backend_entity"
 	"agentre/internal/pkg/agentruntime"
 	"agentre/internal/pkg/agentruntime/capability"
+	"agentre/internal/pkg/llmcatalog"
 	pkgpi "agentre/pkg/piagent"
 )
 
@@ -39,10 +40,11 @@ func New() *Runtime { return &Runtime{active: map[int64]*activeSession{}} }
 func (r *Runtime) Capabilities() capability.Capabilities {
 	return capability.Capabilities{
 		Set: map[capability.Capability]bool{
-			capability.CapSteer:      true,
-			capability.CapAbort:      true,
-			capability.CapImageInput: true,
-			capability.CapCompact:    true,
+			capability.CapSteer:               true,
+			capability.CapAbort:               true,
+			capability.CapImageInput:          true,
+			capability.CapCompact:             true,
+			capability.CapReportContextWindow: true,
 		},
 	}
 }
@@ -177,6 +179,14 @@ func (a *activeSession) consumePendingSteer(text string) (agentruntime.ConsumedS
 	return agentruntime.ConsumedSteer{}, false
 }
 
+func contextWindowForModel(model string) int {
+	info, ok := llmcatalog.Lookup(model)
+	if !ok {
+		return 0
+	}
+	return info.ContextWindow
+}
+
 func drainStream(s stream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *activeSession) {
 	var usage *provider.Usage
 	var stopErr error
@@ -191,10 +201,28 @@ func drainStream(s stream, out chan<- agentruntime.Event, result *agentruntime.R
 			}
 			continue
 		}
+		if raw.Kind == pkgpi.EventContextWindow {
+			if raw.ContextWindow > 0 && raw.ContextWindow != result.ContextWindow {
+				result.ContextWindow = raw.ContextWindow
+			} else {
+				// Context window 未变化时不重复向前端 emit patch。
+				raw.ContextWindow = 0
+			}
+		}
+		if raw.Kind == pkgpi.EventDone {
+			// pkg/piagent 用 EventDone 标记底层流终止；runtime 在 loop 结束后统一
+			// emit agentruntime.Done，避免向 chat_svc 重复发送 message_end。
+			continue
+		}
 		if raw.Model != "" {
 			// Pi 在 usage 帧上报真实模型 id；piagent 不绑 provider，靠这里把模型回
-			// 吐给 chat_svc（result.Model → assistantMsg.Model）。
+			// 吐给 chat_svc（result.Model → assistantMsg.Model）。同时用 Agentre
+			// 宽容 catalog 查上下文窗口并实时上报，给前端 Composer 用量条提供分母。
 			result.Model = raw.Model
+			if cw := contextWindowForModel(raw.Model); cw > 0 && cw != result.ContextWindow {
+				result.ContextWindow = cw
+				out <- agentruntime.ContextWindowUpdated{Tokens: cw}
+			}
 		}
 		events, u, err := translate(raw)
 		for _, ev := range events {
