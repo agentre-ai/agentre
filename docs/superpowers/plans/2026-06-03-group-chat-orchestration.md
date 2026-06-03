@@ -2424,6 +2424,16 @@ git commit -m "✨ group: Stop/Pause/Resume/Rename/Archive 控制流"
 
 > 复用现有 `httpgateway.Gateway.RegisterMCP("/mcp/group/", handler)`（`gateway.go:276` 已支持，**gateway 代码不改**）。handler 是 group_svc 自己的，bootstrap 注册（Task D2）。
 > MCP over HTTP 是 JSON-RPC（claude-code `--mcp-config` 的 `type:"http"` transport）：需处理 `initialize` / `notifications/initialized` / `tools/list` / `tools/call`。JSON-RPC 帧用 `internal/pkg/jsonrpc`（已存在）。
+>
+> **✅ 已 spike 验证（claude-code 2.1.161，2026-06-03）**——实测握手序列与要求：
+> 1. `POST /mcp/ initialize`（client 报 `protocolVersion:"2025-11-25"` + clientInfo）→ 回 `application/json`（**纯 JSON 即可，无需 SSE**），result 里 **echo client 的 protocolVersion** + `serverInfo` + `capabilities.tools`。
+> 2. `POST notifications/initialized` → **回 202**（无 body）。
+> 3. `POST tools/list` → 回 tools。
+> 4. `POST tools/call` → 跑 → 回 `result.content`。
+> 5. `GET /mcp/`（client 开 SSE server→client 流）→ **回 405 即可，claude 容忍**（我们不需要服务端推送；想干净可回 200 空 SSE）。
+> 6. **自定义 header 透传确认**：`Authorization: Bearer <token>`（spike 用 `X-Spike-Auth` 验证，到达时 header 名小写）→ **per-member token 身份方案成立**。
+> 7. claude 在后续请求带 `mcp-session-id`（= 我们 initialize 时设的值）+ `mcp-protocol-version`；**我们用 token 做身份，session-id 可忽略**（容忍其存在即可）。
+> 8. `--strict-mcp-config` 可隔离只用我们的 server；工具名 = `mcp__group__group_send`（server 名 group）。
 
 - [ ] **Step 1: 写 handler 测试（先红）**
 
@@ -2520,12 +2530,16 @@ func (h *groupMCP) lookup(tok string) (memberRef, bool) {
 
 // ServeHTTP 极简 MCP JSON-RPC: initialize / notifications/initialized / tools/list / tools/call。
 func (h *groupMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet { // claude 开 server→client SSE 流; 我们不推送 → 405(已验证 claude 容忍)
+		w.WriteHeader(http.StatusMethodNotAllowed); return
+	}
 	var rpc struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
 		Params struct {
-			Name      string `json:"name"`
-			Arguments struct {
+			ProtocolVersion string `json:"protocolVersion"`
+			Name            string `json:"name"`
+			Arguments       struct {
 				Body     string   `json:"body"`
 				Mentions []string `json:"mentions"`
 			} `json:"arguments"`
@@ -2536,10 +2550,14 @@ func (h *groupMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch rpc.Method {
 	case "initialize":
+		pv := rpc.Params.ProtocolVersion // echo client 版本(claude 报 "2025-11-25")
+		if pv == "" {
+			pv = "2025-06-18"
+		}
 		writeRPCResult(w, rpc.ID, map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": pv,
 			"serverInfo":      map[string]any{"name": "agentre-group", "version": "1"},
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 		})
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)

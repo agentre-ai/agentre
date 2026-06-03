@@ -306,7 +306,7 @@ func (s) ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 - **并发写竞态（必修）**：`IngestAgentMessage` 由 MCP handler goroutine 调用，可能与调度 goroutine、同一成员 turn 的多次 `group_send` 并发。`NextSeq → Create`（seq 分配）与 `round_count++ → Update` 是 read-modify-write，并发下会重号/丢更新。**每个 group 需一把锁**串行化「解析→分配 seq→落库→入队」（可挂在 `scheduler.mu` 或单独 `ingestMu`）。
 - **自我 mention 过滤（必修）**：`resolveMentionNames` 要剔除发送者自身，避免成员把消息投给自己 → 自触发 turn 自循环。
 - **MCP token 生命周期（必修）**：per-member token 用加密随机；成员离群 / 群 stop / 归档时**吊销**对应 token；可加 TTL。token 仅 localhost gateway 可见，scope 到 (group, member)。
-- **MCP transport 验证（风险）**：方案默认 claude CLI `--mcp-config` 的 `type:"http"` + 自定义 header 鉴权。**需对实际安装的 `claude` 版本先做 spike 验证**（http MCP + headers 支持）；若不支持，回退 **stdio MCP**（`agentre group-mcp` 子进程，复用 CLI shim 模式）。工具名约定 `mcp__group__group_send` 也需对齐 CLI 的真实命名规则。
+- **MCP transport（✅ 已 spike 验证通过，2026-06-03 / claude-code 2.1.161）**：`--mcp-config` 的 `type:"http"` + 自定义 header **实测可用**（`claude mcp get` 显示 `✓ Connected`，自定义 header 透传到达）。实测握手：`POST initialize`(client 报 `protocolVersion 2025-11-25`)→ 纯 `application/json` 响应即可（**无需 SSE**）；`POST notifications/initialized`→202；`POST tools/list`；`GET /mcp/`(SSE 流)→回 405 claude 容忍。身份用 `Authorization: Bearer <per-member token>` header。工具名 `mcp__group__group_send`。**stdio 回退方案不再需要**（保留为备选）。
 - **用户消息无 @ 的兜底**：用户在 composer 不选收件人直接发 → **默认投给协调者**（而非 quiesce/上一个发送者）；agent 侧空 mentions 才回上一个发送者。兜底规则按 sender_kind 区分。
 - **招募名单 dept=0**：`department_id=0`（不限）时**关闭自动招募**（无名单无从校验），仅允许用户在 UI 手动加成员；dept>0 才支持协调者 mention 招募。
 - **名称唯一性**：招募 by-name 依赖部门内 + 群内显示名唯一；招募/加入时校验，撞名拒绝并 flag。
