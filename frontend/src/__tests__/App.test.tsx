@@ -979,44 +979,18 @@ describe("App", () => {
       "aria-current",
       "page",
     );
+    // Real data layer: the default IssueList mock returns no issues, so the
+    // workspace renders its empty state rather than the old static placeholder.
     expect(
-      within(main).getByRole("heading", { name: "Board" }),
+      await within(main).findByRole("heading", { name: "No issues yet" }),
     ).toBeInTheDocument();
+    expect(within(main).getByText("0 open · 0 closed")).toBeInTheDocument();
     expect(
-      within(main).getByText("12 Open · 47 Closed · 3 Agents following up"),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("button", { name: "New Issue" }),
-    ).toBeInTheDocument();
-    expect(within(main).getByText("Author")).toBeInTheDocument();
-    expect(within(main).getByText("Assigned Agent")).toBeInTheDocument();
-    expect(
-      within(main).getByText(
-        "Fix OAuth callback losing the state parameter in Safari",
-      ),
-    ).toBeInTheDocument();
-    expect(within(main).getByText("#142")).toBeInTheDocument();
+      within(main).getAllByRole("button", { name: "New issue" }).length,
+    ).toBeGreaterThan(0);
     expect(
       within(main).queryByText("Under construction"),
     ).not.toBeInTheDocument();
-
-    await user.click(within(main).getByRole("button", { name: "Board" }));
-
-    expect(
-      within(main).getByText("Grouped by status · drag cards between columns"),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("heading", { name: "Backlog" }),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("heading", { name: "In Progress" }),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("heading", { name: "Waiting" }),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("heading", { name: "Closed" }),
-    ).toBeInTheDocument();
   });
 
   it("opens the implemented Hooks workspace from the left rail", async () => {
