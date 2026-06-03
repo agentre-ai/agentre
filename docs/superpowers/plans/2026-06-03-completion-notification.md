@@ -179,11 +179,12 @@ Expected: FAIL,报 `undefined: ValidateBoolSetting` 等。
 
 ```go
 	// 通知设置。bool 型存 "true"/"false";sound_preset 为枚举。
-	KeyNotifyEnabled     = "notify.enabled"      // 通知总开关
-	KeyNotifySystem      = "notify.system"       // 系统原生通知
-	KeyNotifySound       = "notify.sound"        // 提示音
-	KeyNotifySoundPreset = "notify.sound_preset" // 提示音预设
-	KeyNotifyToast       = "notify.toast"        // 应用内 toast
+	KeyNotifyEnabled           = "notify.enabled"             // 通知总开关
+	KeyNotifyOnlyWhenUnfocused = "notify.only_when_unfocused" // 仅窗口未激活时通知
+	KeyNotifySystem            = "notify.system"              // 系统原生通知
+	KeyNotifySound             = "notify.sound"               // 提示音
+	KeyNotifySoundPreset       = "notify.sound_preset"        // 提示音预设
+	KeyNotifyToast             = "notify.toast"               // 应用内 toast
 ```
 
 在文件末尾(`ValidateUpdateChannel` 之后)追加:
@@ -289,6 +290,7 @@ Expected: FAIL —— "合法 bool 写入" 会因为命中 `default` 分支返�
 
 ```go
 		case app_setting_entity.KeyNotifyEnabled,
+			app_setting_entity.KeyNotifyOnlyWhenUnfocused,
 			app_setting_entity.KeyNotifySystem,
 			app_setting_entity.KeyNotifySound,
 			app_setting_entity.KeyNotifyToast:
@@ -838,9 +840,10 @@ beforeEach(() => {
 });
 
 describe("notification-settings-store", () => {
-  it("默认值: 仅系统通知开,提示音/toast 关", () => {
+  it("默认值: 仅系统通知开 + 仅失焦时通知,提示音/toast 关", () => {
     expect(DEFAULT_NOTIFICATION_SETTINGS).toEqual({
       enabled: true,
+      onlyWhenUnfocused: true,
       system: true,
       sound: false,
       soundPreset: "ding",
@@ -889,6 +892,7 @@ import type { SoundPreset } from "../lib/notify-sound";
 
 export type NotificationSettings = {
   enabled: boolean;
+  onlyWhenUnfocused: boolean;
   system: boolean;
   sound: boolean;
   soundPreset: SoundPreset;
@@ -897,6 +901,7 @@ export type NotificationSettings = {
 
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   enabled: true,
+  onlyWhenUnfocused: true,
   system: true,
   sound: false,
   soundPreset: "ding",
@@ -905,6 +910,7 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
 
 const KEYS = {
   enabled: "notify.enabled",
+  onlyWhenUnfocused: "notify.only_when_unfocused",
   system: "notify.system",
   sound: "notify.sound",
   soundPreset: "notify.sound_preset",
@@ -930,17 +936,23 @@ type State = {
 export const useNotificationSettingsStore = create<State>((set, get) => ({
   settings: { ...DEFAULT_NOTIFICATION_SETTINGS },
   load: async () => {
-    const [enabled, system, sound, preset, toast] = await Promise.all([
-      readRaw(KEYS.enabled),
-      readRaw(KEYS.system),
-      readRaw(KEYS.sound),
-      readRaw(KEYS.soundPreset),
-      readRaw(KEYS.toast),
-    ]);
+    const [enabled, onlyWhenUnfocused, system, sound, preset, toast] =
+      await Promise.all([
+        readRaw(KEYS.enabled),
+        readRaw(KEYS.onlyWhenUnfocused),
+        readRaw(KEYS.system),
+        readRaw(KEYS.sound),
+        readRaw(KEYS.soundPreset),
+        readRaw(KEYS.toast),
+      ]);
     const d = DEFAULT_NOTIFICATION_SETTINGS;
     set({
       settings: {
         enabled: enabled === null ? d.enabled : enabled === "true",
+        onlyWhenUnfocused:
+          onlyWhenUnfocused === null
+            ? d.onlyWhenUnfocused
+            : onlyWhenUnfocused === "true",
         system: system === null ? d.system : system === "true",
         sound: sound === null ? d.sound : sound === "true",
         soundPreset: (preset as SoundPreset) || d.soundPreset,
@@ -1024,7 +1036,7 @@ function deps(over: Partial<NotifyDeps> = {}): NotifyDeps {
 }
 
 describe("maybeNotify", () => {
-  it("失焦时触发全部已启用渠道", () => {
+  it("默认(仅失焦)+ 失焦 → 触发全部已启用渠道", () => {
     const d = deps();
     maybeNotify(42, "done", d);
     expect(d.showSystemNotification).toHaveBeenCalledWith("我的会话", "notify.body.done");
@@ -1032,18 +1044,32 @@ describe("maybeNotify", () => {
     expect(d.showToast).toHaveBeenCalledWith("done", "我的会话", "notify.body.done");
   });
 
-  it("聚焦且就是当前会话 → 全部静默", () => {
-    const d = deps({ isWindowFocused: () => true, getActiveSessionId: () => 42 });
+  it("默认(仅失焦)+ 聚焦(任意会话)→ 全部静默", () => {
+    const d = deps({ isWindowFocused: () => true, getActiveSessionId: () => 7 });
     maybeNotify(42, "done", d);
     expect(d.showSystemNotification).not.toHaveBeenCalled();
     expect(d.playSound).not.toHaveBeenCalled();
     expect(d.showToast).not.toHaveBeenCalled();
   });
 
-  it("聚焦但非当前会话 → 仍触发", () => {
-    const d = deps({ isWindowFocused: () => true, getActiveSessionId: () => 7 });
+  it("关掉 onlyWhenUnfocused + 聚焦 + 非当前会话 → 触发", () => {
+    const d = deps({
+      isWindowFocused: () => true,
+      getActiveSessionId: () => 7,
+      getSettings: () => ({ ...DEFAULT_NOTIFICATION_SETTINGS, onlyWhenUnfocused: false, sound: true, toast: true }),
+    });
     maybeNotify(42, "done", d);
     expect(d.showSystemNotification).toHaveBeenCalled();
+  });
+
+  it("关掉 onlyWhenUnfocused + 聚焦 + 当前会话 → 静默", () => {
+    const d = deps({
+      isWindowFocused: () => true,
+      getActiveSessionId: () => 42,
+      getSettings: () => ({ ...DEFAULT_NOTIFICATION_SETTINGS, onlyWhenUnfocused: false, sound: true, toast: true }),
+    });
+    maybeNotify(42, "done", d);
+    expect(d.showSystemNotification).not.toHaveBeenCalled();
   });
 
   it("总开关关 → 不触发", () => {
@@ -1114,7 +1140,8 @@ export function classifyTransition(
   return null;
 }
 
-// maybeNotify 在「你没盯着该会话」时,按设置触发各启用渠道。
+// maybeNotify 在门槛通过时,按设置触发各启用渠道。
+// onlyWhenUnfocused 开(默认):仅窗口失焦时通知;关:失焦 或 非当前会话 时通知。
 export function maybeNotify(
   sessionId: number,
   kind: NotifyKind,
@@ -1122,9 +1149,11 @@ export function maybeNotify(
 ): void {
   const s = deps.getSettings();
   if (!s.enabled) return;
-  const watching =
-    deps.isWindowFocused() && deps.getActiveSessionId() === sessionId;
-  if (watching) return;
+  const focused = deps.isWindowFocused();
+  const suppress = s.onlyWhenUnfocused
+    ? focused
+    : focused && deps.getActiveSessionId() === sessionId;
+  if (suppress) return;
 
   const title = deps.getSessionTitle(sessionId) ?? deps.t("notify.app");
   const body = deps.t(`notify.body.${kind}`);
@@ -1408,6 +1437,8 @@ git commit -m "✨ notify(fe): turn 完成通知宿主 + 订阅逻辑 + 挂载"
       "masterDesc": "总开关 —— 关闭后下面所有方式都不生效。",
       "enableLabel": "启用通知",
       "enableDesc": "一轮对话结束时主动提醒你。",
+      "onlyWhenUnfocusedLabel": "仅窗口未激活时通知",
+      "onlyWhenUnfocusedDesc": "默认开;关掉后,应用在前台时,完成的若不是你正在看的会话也会提醒。",
       "channelsTitle": "通知方式",
       "channelsDesc": "满足提醒条件时,用以下已开启的方式提醒。",
       "systemLabel": "系统通知",
@@ -1433,6 +1464,8 @@ en 对应值:
       "masterDesc": "Master switch — turning this off disables every method below.",
       "enableLabel": "Enable notifications",
       "enableDesc": "Alert you when a turn finishes.",
+      "onlyWhenUnfocusedLabel": "Only when app is in background",
+      "onlyWhenUnfocusedDesc": "On by default; turn off to also be notified when the app is focused but the finished session isn't the one you're viewing.",
       "channelsTitle": "Methods",
       "channelsDesc": "When the alert condition is met, notify via any method enabled below.",
       "systemLabel": "System notification",
@@ -1459,6 +1492,7 @@ en 对应值:
 ```ts
     "settings.notifications.pageTitle",
     "settings.notifications.enableLabel",
+    "settings.notifications.onlyWhenUnfocusedLabel",
     "settings.notifications.soundTest",
     "settings.notifications.ruleDesc",
     "notify.body.done",
@@ -1575,6 +1609,16 @@ export function NotificationsPanel() {
             aria-label={t("settings.notifications.enableLabel")}
             checked={settings.enabled}
             onCheckedChange={(v) => set({ enabled: v })}
+          />
+        </Row>
+        <Row
+          label={t("settings.notifications.onlyWhenUnfocusedLabel")}
+          desc={t("settings.notifications.onlyWhenUnfocusedDesc")}
+        >
+          <Switch
+            aria-label={t("settings.notifications.onlyWhenUnfocusedLabel")}
+            checked={settings.onlyWhenUnfocused}
+            onCheckedChange={(v) => set({ onlyWhenUnfocused: v })}
           />
         </Row>
       </section>
@@ -1722,6 +1766,6 @@ git commit -m "✅ notify: 全量 lint/test 通过"
 
 ## Self-Review 记录(plan 作者已核对)
 
-- **Spec 覆盖**:三渠道(系统/声音/toast)= Task 5/7/11/12;可配置 + 默认值 = Task 9/12;三终态 done/error/waiting + 跳过 aborted = Task 10;失焦或非当前会话门槛 = Task 10/11;`app_settings_svc` 离散 key = Task 1/2/3;前端编排 + 薄后端绑定 = Task 4/5/6/11;i18n 双语 = Task 11/12。spec 的「已知局限」(无点击跳转 / 无节流 / 后台音频 / 无 per-event 开关)按设计不实现,无对应 Task,符合预期。
+- **Spec 覆盖**:三渠道(系统/声音/toast)= Task 5/7/11/12;可配置 + 默认值 = Task 9/12;三终态 done/error/waiting + 跳过 aborted = Task 10;门槛(`onlyWhenUnfocused` 开关,默认仅失焦;关掉回到失焦或非当前会话)= Task 10/11/12;`app_settings_svc` 离散 key = Task 1/2/3;前端编排 + 薄后端绑定 = Task 4/5/6/11;i18n 双语 = Task 11/12。spec 的「已知局限」(无点击跳转 / 无节流 / 后台音频 / 无 per-event 开关)按设计不实现,无对应 Task,符合预期。
 - **类型一致性**:`SoundPreset`(notify-sound.ts)被 store / turn-notify / 面板复用;`NotifyKind` / `NotifyDeps`(turn-notify.ts)被 hook 复用;`NotificationSettings` / `DEFAULT_NOTIFICATION_SETTINGS`(store)被 turn-notify / 面板 / 宿主复用;`Notifier`(notification_svc)被 sysnotify 结构化满足、bootstrap 注入;`ShowRequest` 后端定义、前端经 `make generate` 取得。
 - **占位符扫描**:无 TBD/TODO;每个改代码的 step 均含完整代码与精确命令。唯一外部依赖不确定点(beeep `Notify` 签名)已在 Task 5 Step 1 给出 `go doc` 校验命令 + 唯一调整点说明。

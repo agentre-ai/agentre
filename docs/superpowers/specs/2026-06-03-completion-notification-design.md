@@ -22,7 +22,9 @@
 1. **三个通知渠道,各自独立开关、均可配置**:系统原生通知、提示音、应用内 toast。外加一个总开关。
 2. **提示音用 Web Audio API 实时合成**几个短音预设(零二进制资产、无版权问题),不捆绑音频文件。
 3. **触发的终态**:`done`(完成)、`error`(出错)、`waiting`(等用户输入)三种都通知。v1 **不做** per-event 开关(YAGNI)。用户自己点「停止」导致的 `aborted` **不通知**。
-4. **打扰门槛**:`正在看 = 窗口聚焦 且 完成的会话 == 当前会话`。正在看 ⇒ 全部静默;否则(**失焦 或 非当前会话**)⇒ 触发各启用渠道。系统通知正是在「失焦 或 非当前会话」时弹。
+4. **打扰门槛 + 「仅窗口未激活时通知」开关(`notify.only_when_unfocused`,默认开)**:
+   - 开关**开**(默认):**只有窗口失焦时才通知**——你切走去别的 app 才被拉回来;只要应用在前台(哪怕停在别的 tab),都静默。
+   - 开关**关**:回到更广的门槛 `正在看 = 窗口聚焦 且 完成的会话 == 当前会话`,正在看才静默;**失焦 或 非当前会话**都通知(即前台时背景 tab 完成也提醒)。
 5. **决策放前端**:见下方架构选择。
 
 ## 架构选择:谁来决策「要不要通知 + 怎么通知」
@@ -51,10 +53,14 @@
 - **挂载 seed**:首次拿到 `statuses` 时先把各会话现状写进 ref,**不触发**——避免重启/重连时已 idle 的老会话误报。
 - **分类后**:计算 `正在看`,通过门槛后调 `notify(kind, sessionId)` 触发各启用渠道。
 
-**门槛**:
+**门槛**(受 `onlyWhenUnfocused` 开关影响):
 ```
-正在看 = isWindowFocused && completedSessionId === activeSessionId
-若 正在看 → 静默
+if (!settings.enabled) → 静默
+if (settings.onlyWhenUnfocused)        // 默认开
+    抑制 = isWindowFocused             // 仅失焦才通知
+else
+    抑制 = isWindowFocused && completedSessionId === activeSessionId
+若 抑制 → 静默
 否则 → 触发各「已启用」渠道(系统通知 / 提示音 / toast)
 ```
 - `activeSessionId` 来自 `useChatTabsStore`(`activeTab.meta.kind==="session" ? sessionId : 0`)。
@@ -84,6 +90,7 @@ Web Audio 合成的提示音预设。导出 `NOTIFY_SOUND_PRESETS`(枚举集合)
 ### 3. `frontend/src/components/agentre/notifications-panel.tsx`(新增)
 镜像 `settings-proxy.tsx` 的 load 模式:挂载时 `GetAppSetting` 逐 key 读进本地 state。保存策略——**开关/选择改动即时 `UpdateAppSettings`**(通知设置无重启副作用,不像 proxy 需要 Apply 按钮),保存后刷新共享 store。控件:
 - 总开关 `Switch`(`notify.enabled`)。
+- **仅窗口未激活时通知** `Switch`(`notify.only_when_unfocused`,默认开)——关掉后,前台时背景 tab 完成也会提醒。
 - 系统通知 `Switch`(`notify.system`)。
 - 提示音 `Switch`(`notify.sound`)+ 预设 `Select`(`notify.sound_preset`)+ **「试听」** `Button`(调 `playNotifySound`)。
 - toast `Switch`(`notify.toast`)。
@@ -124,6 +131,7 @@ type NotificationSvc interface {
 | key | 类型 | 校验 |
 |---|---|---|
 | `notify.enabled` | bool | 值 ∈ {"true","false"} |
+| `notify.only_when_unfocused` | bool | 同上 |
 | `notify.system` | bool | 同上 |
 | `notify.sound` | bool | 同上 |
 | `notify.sound_preset` | enum | 值 ∈ {ding, chime, blip} |
@@ -134,12 +142,13 @@ bool 用 `ValidateBoolSetting`、preset 用 `ValidateSoundPreset`(放在 `app_se
 | key | 默认 |
 |---|---|
 | `notify.enabled` | `true`(总开关默认开) |
+| `notify.only_when_unfocused` | `true`(默认只在窗口失焦时通知) |
 | `notify.system` | `true` |
 | `notify.sound` | `false`(默认不响,避免打扰;用户主动开启) |
 | `notify.sound_preset` | `ding` |
 | `notify.toast` | `false`(默认关;用户主动开启) |
 
-> 默认下只有「系统通知」开着,提示音与应用内 toast 都默认关 —— 默认行为克制,用户按需开启。
+> 默认行为克制:只有**系统通知**开着,且只在**窗口失焦**时弹;提示音、应用内 toast、以及「前台背景 tab 也提醒」都需用户主动开启。
 
 ## 数据流总览
 
@@ -147,8 +156,8 @@ bool 用 `ValidateBoolSetting`、preset 用 `ValidateSoundPreset`(放在 `app_se
 后端 finalize → AgentStatus=idle/error/waiting + emit 终态事件
    → Wails EventsEmit → 前端 session-status-store(doneTick++ / agentStatus 转换)
       → TurnCompleteNotifier 检测 running→{idle|error|waiting} 转换(跳过 aborted)
-         → 计算「正在看」门槛
-            → 失焦 或 非当前会话 时,触发各启用渠道:
+         → 按 onlyWhenUnfocused 开关算门槛(默认:仅失焦才通知)
+            → 通过门槛时,触发各启用渠道:
                  · toast  → sonner(前端)
                  · 提示音 → playNotifySound(preset)(前端 Web Audio)
                  · 系统通知 → App.ShowNotification(t(title), t(body)) → notification_svc → beeep(原生)
@@ -158,12 +167,13 @@ bool 用 `ValidateBoolSetting`、preset 用 `ValidateSoundPreset`(放在 `app_se
 
 **后端**
 - `notification_svc`:mockgen 出 `Notifier` mock,断言 `Notify` 收到期望 title/body;空 title → 兜底 `"Agentre"`;`Notifier` 报错向上传播。**不连 DB**。
-- `app_settings_svc`:给 5 个新 key 加 Update 校验用例(合法 bool 通过、非法 bool 报错、preset 合法/非法),镜像现有 proxy 校验测试,sqlmock。
+- `app_settings_svc`:给 6 个新 key 加 Update 校验用例(合法 bool 通过、非法 bool 报错、preset 合法/非法),镜像现有 proxy 校验测试,sqlmock。
 
 **前端(Vitest)**
 - `turn-complete-notifier`:注入 mock 的 `playSound`/`showSystemNotification`/`showToast`/`isAppFocused`/`activeSessionId`,断言:
-  - 非当前会话 `running→idle` ⇒ 触发三渠道;
-  - 聚焦 + 当前会话 `running→idle` ⇒ 全部静默;
+  - `onlyWhenUnfocused=true` + 失焦 `running→idle` ⇒ 触发三渠道;
+  - `onlyWhenUnfocused=true` + 聚焦(任意会话)⇒ 全部静默;
+  - `onlyWhenUnfocused=false` + 聚焦但非当前会话 ⇒ 触发;聚焦 + 当前会话 ⇒ 静默;
   - `lastDoneEvent.kind==="aborted"` ⇒ 跳过;
   - `error` / `waiting` ⇒ 正确分类文案;
   - 同一 turn **不重复触发**;挂载 seed 不误报。
