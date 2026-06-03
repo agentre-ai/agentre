@@ -97,6 +97,8 @@ type ChatSvc interface {
 	// EnsureGroupMemberSession 创建/返回某 agent 在指定群的 backing session(带 group_id)。
 	// 幂等: 同 (groupID, agentID) 的 active session 已存在则复用。
 	EnsureGroupMemberSession(ctx context.Context, agentID, projectID, groupID int64) (int64, error)
+	// ObserveTurn 订阅指定 session 下一次 turn 完成(服务端, 不经 Wails)。
+	ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 }
 
 var defaultChat ChatSvc
@@ -121,6 +123,7 @@ func NewChat(emitter Emitter) ChatSvc {
 		locks:         &sync.Map{},
 		activeCancels: &sync.Map{},
 		aborted:       &sync.Map{},
+		turnObservers: &sync.Map{},
 		gateway:       defaultGateway,
 	}
 	s.dispatcher = newPackageDispatcher(s)
@@ -156,7 +159,11 @@ type chatSvc struct {
 	// aborted：sessionID(int64) → struct{}。Stop 触发时 store；runTurn 收尾时
 	// LoadAndDelete 判定是否走 StreamAborted 路径 + 跳过 DrainPending 自动接续。
 	aborted *sync.Map
-	gateway httpgateway.TokenIssuer
+	// turnObservers：sessionID(int64) → *sync.Map(chan TurnResult → struct{})。
+	// 服务端 turn 完成观察口(不经 Wails);group_svc 在 Send 前 ObserveTurn 订阅,
+	// finalize / failTurn 各回灌恰好一条终态用于释放调度位 + 判定 quiesce。
+	turnObservers *sync.Map
+	gateway       httpgateway.TokenIssuer
 
 	// remoteCache 是 device → (runtime, lease) 的 session 引用计数缓存。
 	// runtime 复用底层 lease.Client(),lease 由 remote_device_svc.Pool 管理 conn
@@ -2581,6 +2588,14 @@ func (s *chatSvc) runTurn(
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
 	}
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
+	// turn 正常收尾(含 abort)的唯一终态回灌点。错误路径走 failTurn 后 return,
+	// 自动接续路径在递归 runTurn 的 finalize 回灌(本帧 len(pending)>0 已提前 return)。
+	s.publishTurnResult(sess.ID, TurnResult{
+		SessionID:          sess.ID,
+		AssistantMessageID: assistantMsg.ID,
+		Aborted:            aborted,
+		Err:                stopErr,
+	})
 }
 
 func (s *chatSvc) persistProviderSessionID(ctx context.Context, sess *chat_entity.Session, providerSessionID, reason string) {
@@ -2977,6 +2992,13 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 		Message: chatMessageForEvent(sess, msg),
 	})
 	s.emitter.Emit(ctx, stream, ChatStreamEvent{Kind: StreamClosed})
+	// 错误路径的唯一终态回灌点。failTurn 直线到此(无内部 early return),尾端单点
+	// publish 即覆盖全部退出路径;与 finalize 互斥(调用方 failTurn 后立即 return)。
+	s.publishTurnResult(sess.ID, TurnResult{
+		SessionID:          sess.ID,
+		AssistantMessageID: msg.ID,
+		Err:                err,
+	})
 }
 
 func (s *chatSvc) lockFor(sessionID int64) *trylockMutex {
