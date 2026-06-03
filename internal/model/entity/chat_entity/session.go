@@ -42,6 +42,9 @@ type Session struct {
 	NeedsAttention bool `gorm:"-"`
 	// ProjectID = 0 表示自由会话（保留老行为，spec Q5/B 兜底）；> 0 时受 project_svc 管控。
 	ProjectID int64 `gorm:"column:project_id;type:bigint;not null;default:0"`
+	// GroupID = 0 表示普通单 agent 会话；> 0 时为群聊 backing session，归属该群聊。
+	// 群聊成员 session 在默认会话列表中按 group_id=0 过滤隐藏。
+	GroupID int64 `gorm:"column:group_id;type:bigint;not null;default:0"`
 	// ContextWindow 是 runner 在最近一轮上报的模型上下文窗口大小（tokens）：
 	//   - codex：从 thread/tokenUsage/updated 的 modelContextWindow 字段落库；
 	//   - claudecode / builtin：runner 不报，恒为 0，LoadSession 走 provider/catalog 兜底。

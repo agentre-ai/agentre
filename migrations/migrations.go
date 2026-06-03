@@ -31,5 +31,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202605220008(), // app_settings + proxy host/port seed
 		migration202605220009(), // server_state + paired_agentreds
 		migration202605220010(), // projects.sort_order
+		migration202606030001(), // chat_sessions.group_id + index
 	}
 }
