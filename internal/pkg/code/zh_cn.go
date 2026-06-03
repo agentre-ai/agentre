@@ -38,10 +38,12 @@ var zhCN = map[int]string{
 	AgentBackendInvalidReasoningEffort: "思考力度取值不合法，仅支持 low / medium / high / xhigh / max 或留空",
 	AgentBackendInvalidDevice:          "Agent 后端绑定的设备不存在或已下线",
 
-	AppSettingNotFound:      "设置项不存在",
-	AppSettingInvalidPort:   "端口必须是 0~65535 之间的整数",
-	AppSettingInvalidHost:   "监听地址不是合法的 IP",
-	AppGatewayRestartFailed: "应用并重启本地代理失败，请检查端口占用",
+	AppSettingNotFound:           "设置项不存在",
+	AppSettingInvalidPort:        "端口必须是 0~65535 之间的整数",
+	AppSettingInvalidHost:        "监听地址不是合法的 IP",
+	AppGatewayRestartFailed:      "应用并重启本地代理失败，请检查端口占用",
+	AppSettingInvalidBool:        "开关取值必须是 true 或 false",
+	AppSettingInvalidSoundPreset: "提示音预设不在可选范围内",
 
 	HookSourceNotFound:          "信号源不存在",
 	HookSourceNameDuplicated:    "信号源名称已存在",
