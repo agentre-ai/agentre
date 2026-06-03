@@ -133,6 +133,14 @@ var zhCN = map[int]string{
 	ProjectHasChildren:       "项目下还有子项目，无法删除",
 	ProjectHasActiveSessions: "项目下还有未归档的会话，无法删除",
 
+	// Issue
+	IssueNotFound:          "issue 不存在",
+	IssueTitleRequired:     "issue 标题不能为空",
+	IssueInvalidState:      "issue 状态非法",
+	IssueLabelNameRequired: "标签名不能为空",
+	IssueLabelInvalidTone:  "标签色调非法",
+	IssueLabelNotFound:     "引用的标签不存在",
+
 	// Project Location（远端 device 路径子表）
 	ProjectLocationNotFound:    "项目路径不存在",
 	ProjectLocationInvalidPath: "项目路径必须是绝对路径",
