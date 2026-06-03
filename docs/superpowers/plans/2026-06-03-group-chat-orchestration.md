@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 agentre 桌面端新增「群聊 agent 编排」——一个协调者牵头、可动态招募成员、成员/用户通过 `@` 寻址收发、并行 fan-out 自动推进的多 agent 协作房间；**agent 经注入的 `group_send` MCP tool 发言**，能力门控 `CapGroupChat`（MVP 仅 claudecode）。
+**Goal:** 在 agentre 桌面端新增「群聊 agent 编排」——一个协调者牵头、可动态招募成员、成员/用户通过 `@` 寻址收发、并行 fan-out 自动推进的多 agent 协作房间；**agent 经注入的 `group_send` MCP tool 发言**，能力门控 `CapMCPTools`（MVP 仅 claudecode）。
 
-**Architecture:** 新增自包含 domain `group_*`（entity/repo/svc/app 绑定 + 前端面板），作为纯应用层编排器，**架在 `chat_svc` 之上**（走窄接口 accessor）。成员 = 真实的 `chat_sessions` 行（带 `group_id`，从默认列表隐藏），复用 history / steering / 工具权限 / capability gating。**发消息机制 = `group_send` MCP tool**：成员 turn 内调 tool（结构化 `mentions[]`）→ gateway `/mcp/group` handler → `group_svc.IngestAgentMessage` 路由；私有叙述不进群。`ObserveTurn` 退居**生命周期观察**（释放调度槽 + quiesce），不再解析 turn 文本。seam：`ObserveTurn` + `chat_sessions.group_id` + `EnsureGroupMemberSession` + **新能力 `CapGroupChat`** + **`RunRequest.MCPServers`/`pkg/claudecode --mcp-config`** + **`SendRequest` 透传 `MCPServers`/`SystemPromptSuffix`（领域无关）** + **gateway 注册 `/mcp/group`**。`<mention>` 解析**保留但仅供前端高亮 chip + 点击跳转**，不参与路由。
+**Architecture:** 新增自包含 domain `group_*`（entity/repo/svc/app 绑定 + 前端面板），作为纯应用层编排器，**架在 `chat_svc` 之上**（走窄接口 accessor）。成员 = 真实的 `chat_sessions` 行（带 `group_id`，从默认列表隐藏），复用 history / steering / 工具权限 / capability gating。**发消息机制 = `group_send` MCP tool**：成员 turn 内调 tool（结构化 `mentions[]`）→ gateway `/mcp/group` handler → `group_svc.IngestAgentMessage` 路由；私有叙述不进群。`ObserveTurn` 退居**生命周期观察**（释放调度槽 + quiesce），不再解析 turn 文本。seam：`ObserveTurn` + `chat_sessions.group_id` + `EnsureGroupMemberSession` + **新能力 `CapMCPTools`** + **`RunRequest.MCPServers`/`pkg/claudecode --mcp-config`** + **`SendRequest` 透传 `MCPServers`/`SystemPromptSuffix`（领域无关）** + **gateway 注册 `/mcp/group`**。`<mention>` 解析**保留但仅供前端高亮 chip + 点击跳转**，不参与路由。
 
 **Tech Stack:** Go 1.26 / cago / gorm + gormigrate（SQLite，原生 SQL DDL）/ go.uber.org/mock（mockgen）/ goconvey；MCP over HTTP（复用 `internal/pkg/httpgateway`）；React 19 + TS + Vite + Tailwind v4 + shadcn `@/components/ui/*`（无 `Tabs`，复用 `chat-tabs/`）+ react-i18next + zustand + Vitest；Wails v2 IPC（`frontend/wailsjs` 生成绑定 + `wailsruntime.EventsEmit`）。
 
@@ -566,9 +566,9 @@ git commit -m "✨ group: chat_svc.ObserveTurn 服务端 turn 完成观察口(fi
 
 ## Phase A-MCP — 能力门控 + MCP 注入管线（地基，B 之前）
 
-> 给 claudecode runtime 加 `CapGroupChat` 能力 + 让它能带 `group_send` MCP tool 启动。**不 backend-switch**：经 `RunRequest.MCPServers` + `SendRequest` 透传，chat_svc 领域无关。MCP **server handler** 在 Phase C（需 `IngestAgentMessage`）。
+> 给 claudecode runtime 加 `CapMCPTools` 能力 + 让它能带 `group_send` MCP tool 启动。**不 backend-switch**：经 `RunRequest.MCPServers` + `SendRequest` 透传，chat_svc 领域无关。MCP **server handler** 在 Phase C（需 `IngestAgentMessage`）。
 
-### Task AM1: 新能力 `CapGroupChat` + claudecode 声明 + matrix 测试
+### Task AM1: 新能力 `CapMCPTools` + claudecode 声明 + matrix 测试
 
 **Files:**
 - Modify: `internal/pkg/agentruntime/capability/capability.go`
@@ -582,12 +582,12 @@ git commit -m "✨ group: chat_svc.ObserveTurn 服务端 turn 完成观察口(fi
 `capability.go` const 块末尾加：
 
 ```go
-	CapGroupChat Capability = "group_chat" // 该 runtime 接受 RunRequest.MCPServers, 可带 MCP tool 启动(群聊用)
+	CapMCPTools Capability = "mcp_tools" // 该 runtime 接受 RunRequest.MCPServers, 可带注入的 MCP tool 启动(群聊是首个消费者)
 ```
 
 - [ ] **Step 2: 改 matrix 测试（先红）**
 
-`runtime_test.go` 的 claudecode 能力断言里加一行 `So(caps.Has(capability.CapGroupChat), ShouldBeTrue)`；codex/builtin/piagent 的对应测试加 `ShouldBeFalse`。
+`runtime_test.go` 的 claudecode 能力断言里加一行 `So(caps.Has(capability.CapMCPTools), ShouldBeTrue)`；codex/builtin/piagent 的对应测试加 `ShouldBeFalse`。
 
 - [ ] **Step 3: 跑测试看失败**
 
@@ -596,7 +596,7 @@ Expected: FAIL（claudecode 尚未声明）。
 
 - [ ] **Step 4: claudecode 声明能力**
 
-`runtime.go:69` `Capabilities()` 返回的 `Set` map 加 `capability.CapGroupChat: true`。其它 runtime 不动（默认 false）。
+`runtime.go:69` `Capabilities()` 返回的 `Set` map 加 `capability.CapMCPTools: true`。其它 runtime 不动（默认 false）。
 
 - [ ] **Step 5: 跑测试看通过**
 
@@ -607,7 +607,7 @@ Expected: PASS
 
 ```bash
 git add internal/pkg/agentruntime/capability/capability.go internal/pkg/agentruntime/runtimes/claudecode/runtime.go internal/pkg/agentruntime/runtimes/claudecode/runtime_test.go
-git commit -m "✨ group: 新能力 CapGroupChat(claudecode 声明)——群聊入群门控"
+git commit -m "✨ group: 新能力 CapMCPTools(claudecode 声明)——群聊入群门控"
 ```
 
 ---
@@ -637,7 +637,7 @@ type MCPServerSpec struct {
 `RunRequest` 加字段（与 `Compact`/`ForkAnchor` 并列）：
 
 ```go
-	// MCPServers 非空 = 给本轮 CLI 注入额外 MCP tool server。仅声明 CapGroupChat
+	// MCPServers 非空 = 给本轮 CLI 注入额外 MCP tool server。仅声明 CapMCPTools
 	// 的 runtime(claudecode)消费; 其它 runtime 忽略。群聊经此注入 group_send tool。
 	MCPServers []MCPServerSpec
 ```
@@ -1404,7 +1404,7 @@ const (
 	GroupMemberExists                       // 该 agent 已在群中
 	GroupMemberLimit                        // 群成员数已达上限
 	GroupNotRecruitable                     // 该 agent 不在可招募名单
-	GroupBackendUnsupported                 // 该 agent 的后端不支持群聊(缺 CapGroupChat)
+	GroupBackendUnsupported                 // 该 agent 的后端不支持群聊(缺 CapMCPTools)
 )
 ```
 
@@ -1775,7 +1775,7 @@ func (s *groupSvc) AddGroupMember(ctx context.Context, groupID, agentID int64) (
 	if len(members) >= maxMembers {
 		return nil, i18n.NewError(ctx, code.GroupMemberLimit)
 	}
-	if !s.backendSupportsGroup(ctx, agentID) { // CapGroupChat 门控(helper 在 Task C5 实现)
+	if !s.backendSupportsGroup(ctx, agentID) { // CapMCPTools 门控(helper 在 Task C5 实现)
 		return nil, i18n.NewError(ctx, code.GroupBackendUnsupported)
 	}
 	return s.ensureMember(ctx, g, agentID, group_entity.RoleMember)
@@ -1909,8 +1909,15 @@ func (s *groupSvc) SendGroupMessage(ctx context.Context, req *SendGroupMessageRe
 	if err != nil {
 		return err
 	}
-	_ = members // members 此处不再用于解析(收件人结构化); 保留查询用于校验/未来
 	recipientIDs, toUser := s.resolveRecipientsFromRequest(req)
+	if len(recipientIDs) == 0 && !toUser { // 用户没选收件人 → 默认投协调者(spec §17)
+		for _, m := range members {
+			if m.IsCoordinator() {
+				recipientIDs = []int64{m.ID}
+				break
+			}
+		}
+	}
 	if _, err := s.persistMessage(ctx, g, group_entity.SenderKindUser, 0, req.Text, recipientIDs, toUser, 0); err != nil {
 		return err
 	}
@@ -2113,11 +2120,18 @@ func (s *groupSvc) handleTurnResult(ctx context.Context, groupID int64, m *group
 ```go
 // IngestAgentMessage 是 group_send MCP tool 的服务端入口(MCP handler 调用)。
 // memberID = 发送成员; body = 正文; mentions = 收件成员显示名(+ "用户")。
+// 并发: MCP handler goroutine 调用, 可能与调度/同 turn 多次 group_send 并发 →
+// 必须 per-group 串行化「解析→分配 seq→落库→入队」, 否则 NextSeq 重号 / round_count 丢更新。
 func (s *groupSvc) IngestAgentMessage(ctx context.Context, memberID int64, body string, mentions []string) error {
 	sender, err := group_repo.Member().Find(ctx, memberID)
 	if err != nil || sender == nil {
 		return i18n.NewError(ctx, code.GroupMemberNotFound)
 	}
+	// per-group 串行化「解析→分配 seq→落库→入队」(防 NextSeq 重号 / round_count 丢更新)。
+	mu := s.ingestMu(sender.GroupID) // s.ingestMu: 返回该 group 的 *sync.Mutex(sync.Map 懒建)
+	mu.Lock()
+	defer mu.Unlock()
+
 	g, err := group_repo.Group().Find(ctx, sender.GroupID)
 	if err != nil || g == nil {
 		return i18n.NewError(ctx, code.GroupNotFound)
@@ -2154,8 +2168,10 @@ func (s *groupSvc) resolveMentionNames(ctx context.Context, g *group_entity.Grou
 		switch {
 		case name == "用户" || name == "你":
 			toUser = true
-		case byName[name] != 0:
+		case byName[name] != 0 && byName[name] != sender.ID: // 剔除自我 mention(防自循环)
 			ids = append(ids, byName[name])
+		case byName[name] == sender.ID:
+			// 自己 mention 自己 → 忽略
 		case sender.IsCoordinator():
 			if rid := s.maybeRecruit(ctx, g, name); rid > 0 {
 				ids = append(ids, rid)
@@ -2180,15 +2196,15 @@ func (s *groupSvc) applyFallback(g *group_entity.Group, sender *group_entity.Gro
 	return ids, true
 }
 
-// maybeRecruit: 协调者 mention 了部门名单内、未进群、且支持 CapGroupChat 的 agent → 招募。
+// maybeRecruit: 协调者 mention 了部门名单内、未进群、且支持 CapMCPTools 的 agent → 招募。
 // 返回新成员 member id(0 = 没招到)。落一条 sender_kind=system 的"X 加入"消息。
 func (s *groupSvc) maybeRecruit(ctx context.Context, g *group_entity.Group, name string) int64 {
 	agentID := s.recruitableAgentByName(ctx, g, name) // 查部门名单内同名 agent; 0=不在名单
 	if agentID == 0 {
 		return 0
 	}
-	if !s.backendSupportsGroup(ctx, agentID) { // CapGroupChat 门控
-		logger.Ctx(ctx).Info("group_svc.maybeRecruit: backend lacks CapGroupChat", zap.Int64("agentId", agentID))
+	if !s.backendSupportsGroup(ctx, agentID) { // CapMCPTools 门控
+		logger.Ctx(ctx).Info("group_svc.maybeRecruit: backend lacks CapMCPTools", zap.Int64("agentId", agentID))
 		return 0
 	}
 	m, err := s.ensureMember(ctx, g, agentID, group_entity.RoleMember)
@@ -2203,8 +2219,11 @@ func (s *groupSvc) maybeRecruit(ctx context.Context, g *group_entity.Group, name
 > 实现说明（写代码时补全的小工具）：
 > - `lastSenderMemberID(groupID, excludeMemberID)`：读最近一条非自己的 group_message 的 `sender_member_id`（`group_repo.Message().ListByGroup` 反向找）。
 > - `recruitableAgentByName(ctx, g, name)`：查 `g.DepartmentID` 下名为 `name` 的 agent（走 `agent_repo` accessor）；0=不在可招募名单。
-> - `backendSupportsGroup(ctx, agentID)`：解析该 agent 的 backend，查 `Capabilities().Has(capability.CapGroupChat)`（复用 chat_svc/agentruntime 的能力查询，注入接口避免反依赖）。同一函数供 `AddGroupMember`/`ensureMember` 门控复用（Task C3）。
+> - `backendSupportsGroup(ctx, agentID)`：解析该 agent 的 backend，查 `Capabilities().Has(capability.CapMCPTools)`（复用 chat_svc/agentruntime 的能力查询，注入接口避免反依赖）。同一函数供 `AddGroupMember`/`ensureMember` 门控复用（Task C3）。
 > - `buildGroupMCP(g, m)` / `buildGroupSystemPrompt(g, members, m)`：见 Task C8（MCP token 签发）与本任务的 prompt 拼装；`buildGroupSystemPrompt` 产出角色 + 当前 roster 名字 + "用 group_send tool 发言, mentions 填名字, @用户=回人类" + worktree 引导。
+> - `ingestMu(groupID) *sync.Mutex`：`sync.Map` 懒建的 per-group 锁（`groupSvc` 加字段 `ingestLocks *sync.Map`）。串行化 IngestAgentMessage 的 seq/round_count 临界区。
+> - **token 生命周期**（spec §17）：`maybeRecruit`/`launchDelivery` 签发的 MCP token 用加密随机；成员离群（`RemoveGroupMember`）/ 群 `StopGroup`/`ArchiveGroup` 时吊销该 group/member 的 token（`s.mcp.RevokeGroup(groupID)` / `RevokeMember(memberID)`）。
+> - **用户消息无收件人兜底**（spec §17）：`SendGroupMessage`（C4）里若 `recipientIDs` 空且 `!toUser` → 默认投给**协调者**（取 `members` 中 `IsCoordinator()` 的 member id）；与 agent 侧"回上一个发送者"区分。
 
 - [ ] **Step 5: 跑测试看通过**
 
@@ -2214,7 +2233,7 @@ Expected: PASS（含 race 检测——`scheduler.mu` 保护并发访问）。
 - [ ] **Step 6: 补 recruit / quiesce / 生命周期测试**
 
 `scheduler_test.go` 追加：
-- **招募**：协调者 `IngestAgentMessage` 的 mentions 含名单内未进群且支持 CapGroupChat 的 agent → 断言 `ensureMember`(EnsureGroupMemberSession) 被调 + 系统消息落库 + 新成员被投递；不支持 CapGroupChat → 不招募 + flag。
+- **招募**：协调者 `IngestAgentMessage` 的 mentions 含名单内未进群且支持 CapMCPTools 的 agent → 断言 `ensureMember`(EnsureGroupMemberSession) 被调 + 系统消息落库 + 新成员被投递；不支持 CapMCPTools → 不招募 + flag。
 - **quiesce**：成员 turn 结束（`ch <- TurnResult{}`）且无 pending → 断言 `run_status` 转 `waiting_user`（监听 emitter）。
 - **生命周期**：turn `Err != nil` → 释放槽 + 不落消息 + 继续 kick。
 
@@ -3138,7 +3157,7 @@ git commit -m "✨ group(fe): 消息正文 mention 高亮 chip + 点击跳转成
 - [ ] **前端全量：** `cd frontend && pnpm test` → 全绿
 - [ ] **lint：** `make lint` → 全绿（含 `i18next/no-literal-string`）
 - [ ] **mock 一致：** `make mock` 后 `git status` 无未提交 mock 漂移
-- [ ] **手动冒烟（`make dev`，协调者/成员均用 claudecode 后端的 agent）：** 建群（协调者自动进群）→ 用户 @ 协调者 → 协调者 turn 内调 `group_send` @两个成员 → 两成员并发跑 → 各自 `group_send` 路由 → 只 @用户时 quiesce → 停止中止全部 → 点成员 `›`/消息里 mention chip 跳转 backing 会话 → 普通单聊列表**不含**群成员 session → 邀请列表只列 claudecode（CapGroupChat）agent，加 codex agent 报 `GroupBackendUnsupported`。
+- [ ] **手动冒烟（`make dev`，协调者/成员均用 claudecode 后端的 agent）：** 建群（协调者自动进群）→ 用户 @ 协调者 → 协调者 turn 内调 `group_send` @两个成员 → 两成员并发跑 → 各自 `group_send` 路由 → 只 @用户时 quiesce → 停止中止全部 → 点成员 `›`/消息里 mention chip 跳转 backing 会话 → 普通单聊列表**不含**群成员 session → 邀请列表只列 claudecode（CapMCPTools）agent，加 codex agent 报 `GroupBackendUnsupported`。
 
 ---
 
@@ -3148,19 +3167,19 @@ git commit -m "✨ group(fe): 消息正文 mention 高亮 chip + 点击跳转成
 | --- | --- |
 | §3.1 ObserveTurn（起点订阅 + 覆盖 failTurn 早退 + 恰好一条终态 + **生命周期 only**） | A4 |
 | §3.2 group_id 列 + **9** 个 list/count 查询过滤 + 索引 + EnsureGroupMemberSession | A1 / A2 / A3 |
-| §3.3 能力门控 `CapGroupChat` + `RunRequest.MCPServers` + `--mcp-config` + `SendRequest` 透传 | **AM1 / AM2 / AM3** |
+| §3.3 能力门控 `CapMCPTools` + `RunRequest.MCPServers` + `--mcp-config` + `SendRequest` 透传 | **AM1 / AM2 / AM3** |
 | §3.3 MCP `group_send` server handler + per-member token + 群 system prompt 拼装 | **C8** |
 | §4 三表数据模型 + 充血方法 | B1 / B2 / B3 |
 | §5 并发 fan-out（跨成员并发/同成员串行/eager/无 cap）+ **tool 路由 `IngestAgentMessage`** | C5 |
 | §6 寻址（**结构化路由** `mentions[]`/`recipientMemberIds` + `(来自 X)` 抬头 + 兜底 + quiesce） | C4（用户侧）/ C5（agent 侧 `resolveMentionNames`） |
 | §6 寻址（**展示** `<mention>`/`@` 高亮 chip + 点击跳转） | **E5** |
-| §7 招募（协调者 `group_send` mention 名单内 + CapGroupChat 门控）/终止（无 max_rounds）/插话/暂停 | C5（maybeRecruit）/ C6 |
+| §7 招募（协调者 `group_send` mention 名单内 + CapMCPTools 门控）/终止（无 max_rounds）/插话/暂停 | C5（maybeRecruit）/ C6 |
 | §8 工具权限透传（`group_send` 自动放行；其它 tool 系统行冒泡 + 复用现有 handler） | AM2（allowedTools）/ E3（transcript 渲染审批卡）；后端事件经 backing session stream 既有路径，无新增 |
 | §9 Wails 绑定（结构化 recipientMemberIds）+ `group:event:<id>` 事件流 | D1 / D2 |
-| §10 四区 UI + 视图 tab 栏 + 成员/设置 tab + 成员/mention 跳转 + 邀请按 CapGroupChat 过滤 | E3 / E4 / E5 |
+| §10 四区 UI + 视图 tab 栏 + 成员/设置 tab + 成员/mention 跳转 + 邀请按 CapMCPTools 过滤 | E3 / E4 / E5 |
 | §11 测试策略（capability matrix / MCP handler / sqlmock / mockgen / goconvey / Vitest） | 各 Task 的 Step 1-2 |
 | §12 错误码 19000（含 `GroupBackendUnsupported`）+ i18n + 日志 | C7 + 各 svc 方法 `logger.Ctx` |
 | §13 MVP IN/OUT | 全量（OUT 项不做：codex/builtin 群成员 / 强制 worktree / DAG / 跨群 / 环检测 / remote 专测） |
 
 > **§8 工具权限**：`group_send` 经 `--allowedTools` 自动放行（AM2）；其它 tool 的审批仍复用现有 backing session 的 `ToolPermissionRequest`/`AnswerToolPermission`，群 transcript 当系统行展示（E3 渲染层），无独立后端 Task。
-> **能力门控**：MVP 仅 claudecode 声明 `CapGroupChat`；codex/builtin/piagent 入群被 `GroupBackendUnsupported` 拒绝，前端邀请列表按 cap 过滤（E3/E4）。
+> **能力门控**：MVP 仅 claudecode 声明 `CapMCPTools`；codex/builtin/piagent 入群被 `GroupBackendUnsupported` 拒绝，前端邀请列表按 cap 过滤（E3/E4）。
