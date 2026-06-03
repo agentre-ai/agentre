@@ -187,3 +187,4 @@ bool 用 `ValidateBoolSetting`、preset 用 `ValidateSoundPreset`(放在 `app_se
 - **无节流**:多个会话短时间密集完成会连弹多条通知。
 - **后台音频**:app 完全最小化时,部分平台可能挂起 webview 音频导致提示音不响;系统通知此时仍可靠,可兜底。
 - **无 per-event 开关**:done/error/waiting 不能分别开关(全开)。
+- **无开启 tab 的会话不弹「完成」**:`done` 检测依赖该会话有打开的 tab —— `ChatPanelHost` 为每个打开的 tab(含后台 tab)常驻挂载 `ChatPanel`,turn 结束时它 reload 把 `agentStatus` 落成 `idle`,触发本功能的 `running→idle` 边检测。所以**任何打开了 tab 的会话(活动 / 后台)都正常**;只有完全没开 tab 的后台会话,其 `done` 不会弹通知(因为后端对 idle **不** emit `session_status`)。`error` / `waiting` 不受影响(后端会 emit `session_status`,可靠触达)。若将来要覆盖无 tab 会话,可把检测从「`agentStatus` 边」改为「`doneTick` 自增 + `lastDoneEvent.kind`」(由常驻的 `chat-streams-host` 可靠驱动)。
