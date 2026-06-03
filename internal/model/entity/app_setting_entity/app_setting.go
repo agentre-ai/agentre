@@ -29,6 +29,14 @@ const (
 	// KeyDebugLogging 是否开启 debug 级别日志（"true"/"false"）；缺省关闭。
 	// 取代旧的 AGENTRE_DEBUG 环境变量，由「设置 → 版本 & 更新」开关写入。
 	KeyDebugLogging = "logger.debug_enabled"
+
+	// 通知设置。bool 型存 "true"/"false"；sound_preset 为枚举。
+	KeyNotifyEnabled           = "notify.enabled"             // 通知总开关
+	KeyNotifyOnlyWhenUnfocused = "notify.only_when_unfocused" // 仅窗口未激活时通知
+	KeyNotifySystem            = "notify.system"              // 系统原生通知
+	KeyNotifySound             = "notify.sound"               // 提示音
+	KeyNotifySoundPreset       = "notify.sound_preset"        // 提示音预设
+	KeyNotifyToast             = "notify.toast"               // 应用内 toast
 )
 
 // DefaultProxyListenHost 缺省监听地址 —— loopback，只允许本机访问。
@@ -117,4 +125,27 @@ func ValidateUpdateChannel(ctx context.Context, v string) error {
 		return nil
 	}
 	return i18n.NewError(ctx, code.InvalidParameter)
+}
+
+// ValidateBoolSetting 校验布尔型设置项取值，仅接受 "true"/"false"（service 层调用前已 TrimSpace）。
+func ValidateBoolSetting(ctx context.Context, v string) error {
+	switch strings.TrimSpace(v) {
+	case "true", "false":
+		return nil
+	}
+	return i18n.NewError(ctx, code.AppSettingInvalidBool)
+}
+
+// ValidateSoundPreset 校验提示音预设取值。
+func ValidateSoundPreset(ctx context.Context, v string) error {
+	switch strings.TrimSpace(v) {
+	case "ding", "chime", "blip":
+		return nil
+	}
+	return i18n.NewError(ctx, code.AppSettingInvalidSoundPreset)
+}
+
+// ParseBoolSetting 解析布尔型设置项；仅 "true" 视为开启，其余（含空）关闭。
+func ParseBoolSetting(v string) bool {
+	return strings.TrimSpace(v) == "true"
 }
