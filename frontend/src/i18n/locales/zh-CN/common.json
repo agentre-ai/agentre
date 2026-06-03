@@ -876,6 +876,17 @@
       "running": "进行中",
       "waiting": "待审批"
     },
+    "dialog": {
+      "title": "新建 Issue",
+      "editTitle": "编辑 Issue",
+      "titleLabel": "标题",
+      "bodyLabel": "描述",
+      "projectLabel": "项目",
+      "noProject": "未归属",
+      "labelsLabel": "标签",
+      "create": "创建 Issue",
+      "save": "保存"
+    },
     "filters": {
       "assignedAgent": "分派 Agent",
       "author": "作者",

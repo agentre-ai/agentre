@@ -876,6 +876,17 @@
       "running": "In Progress",
       "waiting": "Waiting"
     },
+    "dialog": {
+      "title": "New Issue",
+      "editTitle": "Edit Issue",
+      "titleLabel": "Title",
+      "bodyLabel": "Description",
+      "projectLabel": "Project",
+      "noProject": "No project",
+      "labelsLabel": "Labels",
+      "create": "Create issue",
+      "save": "Save"
+    },
     "filters": {
       "assignedAgent": "Assigned Agent",
       "author": "Author",
