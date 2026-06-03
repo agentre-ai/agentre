@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 agentre 桌面端新增「群聊 agent 编排」——一个协调者牵头、可动态招募成员、成员/用户通过 `@` 寻址收发、并行 fan-out 自动推进的多 agent 协作房间。
+**Goal:** 在 agentre 桌面端新增「群聊 agent 编排」——一个协调者牵头、可动态招募成员、成员/用户通过 `@` 寻址收发、并行 fan-out 自动推进的多 agent 协作房间；**agent 经注入的 `group_send` MCP tool 发言**，能力门控 `CapGroupChat`（MVP 仅 claudecode）。
 
-**Architecture:** 新增自包含 domain `group_*`（entity/repo/svc/app 绑定 + 前端面板），作为纯应用层编排器，**架在 `chat_svc` 之上**（走窄接口 accessor）。成员 = 真实的 `chat_sessions` 行（带 `group_id`，从默认列表隐藏），复用 history / steering / 工具权限 / capability gating。运行时层（builtin/claudecode/codex/remote）零改动。只在 `chat_*` 开两处 seam：服务端 turn 完成观察口 `ObserveTurn` + `chat_sessions.group_id` 列与 `EnsureGroupMemberSession`。
+**Architecture:** 新增自包含 domain `group_*`（entity/repo/svc/app 绑定 + 前端面板），作为纯应用层编排器，**架在 `chat_svc` 之上**（走窄接口 accessor）。成员 = 真实的 `chat_sessions` 行（带 `group_id`，从默认列表隐藏），复用 history / steering / 工具权限 / capability gating。**发消息机制 = `group_send` MCP tool**：成员 turn 内调 tool（结构化 `mentions[]`）→ gateway `/mcp/group` handler → `group_svc.IngestAgentMessage` 路由；私有叙述不进群。`ObserveTurn` 退居**生命周期观察**（释放调度槽 + quiesce），不再解析 turn 文本。seam：`ObserveTurn` + `chat_sessions.group_id` + `EnsureGroupMemberSession` + **新能力 `CapGroupChat`** + **`RunRequest.MCPServers`/`pkg/claudecode --mcp-config`** + **`SendRequest` 透传 `MCPServers`/`SystemPromptSuffix`（领域无关）** + **gateway 注册 `/mcp/group`**。`<mention>` 解析**保留但仅供前端高亮 chip + 点击跳转**，不参与路由。
 
-**Tech Stack:** Go 1.26 / cago / gorm + gormigrate（SQLite，原生 SQL DDL）/ go.uber.org/mock（mockgen）/ goconvey；React 19 + TS + Vite + Tailwind v4 + shadcn `@/components/ui/*` + react-i18next + zustand + Vitest；Wails v2 IPC（`frontend/wailsjs` 生成绑定 + `wailsruntime.EventsEmit`）。
+**Tech Stack:** Go 1.26 / cago / gorm + gormigrate（SQLite，原生 SQL DDL）/ go.uber.org/mock（mockgen）/ goconvey；MCP over HTTP（复用 `internal/pkg/httpgateway`）；React 19 + TS + Vite + Tailwind v4 + shadcn `@/components/ui/*`（无 `Tabs`，复用 `chat-tabs/`）+ react-i18next + zustand + Vitest；Wails v2 IPC（`frontend/wailsjs` 生成绑定 + `wailsruntime.EventsEmit`）。
 
-**Spec:** `docs/superpowers/specs/2026-06-03-group-chat-orchestration-design.md`
+**Spec:** `docs/superpowers/specs/2026-06-03-group-chat-orchestration-design.md`（2026-06-03 已升级为 tool-send + MCP + 能力门控）
 
-**执行顺序：A（chat_svc seam）→ B（group 数据层）→ C（group_svc 编排）→ D（Wails 绑定 + 事件）→ E（前端）。** A 是地基，必须先做；E 依赖 D 跑过 `make generate`。
+**执行顺序：A（chat_svc seam）→ A-MCP（能力 + MCP 注入管线）→ B（group 数据层）→ C（group_svc 编排）→ D（Wails 绑定 + 事件）→ E（前端）。** A/A-MCP 是地基，必须先做；E 依赖 D 跑过 `make generate`。
 
 **全局命令备忘：**
 - 聚焦后端单测：`go test -race -run TestName ./internal/...`
@@ -23,7 +23,7 @@
 
 ---
 
-## Phase A — `chat_*` 两处 seam（地基）
+## Phase A — `chat_*` seam（地基：group_id 列 / EnsureGroupMemberSession / ObserveTurn）
 
 ### Task A1: `chat_sessions` 增 `group_id` 列 + 实体字段 + 迁移
 
@@ -359,6 +359,7 @@ git commit -m "✨ group: chat_svc.EnsureGroupMemberSession + repo FindByGroupAn
 - Modify: `internal/service/chat_svc/chat.go`（接口加 `ObserveTurn`；finalize 与 `failTurn` 各 publish 一次）
 - Test: `internal/service/chat_svc/observe_test.go`
 
+> **职责（tool-send 架构）：`ObserveTurn` 只管 turn 生命周期**（释放成员调度槽 + 判断 quiesce），**不**承载消息内容 —— 成员发言来自 turn 进行中的 `group_send` MCP tool 调用（Phase A-MCP / C5），不从最终文本解析。故 `TurnResult` 不含 `Text`。
 > **不变量：订阅了就一定收到恰好一条终态。** 正常 finalize publish 一次；`failTurn` 的 5 个早退路径各 publish 一次（且早退后立即 return，不会再走 finalize）。abort 走 finalize 的 `aborted=true` 分支，不经 failTurn。
 
 - [ ] **Step 1: 写 `observe.go`（注册表 + 类型，先建骨架以便测试编译）**
@@ -369,10 +370,10 @@ package chat_svc
 import "sync"
 
 // TurnResult 一个 turn 的终态(服务端观察口产出, 不经 Wails)。
+// tool-send 架构下只承载生命周期信号, 不含消息文本(发言走 group_send MCP tool)。
 type TurnResult struct {
 	SessionID          int64
 	AssistantMessageID int64
-	Text               string // 最终助手纯文本(从 finalBlocks 的 TextBlock 提取)
 	Aborted            bool
 	Err                error
 }
@@ -455,11 +456,12 @@ func TestObserveTurn_ReceivesTerminalOnce(t *testing.T) {
 		})
 		ch, cancel := svc.ObserveTurn(42)
 		defer cancel()
-		svc.PublishTurnResultForTest(42, chat_svc.TurnResult{SessionID: 42, Text: "done"})
+		svc.PublishTurnResultForTest(42, chat_svc.TurnResult{SessionID: 42, Aborted: true})
 
 		select {
 		case r := <-ch:
-			So(r.Text, ShouldEqual, "done")
+			So(r.SessionID, ShouldEqual, 42)
+			So(r.Aborted, ShouldBeTrue)
 		case <-time.After(time.Second):
 			t.Fatal("未收到 TurnResult")
 		}
@@ -494,7 +496,6 @@ Expected: FAIL（首跑应在补齐 struct 字段/方法前编译失败；补齐
 	s.publishTurnResult(sess.ID, TurnResult{
 		SessionID:          sess.ID,
 		AssistantMessageID: assistantMsg.ID,
-		Text:               textOfMessage(assistantMsg),
 		Aborted:            aborted,
 		Err:                stopErr,
 	})
@@ -510,7 +511,7 @@ Expected: FAIL（首跑应在补齐 struct 字段/方法前编译失败；补齐
 	})
 ```
 
-> `textOfMessage`（`chat.go:2993`）已存在，直接复用提取纯文本。
+> 不取 `textOfMessage` —— 生命周期信号不需要文本（发言走 `group_send` tool）。
 
 - [ ] **Step 5: 写「失败 turn 也回灌恰好一条」回归测试**
 
@@ -559,6 +560,198 @@ Expected: PASS
 ```bash
 git add internal/service/chat_svc/observe.go internal/service/chat_svc/chat.go internal/service/chat_svc/observe_test.go
 git commit -m "✨ group: chat_svc.ObserveTurn 服务端 turn 完成观察口(finalize+failTurn 各回灌一次终态)"
+```
+
+---
+
+## Phase A-MCP — 能力门控 + MCP 注入管线（地基，B 之前）
+
+> 给 claudecode runtime 加 `CapGroupChat` 能力 + 让它能带 `group_send` MCP tool 启动。**不 backend-switch**：经 `RunRequest.MCPServers` + `SendRequest` 透传，chat_svc 领域无关。MCP **server handler** 在 Phase C（需 `IngestAgentMessage`）。
+
+### Task AM1: 新能力 `CapGroupChat` + claudecode 声明 + matrix 测试
+
+**Files:**
+- Modify: `internal/pkg/agentruntime/capability/capability.go`
+- Modify: `internal/pkg/agentruntime/runtimes/claudecode/runtime.go`（`Capabilities()`，`runtime.go:69`）
+- Modify: `internal/pkg/agentruntime/runtimes/claudecode/runtime_test.go`（`TestXxxCapabilities` matrix）
+
+> agent-backend.md §0.5 要求 cap 三处同步：capability.go 常量 / runtime.go Capabilities() / runtime_test.go 矩阵断言。
+
+- [ ] **Step 1: 加常量**
+
+`capability.go` const 块末尾加：
+
+```go
+	CapGroupChat Capability = "group_chat" // 该 runtime 接受 RunRequest.MCPServers, 可带 MCP tool 启动(群聊用)
+```
+
+- [ ] **Step 2: 改 matrix 测试（先红）**
+
+`runtime_test.go` 的 claudecode 能力断言里加一行 `So(caps.Has(capability.CapGroupChat), ShouldBeTrue)`；codex/builtin/piagent 的对应测试加 `ShouldBeFalse`。
+
+- [ ] **Step 3: 跑测试看失败**
+
+Run: `go test -race -run TestCapabilities ./internal/pkg/agentruntime/...`
+Expected: FAIL（claudecode 尚未声明）。
+
+- [ ] **Step 4: claudecode 声明能力**
+
+`runtime.go:69` `Capabilities()` 返回的 `Set` map 加 `capability.CapGroupChat: true`。其它 runtime 不动（默认 false）。
+
+- [ ] **Step 5: 跑测试看通过**
+
+Run: `go test -race ./internal/pkg/agentruntime/...`
+Expected: PASS
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add internal/pkg/agentruntime/capability/capability.go internal/pkg/agentruntime/runtimes/claudecode/runtime.go internal/pkg/agentruntime/runtimes/claudecode/runtime_test.go
+git commit -m "✨ group: 新能力 CapGroupChat(claudecode 声明)——群聊入群门控"
+```
+
+---
+
+### Task AM2: `RunRequest.MCPServers` + `pkg/claudecode --mcp-config` + 映射
+
+**Files:**
+- Modify: `internal/pkg/agentruntime/runner.go`（`MCPServerSpec` 类型 + `RunRequest.MCPServers`）
+- Modify: `pkg/claudecode/args.go`（`flagMcpConfig` + `spec.mcpConfig`）
+- Modify: `pkg/claudecode/options.go`（`WithMcpConfig`）
+- Modify: `internal/pkg/agentruntime/runtimes/claudecode/session.go`（`ccBuildClientOpts:177` 映射）
+- Test: `pkg/claudecode/args_test.go` + `internal/pkg/agentruntime/runtimes/claudecode/session_test.go`
+
+- [ ] **Step 1: 加共享类型 + RunRequest 字段**
+
+`runner.go`（RunRequest 上方）：
+
+```go
+// MCPServerSpec 一个注入给 runtime 的 MCP tool server(http transport)。
+type MCPServerSpec struct {
+	Name    string            // server 名; claude tool 暴露为 mcp__<Name>__<tool>
+	URL     string            // http MCP endpoint(如 http://127.0.0.1:<port>/mcp/group/)
+	Headers map[string]string // 鉴权/scope header(如 {"Authorization":"Bearer <token>"})
+}
+```
+
+`RunRequest` 加字段（与 `Compact`/`ForkAnchor` 并列）：
+
+```go
+	// MCPServers 非空 = 给本轮 CLI 注入额外 MCP tool server。仅声明 CapGroupChat
+	// 的 runtime(claudecode)消费; 其它 runtime 忽略。群聊经此注入 group_send tool。
+	MCPServers []MCPServerSpec
+```
+
+- [ ] **Step 2: 写 pkg/claudecode args 测试（先红）**
+
+`args_test.go` 加：当 `spec.mcpConfig != ""` 时 `buildArgs` 含 `--mcp-config <json>`。
+
+```go
+func TestBuildArgs_McpConfig(t *testing.T) {
+	args := buildArgs(runSpec{mcpConfig: `{"mcpServers":{}}`})
+	So(containsPair(args, "--mcp-config", `{"mcpServers":{}}`), ShouldBeTrue)
+}
+```
+
+- [ ] **Step 3: 跑看失败 → 实现 flag**
+
+`args.go`：const 区加 `flagMcpConfig flag = "--mcp-config"`；`runSpec` 加 `mcpConfig string`；`buildArgs` 在 `--settings` 附近加：
+
+```go
+	if spec.mcpConfig != "" {
+		args = append(args, string(flagMcpConfig), spec.mcpConfig)
+	}
+```
+
+`options.go` 加：
+
+```go
+// WithMcpConfig 下发 --mcp-config <json-or-file>。claude CLI 原生兼容 JSON 串或文件路径。
+func WithMcpConfig(value string) Option { return func(c *Client) { c.mcpConfig = value } }
+```
+
+（`Client` 加 `mcpConfig string` 字段，并在构造 runSpec 处透传 —— 仿现有 `settings` 字段的链路。）
+
+Run: `go test -race -run TestBuildArgs_McpConfig ./pkg/claudecode/` → PASS
+
+- [ ] **Step 4: 写 ccBuildClientOpts 映射测试（先红）**
+
+`session_test.go` 加：`RunRequest.MCPServers` 非空 → opts 含 `WithMcpConfig`（断言生成的 mcp-config JSON 含 server name + url + header）+ `allowedTools` 含 `mcp__group__group_send`。仿现有 `ccBuildClientOpts` 测试不 spawn 真子进程。
+
+- [ ] **Step 5: 实现映射**
+
+`session.go` `ccBuildClientOpts`：当 `spec.Req.MCPServers` 非空时，序列化成 claude mcp-config JSON 并 `WithMcpConfig`，同时把每个 server 的工具加进 `allowedTools`：
+
+```go
+	if len(spec.Req.MCPServers) > 0 {
+		cfg, allow := buildMcpConfigJSON(spec.Req.MCPServers) // {"mcpServers":{"group":{"type":"http","url":..,"headers":..}}}, ["mcp__group__group_send"]
+		opts = append(opts, claudecode.WithMcpConfig(cfg))
+		opts = append(opts, claudecode.WithAllowedTools(allow...)) // 若 WithAllowedTools 不存在则一并加(args 已支持 --allowedTools)
+	}
+```
+
+> `buildMcpConfigJSON` 是本包私有小函数：对每个 `MCPServerSpec` 产 `{"type":"http","url":URL,"headers":Headers}`，工具名约定 `mcp__<Name>__group_send`（MVP 只有 group_send 一个；如需通用可后续扩展为按 server 声明的工具列表）。`WithAllowedTools` 若 options.go 没有就照 `WithSettings` 模式补一个（`args.go` 的 `--allowedTools` 已存在）。
+
+- [ ] **Step 6: 跑测试看通过 + 提交**
+
+Run: `go test -race ./pkg/claudecode/ ./internal/pkg/agentruntime/runtimes/claudecode/`
+Expected: PASS
+
+```bash
+git add internal/pkg/agentruntime/runner.go pkg/claudecode/args.go pkg/claudecode/options.go pkg/claudecode/args_test.go internal/pkg/agentruntime/runtimes/claudecode/session.go internal/pkg/agentruntime/runtimes/claudecode/session_test.go
+git commit -m "✨ group: RunRequest.MCPServers + pkg/claudecode --mcp-config + 映射(注入 group_send tool)"
+```
+
+---
+
+### Task AM3: `chat_svc.SendRequest` 透传 `MCPServers` / `SystemPromptSuffix`（领域无关）
+
+**Files:**
+- Modify: `internal/service/chat_svc/types.go`（`SendRequest` 加两字段）
+- Modify: `internal/service/chat_svc/chat.go`（`runTurn` 拼 SystemPrompt + 透传 MCPServers）
+- Test: `internal/service/chat_svc/send_passthrough_test.go`
+
+> **chat_svc 不 branch on group**：只是把两个通用可选字段从 `SendRequest` 透传到 `RunRequest`。group_svc 填它们，单聊留空。
+
+- [ ] **Step 1: SendRequest 加字段**
+
+`types.go` `SendRequest` 末尾加：
+
+```go
+	// MCPServers 透传到 RunRequest.MCPServers(注入额外 MCP tool server)。群聊用; 单聊空。
+	MCPServers []agentruntime.MCPServerSpec `json:"-"`
+	// SystemPromptSuffix 追加到 RunRequest.SystemPrompt 之后(群上下文/角色/roster)。群聊用; 单聊空。
+	SystemPromptSuffix string `json:"-"`
+```
+
+（`json:"-"` —— 这两个字段是服务端内部 plumbing，不暴露给 Wails 前端。）
+
+- [ ] **Step 2: 写测试（先红）**
+
+断言：`Send` 带 `MCPServers`/`SystemPromptSuffix` 时，传给 runtime 的 `RunRequest.SystemPrompt` = `join(agent.GetPrompt()) + suffix` 且 `RunRequest.MCPServers` 透传。用注入的 fake runtime 捕获 RunRequest（仿现有 chat_svc runTurn 测试如何拿到 RunRequest；若无现成 seam，最小验证 `ccBuildClientOpts` 上游的拼接逻辑函数）。
+
+- [ ] **Step 3: 跑看失败 → 实现透传**
+
+`chat.go` 组装 RunRequest 处（`chat.go:2237` 附近）：
+
+```go
+	req := agentruntime.RunRequest{
+		// ... 现有字段 ...
+		SystemPrompt: strings.Join(a.GetPrompt(), "\n") + sendReq.SystemPromptSuffix,
+		MCPServers:   sendReq.MCPServers,
+	}
+```
+
+（把 `SendRequest` 的这两个字段沿 `send → startTurn → runTurn` 线程透传到 RunRequest 组装点；与现有 `req.Text`/`req.Images` 的透传同路径。）
+
+- [ ] **Step 4: 跑测试 + 提交**
+
+Run: `go test -race ./internal/service/chat_svc/`
+Expected: PASS（含单聊回归：两字段空时行为不变）
+
+```bash
+git add internal/service/chat_svc/types.go internal/service/chat_svc/chat.go internal/service/chat_svc/send_passthrough_test.go
+git commit -m "✨ group: SendRequest 透传 MCPServers/SystemPromptSuffix 到 RunRequest(领域无关 plumbing)"
 ```
 
 ---
@@ -732,8 +925,9 @@ package group_entity
 import "encoding/json"
 
 const (
-	SenderKindUser  = "user"
-	SenderKindAgent = "agent"
+	SenderKindUser   = "user"
+	SenderKindAgent  = "agent"
+	SenderKindSystem = "system" // 系统行(X 加入 / 工具审批冒泡)
 )
 
 // GroupMessage 群内一条消息(始终存原文)。
@@ -1210,6 +1404,7 @@ const (
 	GroupMemberExists                       // 该 agent 已在群中
 	GroupMemberLimit                        // 群成员数已达上限
 	GroupNotRecruitable                     // 该 agent 不在可招募名单
+	GroupBackendUnsupported                 // 该 agent 的后端不支持群聊(缺 CapGroupChat)
 )
 ```
 
@@ -1226,6 +1421,7 @@ GroupMemberNotFound:      "群成员不存在",
 GroupMemberExists:        "该 agent 已在群中",
 GroupMemberLimit:         "群成员数已达上限",
 GroupNotRecruitable:      "该 agent 不在可招募名单",
+GroupBackendUnsupported:  "该 agent 的后端不支持群聊",
 ```
 
 `en.go`：
@@ -1239,6 +1435,7 @@ GroupMemberNotFound:      "Group member not found",
 GroupMemberExists:        "Agent is already in the group",
 GroupMemberLimit:         "Group member limit reached",
 GroupNotRecruitable:      "Agent is not recruitable",
+GroupBackendUnsupported:  "Agent backend does not support group chat",
 ```
 
 - [ ] **Step 3: 编译确认**
@@ -1321,102 +1518,13 @@ git commit -m "✨ group: group_svc→chat_svc 窄网关接口 ChatGateway + ada
 
 ---
 
-### Task C2: mention 解析（纯函数）
+### Task C2:（设计说明）mention 解析一分为二 —— 无独立后端任务
 
-**Files:**
-- Create: `internal/service/group_svc/addressing.go`
-- Test: `internal/service/group_svc/addressing_test.go`
-
-- [ ] **Step 1: 写解析测试（先红）**
-
-```go
-package group_svc_test
-
-import (
-	"testing"
-
-	. "github.com/smartystreets/goconvey/convey"
-
-	"agentre/internal/service/group_svc"
-)
-
-func TestParseMentions(t *testing.T) {
-	Convey("提取 <mention> 标签内的名字, 去重保序", t, func() {
-		got := group_svc.ParseMentions("好的 <mention>后端</mention> 和 <mention>前端</mention>, 麻烦 <mention>后端</mention>")
-		So(got, ShouldResemble, []string{"后端", "前端"})
-	})
-	Convey("无标签 → 空", t, func() {
-		So(group_svc.ParseMentions("随便聊聊"), ShouldBeEmpty)
-	})
-	Convey("裸 @名字 也兜底识别(到下一个空白/标点)", t, func() {
-		got := group_svc.ParseMentions("@林队 看一下")
-		So(got, ShouldResemble, []string{"林队"})
-	})
-}
-```
-
-- [ ] **Step 2: 跑测试看失败**
-
-Run: `go test -race -run TestParseMentions ./internal/service/group_svc/`
-Expected: FAIL —— `ParseMentions` 未定义。
-
-- [ ] **Step 3: 写解析**
-
-```go
-package group_svc
-
-import (
-	"regexp"
-	"strings"
-)
-
-var (
-	mentionTagRe  = regexp.MustCompile(`<mention>\s*([^<>]+?)\s*</mention>`)
-	bareMentionRe = regexp.MustCompile(`@([^\s,，。!！?？:：]+)`)
-)
-
-// ParseMentions 从文本提取被 @ 的名字(优先 <mention> 标签, 退而裸 @名字), 去重保序。
-func ParseMentions(text string) []string {
-	seen := map[string]struct{}{}
-	out := []string{}
-	add := func(name string) {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return
-		}
-		if _, ok := seen[name]; ok {
-			return
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
-	}
-	matched := false
-	for _, m := range mentionTagRe.FindAllStringSubmatch(text, -1) {
-		matched = true
-		add(m[1])
-	}
-	if matched {
-		return out
-	}
-	// 无标签时兜底裸 @
-	for _, m := range bareMentionRe.FindAllStringSubmatch(text, -1) {
-		add(m[1])
-	}
-	return out
-}
-```
-
-- [ ] **Step 4: 跑测试看通过**
-
-Run: `go test -race -run TestParseMentions ./internal/service/group_svc/`
-Expected: PASS
-
-- [ ] **Step 5: 提交**
-
-```bash
-git add internal/service/group_svc/addressing.go internal/service/group_svc/addressing_test.go
-git commit -m "✨ group: mention 解析(标签优先, 裸 @ 兜底, 去重保序)"
-```
+> tool-send 架构下**不存在后端文本路由解析**（原 `ParseMentions` 纯函数已废弃）。mention 现在两条线：
+> - **路由（结构化）**：成员经 `group_send(mentions []string)`、用户经 UI 解析出的 `recipientMemberIds` —— **名字→member id 的解析是 C5 `resolveMentionNames`**（在 ingest.go），不是独立的文本正则解析。
+> - **展示（标记化）**：群消息正文里的 `@名字`/`<mention>名字</mention>` 渲染成高亮可点 chip + 点击跳转 —— **是前端 util，见 Task E5**。
+>
+> 故本 Task **无后端代码**，仅作为占位说明，避免读者去找一个被删掉的 `ParseMentions`。直接进 C3。
 
 ---
 
@@ -1539,6 +1647,8 @@ type GroupSvc interface {
 	CreateGroup(ctx context.Context, req *CreateGroupRequest) (*GroupDetail, error)
 	LoadGroup(ctx context.Context, id int64) (*GroupDetail, error)
 	SendGroupMessage(ctx context.Context, req *SendGroupMessageRequest) error
+	// IngestAgentMessage 是 group_send MCP tool 的服务端入口(MCP handler 调, 非 Wails)。见 Task C5。
+	IngestAgentMessage(ctx context.Context, memberID int64, body string, mentions []string) error
 	AddGroupMember(ctx context.Context, groupID, agentID int64) (*group_entity.GroupMember, error)
 	RemoveGroupMember(ctx context.Context, memberID int64) error
 	StopGroup(ctx context.Context, id int64) error
@@ -1665,8 +1775,14 @@ func (s *groupSvc) AddGroupMember(ctx context.Context, groupID, agentID int64) (
 	if len(members) >= maxMembers {
 		return nil, i18n.NewError(ctx, code.GroupMemberLimit)
 	}
+	if !s.backendSupportsGroup(ctx, agentID) { // CapGroupChat 门控(helper 在 Task C5 实现)
+		return nil, i18n.NewError(ctx, code.GroupBackendUnsupported)
+	}
 	return s.ensureMember(ctx, g, agentID, group_entity.RoleMember)
 }
+
+// 注: CreateGroup 的协调者、maybeRecruit 的被招募者同样要过 backendSupportsGroup ——
+// 协调者在 CreateGroup 里校验(不支持则建群失败), recruit 已在 C5 maybeRecruit 内校验。
 
 func (s *groupSvc) RemoveGroupMember(ctx context.Context, memberID int64) error {
 	m, err := group_repo.Member().Find(ctx, memberID)
@@ -1699,11 +1815,13 @@ git commit -m "✨ group: group_svc 骨架 + CRUD(建群/加载/加成员/移除
 
 ---
 
-### Task C4: `SendGroupMessage` —— 解析收件人 + 入队 + 落库
+### Task C4: `SendGroupMessage` —— 结构化收件人 + 入队 + 落库
 
 **Files:**
-- Modify: `internal/service/group_svc/group.go`（`SendGroupMessage` + `resolveRecipients` + `persistMessage`）
+- Modify: `internal/service/group_svc/group.go`（`SendGroupMessage` + `resolveRecipientsFromRequest` + `persistMessage`）
 - Test: `internal/service/group_svc/send_test.go`
+
+> **用户侧收件人永远是结构化的**（前端把 composer 里的 `@名字` 解析成 `recipientMemberIds` 传后端）—— 后端**不**做文本 mention 解析。
 
 > 本 Task 只做「post 一条消息：解析收件人 → 落 group_message → 把 agent 收件人入队」，**不**触发实际 turn（调度在 C5）。让 `kick` 暂为 no-op，便于隔离测试。
 
@@ -1711,7 +1829,7 @@ git commit -m "✨ group: group_svc 骨架 + CRUD(建群/加载/加成员/移除
 
 ```go
 func TestSendGroupMessage_ResolvesMentionsAndPersists(t *testing.T) {
-	Convey("用户发带 <mention>后端</mention> 的消息 → 落库 + 解析出后端为收件人", t, func() {
+	Convey("用户发消息(结构化收件人=后端 member2) → 落库 + 收件人=后端", t, func() {
 		ctx := context.Background()
 		ctrl := gomock.NewController(t); defer ctrl.Finish()
 		gw := mock_group_svc.NewMockChatGateway(ctrl)
@@ -1738,7 +1856,8 @@ func TestSendGroupMessage_ResolvesMentionsAndPersists(t *testing.T) {
 			})
 
 		svc := group_svc.NewForTestWithNames(gw, map[int64]string{1: "林队", 2: "后端"})
-		err := svc.SendGroupMessage(ctx, &group_svc.SendGroupMessageRequest{GroupID: 5, Text: "麻烦 <mention>后端</mention> 看下"})
+		// 前端已把 composer 里的 @后端 解析成结构化收件人 [2]
+		err := svc.SendGroupMessage(ctx, &group_svc.SendGroupMessageRequest{GroupID: 5, Text: "麻烦后端看下", RecipientMemberIDs: []int64{2}})
 		So(err, ShouldBeNil)
 	})
 }
@@ -1790,7 +1909,8 @@ func (s *groupSvc) SendGroupMessage(ctx context.Context, req *SendGroupMessageRe
 	if err != nil {
 		return err
 	}
-	recipientIDs, toUser := s.resolveRecipientsFromRequest(ctx, g, members, req)
+	_ = members // members 此处不再用于解析(收件人结构化); 保留查询用于校验/未来
+	recipientIDs, toUser := s.resolveRecipientsFromRequest(req)
 	if _, err := s.persistMessage(ctx, g, group_entity.SenderKindUser, 0, req.Text, recipientIDs, toUser, 0); err != nil {
 		return err
 	}
@@ -1803,37 +1923,10 @@ func (s *groupSvc) SendGroupMessage(ctx context.Context, req *SendGroupMessageRe
 	return nil
 }
 
-// resolveRecipientsFromRequest 显式收件人优先, 否则从内联 mention 解析。
-func (s *groupSvc) resolveRecipientsFromRequest(ctx context.Context, g *group_entity.Group, members []*group_entity.GroupMember, req *SendGroupMessageRequest) ([]int64, bool) {
-	if len(req.RecipientMemberIDs) > 0 || req.ToUser {
-		return req.RecipientMemberIDs, req.ToUser
-	}
-	return s.resolveRecipients(ctx, g, members, req.Text)
-}
-
-// resolveRecipients 把文本里的 mention 名字解析成 member id(+ 是否 @用户)。
-// 解析不到的名字: 若发送者是协调者且该名字在可招募名单 → 招募(C5 处理); 否则 flag 忽略。
-func (s *groupSvc) resolveRecipients(ctx context.Context, g *group_entity.Group, members []*group_entity.GroupMember, text string) ([]int64, bool) {
-	byName := map[string]int64{}
-	for _, m := range members {
-		if n := s.names(ctx, m.AgentID); n != "" {
-			byName[n] = m.ID
-		}
-	}
-	toUser := false
-	ids := []int64{}
-	for _, name := range ParseMentions(text) {
-		if name == "用户" || name == "你" {
-			toUser = true
-			continue
-		}
-		if id, ok := byName[name]; ok {
-			ids = append(ids, id)
-		} else {
-			logger.Ctx(ctx).Info("group_svc.resolveRecipients: unresolved mention", zap.String("name", name), zap.Int64("groupId", g.ID))
-		}
-	}
-	return ids, toUser
+// resolveRecipientsFromRequest 用户消息的收件人 —— 前端已解析成结构化 recipientMemberIDs/toUser。
+// 后端不做文本 mention 解析(agent 侧的名字→id 解析在 C5 resolveMentionNames)。
+func (s *groupSvc) resolveRecipientsFromRequest(req *SendGroupMessageRequest) ([]int64, bool) {
+	return req.RecipientMemberIDs, req.ToUser
 }
 
 func (s *groupSvc) persistMessage(ctx context.Context, g *group_entity.Group, kind string, senderMemberID int64, content string, recipients []int64, toUser bool, sourceMsgID int64) (*group_entity.GroupMessage, error) {
@@ -1883,22 +1976,23 @@ git commit -m "✨ group: SendGroupMessage 解析收件人 + 落 group_message +
 
 ---
 
-### Task C5: 并发 fan-out 调度器（核心）
+### Task C5: 并发 fan-out 调度器 + tool 路由入口（核心）
 
 **Files:**
-- Create: `internal/service/group_svc/scheduler.go`（`scheduler` 状态 + `kick` + `launchDelivery` + `handleTurnResult` + recruit）
-- Modify: `internal/service/group_svc/group.go`（移除 C4 的占位 `enqueueDeliveries`/`kick`/`type scheduler struct{}`，改用真实实现）
+- Create: `internal/service/group_svc/scheduler.go`（`scheduler` 状态 + `kick` + `launchDelivery` + `handleTurnResult` 生命周期）
+- Create: `internal/service/group_svc/ingest.go`（`IngestAgentMessage` 路由 + `resolveMentionNames` + `applyFallback` + `maybeRecruit`）
+- Modify: `internal/service/group_svc/group.go`（移除 C4 的占位 `enqueueDeliveries`/`kick`/`type scheduler struct{}`；`GroupSvc` 接口加 `IngestAgentMessage`）
 - Test: `internal/service/group_svc/scheduler_test.go`
 
-> 设计：每群一个 `scheduler`，持 `pending map[memberID][]delivery`（每成员 FIFO）+ `inflight map[memberID]bool`。`kick` 对「有 pending 且 not inflight」的成员各起一个 turn（**跨成员并发，同成员串行**，无并发 cap）。turn 完成走 `handleTurnResult`：解析 → 落库 → 路由入队 → 再 kick；队列空且无 inflight → `waiting_user`。
+> **tool-send 架构**：每群一个 `scheduler`，持 `pending map[memberID][]delivery`（每成员 FIFO）+ `inflight map[memberID]bool`。`kick` 对「有 pending 且 not inflight」的成员各起一个 turn（**跨成员并发，同成员串行**，无并发 cap）。
+> - **路由 = `IngestAgentMessage(memberID, body, mentions[])`**（MCP handler 在成员 turn 进行中调，可多次）：解析 mentions 名字 → 落库 → 入队 → kick。**eager**：tool 一调用就路由，不等 turn 结束。
+> - **`handleTurnResult` 只管生命周期**：turn 结束 → 释放 inflight 槽 + kick；队列空且无 inflight → `waiting_user`。**不解析文本、不落消息**（消息来自 tool 调用）。
 
-- [ ] **Step 1: 写调度测试（先红）**
-
-测试用 mock 网关，ObserveTurn 返回测试可控的 channel，断言 fan-out 与路由：
+- [ ] **Step 1: 写 fan-out + tool 路由测试（先红）**
 
 ```go
-func TestScheduler_FanOutThenRoute(t *testing.T) {
-	Convey("用户 @后端@前端 → 两个成员 turn 并发发起; 后端回 @前端 → 触发前端二次投递", t, func() {
+func TestScheduler_FanOutThenToolRoute(t *testing.T) {
+	Convey("用户发给[后端,前端] → 两 turn 并发发起; 后端 turn 内调 group_send @前端 → 前端被投递", t, func() {
 		ctx := context.Background()
 		ctrl := gomock.NewController(t); defer ctrl.Finish()
 		gw := mock_group_svc.NewMockChatGateway(ctrl)
@@ -1918,29 +2012,28 @@ func TestScheduler_FanOutThenRoute(t *testing.T) {
 			{ID: 3, AgentID: 3, BackingSessionID: 13, Status: group_entity.MemberActive},
 		}
 		memberRepo.EXPECT().ListByGroup(gomock.Any(), int64(5)).Return(members, nil).AnyTimes()
+		memberRepo.EXPECT().Find(gomock.Any(), int64(2)).Return(members[1], nil).AnyTimes()
 		msgRepo.EXPECT().NextSeq(gomock.Any(), int64(5)).Return(1, nil).AnyTimes()
 		msgRepo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
-		// ObserveTurn: 每个 backing session 给一个 buffered channel, 测试持有以 push 终态
 		ch12 := make(chan chat_svc.TurnResult, 1)
 		ch13 := make(chan chat_svc.TurnResult, 1)
 		gw.EXPECT().ObserveTurn(int64(12)).Return((<-chan chat_svc.TurnResult)(ch12), func() {}).AnyTimes()
 		gw.EXPECT().ObserveTurn(int64(13)).Return((<-chan chat_svc.TurnResult)(ch13), func() {}).AnyTimes()
-		// Send: 记录被投递的 session
 		sent := make(chan int64, 8)
 		gw.EXPECT().Send(gomock.Any(), gomock.Any()).DoAndReturn(
 			func(_ context.Context, req *chat_svc.SendRequest) (*chat_svc.SendResponse, error) {
+				// 群投递必须带 MCP server + 群 system prompt suffix(注入 group_send tool + 上下文)
+				So(len(req.MCPServers), ShouldBeGreaterThan, 0)
+				So(req.SystemPromptSuffix, ShouldNotBeBlank)
 				sent <- req.SessionID
 				return &chat_svc.SendResponse{SessionID: req.SessionID}, nil
 			}).AnyTimes()
 
-		svc := group_svc.NewForTestWithNames(gw, map[int64]string{1: "林队", 2: "后端", 3: "前端"}).(interface {
-			SendGroupMessage(context.Context, *group_svc.SendGroupMessageRequest) error
-		})
-		// 用户同时 @后端 @前端
-		So(svc.SendGroupMessage(ctx, &group_svc.SendGroupMessageRequest{GroupID: 5, Text: "<mention>后端</mention> <mention>前端</mention> 开工"}), ShouldBeNil)
+		svc := group_svc.NewForTestWithNames(gw, map[int64]string{1: "林队", 2: "后端", 3: "前端"})
+		// 用户发给 [后端=member2, 前端=member3]（前端 UI 已解析成结构化收件人）
+		So(svc.SendGroupMessage(ctx, &group_svc.SendGroupMessageRequest{GroupID: 5, Text: "开工", RecipientMemberIDs: []int64{2, 3}}), ShouldBeNil)
 
-		// 断言两个成员都被投递(并发 fan-out)
 		got := map[int64]bool{}
 		for i := 0; i < 2; i++ {
 			select {
@@ -1952,13 +2045,15 @@ func TestScheduler_FanOutThenRoute(t *testing.T) {
 		}
 		So(got[12] && got[13], ShouldBeTrue)
 
-		// 后端(12)回 "@前端", 前端应被二次投递
-		ch12 <- chat_svc.TurnResult{SessionID: 12, Text: "好的 <mention>前端</mention>"}
+		// 先让前端(13) turn 结束释放槽, 再模拟后端调 group_send @前端 → 前端被二次投递
+		ch13 <- chat_svc.TurnResult{SessionID: 13}
+		time.Sleep(50 * time.Millisecond) // 等 handleTurnResult 释放 13 的 inflight
+		So(svc.IngestAgentMessage(ctx, 2 /*后端 member*/, "做好了", []string{"前端"}), ShouldBeNil)
 		select {
 		case sid := <-sent:
-			So(sid, ShouldEqual, 13) // 前端再次收到
+			So(sid, ShouldEqual, 13)
 		case <-time.After(2 * time.Second):
-			t.Fatal("路由二次投递未发生")
+			t.Fatal("tool 路由二次投递未发生")
 		}
 	})
 }
@@ -1966,123 +2061,29 @@ func TestScheduler_FanOutThenRoute(t *testing.T) {
 
 - [ ] **Step 2: 跑测试看失败**
 
-Run: `go test -race -run TestScheduler_FanOutThenRoute ./internal/service/group_svc/`
-Expected: FAIL —— 调度未实现（占位 `kick`/`enqueueDeliveries` 是 no-op）。
+Run: `go test -race -run TestScheduler_FanOutThenToolRoute ./internal/service/group_svc/`
+Expected: FAIL —— `IngestAgentMessage` / 真实调度未实现。
 
-- [ ] **Step 3: 写 scheduler.go**
+- [ ] **Step 3: 写 scheduler.go（调度 + 生命周期）**
 
-先删 group.go 里 C4 的占位 `type scheduler struct{}`、`enqueueDeliveries`、`kick`。然后：
+先删 group.go 里 C4 的占位 `type scheduler struct{}`、`enqueueDeliveries`、`kick`。`scheduler` / `newScheduler` / `schedulerFor` / `enqueueDeliveries` / `markDone` / `transitionRunStatus` 同前一版（保持不变，从略——见本仓库历史版本或下方完整块）。**变化在 `launchDelivery`（带 MCP + prompt）与 `handleTurnResult`（生命周期 only）**：
 
 ```go
-package group_svc
-
-import (
-	"context"
-	"sync"
-
-	"github.com/cago-frame/cago/pkg/gogo"
-	"github.com/cago-frame/cago/pkg/logger"
-	"go.uber.org/zap"
-
-	"agentre/internal/model/entity/group_entity"
-	"agentre/internal/repository/group_repo"
-	"agentre/internal/service/chat_svc"
-)
-
-type delivery struct {
-	memberID int64
-	content  string
-	fromName string
-}
-
-type scheduler struct {
-	groupID  int64
-	mu       sync.Mutex
-	pending  map[int64][]delivery // memberID -> FIFO
-	inflight map[int64]bool
-}
-
-func newScheduler(groupID int64) *scheduler {
-	return &scheduler{groupID: groupID, pending: map[int64][]delivery{}, inflight: map[int64]bool{}}
-}
-
-func (s *groupSvc) schedulerFor(groupID int64) *scheduler {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sc := s.schedulers[groupID]
-	if sc == nil {
-		sc = newScheduler(groupID)
-		s.schedulers[groupID] = sc
-	}
-	return sc
-}
-
-// enqueueDeliveries 把消息投给若干 agent 收件人(每成员 FIFO, 带正文 + 来源抬头名)。
-func (s *groupSvc) enqueueDeliveries(groupID int64, recipientIDs []int64, content, fromName string) {
-	if len(recipientIDs) == 0 {
-		return
-	}
-	sc := s.schedulerFor(groupID)
-	sc.mu.Lock()
-	for _, rid := range recipientIDs {
-		sc.pending[rid] = append(sc.pending[rid], delivery{memberID: rid, content: content, fromName: fromName})
-	}
-	sc.mu.Unlock()
-}
-
-// kick: 对每个有 pending 且未 inflight 的成员各起一个 turn(跨成员并发, 同成员串行)。
-func (s *groupSvc) kick(ctx context.Context, groupID int64) {
-	g, err := group_repo.Group().Find(ctx, groupID)
-	if err != nil || g == nil || !g.CanAdvance() {
-		return
-	}
-	members, err := group_repo.Member().ListByGroup(ctx, groupID)
-	if err != nil {
-		return
-	}
-	byID := map[int64]*group_entity.GroupMember{}
-	for _, m := range members {
-		byID[m.ID] = m
-	}
-	sc := s.schedulerFor(groupID)
-	sc.mu.Lock()
-	var launches []delivery
-	for mid, q := range sc.pending {
-		if sc.inflight[mid] || len(q) == 0 {
-			continue
-		}
-		d := q[0]
-		sc.pending[mid] = q[1:]
-		sc.inflight[mid] = true
-		launches = append(launches, d)
-	}
-	idle := len(launches) == 0 && len(sc.inflight) == 0
-	sc.mu.Unlock()
-
-	if idle {
-		s.transitionRunStatus(ctx, g, group_entity.RunWaitingUser)
-		return
-	}
-	for _, d := range launches {
-		m := byID[d.memberID]
-		if m == nil {
-			s.markDone(groupID, d.memberID)
-			continue
-		}
-		s.transitionRunStatus(ctx, g, group_entity.RunRunning)
-		s.launchDelivery(d, m)
-	}
-}
-
-// launchDelivery: 先订阅 ObserveTurn(避免快 turn 回执丢), 再 Send, 后台等终态。
-func (s *groupSvc) launchDelivery(d delivery, m *group_entity.GroupMember) {
+// launchDelivery: 订阅 ObserveTurn → Send(带 MCP tool + 群 system prompt) → 后台等 turn 结束(仅生命周期)。
+func (s *groupSvc) launchDelivery(g *group_entity.Group, members []*group_entity.GroupMember, d delivery, m *group_entity.GroupMember) {
 	ch, cancel := s.gw.ObserveTurn(m.BackingSessionID)
-	text := "(来自 " + d.fromName + ")\n" + d.content
 	bg := context.Background()
-	if _, err := s.gw.Send(bg, &chat_svc.SendRequest{SessionID: m.BackingSessionID, AgentID: m.AgentID, Text: text}); err != nil {
+	req := &chat_svc.SendRequest{
+		SessionID:          m.BackingSessionID,
+		AgentID:            m.AgentID,
+		Text:               "(来自 " + d.fromName + ")\n" + d.content,
+		MCPServers:         s.buildGroupMCP(g, m),               // 注入 group_send tool(带 per-member token)
+		SystemPromptSuffix: s.buildGroupSystemPrompt(g, members, m), // 角色 + roster + tool 用法 + worktree 引导
+	}
+	if _, err := s.gw.Send(bg, req); err != nil {
 		cancel()
 		logger.Ctx(bg).Warn("group_svc.launchDelivery: send failed", zap.Int64("memberId", m.ID), zap.Error(err))
-		s.markDone(m.GroupID, m.ID) // markDone(groupID, memberID)
+		s.markDone(m.GroupID, m.ID)
 		s.kick(bg, m.GroupID)
 		return
 	}
@@ -2094,89 +2095,137 @@ func (s *groupSvc) launchDelivery(d delivery, m *group_entity.GroupMember) {
 	}, gogo.WithIgnorePanic())
 }
 
-func (s *groupSvc) markDone(groupID, memberID int64) {
-	sc := s.schedulerFor(groupID)
-	sc.mu.Lock()
-	delete(sc.inflight, memberID)
-	sc.mu.Unlock()
-}
-
-// handleTurnResult: 成员 turn 终态 → 解析路由 → 落库 → 再 kick。
+// handleTurnResult: 仅生命周期 —— 释放 inflight 槽 + kick。消息路由在 IngestAgentMessage(tool)。
 func (s *groupSvc) handleTurnResult(ctx context.Context, groupID int64, m *group_entity.GroupMember, res chat_svc.TurnResult) {
 	s.markDone(groupID, m.ID)
-	g, err := group_repo.Group().Find(ctx, groupID)
-	if err != nil || g == nil {
-		return
-	}
 	if res.Err != nil {
 		logger.Ctx(ctx).Warn("group_svc.handleTurnResult: member turn error", zap.Int64("memberId", m.ID), zap.Error(res.Err))
-		s.kick(ctx, groupID) // 让其它槽位继续; 若全空则转 waiting_user
-		return
 	}
-	members, _ := group_repo.Member().ListByGroup(ctx, groupID)
-	recipientIDs, toUser := s.resolveRecipients(ctx, g, members, res.Text)
-	recipientIDs, toUser = s.applyFallback(g, m, members, recipientIDs, toUser, res.Text)
-	// 招募: 协调者 mention 名单内未进群 agent(C5 recruit, 见下)
-	recipientIDs = append(recipientIDs, s.maybeRecruit(ctx, g, m, res.Text)...)
+	s.kick(ctx, groupID) // 填新槽; 全空则转 waiting_user(quiesce)
+}
+```
+
+> `kick` 把 `g, members` 传给 `launchDelivery`（签名相应调整：`launchDelivery(g, members, d, m)`；`kick` 里已有 `g` 和 `members`）。
+> `buildGroupMCP(g, m)` / `buildGroupSystemPrompt(g, members, m)` 在 ingest.go / 一个 `prompt.go` 实现（见 Step 4 + Task C8）。
+
+- [ ] **Step 4: 写 ingest.go（tool 路由入口 + 名称解析 + 兜底 + 招募）**
+
+```go
+// IngestAgentMessage 是 group_send MCP tool 的服务端入口(MCP handler 调用)。
+// memberID = 发送成员; body = 正文; mentions = 收件成员显示名(+ "用户")。
+func (s *groupSvc) IngestAgentMessage(ctx context.Context, memberID int64, body string, mentions []string) error {
+	sender, err := group_repo.Member().Find(ctx, memberID)
+	if err != nil || sender == nil {
+		return i18n.NewError(ctx, code.GroupMemberNotFound)
+	}
+	g, err := group_repo.Group().Find(ctx, sender.GroupID)
+	if err != nil || g == nil {
+		return i18n.NewError(ctx, code.GroupNotFound)
+	}
+	members, err := group_repo.Member().ListByGroup(ctx, g.ID)
+	if err != nil {
+		return err
+	}
+	recipientIDs, toUser := s.resolveMentionNames(ctx, g, members, sender, mentions)
+	recipientIDs, toUser = s.applyFallback(g, sender, recipientIDs, toUser)
 
 	g.RoundCount++
 	_ = group_repo.Group().Update(ctx, g)
-	if _, err := s.persistMessage(ctx, g, group_entity.SenderKindAgent, m.ID, res.Text, recipientIDs, toUser, res.AssistantMessageID); err != nil {
-		logger.Ctx(ctx).Warn("group_svc.handleTurnResult: persist failed", zap.Error(err))
+	if _, err := s.persistMessage(ctx, g, group_entity.SenderKindAgent, sender.ID, body, recipientIDs, toUser, 0); err != nil {
+		logger.Ctx(ctx).Warn("group_svc.IngestAgentMessage: persist failed", zap.Error(err))
 	}
-	fromName := s.names(ctx, m.AgentID)
-	s.enqueueDeliveries(groupID, recipientIDs, res.Text, fromName)
-	s.kick(ctx, groupID)
+	s.enqueueDeliveries(g.ID, recipientIDs, body, s.names(ctx, sender.AgentID))
+	s.kick(ctx, g.ID)
+	return nil
 }
 
-// applyFallback: 无任何 agent 收件人也不 @用户 → 回上一个发送者(兜底); 见 §6。
-func (s *groupSvc) applyFallback(g *group_entity.Group, sender *group_entity.GroupMember, members []*group_entity.GroupMember, ids []int64, toUser bool, text string) ([]int64, bool) {
+// resolveMentionNames 把成员显示名解析成 member id(+ 是否 @用户)。
+// 解析不到的名字: sender 是协调者 → 尝试招募(maybeRecruit); 否则 flag 忽略。
+func (s *groupSvc) resolveMentionNames(ctx context.Context, g *group_entity.Group, members []*group_entity.GroupMember, sender *group_entity.GroupMember, names []string) ([]int64, bool) {
+	byName := map[string]int64{}
+	for _, m := range members {
+		if n := s.names(ctx, m.AgentID); n != "" {
+			byName[n] = m.ID
+		}
+	}
+	toUser := false
+	ids := []int64{}
+	for _, name := range names {
+		switch {
+		case name == "用户" || name == "你":
+			toUser = true
+		case byName[name] != 0:
+			ids = append(ids, byName[name])
+		case sender.IsCoordinator():
+			if rid := s.maybeRecruit(ctx, g, name); rid > 0 {
+				ids = append(ids, rid)
+			} else {
+				logger.Ctx(ctx).Info("group_svc.resolveMentionNames: unresolved/unrecruitable", zap.String("name", name), zap.Int64("groupId", g.ID))
+			}
+		default:
+			logger.Ctx(ctx).Info("group_svc.resolveMentionNames: non-coordinator unresolved mention", zap.String("name", name))
+		}
+	}
+	return ids, toUser
+}
+
+// applyFallback: 无任何 agent 收件人也不 @用户 → 回上一个发送者; 仍没有 → 回用户(quiesce)。
+func (s *groupSvc) applyFallback(g *group_entity.Group, sender *group_entity.GroupMember, ids []int64, toUser bool) ([]int64, bool) {
 	if len(ids) > 0 || toUser {
 		return ids, toUser
 	}
 	if prev := s.lastSenderMemberID(g.ID, sender.ID); prev > 0 {
 		return []int64{prev}, false
 	}
-	return ids, true // 实在没有上一个发送者 → 回用户(quiesce)
+	return ids, true
 }
 
-func (s *groupSvc) transitionRunStatus(ctx context.Context, g *group_entity.Group, status string) {
-	if g.RunStatus == status {
-		return
+// maybeRecruit: 协调者 mention 了部门名单内、未进群、且支持 CapGroupChat 的 agent → 招募。
+// 返回新成员 member id(0 = 没招到)。落一条 sender_kind=system 的"X 加入"消息。
+func (s *groupSvc) maybeRecruit(ctx context.Context, g *group_entity.Group, name string) int64 {
+	agentID := s.recruitableAgentByName(ctx, g, name) // 查部门名单内同名 agent; 0=不在名单
+	if agentID == 0 {
+		return 0
 	}
-	g.RunStatus = status
-	_ = group_repo.Group().Update(ctx, g)
-	s.emitter.Emit(ctx, groupEventName(g.ID), map[string]any{"kind": "run_status", "runStatus": status})
+	if !s.backendSupportsGroup(ctx, agentID) { // CapGroupChat 门控
+		logger.Ctx(ctx).Info("group_svc.maybeRecruit: backend lacks CapGroupChat", zap.Int64("agentId", agentID))
+		return 0
+	}
+	m, err := s.ensureMember(ctx, g, agentID, group_entity.RoleMember)
+	if err != nil || m == nil {
+		return 0
+	}
+	_, _ = s.persistMessage(ctx, g, group_entity.SenderKindSystem, 0, name+" 加入了群聊", nil, false, 0)
+	return m.ID
 }
 ```
 
 > 实现说明（写代码时补全的小工具）：
-> - `lastSenderMemberID(groupID, excludeMemberID)`：读最近一条非自己的 group_message 的 `sender_member_id`。可用 `group_repo.Message().ListByGroup` 取末尾，或加一个 `LastSender` repo 方法。MVP 用 ListByGroup 反向找即可。
-> - `maybeRecruit(ctx, g, sender, text)`：仅当 `sender.IsCoordinator()`；对 `ParseMentions(text)` 中解析不到现有成员的名字，查 department 名单内是否有同名 agent 且未进群 → `ensureMember(role=member)` + 落一条 "X 加入" 系统消息 + 返回其 member id 以并入收件人。非协调者触发 → 仅 log flag，返回空。成员数达 `maxMembers` 时拒绝并 flag。
+> - `lastSenderMemberID(groupID, excludeMemberID)`：读最近一条非自己的 group_message 的 `sender_member_id`（`group_repo.Message().ListByGroup` 反向找）。
+> - `recruitableAgentByName(ctx, g, name)`：查 `g.DepartmentID` 下名为 `name` 的 agent（走 `agent_repo` accessor）；0=不在可招募名单。
+> - `backendSupportsGroup(ctx, agentID)`：解析该 agent 的 backend，查 `Capabilities().Has(capability.CapGroupChat)`（复用 chat_svc/agentruntime 的能力查询，注入接口避免反依赖）。同一函数供 `AddGroupMember`/`ensureMember` 门控复用（Task C3）。
+> - `buildGroupMCP(g, m)` / `buildGroupSystemPrompt(g, members, m)`：见 Task C8（MCP token 签发）与本任务的 prompt 拼装；`buildGroupSystemPrompt` 产出角色 + 当前 roster 名字 + "用 group_send tool 发言, mentions 填名字, @用户=回人类" + worktree 引导。
 
-- [ ] **Step 4: 跑测试看通过**
+- [ ] **Step 5: 跑测试看通过**
 
-Run: `go test -race -run TestScheduler_FanOutThenRoute ./internal/service/group_svc/`
+Run: `go test -race -run TestScheduler_FanOutThenToolRoute ./internal/service/group_svc/`
 Expected: PASS（含 race 检测——`scheduler.mu` 保护并发访问）。
 
-- [ ] **Step 5: 补 recruit 测试 + quiesce 测试**
+- [ ] **Step 6: 补 recruit / quiesce / 生命周期测试**
 
-`scheduler_test.go` 追加两条：
-- 协调者输出 mention 名单内未进群 agent → 断言 `ensureMember`(EnsureGroupMemberSession) 被调 + 系统消息落库 + 该新成员被投递。
-- 成员输出只 `@用户` → 断言无新投递、`run_status` 转 `waiting_user`（监听 emitter）。
+`scheduler_test.go` 追加：
+- **招募**：协调者 `IngestAgentMessage` 的 mentions 含名单内未进群且支持 CapGroupChat 的 agent → 断言 `ensureMember`(EnsureGroupMemberSession) 被调 + 系统消息落库 + 新成员被投递；不支持 CapGroupChat → 不招募 + flag。
+- **quiesce**：成员 turn 结束（`ch <- TurnResult{}`）且无 pending → 断言 `run_status` 转 `waiting_user`（监听 emitter）。
+- **生命周期**：turn `Err != nil` → 释放槽 + 不落消息 + 继续 kick。
 
-（测试代码结构同 Step 1，按断言点替换 EXPECT。）
-
-- [ ] **Step 6: 跑全部 group_svc 测试**
+- [ ] **Step 7: 跑全部 group_svc 测试 + 提交**
 
 Run: `go test -race ./internal/service/group_svc/`
 Expected: PASS
 
-- [ ] **Step 7: 提交**
-
 ```bash
-git add internal/service/group_svc/scheduler.go internal/service/group_svc/group.go internal/service/group_svc/scheduler_test.go
-git commit -m "✨ group: 并发 fan-out 调度器(跨成员并发/同成员串行/eager 路由/兜底/招募/quiesce)"
+git add internal/service/group_svc/scheduler.go internal/service/group_svc/ingest.go internal/service/group_svc/group.go internal/service/group_svc/scheduler_test.go
+git commit -m "✨ group: 并发 fan-out 调度器 + group_send tool 路由入口 IngestAgentMessage(生命周期/路由分离)"
 ```
 
 ---
@@ -2347,6 +2396,235 @@ git commit -m "✨ group: Stop/Pause/Resume/Rename/Archive 控制流"
 
 ---
 
+### Task C8: `group_send` MCP server handler + token + 系统提示/MCP 拼装
+
+**Files:**
+- Create: `internal/service/group_svc/mcp.go`（MCP `http.Handler` + per-member token + `MintToken` + `buildGroupMCP` + `buildGroupSystemPrompt` + 网关 base URL）
+- Modify: `internal/service/group_svc/group.go`（`groupSvc` 加字段 `mcp *groupMCP` / `gatewayBaseURL string`，`newGroupSvc` 初始化）
+- Test: `internal/service/group_svc/mcp_test.go`
+
+> 复用现有 `httpgateway.Gateway.RegisterMCP("/mcp/group/", handler)`（`gateway.go:276` 已支持，**gateway 代码不改**）。handler 是 group_svc 自己的，bootstrap 注册（Task D2）。
+> MCP over HTTP 是 JSON-RPC（claude-code `--mcp-config` 的 `type:"http"` transport）：需处理 `initialize` / `notifications/initialized` / `tools/list` / `tools/call`。JSON-RPC 帧用 `internal/pkg/jsonrpc`（已存在）。
+
+- [ ] **Step 1: 写 handler 测试（先红）**
+
+```go
+func TestGroupMCP_ToolCallRoutesToIngest(t *testing.T) {
+	Convey("合法 token 的 group_send tools/call → 调 IngestAgentMessage(memberID, body, mentions)", t, func() {
+		var gotMember int64
+		var gotBody string
+		var gotMentions []string
+		h := group_svc.NewGroupMCPForTest(func(_ context.Context, memberID int64, body string, mentions []string) error {
+			gotMember, gotBody, gotMentions = memberID, body, mentions
+			return nil
+		})
+		token := h.MintToken(5 /*group*/, 2 /*member*/)
+
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"group_send","arguments":{"body":"做好了","mentions":["前端"]}}}`
+		req := httptest.NewRequest("POST", "/mcp/group/", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		So(w.Code, ShouldEqual, 200)
+		So(gotMember, ShouldEqual, 2)
+		So(gotBody, ShouldEqual, "做好了")
+		So(gotMentions, ShouldResemble, []string{"前端"})
+	})
+
+	Convey("无/坏 token → 拒绝, 不调 ingest", t, func() {
+		called := false
+		h := group_svc.NewGroupMCPForTest(func(context.Context, int64, string, []string) error { called = true; return nil })
+		req := httptest.NewRequest("POST", "/mcp/group/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"group_send","arguments":{}}}`))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		So(called, ShouldBeFalse)
+		So(w.Code, ShouldNotEqual, 200) // 401/403
+	})
+
+	Convey("tools/list 暴露 group_send schema", t, func() {
+		h := group_svc.NewGroupMCPForTest(nil)
+		req := httptest.NewRequest("POST", "/mcp/group/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		So(w.Body.String(), ShouldContainSubstring, "group_send")
+	})
+}
+```
+
+- [ ] **Step 2: 跑测试看失败**
+
+Run: `go test -race -run TestGroupMCP ./internal/service/group_svc/`
+Expected: FAIL —— handler 未实现。
+
+- [ ] **Step 3: 写 mcp.go**
+
+```go
+package group_svc
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"sync"
+)
+
+type memberRef struct{ groupID, memberID int64 }
+
+// groupMCP 是 group_send tool 的 MCP-over-HTTP server(挂在 gateway /mcp/group/)。
+type groupMCP struct {
+	mu     sync.Mutex
+	tokens map[string]memberRef // token -> (group, member)
+	ingest func(ctx context.Context, memberID int64, body string, mentions []string) error
+	newTok func() string // token 生成器(测试可注入定值)
+}
+
+func newGroupMCP(ingest func(context.Context, int64, string, []string) error) *groupMCP {
+	return &groupMCP{tokens: map[string]memberRef{}, ingest: ingest, newTok: randToken}
+}
+
+// MintToken 为某成员会话签一个绑定 (group, member) 的 token(投递时塞进 mcp-config header)。
+func (h *groupMCP) MintToken(groupID, memberID int64) string {
+	tok := h.newTok()
+	h.mu.Lock()
+	h.tokens[tok] = memberRef{groupID, memberID}
+	h.mu.Unlock()
+	return tok
+}
+
+func (h *groupMCP) lookup(tok string) (memberRef, bool) {
+	h.mu.Lock(); defer h.mu.Unlock()
+	r, ok := h.tokens[tok]
+	return r, ok
+}
+
+// ServeHTTP 极简 MCP JSON-RPC: initialize / notifications/initialized / tools/list / tools/call。
+func (h *groupMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var rpc struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params struct {
+			Name      string `json:"name"`
+			Arguments struct {
+				Body     string   `json:"body"`
+				Mentions []string `json:"mentions"`
+			} `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+		writeRPCError(w, nil, -32700, "parse error"); return
+	}
+	switch rpc.Method {
+	case "initialize":
+		writeRPCResult(w, rpc.ID, map[string]any{
+			"protocolVersion": "2024-11-05",
+			"serverInfo":      map[string]any{"name": "agentre-group", "version": "1"},
+			"capabilities":    map[string]any{"tools": map[string]any{}},
+		})
+	case "notifications/initialized":
+		w.WriteHeader(http.StatusAccepted)
+	case "tools/list":
+		writeRPCResult(w, rpc.ID, map[string]any{"tools": []any{groupSendToolSchema()}})
+	case "tools/call":
+		ref, ok := h.lookup(bearer(r))
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized); return
+		}
+		if rpc.Params.Name != "group_send" {
+			writeRPCError(w, rpc.ID, -32601, "unknown tool"); return
+		}
+		if err := h.ingest(r.Context(), ref.memberID, rpc.Params.Arguments.Body, rpc.Params.Arguments.Mentions); err != nil {
+			writeRPCError(w, rpc.ID, -32000, err.Error()); return
+		}
+		writeRPCResult(w, rpc.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": "sent"}}})
+	default:
+		writeRPCError(w, rpc.ID, -32601, "method not found")
+	}
+}
+
+func bearer(r *http.Request) string {
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+func groupSendToolSchema() map[string]any {
+	return map[string]any{
+		"name":        "group_send",
+		"description": "向群聊发送一条消息。mentions 填收件成员的显示名(@用户 = 回复人类)。一个回合可多次调用。",
+		"inputSchema": map[string]any{
+			"type":     "object",
+			"required": []string{"body"},
+			"properties": map[string]any{
+				"body":     map[string]any{"type": "string", "description": "消息正文"},
+				"mentions": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "收件成员显示名"},
+			},
+		},
+	}
+}
+
+// writeRPCResult / writeRPCError / randToken: 用 internal/pkg/jsonrpc 或本地小工具实现(略)。
+```
+
+- [ ] **Step 4: 接 group_svc + 拼 MCP/prompt**
+
+`group.go`：`groupSvc` 加 `mcp *groupMCP` + `gatewayBaseURL string`；`newGroupSvc` 里 `mcp: newGroupMCP(nil)`（ingest 在装配时回填 `s.IngestAgentMessage`，避免构造期循环）。加导出：
+
+```go
+// MCPHandler 供 bootstrap 注册到 gateway /mcp/group/。
+func (s *groupSvc) MCPHandler() http.Handler { return s.mcp }
+// SetGatewayBaseURL bootstrap 注入本机 gateway base(如 http://127.0.0.1:<port>)。
+func (s *groupSvc) SetGatewayBaseURL(u string) { s.gatewayBaseURL = u }
+
+// NewGroupMCPForTest 仅测试用。
+func NewGroupMCPForTest(ingest func(context.Context, int64, string, []string) error) *groupMCP {
+	return newGroupMCP(ingest)
+}
+```
+
+`buildGroupMCP` / `buildGroupSystemPrompt`（C5 launchDelivery 调）：
+
+```go
+func (s *groupSvc) buildGroupMCP(g *group_entity.Group, m *group_entity.GroupMember) []agentruntime.MCPServerSpec {
+	tok := s.mcp.MintToken(g.ID, m.ID)
+	return []agentruntime.MCPServerSpec{{
+		Name:    "group",
+		URL:     s.gatewayBaseURL + "/mcp/group/",
+		Headers: map[string]string{"Authorization": "Bearer " + tok},
+	}}
+}
+
+func (s *groupSvc) buildGroupSystemPrompt(g *group_entity.Group, members []*group_entity.GroupMember, me *group_entity.GroupMember) string {
+	var b strings.Builder
+	role := "成员"
+	if me.IsCoordinator() { role = "协调者(部门 leader)" }
+	fmt.Fprintf(&b, "\n\n## 群聊「%s」\n你是本群的%s。", g.Title, role)
+	b.WriteString("\n当前成员：")
+	for _, m := range members {
+		fmt.Fprintf(&b, "\n- %s（%s）", s.names(context.Background(), m.AgentID), m.Role)
+	}
+	b.WriteString("\n\n你只会收到 @ 到你的消息。要发言请调用 `group_send` 工具：body=正文，mentions=收件成员显示名数组（@用户 = 回复人类）。一个回合可多次调用、可分别对不同人发不同内容。**不调用 group_send 的内容不会进群**。")
+	if me.IsCoordinator() {
+		b.WriteString("\n作为协调者，mentions 里写一个本部门、尚未进群的同事名字即可把 ta 拉进群。")
+	}
+	b.WriteString("\n若你要修改文件且可能与他人并发，请先 `git worktree add` 在自己的工作树里作业。")
+	return b.String()
+}
+```
+
+- [ ] **Step 5: 跑测试看通过 + 提交**
+
+Run: `go test -race ./internal/service/group_svc/`
+Expected: PASS
+
+```bash
+git add internal/service/group_svc/mcp.go internal/service/group_svc/group.go internal/service/group_svc/mcp_test.go
+git commit -m "✨ group: group_send MCP server handler + per-member token + 群 system prompt/MCP 拼装"
+```
+
+> bootstrap 装配（Task D2 一并做）：`gateway.RegisterMCP("/mcp/group/", group_svc.Default().MCPHandler())` + `group_svc.Default().SetGatewayBaseURL(gw.BaseURL())` + 回填 ingest（`group_svc` 内 `s.mcp.ingest = s.IngestAgentMessage`，在 `newGroupSvc` 末尾或一个 `wireMCP()` 里）。
+
+---
+
 ## Phase D — Wails 绑定 + 事件
 
 ### Task D1: `internal/app/group.go` 绑定 + DTO
@@ -2508,22 +2786,33 @@ git commit -m "✨ group: internal/app/group.go Wails 绑定 + DTO(thin)"
 
 ---
 
-### Task D2: 注册 svc + 注入 emitter + 刷新绑定
+### Task D2: 注册 svc + 注入 emitter + 挂 MCP handler + 刷新绑定
 
 **Files:**
-- Modify: `internal/app/app.go`（仿 `chat_svc` emitter 注入：line ~136 处）
-- Modify: bootstrap/wiring（确保 `group_svc.Default()` 已就绪、repo 已注册——B3 已注册 repo）
+- Modify: `internal/app/app.go`（仿 `chat_svc` emitter 注入：`app.go:136` 处）
+- Modify: `internal/bootstrap/cago.go`（gateway 已构造处：`RegisterMCP` + `SetGatewayBaseURL`；B3 已注册 group repo）
 - 生成: `frontend/wailsjs/**`（`make generate`）
 
 - [ ] **Step 1: 注入 group 事件 emitter**
 
-`internal/app/app.go`，在 chat emitter 注入附近追加：
+`internal/app/app.go`，在 chat emitter 注入（`app.go:136` `chat_svc.RegisterChat(chat_svc.NewChat(emitter))` 附近）追加：
 
 ```go
 	group_svc.SetEmitter(group_svc.EmitterFunc(func(_ context.Context, name string, payload any) {
 		wailsruntime.EventsEmit(a.ctx, name, payload)
 	}))
 ```
+
+- [ ] **Step 1b: 把 group_send MCP handler 挂到 gateway**
+
+`internal/bootstrap/cago.go`，在 gateway 构造/启动处（与 `chat_svc.RegisterGateway(gw)` 等并列，gw 即 `httpgateway.Gateway`）追加：
+
+```go
+	gw.RegisterMCP("/mcp/group/", group_svc.Default().MCPHandler())
+	group_svc.Default().SetGatewayBaseURL(gw.BaseURL()) // 如 http://127.0.0.1:<port>
+```
+
+> `gw.BaseURL()` 若不存在则用 `fmt.Sprintf("http://%s:%d", host, port)`（gateway 已持有 host/port，可加一个 `BaseURL()` 访问器——属本特性 in-scope 小改）。group_svc 内 `s.mcp.ingest` 在 `newGroupSvc`/`wireMCP` 回填 `s.IngestAgentMessage`（Task C8）。
 
 - [ ] **Step 2: 刷新 Wails 绑定**
 
@@ -2538,8 +2827,8 @@ Expected: PASS（含 migrations / chat_repo / chat_svc / group_* 全绿）。
 - [ ] **Step 4: 提交**
 
 ```bash
-git add internal/app/app.go frontend/wailsjs/
-git commit -m "✨ group: 注入群事件 emitter + 刷新 Wails 绑定"
+git add internal/app/app.go internal/bootstrap/cago.go frontend/wailsjs/
+git commit -m "✨ group: 注入群事件 emitter + 挂 group_send MCP handler + 刷新 Wails 绑定"
 ```
 
 > 注：`frontend/wailsjs/` 按仓库约定可能 gitignore（见 architecture.md）。若被忽略则不提交，仅本地生成供前端开发；CI 由 `make generate` 重生成。
@@ -2774,13 +3063,82 @@ git commit -m "✨ group(fe): 左侧对话列表混排群聊 + 导航接入"
 
 ---
 
+### Task E5: mention chip 渲染 + 点击跳转（展示层）
+
+**Files:**
+- Create: `frontend/src/components/agentre/group-chat/mention-text.tsx`（把正文里的 `@名字`/`<mention>名字</mention>` 渲染成高亮可点 chip）
+- Test: `frontend/src/components/agentre/group-chat/mention-text.test.tsx`
+
+> 这是用户明确要保留的「`<mention>` 解析」职责 —— **仅用于展示**：高亮 + 点击跳转到该成员会话。路由不经过它（路由是结构化的，见 C4/C5）。
+
+- [ ] **Step 1: 写测试（先红）**
+
+```tsx
+import { render, screen, fireEvent } from "@testing-library/react";
+import { MentionText } from "./mention-text";
+
+describe("MentionText", () => {
+  const roster = [{ memberId: 2, name: "后端" }, { memberId: 3, name: "前端" }];
+  it("renders matched @name as a clickable chip, plain text otherwise", () => {
+    const onJump = vi.fn();
+    render(<MentionText text="麻烦 @后端 看下 @陌生人" roster={roster} onJump={onJump} />);
+    const chip = screen.getByText("@后端");
+    fireEvent.click(chip);
+    expect(onJump).toHaveBeenCalledWith(2); // 跳到 member 2 的会话
+    // 不在 roster 的 @陌生人 不应是 chip(无 onJump 绑定) —— 退化为普通文本
+    expect(screen.getByText(/陌生人/)).toBeInTheDocument();
+  });
+  it("also recognizes <mention>name</mention> markup", () => {
+    const onJump = vi.fn();
+    render(<MentionText text="好的 <mention>前端</mention>" roster={roster} onJump={onJump} />);
+    fireEvent.click(screen.getByText("@前端"));
+    expect(onJump).toHaveBeenCalledWith(3);
+  });
+});
+```
+
+- [ ] **Step 2: 跑看失败**
+
+Run: `cd frontend && pnpm test -- src/components/agentre/group-chat/mention-text.test.tsx`
+Expected: FAIL。
+
+- [ ] **Step 3: 实现 `mention-text.tsx`**
+
+tokenize 正文：扫描 `<mention>([^<]+)</mention>` 与 `@(\S+)`，匹配 `roster` 的 name → 渲染 `<button>` chip（着色，`onClick={() => onJump(memberId)}`）；未匹配 → 原样文本。`onJump(memberId)` 由父级（transcript）接到「打开该成员会话视图 tab」（复用 E3 的视图 tab 逻辑）。无 i18n 文案（渲染的是动态消息内容，不进 `t()`）。
+
+```tsx
+type RosterEntry = { memberId: number; name: string };
+export function MentionText({ text, roster, onJump }: { text: string; roster: RosterEntry[]; onJump: (memberId: number) => void }) {
+  const byName = new Map(roster.map((r) => [r.name, r.memberId]));
+  // 先把 <mention>X</mention> 归一成 @X, 再按 @token 切分; 匹配 roster 的渲染 chip。
+  // (实现：正则 split + map，chip 用 <button> + 着色 class；非匹配 token 原样输出)
+  // ...
+}
+```
+
+- [ ] **Step 4: 跑看通过 + 在 transcript 接入**
+
+E3 的 transcript 正文用 `<MentionText text={msg.content} roster={roster} onJump={openMemberView} />` 替换纯文本渲染（`openMemberView` = E3 已有的「成员会话视图 tab」打开函数）。
+
+Run: `cd frontend && pnpm test -- src/components/agentre/group-chat/ && pnpm lint`
+Expected: PASS
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add frontend/src/components/agentre/group-chat/mention-text.tsx frontend/src/components/agentre/group-chat/mention-text.test.tsx
+git commit -m "✨ group(fe): 消息正文 mention 高亮 chip + 点击跳转成员会话"
+```
+
+---
+
 ## 收尾校验
 
 - [ ] **后端全量：** `make test-backend` → 全绿
 - [ ] **前端全量：** `cd frontend && pnpm test` → 全绿
 - [ ] **lint：** `make lint` → 全绿（含 `i18next/no-literal-string`）
 - [ ] **mock 一致：** `make mock` 后 `git status` 无未提交 mock 漂移
-- [ ] **手动冒烟（`make dev`）：** 建群（协调者自动进群）→ 用户 @ 协调者 → 协调者输出 @两个成员 → 两成员并发跑 → 回执路由 → 只 @用户时 quiesce → 停止中止全部 → 点成员 `›` 跳转 backing 会话 → 普通单聊列表**不含**群成员 session。
+- [ ] **手动冒烟（`make dev`，协调者/成员均用 claudecode 后端的 agent）：** 建群（协调者自动进群）→ 用户 @ 协调者 → 协调者 turn 内调 `group_send` @两个成员 → 两成员并发跑 → 各自 `group_send` 路由 → 只 @用户时 quiesce → 停止中止全部 → 点成员 `›`/消息里 mention chip 跳转 backing 会话 → 普通单聊列表**不含**群成员 session → 邀请列表只列 claudecode（CapGroupChat）agent，加 codex agent 报 `GroupBackendUnsupported`。
 
 ---
 
@@ -2788,17 +3146,21 @@ git commit -m "✨ group(fe): 左侧对话列表混排群聊 + 导航接入"
 
 | spec 章节 | 覆盖 Task |
 | --- | --- |
-| §3.1 ObserveTurn（起点订阅 + 覆盖 failTurn 早退 + 恰好一条终态） | A4 |
-| §3.2 group_id 列 + 8+ list 查询过滤 + 索引 + EnsureGroupMemberSession | A1 / A2 / A3 |
+| §3.1 ObserveTurn（起点订阅 + 覆盖 failTurn 早退 + 恰好一条终态 + **生命周期 only**） | A4 |
+| §3.2 group_id 列 + **9** 个 list/count 查询过滤 + 索引 + EnsureGroupMemberSession | A1 / A2 / A3 |
+| §3.3 能力门控 `CapGroupChat` + `RunRequest.MCPServers` + `--mcp-config` + `SendRequest` 透传 | **AM1 / AM2 / AM3** |
+| §3.3 MCP `group_send` server handler + per-member token + 群 system prompt 拼装 | **C8** |
 | §4 三表数据模型 + 充血方法 | B1 / B2 / B3 |
-| §5 并发 fan-out（跨成员并发/同成员串行/eager/无 cap） | C5 |
-| §6 寻址（mention 解析/`(来自 X)` 抬头/兜底/quiesce） | C2 / C4 / C5 |
-| §7 招募/终止（无 max_rounds）/插话/暂停 | C5（recruit）/ C6 |
-| §8 工具权限透传（系统行 + 复用现有 handler） | E3（transcript 渲染审批卡）；后端事件经 backing session stream 既有路径，无新增 |
-| §9 Wails 绑定 + `group:event:<id>` 事件流 | D1 / D2 |
-| §10 四区 UI + 视图 tab 栏 + 成员/设置 tab + 成员跳转 | E3 / E4 |
-| §11 测试策略（sqlmock/mockgen/goconvey/Vitest） | 各 Task 的 Step 1-2 |
-| §12 错误码 19000 + i18n + 日志 | C7 + 各 svc 方法 `logger.Ctx` |
-| §13 MVP IN/OUT | 全量（OUT 项不做：强制 worktree / builtin 真 tool 注入 / DAG / 跨群 / 环检测 / remote 专测） |
+| §5 并发 fan-out（跨成员并发/同成员串行/eager/无 cap）+ **tool 路由 `IngestAgentMessage`** | C5 |
+| §6 寻址（**结构化路由** `mentions[]`/`recipientMemberIds` + `(来自 X)` 抬头 + 兜底 + quiesce） | C4（用户侧）/ C5（agent 侧 `resolveMentionNames`） |
+| §6 寻址（**展示** `<mention>`/`@` 高亮 chip + 点击跳转） | **E5** |
+| §7 招募（协调者 `group_send` mention 名单内 + CapGroupChat 门控）/终止（无 max_rounds）/插话/暂停 | C5（maybeRecruit）/ C6 |
+| §8 工具权限透传（`group_send` 自动放行；其它 tool 系统行冒泡 + 复用现有 handler） | AM2（allowedTools）/ E3（transcript 渲染审批卡）；后端事件经 backing session stream 既有路径，无新增 |
+| §9 Wails 绑定（结构化 recipientMemberIds）+ `group:event:<id>` 事件流 | D1 / D2 |
+| §10 四区 UI + 视图 tab 栏 + 成员/设置 tab + 成员/mention 跳转 + 邀请按 CapGroupChat 过滤 | E3 / E4 / E5 |
+| §11 测试策略（capability matrix / MCP handler / sqlmock / mockgen / goconvey / Vitest） | 各 Task 的 Step 1-2 |
+| §12 错误码 19000（含 `GroupBackendUnsupported`）+ i18n + 日志 | C7 + 各 svc 方法 `logger.Ctx` |
+| §13 MVP IN/OUT | 全量（OUT 项不做：codex/builtin 群成员 / 强制 worktree / DAG / 跨群 / 环检测 / remote 专测） |
 
-> **§8 工具权限**：MVP 复用现有 backing session 的 `ToolPermissionRequest`/`AnswerToolPermission` 路径，群 transcript 把它作为系统行展示即可，无需新增后端方法——已落在 E3 渲染层，无独立 Task。若冒烟发现群内审批需专门绑定，再补。
+> **§8 工具权限**：`group_send` 经 `--allowedTools` 自动放行（AM2）；其它 tool 的审批仍复用现有 backing session 的 `ToolPermissionRequest`/`AnswerToolPermission`，群 transcript 当系统行展示（E3 渲染层），无独立后端 Task。
+> **能力门控**：MVP 仅 claudecode 声明 `CapGroupChat`；codex/builtin/piagent 入群被 `GroupBackendUnsupported` 拒绝，前端邀请列表按 cap 过滤（E3/E4）。
