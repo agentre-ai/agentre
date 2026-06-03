@@ -1,4 +1,12 @@
 {
+  "notify": {
+    "app": "Agentre",
+    "body": {
+      "done": "会话已完成",
+      "error": "会话出错",
+      "waiting": "需要你的操作"
+    }
+  },
   "app": {
     "commandPalette": {
       "open": "打开命令面板",

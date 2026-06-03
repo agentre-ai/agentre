@@ -1,4 +1,12 @@
 {
+  "notify": {
+    "app": "Agentre",
+    "body": {
+      "done": "Session completed",
+      "error": "Session failed",
+      "waiting": "Waiting for your input"
+    }
+  },
   "app": {
     "commandPalette": {
       "open": "Open command palette",

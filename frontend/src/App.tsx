@@ -25,6 +25,7 @@ import {
   ChatPage,
   ChatStreamsHost,
   ChatTabsShortcuts,
+  TurnCompleteNotifier,
   CommandPalette,
   HooksPage,
   IssuesPage,
@@ -855,6 +856,7 @@ function App() {
           unmount,但这里继续维持 Wails EventsOn,把 chunk/tool 事件累到全局
           store,切回来时 ChatPanel 能从 store 还原完整流式状态。*/}
       <ChatStreamsHost />
+      <TurnCompleteNotifier />
       <Routes>
         <Route element={<AppLayout />}>
           <Route path="/chat" element={<ChatPage />} />
