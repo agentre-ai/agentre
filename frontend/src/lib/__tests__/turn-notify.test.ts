@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../../stores/notification-settings-store";
-import { classifyTransition, maybeNotify, type NotifyDeps } from "../turn-notify";
+import {
+  classifyTransition,
+  maybeNotify,
+  type NotifyDeps,
+} from "../turn-notify";
 
 describe("classifyTransition", () => {
   it("running→idle = done", () => {
@@ -56,7 +60,10 @@ describe("maybeNotify", () => {
   });
 
   it("默认(仅失焦)+ 聚焦(任意会话)→ 全部静默", () => {
-    const d = deps({ isWindowFocused: () => true, getActiveSessionId: () => 7 });
+    const d = deps({
+      isWindowFocused: () => true,
+      getActiveSessionId: () => 7,
+    });
     maybeNotify(42, "done", d);
     expect(d.showSystemNotification).not.toHaveBeenCalled();
     expect(d.playSound).not.toHaveBeenCalled();
