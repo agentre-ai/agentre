@@ -15,10 +15,10 @@
 | 维度 | 决策 |
 | --- | --- |
 | 核心模型 | 协调者牵头的群聊：协调者可 recruit 新成员;成员内部调用**复用现有单 agent 对话能力**;用户/agent 通过"发消息 + @收件人"参与;**agent 只看到 @ 到自己的消息** |
-| 驱动方式 | **自动推进、随时可插话**:被 @ 的 agent 跑一个 turn,其输出里 @ 到谁就自动触发谁,链式推进;用户随时暂停/插话/纠偏;系统自带防死循环 |
-| 工作区 | **讨论/协调为主、少数才动手**:MVP **不做** worktree/并发写隔离;成员可共用 project 的 cwd |
+| 驱动方式 | **自动推进、随时可插话**:被 @ 的 agent 跑一个 turn,其输出里 @ 到谁就自动触发谁,链式推进;用户随时暂停/插话/停止;**无 max_rounds 防死循环**(靠 stop + 没人被 @ 的自然静默收敛) |
+| 工作区 | **讨论/协调为主、少数才动手**:成员共用 project 的 cwd;并发写竞态不靠强制隔离基础设施, 而是在系统提示里**引导**要动手的成员自建 git worktree(coding agent 有 shell, 自己跑 `git worktree add`),用不用交给 agent 判断 |
 | 寻址协议 | 一条**自然消息** + 内联 `@名字`(自动补全),序列化为 `<mention>名字</mention>`;**收件人 = 文中所有 mention,都收到同一条**;**一个回合 = 一条消息**;投递进会话用「`(来自 X)` 抬头 + 正文」自然文本,不包 XML 信封 |
-| 执行并发 | MVP **串行**(一次一个 agent turn),并行 fan-out 留作后续开关 |
+| 执行并发 | **并行 fan-out**(eager 路由):同一条消息 @ 的独立成员**全部并发跑**(并发数受成员上限 ~8 自然约束, 无单独 `max_concurrency` cap);依赖链(A→B→C)跨波次天然顺序。共享 cwd, 要写文件的成员经系统提示**引导**自建 git worktree(agent 自行决定, 无强制隔离基础设施) |
 
 ## 2. 总体架构与分层
 
@@ -26,7 +26,7 @@
 
 ```
 internal/app/group.go                         Wails 绑定(parse → svc → return,thin)
-internal/service/group_svc/                   编排引擎(总线调度循环)
+internal/service/group_svc/                   编排引擎(并发 worker pool 调度循环)
 internal/repository/group_repo/               group / member / message 数据访问(sqlmock 单测)
   mock_group_repo/                            mockgen 产物(供 group_svc 单测)
 internal/model/entity/group_entity/           充血实体(Group / GroupMember / GroupMessage)
@@ -100,8 +100,7 @@ func (s) ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 | `department_id` | int64 | 可招募名单的来源(0=不限/显式 allowlist) |
 | `project_id` | int64 | 默认 cwd(0=free) |
 | `run_status` | text | `idle`/`running`/`paused`/`waiting_user`/`error` |
-| `round_count` | int | 自上次用户发言以来的 agent turn 计数 |
-| `max_rounds` | int | 防死循环上限(默认 30) |
+| `round_count` | int | 自上次用户发言以来的 agent turn 计数(**仅 UI 展示, 无上限 / 无防死循环**) |
 | `status` | int | `consts.ACTIVE` / 归档 |
 | `created_at`/`updated_at` | | |
 
@@ -138,16 +137,18 @@ func (s) ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 
 充血实体方法示例：`Group.CanAdvance()`（round_count < max_rounds 且 run_status 允许）、`Group.NextSeq()`、`GroupMessage.Recipients()/SetRecipients()`、`GroupMember.IsCoordinator()`。
 
-## 5. 编排引擎（串行消息总线）
+## 5. 编排引擎（并发 fan-out）
 
-`group_svc` 为每个活跃群跑一个调度器，核心是一个**待投递队列**：
+`group_svc` 为每个活跃群跑一个调度器，核心是一个 **待投递队列 + 在跑 turn 集合**（被 @ 的成员**全部并发**，无并发 cap，受成员上限 ~8 自然约束）：
 
-1. 一条消息被 post（用户 composer，或从某成员输出解析而来），带 `recipients`。
-2. 调度器取下一条 **agent 投递** → 对该成员 backing session 调 `chat_svc.Send`，正文加 `(来自 X)` 自然抬头（§6）→ `ObserveTurn` 等待 turn 完成。
-3. 成员最终文本解析出内联 `<mention>` 标签 → 整条输出成为**一条** `group_message`,收件人 = 文中所有 mention → 其中的 agent 收件人入队 → 循环。无 mention 的输出走兜底（§6）。
-4. 队列空 → `run_status = waiting_user`。用户随时 post；插话即追加并踢一脚调度器。
+1. 一条消息被 post（用户 composer，或从某成员输出解析而来），带 `recipients`。其中 agent 收件人**各自**入队（一条 fan-out 消息 @ 了 N 个成员 → N 条待投递）。
+2. 调度器**把队列里的 agent 投递全部发起**（无并发 cap，并发数受成员数 ~8 自然约束）：对每条投递的成员 backing session 调 `chat_svc.Send`（正文加 `(来自 X)` 自然抬头，§6），发起一个 turn 并 `ObserveTurn` 订阅其完成。**多个成员 turn 因此并发执行**（每个 = 独立 backing session / runtime 进程 / ObserveTurn 通道 —— 底层 `Send` 本就异步并发）。
+3. **任一** turn 完成（ObserveTurn fire，eager 路由、非 barrier）→ 解析其最终文本的内联 `<mention>` → 整条输出成为**一条** `group_message`，收件人 = 文中所有 mention → agent 收件人入队 → 回到步骤 2 填槽位。无 mention 的输出走兜底（§6）。
+4. **队列空且无在跑 turn** → `run_status = waiting_user`。用户随时 post；插话即追加并踢一脚调度器。
 
-**串行（MVP）**：一次一个成员 turn（FIFO）。理由：日志确定、可读；stop/插话实现简单；防护好做。并行 fan-out（协调者同时 @ 三人征询）作为后续开关。
+**并行 fan-out**：同一条消息 @ 的若干**独立**成员**全部并发跑**（并发数由成员上限 ~8 自然约束，无单独 `max_concurrency` cap），eager 路由 —— 谁先回谁先触发下游，不等慢的。**依赖链**（A 说完 @B、B 再 @C）天然跨"波次"顺序、无法也无需并行。理由：贴近真实群聊（"大家都看一下" 不该排队）；底层 `Send` 本就异步并发，串行反而是人为加锁。round_count 按**每个** turn 计数，仅用于 UI 展示活跃度（无上限，见 §7）。
+
+**写竞态**：成员共用 cwd，多个并发 turn 同写同一目录有风险。MVP **不上**强制 worktree 隔离基础设施，而是在成员系统提示里**引导**：「若你要修改文件、且可能与其他成员并发，请在自己的 git worktree 里作业」。coding agent 有 shell，自行 `git worktree add`；用不用、何时用由 agent 判断 —— 编排器不管理 worktree，零新增基础设施。
 
 `run_status` 状态机：`idle → running`（有待投递）`→ waiting_user`（静默）/ `paused` / `error`；stop → `idle`。
 
@@ -171,8 +172,8 @@ func (s) ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 ## 7. 控制流：招募 / 终止 / 插话
 
 - **招募**：协调者 `<mention>` 一个**在部门名单、尚未进群**的 agent → `group_svc` 自动新增成员、`EnsureGroupMemberSession` 起 backing session、post 一条系统消息"X 加入",并把这条消息投递给它（招募与 mention 统一,无需单独语法）。成员数上限 ~8。**MVP 仅协调者能触发自动招募**（非协调者 mention 名单外/未进群 agent → 忽略并 flag）；用户也可在 UI 手动加任意 agent。
-- **防死循环**：`max_rounds`（默认 30，**用户发言时清零**）→ 超限则暂停为 `error`/"已达最大轮数"并提示用户。自然终止 = 静默或回 `@用户`。
-- **插话/暂停/停止**：用户 post = live 追加；stop 取消正在跑的成员 turn（复用 `chat_svc.Stop(ctx, *StopRequest)`，`chat.go:1356`）+ 清空队列 + `run_status=idle`；pause 停止新投递、让当前 turn 跑完。
+- **终止（无 max_rounds 防死循环）**：自然终止 = 没人被 @ 的静默（quiesce → `waiting_user`）或回 `@用户`；跑飞了由用户 `停止`。**不设轮数上限**（2026-06-03 据用户决定去掉）—— 互相 @ 理论上可一直跑，靠 stop + 自然静默收敛；`round_count` 仅作 UI 活跃度展示。
+- **插话/暂停/停止**：用户 post = live 追加；stop 取消**所有在跑**的成员 turn（对每个在跑 session 调 `chat_svc.Stop(ctx, *StopRequest)`，`chat.go:1356`）+ 清空队列 + `run_status=idle`；pause 停止填新槽位、让在跑的 turn 自然跑完。
 - **mid-turn 插话**：若用户在某成员忙时 @ 它，MVP 在群级排队、下一轮投递（不强行 steer；如需即时可后续接 `EnqueueChatMessage`）。
 
 ## 8. 工具权限 / 交互事件透传
@@ -186,22 +187,21 @@ func (s) ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 
 方法只做 parse → `group_svc.Xxx()` → return：
 
-- `ListGroups()` / `CreateGroup(req)` / `LoadGroup(id)`（房间 + 成员 + 消息日志）
+- `ListGroups()` / `CreateGroup(req)` / `LoadGroup(id)`（房间 + 成员 + 消息日志；成员含 `backing_session_id`，前端据此**跳转到该成员的完整单聊会话**，复用现有 chat 视图，无需新绑定）
 - `SendGroupMessage(req)`（groupId, text；收件人从内联 @ 解析，或显式 recipientMemberIds/toUser）
 - `AddGroupMember(req)` / `RemoveGroupMember(req)`
 - `StopGroup(id)` / `PauseGroup(id)` / `ResumeGroup(id)`
 - `RenameGroup(req)` / `ArchiveGroup(id)` / `MarkGroupRead(id)`
 
-实时：群事件流 `group:event:<groupId>`，推送新消息、成员状态、run_status 变化、系统行（加入/权限请求/达上限）。前端 `EventsOn` 订阅，写入 zustand store。
+实时：群事件流 `group:event:<groupId>`，推送新消息、成员状态、run_status 变化、系统行（加入/权限请求）。前端 `EventsOn` 订阅，写入 zustand store。
 
 ## 10. 前端 UI/UX
 
-新面板 `frontend/src/components/agentre/group-chat/`（已用可视化 companion 验证布局）：
+新面板 `frontend/src/components/agentre/group-chat/`（已用可视化 companion 验证布局）。**复用 app 既有的「会话列表 ｜ 对话 ｜ 右侧信息栏」四区结构**（rail 不变；不照搬单聊的两栏）：
 
-- **房间头**：群名 + run_status pill（运行中/等待你/已暂停）+ 轮次计数 + 暂停/停止。
-- **左侧成员栏**：协调者 + 成员，含实时状态（思考中/待批准/空闲），"+ 邀请成员"。
-- **transcript**：按发送者着色的气泡（头像=颜色块+首字），`→ @收件人` chips 表达路由，定向消息下灰字"仅 X 收到"提示过滤视图；系统行居中；工具权限以系统行内联出现。
-- **发送框**：自由文本 + 内联 `@` 自动补全（无独立收件人 chip 选择器）；收件人从 @ 提及解析。
+- **左 · 对话列表**：群聊和单 agent 会话**混排在同一列表**（顶部「群聊」分区 + 下面「AGENTS」单聊会话），群条目带 run_status 点。
+- **中 · 群对话**：**视图 tab 栏**（对话区顶部）—— 打开的视图作为可切换 tab：群聊本身 + 点成员 `›` 跳进去的成员会话，点群聊 tab 即返回（这就是"切换看成员消息流"的承载）；房间头（群名 + run_status pill 运行中/等待你/已暂停 + 中性回合数「已 N 轮」**无上限** + 暂停/停止）；transcript（按发送者着色的**头像 + 名字 + 流式正文**，`→ @收件人` chips 表达路由，定向消息下灰字"仅 X 收到"提示过滤视图；系统行居中；工具权限以审批卡内联出现）；发送框（自由文本 + 内联 `@` 自动补全，收件人从 @ 提及解析）。
+- **右 · 群信息**：分 **成员 / 设置** 两个 tab。成员 tab = 协调者 + 成员（实时状态：思考中/待批准/空闲）+ "邀请成员"；设置 tab = 工作目录 / 归档群。**每个成员行可点（尾部 `›`）→ 跳转到它的完整 backing session 会话**（复用单聊视图，看全程工具调用/思考/改动；该会话以新视图 tab 打开，见上方 tab 栏），目标视图顶部「← 返回群聊」。
 
 约束：所有静态文案走 `react-i18next` 的 `t(...)` + 同步 `zh-CN`/`en` common.json；表单控件用 shadcn `@/components/ui/*`，禁原生 `<select>`；agent/用户/消息**内容不翻译**。复用现有 `CanonicalToolRouter` 渲染成员工具卡。
 
@@ -225,19 +225,19 @@ func (s) ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 
 ## 13. MVP 范围 / 非目标
 
-**IN（MVP）**：房间 + 协调者；协调者自动招募（mention 名单内未进群 agent）+ 用户手动加成员；内联 @ + `<mention>` 寻址解析（一条消息一回合，收件人都收同一条）；串行自动推进 + 防护；用户插话/暂停/停止；持久化（3 表 + chat_sessions.group_id）；群面板 UI；复用 `Send`/工具权限透传。
+**IN（MVP）**：房间 + 协调者；协调者自动招募（mention 名单内未进群 agent）+ 用户手动加成员；内联 @ + `<mention>` 寻址解析（一条消息一回合，收件人都收同一条）；**并行 fan-out 自动推进（eager 路由，无并发 cap）**；用户插话/暂停/停止（**无 max_rounds 防死循环**）；成员行跳转到完整 backing session；持久化（3 表 + chat_sessions.group_id）；群面板 UI（左对话列表混排 / 右群信息）；复用 `Send`/工具权限透传。
 
-**OUT（后续）**：并行 fan-out;worktree/并发写隔离;builtin 真 tool 注入(parse 不稳再上);DAG/工作流编辑器;跨群/嵌套群;高级环检测;remote-daemon 成员(经 `Send` 可传递跑通,但本期不专门测).
+**OUT（后续）**：**强制 worktree/并发写隔离基础设施**（MVP 仅系统提示引导 agent 自建，编排器不管理）;builtin 真 tool 注入(parse 不稳再上);DAG/工作流编辑器;跨群/嵌套群;高级环检测;remote-daemon 成员(经 `Send` 可传递跑通,但本期不专门测).
 
 ## 14. 已定默认值 & 待评审确认项
 
 下列为我替你拍的默认，评审时可推翻：
 
-1. **执行串行**（非并行）—— MVP。
+1. **执行并行 fan-out**（eager 路由，**无 `max_concurrency` cap**，并发数受成员上限 ~8 自然约束）—— 依赖链天然顺序；共享 cwd + 引导 agent 自选 git worktree，不上强制隔离基础设施。**（2026-06-03：先从"串行"改"并行"，又据用户决定去掉并发 cap）**
 2. **招募 = 协调者 mention 名单内未进群的 agent**（仅协调者可触发）；可招募名单 = 部门成员；成员上限 ~8。
 3. **寻址 = 一条自然消息 + 内联 `<mention>名字</mention>`**（已与用户确认标签名）；收件人 = 文中所有 mention,都收到同一条;一个回合 = 一条消息;投递用 `(来自 X)` 自然抬头,不包 XML 信封。
 4. **无标签兜底 = 回上一个发送者**；无寻址 = quiesce 转 `waiting_user`。
-5. **`max_rounds` 默认 30，用户发言时清零**。
+5. **无防死循环 / 无 `max_rounds`**（2026-06-03 据用户决定去掉）—— 靠 `停止` + 没人被 @ 的自然静默收敛；`round_count` 仅作 UI 活跃度展示。**成员消息流 = 点成员行跳转到完整 backing session**（复用单聊视图 + 「← 返回群聊」，不在群里就地展开）。
 6. **工具权限/提问**冒泡为系统行，复用现有 handler 应答。
 7. **domain 包名 `group_*`**（vs `crew_*`/`squad_*`）。
 8. **`chat_svc` 两处 seam**（`ObserveTurn` 服务端观察口 + `chat_sessions.group_id` 列 & `EnsureGroupMemberSession`）—— 唯一改动到的既有 domain。**已对照代码核对（2026-06-03）**：seam 成立，但 ① `ObserveTurn` 必须 turn 起点订阅且覆盖 `failTurn` 早退（见 §3.1）；② `group_id` 过滤需在 8+ 个 list 查询显式做 + 加索引（见 §3.2）；③ 中止方法叫 `Stop` 非 `StopChatMessage`；④ `turn.Dispatcher` 是 svc 级共享而非 per-session（措辞已修，见 §1）。
