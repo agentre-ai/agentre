@@ -135,7 +135,7 @@ func (s) ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 
 **@ 过滤视图天然涌现**：成员 backing session 只会收到 @ 到它的消息 → "agent 只看到 @ 到自己的消息"无需任何额外过滤逻辑。
 
-充血实体方法示例：`Group.CanAdvance()`（round_count < max_rounds 且 run_status 允许）、`Group.NextSeq()`、`GroupMessage.Recipients()/SetRecipients()`、`GroupMember.IsCoordinator()`。
+充血实体方法示例：`Group.CanAdvance()`（仅按 `run_status` 判断是否允许推进，**无轮数上限**）、`Group.NextSeq()`、`GroupMessage.Recipients()/SetRecipients()`、`GroupMember.IsCoordinator()`。
 
 ## 5. 编排引擎（并发 fan-out）
 
@@ -212,7 +212,7 @@ func (s) ObserveTurn(sessionID int64) (<-chan TurnResult, func())
   - happy path：用户 → 协调者 → 成员 → 回用户。
   - 寻址解析：多 mention 都收到同一条 / 名称唯一解析 / 无 mention 兜底到上一个发送者 / 只 @用户或无人 → quiesce。
   - 招募流：协调者 mention 名单内未进群 agent → 新成员 backing session 建立 + 系统消息;非协调者触发 → 忽略并 flag。
-  - 边界：`max_rounds` 超限 → 暂停 error；用户发言清零计数。
+  - 边界：静默 quiesce（只 @用户或无人）→ `waiting_user`；用户发言重置 `round_count`（仅 UI 计数）；`paused` 时在跑 turn 跑完但不填新槽位。
   - 错误：成员 turn 报错 / abort 的传播与 run_status。
 - **迁移测试**：新表的 `*_test.go`（迁移自身可起真库，属白名单例外）。
 - **前端 Vitest**：群面板渲染、`@` 自动补全、定向 chip 与"仅 X 收到"渲染、stream 事件 → store。
