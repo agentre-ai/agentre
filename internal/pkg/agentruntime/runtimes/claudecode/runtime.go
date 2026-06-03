@@ -83,6 +83,9 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			// user frame 携带 base64 image content block(CLI stream-json 原生支持);
 			// extractImages 从 RunRequest.UserBlocks 抽 inline 图片经 handle.Stream 透传。
 			capability.CapImageInput: true,
+			// RunRequest.MCPServers 注入支持:claudecode CLI 接受 --mcp-config 传入
+			// 额外 MCP tool 服务器;群聊编排是首个消费者,入群资格门控于此 cap。
+			capability.CapMCPTools: true,
 		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},

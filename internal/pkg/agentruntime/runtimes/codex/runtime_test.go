@@ -33,6 +33,8 @@ func TestCodexCapabilities(t *testing.T) {
 		So(caps.Has(capability.CapForkSession), ShouldBeTrue)
 		So(caps.Has(capability.CapReportContextWindow), ShouldBeTrue)
 		So(caps.Has(capability.CapCompact), ShouldBeTrue)
+		// CapMCPTools=false:codex 不支持 RunRequest.MCPServers 注入。
+		So(caps.Has(capability.CapMCPTools), ShouldBeFalse)
 	})
 
 	Convey("codex PermissionModeMeta", t, func() {

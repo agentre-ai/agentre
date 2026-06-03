@@ -27,6 +27,8 @@ func TestPiAgentCapabilities(t *testing.T) {
 			So(caps.Has(capability.CapCancelSteer), ShouldBeFalse)
 			So(caps.Has(capability.CapDrainSteer), ShouldBeFalse)
 			So(caps.Has(capability.CapToolPermission), ShouldBeFalse)
+			// CapMCPTools=false:pi-agent 不支持 RunRequest.MCPServers 注入。
+			So(caps.Has(capability.CapMCPTools), ShouldBeFalse)
 		})
 
 		Convey("When comparing optional interfaces Then advertised controls match implementations", func() {

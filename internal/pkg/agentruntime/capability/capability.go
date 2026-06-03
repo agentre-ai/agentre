@@ -17,6 +17,7 @@ const (
 	CapReportContextWindow Capability = "report_context_window"
 	CapCompact             Capability = "compact"
 	CapGoal                Capability = "goal"
+	CapMCPTools            Capability = "mcp_tools" // 该 runtime 接受 RunRequest.MCPServers, 可带注入的 MCP tool 启动(群聊是首个消费者)
 )
 
 // Capabilities 一个 runtime 的能力矩阵 + permission mode 元数据。

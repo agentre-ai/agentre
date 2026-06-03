@@ -31,5 +31,7 @@ func TestBuiltinCapabilities(t *testing.T) {
 		So(caps.Has(capability.CapToolPermission), ShouldBeFalse)
 		So(caps.Has(capability.CapForkSession), ShouldBeFalse)
 		So(caps.Has(capability.CapReportContextWindow), ShouldBeFalse)
+		// CapMCPTools=false:builtin 不支持 RunRequest.MCPServers 注入。
+		So(caps.Has(capability.CapMCPTools), ShouldBeFalse)
 	})
 }
