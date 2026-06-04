@@ -158,7 +158,7 @@ export function TaskProgressBar({ progress }: Props) {
         </span>
       </button>
       {expanded ? (
-        <ul className="flex flex-col">
+        <ul className="flex max-h-64 flex-col overflow-y-auto overscroll-contain">
           {tasks.map((t, i) => (
             <TaskRow key={t.id} index={i} task={t} />
           ))}
