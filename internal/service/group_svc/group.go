@@ -3,7 +3,10 @@ package group_svc
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"go.uber.org/zap"
 
 	"agentre/internal/model/entity/group_entity"
+	"agentre/internal/pkg/agentruntime"
 	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/pkg/code"
 	"agentre/internal/repository/agent_repo"
@@ -50,12 +54,14 @@ type GroupSvc interface {
 }
 
 type groupSvc struct {
-	gw         ChatGateway
-	emitter    Emitter
-	now        func() int64
-	names      func(ctx context.Context, agentID int64) string // agent id -> 展示名
-	mu         sync.Mutex                                      // 保护 schedulers
-	schedulers map[int64]*scheduler                            // groupID -> 运行态(Task C5)
+	gw             ChatGateway
+	emitter        Emitter
+	now            func() int64
+	names          func(ctx context.Context, agentID int64) string // agent id -> 展示名
+	mu             sync.Mutex                                      // 保护 schedulers
+	schedulers     map[int64]*scheduler                            // groupID -> 运行态(Task C5)
+	mcp            *groupMCP                                       // group_send MCP server(D2 注册到 gateway)
+	gatewayBaseURL string                                          // 本机 gateway base(D2 注入)
 }
 
 var defaultGroup GroupSvc = newGroupSvc(chatSvcGateway{}, NoopEmitter{})
@@ -75,6 +81,7 @@ func newGroupSvc(gw ChatGateway, e Emitter) *groupSvc {
 		now:        func() int64 { return time.Now().UnixMilli() },
 		names:      defaultNameResolver,
 		schedulers: map[int64]*scheduler{},
+		mcp:        newGroupMCP(nil), // 真正的 ingest 由 D2 回填; C8 测试自带 ingest
 	}
 }
 
@@ -299,3 +306,45 @@ func groupEventName(groupID int64) string { return "group:event:" + strconv.Form
 // enqueueDeliveries / kick 是调度占位; C5 实现真正的并发 fan-out 调度。
 func (s *groupSvc) enqueueDeliveries(groupID int64, recipientIDs []int64, content, fromName string) {}
 func (s *groupSvc) kick(ctx context.Context, groupID int64)                                         {}
+
+// MCPHandler 供 bootstrap(D2) 注册到 gateway /mcp/group/。
+func (s *groupSvc) MCPHandler() http.Handler { return s.mcp }
+
+// SetGatewayBaseURL bootstrap(D2) 注入本机 gateway base(如 http://127.0.0.1:<port>)。
+func (s *groupSvc) SetGatewayBaseURL(u string) { s.gatewayBaseURL = u }
+
+// NewGroupMCPForTest 仅测试用 —— 直接构造 handler 注入 ingest 回调。
+func NewGroupMCPForTest(ingest func(context.Context, int64, string, []string) error) *groupMCP {
+	return newGroupMCP(ingest)
+}
+
+// buildGroupMCP 为某成员投递签发一次性 token, 返回注入到 RunRequest.MCPServers 的 group MCP server。
+// (C5 launchDelivery 调用; 本任务后暂未被引用是预期的。)
+func (s *groupSvc) buildGroupMCP(g *group_entity.Group, m *group_entity.GroupMember) []agentruntime.MCPServerSpec {
+	tok := s.mcp.MintToken(g.ID, m.ID)
+	return []agentruntime.MCPServerSpec{{
+		Name:    "group",
+		URL:     s.gatewayBaseURL + "/mcp/group/",
+		Headers: map[string]string{"Authorization": "Bearer " + tok},
+	}}
+}
+
+// buildGroupSystemPrompt 拼接注入到成员 turn 的群聊 system prompt 后缀(角色 + roster + tool 用法 + worktree 引导)。
+func (s *groupSvc) buildGroupSystemPrompt(g *group_entity.Group, members []*group_entity.GroupMember, me *group_entity.GroupMember) string {
+	var b strings.Builder
+	role := "成员"
+	if me.IsCoordinator() {
+		role = "协调者(部门 leader)"
+	}
+	fmt.Fprintf(&b, "\n\n## 群聊「%s」\n你是本群的%s。", g.Title, role)
+	b.WriteString("\n当前成员：")
+	for _, m := range members {
+		fmt.Fprintf(&b, "\n- %s（%s）", s.names(context.Background(), m.AgentID), m.Role)
+	}
+	b.WriteString("\n\n你只会收到 @ 到你的消息。要发言请调用 `group_send` 工具：body=正文，mentions=收件成员显示名数组（@用户 = 回复人类）。一个回合可多次调用、可分别对不同人发不同内容。**不调用 group_send 的内容不会进群**。")
+	if me.IsCoordinator() {
+		b.WriteString("\n作为协调者，mentions 里写一个本部门、尚未进群的同事名字即可把 ta 拉进群。")
+	}
+	b.WriteString("\n若你要修改文件且可能与他人并发，请先 `git worktree add` 在自己的工作树里作业。")
+	return b.String()
+}
