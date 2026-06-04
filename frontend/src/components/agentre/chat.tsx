@@ -30,6 +30,7 @@ import type { PlanActionStream } from "./canonical-tool/props";
 import { CanonicalToolRouter } from "./canonical-tool/registry";
 import { AIChatInput, type AIChatInputHandle } from "./chat-input";
 import { CodeBlock } from "./code-block";
+import { AutoTriggerBanner } from "./auto-trigger-banner";
 import { CompactBoundaryDivider } from "./compact-boundary-divider";
 import { CompactHistoryFold } from "./compact-history-fold";
 import { MarkdownText } from "./markdown-text";
@@ -1186,6 +1187,21 @@ function ChatTranscript({
     return out;
   }, [folding, messages, fold]);
 
+  // autonomousIds:自主续轮(CLI 后台任务完成后自主跑的一轮)的消息 id 集合。
+  // 判定:assistant 轮且其在**完整 messages**里紧邻的前一条不是 user —— 正常轮是
+  // user→assistant、auto-continue / steer 也是 user→assistant,只有自主续轮是
+  // assistant→assistant(无 user 行)。用完整 messages(而非 displayMessages)算,
+  // 避免 compact 折叠把首条 assistant 误判成自主轮。会话首条(i===0)永不算。
+  const autonomousIds = React.useMemo(() => {
+    const ids = new Set<number>();
+    for (let i = 1; i < messages.length; i++) {
+      if (messages[i].role === "assistant" && messages[i - 1].role !== "user") {
+        ids.add(messages[i].id);
+      }
+    }
+    return ids;
+  }, [messages]);
+
   // useEvent 模式：把 onRerun/onEdit 包成稳定引用,让 MessageItem 的 React.memo
   // 不会被 ChatPanel 传入的 inline lambda 击穿。父侧每次重渲都换新函数,但 ref
   // 内部更新后稳定代理捕获最新值,语义不变。
@@ -1215,37 +1231,42 @@ function ChatTranscript({
         ) : null}
         {displayMessages.map((m) => {
           const isLive = m.id === liveTargetId;
+          const isAutonomous = autonomousIds.has(m.id);
           return (
-            <MessageItem
-              key={m.id}
-              m={m}
-              agentName={agentName}
-              agentColor={agentColor}
-              cwd={cwd}
-              sessionId={sessionId}
-              // 关键: 非 live 消息的所有 live* prop 都收敛到稳定的"空值",
-              // 让 React.memo 的 shallow 比较恒命中。
-              liveTail={isLive ? (liveDelta ?? "") : ""}
-              liveThinking={isLive ? (liveThinking ?? "") : ""}
-              liveBlocks={isLive ? liveBlocks : undefined}
-              liveRetry={isLive ? (liveRetry ?? null) : null}
-              liveStreamStartedAt={
-                isLive ? (liveStreamStartedAt ?? null) : null
-              }
-              showIndicator={
-                streaming && m.role === "assistant" && m.id === lastAssistantId
-              }
-              compacting={
-                isLive &&
-                streaming &&
-                m.role === "assistant" &&
-                m.id === lastAssistantId &&
-                liveCompacting
-              }
-              onRerun={stableOnRerun}
-              onEdit={stableOnEdit}
-              onPlanActionStarted={onPlanActionStarted}
-            />
+            <React.Fragment key={m.id}>
+              {isAutonomous ? <AutoTriggerBanner /> : null}
+              <MessageItem
+                m={m}
+                agentName={agentName}
+                agentColor={agentColor}
+                cwd={cwd}
+                sessionId={sessionId}
+                // 关键: 非 live 消息的所有 live* prop 都收敛到稳定的"空值",
+                // 让 React.memo 的 shallow 比较恒命中。
+                liveTail={isLive ? (liveDelta ?? "") : ""}
+                liveThinking={isLive ? (liveThinking ?? "") : ""}
+                liveBlocks={isLive ? liveBlocks : undefined}
+                liveRetry={isLive ? (liveRetry ?? null) : null}
+                liveStreamStartedAt={
+                  isLive ? (liveStreamStartedAt ?? null) : null
+                }
+                showIndicator={
+                  streaming &&
+                  m.role === "assistant" &&
+                  m.id === lastAssistantId
+                }
+                compacting={
+                  isLive &&
+                  streaming &&
+                  m.role === "assistant" &&
+                  m.id === lastAssistantId &&
+                  liveCompacting
+                }
+                onRerun={stableOnRerun}
+                onEdit={stableOnEdit}
+                onPlanActionStarted={onPlanActionStarted}
+              />
+            </React.Fragment>
           );
         })}
       </div>

@@ -441,6 +441,10 @@
     "actions": {
       "rename": "重命名"
     },
+    "autonomous": {
+      "banner": "后台任务完成 · 自动继续",
+      "aria": "自动继续的回复"
+    },
     "compact": {
       "imageUnsupported": "/compact 不能和图片一起发送",
       "needsSession": "请先发送一条消息让 Codex 会话启动后再压缩",

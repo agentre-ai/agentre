@@ -291,6 +291,63 @@ describe("ChatTranscript image blocks", () => {
   });
 });
 
+describe("ChatTranscript autonomous turn banner", () => {
+  function msg(
+    id: number,
+    role: "user" | "assistant",
+    text: string,
+  ): chat_svc.ChatMessage {
+    return {
+      blocks: [{ type: "text", text } as ChatBlockData],
+      completionTokens: 0,
+      createtime: new Date("2026-05-17T10:30:00Z").getTime(),
+      durationMs: 0,
+      errorText: "",
+      id,
+      model: "",
+      promptTokens: 0,
+      role,
+      seq: id,
+      sessionId: 1,
+    } as chat_svc.ChatMessage;
+  }
+
+  it("自主续轮(assistant 紧邻前一条 assistant,无 user 行)前渲染 AutoTriggerBanner", () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "后台跑 sleep 10 完成后看目录"),
+          msg(2, "assistant", "已在后台启动"),
+          msg(3, "assistant", "当前目录如下…"),
+        ]}
+      />,
+    );
+    // 仅 msg(3) 是自主续轮 → 恰好一条 banner;msg(2) 紧邻 user 不挂。
+    // (无 compact boundary,banner 是唯一的 role=separator。)
+    const banners = screen.getAllByRole("separator");
+    expect(banners).toHaveLength(1);
+    expect(banners[0]).toHaveTextContent(/auto-continued|自动继续/);
+  });
+
+  it("每条 assistant 都紧跟 user 时不渲染 banner", () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "hi"),
+          msg(2, "assistant", "hello"),
+          msg(3, "user", "again"),
+          msg(4, "assistant", "ok"),
+        ]}
+      />,
+    );
+    expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  });
+});
+
 describe("formatResetIn", () => {
   const now = Date.parse("2026-05-28T00:00:00Z");
 
