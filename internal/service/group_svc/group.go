@@ -316,7 +316,7 @@ func (s *groupSvc) persistMessage(ctx context.Context, g *group_entity.Group, ki
 	if err := group_repo.Message().Create(ctx, m); err != nil {
 		return nil, err
 	}
-	s.emitter.Emit(ctx, groupEventName(g.ID), map[string]any{"kind": "message", "message": m})
+	s.emitter.Emit(ctx, groupEventName(g.ID), map[string]any{"kind": "message", "message": toGroupMessageEvent(m)})
 	return m, nil
 }
 
