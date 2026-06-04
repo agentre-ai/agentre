@@ -40,9 +40,6 @@ type NoopEmitter struct{}
 
 func (NoopEmitter) Emit(context.Context, string, any) {}
 
-// scheduler 群运行态占位(Task C5 实现真正的并发 fan-out 调度器)。
-type scheduler struct{}
-
 // GroupSvc 群聊编排服务。
 type GroupSvc interface {
 	ListGroups(ctx context.Context) ([]*group_entity.Group, error)
@@ -51,6 +48,7 @@ type GroupSvc interface {
 	AddGroupMember(ctx context.Context, groupID, agentID int64) (*group_entity.GroupMember, error)
 	RemoveGroupMember(ctx context.Context, memberID int64) error
 	SendGroupMessage(ctx context.Context, req *SendGroupMessageRequest) error
+	IngestAgentMessage(ctx context.Context, memberID int64, body string, mentions []string) error
 }
 
 type groupSvc struct {
@@ -60,6 +58,7 @@ type groupSvc struct {
 	names          func(ctx context.Context, agentID int64) string // agent id -> 展示名
 	mu             sync.Mutex                                      // 保护 schedulers
 	schedulers     map[int64]*scheduler                            // groupID -> 运行态(Task C5)
+	ingestLocks    *sync.Map                                       // groupID -> *sync.Mutex(串行化 IngestAgentMessage 临界区)
 	mcp            *groupMCP                                       // group_send MCP server(D2 注册到 gateway)
 	gatewayBaseURL string                                          // 本机 gateway base(D2 注入)
 }
@@ -75,14 +74,19 @@ func SetEmitter(e Emitter) {
 }
 
 func newGroupSvc(gw ChatGateway, e Emitter) *groupSvc {
-	return &groupSvc{
-		gw:         gw,
-		emitter:    e,
-		now:        func() int64 { return time.Now().UnixMilli() },
-		names:      defaultNameResolver,
-		schedulers: map[int64]*scheduler{},
-		mcp:        newGroupMCP(nil), // 真正的 ingest 由 D2 回填; C8 测试自带 ingest
+	s := &groupSvc{
+		gw:          gw,
+		emitter:     e,
+		now:         func() int64 { return time.Now().UnixMilli() },
+		names:       defaultNameResolver,
+		schedulers:  map[int64]*scheduler{},
+		ingestLocks: &sync.Map{},
+		mcp:         newGroupMCP(nil),
+		// gatewayBaseURL set later via SetGatewayBaseURL
 	}
+	// 绑定 MCP ingest 回调(仅取方法值, 不调用) → group_send tool 路由到 IngestAgentMessage。
+	s.mcp.ingest = s.IngestAgentMessage
+	return s
 }
 
 // defaultNameResolver 把 agent id 解析成展示名(找不到/出错返回空串)。
@@ -302,10 +306,6 @@ func (s *groupSvc) persistMessage(ctx context.Context, g *group_entity.Group, ki
 }
 
 func groupEventName(groupID int64) string { return "group:event:" + strconv.FormatInt(groupID, 10) }
-
-// enqueueDeliveries / kick 是调度占位; C5 实现真正的并发 fan-out 调度。
-func (s *groupSvc) enqueueDeliveries(groupID int64, recipientIDs []int64, content, fromName string) {}
-func (s *groupSvc) kick(ctx context.Context, groupID int64)                                         {}
 
 // MCPHandler 供 bootstrap(D2) 注册到 gateway /mcp/group/。
 func (s *groupSvc) MCPHandler() http.Handler { return s.mcp }
