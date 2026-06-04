@@ -6,12 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+import { useChatAgents } from "../../../hooks/use-chat-agents";
 import { useGroup } from "../../../hooks/use-group";
 import { ChatPanel } from "../chat-panel";
 
 import { GroupComposer, type GroupComposerSend } from "./group-composer";
 import { GroupRoster } from "./group-roster";
 import { GroupTranscript } from "./group-transcript";
+import { MentionText } from "./mention-text";
 
 import {
   GroupArchive,
@@ -41,6 +43,7 @@ type ViewId = string;
 function GroupChat({ groupId }: { groupId: number }) {
   const { t } = useTranslation();
   const { detail } = useGroup(groupId);
+  const { agents } = useChatAgents();
 
   const group = detail?.group;
   const members = React.useMemo(() => detail?.members ?? [], [detail?.members]);
@@ -62,21 +65,56 @@ function GroupChat({ groupId }: { groupId: number }) {
 
   // memberName 解析：agent 名字理应来自 agent 详情，但本任务范围内 roster 不带名字，
   // 用稳定的 "Agent #<agentID>" 占位（动态内容，不进 t()）。E4/后续接入真实名字。
+  // nameOf: agentID → 真实 agent 显示名,数据来自 chat-agents-store(useChatAgents)。
+  // 找不到时回退 "Agent #<id>"(动态内容,绝不进 t())。
+  const nameOf = React.useCallback(
+    (agentID: number) =>
+      agents.find((a) => a.id === agentID)?.name ?? `Agent #${agentID}`,
+    [agents],
+  );
+
+  // memberName: roster member id → 显示名。先取成员的 agentID,再走 nameOf 拿真实名字。
   const memberName = React.useCallback(
     (memberId: number) => {
       const m = memberById.get(memberId);
       if (!m) return `#${memberId}`;
-      return `Agent #${m.agentID}`;
+      return nameOf(m.agentID);
     },
-    [memberById],
+    [memberById, nameOf],
   );
 
-  function openMember(member: GroupMemberItem) {
+  // openMemberById: 打开某成员的会话视图 tab。是 roster 行 "›" 与 transcript 里
+  // mention chip 共用的跳转入口——点 @name chip 与点成员行落到同一个成员视图。
+  const openMemberById = React.useCallback((memberId: number) => {
     setOpenMemberIds((prev) =>
-      prev.includes(member.id) ? prev : [...prev, member.id],
+      prev.includes(memberId) ? prev : [...prev, memberId],
     );
-    setActiveView(`member:${member.id}`);
+    setActiveView(`member:${memberId}`);
+  }, []);
+
+  function openMember(member: GroupMemberItem) {
+    openMemberById(member.id);
   }
+
+  // mentionRoster: 把成员映射成 MentionText 需要的 { memberId, name } 形态,
+  // 供 transcript 里 @mention chip 按名字命中 + 点击跳转成员会话视图。
+  const mentionRoster = React.useMemo(
+    () => members.map((m) => ({ memberId: m.id, name: nameOf(m.agentID) })),
+    [members, nameOf],
+  );
+
+  // renderMessageBody: transcript 的 body 渲染接缝。把正文交给 MentionText 高亮
+  // @mention,点击 chip 复用 openMemberById —— 与点击 roster 行的 "›" 跳到同一视图。
+  const renderMessageBody = React.useCallback(
+    (content: string) => (
+      <MentionText
+        text={content}
+        roster={mentionRoster}
+        onJump={openMemberById}
+      />
+    ),
+    [mentionRoster, openMemberById],
+  );
 
   function closeMember(memberId: number) {
     setOpenMemberIds((prev) => prev.filter((id) => id !== memberId));
@@ -246,6 +284,7 @@ function GroupChat({ groupId }: { groupId: number }) {
                 messages={messages}
                 roster={members}
                 memberName={memberName}
+                renderBody={renderMessageBody}
               />
             </section>
 

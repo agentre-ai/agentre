@@ -51,6 +51,19 @@ vi.mock("../../../../wailsjs/go/app/App", () => ({
   GroupArchive: vi.fn(),
 }));
 vi.mock("../chat-panel", () => ({ ChatPanel: () => null }));
+// mock useChatAgents so the panel resolves real agent names deterministically
+// (agentID 2 → "后端", 3 → "前端") without hitting the ListChatAgents binding.
+vi.mock("../../../hooks/use-chat-agents", () => ({
+  useChatAgents: () => ({
+    agents: [
+      { id: 2, name: "后端" },
+      { id: 3, name: "前端" },
+    ],
+    loading: false,
+    error: null,
+    reload: vi.fn(),
+  }),
+}));
 
 import { GroupChat } from "./index";
 
