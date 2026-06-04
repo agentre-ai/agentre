@@ -48,6 +48,18 @@ describe("notification-settings-store", () => {
     expect(s.enabled).toBe(false); // 读到 "false"
   });
 
+  it("load: 未知 soundPreset 回落默认值(防 Select 空值)", async () => {
+    getMock.mockImplementation((req: { key: string }) => {
+      if (req.key === "notify.sound_preset")
+        return Promise.resolve({ key: req.key, value: "weird-legacy-value" });
+      return Promise.resolve({ key: req.key, value: "false" });
+    });
+    await useNotificationSettingsStore.getState().load();
+    expect(useNotificationSettingsStore.getState().settings.soundPreset).toBe(
+      "ding",
+    );
+  });
+
   it("save: 写一个 partial 后 UpdateAppSettings 收到对应 entry,并更新本地 state", async () => {
     updateMock.mockResolvedValue({});
     await useNotificationSettingsStore.getState().save({ toast: true });

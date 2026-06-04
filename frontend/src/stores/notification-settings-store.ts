@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 import { GetAppSetting, UpdateAppSettings } from "../../wailsjs/go/app/App";
 import type { app_settings_svc } from "../../wailsjs/go/models";
-import type { SoundPreset } from "../lib/notify-sound";
+import { SOUND_PRESETS, type SoundPreset } from "../lib/notify-sound";
 
 export type NotificationSettings = {
   enabled: boolean;
@@ -69,7 +69,9 @@ export const useNotificationSettingsStore = create<State>((set, get) => ({
             : onlyWhenUnfocused === "true",
         system: system === null ? d.system : system === "true",
         sound: sound === null ? d.sound : sound === "true",
-        soundPreset: (preset as SoundPreset) || d.soundPreset,
+        soundPreset: SOUND_PRESETS.includes(preset as SoundPreset)
+          ? (preset as SoundPreset)
+          : d.soundPreset,
         toast: toast === null ? d.toast : toast === "true",
       },
     });

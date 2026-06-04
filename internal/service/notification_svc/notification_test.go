@@ -19,6 +19,7 @@ func TestShow(t *testing.T) {
 		defer ctrl.Finish()
 		n := mock_notification_svc.NewMockNotifier(ctrl)
 		notification_svc.RegisterNotifier(n)
+		t.Cleanup(func() { notification_svc.RegisterNotifier(nil) })
 
 		convey.Convey("透传 title/body", func() {
 			n.EXPECT().Notify("fix bug", "已完成").Return(nil)

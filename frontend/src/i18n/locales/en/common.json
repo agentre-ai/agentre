@@ -1826,7 +1826,7 @@
       "systemLabel": "System notification",
       "systemDesc": "Posts to macOS Notification Center / Windows Action Center — visible even when the app is in the background.",
       "soundLabel": "Sound",
-      "soundDesc": "Play a short chime on completion.",
+      "soundDesc": "Play a short chime when notifying.",
       "soundTest": "Test",
       "preset": {
         "ding": "Ding",

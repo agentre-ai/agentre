@@ -1826,7 +1826,7 @@
       "systemLabel": "系统通知",
       "systemDesc": "弹到 macOS 通知中心 / Windows 操作中心，应用在后台也能看到。",
       "soundLabel": "提示音",
-      "soundDesc": "完成时播放一段提示音。",
+      "soundDesc": "提醒时播放一段提示音。",
       "soundTest": "试听",
       "preset": {
         "ding": "叮",
