@@ -4,9 +4,9 @@
 
 **Goal:** 当一轮对话结束(完成 / 出错 / 等待用户输入)且用户没在看该会话时,通过系统通知 / 提示音 / 应用内 toast 提醒用户,渠道可在「设置 → 通知」配置。
 
-**Architecture:** 前端编排 + 后端薄绑定。前端 `TurnCompleteNotifier` 用本地信号(`session-status-store` 状态转换 + `chat-tabs-store` 当前会话 + 窗口焦点)做全部决策,系统通知调薄 Wails 绑定 `App.ShowNotification` → `notification_svc` → `pkg/sysnotify`(beeep)弹原生通知;提示音(Web Audio 合成)与 toast(sonner)纯前端。设置沿用 `app_settings_svc` 的离散 KV key。
+**Architecture:** 前端编排 + 后端薄绑定。前端 `TurnCompleteNotifier` 用本地信号(`session-status-store` 状态转换 + `chat-tabs-store` 当前会话 + 窗口焦点)做全部决策,系统通知调薄 Wails 绑定 `App.ShowNotification` → `notification_svc` → `pkg/sysnotify`(beeep)弹原生通知;提示音(Web Audio 合成)与应用内 toast 纯前端。应用内 toast 是 bespoke 卡片(`notification-toast-store` 列表 + `NotificationToastViewport` 渲染),**不复用 sonner**,带「跳转到会话」动作。设置沿用 `app_settings_svc` 的离散 KV key。
 
-**Tech Stack:** Go 1.26 / cago / gomock / goconvey;`github.com/gen2brain/beeep`;React 19 / TS / zustand / Vitest / @testing-library/react / sonner / Web Audio API。
+**Tech Stack:** Go 1.26 / cago / gomock / goconvey;`github.com/gen2brain/beeep`;React 19 / TS / zustand / Vitest / @testing-library/react / Web Audio API。
 
 **参考 spec:** `docs/superpowers/specs/2026-06-03-completion-notification-design.md`
 
@@ -45,12 +45,16 @@
 - `frontend/src/lib/turn-notify.ts` — 纯逻辑:`classifyTransition` + `maybeNotify`。
 - `frontend/src/components/agentre/turn-complete-notifier.tsx` — 宿主 + `useTurnNotifications` hook。
 - `frontend/src/components/agentre/notifications-panel.tsx` — 设置面板。
+- `frontend/src/stores/notification-toast-store.ts` — 应用内 toast 列表 store(`push`/`dismiss`/`clear`,上限 5 条)。
+- `frontend/src/components/agentre/notification-toast.tsx` — bespoke 通知卡 + 右下角常驻 `NotificationToastViewport`(不复用 sonner)。
+- `frontend/src/components/agentre/session-avatar.ts` — `tokenToCssColor`/`firstLetter`/`avatarFromMeta`,与 tab 头像共用(从 `use-tabs-view.ts` 抽出去重)。
 - 对应 `__tests__/*.test.ts(x)`。
 
 **前端(修改)**
-- `frontend/src/App.tsx` — 挂 `<TurnCompleteNotifier />`。
+- `frontend/src/App.tsx` — 挂 `<TurnCompleteNotifier />` + `<NotificationToastViewport />`(`<Toaster/>` 保留给别处 sonner 用)。
 - `frontend/src/components/agentre/settings.tsx` — notifications 分支换成真面板 + 去掉 under-construction 条目。
-- `frontend/src/i18n/locales/zh-CN/common.json`、`en/common.json` — 新增 `settings.notifications.*` + `notify.*`,删除 `settings.underConstruction.notifications.*`。
+- `frontend/src/components/agentre/chat-tabs/use-tabs-view.ts` — avatar 推导改用共享的 `session-avatar`。
+- `frontend/src/i18n/locales/zh-CN/common.json`、`en/common.json` — 新增 `settings.notifications.*` + `notify.*`(含 `notify.openSession`/`dismiss`/`justNow`),删除 `settings.underConstruction.notifications.*`。
 - `frontend/src/__tests__/i18n.test.ts` — 更新 `shellAndSettingsKeys` 列表。
 
 ---
@@ -1294,10 +1298,12 @@ Expected: FAIL —— 模块不存在。
 
 `frontend/src/components/agentre/turn-complete-notifier.tsx`:
 
+> **调整(2026-06-04):应用内 toast 改为 bespoke 卡片,不复用 sonner。**
+> `showToast` 不再调 `toast.success/...`,而是把 `{sessionId,kind,title,body}` 推入新增的 `notification-toast-store`,由新增的 `NotificationToastViewport`(`notification-toast.tsx`)在右下角渲染 bespoke 卡片(左状态条 + agent 头像 + 「跳转到会话」+ ✕;`done` 自动消失,`error`/`waiting` 常驻)。因此:`NotifyDeps.showToast` 签名加 `sessionId`(见 Task 10 的 `turn-notify.ts`);头像复用从 `use-tabs-view.ts` 抽出的 `session-avatar.ts`;App 根同时挂 `<NotificationToastViewport/>`;新增 `notify.openSession`/`dismiss`/`justNow` 文案。下面代码块即实际实现。
+
 ```tsx
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
 
 import { ShowNotification } from "../../../wailsjs/go/app/App";
 import { isWindowFocused } from "../../lib/window-focus";
@@ -1306,10 +1312,10 @@ import {
   classifyTransition,
   maybeNotify,
   type NotifyDeps,
-  type NotifyKind,
 } from "../../lib/turn-notify";
 import { useChatTabsStore } from "../../stores/chat-tabs-store";
 import { useNotificationSettingsStore } from "../../stores/notification-settings-store";
+import { useNotificationToastStore } from "../../stores/notification-toast-store";
 import { useSessionStatusStore } from "../../stores/session-status-store";
 
 function activeSessionId(): number | null {
@@ -1326,13 +1332,6 @@ function sessionTitle(sessionId: number): string | undefined {
     )?.title;
 }
 
-function showToast(kind: NotifyKind, title: string, body: string): void {
-  const opts = { description: body };
-  if (kind === "error") toast.error(title, opts);
-  else if (kind === "waiting") toast.warning(title, opts);
-  else toast.success(title, opts);
-}
-
 // TurnCompleteNotifier 常驻 App 根、不渲染任何 UI;订阅 session 状态转换并在合适时机通知。
 export function TurnCompleteNotifier(): null {
   const { t } = useTranslation();
@@ -1347,7 +1346,11 @@ export function TurnCompleteNotifier(): null {
         ShowNotification({ title, body }).catch(() => {});
       },
       playSound: playNotifySound,
-      showToast,
+      showToast: (sessionId, kind, title, body) => {
+        useNotificationToastStore
+          .getState()
+          .push({ sessionId, kind, title, body });
+      },
       t,
     }),
     [t],
@@ -1390,16 +1393,17 @@ Expected: PASS。
 
 - [ ] **Step 6: 在 App 根挂载**
 
-在 `frontend/src/App.tsx` 的 `App()` 里、`<ChatStreamsHost />` 旁边加 `<TurnCompleteNotifier />`:
+在 `frontend/src/App.tsx` 的 `App()` 里、`<ChatStreamsHost />` 旁边加 `<TurnCompleteNotifier />` 和 `<NotificationToastViewport />`(二者经 `@/components/agentre` barrel 导出):
 
 ```tsx
-import { TurnCompleteNotifier } from "./components/agentre/turn-complete-notifier";
+import { TurnCompleteNotifier, NotificationToastViewport } from "@/components/agentre";
 // ...
       <ChatStreamsHost />
       <TurnCompleteNotifier />
+      <NotificationToastViewport />
 ```
 
-> import 相对路径以 `App.tsx` 实际位置为准(`frontend/src/App.tsx` → `./components/agentre/turn-complete-notifier`)。
+> `<Toaster/>`(sonner)继续保留 —— 别处(update / rich-link / terminal / data-backup / clipboard)仍用 sonner,只有 turn 完成通知改成 bespoke 卡片。
 
 - [ ] **Step 7: 全量前端测试 + Commit**
 
@@ -1766,6 +1770,7 @@ git commit -m "✅ notify: 全量 lint/test 通过"
 
 ## Self-Review 记录(plan 作者已核对)
 
-- **Spec 覆盖**:三渠道(系统/声音/toast)= Task 5/7/11/12;可配置 + 默认值 = Task 9/12;三终态 done/error/waiting + 跳过 aborted = Task 10;门槛(`onlyWhenUnfocused` 开关,默认仅失焦;关掉回到失焦或非当前会话)= Task 10/11/12;`app_settings_svc` 离散 key = Task 1/2/3;前端编排 + 薄后端绑定 = Task 4/5/6/11;i18n 双语 = Task 11/12。spec 的「已知局限」(无点击跳转 / 无节流 / 后台音频 / 无 per-event 开关)按设计不实现,无对应 Task,符合预期。
+- **Spec 覆盖**:三渠道(系统/声音/toast)= Task 5/7/11/12;可配置 + 默认值 = Task 9/12;三终态 done/error/waiting + 跳过 aborted = Task 10;门槛(`onlyWhenUnfocused` 开关,默认仅失焦;关掉回到失焦或非当前会话)= Task 10/11/12;`app_settings_svc` 离散 key = Task 1/2/3;前端编排 + 薄后端绑定 = Task 4/5/6/11;i18n 双语 = Task 11/12。
+- **2026-06-04 调整**:应用内 toast 由 sonner 改为 bespoke 卡片(`notification-toast-store` + `NotificationToastViewport` + 复用的 `session-avatar`,见 Task 11 调整说明)。spec「已知局限」里的「无点击跳转」**仅对系统通知仍成立**——应用内 toast 现已带「跳转到会话」动作(`openSession`);无节流 / 后台音频 / 无 per-event 开关 三项按设计仍不实现。
 - **类型一致性**:`SoundPreset`(notify-sound.ts)被 store / turn-notify / 面板复用;`NotifyKind` / `NotifyDeps`(turn-notify.ts)被 hook 复用;`NotificationSettings` / `DEFAULT_NOTIFICATION_SETTINGS`(store)被 turn-notify / 面板 / 宿主复用;`Notifier`(notification_svc)被 sysnotify 结构化满足、bootstrap 注入;`ShowRequest` 后端定义、前端经 `make generate` 取得。
 - **占位符扫描**:无 TBD/TODO;每个改代码的 step 均含完整代码与精确命令。唯一外部依赖不确定点(beeep `Notify` 签名)已在 Task 5 Step 1 给出 `go doc` 校验命令 + 唯一调整点说明。

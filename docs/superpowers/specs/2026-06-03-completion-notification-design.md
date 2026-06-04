@@ -71,7 +71,7 @@ else
 - 出错 → `notify.body.error`(例「会话出错」/ "Session failed")
 - 等待 → `notify.body.waiting`(例「需要你的操作」/ "Waiting for your input")
 
-toast 按 kind 选 `toast.success` / `toast.error` / `toast.info`(`sonner`);系统通知把**已本地化**的 title/body 传给后端。
+应用内 toast 不复用 `sonner`,而是 bespoke 卡片(右下角浮层):左 3px 状态条 + agent 头像 + 会话名 + 状态图标/文案 + 「跳转到会话」按钮(点击 `openSession` 跳到对应 tab,补足系统通知点不动的短板)+ ✕ 关闭;`done` 自动消失,`error`/`waiting` 常驻待处理。渲染由 `notification-toast-store`(列表)+ `NotificationToastViewport`(组件)承担,设计稿见 `~/Desktop/agentry.pen` 的 `In-App Notification` frame。系统通知仍把**已本地化**的 title/body 传给后端。
 
 ## 前端组件
 
@@ -158,7 +158,7 @@ bool 用 `ValidateBoolSetting`、preset 用 `ValidateSoundPreset`(放在 `app_se
       → TurnCompleteNotifier 检测 running→{idle|error|waiting} 转换(跳过 aborted)
          → 按 onlyWhenUnfocused 开关算门槛(默认:仅失焦才通知)
             → 通过门槛时,触发各启用渠道:
-                 · toast  → sonner(前端)
+                 · toast  → notification-toast-store.push → NotificationToastViewport bespoke 卡片(前端)
                  · 提示音 → playNotifySound(preset)(前端 Web Audio)
                  · 系统通知 → App.ShowNotification(t(title), t(body)) → notification_svc → beeep(原生)
 ```
