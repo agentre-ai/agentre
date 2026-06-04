@@ -62,6 +62,7 @@ var resetStaleActiveSessions = bootstrap.ResetStaleActiveSessions
 // the runtime methods.
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	a.RegisterNotificationHandlers()
 	a.resetStaleSessionsOnStartup(ctx)
 	a.registerChatService()
 	a.hookPollerCancel = hook_svc.StartEmailPoller(ctx)
