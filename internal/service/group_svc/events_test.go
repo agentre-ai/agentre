@@ -75,13 +75,13 @@ func TestPersistMessage_EmitsFrontendIsomorphicPayload(t *testing.T) {
 		gw.EXPECT().Send(gomock.Any(), gomock.Any()).Return(&chat_svc.SendResponse{}, nil).AnyTimes()
 
 		svc := group_svc.NewForTestWithNames(gw, map[int64]string{1: "林队", 2: "后端"})
-		cap := &captureEmitter{}
-		group_svc.SetEmitterForTest(svc, cap)
+		rec := &captureEmitter{}
+		group_svc.SetEmitterForTest(svc, rec)
 
 		err := svc.SendGroupMessage(ctx, &group_svc.SendGroupMessageRequest{GroupID: 5, Text: "麻烦后端看下", RecipientMemberIDs: []int64{2}})
 		So(err, ShouldBeNil)
 
-		payload := cap.message()
+		payload := rec.message()
 		So(payload, ShouldNotBeNil)
 		b, err := json.Marshal(payload)
 		So(err, ShouldBeNil)

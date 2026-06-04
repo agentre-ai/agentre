@@ -43,18 +43,18 @@ func (m *MockChatGateway) EXPECT() *MockChatGatewayMockRecorder {
 }
 
 // AgentBackendHasCapability mocks base method.
-func (m *MockChatGateway) AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error) {
+func (m *MockChatGateway) AgentBackendHasCapability(ctx context.Context, agentID int64, wantCap capability.Capability) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AgentBackendHasCapability", ctx, agentID, cap)
+	ret := m.ctrl.Call(m, "AgentBackendHasCapability", ctx, agentID, wantCap)
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // AgentBackendHasCapability indicates an expected call of AgentBackendHasCapability.
-func (mr *MockChatGatewayMockRecorder) AgentBackendHasCapability(ctx, agentID, cap any) *gomock.Call {
+func (mr *MockChatGatewayMockRecorder) AgentBackendHasCapability(ctx, agentID, wantCap any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AgentBackendHasCapability", reflect.TypeOf((*MockChatGateway)(nil).AgentBackendHasCapability), ctx, agentID, cap)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AgentBackendHasCapability", reflect.TypeOf((*MockChatGateway)(nil).AgentBackendHasCapability), ctx, agentID, wantCap)
 }
 
 // EnsureGroupMemberSession mocks base method.

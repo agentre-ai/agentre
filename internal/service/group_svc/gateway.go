@@ -16,7 +16,7 @@ type ChatGateway interface {
 	Send(ctx context.Context, req *chat_svc.SendRequest) (*chat_svc.SendResponse, error)
 	ObserveTurn(sessionID int64) (<-chan chat_svc.TurnResult, func())
 	Stop(ctx context.Context, req *chat_svc.StopRequest) (*chat_svc.StopResponse, error)
-	AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error)
+	AgentBackendHasCapability(ctx context.Context, agentID int64, wantCap capability.Capability) (bool, error)
 }
 
 // chatSvcGateway 委托给 chat_svc 默认单例。
@@ -38,6 +38,6 @@ func (chatSvcGateway) Stop(ctx context.Context, req *chat_svc.StopRequest) (*cha
 	return chat_svc.Chat().Stop(ctx, req)
 }
 
-func (chatSvcGateway) AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error) {
-	return chat_svc.Chat().AgentBackendHasCapability(ctx, agentID, cap)
+func (chatSvcGateway) AgentBackendHasCapability(ctx context.Context, agentID int64, wantCap capability.Capability) (bool, error) {
+	return chat_svc.Chat().AgentBackendHasCapability(ctx, agentID, wantCap)
 }

@@ -101,7 +101,7 @@ type ChatSvc interface {
 	ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 	// AgentBackendHasCapability 报告某 agent 的后端 runtime 是否声明指定能力(领域无关探针)。
 	// 后端缺失/类型无法解析 → (false, nil)。MVP 仅解析本地 runtime; 远程后端目前返回 (false, nil)。
-	AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error)
+	AgentBackendHasCapability(ctx context.Context, agentID int64, wantCap capability.Capability) (bool, error)
 }
 
 var defaultChat ChatSvc
@@ -1284,7 +1284,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 // (RuntimeFor)取能力矩阵。后端缺失/类型无法解析 → (false, nil)。
 // MVP: 远程后端的能力探测需借 session(borrowRemoteRuntime),这里没有 session,
 // 暂统一返回 (false, nil)。
-func (s *chatSvc) AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error) {
+func (s *chatSvc) AgentBackendHasCapability(ctx context.Context, agentID int64, wantCap capability.Capability) (bool, error) {
 	_, be, _, err := s.resolveAgentBackend(ctx, agentID)
 	if err != nil {
 		return false, err
@@ -1299,7 +1299,7 @@ func (s *chatSvc) AgentBackendHasCapability(ctx context.Context, agentID int64, 
 	if r == nil {
 		return false, nil
 	}
-	return r.Capabilities().Has(cap), nil
+	return r.Capabilities().Has(wantCap), nil
 }
 
 // Enqueue 在 AI 还在回答时把一条新的用户消息插入当前 turn。
