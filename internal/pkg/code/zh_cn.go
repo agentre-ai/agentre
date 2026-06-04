@@ -42,6 +42,7 @@ var zhCN = map[int]string{
 	AppSettingInvalidPort:   "端口必须是 0~65535 之间的整数",
 	AppSettingInvalidHost:   "监听地址不是合法的 IP",
 	AppGatewayRestartFailed: "应用并重启本地代理失败，请检查端口占用",
+	AppSettingInvalidBool:   "开关取值必须是 true 或 false",
 
 	HookSourceNotFound:          "信号源不存在",
 	HookSourceNameDuplicated:    "信号源名称已存在",
@@ -132,6 +133,14 @@ var zhCN = map[int]string{
 	ProjectAgentNotFound:     "引用的 Agent 不存在或已删除",
 	ProjectHasChildren:       "项目下还有子项目，无法删除",
 	ProjectHasActiveSessions: "项目下还有未归档的会话，无法删除",
+
+	// Issue
+	IssueNotFound:          "issue 不存在",
+	IssueTitleRequired:     "issue 标题不能为空",
+	IssueInvalidState:      "issue 状态非法",
+	IssueLabelNameRequired: "标签名不能为空",
+	IssueLabelInvalidTone:  "标签色调非法",
+	IssueLabelNotFound:     "引用的标签不存在",
 
 	// Project Location（远端 device 路径子表）
 	ProjectLocationNotFound:    "项目路径不存在",

@@ -101,3 +101,20 @@ func TestParseProxyPort(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateBoolSetting(t *testing.T) {
+	ctx := context.Background()
+	for _, ok := range []string{"true", "false", " true "} {
+		assert.NoError(t, ValidateBoolSetting(ctx, ok), "input=%q", ok)
+	}
+	for _, bad := range []string{"", "1", "yes", "True", "maybe"} {
+		assert.Error(t, ValidateBoolSetting(ctx, bad), "input=%q", bad)
+	}
+}
+
+func TestParseBoolSetting(t *testing.T) {
+	assert.True(t, ParseBoolSetting("true"))
+	for _, f := range []string{"false", "", "1", "x"} {
+		assert.False(t, ParseBoolSetting(f), "input=%q", f)
+	}
+}

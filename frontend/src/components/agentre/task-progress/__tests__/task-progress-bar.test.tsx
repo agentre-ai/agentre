@@ -48,6 +48,21 @@ describe("TaskProgressBar", () => {
     expect(screen.queryByText("当前")).not.toBeInTheDocument();
   });
 
+  it("constrains the expanded list height and enables vertical scrolling", () => {
+    const many: TaskProgress = {
+      tasks: Array.from({ length: 30 }, (_, i) => ({
+        id: `t_${i + 1}`,
+        description: `task ${i + 1}`,
+        status: "queued" as const,
+      })),
+    };
+    render(<TaskProgressBar progress={many} />);
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+    const list = screen.getByRole("list");
+    expect(list.className).toMatch(/overflow-y-auto/);
+    expect(list.className).toMatch(/max-h-/);
+  });
+
   it("auto-collapses to recap label 2s after all tasks complete", () => {
     vi.useFakeTimers();
     const allDone: TaskProgress = {
