@@ -843,10 +843,11 @@ func fakeBackgroundTask(stdin io.Reader, stdout io.Writer) {
 }
 
 // TestSession_BackgroundTaskAutonomousTurn 是本案基石回归:
-//   (a) Turn1 channel 只收到 turn1 文本("started:..."),在 result#1 后 close,
-//       不串入自主续轮的 "autonomous:listing";
-//   (b) Session.AutonomousTurns() 吐出自主续轮,其文本 = "autonomous:listing";
-//   (c) Turn2 只收到 "echo:beta",无错位。
+//
+//	(a) Turn1 channel 只收到 turn1 文本("started:..."),在 result#1 后 close,
+//	    不串入自主续轮的 "autonomous:listing";
+//	(b) Session.AutonomousTurns() 吐出自主续轮,其文本 = "autonomous:listing";
+//	(c) Turn2 只收到 "echo:beta",无错位。
 func TestSession_BackgroundTaskAutonomousTurn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

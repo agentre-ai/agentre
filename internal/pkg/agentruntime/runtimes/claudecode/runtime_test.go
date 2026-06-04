@@ -129,8 +129,8 @@ func (f *fakeCCHandle) SetPermissionMode(_ context.Context, mode string) error {
 func (f *fakeCCHandle) RespondToControl(context.Context, string, claudecode.PermissionResult) error {
 	return nil
 }
-func (f *fakeCCHandle) ExitErr() error                                  { return nil }
-func (f *fakeCCHandle) AutonomousTurns() <-chan *claudecode.AutoTurn    { return f.autoTurns }
+func (f *fakeCCHandle) ExitErr() error                               { return nil }
+func (f *fakeCCHandle) AutonomousTurns() <-chan *claudecode.AutoTurn { return f.autoTurns }
 func (f *fakeCCHandle) Stream(_ context.Context, prompt string, images []claudecode.Image) (ccStream, error) {
 	f.gotPrompt = prompt
 	f.gotImages = images
