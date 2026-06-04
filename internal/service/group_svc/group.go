@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"agentre/internal/model/entity/group_entity"
+	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/pkg/code"
 	"agentre/internal/repository/group_repo"
 )
@@ -90,6 +91,9 @@ func (s *groupSvc) CreateGroup(ctx context.Context, req *CreateGroupRequest) (*G
 	}
 	if err := g.Check(ctx); err != nil {
 		return nil, err
+	}
+	if !s.backendSupportsGroup(ctx, req.CoordinatorAgentID) {
+		return nil, i18n.NewError(ctx, code.GroupBackendUnsupported)
 	}
 	if err := group_repo.Group().Create(ctx, g); err != nil {
 		return nil, err
@@ -182,9 +186,16 @@ func (s *groupSvc) AddGroupMember(ctx context.Context, groupID, agentID int64) (
 	return s.ensureMember(ctx, g, agentID, group_entity.RoleMember)
 }
 
-// backendSupportsGroup 门控成员后端是否支持群聊。
-// TODO(C5): 解析 agent backend 查 capability.CapMCPTools; 现为占位放行。
-func (s *groupSvc) backendSupportsGroup(ctx context.Context, agentID int64) bool { return true }
+// backendSupportsGroup 门控成员后端是否支持群聊(必须声明 CapMCPTools 才能被注入 group_send tool)。
+func (s *groupSvc) backendSupportsGroup(ctx context.Context, agentID int64) bool {
+	ok, err := s.gw.AgentBackendHasCapability(ctx, agentID, capability.CapMCPTools)
+	if err != nil {
+		logger.Ctx(ctx).Warn("group_svc.backendSupportsGroup: capability probe failed",
+			zap.Int64("agentID", agentID), zap.Error(err))
+		return false
+	}
+	return ok
+}
 
 func (s *groupSvc) RemoveGroupMember(ctx context.Context, memberID int64) error {
 	m, err := group_repo.Member().Find(ctx, memberID)

@@ -11,6 +11,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"agentre/internal/model/entity/group_entity"
+	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/pkg/code"
 	"agentre/internal/repository/group_repo"
 	"agentre/internal/repository/group_repo/mock_group_repo"
@@ -32,6 +33,8 @@ func TestGroupSvc_CreateGroup_AddsCoordinatorMember(t *testing.T) {
 		group_repo.RegisterMember(memberRepo)
 		group_repo.RegisterMessage(msgRepo)
 
+		// 协调者后端通过 CapMCPTools 门控 → 放行建群。
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(1), capability.CapMCPTools).Return(true, nil)
 		groupRepo.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
 			func(_ context.Context, g *group_entity.Group) error { g.ID = 5; return nil })
 		// ensureMember: no existing row → create path
@@ -75,6 +78,8 @@ func TestGroupSvc_AddGroupMember_RejoinReactivates(t *testing.T) {
 			&group_entity.Group{ID: 7, ProjectID: 3, Status: consts.ACTIVE}, nil)
 		memberRepo.EXPECT().ListByGroup(gomock.Any(), int64(7)).Return(
 			[]*group_entity.GroupMember{{ID: 1}}, nil)
+		// 限额检查通过后才走后端门控; CapMCPTools 放行 → 继续 ensureMember。
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(9), capability.CapMCPTools).Return(true, nil)
 		// FindByGroupAndAgent 返回一条 left 行(status-agnostic)。
 		memberRepo.EXPECT().FindByGroupAndAgent(gomock.Any(), int64(7), int64(9)).Return(
 			&group_entity.GroupMember{ID: 42, GroupID: 7, AgentID: 9, Status: group_entity.MemberLeft}, nil)
@@ -126,6 +131,65 @@ func TestGroupSvc_AddGroupMember_MemberLimit(t *testing.T) {
 		var httpErr *httputils.Error
 		So(errors.As(err, &httpErr), ShouldBeTrue)
 		So(httpErr.Code, ShouldEqual, code.GroupMemberLimit)
+	})
+}
+
+func TestGroupSvc_AddGroupMember_BackendUnsupported(t *testing.T) {
+	Convey("成员后端不支持群聊应返回 GroupBackendUnsupported 且不建 session/成员", t, func() {
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		gw := mock_group_svc.NewMockChatGateway(ctrl)
+		groupRepo := mock_group_repo.NewMockGroupRepo(ctrl)
+		memberRepo := mock_group_repo.NewMockGroupMemberRepo(ctrl)
+		msgRepo := mock_group_repo.NewMockGroupMessageRepo(ctrl)
+		group_repo.RegisterGroup(groupRepo)
+		group_repo.RegisterMember(memberRepo)
+		group_repo.RegisterMessage(msgRepo)
+
+		// 群存在且 active, 成员数未达上限 → 进入后端门控。
+		groupRepo.EXPECT().Find(gomock.Any(), int64(7)).Return(
+			&group_entity.Group{ID: 7, Status: consts.ACTIVE}, nil)
+		memberRepo.EXPECT().ListByGroup(gomock.Any(), int64(7)).Return(
+			[]*group_entity.GroupMember{{ID: 1}}, nil)
+		// 后端缺 CapMCPTools → 拒绝入群。
+		// 无 FindByGroupAndAgent / EnsureGroupMemberSession / Create 的 EXPECT → 被调用即失败。
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(9), capability.CapMCPTools).Return(false, nil)
+
+		svc := group_svc.NewForTest(gw)
+		_, err := svc.AddGroupMember(ctx, 7, 9)
+		So(err, ShouldNotBeNil)
+		var httpErr *httputils.Error
+		So(errors.As(err, &httpErr), ShouldBeTrue)
+		So(httpErr.Code, ShouldEqual, code.GroupBackendUnsupported)
+	})
+}
+
+func TestGroupSvc_CreateGroup_BackendUnsupported(t *testing.T) {
+	Convey("协调者后端不支持群聊应返回 GroupBackendUnsupported 且不建群", t, func() {
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		gw := mock_group_svc.NewMockChatGateway(ctrl)
+		groupRepo := mock_group_repo.NewMockGroupRepo(ctrl)
+		memberRepo := mock_group_repo.NewMockGroupMemberRepo(ctrl)
+		msgRepo := mock_group_repo.NewMockGroupMessageRepo(ctrl)
+		group_repo.RegisterGroup(groupRepo)
+		group_repo.RegisterMember(memberRepo)
+		group_repo.RegisterMessage(msgRepo)
+
+		// 门控在 Create 之前; 后端缺 CapMCPTools → 拒绝, 不应建群。
+		// 无 groupRepo.Create / EnsureGroupMemberSession 的 EXPECT → 被调用即失败。
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(1), capability.CapMCPTools).Return(false, nil)
+
+		svc := group_svc.NewForTest(gw)
+		_, err := svc.CreateGroup(ctx, &group_svc.CreateGroupRequest{Title: "支付小队", CoordinatorAgentID: 1})
+		So(err, ShouldNotBeNil)
+		var httpErr *httputils.Error
+		So(errors.As(err, &httpErr), ShouldBeTrue)
+		So(httpErr.Code, ShouldEqual, code.GroupBackendUnsupported)
 	})
 }
 
