@@ -86,6 +86,8 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			// RunRequest.MCPServers 注入支持:claudecode CLI 接受 --mcp-config 传入
 			// 额外 MCP tool 服务器;群聊编排是首个消费者,入群资格门控于此 cap。
 			capability.CapMCPTools: true,
+			// CLI 在 run_in_background Bash 任务完成后自主跑续轮;实现 AutonomousTurnSource。
+			capability.CapAutonomousTurn: true,
 		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},

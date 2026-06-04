@@ -18,6 +18,10 @@ const (
 	CapCompact             Capability = "compact"
 	CapGoal                Capability = "goal"
 	CapMCPTools            Capability = "mcp_tools" // 该 runtime 接受 RunRequest.MCPServers, 可带注入的 MCP tool 启动(群聊是首个消费者)
+	// CapAutonomousTurn 标记 backend 会「自发产生 turn」—— 当前仅 claudecode:CLI 在
+	// run_in_background Bash 任务完成后自主注入 <task-notification> 并跑完整一轮。
+	// 实现 AutonomousTurnSource 接口;chat_svc 据此每会话起 watcher 落纯 assistant 轮。
+	CapAutonomousTurn Capability = "autonomous_turn"
 )
 
 // Capabilities 一个 runtime 的能力矩阵 + permission mode 元数据。

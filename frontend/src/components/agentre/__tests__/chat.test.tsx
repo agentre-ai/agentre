@@ -291,6 +291,63 @@ describe("ChatTranscript image blocks", () => {
   });
 });
 
+describe("ChatTranscript autonomous turn banner", () => {
+  function msg(
+    id: number,
+    role: "user" | "assistant",
+    text: string,
+  ): chat_svc.ChatMessage {
+    return {
+      blocks: [{ type: "text", text } as ChatBlockData],
+      completionTokens: 0,
+      createtime: new Date("2026-05-17T10:30:00Z").getTime(),
+      durationMs: 0,
+      errorText: "",
+      id,
+      model: "",
+      promptTokens: 0,
+      role,
+      seq: id,
+      sessionId: 1,
+    } as chat_svc.ChatMessage;
+  }
+
+  it("自主续轮(assistant 紧邻前一条 assistant,无 user 行)前渲染 AutoTriggerBanner", () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "后台跑 sleep 10 完成后看目录"),
+          msg(2, "assistant", "已在后台启动"),
+          msg(3, "assistant", "当前目录如下…"),
+        ]}
+      />,
+    );
+    // 仅 msg(3) 是自主续轮 → 恰好一条 banner;msg(2) 紧邻 user 不挂。
+    // (无 compact boundary,banner 是唯一的 role=separator。)
+    const banners = screen.getAllByRole("separator");
+    expect(banners).toHaveLength(1);
+    expect(banners[0]).toHaveTextContent(/auto-continued|自动继续/);
+  });
+
+  it("每条 assistant 都紧跟 user 时不渲染 banner", () => {
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[
+          msg(1, "user", "hi"),
+          msg(2, "assistant", "hello"),
+          msg(3, "user", "again"),
+          msg(4, "assistant", "ok"),
+        ]}
+      />,
+    );
+    expect(screen.queryAllByRole("separator")).toHaveLength(0);
+  });
+});
+
 describe("formatResetIn", () => {
   const now = Date.parse("2026-05-28T00:00:00Z");
 
@@ -676,6 +733,28 @@ describe("ChatTranscript typing indicator", () => {
       tail.compareDocumentPosition(indicator) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("renders multi-block live streaming text fully within one markdown-body", () => {
+    // 流式尾巴跨多个 block(段落 + 空行 + 段落)时,增量渲染路径不能丢内容,
+    // 且所有 block 落在同一个 .markdown-body 容器里(间距与一次性解析一致)。
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        liveDelta={"committed para\n\ngrowing tail"}
+        liveTargetId={2}
+        messages={[userMessage(1, "hi"), assistantMessage(2, [])]}
+        streaming
+      />,
+    );
+
+    const committed = screen.getByText("committed para");
+    const tail = screen.getByText("growing tail");
+    expect(committed.closest(".markdown-body")).not.toBeNull();
+    expect(tail.closest(".markdown-body")).toBe(
+      committed.closest(".markdown-body"),
+    );
   });
 
   it("does not render the indicator when streaming is false", () => {

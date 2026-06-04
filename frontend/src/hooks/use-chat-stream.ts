@@ -46,7 +46,8 @@ export type ChatStreamEvent = {
     | "session_status"
     | "usage"
     | "compact_boundary"
-    | "runtime_status";
+    | "runtime_status"
+    | "autonomous_started";
   delta?: string;
   message?: chat_svc.ChatMessage;
   error?: string;
@@ -129,6 +130,13 @@ export type ChatStreamEvent = {
     status?: string;
     compacting?: boolean;
   };
+
+  // autonomous_started: 经会话级旁路事件 "chat:autonomous:<sessionId>" 推上来 ——
+  // CLI 在 run_in_background 任务完成后**自主**跑的一轮(无用户输入)被后端捕获。
+  // assistantMessage 是要插入 transcript 的新 assistant 行;stream 是该自主轮的
+  // per-turn 事件名(前端 openStream 订阅它接后续 chunk/done);trigger="background_task"。
+  stream?: string;
+  trigger?: string;
 };
 
 export function useChatStream(

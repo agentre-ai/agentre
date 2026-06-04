@@ -253,6 +253,18 @@ func TestSessionRepo_CountActiveByProject(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestSessionRepo_CountActive(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	mock.ExpectQuery("SELECT count\\(\\*\\) FROM `chat_sessions`").
+		WithArgs(consts.ACTIVE, "running", "waiting").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
+
+	n, err := chat_repo.NewSession().CountActive(ctx, []string{"running", "waiting"})
+	assert.NoError(t, err)
+	assert.Equal(t, int64(4), n)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestSessionRepo_MarkRead(t *testing.T) {
 	t.Run("ts > current last_read_at 时正常 UPDATE 1 行", func(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)

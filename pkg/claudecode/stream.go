@@ -126,6 +126,11 @@ type rawFrame struct {
 	LastToolName string `json:"last_tool_name,omitempty"`
 	Status       string `json:"status,omitempty"`
 
+	// OutputFile 仅「后台命令完成」型 task_notification 帧带（落在 tasks/<id>.output）。
+	// 用于把它与 subagent(Task 工具)的 task_notification 区分 —— 后者无此字段、有
+	// SubagentType。见 isBackgroundTaskNotification。
+	OutputFile string `json:"output_file,omitempty"`
+
 	// system.subtype == "api_retry" 的字段：CLI 把 Anthropic SDK 的可重试错误（429/5xx 等）
 	// 包成 first-class 协议帧推到 stdout。字段直接放在帧顶层，不嵌在 usage / message 里。
 	// ErrorField 字段名避开内置 error。

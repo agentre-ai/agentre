@@ -2,11 +2,24 @@ package terminal_svc
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"sync"
+	"time"
 
 	"agentre/internal/pkg/pty"
 	"agentre/pkg/agentred/protocol"
+)
+
+// Output coalescing: PTY stdout accumulates and is flushed to the emitter at
+// most every flushInterval, or sooner once flushThreshold bytes pile up. This
+// keeps a high-frequency full-screen TUI (claude, vim) from flooding the Wails
+// event bridge with hundreds of tiny events per second — a flood that drops or
+// reorders events and desyncs xterm's parser into the garbled output this fixes.
+// Mirrors the opskat terminal pipeline.
+const (
+	flushInterval  = 10 * time.Millisecond
+	flushThreshold = 32 * 1024
 )
 
 var (
@@ -181,21 +194,42 @@ func (s *Service) pump(ctx context.Context, terminalID string, h pty.Handle) {
 	// Exit() while data is still buffered and drops the trailing output.
 	dataCh := h.Data()
 	exitCh := h.Exit()
+
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	var pending []byte
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		s.emitter.Emit(ctx, DataEventName(terminalID),
+			map[string]string{"data": base64.StdEncoding.EncodeToString(pending)})
+		pending = pending[:0]
+	}
+
 	var exitInfo pty.ExitInfo
 stream:
 	for {
 		select {
 		case data, ok := <-dataCh:
 			if !ok {
-				// Data closed before we observed exit; block for the single
-				// exit value (real handles always deliver it).
+				// Data closed before we observed exit; flush trailing output,
+				// then block for the single exit value (real handles always
+				// deliver it).
+				flush()
 				exitInfo = <-exitCh
 				break stream
 			}
-			s.emitter.Emit(ctx, DataEventName(terminalID), map[string]string{"data": string(data)})
+			pending = append(pending, data...)
+			if len(pending) >= flushThreshold {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
 		case info := <-exitCh:
 			exitInfo = info
-			// Drain any already-buffered data so trailing output is emitted
+			// Drain any already-buffered data so trailing output is flushed
 			// before the exit event.
 			for drained := false; !drained; {
 				select {
@@ -203,7 +237,7 @@ stream:
 					if !ok {
 						drained = true
 					} else {
-						s.emitter.Emit(ctx, DataEventName(terminalID), map[string]string{"data": string(data)})
+						pending = append(pending, data...)
 					}
 				default:
 					drained = true
@@ -212,6 +246,8 @@ stream:
 			break stream
 		}
 	}
+	// Flush whatever remains so no trailing output arrives after the exit event.
+	flush()
 
 	s.mu.Lock()
 	if cur, exists := s.sessions[terminalID]; exists && cur == h {

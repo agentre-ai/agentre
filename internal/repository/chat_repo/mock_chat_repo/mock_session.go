@@ -41,6 +41,21 @@ func (m *MockSessionRepo) EXPECT() *MockSessionRepoMockRecorder {
 	return m.recorder
 }
 
+// CountActive mocks base method.
+func (m *MockSessionRepo) CountActive(ctx context.Context, agentStatuses []string) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountActive", ctx, agentStatuses)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountActive indicates an expected call of CountActive.
+func (mr *MockSessionRepoMockRecorder) CountActive(ctx, agentStatuses any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountActive", reflect.TypeOf((*MockSessionRepo)(nil).CountActive), ctx, agentStatuses)
+}
+
 // CountActiveByProject mocks base method.
 func (m *MockSessionRepo) CountActiveByProject(ctx context.Context, projectID int64, agentStatuses []string) (int64, error) {
 	m.ctrl.T.Helper()

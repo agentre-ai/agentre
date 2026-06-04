@@ -18,6 +18,7 @@ export { ChatPage } from "./chat-page";
 export { ChatStreamsHost } from "./chat-streams-host";
 export { TurnCompleteNotifier } from "./turn-complete-notifier";
 export { NotificationToastViewport } from "./notification-toast";
+export { QuitConfirmDialog } from "./quit-confirm-dialog";
 export { HooksPage } from "./hooks-page";
 export { IssuesPage } from "./issues-page";
 export { OrgChartPage } from "./org-chart-page";

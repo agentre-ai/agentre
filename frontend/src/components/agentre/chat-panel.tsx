@@ -35,7 +35,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useCCUsage } from "@/hooks/use-cc-usage";
 import { useChatSession } from "@/hooks/use-chat-session";
-import type { ChatStreamEvent } from "@/hooks/use-chat-stream";
+import { useChatStream, type ChatStreamEvent } from "@/hooks/use-chat-stream";
 import { useProjectTree } from "@/hooks/use-project-tree";
 import { useVisibleMessageId } from "@/hooks/use-visible-message-id";
 import i18n from "@/i18n";
@@ -382,6 +382,40 @@ function ChatPanel({
   } = useChatSession(sessionId);
 
   const { reason: attentionReason } = useSessionAttention(sessionId);
+
+  // ── 自主续轮(后台任务完成,CLI 自主跑的一轮)的会话级旁路订阅 ──
+  // per-turn 流名只有用户 Send 才会从后端响应里拿到;自主轮没有这个入口,所以后端
+  // 经会话级事件 "chat:autonomous:<sessionId>"(后端 AutonomousEventPrefix)推一帧
+  // StreamAutonomousStarted。收到后:乐观翻 running + 插入新 assistant 行 + openStream
+  // 订阅该自主轮的 per-turn 流,让它像普通 turn 一样实时渲染。后续 chunk/done 与
+  // StreamDone→reloadSession 都复用既有路径,自主轮无需任何特殊渲染分支。
+  const onAutonomousEvent = React.useCallback(
+    (ev: ChatStreamEvent) => {
+      if (
+        ev.kind !== "autonomous_started" ||
+        !ev.assistantMessage ||
+        !ev.stream
+      ) {
+        return;
+      }
+      const amsg = ev.assistantMessage;
+      markSessionRunning(sessionId);
+      openStream({
+        name: ev.stream,
+        sessionId,
+        assistantMessageId: amsg.id,
+        streamStartedAt: Date.now(),
+      });
+      setMessages((prev) =>
+        prev.some((m) => m.id === amsg.id) ? prev : [...prev, amsg],
+      );
+    },
+    [sessionId, openStream, setMessages],
+  );
+  useChatStream(
+    sessionId ? `chat:autonomous:${sessionId}` : null,
+    onAutonomousEvent,
+  );
 
   // ── 内部派生 breadcrumb（从 session.projectId + useProjectTree）──
   const { tree } = useProjectTree();

@@ -37,7 +37,7 @@ Data sources (any schema change must be synced in three places):
 
 ### Capability matrix (Capabilities)
 
-Each row = one reverse channel. The rightmost column gives the capability's semantics and "why ❌" — before copying anything, confirm whether your backend actually has an equivalent protocol; if not, honestly return `ErrUnsupported` instead of force-fitting a fake implementation.
+Each row is a **reverse channel** (host→backend), **except the final `CapAutonomousTurn` row, which is the only forward channel** (backend→host: the backend spontaneously emits a whole turn). The rightmost column gives the capability's semantics and "why ❌" — before copying anything, confirm whether your backend actually has an equivalent protocol; if not, honestly return `ErrUnsupported` instead of force-fitting a fake implementation.
 
 | Capability (constant / wire string) | Sub-interface | builtin | claudecode | codex | piagent | Description |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -52,6 +52,7 @@ Each row = one reverse channel. The rightmost column gives the capability's sema
 | `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ✅ | ✅ | ✅ | the runtime emits after probing the model's actual context-window size, for the frontend usage bar; the claudecode SDK does not report the window itself, so the translator looks it up in `llmcatalog` on the `system.init` frame as a fallback; piagent reports it at the end of each round via the Pi RPC `get_session_stats.contextUsage.contextWindow`, and falls back to looking up `llmcatalog` by the model from the usage frame |
 | `CapCompact` / `"compact"` | `RunRequest.Compact=true` | ❌ | ❌ | ✅ | ✅ | native compact turn — have the LLM summarize history and then clear the occupied space; piagent goes through Pi RPC compact |
 | `CapImageInput` / `"image_input"` | `RunRequest.UserBlocks` contains `blocks.ImageBlock` | ✅ | ✅ | ✅ | ✅ | the user message can carry PNG / JPEG / WebP images. builtin passes cago blocks through directly; claudecode encodes inline images into a base64 `image` content block of the stream-json user frame (image first, text after — natively supported by the CLI); codex materializes inline images into temporary local files and then goes through the app-server `localImage`; piagent passes the RPC image content through |
+| `CapAutonomousTurn` / `"autonomous_turn"` | `AutonomousTurnSource` | ❌ | ✅ | ❌ | ❌ | **the only forward channel (backend→host)**: the backend spontaneously runs a whole turn with *no* user input. claudecode's CLI, after a `run_in_background` Bash task completes, autonomously injects `<task-notification>` and runs a full turn (a second `result` frame); `pkg/claudecode.Session`'s persistent reader routes it to `AutonomousTurns()`, the runtime bridges each one to `agentruntime.AutonomousTurn`, and chat_svc's per-session watcher (`driveAutonomousTurn`) persists it as a **pure assistant turn (no user row)** and surfaces it live via the session-level `chat:autonomous:<sessionID>` event. Backends without this behavior simply don't declare the cap |
 
 > **Rule**: calling the corresponding interface of an undeclared cap must return `agentruntime.ErrUnsupported` (a sentinel error, transparent across processes, which chat_svc translates into a wire code accordingly). Declaring cap=true but not implementing the interface will be caught by the `TestXxxCapabilities` matrix test (type-assert failure).
 
@@ -221,12 +222,13 @@ Implement according to the Capabilities declaration (**if you declared cap=true,
 | `CapReportContextWindow` | emit `ContextWindowUpdated` | the runtime can probe the model's actual window (codex has it natively in the protocol; claudecode falls back via `llmcatalog.Lookup(model)`; piagent prefers reading the Pi RPC `get_session_stats.contextUsage.contextWindow`, then falls back to looking up `llmcatalog` by the model from the usage frame) |
 | `CapCompact` | `RunRequest.Compact=true` built-in semantics | native compact turn |
 | `CapImageInput` | `RunRequest.UserBlocks` image blocks | supports multimodal user input; when unsupported, chat_svc rejects an image-carrying turn before calling the runtime |
+| `CapAutonomousTurn` | `AutonomousTurnSource` | the backend spontaneously produces a turn with no user input (claudecode background-task auto-continue) — **the only forward channel**; see item I below |
 
 For caps you do not implement: **chat_svc returns `ErrUnsupported` when it receives the frontend request** — the error code has already been made a sentinel at the wire layer for transparent cross-process propagation, so **do not invent your own error**.
 
 #### The control interfaces one by one (**must-read before onboarding**)
 
-The following breaks down the protocol details, field semantics, and claudecode/codex/piagent differences of the six reverse channels. When onboarding a new backend, **go through each item** against your implementation; don't guess by intuition.
+The following breaks down the protocol details, field semantics, and claudecode/codex/piagent differences of the reverse channels (A–H), plus the **one forward channel** `AutonomousTurnSource` (item I). When onboarding a new backend, **go through each item** against your implementation; don't guess by intuition.
 
 ##### A. Steerer / SteerCanceler / SteerDrainer — mid-turn injection
 
@@ -492,6 +494,34 @@ agentruntime.SubagentDone{ToolCallID, Info: SubagentInfo{Status: "completed"|"fa
 - **The ParentToolCallID field of ToolCall / ToolResult**: tools called inside the subagent fill in the outer Task tool_use id, so the frontend groups the child cards under the parent SubagentInvocationCard.
 - **codex / builtin / piagent currently do not emit these** — only claudecode has a native subagent protocol. Consider onboarding this set of events when a new backend has a similar fork-execute tool.
 
+##### I. AutonomousTurnSource — the forward turn (backend→host)
+
+This is the **only forward channel**: every other sub-interface is the host reaching into the backend, but here the backend tells the host "I just ran a whole turn on my own." Today only claudecode needs it.
+
+**Why it exists**: when a turn ends with a `run_in_background` Bash task still running, the claude CLI emits `result` to close the turn but keeps the subprocess alive; when the task finishes it **autonomously** injects a `<task-notification>` and runs a *complete* second turn (init → text/tools → a second `result`) without any new stdin. The old per-turn reader stopped at the first `result`, so those autonomous frames sat unread and desynced every later turn ("can't continue the conversation"). See the design spec `docs/superpowers/specs/2026-06-04-claudecode-background-task-autonomous-turn-design.md`.
+
+Interface signature (`internal/pkg/agentruntime/runner.go`):
+
+```go
+type AutonomousTurnSource interface {
+    AutonomousTurns(sessionID int64) <-chan AutonomousTurn
+}
+type AutonomousTurn struct {
+    Events  <-chan Event // same shape as Run's stream; closes after the turn's result
+    Result  *RunResult   // readable after Events closes
+    Trigger string       // "background_task"
+}
+```
+
+Wiring, layer by layer:
+
+- **`pkg/claudecode.Session`** runs one persistent `readLoop` that owns stdout for the subprocess lifetime, demuxing frames to a single active-turn slot. A turn that *opens* with a background-shaped `task_notification` (`isBackgroundTaskNotification`: has `output_file`, no `subagent_type`) is routed to a new autonomous sink exposed via `Session.AutonomousTurns()`; ordinary user turns are a FIFO of pending slots. This is what fixes the desync — it is independent of whether anything consumes the channel.
+- **Runtime bridge** (`runtimes/claudecode/autoturn.go`): ranges `Session.AutonomousTurns()` and, per AutoTurn, reuses `drainStream` (same translator / control protocol / task aggregation) to produce `agentruntime.AutonomousTurn`. It deliberately does **not** call `active.setOut()` — `a.out` is written only by the user-turn `Run` goroutine (chat-lock-serialized), so the autonomous turn must not race it; the cost is that an async tool-permission/ask resolution *inside* an autonomous turn won't echo live (rare; reload fixes it).
+- **chat_svc watcher** (`internal/service/chat_svc/autonomous_turn.go`): `runTurn` lazily type-asserts the runner to `AutonomousTurnSource` and starts one `startAutonomousWatcher` per session (deduped; exits when the channel closes on evict / `CloseSession`). `driveAutonomousTurn` persists each turn as a **pure assistant message (no user row)** and surfaces it live.
+- **Concurrency constraint (do not violate)**: the watcher must **never hold the chat per-session lock while draining** `at.Events`. If it blocked on that lock, the Session reader would stall (evOut undrained → active slot never frees → the user's next turn blocks on `Session.turnMu` while holding the chat lock) → deadlock. Cross-turn serialization is provided naturally by the Session's single active slot; the rare overlap (user sends mid-autonomous-turn) is last-write-wins on the session row and reconciled by the frontend `StreamDone → reloadSession`.
+
+**Frontend surfacing**: there is no per-turn stream name for a turn the user never initiated, so `driveAutonomousTurn` emits a session-level `chat:autonomous:<sessionID>` event (`StreamAutonomousStarted`, carrying the new assistant message + the per-turn stream name). `ChatPanel` keeps a standing subscription to that channel; on receipt it inserts the assistant row + `openStream`s, after which the turn streams exactly like a normal one. The transcript renders an `AutoTriggerBanner` before any assistant message whose immediately-preceding message is not a user message (the structural signature of an autonomous turn).
+
 #### Sentinel errors (must use them, do not invent new ones)
 
 ```go
@@ -554,6 +584,7 @@ To make this path work:
 2. New sentinel errors are added in sync to `wire.ErrCode*` — otherwise `errors.Is(err, agentruntime.ErrXxx)` will fail on the client.
 3. New Event types are added in sync to the `wire.Event*` codec — the `runtime.event` notification is dispatched by the sealed Event tag.
 4. Test the remote path: bring up a pair of in-memory `client.Client` ↔ `daemon.handlers.RuntimeHandlers` and verify the cross-process semantics of capability negotiation / Run / Abort / Steer.
+5. **Forward channel (`AutonomousTurnSource`)**: if the daemon-side runtime implements it, the daemon starts a per-session fanout (`startAutonomousFanout`, deduped) that forwards each turn over three notifications — `runtime.autonomousTurn.started` (`AutonomousTurnStartedFrame`) → `runtime.autonomousTurn.event` (reuses `EventFrame`) → `runtime.autonomousTurn.done` (reuses `RunResultDoneFrame`). The client `remote.Runtime` reconstructs them into `agentruntime.AutonomousTurn`s on a session-keyed `autoSessions` map **independent of the per-Run `sessions` map** (autonomous turns arrive *after* `runResultDone`), and tears them down on connection close. `remote.Runtime` therefore always satisfies `AutonomousTurnSource`; for daemon backends that don't forward (codex/builtin), the channel simply stays idle.
 
 ---
 
