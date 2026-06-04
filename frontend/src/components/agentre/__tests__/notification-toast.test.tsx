@@ -56,7 +56,9 @@ describe("NotificationToastViewport", () => {
         .getState()
         .push({ sessionId: 1, kind: "error", title: "T", body: "B" });
     });
-    await userEvent.click(screen.getByRole("button", { name: "notify.dismiss" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "notify.dismiss" }),
+    );
     expect(useNotificationToastStore.getState().toasts).toHaveLength(0);
   });
 

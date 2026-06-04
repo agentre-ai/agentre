@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { avatarFromMeta, firstLetter, tokenToCssColor } from "../session-avatar";
+import {
+  avatarFromMeta,
+  firstLetter,
+  tokenToCssColor,
+} from "../session-avatar";
 
 describe("tokenToCssColor", () => {
   it("把 agent token 映射成 css 变量", () => {
