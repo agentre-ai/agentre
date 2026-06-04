@@ -140,11 +140,25 @@ func (a *App) Shutdown(ctx context.Context) {
 // "app:quit-blocked" so the frontend can show a confirmation dialog.
 func (a *App) OnBeforeClose(ctx context.Context) (prevent bool) {
 	return shouldPreventQuit(ctx, a.quitConfirmed.Load(),
-		func(c context.Context) (int, error) { return chat_svc.Chat().CountActiveSessions(c) },
+		countActiveSessions,
 		func(n int) {
 			logger.Ctx(ctx).Info("app.OnBeforeClose: quit blocked by active sessions", zap.Int("count", n))
 			wailsruntime.EventsEmit(a.ctx, "app:quit-blocked", map[string]any{"count": n})
 		})
+}
+
+// countActiveSessions reports the running/waiting session count for the quit gate.
+// Wails runs OnStartup in a goroutine concurrent with the window run loop (darwin /
+// windows / linux all do), so OnBeforeClose can fire before Startup wires the chat
+// service — in that window chat_svc.Chat() is still nil and there cannot yet be any
+// session the user would lose. Treat the unregistered service as zero rather than
+// dereferencing a nil interface: fail-open, never panic on the quit path.
+func countActiveSessions(ctx context.Context) (int, error) {
+	chat := chat_svc.Chat()
+	if chat == nil {
+		return 0, nil
+	}
+	return chat.CountActiveSessions(ctx)
 }
 
 // shouldPreventQuit decides whether to block the quit and notify the user.

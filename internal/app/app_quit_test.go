@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"agentre/internal/service/chat_svc"
 )
 
 func TestShouldPreventQuit(t *testing.T) {
@@ -66,4 +68,21 @@ func TestShouldPreventQuit(t *testing.T) {
 			t.Fatalf("emit called %d times, want 0", emitCalls)
 		}
 	})
+}
+
+// TestOnBeforeClose_NilChatServiceFailsOpen guards the race where the user quits
+// before Startup finishes wiring the chat service. Wails runs OnStartup in a
+// goroutine concurrent with the window run loop (darwin/windows/linux all do), so
+// cmd+Q / close button can fire OnBeforeClose while chat_svc.Chat() is still nil.
+// That must fail open (allow quit), never panic on a nil-interface dereference.
+func TestOnBeforeClose_NilChatServiceFailsOpen(t *testing.T) {
+	prev := chat_svc.Chat()
+	t.Cleanup(func() { chat_svc.RegisterChat(prev) })
+	chat_svc.RegisterChat(nil) // simulate the pre-registration window
+
+	a := NewApp()
+	// quitConfirmed defaults to false → OnBeforeClose has to count active sessions.
+	if prevent := a.OnBeforeClose(context.Background()); prevent {
+		t.Fatal("early quit before chat service registration must fail open (prevent=false)")
+	}
 }
