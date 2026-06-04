@@ -9,7 +9,7 @@ export type TabStatus = "idle" | "running" | "waiting" | "error";
 
 export type TabProps = {
   title: string;
-  kind?: "session" | "new" | "terminal";
+  kind?: "session" | "new" | "terminal" | "group";
   avatar: { letter: string; color: string };
   active: boolean;
   isPreview: boolean;

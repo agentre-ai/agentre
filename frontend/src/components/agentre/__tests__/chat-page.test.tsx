@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useGroupListStore } from "@/stores/group-list-store";
 
 function resetTabsStore() {
   useChatTabsStore.setState({ tabs: [], activeTabId: null });
@@ -36,6 +37,7 @@ const appMocks = vi.hoisted(() => ({
   ListChatAgentSessions: vi
     .fn()
     .mockResolvedValue({ sessions: [], total: 0, hasMore: false }),
+  GroupList: vi.fn().mockResolvedValue([]),
 }));
 
 const runtimeMocks = vi.hoisted(() => {
@@ -513,6 +515,66 @@ describe("ChatPage sidebar — 新建会话按钮接入 chat-tabs", () => {
       expect(tabs).toHaveLength(1);
       expect(tabs[0].id).toBe(activeTabId);
       expect(tabs[0].meta).toMatchObject({ kind: "new", agentId: 7 });
+    });
+  });
+});
+
+describe("ChatPage sidebar — 群聊分区", () => {
+  // E4: 左侧对话列表在「Agents」之上混排一个「Group Chats」分区。
+  // 该分区只在有群时渲染;点击群行打开 / 激活一个 group tab。
+  beforeEach(() => {
+    localStorage.clear();
+    resetTabsStore();
+    useGroupListStore.getState().__reset();
+    runtimeMocks.handlers.clear();
+    vi.clearAllMocks();
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+  });
+
+  afterEach(() => {
+    resetTabsStore();
+    useGroupListStore.getState().__reset();
+    localStorage.clear();
+  });
+
+  it("没有群时不渲染 Group Chats 分区标题", async () => {
+    appMocks.GroupList.mockResolvedValue([]);
+    renderChatPage();
+    // 等 sidebar 拉过一次群列表
+    await waitFor(() => {
+      expect(appMocks.GroupList).toHaveBeenCalled();
+    });
+    expect(screen.queryByText("Group Chats")).not.toBeInTheDocument();
+  });
+
+  it("有群时渲染 Group Chats 分区 + 群行;点击群行打开 group tab", async () => {
+    appMocks.GroupList.mockResolvedValue([
+      {
+        id: 9,
+        title: "Release Squad",
+        runStatus: "running",
+        roundCount: 2,
+        createtime: 0,
+        updatetime: 0,
+      },
+    ]);
+
+    renderChatPage();
+
+    const row = await screen.findByRole("button", { name: /Release Squad/ });
+    expect(screen.getByText("Group Chats")).toBeInTheDocument();
+
+    fireEvent.click(row);
+
+    await waitFor(() => {
+      const { tabs, activeTabId } = useChatTabsStore.getState();
+      expect(tabs).toHaveLength(1);
+      expect(tabs[0].id).toBe(activeTabId);
+      expect(tabs[0].meta).toMatchObject({
+        kind: "group",
+        groupId: 9,
+        title: "Release Squad",
+      });
     });
   });
 });

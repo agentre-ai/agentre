@@ -20,7 +20,7 @@ import type { TabStatus } from "./tab";
 export type TabView = {
   id: string;
   title: string;
-  kind: "session" | "new" | "terminal";
+  kind: "session" | "new" | "terminal" | "group";
   avatar: { letter: string; color: string };
   isPreview: boolean;
   isPinned: boolean;
@@ -73,6 +73,28 @@ export function useTabsView(): TabView[] {
   }, [attentionItems]);
 
   return tabs.map((tab) => {
+    // group tab:标题由 meta 自带(openGroup 时透传),不走 session-meta 反查。
+    // 用群标题首字母 + neutral 占位色作头像,状态恒为 idle(群运行态在面板内展示,
+    // tab strip 不重复表达)。
+    if (tab.meta.kind === "group") {
+      const groupTitle = tab.meta.title || t("chatTabs.fallbackSession");
+      return {
+        id: tab.id,
+        title: groupTitle,
+        kind: "group" as const,
+        avatar: { letter: firstLetter(groupTitle), color: "#94a3b8" },
+        isPreview: tab.isPreview,
+        isPinned: tab.isPinned,
+        status: "idle" as const,
+        projectColor: null,
+        worktree: false,
+        pillText: null,
+        sessionId: 0,
+        projectChain: null,
+        worktreeBranch: null,
+        lastMessageAt: 0,
+      };
+    }
     const sid = tab.meta.kind === "session" ? tab.meta.sessionId : 0;
     const live = sid ? statuses.get(sid) : undefined;
     const reason = sid ? (attentionBySid.get(sid) ?? null) : null;

@@ -5,10 +5,12 @@ import type { TFunction } from "i18next";
 
 import { Input } from "@/components/ui/input";
 import { useChatAgents, type ChatAgentItem } from "@/hooks/use-chat-agents";
+import { useGroupList, type GroupListItem } from "@/hooks/use-group-list";
 import {
   reasonToDisplayStatus,
   reasonToPillText,
 } from "@/lib/attention-display";
+import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/relative-time";
 import {
   useSessionAttentionList,
@@ -20,10 +22,27 @@ import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { AgentGroup, AgentPanelSection } from "./agent-list";
 import type { AgentSession } from "./agent-list";
+import { StatusDot } from "./primitives";
 import { ResizableSidebar } from "./resizable-sidebar";
 import { SessionsPopover } from "./sessions-popover";
 import { ListChatAgentSessions } from "../../../wailsjs/go/app/App";
 import type { AgentColor, AgentStatus } from "./types";
+
+// 群 run_status → sidebar StatusDot 的 AgentStatus 收敛。后端可能下发带下划线的
+// "waiting_user";"paused" 落到 idle(暂停不需要醒目色)。未知值兜底 idle。
+function groupRunStatusToDotStatus(runStatus: string): AgentStatus {
+  switch (runStatus) {
+    case "running":
+      return "running";
+    case "waiting_user":
+    case "waitingUser":
+      return "waiting";
+    case "error":
+      return "error";
+    default:
+      return "idle";
+  }
+}
 
 // ─── AgentSession builder ────────────────────────────────────────────────────
 
@@ -262,11 +281,47 @@ function AgentGroupRow({
   );
 }
 
+// ─── GroupRow ────────────────────────────────────────────────────────────────
+// 左侧群聊分区的一行:群标题(动态,不进 t())+ run_status 状态点。点击打开/激活
+// 对应 group tab。视觉密度与 SessionRow 对齐。
+
+type GroupRowProps = {
+  group: GroupListItem;
+  selected: boolean;
+  onOpen: (groupId: number, title: string) => void;
+};
+
+function GroupRow({ group, selected, onOpen }: GroupRowProps) {
+  const dotStatus = groupRunStatusToDotStatus(group.runStatus);
+  return (
+    <button
+      type="button"
+      aria-current={selected ? "true" : undefined}
+      onClick={() => onOpen(group.id, group.title)}
+      className={cn(
+        "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors hover:bg-sidebar-active-bg focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        selected && "bg-primary-soft text-primary-text",
+      )}
+    >
+      <StatusDot status={dotStatus} size="xs" />
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate",
+          selected ? "font-medium text-primary-text" : "text-foreground",
+        )}
+      >
+        {group.title}
+      </span>
+    </button>
+  );
+}
+
 // ─── Main ChatPage ───────────────────────────────────────────────────────────
 
 function ChatPage() {
   const { t } = useTranslation();
   const { agents } = useChatAgents();
+  const { groups } = useGroupList();
   const metas = useSessionMetaStore((s) => s.metas);
   // 选中态完全派生自 chat-tabs-store(single source of truth):
   // - kind:"session" → selectedSessionId = meta.sessionId,selectedAgentId 反查 agents
@@ -291,6 +346,10 @@ function ChatPage() {
   const openSession = useChatTabsStore((s) => s.openSession);
   const openSessionInNewTab = useChatTabsStore((s) => s.openSessionInNewTab);
   const openNewSession = useChatTabsStore((s) => s.openNewSession);
+  const openGroup = useChatTabsStore((s) => s.openGroup);
+  // 当前 active tab 是某个 group → 高亮对应群行。
+  const selectedGroupId =
+    activeTab?.meta.kind === "group" ? activeTab.meta.groupId : 0;
   const [agentFilter, setAgentFilter] = React.useState("");
   // not-chattable inline notice: 点击不可对话 agent header 时显示，3 秒后自动消失。
   const [notChattableNotice, setNotChattableNotice] = React.useState<{
@@ -431,6 +490,19 @@ function ChatPage() {
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
+          {groups.length > 0 ? (
+            <>
+              <AgentPanelSection label={t("group.section")} />
+              {groups.map((g) => (
+                <GroupRow
+                  key={g.id}
+                  group={g}
+                  selected={g.id === selectedGroupId}
+                  onOpen={openGroup}
+                />
+              ))}
+            </>
+          ) : null}
           {pinned.length > 0 ? (
             <>
               <AgentPanelSection

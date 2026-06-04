@@ -20,6 +20,14 @@ vi.mock("../../terminal/terminal-panel", () => ({
   ),
 }));
 
+// GroupChat 是重组件(拉 group 详情 + 嵌 ChatPanel),这里 stub 成 sentinel,
+// 只断言「group tab 走 GroupChat 分支且把 groupId 透传进去」。
+vi.mock("../../group-chat", () => ({
+  GroupChat: ({ groupId }: { groupId: number }) => (
+    <div data-testid={`group-chat-${groupId}`}>group {groupId}</div>
+  ),
+}));
+
 // 把 onSidebarShouldReload 通过 data-attribute 暴露到 DOM 上, 这样回归测试可以
 // 拿到这个回调并断言它真的去触发 store.reload (修复「新建会话不进左栏」的关键路径)。
 type ChatPanelStub = {
@@ -208,6 +216,13 @@ describe("ChatPanelHost", () => {
     expect(projectReload).toHaveBeenCalledTimes(projectCallsBeforeClick + 1);
     chatReload.mockRestore();
     projectReload.mockRestore();
+  });
+
+  it("Given a group tab is active, When ChatPanelHost renders, Then it renders GroupChat with the tab's groupId", () => {
+    useChatTabsStore.getState().openGroup(42, "Release Squad");
+    render(<ChatPanelHost />);
+    expect(screen.getByTestId("group-chat-42")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-panel-0")).not.toBeInTheDocument();
   });
 
   it("Given a terminal tab is open, When ChatPanelHost renders, Then it shows terminal-panel not a ChatPanel", () => {

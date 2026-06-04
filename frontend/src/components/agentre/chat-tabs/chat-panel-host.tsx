@@ -4,6 +4,7 @@ import { Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ChatPanel } from "../chat-panel";
+import { GroupChat } from "../group-chat";
 import { TerminalPanel } from "../terminal/terminal-panel";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
 import type { ChatTab, TabKind } from "@/stores/chat-tabs-store";
@@ -97,6 +98,8 @@ export function ChatPanelHost() {
             tab={t}
             active={t.id === activeTabId}
           />
+        ) : t.meta.kind === "group" ? (
+          <HostedGroupPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ) : (
           <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ),
@@ -215,6 +218,20 @@ function HostedTerminalPanel({
         active={active}
         onClose={() => closeTab(tab.id)}
       />
+    </div>
+  );
+}
+
+function HostedGroupPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
+  const meta = tab.meta as Extract<TabKind, { kind: "group" }>;
+  return (
+    <div
+      data-tab-id={tab.id}
+      data-active={active}
+      style={{ display: active ? "flex" : "none" }}
+      className="flex h-full min-h-0 flex-1 flex-col"
+    >
+      <GroupChat groupId={meta.groupId} />
     </div>
   );
 }
