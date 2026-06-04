@@ -442,4 +442,28 @@ type PermissionModeSetter interface {
 	SetPermissionMode(ctx context.Context, sessionID int64, mode string) error
 }
 
+// AutonomousTurnSource 由「会自发产生 turn」的 runtime 实现 —— 当前仅 claudecode:
+// CLI 在 run_in_background Bash 任务完成后,自主注入 <task-notification> 并跑完整
+// 一轮(列目录之类)。这是唯一的「前向」子接口(backend→host),区别于 Steerer /
+// Aborter / ToolPermissionSink 等全是「反向」(host→backend)的控制通道。
+//
+// chat_svc 每会话订阅一次:AutonomousTurns(sessionID) 返回一个 channel,每当 backend
+// 自主起一轮就吐一个 AutonomousTurn。返回的 channel 在该会话子进程退出 / evict 时
+// close;sessionID 未知(未 spawn 或已 evict)时返回一个立即 close 的 channel。
+//
+// 调用约束:同一 sessionID 的 AutonomousTurns 事件流必须与 Run 的事件流**串行
+// drain**(consumer 侧保证)—— 二者复用同一个 backend session 的翻译/control 状态,
+// 不允许并发。chat_svc 用会话级 turn 锁满足这一点。
+type AutonomousTurnSource interface {
+	AutonomousTurns(sessionID int64) <-chan AutonomousTurn
+}
+
+// AutonomousTurn 是一轮 backend 自发的 turn:事件流 + 异步填充的 RunResult。
+// Events 与 Run 的事件流同形;消费方 drain 完 Events(close)后才可读 Result。
+type AutonomousTurn struct {
+	Events  <-chan Event
+	Result  *RunResult
+	Trigger string // "background_task"
+}
+
 // Errors live in errors.go; registry / RuntimeFor / RegisterRuntime / SwapRuntimeForTest live in registry.go.

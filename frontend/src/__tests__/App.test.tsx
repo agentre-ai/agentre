@@ -8,7 +8,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
 
@@ -649,12 +649,25 @@ function mockHooks(
   return app;
 }
 
+// runtimeEventStubs supplies no-op EventsOn/EventsOff so always-mounted
+// subscribers (e.g. QuitConfirmDialog's "app:quit-blocked" listener) don't blow
+// up on window.runtime.EventsOnMultiple when <App/> renders without a full runtime.
+function runtimeEventStubs() {
+  return {
+    EventsOn: vi.fn(() => vi.fn()),
+    EventsOnMultiple: vi.fn(() => vi.fn()),
+    EventsOff: vi.fn(),
+    EventsEmit: vi.fn(),
+  };
+}
+
 function mockWailsRuntime({
   fullscreen = false,
   platform = "darwin",
   size = { h: 768, w: 1024 },
 }: MockWailsRuntimeOptions = {}) {
   const runtime = {
+    ...runtimeEventStubs(),
     Environment: vi.fn(() =>
       Promise.resolve({
         arch: "arm64",
@@ -676,6 +689,13 @@ function mockWailsRuntime({
 
   return runtime;
 }
+
+beforeEach(() => {
+  // Baseline full runtime so <App/> startup (Environment/Window*) and the
+  // always-mounted QuitConfirmDialog's "app:quit-blocked" subscription both
+  // work; individual tests still override via mockWailsRuntime as needed.
+  mockWailsRuntime();
+});
 
 afterEach(() => {
   restoreMatchMedia?.();

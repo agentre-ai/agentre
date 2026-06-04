@@ -4,6 +4,7 @@ package remote
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"sync"
 	"time"
@@ -119,8 +120,15 @@ func (h *handleImpl) pump() {
 			if !ok {
 				return
 			}
+			// The daemon base64-encodes each chunk so it survives the JSON hop;
+			// decode back to raw bytes. Skip a malformed frame rather than feed
+			// the encoded text to xterm.
+			decoded, err := base64.StdEncoding.DecodeString(ev.Data)
+			if err != nil {
+				continue
+			}
 			select {
-			case h.data <- []byte(ev.Data):
+			case h.data <- decoded:
 			case <-h.done:
 				return
 			}

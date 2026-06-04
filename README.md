@@ -85,7 +85,6 @@ make install-deps    # Install frontend dependencies
 make dev             # Development mode with hot reload
 make test            # Backend race tests + frontend Vitest
 make build           # Production build for the current platform
-make build-windows   # Cross-build for windows/amd64 (override with WINDOWS_PLATFORM=)
 make install         # Install the app bundle (macOS: /Applications/Agentre.app)
 ```
 

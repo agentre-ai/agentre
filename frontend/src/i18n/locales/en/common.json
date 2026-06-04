@@ -452,6 +452,10 @@
     "actions": {
       "rename": "Rename"
     },
+    "autonomous": {
+      "banner": "Background task finished · auto-continued",
+      "aria": "Auto-continued response"
+    },
     "compact": {
       "imageUnsupported": "/compact cannot be sent with images",
       "needsSession": "Send one message first so the Codex session starts before compacting",
@@ -1398,6 +1402,17 @@
     "insertAfterAI": "Inserted after AI finishes",
     "notCancellable": "Not cancellable (codex backend)",
     "notCancellableTitle": "codex turn/steer protocol is not cancellable after send"
+  },
+  "quitConfirm": {
+    "title": "Quit Agentre?",
+    "description": "{{count}} session(s) are still in progress. Quitting will interrupt their current turn, and unfinished turns will not be saved.",
+    "runningSessions": "In progress · {{count}}",
+    "statusRunning": "Running",
+    "statusWaiting": "Awaiting you",
+    "more": "{{count}} more session(s)",
+    "cancel": "Cancel",
+    "quitAnyway": "Quit anyway",
+    "unknownSession": "Untitled session"
   },
   "remoteFs": {
     "actions": {

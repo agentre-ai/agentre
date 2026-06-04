@@ -30,9 +30,10 @@ import type { PlanActionStream } from "./canonical-tool/props";
 import { CanonicalToolRouter } from "./canonical-tool/registry";
 import { AIChatInput, type AIChatInputHandle } from "./chat-input";
 import { CodeBlock } from "./code-block";
+import { AutoTriggerBanner } from "./auto-trigger-banner";
 import { CompactBoundaryDivider } from "./compact-boundary-divider";
 import { CompactHistoryFold } from "./compact-history-fold";
-import { MarkdownText } from "./markdown-text";
+import { MarkdownText, StreamingMarkdown } from "./markdown-text";
 import { AgentAvatar } from "./primitives";
 import { ThinkingBlock } from "./thinking-block";
 
@@ -1186,6 +1187,21 @@ function ChatTranscript({
     return out;
   }, [folding, messages, fold]);
 
+  // autonomousIds:自主续轮(CLI 后台任务完成后自主跑的一轮)的消息 id 集合。
+  // 判定:assistant 轮且其在**完整 messages**里紧邻的前一条不是 user —— 正常轮是
+  // user→assistant、auto-continue / steer 也是 user→assistant,只有自主续轮是
+  // assistant→assistant(无 user 行)。用完整 messages(而非 displayMessages)算,
+  // 避免 compact 折叠把首条 assistant 误判成自主轮。会话首条(i===0)永不算。
+  const autonomousIds = React.useMemo(() => {
+    const ids = new Set<number>();
+    for (let i = 1; i < messages.length; i++) {
+      if (messages[i].role === "assistant" && messages[i - 1].role !== "user") {
+        ids.add(messages[i].id);
+      }
+    }
+    return ids;
+  }, [messages]);
+
   // useEvent 模式：把 onRerun/onEdit 包成稳定引用,让 MessageItem 的 React.memo
   // 不会被 ChatPanel 传入的 inline lambda 击穿。父侧每次重渲都换新函数,但 ref
   // 内部更新后稳定代理捕获最新值,语义不变。
@@ -1215,37 +1231,42 @@ function ChatTranscript({
         ) : null}
         {displayMessages.map((m) => {
           const isLive = m.id === liveTargetId;
+          const isAutonomous = autonomousIds.has(m.id);
           return (
-            <MessageItem
-              key={m.id}
-              m={m}
-              agentName={agentName}
-              agentColor={agentColor}
-              cwd={cwd}
-              sessionId={sessionId}
-              // 关键: 非 live 消息的所有 live* prop 都收敛到稳定的"空值",
-              // 让 React.memo 的 shallow 比较恒命中。
-              liveTail={isLive ? (liveDelta ?? "") : ""}
-              liveThinking={isLive ? (liveThinking ?? "") : ""}
-              liveBlocks={isLive ? liveBlocks : undefined}
-              liveRetry={isLive ? (liveRetry ?? null) : null}
-              liveStreamStartedAt={
-                isLive ? (liveStreamStartedAt ?? null) : null
-              }
-              showIndicator={
-                streaming && m.role === "assistant" && m.id === lastAssistantId
-              }
-              compacting={
-                isLive &&
-                streaming &&
-                m.role === "assistant" &&
-                m.id === lastAssistantId &&
-                liveCompacting
-              }
-              onRerun={stableOnRerun}
-              onEdit={stableOnEdit}
-              onPlanActionStarted={onPlanActionStarted}
-            />
+            <React.Fragment key={m.id}>
+              {isAutonomous ? <AutoTriggerBanner /> : null}
+              <MessageItem
+                m={m}
+                agentName={agentName}
+                agentColor={agentColor}
+                cwd={cwd}
+                sessionId={sessionId}
+                // 关键: 非 live 消息的所有 live* prop 都收敛到稳定的"空值",
+                // 让 React.memo 的 shallow 比较恒命中。
+                liveTail={isLive ? (liveDelta ?? "") : ""}
+                liveThinking={isLive ? (liveThinking ?? "") : ""}
+                liveBlocks={isLive ? liveBlocks : undefined}
+                liveRetry={isLive ? (liveRetry ?? null) : null}
+                liveStreamStartedAt={
+                  isLive ? (liveStreamStartedAt ?? null) : null
+                }
+                showIndicator={
+                  streaming &&
+                  m.role === "assistant" &&
+                  m.id === lastAssistantId
+                }
+                compacting={
+                  isLive &&
+                  streaming &&
+                  m.role === "assistant" &&
+                  m.id === lastAssistantId &&
+                  liveCompacting
+                }
+                onRerun={stableOnRerun}
+                onEdit={stableOnEdit}
+                onPlanActionStarted={onPlanActionStarted}
+              />
+            </React.Fragment>
           );
         })}
       </div>
@@ -1420,7 +1441,9 @@ function renderMessageBlocks(
   t?: TFunction,
 ): React.ReactNode {
   type RenderItem =
-    | { text: string; type: "text" }
+    // streaming=true 标记这是「流式途中正在生长」的文本项 —— 用 StreamingMarkdown
+    // 增量渲染(已定稿 block memo 跳过、只重解析活跃尾巴);持久化文本仍走整段 MarkdownText。
+    | { text: string; type: "text"; streaming?: boolean }
     | { block: ChatBlockData; type: "plan" }
     | {
         block: ChatBlockData;
@@ -1475,14 +1498,17 @@ function renderMessageBlocks(
   // can_use_tool control_request 也不携带未来的 tool_use_id。
   const pendingPermsByTool = new Map<string, number[]>();
 
-  function appendText(text: string) {
+  function appendText(text: string, streaming = false) {
     if (!text) return;
     const last = items.at(-1);
     if (last?.type === "text") {
       last.text += text;
+      // 与前一个已冻结的 text 段合并后,整段都按流式尾巴处理 ——
+      // StreamingMarkdown 会把已冻结的前缀也切成 memo 命中的定稿块,只重解析真尾巴。
+      if (streaming) last.streaming = true;
       return;
     }
-    items.push({ text, type: "text" });
+    items.push({ text, type: "text", streaming });
   }
 
   const consumeBlock = (b: ChatBlockData) => {
@@ -1631,7 +1657,8 @@ function renderMessageBlocks(
     });
   }
   liveBlocks.forEach(consumeBlock);
-  appendText(liveTail);
+  // liveTail 是本轮仍在生长的尾巴文本 —— 标记 streaming,走 StreamingMarkdown 增量渲染。
+  appendText(liveTail, true);
 
   // 被 merge 到下方 tool_use 卡的审批 RenderItem 不再独立渲染。
   const visibleItems = items.filter(
@@ -1641,7 +1668,11 @@ function renderMessageBlocks(
   return visibleItems.map((item, idx) => {
     switch (item.type) {
       case "text":
-        return <MarkdownText key={`text-${idx}`} cwd={cwd} text={item.text} />;
+        return item.streaming ? (
+          <StreamingMarkdown key={`text-${idx}`} cwd={cwd} text={item.text} />
+        ) : (
+          <MarkdownText key={`text-${idx}`} cwd={cwd} text={item.text} />
+        );
       case "plan":
         return (
           <PlanApproveCard

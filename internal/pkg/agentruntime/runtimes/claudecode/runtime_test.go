@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
+	"github.com/cago-frame/agents/provider"
 	. "github.com/smartystreets/goconvey/convey"
 
 	"agentre/internal/model/entity/agent_backend_entity"
@@ -41,6 +43,10 @@ func TestClaudeCodeCapabilities(t *testing.T) {
 		// stream-json 原生支持)。extractImages 从 RunRequest.UserBlocks 抽 inline
 		// 图片,Run 经 handle.Stream 透传。
 		So(caps.Has(capability.CapImageInput), ShouldBeTrue)
+		// CapAutonomousTurn=true:CLI 后台任务完成自主续轮;必须实现 AutonomousTurnSource。
+		So(caps.Has(capability.CapAutonomousTurn), ShouldBeTrue)
+		_, ok := agentruntime.Runtime(r).(agentruntime.AutonomousTurnSource)
+		So(ok, ShouldBeTrue)
 	})
 
 	Convey("claudecode PermissionModeMeta", t, func() {
@@ -109,6 +115,8 @@ type fakeCCHandle struct {
 	// gotPrompt / gotImages 记录最近一次 Stream 收到的入参,Run 透传断言用。
 	gotPrompt string
 	gotImages []claudecode.Image
+	// autoTurns 注入自主续轮(AutonomousTurns 桥接测试用);nil 时方法返回 nil。
+	autoTurns <-chan *claudecode.AutoTurn
 }
 
 func (f *fakeCCHandle) ID() string                      { return f.id }
@@ -121,7 +129,8 @@ func (f *fakeCCHandle) SetPermissionMode(_ context.Context, mode string) error {
 func (f *fakeCCHandle) RespondToControl(context.Context, string, claudecode.PermissionResult) error {
 	return nil
 }
-func (f *fakeCCHandle) ExitErr() error { return nil }
+func (f *fakeCCHandle) ExitErr() error                               { return nil }
+func (f *fakeCCHandle) AutonomousTurns() <-chan *claudecode.AutoTurn { return f.autoTurns }
 func (f *fakeCCHandle) Stream(_ context.Context, prompt string, images []claudecode.Image) (ccStream, error) {
 	f.gotPrompt = prompt
 	f.gotImages = images
@@ -211,6 +220,68 @@ func TestRun_NoChatRepoRegistered(t *testing.T) {
 		for range events {
 		}
 		So(launchMode, ShouldEqual, "bypassPermissions")
+		r.CloseAllSessions(ctx)
+	})
+}
+
+// TestAutonomousTurns_BridgesSessionAutoTurn 验证 Runtime.AutonomousTurns 把底层
+// Session 自主续轮桥接成 agentruntime.AutonomousTurn,事件经 translate 翻译。
+func TestAutonomousTurns_BridgesSessionAutoTurn(t *testing.T) {
+	Convey("Runtime.AutonomousTurns 桥接底层 Session 自主续轮", t, func() {
+		autoSrc := make(chan *claudecode.AutoTurn, 1)
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			return &fakeCCHandle{
+				id:        "fake-sid",
+				autoTurns: autoSrc,
+				// usage 非空避免 Run 的 0-frame 兜底把 session evict 掉。
+				stream: &eventCCStream{events: []claudecode.Event{
+					{Kind: claudecode.EventUsage, Usage: provider.Usage{PromptTokens: 1}},
+					{Kind: claudecode.EventDone},
+				}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		// 先跑一轮把 session spawn + 缓存。
+		events, _, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 77,
+			Cwd:       t.TempDir(),
+			UserText:  "go",
+		})
+		So(err, ShouldBeNil)
+		for range events { //nolint:revive // drain
+		}
+
+		turns := r.AutonomousTurns(77)
+
+		// 注入一轮自主续轮(text + done)。
+		atEvents := make(chan claudecode.Event, 3)
+		atEvents <- claudecode.Event{Kind: claudecode.EventTextDelta, Text: "autonomous:listing"}
+		atEvents <- claudecode.Event{Kind: claudecode.EventDone}
+		close(atEvents)
+		autoSrc <- &claudecode.AutoTurn{Events: atEvents, SessionID: "fake-sid", Trigger: "background_task"}
+		close(autoSrc)
+
+		var at agentruntime.AutonomousTurn
+		select {
+		case at = <-turns:
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected a bridged autonomous turn within 2s")
+		}
+		So(at.Trigger, ShouldEqual, "background_task")
+
+		var text string
+		for ev := range at.Events {
+			if td, ok := ev.(agentruntime.TextDelta); ok {
+				text += td.Text
+			}
+		}
+		So(text, ShouldContainSubstring, "autonomous:listing")
+		So(at.Result.ProviderSessionID, ShouldEqual, "fake-sid")
+
 		r.CloseAllSessions(ctx)
 	})
 }

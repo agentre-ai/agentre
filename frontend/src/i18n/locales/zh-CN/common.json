@@ -452,6 +452,10 @@
     "actions": {
       "rename": "重命名"
     },
+    "autonomous": {
+      "banner": "后台任务完成 · 自动继续",
+      "aria": "自动继续的回复"
+    },
     "compact": {
       "imageUnsupported": "/compact 不能和图片一起发送",
       "needsSession": "请先发送一条消息让 Codex 会话启动后再压缩",
@@ -1398,6 +1402,17 @@
     "insertAfterAI": "AI 完成后插入",
     "notCancellable": "不可撤回（codex 后端）",
     "notCancellableTitle": "codex turn/steer 协议一发即不可撤"
+  },
+  "quitConfirm": {
+    "title": "退出 Agentre？",
+    "description": "有 {{count}} 个会话仍在进行，退出会中断它们当前的回合，未完成的回合不会保存。",
+    "runningSessions": "进行中的会话 · {{count}}",
+    "statusRunning": "运行中",
+    "statusWaiting": "等待确认",
+    "more": "还有 {{count}} 个会话",
+    "cancel": "取消",
+    "quitAnyway": "仍然退出",
+    "unknownSession": "未命名会话"
   },
   "remoteFs": {
     "actions": {

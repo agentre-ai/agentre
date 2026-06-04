@@ -69,23 +69,35 @@ func TestErrCodes_Stable(t *testing.T) {
 // TestMethodNames_Stable pins RPC method names — wire protocol contract.
 func TestMethodNames_Stable(t *testing.T) {
 	for k, v := range map[string]string{
-		MethodCapabilities:         "runtime.capabilities",
-		MethodRun:                  "runtime.run",
-		MethodSteer:                "runtime.steer",
-		MethodCancelSteer:          "runtime.cancelSteer",
-		MethodDrainPending:         "runtime.drainPending",
-		MethodAbort:                "runtime.abort",
-		MethodSetPermissionMode:    "runtime.setPermissionMode",
-		MethodSubmitAnswer:         "runtime.submitAnswer",
-		MethodSubmitToolPermission: "runtime.submitToolPermission",
-		MethodGetGoal:              "runtime.goal.get",
-		MethodSetGoal:              "runtime.goal.set",
-		MethodClearGoal:            "runtime.goal.clear",
-		NotifyEvent:                "runtime.event",
-		NotifyRunResultDone:        "runtime.runResultDone",
+		MethodCapabilities:          "runtime.capabilities",
+		MethodRun:                   "runtime.run",
+		MethodSteer:                 "runtime.steer",
+		MethodCancelSteer:           "runtime.cancelSteer",
+		MethodDrainPending:          "runtime.drainPending",
+		MethodAbort:                 "runtime.abort",
+		MethodSetPermissionMode:     "runtime.setPermissionMode",
+		MethodSubmitAnswer:          "runtime.submitAnswer",
+		MethodSubmitToolPermission:  "runtime.submitToolPermission",
+		MethodGetGoal:               "runtime.goal.get",
+		MethodSetGoal:               "runtime.goal.set",
+		MethodClearGoal:             "runtime.goal.clear",
+		NotifyEvent:                 "runtime.event",
+		NotifyRunResultDone:         "runtime.runResultDone",
+		NotifyAutonomousTurnStarted: "runtime.autonomousTurn.started",
+		NotifyAutonomousTurnEvent:   "runtime.autonomousTurn.event",
+		NotifyAutonomousTurnDone:    "runtime.autonomousTurn.done",
 	} {
 		assert.Equal(t, v, k)
 	}
+}
+
+func TestAutonomousTurnStartedFrame_RoundTrip(t *testing.T) {
+	in := AutonomousTurnStartedFrame{SessionID: 77, Trigger: "background_task"}
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out AutonomousTurnStartedFrame
+	require.NoError(t, json.Unmarshal(b, &out))
+	assert.Equal(t, in, out)
 }
 
 func TestEventFrame_RoundTrip(t *testing.T) {

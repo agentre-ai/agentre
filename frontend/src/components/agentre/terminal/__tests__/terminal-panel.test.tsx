@@ -109,14 +109,15 @@ describe("TerminalPanel", () => {
       useTerminal as unknown as {
         mock: {
           calls: Array<
-            Array<{ terminalID: string; onData: (s: string) => void }>
+            Array<{ terminalID: string; onData: (d: Uint8Array) => void }>
           >;
         };
       }
     ).mock.calls[0][0];
     expect(args.terminalID).toBe("t1");
-    act(() => args.onData("hello"));
-    expect(writeMock).toHaveBeenCalledWith("hello");
+    const bytes = new Uint8Array([104, 101, 108, 108, 111]); // "hello"
+    act(() => args.onData(bytes));
+    expect(writeMock).toHaveBeenCalledWith(bytes);
   });
 
   it("Given a terminal tab is mounted active, When xterm opens, Then focus lands on the terminal before the next macrotask", () => {

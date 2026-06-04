@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"agentre/internal/pkg/clienv"
+	"agentre/internal/pkg/procattr"
 )
 
 type ExitError struct {
@@ -94,6 +95,7 @@ func (r execProcessRunner) Start(ctx context.Context, opts procOptions) (process
 	}
 	// #nosec G204 -- binary and args come from AgentBackend config plus fixed pi RPC flags.
 	cmd := exec.CommandContext(ctx, binary, opts.Args...)
+	procattr.ApplyNoConsoleWindow(cmd)
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}

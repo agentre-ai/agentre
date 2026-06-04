@@ -74,6 +74,7 @@ func newWailsOptionsForDataDir(a *app.App, assets fs.FS, goos, dataDir string) *
 		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
 		OnStartup:        a.Startup,
 		OnShutdown:       a.Shutdown,
+		OnBeforeClose:    a.OnBeforeClose,
 		Mac: &mac.Options{
 			TitleBar: mac.TitleBarHiddenInset(),
 		},

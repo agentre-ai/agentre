@@ -31,7 +31,9 @@ type TerminalCloseParams struct {
 	TerminalID string `json:"terminalId"`
 }
 
-// TerminalDataEvent is the daemon→client push for stdout chunks.
+// TerminalDataEvent is the daemon→client push for stdout chunks. Data is
+// base64-encoded raw PTY bytes — not a UTF-8 string — so multibyte sequences
+// split across PTY reads survive the JSON hop instead of being mangled to U+FFFD.
 type TerminalDataEvent struct {
 	TerminalID string `json:"terminalId"`
 	Data       string `json:"data"`

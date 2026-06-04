@@ -115,6 +115,17 @@ func setupChatTest(t *testing.T) *chatMocks {
 	return m
 }
 
+func TestCountActiveSessions(t *testing.T) {
+	m := setupChatTest(t)
+	m.session.EXPECT().
+		CountActive(gomock.Any(), []string{"running", "waiting"}).
+		Return(int64(5), nil)
+
+	n, err := m.svc.CountActiveSessions(m.ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, 5, n)
+}
+
 func TestRegisterGatewayBeforeNewChatMakesCLIBackendsChattable(t *testing.T) {
 	chat_svc.RegisterChat(nil)
 	chat_svc.RegisterGateway(nil)

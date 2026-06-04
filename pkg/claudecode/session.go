@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,8 +40,9 @@ type Session struct {
 	sessionID string // 由 system init 帧填入；首次 Turn 后稳定
 	model     string // 由 system init 帧 model 字段填入；新一轮如果换 model CLI 会重新发 init
 
-	// turnMu 串行化 Turn 生命周期 —— 上一个 Turn 的 routeUntilResult 完成之前
-	// 拒绝下一个 Turn 启动。Turn 内部 spawn 的 goroutine 持有该锁直到 channel 关闭。
+	// turnMu 串行化 user Turn 生命周期 —— 上一个 Turn 的事件 channel 收尾(done)之前
+	// 拒绝下一个 Turn 启动。Turn 的 waiter goroutine 持有该锁直到本轮 done。
+	// 自主轮不走 turnMu(它没有对应的 Turn 调用)。
 	turnMu sync.Mutex
 	// stdinMu 串行化对 proc.stdin 的写 —— Turn 的 user frame 写完就释放，
 	// Interrupt 的 control_request 写时再单独获取。**绝不**跨 turn 生命周期持有。
@@ -65,7 +65,18 @@ type Session struct {
 	// 上下文占用"（工具循环越多越虚高）。EventDone 优先吐 lastAssistantUsage
 	// 反映模型这一刻看到的输入大小；缺省 fallback 到 result.usage。
 	// 每个 result 帧吐完 EventDone 后置 nil，避免跨 turn 串味。
+	// 仅 readLoop(单 goroutine)读写,无需额外锁。
 	lastAssistantUsage *rawUsage
+
+	// —— 常驻 demux reader 状态(sinkMu 保护)——
+	// readLoop 占住 scanner 整个子进程生命周期,把每帧 demux 到「当前活跃轮」的 ch。
+	// 一刻只有一个活跃轮(CLI 串行 emit,每轮 result 收尾)。归属规则:某轮以「后台型
+	// task_notification」开头 → 自主轮(经 autoCh 吐出);否则按 FIFO 取一个 pendingTurns
+	// 里等待的 user Turn。
+	sinkMu       sync.Mutex
+	active       *activeTurn      // 当前正在投递帧的轮;nil = 轮间空闲
+	pendingTurns chan *activeTurn // 已写 stdin、等待其帧到达的 user Turn(FIFO)
+	autoCh       chan *AutoTurn   // AutonomousTurns() 返回的 channel;子进程退出时 close
 }
 
 // controlResponse 是 control_response 帧 response 字段的最小子集。
@@ -130,7 +141,15 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 	buf := make([]byte, 0, 64<<10)
 	sc.Buffer(buf, maxFrameBytes)
 
-	return &Session{proc: p, scanner: sc, sessionID: spec.sessionID}, nil
+	s := &Session{
+		proc:         p,
+		scanner:      sc,
+		sessionID:    spec.sessionID,
+		pendingTurns: make(chan *activeTurn, 4),
+		autoCh:       make(chan *AutoTurn, 8),
+	}
+	go s.readLoop()
+	return s, nil
 }
 
 // SessionID 返回 claude 报告的 session_id。Open 后到首个 Turn 完成之前可能为空——
@@ -143,12 +162,7 @@ func (s *Session) SessionID() string { return s.sessionID }
 // 并发约束：同一时刻只能有一个 Turn 在飞。第二个 Turn 调用会阻塞直到上一个 Turn
 // 的事件 channel 被完全 drain（result 帧出现 → goroutine 关 channel → 释放 mu）。
 func (s *Session) Turn(ctx context.Context, prompt string, images ...Image) (<-chan Event, error) {
-	s.turnMu.Lock() // 抢 turn slot —— 上一个 turn 没收尾不让进
-	// 防御性清当前 turn 的瞬态：正常情况下 parseLine 看到 result 帧时会清
-	// lastAssistantUsage；但 ctx 取消 / scanner EOF 出现在 result 之前时，
-	// routeUntilResult 直接返回不走 result 分支，余值会留到下一轮。turnMu 保护
-	// 下显式清一次，给 lastAssistantUsage 一个明确的"turn 入口干净"语义。
-	s.lastAssistantUsage = nil
+	s.turnMu.Lock() // 抢 user turn slot —— 上一个 turn 没收尾(done)不让进
 	s.stdinMu.Lock()
 	if s.closed {
 		s.stdinMu.Unlock()
@@ -177,49 +191,167 @@ func (s *Session) Turn(ctx context.Context, prompt string, images ...Image) (<-c
 	}
 	s.stdinMu.Unlock() // stdin 写完立刻释放，给 Interrupt 让路
 
-	ch := make(chan Event, 16)
+	// 注册到 FIFO,等 readLoop 在本轮帧到达时取走。stdin 写在前、push 在后:CLI 的
+	// 响应帧一定晚于这次本地 push;即便极端调度下 reader 先读到首帧,它在 currentTurn
+	// 里阻塞 <-pendingTurns 等这次 push,不会错配。
+	at := newActiveTurn(false)
+	s.pendingTurns <- at
+
 	go func() {
-		defer close(ch)
-		defer s.turnMu.Unlock() // routeUntilResult 走完再放 turn 锁
-		s.routeUntilResult(ctx, ch)
+		defer s.turnMu.Unlock() // 本轮 done(result/EOF)后再放 turn 锁
+		select {
+		case <-at.done:
+		case <-ctx.Done():
+			// 消费方放弃:标记 abandon 让 reader 停投递、丢弃余帧;等 reader 真正
+			// 读到本轮 result(或子进程 EOF)关 done 后再放 turnMu,避免下一轮帧串味。
+			s.markAbandoned(at)
+			<-at.done
+		}
 	}()
-	return ch, nil
+	return at.ch, nil
 }
 
-// routeUntilResult 读 stdout 行、parse、把 Event 推给 ch；result 帧到达后返回。
-// scanner 错误或 EOF 也返回（caller close ch）。
+// AutonomousTurns 返回 CLI 自主续轮(后台任务完成续轮)的 channel。子进程退出
+// (scanner EOF / Close)时 close。消费方 range 它,每个 *AutoTurn 是一轮独立的
+// 事件流。无消费方时缓冲(8)兜底,满后 readLoop 在投递下一轮时阻塞(back-pressure)。
+func (s *Session) AutonomousTurns() <-chan *AutoTurn { return s.autoCh }
+
+// readLoop 占住 scanner 整个子进程生命周期,把每帧 demux 到当前活跃轮。
+// 归属:某轮以「后台型 task_notification」开头 → 自主轮(经 AutonomousTurns 吐出);
+// 否则按 FIFO 取一个 pendingTurns 里等待的 user Turn。每轮以 result 收尾。
 //
-// scanner 拿到 EOF 时如果是子进程已死，把 proc.exitErrIfDone 抓到的真错 snapshot
-// 进 Session.lastErr —— runtime 层 0-frame fallback 通过 Session.ExitErr 拿到这个
-// 值替换通用错误消息。
-func (s *Session) routeUntilResult(ctx context.Context, ch chan<- Event) {
+// scanner 退出(EOF / 错误)= 子进程死亡:snapshot 真错给 Session.ExitErr 用,
+// 再收尾所有未决轮 + close autoCh。
+func (s *Session) readLoop() {
 	for s.scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
 		line := s.scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
-		events, done := s.parseLine(line)
-		for _, ev := range events {
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- ev:
-			}
-		}
-		if done {
+		events, done := s.parseLine(line) // 同时把 control_response dispatch 给 ctrlPending
+		var f rawFrame
+		_ = json.Unmarshal(line, &f) // 仅供归属判定(后台型 task_notification)
+		s.route(f, events, done)
+	}
+	if exitErr := s.proc.exitErrIfDone(); exitErr != nil {
+		s.rememberExitErr(exitErr)
+	}
+	s.shutdownReader()
+}
+
+// route 把一帧的事件投给当前活跃轮;done 时收尾该轮。
+func (s *Session) route(f rawFrame, events []Event, done bool) {
+	at := s.currentTurn(f)
+	if at == nil {
+		// 自主轮起始标记(已建立 active 并吐 autoCh),或空闲态的非 turn 帧
+		// (control_response / status):均无归属轮,本帧事件不下发。
+		return
+	}
+	s.feed(at, events)
+	if done {
+		s.finishActiveTurn(at)
+	}
+}
+
+// currentTurn 返回当前活跃轮;轮间(active==nil)时按归属规则建立新轮:
+//   - 后台型 task_notification → 自主轮,经 autoCh 吐出,返回 nil(调用方丢弃起始标记)。
+//   - 非 turn 帧(control_response / 空闲 status)→ 返回 nil,不认领排队的 user Turn;
+//     否则读循环会被这些会话级帧卡死在 <-pendingTurns 上,后续 Turn / 自主轮再也读不
+//     到 stdout(见 isNonTurnFrame)。
+//   - 否则 → 取 FIFO 队首 user Turn(stdin 已写 → push 紧随,阻塞极短)。
+func (s *Session) currentTurn(f rawFrame) *activeTurn {
+	s.sinkMu.Lock()
+	if s.active != nil {
+		at := s.active
+		s.sinkMu.Unlock()
+		return at
+	}
+	if isBackgroundTaskNotification(f) {
+		at := newActiveTurn(true)
+		s.active = at
+		s.sinkMu.Unlock()
+		s.autoCh <- &AutoTurn{Events: at.ch, SessionID: s.sessionID, Trigger: triggerBackgroundTask}
+		return nil
+	}
+	if isNonTurnFrame(f) {
+		s.sinkMu.Unlock()
+		return nil // 会话级帧,空闲到达无归属轮:不认领 user Turn slot
+	}
+	s.sinkMu.Unlock()
+	at := <-s.pendingTurns // user 轮起始:取队首(对应的 Turn 已 push)
+	s.sinkMu.Lock()
+	s.active = at
+	s.sinkMu.Unlock()
+	return at
+}
+
+// isNonTurnFrame 判定一帧是否「不归属任何一轮」—— 即便在轮间(空闲)到达,也不该认领
+// 一个排队的 user Turn。当前两类:
+//   - control_response:control_request(Interrupt / SetPermissionMode)的回执,已在
+//     parseLine 阶段按 request_id dispatch 给等待者,不携带 turn 事件。
+//   - system{subtype:"status"}:会话级状态推送(permissionMode / 运行态),从不作为某
+//     一轮的起始帧 —— 轮内到达由 active 轮承接(currentTurn 在 active!=nil 时已先返回),
+//     空闲到达则无归属轮,其事件随 route 的 nil 返回被丢弃(set_permission_mode 的回执
+//     已由 SetPermissionMode 调用方拿到,主动切 mode 不依赖这条空闲 status)。
+func isNonTurnFrame(f rawFrame) bool {
+	if f.Type == "control_response" {
+		return true
+	}
+	return f.Type == "system" && f.Subtype == "status"
+}
+
+// feed 把事件投给 at.ch;at 已被消费方放弃(abandon)时丢弃余帧,避免 reader 阻塞。
+func (s *Session) feed(at *activeTurn, events []Event) {
+	for _, ev := range events {
+		select {
+		case at.ch <- ev:
+		case <-at.abandon:
 			return
 		}
 	}
-	// scanner 退出后（EOF / 错误），如果子进程已死且 stderr 命中了 sentinel，
-	// snapshot 真错给 Session.ExitErr 用。stderr 没命中也存着 *ProcessExitError，
-	// 让上层比 "0 frames" 那条通用消息精确。
-	if exitErr := s.proc.exitErrIfDone(); exitErr != nil {
-		s.rememberExitErr(exitErr)
+}
+
+// finishActiveTurn 收尾一轮:清 active 槽 + close ch(唤醒消费方 range)+ close done(唤醒 waiter)。
+func (s *Session) finishActiveTurn(at *activeTurn) {
+	s.sinkMu.Lock()
+	if s.active == at {
+		s.active = nil
+	}
+	s.sinkMu.Unlock()
+	close(at.ch)
+	close(at.done)
+}
+
+// markAbandoned 标记某轮消费方已放弃(Turn 的 ctx 取消)。close abandon 让 feed 停
+// 投递;done 仍由 readLoop 在 result/EOF 时 close。幂等。
+func (s *Session) markAbandoned(at *activeTurn) {
+	select {
+	case <-at.abandon:
+	default:
+		close(at.abandon)
+	}
+}
+
+// shutdownReader 在 scanner 退出后收尾:close 当前活跃轮 + 排空 pendingTurns(让
+// 各自 Turn 的 waiter 解除阻塞)+ close autoCh。
+func (s *Session) shutdownReader() {
+	s.sinkMu.Lock()
+	at := s.active
+	s.active = nil
+	s.sinkMu.Unlock()
+	if at != nil {
+		close(at.ch)
+		close(at.done)
+	}
+	for {
+		select {
+		case p := <-s.pendingTurns:
+			close(p.ch)
+			close(p.done)
+		default:
+			close(s.autoCh)
+			return
+		}
 	}
 }
 
@@ -502,54 +634,14 @@ func (s *Session) SetPermissionMode(ctx context.Context, mode string) error {
 
 	defer s.forgetControlRequest(reqID)
 
-	if resp, ok := receiveControlResponse(ch); ok {
-		return setPermissionModeResponseErr(resp)
-	}
-
-	// Reader 选择：
-	//   - turnMu 可获取 → Turn 不在飞，没有别的 reader。我们独占 scanner 自己 drain。
-	//   - turnMu 抢不到 → Turn goroutine 在 routeUntilResult 里读 scanner，
-	//     parseLine 会把 control_response dispatchControlResponse 到我们的 ch。
-	if !s.turnMu.TryLock() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case resp := <-ch:
-			return setPermissionModeResponseErr(resp)
-		}
-	}
-	defer s.turnMu.Unlock()
-
-	if resp, ok := receiveControlResponse(ch); ok {
-		return setPermissionModeResponseErr(resp)
-	}
-
-	for s.scanner.Scan() {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		line := s.scanner.Bytes()
-		if len(line) > 0 {
-			s.parseLine(line)
-		}
-		select {
-		case resp := <-ch:
-			return setPermissionModeResponseErr(resp)
-		default:
-		}
-	}
-	if err := s.scanner.Err(); err != nil {
-		return err
-	}
-	return io.EOF
-}
-
-func receiveControlResponse(ch <-chan controlResponse) (controlResponse, bool) {
+	// 持久 readLoop 一直在 drain scanner,control_response 一定被 dispatch 到 ch
+	// (不论此刻有没有 user turn 在飞),这里只需等 ch 或 ctx —— 不再需要在 Turn
+	// 不在场时自己 TryLock turnMu drain scanner(那会和 readLoop 抢同一个 scanner)。
 	select {
+	case <-ctx.Done():
+		return ctx.Err()
 	case resp := <-ch:
-		return resp, true
-	default:
-		return controlResponse{}, false
+		return setPermissionModeResponseErr(resp)
 	}
 }
 

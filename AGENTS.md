@@ -86,7 +86,6 @@ Before writing code / fixing bugs / writing tests, read these docs first — the
 make install-deps     # pnpm install in frontend/
 make dev              # wails dev — hot reload
 make build            # wails build with version/commit ldflags (current platform)
-make build-windows    # cross-build windows/amd64 (override via WINDOWS_PLATFORM=)
 make run              # build and launch production app
 make install          # build + install app bundle (macOS: /Applications/Agentre.app)
 make generate         # wails generate module — refresh frontend/wailsjs/ bindings

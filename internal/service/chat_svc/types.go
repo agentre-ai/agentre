@@ -10,6 +10,10 @@ import (
 // 前端用 EventsOn 注册该名字接收 chunk / done / error。
 const StreamEventPrefix = "chat:event"
 
+// AutonomousEventPrefix 是会话级旁路事件名前缀,形如 "chat:autonomous:<sessionID>"。
+// 见 AutonomousStreamName / StreamAutonomousStarted。
+const AutonomousEventPrefix = "chat:autonomous"
+
 // ChatStreamEventKind 是 Wails 事件 payload 里的 kind 枚举。
 type ChatStreamEventKind string
 
@@ -65,6 +69,12 @@ const (
 	// StreamRuntimeStatus runtime 中间状态通知（如 compacting）。
 	// 前端 chat-streams-host 据此切 typing indicator 样式。
 	StreamRuntimeStatus ChatStreamEventKind = "runtime_status"
+	// StreamAutonomousStarted 经会话级流 AutonomousStreamName(sessionID) 推送：CLI 在
+	// run_in_background 任务完成后**自主**跑的一轮(无用户输入)被捕获时,通知前端有一条
+	// 非用户发起的 assistant 轮开始。携带 AssistantMessage(前端据此插入新行)+ Stream
+	// (该自主轮的 per-turn 事件名,前端 openStream 后续 chunk/done 走它实时渲染)。
+	// Trigger="background_task"。前端渲染 AutoTriggerBanner +「自动」badge。
+	StreamAutonomousStarted ChatStreamEventKind = "autonomous_started"
 )
 
 // ChatStreamEvent 是 EventsEmit 出去的统一 payload。
@@ -132,6 +142,12 @@ type ChatStreamEvent struct {
 
 	// StreamRuntimeStatus 事件填充：runtime 中间状态快照。
 	RuntimeStatus *ChatRuntimeStatus `json:"runtimeStatus,omitempty"`
+
+	// StreamAutonomousStarted 事件填充：Stream 是该自主轮的 per-turn 事件名(前端
+	// openStream 订阅它接后续 chunk/done);Trigger 是触发来源("background_task")。
+	// AssistantMessage 复用上面的字段携带要插入的新 assistant 行。
+	Stream  string `json:"stream,omitempty"`
+	Trigger string `json:"trigger,omitempty"`
 }
 
 // ChatCompactBoundary 是 StreamCompactBoundary 事件的 payload。MessageID 是 boundary

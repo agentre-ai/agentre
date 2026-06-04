@@ -41,6 +41,9 @@ type ccSessionHandle interface {
 	// 0-frame fallback 用它替换 "subprocess produced no events" 通用消息,
 	// 让 chat_svc 能 errors.Is 出准确语义。
 	ExitErr() error
+	// AutonomousTurns 返回底层 Session 的自主续轮 channel(后台任务完成 CLI 自主
+	// 跑的一轮)。子进程退出时 close。Runtime.AutonomousTurns 桥接它成 agentruntime 流。
+	AutonomousTurns() <-chan *claudecode.AutoTurn
 }
 
 // ccLaunchSpec 是 ccSessionFactory 的全部入参;具名结构体避免每次新增可选
@@ -100,6 +103,14 @@ func (a *ccClientAdapter) ExitErr() error {
 		return nil
 	}
 	return a.sess.ExitErr()
+}
+
+// AutonomousTurns 透传 claudecode.Session.AutonomousTurns(后台任务自主续轮)。
+func (a *ccClientAdapter) AutonomousTurns() <-chan *claudecode.AutoTurn {
+	if a.sess == nil {
+		return nil
+	}
+	return a.sess.AutonomousTurns()
 }
 
 // RespondToControl 转发到底层 claudecode.Session。stdinMu 由 Session 内部保护,

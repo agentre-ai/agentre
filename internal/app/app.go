@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agentre/internal/bootstrap"
@@ -38,6 +39,9 @@ type App struct {
 	hookPollerCancel context.CancelFunc
 	ccUsageStop      func()
 	terminalSvc      *terminal_svc.Service
+
+	// quitConfirmed 标记本次退出已被用户确认(或自动更新重启),OnBeforeClose 见到即放行。
+	quitConfirmed atomic.Bool
 
 	lastImportPath   string
 	lastImportPathMu sync.Mutex
@@ -129,6 +133,63 @@ func (a *App) Shutdown(ctx context.Context) {
 		a.terminalSvc.Shutdown()
 	}
 	logger.Ctx(ctx).Info("app shutdown")
+}
+
+// OnBeforeClose is wired to wails OnBeforeClose; it fires on every quit path
+// (macOS cmd+Q / menu, Windows close button / Alt+F4, programmatic Quit).
+// Returning true prevents the quit. If active sessions exist it emits
+// "app:quit-blocked" so the frontend can show a confirmation dialog.
+func (a *App) OnBeforeClose(ctx context.Context) (prevent bool) {
+	return shouldPreventQuit(ctx, a.quitConfirmed.Load(),
+		countActiveSessions,
+		func(n int) {
+			logger.Ctx(ctx).Info("app.OnBeforeClose: quit blocked by active sessions", zap.Int("count", n))
+			wailsruntime.EventsEmit(a.ctx, "app:quit-blocked", map[string]any{"count": n})
+		})
+}
+
+// countActiveSessions reports the running/waiting session count for the quit gate.
+// Wails runs OnStartup in a goroutine concurrent with the window run loop (darwin /
+// windows / linux all do), so OnBeforeClose can fire before Startup wires the chat
+// service — in that window chat_svc.Chat() is still nil and there cannot yet be any
+// session the user would lose. Treat the unregistered service as zero rather than
+// dereferencing a nil interface: fail-open, never panic on the quit path.
+func countActiveSessions(ctx context.Context) (int, error) {
+	chat := chat_svc.Chat()
+	if chat == nil {
+		return 0, nil
+	}
+	return chat.CountActiveSessions(ctx)
+}
+
+// shouldPreventQuit decides whether to block the quit and notify the user.
+//   - confirmed (user pressed "quit anyway", or auto-update restart) → allow
+//   - count errors or is 0 → allow (fail-open: a count failure must never trap
+//     the user in an app they cannot quit)
+//   - count > 0 → emit the count and prevent
+func shouldPreventQuit(ctx context.Context, confirmed bool,
+	count func(context.Context) (int, error), emit func(n int)) bool {
+	if confirmed {
+		return false
+	}
+	n, err := count(ctx)
+	if err != nil {
+		logger.Ctx(ctx).Warn("app.shouldPreventQuit: count active sessions", zap.Error(err))
+		return false
+	}
+	if n == 0 {
+		return false
+	}
+	emit(n)
+	return true
+}
+
+// ConfirmQuit is called from the frontend when the user confirms quitting with
+// active sessions. It marks the quit as confirmed and triggers the real quit,
+// which re-enters OnBeforeClose and is allowed through.
+func (a *App) ConfirmQuit() {
+	a.quitConfirmed.Store(true)
+	wailsruntime.Quit(a.ctx)
 }
 
 // registerChatService wires the chat service singleton with a real wails-runtime

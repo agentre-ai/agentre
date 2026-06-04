@@ -19,7 +19,7 @@ internal/
   model/entity/<domain>_entity/(rich domain entity; GORM tag + business methods)
   pkg/                         (cross-cutting internal packages: agentprovider / agentruntime / ccoauth / claudecodehook / clienv /
                                 cliprober / code (i18n error codes) / diff / httpgateway / jsonrpc / keychain / llmcatalog /
-                                paths / pty / remotefs)
+                                paths / procattr / pty / remotefs)
   buildinfo/                   (CommitID ldflag target)
 migrations/                    (gormigrate sequential migrations, filename prefix YYYYMMDDNNNN)
 pkg/                           (externally reusable packages: claudecode / codex / piagent —— independently maintained CLI subprocess wrappers;

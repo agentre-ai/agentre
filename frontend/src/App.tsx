@@ -33,6 +33,7 @@ import {
   OrgChartPage,
   PaletteScopeBridge,
   ProjectsPage,
+  QuitConfirmDialog,
   ShortcutsProvider,
   SidebarButton,
   SettingsPage,
@@ -859,6 +860,8 @@ function App() {
       <ChatStreamsHost />
       <TurnCompleteNotifier />
       <NotificationToastViewport />
+      {/* 退出二次确认:常驻订阅 "app:quit-blocked",活跃会话存在时拦截退出弹框。*/}
+      <QuitConfirmDialog />
       <Routes>
         <Route element={<AppLayout />}>
           <Route path="/chat" element={<ChatPage />} />
