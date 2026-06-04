@@ -149,6 +149,10 @@ type chatSvc struct {
 	// aborted：sessionID(int64) → struct{}。Stop 触发时 store；runTurn 收尾时
 	// LoadAndDelete 判定是否走 StreamAborted 路径 + 跳过 DrainPending 自动接续。
 	aborted *sync.Map
+	// autoWatchers：sessionID(int64) → struct{}。startAutonomousWatcher 用它防同一
+	// session 重复起 watcher goroutine(每会话一个,惰性启动);watcher 在底层
+	// AutonomousTurns channel close(子进程 evict / CloseSession)时退出并清这条。
+	autoWatchers sync.Map
 	gateway httpgateway.TokenIssuer
 	// chatTokens 缓存每个 chat session 的常驻 gateway token(sessionID int64 → token string)。
 	// 该 token 在 spawn 时烤进 claude 子进程 env 给 PostToolUse hook 用,子进程跨轮复用
