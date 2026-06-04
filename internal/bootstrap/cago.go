@@ -25,6 +25,7 @@ import (
 	"agentre/internal/service/agent_backend_svc"
 	"agentre/internal/service/app_settings_svc"
 	"agentre/internal/service/chat_svc"
+	"agentre/internal/service/group_svc"
 	"agentre/internal/service/project_svc"
 	"agentre/migrations"
 
@@ -131,6 +132,12 @@ func Init(ctx context.Context) (*Runtime, error) {
 	agent_backend_svc.RegisterGateway(gw)
 	app_settings_svc.RegisterGateway(gw)
 	chat_svc.RegisterGateway(gw)
+
+	// 挂群聊 group_send MCP handler 到 gateway，并把 gateway base URL 注入 group_svc——
+	// agent 子进程通过 <base>/mcp/group/ 回投消息。gateway 绑定失败时 BaseURL() 返回空串，
+	// group MCP 不可达(软降级，App 继续)。
+	gw.RegisterMCP("/mcp/group/", group_svc.Default().MCPHandler())
+	group_svc.Default().SetGatewayBaseURL(gw.BaseURL())
 
 	// 把 gateway 的 SteerInbox 注入到 claudecode runner，让 Steer 能 Push 进去；
 	// 之后 PostToolUse hook 子进程会 GET /hook/v1/inbox 拉走，turn 结束时

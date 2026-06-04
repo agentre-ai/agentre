@@ -231,6 +231,13 @@ func (g *Gateway) URL() string {
 	return g.actualURL
 }
 
+// BaseURL 返回 gateway 实际绑定的 base URL(如 http://127.0.0.1:<port>); 未启动/绑定失败时返回空串。
+func (g *Gateway) BaseURL() string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.actualURL
+}
+
 // Steer returns the in-process Steer message inbox. agentruntime pushes into
 // it; the /hook/v1/inbox handler drains on hook GET.
 func (g *Gateway) Steer() *SteerInbox { return g.steer }

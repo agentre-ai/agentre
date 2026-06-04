@@ -19,6 +19,7 @@ import (
 	"agentre/internal/pkg/code"
 	"agentre/internal/service/chat_svc"
 	"agentre/internal/service/data_svc"
+	"agentre/internal/service/group_svc"
 	"agentre/internal/service/hook_svc"
 	"agentre/internal/service/remote_device_svc"
 	watcher "agentre/internal/service/remote_device_watcher_svc"
@@ -137,6 +138,10 @@ func (a *App) registerChatService() {
 		wailsruntime.EventsEmit(a.ctx, name, payload)
 	})
 	chat_svc.RegisterChat(chat_svc.NewChat(emitter))
+
+	group_svc.SetEmitter(group_svc.EmitterFunc(func(_ context.Context, name string, payload any) {
+		wailsruntime.EventsEmit(a.ctx, name, payload)
+	}))
 }
 
 // Greet returns a greeting for the given name.

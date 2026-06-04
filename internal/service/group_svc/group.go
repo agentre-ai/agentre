@@ -54,6 +54,10 @@ type GroupSvc interface {
 	ResumeGroup(ctx context.Context, id int64) error
 	RenameGroup(ctx context.Context, id int64, title string) error
 	ArchiveGroup(ctx context.Context, id int64) error
+	// MCPHandler 返回 group_send MCP handler，供 bootstrap(D2) 注册到 gateway /mcp/group/。
+	MCPHandler() http.Handler
+	// SetGatewayBaseURL 注入本机 gateway base(如 http://127.0.0.1:<port>)，供拼装 agent 子进程的 MCP 配置。
+	SetGatewayBaseURL(u string)
 }
 
 type groupSvc struct {
