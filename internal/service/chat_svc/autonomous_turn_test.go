@@ -6,17 +6,47 @@ import (
 	"time"
 
 	"github.com/cago-frame/agents/provider"
+	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"agentre/internal/model/entity/agent_backend_entity"
+	"agentre/internal/model/entity/agent_entity"
 	"agentre/internal/model/entity/chat_entity"
+	"agentre/internal/model/entity/llm_provider_entity"
 	"agentre/internal/pkg/agentruntime"
+	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/pkg/agentruntime/mock_agentruntime"
 	"agentre/internal/service/chat_svc"
 )
+
+// autoTurnRunner 是同时实现 agentruntime.Runtime + AutonomousTurnSource 的 fake,
+// 用来验证 runTurn 的挂载 type-assert(走 builtin Send 路径,比 claudecode 简单)。
+type autoTurnRunner struct {
+	autoCh chan agentruntime.AutonomousTurn
+}
+
+func (*autoTurnRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{
+		Set: map[capability.Capability]bool{capability.CapImageInput: true},
+		PermissionModeMeta: capability.PermissionModeMeta{
+			AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},
+			DefaultMode:          "acceptEdits",
+			SwitchableDuringTurn: true,
+		},
+	}
+}
+
+func (*autoTurnRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	events := make(chan agentruntime.Event, 1)
+	events <- agentruntime.TextDelta{Text: "ok"}
+	close(events)
+	return events, &agentruntime.RunResult{ProviderSessionID: "builtin-100"}, nil
+}
+
+func (r *autoTurnRunner) AutonomousTurns(int64) <-chan agentruntime.AutonomousTurn { return r.autoCh }
 
 // TestDriveAutonomousTurn_PersistsPureAssistantTurn 是 Phase 3 基石:一轮自主续轮
 // 落成 **纯 assistant 消息(无 user 行)**,经会话级旁路通知前端 + 实时 stream +
@@ -148,5 +178,53 @@ func TestStartAutonomousWatcher_DedupesAndExitsOnClose(t *testing.T) {
 		require.Eventually(t, func() bool {
 			return !chat_svc.IsAutonomousWatcherActiveForTest(m.svc, 100)
 		}, time.Second, 5*time.Millisecond, "watcher 应在 channel close 后退出并清去重位")
+	})
+}
+
+// TestRunTurn_MountsAutonomousWatcher 验证 runTurn 在 runner 实现 AutonomousTurnSource
+// 时(Run 完成、session 已 spawn 后)惰性挂上每会话 watcher。
+func TestRunTurn_MountsAutonomousWatcher(t *testing.T) {
+	convey.Convey("runTurn 惰性挂 autonomous watcher", t, func() {
+		t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		runner := &autoTurnRunner{autoCh: make(chan agentruntime.AutonomousTurn)}
+		t.Cleanup(func() { close(runner.autoCh) }) // 让 watcher 在测试结束后退出,不泄漏
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, runner)
+		t.Cleanup(restore)
+
+		sess := &chat_entity.Session{ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE}
+		backend := &agent_backend_entity.AgentBackend{ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-11", Status: consts.ACTIVE}
+		ag := &agent_entity.Agent{ID: 7, Name: "Builtin", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+		prov := &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Model: "m", Status: consts.ACTIVE}
+
+		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+		m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(ag, nil)
+		m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
+		m.provider.EXPECT().FindByKey(gomock.Any(), "key-11").Return(prov, nil)
+		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+		m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+		m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+		m.dbMock.ExpectBegin()
+		m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+		m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+				if msg.Role == "user" {
+					msg.ID = 1000
+				} else {
+					msg.ID = 1001
+				}
+				return nil
+			}).Times(2)
+		m.dbMock.ExpectCommit()
+
+		resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+		require.NoError(t, err)
+		chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+		require.Eventually(t, func() bool {
+			return chat_svc.IsAutonomousWatcherActiveForTest(m.svc, 100)
+		}, time.Second, 5*time.Millisecond, "runTurn 应在 Run 后挂上 watcher")
 	})
 }

@@ -2304,6 +2304,13 @@ func (s *chatSvc) runTurn(
 	if result != nil && (be.IsClaudeCode() || be.IsCodex()) {
 		s.persistProviderSessionID(ctx, sess, result.ProviderSessionID, "runner-start")
 	}
+	// runtime 若支持「自主续轮」(claudecode / remote claudecode 在 run_in_background
+	// 任务完成后**自主**跑一轮),惰性起每会话 watcher 把它落成纯 assistant 轮。session
+	// 已在 Run 内 spawn,此刻订阅 AutonomousTurns 才能拿到该会话的 channel;每会话去重,
+	// 重复调用幂等。watcher 在子进程 evict / CloseSession(channel close)时自行退出。
+	if src, ok := runner.(agentruntime.AutonomousTurnSource); ok {
+		s.startAutonomousWatcher(sess.ID, be, src)
+	}
 	// runtime spawn 新 CLI 子进程时把实际下发的 --permission-mode 同步回吐到
 	// result.LaunchPermissionMode(claudecode 专用,其它 runtime 留空);这里把
 	// 它落库到 session.PermissionModeAtLaunch。历史上由 runtime 直接 chat_repo
