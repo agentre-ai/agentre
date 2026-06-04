@@ -243,6 +243,12 @@ func (s *groupSvc) RemoveGroupMember(ctx context.Context, memberID int64) error 
 
 // SendGroupMessage 把一条用户消息投入群: 解析收件人 → 落 group_message → 入队 agent 收件人。
 func (s *groupSvc) SendGroupMessage(ctx context.Context, req *SendGroupMessageRequest) error {
+	// per-group 串行化「解析→分配 seq→落库→入队」临界区, 与 IngestAgentMessage 共用同一把锁
+	// (spec §17 并发写竞态): 否则用户 send 与 agent 的 mid-turn group_send 可读到同一 MAX(seq) → 重号。
+	// 锁内不再 re-acquire ingestMu(kick/persistMessage/enqueueDeliveries 都不碰它), 故无自死锁。
+	mu := s.ingestMu(req.GroupID)
+	mu.Lock()
+	defer mu.Unlock()
 	g, err := group_repo.Group().Find(ctx, req.GroupID)
 	if err != nil {
 		return err

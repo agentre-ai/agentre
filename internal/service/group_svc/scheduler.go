@@ -154,8 +154,12 @@ func (s *groupSvc) launchDelivery(g *group_entity.Group, members []*group_entity
 	}
 	if _, err := s.gw.Send(bg, req); err != nil {
 		cancel()
+		// Send 瞬时失败: 已从 pending 弹出的这条 delivery 被有意丢弃(仅 Warn, 不回队) ——
+		// 避免无限重试; MVP 可接受。释放槽后再 kick 让其它 ready 成员/后续 delivery 继续。
 		logger.Ctx(bg).Warn("group_svc.launchDelivery: send failed", zap.Int64("memberId", m.ID), zap.Error(err))
 		s.markDone(m.GroupID, m.ID)
+		// 此处同步 kick→launchDelivery→kick 的递归有界: 每次 kick 对每个成员至多弹一条,
+		// 深度受「当前 ready 成员数」约束(成员上限 ~8), 不会失控。
 		s.kick(bg, m.GroupID)
 		return
 	}
