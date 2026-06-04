@@ -53,6 +53,7 @@ describe("maybeNotify", () => {
     );
     expect(d.playSound).toHaveBeenCalledWith("ding");
     expect(d.showToast).toHaveBeenCalledWith(
+      42,
       "done",
       "我的会话",
       "notify.body.done",

@@ -14,7 +14,12 @@ export type NotifyDeps = {
   getSessionTitle: (sessionId: number) => string | undefined;
   showSystemNotification: (title: string, body: string) => void;
   playSound: (preset: SoundPreset) => void;
-  showToast: (kind: NotifyKind, title: string, body: string) => void;
+  showToast: (
+    sessionId: number,
+    kind: NotifyKind,
+    title: string,
+    body: string,
+  ) => void;
   t: TFunction;
 };
 
@@ -51,5 +56,5 @@ export function maybeNotify(
   const body = deps.t(`notify.body.${kind}`);
   if (s.system) deps.showSystemNotification(title, body);
   if (s.sound) deps.playSound(s.soundPreset);
-  if (s.toast) deps.showToast(kind, title, body);
+  if (s.toast) deps.showToast(sessionId, kind, title, body);
 }

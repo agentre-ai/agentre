@@ -1,6 +1,5 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
 
 import { ShowNotification } from "../../../wailsjs/go/app/App";
 import { isWindowFocused } from "../../lib/window-focus";
@@ -9,10 +8,10 @@ import {
   classifyTransition,
   maybeNotify,
   type NotifyDeps,
-  type NotifyKind,
 } from "../../lib/turn-notify";
 import { useChatTabsStore } from "../../stores/chat-tabs-store";
 import { useNotificationSettingsStore } from "../../stores/notification-settings-store";
+import { useNotificationToastStore } from "../../stores/notification-toast-store";
 import { useSessionStatusStore } from "../../stores/session-status-store";
 
 function activeSessionId(): number | null {
@@ -29,13 +28,6 @@ function sessionTitle(sessionId: number): string | undefined {
     )?.title;
 }
 
-function showToast(kind: NotifyKind, title: string, body: string): void {
-  const opts = { description: body };
-  if (kind === "error") toast.error(title, opts);
-  else if (kind === "waiting") toast.warning(title, opts);
-  else toast.success(title, opts);
-}
-
 // TurnCompleteNotifier 常驻 App 根、不渲染任何 UI；订阅 session 状态转换并在合适时机通知。
 export function TurnCompleteNotifier(): null {
   const { t } = useTranslation();
@@ -50,7 +42,11 @@ export function TurnCompleteNotifier(): null {
         ShowNotification({ title, body }).catch(() => {});
       },
       playSound: playNotifySound,
-      showToast,
+      showToast: (sessionId, kind, title, body) => {
+        useNotificationToastStore
+          .getState()
+          .push({ sessionId, kind, title, body });
+      },
       t,
     }),
     [t],

@@ -5,7 +5,10 @@
       "done": "会话已完成",
       "error": "会话出错",
       "waiting": "需要你的操作"
-    }
+    },
+    "openSession": "跳转到会话",
+    "dismiss": "关闭",
+    "justNow": "刚刚"
   },
   "app": {
     "commandPalette": {

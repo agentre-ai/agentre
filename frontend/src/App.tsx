@@ -26,6 +26,7 @@ import {
   ChatStreamsHost,
   ChatTabsShortcuts,
   TurnCompleteNotifier,
+  NotificationToastViewport,
   CommandPalette,
   HooksPage,
   IssuesPage,
@@ -857,6 +858,7 @@ function App() {
           store,切回来时 ChatPanel 能从 store 还原完整流式状态。*/}
       <ChatStreamsHost />
       <TurnCompleteNotifier />
+      <NotificationToastViewport />
       <Routes>
         <Route element={<AppLayout />}>
           <Route path="/chat" element={<ChatPage />} />

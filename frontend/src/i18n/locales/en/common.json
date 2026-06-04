@@ -5,7 +5,10 @@
       "done": "Session completed",
       "error": "Session failed",
       "waiting": "Waiting for your input"
-    }
+    },
+    "openSession": "Open session",
+    "dismiss": "Dismiss",
+    "justNow": "Just now"
   },
   "app": {
     "commandPalette": {

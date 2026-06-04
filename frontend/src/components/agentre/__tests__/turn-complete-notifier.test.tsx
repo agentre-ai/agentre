@@ -17,14 +17,6 @@ vi.mock("../../../lib/notify-sound", () => ({
   playNotifySound: (p: unknown) => playSound(p),
   SOUND_PRESETS: ["ding", "chime", "blip"],
 }));
-const toastSuccess = vi.fn();
-vi.mock("sonner", () => ({
-  toast: {
-    success: (...a: unknown[]) => toastSuccess(...a),
-    error: vi.fn(),
-    warning: vi.fn(),
-  },
-}));
 let focused = false;
 vi.mock("../../../lib/window-focus", () => ({
   isWindowFocused: () => focused,
@@ -36,6 +28,7 @@ import {
   DEFAULT_NOTIFICATION_SETTINGS,
   useNotificationSettingsStore,
 } from "../../../stores/notification-settings-store";
+import { useNotificationToastStore } from "../../../stores/notification-toast-store";
 import { TurnCompleteNotifier } from "../turn-complete-notifier";
 
 beforeEach(() => {
@@ -43,6 +36,7 @@ beforeEach(() => {
   focused = false;
   useSessionStatusStore.getState().__reset();
   useChatTabsStore.setState({ tabs: [], activeTabId: null });
+  useNotificationToastStore.getState().clear();
   useNotificationSettingsStore.setState({
     settings: { ...DEFAULT_NOTIFICATION_SETTINGS, sound: true, toast: true },
   });
@@ -66,7 +60,9 @@ describe("TurnCompleteNotifier", () => {
     });
     expect(showNotification).toHaveBeenCalledTimes(1);
     expect(playSound).toHaveBeenCalledWith("ding");
-    expect(toastSuccess).toHaveBeenCalledTimes(1);
+    const toasts = useNotificationToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toMatchObject({ sessionId: 42, kind: "done" });
   });
 
   it("挂载前已存在的 idle 会话不误报", async () => {
