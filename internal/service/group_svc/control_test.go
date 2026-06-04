@@ -206,3 +206,52 @@ func TestArchiveGroup_StopsAllAndSoftDeletes(t *testing.T) {
 		So(g.Status, ShouldEqual, consts.DELETE)
 	})
 }
+
+// TestStopGroup_RevokesGroupTokens 锁住停止 → 吊销全群 token 的接线(spec §17)。
+func TestStopGroup_RevokesGroupTokens(t *testing.T) {
+	Convey("StopGroup 吊销该群所有 group_send token", t, func() {
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		gw := mock_group_svc.NewMockChatGateway(ctrl)
+		groupRepo := mock_group_repo.NewMockGroupRepo(ctrl)
+		memberRepo := mock_group_repo.NewMockGroupMemberRepo(ctrl)
+		group_repo.RegisterGroup(groupRepo)
+		group_repo.RegisterMember(memberRepo)
+
+		g := &group_entity.Group{ID: 5, RunStatus: group_entity.RunRunning, Status: consts.ACTIVE}
+		groupRepo.EXPECT().Find(gomock.Any(), int64(5)).Return(g, nil).AnyTimes()
+		groupRepo.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		memberRepo.EXPECT().ListByGroup(gomock.Any(), int64(5)).Return(nil, nil).AnyTimes()
+
+		svc := group_svc.NewForTest(gw)
+		tok := group_svc.MintTokenForTest(svc, 5, 2)
+		So(group_svc.TokenValidForTest(svc, tok), ShouldBeTrue)
+
+		So(svc.StopGroup(ctx, 5), ShouldBeNil)
+		So(group_svc.TokenValidForTest(svc, tok), ShouldBeFalse) // 停止后失效
+	})
+}
+
+// TestRemoveGroupMember_RevokesMemberToken 锁住离群 → 吊销该成员 token 的接线(spec §17)。
+func TestRemoveGroupMember_RevokesMemberToken(t *testing.T) {
+	Convey("RemoveGroupMember 吊销该成员的 group_send token", t, func() {
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		gw := mock_group_svc.NewMockChatGateway(ctrl)
+		memberRepo := mock_group_repo.NewMockGroupMemberRepo(ctrl)
+		group_repo.RegisterMember(memberRepo)
+
+		memberRepo.EXPECT().Find(gomock.Any(), int64(42)).Return(
+			&group_entity.GroupMember{ID: 42, Status: group_entity.MemberActive}, nil)
+		memberRepo.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
+
+		svc := group_svc.NewForTest(gw)
+		tok := group_svc.MintTokenForTest(svc, 7, 42)
+		So(group_svc.TokenValidForTest(svc, tok), ShouldBeTrue)
+
+		So(svc.RemoveGroupMember(ctx, 42), ShouldBeNil)
+		So(group_svc.TokenValidForTest(svc, tok), ShouldBeFalse) // 离群后失效
+	})
+}

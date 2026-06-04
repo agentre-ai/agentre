@@ -32,3 +32,20 @@ func MarkInflightForTest(svc GroupSvc, groupID, memberID int64) {
 		sc.mu.Unlock()
 	}
 }
+
+// MintTokenForTest 在该 svc 的 group MCP 上签一个 (group, member) token(单测验证吊销用)。
+func MintTokenForTest(svc GroupSvc, groupID, memberID int64) string {
+	if s, ok := svc.(*groupSvc); ok {
+		return s.mcp.MintToken(groupID, memberID)
+	}
+	return ""
+}
+
+// TokenValidForTest 报告该 token 是否仍能解析到成员(吊销后应为 false)。
+func TokenValidForTest(svc GroupSvc, token string) bool {
+	if s, ok := svc.(*groupSvc); ok {
+		_, ok := s.mcp.lookup(token)
+		return ok
+	}
+	return false
+}

@@ -247,7 +247,11 @@ func (s *groupSvc) RemoveGroupMember(ctx context.Context, memberID int64) error 
 		return i18n.NewError(ctx, code.GroupMemberNotFound)
 	}
 	m.Status = group_entity.MemberLeft
-	return group_repo.Member().Update(ctx, m)
+	if err := group_repo.Member().Update(ctx, m); err != nil {
+		return err
+	}
+	s.mcp.RevokeMember(memberID) // 离群即吊销其 group_send token(spec §17)
+	return nil
 }
 
 // SendGroupMessage 把一条用户消息投入群: 解析收件人 → 落 group_message → 入队 agent 收件人。
@@ -371,6 +375,7 @@ func (s *groupSvc) StopGroup(ctx context.Context, id int64) error {
 		return i18n.NewError(ctx, code.GroupNotFound)
 	}
 	s.stopAll(ctx, id)
+	s.mcp.RevokeGroup(id) // 停止即吊销全群 group_send token(spec §17)
 	g.RunStatus = group_entity.RunIdle
 	if err := group_repo.Group().Update(ctx, g); err != nil {
 		return err
@@ -430,6 +435,7 @@ func (s *groupSvc) ArchiveGroup(ctx context.Context, id int64) error {
 		return i18n.NewError(ctx, code.GroupNotFound)
 	}
 	s.stopAll(ctx, id)
+	s.mcp.RevokeGroup(id) // 归档即吊销全群 group_send token(spec §17)
 	g.Status = consts.DELETE
 	logger.Ctx(ctx).Info("group_svc.ArchiveGroup: archived", zap.Int64("groupId", id))
 	return group_repo.Group().Update(ctx, g)

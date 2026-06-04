@@ -41,6 +41,29 @@ func (h *groupMCP) lookup(tok string) (memberRef, bool) {
 	return r, ok
 }
 
+// RevokeMember 吊销某成员的全部 token(成员离群时调用), 立即让其在途/缓存子进程的
+// group_send 失效。spec §17: token 生命周期。
+func (h *groupMCP) RevokeMember(memberID int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for tok, ref := range h.tokens {
+		if ref.memberID == memberID {
+			delete(h.tokens, tok)
+		}
+	}
+}
+
+// RevokeGroup 吊销某群下全部成员的 token(群 stop / 归档时调用)。
+func (h *groupMCP) RevokeGroup(groupID int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for tok, ref := range h.tokens {
+		if ref.groupID == groupID {
+			delete(h.tokens, tok)
+		}
+	}
+}
+
 func (h *groupMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet { // claude 开 server→client SSE; 我们不推送 → 405(claude 容忍)
 		w.WriteHeader(http.StatusMethodNotAllowed)
