@@ -1,10 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../../stores/notification-settings-store";
+import type { DoneEvent } from "../../stores/session-status-store";
 import {
   classifyTransition,
   maybeNotify,
   type NotifyDeps,
 } from "../turn-notify";
+
+// doneWithText 构造一个带 agent 文本块的 done 事件（仅填正文摘取用到的最小字段）。
+function doneWithText(...texts: string[]): DoneEvent {
+  return {
+    kind: "done",
+    message: { blocks: texts.map((text) => ({ type: "text", text })) },
+  } as unknown as DoneEvent;
+}
 
 describe("classifyTransition", () => {
   it("running→idle = done", () => {
@@ -34,6 +43,7 @@ function deps(over: Partial<NotifyDeps> = {}): NotifyDeps {
       toast: true,
     }),
     getSessionTitle: () => "我的会话",
+    getDoneEvent: () => null,
     showSystemNotification: vi.fn(),
     showToast: vi.fn(),
     t: ((k: string) => k) as NotifyDeps["t"],
@@ -128,5 +138,105 @@ describe("maybeNotify", () => {
     maybeNotify(42, "done", d);
     expect(d.showSystemNotification).toHaveBeenCalled();
     expect(d.showToast).not.toHaveBeenCalled();
+  });
+});
+
+describe("maybeNotify 正文带回复摘要", () => {
+  it("done 带 assistant 文本 → 正文 = 状态词 · 摘要(系统通知+toast 共用)", () => {
+    const d = deps({
+      getDoneEvent: () => doneWithText("已修复登录 bug 并加了测试"),
+    });
+    maybeNotify(42, "done", d);
+    expect(d.showSystemNotification).toHaveBeenCalledWith(
+      42,
+      "我的会话",
+      "notify.body.done · 已修复登录 bug 并加了测试",
+    );
+    expect(d.showToast).toHaveBeenCalledWith(
+      42,
+      "done",
+      "我的会话",
+      "notify.body.done · 已修复登录 bug 并加了测试",
+    );
+  });
+
+  it("done 但无文本块 → 退回纯状态词", () => {
+    const ev = {
+      kind: "done",
+      message: { blocks: [{ type: "tool_use" }] },
+    } as unknown as DoneEvent;
+    const d = deps({ getDoneEvent: () => ev });
+    maybeNotify(42, "done", d);
+    expect(d.showSystemNotification).toHaveBeenCalledWith(
+      42,
+      "我的会话",
+      "notify.body.done",
+    );
+  });
+
+  it("没有 done 事件 → 退回纯状态词", () => {
+    const d = deps({ getDoneEvent: () => null });
+    maybeNotify(42, "done", d);
+    expect(d.showSystemNotification).toHaveBeenCalledWith(
+      42,
+      "我的会话",
+      "notify.body.done",
+    );
+  });
+
+  it("取最后一个非空文本块作摘要", () => {
+    const d = deps({
+      getDoneEvent: () => doneWithText("开始干活", "全部完成"),
+    });
+    maybeNotify(42, "done", d);
+    expect(d.showSystemNotification).toHaveBeenCalledWith(
+      42,
+      "我的会话",
+      "notify.body.done · 全部完成",
+    );
+  });
+
+  it("多行/多空白压成单行", () => {
+    const d = deps({
+      getDoneEvent: () => doneWithText("第一行\n\n  第二行   尾"),
+    });
+    maybeNotify(42, "done", d);
+    expect(d.showSystemNotification).toHaveBeenCalledWith(
+      42,
+      "我的会话",
+      "notify.body.done · 第一行 第二行 尾",
+    );
+  });
+
+  it("超长摘要截断加省略号", () => {
+    const d = deps({ getDoneEvent: () => doneWithText("x".repeat(200)) });
+    maybeNotify(42, "done", d);
+    const body = (d.showSystemNotification as Mock).mock.calls[0][2] as string;
+    const prefix = "notify.body.done · ";
+    expect(body.startsWith(prefix)).toBe(true);
+    const snippet = body.slice(prefix.length);
+    expect(snippet.length).toBe(120);
+    expect(snippet.endsWith("…")).toBe(true);
+  });
+
+  it("error 带错误文案 → 状态词 · 错误", () => {
+    const ev = { kind: "error", error: "连接超时" } as unknown as DoneEvent;
+    const d = deps({ getDoneEvent: () => ev });
+    maybeNotify(42, "error", d);
+    expect(d.showSystemNotification).toHaveBeenCalledWith(
+      42,
+      "我的会话",
+      "notify.body.error · 连接超时",
+    );
+  });
+
+  it("waiting 不带摘要(只状态词)", () => {
+    const d = deps({ getDoneEvent: () => doneWithText("不应出现") });
+    maybeNotify(42, "waiting", d);
+    expect(d.showSystemNotification).toHaveBeenCalledWith(
+      42,
+      "我的会话",
+      "notify.body.waiting",
+    );
   });
 });

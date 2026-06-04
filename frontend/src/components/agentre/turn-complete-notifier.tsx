@@ -38,6 +38,9 @@ export function TurnCompleteNotifier(): null {
       getActiveSessionId: activeSessionId,
       getSettings: () => useNotificationSettingsStore.getState().settings,
       getSessionTitle: sessionTitle,
+      getDoneEvent: (sessionId) =>
+        useSessionStatusStore.getState().statuses.get(sessionId)
+          ?.lastDoneEvent ?? null,
       showSystemNotification: (sessionId, title, body) => {
         ShowNotification({ title, body, sessionId }).catch(() => {});
       },
