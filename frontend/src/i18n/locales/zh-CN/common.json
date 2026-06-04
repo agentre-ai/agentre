@@ -1370,6 +1370,8 @@
       "activeCount": "{{count}} 个活跃会话（含子项目）",
       "attentionAria": "{{name}} 待处理会话",
       "empty": "暂无会话",
+      "group": "会话",
+      "groupToggle": "展开/收起 {{name}} 的会话",
       "inherited": "继承",
       "loadMembersFailed": "加载成员失败：{{error}}",
       "loadingMembers": "加载成员中…",

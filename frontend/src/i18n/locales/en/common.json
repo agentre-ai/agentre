@@ -1370,6 +1370,8 @@
       "activeCount": "{{count}} active sessions including sub-projects",
       "attentionAria": "{{name}} sessions needing attention",
       "empty": "No sessions",
+      "group": "Sessions",
+      "groupToggle": "Toggle {{name}} sessions",
       "inherited": "Inherited",
       "loadMembersFailed": "Failed to load members: {{error}}",
       "loadingMembers": "Loading members...",
