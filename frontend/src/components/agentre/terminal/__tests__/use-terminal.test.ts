@@ -50,7 +50,7 @@ describe("useTerminal", () => {
     expect(result.current.state).toBe("open");
   });
 
-  it("exposes incoming data via onData callback", async () => {
+  it("base64-decodes incoming data to raw bytes for onData", async () => {
     const onData = vi.fn();
     renderHook(() =>
       useTerminal({
@@ -65,8 +65,14 @@ describe("useTerminal", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    act(() => onHandlers["terminal:t1:data"]({ data: "hello" }));
-    expect(onData).toHaveBeenCalledWith("hello");
+    // base64 of bytes [0x68,0x69,0x20,0xe2,0x94,0x80] = "hi ─" — the box-drawing
+    // char '─' is 3 bytes (E2 94 80) and must reach xterm intact as raw bytes.
+    const b64 = btoa(String.fromCharCode(0x68, 0x69, 0x20, 0xe2, 0x94, 0x80));
+    act(() => onHandlers["terminal:t1:data"]({ data: b64 }));
+    expect(onData).toHaveBeenCalledTimes(1);
+    const arg = onData.mock.calls[0][0] as Uint8Array;
+    expect(arg).toBeInstanceOf(Uint8Array);
+    expect(Array.from(arg)).toEqual([0x68, 0x69, 0x20, 0xe2, 0x94, 0x80]);
   });
 
   it("calls TerminalClose and EventsOff on unmount", async () => {

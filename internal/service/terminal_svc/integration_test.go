@@ -5,6 +5,7 @@ package terminal_svc_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"sync"
 	"testing"
 	"time"
@@ -31,8 +32,13 @@ type collectingEmitter struct {
 func (c *collectingEmitter) Emit(_ context.Context, _ string, payload any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Data events ship base64; decode each one (as the frontend's atob does)
+	// before accumulating. Exit events carry a different payload type and are
+	// skipped by the map type-assertion.
 	if m, ok := payload.(map[string]string); ok {
-		c.buf.WriteString(m["data"])
+		if dec, err := base64.StdEncoding.DecodeString(m["data"]); err == nil {
+			c.buf.Write(dec)
+		}
 	}
 }
 

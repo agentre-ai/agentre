@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"sync"
@@ -95,8 +96,11 @@ func (h *TerminalHandlers) pump(ctx context.Context, id string, hd PTYHandle) {
 	go func() {
 		defer close(done)
 		for data := range queue {
+			// base64 so multibyte UTF-8 split across PTY reads survives the
+			// WebSocket JSON hop instead of being mangled to U+FFFD. The desktop
+			// remote backend decodes it back to raw bytes.
 			h.emitter.Emit(ctx, EventNameTerminalData, protocol.TerminalDataEvent{
-				TerminalID: id, Data: string(data),
+				TerminalID: id, Data: base64.StdEncoding.EncodeToString(data),
 			})
 		}
 	}()

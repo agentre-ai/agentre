@@ -2,6 +2,7 @@ package remote_test
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -49,7 +50,10 @@ func TestRemoteBackend_Open_RPC_RoundTrip(t *testing.T) {
 	require.Equal(t, "/r", op.Cwd)
 	require.Equal(t, uint16(80), op.Cols)
 
-	fc.dataPush <- protocol.TerminalDataEvent{TerminalID: "remote-1", Data: "xyz"}
+	// The daemon ships terminal data base64-encoded; the backend decodes it.
+	fc.dataPush <- protocol.TerminalDataEvent{
+		TerminalID: "remote-1", Data: base64.StdEncoding.EncodeToString([]byte("xyz")),
+	}
 
 	select {
 	case chunk := <-h.Data():
@@ -57,6 +61,43 @@ func TestRemoteBackend_Open_RPC_RoundTrip(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("did not receive data within 1s")
 	}
+}
+
+// TestRemoteBackend_Data_Base64DecodedAcrossSplit is the desktop-side regression
+// for the garbled-terminal bug: the daemon base64-encodes each PTY chunk, so the
+// backend must base64-decode it back to raw bytes. A multibyte char '─'
+// (E2 94 80) split across two daemon pushes must reassemble exactly — the old
+// []byte(ev.Data) reinterpreted the base64 text itself as bytes.
+func TestRemoteBackend_Data_Base64DecodedAcrossSplit(t *testing.T) {
+	fc := &fakeClient{
+		openParams: make(chan protocol.TerminalOpenParams, 1),
+		dataPush:   make(chan protocol.TerminalDataEvent, 2),
+		exitPush:   make(chan protocol.TerminalExitEvent, 1),
+	}
+	be := remote.NewBackend(fc)
+	h, err := be.Open(context.Background(), pty.Spec{Cwd: "/r"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	<-fc.openParams
+
+	full := []byte("─") // E2 94 80
+	fc.dataPush <- protocol.TerminalDataEvent{
+		TerminalID: "remote-1", Data: base64.StdEncoding.EncodeToString(full[:1]),
+	}
+	fc.dataPush <- protocol.TerminalDataEvent{
+		TerminalID: "remote-1", Data: base64.StdEncoding.EncodeToString(full[1:]),
+	}
+
+	var got []byte
+	for len(got) < len(full) {
+		select {
+		case chunk := <-h.Data():
+			got = append(got, chunk...)
+		case <-time.After(time.Second):
+			t.Fatalf("did not receive full data within 1s; got %x", got)
+		}
+	}
+	require.Equal(t, full, got, "split multibyte char must reassemble from base64 daemon pushes")
 }
 
 func TestRemoteBackend_ExitEvent_DeliveredAndChannelsClose(t *testing.T) {
