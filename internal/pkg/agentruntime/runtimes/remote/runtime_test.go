@@ -197,6 +197,78 @@ func TestAutonomousTurns_ReconstructsForwardedTurn(t *testing.T) {
 	assert.Equal(t, "claude-sonnet-4-6", at.Result.Model)
 }
 
+// TestAutonomousTurnEvent_ClosingRaceMustNotPanic 锁定一个真实并发缺陷:
+// daemon 在自主续轮投递事件期间断连时,watchClose goroutine 调
+// closeAllAutoSessions() 关 cur.events;若 handleAutonomousTurnEvent 在 a.mu 之外
+// 往 cur.events 送,则关与送不互斥 → send-on-closed-channel panic(读循环 goroutine
+// 无 recover → 整进程崩)。per-Run 的 handleEvent 早就靠"持 sess.mu 期间送"规避这一点,
+// 自主轮必须对齐。
+//
+// 复现手法:把 cur.events(cap 64)填满让下一次 event 送 park 住,再让
+// closeAllAutoSessions() 与之竞争。修复前:关 channel 把 park 的 send 打 panic;
+// 修复后:send 持 a.mu,closeAll 阻塞到 drain 放行,无 panic。
+func TestAutonomousTurnEvent_ClosingRaceMustNotPanic(t *testing.T) {
+	_, _, capture, rt := setupRemote(t)
+	_ = rt.AutonomousTurns(42) // 建好 autoSession(out 缓冲,不必 drain)
+
+	capture.deliver(t, wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: 42, Trigger: "background_task",
+	})
+
+	a := rt.lookupAutoSession(42)
+	require.NotNil(t, a)
+	require.NotNil(t, a.cur)
+	evCh := a.cur.events // close 前抓住引用,供 drainer 用
+
+	marshalEvent := func() json.RawMessage {
+		b, err := json.Marshal(agentruntime.TextDelta{Text: "x"})
+		require.NoError(t, err)
+		return b
+	}
+
+	// 填满 cur.events 缓冲(cap 64),下一次 event 送就会 park。
+	for i := 0; i < cap(evCh); i++ {
+		_, err := rt.handleAutonomousTurnEvent(context.Background(),
+			mustRawFrame(t, wire.EventFrame{SessionID: 42, Event: marshalEvent()}))
+		require.NoError(t, err)
+	}
+	require.Equal(t, cap(evCh), len(evCh), "buffer 应被填满,下一次送才会 park")
+
+	// park 第 65 次 event 送;若 panic 由该 goroutine 自己 recover 上报。
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_, _ = rt.handleAutonomousTurnEvent(context.Background(),
+			mustRawFrame(t, wire.EventFrame{SessionID: 42, Event: marshalEvent()}))
+	}()
+	time.Sleep(50 * time.Millisecond) // 确保上面那次送已 park 在满缓冲上
+
+	// 模拟断连:watchClose → closeAllAutoSessions() 与 park 的 send 竞争。
+	closeDone := make(chan struct{})
+	go func() {
+		rt.closeAllAutoSessions()
+		close(closeDone)
+	}()
+	// drainer:修复后 send 持 a.mu,需 drain 一个放行让 closeAll 拿到锁;修复前 send
+	// 已被 close 打 panic,drain 只是把缓冲抽干、无副作用。
+	go func() {
+		for range evCh { //nolint:revive // 抽干
+		}
+	}()
+
+	<-closeDone
+	got := <-panicked
+	require.Nil(t, got,
+		"closeAllAutoSessions 与 handleAutonomousTurnEvent 竞争时不得 send-on-closed panic;got=%v", got)
+}
+
+func mustRawFrame(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}
+
 func TestRun_DeliversEventArrivingBeforeRunAckReturns(t *testing.T) {
 	_, cli, capture, rt := setupRemote(t)
 	textJSON, err := json.Marshal(agentruntime.TextDelta{Text: "early"})

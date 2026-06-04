@@ -103,16 +103,19 @@ func (r *Runtime) handleAutonomousTurnEvent(ctx context.Context, raw json.RawMes
 			zap.Int64("sid", frame.SessionID), zap.Error(err))
 		return nil, nil
 	}
+	// 持 a.mu 期间送 —— 与 closeAllAutoSessions 的 close(cur.events) 互斥,杜绝
+	// daemon 断连(watchClose 独立 goroutine)恰在投递期间关 channel 时的
+	// send-on-closed-channel panic。对齐 per-Run 的 handleEvent 同款纪律。
+	// consumer(driveAutonomousTurn)独立 drain,缓冲满时这里短暂阻塞读循环(本就是
+	// 既定 back-pressure 契约),不与 a.mu 形成锁环。
 	a.mu.Lock()
-	cur := a.cur
-	closed := a.closed
-	a.mu.Unlock()
-	if closed || cur == nil {
+	defer a.mu.Unlock()
+	if a.closed || a.cur == nil {
 		logger.Ctx(ctx).Warn("remote runtime: autonomousTurn event with no active turn — dropped",
 			zap.Int64("sid", frame.SessionID), zap.String("eventType", fmt.Sprintf("%T", ev)))
 		return nil, nil
 	}
-	cur.events <- ev
+	a.cur.events <- ev
 	return nil, nil
 }
 
