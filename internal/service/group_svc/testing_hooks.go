@@ -22,3 +22,13 @@ func KickForTest(svc GroupSvc, ctx context.Context, groupID int64) {
 		s.kick(ctx, groupID)
 	}
 }
+
+// MarkInflightForTest 手动把某成员置为在跑(单测用, 模拟一个进行中的 turn)。
+func MarkInflightForTest(svc GroupSvc, groupID, memberID int64) {
+	if g, ok := svc.(*groupSvc); ok {
+		sc := g.schedulerFor(groupID)
+		sc.mu.Lock()
+		sc.inflight[memberID] = true
+		sc.mu.Unlock()
+	}
+}

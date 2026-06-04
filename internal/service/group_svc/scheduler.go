@@ -63,6 +63,32 @@ func (s *groupSvc) markDone(groupID, memberID int64) {
 	sc.mu.Unlock()
 }
 
+// stopAll 清空某群队列 + 对每个在跑成员的 backing session 调 gw.Stop(中止 turn)。
+func (s *groupSvc) stopAll(ctx context.Context, groupID int64) {
+	sc := s.schedulerFor(groupID)
+	sc.mu.Lock()
+	inflight := make([]int64, 0, len(sc.inflight))
+	for mid := range sc.inflight {
+		inflight = append(inflight, mid)
+	}
+	sc.pending = map[int64][]delivery{}
+	sc.inflight = map[int64]bool{}
+	sc.mu.Unlock()
+
+	members, _ := group_repo.Member().ListByGroup(ctx, groupID)
+	sessByMember := make(map[int64]int64, len(members))
+	for _, m := range members {
+		sessByMember[m.ID] = m.BackingSessionID
+	}
+	for _, mid := range inflight {
+		if sid := sessByMember[mid]; sid > 0 {
+			if _, err := s.gw.Stop(ctx, &chat_svc.StopRequest{SessionID: sid}); err != nil {
+				logger.Ctx(ctx).Warn("group_svc.stopAll: stop failed", zap.Int64("sessionId", sid), zap.Error(err))
+			}
+		}
+	}
+}
+
 type launchItem struct {
 	d delivery
 	m *group_entity.GroupMember

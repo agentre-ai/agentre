@@ -49,6 +49,11 @@ type GroupSvc interface {
 	RemoveGroupMember(ctx context.Context, memberID int64) error
 	SendGroupMessage(ctx context.Context, req *SendGroupMessageRequest) error
 	IngestAgentMessage(ctx context.Context, memberID int64, body string, mentions []string) error
+	StopGroup(ctx context.Context, id int64) error
+	PauseGroup(ctx context.Context, id int64) error
+	ResumeGroup(ctx context.Context, id int64) error
+	RenameGroup(ctx context.Context, id int64, title string) error
+	ArchiveGroup(ctx context.Context, id int64) error
 }
 
 type groupSvc struct {
@@ -353,4 +358,75 @@ func (s *groupSvc) buildGroupSystemPrompt(g *group_entity.Group, members []*grou
 	}
 	b.WriteString("\n若你要修改文件且可能与他人并发，请先 `git worktree add` 在自己的工作树里作业。")
 	return b.String()
+}
+
+// StopGroup 用户点「停止」: 中止所有在跑成员 turn + 清队列 + run_status=idle。
+func (s *groupSvc) StopGroup(ctx context.Context, id int64) error {
+	g, err := group_repo.Group().Find(ctx, id)
+	if err != nil || g == nil {
+		return i18n.NewError(ctx, code.GroupNotFound)
+	}
+	s.stopAll(ctx, id)
+	g.RunStatus = group_entity.RunIdle
+	if err := group_repo.Group().Update(ctx, g); err != nil {
+		return err
+	}
+	logger.Ctx(ctx).Info("group_svc.StopGroup: stopped", zap.Int64("groupId", id))
+	s.emitter.Emit(ctx, groupEventName(id), map[string]any{"kind": "run_status", "runStatus": group_entity.RunIdle})
+	return nil
+}
+
+// PauseGroup 暂停: 停止填新槽; 在跑 turn 自然跑完(CanAdvance(paused)=false)。
+func (s *groupSvc) PauseGroup(ctx context.Context, id int64) error {
+	return s.setRunStatus(ctx, id, group_entity.RunPaused)
+}
+
+// ResumeGroup 恢复: run_status=running 后立刻 kick 填槽。
+func (s *groupSvc) ResumeGroup(ctx context.Context, id int64) error {
+	if err := s.setRunStatus(ctx, id, group_entity.RunRunning); err != nil {
+		return err
+	}
+	s.kick(ctx, id)
+	return nil
+}
+
+// setRunStatus 用户控制改 run_status(返回错误); 与 scheduler 内部的 transitionRunStatus 区分
+// (后者无错误返回、带 only-on-change 守卫、在 sc.mu 内被 kick 调用)。
+func (s *groupSvc) setRunStatus(ctx context.Context, id int64, status string) error {
+	g, err := group_repo.Group().Find(ctx, id)
+	if err != nil || g == nil {
+		return i18n.NewError(ctx, code.GroupNotFound)
+	}
+	g.RunStatus = status
+	if err := group_repo.Group().Update(ctx, g); err != nil {
+		return err
+	}
+	logger.Ctx(ctx).Info("group_svc.setRunStatus: changed", zap.Int64("groupId", id), zap.String("runStatus", status))
+	s.emitter.Emit(ctx, groupEventName(id), map[string]any{"kind": "run_status", "runStatus": status})
+	return nil
+}
+
+// RenameGroup 改群名(非空白)。
+func (s *groupSvc) RenameGroup(ctx context.Context, id int64, title string) error {
+	g, err := group_repo.Group().Find(ctx, id)
+	if err != nil || g == nil {
+		return i18n.NewError(ctx, code.GroupNotFound)
+	}
+	if strings.TrimSpace(title) == "" {
+		return i18n.NewError(ctx, code.GroupTitleRequired)
+	}
+	g.Title = title
+	return group_repo.Group().Update(ctx, g)
+}
+
+// ArchiveGroup 归档(软删): 先 stopAll 再 status=DELETE。
+func (s *groupSvc) ArchiveGroup(ctx context.Context, id int64) error {
+	g, err := group_repo.Group().Find(ctx, id)
+	if err != nil || g == nil {
+		return i18n.NewError(ctx, code.GroupNotFound)
+	}
+	s.stopAll(ctx, id)
+	g.Status = consts.DELETE
+	logger.Ctx(ctx).Info("group_svc.ArchiveGroup: archived", zap.Int64("groupId", id))
+	return group_repo.Group().Update(ctx, g)
 }
