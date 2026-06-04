@@ -243,7 +243,9 @@ func (s *Session) readLoop() {
 func (s *Session) route(f rawFrame, events []Event, done bool) {
 	at := s.currentTurn(f)
 	if at == nil {
-		return // 自主轮起始标记:已建立 active 并吐 autoCh,本标记帧不下发为事件
+		// 自主轮起始标记(已建立 active 并吐 autoCh),或空闲态的非 turn 帧
+		// (control_response / status):均无归属轮,本帧事件不下发。
+		return
 	}
 	s.feed(at, events)
 	if done {
@@ -253,6 +255,9 @@ func (s *Session) route(f rawFrame, events []Event, done bool) {
 
 // currentTurn 返回当前活跃轮;轮间(active==nil)时按归属规则建立新轮:
 //   - 后台型 task_notification → 自主轮,经 autoCh 吐出,返回 nil(调用方丢弃起始标记)。
+//   - 非 turn 帧(control_response / 空闲 status)→ 返回 nil,不认领排队的 user Turn;
+//     否则读循环会被这些会话级帧卡死在 <-pendingTurns 上,后续 Turn / 自主轮再也读不
+//     到 stdout(见 isNonTurnFrame)。
 //   - 否则 → 取 FIFO 队首 user Turn(stdin 已写 → push 紧随,阻塞极短)。
 func (s *Session) currentTurn(f rawFrame) *activeTurn {
 	s.sinkMu.Lock()
@@ -268,12 +273,31 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 		s.autoCh <- &AutoTurn{Events: at.ch, SessionID: s.sessionID, Trigger: triggerBackgroundTask}
 		return nil
 	}
+	if isNonTurnFrame(f) {
+		s.sinkMu.Unlock()
+		return nil // 会话级帧,空闲到达无归属轮:不认领 user Turn slot
+	}
 	s.sinkMu.Unlock()
 	at := <-s.pendingTurns // user 轮起始:取队首(对应的 Turn 已 push)
 	s.sinkMu.Lock()
 	s.active = at
 	s.sinkMu.Unlock()
 	return at
+}
+
+// isNonTurnFrame 判定一帧是否「不归属任何一轮」—— 即便在轮间(空闲)到达,也不该认领
+// 一个排队的 user Turn。当前两类:
+//   - control_response:control_request(Interrupt / SetPermissionMode)的回执,已在
+//     parseLine 阶段按 request_id dispatch 给等待者,不携带 turn 事件。
+//   - system{subtype:"status"}:会话级状态推送(permissionMode / 运行态),从不作为某
+//     一轮的起始帧 —— 轮内到达由 active 轮承接(currentTurn 在 active!=nil 时已先返回),
+//     空闲到达则无归属轮,其事件随 route 的 nil 返回被丢弃(set_permission_mode 的回执
+//     已由 SetPermissionMode 调用方拿到,主动切 mode 不依赖这条空闲 status)。
+func isNonTurnFrame(f rawFrame) bool {
+	if f.Type == "control_response" {
+		return true
+	}
+	return f.Type == "system" && f.Subtype == "status"
 }
 
 // feed 把事件投给 at.ch;at 已被消费方放弃(abandon)时丢弃余帧,避免 reader 阻塞。
