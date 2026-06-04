@@ -420,7 +420,7 @@ function RowActions({ issue, onEdit, onSetState, onDelete }: RowActionsProps) {
           type="button"
           variant="ghost"
           size="icon-xs"
-          aria-label={t("issues.actions.filter")}
+          aria-label={t("common.moreActions")}
         >
           <MoreHorizontal data-icon="only" aria-hidden="true" />
         </Button>
@@ -494,9 +494,7 @@ function IssuesList({
                   <span className="font-medium text-primary-text">
                     #{issue.id}
                   </span>
-                  <span className="truncate text-muted-foreground">
-                    · {new Date(issue.updatetime).toLocaleDateString()}
-                  </span>
+                  <IssueUpdatedAt value={issue.updatetime} />
                 </div>
               </button>
               <RowActions
@@ -510,6 +508,17 @@ function IssuesList({
         })}
       </div>
     </section>
+  );
+}
+
+function IssueUpdatedAt({ value }: { value?: number }) {
+  if (!value || value <= 0) {
+    return null;
+  }
+  return (
+    <span className="truncate text-muted-foreground">
+      · {new Date(value).toLocaleDateString()}
+    </span>
   );
 }
 

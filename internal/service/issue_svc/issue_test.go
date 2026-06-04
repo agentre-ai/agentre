@@ -67,6 +67,26 @@ func TestIssueSvcCreate_LabelNotFound(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestIssueSvcCreate_DeduplicatesLabelIDs(t *testing.T) {
+	ctx, mi, ml, mil, svc := setupIssueSvc(t)
+	ml.EXPECT().ListByIDs(ctx, []int64{2, 3}).
+		Return([]*issue_entity.Label{
+			{ID: 2, Name: "bug", Tone: "bug"},
+			{ID: 3, Name: "feature", Tone: "feature"},
+		}, nil)
+	mi.EXPECT().Create(ctx, gomock.Any()).DoAndReturn(func(_ context.Context, i *issue_entity.Issue) error {
+		i.ID = 9
+		return nil
+	})
+	mil.EXPECT().SetLabels(ctx, int64(9), []int64{2, 3}).Return(nil)
+
+	got, err := svc.Create(ctx, &issue_svc.CreateIssueRequest{Title: "demo", LabelIDs: []int64{2, 2, 3}})
+	require.NoError(t, err)
+	require.Len(t, got.Labels, 2)
+	assert.Equal(t, int64(2), got.Labels[0].ID)
+	assert.Equal(t, int64(3), got.Labels[1].ID)
+}
+
 func TestIssueSvcUpdate_Happy(t *testing.T) {
 	ctx, mi, ml, mil, svc := setupIssueSvc(t)
 	mi.EXPECT().Find(ctx, int64(5)).

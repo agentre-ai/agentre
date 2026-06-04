@@ -46,6 +46,7 @@ func New() IssueSvc {
 
 func (s *issueSvc) Create(ctx context.Context, req *CreateIssueRequest) (*IssueDetail, error) {
 	now := s.now()
+	labelIDs := uniqueInt64s(req.LabelIDs)
 	issue := &issue_entity.Issue{
 		ProjectID:   req.ProjectID,
 		Title:       strings.TrimSpace(req.Title),
@@ -60,7 +61,7 @@ func (s *issueSvc) Create(ctx context.Context, req *CreateIssueRequest) (*IssueD
 	if err := issue.Check(ctx); err != nil {
 		return nil, err
 	}
-	labels, err := s.resolveLabels(ctx, req.LabelIDs)
+	labels, err := s.resolveLabels(ctx, labelIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +71,7 @@ func (s *issueSvc) Create(ctx context.Context, req *CreateIssueRequest) (*IssueD
 	// TODO(v1): Create 与 SetLabels 目前非原子——SetLabels 失败会留下无标签的 issue 行。
 	// 维持非事务以保证 service 可纯 mock 单测（项目规约：service 单测不接 DB）；
 	// 若后续标签写入可靠性变重要，按 agent_svc.Delete 的 db.Ctx(ctx).Transaction 模式包裹。
-	if err := issue_repo.IssueLabel().SetLabels(ctx, issue.ID, req.LabelIDs); err != nil {
+	if err := issue_repo.IssueLabel().SetLabels(ctx, issue.ID, labelIDs); err != nil {
 		logger.Ctx(ctx).Warn("issue_svc.Create: set labels failed",
 			zap.Int64("issueId", issue.ID), zap.Error(err))
 		return nil, err
@@ -79,6 +80,7 @@ func (s *issueSvc) Create(ctx context.Context, req *CreateIssueRequest) (*IssueD
 }
 
 func (s *issueSvc) Update(ctx context.Context, req *UpdateIssueRequest) (*IssueDetail, error) {
+	labelIDs := uniqueInt64s(req.LabelIDs)
 	issue, err := issue_repo.Issue().Find(ctx, req.ID)
 	if err != nil {
 		return nil, err
@@ -92,7 +94,7 @@ func (s *issueSvc) Update(ctx context.Context, req *UpdateIssueRequest) (*IssueD
 	if err := issue.Check(ctx); err != nil {
 		return nil, err
 	}
-	labels, err := s.resolveLabels(ctx, req.LabelIDs)
+	labels, err := s.resolveLabels(ctx, labelIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +104,7 @@ func (s *issueSvc) Update(ctx context.Context, req *UpdateIssueRequest) (*IssueD
 	// TODO(v1): Update 与 SetLabels 目前非原子——SetLabels 失败会留下标签未更新的 issue 行。
 	// 维持非事务以保证 service 可纯 mock 单测（项目规约：service 单测不接 DB）；
 	// 若后续标签写入可靠性变重要，按 agent_svc.Delete 的 db.Ctx(ctx).Transaction 模式包裹。
-	if err := issue_repo.IssueLabel().SetLabels(ctx, issue.ID, req.LabelIDs); err != nil {
+	if err := issue_repo.IssueLabel().SetLabels(ctx, issue.ID, labelIDs); err != nil {
 		logger.Ctx(ctx).Warn("issue_svc.Update: set labels failed",
 			zap.Int64("issueId", issue.ID), zap.Error(err))
 		return nil, err
@@ -213,6 +215,22 @@ func (s *issueSvc) resolveLabels(ctx context.Context, ids []int64) ([]*issue_ent
 		return nil, i18n.NewError(ctx, code.IssueLabelNotFound)
 	}
 	return labels, nil
+}
+
+func uniqueInt64s(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func (s *issueSvc) hydrate(ctx context.Context, issue *issue_entity.Issue) (*IssueDetail, error) {

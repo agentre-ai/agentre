@@ -83,10 +83,25 @@ func TestIssueLabelSetLabels(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestIssueLabelSetLabels_DeduplicatesLabelIDs(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := issue_repo.NewIssueLabel()
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM `issue_labels`").
+		WithArgs(int64(5)).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("INSERT INTO `issue_labels`").
+		WithArgs(int64(5), int64(1), int64(5), int64(2)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.SetLabels(ctx, 5, []int64{1, 1, 2}))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestIssueLabelListByIssue(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := issue_repo.NewIssueLabel()
-	mock.ExpectQuery("SELECT `label_id` FROM `issue_labels` WHERE issue_id = \\?").
+	mock.ExpectQuery("SELECT `label_id` FROM `issue_labels` WHERE issue_id = \\? ORDER BY label_id ASC").
 		WithArgs(int64(5)).
 		WillReturnRows(sqlmock.NewRows([]string{"label_id"}).
 			AddRow(int64(1)).
@@ -102,7 +117,7 @@ func TestIssueLabelListByIssues(t *testing.T) {
 	t.Run("groups rows into map", func(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)
 		repo := issue_repo.NewIssueLabel()
-		mock.ExpectQuery("SELECT \\* FROM `issue_labels` WHERE issue_id IN \\(\\?,\\?\\)").
+		mock.ExpectQuery("SELECT \\* FROM `issue_labels` WHERE issue_id IN \\(\\?,\\?\\) ORDER BY issue_id ASC, label_id ASC").
 			WithArgs(int64(5), int64(6)).
 			WillReturnRows(sqlmock.NewRows([]string{"issue_id", "label_id"}).
 				AddRow(int64(5), int64(1)).

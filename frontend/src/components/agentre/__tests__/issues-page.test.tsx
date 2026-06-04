@@ -29,6 +29,7 @@ describe("IssuesPage", () => {
           title: "fix OAuth state loss",
           state: "open",
           agentStatus: "idle",
+          updatetime: 0,
           labels: [{ id: 1, name: "bug", tone: "bug" }],
         },
       ],
@@ -41,6 +42,15 @@ describe("IssuesPage", () => {
     render(<IssuesPage />);
     expect(await screen.findByText("fix OAuth state loss")).toBeInTheDocument();
     expect(screen.getByText("#142")).toBeInTheDocument();
+  });
+
+  it("uses the row action menu label and hides empty timestamps", async () => {
+    render(<IssuesPage />);
+    expect(await screen.findByText("fix OAuth state loss")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "More actions" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/1970/)).not.toBeInTheDocument();
   });
 
   it("shows the empty state when there are no issues", async () => {

@@ -79,6 +79,7 @@ func (r *issueLabelRepo) SetLabels(ctx context.Context, issueID int64, labelIDs 
 			Delete(&issue_entity.IssueLabel{}).Error; err != nil {
 			return err
 		}
+		labelIDs = uniqueInt64s(labelIDs)
 		if len(labelIDs) == 0 {
 			return nil
 		}
@@ -93,7 +94,9 @@ func (r *issueLabelRepo) SetLabels(ctx context.Context, issueID int64, labelIDs 
 func (r *issueLabelRepo) ListByIssue(ctx context.Context, issueID int64) ([]int64, error) {
 	var ids []int64
 	err := db.Ctx(ctx).Model(&issue_entity.IssueLabel{}).
-		Where("issue_id = ?", issueID).Pluck("label_id", &ids).Error
+		Where("issue_id = ?", issueID).
+		Order("label_id ASC").
+		Pluck("label_id", &ids).Error
 	return ids, err
 }
 
@@ -103,11 +106,28 @@ func (r *issueLabelRepo) ListByIssues(ctx context.Context, issueIDs []int64) (ma
 		return out, nil
 	}
 	var rows []issue_entity.IssueLabel
-	if err := db.Ctx(ctx).Where("issue_id IN ?", issueIDs).Find(&rows).Error; err != nil {
+	if err := db.Ctx(ctx).Where("issue_id IN ?", issueIDs).
+		Order("issue_id ASC, label_id ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
 		out[row.IssueID] = append(out[row.IssueID], row.LabelID)
 	}
 	return out, nil
+}
+
+func uniqueInt64s(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
