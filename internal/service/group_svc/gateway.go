@@ -4,17 +4,19 @@ package group_svc
 import (
 	"context"
 
+	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/service/chat_svc"
 )
 
 //go:generate mockgen -source gateway.go -destination mock_group_svc/mock_gateway.go
 
-// ChatGateway 是 group_svc 对 chat_svc 的窄依赖(只用这 4 个 seam, ISP)。
+// ChatGateway 是 group_svc 对 chat_svc 的窄依赖(只用这几个 seam, ISP)。
 type ChatGateway interface {
 	EnsureGroupMemberSession(ctx context.Context, agentID, projectID, groupID int64) (int64, error)
 	Send(ctx context.Context, req *chat_svc.SendRequest) (*chat_svc.SendResponse, error)
 	ObserveTurn(sessionID int64) (<-chan chat_svc.TurnResult, func())
 	Stop(ctx context.Context, req *chat_svc.StopRequest) (*chat_svc.StopResponse, error)
+	AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error)
 }
 
 // chatSvcGateway 委托给 chat_svc 默认单例。
@@ -34,4 +36,8 @@ func (chatSvcGateway) ObserveTurn(sessionID int64) (<-chan chat_svc.TurnResult, 
 
 func (chatSvcGateway) Stop(ctx context.Context, req *chat_svc.StopRequest) (*chat_svc.StopResponse, error) {
 	return chat_svc.Chat().Stop(ctx, req)
+}
+
+func (chatSvcGateway) AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error) {
+	return chat_svc.Chat().AgentBackendHasCapability(ctx, agentID, cap)
 }

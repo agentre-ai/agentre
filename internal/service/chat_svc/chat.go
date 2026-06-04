@@ -99,6 +99,9 @@ type ChatSvc interface {
 	EnsureGroupMemberSession(ctx context.Context, agentID, projectID, groupID int64) (int64, error)
 	// ObserveTurn 订阅指定 session 下一次 turn 完成(服务端, 不经 Wails)。
 	ObserveTurn(sessionID int64) (<-chan TurnResult, func())
+	// AgentBackendHasCapability 报告某 agent 的后端 runtime 是否声明指定能力(领域无关探针)。
+	// 后端缺失/类型无法解析 → (false, nil)。MVP 仅解析本地 runtime; 远程后端目前返回 (false, nil)。
+	AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error)
 }
 
 var defaultChat ChatSvc
@@ -1273,6 +1276,30 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 	}
 
 	return a, be, prov, nil
+}
+
+// AgentBackendHasCapability 报告某 agent 的后端 runtime 是否声明指定能力(领域无关探针)。
+//
+// 复用 resolveAgentBackend 的 agent → backend 解析链;对本地后端经全局 runtime 注册表
+// (RuntimeFor)取能力矩阵。后端缺失/类型无法解析 → (false, nil)。
+// MVP: 远程后端的能力探测需借 session(borrowRemoteRuntime),这里没有 session,
+// 暂统一返回 (false, nil)。
+func (s *chatSvc) AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error) {
+	_, be, _, err := s.resolveAgentBackend(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	if be == nil {
+		return false, nil
+	}
+	if !be.IsLocal() {
+		return false, nil
+	}
+	r := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
+	if r == nil {
+		return false, nil
+	}
+	return r.Capabilities().Has(cap), nil
 }
 
 // Enqueue 在 AI 还在回答时把一条新的用户消息插入当前 turn。

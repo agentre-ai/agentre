@@ -10,6 +10,7 @@
 package mock_group_svc
 
 import (
+	capability "agentre/internal/pkg/agentruntime/capability"
 	chat_svc "agentre/internal/service/chat_svc"
 	context "context"
 	reflect "reflect"
@@ -39,6 +40,21 @@ func NewMockChatGateway(ctrl *gomock.Controller) *MockChatGateway {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockChatGateway) EXPECT() *MockChatGatewayMockRecorder {
 	return m.recorder
+}
+
+// AgentBackendHasCapability mocks base method.
+func (m *MockChatGateway) AgentBackendHasCapability(ctx context.Context, agentID int64, cap capability.Capability) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AgentBackendHasCapability", ctx, agentID, cap)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AgentBackendHasCapability indicates an expected call of AgentBackendHasCapability.
+func (mr *MockChatGatewayMockRecorder) AgentBackendHasCapability(ctx, agentID, cap any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AgentBackendHasCapability", reflect.TypeOf((*MockChatGateway)(nil).AgentBackendHasCapability), ctx, agentID, cap)
 }
 
 // EnsureGroupMemberSession mocks base method.
