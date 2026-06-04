@@ -2,6 +2,7 @@
 package chat_svc
 
 import (
+	"agentre/internal/pkg/agentruntime"
 	"agentre/internal/service/chat_svc/blocks"
 	"agentre/internal/service/chat_svc/view"
 )
@@ -467,6 +468,10 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
+	// MCPServers 透传到 RunRequest.MCPServers(注入额外 MCP tool server)。群聊用; 单聊空。
+	MCPServers []agentruntime.MCPServerSpec `json:"-"`
+	// SystemPromptSuffix 追加到 RunRequest.SystemPrompt 之后(群上下文/角色/roster)。群聊用; 单聊空。
+	SystemPromptSuffix string `json:"-"`
 }
 type SendImage struct {
 	Name    string `json:"name,omitempty"`

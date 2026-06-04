@@ -1109,7 +1109,10 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		_ = chat_repo.Session().Update(ctx, sess)
 	}
 
-	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, "" /*forkAnchor*/)
+	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, "" /*forkAnchor*/, turnExtras{
+		mcpServers:         req.MCPServers,
+		systemPromptSuffix: req.SystemPromptSuffix,
+	})
 }
 
 func userBlocksForSend(text string, imageBlocks []blocks.ContentBlock) []blocks.ContentBlock {
@@ -1792,7 +1795,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, forkAnchor)
+	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, forkAnchor, turnExtras{})
 }
 
 // Edit 编辑历史 user 消息后用新文本重跑 turn。截到目标 user 消息（含）开始的全部
@@ -1858,7 +1861,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, replaceTextPreserveImages(text, targetBlocks), preTx, forkAnchor)
+	return s.startTurn(ctx, sess, a, be, prov, replaceTextPreserveImages(text, targetBlocks), preTx, forkAnchor, turnExtras{})
 }
 
 func replaceTextPreserveImages(text string, old []blocks.ContentBlock) []blocks.ContentBlock {
@@ -1957,6 +1960,14 @@ func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Ses
 // preTx, if non-nil, runs at the very top of the transaction — before NextSeq —
 // so it can free up seq numbers by truncating older rows. Returning a non-nil
 // error from preTx aborts the whole turn (and unlocks).
+// turnExtras 是从 SendRequest 透传到 RunRequest 的领域无关可选项;单聊一律零值,
+// 群聊由 group_svc 填(per-member MCP server + 群上下文 system-prompt 后缀)。
+// 在同一会话的自动续轮(auto-continue)里需要保持不变,所以随 runTurn 一路携带。
+type turnExtras struct {
+	mcpServers         []agentruntime.MCPServerSpec
+	systemPromptSuffix string
+}
+
 func (s *chatSvc) startTurn(
 	ctx context.Context,
 	sess *chat_entity.Session,
@@ -1966,6 +1977,7 @@ func (s *chatSvc) startTurn(
 	userBlocks []blocks.ContentBlock,
 	preTx func(txCtx context.Context) error,
 	forkAnchor string,
+	extras turnExtras,
 ) (*SendResponse, error) {
 	lock := s.lockFor(sess.ID)
 	if !lock.TryLock() {
@@ -2037,7 +2049,7 @@ func (s *chatSvc) startTurn(
 			s.activeCancels.Delete(sess.ID)
 			cancel() // 兜底：runTurn 自己没 cancel（正常完成路径）也补一刀，无副作用
 		}()
-		s.runTurn(turnCtx, sess, a, be, prov, userMsg, assistantMsg, stream, forkAnchor, false)
+		s.runTurn(turnCtx, sess, a, be, prov, userMsg, assistantMsg, stream, forkAnchor, false, extras)
 		return nil
 	}, gogo.WithIgnorePanic())
 
@@ -2109,7 +2121,7 @@ func (s *chatSvc) startCompactTurn(
 			s.activeCancels.Delete(sess.ID)
 			cancel()
 		}()
-		s.runTurn(turnCtx, sess, a, be, prov, nil, assistantMsg, stream, "", true)
+		s.runTurn(turnCtx, sess, a, be, prov, nil, assistantMsg, stream, "", true, turnExtras{})
 		return nil
 	}, gogo.WithIgnorePanic())
 
@@ -2213,6 +2225,7 @@ func (s *chatSvc) runTurn(
 	stream string,
 	forkAnchor string,
 	compact bool,
+	extras turnExtras,
 ) {
 	startedAt := time.Now()
 
@@ -2245,15 +2258,18 @@ func (s *chatSvc) runTurn(
 		return
 	}
 	req := agentruntime.RunRequest{
-		Backend:           be,
-		Provider:          prov,
-		AgentID:           a.ID,
-		SessionID:         sess.ID,
-		Cwd:               cwd,
-		SystemPrompt:      strings.Join(a.GetPrompt(), "\n"),
+		Backend:   be,
+		Provider:  prov,
+		AgentID:   a.ID,
+		SessionID: sess.ID,
+		Cwd:       cwd,
+		// SystemPromptSuffix 单聊为空 ⇒ 与今日 strings.Join(...) 逐字节一致(raw concat);
+		// 群聊由 group_svc 自带前导换行格式化,此处只做原样追加。
+		SystemPrompt:      strings.Join(a.GetPrompt(), "\n") + extras.systemPromptSuffix,
 		ProviderSessionID: sess.ProviderSessionID,
 		Compact:           compact,
 		ForkAnchor:        forkAnchor,
+		MCPServers:        extras.mcpServers,
 	}
 	if userMsg != nil {
 		req.UserText = textOfMessage(userMsg)
@@ -2553,7 +2569,9 @@ func (s *chatSvc) runTurn(
 			// chatMessageForEvent / StreamDone 会以 nextAssistant 为目标 emit，
 			// 前端 store 通过 StreamSteerConsumed.AssistantMessage 已经把活动
 			// assistant 切到 nextAssistant。
-			s.runTurn(ctx, sess, a, be, prov, nextUser, nextAssistant, stream, "", false)
+			// 自动续轮沿用本轮 extras:群成员会话的 MCP 注入 + 群上下文 suffix
+			// 需要在同一会话的整个生命周期内保持,而非只在首轮生效。
+			s.runTurn(ctx, sess, a, be, prov, nextUser, nextAssistant, stream, "", false, extras)
 			return
 		}
 		// 写新轮失败 → pending 已经从 SteerInbox drain 走，无法回滚，只能丢。
