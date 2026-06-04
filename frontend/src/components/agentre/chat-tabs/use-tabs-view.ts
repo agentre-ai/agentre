@@ -13,7 +13,7 @@ import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
-import { avatarFromMeta, tokenToCssColor } from "../session-avatar";
+import { avatarFromMeta, firstLetter, tokenToCssColor } from "../session-avatar";
 import type { TabStatus } from "./tab";
 
 export type TabView = {

@@ -34,6 +34,7 @@ linters:
 
   exclusions:
     paths:
+      - .claude
       - frontend
 
 formatters:
@@ -46,6 +47,7 @@ formatters:
         - agentre
   exclusions:
     paths:
+      - .claude
       - frontend
 
 run:

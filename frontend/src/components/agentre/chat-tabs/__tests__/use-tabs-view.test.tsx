@@ -68,6 +68,18 @@ describe("useTabsView 数据派生", () => {
     expect(result.current[0].projectChain).toBeNull();
   });
 
+  it("群聊 tab 使用标题首字母头像且不反查 session meta", () => {
+    useChatTabsStore.getState().openGroup(42, "Release Squad");
+    const { result } = renderHook(() => useTabsView());
+    expect(result.current).toHaveLength(1);
+    expect(result.current[0].title).toBe("Release Squad");
+    expect(result.current[0].kind).toBe("group");
+    expect(result.current[0].avatar.letter).toBe("R");
+    expect(result.current[0].avatar.color).toBe("#94a3b8");
+    expect(result.current[0].status).toBe("idle");
+    expect(result.current[0].sessionId).toBe(0);
+  });
+
   it("有 agent meta 时 avatar letter/color 来自 agentName/agentColor token", () => {
     useChatTabsStore.getState().openSessionInNewTab(101);
     useSessionMetaStore.getState().setMeta(101, {
