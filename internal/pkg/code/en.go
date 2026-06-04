@@ -139,6 +139,16 @@ var enUS = map[int]string{
 	ProjectLocationMissing:     "Project has no path configured on the selected device; add it under Project Settings → Remote Paths",
 	ProjectLocationDuplicate:   "Project already has a path on this device",
 
+	// Group chat orchestration
+	GroupNotFound:            "Group not found",
+	GroupTitleRequired:       "Group title is required",
+	GroupCoordinatorRequired: "Coordinator is required",
+	GroupMemberNotFound:      "Group member not found",
+	GroupMemberExists:        "Agent is already in the group",
+	GroupMemberLimit:         "Group member limit reached",
+	GroupNotRecruitable:      "Agent is not recruitable",
+	GroupBackendUnsupported:  "Agent backend does not support group chat",
+
 	// Server
 	ServerURLInvalid:          "invalid Server URL",
 	ServerUnreachable:         "Server unreachable",

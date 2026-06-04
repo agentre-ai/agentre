@@ -192,6 +192,18 @@ const (
 	ProjectLocationDuplicate                  // 同 (project, device) 已有 active 路径
 )
 
+// Group 群聊编排 19000~19999
+const (
+	GroupNotFound            = iota + 19000 // 群不存在
+	GroupTitleRequired                      // 群名不能为空
+	GroupCoordinatorRequired                // 协调者不能为空
+	GroupMemberNotFound                     // 群成员不存在
+	GroupMemberExists                       // 该 agent 已在群中
+	GroupMemberLimit                        // 群成员数已达上限
+	GroupNotRecruitable                     // 该 agent 不在可招募名单
+	GroupBackendUnsupported                 // 该 agent 的后端不支持群聊(缺 CapMCPTools)
+)
+
 // Server 接入 20300~20399
 const (
 	ServerURLInvalid          = iota + 20300

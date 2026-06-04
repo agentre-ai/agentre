@@ -139,6 +139,16 @@ var zhCN = map[int]string{
 	ProjectLocationMissing:     "该项目尚未在所选设备上配置路径，请到「项目设置 · 远端路径」补齐",
 	ProjectLocationDuplicate:   "该项目在此设备已有路径，无法重复添加",
 
+	// Group 群聊编排
+	GroupNotFound:            "群不存在",
+	GroupTitleRequired:       "群名不能为空",
+	GroupCoordinatorRequired: "协调者不能为空",
+	GroupMemberNotFound:      "群成员不存在",
+	GroupMemberExists:        "该 agent 已在群中",
+	GroupMemberLimit:         "群成员数已达上限",
+	GroupNotRecruitable:      "该 agent 不在可招募名单",
+	GroupBackendUnsupported:  "该 agent 的后端不支持群聊",
+
 	// Server 接入
 	ServerURLInvalid:          "Server URL 不合法",
 	ServerUnreachable:         "Server 不可达",
