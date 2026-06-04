@@ -17,6 +17,7 @@ import (
 	"agentre/internal/repository/app_setting_repo"
 	"agentre/internal/repository/chat_repo"
 	"agentre/internal/repository/department_repo"
+	"agentre/internal/repository/group_repo"
 	"agentre/internal/repository/hook_repo"
 	"agentre/internal/repository/llm_provider_repo"
 	"agentre/internal/repository/project_location_repo"
@@ -98,6 +99,9 @@ func Init(ctx context.Context) (*Runtime, error) {
 	project_repo.RegisterProject(project_repo.NewProject())
 	project_repo.RegisterProjectAgent(project_repo.NewProjectAgent())
 	project_location_repo.RegisterProjectLocation(project_location_repo.NewProjectLocation())
+	group_repo.RegisterGroup(group_repo.NewGroup())
+	group_repo.RegisterMember(group_repo.NewMember())
+	group_repo.RegisterMessage(group_repo.NewMessage())
 	project_svc.SetDefault(project_svc.New())
 	// 把 project_svc 的 cwd 解析注入 chat_svc —— chat_svc 不直接 import project_svc，
 	// 避免 project_svc → chat_repo 与 chat_svc → project_svc 形成环。
