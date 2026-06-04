@@ -42,17 +42,17 @@ func (m *MockNotifier) EXPECT() *MockNotifierMockRecorder {
 }
 
 // Notify mocks base method.
-func (m *MockNotifier) Notify(title, body string) error {
+func (m *MockNotifier) Notify(ctx context.Context, title, body string, sessionID int64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Notify", title, body)
+	ret := m.ctrl.Call(m, "Notify", ctx, title, body, sessionID)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Notify indicates an expected call of Notify.
-func (mr *MockNotifierMockRecorder) Notify(title, body any) *gomock.Call {
+func (mr *MockNotifierMockRecorder) Notify(ctx, title, body, sessionID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Notify", reflect.TypeOf((*MockNotifier)(nil).Notify), title, body)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Notify", reflect.TypeOf((*MockNotifier)(nil).Notify), ctx, title, body, sessionID)
 }
 
 // MockNotificationSvc is a mock of NotificationSvc interface.

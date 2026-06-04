@@ -3,7 +3,9 @@
 package notification_svc
 
 // ShowRequest 展示一条系统通知。Title/Body 已由前端按 i18n 生成。
+// SessionID 标识来源会话，供点击通知时聚焦/跳转（0 = 无具体会话）。
 type ShowRequest struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	SessionID int64  `json:"sessionId"`
 }
