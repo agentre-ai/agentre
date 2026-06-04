@@ -32,7 +32,7 @@ import { AIChatInput, type AIChatInputHandle } from "./chat-input";
 import { CodeBlock } from "./code-block";
 import { CompactBoundaryDivider } from "./compact-boundary-divider";
 import { CompactHistoryFold } from "./compact-history-fold";
-import { MarkdownText } from "./markdown-text";
+import { MarkdownText, StreamingMarkdown } from "./markdown-text";
 import { AgentAvatar } from "./primitives";
 import { ThinkingBlock } from "./thinking-block";
 
@@ -1420,7 +1420,9 @@ function renderMessageBlocks(
   t?: TFunction,
 ): React.ReactNode {
   type RenderItem =
-    | { text: string; type: "text" }
+    // streaming=true 标记这是「流式途中正在生长」的文本项 —— 用 StreamingMarkdown
+    // 增量渲染(已定稿 block memo 跳过、只重解析活跃尾巴);持久化文本仍走整段 MarkdownText。
+    | { text: string; type: "text"; streaming?: boolean }
     | { block: ChatBlockData; type: "plan" }
     | {
         block: ChatBlockData;
@@ -1475,14 +1477,17 @@ function renderMessageBlocks(
   // can_use_tool control_request 也不携带未来的 tool_use_id。
   const pendingPermsByTool = new Map<string, number[]>();
 
-  function appendText(text: string) {
+  function appendText(text: string, streaming = false) {
     if (!text) return;
     const last = items.at(-1);
     if (last?.type === "text") {
       last.text += text;
+      // 与前一个已冻结的 text 段合并后,整段都按流式尾巴处理 ——
+      // StreamingMarkdown 会把已冻结的前缀也切成 memo 命中的定稿块,只重解析真尾巴。
+      if (streaming) last.streaming = true;
       return;
     }
-    items.push({ text, type: "text" });
+    items.push({ text, type: "text", streaming });
   }
 
   const consumeBlock = (b: ChatBlockData) => {
@@ -1631,7 +1636,8 @@ function renderMessageBlocks(
     });
   }
   liveBlocks.forEach(consumeBlock);
-  appendText(liveTail);
+  // liveTail 是本轮仍在生长的尾巴文本 —— 标记 streaming,走 StreamingMarkdown 增量渲染。
+  appendText(liveTail, true);
 
   // 被 merge 到下方 tool_use 卡的审批 RenderItem 不再独立渲染。
   const visibleItems = items.filter(
@@ -1641,7 +1647,11 @@ function renderMessageBlocks(
   return visibleItems.map((item, idx) => {
     switch (item.type) {
       case "text":
-        return <MarkdownText key={`text-${idx}`} cwd={cwd} text={item.text} />;
+        return item.streaming ? (
+          <StreamingMarkdown key={`text-${idx}`} cwd={cwd} text={item.text} />
+        ) : (
+          <MarkdownText key={`text-${idx}`} cwd={cwd} text={item.text} />
+        );
       case "plan":
         return (
           <PlanApproveCard

@@ -678,6 +678,28 @@ describe("ChatTranscript typing indicator", () => {
     ).toBeTruthy();
   });
 
+  it("renders multi-block live streaming text fully within one markdown-body", () => {
+    // 流式尾巴跨多个 block(段落 + 空行 + 段落)时,增量渲染路径不能丢内容,
+    // 且所有 block 落在同一个 .markdown-body 容器里(间距与一次性解析一致)。
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        liveDelta={"committed para\n\ngrowing tail"}
+        liveTargetId={2}
+        messages={[userMessage(1, "hi"), assistantMessage(2, [])]}
+        streaming
+      />,
+    );
+
+    const committed = screen.getByText("committed para");
+    const tail = screen.getByText("growing tail");
+    expect(committed.closest(".markdown-body")).not.toBeNull();
+    expect(tail.closest(".markdown-body")).toBe(
+      committed.closest(".markdown-body"),
+    );
+  });
+
   it("does not render the indicator when streaming is false", () => {
     render(
       <ChatTranscript

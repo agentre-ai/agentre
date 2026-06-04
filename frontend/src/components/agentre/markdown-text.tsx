@@ -7,6 +7,7 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
+import { splitStreamingMarkdown } from "@/lib/streaming-markdown";
 
 import { CodeBlock } from "./code-block";
 import { RichLink } from "./rich-link";
@@ -208,7 +209,11 @@ const markdownRehypePlugins: ReactMarkdownOptions["rehypePlugins"] = [
   [rehypeHighlight, { detect: true, ignoreMissing: true }],
 ];
 
-export const MarkdownText = React.memo(function MarkdownText({
+// MarkdownInner 是「不带 .markdown-body 外壳」的 ReactMarkdown。单独 React.memo:
+// 文本稳定时跳过 markdown 解析 + highlight.js 高亮。抽出外壳是为了让 StreamingMarkdown
+// 能把多个已定稿段塞进同一个 .markdown-body 里渲染 —— 段落的 first/last 外边距
+// 重置必须跨整条消息生效,分到多个外壳会让已定稿段落间距塌成 0。
+const MarkdownInner = React.memo(function MarkdownInner({
   text,
   cwd,
 }: {
@@ -232,15 +237,59 @@ export const MarkdownText = React.memo(function MarkdownText({
   );
 
   return (
+    <ReactMarkdown
+      components={components}
+      remarkPlugins={markdownRemarkPlugins}
+      rehypePlugins={markdownRehypePlugins}
+      urlTransform={whitelistUrl}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+});
+
+export const MarkdownText = React.memo(function MarkdownText({
+  text,
+  cwd,
+}: {
+  text: string;
+  cwd?: string;
+}) {
+  return (
     <div className="markdown-body break-words text-sm leading-relaxed">
-      <ReactMarkdown
-        components={components}
-        remarkPlugins={markdownRemarkPlugins}
-        rehypePlugins={markdownRehypePlugins}
-        urlTransform={whitelistUrl}
-      >
-        {text}
-      </ReactMarkdown>
+      <MarkdownInner text={text} cwd={cwd} />
+    </div>
+  );
+});
+
+// StreamingMarkdown 增量渲染「流式累积中」的 markdown:把文本按 block 边界切成
+// [已定稿 block...] + [活跃尾巴],每段交给一个 React.memo 的 MarkdownInner,
+// 全部塞进同一个 .markdown-body 外壳。已定稿段的文本逐字节稳定 → memo 命中 →
+// 只解析+高亮一次,后续 chunk 跳过;只有活跃尾巴每个 chunk 重解析,把单 chunk
+// 渲染开销从 O(n) 降到 O(Δ),彻底消除「整段 markdown 每 chunk 全量重解析 +
+// highlight.js 全量重探测」的 O(n²) 卡顿。各段同处一个外壳,段落 first/last
+// 外边距跨整条消息计算,间距与一次性解析完全一致。
+//
+// 定稿段的 key 用顺序下标:切分是 append-only,已出现的下标对应的文本永不改变,
+// memo 稳定命中。仅用于流式途中的活跃消息;turn done 后消息从持久化数据走普通
+// MarkdownText 整段渲染一次,所以切分近似(松散列表 / 后置引用定义等极少数情形)会自愈。
+export const StreamingMarkdown = React.memo(function StreamingMarkdown({
+  text,
+  cwd,
+}: {
+  text: string;
+  cwd?: string;
+}) {
+  const { committed, tail } = React.useMemo(
+    () => splitStreamingMarkdown(text),
+    [text],
+  );
+  return (
+    <div className="markdown-body break-words text-sm leading-relaxed">
+      {committed.map((segment, i) => (
+        <MarkdownInner key={i} text={segment} cwd={cwd} />
+      ))}
+      {tail ? <MarkdownInner key="tail" text={tail} cwd={cwd} /> : null}
     </div>
   );
 });
