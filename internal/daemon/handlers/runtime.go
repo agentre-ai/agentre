@@ -60,6 +60,10 @@ type RuntimeHandlers struct {
 	// (已撤销)token → 第二轮起 PostToolUse hook 撞 401、SteerInbox drain 不到。
 	// daemon 侧没有 session 关闭钩子,token 随 daemon 进程退出释放(内存级、有界)。
 	sessionTokens sync.Map
+	// autoSubs 防同一 session 重复起「自主续轮转发」goroutine(每会话一个)。
+	// goroutine 在真实 runtime 的 AutonomousTurns(sid) channel close(子进程 evict)时
+	// 退出并清这条,下次 Run 复用 / 重 spawn 时再起。
+	autoSubs sync.Map // sessionID(int64) → struct{}
 }
 
 type runtimeSession struct {
@@ -178,6 +182,11 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
 		p.SessionID, be.Type, p.AgentID, p.Cwd, len(p.UserText))
 	go h.fanout(p.SessionID, events, result)
+	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
+	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
+	if src, ok := rt.(agentruntime.AutonomousTurnSource); ok {
+		h.startAutonomousFanout(p.SessionID, src)
+	}
 	// LaunchPermissionMode 由 runtime 在 Run 返回前同步填(claudecode 专用),
 	// 通过 ack 回到客户端,chat_svc 在主进程侧落库到 session.PermissionModeAtLaunch。
 	ack := wire.RunAck{SessionID: p.SessionID}
@@ -222,6 +231,53 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 	}
 	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
 		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
+}
+
+// startAutonomousFanout 每会话起一个 goroutine,把真实 runtime 的自主续轮转发到
+// client(每轮:Started → Event* → Done)。去重防重复订阅;AutonomousTurns(sid)
+// channel close(子进程 evict)时 goroutine 退出并清去重位。
+func (h *RuntimeHandlers) startAutonomousFanout(sid int64, src agentruntime.AutonomousTurnSource) {
+	if _, loaded := h.autoSubs.LoadOrStore(sid, struct{}{}); loaded {
+		return
+	}
+	go func() {
+		defer h.autoSubs.Delete(sid)
+		for at := range src.AutonomousTurns(sid) {
+			h.forwardAutonomousTurn(sid, at)
+		}
+		log.Printf("runtime.autonomousTurn: source closed sid=%d", sid)
+	}()
+}
+
+// forwardAutonomousTurn 转发一轮自主续轮:先 Started,再逐事件 Event,最后 Done
+// 带 RunResult(复用 runResultToFrame)。语义同 fanout,但走 autonomousTurn.* 方法。
+func (h *RuntimeHandlers) forwardAutonomousTurn(sid int64, at agentruntime.AutonomousTurn) {
+	if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: sid,
+		Trigger:   at.Trigger,
+	}); perr != nil {
+		log.Printf("runtime.autonomousTurn.started: notify failed sid=%d err=%v", sid, perr)
+	}
+	count := 0
+	for ev := range at.Events {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			log.Printf("runtime.autonomousTurn.event: marshal failed sid=%d kind=%T err=%v", sid, ev, err)
+			continue
+		}
+		count++
+		if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnEvent, wire.EventFrame{
+			SessionID: sid,
+			Event:     json.RawMessage(raw),
+		}); perr != nil {
+			log.Printf("runtime.autonomousTurn.event: notify failed sid=%d n=%d err=%v", sid, count, perr)
+		}
+	}
+	frame := runResultToFrame(sid, at.Result)
+	if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnDone, frame); perr != nil {
+		log.Printf("runtime.autonomousTurn.done: notify failed sid=%d err=%v", sid, perr)
+	}
+	log.Printf("runtime.autonomousTurn: forwarded sid=%d trigger=%s events=%d", sid, at.Trigger, count)
 }
 
 // isNoisyEventKind 标记单 turn 内可能上百次出现的事件类型,逐条 log 会刷屏。

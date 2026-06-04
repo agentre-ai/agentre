@@ -56,6 +56,11 @@ type Runtime struct {
 	mu       sync.RWMutex
 	sessions map[int64]*remoteSession
 	caps     map[agent_backend_entity.BackendType]capability.Capabilities
+	// autoSessions 是「自主续轮」(AutonomousTurnSource)的会话级镜像,**独立于**
+	// per-Run 的 sessions(后者在 runResultDone 时删除,而自主续轮发生在 Run 收尾
+	// *之后*)。按 sessionID 持久(跨 turn / 子进程 evict 复用),conn close 时统一拆。
+	// 见 autoturn.go。
+	autoSessions map[int64]*autoSession
 }
 
 // New 构造一个 remote.Runtime,并把 runtime.event / runtime.runResultDone
@@ -69,12 +74,16 @@ type Runtime struct {
 // StopErr 并 close events,chat_svc 走 StreamError 解锁前端。
 func New(c agentruntime.DaemonClientPort) *Runtime {
 	r := &Runtime{
-		client:   c,
-		sessions: map[int64]*remoteSession{},
-		caps:     map[agent_backend_entity.BackendType]capability.Capabilities{},
+		client:       c,
+		sessions:     map[int64]*remoteSession{},
+		caps:         map[agent_backend_entity.BackendType]capability.Capabilities{},
+		autoSessions: map[int64]*autoSession{},
 	}
 	c.Handle(wire.NotifyEvent, r.handleEvent)
 	c.Handle(wire.NotifyRunResultDone, r.handleRunResultDone)
+	c.Handle(wire.NotifyAutonomousTurnStarted, r.handleAutonomousTurnStarted)
+	c.Handle(wire.NotifyAutonomousTurnEvent, r.handleAutonomousTurnEvent)
+	c.Handle(wire.NotifyAutonomousTurnDone, r.handleAutonomousTurnDone)
 	if closed := c.Closed(); closed != nil {
 		go r.watchClose(closed)
 	}
@@ -124,6 +133,9 @@ func (r *Runtime) watchClose(closed <-chan struct{}) {
 		}
 		sess.mu.Unlock()
 	}
+	// 自主续轮镜像也随 conn close 拆掉:close 每个 out → chat_svc 的 watcher 退出;
+	// 在飞的那轮 events 也 close,driveAutonomousTurn 干净收尾。见 autoturn.go。
+	r.closeAllAutoSessions()
 }
 
 // Close 关掉与 daemon 的 client 连接。

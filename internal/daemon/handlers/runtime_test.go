@@ -40,6 +40,9 @@ type fullRT struct {
 	runFn   func(ctx context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error)
 	runReqs []runCall
 
+	// autoFn 提供 AutonomousTurns(sid) 的返回 channel;nil → 立即 close(不转发)。
+	autoFn func(sid int64) <-chan agentruntime.AutonomousTurn
+
 	steerErr   error
 	steerCalls []steerCall
 
@@ -104,6 +107,18 @@ type goalCall struct {
 }
 
 func (r *fullRT) Capabilities() capability.Capabilities { return r.cap }
+
+func (r *fullRT) AutonomousTurns(sid int64) <-chan agentruntime.AutonomousTurn {
+	r.mu.Lock()
+	fn := r.autoFn
+	r.mu.Unlock()
+	if fn == nil {
+		ch := make(chan agentruntime.AutonomousTurn)
+		close(ch)
+		return ch
+	}
+	return fn(sid)
+}
 
 func (r *fullRT) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
 	r.mu.Lock()
@@ -473,6 +488,73 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 		assert.Error(c, err)
 	}, time.Second, 10*time.Millisecond)
 	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
+func TestRuntime_Run_ForwardsAutonomousTurn(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid-1"}, nil
+	}
+	rt.autoFn = func(_ int64) <-chan agentruntime.AutonomousTurn {
+		out := make(chan agentruntime.AutonomousTurn, 1)
+		evs := make(chan agentruntime.Event, 1)
+		evs <- agentruntime.TextDelta{Text: "autonomous:listing"}
+		close(evs)
+		out <- agentruntime.AutonomousTurn{
+			Events:  evs,
+			Result:  &agentruntime.RunResult{ProviderSessionID: "psid-1", Model: "claude-sonnet-4-6"},
+			Trigger: "background_task",
+		}
+		close(out)
+		return out
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 42, AgentID: 7, Cwd: "/tmp", UserText: "hi",
+	})
+	require.NoError(t, err)
+
+	// run fanout: Done + runResultDone = 2;autonomous: Started + Event + Done = 3 → 5 total。
+	frames := notif.waitFrames(t, 5)
+
+	// 只挑自主续轮三类帧,断言顺序 + 内容(与 run 帧的交错无关)。
+	var (
+		started   *wire.AutonomousTurnStartedFrame
+		autoEvent *wire.EventFrame
+		autoDone  *wire.RunResultDoneFrame
+		order     []string
+	)
+	for _, f := range frames {
+		switch f.method {
+		case wire.NotifyAutonomousTurnStarted:
+			order = append(order, "started")
+			fr := f.params.(wire.AutonomousTurnStartedFrame)
+			started = &fr
+		case wire.NotifyAutonomousTurnEvent:
+			order = append(order, "event")
+			fr := f.params.(wire.EventFrame)
+			autoEvent = &fr
+		case wire.NotifyAutonomousTurnDone:
+			order = append(order, "done")
+			fr := f.params.(wire.RunResultDoneFrame)
+			autoDone = &fr
+		}
+	}
+	require.NotNil(t, started)
+	require.NotNil(t, autoEvent)
+	require.NotNil(t, autoDone)
+	assert.Equal(t, []string{"started", "event", "done"}, order)
+	assert.Equal(t, int64(42), started.SessionID)
+	assert.Equal(t, "background_task", started.Trigger)
+	assert.Equal(t, int64(42), autoEvent.SessionID)
+	assert.Contains(t, string(autoEvent.Event), "autonomous:listing")
+	assert.Equal(t, int64(42), autoDone.SessionID)
+	assert.Equal(t, "claude-sonnet-4-6", autoDone.Model)
 }
 
 func TestRuntime_Run_BadBackendJSON_Errors(t *testing.T) {

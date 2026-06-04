@@ -152,6 +152,51 @@ func TestRun_Success_DispatchesEventsThenCloses(t *testing.T) {
 	assert.NoError(t, runResult.StopErr)
 }
 
+// TestAutonomousTurns_ReconstructsForwardedTurn 验证 client 把 daemon 转发的
+// Started → Event → Done 三帧还原成一个 agentruntime.AutonomousTurn:Events 收到
+// 文本后 close,Result 在 close 后填好。
+func TestAutonomousTurns_ReconstructsForwardedTurn(t *testing.T) {
+	_, _, capture, rt := setupRemote(t)
+	turns := rt.AutonomousTurns(42)
+
+	capture.deliver(t, wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: 42, Trigger: "background_task",
+	})
+
+	var at agentruntime.AutonomousTurn
+	select {
+	case at = <-turns:
+	case <-time.After(time.Second):
+		t.Fatal("never got autonomous turn")
+	}
+	assert.Equal(t, "background_task", at.Trigger)
+	require.NotNil(t, at.Result)
+
+	textJSON, err := json.Marshal(agentruntime.TextDelta{Text: "autonomous:listing"})
+	require.NoError(t, err)
+	capture.deliver(t, wire.NotifyAutonomousTurnEvent, wire.EventFrame{SessionID: 42, Event: textJSON})
+	capture.deliver(t, wire.NotifyAutonomousTurnDone, wire.RunResultDoneFrame{
+		SessionID: 42, ProviderSessionID: "psid-1", Model: "claude-sonnet-4-6",
+	})
+
+	select {
+	case ev := <-at.Events:
+		td, ok := ev.(agentruntime.TextDelta)
+		require.True(t, ok, "got %T", ev)
+		assert.Equal(t, "autonomous:listing", td.Text)
+	case <-time.After(time.Second):
+		t.Fatal("never got autonomous event")
+	}
+	select {
+	case _, ok := <-at.Events:
+		assert.False(t, ok, "events must close after done")
+	case <-time.After(time.Second):
+		t.Fatal("events never closed")
+	}
+	assert.Equal(t, "psid-1", at.Result.ProviderSessionID)
+	assert.Equal(t, "claude-sonnet-4-6", at.Result.Model)
+}
+
 func TestRun_DeliversEventArrivingBeforeRunAckReturns(t *testing.T) {
 	_, cli, capture, rt := setupRemote(t)
 	textJSON, err := json.Marshal(agentruntime.TextDelta{Text: "early"})

@@ -584,6 +584,7 @@ To make this path work:
 2. New sentinel errors are added in sync to `wire.ErrCode*` — otherwise `errors.Is(err, agentruntime.ErrXxx)` will fail on the client.
 3. New Event types are added in sync to the `wire.Event*` codec — the `runtime.event` notification is dispatched by the sealed Event tag.
 4. Test the remote path: bring up a pair of in-memory `client.Client` ↔ `daemon.handlers.RuntimeHandlers` and verify the cross-process semantics of capability negotiation / Run / Abort / Steer.
+5. **Forward channel (`AutonomousTurnSource`)**: if the daemon-side runtime implements it, the daemon starts a per-session fanout (`startAutonomousFanout`, deduped) that forwards each turn over three notifications — `runtime.autonomousTurn.started` (`AutonomousTurnStartedFrame`) → `runtime.autonomousTurn.event` (reuses `EventFrame`) → `runtime.autonomousTurn.done` (reuses `RunResultDoneFrame`). The client `remote.Runtime` reconstructs them into `agentruntime.AutonomousTurn`s on a session-keyed `autoSessions` map **independent of the per-Run `sessions` map** (autonomous turns arrive *after* `runResultDone`), and tears them down on connection close. `remote.Runtime` therefore always satisfies `AutonomousTurnSource`; for daemon backends that don't forward (codex/builtin), the channel simply stays idle.
 
 ---
 
