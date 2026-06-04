@@ -31,12 +31,10 @@ function deps(over: Partial<NotifyDeps> = {}): NotifyDeps {
     getActiveSessionId: () => 0,
     getSettings: () => ({
       ...DEFAULT_NOTIFICATION_SETTINGS,
-      sound: true,
       toast: true,
     }),
     getSessionTitle: () => "我的会话",
     showSystemNotification: vi.fn(),
-    playSound: vi.fn(),
     showToast: vi.fn(),
     t: ((k: string) => k) as NotifyDeps["t"],
     ...over,
@@ -52,7 +50,6 @@ describe("maybeNotify", () => {
       "我的会话",
       "notify.body.done",
     );
-    expect(d.playSound).toHaveBeenCalledWith("ding");
     expect(d.showToast).toHaveBeenCalledWith(
       42,
       "done",
@@ -68,7 +65,6 @@ describe("maybeNotify", () => {
     });
     maybeNotify(42, "done", d);
     expect(d.showSystemNotification).not.toHaveBeenCalled();
-    expect(d.playSound).not.toHaveBeenCalled();
     expect(d.showToast).not.toHaveBeenCalled();
   });
 
@@ -79,7 +75,6 @@ describe("maybeNotify", () => {
       getSettings: () => ({
         ...DEFAULT_NOTIFICATION_SETTINGS,
         onlyWhenUnfocused: false,
-        sound: true,
         toast: true,
       }),
     });
@@ -94,7 +89,6 @@ describe("maybeNotify", () => {
       getSettings: () => ({
         ...DEFAULT_NOTIFICATION_SETTINGS,
         onlyWhenUnfocused: false,
-        sound: true,
         toast: true,
       }),
     });
@@ -123,18 +117,16 @@ describe("maybeNotify", () => {
     );
   });
 
-  it("只开系统通知时不响铃不弹 toast", () => {
+  it("只开系统通知时不弹 toast", () => {
     const d = deps({
       getSettings: () => ({
         ...DEFAULT_NOTIFICATION_SETTINGS,
-        sound: false,
         toast: false,
         system: true,
       }),
     });
     maybeNotify(42, "done", d);
     expect(d.showSystemNotification).toHaveBeenCalled();
-    expect(d.playSound).not.toHaveBeenCalled();
     expect(d.showToast).not.toHaveBeenCalled();
   });
 });

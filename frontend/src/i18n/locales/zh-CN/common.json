@@ -1810,14 +1810,6 @@
       "channelsDesc": "满足提醒条件时，用以下已开启的方式提醒。",
       "systemLabel": "系统通知",
       "systemDesc": "弹到 macOS 通知中心 / Windows 操作中心，应用在后台也能看到。",
-      "soundLabel": "提示音",
-      "soundDesc": "提醒时播放一段提示音。",
-      "soundTest": "试听",
-      "preset": {
-        "ding": "叮",
-        "chime": "和弦",
-        "blip": "气泡"
-      },
       "toastLabel": "应用内提示",
       "toastDesc": "在应用右下角弹一条提示（仅应用在前台时可见）。",
       "ruleTitle": "什么时候提醒",

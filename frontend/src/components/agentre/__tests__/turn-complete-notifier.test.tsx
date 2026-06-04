@@ -2,20 +2,15 @@ import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const showNotification = vi.fn((_req: unknown) => Promise.resolve());
-// 仅 sound/toast 命中 → "true",其余 reject(走默认值)。让 load() 产出
-// enabled/onlyWhenUnfocused/system 默认开 + sound/toast 开,且不依赖时序。
+// 仅 toast 命中 → "true",其余 reject(走默认值)。让 load() 产出
+// enabled/onlyWhenUnfocused/system 默认开 + toast 开,且不依赖时序。
 vi.mock("../../../../wailsjs/go/app/App", () => ({
   ShowNotification: (req: unknown) => showNotification(req),
   GetAppSetting: (req: { key: string }) =>
-    req.key === "notify.sound" || req.key === "notify.toast"
+    req.key === "notify.toast"
       ? Promise.resolve({ key: req.key, value: "true" })
       : Promise.reject(new Error("nf")),
   UpdateAppSettings: vi.fn(() => Promise.resolve({})),
-}));
-const playSound = vi.fn();
-vi.mock("../../../lib/notify-sound", () => ({
-  playNotifySound: (p: unknown) => playSound(p),
-  SOUND_PRESETS: ["ding", "chime", "blip"],
 }));
 let focused = false;
 vi.mock("../../../lib/window-focus", () => ({
@@ -48,13 +43,13 @@ beforeEach(() => {
   useChatTabsStore.setState({ tabs: [], activeTabId: null });
   useNotificationToastStore.getState().clear();
   useNotificationSettingsStore.setState({
-    settings: { ...DEFAULT_NOTIFICATION_SETTINGS, sound: true, toast: true },
+    settings: { ...DEFAULT_NOTIFICATION_SETTINGS, toast: true },
   });
 });
 afterEach(() => vi.restoreAllMocks());
 
 describe("TurnCompleteNotifier", () => {
-  it("非当前会话 running→idle 触发系统通知+声音+toast", async () => {
+  it("非当前会话 running→idle 触发系统通知+toast", async () => {
     render(<TurnCompleteNotifier />);
     await act(async () => {}); // 让 load() 完成
     act(() => {
@@ -69,7 +64,6 @@ describe("TurnCompleteNotifier", () => {
       useSessionStatusStore.getState().bumpDone(42, { kind: "done" });
     });
     expect(showNotification).toHaveBeenCalledTimes(1);
-    expect(playSound).toHaveBeenCalledWith("ding");
     const toasts = useNotificationToastStore.getState().toasts;
     expect(toasts).toHaveLength(1);
     expect(toasts[0]).toMatchObject({ sessionId: 42, kind: "done" });

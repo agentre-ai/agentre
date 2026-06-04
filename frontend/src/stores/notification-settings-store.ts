@@ -2,14 +2,11 @@ import { create } from "zustand";
 
 import { GetAppSetting, UpdateAppSettings } from "../../wailsjs/go/app/App";
 import type { app_settings_svc } from "../../wailsjs/go/models";
-import { SOUND_PRESETS, type SoundPreset } from "../lib/notify-sound";
 
 export type NotificationSettings = {
   enabled: boolean;
   onlyWhenUnfocused: boolean;
   system: boolean;
-  sound: boolean;
-  soundPreset: SoundPreset;
   toast: boolean;
 };
 
@@ -17,8 +14,6 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   enabled: true,
   onlyWhenUnfocused: true,
   system: true,
-  sound: false,
-  soundPreset: "ding",
   toast: false,
 };
 
@@ -26,8 +21,6 @@ const KEYS = {
   enabled: "notify.enabled",
   onlyWhenUnfocused: "notify.only_when_unfocused",
   system: "notify.system",
-  sound: "notify.sound",
-  soundPreset: "notify.sound_preset",
   toast: "notify.toast",
 } as const;
 
@@ -50,15 +43,12 @@ type State = {
 export const useNotificationSettingsStore = create<State>((set, get) => ({
   settings: { ...DEFAULT_NOTIFICATION_SETTINGS },
   load: async () => {
-    const [enabled, onlyWhenUnfocused, system, sound, preset, toast] =
-      await Promise.all([
-        readRaw(KEYS.enabled),
-        readRaw(KEYS.onlyWhenUnfocused),
-        readRaw(KEYS.system),
-        readRaw(KEYS.sound),
-        readRaw(KEYS.soundPreset),
-        readRaw(KEYS.toast),
-      ]);
+    const [enabled, onlyWhenUnfocused, system, toast] = await Promise.all([
+      readRaw(KEYS.enabled),
+      readRaw(KEYS.onlyWhenUnfocused),
+      readRaw(KEYS.system),
+      readRaw(KEYS.toast),
+    ]);
     const d = DEFAULT_NOTIFICATION_SETTINGS;
     set({
       settings: {
@@ -68,10 +58,6 @@ export const useNotificationSettingsStore = create<State>((set, get) => ({
             ? d.onlyWhenUnfocused
             : onlyWhenUnfocused === "true",
         system: system === null ? d.system : system === "true",
-        sound: sound === null ? d.sound : sound === "true",
-        soundPreset: SOUND_PRESETS.includes(preset as SoundPreset)
-          ? (preset as SoundPreset)
-          : d.soundPreset,
         toast: toast === null ? d.toast : toast === "true",
       },
     });

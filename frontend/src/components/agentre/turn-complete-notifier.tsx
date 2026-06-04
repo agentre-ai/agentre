@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { ShowNotification } from "../../../wailsjs/go/app/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
 import { isWindowFocused } from "../../lib/window-focus";
-import { playNotifySound } from "../../lib/notify-sound";
 import {
   classifyTransition,
   maybeNotify,
@@ -42,7 +41,6 @@ export function TurnCompleteNotifier(): null {
       showSystemNotification: (sessionId, title, body) => {
         ShowNotification({ title, body, sessionId }).catch(() => {});
       },
-      playSound: playNotifySound,
       showToast: (sessionId, kind, title, body) => {
         useNotificationToastStore
           .getState()

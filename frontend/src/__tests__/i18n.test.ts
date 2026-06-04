@@ -334,7 +334,7 @@ const shellAndSettingsKeys = [
   "settings.notifications.pageTitle",
   "settings.notifications.enableLabel",
   "settings.notifications.onlyWhenUnfocusedLabel",
-  "settings.notifications.soundTest",
+  "settings.notifications.systemLabel",
   "settings.notifications.ruleDesc",
   "notify.body.done",
   "notify.openSession",

@@ -7,11 +7,6 @@ vi.mock("../../../../wailsjs/go/app/App", () => ({
   GetAppSetting: vi.fn(() => Promise.reject(new Error("nf"))),
   UpdateAppSettings: (req: unknown) => updateMock(req),
 }));
-const playSound = vi.fn();
-vi.mock("../../../lib/notify-sound", () => ({
-  playNotifySound: (p: unknown) => playSound(p),
-  SOUND_PRESETS: ["ding", "chime", "blip"],
-}));
 
 import i18n from "../../../i18n";
 import { NotificationsPanel } from "../notifications-panel";
@@ -30,18 +25,11 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("NotificationsPanel", () => {
-  it("渲染各开关 + 试听按钮", () => {
+  it("渲染各开关", () => {
     render(<NotificationsPanel />);
     // getByText/getByRole 找不到会抛错,本身即断言。
     expect(screen.getByText("启用通知")).toBeTruthy();
     expect(screen.getByText("系统通知")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "试听" })).toBeTruthy();
-  });
-
-  it("点试听调 playNotifySound", async () => {
-    render(<NotificationsPanel />);
-    await userEvent.click(screen.getByRole("button", { name: "试听" }));
-    expect(playSound).toHaveBeenCalledWith("ding");
   });
 
   it("切换系统通知开关写库", async () => {

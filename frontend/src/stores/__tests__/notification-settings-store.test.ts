@@ -22,42 +22,26 @@ beforeEach(() => {
 });
 
 describe("notification-settings-store", () => {
-  it("默认值: 仅系统通知开 + 仅失焦时通知,提示音/toast 关", () => {
+  it("默认值: 仅系统通知开 + 仅失焦时通知,toast 关", () => {
     expect(DEFAULT_NOTIFICATION_SETTINGS).toEqual({
       enabled: true,
       onlyWhenUnfocused: true,
       system: true,
-      sound: false,
-      soundPreset: "ding",
       toast: false,
     });
   });
 
   it("load: 某 key 缺失(reject)时回落默认值", async () => {
     getMock.mockImplementation((req: { key: string }) => {
-      if (req.key === "notify.sound")
-        return Promise.resolve({ key: req.key, value: "true" });
       if (req.key === "notify.toast")
         return Promise.reject(new Error("not found"));
       return Promise.resolve({ key: req.key, value: "false" });
     });
     await useNotificationSettingsStore.getState().load();
     const s = useNotificationSettingsStore.getState().settings;
-    expect(s.sound).toBe(true); // 读到 "true"
     expect(s.toast).toBe(false); // reject → 默认 false
     expect(s.enabled).toBe(false); // 读到 "false"
-  });
-
-  it("load: 未知 soundPreset 回落默认值(防 Select 空值)", async () => {
-    getMock.mockImplementation((req: { key: string }) => {
-      if (req.key === "notify.sound_preset")
-        return Promise.resolve({ key: req.key, value: "weird-legacy-value" });
-      return Promise.resolve({ key: req.key, value: "false" });
-    });
-    await useNotificationSettingsStore.getState().load();
-    expect(useNotificationSettingsStore.getState().settings.soundPreset).toBe(
-      "ding",
-    );
+    expect(s.system).toBe(false); // 读到 "false"
   });
 
   it("save: 写一个 partial 后 UpdateAppSettings 收到对应 entry,并更新本地 state", async () => {

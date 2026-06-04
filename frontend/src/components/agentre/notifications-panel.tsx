@@ -1,22 +1,8 @@
 import * as React from "react";
-import { Play } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
-import {
-  SOUND_PRESETS,
-  playNotifySound,
-  type SoundPreset,
-} from "../../lib/notify-sound";
 import {
   useNotificationSettingsStore,
   type NotificationSettings,
@@ -85,42 +71,6 @@ export function NotificationsPanel() {
             aria-label={t("settings.notifications.systemLabel")}
             checked={settings.system}
             onCheckedChange={(v) => set({ system: v })}
-          />
-        </Row>
-
-        <Row
-          label={t("settings.notifications.soundLabel")}
-          desc={t("settings.notifications.soundDesc")}
-        >
-          <Select
-            value={settings.soundPreset}
-            onValueChange={(v) => set({ soundPreset: v as SoundPreset })}
-          >
-            <SelectTrigger className="h-8 w-28 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SOUND_PRESETS.map((p) => (
-                <SelectItem key={p} value={p}>
-                  {t(`settings.notifications.preset.${p}`)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5 px-3 text-xs"
-            onClick={() => playNotifySound(settings.soundPreset)}
-          >
-            <Play className="size-3.5" aria-hidden="true" />
-            {t("settings.notifications.soundTest")}
-          </Button>
-          <Switch
-            aria-label={t("settings.notifications.soundLabel")}
-            checked={settings.sound}
-            onCheckedChange={(v) => set({ sound: v })}
           />
         </Row>
 

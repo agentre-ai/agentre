@@ -1810,14 +1810,6 @@
       "channelsDesc": "When the alert condition is met, notify via any method enabled below.",
       "systemLabel": "System notification",
       "systemDesc": "Posts to macOS Notification Center / Windows Action Center — visible even when the app is in the background.",
-      "soundLabel": "Sound",
-      "soundDesc": "Play a short chime when notifying.",
-      "soundTest": "Test",
-      "preset": {
-        "ding": "Ding",
-        "chime": "Chime",
-        "blip": "Blip"
-      },
       "toastLabel": "In-app toast",
       "toastDesc": "Pop a toast in the bottom-right of the app (only visible while the app is focused).",
       "ruleTitle": "When you get notified",

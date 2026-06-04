@@ -3,7 +3,6 @@ import type { TFunction } from "i18next";
 import type { AgentStatus } from "../stores/types";
 import type { DoneEvent } from "../stores/session-status-store";
 import type { NotificationSettings } from "../stores/notification-settings-store";
-import type { SoundPreset } from "./notify-sound";
 
 export type NotifyKind = "done" | "error" | "waiting";
 
@@ -17,7 +16,6 @@ export type NotifyDeps = {
     title: string,
     body: string,
   ) => void;
-  playSound: (preset: SoundPreset) => void;
   showToast: (
     sessionId: number,
     kind: NotifyKind,
@@ -59,6 +57,5 @@ export function maybeNotify(
   const title = deps.getSessionTitle(sessionId) ?? deps.t("notify.app");
   const body = deps.t(`notify.body.${kind}`);
   if (s.system) deps.showSystemNotification(sessionId, title, body);
-  if (s.sound) deps.playSound(s.soundPreset);
   if (s.toast) deps.showToast(sessionId, kind, title, body);
 }
