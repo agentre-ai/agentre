@@ -37,6 +37,14 @@ func TestNewWailsOptionsConfiguresSingleInstanceLock(t *testing.T) {
 	}
 }
 
+func TestNewWailsOptionsWiresOnBeforeClose(t *testing.T) {
+	var assets fs.FS = fstest.MapFS{}
+	opts := newWailsOptionsForDataDir(app.NewApp(), assets, "darwin", "/tmp/agentre-test")
+	if opts.OnBeforeClose == nil {
+		t.Fatal("OnBeforeClose must be wired so active-session quit confirmation can intercept the quit")
+	}
+}
+
 func TestNewWailsOptionsOmitsSingleInstanceLockInWailsDev(t *testing.T) {
 	t.Run("Given Wails dev sets devserver When options are built Then single instance lock is disabled", func(t *testing.T) {
 		t.Setenv("devserver", "localhost:34115")

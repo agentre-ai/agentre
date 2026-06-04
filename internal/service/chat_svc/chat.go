@@ -94,6 +94,7 @@ type ChatSvc interface {
 	AnswerUserQuestion(ctx context.Context, req *AnswerUserQuestionRequest) (*AnswerUserQuestionResponse, error)
 	AnswerToolPermission(ctx context.Context, req *AnswerToolPermissionRequest) (*AnswerToolPermissionResponse, error)
 	ResolvePlanAction(ctx context.Context, req *ResolvePlanActionRequest) (*ResolvePlanActionResponse, error)
+	CountActiveSessions(ctx context.Context) (int, error)
 }
 
 var defaultChat ChatSvc
@@ -168,6 +169,15 @@ type chatSvc struct {
 }
 
 // ── ListAgents ───────────────────────────────────────────────────────────────
+
+// CountActiveSessions 返回正在进行(running|waiting)的会话总数,供退出二次确认判断。
+func (s *chatSvc) CountActiveSessions(ctx context.Context) (int, error) {
+	n, err := chat_repo.Session().CountActive(ctx, []string{"running", "waiting"})
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
 
 func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAgentsResponse, error) {
 	agents, err := agent_repo.Agent().List(ctx)

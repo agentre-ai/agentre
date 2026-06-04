@@ -122,6 +122,10 @@ func (a *App) RestartApp() error {
 		}
 	}
 
+	// 重启已拉起新进程,旧进程必须无条件退出:标记已确认,绕过活跃会话二次确认,
+	// 否则 OnBeforeClose 拦住旧进程、新进程撞单实例锁 → 更新静默失败。
+	a.quitConfirmed.Store(true)
+
 	go func() {
 		// 留一拍时间让 wails Quit 走完 OnShutdown。
 		time.Sleep(500 * time.Millisecond)
