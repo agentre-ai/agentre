@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+import { parseMentionedMemberIds } from "./mentions";
+
 import type { app } from "../../../../wailsjs/go/models";
 
 type GroupMemberItem = app.GroupMemberItem;
@@ -47,14 +49,21 @@ function GroupComposer({
 }: GroupComposerProps) {
   const { t } = useTranslation();
   const [text, setText] = React.useState("");
-  // chosen：用户通过 @autocomplete 实际选中的成员 id 集合。发送时直接用它产出
-  // recipientMemberIDs —— 前端产出结构化收件人，后端不做任何文本解析。
-  const [chosen, setChosen] = React.useState<number[]>([]);
+  // 发送时的 recipientMemberIDs 直接解析最终文本里真实出现的 @name token（见 doSend /
+  // parseMentionedMemberIds）——前端是结构化收件人的唯一来源，后端不做任何文本解析，
+  // 所以收件人必须与正文里实际出现的 @mention 完全一致，不再维护一份独立的「已选」状态。
   const [mention, setMention] = React.useState<MentionState>(null);
   const [activeIdx, setActiveIdx] = React.useState(0);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
   const activeMembers = members.filter((m) => m.status === "active");
+
+  // roster：把成员映射成 { memberId, name }，供 parseMentionedMemberIds 在发送时从
+  // 最终文本里解析出真正被 @ 到的收件人——与 transcript 的 chip 渲染同一套解析逻辑。
+  const roster = React.useMemo(
+    () => members.map((m) => ({ memberId: m.id, name: memberName(m.id) })),
+    [members, memberName],
+  );
 
   const suggestions = React.useMemo(() => {
     if (!mention) return [];
@@ -86,9 +95,6 @@ function GroupComposer({
     const tail = text.slice(caret);
     const inserted = `${head}@${name} ${tail}`;
     setText(inserted);
-    setChosen((prev) =>
-      prev.includes(member.id) ? prev : [...prev, member.id],
-    );
     setMention(null);
     // 把焦点 + 光标放回插入点之后，方便用户接着打字。
     const nextCaret = head.length + name.length + 2;
@@ -103,13 +109,11 @@ function GroupComposer({
   function doSend() {
     const trimmed = text.trim();
     if (!trimmed || disabled) return;
-    // 只保留仍出现在文本里的 mention：用户可能删掉了某个 @name。
-    const stillMentioned = chosen.filter((id) =>
-      text.includes(`@${memberName(id)}`),
-    );
-    onSend({ text: trimmed, recipientMemberIDs: stillMentioned });
+    // 收件人 = 最终文本里以 @name token 真实出现、且命中 roster 的成员（精确、最长优先、
+    // 带边界）。这样删掉某个 @name 后它就不再是收件人，而 "@Bobby" 也不会误把 "Bob" 算进去。
+    const recipientMemberIDs = parseMentionedMemberIds(trimmed, roster);
+    onSend({ text: trimmed, recipientMemberIDs });
     setText("");
-    setChosen([]);
     setMention(null);
   }
 

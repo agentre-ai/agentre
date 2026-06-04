@@ -33,4 +33,23 @@ describe("MentionText", () => {
     fireEvent.click(screen.getByText("@前端"));
     expect(onJump).toHaveBeenCalledWith(3);
   });
+  it("renders multi-word names and does not chip @Bob inside @Bobby", () => {
+    const onJump = vi.fn();
+    render(
+      <MentionText
+        text="hi @Bobby ping @Code Reviewer"
+        roster={[
+          { memberId: 7, name: "Bob" },
+          { memberId: 8, name: "Bobby" },
+          { memberId: 4, name: "Code Reviewer" },
+        ]}
+        onJump={onJump}
+      />,
+    );
+    fireEvent.click(screen.getByText("@Bobby"));
+    expect(onJump).toHaveBeenCalledWith(8); // Bobby, not Bob(7)
+    fireEvent.click(screen.getByText("@Code Reviewer"));
+    expect(onJump).toHaveBeenCalledWith(4); // full multi-word name
+    expect(screen.queryByText("@Bob")).not.toBeInTheDocument();
+  });
 });
