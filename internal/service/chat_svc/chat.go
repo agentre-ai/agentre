@@ -133,10 +133,6 @@ func RegisterGateway(g httpgateway.TokenIssuer) {
 	}
 }
 
-// chatTokenTTL 单轮 chat 用 token 的有效期；
-// 比 test 路径的 60s 长，留出大段代码生成的余量。
-const chatTokenTTL = 15 * time.Minute
-
 const renameTitleMaxRunes = 200
 
 type chatSvc struct {
@@ -154,6 +150,12 @@ type chatSvc struct {
 	// LoadAndDelete 判定是否走 StreamAborted 路径 + 跳过 DrainPending 自动接续。
 	aborted *sync.Map
 	gateway httpgateway.TokenIssuer
+	// chatTokens 缓存每个 chat session 的常驻 gateway token(sessionID int64 → token string)。
+	// 该 token 在 spawn 时烤进 claude 子进程 env 给 PostToolUse hook 用,子进程跨轮复用
+	// 时 env 不重建 —— 所以 token 必须签成永久(ttl=0)并跨轮稳定复用,否则长会话(>15min)
+	// 会让 hook 拿过期 token 撞 401、steer 整轮 drain 不到。session 删除时 revokeChatToken
+	// 撤销 + 清缓存。
+	chatTokens sync.Map
 
 	// remoteCache 是 device → (runtime, lease) 的 session 引用计数缓存。
 	// runtime 复用底层 lease.Client(),lease 由 remote_device_svc.Pool 管理 conn
@@ -2281,7 +2283,7 @@ func (s *chatSvc) runTurn(
 		// Claude Code local 仍需要 gateway token 给 PostToolUse hook 访问
 		// /hook/v1/inbox；Codex local 没有 hook，不能注入 gateway，否则会覆盖
 		// codex login 并把模型请求误打到本地 /v1/responses。
-		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be)
+		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID)
 	}
 	switch agent_backend_entity.BackendType(be.Type) {
 	case agent_backend_entity.TypeClaudeCode:
@@ -2876,26 +2878,53 @@ func remoteProviderNotConfiguredError(ctx context.Context, providerKey string) e
 	return i18n.NewError(ctx, code.ChatRemoteProviderNotConfigured, key, key)
 }
 
-// signChatTokenFor 为需要 gateway 的 CLI 后端本轮请求签一次性 token。
+// signChatTokenFor 为需要 gateway 的 CLI 后端签一个 **会话级常驻** token。
 // 返回 (gatewayURL, token)，任意一者为空时调用方按"不签"处理（CLI 走自身 login）。
 //
 // Claude Code local 会使用 token 访问 /hook/v1/inbox；绑定了 LLM provider 的
 // Claude Code / Codex 会用它走 LLM 转发。Codex local 不应调用这里。
 //
-// Token TTL = chatTokenTTL；当前不显式 RevokeToken：单轮结束后 cago retry 看到 401
-// 自然触发新一轮 Send 重签。如担心库存增长，后续可在 turn 结束分支调 RevokeToken。
-func (s *chatSvc) signChatTokenFor(ctx context.Context, be *agent_backend_entity.AgentBackend) (string, string) {
+// 关键不变量:同一 session 跨轮返回 **同一个永久 token**。该 token 在首轮 spawn 时
+// 烤进 claude 子进程 env(AGENTRE_GATEWAY_TOKEN),后续轮复用子进程时 env 不重建 ——
+// 旧实现每轮重签 15min TTL 的新 token、却只有首轮那个被烤进去,导致长会话(>15min)
+// 子进程手里的 token 过期、PostToolUse hook 撞 401、SteerInbox 整轮 drain 不到、
+// steer 被压到轮末 DrainPending。改成 ttl=0 永久 + 跨轮复用,寿命跟随子进程,
+// session 删除时由 Delete→revokeChatToken 撤销。
+func (s *chatSvc) signChatTokenFor(ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64) (string, string) {
 	if be == nil || s.gateway == nil {
 		return "", ""
 	}
 	if s.gateway.Status().State != "running" {
 		return "", ""
 	}
-	tok, err := s.gateway.IssueToken(ctx, be, chatTokenTTL)
+	if sessionID > 0 {
+		if v, ok := s.chatTokens.Load(sessionID); ok {
+			return s.gateway.URL(), v.(string)
+		}
+	}
+	tok, err := s.gateway.IssueToken(ctx, be, 0)
 	if err != nil {
 		return "", ""
 	}
+	if sessionID > 0 {
+		// 并发首轮兜底:别的 goroutine 抢先签好就用它的,撤掉自己这条避免泄漏。
+		if actual, loaded := s.chatTokens.LoadOrStore(sessionID, tok); loaded {
+			s.gateway.RevokeToken(tok)
+			return s.gateway.URL(), actual.(string)
+		}
+	}
 	return s.gateway.URL(), tok
+}
+
+// revokeChatToken 撤销并清掉某 session 的常驻 token。Delete 关闭常驻子进程后调用,
+// 让 token 寿命跟随子进程 —— 之后该 id 若复活会重签一个新的。
+func (s *chatSvc) revokeChatToken(sessionID int64) {
+	if sessionID <= 0 {
+		return
+	}
+	if v, ok := s.chatTokens.LoadAndDelete(sessionID); ok && s.gateway != nil {
+		s.gateway.RevokeToken(v.(string))
+	}
 }
 
 // mapClaudeProviderError 命中 claudecode.ErrSessionNotFound（CLI 报告
@@ -3028,6 +3057,8 @@ func (s *chatSvc) Delete(ctx context.Context, req *DeleteRequest) (*DeleteRespon
 	// DB 已删，释放该 session 的常驻 CLI 子进程（best-effort，cache miss 时 no-op）。
 	claudecodert.Default().CloseSession(ctx, req.SessionID)
 	codexrt.Default().CloseSession(ctx, req.SessionID)
+	// 子进程已关，撤销并清掉它的常驻 gateway token（token 寿命跟随子进程）。
+	s.revokeChatToken(req.SessionID)
 	return &DeleteResponse{}, nil
 }
 

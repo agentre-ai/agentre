@@ -17,6 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
 	"agentre/internal/model/entity/agent_backend_entity"
 )
 
@@ -251,15 +254,26 @@ func (g *Gateway) serveHookInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := g.tokens.Resolve(tok); !ok {
+		// 诊断 steer "等整轮才发出去": hook 子进程拿到的 token 没解出来,drain 永远
+		// 拉不到消息 —— 只能等 turn 末 DrainPending。开 debug 日志看这条是否出现。
+		logger.Ctx(r.Context()).Debug("httpgateway.serveHookInbox: invalid token (hook reached gateway but auth failed)")
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
 	sid := r.URL.Query().Get("session_id")
 	if sid == "" {
+		logger.Ctx(r.Context()).Debug("httpgateway.serveHookInbox: missing session_id")
 		http.Error(w, "missing session_id", http.StatusBadRequest)
 		return
 	}
 	items := g.steer.Drain(sid)
+	// 诊断关键点: hook 在 PostToolUse 边界拉取 inbox 的实况。count>0 = mid-turn 投递
+	// 成功; count==0 但用户确实排了消息 = drain key(sid)与 push key(a.sessionUUID)
+	// 不一致,或消息已被先前边界拉走。sid 与 claudecode runtime "steer enqueued"
+	// 日志里的 inboxKey 对比即可定位。
+	logger.Ctx(r.Context()).Debug("httpgateway.serveHookInbox: hook drained inbox",
+		zap.String("sid", sid),
+		zap.Int("count", len(items)))
 	// Hook protocol stays a plain `{"messages": [...]}` string array — the
 	// queuedID is a chat_svc/runner internal concern; the claude CLI hook
 	// only needs the text to inject as additionalContext.
