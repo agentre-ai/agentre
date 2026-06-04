@@ -69,16 +69,20 @@ func (r *Runtime) handleAutonomousTurnStarted(ctx context.Context, raw json.RawM
 		events: make(chan agentruntime.Event, 64),
 		result: &agentruntime.RunResult{},
 	}
+	logger.Ctx(ctx).Info("remote runtime: autonomous turn started",
+		zap.Int64("sid", frame.SessionID), zap.String("trigger", frame.Trigger))
+	// 持 a.mu 期间设 cur + 送 a.out —— 与 closeAllAutoSessions 的 close(a.out) 互斥,
+	// 杜绝 daemon 断连(watchClose 独立 goroutine)恰在投递新一轮期间关 channel 时的
+	// send-on-closed-channel panic。对齐 handleAutonomousTurnEvent 的同款纪律。
+	// a.out 有缓冲且自主轮串行(daemon 任一时刻至多一轮、消费方 driveAutonomousTurn
+	// 独立 drain),送出几乎不阻塞;缓冲满时短暂阻塞读循环(既定 back-pressure 契约),
+	// 不与 a.mu 形成锁环。
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.closed {
-		a.mu.Unlock()
 		return nil, nil
 	}
 	a.cur = turn
-	a.mu.Unlock()
-	logger.Ctx(ctx).Info("remote runtime: autonomous turn started",
-		zap.Int64("sid", frame.SessionID), zap.String("trigger", frame.Trigger))
-	// out buffered + 自主轮串行,送出不阻塞;不持 a.mu 送以免与 event 路由互锁。
 	a.out <- agentruntime.AutonomousTurn{
 		Events:  turn.events,
 		Result:  turn.result,

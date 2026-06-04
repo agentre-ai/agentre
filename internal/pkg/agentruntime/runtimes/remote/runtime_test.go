@@ -262,6 +262,60 @@ func TestAutonomousTurnEvent_ClosingRaceMustNotPanic(t *testing.T) {
 		"closeAllAutoSessions 与 handleAutonomousTurnEvent 竞争时不得 send-on-closed panic;got=%v", got)
 }
 
+// TestAutonomousTurnStarted_ClosingRaceMustNotPanic 锁定与
+// TestAutonomousTurnEvent_ClosingRaceMustNotPanic 同类、但发生在「起一轮」路径上的
+// 并发缺陷:handleAutonomousTurnStarted 在 a.mu 之外往 a.out 送新 turn,而
+// closeAllAutoSessions()(watchClose goroutine,daemon 断连触发)在 a.mu 内
+// close(a.out)。两者不互斥 → daemon 断连恰在投递新 turn 期间会 send-on-closed panic
+// (读循环 goroutine 无 recover → 整进程崩)。524f33c 只把 event 送(cur.events)纳入
+// a.mu,Started 送(a.out)漏了同一层纪律。
+//
+// 复现手法对齐 event 版:把 a.out(cap 4)填满让下一次 Started 送 park 住,再让
+// closeAllAutoSessions() 与之竞争。修复前(-race):close 与 park 的 send 竞争 / panic;
+// 修复后:send 持 a.mu,closeAll 阻塞到 drain 放行,无 panic、无 race。
+func TestAutonomousTurnStarted_ClosingRaceMustNotPanic(t *testing.T) {
+	_, _, _, rt := setupRemote(t)
+	outCh := rt.AutonomousTurns(42) // 建好 autoSession;a.out cap 4,不 drain
+
+	// 预 marshal 一次,goroutine 内复用,避免在非测试 goroutine 里调 testify。
+	startedRaw := mustRawFrame(t, wire.AutonomousTurnStartedFrame{
+		SessionID: 42, Trigger: "background_task",
+	})
+
+	// 填满 a.out 缓冲(cap 4),下一次 Started 送就会 park。
+	for i := 0; i < cap(outCh); i++ {
+		_, err := rt.handleAutonomousTurnStarted(context.Background(), startedRaw)
+		require.NoError(t, err)
+	}
+	require.Equal(t, cap(outCh), len(outCh), "buffer 应被填满,下一次送才会 park")
+
+	// park 第 cap+1 次 Started 送;若 panic 由该 goroutine 自己 recover 上报。
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_, _ = rt.handleAutonomousTurnStarted(context.Background(), startedRaw)
+	}()
+	time.Sleep(50 * time.Millisecond) // 确保上面那次送已 park 在满缓冲上
+
+	// 模拟断连:watchClose → closeAllAutoSessions() 与 park 的 send 竞争。
+	closeDone := make(chan struct{})
+	go func() {
+		rt.closeAllAutoSessions()
+		close(closeDone)
+	}()
+	// drainer:修复后 send 持 a.mu,需 drain 放行让 closeAll 拿到锁;修复前 send 已被
+	// close 打 panic / 触发 race,drain 只是把缓冲抽干。
+	go func() {
+		for range outCh { //nolint:revive // 抽干
+		}
+	}()
+
+	<-closeDone
+	got := <-panicked
+	require.Nil(t, got,
+		"closeAllAutoSessions 与 handleAutonomousTurnStarted 竞争时不得 send-on-closed panic;got=%v", got)
+}
+
 func mustRawFrame(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
