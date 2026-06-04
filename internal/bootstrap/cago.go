@@ -12,6 +12,7 @@ import (
 	_ "agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"agentre/internal/pkg/httpgateway"
 	"agentre/internal/pkg/paths"
+	"agentre/internal/pkg/sysnotify"
 	"agentre/internal/repository/agent_backend_repo"
 	"agentre/internal/repository/agent_repo"
 	"agentre/internal/repository/app_setting_repo"
@@ -26,6 +27,7 @@ import (
 	"agentre/internal/service/app_settings_svc"
 	"agentre/internal/service/chat_svc"
 	"agentre/internal/service/issue_svc"
+	"agentre/internal/service/notification_svc"
 	"agentre/internal/service/project_svc"
 	"agentre/migrations"
 
@@ -133,6 +135,9 @@ func Init(ctx context.Context) (*Runtime, error) {
 	agent_backend_svc.RegisterGateway(gw)
 	app_settings_svc.RegisterGateway(gw)
 	chat_svc.RegisterGateway(gw)
+
+	// 注入平台原生通知实现，供前端 App.ShowNotification 调用。
+	notification_svc.RegisterNotifier(sysnotify.New())
 
 	// 把 gateway 的 SteerInbox 注入到 claudecode runner，让 Steer 能 Push 进去；
 	// 之后 PostToolUse hook 子进程会 GET /hook/v1/inbox 拉走，turn 结束时

@@ -1,4 +1,15 @@
 {
+  "notify": {
+    "app": "Agentre",
+    "body": {
+      "done": "会话已完成",
+      "error": "会话出错",
+      "waiting": "需要你的操作"
+    },
+    "openSession": "跳转到会话",
+    "dismiss": "关闭",
+    "justNow": "刚刚"
+  },
   "app": {
     "commandPalette": {
       "open": "打开命令面板",
@@ -1350,6 +1361,8 @@
       "activeCount": "{{count}} 个活跃会话（含子项目）",
       "attentionAria": "{{name}} 待处理会话",
       "empty": "暂无会话",
+      "group": "会话",
+      "groupToggle": "展开/收起 {{name}} 的会话",
       "inherited": "继承",
       "loadMembersFailed": "加载成员失败：{{error}}",
       "loadingMembers": "加载成员中…",
@@ -1784,6 +1797,24 @@
       "description": "配置可用模型来源。保存后可拉取该账号下的实际可用模型，模型能力（上下文窗口、是否支持 thinking 等）由 cago agents 内置目录补全。",
       "title": "LLM 供应商"
     },
+    "notifications": {
+      "pageTitle": "通知",
+      "pageDesc": "对话完成、出错或需要你输入时提醒你。",
+      "masterTitle": "通知",
+      "masterDesc": "总开关 —— 关闭后下面所有方式都不生效。",
+      "enableLabel": "启用通知",
+      "enableDesc": "一轮对话结束时主动提醒你。",
+      "onlyWhenUnfocusedLabel": "仅窗口未激活时通知",
+      "onlyWhenUnfocusedDesc": "默认开；关掉后，应用在前台时，完成的若不是你正在看的会话也会提醒。",
+      "channelsTitle": "通知方式",
+      "channelsDesc": "满足提醒条件时，用以下已开启的方式提醒。",
+      "systemLabel": "系统通知",
+      "systemDesc": "弹到 macOS 通知中心 / Windows 操作中心，应用在后台也能看到。",
+      "toastLabel": "应用内提示",
+      "toastDesc": "在应用右下角弹一条提示（仅应用在前台时可见）。",
+      "ruleTitle": "什么时候提醒",
+      "ruleDesc": "默认只在窗口未激活时提醒；关掉上面的开关后，前台时背景会话完成也会提醒。完成、出错、等你输入都会提醒，你手动停止的不会。"
+    },
     "nav": {
       "about": "关于",
       "agentBackend": "Agent 后端",
@@ -1806,10 +1837,6 @@
       "mcpServers": {
         "description": "MCP 服务器配置视图已预留，后续会在这里管理连接、授权和可用工具。",
         "title": "MCP 服务器"
-      },
-      "notifications": {
-        "description": "通知设置视图已预留，后续会在这里调整提醒规则与通知触达渠道。",
-        "title": "通知"
       },
       "skillsTools": {
         "description": "技能和工具管理视图已预留，后续会在这里启用、停用和配置 Agent 能力。",

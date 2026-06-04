@@ -3,6 +3,7 @@ import type { TFunction } from "i18next";
 import {
   Briefcase,
   ChevronDown,
+  MessagesSquare,
   MoreVertical,
   Plus,
   Search,
@@ -669,6 +670,49 @@ function SortableProjectCard({
   );
 }
 
+// SessionsSubGroupHeader —— 父级项目「自己的会话」子组的头部。
+// 仅当父级同时有自己的会话和子项目时出现（见 ProjectCard 的 nestOwnSessions），
+// 让父级会话能独立于子项目折叠/展开。视觉上与子项目头部同级，但用 messages 图标
+// 而非项目头像，明确「这是会话分组、不是子项目」。
+function SessionsSubGroupHeader({
+  name,
+  count,
+  expanded,
+  toggle,
+}: {
+  name: string;
+  count: number;
+  expanded: boolean;
+  toggle: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs outline-none hover:bg-sidebar-active-bg focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      onClick={toggle}
+      aria-expanded={expanded}
+      aria-label={t("projects.session.groupToggle", { name })}
+    >
+      <ChevronDown
+        className={cn(
+          "size-3 text-muted-foreground transition-transform duration-150 ease-out motion-reduce:transition-none",
+          !expanded && "-rotate-90",
+        )}
+        aria-hidden="true"
+      />
+      <MessagesSquare
+        className="size-3.5 text-muted-foreground"
+        aria-hidden="true"
+      />
+      <span className="font-mono text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+        {t("projects.session.group")}
+      </span>
+      <span className="font-mono text-2xs text-subtle-foreground">{count}</span>
+    </button>
+  );
+}
+
 function ProjectCard({
   node,
   depth,
@@ -838,6 +882,66 @@ function ProjectCard({
   const isSub = depth > 0;
   const isDeep = depth >= 2;
 
+  // 父级「自己的会话」与子项目共用同一个 SessionGroup 的折叠箭头会把两者绑死。
+  // 当父级同时有自己的会话和子项目时，把自己的会话拆到一个独立折叠的内层
+  // SessionGroup（persistenceKey: project:<id>:sessions），父级标题箭头仍收整卡。
+  const nestOwnSessions = ownSessions.length > 0 && children.length > 0;
+  const ownSessionsTotal =
+    ownSessions.length > 5 ? ownSessions.length : undefined;
+
+  const renderSessionsPopover = (close: () => void) => (
+    <SessionsPopover
+      header={{
+        name: project.name,
+        avatarColor: project.color,
+        avatarIcon: project.icon || "folder",
+        activeCount,
+      }}
+      loader={async ({ offset, limit }) => {
+        // 后端 ProjectListSessions 暂不分页；客户端切片即可。
+        const all = (await WailsApp.ProjectListSessions(project.id)) ?? [];
+        const slice = all.slice(offset, offset + limit);
+        return {
+          sessions: slice.map((s) => ({
+            id: s.id,
+            title: s.title,
+            status: s.agentStatus,
+            lastMessageAt: s.lastMessageAt,
+          })),
+          total: all.length,
+          hasMore: offset + limit < all.length,
+        };
+      }}
+      onClose={close}
+      onSelectSession={(sid, opts) => {
+        const s = subtreeSessions.find((x) => x.id === sid);
+        if (s) {
+          onSelect(
+            { kind: "session", projectID: s.projectID, session: s },
+            opts,
+          );
+        }
+      }}
+    />
+  );
+
+  const subProjectsList =
+    children.length > 0 ? (
+      <div className="mt-1 flex flex-col gap-0.5">
+        <ProjectSortableList
+          nodes={children}
+          depth={depth + 1}
+          filter={filter}
+          sessions={sessions}
+          selection={selection}
+          onSelect={onSelect}
+          onOpenSettings={onOpenSettings}
+          onAddSubProject={onAddSubProject}
+          dragDisabled={!drag}
+        />
+      </div>
+    ) : null;
+
   return (
     <div
       ref={drag?.setNodeRef}
@@ -847,71 +951,46 @@ function ProjectCard({
       <SessionGroup
         persistenceKey={`project:${project.id}`}
         defaultExpanded
-        sessions={top5AgentSessions}
-        totalSessions={ownSessions.length > 5 ? ownSessions.length : undefined}
+        sessions={nestOwnSessions ? [] : top5AgentSessions}
+        totalSessions={nestOwnSessions ? undefined : ownSessionsTotal}
         selectedSessionId={selectedSessionIdStr}
         onSessionSelect={handleSessionSelect}
-        attentionSessions={attentionAgentSessions}
+        attentionSessions={nestOwnSessions ? [] : attentionAgentSessions}
         collapsedAttentionSessions={collapsedAttentionAgentSessions}
         attentionAriaLabel={t("projects.session.attentionAria", {
           name: project.name,
         })}
         emptyLabel={children.length === 0 ? t("projects.session.empty") : null}
-        renderSessionsPopover={(close) => (
-          <SessionsPopover
-            header={{
-              name: project.name,
-              avatarColor: project.color,
-              avatarIcon: project.icon || "folder",
-              activeCount,
-            }}
-            loader={async ({ offset, limit }) => {
-              // 后端 ProjectListSessions 暂不分页；客户端切片即可。
-              const all =
-                (await WailsApp.ProjectListSessions(project.id)) ?? [];
-              const slice = all.slice(offset, offset + limit);
-              return {
-                sessions: slice.map((s) => ({
-                  id: s.id,
-                  title: s.title,
-                  status: s.agentStatus,
-                  lastMessageAt: s.lastMessageAt,
-                })),
-                total: all.length,
-                hasMore: offset + limit < all.length,
-              };
-            }}
-            onClose={close}
-            onSelectSession={(sid, opts) => {
-              const s = subtreeSessions.find((x) => x.id === sid);
-              if (s) {
-                onSelect(
-                  {
-                    kind: "session",
-                    projectID: s.projectID,
-                    session: s,
-                  },
-                  opts,
-                );
-              }
-            }}
-          />
-        )}
+        renderSessionsPopover={renderSessionsPopover}
         renderAfterSessions={
           children.length > 0 ? (
-            <div className="mt-1 flex flex-col gap-0.5">
-              <ProjectSortableList
-                nodes={children}
-                depth={depth + 1}
-                filter={filter}
-                sessions={sessions}
-                selection={selection}
-                onSelect={onSelect}
-                onOpenSettings={onOpenSettings}
-                onAddSubProject={onAddSubProject}
-                dragDisabled={!drag}
-              />
-            </div>
+            <>
+              {nestOwnSessions ? (
+                <SessionGroup
+                  persistenceKey={`project:${project.id}:sessions`}
+                  defaultExpanded
+                  sessions={top5AgentSessions}
+                  totalSessions={ownSessionsTotal}
+                  selectedSessionId={selectedSessionIdStr}
+                  onSessionSelect={handleSessionSelect}
+                  attentionSessions={attentionAgentSessions}
+                  attentionAriaLabel={t("projects.session.attentionAria", {
+                    name: project.name,
+                  })}
+                  emptyLabel={null}
+                  renderSessionsPopover={renderSessionsPopover}
+                  renderHeader={({ expanded, toggle }) => (
+                    <SessionsSubGroupHeader
+                      name={project.name}
+                      count={ownSessions.length}
+                      expanded={expanded}
+                      toggle={toggle}
+                    />
+                  )}
+                />
+              ) : null}
+              {subProjectsList}
+            </>
           ) : undefined
         }
         renderHeader={({ expanded, toggle }) => (

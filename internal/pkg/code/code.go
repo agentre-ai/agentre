@@ -61,6 +61,7 @@ const (
 	AppSettingInvalidPort                  // 端口越界或非数字
 	AppSettingInvalidHost                  // 监听地址非合法 IP
 	AppGatewayRestartFailed                // 应用并重启时绑定端口失败
+	AppSettingInvalidBool                  // 布尔设置项取值非法
 )
 
 // Hook / 信号源 16000~16999

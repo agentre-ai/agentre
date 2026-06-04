@@ -13,8 +13,7 @@ import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
-import type { AgentColor } from "../types";
-import { agentColorOrder } from "../types";
+import { avatarFromMeta, tokenToCssColor } from "../session-avatar";
 import type { TabStatus } from "./tab";
 
 export type TabView = {
@@ -33,21 +32,6 @@ export type TabView = {
   worktreeBranch: string | null;
   lastMessageAt: number;
 };
-
-const AGENT_COLOR_SET = new Set<string>(agentColorOrder);
-
-function tokenToCssColor(token: string | null | undefined): string | null {
-  if (!token) return null;
-  if (!AGENT_COLOR_SET.has(token as AgentColor)) return null;
-  return `var(--${token})`;
-}
-
-function firstLetter(name: string | null | undefined): string {
-  if (!name) return "?";
-  const trimmed = name.trim();
-  if (!trimmed) return "?";
-  return Array.from(trimmed)[0] ?? "?";
-}
 
 export function useTabsView(): TabView[] {
   const { t } = useTranslation();
@@ -90,8 +74,6 @@ export function useTabsView(): TabView[] {
         ? t("chatTabs.status.errorLabel")
         : reasonToPillText(reason);
     const meta = sid ? (metas.get(sid) ?? null) : null;
-    const avatarColor = tokenToCssColor(meta?.agentColor) ?? "#94a3b8";
-    const avatarLetter = firstLetter(meta?.agentName);
     const pid = meta?.projectId ?? 0;
     const projectColor =
       pid > 0 ? tokenToCssColor(findProjectColorToken(tree, pid)) : null;
@@ -100,7 +82,7 @@ export function useTabsView(): TabView[] {
       id: tab.id,
       title: meta?.title ?? tab.title ?? t("chatTabs.fallbackSession"),
       kind: tab.meta.kind,
-      avatar: { letter: avatarLetter, color: avatarColor },
+      avatar: avatarFromMeta(meta),
       isPreview: tab.isPreview,
       isPinned: tab.isPinned,
       status,

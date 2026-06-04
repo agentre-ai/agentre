@@ -42,6 +42,7 @@ var zhCN = map[int]string{
 	AppSettingInvalidPort:   "端口必须是 0~65535 之间的整数",
 	AppSettingInvalidHost:   "监听地址不是合法的 IP",
 	AppGatewayRestartFailed: "应用并重启本地代理失败，请检查端口占用",
+	AppSettingInvalidBool:   "开关取值必须是 true 或 false",
 
 	HookSourceNotFound:          "信号源不存在",
 	HookSourceNameDuplicated:    "信号源名称已存在",

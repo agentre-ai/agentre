@@ -1,4 +1,15 @@
 {
+  "notify": {
+    "app": "Agentre",
+    "body": {
+      "done": "Session completed",
+      "error": "Session failed",
+      "waiting": "Waiting for your input"
+    },
+    "openSession": "Open session",
+    "dismiss": "Dismiss",
+    "justNow": "Just now"
+  },
   "app": {
     "commandPalette": {
       "open": "Open command palette",
@@ -1350,6 +1361,8 @@
       "activeCount": "{{count}} active sessions including sub-projects",
       "attentionAria": "{{name}} sessions needing attention",
       "empty": "No sessions",
+      "group": "Sessions",
+      "groupToggle": "Toggle {{name}} sessions",
       "inherited": "Inherited",
       "loadMembersFailed": "Failed to load members: {{error}}",
       "loadingMembers": "Loading members...",
@@ -1784,6 +1797,24 @@
       "description": "Configure available model sources. After saving, Agentre can fetch the account's available models, while context window, thinking support, and other capabilities are filled from the built-in cago agents catalog.",
       "title": "LLM Providers"
     },
+    "notifications": {
+      "pageTitle": "Notifications",
+      "pageDesc": "Get notified when a conversation finishes, fails, or needs your input.",
+      "masterTitle": "Notifications",
+      "masterDesc": "Master switch — turning this off disables every method below.",
+      "enableLabel": "Enable notifications",
+      "enableDesc": "Alert you when a turn finishes.",
+      "onlyWhenUnfocusedLabel": "Only when app is in background",
+      "onlyWhenUnfocusedDesc": "On by default; turn off to also be notified when the app is focused but the finished session isn't the one you're viewing.",
+      "channelsTitle": "Methods",
+      "channelsDesc": "When the alert condition is met, notify via any method enabled below.",
+      "systemLabel": "System notification",
+      "systemDesc": "Posts to macOS Notification Center / Windows Action Center — visible even when the app is in the background.",
+      "toastLabel": "In-app toast",
+      "toastDesc": "Pop a toast in the bottom-right of the app (only visible while the app is focused).",
+      "ruleTitle": "When you get notified",
+      "ruleDesc": "By default you're only notified when the app is in the background; turn off the switch above to also be notified while focused on a different session. Done, error, and needs-input all notify; ones you stop manually don't."
+    },
     "nav": {
       "about": "About",
       "agentBackend": "Agent Backends",
@@ -1806,10 +1837,6 @@
       "mcpServers": {
         "description": "The MCP server configuration view is reserved for managing connections, authorization, and available tools.",
         "title": "MCP Servers"
-      },
-      "notifications": {
-        "description": "The notification settings view is reserved for reminder rules and delivery channels.",
-        "title": "Notifications"
       },
       "skillsTools": {
         "description": "The skills and tools management view is reserved for enabling, disabling, and configuring agent capabilities.",

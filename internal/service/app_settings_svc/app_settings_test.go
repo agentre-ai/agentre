@@ -201,3 +201,33 @@ func TestRestartGateway_DefaultsToFixedPort(t *testing.T) {
 		assert.Equal(t, app_setting_entity.DefaultProxyListenPort, gw.applyPort)
 	})
 }
+
+func TestUpdate_NotifyKeys(t *testing.T) {
+	convey.Convey("Update 通知设置 key", t, func() {
+		ctx, repo, gw, svc := setupSvcTest(t)
+
+		convey.Convey("合法 bool 写入,不触发 gateway", func() {
+			repo.EXPECT().Set(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+			_, err := svc.Update(ctx, &UpdateRequest{Entries: []SettingEntry{
+				{Key: app_setting_entity.KeyNotifySystem, Value: "true"},
+			}})
+			assert.NoError(t, err)
+			assert.Equal(t, int32(0), gw.restartCalls.Load(), "通知 key 不应触发 Restart")
+		})
+
+		convey.Convey("非法 bool 直接拒,不落库", func() {
+			_, err := svc.Update(ctx, &UpdateRequest{Entries: []SettingEntry{
+				{Key: app_setting_entity.KeyNotifyEnabled, Value: "maybe"},
+			}})
+			assert.Error(t, err)
+		})
+
+		convey.Convey("only_when_unfocused 也是合法 bool", func() {
+			repo.EXPECT().Set(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+			_, err := svc.Update(ctx, &UpdateRequest{Entries: []SettingEntry{
+				{Key: app_setting_entity.KeyNotifyOnlyWhenUnfocused, Value: "false"},
+			}})
+			assert.NoError(t, err)
+		})
+	})
+}

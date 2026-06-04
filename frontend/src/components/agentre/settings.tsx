@@ -34,6 +34,7 @@ import { DataBackupPanel } from "./data-backup";
 import { RemoteDevicesPanel } from "./remote-devices/remote-devices-panel";
 import { LlmProvidersPanel } from "./llm-providers";
 import { SettingsProxyPanel } from "./settings-proxy";
+import { NotificationsPanel } from "./notifications-panel";
 import { KeyboardShortcutsPanel } from "./shortcuts";
 import { UnderConstructionPage } from "./under-construction-page";
 import { UpdateSection } from "./update-section";
@@ -129,6 +130,7 @@ const underConstructionSettingsPages: Record<
     | "local-proxy"
     | "version-logs"
     | "data-backup"
+    | "notifications"
   >,
   {
     descriptionKey: string;
@@ -140,11 +142,6 @@ const underConstructionSettingsPages: Record<
     titleKey: "settings.underConstruction.mcpServers.title",
     descriptionKey: "settings.underConstruction.mcpServers.description",
     icon: Server,
-  },
-  notifications: {
-    titleKey: "settings.underConstruction.notifications.title",
-    descriptionKey: "settings.underConstruction.notifications.description",
-    icon: Bell,
   },
   "skills-tools": {
     titleKey: "settings.underConstruction.skillsTools.title",
@@ -529,7 +526,8 @@ function SettingsUnderConstruction({ page }: { page: SettingsPageId }) {
     page === "llm-providers" ||
     page === "local-proxy" ||
     page === "version-logs" ||
-    page === "data-backup"
+    page === "data-backup" ||
+    page === "notifications"
   ) {
     return null;
   }
@@ -588,6 +586,8 @@ function SettingsPage({
             <KeyboardShortcutsPanel />
           ) : activePage === "data-backup" ? (
             <DataBackupPanel />
+          ) : activePage === "notifications" ? (
+            <NotificationsPanel />
           ) : activePage === "version-logs" ? (
             <UpdateSection />
           ) : (
