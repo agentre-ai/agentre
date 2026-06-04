@@ -809,3 +809,73 @@ func TestSession_TurnReturnsExitErrWhenProcessDied(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSessionNotFound,
 		"子进程死了之后 Turn 写 stdin 拿 broken pipe，应当被替换成真实退出错误")
 }
+
+// fakeBackgroundTask 复刻真实 CLI 2.1.162 抓到的「后台任务 + 自主续轮」帧序。
+// turn1:启动 run_in_background → result#1;随后不等 stdin 自主吐
+// task_notification(后台型) + 续轮(init+text+result#2);turn2:正常回声。
+func fakeBackgroundTask(stdin io.Reader, stdout io.Writer) {
+	const sid = "sess-bgtask"
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	turn := 0
+	for sc.Scan() {
+		turn++
+		reply := extractTextField(sc.Text())
+		if turn == 1 {
+			// turn1:启动后台任务,以 result#1 收尾(模型主动结束本轮)。
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 1","run_in_background":true}}]}}`)
+			writeFrame(stdout, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Command running in background with ID: bg1"}]}}`)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a2","content":[{"type":"text","text":"started:%s"}]}}`, reply)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+			// —— 不等下一条 stdin,自主吐后台完成续轮 ——
+			writeFrame(stdout, `{"type":"system","subtype":"task_notification","task_id":"bg1","tool_use_id":"tu1","status":"completed","output_file":"/tmp/tasks/bg1.output","summary":"Background command completed"}`)
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a3","content":[{"type":"text","text":"autonomous:listing"}]}}`)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":2,"output_tokens":2}}`, sid)
+			continue
+		}
+		// turn2:普通回声。
+		writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+		writeFrame(stdout, `{"type":"assistant","message":{"id":"a4","content":[{"type":"text","text":"echo:%s"}]}}`, reply)
+		writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+	}
+}
+
+// TestSession_BackgroundTaskAutonomousTurn 是本案基石回归:
+//   (a) Turn1 channel 只收到 turn1 文本("started:..."),在 result#1 后 close,
+//       不串入自主续轮的 "autonomous:listing";
+//   (b) Session.AutonomousTurns() 吐出自主续轮,其文本 = "autonomous:listing";
+//   (c) Turn2 只收到 "echo:beta",无错位。
+func TestSession_BackgroundTaskAutonomousTurn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeBackgroundTask))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// (a) Turn1 干净收尾。
+	ch1, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	got1 := drainText(t, ch1)
+	assert.Equal(t, "started:alpha", got1)
+	assert.NotContains(t, got1, "autonomous", "Turn1 不应吞掉自主续轮帧")
+
+	// (b) 自主续轮经 AutonomousTurns 吐出。
+	var at *AutoTurn
+	select {
+	case at = <-sess.AutonomousTurns():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected an autonomous turn within 2s")
+	}
+	require.NotNil(t, at)
+	assert.Equal(t, "background_task", at.Trigger)
+	assert.Equal(t, "autonomous:listing", drainText(t, at.Events))
+
+	// (c) Turn2 无错位。
+	ch2, err := sess.Turn(ctx, "beta")
+	require.NoError(t, err)
+	assert.Equal(t, "echo:beta", drainText(t, ch2))
+}
