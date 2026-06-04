@@ -262,7 +262,8 @@ func TestTerminal_Pump_DropsOldestAndInsertsThrottleMarkerWhenBufferFull(t *test
 	var sawThrottle bool
 	for _, ev := range events {
 		if pay, ok := ev.Payload.(protocol.TerminalDataEvent); ok {
-			decoded, _ := base64.StdEncoding.DecodeString(pay.Data)
+			decoded, err := base64.StdEncoding.DecodeString(pay.Data)
+			require.NoError(t, err, "terminal data event must be valid base64")
 			if strings.Contains(string(decoded), "--- output throttled ---") {
 				sawThrottle = true
 				break
