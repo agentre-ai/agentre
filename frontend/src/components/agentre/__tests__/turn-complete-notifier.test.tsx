@@ -21,6 +21,16 @@ let focused = false;
 vi.mock("../../../lib/window-focus", () => ({
   isWindowFocused: () => focused,
 }));
+const eventHandlers: Record<string, (data: unknown) => void> = {};
+vi.mock("../../../../wailsjs/runtime/runtime", () => ({
+  EventsOn: (event: string, cb: (data: unknown) => void) => {
+    eventHandlers[event] = cb;
+    return () => delete eventHandlers[event];
+  },
+  EventsOff: (event: string) => {
+    delete eventHandlers[event];
+  },
+}));
 
 import { useSessionStatusStore } from "../../../stores/session-status-store";
 import { useChatTabsStore } from "../../../stores/chat-tabs-store";
@@ -74,5 +84,16 @@ describe("TurnCompleteNotifier", () => {
     render(<TurnCompleteNotifier />);
     await act(async () => {});
     expect(showNotification).not.toHaveBeenCalled();
+  });
+
+  it("收到 notification:click 事件 → 打开/激活对应会话 tab", async () => {
+    render(<TurnCompleteNotifier />);
+    await act(async () => {});
+    act(() => {
+      eventHandlers["notification:click"]?.(99);
+    });
+    const st = useChatTabsStore.getState();
+    const tab = st.tabs.find((x) => x.id === st.activeTabId);
+    expect(tab?.meta).toMatchObject({ kind: "session", sessionId: 99 });
   });
 });

@@ -12,7 +12,11 @@ export type NotifyDeps = {
   getActiveSessionId: () => number | null;
   getSettings: () => NotificationSettings;
   getSessionTitle: (sessionId: number) => string | undefined;
-  showSystemNotification: (title: string, body: string) => void;
+  showSystemNotification: (
+    sessionId: number,
+    title: string,
+    body: string,
+  ) => void;
   playSound: (preset: SoundPreset) => void;
   showToast: (
     sessionId: number,
@@ -54,7 +58,7 @@ export function maybeNotify(
 
   const title = deps.getSessionTitle(sessionId) ?? deps.t("notify.app");
   const body = deps.t(`notify.body.${kind}`);
-  if (s.system) deps.showSystemNotification(title, body);
+  if (s.system) deps.showSystemNotification(sessionId, title, body);
   if (s.sound) deps.playSound(s.soundPreset);
   if (s.toast) deps.showToast(sessionId, kind, title, body);
 }

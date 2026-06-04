@@ -2,6 +2,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ShowNotification } from "../../../wailsjs/go/app/App";
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
 import { isWindowFocused } from "../../lib/window-focus";
 import { playNotifySound } from "../../lib/notify-sound";
 import {
@@ -38,8 +39,8 @@ export function TurnCompleteNotifier(): null {
       getActiveSessionId: activeSessionId,
       getSettings: () => useNotificationSettingsStore.getState().settings,
       getSessionTitle: sessionTitle,
-      showSystemNotification: (title, body) => {
-        ShowNotification({ title, body }).catch(() => {});
+      showSystemNotification: (sessionId, title, body) => {
+        ShowNotification({ title, body, sessionId }).catch(() => {});
       },
       playSound: playNotifySound,
       showToast: (sessionId, kind, title, body) => {
@@ -54,6 +55,13 @@ export function TurnCompleteNotifier(): null {
 
   React.useEffect(() => {
     void useNotificationSettingsStore.getState().load();
+  }, []);
+
+  React.useEffect(() => {
+    EventsOn("notification:click", (sessionId: number) => {
+      useChatTabsStore.getState().openSession(sessionId);
+    });
+    return () => EventsOff("notification:click");
   }, []);
 
   React.useEffect(() => {

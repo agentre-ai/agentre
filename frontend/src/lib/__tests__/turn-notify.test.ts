@@ -48,6 +48,7 @@ describe("maybeNotify", () => {
     const d = deps();
     maybeNotify(42, "done", d);
     expect(d.showSystemNotification).toHaveBeenCalledWith(
+      42,
       "我的会话",
       "notify.body.done",
     );
@@ -116,6 +117,7 @@ describe("maybeNotify", () => {
     const d = deps({ getSessionTitle: () => undefined });
     maybeNotify(42, "error", d);
     expect(d.showSystemNotification).toHaveBeenCalledWith(
+      42,
       "notify.app",
       "notify.body.error",
     );
