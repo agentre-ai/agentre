@@ -267,6 +267,13 @@ type HistoryMessage struct {
 	Blocks []blocks.ContentBlock
 }
 
+// MCPServerSpec 一个注入给 runtime 的 MCP tool server(http transport)。
+type MCPServerSpec struct {
+	Name    string            // server 名; claude tool 暴露为 mcp__<Name>__<tool>
+	URL     string            // http MCP endpoint(如 http://127.0.0.1:<port>/mcp/group/)
+	Headers map[string]string // 鉴权/scope header(如 {"Authorization":"Bearer <token>"})
+}
+
 // RunRequest 一次 Send 的入参。
 type RunRequest struct {
 	Backend   *agent_backend_entity.AgentBackend
@@ -286,6 +293,10 @@ type RunRequest struct {
 	GatewayURL        string                // 关联 provider 的 CLI 后端要；builtin 不用
 	GatewayToken      string                // 同上，一次性 token
 	Compact           bool                  // Codex 原生 compact turn；不创建普通 user prompt
+
+	// MCPServers 非空 = 给本轮 CLI 注入额外 MCP tool server。仅声明 CapMCPTools
+	// 的 runtime(claudecode)消费; 其它 runtime 忽略。群聊经此注入 group_send tool。
+	MCPServers []MCPServerSpec
 
 	// ForkAnchor 非空时 = "重新生成"路径：runner 应当把 provider 会话从 ForkAnchor
 	// 之后的所有内容丢弃，再以 UserText 重发一次。

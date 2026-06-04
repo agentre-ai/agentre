@@ -112,3 +112,29 @@ func TestBuildArgs_AllowedToolsCommaSeparated(t *testing.T) {
 	assert.Contains(t, multi, "--allowedTools Read,Bash")
 	assert.Contains(t, multi, "--disallowedTools Write,Edit")
 }
+
+// TestBuildArgs_McpConfig 验证 spec.mcpConfig 非空时拼入 `--mcp-config <json>`，
+// 且 json 串作为 --mcp-config 的紧邻下一个 argv（不能被拆开/转义）。空串时不下发。
+func TestBuildArgs_McpConfig(t *testing.T) {
+	jsonCfg := `{"mcpServers":{"group":{"type":"http","url":"http://127.0.0.1:9000/mcp/group/"}}}`
+	args := buildArgs(runSpec{mcpConfig: jsonCfg})
+
+	// --mcp-config 必须紧邻其 json 实参（buildArgs 把它们作为两个相邻 argv 追加）。
+	idx := indexOf(args, "--mcp-config")
+	if assert.GreaterOrEqual(t, idx, 0, "args must contain --mcp-config") {
+		assert.Less(t, idx+1, len(args), "--mcp-config 后必须紧跟一个 json 实参")
+		assert.Equal(t, jsonCfg, args[idx+1], "--mcp-config 的下一个 argv 必须是原样 json 串")
+	}
+
+	// 空串回归：不附 --mcp-config。
+	assert.NotContains(t, strings.Join(buildArgs(runSpec{}), " "), "--mcp-config")
+}
+
+func indexOf(xs []string, target string) int {
+	for i, v := range xs {
+		if v == target {
+			return i
+		}
+	}
+	return -1
+}

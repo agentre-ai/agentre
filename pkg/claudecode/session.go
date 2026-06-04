@@ -86,6 +86,8 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 		permissionMode:       c.permissionMode,
 		sessionID:            c.sessionID,
 		settings:             c.settings,
+		mcpConfig:            c.mcpConfig,
+		allowedTools:         c.allowedTools,
 		effort:               c.effort,
 		permissionPromptTool: c.permissionPromptTool,
 	}

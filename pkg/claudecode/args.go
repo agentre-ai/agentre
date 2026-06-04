@@ -18,6 +18,7 @@ const (
 	flagDisallowedTools    cliFlag = "--disallowedTools"
 	flagMaxTurns           cliFlag = "--max-turns"
 	flagSettings           cliFlag = "--settings"
+	flagMcpConfig          cliFlag = "--mcp-config"
 	flagForkSession        cliFlag = "--fork-session"
 	flagResumeSessionAt    cliFlag = "--resume-session-at"
 	flagSessionID          cliFlag = "--session-id"
@@ -32,13 +33,16 @@ const formatStreamJSON = "stream-json"
 
 // runSpec 是 buildArgs 的入参；纯结构体，不带方法，方便测试构造。
 type runSpec struct {
-	model               string
-	systemPrompt        string
-	permissionMode      string // 空 = acceptEdits
-	allowedTools        []string
-	disallowedTools     []string
-	maxTurns            int
-	settings            string
+	model           string
+	systemPrompt    string
+	permissionMode  string // 空 = acceptEdits
+	allowedTools    []string
+	disallowedTools []string
+	maxTurns        int
+	settings        string
+	// mcpConfig 非空 = 下发 --mcp-config <json-or-file>。claude CLI 原生兼容
+	// JSON 串或文件路径，注入额外 MCP tool server（如群聊的 group_send）。
+	mcpConfig           string
 	resumeID            string
 	resumeSessionAtUUID string
 	forkSession         bool
@@ -98,6 +102,9 @@ func buildArgs(spec runSpec) []string {
 	}
 	if spec.settings != "" {
 		args = append(args, string(flagSettings), spec.settings)
+	}
+	if spec.mcpConfig != "" {
+		args = append(args, string(flagMcpConfig), spec.mcpConfig)
 	}
 	if spec.permissionPromptTool != "" {
 		args = append(args, string(flagPermissionPromptTool), spec.permissionPromptTool)

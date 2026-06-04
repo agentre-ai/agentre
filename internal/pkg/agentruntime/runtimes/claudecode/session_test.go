@@ -11,6 +11,50 @@ import (
 	"agentre/pkg/claudecode"
 )
 
+// TestCCBuildClientOpts_MCPServersInjectTool 锁住 AM2:RunRequest.MCPServers 非空时
+// ccBuildClientOpts 把它翻译成 (a) --mcp-config 的 spike 形态 JSON,带 server 的
+// name / url / header,(b) --allowedTools 里追加 mcp__<name>__group_send。
+// 通过 Client accessor 断言,不 spawn 真子进程。
+func TestCCBuildClientOpts_MCPServersInjectTool(t *testing.T) {
+	Convey("Given RunRequest 带一个 http MCP server", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+				MCPServers: []agentruntime.MCPServerSpec{{
+					Name:    "group",
+					URL:     "http://127.0.0.1:9000/mcp/group/",
+					Headers: map[string]string{"Authorization": "Bearer tok-123"},
+				}},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+
+		Convey("Then --mcp-config 是 spike 形态,带 name/url/header", func() {
+			cfg := c.McpConfig()
+			So(cfg, ShouldEqual,
+				`{"mcpServers":{"group":{"type":"http","url":"http://127.0.0.1:9000/mcp/group/","headers":{"Authorization":"Bearer tok-123"}}}}`)
+		})
+
+		Convey("Then --allowedTools 含 mcp__group__group_send", func() {
+			So(c.AllowedTools(), ShouldContain, "mcp__group__group_send")
+		})
+	})
+
+	Convey("Given RunRequest 不带 MCPServers(回归)", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+
+		Convey("Then 不下发 --mcp-config,allowedTools 为空", func() {
+			So(c.McpConfig(), ShouldEqual, "")
+			So(c.AllowedTools(), ShouldBeEmpty)
+		})
+	})
+}
+
 // TestCCBuildClientOpts_ProviderModelDownToCLI 锁住 Bug 1 修复:
 // 绑了 LLM provider 的 claudecode 后端必须把 provider.Model 通过 WithModel
 // 透到 *claudecode.Client,后续 OpenSession 装配 argv 才会带 --model。
