@@ -3,6 +3,7 @@ package group_svc
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"agentre/internal/model/entity/group_entity"
 	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/pkg/code"
+	"agentre/internal/repository/agent_repo"
 	"agentre/internal/repository/group_repo"
 )
 
@@ -44,14 +46,16 @@ type GroupSvc interface {
 	LoadGroup(ctx context.Context, id int64) (*GroupDetail, error)
 	AddGroupMember(ctx context.Context, groupID, agentID int64) (*group_entity.GroupMember, error)
 	RemoveGroupMember(ctx context.Context, memberID int64) error
+	SendGroupMessage(ctx context.Context, req *SendGroupMessageRequest) error
 }
 
 type groupSvc struct {
 	gw         ChatGateway
 	emitter    Emitter
 	now        func() int64
-	mu         sync.Mutex           // 保护 schedulers
-	schedulers map[int64]*scheduler // groupID -> 运行态(Task C5)
+	names      func(ctx context.Context, agentID int64) string // agent id -> 展示名
+	mu         sync.Mutex                                      // 保护 schedulers
+	schedulers map[int64]*scheduler                            // groupID -> 运行态(Task C5)
 }
 
 var defaultGroup GroupSvc = newGroupSvc(chatSvcGateway{}, NoopEmitter{})
@@ -69,12 +73,29 @@ func newGroupSvc(gw ChatGateway, e Emitter) *groupSvc {
 		gw:         gw,
 		emitter:    e,
 		now:        func() int64 { return time.Now().UnixMilli() },
+		names:      defaultNameResolver,
 		schedulers: map[int64]*scheduler{},
 	}
 }
 
+// defaultNameResolver 把 agent id 解析成展示名(找不到/出错返回空串)。
+func defaultNameResolver(ctx context.Context, agentID int64) string {
+	a, err := agent_repo.Agent().Find(ctx, agentID)
+	if err != nil || a == nil {
+		return ""
+	}
+	return a.Name
+}
+
 // NewForTest 注入 mock 网关构造服务(单测用)。
 func NewForTest(gw ChatGateway) GroupSvc { return newGroupSvc(gw, NoopEmitter{}) }
+
+// NewForTestWithNames 注入 mock 网关 + 固定名字表构造服务(单测用)。
+func NewForTestWithNames(gw ChatGateway, names map[int64]string) GroupSvc {
+	s := newGroupSvc(gw, NoopEmitter{})
+	s.names = func(_ context.Context, id int64) string { return names[id] }
+	return s
+}
 
 func (s *groupSvc) ListGroups(ctx context.Context) ([]*group_entity.Group, error) {
 	return group_repo.Group().List(ctx)
@@ -208,3 +229,73 @@ func (s *groupSvc) RemoveGroupMember(ctx context.Context, memberID int64) error 
 	m.Status = group_entity.MemberLeft
 	return group_repo.Member().Update(ctx, m)
 }
+
+// SendGroupMessage 把一条用户消息投入群: 解析收件人 → 落 group_message → 入队 agent 收件人。
+func (s *groupSvc) SendGroupMessage(ctx context.Context, req *SendGroupMessageRequest) error {
+	g, err := group_repo.Group().Find(ctx, req.GroupID)
+	if err != nil {
+		return err
+	}
+	if g == nil {
+		return i18n.NewError(ctx, code.GroupNotFound)
+	}
+	members, err := group_repo.Member().ListByGroup(ctx, g.ID)
+	if err != nil {
+		return err
+	}
+	recipientIDs, toUser := s.resolveRecipientsFromRequest(req)
+	if len(recipientIDs) == 0 && !toUser { // 用户没选收件人 → 默认投协调者(spec §17)
+		for _, m := range members {
+			if m.IsCoordinator() {
+				recipientIDs = []int64{m.ID}
+				break
+			}
+		}
+	}
+	if _, err := s.persistMessage(ctx, g, group_entity.SenderKindUser, 0, req.Text, recipientIDs, toUser, 0); err != nil {
+		return err
+	}
+	// 用户发言重置 round_count(仅 UI 计数)
+	g.RoundCount = 0
+	_ = group_repo.Group().Update(ctx, g)
+	logger.Ctx(ctx).Info("group_svc.SendGroupMessage: sent",
+		zap.Int64("groupID", g.ID), zap.Int64s("recipientMemberIDs", recipientIDs), zap.Bool("toUser", toUser))
+	// 把 agent 收件人入队 + 踢调度器(C5 实现真逻辑; 本 Task 占位)
+	s.enqueueDeliveries(g.ID, recipientIDs, req.Text, "你")
+	s.kick(ctx, g.ID)
+	return nil
+}
+
+// resolveRecipientsFromRequest: 用户消息收件人已由前端解析成结构化字段; 后端不做文本 mention 解析。
+func (s *groupSvc) resolveRecipientsFromRequest(req *SendGroupMessageRequest) ([]int64, bool) {
+	return req.RecipientMemberIDs, req.ToUser
+}
+
+func (s *groupSvc) persistMessage(ctx context.Context, g *group_entity.Group, kind string, senderMemberID int64, content string, recipients []int64, toUser bool, sourceMsgID int64) (*group_entity.GroupMessage, error) {
+	seq, err := group_repo.Message().NextSeq(ctx, g.ID)
+	if err != nil {
+		return nil, err
+	}
+	m := &group_entity.GroupMessage{
+		GroupID:         g.ID,
+		Seq:             seq,
+		SenderKind:      kind,
+		SenderMemberID:  senderMemberID,
+		ToUser:          toUser,
+		Content:         content,
+		SourceMessageID: sourceMsgID,
+		Createtime:      s.now(),
+	}
+	m.SetRecipients(recipients)
+	if err := group_repo.Message().Create(ctx, m); err != nil {
+		return nil, err
+	}
+	s.emitter.Emit(ctx, groupEventName(g.ID), map[string]any{"kind": "message", "message": m})
+	return m, nil
+}
+
+func groupEventName(groupID int64) string { return "group:event:" + strconv.FormatInt(groupID, 10) }
+
+// enqueueDeliveries / kick 是调度占位; C5 实现真正的并发 fan-out 调度。
+func (s *groupSvc) enqueueDeliveries(groupID int64, recipientIDs []int64, content, fromName string) {}
+func (s *groupSvc) kick(ctx context.Context, groupID int64)                                         {}
