@@ -580,6 +580,18 @@
       "worktree": "worktree {{branch}}"
     }
   },
+  "group": {
+    "title": "Groups",
+    "section": "Group Chats",
+    "tabs": { "members": "Members", "settings": "Settings" },
+    "roster": { "coordinator": "Coordinator", "members": "Members", "invite": "Invite member", "backToGroup": "← Back to group" },
+    "runStatus": { "running": "Running", "waitingUser": "Waiting for you", "paused": "Paused", "idle": "Idle", "error": "Error" },
+    "rounds": "{{count}} rounds",
+    "controls": { "pause": "Pause", "stop": "Stop", "resume": "Resume" },
+    "composer": { "placeholder": "Message the group… use @ to mention", "send": "Send" },
+    "settings": { "workdir": "Working directory", "archive": "Archive group" },
+    "onlyXReceived": "Only {{name}} received this"
+  },
   "commandPalette": {
     "chatSessions": {
       "heading": "Chat Sessions",

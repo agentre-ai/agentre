@@ -580,6 +580,18 @@
       "worktree": "worktree {{branch}}"
     }
   },
+  "group": {
+    "title": "群聊",
+    "section": "群聊",
+    "tabs": { "members": "成员", "settings": "设置" },
+    "roster": { "coordinator": "协调者", "members": "成员", "invite": "邀请成员", "backToGroup": "← 返回群聊" },
+    "runStatus": { "running": "运行中", "waitingUser": "等待你", "paused": "已暂停", "idle": "空闲", "error": "出错" },
+    "rounds": "已 {{count}} 轮",
+    "controls": { "pause": "暂停", "stop": "停止", "resume": "继续" },
+    "composer": { "placeholder": "给群里发消息… 用 @ 提及成员", "send": "发送" },
+    "settings": { "workdir": "工作目录", "archive": "归档群" },
+    "onlyXReceived": "仅 {{name}} 收到"
+  },
   "commandPalette": {
     "chatSessions": {
       "heading": "聊天会话",
