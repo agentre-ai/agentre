@@ -57,12 +57,11 @@ const (
 
 // App 设置 15000~15999
 const (
-	AppSettingNotFound           = iota + 15000 // 设置项不存在
-	AppSettingInvalidPort                       // 端口越界或非数字
-	AppSettingInvalidHost                       // 监听地址非合法 IP
-	AppGatewayRestartFailed                     // 应用并重启时绑定端口失败
-	AppSettingInvalidBool                       // 布尔设置项取值非法
-	AppSettingInvalidSoundPreset                // 提示音预设非法
+	AppSettingNotFound      = iota + 15000 // 设置项不存在
+	AppSettingInvalidPort                  // 端口越界或非数字
+	AppSettingInvalidHost                  // 监听地址非合法 IP
+	AppGatewayRestartFailed                // 应用并重启时绑定端口失败
+	AppSettingInvalidBool                  // 布尔设置项取值非法
 )
 
 // Hook / 信号源 16000~16999

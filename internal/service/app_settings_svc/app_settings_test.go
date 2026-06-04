@@ -229,20 +229,5 @@ func TestUpdate_NotifyKeys(t *testing.T) {
 			}})
 			assert.NoError(t, err)
 		})
-
-		convey.Convey("合法 preset 写入", func() {
-			repo.EXPECT().Set(gomock.Any(), gomock.Any()).Return(nil).Times(1)
-			_, err := svc.Update(ctx, &UpdateRequest{Entries: []SettingEntry{
-				{Key: app_setting_entity.KeyNotifySoundPreset, Value: "chime"},
-			}})
-			assert.NoError(t, err)
-		})
-
-		convey.Convey("非法 preset 直接拒", func() {
-			_, err := svc.Update(ctx, &UpdateRequest{Entries: []SettingEntry{
-				{Key: app_setting_entity.KeyNotifySoundPreset, Value: "bell"},
-			}})
-			assert.Error(t, err)
-		})
 	})
 }

@@ -38,12 +38,11 @@ var enUS = map[int]string{
 	AgentBackendInvalidReasoningEffort: "Invalid reasoning effort; must be one of low / medium / high / xhigh / max, or empty",
 	AgentBackendInvalidDevice:          "The device this Agent backend is bound to does not exist or is offline",
 
-	AppSettingNotFound:           "App setting not found",
-	AppSettingInvalidPort:        "Port must be an integer between 0 and 65535",
-	AppSettingInvalidHost:        "Listen host is not a valid IP",
-	AppGatewayRestartFailed:      "Failed to restart the local HTTP gateway; check port availability",
-	AppSettingInvalidBool:        "Toggle value must be true or false",
-	AppSettingInvalidSoundPreset: "Unknown notification sound preset",
+	AppSettingNotFound:      "App setting not found",
+	AppSettingInvalidPort:   "Port must be an integer between 0 and 65535",
+	AppSettingInvalidHost:   "Listen host is not a valid IP",
+	AppGatewayRestartFailed: "Failed to restart the local HTTP gateway; check port availability",
+	AppSettingInvalidBool:   "Toggle value must be true or false",
 
 	HookSourceNotFound:          "Hook source not found",
 	HookSourceNameDuplicated:    "Hook source name already exists",

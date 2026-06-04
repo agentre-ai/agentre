@@ -112,16 +112,6 @@ func TestValidateBoolSetting(t *testing.T) {
 	}
 }
 
-func TestValidateSoundPreset(t *testing.T) {
-	ctx := context.Background()
-	for _, ok := range []string{"ding", "chime", "blip", " ding "} {
-		assert.NoError(t, ValidateSoundPreset(ctx, ok), "input=%q", ok)
-	}
-	for _, bad := range []string{"", "bell", "DING"} {
-		assert.Error(t, ValidateSoundPreset(ctx, bad), "input=%q", bad)
-	}
-}
-
 func TestParseBoolSetting(t *testing.T) {
 	assert.True(t, ParseBoolSetting("true"))
 	for _, f := range []string{"false", "", "1", "x"} {

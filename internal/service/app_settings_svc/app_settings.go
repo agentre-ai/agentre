@@ -79,13 +79,8 @@ func (s *appSettingsSvc) Update(ctx context.Context, req *UpdateRequest) (*Updat
 		case app_setting_entity.KeyNotifyEnabled,
 			app_setting_entity.KeyNotifyOnlyWhenUnfocused,
 			app_setting_entity.KeyNotifySystem,
-			app_setting_entity.KeyNotifySound,
 			app_setting_entity.KeyNotifyToast:
 			if err := app_setting_entity.ValidateBoolSetting(ctx, val); err != nil {
-				return nil, err
-			}
-		case app_setting_entity.KeyNotifySoundPreset:
-			if err := app_setting_entity.ValidateSoundPreset(ctx, val); err != nil {
 				return nil, err
 			}
 		case "":
