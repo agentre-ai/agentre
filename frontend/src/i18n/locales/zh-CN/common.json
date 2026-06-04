@@ -861,7 +861,11 @@
       "dispatchToAgent": "派发给 Agent",
       "filter": "筛选",
       "newIssue": "新建 Issue",
-      "redispatch": "重新派发"
+      "redispatch": "重新派发",
+      "close": "关闭",
+      "reopen": "重新打开",
+      "edit": "编辑",
+      "delete": "删除"
     },
     "board": {
       "addCard": "添加卡片",
@@ -876,6 +880,21 @@
       "running": "进行中",
       "waiting": "待审批"
     },
+    "dialog": {
+      "title": "新建 Issue",
+      "editTitle": "编辑 Issue",
+      "titleLabel": "标题",
+      "bodyLabel": "描述",
+      "projectLabel": "项目",
+      "noProject": "未归属",
+      "labelsLabel": "标签",
+      "create": "创建 Issue",
+      "save": "保存"
+    },
+    "empty": {
+      "title": "还没有 Issue",
+      "desc": "新建一个 Issue 开始追踪工作项"
+    },
     "filters": {
       "assignedAgent": "分派 Agent",
       "author": "作者",
@@ -887,54 +906,15 @@
     "list": {
       "aria": "Issue 列表"
     },
-    "samples": {
-      "129": {
-        "meta": "已关闭 · 3 天前",
-        "title": "修复 Hook 路由匹配优先级"
-      },
-      "132": {
-        "meta": "已关闭 · 昨天",
-        "title": "修复部门 banner 折叠状态丢失"
-      },
-      "133": {
-        "meta": "由 手动创建 · 7 天前 · 未派发",
-        "title": "研究 LLM cost dashboard 方案"
-      },
-      "136": {
-        "meta": "由 手动创建 · 6 天前 · 最近更新 1 小时前",
-        "title": "重构 ChatArea 消息列表性能（虚拟滚动）"
-      },
-      "137": {
-        "meta": "由 手动创建 · 5 天前 · 未派发",
-        "title": "文档：Agent 后端配置示例与常见错误"
-      },
-      "138": {
-        "meta": "由 Sentry Webhook 创建 · 4 天前 · 调用失败 exit=124",
-        "title": "[紧急] Codex CLI 调用偶发超时导致会话中断"
-      },
-      "139": {
-        "meta": "由 GitHub Webhook 创建 · 3 天前 · 等待 CEO 助手批准",
-        "title": "邮箱 Hook 重连重试间隔过短，频繁触发限流"
-      },
-      "140": {
-        "meta": "由 手动创建 · 2 天前 · 等待用户审批",
-        "title": "部门嵌套缩放下卡顿（≥ 4 层）"
-      },
-      "141": {
-        "meta": "由 手动创建 · 昨天 · 最近更新 12 分钟前",
-        "title": "实现深色模式与 Slack 风格消息流"
-      },
-      "142": {
-        "meta": "由 邮件 Hook 创建 · 14:32 · 最近更新 3 分钟前",
-        "title": "修复 OAuth 回调在 Safari 下丢失 state 参数"
-      }
+    "state": {
+      "loading": "加载中…",
+      "error": "加载失败"
     },
     "status": {
       "unassigned": "未派发"
     },
     "summary": {
-      "board": "按状态分列 · 拖卡片可在列间流转",
-      "list": "12 个 Open · 47 个 Closed · 3 个 Agent 在跟进"
+      "counts": "{{open}} 个 Open · {{closed}} 个 Closed"
     },
     "title": "看板",
     "view": {

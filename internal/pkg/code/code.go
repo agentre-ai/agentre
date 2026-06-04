@@ -192,6 +192,16 @@ const (
 	ProjectLocationDuplicate                  // 同 (project, device) 已有 active 路径
 )
 
+// Issue 18200~18999
+const (
+	IssueNotFound          = iota + 18200 // issue 不存在
+	IssueTitleRequired                    // issue 标题不能为空
+	IssueInvalidState                     // issue 状态非法
+	IssueLabelNameRequired                // 标签名不能为空
+	IssueLabelInvalidTone                 // 标签色调非法
+	IssueLabelNotFound                    // 引用的标签不存在
+)
+
 // Server 接入 20300~20399
 const (
 	ServerURLInvalid          = iota + 20300

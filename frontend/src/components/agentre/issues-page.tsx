@@ -1,318 +1,185 @@
 import * as React from "react";
 import {
-  ArrowDownUp,
-  ChevronDown,
   Circle,
   CircleAlert,
   CircleCheck,
   CircleDot,
   Columns3,
   List,
-  MessageSquare,
+  MoreHorizontal,
   Plus,
-  Send,
   SlidersHorizontal,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { useIssues } from "@/hooks/use-issues";
+import { useProjectList } from "@/hooks/use-project-list";
 
-import { AgentAvatar, StatusPill } from "./primitives";
-import type { AgentColor, AgentStatus } from "./types";
+import { IssueNewDialog } from "./issue-new-dialog";
+import { toneClass } from "./issue-tones";
+import { IssueDelete, IssueSetState } from "../../../wailsjs/go/app/App";
+import type { app } from "../../../wailsjs/go/models";
 
 type IssueView = "list" | "board";
-type IssueLabelTone =
-  | "auth"
-  | "bug"
-  | "critical"
-  | "docs"
-  | "feature"
-  | "hook"
-  | "ops"
-  | "perf"
-  | "refactor"
-  | "ui";
 
-type IssueLabel = {
-  name: string;
-  tone: IssueLabelTone;
-};
+const statusIconMeta: Record<string, { className: string; icon: LucideIcon }> =
+  {
+    error: { icon: CircleAlert, className: "text-status-error" },
+    idle: { icon: Circle, className: "text-muted-foreground" },
+    running: { icon: CircleDot, className: "text-status-running" },
+    waiting: { icon: CircleDot, className: "text-status-waiting" },
+  };
 
-type IssueAgent = {
-  color: AgentColor;
-  initials: string;
-  name: string;
-};
-
-type IssueItem = {
-  id: string;
-  title: string;
-  labels: IssueLabel[];
-  status: AgentStatus;
-  meta: string;
-  comments: number;
-  agents: IssueAgent[];
-  closed?: boolean;
-  dispatchable?: boolean;
-  highlighted?: boolean;
-};
-
-type BoardColumn = {
-  count: number;
-  id: string;
-  issues: IssueItem[];
-  tone: AgentStatus;
-  title: string;
-};
-
-const labelToneClassNames: Record<IssueLabelTone, string> = {
-  auth: "bg-agent-1/10 text-agent-1",
-  bug: "bg-destructive-soft text-destructive",
-  critical: "bg-destructive text-destructive-foreground",
-  docs: "bg-secondary text-muted-foreground",
-  feature: "bg-status-running-bg text-status-running",
-  hook: "bg-primary-soft text-primary-text",
-  ops: "bg-secondary text-muted-foreground",
-  perf: "bg-status-waiting-bg text-status-waiting",
-  refactor: "bg-primary-soft text-primary-text",
-  ui: "bg-agent-2/10 text-agent-2",
-};
-
-const statusIconMeta: Record<
-  AgentStatus,
-  { className: string; icon: LucideIcon }
-> = {
-  error: { icon: CircleAlert, className: "text-status-error" },
-  idle: { icon: Circle, className: "text-muted-foreground" },
-  running: { icon: CircleDot, className: "text-status-running" },
-  waiting: { icon: CircleDot, className: "text-status-waiting" },
-};
-
-const boardColumnToneClassNames: Record<
-  AgentStatus,
-  { badge: string; dot: string }
-> = {
-  error: {
-    badge: "bg-destructive-soft text-status-error",
-    dot: "bg-status-error",
-  },
-  idle: {
-    badge: "bg-secondary text-muted-foreground",
-    dot: "bg-muted-foreground",
-  },
-  running: {
-    badge: "bg-status-running-bg text-status-running",
-    dot: "bg-status-running",
-  },
-  waiting: {
-    badge: "bg-status-waiting-bg text-status-waiting",
-    dot: "bg-status-waiting",
-  },
-};
-
-function createIssueRows(t: TFunction): IssueItem[] {
-  return [
-    {
-      id: "#142",
-      title: t("issues.samples.142.title"),
-      labels: [
-        { name: "bug", tone: "bug" },
-        { name: "auth", tone: "auth" },
-      ],
-      status: "running",
-      meta: t("issues.samples.142.meta"),
-      comments: 4,
-      agents: [
-        { name: "Kai", initials: "K", color: "agent-2" },
-        { name: "Parker", initials: "P", color: "agent-1" },
-      ],
-    },
-    {
-      id: "#141",
-      title: t("issues.samples.141.title"),
-      labels: [
-        { name: "feature", tone: "feature" },
-        { name: "ui", tone: "ui" },
-      ],
-      status: "running",
-      meta: t("issues.samples.141.meta"),
-      comments: 12,
-      agents: [{ name: "Eva", initials: "E", color: "agent-3" }],
-    },
-    {
-      id: "#140",
-      title: t("issues.samples.140.title"),
-      labels: [{ name: "perf", tone: "perf" }],
-      status: "waiting",
-      meta: t("issues.samples.140.meta"),
-      comments: 7,
-      agents: [{ name: "Dora", initials: "D", color: "agent-4" }],
-    },
-    {
-      id: "#139",
-      title: t("issues.samples.139.title"),
-      labels: [
-        { name: "hook", tone: "hook" },
-        { name: "ops", tone: "ops" },
-      ],
-      status: "waiting",
-      meta: t("issues.samples.139.meta"),
-      comments: 3,
-      agents: [{ name: "Bea", initials: "B", color: "agent-5" }],
-    },
-    {
-      id: "#138",
-      title: t("issues.samples.138.title"),
-      labels: [
-        { name: "bug", tone: "bug" },
-        { name: "critical", tone: "critical" },
-      ],
-      status: "error",
-      meta: t("issues.samples.138.meta"),
-      comments: 9,
-      agents: [{ name: "Kai", initials: "K", color: "agent-2" }],
-      highlighted: true,
-    },
-    {
-      id: "#137",
-      title: t("issues.samples.137.title"),
-      labels: [{ name: "docs", tone: "docs" }],
-      status: "idle",
-      meta: t("issues.samples.137.meta"),
-      comments: 0,
-      agents: [],
-      dispatchable: true,
-    },
-    {
-      id: "#136",
-      title: t("issues.samples.136.title"),
-      labels: [
-        { name: "refactor", tone: "refactor" },
-        { name: "ui", tone: "ui" },
-      ],
-      status: "running",
-      meta: t("issues.samples.136.meta"),
-      comments: 18,
-      agents: [
-        { name: "Eva", initials: "E", color: "agent-3" },
-        { name: "Parker", initials: "P", color: "agent-1" },
-      ],
-    },
-  ];
-}
-
-function createBoardColumns(
-  t: TFunction,
-  issueRows: IssueItem[],
-): BoardColumn[] {
-  const backlogIssues: IssueItem[] = [
-    issueRows[5],
-    {
-      id: "#133",
-      title: t("issues.samples.133.title"),
-      labels: [{ name: "refactor", tone: "refactor" }],
-      status: "idle",
-      meta: t("issues.samples.133.meta"),
-      comments: 0,
-      agents: [],
-      dispatchable: true,
-    },
-  ];
-  const closedIssues: IssueItem[] = [
-    {
-      id: "#132",
-      title: t("issues.samples.132.title"),
-      labels: [{ name: "bug", tone: "bug" }],
-      status: "idle",
-      meta: t("issues.samples.132.meta"),
-      comments: 2,
-      agents: [],
-      closed: true,
-    },
-    {
-      id: "#129",
-      title: t("issues.samples.129.title"),
-      labels: [],
-      status: "running",
-      meta: t("issues.samples.129.meta"),
-      comments: 5,
-      agents: [],
-      closed: true,
-    },
-  ];
-
-  return [
-    {
-      id: "backlog",
-      title: t("issues.columns.backlog"),
-      count: 2,
-      tone: "idle",
-      issues: backlogIssues,
-    },
-    {
-      id: "running",
-      title: t("issues.columns.running"),
-      count: 4,
-      tone: "running",
-      issues: [issueRows[0], issueRows[1], issueRows[4], issueRows[6]],
-    },
-    {
-      id: "waiting",
-      title: t("issues.columns.waiting"),
-      count: 2,
-      tone: "waiting",
-      issues: [issueRows[2], issueRows[3]],
-    },
-    {
-      id: "closed",
-      title: t("issues.columns.closed"),
-      count: 47,
-      tone: "running",
-      issues: closedIssues,
-    },
-  ];
+function statusIcon(agentStatus: string) {
+  return statusIconMeta[agentStatus] ?? statusIconMeta.idle;
 }
 
 function IssuesPage() {
   const { t } = useTranslation();
   const [view, setView] = React.useState<IssueView>("list");
-  const issueRows = React.useMemo(() => createIssueRows(t), [t]);
-  const boardColumns = React.useMemo(
-    () => createBoardColumns(t, issueRows),
-    [t, issueRows],
-  );
-  const summary =
-    view === "list" ? t("issues.summary.list") : t("issues.summary.board");
+  const [tab, setTab] = React.useState<"open" | "closed">("open");
+  const [labelIDs, setLabelIDs] = React.useState<number[]>([]);
+  const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState<app.IssueItem | null>(null);
+
+  const effectiveState = view === "board" ? "" : tab;
+  const { issues, labels, openCount, closedCount, loading, error, reload } =
+    useIssues({
+      state: effectiveState,
+      projectID: 0,
+      labelIDs,
+    });
+  const { projects } = useProjectList();
+
+  const summary = t("issues.summary.counts", {
+    open: openCount,
+    closed: closedCount,
+  });
+
+  const openCreate = () => {
+    setEditing(null);
+    setDialogOpen(true);
+  };
+  const openEdit = (issue: app.IssueItem) => {
+    setEditing(issue);
+    setDialogOpen(true);
+  };
+  const setState = async (issue: app.IssueItem, state: string) => {
+    await IssueSetState({ id: issue.id, state });
+    void reload();
+  };
+  const remove = async (issue: app.IssueItem) => {
+    await IssueDelete(issue.id);
+    void reload();
+  };
 
   return (
     <main
       className="flex min-h-0 min-w-0 flex-1 flex-col bg-background"
       data-slot="issues-page"
     >
-      <IssuesHeader view={view} summary={summary} onViewChange={setView} />
-      <IssueFilterBar />
-      {view === "list" ? (
-        <IssuesList issueRows={issueRows} />
+      <IssuesHeader
+        view={view}
+        summary={summary}
+        onViewChange={setView}
+        onNewIssue={openCreate}
+      />
+      <IssueFilterBar
+        view={view}
+        tab={tab}
+        onTabChange={setTab}
+        openCount={openCount}
+        closedCount={closedCount}
+        labels={labels}
+        selectedLabelIDs={labelIDs}
+        onToggleLabel={(id) =>
+          setLabelIDs((ids) =>
+            ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
+          )
+        }
+      />
+      {loading && issues.length === 0 ? (
+        <CenterNote text={t("issues.state.loading")} />
+      ) : error ? (
+        <CenterNote text={t("issues.state.error")} />
+      ) : issues.length === 0 ? (
+        <IssuesEmpty onNewIssue={openCreate} />
+      ) : view === "list" ? (
+        <IssuesList
+          issues={issues}
+          onEdit={openEdit}
+          onSetState={setState}
+          onDelete={remove}
+        />
       ) : (
-        <IssuesBoard boardColumns={boardColumns} />
+        <IssuesBoard issues={issues} onEdit={openEdit} />
       )}
+      <IssueNewDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        projects={projects}
+        labels={labels}
+        editing={editing}
+        onSaved={reload}
+      />
     </main>
+  );
+}
+
+function CenterNote({ text }: { text: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center text-xs text-muted-foreground">
+      {text}
+    </div>
+  );
+}
+
+function IssuesEmpty({ onNewIssue }: { onNewIssue: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+      <h2 className="text-sm font-semibold">{t("issues.empty.title")}</h2>
+      <p className="max-w-sm text-xs text-muted-foreground">
+        {t("issues.empty.desc")}
+      </p>
+      <Button type="button" size="sm" onClick={onNewIssue}>
+        <Plus data-icon="inline-start" aria-hidden="true" />
+        {t("issues.actions.newIssue")}
+      </Button>
+    </div>
   );
 }
 
 type IssuesHeaderProps = {
   onViewChange: (view: IssueView) => void;
+  onNewIssue: () => void;
   summary: string;
   view: IssueView;
 };
 
-function IssuesHeader({ onViewChange, summary, view }: IssuesHeaderProps) {
+function IssuesHeader({
+  onViewChange,
+  onNewIssue,
+  summary,
+  view,
+}: IssuesHeaderProps) {
   const { t } = useTranslation();
-
   return (
     <header className="flex min-h-[60px] shrink-0 flex-wrap items-center gap-3 border-b border-border bg-background px-5 py-3 lg:h-[60px] lg:flex-nowrap lg:py-0">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -339,11 +206,7 @@ function IssuesHeader({ onViewChange, summary, view }: IssuesHeaderProps) {
           onClick={() => onViewChange("board")}
         />
       </div>
-      <Button type="button" variant="outline" size="sm" className="h-[30px]">
-        <SlidersHorizontal data-icon="inline-start" aria-hidden="true" />
-        {t("issues.actions.filter")}
-      </Button>
-      <Button type="button" size="sm" className="h-[30px]">
+      <Button type="button" size="sm" className="h-[30px]" onClick={onNewIssue}>
         <Plus data-icon="inline-start" aria-hidden="true" />
         {t("issues.actions.newIssue")}
       </Button>
@@ -382,50 +245,78 @@ function IssueViewButton({
   );
 }
 
-function IssueFilterBar() {
-  const { t } = useTranslation();
+type IssueFilterBarProps = {
+  view: IssueView;
+  tab: "open" | "closed";
+  onTabChange: (tab: "open" | "closed") => void;
+  openCount: number;
+  closedCount: number;
+  labels: app.LabelItem[];
+  selectedLabelIDs: number[];
+  onToggleLabel: (id: number) => void;
+};
 
+function IssueFilterBar({
+  view,
+  tab,
+  onTabChange,
+  openCount,
+  closedCount,
+  labels,
+  selectedLabelIDs,
+  onToggleLabel,
+}: IssueFilterBarProps) {
+  const { t } = useTranslation();
   return (
     <div className="flex min-h-12 shrink-0 items-center gap-2 overflow-x-auto border-b border-border bg-sidebar px-5 py-2">
-      <div className="flex shrink-0 items-center gap-0.5">
-        <FilterTab
-          active
-          icon={CircleDot}
-          label={t("issues.filters.open")}
-          count={12}
-        />
-        <FilterTab
-          icon={CircleCheck}
-          label={t("issues.filters.closed")}
-          count={47}
-        />
-      </div>
+      {view === "list" ? (
+        <div className="flex shrink-0 items-center gap-0.5">
+          <FilterTab
+            active={tab === "open"}
+            icon={CircleDot}
+            label={t("issues.filters.open")}
+            count={openCount}
+            onClick={() => onTabChange("open")}
+          />
+          <FilterTab
+            active={tab === "closed"}
+            icon={CircleCheck}
+            label={t("issues.filters.closed")}
+            count={closedCount}
+            onClick={() => onTabChange("closed")}
+          />
+        </div>
+      ) : null}
       <div className="min-w-0 flex-1" />
-      <FilterChip label={t("issues.filters.author")} />
-      <FilterChip label={t("issues.filters.label")} />
-      <FilterChip label={t("issues.filters.assignedAgent")} />
-      <FilterChip icon={ArrowDownUp} label={t("issues.filters.latestUpdate")} />
+      <LabelFilter
+        labels={labels}
+        selectedLabelIDs={selectedLabelIDs}
+        onToggle={onToggleLabel}
+      />
     </div>
   );
 }
 
 type FilterTabProps = {
-  active?: boolean;
+  active: boolean;
   count: number;
   icon: LucideIcon;
   label: string;
+  onClick: () => void;
 };
 
 function FilterTab({
-  active = false,
+  active,
   count,
   icon: Icon,
   label,
+  onClick,
 }: FilterTabProps) {
   return (
     <button
       type="button"
       aria-pressed={active}
+      onClick={onClick}
       className={cn(
         "inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40",
         active
@@ -435,116 +326,65 @@ function FilterTab({
     >
       <Icon className="size-3.5" aria-hidden="true" />
       {label}
-      {active ? (
-        <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 py-px font-mono text-2xs font-semibold text-primary-foreground">
-          {count}
-        </span>
-      ) : (
-        <span className="font-mono text-2xs text-subtle-foreground">
-          {count}
-        </span>
-      )}
+      <span className="font-mono text-2xs text-subtle-foreground">{count}</span>
     </button>
   );
 }
 
-type FilterChipProps = {
-  icon?: LucideIcon;
-  label: string;
-};
-
-function FilterChip({ icon: Icon, label }: FilterChipProps) {
-  return (
-    <button
-      type="button"
-      className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-foreground outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
-    >
-      {Icon ? <Icon className="size-3" aria-hidden="true" /> : null}
-      {label}
-      <ChevronDown className="size-3" aria-hidden="true" />
-    </button>
-  );
-}
-
-function IssuesList({ issueRows }: { issueRows: IssueItem[] }) {
+function LabelFilter({
+  labels,
+  selectedLabelIDs,
+  onToggle,
+}: {
+  labels: app.LabelItem[];
+  selectedLabelIDs: number[];
+  onToggle: (id: number) => void;
+}) {
   const { t } = useTranslation();
-
   return (
-    <section
-      aria-label={t("issues.list.aria")}
-      className="min-h-0 flex-1 overflow-auto bg-background"
-    >
-      <div role="list" className="min-w-[760px]">
-        {issueRows.map((issue) => (
-          <IssueListRow issue={issue} key={issue.id} />
-        ))}
-      </div>
-    </section>
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="outline" size="sm" className="h-7">
+          <SlidersHorizontal data-icon="inline-start" aria-hidden="true" />
+          {t("issues.filters.label")}
+          {selectedLabelIDs.length > 0 ? (
+            <span className="ml-1 font-mono text-2xs">
+              {selectedLabelIDs.length}
+            </span>
+          ) : null}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-48">
+        <div className="flex flex-wrap gap-1.5">
+          {labels.map((l) => {
+            const selected = selectedLabelIDs.includes(l.id);
+            return (
+              <button
+                type="button"
+                key={l.id}
+                aria-pressed={selected}
+                onClick={() => onToggle(l.id)}
+                className={cn(
+                  "cursor-pointer rounded-full border px-2 py-px font-mono text-2xs font-semibold transition-colors",
+                  selected
+                    ? cn(toneClass(l.tone), "border-transparent")
+                    : "border-border text-muted-foreground hover:bg-accent",
+                )}
+              >
+                {l.name}
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
-function IssueListRow({ issue }: { issue: IssueItem }) {
-  const { t } = useTranslation();
-  const StatusIcon = statusIconMeta[issue.status].icon;
-
-  return (
-    <article
-      role="listitem"
-      className={cn(
-        "flex min-h-[68px] items-center gap-3.5 border-b border-border px-5 py-3.5 transition-colors hover:bg-accent/40",
-        issue.highlighted && "bg-destructive-soft hover:bg-destructive-soft",
-      )}
-    >
-      <StatusIcon
-        className={cn(
-          "size-4 shrink-0",
-          statusIconMeta[issue.status].className,
-        )}
-        aria-hidden="true"
-      />
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-semibold">{issue.title}</span>
-          <IssueLabels labels={issue.labels} />
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-2xs">
-          <span className="font-medium text-primary-text">{issue.id}</span>
-          <span
-            className={cn(
-              "truncate text-muted-foreground",
-              issue.status === "error" && "text-destructive",
-            )}
-          >
-            · {issue.meta}
-          </span>
-        </div>
-      </div>
-      <div className="hidden shrink-0 items-center gap-3 md:flex">
-        {issue.dispatchable ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            className="h-6 border-primary bg-primary-soft font-mono text-2xs font-semibold text-primary-text hover:bg-primary-soft hover:text-primary-text"
-          >
-            <Send data-icon="inline-start" aria-hidden="true" />
-            {t("issues.actions.dispatchToAgent")}
-          </Button>
-        ) : (
-          <StatusPill status={issue.status} />
-        )}
-        <IssueCommentCount count={issue.comments} />
-        <IssueAssignees agents={issue.agents} />
-      </div>
-    </article>
-  );
-}
-
-function IssueLabels({ labels }: { labels: IssueLabel[] }) {
-  if (labels.length === 0) {
+function IssueLabels({ labels }: { labels: app.LabelItem[] }) {
+  if (!labels || labels.length === 0) {
     return null;
   }
-
   return (
     <span className="flex shrink-0 flex-wrap items-center gap-1.5">
       {labels.map((label) => (
@@ -552,9 +392,9 @@ function IssueLabels({ labels }: { labels: IssueLabel[] }) {
           variant="secondary"
           className={cn(
             "rounded-full border-0 px-2 py-px font-mono text-2xs font-semibold",
-            labelToneClassNames[label.tone],
+            toneClass(label.tone),
           )}
-          key={`${label.name}-${label.tone}`}
+          key={label.id}
         >
           {label.name}
         </Badge>
@@ -563,200 +403,179 @@ function IssueLabels({ labels }: { labels: IssueLabel[] }) {
   );
 }
 
-function IssueCommentCount({ count }: { count: number }) {
-  return (
-    <span className="inline-flex items-center gap-1 font-mono text-2xs font-medium text-muted-foreground">
-      <MessageSquare className="size-3" aria-hidden="true" />
-      {count}
-    </span>
-  );
-}
+type RowActionsProps = {
+  issue: app.IssueItem;
+  onEdit: (issue: app.IssueItem) => void;
+  onSetState: (issue: app.IssueItem, state: string) => void;
+  onDelete: (issue: app.IssueItem) => void;
+};
 
-function IssueAssignees({ agents }: { agents: IssueAgent[] }) {
-  if (agents.length === 0) {
-    return (
-      <span className="inline-flex size-6 items-center justify-center rounded-lg border border-border text-muted-foreground">
-        <Plus className="size-3" aria-hidden="true" />
-      </span>
-    );
-  }
-
-  return (
-    <span className="flex items-center">
-      {agents.map((agent, index) => (
-        <AgentAvatar
-          className={cn(
-            "border-2 border-background shadow-xs",
-            index > 0 && "-ml-1.5",
-          )}
-          color={agent.color}
-          initials={agent.initials}
-          key={agent.name}
-          name={agent.name}
-          size="sm"
-        />
-      ))}
-    </span>
-  );
-}
-
-function IssuesBoard({ boardColumns }: { boardColumns: BoardColumn[] }) {
+function RowActions({ issue, onEdit, onSetState, onDelete }: RowActionsProps) {
   const { t } = useTranslation();
+  const isOpen = issue.state === "open";
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label={t("common.moreActions")}
+        >
+          <MoreHorizontal data-icon="only" aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => onEdit(issue)}>
+          {t("issues.actions.edit")}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => onSetState(issue, isOpen ? "closed" : "open")}
+        >
+          {isOpen ? t("issues.actions.close") : t("issues.actions.reopen")}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          variant="destructive"
+          onSelect={() => onDelete(issue)}
+        >
+          {t("issues.actions.delete")}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
+function IssuesList({
+  issues,
+  onEdit,
+  onSetState,
+  onDelete,
+}: {
+  issues: app.IssueItem[];
+  onEdit: (issue: app.IssueItem) => void;
+  onSetState: (issue: app.IssueItem, state: string) => void;
+  onDelete: (issue: app.IssueItem) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <section
+      aria-label={t("issues.list.aria")}
+      className="min-h-0 flex-1 overflow-auto bg-background"
+    >
+      <div role="list" className="min-w-[760px]">
+        {issues.map((issue) => {
+          const Icon = statusIcon(issue.agentStatus).icon;
+          return (
+            <article
+              role="listitem"
+              key={issue.id}
+              className="flex min-h-[68px] items-center gap-3.5 border-b border-border px-5 py-3.5 transition-colors hover:bg-accent/40"
+            >
+              <Icon
+                className={cn(
+                  "size-4 shrink-0",
+                  statusIcon(issue.agentStatus).className,
+                )}
+                aria-hidden="true"
+              />
+              <button
+                type="button"
+                onClick={() => onEdit(issue)}
+                className="flex min-w-0 flex-1 cursor-pointer flex-col gap-1.5 text-left outline-none"
+              >
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="truncate text-sm font-semibold">
+                    {issue.title}
+                  </span>
+                  <IssueLabels labels={issue.labels} />
+                </div>
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-2xs">
+                  <span className="font-medium text-primary-text">
+                    #{issue.id}
+                  </span>
+                  <IssueUpdatedAt value={issue.updatetime} />
+                </div>
+              </button>
+              <RowActions
+                issue={issue}
+                onEdit={onEdit}
+                onSetState={onSetState}
+                onDelete={onDelete}
+              />
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function IssueUpdatedAt({ value }: { value?: number }) {
+  if (!value || value <= 0) {
+    return null;
+  }
+  return (
+    <span className="truncate text-muted-foreground">
+      · {new Date(value).toLocaleDateString()}
+    </span>
+  );
+}
+
+function IssuesBoard({
+  issues,
+  onEdit,
+}: {
+  issues: app.IssueItem[];
+  onEdit: (issue: app.IssueItem) => void;
+}) {
+  const { t } = useTranslation();
+  const backlog = issues.filter((i) => i.state === "open");
+  const closed = issues.filter((i) => i.state === "closed");
+  const columns = [
+    { id: "backlog", title: t("issues.columns.backlog"), items: backlog },
+    { id: "closed", title: t("issues.columns.closed"), items: closed },
+  ];
   return (
     <section
       aria-label={t("issues.board.aria")}
       className="min-h-0 flex-1 overflow-auto bg-sidebar px-5 py-4"
     >
       <div className="flex min-w-max items-start gap-4">
-        {boardColumns.map((column) => (
-          <IssueBoardColumn column={column} key={column.id} />
+        {columns.map((column) => (
+          <section
+            key={column.id}
+            className="flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border bg-card p-2.5"
+          >
+            <div className="flex items-center gap-2 border-b border-border px-1.5 pb-2">
+              <h2 className="text-xs font-semibold">{column.title}</h2>
+              <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-secondary px-1.5 py-px font-mono text-2xs font-semibold text-muted-foreground">
+                {column.items.length}
+              </span>
+            </div>
+            <div className="flex flex-col gap-2">
+              {column.items.map((issue) => (
+                <button
+                  type="button"
+                  key={issue.id}
+                  onClick={() => onEdit(issue)}
+                  className="flex cursor-pointer flex-col gap-2 rounded-md border border-border bg-background px-3 py-2.5 text-left shadow-xs"
+                >
+                  <span className="font-mono text-2xs font-semibold text-primary-text">
+                    #{issue.id}
+                  </span>
+                  <h3 className="line-clamp-2 text-xs font-semibold leading-normal">
+                    {issue.title}
+                  </h3>
+                  <IssueLabels labels={issue.labels} />
+                </button>
+              ))}
+            </div>
+          </section>
         ))}
       </div>
     </section>
   );
-}
-
-function IssueBoardColumn({ column }: { column: BoardColumn }) {
-  const { t } = useTranslation();
-  const tone = boardColumnToneClassNames[column.tone];
-
-  return (
-    <section className="flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border bg-card p-2.5">
-      <div className="flex items-center gap-2 border-b border-border px-1.5 pb-2">
-        <span
-          className={cn("size-2 rounded-full", tone.dot)}
-          aria-hidden="true"
-        />
-        <h2 className="text-xs font-semibold">{column.title}</h2>
-        <span
-          className={cn(
-            "inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-px font-mono text-2xs font-semibold",
-            tone.badge,
-          )}
-        >
-          {column.count}
-        </span>
-        <div className="min-w-0 flex-1" />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label={t("issues.board.addToColumn", { column: column.title })}
-          className="text-muted-foreground"
-        >
-          <Plus data-icon="only" aria-hidden="true" />
-        </Button>
-      </div>
-      <div className="flex flex-col gap-2">
-        {column.issues.map((issue) => (
-          <IssueBoardCard issue={issue} key={`${column.id}-${issue.id}`} />
-        ))}
-        {column.id === "backlog" ? (
-          <button
-            type="button"
-            className="inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border bg-transparent px-2 py-2 text-2xs font-medium text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40"
-          >
-            <Plus className="size-3" aria-hidden="true" />
-            {t("issues.board.addCard")}
-          </button>
-        ) : null}
-        {column.id === "closed" ? (
-          <button
-            type="button"
-            className="inline-flex cursor-pointer items-center justify-center rounded-md px-2 py-1.5 font-mono text-2xs font-semibold text-primary-text outline-none transition-colors hover:bg-primary-soft focus-visible:ring-[3px] focus-visible:ring-ring/40"
-          >
-            {t("issues.board.viewAllClosed", { count: 47 })}
-          </button>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function IssueBoardCard({ issue }: { issue: IssueItem }) {
-  const { t } = useTranslation();
-  const StatusIcon = statusIconMeta[issue.status].icon;
-  const isError = issue.status === "error";
-
-  return (
-    <article
-      className={cn(
-        "flex flex-col gap-2 rounded-md border border-border bg-background px-3 py-2.5 shadow-xs",
-        issue.id === "#142" && "border-primary",
-        isError && "border-destructive bg-destructive-soft",
-      )}
-    >
-      <div className="flex items-center gap-1.5">
-        <StatusIcon
-          className={cn(
-            "size-3 shrink-0",
-            statusIconMeta[issue.status].className,
-          )}
-          aria-hidden="true"
-        />
-        <span
-          className={cn(
-            "font-mono text-2xs font-semibold",
-            isError ? "text-destructive" : "text-primary-text",
-          )}
-        >
-          {issue.id}
-        </span>
-        <div className="min-w-0 flex-1" />
-        {issue.status === "running" || issue.status === "error" ? (
-          <StatusPill
-            className={cn(
-              isError && "bg-destructive text-destructive-foreground",
-            )}
-            status={issue.status}
-          />
-        ) : (
-          <span className="font-mono text-2xs text-muted-foreground">
-            {issue.meta.split("·").at(-1)?.trim()}
-          </span>
-        )}
-      </div>
-      <h3
-        className={cn(
-          "line-clamp-2 text-xs font-semibold leading-normal",
-          columnClosedIssue(issue) && "text-muted-foreground",
-        )}
-      >
-        {issue.title}
-      </h3>
-      {isError ? (
-        <p className="font-mono text-2xs leading-normal text-destructive">
-          {t("issues.board.lastFailure", { code: 124, minutes: 12 })}
-        </p>
-      ) : null}
-      <IssueLabels labels={issue.labels} />
-      <div className="flex items-center gap-2">
-        <IssueAssignees agents={issue.agents} />
-        {issue.dispatchable && issue.agents.length === 0 ? (
-          <span className="font-mono text-2xs font-medium text-muted-foreground">
-            {t("issues.status.unassigned")}
-          </span>
-        ) : null}
-        <div className="min-w-0 flex-1" />
-        <IssueCommentCount count={issue.comments} />
-      </div>
-      {isError ? (
-        <Button
-          type="button"
-          size="xs"
-          variant="destructive"
-          className="h-6 self-start font-mono text-2xs font-semibold"
-        >
-          {t("issues.actions.redispatch")}
-        </Button>
-      ) : null}
-    </article>
-  );
-}
-
-function columnClosedIssue(issue: IssueItem) {
-  return issue.closed === true;
 }
 
 export { IssuesPage };

@@ -133,6 +133,14 @@ var enUS = map[int]string{
 	ProjectHasChildren:       "Project still has child projects",
 	ProjectHasActiveSessions: "Project still has open sessions",
 
+	// Issue
+	IssueNotFound:          "Issue not found",
+	IssueTitleRequired:     "Issue title is required",
+	IssueInvalidState:      "Invalid issue state",
+	IssueLabelNameRequired: "Label name is required",
+	IssueLabelInvalidTone:  "Invalid label tone",
+	IssueLabelNotFound:     "Referenced label not found",
+
 	// Project Location (remote device path sub-table)
 	ProjectLocationNotFound:    "Project path not found",
 	ProjectLocationInvalidPath: "Project path must be absolute",

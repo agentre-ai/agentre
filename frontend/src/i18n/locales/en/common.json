@@ -858,10 +858,14 @@
   },
   "issues": {
     "actions": {
-      "dispatchToAgent": "Dispatch to Agent",
+      "dispatchToAgent": "Dispatch to agent",
       "filter": "Filter",
-      "newIssue": "New Issue",
-      "redispatch": "Redispatch"
+      "newIssue": "New issue",
+      "redispatch": "Re-dispatch",
+      "close": "Close",
+      "reopen": "Reopen",
+      "edit": "Edit",
+      "delete": "Delete"
     },
     "board": {
       "addCard": "Add Card",
@@ -876,6 +880,21 @@
       "running": "In Progress",
       "waiting": "Waiting"
     },
+    "dialog": {
+      "title": "New Issue",
+      "editTitle": "Edit Issue",
+      "titleLabel": "Title",
+      "bodyLabel": "Description",
+      "projectLabel": "Project",
+      "noProject": "No project",
+      "labelsLabel": "Labels",
+      "create": "Create issue",
+      "save": "Save"
+    },
+    "empty": {
+      "title": "No issues yet",
+      "desc": "Create an issue to start tracking work"
+    },
     "filters": {
       "assignedAgent": "Assigned Agent",
       "author": "Author",
@@ -887,54 +906,15 @@
     "list": {
       "aria": "Issue list"
     },
-    "samples": {
-      "129": {
-        "meta": "Closed · 3d ago",
-        "title": "Fix Hook route matching priority"
-      },
-      "132": {
-        "meta": "Closed · yesterday",
-        "title": "Fix department banner collapsed state"
-      },
-      "133": {
-        "meta": "Created manually · 7d ago · Unassigned",
-        "title": "Research LLM cost dashboard options"
-      },
-      "136": {
-        "meta": "Created manually · 6d ago · Updated 1h ago",
-        "title": "Refactor ChatArea message list performance with virtualization"
-      },
-      "137": {
-        "meta": "Created manually · 5d ago · Unassigned",
-        "title": "Docs: Agent backend examples and common errors"
-      },
-      "138": {
-        "meta": "Created by Sentry Webhook · 4d ago · Failed with exit=124",
-        "title": "[Urgent] Codex CLI intermittently times out and interrupts sessions"
-      },
-      "139": {
-        "meta": "Created by GitHub Webhook · 3d ago · Waiting for CEO assistant approval",
-        "title": "Email Hook reconnect retry interval is too short and hits rate limits"
-      },
-      "140": {
-        "meta": "Created manually · 2d ago · Waiting for user approval",
-        "title": "Department nesting stutters when zooming at 4+ levels"
-      },
-      "141": {
-        "meta": "Created manually · yesterday · Updated 12m ago",
-        "title": "Implement dark mode and Slack-style message stream"
-      },
-      "142": {
-        "meta": "Created by Mail Hook · 14:32 · Updated 3m ago",
-        "title": "Fix OAuth callback losing the state parameter in Safari"
-      }
+    "state": {
+      "loading": "Loading…",
+      "error": "Failed to load"
     },
     "status": {
       "unassigned": "Unassigned"
     },
     "summary": {
-      "board": "Grouped by status · drag cards between columns",
-      "list": "12 Open · 47 Closed · 3 Agents following up"
+      "counts": "{{open}} open · {{closed}} closed"
     },
     "title": "Board",
     "view": {
