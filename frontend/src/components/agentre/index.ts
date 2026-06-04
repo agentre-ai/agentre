@@ -16,6 +16,7 @@ export { AgentGroup, AgentPanelSection, SessionRow } from "./agent-list";
 export type { AgentSession } from "./agent-list";
 export { ChatPage } from "./chat-page";
 export { ChatStreamsHost } from "./chat-streams-host";
+export { QuitConfirmDialog } from "./quit-confirm-dialog";
 export { HooksPage } from "./hooks-page";
 export { IssuesPage } from "./issues-page";
 export { OrgChartPage } from "./org-chart-page";

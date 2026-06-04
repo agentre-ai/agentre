@@ -206,3 +206,8 @@ export const PreviewImportData = windowBackedMock("PreviewImportData", () =>
 export const ApplyImportData = windowBackedMock("ApplyImportData", () =>
   Promise.resolve({ counts: {} }),
 );
+
+// Quit confirmation — called when the user confirms quitting with active sessions.
+export const ConfirmQuit = windowBackedMock("ConfirmQuit", () =>
+  Promise.resolve(),
+);
