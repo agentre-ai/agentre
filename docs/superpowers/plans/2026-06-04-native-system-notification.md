@@ -16,6 +16,14 @@
 - 提交用 gitmoji。**只在计划明确写 commit 步骤时提交**，提交到当前分支 `feat/completion-notification`。
 - 分两阶段：Phase 1 原生通知（Task 1-4）、Phase 2 声音移除（Task 5-6）、Task 7 收尾验证。
 
+> **执行落地校准（事后补记）** —— 本计划已执行并合入 `feat/completion-notification`。实际落地与下文略有出入，以此为准：
+> - **行号是编写时快照**，执行时一律以符号/内容定位。
+> - **Task 2** 还需同步更新既有 `internal/pkg/sysnotify/sysnotify_test.go`（它仍断言旧的 2 参接口形状，否则该包测试编译不过）。
+> - **Task 4** `frontend/wailsjs` 是 **gitignore 的生成物**：`make generate` 重生成以保证类型正确，但**不提交**（提交只含源码+测试）。另需在 `frontend/src/__tests__/App.test.tsx` 加一个最小 runtime mock（只桩 `EventsOn`/`EventsOff`），否则新挂载期的 `EventsOn` 会让 ~33 个未设置 `window.runtime` 的 App 用例崩。
+> - **Task 6** 除所列文件外，还需：删 `frontend/src/lib/__tests__/notify-sound.test.ts`、改 `frontend/src/stores/__tests__/notification-settings-store.test.ts` 与 `frontend/src/components/agentre/__tests__/notifications-panel.test.tsx`、微调 `frontend/src/__tests__/i18n.test.ts` 里硬编码的声音 key。
+> - **收尾**额外修了分支既有的 2 个 `prettier/prettier` 报错（`notification-toast.test.tsx`、`session-avatar.test.ts`，非本功能引入）使 `make lint` 绿（30 个既有 warning 未碰）。
+> - **实际提交**：Task 1-6 各 1 个 + lint 修复 1 个 + 本 spec/plan 文档 1 个。
+
 ---
 
 ## Phase 1：原生通知（Wails 运行时）
@@ -516,7 +524,8 @@ Expected: PASS（原有用例 + 新点击用例都过）。
 
 ```bash
 cd /Users/codfrm/Code/agentre/agentre
-git add frontend/src/lib/turn-notify.ts frontend/src/components/agentre/turn-complete-notifier.tsx frontend/src/lib/__tests__/turn-notify.test.ts frontend/src/components/agentre/__tests__/turn-complete-notifier.test.tsx frontend/wailsjs
+# 注意：frontend/wailsjs 是 gitignore 生成物，不要提交（make generate 重生成即可）。
+git add frontend/src/lib/turn-notify.ts frontend/src/components/agentre/turn-complete-notifier.tsx frontend/src/lib/__tests__/turn-notify.test.ts frontend/src/components/agentre/__tests__/turn-complete-notifier.test.tsx frontend/src/__tests__/App.test.tsx
 git commit -m "✨ notify(fe): 通知带 sessionId，点击经 notification:click 跳转会话"
 ```
 

@@ -1,8 +1,8 @@
 # 原生系统通知（图标 + 点击跳转会话，复用 Wails 内置通知）设计
 
 - 日期：2026-06-04
-- 状态：设计已评审（含重大方案修订），待转实现计划
-- 前置：[2026-06-03-completion-notification-design.md](2026-06-03-completion-notification-design.md)（v1 完成通知，beeep 实现）
+- 状态：已实现并合入分支 `feat/completion-notification`（实现计划见 [2026-06-04-native-system-notification.md](../plans/2026-06-04-native-system-notification.md)）
+- 前置背景：完成通知 v1（分类/门槛 + bespoke 应用内 toast + beeep 系统通知 + 前端声音子系统）。本设计**取代**其 beeep 系统通知、并**删除**前端声音子系统；v1 的 spec/plan 已随本次清理移除（分类/门槛/toast 设计仍在代码中沿用）。
 
 ## 背景
 
