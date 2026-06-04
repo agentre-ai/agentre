@@ -83,6 +83,8 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			// user frame 携带 base64 image content block(CLI stream-json 原生支持);
 			// extractImages 从 RunRequest.UserBlocks 抽 inline 图片经 handle.Stream 透传。
 			capability.CapImageInput: true,
+			// CLI 在 run_in_background Bash 任务完成后自主跑续轮;实现 AutonomousTurnSource。
+			capability.CapAutonomousTurn: true,
 		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},

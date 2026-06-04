@@ -17,6 +17,10 @@ const (
 	CapReportContextWindow Capability = "report_context_window"
 	CapCompact             Capability = "compact"
 	CapGoal                Capability = "goal"
+	// CapAutonomousTurn 标记 backend 会「自发产生 turn」—— 当前仅 claudecode:CLI 在
+	// run_in_background Bash 任务完成后自主注入 <task-notification> 并跑完整一轮。
+	// 实现 AutonomousTurnSource 接口;chat_svc 据此每会话起 watcher 落纯 assistant 轮。
+	CapAutonomousTurn Capability = "autonomous_turn"
 )
 
 // Capabilities 一个 runtime 的能力矩阵 + permission mode 元数据。
