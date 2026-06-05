@@ -606,7 +606,23 @@
     "composer": { "placeholder": "Message the group… use @ to mention", "send": "Send" },
     "settings": { "workdir": "Working directory", "archive": "Archive group" },
     "you": "You",
-    "onlyXReceived": "Only {{name}} received this"
+    "onlyXReceived": "Only {{name}} received this",
+    "new": {
+      "title": "New group",
+      "groupTitle": "Group title",
+      "groupTitlePlaceholder": "Frontend refactor squad",
+      "coordinator": "Coordinator",
+      "coordinatorPlaceholder": "Select coordinator",
+      "coordinatorHint": "Only group_send-capable agents (claudecode) can coordinate",
+      "project": "Project",
+      "projectNone": "(No project)",
+      "members": "Initial members",
+      "membersHint": "The coordinator can invite more members anytime",
+      "addMember": "Add member",
+      "removeMember": "Remove {{name}}",
+      "noCandidates": "No agents available to add",
+      "create": "Create group"
+    }
   },
   "commandPalette": {
     "chatSessions": {

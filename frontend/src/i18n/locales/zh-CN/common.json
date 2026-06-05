@@ -606,7 +606,23 @@
     "composer": { "placeholder": "给群里发消息… 用 @ 提及成员", "send": "发送" },
     "settings": { "workdir": "工作目录", "archive": "归档群" },
     "you": "你",
-    "onlyXReceived": "仅 {{name}} 收到"
+    "onlyXReceived": "仅 {{name}} 收到",
+    "new": {
+      "title": "新建群聊",
+      "groupTitle": "群标题",
+      "groupTitlePlaceholder": "前端重构攻坚组",
+      "coordinator": "协调者",
+      "coordinatorPlaceholder": "选择协调者",
+      "coordinatorHint": "仅支持 group_send 的 Agent（claudecode）可作为协调者",
+      "project": "项目",
+      "projectNone": "（不绑定项目）",
+      "members": "初始成员",
+      "membersHint": "协调者可在群里随时邀请更多成员加入",
+      "addMember": "添加成员",
+      "removeMember": "移除 {{name}}",
+      "noCandidates": "没有可加入的 Agent",
+      "create": "创建群聊"
+    }
   },
   "commandPalette": {
     "chatSessions": {
