@@ -19,6 +19,7 @@ import (
 type GroupRepo interface {
 	Create(ctx context.Context, g *group_entity.Group) error
 	Update(ctx context.Context, g *group_entity.Group) error
+	SetPinned(ctx context.Context, id int64, pinned bool) error
 	Find(ctx context.Context, id int64) (*group_entity.Group, error)
 	List(ctx context.Context) ([]*group_entity.Group, error)
 }
@@ -78,6 +79,16 @@ func (r *groupRepo) Update(ctx context.Context, g *group_entity.Group) error {
 			"round_count": g.RoundCount,
 			"status":      g.Status,
 			"updatetime":  g.Updatetime,
+		}).Error
+}
+
+// SetPinned 切换群置顶。顺带 bump updatetime, 让刚置顶的群在混排活跃度排序里浮上来。
+func (r *groupRepo) SetPinned(ctx context.Context, id int64, pinned bool) error {
+	return db.Ctx(ctx).Model(&group_entity.Group{}).
+		Where("id = ? AND status = ?", id, consts.ACTIVE).
+		Updates(map[string]any{
+			"pinned":     pinned,
+			"updatetime": time.Now().UnixMilli(),
 		}).Error
 }
 

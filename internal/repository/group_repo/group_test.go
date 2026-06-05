@@ -287,3 +287,17 @@ func TestGroupMessageRepo_NextSeq(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
+
+func TestGroupRepo_SetPinned(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	group_repo.RegisterGroup(group_repo.NewGroup())
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `groups` SET `pinned`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs(true, sqlmock.AnyArg(), int64(5), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, group_repo.Group().SetPinned(ctx, 5, true))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

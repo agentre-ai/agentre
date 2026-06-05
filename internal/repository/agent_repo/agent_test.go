@@ -210,3 +210,15 @@ func TestNextSortOrderByParent(t *testing.T) {
 	assert.Equal(t, 3, n)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestAgentSetPinned(t *testing.T) {
+	ctx, mock, repo := setupRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `agents` SET `pinned`=\\?").
+		WithArgs(true, int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.SetPinned(ctx, 42, true))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

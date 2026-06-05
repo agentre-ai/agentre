@@ -85,6 +85,20 @@ func (mr *MockGroupRepoMockRecorder) List(ctx any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockGroupRepo)(nil).List), ctx)
 }
 
+// SetPinned mocks base method.
+func (m *MockGroupRepo) SetPinned(ctx context.Context, id int64, pinned bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetPinned", ctx, id, pinned)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetPinned indicates an expected call of SetPinned.
+func (mr *MockGroupRepoMockRecorder) SetPinned(ctx, id, pinned any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPinned", reflect.TypeOf((*MockGroupRepo)(nil).SetPinned), ctx, id, pinned)
+}
+
 // Update mocks base method.
 func (m *MockGroupRepo) Update(ctx context.Context, g *group_entity.Group) error {
 	m.ctrl.T.Helper()

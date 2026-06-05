@@ -261,6 +261,20 @@ func (mr *MockAgentRepoMockRecorder) ReparentChildren(ctx, fromParentAgentID, to
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReparentChildren", reflect.TypeOf((*MockAgentRepo)(nil).ReparentChildren), ctx, fromParentAgentID, toDepartmentID, toParentAgentID)
 }
 
+// SetPinned mocks base method.
+func (m *MockAgentRepo) SetPinned(ctx context.Context, id int64, pinned bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetPinned", ctx, id, pinned)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetPinned indicates an expected call of SetPinned.
+func (mr *MockAgentRepoMockRecorder) SetPinned(ctx, id, pinned any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPinned", reflect.TypeOf((*MockAgentRepo)(nil).SetPinned), ctx, id, pinned)
+}
+
 // Update mocks base method.
 func (m *MockAgentRepo) Update(ctx context.Context, a *agent_entity.Agent) error {
 	m.ctrl.T.Helper()
