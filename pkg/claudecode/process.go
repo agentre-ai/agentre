@@ -6,6 +6,7 @@ import (
 	"os/exec"
 
 	"agentre/internal/pkg/clienv"
+	"agentre/internal/pkg/procattr"
 )
 
 type processSpec struct {
@@ -45,6 +46,7 @@ func startProcess(ctx context.Context, spec processSpec) (*process, error) {
 	// #nosec G204 -- binary/args come from agent backend config (CLIPath + flags
 	// 由 agentruntime 装配)，不接受用户输入。
 	cmd := exec.CommandContext(ctx, binary, spec.args...)
+	procattr.ApplyNoConsoleWindow(cmd)
 	if spec.cwd != "" {
 		cmd.Dir = spec.cwd
 	}

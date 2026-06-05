@@ -162,6 +162,65 @@ func TestToChatMessage_SkipsSubagentStateAndPermissionModeChange(t *testing.T) {
 	assert.Equal(t, "after", cm.Blocks[1].Text)
 }
 
+// TestToChatMessage_SubagentStateMergedOntoToolUseBlock 回归后台任务跨轮/重载后
+// 不可见的问题:SubagentStateBlock 的元数据必须附到匹配的 tool_use ChatBlock 的
+// .Subagent 字段上,不能再作为独立 block 下行前端(否则出 debug 卡)。
+func TestToChatMessage_SubagentStateMergedOntoToolUseBlock(t *testing.T) {
+	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
+	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
+		blocks.ToolUseBlock{ID: "tu1", Name: "Bash", Input: map[string]any{"command": "sleep 20"}},
+		chatblocks.SubagentStateBlock{
+			ParentToolCallID: "tu1",
+			Kind:             "local_bash",
+			Description:      "sleep 20",
+			Status:           "running",
+			TaskID:           "task-abc",
+			TotalTokens:      100,
+			DurationMs:       500,
+			LastToolName:     "computer",
+			ToolUses:         3,
+		},
+	}))
+
+	cm, err := toChatMessage(m)
+	require.NoError(t, err)
+	// 只有 1 个 block(tool_use),不能有独立的 subagent_state 或 unknown 卡。
+	require.Len(t, cm.Blocks, 1, "SubagentStateBlock 不能作为独立 block 下行,只能合入 tool_use")
+
+	tb := cm.Blocks[0]
+	assert.Equal(t, "tool_use", tb.Type)
+	assert.Equal(t, "tu1", tb.ToolUseID)
+
+	require.NotNil(t, tb.Subagent, "tool_use 块必须携带 .Subagent 元数据")
+	assert.Equal(t, "local_bash", tb.Subagent.Kind)
+	assert.Equal(t, "sleep 20", tb.Subagent.TaskDescription)
+	assert.Equal(t, "running", tb.Subagent.Status)
+	assert.Equal(t, "task-abc", tb.Subagent.TaskID)
+	assert.Equal(t, 100, tb.Subagent.TotalTokens)
+	assert.Equal(t, 500, tb.Subagent.DurationMs)
+	assert.Equal(t, "computer", tb.Subagent.LastToolName)
+	assert.Equal(t, 3, tb.Subagent.ToolUses)
+}
+
+// TestToChatMessage_SubagentStateWithNoMatchingToolUse 无匹配 tool_use 时
+// SubagentStateBlock 仍然被 skip(不产生独立 block)。
+func TestToChatMessage_SubagentStateWithNoMatchingToolUse(t *testing.T) {
+	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
+	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
+		blocks.TextBlock{Text: "hello"},
+		chatblocks.SubagentStateBlock{
+			ParentToolCallID: "no-match",
+			Kind:             "local_bash",
+			Status:           "completed",
+		},
+	}))
+
+	cm, err := toChatMessage(m)
+	require.NoError(t, err)
+	require.Len(t, cm.Blocks, 1, "无匹配 tool_use 时 SubagentStateBlock 仍 skip")
+	assert.Equal(t, "text", cm.Blocks[0].Type)
+}
+
 func TestToChatMessage_UnknownBlockFallback(t *testing.T) {
 	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
 	// NoticeBlock has Audience=ToUI; toChatMessage doesn't have a dedicated case for it,

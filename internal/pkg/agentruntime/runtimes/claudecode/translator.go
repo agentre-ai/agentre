@@ -316,6 +316,7 @@ func subagentInfoFromMeta(m *claudecode.SubagentMeta) agentruntime.SubagentInfo 
 	return agentruntime.SubagentInfo{
 		TaskID:          m.TaskID,
 		SubagentType:    m.SubagentType,
+		Kind:            m.TaskType,
 		TaskDescription: m.TaskDescription,
 		Prompt:          m.Prompt,
 		LastToolName:    m.LastToolName,

@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"agentre/internal/pkg/clienv"
+	"agentre/internal/pkg/procattr"
 )
 
 var (
@@ -100,6 +101,7 @@ func (r execAppServerRunner) Start(ctx context.Context, opts procOptions) (proce
 	// #nosec G204 -- binary and args are assembled from AgentBackend config and
 	// fixed protocol flags. Launching the configured CLI is the intended behavior.
 	cmd := exec.CommandContext(ctx, binary, opts.Args...)
+	procattr.ApplyNoConsoleWindow(cmd)
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}

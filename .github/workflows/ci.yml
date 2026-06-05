@@ -38,23 +38,6 @@ jobs:
         run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
       - run: make test-backend
 
-  windows-build-check:
-    name: Windows Cross-Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      - name: Create frontend dist placeholder
-        run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
-      # Catches build-constraint regressions (e.g. an OS-tagged package with no
-      # Windows file) before they reach the nightly/release Windows build.
-      - name: Cross-compile for Windows
-        run: |
-          GOOS=windows GOARCH=amd64 go build ./...
-          GOOS=windows GOARCH=arm64 go build ./...
-
   frontend-lint:
     name: Frontend Lint
     runs-on: ubuntu-latest

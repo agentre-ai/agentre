@@ -16,6 +16,7 @@ import (
 	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/model/entity/project_entity"
 	"agentre/internal/pkg/code"
+	"agentre/internal/pkg/procattr"
 	"agentre/internal/repository/agent_repo"
 	"agentre/internal/repository/chat_repo"
 	"agentre/internal/repository/project_repo"
@@ -326,14 +327,16 @@ func (s *projectSvc) DetectGitRepo(ctx context.Context, path string) (*GitRepoIn
 		return out, nil //nolint:nilerr // 同上，缺 .git 等价"非 git 仓库"
 	}
 	out.IsGitRepo = true
-	if branch, err := exec.CommandContext( //nolint:gosec // abs 来自本地目录选择器
-		ctx, "git", "-C", abs, "rev-parse", "--abbrev-ref", "HEAD",
-	).Output(); err == nil {
+	branchCmd := exec.CommandContext( //nolint:gosec // abs 来自本地目录选择器
+		ctx, "git", "-C", abs, "rev-parse", "--abbrev-ref", "HEAD")
+	procattr.ApplyNoConsoleWindow(branchCmd)
+	if branch, err := branchCmd.Output(); err == nil {
 		out.CurrentBranch = strings.TrimSpace(string(branch))
 	}
-	if origin, err := exec.CommandContext( //nolint:gosec // 同上
-		ctx, "git", "-C", abs, "remote", "get-url", "origin",
-	).Output(); err == nil {
+	originCmd := exec.CommandContext( //nolint:gosec // 同上
+		ctx, "git", "-C", abs, "remote", "get-url", "origin")
+	procattr.ApplyNoConsoleWindow(originCmd)
+	if origin, err := originCmd.Output(); err == nil {
 		out.Origin = strings.TrimSpace(string(origin))
 	}
 	return out, nil

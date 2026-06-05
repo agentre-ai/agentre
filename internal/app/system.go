@@ -9,12 +9,15 @@ import (
 	"strings"
 
 	"agentre/internal/bootstrap"
+	"agentre/internal/pkg/procattr"
 )
 
 // runOpenCmd is the test seam for exec.Command. Tests swap it; production code
 // uses the real exec.
 var runOpenCmd = func(name string, args ...string) error {
-	return exec.Command(name, args...).Run() //nolint:gosec
+	cmd := exec.Command(name, args...) //nolint:gosec
+	procattr.ApplyNoConsoleWindow(cmd)
+	return cmd.Run()
 }
 
 var lineSuffixRe = regexp.MustCompile(`:\d+(?::\d+)?$`)

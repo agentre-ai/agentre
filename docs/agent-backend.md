@@ -191,6 +191,7 @@ Create a new package `internal/pkg/agentruntime/runtimes/<name>/`, with at least
    - **`Capabilities()` must return a stable result** (the same across repeated calls on the same runtime); the frontend capability gating / remote prefetch both depend on this semantics.
    - The channel returned by `Run` **must be closed when the turn ends** (regardless of Done / Error / Abort). **`*RunResult` must not be read before the channel is closed** — `RunResult` is filled asynchronously.
    - When `RunRequest.Cwd` is non-empty, use it directly as cwd; when empty, fall back to `agentruntime.AgentCwd(req.AgentID)`. **Do not reverse-depend on `project_svc`**.
+   - When launching a local CLI subprocess, call `procattr.ApplyNoConsoleWindow(cmd)` before `cmd.Start()`. This is required for Windows GUI builds; otherwise every agent turn can flash a transient console window.
    - When `ForkAnchor` is non-empty, implement "Regenerate" — see claudecode using `--fork-session` and codex using `thread/rollback`.
    - Call `unregister(sessionID)` to clear the sessions map before the main goroutine exits, to avoid a leak.
 

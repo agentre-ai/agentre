@@ -14,6 +14,7 @@ import (
 	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/pkg/agentruntime"
 	"agentre/internal/repository/chat_repo"
+	"agentre/internal/service/chat_svc/handlers"
 	"agentre/internal/service/chat_svc/turn"
 )
 
@@ -92,6 +93,22 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 		return
 	}
 
+	// 若本自主轮由后台命令完成触发,带上完成任务身份,供前端即时翻转上一条消息里
+	// 的 subagent_state 块,并在收尾后落库定向翻转。remote 转发当前不携带 CompletedTask
+	// (v1 已知限制),此处对 nil/空 ToolUseID 全程 no-op。
+	var completedRef *CompletedTaskRef
+	if at.CompletedTask != nil && at.CompletedTask.ToolUseID != "" {
+		st := at.CompletedTask.Status
+		if st == "" {
+			st = "completed"
+		}
+		completedRef = &CompletedTaskRef{
+			ToolUseID: at.CompletedTask.ToolUseID,
+			Status:    st,
+			Summary:   at.CompletedTask.Summary,
+		}
+	}
+
 	stream := StreamName(sessionID, assistantMsg.ID)
 	logger.Ctx(ctx).Info("chat_svc: autonomous turn started",
 		zap.Int64("sessionId", sessionID),
@@ -103,6 +120,7 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 		Stream:           stream,
 		Trigger:          at.Trigger,
 		AssistantMessage: chatMessageForEvent(sess, assistantMsg),
+		CompletedTask:    completedRef,
 	})
 
 	acc := turn.New()
@@ -119,6 +137,11 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 	}
 
 	finalBlocks := acc.Finalize()
+	// 镜像 Send 路径(chat.go):本自主轮结束时仍 running 的 subagent(没等到
+	// SubagentDone,如轮被中断)翻成 "canceled",否则原样落 DB 让前端后台任务芯片
+	// 永远 spin。只动本轮 finalBlocks,不碰更早消息里的后台 bash 块(那条由
+	// FlipSubagentStatus 定向翻转)。
+	handlers.MarkRunningSubagentsCancelled(finalBlocks)
 	_ = assistantMsg.SetBlocks(finalBlocks)
 	if at.Result != nil {
 		if at.Result.Usage != nil {
@@ -147,6 +170,18 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 		zap.Int64("sessionId", sessionID),
 		zap.Int64("assistantMsgId", assistantMsg.ID),
 		zap.String("agentStatus", sess.AgentStatus))
+
+	// 后台命令在本自主轮才完成:它发起的 subagent_state 块住在更早的消息里,过不了
+	// per-turn accumulator,只能定向重写持久化态。completedRef 为 nil(含 remote
+	// 不携带 CompletedTask 的情形)时跳过。
+	if completedRef != nil {
+		if err := chat_repo.Message().FlipSubagentStatus(finalCtx, sessionID, completedRef.ToolUseID, completedRef.Status, completedRef.Summary); err != nil {
+			logger.Ctx(finalCtx).Warn("chat_svc.driveAutonomousTurn: FlipSubagentStatus failed",
+				zap.Int64("sessionId", sessionID),
+				zap.String("toolUseId", completedRef.ToolUseID),
+				zap.Error(err))
+		}
+	}
 
 	final := chatMessageForEvent(sess, assistantMsg)
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})

@@ -1,11 +1,16 @@
 package chat_repo
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/cago/database/db"
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"agentre/internal/model/entity/chat_entity"
@@ -22,7 +27,15 @@ type MessageRepo interface {
 	// DeleteFromSeq 删除指定 session 下 seq >= fromSeq 的所有消息，返回被删除的行数。
 	// 用于「从第 N 条消息开始重新生成」时一次性截断后续记录。
 	DeleteFromSeq(ctx context.Context, sessionID int64, fromSeq int) (int64, error)
+	// FlipSubagentStatus 定向把本会话里 parent_tool_call_id==toolUseID 的 subagent_state
+	// 块状态改成 status(后台 bash 在之后的自主轮才完成,无法走 per-turn accumulator)。
+	// summary 非空时同时写入块的 summary 字段。找不到则静默返回 nil(任务可能已 evict / 非本会话)。
+	FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error
 }
+
+// flipSubagentScanLimit 是 FlipSubagentStatus 倒序扫描的最近 assistant 消息条数上限。
+// 后台 bash 完成的自主轮通常紧跟在发起它的那条消息之后,近窗足以命中。
+const flipSubagentScanLimit = 50
 
 var defaultMessage MessageRepo
 
@@ -77,6 +90,93 @@ func (r *messageRepo) Find(ctx context.Context, id int64) (*chat_entity.Message,
 		return nil, err
 	}
 	return &m, nil
+}
+
+func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error {
+	if toolUseID == "" || status == "" {
+		return nil
+	}
+	logger.Ctx(ctx).Info("chat_repo.FlipSubagentStatus: flipping subagent_state status",
+		zap.Int64("sessionId", sessionID), zap.String("toolUseId", toolUseID), zap.String("status", status))
+
+	var rows []*chat_entity.Message
+	if err := db.Ctx(ctx).
+		Where("session_id = ? AND role = ?", sessionID, "assistant").
+		Order("seq DESC").
+		Limit(flipSubagentScanLimit).
+		Find(&rows).Error; err != nil {
+		return err
+	}
+
+	for _, msg := range rows {
+		rewritten, flipped, err := FlipSubagentInBlocksJSON(msg.BlocksJSON, toolUseID, status, summary)
+		if err != nil {
+			// 单条消息 blocks 损坏不应阻断其它消息;跳过继续找。
+			logger.Ctx(ctx).Warn("chat_repo.FlipSubagentStatus: decode blocks failed; skipping message",
+				zap.Int64("messageId", msg.ID), zap.Error(err))
+			continue
+		}
+		if !flipped {
+			continue
+		}
+		msg.BlocksJSON = rewritten
+		return r.Update(ctx, msg)
+	}
+
+	// 没命中:任务可能已 evict / 非本会话,静默返回 nil。
+	return nil
+}
+
+// FlipSubagentInBlocksJSON 在 blocks_json(StoredBlock 数组)里就地翻转 type=="subagent_state"
+// 且 data.parent_tool_call_id==toolUseID 的块的 status,返回重写后的 JSON + 是否命中。
+// summary 非空时同时写入命中块的 summary 字段。
+// 只触碰命中块的 status / summary 字段,其余 data 原样保留;repo 层不依赖 service 的 block 类型,
+// 只按 StoredBlock 信封 + 该块的少数已知字段操作。
+//
+// 解 data 用 json.Decoder + UseNumber():数字字段(total_tokens / duration_ms /
+// tool_uses)保持 json.Number,避免经 map[string]any 的 float64 强转把整数重写成
+// 科学计数(如 1e+04)。导出以便直接单测 JSON 改写逻辑。
+func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status, summary string) (string, bool, error) {
+	if blocksJSON == "" {
+		return blocksJSON, false, nil
+	}
+	var stored []cagoblocks.StoredBlock
+	if err := json.Unmarshal([]byte(blocksJSON), &stored); err != nil {
+		return blocksJSON, false, err
+	}
+	flipped := false
+	for i := range stored {
+		if stored[i].Type != "subagent_state" {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(stored[i].Data))
+		dec.UseNumber()
+		var data map[string]any
+		if err := dec.Decode(&data); err != nil {
+			return blocksJSON, false, err
+		}
+		if parent, _ := data["parent_tool_call_id"].(string); parent != toolUseID {
+			continue
+		}
+		data["status"] = status
+		if summary != "" {
+			data["summary"] = summary
+		}
+		buf, err := json.Marshal(data)
+		if err != nil {
+			return blocksJSON, false, err
+		}
+		stored[i].Data = buf
+		flipped = true
+	}
+	if !flipped {
+		return blocksJSON, false, nil
+	}
+	out, err := json.Marshal(stored)
+	if err != nil {
+		return blocksJSON, false, err
+	}
+	return string(out), true, nil
 }
 
 func (r *messageRepo) DeleteFromSeq(ctx context.Context, sessionID int64, fromSeq int) (int64, error) {

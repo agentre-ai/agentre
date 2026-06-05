@@ -123,3 +123,9 @@ cago's zap wrapper `github.com/cago-frame/cago/pkg/logger` writes to `<AppDataDi
   5. State changes (permission mode, login, remote connection)
 - **Levels:** Debug = normal-path detail; Info = business milestone; Warn = recoverable error / swallowed defer error; Error = state may be corrupted, fields must be sufficient to reconstruct the scene.
 - **Anti-patterns:** only `return err` without logging; spamming info inside a loop; cramming dynamic values into the message.
+
+## Windows subprocesses
+
+Agentre is a Windows GUI app, so background `exec.Command` subprocesses can flash a black console window unless their process attributes explicitly suppress it. Any Windows background subprocess that is not intentionally user-visible must call `procattr.ApplyNoConsoleWindow(cmd)` before `Start` / `Run` / `Output` / `CombinedOutput`.
+
+This is mandatory for agent backend CLI processes (`claude`, `codex`, `pi`) because they may launch once per turn. Do not duplicate raw `syscall.SysProcAttr{HideWindow: true, CreationFlags: CREATE_NO_WINDOW}` at each call site; use `internal/pkg/procattr` so the rule is test-covered and stays consistent.

@@ -948,3 +948,42 @@ func TestSession_IdleSetPermissionModeKeepsReaderAlive(t *testing.T) {
 	assert.Equal(t, "background_task", at.Trigger)
 	assert.Equal(t, "autonomous:listing", drainText(t, at.Events))
 }
+
+func TestParseSystemTask_CarriesTaskType(t *testing.T) {
+	f := rawFrame{
+		Type: "system", Subtype: "task_started",
+		TaskID: "bg1", ToolUseID: "tu1", Description: "Sleep for 5 seconds",
+		TaskType: "local_bash",
+	}
+	ev, ok := parseSystemTask(f, "sx")
+	require.True(t, ok)
+	require.NotNil(t, ev.Tool)
+	require.NotNil(t, ev.Tool.Subagent)
+	assert.Equal(t, "local_bash", ev.Tool.Subagent.TaskType)
+	assert.Equal(t, "Sleep for 5 seconds", ev.Tool.Subagent.TaskDescription)
+}
+
+func TestBackgroundTaskAutonomousTurn_CarriesCompletedTask(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeBackgroundTask))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	ch1, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	_ = drainText(t, ch1)
+
+	var at *AutoTurn
+	select {
+	case at = <-sess.AutonomousTurns():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected autonomous turn")
+	}
+	require.NotNil(t, at.CompletedTask)
+	assert.Equal(t, "tu1", at.CompletedTask.ToolUseID)
+	assert.Equal(t, "bg1", at.CompletedTask.TaskID)
+	assert.Equal(t, "completed", at.CompletedTask.Status)
+	assert.Equal(t, "Background command completed", at.CompletedTask.Summary)
+}

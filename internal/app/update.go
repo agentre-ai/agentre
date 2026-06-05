@@ -13,6 +13,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.uber.org/zap"
 
+	"agentre/internal/pkg/procattr"
 	"agentre/internal/service/update_svc"
 )
 
@@ -108,16 +109,22 @@ func (a *App) RestartApp() error {
 			appDir = filepath.Dir(appDir)
 		}
 		if strings.HasSuffix(appDir, ".app") {
-			if err := exec.Command("open", "-n", appDir).Start(); err != nil { //nolint:gosec
+			cmd := exec.Command("open", "-n", appDir) //nolint:gosec
+			procattr.ApplyNoConsoleWindow(cmd)
+			if err := cmd.Start(); err != nil {
 				return err
 			}
 		} else {
-			if err := exec.Command(execPath).Start(); err != nil { //nolint:gosec
+			cmd := exec.Command(execPath) //nolint:gosec
+			procattr.ApplyNoConsoleWindow(cmd)
+			if err := cmd.Start(); err != nil {
 				return err
 			}
 		}
 	default:
-		if err := exec.Command(execPath).Start(); err != nil { //nolint:gosec
+		cmd := exec.Command(execPath) //nolint:gosec
+		procattr.ApplyNoConsoleWindow(cmd)
+		if err := cmd.Start(); err != nil {
 			return err
 		}
 	}

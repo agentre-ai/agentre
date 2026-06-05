@@ -272,7 +272,17 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 		at := newActiveTurn(true)
 		s.active = at
 		s.sinkMu.Unlock()
-		s.autoCh <- &AutoTurn{Events: at.ch, SessionID: s.sessionID, Trigger: triggerBackgroundTask}
+		s.autoCh <- &AutoTurn{
+			Events:    at.ch,
+			SessionID: s.sessionID,
+			Trigger:   triggerBackgroundTask,
+			CompletedTask: &CompletedBackgroundTask{
+				ToolUseID: f.ToolUseID,
+				TaskID:    f.TaskID,
+				Status:    f.Status,
+				Summary:   f.Summary,
+			},
+		}
 		return nil
 	}
 	if isNonTurnFrame(f) {
@@ -883,6 +893,7 @@ func parseSystemTask(f rawFrame, sid string) (Event, bool) {
 	meta := &SubagentMeta{
 		TaskID:          f.TaskID,
 		SubagentType:    f.SubagentType,
+		TaskType:        f.TaskType,
 		TaskDescription: f.Description,
 		Prompt:          f.Prompt,
 		LastToolName:    f.LastToolName,
