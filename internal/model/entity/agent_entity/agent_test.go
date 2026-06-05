@@ -66,3 +66,8 @@ func TestAgentHelpers(t *testing.T) {
 	assert.True(t, (&Agent{SystemBadge: "DEFAULT"}).IsSystem())
 	assert.False(t, (&Agent{}).IsSystem())
 }
+
+func TestAgent_PinnedField(t *testing.T) {
+	assert.True(t, (&Agent{Pinned: true}).Pinned)
+	assert.False(t, (&Agent{}).Pinned)
+}

@@ -63,3 +63,10 @@ func TestGroupMemberIsCoordinator(t *testing.T) {
 		So((&group_entity.GroupMember{Role: group_entity.RoleMember}).IsCoordinator(), ShouldBeFalse)
 	})
 }
+
+func TestGroup_PinnedField(t *testing.T) {
+	Convey("Group.Pinned 字段", t, func() {
+		So((&group_entity.Group{Pinned: true}).Pinned, ShouldBeTrue)
+		So((&group_entity.Group{}).Pinned, ShouldBeFalse)
+	})
+}

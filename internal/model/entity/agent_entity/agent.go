@@ -37,6 +37,7 @@ type Agent struct {
 	PromptJSON     string `gorm:"column:prompt_json;type:text;not null;default:'[]'"`
 	SkillsJSON     string `gorm:"column:skills_json;type:text;not null;default:'[]'"`
 	Status         int    `gorm:"column:status;type:int;not null;default:1"`
+	Pinned         bool   `gorm:"column:pinned;type:boolean;not null;default:0"`
 	Createtime     int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
 	Updatetime     int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
 }

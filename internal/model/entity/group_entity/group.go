@@ -29,6 +29,7 @@ type Group struct {
 	RunStatus          string `gorm:"column:run_status;type:text;not null;default:'idle'"`
 	RoundCount         int    `gorm:"column:round_count;type:int;not null;default:0"`
 	Status             int    `gorm:"column:status;type:int;not null;default:1"`
+	Pinned             bool   `gorm:"column:pinned;type:boolean;not null;default:0"`
 	Createtime         int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
 	Updatetime         int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
 }
