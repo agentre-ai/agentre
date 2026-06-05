@@ -137,6 +137,16 @@ func (s *groupSvc) CreateGroup(ctx context.Context, req *CreateGroupRequest) (*G
 	if !s.backendSupportsGroup(ctx, req.CoordinatorAgentID) {
 		return nil, i18n.NewError(ctx, code.GroupBackendUnsupported)
 	}
+	if g.DepartmentID == 0 {
+		// 从协调者 agent 派生部门:决定 group_invite 的可招募池(部门内 agent)。
+		coordinator, err := agent_repo.Agent().Find(ctx, req.CoordinatorAgentID)
+		if err != nil {
+			return nil, err
+		}
+		if coordinator != nil {
+			g.DepartmentID = coordinator.DepartmentID
+		}
+	}
 	if err := group_repo.Group().Create(ctx, g); err != nil {
 		return nil, err
 	}

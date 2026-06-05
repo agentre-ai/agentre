@@ -10,9 +10,12 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"go.uber.org/mock/gomock"
 
+	"agentre/internal/model/entity/agent_entity"
 	"agentre/internal/model/entity/group_entity"
 	"agentre/internal/pkg/agentruntime/capability"
 	"agentre/internal/pkg/code"
+	"agentre/internal/repository/agent_repo"
+	"agentre/internal/repository/agent_repo/mock_agent_repo"
 	"agentre/internal/repository/group_repo"
 	"agentre/internal/repository/group_repo/mock_group_repo"
 	"agentre/internal/service/group_svc"
@@ -32,6 +35,9 @@ func TestGroupSvc_CreateGroup_AddsCoordinatorMember(t *testing.T) {
 		group_repo.RegisterGroup(groupRepo)
 		group_repo.RegisterMember(memberRepo)
 		group_repo.RegisterMessage(msgRepo)
+		agentRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+		agent_repo.RegisterAgent(agentRepo)
+		agentRepo.EXPECT().Find(gomock.Any(), gomock.Any()).Return(&agent_entity.Agent{Status: consts.ACTIVE}, nil).AnyTimes()
 
 		// 协调者后端通过 CapMCPTools 门控 → 放行建群。
 		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(1), capability.CapMCPTools).Return(true, nil)
@@ -250,6 +256,9 @@ func TestGroupSvc_CreateGroup_AddsInitialMembers(t *testing.T) {
 		group_repo.RegisterGroup(groupRepo)
 		group_repo.RegisterMember(memberRepo)
 		group_repo.RegisterMessage(msgRepo)
+		agentRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+		agent_repo.RegisterAgent(agentRepo)
+		agentRepo.EXPECT().Find(gomock.Any(), gomock.Any()).Return(&agent_entity.Agent{Status: consts.ACTIVE}, nil).AnyTimes()
 
 		// 协调者(1) + 成员(2) 都过能力门控。
 		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(1), capability.CapMCPTools).Return(true, nil)
@@ -296,6 +305,9 @@ func TestGroupSvc_CreateGroup_AddsInitialMembers(t *testing.T) {
 		group_repo.RegisterGroup(groupRepo)
 		group_repo.RegisterMember(memberRepo)
 		group_repo.RegisterMessage(msgRepo)
+		agentRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+		agent_repo.RegisterAgent(agentRepo)
+		agentRepo.EXPECT().Find(gomock.Any(), gomock.Any()).Return(&agent_entity.Agent{Status: consts.ACTIVE}, nil).AnyTimes()
 
 		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(1), capability.CapMCPTools).Return(true, nil)
 		groupRepo.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
@@ -325,6 +337,9 @@ func TestGroupSvc_CreateGroup_AddsInitialMembers(t *testing.T) {
 		group_repo.RegisterGroup(groupRepo)
 		group_repo.RegisterMember(memberRepo)
 		group_repo.RegisterMessage(msgRepo)
+		agentRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+		agent_repo.RegisterAgent(agentRepo)
+		agentRepo.EXPECT().Find(gomock.Any(), gomock.Any()).Return(&agent_entity.Agent{Status: consts.ACTIVE}, nil).AnyTimes()
 
 		// 协调者 + 8 个成员 = 9 > maxMembers(8)。前 7 个成员入群(连协调者 8 个)后,
 		// 第 8 个成员触发上限。重复的入群调用用 AnyTimes 放行,只断言最终报错码。
@@ -351,6 +366,45 @@ func TestGroupSvc_CreateGroup_AddsInitialMembers(t *testing.T) {
 		var httpErr *httputils.Error
 		So(errors.As(err, &httpErr), ShouldBeTrue)
 		So(httpErr.Code, ShouldEqual, code.GroupMemberLimit)
+	})
+
+	Convey("DepartmentID==0 时从协调者 agent 派生部门", t, func() {
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		gw := mock_group_svc.NewMockChatGateway(ctrl)
+		groupRepo := mock_group_repo.NewMockGroupRepo(ctrl)
+		memberRepo := mock_group_repo.NewMockGroupMemberRepo(ctrl)
+		msgRepo := mock_group_repo.NewMockGroupMessageRepo(ctrl)
+		agentRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+		group_repo.RegisterGroup(groupRepo)
+		group_repo.RegisterMember(memberRepo)
+		group_repo.RegisterMessage(msgRepo)
+		agent_repo.RegisterAgent(agentRepo)
+
+		// 协调者(1) 属于部门 42 → 派生到群。门控在派生之前放行。
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(1), capability.CapMCPTools).Return(true, nil)
+		agentRepo.EXPECT().Find(gomock.Any(), int64(1)).Return(
+			&agent_entity.Agent{ID: 1, DepartmentID: 42, Status: consts.ACTIVE}, nil)
+		groupRepo.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, g *group_entity.Group) error {
+				So(g.DepartmentID, ShouldEqual, 42) // ← 派生断言
+				g.ID = 5
+				return nil
+			})
+		memberRepo.EXPECT().FindByGroupAndAgent(gomock.Any(), int64(5), int64(1)).Return(nil, nil)
+		gw.EXPECT().EnsureGroupMemberSession(gomock.Any(), int64(1), int64(0), int64(5)).Return(int64(11), nil)
+		memberRepo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+		groupRepo.EXPECT().Find(gomock.Any(), int64(5)).Return(&group_entity.Group{ID: 5}, nil)
+		memberRepo.EXPECT().ListByGroup(gomock.Any(), int64(5)).Return(nil, nil)
+		msgRepo.EXPECT().ListByGroup(gomock.Any(), int64(5)).Return(nil, nil)
+
+		svc := group_svc.NewForTest(gw)
+		_, err := svc.CreateGroup(ctx, &group_svc.CreateGroupRequest{
+			Title: "支付小队", CoordinatorAgentID: 1, DepartmentID: 0,
+		})
+		So(err, ShouldBeNil)
 	})
 }
 
