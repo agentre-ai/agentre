@@ -213,6 +213,7 @@ const (
 	GroupMemberLimit                        // 群成员数已达上限
 	GroupNotRecruitable                     // 该 agent 不在可招募名单
 	GroupBackendUnsupported                 // 该 agent 的后端不支持群聊(缺 CapMCPTools)
+	GroupInviteForbidden                    // 非协调者调用 group_invite / 被邀请人不在招募池
 )
 
 // Server 接入 20300~20399

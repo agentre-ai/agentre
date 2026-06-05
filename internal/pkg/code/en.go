@@ -157,6 +157,7 @@ var enUS = map[int]string{
 	GroupMemberLimit:         "Group member limit reached",
 	GroupNotRecruitable:      "Agent is not recruitable",
 	GroupBackendUnsupported:  "Agent backend does not support group chat",
+	GroupInviteForbidden:     "Only the coordinator can invite members",
 
 	// Server
 	ServerURLInvalid:          "invalid Server URL",

@@ -27,4 +27,10 @@ type SendGroupMessageRequest struct {
 	ToUser             bool
 }
 
+// InviteResult 是 group_invite 成功拉入的一个成员(id + 显示名),回给协调者 turn。
+type InviteResult struct {
+	AgentID int64
+	Name    string
+}
+
 const maxMembers = 8

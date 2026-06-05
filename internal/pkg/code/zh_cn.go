@@ -157,6 +157,7 @@ var zhCN = map[int]string{
 	GroupMemberLimit:         "群成员数已达上限",
 	GroupNotRecruitable:      "该 agent 不在可招募名单",
 	GroupBackendUnsupported:  "该 agent 的后端不支持群聊",
+	GroupInviteForbidden:     "只有协调者能邀请成员",
 
 	// Server 接入
 	ServerURLInvalid:          "Server URL 不合法",

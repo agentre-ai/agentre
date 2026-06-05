@@ -15,6 +15,7 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
+	"agentre/internal/model/entity/agent_entity"
 	"agentre/internal/model/entity/group_entity"
 	"agentre/internal/pkg/agentruntime"
 	"agentre/internal/pkg/agentruntime/capability"
@@ -49,6 +50,8 @@ type GroupSvc interface {
 	RemoveGroupMember(ctx context.Context, memberID int64) error
 	SendGroupMessage(ctx context.Context, req *SendGroupMessageRequest) error
 	IngestAgentMessage(ctx context.Context, memberID int64, body string, mentions []string) error
+	// HandleInvite 是 group_invite MCP tool 的服务端入口:协调者把部门池内 agent 拉进群。
+	HandleInvite(ctx context.Context, callerMemberID int64, names []string, ids []int64, reason string) ([]InviteResult, error)
 	StopGroup(ctx context.Context, id int64) error
 	PauseGroup(ctx context.Context, id int64) error
 	ResumeGroup(ctx context.Context, id int64) error
@@ -174,6 +177,87 @@ func (s *groupSvc) CreateGroup(ctx context.Context, req *CreateGroupRequest) (*G
 	logger.Ctx(ctx).Info("group_svc.CreateGroup: created",
 		zap.Int64("groupID", g.ID), zap.Int64("coordinatorAgentID", req.CoordinatorAgentID))
 	return s.LoadGroup(ctx, g.ID)
+}
+
+// HandleInvite 是 group_invite MCP tool 的服务端入口:协调者把部门招募池内的 agent 拉进群。
+// callerMemberID=调用成员(必须是协调者); names/ids 二选一指定被邀请 agent; reason 仅日志。
+// 逐个经 backendSupportsGroup + maxMembers 门控,幂等 ensureMember,落 system "X 加入了群聊"。
+func (s *groupSvc) HandleInvite(ctx context.Context, callerMemberID int64, names []string, ids []int64, reason string) ([]InviteResult, error) {
+	caller, err := group_repo.Member().Find(ctx, callerMemberID)
+	if err != nil || caller == nil {
+		return nil, i18n.NewError(ctx, code.GroupMemberNotFound)
+	}
+	if !caller.IsCoordinator() {
+		return nil, i18n.NewError(ctx, code.GroupInviteForbidden)
+	}
+	// per-group 串行化,与 IngestAgentMessage 共用,避免并发入群重号。
+	mu := s.ingestMu(caller.GroupID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	g, err := group_repo.Group().Find(ctx, caller.GroupID)
+	if err != nil || g == nil {
+		return nil, i18n.NewError(ctx, code.GroupNotFound)
+	}
+	pool, err := agent_repo.Agent().ListByDepartment(ctx, g.DepartmentID)
+	if err != nil {
+		return nil, err
+	}
+	// 在招募池内按 id / 名解析(去重)。
+	wantIDs := map[int64]bool{}
+	for _, id := range ids {
+		wantIDs[id] = true
+	}
+	wantNames := map[string]bool{}
+	for _, n := range names {
+		wantNames[n] = true
+	}
+	var targets []*agent_entity.Agent
+	seen := map[int64]bool{}
+	for _, a := range pool {
+		if !a.IsActive() || seen[a.ID] {
+			continue
+		}
+		if wantIDs[a.ID] || wantNames[a.Name] {
+			seen[a.ID] = true
+			targets = append(targets, a)
+		}
+	}
+
+	members, err := group_repo.Member().ListByGroup(ctx, g.ID)
+	if err != nil {
+		return nil, err
+	}
+	memberCount := len(members)
+	results := []InviteResult{}
+	for _, a := range targets {
+		if a.ID == g.CoordinatorAgentID {
+			continue
+		}
+		if memberCount >= maxMembers {
+			return nil, i18n.NewError(ctx, code.GroupMemberLimit)
+		}
+		if !s.backendSupportsGroup(ctx, a.ID) {
+			logger.Ctx(ctx).Info("group_svc.HandleInvite: backend lacks CapMCPTools, skip",
+				zap.Int64("agentId", a.ID), zap.String("reason", reason))
+			continue
+		}
+		m, err := s.ensureMember(ctx, g, a.ID, group_entity.RoleMember)
+		if err != nil {
+			return nil, err
+		}
+		if !m.IsActive() {
+			continue
+		}
+		memberCount++
+		if _, err := s.persistMessage(ctx, g, group_entity.SenderKindSystem, 0, a.Name+" 加入了群聊", nil, false, 0); err != nil {
+			logger.Ctx(ctx).Warn("group_svc.HandleInvite: system message persist failed", zap.Error(err))
+		}
+		results = append(results, InviteResult{AgentID: a.ID, Name: a.Name})
+	}
+	logger.Ctx(ctx).Info("group_svc.HandleInvite: invited",
+		zap.Int64("groupId", g.ID), zap.Int("count", len(results)))
+	return results, nil
 }
 
 // ensureMember 幂等地把 agent 加入群(建 member + backing session)。
