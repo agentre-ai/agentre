@@ -159,8 +159,8 @@ type ChatStreamEvent struct {
 // 该块要翻成的终态,Summary 是 CLI 下发的完成摘要文本（如退出码说明）。
 type CompletedTaskRef struct {
 	ToolUseID string `json:"toolUseId"`
-	Status    string `json:"status"`              // completed | failed
-	Summary   string `json:"summary,omitempty"`   // CLI task_notification.summary
+	Status    string `json:"status"`            // completed | failed
+	Summary   string `json:"summary,omitempty"` // CLI task_notification.summary
 }
 
 // ChatCompactBoundary 是 StreamCompactBoundary 事件的 payload。MessageID 是 boundary

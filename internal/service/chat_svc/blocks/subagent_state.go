@@ -13,7 +13,7 @@ type SubagentStateBlock struct {
 	Description       string   `json:"description,omitempty"` // 任务名（task_started.description）
 	TotalTokens       int      `json:"total_tokens,omitempty"`
 	DurationMs        int      `json:"duration_ms,omitempty"`
-	Status            string   `json:"status"` // running | completed | failed | canceled
+	Status            string   `json:"status"`            // running | completed | failed | canceled
 	Summary           string   `json:"summary,omitempty"` // CLI task_notification.summary（如退出码说明）
 	LastToolName      string   `json:"last_tool_name,omitempty"`
 	ToolUses          int      `json:"tool_uses,omitempty"`
