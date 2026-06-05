@@ -335,6 +335,20 @@ function GroupRow({ group, selected, onOpen }: GroupRowProps) {
 
 type ChatSidebarFilter = "all" | "groups" | "agents" | "running" | "unread";
 
+// MixedRow: 侧栏混排列表的一行，agent 与群同列。ts = 最近活跃时间（agent 取其会话
+// 在 meta-store 的 max(lastMessageAt)，群取 Updatetime）；pinned 浮顶。
+type MixedRow =
+  | { kind: "agent"; ts: number; pinned: boolean; agent: ChatAgentItem }
+  | { kind: "group"; ts: number; pinned: boolean; group: GroupListItem };
+
+// 活跃度倒序：ts 大的在前；ts===0（无活跃）沉到底部，保持稳定。
+function mixedRowByActivity(a: MixedRow, b: MixedRow): number {
+  if (a.ts === b.ts) return 0;
+  if (a.ts === 0) return 1;
+  if (b.ts === 0) return -1;
+  return b.ts - a.ts;
+}
+
 function groupMatchesSearch(group: GroupListItem, query: string): boolean {
   if (!query) return true;
   return group.title.toLowerCase().includes(query);
@@ -496,12 +510,10 @@ function ChatPage() {
       ),
     [agents, filterValue, sidebarFilter, attentionReasons],
   );
-  const pinned = visibleAgents.filter((a) => a.pinned);
-  // 非 pinned 按最新会话时间倒序。无会话的 agent 沉到底部，保持原 DB 顺序。
-  // pinned 不参与排序（用户强约束：永远最前面）。
-  // 排序键取 sessionIds 在 meta-store 中的 max(lastMessageAt)，确保 turn 结束
-  // 后实时反映最新活跃时间，而非快照里偶发的 sessions[0] 顺序。
-  const others = React.useMemo(() => {
+  // 混排：agent 与群合并成一个列表，按最近活跃倒序；pinned（系统 agent + 用户置顶的
+  // agent/群）浮顶。agent 活跃度取 sessionIds 在 meta-store 的 max(lastMessageAt)，
+  // 确保 turn 结束后实时反映；群活跃度取 Updatetime。无活跃的项 ts=0 沉到底部。
+  const mixedRows = React.useMemo<MixedRow[]>(() => {
     const agentMaxTs = (a: ChatAgentItem): number => {
       const ids = a.sessionIds ?? a.sessions.map((s) => s.id);
       let max = 0;
@@ -511,17 +523,29 @@ function ChatPage() {
       }
       return max;
     };
-    return visibleAgents
-      .filter((a) => !a.pinned)
-      .sort((a, b) => {
-        const aTs = agentMaxTs(a);
-        const bTs = agentMaxTs(b);
-        if (aTs === bTs) return 0;
-        if (aTs === 0) return 1;
-        if (bTs === 0) return -1;
-        return bTs - aTs;
-      });
-  }, [visibleAgents, metas]);
+    return [
+      ...visibleAgents.map<MixedRow>((a) => ({
+        kind: "agent",
+        ts: agentMaxTs(a),
+        pinned: a.pinned,
+        agent: a,
+      })),
+      ...visibleGroups.map<MixedRow>((g) => ({
+        kind: "group",
+        ts: g.updatetime,
+        pinned: g.pinned,
+        group: g,
+      })),
+    ];
+  }, [visibleAgents, visibleGroups, metas]);
+  const pinnedRows = React.useMemo(
+    () => mixedRows.filter((r) => r.pinned).sort(mixedRowByActivity),
+    [mixedRows],
+  );
+  const otherRows = React.useMemo(
+    () => mixedRows.filter((r) => !r.pinned).sort(mixedRowByActivity),
+    [mixedRows],
+  );
 
   const filterIsActive = filterValue.length > 0;
   const hasResults = visibleAgents.length > 0 || visibleGroups.length > 0;
@@ -559,6 +583,18 @@ function ChatPage() {
       showNotChattableNotice={showNotChattableNotice}
     />
   );
+
+  const renderRow = (row: MixedRow) =>
+    row.kind === "agent" ? (
+      renderAgentGroup(row.agent)
+    ) : (
+      <GroupRow
+        key={`group-${row.group.id}`}
+        group={row.group}
+        selected={row.group.id === selectedGroupId}
+        onOpen={openGroup}
+      />
+    );
 
   return (
     <>
@@ -701,34 +737,16 @@ function ChatPage() {
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
-          {visibleGroups.length > 0 ? (
-            <>
-              <AgentPanelSection label={t("group.section")} />
-              {visibleGroups.map((g) => (
-                <GroupRow
-                  key={g.id}
-                  group={g}
-                  selected={g.id === selectedGroupId}
-                  onOpen={openGroup}
-                />
-              ))}
-            </>
-          ) : null}
-          {pinned.length > 0 ? (
+          {pinnedRows.length > 0 ? (
             <>
               <AgentPanelSection
                 label={t("chatPage.sections.pinned")}
                 icon="pin"
               />
-              {pinned.map(renderAgentGroup)}
+              {pinnedRows.map(renderRow)}
             </>
           ) : null}
-          {others.length > 0 ? (
-            <>
-              <AgentPanelSection label={t("chatPage.sections.agents")} />
-              {others.map(renderAgentGroup)}
-            </>
-          ) : null}
+          {otherRows.map(renderRow)}
           {filterIsActive && !hasResults ? (
             <div className="px-2 py-6 text-center text-2xs text-muted-foreground">
               {t("chatPage.search.noMatches", {

@@ -555,7 +555,7 @@ describe("ChatPage sidebar — 群聊分区", () => {
     expect(screen.queryByText("Group Chats")).not.toBeInTheDocument();
   });
 
-  it("有群时渲染 Group Chats 分区 + 群行;点击群行打开 group tab", async () => {
+  it("混排：群行内联渲染(无独立 Group Chats 分区)+ 点击打开 group tab", async () => {
     appMocks.GroupList.mockResolvedValue([
       {
         id: 9,
@@ -564,13 +564,15 @@ describe("ChatPage sidebar — 群聊分区", () => {
         roundCount: 2,
         createtime: 0,
         updatetime: 0,
+        pinned: false,
       },
     ]);
 
     renderChatPage();
 
     const row = await screen.findByRole("button", { name: /Release Squad/ });
-    expect(screen.getByText("Group Chats")).toBeInTheDocument();
+    // 混排后不再有独立的「Group Chats」分区标题。
+    expect(screen.queryByText("Group Chats")).not.toBeInTheDocument();
 
     fireEvent.click(row);
 
@@ -584,6 +586,107 @@ describe("ChatPage sidebar — 群聊分区", () => {
         title: "Release Squad",
       });
     });
+  });
+
+  it("混排：高活跃度的群排在低活跃度 agent 之上", async () => {
+    appMocks.GroupList.mockResolvedValue([
+      {
+        id: 9,
+        title: "Release Squad",
+        runStatus: "idle",
+        roundCount: 0,
+        createtime: 0,
+        updatetime: 9999,
+        pinned: false,
+      },
+    ]);
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        {
+          activeCount: 0,
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          chattable: true,
+          id: 7,
+          name: "Eng",
+          pinned: false,
+          recentCount: 1,
+          sessions: [
+            {
+              id: 4,
+              lastMessageAt: 1000,
+              lastReadAt: 1000,
+              needsAttention: false,
+              status: "idle",
+              title: "s",
+            },
+          ],
+        },
+      ],
+    });
+    renderChatPage();
+    const groupRow = await screen.findByRole("button", {
+      name: /Release Squad/,
+    });
+    const agentRow = await screen.findByRole("button", {
+      name: /Open Eng recent session/,
+    });
+    // 群 updatetime 9999 > agent 活跃 1000 → 群排在前。
+    expect(
+      groupRow.compareDocumentPosition(agentRow) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("混排：用户置顶的群浮到 PINNED 分区(高于更活跃的未置顶 agent)", async () => {
+    appMocks.GroupList.mockResolvedValue([
+      {
+        id: 9,
+        title: "Release Squad",
+        runStatus: "idle",
+        roundCount: 0,
+        createtime: 0,
+        updatetime: 0,
+        pinned: true,
+      },
+    ]);
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        {
+          activeCount: 0,
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          chattable: true,
+          id: 7,
+          name: "Eng",
+          pinned: false,
+          recentCount: 1,
+          sessions: [
+            {
+              id: 4,
+              lastMessageAt: 5000,
+              lastReadAt: 5000,
+              needsAttention: false,
+              status: "idle",
+              title: "s",
+            },
+          ],
+        },
+      ],
+    });
+    renderChatPage();
+    const groupRow = await screen.findByRole("button", {
+      name: /Release Squad/,
+    });
+    expect(screen.getByText("PINNED")).toBeInTheDocument();
+    const agentRow = await screen.findByRole("button", {
+      name: /Open Eng recent session/,
+    });
+    // 置顶群浮顶：即使活跃度 0 远低于 agent 的 5000，也排在 agent 之上。
+    expect(
+      groupRow.compareDocumentPosition(agentRow) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
 
