@@ -122,6 +122,11 @@ type AgentGroupProps = React.ComponentProps<"article"> & {
   // 把"选 agent → 选会话"压成一步。不影响 chevron / + 按钮（这俩 stopPropagation）。
   onHeaderClick?: () => void;
   onSessionSelect?: (sessionId: string, opts?: { newTab?: boolean }) => void;
+  // 置顶切换:父组件提供时,头部常驻一个 pin 开关按钮。pinToggleLabel 由父组件按
+  // 当前 pinned 态算好(Pin/Unpin {{name}}),同时用作 aria-label 与 title,
+  // 让 agent-list 不必反向依赖 chat 的 i18n 命名空间。
+  onTogglePin?: () => void;
+  pinToggleLabel?: string;
   persistenceKey?: string;
   pinned?: boolean;
   selectedSessionId?: string;
@@ -145,6 +150,8 @@ function AgentGroup({
   onHeaderClick,
   onNewSession,
   onSessionSelect,
+  onTogglePin,
+  pinToggleLabel,
   persistenceKey,
   pinned,
   selectedSessionId,
@@ -219,6 +226,29 @@ function AgentGroup({
             >
               <StatusDot status="running" size="xs" className="animate-pulse" />
             </span>
+          ) : null}
+          {onTogglePin ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={pinToggleLabel}
+              title={pinToggleLabel}
+              className={cn(
+                "text-muted-foreground",
+                pinned && "text-primary-text",
+              )}
+              onClick={(e) => {
+                e.stopPropagation();
+                onTogglePin();
+              }}
+            >
+              <Pin
+                data-icon="only"
+                aria-hidden="true"
+                className="-rotate-[30deg]"
+              />
+            </Button>
           ) : null}
           <Button
             type="button"

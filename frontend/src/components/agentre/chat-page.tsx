@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Check, Plus, Search, SlidersHorizontal, X } from "lucide-react";
+import { Check, Pin, Plus, Search, SlidersHorizontal, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 
@@ -17,7 +17,9 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useChatAgents, type ChatAgentItem } from "@/hooks/use-chat-agents";
+import { useChatAgentsStore } from "@/stores/chat-agents-store";
 import { useGroupList, type GroupListItem } from "@/hooks/use-group-list";
+import { useGroupListStore } from "@/stores/group-list-store";
 import { NEW_CHAT_INITIAL_QUERY } from "@/components/agentre/shortcuts/registry";
 import {
   reasonToDisplayStatus,
@@ -40,7 +42,11 @@ import { StatusDot } from "./primitives";
 import { GroupNewDialog } from "./group-chat/group-new-dialog";
 import { ResizableSidebar } from "./resizable-sidebar";
 import { SessionsPopover } from "./sessions-popover";
-import { ListChatAgentSessions } from "../../../wailsjs/go/app/App";
+import {
+  GroupSetPinned,
+  ListChatAgentSessions,
+  SetAgentPinned,
+} from "../../../wailsjs/go/app/App";
 import type { AgentColor, AgentStatus } from "./types";
 
 // 群 run_status → sidebar StatusDot 的 AgentStatus 收敛。后端可能下发带下划线的
@@ -238,6 +244,17 @@ function AgentGroupRow({
       color={(a.avatarColor as AgentColor) || "agent-1"}
       activeCount={a.activeCount}
       pinned={a.pinned}
+      pinToggleLabel={
+        a.pinned
+          ? t("chatPage.pin.unpinAria", { name: a.name })
+          : t("chatPage.pin.pinAria", { name: a.name })
+      }
+      onTogglePin={() => {
+        void (async () => {
+          await SetAgentPinned({ id: a.id, pinned: !a.pinned });
+          await useChatAgentsStore.getState().reload();
+        })();
+      }}
       persistenceKey={`agent:${a.id}`}
       sessions={sessions}
       attentionSessions={attentionSessions}
@@ -304,30 +321,62 @@ type GroupRowProps = {
   group: GroupListItem;
   selected: boolean;
   onOpen: (groupId: number, title: string) => void;
+  onTogglePin: (groupId: number, pinned: boolean) => void;
 };
 
-function GroupRow({ group, selected, onOpen }: GroupRowProps) {
+function GroupRow({ group, selected, onOpen, onTogglePin }: GroupRowProps) {
+  const { t } = useTranslation();
   const dotStatus = groupRunStatusToDotStatus(group.runStatus);
+  const pinLabel = group.pinned
+    ? t("chatPage.pin.unpinAria", { name: group.title })
+    : t("chatPage.pin.pinAria", { name: group.title });
   return (
-    <button
-      type="button"
-      aria-current={selected ? "true" : undefined}
-      onClick={() => onOpen(group.id, group.title)}
+    <div
       className={cn(
-        "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors hover:bg-sidebar-active-bg focus-visible:ring-[3px] focus-visible:ring-ring/50",
-        selected && "bg-primary-soft text-primary-text",
+        "group/grouprow flex w-full items-center gap-1 rounded-md pr-1 transition-colors hover:bg-sidebar-active-bg",
+        selected && "bg-primary-soft",
       )}
     >
-      <StatusDot status={dotStatus} size="xs" />
-      <span
+      <button
+        type="button"
+        aria-current={selected ? "true" : undefined}
+        onClick={() => onOpen(group.id, group.title)}
         className={cn(
-          "min-w-0 flex-1 truncate",
-          selected ? "font-medium text-primary-text" : "text-foreground",
+          "flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+          selected && "text-primary-text",
         )}
       >
-        {group.title}
-      </span>
-    </button>
+        <StatusDot status={dotStatus} size="xs" />
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate",
+            selected ? "font-medium text-primary-text" : "text-foreground",
+          )}
+        >
+          {group.title}
+        </span>
+        {group.pinned ? (
+          <Pin
+            className="size-3 -rotate-[30deg] text-primary-text"
+            aria-label={t("agentList.pinned")}
+          />
+        ) : null}
+      </button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        aria-label={pinLabel}
+        title={pinLabel}
+        className={cn(
+          "text-muted-foreground",
+          group.pinned && "text-primary-text",
+        )}
+        onClick={() => onTogglePin(group.id, !group.pinned)}
+      >
+        <Pin data-icon="only" aria-hidden="true" className="-rotate-[30deg]" />
+      </Button>
+    </div>
   );
 }
 
@@ -584,6 +633,13 @@ function ChatPage() {
     />
   );
 
+  const toggleGroupPin = (groupId: number, pinned: boolean) => {
+    void (async () => {
+      await GroupSetPinned(groupId, pinned);
+      await useGroupListStore.getState().reload();
+    })();
+  };
+
   const renderRow = (row: MixedRow) =>
     row.kind === "agent" ? (
       renderAgentGroup(row.agent)
@@ -593,6 +649,7 @@ function ChatPage() {
         group={row.group}
         selected={row.group.id === selectedGroupId}
         onOpen={openGroup}
+        onTogglePin={toggleGroupPin}
       />
     );
 

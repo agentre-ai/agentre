@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useCommandPaletteStore } from "@/stores/command-palette-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useChatAgentsStore } from "@/stores/chat-agents-store";
 import { useGroupListStore } from "@/stores/group-list-store";
 
 function resetTabsStore() {
@@ -46,6 +47,8 @@ const appMocks = vi.hoisted(() => ({
     .fn()
     .mockResolvedValue({ sessions: [], total: 0, hasMore: false }),
   GroupList: vi.fn().mockResolvedValue([]),
+  SetAgentPinned: vi.fn().mockResolvedValue({ id: 0, pinned: false }),
+  GroupSetPinned: vi.fn().mockResolvedValue(undefined),
 }));
 
 const runtimeMocks = vi.hoisted(() => {
@@ -570,7 +573,9 @@ describe("ChatPage sidebar — 群聊分区", () => {
 
     renderChatPage();
 
-    const row = await screen.findByRole("button", { name: /Release Squad/ });
+    const row = await screen.findByRole("button", {
+      name: /status Release Squad/,
+    });
     // 混排后不再有独立的「Group Chats」分区标题。
     expect(screen.queryByText("Group Chats")).not.toBeInTheDocument();
 
@@ -626,7 +631,7 @@ describe("ChatPage sidebar — 群聊分区", () => {
     });
     renderChatPage();
     const groupRow = await screen.findByRole("button", {
-      name: /Release Squad/,
+      name: /status Release Squad/,
     });
     const agentRow = await screen.findByRole("button", {
       name: /Open Eng recent session/,
@@ -676,7 +681,7 @@ describe("ChatPage sidebar — 群聊分区", () => {
     });
     renderChatPage();
     const groupRow = await screen.findByRole("button", {
-      name: /Release Squad/,
+      name: /status Release Squad/,
     });
     expect(screen.getByText("PINNED")).toBeInTheDocument();
     const agentRow = await screen.findByRole("button", {
@@ -687,6 +692,145 @@ describe("ChatPage sidebar — 群聊分区", () => {
       groupRow.compareDocumentPosition(agentRow) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+});
+
+describe("ChatPage sidebar — 置顶切换", () => {
+  // E5: 侧栏每行常驻一个置顶切换按钮;点击 → 调 SetAgentPinned / GroupSetPinned
+  // 写库,再 reload 对应 store 让浮顶即时生效。aria-label 随当前置顶态在
+  // Pin/Unpin 之间切换。
+  beforeEach(() => {
+    localStorage.clear();
+    resetTabsStore();
+    useChatAgentsStore.getState().__reset();
+    useGroupListStore.getState().__reset();
+    runtimeMocks.handlers.clear();
+    vi.clearAllMocks();
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.GroupList.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    resetTabsStore();
+    useChatAgentsStore.getState().__reset();
+    useGroupListStore.getState().__reset();
+    localStorage.clear();
+  });
+
+  it("点击未置顶 agent 的置顶按钮 → SetAgentPinned(true) + 刷新 agents", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        {
+          activeCount: 0,
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          chattable: true,
+          id: 7,
+          name: "Eng",
+          pinned: false,
+          recentCount: 0,
+          sessions: [],
+        },
+      ],
+    });
+    appMocks.SetAgentPinned.mockResolvedValue({ id: 7, pinned: true });
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderChatPage();
+
+    const pinBtn = await screen.findByRole("button", { name: "Pin Eng" });
+    // 用「写库后又拉了一次 ListChatAgents」证明 reload 被触发 —— 比 spy store
+    // 方法更不易泄漏到其它测试文件(store 是模块单例)。
+    const before = appMocks.ListChatAgents.mock.calls.length;
+
+    await user.click(pinBtn);
+
+    expect(appMocks.SetAgentPinned).toHaveBeenCalledWith({
+      id: 7,
+      pinned: true,
+    });
+    await waitFor(() =>
+      expect(appMocks.ListChatAgents.mock.calls.length).toBeGreaterThan(before),
+    );
+  });
+
+  it("点击已置顶 agent 的按钮 → SetAgentPinned(false)", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        {
+          activeCount: 0,
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          chattable: true,
+          id: 7,
+          name: "Eng",
+          pinned: true,
+          recentCount: 0,
+          sessions: [],
+        },
+      ],
+    });
+    appMocks.SetAgentPinned.mockResolvedValue({ id: 7, pinned: false });
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderChatPage();
+
+    const unpinBtn = await screen.findByRole("button", { name: "Unpin Eng" });
+    await user.click(unpinBtn);
+
+    expect(appMocks.SetAgentPinned).toHaveBeenCalledWith({
+      id: 7,
+      pinned: false,
+    });
+  });
+
+  it("点击未置顶群的置顶按钮 → GroupSetPinned(true) + 刷新群列表", async () => {
+    appMocks.GroupList.mockResolvedValue([
+      {
+        id: 9,
+        title: "Release Squad",
+        runStatus: "idle",
+        roundCount: 0,
+        createtime: 0,
+        updatetime: 0,
+        pinned: false,
+      },
+    ]);
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderChatPage();
+
+    const pinBtn = await screen.findByRole("button", {
+      name: "Pin Release Squad",
+    });
+    const before = appMocks.GroupList.mock.calls.length;
+
+    await user.click(pinBtn);
+
+    expect(appMocks.GroupSetPinned).toHaveBeenCalledWith(9, true);
+    await waitFor(() =>
+      expect(appMocks.GroupList.mock.calls.length).toBeGreaterThan(before),
+    );
+  });
+
+  it("点击已置顶群的按钮 → GroupSetPinned(false)", async () => {
+    appMocks.GroupList.mockResolvedValue([
+      {
+        id: 9,
+        title: "Release Squad",
+        runStatus: "idle",
+        roundCount: 0,
+        createtime: 0,
+        updatetime: 0,
+        pinned: true,
+      },
+    ]);
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderChatPage();
+
+    const unpinBtn = await screen.findByRole("button", {
+      name: "Unpin Release Squad",
+    });
+    await user.click(unpinBtn);
+
+    expect(appMocks.GroupSetPinned).toHaveBeenCalledWith(9, false);
   });
 });
 
@@ -773,7 +917,7 @@ describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
     renderChatPage();
 
     expect(
-      await screen.findByRole("button", { name: /Release Squad/ }),
+      await screen.findByRole("button", { name: /status Release Squad/ }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Open Eng recent session/ }),
@@ -783,7 +927,7 @@ describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
     fireEvent.click(screen.getByRole("button", { name: "Group chats" }));
 
     expect(
-      screen.getByRole("button", { name: /Release Squad/ }),
+      screen.getByRole("button", { name: /status Release Squad/ }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Open Eng recent session/ }),
@@ -792,7 +936,9 @@ describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
     fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
     fireEvent.click(screen.getByRole("button", { name: "Agents" }));
 
-    expect(screen.queryByRole("button", { name: /Release Squad/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /status Release Squad/ }),
+    ).toBeNull();
     expect(
       screen.getByRole("button", { name: /Open Eng recent session/ }),
     ).toBeInTheDocument();
@@ -804,7 +950,7 @@ describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
     fireEvent.click(screen.getByRole("button", { name: "Running" }));
 
     expect(
-      screen.getByRole("button", { name: /Release Squad/ }),
+      screen.getByRole("button", { name: /status Release Squad/ }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Open Eng recent session/ }),
@@ -820,7 +966,9 @@ describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
       }),
     );
 
-    expect(screen.queryByRole("button", { name: /Release Squad/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /status Release Squad/ }),
+    ).toBeNull();
     expect(
       screen.getByRole("button", { name: /Open Eng recent session/ }),
     ).toBeInTheDocument();

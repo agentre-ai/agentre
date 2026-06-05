@@ -552,6 +552,12 @@
       "defaultHint": "Bind a built-in backend to this Agent on the org chart page first",
       "message": "Not available for chat — {{hint}}"
     },
+    "pin": {
+      "pin": "Pin",
+      "pinAria": "Pin {{name}}",
+      "unpin": "Unpin",
+      "unpinAria": "Unpin {{name}}"
+    },
     "search": {
       "aria": "Search agents and group chats",
       "clear": "Clear filter",

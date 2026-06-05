@@ -552,6 +552,12 @@
       "defaultHint": "请先在组织架构页给该 Agent 绑定一个内置后端",
       "message": "暂不可对话 — {{hint}}"
     },
+    "pin": {
+      "pin": "置顶",
+      "pinAria": "置顶 {{name}}",
+      "unpin": "取消置顶",
+      "unpinAria": "取消置顶 {{name}}"
+    },
     "search": {
       "aria": "搜索 Agent 与群聊",
       "clear": "清空筛选",
