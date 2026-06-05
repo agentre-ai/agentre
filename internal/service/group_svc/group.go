@@ -142,6 +142,17 @@ func (s *groupSvc) CreateGroup(ctx context.Context, req *CreateGroupRequest) (*G
 	if _, err := s.ensureMember(ctx, g, req.CoordinatorAgentID, group_entity.RoleCoordinator); err != nil {
 		return nil, err
 	}
+	for _, agentID := range req.MemberAgentIDs {
+		if agentID == req.CoordinatorAgentID {
+			continue
+		}
+		if !s.backendSupportsGroup(ctx, agentID) {
+			return nil, i18n.NewError(ctx, code.GroupBackendUnsupported)
+		}
+		if _, err := s.ensureMember(ctx, g, agentID, group_entity.RoleMember); err != nil {
+			return nil, err
+		}
+	}
 	logger.Ctx(ctx).Info("group_svc.CreateGroup: created",
 		zap.Int64("groupID", g.ID), zap.Int64("coordinatorAgentID", req.CoordinatorAgentID))
 	return s.LoadGroup(ctx, g.ID)

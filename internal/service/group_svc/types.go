@@ -9,6 +9,9 @@ type CreateGroupRequest struct {
 	CoordinatorAgentID int64
 	DepartmentID       int64
 	ProjectID          int64
+	// MemberAgentIDs 建群时一并拉入的初始成员（协调者之外）。每个都经 backendSupportsGroup
+	// 门控 + 幂等（ensureMember）。
+	MemberAgentIDs []int64
 }
 
 type GroupDetail struct {

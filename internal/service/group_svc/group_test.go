@@ -236,3 +236,80 @@ func TestGroupSvc_RemoveGroupMember(t *testing.T) {
 		})
 	})
 }
+
+func TestGroupSvc_CreateGroup_AddsInitialMembers(t *testing.T) {
+	Convey("建群带初始成员：协调者 + 每个成员都建 member", t, func() {
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		gw := mock_group_svc.NewMockChatGateway(ctrl)
+		groupRepo := mock_group_repo.NewMockGroupRepo(ctrl)
+		memberRepo := mock_group_repo.NewMockGroupMemberRepo(ctrl)
+		msgRepo := mock_group_repo.NewMockGroupMessageRepo(ctrl)
+		group_repo.RegisterGroup(groupRepo)
+		group_repo.RegisterMember(memberRepo)
+		group_repo.RegisterMessage(msgRepo)
+
+		// 协调者(1) + 成员(2) 都过能力门控。
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(1), capability.CapMCPTools).Return(true, nil)
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(2), capability.CapMCPTools).Return(true, nil)
+		groupRepo.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, g *group_entity.Group) error { g.ID = 5; return nil })
+		// 协调者 ensureMember
+		memberRepo.EXPECT().FindByGroupAndAgent(gomock.Any(), int64(5), int64(1)).Return(nil, nil)
+		gw.EXPECT().EnsureGroupMemberSession(gomock.Any(), int64(1), int64(0), int64(5)).Return(int64(11), nil)
+		memberRepo.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, m *group_entity.GroupMember) error {
+				So(m.Role, ShouldEqual, group_entity.RoleCoordinator)
+				return nil
+			})
+		// 成员(2) ensureMember
+		memberRepo.EXPECT().FindByGroupAndAgent(gomock.Any(), int64(5), int64(2)).Return(nil, nil)
+		gw.EXPECT().EnsureGroupMemberSession(gomock.Any(), int64(2), int64(0), int64(5)).Return(int64(12), nil)
+		memberRepo.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, m *group_entity.GroupMember) error {
+				So(m.Role, ShouldEqual, group_entity.RoleMember)
+				return nil
+			})
+		// LoadGroup tail
+		groupRepo.EXPECT().Find(gomock.Any(), int64(5)).Return(&group_entity.Group{ID: 5}, nil)
+		memberRepo.EXPECT().ListByGroup(gomock.Any(), int64(5)).Return(nil, nil)
+		msgRepo.EXPECT().ListByGroup(gomock.Any(), int64(5)).Return(nil, nil)
+
+		svc := group_svc.NewForTest(gw)
+		_, err := svc.CreateGroup(ctx, &group_svc.CreateGroupRequest{
+			Title: "支付小队", CoordinatorAgentID: 1, MemberAgentIDs: []int64{2},
+		})
+		So(err, ShouldBeNil)
+	})
+
+	Convey("成员后端不支持群聊 → GroupBackendUnsupported", t, func() {
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		gw := mock_group_svc.NewMockChatGateway(ctrl)
+		groupRepo := mock_group_repo.NewMockGroupRepo(ctrl)
+		memberRepo := mock_group_repo.NewMockGroupMemberRepo(ctrl)
+		msgRepo := mock_group_repo.NewMockGroupMessageRepo(ctrl)
+		group_repo.RegisterGroup(groupRepo)
+		group_repo.RegisterMember(memberRepo)
+		group_repo.RegisterMessage(msgRepo)
+
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(1), capability.CapMCPTools).Return(true, nil)
+		groupRepo.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, g *group_entity.Group) error { g.ID = 5; return nil })
+		memberRepo.EXPECT().FindByGroupAndAgent(gomock.Any(), int64(5), int64(1)).Return(nil, nil)
+		gw.EXPECT().EnsureGroupMemberSession(gomock.Any(), int64(1), int64(0), int64(5)).Return(int64(11), nil)
+		memberRepo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+		// 成员(7) 门控失败
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), int64(7), capability.CapMCPTools).Return(false, nil)
+
+		svc := group_svc.NewForTest(gw)
+		_, err := svc.CreateGroup(ctx, &group_svc.CreateGroupRequest{
+			Title: "X", CoordinatorAgentID: 1, MemberAgentIDs: []int64{7},
+		})
+		So(err, ShouldNotBeNil)
+	})
+}
