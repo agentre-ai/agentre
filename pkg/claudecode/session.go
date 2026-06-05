@@ -270,7 +270,17 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 		at := newActiveTurn(true)
 		s.active = at
 		s.sinkMu.Unlock()
-		s.autoCh <- &AutoTurn{Events: at.ch, SessionID: s.sessionID, Trigger: triggerBackgroundTask}
+		s.autoCh <- &AutoTurn{
+			Events:    at.ch,
+			SessionID: s.sessionID,
+			Trigger:   triggerBackgroundTask,
+			CompletedTask: &CompletedBackgroundTask{
+				ToolUseID: f.ToolUseID,
+				TaskID:    f.TaskID,
+				Status:    f.Status,
+				Summary:   f.Summary,
+			},
+		}
 		return nil
 	}
 	if isNonTurnFrame(f) {
@@ -286,18 +296,33 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 }
 
 // isNonTurnFrame 判定一帧是否「不归属任何一轮」—— 即便在轮间(空闲)到达,也不该认领
-// 一个排队的 user Turn。当前两类:
+// 一个排队的 user Turn。三类:
 //   - control_response:control_request(Interrupt / SetPermissionMode)的回执,已在
 //     parseLine 阶段按 request_id dispatch 给等待者,不携带 turn 事件。
 //   - system{subtype:"status"}:会话级状态推送(permissionMode / 运行态),从不作为某
 //     一轮的起始帧 —— 轮内到达由 active 轮承接(currentTurn 在 active!=nil 时已先返回),
 //     空闲到达则无归属轮,其事件随 route 的 nil 返回被丢弃(set_permission_mode 的回执
 //     已由 SetPermissionMode 调用方拿到,主动切 mode 不依赖这条空闲 status)。
+//   - system{subtype:"task_started"/"task_updated"/"task_progress"}:后台任务(及
+//     subagent)生命周期的状态推送。真 CLI 2.1.162 在后台任务完成、自主续轮的
+//     task_notification 之前先吐一帧 task_updated(状态 patch);它空闲到达时既非
+//     后台 task_notification 也非 status,旧逻辑会把读循环卡死在 <-pendingTurns,
+//     后续 task_notification / 自主续轮永远读不到(sess-429「续不上对话」复发)。
+//     这些状态帧从不作为一轮的起始帧:轮内到达由 active 轮承接,空闲到达直接丢弃。
+//     注意后台型 task_notification 不在此列 —— 它正是自主轮的起始标记(见
+//     isBackgroundTaskNotification),由 currentTurn 在本判定之前优先处理。
 func isNonTurnFrame(f rawFrame) bool {
 	if f.Type == "control_response" {
 		return true
 	}
-	return f.Type == "system" && f.Subtype == "status"
+	if f.Type != "system" {
+		return false
+	}
+	switch f.Subtype {
+	case "status", "task_started", "task_updated", "task_progress":
+		return true
+	}
+	return false
 }
 
 // feed 把事件投给 at.ch;at 已被消费方放弃(abandon)时丢弃余帧,避免 reader 阻塞。
@@ -866,6 +891,7 @@ func parseSystemTask(f rawFrame, sid string) (Event, bool) {
 	meta := &SubagentMeta{
 		TaskID:          f.TaskID,
 		SubagentType:    f.SubagentType,
+		TaskType:        f.TaskType,
 		TaskDescription: f.Description,
 		Prompt:          f.Prompt,
 		LastToolName:    f.LastToolName,

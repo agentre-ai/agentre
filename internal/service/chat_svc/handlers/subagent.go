@@ -33,6 +33,8 @@ func (SubagentStartedHandler) Apply(ctx context.Context, ev agentruntime.Event, 
 	r := ev.(agentruntime.SubagentStarted)
 	blk := &blocks.SubagentStateBlock{
 		ParentToolCallID: r.ToolCallID,
+		Kind:             r.Info.Kind,
+		Description:      r.Info.TaskDescription,
 		Status:           "running",
 	}
 	acc.AddBlock(blk, "subagent_state:"+r.ToolCallID)

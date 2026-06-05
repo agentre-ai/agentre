@@ -10,6 +10,17 @@ type AutoTurn struct {
 	Events    <-chan Event
 	SessionID string
 	Trigger   string // 当前固定 "background_task"
+	// CompletedTask 仅 background_task 触发的自主轮带:那个完成的后台任务的身份,
+	// 供上层把对应 subagent_state 翻成 completed/failed。
+	CompletedTask *CompletedBackgroundTask
+}
+
+// CompletedBackgroundTask 是触发本自主轮的后台命令完成信息(从 task_notification 帧抽出)。
+type CompletedBackgroundTask struct {
+	ToolUseID string
+	TaskID    string
+	Status    string // "completed" / "failed"(空 → 视为 completed)
+	Summary   string // CLI task_notification.summary,如 "Background command \"…\" completed (exit code 0)"
 }
 
 // triggerBackgroundTask 是目前唯一的 AutoTurn 触发原因。

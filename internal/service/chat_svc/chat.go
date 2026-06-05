@@ -595,6 +595,22 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		Createtime:          m.Createtime,
 		Blocks:              make([]ChatBlock, 0, len(bs)),
 	}
+	// 预扫一遍,把 SubagentStateBlock 按 ParentToolCallID 索引起来,
+	// 后续 tool_use 命中时把元数据合入 .Subagent,实现持久化/重载路径与
+	// live 路径(dispatcher_emitter mergeSubagentMeta)形态一致。
+	subByParent := make(map[string]*chatblocks.SubagentStateBlock)
+	for _, b := range bs {
+		switch sb := b.(type) {
+		case chatblocks.SubagentStateBlock:
+			cp := sb
+			subByParent[sb.ParentToolCallID] = &cp
+		case *chatblocks.SubagentStateBlock:
+			if sb != nil {
+				subByParent[sb.ParentToolCallID] = sb
+			}
+		}
+	}
+
 	for _, b := range bs {
 		switch tb := b.(type) {
 		case blocks.TextBlock:
@@ -612,9 +628,17 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		case *blocks.ThinkingBlock:
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "thinking", Text: tb.Text})
 		case blocks.ToolUseBlock:
-			out.Blocks = append(out.Blocks, toolUseToChatBlock(tb.ID, tb.Name, tb.Input))
+			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
+			if sb := subByParent[tb.ID]; sb != nil {
+				cb.Subagent = subagentStateToChatBlockSubagent(sb)
+			}
+			out.Blocks = append(out.Blocks, cb)
 		case *blocks.ToolUseBlock:
-			out.Blocks = append(out.Blocks, toolUseToChatBlock(tb.ID, tb.Name, tb.Input))
+			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
+			if sb := subByParent[tb.ID]; sb != nil {
+				cb.Subagent = subagentStateToChatBlockSubagent(sb)
+			}
+			out.Blocks = append(out.Blocks, cb)
 		case blocks.ToolResultBlock:
 			out.Blocks = append(out.Blocks, toolResultToChatBlock(tb.ToolUseID, tb.Content, tb.IsError))
 		case *blocks.ToolResultBlock:
@@ -629,12 +653,9 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 			out.Blocks = append(out.Blocks, nestedToolResultToChatBlock(&tb))
 		case *chatblocks.SubagentStateBlock, chatblocks.SubagentStateBlock,
 			*chatblocks.PermissionModeChangeBlock, chatblocks.PermissionModeChangeBlock:
-			// SubagentStateBlock: 累计态(tokens/duration/status),前端 AgentSpawnCard
-			// 通过外层 Task tool 的 canonical.agentSpawn 读 —— live 路径靠
-			// dispatcher_emitter 注入,replay 不重算,STEPS / SUMMARY 仍完整,
-			// 只是 badge 缺失(明确接受)。
-			// PermissionModeChangeBlock: 审计 block,无 UI 元素。两者一并 skip,
-			// 不下行到前端(否则会被打成 type=unknown 让用户看到 debug 卡)。
+			// SubagentStateBlock: 元数据已在预扫阶段合入对应 tool_use 块的 .Subagent 字段,
+			// 不再作为独立 block 下行前端(否则会被打成 type=unknown 让用户看到 debug 卡)。
+			// PermissionModeChangeBlock: 审计 block,无 UI 元素,一并 skip。
 		case *chatblocks.CompactBoundaryBlock:
 			if tb != nil {
 				out.Blocks = append(out.Blocks, ChatBlock{
@@ -685,6 +706,23 @@ func toolUseToChatBlock(id, name string, input map[string]any) ChatBlock {
 		cb.Canonical = view.FromCanonical(c)
 	}
 	return cb
+}
+
+func subagentStateToChatBlockSubagent(sb *chatblocks.SubagentStateBlock) *ChatBlockSubagent {
+	if sb == nil {
+		return nil
+	}
+	return &ChatBlockSubagent{
+		TaskID:          sb.TaskID,
+		Kind:            sb.Kind,
+		TaskDescription: sb.Description,
+		LastToolName:    sb.LastToolName,
+		ToolUses:        sb.ToolUses,
+		TotalTokens:     sb.TotalTokens,
+		DurationMs:      sb.DurationMs,
+		Status:          sb.Status,
+		Summary:         sb.Summary,
+	}
 }
 
 func imageBlockToChatBlock(img blocks.ImageBlock) ChatBlock {

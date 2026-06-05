@@ -812,7 +812,13 @@ func TestSession_TurnReturnsExitErrWhenProcessDied(t *testing.T) {
 
 // fakeBackgroundTask 复刻真实 CLI 2.1.162 抓到的「后台任务 + 自主续轮」帧序。
 // turn1:启动 run_in_background → result#1;随后不等 stdin 自主吐
-// task_notification(后台型) + 续轮(init+text+result#2);turn2:正常回声。
+// task_updated(后台任务收尾状态推送) → task_notification(后台型) → 续轮
+// (init+text+result#2);turn2:正常回声。
+//
+// 关键:真实 CLI 在 result#1 之后、task_notification 之前先吐一帧
+// system{subtype:"task_updated"}(后台任务完成的状态 patch)。它空闲到达、既非
+// 后台 task_notification 也非已知非 turn 帧 —— 若 readLoop 把它当 turn 起始帧卡在
+// <-pendingTurns 上,后面的 task_notification / 续轮就永远读不到(见 sess-429)。
 func fakeBackgroundTask(stdin io.Reader, stdout io.Writer) {
 	const sid = "sess-bgtask"
 	sc := bufio.NewScanner(stdin)
@@ -829,6 +835,8 @@ func fakeBackgroundTask(stdin io.Reader, stdout io.Writer) {
 			writeFrame(stdout, `{"type":"assistant","message":{"id":"a2","content":[{"type":"text","text":"started:%s"}]}}`, reply)
 			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
 			// —— 不等下一条 stdin,自主吐后台完成续轮 ——
+			// 真 CLI 先吐一帧 task_updated(后台任务收尾的状态 patch),再吐 task_notification。
+			writeFrame(stdout, `{"type":"system","subtype":"task_updated","task_id":"bg1","patch":{"status":"completed","end_time":1780625678929},"session_id":%q}`, sid)
 			writeFrame(stdout, `{"type":"system","subtype":"task_notification","task_id":"bg1","tool_use_id":"tu1","status":"completed","output_file":"/tmp/tasks/bg1.output","summary":"Background command completed"}`)
 			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
 			writeFrame(stdout, `{"type":"assistant","message":{"id":"a3","content":[{"type":"text","text":"autonomous:listing"}]}}`)
@@ -939,4 +947,43 @@ func TestSession_IdleSetPermissionModeKeepsReaderAlive(t *testing.T) {
 	require.NotNil(t, at)
 	assert.Equal(t, "background_task", at.Trigger)
 	assert.Equal(t, "autonomous:listing", drainText(t, at.Events))
+}
+
+func TestParseSystemTask_CarriesTaskType(t *testing.T) {
+	f := rawFrame{
+		Type: "system", Subtype: "task_started",
+		TaskID: "bg1", ToolUseID: "tu1", Description: "Sleep for 5 seconds",
+		TaskType: "local_bash",
+	}
+	ev, ok := parseSystemTask(f, "sx")
+	require.True(t, ok)
+	require.NotNil(t, ev.Tool)
+	require.NotNil(t, ev.Tool.Subagent)
+	assert.Equal(t, "local_bash", ev.Tool.Subagent.TaskType)
+	assert.Equal(t, "Sleep for 5 seconds", ev.Tool.Subagent.TaskDescription)
+}
+
+func TestBackgroundTaskAutonomousTurn_CarriesCompletedTask(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeBackgroundTask))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	ch1, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	_ = drainText(t, ch1)
+
+	var at *AutoTurn
+	select {
+	case at = <-sess.AutonomousTurns():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected autonomous turn")
+	}
+	require.NotNil(t, at.CompletedTask)
+	assert.Equal(t, "tu1", at.CompletedTask.ToolUseID)
+	assert.Equal(t, "bg1", at.CompletedTask.TaskID)
+	assert.Equal(t, "completed", at.CompletedTask.Status)
+	assert.Equal(t, "Background command completed", at.CompletedTask.Summary)
 }

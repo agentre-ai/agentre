@@ -122,6 +122,8 @@ type rawFrame struct {
 	ToolUseID    string `json:"tool_use_id,omitempty"`
 	Description  string `json:"description,omitempty"`
 	SubagentType string `json:"subagent_type,omitempty"`
+	// TaskType 区分 task 帧来源:"local_bash"(run_in_background bash)/ "local_agent"(subagent)。
+	TaskType     string `json:"task_type,omitempty"`
 	Prompt       string `json:"prompt,omitempty"`
 	LastToolName string `json:"last_tool_name,omitempty"`
 	Status       string `json:"status,omitempty"`
@@ -130,6 +132,10 @@ type rawFrame struct {
 	// 用于把它与 subagent(Task 工具)的 task_notification 区分 —— 后者无此字段、有
 	// SubagentType。见 isBackgroundTaskNotification。
 	OutputFile string `json:"output_file,omitempty"`
+
+	// Summary 仅「后台命令完成」型 task_notification 帧带，CLI 填充完成摘要文本
+	// 如 "Background command \"…\" completed (exit code 0)"。
+	Summary string `json:"summary,omitempty"`
 
 	// system.subtype == "api_retry" 的字段：CLI 把 Anthropic SDK 的可重试错误（429/5xx 等）
 	// 包成 first-class 协议帧推到 stdout。字段直接放在帧顶层，不嵌在 usage / message 里。

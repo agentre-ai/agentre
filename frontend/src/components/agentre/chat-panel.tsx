@@ -65,6 +65,8 @@ import { PermissionModePill, usePermissionMode } from "./permission-mode";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
 import { AgentAvatar, DeviceTag, StatusDot } from "./primitives";
 import { QueuedMessagesBar } from "./queued-messages-bar";
+import { BackgroundTasksChip } from "./background-tasks/background-tasks-chip";
+import { deriveBackgroundTasks } from "./background-tasks/derive";
 import { deriveTaskProgress } from "./task-progress/derive";
 import { TaskProgressBar } from "./task-progress/task-progress-bar";
 import type { AgentColor, AgentStatus } from "./types";
@@ -389,13 +391,23 @@ function ChatPanel({
   // StreamAutonomousStarted。收到后:乐观翻 running + 插入新 assistant 行 + openStream
   // 订阅该自主轮的 per-turn 流,让它像普通 turn 一样实时渲染。后续 chunk/done 与
   // StreamDone→reloadSession 都复用既有路径,自主轮无需任何特殊渲染分支。
+  // completedTask: 若事件携带后台任务身份,立即把对应 live tool_use block 的
+  // subagent.status 翻成终态,刷新后台任务面板胶囊。
   const onAutonomousEvent = React.useCallback(
     (ev: ChatStreamEvent) => {
-      if (
-        ev.kind !== "autonomous_started" ||
-        !ev.assistantMessage ||
-        !ev.stream
-      ) {
+      if (ev.kind !== "autonomous_started") {
+        return;
+      }
+      // 先翻转后台任务状态 (completedTask 可能在没有 assistantMessage 时也存在)
+      if (ev.completedTask?.toolUseId) {
+        useChatStreamsStore
+          .getState()
+          .mergeSubagentMeta(sessionId, ev.completedTask.toolUseId, {
+            status: ev.completedTask.status,
+            summary: ev.completedTask.summary,
+          } as chat_svc.ChatBlockSubagent);
+      }
+      if (!ev.assistantMessage || !ev.stream) {
         return;
       }
       const amsg = ev.assistantMessage;
@@ -531,6 +543,10 @@ function ChatPanel({
   );
   const taskProgress = React.useMemo(
     () => deriveTaskProgress(messages, currentStream?.liveBlocks ?? []),
+    [messages, currentStream?.liveBlocks],
+  );
+  const backgroundTasks = React.useMemo(
+    () => deriveBackgroundTasks(messages, currentStream?.liveBlocks ?? []),
     [messages, currentStream?.liveBlocks],
   );
   // PermissionMode pill 数据从 caps.permissionModeMeta 拉;caps 未到位时
@@ -1217,6 +1233,8 @@ function ChatPanel({
                             ) : null}
                           </div>
                         </div>
+                        {/* 后台任务胶囊：有运行中任务时显示，点击展开只读弹层 */}
+                        <BackgroundTasksChip tasks={backgroundTasks} />
                         {(() => {
                           // canStop 双源：
                           //   1. currentStream !== null —— 本客户端刚起的 turn，

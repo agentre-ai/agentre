@@ -286,6 +286,72 @@ func TestAutonomousTurns_BridgesSessionAutoTurn(t *testing.T) {
 	})
 }
 
+// TestAutonomousTurns_BridgesCompletedTask 验证 Runtime.AutonomousTurns 把底层
+// claudecode.AutoTurn.CompletedTask 透传到 agentruntime.AutonomousTurn.CompletedTask。
+func TestAutonomousTurns_BridgesCompletedTask(t *testing.T) {
+	Convey("Runtime.AutonomousTurns 把 CompletedTask 透传", t, func() {
+		autoSrc := make(chan *claudecode.AutoTurn, 1)
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			return &fakeCCHandle{
+				id:        "fake-sid",
+				autoTurns: autoSrc,
+				stream: &eventCCStream{events: []claudecode.Event{
+					{Kind: claudecode.EventUsage, Usage: provider.Usage{PromptTokens: 1}},
+					{Kind: claudecode.EventDone},
+				}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		events, _, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 78,
+			Cwd:       t.TempDir(),
+			UserText:  "go",
+		})
+		So(err, ShouldBeNil)
+		for range events {
+		}
+
+		turns := r.AutonomousTurns(78)
+
+		atEvents := make(chan claudecode.Event, 2)
+		atEvents <- claudecode.Event{Kind: claudecode.EventDone}
+		close(atEvents)
+		autoSrc <- &claudecode.AutoTurn{
+			Events:    atEvents,
+			SessionID: "fake-sid",
+			Trigger:   "background_task",
+			CompletedTask: &claudecode.CompletedBackgroundTask{
+				ToolUseID: "tu1",
+				TaskID:    "task-1",
+				Status:    "completed",
+				Summary:   "sum",
+			},
+		}
+		close(autoSrc)
+
+		var got agentruntime.AutonomousTurn
+		select {
+		case got = <-turns:
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected a bridged autonomous turn within 2s")
+		}
+		// drain events
+		for range got.Events {
+		}
+		So(got.CompletedTask, ShouldNotBeNil)
+		So(got.CompletedTask.ToolUseID, ShouldEqual, "tu1")
+		So(got.CompletedTask.TaskID, ShouldEqual, "task-1")
+		So(got.CompletedTask.Status, ShouldEqual, "completed")
+		So(got.CompletedTask.Summary, ShouldEqual, "sum")
+
+		r.CloseAllSessions(ctx)
+	})
+}
+
 func TestRun_ErrorFollowedByProgressClearsStopErr(t *testing.T) {
 	Convey("claudecode runtime: EventError 后还有进展事件和完成时, StopErr 不应污染成功 turn", t, func() {
 		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {

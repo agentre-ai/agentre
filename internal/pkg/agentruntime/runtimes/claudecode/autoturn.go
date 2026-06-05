@@ -43,9 +43,18 @@ func (r *Runtime) AutonomousTurns(sessionID int64) <-chan agentruntime.Autonomou
 		for at := range src {
 			evOut := make(chan agentruntime.Event, 32)
 			result := &agentruntime.RunResult{ProviderSessionID: at.SessionID}
+			var completed *agentruntime.CompletedBackgroundTask
+			if at.CompletedTask != nil {
+				completed = &agentruntime.CompletedBackgroundTask{
+					ToolUseID: at.CompletedTask.ToolUseID,
+					TaskID:    at.CompletedTask.TaskID,
+					Status:    at.CompletedTask.Status,
+					Summary:   at.CompletedTask.Summary,
+				}
+			}
 			// 先把这一轮交给 consumer(它并发 drain evOut),随后 inline 翻译填 evOut。
 			// inline(非 goroutine)保证多个自主轮之间顺序处理、不重叠。
-			out <- agentruntime.AutonomousTurn{Events: evOut, Result: result, Trigger: at.Trigger}
+			out <- agentruntime.AutonomousTurn{Events: evOut, Result: result, Trigger: at.Trigger, CompletedTask: completed}
 			stream := &ccChanStream{ch: at.Events, sidFn: func() string { return at.SessionID }}
 			drainStream(stream, evOut, result, a)
 			if sid := stream.SessionID(); sid != "" {

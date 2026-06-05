@@ -105,6 +105,7 @@ type ToolResultEvent struct {
 type SubagentInfo struct {
 	TaskID          string
 	SubagentType    string
+	Kind            string // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
 	TaskDescription string
 	Prompt          string
 	LastToolName    string
@@ -464,6 +465,16 @@ type AutonomousTurn struct {
 	Events  <-chan Event
 	Result  *RunResult
 	Trigger string // "background_task"
+	// CompletedTask 镜像 claudecode.CompletedBackgroundTask:触发本自主轮的后台命令身份。
+	CompletedTask *CompletedBackgroundTask
+}
+
+// CompletedBackgroundTask 见 AutonomousTurn.CompletedTask。
+type CompletedBackgroundTask struct {
+	ToolUseID string
+	TaskID    string
+	Status    string // "completed" | "failed"; 空 → 视为 completed（见 pkg/claudecode.CompletedBackgroundTask）
+	Summary   string // CLI task_notification.summary 透传；空 = CLI 没下发或 remote 路径暂不携带
 }
 
 // Errors live in errors.go; registry / RuntimeFor / RegisterRuntime / SwapRuntimeForTest live in registry.go.
