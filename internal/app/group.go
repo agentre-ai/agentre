@@ -40,10 +40,11 @@ type GroupDetailResponse struct {
 }
 
 type GroupCreateRequest struct {
-	Title              string `json:"title"`
-	CoordinatorAgentID int64  `json:"coordinatorAgentID"`
-	DepartmentID       int64  `json:"departmentID"`
-	ProjectID          int64  `json:"projectID"`
+	Title              string  `json:"title"`
+	CoordinatorAgentID int64   `json:"coordinatorAgentID"`
+	DepartmentID       int64   `json:"departmentID"`
+	ProjectID          int64   `json:"projectID"`
+	MemberAgentIDs     []int64 `json:"memberAgentIDs"`
 }
 
 type GroupSendRequest struct {
@@ -86,7 +87,7 @@ func (a *App) GroupList() ([]*GroupItem, error) {
 }
 
 func (a *App) GroupCreate(req *GroupCreateRequest) (*GroupDetailResponse, error) {
-	d, err := group_svc.Default().CreateGroup(a.ctx, &group_svc.CreateGroupRequest{Title: req.Title, CoordinatorAgentID: req.CoordinatorAgentID, DepartmentID: req.DepartmentID, ProjectID: req.ProjectID})
+	d, err := group_svc.Default().CreateGroup(a.ctx, &group_svc.CreateGroupRequest{Title: req.Title, CoordinatorAgentID: req.CoordinatorAgentID, DepartmentID: req.DepartmentID, ProjectID: req.ProjectID, MemberAgentIDs: req.MemberAgentIDs})
 	if err != nil {
 		return nil, err
 	}
