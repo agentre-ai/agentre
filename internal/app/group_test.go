@@ -14,8 +14,10 @@ import (
 // 只覆写本测试需要的几个;未覆写方法在本测试中永不被调用。
 type fakeGroupSvc struct {
 	group_svc.GroupSvc
-	detail  *group_svc.GroupDetail
-	sentReq *group_svc.SendGroupMessageRequest
+	detail    *group_svc.GroupDetail
+	sentReq   *group_svc.SendGroupMessageRequest
+	pinnedID  int64
+	pinnedVal bool
 }
 
 func (f *fakeGroupSvc) LoadGroup(_ context.Context, _ int64) (*group_svc.GroupDetail, error) {
@@ -24,6 +26,11 @@ func (f *fakeGroupSvc) LoadGroup(_ context.Context, _ int64) (*group_svc.GroupDe
 
 func (f *fakeGroupSvc) SendGroupMessage(_ context.Context, req *group_svc.SendGroupMessageRequest) error {
 	f.sentReq = req
+	return nil
+}
+
+func (f *fakeGroupSvc) SetGroupPinned(_ context.Context, id int64, pinned bool) error {
+	f.pinnedID, f.pinnedVal = id, pinned
 	return nil
 }
 
@@ -71,5 +78,25 @@ func TestApp_GroupSend_PassesThrough(t *testing.T) {
 		So(fake.sentReq.Text, ShouldEqual, "hi")
 		So(fake.sentReq.RecipientMemberIDs, ShouldResemble, []int64{2})
 		So(fake.sentReq.ToUser, ShouldBeTrue)
+	})
+}
+
+func TestApp_GroupSetPinned_PassesThrough(t *testing.T) {
+	Convey("GroupSetPinned 应透传到 svc", t, func() {
+		prev := group_svc.Default()
+		defer group_svc.SetDefault(prev)
+		fake := &fakeGroupSvc{}
+		group_svc.SetDefault(fake)
+		a := &App{ctx: context.Background()}
+		So(a.GroupSetPinned(5, true), ShouldBeNil)
+		So(fake.pinnedID, ShouldEqual, 5)
+		So(fake.pinnedVal, ShouldBeTrue)
+	})
+}
+
+func TestApp_GroupItem_CarriesPinned(t *testing.T) {
+	Convey("toGroupItem 应带出 Pinned", t, func() {
+		So(toGroupItem(&group_entity.Group{ID: 5, Pinned: true}).Pinned, ShouldBeTrue)
+		So(toGroupItem(&group_entity.Group{ID: 6}).Pinned, ShouldBeFalse)
 	})
 }

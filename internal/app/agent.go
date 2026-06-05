@@ -33,3 +33,8 @@ func (a *App) UploadAgentAvatar(req *agent_svc.UploadAvatarRequest) (*agent_svc.
 func (a *App) DeleteAgentAvatar(req *agent_svc.DeleteAvatarRequest) (*agent_svc.DeleteAvatarResponse, error) {
 	return agent_svc.Agent().DeleteAvatar(a.ctx, req)
 }
+
+// SetAgentPinned 置顶/取消置顶某 Agent（侧栏混排列表浮顶）。
+func (a *App) SetAgentPinned(req *agent_svc.SetPinnedRequest) (*agent_svc.SetPinnedResponse, error) {
+	return agent_svc.Agent().SetPinned(a.ctx, req)
+}

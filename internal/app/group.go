@@ -10,6 +10,7 @@ type GroupItem struct {
 	Title      string `json:"title"`
 	RunStatus  string `json:"runStatus"`
 	RoundCount int    `json:"roundCount"`
+	Pinned     bool   `json:"pinned"`
 	Createtime int64  `json:"createtime"`
 	Updatetime int64  `json:"updatetime"`
 }
@@ -55,7 +56,7 @@ type GroupSendRequest struct {
 }
 
 func toGroupItem(g *group_entity.Group) *GroupItem {
-	return &GroupItem{ID: g.ID, Title: g.Title, RunStatus: g.RunStatus, RoundCount: g.RoundCount, Createtime: g.Createtime, Updatetime: g.Updatetime}
+	return &GroupItem{ID: g.ID, Title: g.Title, RunStatus: g.RunStatus, RoundCount: g.RoundCount, Pinned: g.Pinned, Createtime: g.Createtime, Updatetime: g.Updatetime}
 }
 
 func toGroupMemberItem(m *group_entity.GroupMember) *GroupMemberItem {
@@ -124,5 +125,8 @@ func (a *App) GroupResume(id int64) error {
 }
 func (a *App) GroupRename(id int64, title string) error {
 	return group_svc.Default().RenameGroup(a.ctx, id, title)
+}
+func (a *App) GroupSetPinned(id int64, pinned bool) error {
+	return group_svc.Default().SetGroupPinned(a.ctx, id, pinned)
 }
 func (a *App) GroupArchive(id int64) error { return group_svc.Default().ArchiveGroup(a.ctx, id) }
