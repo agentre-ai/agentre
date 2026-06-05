@@ -9,6 +9,8 @@ import cagoblocks "github.com/cago-frame/agents/agent/blocks"
 type SubagentStateBlock struct {
 	ParentToolCallID  string   `json:"parent_tool_call_id"`
 	TaskID            string   `json:"task_id,omitempty"`
+	Kind              string   `json:"kind,omitempty"`        // local_bash | local_agent
+	Description       string   `json:"description,omitempty"` // 任务名（task_started.description）
 	TotalTokens       int      `json:"total_tokens,omitempty"`
 	DurationMs        int      `json:"duration_ms,omitempty"`
 	Status            string   `json:"status"` // running | completed | failed | canceled
