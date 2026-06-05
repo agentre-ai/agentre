@@ -244,7 +244,9 @@ func buildMcpConfigJSON(specs []agentruntime.MCPServerSpec) (string, []string) {
 	allow := make([]string, 0, len(specs))
 	for _, s := range specs {
 		servers[s.Name] = mcpServer{Type: "http", URL: s.URL, Headers: s.Headers}
-		allow = append(allow, "mcp__"+s.Name+"__group_send")
+		for _, tool := range s.Tools {
+			allow = append(allow, "mcp__"+s.Name+"__"+tool)
+		}
 	}
 	b, _ := json.Marshal(map[string]any{"mcpServers": servers})
 	return string(b), allow

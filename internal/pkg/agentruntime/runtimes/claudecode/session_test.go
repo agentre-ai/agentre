@@ -24,6 +24,7 @@ func TestCCBuildClientOpts_MCPServersInjectTool(t *testing.T) {
 					Name:    "group",
 					URL:     "http://127.0.0.1:9000/mcp/group/",
 					Headers: map[string]string{"Authorization": "Bearer tok-123"},
+					Tools:   []string{"group_send", "group_invite"},
 				}},
 			},
 		}
@@ -35,8 +36,9 @@ func TestCCBuildClientOpts_MCPServersInjectTool(t *testing.T) {
 				`{"mcpServers":{"group":{"type":"http","url":"http://127.0.0.1:9000/mcp/group/","headers":{"Authorization":"Bearer tok-123"}}}}`)
 		})
 
-		Convey("Then --allowedTools 含 mcp__group__group_send", func() {
+		Convey("Then --allowedTools 含 spec.Tools 声明的每个 tool", func() {
 			So(c.AllowedTools(), ShouldContain, "mcp__group__group_send")
+			So(c.AllowedTools(), ShouldContain, "mcp__group__group_invite")
 		})
 	})
 

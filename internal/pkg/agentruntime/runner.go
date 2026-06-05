@@ -272,6 +272,7 @@ type MCPServerSpec struct {
 	Name    string            // server 名; claude tool 暴露为 mcp__<Name>__<tool>
 	URL     string            // http MCP endpoint(如 http://127.0.0.1:<port>/mcp/group/)
 	Headers map[string]string // 鉴权/scope header(如 {"Authorization":"Bearer <token>"})
+	Tools   []string          // 允许的 tool 名(进 --allowedTools 为 mcp__<Name>__<tool>); 按角色裁剪
 }
 
 // RunRequest 一次 Send 的入参。

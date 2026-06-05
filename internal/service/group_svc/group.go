@@ -455,10 +455,16 @@ func NewGroupMCPForTest(ingest func(context.Context, int64, string, []string) er
 // (C5 launchDelivery 调用; 本任务后暂未被引用是预期的。)
 func (s *groupSvc) buildGroupMCP(g *group_entity.Group, m *group_entity.GroupMember) []agentruntime.MCPServerSpec {
 	tok := s.mcp.MintToken(g.ID, m.ID)
+	// 所有成员可 group_send; 仅协调者 turn 额外注入 group_invite(招募部门同事)。
+	tools := []string{"group_send"}
+	if m.IsCoordinator() {
+		tools = append(tools, "group_invite")
+	}
 	return []agentruntime.MCPServerSpec{{
 		Name:    "group",
 		URL:     s.gatewayBaseURL + "/mcp/group/",
 		Headers: map[string]string{"Authorization": "Bearer " + tok},
+		Tools:   tools,
 	}}
 }
 
