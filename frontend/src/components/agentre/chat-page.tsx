@@ -1,11 +1,24 @@
 import * as React from "react";
-import { Search, X } from "lucide-react";
+import { Check, Plus, Search, SlidersHorizontal, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { useChatAgents, type ChatAgentItem } from "@/hooks/use-chat-agents";
 import { useGroupList, type GroupListItem } from "@/hooks/use-group-list";
+import { NEW_CHAT_INITIAL_QUERY } from "@/components/agentre/shortcuts/registry";
 import {
   reasonToDisplayStatus,
   reasonToPillText,
@@ -17,12 +30,14 @@ import {
   type AttentionReason,
 } from "@/stores/attention-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useCommandPaletteStore } from "@/stores/command-palette-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { AgentGroup, AgentPanelSection } from "./agent-list";
 import type { AgentSession } from "./agent-list";
 import { StatusDot } from "./primitives";
+import { GroupNewDialog } from "./group-chat/group-new-dialog";
 import { ResizableSidebar } from "./resizable-sidebar";
 import { SessionsPopover } from "./sessions-popover";
 import { ListChatAgentSessions } from "../../../wailsjs/go/app/App";
@@ -316,6 +331,64 @@ function GroupRow({ group, selected, onOpen }: GroupRowProps) {
   );
 }
 
+// ─── Sidebar mixed filter ────────────────────────────────────────────────────
+
+type ChatSidebarFilter = "all" | "groups" | "agents" | "running" | "unread";
+
+function groupMatchesSearch(group: GroupListItem, query: string): boolean {
+  if (!query) return true;
+  return group.title.toLowerCase().includes(query);
+}
+
+function agentMatchesSearch(agent: ChatAgentItem, query: string): boolean {
+  if (!query) return true;
+  return (
+    agent.name.toLowerCase().includes(query) ||
+    agent.sessions.some((s) => s.title.toLowerCase().includes(query))
+  );
+}
+
+function groupMatchesFilter(
+  group: GroupListItem,
+  filter: ChatSidebarFilter,
+): boolean {
+  switch (filter) {
+    case "all":
+    case "groups":
+      return true;
+    case "running":
+      return group.runStatus === "running";
+    case "agents":
+    case "unread":
+      return false;
+  }
+}
+
+function agentMatchesFilter(
+  agent: ChatAgentItem,
+  filter: ChatSidebarFilter,
+  attentionReasons: Map<number, AttentionReason>,
+): boolean {
+  switch (filter) {
+    case "all":
+    case "agents":
+      return true;
+    case "groups":
+      return false;
+    case "running":
+      return (
+        agent.activeCount > 0 ||
+        (agent.sessionIds ?? agent.sessions.map((s) => s.id)).some(
+          (sid) => attentionReasons.get(sid) === "running",
+        )
+      );
+    case "unread":
+      return (agent.sessionIds ?? agent.sessions.map((s) => s.id)).some(
+        (sid) => attentionReasons.get(sid) === "unread",
+      );
+  }
+}
+
 // ─── Main ChatPage ───────────────────────────────────────────────────────────
 
 function ChatPage() {
@@ -347,10 +420,15 @@ function ChatPage() {
   const openSessionInNewTab = useChatTabsStore((s) => s.openSessionInNewTab);
   const openNewSession = useChatTabsStore((s) => s.openNewSession);
   const openGroup = useChatTabsStore((s) => s.openGroup);
+  const openCommandPalette = useCommandPaletteStore((s) => s.openWith);
   // 当前 active tab 是某个 group → 高亮对应群行。
   const selectedGroupId =
     activeTab?.meta.kind === "group" ? activeTab.meta.groupId : 0;
   const [agentFilter, setAgentFilter] = React.useState("");
+  const [sidebarFilter, setSidebarFilter] =
+    React.useState<ChatSidebarFilter>("all");
+  const [filterPopoverOpen, setFilterPopoverOpen] = React.useState(false);
+  const [newGroupOpen, setNewGroupOpen] = React.useState(false);
   // not-chattable inline notice: 点击不可对话 agent header 时显示，3 秒后自动消失。
   const [notChattableNotice, setNotChattableNotice] = React.useState<{
     name: string;
@@ -383,13 +461,41 @@ function ChatPage() {
 
   // Filter
   const filterValue = agentFilter.trim().toLowerCase();
-  const visibleAgents = filterValue
-    ? agents.filter(
+  const allSessionIds = React.useMemo(
+    () => agents.flatMap((a) => a.sessionIds ?? a.sessions.map((s) => s.id)),
+    [agents],
+  );
+  const attentionItems = useSessionAttentionList(allSessionIds);
+  const attentionReasons = React.useMemo(() => {
+    const m = new Map<number, AttentionReason>();
+    for (const item of attentionItems) m.set(item.sessionId, item.reason);
+    return m;
+  }, [attentionItems]);
+  const unreadCount = React.useMemo(() => {
+    let count = 0;
+    for (const reason of attentionReasons.values()) {
+      if (reason === "unread") count += 1;
+    }
+    return count;
+  }, [attentionReasons]);
+  const visibleGroups = React.useMemo(
+    () =>
+      groups.filter(
+        (g) =>
+          groupMatchesSearch(g, filterValue) &&
+          groupMatchesFilter(g, sidebarFilter),
+      ),
+    [groups, filterValue, sidebarFilter],
+  );
+  const visibleAgents = React.useMemo(
+    () =>
+      agents.filter(
         (a) =>
-          a.name.toLowerCase().includes(filterValue) ||
-          a.sessions.some((s) => s.title.toLowerCase().includes(filterValue)),
-      )
-    : agents;
+          agentMatchesSearch(a, filterValue) &&
+          agentMatchesFilter(a, sidebarFilter, attentionReasons),
+      ),
+    [agents, filterValue, sidebarFilter, attentionReasons],
+  );
   const pinned = visibleAgents.filter((a) => a.pinned);
   // 非 pinned 按最新会话时间倒序。无会话的 agent 沉到底部，保持原 DB 顺序。
   // pinned 不参与排序（用户强约束：永远最前面）。
@@ -418,7 +524,28 @@ function ChatPage() {
   }, [visibleAgents, metas]);
 
   const filterIsActive = filterValue.length > 0;
-  const hasResults = visibleAgents.length > 0;
+  const hasResults = visibleAgents.length > 0 || visibleGroups.length > 0;
+  const filterOptions: Array<{
+    value: ChatSidebarFilter;
+    label: string;
+    dotClassName?: string;
+    badge?: number;
+  }> = [
+    { value: "all", label: t("chatPage.filter.options.all") },
+    { value: "groups", label: t("chatPage.filter.options.groups") },
+    { value: "agents", label: t("chatPage.filter.options.agents") },
+    {
+      value: "running",
+      label: t("chatPage.filter.options.running"),
+      dotClassName: "bg-status-running",
+    },
+    {
+      value: "unread",
+      label: t("chatPage.filter.options.unread"),
+      dotClassName: "bg-status-waiting",
+      badge: unreadCount,
+    },
+  ];
 
   const renderAgentGroup = (a: ChatAgentItem) => (
     <AgentGroupRow
@@ -437,39 +564,123 @@ function ChatPage() {
     <>
       {/* ── Left sidebar ── */}
       <ResizableSidebar persistenceKey="chat" ariaLabel={t("chatPage.sidebar")}>
-        <div className="flex flex-col gap-2 border-b border-border px-4 py-3">
+        <div className="border-b border-border px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold">
-              {t("chatPage.agents")}
-            </span>
-            <span className="font-mono text-2xs text-muted-foreground">
-              {agents.length}
-            </span>
-            <div className="min-w-0 flex-1" />
-          </div>
-          <div className="relative">
-            <Search
-              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-              aria-hidden="true"
-            />
-            <Input
-              aria-label={t("chatPage.search.aria")}
-              placeholder={t("chatPage.search.placeholder")}
-              className="h-[30px] bg-input-bg pl-8 pr-7 text-xs"
-              value={agentFilter}
-              onChange={(event) => setAgentFilter(event.target.value)}
-            />
-            {agentFilter ? (
-              <button
-                type="button"
-                aria-label={t("chatPage.search.clear")}
-                title={t("chatPage.search.clear")}
-                className="absolute right-1.5 top-1/2 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                onClick={() => setAgentFilter("")}
-              >
-                <X className="size-3" aria-hidden="true" />
-              </button>
-            ) : null}
+            <Popover
+              open={filterPopoverOpen}
+              onOpenChange={setFilterPopoverOpen}
+            >
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label={t("chatPage.filter.open")}
+                  title={t("chatPage.filter.open")}
+                  className={cn(
+                    "relative size-[30px] bg-sidebar",
+                    sidebarFilter !== "all" && "border-ring text-primary-text",
+                  )}
+                >
+                  <SlidersHorizontal data-icon="only" aria-hidden="true" />
+                  {sidebarFilter !== "all" ? (
+                    <span className="absolute right-1 top-1 size-1.5 rounded-full bg-destructive" />
+                  ) : null}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[182px] p-1" align="start">
+                <div className="flex flex-col gap-0.5">
+                  {filterOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      aria-pressed={sidebarFilter === option.value}
+                      className={cn(
+                        "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-sidebar-active-bg focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                        sidebarFilter === option.value &&
+                          "bg-sidebar-active-bg font-semibold",
+                      )}
+                      onClick={() => {
+                        setSidebarFilter(option.value);
+                        setFilterPopoverOpen(false);
+                      }}
+                    >
+                      {option.dotClassName ? (
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            "size-1.5 rounded-full",
+                            option.dotClassName,
+                          )}
+                        />
+                      ) : null}
+                      <span className="min-w-0 flex-1 truncate">
+                        {option.label}
+                      </span>
+                      {option.badge ? (
+                        <span className="rounded-full bg-destructive px-1.5 font-mono text-2xs font-semibold text-destructive-foreground">
+                          {option.badge}
+                        </span>
+                      ) : null}
+                      {sidebarFilter === option.value ? (
+                        <Check
+                          className="size-3.5 text-primary-text"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+            <div className="relative min-w-0 flex-1">
+              <Search
+                className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                aria-label={t("chatPage.search.aria")}
+                placeholder={t("chatPage.search.placeholder")}
+                className="h-[30px] bg-background pl-8 pr-7 text-xs"
+                value={agentFilter}
+                onChange={(event) => setAgentFilter(event.target.value)}
+              />
+              {agentFilter ? (
+                <button
+                  type="button"
+                  aria-label={t("chatPage.search.clear")}
+                  title={t("chatPage.search.clear")}
+                  className="absolute right-1.5 top-1/2 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  onClick={() => setAgentFilter("")}
+                >
+                  <X className="size-3" aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="icon-sm"
+                  aria-label={t("chatPage.add.aria")}
+                  title={t("chatPage.add.aria")}
+                  className="size-[30px] bg-primary-soft text-primary-text hover:bg-primary-soft/80"
+                >
+                  <Plus data-icon="only" aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => openCommandPalette(NEW_CHAT_INITIAL_QUERY)}
+                >
+                  {t("chatPage.add.newAgentChat")}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setNewGroupOpen(true)}>
+                  {t("chatPage.add.newGroup")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -490,10 +701,10 @@ function ChatPage() {
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
-          {groups.length > 0 ? (
+          {visibleGroups.length > 0 ? (
             <>
               <AgentPanelSection label={t("group.section")} />
-              {groups.map((g) => (
+              {visibleGroups.map((g) => (
                 <GroupRow
                   key={g.id}
                   group={g}
@@ -512,7 +723,7 @@ function ChatPage() {
               {pinned.map(renderAgentGroup)}
             </>
           ) : null}
-          {hasResults ? (
+          {others.length > 0 ? (
             <>
               <AgentPanelSection label={t("chatPage.sections.agents")} />
               {others.map(renderAgentGroup)}
@@ -527,6 +738,7 @@ function ChatPage() {
           ) : null}
         </div>
       </ResizableSidebar>
+      <GroupNewDialog open={newGroupOpen} onOpenChange={setNewGroupOpen} />
     </>
   );
 }

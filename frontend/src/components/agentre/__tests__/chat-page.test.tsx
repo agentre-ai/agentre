@@ -1,6 +1,14 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useCommandPaletteStore } from "@/stores/command-palette-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useGroupListStore } from "@/stores/group-list-store";
 
@@ -576,5 +584,175 @@ describe("ChatPage sidebar — 群聊分区", () => {
         title: "Release Squad",
       });
     });
+  });
+});
+
+describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetTabsStore();
+    useCommandPaletteStore.setState({ open: false, initialQuery: "" });
+    useGroupListStore.getState().__reset();
+    runtimeMocks.handlers.clear();
+    vi.clearAllMocks();
+    appMocks.GroupList.mockResolvedValue([
+      {
+        id: 9,
+        title: "Release Squad",
+        runStatus: "running",
+        roundCount: 2,
+        createtime: 0,
+        updatetime: 0,
+      },
+    ]);
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        {
+          activeCount: 1,
+          avatarColor: "agent-1",
+          backendType: "builtin",
+          chattable: true,
+          id: 7,
+          name: "Eng",
+          pinned: false,
+          recentCount: 2,
+          sessions: [
+            {
+              id: 4,
+              lastMessageAt: 3000,
+              lastReadAt: 3000,
+              needsAttention: false,
+              status: "running",
+              title: "Running one",
+            },
+            {
+              id: 5,
+              lastMessageAt: 2000,
+              lastReadAt: 0,
+              needsAttention: false,
+              status: "idle",
+              title: "Background done",
+            },
+          ],
+        },
+        {
+          activeCount: 0,
+          avatarColor: "agent-2",
+          backendType: "builtin",
+          chattable: true,
+          id: 8,
+          name: "Designer",
+          pinned: false,
+          recentCount: 1,
+          sessions: [
+            {
+              id: 6,
+              lastMessageAt: 1000,
+              lastReadAt: 1000,
+              needsAttention: false,
+              status: "idle",
+              title: "Visual pass",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    resetTabsStore();
+    useCommandPaletteStore.setState({ open: false, initialQuery: "" });
+    useGroupListStore.getState().__reset();
+    localStorage.clear();
+  });
+
+  it("Given mixed groups and agents, When the sidebar filter changes, Then the list narrows by type and attention state", async () => {
+    renderChatPage();
+
+    expect(
+      await screen.findByRole("button", { name: /Release Squad/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open Eng recent session/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Group chats" }));
+
+    expect(
+      screen.getByRole("button", { name: /Release Squad/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Open Eng recent session/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+
+    expect(screen.queryByRole("button", { name: /Release Squad/ })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Open Eng recent session/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open Designer recent session/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Running" }));
+
+    expect(
+      screen.getByRole("button", { name: /Release Squad/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open Eng recent session/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Open Designer recent session/ }),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: /Unread/,
+      }),
+    );
+
+    expect(screen.queryByRole("button", { name: /Release Squad/ })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Open Eng recent session/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Open Designer recent session/ }),
+    ).toBeNull();
+  });
+
+  it("Given the mixed sidebar, When the top + menu picks new agent chat, Then it opens the new-chat command palette seed", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderChatPage();
+
+    await user.click(await screen.findByRole("button", { name: "New" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "New agent chat" }),
+    );
+
+    expect(useCommandPaletteStore.getState()).toMatchObject({
+      open: true,
+      initialQuery: "> ",
+    });
+  });
+
+  it("Given the mixed sidebar, When the top + menu picks new group, Then the new-group dialog opens", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderChatPage();
+
+    await user.click(await screen.findByRole("button", { name: "New" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "New group" }),
+    );
+
+    // 弹窗 footer 的「Create group」按钮出现 = 新建群聊弹窗已打开。
+    expect(
+      await screen.findByRole("button", { name: "Create group" }),
+    ).toBeInTheDocument();
   });
 });

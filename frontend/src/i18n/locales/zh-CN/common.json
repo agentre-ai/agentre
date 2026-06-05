@@ -531,16 +531,32 @@
     "untitled": "(未命名)"
   },
   "chatPage": {
+    "add": {
+      "aria": "新建",
+      "newAgentChat": "新建 Agent 会话",
+      "newGroup": "新建群聊"
+    },
     "agents": "Agents",
+    "filter": {
+      "open": "筛选侧栏",
+      "options": {
+        "agents": "Agent",
+        "all": "全部",
+        "groups": "群聊",
+        "running": "运行中",
+        "unread": "未读"
+      }
+    },
+    "newChat": "新建会话",
     "notChattable": {
       "defaultHint": "请先在组织架构页给该 Agent 绑定一个内置后端",
       "message": "暂不可对话 — {{hint}}"
     },
     "search": {
-      "aria": "筛选 agent 与会话",
+      "aria": "搜索 Agent 与群聊",
       "clear": "清空筛选",
-      "noMatches": "没有匹配 \"{{query}}\" 的 Agent 或会话",
-      "placeholder": "搜索 Agent / 会话"
+      "noMatches": "没有匹配 \"{{query}}\" 的 Agent 或群聊",
+      "placeholder": "搜索 Agent / 群聊"
     },
     "sections": {
       "agents": "AGENTS",
@@ -599,11 +615,26 @@
     "title": "群聊",
     "section": "群聊",
     "tabs": { "members": "成员", "settings": "设置", "group": "群聊" },
-    "roster": { "coordinator": "协调者", "members": "成员", "invite": "邀请成员", "backToGroup": "← 返回群聊", "openMember": "打开成员" },
-    "runStatus": { "running": "运行中", "waitingUser": "等待你", "paused": "已暂停", "idle": "空闲", "error": "出错" },
+    "roster": {
+      "coordinator": "协调者",
+      "members": "成员",
+      "invite": "邀请成员",
+      "backToGroup": "← 返回群聊",
+      "openMember": "打开成员"
+    },
+    "runStatus": {
+      "running": "运行中",
+      "waitingUser": "等待你",
+      "paused": "已暂停",
+      "idle": "空闲",
+      "error": "出错"
+    },
     "rounds": "已 {{count}} 轮",
     "controls": { "pause": "暂停", "stop": "停止", "resume": "继续" },
-    "composer": { "placeholder": "给群里发消息… 用 @ 提及成员", "send": "发送" },
+    "composer": {
+      "placeholder": "给群里发消息… 用 @ 提及成员",
+      "send": "发送"
+    },
     "settings": { "workdir": "工作目录", "archive": "归档群" },
     "you": "你",
     "onlyXReceived": "仅 {{name}} 收到",

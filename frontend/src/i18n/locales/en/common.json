@@ -531,16 +531,32 @@
     "untitled": "(Untitled)"
   },
   "chatPage": {
+    "add": {
+      "aria": "New",
+      "newAgentChat": "New agent chat",
+      "newGroup": "New group"
+    },
     "agents": "Agents",
+    "filter": {
+      "open": "Filter sidebar",
+      "options": {
+        "agents": "Agents",
+        "all": "All",
+        "groups": "Group chats",
+        "running": "Running",
+        "unread": "Unread"
+      }
+    },
+    "newChat": "New chat",
     "notChattable": {
       "defaultHint": "Bind a built-in backend to this Agent on the org chart page first",
       "message": "Not available for chat — {{hint}}"
     },
     "search": {
-      "aria": "Filter agents and sessions",
+      "aria": "Search agents and group chats",
       "clear": "Clear filter",
-      "noMatches": "No agents or sessions match \"{{query}}\"",
-      "placeholder": "Search Agent / session"
+      "noMatches": "No agents or group chats match \"{{query}}\"",
+      "placeholder": "Search Agent / group"
     },
     "sections": {
       "agents": "AGENTS",
@@ -599,11 +615,26 @@
     "title": "Groups",
     "section": "Group Chats",
     "tabs": { "members": "Members", "settings": "Settings", "group": "Group" },
-    "roster": { "coordinator": "Coordinator", "members": "Members", "invite": "Invite member", "backToGroup": "← Back to group", "openMember": "Open member" },
-    "runStatus": { "running": "Running", "waitingUser": "Waiting for you", "paused": "Paused", "idle": "Idle", "error": "Error" },
+    "roster": {
+      "coordinator": "Coordinator",
+      "members": "Members",
+      "invite": "Invite member",
+      "backToGroup": "← Back to group",
+      "openMember": "Open member"
+    },
+    "runStatus": {
+      "running": "Running",
+      "waitingUser": "Waiting for you",
+      "paused": "Paused",
+      "idle": "Idle",
+      "error": "Error"
+    },
     "rounds": "{{count}} rounds",
     "controls": { "pause": "Pause", "stop": "Stop", "resume": "Resume" },
-    "composer": { "placeholder": "Message the group… use @ to mention", "send": "Send" },
+    "composer": {
+      "placeholder": "Message the group… use @ to mention",
+      "send": "Send"
+    },
     "settings": { "workdir": "Working directory", "archive": "Archive group" },
     "you": "You",
     "onlyXReceived": "Only {{name}} received this",
