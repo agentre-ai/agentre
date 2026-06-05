@@ -102,7 +102,11 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 		if st == "" {
 			st = "completed"
 		}
-		completedRef = &CompletedTaskRef{ToolUseID: at.CompletedTask.ToolUseID, Status: st}
+		completedRef = &CompletedTaskRef{
+			ToolUseID: at.CompletedTask.ToolUseID,
+			Status:    st,
+			Summary:   at.CompletedTask.Summary,
+		}
 	}
 
 	stream := StreamName(sessionID, assistantMsg.ID)
@@ -171,7 +175,7 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 	// per-turn accumulator,只能定向重写持久化态。completedRef 为 nil(含 remote
 	// 不携带 CompletedTask 的情形)时跳过。
 	if completedRef != nil {
-		if err := chat_repo.Message().FlipSubagentStatus(finalCtx, sessionID, completedRef.ToolUseID, completedRef.Status); err != nil {
+		if err := chat_repo.Message().FlipSubagentStatus(finalCtx, sessionID, completedRef.ToolUseID, completedRef.Status, completedRef.Summary); err != nil {
 			logger.Ctx(finalCtx).Warn("chat_svc.driveAutonomousTurn: FlipSubagentStatus failed",
 				zap.Int64("sessionId", sessionID),
 				zap.String("toolUseId", completedRef.ToolUseID),

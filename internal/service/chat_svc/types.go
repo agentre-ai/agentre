@@ -155,11 +155,12 @@ type ChatStreamEvent struct {
 }
 
 // CompletedTaskRef 标识触发本自主轮的后台命令身份。镜像 agentruntime.CompletedBackgroundTask
-// 中前端需要的两个字段:ToolUseID 关联到上一条消息里的 subagent_state 块,Status 指明
-// 该块要翻成的终态。
+// 中前端需要的字段:ToolUseID 关联到上一条消息里的 subagent_state 块,Status 指明
+// 该块要翻成的终态,Summary 是 CLI 下发的完成摘要文本（如退出码说明）。
 type CompletedTaskRef struct {
 	ToolUseID string `json:"toolUseId"`
-	Status    string `json:"status"` // completed | failed
+	Status    string `json:"status"`              // completed | failed
+	Summary   string `json:"summary,omitempty"`   // CLI task_notification.summary
 }
 
 // ChatCompactBoundary 是 StreamCompactBoundary 事件的 payload。MessageID 是 boundary
@@ -320,7 +321,8 @@ type ChatBlockSubagent struct {
 	ToolUses        int    `json:"toolUses,omitempty"`
 	TotalTokens     int    `json:"totalTokens,omitempty"`
 	DurationMs      int    `json:"durationMs,omitempty"`
-	Status          string `json:"status,omitempty"` // running | completed | failed
+	Status          string `json:"status,omitempty"`  // running | completed | failed
+	Summary         string `json:"summary,omitempty"` // CLI task_notification.summary（如退出码说明）
 }
 
 type ChatMessage struct {

@@ -985,4 +985,5 @@ func TestBackgroundTaskAutonomousTurn_CarriesCompletedTask(t *testing.T) {
 	assert.Equal(t, "tu1", at.CompletedTask.ToolUseID)
 	assert.Equal(t, "bg1", at.CompletedTask.TaskID)
 	assert.Equal(t, "completed", at.CompletedTask.Status)
+	assert.Equal(t, "Background command completed", at.CompletedTask.Summary)
 }

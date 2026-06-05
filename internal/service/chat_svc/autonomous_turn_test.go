@@ -166,9 +166,9 @@ func TestDriveAutonomousTurn_BackgroundTaskCompletionFlipsAndEmits(t *testing.T)
 		m.dbMock.ExpectCommit()
 		m.message.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
-		// 关键断言:finalize 后定向翻转上一条消息里的 subagent_state。
+		// 关键断言:finalize 后定向翻转上一条消息里的 subagent_state（含 summary）。
 		m.message.EXPECT().
-			FlipSubagentStatus(gomock.Any(), int64(100), "tu1", "completed").
+			FlipSubagentStatus(gomock.Any(), int64(100), "tu1", "completed", "Background command completed").
 			Return(nil).Times(1)
 
 		evs := make(chan agentruntime.Event, 1)
@@ -181,6 +181,7 @@ func TestDriveAutonomousTurn_BackgroundTaskCompletionFlipsAndEmits(t *testing.T)
 			CompletedTask: &agentruntime.CompletedBackgroundTask{
 				ToolUseID: "tu1",
 				Status:    "completed",
+				Summary:   "Background command completed",
 			},
 		}
 
@@ -198,11 +199,12 @@ func TestDriveAutonomousTurn_BackgroundTaskCompletionFlipsAndEmits(t *testing.T)
 			}
 		}
 
-		convey.Convey("emit 的 StreamAutonomousStarted 携带 CompletedTask 身份", func() {
+		convey.Convey("emit 的 StreamAutonomousStarted 携带 CompletedTask 身份(含 summary)", func() {
 			require.NotNil(t, started, "应 emit StreamAutonomousStarted")
 			require.NotNil(t, started.CompletedTask, "应携带 CompletedTask")
 			assert.Equal(t, "tu1", started.CompletedTask.ToolUseID)
 			assert.Equal(t, "completed", started.CompletedTask.Status)
+			assert.Equal(t, "Background command completed", started.CompletedTask.Summary)
 		})
 	})
 }

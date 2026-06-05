@@ -86,17 +86,17 @@ func (mr *MockMessageRepoMockRecorder) Find(ctx, id any) *gomock.Call {
 }
 
 // FlipSubagentStatus mocks base method.
-func (m *MockMessageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status string) error {
+func (m *MockMessageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FlipSubagentStatus", ctx, sessionID, toolUseID, status)
+	ret := m.ctrl.Call(m, "FlipSubagentStatus", ctx, sessionID, toolUseID, status, summary)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // FlipSubagentStatus indicates an expected call of FlipSubagentStatus.
-func (mr *MockMessageRepoMockRecorder) FlipSubagentStatus(ctx, sessionID, toolUseID, status any) *gomock.Call {
+func (mr *MockMessageRepoMockRecorder) FlipSubagentStatus(ctx, sessionID, toolUseID, status, summary any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FlipSubagentStatus", reflect.TypeOf((*MockMessageRepo)(nil).FlipSubagentStatus), ctx, sessionID, toolUseID, status)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FlipSubagentStatus", reflect.TypeOf((*MockMessageRepo)(nil).FlipSubagentStatus), ctx, sessionID, toolUseID, status, summary)
 }
 
 // List mocks base method.

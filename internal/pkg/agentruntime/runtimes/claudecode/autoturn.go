@@ -49,6 +49,7 @@ func (r *Runtime) AutonomousTurns(sessionID int64) <-chan agentruntime.Autonomou
 					ToolUseID: at.CompletedTask.ToolUseID,
 					TaskID:    at.CompletedTask.TaskID,
 					Status:    at.CompletedTask.Status,
+					Summary:   at.CompletedTask.Summary,
 				}
 			}
 			// 先把这一轮交给 consumer(它并发 drain evOut),随后 inline 翻译填 evOut。

@@ -721,6 +721,7 @@ func subagentStateToChatBlockSubagent(sb *chatblocks.SubagentStateBlock) *ChatBl
 		TotalTokens:     sb.TotalTokens,
 		DurationMs:      sb.DurationMs,
 		Status:          sb.Status,
+		Summary:         sb.Summary,
 	}
 }
 

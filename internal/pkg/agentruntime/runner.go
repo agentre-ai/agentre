@@ -474,6 +474,7 @@ type CompletedBackgroundTask struct {
 	ToolUseID string
 	TaskID    string
 	Status    string // "completed" | "failed"; 空 → 视为 completed（见 pkg/claudecode.CompletedBackgroundTask）
+	Summary   string // CLI task_notification.summary 透传；空 = CLI 没下发或 remote 路径暂不携带
 }
 
 // Errors live in errors.go; registry / RuntimeFor / RegisterRuntime / SwapRuntimeForTest live in registry.go.

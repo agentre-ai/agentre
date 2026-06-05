@@ -29,8 +29,8 @@ type MessageRepo interface {
 	DeleteFromSeq(ctx context.Context, sessionID int64, fromSeq int) (int64, error)
 	// FlipSubagentStatus 定向把本会话里 parent_tool_call_id==toolUseID 的 subagent_state
 	// 块状态改成 status(后台 bash 在之后的自主轮才完成,无法走 per-turn accumulator)。
-	// 找不到则静默返回 nil(任务可能已 evict / 非本会话)。
-	FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status string) error
+	// summary 非空时同时写入块的 summary 字段。找不到则静默返回 nil(任务可能已 evict / 非本会话)。
+	FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error
 }
 
 // flipSubagentScanLimit 是 FlipSubagentStatus 倒序扫描的最近 assistant 消息条数上限。
@@ -92,7 +92,7 @@ func (r *messageRepo) Find(ctx context.Context, id int64) (*chat_entity.Message,
 	return &m, nil
 }
 
-func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status string) error {
+func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error {
 	if toolUseID == "" || status == "" {
 		return nil
 	}
@@ -109,7 +109,7 @@ func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, t
 	}
 
 	for _, msg := range rows {
-		rewritten, flipped, err := FlipSubagentInBlocksJSON(msg.BlocksJSON, toolUseID, status)
+		rewritten, flipped, err := FlipSubagentInBlocksJSON(msg.BlocksJSON, toolUseID, status, summary)
 		if err != nil {
 			// 单条消息 blocks 损坏不应阻断其它消息;跳过继续找。
 			logger.Ctx(ctx).Warn("chat_repo.FlipSubagentStatus: decode blocks failed; skipping message",
@@ -129,13 +129,14 @@ func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, t
 
 // FlipSubagentInBlocksJSON 在 blocks_json(StoredBlock 数组)里就地翻转 type=="subagent_state"
 // 且 data.parent_tool_call_id==toolUseID 的块的 status,返回重写后的 JSON + 是否命中。
-// 只触碰命中块的 status 字段,其余 data 原样保留;repo 层不依赖 service 的 block 类型,
+// summary 非空时同时写入命中块的 summary 字段。
+// 只触碰命中块的 status / summary 字段,其余 data 原样保留;repo 层不依赖 service 的 block 类型,
 // 只按 StoredBlock 信封 + 该块的少数已知字段操作。
 //
 // 解 data 用 json.Decoder + UseNumber():数字字段(total_tokens / duration_ms /
 // tool_uses)保持 json.Number,避免经 map[string]any 的 float64 强转把整数重写成
 // 科学计数(如 1e+04)。导出以便直接单测 JSON 改写逻辑。
-func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status string) (string, bool, error) {
+func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status, summary string) (string, bool, error) {
 	if blocksJSON == "" {
 		return blocksJSON, false, nil
 	}
@@ -158,6 +159,9 @@ func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status string) (string, boo
 			continue
 		}
 		data["status"] = status
+		if summary != "" {
+			data["summary"] = summary
+		}
 		buf, err := json.Marshal(data)
 		if err != nil {
 			return blocksJSON, false, err

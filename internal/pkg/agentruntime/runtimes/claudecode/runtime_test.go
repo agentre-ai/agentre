@@ -328,6 +328,7 @@ func TestAutonomousTurns_BridgesCompletedTask(t *testing.T) {
 				ToolUseID: "tu1",
 				TaskID:    "task-1",
 				Status:    "completed",
+				Summary:   "sum",
 			},
 		}
 		close(autoSrc)
@@ -345,6 +346,7 @@ func TestAutonomousTurns_BridgesCompletedTask(t *testing.T) {
 		So(got.CompletedTask.ToolUseID, ShouldEqual, "tu1")
 		So(got.CompletedTask.TaskID, ShouldEqual, "task-1")
 		So(got.CompletedTask.Status, ShouldEqual, "completed")
+		So(got.CompletedTask.Summary, ShouldEqual, "sum")
 
 		r.CloseAllSessions(ctx)
 	})

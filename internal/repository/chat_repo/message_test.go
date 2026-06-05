@@ -25,7 +25,7 @@ func TestFlipSubagentInBlocksJSON(t *testing.T) {
 		`]`
 
 	t.Run("命中块翻转 status,其余字段全保留", func(t *testing.T) {
-		out, flipped, err := chat_repo.FlipSubagentInBlocksJSON(input, "tu1", "completed")
+		out, flipped, err := chat_repo.FlipSubagentInBlocksJSON(input, "tu1", "completed", "")
 		require.NoError(t, err)
 		assert.True(t, flipped)
 
@@ -47,22 +47,33 @@ func TestFlipSubagentInBlocksJSON(t *testing.T) {
 		assert.Contains(t, out, `{"type":"text","data":{"text":"hi"}}`)
 	})
 
+	t.Run("非空 summary 同时写入", func(t *testing.T) {
+		out, flipped, err := chat_repo.FlipSubagentInBlocksJSON(input, "tu1", "completed", "Background command completed")
+		require.NoError(t, err)
+		assert.True(t, flipped)
+		outData := subagentData(t, out)
+		assert.Equal(t, "completed", outData["status"])
+		assert.Equal(t, "Background command completed", outData["summary"])
+		// 其余字段(数字/数组)未被破坏。
+		assert.Equal(t, json.Number("12345"), outData["total_tokens"])
+	})
+
 	t.Run("无命中块返回 false 且 JSON 不变", func(t *testing.T) {
-		out, flipped, err := chat_repo.FlipSubagentInBlocksJSON(input, "tu-missing", "completed")
+		out, flipped, err := chat_repo.FlipSubagentInBlocksJSON(input, "tu-missing", "completed", "")
 		require.NoError(t, err)
 		assert.False(t, flipped)
 		assert.Equal(t, input, out)
 	})
 
 	t.Run("空 JSON 返回 false 不报错", func(t *testing.T) {
-		out, flipped, err := chat_repo.FlipSubagentInBlocksJSON("", "tu1", "completed")
+		out, flipped, err := chat_repo.FlipSubagentInBlocksJSON("", "tu1", "completed", "")
 		require.NoError(t, err)
 		assert.False(t, flipped)
 		assert.Equal(t, "", out)
 	})
 
 	t.Run("非法 JSON 返回 error", func(t *testing.T) {
-		_, flipped, err := chat_repo.FlipSubagentInBlocksJSON("{not json", "tu1", "completed")
+		_, flipped, err := chat_repo.FlipSubagentInBlocksJSON("{not json", "tu1", "completed", "")
 		require.Error(t, err)
 		assert.False(t, flipped)
 	})
@@ -216,7 +227,7 @@ func TestMessageRepo_FlipSubagentStatus_FlipsMatchingBlock(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	err := chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu1", "completed")
+	err := chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu1", "completed", "Background command completed")
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -230,7 +241,7 @@ func TestMessageRepo_FlipSubagentStatus_NoMatchSilentNil(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
 			AddRow(42, 3, "assistant", `[{"type":"text","data":{"text":"hi"}}]`, 4))
 
-	err := chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu-missing", "completed")
+	err := chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu-missing", "completed", "")
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

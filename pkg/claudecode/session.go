@@ -278,6 +278,7 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 				ToolUseID: f.ToolUseID,
 				TaskID:    f.TaskID,
 				Status:    f.Status,
+				Summary:   f.Summary,
 			},
 		}
 		return nil

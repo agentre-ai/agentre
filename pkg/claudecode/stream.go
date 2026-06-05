@@ -133,6 +133,10 @@ type rawFrame struct {
 	// SubagentType。见 isBackgroundTaskNotification。
 	OutputFile string `json:"output_file,omitempty"`
 
+	// Summary 仅「后台命令完成」型 task_notification 帧带，CLI 填充完成摘要文本
+	// 如 "Background command \"…\" completed (exit code 0)"。
+	Summary string `json:"summary,omitempty"`
+
 	// system.subtype == "api_retry" 的字段：CLI 把 Anthropic SDK 的可重试错误（429/5xx 等）
 	// 包成 first-class 协议帧推到 stdout。字段直接放在帧顶层，不嵌在 usage / message 里。
 	// ErrorField 字段名避开内置 error。
