@@ -143,9 +143,15 @@ func (s *groupSvc) CreateGroup(ctx context.Context, req *CreateGroupRequest) (*G
 	if _, err := s.ensureMember(ctx, g, req.CoordinatorAgentID, group_entity.RoleCoordinator); err != nil {
 		return nil, err
 	}
+	// memberCount 含协调者(已入群);逐个初始成员入群前先卡 maxMembers,与
+	// AddGroupMember 同一上限语义,避免建群一次性绕过 8 人上限。
+	memberCount := 1
 	for _, agentID := range req.MemberAgentIDs {
 		if agentID == req.CoordinatorAgentID {
 			continue
+		}
+		if memberCount >= maxMembers {
+			return nil, i18n.NewError(ctx, code.GroupMemberLimit)
 		}
 		if !s.backendSupportsGroup(ctx, agentID) {
 			return nil, i18n.NewError(ctx, code.GroupBackendUnsupported)
@@ -153,6 +159,7 @@ func (s *groupSvc) CreateGroup(ctx context.Context, req *CreateGroupRequest) (*G
 		if _, err := s.ensureMember(ctx, g, agentID, group_entity.RoleMember); err != nil {
 			return nil, err
 		}
+		memberCount++
 	}
 	logger.Ctx(ctx).Info("group_svc.CreateGroup: created",
 		zap.Int64("groupID", g.ID), zap.Int64("coordinatorAgentID", req.CoordinatorAgentID))

@@ -312,6 +312,46 @@ func TestGroupSvc_CreateGroup_AddsInitialMembers(t *testing.T) {
 		})
 		So(err, ShouldNotBeNil)
 	})
+
+	Convey("初始成员超过 maxMembers → GroupMemberLimit", t, func() {
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		gw := mock_group_svc.NewMockChatGateway(ctrl)
+		groupRepo := mock_group_repo.NewMockGroupRepo(ctrl)
+		memberRepo := mock_group_repo.NewMockGroupMemberRepo(ctrl)
+		msgRepo := mock_group_repo.NewMockGroupMessageRepo(ctrl)
+		group_repo.RegisterGroup(groupRepo)
+		group_repo.RegisterMember(memberRepo)
+		group_repo.RegisterMessage(msgRepo)
+
+		// 协调者 + 8 个成员 = 9 > maxMembers(8)。前 7 个成员入群(连协调者 8 个)后,
+		// 第 8 个成员触发上限。重复的入群调用用 AnyTimes 放行,只断言最终报错码。
+		groupRepo.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, g *group_entity.Group) error { g.ID = 5; return nil })
+		gw.EXPECT().AgentBackendHasCapability(gomock.Any(), gomock.Any(), capability.CapMCPTools).
+			Return(true, nil).AnyTimes()
+		memberRepo.EXPECT().FindByGroupAndAgent(gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(nil, nil).AnyTimes()
+		gw.EXPECT().EnsureGroupMemberSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(int64(99), nil).AnyTimes()
+		memberRepo.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		// LoadGroup tail：仅在「没有上限拦截」的回归态会被走到(那时本测试应失败);
+		// 修好后在拦截处返回,这几条不会被调用。AnyTimes 让两种路径都不报多余调用。
+		groupRepo.EXPECT().Find(gomock.Any(), int64(5)).Return(&group_entity.Group{ID: 5}, nil).AnyTimes()
+		memberRepo.EXPECT().ListByGroup(gomock.Any(), int64(5)).Return(nil, nil).AnyTimes()
+		msgRepo.EXPECT().ListByGroup(gomock.Any(), int64(5)).Return(nil, nil).AnyTimes()
+
+		svc := group_svc.NewForTest(gw)
+		_, err := svc.CreateGroup(ctx, &group_svc.CreateGroupRequest{
+			Title: "满员", CoordinatorAgentID: 1, MemberAgentIDs: []int64{2, 3, 4, 5, 6, 7, 8, 9},
+		})
+		So(err, ShouldNotBeNil)
+		var httpErr *httputils.Error
+		So(errors.As(err, &httpErr), ShouldBeTrue)
+		So(httpErr.Code, ShouldEqual, code.GroupMemberLimit)
+	})
 }
 
 func TestGroupSvc_SetGroupPinned(t *testing.T) {
