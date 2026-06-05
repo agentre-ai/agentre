@@ -272,6 +272,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		}
 		if be := backends[a.AgentBackendID]; be != nil {
 			item.BackendType = be.Type
+			item.SupportsGroup = backendSupportsGroup(be)
 			if agent_backend_entity.BackendType(be.Type) == agent_backend_entity.TypeClaudeCode {
 				// 仅 claudecode 透出；entity.Check 限定其它后端为空串。
 				item.DefaultPermissionMode = be.DefaultPermissionMode
@@ -3402,6 +3403,18 @@ func (s *chatSvc) selectRunner(ctx context.Context, be *agent_backend_entity.Age
 		return r, nil
 	}
 	return s.borrowRemoteRuntime(ctx, be, sessionID)
+}
+
+// backendSupportsGroup 报告某后端 runtime 是否声明 CapMCPTools（群聊资格）。nil → false。
+func backendSupportsGroup(be *agent_backend_entity.AgentBackend) bool {
+	if be == nil {
+		return false
+	}
+	r := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
+	if r == nil {
+		return false
+	}
+	return r.Capabilities().Has(capability.CapMCPTools)
 }
 
 // EnsureGroupMemberSession 创建/返回某 agent 在指定群的 backing session(带 group_id)。
