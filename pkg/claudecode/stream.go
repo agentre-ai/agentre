@@ -122,7 +122,9 @@ type rawFrame struct {
 	ToolUseID    string `json:"tool_use_id,omitempty"`
 	Description  string `json:"description,omitempty"`
 	SubagentType string `json:"subagent_type,omitempty"`
-	Prompt       string `json:"prompt,omitempty"`
+	// TaskType 区分 task 帧来源:"local_bash"(run_in_background bash)/ "local_agent"(subagent)。
+	TaskType string `json:"task_type,omitempty"`
+	Prompt   string `json:"prompt,omitempty"`
 	LastToolName string `json:"last_tool_name,omitempty"`
 	Status       string `json:"status,omitempty"`
 

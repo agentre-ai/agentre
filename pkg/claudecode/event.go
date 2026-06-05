@@ -111,6 +111,7 @@ type ToolEvent struct {
 //
 //	TaskID          ← 三类 system 帧共通字段 task_id
 //	SubagentType    ← 三类共通字段 subagent_type
+//	TaskType        ← 三类共通字段 task_type（"local_bash" / "local_agent"）
 //	TaskDescription ← task_started.description（任务名）/ task_progress.description（实时摘要）
 //	Prompt          ← 仅 task_started.prompt（任务说明，长文本）
 //	LastToolName    ← task_progress.last_tool_name
@@ -121,6 +122,7 @@ type ToolEvent struct {
 type SubagentMeta struct {
 	TaskID          string
 	SubagentType    string
+	TaskType        string // ← task_started/progress/notification.task_type（local_bash / local_agent）
 	TaskDescription string
 	Prompt          string
 	LastToolName    string
