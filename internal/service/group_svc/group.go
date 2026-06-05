@@ -99,6 +99,7 @@ func newGroupSvc(gw ChatGateway, e Emitter) *groupSvc {
 	}
 	// 绑定 MCP ingest 回调(仅取方法值, 不调用) → group_send tool 路由到 IngestAgentMessage。
 	s.mcp.ingest = s.IngestAgentMessage
+	s.mcp.invite = s.HandleInvite
 	return s
 }
 

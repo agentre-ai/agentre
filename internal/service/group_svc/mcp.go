@@ -18,6 +18,7 @@ type groupMCP struct {
 	mu     sync.Mutex
 	tokens map[string]memberRef
 	ingest func(ctx context.Context, memberID int64, body string, mentions []string) error
+	invite func(ctx context.Context, memberID int64, names []string, ids []int64, reason string) ([]InviteResult, error)
 	newTok func() string
 }
 
@@ -76,8 +77,11 @@ func (h *groupMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ProtocolVersion string `json:"protocolVersion"`
 			Name            string `json:"name"`
 			Arguments       struct {
-				Body     string   `json:"body"`
-				Mentions []string `json:"mentions"`
+				Body       string   `json:"body"`
+				Mentions   []string `json:"mentions"`
+				AgentNames []string `json:"agentNames"`
+				AgentIDs   []int64  `json:"agentIds"`
+				Reason     string   `json:"reason"`
 			} `json:"arguments"`
 		} `json:"params"`
 	}
@@ -99,26 +103,42 @@ func (h *groupMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
 	case "tools/list":
-		writeRPCResult(w, rpc.ID, map[string]any{"tools": []any{groupSendToolSchema()}})
+		writeRPCResult(w, rpc.ID, map[string]any{"tools": []any{groupSendToolSchema(), groupInviteToolSchema()}})
 	case "tools/call":
 		ref, ok := h.lookup(bearer(r))
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if rpc.Params.Name != "group_send" {
+		switch rpc.Params.Name {
+		case "group_send":
+			if h.ingest == nil { // 防御: 未装配 ingest(理论上 D2 后必非 nil)
+				writeRPCError(w, rpc.ID, -32000, "ingest not wired")
+				return
+			}
+			if err := h.ingest(r.Context(), ref.memberID, rpc.Params.Arguments.Body, rpc.Params.Arguments.Mentions); err != nil {
+				writeRPCError(w, rpc.ID, -32000, err.Error())
+				return
+			}
+			writeRPCResult(w, rpc.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": "sent"}}})
+		case "group_invite":
+			if h.invite == nil {
+				writeRPCError(w, rpc.ID, -32000, "invite not wired")
+				return
+			}
+			results, err := h.invite(r.Context(), ref.memberID, rpc.Params.Arguments.AgentNames, rpc.Params.Arguments.AgentIDs, rpc.Params.Arguments.Reason)
+			if err != nil {
+				writeRPCError(w, rpc.ID, -32000, err.Error())
+				return
+			}
+			names := make([]string, 0, len(results))
+			for _, x := range results {
+				names = append(names, x.Name)
+			}
+			writeRPCResult(w, rpc.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": "invited: " + strings.Join(names, ", ")}}})
+		default:
 			writeRPCError(w, rpc.ID, -32601, "unknown tool")
-			return
 		}
-		if h.ingest == nil { // 防御: 未装配 ingest(理论上 D2 后必非 nil)
-			writeRPCError(w, rpc.ID, -32000, "ingest not wired")
-			return
-		}
-		if err := h.ingest(r.Context(), ref.memberID, rpc.Params.Arguments.Body, rpc.Params.Arguments.Mentions); err != nil {
-			writeRPCError(w, rpc.ID, -32000, err.Error())
-			return
-		}
-		writeRPCResult(w, rpc.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": "sent"}}})
 	default:
 		writeRPCError(w, rpc.ID, -32601, "method not found")
 	}
@@ -138,6 +158,21 @@ func groupSendToolSchema() map[string]any {
 			"properties": map[string]any{
 				"body":     map[string]any{"type": "string", "description": "消息正文"},
 				"mentions": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "收件成员显示名"},
+			},
+		},
+	}
+}
+
+func groupInviteToolSchema() map[string]any {
+	return map[string]any{
+		"name":        "group_invite",
+		"description": "把本部门的 Agent 拉进当前群聊。只有协调者可调用。agentNames 或 agentIds 二选一。",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"agentNames": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "被邀请成员显示名"},
+				"agentIds":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "被邀请成员 agent id"},
+				"reason":     map[string]any{"type": "string", "description": "邀请理由(可选)"},
 			},
 		},
 	}
