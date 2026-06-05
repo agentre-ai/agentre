@@ -844,7 +844,7 @@ describe("ChatPanel · Codex collaboration mode", () => {
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
   });
 
-  it("/goal objective sets Codex thread goal instead of sending a user message", async () => {
+  it("/goal objective sets Codex thread goal and starts a user turn", async () => {
     resetStore();
     componentMocks.capsSwitchableDuringTurn = false;
     componentMocks.capsAllowedModes = ["default", "plan"];
@@ -855,6 +855,12 @@ describe("ChatPanel · Codex collaboration mode", () => {
     });
     appMocks.SetChatGoal.mockResolvedValue({
       goal: { objective: "ship rpc", status: "active", tokensUsed: 0 },
+    });
+    appMocks.SendChatMessage.mockResolvedValue({
+      assistantMessageId: 1001,
+      sessionId: 42,
+      stream: "chat:event:42:1001",
+      userMessageId: 1000,
     });
 
     render(<ChatPanel sessionId={42} />);
@@ -873,7 +879,15 @@ describe("ChatPanel · Codex collaboration mode", () => {
         status: "active",
       });
     });
-    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(appMocks.SendChatMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "plan",
+          sessionId: 42,
+          text: "ship rpc",
+        }),
+      );
+    });
   });
 
   it("/goal clear calls Codex clear goal RPC", async () => {
@@ -902,7 +916,43 @@ describe("ChatPanel · Codex collaboration mode", () => {
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
   });
 
-  it("/goal objective in a new Codex chat starts a goal session before any user message", async () => {
+  it("/goal is rejected while the Codex turn is still streaming", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = makeSession({
+      backendType: "codex",
+      id: 42,
+      permissionMode: "default",
+    });
+    useChatStreamsStore.getState().openStream({
+      name: "chat:stream:goal-wait",
+      sessionId: 42,
+      assistantMessageId: 99,
+      streamStartedAt: Date.now(),
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+
+    act(() => {
+      submit?.("/goal complete");
+    });
+
+    expect(
+      await screen.findByText(
+        "Wait for this turn to finish before changing the goal",
+      ),
+    ).toBeInTheDocument();
+    expect(appMocks.SetChatGoal).not.toHaveBeenCalled();
+    expect(appMocks.ClearChatGoal).not.toHaveBeenCalled();
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    expect(appMocks.EnqueueChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("/goal objective in a new Codex chat creates the goal session and starts a user turn", async () => {
     resetStore();
     componentMocks.capsSwitchableDuringTurn = false;
     componentMocks.capsAllowedModes = ["default", "plan"];
@@ -911,6 +961,12 @@ describe("ChatPanel · Codex collaboration mode", () => {
     appMocks.StartChatGoal.mockResolvedValue({
       sessionId: 123,
       goal: { objective: "ship rpc", status: "active", tokensUsed: 0 },
+    });
+    appMocks.SendChatMessage.mockResolvedValue({
+      assistantMessageId: 1001,
+      sessionId: 123,
+      stream: "chat:event:123:1001",
+      userMessageId: 1000,
     });
 
     render(
@@ -947,7 +1003,15 @@ describe("ChatPanel · Codex collaboration mode", () => {
       });
     });
     expect(onSessionCreated).toHaveBeenCalledWith(123, 7);
-    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(appMocks.SendChatMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "plan",
+          sessionId: 123,
+          text: "ship rpc",
+        }),
+      );
+    });
     expect(appMocks.SetChatGoal).not.toHaveBeenCalled();
   });
 

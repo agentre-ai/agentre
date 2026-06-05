@@ -112,6 +112,7 @@ func (r *Runtime) GetGoal(ctx context.Context, req agentruntime.GoalRequest) (*a
 	if err != nil {
 		return nil, err
 	}
+	defer r.releaseGoalSession(req.SessionID)
 	goal, err := sess.GetGoal(ctx)
 	if err != nil {
 		return nil, err
@@ -124,6 +125,7 @@ func (r *Runtime) SetGoal(ctx context.Context, req agentruntime.GoalRequest) (*a
 	if err != nil {
 		return nil, err
 	}
+	defer r.releaseGoalSession(req.SessionID)
 	update := codex.GoalUpdate{
 		Objective:   req.Objective,
 		TokenBudget: req.TokenBudget,
@@ -144,7 +146,21 @@ func (r *Runtime) ClearGoal(ctx context.Context, req agentruntime.GoalRequest) (
 	if err != nil {
 		return false, err
 	}
+	defer r.releaseGoalSession(req.SessionID)
 	return sess.ClearGoal(ctx)
+}
+
+func (r *Runtime) releaseGoalSession(sessionID int64) {
+	if sessionID <= 0 {
+		return
+	}
+	r.mu.Lock()
+	active := r.active[sessionID] != nil
+	r.mu.Unlock()
+	if active {
+		return
+	}
+	r.pool.MarkIdle(sessionKey(sessionID))
 }
 
 func (r *Runtime) goalSession(ctx context.Context, req agentruntime.GoalRequest, requireProviderSession bool) (cxSessionHandle, error) {

@@ -205,7 +205,6 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
               questions={payload.questions}
               activeIdx={activeQIdx}
               selections={selections}
-              locked={isLocked}
               onSelect={setActiveQIdx}
             />
           )}
@@ -293,13 +292,11 @@ function QuestionTabs({
   questions,
   activeIdx,
   selections,
-  locked,
   onSelect,
 }: {
   questions: AskQuestionDTO[];
   activeIdx: number;
   selections: Selection[];
-  locked: boolean;
   onSelect: (idx: number) => void;
 }) {
   return (
@@ -312,7 +309,6 @@ function QuestionTabs({
           <button
             key={idx}
             type="button"
-            disabled={locked}
             onClick={() => onSelect(idx)}
             className={cn(
               "-mb-px flex items-center gap-1.5 border-b-2 px-3.5 pt-2.5 pb-2 text-xs transition-colors",

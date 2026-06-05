@@ -785,7 +785,7 @@ function ChatPanel({
     }
   }
 
-  async function doGoal(sid: number, cmd: GoalCommand) {
+  async function doGoal(sid: number, agentId: number, cmd: GoalCommand) {
     if (!sid) return;
     try {
       if (cmd.kind === "get") {
@@ -821,6 +821,9 @@ function ChatPanel({
             })
           : t("chatPanel.goal.updated"),
       });
+      if (cmd.kind === "set") {
+        await doSend(sid, agentId, { text: cmd.objective });
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] goal failed", e);
@@ -852,6 +855,9 @@ function ChatPanel({
             })
           : t("chatPanel.goal.updated"),
       });
+      if (resp.sessionId) {
+        await doSend(resp.sessionId, agentId, { text: cmd.objective });
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[chat] start goal failed", e);
@@ -1498,6 +1504,13 @@ function ChatPanel({
                       });
                       return;
                     }
+                    if (streaming) {
+                      setNotice({
+                        kind: "info",
+                        text: t("chatPanel.goal.waitForTurn"),
+                      });
+                      return;
+                    }
                     if (!sessionId) {
                       if (newSessionAgent && goalCommand.kind === "set") {
                         void doStartGoal(newSessionAgent.id, goalCommand);
@@ -1509,7 +1522,7 @@ function ChatPanel({
                       });
                       return;
                     }
-                    void doGoal(sessionId, goalCommand);
+                    void doGoal(sessionId, session?.agentId ?? 0, goalCommand);
                     return;
                   }
                   if (supportsCompactRPC && isExactCompactCommand(text)) {

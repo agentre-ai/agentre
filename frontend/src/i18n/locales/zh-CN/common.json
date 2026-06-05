@@ -493,6 +493,7 @@
       "empty": "当前没有目标",
       "imageUnsupported": "/goal 不能和图片一起发送",
       "needsSession": "请先发送一条消息让 Codex 会话启动后再设置目标",
+      "waitForTurn": "请等本轮结束后再修改目标",
       "updated": "目标已更新",
       "updatedWithObjective": "目标已更新：{{objective}}"
     },

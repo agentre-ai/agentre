@@ -161,6 +161,85 @@ func TestSetGoal_CreatesProviderThreadBeforeFirstTurn(t *testing.T) {
 	})
 }
 
+func TestSetGoal_ReleasesOneShotSessionToIdle(t *testing.T) {
+	Convey("Given /goal only performs a one-shot Codex RPC, when SetGoal returns, then the cached CLI session is idle for the next turn", t, func() {
+		pool := agentruntime.NewCLISessionPool(8)
+		fake := &fakeRuntimeSession{}
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			return fake, nil
+		})
+		defer restore()
+
+		objective := "ship without starting a turn"
+		status := "active"
+		goal, err := NewWithPool(pool).SetGoal(context.Background(), agentruntime.GoalRequest{
+			Backend: &agent_backend_entity.AgentBackend{
+				Type:    string(agent_backend_entity.TypeCodex),
+				EnvJSON: "{}",
+			},
+			AgentID:   7,
+			SessionID: 42,
+			Cwd:       t.TempDir(),
+			Objective: &objective,
+			Status:    &status,
+		})
+
+		So(err, ShouldBeNil)
+		So(goal, ShouldNotBeNil)
+		So(pool.Len(), ShouldEqual, 1)
+		So(pool.IdleLen(), ShouldEqual, 1)
+	})
+}
+
+func TestSetGoal_KeepsActiveTurnSessionActive(t *testing.T) {
+	Convey("Given a Codex turn is active, when SetGoal runs against the same session, then the cached CLI session is not marked idle", t, func() {
+		pool := agentruntime.NewCLISessionPool(8)
+		stream := newBlockingRuntimeStream()
+		fake := &fakeRuntimeSession{stream: stream, sid: "thread-active"}
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			return fake, nil
+		})
+		defer restore()
+
+		r := NewWithPool(pool)
+		events, _, err := r.Run(context.Background(), agentruntime.RunRequest{
+			Backend: &agent_backend_entity.AgentBackend{
+				Type:    string(agent_backend_entity.TypeCodex),
+				EnvJSON: "{}",
+			},
+			SessionID: 42,
+			Cwd:       t.TempDir(),
+			UserText:  "run",
+		})
+		So(err, ShouldBeNil)
+		defer func() {
+			stream.finish()
+			for range events {
+			}
+		}()
+
+		objective := "update while active"
+		status := "active"
+		goal, err := r.SetGoal(context.Background(), agentruntime.GoalRequest{
+			Backend: &agent_backend_entity.AgentBackend{
+				Type:    string(agent_backend_entity.TypeCodex),
+				EnvJSON: "{}",
+			},
+			AgentID:           7,
+			SessionID:         42,
+			ProviderSessionID: "thread-active",
+			Cwd:               t.TempDir(),
+			Objective:         &objective,
+			Status:            &status,
+		})
+
+		So(err, ShouldBeNil)
+		So(goal, ShouldNotBeNil)
+		So(pool.Len(), ShouldEqual, 1)
+		So(pool.IdleLen(), ShouldEqual, 0)
+	})
+}
+
 func TestRun_ReusesCachedSessionAcrossTurns(t *testing.T) {
 	Convey("Given a Codex chat session is idle after one turn, when Run is called again, then the cached CLI session is reused", t, func() {
 		pool := agentruntime.NewCLISessionPool(8)
@@ -450,6 +529,19 @@ type emptyRuntimeStream struct{}
 func (*emptyRuntimeStream) Next() bool            { return false }
 func (*emptyRuntimeStream) Event() pkgcodex.Event { return pkgcodex.Event{} }
 func (*emptyRuntimeStream) SessionID() string     { return "" }
+
+type blockingRuntimeStream struct {
+	done chan struct{}
+}
+
+func newBlockingRuntimeStream() *blockingRuntimeStream {
+	return &blockingRuntimeStream{done: make(chan struct{})}
+}
+
+func (s *blockingRuntimeStream) Next() bool          { <-s.done; return false }
+func (*blockingRuntimeStream) Event() pkgcodex.Event { return pkgcodex.Event{} }
+func (*blockingRuntimeStream) SessionID() string     { return "" }
+func (s *blockingRuntimeStream) finish()             { close(s.done) }
 
 type eventRuntimeStream struct {
 	events []pkgcodex.Event

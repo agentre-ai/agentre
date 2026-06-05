@@ -493,6 +493,7 @@
       "empty": "No current goal",
       "imageUnsupported": "/goal cannot be sent with images",
       "needsSession": "Send one message first so the Codex session starts before setting a goal",
+      "waitForTurn": "Wait for this turn to finish before changing the goal",
       "updated": "Goal updated",
       "updatedWithObjective": "Goal updated: {{objective}}"
     },

@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 
 import { UserAskCard } from "./card";
@@ -69,5 +70,80 @@ describe("UserAskCard", () => {
     } as unknown as ChatBlockData;
     render(<UserAskCard toolBlock={block} sessionId={1} />);
     expect(screen.getByText("ANSWERED")).toBeDefined();
+  });
+
+  it("Given answered multiple questions, When switching question tabs, Then answers remain reviewable but locked", async () => {
+    const user = userEvent.setup();
+    const block = {
+      type: "tool_use",
+      toolName: "AskUserQuestion",
+      canonical: {
+        kind: "user.ask",
+        userAsk: {
+          requestId: "req-1",
+          questions: [
+            {
+              question: "First question?",
+              header: "First",
+              options: [{ label: "A", description: "" }],
+            },
+            {
+              question: "Second question?",
+              header: "Second",
+              options: [{ label: "B", description: "" }],
+            },
+          ],
+          answers: [
+            { questionIndex: 0, labels: ["A"] },
+            { questionIndex: 1, labels: ["B"] },
+          ],
+          answered: true,
+        },
+      },
+    } as unknown as ChatBlockData;
+
+    render(<UserAskCard toolBlock={block} sessionId={1} />);
+
+    await user.click(screen.getByRole("button", { name: /Q2 · Second/ }));
+
+    expect(screen.getByText("Second question?")).toBeDefined();
+    expect(screen.getByRole("button", { name: /^B$/ })).toBeDisabled();
+    expect(screen.getByRole("textbox")).toBeDisabled();
+  });
+
+  it("Given skipped multiple questions, When switching question tabs, Then questions remain reviewable without answer actions", async () => {
+    const user = userEvent.setup();
+    const block = {
+      type: "tool_use",
+      toolName: "AskUserQuestion",
+      canonical: {
+        kind: "user.ask",
+        userAsk: {
+          requestId: "req-1",
+          questions: [
+            {
+              question: "First question?",
+              header: "First",
+              options: [{ label: "A", description: "" }],
+            },
+            {
+              question: "Second question?",
+              header: "Second",
+              options: [{ label: "B", description: "" }],
+            },
+          ],
+          skipped: true,
+        },
+      },
+    } as unknown as ChatBlockData;
+
+    render(<UserAskCard toolBlock={block} sessionId={1} />);
+
+    await user.click(screen.getByRole("button", { name: /Q2 · Second/ }));
+
+    expect(screen.getByText("Second question?")).toBeDefined();
+    expect(screen.getByRole("button", { name: /^B$/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Skip" })).toBeNull();
   });
 });
