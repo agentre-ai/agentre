@@ -518,6 +518,17 @@
       "placeholder": "Enter a new name",
       "title": "Rename Session"
     },
+    "backgroundTasks": {
+      "chip": "{{count}} running",
+      "title": "Background tasks",
+      "running": "Running",
+      "completed": "Done",
+      "failed": "Failed",
+      "empty": "No background tasks",
+      "bash": "bash",
+      "subagent": "subagent",
+      "aria": "Background tasks"
+    },
     "toolbar": {
       "aria": "Session toolbar",
       "contextSidebar": "Context sidebar",
