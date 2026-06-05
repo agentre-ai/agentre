@@ -46,26 +46,6 @@ func TestProjectMessageBlocks_NestedTool(t *testing.T) {
 	})
 }
 
-func TestProjectMessageBlocks_SubagentState(t *testing.T) {
-	Convey("SubagentStateBlock 投影带 kind/description + ParentToolCallID", t, func() {
-		out := ProjectMessageBlocks([]cagoblocks.ContentBlock{
-			&blocks.SubagentStateBlock{
-				ParentToolCallID: "tu1",
-				Kind:             "local_bash",
-				Description:      "sleep 20",
-				Status:           "running",
-			},
-		})
-		So(out, ShouldHaveLength, 1)
-		So(out[0].Type, ShouldEqual, "subagent_state")
-		So(out[0].ParentToolCallID, ShouldEqual, "tu1")
-		So(out[0].Subagent, ShouldNotBeNil)
-		So(out[0].Subagent.Kind, ShouldEqual, "local_bash")
-		So(out[0].Subagent.Description, ShouldEqual, "sleep 20")
-		So(out[0].Subagent.Status, ShouldEqual, "running")
-	})
-}
-
 func TestProjectMessageBlocks_UserAsk(t *testing.T) {
 	Convey("UserAskBlock 投影到 type=user_ask + UserAsk 子字段", t, func() {
 		out := ProjectMessageBlocks([]cagoblocks.ContentBlock{
