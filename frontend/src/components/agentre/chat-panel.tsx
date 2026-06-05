@@ -404,6 +404,7 @@ function ChatPanel({
           .getState()
           .mergeSubagentMeta(sessionId, ev.completedTask.toolUseId, {
             status: ev.completedTask.status,
+            summary: ev.completedTask.summary,
           } as chat_svc.ChatBlockSubagent);
       }
       if (!ev.assistantMessage || !ev.stream) {

@@ -1,8 +1,15 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BackgroundTasksChip } from "./background-tasks-chip";
+import { BackgroundTasksPopoverContent } from "./background-tasks-popover";
 import type { BackgroundTask } from "./types";
+
+// 任何用 vi.useFakeTimers() 的用例若断言抛错,真实计时器不会被恢复,会泄漏到
+// 后续测试。统一在 afterEach 兜底恢复。
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const running: BackgroundTask = {
   toolUseId: "tu1",
@@ -103,5 +110,109 @@ describe("BackgroundTasksChip", () => {
     fireEvent.click(screen.getByRole("button"));
     expect(screen.getByText("bash")).toBeInTheDocument();
     expect(screen.getByText("subagent")).toBeInTheDocument();
+  });
+});
+
+describe("BackgroundTasksPopoverContent — elapsed + summary", () => {
+  it("shows elapsed for a running task with startedAt", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1700000030000)); // 30s after startedAt
+
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-r",
+        kind: "local_bash",
+        description: "sleep 20",
+        status: "running",
+        startedAt: 1700000000000,
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    // running 30s → "30s"
+    expect(screen.getByTestId("elapsed")).toHaveTextContent("30s");
+  });
+
+  it("shows frozen durationMs for a completed subagent", () => {
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-c",
+        kind: "local_agent",
+        description: "Explore",
+        status: "completed",
+        durationMs: 4200,
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    expect(screen.getByTestId("elapsed")).toHaveTextContent("4s");
+  });
+
+  it("shows summary text for a completed bash task", () => {
+    const summary = 'Background command "sleep 20" completed (exit code 0)';
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-b",
+        kind: "local_bash",
+        description: "sleep 20",
+        status: "completed",
+        summary,
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    expect(screen.getByText(summary)).toBeInTheDocument();
+  });
+
+  it("does not show elapsed for a running task without startedAt", () => {
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-no-start",
+        kind: "local_bash",
+        description: "sleep 20",
+        status: "running",
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    expect(screen.queryByTestId("elapsed")).toBeNull();
+  });
+
+  it("does not show summary when summary is absent", () => {
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-no-summary",
+        kind: "local_bash",
+        description: "run",
+        status: "completed",
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    // No extra text beyond what's expected
+    expect(screen.queryByText(/exit code/)).toBeNull();
+  });
+
+  it("formats minute-range frozen durationMs as m ss", () => {
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-min",
+        kind: "local_agent",
+        description: "task",
+        status: "completed",
+        durationMs: 185_000, // 3m 05s
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    expect(screen.getByTestId("elapsed")).toHaveTextContent("3m 05s");
+  });
+
+  it("formats hour-range frozen durationMs as h mm", () => {
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-hr",
+        kind: "local_agent",
+        description: "task",
+        status: "completed",
+        durationMs: 3_720_000, // 1h 02m
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    expect(screen.getByTestId("elapsed")).toHaveTextContent("1h 02m");
   });
 });

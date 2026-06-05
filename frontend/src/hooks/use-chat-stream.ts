@@ -136,10 +136,10 @@ export type ChatStreamEvent = {
   // assistantMessage 是要插入 transcript 的新 assistant 行;stream 是该自主轮的
   // per-turn 事件名(前端 openStream 订阅它接后续 chunk/done);trigger="background_task"。
   // completedTask: 触发本自主轮的后台任务身份;前端据此把对应 tool_use.subagent.status
-  // 即时翻成 completed/failed,刷新后台任务面板的状态胶囊。
+  // 即时翻成 completed/failed,刷新后台任务面板的状态胶囊。summary 为退出码摘要文本。
   stream?: string;
   trigger?: string;
-  completedTask?: { toolUseId: string; status: string };
+  completedTask?: { toolUseId: string; status: string; summary?: string };
 };
 
 export function useChatStream(
