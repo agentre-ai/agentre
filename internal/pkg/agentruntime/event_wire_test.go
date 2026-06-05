@@ -268,6 +268,15 @@ func TestUnmarshalEvent_AllKindsCovered(t *testing.T) {
 	}
 }
 
+func TestSubagentStarted_KindRoundTrip(t *testing.T) {
+	ev := SubagentStarted{ToolCallID: "tu1", Info: SubagentInfo{Kind: "local_bash"}}
+	b, err := json.Marshal(ev)
+	require.NoError(t, err)
+	got, err := UnmarshalEvent(b)
+	require.NoError(t, err)
+	assert.Equal(t, "local_bash", got.(SubagentStarted).Info.Kind)
+}
+
 func TestUnmarshalEvent_ErrorPaths(t *testing.T) {
 	t.Run("empty bytes", func(t *testing.T) {
 		_, err := UnmarshalEvent(nil)
