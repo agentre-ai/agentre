@@ -428,8 +428,10 @@ function groupMatchesStatuses(
   statuses: ReadonlySet<ChatSidebarStatus>,
 ): boolean {
   if (statuses.size === 0) return true;
-  // 群的 unread（waiting_user）在 #4 接入；此处仅实现 running。
-  return statuses.has("running") && group.runStatus === "running";
+  if (statuses.has("running") && group.runStatus === "running") return true;
+  // 群「未读」= 等待用户处理（runStatus==waiting_user），与 agent 的 attention 未读对齐。
+  if (statuses.has("unread") && group.runStatus === "waiting_user") return true;
+  return false;
 }
 
 function agentMatchesStatuses(

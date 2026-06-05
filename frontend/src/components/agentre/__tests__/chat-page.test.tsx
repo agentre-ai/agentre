@@ -1024,3 +1024,71 @@ describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("ChatPage sidebar — 群未读筛选", () => {
+  // #4: 群在「未读」状态筛选下应按 runStatus==waiting_user(等待用户) 计入,
+  // 而 running 群不算未读。
+  beforeEach(() => {
+    localStorage.clear();
+    resetTabsStore();
+    useChatAgentsStore.getState().__reset();
+    useGroupListStore.getState().__reset();
+    runtimeMocks.handlers.clear();
+    vi.clearAllMocks();
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+  });
+
+  afterEach(() => {
+    resetTabsStore();
+    useChatAgentsStore.getState().__reset();
+    useGroupListStore.getState().__reset();
+    localStorage.clear();
+  });
+
+  it("选「未读」时 waiting_user 群浮现、running 群被排除", async () => {
+    appMocks.GroupList.mockResolvedValue([
+      {
+        id: 9,
+        title: "Waiting Squad",
+        runStatus: "waiting_user",
+        roundCount: 0,
+        createtime: 0,
+        updatetime: 0,
+        pinned: false,
+      },
+      {
+        id: 10,
+        title: "Running Squad",
+        runStatus: "running",
+        roundCount: 0,
+        createtime: 0,
+        updatetime: 0,
+        pinned: false,
+      },
+    ]);
+    renderChatPage();
+
+    // 初始两群都在。
+    expect(
+      await screen.findByRole("button", { name: /status Waiting Squad/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /status Running Squad/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: /Unread/,
+      }),
+    );
+
+    // 未读 = waiting_user:Waiting Squad 在,Running Squad 出局。
+    expect(
+      screen.getByRole("button", { name: /status Waiting Squad/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /status Running Squad/ }),
+    ).toBeNull();
+  });
+});
