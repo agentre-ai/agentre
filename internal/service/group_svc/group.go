@@ -482,10 +482,40 @@ func (s *groupSvc) buildGroupSystemPrompt(g *group_entity.Group, members []*grou
 	}
 	b.WriteString("\n\n你只会收到 @ 到你的消息。要发言请调用 `group_send` 工具：body=正文，mentions=收件成员显示名数组（@用户 = 回复人类）。一个回合可多次调用、可分别对不同人发不同内容。**不调用 group_send 的内容不会进群**。")
 	if me.IsCoordinator() {
-		b.WriteString("\n作为协调者，mentions 里写一个本部门、尚未进群的同事名字即可把 ta 拉进群。")
+		b.WriteString("\n作为协调者，调用 `group_invite` 工具邀请本部门同事进群：agentNames 填显示名数组（或 agentIds 填 id），reason 可选。")
+		if roster := s.recruitableRoster(context.Background(), g, members); roster != "" {
+			b.WriteString("\n可招募同事：" + roster)
+		}
 	}
 	b.WriteString("\n若你要修改文件且可能与他人并发，请先 `git worktree add` 在自己的工作树里作业。")
 	return b.String()
+}
+
+// recruitableRoster 列出部门内、尚未进群、且后端支持 CapMCPTools 的 agent(名字·id),
+// 供协调者 system prompt 提示可 group_invite 的对象。空字符串=没有可招募对象。
+func (s *groupSvc) recruitableRoster(ctx context.Context, g *group_entity.Group, members []*group_entity.GroupMember) string {
+	if g.DepartmentID == 0 {
+		return ""
+	}
+	pool, err := agent_repo.Agent().ListByDepartment(ctx, g.DepartmentID)
+	if err != nil {
+		return ""
+	}
+	inGroup := map[int64]bool{}
+	for _, m := range members {
+		inGroup[m.AgentID] = true
+	}
+	var parts []string
+	for _, a := range pool {
+		if !a.IsActive() || inGroup[a.ID] {
+			continue
+		}
+		if !s.backendSupportsGroup(ctx, a.ID) {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s(id=%d)", a.Name, a.ID))
+	}
+	return strings.Join(parts, "、")
 }
 
 // StopGroup 用户点「停止」: 中止所有在跑成员 turn + 清队列 + run_status=idle。
