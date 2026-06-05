@@ -77,3 +77,14 @@ type DeleteAvatarRequest struct {
 type DeleteAvatarResponse struct {
 	Item *AgentItem `json:"item"`
 }
+
+// SetPinnedRequest 切换 Agent 用户置顶（侧栏混排列表浮顶）。
+type SetPinnedRequest struct {
+	ID     int64 `json:"id" binding:"required"`
+	Pinned bool  `json:"pinned"`
+}
+
+type SetPinnedResponse struct {
+	ID     int64 `json:"id"`
+	Pinned bool  `json:"pinned"`
+}

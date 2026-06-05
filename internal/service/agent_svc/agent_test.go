@@ -319,3 +319,25 @@ func TestDeleteAgentAvatar(t *testing.T) {
 		})
 	})
 }
+
+func TestAgentSvc_SetPinned(t *testing.T) {
+	convey.Convey("SetPinned 透传到 repo", t, func() {
+		ctx, agentMock, _, _, svc := setupSvc(t)
+
+		convey.Convey("存在的 Agent 置顶", func() {
+			agentMock.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{ID: 7, Status: consts.ACTIVE}, nil)
+			agentMock.EXPECT().SetPinned(ctx, int64(7), true).Return(nil)
+
+			resp, err := svc.SetPinned(ctx, &SetPinnedRequest{ID: 7, Pinned: true})
+			convey.So(err, convey.ShouldBeNil)
+			convey.So(resp.ID, convey.ShouldEqual, int64(7))
+			convey.So(resp.Pinned, convey.ShouldBeTrue)
+		})
+
+		convey.Convey("不存在的 Agent 拒绝", func() {
+			agentMock.EXPECT().Find(ctx, int64(99)).Return(nil, nil)
+			_, err := svc.SetPinned(ctx, &SetPinnedRequest{ID: 99, Pinned: true})
+			assert.Error(t, err)
+		})
+	})
+}

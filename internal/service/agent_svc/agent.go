@@ -39,6 +39,7 @@ type AgentSvc interface {
 	Delete(ctx context.Context, req *DeleteAgentRequest) (*DeleteAgentResponse, error)
 	UploadAvatar(ctx context.Context, req *UploadAvatarRequest) (*UploadAvatarResponse, error)
 	DeleteAvatar(ctx context.Context, req *DeleteAvatarRequest) (*DeleteAvatarResponse, error)
+	SetPinned(ctx context.Context, req *SetPinnedRequest) (*SetPinnedResponse, error)
 }
 
 type agentSvc struct {
@@ -223,6 +224,21 @@ func (s *agentSvc) DeleteAvatar(ctx context.Context, req *DeleteAvatarRequest) (
 		return nil, err
 	}
 	return &DeleteAvatarResponse{Item: toItem(existing)}, nil
+}
+
+// SetPinned 切换 Agent 用户置顶。系统 agent 也允许置顶（虽然恒置顶），不特判。
+func (s *agentSvc) SetPinned(ctx context.Context, req *SetPinnedRequest) (*SetPinnedResponse, error) {
+	existing, err := agent_repo.Agent().Find(ctx, req.ID)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, i18n.NewError(ctx, code.AgentNotFound)
+	}
+	if err := agent_repo.Agent().SetPinned(ctx, existing.ID, req.Pinned); err != nil {
+		return nil, err
+	}
+	return &SetPinnedResponse{ID: existing.ID, Pinned: req.Pinned}, nil
 }
 
 func validateAvatarDataURL(ctx context.Context, dataURL string) error {
