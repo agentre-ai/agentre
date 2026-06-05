@@ -265,7 +265,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 			AvatarColor:   a.AvatarColor,
 			AvatarIcon:    a.AvatarIcon,
 			AvatarDataURL: a.AvatarDataURL,
-			Pinned:        a.IsSystem(),
+			Pinned:        a.IsSystem() || a.Pinned,
 			ActiveCount:   counts[a.ID],
 			TotalSessions: totals[a.ID],
 			SessionIDs:    ids,
