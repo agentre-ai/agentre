@@ -53,6 +53,7 @@ type GroupSvc interface {
 	PauseGroup(ctx context.Context, id int64) error
 	ResumeGroup(ctx context.Context, id int64) error
 	RenameGroup(ctx context.Context, id int64, title string) error
+	SetGroupPinned(ctx context.Context, id int64, pinned bool) error
 	ArchiveGroup(ctx context.Context, id int64) error
 	// MCPHandler 返回 group_send MCP handler，供 bootstrap(D2) 注册到 gateway /mcp/group/。
 	MCPHandler() http.Handler
@@ -437,6 +438,18 @@ func (s *groupSvc) RenameGroup(ctx context.Context, id int64, title string) erro
 	}
 	g.Title = title
 	return group_repo.Group().Update(ctx, g)
+}
+
+// SetGroupPinned 切换群用户置顶（侧栏混排列表浮顶）。
+func (s *groupSvc) SetGroupPinned(ctx context.Context, id int64, pinned bool) error {
+	g, err := group_repo.Group().Find(ctx, id)
+	if err != nil {
+		return err
+	}
+	if g == nil {
+		return i18n.NewError(ctx, code.GroupNotFound)
+	}
+	return group_repo.Group().SetPinned(ctx, id, pinned)
 }
 
 // ArchiveGroup 归档(软删): 先 stopAll 再 status=DELETE。

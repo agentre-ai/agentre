@@ -313,3 +313,30 @@ func TestGroupSvc_CreateGroup_AddsInitialMembers(t *testing.T) {
 		So(err, ShouldNotBeNil)
 	})
 }
+
+func TestGroupSvc_SetGroupPinned(t *testing.T) {
+	Convey("SetGroupPinned 透传到 repo", t, func() {
+		ctx := context.Background()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		gw := mock_group_svc.NewMockChatGateway(ctrl)
+		groupRepo := mock_group_repo.NewMockGroupRepo(ctrl)
+		group_repo.RegisterGroup(groupRepo)
+
+		Convey("存在的群置顶", func() {
+			groupRepo.EXPECT().Find(gomock.Any(), int64(5)).Return(&group_entity.Group{ID: 5, Status: consts.ACTIVE}, nil)
+			groupRepo.EXPECT().SetPinned(gomock.Any(), int64(5), true).Return(nil)
+
+			svc := group_svc.NewForTest(gw)
+			So(svc.SetGroupPinned(ctx, 5, true), ShouldBeNil)
+		})
+
+		Convey("不存在的群 → GroupNotFound", func() {
+			groupRepo.EXPECT().Find(gomock.Any(), int64(99)).Return(nil, nil)
+
+			svc := group_svc.NewForTest(gw)
+			So(svc.SetGroupPinned(ctx, 99, true), ShouldNotBeNil)
+		})
+	})
+}
