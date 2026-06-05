@@ -10,7 +10,6 @@ import (
 
 	"agentre/internal/model/entity/group_entity"
 	"agentre/internal/pkg/code"
-	"agentre/internal/repository/agent_repo"
 	"agentre/internal/repository/group_repo"
 )
 
@@ -56,7 +55,7 @@ func (s *groupSvc) IngestAgentMessage(ctx context.Context, memberID int64, body 
 }
 
 // resolveMentionNames 把成员显示名解析成 member id(+ 是否 @用户)。剔除自我 mention(防自循环)。
-// 解析不到的名字: sender 是协调者 → 尝试招募(maybeRecruit); 否则 flag 忽略。
+// 未进群的名字不再自动招募(已退役 @mention 招募);协调者改用 group_invite 工具,仅记日志。
 func (s *groupSvc) resolveMentionNames(ctx context.Context, g *group_entity.Group, members []*group_entity.GroupMember, sender *group_entity.GroupMember, names []string) ([]int64, bool) {
 	byName := map[string]int64{}
 	for _, m := range members {
@@ -74,14 +73,10 @@ func (s *groupSvc) resolveMentionNames(ctx context.Context, g *group_entity.Grou
 			ids = append(ids, byName[name])
 		case byName[name] == sender.ID:
 			// 自己 mention 自己 → 忽略
-		case sender.IsCoordinator():
-			if rid := s.maybeRecruit(ctx, g, name); rid > 0 {
-				ids = append(ids, rid)
-			} else {
-				logger.Ctx(ctx).Info("group_svc.resolveMentionNames: unresolved/unrecruitable", zap.String("name", name), zap.Int64("groupId", g.ID))
-			}
 		default:
-			logger.Ctx(ctx).Info("group_svc.resolveMentionNames: non-coordinator unresolved mention", zap.String("name", name))
+			// 未进群的名字不再自动招募;协调者改用 group_invite 工具。仅记日志。
+			logger.Ctx(ctx).Info("group_svc.resolveMentionNames: unresolved mention (use group_invite)",
+				zap.String("name", name), zap.Int64("groupId", g.ID))
 		}
 	}
 	return ids, toUser
@@ -98,25 +93,6 @@ func (s *groupSvc) applyFallback(ctx context.Context, g *group_entity.Group, sen
 	return ids, true
 }
 
-// maybeRecruit: 协调者 mention 了部门名单内、未进群、且支持 CapMCPTools 的 agent → 招募。
-// 返回新成员 member id(0=没招到); 落一条 sender_kind=system 的"X 加入"消息。
-func (s *groupSvc) maybeRecruit(ctx context.Context, g *group_entity.Group, name string) int64 {
-	agentID := s.recruitableAgentByName(ctx, g, name)
-	if agentID == 0 {
-		return 0
-	}
-	if !s.backendSupportsGroup(ctx, agentID) {
-		logger.Ctx(ctx).Info("group_svc.maybeRecruit: backend lacks CapMCPTools", zap.Int64("agentId", agentID))
-		return 0
-	}
-	m, err := s.ensureMember(ctx, g, agentID, group_entity.RoleMember)
-	if err != nil || m == nil {
-		return 0
-	}
-	_, _ = s.persistMessage(ctx, g, group_entity.SenderKindSystem, 0, name+" 加入了群聊", nil, false, 0)
-	return m.ID
-}
-
 // lastSenderMemberID 取最近一条非自己发的 group_message 的 sender_member_id(反向扫)。0=没有。
 func (s *groupSvc) lastSenderMemberID(ctx context.Context, groupID, excludeMemberID int64) int64 {
 	msgs, err := group_repo.Message().ListByGroup(ctx, groupID)
@@ -126,23 +102,6 @@ func (s *groupSvc) lastSenderMemberID(ctx context.Context, groupID, excludeMembe
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if mid := msgs[i].SenderMemberID; mid > 0 && mid != excludeMemberID {
 			return mid
-		}
-	}
-	return 0
-}
-
-// recruitableAgentByName 查 g.DepartmentID 下名为 name 的活跃 agent。0=不在可招募名单。
-func (s *groupSvc) recruitableAgentByName(ctx context.Context, g *group_entity.Group, name string) int64 {
-	if g.DepartmentID == 0 {
-		return 0
-	}
-	agents, err := agent_repo.Agent().ListByDepartment(ctx, g.DepartmentID)
-	if err != nil {
-		return 0
-	}
-	for _, a := range agents {
-		if a.IsActive() && a.Name == name {
-			return a.ID
 		}
 	}
 	return 0
