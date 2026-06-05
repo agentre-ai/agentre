@@ -234,6 +234,7 @@ function SearchRow({
   //
   // Tab 仅在"项目命令模式"（mode==="command" && /projects 路由）下生效：
   //   Tab → 循环切下一个项目
+  //   Shift+Tab → 循环切上一个项目
   // 非项目路由 ⌘N（自由会话 source） → Tab 走 native（不消费）
   // 焦点始终留在 Input；preventDefault + stopPropagation 防止浏览器 native focus
   // 切换以及 cmdk 在 Command 根上消费 Tab。
@@ -251,10 +252,10 @@ function SearchRow({
         }
         return;
       }
-      if (e.key === "Tab" && isProjectMode && !e.shiftKey) {
+      if (e.key === "Tab" && isProjectMode) {
         e.preventDefault();
         e.stopPropagation();
-        cycleProjectShortcut(projects);
+        cycleProjectShortcut(projects, e.shiftKey ? -1 : 1);
       }
     },
     [mode, payload, projects, isProjectMode, onQueryChange],
@@ -415,10 +416,13 @@ function SourceGroup<T extends CommandItemBase>({
   );
 }
 
-// Tab 直接操作 new-chat-context-store（焦点不动）。
+// Tab / Shift+Tab 直接操作 new-chat-context-store（焦点不动）。
 // 复用 ContextBar 的写库 / localStorage 写入逻辑，保证两套入口（点击 vs 键盘）
 // 状态变化一致。
-function cycleProjectShortcut(projects: ProjectFlat[]): void {
+function cycleProjectShortcut(
+  projects: ProjectFlat[],
+  direction: 1 | -1,
+): void {
   if (projects.length === 0) return; // 没有项目时 no-op
   const store = useNewChatContextStore.getState();
   const cur = store.projectContext;
@@ -426,16 +430,29 @@ function cycleProjectShortcut(projects: ProjectFlat[]): void {
     cur == null ? -1 : projects.findIndex((p) => p.id === cur.projectID);
 
   // 环形顺序：无项目 → 0 → 1 → ... → n-1 → 无项目 → 0 → ...
+  // 反向顺序：无项目 → n-1 → ... → 0 → 无项目 → n-1 → ...
   // 当前 projectID 已不在列表里（项目被删）也走"从头开始"分支。
   let next: ProjectFlat | null;
-  if (cur == null) {
-    next = projects[0];
-  } else if (curIdx === -1) {
-    next = projects[0];
-  } else if (curIdx === projects.length - 1) {
-    next = null;
+  if (direction === 1) {
+    if (cur == null) {
+      next = projects[0];
+    } else if (curIdx === -1) {
+      next = projects[0];
+    } else if (curIdx === projects.length - 1) {
+      next = null;
+    } else {
+      next = projects[curIdx + 1];
+    }
   } else {
-    next = projects[curIdx + 1];
+    if (cur == null) {
+      next = projects[projects.length - 1];
+    } else if (curIdx === -1) {
+      next = projects[projects.length - 1];
+    } else if (curIdx === 0) {
+      next = null;
+    } else {
+      next = projects[curIdx - 1];
+    }
   }
 
   if (next == null) {

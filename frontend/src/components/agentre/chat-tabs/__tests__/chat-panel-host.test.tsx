@@ -6,6 +6,8 @@ import { useChatAgentsStore } from "@/stores/chat-agents-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useProjectSessionsStore } from "@/stores/project-sessions-store";
 
+const chatPanelRenderCounts = vi.hoisted(() => new Map<number, number>());
+
 vi.mock("../../terminal/terminal-panel", () => ({
   TerminalPanel: ({
     terminalID,
@@ -40,38 +42,45 @@ vi.mock("../../chat-panel", () => ({
     sessionId,
     newSessionAgent,
     onSidebarShouldReload,
-  }: ChatPanelStub) => (
-    <div
-      data-testid={`chat-panel-${sessionId}`}
-      data-agent-id={newSessionAgent?.id ?? ""}
-    >
-      <button
-        type="button"
-        data-testid={`fire-reload-${sessionId}`}
-        onClick={() => onSidebarShouldReload?.()}
+  }: ChatPanelStub) => {
+    chatPanelRenderCounts.set(
+      sessionId,
+      (chatPanelRenderCounts.get(sessionId) ?? 0) + 1,
+    );
+    return (
+      <div
+        data-testid={`chat-panel-${sessionId}`}
+        data-agent-id={newSessionAgent?.id ?? ""}
       >
-        fire
-      </button>
-      {newSessionAgent ? <span>new agent {newSessionAgent.name}</span> : null}
-      {newSessionAgent ? (
-        <div
-          role="textbox"
-          data-testid="composer-editor"
-          contentEditable
-          suppressContentEditableWarning
-          tabIndex={0}
+        <button
+          type="button"
+          data-testid={`fire-reload-${sessionId}`}
+          onClick={() => onSidebarShouldReload?.()}
         >
-          editor
-        </div>
-      ) : null}
-      session {sessionId}
-    </div>
-  ),
+          fire
+        </button>
+        {newSessionAgent ? <span>new agent {newSessionAgent.name}</span> : null}
+        {newSessionAgent ? (
+          <div
+            role="textbox"
+            data-testid="composer-editor"
+            contentEditable
+            suppressContentEditableWarning
+            tabIndex={0}
+          >
+            editor
+          </div>
+        ) : null}
+        session {sessionId}
+      </div>
+    );
+  },
 }));
 
 describe("ChatPanelHost", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    chatPanelRenderCounts.clear();
     useChatTabsStore.setState({ tabs: [], activeTabId: null });
     useChatAgentsStore.getState().__reset();
     useProjectSessionsStore.getState().__reset();
@@ -90,6 +99,26 @@ describe("ChatPanelHost", () => {
     render(<ChatPanelHost />);
     expect(screen.getByTestId("chat-panel-1")).toBeInTheDocument();
     expect(screen.getByTestId("chat-panel-2")).toBeInTheDocument();
+  });
+
+  it("Given three mounted session tabs, When active tab changes, Then unrelated hidden panels do not rerender", () => {
+    useChatTabsStore.getState().openSessionInNewTab(1);
+    useChatTabsStore.getState().openSessionInNewTab(2);
+    useChatTabsStore.getState().openSessionInNewTab(3);
+    const secondId = useChatTabsStore.getState().tabs[1].id;
+    render(<ChatPanelHost />);
+
+    const unrelatedBefore = chatPanelRenderCounts.get(1) ?? 0;
+    const oldActiveBefore = chatPanelRenderCounts.get(3) ?? 0;
+    const newActiveBefore = chatPanelRenderCounts.get(2) ?? 0;
+
+    act(() => {
+      useChatTabsStore.getState().setActive(secondId);
+    });
+
+    expect(chatPanelRenderCounts.get(1)).toBe(unrelatedBefore);
+    expect(chatPanelRenderCounts.get(2)).toBeGreaterThan(newActiveBefore);
+    expect(chatPanelRenderCounts.get(3)).toBeGreaterThan(oldActiveBefore);
   });
 
   it("非 active tab 的 ChatPanel 容器 display:none", () => {

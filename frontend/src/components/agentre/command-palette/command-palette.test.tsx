@@ -516,6 +516,55 @@ describe("CommandPalette — Tab 直接切上下文 (BDD)", () => {
     expect(useNewChatContextStore.getState().projectContext).toBeNull();
   });
 
+  it("Given projectContext === B (idx 1), When Shift+Tab, Then projectContext === A (idx 0)", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectListTree.mockResolvedValue([
+      { project: mkProject({ id: 10, name: "A" }), children: [] },
+      { project: mkProject({ id: 11, name: "B" }), children: [] },
+    ]);
+    renderHarness();
+    await act(async () => {
+      useNewChatContextStore.getState().setContext({
+        projectID: 11,
+        projectName: "B",
+      });
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    input.focus();
+    fireEvent.keyDown(input, { key: "Tab", shiftKey: true });
+
+    expect(useNewChatContextStore.getState().projectContext).toEqual({
+      projectID: 10,
+      projectName: "A",
+    });
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("Given projectContext === null, When Shift+Tab, Then projectContext === last project", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectListTree.mockResolvedValue([
+      { project: mkProject({ id: 10, name: "A" }), children: [] },
+      { project: mkProject({ id: 11, name: "B" }), children: [] },
+    ]);
+    renderHarness();
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    input.focus();
+    fireEvent.keyDown(input, { key: "Tab", shiftKey: true });
+
+    expect(useNewChatContextStore.getState().projectContext).toEqual({
+      projectID: 11,
+      projectName: "B",
+    });
+  });
+
   it("Given 无项目列表 + 无 context, When Tab, Then projectContext 保持 null (no-op)", async () => {
     appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
     appMocks.ProjectListTree.mockResolvedValue([]);

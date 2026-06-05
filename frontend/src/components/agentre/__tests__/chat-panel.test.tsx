@@ -351,14 +351,14 @@ describe("ChatPanel · T17 breadcrumb 派生", () => {
     expect(screen.getByText("sess-10")).toBeInTheDocument();
   });
 
-  it("session.projectId=0 时 header 无 breadcrumb", () => {
+  it("session.projectId=0 时 header 仍显示 session id", () => {
     resetStore();
     mockSessionStore.session = makeSession({ id: 42, projectId: 0 });
 
     render(<ChatPanel sessionId={42} />);
 
     expect(screen.queryByText(/Agentre/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/sess-/)).not.toBeInTheDocument();
+    expect(screen.getByText("sess-42")).toBeInTheDocument();
   });
 });
 

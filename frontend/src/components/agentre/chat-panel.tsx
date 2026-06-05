@@ -304,7 +304,7 @@ type ChatPanelProps = {
   onSessionDeleted?: () => void;
   /** 任何会让父级列表（Agent / 项目）需要刷新的 RPC 成功后调一次。*/
   onSidebarShouldReload?: () => void;
-  /** 标题上方的小字 breadcrumb，比如 "📂 Agentre / backend / sess-142"。*/
+  /** 标题上方的小字 meta，比如 "📂 Agentre / backend / sess-142"。*/
   headerTopline?: React.ReactNode;
   /** sessionId=0 且未提供 newSessionAgent 时的空态。*/
   emptyState?: React.ReactNode;
@@ -426,16 +426,20 @@ function ChatPanel({
     if (projectId <= 0) return "";
     return projectChain(tree, projectId).join(" / ");
   }, [newSessionContext?.projectId, tree]);
-  const derivedBreadcrumb = React.useMemo(() => {
-    if (sessionProjectId <= 0) return null;
+  const derivedTopline = React.useMemo(() => {
+    if (currentSessionId <= 0) return null;
+    const sessionIDNode = (
+      <span className="text-muted-foreground">sess-{currentSessionId}</span>
+    );
+    if (sessionProjectId <= 0) return sessionIDNode;
     const chain = projectChain(tree, sessionProjectId);
-    if (chain.length === 0) return null;
+    if (chain.length === 0) return sessionIDNode;
     return (
       <span className="inline-flex items-center gap-1.5">
         <Folder className="size-3" aria-hidden="true" />
         <span>{chain.join(" / ")}</span>
         <span className="text-muted-foreground">·</span>
-        <span className="text-muted-foreground">sess-{currentSessionId}</span>
+        {sessionIDNode}
       </span>
     );
   }, [tree, sessionProjectId, currentSessionId]);
@@ -561,7 +565,7 @@ function ChatPanel({
       session?.agentStatus === "waiting");
 
   // prop 优先，无 prop 时降级到内部派生值。
-  const effectiveTopline = headerTopline ?? derivedBreadcrumb;
+  const effectiveTopline = headerTopline ?? derivedTopline;
 
   React.useLayoutEffect(() => {
     if (!atBottomRef.current) return;

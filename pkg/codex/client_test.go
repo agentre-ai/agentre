@@ -1362,7 +1362,9 @@ func TestStream_SubmitApprovalUnknownRequestReturnsNoActiveTurn(t *testing.T) {
 
 func TestStream_SteerSendsTurnSteerRPC(t *testing.T) {
 	runner := &fakeAppServerRunner{t: t}
-	steerCaptured := make(chan json.RawMessage, 1)
+	steerCaptured := make(chan rpcReq, 1)
+	allowSteerResponse := make(chan struct{})
+	steerReturned := make(chan struct{})
 	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
 		sc := bufio.NewScanner(h.stdinR)
 		respondRPC(h, readRPCReq(t, sc), map[string]any{})
@@ -1379,9 +1381,10 @@ func TestStream_SteerSendsTurnSteerRPC(t *testing.T) {
 		// Now expect a turn/steer; capture and respond, then complete the turn.
 		steerReq := readRPCReq(t, sc)
 		assert.Equal(t, "turn/steer", steerReq.Method)
-		steerCaptured <- steerReq.Params
+		steerCaptured <- steerReq
+		<-allowSteerResponse
 		respondRPC(h, steerReq, map[string]any{})
-
+		<-steerReturned
 		h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thr-1", "turnId": "turn-1", "turn": map[string]any{"id": "turn-1", "status": "completed"}}})
 	}
 
@@ -1391,12 +1394,15 @@ func TestStream_SteerSendsTurnSteerRPC(t *testing.T) {
 	stream, err := client.Stream(ctx, "hello")
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Steer(ctx, "wait, change plan"))
+	steerErr := make(chan error, 1)
+	go func() {
+		steerErr <- stream.Steer(ctx, "wait, change plan")
+	}()
 
 	select {
-	case params := <-steerCaptured:
+	case steerReq := <-steerCaptured:
 		var got map[string]any
-		require.NoError(t, json.Unmarshal(params, &got))
+		require.NoError(t, json.Unmarshal(steerReq.Params, &got))
 		assert.Equal(t, "thr-1", got["threadId"])
 		assert.Equal(t, "turn-1", got["expectedTurnId"])
 		input, ok := got["input"].([]any)
@@ -1408,6 +1414,15 @@ func TestStream_SteerSendsTurnSteerRPC(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("turn/steer never captured")
 	}
+	close(allowSteerResponse)
+
+	select {
+	case err := <-steerErr:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Steer did not return")
+	}
+	close(steerReturned)
 
 	for stream.Next() {
 	}
