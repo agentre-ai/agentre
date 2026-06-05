@@ -913,29 +913,26 @@ describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
     localStorage.clear();
   });
 
-  it("Given mixed groups and agents, When the sidebar filter changes, Then the list narrows by type and attention state", async () => {
+  it("Given mixed groups and agents, When type (single) and status (multi) filters compose, Then the list narrows on both axes independently", async () => {
     renderChatPage();
 
+    // 初始:群 + 两个 agent 全可见。
     expect(
       await screen.findByRole("button", { name: /status Release Squad/ }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Open Eng recent session/ }),
     ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
-    fireEvent.click(screen.getByRole("button", { name: "Group chats" }));
-
     expect(
-      screen.getByRole("button", { name: /status Release Squad/ }),
+      screen.getByRole("button", { name: /Open Designer recent session/ }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /Open Eng recent session/ }),
-    ).not.toBeInTheDocument();
 
+    // 打开筛选下拉,保持打开以便连续组合(类型单选 + 状态多选)。
     fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
-    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    const panel = () => screen.getByRole("dialog");
 
+    // 类型 = Agents(单选)→ 群被类型挡掉,两个 agent 都在。
+    fireEvent.click(within(panel()).getByRole("button", { name: "Agents" }));
     expect(
       screen.queryByRole("button", { name: /status Release Squad/ }),
     ).toBeNull();
@@ -946,9 +943,22 @@ describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
       screen.getByRole("button", { name: /Open Designer recent session/ }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
-    fireEvent.click(screen.getByRole("button", { name: "Running" }));
+    // 叠加 状态 = Running → 类型 Agents ∧ 运行中:只剩 running 的 Eng;
+    // Designer(idle)消失;群仍被类型挡住 —— 证明两维独立组合。
+    fireEvent.click(within(panel()).getByRole("button", { name: "Running" }));
+    expect(
+      screen.queryByRole("button", { name: /status Release Squad/ }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Open Eng recent session/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Open Designer recent session/ }),
+    ).toBeNull();
 
+    // 类型切回 All(状态 Running 保留)→ 运行中的群 + agent:Release Squad + Eng;
+    // Designer 仍 idle 消失。证明类型是单选(切换而非追加),状态被保留。
+    fireEvent.click(within(panel()).getByRole("button", { name: "All" }));
     expect(
       screen.getByRole("button", { name: /status Release Squad/ }),
     ).toBeInTheDocument();
@@ -959,13 +969,20 @@ describe("ChatPage sidebar — 混排筛选与顶部新建", () => {
       screen.queryByRole("button", { name: /Open Designer recent session/ }),
     ).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Filter sidebar" }));
-    fireEvent.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: /Unread/,
-      }),
-    );
+    // 再点 Running 取消(状态清空)→ 全部回来。证明状态是可切换的 toggle。
+    fireEvent.click(within(panel()).getByRole("button", { name: "Running" }));
+    expect(
+      screen.getByRole("button", { name: /status Release Squad/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open Eng recent session/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open Designer recent session/ }),
+    ).toBeInTheDocument();
 
+    // 仅 状态 = Unread → 只剩有未读会话的 Eng;群(running,非 waiting)在未读下不计入。
+    fireEvent.click(within(panel()).getByRole("button", { name: /Unread/ }));
     expect(
       screen.queryByRole("button", { name: /status Release Squad/ }),
     ).toBeNull();

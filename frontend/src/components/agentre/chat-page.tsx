@@ -382,7 +382,9 @@ function GroupRow({ group, selected, onOpen, onTogglePin }: GroupRowProps) {
 
 // ─── Sidebar mixed filter ────────────────────────────────────────────────────
 
-type ChatSidebarFilter = "all" | "groups" | "agents" | "running" | "unread";
+// 侧栏筛选两维（对齐 mockup §2.1）：类型单选 + 状态多选切换，互相独立组合。
+type ChatSidebarType = "all" | "groups" | "agents";
+type ChatSidebarStatus = "running" | "unread";
 
 // MixedRow: 侧栏混排列表的一行，agent 与群同列。ts = 最近活跃时间（agent 取其会话
 // 在 meta-store 的 max(lastMessageAt)，群取 Updatetime）；pinned 浮顶。
@@ -411,45 +413,46 @@ function agentMatchesSearch(agent: ChatAgentItem, query: string): boolean {
   );
 }
 
-function groupMatchesFilter(
-  group: GroupListItem,
-  filter: ChatSidebarFilter,
-): boolean {
-  switch (filter) {
-    case "all":
-    case "groups":
-      return true;
-    case "running":
-      return group.runStatus === "running";
-    case "agents":
-    case "unread":
-      return false;
-  }
+// 类型（单选）过滤：群在 "agents" 下隐藏，agent 在 "groups" 下隐藏，"all" 全过。
+function groupMatchesType(filter: ChatSidebarType): boolean {
+  return filter !== "agents";
 }
 
-function agentMatchesFilter(
+function agentMatchesType(filter: ChatSidebarType): boolean {
+  return filter !== "groups";
+}
+
+// 状态（多选切换）过滤：空集合=不约束（全过）；否则命中任一选中状态即过（并集语义）。
+function groupMatchesStatuses(
+  group: GroupListItem,
+  statuses: ReadonlySet<ChatSidebarStatus>,
+): boolean {
+  if (statuses.size === 0) return true;
+  // 群的 unread（waiting_user）在 #4 接入；此处仅实现 running。
+  return statuses.has("running") && group.runStatus === "running";
+}
+
+function agentMatchesStatuses(
   agent: ChatAgentItem,
-  filter: ChatSidebarFilter,
+  statuses: ReadonlySet<ChatSidebarStatus>,
   attentionReasons: Map<number, AttentionReason>,
 ): boolean {
-  switch (filter) {
-    case "all":
-    case "agents":
-      return true;
-    case "groups":
-      return false;
-    case "running":
-      return (
-        agent.activeCount > 0 ||
-        (agent.sessionIds ?? agent.sessions.map((s) => s.id)).some(
-          (sid) => attentionReasons.get(sid) === "running",
-        )
-      );
-    case "unread":
-      return (agent.sessionIds ?? agent.sessions.map((s) => s.id)).some(
-        (sid) => attentionReasons.get(sid) === "unread",
-      );
+  if (statuses.size === 0) return true;
+  const ids = agent.sessionIds ?? agent.sessions.map((s) => s.id);
+  if (
+    statuses.has("running") &&
+    (agent.activeCount > 0 ||
+      ids.some((sid) => attentionReasons.get(sid) === "running"))
+  ) {
+    return true;
   }
+  if (
+    statuses.has("unread") &&
+    ids.some((sid) => attentionReasons.get(sid) === "unread")
+  ) {
+    return true;
+  }
+  return false;
 }
 
 // ─── Main ChatPage ───────────────────────────────────────────────────────────
@@ -488,8 +491,18 @@ function ChatPage() {
   const selectedGroupId =
     activeTab?.meta.kind === "group" ? activeTab.meta.groupId : 0;
   const [agentFilter, setAgentFilter] = React.useState("");
-  const [sidebarFilter, setSidebarFilter] =
-    React.useState<ChatSidebarFilter>("all");
+  const [filterType, setFilterType] = React.useState<ChatSidebarType>("all");
+  const [filterStatuses, setFilterStatuses] = React.useState<
+    ReadonlySet<ChatSidebarStatus>
+  >(() => new Set());
+  const toggleStatus = React.useCallback((status: ChatSidebarStatus) => {
+    setFilterStatuses((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      return next;
+    });
+  }, []);
   const [filterPopoverOpen, setFilterPopoverOpen] = React.useState(false);
   const [newGroupOpen, setNewGroupOpen] = React.useState(false);
   // not-chattable inline notice: 点击不可对话 agent header 时显示，3 秒后自动消失。
@@ -546,18 +559,20 @@ function ChatPage() {
       groups.filter(
         (g) =>
           groupMatchesSearch(g, filterValue) &&
-          groupMatchesFilter(g, sidebarFilter),
+          groupMatchesType(filterType) &&
+          groupMatchesStatuses(g, filterStatuses),
       ),
-    [groups, filterValue, sidebarFilter],
+    [groups, filterValue, filterType, filterStatuses],
   );
   const visibleAgents = React.useMemo(
     () =>
       agents.filter(
         (a) =>
           agentMatchesSearch(a, filterValue) &&
-          agentMatchesFilter(a, sidebarFilter, attentionReasons),
+          agentMatchesType(filterType) &&
+          agentMatchesStatuses(a, filterStatuses, attentionReasons),
       ),
-    [agents, filterValue, sidebarFilter, attentionReasons],
+    [agents, filterValue, filterType, filterStatuses, attentionReasons],
   );
   // 混排：agent 与群合并成一个列表，按最近活跃倒序；pinned（系统 agent + 用户置顶的
   // agent/群）浮顶。agent 活跃度取 sessionIds 在 meta-store 的 max(lastMessageAt)，
@@ -597,22 +612,39 @@ function ChatPage() {
   );
 
   const filterIsActive = filterValue.length > 0;
+  const filtersActive = filterType !== "all" || filterStatuses.size > 0;
   const hasResults = visibleAgents.length > 0 || visibleGroups.length > 0;
-  const filterOptions: Array<{
-    value: ChatSidebarFilter;
-    label: string;
-    dotClassName?: string;
-    badge?: number;
-  }> = [
-    { value: "all", label: t("chatPage.filter.options.all") },
-    { value: "groups", label: t("chatPage.filter.options.groups") },
-    { value: "agents", label: t("chatPage.filter.options.agents") },
+  // 一条扁平竖向列表（mockup §2.1：无分区标题/分隔线）；kind 区分交互：
+  // type=单选（点击切换当前类型），status=多选 toggle（点击增删）。
+  const filterOptions: Array<
+    | { kind: "type"; value: ChatSidebarType; label: string }
+    | {
+        kind: "status";
+        value: ChatSidebarStatus;
+        label: string;
+        dotClassName: string;
+        badge?: number;
+      }
+  > = [
+    { kind: "type", value: "all", label: t("chatPage.filter.options.all") },
     {
+      kind: "type",
+      value: "groups",
+      label: t("chatPage.filter.options.groups"),
+    },
+    {
+      kind: "type",
+      value: "agents",
+      label: t("chatPage.filter.options.agents"),
+    },
+    {
+      kind: "status",
       value: "running",
       label: t("chatPage.filter.options.running"),
       dotClassName: "bg-status-running",
     },
     {
+      kind: "status",
       value: "unread",
       label: t("chatPage.filter.options.unread"),
       dotClassName: "bg-status-waiting",
@@ -672,57 +704,65 @@ function ChatPage() {
                   title={t("chatPage.filter.open")}
                   className={cn(
                     "relative size-[30px] bg-sidebar",
-                    sidebarFilter !== "all" && "border-ring text-primary-text",
+                    filtersActive && "border-ring text-primary-text",
                   )}
                 >
                   <SlidersHorizontal data-icon="only" aria-hidden="true" />
-                  {sidebarFilter !== "all" ? (
+                  {filtersActive ? (
                     <span className="absolute right-1 top-1 size-1.5 rounded-full bg-destructive" />
                   ) : null}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-[182px] p-1" align="start">
                 <div className="flex flex-col gap-0.5">
-                  {filterOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      aria-pressed={sidebarFilter === option.value}
-                      className={cn(
-                        "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-sidebar-active-bg focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                        sidebarFilter === option.value &&
-                          "bg-sidebar-active-bg font-semibold",
-                      )}
-                      onClick={() => {
-                        setSidebarFilter(option.value);
-                        setFilterPopoverOpen(false);
-                      }}
-                    >
-                      {option.dotClassName ? (
-                        <span
-                          aria-hidden="true"
-                          className={cn(
-                            "size-1.5 rounded-full",
-                            option.dotClassName,
-                          )}
-                        />
-                      ) : null}
-                      <span className="min-w-0 flex-1 truncate">
-                        {option.label}
-                      </span>
-                      {option.badge ? (
-                        <span className="rounded-full bg-destructive px-1.5 font-mono text-2xs font-semibold text-destructive-foreground">
-                          {option.badge}
+                  {filterOptions.map((option) => {
+                    // 类型=单选(选中=当前类型);状态=多选(选中=在集合里)。
+                    const pressed =
+                      option.kind === "type"
+                        ? filterType === option.value
+                        : filterStatuses.has(option.value);
+                    return (
+                      <button
+                        key={`${option.kind}:${option.value}`}
+                        type="button"
+                        aria-pressed={pressed}
+                        className={cn(
+                          "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground outline-none transition-colors hover:bg-sidebar-active-bg focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                          pressed && "bg-sidebar-active-bg font-semibold",
+                        )}
+                        onClick={() => {
+                          // 保持下拉打开,让用户连续组合类型 + 多个状态。
+                          if (option.kind === "type")
+                            setFilterType(option.value);
+                          else toggleStatus(option.value);
+                        }}
+                      >
+                        {option.kind === "status" ? (
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              "size-1.5 rounded-full",
+                              option.dotClassName,
+                            )}
+                          />
+                        ) : null}
+                        <span className="min-w-0 flex-1 truncate">
+                          {option.label}
                         </span>
-                      ) : null}
-                      {sidebarFilter === option.value ? (
-                        <Check
-                          className="size-3.5 text-primary-text"
-                          aria-hidden="true"
-                        />
-                      ) : null}
-                    </button>
-                  ))}
+                        {option.kind === "status" && option.badge ? (
+                          <span className="rounded-full bg-destructive px-1.5 font-mono text-2xs font-semibold text-destructive-foreground">
+                            {option.badge}
+                          </span>
+                        ) : null}
+                        {pressed ? (
+                          <Check
+                            className="size-3.5 text-primary-text"
+                            aria-hidden="true"
+                          />
+                        ) : null}
+                      </button>
+                    );
+                  })}
                 </div>
               </PopoverContent>
             </Popover>
