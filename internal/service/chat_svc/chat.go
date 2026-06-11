@@ -510,6 +510,9 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 		return nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
 	}
 	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.OperationFailed)
+	}
 	if be.IsBuiltin() {
 		return nil, i18n.NewError(ctx, code.ChatLaunchCommandNotAvailable)
 	}
