@@ -164,6 +164,26 @@ type ResolveCLIPathResponse struct {
 	Found bool   `json:"found"`
 }
 
+// ScanResultItem 一次扫描并尝试创建的结果。
+type ScanResultItem struct {
+	Type      string `json:"type"`                // "claudecode" / "codex" / "piagent"
+	Name      string `json:"name"`                // 自动生成的名称
+	CLIPath   string `json:"cliPath"`             // 命中的 binary 绝对路径
+	Found     bool   `json:"found"`               // 是否在 PATH 中找到了 binary
+	Created   bool   `json:"created"`             // 是否成功创建
+	Skipped   bool   `json:"skipped"`             // 是否因重名跳过
+	BackendID int64  `json:"backendId,omitempty"` // 创建成功后的 ID
+	Error     string `json:"error,omitempty"`     // 失败的人话原因
+}
+
+// ScanAndCreateAgentBackendsRequest 入参占位。
+type ScanAndCreateAgentBackendsRequest struct{}
+
+// ScanAndCreateAgentBackendsResponse 报告扫描与自动创建结果。
+type ScanAndCreateAgentBackendsResponse struct {
+	Results []*ScanResultItem `json:"results"`
+}
+
 //go:generate mockgen -source types.go -destination mock_prober_test.go -package agent_backend_svc -mock_names Prober=mockProber
 
 // ProbeDeps 由 svc.Test 装配后传给 Prober。

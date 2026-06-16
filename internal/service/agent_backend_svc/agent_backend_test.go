@@ -12,7 +12,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/agent_entity"
 	"agentre/internal/model/entity/llm_provider_entity"
 	"agentre/internal/pkg/httpgateway"
 	"agentre/internal/repository/agent_backend_repo"
@@ -328,13 +327,12 @@ func TestUpdateBackend(t *testing.T) {
 
 func TestDeleteBackend(t *testing.T) {
 	convey.Convey("Delete Agent backend", t, func() {
-		ctx, backendMock, _, agentMock, _, svc := setupSvcTest(t)
+		ctx, backendMock, _, _, _, svc := setupSvcTest(t)
 
 		convey.Convey("成功软删", func() {
 			backendMock.EXPECT().Find(gomock.Any(), int64(3)).Return(
 				&agent_backend_entity.AgentBackend{ID: 3, Status: consts.ACTIVE}, nil,
 			)
-			agentMock.EXPECT().ListByBackend(gomock.Any(), int64(3)).Return(nil, nil)
 			backendMock.EXPECT().Delete(gomock.Any(), int64(3)).Return(nil)
 			_, err := svc.Delete(ctx, &DeleteBackendRequest{ID: 3})
 			assert.NoError(t, err)
@@ -348,24 +346,13 @@ func TestDeleteBackend(t *testing.T) {
 	})
 }
 
-func TestDeleteBackendInUse(t *testing.T) {
-	convey.Convey("删除被引用的后端", t, func() {
-		ctx, backendMock, _, agentMock, _, svc := setupSvcTest(t)
+func TestDeleteBackendEvenWhenInUse(t *testing.T) {
+	convey.Convey("被 Agent 引用的后端也可正常删除（后端可选，不再阻止）", t, func() {
+		ctx, backendMock, _, _, _, svc := setupSvcTest(t)
 		backendMock.EXPECT().Find(gomock.Any(), int64(5)).
 			Return(&agent_backend_entity.AgentBackend{ID: 5, Status: consts.ACTIVE}, nil)
-		agentMock.EXPECT().ListByBackend(gomock.Any(), int64(5)).
-			Return([]*agent_entity.Agent{{ID: 1, Name: "Eva"}}, nil)
+		backendMock.EXPECT().Delete(gomock.Any(), int64(5)).Return(nil)
 		_, err := svc.Delete(ctx, &DeleteBackendRequest{ID: 5})
-		convey.So(err, convey.ShouldNotBeNil)
-	})
-
-	convey.Convey("无引用的后端可正常删除", t, func() {
-		ctx, backendMock, _, agentMock, _, svc := setupSvcTest(t)
-		backendMock.EXPECT().Find(gomock.Any(), int64(6)).
-			Return(&agent_backend_entity.AgentBackend{ID: 6, Status: consts.ACTIVE}, nil)
-		agentMock.EXPECT().ListByBackend(gomock.Any(), int64(6)).Return(nil, nil)
-		backendMock.EXPECT().Delete(gomock.Any(), int64(6)).Return(nil)
-		_, err := svc.Delete(ctx, &DeleteBackendRequest{ID: 6})
 		convey.So(err, convey.ShouldBeNil)
 	})
 }

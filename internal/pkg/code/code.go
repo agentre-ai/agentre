@@ -125,6 +125,7 @@ const (
 	ChatEditNotUser                                // 编辑只能作用于 user 消息
 	ChatProviderSessionGone                        // CLI 的 provider session（claudecode --resume id）已不存在，本会话已重置
 	ChatRemoteProviderNotConfigured                // 远端 agentred 未配置该 provider key
+	ChatAgentNoBackend                             // Agent 还没配置后端，对话前请先选择
 )
 
 // Chat 排队消息（Enqueue / Steer / Cancel）17050~ 留段

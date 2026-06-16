@@ -54,6 +54,7 @@ import {
   RemoteDeviceListProviders,
   RemoteDeviceSyncProvider,
   ResolveAgentBackendCLIPath,
+  ScanAndCreateAgentBackends,
   TestAgentBackend,
   UpdateAgentBackend,
 } from "../../../wailsjs/go/app/App";
@@ -322,6 +323,7 @@ export function AgentBackendsPanel({
   );
   const [flash, setFlash] = React.useState<FlashState>(null);
   const [testingId, setTestingId] = React.useState<number | null>(null);
+  const [scanning, setScanning] = React.useState(false);
   // 当前正在跑的 TestAgentBackend 的 requestId；用户点取消时拿它去后端 CancelTest。
   // 用 ref 而不是 state，避免 await TestAgentBackend 拿到的是闭包里的旧值。
   const testReqIdRef = React.useRef<string | null>(null);
@@ -382,6 +384,63 @@ export function AgentBackendsPanel({
     }
   }
 
+  async function handleAutoScan() {
+    if (scanning) return;
+    setScanning(true);
+    setFlash(null);
+    try {
+      const res = await ScanAndCreateAgentBackends();
+      const results = res?.results ?? [];
+
+      const created = results.filter((r) => r.created);
+      const skipped = results.filter((r) => r.skipped);
+      const foundAny = results.some((r) => r.found);
+
+      if (created.length > 0) {
+        const createdNames = created.map((r) => r.name).join(", ");
+        if (skipped.length > 0) {
+          const skippedNames = skipped.map((r) => r.name).join(", ");
+          setFlash({
+            kind: "ok",
+            text: t("agentBackends.autoScan.partialFound", {
+              createdCount: created.length,
+              createdNames,
+              skippedCount: skipped.length,
+              skippedNames,
+            }),
+          });
+        } else {
+          setFlash({
+            kind: "ok",
+            text: t("agentBackends.autoScan.created", {
+              count: created.length,
+              names: createdNames,
+            }),
+          });
+        }
+        await reload();
+      } else if (skipped.length > 0) {
+        const names = skipped.map((r) => r.name).join(", ");
+        setFlash({
+          kind: "ok",
+          text: t("agentBackends.autoScan.skipped", {
+            count: skipped.length,
+            names,
+          }),
+        });
+      } else if (!foundAny) {
+        setFlash({
+          kind: "err",
+          text: t("agentBackends.autoScan.nothingFound"),
+        });
+      }
+    } catch (err) {
+      setFlash({ kind: "err", text: messageFromError(err) });
+    } finally {
+      setScanning(false);
+    }
+  }
+
   const reload = React.useCallback(async () => {
     setLoading(true);
     try {
@@ -425,6 +484,8 @@ export function AgentBackendsPanel({
       <Toolbar
         count={backends.length}
         onCreate={() => setEditor({ kind: "create" })}
+        onAutoScan={handleAutoScan}
+        scanning={scanning}
       />
       {flash ? (
         <FlashBanner state={flash} onDismiss={() => setFlash(null)} />
@@ -528,7 +589,17 @@ export function AgentBackendsPanel({
   );
 }
 
-function Toolbar({ count, onCreate }: { count: number; onCreate: () => void }) {
+function Toolbar({
+  count,
+  onCreate,
+  onAutoScan,
+  scanning,
+}: {
+  count: number;
+  onCreate: () => void;
+  onAutoScan: () => void;
+  scanning: boolean;
+}) {
   const { t } = useTranslation();
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-3 sm:px-4">
@@ -540,15 +611,43 @@ function Toolbar({ count, onCreate }: { count: number; onCreate: () => void }) {
           {t("agentBackends.toolbar.count", { count })}
         </span>
       </div>
-      <Button
-        type="button"
-        size="sm"
-        className="h-[30px] gap-1.5 px-3 text-xs"
-        onClick={onCreate}
-      >
-        <Plus data-icon="inline-start" aria-hidden="true" />
-        {t("agentBackends.toolbar.add")}
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-[30px] gap-1.5 px-3 text-xs"
+          onClick={onAutoScan}
+          disabled={scanning}
+          title={t("agentBackends.autoScan.buttonTitle")}
+        >
+          {scanning ? (
+            <Loader2
+              className="size-3.5 animate-spin"
+              data-icon="inline-start"
+              aria-hidden="true"
+            />
+          ) : (
+            <Radar
+              className="size-3.5"
+              data-icon="inline-start"
+              aria-hidden="true"
+            />
+          )}
+          {scanning
+            ? t("agentBackends.autoScan.scanning")
+            : t("agentBackends.autoScan.button")}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          className="h-[30px] gap-1.5 px-3 text-xs"
+          onClick={onCreate}
+        >
+          <Plus data-icon="inline-start" aria-hidden="true" />
+          {t("agentBackends.toolbar.add")}
+        </Button>
+      </div>
     </div>
   );
 }

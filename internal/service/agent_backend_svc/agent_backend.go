@@ -36,6 +36,7 @@ type AgentBackendSvc interface {
 	Test(ctx context.Context, req *TestBackendRequest) (*TestBackendResponse, error)
 	CancelTest(ctx context.Context, req *CancelTestBackendRequest) (*CancelTestBackendResponse, error)
 	ResolveCLIPath(ctx context.Context, req *ResolveCLIPathRequest) (*ResolveCLIPathResponse, error)
+	ScanAndCreateAgentBackends(ctx context.Context, req *ScanAndCreateAgentBackendsRequest) (*ScanAndCreateAgentBackendsResponse, error)
 }
 
 type agentBackendSvc struct {
@@ -370,13 +371,6 @@ func (s *agentBackendSvc) Delete(ctx context.Context, req *DeleteBackendRequest)
 	}
 	if existing == nil {
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)
-	}
-	inUse, err := agent_repo.Agent().ListByBackend(ctx, existing.ID)
-	if err != nil {
-		return nil, err
-	}
-	if len(inUse) > 0 {
-		return nil, i18n.NewError(ctx, code.AgentBackendInUse)
 	}
 	if err := agent_backend_repo.AgentBackend().Delete(ctx, existing.ID); err != nil {
 		return nil, err

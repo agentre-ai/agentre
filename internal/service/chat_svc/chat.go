@@ -297,9 +297,9 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 				item.ChattableHint = "未知 Agent 后端类型"
 			}
 		} else if a.IsSystem() {
-			item.ChattableHint = "CEO 助手还没绑定后端，请在组织架构页配置"
+			item.ChattableHint = "CEO 助手还没配置后端，请在组织架构页选择一个 Agent 后端"
 		} else {
-			item.ChattableHint = "该 Agent 还没绑定后端"
+			item.ChattableHint = "该 Agent 还没配置后端，请在组织架构页选择一个 Agent 后端"
 		}
 
 		sessions, err := chat_repo.Session().ListByAgent(ctx, a.ID, 5)
@@ -522,12 +522,12 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	if a == nil {
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
 	}
+	if a.AgentBackendID <= 0 {
+		return nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
+	}
 	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
 	if err != nil {
 		return nil, i18n.NewError(ctx, code.OperationFailed)
-	}
-	if be == nil {
-		return nil, i18n.NewError(ctx, code.ChatLaunchCommandNotAvailable)
 	}
 	if be.IsBuiltin() {
 		return nil, i18n.NewError(ctx, code.ChatLaunchCommandNotAvailable)
@@ -1265,6 +1265,9 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 	}
 	if a == nil {
 		return nil, nil, nil, i18n.NewError(ctx, code.NotFound)
+	}
+	if a.AgentBackendID <= 0 {
+		return nil, nil, nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
 	}
 	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
 	if err != nil {

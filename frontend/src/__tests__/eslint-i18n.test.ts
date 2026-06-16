@@ -1,27 +1,35 @@
 import path from "node:path";
 import { ESLint } from "eslint";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+
+const fixturePath = path.join(
+  process.cwd(),
+  "src/components/agentre/i18n-lint-fixture.tsx",
+);
+
+let eslint: ESLint;
+
+beforeAll(() => {
+  eslint = new ESLint({ cwd: process.cwd() });
+});
 
 async function lintFixture(code: string) {
-  const eslint = new ESLint({ cwd: process.cwd() });
-  const [result] = await eslint.lintText(code, {
-    filePath: path.join(
-      process.cwd(),
-      "src/components/agentre/i18n-lint-fixture.tsx",
-    ),
-  });
-
+  const [result] = await eslint.lintText(code, { filePath: fixturePath });
   return result.messages.map((message) => message.ruleId);
 }
 
 describe("ESLint i18n rules", () => {
-  it("Given Chinese JSX UI text, When ESLint runs, Then it reports the hard-coded text", async () => {
-    await expect(
-      lintFixture(
-        "export function Fixture() { return <button>新增硬编码文案</button>; }",
-      ),
-    ).resolves.toContain("i18next/no-literal-string");
-  });
+  it(
+    "Given Chinese JSX UI text, When ESLint runs, Then it reports the hard-coded text",
+    { timeout: 30000 },
+    async () => {
+      await expect(
+        lintFixture(
+          "export function Fixture() { return <button>新增硬编码文案</button>; }",
+        ),
+      ).resolves.toContain("i18next/no-literal-string");
+    },
+  );
 
   it("Given Chinese accessible attribute text, When ESLint runs, Then it reports the hard-coded text", async () => {
     await expect(

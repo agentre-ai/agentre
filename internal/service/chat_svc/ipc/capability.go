@@ -62,6 +62,9 @@ func GetSessionCapabilities(ctx context.Context, req *GetSessionCapabilitiesRequ
 	if err != nil || a == nil {
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
 	}
+	if a.AgentBackendID <= 0 {
+		return nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
+	}
 	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
 	if err != nil || be == nil {
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)

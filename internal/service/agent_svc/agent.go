@@ -331,7 +331,7 @@ func hasAgentCycle(all []*agent_entity.Agent, startParentID, selfID int64) bool 
 
 func (s *agentSvc) requireActiveBackend(ctx context.Context, id int64) error {
 	if id <= 0 {
-		return i18n.NewError(ctx, code.AgentBackendRequired)
+		return nil // 后端可选，0 表示未配置
 	}
 	b, err := agent_backend_repo.AgentBackend().Find(ctx, id)
 	if err != nil {

@@ -47,6 +47,15 @@
       "test": "Test Connection",
       "testNamed": "Test connection for {{name}}"
     },
+    "autoScan": {
+      "button": "Auto Scan",
+      "buttonTitle": "Scan system PATH for Claude Code / Codex / Pi Agent CLI and auto-create backends",
+      "created": "Created {{count}} backend(s): {{names}}",
+      "nothingFound": "No claude / codex / pi executables found in system PATH",
+      "partialFound": "Created {{createdCount}} backend(s): {{createdNames}}. {{skippedCount}} already exist(s): {{skippedNames}}",
+      "scanning": "Scanning...",
+      "skipped": "{{count}} backend(s) already exist: {{names}}"
+    },
     "approval": {
       "hint": "Whether tool execution needs human approval",
       "label": "Approval Policy",

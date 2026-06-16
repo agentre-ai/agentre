@@ -95,6 +95,7 @@ var zhCN = map[int]string{
 	ChatEditNotUser:                 "只能编辑用户消息",
 	ChatProviderSessionGone:         "CLI 会话已过期或已被清理，本对话已重置，请重新发送消息",
 	ChatRemoteProviderNotConfigured: "远端 agentred 未配置该 Agent 后端绑定的 LLM 供应商（provider key: %s）。请先在本机同步到远端，或在远端执行 agentred llm add --key=%s --name=<NAME> --type=<TYPE> --api-key=<API_KEY>",
+	ChatAgentNoBackend:              "该 Agent 还没配置后端，请先在组织架构页选择一个 Agent 后端",
 
 	ChatSteerNoActive:     "没有进行中的对话可以插入消息",
 	ChatSteerUnsupported:  "当前后端不支持在 AI 回答时插入消息",

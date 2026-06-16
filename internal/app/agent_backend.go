@@ -40,3 +40,9 @@ func (a *App) CancelTestAgentBackend(req *agent_backend_svc.CancelTestBackendReq
 func (a *App) ResolveAgentBackendCLIPath(req *agent_backend_svc.ResolveCLIPathRequest) (*agent_backend_svc.ResolveCLIPathResponse, error) {
 	return agent_backend_svc.AgentBackend().ResolveCLIPath(a.ctx, req)
 }
+
+// ScanAndCreateAgentBackends 扫描系统 PATH 中的 Claude Code / Codex / Pi Agent CLI，
+// 并为命中的 binary 自动创建对应的 Agent 后端配置。
+func (a *App) ScanAndCreateAgentBackends() (*agent_backend_svc.ScanAndCreateAgentBackendsResponse, error) {
+	return agent_backend_svc.AgentBackend().ScanAndCreateAgentBackends(a.ctx, &agent_backend_svc.ScanAndCreateAgentBackendsRequest{})
+}

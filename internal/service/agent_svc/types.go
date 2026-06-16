@@ -14,7 +14,7 @@ type CreateAgentRequest struct {
 	AvatarIcon     string                         `json:"avatarIcon"`
 	DepartmentID   int64                          `json:"departmentId"`
 	ParentAgentID  int64                          `json:"parentAgentId"`
-	AgentBackendID int64                          `json:"agentBackendId" binding:"required"`
+	AgentBackendID int64                          `json:"agentBackendId"`
 	Prompt         []string                       `json:"prompt"`
 	Skills         []department_svc.AgentSkillDTO `json:"skills"`
 }

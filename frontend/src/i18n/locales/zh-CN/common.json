@@ -47,6 +47,15 @@
       "test": "测试连接",
       "testNamed": "测试连接 {{name}}"
     },
+    "autoScan": {
+      "button": "自动扫描",
+      "buttonTitle": "扫描系统 PATH 中的 Claude Code / Codex / Pi Agent CLI 并自动创建后端",
+      "created": "已创建 {{count}} 个后端: {{names}}",
+      "nothingFound": "未在系统 PATH 中找到 claude / codex / pi 可执行文件",
+      "partialFound": "已创建 {{createdCount}} 个后端: {{createdNames}}。{{skippedCount}} 个已存在: {{skippedNames}}",
+      "scanning": "扫描中...",
+      "skipped": "{{count}} 个后端已存在: {{names}}"
+    },
     "approval": {
       "hint": "工具执行前是否人工确认",
       "label": "Approval Policy",
@@ -544,7 +553,7 @@
   "chatPage": {
     "agents": "Agents",
     "notChattable": {
-      "defaultHint": "请先在组织架构页给该 Agent 绑定一个内置后端",
+      "defaultHint": "该 Agent 还没配置后端，请在组织架构页选择一个 Agent 后端",
       "message": "暂不可对话 — {{hint}}"
     },
     "search": {

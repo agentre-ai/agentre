@@ -95,6 +95,7 @@ var enUS = map[int]string{
 	ChatEditNotUser:                 "Edit is only allowed on user messages",
 	ChatProviderSessionGone:         "The CLI conversation no longer exists. The session has been reset — please resend your message.",
 	ChatRemoteProviderNotConfigured: "Remote agentred does not have the LLM provider required by this Agent backend (provider key: %s). Sync it to the remote first, or run agentred llm add --key=%s --name=<NAME> --type=<TYPE> --api-key=<API_KEY> on the remote",
+	ChatAgentNoBackend:              "This agent does not have a backend configured. Please select an Agent backend on the org chart page first.",
 
 	ChatSteerNoActive:     "No in-flight conversation to enqueue into",
 	ChatSteerUnsupported:  "This backend does not support enqueueing during a turn",
