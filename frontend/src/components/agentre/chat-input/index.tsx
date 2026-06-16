@@ -12,8 +12,8 @@ import {
 import Document from "@tiptap/extension-document";
 import HardBreak from "@tiptap/extension-hard-break";
 import Paragraph from "@tiptap/extension-paragraph";
-import Placeholder from "@tiptap/extension-placeholder";
 import Text from "@tiptap/extension-text";
+import { Placeholder, UndoRedo } from "@tiptap/extensions";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 
 import { cn } from "@/lib/utils";
@@ -127,6 +127,9 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
         HardBreak,
         Paragraph,
         Text,
+        // 撤销/重做历史:ProseMirror 接管 contentEditable 后浏览器原生 Cmd/Ctrl+Z
+        // 会失效,必须由该扩展提供 history 栈 + Mod-z/Mod-y/Shift-Mod-z 快捷键。
+        UndoRedo,
         Placeholder.configure({ placeholder: placeholder || "" }),
         SlashHighlight.configure({
           getValidNames: () => validNamesRef.current,

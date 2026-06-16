@@ -8,9 +8,23 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
+
+// App 渲染 <TurnCompleteNotifier/>，它在 mount 时通过 wailsjs runtime 订阅
+// "notification:click"。这些 App 用例不关心该订阅、也不一定设置 window.runtime，
+// 故把 Events* 桩成安全 no-op；Window*/Environment 仍走真实实现委托到 window.runtime。
+vi.mock("../../wailsjs/runtime/runtime", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../wailsjs/runtime/runtime")
+  >("../../wailsjs/runtime/runtime");
+  return {
+    ...actual,
+    EventsOn: vi.fn(() => () => {}),
+    EventsOff: vi.fn(),
+  };
+});
 
 const themeStorageKey = "agentre.theme";
 const windowSizeStorageKey = "agentre.windowSize";
@@ -635,12 +649,25 @@ function mockHooks(
   return app;
 }
 
+// runtimeEventStubs supplies no-op EventsOn/EventsOff so always-mounted
+// subscribers (e.g. QuitConfirmDialog's "app:quit-blocked" listener) don't blow
+// up on window.runtime.EventsOnMultiple when <App/> renders without a full runtime.
+function runtimeEventStubs() {
+  return {
+    EventsOn: vi.fn(() => vi.fn()),
+    EventsOnMultiple: vi.fn(() => vi.fn()),
+    EventsOff: vi.fn(),
+    EventsEmit: vi.fn(),
+  };
+}
+
 function mockWailsRuntime({
   fullscreen = false,
   platform = "darwin",
   size = { h: 768, w: 1024 },
 }: MockWailsRuntimeOptions = {}) {
   const runtime = {
+    ...runtimeEventStubs(),
     Environment: vi.fn(() =>
       Promise.resolve({
         arch: "arm64",
@@ -662,6 +689,13 @@ function mockWailsRuntime({
 
   return runtime;
 }
+
+beforeEach(() => {
+  // Baseline full runtime so <App/> startup (Environment/Window*) and the
+  // always-mounted QuitConfirmDialog's "app:quit-blocked" subscription both
+  // work; individual tests still override via mockWailsRuntime as needed.
+  mockWailsRuntime();
+});
 
 afterEach(() => {
   restoreMatchMedia?.();
@@ -979,44 +1013,18 @@ describe("App", () => {
       "aria-current",
       "page",
     );
+    // Real data layer: the default IssueList mock returns no issues, so the
+    // workspace renders its empty state rather than the old static placeholder.
     expect(
-      within(main).getByRole("heading", { name: "Board" }),
+      await within(main).findByRole("heading", { name: "No issues yet" }),
     ).toBeInTheDocument();
+    expect(within(main).getByText("0 open · 0 closed")).toBeInTheDocument();
     expect(
-      within(main).getByText("12 Open · 47 Closed · 3 Agents following up"),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("button", { name: "New Issue" }),
-    ).toBeInTheDocument();
-    expect(within(main).getByText("Author")).toBeInTheDocument();
-    expect(within(main).getByText("Assigned Agent")).toBeInTheDocument();
-    expect(
-      within(main).getByText(
-        "Fix OAuth callback losing the state parameter in Safari",
-      ),
-    ).toBeInTheDocument();
-    expect(within(main).getByText("#142")).toBeInTheDocument();
+      within(main).getAllByRole("button", { name: "New issue" }).length,
+    ).toBeGreaterThan(0);
     expect(
       within(main).queryByText("Under construction"),
     ).not.toBeInTheDocument();
-
-    await user.click(within(main).getByRole("button", { name: "Board" }));
-
-    expect(
-      within(main).getByText("Grouped by status · drag cards between columns"),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("heading", { name: "Backlog" }),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("heading", { name: "In Progress" }),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("heading", { name: "Waiting" }),
-    ).toBeInTheDocument();
-    expect(
-      within(main).getByRole("heading", { name: "Closed" }),
-    ).toBeInTheDocument();
   });
 
   it("opens the implemented Hooks workspace from the left rail", async () => {
@@ -1474,11 +1482,7 @@ describe("App", () => {
 
   it("opens under construction pages from unimplemented settings items", async () => {
     const user = userEvent.setup();
-    const unimplementedSettingsItems = [
-      "Notifications",
-      "MCP Servers",
-      "Skills / Tools",
-    ];
+    const unimplementedSettingsItems = ["MCP Servers", "Skills / Tools"];
 
     mockDesktopViewport();
     render(<App />);

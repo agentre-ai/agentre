@@ -1,20 +1,26 @@
-.PHONY: run dev build build-windows agentred agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check
+.PHONY: run dev build agentred agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check
 
 APP_NAME := Agentre
 VERSION ?= 0.1.0
-COMMIT_ID := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+ifeq ($(OS),Windows_NT)
+NULLDEV := NUL
+UNAME_S := Windows_NT
+WAILS ?= wails
+else
+NULLDEV := /dev/null
+UNAME_S := $(shell uname -s 2>$(NULLDEV) || echo unknown)
+WAILS ?= $(shell command -v wails 2>$(NULLDEV) || printf "%s/bin/wails" "$$(go env GOPATH)")
+endif
+COMMIT_ID := $(shell git rev-parse --short HEAD 2>$(NULLDEV) || echo unknown)
 VERSION_PKG := github.com/cago-frame/cago/configs
 BUILDINFO_PKG := agentre/internal/buildinfo
 LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION) -X $(BUILDINFO_PKG).CommitID=$(COMMIT_ID)
-UNAME_S := $(shell uname -s 2>/dev/null || echo unknown)
 FRONTEND_DIR := frontend
-BACKEND_PKGS := $(shell go list ./... | grep -v '/frontend/')
+BACKEND_PKGS := . ./cmd/... ./internal/... ./migrations ./pkg/...
 MACOS_APP_INSTALL_DIR ?= /Applications
 PREFIX ?= /usr/local
 WAILS_PLATFORM ?=
 WAILS_BUILD_FLAGS ?=
-WAILS ?= $(shell command -v wails 2>/dev/null || printf "%s/bin/wails" "$$(go env GOPATH)")
-WINDOWS_PLATFORM ?= windows/amd64
 AGENTRED_BUILD_DIR ?= build/bin
 AGENTRED_LOCAL_BINARY := $(AGENTRED_BUILD_DIR)/agentred
 AGENTRED_GOOS ?= linux
@@ -32,13 +38,9 @@ dev:
 	@mkdir -p $(FRONTEND_DIR)/dist && [ -e $(FRONTEND_DIR)/dist/.keep ] || touch $(FRONTEND_DIR)/dist/.keep
 	"$(WAILS)" dev
 
-# 构建生产版本(默认当前平台；可用 WAILS_PLATFORM=windows/amd64 跨平台构建)
+# 构建生产版本(默认当前平台；可用 WAILS_PLATFORM 跨平台构建)
 build:
 	"$(WAILS)" build -ldflags="$(LDFLAGS)" $(if $(strip $(WAILS_PLATFORM)),-platform "$(WAILS_PLATFORM)") $(WAILS_BUILD_FLAGS)
-
-# 构建 Windows 版本(默认 windows/amd64，可覆盖 WINDOWS_PLATFORM=windows/arm64)
-build-windows:
-	$(MAKE) build WAILS_PLATFORM="$(WINDOWS_PLATFORM)" WAILS_BUILD_FLAGS="$(WAILS_BUILD_FLAGS)"
 
 # 构建 agentred(当前平台)
 agentred:
@@ -110,7 +112,7 @@ test: test-backend test-frontend
 
 # 运行后端测试
 test-backend:
-	go test ./...
+	go test $(BACKEND_PKGS)
 
 # 运行前端测试
 test-frontend: generate

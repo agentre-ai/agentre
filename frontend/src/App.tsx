@@ -25,12 +25,15 @@ import {
   ChatPage,
   ChatStreamsHost,
   ChatTabsShortcuts,
+  TurnCompleteNotifier,
+  NotificationToastViewport,
   CommandPalette,
   HooksPage,
   IssuesPage,
   OrgChartPage,
   PaletteScopeBridge,
   ProjectsPage,
+  QuitConfirmDialog,
   ShortcutsProvider,
   SidebarButton,
   SettingsPage,
@@ -855,6 +858,10 @@ function App() {
           unmount,但这里继续维持 Wails EventsOn,把 chunk/tool 事件累到全局
           store,切回来时 ChatPanel 能从 store 还原完整流式状态。*/}
       <ChatStreamsHost />
+      <TurnCompleteNotifier />
+      <NotificationToastViewport />
+      {/* 退出二次确认:常驻订阅 "app:quit-blocked",活跃会话存在时拦截退出弹框。*/}
+      <QuitConfirmDialog />
       <Routes>
         <Route element={<AppLayout />}>
           <Route path="/chat" element={<ChatPage />} />

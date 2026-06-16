@@ -13,6 +13,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.uber.org/zap"
 
+	"agentre/internal/pkg/procattr"
 	"agentre/internal/service/update_svc"
 )
 
@@ -108,19 +109,29 @@ func (a *App) RestartApp() error {
 			appDir = filepath.Dir(appDir)
 		}
 		if strings.HasSuffix(appDir, ".app") {
-			if err := exec.Command("open", "-n", appDir).Start(); err != nil { //nolint:gosec
+			cmd := exec.Command("open", "-n", appDir) //nolint:gosec
+			procattr.ApplyNoConsoleWindow(cmd)
+			if err := cmd.Start(); err != nil {
 				return err
 			}
 		} else {
-			if err := exec.Command(execPath).Start(); err != nil { //nolint:gosec
+			cmd := exec.Command(execPath) //nolint:gosec
+			procattr.ApplyNoConsoleWindow(cmd)
+			if err := cmd.Start(); err != nil {
 				return err
 			}
 		}
 	default:
-		if err := exec.Command(execPath).Start(); err != nil { //nolint:gosec
+		cmd := exec.Command(execPath) //nolint:gosec
+		procattr.ApplyNoConsoleWindow(cmd)
+		if err := cmd.Start(); err != nil {
 			return err
 		}
 	}
+
+	// 重启已拉起新进程,旧进程必须无条件退出:标记已确认,绕过活跃会话二次确认,
+	// 否则 OnBeforeClose 拦住旧进程、新进程撞单实例锁 → 更新静默失败。
+	a.quitConfirmed.Store(true)
 
 	go func() {
 		// 留一拍时间让 wails Quit 走完 OnShutdown。

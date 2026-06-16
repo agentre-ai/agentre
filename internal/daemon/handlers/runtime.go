@@ -53,11 +53,21 @@ type RuntimeHandlers struct {
 	// SwapRuntimeFor (used by tests that need to flip the runtime registry
 	// after a session is already live).
 	runtimeFor func(agent_backend_entity.BackendType) agentruntime.Runtime
+	// sessionTokens 缓存每个 session 的常驻 gateway token(sessionID int64 → token string)。
+	// 该 token 在 spawn 时烤进 daemon spawn 的 claude 子进程 env,子进程跨轮复用时
+	// env 不重建 —— 所以 token 必须签成永久(ttl=0)、跨轮稳定、且 **不在轮末撤销**。
+	// 旧实现每轮签 time.Hour token 并在 fanout 轮末撤销,而子进程手里还是首轮那个
+	// (已撤销)token → 第二轮起 PostToolUse hook 撞 401、SteerInbox drain 不到。
+	// daemon 侧没有 session 关闭钩子,token 随 daemon 进程退出释放(内存级、有界)。
+	sessionTokens sync.Map
+	// autoSubs 防同一 session 重复起「自主续轮转发」goroutine(每会话一个)。
+	// goroutine 在真实 runtime 的 AutonomousTurns(sid) channel close(子进程 evict)时
+	// 退出并清这条,下次 Run 复用 / 重 spawn 时再起。
+	autoSubs sync.Map // sessionID(int64) → struct{}
 }
 
 type runtimeSession struct {
-	backendType  agent_backend_entity.BackendType
-	gatewayToken string
+	backendType agent_backend_entity.BackendType
 }
 
 // NewRuntimeHandlers wires the dependencies and prepares the session map.
@@ -124,29 +134,23 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	}
 
 	var gatewayURL, gatewayToken string
-	if provider != nil && h.deps.Gateway != nil {
-		gatewayURL = h.deps.Gateway.URL()
-		if gatewayURL != "" {
-			tok, err := h.deps.Gateway.IssueToken(ctx, &be, time.Hour)
-			if err != nil {
-				return wire.RunAck{}, fmt.Errorf("gateway token: %w", err)
-			}
-			gatewayToken = tok
+	if provider != nil {
+		var terr error
+		// 会话级常驻 token:首轮签、后续轮复用同一个,**不在轮末撤销**(见
+		// sessionTokens 注释)。decode/Run 失败也不撤销 —— token 留着给下一轮重试复用,
+		// 没用上的也只是随 daemon 退出释放(有界)。
+		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, p.SessionID, &be)
+		if terr != nil {
+			return wire.RunAck{}, terr
 		}
 	}
 
 	history, err := decodeHistory(p.History)
 	if err != nil {
-		if gatewayToken != "" {
-			h.deps.Gateway.RevokeToken(gatewayToken)
-		}
 		return wire.RunAck{}, fmt.Errorf("decode history: %w", err)
 	}
 	userBlocks, err := decodeUserBlocks(p.UserBlocks)
 	if err != nil {
-		if gatewayToken != "" {
-			h.deps.Gateway.RevokeToken(gatewayToken)
-		}
 		return wire.RunAck{}, fmt.Errorf("decode user blocks: %w", err)
 	}
 
@@ -171,16 +175,18 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 
 	events, result, err := rt.Run(ctx, req)
 	if err != nil {
-		if gatewayToken != "" {
-			h.deps.Gateway.RevokeToken(gatewayToken)
-		}
 		return wire.RunAck{}, err
 	}
 
-	h.register(p.SessionID, runtimeSession{backendType: bt, gatewayToken: gatewayToken})
+	h.register(p.SessionID, runtimeSession{backendType: bt})
 	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
 		p.SessionID, be.Type, p.AgentID, p.Cwd, len(p.UserText))
 	go h.fanout(p.SessionID, events, result)
+	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
+	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
+	if src, ok := rt.(agentruntime.AutonomousTurnSource); ok {
+		h.startAutonomousFanout(p.SessionID, src)
+	}
 	// LaunchPermissionMode 由 runtime 在 Run 返回前同步填(claudecode 专用),
 	// 通过 ack 回到客户端,chat_svc 在主进程侧落库到 session.PermissionModeAtLaunch。
 	ack := wire.RunAck{SessionID: p.SessionID}
@@ -216,15 +222,62 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 		}
 	}
 	frame := runResultToFrame(sid, result)
-	row, _ := h.unregister(sid)
-	if row.gatewayToken != "" && h.deps.Gateway != nil {
-		h.deps.Gateway.RevokeToken(row.gatewayToken)
-	}
+	// 只清 active-turn 记录;**不撤销 gateway token** —— token 是会话级常驻,
+	// 跨轮复用,寿命跟随子进程(见 sessionTokens 注释),轮末撤销会让下一轮复用
+	// 的子进程手里 token 失效。
+	h.unregister(sid)
 	if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
 		log.Printf("runtime.runResultDone: notify failed sid=%d err=%v", sid, perr)
 	}
 	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
 		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
+}
+
+// startAutonomousFanout 每会话起一个 goroutine,把真实 runtime 的自主续轮转发到
+// client(每轮:Started → Event* → Done)。去重防重复订阅;AutonomousTurns(sid)
+// channel close(子进程 evict)时 goroutine 退出并清去重位。
+func (h *RuntimeHandlers) startAutonomousFanout(sid int64, src agentruntime.AutonomousTurnSource) {
+	if _, loaded := h.autoSubs.LoadOrStore(sid, struct{}{}); loaded {
+		return
+	}
+	go func() {
+		defer h.autoSubs.Delete(sid)
+		for at := range src.AutonomousTurns(sid) {
+			h.forwardAutonomousTurn(sid, at)
+		}
+		log.Printf("runtime.autonomousTurn: source closed sid=%d", sid)
+	}()
+}
+
+// forwardAutonomousTurn 转发一轮自主续轮:先 Started,再逐事件 Event,最后 Done
+// 带 RunResult(复用 runResultToFrame)。语义同 fanout,但走 autonomousTurn.* 方法。
+func (h *RuntimeHandlers) forwardAutonomousTurn(sid int64, at agentruntime.AutonomousTurn) {
+	if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: sid,
+		Trigger:   at.Trigger,
+	}); perr != nil {
+		log.Printf("runtime.autonomousTurn.started: notify failed sid=%d err=%v", sid, perr)
+	}
+	count := 0
+	for ev := range at.Events {
+		raw, err := json.Marshal(ev)
+		if err != nil {
+			log.Printf("runtime.autonomousTurn.event: marshal failed sid=%d kind=%T err=%v", sid, ev, err)
+			continue
+		}
+		count++
+		if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnEvent, wire.EventFrame{
+			SessionID: sid,
+			Event:     json.RawMessage(raw),
+		}); perr != nil {
+			log.Printf("runtime.autonomousTurn.event: notify failed sid=%d n=%d err=%v", sid, count, perr)
+		}
+	}
+	frame := runResultToFrame(sid, at.Result)
+	if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnDone, frame); perr != nil {
+		log.Printf("runtime.autonomousTurn.done: notify failed sid=%d err=%v", sid, perr)
+	}
+	log.Printf("runtime.autonomousTurn: forwarded sid=%d trigger=%s events=%d", sid, at.Trigger, count)
 }
 
 // isNoisyEventKind 标记单 turn 内可能上百次出现的事件类型,逐条 log 会刷屏。
@@ -527,6 +580,38 @@ func (h *RuntimeHandlers) resolveSession(sid int64) (agentruntime.Runtime, error
 		return nil, agentruntime.ErrNoActiveTurn
 	}
 	return rt, nil
+}
+
+// ensureSessionToken 返回某 session 的 gateway URL + 常驻 token:首轮签一个永久
+// (ttl=0)token 并缓存,后续轮复用同一个。该 token 在 spawn 时烤进 claude 子进程
+// env,子进程跨轮复用时 env 不重建,所以必须整段会话稳定且永不过期 —— 否则下一轮
+// 复用的子进程手里的 token 失效,PostToolUse hook 撞 401、SteerInbox drain 不到。
+// Gateway 不可用 / URL 为空时返回空串,调用方按"不签"处理。
+func (h *RuntimeHandlers) ensureSessionToken(ctx context.Context, sid int64, be *agent_backend_entity.AgentBackend) (string, string, error) {
+	if h.deps.Gateway == nil {
+		return "", "", nil
+	}
+	url := h.deps.Gateway.URL()
+	if url == "" {
+		return "", "", nil
+	}
+	if sid > 0 {
+		if v, ok := h.sessionTokens.Load(sid); ok {
+			return url, v.(string), nil
+		}
+	}
+	tok, err := h.deps.Gateway.IssueToken(ctx, be, 0)
+	if err != nil {
+		return "", "", fmt.Errorf("gateway token: %w", err)
+	}
+	if sid > 0 {
+		// 并发首轮兜底:别的 goroutine 抢先签好就用它的,撤掉自己这条避免泄漏。
+		if actual, loaded := h.sessionTokens.LoadOrStore(sid, tok); loaded {
+			h.deps.Gateway.RevokeToken(tok)
+			return url, actual.(string), nil
+		}
+	}
+	return url, tok, nil
 }
 
 func (h *RuntimeHandlers) register(sid int64, row runtimeSession) {

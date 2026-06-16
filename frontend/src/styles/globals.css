@@ -384,7 +384,7 @@
 }
 
 /* TipTap Placeholder：把空段落的 data-placeholder 渲染成占位文字。
-   依赖 @tiptap/extension-placeholder 在空 doc 上加 .is-editor-empty。 */
+   依赖 @tiptap/extensions 的 Placeholder 在空 doc 上加 .is-editor-empty。 */
 .ProseMirror p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;

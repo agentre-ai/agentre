@@ -6,6 +6,7 @@ import (
 
 	"github.com/cago-frame/agents/provider"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
 
 	"agentre/internal/pkg/agentruntime"
 	"agentre/internal/pkg/agentruntime/canonical"
@@ -470,4 +471,10 @@ func TestTranslate_Usage_PerCallAnthropicFamily(t *testing.T) {
 		So(uu.TotalInputTokens, ShouldEqual, 1700) // 1000 + 500 + 200
 		So(uu.Usage.PromptTokens, ShouldEqual, 1000)
 	})
+}
+
+func TestSubagentInfoFromMeta_CarriesKind(t *testing.T) {
+	info := subagentInfoFromMeta(&claudecode.SubagentMeta{TaskType: "local_bash", TaskDescription: "sleep 5"})
+	assert.Equal(t, "local_bash", info.Kind)
+	assert.Equal(t, "sleep 5", info.TaskDescription)
 }

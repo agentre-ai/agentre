@@ -12,18 +12,22 @@ import (
 	_ "agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"agentre/internal/pkg/httpgateway"
 	"agentre/internal/pkg/paths"
+	"agentre/internal/pkg/sysnotify"
 	"agentre/internal/repository/agent_backend_repo"
 	"agentre/internal/repository/agent_repo"
 	"agentre/internal/repository/app_setting_repo"
 	"agentre/internal/repository/chat_repo"
 	"agentre/internal/repository/department_repo"
 	"agentre/internal/repository/hook_repo"
+	"agentre/internal/repository/issue_repo"
 	"agentre/internal/repository/llm_provider_repo"
 	"agentre/internal/repository/project_location_repo"
 	"agentre/internal/repository/project_repo"
 	"agentre/internal/service/agent_backend_svc"
 	"agentre/internal/service/app_settings_svc"
 	"agentre/internal/service/chat_svc"
+	"agentre/internal/service/issue_svc"
+	"agentre/internal/service/notification_svc"
 	"agentre/internal/service/project_svc"
 	"agentre/migrations"
 
@@ -99,6 +103,10 @@ func Init(ctx context.Context) (*Runtime, error) {
 	project_repo.RegisterProjectAgent(project_repo.NewProjectAgent())
 	project_location_repo.RegisterProjectLocation(project_location_repo.NewProjectLocation())
 	project_svc.SetDefault(project_svc.New())
+	issue_repo.RegisterIssue(issue_repo.NewIssue())
+	issue_repo.RegisterLabel(issue_repo.NewLabel())
+	issue_repo.RegisterIssueLabel(issue_repo.NewIssueLabel())
+	issue_svc.SetDefault(issue_svc.New())
 	// 把 project_svc 的 cwd 解析注入 chat_svc —— chat_svc 不直接 import project_svc，
 	// 避免 project_svc → chat_repo 与 chat_svc → project_svc 形成环。
 	chat_svc.RegisterCwdResolver(project_svc.Default().ResolveSessionCwd)
@@ -127,6 +135,9 @@ func Init(ctx context.Context) (*Runtime, error) {
 	agent_backend_svc.RegisterGateway(gw)
 	app_settings_svc.RegisterGateway(gw)
 	chat_svc.RegisterGateway(gw)
+
+	// 注入平台原生通知实现，供前端 App.ShowNotification 调用。
+	notification_svc.RegisterNotifier(sysnotify.New())
 
 	// 把 gateway 的 SteerInbox 注入到 claudecode runner，让 Steer 能 Push 进去；
 	// 之后 PostToolUse hook 子进程会 GET /hook/v1/inbox 拉走，turn 结束时

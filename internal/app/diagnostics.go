@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agentre/internal/bootstrap"
+	"agentre/internal/pkg/procattr"
 )
 
 // BugReportInfo 是「Bug 反馈」预填 GitHub issue 模板用的诊断信息。
@@ -84,7 +85,9 @@ func detectOSVersion() string {
 		}
 		return ""
 	case "windows":
-		out, err := exec.Command("cmd", "/c", "ver").Output()
+		cmd := exec.Command("cmd", "/c", "ver")
+		procattr.ApplyNoConsoleWindow(cmd)
+		out, err := cmd.Output()
 		if err != nil {
 			return ""
 		}

@@ -76,6 +76,13 @@ func (s *appSettingsSvc) Update(ctx context.Context, req *UpdateRequest) (*Updat
 				return nil, err
 			}
 			touchedProxy = true
+		case app_setting_entity.KeyNotifyEnabled,
+			app_setting_entity.KeyNotifyOnlyWhenUnfocused,
+			app_setting_entity.KeyNotifySystem,
+			app_setting_entity.KeyNotifyToast:
+			if err := app_setting_entity.ValidateBoolSetting(ctx, val); err != nil {
+				return nil, err
+			}
 		case "":
 			return nil, i18n.NewError(ctx, code.InvalidParameter)
 		default:

@@ -61,6 +61,7 @@ const (
 	AppSettingInvalidPort                  // 端口越界或非数字
 	AppSettingInvalidHost                  // 监听地址非合法 IP
 	AppGatewayRestartFailed                // 应用并重启时绑定端口失败
+	AppSettingInvalidBool                  // 布尔设置项取值非法
 )
 
 // Hook / 信号源 16000~16999
@@ -191,6 +192,16 @@ const (
 	ProjectLocationInvalidPath                // 项目路径必须是绝对路径
 	ProjectLocationMissing                    // 该项目尚未在所选设备上配置路径
 	ProjectLocationDuplicate                  // 同 (project, device) 已有 active 路径
+)
+
+// Issue 18200~18999
+const (
+	IssueNotFound          = iota + 18200 // issue 不存在
+	IssueTitleRequired                    // issue 标题不能为空
+	IssueInvalidState                     // issue 状态非法
+	IssueLabelNameRequired                // 标签名不能为空
+	IssueLabelInvalidTone                 // 标签色调非法
+	IssueLabelNotFound                    // 引用的标签不存在
 )
 
 // Server 接入 20300~20399

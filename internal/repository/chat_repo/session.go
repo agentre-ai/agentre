@@ -26,6 +26,7 @@ type SessionRepo interface {
 	CountByAgents(ctx context.Context, agentIDs []int64) (map[int64]int64, error)
 	CountRunningByAgents(ctx context.Context, agentIDs []int64) (map[int64]int, error)
 	CountActiveByProject(ctx context.Context, projectID int64, agentStatuses []string) (int64, error)
+	CountActive(ctx context.Context, agentStatuses []string) (int64, error)
 	Create(ctx context.Context, s *chat_entity.Session) error
 	Update(ctx context.Context, s *chat_entity.Session) error
 	UpdatePermissionMode(ctx context.Context, sessionID int64, mode string) error
@@ -224,6 +225,17 @@ func (r *sessionRepo) CountActiveByProject(ctx context.Context, projectID int64,
 	}
 	var n int64
 	err := q.Count(&n).Error
+	return n, err
+}
+
+// CountActive 统计 status=ACTIVE 且 agent_status 在指定集合内的会话总数(跨所有 agent/项目)。
+// 退出二次确认用它判断是否还有进行中的会话:agentStatuses 传 {"running","waiting"}。
+func (r *sessionRepo) CountActive(ctx context.Context, agentStatuses []string) (int64, error) {
+	var n int64
+	err := db.Ctx(ctx).
+		Model(&chat_entity.Session{}).
+		Where("status = ? AND agent_status IN ?", consts.ACTIVE, agentStatuses).
+		Count(&n).Error
 	return n, err
 }
 

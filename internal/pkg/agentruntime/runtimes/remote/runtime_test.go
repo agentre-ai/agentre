@@ -152,6 +152,177 @@ func TestRun_Success_DispatchesEventsThenCloses(t *testing.T) {
 	assert.NoError(t, runResult.StopErr)
 }
 
+// TestAutonomousTurns_ReconstructsForwardedTurn 验证 client 把 daemon 转发的
+// Started → Event → Done 三帧还原成一个 agentruntime.AutonomousTurn:Events 收到
+// 文本后 close,Result 在 close 后填好。
+func TestAutonomousTurns_ReconstructsForwardedTurn(t *testing.T) {
+	_, _, capture, rt := setupRemote(t)
+	turns := rt.AutonomousTurns(42)
+
+	capture.deliver(t, wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: 42, Trigger: "background_task",
+	})
+
+	var at agentruntime.AutonomousTurn
+	select {
+	case at = <-turns:
+	case <-time.After(time.Second):
+		t.Fatal("never got autonomous turn")
+	}
+	assert.Equal(t, "background_task", at.Trigger)
+	require.NotNil(t, at.Result)
+
+	textJSON, err := json.Marshal(agentruntime.TextDelta{Text: "autonomous:listing"})
+	require.NoError(t, err)
+	capture.deliver(t, wire.NotifyAutonomousTurnEvent, wire.EventFrame{SessionID: 42, Event: textJSON})
+	capture.deliver(t, wire.NotifyAutonomousTurnDone, wire.RunResultDoneFrame{
+		SessionID: 42, ProviderSessionID: "psid-1", Model: "claude-sonnet-4-6",
+	})
+
+	select {
+	case ev := <-at.Events:
+		td, ok := ev.(agentruntime.TextDelta)
+		require.True(t, ok, "got %T", ev)
+		assert.Equal(t, "autonomous:listing", td.Text)
+	case <-time.After(time.Second):
+		t.Fatal("never got autonomous event")
+	}
+	select {
+	case _, ok := <-at.Events:
+		assert.False(t, ok, "events must close after done")
+	case <-time.After(time.Second):
+		t.Fatal("events never closed")
+	}
+	assert.Equal(t, "psid-1", at.Result.ProviderSessionID)
+	assert.Equal(t, "claude-sonnet-4-6", at.Result.Model)
+}
+
+// TestAutonomousTurnEvent_ClosingRaceMustNotPanic 锁定一个真实并发缺陷:
+// daemon 在自主续轮投递事件期间断连时,watchClose goroutine 调
+// closeAllAutoSessions() 关 cur.events;若 handleAutonomousTurnEvent 在 a.mu 之外
+// 往 cur.events 送,则关与送不互斥 → send-on-closed-channel panic(读循环 goroutine
+// 无 recover → 整进程崩)。per-Run 的 handleEvent 早就靠"持 sess.mu 期间送"规避这一点,
+// 自主轮必须对齐。
+//
+// 复现手法:把 cur.events(cap 64)填满让下一次 event 送 park 住,再让
+// closeAllAutoSessions() 与之竞争。修复前:关 channel 把 park 的 send 打 panic;
+// 修复后:send 持 a.mu,closeAll 阻塞到 drain 放行,无 panic。
+func TestAutonomousTurnEvent_ClosingRaceMustNotPanic(t *testing.T) {
+	_, _, capture, rt := setupRemote(t)
+	_ = rt.AutonomousTurns(42) // 建好 autoSession(out 缓冲,不必 drain)
+
+	capture.deliver(t, wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: 42, Trigger: "background_task",
+	})
+
+	a := rt.lookupAutoSession(42)
+	require.NotNil(t, a)
+	require.NotNil(t, a.cur)
+	evCh := a.cur.events // close 前抓住引用,供 drainer 用
+
+	marshalEvent := func() json.RawMessage {
+		b, err := json.Marshal(agentruntime.TextDelta{Text: "x"})
+		require.NoError(t, err)
+		return b
+	}
+
+	// 填满 cur.events 缓冲(cap 64),下一次 event 送就会 park。
+	for i := 0; i < cap(evCh); i++ {
+		_, err := rt.handleAutonomousTurnEvent(context.Background(),
+			mustRawFrame(t, wire.EventFrame{SessionID: 42, Event: marshalEvent()}))
+		require.NoError(t, err)
+	}
+	require.Equal(t, cap(evCh), len(evCh), "buffer 应被填满,下一次送才会 park")
+
+	// park 第 65 次 event 送;若 panic 由该 goroutine 自己 recover 上报。
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_, _ = rt.handleAutonomousTurnEvent(context.Background(),
+			mustRawFrame(t, wire.EventFrame{SessionID: 42, Event: marshalEvent()}))
+	}()
+	time.Sleep(50 * time.Millisecond) // 确保上面那次送已 park 在满缓冲上
+
+	// 模拟断连:watchClose → closeAllAutoSessions() 与 park 的 send 竞争。
+	closeDone := make(chan struct{})
+	go func() {
+		rt.closeAllAutoSessions()
+		close(closeDone)
+	}()
+	// drainer:修复后 send 持 a.mu,需 drain 一个放行让 closeAll 拿到锁;修复前 send
+	// 已被 close 打 panic,drain 只是把缓冲抽干、无副作用。
+	go func() {
+		for range evCh { //nolint:revive // 抽干
+		}
+	}()
+
+	<-closeDone
+	got := <-panicked
+	require.Nil(t, got,
+		"closeAllAutoSessions 与 handleAutonomousTurnEvent 竞争时不得 send-on-closed panic;got=%v", got)
+}
+
+// TestAutonomousTurnStarted_ClosingRaceMustNotPanic 锁定与
+// TestAutonomousTurnEvent_ClosingRaceMustNotPanic 同类、但发生在「起一轮」路径上的
+// 并发缺陷:handleAutonomousTurnStarted 在 a.mu 之外往 a.out 送新 turn,而
+// closeAllAutoSessions()(watchClose goroutine,daemon 断连触发)在 a.mu 内
+// close(a.out)。两者不互斥 → daemon 断连恰在投递新 turn 期间会 send-on-closed panic
+// (读循环 goroutine 无 recover → 整进程崩)。524f33c 只把 event 送(cur.events)纳入
+// a.mu,Started 送(a.out)漏了同一层纪律。
+//
+// 复现手法对齐 event 版:把 a.out(cap 4)填满让下一次 Started 送 park 住,再让
+// closeAllAutoSessions() 与之竞争。修复前(-race):close 与 park 的 send 竞争 / panic;
+// 修复后:send 持 a.mu,closeAll 阻塞到 drain 放行,无 panic、无 race。
+func TestAutonomousTurnStarted_ClosingRaceMustNotPanic(t *testing.T) {
+	_, _, _, rt := setupRemote(t)
+	outCh := rt.AutonomousTurns(42) // 建好 autoSession;a.out cap 4,不 drain
+
+	// 预 marshal 一次,goroutine 内复用,避免在非测试 goroutine 里调 testify。
+	startedRaw := mustRawFrame(t, wire.AutonomousTurnStartedFrame{
+		SessionID: 42, Trigger: "background_task",
+	})
+
+	// 填满 a.out 缓冲(cap 4),下一次 Started 送就会 park。
+	for i := 0; i < cap(outCh); i++ {
+		_, err := rt.handleAutonomousTurnStarted(context.Background(), startedRaw)
+		require.NoError(t, err)
+	}
+	require.Equal(t, cap(outCh), len(outCh), "buffer 应被填满,下一次送才会 park")
+
+	// park 第 cap+1 次 Started 送;若 panic 由该 goroutine 自己 recover 上报。
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_, _ = rt.handleAutonomousTurnStarted(context.Background(), startedRaw)
+	}()
+	time.Sleep(50 * time.Millisecond) // 确保上面那次送已 park 在满缓冲上
+
+	// 模拟断连:watchClose → closeAllAutoSessions() 与 park 的 send 竞争。
+	closeDone := make(chan struct{})
+	go func() {
+		rt.closeAllAutoSessions()
+		close(closeDone)
+	}()
+	// drainer:修复后 send 持 a.mu,需 drain 放行让 closeAll 拿到锁;修复前 send 已被
+	// close 打 panic / 触发 race,drain 只是把缓冲抽干。
+	go func() {
+		for range outCh { //nolint:revive // 抽干
+		}
+	}()
+
+	<-closeDone
+	got := <-panicked
+	require.Nil(t, got,
+		"closeAllAutoSessions 与 handleAutonomousTurnStarted 竞争时不得 send-on-closed panic;got=%v", got)
+}
+
+func mustRawFrame(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}
+
 func TestRun_DeliversEventArrivingBeforeRunAckReturns(t *testing.T) {
 	_, cli, capture, rt := setupRemote(t)
 	textJSON, err := json.Marshal(agentruntime.TextDelta{Text: "early"})

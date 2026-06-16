@@ -1,4 +1,15 @@
 {
+  "notify": {
+    "app": "Agentre",
+    "body": {
+      "done": "Session completed",
+      "error": "Session failed",
+      "waiting": "Waiting for your input"
+    },
+    "openSession": "Open session",
+    "dismiss": "Dismiss",
+    "justNow": "Just now"
+  },
   "app": {
     "commandPalette": {
       "open": "Open command palette",
@@ -450,6 +461,10 @@
     "actions": {
       "rename": "Rename"
     },
+    "autonomous": {
+      "banner": "Background task finished · auto-continued",
+      "aria": "Auto-continued response"
+    },
     "compact": {
       "imageUnsupported": "/compact cannot be sent with images",
       "needsSession": "Send one message first so the Codex session starts before compacting",
@@ -511,6 +526,17 @@
       "nameAria": "Session name",
       "placeholder": "Enter a new name",
       "title": "Rename Session"
+    },
+    "backgroundTasks": {
+      "chip": "{{count}} running",
+      "title": "Background tasks",
+      "running": "Running",
+      "completed": "Done",
+      "failed": "Failed",
+      "empty": "No background tasks",
+      "bash": "bash",
+      "subagent": "subagent",
+      "aria": "Background tasks"
     },
     "toolbar": {
       "aria": "Session toolbar",
@@ -867,10 +893,14 @@
   },
   "issues": {
     "actions": {
-      "dispatchToAgent": "Dispatch to Agent",
+      "dispatchToAgent": "Dispatch to agent",
       "filter": "Filter",
-      "newIssue": "New Issue",
-      "redispatch": "Redispatch"
+      "newIssue": "New issue",
+      "redispatch": "Re-dispatch",
+      "close": "Close",
+      "reopen": "Reopen",
+      "edit": "Edit",
+      "delete": "Delete"
     },
     "board": {
       "addCard": "Add Card",
@@ -885,6 +915,21 @@
       "running": "In Progress",
       "waiting": "Waiting"
     },
+    "dialog": {
+      "title": "New Issue",
+      "editTitle": "Edit Issue",
+      "titleLabel": "Title",
+      "bodyLabel": "Description",
+      "projectLabel": "Project",
+      "noProject": "No project",
+      "labelsLabel": "Labels",
+      "create": "Create issue",
+      "save": "Save"
+    },
+    "empty": {
+      "title": "No issues yet",
+      "desc": "Create an issue to start tracking work"
+    },
     "filters": {
       "assignedAgent": "Assigned Agent",
       "author": "Author",
@@ -896,54 +941,15 @@
     "list": {
       "aria": "Issue list"
     },
-    "samples": {
-      "129": {
-        "meta": "Closed · 3d ago",
-        "title": "Fix Hook route matching priority"
-      },
-      "132": {
-        "meta": "Closed · yesterday",
-        "title": "Fix department banner collapsed state"
-      },
-      "133": {
-        "meta": "Created manually · 7d ago · Unassigned",
-        "title": "Research LLM cost dashboard options"
-      },
-      "136": {
-        "meta": "Created manually · 6d ago · Updated 1h ago",
-        "title": "Refactor ChatArea message list performance with virtualization"
-      },
-      "137": {
-        "meta": "Created manually · 5d ago · Unassigned",
-        "title": "Docs: Agent backend examples and common errors"
-      },
-      "138": {
-        "meta": "Created by Sentry Webhook · 4d ago · Failed with exit=124",
-        "title": "[Urgent] Codex CLI intermittently times out and interrupts sessions"
-      },
-      "139": {
-        "meta": "Created by GitHub Webhook · 3d ago · Waiting for CEO assistant approval",
-        "title": "Email Hook reconnect retry interval is too short and hits rate limits"
-      },
-      "140": {
-        "meta": "Created manually · 2d ago · Waiting for user approval",
-        "title": "Department nesting stutters when zooming at 4+ levels"
-      },
-      "141": {
-        "meta": "Created manually · yesterday · Updated 12m ago",
-        "title": "Implement dark mode and Slack-style message stream"
-      },
-      "142": {
-        "meta": "Created by Mail Hook · 14:32 · Updated 3m ago",
-        "title": "Fix OAuth callback losing the state parameter in Safari"
-      }
+    "state": {
+      "loading": "Loading…",
+      "error": "Failed to load"
     },
     "status": {
       "unassigned": "Unassigned"
     },
     "summary": {
-      "board": "Grouped by status · drag cards between columns",
-      "list": "12 Open · 47 Closed · 3 Agents following up"
+      "counts": "{{open}} open · {{closed}} closed"
     },
     "title": "Board",
     "view": {
@@ -1379,6 +1385,8 @@
       "activeCount": "{{count}} active sessions including sub-projects",
       "attentionAria": "{{name}} sessions needing attention",
       "empty": "No sessions",
+      "group": "Sessions",
+      "groupToggle": "Toggle {{name}} sessions",
       "inherited": "Inherited",
       "loadMembersFailed": "Failed to load members: {{error}}",
       "loadingMembers": "Loading members...",
@@ -1414,6 +1422,17 @@
     "insertAfterAI": "Inserted after AI finishes",
     "notCancellable": "Not cancellable (codex backend)",
     "notCancellableTitle": "codex turn/steer protocol is not cancellable after send"
+  },
+  "quitConfirm": {
+    "title": "Quit Agentre?",
+    "description": "{{count}} session(s) are still in progress. Quitting will interrupt their current turn, and unfinished turns will not be saved.",
+    "runningSessions": "In progress · {{count}}",
+    "statusRunning": "Running",
+    "statusWaiting": "Awaiting you",
+    "more": "{{count}} more session(s)",
+    "cancel": "Cancel",
+    "quitAnyway": "Quit anyway",
+    "unknownSession": "Untitled session"
   },
   "remoteFs": {
     "actions": {
@@ -1813,6 +1832,24 @@
       "description": "Configure available model sources. After saving, Agentre can fetch the account's available models, while context window, thinking support, and other capabilities are filled from the built-in cago agents catalog.",
       "title": "LLM Providers"
     },
+    "notifications": {
+      "pageTitle": "Notifications",
+      "pageDesc": "Get notified when a conversation finishes, fails, or needs your input.",
+      "masterTitle": "Notifications",
+      "masterDesc": "Master switch — turning this off disables every method below.",
+      "enableLabel": "Enable notifications",
+      "enableDesc": "Alert you when a turn finishes.",
+      "onlyWhenUnfocusedLabel": "Only when app is in background",
+      "onlyWhenUnfocusedDesc": "On by default; turn off to also be notified when the app is focused but the finished session isn't the one you're viewing.",
+      "channelsTitle": "Methods",
+      "channelsDesc": "When the alert condition is met, notify via any method enabled below.",
+      "systemLabel": "System notification",
+      "systemDesc": "Posts to macOS Notification Center / Windows Action Center — visible even when the app is in the background.",
+      "toastLabel": "In-app toast",
+      "toastDesc": "Pop a toast in the bottom-right of the app (only visible while the app is focused).",
+      "ruleTitle": "When you get notified",
+      "ruleDesc": "By default you're only notified when the app is in the background; turn off the switch above to also be notified while focused on a different session. Done, error, and needs-input all notify; ones you stop manually don't."
+    },
     "nav": {
       "about": "About",
       "agentBackend": "Agent Backends",
@@ -1835,10 +1872,6 @@
       "mcpServers": {
         "description": "The MCP server configuration view is reserved for managing connections, authorization, and available tools.",
         "title": "MCP Servers"
-      },
-      "notifications": {
-        "description": "The notification settings view is reserved for reminder rules and delivery channels.",
-        "title": "Notifications"
       },
       "skillsTools": {
         "description": "The skills and tools management view is reserved for enabling, disabling, and configuring agent capabilities.",

@@ -40,6 +40,9 @@ type fullRT struct {
 	runFn   func(ctx context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error)
 	runReqs []runCall
 
+	// autoFn 提供 AutonomousTurns(sid) 的返回 channel;nil → 立即 close(不转发)。
+	autoFn func(sid int64) <-chan agentruntime.AutonomousTurn
+
 	steerErr   error
 	steerCalls []steerCall
 
@@ -104,6 +107,18 @@ type goalCall struct {
 }
 
 func (r *fullRT) Capabilities() capability.Capabilities { return r.cap }
+
+func (r *fullRT) AutonomousTurns(sid int64) <-chan agentruntime.AutonomousTurn {
+	r.mu.Lock()
+	fn := r.autoFn
+	r.mu.Unlock()
+	if fn == nil {
+		ch := make(chan agentruntime.AutonomousTurn)
+		close(ch)
+		return ch
+	}
+	return fn(sid)
+}
 
 func (r *fullRT) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
 	r.mu.Lock()
@@ -475,6 +490,73 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 
+func TestRuntime_Run_ForwardsAutonomousTurn(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid-1"}, nil
+	}
+	rt.autoFn = func(_ int64) <-chan agentruntime.AutonomousTurn {
+		out := make(chan agentruntime.AutonomousTurn, 1)
+		evs := make(chan agentruntime.Event, 1)
+		evs <- agentruntime.TextDelta{Text: "autonomous:listing"}
+		close(evs)
+		out <- agentruntime.AutonomousTurn{
+			Events:  evs,
+			Result:  &agentruntime.RunResult{ProviderSessionID: "psid-1", Model: "claude-sonnet-4-6"},
+			Trigger: "background_task",
+		}
+		close(out)
+		return out
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 42, AgentID: 7, Cwd: "/tmp", UserText: "hi",
+	})
+	require.NoError(t, err)
+
+	// run fanout: Done + runResultDone = 2;autonomous: Started + Event + Done = 3 → 5 total。
+	frames := notif.waitFrames(t, 5)
+
+	// 只挑自主续轮三类帧,断言顺序 + 内容(与 run 帧的交错无关)。
+	var (
+		started   *wire.AutonomousTurnStartedFrame
+		autoEvent *wire.EventFrame
+		autoDone  *wire.RunResultDoneFrame
+		order     []string
+	)
+	for _, f := range frames {
+		switch f.method {
+		case wire.NotifyAutonomousTurnStarted:
+			order = append(order, "started")
+			fr := f.params.(wire.AutonomousTurnStartedFrame)
+			started = &fr
+		case wire.NotifyAutonomousTurnEvent:
+			order = append(order, "event")
+			fr := f.params.(wire.EventFrame)
+			autoEvent = &fr
+		case wire.NotifyAutonomousTurnDone:
+			order = append(order, "done")
+			fr := f.params.(wire.RunResultDoneFrame)
+			autoDone = &fr
+		}
+	}
+	require.NotNil(t, started)
+	require.NotNil(t, autoEvent)
+	require.NotNil(t, autoDone)
+	assert.Equal(t, []string{"started", "event", "done"}, order)
+	assert.Equal(t, int64(42), started.SessionID)
+	assert.Equal(t, "background_task", started.Trigger)
+	assert.Equal(t, int64(42), autoEvent.SessionID)
+	assert.Contains(t, string(autoEvent.Event), "autonomous:listing")
+	assert.Equal(t, int64(42), autoDone.SessionID)
+	assert.Equal(t, "claude-sonnet-4-6", autoDone.Model)
+}
+
 func TestRuntime_Run_BadBackendJSON_Errors(t *testing.T) {
 	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
 	_, err := h.Run(ctx, wire.RunParams{Backend: json.RawMessage(`{bad`)})
@@ -523,6 +605,51 @@ func TestRuntime_Run_RuntimeReturnsErr_RevokesToken(t *testing.T) {
 	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
 	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be)})
 	require.Error(t, err)
+}
+
+// TestRuntime_Run_WithProvider_ReusesPermanentTokenAcrossTurns pins the daemon
+// analog of the local "long session steer dies" fix: the gateway token is baked
+// into the persistent claude subprocess at spawn and reused across turns, so it
+// must be minted ONCE per session, be PERMANENT (ttl=0), and NEVER be revoked at
+// turn end. The old code minted a fresh time.Hour token every turn and revoked
+// it in fanout, leaving the reused subprocess holding a dead token from turn 2.
+func TestRuntime_Run_WithProvider_ReusesPermanentTokenAcrossTurns(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid"}, nil
+	}
+	ctx, _, gw, lookup, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{
+		ID:             3,
+		Type:           string(agent_backend_entity.TypeClaudeCode),
+		LLMProviderKey: "pk",
+	}
+	lookup.EXPECT().FindByKey(ctx, "pk").Return(&llm_provider_entity.LLMProvider{
+		ProviderKey: "pk", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-x",
+	}, nil).Times(2)
+	gw.EXPECT().URL().Return("http://gw").AnyTimes()
+	// ttl=0 (permanent), minted exactly once; NO RevokeToken EXPECT → gomock
+	// fails if anything revokes it (e.g. a leftover turn-end revoke).
+	gw.EXPECT().IssueToken(ctx, gomock.Any(), time.Duration(0)).Return("sess-token", nil).Times(1)
+
+	runOnce := func() {
+		_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42, UserText: "hi"})
+		require.NoError(t, err)
+		// Let the async fanout settle (session unregisters) before the next turn.
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			_, serr := h.Steer(ctx, wire.SteerParams{SessionID: 42, Text: "x"})
+			assert.ErrorIs(c, serr, agentruntime.ErrNoActiveTurn)
+		}, time.Second, 10*time.Millisecond)
+	}
+	runOnce() // turn 1 mints sess-token
+	runOnce() // turn 2 must reuse it
+
+	require.Len(t, rt.runReqs, 2)
+	assert.Equal(t, "sess-token", rt.runReqs[0].req.GatewayToken)
+	assert.Equal(t, "sess-token", rt.runReqs[1].req.GatewayToken, "turn 2 must reuse the same permanent token")
 }
 
 func TestRuntime_Run_StopErrAborted_RehydratesCode(t *testing.T) {

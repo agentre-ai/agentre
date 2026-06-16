@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"sync"
@@ -153,7 +154,9 @@ func TestTerminal_Pump_EmitsDataEvent(t *testing.T) {
 	assert.Equal(t, handlers.EventNameTerminalData, events[0].Name)
 	pay := events[0].Payload.(protocol.TerminalDataEvent)
 	assert.Equal(t, res.TerminalID, pay.TerminalID)
-	assert.Equal(t, "hello", pay.Data)
+	decoded, err := base64.StdEncoding.DecodeString(pay.Data)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(decoded))
 }
 
 func TestTerminal_Pump_EmitsExitAndClearsMap(t *testing.T) {
@@ -259,7 +262,9 @@ func TestTerminal_Pump_DropsOldestAndInsertsThrottleMarkerWhenBufferFull(t *test
 	var sawThrottle bool
 	for _, ev := range events {
 		if pay, ok := ev.Payload.(protocol.TerminalDataEvent); ok {
-			if strings.Contains(pay.Data, "--- output throttled ---") {
+			decoded, err := base64.StdEncoding.DecodeString(pay.Data)
+			require.NoError(t, err, "terminal data event must be valid base64")
+			if strings.Contains(string(decoded), "--- output throttled ---") {
 				sawThrottle = true
 				break
 			}

@@ -14,6 +14,7 @@ import (
 	"agentre/internal/model/entity/agent_backend_entity"
 	"agentre/internal/model/entity/chat_entity"
 	"agentre/internal/pkg/code"
+	"agentre/internal/pkg/procattr"
 	"agentre/internal/repository/agent_backend_repo"
 	"agentre/internal/repository/agent_repo"
 	"agentre/internal/repository/chat_repo"
@@ -66,6 +67,7 @@ func runGitState(ctx context.Context, cwd string) ChatSessionGitState {
 func gitOutput(ctx context.Context, cwd string, args ...string) (string, error) {
 	// args 全部来自本文件内的硬编码 git 子命令,无 user input;binary "git" 固定。
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // G204: controlled args
+	procattr.ApplyNoConsoleWindow(cmd)
 
 	cmd.Dir = cwd
 	var buf bytes.Buffer

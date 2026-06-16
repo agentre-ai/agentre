@@ -85,7 +85,6 @@ make install-deps    # 安装前端依赖
 make dev             # 开发模式（热重载）
 make test            # 后端 race 测试 + 前端 Vitest
 make build           # 构建当前平台的生产版本
-make build-windows   # 交叉构建 windows/amd64（可用 WINDOWS_PLATFORM= 覆盖）
 make install         # 安装应用包（macOS: /Applications/Agentre.app）
 ```
 

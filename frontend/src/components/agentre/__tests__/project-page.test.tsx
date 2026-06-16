@@ -1008,6 +1008,149 @@ describe("ProjectsPage active tab anchor", () => {
   });
 });
 
+describe("ProjectsPage parent own-sessions sub-group", () => {
+  // 父级项目同时有「自己的会话」和「子项目」时，自己的会话应收进一个可独立
+  // 折叠的「会话」子组：父级标题箭头仍收整卡，会话子组箭头只管自己的会话。
+  function parentWithChildTree() {
+    return [
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "Agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+        },
+        children: [
+          {
+            project: {
+              color: "agent-2",
+              icon: "folder",
+              id: 2,
+              name: "backend",
+              parentID: 1,
+              path: "/tmp/agentre/backend",
+            },
+            children: [],
+          },
+        ],
+      },
+    ];
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useSessionReadStore.setState({ overrides: new Map() });
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    appMocks.ProjectGet.mockResolvedValue({
+      project: null,
+      directMembers: [],
+      inheritedMembers: [],
+    });
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    appMocks.ProjectListTree.mockResolvedValue(parentWithChildTree());
+    appMocks.ProjectListSessions.mockImplementation(
+      async (projectID: number) =>
+        projectID === 1
+          ? [
+              buildSession({
+                id: 11,
+                title: "Parent Own A",
+                lastMessageAt: 2000,
+              }),
+            ]
+          : [buildSession({ id: 22, title: "Child One", lastMessageAt: 1000 })],
+    );
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("Given a parent with own sessions AND sub-projects, Then own sessions get a separate collapsible sessions sub-group", async () => {
+    renderProjectsPage();
+
+    await screen.findByText("backend");
+    const toggle = screen.getByRole("button", {
+      name: /Toggle Agentre sessions/i,
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", { name: /Parent Own A/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("When the sessions sub-group is collapsed, Then own sessions hide but sub-projects stay visible", async () => {
+    renderProjectsPage();
+
+    await screen.findByText("backend");
+    expect(
+      screen.getByRole("button", { name: /Parent Own A/ }),
+    ).toBeInTheDocument();
+
+    await setupUser().click(
+      screen.getByRole("button", { name: /Toggle Agentre sessions/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /Parent Own A/ }),
+      ).not.toBeInTheDocument();
+    });
+    // 子项目不受影响，仍然可见。
+    expect(screen.getByText("backend")).toBeInTheDocument();
+  });
+
+  it("Then collapsing the sessions sub-group persists under its own project:<id>:sessions key", async () => {
+    renderProjectsPage();
+
+    await screen.findByText("backend");
+    await setupUser().click(
+      screen.getByRole("button", { name: /Toggle Agentre sessions/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        localStorage.getItem("agentre.agentExpanded.project:1:sessions"),
+      ).toBe("0");
+    });
+    // 项目整体折叠态不应被这次操作写入。
+    expect(localStorage.getItem("agentre.agentExpanded.project:1")).toBeNull();
+  });
+
+  it("Given a leaf project with no sub-projects, Then no separate sessions sub-group is rendered", async () => {
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "Agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+        },
+        children: [],
+      },
+    ]);
+    appMocks.ProjectListSessions.mockResolvedValue([
+      buildSession({ id: 11, title: "Leaf Own A", lastMessageAt: 2000 }),
+    ]);
+
+    renderProjectsPage();
+
+    await screen.findByRole("button", { name: /Leaf Own A/ });
+    expect(
+      screen.queryByRole("button", { name: /Toggle Agentre sessions/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 function buildSession({
   id,
   title,

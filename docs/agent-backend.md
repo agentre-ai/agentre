@@ -1,153 +1,154 @@
-# 接入新的 AI Agent 后端
+# Onboarding a New AI Agent Backend
 
-新增一个 Agent backend（例如 Gemini CLI / 自家 CLI / 另一个 in-process SDK）时要走的路径、改动点、约束和坑。写代码前先全部看完——`agentruntime.Runtime` 接口看着窄，但配套要补齐的东西散在 entity / repo / service / wire / daemon / 前端六层。
+This is the path, the change points, the constraints, and the pitfalls you must walk through when adding a new Agent backend (e.g. Gemini CLI / your own CLI / another in-process SDK). Read all of it before writing code — the `agentruntime.Runtime` interface looks narrow, but the supporting pieces you have to fill in are spread across six layers: entity / repo / service / wire / daemon / frontend.
 
-> 前置阅读：[architecture.md](architecture.md)（分层约定）、[development.md](development.md)（TDD/BDD + Fix Discipline）。
-
----
-
-## 0. 先想清楚的问题
-
-写代码前自问，**不清楚就停下来问用户**，不要写到一半才发现要回炉：
-
-1. **运行模式**：是 in-process（像 builtin，直接吃 LLMProvider 走 cago app/coding），还是 wrap 一个本地 CLI 子进程（像 claudecode / codex / piagent）？两者在 ProviderType 匹配、cli_path 校验、env 透传、Prober 实现上完全不一样。
-2. **是否支持远端执行**：要走 `agentred` daemon 投到 LAN 机器上跑吗？支持的话要保证 init() 注册到的 `RuntimeFor` 不依赖 desktop-only 的服务（chat_repo / GUI），且 wire 协议覆盖到所有 RPC 帧。
-3. **能力矩阵**：能不能 mid-turn steer？能不能 abort？是否有 `can_use_tool` 协议？是否支持 ask_user_question？是否支持 plan / permission mode 切换？是否能 fork session？逐项列出来——这直接决定你要实现 `agentruntime` 哪几个可选子接口。
-4. **协议形态**：事件流是 stdout JSONL（claudecode）？JSON-RPC over stdio（codex app-server）？还是内存 channel（builtin）？translator 是无状态纯函数 vs. 有状态聚合，决定从哪写第一条测试。
-5. **session 复用 / spawn 单次**：每个 turn 起新进程（codex 当前做法），还是子进程常驻、用 LRU 缓存复用（claudecode）？复用要管理 idle evict、abort 解锁、跨 turn 状态 (permission mode / steer queue)。
+> Prerequisite reading: [architecture.md](architecture.md) (layering conventions), [development.md](development.md) (TDD/BDD + Fix Discipline).
 
 ---
 
-## 0.5 现有 backend 速查（接口 / 能力 / Permission Mode）
+## 0. Questions to settle first
 
-仓库目前内置四个 backend，定位差异明显，**新 backend 选档前先对号入座**：
+Ask yourself before writing code, and **if anything is unclear, stop and ask the user** — don't get halfway and discover you have to start over:
 
-- **builtin** — in-process 跑 cago `app/coding`，直接吃 `llm_provider` 配置。定位是「轻量自带」，暴露 steer / cancel / abort / image input 这几种 in-process 单 provider 模式天生支持的能力，没有 CLI 子进程开销，也没有 plan / 工具审批等高级协议。
-- **claudecode** — wrap 本地 `claude` CLI（Anthropic 家族），通过 stdout JSONL + `control_request` 帧双向通信，子进程常驻并 LRU 复用 session。功能最全：能跑 plan / `can_use_tool` / `AskUserQuestion` / Subagent / fork-session / mid-turn 切 permission mode / 图片输入。
-- **codex** — wrap 本地 `codex` CLI（OpenAI 家族），通过 JSON-RPC over stdio app-server 协议交互，每个 turn 起新进程（fire-and-forget）。原生支持 context window 上报、原生 compact turn 和图片输入，但没有 `can_use_tool` 协议、不能 mid-turn 切 mode、也不发 Subagent 事件。
-- **piagent** — wrap 本地 `pi` CLI（Pi coding agent RPC mode），不绑定 Agentre `LLMProvider`，而是读取 Pi 自己的 `~/.pi/agent` 配置和认证。支持 steer / abort / compact / 图片输入 / context window 上报；会话上下文通过 Agentre 专用 Pi session 文件跨 turn resume，不支持工具审批、反向问答、fork-session 或 permission mode meta。
+1. **Run mode**: is it in-process (like builtin, directly consuming an LLMProvider through cago app/coding), or does it wrap a local CLI subprocess (like claudecode / codex / piagent)? The two are completely different in ProviderType matching, cli_path validation, env passthrough, and Prober implementation.
+2. **Remote execution support**: does it need to be dispatched to a LAN machine via the `agentred` daemon? If so, make sure the `RuntimeFor` that init() registers does not depend on desktop-only services (chat_repo / GUI), and that the wire protocol covers all RPC frames.
+3. **Capability matrix**: can it mid-turn steer? Can it abort? Does it have a `can_use_tool` protocol? Does it support ask_user_question? Does it support plan / permission mode switching? Can it fork a session? List these out item by item — this directly determines which optional `agentruntime` sub-interfaces you need to implement.
+4. **Protocol shape**: is the event stream stdout JSONL (claudecode)? JSON-RPC over stdio (codex app-server)? Or an in-memory channel (builtin)? Whether the translator is a stateless pure function vs. a stateful aggregator determines where you write your first test.
+5. **Session reuse vs. single spawn**: does each turn start a new process (codex's current approach), or is the subprocess long-lived and reused via an LRU cache (claudecode)? Reuse means managing idle evict, abort unlocking, and cross-turn state (permission mode / steer queue).
 
-> 仓库里还有 `runtimes/remote/`，它**不是独立 backend**——而是 desktop 调远端 `agentred` daemon 时的代理，capability 通过 `Prefetch` 从 daemon 端真实 backend 同步过来，本节不单列。
+---
 
-数据来源（schema 改动必须三处同步）：
+## 0.5 Quick reference for existing backends (interface / capability / Permission Mode)
 
-- `internal/pkg/agentruntime/runtimes/{builtin,claudecode,codex,piagent}/runtime.go` 的 `Capabilities()` 实现
-- `internal/pkg/agentruntime/capability/capability.go` 的 cap 常量
-- `runtime_test.go::TestXxxCapabilities` 矩阵断言
+The repository currently has four built-in backends, with clearly distinct roles. **Pick the right slot for your new backend before you start** by mapping it to one of these:
 
-### 能力矩阵（Capabilities）
+- **builtin** — runs cago `app/coding` in-process, directly consuming the `llm_provider` config. Its role is "lightweight built-in"; it exposes steer / cancel / abort / image input — the capabilities that an in-process single-provider mode naturally supports — without CLI subprocess overhead, and without advanced protocols like plan / tool approval.
+- **claudecode** — wraps the local `claude` CLI (Anthropic family), communicating bidirectionally via stdout JSONL + `control_request` frames, with the subprocess long-lived and the session reused via LRU. The most fully featured: it can run plan / `can_use_tool` / `AskUserQuestion` / Subagent / fork-session / mid-turn permission-mode switching / image input.
+- **codex** — wraps the local `codex` CLI (OpenAI family), interacting via the JSON-RPC-over-stdio app-server protocol, starting a new process per turn (fire-and-forget). Natively supports context-window reporting, native compact turns, and image input, but has no `can_use_tool` protocol, cannot switch mode mid-turn, and does not emit Subagent events.
+- **piagent** — wraps the local `pi` CLI (Pi coding agent RPC mode); it is not bound to an Agentre `LLMProvider`, but reads Pi's own `~/.pi/agent` config and auth. Supports steer / abort / compact / image input / context-window reporting; session context is resumed across turns via an Agentre-dedicated Pi session file. It does not support tool approval, reverse Q&A, fork-session, or permission mode meta.
 
-每行 = 一个反向通道。最右列给出该能力的语义和「为什么 ❌」——照搬前先确认你的 backend 是否真有同类协议，没有就老实返 `ErrUnsupported`，不要硬塞模拟实现。
+> The repository also has `runtimes/remote/`, which is **not a standalone backend** — it is the proxy used when the desktop calls a remote `agentred` daemon. Its capability is synced from the daemon-side real backend via `Prefetch`, so it is not listed separately in this section.
 
-| Capability（常量 / wire string） | 子接口 | builtin | claudecode | codex | piagent | 说明 |
+Data sources (any schema change must be synced in three places):
+
+- The `Capabilities()` implementation in `internal/pkg/agentruntime/runtimes/{builtin,claudecode,codex,piagent}/runtime.go`
+- The cap constants in `internal/pkg/agentruntime/capability/capability.go`
+- The matrix assertions in `runtime_test.go::TestXxxCapabilities`
+
+### Capability matrix (Capabilities)
+
+Each row is a **reverse channel** (host→backend), **except the final `CapAutonomousTurn` row, which is the only forward channel** (backend→host: the backend spontaneously emits a whole turn). The rightmost column gives the capability's semantics and "why ❌" — before copying anything, confirm whether your backend actually has an equivalent protocol; if not, honestly return `ErrUnsupported` instead of force-fitting a fake implementation.
+
+| Capability (constant / wire string) | Sub-interface | builtin | claudecode | codex | piagent | Description |
 | --- | --- | --- | --- | --- | --- | --- |
-| `CapSteer` / `"steer"` | `Steerer` | ✅ | ✅ | ✅ | ✅ | mid-turn 注入用户消息；chat_svc 生成 queuedID，backend 真正消费后必须 emit `SteerConsumed` |
-| `CapCancelSteer` / `"cancel_steer"` | `SteerCanceler` | ✅ | ✅ | ❌ | ❌ | 注入后撤回；codex / piagent 的 steer 进协议后无法回收 |
-| `CapDrainSteer` / `"drain_steer"` | `SteerDrainer` | ❌ | ✅ | ❌ | ❌ | turn 间 leftover 自动续投到下一 turn；仅 claudecode 维护本地 hook 队列 |
-| `CapAbort` / `"abort"` | `Aborter` | ✅ | ✅ | ✅ | ✅ | 「停止」按钮；必须幂等 + 必须 unblock 所有阻塞 I/O，否则前端永远停在「生成中」 |
-| `CapSetPermission` / `"set_permission_mode"` | `PermissionModeSetter` | ❌ | ✅ mid-turn | ✅ 仅 launch | ❌ | 运行时切 permission mode；codex 协议不允许 mid-turn 切，DB 落库后下次 spawn 生效；piagent 不暴露 permission mode meta |
-| `CapAnswerUserAsk` / `"answer_user_ask"` | `AskAnswerSink` | ❌ | ✅ | ✅ | ❌ | 反向问用户问题（单选 / 多选 / Other / 密码框）；Skip 必须走 deny 而非空 map，否则 turn 静默挂死 |
-| `CapToolPermission` / `"tool_permission_gate"` | `ToolPermissionSink` | ❌ | ✅ `can_use_tool` | ❌ | ❌ | 工具执行前 allow/deny 审批 + 「Remember for session」+ DenyReason 回灌 LLM；codex / piagent 无等价协议 |
-| `CapForkSession` / `"fork_session"` | `RunRequest.ForkAnchor` 内置 | ❌ | ✅ `--fork-session` | ✅ `thread/rollback` | ❌ | 「重新生成」从某个 anchor 派生新 session 重跑 |
-| `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ✅ | ✅ | ✅ | runtime 探到模型实际上下文窗口大小后 emit，前端展示用量条；claudecode SDK 自己不报窗口，translator 在 `system.init` 帧上查 `llmcatalog` 兜底；piagent 每轮结束通过 Pi RPC `get_session_stats.contextUsage.contextWindow` 上报，并用 usage 帧 model 查 `llmcatalog` 兜底 |
-| `CapCompact` / `"compact"` | `RunRequest.Compact=true` | ❌ | ❌ | ✅ | ✅ | 原生 compact turn——让 LLM 把历史摘要后清掉占用；piagent 走 Pi RPC compact |
-| `CapImageInput` / `"image_input"` | `RunRequest.UserBlocks` 包含 `blocks.ImageBlock` | ✅ | ✅ | ✅ | ✅ | 用户消息可携带 PNG / JPEG / WebP 图片。builtin 直接透传 cago blocks；claudecode 把 inline 图片编码成 stream-json user frame 的 base64 `image` content block（图片在前、文本在后，CLI 原生支持）；codex 将 inline 图片物化为临时本地文件后走 app-server `localImage`；piagent 透传 RPC image content |
+| `CapSteer` / `"steer"` | `Steerer` | ✅ | ✅ | ✅ | ✅ | mid-turn injection of a user message; chat_svc generates the queuedID, and after the backend actually consumes it, it must emit `SteerConsumed` |
+| `CapCancelSteer` / `"cancel_steer"` | `SteerCanceler` | ✅ | ✅ | ❌ | ❌ | retract after injection; once codex / piagent steer has entered the protocol it cannot be recalled |
+| `CapDrainSteer` / `"drain_steer"` | `SteerDrainer` | ❌ | ✅ | ❌ | ❌ | leftover between turns is automatically forwarded into the next turn; only claudecode maintains a local hook queue |
+| `CapAbort` / `"abort"` | `Aborter` | ✅ | ✅ | ✅ | ✅ | the "Stop" button; must be idempotent + must unblock all blocking I/O, otherwise the frontend will be stuck on "generating" forever |
+| `CapSetPermission` / `"set_permission_mode"` | `PermissionModeSetter` | ❌ | ✅ mid-turn | ✅ launch only | ❌ | switch permission mode at runtime; the codex protocol does not allow mid-turn switching, so it persists to DB and takes effect on the next spawn; piagent does not expose permission mode meta |
+| `CapAnswerUserAsk` / `"answer_user_ask"` | `AskAnswerSink` | ❌ | ✅ | ✅ | ❌ | reverse-asking the user a question (single-select / multi-select / Other / password field); Skip must go through deny rather than an empty map, otherwise the turn silently hangs |
+| `CapToolPermission` / `"tool_permission_gate"` | `ToolPermissionSink` | ❌ | ✅ `can_use_tool` | ❌ | ❌ | allow/deny approval before tool execution + "Remember for session" + DenyReason fed back to the LLM; codex / piagent have no equivalent protocol |
+| `CapForkSession` / `"fork_session"` | `RunRequest.ForkAnchor` built in | ❌ | ✅ `--fork-session` | ✅ `thread/rollback` | ❌ | "Regenerate" derives a new session from a given anchor and reruns |
+| `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ✅ | ✅ | ✅ | the runtime emits after probing the model's actual context-window size, for the frontend usage bar; the claudecode SDK does not report the window itself, so the translator looks it up in `llmcatalog` on the `system.init` frame as a fallback; piagent reports it at the end of each round via the Pi RPC `get_session_stats.contextUsage.contextWindow`, and falls back to looking up `llmcatalog` by the model from the usage frame |
+| `CapCompact` / `"compact"` | `RunRequest.Compact=true` | ❌ | ❌ | ✅ | ✅ | native compact turn — have the LLM summarize history and then clear the occupied space; piagent goes through Pi RPC compact |
+| `CapImageInput` / `"image_input"` | `RunRequest.UserBlocks` contains `blocks.ImageBlock` | ✅ | ✅ | ✅ | ✅ | the user message can carry PNG / JPEG / WebP images. builtin passes cago blocks through directly; claudecode encodes inline images into a base64 `image` content block of the stream-json user frame (image first, text after — natively supported by the CLI); codex materializes inline images into temporary local files and then goes through the app-server `localImage`; piagent passes the RPC image content through |
+| `CapAutonomousTurn` / `"autonomous_turn"` | `AutonomousTurnSource` | ❌ | ✅ | ❌ | ❌ | **the only forward channel (backend→host)**: the backend spontaneously runs a whole turn with *no* user input. claudecode's CLI, after a `run_in_background` Bash task completes, autonomously injects `<task-notification>` and runs a full turn (a second `result` frame); `pkg/claudecode.Session`'s persistent reader routes it to `AutonomousTurns()`, the runtime bridges each one to `agentruntime.AutonomousTurn`, and chat_svc's per-session watcher (`driveAutonomousTurn`) persists it as a **pure assistant turn (no user row)** and surfaces it live via the session-level `chat:autonomous:<sessionID>` event. Backends without this behavior simply don't declare the cap |
 
-> **规则**：未声明 cap 调对应接口必须返 `agentruntime.ErrUnsupported`（sentinel 错误，跨进程透明，chat_svc 据此翻成 wire code）。声明 cap=true 但未实现接口会被 `TestXxxCapabilities` 矩阵测试卡掉（type-assert 失败）。
+> **Rule**: calling the corresponding interface of an undeclared cap must return `agentruntime.ErrUnsupported` (a sentinel error, transparent across processes, which chat_svc translates into a wire code accordingly). Declaring cap=true but not implementing the interface will be caught by the `TestXxxCapabilities` matrix test (type-assert failure).
 
-### 运行特性
+### Runtime characteristics
 
-这张表回答「跑起来长什么样」——进程形态、session 寿命、translator 设计、plan / Subagent 事件来源。新 backend 落到哪一档基本由你选的协议形态决定，**先选定再写代码**，不要中途换。
+This table answers "what does it look like when it runs" — process shape, session lifetime, translator design, plan / Subagent event sources. Which slot a new backend falls into is basically determined by the protocol shape you pick, so **decide first, then write code** — don't switch midway.
 
-| 维度 | builtin | claudecode | codex | piagent | 备注 |
+| Dimension | builtin | claudecode | codex | piagent | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 运行形态 | in-process（cago app/coding + LLMProvider） | CLI 子进程（stdout JSONL） | CLI 子进程（JSON-RPC over stdio app-server） | CLI 子进程（Pi RPC mode） | 决定 Prober / cli_path 校验 / env 装配路径 |
-| ProviderType 绑定 | 任意 LLM provider | Anthropic 家族（含网关代理） | OpenAI / Codex 家族 | 不绑定 provider；读 `~/.pi/agent` | entity `BackendKind.ProviderTypeMatch` 实现；piagent 恒 false |
-| Session 模式 | turn-scoped cago `Runner`，turn 结束即销毁 | 子进程常驻 + LRU 缓存复用，跨 turn 复用 session | 每个 turn 起新进程，无本地复用 | 每 turn 新 Pi client；通过 `<AppDataDir>/piagent/sessions/agentre-<sessionID>.jsonl` resume | 复用要管 idle evict / abort 解锁 / 跨 turn 状态 |
-| Translator | 纯函数（cago events → sealed） | 纯函数 + `task_aggregator` 跨 turn 维护 Subagent 列表 | 纯函数 | 纯函数（Pi RPC events → sealed） | 状态聚合统一在 `Run` drain 循环里做；translator 必须能在表驱动测试里独立跑 |
-| Plan 来源 | 不发 | `TodoWrite` 工具内联（canonical）+ `Task*` 增量聚合（PlanUpdated 快照） | `turn/plan/updated`（Steps）+ `item/plan/delta`（Text）合并到单一 PlanUpdated | 不发 | 下游 chat_svc 看到的都是同一个 sealed `agentruntime.PlanUpdated` |
-| 反向问答 | 不支持 | control_request `can_use_tool` + `AskUserQuestion` 工具 | app-server `item/tool/requestUserInput` JSON-RPC | 不支持 | claudecode 用 question 文本做 key，codex 用 question ID 做 key |
-| Subagent 事件 | ❌ | ✅ `SubagentStarted/Progress/Done` | ❌ | ❌ | 只 claudecode 有原生 `Task` 工具协议 |
-| 远端 daemon | ✅ | ✅ | ✅ | ✅ | runtime 不得依赖 desktop-only 服务（chat_repo / GUI），状态走 `RunResult` 回吐 |
+| Run shape | in-process (cago app/coding + LLMProvider) | CLI subprocess (stdout JSONL) | CLI subprocess (JSON-RPC over stdio app-server) | CLI subprocess (Pi RPC mode) | determines the Prober / cli_path validation / env assembly path |
+| ProviderType binding | any LLM provider | Anthropic family (incl. gateway proxy) | OpenAI / Codex family | not bound to a provider; reads `~/.pi/agent` | the entity `BackendKind.ProviderTypeMatch` implementation; piagent always false |
+| Session mode | turn-scoped cago `Runner`, destroyed when the turn ends | long-lived subprocess + LRU cache reuse, reusing the session across turns | new process per turn, no local reuse | new Pi client per turn; resumed via `<AppDataDir>/piagent/sessions/agentre-<sessionID>.jsonl` | reuse means managing idle evict / abort unlocking / cross-turn state |
+| Translator | pure function (cago events → sealed) | pure function + `task_aggregator` maintaining the Subagent list across turns | pure function | pure function (Pi RPC events → sealed) | state aggregation is uniformly done in the `Run` drain loop; the translator must be able to run independently in a table-driven test |
+| Plan source | does not emit | `TodoWrite` tool inline (canonical) + `Task*` incremental aggregation (PlanUpdated snapshot) | `turn/plan/updated` (Steps) + `item/plan/delta` (Text) merged into a single PlanUpdated | does not emit | what downstream chat_svc sees is the same sealed `agentruntime.PlanUpdated` |
+| Reverse Q&A | not supported | control_request `can_use_tool` + `AskUserQuestion` tool | app-server `item/tool/requestUserInput` JSON-RPC | not supported | claudecode uses the question text as the key, codex uses the question ID as the key |
+| Subagent events | ❌ | ✅ `SubagentStarted/Progress/Done` | ❌ | ❌ | only claudecode has a native `Task` tool protocol |
+| Remote daemon | ✅ | ✅ | ✅ | ✅ | the runtime must not depend on desktop-only services (chat_repo / GUI); state is returned via `RunResult` |
 
 ### PermissionModeMeta
 
-permission mode 是**会话级权限状态机**（不是 plan 内容）。各 backend 的 mode 集合和 mid-turn 切换能力完全不同——前端 `PermissionModePill` 直接读这张 meta 决定渲染；未声明 `CapSetPermission` 的 backend（builtin / piagent）没有 meta。
+Permission mode is a **session-level permission state machine** (not plan content). Each backend's mode set and mid-turn switching ability are completely different — the frontend `PermissionModePill` reads this meta directly to decide rendering; backends that do not declare `CapSetPermission` (builtin / piagent) have no meta.
 
-| 字段 | builtin | claudecode | codex | piagent | 字段含义 |
+| Field | builtin | claudecode | codex | piagent | Field meaning |
 | --- | --- | --- | --- | --- | --- |
-| `AllowedModes` | —（未声明 CapSetPermission） | `default, acceptEdits, plan, bypassPermissions` | `default, plan` | —（未声明 CapSetPermission） | 该 backend 合法的 mode 名集合，service 层做白名单 |
-| `DefaultMode` | — | `"acceptEdits"` | `"default"` | — | UI 展示 / 计算用的默认 mode（chat_svc 落库默认值） |
-| `LaunchDefaultMode` | — | `""`（不附 `--permission-mode`，pkg/claudecode 内部兜底成 acceptEdits） | `"default"`（协议要求 launch 显式 collaborationMode，**不能空**） | — | spawn 时 wire 层兜底字符串；空 vs 非空决定「用户未显式选」vs「显式选了 default」 |
-| `SwitchableDuringTurn` | — | `true`（写 control_request 即时切） | `false`（落库后下次 spawn 生效） | — | 前端 pill 在 `agentStatus=="waiting"` 时是否可点 |
-| `Order` | — | 同 AllowedModes | 同 AllowedModes | — | pill 循环顺序，UI 直接按顺序 next |
+| `AllowedModes` | — (does not declare CapSetPermission) | `default, acceptEdits, plan, bypassPermissions` | `default, plan` | — (does not declare CapSetPermission) | the set of valid mode names for this backend; the service layer applies it as a whitelist |
+| `DefaultMode` | — | `"acceptEdits"` | `"default"` | — | the default mode used for UI display / computation (the default value chat_svc persists) |
+| `LaunchDefaultMode` | — | `""` (does not attach `--permission-mode`; pkg/claudecode internally falls back to acceptEdits) | `"default"` (the protocol requires an explicit collaborationMode at launch, **cannot be empty**) | — | the fallback string the wire layer uses at spawn; empty vs. non-empty distinguishes "user didn't explicitly pick" vs. "explicitly picked default" |
+| `SwitchableDuringTurn` | — | `true` (writes a control_request to switch immediately) | `false` (takes effect on the next spawn after persisting) | — | whether the frontend pill is clickable when `agentStatus=="waiting"` |
+| `Order` | — | same as AllowedModes | same as AllowedModes | — | the pill cycle order; the UI nexts through it directly in order |
 
-> **易混字段**：`chat_sessions.permission_mode` = CLI 运行时当前 mode（被 SetPermissionMode 修改）；`chat_sessions.permission_mode_at_launch` = spawn 时下发的快照（由 runtime 经 `RunResult.LaunchPermissionMode` 回吐）。前者前端用于显示当前状态，后者决定 `bypassPermissions` 是否出现在 pill 里——只有 launch 时显式选过 bypass 才会显示该项，避免事后被滥用。
+> **Easily confused fields**: `chat_sessions.permission_mode` = the CLI runtime's current mode (modified by SetPermissionMode); `chat_sessions.permission_mode_at_launch` = the snapshot delivered at spawn (returned by the runtime via `RunResult.LaunchPermissionMode`). The frontend uses the former to display the current state; the latter decides whether `bypassPermissions` appears in the pill — the item only shows if bypass was explicitly chosen at launch, to avoid it being abused after the fact.
 
 ---
 
-## 1. 整体接入路径（必经的 7 层）
+## 1. The overall onboarding path (the 7 mandatory layers)
 
-新 backend = 沿着以下 7 层各加一刀，缺一不可：
+A new backend = one cut along each of the following 7 layers, none of which can be skipped:
 
-| 层 | 位置 | 必改？ |
+| Layer | Location | Mandatory? |
 | --- | --- | --- |
-| 1. Entity 类型 | `internal/model/entity/agent_backend_entity/{agent_backend.go, kinds.go}` | 必须 |
-| 2. 数据库迁移 | `migrations/YYYYMMDDNNNN_*.go` + `migrationList()` 末尾 append | 仅当要加新列 |
-| 3. CLI/Prober/Env 装配 | `internal/pkg/agentruntime/clienv.go` + `internal/service/agent_backend_svc/{prober.go, resolve_cli.go}` | CLI 类必须；in-process 仅 Prober |
-| 4. Runtime + Translator | `internal/pkg/agentruntime/runtimes/<name>/{runtime.go, translator.go}` | 必须 |
-| 5. Daemon import | `internal/daemon/runtime_imports.go` blank import | 支持远端就必须 |
-| 6. Wails 绑定与 svc 类型 | `internal/service/agent_backend_svc/types.go` + `internal/app/agent.go`（若引入新字段） | 仅当新字段 |
-| 7. 前端绑定 + UI gating | `frontend/wailsjs/` 重生（`make generate`）+ capability pill / 选择器 | 必须 |
+| 1. Entity type | `internal/model/entity/agent_backend_entity/{agent_backend.go, kinds.go}` | Yes |
+| 2. Database migration | `migrations/YYYYMMDDNNNN_*.go` + append to the end of `migrationList()` | Only when adding a new column |
+| 3. CLI/Prober/Env wiring | `internal/pkg/agentruntime/clienv.go` + `internal/service/agent_backend_svc/{prober.go, resolve_cli.go}` | Mandatory for the CLI kind; Prober only for in-process |
+| 4. Runtime + Translator | `internal/pkg/agentruntime/runtimes/<name>/{runtime.go, translator.go}` | Yes |
+| 5. Daemon import | blank import in `internal/daemon/runtime_imports.go` | Mandatory if remote is supported |
+| 6. Wails bindings and svc types | `internal/service/agent_backend_svc/types.go` + `internal/app/agent.go` (if a new field is introduced) | Only when a new field |
+| 7. Frontend bindings + UI gating | regenerate `frontend/wailsjs/` (`make generate`) + capability pill / selector | Yes |
 
 ---
 
-## 2. 各层必做的事
+## 2. What must be done at each layer
 
-### 2.1 Entity（`agent_backend_entity`）
+### 2.1 Entity (`agent_backend_entity`)
 
-- 在 `agent_backend.go` 加 `BackendType` 常量：
+- Add a `BackendType` constant in `agent_backend.go`:
 
   ```go
   TypeMyAgent BackendType = "myagent"
   ```
 
-- 在 `kinds.go` 实现 `BackendKind` 接口并登记到 `backendKinds`：
+- Implement the `BackendKind` interface in `kinds.go` and register it in `backendKinds`:
 
   ```go
   type myAgentKind struct{}
   func (myAgentKind) Type() BackendType { return TypeMyAgent }
-  func (myAgentKind) KnownAliases() []string { return nil }            // 没有 model_routes 就 nil
+  func (myAgentKind) KnownAliases() []string { return nil }            // nil if there are no model_routes
   func (myAgentKind) ProviderTypeMatch(t llm_provider_entity.ProviderType) bool {
       return t == llm_provider_entity.TypeXxx
   }
-  func (myAgentKind) AllowsCLIPath() bool { return true }              // CLI 类填 true
+  func (myAgentKind) AllowsCLIPath() bool { return true }              // fill true for the CLI kind
   func (myAgentKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
-      // 这里校验 sandbox / approval / default_permission_mode / env_json 独有字段；
-      // 公共字段（name / type / env_json 保留键 / model_routes alias 集合 / reasoning_effort）
-      // 已经在 AgentBackend.Check 里走过，**不要再重复一遍**。
+      // validate the kind-specific fields here: sandbox / approval / default_permission_mode / env_json;
+      // the common fields (name / type / env_json reserved keys / model_routes alias set / reasoning_effort)
+      // have already been run through AgentBackend.Check, so **do not repeat them**.
       return nil
   }
   ```
 
-- `IsXxx()` 便捷判断方法不强制加，但加了 chat_svc / 前端可读性更好（参考 `IsClaudeCode/IsCodex/IsPiAgent`）。
-- 充血模型边界：**新增字段优先放在 entity，方法（校验、默认值、序列化）也写在 entity**，service 只做跨 entity 编排。`AgentBackend.Check` 已经分派到 `BackendKind.ValidateExtra`——千万别在 service 里再写 switch。
+- The `IsXxx()` convenience predicate methods are not mandatory, but adding them improves readability for chat_svc / the frontend (see `IsClaudeCode/IsCodex/IsPiAgent`).
+- Rich domain model boundary: **new fields go into the entity first, and the methods (validation, defaults, serialization) are written in the entity too**; the service only does cross-entity orchestration. `AgentBackend.Check` already dispatches to `BackendKind.ValidateExtra` — never write another switch in the service.
 
-### 2.2 数据库迁移
+### 2.2 Database migration
 
-只有新字段时才动。规则：
+Only touch this when there are new fields. Rules:
 
-- 在 `migrations/` **新建** `YYYYMMDDNNNN_xxx.go`，导出 `migrationYYYYMMDDNNNN()`。
-- **禁止改动既有迁移**——需要修复的也写新的补丁迁移。
-- DDL 走原生 SQL (`tx.Exec(...)`)，不要依赖 `AutoMigrate` 的隐式行为。
-- 在 `migrations/migrations.go::migrationList()` **末尾** append。
-- 默认值必须能让既有行通过 entity.Check（通常 `'' / '{}' / 0`）。
+- **Create a new** `YYYYMMDDNNNN_xxx.go` in `migrations/`, exporting `migrationYYYYMMDDNNNN()`.
+- **Do not modify existing migrations** — even fixes are written as new patch migrations.
+- DDL goes through native SQL (`tx.Exec(...)`); do not rely on the implicit behavior of `AutoMigrate`.
+- Append to the **end** of `migrations/migrations.go::migrationList()`.
+- The default value must let existing rows pass entity.Check (usually `'' / '{}' / 0`).
 
-### 2.3 Prober + CLI 探测 + Env 装配
+### 2.3 Prober + CLI probing + Env wiring
 
-`agent_backend_svc.Prober` 抽象「对一条 backend 跑一轮自检 → 返回 reply 或 error」，供前端「测试连通性」按钮用。
+`agent_backend_svc.Prober` abstracts "run one self-check round against a backend → return reply or error", for the frontend "test connectivity" button.
 
-- 在 `prober.go` 注册：
+- Register in `prober.go`:
 
   ```go
   var proberRegistry = map[agent_backend_entity.BackendType]Prober{
@@ -156,14 +157,14 @@ permission mode 是**会话级权限状态机**（不是 plan 内容）。各 ba
   }
   ```
 
-- CLI 类后端如果要走本地 gateway 测，把 env 装配抽到 `internal/pkg/agentruntime/<name>_env.go`，**和 chat path 的 runtime 共享同一份装配规则**（chat 实跑和 Test 不能漂移；参考 `BuildClaudeCodeEnv` / `BuildCodexEnv` / `BuildPiAgentEnv`）。piagent 这类不走 Agentre gateway 的 backend 也要共用同一个 env builder，避免 prober 和 runtime 对 `env_json` / 保留键理解漂移。
-- 如果是 CLI 类，在 `internal/pkg/cliprober/` 里加 `Type` 分支（当前 `cliprober.ResolveCLIPath` 识别 `claudecode` / `codex` / `piagent`，非这些值会返 `ErrInvalidType`），让前端编辑器能扫到本机 binary 绝对路径。`agent_backend_svc/resolve_cli.go` 是入口适配层，本身不分类型，不需要改。
+- If a CLI-kind backend wants to test through a local gateway, extract the env wiring into `internal/pkg/agentruntime/clienv.go` (`BuildClaudeCodeEnv` / `BuildCodexEnv` / `BuildPiAgentEnv` are all here), **sharing the same wiring rules as the chat-path runtime** (the actual chat run and Test must not drift; see `BuildClaudeCodeEnv` / `BuildCodexEnv` / `BuildPiAgentEnv`). Backends like piagent that do not go through the Agentre gateway must also share the same env builder, to avoid the prober and the runtime drifting in their understanding of `env_json` / reserved keys.
+- If it is the CLI kind, add a `Type` branch in `internal/pkg/cliprober/` (currently `cliprober.ResolveCLIPath` recognizes `claudecode` / `codex` / `piagent`; any other value returns `ErrInvalidType`), so the frontend editor can scan the local binary's absolute path. `agent_backend_svc/resolve_cli.go` is the entry adapter; it does not classify types itself and does not need changing.
 
-### 2.4 Runtime（核心）
+### 2.4 Runtime (core)
 
-新建包 `internal/pkg/agentruntime/runtimes/<name>/`，至少 3 个文件：
+Create a new package `internal/pkg/agentruntime/runtimes/<name>/`, with at least 3 files:
 
-1. **`runtime.go`** — 实现 `agentruntime.Runtime` 接口：
+1. **`runtime.go`** — implements the `agentruntime.Runtime` interface:
 
    ```go
    var defaultRuntime = New()
@@ -183,54 +184,56 @@ permission mode 是**会话级权限状态机**（不是 plan 内容）。各 ba
    ) { ... }
    ```
 
-   - **`Capabilities()` 必须返回稳定结果**（同一 runtime 多次调用相同），前端 capability gating / 远端 prefetch 都依赖这个语义。
-   - `Run` 返回的 channel **必须在 turn 结束时 close**（无论 Done / Error / Abort）。**channel 关闭前不允许读 `*RunResult`**——`RunResult` 是异步填充。
-   - `RunRequest.Cwd` 非空时直接用作 cwd；为空时回退到 `agentruntime.AgentCwd(req.AgentID)`。**不要反向依赖 `project_svc`**。
-   - `ForkAnchor` 非空时实现「重新生成」——参考 claudecode 用 `--fork-session`、codex 用 `thread/rollback`。
-   - 主 goroutine 退出前 `unregister(sessionID)` 清掉 sessions map，避免 leak。
+   - **`Capabilities()` must return a stable result** (the same across repeated calls on the same runtime); the frontend capability gating / remote prefetch both depend on this semantics.
+   - The channel returned by `Run` **must be closed when the turn ends** (regardless of Done / Error / Abort). **`*RunResult` must not be read before the channel is closed** — `RunResult` is filled asynchronously.
+   - When `RunRequest.Cwd` is non-empty, use it directly as cwd; when empty, fall back to `agentruntime.AgentCwd(req.AgentID)`. **Do not reverse-depend on `project_svc`**.
+   - When launching a local CLI subprocess, call `procattr.ApplyNoConsoleWindow(cmd)` before `cmd.Start()`. This is required for Windows GUI builds; otherwise every agent turn can flash a transient console window.
+   - When `ForkAnchor` is non-empty, implement "Regenerate" — see claudecode using `--fork-session` and codex using `thread/rollback`.
+   - Call `unregister(sessionID)` to clear the sessions map before the main goroutine exits, to avoid a leak.
 
-2. **`translator.go`** — 把 backend 自家事件翻译成 sealed `agentruntime.Event`：
+2. **`translator.go`** — translates the backend's own events into sealed `agentruntime.Event`:
 
    ```go
    func translate(ev myAgentEvent) (events []agentruntime.Event, usage *provider.Usage, stopErr error) { ... }
    ```
 
-   - **保持纯函数**——一帧入、0/1/n 帧出，**不读写 runtime 状态**。状态聚合（同安全点连续到达的 SteerConsumed 合并 / pending steer FIFO 配对）在 `runtime.Run` 的 drain 循环里做。
-   - 工具识别走 `internal/pkg/agentruntime/canonical`——能识别成 `FileWrite/FileEdit/PlanUpdate/AgentSpawn` 的就填 `ToolCall.Canonical`，UI 投影 / 前端卡片复用同一套；不能识别的留 raw。
-   - `EventUsage`：translator 内部按 family 把 `TotalInputTokens` 算好（Anthropic = prompt+cached+cacheCreation；OpenAI = prompt），下游不再做家族判断。
+   - **Keep it a pure function** — one frame in, 0/1/n frames out, **does not read or write runtime state**. State aggregation (merging consecutive SteerConsumed arriving at the same safe point / pairing the pending steer FIFO) is done in the `runtime.Run` drain loop.
+   - Tool recognition goes through `internal/pkg/agentruntime/canonical` — whatever can be recognized as `FileWrite/FileEdit/PlanUpdate/AgentSpawn` fills `ToolCall.Canonical`, so the UI projection / frontend cards reuse the same set; leave the unrecognizable as raw.
+   - `EventUsage`: the translator internally computes `TotalInputTokens` per family (Anthropic = prompt+cached+cacheCreation; OpenAI = prompt), so downstream no longer makes family judgments.
 
-3. **`runtime_test.go`** + **`translator_test.go`** — TDD 必须：
-   - **Capabilities 矩阵测试**：声明的 cap=true 与实现的子接口（Steerer / Aborter / 等）必须一致。参考 `runtime_test.go::TestXxxCapabilities`。
-   - **Translator pure-fn 测试**：表驱动覆盖每种事件 kind + 边界（空 tool input / 错误帧 / 部分字段缺失）。Convey 嵌套描述场景。
-   - **Run 集成测试**：用 fake backend 客户端 / fake session 验证事件批次顺序、`SteerConsumed` 合并、Abort 解锁、RunResult 终态。
+3. **`runtime_test.go`** + **`translator_test.go`** — mandatory for TDD:
+   - **Capabilities matrix test**: the declared cap=true must match the implemented sub-interfaces (Steerer / Aborter / etc.). See `runtime_test.go::TestXxxCapabilities`.
+   - **Translator pure-fn test**: table-driven coverage of every event kind + boundaries (empty tool input / error frame / partial field missing). Use Convey-nested scenario descriptions.
+   - **Run integration test**: use a fake backend client / fake session to verify event batch ordering, `SteerConsumed` merging, Abort unlocking, and the RunResult terminal state.
 
-#### 可选控制子接口
+#### Optional control sub-interfaces
 
-按 Capabilities 声明实现（**声明了 cap=true 就必须实现对应接口**；matrix 测试会卡掉）：
+Implement according to the Capabilities declaration (**if you declared cap=true, you must implement the corresponding interface**; the matrix test will catch it):
 
-| Cap | 接口 | 何时实现 |
+| Cap | Interface | When to implement |
 | --- | --- | --- |
-| `CapSteer` | `Steerer` | 支持 mid-turn 注入用户消息 |
-| `CapCancelSteer` | `SteerCanceler` | 注入后还能撤回（claudecode 有；codex 无） |
-| `CapDrainSteer` | `SteerDrainer` | turn 间 leftover 自动续投（仅 claudecode） |
-| `CapAbort` | `Aborter` | 用户「停止」按钮——基本都得实现 |
-| `CapSetPermission` | `PermissionModeSetter` | 运行时切换 permission mode |
-| `CapAnswerUserAsk` | `AskAnswerSink` | 处理反向 ask_user_question |
-| `CapToolPermission` | `ToolPermissionSink` | 处理 `can_use_tool` 协议 |
-| `CapForkSession` | `RunRequest.ForkAnchor` 内置语义 | 「重新生成」走 fork |
-| `CapReportContextWindow` | emit `ContextWindowUpdated` | runtime 能探到模型实际窗口（codex 协议原生有；claudecode 靠 `llmcatalog.Lookup(model)` 兜底；piagent 优先读 Pi RPC `get_session_stats.contextUsage.contextWindow`，再用 usage 帧 model 查 `llmcatalog` 兜底） |
-| `CapCompact` | `RunRequest.Compact=true` 内置语义 | 原生 compact turn |
-| `CapImageInput` | `RunRequest.UserBlocks` image blocks | 支持多模态用户输入；不支持时 chat_svc 会在调 runtime 前拒绝带图 turn |
+| `CapSteer` | `Steerer` | supports mid-turn injection of a user message |
+| `CapCancelSteer` | `SteerCanceler` | can still retract after injection (claudecode has it; codex does not) |
+| `CapDrainSteer` | `SteerDrainer` | leftover between turns is auto-forwarded (claudecode only) |
+| `CapAbort` | `Aborter` | the user's "Stop" button — basically must be implemented |
+| `CapSetPermission` | `PermissionModeSetter` | switch permission mode at runtime |
+| `CapAnswerUserAsk` | `AskAnswerSink` | handle reverse ask_user_question |
+| `CapToolPermission` | `ToolPermissionSink` | handle the `can_use_tool` protocol |
+| `CapForkSession` | `RunRequest.ForkAnchor` built-in semantics | "Regenerate" goes through fork |
+| `CapReportContextWindow` | emit `ContextWindowUpdated` | the runtime can probe the model's actual window (codex has it natively in the protocol; claudecode falls back via `llmcatalog.Lookup(model)`; piagent prefers reading the Pi RPC `get_session_stats.contextUsage.contextWindow`, then falls back to looking up `llmcatalog` by the model from the usage frame) |
+| `CapCompact` | `RunRequest.Compact=true` built-in semantics | native compact turn |
+| `CapImageInput` | `RunRequest.UserBlocks` image blocks | supports multimodal user input; when unsupported, chat_svc rejects an image-carrying turn before calling the runtime |
+| `CapAutonomousTurn` | `AutonomousTurnSource` | the backend spontaneously produces a turn with no user input (claudecode background-task auto-continue) — **the only forward channel**; see item I below |
 
-不实现的 cap：**chat_svc 拿到前端请求时返回 `ErrUnsupported`**——错误码已经在 wire 层 sentinel 化跨进程透明传递，**不要私造错误**。
+For caps you do not implement: **chat_svc returns `ErrUnsupported` when it receives the frontend request** — the error code has already been made a sentinel at the wire layer for transparent cross-process propagation, so **do not invent your own error**.
 
-#### 控制接口逐个展开（**接入前必读**）
+#### The control interfaces one by one (**must-read before onboarding**)
 
-下面把六个反向通道的协议细节、字段语义、claudecode/codex/piagent 差异拆开讲。新 backend 接入时，**逐项**对照实现，不要凭直觉猜。
+The following breaks down the protocol details, field semantics, and claudecode/codex/piagent differences of the reverse channels (A–H), plus the **one forward channel** `AutonomousTurnSource` (item I). When onboarding a new backend, **go through each item** against your implementation; don't guess by intuition.
 
-##### A. Steerer / SteerCanceler / SteerDrainer — mid-turn 注入
+##### A. Steerer / SteerCanceler / SteerDrainer — mid-turn injection
 
-接口签名（`internal/pkg/agentruntime/runner.go:362-407`）：
+Interface signatures (`internal/pkg/agentruntime/runner.go:366-411`):
 
 ```go
 type Steerer interface {
@@ -244,19 +247,19 @@ type SteerDrainer interface {
 }
 ```
 
-- **queuedID** 由 chat_svc 在 Enqueue 时生成（UUID），是后续 CancelSteer 的回写句柄。
-- **消费回执**：backend 真正把这条 text 注入到对话后，**必须**经 translator emit `agentruntime.SteerConsumed{Steers: [{QueuedID, Text}]}`——chat_svc 据此把对应 chat_message 状态推进到 `consumed`。同安全点连续到达的 SteerConsumed **在 `Run` drain 循环里合并成单批**（参考 builtin/runtime.go `flushSteers`），保持单帧 emit 的 wire 行为。
-- **CancelSteer 语义**：
-  - `queuedID == ""` → 清空整个 pending 队列，返回被清的 ID 列表（FIFO）
-  - `queuedID` 非空 → 单条撤回；不在队列返 `ErrSteerNotFound`（已被 AI 消费 / 从未入队）
-- **DrainPending 副作用**：返回非空 slice 时**必须**原子地把 session 标记回 "still in turn"，否则 chat_svc 在两次 Run 之间到的 Steer 会落到 ChatSendInFlight 被丢。codex / piagent 故意不实现 SteerDrainer——它们的 steer 进协议后没有可 drain 的本地 hook 队列。
-- **claudecode 实现**：通过 `httpgateway.SteerInbox` push 给 CLI hook 子进程。
-- **codex 实现**：调 `*codex.Stream.Steer(text)`，本地维护 pending 队列做 echo 配对。
-- **piagent 实现**：调 Pi RPC stream 的 `Steer(text)`；Pi 把 steer 注入回显成 user message 后，runtime 用本地 pending FIFO 配对并 emit `SteerConsumed`。
+- **queuedID** is generated by chat_svc at Enqueue time (UUID); it is the write-back handle for the subsequent CancelSteer.
+- **Consumption receipt**: after the backend actually injects this text into the conversation, it **must** emit `agentruntime.SteerConsumed{Steers: [{QueuedID, Text}]}` via the translator — chat_svc uses it to advance the corresponding chat_message state to `consumed`. SteerConsumed arriving consecutively at the same safe point is **merged into a single batch in the `Run` drain loop** (see builtin/runtime.go `flushSteers`), preserving the single-frame emit wire behavior.
+- **CancelSteer semantics**:
+  - `queuedID == ""` → clears the entire pending queue and returns the list of cleared IDs (FIFO)
+  - `queuedID` non-empty → single retract; returns `ErrSteerNotFound` if not in the queue (already consumed by the AI / never enqueued)
+- **DrainPending side effect**: when returning a non-empty slice, it **must** atomically mark the session back to "still in turn", otherwise a Steer arriving in chat_svc between two Runs would land in ChatSendInFlight and be dropped. codex / piagent deliberately do not implement SteerDrainer — once their steer enters the protocol there is no local hook queue to drain.
+- **claudecode implementation**: pushes to the CLI hook subprocess via `httpgateway.SteerInbox`.
+- **codex implementation**: calls `*codex.Stream.Steer(text)`, maintaining a local pending queue for echo pairing.
+- **piagent implementation**: calls `Steer(text)` on the Pi RPC stream; after Pi injects the steer and echoes it back as a user message, the runtime pairs it via a local pending FIFO and emits `SteerConsumed`.
 
-##### B. Aborter — 「停止」按钮
+##### B. Aborter — the "Stop" button
 
-接口签名（runner.go:422-424）：
+Interface signature (runner.go:426-428):
 
 ```go
 type Aborter interface {
@@ -264,16 +267,16 @@ type Aborter interface {
 }
 ```
 
-- **幂等 + 并发安全**：可能和 runner 自己的 drain goroutine 同时被调。
-- **必须解锁 I/O**：claudecode 写 `control_request{interrupt}` 一帧到 stdin；codex 调 `turn/interrupt` RPC；piagent 调 Pi RPC stream `Interrupt`；builtin 取消 `turnCtx`。**ctx cancel 必须 unblock 所有阻塞读**——这是「停止」生效的前提。
-- **返回值**：sessionID 没 in-flight turn 时返 `ErrNoActiveTurn`，chat_svc 翻 `code.ChatStopNoActive`。
-- **RunResult.StopErr**：用户主动 Abort 时 runner **应当**填 `agentruntime.ErrAborted`，让 chat_svc 区分「正常 Done / 用户中止 / 真错误」三态。
+- **Idempotent + concurrency-safe**: it may be called at the same time as the runner's own drain goroutine.
+- **Must unblock I/O**: claudecode writes a `control_request{interrupt}` frame to stdin; codex calls the `turn/interrupt` RPC; piagent calls the Pi RPC stream `Interrupt`; builtin cancels `turnCtx`. **The ctx cancel must unblock all blocking reads** — this is the prerequisite for "Stop" to take effect.
+- **Return value**: when the sessionID has no in-flight turn, return `ErrNoActiveTurn`, which chat_svc translates into `code.ChatStopNoActive`.
+- **RunResult.StopErr**: when the user actively aborts, the runner **should** fill `agentruntime.ErrAborted`, so that chat_svc can distinguish the three states "normal Done / user abort / real error".
 
-##### C. ToolPermissionSink — `can_use_tool` 工具审批
+##### C. ToolPermissionSink — `can_use_tool` tool approval
 
-> **codex / piagent 当前不支持**（无等价协议）。下文以 claudecode 为蓝本，新 backend 有同类协议时照搬。
+> **codex / piagent currently do not support this** (no equivalent protocol). The following uses claudecode as the blueprint; copy it when a new backend has an equivalent protocol.
 
-接口签名（runner.go:218-220）：
+Interface signature (runner.go:218-220):
 
 ```go
 type ToolPermissionSink interface {
@@ -282,34 +285,34 @@ type ToolPermissionSink interface {
 }
 ```
 
-**完整调用链**：
+**The complete call chain**:
 
-1. **Backend 收到 can_use_tool 控制请求**（除 AskUserQuestion 以外的工具都走这里）→ translator/runtime emit：
+1. **Backend receives a can_use_tool control request** (all tools except AskUserQuestion go through here) → translator/runtime emits:
 
    ```go
    agentruntime.ToolPermissionRequest{
-       RequestID:  "ctl-xxx",        // backend 私有句柄（claudecode = control_request.request_id）
-       ToolCallID: "toolu_xxx",      // 关联 assistant 流里的 tool_use；race 时可空
-       ToolName:   "Bash",           // 工具名，service 据此识别 ExitPlanMode 特例
-       Input:      rawInputJSONBytes,// 原 control_request.input 字节，前端自己 JSON.parse
+       RequestID:  "ctl-xxx",        // backend-private handle (claudecode = control_request.request_id)
+       ToolCallID: "toolu_xxx",      // links to the tool_use in the assistant stream; may be empty in a race
+       ToolName:   "Bash",           // tool name; the service uses it to recognize the ExitPlanMode special case
+       Input:      rawInputJSONBytes,// the raw control_request.input bytes; the frontend JSON.parses it itself
    }
    ```
 
-2. **chat_svc 落库**（`internal/service/chat_svc/tool_permission.go:22-53`）：
-   - 转换为 `blocks.ToolPermissionBlock` 加进 acc。
-   - 投影成 `ChatBlock{Type:"tool_permission_request"}` 推前端；canonical 装 `ToolPermission{...}` 或（ToolName=="ExitPlanMode" 时）`PlanApproveRequest{...}`。
+2. **chat_svc persists** (`internal/service/chat_svc/tool_permission.go:22-53`):
+   - Converts it to a `blocks.ToolPermissionBlock` and adds it to the acc.
+   - Projects it into a `ChatBlock{Type:"tool_permission_request"}` pushed to the frontend; canonical carries `ToolPermission{...}` or (when ToolName=="ExitPlanMode") `PlanApproveRequest{...}`.
 
-3. **前端渲染审批卡**：Allow / Deny 两按钮，Allow 可勾 "Remember for session"（alwaysAllowSession），Deny 可填拒绝原因。
+3. **Frontend renders the approval card**: two buttons Allow / Deny; Allow can check "Remember for session" (alwaysAllowSession), Deny can fill in a deny reason.
 
-4. **前端答复 → service**：调 `AnswerToolPermission(sessionID, requestID, allow, alwaysAllowSession, denyReason, targetPermissionMode)`。
+4. **Frontend replies → service**: calls `AnswerToolPermission(sessionID, requestID, allow, alwaysAllowSession, denyReason, targetPermissionMode)`.
 
-5. **service 反向投回**：
-   - `selectRunner()` 类型断言到 `ToolPermissionSink`，调 `SubmitToolPermission(...)`。
-   - claudecode 实现：写一帧 control_response 到子进程 stdin：
-     - `allow=true` → `PermissionResult{Behavior:"allow", UpdatedInput: parsedInput}`；`alwaysAllowSession=true` 时再附 `UpdatedPermissions=[{type:"addRules", rules:[{toolName}], behavior:"allow", destination:"session"}]`，CLI 自己维护后续 allow rules。
-     - `allow=false` → `PermissionResult{Behavior:"deny", Message: denyReason || "User denied..."}`；CLI 把 Message **当 tool_result 回灌给 LLM**，让 AI 拿到具体反馈重新规划。
+5. **service projects it back in reverse**:
+   - `selectRunner()` type-asserts to `ToolPermissionSink` and calls `SubmitToolPermission(...)`.
+   - claudecode implementation: writes a control_response frame to the subprocess stdin:
+     - `allow=true` → `PermissionResult{Behavior:"allow", UpdatedInput: parsedInput}`; when `alwaysAllowSession=true`, it additionally attaches `UpdatedPermissions=[{type:"addRules", rules:[{toolName}], behavior:"allow", destination:"session"}]`, and the CLI maintains the subsequent allow rules itself.
+     - `allow=false` → `PermissionResult{Behavior:"deny", Message: denyReason || "User denied..."}`; the CLI feeds the Message **back to the LLM as a tool_result**, so the AI gets the specific feedback and re-plans.
 
-6. **runtime 完成回写后** emit 终态帧：
+6. **After the runtime completes the write-back**, it emits the terminal frame:
 
    ```go
    agentruntime.ToolPermissionResolved{
@@ -318,16 +321,16 @@ type ToolPermissionSink interface {
    }
    ```
 
-   chat_svc patch 回 acc 里那条 ToolPermissionBlock，确保 turn finalize 落盘正确。
+   chat_svc patches it back into that ToolPermissionBlock in the acc, ensuring correct on-disk persistence when the turn finalizes.
 
-**新 backend 接入要点**：
-- ToolName 字段必须填——chat_svc 用它做特例识别（ExitPlanMode）。
-- DenyReason 不仅是日志——必须能被 backend 回灌给 LLM 作 tool_result（否则 AI 不知道为何被拒）。
-- Input 透传原始字节，不要解析后再 marshal 一遍（前端可能依赖原 key 顺序 / 数字精度）。
+**Key points for onboarding a new backend**:
+- The ToolName field must be filled — chat_svc uses it for special-case recognition (ExitPlanMode).
+- DenyReason is not just a log — it must be feedable back to the LLM as a tool_result by the backend (otherwise the AI does not know why it was denied).
+- Pass the Input raw bytes through; do not parse and re-marshal them (the frontend may rely on the original key order / numeric precision).
 
-##### D. AskAnswerSink — 反向问用户问题
+##### D. AskAnswerSink — reverse-asking the user a question
 
-接口签名（runner.go:255-257）：
+Interface signature (runner.go:255-257):
 
 ```go
 type AskAnswerSink interface {
@@ -336,17 +339,17 @@ type AskAnswerSink interface {
 }
 ```
 
-**与 ToolPermission 的关键区别**：AskUserQuestion 是**有结构的问答**（单选 / 多选 / Other / 密码框），不是 allow/deny 二元；backend 必须按各自协议聚合答案 map。
+**The key difference from ToolPermission**: AskUserQuestion is **structured Q&A** (single-select / multi-select / Other / password field), not a binary allow/deny; the backend must aggregate the answer map according to its own protocol.
 
-**完整调用链**：
+**The complete call chain**:
 
-1. **Backend 检测到 AskUserQuestion 工具/控制请求** → emit：
+1. **Backend detects the AskUserQuestion tool/control request** → emits:
 
    ```go
    agentruntime.UserAskRequest{
        RequestID:        "ctl-xxx",
-       ToolCallID:       "toolu_xxx",   // race 时可空，前端按 RequestID 占位
-       ParentToolCallID: "task-...",    // subagent 内调用时指向外层 Agent.tool_use_id
+       ToolCallID:       "toolu_xxx",   // may be empty in a race; the frontend uses RequestID as a placeholder
+       ParentToolCallID: "task-...",    // when called inside a subagent, points to the outer Agent.tool_use_id
        Questions: []AskQuestion{{
            ID: "q1", Question: "...", Header: "...",
            MultiSelect: true, IsOther: true, IsSecret: false,
@@ -355,34 +358,34 @@ type AskAnswerSink interface {
    }
    ```
 
-2. **chat_svc 落 `blocks.UserAskBlock`** + 投影 ChatBlock + canonical UserAsk DTO（`internal/service/chat_svc/ask_user_question.go:21-83`）。
+2. **chat_svc persists `blocks.UserAskBlock`** + projects ChatBlock + the canonical UserAsk DTO (`internal/service/chat_svc/ask_user_question.go:21-83`).
 
-3. **前端 UserAskCard 渲染**：单选 radio / 多选 checkbox / Other 文本框 / IsSecret 密码框；提供 Answer + Skip 两按钮。
+3. **Frontend renders the UserAskCard**: single-select radio / multi-select checkbox / Other text field / IsSecret password field; provides two buttons Answer + Skip.
 
-4. **前端答复 → service** `AnswerUserQuestion(sessionID, requestID, answers, skipped)`，answers 是 `[]AskAnswerDTO{QuestionIndex, Labels[], OtherText}`。
+4. **Frontend replies → service** `AnswerUserQuestion(sessionID, requestID, answers, skipped)`, where answers is `[]AskAnswerDTO{QuestionIndex, Labels[], OtherText}`.
 
-5. **service 反向投回** `sink.SubmitAnswer(ctx, sessionID, requestID, nil, rtAnswers, skipped)`。**questions 参数留 nil**——backend 自己缓存了 waiter 时的 questions 列表，传 nil 可让 backend 跳过 length 校验。
+5. **service projects it back in reverse** `sink.SubmitAnswer(ctx, sessionID, requestID, nil, rtAnswers, skipped)`. **Leave the questions parameter nil** — the backend cached the questions list when it became the waiter, so passing nil lets the backend skip the length check.
 
-6. **runtime 写回 backend**：
-   - **claudecode**：写 control_response，`UpdatedInput.answers` 按 question 文本聚合 csv labels（`OtherAnswerLabel` 替换为 `OtherText`）；`Behavior:"allow"`。
-   - **codex**：响应 app-server 的 `item/tool/requestUserInput` JSON-RPC，payload = `map[codexQuestionID][]string`；按 `buildUserInputAnswers` 装配。
-   - **内置 Agent**：in-process channel。
-   - **piagent**：当前未声明 `CapAnswerUserAsk`，前端不会开放该反向通道。
+6. **runtime writes back to the backend**:
+   - **claudecode**: writes a control_response; `UpdatedInput.answers` aggregates the csv labels per question text (`OtherAnswerLabel` replaced with `OtherText`); `Behavior:"allow"`.
+   - **codex**: responds to the app-server's `item/tool/requestUserInput` JSON-RPC, with payload = `map[codexQuestionID][]string`; assembled per `buildUserInputAnswers`.
+   - **builtin Agent**: in-process channel.
+   - **piagent**: currently does not declare `CapAnswerUserAsk`, so the frontend will not open this reverse channel.
 
-7. **Skipped 语义**：必须让 LLM 优雅看到拒答信号，**不要** allow 一个空 map（会让 turn 静默挂死，hapi gotcha #4）：
-   - claudecode：写 deny message。
-   - codex：`SubmitUserInput(requestID, map[string][]string{})` 显式空 map。
+7. **Skipped semantics**: must let the LLM gracefully see the refusal signal; **do not** allow an empty map (which silently hangs the turn, hapi gotcha #4):
+   - claudecode: writes a deny message.
+   - codex: `SubmitUserInput(requestID, map[string][]string{})` — an explicit empty map.
 
-8. **runtime 完成后** emit `UserAskResolved{RequestID, Answers, Skipped}`，chat_svc patch 回 UserAskBlock。
+8. **After the runtime completes**, it emits `UserAskResolved{RequestID, Answers, Skipped}`, and chat_svc patches it back into the UserAskBlock.
 
-**新 backend 接入要点**：
-- `OtherAnswerLabel` 是哨兵常量（`agentruntime.OtherAnswerLabel`），看到这个 label 要替换为 `AskAnswer.OtherText`，不要原样发给 LLM。
-- AskQuestion.ID 是 backend 私有的（codex 用它做 key；claudecode 用 question 文本做 key）——translator 必须把它保留下来，不要丢。
-- waiter 缓存：runtime 收到 UserAskRequest 时**必须**把 (RequestID → questions) 缓存起来，SubmitAnswer 才能在 questions=nil 时反查。
+**Key points for onboarding a new backend**:
+- `OtherAnswerLabel` is a sentinel constant (`agentruntime.OtherAnswerLabel`); when you see this label, replace it with `AskAnswer.OtherText` — do not send it to the LLM as-is.
+- AskQuestion.ID is backend-private (codex uses it as the key; claudecode uses the question text as the key) — the translator must preserve it and not drop it.
+- waiter cache: when the runtime receives a UserAskRequest, it **must** cache (RequestID → questions), so that SubmitAnswer can look it back up when questions=nil.
 
-##### E. PermissionModeSetter — 运行时切换权限模式
+##### E. PermissionModeSetter — switching permission mode at runtime
 
-接口签名（runner.go:437-439）：
+Interface signature (runner.go:441-443):
 
 ```go
 type PermissionModeSetter interface {
@@ -390,96 +393,96 @@ type PermissionModeSetter interface {
 }
 ```
 
-> 这是**会话级权限开关**，不是 plan 内容。两个概念分开：
-> - **PermissionMode** = "默认是否需要审批 / 是否进入 plan 模式" 的运行时状态机；
-> - **Plan 内容** = AI 当前 todo 列表（见 §F）。
+> This is a **session-level permission switch**, not plan content. Keep the two concepts separate:
+> - **PermissionMode** = the runtime state machine for "does it require approval by default / is it in plan mode";
+> - **Plan content** = the AI's current todo list (see §F).
 
-**合法 mode 值**（来自 `capability.PermissionModeMeta.AllowedModes`）：
-- claudecode：`{default, acceptEdits, plan, bypassPermissions}`
-- codex：`{default, plan}`（**禁运行时切换**，`SwitchableDuringTurn: false`）
+**Valid mode values** (from `capability.PermissionModeMeta.AllowedModes`):
+- claudecode: `{default, acceptEdits, plan, bypassPermissions}`
+- codex: `{default, plan}` (**runtime switching prohibited**, `SwitchableDuringTurn: false`)
 
-**两个不同字段**：
+**Two different fields**:
 
-| 字段 | 含义 | 谁写 |
+| Field | Meaning | Who writes |
 | --- | --- | --- |
-| `chat_sessions.permission_mode` | CLI 运行时当前模式（被 SetPermissionMode 改变） | chat_svc 的 PermissionModeWriter |
-| `chat_sessions.permission_mode_at_launch` | spawn 时下发的 `--permission-mode` 快照 | runtime 通过 `RunResult.LaunchPermissionMode` 回吐，chat_svc 写库 |
+| `chat_sessions.permission_mode` | the CLI runtime's current mode (changed by SetPermissionMode) | chat_svc's PermissionModeWriter |
+| `chat_sessions.permission_mode_at_launch` | the `--permission-mode` snapshot delivered at spawn | the runtime returns it via `RunResult.LaunchPermissionMode`, and chat_svc writes it to DB |
 
-历史教训：runtime 不要直接调 `chat_repo.Session().Update...`——agentred daemon 不 bootstrap chat_repo，会 nil panic。**状态走 RunResult 回吐**。
+Historical lesson: the runtime must not call `chat_repo.Session().Update...` directly — the agentred daemon does not bootstrap chat_repo, so it would nil-panic. **State is returned via RunResult.**
 
-**DefaultMode vs LaunchDefaultMode**（`capability.PermissionModeMeta`）：
+**DefaultMode vs LaunchDefaultMode** (`capability.PermissionModeMeta`):
 
-| 字段 | 用途 | claudecode | codex |
+| Field | Use | claudecode | codex |
 | --- | --- | --- | --- |
-| `DefaultMode` | UI 展示/计算用的默认 mode 名 | `"acceptEdits"` | `"default"` |
-| `LaunchDefaultMode` | spawn 时 wire 层兜底字符串 | `""`（不附 flag，让 pkg/claudecode 兜底成 acceptEdits） | `"default"`（协议要求每次 launch 显式 collaborationMode） |
+| `DefaultMode` | the default mode name for UI display/computation | `"acceptEdits"` | `"default"` |
+| `LaunchDefaultMode` | the fallback string the wire layer uses at spawn | `""` (does not attach the flag, letting pkg/claudecode fall back to acceptEdits) | `"default"` (the protocol requires an explicit collaborationMode at every launch) |
 
-**两种触发路径**：
+**Two trigger paths**:
 
-1. **主动切换**（前端点 PermissionModePill）：
-   - 前端 → `SetPermissionMode(sessionID, mode)`
-   - service 落库 `chat_sessions.permission_mode` → 尝试 `runner.SetPermissionMode(ctx, sessionID, mode)`
-   - claudecode runtime 写 control_request 到 CLI；codex 返 `ErrUnsupported`，下次 spawn 从 DB 读新 mode 启动。
+1. **Active switch** (the frontend clicks the PermissionModePill):
+   - frontend → `SetPermissionMode(sessionID, mode)`
+   - service persists `chat_sessions.permission_mode` → attempts `runner.SetPermissionMode(ctx, sessionID, mode)`
+   - the claudecode runtime writes a control_request to the CLI; codex returns `ErrUnsupported`, and starts the next spawn reading the new mode from DB.
 
-2. **被动切换**（CLI 自己通报）：
-   - runtime emit `agentruntime.PermissionModeChanged{Mode: "acceptEdits"}`
-   - `handlers.PermissionModeChangedHandler` 落 `PermissionModeChangeBlock` + 通过 `PermissionModeWriter.SetMode` 写库 + emit `StreamSessionStatus` patch。
+2. **Passive switch** (the CLI reports it itself):
+   - the runtime emits `agentruntime.PermissionModeChanged{Mode: "acceptEdits"}`
+   - `handlers.PermissionModeChangedHandler` persists a `PermissionModeChangeBlock` + writes to DB via `PermissionModeWriter.SetMode` + emits a `StreamSessionStatus` patch.
 
-**前端 PermissionModePill 行为**（capability 投影）：
+**Frontend PermissionModePill behavior** (capability projection):
 
 ```ts
 const meta = caps.PermissionModeMeta
 const canSwitch = meta.SwitchableDuringTurn && agentStatus !== "waiting"
-const order = meta.Order         // pill 循环顺序
+const order = meta.Order         // pill cycle order
 const showBypass = session.permission_mode_at_launch === "bypassPermissions"
-// bypassPermissions 仅在 launch 时显式选过才出现在 pill 里，避免事后被滥用
+// bypassPermissions only appears in the pill if it was explicitly chosen at launch, to avoid being abused after the fact
 ```
 
-##### F. ExitPlanMode — plan → acceptEdits 的特殊审批流
+##### F. ExitPlanMode — the special approval flow for plan → acceptEdits
 
-ExitPlanMode 是**复用 ToolPermission 通道**实现的 plan 退出协议（claudecode 专属，codex 无等价）：
+ExitPlanMode is a plan-exit protocol implemented by **reusing the ToolPermission channel** (claudecode-specific; codex has no equivalent):
 
-1. CLI 在 plan 模式下完成规划后调用 `ExitPlanMode` 工具 → backend emit `ToolPermissionRequest{ToolName: "ExitPlanMode", Input: {plan: "..."}}`。
-2. chat_svc 在 `tool_permission.go:34-41` 检测 `ToolName=="ExitPlanMode"`，**额外装配** `Canonical = PlanApproveRequest{Plan, Actions}`，让前端用 `PlanApproveCard` 渲染（而非通用 ToolPermissionCard）。
-3. `Actions` 由 `handlers.BuildPlanApproveActions(launchPermissionMode)` 在 ToolPermissionRequest handler 里装配（`internal/service/chat_svc/handlers/plan_approve.go:16-32`），规则：
-   - 普通 launch（空 / default / acceptEdits / plan）→ `[plan.approve.accept_edits, plan.approve.manual, plan.refine]`
-   - launch="bypassPermissions" → 第一项**替换**为 `plan.approve.bypass_permissions`（不是追加），得到 `[plan.approve.bypass_permissions, plan.approve.manual, plan.refine]`
-   - `plan.refine` 带 `RequiresFeedback: true`——前端展开 feedback textarea；用户提交后走 `Allow=false` + `DenyReason=feedback`（CLI 把 message 当 tool_result 回灌给 AI 继续规划），**不是** allow + 切回 plan mode
-4. 前端按用户点的 action 调 `AnswerToolPermission`：approve 类 → `Allow=true, TargetPermissionMode=mapPlanApproveAction(actionID)`（见 `plan_action.go:198-210`：bypass→`bypassPermissions` / accept_edits→`acceptEdits` / manual→`default`）；refine → `Allow=false, DenyReason=feedback`。
-5. service 先 `SubmitToolPermission()`（CLI 收到 approve 后自动把 plan → default）。`Allow=true` 且 `TargetPermissionMode` 非空且非 `"default"` 时**接力**调 `SetPermissionMode()` 切到目标——所以 `acceptEdits` / `bypassPermissions` 会接力，`Manual` (=`default`) 不接力，`refine` 因为 `Allow=false` 也不接力（`tool_permission.go:131`）。
+1. After the CLI finishes planning in plan mode, it calls the `ExitPlanMode` tool → the backend emits `ToolPermissionRequest{ToolName: "ExitPlanMode", Input: {plan: "..."}}`.
+2. chat_svc detects `ToolName=="ExitPlanMode"` in `tool_permission.go:34-41`, and **additionally assembles** `Canonical = PlanApproveRequest{Plan, Actions}`, so the frontend renders with `PlanApproveCard` (instead of the generic ToolPermissionCard).
+3. `Actions` is assembled by `handlers.BuildPlanApproveActions(launchPermissionMode)` in the ToolPermissionRequest handler (`internal/service/chat_svc/handlers/plan_approve.go:16-32`), with the rules:
+   - normal launch (empty / default / acceptEdits / plan) → `[plan.approve.accept_edits, plan.approve.manual, plan.refine]`
+   - launch="bypassPermissions" → the first item is **replaced** with `plan.approve.bypass_permissions` (not appended), yielding `[plan.approve.bypass_permissions, plan.approve.manual, plan.refine]`
+   - `plan.refine` carries `RequiresFeedback: true` — the frontend expands a feedback textarea; after the user submits, it goes through `Allow=false` + `DenyReason=feedback` (the CLI feeds the message back to the AI as a tool_result to continue planning), **not** allow + switch back to plan mode
+4. The frontend calls `AnswerToolPermission` according to the action the user clicked: approve kinds → `Allow=true, TargetPermissionMode=mapPlanApproveAction(actionID)` (see `plan_action.go:198-210`: bypass→`bypassPermissions` / accept_edits→`acceptEdits` / manual→`default`); refine → `Allow=false, DenyReason=feedback`.
+5. The service first calls `SubmitToolPermission()` (after the CLI receives an approve, it automatically switches plan → default). When `Allow=true` and `TargetPermissionMode` is non-empty and not `"default"`, it **relays** a call to `SetPermissionMode()` to switch to the target — so `acceptEdits` / `bypassPermissions` relay, `Manual` (=`default`) does not relay, and `refine` does not relay either since `Allow=false` (`tool_permission.go:131`).
 
-**新 backend 接入要点**：有 plan 退出语义的 backend，把 ToolName 起成 `"ExitPlanMode"` 就能直接复用前端 PlanApproveCard——不要新造 tool name。
+**Key points for onboarding a new backend**: for a backend that has plan-exit semantics, naming the ToolName `"ExitPlanMode"` lets it directly reuse the frontend PlanApproveCard — do not invent a new tool name.
 
-##### G. Plan 内容更新 — PlanUpdated event
+##### G. Plan content update — the PlanUpdated event
 
-接口形态（**单向 emit，无反向通道**）：
+Interface shape (**one-way emit, no reverse channel**):
 
 ```go
 agentruntime.PlanUpdated{Plan: canonical.PlanUpdate{
-    Text:    "...",             // 完整 Markdown plan（codex item/plan/delta 透传）
+    Text:    "...",             // the full Markdown plan (codex item/plan/delta passthrough)
     Steps:   []canonical.PlanStep{{Step, Status: pending|inProgress|completed|canceled}},
-    Actions: []canonical.PlanAction{...},  // claudecode 不填（plan 退出走 §F ExitPlanMode 通道）；
-                                           // codex 在 plan mode + Text 非空时由 translator
-                                           // attachPlanModeActions 附 [Execute, Refine]
+    Actions: []canonical.PlanAction{...},  // claudecode does not fill it (plan exit goes through the §F ExitPlanMode channel);
+                                           // codex, when in plan mode + Text is non-empty, has the translator
+                                           // attachPlanModeActions append [Execute, Refine]
 }}
 ```
 
-**两种 wire 形态合并到一个 sealed event**：
+**Two wire shapes merged into one sealed event**:
 
-- **claudecode 两条路径**——
-  - `TodoWrite` 工具调用走 translator → `ToolCall.Canonical = canonical.PlanUpdate`（**不**发独立 PlanUpdated event，前端从 ToolCall 上读 canonical 即可）；
-  - `TaskCreate` / `TaskUpdate` 增量调用由 `claudecode/task_aggregator.go` 跨 turn 维护完整任务列表，每次变更 emit `agentruntime.PlanUpdated` 完整快照。
-- **codex**：两种触发——`turn/plan/updated` 通知发 `Steps[]`；`item/plan/delta + item/completed{type:"plan"}` 流式发 `Text`。translator 收编到同一个 PlanUpdated event，下游不再二态分支（`runtimes/codex/translator.go:57-80`）。codex 还在 plan mode 下通过 `attachPlanModeActions` 给 PlanUpdate 附 `[plan.execute, plan.refine]` 两个 action，前端 PlanCard 直接渲染按钮。
-- **PlanText 保留尾换行**：trim 后会被前端 markdown 渲染端误认为「无尾换行」破坏格式——仅用 `strings.TrimSpace` 做「是否为空」判断，**不要** trim 后再发。
+- **claudecode has two paths** —
+  - `TodoWrite` tool calls go through the translator → `ToolCall.Canonical = canonical.PlanUpdate` (**does not** emit a separate PlanUpdated event; the frontend just reads canonical off the ToolCall);
+  - `TaskCreate` / `TaskUpdate` incremental calls have `claudecode/task_aggregator.go` maintain the full task list across turns, emitting a full `agentruntime.PlanUpdated` snapshot on each change.
+- **codex**: two triggers — the `turn/plan/updated` notification sends `Steps[]`; `item/plan/delta + item/completed{type:"plan"}` streams `Text`. The translator funnels them into the same PlanUpdated event, so downstream no longer branches on the two states (`runtimes/codex/translator.go:57-80`). codex also, while in plan mode, attaches `[plan.execute, plan.refine]` two actions to the PlanUpdate via `attachPlanModeActions`, and the frontend PlanCard renders the buttons directly.
+- **PlanText preserves the trailing newline**: after trimming, the frontend markdown renderer mistakes it for "no trailing newline" and breaks the formatting — use only `strings.TrimSpace` to judge "is it empty", and **do not** trim before emitting.
 
-**chat_svc 落 PlanBlock**（`internal/service/chat_svc/plan_block.go:16-73`）：
-- 投影成 `ChatBlock{Type:"plan"}`
-- 前端 PlanCard 渲染完整文本；`TaskProgressBar` 读 `steps[].status` 做进度条
-- 同一 turn 多次 PlanUpdated 走 mutate（按 PlanBlock key 覆盖），不重复落新 block
+**chat_svc persists a PlanBlock** (`internal/service/chat_svc/plan_block.go:16-73`):
+- projects it into a `ChatBlock{Type:"plan"}`
+- the frontend PlanCard renders the full text; `TaskProgressBar` reads `steps[].status` for the progress bar
+- multiple PlanUpdated within the same turn go through mutate (overwriting by PlanBlock key), without repeatedly landing new blocks
 
-##### H. Subagent 生命周期 — claudecode Task 工具专属
+##### H. Subagent lifecycle — claudecode Task-tool-specific
 
-接口形态（**单向 emit，3 个事件**）：
+Interface shape (**one-way emit, 3 events**):
 
 ```go
 agentruntime.SubagentStarted{ToolCallID, Info: SubagentInfo{...}}
@@ -487,25 +490,53 @@ agentruntime.SubagentProgress{ToolCallID, Info: SubagentInfo{TotalTokens, LastTo
 agentruntime.SubagentDone{ToolCallID, Info: SubagentInfo{Status: "completed"|"failed", DurationMs, TotalTokens}}
 ```
 
-- **ToolCallID** = 外层父级 `Task` / Agent 工具的 tool_use id。
-- **Info.Status**：runtime 只产 `running` / `completed` / `failed`；`canceled` 由 `handlers.MarkRunningSubagentsCancelled` 在 turn abort 收尾时推断（CLI 被 interrupt 后 Done 不会到，留 running 会让前端 AgentSpawnCard 永远 spin）。
-- **ToolCall / ToolResult 的 ParentToolCallID 字段**：subagent 内部调的工具填外层 Task tool_use id，前端据此把子卡归集到父 SubagentInvocationCard。
-- **codex / builtin / piagent 目前不发**——只 claudecode 有原生 subagent 协议。新 backend 有类似 fork-execute 工具时再考虑接入这一组事件。
+- **ToolCallID** = the tool_use id of the outer parent `Task` / Agent tool.
+- **Info.Status**: the runtime only produces `running` / `completed` / `failed`; `canceled` is inferred by `handlers.MarkRunningSubagentsCancelled` during turn-abort cleanup (after the CLI is interrupted, Done will not arrive, and leaving it running would make the frontend AgentSpawnCard spin forever).
+- **The ParentToolCallID field of ToolCall / ToolResult**: tools called inside the subagent fill in the outer Task tool_use id, so the frontend groups the child cards under the parent SubagentInvocationCard.
+- **codex / builtin / piagent currently do not emit these** — only claudecode has a native subagent protocol. Consider onboarding this set of events when a new backend has a similar fork-execute tool.
 
-#### Sentinel 错误（必须用，不要造新的）
+##### I. AutonomousTurnSource — the forward turn (backend→host)
+
+This is the **only forward channel**: every other sub-interface is the host reaching into the backend, but here the backend tells the host "I just ran a whole turn on my own." Today only claudecode needs it.
+
+**Why it exists**: when a turn ends with a `run_in_background` Bash task still running, the claude CLI emits `result` to close the turn but keeps the subprocess alive; when the task finishes it **autonomously** injects a `<task-notification>` and runs a *complete* second turn (init → text/tools → a second `result`) without any new stdin. The old per-turn reader stopped at the first `result`, so those autonomous frames sat unread and desynced every later turn ("can't continue the conversation"). See the design spec `docs/superpowers/specs/2026-06-04-claudecode-background-task-autonomous-turn-design.md`.
+
+Interface signature (`internal/pkg/agentruntime/runner.go`):
 
 ```go
-agentruntime.ErrNoActiveTurn   // sessionID 没有 in-flight turn
-agentruntime.ErrSteerNotFound  // CancelSteer 给的 queuedID 已被消费 / 不存在
-agentruntime.ErrAborted        // 用户主动 Abort，写到 RunResult.StopErr
-agentruntime.ErrUnsupported    // 当前 runtime 不支持该 cap
+type AutonomousTurnSource interface {
+    AutonomousTurns(sessionID int64) <-chan AutonomousTurn
+}
+type AutonomousTurn struct {
+    Events  <-chan Event // same shape as Run's stream; closes after the turn's result
+    Result  *RunResult   // readable after Events closes
+    Trigger string       // "background_task"
+}
 ```
 
-新错误必须有跨进程语义时，**先在 `errors.go` + `wire.go` 同步加 sentinel + error code**，不要在 daemon handler 里临时 stringify。
+Wiring, layer by layer:
 
-### 2.5 Daemon import（远端执行）
+- **`pkg/claudecode.Session`** runs one persistent `readLoop` that owns stdout for the subprocess lifetime, demuxing frames to a single active-turn slot. A turn that *opens* with a background-shaped `task_notification` (`isBackgroundTaskNotification`: has `output_file`, no `subagent_type`) is routed to a new autonomous sink exposed via `Session.AutonomousTurns()`; ordinary user turns are a FIFO of pending slots. This is what fixes the desync — it is independent of whether anything consumes the channel.
+- **Runtime bridge** (`runtimes/claudecode/autoturn.go`): ranges `Session.AutonomousTurns()` and, per AutoTurn, reuses `drainStream` (same translator / control protocol / task aggregation) to produce `agentruntime.AutonomousTurn`. It deliberately does **not** call `active.setOut()` — `a.out` is written only by the user-turn `Run` goroutine (chat-lock-serialized), so the autonomous turn must not race it; the cost is that an async tool-permission/ask resolution *inside* an autonomous turn won't echo live (rare; reload fixes it).
+- **chat_svc watcher** (`internal/service/chat_svc/autonomous_turn.go`): `runTurn` lazily type-asserts the runner to `AutonomousTurnSource` and starts one `startAutonomousWatcher` per session (deduped; exits when the channel closes on evict / `CloseSession`). `driveAutonomousTurn` persists each turn as a **pure assistant message (no user row)** and surfaces it live.
+- **Concurrency constraint (do not violate)**: the watcher must **never hold the chat per-session lock while draining** `at.Events`. If it blocked on that lock, the Session reader would stall (evOut undrained → active slot never frees → the user's next turn blocks on `Session.turnMu` while holding the chat lock) → deadlock. Cross-turn serialization is provided naturally by the Session's single active slot; the rare overlap (user sends mid-autonomous-turn) is last-write-wins on the session row and reconciled by the frontend `StreamDone → reloadSession`.
 
-要让新 backend 在 `agentred` daemon 上跑，**只**改 `internal/daemon/runtime_imports.go`：
+**Frontend surfacing**: there is no per-turn stream name for a turn the user never initiated, so `driveAutonomousTurn` emits a session-level `chat:autonomous:<sessionID>` event (`StreamAutonomousStarted`, carrying the new assistant message + the per-turn stream name). `ChatPanel` keeps a standing subscription to that channel; on receipt it inserts the assistant row + `openStream`s, after which the turn streams exactly like a normal one. The transcript renders an `AutoTriggerBanner` before any assistant message whose immediately-preceding message is not a user message (the structural signature of an autonomous turn).
+
+#### Sentinel errors (must use them, do not invent new ones)
+
+```go
+agentruntime.ErrNoActiveTurn   // the sessionID has no in-flight turn
+agentruntime.ErrSteerNotFound  // the queuedID given to CancelSteer has been consumed / does not exist
+agentruntime.ErrAborted        // the user actively aborted; written to RunResult.StopErr
+agentruntime.ErrUnsupported    // the current runtime does not support this cap
+```
+
+When a new error must have cross-process semantics, **first add the sentinel + error code in `errors.go` + `wire.go` together**; do not temporarily stringify in the daemon handler.
+
+### 2.5 Daemon import (remote execution)
+
+To let a new backend run on the `agentred` daemon, change **only** `internal/daemon/runtime_imports.go`:
 
 ```go
 import (
@@ -513,103 +544,104 @@ import (
     _ "agentre/internal/pkg/agentruntime/runtimes/claudecode"
     _ "agentre/internal/pkg/agentruntime/runtimes/codex"
     _ "agentre/internal/pkg/agentruntime/runtimes/piagent"
-    _ "agentre/internal/pkg/agentruntime/runtimes/myagent"   // ← 加这行
+    _ "agentre/internal/pkg/agentruntime/runtimes/myagent"   // ← add this line
 )
 ```
 
-- 注册依赖 init() 副作用——所以 runtime 包的 `init()` **只**做 `RegisterRuntime`，**不要起 goroutine / 读环境变量 / 打开文件**，否则 daemon 进程启动时会触发副作用。
-- daemon 端不 bootstrap chat_repo——runtime 内部不能反向依赖 repository 包。需要持久化的运行时状态（比如 `LaunchPermissionMode`）走 `RunResult` 字段回吐给 chat_svc。
-- `runtime_imports_test.go` 会枚举 `RegisteredRuntimes()` 跑一轮 capability 协议测试——确保新 runtime 加进去后这个测试还过。
+- Registration relies on init() side effects — so a runtime package's `init()` does **only** `RegisterRuntime`, and **does not start a goroutine / read environment variables / open files**, otherwise the daemon process triggers the side effect at startup.
+- The daemon side does not bootstrap chat_repo — the runtime internally cannot reverse-depend on the repository package. Runtime state that needs to be persisted (e.g. `LaunchPermissionMode`) is returned to chat_svc via `RunResult` fields.
+- `runtime_imports_test.go` enumerates `RegisteredRuntimes()` and runs a round of capability protocol tests — make sure this test still passes after the new runtime is added.
 
-### 2.6 Service / Wails 绑定
+### 2.6 Service / Wails bindings
 
-只有新增字段时才动：
+Only touch this when adding new fields:
 
-- `internal/service/agent_backend_svc/types.go`：在 `BackendItem` / `CreateBackendRequest` / `UpdateBackendRequest` / `TestBackendRequest` 加字段。**字段名稳定、json tag 明确**——`make generate` 会把它提到前端 TS 类型。
-- `internal/service/agent_backend_svc/agent_backend.go`：在 buildEntity / mapItem 里读写新字段。
-- `internal/app/agent.go`：绑定层方法**只做** parse → svc → return，业务塞进 `App` 会被 `go test` 漏掉。
+- `internal/service/agent_backend_svc/types.go`: add fields to `BackendItem` / `CreateBackendRequest` / `UpdateBackendRequest` / `TestBackendRequest`. **Stable field names, explicit json tags** — `make generate` promotes them into the frontend TS types.
+- `internal/service/agent_backend_svc/agent_backend.go`: read/write the new fields in buildEntity / mapItem.
+- `internal/app/agent.go`: the binding-layer methods do **only** parse → svc → return; business logic stuffed into `App` will be missed by `go test`.
 
-### 2.7 前端
+### 2.7 Frontend
 
-- `make generate` 重生 `frontend/wailsjs/` bindings。
-- 编辑器 UI（`frontend/src/components/agentre/agent-backends.tsx` + `agent-backends-utils.ts`）：加 type 选项、新字段表单控件——**统一用 shadcn `@/components/ui/*`**，禁止新增原生 `<select>`。
-- Capability gating：前端 hook `useBackendCapabilities` / `useSessionCapabilities`（`frontend/src/components/agentre/capability/`）调 Wails 绑定 `GetBackendCapabilities` / `GetSessionCapabilities`（`internal/app/chat.go` → `chat_svc/ipc/capability.go`），返回 `Capabilities.Set` + `PermissionModeMeta`。组件里读 `caps.has("steer")` / `caps.has("set_permission_mode")` 等来 gating steer chip / abort 按钮 / permission mode pill / ask_user_question 卡。新 cap 加到 capability 枚举后无需改 hook，只改 use 端。
+- `make generate` regenerates the `frontend/wailsjs/` bindings.
+- Editor UI (`frontend/src/components/agentre/agent-backends.tsx` + `agent-backends-utils.ts`): add the type option and new-field form controls — **use shadcn `@/components/ui/*` uniformly**, and do not add a native `<select>`.
+- Capability gating: the frontend hooks `useBackendCapabilities` / `useSessionCapabilities` (`frontend/src/components/agentre/capability/`) call the Wails bindings `GetBackendCapabilities` / `GetSessionCapabilities` (`internal/app/chat.go` → `chat_svc/ipc/capability.go`), returning `Capabilities.Set` + `PermissionModeMeta`. The component reads `caps.has("steer")` / `caps.has("set_permission_mode")` etc. to gate the steer chip / abort button / permission mode pill / ask_user_question card. After adding a new cap to the capability enum, there is no need to change the hook — only change the consuming end.
 
 ---
 
-## 3. 远端执行（`agentred`）的额外考量
+## 3. Extra considerations for remote execution (`agentred`)
 
-桌面端可以把单个 chat 投到 LAN 的 `agentred` 跑：
+The desktop can dispatch a single chat to a LAN `agentred` to run:
 
 ```
 desktop UI → internal/app → chat_svc → remote.Runtime
            → JSON-RPC over WebSocket (wire.MethodRun)
            → daemon/handlers/RuntimeHandlers
-           → agentruntime.RuntimeFor(backendType) — 跑你新写的 *Runtime
+           → agentruntime.RuntimeFor(backendType) — runs your newly written *Runtime
 ```
 
-要走通这条路：
+To make this path work:
 
-1. Runtime 不依赖 desktop-only 的服务（chat_repo / GUI / system tray）。需要回吐的状态走 `RunResult` 字段，不要直接调 repo。
-2. 新增的 sentinel 错误同步加 `wire.ErrCode*`——不然 `errors.Is(err, agentruntime.ErrXxx)` 在客户端会失效。
-3. 新增的 Event 类型同步加 `wire.Event*` 编解码——`runtime.event` notification 是按 sealed Event tag 分发的。
-4. 测试覆盖远端路径：起一对 in-memory `client.Client` ↔ `daemon.handlers.RuntimeHandlers`，验证 capability 协商 / Run / Abort / Steer 跨进程语义。
+1. The Runtime does not depend on desktop-only services (chat_repo / GUI / system tray). State that needs to be returned goes through `RunResult` fields; do not call the repo directly.
+2. New sentinel errors are added in sync to `wire.ErrCode*` — otherwise `errors.Is(err, agentruntime.ErrXxx)` will fail on the client.
+3. New Event types are added in sync to the `wire.Event*` codec — the `runtime.event` notification is dispatched by the sealed Event tag.
+4. Test the remote path: bring up a pair of in-memory `client.Client` ↔ `daemon.handlers.RuntimeHandlers` and verify the cross-process semantics of capability negotiation / Run / Abort / Steer.
+5. **Forward channel (`AutonomousTurnSource`)**: if the daemon-side runtime implements it, the daemon starts a per-session fanout (`startAutonomousFanout`, deduped) that forwards each turn over three notifications — `runtime.autonomousTurn.started` (`AutonomousTurnStartedFrame`) → `runtime.autonomousTurn.event` (reuses `EventFrame`) → `runtime.autonomousTurn.done` (reuses `RunResultDoneFrame`). The client `remote.Runtime` reconstructs them into `agentruntime.AutonomousTurn`s on a session-keyed `autoSessions` map **independent of the per-Run `sessions` map** (autonomous turns arrive *after* `runResultDone`), and tears them down on connection close. `remote.Runtime` therefore always satisfies `AutonomousTurnSource`; for daemon backends that don't forward (codex/builtin), the channel simply stays idle.
 
 ---
 
-## 4. TDD / BDD 必备测试清单
+## 4. The mandatory TDD / BDD test checklist
 
-**Red 阶段先写、跑、看到失败，再实现。** 没失败测试不写实现代码——这是 [development.md](development.md) §0 的硬规则。
+**In the Red phase, write, run, and see the test fail first, then implement.** Do not write implementation code without a failing test — this is the hard rule of [development.md](development.md) §0.
 
-| 测试 | 位置 | 验什么 |
+| Test | Location | What it verifies |
 | --- | --- | --- |
-| Entity Check 表驱动 | `*_test.go` 同 kinds.go | name / type / env_json 保留键 / model_routes alias / cli_path 允许性 / kind 独有字段 |
-| Capabilities 矩阵 | `runtimes/<name>/runtime_test.go` | 声明的 cap=true ↔ 实现了对应接口（type assert） |
-| Translator 纯函数 | `runtimes/<name>/translator_test.go` | 每种 backend 事件 kind + 边界（空 input / partial fields / error frame） |
-| Run 集成 | `runtimes/<name>/runtime_test.go` | 事件批次顺序、SteerConsumed 合并、Abort 解锁、RunResult 终态、ctx cancel 行为 |
-| ToolPermissionSink | `runtimes/<name>/control_test.go` | Allow / Deny / alwaysAllowSession 三态都写回 wire；DenyReason 透传到 LLM；Resolved 帧回吐字段全 |
-| AskAnswerSink | `runtimes/<name>/control_test.go` | OtherAnswerLabel 替换为 OtherText；Skipped 走 deny 而非空 map；waiter 缓存按 RequestID 反查 |
-| PermissionModeSetter | `runtimes/<name>/control_test.go` | 主动切 wire 帧形态 + 被动 PermissionModeChanged emit；`LaunchPermissionMode` 经 RunResult 回吐 |
-| Plan/Subagent 事件 | `runtimes/<name>/translator_test.go` | PlanText 保尾换行 + Steps 合并；Subagent Started/Progress/Done 三态字段完整 |
-| Prober | `agent_backend_svc/prober_test.go` | provider missing / 网络错误 / 工具循环正常都翻译到合适 reply/err |
-| Wire round-trip | `runtimes/remote/wire/wire_test.go` | 新 Event / 新 sentinel 编解码对称 |
-| Daemon registry | `daemon/runtime_imports_test.go` | 新 backend 出现在 `RegisteredRuntimes()` 里 |
-| Service create/update/delete | `agent_backend_svc/agent_backend_test.go` | mockgen mock repo，验校验 + 落库字段 |
+| Entity Check table-driven | `*_test.go` alongside kinds.go | name / type / env_json reserved keys / model_routes alias / cli_path permissibility / kind-specific fields |
+| Capabilities matrix | `runtimes/<name>/runtime_test.go` | the declared cap=true ↔ the corresponding interface implemented (type assert) |
+| Translator pure function | `runtimes/<name>/translator_test.go` | every backend event kind + boundaries (empty input / partial fields / error frame) |
+| Run integration | `runtimes/<name>/runtime_test.go` | event batch ordering, SteerConsumed merging, Abort unlocking, RunResult terminal state, ctx cancel behavior |
+| ToolPermissionSink | `runtimes/<name>/control_test.go` | all three states Allow / Deny / alwaysAllowSession are written back to wire; DenyReason passed through to the LLM; the Resolved frame returns all fields |
+| AskAnswerSink | `runtimes/<name>/control_test.go` | OtherAnswerLabel replaced with OtherText; Skipped goes through deny rather than an empty map; the waiter cache is looked up by RequestID |
+| PermissionModeSetter | `runtimes/<name>/control_test.go` | the active-switch wire frame shape + the passive PermissionModeChanged emit; `LaunchPermissionMode` returned via RunResult |
+| Plan/Subagent events | `runtimes/<name>/translator_test.go` | PlanText preserves the trailing newline + Steps merging; Subagent Started/Progress/Done all-three-states fields complete |
+| Prober | `agent_backend_svc/prober_test.go` | provider missing / network error / normal tool loop all translate to an appropriate reply/err |
+| Wire round-trip | `runtimes/remote/wire/wire_test.go` | the new Event / new sentinel codec is symmetric |
+| Daemon registry | `daemon/runtime_imports_test.go` | the new backend appears in `RegisteredRuntimes()` |
+| Service create/update/delete | `agent_backend_svc/agent_backend_test.go` | mockgen mock repo, verifying validation + persisted fields |
 
-repo 单测一律 `testutils.Database(t)` + sqlmock，**禁止起真 SQLite**——参考 [development.md](development.md) §测试栈。
-
----
-
-## 5. 常见坑 / 反模式（不要重蹈）
-
-1. **不要把业务塞进 `internal/app/`**。Wails 绑定只做 `parse → svc.Xxx().Method(ctx, ...) → return`，否则 `go test` 覆盖不到。
-2. **不要在 runtime `init()` 里起 goroutine / 读 env / 打开文件**。daemon 进程引导时会触发副作用，而且单测无法控制。`init()` 只做 `RegisterRuntime`。
-3. **不要在 chat_svc 里 switch backendType**。新 backend 出现就抽 interface 让 runtime 自己声明能力——参考 capability matrix。`if backend.Type == "claudecode" { ... }` 是 smell。
-4. **不要重复 normalize**。env / model_routes 在 entity.Check 已经 normalize 一次，service / runtime 不要再做第二次。
-5. **不要让 translator 有状态**。状态聚合在 `Run` 的 drain 循环里做，translator 必须能在测试里独立跑、表驱动断言。
-6. **不要把 SteerInbox / SessionCache 等运行期资源 hard-code 到 `New()`**。用包级 `SetXxx` 注入器（参考 `claudecode.Runtime.SetSteerInbox`），bootstrap 时装配，单测可换 fake。
-7. **不要私造错误来表达 `ErrNoActiveTurn` / `ErrUnsupported`**。这些 sentinel 跨进程透明，私造 string 会让 chat_svc 翻译不出来。
-8. **不要让 runtime 反向依赖 repository / chat_svc**。daemon 进程没 bootstrap repo——一调就 nil panic。状态走 `RunResult` 回吐。
-9. **不要忽略 ctx**。`Run` 收到的 ctx 取消后必须 unblock 所有 I/O——这是 chat_svc 实现「停止」按钮的前提（claudecode 通过 control_request、codex 通过 turn/interrupt、builtin 通过 cancel turnCtx）。
-10. **不要在新增 capability 的同一次提交里做 drive-by refactor**。Diff 只动 producer + 它的测试。看到无关脏数据先 flag——参考 CLAUDE.md / AGENTS.md §3 / [development.md](development.md) §Fix Discipline。
+repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a real SQLite** — see [development.md](development.md) §test stack.
 
 ---
 
-## 6. 提交前自检清单
+## 5. Common pitfalls / anti-patterns (do not repeat them)
 
-- [ ] 新增 `BackendType` 常量 + `BackendKind` 实现 + 登记到 `backendKinds`
-- [ ] 新字段的迁移文件 append 到 `migrationList()` 末尾，DDL 用原生 SQL，默认值能让既有行通过 Check
-- [ ] 新 runtime 包 `init()` 只调 `RegisterRuntime`，无副作用
-- [ ] Capabilities 声明与实际实现的子接口一致（matrix 测试过）
-- [ ] 反向通道实现到位：`SubmitToolPermission` allow/deny/alwaysAllowSession + DenyReason 透传 LLM；`SubmitAnswer` 处理 OtherText 哨兵 + Skipped 走 deny；`SetPermissionMode` 经 wire 写 backend；`PermissionModeChanged` 经 emit 回 chat_svc
-- [ ] runtime 内部缓存了 AskUserQuestion waiter（按 RequestID 反查 questions），SubmitAnswer 收到 nil questions 不报错
-- [ ] ExitPlanMode 复用 ToolPermission 通道时 ToolName 字符串就叫 `"ExitPlanMode"`（不要新造 tool name）
-- [ ] PlanUpdated 的 Text 字段保留尾换行，仅 TrimSpace 做空判断；Steps 合并到同一 PlanBlock 不重复落
-- [ ] Translator 是纯函数，表驱动测试覆盖 happy path + 至少一个 boundary/error
-- [ ] `RunRequest.Cwd` 非空时优先用；`ForkAnchor` 非空时走 fork；`ctx` cancel 能 unblock
-- [ ] `RunResult` 在 events channel close 前**不**被读；新字段（ProviderSessionID / Usage / Model / LaunchPermissionMode / ContextWindow / UserAnchor）按 backend 能力填
-- [ ] 远端：`runtime_imports.go` blank import 已加；新 Event / sentinel 已加 wire 编解码 + round-trip 测试
-- [ ] Wails 类型新字段稳定 json tag；`make generate` 已重生 `frontend/wailsjs/`
-- [ ] Prober 已注册到 `proberRegistry`；CLI 类后端 env 装配在 `agentruntime/clienv.go` 与 chat path 共享
-- [ ] 关键流程打日志：`logger.Ctx(ctx)`、message 用 `package.Method:` 前缀小写、字段用 `zap.Xxx`（参考 [development.md](development.md) §日志）
-- [ ] `make check`（lint + test）全过；新包 service/repository 层覆盖率 ≥80%
+1. **Do not stuff business logic into `internal/app/`**. Wails bindings only do `parse → svc.Xxx().Method(ctx, ...) → return`, otherwise `go test` will not cover it.
+2. **Do not start a goroutine / read env / open files in the runtime `init()`**. The daemon process triggers the side effect at bootstrap, and unit tests cannot control it. `init()` does only `RegisterRuntime`.
+3. **Do not switch on backendType in chat_svc**. When a new backend appears, extract an interface and let the runtime declare its own capability — see the capability matrix. `if backend.Type == "claudecode" { ... }` is a smell.
+4. **Do not normalize repeatedly**. env / model_routes are normalized once in entity.Check; the service / runtime must not do it a second time.
+5. **Do not make the translator stateful**. State aggregation is done in the `Run` drain loop; the translator must be able to run independently in tests with table-driven assertions.
+6. **Do not hard-code runtime resources like SteerInbox / SessionCache into `New()`**. Use package-level `SetXxx` injectors (see `claudecode.Runtime.SetSteerInbox`), wire them up at bootstrap, and swap in a fake in unit tests.
+7. **Do not invent your own error to express `ErrNoActiveTurn` / `ErrUnsupported`**. These sentinels are transparent across processes; an invented string would leave chat_svc unable to translate it.
+8. **Do not let the runtime reverse-depend on repository / chat_svc**. The daemon process did not bootstrap the repo — one call would nil-panic. State is returned via `RunResult`.
+9. **Do not ignore ctx**. After the ctx received by `Run` is canceled, it must unblock all I/O — this is the prerequisite for chat_svc to implement the "Stop" button (claudecode via control_request, codex via turn/interrupt, builtin via canceling turnCtx).
+10. **Do not do a drive-by refactor in the same commit that adds a capability**. The diff only touches the producer + its tests. When you see unrelated dirty data, flag it first — see CLAUDE.md / AGENTS.md §3 / [development.md](development.md) §Fix Discipline.
+
+---
+
+## 6. Pre-commit self-check checklist
+
+- [ ] New `BackendType` constant + `BackendKind` implementation + registered in `backendKinds`
+- [ ] The migration file for new fields is appended to the end of `migrationList()`, the DDL uses native SQL, and the default value lets existing rows pass Check
+- [ ] The new runtime package's `init()` only calls `RegisterRuntime`, with no side effects
+- [ ] The Capabilities declaration matches the actually implemented sub-interfaces (the matrix test passes)
+- [ ] The reverse channels are implemented: `SubmitToolPermission` allow/deny/alwaysAllowSession + DenyReason passed through to the LLM; `SubmitAnswer` handles the OtherText sentinel + Skipped going through deny; `SetPermissionMode` writes the backend via wire; `PermissionModeChanged` returns to chat_svc via emit
+- [ ] The runtime internally caches the AskUserQuestion waiter (looking up questions by RequestID), and SubmitAnswer does not error when it receives nil questions
+- [ ] When reusing the ToolPermission channel for ExitPlanMode, the ToolName string is exactly `"ExitPlanMode"` (do not invent a new tool name)
+- [ ] PlanUpdated's Text field preserves the trailing newline, only using TrimSpace to judge emptiness; Steps merge into the same PlanBlock without repeated landing
+- [ ] The Translator is a pure function, with table-driven tests covering the happy path + at least one boundary/error
+- [ ] `RunRequest.Cwd` is preferred when non-empty; `ForkAnchor` goes through fork when non-empty; `ctx` cancel can unblock
+- [ ] `RunResult` is **not** read before the events channel is closed; new fields (ProviderSessionID / Usage / Model / LaunchPermissionMode / ContextWindow / UserAnchor) are filled according to backend capability
+- [ ] Remote: the `runtime_imports.go` blank import has been added; the new Event / sentinel has the wire codec + round-trip test added
+- [ ] The Wails type's new fields have stable json tags; `make generate` has regenerated `frontend/wailsjs/`
+- [ ] The Prober has been registered in `proberRegistry`; the CLI-kind backend's env wiring is in `agentruntime/clienv.go` and shared with the chat path
+- [ ] Key flows are logged: `logger.Ctx(ctx)`, message uses the lowercase `package.Method:` prefix, fields use `zap.Xxx` (see [development.md](development.md) §logging)
+- [ ] `make check` (lint + test) all passes; the new package's service/repository layer coverage ≥80%

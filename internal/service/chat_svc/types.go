@@ -10,6 +10,10 @@ import (
 // 前端用 EventsOn 注册该名字接收 chunk / done / error。
 const StreamEventPrefix = "chat:event"
 
+// AutonomousEventPrefix 是会话级旁路事件名前缀,形如 "chat:autonomous:<sessionID>"。
+// 见 AutonomousStreamName / StreamAutonomousStarted。
+const AutonomousEventPrefix = "chat:autonomous"
+
 // ChatStreamEventKind 是 Wails 事件 payload 里的 kind 枚举。
 type ChatStreamEventKind string
 
@@ -65,6 +69,12 @@ const (
 	// StreamRuntimeStatus runtime 中间状态通知（如 compacting）。
 	// 前端 chat-streams-host 据此切 typing indicator 样式。
 	StreamRuntimeStatus ChatStreamEventKind = "runtime_status"
+	// StreamAutonomousStarted 经会话级流 AutonomousStreamName(sessionID) 推送：CLI 在
+	// run_in_background 任务完成后**自主**跑的一轮(无用户输入)被捕获时,通知前端有一条
+	// 非用户发起的 assistant 轮开始。携带 AssistantMessage(前端据此插入新行)+ Stream
+	// (该自主轮的 per-turn 事件名,前端 openStream 后续 chunk/done 走它实时渲染)。
+	// Trigger="background_task"。前端渲染 AutoTriggerBanner +「自动」badge。
+	StreamAutonomousStarted ChatStreamEventKind = "autonomous_started"
 )
 
 // ChatStreamEvent 是 EventsEmit 出去的统一 payload。
@@ -132,6 +142,25 @@ type ChatStreamEvent struct {
 
 	// StreamRuntimeStatus 事件填充：runtime 中间状态快照。
 	RuntimeStatus *ChatRuntimeStatus `json:"runtimeStatus,omitempty"`
+
+	// StreamAutonomousStarted 事件填充：Stream 是该自主轮的 per-turn 事件名(前端
+	// openStream 订阅它接后续 chunk/done);Trigger 是触发来源("background_task")。
+	// AssistantMessage 复用上面的字段携带要插入的新 assistant 行。
+	Stream  string `json:"stream,omitempty"`
+	Trigger string `json:"trigger,omitempty"`
+
+	// StreamAutonomousStarted 时,若该自主轮由后台命令完成触发,带上完成任务身份,
+	// 前端据此把对应 subagent_state(上一条消息里)即时翻成 completed/failed。
+	CompletedTask *CompletedTaskRef `json:"completedTask,omitempty"`
+}
+
+// CompletedTaskRef 标识触发本自主轮的后台命令身份。镜像 agentruntime.CompletedBackgroundTask
+// 中前端需要的字段:ToolUseID 关联到上一条消息里的 subagent_state 块,Status 指明
+// 该块要翻成的终态,Summary 是 CLI 下发的完成摘要文本（如退出码说明）。
+type CompletedTaskRef struct {
+	ToolUseID string `json:"toolUseId"`
+	Status    string `json:"status"`            // completed | failed
+	Summary   string `json:"summary,omitempty"` // CLI task_notification.summary
 }
 
 // ChatCompactBoundary 是 StreamCompactBoundary 事件的 payload。MessageID 是 boundary
@@ -284,6 +313,7 @@ type ChatBlockToolPermission struct {
 // task_notification 给 status + 最终 usage。所有字段对老数据自动为零值，向前兼容。
 type ChatBlockSubagent struct {
 	TaskID          string `json:"taskId,omitempty"`
+	Kind            string `json:"kind,omitempty"` // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
 	SubagentType    string `json:"subagentType,omitempty"`
 	TaskDescription string `json:"taskDescription,omitempty"`
 	Prompt          string `json:"prompt,omitempty"`
@@ -291,7 +321,8 @@ type ChatBlockSubagent struct {
 	ToolUses        int    `json:"toolUses,omitempty"`
 	TotalTokens     int    `json:"totalTokens,omitempty"`
 	DurationMs      int    `json:"durationMs,omitempty"`
-	Status          string `json:"status,omitempty"` // running | completed | failed
+	Status          string `json:"status,omitempty"`  // running | completed | failed
+	Summary         string `json:"summary,omitempty"` // CLI task_notification.summary（如退出码说明）
 }
 
 type ChatMessage struct {

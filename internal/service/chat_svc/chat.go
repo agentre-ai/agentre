@@ -94,6 +94,7 @@ type ChatSvc interface {
 	AnswerUserQuestion(ctx context.Context, req *AnswerUserQuestionRequest) (*AnswerUserQuestionResponse, error)
 	AnswerToolPermission(ctx context.Context, req *AnswerToolPermissionRequest) (*AnswerToolPermissionResponse, error)
 	ResolvePlanAction(ctx context.Context, req *ResolvePlanActionRequest) (*ResolvePlanActionResponse, error)
+	CountActiveSessions(ctx context.Context) (int, error)
 }
 
 var defaultChat ChatSvc
@@ -133,10 +134,6 @@ func RegisterGateway(g httpgateway.TokenIssuer) {
 	}
 }
 
-// chatTokenTTL 单轮 chat 用 token 的有效期；
-// 比 test 路径的 60s 长，留出大段代码生成的余量。
-const chatTokenTTL = 15 * time.Minute
-
 const renameTitleMaxRunes = 200
 
 type chatSvc struct {
@@ -153,7 +150,17 @@ type chatSvc struct {
 	// aborted：sessionID(int64) → struct{}。Stop 触发时 store；runTurn 收尾时
 	// LoadAndDelete 判定是否走 StreamAborted 路径 + 跳过 DrainPending 自动接续。
 	aborted *sync.Map
-	gateway httpgateway.TokenIssuer
+	// autoWatchers：sessionID(int64) → struct{}。startAutonomousWatcher 用它防同一
+	// session 重复起 watcher goroutine(每会话一个,惰性启动);watcher 在底层
+	// AutonomousTurns channel close(子进程 evict / CloseSession)时退出并清这条。
+	autoWatchers sync.Map
+	gateway      httpgateway.TokenIssuer
+	// chatTokens 缓存每个 chat session 的常驻 gateway token(sessionID int64 → token string)。
+	// 该 token 在 spawn 时烤进 claude 子进程 env 给 PostToolUse hook 用,子进程跨轮复用
+	// 时 env 不重建 —— 所以 token 必须签成永久(ttl=0)并跨轮稳定复用,否则长会话(>15min)
+	// 会让 hook 拿过期 token 撞 401、steer 整轮 drain 不到。session 删除时 revokeChatToken
+	// 撤销 + 清缓存。
+	chatTokens sync.Map
 
 	// remoteCache 是 device → (runtime, lease) 的 session 引用计数缓存。
 	// runtime 复用底层 lease.Client(),lease 由 remote_device_svc.Pool 管理 conn
@@ -166,6 +173,15 @@ type chatSvc struct {
 }
 
 // ── ListAgents ───────────────────────────────────────────────────────────────
+
+// CountActiveSessions 返回正在进行(running|waiting)的会话总数,供退出二次确认判断。
+func (s *chatSvc) CountActiveSessions(ctx context.Context) (int, error) {
+	n, err := chat_repo.Session().CountActive(ctx, []string{"running", "waiting"})
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
 
 func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAgentsResponse, error) {
 	agents, err := agent_repo.Agent().List(ctx)
@@ -579,6 +595,22 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		Createtime:          m.Createtime,
 		Blocks:              make([]ChatBlock, 0, len(bs)),
 	}
+	// 预扫一遍,把 SubagentStateBlock 按 ParentToolCallID 索引起来,
+	// 后续 tool_use 命中时把元数据合入 .Subagent,实现持久化/重载路径与
+	// live 路径(dispatcher_emitter mergeSubagentMeta)形态一致。
+	subByParent := make(map[string]*chatblocks.SubagentStateBlock)
+	for _, b := range bs {
+		switch sb := b.(type) {
+		case chatblocks.SubagentStateBlock:
+			cp := sb
+			subByParent[sb.ParentToolCallID] = &cp
+		case *chatblocks.SubagentStateBlock:
+			if sb != nil {
+				subByParent[sb.ParentToolCallID] = sb
+			}
+		}
+	}
+
 	for _, b := range bs {
 		switch tb := b.(type) {
 		case blocks.TextBlock:
@@ -596,9 +628,17 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		case *blocks.ThinkingBlock:
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "thinking", Text: tb.Text})
 		case blocks.ToolUseBlock:
-			out.Blocks = append(out.Blocks, toolUseToChatBlock(tb.ID, tb.Name, tb.Input))
+			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
+			if sb := subByParent[tb.ID]; sb != nil {
+				cb.Subagent = subagentStateToChatBlockSubagent(sb)
+			}
+			out.Blocks = append(out.Blocks, cb)
 		case *blocks.ToolUseBlock:
-			out.Blocks = append(out.Blocks, toolUseToChatBlock(tb.ID, tb.Name, tb.Input))
+			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
+			if sb := subByParent[tb.ID]; sb != nil {
+				cb.Subagent = subagentStateToChatBlockSubagent(sb)
+			}
+			out.Blocks = append(out.Blocks, cb)
 		case blocks.ToolResultBlock:
 			out.Blocks = append(out.Blocks, toolResultToChatBlock(tb.ToolUseID, tb.Content, tb.IsError))
 		case *blocks.ToolResultBlock:
@@ -613,12 +653,9 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 			out.Blocks = append(out.Blocks, nestedToolResultToChatBlock(&tb))
 		case *chatblocks.SubagentStateBlock, chatblocks.SubagentStateBlock,
 			*chatblocks.PermissionModeChangeBlock, chatblocks.PermissionModeChangeBlock:
-			// SubagentStateBlock: 累计态(tokens/duration/status),前端 AgentSpawnCard
-			// 通过外层 Task tool 的 canonical.agentSpawn 读 —— live 路径靠
-			// dispatcher_emitter 注入,replay 不重算,STEPS / SUMMARY 仍完整,
-			// 只是 badge 缺失(明确接受)。
-			// PermissionModeChangeBlock: 审计 block,无 UI 元素。两者一并 skip,
-			// 不下行到前端(否则会被打成 type=unknown 让用户看到 debug 卡)。
+			// SubagentStateBlock: 元数据已在预扫阶段合入对应 tool_use 块的 .Subagent 字段,
+			// 不再作为独立 block 下行前端(否则会被打成 type=unknown 让用户看到 debug 卡)。
+			// PermissionModeChangeBlock: 审计 block,无 UI 元素,一并 skip。
 		case *chatblocks.CompactBoundaryBlock:
 			if tb != nil {
 				out.Blocks = append(out.Blocks, ChatBlock{
@@ -669,6 +706,23 @@ func toolUseToChatBlock(id, name string, input map[string]any) ChatBlock {
 		cb.Canonical = view.FromCanonical(c)
 	}
 	return cb
+}
+
+func subagentStateToChatBlockSubagent(sb *chatblocks.SubagentStateBlock) *ChatBlockSubagent {
+	if sb == nil {
+		return nil
+	}
+	return &ChatBlockSubagent{
+		TaskID:          sb.TaskID,
+		Kind:            sb.Kind,
+		TaskDescription: sb.Description,
+		LastToolName:    sb.LastToolName,
+		ToolUses:        sb.ToolUses,
+		TotalTokens:     sb.TotalTokens,
+		DurationMs:      sb.DurationMs,
+		Status:          sb.Status,
+		Summary:         sb.Summary,
+	}
 }
 
 func imageBlockToChatBlock(img blocks.ImageBlock) ChatBlock {
@@ -2284,7 +2338,7 @@ func (s *chatSvc) runTurn(
 		// Claude Code local 仍需要 gateway token 给 PostToolUse hook 访问
 		// /hook/v1/inbox；Codex local 没有 hook，不能注入 gateway，否则会覆盖
 		// codex login 并把模型请求误打到本地 /v1/responses。
-		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be)
+		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID)
 	}
 	switch agent_backend_entity.BackendType(be.Type) {
 	case agent_backend_entity.TypeClaudeCode:
@@ -2300,6 +2354,13 @@ func (s *chatSvc) runTurn(
 	}
 	if result != nil && (be.IsClaudeCode() || be.IsCodex()) {
 		s.persistProviderSessionID(ctx, sess, result.ProviderSessionID, "runner-start")
+	}
+	// runtime 若支持「自主续轮」(claudecode / remote claudecode 在 run_in_background
+	// 任务完成后**自主**跑一轮),惰性起每会话 watcher 把它落成纯 assistant 轮。session
+	// 已在 Run 内 spawn,此刻订阅 AutonomousTurns 才能拿到该会话的 channel;每会话去重,
+	// 重复调用幂等。watcher 在子进程 evict / CloseSession(channel close)时自行退出。
+	if src, ok := runner.(agentruntime.AutonomousTurnSource); ok {
+		s.startAutonomousWatcher(sess.ID, be, src)
 	}
 	// runtime spawn 新 CLI 子进程时把实际下发的 --permission-mode 同步回吐到
 	// result.LaunchPermissionMode(claudecode 专用,其它 runtime 留空);这里把
@@ -2879,26 +2940,53 @@ func remoteProviderNotConfiguredError(ctx context.Context, providerKey string) e
 	return i18n.NewError(ctx, code.ChatRemoteProviderNotConfigured, key, key)
 }
 
-// signChatTokenFor 为需要 gateway 的 CLI 后端本轮请求签一次性 token。
+// signChatTokenFor 为需要 gateway 的 CLI 后端签一个 **会话级常驻** token。
 // 返回 (gatewayURL, token)，任意一者为空时调用方按"不签"处理（CLI 走自身 login）。
 //
 // Claude Code local 会使用 token 访问 /hook/v1/inbox；绑定了 LLM provider 的
 // Claude Code / Codex 会用它走 LLM 转发。Codex local 不应调用这里。
 //
-// Token TTL = chatTokenTTL；当前不显式 RevokeToken：单轮结束后 cago retry 看到 401
-// 自然触发新一轮 Send 重签。如担心库存增长，后续可在 turn 结束分支调 RevokeToken。
-func (s *chatSvc) signChatTokenFor(ctx context.Context, be *agent_backend_entity.AgentBackend) (string, string) {
+// 关键不变量:同一 session 跨轮返回 **同一个永久 token**。该 token 在首轮 spawn 时
+// 烤进 claude 子进程 env(AGENTRE_GATEWAY_TOKEN),后续轮复用子进程时 env 不重建 ——
+// 旧实现每轮重签 15min TTL 的新 token、却只有首轮那个被烤进去,导致长会话(>15min)
+// 子进程手里的 token 过期、PostToolUse hook 撞 401、SteerInbox 整轮 drain 不到、
+// steer 被压到轮末 DrainPending。改成 ttl=0 永久 + 跨轮复用,寿命跟随子进程,
+// session 删除时由 Delete→revokeChatToken 撤销。
+func (s *chatSvc) signChatTokenFor(ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64) (string, string) {
 	if be == nil || s.gateway == nil {
 		return "", ""
 	}
 	if s.gateway.Status().State != "running" {
 		return "", ""
 	}
-	tok, err := s.gateway.IssueToken(ctx, be, chatTokenTTL)
+	if sessionID > 0 {
+		if v, ok := s.chatTokens.Load(sessionID); ok {
+			return s.gateway.URL(), v.(string)
+		}
+	}
+	tok, err := s.gateway.IssueToken(ctx, be, 0)
 	if err != nil {
 		return "", ""
 	}
+	if sessionID > 0 {
+		// 并发首轮兜底:别的 goroutine 抢先签好就用它的,撤掉自己这条避免泄漏。
+		if actual, loaded := s.chatTokens.LoadOrStore(sessionID, tok); loaded {
+			s.gateway.RevokeToken(tok)
+			return s.gateway.URL(), actual.(string)
+		}
+	}
 	return s.gateway.URL(), tok
+}
+
+// revokeChatToken 撤销并清掉某 session 的常驻 token。Delete 关闭常驻子进程后调用,
+// 让 token 寿命跟随子进程 —— 之后该 id 若复活会重签一个新的。
+func (s *chatSvc) revokeChatToken(sessionID int64) {
+	if sessionID <= 0 {
+		return
+	}
+	if v, ok := s.chatTokens.LoadAndDelete(sessionID); ok && s.gateway != nil {
+		s.gateway.RevokeToken(v.(string))
+	}
 }
 
 // mapClaudeProviderError 命中 claudecode.ErrSessionNotFound（CLI 报告
@@ -3031,6 +3119,8 @@ func (s *chatSvc) Delete(ctx context.Context, req *DeleteRequest) (*DeleteRespon
 	// DB 已删，释放该 session 的常驻 CLI 子进程（best-effort，cache miss 时 no-op）。
 	claudecodert.Default().CloseSession(ctx, req.SessionID)
 	codexrt.Default().CloseSession(ctx, req.SessionID)
+	// 子进程已关，撤销并清掉它的常驻 gateway token（token 寿命跟随子进程）。
+	s.revokeChatToken(req.SessionID)
 	return &DeleteResponse{}, nil
 }
 

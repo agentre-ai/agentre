@@ -1,72 +1,72 @@
 # Frontend Conventions
 
-React 19 + TS + Vite + Tailwind v4。Wails 绑定从 `internal/app` 生成到 `frontend/wailsjs/`（gitignored）。
+React 19 + TS + Vite + Tailwind v4. Wails bindings are generated from `internal/app` into `frontend/wailsjs/` (gitignored).
 
-## UI 组件
+## UI Components
 
-**前端表单控件统一走 shadcn `@/components/ui/*`。**
+**Frontend form controls go uniformly through shadcn `@/components/ui/*`.**
 
-- 下拉框用 `Select / SelectTrigger / SelectContent / SelectItem / SelectValue`（参考 `agent-backends.tsx` / `llm-providers.tsx`）。**禁止**新增原生 `<select>`。
-- Input / Switch / Dialog / Button 等都用 ui 目录里的封装。
-- 原生 `<input type="radio">` 在 shadcn 没提供样式时可以保留，但新增前先看 ui 目录里有没有等价组件。
+- Use `Select / SelectTrigger / SelectContent / SelectItem / SelectValue` for dropdowns (see `agent-backends.tsx` / `llm-providers.tsx`). Native `<select>` is **forbidden**.
+- Input / Switch / Dialog / Button, etc. all use the wrappers in the ui directory.
+- A native `<input type="radio">` may be kept when shadcn does not provide a styled equivalent, but before adding one, check whether the ui directory already has an equivalent component.
 
-**理由：** 主题色 / 暗色 / 无障碍 / 键盘交互都在 ui 层统一处理，原生标签会绕过设计 token，导致同一页面里出现两套视觉风格。
+**Rationale:** theme color / dark mode / accessibility / keyboard interaction are all handled uniformly in the ui layer; native tags bypass the design tokens and end up producing two visual styles on the same page.
 
-新增组件前先看 `frontend/src/components/ui` 和 `frontend/src/components/agentre` 是否已经有原语。
+Before adding a component, check whether `frontend/src/components/ui` and `frontend/src/components/agentre` already have a primitive.
 
 ## i18n
 
-前端新增用户可见文案必须显式接 i18n，不要新增写死中文。
+New user-visible UI copy must be explicitly wired to i18n; do not add hardcoded Chinese.
 
-- 新 UI 文案用 `react-i18next` 的 `useTranslation()` / `t("...")`，key 放在 `frontend/src/i18n/locales/{zh-CN,en}/common.json`，两种语言必须同时补齐。
-- 不要引入旁路文本改写机制；静态 UI 文案必须在组件或模块里显式接 `t(...)`。
-- Agent 输出、用户输入、终端输出、文件内容、diff、代码块、markdown 渲染等动态内容不要翻译；它们天然不会进入 `t(...)`。
-- `eslint-plugin-i18next` 的 `i18next/no-literal-string` 会拦 JSX 文本和 `aria-label` / `title` / `placeholder` / `alt` 等可见属性里的中文硬编码文案；需要展示文案就改成 `t(...)`。
-- 改 i18n 资源后跑：
+- New UI copy uses `react-i18next`'s `useTranslation()` / `t("...")`, with keys placed in `frontend/src/i18n/locales/{zh-CN,en}/common.json`; both languages must be filled in at the same time.
+- Do not introduce any bypass text-rewriting mechanism; static UI copy must be wired explicitly to `t(...)` in the component or module.
+- Do not translate dynamic content such as agent output, user input, terminal output, file contents, diffs, code blocks, or markdown rendering; by nature it never enters `t(...)`.
+- `eslint-plugin-i18next`'s `i18next/no-literal-string` catches hardcoded Chinese copy in JSX text and in visible attributes such as `aria-label` / `title` / `placeholder` / `alt`; if you need to display copy, change it to `t(...)`.
+- After changing i18n resources, run:
 
 ```bash
 cd frontend && pnpm test -- src/__tests__/i18n.test.ts src/__tests__/eslint-i18n.test.ts
 cd frontend && pnpm exec eslint src
 ```
 
-## 项目结构
+## Project Structure
 
-- `frontend/components.json` 定义 alias：`@/components`、`@/components/ui`、`@/lib`、`@/hooks`。
-- 路由用 `MemoryRouter`。
-- Stores 放 `frontend/src/stores`，hooks 放 `frontend/src/hooks`。
-- Wails runtime / bindings 从 `frontend/wailsjs` 导入。
-- UI 保持现有 dense desktop-app layout，**不要**在 app shell 里写 landing-page 风格。
-- 用户操作的 icon 优先用项目里已经在用的 `lucide-react` 和 Iconify Tabler，**不要**手画 inline SVG。
+- `frontend/components.json` defines the aliases: `@/components`, `@/lib/utils`, `@/components/ui`, `@/lib`, `@/hooks`.
+- Routing uses `MemoryRouter`.
+- Stores live in `frontend/src/stores`, hooks in `frontend/src/hooks`.
+- Wails runtime / bindings are imported from `frontend/wailsjs`.
+- Keep the existing dense desktop-app layout for the UI; **do not** write landing-page styling into the app shell.
+- For icons used in user operations, prefer the `lucide-react` and Iconify Tabler already in use in the project; **do not** hand-draw inline SVG.
 
-## 包管理
+## Package Management
 
-`pnpm` 是 source of truth，**不要**用 npm。
+`pnpm` is the source of truth; **do not** use npm.
 
 ```bash
-cd frontend && pnpm install              # 装依赖
-cd frontend && pnpm add <pkg>            # 加包
-cd frontend && pnpm remove <pkg>         # 删包
-cd frontend && pnpm test                 # vitest（happy-dom）
-cd frontend && pnpm test -- path/to/file.test.tsx   # 单文件
+cd frontend && pnpm install              # install dependencies
+cd frontend && pnpm add <pkg>            # add a package
+cd frontend && pnpm remove <pkg>         # remove a package
+cd frontend && pnpm test                 # vitest (happy-dom)
+cd frontend && pnpm test -- path/to/file.test.tsx   # single file
 ```
 
-`make test-frontend` 会先跑 `make generate` 再 `pnpm test`，需要重新生成 wails binding 时用它。Vitest 配置了 happy-dom 并把 wails 导入 alias 到 mock，所以即使没 `frontend/wailsjs/` 目录也能跑大多数测试。
+`make test-frontend` runs `make generate` first and then `pnpm test`; use it when the wails bindings need to be regenerated. Vitest is configured with happy-dom and aliases the wails imports to a mock, so most tests can run even without a `frontend/wailsjs/` directory.
 
-## 格式化 / Lint
+## Formatting / Lint
 
-Go：
+Go:
 
 ```bash
 gofmt -w <files>
 goimports -w <files>       # local-prefixes: agentre
 make lint                  # golangci-lint + frontend ESLint
-make lint-fix              # 自动修复（小范围用）
+make lint-fix              # auto-fix (use on a small scope)
 ```
 
-`goimports` 把本地 import 分组在 `agentre` 前缀下，匹配 `.golangci.yml`。
+`goimports` groups local imports under the `agentre` prefix, matching `.golangci.yml`.
 
-前端：跟现有 TS/CSS 风格走，**不要**引入大块 formatting-only diff。
+Frontend: follow the existing TS/CSS style; **do not** introduce a large formatting-only diff.
 
-## 模块路径
+## Module Path
 
-Go module 是 `agentre`，**不要**编造 `github.com/...` 前缀。
+The Go module is `agentre`; **do not** invent a `github.com/...` prefix.

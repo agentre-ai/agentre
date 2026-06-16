@@ -1,85 +1,114 @@
 # AGENTS.md
 
-Guidance for Codex when working in this repository.
+This file provides unified guidance for all AI coding agents (Claude Code, Codex, etc.) working in this repository.
 
-## Project Facts
+## Repository Facts
 
-- Agentre is a Wails v2 desktop app with a Go backend and a React/TypeScript frontend.
-- Go module path is `agentre`. Do not invent a `github.com/...` import prefix.
-- Primary stack: Go 1.26, Wails v2, React 19, TypeScript, Vite, Tailwind CSS v4, pnpm 10.33.
-- Frontend-to-backend IPC goes through Wails bindings in `internal/app`; generated bindings live under `frontend/wailsjs`.
-- `main.go` boots the desktop app and has a special `agentre claudecode ...` passthrough mode for Claude Code hook subprocesses.
-- `cmd/agentred` builds the companion headless daemon used for remote execution over JSON-RPC/WebSocket.
+- Agentre is a Wails v2 desktop app: Go 1.26 backend + React 19 / TypeScript frontend.
+- Main tech stack: Go 1.26, Wails v2, React 19, TypeScript, Vite, Tailwind CSS v4, pnpm 10.33.
+- The Go module path is `agentre`, with no VCS prefix — do not invent a `github.com/...` import prefix.
+- Frontend-backend IPC only goes through the Wails bindings in `internal/app`; the generated bindings live in `frontend/wailsjs`; **do not add HTTP-style app APIs**.
 
-## 高优先级约束（强制，不可绕过）
+This repository produces two binaries:
 
-下面三条是硬性规则。和当前任务冲突时**先停下来问用户**，不要自作主张绕开。
+- **`agentre`** (root `main.go`) — the desktop app. It also doubles as a CLI shim: `agentre claudecode …` short-circuits to `internal/cli/claudecodecmd` before booting wails/cago (used by Claude Code hook subprocesses).
+- **`agentred`** (`cmd/agentred/`) — a headless daemon that executes claude-code / codex subprocesses on behalf of a paired desktop over JSON-RPC-over-WebSocket on the LAN. The daemon-side handlers live in `internal/daemon/`.
 
-1. **严格 TDD / BDD：Red → Green → Refactor，无例外。**
-   - 新功能先写 BDD-style behavior spec（`Given … When … Then …` 或 goconvey `Convey("when X, then Y")`），覆盖 happy path + 至少一个 boundary/error case，**再写实现**。
-   - 没有失败测试，不写实现代码。细节见 [docs/development.md](docs/development.md)。
-2. **修 bug 前先验证 bug 存在。**
-   - 写 regression 测试复现失败，**跑一遍并看到它因为正确的原因失败**，再 patch。
-   - 实在没法复现时**显式说明**，再和用户讨论 patch 方案 —— 不要默默地"应该是这样修"就改。
-3. **不要改动和当前任务无关的文件。**
-   - Diff 只动 producer + 它的测试，最多一个明显在 scope 内的 drift。
-   - **禁止** drive-by refactor / 重命名 sweep / formatter pass / 死代码清理 / import 重排序 / 不相关 test churn。
-   - 看到无关脏数据先 flag 给用户，**不要顺手改**。
+## High-Priority Constraints (mandatory, non-negotiable)
 
-## 高内聚低耦合（编码规则）
+The following are hard rules. If the current task conflicts with them, **stop and ask the user first** — do not work around them on your own.
 
-**高内聚** —— 一个 domain 一套包（`<domain>_entity` / `<domain>_repo` / `<domain>_svc`），新 domain 开新包，别往沾边的旧包里塞不相干功能。单实体的校验 / 状态 / 序列化放充血 entity，service 只做跨实体协调与外部依赖编排。Wails 绑定一个 domain 一个文件，方法只 parse → `svc.Xxx().Method` → return。横切关注点放 `internal/pkg/<concern>`（单一职责、self-contained），别散进 domain。
+1. **Strict TDD / BDD: Red → Green → Refactor, no exceptions.**
+   - For a new feature, first write a BDD-style behavior spec (`Given … When … Then …` or goconvey `Convey("when X, then Y")`) covering the happy path plus at least one boundary/error case, **then write the implementation**.
+   - Do not write implementation code without a failing test. See [docs/development.md](docs/development.md) for details.
+2. **Verify the bug exists before fixing it.**
+   - Write a regression test that reproduces the failure, **run it and watch it fail** (and fail for the right reason), then start patching.
+   - If the bug genuinely cannot be reproduced in a test, **tell the user explicitly**, and then discuss the patch approach. Do not silently "this is probably how to fix it" and change code.
+3. **Prefer refactoring over patching — fix the root cause, don't mask it.**
+   - Fix the bad value the producer emits, instead of adding an `if x == nil` fallback guard at every consumer; don't repeatedly normalize the same field at multiple call sites — normalize once at the boundary.
+   - A comment like `// workaround because X returns Y` is a smell; the code underneath most likely needs to change. Refactor bad structure away when you can rather than piling on patches — but keep the refactor **within the scope of the current task** and don't let it spill over.
+4. **Do not modify files unrelated to the current task.**
+   - The diff should only touch the producer + its tests, plus at most one obvious in-scope drift.
+   - **No** drive-by refactor / rename sweep / formatter pass / dead-code cleanup / import reordering / unrelated test churn — they bury the real change and break `git bisect`.
+   - When you see unrelated dirty data, flag it to the user and ask, **do not fix it in passing**.
+5. **New visible frontend UI copy must go through i18n.**
+   - New UI text uses `react-i18next`'s `t(...)`, and updates both `frontend/src/i18n/locales/zh-CN/common.json` and `frontend/src/i18n/locales/en/common.json`.
+   - Do not add hardcoded Chinese; ESLint, via `eslint-plugin-i18next`'s `i18next/no-literal-string`, blocks hardcoded Chinese UI copy in JSX text and visible attributes.
+   - Static `t("...")` keys and locale coverage are validated by `frontend/src/__tests__/i18n.test.ts`; run the relevant tests when you change copy.
+   - Do not translate dynamic output such as agent / user / terminal / code / markdown; it naturally never enters `t(...)`, and using a global text-rewrite fallback is forbidden.
+   - All static UI copy is explicitly `t(...)`. See [docs/frontend.md](docs/frontend.md) for details.
 
-**低耦合** —— 依赖单向 `internal/app → service → repository → model/entity`；`internal/pkg` 是叶子横切层，被各层引用但**绝不反向 import** service / repository。service 只依赖 repository **接口**（DIP），实现靠 `RegisterXxx(impl)` 装配 —— 这是 mock 单测的前提。跨包协作只走 accessor（`xxx_repo.Xxx()` / `xxx_svc.Default()`），不要 `new` 别人的实现或直接 `db.Ctx` 摸别的 domain 的表。不越级：`internal/app` 不碰 repository / db，service 不绕过自己的 repo 拼裸 SQL。前后端只走 Wails binding，远端执行细节锁在 `internal/daemon/client` 接口后。
+## SOLID (coding rules)
 
-> SOLID + 高内聚低耦合展开见 [docs/development.md](docs/development.md)，分层与依赖方向见 [docs/architecture.md](docs/architecture.md)。
+Run every new package / type / function through this before merging:
 
-## 开发规范（必读）
+- **S — Single Responsibility (SRP).** One reason to change is enough. If a service does parsing + persistence + notification at once, split it; a function that runs hundreds of lines almost certainly violates SRP.
+- **O — Open/Closed (OCP).** Extend by adding a new type / strategy, not by editing a switch scattered across multiple callers. A new agent backend (Claude Code / Codex / built-in) should be an interface implementation, not a patch to `if engine == ...`.
+- **L — Liskov Substitution (LSP).** An implementation must hold the interface contract (nil semantics, error types, side-effect boundaries); there should be no surprise like "this implementation ignores ctx".
+- **I — Interface Segregation (ISP).** Define interfaces on the **consumer** side and narrow them as needed: a service declares only the few repo methods it uses, instead of making the consumer depend on a fat 20-method interface.
+- **D — Dependency Inversion (DIP).** A `service` depends on a repository **interface**, never on the concrete implementation; the concrete implementation is wired up in `main.go` / `internal/app` via `RegisterXxx(impl)` — which is exactly what makes TDD mocking possible.
 
-写代码 / 修 bug / 写测试前，先看：
+## High cohesion, low coupling (coding rules)
 
-- [docs/architecture.md](docs/architecture.md) — repository layout、cago 分层约定（entity / repo / service / wails binding）、远端执行架构、`AppDataDir` 存储路径、`AGENTRE_DATA_DIR` / `AGENTRE_ENV` 环境变量（Debug 日志改由「设置 → 版本 & 更新」开关控制）、迁移流程、生成文件清单。
-- [docs/development.md](docs/development.md) — Red→Green→Refactor、SOLID、高内聚低耦合、Fix Discipline、测试栈（`testutils.Database(t)` + sqlmock + mockgen + goconvey）、commit 风格、日志规范、`.golangci.yml` 例外。
-- [docs/frontend.md](docs/frontend.md) — shadcn `@/components/ui/*` 强制约定、pnpm、`make lint` / `gofmt` / `goimports`。
-- [docs/debugging.md](docs/debugging.md) — sqlite3 / jq / 日志过滤命令、table-to-feature 映射、常见踩坑（macOS `Application Support` 路径要引号）。
-- [docs/agent-backend.md](docs/agent-backend.md) — 接入新 AI Agent backend 的完整路径（entity / migration / runtime / translator / capability / daemon import / 前端 gating），含 TDD 测试清单与常见反模式。
+**High cohesion** — one set of packages per domain (`<domain>_entity` / `<domain>_repo` / `<domain>_svc`); open a new package for a new domain, and don't stuff unrelated functionality into a vaguely related old package. Put single-entity validation / state / serialization in the rich domain entity (`Check` / `IsActive` / `GetXxx`); the service only does cross-entity coordination and external-dependency orchestration, without piling on rules. Wails bindings are one file per domain (`internal/app/<domain>.go`), and methods only parse → `svc.Xxx().Method` → return. Put cross-cutting concerns in `internal/pkg/<concern>` (each package single-responsibility and self-contained), not scattered into domains.
 
-## 关键约束（必记）
+**Low coupling** — dependencies flow one way: `internal/app → service → repository → model/entity`; `internal/pkg` is a leaf cross-cutting layer, referenced by every layer but **never reverse-importing** service / repository (currently zero reverse dependencies — hold that line). A service depends only on the repository **interface** (DIP); the implementation is wired up via `RegisterXxx(impl)` in bootstrap/main — this is the prerequisite for mock unit tests. Cross-package collaboration only goes through accessors (`xxx_repo.Xxx()` / `xxx_svc.Default()`); do not `new` someone else's implementation or directly `db.Ctx` into another domain's tables. Don't skip layers: `internal/app` does not touch repository / db, and a service does not bypass its own repo to hand-write raw SQL. Frontend-backend only goes through the Wails binding (no HTTP-style app API added), and remote-execution details are locked behind the `internal/daemon/client` interface.
 
-- **Wails 绑定层只做 parse → svc.Xxx().Method → return**，业务塞进 `App` 结构会被 go test 漏掉。
-- **修 bug 必须先写失败的回归测试**；不要在 consumer 加 guard 来掩盖 producer bug；同次提交不夹带 drive-by refactor / formatter pass。
-- **Repository 单测一律 `testutils.Database(t)` + sqlmock**，禁止起真 SQLite（迁移自身和 `internal/bootstrap/cago_test.go` 是仅有例外）。
-- **Service 单测**通过 `mockgen` 生成 repo mock + `RegisterXxx` 注入，**不接 DB**。
-- **新增迁移 append 到 `migrationList()` 末尾**，禁止改动既有迁移；DDL 优先原生 SQL，避免依赖 `AutoMigrate`。
-- **关键流程必打日志**：用 `logger.Ctx(ctx)`，message 用 `package.Method:` 前缀小写，动态值走 `zap.Xxx(...)` 字段。
-- **前端表单控件统一用 shadcn `@/components/ui/*`**，禁止新增原生 `<select>`。
-- **前端新增可见文案必须走 i18n**：用 `react-i18next` 的 `t(...)` 和 `frontend/src/i18n/locales/{zh-CN,en}/common.json`，不要新增写死中文；`i18next/no-literal-string` 会拦 JSX 中的中文硬编码文案。不要引入旁路文本改写机制。Agent / 用户 / 终端 / markdown 等动态内容不要翻译。详见 [docs/frontend.md](docs/frontend.md)。
+> The above are the key points; for more concrete examples see [docs/development.md](docs/development.md), and for layering and dependency direction see [docs/architecture.md](docs/architecture.md).
 
-## Useful Commands
+## Development conventions (required reading)
+
+Before writing code / fixing bugs / writing tests, read these docs first — the rules are in them:
+
+- [docs/architecture.md](docs/architecture.md) — repository layout, cago layering conventions (entity / repo / service / wails binding), remote-execution architecture, the `AppDataDir` storage path, the `AGENTRE_DATA_DIR` / `AGENTRE_ENV` environment variables (Debug logging is now controlled by the "Settings → Version & Update" toggle), the database and migration flow, and the list of generated files.
+- [docs/development.md](docs/development.md) — Red→Green→Refactor, SOLID, high cohesion / low coupling, Fix Discipline, the test stack (`testutils.Database(t)` + sqlmock + mockgen + goconvey), commit style, logging conventions, and `.golangci.yml` exceptions.
+- [docs/frontend.md](docs/frontend.md) — the mandatory shadcn `@/components/ui/*` convention, pnpm, formatting / lint (`make lint` / `gofmt` / `goimports`), commit style, and the module path.
+- [docs/debugging.md](docs/debugging.md) — sqlite3 / jq / log-filtering commands, the table-to-feature mapping, the command checklist for reproducing production bugs, and common pitfalls (on macOS the `Application Support` path must be quoted).
+- [docs/agent-backend.md](docs/agent-backend.md) — the full path for wiring up a new AI agent backend (entity / migration / runtime / translator / capability / daemon import / frontend gating), including the TDD test checklist and common anti-patterns.
+- [docs/doc-maintenance.md](docs/doc-maintenance.md) — required reading before changing any contributor doc (`AGENTS.md` / `CLAUDE.md` / `docs/*`): git-aware fact-checking, fixing or deleting stale facts directly (leaving no deprecation comments), doc organization rules, and the one-command verification script.
+
+> See the cago skill (`/cago`) for details — complete controller / service / repo / cron / queue unit-test examples.
+
+## Key constraints (essential facts)
+
+- **The Wails binding layer only does parse → svc.Xxx().Method → return**; business logic stuffed into the `App` struct will be missed by go test.
+- **Fixing a bug must start with a failing regression test**; do not add a guard at the consumer to mask a producer bug; do not smuggle a drive-by refactor / formatter pass into the same commit.
+- **Repository unit tests always use `testutils.Database(t)` + sqlmock**; spinning up a real SQLite is forbidden (the migrations themselves and `internal/bootstrap/cago_test.go` are the only exceptions).
+- **Service unit tests** generate a repo mock via `mockgen` + inject it via `RegisterXxx`, and **do not connect to a DB**.
+- **Append new migrations to the end of `migrationList()`**; modifying an existing migration is forbidden; prefer native SQL for DDL, avoid relying on `AutoMigrate`.
+- **Critical flows must log**: use `logger.Ctx(ctx)`, with a lowercase `package.Method:` prefix in the message, and dynamic values passed through `zap.Xxx(...)` fields.
+- **Frontend form controls uniformly use shadcn `@/components/ui/*`**; adding a native `<select>` is forbidden.
+- **New visible frontend UI copy must go through i18n**: use `react-i18next`'s `t(...)` and `frontend/src/i18n/locales/{zh-CN,en}/common.json`, do not add hardcoded Chinese; `i18next/no-literal-string` blocks hardcoded Chinese UI copy in JSX. Do not introduce a side-channel text-rewrite mechanism. Do not translate dynamic content such as agent / user / terminal / markdown. See [docs/frontend.md](docs/frontend.md) for details.
+
+## Common Commands
 
 ```bash
 make install-deps     # pnpm install in frontend/
-make dev              # Wails dev mode with frontend hot reload
-make build            # Production Wails build for current platform
-make build-windows    # Cross-build Windows, default windows/amd64
-make run              # Build and launch production app
-make install          # Install app bundle/binary for the current platform
-make agentred         # Build local agentred binary
-make agentred-linux   # Cross-build agentred for Linux
-make generate         # Generate Wails frontend bindings
-make test             # Backend race tests + frontend Vitest
+make dev              # wails dev — hot reload
+make build            # wails build with version/commit ldflags (current platform)
+make run              # build and launch production app
+make install          # build + install app bundle (macOS: /Applications/Agentre.app)
+make generate         # wails generate module — refresh frontend/wailsjs/ bindings
+make test             # backend race tests + frontend Vitest (runs `generate` first)
 make test-backend     # Go race tests excluding /frontend/
-make test-frontend    # Wails generate + frontend Vitest
-make test-cover       # Go coverage.out + coverage.html
-make lint             # golangci-lint + frontend ESLint
-make mock             # Regenerate mockgen outputs
-make clean            # Remove build/bin, frontend/dist, and coverage files
+make test-frontend    # wails generate + frontend Vitest
+make test-cover       # coverage.out + coverage.html
+make lint / lint-fix  # golangci-lint + frontend ESLint (runs `generate` first)
+make check            # lint + test
+make mock             # go generate ./... (go.uber.org/mock)
+make clean            # rm build/bin frontend/dist coverage.*
+
+# agentred daemon (remote execution box)
+make agentred                # build local-platform binary → build/bin/agentred
+make agentred-linux          # cross-build linux/amd64 (override via AGENTRED_GOOS/ARCH)
+make agentred-deploy         # build linux + opsctl-cp + install (AGENTRED_TARGET= host)
 
 # Focused tests
-go test -race ./internal/service/chat_svc -run TestName
+go test -race -run TestName ./internal/service/chat_svc/...
 go test -race ./internal/repository/llm_provider_repo -run TestName
 go test -race ./pkg/codex -run TestName
 cd frontend && pnpm test -- path/to/file.test.tsx
+cd frontend && pnpm install                  # pnpm is source of truth, not npm
 ```
 
-> `go test ./...` 在本仓库会扫到 `frontend/node_modules` 里一个 Go 包；默认走 `make test-backend`（已显式排除 `/frontend/`）。
+> `go test ./...` in this repository will scan a Go package under `frontend/node_modules`; by default use `make test-backend` (which explicitly excludes `/frontend/`).

@@ -283,3 +283,41 @@ func (mr *MockPermissionModeSetterMockRecorder) SetPermissionMode(ctx, sessionID
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPermissionMode", reflect.TypeOf((*MockPermissionModeSetter)(nil).SetPermissionMode), ctx, sessionID, mode)
 }
+
+// MockAutonomousTurnSource is a mock of AutonomousTurnSource interface.
+type MockAutonomousTurnSource struct {
+	ctrl     *gomock.Controller
+	recorder *MockAutonomousTurnSourceMockRecorder
+	isgomock struct{}
+}
+
+// MockAutonomousTurnSourceMockRecorder is the mock recorder for MockAutonomousTurnSource.
+type MockAutonomousTurnSourceMockRecorder struct {
+	mock *MockAutonomousTurnSource
+}
+
+// NewMockAutonomousTurnSource creates a new mock instance.
+func NewMockAutonomousTurnSource(ctrl *gomock.Controller) *MockAutonomousTurnSource {
+	mock := &MockAutonomousTurnSource{ctrl: ctrl}
+	mock.recorder = &MockAutonomousTurnSourceMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockAutonomousTurnSource) EXPECT() *MockAutonomousTurnSourceMockRecorder {
+	return m.recorder
+}
+
+// AutonomousTurns mocks base method.
+func (m *MockAutonomousTurnSource) AutonomousTurns(sessionID int64) <-chan agentruntime.AutonomousTurn {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AutonomousTurns", sessionID)
+	ret0, _ := ret[0].(<-chan agentruntime.AutonomousTurn)
+	return ret0
+}
+
+// AutonomousTurns indicates an expected call of AutonomousTurns.
+func (mr *MockAutonomousTurnSourceMockRecorder) AutonomousTurns(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AutonomousTurns", reflect.TypeOf((*MockAutonomousTurnSource)(nil).AutonomousTurns), sessionID)
+}

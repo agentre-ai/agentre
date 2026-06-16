@@ -36,6 +36,28 @@ func TestSubagentLifecycle(t *testing.T) {
 	})
 }
 
+func TestSubagentStarted_PersistsKindAndDescription(t *testing.T) {
+	Convey("SubagentStarted 落 kind/description + running", t, func() {
+		acc := turn.New()
+		err := SubagentStartedHandler{}.Apply(context.Background(),
+			agentruntime.SubagentStarted{
+				ToolCallID: "tu1",
+				Info: agentruntime.SubagentInfo{
+					Kind:            "local_bash",
+					TaskDescription: "sleep 20",
+				},
+			}, acc, nil, nil, &turn.TurnContext{})
+		So(err, ShouldBeNil)
+
+		blks := acc.Finalize()
+		So(blks, ShouldHaveLength, 1)
+		sb := blks[0].(*blocks.SubagentStateBlock)
+		So(sb.Kind, ShouldEqual, "local_bash")
+		So(sb.Description, ShouldEqual, "sleep 20")
+		So(sb.Status, ShouldEqual, "running")
+	})
+}
+
 func TestSubagentDone_DefaultStatus(t *testing.T) {
 	Convey("SubagentDone info.Status 空时默认 completed", t, func() {
 		acc := turn.New()

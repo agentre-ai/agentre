@@ -1,4 +1,15 @@
 {
+  "notify": {
+    "app": "Agentre",
+    "body": {
+      "done": "会话已完成",
+      "error": "会话出错",
+      "waiting": "需要你的操作"
+    },
+    "openSession": "跳转到会话",
+    "dismiss": "关闭",
+    "justNow": "刚刚"
+  },
   "app": {
     "commandPalette": {
       "open": "打开命令面板",
@@ -450,6 +461,10 @@
     "actions": {
       "rename": "重命名"
     },
+    "autonomous": {
+      "banner": "后台任务完成 · 自动继续",
+      "aria": "自动继续的回复"
+    },
     "compact": {
       "imageUnsupported": "/compact 不能和图片一起发送",
       "needsSession": "请先发送一条消息让 Codex 会话启动后再压缩",
@@ -511,6 +526,17 @@
       "nameAria": "会话名称",
       "placeholder": "输入新名称",
       "title": "重命名会话"
+    },
+    "backgroundTasks": {
+      "chip": "{{count}} 运行中",
+      "title": "后台任务",
+      "running": "运行中",
+      "completed": "已完成",
+      "failed": "失败",
+      "empty": "暂无后台任务",
+      "bash": "bash",
+      "subagent": "subagent",
+      "aria": "后台任务"
     },
     "toolbar": {
       "aria": "会话工具栏",
@@ -870,7 +896,11 @@
       "dispatchToAgent": "派发给 Agent",
       "filter": "筛选",
       "newIssue": "新建 Issue",
-      "redispatch": "重新派发"
+      "redispatch": "重新派发",
+      "close": "关闭",
+      "reopen": "重新打开",
+      "edit": "编辑",
+      "delete": "删除"
     },
     "board": {
       "addCard": "添加卡片",
@@ -885,6 +915,21 @@
       "running": "进行中",
       "waiting": "待审批"
     },
+    "dialog": {
+      "title": "新建 Issue",
+      "editTitle": "编辑 Issue",
+      "titleLabel": "标题",
+      "bodyLabel": "描述",
+      "projectLabel": "项目",
+      "noProject": "未归属",
+      "labelsLabel": "标签",
+      "create": "创建 Issue",
+      "save": "保存"
+    },
+    "empty": {
+      "title": "还没有 Issue",
+      "desc": "新建一个 Issue 开始追踪工作项"
+    },
     "filters": {
       "assignedAgent": "分派 Agent",
       "author": "作者",
@@ -896,54 +941,15 @@
     "list": {
       "aria": "Issue 列表"
     },
-    "samples": {
-      "129": {
-        "meta": "已关闭 · 3 天前",
-        "title": "修复 Hook 路由匹配优先级"
-      },
-      "132": {
-        "meta": "已关闭 · 昨天",
-        "title": "修复部门 banner 折叠状态丢失"
-      },
-      "133": {
-        "meta": "由 手动创建 · 7 天前 · 未派发",
-        "title": "研究 LLM cost dashboard 方案"
-      },
-      "136": {
-        "meta": "由 手动创建 · 6 天前 · 最近更新 1 小时前",
-        "title": "重构 ChatArea 消息列表性能（虚拟滚动）"
-      },
-      "137": {
-        "meta": "由 手动创建 · 5 天前 · 未派发",
-        "title": "文档：Agent 后端配置示例与常见错误"
-      },
-      "138": {
-        "meta": "由 Sentry Webhook 创建 · 4 天前 · 调用失败 exit=124",
-        "title": "[紧急] Codex CLI 调用偶发超时导致会话中断"
-      },
-      "139": {
-        "meta": "由 GitHub Webhook 创建 · 3 天前 · 等待 CEO 助手批准",
-        "title": "邮箱 Hook 重连重试间隔过短，频繁触发限流"
-      },
-      "140": {
-        "meta": "由 手动创建 · 2 天前 · 等待用户审批",
-        "title": "部门嵌套缩放下卡顿（≥ 4 层）"
-      },
-      "141": {
-        "meta": "由 手动创建 · 昨天 · 最近更新 12 分钟前",
-        "title": "实现深色模式与 Slack 风格消息流"
-      },
-      "142": {
-        "meta": "由 邮件 Hook 创建 · 14:32 · 最近更新 3 分钟前",
-        "title": "修复 OAuth 回调在 Safari 下丢失 state 参数"
-      }
+    "state": {
+      "loading": "加载中…",
+      "error": "加载失败"
     },
     "status": {
       "unassigned": "未派发"
     },
     "summary": {
-      "board": "按状态分列 · 拖卡片可在列间流转",
-      "list": "12 个 Open · 47 个 Closed · 3 个 Agent 在跟进"
+      "counts": "{{open}} 个 Open · {{closed}} 个 Closed"
     },
     "title": "看板",
     "view": {
@@ -1379,6 +1385,8 @@
       "activeCount": "{{count}} 个活跃会话（含子项目）",
       "attentionAria": "{{name}} 待处理会话",
       "empty": "暂无会话",
+      "group": "会话",
+      "groupToggle": "展开/收起 {{name}} 的会话",
       "inherited": "继承",
       "loadMembersFailed": "加载成员失败：{{error}}",
       "loadingMembers": "加载成员中…",
@@ -1414,6 +1422,17 @@
     "insertAfterAI": "AI 完成后插入",
     "notCancellable": "不可撤回（codex 后端）",
     "notCancellableTitle": "codex turn/steer 协议一发即不可撤"
+  },
+  "quitConfirm": {
+    "title": "退出 Agentre？",
+    "description": "有 {{count}} 个会话仍在进行，退出会中断它们当前的回合，未完成的回合不会保存。",
+    "runningSessions": "进行中的会话 · {{count}}",
+    "statusRunning": "运行中",
+    "statusWaiting": "等待确认",
+    "more": "还有 {{count}} 个会话",
+    "cancel": "取消",
+    "quitAnyway": "仍然退出",
+    "unknownSession": "未命名会话"
   },
   "remoteFs": {
     "actions": {
@@ -1813,6 +1832,24 @@
       "description": "配置可用模型来源。保存后可拉取该账号下的实际可用模型，模型能力（上下文窗口、是否支持 thinking 等）由 cago agents 内置目录补全。",
       "title": "LLM 供应商"
     },
+    "notifications": {
+      "pageTitle": "通知",
+      "pageDesc": "对话完成、出错或需要你输入时提醒你。",
+      "masterTitle": "通知",
+      "masterDesc": "总开关 —— 关闭后下面所有方式都不生效。",
+      "enableLabel": "启用通知",
+      "enableDesc": "一轮对话结束时主动提醒你。",
+      "onlyWhenUnfocusedLabel": "仅窗口未激活时通知",
+      "onlyWhenUnfocusedDesc": "默认开；关掉后，应用在前台时，完成的若不是你正在看的会话也会提醒。",
+      "channelsTitle": "通知方式",
+      "channelsDesc": "满足提醒条件时，用以下已开启的方式提醒。",
+      "systemLabel": "系统通知",
+      "systemDesc": "弹到 macOS 通知中心 / Windows 操作中心，应用在后台也能看到。",
+      "toastLabel": "应用内提示",
+      "toastDesc": "在应用右下角弹一条提示（仅应用在前台时可见）。",
+      "ruleTitle": "什么时候提醒",
+      "ruleDesc": "默认只在窗口未激活时提醒；关掉上面的开关后，前台时背景会话完成也会提醒。完成、出错、等你输入都会提醒，你手动停止的不会。"
+    },
     "nav": {
       "about": "关于",
       "agentBackend": "Agent 后端",
@@ -1835,10 +1872,6 @@
       "mcpServers": {
         "description": "MCP 服务器配置视图已预留，后续会在这里管理连接、授权和可用工具。",
         "title": "MCP 服务器"
-      },
-      "notifications": {
-        "description": "通知设置视图已预留，后续会在这里调整提醒规则与通知触达渠道。",
-        "title": "通知"
       },
       "skillsTools": {
         "description": "技能和工具管理视图已预留，后续会在这里启用、停用和配置 Agent 能力。",

@@ -172,6 +172,29 @@ export const ProjectMove = windowBackedMock("ProjectMove", () =>
   Promise.resolve({ item: { id: 1 } }),
 );
 
+// Issue bindings
+export const IssueList = windowBackedMock("IssueList", () =>
+  Promise.resolve({ issues: [], openCount: 0, closedCount: 0 }),
+);
+export const IssueListLabels = windowBackedMock("IssueListLabels", () =>
+  Promise.resolve([]),
+);
+export const IssueGet = windowBackedMock("IssueGet", () =>
+  Promise.resolve({ id: 0, title: "", state: "open", labels: [] }),
+);
+export const IssueCreate = windowBackedMock("IssueCreate", () =>
+  Promise.resolve({ id: 0, title: "", state: "open", labels: [] }),
+);
+export const IssueUpdate = windowBackedMock("IssueUpdate", () =>
+  Promise.resolve({ id: 0, title: "", state: "open", labels: [] }),
+);
+export const IssueSetState = windowBackedMock("IssueSetState", () =>
+  Promise.resolve({ id: 0, title: "", state: "open", labels: [] }),
+);
+export const IssueDelete = windowBackedMock("IssueDelete", () =>
+  Promise.resolve(undefined),
+);
+
 export const GetSessionCapabilities = windowBackedMock(
   "GetSessionCapabilities",
   () => Promise.resolve({ capabilities: [], permissionModeMeta: null }),
@@ -209,4 +232,9 @@ export const PreviewImportData = windowBackedMock("PreviewImportData", () =>
 );
 export const ApplyImportData = windowBackedMock("ApplyImportData", () =>
   Promise.resolve({ counts: {} }),
+);
+
+// Quit confirmation — called when the user confirms quitting with active sessions.
+export const ConfirmQuit = windowBackedMock("ConfirmQuit", () =>
+  Promise.resolve(),
 );

@@ -40,6 +40,14 @@ const (
 	// daemon → client 通知。
 	NotifyEvent         = "runtime.event"
 	NotifyRunResultDone = "runtime.runResultDone"
+
+	// 自主续轮(AutonomousTurnSource):backend 自发跑的一轮,daemon 转发给 client。
+	// 一轮 = Started → Event* → Done(同一 sessionID,串行,无重叠);Event 复用
+	// EventFrame、Done 复用 RunResultDoneFrame,只是走各自的 notify 方法区分归属
+	// (普通 Run 流 vs 自主续轮流),sessionID 仍负责会话路由。
+	NotifyAutonomousTurnStarted = "runtime.autonomousTurn.started"
+	NotifyAutonomousTurnEvent   = "runtime.autonomousTurn.event"
+	NotifyAutonomousTurnDone    = "runtime.autonomousTurn.done"
 )
 
 // ── Error codes ─────────────────────────────────────────────────────────────
@@ -285,6 +293,15 @@ type RunResultDoneFrame struct {
 	ContextWindow     int        `json:"contextWindow,omitempty"`
 	StopErrMsg        string     `json:"stopErrMsg,omitempty"`
 	StopErrCode       int        `json:"stopErrCode,omitempty"`
+}
+
+// AutonomousTurnStartedFrame 在一轮自主续轮开始时由 daemon 发一次。客户端据此
+// 新建一个 agentruntime.AutonomousTurn 推给 AutonomousTurns() 的消费方,并把随后
+// 的 NotifyAutonomousTurnEvent(EventFrame)路由进它的 Events,直到 NotifyAutonomousTurnDone
+// (RunResultDoneFrame)填回该轮 RunResult 并 close。
+type AutonomousTurnStartedFrame struct {
+	SessionID int64  `json:"sessionId"`
+	Trigger   string `json:"trigger,omitempty"`
 }
 
 // UsageWire mirrors provider.Usage with stable lowerCamelCase tags. provider.Usage
