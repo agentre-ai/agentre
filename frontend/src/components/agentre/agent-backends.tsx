@@ -423,7 +423,10 @@ export function AgentBackendsPanel({
         const names = skipped.map((r) => r.name).join(", ");
         setFlash({
           kind: "ok",
-          text: t("agentBackends.autoScan.skipped", { count: skipped.length, names }),
+          text: t("agentBackends.autoScan.skipped", {
+            count: skipped.length,
+            names,
+          }),
         });
       } else if (!foundAny) {
         setFlash({
@@ -619,9 +622,17 @@ function Toolbar({
           title={t("agentBackends.autoScan.buttonTitle")}
         >
           {scanning ? (
-            <Loader2 className="size-3.5 animate-spin" data-icon="inline-start" aria-hidden="true" />
+            <Loader2
+              className="size-3.5 animate-spin"
+              data-icon="inline-start"
+              aria-hidden="true"
+            />
           ) : (
-            <Radar className="size-3.5" data-icon="inline-start" aria-hidden="true" />
+            <Radar
+              className="size-3.5"
+              data-icon="inline-start"
+              aria-hidden="true"
+            />
           )}
           {scanning
             ? t("agentBackends.autoScan.scanning")
