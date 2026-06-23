@@ -9,7 +9,8 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/repository/repoquery"
 )
 
 //go:generate mockgen -source llm_provider.go -destination mock_llm_provider_repo/mock_llm_provider.go
@@ -60,18 +61,9 @@ func (r *llmProviderRepo) Find(ctx context.Context, id int64) (*llm_provider_ent
 }
 
 func (r *llmProviderRepo) BatchFindByKey(ctx context.Context, keys []string) (map[string]*llm_provider_entity.LLMProvider, error) {
-	out := make(map[string]*llm_provider_entity.LLMProvider, len(keys))
-	if len(keys) == 0 {
-		return out, nil
-	}
-	var rows []*llm_provider_entity.LLMProvider
-	if err := db.Ctx(ctx).Where("provider_key IN ? AND status = ?", keys, consts.ACTIVE).Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	for _, p := range rows {
-		out[p.ProviderKey] = p
-	}
-	return out, nil
+	return repoquery.ActiveMap[llm_provider_entity.LLMProvider](ctx, "provider_key", keys, func(p *llm_provider_entity.LLMProvider) string {
+		return p.ProviderKey
+	})
 }
 
 func (r *llmProviderRepo) FindByName(ctx context.Context, name string) (*llm_provider_entity.LLMProvider, error) {

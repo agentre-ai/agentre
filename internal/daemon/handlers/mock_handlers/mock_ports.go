@@ -10,11 +10,11 @@
 package mock_handlers
 
 import (
-	handlers "agentre/internal/daemon/handlers"
-	state "agentre/internal/daemon/state"
-	agent_backend_entity "agentre/internal/model/entity/agent_backend_entity"
-	llm_provider_entity "agentre/internal/model/entity/llm_provider_entity"
 	context "context"
+	handlers "github.com/agentre-ai/agentre/internal/daemon/handlers"
+	state "github.com/agentre-ai/agentre/internal/daemon/state"
+	agent_backend_entity "github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	llm_provider_entity "github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	reflect "reflect"
 	time "time"
 

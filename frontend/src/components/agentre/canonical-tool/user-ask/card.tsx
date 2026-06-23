@@ -17,6 +17,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
+import {
+  clearTranscriptDraftState,
+  loadTranscriptDraftState,
+  saveTranscriptDraftState,
+} from "../../chat-panel-scroll-state";
+import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type {
   AskQuestionDTO,
@@ -30,6 +36,7 @@ import { submitAnswer } from "./use-submit-answer";
 const OTHER_LABEL = "__other__";
 
 type Selection = { labels: string[]; otherText: string };
+type UserAskDraftState = { activeQIdx: number; selections: Selection[] };
 
 function readUserAsk(toolBlock: unknown): UserAskDTO | undefined {
   const c = (toolBlock as { canonical?: CanonicalDTO }).canonical;
@@ -54,22 +61,56 @@ function initialSelections(payload: UserAskDTO | undefined): Selection[] {
 export const UserAskCard: React.FC<CanonicalCardProps> = ({
   toolBlock,
   sessionId,
+  uiStateKey,
+  tabStateKey,
 }) => {
   const { t } = useTranslation();
   const payload = readUserAsk(toolBlock);
+  const draftKey =
+    payload?.requestId && !payload.answered && !payload.skipped
+      ? `userAsk:${payload.requestId}`
+      : undefined;
 
-  const [collapsed, setCollapsed] = React.useState(false);
-  const [selections, setSelections] = React.useState<Selection[]>(() =>
-    initialSelections(payload),
+  const [collapsed, setCollapsed] = useTranscriptBooleanState(
+    uiStateKey,
+    false,
   );
+  const [selections, setSelections] = React.useState<Selection[]>(() => {
+    const saved = loadTranscriptDraftState<UserAskDraftState>(
+      tabStateKey,
+      draftKey,
+    );
+    return saved?.selections ?? initialSelections(payload);
+  });
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const totalQs = payload?.questions?.length ?? 0;
-  const [activeQIdx, setActiveQIdx] = React.useState(0);
+  const [activeQIdx, setActiveQIdx] = React.useState(() => {
+    const saved = loadTranscriptDraftState<UserAskDraftState>(
+      tabStateKey,
+      draftKey,
+    );
+    const maxIdx = Math.max(0, (payload?.questions?.length ?? 1) - 1);
+    return Math.min(Math.max(saved?.activeQIdx ?? 0, 0), maxIdx);
+  });
+  const draftClearedRef = React.useRef(false);
 
   const isAnswered = !!payload?.answered;
   const isSkipped = !!payload?.skipped;
   const isLocked = isAnswered || isSkipped || submitting;
+
+  React.useEffect(() => {
+    if (isAnswered || isSkipped) {
+      draftClearedRef.current = true;
+      clearTranscriptDraftState(tabStateKey, draftKey);
+      return;
+    }
+    if (draftClearedRef.current) return;
+    saveTranscriptDraftState<UserAskDraftState>(tabStateKey, draftKey, {
+      activeQIdx,
+      selections,
+    });
+  }, [activeQIdx, draftKey, isAnswered, isSkipped, selections, tabStateKey]);
 
   const toggleOption = React.useCallback(
     (qIdx: number, label: string, multi: boolean) => {
@@ -139,6 +180,8 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
           answers: skipped ? undefined : answers,
           skipped,
         });
+        draftClearedRef.current = true;
+        clearTranscriptDraftState(tabStateKey, draftKey);
         setCollapsed(true);
       } catch (err) {
         setError(
@@ -150,7 +193,16 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
         setSubmitting(false);
       }
     },
-    [payload, sessionId, selections, isLocked, t],
+    [
+      payload,
+      sessionId,
+      selections,
+      isLocked,
+      t,
+      setCollapsed,
+      tabStateKey,
+      draftKey,
+    ],
   );
 
   const headerLabel = React.useMemo(() => {
@@ -205,7 +257,6 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
               questions={payload.questions}
               activeIdx={activeQIdx}
               selections={selections}
-              locked={isLocked}
               onSelect={setActiveQIdx}
             />
           )}
@@ -293,13 +344,11 @@ function QuestionTabs({
   questions,
   activeIdx,
   selections,
-  locked,
   onSelect,
 }: {
   questions: AskQuestionDTO[];
   activeIdx: number;
   selections: Selection[];
-  locked: boolean;
   onSelect: (idx: number) => void;
 }) {
   return (
@@ -312,7 +361,6 @@ function QuestionTabs({
           <button
             key={idx}
             type="button"
-            disabled={locked}
             onClick={() => onSelect(idx)}
             className={cn(
               "-mb-px flex items-center gap-1.5 border-b-2 px-3.5 pt-2.5 pb-2 text-xs transition-colors",

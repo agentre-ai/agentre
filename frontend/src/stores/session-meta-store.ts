@@ -38,6 +38,8 @@ function isSameMeta(a: SessionMeta, b: SessionMeta): boolean {
     a.agentName === b.agentName &&
     a.agentColor === b.agentColor &&
     (a.projectId ?? -1) === (b.projectId ?? -1) &&
+    (a.groupId ?? 0) === (b.groupId ?? 0) &&
+    (a.groupTitle ?? "") === (b.groupTitle ?? "") &&
     a.title === b.title &&
     (a.lastMessageAt ?? 0) === (b.lastMessageAt ?? 0) &&
     (a.lastReadAt ?? 0) === (b.lastReadAt ?? 0) &&

@@ -1,12 +1,12 @@
-module agentre
+module github.com/agentre-ai/agentre
 
 go 1.26.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/UserExistsError/conpty v0.1.4
-	github.com/cago-frame/agents v0.0.0-20260529062759-8158e363e912
-	github.com/cago-frame/cago v0.0.0-20260423074423-9a4902409f48
+	github.com/cago-frame/agents v0.0.0-20260610020000-640785b2d7a3
+	github.com/cago-frame/cago v0.0.0-20260609091633-ba2f550b2729
 	github.com/creack/pty v1.1.21
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/emersion/go-message v0.18.2

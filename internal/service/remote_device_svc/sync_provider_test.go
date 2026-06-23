@@ -10,14 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/agentruntime/mock_agentruntime"
-	"agentre/internal/repository/llm_provider_repo"
-	llmrepomock "agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
-	remoterepomock "agentre/internal/repository/remote_device_repo/mock_remote_device_repo"
-	"agentre/internal/service/remote_device_svc"
-	svcmock "agentre/internal/service/remote_device_svc/mock_remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/mock_agentruntime"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	llmrepomock "github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+	remoterepomock "github.com/agentre-ai/agentre/internal/repository/remote_device_repo/mock_remote_device_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	svcmock "github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 func TestRemoteDeviceSvc_SyncProvider(t *testing.T) {

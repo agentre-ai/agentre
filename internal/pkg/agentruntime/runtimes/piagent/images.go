@@ -3,7 +3,7 @@ package piagent
 import (
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
-	pkgpi "agentre/pkg/piagent"
+	pkgpi "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
 // extractImages 从本轮用户 blocks 里抽出 ImageBlock，转成 Pi prompt 需要的

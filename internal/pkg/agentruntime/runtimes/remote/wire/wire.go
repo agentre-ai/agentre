@@ -15,9 +15,9 @@ import (
 
 	"github.com/cago-frame/agents/agent/blocks"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/internal/pkg/jsonrpc"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/jsonrpc"
 )
 
 // ── RPC method names ────────────────────────────────────────────────────────
@@ -40,6 +40,13 @@ const (
 	// daemon → client 通知。
 	NotifyEvent         = "runtime.event"
 	NotifyRunResultDone = "runtime.runResultDone"
+
+	// MethodMCPProxy 是 daemon → client 的反向请求(request/response):daemon 上的 CLI
+	// 子进程访问内置工具 MCP(org/subagent/group/workflow)时,这些 /mcp/* handler 的真身
+	// 在 desktop。daemon 把 CLI 打到本地的 HTTP 请求原样隧道回 desktop 执行,应答原路返回,
+	// 修「remote 不支持内置工具(URL 是 desktop 的 127.0.0.1)」。鉴权靠 Header 里 desktop
+	// 轮起手时签的 MCP token(随 RunRequest.MCPServers 下发),在 desktop 侧校验。
+	MethodMCPProxy = "runtime.mcpProxy"
 
 	// 自主续轮(AutonomousTurnSource):backend 自发跑的一轮,daemon 转发给 client。
 	// 一轮 = Started → Event* → Done(同一 sessionID,串行,无重叠);Event 复用
@@ -189,9 +196,32 @@ type RunParams struct {
 	ForkAnchor        string               `json:"forkAnchor,omitempty"`
 	PermissionMode    string               `json:"permissionMode,omitempty"`
 	CollaborationMode string               `json:"collaborationMode,omitempty"`
+	// MCPServers 注入给 runtime 的 MCP tool server（群聊/org 工具等）。漏传会让
+	// 远程后端的 launch-time MCP 注入失效，故必须随 wire 过线。
+	MCPServers []agentruntime.MCPServerSpec `json:"mcpServers,omitempty"`
+	// EnabledPlugins 注入给 runtime 的 per-agent plugin/skill-pack 覆盖。漏传会让
+	// 远程 CapSkills 后端展示可配置但实际继承全局配置。
+	EnabledPlugins map[string]bool `json:"enabledPlugins,omitempty"`
 	// LLMProviderKey 是 desktop 端关联的 provider stable key（UUID）。
 	// daemon 用它做 ProviderLookup（FindByKey），不需要 desktop 越线传 APIKey。
 	LLMProviderKey string `json:"llmProviderKey,omitempty"`
+}
+
+// MCPProxyRequest 是 daemon→desktop 隧道里一次 MCP HTTP 请求的封装。daemon 把 CLI 子进程
+// 打到 daemon 本地 /mcp/* 的请求原样装包发回 desktop;desktop 用本机真 gateway 重放。
+// MCP-over-HTTP 是纯请求/应答(server→client SSE 被 handler 405 掉),所以单帧封装即可。
+type MCPProxyRequest struct {
+	Path    string              `json:"path"`              // 如 /mcp/org/
+	Method  string              `json:"method"`            // HTTP 方法(POST/GET/...)
+	Headers map[string][]string `json:"headers,omitempty"` // 含 Authorization: Bearer <token>
+	Body    []byte              `json:"body,omitempty"`    // JSON-RPC body
+}
+
+// MCPProxyResponse 是 desktop 重放 MCPProxyRequest 后的 HTTP 应答封装。
+type MCPProxyResponse struct {
+	Status  int                 `json:"status"`
+	Headers map[string][]string `json:"headers,omitempty"`
+	Body    []byte              `json:"body,omitempty"`
 }
 
 // RunAck 是 runtime.run 的同步返回,只回 echo 客户端传的 sessionID 供它确认。

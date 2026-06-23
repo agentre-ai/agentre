@@ -24,7 +24,7 @@ The repository currently has four built-in backends, with clearly distinct roles
 
 - **builtin** — runs cago `app/coding` in-process, directly consuming the `llm_provider` config. Its role is "lightweight built-in"; it exposes steer / cancel / abort / image input — the capabilities that an in-process single-provider mode naturally supports — without CLI subprocess overhead, and without advanced protocols like plan / tool approval.
 - **claudecode** — wraps the local `claude` CLI (Anthropic family), communicating bidirectionally via stdout JSONL + `control_request` frames, with the subprocess long-lived and the session reused via LRU. The most fully featured: it can run plan / `can_use_tool` / `AskUserQuestion` / Subagent / fork-session / mid-turn permission-mode switching / image input.
-- **codex** — wraps the local `codex` CLI (OpenAI family), interacting via the JSON-RPC-over-stdio app-server protocol, starting a new process per turn (fire-and-forget). Natively supports context-window reporting, native compact turns, and image input, but has no `can_use_tool` protocol, cannot switch mode mid-turn, and does not emit Subagent events.
+- **codex** — wraps the local `codex` CLI (OpenAI family), interacting via the JSON-RPC-over-stdio app-server protocol, starting a new process per turn (fire-and-forget). Natively supports context-window reporting, native compact turns, image input, and tool approval via the app-server `requestApproval` protocol (allow/deny + remember-for-session, though with **no DenyReason feedback** and no `can_use_tool`-shaped control frames), but cannot switch permission mode mid-turn and does not emit Subagent events.
 - **piagent** — wraps the local `pi` CLI (Pi coding agent RPC mode); it is not bound to an Agentre `LLMProvider`, but reads Pi's own `~/.pi/agent` config and auth. Supports steer / abort / compact / image input / context-window reporting; session context is resumed across turns via an Agentre-dedicated Pi session file. It does not support tool approval, reverse Q&A, fork-session, or permission mode meta.
 
 > The repository also has `runtimes/remote/`, which is **not a standalone backend** — it is the proxy used when the desktop calls a remote `agentred` daemon. Its capability is synced from the daemon-side real backend via `Prefetch`, so it is not listed separately in this section.
@@ -47,14 +47,19 @@ Each row is a **reverse channel** (host→backend), **except the final `CapAuton
 | `CapAbort` / `"abort"` | `Aborter` | ✅ | ✅ | ✅ | ✅ | the "Stop" button; must be idempotent + must unblock all blocking I/O, otherwise the frontend will be stuck on "generating" forever |
 | `CapSetPermission` / `"set_permission_mode"` | `PermissionModeSetter` | ❌ | ✅ mid-turn | ✅ launch only | ❌ | switch permission mode at runtime; the codex protocol does not allow mid-turn switching, so it persists to DB and takes effect on the next spawn; piagent does not expose permission mode meta |
 | `CapAnswerUserAsk` / `"answer_user_ask"` | `AskAnswerSink` | ❌ | ✅ | ✅ | ❌ | reverse-asking the user a question (single-select / multi-select / Other / password field); Skip must go through deny rather than an empty map, otherwise the turn silently hangs |
-| `CapToolPermission` / `"tool_permission_gate"` | `ToolPermissionSink` | ❌ | ✅ `can_use_tool` | ❌ | ❌ | allow/deny approval before tool execution + "Remember for session" + DenyReason fed back to the LLM; codex / piagent have no equivalent protocol |
+| `CapToolPermission` / `"tool_permission_gate"` | `ToolPermissionSink` | ❌ | ✅ `can_use_tool` | ✅ `requestApproval` | ❌ | allow/deny approval before tool execution + "Remember for session" (alwaysAllowSession). claudecode goes through the `can_use_tool` control_request and feeds DenyReason back to the LLM as a tool_result; codex goes through the app-server `requestApproval` protocol — it carries allow/deny + remember-for-session but has **no DenyReason feedback** (the deny-message param is ignored, the protocol has no deny field). piagent has no equivalent protocol |
 | `CapForkSession` / `"fork_session"` | `RunRequest.ForkAnchor` built in | ❌ | ✅ `--fork-session` | ✅ `thread/rollback` | ❌ | "Regenerate" derives a new session from a given anchor and reruns |
 | `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ✅ | ✅ | ✅ | the runtime emits after probing the model's actual context-window size, for the frontend usage bar; the claudecode SDK does not report the window itself, so the translator looks it up in `llmcatalog` on the `system.init` frame as a fallback; piagent reports it at the end of each round via the Pi RPC `get_session_stats.contextUsage.contextWindow`, and falls back to looking up `llmcatalog` by the model from the usage frame |
 | `CapCompact` / `"compact"` | `RunRequest.Compact=true` | ❌ | ❌ | ✅ | ✅ | native compact turn — have the LLM summarize history and then clear the occupied space; piagent goes through Pi RPC compact |
 | `CapImageInput` / `"image_input"` | `RunRequest.UserBlocks` contains `blocks.ImageBlock` | ✅ | ✅ | ✅ | ✅ | the user message can carry PNG / JPEG / WebP images. builtin passes cago blocks through directly; claudecode encodes inline images into a base64 `image` content block of the stream-json user frame (image first, text after — natively supported by the CLI); codex materializes inline images into temporary local files and then goes through the app-server `localImage`; piagent passes the RPC image content through |
+| `CapGoal` / `"goal"` | `GoalController` | ❌ | ❌ | ✅ | ❌ | session/thread-level **objective** state: the host reads/sets/clears a persistent goal (`Objective` + `Status` + optional `TokenBudget`, plus `TokensUsed` / `TimeUsedSeconds` counters) bound to the provider thread. Only codex has it natively (app-server thread-goal protocol, `runtimes/codex/runtime.go` `GetGoal/SetGoal/ClearGoal`); chat_svc surfaces it via `GetGoal` / `SetGoal` / `StartGoal` / `ClearGoal`, and `remote.Runtime` forwards it over `runtime.goal.{get,set,clear}`. builtin / claudecode / piagent don't declare it, so chat_svc returns `ErrUnsupported` |
+| `CapMCPTools` / `"mcp_tools"` | `RunRequest.MCPServers` (no sub-interface) | ❌ | ✅ | ✅ | ❌ | host→backend **launch-time MCP injection**: the runtime accepts `RunRequest.MCPServers` (`[]MCPServerSpec`: `Name` / `URL` / `Headers`, http transport) and starts the turn with those extra MCP tool servers wired in. claudecode renders each spec into a `--mcp-config` entry (`{"mcpServers":{"<name>":{"type":"http","url":"...","headers":{...}}}}`) and auto-adds `mcp__<Name>__<tool>` entries to `--allowedTools`; codex renders each spec into one-shot `--config mcp_servers.<name>...` overrides (`url`, `http_headers`, `enabled_tools`, `default_tools_approval_mode="approve"`) and bypasses its persistent app-server cache for MCP-injected turns so launch-time config is always loaded. Group-chat orchestration is the first consumer: a member backend **must** declare this cap to be admitted to a group (`group_svc.backendSupportsGroup` → `chat_svc.AgentBackendHasCapability`); builtin / piagent ignore `RunRequest.MCPServers` |
+| `CapSkills` / `"skills"` | `RunRequest.EnabledPlugins` (no sub-interface) | ❌ | ✅ | ✅ | ❌ | host→backend **launch-time skill-pack/plugin injection**: the runtime accepts `RunRequest.EnabledPlugins` (`map[string]bool`, **sparse** — only the agent's explicit overrides: force-on=true / force-off=false; plugins not listed inherit the user's global CLI config). claudecode merges it into `--settings`'s `enabledPlugins` at spawn (`buildSkillsSettings`); codex renders it into one-shot `--config plugins."<id>".enabled=<bool>` overrides and bypasses the persistent app-server cache for plugin-injected turns so launch-time config is always loaded. Granularity is **per-plugin / skill-pack only** for Agentre's cross-backend UI. builtin / piagent ignore `RunRequest.EnabledPlugins`. See §7 |
 | `CapAutonomousTurn` / `"autonomous_turn"` | `AutonomousTurnSource` | ❌ | ✅ | ❌ | ❌ | **the only forward channel (backend→host)**: the backend spontaneously runs a whole turn with *no* user input. claudecode's CLI, after a `run_in_background` Bash task completes, autonomously injects `<task-notification>` and runs a full turn (a second `result` frame); `pkg/claudecode.Session`'s persistent reader routes it to `AutonomousTurns()`, the runtime bridges each one to `agentruntime.AutonomousTurn`, and chat_svc's per-session watcher (`driveAutonomousTurn`) persists it as a **pure assistant turn (no user row)** and surfaces it live via the session-level `chat:autonomous:<sessionID>` event. Backends without this behavior simply don't declare the cap |
 
 > **Rule**: calling the corresponding interface of an undeclared cap must return `agentruntime.ErrUnsupported` (a sentinel error, transparent across processes, which chat_svc translates into a wire code accordingly). Declaring cap=true but not implementing the interface will be caught by the `TestXxxCapabilities` matrix test (type-assert failure).
+
+> **Group-chat passthrough (no per-backend work)**: alongside MCP injection, orchestration also feeds role / roster context through `chat_svc` `SendRequest.SystemPromptSuffix`, which is concatenated onto `RunRequest.SystemPrompt` upstream (empty for single chat ⇒ byte-identical to today). A runtime therefore just sees a longer system prompt and needs no special handling — only `RunRequest.MCPServers` requires a `CapMCPTools` runtime to actually consume it.
 
 ### Runtime characteristics
 
@@ -223,6 +228,9 @@ Implement according to the Capabilities declaration (**if you declared cap=true,
 | `CapReportContextWindow` | emit `ContextWindowUpdated` | the runtime can probe the model's actual window (codex has it natively in the protocol; claudecode falls back via `llmcatalog.Lookup(model)`; piagent prefers reading the Pi RPC `get_session_stats.contextUsage.contextWindow`, then falls back to looking up `llmcatalog` by the model from the usage frame) |
 | `CapCompact` | `RunRequest.Compact=true` built-in semantics | native compact turn |
 | `CapImageInput` | `RunRequest.UserBlocks` image blocks | supports multimodal user input; when unsupported, chat_svc rejects an image-carrying turn before calling the runtime |
+| `CapGoal` | `GoalController` | exposes a session/thread-level objective the host can get / set / clear (codex thread goal; remote-forwarded) |
+| `CapMCPTools` | `RunRequest.MCPServers` (no sub-interface) | the runtime consumes MCP tool servers injected at launch; orchestration (group chat) gates membership on this cap — see the matrix above |
+| `CapSkills` | `RunRequest.EnabledPlugins` (no sub-interface) | the runtime injects per-agent skill-pack/plugin overrides at launch; sparse map, unlisted plugins inherit global CLI config — see the matrix above and §7 |
 | `CapAutonomousTurn` | `AutonomousTurnSource` | the backend spontaneously produces a turn with no user input (claudecode background-task auto-continue) — **the only forward channel**; see item I below |
 
 For caps you do not implement: **chat_svc returns `ErrUnsupported` when it receives the frontend request** — the error code has already been made a sentinel at the wire layer for transparent cross-process propagation, so **do not invent your own error**.
@@ -274,7 +282,7 @@ type Aborter interface {
 
 ##### C. ToolPermissionSink — `can_use_tool` tool approval
 
-> **codex / piagent currently do not support this** (no equivalent protocol). The following uses claudecode as the blueprint; copy it when a new backend has an equivalent protocol.
+> **piagent currently does not support this** (no equivalent protocol). **codex does** — via the app-server `requestApproval` protocol (`runtimes/codex/runtime.go` `SubmitToolPermission`); it carries allow/deny + alwaysAllowSession but **drops DenyReason** (the deny-message param is ignored, since the codex protocol has no deny-feedback field). The following uses claudecode as the blueprint; copy the relevant parts when a new backend has an equivalent protocol.
 
 Interface signature (runner.go:218-220):
 
@@ -540,11 +548,11 @@ To let a new backend run on the `agentred` daemon, change **only** `internal/dae
 
 ```go
 import (
-    _ "agentre/internal/pkg/agentruntime/runtimes/builtin"
-    _ "agentre/internal/pkg/agentruntime/runtimes/claudecode"
-    _ "agentre/internal/pkg/agentruntime/runtimes/codex"
-    _ "agentre/internal/pkg/agentruntime/runtimes/piagent"
-    _ "agentre/internal/pkg/agentruntime/runtimes/myagent"   // ← add this line
+    _ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/builtin"
+    _ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
+    _ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/codex"
+    _ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
+    _ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/myagent"   // ← add this line
 )
 ```
 
@@ -645,3 +653,45 @@ repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a re
 - [ ] The Prober has been registered in `proberRegistry`; the CLI-kind backend's env wiring is in `agentruntime/clienv.go` and shared with the chat path
 - [ ] Key flows are logged: `logger.Ctx(ctx)`, message uses the lowercase `package.Method:` prefix, fields use `zap.Xxx` (see [development.md](development.md) §logging)
 - [ ] `make check` (lint + test) all passes; the new package's service/repository layer coverage ≥80%
+
+---
+
+## 7. 技能包（Skill Pack / plugin）注入 —— `CapSkills`
+
+> 已落地，`CapSkills` 已并入 §0.5 矩阵。代码：`internal/pkg/agentskill`（leaf 目录域）+ `internal/service/skill_svc`（组合服务）+ `chat_svc/turn_skills.go`（注入接缝）+ `runtimes/claudecode/skills.go`（`--settings` 渲染）+ `runtimes/codex/session.go`（`--config plugins.*.enabled` 渲染）。设计 / CLI 实测快照见 `superpowers/specs/2026-06-12-agent-skills-tools-design.md` 与 `superpowers/plans/2026-06-12-agent-skills-pr1-backend.md`（归档稿，不随代码更新）。
+>
+> 给 agent 按 **plugin / skill-pack** 粒度配技能，是与 `CapMCPTools` 同构的 launch-time 注入：per-agent 配置 → spawn 时 CLI 配置覆盖 → 每会话子进程独立。
+
+### 7.1 Claude Code CLI 控制机制（已实测，claude 2.1.174 —— 这部分是 CLI 客观事实）
+
+| 关注点 | 结论（命令 / 实验） |
+| --- | --- |
+| 发现已装包 | `claude plugin list --json` → `[{id:"name@marketplace", enabled, scope}]`；`--available --json` 加 marketplace 可装项；`claude plugin details <id>` 列包内 skill 名 + token 成本 |
+| per-session 真相 | `--output-format stream-json` 的 `system.init` 帧带 `skills[]` / `plugins[]`（runtime 已解析此帧）。plugin skill 命名 `superpowers:brainstorming`，个人裸 skill `cago` |
+| 开关控制 | `--settings '{"enabledPlugins":{"<id>":true/false}}'` 在 **launch 时**完整控制 plugin 及其 skills。实测：关 `superpowers@claude-plugins-official` → init 帧 `skills` 从 32 降到 18（其 14 个整包消失，且从 `plugins[]` 移除） |
+| 粒度边界 | 只能按 **plugin** 开关；**单个 skill 不可**（`<name>@skills-dir:false` 无效）；个人 `~/.claude/skills/*` 裸 skill 不受 `enabledPlugins` 控制；`--disable-slash-commands` = 关全部 |
+| 叠加语义 | `--settings` 的 `enabledPlugins` 叠加（additional）到全局：注入**全量**（每个已装 plugin → 含 false）→ 与全局完全隔离；注入**稀疏子集** → 未列出沿用全局。agentre 取后者（继承，见 §7.2） |
+
+### 7.2 per-agent 独立怎么成立（共享安装也不冲突）
+
+同后端的多 agent 共用一份 `~/.claude/` 安装与 `settings.json`，但 agentre **不改共享文件**，而是**每次 spawn 子进程时单独传 `--settings`**：
+
+- 一 chat-session = 一 claude 子进程（LRU 按 `sessionKey(SessionID)`，`runtimes/claudecode/runtime.go`）；群成员各自 `BackingSessionID`（`group_svc/scheduler.go`）。
+- 传 agent 的**显式覆盖** map（强制开=true / 强制关=false，**稀疏**）→ 未列出的 plugin 沿用全局 `~/.claude`（继承），agent 在全局基线上叠加自己的开关；同后端两 agent 可并发跑不同技能集。
+- 与已上线 org 工具（per-agent `MCPServers`→`--mcp-config`，`session.go` `ccBuildClientOpts`）**同模式**。
+- **caveat**：launch-time 生效，cache-hit 复用不重下发 → 改授权**下次 spawn** 生效（新会话即时；活跃缓存会话下次重启）。无 per-call gateway，纯 launch-time（对比 org 工具有 gateway 每次调用复检）。
+
+Codex 同样走 launch-time 覆盖：`codex plugin list --json` 发现已安装 plugin，`RunRequest.EnabledPlugins` 渲染为 `--config plugins."<id>".enabled=<bool>`。带 plugin 覆盖的 turn 会绕过 persistent app-server cache，确保本轮启动配置生效；未覆盖时仍继承用户全局 `~/.codex/config.toml`。
+
+### 7.3 接入的接口（已并入 §0.5 矩阵）
+
+| 接缝 | 形态 |
+| --- | --- |
+| 能力 | `capability.CapSkills`（claudecode / codex 声明）；前端 `caps.has("skills")` 门控技能区 |
+| RunRequest | `EnabledPlugins map[string]bool`（**稀疏**：仅 agent 显式覆盖；未列出沿用全局=继承）；仅 `CapSkills` runtime 消费，其它忽略（软降级，同 `MCPServers`/`CapMCPTools`） |
+| claudecode | 纯函数 `buildSkillsSettings(map, base) string`（`runtimes/claudecode/skills.go`）把 `{"enabledPlugins":…}` 合进 `--settings`；`acquireSession`（`runtime.go`）spawn 时调用 |
+| codex | 纯函数 `buildPluginConfig(map) []string`（`runtimes/codex/session.go`）把覆盖渲为 `plugins."<id>".enabled=<bool>`；带覆盖时绕过 session cache |
+| 目录域 | leaf `internal/pkg/agentskill`：`SkillPack` 类型 + `Recommended()` 静态精选 + `Discoverer` 按 backend 注册表（claudecode / codex 实现 = 解析各自 `plugin list --json`，blank import 注册，仿 runtime/prober） |
+| 服务 | `skill_svc`（消费者侧窄接口 `AgentLookup`/`BackendLookup` 注入）：`ListAgentSkillPacks`（推荐+发现合并去重，Wails 绑定 `App.ListAgentSkillPacks`）/ `EnabledPluginsMap`（注入用，回 agent 显式覆盖）；保存复用 `agent_svc.Update`（`agents.skills_json` 存 `{id,enabled}`，id=plugin id；迁移 `202606120001_agent_skills_reset` 把旧 `{label}` 清成 `{id}`） |
+| 注入点 | `chat_svc` `runTurn` 组 RunRequest 时按 `CapSkills` 填 `EnabledPlugins`（`turn_skills.go` 接缝，仿 `turn_mcp.go`） |
+| 远端 | `EnabledPlugins` 已随 remote wire 透传到 daemon runtime；目录发现仍在 `ListAgentSkillPacks` 所在进程执行，远端 CLI 不可在桌面访问时会软降级为空发现 |

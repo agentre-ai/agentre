@@ -3,9 +3,15 @@ package chat_svc
 import (
 	"context"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 )
+
+// MessageTextExport 暴露 messageText 给外部测试包验证纯文本拼接逻辑。
+func MessageTextExport(m *chat_entity.Message) (string, error) {
+	return messageText(m)
+}
 
 // DriveAutonomousTurnForTest 暴露 driveAutonomousTurn 给外部测试包,直接驱动一轮
 // 自主续轮(不经 watcher goroutine,便于同步断言落库 + stream)。
@@ -23,6 +29,24 @@ func StartAutonomousWatcherForTest(svc ChatSvc, sessionID int64, be *agent_backe
 // 占着)。watcher 在底层 AutonomousTurns channel close 后退出并清位 → 返 false。
 func IsAutonomousWatcherActiveForTest(svc ChatSvc, sessionID int64) bool {
 	_, ok := svc.(*chatSvc).autoWatchers.Load(sessionID)
+	return ok
+}
+
+// DriveSubagentActivityForTest 暴露 driveSubagentActivity 给外部测试包,直接驱动一轮
+// 后台 subagent 内部活动流(不经 watcher goroutine,便于同步断言落库 + stream)。
+func DriveSubagentActivityForTest(ctx context.Context, svc ChatSvc, sessionID int64, be *agent_backend_entity.AgentBackend, act agentruntime.SubagentActivity) {
+	svc.(*chatSvc).driveSubagentActivity(ctx, sessionID, be, act)
+}
+
+// StartSubagentActivityWatcherForTest 暴露 startSubagentActivityWatcher 给外部测试包。
+func StartSubagentActivityWatcherForTest(svc ChatSvc, sessionID int64, be *agent_backend_entity.AgentBackend, src agentruntime.SubagentActivitySource) {
+	svc.(*chatSvc).startSubagentActivityWatcher(sessionID, be, src)
+}
+
+// IsSubagentActivityWatcherActiveForTest 报告某 session 是否还有活跃 subagent-activity
+// watcher(去重位是否占着)。channel close 后退出并清位 → 返 false。
+func IsSubagentActivityWatcherActiveForTest(svc ChatSvc, sessionID int64) bool {
+	_, ok := svc.(*chatSvc).subagentActivityWatchers.Load(sessionID)
 	return ok
 }
 

@@ -10,10 +10,10 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/buildinfo"
-	"agentre/internal/model/entity/server_state_entity"
-	"agentre/internal/pkg/keychain"
-	"agentre/internal/repository/server_state_repo"
+	"github.com/agentre-ai/agentre/internal/buildinfo"
+	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/keychain"
+	"github.com/agentre-ai/agentre/internal/repository/server_state_repo"
 )
 
 // keychainAccountName 是 hub refresh_token 在 OS keychain 中挂的账号名。

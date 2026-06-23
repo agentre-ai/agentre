@@ -384,6 +384,7 @@ describe("chat-tabs-store · resolveNewTab", () => {
     const t = useChatTabsStore.getState().tabs[0];
     expect(t.id).toBe(tabId);
     expect(t.meta).toEqual({ kind: "session", sessionId: 99 });
+    expect(t.isPreview).toBe(false);
   });
 
   it("非 kind:'new' tab 是 noop", () => {
@@ -440,6 +441,20 @@ describe("chat-tabs-store · reconcileMissingSessions", () => {
     useChatTabsStore.getState().reconcileMissingSessions(new Set([1]));
     const s = useChatTabsStore.getState();
     expect(s.tabs.map((t) => t.meta.kind)).toEqual(["session", "terminal"]);
+  });
+
+  it("保留由 group tab 打开的成员 backing session, 即使普通会话列表没有它", () => {
+    useChatTabsStore.getState().openGroup(5, "队");
+    useChatTabsStore.getState().openGroupMemberSession(5, 42, "前端");
+    useChatTabsStore.getState().reconcileMissingSessions(new Set());
+    const tabs = useChatTabsStore.getState().tabs;
+    expect(tabs.map((t) => t.meta.kind)).toEqual(["group", "groupSession"]);
+    expect(tabs[1].meta).toEqual({
+      kind: "groupSession",
+      groupId: 5,
+      sessionId: 42,
+      title: "前端",
+    });
   });
 });
 

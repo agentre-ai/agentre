@@ -1,11 +1,31 @@
 import { describe, expect, it } from "vitest";
 
+import type { chat_svc } from "../../../../wailsjs/go/models";
+
 import { deriveBackgroundTasks } from "./derive";
+
+// A genuine background task block carries BOTH a local_bash overlay AND the
+// run_in_background tool input — the helpers default to that so fixtures stay
+// valid under the corrected "is this a background task" contract.
+const makeBlock = (
+  type: string,
+  toolUseId: string,
+  subagent: Record<string, unknown>,
+) =>
+  ({
+    type,
+    toolUseId,
+    toolInput: { run_in_background: true },
+    subagent,
+  }) as unknown as chat_svc.ChatBlock;
+const makeMessage = (createtime: number, blocks: chat_svc.ChatBlock[]) =>
+  ({ createtime, blocks }) as unknown as chat_svc.ChatMessage;
 
 const tu = (over: Record<string, unknown> = {}) =>
   ({
     type: "tool_use",
     toolUseId: "tu1",
+    toolInput: { run_in_background: true },
     subagent: {
       kind: "local_bash",
       taskDescription: "sleep 20",
@@ -27,7 +47,7 @@ describe("deriveBackgroundTasks", () => {
     ]);
   });
 
-  it("includes persisted-message tool_use tasks and maps local_agent + completed", () => {
+  it("excludes local_agent from persisted-message tool_use tasks (only local_bash is shown)", () => {
     const msg = {
       blocks: [
         tu({
@@ -41,11 +61,7 @@ describe("deriveBackgroundTasks", () => {
       ],
     };
     const tasks = deriveBackgroundTasks([msg as never], []);
-    expect(tasks[0]).toMatchObject({
-      toolUseId: "tu2",
-      kind: "local_agent",
-      status: "completed",
-    });
+    expect(tasks).toHaveLength(0);
   });
 
   it("live overrides history for the same toolUseId (dedupe, live wins)", () => {
@@ -89,12 +105,47 @@ describe("deriveBackgroundTasks", () => {
     expect(tasks).toEqual([]);
   });
 
-  it("empty/unknown kind falls back to local_agent", () => {
+  it("empty/unknown kind is excluded (only local_bash passes)", () => {
     const tasks = deriveBackgroundTasks(
       [],
       [tu({ subagent: { taskDescription: "y", status: "running" } })],
     );
-    expect(tasks[0].kind).toBe("local_agent");
+    expect(tasks).toHaveLength(0);
+  });
+
+  it("excludes a foreground bash — local_bash overlay without run_in_background is not a background task", () => {
+    // The real CLI emits task_type:"local_bash" frames for EVERY Bash, not just
+    // run_in_background ones, so the kind alone is not enough — gate on the
+    // tool input's run_in_background flag (same discriminator the inline pill uses).
+    const foreground = {
+      type: "tool_use",
+      toolUseId: "tu-fg",
+      toolName: "Bash",
+      toolInput: { command: "git stash -u" },
+      subagent: {
+        kind: "local_bash",
+        status: "running",
+        taskDescription: "Stash untracked files",
+      },
+    } as unknown as Parameters<typeof deriveBackgroundTasks>[1][number];
+    const tasks = deriveBackgroundTasks([], [foreground]);
+    expect(tasks).toHaveLength(0);
+  });
+
+  it("includes a bash with run_in_background:true", () => {
+    const background = {
+      type: "tool_use",
+      toolUseId: "tu-bg",
+      toolName: "Bash",
+      toolInput: { command: "sleep 20", run_in_background: true },
+      subagent: {
+        kind: "local_bash",
+        status: "running",
+        taskDescription: "sleep 20",
+      },
+    } as unknown as Parameters<typeof deriveBackgroundTasks>[1][number];
+    const tasks = deriveBackgroundTasks([], [background]);
+    expect(tasks.map((t) => t.toolUseId)).toEqual(["tu-bg"]);
   });
 
   it("threads startedAt from the containing message createtime + durationMs + summary", () => {
@@ -120,15 +171,15 @@ describe("deriveBackgroundTasks", () => {
     });
   });
 
-  it("reads durationMs from subagent for completed subagents", () => {
+  it("reads durationMs from subagent for completed local_bash tasks", () => {
     const msg = {
       createtime: 1,
       blocks: [
         tu({
           toolUseId: "tA",
           subagent: {
-            kind: "local_agent",
-            taskDescription: "Explore",
+            kind: "local_bash",
+            taskDescription: "run build",
             status: "completed",
             durationMs: 4200,
           },
@@ -174,5 +225,70 @@ describe("deriveBackgroundTasks", () => {
       startedAt: 1700000000000,
       status: "running",
     });
+  });
+
+  it("excludes local_agent subagents — only run_in_background bash is shown", () => {
+    const messages = [
+      makeMessage(1000, [
+        makeBlock("tool_use", "tu-bash", {
+          kind: "local_bash",
+          status: "running",
+          taskDescription: "sleep 5",
+        }),
+        makeBlock("tool_use", "tu-agent", {
+          kind: "local_agent",
+          status: "running",
+          taskDescription: "Explore",
+        }),
+      ]),
+    ];
+    const tasks = deriveBackgroundTasks(messages, []);
+    expect(tasks.map((t) => t.toolUseId)).toEqual(["tu-bash"]);
+    expect(tasks[0].kind).toBe("local_bash");
+  });
+
+  it("carries the real task_id through to BackgroundTask.taskId", () => {
+    const messages = [
+      makeMessage(1000, [
+        makeBlock("tool_use", "tu-bash", {
+          kind: "local_bash",
+          status: "running",
+          taskId: "b3875slp0",
+        }),
+      ]),
+    ];
+    const tasks = deriveBackgroundTasks(messages, []);
+    expect(tasks[0].taskId).toBe("b3875slp0");
+  });
+
+  it("filters out cleared toolUseIds", () => {
+    const messages = [
+      makeMessage(1000, [
+        makeBlock("tool_use", "tu-a", {
+          kind: "local_bash",
+          status: "completed",
+        }),
+        makeBlock("tool_use", "tu-b", {
+          kind: "local_bash",
+          status: "running",
+        }),
+      ]),
+    ];
+    const tasks = deriveBackgroundTasks(messages, [], new Set(["tu-a"]));
+    expect(tasks.map((t) => t.toolUseId)).toEqual(["tu-b"]);
+  });
+
+  it("maps a canceled task to failed (terminal, clearable)", () => {
+    const messages = [
+      makeMessage(1000, [
+        makeBlock("tool_use", "tu-x", {
+          kind: "local_bash",
+          status: "canceled",
+          taskDescription: "sleep",
+        }),
+      ]),
+    ];
+    const tasks = deriveBackgroundTasks(messages, []);
+    expect(tasks[0].status).toBe("failed");
   });
 });

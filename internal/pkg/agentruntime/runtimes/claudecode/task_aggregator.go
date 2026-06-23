@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"sync"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/pkg/claudecode"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
 
 // taskAggregator 收编 claudecode CLI 的 TaskCreate / TaskUpdate 工具调用为

@@ -6,8 +6,8 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/pkg/claudecode"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
 
 func newPreToolUse(toolUseID, name, input string) claudecode.Event {

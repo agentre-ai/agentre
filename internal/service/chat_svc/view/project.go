@@ -5,7 +5,7 @@ import (
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
-	"agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
 
 // ProjectMessageBlocks 把 cago []ContentBlock 投影成 wire []ChatBlock。

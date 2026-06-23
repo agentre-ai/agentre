@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 )
 
 // claudeActive 一个 chat session 当前的常驻 claude 子进程状态。
@@ -40,9 +40,11 @@ type claudeActive struct {
 	permMu      sync.Mutex
 	permWaiters map[string]*permWaiter
 
-	// permissionMode CLI 当前的 permission mode。spawn 时写入,drain 期间收到
-	// EventPermissionModeChanged 时同步更新。读写都只发生在同一个 drain
-	// goroutine 里,无需加锁。
+	// permissionMode CLI 当前的 permission mode 快照。spawn 时直赋(发布前无竞争),
+	// 之后的读写走 permissionModeSnapshot / setPermissionModeSnapshot:drain goroutine
+	// 收到 EventPermissionModeChanged 时同步,Runtime.SetPermissionMode(用户切 pill,
+	// claudecode 允许轮中切)成功后也写 —— 跨 goroutine,由 modeMu 保护。
+	modeMu         sync.Mutex
 	permissionMode string
 
 	// outMu/out Run() 期间登记的事件出口 channel,SubmitAnswer 完成后用它
@@ -54,6 +56,21 @@ type claudeActive struct {
 	// 快照流。drainStream 每帧调 observePreToolUse / observePostToolUse,变更时
 	// 合成 agentruntime.PlanUpdated 推 out。详见 task_aggregator.go 头注。
 	tasks *taskAggregator
+}
+
+// permissionModeSnapshot 读当前 mode 快照。
+func (a *claudeActive) permissionModeSnapshot() string {
+	a.modeMu.Lock()
+	defer a.modeMu.Unlock()
+	return a.permissionMode
+}
+
+// setPermissionModeSnapshot 写 mode 快照。CLI 侧切换成功后调用
+// (drainStream 的 status 帧同步 / Runtime.SetPermissionMode 的主动切换)。
+func (a *claudeActive) setPermissionModeSnapshot(mode string) {
+	a.modeMu.Lock()
+	a.permissionMode = mode
+	a.modeMu.Unlock()
 }
 
 func (a *claudeActive) setOut(out chan<- agentruntime.Event) {

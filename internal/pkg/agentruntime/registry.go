@@ -5,8 +5,8 @@ import (
 	"maps"
 	"sync"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 )
 
 // Runtime 是 agent backend 跑一次 turn 的统一入口。各 backend 实现(claudecode /

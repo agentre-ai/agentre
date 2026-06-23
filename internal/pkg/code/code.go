@@ -204,6 +204,29 @@ const (
 	IssueLabelNotFound                    // 引用的标签不存在
 )
 
+// Group 群聊编排 19000~19999
+const (
+	GroupNotFound             = iota + 19000 // 群不存在
+	GroupTitleRequired                       // 群名不能为空
+	GroupHostRequired                        // 主持人不能为空
+	GroupMemberNotFound                      // 群成员不存在
+	GroupMemberExists                        // 该 agent 已在群中
+	GroupMemberLimit                         // 群成员数已达上限
+	GroupNotRecruitable                      // 该 agent 不在可招募名单
+	GroupBackendUnsupported                  // 该 agent 的后端不支持群聊(缺 CapMCPTools)
+	GroupInviteForbidden                     // 非主持人调用 group_invite / 被邀请人不在招募池
+	GroupTaskNotFound                        // 任务不存在
+	GroupTaskForbidden                       // 无权操作该任务
+	GroupTaskClosed                          // 任务已关闭
+	GroupTaskResultRequired                  // 交付说明不能为空
+	GroupTaskSelfAssign                      // 不能把任务派给自己
+	GroupCreateSessionInvalid                // group_create: 会话无效(不存在/已归档/不属于该 agent)
+	GroupCreateNested                        // group_create: 群成员轮内禁止再拉群(防套娃)
+	GroupCreateMemberUnknown                 // group_create: 成员名找不到对应可用 agent
+	GroupNicknameTaken                       // 群昵称与同群其他成员的有效名冲突(@mention 须唯一)
+	GroupCreateToolDisabled                  // group_create: 发起 agent 未开启 group_create 工具(per-agent 门控)
+)
+
 // Server 接入 20300~20399
 const (
 	ServerURLInvalid          = iota + 20300
@@ -264,4 +287,9 @@ const (
 	DataImportDuplicateLocal                    // 本地存在多条同名记录,无法自动覆盖
 	DataImportRollback                          // 导入失败,所有改动已回滚
 	DataImportInvalidAction                     // 未知的导入 action
+)
+
+// 流程库(workflow)20800~
+const (
+	WorkflowNotFound = iota + 20800 // 流程不存在
 )

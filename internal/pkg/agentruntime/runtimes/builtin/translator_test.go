@@ -7,7 +7,7 @@ import (
 	"github.com/cago-frame/agents/agent/blocks"
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 )
 
 // TestTranslate_TextDelta agent.EventTextDelta → agentruntime.TextDelta。

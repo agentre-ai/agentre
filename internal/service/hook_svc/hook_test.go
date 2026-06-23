@@ -12,12 +12,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/model/entity/hook_entity"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/agent_repo/mock_agent_repo"
-	"agentre/internal/repository/hook_repo"
-	"agentre/internal/repository/hook_repo/mock_hook_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/hook_entity"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/hook_repo"
+	"github.com/agentre-ai/agentre/internal/repository/hook_repo/mock_hook_repo"
 )
 
 type fakeMailFetcher struct {

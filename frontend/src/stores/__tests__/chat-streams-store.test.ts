@@ -355,4 +355,78 @@ describe("chat-streams-store", () => {
       },
     });
   });
+
+  // ── tool_approval(内置写工具审批)live 路径 —— 镜像 tool permission 两式 ──
+  it("appendLiveToolApproval pushes a pending tool_approval live block", () => {
+    const { openStream, appendLiveToolApproval } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    appendLiveToolApproval(7, {
+      toolKey: "org",
+      requestId: "org-1",
+      toolName: "org_create_department",
+      toolInput: { name: "研发部" },
+      status: "pending",
+    });
+    const s = useChatStreamsStore.getState().streams.get(7)!;
+    expect(s.liveBlocks).toHaveLength(1);
+    expect(s.liveBlocks[0]).toMatchObject({
+      type: "tool_approval",
+      toolApproval: {
+        toolKey: "org",
+        requestId: "org-1",
+        toolName: "org_create_department",
+        status: "pending",
+      },
+    });
+  });
+
+  it("markToolApprovalResolved updates status/result by requestId", () => {
+    const { openStream, appendLiveToolApproval, markToolApprovalResolved } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    appendLiveToolApproval(7, {
+      toolKey: "org",
+      requestId: "org-2",
+      toolName: "org_delete_agent",
+      toolInput: { id: 9 },
+      status: "pending",
+    });
+    markToolApprovalResolved(7, {
+      toolKey: "org",
+      requestId: "org-2",
+      toolName: "org_delete_agent",
+      status: "approved",
+      result: "已删除 Agent #9",
+    });
+    const block = useChatStreamsStore.getState().streams.get(7)!.liveBlocks[0];
+    expect(block.toolApproval).toMatchObject({
+      requestId: "org-2",
+      status: "approved",
+      result: "已删除 Agent #9",
+    });
+  });
+
+  it("markToolApprovalResolved is a no-op for an unknown requestId", () => {
+    const { openStream, appendLiveToolApproval, markToolApprovalResolved } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    appendLiveToolApproval(7, {
+      toolKey: "org",
+      requestId: "org-3",
+      toolName: "org_update_agent",
+      status: "pending",
+    });
+    const before = useChatStreamsStore.getState().streams;
+    markToolApprovalResolved(7, {
+      toolKey: "org",
+      requestId: "does-not-exist",
+      toolName: "org_update_agent",
+      status: "denied",
+    });
+    // 未知 requestId 既不改块也不重建 Map(referential no-op)。
+    expect(useChatStreamsStore.getState().streams).toBe(before);
+    const block = useChatStreamsStore.getState().streams.get(7)!.liveBlocks[0];
+    expect(block.toolApproval).toMatchObject({ status: "pending" });
+  });
 });

@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/paired_agentred_entity"
-	"agentre/internal/repository/remote_device_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
 )
 
 func TestPairedAgentredRepo_Create(t *testing.T) {

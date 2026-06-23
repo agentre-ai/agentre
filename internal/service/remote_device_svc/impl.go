@@ -3,7 +3,7 @@ package remote_device_svc
 import (
 	"sync"
 
-	"agentre/internal/repository/remote_device_repo"
+	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
 )
 
 type service struct {

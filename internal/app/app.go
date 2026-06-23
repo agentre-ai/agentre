@@ -13,18 +13,26 @@ import (
 	"sync/atomic"
 	"time"
 
-	"agentre/internal/bootstrap"
-	"agentre/internal/buildinfo"
-	"agentre/internal/pkg/agentruntime"
-	_ "agentre/internal/pkg/agentruntime/runtimes/piagent"
-	"agentre/internal/pkg/code"
-	"agentre/internal/service/chat_svc"
-	"agentre/internal/service/data_svc"
-	"agentre/internal/service/hook_svc"
-	"agentre/internal/service/remote_device_svc"
-	watcher "agentre/internal/service/remote_device_watcher_svc"
-	"agentre/internal/service/server_svc"
-	"agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/bootstrap"
+	"github.com/agentre-ai/agentre/internal/buildinfo"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/service/agent_svc"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/data_svc"
+	"github.com/agentre-ai/agentre/internal/service/department_svc"
+	"github.com/agentre-ai/agentre/internal/service/group_svc"
+	"github.com/agentre-ai/agentre/internal/service/hook_svc"
+	"github.com/agentre-ai/agentre/internal/service/orgtool_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	watcher "github.com/agentre-ai/agentre/internal/service/remote_device_watcher_svc"
+	"github.com/agentre-ai/agentre/internal/service/server_svc"
+	"github.com/agentre-ai/agentre/internal/service/subagent_svc"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/service/workflow_svc"
+	"github.com/agentre-ai/agentre/internal/service/workflowtool_svc"
 
 	"github.com/cago-frame/cago/configs"
 	"github.com/cago-frame/cago/pkg/i18n"
@@ -199,6 +207,28 @@ func (a *App) registerChatService() {
 		wailsruntime.EventsEmit(a.ctx, name, payload)
 	})
 	chat_svc.RegisterChat(chat_svc.NewChat(emitter))
+
+	group_svc.SetEmitter(group_svc.EmitterFunc(func(_ context.Context, name string, payload any) {
+		wailsruntime.EventsEmit(a.ctx, name, payload)
+	}))
+
+	// 注入 orgtool_svc 依赖:必须在 RegisterChat 之后执行,因为 chat_svc.Chat()
+	// 在此之前为 nil(chat 服务是懒注册的)。
+	// department_svc.Department() 同时满足 OrgQuery + DeptCommand 两个窄接口。
+	orgtool_svc.Default().RegisterDeps(
+		department_svc.Department(), department_svc.Department(),
+		agent_svc.Agent(), agent_repo.Agent(), chat_svc.Chat(),
+	)
+
+	// workflow_svc.Workflow() 同时满足 WorkflowQuery + WorkflowCommand 两个窄接口。
+	workflowtool_svc.Default().RegisterDeps(
+		workflow_svc.Workflow(), workflow_svc.Workflow(),
+		agent_repo.Agent(), chat_svc.Chat(),
+	)
+
+	// subagent_svc 同样需 chat_svc.Chat() 非 nil(起子 agent 轮),故也在 RegisterChat 之后接线。
+	// agent_repo.Agent() 直接满足 AgentGateway(Find/FindByName/List)。
+	subagent_svc.Default().RegisterDeps(agent_repo.Agent(), subagent_svc.ChatSvcGateway())
 }
 
 // Greet returns a greeting for the given name.

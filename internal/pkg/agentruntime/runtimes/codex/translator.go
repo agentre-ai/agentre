@@ -6,10 +6,10 @@ import (
 
 	"github.com/cago-frame/agents/provider"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/pkg/diff"
-	"agentre/pkg/codex"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/diff"
+	"github.com/agentre-ai/agentre/pkg/codex"
 )
 
 // translate 把单帧 codex.Event 翻成 0/1/n 个 sealed agentruntime.Event。
@@ -174,45 +174,7 @@ func recognizeCanonical(name string, rawInput json.RawMessage) canonical.Canonic
 	if !ok || len(payload.Files) == 0 {
 		return nil
 	}
-	return canonical.FileEdit{Files: canonicalPatchesFromDiff(payload)}
-}
-
-// canonicalPatchesFromDiff 把 diff.Payload 降级到 canonical.FileEditPatch 列表。
-// 镜像 claudecode/translator.go 同名 helper。
-func canonicalPatchesFromDiff(p diff.Payload) []canonical.FileEditPatch {
-	out := make([]canonical.FileEditPatch, 0, len(p.Files))
-	for _, f := range p.Files {
-		patch := canonical.FileEditPatch{
-			Path:       f.Path,
-			Kind:       canonical.FileChangeKind(string(f.Kind)),
-			Plus:       f.Plus,
-			Minus:      f.Minus,
-			Truncated:  f.Truncated,
-			ReplaceAll: f.ReplaceAll,
-		}
-		patch.Hunks = make([]canonical.DiffHunk, 0, len(f.Hunks))
-		for _, h := range f.Hunks {
-			ch := canonical.DiffHunk{
-				OldStart: h.OldStart,
-				OldLines: h.OldLines,
-				NewStart: h.NewStart,
-				NewLines: h.NewLines,
-				Header:   h.Header,
-			}
-			ch.Lines = make([]canonical.DiffLine, 0, len(h.Lines))
-			for _, ln := range h.Lines {
-				ch.Lines = append(ch.Lines, canonical.DiffLine{
-					Op:   canonical.DiffOp(string(ln.Op)),
-					Old:  ln.Old,
-					New:  ln.New,
-					Text: ln.Text,
-				})
-			}
-			patch.Hunks = append(patch.Hunks, ch)
-		}
-		out = append(out, patch)
-	}
-	return out
+	return canonical.FileEdit{Files: canonical.PatchesFromDiff(payload)}
 }
 
 // requestUserInputQuestionsToRuntime 把 codex 自带的 RequestUserInputQuestion

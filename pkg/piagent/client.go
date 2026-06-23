@@ -26,9 +26,12 @@ type Client struct {
 	sessionDir string
 	// session 非空时透传 --session <path>：Pi 会在该路径不存在时新建、存在时
 	// resume，从而跨 turn 复用同一会话历史。
-	session   string
-	killGrace time.Duration
-	runner    processRunner
+	session string
+	// extensions 透传给 pi 的 --extension（可多次）。Agentre 用它加载内嵌的
+	// MCP 桥扩展，把注入的 HTTP MCP server 翻成 pi 一等工具。
+	extensions []string
+	killGrace  time.Duration
+	runner     processRunner
 }
 
 func New(opts ...Option) *Client {

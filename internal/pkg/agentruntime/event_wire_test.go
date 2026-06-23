@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 )
 
 // TestEvent_RoundTrip 每个 sealed Event 至少 1 个 happy + 1 个边界 case,

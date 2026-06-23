@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 )
 
 // setupAgentBackendRepoTest 起一个 sqlmock 数据库，返回 ctx / mock / repo。

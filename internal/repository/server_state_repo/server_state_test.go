@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/server_state_entity"
-	"agentre/internal/repository/server_state_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
+	"github.com/agentre-ai/agentre/internal/repository/server_state_repo"
 )
 
 func TestServerStateRepo_Get(t *testing.T) {

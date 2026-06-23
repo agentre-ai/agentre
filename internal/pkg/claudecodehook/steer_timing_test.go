@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 )
 
 // realInboxGateway stands up an httptest server that mirrors

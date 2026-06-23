@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/daemon/handlers/mock_handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers/mock_handlers"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

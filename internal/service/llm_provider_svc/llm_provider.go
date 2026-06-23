@@ -16,10 +16,10 @@ import (
 	"github.com/cago-frame/cago/pkg/i18n"
 	"github.com/google/uuid"
 
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/pkg/llmcatalog"
-	"agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/llmcatalog"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 )
 
 // 默认 endpoint。BaseURL 留空时使用。

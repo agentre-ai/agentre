@@ -3,8 +3,8 @@ package piagent
 import (
 	"github.com/cago-frame/agents/provider"
 
-	"agentre/internal/pkg/agentruntime"
-	pkgpi "agentre/pkg/piagent"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	pkgpi "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
 func translate(ev pkgpi.Event) (events []agentruntime.Event, usage *provider.Usage, stopErr error) {

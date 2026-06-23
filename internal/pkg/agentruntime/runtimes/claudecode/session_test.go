@@ -5,11 +5,57 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/pkg/claudecode"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
+
+// TestCCBuildClientOpts_MCPServersInjectTool 锁住 AM2:RunRequest.MCPServers 非空时
+// ccBuildClientOpts 把它翻译成 (a) --mcp-config 的 spike 形态 JSON,带 server 的
+// name / url / header,(b) --allowedTools 里追加 mcp__<name>__group_send。
+// 通过 Client accessor 断言,不 spawn 真子进程。
+func TestCCBuildClientOpts_MCPServersInjectTool(t *testing.T) {
+	Convey("Given RunRequest 带一个 http MCP server", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+				MCPServers: []agentruntime.MCPServerSpec{{
+					Name:    "group",
+					URL:     "http://127.0.0.1:9000/mcp/group/",
+					Headers: map[string]string{"Authorization": "Bearer tok-123"},
+					Tools:   []string{"group_send", "group_invite"},
+				}},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+
+		Convey("Then --mcp-config 是 spike 形态,带 name/url/header", func() {
+			cfg := c.McpConfig()
+			So(cfg, ShouldEqual,
+				`{"mcpServers":{"group":{"type":"http","url":"http://127.0.0.1:9000/mcp/group/","headers":{"Authorization":"Bearer tok-123"}}}}`)
+		})
+
+		Convey("Then --allowedTools 含 spec.Tools 声明的每个 tool", func() {
+			So(c.AllowedTools(), ShouldContain, "mcp__group__group_send")
+			So(c.AllowedTools(), ShouldContain, "mcp__group__group_invite")
+		})
+	})
+
+	Convey("Given RunRequest 不带 MCPServers(回归)", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+
+		Convey("Then 不下发 --mcp-config,allowedTools 为空", func() {
+			So(c.McpConfig(), ShouldEqual, "")
+			So(c.AllowedTools(), ShouldBeEmpty)
+		})
+	})
+}
 
 // TestCCBuildClientOpts_ProviderModelDownToCLI 锁住 Bug 1 修复:
 // 绑了 LLM provider 的 claudecode 后端必须把 provider.Model 通过 WithModel
@@ -49,6 +95,115 @@ func TestCCBuildClientOpts_ProviderModelDownToCLI(t *testing.T) {
 		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
 		// strings.TrimSpace 之后空串不应当下发 WithModel,留给 CLI 走默认。
 		So(c.Model(), ShouldEqual, "")
+	})
+}
+
+// TestCCBuildClientOpts_BackendDefaultModel 锁住 CLI 登录态(无 provider)下的自定义
+// 模型:backend.DefaultModel 在 provider.Model 为空时兜底下发成 --model;provider.Model
+// 非空时仍优先,DefaultModel 被忽略(绑 provider 行为不变)。
+func TestCCBuildClientOpts_BackendDefaultModel(t *testing.T) {
+	Convey("provider = nil + backend.DefaultModel 非空 → 下发 DefaultModel", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:         string(agent_backend_entity.TypeClaudeCode),
+					DefaultModel: "claude-fable-5",
+				},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+		So(c.Model(), ShouldEqual, "claude-fable-5")
+	})
+
+	Convey("provider.Model 非空 → 优先于 backend.DefaultModel", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:         string(agent_backend_entity.TypeClaudeCode),
+					DefaultModel: "claude-fable-5",
+				},
+				Provider: &llm_provider_entity.LLMProvider{Model: "glm-5.1"},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+		So(c.Model(), ShouldEqual, "glm-5.1")
+	})
+
+	Convey("DefaultModel 只有空白 → 不下发 --model", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:         string(agent_backend_entity.TypeClaudeCode),
+					DefaultModel: "   ",
+				},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+		So(c.Model(), ShouldEqual, "")
+	})
+}
+
+// TestCCBuildClientOpts_MCPTimeoutEnv 锁住:有 MCPServers 时注入 MCP_TIMEOUT /
+// MCP_TOOL_TIMEOUT env(均为 600000 ms);无 MCPServers 时不注入;caller 显式配
+// 置同名 key 时不覆盖。
+func TestCCBuildClientOpts_MCPTimeoutEnv(t *testing.T) {
+	Convey("Given RunRequest 带 MCPServers", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+				MCPServers: []agentruntime.MCPServerSpec{{
+					Name: "org",
+					URL:  "http://127.0.0.1:9001/mcp/org/",
+				}},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+
+		Convey("Then Env 含 MCP_TIMEOUT=600000 与 MCP_TOOL_TIMEOUT=600000", func() {
+			env := c.Env()
+			So(env["MCP_TIMEOUT"], ShouldEqual, "600000")
+			So(env["MCP_TOOL_TIMEOUT"], ShouldEqual, "600000")
+		})
+	})
+
+	Convey("Given RunRequest 不带 MCPServers", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+
+		Convey("Then Env 不含 MCP_TIMEOUT / MCP_TOOL_TIMEOUT", func() {
+			env := c.Env()
+			_, hasMCPTimeout := env["MCP_TIMEOUT"]
+			_, hasMCPToolTimeout := env["MCP_TOOL_TIMEOUT"]
+			So(hasMCPTimeout, ShouldBeFalse)
+			So(hasMCPToolTimeout, ShouldBeFalse)
+		})
+	})
+
+	Convey("Given RunRequest 带 MCPServers 且 spec.Env 已有同名 key", t, func() {
+		spec := ccLaunchSpec{
+			Env: map[string]string{
+				"MCP_TIMEOUT":      "30000",
+				"MCP_TOOL_TIMEOUT": "30000",
+			},
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+				MCPServers: []agentruntime.MCPServerSpec{{
+					Name: "org",
+					URL:  "http://127.0.0.1:9001/mcp/org/",
+				}},
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+
+		Convey("Then caller 的值优先,不被覆盖", func() {
+			env := c.Env()
+			So(env["MCP_TIMEOUT"], ShouldEqual, "30000")
+			So(env["MCP_TOOL_TIMEOUT"], ShouldEqual, "30000")
+		})
 	})
 }
 

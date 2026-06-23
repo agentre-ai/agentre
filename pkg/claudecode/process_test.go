@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,43 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func readProcessStdout(t *testing.T, p *process) string {
+	t.Helper()
+	out := strings.Builder{}
+	buf := make([]byte, 64)
+	for {
+		n, rerr := p.stdout.Read(buf)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+		if rerr != nil {
+			if rerr != io.EOF {
+				t.Fatalf("read stdout: %v", rerr)
+			}
+			break
+		}
+	}
+	return out.String()
+}
+
+func runShellProcess(t *testing.T, script string, env map[string]string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	p, err := startProcess(ctx, processSpec{
+		binary: "/bin/sh",
+		args:   []string{"-c", script},
+		env:    env,
+	})
+	require.NoError(t, err)
+
+	out := readProcessStdout(t, p)
+	exit, _ := p.wait(ctx)
+	require.Equal(t, 0, exit)
+	return out
+}
 
 // TestProcess_StreamsStdoutAndWaitsForExit 用 /bin/sh -c 'printf ...' 作为 fake
 // binary，验证 Start → 读 stdout → Wait 的链路。
@@ -24,20 +62,32 @@ func TestProcess_StreamsStdoutAndWaitsForExit(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out := strings.Builder{}
-	buf := make([]byte, 16)
-	for {
-		n, rerr := p.stdout.Read(buf)
-		if n > 0 {
-			out.Write(buf[:n])
-		}
-		if rerr != nil {
-			break
-		}
-	}
+	out := readProcessStdout(t, p)
 	exitCode, _ := p.wait(ctx)
 	assert.Equal(t, 0, exitCode)
-	assert.Equal(t, "a\nb\n", out.String())
+	assert.Equal(t, "a\nb\n", out)
+}
+
+// TestProcess_KillTerminatesWedgedSubprocess 钉死硬杀路径:对一个长睡、不读 stdin
+// 的子进程(模拟 CLI 卡在 MCP 初始化、Close 关 stdin 救不回来)调 kill() 必须 SIGKILL
+// 掉它,reaper 的 cmd.Wait 随即返回 → exit channel close,上层 readLoop 拿 EOF 解阻塞。
+func TestProcess_KillTerminatesWedgedSubprocess(t *testing.T) {
+	ctx := context.Background()
+	p, err := startProcess(ctx, processSpec{
+		binary: "/bin/sh",
+		args:   []string{"-c", "sleep 60"},
+	})
+	require.NoError(t, err)
+	require.False(t, p.hasExited(), "子进程应先存活")
+
+	p.kill()
+
+	select {
+	case <-p.exit:
+	case <-time.After(5 * time.Second):
+		t.Fatal("kill() 没能终止长睡子进程")
+	}
+	assert.True(t, p.hasExited(), "kill 后 reaper 应已收尾")
 }
 
 // TestProcess_EnvInheritsOSEnviron 验证传入 spec.env 时不会把整个进程环境清空。
@@ -45,65 +95,27 @@ func TestProcess_StreamsStdoutAndWaitsForExit(t *testing.T) {
 // cmd.Env = envList 把 PATH/HOME 也丢掉，子进程会卡在初始化阶段不出任何 frame —
 // 用户视角就是「发出去了但一直没返回消息」。
 func TestProcess_EnvInheritsOSEnviron(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
 	t.Setenv("CLAUDECODE_TEST_INHERIT", "from_parent")
 
-	p, err := startProcess(ctx, processSpec{
-		binary: "/bin/sh",
-		// 同时 echo: 调用方注入的 key + 父进程继承的 key。两者都应该出现。
-		args: []string{"-c", `printf '%s\n%s\n' "$ANTHROPIC_AUTH_TOKEN" "$CLAUDECODE_TEST_INHERIT"`},
-		env:  map[string]string{"ANTHROPIC_AUTH_TOKEN": "from_caller"},
-	})
-	require.NoError(t, err)
-
-	out := strings.Builder{}
-	buf := make([]byte, 64)
-	for {
-		n, rerr := p.stdout.Read(buf)
-		if n > 0 {
-			out.Write(buf[:n])
-		}
-		if rerr != nil {
-			break
-		}
-	}
-	exit, _ := p.wait(ctx)
-	require.Equal(t, 0, exit)
-	assert.Equal(t, "from_caller\nfrom_parent\n", out.String(),
+	// 同时 echo: 调用方注入的 key + 父进程继承的 key。两者都应该出现。
+	out := runShellProcess(t,
+		`printf '%s\n%s\n' "$ANTHROPIC_AUTH_TOKEN" "$CLAUDECODE_TEST_INHERIT"`,
+		map[string]string{"ANTHROPIC_AUTH_TOKEN": "from_caller"},
+	)
+	assert.Equal(t, "from_caller\nfrom_parent\n", out,
 		"子进程应同时拿到调用方注入的 env 和父进程继承的 env")
 }
 
 // TestProcess_EnvCallerOverridesOSEnviron 验证调用方传入的同名 key 会覆盖
 // 父进程的值（execve 后者胜出）—— 比如让单元测试可以临时改 HOME。
 func TestProcess_EnvCallerOverridesOSEnviron(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
 	t.Setenv("CLAUDECODE_TEST_OVERRIDE", "parent_value")
 
-	p, err := startProcess(ctx, processSpec{
-		binary: "/bin/sh",
-		args:   []string{"-c", `printf '%s\n' "$CLAUDECODE_TEST_OVERRIDE"`},
-		env:    map[string]string{"CLAUDECODE_TEST_OVERRIDE": "caller_value"},
-	})
-	require.NoError(t, err)
-
-	out := strings.Builder{}
-	buf := make([]byte, 64)
-	for {
-		n, rerr := p.stdout.Read(buf)
-		if n > 0 {
-			out.Write(buf[:n])
-		}
-		if rerr != nil {
-			break
-		}
-	}
-	exit, _ := p.wait(ctx)
-	require.Equal(t, 0, exit)
-	assert.Equal(t, "caller_value\n", out.String(), "调用方注入的值应当覆盖父进程")
+	out := runShellProcess(t,
+		`printf '%s\n' "$CLAUDECODE_TEST_OVERRIDE"`,
+		map[string]string{"CLAUDECODE_TEST_OVERRIDE": "caller_value"},
+	)
+	assert.Equal(t, "caller_value\n", out, "调用方注入的值应当覆盖父进程")
 }
 
 func TestProcess_BinaryMissing(t *testing.T) {

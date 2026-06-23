@@ -28,6 +28,3 @@ var defaultSvc DataSvc = &dataSvc{
 
 // Default 返回默认实现。
 func Default() DataSvc { return defaultSvc }
-
-// SetDefault 由 bootstrap 注入(可选)。
-func SetDefault(s DataSvc) { defaultSvc = s }

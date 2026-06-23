@@ -10,11 +10,12 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/internal/pkg/llmcatalog"
-	pkgpi "agentre/pkg/piagent"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent/mcpbridge"
+	"github.com/agentre-ai/agentre/internal/pkg/llmcatalog"
+	pkgpi "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
 var defaultRuntime = New()
@@ -45,6 +46,7 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			capability.CapImageInput:          true,
 			capability.CapCompact:             true,
 			capability.CapReportContextWindow: true,
+			capability.CapMCPTools:            true,
 		},
 	}
 }
@@ -90,12 +92,25 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		modelID = strings.TrimSpace(req.Provider.Model)
 	}
 	result := &agentruntime.RunResult{ProviderSessionID: sess.ID(), Model: modelID}
+	logger.Ctx(ctx).Info("piagent runtime: turn starting",
+		zap.Int64("sessionID", req.SessionID),
+		zap.Int64("agentID", req.AgentID),
+		zap.String("cwd", cwd),
+		zap.String("providerSessionID", result.ProviderSessionID),
+		zap.String("model", result.Model),
+		zap.Bool("compact", req.Compact),
+	)
 
 	go func() {
 		defer close(out)
 		defer r.unregister(req.SessionID)
+		// turn 结束、pi 子进程退出后删除含 token 的会话配置（仅注入过才需要），
+		// 避免凭证文件随会话数累积。注册在 sess.Close 之前 → LIFO 后于 Close 执行。
+		if len(req.MCPServers) > 0 {
+			defer func() { _ = mcpbridge.RemoveConfig(req.SessionID) }()
+		}
 		defer func() { _ = sess.Close(context.Background()) }()
-		drainStream(s, out, result, active)
+		drainStream(ctx, req, cwd, s, out, result, active)
 		if sid := s.SessionID(); sid != "" {
 			result.ProviderSessionID = sid
 		}
@@ -187,7 +202,7 @@ func contextWindowForModel(model string) int {
 	return info.ContextWindow
 }
 
-func drainStream(s stream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *activeSession) {
+func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s stream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *activeSession) {
 	var usage *provider.Usage
 	var stopErr error
 	for s.Next() {
@@ -241,10 +256,82 @@ func drainStream(s stream, out chan<- agentruntime.Event, result *agentruntime.R
 	if usage != nil {
 		result.Usage = usage
 	}
+	if sid := s.SessionID(); sid != "" {
+		result.ProviderSessionID = sid
+	}
 	if stopErr != nil {
 		result.StopErr = stopErr
+		logPiFailureDiagnostics(ctx, req, cwd, s)
+		logger.Ctx(ctx).Warn("piagent runtime: turn failed", piTurnLogFields(req, cwd, result, stopErr)...)
 		out <- agentruntime.ErrorEvent{Err: stopErr}
 		return
 	}
+	logger.Ctx(ctx).Info("piagent runtime: turn done", piTurnLogFields(req, cwd, result, nil)...)
 	out <- agentruntime.Done{}
+}
+
+type diagnosticsStream interface {
+	Diagnostics() pkgpi.StreamDiagnostics
+}
+
+func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, cwd string, s stream) {
+	ds, ok := s.(diagnosticsStream)
+	if !ok {
+		return
+	}
+	d := ds.Diagnostics()
+	if d.FinalErrorFrame == "" && d.StderrTail == "" {
+		return
+	}
+	fields := []zap.Field{
+		zap.Int64("sessionID", req.SessionID),
+		zap.Int64("agentID", req.AgentID),
+		zap.String("cwd", cwd),
+		zap.Bool("compact", req.Compact),
+	}
+	if d.FinalErrorEventType != "" {
+		fields = append(fields, zap.String("piEventType", d.FinalErrorEventType))
+	}
+	if d.FinalErrorStopReason != "" {
+		fields = append(fields, zap.String("piStopReason", d.FinalErrorStopReason))
+	}
+	if d.FinalErrorMessage != "" {
+		fields = append(fields, zap.String("piErrorMessage", d.FinalErrorMessage))
+	}
+	if d.FinalErrorFrame != "" {
+		fields = append(fields, zap.String("piFinalErrorFrame", d.FinalErrorFrame))
+	}
+	if d.StderrTail != "" {
+		fields = append(fields, zap.String("piStderrTail", d.StderrTail))
+	}
+	logger.Ctx(ctx).Debug("piagent runtime: turn failed diagnostics", fields...)
+}
+
+func piTurnLogFields(req agentruntime.RunRequest, cwd string, result *agentruntime.RunResult, err error) []zap.Field {
+	fields := []zap.Field{
+		zap.Int64("sessionID", req.SessionID),
+		zap.Int64("agentID", req.AgentID),
+		zap.String("cwd", cwd),
+		zap.Bool("compact", req.Compact),
+	}
+	if result != nil {
+		fields = append(fields,
+			zap.String("providerSessionID", result.ProviderSessionID),
+			zap.String("model", result.Model),
+			zap.Int("contextWindow", result.ContextWindow),
+		)
+		if result.Usage != nil {
+			fields = append(fields,
+				zap.Int("promptTokens", result.Usage.PromptTokens),
+				zap.Int("completionTokens", result.Usage.CompletionTokens),
+				zap.Int("cachedTokens", result.Usage.CachedTokens),
+				zap.Int("cacheCreationTokens", result.Usage.CacheCreationTokens),
+				zap.Int("totalInputTokens", result.Usage.PromptTokens+result.Usage.CachedTokens+result.Usage.CacheCreationTokens),
+			)
+		}
+	}
+	if err != nil {
+		fields = append(fields, zap.Error(err))
+	}
+	return fields
 }

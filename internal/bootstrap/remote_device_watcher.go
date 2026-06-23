@@ -6,12 +6,12 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/daemon/client"
-	"agentre/internal/model/entity/paired_agentred_entity"
-	"agentre/internal/pkg/keychain"
-	"agentre/internal/repository/remote_device_repo"
-	"agentre/internal/service/remote_device_svc"
-	watcher "agentre/internal/service/remote_device_watcher_svc"
+	"github.com/agentre-ai/agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/keychain"
+	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	watcher "github.com/agentre-ai/agentre/internal/service/remote_device_watcher_svc"
 )
 
 // dialAdapter 把 remote_device_svc.DaemonDialPort 的 Open 桥到 watcher port。

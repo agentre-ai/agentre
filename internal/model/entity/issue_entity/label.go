@@ -7,7 +7,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // allowedTones 与前端 labelToneClassNames 的 key 一致；颜色由前端设计系统统一管理。

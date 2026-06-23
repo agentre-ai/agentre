@@ -270,6 +270,11 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           historyIndexRef.current = -1;
           applyInputHistoryMessage(editor, draft);
         },
+        insertText: (text) => {
+          // 与 slash literal_text 插入同手法(slashSelectHandler):
+          // focus + insertContent,插在当前光标处,不自动发送。
+          editor?.chain().focus().insertContent(text).run();
+        },
       }),
       [editor],
     );

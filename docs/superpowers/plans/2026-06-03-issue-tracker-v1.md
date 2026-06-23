@@ -296,7 +296,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
 )
 
 func TestIssueCheck(t *testing.T) {
@@ -333,7 +333,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
 )
 
 func TestLabelCheck(t *testing.T) {
@@ -362,7 +362,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 const (
@@ -437,7 +437,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // allowedTones 与前端 labelToneClassNames 的 key 一致；颜色由前端设计系统统一管理。
@@ -518,8 +518,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/repository/issue_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 )
 
 func setupIssueRepo(t *testing.T) (context.Context, sqlmock.Sqlmock, issue_repo.IssueRepo) {
@@ -574,7 +574,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
 )
 
 //go:generate mockgen -source issue.go -destination mock_issue_repo/mock_issue.go
@@ -730,7 +730,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/repository/issue_repo"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 )
 
 func TestLabelList(t *testing.T) {
@@ -782,7 +782,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
 )
 
 //go:generate mockgen -source label.go -destination mock_issue_repo/mock_label.go
@@ -939,7 +939,7 @@ git commit -m "🤖 issue: 生成 issue_repo mocks"
 ```go
 package issue_svc
 
-import "agentre/internal/model/entity/issue_entity"
+import "github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
 
 type CreateIssueRequest struct {
 	ProjectID int64
@@ -990,10 +990,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/repository/issue_repo"
-	"agentre/internal/repository/issue_repo/mock_issue_repo"
-	"agentre/internal/service/issue_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo/mock_issue_repo"
+	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 )
 
 func setupIssueSvc(t *testing.T) (
@@ -1075,9 +1075,9 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/issue_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 )
 
 // IssueSvc Issue 模块应用服务。
@@ -1310,8 +1310,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/service/issue_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 )
 
 func TestToIssueItem(t *testing.T) {
@@ -1344,8 +1344,8 @@ Expected: FAIL — `toIssueItem` undefined.
 package app
 
 import (
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/service/issue_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 )
 
 // IssueItem issue 摘要（含标签），列表 / 看板 / 详情共用。
@@ -1523,8 +1523,8 @@ git commit -m "✨ issue: 新增 Wails 绑定 internal/app/issue.go"
 - [ ] **Step 1: Add imports** to the import block in `internal/bootstrap/cago.go`
 
 ```go
-	"agentre/internal/repository/issue_repo"
-	"agentre/internal/service/issue_svc"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
+	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 ```
 
 - [ ] **Step 2: Register repos + svc** — in `Init(...)`, after the project wiring lines:

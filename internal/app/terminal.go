@@ -3,7 +3,7 @@ package app
 import (
 	"errors"
 
-	"agentre/internal/service/project_svc"
+	"github.com/agentre-ai/agentre/internal/service/project_svc"
 )
 
 var errTerminalSvcNotInitialized = errors.New("terminal service not initialized")

@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 )
 
 func TestGateway_StartStopRoundTrip(t *testing.T) {
@@ -98,6 +98,19 @@ func TestGateway_TokenLifecycle(t *testing.T) {
 	g.RevokeToken(tok)
 	assert.Equal(t, 0, g.tokens.Size())
 	assert.NoError(t, g.Stop(context.Background()))
+}
+
+func TestGateway_BaseURL(t *testing.T) {
+	// 未启动时 BaseURL 为空。
+	g := New("127.0.0.1", 0, newFakeLookup())
+	assert.Empty(t, g.BaseURL())
+
+	// 启动后 BaseURL 非空且带 http:// 前缀。
+	assert.NoError(t, g.Start(context.Background()))
+	defer func() { _ = g.Stop(context.Background()) }()
+	base := g.BaseURL()
+	assert.NotEmpty(t, base)
+	assert.True(t, strings.HasPrefix(base, "http://"), "BaseURL 应以 http:// 开头: %s", base)
 }
 
 func TestGateway_RegisterMCP(t *testing.T) {

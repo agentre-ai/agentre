@@ -10,10 +10,10 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/pkg/ccoauth"
-	"agentre/internal/service/cc_usage_svc"
-	"agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/pkg/ccoauth"
+	"github.com/agentre-ai/agentre/internal/service/cc_usage_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // GetCCUsage 给前端 hook 主动拉指定 device 的缓存状态。

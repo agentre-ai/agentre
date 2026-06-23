@@ -3,7 +3,7 @@ package canonical
 import (
 	"strings"
 
-	"agentre/internal/pkg/diff"
+	"github.com/agentre-ai/agentre/internal/pkg/diff"
 )
 
 // WriteContentByteCap 是 FileWrite.Content 字节上限。超过后截断并标 Truncated=true,

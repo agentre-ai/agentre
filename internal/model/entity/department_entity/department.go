@@ -8,7 +8,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // Department 一条部门记录。
@@ -47,6 +47,12 @@ var allowedColors = map[string]struct{}{
 	"agent-8":  {},
 	"agent-9":  {},
 	"agent-10": {},
+	"agent-11": {},
+	"agent-12": {},
+	"agent-13": {},
+	"agent-14": {},
+	"agent-15": {},
+	"agent-16": {},
 	"neutral":  {},
 }
 

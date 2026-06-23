@@ -7,9 +7,9 @@ import (
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/service/chat_svc/blocks"
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 func TestSubagentLifecycle(t *testing.T) {
@@ -54,6 +54,60 @@ func TestSubagentStarted_PersistsKindAndDescription(t *testing.T) {
 		sb := blks[0].(*blocks.SubagentStateBlock)
 		So(sb.Kind, ShouldEqual, "local_bash")
 		So(sb.Description, ShouldEqual, "sleep 20")
+		So(sb.Status, ShouldEqual, "running")
+	})
+}
+
+func TestSubagentStarted_ForegroundBash_NoOverlay(t *testing.T) {
+	Convey("前台 bash(无 run_in_background)的 local_bash 帧不建 overlay", t, func() {
+		acc := turn.New()
+		// 真实流里 Bash tool_use 先于 task_started 到达。
+		acc.AddToolUse(&cagoblocks.ToolUseBlock{
+			ID:    "tu-fg",
+			Name:  "Bash",
+			Input: map[string]any{"command": "git stash -u"},
+		}, "")
+		err := SubagentStartedHandler{}.Apply(context.Background(),
+			agentruntime.SubagentStarted{
+				ToolCallID: "tu-fg",
+				Info:       agentruntime.SubagentInfo{Kind: "local_bash", TaskDescription: "Stash"},
+			}, acc, nil, nil, &turn.TurnContext{})
+		So(err, ShouldBeNil)
+
+		blks := acc.Finalize()
+		// 只剩 Bash tool_use,没有 SubagentStateBlock overlay。
+		So(blks, ShouldHaveLength, 1)
+		for _, b := range blks {
+			_, isOverlay := b.(*blocks.SubagentStateBlock)
+			So(isOverlay, ShouldBeFalse)
+		}
+	})
+}
+
+func TestSubagentStarted_BackgroundBash_CreatesOverlay(t *testing.T) {
+	Convey("run_in_background bash 的 local_bash 帧照常建 overlay", t, func() {
+		acc := turn.New()
+		acc.AddToolUse(&cagoblocks.ToolUseBlock{
+			ID:    "tu-bg",
+			Name:  "Bash",
+			Input: map[string]any{"command": "sleep 20", "run_in_background": true},
+		}, "")
+		err := SubagentStartedHandler{}.Apply(context.Background(),
+			agentruntime.SubagentStarted{
+				ToolCallID: "tu-bg",
+				Info:       agentruntime.SubagentInfo{Kind: "local_bash", TaskDescription: "sleep 20"},
+			}, acc, nil, nil, &turn.TurnContext{})
+		So(err, ShouldBeNil)
+
+		var sb *blocks.SubagentStateBlock
+		for _, b := range acc.Finalize() {
+			if x, ok := b.(*blocks.SubagentStateBlock); ok {
+				sb = x
+			}
+		}
+		So(sb, ShouldNotBeNil)
+		So(sb.Kind, ShouldEqual, "local_bash")
+		So(sb.ParentToolCallID, ShouldEqual, "tu-bg")
 		So(sb.Status, ShouldEqual, "running")
 	})
 }

@@ -26,6 +26,20 @@ type CompletedBackgroundTask struct {
 // triggerBackgroundTask 是目前唯一的 AutoTurn 触发原因。
 const triggerBackgroundTask = "background_task"
 
+// SubagentActivity 是一轮「后台 subagent 在空闲态产生的内部活动」的事件流。它由 readLoop
+// 在空闲态遇到第一帧后台 subagent 内部活动时开出(keyed by 发起该 subagent 的 Agent 工具
+// tool_use_id),以「后台型 task_notification(子 agent 完成)」收尾——该完成帧随即触发既有
+// 自主续轮(AutonomousTurns)跑主 agent 总结。Events 与普通 Turn 同形:子 agent 内部 assistant/
+// user 帧(ParentToolUseID==ToolUseID)、子 agent 的 task_progress/task_updated 等。
+//
+// 消费方(chat_svc)据 ToolUseID 定位发起 subagent 的那条「发起消息」,把事件嵌套渲染回那张
+// AgentSpawnCard(见 docs/superpowers/plans/2026-06-23-bg-subagent-live-nesting.md)。
+type SubagentActivity struct {
+	ToolUseID string
+	Events    <-chan Event
+	SessionID string
+}
+
 // activeTurn 是 readLoop 当前正在投递帧的那一轮 —— 可能是用户发起的 Turn,也可能
 // 是自主轮。一刻只有一个(CLI 串行 emit 各轮,每轮以 result 收尾,从不交错)。
 type activeTurn struct {
@@ -33,6 +47,9 @@ type activeTurn struct {
 	done       chan struct{} // readLoop 在本轮收尾(result/EOF)时 close,唤醒 Turn 的 waiter
 	abandon    chan struct{} // Turn 的 waiter 在 ctx 取消时 close;readLoop 据此停止投递、丢弃余帧
 	autonomous bool          // 自主轮 = true(经 AutonomousTurns 吐出,无对应 Turn 调用)
+	// subagentToolUseID 非空 = 本轮是「后台 subagent 活动轮」,值为发起该 subagent 的 Agent
+	// 工具 tool_use_id。用于:readLoop 在收到后台完成 task_notification 时识别要收尾的是活动轮。
+	subagentToolUseID string
 }
 
 // newActiveTurn 造一轮的投递三件套。ch 带缓冲削峰(单一消费方实时 drain)。

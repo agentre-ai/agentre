@@ -100,7 +100,10 @@ function AgentRow({ item }: AgentRowProps) {
   const { t } = useTranslation();
   const a = item.agent;
   return (
-    <div className="flex w-full items-center gap-3">
+    <div
+      data-testid={`agent-picker-item-${a.id}`}
+      className="flex w-full items-center gap-3"
+    >
       <AgentAvatar
         name={a.name}
         initials={a.name.charAt(0)}

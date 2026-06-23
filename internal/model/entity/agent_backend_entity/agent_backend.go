@@ -3,7 +3,7 @@
 // 一条 AgentBackend = 一个可被多个 Agent 共享引用的「后端实例」：
 //   - Type=TypeBuiltin   走 cago github.com/cago-frame/agents/app/coding，绑定一个 LLMProvider；
 //   - Type=TypeClaudeCode  通过 cliagent/claudecode 拉 claude CLI，绑定 anthropic 类型 provider；
-//   - Type=TypeCodex     通过 agentre/pkg/codex 拉 codex CLI，绑定 openai-response provider。
+//   - Type=TypeCodex     通过 github.com/agentre-ai/agentre/pkg/codex 拉 codex CLI，绑定 openai-response provider。
 //
 // 不同 type 的字段约束由 BackendKind（kinds.go）分派，entity.Check 不再直接 switch type。
 package agent_backend_entity
@@ -16,7 +16,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // BackendType Agent 后端实现类型。
@@ -27,7 +27,7 @@ const (
 	TypeBuiltin BackendType = "builtin"
 	// TypeClaudeCode 包装本地 claude CLI（cliagent/claudecode）。
 	TypeClaudeCode BackendType = "claudecode"
-	// TypeCodex 包装本地 codex CLI（agentre/pkg/codex），默认走 OpenAI Responses API。
+	// TypeCodex 包装本地 codex CLI（github.com/agentre-ai/agentre/pkg/codex），默认走 OpenAI Responses API。
 	TypeCodex BackendType = "codex"
 	// TypePiAgent 包装本地 pi CLI（@earendil-works/pi-coding-agent RPC mode）。
 	TypePiAgent BackendType = "piagent"
@@ -59,9 +59,14 @@ type AgentBackend struct {
 	// 取值：'' / default / acceptEdits / plan / bypassPermissions。
 	// 其它后端类型必须保持空串，否则 entity.Check 报 InvalidParameter。
 	DefaultPermissionMode string `gorm:"column:default_permission_mode;type:text;not null;default:''"`
-	Status                int    `gorm:"column:status;type:int;not null;default:1"`
-	Createtime            int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
-	Updatetime            int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	// DefaultModel 仅 claudecode 使用：spawn claude 子进程时下发的 --model 值。
+	// 走 CLI 登录态（未绑 provider）时用它指定自定义模型（如 claude-fable-5）；
+	// 绑了 provider 时 provider.Model 优先，本字段仅在 provider.Model 为空时兜底。
+	// 空串 = 不下发 --model，走 CLI 默认。其它后端类型必须保持空串。
+	DefaultModel string `gorm:"column:default_model;type:text;not null;default:''"`
+	Status       int    `gorm:"column:status;type:int;not null;default:1"`
+	Createtime   int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
+	Updatetime   int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
 }
 
 // TableName 绑定表名。

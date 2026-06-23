@@ -13,13 +13,17 @@ import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
-import { avatarFromMeta, tokenToCssColor } from "../session-avatar";
+import {
+  avatarFromMeta,
+  firstLetter,
+  tokenToCssColor,
+} from "../session-avatar";
 import type { TabStatus } from "./tab";
 
 export type TabView = {
   id: string;
   title: string;
-  kind: "session" | "new" | "terminal";
+  kind: "session" | "groupSession" | "new" | "terminal" | "group";
   avatar: { letter: string; color: string };
   isPreview: boolean;
   isPinned: boolean;
@@ -41,12 +45,7 @@ export function useTabsView(): TabView[] {
   const { tree } = useProjectTree();
 
   const sessionTabIds = React.useMemo(
-    () =>
-      tabs
-        .filter((t) => t.meta.kind === "session")
-        .map(
-          (t) => (t.meta as { kind: "session"; sessionId: number }).sessionId,
-        ),
+    () => tabs.map((t) => sessionIdOf(t.meta)).filter((sid) => sid > 0),
     [tabs],
   );
   const attentionItems = useSessionAttentionList(sessionTabIds);
@@ -57,7 +56,30 @@ export function useTabsView(): TabView[] {
   }, [attentionItems]);
 
   return tabs.map((tab) => {
-    const sid = tab.meta.kind === "session" ? tab.meta.sessionId : 0;
+    // group tab:标题由 meta 自带(openGroup 时透传),不走 session-meta 反查。
+    // 群聊在 Tab 内用「群组」图标头像与普通 agent 区分(见 tab.tsx kind==="group"),
+    // 这里的 letter/color 只是 TabView 必填字段的占位 fallback,不参与群聊渲染;
+    // 状态恒为 idle(群运行态在面板内展示,tab strip 不重复表达)。
+    if (tab.meta.kind === "group") {
+      const groupTitle = tab.meta.title || t("chatTabs.fallbackSession");
+      return {
+        id: tab.id,
+        title: groupTitle,
+        kind: "group" as const,
+        avatar: { letter: firstLetter(groupTitle), color: "#94a3b8" },
+        isPreview: tab.isPreview,
+        isPinned: tab.isPinned,
+        status: "idle" as const,
+        projectColor: null,
+        worktree: false,
+        pillText: null,
+        sessionId: 0,
+        projectChain: null,
+        worktreeBranch: null,
+        lastMessageAt: 0,
+      };
+    }
+    const sid = sessionIdOf(tab.meta);
     const live = sid ? statuses.get(sid) : undefined;
     const reason = sid ? (attentionBySid.get(sid) ?? null) : null;
     const agentStatus = live?.agentStatus;
@@ -95,4 +117,9 @@ export function useTabsView(): TabView[] {
       lastMessageAt: meta?.lastMessageAt ?? 0,
     };
   });
+}
+
+function sessionIdOf(meta: { kind: string; sessionId?: number }): number {
+  if (meta.kind !== "session" && meta.kind !== "groupSession") return 0;
+  return meta.sessionId ?? 0;
 }

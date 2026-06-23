@@ -1,7 +1,7 @@
 package view
 
 import (
-	"agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 )
 
 // FromCanonical 把 agentruntime.canonical 类型转成 wire CanonicalDTO。

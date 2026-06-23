@@ -3,7 +3,7 @@ package main
 import (
 	"github.com/spf13/cobra"
 
-	"agentre/internal/cli/claudecodecmd"
+	"github.com/agentre-ai/agentre/internal/cli/claudecodecmd"
 )
 
 // newClaudeCodeCmd is an internal hook passthrough used by spawned claudecode

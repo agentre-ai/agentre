@@ -147,7 +147,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -268,7 +268,7 @@ package pty_test
 import (
 	"testing"
 
-	"agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
 )
 
 func TestSpec_ZeroValueValid(t *testing.T) {
@@ -384,8 +384,8 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/pkg/pty"
-	"agentre/internal/pkg/pty/local"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/pkg/pty/local"
 
 	"github.com/stretchr/testify/require"
 )
@@ -447,7 +447,7 @@ import (
 
 	creackpty "github.com/creack/pty"
 
-	pkgpty "agentre/internal/pkg/pty"
+	pkgpty "github.com/agentre-ai/agentre/internal/pkg/pty"
 )
 
 // Backend is the local creack/pty implementation of pty.Backend.
@@ -807,10 +807,10 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/daemon/handlers/mock_handlers"
-	"agentre/internal/pkg/pty"
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers/mock_handlers"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -864,8 +864,8 @@ import (
 	"errors"
 	"sync"
 
-	"agentre/internal/pkg/pty"
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
 
 //go:generate mockgen -source=terminal.go -destination=mock_handlers/mock_terminal.go -package=mock_handlers
@@ -1226,8 +1226,8 @@ Confirm `wrapGuarded` helper exists (used for session.get / llm.upsert / etc.).
 In the import block at the top of `internal/daemon/daemon.go`, add:
 
 ```go
-"agentre/internal/pkg/pty"
-"agentre/internal/pkg/pty/local"
+"github.com/agentre-ai/agentre/internal/pkg/pty"
+"github.com/agentre-ai/agentre/internal/pkg/pty/local"
 ```
 
 - [ ] **Step 3: Add registration in the bootstrap method**
@@ -1320,9 +1320,9 @@ import (
 	"context"
 	"testing"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1394,7 +1394,7 @@ import (
 	"context"
 	"testing"
 
-	"agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -1495,9 +1495,9 @@ import (
 	"context"
 	"testing"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/pty"
-	"agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1555,8 +1555,8 @@ import (
 	"context"
 	"errors"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
 )
 
 //go:generate mockgen -source=backend.go -destination=mocks/mock_backend.go -package=mocks
@@ -1640,11 +1640,11 @@ import (
 	"context"
 	"testing"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/pkg/pty"
-	"agentre/internal/service/terminal_svc"
-	"agentre/internal/service/terminal_svc/mocks"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc/mocks"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1707,10 +1707,10 @@ import (
 	"errors"
 	"sync"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/pkg/pty"
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
 
 // SessionLookup decouples Service from chat_repo so it can be unit tested.
@@ -2079,9 +2079,9 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/pkg/pty"
-	"agentre/internal/pkg/pty/remote"
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/pkg/pty/remote"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 
 	"github.com/stretchr/testify/require"
 )
@@ -2197,8 +2197,8 @@ import (
 	"errors"
 	"sync"
 
-	pkgpty "agentre/internal/pkg/pty"
-	"agentre/pkg/agentred/protocol"
+	pkgpty "github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
 
 // Client is the minimal subset of the agentred ws client surface needed
@@ -2372,15 +2372,15 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/pkg/pty"
-	"agentre/internal/pkg/pty/local"
-	"agentre/internal/pkg/pty/remote"
-	agentbackendrepo "agentre/internal/repository/agent_backend_repo"
-	chatrepo "agentre/internal/repository/chat_repo"
-	"agentre/internal/service/chat_svc"
-	"agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/pkg/pty/local"
+	"github.com/agentre-ai/agentre/internal/pkg/pty/remote"
+	agentbackendrepo "github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	chatrepo "github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 )
 
 type sessionLookupAdapter struct{}
@@ -2434,7 +2434,7 @@ func newTerminalService(appCtx context.Context) *terminal_svc.Service {
 
 In `internal/app/app.go`:
 
-- Add import: `"agentre/internal/service/terminal_svc"`
+- Add import: `"github.com/agentre-ai/agentre/internal/service/terminal_svc"`
 - Add field on App struct: `terminalSvc *terminal_svc.Service`
 - In `Startup`, after the existing chat_svc wiring (search for `chat_svc.RegisterChat` ~line 122): `a.terminalSvc = newTerminalService(a.ctx)`
 - In `Shutdown`: `if a.terminalSvc != nil { a.terminalSvc.Shutdown() }`
@@ -3196,11 +3196,11 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/pkg/pty"
-	"agentre/internal/pkg/pty/local"
-	"agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/pkg/pty/local"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 
 	"github.com/stretchr/testify/require"
 )

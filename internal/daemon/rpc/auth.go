@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"time"
 
-	"agentre/internal/daemon/pairing"
-	"agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/daemon/pairing"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
 )
 
 // PairParams is the payload of an auth.pair request (Mode A).

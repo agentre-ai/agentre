@@ -170,6 +170,73 @@ describe("RawToolCard expansion", () => {
   });
 });
 
+describe("RawToolCard background running pill", () => {
+  const bashBlock = (extra: Record<string, unknown>) =>
+    ({
+      type: "tool_use",
+      toolName: "Bash",
+      toolUseId: "tu1",
+      toolInput: { command: "sleep 5", run_in_background: true },
+      ...extra,
+    }) as never;
+
+  it("shows 后台运行 + task_id pill when run_in_background", () => {
+    render(
+      <RawToolCard
+        toolBlock={bashBlock({
+          subagent: {
+            kind: "local_bash",
+            taskId: "b3875slp0",
+            status: "running",
+          },
+        })}
+        resultBlock={undefined}
+        cwd="/tmp"
+        sessionId={1}
+      />,
+    );
+    expect(screen.getByText(/后台运行|Background/)).toBeDefined();
+    expect(screen.getByText("b3875slp0")).toBeDefined();
+  });
+
+  it("does NOT show the pill for a normal foreground bash", () => {
+    render(
+      <RawToolCard
+        toolBlock={
+          {
+            type: "tool_use",
+            toolName: "Bash",
+            toolUseId: "tu2",
+            toolInput: { command: "ls" },
+          } as never
+        }
+        resultBlock={undefined}
+        cwd="/tmp"
+        sessionId={1}
+      />,
+    );
+    expect(screen.queryByText(/后台运行|Background/)).toBeNull();
+  });
+
+  it("hides the 后台运行 pill once the background task has completed", () => {
+    render(
+      <RawToolCard
+        toolBlock={bashBlock({
+          subagent: {
+            kind: "local_bash",
+            taskId: "b3875slp0",
+            status: "completed",
+          },
+        })}
+        resultBlock={undefined}
+        cwd="/tmp"
+        sessionId={1}
+      />,
+    );
+    expect(screen.queryByText(/后台运行|Background/)).toBeNull();
+  });
+});
+
 describe("RawToolCard permission integration", () => {
   it("shows the unresolved permission overlay", () => {
     render(

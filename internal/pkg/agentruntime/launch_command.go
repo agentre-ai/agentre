@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 )
 
 // LaunchCommandTokenPlaceholder 是 gateway token 的字面量占位符，
@@ -37,7 +37,7 @@ type LaunchCommandSpec struct {
 //
 //	cd '<cwd>' && KEY='val' KEY2='val2' <binary> --flag 'value' ...
 //
-// 仅支持 claudecode / codex；builtin 没有对应 CLI，直接返回 error。
+// 仅支持 claudecode / codex / piagent；builtin 没有对应 CLI，直接返回 error。
 func BuildLaunchCommand(spec LaunchCommandSpec) (string, error) {
 	if spec.Backend == nil {
 		return "", fmt.Errorf("agentruntime: nil backend")

@@ -86,7 +86,10 @@ describe("OrgDetailDepartment editor layout", () => {
     ).toBeInTheDocument();
     expect(
       screen.getAllByRole("radio", { name: /Theme color agent-/ }),
-    ).toHaveLength(10);
+    ).toHaveLength(16);
+    expect(
+      screen.getByRole("radio", { name: "Theme color agent-16" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Parent" })).toHaveTextContent(
       "工程部",
     );

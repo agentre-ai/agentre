@@ -2,7 +2,6 @@ package pairing
 
 import (
 	"crypto/rand"
-	"errors"
 	"sync"
 	"time"
 )
@@ -76,8 +75,3 @@ func (m *Manager) Consume(code string) bool {
 	m.pending = ""
 	return true
 }
-
-// ErrNoPending is returned by callers that need to distinguish "no code
-// generated yet" from "code wrong" — currently unused outside tests but
-// kept in the public API for clarity.
-var ErrNoPending = errors.New("pairing: no pending code")

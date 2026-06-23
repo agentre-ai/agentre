@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import { clientLog } from "@/lib/client-log";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
@@ -26,7 +27,17 @@ function bumpSessionTabToAfterPinned(sessionId: number): void {
 //
 // 这里不该有任何业务判断,只做「Wails event → store action」一次翻译。
 export function ChatStreamsHost(): React.ReactElement | null {
-  const streams = useChatStreamsStore((s) => s.streams);
+  // 只订阅「当前有哪些流」这一身份集合(sessionId + 事件流名),不订阅流内容。
+  // appendLiveText 等每个 chunk 都重建 streams Map,但 host 只用 name 挂 EventsOn
+  // 订阅 + 用 sessionId 路由事件 —— 这两者在一条流的整个生命周期里都不变。把身份
+  // 编码成 `${sessionId}\n${name}` 的字符串数组(原始值,useShallow 可逐项浅比较),
+  // 内容变、身份集合不变时浅相等 → host 不再每 chunk 重渲染整棵订阅树;流增删时
+  // 数组变 → 正常重挂订阅。sessionId 为数字、name 为后端事件名,\n 不会出现在两者中。
+  const streamKeys = useChatStreamsStore(
+    useShallow((s) =>
+      Array.from(s.streams.values(), (st) => `${st.sessionId}\n${st.name}`),
+    ),
+  );
   const appendLiveText = useChatStreamsStore((s) => s.appendLiveText);
   const appendLiveThinking = useChatStreamsStore((s) => s.appendLiveThinking);
   const appendLiveToolUse = useChatStreamsStore((s) => s.appendLiveToolUse);
@@ -52,6 +63,12 @@ export function ChatStreamsHost(): React.ReactElement | null {
   );
   const markToolPermissionResolved = useChatStreamsStore(
     (s) => s.markToolPermissionResolved,
+  );
+  const appendLiveToolApproval = useChatStreamsStore(
+    (s) => s.appendLiveToolApproval,
+  );
+  const markToolApprovalResolved = useChatStreamsStore(
+    (s) => s.markToolApprovalResolved,
   );
   const patchLiveUsage = useChatStreamsStore((s) => s.patchLiveUsage);
   const patchLiveContextWindow = useChatStreamsStore(
@@ -169,6 +186,26 @@ export function ChatStreamsHost(): React.ReactElement | null {
             );
           }
           return;
+        case "tool_approval": {
+          // 内置写工具审批。pending=新卡,其余=同 requestId 决议更新。
+          if (!ev.requestId) return;
+          clearLiveRetry(sessionId);
+          const payload = {
+            toolKey: ev.toolKey ?? "",
+            requestId: ev.requestId,
+            toolName: ev.toolName ?? "",
+            toolInput: ev.toolInput,
+            status: ev.status ?? "",
+            result: ev.result,
+          };
+          if (ev.status === "pending") {
+            bumpSessionTabToAfterPinned(sessionId);
+            appendLiveToolApproval(sessionId, payload);
+          } else {
+            markToolApprovalResolved(sessionId, payload);
+          }
+          return;
+        }
         case "session_status": {
           if (!ev.sessionStatus) return;
           // session_status patch 一般只带 agentStatus + needsAttention,
@@ -282,21 +319,29 @@ export function ChatStreamsHost(): React.ReactElement | null {
       markAskUserQuestionAnswered,
       appendLiveToolPermissionRequest,
       markToolPermissionResolved,
+      appendLiveToolApproval,
+      markToolApprovalResolved,
       patchLiveUsage,
       patchLiveContextWindow,
       appendLiveCompactBoundary,
+      setLiveCompacting,
     ],
   );
 
   return (
     <>
-      {Array.from(streams.values()).map((s) => (
-        <StreamSubscriber
-          key={s.sessionId}
-          streamName={s.name}
-          onEvent={(ev) => handleEvent(s.sessionId, ev)}
-        />
-      ))}
+      {streamKeys.map((key) => {
+        const sep = key.indexOf("\n");
+        const sessionId = Number(key.slice(0, sep));
+        const streamName = key.slice(sep + 1);
+        return (
+          <StreamSubscriber
+            key={sessionId}
+            streamName={streamName}
+            onEvent={(ev) => handleEvent(sessionId, ev)}
+          />
+        );
+      })}
     </>
   );
 }

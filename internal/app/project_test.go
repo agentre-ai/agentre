@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/service/project_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/service/project_svc"
 )
 
 func TestProjectSessionItemsIncludeLastReadAt(t *testing.T) {

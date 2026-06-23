@@ -9,8 +9,10 @@ import (
 
 	"github.com/cago-frame/cago/configs"
 	"github.com/cago-frame/cago/database/db"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 
-	"agentre/internal/repository/project_location_repo"
+	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 )
 
 func TestInitCreatesCagoRuntime(t *testing.T) {
@@ -75,6 +77,30 @@ func TestInitCreatesCagoRuntime(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dataDir, "config.json")); !os.IsNotExist(err) {
 		t.Fatalf("config.json should not be created, stat error = %v", err)
+	}
+}
+
+// 回归(dev group-3 并发群轮 SQLITE_BUSY):并发 turn 流式写库时,另一条写
+// 0.5ms 即报 database is locked —— 连接没配 busy_timeout。DSN 必须带
+// _pragma=busy_timeout(glebarez 驱动 per-connection 生效;启动后 Exec PRAGMA
+// 只作用连接池里单个连接,不可用)。用真驱动验证 pragma 实际生效。
+func TestSQLiteDSNSetsBusyTimeout(t *testing.T) {
+	gormDB, err := gorm.Open(sqlite.Open(sqliteDSN(filepath.Join(t.TempDir(), "x.db"))), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		t.Fatalf("DB() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	var v int
+	if err := gormDB.Raw("PRAGMA busy_timeout").Scan(&v).Error; err != nil {
+		t.Fatalf("PRAGMA busy_timeout query error = %v", err)
+	}
+	if v != 5000 {
+		t.Fatalf("busy_timeout = %d, want 5000", v)
 	}
 }
 

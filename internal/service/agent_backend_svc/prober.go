@@ -10,11 +10,11 @@ import (
 	"github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/agents/app/coding"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentprovider"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/cliprober"
-	"agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentprovider"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/cliprober"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 )
 
 // proberFor 按 backend 类型查 Prober；未注册返 nil。
@@ -121,10 +121,7 @@ func (cliProber) Run(ctx context.Context, b *agent_backend_entity.AgentBackend, 
 	if err != nil {
 		return "", err
 	}
-	model := deps.Model
-	if b.IsPiAgent() {
-		model = buildPiAgentProbeModel(b)
-	}
+	model := resolveCLIProbeModel(b, deps)
 	resp, err := cliprober.Probe(ctx, cliprober.ProbeRequest{
 		Type:         b.Type,
 		CLIPath:      b.CLIPath,
@@ -141,6 +138,23 @@ func (cliProber) Run(ctx context.Context, b *agent_backend_entity.AgentBackend, 
 }
 
 func buildPiAgentProbeModel(*agent_backend_entity.AgentBackend) string {
+	return ""
+}
+
+// resolveCLIProbeModel 选 Test 连通性下发给 CLI 的模型,与 chat-path
+// claudecode/session.go::ccBuildClientOpts 同优先级,避免 Test 与实际 chat run 漂移
+// (agent-backend.md §2.3 不变量):provider/gateway 模型(deps.Model) → claudecode 后端
+// DefaultModel(走 CLI 登录态时的自定义模型) → ""(CLI 默认)。piagent 走自己的解析。
+func resolveCLIProbeModel(b *agent_backend_entity.AgentBackend, deps ProbeDeps) string {
+	if b.IsPiAgent() {
+		return buildPiAgentProbeModel(b)
+	}
+	if m := strings.TrimSpace(deps.Model); m != "" {
+		return m
+	}
+	if b.IsClaudeCode() {
+		return strings.TrimSpace(b.DefaultModel)
+	}
 	return ""
 }
 

@@ -12,7 +12,7 @@ package wire
 import (
 	"errors"
 
-	"agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 )
 
 // ── RPC method names ────────────────────────────────────────────────────────

@@ -9,10 +9,10 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/daemon/client"
-	"agentre/internal/model/entity/paired_agentred_entity"
-	"agentre/internal/service/remote_device_watcher_svc"
-	"agentre/internal/service/remote_device_watcher_svc/mock_remote_device_watcher_svc"
+	"github.com/agentre-ai/agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_watcher_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_watcher_svc/mock_remote_device_watcher_svc"
 )
 
 func setupService(t *testing.T) (

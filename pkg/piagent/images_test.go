@@ -18,14 +18,20 @@ import (
 type captureProc struct {
 	stdin  *lockedBuffer
 	stdout io.Reader
+	stderr io.Reader
 	done   chan error
 }
 
 func (p *captureProc) Stdin() io.Writer  { return p.stdin }
 func (p *captureProc) Stdout() io.Reader { return p.stdout }
-func (p *captureProc) Stderr() io.Reader { return strings.NewReader("") }
-func (p *captureProc) Wait() error       { return <-p.done }
-func (p *captureProc) Kill() error       { close(p.done); return nil }
+func (p *captureProc) Stderr() io.Reader {
+	if p.stderr != nil {
+		return p.stderr
+	}
+	return strings.NewReader("")
+}
+func (p *captureProc) Wait() error { return <-p.done }
+func (p *captureProc) Kill() error { close(p.done); return nil }
 func (p *captureProc) Signal(os.Signal) error {
 	select {
 	case p.done <- nil:

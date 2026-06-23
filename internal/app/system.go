@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	"agentre/internal/bootstrap"
-	"agentre/internal/pkg/procattr"
+	"github.com/agentre-ai/agentre/internal/bootstrap"
+	"github.com/agentre-ai/agentre/internal/pkg/procattr"
 )
 
 // runOpenCmd is the test seam for exec.Command. Tests swap it; production code

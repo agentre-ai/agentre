@@ -8,8 +8,8 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/daemon/client"
-	"agentre/internal/service/remote_device_watcher_svc"
+	"github.com/agentre-ai/agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_watcher_svc"
 )
 
 // spyRecorder captures RecordDeviceProviders calls for assertion.

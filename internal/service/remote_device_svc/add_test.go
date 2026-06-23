@@ -8,9 +8,9 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/paired_agentred_entity"
-	"agentre/internal/pkg/keychain"
-	"agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/keychain"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 func validAddReq() remote_device_svc.AddRequest {

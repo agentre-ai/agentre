@@ -10,10 +10,10 @@
 package mock_chat_repo
 
 import (
-	chat_entity "agentre/internal/model/entity/chat_entity"
 	context "context"
 	reflect "reflect"
 
+	chat_entity "github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -39,6 +39,20 @@ func NewMockMessageRepo(ctrl *gomock.Controller) *MockMessageRepo {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockMessageRepo) EXPECT() *MockMessageRepoMockRecorder {
 	return m.recorder
+}
+
+// AppendSubagentChildren mocks base method.
+func (m *MockMessageRepo) AppendSubagentChildren(ctx context.Context, sessionID int64, parentToolUseID, childBlocksJSON string, childIDs []string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AppendSubagentChildren", ctx, sessionID, parentToolUseID, childBlocksJSON, childIDs)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// AppendSubagentChildren indicates an expected call of AppendSubagentChildren.
+func (mr *MockMessageRepoMockRecorder) AppendSubagentChildren(ctx, sessionID, parentToolUseID, childBlocksJSON, childIDs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AppendSubagentChildren", reflect.TypeOf((*MockMessageRepo)(nil).AppendSubagentChildren), ctx, sessionID, parentToolUseID, childBlocksJSON, childIDs)
 }
 
 // Create mocks base method.
@@ -83,6 +97,21 @@ func (m *MockMessageRepo) Find(ctx context.Context, id int64) (*chat_entity.Mess
 func (mr *MockMessageRepoMockRecorder) Find(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Find", reflect.TypeOf((*MockMessageRepo)(nil).Find), ctx, id)
+}
+
+// FindAssistantBySubagentToolUseID mocks base method.
+func (m *MockMessageRepo) FindAssistantBySubagentToolUseID(ctx context.Context, sessionID int64, toolUseID string) (*chat_entity.Message, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FindAssistantBySubagentToolUseID", ctx, sessionID, toolUseID)
+	ret0, _ := ret[0].(*chat_entity.Message)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FindAssistantBySubagentToolUseID indicates an expected call of FindAssistantBySubagentToolUseID.
+func (mr *MockMessageRepoMockRecorder) FindAssistantBySubagentToolUseID(ctx, sessionID, toolUseID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindAssistantBySubagentToolUseID", reflect.TypeOf((*MockMessageRepo)(nil).FindAssistantBySubagentToolUseID), ctx, sessionID, toolUseID)
 }
 
 // FlipSubagentStatus mocks base method.

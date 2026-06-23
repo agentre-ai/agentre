@@ -6,7 +6,7 @@ import (
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
 
 func TestProjectMessageBlocks_Text(t *testing.T) {

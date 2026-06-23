@@ -11,9 +11,9 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/issue_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 )
 
 // IssueSvc Issue 模块应用服务。

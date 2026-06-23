@@ -3,8 +3,8 @@ package remote_device_watcher_svc
 import (
 	"context"
 
-	"agentre/internal/daemon/client"
-	"agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 )
 
 //go:generate mockgen -source ports.go -destination mock_remote_device_watcher_svc/mock_ports.go

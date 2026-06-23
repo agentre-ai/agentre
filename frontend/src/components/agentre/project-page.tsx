@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import {
   DndContext,
   KeyboardSensor,
@@ -220,6 +221,25 @@ function ProjectsPage() {
     return map;
   }, [tree]);
 
+  // focus 一次性消费:从 /projects?focus=<id> 进来(如群聊设置页点击「项目」),树加载完
+  // 且 id 命中时打开该项目的设置抽屉,然后清掉 query 防止重复打开。命中失败(已删/非法)
+  // 静默丢弃。selection 是会话级的、没有「只选中项目」语义,设置抽屉是唯一纯项目 id 入口。
+  const [searchParams, setSearchParams] = useSearchParams();
+  React.useEffect(() => {
+    const raw = searchParams.get("focus");
+    if (!raw || loading) return;
+    const id = Number(raw);
+    if (id > 0 && projectByID.has(id)) setSettingsProjectID(id);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("focus");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams, loading, projectByID]);
+
   React.useEffect(() => {
     const store = useNewChatContextStore.getState();
     if (currentProjectID > 0) {
@@ -275,7 +295,7 @@ function ProjectsPage() {
         useNewChatContextStore.getState().setNewSelectionHandler(null);
       }
     };
-  }, []);
+  }, [selectOnTab]);
 
   const openCreateDialog = (parentID = 0) => {
     setNewDialogParent(parentID);

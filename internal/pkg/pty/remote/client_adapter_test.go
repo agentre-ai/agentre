@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/pkg/pty/remote"
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/internal/pkg/pty/remote"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

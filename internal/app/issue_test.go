@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/service/issue_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 )
 
 func TestToIssueItem(t *testing.T) {

@@ -8,13 +8,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/model/entity/department_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/agent_repo/mock_agent_repo"
-	"agentre/internal/repository/department_repo"
-	"agentre/internal/repository/department_repo/mock_department_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/department_repo"
+	"github.com/agentre-ai/agentre/internal/repository/department_repo/mock_department_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
 )
 
 func setupSvc(t *testing.T) (
@@ -177,6 +183,57 @@ func TestUpdateDepartmentLeadValidation(t *testing.T) {
 				ID: 3, Name: "工程部", AccentColor: "agent-2", LeadAgentID: 42,
 			})
 			assert.NoError(t, err)
+		})
+	})
+}
+
+func setupLoadSvc(t *testing.T) (
+	context.Context,
+	*mock_department_repo.MockDepartmentRepo,
+	*mock_agent_repo.MockAgentRepo,
+	*mock_agent_backend_repo.MockAgentBackendRepo,
+	*mock_llm_provider_repo.MockLLMProviderRepo,
+	*departmentSvc,
+) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	deptMock := mock_department_repo.NewMockDepartmentRepo(ctrl)
+	agentMock := mock_agent_repo.NewMockAgentRepo(ctrl)
+	backendMock := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
+	providerMock := mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl)
+	department_repo.RegisterDepartment(deptMock)
+	agent_repo.RegisterAgent(agentMock)
+	agent_backend_repo.RegisterAgentBackend(backendMock)
+	llm_provider_repo.RegisterLLMProvider(providerMock)
+	return context.Background(), deptMock, agentMock, backendMock, providerMock, &departmentSvc{now: func() int64 { return 1700000000 }}
+}
+
+func TestLoad_ToolsProjectionAndAvailableTools(t *testing.T) {
+	convey.Convey("Load 部门+Agent", t, func() {
+		ctx, deptMock, agentMock, backendMock, providerMock, svc := setupLoadSvc(t)
+
+		convey.Convey("AgentItem.Tools 投影 + LoadOrgResponse.AvailableTools == agenttool.Keys()", func() {
+			deptMock.EXPECT().List(gomock.Any()).Return([]*department_entity.Department{
+				{ID: 1, Name: "工程部", Status: 1},
+			}, nil)
+			agentMock.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{
+				{
+					ID: 10, Name: "Eva", DepartmentID: 1, Status: 1,
+					PromptJSON: "[]", SkillsJSON: "[]",
+					ToolsJSON: `[{"key":"org","enabled":true}]`,
+				},
+			}, nil)
+			backendMock.EXPECT().List(gomock.Any()).Return([]*agent_backend_entity.AgentBackend{}, nil)
+			providerMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+
+			resp, err := svc.Load(ctx, &LoadOrgRequest{})
+			assert.NoError(t, err)
+			assert.Len(t, resp.Agents, 1)
+			assert.Len(t, resp.Agents[0].Tools, 1)
+			assert.Equal(t, "org", resp.Agents[0].Tools[0].Key)
+			assert.True(t, resp.Agents[0].Tools[0].Enabled)
+			assert.Equal(t, agenttool.Keys(), resp.AvailableTools)
 		})
 	})
 }

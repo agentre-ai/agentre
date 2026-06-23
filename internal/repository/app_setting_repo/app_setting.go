@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"agentre/internal/model/entity/app_setting_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
 )
 
 //go:generate mockgen -source app_setting.go -destination mock_app_setting_repo/mock_app_setting.go

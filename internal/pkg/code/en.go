@@ -149,6 +149,27 @@ var enUS = map[int]string{
 	ProjectLocationMissing:     "Project has no path configured on the selected device; add it under Project Settings → Remote Paths",
 	ProjectLocationDuplicate:   "Project already has a path on this device",
 
+	// Group chat orchestration
+	GroupNotFound:             "Group not found",
+	GroupTitleRequired:        "Group title is required",
+	GroupHostRequired:         "Host is required",
+	GroupMemberNotFound:       "Group member not found",
+	GroupMemberExists:         "Agent is already in the group",
+	GroupMemberLimit:          "Group member limit reached",
+	GroupNotRecruitable:       "Agent is not recruitable",
+	GroupBackendUnsupported:   "Agent backend does not support group chat",
+	GroupInviteForbidden:      "Only the host can invite members",
+	GroupTaskNotFound:         "Task not found",
+	GroupTaskForbidden:        "Not allowed to operate this task",
+	GroupTaskClosed:           "Task already closed",
+	GroupTaskResultRequired:   "Result is required",
+	GroupTaskSelfAssign:       "Cannot assign a task to yourself; just do it directly",
+	GroupCreateSessionInvalid: "invalid session, cannot create group",
+	GroupCreateNested:         "group members cannot create another group",
+	GroupCreateMemberUnknown:  "no available agent named: %v",
+	GroupNicknameTaken:        "group nickname is already taken by another member",
+	GroupCreateToolDisabled:   "the create-group tool is disabled, cannot start a group",
+
 	// Server
 	ServerURLInvalid:          "invalid Server URL",
 	ServerUnreachable:         "Server unreachable",
@@ -200,4 +221,7 @@ var enUS = map[int]string{
 	DataImportDuplicateLocal:     "Multiple local records share the same name, cannot auto-overwrite",
 	DataImportRollback:           "Import failed, all changes rolled back",
 	DataImportInvalidAction:      "Unknown import action",
+
+	// workflow
+	WorkflowNotFound: "Workflow not found",
 }

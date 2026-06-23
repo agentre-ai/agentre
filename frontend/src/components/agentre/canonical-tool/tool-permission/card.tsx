@@ -10,6 +10,7 @@ import { AnswerToolPermission as wailsAnswerToolPermission } from "../../../../.
 import type { chat_svc } from "../../../../../wailsjs/go/models";
 
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
+import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type { CanonicalDTO, ToolPermissionDTO } from "../types";
 
@@ -46,6 +47,7 @@ function formatToolSummary(
 export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
   toolBlock,
   sessionId,
+  uiStateKey,
 }) => {
   const { t } = useTranslation();
   const payload = readPermission(toolBlock);
@@ -53,7 +55,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
     (s) => s.markToolPermissionResolved,
   );
 
-  const [collapsed, setCollapsed] = useState(true);
+  const [collapsed, setCollapsed] = useTranscriptBooleanState(uiStateKey, true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

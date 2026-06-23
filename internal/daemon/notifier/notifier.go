@@ -6,7 +6,7 @@ package notifier
 import (
 	"context"
 
-	"agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 )
 
 // Notifier wraps a single *rpc.Conn.

@@ -71,6 +71,16 @@ describe("Tab 组件", () => {
     expect(screen.getByText("终端 · MacMini")).toBeInTheDocument();
   });
 
+  it("kind='group' 显示群组图标(users-round)替代字母头像,与普通 agent tab 区分", () => {
+    const { container } = render(
+      <Tab {...baseProps} kind="group" title="发布前回归小组" />,
+    );
+    expect(container.querySelector(".lucide-users-round")).toBeInTheDocument();
+    // 群聊不展示 agent 风格的字母头像
+    expect(screen.queryByText("C")).not.toBeInTheDocument();
+    expect(screen.getByText("发布前回归小组")).toBeInTheDocument();
+  });
+
   it("单击触发 onActivate", async () => {
     const user = userEvent.setup();
     const onActivate = vi.fn();

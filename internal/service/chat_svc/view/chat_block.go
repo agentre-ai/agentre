@@ -6,8 +6,8 @@
 package view
 
 import (
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
 
 // ChatBlock 是 wire DTO,前端 React 直接吃。canonical 字段在工具调用上时填充,

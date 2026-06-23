@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 )
 
 func setupRepo(t *testing.T) (context.Context, sqlmock.Sqlmock, agent_repo.AgentRepo) {
@@ -208,5 +208,17 @@ func TestNextSortOrderByParent(t *testing.T) {
 	n, err := repo.NextSortOrderByParent(ctx, 7)
 	require.NoError(t, err)
 	assert.Equal(t, 3, n)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAgentSetPinned(t *testing.T) {
+	ctx, mock, repo := setupRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `agents` SET `pinned`=\\?").
+		WithArgs(true, int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.SetPinned(ctx, 42, true))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"agentre/pkg/piagent"
+	"github.com/agentre-ai/agentre/pkg/piagent"
 )
 
 func probePiAgent(ctx context.Context, req ProbeRequest) (*ProbeResponse, error) {

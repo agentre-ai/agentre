@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 )
 
 // recordingGateway is a TokenIssuer that records the TTLs it was asked to issue

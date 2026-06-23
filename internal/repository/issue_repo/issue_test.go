@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/repository/issue_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 )
 
 func setupIssueRepo(t *testing.T) (context.Context, sqlmock.Sqlmock, issue_repo.IssueRepo) {

@@ -12,10 +12,10 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // ErrRemoteDialFailed 把 dial 阶段任何失败（网络 / TLS / token 等）统一抽象成

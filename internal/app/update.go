@@ -13,8 +13,8 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.uber.org/zap"
 
-	"agentre/internal/pkg/procattr"
-	"agentre/internal/service/update_svc"
+	"github.com/agentre-ai/agentre/internal/pkg/procattr"
+	"github.com/agentre-ai/agentre/internal/service/update_svc"
 )
 
 // 启动后延迟若干秒再触发自动检查，避开前端冷启动 / DB 迁移高峰。

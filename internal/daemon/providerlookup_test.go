@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"agentre/internal/daemon/state"
-	"agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

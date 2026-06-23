@@ -197,6 +197,22 @@ func (s *Stream) handleItemCompleted(n appNotification, raw json.RawMessage, pre
 			},
 			Raw: raw,
 		})
+	default:
+		if _, startedAsTool := preSeen[item.ID]; startedAsTool {
+			s.emit(Event{
+				Kind:      EventPostToolUse,
+				SessionID: s.SessionID(),
+				Tool: &ToolEvent{
+					ID:       item.ID,
+					Name:     toolNameForItem(item),
+					Input:    toolInputForItem(item),
+					Response: toolResponseForItem(item),
+					Err:      toolErrForItem(item),
+					Source:   toolSourceForItem(item),
+				},
+				Raw: raw,
+			})
+		}
 	}
 }
 

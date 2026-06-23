@@ -6,11 +6,11 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"agentre/internal/pkg/pty"
-	"agentre/internal/pkg/pty/local"
-	"agentre/internal/pkg/pty/remote"
-	"agentre/internal/service/chat_svc"
-	"agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/pkg/pty/local"
+	"github.com/agentre-ai/agentre/internal/pkg/pty/remote"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 )
 
 // ptyBackendAdapter bridges pty.Backend → terminal_svc.PTYBackend (same

@@ -5,8 +5,8 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 func TestPlanActionDecision(t *testing.T) {

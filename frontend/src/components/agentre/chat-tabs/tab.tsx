@@ -1,6 +1,6 @@
 // frontend/src/components/agentre/chat-tabs/tab.tsx
 import * as React from "react";
-import { Loader2, Pin, TerminalSquare, X } from "lucide-react";
+import { Loader2, Pin, TerminalSquare, UsersRound, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
@@ -9,7 +9,7 @@ export type TabStatus = "idle" | "running" | "waiting" | "error";
 
 export type TabProps = {
   title: string;
-  kind?: "session" | "new" | "terminal";
+  kind?: "session" | "groupSession" | "new" | "terminal" | "group";
   avatar: { letter: string; color: string };
   active: boolean;
   isPreview: boolean;
@@ -96,6 +96,12 @@ export const Tab = React.forwardRef<
           className="size-4 text-muted-foreground"
           aria-hidden="true"
         />
+      ) : kind === "group" ? (
+        // 群聊 tab:用「群组」图标头像(柔和主色底 + 主色 users-round 图标)与普通
+        // agent 的字母头像区分开,对齐设计稿混排侧栏的群聊行视觉。
+        <span className="inline-flex size-4 items-center justify-center rounded-sm bg-primary/15 text-primary">
+          <UsersRound className="size-2.5" aria-hidden="true" />
+        </span>
       ) : (
         <span
           className="inline-flex size-4 items-center justify-center rounded-sm"

@@ -3,8 +3,8 @@ package chat_svc
 import (
 	"encoding/json"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 )
 
 // convertOldEventToNew 旧 RuntimeEvent → 新 Event,仅留给 chat_svc_test 包的

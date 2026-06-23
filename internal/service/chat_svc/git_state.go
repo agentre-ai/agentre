@@ -11,13 +11,13 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/pkg/procattr"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/procattr"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 )
 
 // runGitState 在 cwd 下连跑几条 git 命令汇成 ChatSessionGitState。

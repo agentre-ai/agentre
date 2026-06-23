@@ -26,9 +26,9 @@ import (
 	"github.com/emersion/go-message/mail"
 	"go.uber.org/zap"
 
-	"agentre/internal/model/entity/hook_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/hook_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/hook_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/hook_repo"
 )
 
 const (

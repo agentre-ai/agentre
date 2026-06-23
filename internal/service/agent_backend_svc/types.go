@@ -7,7 +7,7 @@ package agent_backend_svc
 import (
 	"context"
 
-	"agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 )
 
 // BackendItem 单条 Agent 后端配置（已 join LLM Provider 摘要）。
@@ -29,6 +29,9 @@ type BackendItem struct {
 	// DefaultPermissionMode 仅 claudecode 使用；新会话起手 mode；
 	// '' / default / acceptEdits / plan / bypassPermissions。
 	DefaultPermissionMode string `json:"defaultPermissionMode"`
+	// DefaultModel 仅 claudecode 使用；spawn claude 子进程下发的 --model 值。
+	// 走 CLI 登录态（未绑 provider）时填自定义模型（如 claude-fable-5）；空 = CLI 默认。
+	DefaultModel string `json:"defaultModel"`
 	// DeviceID 关联的远端设备 ID（paired_agents.id 的字符串形式）。空串 = 本地。
 	DeviceID string `json:"deviceId"`
 	// DeviceName 关联远端设备的显示名；DeviceID 为空时为空串。
@@ -61,6 +64,7 @@ type CreateBackendRequest struct {
 	EnvJSON               string `json:"envJson"`
 	ReasoningEffort       string `json:"reasoningEffort"`
 	DefaultPermissionMode string `json:"defaultPermissionMode"`
+	DefaultModel          string `json:"defaultModel"`
 	DeviceID              string `json:"deviceId"`
 }
 
@@ -81,6 +85,7 @@ type UpdateBackendRequest struct {
 	EnvJSON               string `json:"envJson"`
 	ReasoningEffort       string `json:"reasoningEffort"`
 	DefaultPermissionMode string `json:"defaultPermissionMode"`
+	DefaultModel          string `json:"defaultModel"`
 	DeviceID              string `json:"deviceId"`
 }
 
@@ -117,6 +122,7 @@ type TestBackendRequest struct {
 	EnvJSON               string `json:"envJson"`
 	ReasoningEffort       string `json:"reasoningEffort"`
 	DefaultPermissionMode string `json:"defaultPermissionMode"`
+	DefaultModel          string `json:"defaultModel"`
 	RequestID             string `json:"requestId"`
 }
 

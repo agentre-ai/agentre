@@ -7,8 +7,8 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // ValidatePermissionMode 用 Capabilities().PermissionModeMeta 替代 chat_svc 旧的

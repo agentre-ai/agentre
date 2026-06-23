@@ -14,7 +14,7 @@ import (
 
 	creackpty "github.com/creack/pty"
 
-	pkgpty "agentre/internal/pkg/pty"
+	pkgpty "github.com/agentre-ai/agentre/internal/pkg/pty"
 )
 
 // Backend is the local creack/pty implementation of pty.Backend.

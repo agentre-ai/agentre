@@ -987,3 +987,163 @@ func TestBackgroundTaskAutonomousTurn_CarriesCompletedTask(t *testing.T) {
 	assert.Equal(t, "completed", at.CompletedTask.Status)
 	assert.Equal(t, "Background command completed", at.CompletedTask.Summary)
 }
+
+// fakeBackgroundSubagent 复刻真实 CLI 2.1.185 抓到的「run_in_background 子 agent
+// (Agent/Task 工具)」帧序(见 /tmp 抓帧):
+//
+//	turn1:主 agent 起 Agent(run_in_background:true)→ tool_result(异步启动,带
+//	       output_file)→ text → result#1(本轮收尾、会话转空闲)。
+//	空闲态:子 agent 的内部子对话实时流出 —— assistant/user 帧带 parent_tool_use_id
+//	       =Agent 工具 tool_use_id(内部文本 / 内层 Bash 调用 / 内层 bash 完成通知
+//	       (output_file 为空)/ 内层 tool_result),夹 task_progress / task_updated。
+//	完成:  task_notification(后台型:有 output_file、无 subagent_type)→ 起自主续轮。
+//	续轮:  init + assistant(主 agent 总结)+ result#2。
+//	turn2: 普通回声。
+//
+// 关键缺陷(Phase 1 修复):空闲态第一帧子 agent 内部活动(parent_tool_use_id 的
+// assistant 帧)既非后台型 task_notification、也不在 isNonTurnFrame 白名单 —— 旧逻辑
+// 在 currentTurn 落到 <-pendingTurns 阻塞,冻住读循环;后续完成通知 / 自主续轮永远读
+// 不到(与后台 bash 的 sess-429 同类,但触发源是后台 subagent 的内部活动)。
+const fakeBgSubAgentTU = "toolu_agent" // Agent 工具 tool_use_id == subagent 卡片 key
+
+func fakeBackgroundSubagent(stdin io.Reader, stdout io.Writer) {
+	const sid = "sess-bgsubagent"
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	turn := 0
+	for sc.Scan() {
+		turn++
+		reply := extractTextField(sc.Text())
+		if turn == 1 {
+			// turn1:启动后台 subagent,以 result#1 收尾(模型不等子任务结束本轮)。
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":%q,"name":"Agent","input":{"subagent_type":"general-purpose","description":"explore","prompt":"go","run_in_background":true}}]}}`, fakeBgSubAgentTU)
+			writeFrame(stdout, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":%q,"content":"Async agent launched successfully. output_file: /tmp/tasks/sub.output"}]}}`, fakeBgSubAgentTU)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a2","content":[{"type":"text","text":"started:%s"}]}}`, reply)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+			// —— 不等下一条 stdin:子 agent 内部子对话在空闲态实时流出(parent_tool_use_id)——
+			writeFrame(stdout, `{"type":"assistant","parent_tool_use_id":%q,"message":{"id":"s1","content":[{"type":"text","text":"subagent thinking"}]}}`, fakeBgSubAgentTU)
+			writeFrame(stdout, `{"type":"assistant","parent_tool_use_id":%q,"message":{"id":"s2","content":[{"type":"tool_use","id":"sub_bash","name":"Bash","input":{"command":"sleep 6"}}]}}`, fakeBgSubAgentTU)
+			writeFrame(stdout, `{"type":"system","subtype":"task_progress","task_id":"subtask","tool_use_id":%q,"subagent_type":"general-purpose"}`, fakeBgSubAgentTU)
+			writeFrame(stdout, `{"type":"system","subtype":"task_started","task_id":"innerbash","task_type":"local_bash"}`)
+			writeFrame(stdout, `{"type":"system","subtype":"task_notification","task_id":"innerbash","tool_use_id":"sub_bash","status":"completed","output_file":"","summary":"inner bash done"}`)
+			writeFrame(stdout, `{"type":"user","parent_tool_use_id":%q,"message":{"content":[{"type":"tool_result","tool_use_id":"sub_bash","content":"SUBAGENT_DONE"}]}}`, fakeBgSubAgentTU)
+			writeFrame(stdout, `{"type":"assistant","parent_tool_use_id":%q,"message":{"id":"s3","content":[{"type":"text","text":"subagent final"}]}}`, fakeBgSubAgentTU)
+			writeFrame(stdout, `{"type":"system","subtype":"task_updated","task_id":"subtask","patch":{"status":"completed"},"session_id":%q}`, sid)
+			// 后台型完成通知:有 output_file、无 subagent_type → isBackgroundTaskNotification=true。
+			writeFrame(stdout, `{"type":"system","subtype":"task_notification","task_id":"subtask","tool_use_id":%q,"status":"completed","output_file":"/tmp/tasks/sub.output","summary":"Agent came to rest"}`, fakeBgSubAgentTU)
+			// —— 自主续轮:主 agent 总结子 agent 结果 ——
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a3","content":[{"type":"text","text":"autonomous:subagent-summary"}]}}`)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":2,"output_tokens":2}}`, sid)
+			continue
+		}
+		// turn2:普通回声。
+		writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+		writeFrame(stdout, `{"type":"assistant","message":{"id":"a4","content":[{"type":"text","text":"echo:%s"}]}}`, reply)
+		writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+	}
+}
+
+// TestSession_BackgroundSubagentActivityTurn 锁定 Phase 2:后台 subagent 的空闲内部活动
+// 经 SubagentActivity() 作为一轮独立事件流吐出(keyed by Agent tool_use_id),其后台完成
+// 仍触发既有自主续轮(AutonomousTurns)。
+func TestSession_BackgroundSubagentActivityTurn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeBackgroundSubagent))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	ch1, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, "started:alpha", drainText(t, ch1))
+
+	// (a) subagent 活动轮:keyed by Agent tool_use_id,事件流含子 agent 内部文本/工具。
+	var act *SubagentActivity
+	select {
+	case act = <-sess.SubagentActivity():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a subagent activity turn within 2s")
+	}
+	require.NotNil(t, act)
+	assert.Equal(t, fakeBgSubAgentTU, act.ToolUseID)
+	var sawNestedText, sawNestedTool bool
+	for ev := range act.Events {
+		if ev.ParentToolUseID != fakeBgSubAgentTU {
+			continue
+		}
+		if ev.Kind == EventTextDelta && ev.Text == "subagent thinking" {
+			sawNestedText = true
+		}
+		if ev.Kind == EventPreToolUse {
+			sawNestedTool = true
+		}
+	}
+	assert.True(t, sawNestedText, "活动轮应含子 agent 内部文本帧")
+	assert.True(t, sawNestedTool, "活动轮应含子 agent 内部工具调用帧")
+
+	// (b) 后台完成仍触发既有自主续轮(总结)。
+	var at *AutoTurn
+	select {
+	case at = <-sess.AutonomousTurns():
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected autonomous summary turn within 2s")
+	}
+	require.NotNil(t, at)
+	assert.Equal(t, "autonomous:subagent-summary", drainText(t, at.Events))
+	require.NotNil(t, at.CompletedTask)
+	assert.Equal(t, fakeBgSubAgentTU, at.CompletedTask.ToolUseID)
+
+	// (c) turn2 无错位。
+	ch2, err := sess.Turn(ctx, "beta")
+	require.NoError(t, err)
+	assert.Equal(t, "echo:beta", drainText(t, ch2))
+}
+
+// TestSession_IdleBackgroundSubagentKeepsReaderAlive 锁定 Phase 1 缺陷:后台 subagent
+// 的内部活动在空闲态(result#1 之后、无 user turn 在飞)实时流出时,读循环不得卡死。
+//
+//	(a) turn1 干净收尾,只含 "started:alpha",不串入空闲子 agent 帧;
+//	(b) 后台 subagent 完成的自主续轮必须经 AutonomousTurns() 浮现,文本 =
+//	    "autonomous:subagent-summary",CompletedTask 指向 Agent 工具 tool_use_id
+//	    (= subagent 卡片 key,供 FlipSubagentStatus 跨轮翻成 completed)。读循环若卡死
+//	    在第一帧空闲子 agent 内部帧上,这一轮永远到不了 autoCh —— 修复前会超时;
+//	(c) turn2 无错位。
+func TestSession_IdleBackgroundSubagentKeepsReaderAlive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeBackgroundSubagent))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// (a) turn1 干净收尾。
+	ch1, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	got1 := drainText(t, ch1)
+	assert.Equal(t, "started:alpha", got1)
+	assert.NotContains(t, got1, "subagent", "turn1 不应吞掉空闲子 agent 内部帧")
+
+	// (b) 后台 subagent 完成的自主续轮必须浮现(修复前:读循环卡死在空闲子 agent 内部帧)。
+	var at *AutoTurn
+	select {
+	case at = <-sess.AutonomousTurns():
+	case <-time.After(2 * time.Second):
+		t.Fatal("后台 subagent 空闲内部活动卡死读循环:自主续轮从未到达 " +
+			"(parent_tool_use_id 的 assistant/user 帧落入 <-pendingTurns 阻塞)")
+	}
+	require.NotNil(t, at)
+	assert.Equal(t, "background_task", at.Trigger)
+	assert.Equal(t, "autonomous:subagent-summary", drainText(t, at.Events))
+	require.NotNil(t, at.CompletedTask)
+	assert.Equal(t, fakeBgSubAgentTU, at.CompletedTask.ToolUseID,
+		"CompletedTask 须指向 Agent 工具 tool_use_id 以翻转 subagent 卡片")
+
+	// (c) turn2 无错位。
+	ch2, err := sess.Turn(ctx, "beta")
+	require.NoError(t, err)
+	assert.Equal(t, "echo:beta", drainText(t, ch2))
+}

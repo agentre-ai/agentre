@@ -3,10 +3,10 @@ package project_svc
 import (
 	"context"
 
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/model/entity/project_entity"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/project_repo"
 )
 
 // aggregateMembers 按 parent_id 链向上聚合成员：直接成员 + 全部祖先继承成员。

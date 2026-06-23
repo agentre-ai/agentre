@@ -4,7 +4,7 @@ package remote_device_svc
 import (
 	"context"
 
-	"agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/daemon/client"
 )
 
 //go:generate mockgen -source ports.go -destination mock_remote_device_svc/mock_ports.go

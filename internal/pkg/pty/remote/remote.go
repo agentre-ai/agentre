@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	pkgpty "agentre/internal/pkg/pty"
-	"agentre/pkg/agentred/protocol"
+	pkgpty "github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
 
 const openTimeout = 5 * time.Second

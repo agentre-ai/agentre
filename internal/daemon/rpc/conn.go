@@ -62,6 +62,14 @@ func NewConn(ws *websocket.Conn, reg *Registry) *Conn {
 	}
 }
 
+// ErrConnClosed is returned by Call when the connection closes (peer
+// disconnect / Close / read-loop EOF) while a request is still awaiting its
+// response. Without it, Call would block until the caller's own ctx deadline
+// — and reverse requests like the MCP tunnel carry the CLI's long-lived HTTP
+// ctx (~285s), so a mid-request WS death would hang that long. Callers can
+// errors.Is against this to retry / re-borrow a fresh connection.
+var ErrConnClosed = errors.New("rpc: connection closed")
+
 // Done returns a channel that is closed when Close is called or when Serve
 // exits (read loop EOF). Multiple consumers may receive on it.
 func (c *Conn) Done() <-chan struct{} { return c.done }
@@ -184,6 +192,11 @@ func (c *Conn) Call(ctx context.Context, method string, params any, result any) 
 		return json.Unmarshal(f.Result, result)
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-c.done:
+		// 连接已断(peer 掉线 / Close / read-loop EOF):响应永不会来,及时返回而
+		// 不是干等 ctx deadline。反向请求(MCP 隧道)携 CLI 的长寿命 HTTP ctx,少了
+		// 这一路 case,WS 中途断会把隧道 goroutine + pending 挂到 CLI ~285s 超时。
+		return ErrConnClosed
 	}
 }
 

@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/pkg/agentruntime"
-	pkgpi "agentre/pkg/piagent"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	pkgpi "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
 func TestTranslate_TextAndThinking(t *testing.T) {

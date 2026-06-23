@@ -429,7 +429,7 @@ describe("TerminalPanel", () => {
   it("re-themes xterm when document root class changes (light↔dark toggle)", () => {
     // jsdom's getComputedStyle does not resolve CSS custom properties (--background,
     // --foreground), so we cannot assert the exact theme values here. The actual
-    // re-theme behaviour is verified manually in Task 30.
+    // re-theme behaviour is verified manually in browser-level coverage.
     // Minimum assertion: render + MutationObserver registration throws no error.
     const onClose = vi.fn();
     render(

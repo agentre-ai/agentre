@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/pkg/pty"
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 
 	"github.com/stretchr/testify/require"
 )

@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"agentre/internal/pkg/paths"
+	"github.com/agentre-ai/agentre/internal/pkg/paths"
 )
 
 // AgentCwd 给需要文件系统工具的后端拼一个稳定的 Agent 工作目录：

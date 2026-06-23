@@ -116,6 +116,11 @@ type FlashState =
   | { kind: "err"; text: string }
   | null;
 
+type ProviderSubmitResult = {
+  flash?: FlashState;
+  providerKey?: string;
+};
+
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
@@ -197,7 +202,7 @@ export function LlmProvidersPanel() {
   );
 
   const handleSubmit = React.useCallback(
-    async (input: ProviderFormValues): Promise<{ providerKey?: string }> => {
+    async (input: ProviderFormValues): Promise<ProviderSubmitResult> => {
       try {
         if (editor.kind === "create") {
           const created = await CreateLLMProvider(
@@ -211,18 +216,20 @@ export function LlmProvidersPanel() {
               contextWindow: input.contextWindow,
             }),
           );
-          setFlash({
-            kind: "ok",
-            text: t("llmProviders.flash.created", {
-              name: input.name.trim(),
-            }),
-          });
           await refresh();
           // Return key to form so it can display it; form stays open.
           const key = (
             created as unknown as { item?: { providerKey?: string } }
           )?.item?.providerKey;
-          return { providerKey: key };
+          return {
+            providerKey: key,
+            flash: {
+              kind: "ok",
+              text: t("llmProviders.flash.created", {
+                name: input.name.trim(),
+              }),
+            },
+          };
         } else if (editor.kind === "edit") {
           await UpdateLLMProvider(
             new llm_provider_svc.UpdateProviderRequest({
@@ -245,12 +252,14 @@ export function LlmProvidersPanel() {
           await refresh();
         }
       } catch (err) {
-        setFlash({
-          kind: "err",
-          text: t("llmProviders.flash.saveFailed", {
-            message: errMessage(err),
-          }),
-        });
+        return {
+          flash: {
+            kind: "err",
+            text: t("llmProviders.flash.saveFailed", {
+              message: errMessage(err),
+            }),
+          },
+        };
       }
       return {};
     },
@@ -678,7 +687,7 @@ type ProviderFormValues = {
 type ProviderFormDialogProps = {
   editor: EditorState;
   onClose: () => void;
-  onSubmit: (values: ProviderFormValues) => Promise<{ providerKey?: string }>;
+  onSubmit: (values: ProviderFormValues) => Promise<ProviderSubmitResult>;
 };
 
 function ProviderFormDialog({
@@ -713,7 +722,7 @@ function ProviderFormDialog({
 type ProviderFormProps = {
   editor: Exclude<EditorState, { kind: "closed" }>;
   onCancel: () => void;
-  onSubmit: (values: ProviderFormValues) => Promise<{ providerKey?: string }>;
+  onSubmit: (values: ProviderFormValues) => Promise<ProviderSubmitResult>;
 };
 
 function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
@@ -756,6 +765,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
   const [modelsError, setModelsError] = React.useState<string | null>(null);
   const [fetchedOnce, setFetchedOnce] = React.useState(false);
   const [testingDraft, setTestingDraft] = React.useState(false);
+  const [saveFlash, setSaveFlash] = React.useState<FlashState>(null);
   const [testFlash, setTestFlash] = React.useState<FlashState>(null);
 
   const meta = providerTypeMeta[values.type];
@@ -766,6 +776,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
 
   const update = React.useCallback(
     <K extends keyof ProviderFormValues>(key: K, v: ProviderFormValues[K]) => {
+      setSaveFlash(null);
       setTestFlash(null);
       setValues((prev) => ({ ...prev, [key]: v }));
     },
@@ -887,6 +898,7 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       setError(null);
+      setSaveFlash(null);
       setTestFlash(null);
       if (!values.name.trim()) {
         setError(t("llmProviders.validation.nameRequired"));
@@ -902,8 +914,11 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
         if (result?.providerKey) {
           setProviderKey(result.providerKey);
         }
+        if (result?.flash) {
+          setSaveFlash(result.flash);
+        }
       } catch (err) {
-        setError(errMessage(err));
+        setSaveFlash({ kind: "err", text: errMessage(err) });
       } finally {
         setSubmitting(false);
       }
@@ -1202,6 +1217,30 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
         </FormField>
 
         {error ? <p className="text-2xs text-status-error">{error}</p> : null}
+        {saveFlash ? (
+          <Alert
+            className={cn(
+              "py-2",
+              saveFlash.kind === "ok"
+                ? "border-status-running/40 bg-status-running/10 text-status-running"
+                : "border-status-error/40 bg-status-error/10 text-status-error",
+            )}
+          >
+            {saveFlash.kind === "ok" ? (
+              <CheckCircle2 className="size-4" aria-hidden="true" />
+            ) : (
+              <AlertCircle className="size-4" aria-hidden="true" />
+            )}
+            <AlertTitle className="text-xs font-semibold">
+              {saveFlash.kind === "ok"
+                ? t("common.operationSucceeded")
+                : t("common.errorOccurred")}
+            </AlertTitle>
+            <AlertDescription className="text-2xs">
+              {saveFlash.text}
+            </AlertDescription>
+          </Alert>
+        ) : null}
         {testFlash ? (
           <Alert
             className={cn(

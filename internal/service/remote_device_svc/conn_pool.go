@@ -11,8 +11,8 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/repository/remote_device_repo"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
 )
 
 // ErrPoolClosed 在 Pool.Close 之后调 Borrow 返回。生产路径只在 bootstrap

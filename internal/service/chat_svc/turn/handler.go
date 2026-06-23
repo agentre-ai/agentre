@@ -3,7 +3,7 @@ package turn
 import (
 	"context"
 
-	"agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 )
 
 // Handler 处理一种 agentruntime.Event 类型。

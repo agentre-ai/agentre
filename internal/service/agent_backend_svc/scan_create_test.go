@@ -8,12 +8,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/cliprober"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
-	"agentre/internal/repository/llm_provider_repo"
-	"agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/cliprober"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
 )
 
 func setupScanTest(t *testing.T) (

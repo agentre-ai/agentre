@@ -32,5 +32,9 @@ func migrationList() []*gormigrate.Migration {
 		migration202605220009(), // server_state + paired_agentreds
 		migration202605220010(), // projects.sort_order
 		migration202605220011(), // issues + labels + issue_labels + label seed
+		migration202606030001(), // group chat baseline
+		migration202606100001(), // agent_backends.default_model
+		migration202606160001(), // 群协作:agent 工具(org/group_create)+ 群任务/流程 + 群成员昵称
+		migration202606160002(), // chat_sessions.purpose(隐藏 subagent 委派会话)
 	}
 }

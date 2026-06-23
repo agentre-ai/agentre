@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 
 import { statusConfig, type AgentStatus } from "../../types";
+import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 
 import { summarizeRawTool } from "./summary";
@@ -27,12 +28,24 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
   resultBlock,
   cwd,
   sessionId,
+  uiStateKey,
 }) => {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = useTranscriptBooleanState(uiStateKey, false);
 
   const toolName = toolBlock.toolName ?? "tool";
   const input = toolBlock.toolInput as Record<string, unknown> | undefined;
+  const isBackground = input?.run_in_background === true;
+  const bgSubagent = (toolBlock as ChatBlockData).subagent;
+  // The 「后台运行」 pill is a "running in background right now" indicator. A
+  // run_in_background Bash gets its tool_result (launch ACK) immediately, so we
+  // can't key off hasResult — drive it off the background subagent's status.
+  const bgRunning =
+    isBackground &&
+    bgSubagent?.status !== "completed" &&
+    bgSubagent?.status !== "failed" &&
+    bgSubagent?.status !== "canceled";
+  const bgTaskId = bgSubagent?.taskId ?? undefined;
   const isShellShape = typeof input?.command === "string";
   const toolLabel = isShellShape ? "Bash" : toolName;
   const ToolIcon = isShellShape ? Terminal : Wrench;
@@ -127,6 +140,24 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
           </>
         )}
         <span className="min-w-0 flex-1" />
+        {bgRunning && (
+          <span
+            data-testid="bg-running-pill"
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
+          >
+            <LoaderCircle
+              className="size-2.5 animate-spin"
+              aria-hidden="true"
+            />
+            {t("canonical.raw.backgroundRunning")}
+            {bgTaskId && (
+              <>
+                <span className="opacity-50">·</span>
+                <span className="font-mono">{bgTaskId}</span>
+              </>
+            )}
+          </span>
+        )}
         {allowedBadge && (
           <span
             className="inline-flex shrink-0 items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-emerald-600 dark:text-emerald-400"

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/daemon/pairing"
-	"agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/daemon/pairing"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

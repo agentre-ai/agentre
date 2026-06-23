@@ -10,8 +10,8 @@
 package mock_app_setting_repo
 
 import (
-	app_setting_entity "agentre/internal/model/entity/app_setting_entity"
 	context "context"
+	app_setting_entity "github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"

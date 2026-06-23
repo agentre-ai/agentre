@@ -40,12 +40,13 @@ type assistantDelta struct {
 }
 
 type assistantMessage struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content"`
-	Provider   string          `json:"provider"`
-	Model      string          `json:"model"`
-	Usage      *usageWire      `json:"usage"`
-	StopReason string          `json:"stopReason"`
+	Role         string          `json:"role"`
+	Content      json.RawMessage `json:"content"`
+	Provider     string          `json:"provider"`
+	Model        string          `json:"model"`
+	Usage        *usageWire      `json:"usage"`
+	StopReason   string          `json:"stopReason"`
+	ErrorMessage string          `json:"errorMessage,omitempty"`
 }
 
 type usageWire struct {
@@ -110,7 +111,9 @@ func buildRPCArgs(c *Client) []string {
 	if thinking := normalizeThinkingLevel(c.thinking); thinking != "" {
 		args = append(args, "--thinking", thinking)
 	}
-	args = append(args, "--no-context-files")
+	for _, ext := range c.extensions {
+		args = append(args, "--extension", ext)
+	}
 	return args
 }
 

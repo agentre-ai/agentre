@@ -27,10 +27,10 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 )
 
 // remoteSession 一个远端 daemon 上跑的 chat session 在本地的镜像。sessionID
@@ -84,6 +84,9 @@ func New(c agentruntime.DaemonClientPort) *Runtime {
 	c.Handle(wire.NotifyAutonomousTurnStarted, r.handleAutonomousTurnStarted)
 	c.Handle(wire.NotifyAutonomousTurnEvent, r.handleAutonomousTurnEvent)
 	c.Handle(wire.NotifyAutonomousTurnDone, r.handleAutonomousTurnDone)
+	// daemon 上的 CLI 子进程访问内置工具 MCP(org/subagent/group/workflow)时,经此反向
+	// 请求隧道回 desktop 执行(真 /mcp/* handler 在 desktop)。见 mcpproxy.go。
+	c.Handle(wire.MethodMCPProxy, r.handleMCPProxy)
 	if closed := c.Closed(); closed != nil {
 		go r.watchClose(closed)
 	}
@@ -195,6 +198,7 @@ var defaultCapsBeforePrefetch = capability.Capabilities{
 		capability.CapAbort:          true,
 		capability.CapAnswerUserAsk:  true,
 		capability.CapToolPermission: true,
+		capability.CapSkills:         true,
 	},
 	PermissionModeMeta: capability.PermissionModeMeta{
 		AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},
@@ -294,6 +298,8 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 		ForkAnchor:        req.ForkAnchor,
 		PermissionMode:    req.PermissionMode,
 		CollaborationMode: req.CollaborationMode,
+		MCPServers:        req.MCPServers,
+		EnabledPlugins:    req.EnabledPlugins,
 		LLMProviderKey:    req.LLMProviderKey,
 	}, nil
 }

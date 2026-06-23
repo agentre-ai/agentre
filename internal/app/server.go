@@ -1,8 +1,8 @@
 package app
 
 import (
-	"agentre/internal/model/entity/server_state_entity"
-	"agentre/internal/service/server_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
+	"github.com/agentre-ai/agentre/internal/service/server_svc"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )

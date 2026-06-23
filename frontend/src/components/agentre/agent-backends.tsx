@@ -124,6 +124,7 @@ type BackendDraft = {
   envJson: string;
   reasoningEffort: ReasoningEffortValue;
   defaultPermissionMode: string;
+  defaultModel: string;
 };
 type PendingProviderSync = {
   draft: BackendDraft;
@@ -565,7 +566,6 @@ export function AgentBackendsPanel({
             setFlash({ kind: "ok", text: message });
             await reload();
           }}
-          onError={(text) => setFlash({ kind: "err", text })}
           onOpenProxySettings={onOpenProxySettings}
         />
       ) : null}
@@ -810,14 +810,12 @@ function BackendEditor({
   providers,
   onClose,
   onSaved,
-  onError,
   onOpenProxySettings,
 }: {
   state: EditorState;
   providers: Provider[];
   onClose: () => void;
   onSaved: (message: string) => Promise<void> | void;
-  onError: (text: string) => void;
   onOpenProxySettings?: () => void;
 }) {
   const { t } = useTranslation();
@@ -862,6 +860,12 @@ function BackendEditor({
       ((editing as unknown as { defaultPermissionMode?: string } | null)
         ?.defaultPermissionMode as string) || "",
     );
+  const [defaultModel, setDefaultModel] = React.useState<string>(
+    // BackendItem.defaultModel 在 Wails 重新生成绑定前可能还未出现在 TS 类型里；
+    // 用宽类型读出。空串 = 走 provider.Model / CLI 默认。
+    ((editing as unknown as { defaultModel?: string } | null)
+      ?.defaultModel as string) || "",
+  );
   const [deviceId, setDeviceId] = React.useState<string>(
     // BackendItem.deviceID may not yet appear in the Wails-generated TS type;
     // use unknown cast to read it safely. Empty string = local.
@@ -877,6 +881,7 @@ function BackendEditor({
   >(null);
   const [syncingProvider, setSyncingProvider] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
+  const [saveResult, setSaveResult] = React.useState<FlashState>(null);
   const [testResult, setTestResult] = React.useState<FlashState>(null);
   const [gatewayStatus, setGatewayStatus] =
     React.useState<httpgateway.GatewayStatus | null>(null);
@@ -916,15 +921,18 @@ function BackendEditor({
   }
 
   function handleTypeChange(nextType: BackendType) {
+    setSaveResult(null);
     setType(nextType);
     setLlmProviderKey("");
     setRoutes(emptyRoutes());
     setSandbox("");
     setApproval("");
     setTestResult(null);
-    // 切离 claudecode 时清空 default permission mode：entity.Check 仅放行 claudecode + 非空。
+    // 切离 claudecode 时清空 default permission mode / default model：
+    // entity.Check 仅放行 claudecode + 非空。
     if (nextType !== "claudecode") {
       setDefaultPermissionMode("");
+      setDefaultModel("");
     }
     // 切到 codex 时把 max 自动降到 high，避免「保存了一个 codex 不支持的档位」。
     if (nextType === "codex") {
@@ -1015,6 +1023,7 @@ function BackendEditor({
       envJson: type === "builtin" ? "{}" : serializeEnv(envEntries),
       reasoningEffort: effort,
       defaultPermissionMode: type === "claudecode" ? defaultPermissionMode : "",
+      defaultModel: type === "claudecode" ? defaultModel.trim() : "",
     };
   }
 
@@ -1057,6 +1066,7 @@ function BackendEditor({
         envJson: draft.envJson,
         reasoningEffort: draft.reasoningEffort,
         defaultPermissionMode: draft.defaultPermissionMode,
+        defaultModel: draft.defaultModel,
       } as unknown as agent_backend_svc.UpdateBackendRequest);
       await onSaved(t("agentBackends.flash.saved"));
     }
@@ -1130,12 +1140,14 @@ function BackendEditor({
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (submitting) return;
+    setSaveResult(null);
     if (reservedOffenders.length > 0) {
-      onError(
-        t("agentBackends.env.reservedDisabled", {
+      setSaveResult({
+        kind: "err",
+        text: t("agentBackends.env.reservedDisabled", {
           keys: reservedOffenders.join(", "),
         }),
-      );
+      });
       setAdvancedOpen(true);
       return;
     }
@@ -1154,7 +1166,7 @@ function BackendEditor({
       }
       await saveDraft(draft);
     } catch (err) {
-      onError(messageFromError(err));
+      setSaveResult({ kind: "err", text: messageFromError(err) });
     } finally {
       setSubmitting(false);
     }
@@ -1239,6 +1251,7 @@ function BackendEditor({
         footerClassName="flex-col items-stretch gap-2"
         footer={
           <>
+            {saveResult ? <TestResultPill state={saveResult} /> : null}
             {testResult ? <TestResultPill state={testResult} /> : null}
             <div className="flex w-full items-center gap-2">
               {testing ? (
@@ -1392,6 +1405,10 @@ function BackendEditor({
             onChange={setRoutes}
             mainProviderKey={llmProviderKey}
           />
+        ) : null}
+
+        {type === "claudecode" ? (
+          <DefaultModelField value={defaultModel} onChange={setDefaultModel} />
         ) : null}
 
         {type === "claudecode" ? (
@@ -2042,6 +2059,42 @@ function ReasoningEffortField({
           {t("agentBackends.reasoning.codexHint")}
         </span>
       ) : null}
+    </div>
+  );
+}
+
+// DefaultModelField 是 claudecode 的「自定义模型」配置：spawn claude 子进程时
+// 下发的 --model 值。主要用于走 CLI 自身登录态（未绑 provider）时指定模型
+// （如 claude-fable-5）；绑了 provider 时 provider.Model 优先，本字段仅兜底。
+// 纯自由文本，CLI 既收别名（fable/opus/sonnet）也收完整模型名。
+function DefaultModelField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col gap-1.5 text-xs">
+      <div className="flex items-center justify-between">
+        <span className="font-medium">
+          {t("agentBackends.defaultModel.label")}
+        </span>
+        <span className="font-mono text-2xs text-muted-foreground">
+          {t("agentBackends.defaultModel.hint")}
+        </span>
+      </div>
+      <Input
+        value={value}
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        placeholder={t("agentBackends.defaultModel.placeholder")}
+        onChange={(e) => onChange(e.currentTarget.value)}
+        className="h-9 font-mono text-xs"
+      />
     </div>
   );
 }

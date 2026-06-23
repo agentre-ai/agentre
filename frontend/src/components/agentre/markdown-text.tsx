@@ -44,6 +44,84 @@ function codeBlockLanguage(className: string): string {
   return match?.[1] ?? "code";
 }
 
+// ── 内联装饰器接缝 ──────────────────────────────────────────────────────────
+// 让调用方在「markdown 渲染结果」里注入内联富节点(@mention chip / 命令 chip /
+// 文件引用 chip…):tokenize 把一段纯文本切成 text|token 段,render 把 token 渲染成
+// React 节点。装饰发生在 hast 文本节点层面 —— code/pre 子树天然跳过,代码里的
+// "@name" 不会被误染。data 会经 JSON 字符串穿过 hast properties,必须可 JSON 序列化。
+export type MarkdownInlineSegment<T> =
+  | { type: "text"; value: string }
+  | { type: "token"; data: T };
+
+// 注意用方法简写签名(而非箭头属性):strictFunctionTypes 对方法参数做双变检查,
+// 让 Decorator<具体 T> 可以赋给组件 props 的 Decorator<unknown>。
+export type MarkdownInlineDecorator<T = unknown> = {
+  tokenize(text: string): MarkdownInlineSegment<T>[];
+  render(data: T): React.ReactNode;
+};
+
+// hast 节点的最小结构类型:@types/hast 不是直接依赖(pnpm 不提升),这里只描述
+// 遍历/替换用到的字段。
+type HastNode = {
+  type: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+};
+
+const INLINE_TOKEN_TAG = "markdown-inline-token";
+
+// decorateHastText:深度遍历 hast,把文本节点交给 tokenize 切分;命中 token 的文本
+// 节点被替换成 [text..., INLINE_TOKEN_TAG 元素, ...] 序列,token 数据 JSON 进
+// properties.payload,由 components 映射里的同名条目渲染回 React 节点。
+function decorateHastText(
+  node: HastNode,
+  tokenize: (text: string) => MarkdownInlineSegment<unknown>[],
+): void {
+  if (
+    node.type === "element" &&
+    (node.tagName === "code" || node.tagName === "pre")
+  ) {
+    return;
+  }
+  const children = node.children;
+  if (!children) return;
+  for (let i = 0; i < children.length; ) {
+    const child = children[i];
+    if (child.type !== "text" || typeof child.value !== "string") {
+      decorateHastText(child, tokenize);
+      i += 1;
+      continue;
+    }
+    const segments = tokenize(child.value);
+    if (!segments.some((s) => s.type === "token")) {
+      i += 1;
+      continue;
+    }
+    const replacement: HastNode[] = segments.map((s) =>
+      s.type === "text"
+        ? { type: "text", value: s.value }
+        : {
+            type: "element",
+            tagName: INLINE_TOKEN_TAG,
+            properties: { payload: JSON.stringify(s.data) },
+            children: [],
+          },
+    );
+    children.splice(i, 1, ...replacement);
+    i += replacement.length;
+  }
+}
+
+function rehypeInlineTokens(
+  tokenize: (text: string) => MarkdownInlineSegment<unknown>[],
+) {
+  return () => (tree: HastNode) => {
+    decorateHastText(tree, tokenize);
+  };
+}
+
 const SAFE_HREF_PATTERNS: RegExp[] = [
   /^https?:/i,
   /^mailto:/i,
@@ -216,12 +294,14 @@ const markdownRehypePlugins: ReactMarkdownOptions["rehypePlugins"] = [
 const MarkdownInner = React.memo(function MarkdownInner({
   text,
   cwd,
+  decorator,
 }: {
   text: string;
   cwd?: string;
+  decorator?: MarkdownInlineDecorator;
 }) {
-  const components = React.useMemo<Components>(
-    () => ({
+  const components = React.useMemo<Components>(() => {
+    const base: Components = {
       ...markdownComponentsStatic,
       a: ({ node: _node, href, children, className }) => (
         <RichLink
@@ -232,15 +312,38 @@ const MarkdownInner = React.memo(function MarkdownInner({
           {children}
         </RichLink>
       ),
-    }),
-    [cwd],
-  );
+    };
+    if (decorator) {
+      // INLINE_TOKEN_TAG 是自定义元素名,不在 JSX.IntrinsicElements 里,
+      // Components 类型只收内建标签,这里以宽类型挂载。
+      (base as Record<string, unknown>)[INLINE_TOKEN_TAG] = ({
+        payload,
+      }: {
+        payload?: string;
+      }) => (payload ? decorator.render(JSON.parse(payload)) : null);
+    }
+    return base;
+  }, [cwd, decorator]);
+
+  const rehypePlugins = React.useMemo<
+    ReactMarkdownOptions["rehypePlugins"]
+  >(() => {
+    if (!decorator) return markdownRehypePlugins;
+    return [
+      ...(markdownRehypePlugins ?? []),
+      rehypeInlineTokens(
+        decorator.tokenize as (
+          text: string,
+        ) => MarkdownInlineSegment<unknown>[],
+      ),
+    ];
+  }, [decorator]);
 
   return (
     <ReactMarkdown
       components={components}
       remarkPlugins={markdownRemarkPlugins}
-      rehypePlugins={markdownRehypePlugins}
+      rehypePlugins={rehypePlugins}
       urlTransform={whitelistUrl}
     >
       {text}
@@ -251,13 +354,16 @@ const MarkdownInner = React.memo(function MarkdownInner({
 export const MarkdownText = React.memo(function MarkdownText({
   text,
   cwd,
+  decorator,
 }: {
   text: string;
   cwd?: string;
+  /** 内联装饰器(mention / 命令 / 文件 chip)。调用方须传 useMemo 稳定引用,否则 memo 失效。 */
+  decorator?: MarkdownInlineDecorator;
 }) {
   return (
     <div className="markdown-body break-words text-sm leading-relaxed">
-      <MarkdownInner text={text} cwd={cwd} />
+      <MarkdownInner text={text} cwd={cwd} decorator={decorator} />
     </div>
   );
 });

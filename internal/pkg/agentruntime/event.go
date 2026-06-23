@@ -5,7 +5,7 @@ import (
 
 	"github.com/cago-frame/agents/provider"
 
-	"agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 )
 
 // Event 是 sealed interface,所有 typed event case 必须实现 isEvent()。

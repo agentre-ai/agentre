@@ -26,6 +26,8 @@ Start the commit message with a **gitmoji emoji character** (write the emoji gly
 📝 update commit message discipline
 ```
 
+Issue / PR suffixes are selective, not automatic. Add an issue suffix only when the commit is a single focused change that directly resolves or advances a known issue, using the issue number form such as `#123`. When the work is organized around a PR, do **not** append the PR number to every commit; the PR already carries that context. In general, prefer issue references over PR references, and leave the suffix off when there is no relevant issue.
+
 Common gitmojis and the category they map to when the changelog is generated (release flow):
 
 | gitmoji | Purpose | changelog category |

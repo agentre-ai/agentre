@@ -3,8 +3,8 @@ package handlers
 import (
 	"context"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 // RuntimeStatusHandler 处理 agentruntime.RuntimeStatus 事件。

@@ -9,8 +9,8 @@ import (
 
 	"github.com/cago-frame/cago/pkg/consts"
 
-	"agentre/internal/daemon/state"
-	"agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 )
 
 // ProviderLookup implements httpgateway.ProviderLookup: given a stable provider key,

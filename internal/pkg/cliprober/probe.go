@@ -7,9 +7,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"agentre/pkg/claudecode"
-	"agentre/pkg/codex"
-	"agentre/pkg/piagent"
+	"github.com/agentre-ai/agentre/pkg/claudecode"
+	"github.com/agentre-ai/agentre/pkg/codex"
+	"github.com/agentre-ai/agentre/pkg/piagent"
 )
 
 // ProbeRequest 调用方装配好的 CLI 子进程参数。Env 必须完整 —— 包括
@@ -87,50 +87,38 @@ func formatCLIProberError(err error) (string, bool) {
 	}
 	var cx *codex.ExitError
 	if errors.As(err, &cx) {
-		inner := ""
-		if cx.Err != nil {
-			inner = cx.Err.Error()
-		}
 		// codex.ExitError 没有原始 exit code 字段（包在 Err 里），尽力从 *exec.ExitError 取一下。
-		code := -1
-		var ee *exec.ExitError
-		if errors.As(cx.Err, &ee) {
-			code = ee.ExitCode()
-		}
-		if code >= 0 {
-			return formatExitDetail("codex 进程", code, joinNonEmpty(inner, cx.Stderr)), true
-		}
-		msg := strings.TrimSpace(joinNonEmpty(inner, cx.Stderr))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "codex 进程退出: " + truncateStderr(msg), true
+		return formatNestedExitError("codex 进程", cx.Err, cx.Stderr, err), true
 	}
 	var px *piagent.ExitError
 	if errors.As(err, &px) {
-		inner := ""
-		if px.Err != nil {
-			inner = px.Err.Error()
-		}
-		code := -1
-		var ee *exec.ExitError
-		if errors.As(px.Err, &ee) {
-			code = ee.ExitCode()
-		}
-		if code >= 0 {
-			return formatExitDetail("piagent 进程", code, joinNonEmpty(inner, px.Stderr)), true
-		}
-		msg := strings.TrimSpace(joinNonEmpty(inner, px.Stderr))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "piagent 进程退出: " + truncateStderr(msg), true
+		return formatNestedExitError("piagent 进程", px.Err, px.Stderr, err), true
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return formatExitDetail("子进程", ee.ExitCode(), string(ee.Stderr)), true
 	}
 	return "", false
+}
+
+func formatNestedExitError(label string, innerErr error, stderr string, fallback error) string {
+	inner := ""
+	if innerErr != nil {
+		inner = innerErr.Error()
+	}
+	code := -1
+	var ee *exec.ExitError
+	if errors.As(innerErr, &ee) {
+		code = ee.ExitCode()
+	}
+	if code >= 0 {
+		return formatExitDetail(label, code, joinNonEmpty(inner, stderr))
+	}
+	msg := strings.TrimSpace(joinNonEmpty(inner, stderr))
+	if msg == "" {
+		msg = fallback.Error()
+	}
+	return label + "退出: " + truncateStderr(msg)
 }
 
 func formatExitDetail(label string, code int, stderr string) string {

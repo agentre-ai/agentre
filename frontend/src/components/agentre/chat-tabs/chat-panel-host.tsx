@@ -4,6 +4,8 @@ import { Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ChatPanel } from "../chat-panel";
+import { pruneChatPanelScrollState } from "../chat-panel-scroll-state";
+import { GroupChat } from "../group-chat";
 import { TerminalPanel } from "../terminal/terminal-panel";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
 import type { ChatTab, TabKind } from "@/stores/chat-tabs-store";
@@ -57,6 +59,9 @@ export function ChatPanelHost() {
     () => tabsByPanelOrder(tabs, panelOrder),
     [panelOrder, tabs],
   );
+  React.useEffect(() => {
+    pruneChatPanelScrollState(new Set(tabs.map((tab) => tab.id)));
+  }, [tabs]);
 
   if (tabs.length === 0) {
     return (
@@ -89,7 +94,7 @@ export function ChatPanelHost() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col">
+    <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       {panelTabs.map((t) =>
         t.meta.kind === "terminal" ? (
           <HostedTerminalPanel
@@ -97,6 +102,8 @@ export function ChatPanelHost() {
             tab={t}
             active={t.id === activeTabId}
           />
+        ) : t.meta.kind === "group" ? (
+          <HostedGroupPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ) : (
           <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ),
@@ -105,8 +112,17 @@ export function ChatPanelHost() {
   );
 }
 
-function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
-  const sid = tab.meta.kind === "session" ? tab.meta.sessionId : 0;
+const HostedPanel = React.memo(function HostedPanel({
+  tab,
+  active,
+}: {
+  tab: ChatTab;
+  active: boolean;
+}) {
+  const sid =
+    tab.meta.kind === "session" || tab.meta.kind === "groupSession"
+      ? tab.meta.sessionId
+      : 0;
   const isNewTab = tab.meta.kind === "new";
   const newAgentId = tab.meta.kind === "new" ? tab.meta.agentId : 0;
   const newProjectId = tab.meta.kind === "new" ? tab.meta.projectId : 0;
@@ -120,6 +136,25 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
   const resolveNewTab = useChatTabsStore((s) => s.resolveNewTab);
   const closeTab = useChatTabsStore((s) => s.closeTab);
   const reloadMissingAgentRef = React.useRef<number | null>(null);
+  const newSessionContext = React.useMemo(
+    () => (isNewTab ? { projectId: newProjectId } : undefined),
+    [isNewTab, newProjectId],
+  );
+  const handleSessionCreated = React.useCallback(
+    (newSid: number) => resolveNewTab(tab.id, newSid),
+    [resolveNewTab, tab.id],
+  );
+  const handleSessionDeleted = React.useCallback(
+    () => closeTab(tab.id),
+    [closeTab, tab.id],
+  );
+  const handleSidebarShouldReload = React.useCallback(() => {
+    // 统一信号: 让 /chat (chat-agents-store) 与 /projects
+    // (project-sessions-store) 两边的 sidebar 都同步刷新。新建会话 /
+    // 删除会话 / 改标题 / turn 结束等 RPC 完成都走这里, 不必等下次
+    // mount。两个 store 各自 inflight dedup, 调用安全。
+    reloadSidebarSources();
+  }, []);
 
   // 每次该 Tab 从隐藏切到 active(包括 tab-strip 单击、overflow menu、⌘1..⌘9、
   // cmd+click 新开后激活、closeTab 后自动激活相邻 tab),把焦点交回 TipTap 输入框。
@@ -162,8 +197,8 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
       ref={wrapperRef}
       data-tab-id={tab.id}
       data-active={active}
-      style={{ display: active ? "flex" : "none" }}
-      className="flex h-full min-h-0 flex-1 flex-col"
+      aria-hidden={!active}
+      className={panelFrameClassName(active)}
     >
       {isNewTab && !agent ? (
         <MissingNewSessionAgent
@@ -174,25 +209,20 @@ function HostedPanel({ tab, active }: { tab: ChatTab; active: boolean }) {
       ) : (
         <ChatPanel
           active={active}
+          scrollStateKey={tab.id}
           sessionId={sid}
           newSessionAgent={isNewTab ? agent : null}
-          newSessionContext={isNewTab ? { projectId: newProjectId } : undefined}
-          onSessionCreated={(newSid) => resolveNewTab(tab.id, newSid)}
-          onSessionDeleted={() => closeTab(tab.id)}
-          onSidebarShouldReload={() => {
-            // 统一信号: 让 /chat (chat-agents-store) 与 /projects
-            // (project-sessions-store) 两边的 sidebar 都同步刷新。新建会话 /
-            // 删除会话 / 改标题 / turn 结束等 RPC 完成都走这里, 不必等下次
-            // mount。两个 store 各自 inflight dedup, 调用安全。
-            reloadSidebarSources();
-          }}
+          newSessionContext={newSessionContext}
+          onSessionCreated={handleSessionCreated}
+          onSessionDeleted={handleSessionDeleted}
+          onSidebarShouldReload={handleSidebarShouldReload}
         />
       )}
     </div>
   );
-}
+});
 
-function HostedTerminalPanel({
+const HostedTerminalPanel = React.memo(function HostedTerminalPanel({
   tab,
   active,
 }: {
@@ -201,22 +231,53 @@ function HostedTerminalPanel({
 }) {
   const closeTab = useChatTabsStore((s) => s.closeTab);
   const meta = tab.meta as Extract<TabKind, { kind: "terminal" }>;
+  const handleClose = React.useCallback(
+    () => closeTab(tab.id),
+    [closeTab, tab.id],
+  );
+
   return (
     <div
       data-tab-id={tab.id}
       data-active={active}
-      style={{ display: active ? "flex" : "none" }}
-      className="flex h-full min-h-0 flex-1 flex-col"
+      aria-hidden={!active}
+      className={panelFrameClassName(active)}
     >
       <TerminalPanel
         terminalID={meta.terminalId}
         projectId={meta.projectId}
         deviceId={meta.deviceId}
         active={active}
-        onClose={() => closeTab(tab.id)}
+        onClose={handleClose}
       />
     </div>
   );
+});
+
+const HostedGroupPanel = React.memo(function HostedGroupPanel({
+  tab,
+  active,
+}: {
+  tab: ChatTab;
+  active: boolean;
+}) {
+  const meta = tab.meta as Extract<TabKind, { kind: "group" }>;
+  return (
+    <div
+      data-tab-id={tab.id}
+      data-active={active}
+      aria-hidden={!active}
+      className={panelFrameClassName(active)}
+    >
+      <GroupChat groupId={meta.groupId} />
+    </div>
+  );
+});
+
+function panelFrameClassName(active: boolean): string {
+  const base = "h-full min-h-0 flex-1 flex-col";
+  if (active) return `${base} relative z-10 flex`;
+  return `${base} invisible pointer-events-none absolute inset-0 z-0 flex overflow-hidden`;
 }
 
 function MissingNewSessionAgent({

@@ -13,10 +13,10 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/model/entity/hook_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/hook_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/hook_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/hook_repo"
 )
 
 const (

@@ -1,6 +1,7 @@
 package rpc_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,7 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 )
 
 // dialPair 起一个 httptest server,把 server / client 两端 *rpc.Conn 都返回。
@@ -67,5 +68,30 @@ func TestConn_Done_ClosedOnServeExit(t *testing.T) {
 	case <-c.Done():
 	case <-time.After(time.Second):
 		t.Fatal("Done() did not close after Serve exited")
+	}
+}
+
+// TestConn_Call_UnblocksOnConnClose 回归:对端永不回应 + 永不超时的 ctx 发 Call,
+// 连接关闭时 Call 必须及时返回 ErrConnClosed,而不是挂到 ctx deadline。旧实现 select
+// 只看 ch / ctx.Done,反向隧道(MCP tunnel)的 Call 携 CLI 的 ~285s HTTP ctx,WS 中途
+// 断会挂那么久。
+func TestConn_Call_UnblocksOnConnClose(t *testing.T) {
+	// dialPair 的 server 端不跑 Serve → 永远不会回应。
+	_, client, cleanup := dialPair(t)
+	defer cleanup()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.Call(context.Background(), "never.responds", nil, nil) }()
+
+	// 让 Call 写完帧、进入 select 等待,再断连接。
+	time.Sleep(50 * time.Millisecond)
+	_ = client.Close()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		require.ErrorIs(t, err, rpc.ErrConnClosed)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Call 未在连接关闭后及时返回(反向隧道会挂到 CLI 超时)")
 	}
 }

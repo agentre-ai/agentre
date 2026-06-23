@@ -29,6 +29,7 @@
     "expand": "Expand {{name}}",
     "newSession": "New {{name}} session",
     "openRecent": "Open {{name}} recent session",
+    "groupSession": "Group",
     "pinned": "Pinned",
     "running": "Running",
     "runningAria": "{{name}} has running sessions"
@@ -125,6 +126,11 @@
       "deleted": "Deleted",
       "providerSynced": "Remote provider synced",
       "saved": "Saved"
+    },
+    "defaultModel": {
+      "hint": "--model · leave empty to use the provider model / CLI default",
+      "label": "Custom Model",
+      "placeholder": "e.g. claude-fable-5 or an alias like opus/sonnet (used on CLI login)"
     },
     "modelRoutes": {
       "hint": "ANTHROPIC_DEFAULT_*_MODEL. Leave empty to use the main provider.",
@@ -337,7 +343,8 @@
         "params": "Parameters",
         "result": "Result"
       },
-      "waitingResult": "Waiting for result"
+      "waitingResult": "Waiting for result",
+      "backgroundRunning": "Background"
     },
     "toolPermission": {
       "allowOnce": "Allow Once",
@@ -362,9 +369,35 @@
       "waiting": "WAITING · Awaiting reply"
     }
   },
+  "toolApproval": {
+    "title": "Org structure operation approval",
+    "approve": "Approve",
+    "deny": "Reject",
+    "submitFailed": "Approval submission failed",
+    "status": {
+      "approved": "Approved",
+      "denied": "Rejected",
+      "expired": "Expired"
+    },
+    "tools": {
+      "org_create_department": "Create department",
+      "org_update_department": "Update department",
+      "org_delete_department": "Delete department",
+      "org_create_agent": "Create agent",
+      "org_update_agent": "Update agent",
+      "org_delete_agent": "Delete agent",
+      "group_create": "Create group chat",
+      "workflow_create": "Create workflow",
+      "workflow_update": "Update workflow",
+      "workflow_delete": "Delete workflow"
+    }
+  },
   "chat": {
     "actions": {
       "approve": "Approve",
+      "copyOutput": "Copy AI output",
+      "copyOutputDone": "AI output copied",
+      "copyOutputFailed": "Failed to copy AI output",
       "regenerate": "Regenerate"
     },
     "composer": {
@@ -381,6 +414,7 @@
         "tooMany": "Add at most {{count}} images",
         "unsupported": "Only PNG, JPEG, and WebP are supported. Each image must be under 5 MB."
       },
+      "dropHint": "Drop to add files / folder paths",
       "placeholder": "Type a message or / for commands",
       "removeImage": "Remove image {{name}}",
       "saveEdit": "Save edit",
@@ -502,6 +536,7 @@
       "empty": "No current goal",
       "imageUnsupported": "/goal cannot be sent with images",
       "needsSession": "Send one message first so the Codex session starts before setting a goal",
+      "waitForTurn": "Wait for this turn to finish before changing the goal",
       "updated": "Goal updated",
       "updatedWithObjective": "Goal updated: {{objective}}"
     },
@@ -517,6 +552,9 @@
     "notice": {
       "close": "Close notice"
     },
+    "scroll": {
+      "backToBottom": "Back to bottom"
+    },
     "regenerateDialog": {
       "confirm": "Regenerate",
       "description": "This reply and every message after it will be discarded. The agent will generate a new response from the previous user message.",
@@ -529,14 +567,15 @@
     },
     "backgroundTasks": {
       "chip": "{{count}} running",
+      "completedChip": "{{count}} done",
       "title": "Background tasks",
       "running": "Running",
       "completed": "Done",
       "failed": "Failed",
       "empty": "No background tasks",
       "bash": "bash",
-      "subagent": "subagent",
-      "aria": "Background tasks"
+      "aria": "Background tasks",
+      "clearCompleted": "Clear completed"
     },
     "toolbar": {
       "aria": "Session toolbar",
@@ -551,16 +590,38 @@
     "untitled": "(Untitled)"
   },
   "chatPage": {
+    "add": {
+      "aria": "New",
+      "newAgentChat": "New agent chat",
+      "newGroup": "New group"
+    },
     "agents": "Agents",
+    "filter": {
+      "open": "Filter sidebar",
+      "options": {
+        "agents": "Agents",
+        "all": "All",
+        "groups": "Group chats",
+        "running": "Running",
+        "unread": "Unread"
+      }
+    },
+    "newChat": "New chat",
     "notChattable": {
       "defaultHint": "Bind a built-in backend to this Agent on the org chart page first",
       "message": "Not available for chat — {{hint}}"
     },
+    "pin": {
+      "pin": "Pin",
+      "pinAria": "Pin {{name}}",
+      "unpin": "Unpin",
+      "unpinAria": "Unpin {{name}}"
+    },
     "search": {
-      "aria": "Filter agents and sessions",
+      "aria": "Search agents and group chats",
       "clear": "Clear filter",
-      "noMatches": "No agents or sessions match \"{{query}}\"",
-      "placeholder": "Search Agent / session"
+      "noMatches": "No agents or group chats match \"{{query}}\"",
+      "placeholder": "Search Agent / group"
     },
     "sections": {
       "agents": "AGENTS",
@@ -614,6 +675,86 @@
       "session": "sess-{{id}}",
       "worktree": "worktree {{branch}}"
     }
+  },
+  "group": {
+    "title": "Groups",
+    "section": "Group Chats",
+    "tabs": { "members": "Members", "settings": "Settings", "group": "Group", "tasks": "Tasks" },
+    "roster": {
+      "host": "Host",
+      "members": "Members",
+      "invite": "Invite member",
+      "backToGroup": "← Back to group",
+      "openMember": "Open member"
+    },
+    "nickname": {
+      "edit": "Set group nickname",
+      "title": "Group nickname",
+      "identity": "Agent global name · won't change",
+      "hint": "Leave blank to use the real name \"{{name}}\". Visible in this group only.",
+      "taken": "\"{{name}}\" is already used by another member; pick another"
+    },
+    "runStatus": {
+      "running": "Running",
+      "waitingUser": "Waiting for you",
+      "paused": "Paused",
+      "idle": "Idle",
+      "error": "Error"
+    },
+    "rounds": "{{count}} rounds",
+    "controls": { "pause": "Pause", "stop": "Stop", "resume": "Resume" },
+    "composer": {
+      "placeholder": "Message the group… use @ to mention",
+      "send": "Send"
+    },
+    "settings": { "project": "Project", "noProject": "No project" },
+    "delete": {
+      "button": "Delete group",
+      "title": "Delete group?",
+      "description": "This removes the group. Member conversations are kept unless you choose to delete them below.",
+      "alsoSessions": "Also delete associated sessions",
+      "confirm": "Delete"
+    },
+    "task": {
+      "status": {
+        "open": "In progress",
+        "done": "Done",
+        "canceled": "Canceled"
+      },
+      "assignedTo": "Assigned to",
+      "deliveredTo": "Delivered to",
+      "verifies": "Verifies #{{no}}",
+      "sectionOpen": "In progress",
+      "sectionClosed": "Completed",
+      "empty": "No tasks yet",
+      "openAssignee": "Open assignee"
+    },
+    "you": "You",
+    "onlyXReceived": "Only {{name}} received this",
+    "new": {
+      "title": "New group",
+      "groupTitle": "Group title",
+      "groupTitlePlaceholder": "Frontend refactor squad",
+      "host": "Host",
+      "hostPlaceholder": "Select host",
+      "hostHint": "Only group_send-capable agents (claudecode) can host",
+      "project": "Project",
+      "projectNone": "(No project)",
+      "members": "Initial members",
+      "membersHint": "The host can invite more members anytime",
+      "addMember": "Add member",
+      "removeMember": "Remove {{name}}",
+      "noCandidates": "No agents available to add",
+      "create": "Create group",
+      "workflow": "Workflow",
+      "workflowNone": "None",
+      "workflowHint": "Optional; the host orchestrates by the latest content of this workflow",
+      "manageWorkflows": "Manage workflows"
+    }
+  },
+  "groupCreateCard": {
+    "created": "Group chat created",
+    "open": "Open group"
   },
   "commandPalette": {
     "chatSessions": {
@@ -680,7 +821,10 @@
       "commandPlaceholder": "Type a command...",
       "sessionPlaceholder": "Search sessions..."
     },
-    "title": "Command Palette"
+    "title": "Command Palette",
+    "workflows": {
+      "heading": "Actions"
+    }
   },
   "dataBackup": {
     "actions": {
@@ -1673,11 +1817,50 @@
       "reportsTo": "Reports to",
       "savedAt": "Saved · {{time}}",
       "skills": {
-        "empty": "No skills yet. Add skills through Update settings.",
-        "item": "Skill {{label}}",
-        "list": "Skill list",
+        "sectionTitle": "Skills · Skill Packs",
+        "manage": "Manage skills",
+        "count": "{{inherit}} inherited · {{on}} on · {{off}} off",
+        "inheritNote": "Gray = inherited from global · Blue = forced on for this agent · Red = forced off for this agent (global untouched). Changes apply on the agent's next new session.",
+        "empty": "No skill packs granted",
+        "personalNote": "Always available · personal skills (~/.claude/skills) can't be toggled individually",
         "summary": "{{enabled}} enabled · {{disabled}} disabled",
-        "title": "Skills / Tools"
+        "title": "Skills"
+      },
+      "skillsGate": {
+        "pill": "Unsupported",
+        "title": "This backend doesn't support skills",
+        "description": "Skills are a Claude Code native capability. Switch to a Claude Code backend to enable and configure them."
+      },
+      "skillPicker": {
+        "title": "Add Skills · Skill Packs",
+        "subtitle": "One pack = a set of skills, granted per agent",
+        "searchPlaceholder": "Search skill packs / descriptions…",
+        "personalNote": "Personal skills (~/.claude/skills) are always available; the CLI can't toggle them individually"
+      },
+      "tools": {
+        "title": "Tools",
+        "sectionTitle": "Tools · TOOLS",
+        "enabledCount": "{{count}} enabled",
+        "add": "Add Tool",
+        "empty": "No tools available",
+        "approval": "Approval",
+        "names": { "org": "Org Structure", "workflow": "Workflow Library", "group_create": "Create Group", "subagent": "Call Sub-agent" },
+        "descriptions": { "org": "Allow this agent to read and manage departments and members (writes require your approval)", "workflow": "Allow this agent to read and manage collaboration workflows (writes require your approval)", "group_create": "Allow this agent to start a multi-agent collaboration group (requires your approval)", "subagent": "Delegate a subtask to another configured agent and get its result back synchronously. The sub-agent runs in an isolated one-shot session; agents used as sub-agents should use an auto-approving permission mode." }
+      },
+      "toolPicker": {
+        "title": "Add Tools",
+        "subtitle": "Tool calls are injected over MCP; writes need approval",
+        "searchPlaceholder": "Search tools / descriptions…"
+      },
+      "skillCatalog": {
+        "group": {
+          "available": "Available · Marketplace",
+          "inheritedOn": "Inherited (on globally)",
+          "enableable": "Available to enable (installed)"
+        },
+        "needInstall": "Install first",
+        "globalEnabled": "Globally enabled",
+        "globalDisabled": "Globally disabled"
       },
       "systemPrompt": "System Prompt",
       "systemPromptHint": "Put style, tone, and boundaries in the system prompt. No separate fields are used.",
@@ -1759,6 +1942,51 @@
       "expand": "Expand {{name}}",
       "lead": "Lead · {{name}}",
       "memberCount": "{{count}} members"
+    }
+  },
+  "workflows": {
+    "title": "Workflows",
+    "subtitle": "Reusable collaboration SOPs; the host gets the latest bound workflow every round",
+    "new": "New workflow",
+    "empty": "No workflows yet — click \"New workflow\" to start",
+    "groupCount": "Used by {{count}} groups",
+    "groupCount_one": "Used by 1 group",
+    "updatedAt": "Updated {{time}}",
+    "edit": "Edit workflow",
+    "delete": "Delete",
+    "preview": {
+      "liveHint": "Changes take effect immediately: running groups get the latest content next round",
+      "empty": "Select a workflow to preview"
+    },
+    "editor": {
+      "createTitle": "New workflow",
+      "editTitle": "Edit workflow",
+      "name": "Name",
+      "namePlaceholder": "e.g. Product development workflow",
+      "content": "Workflow content (Markdown)",
+      "insertTemplate": "Insert template",
+      "save": "Save",
+      "template": "# Workflow name\n\nApplies to: when to use this workflow.\n\n## Roles\n- Role A: responsibility and deliverable\n- Role B: responsibility and deliverable\n(Use abstract roles, not agent names; map to roster members by duty, recruit via group_invite or ask the user when a role is missing)\n\n## Steps\n1. Role A: input → output, deliver .agentre/handoff/<group>/task-N-xxx.md with acceptance criteria\n2. Role B: continue from the previous deliverable\n3. Parallel verification: mark parallelizable steps explicitly (verification tasks reference the verified task)\n4. All pass → summarize @user; issues → send back to the owning step (new task card)\n\n## Discipline\n- Hand over every step with a task card; write deliverable paths explicitly\n- Never parallelize tasks that may touch the same code\n- Put acceptance criteria into the brief when assigning"
+    },
+    "deleteConfirm": {
+      "title": "Delete workflow",
+      "desc": "\"{{name}}\" is used by {{count}} groups; after deletion they fall back to \"no workflow\". This cannot be undone.",
+      "desc_one": "\"{{name}}\" is used by 1 group; after deletion it falls back to \"no workflow\". This cannot be undone.",
+      "descUnused": "Deleting \"{{name}}\" cannot be undone.",
+      "confirm": "Delete workflow"
+    },
+    "manager": {
+      "searchPlaceholder": "Search workflow name or body",
+      "metaLive": "Used by {{count}} groups · updated {{time}} · changes apply immediately",
+      "metaLive_one": "Used by {{count}} group · updated {{time}} · changes apply immediately",
+      "metaUnused": "Unused · updated {{time}} · changes apply immediately",
+      "saveHint": "⌘ + Enter to save · Esc to cancel"
+    },
+    "actions": {
+      "openLibrary": "Open workflow library",
+      "openLibraryHint": "Browse / create / edit cross-group workflows",
+      "newWorkflow": "New workflow",
+      "newWorkflowHint": "Open a blank workflow editor"
     }
   },
   "permissionMode": {
@@ -2144,5 +2372,22 @@
     "badge": "Under construction",
     "planning": "Planning",
     "progressLabel": "Design progress"
+  },
+  "capability": {
+    "picker": {
+      "rescan": "Rescan",
+      "done": "Done",
+      "loading": "Loading…",
+      "empty": "Nothing available",
+      "searchEmpty": "No matches",
+      "selected": "{{count}} selected · applies on the agent's next new session after save",
+      "remove": "Remove {{name}}",
+      "close": "Close"
+    },
+    "triState": {
+      "inherit": "Inherit",
+      "on": "On",
+      "off": "Off"
+    }
   }
 }

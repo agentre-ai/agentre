@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"agentre/internal/model/entity/server_state_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 )
 
 // ServerSvc 桌面端接入 Hub 的服务接口。

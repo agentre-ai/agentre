@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"agentre/internal/model/entity/app_setting_entity"
-	"agentre/internal/repository/app_setting_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
+	"github.com/agentre-ai/agentre/internal/repository/app_setting_repo"
 )
 
 // GetChannel 读取持久化的更新通道；未设置时返回 DefaultUpdateChannel。

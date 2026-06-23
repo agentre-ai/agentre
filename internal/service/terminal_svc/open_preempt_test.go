@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"agentre/internal/pkg/pty"
-	"agentre/internal/service/terminal_svc"
-	"agentre/internal/service/terminal_svc/mocks"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc/mocks"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"

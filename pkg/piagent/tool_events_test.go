@@ -78,3 +78,80 @@ func TestStreamContinuesAfterToolUseAgentEnd(t *testing.T) {
 	assert.Equal(t, "done", text)
 	assert.True(t, done)
 }
+
+// Pi reports provider/transport failures on the final agent_end assistant
+// message. Agentre must surface that as EventError instead of treating the turn
+// as a clean Done, otherwise the UI silently shows a half-finished tool-only
+// answer.
+func TestStreamEmitsErrorFromFinalAgentEnd(t *testing.T) {
+	script := strings.Join([]string{
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"error","errorMessage":"terminated"}]}`,
+		"",
+	}, "\n")
+	client, _ := newCaptureClient(script)
+
+	s, err := client.Stream(context.Background(), "research pi rpc")
+	require.NoError(t, err)
+
+	var gotErr Event
+	var done bool
+	for s.Next() {
+		switch s.Event().Kind {
+		case EventError:
+			gotErr = s.Event()
+		case EventDone:
+			done = true
+		}
+	}
+
+	require.Equal(t, EventError, gotErr.Kind)
+	require.Error(t, gotErr.Err)
+	assert.EqualError(t, gotErr.Err, "piagent: terminated")
+	assert.False(t, done, "error terminal agent_end must not be reported as a clean done")
+	assert.EqualError(t, s.Err(), "piagent: terminated")
+}
+
+func TestStreamDiagnosticsIncludeFinalErrorFrameAndStderrTail(t *testing.T) {
+	finalFrame := `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"error","errorMessage":"terminated","model":"gpt-5.5(xhigh)"}]}`
+	script := strings.Join([]string{
+		`{"type":"response","command":"prompt","success":true}`,
+		finalFrame,
+		"",
+	}, "\n")
+	client, proc := newCaptureClient(script)
+	proc.stderr = strings.NewReader("first stderr line\nlast stderr line\n")
+
+	s, err := client.Stream(context.Background(), "research pi rpc")
+	require.NoError(t, err)
+
+	for s.Next() {
+	}
+
+	d := s.Diagnostics()
+	assert.Equal(t, "agent_end", d.FinalErrorEventType)
+	assert.Equal(t, "error", d.FinalErrorStopReason)
+	assert.Equal(t, "terminated", d.FinalErrorMessage)
+	assert.JSONEq(t, finalFrame, d.FinalErrorFrame)
+	assert.Equal(t, "first stderr line\nlast stderr line", d.StderrTail)
+}
+
+func TestStreamDiagnosticsTruncateLongStderrTail(t *testing.T) {
+	script := strings.Join([]string{
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"terminated"}]}`,
+		"",
+	}, "\n")
+	client, proc := newCaptureClient(script)
+	proc.stderr = strings.NewReader(strings.Repeat("a", diagnosticStderrTailLimit+16))
+
+	s, err := client.Stream(context.Background(), "research pi rpc")
+	require.NoError(t, err)
+
+	for s.Next() {
+	}
+
+	d := s.Diagnostics()
+	assert.Len(t, d.StderrTail, diagnosticStderrTailLimit)
+	assert.Equal(t, strings.Repeat("a", diagnosticStderrTailLimit), d.StderrTail)
+}

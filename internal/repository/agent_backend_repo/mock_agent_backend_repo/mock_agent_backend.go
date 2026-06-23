@@ -10,8 +10,8 @@
 package mock_agent_backend_repo
 
 import (
-	agent_backend_entity "agentre/internal/model/entity/agent_backend_entity"
 	context "context"
+	agent_backend_entity "github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"

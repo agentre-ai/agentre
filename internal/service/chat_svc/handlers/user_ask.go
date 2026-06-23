@@ -3,9 +3,9 @@ package handlers
 import (
 	"context"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/service/chat_svc/blocks"
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 type UserAskRequestHandler struct{}
@@ -15,7 +15,7 @@ func (UserAskRequestHandler) Apply(ctx context.Context, ev agentruntime.Event, a
 	blk := &blocks.UserAskBlock{
 		RequestID:  r.RequestID,
 		ToolCallID: r.ToolCallID,
-		Questions:  convertQuestions(r.Questions),
+		Questions:  blocks.QuestionsFromRuntime(r.Questions),
 	}
 	acc.AddBlock(blk, "user_ask:"+r.RequestID)
 
@@ -42,7 +42,7 @@ func (UserAskResolvedHandler) Apply(ctx context.Context, ev agentruntime.Event, 
 	hit := turn.Mutate[blocks.UserAskBlock](acc, "user_ask:"+r.RequestID, func(b *blocks.UserAskBlock) {
 		b.Answered = !r.Skipped
 		b.Skipped = r.Skipped
-		b.Answers = convertAnswers(r.Answers)
+		b.Answers = blocks.AnswersFromRuntime(r.Answers)
 		blkPtr = b
 	})
 	if !hit {
@@ -64,38 +64,4 @@ func (UserAskResolvedHandler) Apply(ctx context.Context, ev agentruntime.Event, 
 		tc.SessionTransitioner.MarkRunning(ctx, tc.Session, tc.Stream)
 	}
 	return nil
-}
-
-func convertQuestions(qs []agentruntime.AskQuestion) []blocks.AskQuestionDTO {
-	if len(qs) == 0 {
-		return nil
-	}
-	out := make([]blocks.AskQuestionDTO, 0, len(qs))
-	for _, q := range qs {
-		opts := make([]blocks.AskOptionDTO, 0, len(q.Options))
-		for _, o := range q.Options {
-			opts = append(opts, blocks.AskOptionDTO{Label: o.Label, Description: o.Description, Preview: o.Preview})
-		}
-		out = append(out, blocks.AskQuestionDTO{
-			ID: q.ID, Question: q.Question, Header: q.Header,
-			MultiSelect: q.MultiSelect, IsOther: q.IsOther, IsSecret: q.IsSecret,
-			Options: opts,
-		})
-	}
-	return out
-}
-
-func convertAnswers(ans []agentruntime.AskAnswer) []blocks.AskAnswerDTO {
-	if len(ans) == 0 {
-		return nil
-	}
-	out := make([]blocks.AskAnswerDTO, 0, len(ans))
-	for _, a := range ans {
-		out = append(out, blocks.AskAnswerDTO{
-			QuestionIndex: a.QuestionIndex,
-			Labels:        append([]string(nil), a.Labels...),
-			OtherText:     a.OtherText,
-		})
-	}
-	return out
 }

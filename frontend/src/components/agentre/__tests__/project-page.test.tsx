@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type * as React from "react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../wailsjs/runtime/runtime", () => ({
@@ -71,8 +72,12 @@ vi.mock("@dnd-kit/sortable", () => ({
 import { ProjectsPage, NewTerminalSubMenu } from "../project-page";
 import { ProjectSettingsDrawer } from "../project-settings-drawer";
 
-function renderProjectsPage() {
-  return render(<ProjectsPage />);
+function renderProjectsPage(initialPath = "/projects") {
+  return render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <ProjectsPage />
+    </MemoryRouter>,
+  );
 }
 
 // Radix DropdownMenu 在 jsdom 中需要关闭 pointerEvents 检查。
@@ -1171,7 +1176,7 @@ function buildSession({
   };
 }
 
-// NewTerminalSubMenu 组件级测试（Task 10）
+// NewTerminalSubMenu 组件级测试。
 // 策略：将组件包在 DropdownMenu(open) + DropdownMenuContent 里以满足 Radix 上下文要求，
 // hover DropdownMenuSubTrigger 展开子内容（Radix sub 在 hover 时 open）；
 // 用 pointerEventsCheck:0 绕开 jsdom 的 pointer-events:none 检查。
@@ -1417,5 +1422,64 @@ describe("ProjectSettingsDrawer members", () => {
 
     expect(await screen.findByText("Builder")).toBeInTheDocument();
     expect(screen.queryByText("Agent #5")).not.toBeInTheDocument();
+  });
+});
+
+describe("ProjectsPage focus query param", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useChatAgentsStore.getState().__reset();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+
+    appMocks.ListChatAgents.mockResolvedValue({ agents: [] });
+    // 抽屉的 BasicTab 会读 detail.project.name 等字段,这里给出完整项目避免渲染崩。
+    appMocks.ProjectGet.mockResolvedValue({
+      project: {
+        color: "agent-1",
+        description: "",
+        icon: "folder",
+        id: 1,
+        name: "Agentre",
+        parentID: 0,
+        path: "/tmp/agentre",
+      },
+      directMembers: [],
+      inheritedMembers: [],
+    });
+    appMocks.ProjectLocationList.mockResolvedValue([]);
+    appMocks.RemoteDeviceList.mockResolvedValue([]);
+    appMocks.ProjectListSessions.mockResolvedValue([]);
+    appMocks.ProjectListTree.mockResolvedValue([
+      {
+        project: {
+          color: "agent-1",
+          icon: "folder",
+          id: 1,
+          name: "Agentre",
+          parentID: 0,
+          path: "/tmp/agentre",
+        },
+        children: [],
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  // 群聊设置页点「项目」会 navigate(`/projects?focus=<id>`);projects 页应据此打开该项目的
+  // 设置抽屉(selection 是会话级的,没有「只选中项目」语义,设置抽屉是唯一纯项目 id 入口)。
+  it("Given /projects?focus=<id> for an existing project, Then it opens that project's settings drawer", async () => {
+    renderProjectsPage("/projects?focus=1");
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("Given /projects?focus=<id> for a missing project, Then no settings drawer opens", async () => {
+    renderProjectsPage("/projects?focus=999");
+    // 等树渲染完(focus 效应在 loading 落定后才跑),再断言没有抽屉打开。
+    await screen.findByText("Agentre");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });

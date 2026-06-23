@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
 
 // DaemonClient is the subset of internal/daemon/client.Client and

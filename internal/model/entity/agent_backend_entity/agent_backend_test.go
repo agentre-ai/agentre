@@ -242,6 +242,39 @@ func TestAgentBackendCheck(t *testing.T) {
 			input:   &AgentBackend{Type: string(TypeCodex), Name: "cx", LLMProviderKey: "11111111-1111-1111-1111-111111111111", DefaultPermissionMode: "bypassPermissions"},
 			wantErr: true,
 		},
+
+		// default_model — claudecode 独占自由文本；走 CLI 登录态时指定自定义模型。
+		// 其它类型设非空一律拒绝。
+		{
+			name:    "claudecode accepts default_model (CLI 登录态)",
+			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", DefaultModel: "claude-fable-5"},
+			wantErr: false,
+		},
+		{
+			name:    "claudecode accepts default_model with provider bound",
+			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", LLMProviderKey: "11111111-1111-1111-1111-111111111111", DefaultModel: "claude-opus-4-8"},
+			wantErr: false,
+		},
+		{
+			name:    "claudecode accepts empty default_model",
+			input:   &AgentBackend{Type: string(TypeClaudeCode), Name: "cc", DefaultModel: ""},
+			wantErr: false,
+		},
+		{
+			name:    "builtin rejects non-empty default_model",
+			input:   &AgentBackend{Type: string(TypeBuiltin), Name: "x", LLMProviderKey: "11111111-1111-1111-1111-111111111111", DefaultModel: "claude-fable-5"},
+			wantErr: true,
+		},
+		{
+			name:    "codex rejects non-empty default_model",
+			input:   &AgentBackend{Type: string(TypeCodex), Name: "cx", LLMProviderKey: "11111111-1111-1111-1111-111111111111", DefaultModel: "gpt-5.5"},
+			wantErr: true,
+		},
+		{
+			name:    "piagent rejects non-empty default_model",
+			input:   &AgentBackend{Type: string(TypePiAgent), Name: "pi", DefaultModel: "whatever"},
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range cases {

@@ -4,12 +4,12 @@ import (
 	"context"
 	"strings"
 
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/repository/chat_repo"
-	"agentre/internal/service/chat_svc/handlers"
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/handlers"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 // dispatcher_adapters.go 给 turn dispatcher 注入持久化 + 数据写入能力。

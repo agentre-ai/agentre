@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ChevronDown, Pin, Plus } from "lucide-react";
+import { ChevronDown, MessagesSquare, Pin, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,8 @@ type SessionRowProps = React.ComponentProps<"button"> & {
   status: AgentStatus;
   title: string;
   trailingLabel: string;
+  groupId?: number;
+  groupTitle?: string;
 };
 
 function SessionRow({
@@ -53,10 +55,14 @@ function SessionRow({
   status,
   title,
   trailingLabel,
+  groupId,
+  groupTitle,
   ...props
 }: SessionRowProps) {
+  const { t } = useTranslation();
   const config = statusConfig[status];
   const hiddenFromAccessibility = ariaHidden === true || ariaHidden === "true";
+  const isGroupSession = (groupId ?? 0) > 0 || Boolean(groupTitle);
 
   return (
     <button
@@ -86,6 +92,15 @@ function SessionRow({
       >
         {title}
       </span>
+      {isGroupSession ? (
+        <span
+          title={groupTitle}
+          className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-secondary px-1 py-0.5 text-2xs text-muted-foreground"
+        >
+          <MessagesSquare className="size-3" aria-hidden="true" />
+          {t("agentList.groupSession")}
+        </span>
+      ) : null}
       <span
         className={cn(
           "shrink-0 font-mono text-2xs",
@@ -104,6 +119,8 @@ type AgentSession = {
   status: AgentStatus;
   title: string;
   trailingLabel: string;
+  groupId?: number;
+  groupTitle?: string;
   // 只有 attentionSessions 数组里的项会有；SessionGroup 在 expanded 态下用它把
   // selected 从 bubble 中过滤掉（让它回到常规列表它本来的位置）；
   // unread / running / error / needs_attention 在 expanded 下也保留在 bubble,
@@ -122,6 +139,11 @@ type AgentGroupProps = React.ComponentProps<"article"> & {
   // 把"选 agent → 选会话"压成一步。不影响 chevron / + 按钮（这俩 stopPropagation）。
   onHeaderClick?: () => void;
   onSessionSelect?: (sessionId: string, opts?: { newTab?: boolean }) => void;
+  // 置顶切换:父组件提供时,头部常驻一个 pin 开关按钮。pinToggleLabel 由父组件按
+  // 当前 pinned 态算好(Pin/Unpin {{name}}),同时用作 aria-label 与 title,
+  // 让 agent-list 不必反向依赖 chat 的 i18n 命名空间。
+  onTogglePin?: () => void;
+  pinToggleLabel?: string;
   persistenceKey?: string;
   pinned?: boolean;
   selectedSessionId?: string;
@@ -145,6 +167,8 @@ function AgentGroup({
   onHeaderClick,
   onNewSession,
   onSessionSelect,
+  onTogglePin,
+  pinToggleLabel,
   persistenceKey,
   pinned,
   selectedSessionId,
@@ -219,6 +243,29 @@ function AgentGroup({
             >
               <StatusDot status="running" size="xs" className="animate-pulse" />
             </span>
+          ) : null}
+          {onTogglePin ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={pinToggleLabel}
+              title={pinToggleLabel}
+              className={cn(
+                "text-muted-foreground",
+                pinned && "text-primary-text",
+              )}
+              onClick={(e) => {
+                e.stopPropagation();
+                onTogglePin();
+              }}
+            >
+              <Pin
+                data-icon="only"
+                aria-hidden="true"
+                className="-rotate-[30deg]"
+              />
+            </Button>
           ) : null}
           <Button
             type="button"

@@ -136,9 +136,8 @@ describe("TabStrip", () => {
 
   // NOTE: dnd-kit's KeyboardSensor does not fire onDragEnd in jsdom even with
   // getBoundingClientRect mocked — the sensor cannot resolve sibling positions
-  // and silently no-ops the drop. Falling back to direct store-action assertions
-  // per plan Step 3 degradation. Real DnD interaction is covered by Task 10
-  // manual verify.
+  // and silently no-ops the drop. Falling back to direct store-action assertions;
+  // browser-level DnD interaction remains covered manually.
   it("键盘拖拽降级: moveTab 把第 1 个 tab 移到第 2 位, id 顺序翻转", () => {
     useChatTabsStore.getState().openSessionInNewTab(1);
     useChatTabsStore.getState().openSessionInNewTab(2);
@@ -146,7 +145,7 @@ describe("TabStrip", () => {
     const secondId = useChatTabsStore.getState().tabs[1].id;
     render(<TabStrip />);
 
-    // 直接调 store action 模拟拖拽完成 —— 真实 DnD 由 Task 10 manual verify 覆盖
+    // 直接调 store action 模拟拖拽完成；真实 DnD 由浏览器级验证覆盖。
     useChatTabsStore.getState().moveTab(0, 1);
 
     const ids = useChatTabsStore.getState().tabs.map((t) => t.id);
@@ -183,7 +182,7 @@ describe("TabStrip", () => {
     useChatTabsStore.getState().openSessionInNewTab(2);
     render(<TabStrip />);
 
-    // 直接调 store action 模拟拖拽完成 —— 真实 DnD 由 Task 10 manual verify 覆盖
+    // 直接调 store action 模拟拖拽完成；真实 DnD 由浏览器级验证覆盖。
     useChatTabsStore.getState().moveTab(0, 1);
 
     expect(

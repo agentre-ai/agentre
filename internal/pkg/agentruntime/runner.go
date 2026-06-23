@@ -8,8 +8,8 @@ import (
 	"github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/agents/provider"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 )
 
 // EventKind 统一事件离散类型。chat_svc 按这个枚举做 switch。
@@ -268,6 +268,14 @@ type HistoryMessage struct {
 	Blocks []blocks.ContentBlock
 }
 
+// MCPServerSpec 一个注入给 runtime 的 MCP tool server(http transport)。
+type MCPServerSpec struct {
+	Name    string            // server 名; claude tool 暴露为 mcp__<Name>__<tool>
+	URL     string            // http MCP endpoint(如 http://127.0.0.1:<port>/mcp/group/)
+	Headers map[string]string // 鉴权/scope header(如 {"Authorization":"Bearer <token>"})
+	Tools   []string          // 允许的 tool 名(进 --allowedTools 为 mcp__<Name>__<tool>); 按角色裁剪
+}
+
 // RunRequest 一次 Send 的入参。
 type RunRequest struct {
 	Backend   *agent_backend_entity.AgentBackend
@@ -287,6 +295,16 @@ type RunRequest struct {
 	GatewayURL        string                // 关联 provider 的 CLI 后端要；builtin 不用
 	GatewayToken      string                // 同上，一次性 token
 	Compact           bool                  // Codex 原生 compact turn；不创建普通 user prompt
+
+	// MCPServers 非空 = 给本轮 CLI 注入额外 MCP tool server。仅声明 CapMCPTools
+	// 的 runtime(claudecode/codex)消费; 其它 runtime 忽略。群聊经此注入 group_send tool。
+	MCPServers []MCPServerSpec
+
+	// EnabledPlugins 非空 = 给本轮 CLI 注入 plugin/skill-pack 覆盖(仅 agent 的显式
+	// 覆盖:强制开=true / 强制关=false;未列出的 plugin 沿用全局 CLI 配置=继承)。
+	// 仅声明 CapSkills 的 runtime 消费:claudecode 渲进 --settings,codex 渲进 --config;
+	// 其它 runtime 忽略。
+	EnabledPlugins map[string]bool
 
 	// ForkAnchor 非空时 = "重新生成"路径：runner 应当把 provider 会话从 ForkAnchor
 	// 之后的所有内容丢弃，再以 UserText 重发一次。
@@ -475,6 +493,18 @@ type CompletedBackgroundTask struct {
 	TaskID    string
 	Status    string // "completed" | "failed"; 空 → 视为 completed（见 pkg/claudecode.CompletedBackgroundTask）
 	Summary   string // CLI task_notification.summary 透传；空 = CLI 没下发或 remote 路径暂不携带
+}
+
+// SubagentActivitySource 由能在轮间(空闲)产生「后台 subagent 内部活动流」的 runtime 实现
+// —— 当前仅 claudecode。事件流与 Run 同形,ToolUseID 是发起该 subagent 的 Agent 工具 tool_use_id。
+type SubagentActivitySource interface {
+	SubagentActivity(sessionID int64) <-chan SubagentActivity
+}
+
+// SubagentActivity 镜像 claudecode.SubagentActivity:一轮后台 subagent 内部活动的事件流。
+type SubagentActivity struct {
+	ToolUseID string
+	Events    <-chan Event
 }
 
 // Errors live in errors.go; registry / RuntimeFor / RegisterRuntime / SwapRuntimeForTest live in registry.go.

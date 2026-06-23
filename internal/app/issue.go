@@ -1,8 +1,8 @@
 package app
 
 import (
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/service/issue_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 )
 
 // IssueItem issue 摘要（含标签），列表 / 看板 / 详情共用。

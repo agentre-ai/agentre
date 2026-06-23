@@ -2310,7 +2310,6 @@ export function HooksPage() {
   }, []);
 
   React.useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reload();
   }, [reload]);
 

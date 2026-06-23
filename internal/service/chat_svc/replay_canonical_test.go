@@ -5,8 +5,8 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
 
 // 三个 entity→wire 转换 helper 在 Plan C 接管 replay 路径,落 cb.Canonical 让前端

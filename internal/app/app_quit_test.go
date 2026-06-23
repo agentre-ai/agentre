@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 )
 
 func TestShouldPreventQuit(t *testing.T) {

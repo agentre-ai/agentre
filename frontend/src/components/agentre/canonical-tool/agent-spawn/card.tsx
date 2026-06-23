@@ -21,6 +21,7 @@ import type { ChatBlockData } from "@/stores/chat-streams-store";
 
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
 import { statusConfig, type AgentStatus } from "../../types";
+import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import { summarizeRawTool } from "../raw/summary";
 import type { CanonicalCardProps } from "../props";
 import type { AgentSpawnDTO, CanonicalDTO } from "../types";
@@ -162,10 +163,11 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
   resultBlock,
   cwd,
   childBlocks = [],
+  uiStateKey,
 }) => {
   const { t } = useTranslation();
   const spawn = readSpawn(toolBlock);
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = useTranscriptBooleanState(uiStateKey, false);
 
   if (!spawn) return null;
 
@@ -329,11 +331,16 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
-                  {steps.map((s) => (
+                  {steps.map((s, idx) => (
                     <AgentSpawnStepCard
                       key={s.tool.toolUseId || s.tool.text || ""}
                       step={s}
                       cwd={cwd}
+                      uiStateKey={
+                        uiStateKey
+                          ? `${uiStateKey}:step:${s.tool.toolUseId || idx}`
+                          : undefined
+                      }
                     />
                   ))}
                 </div>
@@ -381,12 +388,14 @@ function AgentSpawnSection({
 function AgentSpawnStepCard({
   cwd,
   step,
+  uiStateKey,
 }: {
   cwd?: string;
   step: StepRow;
+  uiStateKey?: string;
 }): React.ReactElement {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = useTranscriptBooleanState(uiStateKey, false);
   const tool = step.tool;
   const result = step.result;
   const toolName = tool.toolName || "tool";

@@ -111,6 +111,99 @@ describe("LlmProvidersPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows create result inside the dialog instead of the provider table", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      CreateLLMProvider: vi.fn(() =>
+        Promise.resolve({ item: { id: 1, providerKey: "created-key" } }),
+      ),
+      ListLLMProviders: vi
+        .fn()
+        .mockResolvedValueOnce({ items: [] })
+        .mockResolvedValueOnce({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Created",
+              providerKey: "created-key",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+    });
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("table", { name: "LLM provider list" });
+    await user.click(screen.getByRole("button", { name: "New Provider" }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(
+      screen.getByPlaceholderText("Example: production / local Ollama"),
+      { target: { value: "Created" } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText(
+        "sk-... or self-hosted token. Leave empty for anonymous access.",
+      ),
+      { target: { value: "sk-test" } },
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        'Provider "Created" added',
+      );
+    });
+
+    expect(
+      screen.getAllByRole("alert").filter((alert) => !dialog.contains(alert)),
+    ).toHaveLength(0);
+  });
+
+  it("shows create failures inside the dialog", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      CreateLLMProvider: vi.fn(() => Promise.reject(new Error("name exists"))),
+    });
+    render(<LlmProvidersPanel />);
+
+    await screen.findByRole("table", { name: "LLM provider list" });
+    await user.click(screen.getByRole("button", { name: "New Provider" }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(
+      screen.getByPlaceholderText("Example: production / local Ollama"),
+      { target: { value: "Duplicate" } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText(
+        "sk-... or self-hosted token. Leave empty for anonymous access.",
+      ),
+      { target: { value: "sk-test" } },
+    );
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        "Save failed: name exists",
+      );
+    });
+
+    expect(
+      screen.getAllByRole("alert").filter((alert) => !dialog.contains(alert)),
+    ).toHaveLength(0);
+  });
+
   it("copies providerKey to clipboard", async () => {
     const user = userEvent.setup();
     installAppMock({

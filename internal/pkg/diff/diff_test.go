@@ -7,7 +7,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 
-	"agentre/internal/pkg/diff"
+	"github.com/agentre-ai/agentre/internal/pkg/diff"
 )
 
 func TestFromClaudeCodeEdit(t *testing.T) {

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanApproveCard } from "./card";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
+import { __resetChatPanelScrollStateForTesting } from "../../chat-panel-scroll-state";
 
 vi.mock("../../../../../wailsjs/go/app/App", () => ({
   ResolvePlanAction: vi.fn().mockResolvedValue(undefined),
@@ -56,6 +57,7 @@ function actionPlanBlock(): ChatBlockData {
 describe("PlanApproveCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetChatPanelScrollStateForTesting();
     useChatStreamsStore.setState({ streams: new Map() });
   });
 
@@ -182,6 +184,104 @@ describe("PlanApproveCard", () => {
         }),
       );
     });
+  });
+
+  it("Given feedback draft, When the plan card remounts in the same tab, Then it restores the open editor and text", () => {
+    const block = blockWithActions([
+      { id: "plan.approve.accept_edits", kind: "approve" },
+      { id: "plan.refine", kind: "refine", requiresFeedback: true },
+    ]);
+    const view = render(
+      <PlanApproveCard
+        toolBlock={block}
+        sessionId={1}
+        tabStateKey="tab-a"
+        uiStateKey="plan:req-1"
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Continue Planning"));
+    fireEvent.change(screen.getByPlaceholderText(/step 2/), {
+      target: { value: "keep this feedback" },
+    });
+
+    view.unmount();
+    render(
+      <PlanApproveCard
+        toolBlock={block}
+        sessionId={1}
+        tabStateKey="tab-a"
+        uiStateKey="plan:req-1"
+      />,
+    );
+
+    expect(screen.getByPlaceholderText(/step 2/)).toHaveValue(
+      "keep this feedback",
+    );
+  });
+
+  it("Given feedback draft in one tab, When the same plan remounts in another tab, Then it does not restore the old draft", () => {
+    const block = blockWithActions([
+      { id: "plan.approve.accept_edits", kind: "approve" },
+      { id: "plan.refine", kind: "refine", requiresFeedback: true },
+    ]);
+    const view = render(
+      <PlanApproveCard
+        toolBlock={block}
+        sessionId={1}
+        tabStateKey="tab-a"
+        uiStateKey="plan:req-1"
+      />,
+    );
+    fireEvent.click(screen.getByText("Continue Planning"));
+    fireEvent.change(screen.getByPlaceholderText(/step 2/), {
+      target: { value: "tab A feedback" },
+    });
+
+    view.unmount();
+    render(
+      <PlanApproveCard
+        toolBlock={block}
+        sessionId={1}
+        tabStateKey="tab-b"
+        uiStateKey="plan:req-1"
+      />,
+    );
+
+    expect(screen.queryByPlaceholderText(/step 2/)).toBeNull();
+  });
+
+  it("Given saved feedback draft, When refine is submitted, Then remounting does not restore it", async () => {
+    const block = blockWithActions([
+      { id: "plan.approve.accept_edits", kind: "approve" },
+      { id: "plan.refine", kind: "refine", requiresFeedback: true },
+    ]);
+    const view = render(
+      <PlanApproveCard
+        toolBlock={block}
+        sessionId={1}
+        tabStateKey="tab-a"
+        uiStateKey="plan:req-1"
+      />,
+    );
+    fireEvent.click(screen.getByText("Continue Planning"));
+    fireEvent.change(screen.getByPlaceholderText(/step 2/), {
+      target: { value: "feedback before submit" },
+    });
+    fireEvent.click(screen.getByText("Send Feedback and Continue Planning"));
+    await waitFor(() => expect(ResolvePlanAction).toHaveBeenCalled());
+
+    view.unmount();
+    render(
+      <PlanApproveCard
+        toolBlock={block}
+        sessionId={1}
+        tabStateKey="tab-a"
+        uiStateKey="plan:req-1"
+      />,
+    );
+
+    expect(screen.queryByPlaceholderText(/step 2/)).toBeNull();
   });
 
   it("renders resolved-allowed banner without action buttons", () => {

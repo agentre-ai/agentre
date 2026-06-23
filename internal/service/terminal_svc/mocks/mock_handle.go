@@ -10,8 +10,8 @@
 package mocks
 
 import (
-	pty "agentre/internal/pkg/pty"
 	context "context"
+	pty "github.com/agentre-ai/agentre/internal/pkg/pty"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"

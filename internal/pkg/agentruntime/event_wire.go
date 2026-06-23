@@ -7,7 +7,7 @@ import (
 
 	"github.com/cago-frame/agents/provider"
 
-	"agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 )
 
 // Event wire 编解码。Event 是 sealed interface，无法靠 stdlib 默认反序列化跨线传递；

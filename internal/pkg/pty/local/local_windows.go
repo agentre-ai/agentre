@@ -17,7 +17,7 @@ import (
 
 	"github.com/UserExistsError/conpty"
 
-	pkgpty "agentre/internal/pkg/pty"
+	pkgpty "github.com/agentre-ai/agentre/internal/pkg/pty"
 )
 
 // Backend is the local ConPTY implementation of pty.Backend.

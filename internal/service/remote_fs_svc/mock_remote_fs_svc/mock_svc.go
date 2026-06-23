@@ -10,8 +10,8 @@
 package mock_remote_fs_svc
 
 import (
-	remote_fs_svc "agentre/internal/service/remote_fs_svc"
 	context "context"
+	remote_fs_svc "github.com/agentre-ai/agentre/internal/service/remote_fs_svc"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"

@@ -3,6 +3,19 @@ import userEvent from "@testing-library/user-event";
 import { MessageSquare } from "lucide-react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// ChatComposer 现在通过 useFileDropZone → file-drop → OnFileDrop 间接依赖 wailsjs runtime。
+// happy-dom 下 window.runtime 不存在,故把 OnFileDrop/OnFileDropOff 桩成 no-op,其余保持真实。
+vi.mock("../../../../wailsjs/runtime/runtime", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../../../wailsjs/runtime/runtime")
+  >("../../../../wailsjs/runtime/runtime");
+  return {
+    ...actual,
+    OnFileDrop: vi.fn(),
+    OnFileDropOff: vi.fn(),
+  };
+});
+
 import {
   AgentAvatar,
   AgentGroup,
@@ -239,6 +252,21 @@ describe("Agentre foundation components", () => {
     expect(screen.getByRole("button", { name: "Minimize window" })).toHaveClass(
       "cursor-pointer",
     );
+  });
+
+  it("Given a group backing session has only groupId, When SessionRow renders, Then it still shows the group marker", () => {
+    render(
+      <SessionRow
+        status="idle"
+        title="支付 / 结算小队 / 后端"
+        trailingLabel="now"
+        groupId={5}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /支付 \/ 结算小队/ }),
+    ).toHaveTextContent("Group");
   });
 
   it("given notifications and user profiles are not available, when the top bar renders, then it omits those buttons", () => {

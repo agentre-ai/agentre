@@ -1,0 +1,102 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+// 重渲隔离探针:把 CanonicalToolRouter 换成渲染计数器,验证流式 chunk 期间
+// persisted 消息的 tool 行不重渲 —— 这是本次性能修复的另一半(行级 memo +
+// WeakMap 行缓存 + TranscriptRenderContext 稳定值)。若 context value 或行对象
+// 在 chunk 间失稳,memo 被击穿,这里立刻红。
+const probe = vi.hoisted(() => ({
+  renders: new Map<string, number>(),
+}));
+
+vi.mock("@/components/agentre/canonical-tool/registry", () => ({
+  CanonicalToolRouter: ({
+    toolBlock,
+  }: {
+    toolBlock?: { toolUseId?: string };
+  }) => {
+    const key = toolBlock?.toolUseId ?? "?";
+    probe.renders.set(key, (probe.renders.get(key) ?? 0) + 1);
+    return <div data-testid="probe-tool-card" data-tool={key} />;
+  },
+}));
+
+import { ChatTranscript } from "@/components/agentre/chat";
+import type { ChatBlockData } from "@/stores/chat-streams-store";
+import type { chat_svc } from "../../../../wailsjs/go/models";
+
+function message(
+  id: number,
+  role: "user" | "assistant",
+  blocks: ChatBlockData[],
+): chat_svc.ChatMessage {
+  return {
+    blocks,
+    completionTokens: 0,
+    createtime: 0,
+    durationMs: 0,
+    errorText: "",
+    id,
+    model: "",
+    promptTokens: 0,
+    role,
+    seq: id,
+    sessionId: 1,
+  } as chat_svc.ChatMessage;
+}
+
+function toolPair(toolUseId: string): ChatBlockData[] {
+  return [
+    {
+      toolInput: { command: `echo ${toolUseId}` },
+      toolName: "Bash",
+      toolUseId,
+      type: "tool_use",
+    } as ChatBlockData,
+    { text: "done", toolUseId, type: "tool_result" } as ChatBlockData,
+  ];
+}
+
+describe("ChatTranscript live re-render isolation", () => {
+  it("Given persisted tool rows, When live chunks stream in, Then only the live message re-renders", () => {
+    const persisted = message(1, "assistant", [
+      ...toolPair("toolu-old-1"),
+      ...toolPair("toolu-old-2"),
+    ]);
+    const live = message(2, "assistant", []);
+    const messages = [persisted, live];
+
+    const transcript = (liveDelta: string) => (
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="A"
+        liveBlocks={toolPair("toolu-live-1")}
+        liveDelta={liveDelta}
+        liveTargetId={2}
+        messages={messages}
+        streaming
+      />
+    );
+
+    const { rerender } = render(transcript("chunk"));
+    expect(screen.getAllByTestId("probe-tool-card").length).toBe(3);
+    const persistedAfterMount = [
+      probe.renders.get("toolu-old-1"),
+      probe.renders.get("toolu-old-2"),
+    ];
+    const liveAfterMount = probe.renders.get("toolu-live-1")!;
+
+    rerender(transcript("chunk chunk"));
+    rerender(transcript("chunk chunk chunk"));
+    rerender(transcript("chunk chunk chunk chunk"));
+
+    // persisted 消息的 tool 行:行对象来自 WeakMap 缓存、live props 恒为空值、
+    // context value 稳定 → memo 恒命中,3 个 chunk 渲染计数零增长。
+    expect([
+      probe.renders.get("toolu-old-1"),
+      probe.renders.get("toolu-old-2"),
+    ]).toEqual(persistedAfterMount);
+    // live 消息的行每 chunk 现场重建 → 一定重渲(探针本身在工作的 sanity check)。
+    expect(probe.renders.get("toolu-live-1")!).toBeGreaterThan(liveAfterMount);
+  });
+});

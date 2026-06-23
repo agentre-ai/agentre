@@ -3,7 +3,7 @@ package pty_test
 import (
 	"testing"
 
-	"agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
 )
 
 func TestSpec_ZeroValueValid(t *testing.T) {

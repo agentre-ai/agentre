@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Icon as IconifyIconCmp } from "@iconify/react";
 import type { IconifyIcon } from "@iconify/types";
-import type { LucideIcon } from "lucide-react";
+import { UsersRound, type LucideIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -116,6 +116,29 @@ function AgentAvatar({
       {...props}
     >
       {initials ?? getInitials(name)}
+    </div>
+  );
+}
+
+type GroupAvatarProps = React.ComponentProps<"div"> & {
+  size?: AgentAvatarSize;
+};
+
+// GroupAvatar: 群聊在列表里的专属头像 —— 浅蓝底(primary-soft)+ 人群图标,刻意区别于
+// AgentAvatar 的实心色字母头像,让混排列表里一眼能认出哪几行是群。图标是固定的群语义
+// 字形(非用户可选 avatarIcon)。装饰性元素(aria-hidden),群名由相邻标题文本承担可访问名。
+function GroupAvatar({ className, size = "sm", ...props }: GroupAvatarProps) {
+  return (
+    <div
+      aria-hidden="true"
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center bg-primary-soft text-primary-text",
+        avatarSizeClassNames[size],
+        className,
+      )}
+      {...props}
+    >
+      <UsersRound className="size-[60%]" aria-hidden="true" />
     </div>
   );
 }
@@ -244,4 +267,11 @@ function SidebarButton({
   );
 }
 
-export { AgentAvatar, DeviceTag, SidebarButton, StatusDot, StatusPill };
+export {
+  AgentAvatar,
+  DeviceTag,
+  GroupAvatar,
+  SidebarButton,
+  StatusDot,
+  StatusPill,
+};

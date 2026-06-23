@@ -12,7 +12,7 @@ import (
 	"github.com/cago-frame/agents/provider/openai_response"
 	goopenai "github.com/sashabaranov/go-openai"
 
-	"agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 )
 
 var (

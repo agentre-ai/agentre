@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/app_setting_entity"
-	"agentre/internal/pkg/httpgateway"
-	"agentre/internal/repository/app_setting_repo"
-	"agentre/internal/repository/app_setting_repo/mock_app_setting_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/repository/app_setting_repo"
+	"github.com/agentre-ai/agentre/internal/repository/app_setting_repo/mock_app_setting_repo"
 )
 
 // fakeGateway 模拟 httpgateway.Lifecycle，记录 Restart / ApplyAddr 调用次数与最终参数。

@@ -8,7 +8,7 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/service/server_svc"
+	"github.com/agentre-ai/agentre/internal/service/server_svc"
 )
 
 func TestHealthcheck_OK(t *testing.T) {

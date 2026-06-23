@@ -7,6 +7,27 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+type validationCase struct {
+	name    string
+	input   string
+	wantErr bool
+}
+
+func assertValidationCases(t *testing.T, cases []validationCase, validate func(context.Context, string) error) {
+	t.Helper()
+	ctx := context.Background()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validate(ctx, tc.input)
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestIsProxyKey(t *testing.T) {
 	cases := []struct {
 		name string
@@ -27,12 +48,7 @@ func TestIsProxyKey(t *testing.T) {
 }
 
 func TestValidateProxyHost(t *testing.T) {
-	ctx := context.Background()
-	cases := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
+	assertValidationCases(t, []validationCase{
 		{"loopback", "127.0.0.1", false},
 		{"any", "0.0.0.0", false},
 		{"ipv6 loopback", "::1", false},
@@ -41,26 +57,11 @@ func TestValidateProxyHost(t *testing.T) {
 		{"whitespace only", "   ", true},
 		{"hostname", "localhost", true},
 		{"garbage", "not-an-ip", true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateProxyHost(ctx, tc.input)
-			if tc.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
+	}, ValidateProxyHost)
 }
 
 func TestValidateProxyPort(t *testing.T) {
-	ctx := context.Background()
-	cases := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
+	assertValidationCases(t, []validationCase{
 		{"zero (random)", "0", false},
 		{"valid", "60080", false},
 		{"max", "65535", false},
@@ -69,17 +70,7 @@ func TestValidateProxyPort(t *testing.T) {
 		{"non-numeric", "abc", true},
 		{"empty", "", true},
 		{"with whitespace", "  60080  ", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateProxyPort(ctx, tc.input)
-			if tc.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
+	}, ValidateProxyPort)
 }
 
 func TestParseProxyPort(t *testing.T) {

@@ -84,19 +84,7 @@ func (c *Client) ClearGoal(ctx context.Context, threadID string) (bool, error) {
 }
 
 func (s *Session) GetGoal(ctx context.Context) (*Goal, error) {
-	threadID := strings.TrimSpace(s.ID())
-	if threadID == "" {
-		return nil, errors.New("codex: thread id is required for goal")
-	}
-	if _, err := s.ensureThread(ctx, runSpec{
-		resumeID: threadID,
-		cwd:      s.client.cwd,
-		sandbox:  s.client.sandbox,
-		approval: s.client.approval,
-	}); err != nil {
-		return nil, err
-	}
-	raw, err := s.app.Call(ctx, appMethodThreadGoalGet, map[string]any{"threadId": threadID})
+	raw, err := s.callExistingThreadGoal(ctx, appMethodThreadGoalGet, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -137,19 +125,7 @@ func (s *Session) SetGoal(ctx context.Context, update GoalUpdate) (*Goal, error)
 }
 
 func (s *Session) ClearGoal(ctx context.Context) (bool, error) {
-	threadID := strings.TrimSpace(s.ID())
-	if threadID == "" {
-		return false, errors.New("codex: thread id is required for goal")
-	}
-	if _, err := s.ensureThread(ctx, runSpec{
-		resumeID: threadID,
-		cwd:      s.client.cwd,
-		sandbox:  s.client.sandbox,
-		approval: s.client.approval,
-	}); err != nil {
-		return false, err
-	}
-	raw, err := s.app.Call(ctx, appMethodThreadGoalClear, map[string]any{"threadId": threadID})
+	raw, err := s.callExistingThreadGoal(ctx, appMethodThreadGoalClear, nil)
 	if err != nil {
 		return false, err
 	}
@@ -158,6 +134,28 @@ func (s *Session) ClearGoal(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return res.Cleared, nil
+}
+
+func (s *Session) callExistingThreadGoal(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
+	threadID := strings.TrimSpace(s.ID())
+	if threadID == "" {
+		return nil, errors.New("codex: thread id is required for goal")
+	}
+	thread, err := s.ensureThread(ctx, runSpec{
+		resumeID: threadID,
+		cwd:      s.client.cwd,
+		sandbox:  s.client.sandbox,
+		approval: s.client.approval,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if params == nil {
+		params = map[string]any{"threadId": thread.ThreadID}
+	} else {
+		params["threadId"] = thread.ThreadID
+	}
+	return s.app.Call(ctx, method, params)
 }
 
 func (c *Client) callThreadGoal(ctx context.Context, threadID, method string, params map[string]any) (json.RawMessage, error) {

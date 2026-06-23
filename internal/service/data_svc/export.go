@@ -8,18 +8,18 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/buildinfo"
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/model/entity/department_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/model/entity/paired_agentred_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/department_repo"
-	"agentre/internal/repository/llm_provider_repo"
-	"agentre/internal/repository/remote_device_repo"
+	"github.com/agentre-ai/agentre/internal/buildinfo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/department_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
 )
 
 const (

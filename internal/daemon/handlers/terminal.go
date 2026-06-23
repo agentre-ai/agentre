@@ -9,8 +9,8 @@ import (
 	"errors"
 	"sync"
 
-	"agentre/internal/pkg/pty"
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
 
 //go:generate mockgen -source=terminal.go -destination=mock_handlers/mock_terminal.go -package=mock_handlers

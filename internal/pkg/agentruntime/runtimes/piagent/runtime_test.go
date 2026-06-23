@@ -2,15 +2,21 @@ package piagent
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
+	"github.com/cago-frame/agents/provider"
+	"github.com/cago-frame/cago/pkg/logger"
 	. "github.com/smartystreets/goconvey/convey"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
-	pkgpiagent "agentre/pkg/piagent"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	pkgpiagent "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
 func TestPiAgentCapabilities(t *testing.T) {
@@ -27,6 +33,8 @@ func TestPiAgentCapabilities(t *testing.T) {
 			So(caps.Has(capability.CapCancelSteer), ShouldBeFalse)
 			So(caps.Has(capability.CapDrainSteer), ShouldBeFalse)
 			So(caps.Has(capability.CapToolPermission), ShouldBeFalse)
+			// CapMCPTools=true:pi-agent 经内嵌桥扩展消费 RunRequest.MCPServers。
+			So(caps.Has(capability.CapMCPTools), ShouldBeTrue)
 		})
 
 		Convey("When comparing optional interfaces Then advertised controls match implementations", func() {
@@ -135,6 +143,60 @@ func TestRun_ForwardsUserBlockImagesToStream(t *testing.T) {
 	})
 }
 
+func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
+	Convey("Given a pi-agent stream that fails after reporting model and usage", t, func() {
+		boom := errors.New("piagent: terminated")
+		sess := &fakeSession{
+			stream: &scriptedStream{events: []pkgpiagent.Event{
+				{Kind: pkgpiagent.EventUsage, Model: "gpt-5.5(xhigh)", Usage: provider.Usage{
+					PromptTokens:        4017,
+					CompletionTokens:    128,
+					CachedTokens:        69632,
+					CacheCreationTokens: 0,
+				}},
+				{Kind: pkgpiagent.EventContextWindow, ContextWindow: 1050000},
+				{Kind: pkgpiagent.EventError, Err: boom},
+			}, err: boom, sid: "pi-session-689"},
+			sid: "pi-session-689",
+		}
+		restoreFactory := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+			return sess, nil
+		})
+		defer restoreFactory()
+		core, logs := observer.New(zapcore.DebugLevel)
+		ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+		Convey("When the turn drains Then runtime logs enough fields to diagnose future Pi terminated failures", func() {
+			events, result, err := New().Run(ctx, agentruntime.RunRequest{
+				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID: 689,
+				AgentID:   8,
+				Cwd:       t.TempDir(),
+				UserText:  "检查一下pi agent能否支持mcp，实现群聊功能",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.StopErr, ShouldEqual, boom)
+			matches := logs.FilterMessage("piagent runtime: turn failed").All()
+			So(matches, ShouldHaveLength, 1)
+			fields := matches[0].ContextMap()
+			So(fields["sessionID"], ShouldEqual, int64(689))
+			So(fields["agentID"], ShouldEqual, int64(8))
+			So(fields["providerSessionID"], ShouldEqual, "pi-session-689")
+			So(fields["model"], ShouldEqual, "gpt-5.5(xhigh)")
+			So(fields["contextWindow"], ShouldEqual, int64(1050000))
+			So(fields["promptTokens"], ShouldEqual, int64(4017))
+			So(fields["completionTokens"], ShouldEqual, int64(128))
+			So(fields["cachedTokens"], ShouldEqual, int64(69632))
+			So(fields["cacheCreationTokens"], ShouldEqual, int64(0))
+			So(fields["totalInputTokens"], ShouldEqual, int64(73649))
+			So(fields["error"], ShouldEqual, "piagent: terminated")
+		})
+	})
+}
+
 type fakeSession struct {
 	stream     stream
 	sid        string
@@ -163,3 +225,22 @@ func (*emptyStream) Next() bool              { return false }
 func (*emptyStream) Event() pkgpiagent.Event { return pkgpiagent.Event{} }
 func (*emptyStream) SessionID() string       { return "" }
 func (*emptyStream) Err() error              { return nil }
+
+type scriptedStream struct {
+	events []pkgpiagent.Event
+	idx    int
+	err    error
+	sid    string
+}
+
+func (s *scriptedStream) Next() bool {
+	if s.idx >= len(s.events) {
+		return false
+	}
+	s.idx++
+	return true
+}
+
+func (s *scriptedStream) Event() pkgpiagent.Event { return s.events[s.idx-1] }
+func (s *scriptedStream) SessionID() string       { return s.sid }
+func (s *scriptedStream) Err() error              { return s.err }

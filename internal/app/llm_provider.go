@@ -1,7 +1,7 @@
 package app
 
 import (
-	"agentre/internal/service/llm_provider_svc"
+	"github.com/agentre-ai/agentre/internal/service/llm_provider_svc"
 )
 
 // ListLLMProviders 列出全部 LLM 供应商配置（脱敏）。

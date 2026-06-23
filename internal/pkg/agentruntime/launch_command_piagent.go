@@ -3,7 +3,7 @@ package agentruntime
 import (
 	"strings"
 
-	"agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 )
 
 func buildPiAgentShellCommand(spec LaunchCommandSpec, cwd string) (string, error) {
@@ -15,7 +15,7 @@ func buildPiAgentShellCommand(spec LaunchCommandSpec, cwd string) (string, error
 	if binary == "" {
 		binary = "pi"
 	}
-	argv := []string{binary, "--mode", "rpc", "--no-context-files"}
+	argv := []string{binary}
 	if model := piAgentModel(spec.Backend, spec.ProviderSessionID); model != "" {
 		argv = append(argv, "--model", model)
 	}

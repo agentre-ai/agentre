@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"agentre/pkg/agentred/protocol"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

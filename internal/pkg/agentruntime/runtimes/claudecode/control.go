@@ -6,9 +6,13 @@ import (
 	"errors"
 	"fmt"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/pkg/claudecode"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
+
+// toolNameExitPlanMode CLI 计划审批 control_request 的 tool_name。
+// 与 chat_svc/handlers 的同名常量各自归属(包间不互相 import)。
+const toolNameExitPlanMode = "ExitPlanMode"
 
 // SubmitAnswer 把前端提交的 AskUserQuestion 答案反向投回 CLI。语义同顶层
 // claudecode.go.SubmitAnswer:
@@ -161,6 +165,9 @@ func emitToolPermissionResolved(a *claudeActive, requestID string, allowed, alwa
 //   - AskUserQuestion → 走 askWaiter 路径,emit UserAskRequest
 //   - 其它工具 → 默认走 permWaiter 路径 emit ToolPermissionRequest
 //     bypassPermissions 模式下立即放行(防御性兜底)
+//   - ExitPlanMode 豁免于 bypass 短路:计划审批是流程门禁不是工具权限,
+//     永远走审批卡。否则快照失同步(或会话真在 bypass)时计划被静默放行,
+//     CLI 随后自切 mode,用户全程没有审批机会。
 //
 // RespondToControl 的写动作放后台 goroutine,避免阻塞 drain 主循环。
 func handleControlRequest(req *claudecode.ControlRequestEvent, active *claudeActive, out chan<- agentruntime.Event) {
@@ -180,7 +187,7 @@ func handleControlRequest(req *claudecode.ControlRequestEvent, active *claudeAct
 		return
 	}
 
-	if active.permissionMode == "bypassPermissions" {
+	if active.permissionModeSnapshot() == "bypassPermissions" && req.ToolName != toolNameExitPlanMode {
 		go func() {
 			_ = active.handle.RespondToControl(context.Background(), req.RequestID, claudecode.PermissionResult{
 				Behavior:     "allow",

@@ -159,6 +159,8 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
                 title: s.title || "",
                 lastMessageAt: s.lastMessageAt ?? 0,
                 lastReadAt: s.lastReadAt ?? 0,
+                groupId: s.groupId ?? 0,
+                groupTitle: s.groupTitle ?? "",
               },
             ]);
           }

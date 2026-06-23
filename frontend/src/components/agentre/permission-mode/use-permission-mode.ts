@@ -96,7 +96,6 @@ export function usePermissionMode({
       defaultMode,
       backendDefaultMode,
     );
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setModeState(next);
     lastModeRef.current = next;
     setError(null);

@@ -14,10 +14,10 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
-	"agentre/internal/pkg/remotefs/pathguard"
-	"agentre/internal/pkg/remotefs/wire"
-	"agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/remotefs/pathguard"
+	"github.com/agentre-ai/agentre/internal/pkg/remotefs/wire"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // RemoteFsSvc 给 Wails 绑定层调,deviceID 字符串化(与 ProjectLocationSvc 一致)。
@@ -49,8 +49,7 @@ type MkdirView struct {
 
 var defaultSvc RemoteFsSvc = &remoteFsImpl{}
 
-func Default() RemoteFsSvc     { return defaultSvc }
-func SetDefault(s RemoteFsSvc) { defaultSvc = s }
+func Default() RemoteFsSvc { return defaultSvc }
 
 type remoteFsImpl struct {
 	// rdSvc 默认走 remote_device_svc.Default();单测注入 mock。

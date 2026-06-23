@@ -8,8 +8,8 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // BackendKind 把「不同 backend 类型的取值约束」做成可扩展集合。
@@ -100,7 +100,8 @@ func (builtinKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
 		strings.TrimSpace(b.Sandbox) != "" ||
 		strings.TrimSpace(b.Approval) != "" ||
 		!isEmptyJSONObject(b.EnvJSON) ||
-		strings.TrimSpace(b.DefaultPermissionMode) != "" {
+		strings.TrimSpace(b.DefaultPermissionMode) != "" ||
+		strings.TrimSpace(b.DefaultModel) != "" {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
 	return nil
@@ -149,9 +150,10 @@ func (codexKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
 	if err := validateApproval(ctx, b.Approval); err != nil {
 		return err
 	}
-	// default_permission_mode 是 claudecode 专属字段；codex 自有 sandbox/approval 通道，
-	// 不复用该字段。
-	if strings.TrimSpace(b.DefaultPermissionMode) != "" {
+	// default_permission_mode / default_model 都是 claudecode 专属字段；codex 自有
+	// sandbox/approval 通道与自己的模型解析，不复用这两个字段。
+	if strings.TrimSpace(b.DefaultPermissionMode) != "" ||
+		strings.TrimSpace(b.DefaultModel) != "" {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
 	return nil
@@ -173,7 +175,8 @@ func (piAgentKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
 		!isEmptyJSONObject(b.ModelRoutes) ||
 		strings.TrimSpace(b.Sandbox) != "" ||
 		strings.TrimSpace(b.Approval) != "" ||
-		strings.TrimSpace(b.DefaultPermissionMode) != "" {
+		strings.TrimSpace(b.DefaultPermissionMode) != "" ||
+		strings.TrimSpace(b.DefaultModel) != "" {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
 	return nil

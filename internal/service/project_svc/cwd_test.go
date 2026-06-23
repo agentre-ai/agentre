@@ -10,11 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/model/entity/project_entity"
-	"agentre/internal/repository/project_repo"
-	"agentre/internal/repository/project_repo/mock_project_repo"
-	"agentre/internal/service/project_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
+	"github.com/agentre-ai/agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/repository/project_repo/mock_project_repo"
+	"github.com/agentre-ai/agentre/internal/service/project_svc"
 )
 
 func setupCwdTest(t *testing.T) (context.Context, *mock_project_repo.MockProjectRepo, project_svc.ProjectSvc) {

@@ -196,6 +196,42 @@ describe("chat-agents-store", () => {
     expect(meta?.projectId).toBeUndefined();
   });
 
+  it("Given backend returns a group backing session, When reload runs, Then session meta keeps group source fields", async () => {
+    listChatAgents.mockResolvedValueOnce({
+      agents: [
+        {
+          id: 10,
+          name: "Backend",
+          avatarColor: "agent-3",
+          pinned: false,
+          chattable: true,
+          sessionIds: [7],
+          sessions: [
+            {
+              id: 7,
+              title: "支付小队 / Backend",
+              status: "idle",
+              needsAttention: false,
+              lastMessageAt: 700,
+              groupId: 5,
+              groupTitle: "支付小队",
+            },
+          ],
+          attentionSessions: [],
+        },
+      ],
+    });
+
+    await useChatAgentsStore.getState().reload();
+
+    expect(useSessionMetaStore.getState().metas.get(7)).toMatchObject({
+      agentId: 10,
+      title: "支付小队 / Backend",
+      groupId: 5,
+      groupTitle: "支付小队",
+    });
+  });
+
   it("bulkUpsert merge 不会清掉 useChatSession 之前写入的 projectId", async () => {
     useSessionMetaStore.getState().__reset();
     // 模拟: useChatSession 先 setMeta(完整含 projectId=7)

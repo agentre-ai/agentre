@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"agentre/internal/daemon/client"
-	"agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 )
 
 // realDial wraps internal/daemon/client to satisfy DaemonDialPort.

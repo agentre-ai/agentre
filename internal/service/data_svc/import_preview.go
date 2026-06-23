@@ -7,11 +7,11 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/department_repo"
-	"agentre/internal/repository/llm_provider_repo"
-	"agentre/internal/repository/remote_device_repo"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/department_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
 )
 
 // PreviewImport 解析 raw,与本地数据对比,返回逐条 diff。不写库。

@@ -12,7 +12,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // ProviderType 供应商实现类型。值与 cago agents/provider.Provider.Name() 对齐。

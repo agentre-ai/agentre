@@ -9,8 +9,8 @@ import (
 
 	"github.com/cago-frame/agents/agent/blocks"
 
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/service/chat_svc/view"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/view"
 )
 
 type PlanBlock struct {

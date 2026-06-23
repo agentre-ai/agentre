@@ -29,6 +29,7 @@
     "expand": "展开 {{name}}",
     "newSession": "新建 {{name}} 会话",
     "openRecent": "打开 {{name}} 最近会话",
+    "groupSession": "群聊",
     "pinned": "置顶",
     "running": "运行中",
     "runningAria": "{{name}} 有运行中的会话"
@@ -125,6 +126,11 @@
       "deleted": "已删除",
       "providerSynced": "已同步远端 Provider",
       "saved": "已保存"
+    },
+    "defaultModel": {
+      "hint": "--model · 留空走供应商模型 / CLI 默认",
+      "label": "自定义模型",
+      "placeholder": "如 claude-fable-5 或别名 opus/sonnet（走 CLI 登录态时生效）"
     },
     "modelRoutes": {
       "hint": "ANTHROPIC_DEFAULT_*_MODEL，留空走主供应商",
@@ -337,7 +343,8 @@
         "params": "参数",
         "result": "结果"
       },
-      "waitingResult": "等待返回"
+      "waitingResult": "等待返回",
+      "backgroundRunning": "后台运行"
     },
     "toolPermission": {
       "allowOnce": "仅本次允许",
@@ -362,9 +369,35 @@
       "waiting": "WAITING · 等待回复"
     }
   },
+  "toolApproval": {
+    "title": "组织架构操作审批",
+    "approve": "批准",
+    "deny": "拒绝",
+    "submitFailed": "审批提交失败",
+    "status": {
+      "approved": "已批准",
+      "denied": "已拒绝",
+      "expired": "已过期"
+    },
+    "tools": {
+      "org_create_department": "创建部门",
+      "org_update_department": "修改部门",
+      "org_delete_department": "删除部门",
+      "org_create_agent": "创建 Agent",
+      "org_update_agent": "修改 Agent",
+      "org_delete_agent": "删除 Agent",
+      "group_create": "创建群聊",
+      "workflow_create": "新建流程",
+      "workflow_update": "更新流程",
+      "workflow_delete": "删除流程"
+    }
+  },
   "chat": {
     "actions": {
       "approve": "批准",
+      "copyOutput": "复制 AI 输出原文",
+      "copyOutputDone": "已复制 AI 输出原文",
+      "copyOutputFailed": "复制 AI 输出原文失败",
       "regenerate": "重新生成"
     },
     "composer": {
@@ -381,6 +414,7 @@
         "tooMany": "最多添加 {{count}} 张图片",
         "unsupported": "仅支持 PNG、JPEG、WebP，单张不超过 5MB"
       },
+      "dropHint": "松开以添加文件 / 文件夹路径",
       "placeholder": "输入消息或 / 触发命令",
       "removeImage": "移除图片 {{name}}",
       "saveEdit": "保存编辑",
@@ -502,6 +536,7 @@
       "empty": "当前没有目标",
       "imageUnsupported": "/goal 不能和图片一起发送",
       "needsSession": "请先发送一条消息让 Codex 会话启动后再设置目标",
+      "waitForTurn": "请等本轮结束后再修改目标",
       "updated": "目标已更新",
       "updatedWithObjective": "目标已更新：{{objective}}"
     },
@@ -517,6 +552,9 @@
     "notice": {
       "close": "关闭提示"
     },
+    "scroll": {
+      "backToBottom": "回到底部"
+    },
     "regenerateDialog": {
       "confirm": "确认重新生成",
       "description": "这条回复及它之后的所有消息会被丢弃，agent 会基于上一条 user 消息重新生成新的回复。",
@@ -529,14 +567,15 @@
     },
     "backgroundTasks": {
       "chip": "{{count}} 运行中",
+      "completedChip": "{{count}} 已完成",
       "title": "后台任务",
       "running": "运行中",
       "completed": "已完成",
       "failed": "失败",
       "empty": "暂无后台任务",
       "bash": "bash",
-      "subagent": "subagent",
-      "aria": "后台任务"
+      "aria": "后台任务",
+      "clearCompleted": "清理已完成"
     },
     "toolbar": {
       "aria": "会话工具栏",
@@ -551,16 +590,38 @@
     "untitled": "(未命名)"
   },
   "chatPage": {
+    "add": {
+      "aria": "新建",
+      "newAgentChat": "新建 Agent 会话",
+      "newGroup": "新建群聊"
+    },
     "agents": "Agents",
+    "filter": {
+      "open": "筛选侧栏",
+      "options": {
+        "agents": "Agent",
+        "all": "全部",
+        "groups": "群聊",
+        "running": "运行中",
+        "unread": "未读"
+      }
+    },
+    "newChat": "新建会话",
     "notChattable": {
       "defaultHint": "该 Agent 还没配置后端，请在组织架构页选择一个 Agent 后端",
       "message": "暂不可对话 — {{hint}}"
     },
+    "pin": {
+      "pin": "置顶",
+      "pinAria": "置顶 {{name}}",
+      "unpin": "取消置顶",
+      "unpinAria": "取消置顶 {{name}}"
+    },
     "search": {
-      "aria": "筛选 agent 与会话",
+      "aria": "搜索 Agent 与群聊",
       "clear": "清空筛选",
-      "noMatches": "没有匹配 \"{{query}}\" 的 Agent 或会话",
-      "placeholder": "搜索 Agent / 会话"
+      "noMatches": "没有匹配 \"{{query}}\" 的 Agent 或群聊",
+      "placeholder": "搜索 Agent / 群聊"
     },
     "sections": {
       "agents": "AGENTS",
@@ -614,6 +675,86 @@
       "session": "sess-{{id}}",
       "worktree": "worktree {{branch}}"
     }
+  },
+  "group": {
+    "title": "群聊",
+    "section": "群聊",
+    "tabs": { "members": "成员", "settings": "设置", "group": "群聊", "tasks": "任务" },
+    "roster": {
+      "host": "主持人",
+      "members": "成员",
+      "invite": "邀请成员",
+      "backToGroup": "← 返回群聊",
+      "openMember": "打开成员"
+    },
+    "nickname": {
+      "edit": "设置群昵称",
+      "title": "群昵称",
+      "identity": "Agent 全局名 · 不会被改",
+      "hint": "留空 = 使用本名「{{name}}」。仅本群可见。",
+      "taken": "「{{name}}」已被其他成员使用，换一个"
+    },
+    "runStatus": {
+      "running": "运行中",
+      "waitingUser": "等待你",
+      "paused": "已暂停",
+      "idle": "空闲",
+      "error": "出错"
+    },
+    "rounds": "已 {{count}} 轮",
+    "controls": { "pause": "暂停", "stop": "停止", "resume": "继续" },
+    "composer": {
+      "placeholder": "给群里发消息… 用 @ 提及成员",
+      "send": "发送"
+    },
+    "settings": { "project": "项目", "noProject": "未绑定项目" },
+    "delete": {
+      "button": "删除群",
+      "title": "删除群聊？",
+      "description": "将移除该群。成员会话默认保留,除非你勾选下面的选项一并删除。",
+      "alsoSessions": "同时删除关联的会话",
+      "confirm": "删除"
+    },
+    "task": {
+      "status": {
+        "open": "进行中",
+        "done": "已完成",
+        "canceled": "已取消"
+      },
+      "assignedTo": "指派给",
+      "deliveredTo": "交付给",
+      "verifies": "验证 #{{no}}",
+      "sectionOpen": "进行中",
+      "sectionClosed": "已完成",
+      "empty": "暂无任务",
+      "openAssignee": "打开执行成员"
+    },
+    "you": "你",
+    "onlyXReceived": "仅 {{name}} 收到",
+    "new": {
+      "title": "新建群聊",
+      "groupTitle": "群标题",
+      "groupTitlePlaceholder": "前端重构攻坚组",
+      "host": "主持人",
+      "hostPlaceholder": "选择主持人",
+      "hostHint": "仅支持 group_send 的 Agent（claudecode）可作为主持人",
+      "project": "项目",
+      "projectNone": "（不绑定项目）",
+      "members": "初始成员",
+      "membersHint": "主持人可在群里随时邀请更多成员加入",
+      "addMember": "添加成员",
+      "removeMember": "移除 {{name}}",
+      "noCandidates": "没有可加入的 Agent",
+      "create": "创建群聊",
+      "workflow": "协作流程",
+      "workflowNone": "不绑定",
+      "workflowHint": "可选;主持人将按该流程的最新内容编排协作",
+      "manageWorkflows": "管理流程"
+    }
+  },
+  "groupCreateCard": {
+    "created": "已创建群聊",
+    "open": "打开群聊"
   },
   "commandPalette": {
     "chatSessions": {
@@ -680,7 +821,10 @@
       "commandPlaceholder": "输入命令…",
       "sessionPlaceholder": "搜索会话…"
     },
-    "title": "命令面板"
+    "title": "命令面板",
+    "workflows": {
+      "heading": "操作"
+    }
   },
   "dataBackup": {
     "actions": {
@@ -1673,11 +1817,50 @@
       "reportsTo": "汇报给",
       "savedAt": "已保存 · {{time}}",
       "skills": {
-        "empty": "暂无技能。可在 Update 时通过设置 skills 添加。",
-        "item": "技能 {{label}}",
-        "list": "技能列表",
+        "sectionTitle": "技能 · SKILL PACKS",
+        "manage": "管理技能",
+        "count": "继承 {{inherit}} · 强制开 {{on}} · 强制关 {{off}}",
+        "inheritNote": "灰=继承全局已启用 · 蓝=仅此 agent 强制开 · 红=仅此 agent 强制关(不动全局)。改动下次起新会话生效。",
+        "empty": "未授予技能包",
+        "personalNote": "始终可用 · 个人技能（~/.claude/skills）不可单独开关",
         "summary": "{{enabled}} 启用 · {{disabled}} 禁用",
-        "title": "技能 / 工具"
+        "title": "技能"
+      },
+      "skillsGate": {
+        "pill": "backend 不支持",
+        "title": "当前 backend 不支持技能",
+        "description": "技能是 Claude Code 原生能力 · 切换到 Claude Code 后端即可启用并配置"
+      },
+      "skillPicker": {
+        "title": "添加技能 · Skill Packs",
+        "subtitle": "一个包 = 一组 skill，按 agent 授权",
+        "searchPlaceholder": "搜索技能包 / 描述…",
+        "personalNote": "个人技能（~/.claude/skills）始终可用，CLI 不支持单独开关"
+      },
+      "tools": {
+        "title": "工具",
+        "sectionTitle": "工具 · TOOLS",
+        "enabledCount": "{{count}} 已启用",
+        "add": "添加工具",
+        "empty": "暂无可用工具",
+        "approval": "需审批",
+        "names": { "org": "组织架构", "workflow": "流程库", "group_create": "创建群聊", "subagent": "调用子 Agent" },
+        "descriptions": { "org": "允许该 Agent 查询并管理部门与成员（写操作需你审批）", "workflow": "允许该 Agent 查询并管理协作流程（写操作需你审批）", "group_create": "允许该 Agent 拉起多 Agent 协作群（需你审批）", "subagent": "把子任务委派给另一个已配置的 Agent 执行并同步取回结果。子 Agent 在隔离的一次性会话中运行；用作子 Agent 的成员建议使用自动批准的权限模式。" }
+      },
+      "toolPicker": {
+        "title": "添加工具",
+        "subtitle": "工具调用经 MCP 注入 · 写操作需审批",
+        "searchPlaceholder": "搜索工具 / 描述…"
+      },
+      "skillCatalog": {
+        "group": {
+          "available": "可安装 · MARKETPLACE",
+          "inheritedOn": "继承(全局已开)",
+          "enableable": "可启用(已安装·全局未开)"
+        },
+        "needInstall": "需先安装",
+        "globalEnabled": "全局已启用",
+        "globalDisabled": "全局未启用"
       },
       "systemPrompt": "系统提示词",
       "systemPromptHint": "风格 / 语气 / 边界都写进 system prompt — 不另设字段。",
@@ -1759,6 +1942,51 @@
       "expand": "展开 {{name}}",
       "lead": "Lead · {{name}}",
       "memberCount": "{{count}} 名成员"
+    }
+  },
+  "workflows": {
+    "title": "流程库",
+    "subtitle": "跨群复用的协作流程(SOP);主持人每轮注入绑定流程的最新内容",
+    "new": "新建流程",
+    "empty": "还没有流程,点击「新建流程」开始",
+    "groupCount": "{{count}} 个群使用中",
+    "groupCount_one": "{{count}} 个群使用中",
+    "updatedAt": "更新于 {{time}}",
+    "edit": "编辑流程",
+    "delete": "删除",
+    "preview": {
+      "liveHint": "修改即时生效:进行中的群下一轮即注入最新正文",
+      "empty": "选择左侧流程查看正文"
+    },
+    "editor": {
+      "createTitle": "新建流程",
+      "editTitle": "编辑流程",
+      "name": "名称",
+      "namePlaceholder": "如:产品开发流程",
+      "content": "流程正文(Markdown)",
+      "insertTemplate": "插入骨架模板",
+      "save": "保存",
+      "template": "# 流程名称\n\n适用:什么场景用这个流程。\n\n## 角色\n- 角色 A:职责与产出\n- 角色 B:职责与产出\n(用抽象角色,不写 agent 真名;按群成员职责对号入座,缺角色先 group_invite 招募或询问用户)\n\n## 步骤\n1. 角色 A:输入 → 产出,交付 .agentre/handoff/<群>/task-N-xxx.md,含验收标准\n2. 角色 B:依据上一棒交付物继续\n3. 并行验证:可并行的环节明确标注(验证任务回指被验证任务)\n4. 全部通过 → 汇总 @用户;有问题 → 打回对应环节(新任务卡)\n\n## 纪律\n- 每一步都用任务卡交接,交付物写明路径\n- 可能改同一片代码的任务不要并行\n- 验收标准在派活时写进 brief"
+    },
+    "deleteConfirm": {
+      "title": "删除流程",
+      "desc": "「{{name}}」正被 {{count}} 个群使用;删除后这些群按「不绑定流程」处理,且不可恢复。",
+      "desc_one": "「{{name}}」正被 1 个群使用;删除后该群按「不绑定流程」处理,且不可恢复。",
+      "descUnused": "删除「{{name}}」后不可恢复。",
+      "confirm": "删除流程"
+    },
+    "manager": {
+      "searchPlaceholder": "搜索流程名称或正文",
+      "metaLive": "{{count}} 个群使用中 · 更新于 {{time}} · 修改即时生效",
+      "metaLive_one": "{{count}} 个群使用中 · 更新于 {{time}} · 修改即时生效",
+      "metaUnused": "未使用 · 更新于 {{time}} · 修改即时生效",
+      "saveHint": "⌘ + Enter 保存 · Esc 取消"
+    },
+    "actions": {
+      "openLibrary": "打开流程库",
+      "openLibraryHint": "浏览 / 新建 / 编辑跨群协作流程",
+      "newWorkflow": "新建流程",
+      "newWorkflowHint": "直接打开空白流程编辑器"
     }
   },
   "permissionMode": {
@@ -2144,5 +2372,22 @@
     "badge": "建设中",
     "planning": "规划中",
     "progressLabel": "设计进度"
+  },
+  "capability": {
+    "picker": {
+      "rescan": "重新扫描",
+      "done": "完成",
+      "loading": "加载中…",
+      "empty": "暂无可用项",
+      "searchEmpty": "无匹配项",
+      "selected": "已选 {{count}} 项 · 保存后下次起新会话生效",
+      "remove": "移除 {{name}}",
+      "close": "关闭"
+    },
+    "triState": {
+      "inherit": "继承",
+      "on": "开",
+      "off": "关"
+    }
   }
 }

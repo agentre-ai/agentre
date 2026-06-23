@@ -26,8 +26,8 @@ it must never be written as if already released.
 your checkout will masquerade as released (the "branch leakage" above is exactly how this happens). Planned / feature-branch-specific content either stays in that branch's docs, or is clearly marked as planned.
 
 > Cross-repo reminder: the workspace root (`/Users/codfrm/Code/agentre`) wraps `agentre/` and `agentre-server/`, **two mutually independent git
-> repositories**. This guide only covers `agentre/`. Don't verify facts about `agentre-server` with `agentre`'s commands, or vice versa; neither module path
-> (`agentre` / `agentre-server`) has a VCS prefix, so don't invent `github.com/...`.
+> repositories**. This guide only covers `agentre/`. Don't verify facts about `agentre-server` with `agentre`'s commands, or vice versa. The desktop module path
+> is `github.com/agentre-ai/agentre`; the server remains the independent local module `agentre-server`.
 
 ## Doc Set and Responsibilities (Don't Duplicate — Cross-Link)
 
@@ -41,8 +41,11 @@ your checkout will masquerade as released (the "branch leakage" above is exactly
 | [`frontend.md`](./frontend.md) | shadcn `@/components/ui/*` conventions, i18n, frontend structure, pnpm, formatting / lint, module path. |
 | [`debugging.md`](./debugging.md) | Diagnosing runtime issues: SQLite / log commands, table → feature mapping, reproduction commands, common pitfalls. |
 | [`agent-backend.md`](./agent-backend.md) | The full path to wiring in a new AI Agent backend (entity / migration / runtime / translator / capability / daemon import / frontend gating). |
+| [`session-lifecycle.md`](./session-lifecycle.md) | Rules for creating and reusing `chat_sessions`, including group backing sessions, future issue/hook dispatch, and remote-execution ownership. |
+| [`e2e-harness-guide.md`](./e2e-harness-guide.md) | The Playwright + fake-runtime e2e harness (root `e2e/` package): `make e2e` / `make e2e-scratch`, ad-hoc feature verification via throwaway `e2e/scratch/` specs vs. the committed `e2e/tests/` core suite, the cross-platform `run-e2e.mjs` runner, the `e2e` build-tag seam, the `node:sqlite` DB oracle, data isolation / seeding, and how to write or extend a spec. |
 | [`doc-maintenance.md`](./doc-maintenance.md) | This guide: doc organization rules + fact-checking / anti-drift discipline. |
 | [`README_zh.md`](./README_zh.md) / [`../README.md`](../README.md) | The user-facing Chinese / English project README — **not** a docs index; don't stuff contributor conventions into it. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) / [`CONTRIBUTING_ZH.md`](./CONTRIBUTING_ZH.md) | The contributor guide (English / Chinese): setup, the GitHub fork / branch / PR workflow, a summary of the ground rules, commit style, PR checklist. It **links into** `AGENTS.md` / `docs/*` for the details — keep it a pointer, don't let facts fork from the docs that own them. |
 | `superpowers/{plans,specs}/*` | Date-archived historical plan / spec snapshots, **not updated alongside the code**; when referencing one, note that it is the archived snapshot of some design, not a living doc. |
 
 **Agentre has no `docs/README.md` index file** — the docs index role is played by the **"Development Conventions (required reading)" section of `AGENTS.md`**.
@@ -126,7 +129,7 @@ Link integrity — confirm every relative markdown link in the core docs resolve
 
 ```bash
 for doc in AGENTS.md CLAUDE.md docs/architecture.md docs/development.md docs/frontend.md \
-           docs/debugging.md docs/agent-backend.md docs/doc-maintenance.md; do
+           docs/debugging.md docs/agent-backend.md docs/session-lifecycle.md docs/doc-maintenance.md; do
   grep -oE '\]\(([^)]+)\)' "$doc" | sed -E 's/^\]\(|\)$//g' | grep -vE '^https?:|^#|^mailto:' | while read -r link; do
     target="$(dirname "$doc")/${link%%#*}"
     [ -e "$target" ] && echo "ok     $doc → $link" || echo "BROKEN $doc → $link"

@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,17 +22,18 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/daemon/client"
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/daemon/rpc"
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/internal/pkg/agentruntime/runtimes/remote"
-	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
-	"agentre/internal/pkg/ccoauth"
-	remotefswire "agentre/internal/pkg/remotefs/wire"
+	"github.com/agentre-ai/agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
+	"github.com/agentre-ai/agentre/internal/pkg/ccoauth"
+	remotefswire "github.com/agentre-ai/agentre/internal/pkg/remotefs/wire"
 
 	"github.com/cago-frame/agents/provider"
 	"github.com/stretchr/testify/assert"
@@ -434,6 +436,7 @@ func (p *pacedBackendRunner) Abort(_ context.Context, _ int64) error            
 // fanout channel and emits runtime.runResultDone.
 type pairedTestRig struct {
 	dir    string
+	d      *Daemon
 	cli    *client.Client
 	runner *remote.Runtime
 }
@@ -492,7 +495,7 @@ func bootRemoteRig(t *testing.T, script []agentruntime.Event) *pairedTestRig {
 	}, &pairResp))
 	require.NotEmpty(t, pairResp.DeviceToken)
 
-	return &pairedTestRig{dir: dir, cli: cli, runner: remote.New(cli)}
+	return &pairedTestRig{dir: dir, d: d, cli: cli, runner: remote.New(cli)}
 }
 
 func (r *pairedTestRig) startRun(t *testing.T, sid int64) (<-chan agentruntime.Event, *agentruntime.RunResult) {
@@ -667,6 +670,124 @@ func TestIntegration_ErrorCodeRehydration(t *testing.T) {
 
 	// Drain to keep harness clean.
 	_ = drainRuntimeEvents(t, events, 5*time.Second)
+}
+
+// TestIntegration_MCPReverseTunnel 端到端验证内置工具 MCP 反向隧道(org/subagent/group/
+// workflow 在远端 agentred 执行时可用):真 daemon + 真 WS + 真 *remote.Runtime。daemon 本机
+// gateway 的 /mcp/ 隧道入口收到 CLI 子进程(此处用裸 HTTP 模拟)的请求后,经 WS
+// MethodMCPProxy 反向请求回 desktop,desktop 用注入的 dispatcher 重放到本机真 gateway(此处
+// 用 httptest 充当真 /mcp/* handler 的替身),应答原路返回。断言 path / 鉴权头 / body 全程
+// 保真,且响应正确回流——这是 06023bb 反向隧道唯一被全链路覆盖的路径(其余各 seam 是单测)。
+func TestIntegration_MCPReverseTunnel(t *testing.T) {
+	// desktop 侧:httptest 充当 desktop 本机真 gateway(真 /mcp/org/ handler 的替身),
+	// 记录隧道送达的请求,回一个 JSON-RPC 应答。
+	var (
+		gotPath, gotMethod, gotAuth string
+		gotBody                     []byte
+	)
+	desktopGW := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod, gotAuth = r.URL.Path, r.Method, r.Header.Get("Authorization")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
+	}))
+	defer desktopGW.Close()
+
+	// desktop 侧装配 dispatcher(就是 bootstrap.Init 里那条),把隧道请求重放到本机真
+	// gateway。进程级全局,测后清空。
+	remote.RegisterMCPProxyDispatcher(remote.NewLocalGatewayDispatcher(
+		func() string { return desktopGW.URL }, desktopGW.Client()))
+	t.Cleanup(func() { remote.RegisterMCPProxyDispatcher(nil) })
+
+	// 真 daemon + 真 WS 客户端;remote.New(cli) 已在 rig 内注册 MethodMCPProxy 反向 handler。
+	// script 仅 Done:本测不跑 runtime.run,只验隧道(此刻 daemon 已记下活跃 notifier)。
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+
+	// daemon 本机 gateway 的隧道入口(真机上 CLI 子进程被改写后打的就是这个 base)。
+	base := rig.d.gateway.BaseURL()
+	require.NotEmpty(t, base, "daemon gateway must be running for the /mcp/ tunnel entry")
+
+	// 模拟 daemon 上的 CLI 子进程:POST /mcp/org/,带 desktop 轮起手时签的 token。
+	reqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Authorization", "Bearer desktop-signed-tok")
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	// 1) desktop 应答原路回到「CLI」:状态码 / Content-Type / body 都还原。
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	require.Equal(t, `{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`, string(respBody))
+
+	// 2) 请求经 WS 隧道送达 desktop gateway 时 path / method / 鉴权头 / body 全程保真。
+	require.Equal(t, "/mcp/org/", gotPath)
+	require.Equal(t, http.MethodPost, gotMethod)
+	require.Equal(t, "Bearer desktop-signed-tok", gotAuth)
+	require.Equal(t, reqBody, string(gotBody))
+}
+
+// TestIntegration_MCPReverseTunnel_NoDispatcher 验证 desktop 侧未装配 dispatcher 时,隧道
+// 不会打挂 RPC 连接,而是把 502 以 HTTP 应答回给 CLI(handleMCPProxy 的兜底)。
+func TestIntegration_MCPReverseTunnel_NoDispatcher(t *testing.T) {
+	// 显式清空 dispatcher(remote 包进程级全局),并在测后保持清空。
+	remote.RegisterMCPProxyDispatcher(nil)
+	t.Cleanup(func() { remote.RegisterMCPProxyDispatcher(nil) })
+
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	base := rig.d.gateway.BaseURL()
+	require.NotEmpty(t, base)
+
+	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(httpReq)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	// 未装配 dispatcher → desktop handleMCPProxy 回 502(而非让反向 RPC 失败打挂连接)。
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+// rigSkillDisc 替身发现器,供 skills.list 集成测试在 daemon 侧换上,免依赖真实 claude。
+type rigSkillDisc struct{ packs []agentskill.SkillPack }
+
+func (d rigSkillDisc) Discover(_ context.Context, _ agentskill.DiscoverQuery) ([]agentskill.SkillPack, error) {
+	return d.packs, nil
+}
+
+// TestIntegration_SkillsList 端到端验证 skills.list:真 daemon + 真 WS + paired client。
+// daemon 侧换上替身发现器(daemon 与测试同进程,共享 agentskill 全局注册表),paired
+// client 调 skills.list,断言 daemon 本机已装技能包经 RPC 原样回传 —— 远端 agent 配
+// per-agent 技能时,desktop 据此展 daemon 真实可用集(而非 desktop 本地的)。
+func TestIntegration_SkillsList(t *testing.T) {
+	want := []agentskill.SkillPack{
+		{ID: "superpowers@claude-plugins-official", Name: "superpowers", Installed: true, Source: agentskill.SourceInstalled, GloballyEnabled: true},
+		{ID: "opsctl@opskat", Name: "opsctl", Installed: true, Source: agentskill.SourceInstalled},
+	}
+	restore := agentskill.SwapDiscovererForTest(agent_backend_entity.TypeClaudeCode, rigSkillDisc{packs: want})
+	t.Cleanup(restore)
+	// daemon 本机 CLI 路径解析换成桩,免依赖宿主 PATH(替身发现器不消费它,这里仅求确定性)。
+	handlers.SetResolveCLIPathFunc(func(string) (string, bool, error) { return "/daemon/bin/claude", true, nil })
+	t.Cleanup(handlers.ResetResolveCLIPathFunc)
+
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var resp handlers.SkillsListResult
+	require.NoError(t, rig.cli.Call(ctx, "skills.list",
+		handlers.SkillsListParams{BackendType: "claudecode"}, &resp))
+
+	require.Len(t, resp.Packs, 2)
+	require.Equal(t, "superpowers@claude-plugins-official", resp.Packs[0].ID)
+	require.True(t, resp.Packs[0].GloballyEnabled)
+	require.Equal(t, "opsctl@opskat", resp.Packs[1].ID)
 }
 
 func TestIntegration_HealthPing(t *testing.T) {

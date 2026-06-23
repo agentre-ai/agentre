@@ -8,7 +8,7 @@ import (
 	"github.com/cago-frame/cago/database/db"
 	"github.com/cago-frame/cago/pkg/consts"
 
-	"agentre/internal/model/entity/project_location_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
 )
 
 //go:generate mockgen -source project_location.go -destination mock_project_location_repo/mock_project_location.go

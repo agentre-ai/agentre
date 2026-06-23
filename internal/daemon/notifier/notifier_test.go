@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"

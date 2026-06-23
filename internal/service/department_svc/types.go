@@ -32,9 +32,15 @@ type BackendSummary struct {
 	LLMProviderActive bool   `json:"llmProviderActive"`
 }
 
-// AgentSkillDTO 与 agent_entity.AgentSkillItem 同结构，避免前端引用 entity 包。
+// AgentSkillDTO 与 agent_entity.AgentSkillItem 同结构(plugin id 开关)。
 type AgentSkillDTO struct {
-	Label   string `json:"label"`
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
+}
+
+// AgentToolDTO 与 agent_entity.AgentToolItem 同结构，避免前端引用 entity 包。
+type AgentToolDTO struct {
+	Key     string `json:"key"`
 	Enabled bool   `json:"enabled"`
 }
 
@@ -56,6 +62,7 @@ type AgentItem struct {
 	SortOrder       int             `json:"sortOrder"`
 	Prompt          []string        `json:"prompt"`
 	Skills          []AgentSkillDTO `json:"skills"`
+	Tools           []AgentToolDTO  `json:"tools"`
 	Createtime      int64           `json:"createtime"`
 	Updatetime      int64           `json:"updatetime"`
 }
@@ -65,8 +72,9 @@ type LoadOrgRequest struct{}
 
 // LoadOrgResponse 一次性返回部门 + Agent 全量（前端首屏使用）。
 type LoadOrgResponse struct {
-	Departments []*DepartmentItem `json:"departments"`
-	Agents      []*AgentItem      `json:"agents"`
+	Departments    []*DepartmentItem `json:"departments"`
+	Agents         []*AgentItem      `json:"agents"`
+	AvailableTools []string          `json:"availableTools"`
 }
 
 // CreateDepartmentRequest 新建部门。

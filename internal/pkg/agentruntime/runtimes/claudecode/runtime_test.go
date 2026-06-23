@@ -3,6 +3,8 @@ package claudecode
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,10 +12,10 @@ import (
 	"github.com/cago-frame/agents/provider"
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/pkg/claudecode"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
 
 // TestClaudeCodeCapabilities 钉死 claudecode runtime 的能力矩阵 + permission
@@ -43,8 +45,14 @@ func TestClaudeCodeCapabilities(t *testing.T) {
 		// stream-json 原生支持)。extractImages 从 RunRequest.UserBlocks 抽 inline
 		// 图片,Run 经 handle.Stream 透传。
 		So(caps.Has(capability.CapImageInput), ShouldBeTrue)
+		// CapMCPTools=true:claudecode runtime 接受 RunRequest.MCPServers,可带注入
+		// 的 MCP tool 服务器启动;群聊是首个消费者,入群资格门控于此 cap。
+		So(caps.Has(capability.CapMCPTools), ShouldBeTrue)
 		// CapAutonomousTurn=true:CLI 后台任务完成自主续轮;必须实现 AutonomousTurnSource。
 		So(caps.Has(capability.CapAutonomousTurn), ShouldBeTrue)
+		// CapSkills=true:runtime 接受 RunRequest.EnabledPlugins,spawn 时渲进
+		// --settings 的 enabledPlugins,按 agent 注入技能包开关。
+		So(caps.Has(capability.CapSkills), ShouldBeTrue)
 		_, ok := agentruntime.Runtime(r).(agentruntime.AutonomousTurnSource)
 		So(ok, ShouldBeTrue)
 	})
@@ -101,6 +109,87 @@ func TestRun_ForwardsUserBlockImages(t *testing.T) {
 	})
 }
 
+// TestRun_BlockedSpawnDoesNotWedgeOtherSessions 回归「单个 session 卡死 → 整个
+// claudecode runtime 宕掉」。
+//
+// 现场(2026-06-05 sess-453/458):群聊成员轮带 --mcp-config 启动 claude CLI,CLI
+// 卡在 MCP 初始化;acquireSession 旧实现持**单把全局 r.mu** 串行化所有 session 的
+// get-or-spawn,并在锁内做阻塞子进程操作(spawn / 同步 SetPermissionMode)。卡住的
+// 那一轮一直占着全局锁 → 之后**每一个**单聊 turn 都堵在 acquireSession 的锁上,既不
+// 输出也停不掉,再发消息报 ChatSendInFlight。codex 走独立 runtime 不受影响。
+//
+// 不变量:一个 session 的 spawn 阻塞,绝不能拖垮其它 session 的 Run。锁必须按
+// session key 分桶,只串行化同一 session 的并发首轮,而非全局互斥。
+func TestRun_BlockedSpawnDoesNotWedgeOtherSessions(t *testing.T) {
+	Convey("一个 session 的 spawn 阻塞不得拖垮其它 session 的 Run", t, func() {
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		restore := SetSessionFactoryForTest(func(spec ccLaunchSpec) (ccSessionHandle, error) {
+			if spec.Req.SessionID == 1 {
+				close(entered)
+				<-release // 模拟 CLI 启动期(MCP 初始化)永久挂起
+			}
+			return &fakeCCHandle{
+				id:     "sid",
+				stream: &eventCCStream{events: []claudecode.Event{{Kind: claudecode.EventDone}}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		cwd1, cwd2 := t.TempDir(), t.TempDir()
+
+		type res struct {
+			events <-chan agentruntime.Event
+			err    error
+		}
+		run := func(sessionID int64, cwd, text string) <-chan res {
+			ch := make(chan res, 1)
+			go func() {
+				events, _, err := r.Run(ctx, agentruntime.RunRequest{
+					Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+					SessionID: sessionID,
+					Cwd:       cwd,
+					UserText:  text,
+				})
+				ch <- res{events: events, err: err}
+			}()
+			return ch
+		}
+
+		// session 1:卡在 factory(模拟群聊成员轮 CLI 挂起);Run 同步段会一直阻塞。
+		done1 := run(1, cwd1, "hang")
+		<-entered // 确保 session 1 已进入 factory(bug 下此刻全局锁被它独占)
+
+		// session 2:不同 session,必须能在 3s 内正常起 turn,不被 session 1 拖死。
+		done2 := run(2, cwd2, "go")
+		wedged := false
+		var got2 res
+		select {
+		case got2 = <-done2:
+		case <-time.After(3 * time.Second):
+			wedged = true
+		}
+
+		// 无论是否 wedge,都放行 session 1 并 join 两个 Run —— 让所有读全局 factory
+		// 的 goroutine 在 defer restore() 之前退出,失败路径下也不留竞态/泄漏。
+		close(release)
+		if wedged {
+			got2 = <-done2
+		}
+		got1 := <-done1
+		for range got1.events { // drain
+		}
+		for range got2.events { // drain
+		}
+		r.CloseAllSessions(ctx)
+
+		So(wedged, ShouldBeFalse) // 全局锁被卡住的 session 1 独占 → session 2 超时 wedge
+		So(got2.err, ShouldBeNil)
+	})
+}
+
 // fakeCCHandle 是 ccSessionHandle 的最简 stub:Stream 返回一个立即 close 的
 // 空事件流;其他控制方法 no-op。仅供 Run() 路径不需要真实 CLI 子进程的单测。
 //
@@ -117,20 +206,43 @@ type fakeCCHandle struct {
 	gotImages []claudecode.Image
 	// autoTurns 注入自主续轮(AutonomousTurns 桥接测试用);nil 时方法返回 nil。
 	autoTurns <-chan *claudecode.AutoTurn
+	// subagentActivity 注入后台 subagent 活动流(SubagentActivity 桥接测试用);nil 时方法返回 nil。
+	subagentActivity <-chan *claudecode.SubagentActivity
+	// respondedResults 非 nil 时记录 RespondToControl 收到的结果(control_request
+	// 自动放行路径在后台 goroutine 里回包,单测经 channel 同步观察)。
+	respondedResults chan claudecode.PermissionResult
+	// killed 非 nil 时, Kill 会 close 它(once) —— blockingCCStream 等在上面模拟
+	// 「子进程被 SIGKILL → stream 解阻塞结束」。killCalls 原子计数 Kill 调用次数。
+	killed    chan struct{}
+	killOnce  sync.Once
+	killCalls int32
 }
 
 func (f *fakeCCHandle) ID() string                      { return f.id }
 func (f *fakeCCHandle) Close(context.Context) error     { return nil }
 func (f *fakeCCHandle) Interrupt(context.Context) error { return nil }
+func (f *fakeCCHandle) Kill(context.Context) error {
+	atomic.AddInt32(&f.killCalls, 1)
+	if f.killed != nil {
+		f.killOnce.Do(func() { close(f.killed) })
+	}
+	return nil
+}
 func (f *fakeCCHandle) SetPermissionMode(_ context.Context, mode string) error {
 	f.setPermissionModeCalls = append(f.setPermissionModeCalls, mode)
 	return f.setPermissionModeErr
 }
-func (f *fakeCCHandle) RespondToControl(context.Context, string, claudecode.PermissionResult) error {
+func (f *fakeCCHandle) RespondToControl(_ context.Context, _ string, res claudecode.PermissionResult) error {
+	if f.respondedResults != nil {
+		f.respondedResults <- res
+	}
 	return nil
 }
 func (f *fakeCCHandle) ExitErr() error                               { return nil }
 func (f *fakeCCHandle) AutonomousTurns() <-chan *claudecode.AutoTurn { return f.autoTurns }
+func (f *fakeCCHandle) SubagentActivity() <-chan *claudecode.SubagentActivity {
+	return f.subagentActivity
+}
 func (f *fakeCCHandle) Stream(_ context.Context, prompt string, images []claudecode.Image) (ccStream, error) {
 	f.gotPrompt = prompt
 	f.gotImages = images
@@ -161,6 +273,60 @@ func (s *eventCCStream) Next() bool {
 
 func (s *eventCCStream) Event() claudecode.Event { return s.events[s.idx-1] }
 func (s *eventCCStream) SessionID() string       { return "" }
+
+// blockingCCStream 模拟「子进程起步后卡死、一帧不吐」:Next() 阻塞到 killed 关闭
+// (即 Kill 把子进程 SIGKILL 掉 → stdout EOF)才返 false 结束。无任何事件。
+type blockingCCStream struct{ killed chan struct{} }
+
+func (s *blockingCCStream) Next() bool {
+	<-s.killed
+	return false
+}
+func (s *blockingCCStream) Event() claudecode.Event { return claudecode.Event{} }
+func (s *blockingCCStream) SessionID() string       { return "" }
+
+// TestRun_StartupWatchdogKillsWedgedTurn 钉死 startup 看门狗:turn 起步后
+// startupTimeout 内一帧都没有(子进程卡 MCP 初始化), 必须硬杀子进程让 drainStream
+// 解阻塞, 并把 RunResult.StopErr 收成 errStartupTimeout —— 而不是永久挂起。
+func TestRun_StartupWatchdogKillsWedgedTurn(t *testing.T) {
+	Convey("turn 起步后 startupTimeout 内无帧 → 硬杀子进程并以 errStartupTimeout 收尾", t, func() {
+		killed := make(chan struct{})
+		h := &fakeCCHandle{id: "wedged", killed: killed, stream: &blockingCCStream{killed: killed}}
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			return h, nil
+		})
+		defer restore()
+
+		r := New()
+		r.startupTimeout = 50 * time.Millisecond
+		ctx := context.Background()
+
+		events, result, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 77,
+			Cwd:       t.TempDir(),
+			UserText:  "hang on mcp init",
+		})
+		So(err, ShouldBeNil)
+
+		done := make(chan struct{})
+		go func() {
+			for range events { //nolint:revive // drain
+			}
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("Run events channel 没关闭 —— 看门狗没能杀掉卡死的 turn")
+		}
+
+		So(atomic.LoadInt32(&h.killCalls), ShouldEqual, 1)
+		So(result.StopErr, ShouldNotBeNil)
+		So(errors.Is(result.StopErr, errStartupTimeout), ShouldBeTrue)
+		r.CloseAllSessions(ctx)
+	})
+}
 
 // TestRun_NoChatRepoRegistered 回归 daemon 路径下的 nil panic:
 // agentred daemon 不 bootstrap cago/chat_repo,Runtime.acquireSession 旧实现
@@ -515,5 +681,86 @@ func TestRun_SpawnAfterSetPermissionMode(t *testing.T) {
 		So(launchMode, ShouldEqual, "bypassPermissions")
 		So(captured.setPermissionModeCalls, ShouldResemble, []string{"plan"})
 		r.CloseAllSessions(ctx)
+	})
+}
+
+// TestSubagentActivity_BridgesSessionActivity 验证 Runtime.SubagentActivity 把底层
+// claudecode.Session 的后台 subagent 活动流桥接成 agentruntime.SubagentActivity,
+// 事件经 drainStream 翻译(ParentToolUseID → ParentToolCallID)。
+func TestSubagentActivity_BridgesSessionActivity(t *testing.T) {
+	Convey("Runtime.SubagentActivity 桥接底层 Session 后台 subagent 活动流", t, func() {
+		actSrc := make(chan *claudecode.SubagentActivity, 1)
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			return &fakeCCHandle{
+				id:               "fake-sid",
+				subagentActivity: actSrc,
+				// usage 非空避免 Run 的 0-frame 兜底把 session evict 掉。
+				stream: &eventCCStream{events: []claudecode.Event{
+					{Kind: claudecode.EventUsage, Usage: provider.Usage{PromptTokens: 1}},
+					{Kind: claudecode.EventDone},
+				}},
+			}, nil
+		})
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		// 先跑一轮把 session spawn + 缓存。
+		events, _, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 88,
+			Cwd:       t.TempDir(),
+			UserText:  "go",
+		})
+		So(err, ShouldBeNil)
+		for range events { //nolint:revive // drain
+		}
+
+		activities := r.SubagentActivity(88)
+
+		// 注入一轮后台 subagent 活动(PreToolUse + done),ParentToolUseID 需被翻译成 ParentToolCallID。
+		saEvents := make(chan claudecode.Event, 4)
+		saEvents <- claudecode.Event{
+			Kind: claudecode.EventPreToolUse,
+			Tool: &claudecode.ToolEvent{
+				ID:    "inner-tu-1",
+				Name:  "bash",
+				Input: []byte(`{"command":"ls"}`),
+			},
+			ParentToolUseID: "<agent tool id>",
+		}
+		saEvents <- claudecode.Event{Kind: claudecode.EventDone}
+		close(saEvents)
+		actSrc <- &claudecode.SubagentActivity{ToolUseID: "<agent tool id>", Events: saEvents, SessionID: "fake-sid"}
+		close(actSrc)
+
+		var got agentruntime.SubagentActivity
+		select {
+		case got = <-activities:
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected a bridged SubagentActivity within 2s")
+		}
+		So(got.ToolUseID, ShouldEqual, "<agent tool id>")
+
+		var gotParentToolCallID string
+		for ev := range got.Events {
+			if tu, ok := ev.(agentruntime.ToolCall); ok {
+				gotParentToolCallID = tu.ParentToolCallID
+			}
+		}
+		So(gotParentToolCallID, ShouldEqual, "<agent tool id>")
+
+		r.CloseAllSessions(ctx)
+	})
+
+	Convey("Runtime.SubagentActivity sessionID 未知时返回立即 close 的 channel", t, func() {
+		r := New()
+		ch := r.SubagentActivity(999)
+		select {
+		case _, ok := <-ch:
+			So(ok, ShouldBeFalse)
+		case <-time.After(time.Second):
+			t.Fatal("channel 未立即 close")
+		}
 	})
 }

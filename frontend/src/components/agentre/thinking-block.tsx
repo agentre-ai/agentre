@@ -5,6 +5,7 @@ import { Brain, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { shouldIgnoreClickForSelection } from "./copyable-text";
+import { useTranscriptBooleanState } from "./transcript-ui-state";
 
 type ThinkingBlockProps = {
   text: string;
@@ -16,16 +17,21 @@ type ThinkingBlockProps = {
    * 不传时退化为「组件首次挂载时」自计时。
    */
   startedAt?: number;
+  uiStateKey?: string;
 };
 
 export function ThinkingBlock({
   text,
   streaming,
   startedAt: externalStartedAt,
+  uiStateKey,
 }: ThinkingBlockProps) {
   const { t } = useTranslation();
   // streaming 期间默认展开,纯历史(streaming=false 渲染)默认折叠,完成时再强制收回(见下方 effect)。
-  const [expanded, setExpanded] = React.useState(streaming);
+  const [expanded, setExpanded] = useTranscriptBooleanState(
+    uiStateKey,
+    streaming,
+  );
   // 自计时回退:仅当外部没传 startedAt 时使用。
   const [internalStartedAt, setInternalStartedAt] = React.useState<
     number | null
@@ -50,13 +56,12 @@ export function ThinkingBlock({
       setExpanded(false);
     }
     prevStreamingRef.current = streaming;
-  }, [streaming]);
+  }, [setExpanded, streaming]);
 
   React.useEffect(() => {
     if (!streaming) {
       // 流式结束:如果曾有起点 (外部传入或自记),把当前 (Date.now() - startedAt) 固化为 final。
       if (startedAt !== null && finalSeconds === null) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- closing the stream needs to freeze elapsed time once.
         setFinalSeconds(Math.floor((Date.now() - startedAt) / 1000));
       }
       return undefined;

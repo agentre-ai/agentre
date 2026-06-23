@@ -13,7 +13,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 )
 
 //go:generate mockgen -source message.go -destination mock_chat_repo/mock_message.go
@@ -31,6 +31,16 @@ type MessageRepo interface {
 	// 块状态改成 status(后台 bash 在之后的自主轮才完成,无法走 per-turn accumulator)。
 	// summary 非空时同时写入块的 summary 字段。找不到则静默返回 nil(任务可能已 evict / 非本会话)。
 	FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error
+	// AppendSubagentChildren 把后台 subagent 内部产生的子块追加进发起消息里对应
+	// subagent_state 块的 nested_tool_call_ids,同时把 childBlocksJSON 里的 StoredBlock
+	// 追加到该消息 blocks_json 的末尾。childIDs 自动去重(跳过已在数组中的 id)。
+	// 找不到命中块则静默返回 nil。
+	AppendSubagentChildren(ctx context.Context, sessionID int64, parentToolUseID, childBlocksJSON string, childIDs []string) error
+	// FindAssistantBySubagentToolUseID 倒序扫描最近 N 条 assistant 消息,返回第一条 blocks
+	// 含 type=="subagent_state" 且 data.parent_tool_call_id==toolUseID 的消息(后台 subagent
+	// 的发起卡所在消息)。toolUseID 空 / 无命中 / 该会话没有这类消息时返回 (nil, nil)。
+	// 仅读取定位,不改写。
+	FindAssistantBySubagentToolUseID(ctx context.Context, sessionID int64, toolUseID string) (*chat_entity.Message, error)
 }
 
 // flipSubagentScanLimit 是 FlipSubagentStatus 倒序扫描的最近 assistant 消息条数上限。
@@ -177,6 +187,158 @@ func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status, summary string) (st
 		return blocksJSON, false, err
 	}
 	return string(out), true, nil
+}
+
+func (r *messageRepo) AppendSubagentChildren(ctx context.Context, sessionID int64, parentToolUseID, childBlocksJSON string, childIDs []string) error {
+	if parentToolUseID == "" || childBlocksJSON == "" {
+		return nil
+	}
+	var rows []*chat_entity.Message
+	if err := db.Ctx(ctx).
+		Where("session_id = ? AND role = ?", sessionID, "assistant").
+		Order("seq DESC").Limit(flipSubagentScanLimit).Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, msg := range rows {
+		rewritten, ok, err := AppendSubagentChildrenInBlocksJSON(msg.BlocksJSON, parentToolUseID, childBlocksJSON, childIDs)
+		if err != nil {
+			logger.Ctx(ctx).Warn("chat_repo.AppendSubagentChildren: decode blocks failed; skipping",
+				zap.Int64("messageId", msg.ID), zap.Error(err))
+			continue
+		}
+		if !ok {
+			continue
+		}
+		msg.BlocksJSON = rewritten
+		return r.Update(ctx, msg)
+	}
+	return nil
+}
+
+// AppendSubagentChildrenInBlocksJSON 在 blocks_json(StoredBlock 数组)里找到
+// type=="subagent_state" 且 data.parent_tool_call_id==parentToolUseID 的块,
+// 把 childIDs 追加到其 nested_tool_call_ids(去重),并把 childBlocksJSON 里的
+// StoredBlock 追加到顶层数组末尾,返回重写后的 JSON + 是否命中。
+//
+// 遵循和 FlipSubagentInBlocksJSON 相同的 UseNumber 纪律:data map 用
+// json.Decoder+UseNumber() 解码,防止整数字段被 float64 强转后重写成科学计数。
+func AppendSubagentChildrenInBlocksJSON(blocksJSON, parentToolUseID, childBlocksJSON string, childIDs []string) (string, bool, error) {
+	if blocksJSON == "" {
+		return blocksJSON, false, nil
+	}
+	var stored []cagoblocks.StoredBlock
+	if err := json.Unmarshal([]byte(blocksJSON), &stored); err != nil {
+		return blocksJSON, false, err
+	}
+	matched := false
+	for i := range stored {
+		if stored[i].Type != "subagent_state" {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(stored[i].Data))
+		dec.UseNumber()
+		var data map[string]any
+		if err := dec.Decode(&data); err != nil {
+			return blocksJSON, false, err
+		}
+		if parent, _ := data["parent_tool_call_id"].(string); parent != parentToolUseID {
+			continue
+		}
+		// 去重追加 childIDs。
+		existing := map[string]bool{}
+		if arr, ok := data["nested_tool_call_ids"].([]any); ok {
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					existing[s] = true
+				}
+			}
+		}
+		ids, _ := data["nested_tool_call_ids"].([]any)
+		for _, id := range childIDs {
+			if !existing[id] {
+				ids = append(ids, id)
+				existing[id] = true
+			}
+		}
+		data["nested_tool_call_ids"] = ids
+		buf, err := json.Marshal(data)
+		if err != nil {
+			return blocksJSON, false, err
+		}
+		stored[i].Data = buf
+		matched = true
+		break
+	}
+	if !matched {
+		return blocksJSON, false, nil
+	}
+	// 追加子块到顶层数组末尾。
+	if childBlocksJSON != "" && childBlocksJSON != "[]" {
+		var childBlocks []cagoblocks.StoredBlock
+		if err := json.Unmarshal([]byte(childBlocksJSON), &childBlocks); err != nil {
+			return blocksJSON, false, err
+		}
+		stored = append(stored, childBlocks...)
+	}
+	out, err := json.Marshal(stored)
+	if err != nil {
+		return blocksJSON, false, err
+	}
+	return string(out), true, nil
+}
+
+func (r *messageRepo) FindAssistantBySubagentToolUseID(ctx context.Context, sessionID int64, toolUseID string) (*chat_entity.Message, error) {
+	if toolUseID == "" {
+		return nil, nil
+	}
+	var rows []*chat_entity.Message
+	if err := db.Ctx(ctx).
+		Where("session_id = ? AND role = ?", sessionID, "assistant").
+		Order("seq DESC").Limit(flipSubagentScanLimit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, msg := range rows {
+		matched, err := blocksHaveSubagentState(msg.BlocksJSON, toolUseID)
+		if err != nil {
+			// 单条消息 blocks 损坏不应阻断其它消息;跳过继续找。
+			logger.Ctx(ctx).Warn("chat_repo.FindAssistantBySubagentToolUseID: decode blocks failed; skipping",
+				zap.Int64("messageId", msg.ID), zap.Error(err))
+			continue
+		}
+		if matched {
+			return msg, nil
+		}
+	}
+	return nil, nil
+}
+
+// blocksHaveSubagentState 只读判定:blocks_json(StoredBlock 数组)里是否存在
+// type=="subagent_state" 且 data.parent_tool_call_id==parentToolUseID 的块。
+// 与 Flip/AppendSubagentChildrenInBlocksJSON 共用同一 StoredBlock 信封 + parent_tool_call_id
+// 匹配口径,但不改写任何字段。空 JSON 返回 (false, nil)。
+func blocksHaveSubagentState(blocksJSON, parentToolUseID string) (bool, error) {
+	if blocksJSON == "" {
+		return false, nil
+	}
+	var stored []cagoblocks.StoredBlock
+	if err := json.Unmarshal([]byte(blocksJSON), &stored); err != nil {
+		return false, err
+	}
+	for i := range stored {
+		if stored[i].Type != "subagent_state" {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(stored[i].Data))
+		dec.UseNumber()
+		var data map[string]any
+		if err := dec.Decode(&data); err != nil {
+			return false, err
+		}
+		if parent, _ := data["parent_tool_call_id"].(string); parent == parentToolUseID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *messageRepo) DeleteFromSeq(ctx context.Context, sessionID int64, fromSeq int) (int64, error) {

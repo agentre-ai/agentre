@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 )
 
 func TestTokenRegistry_IssueResolveRevoke(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // MessageTextMaxBytes — defensive ceiling on a single user message body.

@@ -1,7 +1,7 @@
 package claudecode
 
 import (
-	"agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 )
 
 // AutonomousTurns 实现 agentruntime.AutonomousTurnSource:把底层 claudecode.Session
@@ -56,10 +56,55 @@ func (r *Runtime) AutonomousTurns(sessionID int64) <-chan agentruntime.Autonomou
 			// inline(非 goroutine)保证多个自主轮之间顺序处理、不重叠。
 			out <- agentruntime.AutonomousTurn{Events: evOut, Result: result, Trigger: at.Trigger, CompletedTask: completed}
 			stream := &ccChanStream{ch: at.Events, sidFn: func() string { return at.SessionID }}
-			drainStream(stream, evOut, result, a)
+			// 自主续轮的子进程早已存活(由首轮 spawn),不存在「起步即卡死」, 不挂看门狗。
+			drainStream(stream, evOut, result, a, nil)
 			if sid := stream.SessionID(); sid != "" {
 				result.ProviderSessionID = sid
 			}
+			close(evOut)
+		}
+	}()
+	return out
+}
+
+// SubagentActivity 实现 agentruntime.SubagentActivitySource:把底层 claudecode.Session
+// 的后台 subagent 内部活动流桥接成 agentruntime 事件流。
+//
+// 每个 SubagentActivity 复用 drainStream(同 translator / control 协议 / tasks 聚合)。本桥接
+// 按活动顺序 **inline** drain —— subagent 活动轮之间不重叠。
+//
+// **刻意不调 active.setOut(evOut)**:原因与 AutonomousTurns 的注释相同。
+//
+// sessionID 未 spawn / 已 evict → 返回一个立即 close 的 channel。子进程退出时底层
+// SubagentActivity channel close,本 channel 随之 close。
+func (r *Runtime) SubagentActivity(sessionID int64) <-chan agentruntime.SubagentActivity {
+	out := make(chan agentruntime.SubagentActivity, 4)
+	v, ok := r.cache.Get(sessionKey(sessionID))
+	if !ok {
+		close(out)
+		return out
+	}
+	a, ok := v.(*claudeActive)
+	if !ok || a.handle == nil {
+		close(out)
+		return out
+	}
+	src := a.handle.SubagentActivity()
+	if src == nil {
+		close(out)
+		return out
+	}
+	go func() {
+		defer close(out)
+		for sa := range src {
+			evOut := make(chan agentruntime.Event, 32)
+			result := &agentruntime.RunResult{ProviderSessionID: sa.SessionID}
+			// 先把这一轮活动交给 consumer(它并发 drain evOut),随后 inline 翻译填 evOut。
+			// inline(非 goroutine)保证多个活动轮之间顺序处理、不重叠。
+			out <- agentruntime.SubagentActivity{ToolUseID: sa.ToolUseID, Events: evOut}
+			stream := &ccChanStream{ch: sa.Events, sidFn: func() string { return sa.SessionID }}
+			// 活动轮的子进程早已存活(由首轮 spawn),不存在「起步即卡死」, 不挂看门狗。
+			drainStream(stream, evOut, result, a, nil)
 			close(evOut)
 		}
 	}()

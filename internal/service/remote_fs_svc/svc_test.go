@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/daemon/rpc"
-	mockRT "agentre/internal/pkg/agentruntime/mock_agentruntime"
-	"agentre/internal/pkg/remotefs/wire"
-	"agentre/internal/service/remote_device_svc"
-	mockRD "agentre/internal/service/remote_device_svc/mock_remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	mockRT "github.com/agentre-ai/agentre/internal/pkg/agentruntime/mock_agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/remotefs/wire"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	mockRD "github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 func setupSvc(t *testing.T) (

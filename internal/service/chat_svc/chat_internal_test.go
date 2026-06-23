@@ -15,20 +15,20 @@ import (
 	"go.uber.org/mock/gomock"
 	"gorm.io/gorm"
 
-	daemonrpc "agentre/internal/daemon/rpc"
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/model/entity/project_location_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/internal/pkg/agentruntime/runtimes/remote"
-	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/project_location_repo"
-	"agentre/internal/repository/project_location_repo/mock_project_location_repo"
-	chatblocks "agentre/internal/service/chat_svc/blocks"
-	"agentre/internal/service/remote_device_svc/mock_remote_device_svc"
+	daemonrpc "github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
+	"github.com/agentre-ai/agentre/internal/repository/project_location_repo/mock_project_location_repo"
+	chatblocks "github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 func TestToChatMessage_BlockTypes(t *testing.T) {
@@ -63,6 +63,32 @@ func TestToChatMessage_BlockTypes(t *testing.T) {
 
 	assert.Equal(t, "plan", cm.Blocks[4].Type)
 	assert.Contains(t, cm.Blocks[4].Text, "Inspect files")
+}
+
+// TestToChatMessage_ToolApprovalBlock 验证 ToolApprovalBlock 经 toChatMessage 投影成
+// type="tool_approval" + ToolApproval 字段保真(含 ToolKey)。
+func TestToChatMessage_ToolApprovalBlock(t *testing.T) {
+	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
+	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
+		chatblocks.ToolApprovalBlock{
+			ToolKey:   "org",
+			RequestID: "org-req-42",
+			ToolName:  "org_invite",
+			ToolInput: map[string]any{"user_id": "u-99"},
+			Status:    "pending",
+		},
+	}))
+
+	cm, err := toChatMessage(m)
+	require.NoError(t, err)
+	require.Len(t, cm.Blocks, 1)
+	assert.Equal(t, "tool_approval", cm.Blocks[0].Type)
+	require.NotNil(t, cm.Blocks[0].ToolApproval)
+	assert.Equal(t, "org", cm.Blocks[0].ToolApproval.ToolKey)
+	assert.Equal(t, "org-req-42", cm.Blocks[0].ToolApproval.RequestID)
+	assert.Equal(t, "org_invite", cm.Blocks[0].ToolApproval.ToolName)
+	assert.Equal(t, "u-99", cm.Blocks[0].ToolApproval.ToolInput["user_id"])
+	assert.Equal(t, "pending", cm.Blocks[0].ToolApproval.Status)
 }
 
 // 历史:ToolResultMetaBlock 已整删,meta 字段改走 raw tool_result.Meta 字节透传
@@ -237,7 +263,7 @@ func TestToChatMessage_UnknownBlockFallback(t *testing.T) {
 }
 
 func TestAskQuestionsToDTO_PreservesRequestUserInputMetadata(t *testing.T) {
-	got := askQuestionsToDTO([]agentruntime.AskQuestion{{
+	got := chatblocks.QuestionsFromRuntime([]agentruntime.AskQuestion{{
 		ID:          "target",
 		Question:    "Which target?",
 		Header:      "Target",

@@ -66,12 +66,18 @@ jq -c 'select(.session_id == 42)' "$LOG"
 
 | Table | What lives here |
 |-------|-----------------|
-| `agents`, `agent_backends` | Agent definitions + which CLI backend (builtin/claudecode/codex) |
+| `agents`, `agent_backends` | Agent definitions + which CLI backend (builtin/claudecode/codex/piagent) |
 | `chat_sessions`, `chat_messages` | Conversation history, tool calls, thinking blocks |
 | `llm_providers` | Provider configs (OpenAI/Anthropic/etc.) |
 | `hook_sources`, `hook_rules`, `hook_events` | Hook ingestion (e.g. email source) and dispatch |
 | `app_settings` | UI/runtime prefs persisted by the app |
 | `departments` | Org structure for the org-chart UI |
+| `projects`, `project_agents`, `project_locations` | Projects, their member agents, and working-directory locations |
+| `groups`, `group_members`, `group_messages`, `group_tasks` | Group chat: membership, transcript, and orchestrated task cards |
+| `issues`, `labels`, `issue_labels` | Issue tracker (issues + labels + join) |
+| `workflows` | Reusable workflow (process) library |
+| `paired_agentreds` | Paired remote `agentred` (LAN daemon) records |
+| `server_state` | Desktop ↔ SaaS Server connection state (single row, `id=1`) |
 | `migrations` | gormigrate ledger — one row per applied migration id |
 
 When debugging, start from the table closest to the feature, then follow FK-style id fields into adjacent tables. Schemas are not documented separately — use `.schema <table>` against the live DB.

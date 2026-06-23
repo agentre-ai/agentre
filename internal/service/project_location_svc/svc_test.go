@@ -9,11 +9,11 @@ import (
 	"go.uber.org/mock/gomock"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/project_location_entity"
-	"agentre/internal/repository/project_location_repo"
-	"agentre/internal/repository/project_location_repo/mock_project_location_repo"
-	"agentre/internal/service/remote_device_svc"
-	mockRD "agentre/internal/service/remote_device_svc/mock_remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
+	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
+	"github.com/agentre-ai/agentre/internal/repository/project_location_repo/mock_project_location_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	mockRD "github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 func setupSvc(t *testing.T) (context.Context, *mock_project_location_repo.MockProjectLocationRepo, *mockRD.MockRemoteDeviceSvc, *projectLocationImpl) {

@@ -1,7 +1,7 @@
 // Package keychain 抽象一层 OS 级别的密钥存储。
 //
-// 桌面端用它来持久化 Hub refresh_token：生产构建挂 NewSystem() （C5 提供）；
-// 没有 OS keychain 的环境（CI / 部分 Linux 容器）显式 opt-in NewFile() （C6 提供）；
+// 桌面端用它来持久化 Hub refresh_token：生产构建挂 NewSystem()；
+// 没有 OS keychain 的环境（CI / 部分 Linux 容器）显式 opt-in NewFile()；
 // 单测一律用 NewMemory()。
 package keychain
 

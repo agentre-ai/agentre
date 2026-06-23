@@ -11,7 +11,7 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // 预定义的 key 常量。新增 key 时在这里登记，避免 service 层散写魔法字符串。

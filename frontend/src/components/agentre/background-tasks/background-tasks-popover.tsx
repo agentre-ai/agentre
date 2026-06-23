@@ -1,4 +1,4 @@
-import { Bot, Terminal } from "lucide-react";
+import { Terminal } from "lucide-react";
 import React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -21,16 +21,15 @@ function formatElapsed(ms: number): string {
 
 type BackgroundTasksPopoverContentProps = {
   tasks: BackgroundTask[];
+  onClearCompleted?: () => void;
 };
 
 export function BackgroundTasksPopoverContent({
   tasks,
+  onClearCompleted,
 }: BackgroundTasksPopoverContentProps) {
   const { t } = useTranslation();
 
-  // One ticking `now` for the whole popover. The interval only runs while the
-  // popover is mounted (open) AND there is at least one running task with a
-  // known startedAt — so a popover full of completed tasks doesn't tick/re-render.
   const [now, setNow] = React.useState(() => Date.now());
   const hasLiveElapsed = tasks.some(
     (task) => task.status === "running" && task.startedAt != null,
@@ -41,10 +40,36 @@ export function BackgroundTasksPopoverContent({
     return () => clearInterval(id);
   }, [hasLiveElapsed]);
 
+  const runningCount = tasks.filter((tk) => tk.status === "running").length;
+  const hasCompleted = tasks.some(
+    (tk) => tk.status === "completed" || tk.status === "failed",
+  );
+
   return (
     <div className="flex min-w-[260px] max-w-[400px] flex-col gap-2">
-      <div className="text-xs font-semibold text-foreground">
-        {t("chatPanel.backgroundTasks.title")}
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-semibold text-foreground">
+          {t("chatPanel.backgroundTasks.title")}
+        </span>
+        {runningCount > 0 && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
+            <span
+              className="inline-block size-1.5 rounded-full bg-emerald-500"
+              aria-hidden="true"
+            />
+            {t("chatPanel.backgroundTasks.chip", { count: runningCount })}
+          </span>
+        )}
+        <span className="min-w-0 flex-1" />
+        {hasCompleted && onClearCompleted && (
+          <button
+            type="button"
+            onClick={onClearCompleted}
+            className="shrink-0 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+          >
+            {t("chatPanel.backgroundTasks.clearCompleted")}
+          </button>
+        )}
       </div>
       {tasks.length === 0 ? (
         <p className="text-xs text-muted-foreground">
@@ -53,7 +78,6 @@ export function BackgroundTasksPopoverContent({
       ) : (
         <ul className="flex flex-col gap-1.5">
           {tasks.map((task) => {
-            // Compute elapsed label (computed value — not through t())
             let elapsedLabel: string | undefined;
             if (task.status === "running" && task.startedAt != null) {
               elapsedLabel = formatElapsed(now - task.startedAt);
@@ -66,13 +90,12 @@ export function BackgroundTasksPopoverContent({
             }
 
             return (
-              <li key={task.toolUseId} className="flex items-start gap-2">
-                <span className="mt-0.5 shrink-0 text-muted-foreground">
-                  {task.kind === "local_bash" ? (
-                    <Terminal className="size-3.5" aria-hidden="true" />
-                  ) : (
-                    <Bot className="size-3.5" aria-hidden="true" />
-                  )}
+              <li key={task.toolUseId} className="flex items-center gap-2.5">
+                <span
+                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-sky-50 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300"
+                  aria-hidden="true"
+                >
+                  <Terminal className="size-3.5" />
                 </span>
                 <div className="min-w-0 flex-1">
                   {/* description is dynamic agent output — do NOT pass through t() */}
@@ -81,18 +104,33 @@ export function BackgroundTasksPopoverContent({
                   </p>
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <span className="font-mono text-[10px] text-muted-foreground">
-                      {task.kind === "local_bash"
-                        ? t("chatPanel.backgroundTasks.bash")
-                        : t("chatPanel.backgroundTasks.subagent")}
+                      {t("chatPanel.backgroundTasks.bash")}
                     </span>
-                    <StatusPill status={task.status} />
+                    {task.taskId && (
+                      <>
+                        <span className="font-mono text-[10px] text-muted-foreground/50">
+                          ·
+                        </span>
+                        <span
+                          className="font-mono text-[10px] text-muted-foreground"
+                          data-testid="task-id"
+                        >
+                          {task.taskId}
+                        </span>
+                      </>
+                    )}
                     {elapsedLabel != null && (
-                      <span
-                        className="ml-auto font-mono text-[10px] tabular-nums text-muted-foreground"
-                        data-testid="elapsed"
-                      >
-                        {elapsedLabel}
-                      </span>
+                      <>
+                        <span className="font-mono text-[10px] text-muted-foreground/50">
+                          ·
+                        </span>
+                        <span
+                          className="font-mono text-[10px] tabular-nums text-muted-foreground"
+                          data-testid="elapsed"
+                        >
+                          {elapsedLabel}
+                        </span>
+                      </>
                     )}
                   </div>
                   {/* summary is dynamic agent text (exit-code text) — do NOT pass through t() */}
@@ -102,6 +140,7 @@ export function BackgroundTasksPopoverContent({
                     </p>
                   )}
                 </div>
+                <StatusPill status={task.status} />
               </li>
             );
           })}
@@ -116,7 +155,7 @@ function StatusPill({ status }: { status: BackgroundTask["status"] }) {
 
   if (status === "running") {
     return (
-      <span className="inline-flex items-center gap-1 font-mono text-[10px] text-green-600 dark:text-green-400">
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] text-green-700 dark:bg-emerald-500/15 dark:text-green-400">
         <span
           className="inline-block size-1.5 rounded-full bg-green-500"
           aria-hidden="true"
@@ -127,7 +166,7 @@ function StatusPill({ status }: { status: BackgroundTask["status"] }) {
   }
   if (status === "failed") {
     return (
-      <span className="inline-flex items-center gap-1 font-mono text-[10px] text-destructive">
+      <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
         <span
           className="inline-block size-1.5 rounded-full bg-destructive"
           aria-hidden="true"
@@ -138,7 +177,7 @@ function StatusPill({ status }: { status: BackgroundTask["status"] }) {
   }
   // completed
   return (
-    <span className="inline-flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
+    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
       <span
         className="inline-block size-1.5 rounded-full bg-muted-foreground"
         aria-hidden="true"

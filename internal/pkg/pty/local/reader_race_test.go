@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/pkg/pty"
-	"agentre/internal/pkg/pty/local"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/pkg/pty/local"
 
 	"github.com/stretchr/testify/require"
 )

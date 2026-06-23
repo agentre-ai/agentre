@@ -5,7 +5,7 @@ package sessions
 import (
 	"sync"
 
-	"agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 )
 
 // Registry implements handlers.SessionRegistryPort via a sync.RWMutex-

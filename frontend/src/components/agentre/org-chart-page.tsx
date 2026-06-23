@@ -46,6 +46,7 @@ export function OrgChartPage() {
     departments,
     agents,
     backends,
+    availableTools,
     moveAgent,
     moveDepartment,
     updateDepartment,
@@ -128,6 +129,7 @@ export function OrgChartPage() {
     departments,
     agents,
     backends,
+    availableTools,
     onSelect: view.setSelected,
     onClose: () => view.setSelected(null),
     updateDepartment,
@@ -348,6 +350,7 @@ type RenderDetailArgs = {
   departments: OrgDepartment[];
   agents: OrgAgent[];
   backends: ReturnType<typeof useOrgData>["backends"];
+  availableTools: ReturnType<typeof useOrgData>["availableTools"];
   onSelect: (sel: ReturnType<typeof useOrgTreeView>["selected"]) => void;
   onClose: () => void;
   updateDepartment: ReturnType<typeof useOrgData>["updateDepartment"];
@@ -392,6 +395,7 @@ function renderDetail(args: RenderDetailArgs): React.ReactNode {
         departments={args.departments}
         agents={args.agents}
         backends={args.backends}
+        availableTools={args.availableTools}
         isLeadOf={
           args.departments.find((d) => d.leadAgentId === selected.id) ?? null
         }

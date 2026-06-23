@@ -1,8 +1,8 @@
 package claudecode
 
 import (
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 )
 
 // CLIDeps 重导出 agentruntime.CLIDeps,让子包不直接依赖顶层类型。

@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/app_setting_entity"
-	"agentre/internal/repository/app_setting_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
+	"github.com/agentre-ai/agentre/internal/repository/app_setting_repo"
 )
 
 func setupAppSettingRepoTest(t *testing.T) (context.Context, sqlmock.Sqlmock, app_setting_repo.AppSettingRepo) {

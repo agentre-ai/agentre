@@ -17,6 +17,8 @@ type Client struct {
 	permissionMode       string
 	sessionID            string
 	settings             string
+	mcpConfig            string
+	allowedTools         []string
 	effort               string
 	permissionPromptTool string
 
@@ -54,6 +56,8 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 		permissionMode:       c.permissionMode,
 		sessionID:            c.sessionID,
 		settings:             c.settings,
+		mcpConfig:            c.mcpConfig,
+		allowedTools:         c.allowedTools,
 		effort:               c.effort,
 		permissionPromptTool: c.permissionPromptTool,
 	}
@@ -131,6 +135,18 @@ func (c *Client) Close(_ context.Context) error { return nil }
 // --model argv 值）。WithModel 没设置时返空串。供调用方装配后做 invariant 校验，
 // 也便于单测断言 WithModel 实际进了 Client。
 func (c *Client) Model() string { return c.model }
+
+// McpConfig 返回 Client 当前持有的 --mcp-config 值（WithMcpConfig 没设置时空串）。
+// 供装配后做 invariant 校验，也便于单测断言注入的 MCP server JSON 进了 Client。
+func (c *Client) McpConfig() string { return c.mcpConfig }
+
+// AllowedTools 返回 Client 当前累加的 --allowedTools 白名单（WithAllowedTools 没
+// 设置时为空切片）。供单测断言注入的 tool 名（如 mcp__group__group_send）进了 Client。
+func (c *Client) AllowedTools() []string { return c.allowedTools }
+
+// Env 返回 Client 当前持有的增量 env map（WithEnv 没设置时为 nil）。
+// 供单测断言 ccBuildClientOpts 注入的环境变量（如 MCP_TIMEOUT）进了 Client。
+func (c *Client) Env() map[string]string { return c.env }
 
 // Stream 一次 turn 的事件流 + 子进程句柄。
 type Stream struct {

@@ -78,7 +78,6 @@ export function ImportPreviewDialog({
     for (const it of preview.items) {
       next[`${it.scope}:${it.sourceKey}`] = it.defaultAction;
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- derive row actions from new preview prop
     setActions(next);
   }, [preview]);
 

@@ -9,7 +9,7 @@ import (
 	"io"
 	"os"
 
-	"agentre/internal/pkg/claudecodehook"
+	"github.com/agentre-ai/agentre/internal/pkg/claudecodehook"
 )
 
 // Main is the entry point. It runs the subcommand and exits the process.

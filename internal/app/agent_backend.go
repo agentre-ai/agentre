@@ -1,7 +1,7 @@
 package app
 
 import (
-	"agentre/internal/service/agent_backend_svc"
+	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 )
 
 // ListAgentBackends 列出全部 Agent 后端（已 join LLM 供应商摘要）。

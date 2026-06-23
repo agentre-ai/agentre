@@ -10,6 +10,7 @@ describe("tokenToCssColor", () => {
   it("把 agent token 映射成 css 变量", () => {
     expect(tokenToCssColor("agent-1")).toBe("var(--agent-1)");
     expect(tokenToCssColor("agent-10")).toBe("var(--agent-10)");
+    expect(tokenToCssColor("agent-16")).toBe("var(--agent-16)");
   });
   it("空 / 非 agent token → null", () => {
     expect(tokenToCssColor(null)).toBeNull();

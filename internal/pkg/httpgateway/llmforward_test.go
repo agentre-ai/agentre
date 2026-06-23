@@ -15,8 +15,8 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/stretchr/testify/assert"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 )
 
 // fakeLookup 测试用 provider lookup，返回构造时 inject 的 map。
@@ -34,6 +34,32 @@ func newFakeLookup(items ...*llm_provider_entity.LLMProvider) *fakeLookup {
 		m[p.ProviderKey] = p
 	}
 	return &fakeLookup{providers: m}
+}
+
+func assertOpenAIForwarded(
+	t *testing.T,
+	provider *llm_provider_entity.LLMProvider,
+	handler func(*Forwarder) http.HandlerFunc,
+	backendID int64,
+	path string,
+	body string,
+	apiKeyName string,
+) {
+	t.Helper()
+	upstream, rec := newRecordingUpstream(t, `{"id":"openai_x"}`)
+	provider.BaseURL = upstream.URL
+	tokens := NewTokenRegistry()
+	lookup := newFakeLookup(provider)
+	f := NewForwarder(tokens, lookup)
+
+	w := issueAndRequest(t, handler(f), tokens,
+		&agent_backend_entity.AgentBackend{ID: backendID, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: provider.ProviderKey},
+		path,
+		body,
+	)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, path, rec.Path)
+	assert.Equal(t, "Bearer "+testAPIKey(apiKeyName), rec.Header.Get("Authorization"))
 }
 
 func testAPIKey(name string) string {
@@ -158,35 +184,25 @@ func TestForwarder_AliasRoutingPicksTierProvider(t *testing.T) {
 }
 
 func TestForwarder_OpenAIResponses(t *testing.T) {
-	upstream, rec := newRecordingUpstream(t, `{"id":"resp_x"}`)
-	tokens := NewTokenRegistry()
-	lookup := newFakeLookup(newOpenAIResponseProvider("key-1", upstream.URL))
-	f := NewForwarder(tokens, lookup)
-
-	w := issueAndRequest(t, f.OpenAIResponsesHandler(), tokens,
-		&agent_backend_entity.AgentBackend{ID: 6, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-1"},
+	assertOpenAIForwarded(t,
+		newOpenAIResponseProvider("key-1", ""),
+		(*Forwarder).OpenAIResponsesHandler,
+		6,
 		"/v1/responses",
 		`{"model":"gpt-5","input":"hi"}`,
+		"resp",
 	)
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "/v1/responses", rec.Path)
-	assert.Equal(t, "Bearer "+testAPIKey("resp"), rec.Header.Get("Authorization"))
 }
 
 func TestForwarder_OpenAIChat(t *testing.T) {
-	upstream, rec := newRecordingUpstream(t, `{"id":"chat_x"}`)
-	tokens := NewTokenRegistry()
-	lookup := newFakeLookup(newOpenAIChatProvider("key-1", upstream.URL))
-	f := NewForwarder(tokens, lookup)
-
-	w := issueAndRequest(t, f.OpenAIChatHandler(), tokens,
-		&agent_backend_entity.AgentBackend{ID: 7, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-1"},
+	assertOpenAIForwarded(t,
+		newOpenAIChatProvider("key-1", ""),
+		(*Forwarder).OpenAIChatHandler,
+		7,
 		"/v1/chat/completions",
 		`{"model":"gpt-4o","messages":[]}`,
+		"chat",
 	)
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "/v1/chat/completions", rec.Path)
-	assert.Equal(t, "Bearer "+testAPIKey("chat"), rec.Header.Get("Authorization"))
 }
 
 func TestForwarder_RejectsProviderTypeMismatch(t *testing.T) {

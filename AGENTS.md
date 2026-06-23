@@ -6,7 +6,7 @@ This file provides unified guidance for all AI coding agents (Claude Code, Codex
 
 - Agentre is a Wails v2 desktop app: Go 1.26 backend + React 19 / TypeScript frontend.
 - Main tech stack: Go 1.26, Wails v2, React 19, TypeScript, Vite, Tailwind CSS v4, pnpm 10.33.
-- The Go module path is `agentre`, with no VCS prefix — do not invent a `github.com/...` import prefix.
+- The Go module path is `github.com/agentre-ai/agentre`.
 - Frontend-backend IPC only goes through the Wails bindings in `internal/app`; the generated bindings live in `frontend/wailsjs`; **do not add HTTP-style app APIs**.
 
 This repository produces two binaries:
@@ -65,6 +65,8 @@ Before writing code / fixing bugs / writing tests, read these docs first — the
 - [docs/frontend.md](docs/frontend.md) — the mandatory shadcn `@/components/ui/*` convention, pnpm, formatting / lint (`make lint` / `gofmt` / `goimports`), commit style, and the module path.
 - [docs/debugging.md](docs/debugging.md) — sqlite3 / jq / log-filtering commands, the table-to-feature mapping, the command checklist for reproducing production bugs, and common pitfalls (on macOS the `Application Support` path must be quoted).
 - [docs/agent-backend.md](docs/agent-backend.md) — the full path for wiring up a new AI agent backend (entity / migration / runtime / translator / capability / daemon import / frontend gating), including the TDD test checklist and common anti-patterns.
+- [docs/session-lifecycle.md](docs/session-lifecycle.md) — rules for creating and reusing `chat_sessions`, including group backing sessions, future issue/hook dispatch, and remote-execution ownership.
+- [docs/e2e-harness-guide.md](docs/e2e-harness-guide.md) — the Playwright + fake-runtime e2e harness (root `e2e/` package): how to run (`make e2e` / `make e2e-scratch`), ad-hoc **feature verification** via throwaway specs in the gitignored `e2e/scratch/` (vs. the small committed `e2e/tests/` core suite), the cross-platform `run-e2e.mjs` runner, the build-tag seam that keeps the fake out of production builds, the `node:sqlite` DB oracle, data isolation / seeding, and how to write or extend a spec.
 - [docs/doc-maintenance.md](docs/doc-maintenance.md) — required reading before changing any contributor doc (`AGENTS.md` / `CLAUDE.md` / `docs/*`): git-aware fact-checking, fixing or deleting stale facts directly (leaving no deprecation comments), doc organization rules, and the one-command verification script.
 
 > See the cago skill (`/cago`) for details — complete controller / service / repo / cron / queue unit-test examples.
@@ -89,8 +91,8 @@ make build            # wails build with version/commit ldflags (current platfor
 make run              # build and launch production app
 make install          # build + install app bundle (macOS: /Applications/Agentre.app)
 make generate         # wails generate module — refresh frontend/wailsjs/ bindings
-make test             # backend race tests + frontend Vitest (runs `generate` first)
-make test-backend     # Go race tests excluding /frontend/
+make test             # backend Go tests + frontend Vitest (runs `generate` first)
+make test-backend     # Go tests excluding /frontend/
 make test-frontend    # wails generate + frontend Vitest
 make test-cover       # coverage.out + coverage.html
 make lint / lint-fix  # golangci-lint + frontend ESLint (runs `generate` first)

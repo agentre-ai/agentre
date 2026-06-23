@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"agentre/internal/pkg/keychain"
-	"agentre/internal/repository/remote_device_repo"
-	"agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/pkg/keychain"
+	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // InitRemoteDevice wires the repo + svc default impls. Must run after the

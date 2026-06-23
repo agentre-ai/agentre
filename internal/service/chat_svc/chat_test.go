@@ -21,27 +21,27 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
-	"agentre/internal/pkg/httpgateway"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/agent_repo/mock_agent_repo"
-	"agentre/internal/repository/chat_repo"
-	"agentre/internal/repository/chat_repo/mock_chat_repo"
-	"agentre/internal/repository/llm_provider_repo"
-	"agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
-	"agentre/internal/service/chat_svc"
-	"agentre/internal/service/remote_device_svc"
-	"agentre/internal/service/remote_device_svc/mock_remote_device_svc"
-	"agentre/pkg/claudecode"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
+	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
 
 type chatMocks struct {
@@ -115,6 +115,116 @@ func setupChatTest(t *testing.T) *chatMocks {
 	return m
 }
 
+func expectLoadSessionBackend(
+	m *chatMocks,
+	ctx context.Context,
+	sessionID int64,
+	agentID int64,
+	backendID int64,
+	backendType agent_backend_entity.BackendType,
+	provider *llm_provider_entity.LLMProvider,
+	messages ...*chat_entity.Message,
+) {
+	providerKey := ""
+	if provider != nil {
+		providerKey = provider.ProviderKey
+	}
+	m.session.EXPECT().Find(ctx, sessionID).Return(&chat_entity.Session{ID: sessionID, AgentID: agentID, Status: consts.ACTIVE}, nil)
+	m.agent.EXPECT().Find(ctx, agentID).Return(&agent_entity.Agent{ID: agentID, AgentBackendID: backendID, Status: consts.ACTIVE}, nil)
+	m.backend.EXPECT().Find(ctx, backendID).Return(&agent_backend_entity.AgentBackend{
+		ID: backendID, Type: string(backendType), LLMProviderKey: providerKey, Status: consts.ACTIVE,
+	}, nil)
+	if provider != nil {
+		m.provider.EXPECT().FindByKey(ctx, provider.ProviderKey).Return(provider, nil)
+	}
+	m.message.EXPECT().List(ctx, sessionID).Return(messages, nil)
+}
+
+func assertLoadSessionContextWindow(
+	t *testing.T,
+	m *chatMocks,
+	ctx context.Context,
+	sessionID int64,
+	agentID int64,
+	backendID int64,
+	providerID int64,
+	providerKey string,
+	providerContextWindow int,
+	want int,
+	message string,
+) {
+	t.Helper()
+	expectLoadSessionBackend(m, ctx, sessionID, agentID, backendID, agent_backend_entity.TypeClaudeCode, &llm_provider_entity.LLMProvider{
+		ID:            providerID,
+		ProviderKey:   providerKey,
+		Type:          string(llm_provider_entity.TypeAnthropic),
+		Model:         "claude-sonnet-4-6",
+		ContextWindow: providerContextWindow,
+		Status:        consts.ACTIVE,
+	}, &chat_entity.Message{
+		ID: sessionID * 10, SessionID: sessionID, Role: "assistant", BlocksJSON: "[]", Seq: 1, Model: "claude-haiku-4-5",
+	})
+
+	resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: sessionID})
+	assert.NoError(t, err)
+	assert.Equal(t, want, resp.Session.ContextWindow, message)
+}
+
+func expectLaunchCommandBackend(
+	m *chatMocks,
+	ctx context.Context,
+	sessionID int64,
+	agentID int64,
+	backendID int64,
+	backendType agent_backend_entity.BackendType,
+	providerSessionID string,
+	provider *llm_provider_entity.LLMProvider,
+) {
+	m.session.EXPECT().Find(ctx, sessionID).Return(&chat_entity.Session{
+		ID: sessionID, AgentID: agentID, ProviderSessionID: providerSessionID, Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(ctx, agentID).Return(&agent_entity.Agent{
+		ID: agentID, AgentBackendID: backendID, Status: consts.ACTIVE,
+	}, nil)
+	m.backend.EXPECT().Find(ctx, backendID).Return(&agent_backend_entity.AgentBackend{
+		ID: backendID, Type: string(backendType), LLMProviderKey: provider.ProviderKey, Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(ctx, provider.ProviderKey).Return(provider, nil)
+}
+
+func loadLaunchCommand(
+	t *testing.T,
+	m *chatMocks,
+	ctx context.Context,
+	sessionID int64,
+	backendType agent_backend_entity.BackendType,
+) string {
+	t.Helper()
+	resp, err := m.svc.GetLaunchCommand(ctx, &chat_svc.LaunchCommandRequest{SessionID: sessionID})
+	assert.NoError(t, err)
+	assert.Equal(t, string(backendType), resp.BackendType)
+	assert.NotContains(t, resp.Command, "\n")
+	return resp.Command
+}
+
+func expectCapabilitySessionBackend(
+	m *chatMocks,
+	ctx context.Context,
+	providerSessionID string,
+	agentName string,
+	backendType agent_backend_entity.BackendType,
+) {
+	m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderSessionID: providerSessionID,
+	}, nil)
+	m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: agentName, AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(backendType), LLMProviderKey: "", Status: consts.ACTIVE,
+	}, nil)
+}
+
 func TestCountActiveSessions(t *testing.T) {
 	m := setupChatTest(t)
 	m.session.EXPECT().
@@ -150,10 +260,10 @@ func TestRegisterGatewayBeforeNewChatMakesCLIBackendsChattable(t *testing.T) {
 		"key-21": {ID: 21, Type: string(llm_provider_entity.TypeOpenAIResponse), Status: consts.ACTIVE},
 	}, nil)
 	m.session.EXPECT().CountRunningByAgents(ctx, []int64{7}).Return(map[int64]int{}, nil)
-	m.session.EXPECT().CountByAgents(ctx, []int64{7}).Return(map[int64]int64{}, nil)
-	m.session.EXPECT().ListIDsByAgents(ctx, []int64{7}).Return(map[int64][]int64{}, nil)
-	m.session.EXPECT().ListByAgent(ctx, int64(7), 5).Return(nil, nil)
-	m.session.EXPECT().ListAttentionByAgent(ctx, int64(7), 20).Return(nil, nil)
+	m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{7}).Return(map[int64]int64{}, nil)
+	m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{7}).Return(map[int64][]int64{}, nil)
+	m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(7), 5).Return(nil, nil)
+	m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(7), 20).Return(nil, nil)
 
 	resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
 	assert.NoError(t, err)
@@ -185,10 +295,10 @@ func TestListAgents(t *testing.T) {
 			}, nil)
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{3}).Return(map[int64]int{}, nil)
-			m.session.EXPECT().CountByAgents(ctx, []int64{3}).Return(map[int64]int64{}, nil)
-			m.session.EXPECT().ListIDsByAgents(ctx, []int64{3}).Return(map[int64][]int64{}, nil)
-			m.session.EXPECT().ListByAgent(ctx, int64(3), 5).Return(nil, nil)
-			m.session.EXPECT().ListAttentionByAgent(ctx, int64(3), 20).Return(nil, nil)
+			m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{3}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{3}).Return(map[int64][]int64{}, nil)
+			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(3), 5).Return(nil, nil)
+			m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(3), 20).Return(nil, nil)
 
 			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
 			assert.NoError(t, err)
@@ -212,10 +322,10 @@ func TestListAgents(t *testing.T) {
 			}, nil)
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{4}).Return(map[int64]int{}, nil)
-			m.session.EXPECT().CountByAgents(ctx, []int64{4}).Return(map[int64]int64{}, nil)
-			m.session.EXPECT().ListIDsByAgents(ctx, []int64{4}).Return(map[int64][]int64{}, nil)
-			m.session.EXPECT().ListByAgent(ctx, int64(4), 5).Return(nil, nil)
-			m.session.EXPECT().ListAttentionByAgent(ctx, int64(4), 20).Return(nil, nil)
+			m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{4}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{4}).Return(map[int64][]int64{}, nil)
+			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(4), 5).Return(nil, nil)
+			m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(4), 20).Return(nil, nil)
 
 			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
 			assert.NoError(t, err)
@@ -236,17 +346,17 @@ func TestListAgents(t *testing.T) {
 				"key-11": {ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE},
 			}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{1, 2}).Return(map[int64]int{1: 0, 2: 3}, nil)
-			m.session.EXPECT().CountByAgents(ctx, []int64{1, 2}).Return(map[int64]int64{1: 0, 2: 12}, nil)
-			m.session.EXPECT().ListIDsByAgents(ctx, []int64{1, 2}).Return(map[int64][]int64{
+			m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{1, 2}).Return(map[int64]int64{1: 0, 2: 12}, nil)
+			m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{1, 2}).Return(map[int64][]int64{
 				2: {99, 50, 49, 48, 47, 46},
 			}, nil)
-			m.session.EXPECT().ListAttentionByAgent(ctx, int64(1), 20).Return(nil, nil)
-			m.session.EXPECT().ListAttentionByAgent(ctx, int64(2), 20).Return([]*chat_entity.Session{
+			m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(1), 20).Return(nil, nil)
+			m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(2), 20).Return([]*chat_entity.Session{
 				{ID: 50, AgentID: 2, Title: "approve me", AgentStatus: "waiting", LastMessageAt: 1700000005000},
 			}, nil)
-			m.session.EXPECT().ListByAgent(ctx, int64(1), 5).Return(nil, nil)
-			m.session.EXPECT().ListByAgent(ctx, int64(2), 5).Return([]*chat_entity.Session{
-				{ID: 99, AgentID: 2, Title: "修复 #142", AgentStatus: "running", LastMessageAt: 1700000000000},
+			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(1), 5).Return(nil, nil)
+			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(2), 5).Return([]*chat_entity.Session{
+				{ID: 99, AgentID: 2, Title: "支付小队 / 工程师", AgentStatus: "running", LastMessageAt: 1700000000000, GroupID: 5},
 			}, nil)
 
 			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
@@ -257,7 +367,8 @@ func TestListAgents(t *testing.T) {
 			assert.True(t, resp.Agents[1].Chattable)
 			assert.Equal(t, 3, resp.Agents[1].ActiveCount)
 			assert.Equal(t, []int64{99, 50, 49, 48, 47, 46}, resp.Agents[1].SessionIDs)
-			assert.Equal(t, "修复 #142", resp.Agents[1].Sessions[0].Title)
+			assert.Equal(t, "支付小队 / 工程师", resp.Agents[1].Sessions[0].Title)
+			assert.Equal(t, int64(5), resp.Agents[1].Sessions[0].GroupID)
 			assert.Len(t, resp.Agents[0].AttentionSessions, 0, "CEO 没 attention session")
 			if assert.Len(t, resp.Agents[1].AttentionSessions, 1) {
 				assert.Equal(t, int64(50), resp.Agents[1].AttentionSessions[0].ID)
@@ -274,18 +385,18 @@ func TestListAgents(t *testing.T) {
 			}, nil)
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{9}).Return(map[int64]int{}, nil)
-			m.session.EXPECT().CountByAgents(ctx, []int64{9}).Return(map[int64]int64{9: 6}, nil)
-			m.session.EXPECT().ListIDsByAgents(ctx, []int64{9}).Return(map[int64][]int64{
+			m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{9}).Return(map[int64]int64{9: 6}, nil)
+			m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{9}).Return(map[int64][]int64{
 				9: {6, 5, 4, 3, 2, 1},
 			}, nil)
-			m.session.EXPECT().ListByAgent(ctx, int64(9), 5).Return([]*chat_entity.Session{
+			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(9), 5).Return([]*chat_entity.Session{
 				{ID: 6, AgentID: 9, Title: "s6", AgentStatus: "idle"},
 				{ID: 5, AgentID: 9, Title: "s5", AgentStatus: "idle"},
 				{ID: 4, AgentID: 9, Title: "s4", AgentStatus: "idle"},
 				{ID: 3, AgentID: 9, Title: "s3", AgentStatus: "idle"},
 				{ID: 2, AgentID: 9, Title: "s2", AgentStatus: "idle"},
 			}, nil)
-			m.session.EXPECT().ListAttentionByAgent(ctx, int64(9), 20).Return(nil, nil)
+			m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(9), 20).Return(nil, nil)
 
 			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
 			assert.NoError(t, err)
@@ -318,10 +429,10 @@ func TestListAgents_PopulatesDeviceFields(t *testing.T) {
 			}, nil)
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{5}).Return(map[int64]int{}, nil)
-			m.session.EXPECT().CountByAgents(ctx, []int64{5}).Return(map[int64]int64{}, nil)
-			m.session.EXPECT().ListIDsByAgents(ctx, []int64{5}).Return(map[int64][]int64{}, nil)
-			m.session.EXPECT().ListByAgent(ctx, int64(5), 5).Return(nil, nil)
-			m.session.EXPECT().ListAttentionByAgent(ctx, int64(5), 20).Return(nil, nil)
+			m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{5}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{5}).Return(map[int64][]int64{}, nil)
+			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(5), 5).Return(nil, nil)
+			m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(5), 20).Return(nil, nil)
 			// 本地 backend 不触发 remote_device_svc.Get
 
 			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
@@ -342,10 +453,10 @@ func TestListAgents_PopulatesDeviceFields(t *testing.T) {
 			}, nil)
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{6}).Return(map[int64]int{}, nil)
-			m.session.EXPECT().CountByAgents(ctx, []int64{6}).Return(map[int64]int64{}, nil)
-			m.session.EXPECT().ListIDsByAgents(ctx, []int64{6}).Return(map[int64][]int64{}, nil)
-			m.session.EXPECT().ListByAgent(ctx, int64(6), 5).Return(nil, nil)
-			m.session.EXPECT().ListAttentionByAgent(ctx, int64(6), 20).Return(nil, nil)
+			m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{6}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{6}).Return(map[int64][]int64{}, nil)
+			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(6), 5).Return(nil, nil)
+			m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(6), 20).Return(nil, nil)
 			mockRDS.EXPECT().Get(ctx, int64(7)).Return(&remote_device_svc.DeviceView{
 				ID: 7, Name: "linux-srv", Online: true,
 			}, nil)
@@ -368,10 +479,10 @@ func TestListAgents_PopulatesDeviceFields(t *testing.T) {
 			}, nil)
 			m.provider.EXPECT().BatchFindByKey(ctx, []string{}).Return(map[string]*llm_provider_entity.LLMProvider{}, nil)
 			m.session.EXPECT().CountRunningByAgents(ctx, []int64{7}).Return(map[int64]int{}, nil)
-			m.session.EXPECT().CountByAgents(ctx, []int64{7}).Return(map[int64]int64{}, nil)
-			m.session.EXPECT().ListIDsByAgents(ctx, []int64{7}).Return(map[int64][]int64{}, nil)
-			m.session.EXPECT().ListByAgent(ctx, int64(7), 5).Return(nil, nil)
-			m.session.EXPECT().ListAttentionByAgent(ctx, int64(7), 20).Return(nil, nil)
+			m.session.EXPECT().CountByAgentsIncludingGroups(ctx, []int64{7}).Return(map[int64]int64{}, nil)
+			m.session.EXPECT().ListIDsByAgentsIncludingGroups(ctx, []int64{7}).Return(map[int64][]int64{}, nil)
+			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(7), 5).Return(nil, nil)
+			m.session.EXPECT().ListAttentionByAgentIncludingGroups(ctx, int64(7), 20).Return(nil, nil)
 			mockRDS.EXPECT().Get(ctx, int64(9)).Return(nil, errors.New("device not found"))
 
 			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
@@ -422,15 +533,9 @@ func TestLoadSession(t *testing.T) {
 
 		convey.Convey("LLMProviderType 透传到 detail（前端按它判定 Usage 字段语义）", func() {
 			convey.Convey("builtin + anthropic provider → llmProviderType=anthropic", func() {
-				m.session.EXPECT().Find(ctx, int64(20)).Return(&chat_entity.Session{ID: 20, AgentID: 60, Status: consts.ACTIVE}, nil)
-				m.agent.EXPECT().Find(ctx, int64(60)).Return(&agent_entity.Agent{ID: 60, AgentBackendID: 70, Status: consts.ACTIVE}, nil)
-				m.backend.EXPECT().Find(ctx, int64(70)).Return(&agent_backend_entity.AgentBackend{
-					ID: 70, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-80", Status: consts.ACTIVE,
-				}, nil)
-				m.provider.EXPECT().FindByKey(ctx, "key-80").Return(&llm_provider_entity.LLMProvider{
-					ID: 80, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
-				}, nil)
-				m.message.EXPECT().List(ctx, int64(20)).Return(nil, nil)
+				expectLoadSessionBackend(m, ctx, 20, 60, 70, agent_backend_entity.TypeBuiltin, &llm_provider_entity.LLMProvider{
+					ID: 80, ProviderKey: "key-80", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
+				})
 
 				resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 20})
 				assert.NoError(t, err)
@@ -438,15 +543,9 @@ func TestLoadSession(t *testing.T) {
 			})
 
 			convey.Convey("builtin + openai-chat provider → llmProviderType=openai-chat", func() {
-				m.session.EXPECT().Find(ctx, int64(21)).Return(&chat_entity.Session{ID: 21, AgentID: 61, Status: consts.ACTIVE}, nil)
-				m.agent.EXPECT().Find(ctx, int64(61)).Return(&agent_entity.Agent{ID: 61, AgentBackendID: 71, Status: consts.ACTIVE}, nil)
-				m.backend.EXPECT().Find(ctx, int64(71)).Return(&agent_backend_entity.AgentBackend{
-					ID: 71, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-81", Status: consts.ACTIVE,
-				}, nil)
-				m.provider.EXPECT().FindByKey(ctx, "key-81").Return(&llm_provider_entity.LLMProvider{
-					ID: 81, Type: string(llm_provider_entity.TypeOpenAIChat), Model: "gpt-4o", Status: consts.ACTIVE,
-				}, nil)
-				m.message.EXPECT().List(ctx, int64(21)).Return(nil, nil)
+				expectLoadSessionBackend(m, ctx, 21, 61, 71, agent_backend_entity.TypeBuiltin, &llm_provider_entity.LLMProvider{
+					ID: 81, ProviderKey: "key-81", Type: string(llm_provider_entity.TypeOpenAIChat), Model: "gpt-4o", Status: consts.ACTIVE,
+				})
 
 				resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 21})
 				assert.NoError(t, err)
@@ -549,44 +648,12 @@ func TestLoadSession(t *testing.T) {
 		convey.Convey("claudecode + provider 未显式配置 ContextWindow → 用 message.Model 反映实际运行模型", func() {
 			// claudecode 后端，provider.Model=sonnet 但 ContextWindow=0（未显式配），message.Model=haiku-4-5。
 			// 新优先级：第 1 级 provider.ContextWindow 未命中（=0）→ 落到第 2 级 message.Model catalog。
-			m.session.EXPECT().Find(ctx, int64(8)).Return(&chat_entity.Session{ID: 8, AgentID: 12, Status: consts.ACTIVE}, nil)
-			m.agent.EXPECT().Find(ctx, int64(12)).Return(&agent_entity.Agent{
-				ID: 12, AgentBackendID: 41, Status: consts.ACTIVE,
-			}, nil)
-			m.backend.EXPECT().Find(ctx, int64(41)).Return(&agent_backend_entity.AgentBackend{
-				ID: 41, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-46", Status: consts.ACTIVE,
-			}, nil)
-			m.provider.EXPECT().FindByKey(ctx, "key-46").Return(&llm_provider_entity.LLMProvider{
-				ID: 46, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", ContextWindow: 0, Status: consts.ACTIVE,
-			}, nil)
-			m.message.EXPECT().List(ctx, int64(8)).Return([]*chat_entity.Message{
-				{ID: 90, SessionID: 8, Role: "assistant", BlocksJSON: "[]", Seq: 1, Model: "claude-haiku-4-5"},
-			}, nil)
-
-			resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 8})
-			assert.NoError(t, err)
-			assert.Equal(t, 200000, resp.Session.ContextWindow, "应取 haiku 的 200k，而不是 sonnet 的 1M")
+			assertLoadSessionContextWindow(t, m, ctx, 8, 12, 41, 46, "key-46", 0, 200000, "应取 haiku 的 200k，而不是 sonnet 的 1M")
 		})
 
 		convey.Convey("claudecode + provider.ContextWindow > 0 → 显式配置覆盖 message.Model catalog", func() {
 			// 核心新行为：LLM 供应商显式配了 500k，即使 message.Model=haiku（catalog 200k），也应取 500k。
-			m.session.EXPECT().Find(ctx, int64(9)).Return(&chat_entity.Session{ID: 9, AgentID: 13, Status: consts.ACTIVE}, nil)
-			m.agent.EXPECT().Find(ctx, int64(13)).Return(&agent_entity.Agent{
-				ID: 13, AgentBackendID: 42, Status: consts.ACTIVE,
-			}, nil)
-			m.backend.EXPECT().Find(ctx, int64(42)).Return(&agent_backend_entity.AgentBackend{
-				ID: 42, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-47", Status: consts.ACTIVE,
-			}, nil)
-			m.provider.EXPECT().FindByKey(ctx, "key-47").Return(&llm_provider_entity.LLMProvider{
-				ID: 47, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", ContextWindow: 500000, Status: consts.ACTIVE,
-			}, nil)
-			m.message.EXPECT().List(ctx, int64(9)).Return([]*chat_entity.Message{
-				{ID: 100, SessionID: 9, Role: "assistant", BlocksJSON: "[]", Seq: 1, Model: "claude-haiku-4-5"},
-			}, nil)
-
-			resp, err := m.svc.LoadSession(ctx, &chat_svc.LoadSessionRequest{SessionID: 9})
-			assert.NoError(t, err)
-			assert.Equal(t, 500000, resp.Session.ContextWindow, "provider 显式 ContextWindow 应覆盖 message.Model catalog")
+			assertLoadSessionContextWindow(t, m, ctx, 9, 13, 42, 47, "key-47", 500000, 500000, "provider 显式 ContextWindow 应覆盖 message.Model catalog")
 		})
 
 		convey.Convey("session.ContextWindow > 0 → runtime 上报值覆盖所有 fallback", func() {
@@ -732,55 +799,30 @@ func TestGetLaunchCommand(t *testing.T) {
 		ctx := context.Background()
 
 		convey.Convey("claudecode + provider → 单行命令含 BASE_URL、永久 token、model、--resume", func() {
-			m.session.EXPECT().Find(ctx, int64(3)).Return(&chat_entity.Session{
-				ID: 3, AgentID: 7, ProviderSessionID: "sess-uuid", Status: consts.ACTIVE,
-			}, nil)
-			m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
-				ID: 7, AgentBackendID: 22, Status: consts.ACTIVE,
-			}, nil)
-			m.backend.EXPECT().Find(ctx, int64(22)).Return(&agent_backend_entity.AgentBackend{
-				ID: 22, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "key-33", Status: consts.ACTIVE,
-			}, nil)
-			m.provider.EXPECT().FindByKey(ctx, "key-33").Return(&llm_provider_entity.LLMProvider{
-				ID: 33, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
-			}, nil)
+			expectLaunchCommandBackend(m, ctx, 3, 7, 22, agent_backend_entity.TypeClaudeCode, "sess-uuid", &llm_provider_entity.LLMProvider{
+				ID: 33, ProviderKey: "key-33", Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-sonnet-4-6", Status: consts.ACTIVE,
+			})
 
-			resp, err := m.svc.GetLaunchCommand(ctx, &chat_svc.LaunchCommandRequest{SessionID: 3})
-			assert.NoError(t, err)
-			assert.Equal(t, string(agent_backend_entity.TypeClaudeCode), resp.BackendType)
-			// 单行命令
-			assert.NotContains(t, resp.Command, "\n")
+			command := loadLaunchCommand(t, m, ctx, 3, agent_backend_entity.TypeClaudeCode)
 			// gateway URL + fake gateway 发出的真实 token（"chat-token"）
-			assert.Contains(t, resp.Command, "ANTHROPIC_BASE_URL='http://127.0.0.1:60080'")
-			assert.Contains(t, resp.Command, "ANTHROPIC_AUTH_TOKEN='chat-token'")
+			assert.Contains(t, command, "ANTHROPIC_BASE_URL='http://127.0.0.1:60080'")
+			assert.Contains(t, command, "ANTHROPIC_AUTH_TOKEN='chat-token'")
 			// 没有 <TOKEN> 占位符泄漏
-			assert.NotContains(t, resp.Command, "<TOKEN>")
+			assert.NotContains(t, command, "<TOKEN>")
 			// model + resume
-			assert.Contains(t, resp.Command, "claude --model claude-sonnet-4-6 --resume sess-uuid")
+			assert.Contains(t, command, "claude --model claude-sonnet-4-6 --resume sess-uuid")
 		})
 
 		convey.Convey("codex + provider session → 单行命令用 resume 子命令带 session id", func() {
-			m.session.EXPECT().Find(ctx, int64(6)).Return(&chat_entity.Session{
-				ID: 6, AgentID: 8, ProviderSessionID: "codex-thread-123", Status: consts.ACTIVE,
-			}, nil)
-			m.agent.EXPECT().Find(ctx, int64(8)).Return(&agent_entity.Agent{
-				ID: 8, AgentBackendID: 23, Status: consts.ACTIVE,
-			}, nil)
-			m.backend.EXPECT().Find(ctx, int64(23)).Return(&agent_backend_entity.AgentBackend{
-				ID: 23, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "key-34", Status: consts.ACTIVE,
-			}, nil)
-			m.provider.EXPECT().FindByKey(ctx, "key-34").Return(&llm_provider_entity.LLMProvider{
-				ID: 34, Type: string(llm_provider_entity.TypeOpenAIResponse), Model: "gpt-5-codex", Status: consts.ACTIVE,
-			}, nil)
+			expectLaunchCommandBackend(m, ctx, 6, 8, 23, agent_backend_entity.TypeCodex, "codex-thread-123", &llm_provider_entity.LLMProvider{
+				ID: 34, ProviderKey: "key-34", Type: string(llm_provider_entity.TypeOpenAIResponse), Model: "gpt-5-codex", Status: consts.ACTIVE,
+			})
 
-			resp, err := m.svc.GetLaunchCommand(ctx, &chat_svc.LaunchCommandRequest{SessionID: 6})
-			assert.NoError(t, err)
-			assert.Equal(t, string(agent_backend_entity.TypeCodex), resp.BackendType)
-			assert.NotContains(t, resp.Command, "\n")
-			assert.Contains(t, resp.Command, "OPENAI_API_KEY='chat-token'")
-			assert.Contains(t, resp.Command, "codex resume")
-			assert.Contains(t, resp.Command, " codex-thread-123")
-			assert.Contains(t, resp.Command, `-c 'model="gpt-5-codex"'`)
+			command := loadLaunchCommand(t, m, ctx, 6, agent_backend_entity.TypeCodex)
+			assert.Contains(t, command, "OPENAI_API_KEY='chat-token'")
+			assert.Contains(t, command, "codex resume")
+			assert.Contains(t, command, " codex-thread-123")
+			assert.Contains(t, command, `-c 'model="gpt-5-codex"'`)
 		})
 
 		convey.Convey("builtin → ChatLaunchCommandNotAvailable", func() {
@@ -1598,15 +1640,7 @@ func TestCompact_RequiresCodexProviderSessionAndCapability(t *testing.T) {
 	t.Run("non-codex backend", func(t *testing.T) {
 		m := setupChatTest(t)
 		ctx := context.Background()
-		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
-			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderSessionID: "thread-1",
-		}, nil)
-		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
-			ID: 7, Name: "Claude", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
-		}, nil)
-		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
-			ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "", Status: consts.ACTIVE,
-		}, nil)
+		expectCapabilitySessionBackend(m, ctx, "thread-1", "Claude", agent_backend_entity.TypeClaudeCode)
 
 		_, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
 		assert.Error(t, err)
@@ -1619,15 +1653,7 @@ func TestCompact_RequiresCodexProviderSessionAndCapability(t *testing.T) {
 		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
 		t.Cleanup(restore)
 
-		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
-			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderSessionID: "thread-1",
-		}, nil)
-		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
-			ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
-		}, nil)
-		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
-			ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
-		}, nil)
+		expectCapabilitySessionBackend(m, ctx, "thread-1", "Codex", agent_backend_entity.TypeCodex)
 
 		_, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
 		assert.Error(t, err)
@@ -1771,15 +1797,7 @@ func TestGoal_RequiresCodexProviderSessionAndCapability(t *testing.T) {
 	t.Run("non-codex backend", func(t *testing.T) {
 		m := setupChatTest(t)
 		ctx := context.Background()
-		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
-			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderSessionID: "thread-1",
-		}, nil)
-		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
-			ID: 7, Name: "Claude", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
-		}, nil)
-		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
-			ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), LLMProviderKey: "", Status: consts.ACTIVE,
-		}, nil)
+		expectCapabilitySessionBackend(m, ctx, "thread-1", "Claude", agent_backend_entity.TypeClaudeCode)
 
 		_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
 		assert.Error(t, err)
@@ -1792,15 +1810,7 @@ func TestGoal_RequiresCodexProviderSessionAndCapability(t *testing.T) {
 		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, runner)
 		t.Cleanup(restore)
 
-		m.session.EXPECT().Find(ctx, int64(100)).Return(&chat_entity.Session{
-			ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE, ProviderSessionID: "thread-1",
-		}, nil)
-		m.agent.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{
-			ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
-		}, nil)
-		m.backend.EXPECT().Find(ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
-			ID: 12, Type: string(agent_backend_entity.TypeCodex), LLMProviderKey: "", Status: consts.ACTIVE,
-		}, nil)
+		expectCapabilitySessionBackend(m, ctx, "thread-1", "Codex", agent_backend_entity.TypeCodex)
 
 		_, err := m.svc.GetGoal(ctx, &chat_svc.GoalRequest{SessionID: 100})
 		assert.Error(t, err)
@@ -3143,6 +3153,107 @@ func TestSend_ErrorSessionMarksRunningAtTurnStart(t *testing.T) {
 	assert.Equal(t, "running", captured[0].AgentStatus)
 	assert.False(t, captured[0].NeedsAttention)
 	assert.Equal(t, "idle", captured[len(captured)-1].AgentStatus)
+}
+
+// 回归(dev sess-21 卡 running):Send 不得在 startTurn 事务外预写 agent_status=running ——
+// 事务持久化失败(如 SQLITE_BUSY)时无人回滚,DB 永久卡 running 且 quit 被 block。
+// running 只能随 startTurn 事务内的 session Update 原子落库,事务失败即不残留,
+// 故本测试不设任何 session.Update 期望:出现调用即违规。
+func TestSend_PersistFailureDoesNotPersistRunning(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(0, errors.New("database is locked"))
+	m.dbMock.ExpectRollback()
+
+	_, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.Error(t, err, "事务持久化失败必须把错误返回给调用方")
+}
+
+// 回归(同上):新建会话必须以 idle Create;running 由 startTurn 事务内 Update 原子翻转。
+// 否则 Create(running) 后事务失败,留下一条永久 running 的空会话。
+func TestSend_NewSessionCreatesIdleNotRunning(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+
+	var created chat_entity.Session
+	m.session.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
+			s.ID = 100
+			created = *s
+			return nil
+		})
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(0, errors.New("database is locked"))
+	m.dbMock.ExpectRollback()
+
+	_, err := m.svc.Send(ctx, &chat_svc.SendRequest{AgentID: 7, Text: "hi"})
+	require.Error(t, err)
+	assert.Equal(t, "idle", created.AgentStatus,
+		"新建会话以 idle 落库,事务失败时不残留 running")
+}
+
+// 回归(同上):Regenerate 与 Send 同病 —— 事务外预写 running。
+func TestRegenerate_PersistFailureDoesNotPersistRunning(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, scriptedRunner{
+		events: []agentruntime.RuntimeEvent{{Kind: agentruntime.EventDone}},
+	})
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
+		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1"),
+	}, nil)
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+		{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("hi")},
+		{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1")},
+	}, nil).AnyTimes()
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), 1).
+		Return(int64(0), errors.New("database is locked"))
+	m.dbMock.ExpectRollback()
+
+	_, err := m.svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+	require.Error(t, err)
 }
 
 // TestSend_AskUserQuestionFlipsSessionToWaiting:
@@ -4976,11 +5087,11 @@ func TestListAgentSessions(t *testing.T) {
 		ctx := m.ctx
 
 		convey.Convey("中段分页：返回当前页 sessions、total、hasMore=true", func() {
-			m.session.EXPECT().ListByAgentPaged(ctx, int64(7), 20, 20).Return([]*chat_entity.Session{
+			m.session.EXPECT().ListByAgentPagedIncludingGroups(ctx, int64(7), 20, 20).Return([]*chat_entity.Session{
 				{ID: 30, AgentID: 7, Title: "newer", AgentStatus: "idle", LastMessageAt: 1700000300000},
 				{ID: 25, AgentID: 7, Title: "older", AgentStatus: "idle", LastMessageAt: 1700000250000},
 			}, nil)
-			m.session.EXPECT().CountByAgent(ctx, int64(7)).Return(int64(42), nil)
+			m.session.EXPECT().CountByAgentIncludingGroups(ctx, int64(7)).Return(int64(42), nil)
 
 			resp, err := m.svc.ListAgentSessions(ctx, &chat_svc.ListAgentSessionsRequest{
 				AgentID: 7, Offset: 20, Limit: 20,
@@ -4993,11 +5104,11 @@ func TestListAgentSessions(t *testing.T) {
 		})
 
 		convey.Convey("末页：offset+len == total → hasMore=false", func() {
-			m.session.EXPECT().ListByAgentPaged(ctx, int64(7), 40, 20).Return([]*chat_entity.Session{
+			m.session.EXPECT().ListByAgentPagedIncludingGroups(ctx, int64(7), 40, 20).Return([]*chat_entity.Session{
 				{ID: 2, AgentID: 7, Title: "tail-a", AgentStatus: "idle"},
 				{ID: 1, AgentID: 7, Title: "tail-b", AgentStatus: "idle"},
 			}, nil)
-			m.session.EXPECT().CountByAgent(ctx, int64(7)).Return(int64(42), nil)
+			m.session.EXPECT().CountByAgentIncludingGroups(ctx, int64(7)).Return(int64(42), nil)
 
 			resp, err := m.svc.ListAgentSessions(ctx, &chat_svc.ListAgentSessionsRequest{
 				AgentID: 7, Offset: 40, Limit: 20,
@@ -5008,8 +5119,8 @@ func TestListAgentSessions(t *testing.T) {
 		})
 
 		convey.Convey("limit=0 默认走 20", func() {
-			m.session.EXPECT().ListByAgentPaged(ctx, int64(7), 0, 20).Return(nil, nil)
-			m.session.EXPECT().CountByAgent(ctx, int64(7)).Return(int64(0), nil)
+			m.session.EXPECT().ListByAgentPagedIncludingGroups(ctx, int64(7), 0, 20).Return(nil, nil)
+			m.session.EXPECT().CountByAgentIncludingGroups(ctx, int64(7)).Return(int64(0), nil)
 
 			resp, err := m.svc.ListAgentSessions(ctx, &chat_svc.ListAgentSessionsRequest{
 				AgentID: 7, Offset: 0, Limit: 0,
@@ -5020,8 +5131,8 @@ func TestListAgentSessions(t *testing.T) {
 		})
 
 		convey.Convey("limit 超上限 → 裁到 100", func() {
-			m.session.EXPECT().ListByAgentPaged(ctx, int64(7), 0, 100).Return(nil, nil)
-			m.session.EXPECT().CountByAgent(ctx, int64(7)).Return(int64(0), nil)
+			m.session.EXPECT().ListByAgentPagedIncludingGroups(ctx, int64(7), 0, 100).Return(nil, nil)
+			m.session.EXPECT().CountByAgentIncludingGroups(ctx, int64(7)).Return(int64(0), nil)
 
 			_, err := m.svc.ListAgentSessions(ctx, &chat_svc.ListAgentSessionsRequest{
 				AgentID: 7, Offset: 0, Limit: 999,

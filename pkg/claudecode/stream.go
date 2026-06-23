@@ -275,6 +275,12 @@ func (d *frameDecoder) decodeLine(line []byte) ([]Event, bool) {
 // 等价(详见 session.go 同名方法注释);把 frameDecoder 改造成 receiver,与既有
 // d.lastAssistantUsage 状态共享同一个 lifecycle。
 func (d *frameDecoder) parseStreamEvent(f rawFrame) []Event {
+	return parseStreamEventUsage(f, d.sessionID, func(u *rawUsage) {
+		d.lastAssistantUsage = u
+	})
+}
+
+func parseStreamEventUsage(f rawFrame, sid string, remember func(*rawUsage)) []Event {
 	if f.ParentToolUseID != "" || len(f.Event) == 0 {
 		return nil
 	}
@@ -285,10 +291,12 @@ func (d *frameDecoder) parseStreamEvent(f rawFrame) []Event {
 	if ev.Type != "message_delta" || ev.Usage == nil || isZeroUsage(ev.Usage) {
 		return nil
 	}
-	d.lastAssistantUsage = ev.Usage
+	if remember != nil {
+		remember(ev.Usage)
+	}
 	return []Event{{
 		Kind:      EventUsage,
-		SessionID: d.sessionID,
+		SessionID: sid,
 		Usage: provider.Usage{
 			PromptTokens:        ev.Usage.InputTokens,
 			CompletionTokens:    ev.Usage.OutputTokens,

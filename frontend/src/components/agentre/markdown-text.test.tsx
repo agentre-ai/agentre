@@ -10,7 +10,11 @@ const sonnerMocks = vi.hoisted(() => ({
 
 vi.mock("sonner", () => sonnerMocks);
 
-import { MarkdownText } from "./markdown-text";
+import {
+  MarkdownText,
+  type MarkdownInlineDecorator,
+  type MarkdownInlineSegment,
+} from "./markdown-text";
 
 const originalClipboard = navigator.clipboard;
 
@@ -49,6 +53,62 @@ describe("MarkdownText", () => {
       }),
     );
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+});
+
+describe("MarkdownText inline decorator", () => {
+  // bobDecorator:测试用的最小装饰器 —— 把字面 "@Bob" 切成可点击 token,
+  // 其余原样保留。只测接缝本身,不绑 mention 业务。
+  function bobDecorator(
+    onJump: (id: number) => void,
+  ): MarkdownInlineDecorator<{ id: number; label: string }> {
+    return {
+      tokenize: (text) => {
+        const segments: MarkdownInlineSegment<{ id: number; label: string }>[] =
+          [];
+        let rest = text;
+        let idx = rest.indexOf("@Bob");
+        while (idx >= 0) {
+          if (idx > 0)
+            segments.push({ type: "text", value: rest.slice(0, idx) });
+          segments.push({ type: "token", data: { id: 7, label: "Bob" } });
+          rest = rest.slice(idx + "@Bob".length);
+          idx = rest.indexOf("@Bob");
+        }
+        if (rest) segments.push({ type: "text", value: rest });
+        return segments;
+      },
+      render: (data) => (
+        <button type="button" onClick={() => onJump(data.id)}>
+          @{data.label}
+        </button>
+      ),
+    };
+  }
+
+  it("renders decorator tokens as interactive nodes inside markdown output", () => {
+    const onJump = vi.fn();
+    const { container } = render(
+      <MarkdownText
+        text={"**bold** ping @Bob"}
+        decorator={bobDecorator(onJump)}
+      />,
+    );
+    expect(container.querySelector("strong")?.textContent).toBe("bold");
+    fireEvent.click(screen.getByRole("button", { name: "@Bob" }));
+    expect(onJump).toHaveBeenCalledWith(7);
+  });
+
+  it("does not decorate text inside inline code or fenced code blocks", () => {
+    const onJump = vi.fn();
+    const { container } = render(
+      <MarkdownText
+        text={"see `@Bob` and\n\n```\n@Bob\n```\n"}
+        decorator={bobDecorator(onJump)}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "@Bob" })).toBeNull();
+    expect(container.textContent).toContain("@Bob");
   });
 });
 

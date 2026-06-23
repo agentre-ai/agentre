@@ -9,11 +9,12 @@ import (
 	"log"
 	"os"
 	stdruntime "runtime"
-	"strings"
 
-	"agentre/internal/app"
-	"agentre/internal/bootstrap"
-	"agentre/internal/cli/claudecodecmd"
+	"github.com/agentre-ai/agentre/e2e/fakes"
+	"github.com/agentre-ai/agentre/internal/app"
+	"github.com/agentre-ai/agentre/internal/bootstrap"
+	"github.com/agentre-ai/agentre/internal/cli/claudecodecmd"
+	"github.com/agentre-ai/agentre/internal/pkg/paths"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/wailsapp/wails/v2"
@@ -48,6 +49,8 @@ func main() {
 	}
 	defer runtime.Close()
 
+	fakes.Install(context.Background())
+
 	// Create an instance of the app structure
 	appInst := app.NewApp()
 
@@ -62,7 +65,7 @@ func main() {
 
 func newWailsOptionsForDataDir(a *app.App, assets fs.FS, goos, dataDir string) *options.App {
 	appOptions := &options.App{
-		Title:       "Agentre",
+		Title:       windowTitle(),
 		Width:       defaultWindowWidth,
 		Height:      defaultWindowHeight,
 		MinWidth:    minWindowWidth,
@@ -80,6 +83,12 @@ func newWailsOptionsForDataDir(a *app.App, assets fs.FS, goos, dataDir string) *
 		},
 		Bind: []interface{}{
 			a,
+		},
+		DragAndDrop: &options.DragAndDrop{
+			// 启用 Wails 原生拖拽,回调返回拖入文件的绝对路径(webview HTML5 drop 拿不到)。
+			// DisableWebViewDrop 保持 false:让 composer 仍收到 HTML5 dragenter/leave 驱动高亮;
+			// 真实路径只来自 OnFileDrop。CSSDropProperty/Value 用默认 --wails-drop-target / drop。
+			EnableFileDrop: true,
 		},
 	}
 
@@ -100,7 +109,16 @@ func newWailsOptionsForDataDir(a *app.App, assets fs.FS, goos, dataDir string) *
 }
 
 func isWailsDevMode() bool {
-	return strings.TrimSpace(os.Getenv("devserver")) != ""
+	return paths.IsDevMode()
+}
+
+// windowTitle 在 wails dev 下给标题加 (Dev) 后缀，方便和已安装的 App 窗口区分
+// （两者数据已隔离、可同时运行，见 paths.AppDataDir）。
+func windowTitle() string {
+	if isWailsDevMode() {
+		return "Agentre (Dev)"
+	}
+	return "Agentre"
 }
 
 func singleInstanceUniqueID(dataDir string) string {

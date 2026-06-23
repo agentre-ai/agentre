@@ -15,9 +15,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/repository/llm_provider_repo"
-	"agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
 )
 
 type fakeDoer struct {

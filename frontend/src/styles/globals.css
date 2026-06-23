@@ -77,6 +77,12 @@
   --agent-8: #65a30d;
   --agent-9: #4f46e5;
   --agent-10: #ea580c;
+  --agent-11: #059669;
+  --agent-12: #0d9488;
+  --agent-13: #db2777;
+  --agent-14: #ca8a04;
+  --agent-15: #64748b;
+  --agent-16: #9333ea;
 
   /* macOS traffic light */
   --traffic-close: #ff5f57;
@@ -162,6 +168,12 @@
   --agent-8: #a3e635;
   --agent-9: #818cf8;
   --agent-10: #fdba74;
+  --agent-11: #34d399;
+  --agent-12: #2dd4bf;
+  --agent-13: #f472b6;
+  --agent-14: #fde047;
+  --agent-15: #94a3b8;
+  --agent-16: #c084fc;
 
   /* Charts */
   --chart-1: oklch(0.488 0.243 264.376);
@@ -226,6 +238,12 @@
   --color-agent-8: var(--agent-8);
   --color-agent-9: var(--agent-9);
   --color-agent-10: var(--agent-10);
+  --color-agent-11: var(--agent-11);
+  --color-agent-12: var(--agent-12);
+  --color-agent-13: var(--agent-13);
+  --color-agent-14: var(--agent-14);
+  --color-agent-15: var(--agent-15);
+  --color-agent-16: var(--agent-16);
   --color-status-running: var(--status-running);
   --color-status-running-foreground: var(--status-running-foreground);
   --color-status-running-bg: var(--status-running-bg);

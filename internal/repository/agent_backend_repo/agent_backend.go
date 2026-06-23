@@ -9,7 +9,8 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/repository/repoquery"
 )
 
 //go:generate mockgen -source agent_backend.go -destination mock_agent_backend_repo/mock_agent_backend.go
@@ -59,18 +60,9 @@ func (r *agentBackendRepo) Find(ctx context.Context, id int64) (*agent_backend_e
 }
 
 func (r *agentBackendRepo) BatchFind(ctx context.Context, ids []int64) (map[int64]*agent_backend_entity.AgentBackend, error) {
-	out := make(map[int64]*agent_backend_entity.AgentBackend, len(ids))
-	if len(ids) == 0 {
-		return out, nil
-	}
-	var rows []*agent_backend_entity.AgentBackend
-	if err := db.Ctx(ctx).Where("id IN ? AND status = ?", ids, consts.ACTIVE).Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	for _, b := range rows {
-		out[b.ID] = b
-	}
-	return out, nil
+	return repoquery.ActiveMap[agent_backend_entity.AgentBackend](ctx, "id", ids, func(b *agent_backend_entity.AgentBackend) int64 {
+		return b.ID
+	})
 }
 
 func (r *agentBackendRepo) FindByName(ctx context.Context, name string) (*agent_backend_entity.AgentBackend, error) {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 // BorrowDeviceClient leases a device's daemon client from the shared

@@ -8,10 +8,10 @@ import (
 	"github.com/cago-frame/cago/pkg/i18n"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/project_location_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/project_location_repo"
-	"agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_location_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 type projectLocationImpl struct{}

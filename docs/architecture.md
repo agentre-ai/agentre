@@ -17,9 +17,9 @@ internal/
   repository/<domain>_repo/    (data access; interface + Register/accessor, uniformly going through db.Ctx(ctx))
     mock_<domain>_repo/        (mockgen output, injected into service unit tests)
   model/entity/<domain>_entity/(rich domain entity; GORM tag + business methods)
-  pkg/                         (cross-cutting internal packages: agentprovider / agentruntime / ccoauth / claudecodehook / clienv /
-                                cliprober / code (i18n error codes) / diff / httpgateway / jsonrpc / keychain / llmcatalog /
-                                paths / procattr / pty / remotefs)
+  pkg/                         (cross-cutting internal packages: agentprovider / agentruntime / agentskill / agenttool / ccoauth /
+                                claudecodehook / clienv / cliprober / cliprocess / code (i18n error codes) / diff / httpgateway /
+                                jsonrpc / keychain / llmcatalog / paths / procattr / pty / remotefs / sysnotify)
   buildinfo/                   (CommitID ldflag target)
 migrations/                    (gormigrate sequential migrations, filename prefix YYYYMMDDNNNN)
 pkg/                           (externally reusable packages: claudecode / codex / piagent —— independently maintained CLI subprocess wrappers;
@@ -38,7 +38,7 @@ UI
   → internal/app Wails binding
   → chat_svc
   → internal/daemon/client (JSON-RPC client)
-  → agentred (internal/daemon/{ipc,handlers,sessions})
+  → agentred (internal/daemon/{rpc,handlers,sessions})
   → claude-code / codex subprocess
 ```
 

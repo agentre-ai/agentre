@@ -7,9 +7,9 @@ import (
 	"context"
 	"time"
 
-	"agentre/internal/daemon/state"
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 )
 
 //go:generate mockgen -source ports.go -destination mock_handlers/mock_ports.go -package mock_handlers

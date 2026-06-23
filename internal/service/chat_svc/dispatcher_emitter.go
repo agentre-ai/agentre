@@ -8,9 +8,9 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/service/chat_svc/blocks"
-	"agentre/internal/service/chat_svc/view"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/view"
 )
 
 // dispatcherEmitter 把 handlers 输出的 map[string]any{kind: ..., ...} 中间形态

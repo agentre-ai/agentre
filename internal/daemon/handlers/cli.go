@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/cliprober"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/cliprober"
 )
 
 // cliProbeTokenTTL daemon 自签 token 仅供这一次 probe 子进程使用，30s 足矣，

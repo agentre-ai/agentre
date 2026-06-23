@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 )
 
 // agentCwdFor 直接复用 AgentCwd 在 t.TempDir() 下的产物，给 assert 提供期望路径。
@@ -265,7 +265,9 @@ func TestBuildLaunchCommand_PiAgentWithThinking(t *testing.T) {
 	assert.True(t, strings.HasPrefix(cmd, "cd '"+cwd+"' && "), "前缀应为 cd '<cwd>' && ，got %q", cmd)
 	assert.Contains(t, cmd, "PI_OFFLINE='1'")
 	assert.Contains(t, cmd, "PI_CODING_AGENT_DIR='/tmp/pi-agentre'")
-	assert.Contains(t, cmd, "pi --mode rpc --no-context-files --thinking high")
+	assert.Contains(t, cmd, "pi --thinking high")
+	assert.NotContains(t, cmd, "--mode rpc", "copied pi command should be a human terminal command, not the internal RPC transport")
+	assert.NotContains(t, cmd, "--no-context-files", "copied pi command should preserve Pi's normal terminal context loading")
 	assert.NotContains(t, cmd, "--model", "pi backend should use the user's ~/.pi/agent default model unless explicitly configured")
 	assert.NotContains(t, cmd, "gpt-5.5:high", "thinking level should be passed only once")
 	assert.NotContains(t, cmd, "AGENTRE_GATEWAY_TOKEN")

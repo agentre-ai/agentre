@@ -4,7 +4,7 @@
 // 详细设计见 docs/superpowers/specs/2026-05-19-project-module-design.md。
 package project_svc
 
-import "agentre/internal/model/entity/project_entity"
+import "github.com/agentre-ai/agentre/internal/model/entity/project_entity"
 
 // CreateProjectRequest 新建项目入参。
 //

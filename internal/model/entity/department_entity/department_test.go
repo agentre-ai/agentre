@@ -21,7 +21,7 @@ func TestDepartmentCheck(t *testing.T) {
 		{"invalid color", &Department{Name: "x", AccentColor: "rainbow"}, true},
 		{"empty color allowed", &Department{Name: "x", AccentColor: ""}, false},
 		{"valid agent-3", &Department{Name: "工程部", AccentColor: "agent-3"}, false},
-		{"valid extended color", &Department{Name: "设计部", AccentColor: "agent-8"}, false},
+		{"valid extended color", &Department{Name: "设计部", AccentColor: "agent-16"}, false},
 		{"neutral allowed", &Department{Name: "x", AccentColor: "neutral"}, false},
 	}
 

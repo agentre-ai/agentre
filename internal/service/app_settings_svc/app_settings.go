@@ -7,10 +7,10 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/model/entity/app_setting_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/pkg/httpgateway"
-	"agentre/internal/repository/app_setting_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/repository/app_setting_repo"
 )
 
 // AppSettingsSvc App 全局设置 + 本地 HTTP 代理生命周期。

@@ -8,10 +8,10 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 )
 
 // SyncProvider copies a local provider's metadata and API key to one paired

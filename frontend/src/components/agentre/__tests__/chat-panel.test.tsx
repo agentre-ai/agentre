@@ -95,7 +95,12 @@ vi.mock("@/hooks/use-project-tree", () => ({
     tree: [
       {
         project: { id: 1, name: "Agentre" },
-        children: [{ project: { id: 2, name: "backend" }, children: [] }],
+        children: [
+          {
+            project: { id: 2, name: "backend", color: "agent-5" },
+            children: [],
+          },
+        ],
       },
     ],
     invalidate: () => {},
@@ -107,14 +112,18 @@ vi.mock("@/hooks/use-project-tree", () => ({
 
 // makeMockSession 构造最小化的 ChatSessionDetail，只提供测试需要的字段。
 // 通过 `overrides` 注入测试想要的字段（projectId / workMode / title 等）。
-const mockSessionStore: { session: Record<string, unknown> | null } = {
+const mockSessionStore: {
+  messages: Array<Record<string, unknown>>;
+  session: Record<string, unknown> | null;
+} = {
+  messages: [],
   session: null,
 };
 
 vi.mock("@/hooks/use-chat-session", () => ({
   useChatSession: () => ({
     session: mockSessionStore.session,
-    messages: [],
+    messages: mockSessionStore.messages,
     loading: false,
     error: null,
     reload: () => Promise.resolve(),
@@ -156,7 +165,7 @@ vi.mock("../chat", async () => {
     },
     ChatTranscript: (props: Record<string, unknown>) => {
       componentMocks.chatTranscriptProps.push(props);
-      return React.createElement("div", null);
+      return React.createElement("div", { "data-testid": "chat-transcript" });
     },
   };
 });
@@ -251,11 +260,17 @@ vi.mock("../chat-panel-context-usage", () => ({
 
 // ── import after mocks ─────────────────────────────────────────────────────
 
-import { ChatPanel } from "../chat-panel";
+import { ChatPanel, computeTopVisibleAnchor } from "../chat-panel";
+import {
+  __resetChatPanelScrollStateForTesting,
+  loadTranscriptScrollState,
+} from "../chat-panel-scroll-state";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
 
 /** 清 store streams 以避免测试间串台 */
 function resetStore() {
+  __resetChatPanelScrollStateForTesting();
+  mockSessionStore.messages = [];
   useChatStreamsStore.getState().streams.clear();
   componentMocks.chatComposerProps.length = 0;
   componentMocks.chatTranscriptProps.length = 0;
@@ -284,6 +299,32 @@ function resetStore() {
   appMocks.GetChatLaunchCommand.mockReset();
   sonnerMocks.toast.error.mockClear();
   sonnerMocks.toast.success.mockClear();
+}
+
+function transcriptScroller(container: HTMLElement): HTMLElement {
+  const el = container.querySelector("section");
+  if (!el) throw new Error("transcript scroller not found");
+  Object.defineProperty(el, "clientHeight", {
+    configurable: true,
+    get: () => 480,
+  });
+  Object.defineProperty(el, "scrollHeight", {
+    configurable: true,
+    get: () => 4_000,
+  });
+  return el as HTMLElement;
+}
+
+function transcriptScrollerWithDynamicHeight(
+  container: HTMLElement,
+  scrollHeight: () => number,
+): HTMLElement {
+  const el = transcriptScroller(container);
+  Object.defineProperty(el, "scrollHeight", {
+    configurable: true,
+    get: scrollHeight,
+  });
+  return el;
 }
 
 /** 构造 ChatSessionDetail 最小形状 */
@@ -336,9 +377,11 @@ describe("ChatPanel · T17 breadcrumb 派生", () => {
     render(<ChatPanel sessionId={42} />);
 
     // 树里 id=2 的路径是 Agentre → backend
-    expect(screen.getByText("Agentre / backend")).toBeInTheDocument();
+    const projectPath = screen.getByText("Agentre / backend");
+    expect(projectPath).toHaveClass("text-agent-5");
+    expect(projectPath.previousElementSibling).toHaveClass("text-agent-5");
     // session id 也显示
-    expect(screen.getByText("sess-42")).toBeInTheDocument();
+    expect(screen.getByText("sess-42")).toHaveClass("text-muted-foreground");
   });
 
   it("session.projectId=1 时 header 显示 'Agentre'（顶级）", () => {
@@ -351,14 +394,14 @@ describe("ChatPanel · T17 breadcrumb 派生", () => {
     expect(screen.getByText("sess-10")).toBeInTheDocument();
   });
 
-  it("session.projectId=0 时 header 无 breadcrumb", () => {
+  it("session.projectId=0 时 header 仍显示 session id", () => {
     resetStore();
     mockSessionStore.session = makeSession({ id: 42, projectId: 0 });
 
     render(<ChatPanel sessionId={42} />);
 
     expect(screen.queryByText(/Agentre/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/sess-/)).not.toBeInTheDocument();
+    expect(screen.getByText("sess-42")).toBeInTheDocument();
   });
 });
 
@@ -375,6 +418,401 @@ describe("ChatPanel · transcript cwd", () => {
     expect(componentMocks.chatTranscriptProps.at(-1)?.cwd).toBe(
       "/Users/codfrm/Code/agentre/agentre",
     );
+  });
+});
+
+describe("computeTopVisibleAnchor", () => {
+  function fakeRow(id: string, top: number, bottom: number): HTMLElement {
+    return {
+      getAttribute: (name: string) => (name === "data-message-id" ? id : null),
+      getBoundingClientRect: () => ({ top, bottom }) as DOMRect,
+    } as unknown as HTMLElement;
+  }
+  function fakeContainer(top: number, rows: HTMLElement[]): HTMLElement {
+    return {
+      getBoundingClientRect: () => ({ top }) as DOMRect,
+      querySelectorAll: () => rows as unknown as NodeListOf<HTMLElement>,
+    } as unknown as HTMLElement;
+  }
+
+  it("Given rows straddling the viewport top, Then it anchors to the first row whose bottom crosses the top and records the overscroll px", () => {
+    const el = fakeContainer(100, [
+      fakeRow("1", 0, 50), // 完全在视口上方 (bottom 50 ≤ 100) → 跳过
+      fakeRow("2", 60, 140), // 第一条底边越过视口顶 → 命中
+      fakeRow("3", 140, 300),
+    ]);
+    expect(computeTopVisibleAnchor(el)).toEqual({
+      anchorId: 2,
+      anchorOffset: 40,
+    });
+  });
+
+  it("Given the top-visible row starts below the viewport top, Then anchorOffset clamps to 0", () => {
+    const el = fakeContainer(100, [fakeRow("7", 120, 300)]);
+    expect(computeTopVisibleAnchor(el)).toEqual({
+      anchorId: 7,
+      anchorOffset: 0,
+    });
+  });
+
+  it("Given rows carry data-row-key, Then the anchor includes the row key for row-precise restore", () => {
+    // 行级虚拟化下一条长消息会拆成多行;只记 anchorId 的话,恢复会塌到消息首行,
+    // 偏差可达整条消息的高度。data-row-key 让恢复端精确钉回同一行。
+    const row = {
+      getAttribute: (name: string) =>
+        name === "data-message-id"
+          ? "1"
+          : name === "data-row-key"
+            ? "message:1:tool:tool:toolu-120"
+            : null,
+      getBoundingClientRect: () => ({ top: 60, bottom: 140 }) as DOMRect,
+    } as unknown as HTMLElement;
+    expect(computeTopVisibleAnchor(fakeContainer(100, [row]))).toEqual({
+      anchorId: 1,
+      anchorOffset: 40,
+      anchorRowKey: "message:1:tool:tool:toolu-120",
+    });
+  });
+
+  it("Given no message rows, Then it returns null", () => {
+    expect(computeTopVisibleAnchor(fakeContainer(100, []))).toBeNull();
+  });
+
+  it("Given every row sits entirely above the viewport top, Then it returns null", () => {
+    const el = fakeContainer(100, [fakeRow("1", 0, 40), fakeRow("2", 40, 90)]);
+    expect(computeTopVisibleAnchor(el)).toBeNull();
+  });
+});
+
+describe("ChatPanel · transcript scroll restoration", () => {
+  it("Given a tab-scoped scroll key, When ChatPanel unmounts across routes and remounts, Then it restores the previous scrollTop", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const first = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-a" />,
+    );
+    const firstScroller = transcriptScroller(first.container);
+
+    act(() => {
+      firstScroller.scrollTop = 1_240;
+      fireEvent.scroll(firstScroller);
+    });
+
+    first.unmount();
+    const second = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-a" />,
+    );
+    const secondScroller = transcriptScroller(second.container);
+
+    expect(secondScroller.scrollTop).toBe(1_240);
+  });
+
+  it("Given saved scroll before messages load, When messages arrive after route remount, Then it restores the saved scrollTop instead of following bottom", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const first = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-a" />,
+    );
+    const firstScroller = transcriptScroller(first.container);
+
+    act(() => {
+      firstScroller.scrollTop = 1_240;
+      fireEvent.scroll(firstScroller);
+    });
+
+    first.unmount();
+    let height = 480;
+    const second = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-a" />,
+    );
+    const secondScroller = transcriptScrollerWithDynamicHeight(
+      second.container,
+      () => height,
+    );
+    act(() => {
+      secondScroller.scrollTop = 0;
+    });
+
+    act(() => {
+      mockSessionStore.messages = [
+        { blocks: [], createtime: 0, id: 1, role: "assistant" },
+      ];
+      height = 4_000;
+      second.rerender(<ChatPanel sessionId={42} scrollStateKey="chat-tab-a" />);
+    });
+
+    expect(secondScroller.scrollTop).toBe(1_240);
+  });
+
+  it("Given a tab resumes at a tall bottom position, When virtualized height briefly collapses, Then the collapsed scroll event does not overwrite the saved position", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    let height = 8_392;
+    const view = render(
+      <ChatPanel active sessionId={42} scrollStateKey="chat-tab-collapse" />,
+    );
+    const scroller = transcriptScrollerWithDynamicHeight(
+      view.container,
+      () => height,
+    );
+
+    act(() => {
+      scroller.scrollTop = 7_912;
+      fireEvent.scroll(scroller);
+    });
+    expect(loadTranscriptScrollState("chat-tab-collapse")).toEqual({
+      atBottom: true,
+      scrollTop: 7_912,
+    });
+
+    view.rerender(
+      <ChatPanel
+        active={false}
+        sessionId={42}
+        scrollStateKey="chat-tab-collapse"
+      />,
+    );
+    view.rerender(
+      <ChatPanel active sessionId={42} scrollStateKey="chat-tab-collapse" />,
+    );
+
+    act(() => {
+      height = 1_096;
+      scroller.scrollTop = 896;
+      fireEvent.scroll(scroller);
+    });
+
+    expect(loadTranscriptScrollState("chat-tab-collapse")).toEqual({
+      atBottom: true,
+      scrollTop: 7_912,
+    });
+  });
+
+  it("Given a tab resumes while virtualized height is collapsed, When active-follow runs, Then it does not overwrite the saved bottom position", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    let height = 8_392;
+    const view = render(
+      <ChatPanel
+        active
+        sessionId={42}
+        scrollStateKey="chat-tab-active-follow"
+      />,
+    );
+    const scroller = transcriptScrollerWithDynamicHeight(
+      view.container,
+      () => height,
+    );
+
+    act(() => {
+      scroller.scrollTop = 7_912;
+      fireEvent.scroll(scroller);
+    });
+    expect(loadTranscriptScrollState("chat-tab-active-follow")).toEqual({
+      atBottom: true,
+      scrollTop: 7_912,
+    });
+
+    view.rerender(
+      <ChatPanel
+        active={false}
+        sessionId={42}
+        scrollStateKey="chat-tab-active-follow"
+      />,
+    );
+    act(() => {
+      height = 200;
+    });
+    view.rerender(
+      <ChatPanel
+        active
+        sessionId={42}
+        scrollStateKey="chat-tab-active-follow"
+      />,
+    );
+
+    expect(loadTranscriptScrollState("chat-tab-active-follow")).toEqual({
+      atBottom: true,
+      scrollTop: 7_912,
+    });
+  });
+
+  it("Given a tab ignored collapsed scroll events, When the virtualized height recovers, Then it restores the saved position before saving again", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    let height = 8_392;
+    const view = render(
+      <ChatPanel active sessionId={42} scrollStateKey="chat-tab-recover" />,
+    );
+    const scroller = transcriptScrollerWithDynamicHeight(
+      view.container,
+      () => height,
+    );
+
+    act(() => {
+      scroller.scrollTop = 7_912;
+      fireEvent.scroll(scroller);
+    });
+
+    view.rerender(
+      <ChatPanel
+        active={false}
+        sessionId={42}
+        scrollStateKey="chat-tab-recover"
+      />,
+    );
+    view.rerender(
+      <ChatPanel active sessionId={42} scrollStateKey="chat-tab-recover" />,
+    );
+
+    act(() => {
+      height = 1_096;
+      scroller.scrollTop = 896;
+      fireEvent.scroll(scroller);
+    });
+    expect(loadTranscriptScrollState("chat-tab-recover")).toEqual({
+      atBottom: true,
+      scrollTop: 7_912,
+    });
+
+    act(() => {
+      height = 8_392;
+      scroller.scrollTop = 896;
+      fireEvent.scroll(scroller);
+    });
+
+    expect(scroller.scrollTop).toBe(7_912);
+    expect(loadTranscriptScrollState("chat-tab-recover")).toEqual({
+      atBottom: true,
+      scrollTop: 7_912,
+    });
+  });
+
+  it("Given a tab is visible at the top while virtualized height recovers, When no scroll event fires, Then it proactively restores the saved position", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    let height = 8_392;
+    const view = render(
+      <ChatPanel active sessionId={42} scrollStateKey="chat-tab-raf-restore" />,
+    );
+    const scroller = transcriptScrollerWithDynamicHeight(
+      view.container,
+      () => height,
+    );
+
+    act(() => {
+      scroller.scrollTop = 7_912;
+      fireEvent.scroll(scroller);
+    });
+
+    view.rerender(
+      <ChatPanel
+        active={false}
+        sessionId={42}
+        scrollStateKey="chat-tab-raf-restore"
+      />,
+    );
+    act(() => {
+      height = 200;
+      scroller.scrollTop = 0;
+    });
+    view.rerender(
+      <ChatPanel active sessionId={42} scrollStateKey="chat-tab-raf-restore" />,
+    );
+
+    expect(scroller.style.visibility).toBe("hidden");
+
+    act(() => {
+      height = 8_392;
+    });
+
+    await waitFor(() => {
+      expect(scroller.scrollTop).toBe(7_912);
+    });
+    expect(scroller.style.visibility).toBe("");
+  });
+
+  it("Given a new tab starts at the bottom on collapsed virtualized height, When height grows, Then it keeps following the bottom", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    let height = 1_096;
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-new-bottom" />,
+    );
+    const scroller = transcriptScrollerWithDynamicHeight(
+      view.container,
+      () => height,
+    );
+    act(() => {
+      mockSessionStore.messages = [
+        { blocks: [], createtime: 0, id: 1, role: "assistant" },
+      ];
+      view.rerender(
+        <ChatPanel sessionId={42} scrollStateKey="chat-tab-new-bottom" />,
+      );
+    });
+
+    expect(loadTranscriptScrollState("chat-tab-new-bottom")).toEqual({
+      atBottom: true,
+      scrollTop: 616,
+    });
+
+    act(() => {
+      height = 8_392;
+      fireEvent.scroll(scroller);
+    });
+
+    expect(scroller.scrollTop).toBe(7_912);
+    expect(loadTranscriptScrollState("chat-tab-new-bottom")).toEqual({
+      atBottom: true,
+      scrollTop: 7_912,
+    });
+  });
+
+  it("Given a different tab-scoped scroll key, When the same session opens in a new tab, Then it does not restore the old tab scrollTop", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const first = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-a" />,
+    );
+    const firstScroller = transcriptScroller(first.container);
+
+    act(() => {
+      firstScroller.scrollTop = 1_240;
+      fireEvent.scroll(firstScroller);
+    });
+
+    first.unmount();
+    const second = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-b" />,
+    );
+    const secondScroller = transcriptScroller(second.container);
+
+    expect(secondScroller.scrollTop).toBe(0);
+  });
+
+  it("Given the user scrolls away from the bottom, When the transcript is rendered, Then a back-to-bottom control appears and returns to the bottom", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const { container } = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-a" />,
+    );
+    const scroller = transcriptScroller(container);
+
+    act(() => {
+      scroller.scrollTop = 300;
+      fireEvent.scroll(scroller);
+    });
+
+    const button = await screen.findByRole("button", {
+      name: "Back to bottom",
+    });
+    fireEvent.click(button);
+
+    expect(scroller.scrollTop).toBe(3_520);
+    expect(
+      screen.queryByRole("button", { name: "Back to bottom" }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -844,7 +1282,7 @@ describe("ChatPanel · Codex collaboration mode", () => {
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
   });
 
-  it("/goal objective sets Codex thread goal instead of sending a user message", async () => {
+  it("/goal objective sets Codex thread goal and starts a user turn", async () => {
     resetStore();
     componentMocks.capsSwitchableDuringTurn = false;
     componentMocks.capsAllowedModes = ["default", "plan"];
@@ -855,6 +1293,12 @@ describe("ChatPanel · Codex collaboration mode", () => {
     });
     appMocks.SetChatGoal.mockResolvedValue({
       goal: { objective: "ship rpc", status: "active", tokensUsed: 0 },
+    });
+    appMocks.SendChatMessage.mockResolvedValue({
+      assistantMessageId: 1001,
+      sessionId: 42,
+      stream: "chat:event:42:1001",
+      userMessageId: 1000,
     });
 
     render(<ChatPanel sessionId={42} />);
@@ -873,7 +1317,15 @@ describe("ChatPanel · Codex collaboration mode", () => {
         status: "active",
       });
     });
-    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(appMocks.SendChatMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "plan",
+          sessionId: 42,
+          text: "ship rpc",
+        }),
+      );
+    });
   });
 
   it("/goal clear calls Codex clear goal RPC", async () => {
@@ -902,7 +1354,43 @@ describe("ChatPanel · Codex collaboration mode", () => {
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
   });
 
-  it("/goal objective in a new Codex chat starts a goal session before any user message", async () => {
+  it("/goal is rejected while the Codex turn is still streaming", async () => {
+    resetStore();
+    componentMocks.capsSwitchableDuringTurn = false;
+    componentMocks.capsAllowedModes = ["default", "plan"];
+    mockSessionStore.session = makeSession({
+      backendType: "codex",
+      id: 42,
+      permissionMode: "default",
+    });
+    useChatStreamsStore.getState().openStream({
+      name: "chat:stream:goal-wait",
+      sessionId: 42,
+      assistantMessageId: 99,
+      streamStartedAt: Date.now(),
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+
+    act(() => {
+      submit?.("/goal complete");
+    });
+
+    expect(
+      await screen.findByText(
+        "Wait for this turn to finish before changing the goal",
+      ),
+    ).toBeInTheDocument();
+    expect(appMocks.SetChatGoal).not.toHaveBeenCalled();
+    expect(appMocks.ClearChatGoal).not.toHaveBeenCalled();
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    expect(appMocks.EnqueueChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("/goal objective in a new Codex chat creates the goal session and starts a user turn", async () => {
     resetStore();
     componentMocks.capsSwitchableDuringTurn = false;
     componentMocks.capsAllowedModes = ["default", "plan"];
@@ -911,6 +1399,12 @@ describe("ChatPanel · Codex collaboration mode", () => {
     appMocks.StartChatGoal.mockResolvedValue({
       sessionId: 123,
       goal: { objective: "ship rpc", status: "active", tokensUsed: 0 },
+    });
+    appMocks.SendChatMessage.mockResolvedValue({
+      assistantMessageId: 1001,
+      sessionId: 123,
+      stream: "chat:event:123:1001",
+      userMessageId: 1000,
     });
 
     render(
@@ -947,7 +1441,15 @@ describe("ChatPanel · Codex collaboration mode", () => {
       });
     });
     expect(onSessionCreated).toHaveBeenCalledWith(123, 7);
-    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(appMocks.SendChatMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permissionMode: "plan",
+          sessionId: 123,
+          text: "ship rpc",
+        }),
+      );
+    });
     expect(appMocks.SetChatGoal).not.toHaveBeenCalled();
   });
 

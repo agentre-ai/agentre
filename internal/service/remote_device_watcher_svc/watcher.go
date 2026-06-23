@@ -11,8 +11,8 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/daemon/client"
-	"agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 )
 
 // WatcherConfig 控制单 watcher 行为。

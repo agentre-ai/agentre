@@ -8,9 +8,10 @@ import (
 	"strings"
 	"sync"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/paths"
-	"agentre/pkg/piagent"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent/mcpbridge"
+	"github.com/agentre-ai/agentre/internal/pkg/paths"
+	"github.com/agentre-ai/agentre/pkg/piagent"
 )
 
 type stream interface {
@@ -152,6 +153,21 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 	if model == "" {
 		model = defaultModelForBackend(req.Backend)
 	}
+	// MCP 注入：有 RunRequest.MCPServers 时，materialize 内嵌桥扩展 + 渲染会话私有
+	// config，扩展路径走 --extension、config 路径走 AGENTRE_PI_MCP_CONFIG env。
+	var extPath string
+	if len(req.MCPServers) > 0 {
+		p, err := mcpbridge.Materialize()
+		if err != nil {
+			return nil, err
+		}
+		cfgPath, err := mcpbridge.RenderConfig(req.MCPServers, req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		extPath = p
+		env = withEnv(env, mcpbridge.ConfigEnvVar, cfgPath)
+	}
 	opts := []piagent.Option{
 		piagent.WithBinary(binary),
 		piagent.WithCwd(cwd),
@@ -159,6 +175,9 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 		piagent.WithModel(model),
 		piagent.WithSystemPrompt(req.SystemPrompt),
 		piagent.WithThinking(req.Backend.ReasoningEffort),
+	}
+	if extPath != "" {
+		opts = append(opts, piagent.WithExtension(extPath))
 	}
 	// 跨 turn 上下文：把 session 存到专用目录，并按 chat session id 解析出确定的
 	// session 文件路径，Pi 第一轮新建、后续轮 resume。解析目录失败时退化为不
@@ -177,4 +196,14 @@ func SetSessionFactoryForTest(fn func(agentruntime.RunRequest, map[string]string
 	old := sessionFactory
 	sessionFactory = fn
 	return func() { sessionFactory = old }
+}
+
+// withEnv 返回 env 的副本并设置一个键，避免就地改调用方的 map。
+func withEnv(env map[string]string, key, val string) map[string]string {
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		out[k] = v
+	}
+	out[key] = val
+	return out
 }

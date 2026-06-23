@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 // PlanWriter 抽象 PlanUpdated 事件的持久化落点。chat_svc 实现把它写到

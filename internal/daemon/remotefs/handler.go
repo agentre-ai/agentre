@@ -7,9 +7,9 @@ import (
 	"context"
 	"encoding/json"
 
-	"agentre/internal/daemon/rpc"
-	"agentre/internal/pkg/remotefs/pathguard"
-	"agentre/internal/pkg/remotefs/wire"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/pkg/remotefs/pathguard"
+	"github.com/agentre-ai/agentre/internal/pkg/remotefs/wire"
 )
 
 // Options 注入测试 hook。生产用 NewHandlers(Options{}) 全用默认。

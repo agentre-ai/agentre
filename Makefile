@@ -1,4 +1,4 @@
-.PHONY: run dev build agentred agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check
+.PHONY: run dev build agentred agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-scratch
 
 APP_NAME := Agentre
 VERSION ?= 0.1.0
@@ -13,10 +13,12 @@ WAILS ?= $(shell command -v wails 2>$(NULLDEV) || printf "%s/bin/wails" "$$(go e
 endif
 COMMIT_ID := $(shell git rev-parse --short HEAD 2>$(NULLDEV) || echo unknown)
 VERSION_PKG := github.com/cago-frame/cago/configs
-BUILDINFO_PKG := agentre/internal/buildinfo
+BUILDINFO_PKG := github.com/agentre-ai/agentre/internal/buildinfo
 LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION) -X $(BUILDINFO_PKG).CommitID=$(COMMIT_ID)
 FRONTEND_DIR := frontend
 BACKEND_PKGS := . ./cmd/... ./internal/... ./migrations ./pkg/...
+E2E_SPEC ?=
+
 MACOS_APP_INSTALL_DIR ?= /Applications
 PREFIX ?= /usr/local
 WAILS_PLATFORM ?=
@@ -117,6 +119,17 @@ test-backend:
 # 运行前端测试
 test-frontend: generate
 	cd $(FRONTEND_DIR) && pnpm test
+
+# E2E:Playwright 驱动真实 wails dev(-tags e2e 的确定性 fake runtime)跑 GUI 端到端。
+# 详见 docs/e2e-harness-guide.md。一次性装依赖+浏览器:cd e2e && pnpm run setup(CI 在独立
+# 步骤装,故这里不重复)。编排与收尾清理(回收残留 vite、删临时目录)都在 e2e/run-e2e.mjs
+# 里用 Node 跨平台完成;配方只做 shell 无关的 cd && pnpm,cmd/sh 皆可。
+e2e:
+	cd e2e && pnpm test
+
+# 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 docs/e2e-harness-guide.md。
+e2e-scratch:
+	cd e2e && pnpm run test:scratch
 
 # 测试覆盖率
 test-cover:

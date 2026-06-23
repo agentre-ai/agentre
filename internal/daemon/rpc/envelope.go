@@ -11,7 +11,7 @@ package rpc
 import (
 	"encoding/json"
 
-	"agentre/internal/pkg/jsonrpc"
+	"github.com/agentre-ai/agentre/internal/pkg/jsonrpc"
 )
 
 // Frame is the on-wire JSON-RPC 2.0 message. A single shape carries

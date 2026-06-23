@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	"agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 )
 
 func itoa(i int64) string { return strconv.FormatInt(i, 10) }

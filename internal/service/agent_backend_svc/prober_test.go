@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/repository/llm_provider_repo"
-	"agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
 )
 
 func TestBuildClaudeCodeEnv(t *testing.T) {
@@ -161,6 +161,39 @@ func TestBuildPiAgentProbeModel(t *testing.T) {
 
 			So(model, ShouldEqual, "")
 		})
+	})
+}
+
+// TestResolveCLIProbeModel 锁住「Test 连通性下发的模型」与 chat-path ccBuildClientOpts
+// 同优先级,避免 Test 与实际 chat run 漂移（agent-backend.md §2.3 不变量）：
+// provider/gateway 模型(deps.Model)→ claudecode 后端 DefaultModel → ""(CLI 默认)。
+func TestResolveCLIProbeModel(t *testing.T) {
+	cc := func(model string) *agent_backend_entity.AgentBackend {
+		return &agent_backend_entity.AgentBackend{
+			Type:         string(agent_backend_entity.TypeClaudeCode),
+			DefaultModel: model,
+		}
+	}
+
+	Convey("claudecode CLI 登录态(deps.Model 空) → 用后端 DefaultModel", t, func() {
+		So(resolveCLIProbeModel(cc("claude-fable-5"), ProbeDeps{}), ShouldEqual, "claude-fable-5")
+	})
+	Convey("claudecode 绑 provider(deps.Model 非空) → provider 优先,忽略 DefaultModel", t, func() {
+		So(resolveCLIProbeModel(cc("claude-fable-5"), ProbeDeps{Model: "glm-5.1"}), ShouldEqual, "glm-5.1")
+	})
+	Convey("claudecode 两者皆空 → 空(走 CLI 默认)", t, func() {
+		So(resolveCLIProbeModel(cc(""), ProbeDeps{}), ShouldEqual, "")
+	})
+	Convey("claudecode DefaultModel 只有空白 → trim 后空", t, func() {
+		So(resolveCLIProbeModel(cc("   "), ProbeDeps{}), ShouldEqual, "")
+	})
+	Convey("codex 不吃 DefaultModel 兜底(实体层本就禁止),deps 空 → 空", t, func() {
+		codex := &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex)}
+		So(resolveCLIProbeModel(codex, ProbeDeps{}), ShouldEqual, "")
+	})
+	Convey("piagent → buildPiAgentProbeModel(当前为空)", t, func() {
+		pi := &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+		So(resolveCLIProbeModel(pi, ProbeDeps{Model: "ignored"}), ShouldEqual, "")
 	})
 }
 

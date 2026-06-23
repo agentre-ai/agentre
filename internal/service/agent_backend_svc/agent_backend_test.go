@@ -11,17 +11,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/httpgateway"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/agent_repo/mock_agent_repo"
-	"agentre/internal/repository/llm_provider_repo"
-	"agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
-	"agentre/internal/service/remote_device_svc"
-	"agentre/internal/service/remote_device_svc/mock_remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
 func setupSvcTest(t *testing.T) (
@@ -168,6 +168,25 @@ func TestCreateBackend(t *testing.T) {
 			})
 			assert.NoError(t, err)
 			assert.Equal(t, int64(43), resp.Item.ID)
+		})
+
+		convey.Convey("claudecode CLI 登录态保存 default_model", func() {
+			backendMock.EXPECT().FindByName(gomock.Any(), "cc").Return(nil, nil)
+			backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
+					assert.Equal(t, "", b.LLMProviderKey)
+					assert.Equal(t, "claude-fable-5", b.DefaultModel)
+					b.ID = 46
+					return nil
+				})
+
+			resp, err := svc.Create(ctx, &CreateBackendRequest{
+				Type:         string(agent_backend_entity.TypeClaudeCode),
+				Name:         "cc",
+				DefaultModel: "claude-fable-5",
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, "claude-fable-5", resp.Item.DefaultModel)
 		})
 
 		convey.Convey("codex provider 类型不匹配", func() {

@@ -7,7 +7,7 @@ import (
 	"github.com/cago-frame/agents/agent"
 	"github.com/cago-frame/agents/agent/blocks"
 
-	"agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 )
 
 // translate 把单个 cago agent.Event 翻译成 0/1 个新 sealed agentruntime.Event。

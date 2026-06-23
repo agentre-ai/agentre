@@ -30,6 +30,7 @@ type State = {
   departments: OrgDepartment[];
   agents: OrgAgent[];
   backends: agent_backend_svc.BackendItem[];
+  availableTools: string[];
 };
 
 const initialState: State = {
@@ -38,6 +39,7 @@ const initialState: State = {
   departments: [],
   agents: [],
   backends: [],
+  availableTools: [],
 };
 
 export function useOrgData() {
@@ -56,6 +58,7 @@ export function useOrgData() {
         departments: res.departments ?? [],
         agents: res.agents ?? [],
         backends: backendsRes.items ?? [],
+        availableTools: res.availableTools ?? [],
       });
     } catch (err) {
       setState((s) => ({ ...s, loading: false, error: messageOf(err) }));

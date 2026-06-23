@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
 
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"

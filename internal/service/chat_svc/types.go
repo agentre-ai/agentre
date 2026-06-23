@@ -2,8 +2,10 @@
 package chat_svc
 
 import (
-	"agentre/internal/service/chat_svc/blocks"
-	"agentre/internal/service/chat_svc/view"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/view"
 )
 
 // Chat Wails 事件名形如 "chat:event:<sessionID>:<assistantMessageID>"。
@@ -75,6 +77,10 @@ const (
 	// (该自主轮的 per-turn 事件名,前端 openStream 后续 chunk/done 走它实时渲染)。
 	// Trigger="background_task"。前端渲染 AutoTriggerBanner +「自动」badge。
 	StreamAutonomousStarted ChatStreamEventKind = "autonomous_started"
+	// StreamSubagentActivityStarted:后台 subagent 在空闲态开始产出内部活动。前端据此对
+	// 发起消息(LaunchMessageID)重开 per-turn 流(Stream),把活动块嵌套渲染回 AgentSpawnCard。
+	// 与 StreamAutonomousStarted 不同:不插入新 assistant 行(发起消息已存在)。
+	StreamSubagentActivityStarted ChatStreamEventKind = "subagent_activity_started"
 )
 
 // ChatStreamEvent 是 EventsEmit 出去的统一 payload。
@@ -148,6 +154,11 @@ type ChatStreamEvent struct {
 	// AssistantMessage 复用上面的字段携带要插入的新 assistant 行。
 	Stream  string `json:"stream,omitempty"`
 	Trigger string `json:"trigger,omitempty"`
+
+	// StreamSubagentActivityStarted 事件填充：LaunchMessageID 是后台 subagent 所属的
+	// 发起消息 ID,前端据此定位 AgentSpawnCard 并重开 per-turn 流(Stream 字段)。
+	// ToolUseID 复用上方字段,标识具体的 subagent tool_use block。
+	LaunchMessageID int64 `json:"launchMessageId,omitempty"`
 
 	// StreamAutonomousStarted 时,若该自主轮由后台命令完成触发,带上完成任务身份,
 	// 前端据此把对应 subagent_state(上一条消息里)即时翻成 completed/failed。
@@ -246,6 +257,9 @@ type ChatBlock struct {
 	// tool_permission_request block 专用：工具审批载荷与决策状态。
 	ToolPermission *ChatBlockToolPermission `json:"toolPermission,omitempty"`
 
+	// tool_approval block 专用：agent 内置工具(org / group_create / workflow 等)写操作审批卡。
+	ToolApproval *ChatBlockToolApproval `json:"toolApproval,omitempty"`
+
 	// Canonical 是 runtime translator 算出的统一工具识别投影 — wire 形态由
 	// chat_svc/view/CanonicalDTO 提供。前端按 kind 分发到 canonical-tool/<kind>/card.tsx。
 	// Live emit 路径:dispatcher_emitter 从 handler m["canonical"] 转;
@@ -307,6 +321,17 @@ type ChatBlockToolPermission struct {
 	AlwaysAllow bool           `json:"alwaysAllow,omitempty"`
 }
 
+// ChatBlockToolApproval agent 内置工具(org / group_create / workflow 等)写操作审批卡的前端投影。
+// ToolKey 标识来源工具,前端据此选标题/文案与 approved 后处理。
+type ChatBlockToolApproval struct {
+	ToolKey   string         `json:"toolKey"`
+	RequestID string         `json:"requestId"`
+	ToolName  string         `json:"toolName"`
+	ToolInput map[string]any `json:"toolInput,omitempty"`
+	Status    string         `json:"status"`
+	Result    string         `json:"result,omitempty"`
+}
+
 // ChatBlockSubagent 是 claudecode.SubagentMeta / agentruntime.SubagentInfo 在前端投影里的镜像。
 //
 // task_started 给到完整 prompt / subagent_type；task_progress 阶段性带 last_tool_name + cumulative usage；
@@ -351,6 +376,8 @@ type ChatSessionLite struct {
 	Status         string `json:"status"`
 	NeedsAttention bool   `json:"needsAttention"`
 	LastMessageAt  int64  `json:"lastMessageAt"`
+	GroupID        int64  `json:"groupId,omitempty"`
+	GroupTitle     string `json:"groupTitle,omitempty"`
 	// LastReadAt 由 chat_svc.MarkSessionRead 推进；前端 sidebar 折叠态 attention bubble 用
 	// LastMessageAt > LastReadAt 判定「未读」。
 	LastReadAt int64 `json:"lastReadAt"`
@@ -373,6 +400,11 @@ type ChatSessionDetail struct {
 	LLMProviderType string `json:"llmProviderType"`
 	Title           string `json:"title"`
 	AgentStatus     string `json:"agentStatus"`
+	// ActiveStream 仅在 LoadSession 时填:该会话有正在跑的 turn 时,给出其 per-turn
+	// wails 事件名("chat:event:<sessionID>:<assistantMessageID>"),让中途打开本会话的
+	// 前端 openStream 重挂到实时流。群聊成员轮 / 自主轮等"非前端发起"的 turn 没有 Send
+	// 响应入口,只能靠这个字段重挂。无活跃 turn 时为空(omitempty),前端不重挂。
+	ActiveStream string `json:"activeStream,omitempty"`
 	// NeedsAttention 是由 AgentStatus=="waiting" 派生的兼容字段，不单独持久化。
 	// 前端 toolbar 同时叠 displayStatus 兜底：即便 session_status stream 事件丢失，
 	// LoadSession 拉到这个字段为 true 也能把状态翻成橙色 WAITING。
@@ -404,6 +436,9 @@ type ChatSessionDetail struct {
 	// ProjectID = 0 表示自由会话；> 0 时受 project_svc 管控。
 	// 前端 ChatPanel 用它派生 breadcrumb 路径。
 	ProjectID int64 `json:"projectId,omitempty"`
+	GroupID   int64 `json:"groupId,omitempty"`
+	// GroupTitle 是群聊 backing session 的来源群名。普通会话为空。
+	GroupTitle string `json:"groupTitle,omitempty"`
 }
 
 type ChatAgentItem struct {
@@ -417,16 +452,19 @@ type ChatAgentItem struct {
 	// （codex / builtin）一律留空。前端新会话场景下用它作为 pill 起手值兜底，并把
 	// 同值随 SendChatMessage.permissionMode 透回，让 chat_svc.createPermissionMode
 	// 的「raw 非空就直接用」分支照样落到管理员预设上。
-	DefaultPermissionMode string            `json:"defaultPermissionMode"`
-	Chattable             bool              `json:"chattable"`
-	Pinned                bool              `json:"pinned"`
-	ChattableHint         string            `json:"chattableHint"`
-	ActiveCount           int               `json:"activeCount"`
-	RecentCount           int               `json:"recentCount"`
-	TotalSessions         int64             `json:"totalSessions"`
-	SessionIDs            []int64           `json:"sessionIds"`
-	Sessions              []ChatSessionLite `json:"sessions"`
-	AttentionSessions     []ChatSessionLite `json:"attentionSessions"`
+	DefaultPermissionMode string `json:"defaultPermissionMode"`
+	Chattable             bool   `json:"chattable"`
+	Pinned                bool   `json:"pinned"`
+	// SupportsGroup 报告该 agent 的后端是否声明 CapMCPTools（可作为群聊主持人/成员）。
+	// MVP 仅 claudecode 为 true。前端「新建群聊」picker 用它过滤候选（OCP，不写 backendType 字面量）。
+	SupportsGroup     bool              `json:"supportsGroup"`
+	ChattableHint     string            `json:"chattableHint"`
+	ActiveCount       int               `json:"activeCount"`
+	RecentCount       int               `json:"recentCount"`
+	TotalSessions     int64             `json:"totalSessions"`
+	SessionIDs        []int64           `json:"sessionIds"`
+	Sessions          []ChatSessionLite `json:"sessions"`
+	AttentionSessions []ChatSessionLite `json:"attentionSessions"`
 
 	// 远端 device 归属 — 给前端 DeviceTag 渲染本地/远端 chip 用。
 	// 空 DeviceID = 本地 backend；非空 = paired_agentred.id 字符串化。
@@ -485,6 +523,28 @@ type ListAgentSessionsResponse struct {
 	HasMore  bool              `json:"hasMore"`
 }
 
+type SessionPurpose string
+
+const (
+	SessionPurposeGroupMember SessionPurpose = "group_member"
+	// SessionPurposeSubagentCall 子 agent 调用的一次性隔离会话(每次新建, 不复用, group_id=0)。
+	// 值与落库的 chat_entity.SessionPurposeSubagent 同源, 防两处字面量漂移。
+	SessionPurposeSubagentCall SessionPurpose = SessionPurpose(chat_entity.SessionPurposeSubagent)
+)
+
+type EnsureSessionRequest struct {
+	Purpose   SessionPurpose
+	AgentID   int64
+	ProjectID int64
+	GroupID   int64
+	Title     string
+}
+
+type EnsureSessionResponse struct {
+	SessionID int64
+	Created   bool
+}
+
 type SendRequest struct {
 	SessionID int64       `json:"sessionId"` // 0 = 新建
 	AgentID   int64       `json:"agentId"`
@@ -498,11 +558,47 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
+	// MCPServers 透传到 RunRequest.MCPServers(注入额外 MCP tool server)。群聊用; 单聊空。
+	MCPServers []agentruntime.MCPServerSpec `json:"-"`
+	// SystemPromptSuffix 追加到 RunRequest.SystemPrompt 之后(群上下文/角色/roster)。群聊用; 单聊空。
+	SystemPromptSuffix string `json:"-"`
+	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(群成员轮经 scheduler dispatch),
+	// 需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话已打开(可能在后台)
+	// 的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者(前端 Send 响应)能拿到流名。
+	// 前端 Send 默认 false: 发起者自己已从响应拿到流名, 重复推会双开流。群聊用; 单聊空。
+	EmitTurnStartedBypass bool `json:"-"`
 }
 type SendImage struct {
 	Name    string `json:"name,omitempty"`
 	DataURL string `json:"dataUrl"`
 }
+
+// ── 拖拽图片读取 (ReadDroppedImages) ─────────────────────────────────────────
+
+const (
+	DroppedImageKindImage = "image"
+	DroppedImageKindPath  = "path"
+)
+
+type ReadDroppedImagesRequest struct {
+	Paths []string `json:"paths"`
+}
+
+type ReadDroppedImagesResponse struct {
+	Items []DroppedImageItem `json:"items"`
+}
+
+// DroppedImageItem 是单个拖入路径的归类结果。
+//   - Kind=="image": 可作图片附件,Name/MediaType/DataURL 给出。
+//   - Kind=="path":  降级为纯路径(目录/超限/类型不符/读失败),调用方应把 Path 当文本插入。
+type DroppedImageItem struct {
+	Path      string `json:"path"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name,omitempty"`
+	MediaType string `json:"mediaType,omitempty"`
+	DataURL   string `json:"dataUrl,omitempty"` // 空 for Kind==path
+}
+
 type SendResponse struct {
 	SessionID          int64  `json:"sessionId"`
 	UserMessageID      int64  `json:"userMessageId"`

@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/issue_entity"
-	"agentre/internal/repository/issue_repo"
-	"agentre/internal/repository/issue_repo/mock_issue_repo"
-	"agentre/internal/service/issue_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo/mock_issue_repo"
+	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 )
 
 func setupIssueSvc(t *testing.T) (

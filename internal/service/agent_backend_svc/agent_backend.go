@@ -11,14 +11,14 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/pkg/httpgateway"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/llm_provider_repo"
-	"agentre/internal/service/remote_device_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 )
 
 const (
@@ -116,6 +116,7 @@ func (s *agentBackendSvc) Create(ctx context.Context, req *CreateBackendRequest)
 		EnvJSON:               strings.TrimSpace(req.EnvJSON),
 		ReasoningEffort:       strings.TrimSpace(req.ReasoningEffort),
 		DefaultPermissionMode: strings.TrimSpace(req.DefaultPermissionMode),
+		DefaultModel:          strings.TrimSpace(req.DefaultModel),
 		DeviceID:              strings.TrimSpace(req.DeviceID),
 		Status:                consts.ACTIVE,
 		Createtime:            now,
@@ -179,6 +180,7 @@ func (s *agentBackendSvc) Update(ctx context.Context, req *UpdateBackendRequest)
 	existing.EnvJSON = strings.TrimSpace(req.EnvJSON)
 	existing.ReasoningEffort = strings.TrimSpace(req.ReasoningEffort)
 	existing.DefaultPermissionMode = strings.TrimSpace(req.DefaultPermissionMode)
+	existing.DefaultModel = strings.TrimSpace(req.DefaultModel)
 	existing.DeviceID = strings.TrimSpace(req.DeviceID)
 	existing.Updatetime = s.now()
 
@@ -361,6 +363,7 @@ func (s *agentBackendSvc) resolveBackendForTest(ctx context.Context, req *TestBa
 	out.EnvJSON = strings.TrimSpace(req.EnvJSON)
 	out.ReasoningEffort = strings.TrimSpace(req.ReasoningEffort)
 	out.DefaultPermissionMode = strings.TrimSpace(req.DefaultPermissionMode)
+	out.DefaultModel = strings.TrimSpace(req.DefaultModel)
 	return out, nil
 }
 
@@ -458,6 +461,7 @@ func toItem(ctx context.Context, b *agent_backend_entity.AgentBackend, p *llm_pr
 		EnvJSON:               b.EnvJSON,
 		ReasoningEffort:       b.ReasoningEffort,
 		DefaultPermissionMode: b.DefaultPermissionMode,
+		DefaultModel:          b.DefaultModel,
 		DeviceID:              b.DeviceID,
 		Createtime:            b.Createtime,
 		Updatetime:            b.Updatetime,

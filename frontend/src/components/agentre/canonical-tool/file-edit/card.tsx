@@ -5,6 +5,7 @@ import { Check, ChevronRight, LoaderCircle, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { statusConfig } from "../../types";
+import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type { CanonicalDTO } from "../types";
 
@@ -16,10 +17,11 @@ export const FileEditCard: React.FC<CanonicalCardProps> = ({
   toolBlock,
   resultBlock,
   cwd,
+  uiStateKey,
 }) => {
   const { t } = useTranslation();
   const canonical = (toolBlock as { canonical?: CanonicalDTO }).canonical;
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = useTranscriptBooleanState(uiStateKey, false);
 
   if (!canonical || canonical.kind !== "file.edit") return null;
   const files = canonical.fileEdit.files;

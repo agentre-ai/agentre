@@ -13,7 +13,9 @@ export type Capability =
   | "fork_session"
   | "report_context_window"
   | "compact"
-  | "goal";
+  | "goal"
+  | "mcp_tools"
+  | "skills";
 
 // PermissionModeMeta 镜像后端 capability.PermissionModeMeta:
 //   - allowedModes: runtime 接受的 mode 集合(claudecode = 4 档, codex = 2 档,

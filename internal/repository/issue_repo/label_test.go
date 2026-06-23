@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/repository/issue_repo"
+	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 )
 
 func TestLabelList(t *testing.T) {

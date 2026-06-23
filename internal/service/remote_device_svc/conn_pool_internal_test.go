@@ -33,6 +33,22 @@ func (f *fakeClient) Close() error {
 	return nil
 }
 
+func expectEntryEvictedAfterDrop(t *testing.T, p *pool, e *entry, fc *fakeClient) {
+	t.Helper()
+	go p.watchClient(e)
+	_ = fc.Close()
+
+	select {
+	case <-e.closedCh:
+	case <-time.After(time.Second):
+		t.Fatal("entry.closedCh not closed")
+	}
+	p.mu.Lock()
+	_, stillIn := p.entries[e.deviceID]
+	p.mu.Unlock()
+	So(stillIn, ShouldBeFalse)
+}
+
 func TestPool_WatchClient_EvictsOnDrop(t *testing.T) {
 	Convey("daemon drop closes closedCh and evicts entry", t, func() {
 		p := &pool{
@@ -47,19 +63,7 @@ func TestPool_WatchClient_EvictsOnDrop(t *testing.T) {
 			refcount: 1,
 		}
 		p.entries[7] = e
-		go p.watchClient(e)
-
-		_ = fc.Close() // simulate daemon drop
-
-		select {
-		case <-e.closedCh:
-		case <-time.After(time.Second):
-			t.Fatal("entry.closedCh not closed")
-		}
-		p.mu.Lock()
-		_, stillIn := p.entries[7]
-		p.mu.Unlock()
-		So(stillIn, ShouldBeFalse)
+		expectEntryEvictedAfterDrop(t, p, e, fc)
 	})
 }
 
@@ -112,17 +116,6 @@ func TestPool_RedialsAfterDrop(t *testing.T) {
 			refcount: 1,
 		}
 		p.entries[9] = e
-		go p.watchClient(e)
-		_ = fc.Close()
-
-		select {
-		case <-e.closedCh:
-		case <-time.After(time.Second):
-			t.Fatal("watchClient did not finish")
-		}
-		p.mu.Lock()
-		_, stillIn := p.entries[9]
-		p.mu.Unlock()
-		So(stillIn, ShouldBeFalse)
+		expectEntryEvictedAfterDrop(t, p, e, fc)
 	})
 }

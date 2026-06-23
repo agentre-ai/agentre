@@ -9,15 +9,17 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/internal/pkg/httpgateway"
-	"agentre/pkg/claudecode"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
+	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
 
 // defaultRuntime 是包级单例,init() 时登记到 agentruntime.RuntimeFor 注册表。
@@ -34,12 +36,41 @@ func Default() *Runtime { return defaultRuntime }
 // sessionCacheCap = 8:与顶层 claudecode.go.claudeSessionCacheCap 一致。
 const sessionCacheCap = 8
 
+// defaultStartupFrameTimeout 是 startup 看门狗的默认阈值:一轮 turn 起步后, 健康的
+// CLI 会在数秒内吐首帧(system.init);若这么久还一帧都没有, 判定子进程卡死(典型:
+// 群成员轮 CLI 卡在 MCP 初始化连不上 gateway)→ 硬杀子进程让本轮以错误收尾。取值
+// 宽松到不会误杀冷启动慢的健康 turn, 又有界到能从无界挂起里恢复。
+const defaultStartupFrameTimeout = 120 * time.Second
+
+// errStartupTimeout 是 startup 看门狗杀掉「起步即卡死」子进程后写入 RunResult.StopErr
+// 的哨兵错误, 让 chat_svc 把该 turn 收成 error 而非永久 running。
+var errStartupTimeout = errors.New("agentruntime/runtimes/claudecode: turn produced no frame within startup timeout (subprocess likely wedged, e.g. MCP init)")
+
 // Runtime claudecode runtime 实现。
 type Runtime struct {
-	// mu 仅用于 acquireSession 的 get-or-spawn 串行化兜底。
-	mu    sync.Mutex
-	cache *agentruntime.CLISessionPool
-	steer *httpgateway.SteerInbox
+	// spawnLocks 按 session key 分桶串行化 acquireSession 的 get-or-spawn,只防同一
+	// session 并发首轮 double-spawn。
+	//
+	// **绝不能退回单把全局锁**:acquireSession 在锁内做阻塞子进程操作(spawn + 同步
+	// SetPermissionMode);某个 session 的 CLI 启动期挂起(实测:群聊成员轮带
+	// --mcp-config 卡在 MCP 初始化)会一直占着全局锁 → 其它**所有** session 的 turn 全
+	// 堵在 acquireSession 的锁上,整个 claudecode runtime 宕掉(单聊不输出/停不掉/再发
+	// 报 in-flight)。回归见 TestRun_BlockedSpawnDoesNotWedgeOtherSessions。
+	//
+	// 锁条目按 key 惰性创建后不回收:每个 session key 一把 *sync.Mutex(指针大小),
+	// 数量随会话量有界增长,内存可忽略;删除会与并发 LoadOrStore 产生「同一 key 两把锁」
+	// 的 double-spawn 竞态,故不做。
+	spawnLocks sync.Map // key(string) → *sync.Mutex
+	cache      *agentruntime.CLISessionPool
+	steer      *httpgateway.SteerInbox
+	// startupTimeout 是 startup 看门狗阈值;NewWithPool 设默认值, 单测覆写成毫秒级。
+	startupTimeout time.Duration
+}
+
+// spawnLockFor 返回某 session key 专属的 get-or-spawn 锁(惰性创建)。
+func (r *Runtime) spawnLockFor(key string) *sync.Mutex {
+	v, _ := r.spawnLocks.LoadOrStore(key, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // New 默认 8 上限 LRU。
@@ -56,7 +87,7 @@ func NewWithPool(pool *agentruntime.CLISessionPool) *Runtime {
 	if pool == nil {
 		pool = agentruntime.NewCLISessionPool(sessionCacheCap)
 	}
-	return &Runtime{cache: pool}
+	return &Runtime{cache: pool, startupTimeout: defaultStartupFrameTimeout}
 }
 
 // SetSteerInbox 由 bootstrap 在 gateway.Start() 后注入。
@@ -83,8 +114,13 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			// user frame 携带 base64 image content block(CLI stream-json 原生支持);
 			// extractImages 从 RunRequest.UserBlocks 抽 inline 图片经 handle.Stream 透传。
 			capability.CapImageInput: true,
+			// RunRequest.MCPServers 注入支持:claudecode CLI 接受 --mcp-config 传入
+			// 额外 MCP tool 服务器;群聊编排是首个消费者,入群资格门控于此 cap。
+			capability.CapMCPTools: true,
 			// CLI 在 run_in_background Bash 任务完成后自主跑续轮;实现 AutonomousTurnSource。
 			capability.CapAutonomousTurn: true,
+			// 接受 RunRequest.EnabledPlugins,spawn 时渲进 --settings 的 enabledPlugins。
+			capability.CapSkills: true,
 		},
 		PermissionModeMeta: capability.PermissionModeMeta{
 			AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},
@@ -210,6 +246,11 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 }
 
 // SetPermissionMode 实现 PermissionModeSetter。语义同顶层 SetPermissionMode。
+//
+// CLI 切换成功后必须同步 active.permissionMode 快照:CLI 的空闲 status 回显帧被
+// demux reader 丢弃(pkg/claudecode session.go isNonTurnFrame),复用进程的下一轮
+// 也不重发 mode —— 不写这里,快照会停留在 spawn 时的值,handleControlRequest 的
+// bypassPermissions 短路就会吞掉本应弹审批的 control_request。
 func (r *Runtime) SetPermissionMode(ctx context.Context, sessionID int64, mode string) error {
 	if sessionID <= 0 {
 		return fmt.Errorf("agentruntime/runtimes/claudecode: invalid sessionID %d", sessionID)
@@ -222,7 +263,11 @@ func (r *Runtime) SetPermissionMode(ctx context.Context, sessionID int64, mode s
 	if a.handle == nil {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return a.handle.SetPermissionMode(ctx, mode)
+	if err := a.handle.SetPermissionMode(ctx, mode); err != nil {
+		return err
+	}
+	a.setPermissionModeSnapshot(mode)
+	return nil
 }
 
 // CloseSession 显式释放某个 chat session 的常驻进程。
@@ -282,6 +327,32 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 
 	a.setOut(out)
 
+	// startup 看门狗:turn 起步后 startupTimeout 内一帧都没有 → 判定子进程卡死(典型:
+	// 群成员轮 CLI 卡在 MCP 初始化连不上 gateway),硬杀子进程让 drainStream 的
+	// stream.Next() 拿到 EOF 解阻塞、本轮以 errStartupTimeout 收尾,而不是永久挂起。
+	// 首帧到达即解除看门狗 —— 合法的长 turn(等审批 / 长工具调用都在首帧之后)不受影响;
+	// 起步之后的中途卡死由 CLI 自身 MCP_TOOL_TIMEOUT / approvalTimeout 兜底,不归这里管。
+	firstFrame := make(chan struct{})
+	var firstFrameOnce sync.Once
+	signalFirstFrame := func() { firstFrameOnce.Do(func() { close(firstFrame) }) }
+	var startupKilled atomic.Bool
+	if r.startupTimeout > 0 {
+		timer := time.NewTimer(r.startupTimeout)
+		go func() {
+			defer timer.Stop()
+			select {
+			case <-firstFrame:
+			case <-timer.C:
+				startupKilled.Store(true)
+				logger.Ctx(ctx).Warn("claudecode runtime: no frame within startup timeout, killing wedged subprocess",
+					zap.Int64("sessionID", req.SessionID),
+					zap.String("providerSessionID", a.handle.ID()),
+					zap.Duration("startupTimeout", r.startupTimeout))
+				_ = a.handle.Kill(ctx)
+			}
+		}()
+	}
+
 	go func() {
 		var (
 			steerDrain  <-chan []httpgateway.SteerItem
@@ -305,7 +376,8 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 			close(steerDone)
 		}
 
-		drainStream(stream, out, result, a)
+		drainStream(stream, out, result, a, signalFirstFrame)
+		signalFirstFrame() // 兜底解除看门狗:0 帧自然结束(非卡死)时也要让它退出
 		if cancelDrain != nil {
 			cancelDrain()
 		}
@@ -313,6 +385,16 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		a.clearOut()
 		if sid := stream.SessionID(); sid != "" {
 			result.ProviderSessionID = sid
+		}
+		// startup 看门狗杀掉了卡死子进程:收成 errStartupTimeout(优先于下面的 0-frame
+		// 兜底消息),并剔除缓存让下一轮重新 spawn 干净子进程。
+		if startupKilled.Load() {
+			if result.StopErr == nil {
+				result.StopErr = errStartupTimeout
+			}
+			if req.SessionID > 0 {
+				r.cache.Remove(sessionKey(req.SessionID))
+			}
 		}
 		// 0-frame 兜底:CLI spawn 起来但立刻退出。语义同顶层 Run。
 		if result.Usage == nil && result.StopErr == nil && ctx.Err() == nil {
@@ -391,10 +473,14 @@ func consumedSteersFromInbox(items []httpgateway.SteerItem) []agentruntime.Consu
 // 历史:旧实现直接调 chat_repo.Session().UpdatePermissionModeAtLaunch 写库,
 // 在 agentred daemon 进程(不 bootstrap cago/chat_repo)里会 nil panic。
 func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunRequest) (*claudeActive, string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
+	// 按 session key 加锁(非全局):同一 session 的并发首轮串行化避免 double-spawn,
+	// 不同 session 互不阻塞 —— 一个 session 卡在 spawn / SetPermissionMode 不会拖垮
+	// 其它 session。CLISessionPool 自身按 key 线程安全,无需额外全局互斥。
 	key := sessionKey(req.SessionID)
+	lk := r.spawnLockFor(key)
+	lk.Lock()
+	defer lk.Unlock()
+
 	var cur *claudeActive
 	if req.SessionID > 0 {
 		if v, ok := r.cache.Get(key); ok {
@@ -417,7 +503,7 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 		// 下发。回吐当前缓存的 mode 让 chat_svc 写库幂等(值不变即 noop)。
 		cur.inTurn.Store(true)
 		r.cache.MarkActive(key)
-		return cur, cur.permissionMode, nil
+		return cur, cur.permissionModeSnapshot(), nil
 	}
 
 	isolationUUID := newUUIDv4()
@@ -429,6 +515,7 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 	if err != nil {
 		return nil, "", fmt.Errorf("agentruntime/runtimes/claudecode: build hook settings: %w", err)
 	}
+	settingsJSON = buildSkillsSettings(req.EnabledPlugins, settingsJSON)
 
 	pureResume := req.ProviderSessionID != "" && req.ForkAnchor == ""
 	var cliSessionUUID, inboxKey string
@@ -470,8 +557,9 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 	// 让前端 pill 看到的 mode 和 CLI 实际行为一致。失败仅记 warn 不阻 spawn ——
 	// launch mode (bypass) 已是最宽松, 用户可以在 pill 上手动重试切换。
 	//
-	// 必须在 cache.Put + drainStream goroutine 启动前调用同步 SetPermissionMode,
-	// 否则与 EventPermissionModeChanged 写 active.permissionMode 的路径有 race。
+	// 必须在 cache.Put + drainStream goroutine 启动前调用同步 SetPermissionMode:
+	// 校准结果直赋 claudeActive.permissionMode 初值(发布前,无需 modeMu),发布后
+	// 的更新一律走 setPermissionModeSnapshot。
 	runtimeMode := resolvedLaunchMode
 	if req.PermissionMode != "" && req.PermissionMode != resolvedLaunchMode {
 		if err := handle.SetPermissionMode(ctx, req.PermissionMode); err != nil {
@@ -509,8 +597,17 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 // 完整快照(TodoWrite 已经在 translator 里直接出 EventPlanUpdated),emit 顺序
 // 是"先翻译完原始 event,再吐 PlanUpdated 快照",保证前端看到的 plan 更新
 // 永远在对应 tool_use / tool_result 之后(消费方的 mutation order 不被打破)。
-func drainStream(stream ccStream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *claudeActive) {
+// onFirstFrame 在收到本轮第一帧时回调一次(解除 startup 看门狗) —— 子进程已吐帧
+// 即证明它没卡在起步期, 后续无论多慢都不再由看门狗管。
+func drainStream(stream ccStream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *claudeActive, onFirstFrame func()) {
+	first := true
 	for stream.Next() {
+		if first {
+			first = false
+			if onFirstFrame != nil {
+				onFirstFrame()
+			}
+		}
 		ev := stream.Event()
 		if result.StopErr != nil && claudeEventShowsProgressAfterError(ev.Kind) {
 			result.StopErr = nil
@@ -519,10 +616,10 @@ func drainStream(stream ccStream, out chan<- agentruntime.Event, result *agentru
 			handleControlRequest(ev.ControlRequest, active, out)
 			continue
 		}
-		// 同步 in-process mode 快照 —— ExitPlanMode 之后 CLI 会切到 default,
+		// 同步 in-process mode 快照 —— ExitPlanMode 批准后 CLI 会自切 mode,
 		// handleControlRequest 里的 bypassPermissions 短路判断要看新值。
 		if ev.Kind == claudecode.EventPermissionModeChanged && ev.PermissionMode != "" && active != nil {
-			active.permissionMode = ev.PermissionMode
+			active.setPermissionModeSnapshot(ev.PermissionMode)
 		}
 		translated, usage, stopErr := translate(ev)
 		for _, t := range translated {

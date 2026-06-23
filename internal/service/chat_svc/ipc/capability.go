@@ -8,20 +8,20 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 
 	// 显式 blank import 触发 NEW runtime 子包 init() 注册到 RuntimeFor。
 	// 不直接调子包的 Runtime 类型,只通过 agentruntime.RuntimeFor 反查。
-	_ "agentre/internal/pkg/agentruntime/runtimes/builtin"
-	_ "agentre/internal/pkg/agentruntime/runtimes/claudecode"
-	_ "agentre/internal/pkg/agentruntime/runtimes/codex"
-	_ "agentre/internal/pkg/agentruntime/runtimes/piagent"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/chat_repo"
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/builtin"
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/codex"
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 )
 
 // GetSessionCapabilitiesRequest 前端按 sessionID 询问当前会话的 backend 能力矩阵。

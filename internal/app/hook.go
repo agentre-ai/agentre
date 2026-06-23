@@ -1,7 +1,7 @@
 package app
 
 import (
-	"agentre/internal/service/hook_svc"
+	"github.com/agentre-ai/agentre/internal/service/hook_svc"
 )
 
 // LoadHooks 聚合返回 Hook 信号源、路由规则、事件日志与可选目标 Agent。

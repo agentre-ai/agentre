@@ -347,6 +347,37 @@ describe("AgentBackendsPanel", () => {
     expect(body!.contains(pong)).toBe(false);
   });
 
+  it("新建保存失败时错误显示在弹窗内，而不是表格提示区", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      CreateAgentBackend: vi.fn(() =>
+        Promise.reject(new Error("backend name exists")),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
+      { target: { value: "Duplicate backend" } },
+    );
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(
+        within(dialog).getByText("backend name exists"),
+      ).toBeInTheDocument();
+    });
+
+    expect(
+      screen.getAllByRole("status").filter((node) => !dialog.contains(node)),
+    ).toHaveLength(0);
+  });
+
   it("claudecode/codex 行未关联供应商时显示「走 CLI 自身登录」而非需处理", async () => {
     installAppMock({
       ListAgentBackends: vi.fn(() =>

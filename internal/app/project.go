@@ -1,10 +1,10 @@
 package app
 
 import (
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/model/entity/project_entity"
-	"agentre/internal/service/project_location_svc"
-	"agentre/internal/service/project_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
+	"github.com/agentre-ai/agentre/internal/service/project_location_svc"
+	"github.com/agentre-ai/agentre/internal/service/project_svc"
 )
 
 // ProjectCreateRequest 前端新建项目入参，与 project_svc.CreateProjectRequest

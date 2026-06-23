@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/pkg/pty"
-	"agentre/internal/service/terminal_svc"
+	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 
 	"github.com/stretchr/testify/require"
 )

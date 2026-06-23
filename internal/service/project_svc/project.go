@@ -13,13 +13,13 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/model/entity/project_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/pkg/procattr"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/chat_repo"
-	"agentre/internal/repository/project_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/project_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/procattr"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/project_repo"
 )
 
 // ProjectSvc Project 模块的应用服务。

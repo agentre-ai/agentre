@@ -7,6 +7,7 @@ import { copyTextWithToast } from "@/lib/clipboard-toast";
 import { cn } from "@/lib/utils";
 
 import { statusConfig } from "../../types";
+import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type { CanonicalDTO } from "../types";
 
@@ -16,10 +17,11 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
   toolBlock,
   resultBlock,
   cwd,
+  uiStateKey,
 }) => {
   const { t } = useTranslation();
   const canonical = (toolBlock as { canonical?: CanonicalDTO }).canonical;
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = useTranscriptBooleanState(uiStateKey, false);
 
   if (!canonical || canonical.kind !== "file.write") return null;
   const w = canonical.fileWrite;

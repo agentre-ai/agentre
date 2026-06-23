@@ -90,6 +90,27 @@ func (a *Accumulator) HasToolUse(id string) bool {
 	return false
 }
 
+// ToolUseInput 返回已 push 的该 ID cago.ToolUseBlock 的原始 Input(value 或 pointer
+// 形态),未找到返回 (nil, false)。SubagentStarted handler 用它读 run_in_background
+// 判定一次 local_bash 帧是真后台 bash 还是普通前台 bash。
+func (a *Accumulator) ToolUseInput(id string) (map[string]any, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, b := range a.finalBlocks {
+		switch tu := b.(type) {
+		case *cagoblocks.ToolUseBlock:
+			if tu.ID == id {
+				return tu.Input, true
+			}
+		case cagoblocks.ToolUseBlock:
+			if tu.ID == id {
+				return tu.Input, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // Empty 反映"无任何内容 + 无 buf";turn 收尾判定是否落 message 用。
 func (a *Accumulator) Empty() bool {
 	a.mu.Lock()

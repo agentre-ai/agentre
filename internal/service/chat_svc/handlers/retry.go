@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 type RetryHandler struct{}

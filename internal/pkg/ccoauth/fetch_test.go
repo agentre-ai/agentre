@@ -11,7 +11,7 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/pkg/ccoauth"
+	"github.com/agentre-ai/agentre/internal/pkg/ccoauth"
 )
 
 func TestFetch(t *testing.T) {

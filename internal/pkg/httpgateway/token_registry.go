@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 )
 
 // TokenEntry 一条 token → backend 路由记录。

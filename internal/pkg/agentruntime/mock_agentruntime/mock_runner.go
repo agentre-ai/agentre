@@ -10,8 +10,8 @@
 package mock_agentruntime
 
 import (
-	agentruntime "agentre/internal/pkg/agentruntime"
 	context "context"
+	agentruntime "github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"
@@ -320,4 +320,42 @@ func (m *MockAutonomousTurnSource) AutonomousTurns(sessionID int64) <-chan agent
 func (mr *MockAutonomousTurnSourceMockRecorder) AutonomousTurns(sessionID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AutonomousTurns", reflect.TypeOf((*MockAutonomousTurnSource)(nil).AutonomousTurns), sessionID)
+}
+
+// MockSubagentActivitySource is a mock of SubagentActivitySource interface.
+type MockSubagentActivitySource struct {
+	ctrl     *gomock.Controller
+	recorder *MockSubagentActivitySourceMockRecorder
+	isgomock struct{}
+}
+
+// MockSubagentActivitySourceMockRecorder is the mock recorder for MockSubagentActivitySource.
+type MockSubagentActivitySourceMockRecorder struct {
+	mock *MockSubagentActivitySource
+}
+
+// NewMockSubagentActivitySource creates a new mock instance.
+func NewMockSubagentActivitySource(ctrl *gomock.Controller) *MockSubagentActivitySource {
+	mock := &MockSubagentActivitySource{ctrl: ctrl}
+	mock.recorder = &MockSubagentActivitySourceMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockSubagentActivitySource) EXPECT() *MockSubagentActivitySourceMockRecorder {
+	return m.recorder
+}
+
+// SubagentActivity mocks base method.
+func (m *MockSubagentActivitySource) SubagentActivity(sessionID int64) <-chan agentruntime.SubagentActivity {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SubagentActivity", sessionID)
+	ret0, _ := ret[0].(<-chan agentruntime.SubagentActivity)
+	return ret0
+}
+
+// SubagentActivity indicates an expected call of SubagentActivity.
+func (mr *MockSubagentActivitySourceMockRecorder) SubagentActivity(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubagentActivity", reflect.TypeOf((*MockSubagentActivitySource)(nil).SubagentActivity), sessionID)
 }

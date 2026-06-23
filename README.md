@@ -83,7 +83,7 @@ Agentre includes `agentred`, a companion daemon for running sessions on another 
 ```bash
 make install-deps    # Install frontend dependencies
 make dev             # Development mode with hot reload
-make test            # Backend race tests + frontend Vitest
+make test            # Backend Go tests + frontend Vitest
 make build           # Production build for the current platform
 make install         # Install the app bundle (macOS: /Applications/Agentre.app)
 ```
@@ -96,7 +96,7 @@ make install MACOS_APP_INSTALL_DIR="$HOME/Applications"
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CLAUDE.md](./CLAUDE.md) for repository conventions, architecture, TDD discipline, and commit style.
+Issues and pull requests are welcome. Start with the [Contributing Guide](./CONTRIBUTING.md) ([中文版](./docs/CONTRIBUTING_ZH.md)) — it covers setup, the engineering ground rules, commit style, and the PR checklist.
 
 ## License
 

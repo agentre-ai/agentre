@@ -5,8 +5,8 @@ import (
 	"io"
 	"os/exec"
 
-	"agentre/internal/pkg/clienv"
-	"agentre/internal/pkg/procattr"
+	"github.com/agentre-ai/agentre/internal/pkg/clienv"
+	"github.com/agentre-ai/agentre/internal/pkg/procattr"
 )
 
 type processSpec struct {
@@ -127,6 +127,16 @@ func (p *process) exitErrIfDone() error {
 		return nil
 	}
 	return p.exitErr
+}
+
+// kill 给子进程发 SIGKILL（不可被忽略），用于子进程卡死、优雅 Close(关 stdin)
+// 救不回来的场景（典型：CLI 卡在 MCP 初始化连不上、根本不读 stdin）。进程死亡后
+// reaper 的 cmd.Wait 返回、parent-side stdout pipe 关闭 → scanner 拿到 EOF →
+// readLoop 收尾未决轮。多次调用幂等（Kill 已死进程返错，忽略）。
+func (p *process) kill() {
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
 }
 
 // boundedBuffer 是一个上限可丢前的 io.Writer，避免 stderr 把内存吃爆。

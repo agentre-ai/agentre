@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 
 	"github.com/stretchr/testify/assert"
 )

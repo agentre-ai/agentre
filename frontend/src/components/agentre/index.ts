@@ -16,6 +16,7 @@ export { AgentGroup, AgentPanelSection, SessionRow } from "./agent-list";
 export type { AgentSession } from "./agent-list";
 export { ChatPage } from "./chat-page";
 export { ChatStreamsHost } from "./chat-streams-host";
+export { GroupEventsHost } from "./group-events-host";
 export { TurnCompleteNotifier } from "./turn-complete-notifier";
 export { NotificationToastViewport } from "./notification-toast";
 export { QuitConfirmDialog } from "./quit-confirm-dialog";
@@ -24,6 +25,7 @@ export { IssuesPage } from "./issues-page";
 export { OrgChartPage } from "./org-chart-page";
 export { ProjectsPage } from "./project-page";
 export { UnderConstructionPage } from "./under-construction-page";
+export { WorkflowManagerDialog } from "./workflows/workflow-manager-dialog";
 export {
   ApprovalGate,
   ChatComposer,

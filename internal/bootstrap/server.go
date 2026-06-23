@@ -9,10 +9,10 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/model/entity/server_state_entity"
-	"agentre/internal/pkg/keychain"
-	"agentre/internal/repository/server_state_repo"
-	"agentre/internal/service/server_svc"
+	"github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/keychain"
+	"github.com/agentre-ai/agentre/internal/repository/server_state_repo"
+	"github.com/agentre-ai/agentre/internal/service/server_svc"
 )
 
 // InitServer wires the desktop's keychain + server_state_repo + server_svc defaults.

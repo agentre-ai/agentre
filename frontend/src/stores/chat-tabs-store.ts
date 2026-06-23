@@ -4,7 +4,14 @@ import { writePersistedTabs, readPersistedTabs } from "./chat-tabs-persistence";
 
 export type TabKind =
   | { kind: "session"; sessionId: number }
+  | {
+      kind: "groupSession";
+      groupId: number;
+      sessionId: number;
+      title: string;
+    }
   | { kind: "new"; projectId: number; agentId: number; workMode: string }
+  | { kind: "group"; groupId: number; title: string }
   | {
       kind: "terminal";
       projectId: number;
@@ -34,6 +41,12 @@ type Actions = {
     projectId: number,
     agentId: number,
     workMode: string,
+  ) => void;
+  openGroup: (groupId: number, title: string) => void;
+  openGroupMemberSession: (
+    groupId: number,
+    sessionId: number,
+    title: string,
   ) => void;
   promoteCurrent: () => void;
   togglePin: (id: string) => void;
@@ -120,6 +133,45 @@ export const useChatTabsStore = create<State & Actions>((set, _get) => ({
         isPinned: false,
         pinAt: 0,
         openedAt: now(),
+      };
+      return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
+    }),
+  openGroup: (groupId, title) =>
+    set((state) => {
+      const existing = state.tabs.find(
+        (t) => t.meta.kind === "group" && t.meta.groupId === groupId,
+      );
+      if (existing) {
+        return { activeTabId: existing.id };
+      }
+      const newTab: ChatTab = {
+        id: nextId(),
+        meta: { kind: "group", groupId, title },
+        isPreview: false,
+        isPinned: false,
+        pinAt: 0,
+        openedAt: now(),
+      };
+      return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
+    }),
+  openGroupMemberSession: (groupId, sessionId, title) =>
+    set((state) => {
+      const existing = state.tabs.find(
+        (t) =>
+          (t.meta.kind === "session" || t.meta.kind === "groupSession") &&
+          t.meta.sessionId === sessionId,
+      );
+      if (existing) {
+        return { activeTabId: existing.id };
+      }
+      const newTab: ChatTab = {
+        id: nextId(),
+        meta: { kind: "groupSession", groupId, sessionId, title },
+        isPreview: false,
+        isPinned: false,
+        pinAt: 0,
+        openedAt: now(),
+        title,
       };
       return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
     }),
@@ -268,6 +320,7 @@ export const useChatTabsStore = create<State & Actions>((set, _get) => ({
   reconcileMissingSessions: (existingSessionIds) =>
     set((state) => {
       const tabs = state.tabs.filter((t) => {
+        if (t.meta.kind === "groupSession") return true;
         if (t.meta.kind !== "session") return true;
         return existingSessionIds.has(t.meta.sessionId);
       });

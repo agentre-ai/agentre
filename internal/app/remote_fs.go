@@ -1,7 +1,7 @@
 package app
 
 import (
-	"agentre/internal/service/remote_fs_svc"
+	"github.com/agentre-ai/agentre/internal/service/remote_fs_svc"
 )
 
 // RemoteFsListDir 列出远端 device 上某目录下的子项。

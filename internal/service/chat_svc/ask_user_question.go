@@ -5,14 +5,14 @@ import (
 
 	"github.com/cago-frame/cago/pkg/i18n"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/chat_repo"
-	"agentre/internal/service/chat_svc/blocks"
-	"agentre/internal/service/chat_svc/view"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/view"
 )
 
 // askUserQuestionBlockToChatBlock 把持久化的 blocks.UserAskBlock 投影到前端
@@ -36,50 +36,6 @@ func askUserQuestionBlockToChatBlock(b blocks.UserAskBlock) ChatBlock {
 			Skipped:   b.Skipped,
 		}),
 	}
-}
-
-// askQuestionsToDTO 把 agentruntime 层的 question 列表转成 wire-format DTO。
-func askQuestionsToDTO(qs []agentruntime.AskQuestion) []blocks.AskQuestionDTO {
-	if len(qs) == 0 {
-		return nil
-	}
-	out := make([]blocks.AskQuestionDTO, 0, len(qs))
-	for _, q := range qs {
-		opts := make([]blocks.AskOptionDTO, 0, len(q.Options))
-		for _, o := range q.Options {
-			opts = append(opts, blocks.AskOptionDTO{
-				Label:       o.Label,
-				Description: o.Description,
-				Preview:     o.Preview,
-			})
-		}
-		out = append(out, blocks.AskQuestionDTO{
-			ID:          q.ID,
-			Question:    q.Question,
-			Header:      q.Header,
-			MultiSelect: q.MultiSelect,
-			IsOther:     q.IsOther,
-			IsSecret:    q.IsSecret,
-			Options:     opts,
-		})
-	}
-	return out
-}
-
-// dtoAnswersToRuntime 把前端 DTO 答案转成 agentruntime 类型。
-func dtoAnswersToRuntime(ans []blocks.AskAnswerDTO) []agentruntime.AskAnswer {
-	if len(ans) == 0 {
-		return nil
-	}
-	out := make([]agentruntime.AskAnswer, 0, len(ans))
-	for _, a := range ans {
-		out = append(out, agentruntime.AskAnswer{
-			QuestionIndex: a.QuestionIndex,
-			Labels:        append([]string(nil), a.Labels...),
-			OtherText:     a.OtherText,
-		})
-	}
-	return out
 }
 
 // AnswerUserQuestionRequest 前端答完题调 App.AnswerUserQuestion 时的 payload。
@@ -138,7 +94,7 @@ func (s *chatSvc) AnswerUserQuestion(ctx context.Context, req *AnswerUserQuestio
 		return nil, i18n.NewError(ctx, code.AgentBackendTypeUnsupported)
 	}
 
-	rtAnswers := dtoAnswersToRuntime(req.Answers)
+	rtAnswers := blocks.AnswersToRuntime(req.Answers)
 	if err := sink.SubmitAnswer(ctx, req.SessionID, req.RequestID, nil, rtAnswers, req.Skipped); err != nil {
 		return nil, err
 	}

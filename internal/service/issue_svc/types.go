@@ -1,6 +1,6 @@
 package issue_svc
 
-import "agentre/internal/model/entity/issue_entity"
+import "github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
 
 type CreateIssueRequest struct {
 	ProjectID int64

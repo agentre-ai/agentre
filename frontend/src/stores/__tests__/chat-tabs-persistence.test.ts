@@ -165,6 +165,51 @@ describe("chat-tabs-persistence · v2 升级", () => {
     });
   });
 
+  it("group / groupSession tab 各自往返持久化不被丢弃", () => {
+    const tabs: ChatTab[] = [
+      {
+        id: "g1",
+        meta: { kind: "group", groupId: 5, title: "队" },
+        isPreview: false,
+        isPinned: true,
+        pinAt: 3,
+        openedAt: 1,
+        title: "队",
+      },
+      {
+        id: "gs1",
+        meta: {
+          kind: "groupSession",
+          groupId: 5,
+          sessionId: 42,
+          title: "前端",
+        },
+        isPreview: false,
+        isPinned: false,
+        pinAt: 0,
+        openedAt: 2,
+        title: "前端",
+      },
+    ];
+    writePersistedTabs(tabs, "g1");
+    const restored = readPersistedTabs();
+    expect(restored?.tabs).toHaveLength(2);
+    expect(restored?.tabs[0]).toMatchObject({
+      id: "g1",
+      meta: { kind: "group", groupId: 5, title: "队" },
+      isPinned: true,
+      pinAt: 3,
+      openedAt: 1,
+      title: "队",
+    });
+    expect(restored?.tabs[1]).toMatchObject({
+      id: "gs1",
+      meta: { kind: "groupSession", groupId: 5, sessionId: 42, title: "前端" },
+      title: "前端",
+    });
+    expect(restored?.activeTabId).toBe("g1");
+  });
+
   it("new / preview tab 不被持久化", () => {
     const tabs: ChatTab[] = [
       {

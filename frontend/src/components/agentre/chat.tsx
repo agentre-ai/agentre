@@ -1,14 +1,12 @@
 import * as React from "react";
 import type { TFunction } from "i18next";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  ArrowDown,
-  ArrowUp,
   Check,
   Gauge,
   ImagePlus,
   LoaderCircle,
   Pencil,
-  RefreshCw,
   SendHorizontal,
   TriangleAlert,
   Wrench,
@@ -17,126 +15,34 @@ import {
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import { PlanApproveCard } from "./canonical-tool/plan-approve-request/card";
 import type { PlanActionStream } from "./canonical-tool/props";
-import { CanonicalToolRouter } from "./canonical-tool/registry";
 import { AIChatInput, type AIChatInputHandle } from "./chat-input";
 import { CodeBlock } from "./code-block";
-import { AutoTriggerBanner } from "./auto-trigger-banner";
-import { CompactBoundaryDivider } from "./compact-boundary-divider";
 import { CompactHistoryFold } from "./compact-history-fold";
-import { MarkdownText, StreamingMarkdown } from "./markdown-text";
-import { AgentAvatar } from "./primitives";
-import { ThinkingBlock } from "./thinking-block";
-
-// isSubagentCanonical 替代旧 isSubagentTool(name) — name-based 检测改为读
-// canonical.kind。translator 在 emit 时已经把 Task/Agent/collabAgent 工具识别成
-// canonical.agentSpawn,这里直接 dispatch。
-function isSubagentCanonical(block: {
-  canonical?: { kind?: string };
-}): boolean {
-  return block.canonical?.kind === "agent.spawn";
-}
+import {
+  ChatMessage,
+  ErrorCard,
+  MessageMeta,
+  TranscriptRenderContext,
+  TranscriptRowView,
+  type TranscriptRenderContextValue,
+} from "./transcript-row-view";
+import {
+  buildTranscriptRows,
+  estimateRowSize,
+  type TranscriptRow,
+} from "./transcript-rows";
+import { TranscriptUIStateProvider } from "./transcript-ui-state";
 import type { AgentColor, AgentStatus } from "./types";
-
-// isAskUserQuestionToolName 旧 tool-summary.ts 同名;此处过滤掉 AskUserQuestion 类工具的
-// tool_use 块,避免与 ask_user_question 独立 block 渲染的 UserAskCard 重复出卡。
-function isAskUserQuestionToolName(toolName: string | undefined): boolean {
-  if (!toolName) return false;
-  const name = toolName.toLowerCase();
-  return name === "askuserquestion" || name === "ask_user_question";
-}
 import { statusConfig } from "./types";
 import type { ChatBlockData, RetryNotice } from "@/stores/chat-streams-store";
-import type { chat_svc } from "../../../wailsjs/go/models";
-
-function isRenderablePlanBlock(block: ChatBlockData): boolean {
-  const canonical = block.canonical;
-  if (canonical?.kind !== "plan.update" || !canonical.planUpdate) return false;
-  const actions = canonical.planUpdate.actions ?? [];
-  if (actions.length > 0) return true;
-  const text = canonical.planUpdate.text ?? block.text ?? "";
-  const steps = canonical.planUpdate.steps ?? [];
-  return text.trim().length > 0 && steps.length === 0;
-}
-
-type ChatMessageProps = React.ComponentProps<"article"> & {
-  author: string;
-  avatarColor?: AgentColor;
-  children: React.ReactNode;
-  initials?: string;
-  meta?: React.ReactNode;
-  time: string;
-  /** "assistant" (默认): 渲染 agent avatar + 名字。
-   *  "user": 渲染中性的「我」头像 —— 与 agent 头像视觉对称，但走 muted
-   *  色阶不抢焦点，把主视觉留给 agent。 */
-  variant?: "user" | "assistant";
-};
-
-function ChatMessage({
-  author,
-  avatarColor = "agent-1",
-  children,
-  className,
-  initials,
-  meta,
-  time,
-  variant = "assistant",
-  ...props
-}: ChatMessageProps) {
-  const { t } = useTranslation();
-  const isUser = variant === "user";
-  return (
-    <article className={cn("flex gap-3 text-sm", className)} {...props}>
-      {isUser ? (
-        <span
-          aria-label={t("chat.message.me")}
-          role="img"
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-[11px] font-semibold text-muted-foreground"
-        >
-          {t("chat.message.me")}
-        </span>
-      ) : (
-        <AgentAvatar
-          name={author}
-          initials={initials}
-          color={avatarColor}
-          size="md"
-          className="size-7 text-[11px]"
-        />
-      )}
-      <div className="flex min-w-0 max-w-[720px] flex-1 flex-col gap-1">
-        <div className="flex items-center gap-2">
-          {/* user 行: 不渲染名字（前缀 "›" 已是充足的「这是我说的」信号）。
-              assistant 行：保留 agent 名字 + 时间。 */}
-          {isUser ? null : <span className="font-semibold">{author}</span>}
-          <span className="font-mono text-[10px] text-muted-foreground">
-            {time}
-          </span>
-        </div>
-        <div
-          data-selectable-text="true"
-          className="flex flex-col gap-2 leading-[1.55]"
-        >
-          {children}
-        </div>
-        {meta ? (
-          <div className="mt-1 font-mono text-[10px] text-subtle-foreground">
-            {meta}
-          </div>
-        ) : null}
-      </div>
-    </article>
-  );
-}
+import { ChatReadDroppedImages } from "../../../wailsjs/go/app/App";
+import { chat_svc } from "../../../wailsjs/go/models";
+import { resolveDroppedPaths } from "./chat-input/drop";
+import { useFileDropZone } from "./chat-input/use-file-drop";
 
 type ToolCallProps = React.ComponentProps<"div"> & {
   path?: string;
@@ -183,140 +89,6 @@ function ToolCall({
           {statusLabel}
         </span>
       </div>
-    </div>
-  );
-}
-
-type MessageMetaProps = {
-  cacheCreationTokens?: number;
-  cachedTokens?: number;
-  completionTokens: number;
-  durationMs: number;
-  model: string;
-  onRerun?: () => void;
-  promptTokens: number;
-  reasoningTokens?: number;
-};
-
-function MessageMeta({
-  cacheCreationTokens = 0,
-  cachedTokens = 0,
-  completionTokens,
-  durationMs,
-  model,
-  onRerun,
-  promptTokens,
-  reasoningTokens = 0,
-}: MessageMetaProps) {
-  const { t } = useTranslation();
-  const durationLabel = `${(durationMs / 1000).toFixed(1)}s`;
-
-  // tooltip 里需要拆分展示，所以这里给一个稳定的 row 渲染器避免重复。
-  const rows: { label: string; value: string }[] = [
-    { label: t("chat.meta.model"), value: model || "—" },
-    {
-      label: t("chat.meta.prompt"),
-      value: promptTokens.toLocaleString(),
-    },
-    {
-      label: t("chat.meta.completion"),
-      value: completionTokens.toLocaleString(),
-    },
-  ];
-  if (cachedTokens > 0) {
-    rows.push({
-      label: t("chat.meta.cacheHit"),
-      value: cachedTokens.toLocaleString(),
-    });
-  }
-  if (cacheCreationTokens > 0) {
-    rows.push({
-      label: t("chat.meta.cacheWrite"),
-      value: cacheCreationTokens.toLocaleString(),
-    });
-  }
-  if (reasoningTokens > 0) {
-    rows.push({
-      label: t("chat.meta.reasoning"),
-      value: reasoningTokens.toLocaleString(),
-    });
-  }
-  rows.push({ label: t("chat.meta.duration"), value: durationLabel });
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-muted/60"
-            aria-label={t("chat.meta.tokenDetails")}
-          >
-            {model ? (
-              <>
-                <span>{model}</span>
-                <span className="text-border-strong">·</span>
-              </>
-            ) : null}
-            <span className="inline-flex items-center gap-0.5">
-              <ArrowUp className="size-2.5" aria-hidden="true" />
-              {promptTokens.toLocaleString()}
-            </span>
-            <span className="inline-flex items-center gap-0.5">
-              <ArrowDown className="size-2.5" aria-hidden="true" />
-              {completionTokens.toLocaleString()}
-            </span>
-            <span className="text-border-strong">·</span>
-            <span>{durationLabel}</span>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent className="font-mono text-[11px]">
-          <table className="border-separate border-spacing-x-3 border-spacing-y-0.5">
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.label}>
-                  <td className="text-left text-muted-foreground">
-                    {row.label}
-                  </td>
-                  <td className="text-right tabular-nums">{row.value}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TooltipContent>
-      </Tooltip>
-      {onRerun ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          className="ml-1 h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
-          onClick={onRerun}
-        >
-          <RefreshCw data-icon="inline-start" aria-hidden="true" />
-          {t("chat.actions.regenerate")}
-        </Button>
-      ) : null}
-    </div>
-  );
-}
-
-// UserMessageActions 渲染 user 气泡的 action 行：目前只有「编辑」。
-// 作为 `meta` prop 传入 ChatMessage，常驻显示在消息下方。
-function UserMessageActions({ onEdit }: { onEdit: () => void }) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex items-center gap-1.5">
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
-        onClick={onEdit}
-      >
-        <Pencil data-icon="inline-start" aria-hidden="true" />
-        {t("common.edit")}
-      </Button>
     </div>
   );
 }
@@ -476,7 +248,6 @@ function formatTokens(n: number): string {
 //   - <24h → "Nh"(向下取整)
 //   - >=24h → "XdYh"(Yh=0 时省略,写 "Xd")
 // nowMs 可选(测试注入固定 now);省略走 Date.now()。
-// eslint-disable-next-line react-refresh/only-export-components
 export function formatResetIn(value: unknown, nowMs?: number): string {
   if (value == null || value === "") return "";
   const target =
@@ -650,30 +421,6 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
   );
 }
 
-function ImageBlockView({ block }: { block: ChatBlockData }) {
-  const { t } = useTranslation();
-  const image = (
-    block as ChatBlockData & {
-      image?: { dataUrl?: string; mediaType?: string; name?: string };
-    }
-  ).image;
-  if (!image?.dataUrl) return null;
-  return (
-    <a
-      href={image.dataUrl}
-      target="_blank"
-      rel="noreferrer"
-      className="block w-fit overflow-hidden rounded-md border border-border bg-muted"
-    >
-      <img
-        src={image.dataUrl}
-        alt={image.name || image.mediaType || t("chat.image.alt")}
-        className="max-h-72 max-w-full object-contain"
-      />
-    </a>
-  );
-}
-
 function ChatComposer({
   className,
   onSubmit,
@@ -735,6 +482,46 @@ function ChatComposer({
     setImageError("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [supportsImageInput]);
+
+  const dropRef = React.useRef<HTMLFormElement>(null);
+
+  const handleDroppedPaths = React.useCallback(
+    (paths: string[]) => {
+      void (async () => {
+        const { attachments, text } = await resolveDroppedPaths(paths, {
+          allowImages: !editing && supportsImageInput,
+          remainingImageSlots: MAX_CHAT_IMAGE_COUNT - images.length,
+          readImages: async (imagePaths) => {
+            const resp = await ChatReadDroppedImages(
+              chat_svc.ReadDroppedImagesRequest.createFrom({
+                paths: imagePaths,
+              }),
+            );
+            return (resp.items ?? []).map((it) => ({
+              path: it.path,
+              kind:
+                it.kind === "image" ? ("image" as const) : ("path" as const),
+              name: it.name,
+              mediaType: it.mediaType,
+              dataUrl: it.dataUrl,
+            }));
+          },
+        });
+        if (attachments.length > 0) {
+          setImages((prev) => [...prev, ...attachments]);
+          setImageError("");
+        }
+        if (text) inputRef.current?.insertText(text);
+      })();
+    },
+    [editing, supportsImageInput, images.length],
+  );
+
+  const { isDragOver } = useFileDropZone({
+    ref: dropRef,
+    enabled: true,
+    onPaths: handleDroppedPaths,
+  });
 
   function handleSend(text: string) {
     const trimmed = text.trim();
@@ -823,8 +610,9 @@ function ChatComposer({
 
   return (
     <form
+      ref={dropRef}
       className={cn(
-        "w-full border-t border-border bg-background px-5 py-3.5",
+        "relative w-full border-t border-border bg-background px-5 py-3.5",
         className,
       )}
       onSubmit={handleFormSubmit}
@@ -832,6 +620,14 @@ function ChatComposer({
       onPasteCapture={handlePasteCapture}
       {...props}
     >
+      {isDragOver ? (
+        <div
+          className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-md border-2 border-dashed border-ring bg-background/85 text-sm font-medium text-foreground"
+          aria-hidden="true"
+        >
+          {t("chat.composer.dropHint")}
+        </div>
+      ) : null}
       <div
         className={cn(
           "flex w-full flex-col overflow-hidden rounded-md border bg-card shadow-xs transition-colors",
@@ -989,98 +785,16 @@ function ChatComposer({
   );
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function formatHHmm(ms: number): string {
-  if (!ms) return "";
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-function formatHHmmss(ms: number): string {
-  if (!ms) return "";
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
-}
-
-// ─── ErrorCard ───────────────────────────────────────────────────────────────
-
-function ErrorCard({ text, onRerun }: { text: string; onRerun?: () => void }) {
-  const { t } = useTranslation();
-  return (
-    <section
-      data-selectable-text="true"
-      className="flex w-full max-w-[720px] items-center gap-3 rounded-md border border-status-error/40 bg-destructive-soft px-4 py-2.5"
-    >
-      <TriangleAlert
-        className="size-4 shrink-0 text-status-error"
-        aria-hidden="true"
-      />
-      <span className="min-w-0 flex-1 text-xs text-status-error">
-        {t("chat.errorCard.message", { text })}
-      </span>
-      {onRerun ? (
-        <Button type="button" size="xs" variant="outline" onClick={onRerun}>
-          {t("chat.errorCard.regenerate")}
-        </Button>
-      ) : null}
-    </section>
-  );
-}
-
-function RetryNoticeCard({ retry }: { retry: RetryNotice }) {
-  const { t } = useTranslation();
-  const hasCount = retry.attempt > 0 && retry.maxAttempts > 0;
-  const title = hasCount
-    ? t("chat.retry.titleWithMax", {
-        attempt: retry.attempt,
-        max: retry.maxAttempts,
-      })
-    : retry.attempt > 0
-      ? t("chat.retry.titleWithAttempt", { attempt: retry.attempt })
-      : t("chat.retry.title");
-  const message = retry.message || t("chat.retry.defaultMessage");
-  const at = formatHHmmss(retry.at);
-
-  return (
-    <section
-      data-selectable-text="true"
-      role="status"
-      aria-label={t("chat.retry.aria")}
-      className="flex w-full max-w-[720px] items-start gap-3 rounded-md border border-status-warning/45 bg-status-warning/10 px-4 py-2.5"
-    >
-      <RefreshCw
-        className="mt-0.5 size-4 shrink-0 animate-spin text-status-warning motion-reduce:animate-none"
-        aria-hidden="true"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-xs font-semibold text-status-warning">
-            {title}
-          </span>
-          {at ? (
-            <span className="font-mono text-[10px] text-muted-foreground">
-              {at}
-            </span>
-          ) : null}
-        </div>
-        <div className="mt-1 min-w-0 break-words font-mono text-[11px] text-foreground">
-          {message}
-        </div>
-        {retry.details ? (
-          <div className="mt-1 min-w-0 break-words text-[11px] leading-snug text-muted-foreground">
-            {retry.details}
-          </div>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
 // Generic tool card extension point: canonical-tool/raw/card.tsx handles
 // non-canonical tools; canonical-tool/<kind>/card.tsx handles canonical kinds.
 
 // ─── ChatTranscript ──────────────────────────────────────────────────────────
+
+// 距底 ≤32px 视为"贴底",与 chat-panel 的 TRANSCRIPT_BOTTOM_THRESHOLD 同义:
+// 它是 anchorTo:"end" 在 live 行流式增长时"是否继续钉底"的容差;
+// 用户上滑超过它就不再钉底,保住阅读历史的位置。
+const STICK_TO_BOTTOM_THRESHOLD_PX = 32;
+const TRANSCRIPT_VIRTUAL_OVERSCAN = 6;
 
 type ChatTranscriptProps = {
   agentName: string;
@@ -1089,6 +803,12 @@ type ChatTranscriptProps = {
   cwd?: string;
   /** 当前 chat session id —— AskUserQuestionCard 提交答案时要带它去 Wails 绑定。 */
   sessionId?: number;
+  /** Transcript 的滚动容器。传入时启用动态高度虚拟列表。 */
+  scrollElement?: HTMLElement | null;
+  /** scrollElement 挂上前也保持虚拟化路径，避免长对话首帧全量 mount。 */
+  virtualize?: boolean;
+  /** 当前 tab 是否可见；从隐藏切回时触发虚拟列表重新测量。 */
+  active?: boolean;
   messages: chat_svc.ChatMessage[];
   liveDelta?: string;
   /** 流式中累积的 thinking 增量。挂在 liveTargetId 对应的 assistant 上作为一张 streaming thinking 卡。 */
@@ -1113,6 +833,22 @@ type ChatTranscriptProps = {
    *  "正在压缩上下文…" chip,让用户知道这段时间在做什么。compact_boundary 到达自动清空。*/
   liveCompacting?: boolean;
   onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void;
+  /** Stable mounted chat tab key for UI drafts that survive route/tab remounts. */
+  tabStateKey?: string;
+};
+
+type ChatTranscriptHandle = {
+  scrollToMessage: (messageId: number) => void;
+  // 锚点恢复:把锚点行钉到距视口顶 offset px 处,并随虚拟器逐行复测收敛。
+  // rowKey(data-row-key)命中时精确钉回该行 —— 行级虚拟化下长消息拆成多行,
+  // 只按 messageId 会塌到消息首行;rowKey 失效(行已消失/旧快照)回退消息首行。
+  // 返回 false 表示该消息当前不在 displayMessages(被折叠 / 尚未加载),
+  // 调用方应回退到像素恢复。
+  scrollToAnchor: (
+    messageId: number,
+    offset: number,
+    rowKey?: string,
+  ) => boolean;
 };
 
 // findLastCompactBoundary 顺序扫所有 messages.blocks 找最后一条 type=compact_boundary
@@ -1132,24 +868,34 @@ function findLastCompactBoundary(
   return found;
 }
 
-function ChatTranscript({
-  agentName,
-  agentColor,
-  cwd,
-  sessionId,
-  messages,
-  liveDelta,
-  liveThinking,
-  liveTargetId,
-  liveBlocks,
-  liveRetry,
-  liveStreamStartedAt,
-  onRerun,
-  onEdit,
-  onPlanActionStarted,
-  streaming = false,
-  liveCompacting = false,
-}: ChatTranscriptProps) {
+const ChatTranscript = React.forwardRef<
+  ChatTranscriptHandle,
+  ChatTranscriptProps
+>(function ChatTranscript(
+  {
+    agentName,
+    agentColor,
+    cwd,
+    sessionId,
+    scrollElement,
+    virtualize = false,
+    active = true,
+    messages,
+    liveDelta,
+    liveThinking,
+    liveTargetId,
+    liveBlocks,
+    liveRetry,
+    liveStreamStartedAt,
+    onRerun,
+    onEdit,
+    onPlanActionStarted,
+    tabStateKey,
+    streaming = false,
+    liveCompacting = false,
+  },
+  ref,
+) {
   // 只有当整个序列的「最后一条」就是 assistant 时才挂指示器：
   // 正常 stream 流程下 doSend 会同时插入 user + assistant 占位，所以末尾一定是 assistant；
   // 如果末尾是 user（异常态或还没插占位），不应该在更早的 assistant 上挂指示器误导用户。
@@ -1202,14 +948,16 @@ function ChatTranscript({
     return ids;
   }, [messages]);
 
-  // useEvent 模式：把 onRerun/onEdit 包成稳定引用,让 MessageItem 的 React.memo
-  // 不会被 ChatPanel 传入的 inline lambda 击穿。父侧每次重渲都换新函数,但 ref
-  // 内部更新后稳定代理捕获最新值,语义不变。
+  // useEvent 模式：把 onRerun/onEdit/onPlanActionStarted 包成稳定引用,让行组件的
+  // React.memo / TranscriptRenderContext 不会被 ChatPanel 传入的 inline lambda 击穿。
+  // 父侧每次重渲都换新函数,但 ref 内部更新后稳定代理捕获最新值,语义不变。
   const onRerunRef = React.useRef(onRerun);
   const onEditRef = React.useRef(onEdit);
+  const onPlanActionStartedRef = React.useRef(onPlanActionStarted);
   React.useEffect(() => {
     onRerunRef.current = onRerun;
     onEditRef.current = onEdit;
+    onPlanActionStartedRef.current = onPlanActionStarted;
   });
   const stableOnRerun = React.useCallback((id: number) => {
     onRerunRef.current?.(id);
@@ -1217,543 +965,419 @@ function ChatTranscript({
   const stableOnEdit = React.useCallback((id: number) => {
     onEditRef.current?.(id);
   }, []);
+  const stableOnPlanActionStarted = React.useCallback(
+    (stream: PlanActionStream, userText: string) => {
+      onPlanActionStartedRef.current?.(stream, userText);
+    },
+    [],
+  );
+
+  // displayMessages → 虚拟行。persisted 消息的行缓存在实例级 WeakMap(引用稳定
+  // → 行组件 memo 恒命中);live 消息每 chunk 现场重建,重渲上限 = 可见窗口行数。
+  const rowsCacheRef = React.useRef(
+    new WeakMap<chat_svc.ChatMessage, TranscriptRow[]>(),
+  );
+  const { rows, firstRowIndexByMessageId, rowIndexByKey } = React.useMemo(
+    () =>
+      buildTranscriptRows({
+        autonomousIds,
+        cache: rowsCacheRef.current,
+        displayMessages,
+        liveBlocks,
+        liveTail: liveDelta ?? "",
+        liveTargetId,
+        liveThinking: liveThinking ?? "",
+        liveThinkingStartedAt: liveStreamStartedAt,
+      }),
+    [
+      autonomousIds,
+      displayMessages,
+      liveBlocks,
+      liveDelta,
+      liveStreamStartedAt,
+      liveTargetId,
+      liveThinking,
+    ],
+  );
+
+  const renderCtx = React.useMemo<TranscriptRenderContextValue>(
+    () => ({
+      agentColor,
+      agentName,
+      cwd,
+      onEdit: stableOnEdit,
+      onPlanActionStarted: stableOnPlanActionStarted,
+      onRerun: stableOnRerun,
+      sessionId: sessionId ?? 0,
+      tabStateKey,
+    }),
+    [
+      agentColor,
+      agentName,
+      cwd,
+      sessionId,
+      stableOnEdit,
+      stableOnPlanActionStarted,
+      stableOnRerun,
+      tabStateKey,
+    ],
+  );
+
+  const shouldVirtualize = virtualize || scrollElement != null;
+  const lastVirtualTotalSizeRef = React.useRef(0);
+  const lastScrollRectRef = React.useRef({ height: 0, width: 0 });
+  const lastScrollOffsetRef = React.useRef(0);
+  const restoreScrollOffsetRef = React.useRef(false);
+  const [, forceRestoreRender] = React.useState(0);
+
+  const observeScrollRect = React.useCallback(
+    (
+      el: HTMLElement | null,
+      cb: (rect: { height: number; width: number }) => void,
+    ) => {
+      const next = {
+        height: el?.clientHeight ?? 0,
+        width: el?.clientWidth ?? 0,
+      };
+      if (next.height > 0 || next.width > 0) {
+        lastScrollRectRef.current = next;
+        cb(next);
+        return;
+      }
+      cb(active ? next : lastScrollRectRef.current);
+    },
+    [active],
+  );
+
+  // renderRowView:单个虚拟行的内容。非 live 行的 live* prop 全部收敛到稳定空值,
+  // 让 TranscriptRowView 的 React.memo shallow 比较恒命中 —— 每个流式 chunk 只有
+  // live 消息(和指示器宿主末行)重渲。
+  const renderRowView = React.useCallback(
+    (row: TranscriptRow) => {
+      const isLiveTail =
+        row.isLastOfMessage &&
+        liveTargetId != null &&
+        row.messageId === liveTargetId;
+      const showIndicator =
+        row.isLastOfMessage &&
+        streaming &&
+        lastAssistantId != null &&
+        row.messageId === lastAssistantId;
+      return (
+        <TranscriptRowView
+          row={row}
+          liveTail={isLiveTail ? (liveDelta ?? "") : ""}
+          liveBlocks={isLiveTail ? liveBlocks : undefined}
+          liveRetry={isLiveTail ? (liveRetry ?? null) : null}
+          showIndicator={showIndicator}
+          compacting={showIndicator && isLiveTail && liveCompacting}
+        />
+      );
+    },
+    [
+      lastAssistantId,
+      liveBlocks,
+      liveCompacting,
+      liveDelta,
+      liveRetry,
+      liveTargetId,
+      streaming,
+    ],
+  );
+
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual intentionally owns mutable measurement callbacks.
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    estimateSize: (index) => {
+      const row = rows[index];
+      return row ? estimateRowSize(row) : 132;
+    },
+    getItemKey: (index) => rows[index]?.key ?? index,
+    getScrollElement: () => scrollElement ?? null,
+    initialRect: {
+      height: scrollElement?.clientHeight ?? 0,
+      width: scrollElement?.clientWidth ?? 0,
+    },
+    observeElementOffset: (_instance, cb) => {
+      const el = scrollElement;
+      const readOffset = () => {
+        const offset = el?.scrollTop ?? 0;
+        if (active && !restoreScrollOffsetRef.current) {
+          lastScrollOffsetRef.current = offset;
+          return offset;
+        }
+        if (offset > 0) {
+          lastScrollOffsetRef.current = offset;
+          return offset;
+        }
+        return lastScrollOffsetRef.current;
+      };
+      cb(readOffset(), false);
+      if (!el) return;
+      let scrollEndTimer: number | null = null;
+      const handler = () => {
+        const offset = readOffset();
+        cb(offset, true);
+        if (scrollEndTimer != null) window.clearTimeout(scrollEndTimer);
+        scrollEndTimer = window.setTimeout(() => {
+          cb(readOffset(), false);
+          scrollEndTimer = null;
+        }, 150);
+      };
+      el.addEventListener("scroll", handler, { passive: true });
+      return () => {
+        if (scrollEndTimer != null) window.clearTimeout(scrollEndTimer);
+        el.removeEventListener("scroll", handler);
+      };
+    },
+    observeElementRect: (_instance, cb) => {
+      const el = scrollElement ?? null;
+      observeScrollRect(el, cb);
+      if (!el || typeof ResizeObserver === "undefined") return;
+      const observer = new ResizeObserver(() => {
+        observeScrollRect(el, cb);
+      });
+      observer.observe(el);
+      return () => observer.disconnect();
+    },
+    overscan: TRANSCRIPT_VIRTUAL_OVERSCAN,
+    // 流式贴底交给虚拟器自己的测量回路,而不是 chat-panel 在每个 chunk 用
+    // scrollTop=maxScrollTop 手动追(那条路读的是异步复测前的旧 getTotalSize,
+    // 永远慢一帧→最新输出被压到折叠线以下)。anchorTo:"end" 在 live 行被
+    // ResizeObserver 复测变高、且当前距底 ≤ 阈值时,于 resizeItem 测量回路内
+    // 同步把滚动钉回底部,天然消除"慢一帧";上滑超过阈值则不钉,保住阅读位置。
+    //
+    // 刻意不开 followOnAppend:追"新追加整条消息"已由 chat-panel 的结构性 follow
+    //(atBottom 时随 messages 变化滚到底)覆盖;而 followOnAppend 会在会话打开、
+    // messages 从 0→N 时把空列表判定为"在末尾"抢先 scrollToEnd,覆盖掉
+    //「恢复到上次上滑位置」的还原(正是要修的 wrong-restore),故不启用。
+    anchorTo: "end",
+    scrollEndThreshold: STICK_TO_BOTTOM_THRESHOLD_PX,
+  });
+  React.useLayoutEffect(() => {
+    if (!scrollElement) return;
+    virtualizer.measure();
+  }, [scrollElement, virtualizer]);
+  React.useLayoutEffect(() => {
+    if (!active) {
+      restoreScrollOffsetRef.current = true;
+      return;
+    }
+    if (!restoreScrollOffsetRef.current) return;
+    restoreScrollOffsetRef.current = false;
+    const el = scrollElement;
+    if (!el) return;
+    const offset = lastScrollOffsetRef.current;
+    if (el.scrollTop !== offset) el.scrollTop = offset;
+    el.dispatchEvent(new Event("scroll"));
+    forceRestoreRender((version) => version + 1);
+  }, [active, scrollElement, virtualizer]);
+  // 注意:这里不能在 active 翻成 true 时再调 virtualizer.measure()。
+  // measure() 会 itemSizeCache.clear() 把所有行的真实测量值丢弃、整列瞬间塌回
+  // estimateSize(132px),切回 tab 时引发可见的塌缩 / 闪烁 reflow。隐藏期间行的
+  // ResizeObserver 不触发(display:none 不参与布局),重新可见时 measureElement 的
+  // ResizeObserver 会自然对可见窗口逐行复测,无需整列清缓存。
+
+  // 行级贴底跟随:anchorTo:"end" 只在「行 resize」时钉底(流式文本生长走那条路),
+  // 而行模型下新 tool 卡 / indicator 是「行追加」—— followOnAppend 因 wrong-restore
+  // (见 virtualizer 配置注释)刻意不开,这里自己补:仅当 ①tab 可见且不在恢复期
+  // ②非首载(0→N 是打开会话回放,要让位给滚动恢复)③确实是尾部追加 ④追加前
+  // 用户贴底(按追加前的 totalSize 判定)时,把滚动钉到新的末尾。
+  const followTailRef = React.useRef({
+    count: 0,
+    tailKey: null as string | null,
+    totalSize: 0,
+  });
+  React.useLayoutEffect(() => {
+    const el = scrollElement;
+    const prev = followTailRef.current;
+    const tailKey = rows.at(-1)?.key ?? null;
+    followTailRef.current = {
+      count: rows.length,
+      tailKey,
+      totalSize: virtualizer.getTotalSize(),
+    };
+    if (!el || !active || restoreScrollOffsetRef.current) return;
+    if (prev.count === 0) return;
+    if (rows.length <= prev.count || tailKey === prev.tailKey) return;
+    const wasAtEnd =
+      prev.totalSize <= el.clientHeight ||
+      el.scrollTop + el.clientHeight >=
+        prev.totalSize - STICK_TO_BOTTOM_THRESHOLD_PX;
+    if (!wasAtEnd) return;
+    virtualizer.scrollToOffset(virtualizer.getTotalSize(), { align: "end" });
+  }, [rows, active, scrollElement, virtualizer]);
+
+  const [pendingScrollMessageId, setPendingScrollMessageId] = React.useState<
+    number | null
+  >(null);
+  const scrollToMessage = React.useCallback(
+    (messageId: number) => {
+      // 消息首行 = 消息顶,align:"start" 视觉等价于旧 message 级行为。
+      const index = firstRowIndexByMessageId.get(messageId);
+      if (index != null) {
+        virtualizer.scrollToIndex(index, { align: "start" });
+        return;
+      }
+      if (folding && messages.some((m) => m.id === messageId)) {
+        setExpanded(true);
+        setPendingScrollMessageId(messageId);
+      }
+    },
+    [firstRowIndexByMessageId, folding, messages, virtualizer],
+  );
+
+  React.useEffect(() => {
+    if (pendingScrollMessageId == null) return;
+    const index = firstRowIndexByMessageId.get(pendingScrollMessageId);
+    if (index == null) return;
+    virtualizer.scrollToIndex(index, { align: "start" });
+    setPendingScrollMessageId(null);
+  }, [firstRowIndexByMessageId, pendingScrollMessageId, virtualizer]);
+
+  const anchorRestoreFrameRef = React.useRef<number | null>(null);
+  const cancelAnchorRestore = React.useCallback(() => {
+    if (anchorRestoreFrameRef.current != null) {
+      window.cancelAnimationFrame(anchorRestoreFrameRef.current);
+      anchorRestoreFrameRef.current = null;
+    }
+  }, []);
+  // scrollToAnchor:把"保存时位于视口顶部的那条消息"(messageId)重新钉到距视口顶
+  // offset px 处。路由重挂时虚拟器整列只有 estimate 高度,getOffsetForIndex 会随可见
+  // 窗口逐行复测而变化;这里用 rAF 循环重算 target 直到稳定(连续 2 帧不变)或封顶,
+  // 从而消除"仅凭像素 scrollTop 会落到错消息"的冷启动漂移——锚点钉的是消息身份,
+  // 不是像素值。返回 false=该消息不在 displayMessages(被折叠/未加载),交回调用方
+  // 回退像素恢复。
+  const scrollToAnchor = React.useCallback(
+    (messageId: number, offset: number, rowKey?: string): boolean => {
+      const index =
+        (rowKey != null ? rowIndexByKey.get(rowKey) : undefined) ??
+        firstRowIndexByMessageId.get(messageId) ??
+        -1;
+      const el = scrollElement;
+      if (index < 0 || !el) return false;
+      cancelAnchorRestore();
+      let prevTarget = -1;
+      let stableFrames = 0;
+      let frames = 0;
+      const settle = () => {
+        anchorRestoreFrameRef.current = null;
+        const info = virtualizer.getOffsetForIndex(index, "start");
+        if (!info) return;
+        const target = Math.max(0, info[0] + offset);
+        if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target;
+        stableFrames =
+          Math.abs(target - prevTarget) <= 1 ? stableFrames + 1 : 0;
+        prevTarget = target;
+        frames += 1;
+        if (stableFrames < 2 && frames < 30) {
+          anchorRestoreFrameRef.current = window.requestAnimationFrame(settle);
+        }
+      };
+      // 同步先钉一帧(调用点是 chat-panel 的 useLayoutEffect,paint 前生效),
+      // 避免路由重挂首帧闪在顶部;后续逐帧由 settle 自己挂 rAF 收敛。
+      settle();
+      return true;
+    },
+    [
+      cancelAnchorRestore,
+      firstRowIndexByMessageId,
+      rowIndexByKey,
+      scrollElement,
+      virtualizer,
+    ],
+  );
+  React.useEffect(() => () => cancelAnchorRestore(), [cancelAnchorRestore]);
+
+  React.useImperativeHandle(
+    ref,
+    () => ({
+      scrollToMessage,
+      scrollToAnchor,
+    }),
+    [scrollToAnchor, scrollToMessage],
+  );
+
+  const renderVirtualRows =
+    shouldVirtualize && active && !restoreScrollOffsetRef.current;
+  const virtualTotalSize = virtualizer.getTotalSize();
+  if (virtualTotalSize > 0) {
+    lastVirtualTotalSizeRef.current = virtualTotalSize;
+  }
+  const virtualSpacerSize =
+    virtualTotalSize > 0
+      ? virtualTotalSize
+      : lastVirtualTotalSizeRef.current || rows.length * 48;
+
+  // 行间距:消息末行 pb-5(消息间距),消息内分片行 pb-2(block 间距)。padding
+  // 打在行 wrapper 上,跟随 measureElement 一起计入行高。
+  const rowWrapperPad = (index: number): string => {
+    const row = rows[index];
+    const next = rows[index + 1];
+    return next == null || next.messageId !== row?.messageId ? "pb-5" : "pb-2";
+  };
 
   return (
     <TooltipProvider delayDuration={200}>
-      {/* 不再加 max-w-4xl —— 内部 ChatMessage 已经 cap 在 720px,
+      <TranscriptUIStateProvider>
+        <TranscriptRenderContext.Provider value={renderCtx}>
+          {/* 不再加 max-w-4xl —— 内部 ChatMessage 已经 cap 在 720px,
           这里再叠一层外层 max-w 没有任何收紧效果,只会留出 phantom 空白。 */}
-      <div className="flex flex-col gap-5">
-        {folding && foldedCount > 0 ? (
-          <CompactHistoryFold
-            count={foldedCount}
-            onExpand={() => setExpanded(true)}
-          />
-        ) : null}
-        {displayMessages.map((m) => {
-          const isLive = m.id === liveTargetId;
-          const isAutonomous = autonomousIds.has(m.id);
-          return (
-            <React.Fragment key={m.id}>
-              {isAutonomous ? <AutoTriggerBanner /> : null}
-              <MessageItem
-                m={m}
-                agentName={agentName}
-                agentColor={agentColor}
-                cwd={cwd}
-                sessionId={sessionId}
-                // 关键: 非 live 消息的所有 live* prop 都收敛到稳定的"空值",
-                // 让 React.memo 的 shallow 比较恒命中。
-                liveTail={isLive ? (liveDelta ?? "") : ""}
-                liveThinking={isLive ? (liveThinking ?? "") : ""}
-                liveBlocks={isLive ? liveBlocks : undefined}
-                liveRetry={isLive ? (liveRetry ?? null) : null}
-                liveStreamStartedAt={
-                  isLive ? (liveStreamStartedAt ?? null) : null
-                }
-                showIndicator={
-                  streaming &&
-                  m.role === "assistant" &&
-                  m.id === lastAssistantId
-                }
-                compacting={
-                  isLive &&
-                  streaming &&
-                  m.role === "assistant" &&
-                  m.id === lastAssistantId &&
-                  liveCompacting
-                }
-                onRerun={stableOnRerun}
-                onEdit={stableOnEdit}
-                onPlanActionStarted={onPlanActionStarted}
+          <div className={shouldVirtualize ? "min-h-full" : "flex flex-col"}>
+            {folding && foldedCount > 0 ? (
+              <CompactHistoryFold
+                count={foldedCount}
+                onExpand={() => setExpanded(true)}
               />
-            </React.Fragment>
-          );
-        })}
-      </div>
+            ) : null}
+            {shouldVirtualize ? (
+              <div
+                className="relative w-full"
+                style={{ height: `${virtualSpacerSize}px` }}
+              >
+                {renderVirtualRows
+                  ? virtualizer.getVirtualItems().map((virtualItem) => {
+                      const row = rows[virtualItem.index];
+                      if (!row) return null;
+                      return (
+                        <div
+                          key={virtualItem.key}
+                          ref={virtualizer.measureElement}
+                          data-index={virtualItem.index}
+                          data-message-id={row.messageId}
+                          data-row-key={row.key}
+                          className={cn(
+                            "absolute left-0 top-0 w-full",
+                            rowWrapperPad(virtualItem.index),
+                          )}
+                          style={{
+                            transform: `translateY(${virtualItem.start}px)`,
+                          }}
+                        >
+                          {renderRowView(row)}
+                        </div>
+                      );
+                    })
+                  : null}
+              </div>
+            ) : (
+              rows.map((row, index) => (
+                <div
+                  key={row.key}
+                  data-message-id={row.messageId}
+                  data-row-key={row.key}
+                  className={rowWrapperPad(index)}
+                >
+                  {renderRowView(row)}
+                </div>
+              ))
+            )}
+          </div>
+        </TranscriptRenderContext.Provider>
+      </TranscriptUIStateProvider>
     </TooltipProvider>
   );
-}
-
-type MessageItemProps = {
-  m: chat_svc.ChatMessage;
-  agentName: string;
-  agentColor: AgentColor;
-  cwd?: string;
-  sessionId?: number;
-  liveTail: string;
-  liveThinking: string;
-  liveBlocks: ChatBlockData[] | undefined;
-  liveRetry: RetryNotice | null;
-  liveStreamStartedAt: number | null;
-  showIndicator: boolean;
-  /** showIndicator && compacting → 渲染 CompactingIndicator 替代 TypingIndicator。*/
-  compacting: boolean;
-  onRerun: (id: number) => void;
-  onEdit: (id: number) => void;
-  onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void;
-};
-
-// MessageItem 是 transcript 里单条消息的渲染单元。memo 后,只要传入 props
-// (m 引用 / live* 值) 没变,流式 chunk 不会再让历史消息进 render。配合上面
-// 稳定的 onRerun/onEdit + 上游 immutable 消息更新,历史段在每次 chunk 期间
-// 都能命中 memo,跳过 react-markdown / rehype-highlight 的重渲染。
-const MessageItem = React.memo(function MessageItem({
-  m,
-  agentName,
-  agentColor,
-  cwd,
-  sessionId,
-  liveTail,
-  liveThinking,
-  liveBlocks,
-  liveRetry,
-  liveStreamStartedAt,
-  showIndicator,
-  compacting,
-  onRerun,
-  onEdit,
-  onPlanActionStarted,
-}: MessageItemProps) {
-  const { t } = useTranslation();
-  const isAssistant = m.role === "assistant";
-  // 每条 assistant 都允许重新生成；后端按消息 id 截断后重跑。
-  const rerunHandler = isAssistant ? () => onRerun(m.id) : undefined;
-  const editHandler = !isAssistant ? () => onEdit(m.id) : undefined;
-
-  return (
-    <ChatMessage
-      data-message-id={m.id}
-      author={isAssistant ? agentName : ""}
-      avatarColor={isAssistant ? agentColor : "neutral"}
-      initials={isAssistant ? agentName.charAt(0) : undefined}
-      variant={isAssistant ? "assistant" : "user"}
-      time={formatHHmm(m.createtime)}
-      meta={
-        // claude/codex 后端走 CLI 自身 login 时 m.model 落库是空串 —
-        // 用 durationMs > 0 作为「turn 已结束」的可靠信号，让这些会话也
-        // 能看到耗时/重新生成。streaming 占位（durationMs=0）仍然不出 meta。
-        isAssistant && m.durationMs > 0 ? (
-          <MessageMeta
-            model={m.model}
-            promptTokens={m.promptTokens}
-            completionTokens={m.completionTokens}
-            cachedTokens={m.cachedTokens}
-            cacheCreationTokens={m.cacheCreationTokens}
-            reasoningTokens={m.reasoningTokens}
-            durationMs={m.durationMs}
-            onRerun={rerunHandler}
-          />
-        ) : !isAssistant && editHandler ? (
-          <UserMessageActions onEdit={editHandler} />
-        ) : undefined
-      }
-    >
-      {renderMessageBlocks(
-        m.blocks,
-        liveTail,
-        cwd,
-        liveThinking,
-        liveStreamStartedAt,
-        liveBlocks,
-        sessionId,
-        onPlanActionStarted,
-        t,
-      )}
-      {liveRetry ? <RetryNoticeCard retry={liveRetry} /> : null}
-      {showIndicator ? (
-        compacting ? (
-          <CompactingIndicator />
-        ) : (
-          <TypingIndicator />
-        )
-      ) : null}
-      {isAssistant && m.errorText ? (
-        <ErrorCard text={m.errorText} onRerun={rerunHandler} />
-      ) : null}
-    </ChatMessage>
-  );
 });
-
-function TypingIndicator() {
-  const { t } = useTranslation();
-  // keyframe 自己控制 opacity (0.2 ↔ 1)，dot 颜色不再叠 /60，避免叠加后整体太淡看不见。
-  // 6px 三点 + 1.5 gap 是「克制但可感知」的尺寸；动画通过 @theme 的 --animate-typing-dot 注册，
-  // class 名 animate-typing-dot 由 Tailwind v4 解析为 animation: typing-dot 1.2s ease-in-out infinite。
-  const dotClass =
-    "size-1.5 rounded-full bg-muted-foreground animate-typing-dot motion-reduce:animate-none";
-  return (
-    <div
-      aria-label={t("chat.typing.aria")}
-      role="status"
-      aria-live="polite"
-      className="flex items-center gap-1.5 py-1"
-    >
-      <span className={dotClass} />
-      <span className={cn(dotClass, "[animation-delay:0.15s]")} />
-      <span className={cn(dotClass, "[animation-delay:0.3s]")} />
-    </div>
-  );
-}
-
-// CompactingIndicator 在 claudecode CLI 跑 /compact 期间替代 TypingIndicator,
-// 让用户知道这段时间不是普通回答,而是在压缩上下文 (manual 或 auto)。文案旁
-// 复用 TypingIndicator 的 dot 动画做"还在跑"的视觉信号。
-function CompactingIndicator() {
-  const { t } = useTranslation();
-  const dotClass =
-    "size-1.5 rounded-full bg-muted-foreground animate-typing-dot motion-reduce:animate-none";
-  return (
-    <div
-      aria-label={t("chat.compacting.aria")}
-      role="status"
-      aria-live="polite"
-      className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
-    >
-      <div className="flex items-center gap-1">
-        <span className={dotClass} />
-        <span className={cn(dotClass, "[animation-delay:0.15s]")} />
-        <span className={cn(dotClass, "[animation-delay:0.3s]")} />
-      </div>
-      <span>{t("chat.compacting.label")}</span>
-    </div>
-  );
-}
-
-// renderMessageBlocks 把后端 ChatBlock 数组转成 JSX。
-// 多个 text block 合并为一个 <p> + 末尾追加流式增量（liveTail），
-// 其它类型逐个独立渲染。
-// liveThinking 非空时在末尾追加一张「streaming thinking」卡片；当 liveTail 已有内容（文字已开始流式）
-// 时该卡片显示为已完成态（思考结束、文字接力中），符合 spec 中「文字 chunk 一来思考即折叠」规则。
-function renderMessageBlocks(
-  blocks: ChatBlockData[] = [],
-  liveTail: string,
-  cwd?: string,
-  liveThinking: string = "",
-  liveThinkingStartedAt?: number | null,
-  // 本轮 turn 已"冻结但还没持久化"的块（text / tool_use / tool_result），由
-  // chat-streams-store 维护。和 persisted blocks 拼成一个完整顺序 —— 关键:
-  // 流式途中遇到 tool_use 时,store 会把当下的 liveDelta 先冻成 text block 推
-  // 到 liveBlocks 尾,所以真实顺序就是 [persisted..., ...liveBlocks, liveDelta]。
-  liveBlocks: ChatBlockData[] = [],
-  // AskUserQuestionCard 提交答案时要带它去 Wails 绑定。
-  sessionId: number = 0,
-  onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void,
-  t?: TFunction,
-): React.ReactNode {
-  type RenderItem =
-    // streaming=true 标记这是「流式途中正在生长」的文本项 —— 用 StreamingMarkdown
-    // 增量渲染(已定稿 block memo 跳过、只重解析活跃尾巴);持久化文本仍走整段 MarkdownText。
-    | { text: string; type: "text"; streaming?: boolean }
-    | { block: ChatBlockData; type: "plan" }
-    | {
-        block: ChatBlockData;
-        startedAt?: number;
-        streaming: boolean;
-        type: "thinking";
-      }
-    | {
-        // permissionBlock 仅在审批通过后由配对逻辑挂上,渲染时透传给 ToolInvocationCard。
-        permissionBlock?: ChatBlockData;
-        resultBlock?: ChatBlockData;
-        toolBlock?: ChatBlockData;
-        // childBlocks 仅 canonical.agent.spawn 需要(parent-child 归集),其它工具留空。
-        childBlocks?: ChatBlockData[];
-        type: "tool";
-      }
-    | {
-        block: ChatBlockData;
-        type: "image";
-      }
-    | {
-        block: ChatBlockData;
-        // _consumed 标记此条审批已被 merge 到某条 tool_use 卡上,渲染前会被过滤掉。
-        // 未 resolved / resolved-denied 的审批不会被标记,保留为独立卡。
-        _consumed?: boolean;
-        type: "tool_permission_request";
-      }
-    | { block: ChatBlockData; type: "unknown" }
-    | { block: ChatBlockData; type: "compact_boundary" };
-
-  // 预扫一遍把 subagent 内部 block 归集到外层 Agent.tool_use_id；
-  // 主流程遇到 parentToolUseId 非空就 skip，避免被同级渲染。
-  const childrenByParent = new Map<string, ChatBlockData[]>();
-  const collectChildren = (b: ChatBlockData) => {
-    if (!b.parentToolUseId) return;
-    const arr = childrenByParent.get(b.parentToolUseId) ?? [];
-    arr.push(b);
-    childrenByParent.set(b.parentToolUseId, arr);
-  };
-  blocks.forEach(collectChildren);
-  liveBlocks.forEach(collectChildren);
-
-  const items: RenderItem[] = [];
-  const pendingToolIndexes = new Map<string, number>();
-  const pendingAnonymousToolIndexes: number[] = [];
-  // SKIPPED_TOOL_INDEX 给 AskUserQuestion 的 tool_use 占位用:tool_use 本身不入 items,
-  // 但要让后续的 tool_result 在 pendingToolIndexes 里查到这个哨兵,从而一同 skip。
-  const SKIPPED_TOOL_INDEX = -1;
-  // pendingPermsByTool 按 toolName 维护"已审批通过、还在等匹配 tool_use"的 perm RenderItem
-  // 下标 (FIFO)。匹配到 tool_use 时把 perm 标记 _consumed,merge 到那条 tool item。
-  // 这是协议上唯一可行的关联方式 —— ChatBlockToolPermission 没有 toolUseId 字段,
-  // can_use_tool control_request 也不携带未来的 tool_use_id。
-  const pendingPermsByTool = new Map<string, number[]>();
-
-  function appendText(text: string, streaming = false) {
-    if (!text) return;
-    const last = items.at(-1);
-    if (last?.type === "text") {
-      last.text += text;
-      // 与前一个已冻结的 text 段合并后,整段都按流式尾巴处理 ——
-      // StreamingMarkdown 会把已冻结的前缀也切成 memo 命中的定稿块,只重解析真尾巴。
-      if (streaming) last.streaming = true;
-      return;
-    }
-    items.push({ text, type: "text", streaming });
-  }
-
-  const consumeBlock = (b: ChatBlockData) => {
-    // subagent 内部 block 已经被归集到父 AgentSpawnCard 的 childBlocks，不再同级渲染。
-    if (b.parentToolUseId) return;
-    switch (b.type) {
-      case "text":
-        appendText(b.text ?? "");
-        break;
-      case "thinking":
-        items.push({ block: b, streaming: false, type: "thinking" });
-        break;
-      case "image":
-        items.push({ block: b, type: "image" });
-        break;
-      case "plan":
-        // Most plan.update blocks are progress data for TaskProgressBar only.
-        // Actionable plan blocks carry canonical.actions and need the shared
-        // PlanCard in the transcript.
-        if (isRenderablePlanBlock(b)) {
-          items.push({ block: b, type: "plan" });
-        }
-        break;
-      case "tool_use": {
-        // AskUserQuestion 类工具的 tool_use 不渲染独立卡 —— ask_user_question block
-        // 已经把交互界面接管掉。占位 SKIPPED_TOOL_INDEX 让后续 tool_result 也 skip。
-        if (isAskUserQuestionToolName(b.toolName)) {
-          if (b.toolUseId)
-            pendingToolIndexes.set(b.toolUseId, SKIPPED_TOOL_INDEX);
-          break;
-        }
-        // ExitPlanMode 同理 —— PlanApproveCard(plan.approve_request canonical)已经
-        // 承担"批准执行计划"的完整渲染,后续 CLI 真正调用 ExitPlanMode 冒出的 tool_use
-        // 是协议余响,再渲染一张卡只会和 PlanApproveCard 视觉重复。break 前不入
-        // pendingPermsByTool 队列也意味着 PlanApproveCard 不会被 merge 隐藏。
-        if (b.toolName === "ExitPlanMode") {
-          if (b.toolUseId)
-            pendingToolIndexes.set(b.toolUseId, SKIPPED_TOOL_INDEX);
-          break;
-        }
-        if (isSubagentCanonical(b)) {
-          // canonical.agent.spawn — 走 CanonicalToolRouter → AgentSpawnCard,childBlocks
-          // 由 chat.tsx 的 parent-child 归集传过去(AgentSpawnCard 内部渲染 STEPS 段)。
-          const item: RenderItem = {
-            childBlocks: b.toolUseId
-              ? (childrenByParent.get(b.toolUseId) ?? [])
-              : [],
-            toolBlock: b,
-            type: "tool",
-          };
-          items.push(item);
-          if (b.toolUseId) {
-            pendingToolIndexes.set(b.toolUseId, items.length - 1);
-          }
-          break;
-        }
-        const item: RenderItem = { toolBlock: b, type: "tool" };
-        // 配对消费一条审批 RenderItem —— 找最早未消费且同 toolName 的 allowed 审批。
-        if (b.toolName) {
-          const queue = pendingPermsByTool.get(b.toolName);
-          if (queue && queue.length > 0) {
-            const permIdx = queue.shift()!;
-            const permItem = items[permIdx];
-            if (permItem?.type === "tool_permission_request") {
-              permItem._consumed = true;
-              item.permissionBlock = permItem.block;
-            }
-          }
-        }
-        items.push(item);
-        if (b.toolUseId) {
-          pendingToolIndexes.set(b.toolUseId, items.length - 1);
-        } else {
-          pendingAnonymousToolIndexes.push(items.length - 1);
-        }
-        break;
-      }
-      case "tool_result": {
-        const toolIndex = b.toolUseId
-          ? pendingToolIndexes.get(b.toolUseId)
-          : pendingAnonymousToolIndexes.pop();
-        // AskUserQuestion 的 tool_result 命中 SKIPPED_TOOL_INDEX 哨兵,直接丢弃。
-        if (toolIndex === SKIPPED_TOOL_INDEX) {
-          if (b.toolUseId) pendingToolIndexes.delete(b.toolUseId);
-          break;
-        }
-        const item =
-          typeof toolIndex === "number" ? items[toolIndex] : undefined;
-
-        if (item?.type === "tool") {
-          item.resultBlock = b;
-          if (b.toolUseId) pendingToolIndexes.delete(b.toolUseId);
-        }
-        // 孤儿 tool_result：没有配对 tool_use（AskUserQuestion 历史数据 / 后端漏过滤
-        // 的 PostToolUse 等都会走到这里），直接丢，不要 push 一条没有 toolBlock 的
-        // 幽灵 tool 卡（toolName 会回退到默认 "tool" 把答案文本暴露出来）。
-        break;
-      }
-      case "ask_user_question":
-        // ask_user_question 走 CanonicalToolRouter — block.canonical (UserAsk)
-        // 已由后端 live + replay 双路径填好,UserAskCard 直接消费。
-        items.push({ toolBlock: b, type: "tool" });
-        break;
-      case "tool_permission_request": {
-        // tool_permission_request 渲染走 CanonicalToolRouter —— ExitPlanMode
-        // → canonical.plan.approve_request → PlanApproveCard;其它工具
-        // → canonical.tool.permission → ToolPermissionCard。两条 canonical 都由后端
-        // dispatcher_emitter + replay 填好。RenderItem.type 保留 "tool_permission_request"
-        // 让 merge 到下方同 toolName tool_use 卡的逻辑可识别。
-        items.push({ block: b, type: "tool_permission_request" });
-        const idx = items.length - 1;
-        const perm = b.toolPermission;
-        // 只有 resolved + allowed 才参与 merge:未决态用户还要操作、denied 没有下游 tool_use。
-        if (perm?.resolved && perm.allowed && perm.toolName) {
-          const queue = pendingPermsByTool.get(perm.toolName) ?? [];
-          queue.push(idx);
-          pendingPermsByTool.set(perm.toolName, queue);
-        }
-        break;
-      }
-      case "compact_boundary":
-        // CLI 通报上下文已压缩 (manual /compact 或 auto)。在 transcript 中嵌一条
-        // 分隔卡片;最后一条 compact_boundary 之前的所有内容会被 ChatTranscript 顶层
-        // 折叠成"查看历史"按钮。
-        items.push({ block: b, type: "compact_boundary" });
-        break;
-      default:
-        items.push({ block: b, type: "unknown" });
-        break;
-    }
-  };
-  blocks.forEach(consumeBlock);
-
-  // 合成 thinking 必须排在本轮 liveBlocks（tool_use/tool_result/已冻结 text）之前 —
-  // Anthropic 协议里 thinking 永远在 turn 开头，store 也是单一 liveThinking 字段不穿插。
-  // 摆错位置会出现「思考 14s 还在转，但工具卡已经在它上方」的视觉错乱。
-  // streaming 判定：本轮一旦冒出任何非思考的输出（tool_use 进 liveBlocks 或文本开始流到
-  // liveTail），思考阶段就结束；只看 liveTail 会漏掉「思考完→直接发 tool」那一帧，徽标
-  // 一直 pulse、计时定格。
-  if (liveThinking) {
-    items.push({
-      block: { text: liveThinking, type: "thinking" } as ChatBlockData,
-      startedAt: liveThinkingStartedAt ?? undefined,
-      streaming: !liveTail && liveBlocks.length === 0,
-      type: "thinking",
-    });
-  }
-  liveBlocks.forEach(consumeBlock);
-  // liveTail 是本轮仍在生长的尾巴文本 —— 标记 streaming,走 StreamingMarkdown 增量渲染。
-  appendText(liveTail, true);
-
-  // 被 merge 到下方 tool_use 卡的审批 RenderItem 不再独立渲染。
-  const visibleItems = items.filter(
-    (item) => !(item.type === "tool_permission_request" && item._consumed),
-  );
-
-  return visibleItems.map((item, idx) => {
-    switch (item.type) {
-      case "text":
-        return item.streaming ? (
-          <StreamingMarkdown key={`text-${idx}`} cwd={cwd} text={item.text} />
-        ) : (
-          <MarkdownText key={`text-${idx}`} cwd={cwd} text={item.text} />
-        );
-      case "plan":
-        return (
-          <PlanApproveCard
-            key={`plan-${idx}`}
-            cwd={cwd}
-            sessionId={sessionId}
-            toolBlock={item.block}
-            onPlanActionStarted={onPlanActionStarted}
-          />
-        );
-      case "thinking":
-        return (
-          <ThinkingBlock
-            key={`thinking-${idx}`}
-            startedAt={item.startedAt}
-            streaming={item.streaming}
-            text={item.block.text ?? ""}
-          />
-        );
-      case "image":
-        return <ImageBlockView key={`image-${idx}`} block={item.block} />;
-      case "tool": {
-        // 工具卡统一走 CanonicalToolRouter:
-        //   - block.canonical 非空且 kind 已注册 → 分发到 canonical-tool/<kind>/card.tsx
-        //     (file.write / file.edit / agent.spawn ... )
-        //   - tool_use 形态的 plan.update 刻意不注册,这里仍显示普通工具卡。
-        //     type="plan" 且带 actions 的 plan.update 已在上方复用 PlanCard。
-        //   - 否则 fallback 到 RawToolCard(Bash/Read/MCP 等通用工具)。
-        // item.permissionBlock 由 RawToolCard 自行从 toolBlock.toolPermission 读。
-        return (
-          <CanonicalToolRouter
-            key={`tool-${idx}`}
-            cwd={cwd}
-            sessionId={sessionId}
-            resultBlock={item.resultBlock}
-            toolBlock={item.toolBlock ?? { type: "tool_use" }}
-            childBlocks={item.childBlocks}
-            onPlanActionStarted={onPlanActionStarted}
-          />
-        );
-      }
-      case "tool_permission_request":
-        // 两种 canonical(plan.approve_request / tool.permission)由后端在
-        // ExitPlanMode 与其它工具之间分流。这里统一走 CanonicalToolRouter。
-        return (
-          <CanonicalToolRouter
-            key={`perm-${idx}`}
-            cwd={cwd}
-            sessionId={sessionId}
-            toolBlock={item.block}
-            onPlanActionStarted={onPlanActionStarted}
-          />
-        );
-      case "compact_boundary": {
-        const trig = item.block.compact?.trigger;
-        const trigger: "auto" | "manual" | undefined =
-          trig === "auto" || trig === "manual" ? trig : undefined;
-        return (
-          <CompactBoundaryDivider
-            key={`compact-${idx}`}
-            preTokens={item.block.compact?.preTokens}
-            trigger={trigger}
-            at={item.block.compact?.at ?? 0}
-          />
-        );
-      }
-      case "unknown":
-        return (
-          <div
-            key={`unknown-${idx}`}
-            className="rounded-md border border-dashed border-border px-3 py-2 font-mono text-xs text-muted-foreground"
-          >
-            {t?.("chat.debug.unknownBlock", { type: item.block.type }) ??
-              `(debug) unknown block type: ${item.block.type}`}
-          </div>
-        );
-      default:
-        return null;
-    }
-  });
-}
 
 export {
   ApprovalGate,
@@ -1765,3 +1389,4 @@ export {
   MessageMeta,
   ToolCall,
 };
+export type { ChatTranscriptHandle };

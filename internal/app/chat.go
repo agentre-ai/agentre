@@ -1,8 +1,11 @@
 package app
 
 import (
-	"agentre/internal/service/chat_svc"
-	"agentre/internal/service/chat_svc/ipc"
+	"github.com/cago-frame/cago/pkg/i18n"
+
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/ipc"
 )
 
 // ListChatAgents 聚合返回左栏 Agent 列表（含每个 Agent 的最近会话和可对话状态）。
@@ -21,7 +24,7 @@ func (a *App) LoadChatSession(req *chat_svc.LoadSessionRequest) (*chat_svc.LoadS
 }
 
 // GetChatLaunchCommand 把当前 session 的 CLI 后端配置拼成可在终端粘贴运行的命令。
-// 仅 claudecode / codex 有效；builtin 返回 ChatLaunchCommandNotAvailable。
+// 仅 claudecode / codex / piagent 有效；builtin 返回 ChatLaunchCommandNotAvailable。
 // 命令中的 gateway token 故意写成占位符 <TOKEN>，不发放实际 token，用户自行替换。
 func (a *App) GetChatLaunchCommand(req *chat_svc.LaunchCommandRequest) (*chat_svc.LaunchCommandResponse, error) {
 	return chat_svc.Chat().GetLaunchCommand(a.ctx, req)
@@ -37,6 +40,12 @@ func (a *App) GetSessionGitState(req *chat_svc.GetSessionGitStateRequest) (*chat
 // SendChatMessage 发一条用户消息并起异步 turn；返回 stream 事件名。
 func (a *App) SendChatMessage(req *chat_svc.SendRequest) (*chat_svc.SendResponse, error) {
 	return chat_svc.Chat().Send(a.ctx, req)
+}
+
+// ChatReadDroppedImages 按绝对路径读取拖入的图片候选,做 stat/类型/大小校验后归类
+// (image=可附件 / path=降级为纯路径)。供 composer 拖拽链路区分图片与文件/文件夹。
+func (a *App) ChatReadDroppedImages(req *chat_svc.ReadDroppedImagesRequest) (*chat_svc.ReadDroppedImagesResponse, error) {
+	return chat_svc.ReadDroppedImages(a.ctx, req)
 }
 
 // CompactChatSession 触发 Codex app-server 原生 thread/compact/start。
@@ -135,6 +144,19 @@ func (a *App) AnswerUserQuestion(req *chat_svc.AnswerUserQuestionRequest) (*chat
 // 让 SDK 内化为后续 allow rule。当前仅 claudecode 后端支持。
 func (a *App) AnswerToolPermission(req *chat_svc.AnswerToolPermissionRequest) (*chat_svc.AnswerToolPermissionResponse, error) {
 	return chat_svc.Chat().AnswerToolPermission(a.ctx, req)
+}
+
+// AnswerToolApproval agent 内置工具(org / group_create / workflow 等)写操作的审批决策
+// (批准/拒绝),按 requestID 路由唤醒挂起的工具调用。各工具不再各自持 waiter / Answer,
+// 统一经此入口落到 chat_svc 的通用审批管线。
+func (a *App) AnswerToolApproval(req *chat_svc.AnswerToolApprovalRequest) (*chat_svc.AnswerToolApprovalResponse, error) {
+	if req == nil {
+		return nil, i18n.NewError(a.ctx, code.InvalidParameter)
+	}
+	if err := chat_svc.Chat().AnswerToolApproval(a.ctx, req.SessionID, req.RequestID, req.Allow); err != nil {
+		return nil, err
+	}
+	return &chat_svc.AnswerToolApprovalResponse{}, nil
 }
 
 // ResolvePlanAction 计划审批/历史计划 actionId 的入口。前端按 provider-neutral

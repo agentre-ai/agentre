@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 
-	"agentre/internal/pkg/paths"
+	"github.com/agentre-ai/agentre/internal/pkg/paths"
 )
 
 // localClient dials the daemon's unix socket so CLI subcommands can talk to a

@@ -10,6 +10,7 @@ export interface AIChatInputHandle {
   isEmpty: () => boolean;
   submit: () => void;
   loadDraft: (draft: string | AIChatInputDraft) => void;
+  insertText: (text: string) => void;
 }
 
 export interface ProseMirrorLikeNode {

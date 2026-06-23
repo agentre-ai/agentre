@@ -6,7 +6,7 @@ import (
 	"github.com/cago-frame/agents/agent/blocks"
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 // §1.2 孤儿事件丢弃 — characterization tests

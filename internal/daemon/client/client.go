@@ -10,8 +10,8 @@ import (
 	"errors"
 	"net/url"
 
-	"agentre/internal/daemon/rpc"
-	"agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 
 	"github.com/gorilla/websocket"
 )

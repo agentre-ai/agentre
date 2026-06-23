@@ -1,6 +1,9 @@
 package piagent
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type PermissionMode string
 
@@ -34,6 +37,15 @@ func WithSystemPrompt(prompt string) Option {
 
 func WithThinking(level string) Option {
 	return func(c *Client) { c.thinking = level }
+}
+
+// WithExtension 透传一个 pi 扩展文件路径（--extension <path>），可多次调用。
+func WithExtension(path string) Option {
+	return func(c *Client) {
+		if p := strings.TrimSpace(path); p != "" {
+			c.extensions = append(c.extensions, p)
+		}
+	}
 }
 
 func WithKillGrace(d time.Duration) Option {

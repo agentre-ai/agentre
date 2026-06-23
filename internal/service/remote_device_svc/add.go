@@ -16,9 +16,9 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/model/entity/paired_agentred_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/pkg/keychain"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/keychain"
 )
 
 // pairingCodeLen 与 spec §4.3 一致 — base32 6 字符。

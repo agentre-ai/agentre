@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/pkg/codex"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/pkg/codex"
 )
 
 // defaultModelID 是 Agentre 在 codex CLI login 路径没有显式 provider model、
@@ -342,6 +343,8 @@ func buildLaunchSpec(req agentruntime.RunRequest, env map[string]string, cwd str
 		systemPrompt: req.SystemPrompt,
 		config:       BuildCodexConfig(gatewayDeps(req)),
 	}
+	spec.config = append(spec.config, buildMCPServerConfig(req.MCPServers)...)
+	spec.config = append(spec.config, buildPluginConfig(req.EnabledPlugins)...)
 	if eff := reasoningEffortConfigValue(req.Backend.ReasoningEffort); eff != "" {
 		spec.config = append(spec.config, `model_reasoning_effort="`+eff+`"`)
 	}
@@ -355,6 +358,73 @@ func buildLaunchSpec(req agentruntime.RunRequest, env map[string]string, cwd str
 		spec.approval = codex.ApprovalPolicy(ap)
 	}
 	return spec
+}
+
+func buildMCPServerConfig(specs []agentruntime.MCPServerSpec) []string {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(specs)*4)
+	for _, s := range specs {
+		name := strings.TrimSpace(s.Name)
+		url := strings.TrimSpace(s.URL)
+		if name == "" || url == "" {
+			continue
+		}
+		prefix := "mcp_servers." + tomlKey(name)
+		out = append(out, prefix+".url="+strconv.Quote(url))
+		if len(s.Headers) > 0 {
+			keys := make([]string, 0, len(s.Headers))
+			for k := range s.Headers {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				out = append(out, prefix+".http_headers."+tomlKey(k)+"="+strconv.Quote(s.Headers[k]))
+			}
+		}
+		if len(s.Tools) > 0 {
+			out = append(out, prefix+".enabled_tools="+tomlStringArray(s.Tools))
+			out = append(out, prefix+".default_tools_approval_mode="+strconv.Quote("approve"))
+		}
+	}
+	return out
+}
+
+func buildPluginConfig(enabled map[string]bool) []string {
+	if len(enabled) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(enabled))
+	for k := range enabled {
+		if strings.TrimSpace(k) != "" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		id := strings.TrimSpace(k)
+		out = append(out, "plugins."+strconv.Quote(id)+".enabled="+strconv.FormatBool(enabled[k]))
+	}
+	return out
+}
+
+func tomlKey(s string) string {
+	return s
+}
+
+func tomlStringArray(items []string) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, item := range items {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.Quote(item))
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 // reasoningEffortConfigValue 把落库的 reasoning_effort 映射为 codex CLI 配置值。

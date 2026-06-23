@@ -9,13 +9,13 @@ import (
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/internal/service/chat_svc"
-	"agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
 
 // fakeAskRunner 是测试用的 Runtime + AskAnswerSink 组合体;记录 SubmitAnswer 调用。
@@ -46,74 +46,70 @@ func (f *fakeAskRunner) SubmitAnswer(_ context.Context, sessionID int64, request
 	return f.err
 }
 
+func expectAskBackend(
+	m *chatMocks,
+	sessionID int64,
+	agentID int64,
+	backendID int64,
+	backendType agent_backend_entity.BackendType,
+) {
+	m.session.EXPECT().Find(m.ctx, sessionID).Return(&chat_entity.Session{
+		ID: sessionID, AgentID: agentID, Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(m.ctx, agentID).Return(&agent_entity.Agent{
+		ID: agentID, AgentBackendID: backendID, Status: consts.ACTIVE,
+	}, nil)
+	m.backend.EXPECT().Find(m.ctx, backendID).Return(&agent_backend_entity.AgentBackend{
+		ID: backendID, Type: string(backendType), Status: consts.ACTIVE,
+	}, nil)
+}
+
+func answerAndAssertSubmitted(
+	t *testing.T,
+	m *chatMocks,
+	fake *fakeAskRunner,
+	backendType agent_backend_entity.BackendType,
+	sessionID int64,
+	agentID int64,
+	backendID int64,
+	requestID string,
+	labels []string,
+) {
+	t.Helper()
+	restore := agentruntime.SwapRuntimeForTest(backendType, fake)
+	defer restore()
+	expectAskBackend(m, sessionID, agentID, backendID, backendType)
+
+	resp, err := m.svc.AnswerUserQuestion(m.ctx, &chat_svc.AnswerUserQuestionRequest{
+		SessionID: sessionID,
+		RequestID: requestID,
+		Answers: []blocks.AskAnswerDTO{
+			{QuestionIndex: 0, Labels: labels},
+		},
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, 1, fake.calls)
+	assert.Equal(t, sessionID, fake.gotSession)
+	assert.Equal(t, requestID, fake.gotReqID)
+	assert.False(t, fake.gotSkipped)
+	assert.Len(t, fake.gotAnswers, 1)
+	assert.Equal(t, labels, fake.gotAnswers[0].Labels)
+}
+
 func TestAnswerUserQuestion(t *testing.T) {
 	convey.Convey("AnswerUserQuestion", t, func() {
 		m := setupChatTest(t)
 
 		convey.Convey("happy path 投递答案给 backend AskAnswerSink", func() {
 			fake := &fakeAskRunner{}
-			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, fake)
-			defer restore()
-
-			m.session.EXPECT().Find(m.ctx, int64(42)).Return(&chat_entity.Session{
-				ID: 42, AgentID: 7, Status: consts.ACTIVE,
-			}, nil)
-			m.agent.EXPECT().Find(m.ctx, int64(7)).Return(&agent_entity.Agent{
-				ID: 7, AgentBackendID: 12, Status: consts.ACTIVE,
-			}, nil)
-			m.backend.EXPECT().Find(m.ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
-				ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
-			}, nil)
-
-			resp, err := m.svc.AnswerUserQuestion(m.ctx, &chat_svc.AnswerUserQuestionRequest{
-				SessionID: 42,
-				RequestID: "req-001",
-				Answers: []blocks.AskAnswerDTO{
-					{QuestionIndex: 0, Labels: []string{"last_read_at int64"}},
-				},
-			})
-
-			assert.NoError(t, err)
-			assert.NotNil(t, resp)
-			assert.Equal(t, 1, fake.calls)
-			assert.Equal(t, int64(42), fake.gotSession)
-			assert.Equal(t, "req-001", fake.gotReqID)
-			assert.False(t, fake.gotSkipped)
-			assert.Len(t, fake.gotAnswers, 1)
-			assert.Equal(t, []string{"last_read_at int64"}, fake.gotAnswers[0].Labels)
+			answerAndAssertSubmitted(t, m, fake, agent_backend_entity.TypeClaudeCode, 42, 7, 12, "req-001", []string{"last_read_at int64"})
 		})
 
 		convey.Convey("codex backend 也通过同一 AskAnswerSink 投递答案", func() {
 			fake := &fakeAskRunner{}
-			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, fake)
-			defer restore()
-
-			m.session.EXPECT().Find(m.ctx, int64(43)).Return(&chat_entity.Session{
-				ID: 43, AgentID: 8, Status: consts.ACTIVE,
-			}, nil)
-			m.agent.EXPECT().Find(m.ctx, int64(8)).Return(&agent_entity.Agent{
-				ID: 8, AgentBackendID: 13, Status: consts.ACTIVE,
-			}, nil)
-			m.backend.EXPECT().Find(m.ctx, int64(13)).Return(&agent_backend_entity.AgentBackend{
-				ID: 13, Type: string(agent_backend_entity.TypeCodex), Status: consts.ACTIVE,
-			}, nil)
-
-			resp, err := m.svc.AnswerUserQuestion(m.ctx, &chat_svc.AnswerUserQuestionRequest{
-				SessionID: 43,
-				RequestID: "ask-001",
-				Answers: []blocks.AskAnswerDTO{
-					{QuestionIndex: 0, Labels: []string{"backend"}},
-				},
-			})
-
-			assert.NoError(t, err)
-			assert.NotNil(t, resp)
-			assert.Equal(t, 1, fake.calls)
-			assert.Equal(t, int64(43), fake.gotSession)
-			assert.Equal(t, "ask-001", fake.gotReqID)
-			assert.False(t, fake.gotSkipped)
-			assert.Len(t, fake.gotAnswers, 1)
-			assert.Equal(t, []string{"backend"}, fake.gotAnswers[0].Labels)
+			answerAndAssertSubmitted(t, m, fake, agent_backend_entity.TypeCodex, 43, 8, 13, "ask-001", []string{"backend"})
 		})
 
 		convey.Convey("skipped 路径 Answers 可空", func() {
@@ -121,15 +117,7 @@ func TestAnswerUserQuestion(t *testing.T) {
 			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, fake)
 			defer restore()
 
-			m.session.EXPECT().Find(m.ctx, int64(42)).Return(&chat_entity.Session{
-				ID: 42, AgentID: 7, Status: consts.ACTIVE,
-			}, nil)
-			m.agent.EXPECT().Find(m.ctx, int64(7)).Return(&agent_entity.Agent{
-				ID: 7, AgentBackendID: 12, Status: consts.ACTIVE,
-			}, nil)
-			m.backend.EXPECT().Find(m.ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
-				ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
-			}, nil)
+			expectAskBackend(m, 42, 7, 12, agent_backend_entity.TypeClaudeCode)
 
 			_, err := m.svc.AnswerUserQuestion(m.ctx, &chat_svc.AnswerUserQuestionRequest{
 				SessionID: 42,
@@ -181,15 +169,7 @@ func TestAnswerUserQuestion(t *testing.T) {
 			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, fake)
 			defer restore()
 
-			m.session.EXPECT().Find(m.ctx, int64(42)).Return(&chat_entity.Session{
-				ID: 42, AgentID: 7, Status: consts.ACTIVE,
-			}, nil)
-			m.agent.EXPECT().Find(m.ctx, int64(7)).Return(&agent_entity.Agent{
-				ID: 7, AgentBackendID: 12, Status: consts.ACTIVE,
-			}, nil)
-			m.backend.EXPECT().Find(m.ctx, int64(12)).Return(&agent_backend_entity.AgentBackend{
-				ID: 12, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE,
-			}, nil)
+			expectAskBackend(m, 42, 7, 12, agent_backend_entity.TypeClaudeCode)
 
 			_, err := m.svc.AnswerUserQuestion(m.ctx, &chat_svc.AnswerUserQuestionRequest{
 				SessionID: 42, RequestID: "req-001",

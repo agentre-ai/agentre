@@ -3,7 +3,11 @@
 // LoadConversation 按 Audience 过滤)。
 package blocks
 
-import cagoblocks "github.com/cago-frame/agents/agent/blocks"
+import (
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
+
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+)
 
 // UserAskBlock (旧名 AskUserQuestionBlock) 持久化 user.ask 交互全态:问题 + 答案 + 跳过。
 //
@@ -45,4 +49,61 @@ type AskAnswerDTO struct {
 	QuestionIndex int      `json:"questionIndex"`
 	Labels        []string `json:"labels"`
 	OtherText     string   `json:"otherText,omitempty"`
+}
+
+func QuestionsFromRuntime(qs []agentruntime.AskQuestion) []AskQuestionDTO {
+	if len(qs) == 0 {
+		return nil
+	}
+	out := make([]AskQuestionDTO, 0, len(qs))
+	for _, q := range qs {
+		opts := make([]AskOptionDTO, 0, len(q.Options))
+		for _, o := range q.Options {
+			opts = append(opts, AskOptionDTO{
+				Label:       o.Label,
+				Description: o.Description,
+				Preview:     o.Preview,
+			})
+		}
+		out = append(out, AskQuestionDTO{
+			ID:          q.ID,
+			Question:    q.Question,
+			Header:      q.Header,
+			MultiSelect: q.MultiSelect,
+			IsOther:     q.IsOther,
+			IsSecret:    q.IsSecret,
+			Options:     opts,
+		})
+	}
+	return out
+}
+
+func AnswersFromRuntime(ans []agentruntime.AskAnswer) []AskAnswerDTO {
+	if len(ans) == 0 {
+		return nil
+	}
+	out := make([]AskAnswerDTO, 0, len(ans))
+	for _, a := range ans {
+		out = append(out, AskAnswerDTO{
+			QuestionIndex: a.QuestionIndex,
+			Labels:        append([]string(nil), a.Labels...),
+			OtherText:     a.OtherText,
+		})
+	}
+	return out
+}
+
+func AnswersToRuntime(ans []AskAnswerDTO) []agentruntime.AskAnswer {
+	if len(ans) == 0 {
+		return nil
+	}
+	out := make([]agentruntime.AskAnswer, 0, len(ans))
+	for _, a := range ans {
+		out = append(out, agentruntime.AskAnswer{
+			QuestionIndex: a.QuestionIndex,
+			Labels:        append([]string(nil), a.Labels...),
+			OtherText:     a.OtherText,
+		})
+	}
+	return out
 }

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BackgroundTasksChip } from "./background-tasks-chip";
@@ -20,7 +21,7 @@ const running: BackgroundTask = {
 
 const completed: BackgroundTask = {
   toolUseId: "tu2",
-  kind: "local_agent",
+  kind: "local_bash",
   description: "Explore repo",
   status: "completed",
 };
@@ -33,16 +34,39 @@ const failed: BackgroundTask = {
 };
 
 describe("BackgroundTasksChip", () => {
-  it("renders null when no running tasks", () => {
-    const { container } = render(
-      <BackgroundTasksChip tasks={[completed, failed]} />,
+  it("stays visible with a completed label when only completed/failed tasks remain", () => {
+    render(
+      <BackgroundTasksChip
+        tasks={[
+          {
+            toolUseId: "tu1",
+            taskId: "id1",
+            kind: "local_bash",
+            description: "build",
+            status: "completed",
+            durationMs: 1000,
+          },
+          {
+            toolUseId: "tu2",
+            taskId: "id2",
+            kind: "local_bash",
+            description: "lint",
+            status: "failed",
+            durationMs: 500,
+          },
+        ]}
+      />,
     );
-    expect(container.firstChild).toBeNull();
+    // chip trigger present (aria-label 后台任务) and shows the completed count, not running
+    expect(
+      screen.getByRole("button", { name: /后台任务|background/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/2 已完成|2 done/)).toBeInTheDocument();
   });
 
-  it("renders null when tasks is empty", () => {
+  it("renders null only when there are no tasks at all", () => {
     const { container } = render(<BackgroundTasksChip tasks={[]} />);
-    expect(container.firstChild).toBeNull();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("shows running count in chip label", () => {
@@ -55,7 +79,7 @@ describe("BackgroundTasksChip", () => {
   it("shows correct count when multiple tasks are running", () => {
     const running2: BackgroundTask = {
       toolUseId: "tu4",
-      kind: "local_agent",
+      kind: "local_bash",
       description: "another task",
       status: "running",
     };
@@ -101,15 +125,16 @@ describe("BackgroundTasksChip", () => {
     expect(screen.getByText("Background tasks")).toBeInTheDocument();
   });
 
-  it("shows kind labels (bash / subagent) in popover", () => {
+  it("shows 'bash' kind label for all tasks in popover", () => {
     render(
       <BackgroundTasksChip
         tasks={[running, { ...completed, status: "running" as const }]}
       />,
     );
     fireEvent.click(screen.getByRole("button"));
-    expect(screen.getByText("bash")).toBeInTheDocument();
-    expect(screen.getByText("subagent")).toBeInTheDocument();
+    // Both tasks are local_bash — both rows should show the "bash" label
+    const bashLabels = screen.getAllByText("bash");
+    expect(bashLabels.length).toBe(2);
   });
 });
 
@@ -132,11 +157,11 @@ describe("BackgroundTasksPopoverContent — elapsed + summary", () => {
     expect(screen.getByTestId("elapsed")).toHaveTextContent("30s");
   });
 
-  it("shows frozen durationMs for a completed subagent", () => {
+  it("shows frozen durationMs for a completed bash task", () => {
     const tasks: BackgroundTask[] = [
       {
         toolUseId: "tu-c",
-        kind: "local_agent",
+        kind: "local_bash",
         description: "Explore",
         status: "completed",
         durationMs: 4200,
@@ -192,7 +217,7 @@ describe("BackgroundTasksPopoverContent — elapsed + summary", () => {
     const tasks: BackgroundTask[] = [
       {
         toolUseId: "tu-min",
-        kind: "local_agent",
+        kind: "local_bash",
         description: "task",
         status: "completed",
         durationMs: 185_000, // 3m 05s
@@ -206,7 +231,7 @@ describe("BackgroundTasksPopoverContent — elapsed + summary", () => {
     const tasks: BackgroundTask[] = [
       {
         toolUseId: "tu-hr",
-        kind: "local_agent",
+        kind: "local_bash",
         description: "task",
         status: "completed",
         durationMs: 3_720_000, // 1h 02m
@@ -214,5 +239,76 @@ describe("BackgroundTasksPopoverContent — elapsed + summary", () => {
     ];
     render(<BackgroundTasksPopoverContent tasks={tasks} />);
     expect(screen.getByTestId("elapsed")).toHaveTextContent("1h 02m");
+  });
+});
+
+describe("BackgroundTasksChip — new design (badge + clearCompleted)", () => {
+  it("shows the running-count badge and the task_id in the row", async () => {
+    const onClear = vi.fn();
+    render(
+      <BackgroundTasksChip
+        tasks={[
+          {
+            toolUseId: "tu1",
+            taskId: "b3875slp0",
+            kind: "local_bash",
+            description: "sleep 5",
+            status: "running",
+            startedAt: Date.now(),
+          },
+          {
+            toolUseId: "tu2",
+            taskId: "c9xyz",
+            kind: "local_bash",
+            description: "build",
+            status: "completed",
+            durationMs: 20000,
+          },
+        ]}
+        onClearCompleted={onClear}
+      />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /后台任务|background/i }),
+    );
+    expect(screen.getByText("b3875slp0")).toBeInTheDocument();
+    // The running-count badge appears in the popover header (may also appear in chip label)
+    expect(
+      screen.getAllByText(/1 运行中|1 running/).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("clears completed tasks via 清理已完成", async () => {
+    const onClear = vi.fn();
+    render(
+      <BackgroundTasksChip
+        tasks={[
+          {
+            toolUseId: "tu1",
+            taskId: "id1",
+            kind: "local_bash",
+            description: "sleep",
+            status: "running",
+            startedAt: Date.now(),
+          },
+          {
+            toolUseId: "tu2",
+            taskId: "id2",
+            kind: "local_bash",
+            description: "build",
+            status: "completed",
+            durationMs: 1000,
+          },
+        ]}
+        onClearCompleted={onClear}
+      />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /后台任务|background/i }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /清理已完成|clear completed/i }),
+    );
+    expect(onClear).toHaveBeenCalledTimes(1);
   });
 });

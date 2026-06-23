@@ -23,5 +23,4 @@ type ProjectLocationView struct {
 
 var defaultSvc ProjectLocationSvc = &projectLocationImpl{}
 
-func Default() ProjectLocationSvc     { return defaultSvc }
-func SetDefault(s ProjectLocationSvc) { defaultSvc = s }
+func Default() ProjectLocationSvc { return defaultSvc }

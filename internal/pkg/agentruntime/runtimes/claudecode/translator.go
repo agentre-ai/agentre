@@ -7,11 +7,11 @@ import (
 
 	"github.com/cago-frame/agents/provider"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/pkg/diff"
-	"agentre/internal/pkg/llmcatalog"
-	"agentre/pkg/claudecode"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/diff"
+	"github.com/agentre-ai/agentre/internal/pkg/llmcatalog"
+	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
 
 // writeContentByteCap canonical.FileWrite 内容字节上限。
@@ -209,7 +209,7 @@ func recognizeFileEdit(m map[string]any) canonical.CanonicalTool {
 		return nil
 	}
 	replaceAll, _ := m["replace_all"].(bool)
-	patches := canonicalPatchesFromDiff(payload)
+	patches := canonical.PatchesFromDiff(payload)
 	if replaceAll {
 		// Edit.replace_all 只对单文件 Edit 有效;MultiEdit 永远 false。
 		for i := range patches {
@@ -233,7 +233,7 @@ func recognizeMultiEdit(m map[string]any) canonical.CanonicalTool {
 	if totalHunks == 0 {
 		return nil
 	}
-	return canonical.FileEdit{Files: canonicalPatchesFromDiff(payload)}
+	return canonical.FileEdit{Files: canonical.PatchesFromDiff(payload)}
 }
 
 func recognizeTodoWrite(m map[string]any) canonical.CanonicalTool {
@@ -260,45 +260,6 @@ func recognizeTodoWrite(m map[string]any) canonical.CanonicalTool {
 		return nil
 	}
 	return canonical.PlanUpdate{Steps: steps}
-}
-
-// canonicalPatchesFromDiff 把 diff.Payload 降级到 canonical.FileEditPatch 列表。
-// 字段一一对应(diff.Op 与 canonical.DiffOp 同字符串值;diff.Kind 与
-// canonical.FileChangeKind 同字符串值)。
-func canonicalPatchesFromDiff(p diff.Payload) []canonical.FileEditPatch {
-	out := make([]canonical.FileEditPatch, 0, len(p.Files))
-	for _, f := range p.Files {
-		patch := canonical.FileEditPatch{
-			Path:       f.Path,
-			Kind:       canonical.FileChangeKind(string(f.Kind)),
-			Plus:       f.Plus,
-			Minus:      f.Minus,
-			Truncated:  f.Truncated,
-			ReplaceAll: f.ReplaceAll,
-		}
-		patch.Hunks = make([]canonical.DiffHunk, 0, len(f.Hunks))
-		for _, h := range f.Hunks {
-			ch := canonical.DiffHunk{
-				OldStart: h.OldStart,
-				OldLines: h.OldLines,
-				NewStart: h.NewStart,
-				NewLines: h.NewLines,
-				Header:   h.Header,
-			}
-			ch.Lines = make([]canonical.DiffLine, 0, len(h.Lines))
-			for _, ln := range h.Lines {
-				ch.Lines = append(ch.Lines, canonical.DiffLine{
-					Op:   canonical.DiffOp(string(ln.Op)),
-					Old:  ln.Old,
-					New:  ln.New,
-					Text: ln.Text,
-				})
-			}
-			patch.Hunks = append(patch.Hunks, ch)
-		}
-		out = append(out, patch)
-	}
-	return out
 }
 
 // isAskUserQuestionToolName 识别 AskUserQuestion 工具名(snake/Pascal 双写)。

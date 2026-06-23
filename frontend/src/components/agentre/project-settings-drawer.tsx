@@ -288,8 +288,8 @@ function BasicTab({
         />
       </Field>
       <Field label={t("org.department.themeColor")}>
-        <div className="flex items-center gap-1.5">
-          {agentColorOrder.slice(0, 5).map((c) => (
+        <div className="grid grid-cols-8 gap-1.5">
+          {agentColorOrder.map((c) => (
             <button
               key={c}
               type="button"

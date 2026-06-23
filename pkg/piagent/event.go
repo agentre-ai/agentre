@@ -32,6 +32,14 @@ type Event struct {
 	Err           error
 }
 
+type StreamDiagnostics struct {
+	FinalErrorEventType  string
+	FinalErrorStopReason string
+	FinalErrorMessage    string
+	FinalErrorFrame      string
+	StderrTail           string
+}
+
 type ToolEvent struct {
 	ID      string
 	Name    string

@@ -6,8 +6,8 @@ import (
 
 	"github.com/cago-frame/cago/pkg/utils/httputils"
 
-	"agentre/internal/pkg/cliprober"
-	"agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/pkg/cliprober"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
 // defaultNameForType 按 CLI 后端类型返回自动扫描时的默认名称。

@@ -8,9 +8,9 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
-	"agentre/internal/pkg/agentruntime/canonical"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 )
 
 // ResolvePlanActionRequest 前端计划审批/历史计划 action 按钮点击后调

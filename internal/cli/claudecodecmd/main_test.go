@@ -16,6 +16,35 @@ func envStub(m map[string]string) func(string) (string, bool) {
 	}
 }
 
+func runPostToolHook(t *testing.T, sessionID string, messages []string, env map[string]string) (string, string) {
+	t.Helper()
+	gotAuth := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string][]string{"messages": messages})
+	}))
+	defer srv.Close()
+
+	if _, ok := env["AGENTRE_GATEWAY_URL"]; ok {
+		env["AGENTRE_GATEWAY_URL"] = srv.URL
+	}
+	if _, ok := env["ANTHROPIC_BASE_URL"]; ok {
+		env["ANTHROPIC_BASE_URL"] = srv.URL
+	}
+
+	var out, errBuf bytes.Buffer
+	code := run(
+		[]string{"hook", "post-tool"},
+		strings.NewReader(`{"session_id":"`+sessionID+`"}`),
+		&out, &errBuf,
+		envStub(env),
+	)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errBuf.String())
+	}
+	return gotAuth, out.String()
+}
+
 func TestRun_NoArgs(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run(nil, strings.NewReader(""), &out, &errBuf, envStub(nil))
@@ -73,32 +102,16 @@ func TestRun_HookUnknownEvent(t *testing.T) {
 // 否则 CLI 登录模式（ANTHROPIC_* 故意不设）下 hook 会 noop，mid-turn 排队
 // 消息再也插不进 turn。
 func TestRun_HookPostTool_PrefersAgentreGatewayEnv(t *testing.T) {
-	gotAuth := ""
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		_ = json.NewEncoder(w).Encode(map[string][]string{"messages": {"hello from inbox"}})
-	}))
-	defer srv.Close()
-
-	var out, errBuf bytes.Buffer
-	code := run(
-		[]string{"hook", "post-tool"},
-		strings.NewReader(`{"session_id":"sid-1"}`),
-		&out, &errBuf,
-		envStub(map[string]string{
-			"AGENTRE_GATEWAY_URL":   srv.URL,
-			"AGENTRE_GATEWAY_TOKEN": "agentre-tok",
-			// 故意 *不* 设 ANTHROPIC_*；模拟 CLI 登录模式
-		}),
-	)
-	if code != 0 {
-		t.Fatalf("exit=%d stderr=%s", code, errBuf.String())
-	}
+	gotAuth, out := runPostToolHook(t, "sid-1", []string{"hello from inbox"}, map[string]string{
+		"AGENTRE_GATEWAY_URL":   "",
+		"AGENTRE_GATEWAY_TOKEN": "agentre-tok",
+		// 故意 *不* 设 ANTHROPIC_*；模拟 CLI 登录模式
+	})
 	if gotAuth != "Bearer agentre-tok" {
 		t.Fatalf("hook should use AGENTRE_GATEWAY_TOKEN, got auth=%q", gotAuth)
 	}
-	if !strings.Contains(out.String(), "hello from inbox") {
-		t.Fatalf("hook should inject inbox messages, got: %s", out.String())
+	if !strings.Contains(out, "hello from inbox") {
+		t.Fatalf("hook should inject inbox messages, got: %s", out)
 	}
 }
 
@@ -109,30 +122,14 @@ func TestRun_HookPostTool_PrefersAgentreGatewayEnv(t *testing.T) {
 // 这两种情形 ANTHROPIC_BASE_URL+ANTHROPIC_AUTH_TOKEN 是设了的，hook 应该
 // 退化到它们而不是 noop。
 func TestRun_HookPostTool_FallsBackToAnthropicEnv(t *testing.T) {
-	gotAuth := ""
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		_ = json.NewEncoder(w).Encode(map[string][]string{"messages": {"legacy-msg"}})
-	}))
-	defer srv.Close()
-
-	var out, errBuf bytes.Buffer
-	code := run(
-		[]string{"hook", "post-tool"},
-		strings.NewReader(`{"session_id":"sid-2"}`),
-		&out, &errBuf,
-		envStub(map[string]string{
-			"ANTHROPIC_BASE_URL":   srv.URL,
-			"ANTHROPIC_AUTH_TOKEN": "legacy-tok",
-		}),
-	)
-	if code != 0 {
-		t.Fatalf("exit=%d stderr=%s", code, errBuf.String())
-	}
+	gotAuth, out := runPostToolHook(t, "sid-2", []string{"legacy-msg"}, map[string]string{
+		"ANTHROPIC_BASE_URL":   "",
+		"ANTHROPIC_AUTH_TOKEN": "legacy-tok",
+	})
 	if gotAuth != "Bearer legacy-tok" {
 		t.Fatalf("hook fallback should use ANTHROPIC_AUTH_TOKEN, got auth=%q", gotAuth)
 	}
-	if !strings.Contains(out.String(), "legacy-msg") {
-		t.Fatalf("hook fallback should inject inbox messages, got: %s", out.String())
+	if !strings.Contains(out, "legacy-msg") {
+		t.Fatalf("hook fallback should inject inbox messages, got: %s", out)
 	}
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 )
 
 //go:generate mockgen -source paired_agentred.go -destination mock_remote_device_repo/mock_paired_agentred.go

@@ -8,7 +8,7 @@ import (
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 
-	"agentre/internal/pkg/remotefs/pathguard"
+	"github.com/agentre-ai/agentre/internal/pkg/remotefs/pathguard"
 )
 
 func TestResolvePath(t *testing.T) {

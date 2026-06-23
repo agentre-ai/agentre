@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"agentre/internal/model/entity/app_setting_entity"
-	"agentre/internal/repository/app_setting_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
+	"github.com/agentre-ai/agentre/internal/repository/app_setting_repo"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"

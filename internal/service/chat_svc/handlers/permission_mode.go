@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/service/chat_svc/blocks"
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 // PermissionModeWriter handler 通过这个把新 mode 落库 + 改 sess 字段。

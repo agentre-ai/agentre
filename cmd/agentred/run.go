@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"agentre/internal/daemon"
-	"agentre/internal/pkg/paths"
+	"github.com/agentre-ai/agentre/internal/daemon"
+	"github.com/agentre-ai/agentre/internal/pkg/paths"
 )
 
 func newRunCmd() *cobra.Command {

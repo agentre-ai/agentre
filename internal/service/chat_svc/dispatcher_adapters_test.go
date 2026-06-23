@@ -5,7 +5,7 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
-	"agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 )
 
 func TestNewTurnContext_PopulatesAllAdapters(t *testing.T) {

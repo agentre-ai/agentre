@@ -125,10 +125,6 @@ func TextInput(text string) UserInput {
 	return UserInput{Type: "text", Text: text, TextElements: []any{}}
 }
 
-func ImageURLInput(url string, detail ImageDetail) UserInput {
-	return UserInput{Type: "image", URL: url, Detail: detail}
-}
-
 func LocalImageInput(path string, detail ImageDetail) UserInput {
 	return UserInput{Type: "localImage", Path: path, Detail: detail}
 }
@@ -188,8 +184,9 @@ type appNotifyError struct {
 }
 
 type appThreadItem struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
+	Type string          `json:"type"`
+	ID   string          `json:"id"`
+	Raw  json.RawMessage `json:"-"`
 
 	Text string `json:"text,omitempty"`
 	// Codex 0.131.0 represents userMessage text as content[] rather than a
@@ -210,6 +207,17 @@ type appThreadItem struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 	Changes []appFileChange `json:"changes,omitempty"`
+}
+
+func (i *appThreadItem) UnmarshalJSON(data []byte) error {
+	type alias appThreadItem
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*i = appThreadItem(a)
+	i.Raw = append(i.Raw[:0], data...)
+	return nil
 }
 
 type appUserInput struct {
@@ -513,6 +521,12 @@ func toolInputForItem(item *appThreadItem) json.RawMessage {
 	case appItemMCPToolCall, appItemDynamicToolCall:
 		return item.Arguments
 	default:
+		if len(item.Arguments) > 0 {
+			return item.Arguments
+		}
+		if len(item.Raw) > 0 {
+			return item.Raw
+		}
 		return mustRaw(item)
 	}
 }
@@ -534,6 +548,12 @@ func toolResponseForItem(item *appThreadItem) json.RawMessage {
 		}
 	case appItemFileChange:
 		return mustRaw(map[string]any{"status": item.Status, "changes": item.Changes})
+	}
+	if len(item.Result) > 0 {
+		return item.Result
+	}
+	if len(item.Raw) > 0 {
+		return item.Raw
 	}
 	return mustRaw(item)
 }

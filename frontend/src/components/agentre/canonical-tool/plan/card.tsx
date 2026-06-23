@@ -14,7 +14,13 @@ import { cn } from "@/lib/utils";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
 import { ResolvePlanAction as wailsResolvePlanAction } from "../../../../../wailsjs/go/app/App";
 
+import {
+  clearTranscriptDraftState,
+  loadTranscriptDraftState,
+  saveTranscriptDraftState,
+} from "../../chat-panel-scroll-state";
 import { MarkdownText } from "../../markdown-text";
+import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps, PlanActionStream } from "../props";
 import type { CanonicalDTO, PlanActionDTO } from "../types";
 
@@ -27,6 +33,8 @@ type NormalizedPlan = {
   text: string;
   actions: PlanActionDTO[];
 };
+
+type PlanFeedbackDraftState = { feedback: string; feedbackOpen: boolean };
 
 function readPlan(toolBlock: unknown): NormalizedPlan | undefined {
   const block = toolBlock as {
@@ -121,28 +129,68 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
   toolBlock,
   sessionId,
   onPlanActionStarted,
+  uiStateKey,
+  tabStateKey,
 }) => {
   const { t } = useTranslation();
   const plan = readPlan(toolBlock);
+  const feedbackDraftKey =
+    plan && !plan.resolved && (plan.requestId || uiStateKey)
+      ? `planFeedback:${plan.requestId || uiStateKey}`
+      : undefined;
   const streamActive = useChatStreamsStore((s) =>
     sessionId ? s.streams.has(sessionId) : false,
   );
 
-  const [expanded, setExpanded] = React.useState(() => !!plan?.text);
-  const [feedbackOpen, setFeedbackOpen] = React.useState(false);
-  const [feedback, setFeedback] = React.useState("");
+  const [expanded, setExpanded] = useTranscriptBooleanState(
+    uiStateKey,
+    !!plan?.text,
+  );
+  const [feedbackOpen, setFeedbackOpen] = React.useState(() => {
+    const saved = loadTranscriptDraftState<PlanFeedbackDraftState>(
+      tabStateKey,
+      feedbackDraftKey,
+    );
+    return saved?.feedbackOpen ?? false;
+  });
+  const [feedback, setFeedback] = React.useState(() => {
+    const saved = loadTranscriptDraftState<PlanFeedbackDraftState>(
+      tabStateKey,
+      feedbackDraftKey,
+    );
+    return saved?.feedback ?? "";
+  });
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [localResolution, setLocalResolution] = React.useState<{
     allowed: boolean;
     resolved: boolean;
   } | null>(null);
+  const feedbackDraftClearedRef = React.useRef(false);
+  const planResolved = !!plan?.resolved || !!localResolution?.resolved;
+
+  React.useEffect(() => {
+    if (planResolved) {
+      feedbackDraftClearedRef.current = true;
+      clearTranscriptDraftState(tabStateKey, feedbackDraftKey);
+      return;
+    }
+    if (feedbackDraftClearedRef.current) return;
+    saveTranscriptDraftState<PlanFeedbackDraftState>(
+      tabStateKey,
+      feedbackDraftKey,
+      {
+        feedback,
+        feedbackOpen,
+      },
+    );
+  }, [feedback, feedbackDraftKey, feedbackOpen, planResolved, tabStateKey]);
 
   if (!plan) return null;
   const activePlan = plan;
 
   const bodyText = activePlan.text.replace(/^#?\s*Plan\s*\n?/i, "");
-  const resolved = !!activePlan.resolved || !!localResolution?.resolved;
+  const resolved = planResolved;
   const allowed = activePlan.resolved
     ? activePlan.allowed
     : localResolution?.allowed;
@@ -182,6 +230,8 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
           allowed: action.kind !== "refine",
         });
       }
+      feedbackDraftClearedRef.current = true;
+      clearTranscriptDraftState(tabStateKey, feedbackDraftKey);
       if (action.kind === "refine") {
         setFeedbackOpen(false);
         setFeedback("");

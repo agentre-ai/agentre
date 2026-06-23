@@ -10,15 +10,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/model/entity/department_entity"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/agent_repo/mock_agent_repo"
-	"agentre/internal/repository/department_repo"
-	"agentre/internal/repository/department_repo/mock_department_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/department_repo"
+	"github.com/agentre-ai/agentre/internal/repository/department_repo/mock_department_repo"
+	"github.com/agentre-ai/agentre/internal/service/department_svc"
 )
 
 func setupSvc(t *testing.T) (
@@ -315,6 +316,91 @@ func TestDeleteAgentAvatar(t *testing.T) {
 		convey.Convey("不存在的 Agent 拒绝", func() {
 			agentMock.EXPECT().Find(gomock.Any(), int64(99)).Return(nil, nil)
 			_, err := svc.DeleteAvatar(ctx, &DeleteAvatarRequest{ID: 99})
+			assert.Error(t, err)
+		})
+	})
+}
+
+func TestCreateAgent_WithTools(t *testing.T) {
+	convey.Convey("Create Agent 带 Tools", t, func() {
+		ctx, agentMock, deptMock, backendMock, svc := setupSvc(t)
+
+		convey.Convey("请求带 Tools → entity ToolsJSON 落值 + 响应 Item.Tools 回传", func() {
+			deptMock.EXPECT().Find(gomock.Any(), int64(2)).Return(activeDept(2), nil)
+			backendMock.EXPECT().Find(gomock.Any(), int64(5)).Return(activeBackend(5), nil)
+			agentMock.EXPECT().FindByName(gomock.Any(), "Eva").Return(nil, nil)
+			agentMock.EXPECT().NextSortOrder(gomock.Any(), int64(2)).Return(1, nil)
+			var captured *agent_entity.Agent
+			agentMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, a *agent_entity.Agent) error {
+				a.ID = 99
+				captured = a
+				return nil
+			})
+			resp, err := svc.Create(ctx, &CreateAgentRequest{
+				Name: "Eva", AvatarColor: "agent-2", DepartmentID: 2, AgentBackendID: 5,
+				Tools: []department_svc.AgentToolDTO{{Key: "org", Enabled: true}},
+			})
+			assert.NoError(t, err)
+			tools := captured.GetTools()
+			assert.Len(t, tools, 1)
+			assert.Equal(t, "org", tools[0].Key)
+			assert.True(t, tools[0].Enabled)
+			assert.Len(t, resp.Item.Tools, 1)
+			assert.Equal(t, "org", resp.Item.Tools[0].Key)
+			assert.True(t, resp.Item.Tools[0].Enabled)
+		})
+	})
+}
+
+func TestUpdateAgent_WithTools(t *testing.T) {
+	convey.Convey("Update Agent 带 Tools", t, func() {
+		ctx, agentMock, _, _, svc := setupSvc(t)
+
+		convey.Convey("请求带 Tools → entity ToolsJSON 落值 + 响应 Item.Tools 回传", func() {
+			agentMock.EXPECT().Find(gomock.Any(), int64(42)).
+				Return(&agent_entity.Agent{
+					ID: 42, Name: "Eva", AvatarColor: "agent-2",
+					DepartmentID: 2, AgentBackendID: 5, Status: consts.ACTIVE,
+					PromptJSON: "[]", SkillsJSON: "[]", ToolsJSON: "[]",
+				}, nil)
+			var captured *agent_entity.Agent
+			agentMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, a *agent_entity.Agent) error {
+				captured = a
+				return nil
+			})
+			resp, err := svc.Update(ctx, &UpdateAgentRequest{
+				ID: 42, Name: "Eva", AvatarColor: "agent-2",
+				Tools: []department_svc.AgentToolDTO{{Key: "org", Enabled: false}},
+			})
+			assert.NoError(t, err)
+			tools := captured.GetTools()
+			assert.Len(t, tools, 1)
+			assert.Equal(t, "org", tools[0].Key)
+			assert.False(t, tools[0].Enabled)
+			assert.Len(t, resp.Item.Tools, 1)
+			assert.Equal(t, "org", resp.Item.Tools[0].Key)
+			assert.False(t, resp.Item.Tools[0].Enabled)
+		})
+	})
+}
+
+func TestAgentSvc_SetPinned(t *testing.T) {
+	convey.Convey("SetPinned 透传到 repo", t, func() {
+		ctx, agentMock, _, _, svc := setupSvc(t)
+
+		convey.Convey("存在的 Agent 置顶", func() {
+			agentMock.EXPECT().Find(ctx, int64(7)).Return(&agent_entity.Agent{ID: 7, Status: consts.ACTIVE}, nil)
+			agentMock.EXPECT().SetPinned(ctx, int64(7), true).Return(nil)
+
+			resp, err := svc.SetPinned(ctx, &SetPinnedRequest{ID: 7, Pinned: true})
+			convey.So(err, convey.ShouldBeNil)
+			convey.So(resp.ID, convey.ShouldEqual, int64(7))
+			convey.So(resp.Pinned, convey.ShouldBeTrue)
+		})
+
+		convey.Convey("不存在的 Agent 拒绝", func() {
+			agentMock.EXPECT().Find(ctx, int64(99)).Return(nil, nil)
+			_, err := svc.SetPinned(ctx, &SetPinnedRequest{ID: 99, Pinned: true})
 			assert.Error(t, err)
 		})
 	})

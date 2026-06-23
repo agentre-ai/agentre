@@ -26,6 +26,24 @@ func WithSessionID(uuid string) Option { return func(c *Client) { c.sessionID = 
 // CLI 原生兼容两种形态 (`--settings <file-or-json>`)。
 func WithSettings(value string) Option { return func(c *Client) { c.settings = value } }
 
+// WithMcpConfig 下发 --mcp-config <json-or-file>。claude CLI 原生兼容 JSON 串
+// 或文件路径，用来注入额外的 MCP tool server（如群聊的 group_send）。注入的
+// tool 还需经 WithAllowedTools 放进 --allowedTools 才会被 CLI 实际暴露。
+func WithMcpConfig(value string) Option { return func(c *Client) { c.mcpConfig = value } }
+
+// WithAllowedTools 追加 --allowedTools 白名单条目。多次调用累加（不是覆盖），
+// 便于在已有 client 选项之上叠加注入工具（如 mcp__group__group_send）。空入参
+// 忽略。
+func WithAllowedTools(tools ...string) Option {
+	return func(c *Client) {
+		for _, t := range tools {
+			if t != "" {
+				c.allowedTools = append(c.allowedTools, t)
+			}
+		}
+	}
+}
+
 // WithEffort 把 claude CLI 的 --effort <level> 标志固化在 Client 上。
 // level 取值：""(不下发) / "low" / "medium" / "high" / "xhigh" / "max"。
 // 该值在 Stream/Text 起每一轮 turn 时透传，单值 client 跨 turn 一致。

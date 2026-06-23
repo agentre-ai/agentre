@@ -1,9 +1,9 @@
 package chat_svc
 
 import (
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/service/chat_svc/handlers"
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/handlers"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 // newPackageDispatcher 构造 chat_svc 的 dispatcher 并注册全部 handler,

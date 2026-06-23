@@ -1,4 +1,3 @@
-/* eslint-disable react-refresh/only-export-components */
 import * as React from "react";
 import { ChevronDown, ChevronUp, Puzzle, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -69,6 +68,12 @@ const agentBorderClassNames: Record<AgentColor, string> = {
   "agent-8": "border-agent-8",
   "agent-9": "border-agent-9",
   "agent-10": "border-agent-10",
+  "agent-11": "border-agent-11",
+  "agent-12": "border-agent-12",
+  "agent-13": "border-agent-13",
+  "agent-14": "border-agent-14",
+  "agent-15": "border-agent-15",
+  "agent-16": "border-agent-16",
   neutral: "border-border",
 };
 

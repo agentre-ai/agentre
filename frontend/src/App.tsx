@@ -24,6 +24,7 @@ import {
   AppTopBar,
   ChatPage,
   ChatStreamsHost,
+  GroupEventsHost,
   ChatTabsShortcuts,
   TurnCompleteNotifier,
   NotificationToastViewport,
@@ -32,6 +33,7 @@ import {
   IssuesPage,
   OrgChartPage,
   PaletteScopeBridge,
+  WorkflowManagerDialog,
   ProjectsPage,
   QuitConfirmDialog,
   ShortcutsProvider,
@@ -786,6 +788,7 @@ function AppLayout() {
             {navItems.map((item) => (
               <SidebarButton
                 key={item.labelKey}
+                data-testid={`nav-${item.path?.slice(1) ?? item.labelKey}`}
                 label={t(item.labelKey)}
                 icon={item.icon}
                 active={isNavItemActive(location.pathname, item.path)}
@@ -799,6 +802,7 @@ function AppLayout() {
               onThemePreferenceChange={setThemePreference}
             />
             <SidebarButton
+              data-testid="nav-settings"
               label={t(settingsNavItem.labelKey)}
               icon={settingsNavItem.icon}
               active={isNavItemActive(location.pathname, settingsNavItem.path)}
@@ -832,6 +836,7 @@ function AppLayout() {
         />
         <PaletteScopeBridge />
         <CommandPalette />
+        <WorkflowManagerDialog />
         <Toaster position="bottom-right" richColors theme={effectiveTheme} />
       </div>
     </ShortcutsProvider>
@@ -858,6 +863,9 @@ function App() {
           unmount,但这里继续维持 Wails EventsOn,把 chunk/tool 事件累到全局
           store,切回来时 ChatPanel 能从 store 还原完整流式状态。*/}
       <ChatStreamsHost />
+      {/* 群运行态常驻订阅器:侧栏群行/成员 backing session 行不开群页也实时翻
+          running(订阅全局 groups:run_state 频道)。*/}
+      <GroupEventsHost />
       <TurnCompleteNotifier />
       <NotificationToastViewport />
       {/* 退出二次确认:常驻订阅 "app:quit-blocked",活跃会话存在时拦截退出弹框。*/}

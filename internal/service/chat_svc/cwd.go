@@ -7,11 +7,11 @@ import (
 	"github.com/cago-frame/cago/pkg/i18n"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/project_location_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 )
 
 // CwdResolver session → cwd 解析器；project_svc 在启动时调 RegisterCwdResolver

@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"time"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
 )
 
 const ipcSocketName = "agentred.sock"

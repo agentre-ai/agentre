@@ -10,12 +10,12 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/repository/chat_repo"
-	"agentre/internal/service/chat_svc/handlers"
-	"agentre/internal/service/chat_svc/turn"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/handlers"
+	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
 // startAutonomousWatcher 为某 claudecode 会话惰性启动一个 watcher goroutine,订阅

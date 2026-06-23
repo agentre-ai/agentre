@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import {
   agentColorClassNames,
   agentColorOrder,
+  agentTextColorClassNames,
   type AgentColor,
 } from "../types";
 import type { department_svc } from "../../../../wailsjs/go/models";
@@ -64,20 +65,6 @@ type Props = {
   onClose: () => void;
   onAddAgent?: () => void;
   onAddSubDepartment?: () => void;
-};
-
-const leadTextColorClassNames: Record<AgentColor, string> = {
-  "agent-1": "text-agent-1",
-  "agent-2": "text-agent-2",
-  "agent-3": "text-agent-3",
-  "agent-4": "text-agent-4",
-  "agent-5": "text-agent-5",
-  "agent-6": "text-agent-6",
-  "agent-7": "text-agent-7",
-  "agent-8": "text-agent-8",
-  "agent-9": "text-agent-9",
-  "agent-10": "text-agent-10",
-  neutral: "text-foreground",
 };
 
 export function OrgDetailDepartment(props: Props) {
@@ -728,7 +715,7 @@ function LeadBadge({
     <span
       className={cn(
         "inline-flex shrink-0 items-center rounded-sm bg-secondary font-mono font-semibold",
-        leadTextColorClassNames[color],
+        agentTextColorClassNames[color],
         compact ? "gap-1 px-1 py-0.5 text-2xs" : "gap-1 px-1.5 py-0.5 text-2xs",
       )}
     >

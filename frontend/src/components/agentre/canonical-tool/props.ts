@@ -17,6 +17,10 @@ export type CanonicalCardProps = {
   cwd?: string;
   sessionId?: number;
   onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void;
+  /** Stable key for transcript-local UI state that must survive virtualization unmounts. */
+  uiStateKey?: string;
+  /** Stable mounted chat tab key for UI drafts that must survive route/tab remounts. */
+  tabStateKey?: string;
   // childBlocks 仅 agent.spawn 用 — 父 Agent/Task 工具下挂的内层 tool_use / tool_result
   // (parentToolUseId 已经在 chat.tsx 归集);AgentSpawnCard 展开后渲染为 STEPS 段。
   childBlocks?: ChatBlockData[];

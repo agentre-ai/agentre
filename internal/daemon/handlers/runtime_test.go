@@ -12,14 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/daemon/handlers/mock_handlers"
-	"agentre/internal/daemon/rpc"
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/agentruntime"
-	"agentre/internal/pkg/agentruntime/capability"
-	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers/mock_handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 )
 
 // ── fake Runtimes ───────────────────────────────────────────────────────────
@@ -445,17 +445,19 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 
 	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), Name: "x"}
 	ack, err := h.Run(ctx, wire.RunParams{
-		Backend:   backendJSON(t, be),
-		SessionID: 42,
-		AgentID:   7,
-		Cwd:       "/tmp",
-		UserText:  "hello",
-		Compact:   true,
+		Backend:        backendJSON(t, be),
+		SessionID:      42,
+		AgentID:        7,
+		Cwd:            "/tmp",
+		UserText:       "hello",
+		Compact:        true,
+		EnabledPlugins: map[string]bool{"browser@openai-bundled": true},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), ack.SessionID)
 	require.Len(t, rt.runReqs, 1)
 	assert.True(t, rt.runReqs[0].req.Compact)
+	assert.Equal(t, map[string]bool{"browser@openai-bundled": true}, rt.runReqs[0].req.EnabledPlugins)
 
 	// 2 events + 1 runResultDone = 3 frames expected.
 	frames := notif.waitFrames(t, 3)
@@ -737,6 +739,67 @@ func TestRuntime_Steer_BackendUnsupported_ErrUnsupported(t *testing.T) {
 
 	_, err = h.Steer(ctx, wire.SteerParams{SessionID: 5, Text: "x"})
 	require.ErrorIs(t, err, agentruntime.ErrUnsupported)
+}
+
+func TestRuntime_ControlRPCs_BackendUnsupported_ErrUnsupported(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 5)
+	defer close(live)
+
+	h.SwapRuntimeFor(func(_ agent_backend_entity.BackendType) agentruntime.Runtime { return bareRT{} })
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "cancel steer",
+			call: func() error {
+				_, err := h.CancelSteer(ctx, wire.CancelSteerParams{SessionID: 5, QueuedID: "q-1"})
+				return err
+			},
+		},
+		{
+			name: "drain pending",
+			call: func() error {
+				_, err := h.DrainPending(ctx, wire.DrainParams{SessionID: 5})
+				return err
+			},
+		},
+		{
+			name: "abort",
+			call: func() error {
+				_, err := h.Abort(ctx, wire.AbortParams{SessionID: 5})
+				return err
+			},
+		},
+		{
+			name: "set permission mode",
+			call: func() error {
+				_, err := h.SetPermissionMode(ctx, wire.SetPermissionModeParams{SessionID: 5, Mode: "plan"})
+				return err
+			},
+		},
+		{
+			name: "submit answer",
+			call: func() error {
+				_, err := h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 5, RequestID: "r-1"})
+				return err
+			},
+		},
+		{
+			name: "submit tool permission",
+			call: func() error {
+				_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 5, RequestID: "p-1"})
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.ErrorIs(t, tt.call(), agentruntime.ErrUnsupported)
+		})
+	}
 }
 
 func TestRuntime_CancelSteer_ReturnsRemoved(t *testing.T) {

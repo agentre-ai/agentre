@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"agentre/internal/daemon/rpc"
-	"agentre/internal/pkg/remotefs/wire"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/pkg/remotefs/wire"
 )
 
 func TestSentinelRoundTrip(t *testing.T) {

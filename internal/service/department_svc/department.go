@@ -11,13 +11,14 @@ import (
 	"github.com/cago-frame/cago/pkg/i18n"
 	"gorm.io/gorm"
 
-	"agentre/internal/model/entity/agent_entity"
-	"agentre/internal/model/entity/department_entity"
-	"agentre/internal/pkg/code"
-	"agentre/internal/repository/agent_backend_repo"
-	"agentre/internal/repository/agent_repo"
-	"agentre/internal/repository/department_repo"
-	"agentre/internal/repository/llm_provider_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/department_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
+	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/department_repo"
+	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 )
 
 const (
@@ -161,6 +162,7 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 			SortOrder:      a.SortOrder,
 			Prompt:         a.GetPrompt(),
 			Skills:         toAgentSkillDTO(a.GetSkills()),
+			Tools:          toAgentToolDTO(a.GetTools()),
 			Createtime:     a.Createtime,
 			Updatetime:     a.Updatetime,
 		}
@@ -175,13 +177,22 @@ func (s *departmentSvc) Load(ctx context.Context, _ *LoadOrgRequest) (*LoadOrgRe
 		}
 		resp.Agents = append(resp.Agents, item)
 	}
+	resp.AvailableTools = agenttool.Keys()
 	return resp, nil
 }
 
 func toAgentSkillDTO(items []agent_entity.AgentSkillItem) []AgentSkillDTO {
 	out := make([]AgentSkillDTO, 0, len(items))
 	for _, s := range items {
-		out = append(out, AgentSkillDTO{Label: s.Label, Enabled: s.Enabled})
+		out = append(out, AgentSkillDTO{ID: s.ID, Enabled: s.Enabled})
+	}
+	return out
+}
+
+func toAgentToolDTO(items []agent_entity.AgentToolItem) []AgentToolDTO {
+	out := make([]AgentToolDTO, 0, len(items))
+	for _, t := range items {
+		out = append(out, AgentToolDTO{Key: t.Key, Enabled: t.Enabled})
 	}
 	return out
 }

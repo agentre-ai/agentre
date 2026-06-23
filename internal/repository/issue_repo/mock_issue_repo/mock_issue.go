@@ -10,9 +10,9 @@
 package mock_issue_repo
 
 import (
-	issue_entity "agentre/internal/model/entity/issue_entity"
-	issue_repo "agentre/internal/repository/issue_repo"
 	context "context"
+	issue_entity "github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	issue_repo "github.com/agentre-ai/agentre/internal/repository/issue_repo"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"

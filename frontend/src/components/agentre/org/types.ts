@@ -15,6 +15,12 @@ export type OrgAgentColor =
   | "agent-8"
   | "agent-9"
   | "agent-10"
+  | "agent-11"
+  | "agent-12"
+  | "agent-13"
+  | "agent-14"
+  | "agent-15"
+  | "agent-16"
   | "neutral";
 
 export type OrgAgentStatus = "running" | "waiting" | "idle";
@@ -47,6 +53,12 @@ export function isOrgAgentColor(value: string): value is OrgAgentColor {
     value === "agent-8" ||
     value === "agent-9" ||
     value === "agent-10" ||
+    value === "agent-11" ||
+    value === "agent-12" ||
+    value === "agent-13" ||
+    value === "agent-14" ||
+    value === "agent-15" ||
+    value === "agent-16" ||
     value === "neutral"
   );
 }

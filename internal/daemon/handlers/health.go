@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"agentre/internal/daemon/state"
-	"agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 )
 
 // HealthPingResult 是 health.ping 的返回。客户端用来探活，不修改 daemon 状态。

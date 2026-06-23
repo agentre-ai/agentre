@@ -10,8 +10,8 @@
 package mock_update_svc
 
 import (
-	update_svc "agentre/internal/service/update_svc"
 	context "context"
+	update_svc "github.com/agentre-ai/agentre/internal/service/update_svc"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"

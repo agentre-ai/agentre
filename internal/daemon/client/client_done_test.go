@@ -9,8 +9,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/daemon/client"
-	"agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/client"
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 )
 
 func TestClient_Closed_OnClose(t *testing.T) {

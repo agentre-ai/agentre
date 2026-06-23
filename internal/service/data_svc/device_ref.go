@@ -3,7 +3,7 @@ package data_svc
 import (
 	"strconv"
 
-	"agentre/internal/model/entity/paired_agentred_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 )
 
 type deviceRefResolver struct {

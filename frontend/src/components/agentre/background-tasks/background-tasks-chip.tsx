@@ -1,7 +1,8 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Terminal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   Popover,
   PopoverContent,
@@ -13,15 +14,24 @@ import type { BackgroundTask } from "./types";
 
 type BackgroundTasksChipProps = {
   tasks: BackgroundTask[];
+  onClearCompleted?: () => void;
 };
 
-export function BackgroundTasksChip({ tasks }: BackgroundTasksChipProps) {
+export function BackgroundTasksChip({
+  tasks,
+  onClearCompleted,
+}: BackgroundTasksChipProps) {
   const { t } = useTranslation();
 
   const runningCount = tasks.filter((task) => task.status === "running").length;
+  const completedCount = tasks.filter(
+    (task) => task.status === "completed" || task.status === "failed",
+  ).length;
 
-  // Hidden when no running tasks
-  if (runningCount === 0) return null;
+  // Hidden only when there is nothing to show at all.
+  if (runningCount === 0 && completedCount === 0) return null;
+
+  const isRunning = runningCount > 0;
 
   return (
     <Popover>
@@ -33,16 +43,30 @@ export function BackgroundTasksChip({ tasks }: BackgroundTasksChipProps) {
           aria-label={t("chatPanel.backgroundTasks.aria")}
           className="gap-1.5"
         >
-          <span
-            className="inline-block size-2 rounded-full bg-green-500"
+          <Terminal
+            className="size-3 text-muted-foreground"
             aria-hidden="true"
           />
-          {t("chatPanel.backgroundTasks.chip", { count: runningCount })}
+          <span
+            className={cn(
+              "inline-block size-2 rounded-full",
+              isRunning ? "bg-green-500" : "bg-muted-foreground",
+            )}
+            aria-hidden="true"
+          />
+          {isRunning
+            ? t("chatPanel.backgroundTasks.chip", { count: runningCount })
+            : t("chatPanel.backgroundTasks.completedChip", {
+                count: completedCount,
+              })}
           <ChevronDown className="size-3 opacity-60" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="p-3">
-        <BackgroundTasksPopoverContent tasks={tasks} />
+        <BackgroundTasksPopoverContent
+          tasks={tasks}
+          onClearCompleted={onClearCompleted}
+        />
       </PopoverContent>
     </Popover>
   );

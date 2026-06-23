@@ -6,6 +6,8 @@ import { useChatAgentsStore } from "@/stores/chat-agents-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useProjectSessionsStore } from "@/stores/project-sessions-store";
 
+const chatPanelRenderCounts = vi.hoisted(() => new Map<number, number>());
+
 vi.mock("../../terminal/terminal-panel", () => ({
   TerminalPanel: ({
     terminalID,
@@ -20,50 +22,69 @@ vi.mock("../../terminal/terminal-panel", () => ({
   ),
 }));
 
+// GroupChat 是重组件(拉 group 详情 + 嵌 ChatPanel),这里 stub 成 sentinel,
+// 只断言「group tab 走 GroupChat 分支且把 groupId 透传进去」。
+vi.mock("../../group-chat", () => ({
+  GroupChat: ({ groupId }: { groupId: number }) => (
+    <div data-testid={`group-chat-${groupId}`}>group {groupId}</div>
+  ),
+}));
+
 // 把 onSidebarShouldReload 通过 data-attribute 暴露到 DOM 上, 这样回归测试可以
 // 拿到这个回调并断言它真的去触发 store.reload (修复「新建会话不进左栏」的关键路径)。
 type ChatPanelStub = {
   sessionId: number;
   newSessionAgent?: { id: number; name: string } | null;
   onSidebarShouldReload?: () => void;
+  scrollStateKey?: string;
 };
 vi.mock("../../chat-panel", () => ({
   ChatPanel: ({
     sessionId,
     newSessionAgent,
     onSidebarShouldReload,
-  }: ChatPanelStub) => (
-    <div
-      data-testid={`chat-panel-${sessionId}`}
-      data-agent-id={newSessionAgent?.id ?? ""}
-    >
-      <button
-        type="button"
-        data-testid={`fire-reload-${sessionId}`}
-        onClick={() => onSidebarShouldReload?.()}
+    scrollStateKey,
+  }: ChatPanelStub) => {
+    chatPanelRenderCounts.set(
+      sessionId,
+      (chatPanelRenderCounts.get(sessionId) ?? 0) + 1,
+    );
+    return (
+      <div
+        data-testid={`chat-panel-${sessionId}`}
+        data-agent-id={newSessionAgent?.id ?? ""}
+        data-scroll-state-key={scrollStateKey ?? ""}
       >
-        fire
-      </button>
-      {newSessionAgent ? <span>new agent {newSessionAgent.name}</span> : null}
-      {newSessionAgent ? (
-        <div
-          role="textbox"
-          data-testid="composer-editor"
-          contentEditable
-          suppressContentEditableWarning
-          tabIndex={0}
+        <button
+          type="button"
+          data-testid={`fire-reload-${sessionId}`}
+          onClick={() => onSidebarShouldReload?.()}
         >
-          editor
-        </div>
-      ) : null}
-      session {sessionId}
-    </div>
-  ),
+          fire
+        </button>
+        {newSessionAgent ? <span>new agent {newSessionAgent.name}</span> : null}
+        {newSessionAgent ? (
+          <div
+            role="textbox"
+            data-testid="composer-editor"
+            contentEditable
+            suppressContentEditableWarning
+            tabIndex={0}
+          >
+            editor
+          </div>
+        ) : null}
+        session {sessionId}
+      </div>
+    );
+  },
+  pruneChatPanelScrollState: vi.fn(),
 }));
 
 describe("ChatPanelHost", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    chatPanelRenderCounts.clear();
     useChatTabsStore.setState({ tabs: [], activeTabId: null });
     useChatAgentsStore.getState().__reset();
     useProjectSessionsStore.getState().__reset();
@@ -84,14 +105,48 @@ describe("ChatPanelHost", () => {
     expect(screen.getByTestId("chat-panel-2")).toBeInTheDocument();
   });
 
-  it("非 active tab 的 ChatPanel 容器 display:none", () => {
+  it("passes the tab id as ChatPanel scrollStateKey", () => {
+    useChatTabsStore.getState().openSessionInNewTab(1);
+    const tabId = useChatTabsStore.getState().tabs[0].id;
+
+    render(<ChatPanelHost />);
+
+    expect(screen.getByTestId("chat-panel-1")).toHaveAttribute(
+      "data-scroll-state-key",
+      tabId,
+    );
+  });
+
+  it("Given three mounted session tabs, When active tab changes, Then unrelated hidden panels do not rerender", () => {
+    useChatTabsStore.getState().openSessionInNewTab(1);
+    useChatTabsStore.getState().openSessionInNewTab(2);
+    useChatTabsStore.getState().openSessionInNewTab(3);
+    const secondId = useChatTabsStore.getState().tabs[1].id;
+    render(<ChatPanelHost />);
+
+    const unrelatedBefore = chatPanelRenderCounts.get(1) ?? 0;
+    const oldActiveBefore = chatPanelRenderCounts.get(3) ?? 0;
+    const newActiveBefore = chatPanelRenderCounts.get(2) ?? 0;
+
+    act(() => {
+      useChatTabsStore.getState().setActive(secondId);
+    });
+
+    expect(chatPanelRenderCounts.get(1)).toBe(unrelatedBefore);
+    expect(chatPanelRenderCounts.get(2)).toBeGreaterThan(newActiveBefore);
+    expect(chatPanelRenderCounts.get(3)).toBeGreaterThan(oldActiveBefore);
+  });
+
+  it("Given an inactive session tab is mounted, When ChatPanelHost renders, Then it stays out of interaction without display:none", () => {
     useChatTabsStore.getState().openSessionInNewTab(1);
     useChatTabsStore.getState().openSessionInNewTab(2);
     const firstId = useChatTabsStore.getState().tabs[0].id;
     useChatTabsStore.getState().setActive(firstId);
     render(<ChatPanelHost />);
     const wrap2 = screen.getByTestId("chat-panel-2").parentElement!;
-    expect(wrap2).toHaveStyle({ display: "none" });
+    expect(wrap2).not.toHaveStyle({ display: "none" });
+    expect(wrap2).toHaveAttribute("aria-hidden", "true");
+    expect(wrap2).toHaveClass("pointer-events-none");
   });
 
   it("Given terminal tabs, When the active tab changes, Then TerminalPanel receives active for focus management", () => {
@@ -208,6 +263,13 @@ describe("ChatPanelHost", () => {
     expect(projectReload).toHaveBeenCalledTimes(projectCallsBeforeClick + 1);
     chatReload.mockRestore();
     projectReload.mockRestore();
+  });
+
+  it("Given a group tab is active, When ChatPanelHost renders, Then it renders GroupChat with the tab's groupId", () => {
+    useChatTabsStore.getState().openGroup(42, "Release Squad");
+    render(<ChatPanelHost />);
+    expect(screen.getByTestId("group-chat-42")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-panel-0")).not.toBeInTheDocument();
   });
 
   it("Given a terminal tab is open, When ChatPanelHost renders, Then it shows terminal-panel not a ChatPanel", () => {

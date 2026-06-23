@@ -10,9 +10,9 @@
 package mock_handlers
 
 import (
-	handlers "agentre/internal/daemon/handlers"
-	pty "agentre/internal/pkg/pty"
 	context "context"
+	handlers "github.com/agentre-ai/agentre/internal/daemon/handlers"
+	pty "github.com/agentre-ai/agentre/internal/pkg/pty"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"

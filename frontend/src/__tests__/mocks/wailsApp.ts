@@ -20,6 +20,7 @@ export const Greet = vi.fn((name: string) =>
 
 export const AnswerUserQuestion = vi.fn(() => Promise.resolve({}));
 export const AnswerToolPermission = vi.fn(() => Promise.resolve({}));
+export const AnswerToolApproval = vi.fn(() => Promise.resolve({}));
 export const ResolvePlanAction = vi.fn(() => Promise.resolve({}));
 
 export const Info = vi.fn(() =>
@@ -122,6 +123,9 @@ export const UploadAgentAvatar = windowBackedMock("UploadAgentAvatar", () =>
 );
 export const DeleteAgentAvatar = windowBackedMock("DeleteAgentAvatar", () =>
   Promise.resolve({}),
+);
+export const ListAgentSkillPacks = windowBackedMock("ListAgentSkillPacks", () =>
+  Promise.resolve({ packs: [] }),
 );
 
 // Chat and project bindings
@@ -237,4 +241,24 @@ export const ApplyImportData = windowBackedMock("ApplyImportData", () =>
 // Quit confirmation — called when the user confirms quitting with active sessions.
 export const ConfirmQuit = windowBackedMock("ConfirmQuit", () =>
   Promise.resolve(),
+);
+
+// File drop bindings
+export const ChatReadDroppedImages = windowBackedMock(
+  "ChatReadDroppedImages",
+  () => Promise.resolve({ items: [] }),
+);
+
+// Workflow bindings
+export const WorkflowList = windowBackedMock("WorkflowList", () =>
+  Promise.resolve({ items: [] }),
+);
+export const WorkflowCreate = windowBackedMock("WorkflowCreate", () =>
+  Promise.resolve({ item: null }),
+);
+export const WorkflowUpdate = windowBackedMock("WorkflowUpdate", () =>
+  Promise.resolve({ item: null }),
+);
+export const WorkflowDelete = windowBackedMock("WorkflowDelete", () =>
+  Promise.resolve({}),
 );

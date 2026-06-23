@@ -149,6 +149,27 @@ var zhCN = map[int]string{
 	ProjectLocationMissing:     "该项目尚未在所选设备上配置路径，请到「项目设置 · 远端路径」补齐",
 	ProjectLocationDuplicate:   "该项目在此设备已有路径，无法重复添加",
 
+	// Group 群聊编排
+	GroupNotFound:             "群不存在",
+	GroupTitleRequired:        "群名不能为空",
+	GroupHostRequired:         "主持人不能为空",
+	GroupMemberNotFound:       "群成员不存在",
+	GroupMemberExists:         "该 agent 已在群中",
+	GroupMemberLimit:          "群成员数已达上限",
+	GroupNotRecruitable:       "该 agent 不在可招募名单",
+	GroupBackendUnsupported:   "该 agent 的后端不支持群聊",
+	GroupInviteForbidden:      "只有主持人能邀请成员",
+	GroupTaskNotFound:         "任务不存在",
+	GroupTaskForbidden:        "无权操作该任务",
+	GroupTaskClosed:           "任务已关闭",
+	GroupTaskResultRequired:   "交付说明(result)不能为空",
+	GroupTaskSelfAssign:       "不能把任务派给自己,直接执行即可",
+	GroupCreateSessionInvalid: "会话无效,无法创建群聊",
+	GroupCreateNested:         "群聊成员不能再创建群聊",
+	GroupCreateMemberUnknown:  "找不到可用的成员: %v",
+	GroupNicknameTaken:        "群昵称已被同群其他成员占用,换一个",
+	GroupCreateToolDisabled:   "未开启创建群聊工具,无法拉群",
+
 	// Server 接入
 	ServerURLInvalid:          "Server URL 不合法",
 	ServerUnreachable:         "Server 不可达",
@@ -200,4 +221,7 @@ var zhCN = map[int]string{
 	DataImportDuplicateLocal:     "本地存在多条同名记录,无法自动覆盖",
 	DataImportRollback:           "导入失败,所有改动已回滚",
 	DataImportInvalidAction:      "未知的导入 action 类型",
+
+	// 流程库
+	WorkflowNotFound: "流程不存在",
 }

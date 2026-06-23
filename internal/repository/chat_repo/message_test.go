@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"agentre/internal/model/entity/chat_entity"
-	"agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 )
 
 // TestFlipSubagentInBlocksJSON 直接单测 JSON 改写核心:翻转命中块的 status,其余字段
@@ -244,6 +244,165 @@ func TestMessageRepo_FlipSubagentStatus_NoMatchSilentNil(t *testing.T) {
 	err := chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu-missing", "completed", "")
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestAppendSubagentChildrenInBlocksJSON 直接单测 JSON 改写核心:把子块追加进 subagent_state。
+func TestAppendSubagentChildrenInBlocksJSON(t *testing.T) {
+	const baseBlocks = `[` +
+		`{"type":"tool_use","data":{"id":"toolu_agent","name":"Task","input":{"description":"run something"}}},` +
+		`{"type":"subagent_state","data":{"parent_tool_call_id":"toolu_agent","kind":"local_bash","description":"run something","status":"running","nested_tool_call_ids":[]}}` +
+		`]`
+
+	childBlocks := `[` +
+		`{"type":"tool_use","data":{"id":"sub_bash","name":"Bash","input":{"command":"ls"}}},` +
+		`{"type":"tool_result","data":{"id":"sub_bash","content":"file1.txt"}}` +
+		`]`
+
+	t.Run("追加子块并更新 nested_tool_call_ids", func(t *testing.T) {
+		out, ok, err := chat_repo.AppendSubagentChildrenInBlocksJSON(baseBlocks, "toolu_agent", childBlocks, []string{"sub_bash"})
+		require.NoError(t, err)
+		assert.True(t, ok)
+		// nested_tool_call_ids 应包含 sub_bash。
+		data := subagentData(t, out)
+		ids, _ := data["nested_tool_call_ids"].([]any)
+		assert.Equal(t, []any{"sub_bash"}, ids)
+		// 子块被追加到末尾。
+		assert.Contains(t, out, `"sub_bash"`)
+		assert.Contains(t, out, `"Bash"`)
+		assert.Contains(t, out, `"tool_result"`)
+		// 原有块仍在。
+		assert.Contains(t, out, `"tool_use"`)
+		assert.Contains(t, out, `"toolu_agent"`)
+	})
+
+	t.Run("childIDs 去重", func(t *testing.T) {
+		// nested_tool_call_ids 已有 existing_id。
+		withExisting := `[{"type":"subagent_state","data":{"parent_tool_call_id":"toolu_agent","status":"running","nested_tool_call_ids":["existing_id"]}}]`
+		out, ok, err := chat_repo.AppendSubagentChildrenInBlocksJSON(withExisting, "toolu_agent", `[]`, []string{"existing_id", "new_id"})
+		require.NoError(t, err)
+		assert.True(t, ok)
+		data := subagentData(t, out)
+		ids, _ := data["nested_tool_call_ids"].([]any)
+		// existing_id 不重复,new_id 补进去。
+		assert.Equal(t, []any{"existing_id", "new_id"}, ids)
+	})
+
+	t.Run("无命中返回 false", func(t *testing.T) {
+		out, ok, err := chat_repo.AppendSubagentChildrenInBlocksJSON(baseBlocks, "toolu_missing", childBlocks, []string{"sub_bash"})
+		require.NoError(t, err)
+		assert.False(t, ok)
+		assert.Equal(t, baseBlocks, out)
+	})
+
+	t.Run("空 blocksJSON 返回 false", func(t *testing.T) {
+		out, ok, err := chat_repo.AppendSubagentChildrenInBlocksJSON("", "toolu_agent", childBlocks, []string{"sub_bash"})
+		require.NoError(t, err)
+		assert.False(t, ok)
+		assert.Equal(t, "", out)
+	})
+
+	t.Run("非法 blocksJSON 返回 error", func(t *testing.T) {
+		_, ok, err := chat_repo.AppendSubagentChildrenInBlocksJSON("{not json", "toolu_agent", childBlocks, []string{"sub_bash"})
+		require.Error(t, err)
+		assert.False(t, ok)
+	})
+}
+
+func TestMessageRepo_AppendSubagentChildren_AppendsBlocks(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	blocksJSON := `[` +
+		`{"type":"tool_use","data":{"id":"toolu_agent","name":"Task","input":{"description":"run something"}}},` +
+		`{"type":"subagent_state","data":{"parent_tool_call_id":"toolu_agent","kind":"local_bash","description":"run something","status":"running","nested_tool_call_ids":[]}}` +
+		`]`
+	childBlocksJSON := `[{"type":"tool_use","data":{"id":"sub_bash","name":"Bash","input":{"command":"ls"}}}]`
+
+	// 倒序拉近 N 条 assistant 消息。
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY seq DESC LIMIT \\?").
+		WithArgs(int64(3), "assistant", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
+			AddRow(42, 3, "assistant", blocksJSON, 4))
+
+	// 命中后重写该条。
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_messages` SET ").
+		WithArgs(
+			sqlmock.AnyArg(),                                                                         // session_id
+			sqlmock.AnyArg(),                                                                         // device_id
+			sqlmock.AnyArg(),                                                                         // role
+			sqlmock.AnyArg(),                                                                         // blocks_json (追加后)
+			sqlmock.AnyArg(),                                                                         // model
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // token 列
+			sqlmock.AnyArg(),                   // total_input_tokens
+			sqlmock.AnyArg(),                   // duration_ms
+			sqlmock.AnyArg(),                   // fork_anchor
+			sqlmock.AnyArg(),                   // error_text
+			sqlmock.AnyArg(),                   // seq
+			sqlmock.AnyArg(), sqlmock.AnyArg(), // createtime / updatetime
+			int64(42), // WHERE id
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := chat_repo.NewMessage().AppendSubagentChildren(ctx, 3, "toolu_agent", childBlocksJSON, []string{"sub_bash"})
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMessageRepo_AppendSubagentChildren_NoMatchSilentNil(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	// 没有 subagent_state 命中 → 不写库,静默返回 nil。
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY seq DESC LIMIT \\?").
+		WithArgs(int64(3), "assistant", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
+			AddRow(42, 3, "assistant", `[{"type":"text","data":{"text":"hi"}}]`, 4))
+
+	err := chat_repo.NewMessage().AppendSubagentChildren(ctx, 3, "toolu_missing", `[{"type":"tool_use","data":{}}]`, []string{"x"})
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMessageRepo_FindAssistantBySubagentToolUseID_ReturnsMatch(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	matchBlocks := `[{"type":"subagent_state","data":{"parent_tool_call_id":"toolu_agent","kind":"local_agent","description":"do work","status":"running"}}]`
+	otherBlocks := `[{"type":"text","data":{"text":"hi"}}]`
+
+	// 倒序拉近 N 条 assistant 消息;返回第一条 blocks 含命中 subagent_state 的。
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY seq DESC LIMIT \\?").
+		WithArgs(int64(3), "assistant", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
+			AddRow(43, 3, "assistant", otherBlocks, 5).
+			AddRow(42, 3, "assistant", matchBlocks, 4))
+
+	got, err := chat_repo.NewMessage().FindAssistantBySubagentToolUseID(ctx, 3, "toolu_agent")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, int64(42), got.ID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMessageRepo_FindAssistantBySubagentToolUseID_NoMatchNil(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY seq DESC LIMIT \\?").
+		WithArgs(int64(3), "assistant", 50).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
+			AddRow(42, 3, "assistant", `[{"type":"text","data":{"text":"hi"}}]`, 4))
+
+	got, err := chat_repo.NewMessage().FindAssistantBySubagentToolUseID(ctx, 3, "toolu_missing")
+	require.NoError(t, err)
+	assert.Nil(t, got, "无命中 subagent_state 应返回 (nil, nil)")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMessageRepo_FindAssistantBySubagentToolUseID_EmptyToolUseID(t *testing.T) {
+	ctx, _, _ := testutils.Database(t)
+
+	got, err := chat_repo.NewMessage().FindAssistantBySubagentToolUseID(ctx, 3, "")
+	require.NoError(t, err)
+	assert.Nil(t, got, "空 toolUseID 短路返回 (nil, nil),不查库")
 }
 
 func TestMessageRepo_Update(t *testing.T) {

@@ -83,7 +83,7 @@ Agentre 附带 `agentred` companion daemon，可以在局域网内另一台 Linu
 ```bash
 make install-deps    # 安装前端依赖
 make dev             # 开发模式（热重载）
-make test            # 后端 race 测试 + 前端 Vitest
+make test            # 后端 Go 测试 + 前端 Vitest
 make build           # 构建当前平台的生产版本
 make install         # 安装应用包（macOS: /Applications/Agentre.app）
 ```
@@ -96,7 +96,7 @@ make install MACOS_APP_INSTALL_DIR="$HOME/Applications"
 
 ## 参与贡献
 
-欢迎提 Issue 和 PR。仓库约定、分层架构、TDD 纪律和提交规范见 [CLAUDE.md](../CLAUDE.md)。
+欢迎提 Issue 和 PR。请从[贡献指南](./CONTRIBUTING_ZH.md)（[English](../CONTRIBUTING.md)）开始——它涵盖环境搭建、工程规则、提交规范和 PR 检查清单。
 
 ## 开源许可
 

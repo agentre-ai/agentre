@@ -2,9 +2,12 @@ import * as React from "react";
 import type { TFunction } from "i18next";
 import {
   AlertTriangle,
+  Ban,
+  Boxes,
   CornerDownRight,
   History,
   Info,
+  Network,
   Trash2,
   Wrench,
   X,
@@ -40,11 +43,17 @@ import {
 } from "../types";
 import {
   agent_svc,
+  department_svc,
   type agent_backend_svc,
-  type department_svc,
 } from "../../../../wailsjs/go/models";
 
+import type { TriState } from "../capability/catalog";
+import { useBackendCapabilities } from "../capability/use-backend-capabilities";
+import { CapabilityPicker } from "../capability/capability-picker";
+import { GrantedChips, type GrantedChip } from "../capability/granted-chips";
 import { resolveReportTo } from "./reporting";
+import { toolKeysToCatalog, APPROVAL_TOOLS } from "./tool-catalog";
+import { useSkillCatalog } from "./use-skill-catalog";
 import { safeAgentColor, type OrgAgent, type OrgDepartment } from "./types";
 
 type Props = {
@@ -53,6 +62,7 @@ type Props = {
   agents: OrgAgent[];
   backends: agent_backend_svc.BackendItem[];
   isLeadOf: OrgDepartment | null;
+  availableTools?: string[];
   onUpdate: (req: agent_svc.UpdateAgentRequest) => Promise<unknown>;
   onDelete: (req: agent_svc.DeleteAgentRequest) => Promise<unknown>;
   onUploadAvatar: (req: agent_svc.UploadAvatarRequest) => Promise<unknown>;
@@ -97,6 +107,17 @@ export function OrgDetailAgent(props: Props) {
   const [skills, setSkills] = React.useState<department_svc.AgentSkillDTO[]>(
     () => (props.agent.skills ?? []).map((s) => ({ ...s })),
   );
+  const [tools, setTools] = React.useState<department_svc.AgentToolDTO[]>(
+    () => {
+      const cur = new Map(
+        (props.agent.tools ?? []).map((t) => [t.key, t.enabled]),
+      );
+      return (props.availableTools ?? []).map((key) => ({
+        key,
+        enabled: cur.get(key) ?? false,
+      }));
+    },
+  );
   const [deletePromptOpen, setDeletePromptOpen] = React.useState(false);
 
   // 汇报对象走统一解析：显式上级 ▸ 部门 leader（沿父部门链递归） ▸ CEO 兜底。
@@ -113,6 +134,11 @@ export function OrgDetailAgent(props: Props) {
     props.backends.find((b) => b.id === backendId) ??
     (props.agent.backend?.id === backendId ? props.agent.backend : undefined);
 
+  const { caps } = useBackendCapabilities(selectedBackend?.type);
+  const skillsCapOn = caps?.has("skills") ?? false;
+  const skillCatalog = useSkillCatalog(props.agent.id, skillsCapOn);
+  const [skillPickerOpen, setSkillPickerOpen] = React.useState(false);
+
   const handleSave = async () => {
     await props.onUpdate(
       agent_svc.UpdateAgentRequest.createFrom({
@@ -124,6 +150,7 @@ export function OrgDetailAgent(props: Props) {
         agentBackendId: backendId,
         prompt: prompt.split("\n").filter((s) => s.trim() !== ""),
         skills,
+        tools,
       }),
     );
   };
@@ -147,14 +174,100 @@ export function OrgDetailAgent(props: Props) {
     setDeletePromptOpen(false);
   };
 
-  const toggleSkill = (label: string) => {
-    setSkills((prev) =>
-      prev.map((s) => (s.label === label ? { ...s, enabled: !s.enabled } : s)),
+  const [toolPickerOpen, setToolPickerOpen] = React.useState(false);
+  const toolChips: GrantedChip[] = tools
+    .filter((tl) => tl.enabled)
+    .map((tl) => ({
+      id: tl.key,
+      label: t(`org.agent.tools.names.${tl.key}`),
+      badge: APPROVAL_TOOLS.has(tl.key)
+        ? t("org.agent.tools.approval")
+        : undefined,
+    }));
+  const toolItems = toolKeysToCatalog(props.availableTools ?? [], tools, t);
+  const toggleToolGrant = (key: string) =>
+    setTools((prev) =>
+      prev.map((tl) => (tl.key === key ? { ...tl, enabled: !tl.enabled } : tl)),
     );
+  const removeTool = (key: string) =>
+    setTools((prev) =>
+      prev.map((tl) => (tl.key === key ? { ...tl, enabled: false } : tl)),
+    );
+
+  // 已授予芯片：label 由 id 派生(strip @marketplace)，count 来自已拉过的目录缓存。
+  const idToName = (id: string) => id.split("@")[0] || id;
+  const skillCountById = React.useMemo(() => {
+    const m = new Map<string, number>();
+    for (const it of skillCatalog.items) m.set(it.id, it.contents?.length ?? 0);
+    return m;
+  }, [skillCatalog.items]);
+  const globallyOn = React.useMemo(
+    () =>
+      new Set(
+        skillCatalog.items.filter((i) => i.globallyEnabled).map((i) => i.id),
+      ),
+    [skillCatalog.items],
+  );
+
+  const skillStateOf = (id: string): TriState => {
+    const s = skills.find((x) => x.id === id);
+    if (!s) return "inherit";
+    return s.enabled ? "on" : "off";
+  };
+  const setSkillState = (id: string, next: TriState) =>
+    setSkills((prev) => {
+      const rest = prev.filter((s) => s.id !== id);
+      if (next === "inherit") return rest;
+      return [
+        ...rest,
+        department_svc.AgentSkillDTO.createFrom({ id, enabled: next === "on" }),
+      ];
+    });
+
+  const triLabels: Record<TriState, string> = {
+    inherit: t("capability.triState.inherit"),
+    on: t("capability.triState.on"),
+    off: t("capability.triState.off"),
   };
 
-  const enabledCount = skills.filter((s) => s.enabled).length;
-  const disabledCount = skills.length - enabledCount;
+  const onSkills = skills.filter((s) => s.enabled);
+  const offSkills = skills.filter((s) => !s.enabled);
+  const overriddenIds = new Set(skills.map((s) => s.id));
+  const inheritedIds = [...globallyOn].filter((id) => !overriddenIds.has(id));
+  const skillChips: GrantedChip[] = [
+    ...inheritedIds.map((id) => ({
+      id,
+      label: idToName(id),
+      count: skillCountById.get(id),
+      tone: "inherit" as const,
+      locked: true,
+    })),
+    ...onSkills.map((s) => ({
+      id: s.id,
+      label: idToName(s.id),
+      count: skillCountById.get(s.id),
+      tone: "on" as const,
+    })),
+    ...offSkills.map((s) => ({
+      id: s.id,
+      label: idToName(s.id),
+      count: skillCountById.get(s.id),
+      tone: "off" as const,
+    })),
+  ];
+
+  const pickerItems = skillCatalog.items.map((it) => ({
+    ...it,
+    state: it.state ? skillStateOf(it.id) : undefined,
+  }));
+
+  const openSkillPicker = () => {
+    setSkillPickerOpen(true);
+    if (!skillCatalog.fetched) void skillCatalog.load(false);
+  };
+  const removeSkillOverride = (id: string) =>
+    setSkills((prev) => prev.filter((s) => s.id !== id));
+
   const promptCharCount = prompt.replace(/\s/g, "").length;
 
   return (
@@ -221,7 +334,7 @@ export function OrgDetailAgent(props: Props) {
                 color={safeAgentColor(reportTarget.avatarColor)}
                 avatarDataUrl={reportTarget.avatarDataUrl}
                 avatarIcon={reportTarget.avatarIcon}
-                className="size-3.5 rounded-sm text-2xs"
+                className="size-5 rounded-sm text-2xs"
               />
               <span>{reportTarget.name}</span>
             </span>
@@ -394,48 +507,101 @@ export function OrgDetailAgent(props: Props) {
         </section>
 
         <section className="space-y-2.5" data-slot="agent-section-skills">
-          <div className="flex items-center justify-between">
-            <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {t("org.agent.skills.title")}
-            </h3>
-            <span className="font-mono text-2xs text-muted-foreground">
-              {t("org.agent.skills.summary", {
-                disabled: disabledCount,
-                enabled: enabledCount,
-              })}
-            </span>
-          </div>
-          {skills.length === 0 ? (
-            <p className="text-2xs text-muted-foreground">
-              {t("org.agent.skills.empty")}
-            </p>
+          {caps?.has("skills") ? (
+            <>
+              <GrantedChips
+                title={t("org.agent.skills.sectionTitle")}
+                countLabel={t("org.agent.skills.count", {
+                  inherit: inheritedIds.length,
+                  on: onSkills.length,
+                  off: offSkills.length,
+                })}
+                chipIcon={Boxes}
+                chips={skillChips}
+                addLabel={t("org.agent.skills.manage")}
+                removeLabel={(name) => t("capability.picker.remove", { name })}
+                onRemove={removeSkillOverride}
+                onAdd={openSkillPicker}
+                emptyLabel={t("org.agent.skills.empty")}
+                footerNote={t("org.agent.skills.inheritNote")}
+              />
+              <CapabilityPicker
+                open={skillPickerOpen}
+                title={t("org.agent.skillPicker.title")}
+                subtitle={t("org.agent.skillPicker.subtitle")}
+                searchPlaceholder={t("org.agent.skillPicker.searchPlaceholder")}
+                items={pickerItems}
+                loading={skillCatalog.loading}
+                triLabels={triLabels}
+                footerSummary={t("org.agent.skills.count", {
+                  inherit: inheritedIds.length,
+                  on: onSkills.length,
+                  off: offSkills.length,
+                })}
+                footerNote={t("org.agent.skillPicker.personalNote")}
+                onToggle={() => {}}
+                onSetState={setSkillState}
+                onConfirm={() => setSkillPickerOpen(false)}
+                onCancel={() => setSkillPickerOpen(false)}
+                onRescan={() => void skillCatalog.load(true)}
+              />
+            </>
           ) : (
-            <div
-              className="flex flex-wrap gap-1.5"
-              role="group"
-              aria-label={t("org.agent.skills.list")}
-            >
-              {skills.map((s) => (
-                <button
-                  key={s.label}
-                  type="button"
-                  role="switch"
-                  aria-checked={s.enabled}
-                  aria-label={t("org.agent.skills.item", { label: s.label })}
-                  onClick={() => toggleSkill(s.label)}
-                  className={cn(
-                    "rounded-sm border px-2 py-1 font-mono text-2xs transition-colors",
-                    s.enabled
-                      ? "border-status-running bg-status-running-bg text-status-running"
-                      : "border-destructive bg-destructive-soft text-destructive line-through",
-                  )}
-                >
-                  {s.label}
-                </button>
-              ))}
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5">
+                <h3 className="font-mono text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t("org.agent.skills.title")}
+                </h3>
+                <div className="flex-1" />
+                <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+                  {t("org.agent.skillsGate.pill")}
+                </span>
+              </div>
+              <div className="flex items-start gap-2.5 rounded-md border border-border bg-secondary/30 px-3 py-2.5">
+                <Ban
+                  className="mt-0.5 size-3.5 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <div className="space-y-0.5">
+                  <p className="text-2xs font-semibold text-foreground">
+                    {t("org.agent.skillsGate.title")}
+                  </p>
+                  <p className="font-mono text-2xs text-muted-foreground">
+                    {t("org.agent.skillsGate.description")}
+                  </p>
+                </div>
+              </div>
             </div>
           )}
         </section>
+
+        {caps?.has("mcp_tools") && (
+          <section className="space-y-2.5" data-slot="agent-section-tools">
+            <GrantedChips
+              title={t("org.agent.tools.sectionTitle")}
+              countLabel={t("org.agent.tools.enabledCount", {
+                count: toolChips.length,
+              })}
+              chipIcon={Network}
+              chips={toolChips}
+              addLabel={t("org.agent.tools.add")}
+              removeLabel={(name) => t("capability.picker.remove", { name })}
+              onRemove={removeTool}
+              onAdd={() => setToolPickerOpen(true)}
+              emptyLabel={t("org.agent.tools.empty")}
+            />
+            <CapabilityPicker
+              open={toolPickerOpen}
+              title={t("org.agent.toolPicker.title")}
+              subtitle={t("org.agent.toolPicker.subtitle")}
+              searchPlaceholder={t("org.agent.toolPicker.searchPlaceholder")}
+              items={toolItems}
+              onToggle={toggleToolGrant}
+              onConfirm={() => setToolPickerOpen(false)}
+              onCancel={() => setToolPickerOpen(false)}
+            />
+          </section>
+        )}
       </div>
 
       <footer className="flex items-center gap-2 border-t border-border bg-secondary/40 px-5 py-3">

@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"agentre/internal/daemon/handlers"
-	"agentre/internal/daemon/handlers/mock_handlers"
-	"agentre/internal/model/entity/agent_backend_entity"
-	"agentre/internal/model/entity/llm_provider_entity"
-	"agentre/internal/pkg/cliprober"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	"github.com/agentre-ai/agentre/internal/daemon/handlers/mock_handlers"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/cliprober"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
