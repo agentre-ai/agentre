@@ -60,6 +60,7 @@ export type UserAskDTO = {
   answers?: AskAnswerDTO[];
   answered?: boolean;
   skipped?: boolean;
+  expired?: boolean;
 };
 
 export type PlanStepDTO = {

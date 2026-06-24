@@ -240,6 +240,51 @@ describe("UserAskCard", () => {
     expect(screen.getByRole("textbox")).toHaveValue("");
   });
 
+  it("renders EXPIRED state locked with no submit button", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "AskUserQuestion",
+      canonical: {
+        kind: "user.ask",
+        userAsk: {
+          requestId: "req-exp",
+          questions: [{ question: "?", header: "h", options: [{ label: "A", description: "" }] }],
+          expired: true,
+        },
+      },
+    } as unknown as ChatBlockData;
+    render(<UserAskCard toolBlock={block} sessionId={1} />);
+    expect(screen.getByText(/已失效|EXPIRED/i)).toBeDefined();
+    expect(screen.queryByText("提交回复")).toBeNull();
+    expect(screen.queryByText("Submit reply")).toBeNull();
+  });
+
+  it("on submit failure shows expired message and locks the card", async () => {
+    const user = userEvent.setup();
+    (AnswerUserQuestion as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      "no waiting AskUserQuestion",
+    );
+    const block = {
+      type: "tool_use",
+      toolName: "AskUserQuestion",
+      canonical: {
+        kind: "user.ask",
+        userAsk: {
+          requestId: "req-1",
+          questions: [{ question: "?", header: "h", options: [{ label: "A", description: "" }] }],
+        },
+      },
+    } as unknown as ChatBlockData;
+    render(<UserAskCard toolBlock={block} sessionId={1} />);
+    await user.click(screen.getByText("A"));
+    await user.click(screen.getByText("Submit Reply"));
+    await waitFor(() => {
+      expect(screen.getByText(/提问已失效|已结束|superseded/i)).toBeDefined();
+    });
+    // 锁卡:提交按钮消失
+    expect(screen.queryByText("Submit Reply")).toBeNull();
+  });
+
   it("Given a saved draft, When the answer is submitted, Then remounting does not restore it", async () => {
     const user = userEvent.setup();
     const block = {
