@@ -7,7 +7,10 @@ interface OrchRunState {
   details: Map<number, app.RunDetailDTO>;
   deadlocks: Map<number, number[]>;
   loadRun: (id: number) => Promise<void>;
-  onRunEvent: (name: string, payload: { runId: number; cycle?: number[] }) => void;
+  onRunEvent: (
+    name: string,
+    payload: { runId: number; cycle?: number[] },
+  ) => void;
   __reset: () => void;
 }
 

@@ -7,6 +7,7 @@ import { ChatPanel } from "../chat-panel";
 import { pruneChatPanelScrollState } from "../chat-panel-scroll-state";
 import { GroupChat } from "../group-chat";
 import { TerminalPanel } from "../terminal/terminal-panel";
+import { OrchestrationRun } from "../orchestration";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
 import type { ChatTab, TabKind } from "@/stores/chat-tabs-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
@@ -104,6 +105,12 @@ export function ChatPanelHost() {
           />
         ) : t.meta.kind === "group" ? (
           <HostedGroupPanel key={t.id} tab={t} active={t.id === activeTabId} />
+        ) : t.meta.kind === "run" ? (
+          <HostedOrchestrationRun
+            key={t.id}
+            tab={t}
+            active={t.id === activeTabId}
+          />
         ) : (
           <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ),
@@ -270,6 +277,27 @@ const HostedGroupPanel = React.memo(function HostedGroupPanel({
       className={panelFrameClassName(active)}
     >
       <GroupChat groupId={meta.groupId} />
+    </div>
+  );
+});
+
+// run tab 的面板框包装器，与 HostedGroupPanel 结构完全一致，确保非激活时不可见
+const HostedOrchestrationRun = React.memo(function HostedOrchestrationRun({
+  tab,
+  active,
+}: {
+  tab: ChatTab;
+  active: boolean;
+}) {
+  const meta = tab.meta as Extract<TabKind, { kind: "run" }>;
+  return (
+    <div
+      data-tab-id={tab.id}
+      data-active={active}
+      aria-hidden={!active}
+      className={panelFrameClassName(active)}
+    >
+      <OrchestrationRun runId={meta.runId} title={meta.title} />
     </div>
   );
 });

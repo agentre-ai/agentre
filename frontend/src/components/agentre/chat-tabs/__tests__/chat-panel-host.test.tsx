@@ -272,6 +272,58 @@ describe("ChatPanelHost", () => {
     expect(screen.queryByTestId("chat-panel-0")).not.toBeInTheDocument();
   });
 
+  it("Given a run tab is active, When ChatPanelHost renders, Then it renders OrchestrationRun with the tab's runId and title", () => {
+    useChatTabsStore.setState({
+      tabs: [
+        {
+          id: "run-tab-1",
+          meta: { kind: "run", runId: 1, title: "做登录页" },
+          isPreview: false,
+          isPinned: false,
+          pinAt: 0,
+          openedAt: 1000,
+        },
+      ],
+      activeTabId: "run-tab-1",
+    });
+    render(<ChatPanelHost />);
+    expect(screen.getByTestId("orchestration-run")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-panel-0")).not.toBeInTheDocument();
+  });
+
+  it("Given an inactive run tab is mounted, When ChatPanelHost renders, Then the run panel wrapper has aria-hidden and is not overlapping", () => {
+    // run tab 非激活状态应被面板框隐藏，不与活跃 panel 重叠
+    useChatTabsStore.setState({
+      tabs: [
+        {
+          id: "run-tab-2",
+          meta: { kind: "run", runId: 2, title: "后台任务" },
+          isPreview: false,
+          isPinned: false,
+          pinAt: 0,
+          openedAt: 1000,
+        },
+        {
+          id: "session-tab-1",
+          meta: { kind: "session", sessionId: 99 },
+          isPreview: false,
+          isPinned: false,
+          pinAt: 0,
+          openedAt: 2000,
+        },
+      ],
+      activeTabId: "session-tab-1", // run tab 为非激活
+    });
+    render(<ChatPanelHost />);
+
+    const orchRun = screen.getByTestId("orchestration-run");
+    const wrapper = orchRun.parentElement!;
+    // 面板框应标记为隐藏并阻止交互
+    expect(wrapper).toHaveAttribute("aria-hidden", "true");
+    expect(wrapper).toHaveAttribute("data-active", "false");
+    expect(wrapper).toHaveClass("pointer-events-none");
+  });
+
   it("Given a terminal tab is open, When ChatPanelHost renders, Then it shows terminal-panel not a ChatPanel", () => {
     useChatTabsStore.getState().openTerminal(7, "", undefined);
     render(<ChatPanelHost />);
