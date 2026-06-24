@@ -1,0 +1,264 @@
+package orch_svc
+
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
+)
+
+// orchMCP is the MCP-over-HTTP server for the orchestrate tool set (mounted at /mcp/orchestrate/).
+// Token format mirrors subagent_svc: base64(agentID:sessionID).HMAC-SHA256.
+type orchMCP struct {
+	svc    *orchSvc
+	secret []byte
+}
+
+type orchRef struct {
+	agentID   int64
+	sessionID int64
+}
+
+// ensureMCP lazily constructs the orchMCP singleton (process-scoped random secret).
+func (s *orchSvc) ensureMCP() *orchMCP {
+	s.mcpOnce.Do(func() {
+		s.mcp = &orchMCP{svc: s, secret: randSecret()}
+	})
+	return s.mcp
+}
+
+// MintToken returns an HMAC-signed token binding (agentID, sessionID).
+// Called by the bootstrap layer when injecting the orchestrate tool URL into an agent session.
+func (s *orchSvc) MintToken(agentID, sessionID int64) string {
+	m := s.ensureMCP()
+	payload := strconv.FormatInt(agentID, 10) + ":" + strconv.FormatInt(sessionID, 10)
+	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + m.sign(payload)
+}
+
+func (m *orchMCP) sign(payload string) string {
+	mac := hmac.New(sha256.New, m.secret)
+	mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// lookup verifies the token and returns the embedded orchRef.
+func (m *orchMCP) lookup(tok string) (orchRef, bool) {
+	payloadB64, sig, ok := strings.Cut(tok, ".")
+	if !ok {
+		return orchRef{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil || !hmac.Equal([]byte(m.sign(string(payload))), []byte(sig)) {
+		return orchRef{}, false
+	}
+	aStr, sStr, ok := strings.Cut(string(payload), ":")
+	if !ok {
+		return orchRef{}, false
+	}
+	agentID, err1 := strconv.ParseInt(aStr, 10, 64)
+	sessionID, err2 := strconv.ParseInt(sStr, 10, 64)
+	if err1 != nil || err2 != nil {
+		return orchRef{}, false
+	}
+	return orchRef{agentID: agentID, sessionID: sessionID}, true
+}
+
+// MCPHandler returns the http.Handler to mount at /mcp/orchestrate/.
+// The handler implements the MCP streamable-HTTP transport shape used by subagent_svc:
+//   - GET → 405 (codex gracefully degrades; no SSE stream needed)
+//   - POST → JSON-RPC dispatch with HMAC token verification at the top
+func (s *orchSvc) MCPHandler() http.Handler {
+	m := s.ensureMCP()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// GET is not supported (codex uses graceful degradation per subagent_svc pattern).
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Verify token on EVERY request (real claude/codex sends Authorization on all requests
+		// including initialize/tools/list). On failure → 403 before touching the body.
+		ref, ok := m.lookup(bearer(r))
+		if !ok {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		var rpc struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				ProtocolVersion string          `json:"protocolVersion"`
+				Name            string          `json:"name"`
+				Arguments       json.RawMessage `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&rpc); err != nil {
+			writeRPCError(w, nil, -32700, "parse error")
+			return
+		}
+
+		switch rpc.Method {
+		case "initialize":
+			pv := rpc.Params.ProtocolVersion
+			if pv == "" {
+				pv = "2025-06-18"
+			}
+			writeRPCResult(w, rpc.ID, map[string]any{
+				"protocolVersion": pv,
+				"serverInfo":      map[string]any{"name": "agentre-orch", "version": "1"},
+				"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			writeRPCResult(w, rpc.ID, map[string]any{"tools": orchToolSchemas()})
+		case "tools/call":
+			// Capability gate: only agents with orchestrate tool enabled may call.
+			if m.svc.agents == nil {
+				http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			a, err := m.svc.agents.Find(r.Context(), ref.agentID)
+			if err != nil || a == nil || !a.ToolEnabled(agenttool.KeyOrchestrate) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			m.dispatchTool(w, r, rpc.ID, ref, rpc.Params.Name, rpc.Params.Arguments)
+		default:
+			writeRPCError(w, rpc.ID, -32601, "method not found")
+		}
+	})
+}
+
+func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, name string, args json.RawMessage) {
+	switch name {
+	case "agent_list":
+		m.handleAgentList(w, r, id)
+	case "dispatch", "ask", "send", "finish", "reply":
+		writeRPCError(w, id, -32000, "not implemented") // Tasks 7/10/11/12 replace these
+	default:
+		writeRPCError(w, id, -32601, "unknown tool")
+	}
+}
+
+type agentListItem struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	SystemBadge string `json:"systemBadge,omitempty"`
+}
+
+func (m *orchMCP) handleAgentList(w http.ResponseWriter, r *http.Request, id json.RawMessage) {
+	list, err := m.svc.agents.List(r.Context())
+	if err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	out := make([]agentListItem, 0, len(list))
+	for _, a := range list {
+		out = append(out, agentListItem{ID: a.ID, Name: a.Name, Description: a.Description, SystemBadge: a.SystemBadge})
+	}
+	b, _ := json.Marshal(out)
+	writeRPCResult(w, id, map[string]any{"content": []any{map[string]any{"type": "text", "text": string(b)}}})
+}
+
+func orchToolSchemas() []any {
+	return []any{
+		map[string]any{
+			"name":        "agent_list",
+			"description": "列出可调度的全部 agent(id/名称/描述/能力)。据此拆活、按名 dispatch。",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		map[string]any{
+			"name":        "dispatch",
+			"description": "把一个子任务异步派给某 agent(按名),新起一条子会话并行跑;它完成后结果会自动回报给你、触发你下一轮决策。可对同一 agent 多次 dispatch(即多个子任务)。审核/测试/合并都是 dispatch 给相应 agent。",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"agent", "brief"},
+				"properties": map[string]any{
+					"agent":   map[string]any{"type": "string", "description": "目标 agent 名(取自 agent_list)"},
+					"brief":   map[string]any{"type": "string", "description": "任务说明 + 验证目标;需要的产物引用写进来"},
+					"isolate": map[string]any{"type": "boolean", "description": "true=独立 git worktree 隔离;默认 false 共享工作区"},
+				},
+			},
+		},
+		map[string]any{
+			"name":        "ask",
+			"description": "向另一个 agent 提问并等待其回复;问题会被注入对方的活会话(它带着自己的上下文回答),答案回报你。用于咨询同伴上下文里才有的信息,不新增任务节点。",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"agent", "question"},
+				"properties": map[string]any{
+					"agent":    map[string]any{"type": "string"},
+					"question": map[string]any{"type": "string"},
+				},
+			},
+		},
+		map[string]any{
+			"name":        "reply",
+			"description": "回复别人通过 ask 向你提出的问题。必须原样带上提问消息里给你的 ask_id,否则提问方收不到。",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"ask_id", "answer"},
+				"properties": map[string]any{
+					"ask_id": map[string]any{"type": "string", "description": "提问消息里给出的 ask_id,原样带回"},
+					"answer": map[string]any{"type": "string", "description": "你的回答"},
+				},
+			},
+		},
+		map[string]any{
+			"name":        "send",
+			"description": "往你派发的某任务会话里发后续/返工反馈(同会话续做),更新后的结果再回报你。返工=对原任务再 send,不新增节点。",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"task_id", "message"},
+				"properties": map[string]any{
+					"task_id": map[string]any{"type": "integer"},
+					"message": map[string]any{"type": "string"},
+				},
+			},
+		},
+		map[string]any{
+			"name":        "finish",
+			"description": "收口当前任务/Run,向上回报一份结构化小结。你是根(Leader)时 finish = 整个 Run 完成。无次数上限,自行判断何时收口。",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"summary"},
+				"properties": map[string]any{
+					"summary": map[string]any{"type": "string"},
+				},
+			},
+		},
+	}
+}
+
+// ── helpers (mirrored from subagent_svc; different package so no name collision) ──
+
+func bearer(r *http.Request) string {
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": code, "message": msg}})
+}
+
+func randSecret() []byte {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("orch_svc: crypto/rand failed: " + err.Error())
+	}
+	return b
+}

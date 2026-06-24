@@ -13,9 +13,6 @@ import (
 type askEnvelope struct{}
 type scheduler struct{}
 
-// orchMCP 占位，Task 6 引入真实实现。
-type orchMCP struct{}
-
 var (
 	errLeaderNotFound = errors.New("orch: leader agent not found")
 	errAgentNotFound  = errors.New("orch: target agent not found")
