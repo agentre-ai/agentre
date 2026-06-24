@@ -2641,6 +2641,11 @@ func (s *chatSvc) runTurn(
 	for _, b := range s.takeToolApprovals(sess.ID) {
 		finalBlocks = append(finalBlocks, b)
 	}
+	// 未答的 AskUserQuestion 在 turn 结束后会变死卡(runner 已 Close，再提交走
+	// ErrNoActiveTurn / 无 waiter 必然失败)。与 MarkRunningSubagentsCancelled /
+	// takeToolApprovals 同模式标 expired：落库让 reload 可见，下方 finalCtx 就绪后
+	// 对被标记的 block emit 锁定 patch，让在屏活卡不用 reload 立即锁。
+	expiredAsks := handlers.MarkUnansweredUserAsksExpired(finalBlocks)
 	_ = assistantMsg.SetBlocks(finalBlocks)
 
 	assistantMsg.DurationMs = int(time.Since(segmentStart).Milliseconds())
@@ -2705,6 +2710,17 @@ func (s *chatSvc) runTurn(
 	// 用它写 Update 会静默失败，partial 内容就丢了。
 	finalCtx := context.WithoutCancel(ctx)
 	_ = chat_repo.Message().Update(finalCtx, assistantMsg)
+
+	// 对 finalize 时标 expired 的 AskUserQuestion emit 锁定 patch(形态同
+	// UserAskResolvedHandler):前端按 requestId merge,把在屏活卡立即翻到失效态,
+	// 无需等下一次 LoadSession 回放持久化的 expired block。
+	for _, blk := range expiredAsks {
+		dispEmit.Emit(finalCtx, stream, map[string]any{
+			"kind":            "ask_user_question",
+			"requestId":       blk.RequestID,
+			"askUserQuestion": blk,
+		})
+	}
 
 	// turn 结束（无错且未 abort）→ 看 runner 还有没有 mid-turn 排进来但 hook 没拉走的
 	// 残留 Steer 消息。有的话合并成一条 user msg、emit StreamSteerConsumed、

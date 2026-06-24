@@ -39,6 +39,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	chatblocks "github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 	"github.com/agentre-ai/agentre/pkg/claudecode"
@@ -2166,6 +2167,81 @@ func TestSend_CodexPlanUpdatedPersistsVisiblePlanBlock(t *testing.T) {
 	}
 	assert.Contains(t, planText, "Inspect files")
 	assert.Contains(t, planText, "[>]")
+}
+
+// TestSend_UnansweredAskUserQuestionExpiresAtFinalize 回归 sess-1174 的死卡:
+// turn 内 emit 了 AskUserQuestion 但未答(无 resolved 帧)就 turn done,
+// finalize 必须把该 UserAskBlock 标 expired 并落库,否则该卡片在前端永远可点、
+// 提交必失败(runtime SubmitAnswer 走 ErrNoActiveTurn / 无 waiter)。
+func TestSend_UnansweredAskUserQuestionExpiresAtFinalize(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeCodex, scriptedRunner{events: []agentruntime.RuntimeEvent{
+		{Kind: agentruntime.EventAskUserQuestion, AskUserQuestion: &agentruntime.AskUserQuestionEvent{
+			RequestID: "ask-1",
+			Questions: []agentruntime.AskQuestion{{ID: "q1", Question: "ok?", Options: []agentruntime.AskOption{{Label: "Y"}}}},
+		}},
+		{Kind: agentruntime.EventDone},
+	}})
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Codex", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeCodex), Status: consts.ACTIVE,
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	var final *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			cp := *msg
+			final = &cp
+			return nil
+		}).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	require.NotNil(t, final)
+	bs, err := final.GetBlocks()
+	require.NoError(t, err)
+	var found bool
+	for _, b := range bs {
+		switch ua := b.(type) {
+		case *chatblocks.UserAskBlock:
+			if ua.RequestID == "ask-1" {
+				found = true
+				assert.True(t, ua.Expired, "未答 ask 应在 finalize 标 expired")
+				assert.False(t, ua.Answered)
+				assert.False(t, ua.Skipped)
+			}
+		case chatblocks.UserAskBlock:
+			if ua.RequestID == "ask-1" {
+				found = true
+				assert.True(t, ua.Expired, "未答 ask 应在 finalize 标 expired")
+			}
+		}
+	}
+	assert.True(t, found, "应持久化 ask-1 的 UserAskBlock")
 }
 
 func TestSend_CodexPlanItemTextPersistsVisiblePlanBlock(t *testing.T) {
