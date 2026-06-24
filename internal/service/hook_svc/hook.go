@@ -30,11 +30,13 @@ type HookSvc interface {
 	DeleteHook(ctx context.Context, id int64) error
 	ToggleHook(ctx context.Context, id int64, enabled bool) (*HookItem, error)
 	RunHook(ctx context.Context, req *RunHookRequest) (*RunHookResult, error)
+	StartScheduler(ctx context.Context) context.CancelFunc
 }
 
 type hookSvc struct {
 	now    func() int64
 	runner hookexec.ScriptRunner
+	sched  schedulerState
 }
 
 var defaultHook HookSvc = newHookSvc()

@@ -145,9 +145,6 @@ func (s *hookSvc) finishRun(ctx context.Context, h *hook_entity.Hook, now int64,
 	}
 }
 
-// computeNextRun 临时占位，Task 8 在 scheduler.go 替换为 cron 实现并删除本占位。
-func (s *hookSvc) computeNextRun(*hook_entity.Hook, int64) int64 { return 0 }
-
 func buildEnv(h *hook_entity.Hook) map[string]string {
 	env := map[string]string{
 		"HOOK_STATE": orEmptyObject(h.StateJSON),
