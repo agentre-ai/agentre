@@ -26,6 +26,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/department_svc"
 	"github.com/agentre-ai/agentre/internal/service/group_svc"
 	"github.com/agentre-ai/agentre/internal/service/hook_svc"
+	"github.com/agentre-ai/agentre/internal/service/hooktool_svc"
 	"github.com/agentre-ai/agentre/internal/service/orch_svc"
 	"github.com/agentre-ai/agentre/internal/service/orgtool_svc"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
@@ -240,6 +241,10 @@ func (a *App) registerChatService() {
 		orch_repo.Run(), orch_repo.Task(),
 		chat_svc.Chat(), orchEmitter{a: a},
 	)
+
+	// hooktool_svc 依赖:hook_svc.Hook() 满足 HookService;agent_repo.Agent() 满足 AgentLookup;
+	// chat_svc.Chat() 满足 ApprovalGateway。须在 RegisterChat 之后(chat_svc.Chat() 非 nil)。
+	hooktool_svc.Default().RegisterDeps(hook_svc.Hook(), agent_repo.Agent(), chat_svc.Chat())
 }
 
 // Greet returns a greeting for the given name.

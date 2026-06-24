@@ -36,6 +36,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/app_settings_svc"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 	"github.com/agentre-ai/agentre/internal/service/group_svc"
+	"github.com/agentre-ai/agentre/internal/service/hooktool_svc"
 	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 	"github.com/agentre-ai/agentre/internal/service/notification_svc"
 	"github.com/agentre-ai/agentre/internal/service/orch_svc"
@@ -192,6 +193,12 @@ func Init(ctx context.Context) (*Runtime, error) {
 	orch_svc.Default().SetGatewayBaseURL(gw.BaseURL())
 	chat_svc.RegisterTurnMCPProvider(orch_svc.Default().BuildTurnMCP)
 	chat_svc.RegisterTurnExtrasProvider(orch_svc.Default().BuildTurnExtras)
+	// 挂脚本 Hook 工具 MCP handler(/mcp/hook/) + 注册 TurnMCPProvider:agent 开了 hook 工具
+	// 的会话 turn 注入该 MCP server(写操作/执行审批在服务端,见 hooktool_svc)。RegisterDeps
+	// (含 chat_svc.Chat())延迟到 app.go registerChatService() 中 RegisterChat 之后执行。
+	gw.RegisterMCP("/mcp/hook/", hooktool_svc.Default().MCPHandler())
+	hooktool_svc.Default().SetGatewayBaseURL(gw.BaseURL())
+	chat_svc.RegisterTurnMCPProvider(hooktool_svc.Default().BuildTurnMCP)
 	// 远端执行(agentred):daemon 上 CLI 子进程访问内置工具 MCP(org/subagent/group/
 	// workflow)会被 daemon 改写成 daemon 本地 URL,再经 WS 反向请求隧道回 desktop。这里
 	// 装配把隧道请求重放到 desktop 本机 gateway 的 dispatcher。无 client 超时:approval 类
