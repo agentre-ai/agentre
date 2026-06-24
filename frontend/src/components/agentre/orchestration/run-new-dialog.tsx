@@ -106,8 +106,8 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
       .catch(() => setWorkflows([]));
   }, [open]);
 
-  // 是否可以提交: 目标不为空
-  const canSubmit = goal.trim().length > 0 && !submitting;
+  // 是否可以提交: 目标非空 + 已选 Leader(Leader 是必选的编排枢纽,leaderAgentId=0 无效)
+  const canSubmit = goal.trim().length > 0 && leaderId > 0 && !submitting;
 
   // 切换团队成员勾选
   const toggleAllowed = (agentId: number, checked: boolean) => {
@@ -315,7 +315,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
           ) : null}
 
           {error ? (
-            <div className="rounded-md border border-destructive bg-destructive/10 px-3 py-2 text-2xs text-destructive">
+            <div className="rounded-md border border-destructive bg-destructive-soft px-3 py-2 text-2xs text-destructive">
               {error}
             </div>
           ) : null}
