@@ -49,16 +49,8 @@ const TaskCompleteEmptyDirectivePrefix = "e2e-task-complete-empty:"
 // TaskCancelDirectivePrefix 触发取消任务:e2e-task-cancel:<taskNo>:<reason>。
 const TaskCancelDirectivePrefix = "e2e-task-cancel:"
 
-// GroupInviteDirectivePrefix 触发动态招募:e2e-group-invite:<agentName>:<reason>。
-const GroupInviteDirectivePrefix = "e2e-group-invite:"
-
 // SystemAssertDirectivePrefix 触发 system prompt 可观测断言:e2e-assert-system:<needle>。
 const SystemAssertDirectivePrefix = "e2e-assert-system:"
-
-// GroupCreateDirectivePrefix 触发单聊建群的用户指令:
-// e2e-group-create:<title>:<成员名逗号分隔>:<brief>[:<workflowId>]。
-// 末段 workflowId 可选(整数,>0 才透传),用于「拉群带流程」绑定。
-const GroupCreateDirectivePrefix = "e2e-group-create:"
 
 // WorkflowCreateDirectivePrefix 触发流程管理工具建流程的用户指令:
 // e2e-workflow-create:<name>。需 agent 开启 workflow 工具(注入 /mcp/workflow/)。
@@ -94,9 +86,10 @@ type Runtime struct{}
 // New 返回一个 fake runtime。
 func New() *Runtime { return &Runtime{} }
 
-// Capabilities 返回驱动聊天 + 群聊 UI 的最小能力集:CapAbort 支撑停止按钮;
-// CapMCPTools 让群聊门控(group_svc.backendSupportsGroup)放行,否则 e2e 里
-// 建群入口没有任何可选 agent。fake 实际忽略注入的 MCPServers(只回显文本)。
+// Capabilities 返回最小能力集:CapAbort 支撑停止按钮;
+// CapMCPTools 让 e2e 的 MCP 工具注入接缝生效(org/subagent/orchestrate 等写工具
+// 需要 backend 声明此 cap 才会被注入)。fake 实际消费注入的 MCPServers(调各 tool
+// endpoint),但不真正执行 LLM,只回显文本。
 func (r *Runtime) Capabilities() capability.Capabilities {
 	return capability.Capabilities{
 		Set: map[capability.Capability]bool{
@@ -138,85 +131,6 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 			case <-ctx.Done():
 				return
 			case out <- agentruntime.TextDelta{Text: chunk}:
-			}
-		}
-		// 群成员 turn:像真 CLI 一样,把本轮回复经注入的 group MCP server 调 group_send
-		// 冒泡进群转录区(IngestAgentMessage → group_messages)。无注入(单聊 / 非群)→ 跳过,
-		// 行为不变。ctx 取消时上面的循环已提前 return,不会走到这里。
-		// mentions=["用户"] 回人类来源(ingest 后无 agent 收件人 → 本轮自然收敛,不触发 agent 互投)。
-		if spec, ok := findGroupToolServer(req.MCPServers, "group_send"); ok {
-			if err := postToolCall(ctx, spec, "group_send", map[string]any{
-				"body":     reply,
-				"mentions": []string{"用户"},
-			}); err != nil {
-				// 尽力而为:发失败不报 ErrorEvent(避免误把 backing session 标成出错),
-				// 只写日志;群气泡缺失会被 e2e spec 当作显式失败信号抓到。
-				fmt.Fprintf(os.Stderr, "fake: group_send failed: %v\n", err)
-			}
-		}
-		// 任务接缝(spec §9):主持人收到 e2e-task 指令 → 建卡派活;成员收到派活抬头 → 交付。
-		// 与 group_send 一样尽力而为:失败只写 stderr,缺卡/缺交付由 e2e spec 显式抓红。
-		if spec, ok := findGroupToolServer(req.MCPServers, "group_task_create"); ok {
-			if task, found := parseTaskCreateDirective(req.UserText); found {
-				args := map[string]any{
-					"assignee": task.assignee,
-					"title":    task.title,
-					"brief":    task.brief,
-				}
-				if task.parentTaskNo > 0 {
-					args["parentTaskId"] = task.parentTaskNo
-				}
-				if err := postToolCall(ctx, spec, "group_task_create", args); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: group_task_create failed: %v\n", err)
-				}
-			}
-		}
-		if spec, ok := findGroupToolServer(req.MCPServers, "group_task_complete"); ok {
-			if no, found := parseTaskCompleteEmptyDirective(req.UserText); found {
-				if err := postToolCall(ctx, spec, "group_task_complete", map[string]any{
-					"taskId": no, "result": "",
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: group_task_complete failed: %v\n", err)
-				}
-			} else if m := taskAssignedRe.FindStringSubmatch(req.UserText); m != nil && !strings.Contains(req.UserText, OpenTaskMarker) {
-				no, _ := strconv.Atoi(m[1])
-				if err := postToolCall(ctx, spec, "group_task_complete", map[string]any{
-					"taskId": no, "result": TaskResultPrefix + "task #" + m[1],
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: group_task_complete failed: %v\n", err)
-				}
-			}
-		}
-		if spec, ok := findGroupToolServer(req.MCPServers, "group_task_cancel"); ok {
-			if no, reason, found := parseTaskCancelDirective(req.UserText); found {
-				if err := postToolCall(ctx, spec, "group_task_cancel", map[string]any{
-					"taskId": no, "reason": reason,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: group_task_cancel failed: %v\n", err)
-				}
-			}
-		}
-		if spec, ok := findGroupToolServer(req.MCPServers, "group_invite"); ok {
-			if name, reason, found := parseGroupInviteDirective(req.UserText); found {
-				if err := postToolCall(ctx, spec, "group_invite", map[string]any{
-					"agentNames": []string{name}, "reason": reason,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: group_invite failed: %v\n", err)
-				}
-			}
-		}
-		// 建群接缝(spec §7.1):单聊注入 group_create 时,按指令调 tool;
-		// 该调用会挂起直到用户在 UI 批准(e2e spec 负责点批准);run ctx 取消
-		// (停止会话)会同步中断该 HTTP 请求,失败只写 stderr。
-		if spec, ok := findGroupToolServer(req.MCPServers, "group_create"); ok {
-			if title, members, brief, workflowID, found := parseGroupCreateDirective(req.UserText); found {
-				args := map[string]any{"title": title, "memberNames": members, "brief": brief}
-				if workflowID > 0 {
-					args["workflowId"] = workflowID // 拉群带流程:绑定已建流程
-				}
-				if err := postToolCall(ctx, spec, "group_create", args); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: group_create failed: %v\n", err)
-				}
 			}
 		}
 		// 流程工具接缝:agent 开启 workflow 工具时注入 /mcp/workflow/;按 e2e-workflow-create
@@ -373,10 +287,6 @@ func parseTaskCancelDirective(text string) (taskNo int, reason string, ok bool) 
 	return no, reason, true
 }
 
-func parseGroupInviteDirective(text string) (agentName, reason string, ok bool) {
-	return parseTwoPartDirective(text, GroupInviteDirectivePrefix)
-}
-
 func parseOnePartDirective(text, prefix string) (value string, ok bool) {
 	idx := strings.Index(text, prefix)
 	if idx < 0 {
@@ -404,41 +314,6 @@ func parseTwoPartDirective(text, prefix string) (first, second string, ok bool) 
 		return "", "", false
 	}
 	return first, second, true
-}
-
-// parseGroupCreateDirective 解析建群指令(取指令所在行;三段冒号分隔,成员逗号分隔;
-// 缺段/空段 → !ok)。title 不支持含冒号(SplitN 三段切分);e2e 指令是测试接缝,
-// 标题用时间戳即可。
-func parseGroupCreateDirective(text string) (title string, members []string, brief string, workflowID int, ok bool) {
-	idx := strings.Index(text, GroupCreateDirectivePrefix)
-	if idx < 0 {
-		return "", nil, "", 0, false
-	}
-	rest := text[idx+len(GroupCreateDirectivePrefix):]
-	if i := strings.IndexByte(rest, '\n'); i >= 0 {
-		rest = rest[:i]
-	}
-	// 末段 workflowId 可选:limit 4 让 3 段(无 workflow)与 4 段(带 workflow)都解析,
-	// 且不破坏既有 3 段契约(brief 不含冒号,e2e 受控)。
-	parts := strings.SplitN(rest, ":", 4)
-	if len(parts) < 3 {
-		return "", nil, "", 0, false
-	}
-	title, brief = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[2])
-	for _, m := range strings.Split(parts[1], ",") {
-		if m = strings.TrimSpace(m); m != "" {
-			members = append(members, m)
-		}
-	}
-	if len(parts) == 4 { // 可选 workflowId:非整数/缺省 → 0=不绑定
-		if n, err := strconv.Atoi(strings.TrimSpace(parts[3])); err == nil {
-			workflowID = n
-		}
-	}
-	if title == "" || len(members) == 0 || brief == "" {
-		return "", nil, "", 0, false
-	}
-	return title, members, brief, workflowID, true
 }
 
 // parseWorkflowCreateDirective 解出 e2e-workflow-create:<name>(取指令所在行;空段 → !ok)。

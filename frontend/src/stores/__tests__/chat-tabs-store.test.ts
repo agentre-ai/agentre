@@ -442,20 +442,6 @@ describe("chat-tabs-store · reconcileMissingSessions", () => {
     const s = useChatTabsStore.getState();
     expect(s.tabs.map((t) => t.meta.kind)).toEqual(["session", "terminal"]);
   });
-
-  it("保留由 group tab 打开的成员 backing session, 即使普通会话列表没有它", () => {
-    useChatTabsStore.getState().openGroup(5, "队");
-    useChatTabsStore.getState().openGroupMemberSession(5, 42, "前端");
-    useChatTabsStore.getState().reconcileMissingSessions(new Set());
-    const tabs = useChatTabsStore.getState().tabs;
-    expect(tabs.map((t) => t.meta.kind)).toEqual(["group", "groupSession"]);
-    expect(tabs[1].meta).toEqual({
-      kind: "groupSession",
-      groupId: 5,
-      sessionId: 42,
-      title: "前端",
-    });
-  });
 });
 
 describe("chat-tabs-store · hydrate from localStorage", () => {
@@ -565,6 +551,34 @@ describe("chat-tabs-store · moveTab", () => {
     const tabs = useChatTabsStore.getState().tabs;
     expect(tabs[0].isPinned).toBe(false);
     expect((tabs[0].meta as { sessionId: number }).sessionId).toBe(3);
+  });
+});
+
+describe("chat-tabs-store · openRun", () => {
+  beforeEach(() => {
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+    let nid = 1;
+    __setNextIdFactoryForTesting(() => `t${nid++}`);
+    __setNowForTesting(() => 1000);
+  });
+
+  it("openRun 新建 kind:'run' tab 并激活", () => {
+    useChatTabsStore.getState().openRun(1, "X");
+    const { tabs, activeTabId } = useChatTabsStore.getState();
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].meta).toEqual({ kind: "run", runId: 1, title: "X" });
+    expect(tabs[0].isPreview).toBe(false);
+    expect(tabs[0].isPinned).toBe(false);
+    expect(activeTabId).toBe(tabs[0].id);
+  });
+
+  it("openRun 相同 runId 不重复新建, 只激活已有 tab", () => {
+    useChatTabsStore.getState().openRun(1, "X");
+    const firstTabId = useChatTabsStore.getState().tabs[0].id;
+    useChatTabsStore.getState().openRun(1, "X");
+    const { tabs, activeTabId } = useChatTabsStore.getState();
+    expect(tabs).toHaveLength(1);
+    expect(activeTabId).toBe(firstTabId);
   });
 });
 

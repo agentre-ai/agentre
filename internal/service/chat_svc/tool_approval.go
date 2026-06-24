@@ -47,7 +47,7 @@ func (s *chatSvc) BeginToolApproval(ctx context.Context, sessionID int64, blk *b
 	return ch, nil
 }
 
-// AnswerToolApprovalRequest 前端审批入口(wails binding)。org / group_create / workflow
+// AnswerToolApprovalRequest 前端审批入口(wails binding)。org / workflow
 // 等内置写工具的审批决策统一走此请求(按 requestID 路由,SessionID 仅作前端上下文)。
 type AnswerToolApprovalRequest struct {
 	SessionID int64  `json:"sessionId"`

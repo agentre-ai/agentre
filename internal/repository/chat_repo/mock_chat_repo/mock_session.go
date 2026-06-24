@@ -11,9 +11,9 @@ package mock_chat_repo
 
 import (
 	context "context"
-	chat_entity "github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	reflect "reflect"
 
+	chat_entity "github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -173,21 +173,6 @@ func (m *MockSessionRepo) Find(ctx context.Context, id int64) (*chat_entity.Sess
 func (mr *MockSessionRepoMockRecorder) Find(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Find", reflect.TypeOf((*MockSessionRepo)(nil).Find), ctx, id)
-}
-
-// FindByGroupAndAgent mocks base method.
-func (m *MockSessionRepo) FindByGroupAndAgent(ctx context.Context, groupID, agentID int64) (*chat_entity.Session, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindByGroupAndAgent", ctx, groupID, agentID)
-	ret0, _ := ret[0].(*chat_entity.Session)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FindByGroupAndAgent indicates an expected call of FindByGroupAndAgent.
-func (mr *MockSessionRepoMockRecorder) FindByGroupAndAgent(ctx, groupID, agentID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByGroupAndAgent", reflect.TypeOf((*MockSessionRepo)(nil).FindByGroupAndAgent), ctx, groupID, agentID)
 }
 
 // ListAttentionByAgent mocks base method.

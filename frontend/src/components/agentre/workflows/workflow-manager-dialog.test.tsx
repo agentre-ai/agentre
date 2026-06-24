@@ -22,7 +22,7 @@ const items = [
     id: 1,
     name: "产品开发流程",
     content: "# 产品开发流程\n\n适用:新功能完整交付。\n\n## 角色",
-    groupCount: 2,
+    runCount: 2,
     createtime: 1700000000000,
     updatetime: 1700000000000,
   },
@@ -30,7 +30,7 @@ const items = [
     id: 2,
     name: "紧急修复流程",
     content: "",
-    groupCount: 0,
+    runCount: 0,
     createtime: 1700000000000,
     updatetime: 1700000000000,
   },
@@ -149,7 +149,7 @@ describe("WorkflowManagerDialog · 内联编辑", () => {
 describe("WorkflowManagerDialog · 内联删除", () => {
   beforeEach(resetAll);
 
-  it("删除图标 → 内联确认条(带使用中群数) → 确认调 WorkflowDelete", async () => {
+  it("删除图标 → 内联确认条(带使用中 Run 数) → 确认调 WorkflowDelete", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<WorkflowManagerDialog />);
     useWorkflowManagerStore.getState().openBrowse();
@@ -159,7 +159,7 @@ describe("WorkflowManagerDialog · 内联删除", () => {
     expect(screen.getByTestId("workflow-delete-confirm")).toBeTruthy();
     expect(
       screen.getByText(
-        '"产品开发流程" is used by 2 groups; after deletion they fall back to "no workflow". This cannot be undone.',
+        '"产品开发流程" is used by 2 runs; after deletion they fall back to "no workflow". This cannot be undone.',
       ),
     ).toBeTruthy();
     await user.click(screen.getByTestId("workflow-delete-confirm-button"));

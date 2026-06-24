@@ -257,7 +257,7 @@ type ChatBlock struct {
 	// tool_permission_request block 专用：工具审批载荷与决策状态。
 	ToolPermission *ChatBlockToolPermission `json:"toolPermission,omitempty"`
 
-	// tool_approval block 专用：agent 内置工具(org / group_create / workflow 等)写操作审批卡。
+	// tool_approval block 专用：agent 内置工具(org / workflow 等)写操作审批卡。
 	ToolApproval *ChatBlockToolApproval `json:"toolApproval,omitempty"`
 
 	// Canonical 是 runtime translator 算出的统一工具识别投影 — wire 形态由
@@ -322,7 +322,7 @@ type ChatBlockToolPermission struct {
 	AlwaysAllow bool           `json:"alwaysAllow,omitempty"`
 }
 
-// ChatBlockToolApproval agent 内置工具(org / group_create / workflow 等)写操作审批卡的前端投影。
+// ChatBlockToolApproval agent 内置工具(org / workflow 等)写操作审批卡的前端投影。
 // ToolKey 标识来源工具,前端据此选标题/文案与 approved 后处理。
 type ChatBlockToolApproval struct {
 	ToolKey   string         `json:"toolKey"`
@@ -377,8 +377,6 @@ type ChatSessionLite struct {
 	Status         string `json:"status"`
 	NeedsAttention bool   `json:"needsAttention"`
 	LastMessageAt  int64  `json:"lastMessageAt"`
-	GroupID        int64  `json:"groupId,omitempty"`
-	GroupTitle     string `json:"groupTitle,omitempty"`
 	// LastReadAt 由 chat_svc.MarkSessionRead 推进；前端 sidebar 折叠态 attention bubble 用
 	// LastMessageAt > LastReadAt 判定「未读」。
 	LastReadAt int64 `json:"lastReadAt"`
@@ -437,9 +435,6 @@ type ChatSessionDetail struct {
 	// ProjectID = 0 表示自由会话；> 0 时受 project_svc 管控。
 	// 前端 ChatPanel 用它派生 breadcrumb 路径。
 	ProjectID int64 `json:"projectId,omitempty"`
-	GroupID   int64 `json:"groupId,omitempty"`
-	// GroupTitle 是群聊 backing session 的来源群名。普通会话为空。
-	GroupTitle string `json:"groupTitle,omitempty"`
 }
 
 type ChatAgentItem struct {
@@ -453,19 +448,16 @@ type ChatAgentItem struct {
 	// （codex / builtin）一律留空。前端新会话场景下用它作为 pill 起手值兜底，并把
 	// 同值随 SendChatMessage.permissionMode 透回，让 chat_svc.createPermissionMode
 	// 的「raw 非空就直接用」分支照样落到管理员预设上。
-	DefaultPermissionMode string `json:"defaultPermissionMode"`
-	Chattable             bool   `json:"chattable"`
-	Pinned                bool   `json:"pinned"`
-	// SupportsGroup 报告该 agent 的后端是否声明 CapMCPTools（可作为群聊主持人/成员）。
-	// MVP 仅 claudecode 为 true。前端「新建群聊」picker 用它过滤候选（OCP，不写 backendType 字面量）。
-	SupportsGroup     bool              `json:"supportsGroup"`
-	ChattableHint     string            `json:"chattableHint"`
-	ActiveCount       int               `json:"activeCount"`
-	RecentCount       int               `json:"recentCount"`
-	TotalSessions     int64             `json:"totalSessions"`
-	SessionIDs        []int64           `json:"sessionIds"`
-	Sessions          []ChatSessionLite `json:"sessions"`
-	AttentionSessions []ChatSessionLite `json:"attentionSessions"`
+	DefaultPermissionMode string            `json:"defaultPermissionMode"`
+	Chattable             bool              `json:"chattable"`
+	Pinned                bool              `json:"pinned"`
+	ChattableHint         string            `json:"chattableHint"`
+	ActiveCount           int               `json:"activeCount"`
+	RecentCount           int               `json:"recentCount"`
+	TotalSessions         int64             `json:"totalSessions"`
+	SessionIDs            []int64           `json:"sessionIds"`
+	Sessions              []ChatSessionLite `json:"sessions"`
+	AttentionSessions     []ChatSessionLite `json:"attentionSessions"`
 
 	// 远端 device 归属 — 给前端 DeviceTag 渲染本地/远端 chip 用。
 	// 空 DeviceID = 本地 backend；非空 = paired_agentred.id 字符串化。
@@ -527,8 +519,7 @@ type ListAgentSessionsResponse struct {
 type SessionPurpose string
 
 const (
-	SessionPurposeGroupMember SessionPurpose = "group_member"
-	// SessionPurposeSubagentCall 子 agent 调用的一次性隔离会话(每次新建, 不复用, group_id=0)。
+	// SessionPurposeSubagentCall 子 agent 调用的一次性隔离会话(每次新建, 不复用)。
 	// 值与落库的 chat_entity.SessionPurposeSubagent 同源, 防两处字面量漂移。
 	SessionPurposeSubagentCall SessionPurpose = SessionPurpose(chat_entity.SessionPurposeSubagent)
 	// SessionPurposeOrchChild 编排 Run 的子 agent 会话(每次新建, 不复用, run_id>0)。
@@ -540,7 +531,6 @@ type EnsureSessionRequest struct {
 	Purpose   SessionPurpose
 	AgentID   int64
 	ProjectID int64
-	GroupID   int64
 	RunID     int64
 	Title     string
 }
@@ -563,14 +553,14 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
-	// MCPServers 透传到 RunRequest.MCPServers(注入额外 MCP tool server)。群聊用; 单聊空。
+	// MCPServers 透传到 RunRequest.MCPServers(注入额外 MCP tool server)。编排用; 普通会话空。
 	MCPServers []agentruntime.MCPServerSpec `json:"-"`
-	// SystemPromptSuffix 追加到 RunRequest.SystemPrompt 之后(群上下文/角色/roster)。群聊用; 单聊空。
+	// SystemPromptSuffix 追加到 RunRequest.SystemPrompt 之后(编排上下文/角色)。编排用; 普通会话空。
 	SystemPromptSuffix string `json:"-"`
-	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(群成员轮经 scheduler dispatch),
+	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(编排子轮经调度),
 	// 需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话已打开(可能在后台)
 	// 的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者(前端 Send 响应)能拿到流名。
-	// 前端 Send 默认 false: 发起者自己已从响应拿到流名, 重复推会双开流。群聊用; 单聊空。
+	// 前端 Send 默认 false: 发起者自己已从响应拿到流名, 重复推会双开流。编排用; 普通会话空。
 	EmitTurnStartedBypass bool `json:"-"`
 }
 type SendImage struct {

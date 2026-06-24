@@ -148,7 +148,7 @@ func TestWorkflowMCP_InitializeAndToolsList(t *testing.T) {
 }
 
 func TestWorkflowMCP_ListReturnsProjection(t *testing.T) {
-	Convey("workflow_list → content[0].text 含 workflows 数组，含 name/groupCount/content", t, func() {
+	Convey("workflow_list → content[0].text 含 workflows 数组，含 name/runCount/content", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		lookup := mock_workflowtool_svc.NewMockAgentLookup(ctrl)
@@ -156,8 +156,8 @@ func TestWorkflowMCP_ListReturnsProjection(t *testing.T) {
 		lookup.EXPECT().Find(gomock.Any(), int64(7)).Return(workflowEnabledAgent(7), nil)
 		query.EXPECT().List(gomock.Any(), gomock.Any()).Return(&workflow_svc.ListWorkflowsResponse{
 			Items: []*workflow_svc.WorkflowItem{
-				{ID: 1, Name: "新员工入职", GroupCount: 3, Content: "步骤一:准备材料"},
-				{ID: 2, Name: "代码评审", GroupCount: 1, Content: "步骤一:提交 PR"},
+				{ID: 1, Name: "新员工入职", RunCount: 3, Content: "步骤一:准备材料"},
+				{ID: 2, Name: "代码评审", RunCount: 1, Content: "步骤一:提交 PR"},
 			},
 		}, nil)
 
@@ -170,7 +170,7 @@ func TestWorkflowMCP_ListReturnsProjection(t *testing.T) {
 		So(body, ShouldContainSubstring, "workflows")
 		So(body, ShouldContainSubstring, "新员工入职")
 		So(body, ShouldContainSubstring, "代码评审")
-		So(body, ShouldContainSubstring, "groupCount")
+		So(body, ShouldContainSubstring, "runCount")
 		So(body, ShouldContainSubstring, "步骤一")
 		So(body, ShouldContainSubstring, `"type":"text"`)
 	})

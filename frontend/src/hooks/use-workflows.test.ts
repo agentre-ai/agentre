@@ -23,7 +23,7 @@ describe("useWorkflows", () => {
           id: 1,
           name: "产品开发流程",
           content: "# A",
-          groupCount: 2,
+          runCount: 2,
           createtime: 1,
           updatetime: 2,
         },
@@ -38,7 +38,7 @@ describe("useWorkflows", () => {
     const { result } = renderHook(() => useWorkflows());
     await waitFor(() => expect(result.current.workflows).toHaveLength(1));
     expect(result.current.workflows[0].name).toBe("产品开发流程");
-    expect(result.current.workflows[0].groupCount).toBe(2);
+    expect(result.current.workflows[0].runCount).toBe(2);
   });
 
   it("create/update/remove 调绑定后重新加载", async () => {

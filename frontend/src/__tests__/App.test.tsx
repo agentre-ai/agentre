@@ -393,259 +393,75 @@ function mockAgentBackends() {
   });
 }
 
-function mockHooks(
-  options: {
-    sourceConfig?: Record<string, unknown>;
-    sourcePatch?: Record<string, unknown>;
-  } = {},
-) {
+function mockHooks() {
   const existing =
     (window as unknown as { go?: { app?: { App?: Record<string, unknown> } } })
       .go?.app?.App ?? {};
-  const source = {
+  const hookA = {
     id: 2,
-    kind: "github",
-    name: "agentre-bot",
-    description: "GitHub Webhook",
-    identifier: "agentre-frame",
-    config: {
-      webhookUrl: "https://agentre.local/hooks/g-RuP8X3kQwLm2N",
-      secret: "••••••••",
-      verifySignature: true,
-      events: ["pull_request", "issues", "push", "release"],
-      imapServer: "",
-      imapPort: 993,
-      imapMailbox: "INBOX",
-      useTls: true,
-      emailAddress: "",
-      appPassword: "",
-      pollingInterval: "",
-      lastUid: 0,
-      uidValidity: 0,
-      botToken: "",
-      channel: "",
-      cronExpr: "",
-      timezone: "",
-      systemPermission: "",
-    },
+    name: "Jira urgent",
+    interpreter: "bash",
+    command: "echo '{\"events\":[]}'",
+    scheduleExpr: "*/5 * * * *",
+    timezone: "Asia/Shanghai",
+    env: [{ key: "JIRA_TOKEN", value: "********", secret: true }],
     enabled: true,
-    connectionStatus: "connected",
-    lastSyncTime: 1778934000,
-    totalCount: 1284,
+    nextRunAt: 0,
+    lastRunAt: 1778934000,
+    lastStatus: "ok",
+    lastError: "",
+    lastDurationMs: 412,
+    totalCount: 37,
     createtime: 0,
     updatetime: 0,
+  };
+  const hookB = {
+    ...hookA,
+    id: 3,
+    name: "RSS advisories",
+    interpreter: "node",
+    enabled: false,
+    lastStatus: "",
   };
   const event = {
     id: 100,
-    sourceId: 2,
-    sourceName: "agentre-bot",
-    title: "PR #142 修复 OAuth 回调",
-    sourceRef: "agentre-frame",
-    sender: "wangyizhi",
-    eventType: "pr.opened",
-    eventStatus: "dispatched",
-    payloadJson: '{"action":"opened","number":142}',
-    matchedRules: [
-      {
-        ruleId: 1,
-        ruleName: "PR opened / review",
-        matched: true,
-        reason: 'event_type contains "pr"',
-        agentId: 1,
-        agentName: "CEO 助手",
-      },
-    ],
-    dispatches: [
-      {
-        agentId: 1,
-        agentName: "CEO 助手",
-        sessionId: "s-142",
-        status: "queued",
-        message: "Agent runtime dispatch is not enabled yet.",
-      },
-    ],
-    matchedRuleNames: ["PR opened / review"],
-    targetAgentNames: ["CEO 助手"],
+    hookId: 2,
+    title: "payment callback timeout",
+    dedupeKey: "OPS-4821",
+    payloadJson: '{"severity":"high"}',
     receivedAt: 1778934120,
     createtime: 0,
-    updatetime: 0,
-  };
-  const otherSourceEvent = {
-    ...event,
-    id: 200,
-    sourceId: 99,
-    sourceName: "n8n 自动化",
-    title: "n8n deploy_webhook failed",
-    eventStatus: "failed",
-    matchedRules: [],
-    dispatches: [],
-    matchedRuleNames: [],
-    targetAgentNames: [],
-  };
-  const loadedSource = {
-    ...source,
-    ...options.sourcePatch,
-    config: options.sourceConfig
-      ? { ...source.config, ...options.sourceConfig }
-      : source.config,
   };
   const app = {
     ...existing,
     LoadHooks: vi.fn(() =>
+      Promise.resolve({ hooks: [hookA, hookB], events: [event] }),
+    ),
+    CreateHook: vi.fn((req) => Promise.resolve({ ...hookA, id: 9, ...req })),
+    UpdateHook: vi.fn((req) => Promise.resolve({ ...hookA, ...req })),
+    DeleteHook: vi.fn(() => Promise.resolve()),
+    ToggleHook: vi.fn((id, enabled) =>
+      Promise.resolve({ ...hookA, id, enabled }),
+    ),
+    RunHook: vi.fn(() =>
       Promise.resolve({
-        sources: [loadedSource],
-        rules: [
-          {
-            id: 1,
-            sourceId: 2,
-            name: "PR opened / review",
-            conditionExpr: 'event_type contains "pr"',
-            targetAgentId: 1,
-            targetAgentName: "CEO 助手",
-            enabled: true,
-            isFallback: false,
-            sortOrder: 1,
-            createtime: 0,
-            updatetime: 0,
-          },
-          {
-            id: 4,
-            sourceId: 2,
-            name: "兜底规则",
-            conditionExpr: "未命中任何规则",
-            targetAgentId: 1,
-            targetAgentName: "CEO 助手",
-            enabled: true,
-            isFallback: true,
-            sortOrder: 9999,
-            createtime: 0,
-            updatetime: 0,
-          },
-        ],
-        events: [event, otherSourceEvent],
-        agents: [
-          {
-            id: 1,
-            name: "CEO 助手",
-            avatarColor: "agent-1",
-            systemBadge: "DEFAULT",
-            departmentId: 0,
-          },
-        ],
+        exitCode: 0,
+        durationMs: 412,
+        timedOut: false,
+        stdout: "{}",
+        stderr: "",
+        parseError: "",
+        events: [event],
+        newCount: 1,
+        dupCount: 1,
+        persisted: false,
       }),
     ),
-    UpdateHookSource: vi.fn((req) =>
-      Promise.resolve({
-        item: {
-          ...loadedSource,
-          ...req,
-          connectionStatus: source.connectionStatus,
-          totalCount: source.totalCount,
-        },
-      }),
-    ),
-    TestHookSource: vi.fn(() =>
-      Promise.resolve({
-        item: { ...loadedSource, totalCount: 1285 },
-        event: {
-          ...event,
-          id: 101,
-          title: "连接测试 · agentre-bot",
-          eventType: "connection_test",
-        },
-      }),
-    ),
-    SyncHookEmailSource: vi.fn(() =>
-      Promise.resolve({
-        item: {
-          ...loadedSource,
-          connectionStatus: "connected",
-          lastSyncTime: 1778934300,
-          totalCount: 1285,
-          config: { ...loadedSource.config, lastUid: 42 },
-        },
-        events: [
-          {
-            ...event,
-            id: 102,
-            sourceId: loadedSource.id,
-            sourceName: loadedSource.name,
-            title: "Invoice approved",
-            sourceRef: "message-42@example.com",
-            sender: "Alice <alice@example.com>",
-            eventType: "email.received",
-            payloadJson:
-              '{"type":"email.received","subject":"Invoice approved"}',
-            receivedAt: 1778934300,
-          },
-        ],
-        created: 1,
-        skipped: 0,
-      }),
-    ),
-    RedeliverHookEvent: vi.fn((req) =>
-      Promise.resolve({
-        item: {
-          ...event,
-          dispatches: [
-            ...event.dispatches,
-            {
-              agentId: req.targetAgentId || 1,
-              agentName: "CEO 助手",
-              sessionId: "pending-100",
-              status: "queued",
-              message: "Agent runtime dispatch is not enabled yet.",
-            },
-          ],
-        },
-      }),
-    ),
-    CreateHookSource: vi.fn((req) =>
-      Promise.resolve({ item: { ...loadedSource, ...req, id: 3 } }),
-    ),
-    DeleteHookSource: vi.fn(() => Promise.resolve({})),
-    CreateHookRule: vi.fn((req) =>
-      Promise.resolve({
-        item: {
-          id: 9,
-          ...req,
-          targetAgentName: "CEO 助手",
-          isFallback: false,
-          sortOrder: 2,
-          createtime: 0,
-          updatetime: 0,
-        },
-      }),
-    ),
-    UpdateHookRule: vi.fn((req) =>
-      Promise.resolve({
-        item: {
-          id: req.id,
-          sourceId: 2,
-          name: req.name,
-          conditionExpr: req.conditionExpr,
-          targetAgentId: req.targetAgentId,
-          targetAgentName: "CEO 助手",
-          enabled: req.enabled,
-          isFallback: req.id === 4,
-          sortOrder: req.id === 4 ? 9999 : 1,
-          createtime: 0,
-          updatetime: 0,
-        },
-      }),
-    ),
-    DeleteHookRule: vi.fn(() => Promise.resolve({})),
   };
-
   Object.defineProperty(window, "go", {
     configurable: true,
-    value: {
-      app: {
-        App: app,
-      },
-    },
+    value: { app: { App: app } },
   });
-
   return app;
 }
 
@@ -926,7 +742,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Chat" }));
 
     const textareaEvent = fireSelectAllKey(
-      screen.getByPlaceholderText("Search Agent / group"),
+      screen.getByPlaceholderText("Search Agent"),
       "meta",
     );
 
@@ -973,7 +789,7 @@ describe("App", () => {
       screen.getByRole("complementary", { name: "Agent list" }),
     ).toHaveStyle({ width: "320px" });
     expect(
-      screen.getByPlaceholderText("Search Agent / group"),
+      screen.getByPlaceholderText("Search Agent"),
     ).toBeInTheDocument();
     expect(
       screen.getByText("Choose an Agent or project session to start"),
@@ -1027,7 +843,7 @@ describe("App", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("opens the implemented Hooks workspace from the left rail", async () => {
+  it("opens the script-driven Hooks workspace from the left rail", async () => {
     const user = userEvent.setup();
     mockHooks();
 
@@ -1039,136 +855,12 @@ describe("App", () => {
       "aria-current",
       "page",
     );
-    expect(
-      await screen.findByRole("complementary", { name: "Source list" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "agentre-bot" }),
-    ).toBeInTheDocument();
+    expect((await screen.findAllByText("Jira urgent")).length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.getByText("RSS advisories")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Script" })).toBeInTheDocument();
     expect(screen.queryByText("Under construction")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Webhook URL")).toHaveDisplayValue(
-      "https://agentre.local/hooks/g-RuP8X3kQwLm2N",
-    );
-    expect(screen.getByText("PR opened / review")).toBeInTheDocument();
-  });
-
-  it("opens Hooks when Wails returns a source config with null event list", async () => {
-    const user = userEvent.setup();
-    mockHooks({ sourceConfig: { events: null } });
-
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: "Hooks" }));
-
-    expect(
-      await screen.findByRole("heading", { name: "agentre-bot" }),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("Listening Events")).toHaveDisplayValue("");
-  });
-
-  it("saves Hook source config and writes a test event to the log", async () => {
-    const user = userEvent.setup();
-    const appBridge = mockHooks();
-
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: "Hooks" }));
-    const nameInput = await screen.findByLabelText("Name");
-
-    await user.clear(nameInput);
-    await user.type(nameInput, "agentre-prod");
-    await user.click(
-      screen.getByRole("button", { name: "Save Configuration" }),
-    );
-
-    await waitFor(() => {
-      expect(appBridge.UpdateHookSource).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 2, name: "agentre-prod" }),
-      );
-    });
-
-    await user.click(screen.getByRole("button", { name: "Test Connection" }));
-
-    await waitFor(() => {
-      expect(appBridge.TestHookSource).toHaveBeenCalledWith({ id: 2 });
-    });
-    expect(
-      (await screen.findAllByText("连接测试 · agentre-bot")).length,
-    ).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /Event Log/ })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-  });
-
-  it("syncs a real email Hook source into the event log", async () => {
-    const user = userEvent.setup();
-    const appBridge = mockHooks({
-      sourcePatch: {
-        kind: "email",
-        name: "工作邮箱",
-        description: "IMAP inbox",
-        identifier: "ops@example.com",
-      },
-      sourceConfig: {
-        imapServer: "imap.example.com",
-        imapPort: 993,
-        imapMailbox: "INBOX",
-        useTls: true,
-        emailAddress: "ops@example.com",
-        appPassword: "secret",
-        pollingInterval: "5m",
-      },
-    });
-
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: "Hooks" }));
-    expect(await screen.findByLabelText("IMAP Server")).toHaveDisplayValue(
-      "imap.example.com",
-    );
-
-    await user.click(screen.getByRole("button", { name: "More actions" }));
-    await user.click(screen.getByRole("button", { name: "Sync Email" }));
-
-    await waitFor(() => {
-      expect(appBridge.SyncHookEmailSource).toHaveBeenCalledWith({
-        id: 2,
-        limit: 20,
-      });
-    });
-    expect(
-      (await screen.findAllByText("Invoice approved")).length,
-    ).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /Event Log/ })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-  });
-
-  it("redelivers a Hook event without starting the Agent runtime", async () => {
-    const user = userEvent.setup();
-    const appBridge = mockHooks();
-
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: "Hooks" }));
-    await user.click(await screen.findByRole("button", { name: /Event Log/ }));
-    expect(screen.getByRole("button", { name: /All\s+1/ })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Failed\s+0/ }),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Redeliver" }));
-
-    await waitFor(() => {
-      expect(appBridge.RedeliverHookEvent).toHaveBeenCalledWith({
-        id: 100,
-        targetAgentId: 0,
-      });
-    });
-    expect(
-      await screen.findByText("Redelivery request recorded"),
-    ).toBeInTheDocument();
   });
 
   it("loads and lists departments + agents on the organization page", async () => {

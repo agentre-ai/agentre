@@ -29,7 +29,6 @@
     "expand": "Expand {{name}}",
     "newSession": "New {{name}} session",
     "openRecent": "Open {{name}} recent session",
-    "groupSession": "Group",
     "pinned": "Pinned",
     "running": "Running",
     "runningAria": "{{name}} has running sessions"
@@ -594,16 +593,11 @@
   "chatPage": {
     "add": {
       "aria": "New",
-      "newAgentChat": "New agent chat",
-      "newGroup": "New group"
+      "newAgentChat": "New agent chat"
     },
-    "agents": "Agents",
     "filter": {
       "open": "Filter sidebar",
       "options": {
-        "agents": "Agents",
-        "all": "All",
-        "groups": "Group chats",
         "running": "Running",
         "unread": "Unread"
       }
@@ -620,10 +614,10 @@
       "unpinAria": "Unpin {{name}}"
     },
     "search": {
-      "aria": "Search agents and group chats",
+      "aria": "Search agents",
       "clear": "Clear filter",
-      "noMatches": "No agents or group chats match \"{{query}}\"",
-      "placeholder": "Search Agent / group"
+      "noMatches": "No agents match \"{{query}}\"",
+      "placeholder": "Search Agent"
     },
     "sections": {
       "agents": "AGENTS",
@@ -677,86 +671,6 @@
       "session": "sess-{{id}}",
       "worktree": "worktree {{branch}}"
     }
-  },
-  "group": {
-    "title": "Groups",
-    "section": "Group Chats",
-    "tabs": { "members": "Members", "settings": "Settings", "group": "Group", "tasks": "Tasks" },
-    "roster": {
-      "host": "Host",
-      "members": "Members",
-      "invite": "Invite member",
-      "backToGroup": "← Back to group",
-      "openMember": "Open member"
-    },
-    "nickname": {
-      "edit": "Set group nickname",
-      "title": "Group nickname",
-      "identity": "Agent global name · won't change",
-      "hint": "Leave blank to use the real name \"{{name}}\". Visible in this group only.",
-      "taken": "\"{{name}}\" is already used by another member; pick another"
-    },
-    "runStatus": {
-      "running": "Running",
-      "waitingUser": "Waiting for you",
-      "paused": "Paused",
-      "idle": "Idle",
-      "error": "Error"
-    },
-    "rounds": "{{count}} rounds",
-    "controls": { "pause": "Pause", "stop": "Stop", "resume": "Resume" },
-    "composer": {
-      "placeholder": "Message the group… use @ to mention",
-      "send": "Send"
-    },
-    "settings": { "project": "Project", "noProject": "No project" },
-    "delete": {
-      "button": "Delete group",
-      "title": "Delete group?",
-      "description": "This removes the group. Member conversations are kept unless you choose to delete them below.",
-      "alsoSessions": "Also delete associated sessions",
-      "confirm": "Delete"
-    },
-    "task": {
-      "status": {
-        "open": "In progress",
-        "done": "Done",
-        "canceled": "Canceled"
-      },
-      "assignedTo": "Assigned to",
-      "deliveredTo": "Delivered to",
-      "verifies": "Verifies #{{no}}",
-      "sectionOpen": "In progress",
-      "sectionClosed": "Completed",
-      "empty": "No tasks yet",
-      "openAssignee": "Open assignee"
-    },
-    "you": "You",
-    "onlyXReceived": "Only {{name}} received this",
-    "new": {
-      "title": "New group",
-      "groupTitle": "Group title",
-      "groupTitlePlaceholder": "Frontend refactor squad",
-      "host": "Host",
-      "hostPlaceholder": "Select host",
-      "hostHint": "Only group_send-capable agents (claudecode) can host",
-      "project": "Project",
-      "projectNone": "(No project)",
-      "members": "Initial members",
-      "membersHint": "The host can invite more members anytime",
-      "addMember": "Add member",
-      "removeMember": "Remove {{name}}",
-      "noCandidates": "No agents available to add",
-      "create": "Create group",
-      "workflow": "Workflow",
-      "workflowNone": "None",
-      "workflowHint": "Optional; the host orchestrates by the latest content of this workflow",
-      "manageWorkflows": "Manage workflows"
-    }
-  },
-  "groupCreateCard": {
-    "created": "Group chat created",
-    "open": "Open group"
   },
   "commandPalette": {
     "chatSessions": {
@@ -1110,213 +1024,119 @@
     "zh-CN": "中文"
   },
   "hooks": {
-    "actions": {
-      "syncEmail": "Sync Email",
-      "testConnection": "Test Connection"
-    },
-    "config": {
-      "basicInfo": "Basic Info",
-      "connection": {
-        "ariaLabel": "Connection Configuration",
-        "description": "Entry parameters and connection status for {{kind}}.",
-        "title": "Connection Configuration"
-      },
-      "enabled": {
-        "ariaLabel": "Enable source",
-        "description": "When disabled, configuration and history are kept, but routing no longer triggers.",
-        "emailActive": "Auto Polling",
-        "emailDescription": "When enabled, Agentre polls unread email by interval. When disabled, configuration and history are kept.",
-        "emailPaused": "Polling Paused",
-        "label": "Enabled State",
-        "receiveActive": "Receiving Events",
-        "receivePaused": "Receiving Paused"
-      },
-      "identifier": "Display Identifier",
-      "identifierDescription": "Used in lists and event source summaries.",
-      "save": "Save Configuration",
-      "sourceName": "Name",
-      "sourceType": "Type"
-    },
-    "connectionStatus": {
-      "connected": "Connected",
-      "disabled": "Disabled",
-      "error": "Connection failed",
-      "pending": "Pending verification"
-    },
-    "empty": {
-      "createSource": "New Source",
-      "description": "Create an email, Webhook, Slack, or scheduled source, then configure routing rules and inspect event logs.",
-      "title": "No sources yet"
-    },
-    "eventDetail": {
-      "author": "Author: {{name}}",
-      "copyPayload": "Copy payload",
-      "copyPayloadDone": "Payload copied",
-      "copyPayloadFailed": "Failed to copy payload",
-      "defaultAgent": "Default Agent",
-      "dispatchResults": "Dispatch Results",
-      "empty": "Select an event to inspect payload, rule matches, and dispatch records.",
-      "noDispatches": "Not dispatched to an agent yet.",
-      "noRuleMatches": "No rule match records.",
-      "rawPayload": "Raw JSON payload",
-      "redeliver": "Redeliver",
-      "redeliverTarget": "Redelivery target agent",
-      "ruleMatches": "Rule Match Results"
-    },
-    "eventStatus": {
-      "dispatched": "Dispatched",
-      "failed": "Failed",
-      "unmatched": "Unmatched"
-    },
-    "events": {
-      "emptyDescription": "Try testing the connection, or adjust search and status filters.",
-      "emptyTitle": "No events",
-      "fallbackUnmatched": "Fallback / unmatched",
-      "listAria": "Event log list",
-      "searchAria": "Search events",
-      "searchPlaceholder": "Search event title / sender / payload..."
-    },
-    "fields": {
-      "advanced": "Advanced Settings",
-      "appPassword": "App Password",
-      "botToken": "Bot Token",
-      "copyWebhookUrl": "Copy Webhook URL",
-      "copyWebhookUrlDone": "Webhook URL copied",
-      "copyWebhookUrlFailed": "Failed to copy Webhook URL",
-      "cronExpr": "cron Expression",
-      "emailAddress": "Email Address",
-      "emailAdvancedSummary": "Port, mailbox, and TLS",
-      "enableSignature": "Enable signature verification",
-      "imapPort": "IMAP Port",
-      "imapServer": "IMAP Server",
-      "keepPasswordPlaceholder": "Leave empty to keep current password",
-      "listenChannel": "Listening Channel",
-      "listenEvents": "Listening Events",
-      "mailbox": "Mailbox",
-      "plainImap": "Plain IMAP / 143",
-      "pollingInterval": "Polling Interval",
-      "signatureVerification": "Signature Verification",
-      "slackChannel": "Slack listening channel",
-      "systemPermission": "System Permission",
-      "timezone": "Timezone",
-      "useTls": "Use IMAP TLS",
-      "webhookSecret": "Webhook Secret",
-      "webhookUrl": "Webhook URL",
-      "webhookDescription": "In local desktop mode, copy this to external systems. Public proxy settings are configured separately later."
-    },
-    "flash": {
-      "connectionSaved": "Connection configuration saved",
-      "emailSyncDone": "Email sync complete: {{created}} new, {{skipped}} skipped",
-      "redeliverRecorded": "Redelivery request recorded",
-      "ruleDeleted": "Rule {{name}} deleted",
-      "ruleSaved": "Routing rule saved",
-      "sourceCreated": "Source {{name}} created",
-      "sourceDeleted": "Source {{name}} deleted",
-      "sourceDisabled": "Source disabled",
-      "sourceEnabled": "Source enabled",
-      "testEventWritten": "Test event written to the event log"
+    "title": "Hooks",
+    "loading": "Loading Hooks…",
+    "list": {
+      "search": "Search Hooks",
+      "groupScheduled": "Scheduled",
+      "empty": "No Hooks yet",
+      "emptyHint": "Click + at the top right to create a script Hook",
+      "addAria": "New Hook",
+      "disabled": "Off"
     },
     "header": {
-      "emptyDescription": "Create a source, then configure connection and routing rules.",
-      "emptyTitle": "Hook",
-      "lastSync": "Sync {{time}}",
-      "noIdentifier": "No identifier configured",
-      "totalCount": "Total {{count}}"
-    },
-    "loading": "Loading Hooks...",
-    "ruleDialog": {
-      "condition": "Condition Expression",
-      "createAriaLabel": "New routing rule",
-      "createTitle": "New Routing Rule",
-      "description": "Conditions support simple expressions such as subject contains \"X\" or event_type contains \"release\".",
-      "editAriaLabel": "Edit routing rule",
-      "editTitle": "Edit Routing Rule",
-      "enableRule": "Enable rule",
-      "enableThisRule": "Enable this rule",
-      "fallbackAlwaysEnabled": "Fallback rule is always enabled",
-      "targetAgent": "Target Agent"
-    },
-    "rules": {
-      "agentDecidesDescription": "One event can match multiple rules. Creating issues, replying to email, or sending desktop notifications is not configured here. This version only records dispatch intent and does not start the agent runtime.",
-      "agentDecidesTitle": "The target agent decides how to transform events",
-      "ariaLabel": "Routing Rules",
-      "deleteNamed": "Delete rule {{name}}",
-      "description": "All matching rules run. Each target agent gets an independent dispatch record.",
-      "empty": "No custom rules yet. Events fall through to the fallback rule.",
-      "enableNamed": "Enable rule {{name}}",
-      "fallbackBadge": "fallback",
-      "fallbackPrefix": "When no rules match, route to",
-      "fallbackSuffix": ". You can edit the target, but cannot delete it.",
-      "newRule": "New Rule",
-      "noAgent": "No agent selected",
-      "noDispatch": "Do not dispatch",
-      "selectAgent": "Select Agent",
-      "status": {
-        "enabled": "enabled",
-        "paused": "paused"
-      },
-      "targetNamed": "Target agent for rule {{name}}",
-      "targetPlaceholder": "Target Agent",
-      "title": "Routing Rules"
-    },
-    "source": {
-      "subtitle": {
-        "systemDisabled": "macOS Notification Center · Disabled",
-        "systemEnabled": "macOS Notification Center"
-      }
-    },
-    "sourceDialog": {
-      "ariaLabel": "New source",
-      "description": "Create the basic entry first, then fill in connection parameters and routing rules on the detail page.",
-      "title": "New Source",
-      "typeAria": "New source type"
-    },
-    "sourceKind": {
-      "email": {
-        "label": "Email",
-        "shortLabel": "Email"
-      },
-      "github": {
-        "label": "GitHub Webhook",
-        "shortLabel": "GitHub"
-      },
-      "schedule": {
-        "label": "Schedule",
-        "shortLabel": "Schedule"
-      },
-      "slack": {
-        "label": "Slack DM",
-        "shortLabel": "Slack"
-      },
-      "system": {
-        "label": "System Notification",
-        "shortLabel": "System"
-      },
-      "webhook": {
-        "label": "Custom Webhook",
-        "shortLabel": "Webhook"
-      }
-    },
-    "sourceList": {
-      "ariaLabel": "Source list",
-      "eventSources": "Event Sources",
-      "messageSources": "Message Sources",
-      "off": "OFF",
-      "searchAria": "Search sources",
-      "searchPlaceholder": "Search sources",
-      "title": "Sources",
-      "triggerCount": "{{label}} · {{count}} triggers"
+      "kindLabel": "{{interp}} Hook",
+      "run": "Dry run",
+      "runNow": "Run now",
+      "enable": "Enable",
+      "disable": "Disable",
+      "more": "More actions",
+      "delete": "Delete",
+      "lastRun": "Last run {{time}}",
+      "neverRun": "Never run",
+      "totalEvents": "{{count}} events total"
     },
     "tabs": {
-      "config": "Config",
-      "eventLog": "Event Log"
+      "script": "Script",
+      "runLog": "Run Log"
+    },
+    "trigger": {
+      "title": "Trigger",
+      "subtitle": "cron expression · run manually anytime via Dry run",
+      "cronLabel": "cron expression",
+      "interpreter": "Interpreter",
+      "timezone": "Timezone"
+    },
+    "script": {
+      "title": "Script",
+      "subtitle": "env injects HOOK_STATE / secrets · stdout emits JSON: { events, state }",
+      "name": "Name",
+      "namePlaceholder": "Hook name",
+      "commandPlaceholder": "# Write your script; print { events, state } to stdout",
+      "save": "Save",
+      "create": "Create"
+    },
+    "env": {
+      "title": "Environment / Secrets",
+      "subtitle": "Injected as env vars · secrets are masked in the UI as ••••",
+      "add": "Add variable",
+      "keyPlaceholder": "KEY",
+      "valuePlaceholder": "value",
+      "secret": "Secret",
+      "remove": "Remove variable",
+      "empty": "No environment variables"
+    },
+    "run": {
+      "ok": "Dry run · exit {{code}}",
+      "failed": "Dry run failed · exit {{code}}",
+      "timedOut": "Timed out",
+      "meta": "{{ms}}ms · {{persist}}",
+      "noPersist": "not persisted",
+      "persisted": "persisted",
+      "summary": "{{events}} events parsed · {{new}} new after dedupe · {{dup}} duplicates",
+      "parseError": "Parse error: {{error}}",
+      "stdout": "stdout",
+      "stderr": "stderr",
+      "running": "Running…",
+      "empty": "Click Dry run to execute once; the result shows here"
+    },
+    "log": {
+      "empty": "No events yet",
+      "selectPrompt": "Select an event to view its payload",
+      "dedupeKey": "Dedupe key",
+      "payload": "Payload",
+      "receivedAt": "Received {{time}}"
+    },
+    "interp": {
+      "bash": "Bash",
+      "sh": "Shell",
+      "node": "Node",
+      "python": "Python",
+      "pwsh": "PowerShell",
+      "powershell": "PowerShell",
+      "cmd": "CMD"
+    },
+    "status": {
+      "ok": "OK",
+      "failed": "Failed",
+      "running": "Running",
+      "disabled": "Off",
+      "idle": "Idle"
+    },
+    "flash": {
+      "created": "Created Hook {{name}}",
+      "updated": "Saved Hook {{name}}",
+      "deleted": "Deleted Hook {{name}}",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "saveFailed": "Save failed: {{error}}",
+      "runFailed": "Run failed: {{error}}"
+    },
+    "del": {
+      "title": "Delete Hook",
+      "description": "Delete \"{{name}}\"? This cannot be undone.",
+      "confirm": "Delete",
+      "cancel": "Cancel"
+    },
+    "create": {
+      "defaultName": "New Hook"
     },
     "time": {
-      "daysAgo": "{{count}}d ago",
-      "hoursAgo": "{{count}}h ago",
+      "never": "never",
+      "secondsAgo": "{{count}}s ago",
       "minutesAgo": "{{count}}m ago",
-      "never": "Never",
-      "secondsAgo": "{{count}}s ago"
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
     }
   },
   "llmProviders": {
@@ -1846,8 +1666,8 @@
         "add": "Add Tool",
         "empty": "No tools available",
         "approval": "Approval",
-        "names": { "org": "Org Structure", "workflow": "Workflow Library", "group_create": "Create Group", "subagent": "Call Sub-agent" },
-        "descriptions": { "org": "Allow this agent to read and manage departments and members (writes require your approval)", "workflow": "Allow this agent to read and manage collaboration workflows (writes require your approval)", "group_create": "Allow this agent to start a multi-agent collaboration group (requires your approval)", "subagent": "Delegate a subtask to another configured agent and get its result back synchronously. The sub-agent runs in an isolated one-shot session; agents used as sub-agents should use an auto-approving permission mode." }
+        "names": { "org": "Org Structure", "workflow": "Workflow Library", "group_create": "Create Group", "subagent": "Call Sub-agent", "hook": "Script Hooks" },
+        "descriptions": { "org": "Allow this agent to read and manage departments and members (writes require your approval)", "workflow": "Allow this agent to read and manage collaboration workflows (writes require your approval)", "group_create": "Allow this agent to start a multi-agent collaboration group (requires your approval)", "subagent": "Delegate a subtask to another configured agent and get its result back synchronously. The sub-agent runs in an isolated one-shot session; agents used as sub-agents should use an auto-approving permission mode.", "hook": "Let this agent author, dry-run and schedule script Hooks on a cron to emit events (create/update/delete/run all require your approval)" }
       },
       "toolPicker": {
         "title": "Add Tools",
@@ -1951,13 +1771,13 @@
     "subtitle": "Reusable collaboration SOPs; the host gets the latest bound workflow every round",
     "new": "New workflow",
     "empty": "No workflows yet — click \"New workflow\" to start",
-    "groupCount": "Used by {{count}} groups",
-    "groupCount_one": "Used by 1 group",
+    "runCount": "Used by {{count}} runs",
+    "runCount_one": "Used by 1 run",
     "updatedAt": "Updated {{time}}",
     "edit": "Edit workflow",
     "delete": "Delete",
     "preview": {
-      "liveHint": "Changes take effect immediately: running groups get the latest content next round",
+      "liveHint": "Changes take effect immediately: in-progress runs get the latest content next round",
       "empty": "Select a workflow to preview"
     },
     "editor": {
@@ -1968,25 +1788,25 @@
       "content": "Workflow content (Markdown)",
       "insertTemplate": "Insert template",
       "save": "Save",
-      "template": "# Workflow name\n\nApplies to: when to use this workflow.\n\n## Roles\n- Role A: responsibility and deliverable\n- Role B: responsibility and deliverable\n(Use abstract roles, not agent names; map to roster members by duty, recruit via group_invite or ask the user when a role is missing)\n\n## Steps\n1. Role A: input → output, deliver .agentre/handoff/<group>/task-N-xxx.md with acceptance criteria\n2. Role B: continue from the previous deliverable\n3. Parallel verification: mark parallelizable steps explicitly (verification tasks reference the verified task)\n4. All pass → summarize @user; issues → send back to the owning step (new task card)\n\n## Discipline\n- Hand over every step with a task card; write deliverable paths explicitly\n- Never parallelize tasks that may touch the same code\n- Put acceptance criteria into the brief when assigning"
+      "template": "# Workflow name\n\nApplies to: when to use this workflow.\n\n## Roles\n- Role A: responsibility and deliverable\n- Role B: responsibility and deliverable\n(Use abstract roles, not agent names; map to the run's agents by duty, dispatch to a sub-agent or ask the user when a role is missing)\n\n## Steps\n1. Role A: input → output, deliver .agentre/handoff/<run>/task-N-xxx.md with acceptance criteria\n2. Role B: continue from the previous deliverable\n3. Parallel verification: mark parallelizable steps explicitly (verification tasks reference the verified task)\n4. All pass → summarize @user; issues → send back to the owning step (new task card)\n\n## Discipline\n- Hand over every step with a task card; write deliverable paths explicitly\n- Never parallelize tasks that may touch the same code\n- Put acceptance criteria into the brief when assigning"
     },
     "deleteConfirm": {
       "title": "Delete workflow",
-      "desc": "\"{{name}}\" is used by {{count}} groups; after deletion they fall back to \"no workflow\". This cannot be undone.",
-      "desc_one": "\"{{name}}\" is used by 1 group; after deletion it falls back to \"no workflow\". This cannot be undone.",
+      "desc": "\"{{name}}\" is used by {{count}} runs; after deletion they fall back to \"no workflow\". This cannot be undone.",
+      "desc_one": "\"{{name}}\" is used by 1 run; after deletion it falls back to \"no workflow\". This cannot be undone.",
       "descUnused": "Deleting \"{{name}}\" cannot be undone.",
       "confirm": "Delete workflow"
     },
     "manager": {
       "searchPlaceholder": "Search workflow name or body",
-      "metaLive": "Used by {{count}} groups · updated {{time}} · changes apply immediately",
-      "metaLive_one": "Used by {{count}} group · updated {{time}} · changes apply immediately",
+      "metaLive": "Used by {{count}} runs · updated {{time}} · changes apply immediately",
+      "metaLive_one": "Used by 1 run · updated {{time}} · changes apply immediately",
       "metaUnused": "Unused · updated {{time}} · changes apply immediately",
       "saveHint": "⌘ + Enter to save · Esc to cancel"
     },
     "actions": {
       "openLibrary": "Open workflow library",
-      "openLibraryHint": "Browse / create / edit cross-group workflows",
+      "openLibraryHint": "Browse / create / edit cross-run workflows",
       "newWorkflow": "New workflow",
       "newWorkflowHint": "Open a blank workflow editor"
     }
@@ -2390,6 +2210,96 @@
       "inherit": "Inherit",
       "on": "On",
       "off": "Off"
+    }
+  },
+  "orchestration": {
+    "section": "Orchestration",
+    "loading": "Loading…",
+    "new": {
+      "title": "New Orchestration",
+      "goal": "Goal",
+      "goalPlaceholder": "Describe what you want to achieve…",
+      "leader": "Leader",
+      "leaderPlaceholder": "Choose the leader agent…",
+      "team": "Limit Team",
+      "teamHint": "Leave empty to allow any agent to participate",
+      "flow": "Flow",
+      "flowNone": "None",
+      "flowAdhoc": "Ad-hoc",
+      "flowSelect": "Choose from library",
+      "flowSelectPlaceholder": "Search flows…",
+      "flowLibrary": "Flow Library",
+      "flowContent": "Flow Content",
+      "flowContentPlaceholder": "Enter or paste flow definition…",
+      "dangerAuto": "Auto-approve dangerous operations",
+      "dangerApproval": "Require approval for dangerous operations",
+      "create": "Create"
+    },
+    "list": {
+      "newButton": "New Orchestration"
+    },
+    "onboarding": {
+      "cta": "Start multi-agent orchestration",
+      "step1": "Assign a Leader agent to coordinate",
+      "step2": "Set a goal — Leader breaks it down and delegates tasks",
+      "step3": "Track the structure graph and activity feed in real time"
+    },
+    "header": {
+      "viewGraph": "Graph",
+      "viewFeed": "Feed",
+      "running": "Running",
+      "completed": "Completed",
+      "paused": "Paused",
+      "stopped": "Stopped",
+      "pending": "Pending",
+      "countRunning": "{{count}} running",
+      "countWaitingYou": "{{count}} awaiting you",
+      "countDone": "{{count}} done",
+      "treeSize": "Nodes {{nodes}} · Subagents {{subagents}} · Depth {{depth}}",
+      "tokens": "{{count}} tokens",
+      "duration": "{{duration}}",
+      "pause": "Pause",
+      "resume": "Resume",
+      "stop": "Hard Stop",
+      "softWarning": "This cannot be undone. Continue?"
+    },
+    "graph": {
+      "empty": "No nodes yet",
+      "completedBanner": "✓ Orchestration completed",
+      "pausedBanner": "Paused — click Resume to continue",
+      "stoppedBanner": "Hard stopped",
+      "deadlock": "Waiting cycle detected — resolve it",
+      "leaderCrown": "Leader"
+    },
+    "feed": {
+      "deadlock": "Ask waiting cycle detected",
+      "blockingCount": "{{count}} branch(es) awaiting your approval",
+      "blockingView": "Resolve",
+      "completed": "Orchestration completed",
+      "paused": "Orchestration paused",
+      "empty": "No activity yet",
+      "blocked": "Awaiting you",
+      "speakPlaceholder": "Message the Leader…",
+      "speakSend": "Send"
+    },
+    "board": {
+      "tabTasks": "Tasks",
+      "tabOutputs": "Outputs",
+      "tasksEmpty": "No tasks yet",
+      "outputsEmpty": "No outputs yet",
+      "drilldownTitle": "Details",
+      "drilldownEmpty": "No details available",
+      "statusRunning": "Running",
+      "statusDone": "Done",
+      "statusAwaitingUser": "Awaiting you",
+      "statusAwaitingChildren": "Awaiting subtasks",
+      "statusError": "Error",
+      "statusPending": "Pending"
+    },
+    "notify": {
+      "completed": "Orchestration run completed: {{goal}}",
+      "waitingYou": "A branch is awaiting your approval: {{goal}}",
+      "view": "View"
     }
   }
 }

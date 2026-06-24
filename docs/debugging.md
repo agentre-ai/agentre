@@ -73,7 +73,7 @@ jq -c 'select(.session_id == 42)' "$LOG"
 | `app_settings` | UI/runtime prefs persisted by the app |
 | `departments` | Org structure for the org-chart UI |
 | `projects`, `project_agents`, `project_locations` | Projects, their member agents, and working-directory locations |
-| `groups`, `group_members`, `group_messages`, `group_tasks` | Group chat: membership, transcript, and orchestrated task cards |
+| `orchestration_runs`, `orch_tasks` | Orchestration: active runs and dispatched tasks |
 | `issues`, `labels`, `issue_labels` | Issue tracker (issues + labels + join) |
 | `workflows` | Reusable workflow (process) library |
 | `paired_agentreds` | Paired remote `agentred` (LAN daemon) records |

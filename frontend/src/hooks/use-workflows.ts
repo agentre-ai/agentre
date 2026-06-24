@@ -12,7 +12,7 @@ export type WorkflowItem = {
   id: number;
   name: string;
   content: string;
-  groupCount: number;
+  runCount: number;
   createtime: number;
   updatetime: number;
 };
@@ -32,7 +32,7 @@ export function useWorkflows() {
           id: i.id,
           name: i.name,
           content: i.content,
-          groupCount: i.groupCount,
+          runCount: i.runCount,
           createtime: i.createtime,
           updatetime: i.updatetime,
         })),

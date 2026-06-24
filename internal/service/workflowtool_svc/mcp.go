@@ -154,16 +154,16 @@ func isWorkflowWriteTool(name string) bool {
 }
 
 type workflowListItemView struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	GroupCount int    `json:"groupCount"`
-	Content    string `json:"content"`
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	RunCount int    `json:"runCount"`
+	Content  string `json:"content"`
 }
 
 func workflowListView(resp *workflow_svc.ListWorkflowsResponse) any {
 	items := make([]workflowListItemView, 0, len(resp.Items))
 	for _, it := range resp.Items {
-		items = append(items, workflowListItemView{ID: it.ID, Name: it.Name, GroupCount: it.GroupCount, Content: it.Content})
+		items = append(items, workflowListItemView{ID: it.ID, Name: it.Name, RunCount: it.RunCount, Content: it.Content})
 	}
 	return map[string]any{"workflows": items}
 }
@@ -173,7 +173,7 @@ func workflowToolSchemas() []any {
 	return []any{
 		map[string]any{
 			"name":        "workflow_list",
-			"description": "列出全部协作流程(SOP):id、名称、使用中群数、正文。无参数。",
+			"description": "列出全部协作流程(SOP):id、名称、使用中 Run 数、正文。无参数。",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		map[string]any{
@@ -192,7 +192,7 @@ func workflowToolSchemas() []any {
 			}},
 		},
 		map[string]any{
-			"name": "workflow_delete", "description": "删除协作流程;绑定它的群将按「不绑定流程」处理" + approvalNote,
+			"name": "workflow_delete", "description": "删除协作流程;绑定它的 Run 将按「不绑定流程」处理" + approvalNote,
 			"inputSchema": map[string]any{"type": "object", "required": []string{"id"}, "properties": map[string]any{
 				"id": map[string]any{"type": "integer", "description": "流程 id(必填)"},
 			}},

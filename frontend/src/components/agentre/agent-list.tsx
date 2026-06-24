@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ChevronDown, MessagesSquare, Pin, Plus } from "lucide-react";
+import { ChevronDown, Pin, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -43,8 +43,6 @@ type SessionRowProps = React.ComponentProps<"button"> & {
   status: AgentStatus;
   title: string;
   trailingLabel: string;
-  groupId?: number;
-  groupTitle?: string;
 };
 
 function SessionRow({
@@ -55,14 +53,10 @@ function SessionRow({
   status,
   title,
   trailingLabel,
-  groupId,
-  groupTitle,
   ...props
 }: SessionRowProps) {
-  const { t } = useTranslation();
   const config = statusConfig[status];
   const hiddenFromAccessibility = ariaHidden === true || ariaHidden === "true";
-  const isGroupSession = (groupId ?? 0) > 0 || Boolean(groupTitle);
 
   return (
     <button
@@ -92,15 +86,6 @@ function SessionRow({
       >
         {title}
       </span>
-      {isGroupSession ? (
-        <span
-          title={groupTitle}
-          className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-secondary px-1 py-0.5 text-2xs text-muted-foreground"
-        >
-          <MessagesSquare className="size-3" aria-hidden="true" />
-          {t("agentList.groupSession")}
-        </span>
-      ) : null}
       <span
         className={cn(
           "shrink-0 font-mono text-2xs",
@@ -119,8 +104,6 @@ type AgentSession = {
   status: AgentStatus;
   title: string;
   trailingLabel: string;
-  groupId?: number;
-  groupTitle?: string;
   // 只有 attentionSessions 数组里的项会有；SessionGroup 在 expanded 态下用它把
   // selected 从 bubble 中过滤掉（让它回到常规列表它本来的位置）；
   // unread / running / error / needs_attention 在 expanded 下也保留在 bubble,

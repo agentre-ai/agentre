@@ -249,9 +249,9 @@ function WorkflowManagerBody({
                       <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
                         {w.name}
                       </span>
-                      {w.groupCount > 0 ? (
+                      {w.runCount > 0 ? (
                         <span className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-2xs text-muted-foreground">
-                          {t("workflows.groupCount", { count: w.groupCount })}
+                          {t("workflows.runCount", { count: w.runCount })}
                         </span>
                       ) : null}
                     </div>
@@ -323,9 +323,9 @@ function ViewPane({
 }) {
   const { t } = useTranslation();
   const meta =
-    workflow.groupCount > 0
+    workflow.runCount > 0
       ? t("workflows.manager.metaLive", {
-          count: workflow.groupCount,
+          count: workflow.runCount,
           time: new Date(workflow.updatetime).toLocaleDateString(),
         })
       : t("workflows.manager.metaUnused", {
@@ -392,10 +392,10 @@ function DeleteConfirmBar({
 }) {
   const { t } = useTranslation();
   const desc =
-    workflow.groupCount > 0
+    workflow.runCount > 0
       ? t("workflows.deleteConfirm.desc", {
           name: workflow.name,
-          count: workflow.groupCount,
+          count: workflow.runCount,
         })
       : t("workflows.deleteConfirm.descUnused", { name: workflow.name });
   return (

@@ -96,9 +96,6 @@ type ChatSvc interface {
 	ResolvePlanAction(ctx context.Context, req *ResolvePlanActionRequest) (*ResolvePlanActionResponse, error)
 	// EnsureSession 是 chat_sessions 的统一创建/复用边界。其它 domain 不直接写 chat_repo.Session().Create。
 	EnsureSession(ctx context.Context, req *EnsureSessionRequest) (*EnsureSessionResponse, error)
-	// EnsureGroupMemberSession 创建/返回某 agent 在指定群的 backing session(带 group_id)。
-	// 幂等: 同 (groupID, agentID) 的 active session 已存在则复用。
-	EnsureGroupMemberSession(ctx context.Context, agentID, projectID, groupID int64, title string) (int64, error)
 	// ObserveTurn 订阅指定 session 下一次 turn 完成(服务端, 不经 Wails)。
 	ObserveTurn(sessionID int64) (<-chan TurnResult, func())
 	// AgentBackendHasCapability 报告某 agent 的后端 runtime 是否声明指定能力(领域无关探针)。
@@ -107,7 +104,7 @@ type ChatSvc interface {
 	CountActiveSessions(ctx context.Context) (int, error)
 	// BeginToolApproval 在 sessionID 当前活跃 turn 上登记一条 pending 工具审批、推流,
 	// 并返回等待 channel;无活跃 turn → error(工具 MCP handler 据此拒绝工具调用)。
-	// org / group_create / workflow 等内置写工具共用此入口。
+	// org / workflow 等内置写工具共用此入口。
 	BeginToolApproval(ctx context.Context, sessionID int64, blk *chatblocks.ToolApprovalBlock) (<-chan bool, error)
 	// AnswerToolApproval 按 requestID 唤醒挂起的写工具调用(前端审批入口的唯一后端方法);
 	// 未知/重复/已超时 → error。
@@ -182,16 +179,15 @@ type chatSvc struct {
 	// activeTurnStreams: sessionID(int64) → 当前活跃 turn 的 per-turn 流名(string)。
 	// runTurn 起止维护;工具审批(BeginToolApproval)据此路由审批卡到正确的流。
 	activeTurnStreams sync.Map
-	// toolApprovals: 本会话进行中 turn 上挂起/已决的工具审批 block(org / group_create
-	// / workflow 等内置写工具共用),finalize 时 merge 进 assistant 消息;LoadSession 时
-	// overlay 到投影。
+	// toolApprovals: 本会话进行中 turn 上挂起/已决的工具审批 block(org / workflow 等内置
+	// 写工具共用),finalize 时 merge 进 assistant 消息;LoadSession 时 overlay 到投影。
 	toolApprovalsMu sync.Mutex
 	toolApprovals   map[int64][]*chatblocks.ToolApprovalBlock
 	// toolApprovalWaiters: requestID(string) → chan bool(buffered=1)。BeginToolApproval
 	// 登记,AnswerToolApproval LoadAndDelete 后回灌决策,FinishToolApproval 终态兜底清。
 	toolApprovalWaiters sync.Map
 	// turnObservers：sessionID(int64) → *sync.Map(chan TurnResult → struct{})。
-	// 服务端 turn 完成观察口(不经 Wails);group_svc 在 Send 前 ObserveTurn 订阅,
+	// 服务端 turn 完成观察口(不经 Wails);调度方在 Send 前 ObserveTurn 订阅,
 	// finalize / failTurn 各回灌恰好一条终态用于释放调度位 + 判定 quiesce。
 	turnObservers *sync.Map
 	// autoWatchers：sessionID(int64) → struct{}。startAutonomousWatcher 用它防同一
@@ -307,7 +303,6 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		}
 		if be := backends[a.AgentBackendID]; be != nil {
 			item.BackendType = be.Type
-			item.SupportsGroup = backendSupportsGroup(be)
 			if agent_backend_entity.BackendType(be.Type) == agent_backend_entity.TypeClaudeCode {
 				// 仅 claudecode 透出；entity.Check 限定其它后端为空串。
 				item.DefaultPermissionMode = be.DefaultPermissionMode
@@ -429,21 +424,7 @@ func sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLite {
 		NeedsAttention: sess.IsWaitingForUser(),
 		LastMessageAt:  sess.LastMessageAt,
 		LastReadAt:     sess.LastReadAt,
-		GroupID:        sess.GroupID,
-		GroupTitle:     groupTitleFromSessionTitle(sess),
 	}
-}
-
-func groupTitleFromSessionTitle(sess *chat_entity.Session) string {
-	if sess == nil || sess.GroupID <= 0 {
-		return ""
-	}
-	title := strings.TrimSpace(sess.Title)
-	idx := strings.LastIndex(title, " / ")
-	if idx < 0 {
-		return ""
-	}
-	return strings.TrimSpace(title[:idx])
 }
 
 // activeStreamName 给 LoadSession 用:turn 进行中时,让中途打开该会话的前端能重挂到
@@ -491,8 +472,6 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 			PermissionMode:         sess.PermissionMode,
 			PermissionModeAtLaunch: sess.PermissionModeAtLaunch,
 			ProjectID:              sess.ProjectID,
-			GroupID:                sess.GroupID,
-			GroupTitle:             groupTitleFromSessionTitle(sess),
 		},
 		Messages: make([]ChatMessage, 0, len(msgs)),
 	}
@@ -2124,8 +2103,8 @@ func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Ses
 // preTx, if non-nil, runs at the very top of the transaction — before NextSeq —
 // so it can free up seq numbers by truncating older rows. Returning a non-nil
 // error from preTx aborts the whole turn (and unlocks).
-// turnExtras 是从 SendRequest 透传到 RunRequest 的领域无关可选项;单聊一律零值,
-// 群聊由 group_svc 填(per-member MCP server + 群上下文 system-prompt 后缀)。
+// turnExtras 是从 SendRequest 透传到 RunRequest 的领域无关可选项;普通会话一律零值,
+// 编排会话由 orch provider 填(额外 MCP server + system-prompt 后缀)。
 // 在同一会话的自动续轮(auto-continue)里需要保持不变,所以随 runTurn 一路携带。
 type turnExtras struct {
 	mcpServers         []agentruntime.MCPServerSpec
@@ -2146,11 +2125,10 @@ func (s *chatSvc) startTurn(
 	forkAnchor string,
 	extras turnExtras,
 ) (*SendResponse, error) {
-	// 群成员 backing session(GroupID>0)或编排会话(RunID>0)若 extras 未带 turn 上下文
-	// (用户直接 Send/Edit/Regenerate,非经 group_svc.launchDelivery / orch 调度),经 provider
-	// 补齐:群会话补 group_send MCP + 群后缀(设计问题⑥),编排会话补编排指引 + 流程后缀(C2)。
-	// 普通会话(两者皆 0)整体跳过;调度路径已填满则跳过。
-	extras = fillGroupTurnExtras(ctx, a, sess.ID, sess.GroupID, sess.RunID, extras)
+	// 编排会话(RunID>0)若 extras 未带 turn 上下文(用户直接 Send/Edit/Regenerate,非经 orch
+	// 调度),经 provider 补齐编排指引 + 流程后缀(C2)。普通会话(RunID=0)整体跳过;
+	// 调度路径已填满则跳过。
+	extras = fillGroupTurnExtras(ctx, a, sess.ID, sess.RunID, extras)
 
 	lock := s.lockFor(sess.ID)
 	if !lock.TryLock() {
@@ -2452,13 +2430,13 @@ func (s *chatSvc) runTurn(
 		AgentID:   a.ID,
 		SessionID: sess.ID,
 		Cwd:       cwd,
-		// SystemPromptSuffix 单聊为空 ⇒ 与今日 strings.Join(...) 逐字节一致(raw concat);
-		// 群聊由 group_svc 自带前导换行格式化,此处只做原样追加。
+		// SystemPromptSuffix 普通会话为空 ⇒ 与今日 strings.Join(...) 逐字节一致(raw concat);
+		// 编排会话由 orch provider 自带前导换行格式化,此处只做原样追加。
 		SystemPrompt:      strings.Join(a.GetPrompt(), "\n") + extras.systemPromptSuffix,
 		ProviderSessionID: sess.ProviderSessionID,
 		Compact:           compact,
 		ForkAnchor:        forkAnchor,
-		MCPServers:        appendTurnMCP(ctx, extras.mcpServers, a, sess.ID, sess.GroupID, runner.Capabilities().Has(capability.CapMCPTools)),
+		MCPServers:        appendTurnMCP(ctx, extras.mcpServers, a, sess.ID, runner.Capabilities().Has(capability.CapMCPTools)),
 		EnabledPlugins:    enabledPluginsForTurn(ctx, a, runner.Capabilities().Has(capability.CapSkills)),
 	}
 	if userMsg != nil {
@@ -3584,25 +3562,11 @@ func (s *chatSvc) selectRunner(ctx context.Context, be *agent_backend_entity.Age
 	return s.borrowRemoteRuntime(ctx, be, sessionID)
 }
 
-// backendSupportsGroup 报告某后端 runtime 是否声明 CapMCPTools（群聊资格）。nil → false。
-func backendSupportsGroup(be *agent_backend_entity.AgentBackend) bool {
-	if be == nil {
-		return false
-	}
-	r := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
-	if r == nil {
-		return false
-	}
-	return r.Capabilities().Has(capability.CapMCPTools)
-}
-
 func (s *chatSvc) EnsureSession(ctx context.Context, req *EnsureSessionRequest) (*EnsureSessionResponse, error) {
 	if req == nil {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 	switch req.Purpose {
-	case SessionPurposeGroupMember:
-		return s.ensureGroupMemberSession(ctx, req.AgentID, req.ProjectID, req.GroupID, req.Title)
 	case SessionPurposeSubagentCall:
 		return s.createSubagentSession(ctx, req.AgentID, req.ProjectID, req.Title)
 	case SessionPurposeOrchChild:
@@ -3612,77 +3576,8 @@ func (s *chatSvc) EnsureSession(ctx context.Context, req *EnsureSessionRequest) 
 	}
 }
 
-// EnsureGroupMemberSession 创建/返回某 agent 在指定群的 backing session(带 group_id)。
-// 幂等: 同 (groupID, agentID) 的 active session 已存在则复用。
-func (s *chatSvc) EnsureGroupMemberSession(ctx context.Context, agentID, projectID, groupID int64, title string) (int64, error) {
-	resp, err := s.EnsureSession(ctx, &EnsureSessionRequest{
-		Purpose:   SessionPurposeGroupMember,
-		AgentID:   agentID,
-		ProjectID: projectID,
-		GroupID:   groupID,
-		Title:     title,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return resp.SessionID, nil
-}
-
-func (s *chatSvc) ensureGroupMemberSession(ctx context.Context, agentID, projectID, groupID int64, title string) (*EnsureSessionResponse, error) {
-	if agentID <= 0 || groupID <= 0 {
-		return nil, i18n.NewError(ctx, code.InvalidParameter)
-	}
-	unlock := s.lockEnsureSession("group_member:" + strconv.FormatInt(groupID, 10) + ":" + strconv.FormatInt(agentID, 10))
-	defer unlock()
-	existing, err := chat_repo.Session().FindByGroupAndAgent(ctx, groupID, agentID)
-	if err != nil {
-		logger.Ctx(ctx).Warn("chat_svc.EnsureGroupMemberSession: find failed",
-			zap.Int64("agentId", agentID),
-			zap.Int64("groupId", groupID),
-			zap.Error(err))
-		return nil, i18n.NewError(ctx, code.OperationFailed)
-	}
-	if existing != nil {
-		trimmedTitle := strings.TrimSpace(title)
-		if strings.TrimSpace(existing.Title) == "" && trimmedTitle != "" {
-			existing.Title = trimmedTitle
-			if err := chat_repo.Session().Update(ctx, existing); err != nil {
-				logger.Ctx(ctx).Error("chat_svc.EnsureGroupMemberSession: title repair failed",
-					zap.Int64("sessionId", existing.ID),
-					zap.Int64("agentId", agentID),
-					zap.Int64("groupId", groupID),
-					zap.Error(err))
-				return nil, i18n.NewError(ctx, code.OperationFailed)
-			}
-		}
-		return &EnsureSessionResponse{SessionID: existing.ID, Created: false}, nil
-	}
-	// 同步落 PermissionMode + PermissionModeAtLaunch, 对齐普通新建会话(send 新建分支)。
-	// 群成员 backing session 是普通 chat_session, 不落 mode 会让前端中途打开它时, 在 runtime
-	// 异步回填 at_launch 之前 LoadSession 读到空串而把 bypass pill 错灰。
-	permissionMode := s.launchPermissionModeForAgent(ctx, agentID)
-	sess := &chat_entity.Session{
-		AgentID:                agentID,
-		ProjectID:              projectID,
-		GroupID:                groupID,
-		PermissionMode:         permissionMode,
-		PermissionModeAtLaunch: permissionMode,
-		Title:                  strings.TrimSpace(title),
-		AgentStatus:            "idle",
-		Status:                 consts.ACTIVE,
-	}
-	if err := chat_repo.Session().Create(ctx, sess); err != nil {
-		logger.Ctx(ctx).Error("chat_svc.EnsureGroupMemberSession: create failed",
-			zap.Int64("agentId", agentID),
-			zap.Int64("groupId", groupID),
-			zap.Error(err))
-		return nil, i18n.NewError(ctx, code.OperationFailed)
-	}
-	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil
-}
-
-// createSubagentSession 为子 agent 调用建一个全新的一次性隔离会话(group_id=0,每次新建)。
-// 与 group backing session 不同:不做幂等复用 —— 每次 agent_call 都要干净的隔离上下文。
+// createSubagentSession 为子 agent 调用建一个全新的一次性隔离会话(每次新建)。
+// 不做幂等复用 —— 每次 agent_call 都要干净的隔离上下文。
 func (s *chatSvc) createSubagentSession(ctx context.Context, agentID, projectID int64, title string) (*EnsureSessionResponse, error) {
 	if agentID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)

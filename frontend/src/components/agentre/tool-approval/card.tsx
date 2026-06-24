@@ -5,12 +5,11 @@ import { Check, ShieldAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ToolApprovalData } from "@/stores/chat-streams-store";
-import { useGroupListStore } from "@/stores/group-list-store";
 import { AnswerToolApproval } from "../../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../../wailsjs/go/models";
 
 // ToolApprovalCard 渲染 agent 内置写工具(org_create_department / org_update_agent /
-// group_create / ...)的审批卡。视觉对齐 canonical-tool/tool-permission/card.tsx,但走
+// ...)的审批卡。视觉对齐 canonical-tool/tool-permission/card.tsx,但走
 // 独立组件,按 block.type==="tool_approval" 直接路由(不进 CanonicalToolRouter)。
 // toolKey 标识来源工具,供标题/文案与 approved 后处理选择。
 //
@@ -28,14 +27,6 @@ export const ToolApprovalCard: React.FC<{
 
   const isPending = approval.status === "pending";
   const isApproved = approval.status === "approved";
-
-  // group_create 批准落地后,侧栏群列表要立刻出现新群(fake/e2e 不产 tool block,
-  // 刷新只能挂在审批卡上);reload 自带并发去重,历史卡重挂载多刷一次无害。
-  React.useEffect(() => {
-    if (approval.toolKey === "group_create" && isApproved) {
-      void useGroupListStore.getState().reload();
-    }
-  }, [approval.toolKey, isApproved]);
 
   const answer = async (allow: boolean) => {
     if (!approval.requestId || submitting) return;

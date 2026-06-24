@@ -82,7 +82,7 @@ A muted, cool steel-blue chosen to stay distinct from the bright agent blues (§
 | --- | --- | --- | --- |
 | `primary` | `#3b6896` | `#5b8dbf` | **Solid** brand fill (the `Button`/`Badge` `default` variant is `bg-primary text-primary-foreground`) and accent borders/indicators |
 | `primary-foreground` | `#ffffff` | `#0a1420` | Text/icons on solid `primary` |
-| `primary-soft` | `#eef4fa` | `#1a2738` | Soft brand wash — active sidebar items, icon backgrounds, info toasts, group avatars |
+| `primary-soft` | `#eef4fa` | `#1a2738` | Soft brand wash — active sidebar items, icon backgrounds, info toasts |
 | `primary-text` | `#3b6896` | `#8eb6dc` | Brand-tinted **text/icon** on a soft/neutral background (dark is brightened for contrast vs. solid `primary`) |
 | `ring` | `#3b6896` | `#5b8dbf` | Focus ring (`focus-visible:ring-ring/50`) |
 
@@ -346,7 +346,7 @@ Project blocks in [`components/agentre/primitives.tsx`](../frontend/src/componen
 | Component | Use |
 | --- | --- |
 | `AgentAvatar` | Agent identity avatar. Sizes `sm`/`md`/`lg` (`size-6`/`8`/`10`). Renders, in priority: a custom image (`avatarDataUrl`), a registry icon (`avatarIcon`), else initials — on the `agentColorClassNames[color]` fill with white text. Defaults: `color="agent-1"`, `size="md"`. |
-| `GroupAvatar` | Group-chat avatar — `primary-soft` fill + `primary-text` `UsersRound` glyph, deliberately distinct from solid agent avatars so groups read at a glance. Decorative (`aria-hidden`). |
+| `RunAvatar` | Orchestration Run avatar — `primary-soft` fill + `primary-text` glyph, distinct from solid agent avatars. Decorative (`aria-hidden`). |
 | `StatusDot` | Colored run-state dot. Sizes `xs`/`sm`/`md` (`size-1.5`/`2`/`2.5`); `aria-label` = `"<status> status"`. |
 | `StatusPill` | Dot + uppercase label pill — `font-mono text-2xs`, `rounded-sm`, on the status' tinted bg. The canonical "agent is RUNNING/WAITING/…" chip. |
 | `SidebarButton` | Icon rail button — `ghost`/`icon`, `size-10 rounded-lg`, `sidebar-icon` color; active = `bg-primary-soft text-sidebar-icon-active shadow-xs`; ships its own hover/focus tooltip (300ms hover delay) and `aria-current`. |
@@ -510,7 +510,7 @@ The base layer applies `outline-ring/50` and the shadcn primitives rely on `focu
 - **Everything actionable is reachable and operable by keyboard** — prefer native `<button>`/`<a>`/`<input>`; the Radix primitives (Dialog, DropdownMenu, Popover, Select…) already ship focus trap, arrow-key nav, Esc, and return-focus — a reason to reuse them over hand-rolled overlays (§6).
 - **Icon-only controls need an accessible name:** `aria-label` on every icon `Button` (`SidebarButton` already does this).
 - **Announce async state:** loading/error/progress regions carry `role="status"` + `aria-label` (the `TypingIndicator` already uses `role="status"` + `aria-live="polite"`) so non-visual users get the same "no silent operations" guarantee (§9).
-- **Decorative icons** (next to a text label, or `GroupAvatar`) are `aria-hidden` so they aren't double-announced.
+- **Decorative icons** (next to a text label, or a purely visual avatar) are `aria-hidden` so they aren't double-announced.
 
 ### Reduced motion
 
