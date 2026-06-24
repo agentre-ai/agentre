@@ -29,6 +29,12 @@ var allowedAgentStatuses = map[string]struct{}{
 // chat_svc.SessionPurposeSubagentCall(请求侧 DTO)以此为唯一来源，避免两处字面量漂移。
 const SessionPurposeSubagent = "subagent_call"
 
+// SessionPurposeOrchChild 是 chat_sessions.purpose 中标记「编排 Run 子会话」的值。
+// orch_svc 经 EnsureOrchSession 创建子 agent 会话时落此值；这类会话已经由
+// run_id > 0 在默认会话列表中隐藏，purpose 提供额外语义标识。
+// chat_svc.SessionPurposeOrchChild(请求侧 DTO)以此为唯一来源。
+const SessionPurposeOrchChild = "orch_child"
+
 // Session is one open or historical chat thread scoped to a single Agent.
 type Session struct {
 	ID            int64  `gorm:"column:id;primaryKey;autoIncrement"`

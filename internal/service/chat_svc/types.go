@@ -530,6 +530,9 @@ const (
 	// SessionPurposeSubagentCall 子 agent 调用的一次性隔离会话(每次新建, 不复用, group_id=0)。
 	// 值与落库的 chat_entity.SessionPurposeSubagent 同源, 防两处字面量漂移。
 	SessionPurposeSubagentCall SessionPurpose = SessionPurpose(chat_entity.SessionPurposeSubagent)
+	// SessionPurposeOrchChild 编排 Run 的子 agent 会话(每次新建, 不复用, run_id>0)。
+	// 值与落库的 chat_entity.SessionPurposeOrchChild 同源, 防两处字面量漂移。
+	SessionPurposeOrchChild SessionPurpose = SessionPurpose(chat_entity.SessionPurposeOrchChild)
 )
 
 type EnsureSessionRequest struct {
@@ -537,6 +540,7 @@ type EnsureSessionRequest struct {
 	AgentID   int64
 	ProjectID int64
 	GroupID   int64
+	RunID     int64
 	Title     string
 }
 

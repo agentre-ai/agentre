@@ -3588,6 +3588,8 @@ func (s *chatSvc) EnsureSession(ctx context.Context, req *EnsureSessionRequest) 
 		return s.ensureGroupMemberSession(ctx, req.AgentID, req.ProjectID, req.GroupID, req.Title)
 	case SessionPurposeSubagentCall:
 		return s.createSubagentSession(ctx, req.AgentID, req.ProjectID, req.Title)
+	case SessionPurposeOrchChild:
+		return s.createOrchChildSession(ctx, req.AgentID, req.ProjectID, req.RunID, req.Title)
 	default:
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
@@ -3682,6 +3684,34 @@ func (s *chatSvc) createSubagentSession(ctx context.Context, agentID, projectID 
 	if err := chat_repo.Session().Create(ctx, sess); err != nil {
 		logger.Ctx(ctx).Error("chat_svc.createSubagentSession: create failed",
 			zap.Int64("agentId", agentID), zap.Error(err))
+		return nil, i18n.NewError(ctx, code.OperationFailed)
+	}
+	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil
+}
+
+// createOrchChildSession 为编排 Run 的子 agent 建一个全新的一次性会话(run_id>0,每次新建)。
+// 与 subagent_call 类似,不做幂等复用 —— 每次 dispatch 都要干净的隔离上下文。
+func (s *chatSvc) createOrchChildSession(ctx context.Context, agentID, projectID, runID int64, title string) (*EnsureSessionResponse, error) {
+	if agentID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	permissionMode := s.launchPermissionModeForAgent(ctx, agentID)
+	sess := &chat_entity.Session{
+		AgentID:                agentID,
+		ProjectID:              projectID,
+		RunID:                  runID,
+		Purpose:                chat_entity.SessionPurposeOrchChild,
+		PermissionMode:         permissionMode,
+		PermissionModeAtLaunch: permissionMode,
+		Title:                  strings.TrimSpace(title),
+		AgentStatus:            "idle",
+		Status:                 consts.ACTIVE,
+	}
+	if err := chat_repo.Session().Create(ctx, sess); err != nil {
+		logger.Ctx(ctx).Error("chat_svc.createOrchChildSession: create failed",
+			zap.Int64("agentId", agentID),
+			zap.Int64("runId", runID),
+			zap.Error(err))
 		return nil, i18n.NewError(ctx, code.OperationFailed)
 	}
 	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil
