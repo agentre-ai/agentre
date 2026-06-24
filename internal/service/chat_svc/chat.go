@@ -2524,9 +2524,11 @@ func (s *chatSvc) runTurn(
 	if src, ok := runner.(agentruntime.AutonomousTurnSource); ok {
 		s.startAutonomousWatcher(sess.ID, be, src)
 	}
-	// runtime 若支持「后台 subagent 内部活动流」(claudecode / remote claudecode 在
+	// runtime 若支持「后台 subagent 内部活动流」(本地 claudecode 在
 	// run_in_background subagent 空闲态产出内部工具调用),惰性起每会话 watcher 把每轮活动
 	// 嵌套渲染回发起卡并跨消息落库。每会话去重,channel close 时自行退出。
+	// 注: remote claudecode (agentred) 目前未实现 SubagentActivitySource,
+	// 仅本地 claudecode runtime 走这条路径。
 	if src, ok := runner.(agentruntime.SubagentActivitySource); ok {
 		s.startSubagentActivityWatcher(sess.ID, be, src)
 	}

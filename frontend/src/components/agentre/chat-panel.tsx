@@ -488,8 +488,24 @@ function ChatPanel({
   // StreamDone→reloadSession 都复用既有路径,自主轮无需任何特殊渲染分支。
   // completedTask: 若事件携带后台任务身份,立即把对应 live tool_use block 的
   // subagent.status 翻成终态,刷新后台任务面板胶囊。
+  // subagent_activity_started: 后台 subagent 开始产生内部活动(本地 claudecode 专有)。
+  // 重开发起消息已有的 per-turn 流把嵌套块渲染回 AgentSpawnCard;不新建消息行,
+  // session 保持 idle 态。remote claudecode 目前不发此事件。
   const onAutonomousEvent = React.useCallback(
     (ev: ChatStreamEvent) => {
+      // subagent_activity_started: 后台 subagent 开始产生内部活动。
+      // 只重开发起消息的流（openStream 绑到已存在的 launchMessageId）；
+      // 不插入新消息行，不把 session 翻成 running（后台工作保持 idle 态）。
+      if (ev.kind === "subagent_activity_started") {
+        if (!ev.stream || !ev.launchMessageId) return;
+        openStream({
+          name: ev.stream,
+          sessionId,
+          assistantMessageId: ev.launchMessageId,
+          streamStartedAt: Date.now(),
+        });
+        return;
+      }
       if (ev.kind !== "autonomous_started") {
         return;
       }

@@ -791,7 +791,6 @@
       "matches": "{{count}} 条匹配"
     },
     "newProjectChat": {
-      "freeChatInfo": "[command-palette] 已为「{{agentName}}」创建自由会话 · 该 agent 不在「{{projectName}}」项目里",
       "heading": "项目新对话",
       "itemPrefix": "在项目中新建对话：",
       "itemTitle": "在项目中新建对话：{{agentName}}",

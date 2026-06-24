@@ -295,6 +295,17 @@ describe("newProjectChatSource.renderItem — shows 'New project chat with <name
   });
 });
 
+describe("newProjectChatSource.isDisabled — 非成员（其它 Agent）不可选", () => {
+  it("returns true for non-members, false for members", () => {
+    expect(newProjectChatSource.isDisabled?.(mkItem({ isMember: false }))).toBe(
+      true,
+    );
+    expect(newProjectChatSource.isDisabled?.(mkItem({ isMember: true }))).toBe(
+      false,
+    );
+  });
+});
+
 describe("newProjectChatSource.onSelect — 项目作用域分发", () => {
   beforeEach(() => {
     useNewChatContextStore.getState().clear();
@@ -305,7 +316,7 @@ describe("newProjectChatSource.onSelect — 项目作用域分发", () => {
     clearLastAgentId();
   });
 
-  it("写入 lastAgentId（不论走项目路径还是兜底自由会话）", () => {
+  it("写入 lastAgentId（成员走项目路径 / 退化自由会话都写）", () => {
     // 项目路径：handler 注册 + member
     const handler = vi.fn();
     useNewChatContextStore
@@ -319,14 +330,34 @@ describe("newProjectChatSource.onSelect — 项目作用域分发", () => {
     );
     expect(readLastAgentId()).toBe(77);
 
-    // 兜底自由会话
+    // 退化自由会话（member, 无 project context）也写
     useNewChatContextStore.getState().clear();
     clearLastAgentId();
     newProjectChatSource.onSelect(
-      mkItem({ agent: mkAgent({ id: 88 }), isMember: false }),
+      mkItem({ agent: mkAgent({ id: 88 }), isMember: true }),
       mkCtx("/projects"),
     );
     expect(readLastAgentId()).toBe(88);
+  });
+
+  it("非成员（其它 Agent）→ no-op：不选中、不兜底自由会话、不写 lastAgentId", () => {
+    useNewChatContextStore.getState().setContext({
+      projectID: 42,
+      projectName: "后端重构",
+    });
+    useNewChatContextStore.getState().setNewSelectionHandler(vi.fn());
+
+    const agent = mkAgent({ id: 9, name: "设计师" });
+    const item = mkItem({ agent, isMember: false });
+    const ctx = mkCtx("/projects");
+    newProjectChatSource.onSelect(item, ctx);
+
+    expect(ctx.close).not.toHaveBeenCalled();
+    expect(ctx.openNewSession).not.toHaveBeenCalled();
+    expect(ctx.navigate).not.toHaveBeenCalled();
+    expect(readLastAgentId()).toBeNull();
+    // 项目上下文未被清
+    expect(useNewChatContextStore.getState().projectContext).not.toBeNull();
   });
 
   it("defense: if pathname is somehow not /projects → free chat fallback (activeFor 已经过滤了，这里只是兜底)", () => {
@@ -365,24 +396,6 @@ describe("newProjectChatSource.onSelect — 项目作用域分发", () => {
     expect(ctx.navigate).not.toHaveBeenCalled();
     expect(ctx.openNewSession).not.toHaveBeenCalled();
     expect(ctx.openSession).not.toHaveBeenCalled();
-  });
-
-  it("non-member silent fallback → /chat + console.info + clears store", () => {
-    useNewChatContextStore.getState().setContext({
-      projectID: 42,
-      projectName: "后端重构",
-    });
-    useNewChatContextStore.getState().setNewSelectionHandler(vi.fn());
-
-    const agent = mkAgent({ id: 9, name: "设计师" });
-    const item = mkItem({ agent, isMember: false });
-    const ctx = mkCtx("/projects");
-    newProjectChatSource.onSelect(item, ctx);
-
-    expect(ctx.openNewSession).toHaveBeenCalledWith(9);
-    expect(ctx.navigate).toHaveBeenCalledWith("/chat");
-    expect(console.info).toHaveBeenCalled();
-    expect(useNewChatContextStore.getState().projectContext).toBeNull();
   });
 
   it("isMember=true but handler not registered (init race) → falls back to free chat", () => {

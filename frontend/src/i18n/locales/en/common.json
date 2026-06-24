@@ -791,7 +791,6 @@
       "matches": "{{count}} matches"
     },
     "newProjectChat": {
-      "freeChatInfo": "[command-palette] Created a free chat for \"{{agentName}}\" · the agent is not in project \"{{projectName}}\"",
       "heading": "New Project Chat",
       "itemPrefix": "New project chat with",
       "itemTitle": "New project chat with {{agentName}}",

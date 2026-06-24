@@ -390,6 +390,7 @@ function SourceGroup<T extends CommandItemBase>({
         {ranked.map(({ item }, idx) => {
           const prev = idx > 0 ? ranked[idx - 1].item.subHeading : undefined;
           const showSub = !!item.subHeading && item.subHeading !== prev;
+          const disabled = source.isDisabled?.(item) ?? false;
           return (
             <React.Fragment key={item.key}>
               {showSub ? (
@@ -402,9 +403,11 @@ function SourceGroup<T extends CommandItemBase>({
               ) : null}
               <CommandPrimitive.Item
                 value={item.key}
+                disabled={disabled}
                 onSelect={() => source.onSelect(item, ctx)}
                 className={cn(
-                  "group/cmditem flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 outline-none transition-colors",
+                  "group/cmditem flex items-center gap-3 rounded-md px-3 py-2 outline-none transition-colors",
+                  disabled ? "cursor-not-allowed" : "cursor-pointer",
                   "data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground",
                 )}
               >

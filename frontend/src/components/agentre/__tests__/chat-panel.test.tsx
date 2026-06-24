@@ -83,10 +83,12 @@ const componentMocks = vi.hoisted(() => ({
 
 // ── wailsjs runtime mock（EventsOn / EventsOff）────────────────────────────
 
-vi.mock("../../../../wailsjs/runtime/runtime", () => ({
+const runtimeMocks = vi.hoisted(() => ({
   EventsOff: vi.fn(),
-  EventsOn: vi.fn(),
+  EventsOn: vi.fn(() => vi.fn()),
 }));
+
+vi.mock("../../../../wailsjs/runtime/runtime", () => runtimeMocks);
 
 // ── use-project-tree: 单例缓存 hook，直接 mock 返回测试用树 ──────────────────
 
@@ -120,6 +122,9 @@ const mockSessionStore: {
   session: null,
 };
 
+// setMessagesSpy 允许断言 setMessages 是否被调用（T29 subagent_activity_started）
+const setMessagesSpy = vi.hoisted(() => vi.fn());
+
 vi.mock("@/hooks/use-chat-session", () => ({
   useChatSession: () => ({
     session: mockSessionStore.session,
@@ -127,7 +132,7 @@ vi.mock("@/hooks/use-chat-session", () => ({
     loading: false,
     error: null,
     reload: () => Promise.resolve(),
-    setMessages: () => {},
+    setMessages: setMessagesSpy,
   }),
 }));
 
@@ -272,6 +277,9 @@ function resetStore() {
   __resetChatPanelScrollStateForTesting();
   mockSessionStore.messages = [];
   useChatStreamsStore.getState().streams.clear();
+  runtimeMocks.EventsOn.mockReset();
+  runtimeMocks.EventsOn.mockImplementation(() => vi.fn());
+  setMessagesSpy.mockClear();
   componentMocks.chatComposerProps.length = 0;
   componentMocks.chatTranscriptProps.length = 0;
   componentMocks.permissionModePillProps.length = 0;
@@ -1681,5 +1689,118 @@ describe("chat-panel · 终端 toggle 已移除", () => {
     render(<ChatPanel sessionId={5} />);
 
     expect(screen.queryByTestId("terminal-panel")).not.toBeInTheDocument();
+  });
+});
+
+// ─── T29: subagent_activity_started 旁路事件 ─────────────────────────────────
+// 后台 subagent 开始产生内部活动时，后端经 "chat:autonomous:<sessionId>" 推
+// subagent_activity_started 事件。前端必须仅调 openStream（指向发起消息），
+// 不插入新消息行，不将 session 标记为 running。
+describe("ChatPanel · T29 subagent_activity_started 旁路订阅", () => {
+  /**
+   * 找 EventsOn 中注册在 "chat:autonomous:<sessionId>" 信道上的 handler。
+   * useChatStream 调 EventsOn(stream, handler) —— 我们从 mock.calls 里找对应条目。
+   */
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  it("Given a subagent_activity_started event, When it arrives on the autonomous channel, Then openStream is called with the launch message id", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 1 });
+
+    render(<ChatPanel sessionId={1} />);
+
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:1",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(1);
+    expect(handler).not.toBeNull();
+
+    act(() => {
+      handler!({
+        kind: "subagent_activity_started",
+        stream: "chat:event:1:42",
+        sessionId: 1,
+        launchMessageId: 42,
+        toolUseId: "toolu_agent",
+      } as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    // (a) openStream was called with the launch message id and stream name
+    const liveStream = useChatStreamsStore.getState().streams.get(1);
+    expect(liveStream).toBeDefined();
+    expect(liveStream?.assistantMessageId).toBe(42);
+    expect(liveStream?.name).toBe("chat:event:1:42");
+  });
+
+  it("Given a subagent_activity_started event, When it fires, Then setMessages is NOT called to add a new message row", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 1 });
+
+    render(<ChatPanel sessionId={1} />);
+
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:1",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(1);
+    act(() => {
+      handler!({
+        kind: "subagent_activity_started",
+        stream: "chat:event:1:42",
+        sessionId: 1,
+        launchMessageId: 42,
+        toolUseId: "toolu_agent",
+      } as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    // (b) setMessages must NOT be called — the launch message already exists
+    expect(setMessagesSpy).not.toHaveBeenCalled();
+  });
+
+  it("Given a subagent_activity_started event, When it fires, Then the session is NOT marked running", async () => {
+    resetStore();
+    useSessionStatusStore.getState().__reset();
+    mockSessionStore.session = makeSession({ id: 1, agentStatus: "idle" });
+
+    render(<ChatPanel sessionId={1} />);
+
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:1",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(1);
+    act(() => {
+      handler!({
+        kind: "subagent_activity_started",
+        stream: "chat:event:1:42",
+        sessionId: 1,
+        launchMessageId: 42,
+        toolUseId: "toolu_agent",
+      } as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    // (c) session must NOT be marked running — background activity keeps session idle
+    const status = useSessionStatusStore.getState().statuses.get(1);
+    expect(status?.agentStatus).not.toBe("running");
   });
 });

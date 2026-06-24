@@ -34,6 +34,8 @@ export type OnSelectCtx = {
 //   - useItems：React hook，返回最终要渲染的 items + loading 状态。
 //   - getScore：传入 query 与 item，返回评分（0=不命中，>0 排序权重）。
 //   - renderItem：渲染单行（包括 Avatar / Title / Meta / Right）。
+//   - isDisabled：可选。返回 true 的 item 渲染成不可选 / 不可点（cmdk disabled），
+//     键盘导航跳过、hover 显示禁用光标；onSelect 不会被触发。未提供 = 全部可选。
 //   - onSelect：用户回车 / 点击时回调。
 export type CommandSource<T extends CommandItemBase> = {
   id: string;
@@ -43,5 +45,6 @@ export type CommandSource<T extends CommandItemBase> = {
   useItems: () => { items: T[]; loading: boolean };
   getScore: (query: string, item: T) => number;
   renderItem: (item: T, opts: { active: boolean }) => React.ReactNode;
+  isDisabled?: (item: T) => boolean;
   onSelect: (item: T, ctx: OnSelectCtx) => void;
 };

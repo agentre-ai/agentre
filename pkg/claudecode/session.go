@@ -261,15 +261,16 @@ func (s *Session) route(f rawFrame, events []Event, done bool) {
 	}
 }
 
-// subagentOwnerID 取一帧空闲后台 subagent 活动帧所属的 Agent 工具 tool_use_id:assistant/user
-// 帧用 parent_tool_use_id;子 agent 的 task 帧(task_progress/task_updated/非后台 task_notification)
-// 用 tool_use_id(真 CLI 该字段即发起 Agent 的 tool_use_id)。取不到返回 ""。
+// subagentOwnerID 取一帧空闲后台 subagent 活动帧所属的 Agent 工具 tool_use_id。
+// 有效来源仅限 assistant/user 帧携带的 parent_tool_use_id —— 这是子 agent 内部
+// API 轮的归属标识符。系统帧(task_notification 等)不携带有效 owner:它们要么
+// 已被 isBackgroundTaskNotification 认领起自主续轮,要么在 isNonTurnFrame 被丢弃。
+// 让 system 帧的 tool_use_id 充当 owner 会在空闲态收到非后台 task_notification
+// 时错误地开启一个活动轮,与无 user Turn 等待时的 Phase-1 丢弃语义冲突。
+// 取不到返回 ""(调用方按 Phase-1 丢弃)。
 func subagentOwnerID(f rawFrame) string {
 	if (f.Type == "assistant" || f.Type == "user") && f.ParentToolUseID != "" {
 		return f.ParentToolUseID
-	}
-	if f.Type == "system" && f.ToolUseID != "" {
-		return f.ToolUseID
 	}
 	return ""
 }

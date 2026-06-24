@@ -48,7 +48,8 @@ export type ChatStreamEvent = {
     | "usage"
     | "compact_boundary"
     | "runtime_status"
-    | "autonomous_started";
+    | "autonomous_started"
+    | "subagent_activity_started";
   delta?: string;
   message?: chat_svc.ChatMessage;
   error?: string;
@@ -142,15 +143,20 @@ export type ChatStreamEvent = {
     compacting?: boolean;
   };
 
-  // autonomous_started: 经会话级旁路事件 "chat:autonomous:<sessionId>" 推上来 ——
-  // CLI 在 run_in_background 任务完成后**自主**跑的一轮(无用户输入)被后端捕获。
-  // assistantMessage 是要插入 transcript 的新 assistant 行;stream 是该自主轮的
-  // per-turn 事件名(前端 openStream 订阅它接后续 chunk/done);trigger="background_task"。
-  // completedTask: 触发本自主轮的后台任务身份;前端据此把对应 tool_use.subagent.status
-  // 即时翻成 completed/failed,刷新后台任务面板的状态胶囊。summary 为退出码摘要文本。
+  // autonomous_started / subagent_activity_started: 经会话级旁路事件
+  // "chat:autonomous:<sessionId>" 推上来。
+  // autonomous_started — CLI run_in_background 任务完成后自主跑的一轮;
+  //   assistantMessage 是新 assistant 行;stream 是该轮 per-turn 事件名。
+  //   completedTask: 触发本轮的后台任务身份;前端把对应 tool_use.subagent.status
+  //   翻成终态。summary 为退出码摘要文本。
+  // subagent_activity_started — 后台 subagent 开始产生内部活动;stream 是该
+  //   subagent 的 per-turn 事件名;launchMessageId 是发起此 subagent 的 assistant
+  //   消息 id（已在 transcript 中）;toolUseId 是对应的外层 Agent tool_use id。
+  //   前端只调 openStream 把活动流绑到发起消息，不插入新消息行，不翻 running。
   stream?: string;
   trigger?: string;
   completedTask?: { toolUseId: string; status: string; summary?: string };
+  launchMessageId?: number;
 };
 
 export function useChatStream(

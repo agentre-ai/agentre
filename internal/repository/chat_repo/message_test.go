@@ -2,7 +2,9 @@ package chat_repo_test
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -13,6 +15,25 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 )
+
+// blocksJSONContainsMatcher 是 sqlmock 自定义参数匹配器:校验 UPDATE 时传给 blocks_json
+// 列的值包含全部指定子串,捕捉 AnyArg() 查不出的「未改写(原样回传 JSON)」缺陷。
+type blocksJSONContainsMatcher struct {
+	substrings []string
+}
+
+func (m blocksJSONContainsMatcher) Match(v driver.Value) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	for _, sub := range m.substrings {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
+}
 
 // TestFlipSubagentInBlocksJSON 直接单测 JSON 改写核心:翻转命中块的 status,其余字段
 // (含 total_tokens/duration_ms/tool_uses 数字 + nested_tool_call_ids 数组)字节级保留,
@@ -308,6 +329,48 @@ func TestAppendSubagentChildrenInBlocksJSON(t *testing.T) {
 	})
 }
 
+// TestFlipAndAppendCompose 证明两个纯 JSON 改写 helper 在任意执行顺序下可以安全组合:
+// Flip(Append(...)) 和 Append(Flip(...)) 产出的结果都同时包含嵌套子块和 completed 状态。
+// 这是 per-session mutex 序列化并发写的正确性依据 —— 先后无关,两个路径不互相覆写对方的字段。
+func TestFlipAndAppendCompose(t *testing.T) {
+	// 基础 blocks_json:一个空 subagent_state(running,nested_tool_call_ids 为空)。
+	const base = `[` +
+		`{"type":"subagent_state","data":{"parent_tool_call_id":"toolu_agent","kind":"local_bash","description":"run something","status":"running","nested_tool_call_ids":[]}}` +
+		`]`
+
+	nestedBlock := `[{"type":"tool_use","data":{"id":"sub_bash","name":"Bash","input":{"command":"ls"}}}]`
+
+	assertBothPresent := func(t *testing.T, result string) {
+		t.Helper()
+		data := subagentData(t, result)
+		// Flip 的效果:status == "completed"。
+		assert.Equal(t, "completed", data["status"])
+		// Append 的效果:nested_tool_call_ids 包含 "sub_bash"。
+		ids, _ := data["nested_tool_call_ids"].([]any)
+		assert.Contains(t, ids, "sub_bash")
+		// 子块被追加到顶层数组末尾。
+		assert.Contains(t, result, `"sub_bash"`)
+	}
+
+	t.Run("Flip-then-Append", func(t *testing.T) {
+		// 先 Flip(status running→completed),再 Append(追加子块)。
+		flipped, _, err := chat_repo.FlipSubagentInBlocksJSON(base, "toolu_agent", "completed", "done")
+		require.NoError(t, err)
+		result, _, err := chat_repo.AppendSubagentChildrenInBlocksJSON(flipped, "toolu_agent", nestedBlock, []string{"sub_bash"})
+		require.NoError(t, err)
+		assertBothPresent(t, result)
+	})
+
+	t.Run("Append-then-Flip", func(t *testing.T) {
+		// 先 Append(追加子块),再 Flip(status running→completed)。
+		appended, _, err := chat_repo.AppendSubagentChildrenInBlocksJSON(base, "toolu_agent", nestedBlock, []string{"sub_bash"})
+		require.NoError(t, err)
+		result, _, err := chat_repo.FlipSubagentInBlocksJSON(appended, "toolu_agent", "completed", "done")
+		require.NoError(t, err)
+		assertBothPresent(t, result)
+	})
+}
+
 func TestMessageRepo_AppendSubagentChildren_AppendsBlocks(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 
@@ -323,14 +386,15 @@ func TestMessageRepo_AppendSubagentChildren_AppendsBlocks(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
 			AddRow(42, 3, "assistant", blocksJSON, 4))
 
-	// 命中后重写该条。
+	// 命中后重写该条。blocks_json 参数必须包含追加的子块 id("sub_bash")和子块
+	// 的 name("Bash"),以确保方法不会把原始(未重写)的 JSON 传给 Update。
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE `chat_messages` SET ").
 		WithArgs(
-			sqlmock.AnyArg(),                                                                         // session_id
-			sqlmock.AnyArg(),                                                                         // device_id
-			sqlmock.AnyArg(),                                                                         // role
-			sqlmock.AnyArg(),                                                                         // blocks_json (追加后)
+			sqlmock.AnyArg(), // session_id
+			sqlmock.AnyArg(), // device_id
+			sqlmock.AnyArg(), // role
+			blocksJSONContainsMatcher{substrings: []string{"sub_bash", "\"Bash\""}}, // blocks_json (追加后,含子块 id 及子块 name)
 			sqlmock.AnyArg(),                                                                         // model
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // token 列
 			sqlmock.AnyArg(),                   // total_input_tokens

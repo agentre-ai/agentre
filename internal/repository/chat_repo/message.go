@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
@@ -15,6 +16,19 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 )
+
+// sessionMutexes 是 per-session 的 read-modify-write 锁。FlipSubagentStatus 与
+// AppendSubagentChildren 在同一会话里并发对同一条 launch 消息行做「Find → 改写 →
+// Update」时,按会话粒度串行化,避免互相覆盖对方的写入。
+// key: sessionID(int64),value: *sync.Mutex。
+var sessionMutexes sync.Map
+
+// lockForSession 返回会话 ID 对应的 *sync.Mutex。锁在会话存续期间常驻(不被 GC);
+// 会话数实践上有限,不构成问题。
+func lockForSession(sessionID int64) *sync.Mutex {
+	v, _ := sessionMutexes.LoadOrStore(sessionID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
 
 //go:generate mockgen -source message.go -destination mock_chat_repo/mock_message.go
 
@@ -106,6 +120,11 @@ func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, t
 	if toolUseID == "" || status == "" {
 		return nil
 	}
+	// serialize read-modify-write per session to avoid lost-update races with AppendSubagentChildren.
+	mu := lockForSession(sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	logger.Ctx(ctx).Info("chat_repo.FlipSubagentStatus: flipping subagent_state status",
 		zap.Int64("sessionId", sessionID), zap.String("toolUseId", toolUseID), zap.String("status", status))
 
@@ -193,6 +212,11 @@ func (r *messageRepo) AppendSubagentChildren(ctx context.Context, sessionID int6
 	if parentToolUseID == "" || childBlocksJSON == "" {
 		return nil
 	}
+	// serialize read-modify-write per session to avoid lost-update races with FlipSubagentStatus.
+	mu := lockForSession(sessionID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	var rows []*chat_entity.Message
 	if err := db.Ctx(ctx).
 		Where("session_id = ? AND role = ?", sessionID, "assistant").

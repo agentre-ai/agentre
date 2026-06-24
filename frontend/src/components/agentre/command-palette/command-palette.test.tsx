@@ -730,6 +730,42 @@ describe("CommandPalette — 路由互斥的两个命令 source", () => {
   });
 });
 
+describe("CommandPalette — 非成员（其它 Agent）行不可选/不可点（disabled）", () => {
+  it("/projects: 非成员行 aria-disabled=true + cursor-not-allowed；成员行可选", async () => {
+    appMocks.ListChatAgents.mockResolvedValue({
+      agents: [
+        mkAgent({ id: 5, name: "Builder" }), // member
+        mkAgent({ id: 6, name: "Outsider" }), // non-member（其它 Agent）
+      ],
+    });
+    appMocks.ProjectGet.mockResolvedValue({
+      project: { id: 1, name: "Agentre" },
+      directMembers: [{ agentID: 5 }],
+      inheritedMembers: [],
+    });
+    useNewChatContextStore
+      .getState()
+      .setContext({ projectID: 1, projectName: "Agentre" });
+
+    renderHarness("/projects");
+    await act(async () => {
+      useCommandPaletteStore.getState().openWith("> ");
+    });
+    await flush();
+
+    // 非成员行：cmdk-item 被标记 disabled（不可键盘导航 / 不可点）
+    const outsiderItem = screen.getByText("Outsider").closest("[cmdk-item]");
+    expect(outsiderItem?.getAttribute("aria-disabled")).toBe("true");
+    expect(outsiderItem?.className).toContain("cursor-not-allowed");
+    expect(outsiderItem?.className).not.toContain("cursor-pointer");
+
+    // 成员行：未被禁用
+    const builderItem = screen.getByText("Builder").closest("[cmdk-item]");
+    expect(builderItem?.getAttribute("aria-disabled")).toBe("false");
+    expect(builderItem?.className).toContain("cursor-pointer");
+  });
+});
+
 describe("CommandPalette — ⌘P does NOT enter command mode after a prior ⌘N (regression for stale initialQuery)", () => {
   it("Given ⌘N → close (setOpen false) → ⌘P (toggle), Then palette is in default mode", async () => {
     appMocks.ListChatAgents.mockResolvedValue({

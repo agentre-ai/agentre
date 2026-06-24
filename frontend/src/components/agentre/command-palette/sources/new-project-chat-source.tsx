@@ -338,7 +338,18 @@ function dispatchFreeChat(item: NewProjectChatItem, ctx: OnSelectCtx): void {
   }
 }
 
+// 非成员（命令面板里的 "其它 Agent" 分组）不可在当前项目作用域里新建 chat，
+// 渲染成 disabled —— 不可选中 / 不可点击。退化模式（无 project context）下
+// flattenAgents 把全部 agent 标 isMember=true，故不会被禁用。
+function isDisabled(item: NewProjectChatItem): boolean {
+  return !item.isMember;
+}
+
 function onSelect(item: NewProjectChatItem, ctx: OnSelectCtx): void {
+  // 非成员不可选 —— 命令面板已用 cmdk disabled 拦截点击/键盘，这里是防御：
+  // 即便被直接调用也 no-op，保持与 isDisabled 契约一致。
+  if (isDisabled(item)) return;
+
   ctx.close();
   // 记忆最近选过的 agent —— 不论是走项目路径还是兜底自由会话。
   writeLastAgentId(item.agentId);
@@ -361,8 +372,8 @@ function onSelect(item: NewProjectChatItem, ctx: OnSelectCtx): void {
     return;
   }
 
-  // Remote-device guards: check before member/non-member fallback so we do not
-  // silently start a free-chat session for an offline or unconfigured remote agent.
+  // Remote-device guards: check before the handler dispatch so we do not
+  // silently start a session for an offline or unconfigured remote agent.
   const a = item.agent;
   const offline = !!a.deviceID && a.online === false;
   if (offline) {
@@ -385,20 +396,13 @@ function onSelect(item: NewProjectChatItem, ctx: OnSelectCtx): void {
   }
 
   // 项目内成员 + handler 已注册 → 让 project-page 把 selection 翻成 {kind:"new"}。
-  if (item.isMember && handler) {
+  // 此处 item 必为成员（非成员已被开头 isDisabled 守卫拦截）。
+  if (handler) {
     handler(projectContext.projectID, item.agent);
     return;
   }
 
-  // 非成员（或异常情况：handler 未注册）→ 静默兜底到 /chat 自由会话。
-  if (!item.isMember) {
-    console.info(
-      i18n.t("commandPalette.newProjectChat.freeChatInfo", {
-        agentName: item.agent.name,
-        projectName: projectContext.projectName,
-      }),
-    );
-  }
+  // 成员但 handler 未注册（init race）→ 兜底到 /chat 自由会话。
   store.clear();
   dispatchFreeChat(item, ctx);
 }
@@ -411,5 +415,6 @@ export const newProjectChatSource: CommandSource<NewProjectChatItem> = {
   useItems,
   getScore,
   renderItem,
+  isDisabled,
   onSelect,
 };
