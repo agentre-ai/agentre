@@ -53,6 +53,10 @@ var enUS = map[int]string{
 	HookRuleFallbackImmutable:   "Fallback rule cannot be deleted",
 	HookEventNotFound:           "Hook event not found",
 	HookInvalidEventStatus:      "Invalid hook event status",
+	HookNotFound:                "hook not found",
+	HookNameDuplicated:          "hook name already exists",
+	HookInvalidInterpreter:      "unsupported interpreter",
+	HookInvalidSchedule:         "invalid schedule expression",
 
 	DepartmentNotFound:            "Department not found",
 	DepartmentNameDuplicated:      "A sibling department with this name already exists",

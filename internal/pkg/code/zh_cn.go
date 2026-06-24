@@ -53,6 +53,10 @@ var zhCN = map[int]string{
 	HookRuleFallbackImmutable:   "兜底规则不可删除",
 	HookEventNotFound:           "Hook 事件不存在",
 	HookInvalidEventStatus:      "Hook 事件状态不合法",
+	HookNotFound:                "Hook 不存在",
+	HookNameDuplicated:          "Hook 名称已存在",
+	HookInvalidInterpreter:      "不支持的解释器",
+	HookInvalidSchedule:         "调度表达式无效",
 
 	DepartmentNotFound:            "部门不存在",
 	DepartmentNameDuplicated:      "同级部门下已存在同名部门",

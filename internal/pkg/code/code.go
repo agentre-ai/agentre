@@ -75,6 +75,10 @@ const (
 	HookRuleFallbackImmutable                  // 兜底规则不可删除
 	HookEventNotFound                          // Hook 事件不存在
 	HookInvalidEventStatus                     // Hook 事件状态不合法
+	HookNotFound                               // 脚本 Hook 不存在
+	HookNameDuplicated                         // Hook 名称已存在
+	HookInvalidInterpreter                     // 不支持的解释器
+	HookInvalidSchedule                        // 调度表达式无效
 )
 
 // Department 13000~13999

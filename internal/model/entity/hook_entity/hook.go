@@ -1,5 +1,4 @@
-// Package hook_entity contains the rich models for Hook signal sources, routing
-// rules, and event log entries.
+// Package hook_entity 是脚本驱动 Hook 与其产出事件的富模型。
 package hook_entity
 
 import (
@@ -12,152 +11,76 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
 
-type SourceKind string
+const TriggerSchedule = "schedule" // 预留 "webhook"
 
-const (
-	SourceKindEmail    SourceKind = "email"
-	SourceKindGitHub   SourceKind = "github"
-	SourceKindSlack    SourceKind = "slack"
-	SourceKindSchedule SourceKind = "schedule"
-	SourceKindWebhook  SourceKind = "webhook"
-	SourceKindSystem   SourceKind = "system"
-)
-
-type ConnectionStatus string
-
-const (
-	ConnectionConnected ConnectionStatus = "connected"
-	ConnectionPending   ConnectionStatus = "pending"
-	ConnectionDisabled  ConnectionStatus = "disabled"
-	ConnectionError     ConnectionStatus = "error"
-)
-
-type EventStatus string
-
-const (
-	EventDispatched EventStatus = "dispatched"
-	EventUnmatched  EventStatus = "unmatched"
-	EventFailed     EventStatus = "failed"
-)
-
-var validSourceKinds = map[string]struct{}{
-	string(SourceKindEmail):    {},
-	string(SourceKindGitHub):   {},
-	string(SourceKindSlack):    {},
-	string(SourceKindSchedule): {},
-	string(SourceKindWebhook):  {},
-	string(SourceKindSystem):   {},
+// ValidInterpreters 是允许声明的解释器 allowlist（见 hookexec 注册表）。
+var ValidInterpreters = map[string]struct{}{
+	"bash": {}, "sh": {}, "node": {}, "python": {}, "pwsh": {}, "powershell": {}, "cmd": {},
 }
 
-var validConnectionStatuses = map[string]struct{}{
-	string(ConnectionConnected): {},
-	string(ConnectionPending):   {},
-	string(ConnectionDisabled):  {},
-	string(ConnectionError):     {},
+// Hook 是一段可调度的脚本：拉数据→stdout 产出 {events,state}。
+type Hook struct {
+	ID             int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	Name           string `gorm:"column:name;type:text;not null"`
+	Interpreter    string `gorm:"column:interpreter;type:text;not null;default:'bash'"`
+	Command        string `gorm:"column:command;type:text;not null;default:''"`
+	TriggerType    string `gorm:"column:trigger_type;type:text;not null;default:'schedule'"`
+	ScheduleExpr   string `gorm:"column:schedule_expr;type:text;not null;default:''"` // cron 表达式
+	Timezone       string `gorm:"column:timezone;type:text;not null;default:'Asia/Shanghai'"`
+	EnvJSON        string `gorm:"column:env_json;type:text;not null;default:'[]'"`
+	StateJSON      string `gorm:"column:state_json;type:text;not null;default:'{}'"`
+	NextRunAt      int64  `gorm:"column:next_run_at;type:bigint;not null;default:0"`
+	Enabled        int    `gorm:"column:enabled;type:int;not null;default:1"`
+	LastRunAt      int64  `gorm:"column:last_run_at;type:bigint;not null;default:0"`
+	LastStatus     string `gorm:"column:last_status;type:text;not null;default:''"`
+	LastError      string `gorm:"column:last_error;type:text;not null;default:''"`
+	LastDurationMs int64  `gorm:"column:last_duration_ms;type:bigint;not null;default:0"`
+	TotalCount     int64  `gorm:"column:total_count;type:bigint;not null;default:0"`
+	Status         int    `gorm:"column:status;type:int;not null;default:1"`
+	Createtime     int64
+	Updatetime     int64
 }
 
-var validEventStatuses = map[string]struct{}{
-	string(EventDispatched): {},
-	string(EventUnmatched):  {},
-	string(EventFailed):     {},
-}
+func (*Hook) TableName() string { return "hooks" }
 
-// HookSource is one configured external signal source.
-type HookSource struct {
-	ID               int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	Kind             string `gorm:"column:kind;type:text;not null"`
-	Name             string `gorm:"column:name;type:text;not null"`
-	Description      string `gorm:"column:description;type:text;not null;default:''"`
-	Identifier       string `gorm:"column:identifier;type:text;not null;default:''"`
-	ConfigJSON       string `gorm:"column:config_json;type:text;not null;default:'{}'"`
-	Enabled          int    `gorm:"column:enabled;type:int;not null;default:1"`
-	ConnectionStatus string `gorm:"column:connection_status;type:text;not null;default:'pending'"`
-	LastSyncTime     int64  `gorm:"column:last_sync_time;type:bigint;not null;default:0"`
-	TotalCount       int64  `gorm:"column:total_count;type:bigint;not null;default:0"`
-	Status           int    `gorm:"column:status;type:int;not null;default:1"`
-	Createtime       int64
-	Updatetime       int64
-}
+func (h *Hook) IsEnabled() bool { return h != nil && h.Enabled == 1 }
 
-func (*HookSource) TableName() string { return "hook_sources" }
-
-func (s *HookSource) IsEnabled() bool { return s != nil && s.Enabled == 1 }
-
-func (s *HookSource) Check(ctx context.Context) error {
-	if s == nil {
-		return i18n.NewError(ctx, code.HookSourceNotFound)
+func (h *Hook) Check(ctx context.Context) error {
+	if h == nil {
+		return i18n.NewError(ctx, code.HookNotFound)
 	}
-	if strings.TrimSpace(s.Name) == "" {
+	if strings.TrimSpace(h.Name) == "" || strings.TrimSpace(h.Command) == "" {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
-	if _, ok := validSourceKinds[strings.TrimSpace(s.Kind)]; !ok {
-		return i18n.NewError(ctx, code.HookInvalidSourceType)
+	if _, ok := ValidInterpreters[strings.TrimSpace(h.Interpreter)]; !ok {
+		return i18n.NewError(ctx, code.HookInvalidInterpreter)
 	}
-	status := strings.TrimSpace(s.ConnectionStatus)
-	if status == "" {
-		status = string(ConnectionPending)
-		s.ConnectionStatus = status
+	if h.TriggerType == "" {
+		h.TriggerType = TriggerSchedule
 	}
-	if _, ok := validConnectionStatuses[status]; !ok {
-		return i18n.NewError(ctx, code.InvalidParameter)
+	if strings.TrimSpace(h.ScheduleExpr) == "" {
+		return i18n.NewError(ctx, code.HookInvalidSchedule)
 	}
-	if err := validateJSONObject(s.ConfigJSON); err != nil {
+	if err := validateJSONArray(h.EnvJSON); err != nil {
+		return i18n.NewError(ctx, code.HookInvalidConfig)
+	}
+	if err := validateJSONObject(h.StateJSON); err != nil {
 		return i18n.NewError(ctx, code.HookInvalidConfig)
 	}
 	return nil
 }
 
-// HookRule routes matching events from one source to one target Agent.
-type HookRule struct {
-	ID            int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	SourceID      int64  `gorm:"column:source_id;type:bigint;not null"`
-	Name          string `gorm:"column:name;type:text;not null"`
-	ConditionExpr string `gorm:"column:condition_expr;type:text;not null;default:''"`
-	TargetAgentID int64  `gorm:"column:target_agent_id;type:bigint;not null;default:0"`
-	Enabled       int    `gorm:"column:enabled;type:int;not null;default:1"`
-	IsFallback    int    `gorm:"column:is_fallback;type:int;not null;default:0"`
-	SortOrder     int    `gorm:"column:sort_order;type:int;not null;default:0"`
-	Status        int    `gorm:"column:status;type:int;not null;default:1"`
-	Createtime    int64
-	Updatetime    int64
-}
-
-func (*HookRule) TableName() string { return "hook_rules" }
-
-func (r *HookRule) IsEnabled() bool { return r != nil && r.Enabled == 1 }
-
-func (r *HookRule) IsFallbackRule() bool { return r != nil && r.IsFallback == 1 }
-
-func (r *HookRule) Check(ctx context.Context) error {
-	if r == nil {
-		return i18n.NewError(ctx, code.HookRuleNotFound)
-	}
-	if r.SourceID <= 0 {
-		return i18n.NewError(ctx, code.InvalidParameter)
-	}
-	if strings.TrimSpace(r.Name) == "" {
-		return i18n.NewError(ctx, code.InvalidParameter)
-	}
-	return nil
-}
-
-// HookEvent is an immutable-ish event log entry. Service methods may append
-// dispatch metadata for manual redelivery, but raw payload fields stay intact.
+// HookEvent 是脚本产出的一条结构化记录（产出日志）。
 type HookEvent struct {
-	ID               int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	SourceID         int64  `gorm:"column:source_id;type:bigint;not null"`
-	Title            string `gorm:"column:title;type:text;not null"`
-	SourceRef        string `gorm:"column:source_ref;type:text;not null;default:''"`
-	Sender           string `gorm:"column:sender;type:text;not null;default:''"`
-	EventType        string `gorm:"column:event_type;type:text;not null;default:''"`
-	EventStatus      string `gorm:"column:event_status;type:text;not null"`
-	PayloadJSON      string `gorm:"column:payload_json;type:text;not null;default:'{}'"`
-	MatchedRulesJSON string `gorm:"column:matched_rules_json;type:text;not null;default:'[]'"`
-	DispatchesJSON   string `gorm:"column:dispatches_json;type:text;not null;default:'[]'"`
-	ReceivedAt       int64  `gorm:"column:received_at;type:bigint;not null;default:0"`
-	Status           int    `gorm:"column:status;type:int;not null;default:1"`
-	Createtime       int64
-	Updatetime       int64
+	ID          int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	HookID      int64  `gorm:"column:hook_id;type:bigint;not null"`
+	Title       string `gorm:"column:title;type:text;not null"`
+	DedupeKey   string `gorm:"column:dedupe_key;type:text;not null;default:''"`
+	PayloadJSON string `gorm:"column:payload_json;type:text;not null;default:'{}'"`
+	ReceivedAt  int64  `gorm:"column:received_at;type:bigint;not null;default:0"`
+	Status      int    `gorm:"column:status;type:int;not null;default:1"`
+	Createtime  int64
+	Updatetime  int64
 }
 
 func (*HookEvent) TableName() string { return "hook_events" }
@@ -166,19 +89,10 @@ func (e *HookEvent) Check(ctx context.Context) error {
 	if e == nil {
 		return i18n.NewError(ctx, code.HookEventNotFound)
 	}
-	if e.SourceID <= 0 || strings.TrimSpace(e.Title) == "" {
+	if e.HookID <= 0 || strings.TrimSpace(e.Title) == "" {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
-	if _, ok := validEventStatuses[strings.TrimSpace(e.EventStatus)]; !ok {
-		return i18n.NewError(ctx, code.HookInvalidEventStatus)
-	}
 	if err := validateJSONObject(e.PayloadJSON); err != nil {
-		return i18n.NewError(ctx, code.HookInvalidConfig)
-	}
-	if err := validateJSONArray(e.MatchedRulesJSON); err != nil {
-		return i18n.NewError(ctx, code.HookInvalidConfig)
-	}
-	if err := validateJSONArray(e.DispatchesJSON); err != nil {
 		return i18n.NewError(ctx, code.HookInvalidConfig)
 	}
 	return nil
