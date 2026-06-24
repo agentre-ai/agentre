@@ -595,12 +595,9 @@
       "aria": "新建",
       "newAgentChat": "新建 Agent 会话"
     },
-    "agents": "Agents",
     "filter": {
       "open": "筛选侧栏",
       "options": {
-        "agents": "Agent",
-        "all": "全部",
         "running": "运行中",
         "unread": "未读"
       }
@@ -1771,7 +1768,7 @@
   },
   "workflows": {
     "title": "流程库",
-    "subtitle": "跨群复用的协作流程(SOP);主持人每轮注入绑定流程的最新内容",
+    "subtitle": "跨 Run 复用的协作流程(SOP);主持人每轮注入绑定流程的最新内容",
     "new": "新建流程",
     "empty": "还没有流程,点击「新建流程」开始",
     "runCount": "{{count}} 个 Run 使用中",
@@ -1791,7 +1788,7 @@
       "content": "流程正文(Markdown)",
       "insertTemplate": "插入骨架模板",
       "save": "保存",
-      "template": "# 流程名称\n\n适用:什么场景用这个流程。\n\n## 角色\n- 角色 A:职责与产出\n- 角色 B:职责与产出\n(用抽象角色,不写 agent 真名;按群成员职责对号入座,缺角色先 group_invite 招募或询问用户)\n\n## 步骤\n1. 角色 A:输入 → 产出,交付 .agentre/handoff/<群>/task-N-xxx.md,含验收标准\n2. 角色 B:依据上一棒交付物继续\n3. 并行验证:可并行的环节明确标注(验证任务回指被验证任务)\n4. 全部通过 → 汇总 @用户;有问题 → 打回对应环节(新任务卡)\n\n## 纪律\n- 每一步都用任务卡交接,交付物写明路径\n- 可能改同一片代码的任务不要并行\n- 验收标准在派活时写进 brief"
+      "template": "# 流程名称\n\n适用:什么场景用这个流程。\n\n## 角色\n- 角色 A:职责与产出\n- 角色 B:职责与产出\n(用抽象角色,不写 agent 真名;按编排成员职责对号入座,缺角色先 dispatch 派活给子 agent 或询问用户)\n\n## 步骤\n1. 角色 A:输入 → 产出,交付 .agentre/handoff/<run>/task-N-xxx.md,含验收标准\n2. 角色 B:依据上一棒交付物继续\n3. 并行验证:可并行的环节明确标注(验证任务回指被验证任务)\n4. 全部通过 → 汇总 @用户;有问题 → 打回对应环节(新任务卡)\n\n## 纪律\n- 每一步都用任务卡交接,交付物写明路径\n- 可能改同一片代码的任务不要并行\n- 验收标准在派活时写进 brief"
     },
     "deleteConfirm": {
       "title": "删除流程",
@@ -1809,7 +1806,7 @@
     },
     "actions": {
       "openLibrary": "打开流程库",
-      "openLibraryHint": "浏览 / 新建 / 编辑跨群协作流程",
+      "openLibraryHint": "浏览 / 新建 / 编辑跨 Run 协作流程",
       "newWorkflow": "新建流程",
       "newWorkflowHint": "直接打开空白流程编辑器"
     }

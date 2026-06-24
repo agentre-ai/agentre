@@ -553,14 +553,14 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
-	// MCPServers 透传到 RunRequest.MCPServers(注入额外 MCP tool server)。群聊用; 单聊空。
+	// MCPServers 透传到 RunRequest.MCPServers(注入额外 MCP tool server)。编排用; 普通会话空。
 	MCPServers []agentruntime.MCPServerSpec `json:"-"`
-	// SystemPromptSuffix 追加到 RunRequest.SystemPrompt 之后(群上下文/角色/roster)。群聊用; 单聊空。
+	// SystemPromptSuffix 追加到 RunRequest.SystemPrompt 之后(编排上下文/角色)。编排用; 普通会话空。
 	SystemPromptSuffix string `json:"-"`
-	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(群成员轮经 scheduler dispatch),
+	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(编排子轮经调度),
 	// 需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话已打开(可能在后台)
 	// 的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者(前端 Send 响应)能拿到流名。
-	// 前端 Send 默认 false: 发起者自己已从响应拿到流名, 重复推会双开流。群聊用; 单聊空。
+	// 前端 Send 默认 false: 发起者自己已从响应拿到流名, 重复推会双开流。编排用; 普通会话空。
 	EmitTurnStartedBypass bool `json:"-"`
 }
 type SendImage struct {

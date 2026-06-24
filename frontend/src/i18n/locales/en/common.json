@@ -595,12 +595,9 @@
       "aria": "New",
       "newAgentChat": "New agent chat"
     },
-    "agents": "Agents",
     "filter": {
       "open": "Filter sidebar",
       "options": {
-        "agents": "Agents",
-        "all": "All",
         "running": "Running",
         "unread": "Unread"
       }
@@ -1791,7 +1788,7 @@
       "content": "Workflow content (Markdown)",
       "insertTemplate": "Insert template",
       "save": "Save",
-      "template": "# Workflow name\n\nApplies to: when to use this workflow.\n\n## Roles\n- Role A: responsibility and deliverable\n- Role B: responsibility and deliverable\n(Use abstract roles, not agent names; map to roster members by duty, recruit via group_invite or ask the user when a role is missing)\n\n## Steps\n1. Role A: input → output, deliver .agentre/handoff/<group>/task-N-xxx.md with acceptance criteria\n2. Role B: continue from the previous deliverable\n3. Parallel verification: mark parallelizable steps explicitly (verification tasks reference the verified task)\n4. All pass → summarize @user; issues → send back to the owning step (new task card)\n\n## Discipline\n- Hand over every step with a task card; write deliverable paths explicitly\n- Never parallelize tasks that may touch the same code\n- Put acceptance criteria into the brief when assigning"
+      "template": "# Workflow name\n\nApplies to: when to use this workflow.\n\n## Roles\n- Role A: responsibility and deliverable\n- Role B: responsibility and deliverable\n(Use abstract roles, not agent names; map to the run's agents by duty, dispatch to a sub-agent or ask the user when a role is missing)\n\n## Steps\n1. Role A: input → output, deliver .agentre/handoff/<run>/task-N-xxx.md with acceptance criteria\n2. Role B: continue from the previous deliverable\n3. Parallel verification: mark parallelizable steps explicitly (verification tasks reference the verified task)\n4. All pass → summarize @user; issues → send back to the owning step (new task card)\n\n## Discipline\n- Hand over every step with a task card; write deliverable paths explicitly\n- Never parallelize tasks that may touch the same code\n- Put acceptance criteria into the brief when assigning"
     },
     "deleteConfirm": {
       "title": "Delete workflow",
@@ -1809,7 +1806,7 @@
     },
     "actions": {
       "openLibrary": "Open workflow library",
-      "openLibraryHint": "Browse / create / edit cross-group workflows",
+      "openLibraryHint": "Browse / create / edit cross-run workflows",
       "newWorkflow": "New workflow",
       "newWorkflowHint": "Open a blank workflow editor"
     }
