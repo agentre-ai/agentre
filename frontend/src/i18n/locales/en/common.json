@@ -2472,6 +2472,11 @@
       "statusAwaitingChildren": "Awaiting subtasks",
       "statusError": "Error",
       "statusPending": "Pending"
+    },
+    "notify": {
+      "completed": "Orchestration run completed: {{goal}}",
+      "waitingYou": "A branch is awaiting your approval: {{goal}}",
+      "view": "View"
     }
   }
 }

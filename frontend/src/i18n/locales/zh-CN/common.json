@@ -2472,6 +2472,11 @@
       "statusAwaitingChildren": "等待子任务",
       "statusError": "出错",
       "statusPending": "待启动"
+    },
+    "notify": {
+      "completed": "编排 Run 已完成:{{goal}}",
+      "waitingYou": "有分支在等待你审批:{{goal}}",
+      "view": "查看"
     }
   }
 }

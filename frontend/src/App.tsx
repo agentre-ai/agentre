@@ -26,6 +26,7 @@ import {
   ChatStreamsHost,
   GroupEventsHost,
   OrchEventsHost,
+  OrchNotifier,
   ChatTabsShortcuts,
   TurnCompleteNotifier,
   NotificationToastViewport,
@@ -870,6 +871,7 @@ function App() {
       {/* 编排运行态常驻订阅器:订阅全部 6 个 orch:run:* 事件,刷新 orch-run-store
           与 orch-run-list-store,跨路由保持编排列表与详情实时更新。*/}
       <OrchEventsHost />
+      <OrchNotifier />
       <TurnCompleteNotifier />
       <NotificationToastViewport />
       {/* 退出二次确认:常驻订阅 "app:quit-blocked",活跃会话存在时拦截退出弹框。*/}
