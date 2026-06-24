@@ -41,6 +41,9 @@ func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, quest
 	s.pending[askID] = env
 	s.askMu.Unlock()
 	s.recordAskWait(fromSessionID, toSession) // 死锁检测边（Task 13 读 askWaits）
+	if cycle, found := s.detectAskCycle(ctx, from.RunID); found && s.emit != nil {
+		s.emit.Emit(ctx, "orch:run:deadlock", map[string]any{"runId": from.RunID, "cycle": cycle})
+	}
 	defer func() {
 		s.askMu.Lock()
 		delete(s.pending, askID)

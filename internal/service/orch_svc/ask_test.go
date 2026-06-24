@@ -41,7 +41,8 @@ func TestAsk_InjectLiveSessionThenReplyResolves(t *testing.T) {
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
 	// 王 在该 Run 已有「活会话」700 → 问题注入 700(保留王的上下文)。
-	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 8, AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil)
+	// AnyTimes：Ask 内部调两次 ListByRun（resolveOrCreateAgentSession + detectAskCycle）。
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 8, AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
 	injCh := make(chan string, 1)
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(700), gomock.Any()).DoAndReturn(func(_ context.Context, _ int64, msg string) error {
 		injCh <- msg
@@ -76,7 +77,8 @@ func TestReply_RejectsForeignReplier(t *testing.T) {
 	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, nil)
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1}, nil)
-	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil)
+	// AnyTimes：Ask 内部调两次 ListByRun（resolveOrCreateAgentSession + detectAskCycle）。
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
 	injCh := make(chan string, 1)
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(700), gomock.Any()).DoAndReturn(func(_ context.Context, _ int64, m string) error { injCh <- m; return nil })
 
