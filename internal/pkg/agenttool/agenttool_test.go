@@ -10,7 +10,7 @@ import (
 
 func TestRegistry(t *testing.T) {
 	defs := Registry()
-	require.Len(t, defs, 6)
+	require.Len(t, defs, 5)
 	require.Equal(t, "org", defs[0].Key)
 	require.Equal(t, "/mcp/org/", defs[0].MCPPath)
 	require.Contains(t, defs[0].ToolNames, "org_get")
@@ -22,7 +22,7 @@ func TestRegistry(t *testing.T) {
 	_, ok = Lookup("nope")
 	require.False(t, ok)
 
-	require.Equal(t, []string{"org", "workflow", "group_create", "subagent", "orchestrate", "hook"}, Keys())
+	require.Equal(t, []string{"org", "workflow", "subagent", "orchestrate", "hook"}, Keys())
 }
 
 func TestRegistry_HasHook(t *testing.T) {
@@ -34,14 +34,6 @@ func TestRegistry_HasHook(t *testing.T) {
 		"hook_list", "hook_get", "hook_create", "hook_update", "hook_delete", "hook_run",
 	}, d.ToolNames)
 	require.Contains(t, Keys(), KeyHook)
-}
-
-func TestRegistry_HasGroupCreate(t *testing.T) {
-	d, ok := Lookup(KeyGroupCreate)
-	require.True(t, ok)
-	require.Equal(t, "group_create", d.Key)
-	require.Equal(t, "/mcp/group/", d.MCPPath)
-	require.Equal(t, []string{"group_create"}, d.ToolNames)
 }
 
 func TestRegistry_HasWorkflow(t *testing.T) {
@@ -85,4 +77,10 @@ func TestRegistry_HasOrchestrate(t *testing.T) {
 	assert.Equal(t, "/mcp/orchestrate/", d.MCPPath)
 	assert.ElementsMatch(t, []string{"agent_list", "dispatch", "ask", "send", "finish", "reply"}, d.ToolNames)
 	assert.Contains(t, Keys(), KeyOrchestrate)
+}
+
+func TestRegistry_NoGroupCreate(t *testing.T) {
+	_, ok := Lookup("group_create")
+	assert.False(t, ok)
+	assert.NotContains(t, Keys(), "group_create")
 }

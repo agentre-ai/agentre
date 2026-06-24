@@ -16,11 +16,6 @@ const KeyOrg = "org"
 // KeyWorkflow 协作流程(SOP)读写工具。
 const KeyWorkflow = "workflow"
 
-// KeyGroupCreate 拉群带流程工具(group_create)。刻意等于 group_svc.toolKeyGroupCreate
-// 与审批卡 ToolKey,保持注入/审批/门控全链路同值。注入仍走专用 BuildCreateTurnMCP
-// (create token 与成员 token 不同),registry 项用于「可用工具清单 + ToolEnabled 查询」。
-const KeyGroupCreate = "group_create"
-
 // KeySubagent 调用子 agent 工具(把子任务委派给另一具名 agent,同步拿回输出)。
 const KeySubagent = "subagent"
 
@@ -39,7 +34,6 @@ var registry = []Definition{
 	{Key: KeyWorkflow, MCPPath: "/mcp/workflow/", ToolNames: []string{
 		"workflow_list", "workflow_create", "workflow_update", "workflow_delete",
 	}},
-	{Key: KeyGroupCreate, MCPPath: "/mcp/group/", ToolNames: []string{"group_create"}},
 	{Key: KeySubagent, MCPPath: "/mcp/subagent/", ToolNames: []string{"agent_list", "agent_call"}},
 	{Key: KeyOrchestrate, MCPPath: "/mcp/orchestrate/", ToolNames: []string{"agent_list", "dispatch", "ask", "send", "finish", "reply"}},
 	{Key: KeyHook, MCPPath: "/mcp/hook/", ToolNames: []string{
