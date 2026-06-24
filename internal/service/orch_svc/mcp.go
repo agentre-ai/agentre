@@ -151,7 +151,7 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 	case "send":
 		m.handleSend(w, r, id, ref, args)
 	case "finish":
-		writeRPCError(w, id, -32000, "not implemented") // Task 12 replaces this
+		m.handleFinish(w, r, id, ref, args)
 	default:
 		writeRPCError(w, id, -32601, "unknown tool")
 	}
@@ -239,6 +239,25 @@ func (m *orchMCP) handleSend(w http.ResponseWriter, r *http.Request, id json.Raw
 		return
 	}
 	writeRPCResult(w, id, textResult("已续做"))
+}
+
+func (m *orchMCP) handleFinish(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
+	var p struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		writeRPCError(w, id, -32700, "parse error: "+err.Error())
+		return
+	}
+	if p.Summary == "" {
+		writeRPCError(w, id, -32602, "summary is required")
+		return
+	}
+	if err := m.svc.Finish(r.Context(), ref.sessionID, p.Summary); err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult("已收口"))
 }
 
 // textResult 将文本包装成 MCP content 格式（Tasks 10/11/12 复用）。
