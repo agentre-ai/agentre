@@ -1110,213 +1110,119 @@
     "zh-CN": "中文"
   },
   "hooks": {
-    "actions": {
-      "syncEmail": "Sync Email",
-      "testConnection": "Test Connection"
-    },
-    "config": {
-      "basicInfo": "Basic Info",
-      "connection": {
-        "ariaLabel": "Connection Configuration",
-        "description": "Entry parameters and connection status for {{kind}}.",
-        "title": "Connection Configuration"
-      },
-      "enabled": {
-        "ariaLabel": "Enable source",
-        "description": "When disabled, configuration and history are kept, but routing no longer triggers.",
-        "emailActive": "Auto Polling",
-        "emailDescription": "When enabled, Agentre polls unread email by interval. When disabled, configuration and history are kept.",
-        "emailPaused": "Polling Paused",
-        "label": "Enabled State",
-        "receiveActive": "Receiving Events",
-        "receivePaused": "Receiving Paused"
-      },
-      "identifier": "Display Identifier",
-      "identifierDescription": "Used in lists and event source summaries.",
-      "save": "Save Configuration",
-      "sourceName": "Name",
-      "sourceType": "Type"
-    },
-    "connectionStatus": {
-      "connected": "Connected",
-      "disabled": "Disabled",
-      "error": "Connection failed",
-      "pending": "Pending verification"
-    },
-    "empty": {
-      "createSource": "New Source",
-      "description": "Create an email, Webhook, Slack, or scheduled source, then configure routing rules and inspect event logs.",
-      "title": "No sources yet"
-    },
-    "eventDetail": {
-      "author": "Author: {{name}}",
-      "copyPayload": "Copy payload",
-      "copyPayloadDone": "Payload copied",
-      "copyPayloadFailed": "Failed to copy payload",
-      "defaultAgent": "Default Agent",
-      "dispatchResults": "Dispatch Results",
-      "empty": "Select an event to inspect payload, rule matches, and dispatch records.",
-      "noDispatches": "Not dispatched to an agent yet.",
-      "noRuleMatches": "No rule match records.",
-      "rawPayload": "Raw JSON payload",
-      "redeliver": "Redeliver",
-      "redeliverTarget": "Redelivery target agent",
-      "ruleMatches": "Rule Match Results"
-    },
-    "eventStatus": {
-      "dispatched": "Dispatched",
-      "failed": "Failed",
-      "unmatched": "Unmatched"
-    },
-    "events": {
-      "emptyDescription": "Try testing the connection, or adjust search and status filters.",
-      "emptyTitle": "No events",
-      "fallbackUnmatched": "Fallback / unmatched",
-      "listAria": "Event log list",
-      "searchAria": "Search events",
-      "searchPlaceholder": "Search event title / sender / payload..."
-    },
-    "fields": {
-      "advanced": "Advanced Settings",
-      "appPassword": "App Password",
-      "botToken": "Bot Token",
-      "copyWebhookUrl": "Copy Webhook URL",
-      "copyWebhookUrlDone": "Webhook URL copied",
-      "copyWebhookUrlFailed": "Failed to copy Webhook URL",
-      "cronExpr": "cron Expression",
-      "emailAddress": "Email Address",
-      "emailAdvancedSummary": "Port, mailbox, and TLS",
-      "enableSignature": "Enable signature verification",
-      "imapPort": "IMAP Port",
-      "imapServer": "IMAP Server",
-      "keepPasswordPlaceholder": "Leave empty to keep current password",
-      "listenChannel": "Listening Channel",
-      "listenEvents": "Listening Events",
-      "mailbox": "Mailbox",
-      "plainImap": "Plain IMAP / 143",
-      "pollingInterval": "Polling Interval",
-      "signatureVerification": "Signature Verification",
-      "slackChannel": "Slack listening channel",
-      "systemPermission": "System Permission",
-      "timezone": "Timezone",
-      "useTls": "Use IMAP TLS",
-      "webhookSecret": "Webhook Secret",
-      "webhookUrl": "Webhook URL",
-      "webhookDescription": "In local desktop mode, copy this to external systems. Public proxy settings are configured separately later."
-    },
-    "flash": {
-      "connectionSaved": "Connection configuration saved",
-      "emailSyncDone": "Email sync complete: {{created}} new, {{skipped}} skipped",
-      "redeliverRecorded": "Redelivery request recorded",
-      "ruleDeleted": "Rule {{name}} deleted",
-      "ruleSaved": "Routing rule saved",
-      "sourceCreated": "Source {{name}} created",
-      "sourceDeleted": "Source {{name}} deleted",
-      "sourceDisabled": "Source disabled",
-      "sourceEnabled": "Source enabled",
-      "testEventWritten": "Test event written to the event log"
+    "title": "Hooks",
+    "loading": "Loading Hooks…",
+    "list": {
+      "search": "Search Hooks",
+      "groupScheduled": "Scheduled",
+      "empty": "No Hooks yet",
+      "emptyHint": "Click + at the top right to create a script Hook",
+      "addAria": "New Hook",
+      "disabled": "Off"
     },
     "header": {
-      "emptyDescription": "Create a source, then configure connection and routing rules.",
-      "emptyTitle": "Hook",
-      "lastSync": "Sync {{time}}",
-      "noIdentifier": "No identifier configured",
-      "totalCount": "Total {{count}}"
-    },
-    "loading": "Loading Hooks...",
-    "ruleDialog": {
-      "condition": "Condition Expression",
-      "createAriaLabel": "New routing rule",
-      "createTitle": "New Routing Rule",
-      "description": "Conditions support simple expressions such as subject contains \"X\" or event_type contains \"release\".",
-      "editAriaLabel": "Edit routing rule",
-      "editTitle": "Edit Routing Rule",
-      "enableRule": "Enable rule",
-      "enableThisRule": "Enable this rule",
-      "fallbackAlwaysEnabled": "Fallback rule is always enabled",
-      "targetAgent": "Target Agent"
-    },
-    "rules": {
-      "agentDecidesDescription": "One event can match multiple rules. Creating issues, replying to email, or sending desktop notifications is not configured here. This version only records dispatch intent and does not start the agent runtime.",
-      "agentDecidesTitle": "The target agent decides how to transform events",
-      "ariaLabel": "Routing Rules",
-      "deleteNamed": "Delete rule {{name}}",
-      "description": "All matching rules run. Each target agent gets an independent dispatch record.",
-      "empty": "No custom rules yet. Events fall through to the fallback rule.",
-      "enableNamed": "Enable rule {{name}}",
-      "fallbackBadge": "fallback",
-      "fallbackPrefix": "When no rules match, route to",
-      "fallbackSuffix": ". You can edit the target, but cannot delete it.",
-      "newRule": "New Rule",
-      "noAgent": "No agent selected",
-      "noDispatch": "Do not dispatch",
-      "selectAgent": "Select Agent",
-      "status": {
-        "enabled": "enabled",
-        "paused": "paused"
-      },
-      "targetNamed": "Target agent for rule {{name}}",
-      "targetPlaceholder": "Target Agent",
-      "title": "Routing Rules"
-    },
-    "source": {
-      "subtitle": {
-        "systemDisabled": "macOS Notification Center · Disabled",
-        "systemEnabled": "macOS Notification Center"
-      }
-    },
-    "sourceDialog": {
-      "ariaLabel": "New source",
-      "description": "Create the basic entry first, then fill in connection parameters and routing rules on the detail page.",
-      "title": "New Source",
-      "typeAria": "New source type"
-    },
-    "sourceKind": {
-      "email": {
-        "label": "Email",
-        "shortLabel": "Email"
-      },
-      "github": {
-        "label": "GitHub Webhook",
-        "shortLabel": "GitHub"
-      },
-      "schedule": {
-        "label": "Schedule",
-        "shortLabel": "Schedule"
-      },
-      "slack": {
-        "label": "Slack DM",
-        "shortLabel": "Slack"
-      },
-      "system": {
-        "label": "System Notification",
-        "shortLabel": "System"
-      },
-      "webhook": {
-        "label": "Custom Webhook",
-        "shortLabel": "Webhook"
-      }
-    },
-    "sourceList": {
-      "ariaLabel": "Source list",
-      "eventSources": "Event Sources",
-      "messageSources": "Message Sources",
-      "off": "OFF",
-      "searchAria": "Search sources",
-      "searchPlaceholder": "Search sources",
-      "title": "Sources",
-      "triggerCount": "{{label}} · {{count}} triggers"
+      "kindLabel": "{{interp}} Hook",
+      "run": "Dry run",
+      "runNow": "Run now",
+      "enable": "Enable",
+      "disable": "Disable",
+      "more": "More actions",
+      "delete": "Delete",
+      "lastRun": "Last run {{time}}",
+      "neverRun": "Never run",
+      "totalEvents": "{{count}} events total"
     },
     "tabs": {
-      "config": "Config",
-      "eventLog": "Event Log"
+      "script": "Script",
+      "runLog": "Run Log"
+    },
+    "trigger": {
+      "title": "Trigger",
+      "subtitle": "cron expression · run manually anytime via Dry run",
+      "cronLabel": "cron expression",
+      "interpreter": "Interpreter",
+      "timezone": "Timezone"
+    },
+    "script": {
+      "title": "Script",
+      "subtitle": "env injects HOOK_STATE / secrets · stdout emits JSON: { events, state }",
+      "name": "Name",
+      "namePlaceholder": "Hook name",
+      "commandPlaceholder": "# Write your script; print { events, state } to stdout",
+      "save": "Save",
+      "create": "Create"
+    },
+    "env": {
+      "title": "Environment / Secrets",
+      "subtitle": "Injected as env vars · secrets are masked in the UI as ••••",
+      "add": "Add variable",
+      "keyPlaceholder": "KEY",
+      "valuePlaceholder": "value",
+      "secret": "Secret",
+      "remove": "Remove variable",
+      "empty": "No environment variables"
+    },
+    "run": {
+      "ok": "Dry run · exit {{code}}",
+      "failed": "Dry run failed · exit {{code}}",
+      "timedOut": "Timed out",
+      "meta": "{{ms}}ms · {{persist}}",
+      "noPersist": "not persisted",
+      "persisted": "persisted",
+      "summary": "{{events}} events parsed · {{new}} new after dedupe · {{dup}} duplicates",
+      "parseError": "Parse error: {{error}}",
+      "stdout": "stdout",
+      "stderr": "stderr",
+      "running": "Running…",
+      "empty": "Click Dry run to execute once; the result shows here"
+    },
+    "log": {
+      "empty": "No events yet",
+      "selectPrompt": "Select an event to view its payload",
+      "dedupeKey": "Dedupe key",
+      "payload": "Payload",
+      "receivedAt": "Received {{time}}"
+    },
+    "interp": {
+      "bash": "Bash",
+      "sh": "Shell",
+      "node": "Node",
+      "python": "Python",
+      "pwsh": "PowerShell",
+      "powershell": "PowerShell",
+      "cmd": "CMD"
+    },
+    "status": {
+      "ok": "OK",
+      "failed": "Failed",
+      "running": "Running",
+      "disabled": "Off",
+      "idle": "Idle"
+    },
+    "flash": {
+      "created": "Created Hook {{name}}",
+      "updated": "Saved Hook {{name}}",
+      "deleted": "Deleted Hook {{name}}",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "saveFailed": "Save failed: {{error}}",
+      "runFailed": "Run failed: {{error}}"
+    },
+    "del": {
+      "title": "Delete Hook",
+      "description": "Delete \"{{name}}\"? This cannot be undone.",
+      "confirm": "Delete",
+      "cancel": "Cancel"
+    },
+    "create": {
+      "defaultName": "New Hook"
     },
     "time": {
-      "daysAgo": "{{count}}d ago",
-      "hoursAgo": "{{count}}h ago",
+      "never": "never",
+      "secondsAgo": "{{count}}s ago",
       "minutesAgo": "{{count}}m ago",
-      "never": "Never",
-      "secondsAgo": "{{count}}s ago"
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
     }
   },
   "llmProviders": {

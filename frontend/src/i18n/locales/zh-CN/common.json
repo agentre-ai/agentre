@@ -1110,213 +1110,119 @@
     "zh-CN": "中文"
   },
   "hooks": {
-    "actions": {
-      "syncEmail": "同步邮箱",
-      "testConnection": "测试连接"
-    },
-    "config": {
-      "basicInfo": "基础信息",
-      "connection": {
-        "ariaLabel": "连接配置",
-        "description": "{{kind}} 的入口参数和连接状态。",
-        "title": "连接配置"
-      },
-      "enabled": {
-        "ariaLabel": "启用信号源",
-        "description": "停用后保留配置和历史日志，不再触发路由。",
-        "emailActive": "自动轮询",
-        "emailDescription": "启用后按轮询间隔自动拉取未读邮件；停用后保留配置和历史日志。",
-        "emailPaused": "暂停轮询",
-        "label": "启用状态",
-        "receiveActive": "接收事件",
-        "receivePaused": "暂停接收"
-      },
-      "identifier": "显示标识",
-      "identifierDescription": "用于列表和事件来源摘要。",
-      "save": "保存配置",
-      "sourceName": "名称",
-      "sourceType": "类型"
-    },
-    "connectionStatus": {
-      "connected": "已连接",
-      "disabled": "已停用",
-      "error": "连接失败",
-      "pending": "待验证"
-    },
-    "empty": {
-      "createSource": "新建信号源",
-      "description": "创建邮箱、Webhook、Slack 或定时器入口后，就能配置路由规则和查看事件日志。",
-      "title": "还没有信号源"
-    },
-    "eventDetail": {
-      "author": "作者：{{name}}",
-      "copyPayload": "复制 payload",
-      "copyPayloadDone": "已复制 payload",
-      "copyPayloadFailed": "复制 payload 失败",
-      "defaultAgent": "默认 Agent",
-      "dispatchResults": "派发结果",
-      "empty": "选择一条事件查看 payload、规则匹配结果和派发记录。",
-      "noDispatches": "尚未派发到 Agent。",
-      "noRuleMatches": "没有规则匹配记录。",
-      "rawPayload": "原始 JSON payload",
-      "redeliver": "重新派发",
-      "redeliverTarget": "重新派发目标 Agent",
-      "ruleMatches": "规则匹配结果"
-    },
-    "eventStatus": {
-      "dispatched": "已派发",
-      "failed": "失败",
-      "unmatched": "未匹配"
-    },
-    "events": {
-      "emptyDescription": "试试测试连接，或调整搜索和状态筛选。",
-      "emptyTitle": "暂无事件",
-      "fallbackUnmatched": "兜底 / 未匹配",
-      "listAria": "事件日志列表",
-      "searchAria": "搜索事件",
-      "searchPlaceholder": "搜索事件标题 / 发件人 / payload…"
-    },
-    "fields": {
-      "advanced": "高级设置",
-      "appPassword": "应用密码",
-      "botToken": "Bot Token",
-      "copyWebhookUrl": "复制 Webhook URL",
-      "copyWebhookUrlDone": "已复制 Webhook URL",
-      "copyWebhookUrlFailed": "复制 Webhook URL 失败",
-      "cronExpr": "cron 表达式",
-      "emailAddress": "邮箱地址",
-      "emailAdvancedSummary": "端口、邮箱目录和 TLS",
-      "enableSignature": "启用签名验证",
-      "imapPort": "IMAP 端口",
-      "imapServer": "IMAP 服务器",
-      "keepPasswordPlaceholder": "留空保持当前密码",
-      "listenChannel": "监听频道",
-      "listenEvents": "监听事件",
-      "mailbox": "邮箱目录",
-      "plainImap": "明文 IMAP / 143",
-      "pollingInterval": "轮询间隔",
-      "signatureVerification": "签名验证",
-      "slackChannel": "Slack 监听频道",
-      "systemPermission": "系统权限",
-      "timezone": "时区",
-      "useTls": "使用 IMAP TLS",
-      "webhookSecret": "Webhook Secret",
-      "webhookUrl": "Webhook URL",
-      "webhookDescription": "桌面本地模式下可以复制给外部系统；公网代理后续单独配置。"
-    },
-    "flash": {
-      "connectionSaved": "连接配置已保存",
-      "emailSyncDone": "邮箱同步完成：新增 {{created}} 封，跳过 {{skipped}} 封",
-      "redeliverRecorded": "已记录重新派发请求",
-      "ruleDeleted": "已删除规则 {{name}}",
-      "ruleSaved": "路由规则已保存",
-      "sourceCreated": "已创建信号源 {{name}}",
-      "sourceDeleted": "已删除信号源 {{name}}",
-      "sourceDisabled": "信号源已停用",
-      "sourceEnabled": "信号源已启用",
-      "testEventWritten": "测试事件已写入事件日志"
+    "title": "Hooks",
+    "loading": "正在加载 Hooks…",
+    "list": {
+      "search": "搜索 Hook",
+      "groupScheduled": "定时任务",
+      "empty": "还没有 Hook",
+      "emptyHint": "点击右上角 + 新建一个脚本 Hook",
+      "addAria": "新建 Hook",
+      "disabled": "停用"
     },
     "header": {
-      "emptyDescription": "新建一个信号源后配置连接和路由规则。",
-      "emptyTitle": "Hook",
-      "lastSync": "同步 {{time}}",
-      "noIdentifier": "未配置标识",
-      "totalCount": "总计 {{count}}"
-    },
-    "loading": "正在加载 Hooks…",
-    "ruleDialog": {
-      "condition": "条件表达式",
-      "createAriaLabel": "新建路由规则",
-      "createTitle": "新建路由规则",
-      "description": "条件支持简单表达式，例如 subject contains \"X\" 或 event_type contains \"release\"。",
-      "editAriaLabel": "编辑路由规则",
-      "editTitle": "编辑路由规则",
-      "enableRule": "启用规则",
-      "enableThisRule": "启用此规则",
-      "fallbackAlwaysEnabled": "兜底规则始终启用",
-      "targetAgent": "目标 Agent"
-    },
-    "rules": {
-      "agentDecidesDescription": "一条事件可命中多条规则。建 issue、回复邮件或发桌面通知等动作不在此页配置；当前版本只记录派发意图，不启动 Agent runtime。",
-      "agentDecidesTitle": "事件转化由目标 Agent 自己决定",
-      "ariaLabel": "路由规则",
-      "deleteNamed": "删除规则 {{name}}",
-      "description": "所有匹配的规则都会执行；每个目标 Agent 生成独立派发记录。",
-      "empty": "暂无自定义规则。事件会落到兜底规则。",
-      "enableNamed": "启用规则 {{name}}",
-      "fallbackBadge": "兜底",
-      "fallbackPrefix": "未命中任何规则时路由到",
-      "fallbackSuffix": "。可编辑目标，但不可删除。",
-      "newRule": "新建规则",
-      "noAgent": "未指定 Agent",
-      "noDispatch": "暂不派发",
-      "selectAgent": "选择 Agent",
-      "status": {
-        "enabled": "已启用",
-        "paused": "已暂停"
-      },
-      "targetNamed": "规则 {{name}} 目标 Agent",
-      "targetPlaceholder": "目标 Agent",
-      "title": "路由规则"
-    },
-    "source": {
-      "subtitle": {
-        "systemDisabled": "macOS 通知中心 · 已禁用",
-        "systemEnabled": "macOS 通知中心"
-      }
-    },
-    "sourceDialog": {
-      "ariaLabel": "新建信号源",
-      "description": "先创建基础入口，再在详情页补充连接参数和路由规则。",
-      "title": "新建信号源",
-      "typeAria": "新建信号源类型"
-    },
-    "sourceKind": {
-      "email": {
-        "label": "邮箱",
-        "shortLabel": "邮箱"
-      },
-      "github": {
-        "label": "GitHub Webhook",
-        "shortLabel": "GitHub"
-      },
-      "schedule": {
-        "label": "定时器",
-        "shortLabel": "定时器"
-      },
-      "slack": {
-        "label": "Slack DM",
-        "shortLabel": "Slack"
-      },
-      "system": {
-        "label": "系统通知",
-        "shortLabel": "系统"
-      },
-      "webhook": {
-        "label": "自定义 Webhook",
-        "shortLabel": "Webhook"
-      }
-    },
-    "sourceList": {
-      "ariaLabel": "信号源列表",
-      "eventSources": "事件源",
-      "messageSources": "消息源",
-      "off": "OFF",
-      "searchAria": "搜索信号源",
-      "searchPlaceholder": "搜索信号源",
-      "title": "信号源",
-      "triggerCount": "{{label}} · {{count}} 触发"
+      "kindLabel": "{{interp}} Hook",
+      "run": "试运行",
+      "runNow": "立即运行",
+      "enable": "启用",
+      "disable": "停用",
+      "more": "更多操作",
+      "delete": "删除",
+      "lastRun": "上次运行 {{time}}",
+      "neverRun": "从未运行",
+      "totalEvents": "累计 {{count}} 事件"
     },
     "tabs": {
-      "config": "配置",
-      "eventLog": "事件日志"
+      "script": "脚本",
+      "runLog": "运行日志"
+    },
+    "trigger": {
+      "title": "触发",
+      "subtitle": "cron 表达式 · 手动「试运行」随时可跑",
+      "cronLabel": "cron 表达式",
+      "interpreter": "解释器",
+      "timezone": "时区"
+    },
+    "script": {
+      "title": "脚本",
+      "subtitle": "env 注入 HOOK_STATE / 密钥 · stdout 输出 JSON:{ events, state }",
+      "name": "名称",
+      "namePlaceholder": "Hook 名称",
+      "commandPlaceholder": "# 在此编写脚本,向 stdout 打印 { events, state }",
+      "save": "保存",
+      "create": "创建"
+    },
+    "env": {
+      "title": "环境变量 / 密钥",
+      "subtitle": "注入为脚本的环境变量 · 密钥落库脱敏,UI 显示 ••••",
+      "add": "添加变量",
+      "keyPlaceholder": "变量名",
+      "valuePlaceholder": "值",
+      "secret": "密钥",
+      "remove": "删除变量",
+      "empty": "暂无环境变量"
+    },
+    "run": {
+      "ok": "试运行 · 退出码 {{code}}",
+      "failed": "试运行失败 · 退出码 {{code}}",
+      "timedOut": "超时",
+      "meta": "耗时 {{ms}}ms · {{persist}}",
+      "noPersist": "不写库",
+      "persisted": "已入库",
+      "summary": "解析到 {{events}} 个事件 · 去重后 {{new}} 个新事件将入库 · {{dup}} 个重复",
+      "parseError": "解析失败:{{error}}",
+      "stdout": "stdout",
+      "stderr": "stderr",
+      "running": "运行中…",
+      "empty": "点「试运行」执行一次,结果会显示在这里"
+    },
+    "log": {
+      "empty": "还没有产出事件",
+      "selectPrompt": "选择左侧事件查看 payload",
+      "dedupeKey": "去重键",
+      "payload": "Payload",
+      "receivedAt": "产出于 {{time}}"
+    },
+    "interp": {
+      "bash": "Bash",
+      "sh": "Shell",
+      "node": "Node",
+      "python": "Python",
+      "pwsh": "PowerShell",
+      "powershell": "PowerShell",
+      "cmd": "CMD"
+    },
+    "status": {
+      "ok": "正常",
+      "failed": "失败",
+      "running": "运行中",
+      "disabled": "停用",
+      "idle": "待运行"
+    },
+    "flash": {
+      "created": "已创建 Hook {{name}}",
+      "updated": "已保存 Hook {{name}}",
+      "deleted": "已删除 Hook {{name}}",
+      "enabled": "已启用",
+      "disabled": "已停用",
+      "saveFailed": "保存失败:{{error}}",
+      "runFailed": "运行失败:{{error}}"
+    },
+    "del": {
+      "title": "删除 Hook",
+      "description": "确定删除「{{name}}」?此操作不可撤销。",
+      "confirm": "删除",
+      "cancel": "取消"
+    },
+    "create": {
+      "defaultName": "新 Hook"
     },
     "time": {
-      "daysAgo": "{{count}}d ago",
-      "hoursAgo": "{{count}}h ago",
-      "minutesAgo": "{{count}}m ago",
       "never": "从未",
-      "secondsAgo": "{{count}}s ago"
+      "secondsAgo": "{{count}} 秒前",
+      "minutesAgo": "{{count}} 分钟前",
+      "hoursAgo": "{{count}} 小时前",
+      "daysAgo": "{{count}} 天前"
     }
   },
   "llmProviders": {
