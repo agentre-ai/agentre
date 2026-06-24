@@ -84,11 +84,11 @@ describe("RunNewDialog", () => {
     // 等 agents 渲染到团队列表; bypassPermissions→自动放行, 其它→需审批
     await waitFor(() => {
       expect(
-        screen.getByText("orchestration.new.dangerAuto"),
+        screen.getByText("Auto-approve dangerous operations"),
       ).toBeInTheDocument();
     });
     expect(
-      screen.getByText("orchestration.new.dangerApproval"),
+      screen.getByText("Require approval for dangerous operations"),
     ).toBeInTheDocument();
   });
 });

@@ -2389,5 +2389,89 @@
       "on": "On",
       "off": "Off"
     }
+  },
+  "orchestration": {
+    "loading": "Loading…",
+    "new": {
+      "title": "New Orchestration",
+      "goal": "Goal",
+      "goalPlaceholder": "Describe what you want to achieve…",
+      "leader": "Leader",
+      "leaderPlaceholder": "Choose the leader agent…",
+      "team": "Limit Team",
+      "teamHint": "Leave empty to allow any agent to participate",
+      "flow": "Flow",
+      "flowNone": "None",
+      "flowAdhoc": "Ad-hoc",
+      "flowSelect": "Choose from library",
+      "flowSelectPlaceholder": "Search flows…",
+      "flowLibrary": "Flow Library",
+      "flowContent": "Flow Content",
+      "flowContentPlaceholder": "Enter or paste flow definition…",
+      "dangerAuto": "Auto-approve dangerous operations",
+      "dangerApproval": "Require approval for dangerous operations",
+      "create": "Create"
+    },
+    "list": {
+      "newButton": "New Orchestration"
+    },
+    "onboarding": {
+      "cta": "Start multi-agent orchestration",
+      "step1": "Assign a Leader agent to coordinate",
+      "step2": "Set a goal — Leader breaks it down and delegates tasks",
+      "step3": "Track the structure graph and activity feed in real time"
+    },
+    "header": {
+      "viewGraph": "Graph",
+      "viewFeed": "Feed",
+      "running": "Running",
+      "completed": "Completed",
+      "paused": "Paused",
+      "stopped": "Stopped",
+      "pending": "Pending",
+      "countRunning": "{{count}} running",
+      "countWaitingYou": "{{count}} awaiting you",
+      "countDone": "{{count}} done",
+      "treeSize": "Nodes {{nodes}} · Subagents {{subagents}} · Depth {{depth}}",
+      "tokens": "{{count}} tokens",
+      "duration": "{{duration}}",
+      "pause": "Pause",
+      "resume": "Resume",
+      "stop": "Hard Stop",
+      "softWarning": "This cannot be undone. Continue?"
+    },
+    "graph": {
+      "empty": "No nodes yet",
+      "completedBanner": "✓ Orchestration completed",
+      "pausedBanner": "Paused — click Resume to continue",
+      "stoppedBanner": "Hard stopped",
+      "deadlock": "Waiting cycle detected — resolve it",
+      "leaderCrown": "Leader"
+    },
+    "feed": {
+      "deadlock": "Ask waiting cycle detected",
+      "blockingCount": "{{count}} branch(es) awaiting your approval",
+      "blockingView": "Resolve",
+      "completed": "Orchestration completed",
+      "paused": "Orchestration paused",
+      "empty": "No activity yet",
+      "blocked": "Awaiting you",
+      "speakPlaceholder": "Message the Leader…",
+      "speakSend": "Send"
+    },
+    "board": {
+      "tabTasks": "Tasks",
+      "tabOutputs": "Outputs",
+      "tasksEmpty": "No tasks yet",
+      "outputsEmpty": "No outputs yet",
+      "drilldownTitle": "Details",
+      "drilldownEmpty": "No details available",
+      "statusRunning": "Running",
+      "statusDone": "Done",
+      "statusAwaitingUser": "Awaiting you",
+      "statusAwaitingChildren": "Awaiting subtasks",
+      "statusError": "Error",
+      "statusPending": "Pending"
+    }
   }
 }

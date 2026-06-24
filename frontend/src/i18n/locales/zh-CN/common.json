@@ -2389,5 +2389,89 @@
       "on": "开",
       "off": "关"
     }
+  },
+  "orchestration": {
+    "loading": "加载中…",
+    "new": {
+      "title": "新建编排流程",
+      "goal": "目标",
+      "goalPlaceholder": "描述你希望达成的目标…",
+      "leader": "Leader",
+      "leaderPlaceholder": "选择负责主持的 Agent…",
+      "team": "限定团队",
+      "teamHint": "留空则不限制可参与的 Agent",
+      "flow": "编排流程",
+      "flowNone": "无",
+      "flowAdhoc": "临时",
+      "flowSelect": "选择流程库",
+      "flowSelectPlaceholder": "搜索流程…",
+      "flowLibrary": "流程库",
+      "flowContent": "流程内容",
+      "flowContentPlaceholder": "输入或粘贴流程定义…",
+      "dangerAuto": "危险操作自动放行",
+      "dangerApproval": "危险操作需审批",
+      "create": "创建"
+    },
+    "list": {
+      "newButton": "新建编排"
+    },
+    "onboarding": {
+      "cta": "开启多 Agent 协作编排",
+      "step1": "指定一个 Leader Agent 负责主持",
+      "step2": "设定目标，Leader 自动拆解并分派任务",
+      "step3": "实时跟踪结构图与活动流"
+    },
+    "header": {
+      "viewGraph": "结构图",
+      "viewFeed": "活动流",
+      "running": "自主运行中",
+      "completed": "已完成",
+      "paused": "已暂停",
+      "stopped": "已停止",
+      "pending": "等待启动",
+      "countRunning": "{{count}} 运行中",
+      "countWaitingYou": "{{count}} 等待你",
+      "countDone": "{{count}} 已完成",
+      "treeSize": "节点 {{nodes}} · 子Agent {{subagents}} · 深度 {{depth}}",
+      "tokens": "{{count}} tokens",
+      "duration": "{{duration}}",
+      "pause": "暂停",
+      "resume": "继续",
+      "stop": "硬停止",
+      "softWarning": "停止后不可恢复，确认继续？"
+    },
+    "graph": {
+      "empty": "暂无节点",
+      "completedBanner": "✓ 编排已完成",
+      "pausedBanner": "已暂停，点击「继续」恢复运行",
+      "stoppedBanner": "已硬停止",
+      "deadlock": "检测到等待环，请去裁决",
+      "leaderCrown": "Leader"
+    },
+    "feed": {
+      "deadlock": "检测到 ask 等待环",
+      "blockingCount": "{{count}} 个分支等待你审批",
+      "blockingView": "去裁决",
+      "completed": "编排已完成",
+      "paused": "编排已暂停",
+      "empty": "暂无活动",
+      "blocked": "等待你",
+      "speakPlaceholder": "对 Leader 说…",
+      "speakSend": "发送"
+    },
+    "board": {
+      "tabTasks": "任务",
+      "tabOutputs": "输出",
+      "tasksEmpty": "暂无任务",
+      "outputsEmpty": "暂无输出",
+      "drilldownTitle": "详情",
+      "drilldownEmpty": "暂无详情",
+      "statusRunning": "运行中",
+      "statusDone": "已完成",
+      "statusAwaitingUser": "等待你",
+      "statusAwaitingChildren": "等待子任务",
+      "statusError": "出错",
+      "statusPending": "待启动"
+    }
   }
 }
