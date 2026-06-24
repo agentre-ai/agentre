@@ -138,7 +138,6 @@ func NewChat(emitter Emitter) ChatSvc {
 	s := &chatSvc{
 		emitter:       emitter,
 		locks:         &sync.Map{},
-		ensureLocks:   &sync.Map{},
 		activeCancels: &sync.Map{},
 		aborted:       &sync.Map{},
 		turnObservers: &sync.Map{},
@@ -167,8 +166,6 @@ type chatSvc struct {
 	// AGENTRE_NEW_DISPATCHER=1 时 runTurn drain loop 通过它处理 Event;默认关。
 	dispatcher *turn.Dispatcher
 	locks      *sync.Map
-	// ensureLocks serializes domain-scoped EnsureSession find/create pairs by reuse key.
-	ensureLocks *sync.Map
 	// activeCancels：sessionID(int64) → context.CancelFunc。startTurn 在 gogo.Go
 	// 之前 store；runTurn 收尾 / Stop 触发时 LoadAndDelete。Stop 用它 cancel turnCtx，
 	// 给嵌套 DB / cago / select 兜底解锁。
@@ -3647,14 +3644,4 @@ func (s *chatSvc) launchPermissionModeForAgent(ctx context.Context, agentID int6
 		return ""
 	}
 	return mode
-}
-
-func (s *chatSvc) lockEnsureSession(key string) func() {
-	if s.ensureLocks == nil {
-		s.ensureLocks = &sync.Map{}
-	}
-	raw, _ := s.ensureLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := raw.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
 }

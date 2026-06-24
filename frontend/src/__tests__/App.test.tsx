@@ -788,9 +788,7 @@ describe("App", () => {
     expect(
       screen.getByRole("complementary", { name: "Agent list" }),
     ).toHaveStyle({ width: "320px" });
-    expect(
-      screen.getByPlaceholderText("Search Agent"),
-    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search Agent")).toBeInTheDocument();
     expect(
       screen.getByText("Choose an Agent or project session to start"),
     ).toBeInTheDocument();
