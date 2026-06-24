@@ -29,6 +29,7 @@ type HookSvc interface {
 	UpdateHook(ctx context.Context, req *UpdateHookRequest) (*HookItem, error)
 	DeleteHook(ctx context.Context, id int64) error
 	ToggleHook(ctx context.Context, id int64, enabled bool) (*HookItem, error)
+	RunHook(ctx context.Context, req *RunHookRequest) (*RunHookResult, error)
 }
 
 type hookSvc struct {
