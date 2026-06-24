@@ -3,6 +3,7 @@ package orch_svc_test
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -276,6 +277,61 @@ func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 		So(capturedResult, ShouldEqual, finishSummary)
 		So(capturedSendMsg, ShouldContainSubstring, finishSummary)
 		So(capturedSendMsg, ShouldNotContainSubstring, "不应被采用")
+	})
+}
+
+// TestWatchCompletion_ParentFlipEmitsRunUpdated — done 分支触发父翻转（awaiting-children → running）
+// 时,emitRunUpdated 必须在父 Update 之后再次发出,让前端能取到最新的父状态。
+// 本测试使用真实 MockEmitter 断言父翻转路径确实发出了 orch:run:updated。
+// TDD: 先跑见 RED(父翻转后无 Emit 调用, MinTimes(2) 不满足)，补发 emit 后见 GREEN。
+func TestWatchCompletion_ParentFlipEmitsRunUpdated(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	emit := mock_orch_svc.NewMockEmitter(ctrl)
+	// 注入真实 emit mock，断言父翻转路径的 emit 调用。
+	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, emit)
+
+	turnCh := make(chan orch_svc.TurnDone, 1)
+	child := &orch_entity.Task{ID: 11, RunID: 100, AgentID: 3, SessionID: 600, ParentTaskID: 9, CallSeq: 1, Status: orch_entity.TaskRunning}
+
+	chat.EXPECT().AgentStatus(gomock.Any(), int64(600)).Return("idle", nil)
+	chat.EXPECT().FinalAssistantText(gomock.Any(), int64(600)).Return("登录表单已实现", nil)
+	// idle 分支重读子任务：Result 为空 → 退回 FinalAssistantText。
+	tasks.EXPECT().Find(gomock.Any(), int64(11)).Return(
+		&orch_entity.Task{ID: 11, RunID: 100, SessionID: 600, Status: orch_entity.TaskRunning, Result: ""}, nil)
+	// 子任务标 done。
+	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	// 父任务翻转：awaiting-children → running（父翻转路径触发条件）。
+	tasks.EXPECT().Find(gomock.Any(), int64(9)).Return(
+		&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500, Status: orch_entity.TaskAwaitingChildren}, nil)
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{
+		{ID: 11, ParentTaskID: 9, Kind: orch_entity.TaskKindDispatch, Status: orch_entity.TaskDone},
+	}, nil)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(500), gomock.Any()).Return(nil)
+
+	// 期望 emit 至少被调用两次：
+	//   1. idle 分支本身的 emitRunUpdated（complete.go:43）
+	//   2. 父翻转成功后的 emitRunUpdated（Finding 1 修复点）
+	// 不能在 DoAndReturn 中调用 So（goroutine 外无 Convey 上下文），改用原子计数捕获。
+	var emitCount int64
+	emit.EXPECT().Emit(gomock.Any(), "orch:run:updated", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, payload any) {
+			atomic.AddInt64(&emitCount, 1)
+		}).MinTimes(2)
+
+	Convey("父翻转（awaiting-children→running）后额外发出 orch:run:updated", t, func() {
+		done := make(chan struct{})
+		go func() {
+			orch_svc.Default().WatchCompletionForTest(context.Background(), child, (<-chan orch_svc.TurnDone)(turnCh), func() {})
+			close(done)
+		}()
+		turnCh <- orch_svc.TurnDone{SessionID: 600, OK: true}
+		close(turnCh)
+		<-done
+		// 父翻转路径应触发至少 2 次 emit（子 done 1 次 + 父翻转后 1 次）。
+		So(atomic.LoadInt64(&emitCount), ShouldBeGreaterThanOrEqualTo, 2)
 	})
 }
 

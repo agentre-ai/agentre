@@ -3,128 +3,46 @@ package hook_entity
 import (
 	"context"
 	"testing"
-
-	"github.com/cago-frame/cago/pkg/consts"
-	"github.com/stretchr/testify/assert"
 )
 
-func TestHookSourceCheck(t *testing.T) {
+func TestHook_Check(t *testing.T) {
 	ctx := context.Background()
-
-	tests := []struct {
-		name    string
-		source  *HookSource
-		wantErr bool
-	}{
-		{
-			name: "valid github source",
-			source: &HookSource{
-				Kind:             string(SourceKindGitHub),
-				Name:             "agentre-bot",
-				ConfigJSON:       `{"webhookUrl":"https://agentre.local/hooks/abc","verifySignature":true}`,
-				Enabled:          1,
-				ConnectionStatus: string(ConnectionConnected),
-				Status:           consts.ACTIVE,
-			},
-		},
-		{
-			name: "blank name rejected",
-			source: &HookSource{
-				Kind:             string(SourceKindGitHub),
-				Name:             " ",
-				ConfigJSON:       `{}`,
-				ConnectionStatus: string(ConnectionPending),
-				Status:           consts.ACTIVE,
-			},
-			wantErr: true,
-		},
-		{
-			name: "unknown kind rejected",
-			source: &HookSource{
-				Kind:             "rss",
-				Name:             "feed",
-				ConfigJSON:       `{}`,
-				ConnectionStatus: string(ConnectionPending),
-				Status:           consts.ACTIVE,
-			},
-			wantErr: true,
-		},
-		{
-			name: "malformed config json rejected",
-			source: &HookSource{
-				Kind:             string(SourceKindWebhook),
-				Name:             "n8n",
-				ConfigJSON:       `{`,
-				ConnectionStatus: string(ConnectionPending),
-				Status:           consts.ACTIVE,
-			},
-			wantErr: true,
-		},
+	base := func() *Hook {
+		return &Hook{Name: "jira", Interpreter: "bash", Command: "echo '{}'",
+			TriggerType: TriggerSchedule, ScheduleExpr: "*/5 * * * *", EnvJSON: "[]"}
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.source.Check(ctx)
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			assert.NoError(t, err)
-		})
+	if err := base().Check(ctx); err != nil {
+		t.Fatalf("valid hook should pass: %v", err)
+	}
+	cases := map[string]func(*Hook){
+		"empty name":      func(h *Hook) { h.Name = "  " },
+		"bad interpreter": func(h *Hook) { h.Interpreter = "ruby" },
+		"empty schedule":  func(h *Hook) { h.ScheduleExpr = "" },
+		"empty command":   func(h *Hook) { h.Command = "" },
+		"bad env json":    func(h *Hook) { h.EnvJSON = "{not array}" },
+	}
+	for name, mutate := range cases {
+		h := base()
+		mutate(h)
+		if err := h.Check(ctx); err == nil {
+			t.Errorf("%s: expected Check error, got nil", name)
+		}
 	}
 }
 
-func TestHookRuleCheck(t *testing.T) {
+func TestHookEvent_Check(t *testing.T) {
 	ctx := context.Background()
-
-	assert.NoError(t, (&HookRule{
-		SourceID:      2,
-		Name:          "PR opened",
-		ConditionExpr: `event_type contains "pr"`,
-		TargetAgentID: 1,
-		Enabled:       1,
-		Status:        consts.ACTIVE,
-	}).Check(ctx))
-
-	assert.Error(t, (&HookRule{
-		SourceID: 0,
-		Name:     "missing source",
-		Status:   consts.ACTIVE,
-	}).Check(ctx))
-
-	assert.Error(t, (&HookRule{
-		SourceID: 1,
-		Name:     " ",
-		Status:   consts.ACTIVE,
-	}).Check(ctx))
-}
-
-func TestHookEventCheck(t *testing.T) {
-	ctx := context.Background()
-
-	assert.NoError(t, (&HookEvent{
-		SourceID:         2,
-		Title:            "PR #142",
-		EventStatus:      string(EventDispatched),
-		PayloadJSON:      `{"action":"opened"}`,
-		MatchedRulesJSON: `[{"ruleId":1,"ruleName":"PR opened","matched":true}]`,
-		DispatchesJSON:   `[{"agentId":1,"agentName":"CEO 助手","status":"queued"}]`,
-		Status:           consts.ACTIVE,
-	}).Check(ctx))
-
-	assert.Error(t, (&HookEvent{
-		SourceID:    2,
-		Title:       "bad status",
-		EventStatus: "ignored",
-		PayloadJSON: `{}`,
-		Status:      consts.ACTIVE,
-	}).Check(ctx))
-
-	assert.Error(t, (&HookEvent{
-		SourceID:    2,
-		Title:       "bad payload",
-		EventStatus: string(EventFailed),
-		PayloadJSON: `{`,
-		Status:      consts.ACTIVE,
-	}).Check(ctx))
+	ok := &HookEvent{HookID: 1, Title: "t", PayloadJSON: "{}"}
+	if err := ok.Check(ctx); err != nil {
+		t.Fatalf("valid event should pass: %v", err)
+	}
+	for name, e := range map[string]*HookEvent{
+		"no hook":  {HookID: 0, Title: "t", PayloadJSON: "{}"},
+		"no title": {HookID: 1, Title: "", PayloadJSON: "{}"},
+		"bad json": {HookID: 1, Title: "t", PayloadJSON: "{bad"},
+	} {
+		if err := e.Check(ctx); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
 }

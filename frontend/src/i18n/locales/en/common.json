@@ -1507,6 +1507,7 @@
   },
   "projects": {
     "actions": {
+      "deleteProject": "Delete Project",
       "more": "More actions for {{name}}",
       "newProject": "New Project",
       "newSubProject": "New Sub-project"

@@ -14,6 +14,8 @@ React 19 + TS + Vite + Tailwind v4. Wails bindings are generated from `internal/
 
 Before adding a component, check whether `frontend/src/components/ui` and `frontend/src/components/agentre` already have a primitive.
 
+> **Design system →** the visual language those components express — color tokens (full light/dark values), the 16-color agent palette & run-status system, theming, the desktop window shell, motion, state patterns, and accessibility — lives in [DESIGN.md](./DESIGN.md). This doc owns the **enforced rules** (shadcn-only, i18n, icons, lint); DESIGN.md owns the **design system**; the two cross-link rather than duplicate.
+
 ## i18n
 
 New user-visible UI copy must be explicitly wired to i18n; do not add hardcoded Chinese.

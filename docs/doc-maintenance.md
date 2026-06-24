@@ -39,6 +39,7 @@ your checkout will masquerade as released (the "branch leakage" above is exactly
 | [`architecture.md`](./architecture.md) | Project layout, cago layering conventions, remote execution architecture, `AppDataDir` storage paths, database and migration flow, list of generated files. |
 | [`development.md`](./development.md) | The concrete "how to": TDD/BDD, SOLID, high cohesion / low coupling, Fix Discipline, the test stack, commit style, logging conventions. |
 | [`frontend.md`](./frontend.md) | shadcn `@/components/ui/*` conventions, i18n, frontend structure, pnpm, formatting / lint, module path. |
+| [`DESIGN.md`](./DESIGN.md) | The frontend **design system**: color tokens (light/dark values), the agent palette + run-status system, theming, the desktop window shell, component palette, motion, state patterns, accessibility, the new-page recipe. Owns the visual language; defers the enforced shadcn / i18n / lint rules to [`frontend.md`](./frontend.md). |
 | [`debugging.md`](./debugging.md) | Diagnosing runtime issues: SQLite / log commands, table → feature mapping, reproduction commands, common pitfalls. |
 | [`agent-backend.md`](./agent-backend.md) | The full path to wiring in a new AI Agent backend (entity / migration / runtime / translator / capability / daemon import / frontend gating). |
 | [`session-lifecycle.md`](./session-lifecycle.md) | Rules for creating and reusing `chat_sessions`, including group backing sessions, future issue/hook dispatch, and remote-execution ownership. |
@@ -128,7 +129,7 @@ echo "== cago import =="; git grep -n "github.com/cago-frame/cago" -- go.mod
 Link integrity — confirm every relative markdown link in the core docs resolves:
 
 ```bash
-for doc in AGENTS.md CLAUDE.md docs/architecture.md docs/development.md docs/frontend.md \
+for doc in AGENTS.md CLAUDE.md docs/architecture.md docs/development.md docs/frontend.md docs/DESIGN.md \
            docs/debugging.md docs/agent-backend.md docs/session-lifecycle.md docs/doc-maintenance.md; do
   grep -oE '\]\(([^)]+)\)' "$doc" | sed -E 's/^\]\(|\)$//g' | grep -vE '^https?:|^#|^mailto:' | while read -r link; do
     target="$(dirname "$doc")/${link%%#*}"

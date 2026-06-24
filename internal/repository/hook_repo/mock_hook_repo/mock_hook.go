@@ -11,52 +11,52 @@ package mock_hook_repo
 
 import (
 	context "context"
-	hook_entity "github.com/agentre-ai/agentre/internal/model/entity/hook_entity"
 	reflect "reflect"
 
+	hook_entity "github.com/agentre-ai/agentre/internal/model/entity/hook_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 
-// MockHookSourceRepo is a mock of HookSourceRepo interface.
-type MockHookSourceRepo struct {
+// MockHookRepo is a mock of HookRepo interface.
+type MockHookRepo struct {
 	ctrl     *gomock.Controller
-	recorder *MockHookSourceRepoMockRecorder
+	recorder *MockHookRepoMockRecorder
 	isgomock struct{}
 }
 
-// MockHookSourceRepoMockRecorder is the mock recorder for MockHookSourceRepo.
-type MockHookSourceRepoMockRecorder struct {
-	mock *MockHookSourceRepo
+// MockHookRepoMockRecorder is the mock recorder for MockHookRepo.
+type MockHookRepoMockRecorder struct {
+	mock *MockHookRepo
 }
 
-// NewMockHookSourceRepo creates a new mock instance.
-func NewMockHookSourceRepo(ctrl *gomock.Controller) *MockHookSourceRepo {
-	mock := &MockHookSourceRepo{ctrl: ctrl}
-	mock.recorder = &MockHookSourceRepoMockRecorder{mock}
+// NewMockHookRepo creates a new mock instance.
+func NewMockHookRepo(ctrl *gomock.Controller) *MockHookRepo {
+	mock := &MockHookRepo{ctrl: ctrl}
+	mock.recorder = &MockHookRepoMockRecorder{mock}
 	return mock
 }
 
 // EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockHookSourceRepo) EXPECT() *MockHookSourceRepoMockRecorder {
+func (m *MockHookRepo) EXPECT() *MockHookRepoMockRecorder {
 	return m.recorder
 }
 
 // Create mocks base method.
-func (m *MockHookSourceRepo) Create(ctx context.Context, s *hook_entity.HookSource) error {
+func (m *MockHookRepo) Create(ctx context.Context, h *hook_entity.Hook) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Create", ctx, s)
+	ret := m.ctrl.Call(m, "Create", ctx, h)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Create indicates an expected call of Create.
-func (mr *MockHookSourceRepoMockRecorder) Create(ctx, s any) *gomock.Call {
+func (mr *MockHookRepoMockRecorder) Create(ctx, h any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockHookSourceRepo)(nil).Create), ctx, s)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockHookRepo)(nil).Create), ctx, h)
 }
 
 // Delete mocks base method.
-func (m *MockHookSourceRepo) Delete(ctx context.Context, id int64) error {
+func (m *MockHookRepo) Delete(ctx context.Context, id int64) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Delete", ctx, id)
 	ret0, _ := ret[0].(error)
@@ -64,194 +64,83 @@ func (m *MockHookSourceRepo) Delete(ctx context.Context, id int64) error {
 }
 
 // Delete indicates an expected call of Delete.
-func (mr *MockHookSourceRepoMockRecorder) Delete(ctx, id any) *gomock.Call {
+func (mr *MockHookRepoMockRecorder) Delete(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockHookSourceRepo)(nil).Delete), ctx, id)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockHookRepo)(nil).Delete), ctx, id)
 }
 
 // Find mocks base method.
-func (m *MockHookSourceRepo) Find(ctx context.Context, id int64) (*hook_entity.HookSource, error) {
+func (m *MockHookRepo) Find(ctx context.Context, id int64) (*hook_entity.Hook, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Find", ctx, id)
-	ret0, _ := ret[0].(*hook_entity.HookSource)
+	ret0, _ := ret[0].(*hook_entity.Hook)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Find indicates an expected call of Find.
-func (mr *MockHookSourceRepoMockRecorder) Find(ctx, id any) *gomock.Call {
+func (mr *MockHookRepoMockRecorder) Find(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Find", reflect.TypeOf((*MockHookSourceRepo)(nil).Find), ctx, id)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Find", reflect.TypeOf((*MockHookRepo)(nil).Find), ctx, id)
 }
 
 // FindByName mocks base method.
-func (m *MockHookSourceRepo) FindByName(ctx context.Context, name string) (*hook_entity.HookSource, error) {
+func (m *MockHookRepo) FindByName(ctx context.Context, name string) (*hook_entity.Hook, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "FindByName", ctx, name)
-	ret0, _ := ret[0].(*hook_entity.HookSource)
+	ret0, _ := ret[0].(*hook_entity.Hook)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // FindByName indicates an expected call of FindByName.
-func (mr *MockHookSourceRepoMockRecorder) FindByName(ctx, name any) *gomock.Call {
+func (mr *MockHookRepoMockRecorder) FindByName(ctx, name any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByName", reflect.TypeOf((*MockHookSourceRepo)(nil).FindByName), ctx, name)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByName", reflect.TypeOf((*MockHookRepo)(nil).FindByName), ctx, name)
 }
 
 // List mocks base method.
-func (m *MockHookSourceRepo) List(ctx context.Context) ([]*hook_entity.HookSource, error) {
+func (m *MockHookRepo) List(ctx context.Context) ([]*hook_entity.Hook, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "List", ctx)
-	ret0, _ := ret[0].([]*hook_entity.HookSource)
+	ret0, _ := ret[0].([]*hook_entity.Hook)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // List indicates an expected call of List.
-func (mr *MockHookSourceRepoMockRecorder) List(ctx any) *gomock.Call {
+func (mr *MockHookRepoMockRecorder) List(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockHookSourceRepo)(nil).List), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockHookRepo)(nil).List), ctx)
+}
+
+// ListDue mocks base method.
+func (m *MockHookRepo) ListDue(ctx context.Context, now int64) ([]*hook_entity.Hook, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListDue", ctx, now)
+	ret0, _ := ret[0].([]*hook_entity.Hook)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListDue indicates an expected call of ListDue.
+func (mr *MockHookRepoMockRecorder) ListDue(ctx, now any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListDue", reflect.TypeOf((*MockHookRepo)(nil).ListDue), ctx, now)
 }
 
 // Update mocks base method.
-func (m *MockHookSourceRepo) Update(ctx context.Context, s *hook_entity.HookSource) error {
+func (m *MockHookRepo) Update(ctx context.Context, h *hook_entity.Hook) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Update", ctx, s)
+	ret := m.ctrl.Call(m, "Update", ctx, h)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Update indicates an expected call of Update.
-func (mr *MockHookSourceRepoMockRecorder) Update(ctx, s any) *gomock.Call {
+func (mr *MockHookRepoMockRecorder) Update(ctx, h any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockHookSourceRepo)(nil).Update), ctx, s)
-}
-
-// MockHookRuleRepo is a mock of HookRuleRepo interface.
-type MockHookRuleRepo struct {
-	ctrl     *gomock.Controller
-	recorder *MockHookRuleRepoMockRecorder
-	isgomock struct{}
-}
-
-// MockHookRuleRepoMockRecorder is the mock recorder for MockHookRuleRepo.
-type MockHookRuleRepoMockRecorder struct {
-	mock *MockHookRuleRepo
-}
-
-// NewMockHookRuleRepo creates a new mock instance.
-func NewMockHookRuleRepo(ctrl *gomock.Controller) *MockHookRuleRepo {
-	mock := &MockHookRuleRepo{ctrl: ctrl}
-	mock.recorder = &MockHookRuleRepoMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockHookRuleRepo) EXPECT() *MockHookRuleRepoMockRecorder {
-	return m.recorder
-}
-
-// Create mocks base method.
-func (m *MockHookRuleRepo) Create(ctx context.Context, r *hook_entity.HookRule) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Create", ctx, r)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Create indicates an expected call of Create.
-func (mr *MockHookRuleRepoMockRecorder) Create(ctx, r any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockHookRuleRepo)(nil).Create), ctx, r)
-}
-
-// Delete mocks base method.
-func (m *MockHookRuleRepo) Delete(ctx context.Context, id int64) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Delete", ctx, id)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Delete indicates an expected call of Delete.
-func (mr *MockHookRuleRepoMockRecorder) Delete(ctx, id any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockHookRuleRepo)(nil).Delete), ctx, id)
-}
-
-// Find mocks base method.
-func (m *MockHookRuleRepo) Find(ctx context.Context, id int64) (*hook_entity.HookRule, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Find", ctx, id)
-	ret0, _ := ret[0].(*hook_entity.HookRule)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// Find indicates an expected call of Find.
-func (mr *MockHookRuleRepoMockRecorder) Find(ctx, id any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Find", reflect.TypeOf((*MockHookRuleRepo)(nil).Find), ctx, id)
-}
-
-// List mocks base method.
-func (m *MockHookRuleRepo) List(ctx context.Context) ([]*hook_entity.HookRule, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "List", ctx)
-	ret0, _ := ret[0].([]*hook_entity.HookRule)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// List indicates an expected call of List.
-func (mr *MockHookRuleRepoMockRecorder) List(ctx any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockHookRuleRepo)(nil).List), ctx)
-}
-
-// ListBySource mocks base method.
-func (m *MockHookRuleRepo) ListBySource(ctx context.Context, sourceID int64) ([]*hook_entity.HookRule, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListBySource", ctx, sourceID)
-	ret0, _ := ret[0].([]*hook_entity.HookRule)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ListBySource indicates an expected call of ListBySource.
-func (mr *MockHookRuleRepoMockRecorder) ListBySource(ctx, sourceID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListBySource", reflect.TypeOf((*MockHookRuleRepo)(nil).ListBySource), ctx, sourceID)
-}
-
-// NextSortOrder mocks base method.
-func (m *MockHookRuleRepo) NextSortOrder(ctx context.Context, sourceID int64) (int, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "NextSortOrder", ctx, sourceID)
-	ret0, _ := ret[0].(int)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// NextSortOrder indicates an expected call of NextSortOrder.
-func (mr *MockHookRuleRepoMockRecorder) NextSortOrder(ctx, sourceID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NextSortOrder", reflect.TypeOf((*MockHookRuleRepo)(nil).NextSortOrder), ctx, sourceID)
-}
-
-// Update mocks base method.
-func (m *MockHookRuleRepo) Update(ctx context.Context, r *hook_entity.HookRule) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Update", ctx, r)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Update indicates an expected call of Update.
-func (mr *MockHookRuleRepoMockRecorder) Update(ctx, r any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockHookRuleRepo)(nil).Update), ctx, r)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockHookRepo)(nil).Update), ctx, h)
 }
 
 // MockHookEventRepo is a mock of HookEventRepo interface.
@@ -292,49 +181,34 @@ func (mr *MockHookEventRepoMockRecorder) Create(ctx, e any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockHookEventRepo)(nil).Create), ctx, e)
 }
 
-// Find mocks base method.
-func (m *MockHookEventRepo) Find(ctx context.Context, id int64) (*hook_entity.HookEvent, error) {
+// FindByDedupeKey mocks base method.
+func (m *MockHookEventRepo) FindByDedupeKey(ctx context.Context, hookID int64, key string) (*hook_entity.HookEvent, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Find", ctx, id)
+	ret := m.ctrl.Call(m, "FindByDedupeKey", ctx, hookID, key)
 	ret0, _ := ret[0].(*hook_entity.HookEvent)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// Find indicates an expected call of Find.
-func (mr *MockHookEventRepoMockRecorder) Find(ctx, id any) *gomock.Call {
+// FindByDedupeKey indicates an expected call of FindByDedupeKey.
+func (mr *MockHookEventRepoMockRecorder) FindByDedupeKey(ctx, hookID, key any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Find", reflect.TypeOf((*MockHookEventRepo)(nil).Find), ctx, id)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindByDedupeKey", reflect.TypeOf((*MockHookEventRepo)(nil).FindByDedupeKey), ctx, hookID, key)
 }
 
-// FindBySourceRef mocks base method.
-func (m *MockHookEventRepo) FindBySourceRef(ctx context.Context, sourceID int64, sourceRef string) (*hook_entity.HookEvent, error) {
+// ListByHook mocks base method.
+func (m *MockHookEventRepo) ListByHook(ctx context.Context, hookID int64, limit int) ([]*hook_entity.HookEvent, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindBySourceRef", ctx, sourceID, sourceRef)
-	ret0, _ := ret[0].(*hook_entity.HookEvent)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FindBySourceRef indicates an expected call of FindBySourceRef.
-func (mr *MockHookEventRepoMockRecorder) FindBySourceRef(ctx, sourceID, sourceRef any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindBySourceRef", reflect.TypeOf((*MockHookEventRepo)(nil).FindBySourceRef), ctx, sourceID, sourceRef)
-}
-
-// ListBySource mocks base method.
-func (m *MockHookEventRepo) ListBySource(ctx context.Context, sourceID int64, limit int) ([]*hook_entity.HookEvent, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListBySource", ctx, sourceID, limit)
+	ret := m.ctrl.Call(m, "ListByHook", ctx, hookID, limit)
 	ret0, _ := ret[0].([]*hook_entity.HookEvent)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// ListBySource indicates an expected call of ListBySource.
-func (mr *MockHookEventRepoMockRecorder) ListBySource(ctx, sourceID, limit any) *gomock.Call {
+// ListByHook indicates an expected call of ListByHook.
+func (mr *MockHookEventRepoMockRecorder) ListByHook(ctx, hookID, limit any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListBySource", reflect.TypeOf((*MockHookEventRepo)(nil).ListBySource), ctx, sourceID, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByHook", reflect.TypeOf((*MockHookEventRepo)(nil).ListByHook), ctx, hookID, limit)
 }
 
 // ListRecent mocks base method.
@@ -350,18 +224,4 @@ func (m *MockHookEventRepo) ListRecent(ctx context.Context, limit int) ([]*hook_
 func (mr *MockHookEventRepoMockRecorder) ListRecent(ctx, limit any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRecent", reflect.TypeOf((*MockHookEventRepo)(nil).ListRecent), ctx, limit)
-}
-
-// Update mocks base method.
-func (m *MockHookEventRepo) Update(ctx context.Context, e *hook_entity.HookEvent) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Update", ctx, e)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Update indicates an expected call of Update.
-func (mr *MockHookEventRepoMockRecorder) Update(ctx, e any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockHookEventRepo)(nil).Update), ctx, e)
 }

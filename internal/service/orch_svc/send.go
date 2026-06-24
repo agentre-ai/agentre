@@ -36,6 +36,9 @@ func (s *orchSvc) Send(ctx context.Context, callerSessionID, taskID int64, messa
 		logger.Ctx(ctx).Warn("orch.Send: 更新父任务状态失败(非致命)", zap.Int64("task", caller.ID), zap.Error(err))
 	}
 
+	// 任务重新进入 running，通知前端刷新 Run 状态。
+	s.emitRunUpdated(ctx, tk.RunID)
+
 	s.enqueueRun(tk.RunID, tk, message) // 复用调度器 + watchCompletion，同节点不新增 Task
 	return nil
 }

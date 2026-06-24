@@ -9,6 +9,7 @@ import {
   Search,
   Settings,
   TerminalSquare,
+  Trash2,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -61,6 +62,10 @@ import type { AgentSession } from "./agent-list";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useRemoteDevices } from "./remote-devices/use-remote-devices";
 import { AgentAvatar } from "./primitives";
+import {
+  DeleteProjectDialog,
+  type DeleteProjectTarget,
+} from "./delete-project-dialog";
 import { ProjectNewDialog } from "./project-new-dialog";
 import { ProjectSettingsDrawer } from "./project-settings-drawer";
 import { ResizableSidebar } from "./resizable-sidebar";
@@ -153,6 +158,8 @@ function ProjectsPage() {
   const [newDialogOpen, setNewDialogOpen] = React.useState(false);
   const [newDialogParent, setNewDialogParent] = React.useState(0);
   const [settingsProjectID, setSettingsProjectID] = React.useState(0);
+  const [deleteTarget, setDeleteTarget] =
+    React.useState<DeleteProjectTarget | null>(null);
   const [reorderError, setReorderError] = React.useState<string | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -436,6 +443,7 @@ function ProjectsPage() {
                   onSelect={selectOnTab}
                   onOpenSettings={(id) => setSettingsProjectID(id)}
                   onAddSubProject={(id) => openCreateDialog(id)}
+                  onDelete={(id, name) => setDeleteTarget({ id, name })}
                   dragDisabled={dragDisabled}
                 />
               </div>
@@ -460,6 +468,14 @@ function ProjectsPage() {
         onChanged={refreshProjectData}
         onDeleted={() => {
           setSettingsProjectID(0);
+          refreshProjectData();
+        }}
+      />
+      <DeleteProjectDialog
+        target={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onDeleted={() => {
+          setDeleteTarget(null);
           refreshProjectData();
         }}
       />
@@ -605,6 +621,7 @@ type ProjectCardProps = {
   onSelect: (sel: ProjectSelection | null, opts?: { newTab?: boolean }) => void;
   onOpenSettings: (id: number) => void;
   onAddSubProject: (parentID: number) => void;
+  onDelete: (id: number, name: string) => void;
   drag?: ProjectDragState;
 };
 
@@ -742,6 +759,7 @@ function ProjectCard({
   onSelect,
   onOpenSettings,
   onAddSubProject,
+  onDelete,
   drag,
 }: ProjectCardProps) {
   const { t } = useTranslation();
@@ -957,6 +975,7 @@ function ProjectCard({
           onSelect={onSelect}
           onOpenSettings={onOpenSettings}
           onAddSubProject={onAddSubProject}
+          onDelete={onDelete}
           dragDisabled={!drag}
         />
       </div>
@@ -1119,6 +1138,14 @@ function ProjectCard({
                     })
                   }
                 />
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => onDelete(project.id, project.name)}
+                >
+                  <Trash2 className="size-3.5" aria-hidden="true" />
+                  {t("projects.actions.deleteProject")}
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
