@@ -4,12 +4,12 @@
 // 类型暴露给前端,因此字段名要稳定、json tag 要明确。
 package workflow_svc
 
-// WorkflowItem 单条流程(含使用中群数,给列表/预览/删除确认用)。
+// WorkflowItem 单条流程(含使用中 Run 数,给列表/预览/删除确认用)。
 type WorkflowItem struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`
 	Content    string `json:"content"`
-	GroupCount int    `json:"groupCount"`
+	RunCount   int    `json:"runCount"`
 	Createtime int64  `json:"createtime"`
 	Updatetime int64  `json:"updatetime"`
 }

@@ -116,7 +116,7 @@ func (s *workflowtoolSvc) deleteWorkflow(ctx context.Context, rawArgs json.RawMe
 	if _, err := s.command.Delete(ctx, &workflow_svc.DeleteWorkflowRequest{ID: args.ID}); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("已删除流程「%s」(id=%d,原被 %d 个群使用)", cur.Name, args.ID, cur.GroupCount), nil
+	return fmt.Sprintf("已删除流程「%s」(id=%d,原被 %d 个 Run 使用)", cur.Name, args.ID, cur.RunCount), nil
 }
 
 // loadWorkflow 从 List 里按 id 找现值(update merge / delete 文案需要)。Items 是 []*WorkflowItem。

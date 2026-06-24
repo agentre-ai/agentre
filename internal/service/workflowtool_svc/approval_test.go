@@ -209,7 +209,7 @@ func TestWorkflowApproval_UpdateMerge(t *testing.T) {
 		// loadWorkflow 内部调 query.List 找现值
 		d.query.EXPECT().List(gomock.Any(), gomock.Any()).Return(&workflow_svc.ListWorkflowsResponse{
 			Items: []*workflow_svc.WorkflowItem{
-				{ID: 3, Name: "旧名称", Content: "步骤一:原始内容", GroupCount: 2},
+				{ID: 3, Name: "旧名称", Content: "步骤一:原始内容", RunCount: 2},
 			},
 		}, nil)
 		apvCh := beginCh(d, 99)
@@ -241,16 +241,16 @@ func TestWorkflowApproval_UpdateMerge(t *testing.T) {
 }
 
 func TestWorkflowApproval_DeleteMessage(t *testing.T) {
-	Convey("workflow_delete → result 文案含原 GroupCount", t, func() {
+	Convey("workflow_delete → result 文案含原 RunCount", t, func() {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		s, d := newWriteSvc(ctrl)
 		d.lookup.EXPECT().Find(gomock.Any(), int64(7)).Return(workflowEnabledAgent(7), nil)
 
-		// loadWorkflow 取现值(含 GroupCount=5)
+		// loadWorkflow 取现值(含 RunCount=5)
 		d.query.EXPECT().List(gomock.Any(), gomock.Any()).Return(&workflow_svc.ListWorkflowsResponse{
 			Items: []*workflow_svc.WorkflowItem{
-				{ID: 4, Name: "待删流程", GroupCount: 5, Content: "内容"},
+				{ID: 4, Name: "待删流程", RunCount: 5, Content: "内容"},
 			},
 		}, nil)
 		apvCh := beginCh(d, 99)
@@ -267,7 +267,7 @@ func TestWorkflowApproval_DeleteMessage(t *testing.T) {
 		body := w.Body.String()
 		So(body, ShouldContainSubstring, "已删除流程")
 		So(body, ShouldContainSubstring, "待删流程")
-		// result 应含原 GroupCount
+		// result 应含原 RunCount
 		So(body, ShouldContainSubstring, "5")
 	})
 }

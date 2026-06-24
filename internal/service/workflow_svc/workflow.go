@@ -1,5 +1,5 @@
 // Package workflow_svc 流程(剧本库)业务服务:列表/增改删,供 Wails 绑定层调用。
-// 流程注入(主持人每轮读绑定流程)在 group_svc,不在本包。
+// 流程注入(Leader 每次 Run 启动时读取快照)在编排 runtime,不在本包。
 package workflow_svc
 
 import (
@@ -11,7 +11,7 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/workflow_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
-	"github.com/agentre-ai/agentre/internal/repository/group_repo"
+	"github.com/agentre-ai/agentre/internal/repository/orch_repo"
 	"github.com/agentre-ai/agentre/internal/repository/workflow_repo"
 )
 
@@ -30,39 +30,39 @@ var defaultWorkflow WorkflowSvc = &workflowSvc{}
 // Workflow 取默认服务单例。
 func Workflow() WorkflowSvc { return defaultWorkflow }
 
-// groupCounts 统计每个流程被多少个 active 群绑定(列表「使用中群数」与删除确认提示用)。
-func (s *workflowSvc) groupCounts(ctx context.Context) (map[int64]int, error) {
-	groups, err := group_repo.Group().List(ctx)
+// runCounts 统计每个流程被多少个编排 Run 引用(列表「使用中 Run 数」与删除确认提示用)。
+func (s *workflowSvc) runCounts(ctx context.Context) (map[int64]int, error) {
+	runs, err := orch_repo.Run().List(ctx)
 	if err != nil {
 		return nil, err
 	}
 	counts := make(map[int64]int)
-	for _, g := range groups {
-		if g.WorkflowID > 0 {
-			counts[g.WorkflowID]++
+	for _, r := range runs {
+		if r.FlowID > 0 {
+			counts[r.FlowID]++
 		}
 	}
 	return counts, nil
 }
 
-func toItem(w *workflow_entity.Workflow, groupCount int) *WorkflowItem {
+func toItem(w *workflow_entity.Workflow, runCount int) *WorkflowItem {
 	return &WorkflowItem{
 		ID:         w.ID,
 		Name:       w.Name,
 		Content:    w.Content,
-		GroupCount: groupCount,
+		RunCount:   runCount,
 		Createtime: w.Createtime,
 		Updatetime: w.Updatetime,
 	}
 }
 
-// List 返回全部 active 流程 + 各自使用中群数。
+// List 返回全部 active 流程 + 各自使用中 Run 数。
 func (s *workflowSvc) List(ctx context.Context, _ *ListWorkflowsRequest) (*ListWorkflowsResponse, error) {
 	rows, err := workflow_repo.Workflow().List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	counts, err := s.groupCounts(ctx)
+	counts, err := s.runCounts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func (s *workflowSvc) Update(ctx context.Context, req *UpdateWorkflowRequest) (*
 	if err := workflow_repo.Workflow().Update(ctx, w); err != nil {
 		return nil, err
 	}
-	counts, err := s.groupCounts(ctx)
+	counts, err := s.runCounts(ctx)
 	if err != nil {
 		return nil, err
 	}

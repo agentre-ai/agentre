@@ -1774,13 +1774,13 @@
     "subtitle": "Reusable collaboration SOPs; the host gets the latest bound workflow every round",
     "new": "New workflow",
     "empty": "No workflows yet — click \"New workflow\" to start",
-    "groupCount": "Used by {{count}} groups",
-    "groupCount_one": "Used by 1 group",
+    "runCount": "Used by {{count}} runs",
+    "runCount_one": "Used by 1 run",
     "updatedAt": "Updated {{time}}",
     "edit": "Edit workflow",
     "delete": "Delete",
     "preview": {
-      "liveHint": "Changes take effect immediately: running groups get the latest content next round",
+      "liveHint": "Changes take effect immediately: in-progress runs get the latest content next round",
       "empty": "Select a workflow to preview"
     },
     "editor": {
@@ -1795,15 +1795,15 @@
     },
     "deleteConfirm": {
       "title": "Delete workflow",
-      "desc": "\"{{name}}\" is used by {{count}} groups; after deletion they fall back to \"no workflow\". This cannot be undone.",
-      "desc_one": "\"{{name}}\" is used by 1 group; after deletion it falls back to \"no workflow\". This cannot be undone.",
+      "desc": "\"{{name}}\" is used by {{count}} runs; after deletion they fall back to \"no workflow\". This cannot be undone.",
+      "desc_one": "\"{{name}}\" is used by 1 run; after deletion it falls back to \"no workflow\". This cannot be undone.",
       "descUnused": "Deleting \"{{name}}\" cannot be undone.",
       "confirm": "Delete workflow"
     },
     "manager": {
       "searchPlaceholder": "Search workflow name or body",
-      "metaLive": "Used by {{count}} groups · updated {{time}} · changes apply immediately",
-      "metaLive_one": "Used by {{count}} group · updated {{time}} · changes apply immediately",
+      "metaLive": "Used by {{count}} runs · updated {{time}} · changes apply immediately",
+      "metaLive_one": "Used by 1 run · updated {{time}} · changes apply immediately",
       "metaUnused": "Unused · updated {{time}} · changes apply immediately",
       "saveHint": "⌘ + Enter to save · Esc to cancel"
     },

@@ -1774,13 +1774,13 @@
     "subtitle": "跨群复用的协作流程(SOP);主持人每轮注入绑定流程的最新内容",
     "new": "新建流程",
     "empty": "还没有流程,点击「新建流程」开始",
-    "groupCount": "{{count}} 个群使用中",
-    "groupCount_one": "{{count}} 个群使用中",
+    "runCount": "{{count}} 个 Run 使用中",
+    "runCount_one": "{{count}} 个 Run 使用中",
     "updatedAt": "更新于 {{time}}",
     "edit": "编辑流程",
     "delete": "删除",
     "preview": {
-      "liveHint": "修改即时生效:进行中的群下一轮即注入最新正文",
+      "liveHint": "修改即时生效:进行中的 Run 下一轮即注入最新正文",
       "empty": "选择左侧流程查看正文"
     },
     "editor": {
@@ -1795,15 +1795,15 @@
     },
     "deleteConfirm": {
       "title": "删除流程",
-      "desc": "「{{name}}」正被 {{count}} 个群使用;删除后这些群按「不绑定流程」处理,且不可恢复。",
-      "desc_one": "「{{name}}」正被 1 个群使用;删除后该群按「不绑定流程」处理,且不可恢复。",
+      "desc": "「{{name}}」正被 {{count}} 个 Run 使用;删除后这些 Run 按「不绑定流程」处理,且不可恢复。",
+      "desc_one": "「{{name}}」正被 1 个 Run 使用;删除后该 Run 按「不绑定流程」处理,且不可恢复。",
       "descUnused": "删除「{{name}}」后不可恢复。",
       "confirm": "删除流程"
     },
     "manager": {
       "searchPlaceholder": "搜索流程名称或正文",
-      "metaLive": "{{count}} 个群使用中 · 更新于 {{time}} · 修改即时生效",
-      "metaLive_one": "{{count}} 个群使用中 · 更新于 {{time}} · 修改即时生效",
+      "metaLive": "{{count}} 个 Run 使用中 · 更新于 {{time}} · 修改即时生效",
+      "metaLive_one": "{{count}} 个 Run 使用中 · 更新于 {{time}} · 修改即时生效",
       "metaUnused": "未使用 · 更新于 {{time}} · 修改即时生效",
       "saveHint": "⌘ + Enter 保存 · Esc 取消"
     },
