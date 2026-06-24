@@ -4,12 +4,13 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRegistry(t *testing.T) {
 	defs := Registry()
-	require.Len(t, defs, 4)
+	require.Len(t, defs, 5)
 	require.Equal(t, "org", defs[0].Key)
 	require.Equal(t, "/mcp/org/", defs[0].MCPPath)
 	require.Contains(t, defs[0].ToolNames, "org_get")
@@ -21,7 +22,7 @@ func TestRegistry(t *testing.T) {
 	_, ok = Lookup("nope")
 	require.False(t, ok)
 
-	require.Equal(t, []string{"org", "workflow", "group_create", "subagent"}, Keys())
+	require.Equal(t, []string{"org", "workflow", "group_create", "subagent", "orchestrate"}, Keys())
 }
 
 func TestRegistry_HasGroupCreate(t *testing.T) {
@@ -65,4 +66,12 @@ func TestSubagentRegistered(t *testing.T) {
 	if !slices.Contains(Keys(), KeySubagent) {
 		t.Fatal("KeySubagent missing from Keys()")
 	}
+}
+
+func TestRegistry_HasOrchestrate(t *testing.T) {
+	d, ok := Lookup(KeyOrchestrate)
+	assert.True(t, ok)
+	assert.Equal(t, "/mcp/orchestrate/", d.MCPPath)
+	assert.ElementsMatch(t, []string{"agent_list", "dispatch", "ask", "send", "finish", "reply"}, d.ToolNames)
+	assert.Contains(t, Keys(), KeyOrchestrate)
 }

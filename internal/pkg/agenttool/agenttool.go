@@ -24,6 +24,9 @@ const KeyGroupCreate = "group_create"
 // KeySubagent 调用子 agent 工具(把子任务委派给另一具名 agent,同步拿回输出)。
 const KeySubagent = "subagent"
 
+// KeyOrchestrate 编排工具集(dispatch/ask/reply/send/finish + agent_list):异步并行多发 + 完成回报续轮。
+const KeyOrchestrate = "orchestrate"
+
 var registry = []Definition{
 	{Key: KeyOrg, MCPPath: "/mcp/org/", ToolNames: []string{
 		"org_get",
@@ -35,6 +38,7 @@ var registry = []Definition{
 	}},
 	{Key: KeyGroupCreate, MCPPath: "/mcp/group/", ToolNames: []string{"group_create"}},
 	{Key: KeySubagent, MCPPath: "/mcp/subagent/", ToolNames: []string{"agent_list", "agent_call"}},
+	{Key: KeyOrchestrate, MCPPath: "/mcp/orchestrate/", ToolNames: []string{"agent_list", "dispatch", "ask", "send", "finish", "reply"}},
 }
 
 // Registry 返回全部内置工具定义(只读副本)。
