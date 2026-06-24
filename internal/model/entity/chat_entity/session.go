@@ -49,6 +49,9 @@ type Session struct {
 	// GroupID = 0 表示普通单 agent 会话；> 0 时为群聊 backing session，归属该群聊。
 	// 群聊成员 session 在默认会话列表中按 group_id=0 过滤隐藏。
 	GroupID int64 `gorm:"column:group_id;type:bigint;not null;default:0"`
+	// RunID = 0 表示普通会话；> 0 时为编排 Run 的子会话（dispatch 分配给子 agent 的一次性会话）。
+	// 编排子会话在默认会话列表中按 run_id=0 过滤隐藏。
+	RunID int64 `gorm:"column:run_id;type:bigint;not null;default:0"`
 	// Purpose 标识会话的内部用途；普通顶层会话为空串。子 agent 委派会话(agent_call)
 	// 落 SessionPurposeSubagent —— 这类会话一次性隔离、不是用户顶层会话，repo 层在所有
 	// 会话列表/计数里无条件隐藏它(与按 group_id 区分的群成员 backing session 不同)。

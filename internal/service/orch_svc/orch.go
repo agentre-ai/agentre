@@ -33,6 +33,8 @@ type orchSvc struct {
 	approval ApprovalGateway
 	emit     Emitter
 
+	gatewayBaseURL string
+
 	approvalTimeout time.Duration
 
 	// enqueue 异步触发钩子：nil = 使用 enqueueRun 真实实现；测试注入 no-op 避免竞态。
@@ -64,3 +66,6 @@ func Default() *orchSvc { return defaultOrch }
 func (s *orchSvc) RegisterDeps(chat ChatGateway, agents AgentLookup, runs orch_repo.RunRepo, tasks orch_repo.TaskRepo, approval ApprovalGateway, emit Emitter) {
 	s.chat, s.agents, s.runs, s.tasks, s.approval, s.emit = chat, agents, runs, tasks, approval, emit
 }
+
+// SetGatewayBaseURL 由 bootstrap 在 gateway 起好后注入；mirror subagent_svc。
+func (s *orchSvc) SetGatewayBaseURL(u string) { s.gatewayBaseURL = u }

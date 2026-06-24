@@ -63,10 +63,11 @@ func Session() SessionRepo             { return defaultSession }
 func RegisterSession(impl SessionRepo) { defaultSession = impl }
 func NewSession() SessionRepo          { return &sessionRepo{} }
 
-// defaultSessionScope 限定为「普通单 agent 会话」(排除群聊成员 backing session)。
+// defaultSessionScope 限定为「普通单 agent 会话」(排除群聊成员 backing session 和编排子会话)。
 // 所有默认会话列表/计数查询统一挂这个 scope, 避免逐个手写 group_id = 0 漏一个。
+// run_id = 0 将 dispatch 创建的编排子会话（run_id>0）挡出普通会话列表。
 func defaultSessionScope(db *gorm.DB) *gorm.DB {
-	return db.Where("group_id = ?", 0)
+	return db.Where("group_id = ? AND run_id = ?", 0, 0)
 }
 
 // nonSubagentScope 排除子 agent 委派会话(purpose='subagent_call')。这类会话由 agent_call
