@@ -24,7 +24,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/app_setting_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/department_repo"
-	"github.com/agentre-ai/agentre/internal/repository/group_repo"
 	"github.com/agentre-ai/agentre/internal/repository/hook_repo"
 	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
@@ -35,7 +34,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 	"github.com/agentre-ai/agentre/internal/service/app_settings_svc"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
-	"github.com/agentre-ai/agentre/internal/service/group_svc"
 	"github.com/agentre-ai/agentre/internal/service/hooktool_svc"
 	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 	"github.com/agentre-ai/agentre/internal/service/notification_svc"
@@ -117,10 +115,6 @@ func Init(ctx context.Context) (*Runtime, error) {
 	project_repo.RegisterProject(project_repo.NewProject())
 	project_repo.RegisterProjectAgent(project_repo.NewProjectAgent())
 	project_location_repo.RegisterProjectLocation(project_location_repo.NewProjectLocation())
-	group_repo.RegisterGroup(group_repo.NewGroup())
-	group_repo.RegisterMember(group_repo.NewMember())
-	group_repo.RegisterMessage(group_repo.NewMessage())
-	group_repo.RegisterTask(group_repo.NewTask())
 	workflow_repo.RegisterWorkflow(workflow_repo.NewWorkflow())
 	orch_repo.RegisterRun(orch_repo.NewRun())
 	orch_repo.RegisterTask(orch_repo.NewTask())
@@ -158,12 +152,6 @@ func Init(ctx context.Context) (*Runtime, error) {
 	app_settings_svc.RegisterGateway(gw)
 	chat_svc.RegisterGateway(gw)
 
-	// 挂群聊 group_send MCP handler 到 gateway，并把 gateway base URL 注入 group_svc——
-	// agent 子进程通过 <base>/mcp/group/ 回投消息。gateway 绑定失败时 BaseURL() 返回空串，
-	// group MCP 不可达(软降级，App 继续)。
-	gw.RegisterMCP("/mcp/group/", group_svc.Default().MCPHandler())
-	group_svc.Default().SetGatewayBaseURL(gw.BaseURL())
-
 	// 挂组织架构工具 MCP handler(/mcp/org/),并注册 TurnMCPProvider:
 	// agent 开了 org 工具的会话 turn 注入该 MCP server(审批在服务端,见 orgtool_svc)。
 	// 注意:RegisterDeps(含 chat_svc.Chat() 作为 ApprovalGateway)延迟到 app.go
@@ -175,11 +163,6 @@ func Init(ctx context.Context) (*Runtime, error) {
 	gw.RegisterMCP("/mcp/workflow/", workflowtool_svc.Default().MCPHandler())
 	workflowtool_svc.Default().SetGatewayBaseURL(gw.BaseURL())
 	chat_svc.RegisterTurnMCPProvider(workflowtool_svc.Default().BuildTurnMCP)
-	// group_create:单聊轮注入(群成员轮在 provider 内按 groupID 跳过)。
-	chat_svc.RegisterTurnMCPProvider(group_svc.Default().BuildCreateTurnMCP)
-	// 群成员 backing session 的群上下文(group_send MCP + 群 system-prompt 后缀):
-	// 用户直接 Send/Edit/Regenerate(不经 scheduler)时补齐,修设计问题⑥。
-	chat_svc.RegisterTurnExtrasProvider(group_svc.Default().BuildSendTurnExtras)
 	// 挂「调用子 agent」工具 MCP handler(/mcp/subagent/) + 注册 TurnMCPProvider:
 	// agent 开了 subagent 工具的会话 turn 注入该 MCP server(无审批门, 见 subagent_svc)。
 	gw.RegisterMCP("/mcp/subagent/", subagent_svc.Default().MCPHandler())
@@ -199,7 +182,7 @@ func Init(ctx context.Context) (*Runtime, error) {
 	gw.RegisterMCP("/mcp/hook/", hooktool_svc.Default().MCPHandler())
 	hooktool_svc.Default().SetGatewayBaseURL(gw.BaseURL())
 	chat_svc.RegisterTurnMCPProvider(hooktool_svc.Default().BuildTurnMCP)
-	// 远端执行(agentred):daemon 上 CLI 子进程访问内置工具 MCP(org/subagent/group/
+	// 远端执行(agentred):daemon 上 CLI 子进程访问内置工具 MCP(org/subagent/
 	// workflow)会被 daemon 改写成 daemon 本地 URL,再经 WS 反向请求隧道回 desktop。这里
 	// 装配把隧道请求重放到 desktop 本机 gateway 的 dispatcher。无 client 超时:approval 类
 	// 工具可挂几分钟,由 MCP handler 自身上限收口(见 approvalTimeout)。
@@ -255,7 +238,7 @@ func loadProxyAddr(ctx context.Context) (string, int) {
 	}
 	// 环境变量覆盖(最高优先级):e2e 用 AGENTRE_PROXY_PORT=0 绑 OS 临时端口,与已运行的正式
 	// Agentre(固定 52401)互不抢端口,保证 gateway 在 e2e 中可靠起来(否则 BaseURL 为空、
-	// group_send 之类经 gateway 的回投全部失效)。生产不设此变量,行为不变。
+	// orchestrate 之类经 gateway 的回投全部失效)。生产不设此变量,行为不变。
 	if p, ok := proxyPortFromEnv(); ok {
 		port = p
 	}

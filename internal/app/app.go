@@ -24,7 +24,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 	"github.com/agentre-ai/agentre/internal/service/data_svc"
 	"github.com/agentre-ai/agentre/internal/service/department_svc"
-	"github.com/agentre-ai/agentre/internal/service/group_svc"
 	"github.com/agentre-ai/agentre/internal/service/hook_svc"
 	"github.com/agentre-ai/agentre/internal/service/hooktool_svc"
 	"github.com/agentre-ai/agentre/internal/service/orch_svc"
@@ -210,10 +209,6 @@ func (a *App) registerChatService() {
 		wailsruntime.EventsEmit(a.ctx, name, payload)
 	})
 	chat_svc.RegisterChat(chat_svc.NewChat(emitter))
-
-	group_svc.SetEmitter(group_svc.EmitterFunc(func(_ context.Context, name string, payload any) {
-		wailsruntime.EventsEmit(a.ctx, name, payload)
-	}))
 
 	// 注入 orgtool_svc 依赖:必须在 RegisterChat 之后执行,因为 chat_svc.Chat()
 	// 在此之前为 nil(chat 服务是懒注册的)。
