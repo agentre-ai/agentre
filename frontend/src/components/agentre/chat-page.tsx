@@ -33,10 +33,12 @@ import {
 } from "@/stores/attention-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useCommandPaletteStore } from "@/stores/command-palette-store";
+import { useOrchRunListStore } from "@/stores/orch-run-list-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { AgentGroup, AgentPanelSection } from "./agent-list";
+import { RunList } from "./orchestration/run-list";
 import type { AgentSession } from "./agent-list";
 import { GroupAvatar, StatusDot } from "./primitives";
 import { GroupNewDialog } from "./group-chat/group-new-dialog";
@@ -880,6 +882,23 @@ function ChatPage() {
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto px-2 py-3">
+          {/* 编排 Run 列表 — 固定在侧栏顶部 */}
+          <div className="mb-2">
+            <AgentPanelSection label={t("orchestration.section")} />
+            <RunList
+              activeRunId={
+                activeTab?.meta.kind === "run"
+                  ? activeTab.meta.runId
+                  : undefined
+              }
+              onSelect={(runId) => {
+                const run = useOrchRunListStore
+                  .getState()
+                  .runs.find((r) => r.id === runId);
+                useChatTabsStore.getState().openRun(runId, run?.goal ?? "");
+              }}
+            />
+          </div>
           {pinnedRows.length > 0 ? (
             <>
               <AgentPanelSection

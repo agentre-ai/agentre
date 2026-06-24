@@ -2391,6 +2391,7 @@
     }
   },
   "orchestration": {
+    "section": "Orchestration",
     "loading": "Loading…",
     "new": {
       "title": "New Orchestration",

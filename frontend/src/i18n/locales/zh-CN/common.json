@@ -2391,6 +2391,7 @@
     }
   },
   "orchestration": {
+    "section": "编排",
     "loading": "加载中…",
     "new": {
       "title": "新建编排流程",
