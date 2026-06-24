@@ -63,6 +63,9 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 		logger.Ctx(ctx).Warn("orch.Dispatch: 更新父任务状态失败(非致命,子任务照常跑)", zap.Int64("task", parent.ID), zap.Error(err))
 	}
 
+	// 子任务已创建，通知前端刷新 Run 状态。
+	s.emitRunUpdated(ctx, parent.RunID)
+
 	// 经调度器并发执行（Task 9 接管）；本步先直接触发首轮 + 挂完成监听。
 	s.fireEnqueue(parent.RunID, child, brief)
 

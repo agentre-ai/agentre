@@ -2,6 +2,7 @@
 package orch_svc
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -69,3 +70,11 @@ func (s *orchSvc) RegisterDeps(chat ChatGateway, agents AgentLookup, runs orch_r
 
 // SetGatewayBaseURL 由 bootstrap 在 gateway 起好后注入；mirror subagent_svc。
 func (s *orchSvc) SetGatewayBaseURL(u string) { s.gatewayBaseURL = u }
+
+// emitRunUpdated 向前端推送 orch:run:updated 事件，通知某 Run 的任务状态发生变化。
+// emit 为 nil 时（部分单测场景）跳过，不影响测试隔离。
+func (s *orchSvc) emitRunUpdated(ctx context.Context, runID int64) {
+	if s.emit != nil {
+		s.emit.Emit(ctx, "orch:run:updated", map[string]any{"runId": runID})
+	}
+}

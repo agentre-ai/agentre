@@ -40,10 +40,12 @@ func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Task, c
 			if err := s.tasks.Update(ctx, task); err != nil {
 				logger.Ctx(ctx).Error("orch.watchCompletion: 写子任务终态失败(可被对账纠正)", zap.Int64("task", task.ID), zap.String("status", task.Status), zap.Error(err))
 			}
+			s.emitRunUpdated(ctx, task.RunID)
 			s.reportToParent(ctx, task.ParentTaskID, task, result)
 			return
 		case "error":
 			s.markTaskError(ctx, task, "运行时崩溃")
+			s.emitRunUpdated(ctx, task.RunID)
 			return
 		default:
 			// running/waiting:还有未决事项(子任务/ask/审批),继续等下一轮。
@@ -66,6 +68,8 @@ func (s *orchSvc) reportToParent(ctx context.Context, parentTaskID int64, child 
 		if err := s.tasks.Update(ctx, parent); err != nil {
 			logger.Ctx(ctx).Error("orch.reportToParent: 父任务翻回 running 失败(可被对账纠正)", zap.Int64("task", parent.ID), zap.Error(err))
 		}
+		// 父翻转落库后补发事件，让前端取到翻转后的最新父状态（而非 done 分支 emit 时的旧快照）。
+		s.emitRunUpdated(ctx, parent.RunID)
 	}
 	msg := fmt.Sprintf("【子任务 #%d 完成 · agent#%d】\n%s", child.ID, child.AgentID, report)
 	if err := s.chat.SendAndForget(ctx, parent.SessionID, msg); err != nil {
