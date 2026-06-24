@@ -36,11 +36,14 @@
 | 工具 | 语义 | 轮次性质 | 复用 |
 | --- | --- | --- | --- |
 | `dispatch(agent, brief, {isolate?})` | 派一个任务给某 agent，新起一条子会话异步跑，**结果回报派发者** | **一次性调用-返回**；可对同一 agent 反复多次调用（这就是"子agent"） | `subagent.agent_call`，改为异步并行 |
-| `ask(agent, question)` | 向另一个 agent 提问，**答案回报提问者**；目标忙则排队、空了再答；提问方挂起等回复 | **多轮问答** | group 调度器 `pending/inflight` + 阻塞式工具调用 |
+| `ask(agent, question)` | 向另一个 agent 提问：生成 `ask_id`，把问题**注入对方活会话**（它带自身上下文回答），提问方挂起等回复 | **阻塞式工具调用** | 注入活会话 + `ask_id` 显式关联 |
+| `reply(ask_id, answer)` | **被提问方**用它回复——按 `ask_id` 原样带回，runtime 据此解开提问方的阻塞 | 一次性调用-返回 | `ask` 的配对工具 |
 | `send(taskId, message)` | 往**自己派发的某任务**会话里发后续/返工反馈（**同会话续做**），更新后的结果再回报自己 | 续接同一会话 | `chat_svc` 续轮 |
 | `finish(summary)` | 收口当前任务/Run，向上回报 | — | — |
 
 > "审核"= dispatch 给评审 agent；"合并"= dispatch 给某 agent 跑 git；"返工"= send 进原任务会话。都不是独立工具。
+>
+> **`ask`/`reply` 为何这样设计**：不靠"收下一轮 + 取末条 assistant 文本"猜答案——目标会话里别的轮（它自己的任务续轮、用户插话）会被误当答案，且把问题塞进对方会话才能保住其上下文。改为**显式 `ask_id` 关联**：问题注入对方**活会话**（上下文不丢、不 fork），对方调 `reply(ask_id, answer)` 回复，runtime 按 id 精确解开提问方阻塞，并校验回复者就是被提问者（防串答）。已用两个真 `claude` 实测：A `ask` → B（带私有上下文）`reply(ask_id,…)` → A 拿到**源自 B 上下文**的答案。
 
 ### 3.2 Runtime 机制（护栏 + 接力，非 agent 工具）
 
@@ -109,7 +112,7 @@
 | 能力 | 复用现有 |
 | --- | --- |
 | `dispatch` | `subagent_svc.agent_call`（改异步并行 + 完成回报，不再同步阻塞） |
-| `ask` 排队 | group 调度器 `pending/inflight` 投递 |
+| `ask`/`reply` | 注入对方活会话 + `ask_id` 显式关联（`pending[ask_id]` + 阻塞式工具调用 + 配对 `reply` 工具） |
 | 完成回报续轮 | `AutonomousTurnSource`（后台任务自主续轮） |
 | 任务执行 | `chat_svc` turn 机制 + `chat_entity.Session` |
 | 并行隔离 | 现有 worktree 基建 |
