@@ -23,7 +23,7 @@ import type { TabStatus } from "./tab";
 export type TabView = {
   id: string;
   title: string;
-  kind: "session" | "groupSession" | "new" | "terminal" | "group";
+  kind: "session" | "groupSession" | "new" | "terminal" | "group" | "run";
   avatar: { letter: string; color: string };
   isPreview: boolean;
   isPinned: boolean;
@@ -67,6 +67,26 @@ export function useTabsView(): TabView[] {
         title: groupTitle,
         kind: "group" as const,
         avatar: { letter: firstLetter(groupTitle), color: "#94a3b8" },
+        isPreview: tab.isPreview,
+        isPinned: tab.isPinned,
+        status: "idle" as const,
+        projectColor: null,
+        worktree: false,
+        pillText: null,
+        sessionId: 0,
+        projectChain: null,
+        worktreeBranch: null,
+        lastMessageAt: 0,
+      };
+    }
+    // run tab: 标题由 meta 自带,不走 session-meta 反查,状态恒为 idle。
+    if (tab.meta.kind === "run") {
+      const runTitle = tab.meta.title || t("chatTabs.fallbackSession");
+      return {
+        id: tab.id,
+        title: runTitle,
+        kind: "run" as const,
+        avatar: { letter: firstLetter(runTitle), color: "#94a3b8" },
         isPreview: tab.isPreview,
         isPinned: tab.isPinned,
         status: "idle" as const,

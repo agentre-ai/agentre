@@ -272,6 +272,25 @@ describe("ChatPanelHost", () => {
     expect(screen.queryByTestId("chat-panel-0")).not.toBeInTheDocument();
   });
 
+  it("Given a run tab is active, When ChatPanelHost renders, Then it renders OrchestrationRun with the tab's runId and title", () => {
+    useChatTabsStore.setState({
+      tabs: [
+        {
+          id: "run-tab-1",
+          meta: { kind: "run", runId: 1, title: "做登录页" },
+          isPreview: false,
+          isPinned: false,
+          pinAt: 0,
+          openedAt: 1000,
+        },
+      ],
+      activeTabId: "run-tab-1",
+    });
+    render(<ChatPanelHost />);
+    expect(screen.getByTestId("orchestration-run")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-panel-0")).not.toBeInTheDocument();
+  });
+
   it("Given a terminal tab is open, When ChatPanelHost renders, Then it shows terminal-panel not a ChatPanel", () => {
     useChatTabsStore.getState().openTerminal(7, "", undefined);
     render(<ChatPanelHost />);

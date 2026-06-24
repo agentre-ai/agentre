@@ -7,6 +7,7 @@ import { ChatPanel } from "../chat-panel";
 import { pruneChatPanelScrollState } from "../chat-panel-scroll-state";
 import { GroupChat } from "../group-chat";
 import { TerminalPanel } from "../terminal/terminal-panel";
+import { OrchestrationRun } from "../orchestration";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
 import type { ChatTab, TabKind } from "@/stores/chat-tabs-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
@@ -104,6 +105,12 @@ export function ChatPanelHost() {
           />
         ) : t.meta.kind === "group" ? (
           <HostedGroupPanel key={t.id} tab={t} active={t.id === activeTabId} />
+        ) : t.meta.kind === "run" ? (
+          <OrchestrationRun
+            key={t.id}
+            runId={t.meta.runId}
+            title={t.meta.title}
+          />
         ) : (
           <HostedPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ),
