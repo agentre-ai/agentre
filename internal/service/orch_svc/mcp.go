@@ -144,8 +144,12 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 		m.handleAgentList(w, r, id)
 	case "dispatch":
 		m.handleDispatch(w, r, id, ref, args)
-	case "ask", "send", "finish", "reply":
-		writeRPCError(w, id, -32000, "not implemented") // Tasks 10/11/12 replace these
+	case "ask":
+		m.handleAsk(w, r, id, ref, args)
+	case "reply":
+		m.handleReply(w, r, id, ref, args)
+	case "send", "finish":
+		writeRPCError(w, id, -32000, "not implemented") // Tasks 11/12 replace these
 	default:
 		writeRPCError(w, id, -32601, "unknown tool")
 	}
@@ -171,6 +175,48 @@ func (m *orchMCP) handleDispatch(w http.ResponseWriter, r *http.Request, id json
 		return
 	}
 	writeRPCResult(w, id, textResult(fmt.Sprintf("已派发,task_id=%d", taskID)))
+}
+
+func (m *orchMCP) handleAsk(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
+	var p struct {
+		Agent    string `json:"agent"`
+		Question string `json:"question"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		writeRPCError(w, id, -32700, "parse error: "+err.Error())
+		return
+	}
+	if p.Agent == "" || p.Question == "" {
+		writeRPCError(w, id, -32602, "agent and question are required")
+		return
+	}
+	ans, err := m.svc.Ask(r.Context(), ref.sessionID, p.Agent, p.Question)
+	if err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult(ans))
+}
+
+func (m *orchMCP) handleReply(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
+	var p struct {
+		AskID  string `json:"ask_id"`
+		Answer string `json:"answer"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		writeRPCError(w, id, -32700, "parse error: "+err.Error())
+		return
+	}
+	if p.AskID == "" || p.Answer == "" {
+		writeRPCError(w, id, -32602, "ask_id and answer are required")
+		return
+	}
+	// ref.agentID is the replier's identity (from the HMAC token) — this is how 防串答 works.
+	if err := m.svc.Reply(r.Context(), ref.agentID, p.AskID, p.Answer); err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult("已送达提问者"))
 }
 
 // textResult 将文本包装成 MCP content 格式（Tasks 10/11/12 复用）。

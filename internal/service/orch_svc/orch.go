@@ -10,8 +10,14 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/orch_repo"
 )
 
-// 占位类型，Task 10 引入真实定义后替换。
-type askEnvelope struct{}
+// askEnvelope 记录一个在飞的 ask：ask_id、提问方会话、接收方 agent 与会话、答案通道。
+type askEnvelope struct {
+	askID         string
+	askerSession  int64
+	targetAgentID int64
+	targetSession int64
+	reply         chan string
+}
 
 var (
 	errLeaderNotFound = errors.New("orch: leader agent not found")
