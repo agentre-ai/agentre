@@ -59,7 +59,10 @@ func (s *orchSvc) StopRun(ctx context.Context, runID int64) error {
 	s.setSchedulerPaused(runID, true)
 
 	// 级联取消活任务（非终态）。
-	rows, _ := s.tasks.ListByRun(ctx, runID)
+	rows, err := s.tasks.ListByRun(ctx, runID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("orch.StopRun: 取任务列表失败(级联取消可能不完整)", zap.Int64("run", runID), zap.Error(err))
+	}
 	for _, tk := range rows {
 		if tk.IsActive() {
 			tk.Status = orch_entity.TaskCanceled

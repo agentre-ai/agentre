@@ -26,9 +26,10 @@ func TestSend_ReopensSameTaskNoNewNode(t *testing.T) {
 	// Update is called at least once: assert task 11 is set to running.
 	// Also accept the caller flip (task 9 → AwaitingChildren) via AnyTimes.
 	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
-		if tk.ID == 11 {
+		switch tk.ID {
+		case 11:
 			So(tk.Status, ShouldEqual, orch_entity.TaskRunning)
-		} else if tk.ID == 9 {
+		case 9:
 			So(tk.Status, ShouldEqual, orch_entity.TaskAwaitingChildren)
 		}
 		return nil

@@ -91,4 +91,3 @@ func (s *orchSvc) allChildrenSettled(ctx context.Context, parent *orch_entity.Ta
 	}
 	return true
 }
-

@@ -13,13 +13,13 @@ type RunItemDTO struct {
 	Status        string `json:"status"`
 	ProjectID     int64  `json:"projectId"`
 	// FlowID 关联的编排流程库 ID（0=临时/无）。
-	FlowID      int64  `json:"flowId"`
+	FlowID int64 `json:"flowId"`
 	// FlowContent 创建时快照的流程正文。
 	FlowContent string `json:"flowContent"`
 	// RootTaskID 根 Task 的 ID。
-	RootTaskID  int64  `json:"rootTaskId"`
-	Createtime  int64  `json:"createtime"`
-	Updatetime  int64  `json:"updatetime"`
+	RootTaskID int64 `json:"rootTaskId"`
+	Createtime int64 `json:"createtime"`
+	Updatetime int64 `json:"updatetime"`
 }
 
 // TaskDTO 编排 Task 条目。

@@ -35,7 +35,8 @@ func TestBuildTurnMCP_InjectsWhenEnabled(t *testing.T) {
 	specs := orch_svc.Default().BuildTurnMCP(context.Background(), a, 500, 0)
 	assert.NotEmpty(t, specs)
 	assert.Equal(t, agenttool.KeyOrchestrate, specs[0].Name)
-	assert.Contains(t, specs[0].URL, "/mcp/orchestrate/")
+	assert.Equal(t, "http://127.0.0.1:9/mcp/orchestrate/", specs[0].URL)
+	assert.ElementsMatch(t, []string{"agent_list", "dispatch", "ask", "send", "finish", "reply"}, specs[0].Tools)
 	assert.NotEmpty(t, specs[0].Headers["Authorization"])
 
 	// No gateway → nil even when enabled.

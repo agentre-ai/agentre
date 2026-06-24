@@ -3,7 +3,10 @@ package orch_svc
 import (
 	"context"
 
+	"go.uber.org/zap"
+
 	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
+	"github.com/cago-frame/cago/pkg/logger"
 )
 
 // detectAskCycle 合并 dispatch 等待边（父等子回报）+ ask 等待边，DFS 找有向环。
@@ -27,7 +30,10 @@ func (s *orchSvc) detectAskCycle(ctx context.Context, runID int64) ([]int64, boo
 	s.askMu.Unlock()
 
 	// dispatch 边：父任务 P（awaiting-children）→ 非终态 dispatch 子任务 C。
-	rows, _ := s.tasks.ListByRun(ctx, runID)
+	rows, err := s.tasks.ListByRun(ctx, runID)
+	if err != nil {
+		logger.Ctx(ctx).Warn("orch.detectAskCycle: 取任务列表失败(死锁检测降级,仅用 ask 等待边)", zap.Int64("run", runID), zap.Error(err))
+	}
 	// 先建 ID→Task 索引，方便 O(1) 查父任务。
 	byID := make(map[int64]*orch_entity.Task, len(rows))
 	for _, t := range rows {

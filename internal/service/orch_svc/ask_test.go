@@ -18,16 +18,14 @@ import (
 
 // parseAskID 从注入消息里抽出 ask_id(消息形如 "【收到提问 ask_id=<id>】...")。
 func parseAskID(msg string) string {
-	const k = "ask_id="
-	i := strings.Index(msg, k)
-	if i < 0 {
+	_, after, found := strings.Cut(msg, "ask_id=")
+	if !found {
 		return ""
 	}
-	rest := msg[i+len(k):]
-	if j := strings.IndexAny(rest, "】\" "); j >= 0 {
-		return rest[:j]
+	if j := strings.IndexAny(after, "】\" "); j >= 0 {
+		return after[:j]
 	}
-	return rest
+	return after
 }
 
 func TestAsk_InjectLiveSessionThenReplyResolves(t *testing.T) {

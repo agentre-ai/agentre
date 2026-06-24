@@ -158,7 +158,7 @@ func TestWatchCompletion_ReleasesSlotOnChannelClose(t *testing.T) {
 
 		// 两个任务都必须发射：先等第一个 SendAndForget（任务 A），
 		// 它的 watchCompletion 因 closed channel 立即退出释放槽，然后任务 B 也发射。
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			select {
 			case <-sendCh:
 			case <-time.After(time.Second):
