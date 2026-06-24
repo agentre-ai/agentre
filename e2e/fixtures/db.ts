@@ -337,6 +337,45 @@ export function departmentCountByName(name: string): number {
   }
 }
 
+// orchestrationRunStatus returns the status of the latest orchestration_run, or null if none.
+// Read-only — proves the orchestration engine actually advanced the Run lifecycle at the source of
+// truth (DB), independent of the UI.
+export function orchestrationRunStatus(): string | null {
+  const db = new DatabaseSync(dbPath(), { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    const row = db
+      .prepare("SELECT status FROM orchestration_runs ORDER BY id DESC LIMIT 1")
+      .get() as { status: string } | undefined;
+    return row?.status ?? null;
+  } finally {
+    db.close();
+  }
+}
+
+export type OrchTaskRow = {
+  id: number;
+  status: string;
+  parentTaskId: number;
+};
+
+// orchTaskRows returns all orch_tasks rows (id, status, parentTaskId) ordered by id.
+// Read-only — proves dispatch created sub-tasks and they reached terminal state at the source of
+// truth, independent of the UI.
+export function orchTaskRows(): OrchTaskRow[] {
+  const db = new DatabaseSync(dbPath(), { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    return db
+      .prepare(
+        "SELECT id, status, parent_task_id AS parentTaskId FROM orch_tasks ORDER BY id ASC",
+      )
+      .all() as OrchTaskRow[];
+  } finally {
+    db.close();
+  }
+}
+
 // Count persisted assistant chat_messages whose text echoes the fake reply prefix. Read-only,
 // independent of the UI — proves an agent turn's reply actually hit disk (used to corroborate
 // rehydration after a reload). The fake's text lands in blocks_json, so match the raw column.
