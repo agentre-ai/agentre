@@ -187,7 +187,8 @@ function NodeTree({
     byDepth.get(d)!.push(node);
   }
 
-  const maxDepth = Math.max(...[...byDepth.keys()]);
+  // 兜底 0:byDepth 为空时 Math.max(...[]) 会得 -Infinity,加 0 锚定不变量
+  const maxDepth = Math.max(...[...byDepth.keys()], 0);
 
   return (
     // TODO(plan-1b): 大图时加缩放/适应/折叠/小地图工具条

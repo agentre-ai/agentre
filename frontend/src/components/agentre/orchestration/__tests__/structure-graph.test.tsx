@@ -135,6 +135,12 @@ describe("StructureGraph", () => {
     render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
 
     expect(screen.getByTestId("graph-deadlock-banner")).toBeInTheDocument();
+    // 死锁高亮必须落在正确的节点:cycle sessionId(99)→该任务 agentId(3),
+    // Leader(agentId 2)不在环上,不应被红环。验证 sessionId→agentId 映射真发生。
+    expect(screen.getByTestId("node-3").className).toMatch(/ring-destructive/);
+    expect(screen.getByTestId("node-2").className).not.toMatch(
+      /ring-destructive/,
+    );
   });
 
   it("empty 态（仅 Leader 根任务）渲染 graph-empty 引导文案", () => {
