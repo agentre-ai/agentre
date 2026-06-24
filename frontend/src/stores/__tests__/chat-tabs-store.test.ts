@@ -442,20 +442,6 @@ describe("chat-tabs-store · reconcileMissingSessions", () => {
     const s = useChatTabsStore.getState();
     expect(s.tabs.map((t) => t.meta.kind)).toEqual(["session", "terminal"]);
   });
-
-  it("保留由 group tab 打开的成员 backing session, 即使普通会话列表没有它", () => {
-    useChatTabsStore.getState().openGroup(5, "队");
-    useChatTabsStore.getState().openGroupMemberSession(5, 42, "前端");
-    useChatTabsStore.getState().reconcileMissingSessions(new Set());
-    const tabs = useChatTabsStore.getState().tabs;
-    expect(tabs.map((t) => t.meta.kind)).toEqual(["group", "groupSession"]);
-    expect(tabs[1].meta).toEqual({
-      kind: "groupSession",
-      groupId: 5,
-      sessionId: 42,
-      title: "前端",
-    });
-  });
 });
 
 describe("chat-tabs-store · hydrate from localStorage", () => {

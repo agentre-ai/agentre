@@ -58,11 +58,7 @@ export function TabStrip() {
   const sessionTabIds = React.useMemo(
     () =>
       tabs
-        .map((t) =>
-          t.meta.kind === "session" || t.meta.kind === "groupSession"
-            ? t.meta.sessionId
-            : 0,
-        )
+        .map((t) => (t.meta.kind === "session" ? t.meta.sessionId : 0))
         .filter((sid) => sid > 0),
     [tabs],
   );
@@ -72,7 +68,7 @@ export function TabStrip() {
     const bySid = new Map<number, true>();
     for (const x of attentionItems) bySid.set(x.sessionId, true);
     for (const t of tabs) {
-      if (t.meta.kind !== "session" && t.meta.kind !== "groupSession") {
+      if (t.meta.kind !== "session") {
         continue;
       }
       if (bySid.has(t.meta.sessionId)) ids.add(t.id);

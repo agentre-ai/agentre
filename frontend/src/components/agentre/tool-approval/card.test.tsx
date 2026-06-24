@@ -10,16 +10,6 @@ vi.mock("../../../../wailsjs/go/app/App", () => ({
   AnswerToolApproval: vi.fn().mockResolvedValue(undefined),
 }));
 
-// group_create 批准落地后要刷新侧栏群列表;mock 掉 store 只断言 reload 被调。
-const mockGroupListReload = vi.hoisted(() =>
-  vi.fn().mockResolvedValue(undefined),
-);
-vi.mock("@/stores/group-list-store", () => ({
-  useGroupListStore: {
-    getState: () => ({ reload: mockGroupListReload }),
-  },
-}));
-
 describe("ToolApprovalCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -149,74 +139,6 @@ describe("ToolApprovalCard", () => {
           allow: true,
         }),
       );
-    });
-  });
-
-  describe("group_create", () => {
-    const groupCreatePending = (
-      overrides: Partial<ToolApprovalData> = {},
-    ): ToolApprovalData => ({
-      toolKey: "group_create",
-      requestId: "gc-1",
-      toolName: "group_create",
-      toolInput: {
-        title: "新功能开发组",
-        memberNames: ["开发"],
-        brief: "按设计稿重构",
-      },
-      status: "pending",
-      ...overrides,
-    });
-
-    it("routes group_create answers through the unified AnswerToolApproval", async () => {
-      const user = userEvent.setup();
-      render(
-        <ToolApprovalCard approval={groupCreatePending()} sessionId={42} />,
-      );
-      await user.click(screen.getByText("Approve"));
-      await waitFor(() => {
-        expect(AnswerToolApproval).toHaveBeenCalledTimes(1);
-      });
-      expect(AnswerToolApproval).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sessionId: 42,
-          requestId: "gc-1",
-          allow: true,
-        }),
-      );
-    });
-
-    it("reloads the group list when a group_create approval resolves approved", () => {
-      render(
-        <ToolApprovalCard
-          approval={groupCreatePending({
-            status: "approved",
-            result: "group created: id=12 title=新功能开发组",
-          })}
-          sessionId={42}
-        />,
-      );
-      expect(mockGroupListReload).toHaveBeenCalled();
-    });
-
-    it("does not reload the group list while pending or for non-group_create approvals", () => {
-      render(
-        <ToolApprovalCard approval={groupCreatePending()} sessionId={42} />,
-      );
-      render(
-        <ToolApprovalCard
-          approval={pending({ status: "approved", result: "done" })}
-          sessionId={42}
-        />,
-      );
-      expect(mockGroupListReload).not.toHaveBeenCalled();
-    });
-
-    it("shows the i18n label for group_create", () => {
-      render(
-        <ToolApprovalCard approval={groupCreatePending()} sessionId={42} />,
-      );
-      expect(screen.getByText("Create group chat")).toBeDefined();
     });
   });
 });

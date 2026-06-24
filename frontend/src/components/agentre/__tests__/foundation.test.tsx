@@ -254,21 +254,6 @@ describe("Agentre foundation components", () => {
     );
   });
 
-  it("Given a group backing session has only groupId, When SessionRow renders, Then it still shows the group marker", () => {
-    render(
-      <SessionRow
-        status="idle"
-        title="支付 / 结算小队 / 后端"
-        trailingLabel="now"
-        groupId={5}
-      />,
-    );
-
-    expect(
-      screen.getByRole("button", { name: /支付 \/ 结算小队/ }),
-    ).toHaveTextContent("Group");
-  });
-
   it("given notifications and user profiles are not available, when the top bar renders, then it omits those buttons", () => {
     render(
       <AppTopBar appName="Agentre" breadcrumb="CEO 助手" platform="windows" />,

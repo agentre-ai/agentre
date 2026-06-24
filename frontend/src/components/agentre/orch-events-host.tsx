@@ -26,7 +26,7 @@ export function OrchEventsHost(): React.ReactElement | null {
       unsubs.forEach((unsub) => {
         if (typeof unsub === "function") unsub();
       });
-      // 再用 EventsOff 兜底(与 GroupEventsHost 保持一致)
+      // 再用 EventsOff 兜底
       Object.values(ORCH_EVENTS).forEach((name) => EventsOff(name));
     };
   }, []);

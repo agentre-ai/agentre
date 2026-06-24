@@ -16,7 +16,6 @@ export { AgentGroup, AgentPanelSection, SessionRow } from "./agent-list";
 export type { AgentSession } from "./agent-list";
 export { ChatPage } from "./chat-page";
 export { ChatStreamsHost } from "./chat-streams-host";
-export { GroupEventsHost } from "./group-events-host";
 export { OrchEventsHost } from "./orch-events-host";
 export { OrchNotifier } from "./orch-notifier";
 export { TurnCompleteNotifier } from "./turn-complete-notifier";

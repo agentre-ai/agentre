@@ -29,7 +29,6 @@
     "expand": "Expand {{name}}",
     "newSession": "New {{name}} session",
     "openRecent": "Open {{name}} recent session",
-    "groupSession": "Group",
     "pinned": "Pinned",
     "running": "Running",
     "runningAria": "{{name}} has running sessions"
@@ -594,8 +593,7 @@
   "chatPage": {
     "add": {
       "aria": "New",
-      "newAgentChat": "New agent chat",
-      "newGroup": "New group"
+      "newAgentChat": "New agent chat"
     },
     "agents": "Agents",
     "filter": {
@@ -603,7 +601,6 @@
       "options": {
         "agents": "Agents",
         "all": "All",
-        "groups": "Group chats",
         "running": "Running",
         "unread": "Unread"
       }
@@ -677,86 +674,6 @@
       "session": "sess-{{id}}",
       "worktree": "worktree {{branch}}"
     }
-  },
-  "group": {
-    "title": "Groups",
-    "section": "Group Chats",
-    "tabs": { "members": "Members", "settings": "Settings", "group": "Group", "tasks": "Tasks" },
-    "roster": {
-      "host": "Host",
-      "members": "Members",
-      "invite": "Invite member",
-      "backToGroup": "← Back to group",
-      "openMember": "Open member"
-    },
-    "nickname": {
-      "edit": "Set group nickname",
-      "title": "Group nickname",
-      "identity": "Agent global name · won't change",
-      "hint": "Leave blank to use the real name \"{{name}}\". Visible in this group only.",
-      "taken": "\"{{name}}\" is already used by another member; pick another"
-    },
-    "runStatus": {
-      "running": "Running",
-      "waitingUser": "Waiting for you",
-      "paused": "Paused",
-      "idle": "Idle",
-      "error": "Error"
-    },
-    "rounds": "{{count}} rounds",
-    "controls": { "pause": "Pause", "stop": "Stop", "resume": "Resume" },
-    "composer": {
-      "placeholder": "Message the group… use @ to mention",
-      "send": "Send"
-    },
-    "settings": { "project": "Project", "noProject": "No project" },
-    "delete": {
-      "button": "Delete group",
-      "title": "Delete group?",
-      "description": "This removes the group. Member conversations are kept unless you choose to delete them below.",
-      "alsoSessions": "Also delete associated sessions",
-      "confirm": "Delete"
-    },
-    "task": {
-      "status": {
-        "open": "In progress",
-        "done": "Done",
-        "canceled": "Canceled"
-      },
-      "assignedTo": "Assigned to",
-      "deliveredTo": "Delivered to",
-      "verifies": "Verifies #{{no}}",
-      "sectionOpen": "In progress",
-      "sectionClosed": "Completed",
-      "empty": "No tasks yet",
-      "openAssignee": "Open assignee"
-    },
-    "you": "You",
-    "onlyXReceived": "Only {{name}} received this",
-    "new": {
-      "title": "New group",
-      "groupTitle": "Group title",
-      "groupTitlePlaceholder": "Frontend refactor squad",
-      "host": "Host",
-      "hostPlaceholder": "Select host",
-      "hostHint": "Only group_send-capable agents (claudecode) can host",
-      "project": "Project",
-      "projectNone": "(No project)",
-      "members": "Initial members",
-      "membersHint": "The host can invite more members anytime",
-      "addMember": "Add member",
-      "removeMember": "Remove {{name}}",
-      "noCandidates": "No agents available to add",
-      "create": "Create group",
-      "workflow": "Workflow",
-      "workflowNone": "None",
-      "workflowHint": "Optional; the host orchestrates by the latest content of this workflow",
-      "manageWorkflows": "Manage workflows"
-    }
-  },
-  "groupCreateCard": {
-    "created": "Group chat created",
-    "open": "Open group"
   },
   "commandPalette": {
     "chatSessions": {

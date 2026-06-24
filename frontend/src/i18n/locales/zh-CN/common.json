@@ -29,7 +29,6 @@
     "expand": "展开 {{name}}",
     "newSession": "新建 {{name}} 会话",
     "openRecent": "打开 {{name}} 最近会话",
-    "groupSession": "群聊",
     "pinned": "置顶",
     "running": "运行中",
     "runningAria": "{{name}} 有运行中的会话"
@@ -594,8 +593,7 @@
   "chatPage": {
     "add": {
       "aria": "新建",
-      "newAgentChat": "新建 Agent 会话",
-      "newGroup": "新建群聊"
+      "newAgentChat": "新建 Agent 会话"
     },
     "agents": "Agents",
     "filter": {
@@ -603,7 +601,6 @@
       "options": {
         "agents": "Agent",
         "all": "全部",
-        "groups": "群聊",
         "running": "运行中",
         "unread": "未读"
       }
@@ -677,86 +674,6 @@
       "session": "sess-{{id}}",
       "worktree": "worktree {{branch}}"
     }
-  },
-  "group": {
-    "title": "群聊",
-    "section": "群聊",
-    "tabs": { "members": "成员", "settings": "设置", "group": "群聊", "tasks": "任务" },
-    "roster": {
-      "host": "主持人",
-      "members": "成员",
-      "invite": "邀请成员",
-      "backToGroup": "← 返回群聊",
-      "openMember": "打开成员"
-    },
-    "nickname": {
-      "edit": "设置群昵称",
-      "title": "群昵称",
-      "identity": "Agent 全局名 · 不会被改",
-      "hint": "留空 = 使用本名「{{name}}」。仅本群可见。",
-      "taken": "「{{name}}」已被其他成员使用，换一个"
-    },
-    "runStatus": {
-      "running": "运行中",
-      "waitingUser": "等待你",
-      "paused": "已暂停",
-      "idle": "空闲",
-      "error": "出错"
-    },
-    "rounds": "已 {{count}} 轮",
-    "controls": { "pause": "暂停", "stop": "停止", "resume": "继续" },
-    "composer": {
-      "placeholder": "给群里发消息… 用 @ 提及成员",
-      "send": "发送"
-    },
-    "settings": { "project": "项目", "noProject": "未绑定项目" },
-    "delete": {
-      "button": "删除群",
-      "title": "删除群聊？",
-      "description": "将移除该群。成员会话默认保留,除非你勾选下面的选项一并删除。",
-      "alsoSessions": "同时删除关联的会话",
-      "confirm": "删除"
-    },
-    "task": {
-      "status": {
-        "open": "进行中",
-        "done": "已完成",
-        "canceled": "已取消"
-      },
-      "assignedTo": "指派给",
-      "deliveredTo": "交付给",
-      "verifies": "验证 #{{no}}",
-      "sectionOpen": "进行中",
-      "sectionClosed": "已完成",
-      "empty": "暂无任务",
-      "openAssignee": "打开执行成员"
-    },
-    "you": "你",
-    "onlyXReceived": "仅 {{name}} 收到",
-    "new": {
-      "title": "新建群聊",
-      "groupTitle": "群标题",
-      "groupTitlePlaceholder": "前端重构攻坚组",
-      "host": "主持人",
-      "hostPlaceholder": "选择主持人",
-      "hostHint": "仅支持 group_send 的 Agent（claudecode）可作为主持人",
-      "project": "项目",
-      "projectNone": "（不绑定项目）",
-      "members": "初始成员",
-      "membersHint": "主持人可在群里随时邀请更多成员加入",
-      "addMember": "添加成员",
-      "removeMember": "移除 {{name}}",
-      "noCandidates": "没有可加入的 Agent",
-      "create": "创建群聊",
-      "workflow": "协作流程",
-      "workflowNone": "不绑定",
-      "workflowHint": "可选;主持人将按该流程的最新内容编排协作",
-      "manageWorkflows": "管理流程"
-    }
-  },
-  "groupCreateCard": {
-    "created": "已创建群聊",
-    "open": "打开群聊"
   },
   "commandPalette": {
     "chatSessions": {

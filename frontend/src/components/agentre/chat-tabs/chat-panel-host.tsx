@@ -5,7 +5,6 @@ import { useTranslation } from "react-i18next";
 
 import { ChatPanel } from "../chat-panel";
 import { pruneChatPanelScrollState } from "../chat-panel-scroll-state";
-import { GroupChat } from "../group-chat";
 import { TerminalPanel } from "../terminal/terminal-panel";
 import { OrchestrationRun } from "../orchestration";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
@@ -103,8 +102,6 @@ export function ChatPanelHost() {
             tab={t}
             active={t.id === activeTabId}
           />
-        ) : t.meta.kind === "group" ? (
-          <HostedGroupPanel key={t.id} tab={t} active={t.id === activeTabId} />
         ) : t.meta.kind === "run" ? (
           <HostedOrchestrationRun
             key={t.id}
@@ -126,10 +123,7 @@ const HostedPanel = React.memo(function HostedPanel({
   tab: ChatTab;
   active: boolean;
 }) {
-  const sid =
-    tab.meta.kind === "session" || tab.meta.kind === "groupSession"
-      ? tab.meta.sessionId
-      : 0;
+  const sid = tab.meta.kind === "session" ? tab.meta.sessionId : 0;
   const isNewTab = tab.meta.kind === "new";
   const newAgentId = tab.meta.kind === "new" ? tab.meta.agentId : 0;
   const newProjectId = tab.meta.kind === "new" ? tab.meta.projectId : 0;
@@ -261,27 +255,7 @@ const HostedTerminalPanel = React.memo(function HostedTerminalPanel({
   );
 });
 
-const HostedGroupPanel = React.memo(function HostedGroupPanel({
-  tab,
-  active,
-}: {
-  tab: ChatTab;
-  active: boolean;
-}) {
-  const meta = tab.meta as Extract<TabKind, { kind: "group" }>;
-  return (
-    <div
-      data-tab-id={tab.id}
-      data-active={active}
-      aria-hidden={!active}
-      className={panelFrameClassName(active)}
-    >
-      <GroupChat groupId={meta.groupId} />
-    </div>
-  );
-});
-
-// run tab 的面板框包装器，与 HostedGroupPanel 结构完全一致，确保非激活时不可见
+// run tab 的面板框包装器，与 HostedTerminalPanel 结构完全一致，确保非激活时不可见
 const HostedOrchestrationRun = React.memo(function HostedOrchestrationRun({
   tab,
   active,

@@ -24,7 +24,6 @@ import {
   AppTopBar,
   ChatPage,
   ChatStreamsHost,
-  GroupEventsHost,
   OrchEventsHost,
   OrchNotifier,
   ChatTabsShortcuts,
@@ -865,9 +864,6 @@ function App() {
           unmount,但这里继续维持 Wails EventsOn,把 chunk/tool 事件累到全局
           store,切回来时 ChatPanel 能从 store 还原完整流式状态。*/}
       <ChatStreamsHost />
-      {/* 群运行态常驻订阅器:侧栏群行/成员 backing session 行不开群页也实时翻
-          running(订阅全局 groups:run_state 频道)。*/}
-      <GroupEventsHost />
       {/* 编排运行态常驻订阅器:订阅全部 6 个 orch:run:* 事件,刷新 orch-run-store
           与 orch-run-list-store,跨路由保持编排列表与详情实时更新。*/}
       <OrchEventsHost />

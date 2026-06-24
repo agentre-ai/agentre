@@ -4,13 +4,6 @@ export const CHAT_TABS_STORAGE_KEY = "agentre.chatTabs";
 
 type PersistMeta =
   | { kind: "session"; sessionId: number }
-  | { kind: "group"; groupId: number; title: string }
-  | {
-      kind: "groupSession";
-      groupId: number;
-      sessionId: number;
-      title: string;
-    }
   | {
       kind: "terminal";
       projectId: number;
@@ -55,8 +48,6 @@ function getStorage(): Storage | null {
 
 function persistable(t: ChatTab): PersistMeta | null {
   if (t.meta.kind === "session" && !t.isPreview) return t.meta;
-  if (t.meta.kind === "group") return t.meta;
-  if (t.meta.kind === "groupSession") return t.meta;
   if (t.meta.kind === "terminal") return t.meta;
   return null;
 }
@@ -135,42 +126,6 @@ export function readPersistedTabs(): {
           toChatTab(
             r.id,
             { kind: "session", sessionId: m.sessionId },
-            r.isPinned,
-            r.pinAt,
-            r.openedAt,
-            r.title,
-          ),
-        );
-      } else if (
-        m?.kind === "group" &&
-        typeof m.groupId === "number" &&
-        typeof m.title === "string"
-      ) {
-        tabs.push(
-          toChatTab(
-            r.id,
-            { kind: "group", groupId: m.groupId, title: m.title },
-            r.isPinned,
-            r.pinAt,
-            r.openedAt,
-            r.title,
-          ),
-        );
-      } else if (
-        m?.kind === "groupSession" &&
-        typeof m.groupId === "number" &&
-        typeof m.sessionId === "number" &&
-        typeof m.title === "string"
-      ) {
-        tabs.push(
-          toChatTab(
-            r.id,
-            {
-              kind: "groupSession",
-              groupId: m.groupId,
-              sessionId: m.sessionId,
-              title: m.title,
-            },
             r.isPinned,
             r.pinAt,
             r.openedAt,
