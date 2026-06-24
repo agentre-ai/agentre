@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/cago-frame/cago/pkg/i18n"
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
@@ -64,40 +66,62 @@ type AnswerUserQuestionResponse struct{}
 //  3. 反向转换 DTO → runtime 类型，再调 sink.SubmitAnswer
 func (s *chatSvc) AnswerUserQuestion(ctx context.Context, req *AnswerUserQuestionRequest) (*AnswerUserQuestionResponse, error) {
 	if req == nil || req.SessionID <= 0 || req.RequestID == "" {
+		if req != nil {
+			logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: invalid request",
+				zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID))
+		} else {
+			logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: request is nil")
+		}
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 	if !req.Skipped && len(req.Answers) == 0 {
+		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: answers required for non-skipped request",
+			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID))
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil || sess == nil {
+		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: session not found",
+			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID), zap.Error(err))
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 
 	a, err := agent_repo.Agent().Find(ctx, sess.AgentID)
 	if err != nil || a == nil {
+		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: agent not found",
+			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID), zap.Error(err))
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
 	}
 	if a.AgentBackendID <= 0 {
+		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: agent backend required",
+			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID))
 		return nil, i18n.NewError(ctx, code.AgentBackendRequired)
 	}
 	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
 	if err != nil || be == nil {
+		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: agent backend not found",
+			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID), zap.Error(err))
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
 
 	runner, err := s.selectRunner(ctx, be, sess.ID)
 	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: selectRunner failed",
+			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID), zap.Error(err))
 		return nil, i18n.NewError(ctx, code.AgentBackendTypeUnsupported)
 	}
 	sink, ok := runner.(agentruntime.AskAnswerSink)
 	if !ok {
+		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: runner does not implement AskAnswerSink",
+			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID))
 		return nil, i18n.NewError(ctx, code.AgentBackendTypeUnsupported)
 	}
 
 	rtAnswers := blocks.AnswersToRuntime(req.Answers)
 	if err := sink.SubmitAnswer(ctx, req.SessionID, req.RequestID, nil, rtAnswers, req.Skipped); err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.AnswerUserQuestion: SubmitAnswer failed",
+			zap.Int64("sessionId", req.SessionID), zap.String("requestId", req.RequestID), zap.Error(err))
 		return nil, err
 	}
 	return &AnswerUserQuestionResponse{}, nil
