@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
+
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
@@ -64,4 +66,22 @@ func (UserAskResolvedHandler) Apply(ctx context.Context, ev agentruntime.Event, 
 		tc.SessionTransitioner.MarkRunning(ctx, tc.Session, tc.Stream)
 	}
 	return nil
+}
+
+// MarkUnansweredUserAsksExpired finalize 时把仍未答/未跳过的 AskUserQuestion block
+// 标 expired —— 与 MarkRunningSubagentsCancelled / chatSvc.takeToolApprovals 同模式。
+// turn 结束后该卡再提交必然失败(claudecode SubmitAnswer 走 ErrNoActiveTurn / 无 waiter),
+// 标 expired 让前端锁卡并展示「已失效」,且落库后 reload 仍可见。
+// 返回被本次标记的 block 指针,供调用方 emit live 锁定 patch。
+func MarkUnansweredUserAsksExpired(finalBlocks []cagoblocks.ContentBlock) []*blocks.UserAskBlock {
+	var marked []*blocks.UserAskBlock
+	for _, b := range finalBlocks {
+		ua, ok := b.(*blocks.UserAskBlock)
+		if !ok || ua.Answered || ua.Skipped || ua.Expired {
+			continue
+		}
+		ua.Expired = true
+		marked = append(marked, ua)
+	}
+	return marked
 }
