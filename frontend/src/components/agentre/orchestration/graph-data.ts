@@ -1,10 +1,29 @@
 import type { app } from "../../../../wailsjs/go/models";
 
 export type TaskLite = app.TaskDTO;
-export type NodeStatus = "running" | "waiting" | "waiting-user" | "done" | "error" | "idle";
-export interface GraphNode { agentId: number; tasks: TaskLite[]; status: NodeStatus; isLeader: boolean; }
-export interface GraphEdge { from: number; to: number; kind: "dispatch" | "report"; }
-export interface TreeStats { nodes: number; subagents: number; depth: number; }
+export type NodeStatus =
+  | "running"
+  | "waiting"
+  | "waiting-user"
+  | "done"
+  | "error"
+  | "idle";
+export interface GraphNode {
+  agentId: number;
+  tasks: TaskLite[];
+  status: NodeStatus;
+  isLeader: boolean;
+}
+export interface GraphEdge {
+  from: number;
+  to: number;
+  kind: "dispatch" | "report";
+}
+export interface TreeStats {
+  nodes: number;
+  subagents: number;
+  depth: number;
+}
 
 function aggregate(tasks: TaskLite[]): NodeStatus {
   const s = new Set(tasks.map((t) => t.status));
@@ -17,7 +36,11 @@ function aggregate(tasks: TaskLite[]): NodeStatus {
   return "idle";
 }
 
-export function buildGraph(detail: app.RunDetailDTO): { nodes: GraphNode[]; edges: GraphEdge[]; stats: TreeStats } {
+export function buildGraph(detail: app.RunDetailDTO): {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  stats: TreeStats;
+} {
   const tasks = detail.tasks ?? [];
   const leaderAgent = detail.run?.leaderAgentId;
   const byAgent = new Map<number, TaskLite[]>();
@@ -26,7 +49,10 @@ export function buildGraph(detail: app.RunDetailDTO): { nodes: GraphNode[]; edge
     byAgent.get(t.agentId)!.push(t);
   }
   const nodes: GraphNode[] = [...byAgent.entries()].map(([agentId, ts]) => ({
-    agentId, tasks: ts, status: aggregate(ts), isLeader: agentId === leaderAgent,
+    agentId,
+    tasks: ts,
+    status: aggregate(ts),
+    isLeader: agentId === leaderAgent,
   }));
   // dispatch 边: 子任务的 parent agent → 子任务 agent(去重到 agent 级)。
   const taskById = new Map(tasks.map((t) => [t.id, t]));
@@ -49,10 +75,20 @@ export function buildGraph(detail: app.RunDetailDTO): { nodes: GraphNode[]; edge
   };
   const depth = tasks.reduce((m, t) => Math.max(m, depthOf(t.id)), 0);
   // subagents = 唯一子agent 节点数(排除 Leader),与 runHeader「子agent M」标签一致;非任务总数。
-  return { nodes, edges, stats: { nodes: nodes.length, subagents: Math.max(0, nodes.length - 1), depth } };
+  return {
+    nodes,
+    edges,
+    stats: {
+      nodes: nodes.length,
+      subagents: Math.max(0, nodes.length - 1),
+      depth,
+    },
+  };
 }
 
-export function lifecycle(detail: app.RunDetailDTO): "empty" | "running" | "completed" | "paused" | "stopped" {
+export function lifecycle(
+  detail: app.RunDetailDTO,
+): "empty" | "running" | "completed" | "paused" | "stopped" {
   const st = detail.run?.status;
   if (st === "done") return "completed";
   if (st === "paused") return "paused";
