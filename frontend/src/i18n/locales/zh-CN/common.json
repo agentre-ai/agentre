@@ -1507,6 +1507,7 @@
   },
   "projects": {
     "actions": {
+      "deleteProject": "删除项目",
       "more": "{{name}} 更多操作",
       "newProject": "新建项目",
       "newSubProject": "新建子项目"
