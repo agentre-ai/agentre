@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -141,11 +142,40 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 	switch name {
 	case "agent_list":
 		m.handleAgentList(w, r, id)
-	case "dispatch", "ask", "send", "finish", "reply":
-		writeRPCError(w, id, -32000, "not implemented") // Tasks 7/10/11/12 replace these
+	case "dispatch":
+		m.handleDispatch(w, r, id, ref, args)
+	case "ask", "send", "finish", "reply":
+		writeRPCError(w, id, -32000, "not implemented") // Tasks 10/11/12 replace these
 	default:
 		writeRPCError(w, id, -32601, "unknown tool")
 	}
+}
+
+func (m *orchMCP) handleDispatch(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
+	var p struct {
+		Agent   string `json:"agent"`
+		Brief   string `json:"brief"`
+		Isolate bool   `json:"isolate"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		writeRPCError(w, id, -32700, "parse error: "+err.Error())
+		return
+	}
+	if p.Agent == "" || p.Brief == "" {
+		writeRPCError(w, id, -32602, "agent and brief are required")
+		return
+	}
+	taskID, err := m.svc.Dispatch(r.Context(), ref.sessionID, p.Agent, p.Brief, p.Isolate)
+	if err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult(fmt.Sprintf("已派发,task_id=%d", taskID)))
+}
+
+// textResult 将文本包装成 MCP content 格式（Tasks 10/11/12 复用）。
+func textResult(s string) map[string]any {
+	return map[string]any{"content": []any{map[string]any{"type": "text", "text": s}}}
 }
 
 type agentListItem struct {

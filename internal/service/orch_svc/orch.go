@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 	"github.com/agentre-ai/agentre/internal/repository/orch_repo"
 )
 
@@ -28,6 +29,9 @@ type orchSvc struct {
 	emit     Emitter
 
 	approvalTimeout time.Duration
+
+	// enqueue 异步触发钩子：nil = 使用 enqueueRun 真实实现；测试注入 no-op 避免竞态。
+	enqueue func(runID int64, task *orch_entity.Task, brief string)
 
 	mcp     *orchMCP
 	mcpOnce sync.Once
