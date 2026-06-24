@@ -1,4 +1,4 @@
-import type { app } from "../../../wailsjs/go/models";
+import type { app } from "../../../../wailsjs/go/models";
 
 export type TaskLite = app.TaskDTO;
 export type NodeStatus = "running" | "waiting" | "waiting-user" | "done" | "error" | "idle";
@@ -18,7 +18,7 @@ function aggregate(tasks: TaskLite[]): NodeStatus {
 
 export function buildGraph(detail: app.RunDetailDTO): { nodes: GraphNode[]; edges: GraphEdge[]; stats: TreeStats } {
   const tasks = detail.tasks ?? [];
-  const leaderAgent = detail.run.leaderAgentId;
+  const leaderAgent = detail.run?.leaderAgentId;
   const byAgent = new Map<number, TaskLite[]>();
   for (const t of tasks) {
     if (!byAgent.has(t.agentId)) byAgent.set(t.agentId, []);
@@ -51,7 +51,7 @@ export function buildGraph(detail: app.RunDetailDTO): { nodes: GraphNode[]; edge
 }
 
 export function lifecycle(detail: app.RunDetailDTO): "empty" | "running" | "completed" | "paused" | "stopped" {
-  const st = detail.run.status;
+  const st = detail.run?.status;
   if (st === "done") return "completed";
   if (st === "paused") return "paused";
   if (st === "stopped") return "stopped";
