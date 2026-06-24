@@ -302,6 +302,7 @@ type ChatBlockAskUserQuestion struct {
 	Answered  bool                    `json:"answered,omitempty"`
 	Answers   []blocks.AskAnswerDTO   `json:"answers,omitempty"`
 	Skipped   bool                    `json:"skipped,omitempty"`
+	Expired   bool                    `json:"expired,omitempty"`
 }
 
 // ChatBlockToolPermission 是前端渲染工具审批卡片需要的全部状态。

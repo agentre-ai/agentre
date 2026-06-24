@@ -348,3 +348,25 @@ func TestDispatcherEmitter_UnknownKindDropped(t *testing.T) {
 		So(em.events, ShouldHaveLength, 0)
 	})
 }
+
+func TestDispatcherEmitter_AskUserQuestion_CarriesExpired(t *testing.T) {
+	Convey("kind=ask_user_question 带 expired 的 block → ev + canonical 都透传 expired", t, func() {
+		de, em := newTestDispatcherEmitter()
+		de.Emit(context.Background(), "s", map[string]any{
+			"kind":      "ask_user_question",
+			"requestId": "r-exp",
+			"askUserQuestion": &blocks.UserAskBlock{
+				RequestID: "r-exp",
+				Questions: []blocks.AskQuestionDTO{{Question: "ok?"}},
+				Expired:   true,
+			},
+		})
+		So(em.events, ShouldHaveLength, 1)
+		So(em.events[0].Kind, ShouldEqual, StreamAskUserQuestion)
+		So(em.events[0].AskUserQuestion, ShouldNotBeNil)
+		So(em.events[0].AskUserQuestion.Expired, ShouldBeTrue)
+		So(em.events[0].Canonical, ShouldNotBeNil)
+		So(em.events[0].Canonical.UserAsk, ShouldNotBeNil)
+		So(em.events[0].Canonical.UserAsk.Expired, ShouldBeTrue)
+	})
+}

@@ -27,6 +27,7 @@ func askUserQuestionBlockToChatBlock(b blocks.UserAskBlock) ChatBlock {
 			Answered:  b.Answered,
 			Answers:   b.Answers,
 			Skipped:   b.Skipped,
+			Expired:   b.Expired,
 		},
 		Canonical: view.FromCanonical(canonical.UserAsk{
 			RequestID: b.RequestID,
@@ -34,6 +35,7 @@ func askUserQuestionBlockToChatBlock(b blocks.UserAskBlock) ChatBlock {
 			Answers:   b.Answers,
 			Answered:  b.Answered,
 			Skipped:   b.Skipped,
+			Expired:   b.Expired,
 		}),
 	}
 }
