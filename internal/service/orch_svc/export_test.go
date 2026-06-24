@@ -42,3 +42,11 @@ func (s *orchSvc) EnqueueRunForTest(runID int64, task *orch_entity.Task, brief s
 func (s *orchSvc) OnTaskSettledForTest(runID int64) {
 	s.onTaskSettled(runID)
 }
+
+// SchedulerPausedForTest 仅测试用：返回某 Run 调度器的 paused 标志（由 PauseRun/ResumeRun 控制）。
+func (s *orchSvc) SchedulerPausedForTest(runID int64) bool {
+	sc := s.schedulerFor(runID)
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.paused
+}

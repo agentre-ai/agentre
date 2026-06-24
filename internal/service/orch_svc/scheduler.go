@@ -20,6 +20,7 @@ type scheduler struct {
 	pending  []queued
 	inflight int
 	cap      int
+	paused   bool // pause 门控：true 时 kick 不起新槽（in-flight goroutine 继续跑完）
 }
 
 // schedulerFor 懒建并返回某 Run 的调度器（s.schedMu 保护 s.schedulers）。
@@ -48,10 +49,22 @@ func (s *orchSvc) enqueueRun(runID int64, task *orch_entity.Task, brief string) 
 	s.kick(runID)
 }
 
+// setSchedulerPaused 设置/清除某 Run 调度器的 paused 门控标志。
+func (s *orchSvc) setSchedulerPaused(runID int64, paused bool) {
+	sc := s.schedulerFor(runID)
+	sc.mu.Lock()
+	sc.paused = paused
+	sc.mu.Unlock()
+}
+
 // kick 在并发上限内尽可能将 pending 任务移入 inflight，并在锁外为每个任务起一个 goroutine。
 func (s *orchSvc) kick(runID int64) {
 	sc := s.schedulerFor(runID)
 	sc.mu.Lock()
+	if sc.paused {
+		sc.mu.Unlock()
+		return // 暂停中：不起新槽，in-flight goroutine 继续跑完
+	}
 	var launch []queued
 	for sc.inflight < sc.cap && len(sc.pending) > 0 {
 		q := sc.pending[0]
