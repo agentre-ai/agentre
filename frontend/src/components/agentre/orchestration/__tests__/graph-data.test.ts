@@ -25,4 +25,49 @@ describe("graph-data", () => {
     expect(lifecycle(detail([{ id: 1, agentId: 2, parentTaskId: 0, status: "running" }]) as any)).toBe("empty");
     expect(lifecycle(detail([], "done") as any)).toBe("completed");
   });
+  it("error + awaiting-user 同节点时 等待你 优先于 error(琥珀胜)", () => {
+    const g = buildGraph(detail([
+      { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+      { id: 2, agentId: 5, parentTaskId: 1, status: "error" },
+      { id: 3, agentId: 5, parentTaskId: 1, status: "awaiting-user" }, // 同节点同时 error + 等待你
+    ]) as any);
+    expect(g.nodes.find((n) => n.agentId === 5)!.status).toBe("waiting-user");
+  });
+  it("全 error 节点聚合为 error", () => {
+    const g = buildGraph(detail([
+      { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+      { id: 2, agentId: 6, parentTaskId: 1, status: "error" },
+    ]) as any);
+    expect(g.nodes.find((n) => n.agentId === 6)!.status).toBe("error");
+  });
+  it("awaiting-children 聚合为 waiting", () => {
+    const g = buildGraph(detail([{ id: 1, agentId: 2, parentTaskId: 0, status: "awaiting-children" }]) as any);
+    expect(g.nodes.find((n) => n.agentId === 2)!.status).toBe("waiting");
+  });
+  it("stats.subagents 数唯一子agent 节点(排除 Leader), 非任务总数", () => {
+    const g = buildGraph(detail([
+      { id: 1, agentId: 2, parentTaskId: 0, status: "running" },          // Leader
+      { id: 2, agentId: 3, parentTaskId: 1, status: "running" },
+      { id: 3, agentId: 3, parentTaskId: 1, status: "done" },             // 同 agent 第二任务
+      { id: 4, agentId: 7, parentTaskId: 1, status: "done" },
+    ]) as any);
+    expect(g.stats.nodes).toBe(3);        // agent 2/3/7
+    expect(g.stats.subagents).toBe(2);    // 3 与 7(排除 Leader 2), 不是任务总数 4
+  });
+  it("stats.depth 取最长 parentTask 链", () => {
+    const g = buildGraph(detail([
+      { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+      { id: 2, agentId: 3, parentTaskId: 1, status: "running" },
+      { id: 3, agentId: 4, parentTaskId: 2, status: "running" }, // 深度 2
+    ]) as any);
+    expect(g.stats.depth).toBe(2);
+  });
+  it("lifecycle: paused / stopped 跟随 run 状态", () => {
+    const one = [{ id: 1, agentId: 2, parentTaskId: 0, status: "running" }];
+    expect(lifecycle(detail(one, "paused") as any)).toBe("paused");
+    expect(lifecycle(detail(one, "stopped") as any)).toBe("stopped");
+  });
+  it("buildGraph 容忍 run 缺失(可选字段)不抛", () => {
+    expect(() => buildGraph({ tasks: [] } as any)).not.toThrow();
+  });
 });

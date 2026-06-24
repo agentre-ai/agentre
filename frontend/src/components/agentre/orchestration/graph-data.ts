@@ -8,8 +8,9 @@ export interface TreeStats { nodes: number; subagents: number; depth: number; }
 
 function aggregate(tasks: TaskLite[]): NodeStatus {
   const s = new Set(tasks.map((t) => t.status));
-  if (s.has("error")) return "error";
+  // 等待你(awaiting-user)优先于 error:等待你是唯一真正阻塞用户的状态,不能被技术崩溃(会回报父 agent 重派)掩盖。
   if (s.has("awaiting-user")) return "waiting-user";
+  if (s.has("error")) return "error";
   if (s.has("running")) return "running";
   if (s.has("awaiting-children")) return "waiting";
   if (tasks.length && tasks.every((t) => t.status === "done")) return "done";
@@ -47,7 +48,8 @@ export function buildGraph(detail: app.RunDetailDTO): { nodes: GraphNode[]; edge
     return 1 + depthOf(t.parentTaskId, guard + 1);
   };
   const depth = tasks.reduce((m, t) => Math.max(m, depthOf(t.id)), 0);
-  return { nodes, edges, stats: { nodes: nodes.length, subagents: tasks.length, depth } };
+  // subagents = 唯一子agent 节点数(排除 Leader),与 runHeader「子agent M」标签一致;非任务总数。
+  return { nodes, edges, stats: { nodes: nodes.length, subagents: Math.max(0, nodes.length - 1), depth } };
 }
 
 export function lifecycle(detail: app.RunDetailDTO): "empty" | "running" | "completed" | "paused" | "stopped" {
@@ -56,6 +58,6 @@ export function lifecycle(detail: app.RunDetailDTO): "empty" | "running" | "comp
   if (st === "paused") return "paused";
   if (st === "stopped") return "stopped";
   const tasks = detail.tasks ?? [];
-  if (tasks.length <= 1) return "empty"; // 只有 Leader 根任务 → 起步态
+  if (tasks.length <= 1) return "empty"; // 0 任务(Leader 任务尚未派发)或仅 Leader 根任务 → 起步态
   return "running";
 }
