@@ -31,8 +31,9 @@ export function OrchestrationRun({
       aria-label={title}
       className="flex h-full"
     >
-      {!detail ? (
-        // 加载占位，detail 未就绪时显示
+      {!detail || !detail.run ? (
+        // 加载占位:detail 未就绪 或 run 字段缺失(可选字段)时显示,
+        // 避免把 run=undefined 的半成品 detail 传给子组件。
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
           {t("orchestration.loading")}
         </div>

@@ -127,7 +127,7 @@ export function TaskBoard({
   // 选中 agent 的所有任务（用于钻入面板）
   const selectedAgentTasks = React.useMemo(() => {
     if (selectedAgentId === null) return [];
-    return tasks.filter((t) => t.agentId === selectedAgentId);
+    return tasks.filter((task) => task.agentId === selectedAgentId);
   }, [tasks, selectedAgentId]);
 
   // 选中 agent 的名称
@@ -229,13 +229,14 @@ export function TaskBoard({
           // 产出物 tab
           <div data-testid="board-outputs" className="flex flex-col gap-2 p-3">
             {/* TODO(plan-1b): 结构化展开 Refs */}
-            {tasks.filter((t) => t.refs && t.refs.trim()).length === 0 ? (
+            {tasks.filter((task) => task.refs && task.refs.trim()).length ===
+            0 ? (
               <p className="text-center text-xs text-muted-foreground">
                 {t("orchestration.board.outputsEmpty")}
               </p>
             ) : (
               tasks
-                .filter((t) => t.refs && t.refs.trim())
+                .filter((task) => task.refs && task.refs.trim())
                 .map((task) => (
                   <div
                     key={task.id}
