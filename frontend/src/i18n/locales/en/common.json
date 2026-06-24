@@ -614,10 +614,10 @@
       "unpinAria": "Unpin {{name}}"
     },
     "search": {
-      "aria": "Search agents and group chats",
+      "aria": "Search agents",
       "clear": "Clear filter",
-      "noMatches": "No agents or group chats match \"{{query}}\"",
-      "placeholder": "Search Agent / group"
+      "noMatches": "No agents match \"{{query}}\"",
+      "placeholder": "Search Agent"
     },
     "sections": {
       "agents": "AGENTS",

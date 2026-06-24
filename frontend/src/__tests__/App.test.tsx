@@ -742,7 +742,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Chat" }));
 
     const textareaEvent = fireSelectAllKey(
-      screen.getByPlaceholderText("Search Agent / group"),
+      screen.getByPlaceholderText("Search Agent"),
       "meta",
     );
 
@@ -789,7 +789,7 @@ describe("App", () => {
       screen.getByRole("complementary", { name: "Agent list" }),
     ).toHaveStyle({ width: "320px" });
     expect(
-      screen.getByPlaceholderText("Search Agent / group"),
+      screen.getByPlaceholderText("Search Agent"),
     ).toBeInTheDocument();
     expect(
       screen.getByText("Choose an Agent or project session to start"),

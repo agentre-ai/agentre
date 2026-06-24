@@ -614,10 +614,10 @@
       "unpinAria": "取消置顶 {{name}}"
     },
     "search": {
-      "aria": "搜索 Agent 与群聊",
+      "aria": "搜索 Agent",
       "clear": "清空筛选",
-      "noMatches": "没有匹配 \"{{query}}\" 的 Agent 或群聊",
-      "placeholder": "搜索 Agent / 群聊"
+      "noMatches": "没有匹配 \"{{query}}\" 的 Agent",
+      "placeholder": "搜索 Agent"
     },
     "sections": {
       "agents": "AGENTS",
