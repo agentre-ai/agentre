@@ -12,6 +12,7 @@ import (
 
 // watchCompletion 订阅子会话轮次；轮结束且会话真实空闲 → 标 done + 报告回报派发者续轮。
 func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Task) {
+	defer s.onTaskSettled(task.RunID) // 释放调度槽：无论 idle / error / channel 提前关闭，均恰好执行一次。
 	ch, cancel := s.chat.ObserveTurn(task.SessionID)
 	defer cancel()
 	for td := range ch {
@@ -34,11 +35,9 @@ func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Task) {
 				logger.Ctx(ctx).Error("orch.watchCompletion: 写子任务终态失败(可被对账纠正)", zap.Int64("task", task.ID), zap.String("status", task.Status), zap.Error(err))
 			}
 			s.reportToParent(ctx, task.ParentTaskID, task, text)
-			s.onTaskSettled(task.RunID) // Task 9：释放调度槽
 			return
 		case "error":
 			s.markTaskError(ctx, task, "运行时崩溃")
-			s.onTaskSettled(task.RunID)
 			return
 		default:
 			// running/waiting：还有未决事项（子任务/ask/审批），继续等下一轮。
@@ -93,5 +92,3 @@ func (s *orchSvc) allChildrenSettled(ctx context.Context, parent *orch_entity.Ta
 	return true
 }
 
-// onTaskSettled 释放调度器并发槽（Task 9 替换此空实现）。
-func (s *orchSvc) onTaskSettled(_ int64) {}

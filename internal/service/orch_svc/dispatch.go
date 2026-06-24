@@ -80,17 +80,3 @@ func (s *orchSvc) fireEnqueue(runID int64, task *orch_entity.Task, brief string)
 	}
 	s.enqueueRun(runID, task, brief)
 }
-
-// enqueueRun 触发子任务首轮并挂完成监听（Task 9 用 scheduler 替换为限流版）。
-func (s *orchSvc) enqueueRun(runID int64, task *orch_entity.Task, brief string) {
-	go func() {
-		ctx := context.Background()
-		if err := s.chat.SendAndForget(ctx, task.SessionID, brief); err != nil {
-			logger.Ctx(ctx).Error("orch.enqueueRun: 触发子任务首轮失败",
-				zap.Int64("task", task.ID), zap.Error(err))
-			return
-		}
-		s.watchCompletion(ctx, task) // Task 8
-	}()
-}
-

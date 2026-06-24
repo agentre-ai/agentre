@@ -10,9 +10,8 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/orch_repo"
 )
 
-// 占位类型，Task 9/10 引入真实定义后替换。
+// 占位类型，Task 10 引入真实定义后替换。
 type askEnvelope struct{}
-type scheduler struct{}
 
 var (
 	errLeaderNotFound = errors.New("orch: leader agent not found")
@@ -38,6 +37,7 @@ type orchSvc struct {
 
 	schedMu    sync.Mutex
 	schedulers map[int64]*scheduler // runID -> scheduler
+	defaultCap int                  // 测试覆盖并发上限（0=使用 min(16,NumCPU)）
 
 	askMu    sync.Mutex
 	pending  map[string]askEnvelope // ask_id -> 在飞的 ask（Task 10 用 ask_id 显式关联）

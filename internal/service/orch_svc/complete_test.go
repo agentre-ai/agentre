@@ -3,6 +3,7 @@ package orch_svc_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 	"go.uber.org/mock/gomock"
@@ -112,6 +113,58 @@ func TestAllChildrenSettled_Boundaries(t *testing.T) {
 		}, nil)
 		So(orch_svc.Default().AllChildrenSettledForTest(context.Background(), parent), ShouldBeTrue)
 		ctrl.Finish()
+	})
+}
+
+// TestWatchCompletion_ReleasesSlotOnChannelClose — channel 关闭但无 idle/error 事件时槽仍被释放（Fix 1 回归）。
+// 与 cap=1 配合：若槽未释放，第二个任务永远不能发射，sendCh 的第二次读将永久阻塞。
+func TestWatchCompletion_ReleasesSlotOnChannelClose(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
+	orch_svc.Default().ResetSchedulersForTest()
+	orch_svc.Default().SetSchedulerCapForTest(1)
+	t.Cleanup(func() {
+		orch_svc.Default().SetSchedulerCapForTest(0)
+		orch_svc.Default().ResetSchedulersForTest()
+	})
+
+	sendCh := make(chan struct{}, 4)
+	chat.EXPECT().SendAndForget(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, _ int64, _ string) error {
+			sendCh <- struct{}{}
+			return nil
+		}).AnyTimes()
+
+	// ObserveTurn 返回已关闭的 channel：watchCompletion 的 range 立即退出，没有 idle/error 事件。
+	closed := make(chan orch_svc.TurnDone)
+	close(closed)
+	chat.EXPECT().ObserveTurn(gomock.Any()).
+		Return((<-chan orch_svc.TurnDone)(closed), func() {}).AnyTimes()
+
+	// Update 可能不被调用（channel-close 路径跳过了 idle/error 分支），AnyTimes 保持松散。
+	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	Convey("channel 关闭（无 idle/error）→ 槽释放，第二个任务可发射", t, func() {
+		orch_svc.Default().EnqueueRunForTest(200,
+			&orch_entity.Task{ID: 1, RunID: 200, SessionID: 701},
+			"go")
+		orch_svc.Default().EnqueueRunForTest(200,
+			&orch_entity.Task{ID: 2, RunID: 200, SessionID: 702},
+			"go")
+
+		// 两个任务都必须发射：先等第一个 SendAndForget（任务 A），
+		// 它的 watchCompletion 因 closed channel 立即退出释放槽，然后任务 B 也发射。
+		for i := 0; i < 2; i++ {
+			select {
+			case <-sendCh:
+			case <-time.After(time.Second):
+				t.Fatalf("task %d did not launch within 1s — slot was likely leaked", i+1)
+			}
+		}
 	})
 }
 

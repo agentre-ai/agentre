@@ -20,3 +20,25 @@ func (s *orchSvc) WatchCompletionForTest(ctx context.Context, t *orch_entity.Tas
 func (s *orchSvc) AllChildrenSettledForTest(ctx context.Context, parent *orch_entity.Task) bool {
 	return s.allChildrenSettled(ctx, parent)
 }
+
+// SetSchedulerCapForTest 仅测试用：覆盖新建调度器的并发上限（0 重置为 NumCPU 默认值）。
+func (s *orchSvc) SetSchedulerCapForTest(n int) {
+	s.defaultCap = n
+}
+
+// ResetSchedulersForTest 仅测试用：清空已缓存的调度器（配合 SetSchedulerCapForTest 重置）。
+func (s *orchSvc) ResetSchedulersForTest() {
+	s.schedMu.Lock()
+	s.schedulers = map[int64]*scheduler{}
+	s.schedMu.Unlock()
+}
+
+// EnqueueRunForTest 仅测试用：直接调用 enqueueRun（绕过 fireEnqueue / enqueue 钩子）。
+func (s *orchSvc) EnqueueRunForTest(runID int64, task *orch_entity.Task, brief string) {
+	s.enqueueRun(runID, task, brief)
+}
+
+// OnTaskSettledForTest 仅测试用：直接调用 onTaskSettled（手动释放调度槽）。
+func (s *orchSvc) OnTaskSettledForTest(runID int64) {
+	s.onTaskSettled(runID)
+}
