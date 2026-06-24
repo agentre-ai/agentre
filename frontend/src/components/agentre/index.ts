@@ -17,6 +17,7 @@ export type { AgentSession } from "./agent-list";
 export { ChatPage } from "./chat-page";
 export { ChatStreamsHost } from "./chat-streams-host";
 export { GroupEventsHost } from "./group-events-host";
+export { OrchEventsHost } from "./orch-events-host";
 export { TurnCompleteNotifier } from "./turn-complete-notifier";
 export { NotificationToastViewport } from "./notification-toast";
 export { QuitConfirmDialog } from "./quit-confirm-dialog";
