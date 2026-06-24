@@ -332,8 +332,3 @@ func randSecret() []byte {
 	}
 	return b
 }
-
-// handleWriteTool 占位:Task 4(approval.go)用走通用 tool_approval 的真实现替换本桩。
-func (s *hooktoolSvc) handleWriteTool(w http.ResponseWriter, _ *http.Request, rpcID json.RawMessage, _ hookRef, _ string, _ json.RawMessage) {
-	writeRPCError(w, rpcID, -32000, "not implemented")
-}
