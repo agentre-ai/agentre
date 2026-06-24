@@ -171,7 +171,9 @@ export function RunHeader({
               data-testid="run-pause"
               variant="outline"
               size="sm"
-              onClick={() => RunPause(runId)}
+              onClick={() => {
+                void RunPause(runId).catch(() => {});
+              }}
             >
               {t("orchestration.header.pause")}
             </Button>
@@ -181,7 +183,9 @@ export function RunHeader({
               data-testid="run-resume"
               variant="outline"
               size="sm"
-              onClick={() => RunResume(runId)}
+              onClick={() => {
+                void RunResume(runId).catch(() => {});
+              }}
             >
               {t("orchestration.header.resume")}
             </Button>
@@ -193,7 +197,9 @@ export function RunHeader({
             variant="destructive"
             size="sm"
             disabled={isTerminal(runStatus)}
-            onClick={() => RunStop(runId)}
+            onClick={() => {
+              void RunStop(runId).catch(() => {});
+            }}
           >
             {t("orchestration.header.stop")}
           </Button>

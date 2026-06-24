@@ -47,6 +47,7 @@ function makeDetail(
     runStatus: string;
     tasks: app.TaskDTO[];
     leaderAgentId: number;
+    rootTaskId: number;
   }> = {},
 ): app.RunDetailDTO {
   const {
@@ -54,6 +55,7 @@ function makeDetail(
     runStatus = "running",
     tasks = [],
     leaderAgentId = 2,
+    rootTaskId = 0,
   } = overrides;
   return {
     run: {
@@ -64,7 +66,7 @@ function makeDetail(
       projectId: 0,
       flowId: 0,
       flowContent: "",
-      rootTaskId: 0,
+      rootTaskId,
       createtime: 1000,
       updatetime: 2000,
     } as app.RunItemDTO,
@@ -123,8 +125,15 @@ describe("ActivityFeed", () => {
     expect(screen.getByText("已完成X")).toBeInTheDocument();
   });
 
-  it("在 feed-speak-input 输入文字后点击 feed-speak-send，调用 RunSpeak(runId, msg)", async () => {
-    const detail = makeDetail({ runId: 42 });
+  it("在 feed-speak-input 输入文字后点击 feed-speak-send，调用 RunSpeak(根会话ID, msg)", async () => {
+    // 根 task 的 sessionId=500，RunSpeak 应收到 500 而非 run.id(100)
+    const rootTask = makeTask({
+      id: 1,
+      parentTaskId: 0,
+      sessionId: 500,
+      agentId: 2,
+    });
+    const detail = makeDetail({ runId: 100, rootTaskId: 1, tasks: [rootTask] });
 
     render(<ActivityFeed detail={detail} />);
 
@@ -135,7 +144,7 @@ describe("ActivityFeed", () => {
     fireEvent.click(sendBtn);
 
     await waitFor(() => {
-      expect(AppBindings.RunSpeak).toHaveBeenCalledWith(42, "对Leader的话");
+      expect(AppBindings.RunSpeak).toHaveBeenCalledWith(500, "对Leader的话");
     });
   });
 

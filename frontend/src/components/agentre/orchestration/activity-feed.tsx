@@ -46,7 +46,13 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
 
   const tasks = detail.tasks ?? [];
   const runStatus = detail.run?.status;
-  const runId = detail.run?.id;
+
+  // 解析根任务会话 ID：优先匹配 rootTaskId，退而匹配 parentTaskId===0
+  const rootSessionId =
+    (detail.tasks ?? []).find((t) => t.id === detail.run?.rootTaskId)
+      ?.sessionId ??
+    (detail.tasks ?? []).find((t) => t.parentTaskId === 0)?.sessionId ??
+    0;
 
   // 统计 awaiting-user 任务数
   const awaitingTasks = tasks.filter((t) => t.status === "awaiting-user");
@@ -55,10 +61,14 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
   // 构造 feed 条目列表
   const feedItems = buildFeed(detail);
 
-  // 发送「对 Leader 说」消息
+  // 发送「对 Leader 说」消息，目标是根 task 的 session（非 run.id）
   async function handleSend() {
-    if (!runId || !msg.trim()) return;
-    await RunSpeak(runId, msg.trim());
+    if (!rootSessionId || !msg.trim()) return;
+    try {
+      await RunSpeak(rootSessionId, msg.trim());
+    } catch {
+      // 忽略后端拒绝（如 run 已终态），不抛出未处理异常
+    }
     setMsg("");
   }
 
