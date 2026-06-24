@@ -36,8 +36,9 @@ func (s *orchSvc) Finish(ctx context.Context, sessionID int64, summary string) e
 		logger.Ctx(ctx).Info("orch.Finish: Run 收口完成", zap.Int64("run", run.ID))
 		return nil
 	}
-	// 非根：把小结当回报上抛父（与完成回报同路）。
-	s.reportToParent(ctx, tk.ParentTaskID, tk, summary)
-	s.onTaskSettled(tk.RunID)
+	// 非根:只「记录」显式小结。回报父 + 释放调度槽由 watcher(watchCompletion)
+	// 统一负责;此处若同步再做一遍会让 Leader 收到两份回报(两次多余续轮)、
+	// inflight 被减两次(并发额度记账错乱)。tk.Status=done + Result 已在上方写库,
+	// watcher 的 idle 分支会优先读到该 Result 作为回报正文。
 	return nil
 }

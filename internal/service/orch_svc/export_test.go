@@ -11,9 +11,9 @@ func (s *orchSvc) SetEnqueueForTest(fn func(int64, *orch_entity.Task, string)) {
 	s.enqueue = fn
 }
 
-// WatchCompletionForTest 仅测试用:暴露私有 watchCompletion 供外部测试包驱动。
-func (s *orchSvc) WatchCompletionForTest(ctx context.Context, t *orch_entity.Task) {
-	s.watchCompletion(ctx, t)
+// WatchCompletionForTest 仅测试用:暴露私有 watchCompletion 供外部测试包驱动(ch/cancel 直传)。
+func (s *orchSvc) WatchCompletionForTest(ctx context.Context, t *orch_entity.Task, ch <-chan TurnDone, cancel func()) {
+	s.watchCompletion(ctx, t, ch, cancel)
 }
 
 // AllChildrenSettledForTest 仅测试用:暴露私有 allChildrenSettled 供外部测试包驱动边界用例。

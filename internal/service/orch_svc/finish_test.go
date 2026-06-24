@@ -68,7 +68,7 @@ func TestFinish_RootEmitsRunDoneEvent(t *testing.T) {
 	})
 }
 
-func TestFinish_NonRootReportsToParent(t *testing.T) {
+func TestFinish_NonRootRecordsResultNoReport(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
@@ -76,52 +76,32 @@ func TestFinish_NonRootReportsToParent(t *testing.T) {
 	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, runs, tasks, nil, nil)
 
-	// FindBySession → non-root task (ID:11 ≠ RootTaskID:9)
+	// FindBySession → 非根任务(ID:11 ≠ RootTaskID:9)
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(600)).Return(
 		&orch_entity.Task{ID: 11, RunID: 100, ParentTaskID: 9, SessionID: 600, Status: orch_entity.TaskRunning},
 		nil,
 	)
-	// runs.Find → run with RootTaskID=9 (≠ tk.ID=11, so NOT root)
+	// runs.Find → RootTaskID=9(≠ tk.ID=11,即非根)
 	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(
 		&orch_entity.OrchestrationRun{ID: 100, RootTaskID: 9, Status: orch_entity.RunRunning},
 		nil,
 	)
-	// tasks.Update called once to mark the non-root task done
+	// 非根 finish 只「记录」显式小结:Update 写入 Result + done,且只调用一次。
+	var capturedStatus, capturedResult string
 	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
-		So(tk.Status, ShouldEqual, orch_entity.TaskDone)
-		return nil
-	})
-	// runs.Update must NOT be called (non-root finish does NOT collapse the Run)
-	// gomock strict controller enforces this: any unexpected call will fail the test.
-
-	// reportToParent: fetch parent task
-	tasks.EXPECT().Find(gomock.Any(), int64(9)).Return(
-		&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500, Status: orch_entity.TaskAwaitingChildren},
-		nil,
-	)
-	// reportToParent: check all children settled
-	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return(
-		[]*orch_entity.Task{
-			{ID: 11, ParentTaskID: 9, Kind: orch_entity.TaskKindDispatch, Status: orch_entity.TaskDone},
-		},
-		nil,
-	)
-	// allChildrenSettled=true → parent flips to running (2nd tasks.Update)
-	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
-		So(tk.ID, ShouldEqual, int64(9))
-		So(tk.Status, ShouldEqual, orch_entity.TaskRunning)
-		return nil
-	})
-	// reportToParent sends message to parent session containing the summary
-	var capturedMsg string
-	chat.EXPECT().SendAndForget(gomock.Any(), int64(500), gomock.Any()).DoAndReturn(func(_ context.Context, _ int64, msg string) error {
-		capturedMsg = msg
+		So(tk.ID, ShouldEqual, int64(11))
+		capturedStatus = tk.Status
+		capturedResult = tk.Result
 		return nil
 	})
 
-	Convey("非根 finish → 回报父会话, Run 不收口", t, func() {
+	// 关键回归:非根 finish 不得回报父(watcher 才是唯一回报者),也不得收口 Run。
+	// gomock 严格控制器会因任何未声明的调用(SendAndForget/runs.Update/Find/ListByRun)而失败。
+
+	Convey("非根 finish → 只记录 Result+done,不回报父、不收口 Run", t, func() {
 		err := orch_svc.Default().Finish(context.Background(), 600, "子任务完成小结")
 		So(err, ShouldBeNil)
-		So(capturedMsg, ShouldContainSubstring, "子任务完成小结")
+		So(capturedStatus, ShouldEqual, orch_entity.TaskDone)
+		So(capturedResult, ShouldEqual, "子任务完成小结")
 	})
 }

@@ -78,11 +78,15 @@ func (s *orchSvc) kick(runID int64) {
 	for _, q := range launch {
 		go func(q queued) {
 			ctx := context.Background()
+			// 订阅必须早于 Send(ObserveTurn 契约):快 turn 的终态回执会在订阅前发出而丢失,
+			// watchCompletion 的 range 会永久阻塞 → 任务永不 done、调度槽泄漏、Run 卡死。
+			ch, cancel := s.chat.ObserveTurn(q.task.SessionID)
 			if err := s.chat.SendAndForget(ctx, q.task.SessionID, q.brief); err != nil {
+				cancel()
 				s.onTaskSettled(runID)
 				return
 			}
-			s.watchCompletion(ctx, q.task)
+			s.watchCompletion(ctx, q.task, ch, cancel)
 		}(q)
 	}
 }

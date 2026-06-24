@@ -28,11 +28,14 @@ func RegisterTurnExtrasProvider(p TurnExtrasProvider) {
 // ResetTurnExtrasProviders 测试清理,防用例间串台;仅测试使用,生产代码勿调。
 func ResetTurnExtrasProviders() { turnExtrasProviders = nil }
 
-// fillGroupTurnExtras 对群成员 backing session(groupID>0)逐字段补齐缺失的群上下文。
-// 永不覆盖 caller 已设置的字段(调度路径已填满则整体跳过),只填空位;emitTurnStartedBypass
-// 由发起路径决定(调度=true / 直接发起=false),不归 provider 管。
-func fillGroupTurnExtras(ctx context.Context, a *agent_entity.Agent, sessionID, groupID int64, extras turnExtras) turnExtras {
-	if a == nil || groupID <= 0 {
+// fillGroupTurnExtras 对群成员 backing session(groupID>0)与编排会话(runID>0)逐字段补齐
+// 缺失的 turn 上下文。永不覆盖 caller 已设置的字段(调度路径已填满则整体跳过),只填空位;
+// emitTurnStartedBypass 由发起路径决定(调度=true / 直接发起=false),不归 provider 管。
+// 仅在 groupID==0 且 runID==0(普通会话)时整体跳过:编排会话(groupID=0,runID>0)的 orch
+// provider 需经此处触发,否则 Leader 拿不到编排指引/流程后缀(C2)。群 provider 对 groupID=0
+// 返回 ok=false,迭代自然落到 orch provider。
+func fillGroupTurnExtras(ctx context.Context, a *agent_entity.Agent, sessionID, groupID, runID int64, extras turnExtras) turnExtras {
+	if a == nil || (groupID <= 0 && runID <= 0) {
 		return extras
 	}
 	// 调度路径(launchDelivery)已显式填满 → 整体跳过,不重复咨询 provider。

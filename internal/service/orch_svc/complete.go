@@ -10,11 +10,13 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 )
 
-// watchCompletion 订阅子会话轮次；轮结束且会话真实空闲 → 标 done + 报告回报派发者续轮。
-func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Task) {
-	defer s.onTaskSettled(task.RunID) // 释放调度槽：无论 idle / error / channel 提前关闭，均恰好执行一次。
-	ch, cancel := s.chat.ObserveTurn(task.SessionID)
+// watchCompletion 监听已订阅好的子会话轮次 channel；轮结束且会话真实空闲 → 标 done +
+// 回报派发者续轮。ch/cancel 必须由调用方在 Send 之前订阅好后传入(ObserveTurn 契约:订阅
+// 须早于 turn 启动,否则快 turn 的终态回执会丢、range 永久阻塞 → 任务永不 done、父永不
+// 唤醒、调度槽泄漏、Run 卡死)。watcher 是被派发任务 report+settle 的唯一负责者。
+func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Task, ch <-chan TurnDone, cancel func()) {
 	defer cancel()
+	defer s.onTaskSettled(task.RunID) // 释放调度槽:无论 idle / error / channel 提前关闭,均恰好执行一次。
 	for td := range ch {
 		if td.SessionID != task.SessionID {
 			continue
@@ -27,20 +29,24 @@ func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Task) {
 		}
 		switch status {
 		case "idle":
-			// 本轮结束 + 无未决 → done（完成态从真实空闲推导，杜绝卡 running）。
-			text, _ := s.chat.FinalAssistantText(ctx, task.SessionID)
+			// 本轮结束 + 无未决 → done(完成态从真实空闲推导,杜绝卡 running)。
+			// 优先取 agent 显式 finish 写下的 Result;无显式小结时退回末条 assistant 正文。
+			result, _ := s.chat.FinalAssistantText(ctx, task.SessionID)
+			if fresh, _ := s.tasks.Find(ctx, task.ID); fresh != nil && fresh.Result != "" {
+				result = fresh.Result
+			}
 			task.Status = orch_entity.TaskDone
-			task.Result = text
+			task.Result = result
 			if err := s.tasks.Update(ctx, task); err != nil {
 				logger.Ctx(ctx).Error("orch.watchCompletion: 写子任务终态失败(可被对账纠正)", zap.Int64("task", task.ID), zap.String("status", task.Status), zap.Error(err))
 			}
-			s.reportToParent(ctx, task.ParentTaskID, task, text)
+			s.reportToParent(ctx, task.ParentTaskID, task, result)
 			return
 		case "error":
 			s.markTaskError(ctx, task, "运行时崩溃")
 			return
 		default:
-			// running/waiting：还有未决事项（子任务/ask/审批），继续等下一轮。
+			// running/waiting:还有未决事项(子任务/ask/审批),继续等下一轮。
 			continue
 		}
 	}
