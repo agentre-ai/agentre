@@ -20,7 +20,7 @@ func columnExists(t *testing.T, db *gorm.DB, table, col string) bool {
 	t.Helper()
 	rows, err := db.Raw(`PRAGMA table_info(` + table + `)`).Rows()
 	require.NoError(t, err)
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var cid int
 		var name, ctype string

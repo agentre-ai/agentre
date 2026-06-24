@@ -74,6 +74,16 @@ const SubagentCallDirectivePrefix = "e2e-subagent-call:"
 // org 写工具需用户审批,调用挂起直至 e2e spec 点批准。
 const OrgCreateDeptDirectivePrefix = "e2e-org-create-dept:"
 
+// OrchestrateDispatchDirectivePrefix 触发编排引擎派发子任务的用户指令:
+// e2e-orch-dispatch:<agentName>:<brief>。需 agent 开启 orchestrate 工具(注入 /mcp/orchestrate/);
+// dispatch 异步派发(不阻塞当前 turn),子 agent 在独立会话跑完后报告给 leader。
+const OrchestrateDispatchDirectivePrefix = "e2e-orch-dispatch:"
+
+// OrchestrateFinishDirectivePrefix 触发编排引擎完成 Run 的用户指令:
+// e2e-orch-finish:<summary>。需 agent 开启 orchestrate 工具(注入 /mcp/orchestrate/);
+// finish 把根 Task 标为 done 并把 Run 推进到 done。
+const OrchestrateFinishDirectivePrefix = "e2e-orch-finish:"
+
 // taskAssignedRe 匹配派活消息抬头「任务 #N：」(HandleTaskCreate 的 content 格式;
 // 完成回执是「任务 #N 已完成」、取消是「任务 #N 已取消」,编号后无全角冒号,不会误匹配)。
 var taskAssignedRe = regexp.MustCompile(`任务 #(\d+)：`)
@@ -241,6 +251,38 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 					"name": name,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "fake: org_create_department failed: %v\n", err)
+				}
+			}
+		}
+		// orchestrate dispatch 接缝:leader agent 开启 orchestrate 工具时注入 /mcp/orchestrate/;
+		// 按 e2e-orch-dispatch:<agentName>:<brief> 指令调 dispatch(异步派发,立即返回)。
+		// 失败只写 stderr。
+		if spec, ok := findGroupToolServer(req.MCPServers, "dispatch"); ok {
+			if agentName, brief, found := parseTwoPartDirective(req.UserText, OrchestrateDispatchDirectivePrefix); found {
+				if err := postToolCall(ctx, spec, "dispatch", map[string]any{
+					"agent": agentName,
+					"brief": brief,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "fake: orchestrate dispatch failed: %v\n", err)
+				}
+			}
+		}
+		// orchestrate finish 接缝:按 e2e-orch-finish:<summary> 指令调 finish(收口 Run)。
+		// 另外:子任务完成回报续轮时 UserText 包含「【子任务」前缀,自动调 finish 避免 leader
+		// 永挂。两者都在同一个 finish tool server 上操作,失败只写 stderr。
+		if spec, ok := findGroupToolServer(req.MCPServers, "finish"); ok {
+			if summary, found := parseOnePartDirective(req.UserText, OrchestrateFinishDirectivePrefix); found {
+				if err := postToolCall(ctx, spec, "finish", map[string]any{
+					"summary": summary,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "fake: orchestrate finish (directive) failed: %v\n", err)
+				}
+			} else if strings.Contains(req.UserText, "【子任务") {
+				// 子任务完成回报续轮:leader 收到「【子任务 #N 完成 · agent#N】\n<text>」→ 自动收口。
+				if err := postToolCall(ctx, spec, "finish", map[string]any{
+					"summary": "e2e-orchestration-complete",
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "fake: orchestrate finish (auto) failed: %v\n", err)
 				}
 			}
 		}

@@ -2146,10 +2146,11 @@ func (s *chatSvc) startTurn(
 	forkAnchor string,
 	extras turnExtras,
 ) (*SendResponse, error) {
-	// 群成员 backing session(GroupID>0)若 extras 未带群上下文(用户直接 Send/Edit/
-	// Regenerate,非经 group_svc.launchDelivery),经 provider 补齐 group_send MCP + 群
-	// system-prompt 后缀,使各发起路径群上下文一致(设计问题⑥)。调度路径已填满则跳过。
-	extras = fillGroupTurnExtras(ctx, a, sess.ID, sess.GroupID, extras)
+	// 群成员 backing session(GroupID>0)或编排会话(RunID>0)若 extras 未带 turn 上下文
+	// (用户直接 Send/Edit/Regenerate,非经 group_svc.launchDelivery / orch 调度),经 provider
+	// 补齐:群会话补 group_send MCP + 群后缀(设计问题⑥),编排会话补编排指引 + 流程后缀(C2)。
+	// 普通会话(两者皆 0)整体跳过;调度路径已填满则跳过。
+	extras = fillGroupTurnExtras(ctx, a, sess.ID, sess.GroupID, sess.RunID, extras)
 
 	lock := s.lockFor(sess.ID)
 	if !lock.TryLock() {
@@ -3588,6 +3589,8 @@ func (s *chatSvc) EnsureSession(ctx context.Context, req *EnsureSessionRequest) 
 		return s.ensureGroupMemberSession(ctx, req.AgentID, req.ProjectID, req.GroupID, req.Title)
 	case SessionPurposeSubagentCall:
 		return s.createSubagentSession(ctx, req.AgentID, req.ProjectID, req.Title)
+	case SessionPurposeOrchChild:
+		return s.createOrchChildSession(ctx, req.AgentID, req.ProjectID, req.RunID, req.Title)
 	default:
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
@@ -3682,6 +3685,34 @@ func (s *chatSvc) createSubagentSession(ctx context.Context, agentID, projectID 
 	if err := chat_repo.Session().Create(ctx, sess); err != nil {
 		logger.Ctx(ctx).Error("chat_svc.createSubagentSession: create failed",
 			zap.Int64("agentId", agentID), zap.Error(err))
+		return nil, i18n.NewError(ctx, code.OperationFailed)
+	}
+	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil
+}
+
+// createOrchChildSession 为编排 Run 的子 agent 建一个全新的一次性会话(run_id>0,每次新建)。
+// 与 subagent_call 类似,不做幂等复用 —— 每次 dispatch 都要干净的隔离上下文。
+func (s *chatSvc) createOrchChildSession(ctx context.Context, agentID, projectID, runID int64, title string) (*EnsureSessionResponse, error) {
+	if agentID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	permissionMode := s.launchPermissionModeForAgent(ctx, agentID)
+	sess := &chat_entity.Session{
+		AgentID:                agentID,
+		ProjectID:              projectID,
+		RunID:                  runID,
+		Purpose:                chat_entity.SessionPurposeOrchChild,
+		PermissionMode:         permissionMode,
+		PermissionModeAtLaunch: permissionMode,
+		Title:                  strings.TrimSpace(title),
+		AgentStatus:            "idle",
+		Status:                 consts.ACTIVE,
+	}
+	if err := chat_repo.Session().Create(ctx, sess); err != nil {
+		logger.Ctx(ctx).Error("chat_svc.createOrchChildSession: create failed",
+			zap.Int64("agentId", agentID),
+			zap.Int64("runId", runID),
+			zap.Error(err))
 		return nil, i18n.NewError(ctx, code.OperationFailed)
 	}
 	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil

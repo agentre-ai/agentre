@@ -102,6 +102,7 @@ func Install(ctx context.Context) {
 			{Key: agenttool.KeyGroupCreate, Enabled: true},
 			{Key: agenttool.KeySubagent, Enabled: true},
 			{Key: agenttool.KeyOrg, Enabled: true},
+			{Key: agenttool.KeyOrchestrate, Enabled: true},
 		},
 	}); err != nil {
 		logger.Ctx(ctx).Error("e2efakes.Install: attach backend to agent failed", zap.Error(err))

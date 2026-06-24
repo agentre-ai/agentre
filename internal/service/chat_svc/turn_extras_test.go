@@ -18,11 +18,11 @@ func TestFillGroupTurnExtras(t *testing.T) {
 		return groupMCP, suffix, true
 	}
 
-	t.Run("非群会话(groupID=0)不咨询 provider,原样返回", func(t *testing.T) {
+	t.Run("普通会话(groupID=0 且 runID=0)不咨询 provider,原样返回", func(t *testing.T) {
 		ResetTurnExtrasProviders()
 		defer ResetTurnExtrasProviders()
 		RegisterTurnExtrasProvider(provider)
-		got := fillGroupTurnExtras(context.Background(), a, 42, 0, turnExtras{})
+		got := fillGroupTurnExtras(context.Background(), a, 42, 0, 0, turnExtras{})
 		require.Empty(t, got.mcpServers)
 		require.Equal(t, "", got.systemPromptSuffix)
 	})
@@ -31,10 +31,21 @@ func TestFillGroupTurnExtras(t *testing.T) {
 		ResetTurnExtrasProviders()
 		defer ResetTurnExtrasProviders()
 		RegisterTurnExtrasProvider(provider)
-		got := fillGroupTurnExtras(context.Background(), a, 42, 5, turnExtras{})
+		got := fillGroupTurnExtras(context.Background(), a, 42, 5, 0, turnExtras{})
 		require.Len(t, got.mcpServers, 1)
 		require.Contains(t, got.mcpServers[0].Tools, "group_send")
 		require.Equal(t, suffix, got.systemPromptSuffix)
+	})
+
+	t.Run("编排会话(groupID=0 且 runID>0)→ provider 被咨询并应用其后缀(C2)", func(t *testing.T) {
+		ResetTurnExtrasProviders()
+		defer ResetTurnExtrasProviders()
+		const orchSuffix = "\n\n### 编排指引\n你被授予编排能力"
+		RegisterTurnExtrasProvider(func(_ context.Context, _ *agent_entity.Agent, _, _ int64) ([]agentruntime.MCPServerSpec, string, bool) {
+			return nil, orchSuffix, true
+		})
+		got := fillGroupTurnExtras(context.Background(), a, 42, 0, 7, turnExtras{})
+		require.Equal(t, orchSuffix, got.systemPromptSuffix)
 	})
 
 	t.Run("调度路径已填满 extras → provider 跳过,不覆盖", func(t *testing.T) {
@@ -45,7 +56,7 @@ func TestFillGroupTurnExtras(t *testing.T) {
 			t.Fatal("provider 不应被调用:extras 已填满")
 			return nil, "", false
 		})
-		got := fillGroupTurnExtras(context.Background(), a, 42, 5, turnExtras{
+		got := fillGroupTurnExtras(context.Background(), a, 42, 5, 0, turnExtras{
 			mcpServers:         schedulerMCP,
 			systemPromptSuffix: "scheduler-suffix",
 		})
@@ -59,7 +70,7 @@ func TestFillGroupTurnExtras(t *testing.T) {
 		RegisterTurnExtrasProvider(func(_ context.Context, _ *agent_entity.Agent, _, _ int64) ([]agentruntime.MCPServerSpec, string, bool) {
 			return nil, "", false
 		})
-		got := fillGroupTurnExtras(context.Background(), a, 42, 5, turnExtras{})
+		got := fillGroupTurnExtras(context.Background(), a, 42, 5, 0, turnExtras{})
 		require.Empty(t, got.mcpServers)
 		require.Equal(t, "", got.systemPromptSuffix)
 	})

@@ -19,12 +19,14 @@ import (
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/orch_repo"
 	"github.com/agentre-ai/agentre/internal/service/agent_svc"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 	"github.com/agentre-ai/agentre/internal/service/data_svc"
 	"github.com/agentre-ai/agentre/internal/service/department_svc"
 	"github.com/agentre-ai/agentre/internal/service/group_svc"
 	"github.com/agentre-ai/agentre/internal/service/hook_svc"
+	"github.com/agentre-ai/agentre/internal/service/orch_svc"
 	"github.com/agentre-ai/agentre/internal/service/orgtool_svc"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	watcher "github.com/agentre-ai/agentre/internal/service/remote_device_watcher_svc"
@@ -229,6 +231,15 @@ func (a *App) registerChatService() {
 	// subagent_svc 同样需 chat_svc.Chat() 非 nil(起子 agent 轮),故也在 RegisterChat 之后接线。
 	// agent_repo.Agent() 直接满足 AgentGateway(Find/FindByName/List)。
 	subagent_svc.Default().RegisterDeps(agent_repo.Agent(), subagent_svc.ChatSvcGateway())
+
+	// orch_svc 依赖注入：chat/agents/runs/tasks/approval/emit。
+	// 需在 RegisterChat 之后执行，因为 orchChatAdapter 调用 chat_svc.Chat() 须非 nil。
+	// ApprovalGateway 由 chat_svc.Chat() 满足(BeginToolApproval/FinishToolApproval)。
+	orch_svc.Default().RegisterDeps(
+		&orchChatAdapter{}, orchAgentAdapter{},
+		orch_repo.Run(), orch_repo.Task(),
+		chat_svc.Chat(), orchEmitter{a: a},
+	)
 }
 
 // Greet returns a greeting for the given name.

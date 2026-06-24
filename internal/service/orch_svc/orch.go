@@ -6,15 +6,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 	"github.com/agentre-ai/agentre/internal/repository/orch_repo"
 )
 
-// 占位类型，Task 9/10 引入真实定义后替换。
-type askEnvelope struct{}
-type scheduler struct{}
-
-// orchMCP 占位，Task 6 引入真实实现。
-type orchMCP struct{}
+// askEnvelope 记录一个在飞的 ask：ask_id、提问方会话、接收方 agent 与会话、答案通道。
+type askEnvelope struct {
+	askID         string
+	askerSession  int64
+	targetAgentID int64
+	targetSession int64
+	reply         chan string
+}
 
 var (
 	errLeaderNotFound = errors.New("orch: leader agent not found")
@@ -30,13 +33,19 @@ type orchSvc struct {
 	approval ApprovalGateway
 	emit     Emitter
 
+	gatewayBaseURL string
+
 	approvalTimeout time.Duration
+
+	// enqueue 异步触发钩子：nil = 使用 enqueueRun 真实实现；测试注入 no-op 避免竞态。
+	enqueue func(runID int64, task *orch_entity.Task, brief string)
 
 	mcp     *orchMCP
 	mcpOnce sync.Once
 
 	schedMu    sync.Mutex
 	schedulers map[int64]*scheduler // runID -> scheduler
+	defaultCap int                  // 测试覆盖并发上限（0=使用 min(16,NumCPU)）
 
 	askMu    sync.Mutex
 	pending  map[string]askEnvelope // ask_id -> 在飞的 ask（Task 10 用 ask_id 显式关联）
@@ -57,3 +66,6 @@ func Default() *orchSvc { return defaultOrch }
 func (s *orchSvc) RegisterDeps(chat ChatGateway, agents AgentLookup, runs orch_repo.RunRepo, tasks orch_repo.TaskRepo, approval ApprovalGateway, emit Emitter) {
 	s.chat, s.agents, s.runs, s.tasks, s.approval, s.emit = chat, agents, runs, tasks, approval, emit
 }
+
+// SetGatewayBaseURL 由 bootstrap 在 gateway 起好后注入；mirror subagent_svc。
+func (s *orchSvc) SetGatewayBaseURL(u string) { s.gatewayBaseURL = u }

@@ -2,18 +2,12 @@ package app
 
 import (
 	"context"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"strings"
 	"time"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.uber.org/zap"
 
-	"github.com/agentre-ai/agentre/internal/pkg/procattr"
 	"github.com/agentre-ai/agentre/internal/service/update_svc"
 )
 
@@ -89,57 +83,7 @@ func (a *App) SetDownloadMirror(mirror string) error {
 	return update_svc.Update().SetMirror(a.ctx, mirror)
 }
 
-// RestartApp 安装完成后重启应用本体。
-// 不同平台启动方式不同：macOS 用 open -n 启动新进程；Linux/Windows 直接 fork-exec。
-// 当前进程随后由 Quit 终止；wails OnShutdown 钩子会被触发完成收尾。
-func (a *App) RestartApp() error {
-	execPath, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	execPath, err = filepath.EvalSymlinks(execPath)
-	if err != nil {
-		return err
-	}
-
-	switch runtime.GOOS {
-	case "darwin":
-		appDir := execPath
-		for !strings.HasSuffix(appDir, ".app") && appDir != "/" {
-			appDir = filepath.Dir(appDir)
-		}
-		if strings.HasSuffix(appDir, ".app") {
-			cmd := exec.Command("open", "-n", appDir) //nolint:gosec
-			procattr.ApplyNoConsoleWindow(cmd)
-			if err := cmd.Start(); err != nil {
-				return err
-			}
-		} else {
-			cmd := exec.Command(execPath) //nolint:gosec
-			procattr.ApplyNoConsoleWindow(cmd)
-			if err := cmd.Start(); err != nil {
-				return err
-			}
-		}
-	default:
-		cmd := exec.Command(execPath) //nolint:gosec
-		procattr.ApplyNoConsoleWindow(cmd)
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-	}
-
-	// 重启已拉起新进程,旧进程必须无条件退出:标记已确认,绕过活跃会话二次确认,
-	// 否则 OnBeforeClose 拦住旧进程、新进程撞单实例锁 → 更新静默失败。
-	a.quitConfirmed.Store(true)
-
-	go func() {
-		// 留一拍时间让 wails Quit 走完 OnShutdown。
-		time.Sleep(500 * time.Millisecond)
-		wailsruntime.Quit(a.ctx)
-	}()
-	return nil
-}
+// RestartApp 的实现见 restart.go（跨平台逻辑）与 restart_{darwin,unix,windows}.go。
 
 // startAutoUpdateCheck 启动 5s 后做一次更新检查；24h 节流。
 // 有新版本时发送 "update:available" 事件供前端弹横幅。
