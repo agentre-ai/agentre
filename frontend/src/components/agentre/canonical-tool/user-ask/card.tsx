@@ -83,6 +83,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
     return saved?.selections ?? initialSelections(payload);
   });
   const [submitting, setSubmitting] = React.useState(false);
+  const [failed, setFailed] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const totalQs = payload?.questions?.length ?? 0;
   const [activeQIdx, setActiveQIdx] = React.useState(() => {
@@ -97,7 +98,8 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
 
   const isAnswered = !!payload?.answered;
   const isSkipped = !!payload?.skipped;
-  const isLocked = isAnswered || isSkipped || submitting;
+  const isExpired = !!payload?.expired || failed;
+  const isLocked = isAnswered || isSkipped || isExpired || submitting;
 
   React.useEffect(() => {
     if (isAnswered || isSkipped) {
@@ -183,12 +185,9 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
         draftClearedRef.current = true;
         clearTranscriptDraftState(tabStateKey, draftKey);
         setCollapsed(true);
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : t("canonical.userAsk.errors.submitFailed"),
-        );
+      } catch {
+        setFailed(true);
+        setError(t("canonical.userAsk.errors.expired"));
       } finally {
         setSubmitting(false);
       }
@@ -247,7 +246,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
           </>
         )}
         <div className="flex-1" />
-        <StatusPill answered={isAnswered} skipped={isSkipped} />
+        <StatusPill answered={isAnswered} skipped={isSkipped} expired={isExpired} />
       </button>
 
       {!collapsed && (
@@ -311,11 +310,21 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
 function StatusPill({
   answered,
   skipped,
+  expired,
 }: {
   answered: boolean;
   skipped: boolean;
+  expired: boolean;
 }) {
   const { t } = useTranslation();
+  if (expired) {
+    return (
+      <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-muted-foreground">
+        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+        {t("canonical.userAsk.expired")}
+      </span>
+    );
+  }
   if (skipped) {
     return (
       <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-muted-foreground">

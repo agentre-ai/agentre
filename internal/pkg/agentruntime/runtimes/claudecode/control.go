@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
@@ -30,11 +33,15 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	}
 	v, ok := r.cache.Get(sessionKey(sessionID))
 	if !ok {
+		logger.Ctx(ctx).Warn("claudecode runtime: SubmitAnswer no active turn",
+			zap.Int64("sessionID", sessionID), zap.String("requestID", requestID))
 		return agentruntime.ErrNoActiveTurn
 	}
 	a := v.(*claudeActive)
 	waiter := a.takeAskWaiter(requestID)
 	if waiter == nil {
+		logger.Ctx(ctx).Warn("claudecode runtime: SubmitAnswer no waiting AskUserQuestion",
+			zap.Int64("sessionID", sessionID), zap.String("requestID", requestID))
 		return fmt.Errorf("agentruntime/runtimes/claudecode: no waiting AskUserQuestion for requestID %s", requestID)
 	}
 

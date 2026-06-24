@@ -79,7 +79,7 @@ func (a *App) Startup(ctx context.Context) {
 	a.RegisterNotificationHandlers()
 	a.resetStaleSessionsOnStartup(ctx)
 	a.registerChatService()
-	a.hookPollerCancel = hook_svc.StartEmailPoller(ctx)
+	a.hookPollerCancel = hook_svc.StartScheduler(ctx)
 
 	// Server 联机：绑定 wails 事件源后启动 boot 协程（最长一次刷新）。
 	server_svc.Server().SetEmitter(func(payload any) {

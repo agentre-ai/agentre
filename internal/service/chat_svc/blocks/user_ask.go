@@ -20,6 +20,7 @@ type UserAskBlock struct {
 	Answered   bool             `json:"answered,omitempty"`
 	Answers    []AskAnswerDTO   `json:"answers,omitempty"`
 	Skipped    bool             `json:"skipped,omitempty"`
+	Expired    bool             `json:"expired,omitempty"`
 }
 
 func (UserAskBlock) Type() string                      { return "user_ask" }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
@@ -113,5 +114,25 @@ func TestUserAskResolvedHandler_EmitsBlockPointer(t *testing.T) {
 		So(blk.Answered, ShouldBeTrue)
 		So(blk.Questions, ShouldHaveLength, 1)
 		So(blk.Answers, ShouldHaveLength, 1)
+	})
+}
+
+func TestMarkUnansweredUserAsksExpired(t *testing.T) {
+	Convey("仅未答/未跳过/未失效的 UserAskBlock 被标 expired 并返回", t, func() {
+		pending := &blocks.UserAskBlock{RequestID: "r-pending"}
+		answered := &blocks.UserAskBlock{RequestID: "r-answered", Answered: true}
+		skipped := &blocks.UserAskBlock{RequestID: "r-skipped", Skipped: true}
+		already := &blocks.UserAskBlock{RequestID: "r-expired", Expired: true}
+		other := &cagoblocks.TextBlock{Text: "hi"}
+		final := []cagoblocks.ContentBlock{pending, answered, skipped, already, other}
+
+		marked := MarkUnansweredUserAsksExpired(final)
+
+		So(marked, ShouldHaveLength, 1)
+		So(marked[0].RequestID, ShouldEqual, "r-pending")
+		So(pending.Expired, ShouldBeTrue)
+		So(answered.Expired, ShouldBeFalse)
+		So(skipped.Expired, ShouldBeFalse)
+		So(already.Expired, ShouldBeTrue) // 不重复返回
 	})
 }

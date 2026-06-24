@@ -356,10 +356,12 @@
     },
     "userAsk": {
       "answered": "ANSWERED",
+      "expired": "EXPIRED",
       "errors": {
         "optionRequired": "Select an option before submitting",
         "otherRequired": "Fill in the custom answer you selected",
-        "submitFailed": "Submit failed. Try again later."
+        "submitFailed": "Submit failed. Try again later.",
+        "expired": "This prompt has expired: the session ended or it was superseded by a newer message"
       },
       "multi": "Multiple",
       "otherPlaceholder": "Custom answer - enter your own response...",

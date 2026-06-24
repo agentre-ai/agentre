@@ -72,6 +72,7 @@ func (d *dispatcherEmitter) Emit(ctx context.Context, stream string, raw any) {
 			Answers:   ev.AskUserQuestion.Answers,
 			Answered:  ev.AskUserQuestion.Answered,
 			Skipped:   ev.AskUserQuestion.Skipped,
+			Expired:   ev.AskUserQuestion.Expired,
 		})
 
 	case string(StreamPlanUpdate):
@@ -236,6 +237,7 @@ func askUserQuestionFromMap(m map[string]any) *ChatBlockAskUserQuestion {
 			Answered:  blk.Answered,
 			Answers:   blk.Answers,
 			Skipped:   blk.Skipped,
+			Expired:   blk.Expired,
 		}
 	}
 	out := &ChatBlockAskUserQuestion{

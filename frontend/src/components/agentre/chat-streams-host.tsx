@@ -6,6 +6,7 @@ import { useChatStreamsStore } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
+import { isResolvedAskState } from "./ask-event-state";
 import { StreamSubscriber } from "./stream-subscriber";
 
 import type { ChatStreamEvent } from "@/hooks/use-chat-stream";
@@ -146,7 +147,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
         case "ask_user_question":
           if (!ev.askUserQuestion) return;
           clearLiveRetry(sessionId);
-          if (ev.askUserQuestion.answered || ev.askUserQuestion.skipped) {
+          if (isResolvedAskState(ev.askUserQuestion)) {
             markAskUserQuestionAnswered(
               sessionId,
               ev.askUserQuestion,

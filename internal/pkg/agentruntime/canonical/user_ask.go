@@ -12,6 +12,7 @@ type UserAsk struct {
 	Answers   any    `json:"answers,omitempty"`
 	Answered  bool   `json:"answered,omitempty"`
 	Skipped   bool   `json:"skipped,omitempty"`
+	Expired   bool   `json:"expired,omitempty"`
 }
 
 func (UserAsk) canonicalKind() Kind { return KindUserAsk }

@@ -25,7 +25,7 @@ func (osScriptRunner) Run(ctx context.Context, spec RunSpec) (*RunResult, error)
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	file := filepath.Join(dir, "hook"+in.Ext)
 	if err := os.WriteFile(file, []byte(spec.Command), 0o600); err != nil {
 		return nil, err
@@ -39,6 +39,7 @@ func (osScriptRunner) Run(ctx context.Context, spec RunSpec) (*RunResult, error)
 	defer cancel()
 
 	args := append(append([]string{}, in.Args...), file)
+	//nolint:gosec // G204: 按设计执行用户自定义脚本；解释器经 Resolve allowlist 校验,脚本本就是 Hook 的功能本体。
 	cmd := exec.CommandContext(runCtx, in.Bin, args...)
 	cmd.Env = append(os.Environ(), envSlice(spec.Env)...)
 	setSysProcAttr(cmd) // 平台钩子：独立进程组
