@@ -18,8 +18,6 @@ export type SessionMetaSnapshot = {
   agentName: string;
   agentColor: string;
   projectId?: number;
-  groupId?: number;
-  groupTitle?: string;
   title: string;
   lastMessageAt?: number;
   lastReadAt?: number;
@@ -44,8 +42,6 @@ export type SessionView = {
   agentName: string;
   agentColor: string;
   projectId?: number;
-  groupId?: number;
-  groupTitle?: string;
   title: string;
   lastMessageAt: number;
   agentStatus: AgentStatus;

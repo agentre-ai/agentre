@@ -55,8 +55,6 @@ export function useChatSession(sessionId: number) {
         agentName: resp.session.agentName,
         agentColor: resp.session.agentColor,
         projectId: resp.session.projectId ?? 0,
-        groupId: resp.session.groupId ?? 0,
-        groupTitle: resp.session.groupTitle ?? "",
         title: resp.session.title,
         lastMessageAt: resp.session.lastMessageAt ?? 0,
         lastReadAt: resp.session.lastReadAt ?? 0,
