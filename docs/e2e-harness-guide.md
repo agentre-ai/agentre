@@ -56,7 +56,7 @@ Playwright drives its **own** chromium against `:34216`. The native webview wind
 |---|---|
 | `AGENTRE_DATA_DIR=<tmp>/agentre-e2e-data` | DB / config / logs under a throwaway dir — the highest-precedence data-root override (`internal/pkg/paths/paths.go`), so it never collides with your real DB or the `make dev` root |
 | `AGENTRE_ENV=test` | quiet logger level (`internal/bootstrap/cago.go` `appEnv()`) |
-| `AGENTRE_PROXY_PORT=0` | bind the local HTTP gateway to an OS-chosen **free** port instead of the fixed default 52401 (`internal/bootstrap/cago.go` `loadProxyAddr` → `proxyPortFromEnv`). The fixed port is **not** data-dir-scoped, so a running real Agentre already holds 52401; without this override the e2e gateway fails to bind → `BaseURL()` is empty → every gateway round-trip (`group_send`, hooks, LLM forward) silently dies. `BaseURL()` reports the real bound port via the listener, so nothing hardcodes 52401 |
+| `AGENTRE_PROXY_PORT=0` | bind the local HTTP gateway to an OS-chosen **free** port instead of the fixed default 52401 (`internal/bootstrap/cago.go` `loadProxyAddr` → `proxyPortFromEnv`). The fixed port is **not** data-dir-scoped, so a running real Agentre already holds 52401; without this override the e2e gateway fails to bind → `BaseURL()` is empty → every gateway round-trip (MCP tool calls, hooks, LLM forward) silently dies. `BaseURL()` reports the real bound port via the listener, so nothing hardcodes 52401 |
 
 The bridge runs on a **dedicated port 34216** (not Wails' default 34115) so it never reuses — or
 collides with — a `make dev` dev server you already have open.
@@ -96,8 +96,9 @@ A run is fully hermetic, and in particular **a running Agentre does not interfer
 - **Bridge port** — 34216, dedicated; never collides with a `make dev` on 34115.
 - **Gateway port** — the local HTTP gateway's default 52401 is **not** data-dir-scoped, so a
   running real Agentre holds it; e2e sets `AGENTRE_PROXY_PORT=0` to bind a free port instead (see
-  §2's env table). Without this the gateway degrades and every gateway round-trip (`group_send`,
-  hooks) silently fails — `group-chat.spec.ts` would go red against a perfectly-good backend.
+  §2's env table). Without this the gateway degrades and every gateway round-trip (MCP tool calls,
+  hooks) silently fails — committed specs that exercise injected tools would go red against a
+  perfectly-good backend.
 
 Run one e2e invocation at a time locally (the temp data-dir path is fixed). CI runners are
 isolated, so each job's run is independent.
@@ -231,12 +232,11 @@ in mind when changing it.
   **Not implemented yet** — it's the intended seam; add it red→green (with a fake-runtime unit
   test) when a spec first needs it.
 - **Fake an injected MCP tool call** → when the real backend would call an injected MCP tool, the
-  fake makes the same HTTP `tools/call` like a real CLI. **Done for `group_send`**: a group member
-  turn injects a `group` MCP server (`group_svc.buildGroupMCP`), so the fake `Run` detects it
-  (`findGroupSendServer`) and POSTs `group_send` to the gateway `/mcp/group/` — driving the real
-  `IngestAgentMessage` so the member reply bubbles into the group transcript
-  (`group-chat.spec.ts` asserts the visible bubble + the `agentGroupMessageCount()` DB twin). Model
-  any future injected-tool fidelity on this; it's the deterministic-fake-as-MCP-client seam.
+  fake makes the same HTTP `tools/call` like a real CLI. **Done for orchestration tools** (workflow,
+  org, subagent, dispatch, finish): when the agent has the relevant tool enabled, the real backend
+  injects the MCP server, so the fake `Run` detects it (`findGroupToolServer`) and POSTs the
+  appropriate tool call to the gateway endpoint — driving the real service handler. Model any future
+  injected-tool fidelity on this; it's the deterministic-fake-as-MCP-client seam.
 - **Fake another backend** (codex / builtin / remote) → add a fake package under `//go:build e2e`
   + one more `RegisterRuntime` line in `e2e_install.go`. Never a patch to production control flow.
 - **A new UI assertion target** → add a `data-testid` (additive) in the same style as §5.
@@ -258,7 +258,7 @@ in mind when changing it.
 | `e2e_install.go` (`//go:build e2e`) / `e2e_install_noop.go` (`//go:build !e2e`) | register the fake + seed / no-op | yes |
 | `internal/pkg/agentruntime/runtimes/fake/` | the deterministic fake runtime (entire package `//go:build e2e`) | yes |
 
-claudecode backend only. The committed suite covers single-chat, session reload, and the
-group-chat round-trip (the fake acts as the `group_send` MCP client so the member reply bubbles in
-— see §8). Settings / multi-backend / codex / remote e2e remain future specs that reuse this same
-harness and the fake-runtime seam above.
+claudecode backend only. The committed suite covers single-chat, session reload, and
+orchestration flows (the fake acts as an MCP client for injected tool servers — see §8).
+Settings / multi-backend / codex / remote e2e remain future specs that reuse this same harness
+and the fake-runtime seam above.
