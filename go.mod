@@ -8,8 +8,6 @@ require (
 	github.com/cago-frame/agents v0.0.0-20260610020000-640785b2d7a3
 	github.com/cago-frame/cago v0.0.0-20260609091633-ba2f550b2729
 	github.com/creack/pty v1.1.21
-	github.com/emersion/go-imap/v2 v2.0.0-beta.8
-	github.com/emersion/go-message v0.18.2
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-gormigrate/gormigrate/v2 v2.1.2
 	github.com/google/uuid v1.6.0
@@ -50,7 +48,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elastic/elastic-transport-go/v8 v8.4.0 // indirect
 	github.com/elastic/go-elasticsearch/v8 v8.12.1 // indirect
-	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.7 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/gin-gonic/gin v1.10.0 // indirect
