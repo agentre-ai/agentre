@@ -357,7 +357,7 @@ func TestListAgents(t *testing.T) {
 			}, nil)
 			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(1), 5).Return(nil, nil)
 			m.session.EXPECT().ListByAgentIncludingGroups(ctx, int64(2), 5).Return([]*chat_entity.Session{
-				{ID: 99, AgentID: 2, Title: "支付小队 / 工程师", AgentStatus: "running", LastMessageAt: 1700000000000, GroupID: 5},
+				{ID: 99, AgentID: 2, Title: "支付小队 / 工程师", AgentStatus: "running", LastMessageAt: 1700000000000},
 			}, nil)
 
 			resp, err := m.svc.ListAgents(ctx, &chat_svc.ListAgentsRequest{})
@@ -369,7 +369,6 @@ func TestListAgents(t *testing.T) {
 			assert.Equal(t, 3, resp.Agents[1].ActiveCount)
 			assert.Equal(t, []int64{99, 50, 49, 48, 47, 46}, resp.Agents[1].SessionIDs)
 			assert.Equal(t, "支付小队 / 工程师", resp.Agents[1].Sessions[0].Title)
-			assert.Equal(t, int64(5), resp.Agents[1].Sessions[0].GroupID)
 			assert.Len(t, resp.Agents[0].AttentionSessions, 0, "CEO 没 attention session")
 			if assert.Len(t, resp.Agents[1].AttentionSessions, 1) {
 				assert.Equal(t, int64(50), resp.Agents[1].AttentionSessions[0].ID)

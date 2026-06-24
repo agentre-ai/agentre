@@ -17,8 +17,6 @@ import (
 
 type SessionRepo interface {
 	Find(ctx context.Context, id int64) (*chat_entity.Session, error)
-	// FindByGroupAndAgent 查某 agent 在某群的 active backing session, 无则返回 nil。
-	FindByGroupAndAgent(ctx context.Context, groupID, agentID int64) (*chat_entity.Session, error)
 	ListByAgent(ctx context.Context, agentID int64, limit int) ([]*chat_entity.Session, error)
 	ListByAgentIncludingGroups(ctx context.Context, agentID int64, limit int) ([]*chat_entity.Session, error)
 	ListByAgentPaged(ctx context.Context, agentID int64, offset, limit int) ([]*chat_entity.Session, error)
@@ -63,18 +61,17 @@ func Session() SessionRepo             { return defaultSession }
 func RegisterSession(impl SessionRepo) { defaultSession = impl }
 func NewSession() SessionRepo          { return &sessionRepo{} }
 
-// defaultSessionScope 限定为「普通单 agent 会话」(排除群聊成员 backing session 和编排子会话)。
-// 所有默认会话列表/计数查询统一挂这个 scope, 避免逐个手写 group_id = 0 漏一个。
+// defaultSessionScope 限定为「普通会话」(排除编排子会话)。所有默认会话列表/计数查询统一
+// 挂这个 scope, 避免逐个手写 run_id = 0 漏一个。
 // run_id = 0 将 dispatch 创建的编排子会话（run_id>0）挡出普通会话列表。
 func defaultSessionScope(db *gorm.DB) *gorm.DB {
-	return db.Where("group_id = ? AND run_id = ?", 0, 0)
+	return db.Where("run_id = ?", 0)
 }
 
 // nonSubagentScope 排除子 agent 委派会话(purpose='subagent_call')。这类会话由 agent_call
 // 同步委派出来、一次性隔离, 不是用户顶层会话, 不应出现在任何 agent/项目的会话列表或计数里。
-// 与按 group_id 条件过滤的 defaultSessionScope 不同: 子 agent 会话走 group_id=0, 含群的
-// *IncludingGroups 变体不挂 defaultSessionScope, 所以本 scope 必须无条件挂在每个列表/计数查询上,
-// 否则它会从侧栏(走 IncludingGroups)漏出来。
+// 不挂 defaultSessionScope 的 *IncludingGroups 变体仍需隐藏它, 所以本 scope 必须无条件挂在
+// 每个列表/计数查询上, 否则它会从侧栏(走 IncludingGroups)漏出来。
 func nonSubagentScope(db *gorm.DB) *gorm.DB {
 	return db.Where("purpose <> ?", chat_entity.SessionPurposeSubagent)
 }
@@ -91,18 +88,6 @@ func (r *sessionRepo) Find(ctx context.Context, id int64) (*chat_entity.Session,
 		return nil, err
 	}
 	out.ApplyDerivedFields()
-	return out, nil
-}
-
-func (r *sessionRepo) FindByGroupAndAgent(ctx context.Context, groupID, agentID int64) (*chat_entity.Session, error) {
-	out := &chat_entity.Session{}
-	err := db.Ctx(ctx).Where("group_id = ? AND agent_id = ? AND status = ?", groupID, agentID, consts.ACTIVE).First(out).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	return out, nil
 }
 
@@ -292,9 +277,9 @@ func (r *sessionRepo) countByAgent(ctx context.Context, agentID int64, ordinaryO
 // 注意:不要把 consts.ACTIVE(软删除位)误用为"运行中"语义 —— 那会让任何有历史会话的
 // agent 一直亮灯。真实"是否在跑"由 chat_sessions.agent_status 表达。
 //
-// 不挂 defaultSessionScope: 群成员 backing session(group_id>0)的运行轮同样让 agent 忙,
-// 必须计入呼吸灯,且要与含群的 attention bubble(ListAttentionByAgentIncludingGroups)一致 ——
-// 否则 agent 仅在跑群轮时呼吸灯不亮。
+// 不挂 defaultSessionScope: 编排子会话(run_id>0)的运行轮同样让 agent 忙,必须计入呼吸灯,
+// 且要与不挂 scope 的 *IncludingGroups attention bubble 一致 —— 否则 agent 仅在跑编排轮时
+// 呼吸灯不亮。
 // 但挂 nonSubagentScope: 子 agent 委派会话从侧栏隐藏、点不进去,让它点亮呼吸灯会留下
 // 「亮灯却无会话可看」的死角,故运行中的子 agent 轮不计入呼吸灯。
 func (r *sessionRepo) CountRunningByAgents(ctx context.Context, agentIDs []int64) (map[int64]int, error) {
