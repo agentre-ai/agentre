@@ -94,5 +94,3 @@ func (s *orchSvc) enqueueRun(runID int64, task *orch_entity.Task, brief string) 
 	}()
 }
 
-// watchCompletion 监听子任务完成并回报派发者(Task 8 实现完整逻辑)。
-func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Task) {}
