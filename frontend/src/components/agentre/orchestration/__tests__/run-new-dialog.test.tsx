@@ -101,13 +101,13 @@ describe("RunNewDialog", () => {
       expect(screen.getByTestId("run-flow-mode-adhoc")).toBeInTheDocument();
     });
 
-    it("点击 library 按钮切换 flowMode 并显示流程库 picker", async () => {
+    it("点击 library 按钮切换 flowMode 并显示流程库 picker(多标签全显)", async () => {
       appMocks.WorkflowList.mockResolvedValue({
         items: [
           {
             id: 1,
             name: "标准功能开发流",
-            tags: ["通用"],
+            tags: ["通用", "研发"],
             outline: ["需求拆解", "方案设计"],
           },
         ],
@@ -116,9 +116,10 @@ describe("RunNewDialog", () => {
       await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
       // 切到「流程库」模式
       screen.getByTestId("run-flow-mode-library").click();
-      // 流程库 picker 显示名称 + 标签 chip + 步骤面包屑
+      // 流程库 picker 显示名称 + 所有标签 chip + 步骤面包屑
       expect(await screen.findByText("标准功能开发流")).toBeInTheDocument();
       expect(screen.getByText("通用")).toBeInTheDocument();
+      expect(screen.getByText("研发")).toBeInTheDocument();
       expect(screen.getByText("需求拆解")).toBeInTheDocument();
       expect(screen.getByText("方案设计")).toBeInTheDocument();
     });

@@ -240,7 +240,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
                     onClick={() => setFlowId(w.id)}
                     className={
                       flowId === w.id
-                        ? "flex flex-col gap-1 rounded-md border border-primary bg-primary/5 px-3 py-2 text-left"
+                        ? "flex flex-col gap-1 rounded-md border border-primary bg-primary-soft px-3 py-2 text-left"
                         : "flex flex-col gap-1 rounded-md border border-border px-3 py-2 text-left hover:bg-accent/50"
                     }
                   >
@@ -248,18 +248,21 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
                       <span className="font-medium text-foreground">
                         {w.name}
                       </span>
-                      {w.tags[0] ? (
-                        <span className="rounded bg-accent px-1 py-0.5 text-2xs text-muted-foreground">
-                          {w.tags[0]}
+                      {w.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded bg-accent px-1 py-0.5 text-2xs text-muted-foreground"
+                        >
+                          {tag}
                         </span>
-                      ) : null}
+                      ))}
                     </span>
                     {w.outline.length > 0 ? (
                       <span className="flex flex-wrap items-center gap-1">
                         {w.outline.map((step, i) => (
                           <React.Fragment key={`${step}-${i}`}>
                             {i > 0 ? (
-                              <span className="text-2xs text-muted-foreground">
+                              <span className="text-2xs text-subtle-foreground">
                                 ›
                               </span>
                             ) : null}
