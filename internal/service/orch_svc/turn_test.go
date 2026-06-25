@@ -2,6 +2,7 @@ package orch_svc_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -75,16 +76,21 @@ func TestBuildTurnExtras_ReturnsFalseWhenDisabled(t *testing.T) {
 }
 
 // TestBuildTurnExtras_NeverInjectsTagsOutline 是护栏测试：验证 BuildTurnExtras 注入的
-// suffix 仅来自 run.FlowContent，绝不包含 workflow.Tags / workflow.Outline 的内容。
+// suffix 严格等于「编排指引」+ 「本次编排流程」两个段落，绝不包含任何 workflow 衍生内容
+// （workflow.Tags / workflow.Outline 等展示层字段）。
 //
 // 结构说明：workflow.Tags 和 workflow.Outline 存在于 Workflow 实体（不注入，仅展示），
 // BuildTurnExtras 没有接收 workflow repo 的路径，只通过 tasks → runs 读取
-// OrchestrationRun.FlowContent。未来若有人新增代码加载 Workflow 并拼入 tags/outline，
-// 本测试会因 suffix 中出现哨兵串而变红。
+// OrchestrationRun.FlowContent。
 //
-// 哨兵的可达路径：注入泄露只能通过「加载 Workflow 实体并读取其 Tags/Outline 字段」发生，
-// 因此把哨兵置于此时才会被读取的 tags/outline 字段值（通过测试注释声明其语义），
-// 并断言它们不出现在 suffix 里。
+// tripwire 设计：orchGuidance 是 orch_svc 包私有常量，外部测试包无法直接引用，
+// 因此使用结构性断言替代字面等值比较：
+//  1. suffix 恰好含 2 个 "### " 小节标题（编排指引 + 本次编排流程），
+//     若注入第三段（如 tags/outline）则计数变为 3+，断言失败。
+//  2. suffix 以 flowBody 结尾，确保 FlowContent 之后没有额外内容追加。
+//  3. suffix 包含 flowBody（正向确认 FlowContent 路径正常）。
+//
+// 任何将 workflow.Tags / workflow.Outline 拼入 suffix 的改动，都会使断言 1 或 2 失败。
 func TestBuildTurnExtras_NeverInjectsTagsOutline(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -94,14 +100,8 @@ func TestBuildTurnExtras_NeverInjectsTagsOutline(t *testing.T) {
 	orch_svc.Default().RegisterDeps(nil, nil, runs, tasks, nil, nil)
 	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
 
-	// FlowContent 只含正文；哨兵串不出现在任何 BuildTurnExtras 可读的字段里。
-	// 若未来有人加载 Workflow 并拼入 Tags("TAG-SENTINEL") / Outline("OUTLINE-SENTINEL")，
-	// suffix 就会包含哨兵，断言变红。
-	const (
-		flowBody       = "正文-FLOW-BODY"
-		tagSentinel    = "TAG-SENTINEL"    // 代表 workflow.Tags 被注入时才会出现的串
-		outlineSentinel = "OUTLINE-SENTINEL" // 代表 workflow.Outline 被注入时才会出现的串
-	)
+	const flowBody = "正文-FLOW-BODY"
+
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(600)).
 		Return(&orch_entity.Task{ID: 50, RunID: 200, SessionID: 600, ParentTaskID: 0}, nil)
 	runs.EXPECT().Find(gomock.Any(), int64(200)).
@@ -110,9 +110,11 @@ func TestBuildTurnExtras_NeverInjectsTagsOutline(t *testing.T) {
 	a := enableOrch(&agent_entity.Agent{ID: 3})
 	_, suffix, ok := orch_svc.Default().BuildTurnExtras(context.Background(), a, 600, 0)
 	assert.True(t, ok)
-	// 正文必须存在（确认 FlowContent 路径正常）。
+	// 正向：FlowContent 路径正常。
 	assert.Contains(t, suffix, flowBody)
-	// 哨兵绝不出现（锁死 tags/outline 不进注入的不变量）。
-	assert.NotContains(t, suffix, tagSentinel)
-	assert.NotContains(t, suffix, outlineSentinel)
+	// tripwire 1：suffix 恰好包含 2 个 "### " 节标题（编排指引 + 本次编排流程），
+	// 任何新增段落（如注入 tags/outline）都会使计数变为 3+，断言失败。
+	assert.Equal(t, 2, strings.Count(suffix, "### "), "suffix 应只含两个 ### 段落，多则说明有额外注入")
+	// tripwire 2：suffix 以 flowBody 结尾，确保 FlowContent 之后没有额外内容追加。
+	assert.True(t, strings.HasSuffix(suffix, flowBody), "suffix 应以 FlowContent 结尾，有额外追加则失败")
 }
