@@ -40,6 +40,8 @@ type AgentItem = {
 type WorkflowOption = {
   id: number;
   name: string;
+  tags: string[];
+  outline: string[];
 };
 
 export type RunNewDialogProps = {
@@ -97,10 +99,14 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
     WorkflowList()
       .then((resp) => {
         setWorkflows(
-          (resp?.items ?? []).map((w: { id: number; name: string }) => ({
-            id: w.id,
-            name: w.name,
-          })),
+          (resp?.items ?? []).map(
+            (w: { id: number; name: string; tags?: string[]; outline?: string[] }) => ({
+              id: w.id,
+              name: w.name,
+              tags: w.tags ?? [],
+              outline: w.outline ?? [],
+            }),
+          ),
         );
       })
       .catch(() => setWorkflows([]));
@@ -192,64 +198,82 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
             </Select>
           </label>
 
-          {/* 流程模式 */}
-          <label className="flex flex-col gap-1.5 text-xs">
+          {/* 流程模式: 三态按钮组 */}
+          <div className="flex flex-col gap-1.5 text-xs">
             <span className="font-medium text-foreground">
               {t("orchestration.new.flow")}
             </span>
-            <Select
-              value={flowMode}
-              onValueChange={(v) => setFlowMode(v as FlowMode)}
-            >
-              <SelectTrigger
-                data-testid="run-flow-mode"
-                aria-label={t("orchestration.new.flow")}
-                className="h-9 text-xs"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">
-                  {t("orchestration.new.flowNone")}
-                </SelectItem>
-                <SelectItem value="library">
-                  {t("orchestration.new.flowLibrary")}
-                </SelectItem>
-                <SelectItem value="adhoc">
-                  {t("orchestration.new.flowAdhoc")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </label>
+            <div className="flex gap-1.5">
+              {(["none", "library", "adhoc"] as FlowMode[]).map((m) => (
+                <Button
+                  key={m}
+                  type="button"
+                  size="sm"
+                  variant={flowMode === m ? "default" : "outline"}
+                  data-testid={`run-flow-mode-${m}`}
+                  onClick={() => setFlowMode(m)}
+                >
+                  {t(
+                    m === "none"
+                      ? "orchestration.new.flowNone"
+                      : m === "library"
+                        ? "orchestration.new.flowLibrary"
+                        : "orchestration.new.flowAdhoc",
+                  )}
+                </Button>
+              ))}
+            </div>
+          </div>
 
-          {/* 流程库选择 */}
+          {/* 流程库选择: 单选行列表,显示名称 + 标签 chip + 步骤面包屑 */}
           {flowMode === "library" ? (
-            <label className="flex flex-col gap-1.5 text-xs">
+            <div className="flex flex-col gap-1.5 text-xs">
               <span className="font-medium text-foreground">
                 {t("orchestration.new.flowSelect")}
               </span>
-              <Select
-                value={flowId ? String(flowId) : ""}
-                onValueChange={(v) => setFlowId(Number(v))}
-              >
-                <SelectTrigger
-                  data-testid="run-flow-id"
-                  aria-label={t("orchestration.new.flowSelect")}
-                  className="h-9 text-xs"
-                >
-                  <SelectValue
-                    placeholder={t("orchestration.new.flowSelectPlaceholder")}
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {workflows.map((w) => (
-                    <SelectItem key={w.id} value={String(w.id)}>
-                      {w.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
+              <div className="flex flex-col gap-1.5">
+                {workflows.map((w) => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    data-testid={`run-flow-pick-${w.id}`}
+                    onClick={() => setFlowId(w.id)}
+                    className={
+                      flowId === w.id
+                        ? "flex flex-col gap-1 rounded-md border border-primary bg-primary/5 px-3 py-2 text-left"
+                        : "flex flex-col gap-1 rounded-md border border-border px-3 py-2 text-left hover:bg-accent/50"
+                    }
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="font-medium text-foreground">
+                        {w.name}
+                      </span>
+                      {w.tags[0] ? (
+                        <span className="rounded bg-accent px-1 py-0.5 text-2xs text-muted-foreground">
+                          {w.tags[0]}
+                        </span>
+                      ) : null}
+                    </span>
+                    {w.outline.length > 0 ? (
+                      <span className="flex flex-wrap items-center gap-1">
+                        {w.outline.map((step, i) => (
+                          <React.Fragment key={`${step}-${i}`}>
+                            {i > 0 ? (
+                              <span className="text-2xs text-muted-foreground">
+                                ›
+                              </span>
+                            ) : null}
+                            <span className="rounded border border-border bg-card px-1.5 py-0.5 text-2xs text-muted-foreground">
+                              {step}
+                            </span>
+                          </React.Fragment>
+                        ))}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </div>
           ) : null}
 
           {/* 临时流程内容 */}
