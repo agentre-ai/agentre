@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,30 +23,6 @@ import (
 
 // ReplyPrefix 是所有假回复的前缀,前端据此断言并与用户消息区分。
 const ReplyPrefix = "e2e-fake-reply: "
-
-// TaskDirectivePrefix 触发建任务卡的用户指令:e2e-task:<assignee显示名>:<title>。
-// e2e spec 用它驱动主持人轮确定性建卡(真实场景这是 LLM 的判断,fake 用文本模式顶替)。
-const TaskDirectivePrefix = "e2e-task:"
-
-// TaskOpenDirectivePrefix 触发只建 open 任务的用户指令:e2e-task-open:<assignee>:<title>。
-// fake 会在 brief 里写入 OpenTaskMarker,成员收到派活后不会自动 complete。
-const TaskOpenDirectivePrefix = "e2e-task-open:"
-
-// TaskParentDirectivePrefix 触发带 parentTaskId 的建卡指令:
-// e2e-task-parent:<assignee>:<title>:<parentTaskNo>。
-const TaskParentDirectivePrefix = "e2e-task-parent:"
-
-// TaskResultPrefix 是 fake 交付任务时 result 的前缀,DB oracle 据此锁定 fake 写入的行。
-const TaskResultPrefix = "e2e-fake-result: "
-
-// OpenTaskMarker 标记 create-only 任务,让成员 fake 收到派活抬头时保持 open。
-const OpenTaskMarker = "e2e-open-task"
-
-// TaskCompleteEmptyDirectivePrefix 触发空 result complete,用于 e2e 验证服务端软门。
-const TaskCompleteEmptyDirectivePrefix = "e2e-task-complete-empty:"
-
-// TaskCancelDirectivePrefix 触发取消任务:e2e-task-cancel:<taskNo>:<reason>。
-const TaskCancelDirectivePrefix = "e2e-task-cancel:"
 
 // SystemAssertDirectivePrefix 触发 system prompt 可观测断言:e2e-assert-system:<needle>。
 const SystemAssertDirectivePrefix = "e2e-assert-system:"
@@ -76,9 +51,21 @@ const OrchestrateDispatchDirectivePrefix = "e2e-orch-dispatch:"
 // finish 把根 Task 标为 done 并把 Run 推进到 done。
 const OrchestrateFinishDirectivePrefix = "e2e-orch-finish:"
 
-// taskAssignedRe 匹配派活消息抬头「任务 #N：」(HandleTaskCreate 的 content 格式;
-// 完成回执是「任务 #N 已完成」、取消是「任务 #N 已取消」,编号后无全角冒号,不会误匹配)。
-var taskAssignedRe = regexp.MustCompile(`任务 #(\d+)：`)
+// OrchestrateAskDirectivePrefix 触发编排 ask 的用户指令:e2e-orch-ask:<agentName>:<question>。
+// 需 agent 开启 orchestrate 工具;ask 把带 ask_id 的问题注入对方活会话并阻塞等其 reply。
+// 当 <question> 本身又是一条 e2e-orch-ask 指令时,接收方会 ask 回去 → 形成 A↔B 等待环,
+// 驱动死锁检测 emit orch:run:deadlock(e2e 死锁场景)。
+const OrchestrateAskDirectivePrefix = "e2e-orch-ask:"
+
+// AskUserQuestionDirectivePrefix 触发 AskUserQuestion 失效终态的用户指令:e2e-ask:<question>。
+// fake emit 一条 UserAskRequest(单问两选)后直接 Done 而不等回答 → chat_svc finalize 把未答的
+// ask 标 expired,前端卡片转「已失效」终态(无需任何工具,纯 runtime 事件)。
+const AskUserQuestionDirectivePrefix = "e2e-ask:"
+
+// HookCreateDirectivePrefix 触发脚本 Hook 创作工具的用户指令:e2e-hook-create:<name>。
+// 需 agent 开启 hook 工具(注入 /mcp/hook/);hook_create 是写工具需审批,挂起等 UI 批准
+// (镜像 org_create_department 接缝)。
+const HookCreateDirectivePrefix = "e2e-hook-create:"
 
 // Runtime 实现 agentruntime.Runtime。
 type Runtime struct{}
@@ -170,14 +157,54 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		}
 		// orchestrate dispatch 接缝:leader agent 开启 orchestrate 工具时注入 /mcp/orchestrate/;
 		// 按 e2e-orch-dispatch:<agentName>:<brief> 指令调 dispatch(异步派发,立即返回)。
-		// 失败只写 stderr。
+		// 失败只写 stderr。dispatched 记录本轮是否已派发,使 dispatch 与 ask 互斥(见下)。
+		dispatched := false
 		if spec, ok := findGroupToolServer(req.MCPServers, "dispatch"); ok {
 			if agentName, brief, found := parseTwoPartDirective(req.UserText, OrchestrateDispatchDirectivePrefix); found {
+				dispatched = true
 				if err := postToolCall(ctx, spec, "dispatch", map[string]any{
 					"agent": agentName,
 					"brief": brief,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "fake: orchestrate dispatch failed: %v\n", err)
+				}
+			}
+		}
+		// orchestrate ask/reply 接缝(ask 与 reply 同在 /mcp/orchestrate/):
+		//   - 提问方轮含 e2e-orch-ask:<agent>:<question> → 调 ask(阻塞等 reply / 超时)。
+		//   - 接收方轮收到注入的「【收到提问 ask_id=X】」→ 调 reply 回复;
+		//     但若注入的问题体本身又是一条 e2e-orch-ask 指令(死锁场景),则优先 ask 回去,
+		//     不 reply → A↔B 互等触发死锁检测。失败只写 stderr。
+		// dispatch 与 ask 互斥(一轮只做一个编排动作):否则当 dispatch 的 brief 里又嵌一条
+		// e2e-orch-ask 指令(死锁构造)时,本轮会既 dispatch 又对自己 ask,污染等待图。
+		if spec, ok := findGroupToolServer(req.MCPServers, "ask"); ok && !dispatched {
+			if agentName, question, found := parseTwoPartDirective(req.UserText, OrchestrateAskDirectivePrefix); found {
+				if err := postToolCall(ctx, spec, "ask", map[string]any{
+					"agent":    agentName,
+					"question": question,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "fake: orchestrate ask failed: %v\n", err)
+				}
+			} else if askID, found := parseInjectedAskID(req.UserText); found {
+				if err := postToolCall(ctx, spec, "reply", map[string]any{
+					"ask_id": askID,
+					"answer": "e2e-orch-reply: ok",
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "fake: orchestrate reply failed: %v\n", err)
+				}
+			}
+		}
+		// hook 接缝:agent 开启 hook 工具时注入 /mcp/hook/;按 e2e-hook-create:<name> 指令调
+		// hook_create(写工具需审批,挂起等 UI 批准,镜像 org 接缝)。失败只写 stderr。
+		if spec, ok := findGroupToolServer(req.MCPServers, "hook_create"); ok {
+			if name, found := parseOnePartDirective(req.UserText, HookCreateDirectivePrefix); found {
+				if err := postToolCall(ctx, spec, "hook_create", map[string]any{
+					"name":         name,
+					"interpreter":  "bash",
+					"command":      "echo '{\"events\":[]}'",
+					"scheduleExpr": "*/5 * * * *",
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "fake: hook_create failed: %v\n", err)
 				}
 			}
 		}
@@ -200,6 +227,27 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 				}
 			}
 		}
+		// AskUserQuestion 失效终态接缝:e2e-ask:<question> → emit 一条未答的 UserAskRequest,
+		// 随后直接 Done。chat_svc finalize 把未答的 ask 标 expired → 卡片转「已失效」。
+		if question, found := parseOnePartDirective(req.UserText, AskUserQuestionDirectivePrefix); found {
+			select {
+			case <-ctx.Done():
+				return
+			case out <- agentruntime.UserAskRequest{
+				RequestID:  fmt.Sprintf("e2e-ask-%d", req.SessionID),
+				ToolCallID: fmt.Sprintf("e2e-ask-tc-%d", req.SessionID),
+				Questions: []agentruntime.AskQuestion{{
+					ID:       "q1",
+					Question: question,
+					Header:   "e2e",
+					Options: []agentruntime.AskOption{
+						{Label: "Yes", Description: "yes"},
+						{Label: "No", Description: "no"},
+					},
+				}},
+			}:
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -209,11 +257,23 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	return out, result, nil
 }
 
-type taskCreateDirective struct {
-	assignee     string
-	title        string
-	brief        string
-	parentTaskNo int
+// parseInjectedAskID 从编排 ask 注入消息「【收到提问 ask_id=<uuid>】…」里解出 ask_id。
+// 接收方 fake 据此调 reply。提问方自己的 e2e-orch-ask 指令文本不含 ask_id= → 返回 !ok。
+func parseInjectedAskID(text string) (string, bool) {
+	const marker = "ask_id="
+	idx := strings.Index(text, marker)
+	if idx < 0 {
+		return "", false
+	}
+	rest := text[idx+len(marker):]
+	if i := strings.IndexAny(rest, "】\n "); i >= 0 {
+		rest = rest[:i]
+	}
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return "", false
+	}
+	return rest, true
 }
 
 // findGroupToolServer 返回首个广告 tool 的注入 MCP server(无 → !ok)。
@@ -224,67 +284,6 @@ func findGroupToolServer(specs []agentruntime.MCPServerSpec, tool string) (agent
 		}
 	}
 	return agentruntime.MCPServerSpec{}, false
-}
-
-// parseTaskDirective 从 UserText 中解出 e2e-task:<assignee>:<title>(取指令所在行,
-// 缺段/空段 → !ok)。
-func parseTaskDirective(text string) (assignee, title string, ok bool) {
-	idx := strings.Index(text, TaskDirectivePrefix)
-	if idx < 0 {
-		return "", "", false
-	}
-	rest := text[idx+len(TaskDirectivePrefix):]
-	if i := strings.IndexByte(rest, '\n'); i >= 0 {
-		rest = rest[:i]
-	}
-	assignee, title, found := strings.Cut(rest, ":")
-	assignee, title = strings.TrimSpace(assignee), strings.TrimSpace(title)
-	if !found || assignee == "" || title == "" {
-		return "", "", false
-	}
-	return assignee, title, true
-}
-
-func parseTaskCreateDirective(text string) (taskCreateDirective, bool) {
-	if assignee, title, ok := parseTaskDirective(text); ok {
-		return taskCreateDirective{assignee: assignee, title: title, brief: "e2e-brief: " + title}, true
-	}
-	if assignee, title, ok := parseTwoPartDirective(text, TaskOpenDirectivePrefix); ok {
-		return taskCreateDirective{assignee: assignee, title: title, brief: OpenTaskMarker + ": " + title}, true
-	}
-	if assignee, rest, ok := parseTwoPartDirective(text, TaskParentDirectivePrefix); ok {
-		title, parentRaw, found := strings.Cut(rest, ":")
-		title, parentRaw = strings.TrimSpace(title), strings.TrimSpace(parentRaw)
-		parentNo, err := strconv.Atoi(parentRaw)
-		if found && title != "" && err == nil && parentNo > 0 {
-			return taskCreateDirective{assignee: assignee, title: title, brief: "e2e-brief: " + title, parentTaskNo: parentNo}, true
-		}
-	}
-	return taskCreateDirective{}, false
-}
-
-func parseTaskCompleteEmptyDirective(text string) (taskNo int, ok bool) {
-	raw, ok := parseOnePartDirective(text, TaskCompleteEmptyDirectivePrefix)
-	if !ok {
-		return 0, false
-	}
-	no, err := strconv.Atoi(raw)
-	if err != nil || no <= 0 {
-		return 0, false
-	}
-	return no, true
-}
-
-func parseTaskCancelDirective(text string) (taskNo int, reason string, ok bool) {
-	noRaw, reason, ok := parseTwoPartDirective(text, TaskCancelDirectivePrefix)
-	if !ok {
-		return 0, "", false
-	}
-	no, err := strconv.Atoi(noRaw)
-	if err != nil || no <= 0 {
-		return 0, "", false
-	}
-	return no, reason, true
 }
 
 func parseOnePartDirective(text, prefix string) (value string, ok bool) {

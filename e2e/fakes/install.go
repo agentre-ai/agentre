@@ -96,19 +96,24 @@ func Install(ctx context.Context) {
 		//   - workflow → /mcp/workflow/(workflow-tool.spec:建流程审批)
 		//   - subagent → /mcp/subagent/(subagent-tool.spec:agent_call 委派,无审批)
 		//   - org → /mcp/org/(org-tool.spec:org_create_department 写工具审批)
+		//   - orchestrate → /mcp/orchestrate/(orchestration.spec:dispatch/ask/finish)
+		//   - hook → /mcp/hook/(hooks MCP 创作工具:hook_create 写工具审批)
 		Tools: []department_svc.AgentToolDTO{
 			{Key: agenttool.KeyWorkflow, Enabled: true},
 			{Key: agenttool.KeySubagent, Enabled: true},
 			{Key: agenttool.KeyOrg, Enabled: true},
 			{Key: agenttool.KeyOrchestrate, Enabled: true},
+			{Key: agenttool.KeyHook, Enabled: true},
 		},
 	}); err != nil {
 		logger.Ctx(ctx).Error("e2efakes.Install: attach backend to agent failed", zap.Error(err))
 		return
 	}
 
-	// seed 群聊成员(挂 CEO 汇报线;子 agent 与建群弹窗 eligible 池同口径)。
+	// seed 编排成员(挂 CEO 汇报线;子 agent 与编排可调度池同口径)。
 	// E2E Member 覆盖执行人链路;E2E Reviewer 覆盖验证/审查/动态招募链路。
+	// 开 orchestrate 工具:成员被 dispatch 后才能自己再 dispatch(多级编排)/ reply 回应 ask。
+	memberTools := []department_svc.AgentToolDTO{{Key: agenttool.KeyOrchestrate, Enabled: true}}
 	for _, memberName := range []string{"E2E Member", "E2E Reviewer"} {
 		if existing, err := agent_repo.Agent().FindByName(ctx, memberName); err != nil {
 			logger.Ctx(ctx).Error("e2efakes.Install: lookup member agent failed",
@@ -119,11 +124,19 @@ func Install(ctx context.Context) {
 				Name:           memberName,
 				ParentAgentID:  ceo.ID,
 				AgentBackendID: backendID,
+				Tools:          memberTools,
 			}); err != nil {
 				logger.Ctx(ctx).Error("e2efakes.Install: create member agent failed",
 					zap.String("name", memberName), zap.Error(err))
 				return
 			}
+		} else if _, err := agent_svc.Agent().Update(ctx, &agent_svc.UpdateAgentRequest{
+			// wails dev 热重载复用已存在成员:补开 orchestrate(首次建已带,这里兜底)。
+			ID: existing.ID, Name: existing.Name, AgentBackendID: backendID, Tools: memberTools,
+		}); err != nil {
+			logger.Ctx(ctx).Error("e2efakes.Install: update member tools failed",
+				zap.String("name", memberName), zap.Error(err))
+			return
 		}
 	}
 
