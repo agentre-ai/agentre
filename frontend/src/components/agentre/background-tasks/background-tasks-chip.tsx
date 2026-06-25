@@ -50,7 +50,7 @@ export function BackgroundTasksChip({
           <span
             className={cn(
               "inline-block size-2 rounded-full",
-              isRunning ? "bg-green-500" : "bg-muted-foreground",
+              isRunning ? "bg-status-running" : "bg-muted-foreground",
             )}
             aria-hidden="true"
           />

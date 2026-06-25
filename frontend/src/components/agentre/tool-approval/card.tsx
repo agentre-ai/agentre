@@ -61,7 +61,7 @@ export const ToolApprovalCard: React.FC<{
         "rounded-md border bg-card text-card-foreground shadow-sm",
         !isPending && !isApproved
           ? "border-destructive/40"
-          : "border-amber-500/40",
+          : "border-status-waiting/40",
       )}
     >
       <div className="flex items-center gap-2 px-3 py-2">
@@ -69,9 +69,9 @@ export const ToolApprovalCard: React.FC<{
           className={cn(
             "h-4 w-4 shrink-0",
             isPending
-              ? "text-amber-500"
+              ? "text-status-waiting"
               : isApproved
-                ? "text-emerald-500"
+                ? "text-status-running"
                 : "text-destructive",
           )}
         />
@@ -89,7 +89,7 @@ export const ToolApprovalCard: React.FC<{
             className={cn(
               "ml-auto rounded px-1.5 py-0.5 text-xs",
               isApproved
-                ? "bg-emerald-500/10 text-emerald-600"
+                ? "bg-status-running-bg text-status-running"
                 : "bg-destructive/10 text-destructive",
             )}
           >

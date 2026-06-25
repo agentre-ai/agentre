@@ -421,7 +421,7 @@ export function UpdateSection() {
             </Button>
             {phase.kind === "uptodate" ? (
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                <CheckCircle2 className="size-3.5 text-emerald-500" />
+                <CheckCircle2 className="size-3.5 text-status-running" />
                 {t("update.status.upToDate")}
               </span>
             ) : null}
@@ -726,10 +726,10 @@ function InstalledCard({
   const unknownVersionLabel = t("update.version.unknown");
 
   return (
-    <section className="overflow-hidden rounded-lg border border-emerald-500/30 bg-emerald-500/5">
-      <div className="flex flex-wrap items-center gap-3 border-b border-emerald-500/20 px-4 py-3">
+    <section className="overflow-hidden rounded-lg border border-status-running/30 bg-status-running-bg">
+      <div className="flex flex-wrap items-center gap-3 border-b border-status-running/20 px-4 py-3">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <h2 className="text-sm font-semibold text-emerald-600">
+          <h2 className="text-sm font-semibold text-status-running">
             {t("update.installed.title", {
               version: formatVersion(info.latestVersion, unknownVersionLabel),
             })}
@@ -786,7 +786,7 @@ function ChecksumDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Info className="size-4 text-amber-500" aria-hidden="true" />
+            <Info className="size-4 text-status-waiting" aria-hidden="true" />
             {t("update.checksum.title")}
           </DialogTitle>
           <DialogDescription>

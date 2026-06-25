@@ -679,7 +679,7 @@ function CandidateRow({
         deviceName={agent.deviceName ?? ""}
         online={agent.online ?? false}
       />
-      <span className="text-2xs text-amber-600 dark:text-amber-500">
+      <span className="text-2xs text-status-waiting">
         {t("projectSettings.members.configureRemotePath")}
       </span>
     </div>

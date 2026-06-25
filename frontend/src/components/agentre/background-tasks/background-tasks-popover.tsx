@@ -52,9 +52,9 @@ export function BackgroundTasksPopoverContent({
           {t("chatPanel.backgroundTasks.title")}
         </span>
         {runningCount > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
+          <span className="inline-flex items-center gap-1 rounded-full bg-status-running-bg px-1.5 py-0.5 font-mono text-[10px] font-medium text-status-running">
             <span
-              className="inline-block size-1.5 rounded-full bg-emerald-500"
+              className="inline-block size-1.5 rounded-full bg-status-running"
               aria-hidden="true"
             />
             {t("chatPanel.backgroundTasks.chip", { count: runningCount })}
@@ -155,9 +155,9 @@ function StatusPill({ status }: { status: BackgroundTask["status"] }) {
 
   if (status === "running") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] text-green-700 dark:bg-emerald-500/15 dark:text-green-400">
+      <span className="inline-flex items-center gap-1 rounded-full bg-status-running-bg px-1.5 py-0.5 font-mono text-[10px] text-status-running">
         <span
-          className="inline-block size-1.5 rounded-full bg-green-500"
+          className="inline-block size-1.5 rounded-full bg-status-running"
           aria-hidden="true"
         />
         {t("chatPanel.backgroundTasks.running")}
