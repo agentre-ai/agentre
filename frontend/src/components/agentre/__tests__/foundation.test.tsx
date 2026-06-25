@@ -90,7 +90,7 @@ describe("Agentre foundation components", () => {
     expect(screen.queryByText(/active/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/recent/i)).not.toBeInTheDocument();
     expect(screen.getByLabelText("running status")).toHaveClass(
-      "animate-pulse",
+      "motion-safe:animate-pulse",
     );
 
     rerender(<AgentGroup name="设计师" activeCount={0} />);
