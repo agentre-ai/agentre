@@ -210,9 +210,17 @@ func toEventItem(e *hook_entity.HookEvent) *HookEventItem {
 		return nil
 	}
 	return &HookEventItem{
-		ID: e.ID, HookID: e.HookID, Title: e.Title, DedupeKey: e.DedupeKey,
+		ID: e.ID, HookID: e.HookID, Kind: orOutputKind(e.Kind), Title: e.Title, DedupeKey: e.DedupeKey,
 		PayloadJSON: e.PayloadJSON, ReceivedAt: e.ReceivedAt, Createtime: e.Createtime,
 	}
+}
+
+// orOutputKind 把空 kind 兜底成 output(历史行 / 默认值缺失),前端无需处理空串。
+func orOutputKind(kind string) string {
+	if strings.TrimSpace(kind) == "" {
+		return hook_entity.HookEventKindOutput
+	}
+	return kind
 }
 
 func parseEnv(raw string) []EnvVar {

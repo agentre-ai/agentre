@@ -74,6 +74,7 @@ type HookItem = {
 type HookEventItem = {
   id: number;
   hookId: number;
+  kind: string; // "output" (script-produced) | "failure" (run-failure log)
   title: string;
   dedupeKey: string;
   payloadJson: string;
@@ -669,8 +670,23 @@ function RunLogTab({
                 : "border-border hover:bg-muted/50",
             )}
           >
-            <span className="truncate text-xs font-medium text-foreground">
-              {ev.title}
+            <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium">
+              {ev.kind === "failure" ? (
+                <XCircle
+                  className="h-3 w-3 shrink-0 text-status-error"
+                  aria-hidden
+                />
+              ) : null}
+              <span
+                className={cn(
+                  "truncate",
+                  ev.kind === "failure"
+                    ? "text-status-error"
+                    : "text-foreground",
+                )}
+              >
+                {ev.title}
+              </span>
             </span>
             <span className="font-mono text-[10px] text-muted-foreground">
               {t("hooks.log.receivedAt", {
@@ -684,8 +700,22 @@ function RunLogTab({
         {selected ? (
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1">
-              <span className="text-sm font-semibold text-foreground">
-                {selected.title}
+              <span className="flex items-center gap-2">
+                {selected.kind === "failure" ? (
+                  <Badge variant="destructive" className="shrink-0">
+                    {t("hooks.log.failureBadge")}
+                  </Badge>
+                ) : null}
+                <span
+                  className={cn(
+                    "text-sm font-semibold",
+                    selected.kind === "failure"
+                      ? "text-status-error"
+                      : "text-foreground",
+                  )}
+                >
+                  {selected.title}
+                </span>
               </span>
               {selected.dedupeKey ? (
                 <span className="font-mono text-[10px] text-muted-foreground">
@@ -909,7 +939,7 @@ export function HooksPage() {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+      <div className="flex h-full min-w-0 flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
         {t("hooks.loading")}
       </div>
@@ -917,7 +947,7 @@ export function HooksPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 min-w-0 flex-1">
       {/* Left list */}
       <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-sidebar">
         <div className="flex flex-col gap-2.5 border-b border-border p-3.5">

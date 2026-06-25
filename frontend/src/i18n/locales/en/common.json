@@ -1094,7 +1094,8 @@
       "selectPrompt": "Select an event to view its payload",
       "dedupeKey": "Dedupe key",
       "payload": "Payload",
-      "receivedAt": "Received {{time}}"
+      "receivedAt": "Received {{time}}",
+      "failureBadge": "Failed"
     },
     "interp": {
       "bash": "Bash",

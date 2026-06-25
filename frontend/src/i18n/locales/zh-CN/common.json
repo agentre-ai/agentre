@@ -1094,7 +1094,8 @@
       "selectPrompt": "选择左侧事件查看 payload",
       "dedupeKey": "去重键",
       "payload": "Payload",
-      "receivedAt": "产出于 {{time}}"
+      "receivedAt": "产出于 {{time}}",
+      "failureBadge": "失败"
     },
     "interp": {
       "bash": "Bash",

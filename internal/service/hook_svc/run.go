@@ -3,6 +3,7 @@ package hook_svc
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,6 +77,7 @@ func (s *hookSvc) executeHook(ctx context.Context, h *hook_entity.Hook, dryRun b
 	if failed {
 		if !dryRun {
 			s.finishRun(ctx, h, now, "failed", failureMessage(out, runErr), res, 0)
+			s.writeFailureEvent(ctx, h, out, runErr, now)
 		}
 		logger.Ctx(ctx).Warn("hook_svc.executeHook: run failed",
 			zap.Int64("hook_id", h.ID), zap.Int("exit", out.ExitCode), zap.Bool("timeout", out.TimedOut))
@@ -88,8 +90,8 @@ func (s *hookSvc) executeHook(ctx context.Context, h *hook_entity.Hook, dryRun b
 		if title == "" {
 			continue
 		}
-		item := &HookEventItem{HookID: h.ID, Title: title, DedupeKey: ev.DedupeKey,
-			PayloadJSON: rawOrEmpty(ev.Payload), ReceivedAt: now}
+		item := &HookEventItem{HookID: h.ID, Kind: hook_entity.HookEventKindOutput, Title: title,
+			DedupeKey: ev.DedupeKey, PayloadJSON: rawOrEmpty(ev.Payload), ReceivedAt: now}
 		if ev.DedupeKey != "" && !dryRun {
 			existing, err := hook_repo.HookEvent().FindByDedupeKey(ctx, h.ID, ev.DedupeKey)
 			if err != nil {
@@ -104,7 +106,7 @@ func (s *hookSvc) executeHook(ctx context.Context, h *hook_entity.Hook, dryRun b
 		out.NewCount++
 		if !dryRun {
 			row := &hook_entity.HookEvent{
-				HookID: h.ID, Title: title, DedupeKey: ev.DedupeKey,
+				HookID: h.ID, Kind: hook_entity.HookEventKindOutput, Title: title, DedupeKey: ev.DedupeKey,
 				PayloadJSON: item.PayloadJSON, ReceivedAt: now,
 				Status: consts.ACTIVE, Createtime: now, Updatetime: now,
 			}
@@ -145,10 +147,69 @@ func (s *hookSvc) finishRun(ctx context.Context, h *hook_entity.Hook, now int64,
 	}
 }
 
+const failureTitleMaxRunes = 200
+
+// writeFailureEvent 把一次失败也落成 hook_event(kind=failure),与成功产出并列进「运行日志」。
+// 失败留痕落库失败时仅记日志、不回传——原始运行失败已经报给调用方,不该被持久化错误盖住。
+func (s *hookSvc) writeFailureEvent(ctx context.Context, h *hook_entity.Hook, out *RunHookResult, runErr error, now int64) {
+	row := &hook_entity.HookEvent{
+		HookID:      h.ID,
+		Kind:        hook_entity.HookEventKindFailure,
+		Title:       failureTitle(out, runErr),
+		PayloadJSON: failurePayload(out),
+		ReceivedAt:  now,
+		Status:      consts.ACTIVE,
+		Createtime:  now,
+		Updatetime:  now,
+	}
+	if err := row.Check(ctx); err != nil {
+		logger.Ctx(ctx).Error("hook_svc.writeFailureEvent: invalid failure event",
+			zap.Int64("hook_id", h.ID), zap.Error(err))
+		return
+	}
+	if err := hook_repo.HookEvent().Create(ctx, row); err != nil {
+		logger.Ctx(ctx).Error("hook_svc.writeFailureEvent: create failed",
+			zap.Int64("hook_id", h.ID), zap.Error(err))
+	}
+}
+
+// failureTitle 取失败原因首行作标题(stderr 可能很长/多行,完整内容留在 payload),非零退出且
+// stderr 为空时兜底成 "run failed (exit N)"。按 rune 截断避免切碎多字节 UTF-8。
+func failureTitle(out *RunHookResult, runErr error) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(failureMessage(out, runErr)), "\n")
+	msg := strings.TrimSpace(line)
+	if msg == "" {
+		msg = "run failed (exit " + strconv.Itoa(out.ExitCode) + ")"
+	}
+	if r := []rune(msg); len(r) > failureTitleMaxRunes {
+		msg = string(r[:failureTitleMaxRunes]) + "…"
+	}
+	return msg
+}
+
+// failurePayload 把可查的失败日志(退出码/超时/stderr/stdout/解析错误)序列化进 payload_json。
+func failurePayload(out *RunHookResult) string {
+	raw, err := json.Marshal(struct {
+		ExitCode   int    `json:"exitCode"`
+		TimedOut   bool   `json:"timedOut"`
+		Stderr     string `json:"stderr,omitempty"`
+		Stdout     string `json:"stdout,omitempty"`
+		ParseError string `json:"parseError,omitempty"`
+	}{
+		ExitCode: out.ExitCode, TimedOut: out.TimedOut,
+		Stderr: out.Stderr, Stdout: out.Stdout, ParseError: out.ParseError,
+	})
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
 func buildEnv(h *hook_entity.Hook) map[string]string {
 	env := map[string]string{
 		"HOOK_STATE": orEmptyObject(h.StateJSON),
 		"HOOK_NAME":  h.Name,
+		"HOOK_ID":    strconv.FormatInt(h.ID, 10),
 	}
 	for _, e := range parseEnv(h.EnvJSON) {
 		if strings.TrimSpace(e.Key) != "" {

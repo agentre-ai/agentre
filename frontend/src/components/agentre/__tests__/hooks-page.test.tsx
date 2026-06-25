@@ -87,6 +87,19 @@ afterEach(() => {
 });
 
 describe("HooksPage", () => {
+  it("grows to fill the available width as a flex child (flex-1)", async () => {
+    setBridge();
+    const { container } = render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+
+    // The page mounts directly into AppLayout's horizontal flex row, so its
+    // root must grow (flex-1) to fill the space left of the nav rail — without
+    // it the page collapses to its content width and leaves a gap on the right.
+    const root = container.firstChild as HTMLElement;
+    expect(root).toHaveClass("flex-1");
+    expect(root).toHaveClass("min-w-0");
+  });
+
   it("loads and lists hooks, auto-selecting the first into the header", async () => {
     setBridge();
     render(<HooksPage />);
@@ -181,6 +194,41 @@ describe("HooksPage", () => {
     ).toBeGreaterThan(0);
     expect(screen.getByText(/OPS-4821/)).toBeInTheDocument();
     expect(screen.getByText(/"severity":"high"/)).toBeInTheDocument();
+  });
+
+  it("flags failure events distinctly and keeps the failure log in the payload", async () => {
+    const failureEvent = {
+      id: 200,
+      hookId: 2,
+      kind: "failure",
+      title: "execution timed out",
+      dedupeKey: "",
+      payloadJson:
+        '{"exitCode":124,"timedOut":true,"stderr":"deadline exceeded"}',
+      receivedAt: Math.floor(Date.now() / 1000) - 30,
+      createtime: 0,
+    };
+    setBridge({
+      LoadHooks: vi.fn(() =>
+        Promise.resolve({
+          hooks: [makeHook()],
+          events: [failureEvent, sampleEvent],
+        }),
+      ),
+    });
+    render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+    await userEvent.click(screen.getByRole("tab", { name: /Run Log/ }));
+
+    // The failure row is marked "Failed" (so it reads apart from script output)…
+    expect(
+      (await screen.findAllByText("execution timed out")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("Failed").length).toBeGreaterThan(0);
+    // …and the retained stderr is inspectable in the payload detail.
+    expect(screen.getByText(/deadline exceeded/)).toBeInTheDocument();
+    // Plain output rows carry no failure marker.
+    expect(screen.getByText("payment callback timeout")).toBeInTheDocument();
   });
 
   it("toggles the selected hook", async () => {

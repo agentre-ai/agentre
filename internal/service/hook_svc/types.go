@@ -29,6 +29,7 @@ type HookItem struct {
 type HookEventItem struct {
 	ID          int64  `json:"id"`
 	HookID      int64  `json:"hookId"`
+	Kind        string `json:"kind"` // "output"（脚本产出）| "failure"（运行失败留痕）
 	Title       string `json:"title"`
 	DedupeKey   string `json:"dedupeKey"`
 	PayloadJSON string `json:"payloadJson"`

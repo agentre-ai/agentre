@@ -71,10 +71,17 @@ func (h *Hook) Check(ctx context.Context) error {
 	return nil
 }
 
-// HookEvent 是脚本产出的一条结构化记录（产出日志）。
+// HookEvent 的 Kind:脚本成功产出的结构化记录 vs 运行失败留痕。
+const (
+	HookEventKindOutput  = "output"  // 脚本 stdout 解析出的一条结构化事件
+	HookEventKindFailure = "failure" // 一次运行失败的留痕（exit≠0 / 超时 / stdout 非 JSON）
+)
+
+// HookEvent 是一条运行留痕:成功时为脚本产出的结构化记录(kind=output),失败时为失败日志(kind=failure)。
 type HookEvent struct {
 	ID          int64  `gorm:"column:id;primaryKey;autoIncrement"`
 	HookID      int64  `gorm:"column:hook_id;type:bigint;not null"`
+	Kind        string `gorm:"column:kind;type:text;not null;default:'output'"`
 	Title       string `gorm:"column:title;type:text;not null"`
 	DedupeKey   string `gorm:"column:dedupe_key;type:text;not null;default:''"`
 	PayloadJSON string `gorm:"column:payload_json;type:text;not null;default:'{}'"`
