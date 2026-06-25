@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -22,11 +24,12 @@ type ScriptRunner interface {
 
 // RunSpec 描述一次脚本执行所需的全部输入。
 type RunSpec struct {
-	Interpreter    string
-	Command        string
-	Env            map[string]string
-	Timeout        time.Duration
-	MaxOutputBytes int
+	Interpreter     string
+	InterpreterPath string
+	Command         string
+	Env             map[string]string
+	Timeout         time.Duration
+	MaxOutputBytes  int
 }
 
 // RunResult 是一次脚本执行的采集结果。
@@ -105,11 +108,17 @@ func Probe(goos string) []Available {
 	return out
 }
 
-// Resolve 校验解释器并解析其二进制路径。
-func Resolve(interpreter string) (*Interp, error) {
+// Resolve 校验解释器并解析其二进制路径;interpreterPath 非空时覆盖二进制(args/ext 仍取预设)。
+func Resolve(interpreter, interpreterPath string) (*Interp, error) {
 	def, ok := registry[interpreter]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownInterpreter, interpreter)
+	}
+	if p := strings.TrimSpace(interpreterPath); p != "" {
+		if info, err := os.Stat(p); err != nil || info.IsDir() {
+			return nil, fmt.Errorf("%w: %q", ErrInterpreterNotInstalled, p)
+		}
+		return &Interp{Bin: p, Args: def.args, Ext: def.ext}, nil
 	}
 	for _, name := range def.candidates {
 		if bin, err := exec.LookPath(name); err == nil {

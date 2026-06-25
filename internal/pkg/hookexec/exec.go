@@ -17,7 +17,7 @@ type osScriptRunner struct{}
 func NewOSRunner() ScriptRunner { return &osScriptRunner{} }
 
 func (osScriptRunner) Run(ctx context.Context, spec RunSpec) (*RunResult, error) {
-	in, err := Resolve(spec.Interpreter)
+	in, err := Resolve(spec.Interpreter, spec.InterpreterPath)
 	if err != nil {
 		return nil, err
 	}
