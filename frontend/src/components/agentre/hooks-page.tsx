@@ -148,8 +148,8 @@ const INTERP_META: Record<
   sh: { abbrev: "SH", icon: Terminal, color: "agent-8" },
   node: { abbrev: "JS", icon: Braces, color: "agent-1" },
   python: { abbrev: "PY", icon: Terminal, color: "agent-4" },
-  pwsh: { abbrev: "PS", icon: Terminal, color: "agent-3" },
-  powershell: { abbrev: "PS", icon: Terminal, color: "agent-3" },
+  pwsh: { abbrev: "PS7", icon: Terminal, color: "agent-3" },
+  powershell: { abbrev: "PS", icon: Terminal, color: "agent-5" },
   cmd: { abbrev: "CMD", icon: Terminal, color: "agent-15" },
 };
 

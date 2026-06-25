@@ -1054,6 +1054,9 @@
       "subtitle": "cron expression · run manually anytime via Dry run",
       "cronLabel": "cron expression",
       "interpreter": "Interpreter",
+      "interpreterPath": "Binary path",
+      "interpreterPathAuto": "auto: {{path}}",
+      "interpreterPathPlaceholder": "Empty = auto-resolve",
       "timezone": "Timezone"
     },
     "script": {
@@ -1103,8 +1106,9 @@
       "node": "Node",
       "python": "Python",
       "pwsh": "PowerShell",
-      "powershell": "PowerShell",
-      "cmd": "CMD"
+      "powershell": "Windows PowerShell",
+      "cmd": "CMD",
+      "notInstalled": "Not installed"
     },
     "status": {
       "ok": "OK",

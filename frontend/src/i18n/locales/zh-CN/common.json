@@ -1054,6 +1054,9 @@
       "subtitle": "cron 表达式 · 手动「试运行」随时可跑",
       "cronLabel": "cron 表达式",
       "interpreter": "解释器",
+      "interpreterPath": "二进制路径",
+      "interpreterPathAuto": "自动: {{path}}",
+      "interpreterPathPlaceholder": "留空 = 自动解析",
       "timezone": "时区"
     },
     "script": {
@@ -1103,8 +1106,9 @@
       "node": "Node",
       "python": "Python",
       "pwsh": "PowerShell",
-      "powershell": "PowerShell",
-      "cmd": "CMD"
+      "powershell": "Windows PowerShell",
+      "cmd": "CMD",
+      "notInstalled": "未安装"
     },
     "status": {
       "ok": "正常",
