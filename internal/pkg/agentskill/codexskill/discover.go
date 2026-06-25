@@ -29,7 +29,7 @@ func (d Discoverer) runner() commandRunner {
 		return d.run
 	}
 	return func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, name, args...).Output()
+		return exec.CommandContext(ctx, name, args...).Output() //nolint:gosec // G204: name 为用户配置的 CLI 路径,非请求输入
 	}
 }
 
@@ -75,7 +75,7 @@ func parsePluginList(b []byte) ([]agentskill.SkillPack, error) {
 	}
 	var raws rawPluginList
 	if err := json.Unmarshal(b, &raws); err != nil {
-		return out, nil
+		return out, nil //nolint:nilerr // 坏 JSON 视为无发现,软降级不阻断
 	}
 	for _, r := range raws.Installed {
 		id := strings.TrimSpace(r.PluginID)
@@ -109,7 +109,7 @@ func (d Discoverer) Discover(ctx context.Context, q agentskill.DiscoverQuery) ([
 	}
 	b, err := d.runner()(ctx, bin, "plugin", "list", "--json")
 	if err != nil {
-		return []agentskill.SkillPack{}, nil
+		return []agentskill.SkillPack{}, nil //nolint:nilerr // CLI 不可用 → 软降级(空发现)
 	}
 	return parsePluginList(b)
 }

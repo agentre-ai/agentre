@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("../../../wailsjs/go/app/App", () => ({
-  RunList: vi.fn().mockResolvedValue([{ id: 1, goal: "做登录页", status: "running" }]),
+  RunList: vi
+    .fn()
+    .mockResolvedValue([{ id: 1, goal: "做登录页", status: "running" }]),
 }));
 import { useOrchRunListStore } from "../orch-run-list-store";
 

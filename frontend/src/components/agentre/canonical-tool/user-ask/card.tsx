@@ -246,7 +246,11 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
           </>
         )}
         <div className="flex-1" />
-        <StatusPill answered={isAnswered} skipped={isSkipped} expired={isExpired} />
+        <StatusPill
+          answered={isAnswered}
+          skipped={isSkipped}
+          expired={isExpired}
+        />
       </button>
 
       {!collapsed && (
