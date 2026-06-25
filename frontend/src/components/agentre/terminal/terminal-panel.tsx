@@ -246,13 +246,13 @@ export function TerminalPanel({
       {connectionLost ? (
         <div
           role="alert"
-          className="flex items-center justify-between border-b border-red-700 bg-red-950/60 px-3 py-2 text-xs text-red-100"
+          className="flex items-center justify-between border-b border-status-error/40 bg-destructive-soft px-3 py-2 text-xs text-destructive"
         >
           <span>{t("terminal.banner.connectionLost")}</span>
           <button
             type="button"
             onClick={dismissAndClose}
-            className="rounded border border-red-700 px-2 py-0.5 hover:bg-red-900"
+            className="rounded border border-status-error/40 px-2 py-0.5 hover:bg-destructive/10"
           >
             {t("common.close")}
           </button>

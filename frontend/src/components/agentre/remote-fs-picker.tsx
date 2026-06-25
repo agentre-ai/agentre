@@ -360,11 +360,11 @@ function EntryRow({
     >
       {entry.symlink ? (
         <LinkIcon
-          className="size-3 shrink-0 text-cyan-500"
+          className="size-3 shrink-0 text-muted-foreground"
           aria-label={t("remoteFs.entry.symlink")}
         />
       ) : entry.isDir ? (
-        <FolderIcon className="size-3 shrink-0 text-amber-500" />
+        <FolderIcon className="size-3 shrink-0 text-primary-text" />
       ) : (
         <FileIcon className="size-3 shrink-0" />
       )}

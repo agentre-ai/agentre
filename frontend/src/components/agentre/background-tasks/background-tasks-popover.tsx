@@ -92,7 +92,7 @@ export function BackgroundTasksPopoverContent({
             return (
               <li key={task.toolUseId} className="flex items-center gap-2.5">
                 <span
-                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-sky-50 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300"
+                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-primary-soft text-primary-text"
                   aria-hidden="true"
                 >
                   <Terminal className="size-3.5" />
