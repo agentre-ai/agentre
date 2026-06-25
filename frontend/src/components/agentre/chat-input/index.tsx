@@ -42,6 +42,10 @@ export type { AIChatInputDraft, AIChatInputHandle } from "./types";
 export interface AIChatInputProps {
   onSubmit: (content: string) => void;
   onEmptyChange?: (empty: boolean) => void;
+  /** 编辑器内容以 ! 开头时进入命令模式,回调通知父组件切换 UI(横幅/按钮)。 */
+  onCommandModeChange?: (active: boolean) => void;
+  /** 命令模式下按 Enter/Run 时触发,参数为去掉首个 ! 并 trim 后的命令字符串。 */
+  onCommandSubmit?: (command: string) => void;
   sendOnEnter?: boolean;
   userMessageHistory?: string[];
   placeholder?: string;
@@ -67,6 +71,8 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     {
       onSubmit,
       onEmptyChange,
+      onCommandModeChange,
+      onCommandSubmit,
       sendOnEnter = true,
       userMessageHistory = [],
       placeholder,
@@ -89,9 +95,21 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     const triggerSubmitRef = useRef<() => void>(() => {});
     const slashKeyDownRef = useRef<(e: KeyboardEvent) => boolean>(() => false);
     const slashSelectRef = useRef(onSlashSelect);
+    const onCommandModeChangeRef = useRef(onCommandModeChange);
+    const onCommandSubmitRef = useRef(onCommandSubmit);
+    /** 命令模式去重 ref —— 避免每次 onUpdate 都触发回调 */
+    const commandModeRef = useRef(false);
     useEffect(() => {
       slashSelectRef.current = onSlashSelect;
     }, [onSlashSelect]);
+
+    useEffect(() => {
+      onCommandModeChangeRef.current = onCommandModeChange;
+    }, [onCommandModeChange]);
+
+    useEffect(() => {
+      onCommandSubmitRef.current = onCommandSubmit;
+    }, [onCommandSubmit]);
 
     useEffect(() => {
       submitRef.current = onSubmit;
@@ -154,7 +172,9 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           // 避免 IME 候选回车被当成消息发送。
           if (shouldIgnoreEditorShortcut(view, event)) return false;
           // slash menu 打开时拦截 Up/Down/Enter/Tab/Esc;关闭时透明。
-          if (slashKeyDownRef.current(event)) return true;
+          // 命令模式下不弹 slash,直接跳过。
+          if (!commandModeRef.current && slashKeyDownRef.current(event))
+            return true;
 
           const shouldSendOnEnter = sendOnEnterRef.current;
           const isEnter = event.key === "Enter";
@@ -213,6 +233,16 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           lastIsEmptyRef.current = isEmpty;
           onEmptyChangeRef.current?.(isEmpty);
         }
+
+        // 命令模式检测:首字符是 ! 则进入命令模式,去重避免每次 keystroke 都回调。
+        const text = extractPlainText(
+          ed.state.doc as unknown as ProseMirrorLikeNode,
+        );
+        const inCommandMode = text.trimStart().startsWith("!");
+        if (inCommandMode !== commandModeRef.current) {
+          commandModeRef.current = inCommandMode;
+          onCommandModeChangeRef.current?.(inCommandMode);
+        }
       },
       editable: !disabled,
     });
@@ -232,6 +262,16 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           editor.state.doc as unknown as ProseMirrorLikeNode,
         );
         if (!content.trim()) return;
+
+        // 命令模式分流:content 以 ! 开头则调 onCommandSubmit,否则走普通 onSubmit。
+        if (content.trimStart().startsWith("!")) {
+          const command = content.trimStart().slice(1).trim();
+          historyIndexRef.current = -1;
+          if (command) onCommandSubmitRef.current?.(command);
+          editor.commands.clearContent(true);
+          editor.commands.focus();
+          return;
+        }
 
         historyIndexRef.current = -1;
         submitRef.current(content);
