@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { TFunction } from "i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useShallow } from "zustand/react/shallow";
 import {
   Check,
   EyeOff,
@@ -42,6 +43,7 @@ import { TranscriptUIStateProvider } from "./transcript-ui-state";
 import type { AgentColor, AgentStatus } from "./types";
 import { statusConfig } from "./types";
 import type { ChatBlockData, RetryNotice } from "@/stores/chat-streams-store";
+import { useLocalCommandsStore } from "@/stores/local-commands-store";
 import { ChatReadDroppedImages } from "../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../wailsjs/go/models";
 import { resolveDroppedPaths } from "./chat-input/drop";
@@ -1017,6 +1019,11 @@ const ChatTranscript = React.forwardRef<
   const rowsCacheRef = React.useRef(
     new WeakMap<chat_svc.ChatMessage, TranscriptRow[]>(),
   );
+  // 本会话的临时本地命令条目(!command),useShallow 浅比身份集合 —— output 流式
+  // 追加重建数组但条目身份不变时不触发归并重算。
+  const localCommands = useLocalCommandsStore(
+    useShallow((s) => s.listForSession(sessionId ?? 0)),
+  );
   const { rows, firstRowIndexByMessageId, rowIndexByKey } = React.useMemo(
     () =>
       buildTranscriptRows({
@@ -1028,6 +1035,7 @@ const ChatTranscript = React.forwardRef<
         liveTargetId,
         liveThinking: liveThinking ?? "",
         liveThinkingStartedAt: liveStreamStartedAt,
+        localCommands,
       }),
     [
       autonomousIds,
@@ -1037,6 +1045,7 @@ const ChatTranscript = React.forwardRef<
       liveStreamStartedAt,
       liveTargetId,
       liveThinking,
+      localCommands,
     ],
   );
 

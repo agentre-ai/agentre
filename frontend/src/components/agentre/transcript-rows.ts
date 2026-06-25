@@ -2,6 +2,7 @@
 // renderMessageBlocks 的配对状态机抽取到这里,让行级虚拟化(每个 RenderItem 一个
 // 虚拟行)能在不碰 JSX 的前提下单测配对 / 合并 / skip / FIFO / 归集 / key 稳定性。
 import type { ChatBlockData } from "@/stores/chat-streams-store";
+import type { LocalCommandEntry } from "@/stores/local-commands-store";
 import type { chat_svc } from "../../../wailsjs/go/models";
 
 // isSubagentCanonical 替代旧 isSubagentTool(name) — name-based 检测改为读
@@ -330,14 +331,20 @@ function itemUIStateKey(
 // (头像行 + typing indicator 落点),发射一个无内容行。
 export type TranscriptRowItem =
   | VisibleRenderItem
-  | { type: "placeholder"; uiStateKey?: undefined };
+  | { type: "placeholder"; uiStateKey?: undefined }
+  // local_command:!command 起的临时本地命令条目(F4 store),按 createdAt 归并
+  // 进 transcript,渲染成 LocalCommandCard。无 message 引用(messageId 哨兵 -1)。
+  | { type: "local_command"; entry: LocalCommandEntry; uiStateKey?: undefined };
 
 export type TranscriptRow = {
   /** 虚拟器 getItemKey + 测量缓存键。复用 uiStateKey(含 messageId,item 级唯一)。 */
   key: string;
   messageId: number;
-  /** 行渲染需要的消息引用(角色/时间戳/meta tokens/errorText)。 */
-  message: chat_svc.ChatMessage;
+  /**
+   * 行渲染需要的消息引用(角色/时间戳/meta tokens/errorText)。local_command 行
+   * 无对应消息,字段缺省 —— 渲染层在读取前已按 item.type 提前返回。
+   */
+  message?: chat_svc.ChatMessage;
   item: TranscriptRowItem;
   /** 首行渲染头像 + 名字 + 时间戳(以及 autonomous banner)。 */
   isFirstOfMessage: boolean;
@@ -357,6 +364,11 @@ export type TranscriptRowsResult = {
 export type BuildTranscriptRowsArgs = {
   displayMessages: chat_svc.ChatMessage[];
   autonomousIds: ReadonlySet<number>;
+  /**
+   * 当前会话的本地命令条目(F4 store,listForSession 已按 createdAt 升序)。
+   * 按 createdAt 归并进消息行之间,不重排消息;空/缺省时输出与不传逐项一致。
+   */
+  localCommands?: LocalCommandEntry[];
   liveTargetId?: number | null;
   liveTail?: string;
   liveThinking?: string;
@@ -415,9 +427,22 @@ function buildMessageRows(
   }));
 }
 
+function localCommandRow(entry: LocalCommandEntry): TranscriptRow {
+  return {
+    autonomous: false,
+    isFirstOfMessage: true,
+    isLastOfMessage: true,
+    item: { entry, type: "local_command" },
+    key: `localcmd:${entry.id}`,
+    // 哨兵 -1:无对应消息;不进 firstRowIndexByMessageId,渲染层提前返回不读 message。
+    messageId: -1,
+  };
+}
+
 export function buildTranscriptRows({
   displayMessages,
   autonomousIds,
+  localCommands,
   liveTargetId,
   liveTail,
   liveThinking,
@@ -425,10 +450,9 @@ export function buildTranscriptRows({
   liveBlocks,
   cache,
 }: BuildTranscriptRowsArgs): TranscriptRowsResult {
-  const rows: TranscriptRow[] = [];
-  const firstRowIndexByMessageId = new Map<number, number>();
-  const rowIndexByKey = new Map<string, number>();
-
+  // 阶段一:按 displayMessages 顺序产出各消息的行组(缓存/live 逻辑与历史一致),
+  // 同时记下每组的 createtime,供阶段二归并 —— 消息组顺序原样保留,无重排可能。
+  const messageGroups: { rows: TranscriptRow[]; createtime: number }[] = [];
   for (const m of displayMessages) {
     const autonomous = autonomousIds.has(m.id);
     const isLive = liveTargetId != null && m.id === liveTargetId;
@@ -452,12 +476,55 @@ export function buildTranscriptRows({
         cache?.set(m, messageRows);
       }
     }
-    firstRowIndexByMessageId.set(m.id, rows.length);
-    for (const row of messageRows) {
-      rowIndexByKey.set(row.key, rows.length);
-      rows.push(row);
+    messageGroups.push({ createtime: m.createtime, rows: messageRows });
+  }
+
+  // 阶段二:把本地命令按 createdAt 归并进消息组之间 —— 绝不重排消息。每条命令的
+  // insertionIndex = createtime <= entry.createdAt 的消息组数量;按 index 归桶,
+  // 扁平化时在第 i 组之前先发该桶(同桶按 createdAt 升序),收尾发末尾桶。
+  const sortedCommands = (localCommands ?? [])
+    .slice()
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const commandsByInsertion = new Map<number, LocalCommandEntry[]>();
+  for (const entry of sortedCommands) {
+    let insertionIndex = 0;
+    while (
+      insertionIndex < messageGroups.length &&
+      messageGroups[insertionIndex].createtime <= entry.createdAt
+    ) {
+      insertionIndex++;
+    }
+    const bucket = commandsByInsertion.get(insertionIndex) ?? [];
+    bucket.push(entry);
+    commandsByInsertion.set(insertionIndex, bucket);
+  }
+
+  const rows: TranscriptRow[] = [];
+  const firstRowIndexByMessageId = new Map<number, number>();
+  const rowIndexByKey = new Map<string, number>();
+  const pushRow = (row: TranscriptRow) => {
+    rowIndexByKey.set(row.key, rows.length);
+    rows.push(row);
+  };
+  const flushCommands = (insertionIndex: number) => {
+    for (const entry of commandsByInsertion.get(insertionIndex) ?? []) {
+      pushRow(localCommandRow(entry));
+    }
+  };
+
+  for (const [groupIdx, group] of messageGroups.entries()) {
+    flushCommands(groupIdx);
+    // 消息组首行下标对准 firstRowIndexByMessageId(只收真实消息行,messageId >= 0)。
+    const firstRow = group.rows[0];
+    if (firstRow && firstRow.messageId >= 0) {
+      firstRowIndexByMessageId.set(firstRow.messageId, rows.length);
+    }
+    for (const row of group.rows) {
+      pushRow(row);
     }
   }
+  // 末尾桶:晚于所有消息的命令。
+  flushCommands(messageGroups.length);
 
   return { firstRowIndexByMessageId, rowIndexByKey, rows };
 }
@@ -476,6 +543,8 @@ export function estimateRowSize(row: TranscriptRow): number {
       return 40;
     case "compact_boundary":
       return 48;
+    case "local_command":
+      return 120;
     default:
       // tool / plan / tool_permission_request / unknown:折叠态卡片。
       return 48;
