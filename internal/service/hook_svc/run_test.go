@@ -184,14 +184,14 @@ func TestRunHook_ThreadsInterpreterPath(t *testing.T) {
 		Command: "x", EnvJSON: "[]", StateJSON: "{}",
 	}, nil)
 
-	cap := &captureRunner{res: &hookexec.RunResult{ExitCode: 0}}
-	svc := &hookSvc{now: func() int64 { return 1000 }, runner: cap}
+	cr := &captureRunner{res: &hookexec.RunResult{ExitCode: 0}}
+	svc := &hookSvc{now: func() int64 { return 1000 }, runner: cr}
 
 	if _, err := svc.RunHook(context.Background(), &RunHookRequest{ID: 1, DryRun: true}); err != nil {
 		t.Fatalf("RunHook: %v", err)
 	}
-	if cap.spec.InterpreterPath != "/opt/py/bin/python3" {
-		t.Errorf("spec.InterpreterPath = %q, want threaded path", cap.spec.InterpreterPath)
+	if cr.spec.InterpreterPath != "/opt/py/bin/python3" {
+		t.Errorf("spec.InterpreterPath = %q, want threaded path", cr.spec.InterpreterPath)
 	}
 }
 
