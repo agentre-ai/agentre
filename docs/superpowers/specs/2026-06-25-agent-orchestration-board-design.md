@@ -37,13 +37,13 @@
 
 | # | 屏 | Light | Dark | 说明 |
 |---|---|---|---|---|
-| 1 | 编排 — 总览 | `K0q5q` | `RDHk9` | 落地页：标题+概要统计(运行中/等待/本周完成/平均时长) + 进行中 Run 卡片(进度条+Agent 头像+状态) + 最近完成列表 |
+| 1 | 编排 — 总览 | `K0q5q` | `Zk6xc` | 落地页：标题+概要统计(运行中/等待/本周完成/平均时长) + 进行中 Run 卡片(进度条+Agent 头像+状态) + 最近完成列表。**左 RunSidebar 底部固定「流程库」入口**（route 图标 +「浏览/新建/编辑流程」→ 打开流程库弹窗），补齐此前缺失的可见入口 |
 | 2 | Run — 结构图 | `iBqBl` | `KsHC5` | **新**主视图：自顶向下树（Leader 皇冠 → Agent → subagent）。**后端工程师派生 3 个 subagent**(验签助手 ×2 / 迁移助手 / 限流助手)、测试派生 1 个(用例生成器)——演示「一个 agent 调用多次 / 多个 subagent」；前端节点带「向 后端 提问·等待回复」徽标演示 peer ask |
 | 3 | Run — 活动流 | `Z2P0Vn` | `o6UQQ` | 事件时间线（派发/汇报/提问/完成/思考 + Leader 皇冠 + 正在执行指示器）；含 **agent↔agent peer ask/reply** 事件（前端 提问 @后端 → 后端 回复 @前端）+ 右侧任务板。**视图切换栏下方有一条「流程蓝图」参考带**（套用的流程名 + 步骤面包屑 + 「仅参考·不约束执行」），淡色、与下方彩色实时流明显区分 —— 详见 §6.1「蓝图 vs 执行」 |
 | 4 | Run — 暂停·错误 | `kx9LR` | `rtrNS` | 活动流 + 红色错误横幅 + 状态「已暂停」+「继续」控制 |
 | 5 | Run — ask·死锁 | `RLgFO` | `XoZpZ` | 结构图 + 死锁横幅 + 互等两节点红框 + 状态「等待介入」 |
 | 6 | 新建 Run 弹窗 | `Y8hJ5` | `GCJVD` | 目标/Leader/起始流程/可参与 agent + 创建并启动（**已去掉「关键步骤需批准」「允许自动派生 subagent」两项设置**） |
-| 7 | 新建 Run · 从流程库 | `wst5z` | `hD0Yx` | 起始流程切到「从流程库选择」的状态：流程单选列表（每项=名称 + **标签 chip** + **步骤面包屑**）+ Leader + 套用流程并启动。标签/步骤是给人一眼挑流程的展示层（来自结构化字段，见 §6.1），**不注入 AI** |
+| 7 | 新建 Run · 从流程库 | `wst5z` | `a5uhM` | 起始流程切到「从流程库选择」的状态：流程单选列表（每项=名称 + **标签 chip** + **步骤面包屑**）+ Leader + 套用流程并启动。标签/步骤是给人一眼挑流程的展示层（来自结构化字段，见 §6.1），**不注入 AI**。右上「管理流程库 →」上下文链接 → 打开流程库弹窗 |
 | 8 | 流程库弹窗 | `DEpdt` | `VSE2d` | 真实 `workflow-manager-dialog` 的两栏壳：左列表（名称 + **标签 chip** + 使用中 Run 数 + 一行摘要 + 更新于）+ 右预览。**预览顶部新增「蓝图」glance band**（标签 chips + 步骤 outline 面包屑 + 「仅供一眼读懂·不约束 AI」提示），其下是 **Markdown 正文**（AI 实际读取，`## 步骤` 是正文细节）+ 编辑/删除 |
 | 9 | 流程编辑器 | `yl83F` | `kRxup` | manager 的编辑态：名称 + **标签 chips**（增删）+ **步骤(概览) 有序列表**（grip 排序/增删，每行 标注「仅展示·不约束 AI」）+ **流程正文(Markdown) · AI 实际读取**（含「插入骨架模板」）+ ⌘+Enter 保存。对齐 `workflow-editor-form` 并新增 tags/outline 录入 |
 | 10 | Run — 进入会话(钻入) | `x4ZEP` | `RUK6J` | 点 agent 节点→蓝色选中环，右侧任务板切换成**该 agent 的会话**(transcript + 内联审批 批准/拒绝 + 「对它说」输入 + 返回任务板)。这就是「进入实际对话」的入口 |
@@ -54,7 +54,7 @@
 
 - 全部用 `$变量` 上色 + 屏帧 `theme:{mode:light|dark}`；Dark 版是 Light 版的 `Copy` + 翻 `theme`。
 - 壳（topbar/rail/RunSidebar/statusbar）为**内联**构建（非组件实例）。原因见 §7「设计稿坑」。
-- Run 模板（活动流屏 `Z2P0Vn`）内同时含 `graphView`(默认隐藏) 与 `feedView`；结构图/暂停/死锁/钻入屏都是 `Copy` 它 + `descendants` 开关视图/横幅/节点高亮；钻入屏用 `descendants` 把 `TaskBoard` 整体 **type-替换**成会话面板。**改 Run 内容需「改模板 → 删旧变体 → 重新派生」**(故变体 frame id 会变，本表已是最新)。
+- Run 模板（活动流屏 `Z2P0Vn`）内同时含 `graphView`(默认隐藏) 与 `feedView`；结构图/暂停/死锁/钻入屏都是 `Copy` 它 + `descendants` 开关视图/横幅/节点高亮；钻入屏用 `descendants` 把 `TaskBoard` 整体 **type-替换**成会话面板。**改 Run 内容需「改模板 → 删旧变体 → 重新派生」**(故变体/Dark frame id 经多次重新派生已变 —— **以 frame name `编排 — … · Dark` 搜索为准**，表中 Dark id 为最近一次派生值、可能已过期；Light id 稳定)。另：画布原点也被移动过（协作编辑），按 name 定位、勿硬编码坐标。
 
 ## 4. 新 IA / 导航
 
@@ -79,8 +79,9 @@
 8. **导航 rail 收敛（设计系统修复）**：把分散的三套 rail 统一为一个共享 `AppRail` 组件（Chat/编排/Projects/Issues/Org/Hooks/Theme/Settings），各页只切换 active 项。
 9. **进入会话（节点钻入）**：结构图节点 / 任务板行 / 活动流头像都应可点击 → 选中(蓝环) + 右侧从「任务板」切到该 agent 的**会话面板**(transcript + 内联审批 批准/拒绝 + 「对它说」输入 + 返回任务板)。这是用户反馈「没看见点击进入实际对话的入口」的直接补齐 —— 复用既有 chat transcript + ask-card 组件，承载在 Run 的右栏（任务板 ⇄ 会话 二态切换）。
 10. **去掉两项 Run 创建设置**：`run-new-dialog.tsx` 不再有「关键步骤需我批准」「允许 Leader 自动派生 subagent」开关 —— **派生 subagent 默认允许**；审批走**各 agent 后端权限的 awaiting-user 阻塞**（危险操作内联批准/拒绝，见 `2026-06-23-agent-orchestration-design.md`），不是 Run 级开关。**注意**：`TaskAwaitingUser`/`ApprovalGateway` 后端尚未接线（见 §9），落地需补转换逻辑。
-11. **agent↔agent ask/reply（后端已存在，只差前端）**：复查发现 `orch_svc/ask.go` 的 `Ask()` 已支持任意 agent 问任意 agent、注入对方活跃 session、等待最多 4min、接入死锁检测 —— **不是新能力**。落地只需**前端**：在活动流渲染 peer-ask/peer-reply 事件（`feed-data.ts` 已有 `"ask"` 类型但未渲染）+ 结构图「提问·等待回复」徽标。详见 §9。
+11. **agent↔agent ask/reply（部分已存在，busy 目标需补后端 + 前端）**：`orch_svc` 已有 `ask`/`reply` MCP 工具（`mcp.go`），任意 agent 问任意 agent、阻塞等回复（≤4min）、接死锁检测 —— **但只对 idle 目标有效**：`Ask()` 走 `Send`/`startTurn`，对方 busy 时 `lock.TryLock()` 失败、返回 `ChatSendInFlight`。你要的「**对方处理中也能 ask**」**没落地**，且实现**没复用 setter**（用的是新 turn，不是 `Enqueue`/steer）。落地 = ① 后端：busy 时改走 `Enqueue`/steer 投递；② 前端：`feed-data.ts` 渲染 ask/reply + 结构图徽标；③ **注入格式：把提问用 XML 标签包裹并带 `ask_id`**（`<peer_ask ask_id="…" from="…">问题</peer_ask>` + 一句「调用 `reply(ask_id=…)` 回复」），取代现有 `【收到提问 ask_id=…】` 纯文本前缀 —— 闭合标签是天然边界，steer 进对方当前 turn 时不被其输出污染、更易被识别为同伴提问并据 id 回 `reply`。详见 §9 与 roadmap S3。
 12. **「从流程库选择」+ 标签/步骤展示层**：`run-new-dialog.tsx` 已有 3 态 Select（无/流程库/临时）+ 按名称的流程下拉。设计稿把它升级为「名称 + **标签 chip** + **步骤面包屑**」的单选列表 —— 标签/步骤是**给人一眼挑流程的展示层**，来自新增的 display-only 字段 `tags`/`outline`（§6.1），**绝不注入 Leader**（注入仍只 `content`）。落地改动面见 §9（含小迁移）。
+13. **流程库可见入口（补缺）**：现状流程库**只能从命令面板打开**（`command-palette/sources/workflow-actions-source.tsx` 的「打开流程库/新建流程」→ `useWorkflowManagerStore.openBrowse()/openCreate()`），无任何可见按钮 —— 发现性缺口。设计稿补两个可见入口：① **RunSidebar 底部固定「流程库」行**（持久入口，编排页常驻）→ `openBrowse()`；② **新建 Run·从流程库 picker 右上「管理流程库 →」**（上下文入口，挑流程时可跳去管理）→ `openBrowse()`。命令面板入口保留。
 
 ## 6. 状态与空态覆盖（对齐 Web App 设计准则）
 
@@ -126,7 +127,7 @@
 - 旧编排屏（`VfK55`/`bOsgi`/`SSum1`/`fcbwn`/`HPdcC`/`VcUcz`/`XMieU`/`kGaru`/`H1rked`）**保留**作参考，被本板块取代；前端落地后可清理设计稿旧屏。
 - **流程库能力已确认存在**：`workflow` 域完整落地 —— `workflow_entity` / `_repo` / `_svc`（List/Create/Update/Delete）+ `workflows` 表 + 前端 `workflow-manager-dialog`/`workflow-editor-form` + `run-new-dialog` 集成。**「从流程库套用为编排起始」也已通**：`run` 有 `FlowID` + `FlowContent`（创建时快照正文），`orch_svc/create.go` 持久化，Run 启动注入 Leader，进行中 Run 下一轮取最新正文。
 - **⚠ 标签/步骤是设计提案，需小改动（落地前确认）**：现有 `workflow` **只有 `name` + `content`（自由 Markdown）**。为支持「给人一眼读懂」的标签/步骤（§6.1），需新增两个**仅展示、绝不注入 Leader** 的字段 `tags []string` + `outline []string`。改动面：① 迁移在 `workflows` 末尾 append `tags`/`outline` 列（native SQL，prefer JSON text 列）；② `workflow_entity`/`workflow_svc` 类型 + List/Create/Update 带上；③ 前端 `workflow-editor-form`（tags chips + outline 有序列表录入）、`workflow-manager-dialog`（列表标签 chip + 预览蓝图 band）、`run-new-dialog`（picker 行带标签+步骤）。**注入链路不动**（仍只 `content`）。若决定不加这两个字段，则退回「标签/步骤从 `content` 的 `## 步骤` 解析显示」的轻量方案（脆弱，不推荐）。
-- **❗ 复查更正 —— agent↔agent peer ask/reply 后端其实已存在**：`orch_svc/ask.go` 的 `Ask()` 允许任意 agent 问任意 agent、把问题注入对方活跃 session、等待最多 4min、`recordAskWait` 还接入死锁检测（`detectAskCycle`）。所以 §5.11 说的「新能力」措辞不准 —— **后端齐了，缺的只是前端**：`feed-data.ts` 有 `"ask"` 类型但「未实际渲染」。落地 = 在活动流渲染 peer ask/reply + 结构图徽标，**不需要新后端**。
+- **❗ agent↔agent peer ask/reply —— 部分已存在，但与原需求不一致（再次复查纠正）**：`orch_svc` 有 `ask`/`reply` MCP 工具 + `Ask()`（任意 agent 问任意 agent、阻塞等回复 ≤4min、`recordAskWait` 接死锁检测）。**但 `Ask()` 经 `SendAndForget`→`chat_svc.Send`→`startTurn`，而 `startTurn` 用 `lock.TryLock()`(`chat.go:2133`)，对方 busy（正在跑 turn）时直接返回 `ChatSendInFlight` 报错**。后果:① **「对方处理中也能 ask」没落地**（只 idle 目标可问）；② 实现**没复用 setter**（用新 `Send` turn，不是 `Enqueue`/steer）。所以前一版「后端齐了只差前端／不需要新后端」**是错的**:busy 目标要补后端。**busy 投递已定（用户拍板）：只 steer 进对方当前 turn**——`Ask()` idle 走 `Send`、busy 时走 `Enqueue`/steer 注入对方在跑的 turn（复用 setter），需把 `Enqueue` 加进 orch `ChatGateway`+`orch_adapter`。**接受权衡**：对方本 turn 内不调 `reply` → 提问方 4min 超时返错（已有超时分支，不新增机制）。见 roadmap S3。
 - **❗ awaiting-user 内联审批后端未接线**：`TaskAwaitingUser` 常量 + `ApprovalGateway` 接口已定义但**零调用点**。钻入屏 / Run 右栏画的「批准/拒绝」阻塞目前**没有后端落地**，需补 `orch_svc` 的状态转换 + 调用 ApprovalGateway。
 - **❗ Run 没有 "error" 状态**：Run 状态枚举只有 `pending/running/paused/done/stopped`；error 是 **task 级**（技术崩溃 `TaskError`）。「暂停·错误」屏的"错误"应表述为「某任务 error」，不是 Run 状态。**task 级 pause 也未用**（只有 Run 级 pause）。
 - **✅ 复查确认可直接用的**：`callSeq`（×N 次调用）已实现且 `task-board.tsx` 已渲染（`#{seq}`），结构图边按 `parentTaskId` 连（`buildGraph`，同 agent 对去重）—— 「验签助手 ×2」是真数据；每个 task 有独立 `SessionID`（migration 加 `chat_sessions.run_id`）→「进入会话」钻入可行（读该 session 消息），需前端做「任务板⇄会话」切换。
