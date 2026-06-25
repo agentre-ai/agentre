@@ -249,6 +249,7 @@ const HostedTerminalPanel = React.memo(function HostedTerminalPanel({
         projectId={meta.projectId}
         deviceId={meta.deviceId}
         active={active}
+        attach={meta.attach}
         onClose={handleClose}
       />
     </div>

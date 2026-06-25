@@ -180,6 +180,205 @@ func TestRun_ReportsMissingSystemPromptNeedle(t *testing.T) {
 	assert.Contains(t, text, "e2e-system-missing:E2E_WORKFLOW_SENTINEL")
 }
 
+// e2e-ask:<question> → fake emit 一条未答的 UserAskRequest(带问题/选项)后 Done。
+// chat_svc finalize 据此把 ask 标 expired(失效终态 e2e 的产出端)。
+func TestRun_EmitsUserAskRequestOnDirective(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 30,
+		UserText:  "(来自 用户)\ne2e-ask:要继续吗?",
+	})
+	require.NoError(t, err)
+
+	var ask *agentruntime.UserAskRequest
+	var sawDone bool
+	for ev := range events {
+		switch e := ev.(type) {
+		case agentruntime.UserAskRequest:
+			cp := e
+			ask = &cp
+		case agentruntime.Done:
+			sawDone = true
+		}
+	}
+	require.NotNil(t, ask, "must emit a UserAskRequest")
+	require.Len(t, ask.Questions, 1)
+	assert.Equal(t, "要继续吗?", ask.Questions[0].Question)
+	assert.NotEmpty(t, ask.RequestID)
+	assert.True(t, sawDone, "Done must follow the ask (turn finalizes unanswered)")
+}
+
+// 无 e2e-ask 指令 → 不 emit UserAskRequest(普通回显轮不应误触发失效卡)。
+func TestRun_NoUserAskWithoutDirective(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{SessionID: 31, UserText: "ping"})
+	require.NoError(t, err)
+	for ev := range events {
+		if _, ok := ev.(agentruntime.UserAskRequest); ok {
+			t.Fatal("must not emit UserAskRequest without e2e-ask directive")
+		}
+	}
+}
+
+// e2e-hook-create:<name> + 注入 hook 工具 → fake 调一次 hook_create(必填四段齐全)。
+func TestRun_PostsHookCreateOnDirective(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv, snapshot := toolCaptureServer(t)
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 26,
+		UserText:  "e2e-hook-create:夜间巡检",
+		MCPServers: []agentruntime.MCPServerSpec{{
+			Name:    "hook",
+			URL:     srv.URL + "/mcp/hook/",
+			Headers: map[string]string{"Authorization": "Bearer tok"},
+			Tools:   []string{"hook_create"},
+		}},
+	})
+	require.NoError(t, err)
+	for range events { //nolint:revive // draining
+	}
+
+	calls := snapshot()
+	require.Len(t, calls["hook_create"], 1)
+	args := calls["hook_create"][0]
+	assert.Equal(t, "夜间巡检", args["name"])
+	assert.Equal(t, "bash", args["interpreter"])
+	assert.NotEmpty(t, args["command"])
+	assert.NotEmpty(t, args["scheduleExpr"])
+}
+
+// e2e-orch-ask:<agent>:<question> + 注入 orchestrate 工具 → fake 调一次 ask。
+func TestRun_PostsOrchAskOnDirective(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv, snapshot := toolCaptureServer(t)
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 27,
+		UserText:  "e2e-orch-ask:E2E Member:你完成了吗",
+		MCPServers: []agentruntime.MCPServerSpec{{
+			Name:    "orchestrate",
+			URL:     srv.URL + "/mcp/orchestrate/",
+			Headers: map[string]string{"Authorization": "Bearer tok"},
+			Tools:   []string{"ask", "reply", "dispatch", "finish"},
+		}},
+	})
+	require.NoError(t, err)
+	for range events { //nolint:revive // draining
+	}
+
+	calls := snapshot()
+	require.Len(t, calls["ask"], 1)
+	assert.Equal(t, "E2E Member", calls["ask"][0]["agent"])
+	assert.Equal(t, "你完成了吗", calls["ask"][0]["question"])
+	assert.Empty(t, calls["reply"], "asker must not also reply")
+}
+
+// 收到注入的「【收到提问 ask_id=X】」(普通问题体)→ fake 调 reply 带回 ask_id。
+func TestRun_PostsReplyOnInjectedAsk(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv, snapshot := toolCaptureServer(t)
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 28,
+		UserText:  "【收到提问 ask_id=abc-123】你完成了吗\n请调用 reply(ask_id=\"abc-123\", answer=...) 回复。",
+		MCPServers: []agentruntime.MCPServerSpec{{
+			Name:    "orchestrate",
+			URL:     srv.URL + "/mcp/orchestrate/",
+			Headers: map[string]string{"Authorization": "Bearer tok"},
+			Tools:   []string{"ask", "reply"},
+		}},
+	})
+	require.NoError(t, err)
+	for range events { //nolint:revive // draining
+	}
+
+	calls := snapshot()
+	require.Len(t, calls["reply"], 1)
+	assert.Equal(t, "abc-123", calls["reply"][0]["ask_id"])
+	assert.NotEmpty(t, calls["reply"][0]["answer"])
+	assert.Empty(t, calls["ask"], "plain injected question must reply, not ask back")
+}
+
+// 死锁场景:注入的问题体本身又是 e2e-orch-ask 指令 → fake 优先 ask 回去,不 reply。
+func TestRun_AsksBackWhenInjectedQuestionIsAskDirective(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv, snapshot := toolCaptureServer(t)
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 29,
+		UserText:  "【收到提问 ask_id=xyz-9】e2e-orch-ask:CEO 助手:回环\n请调用 reply(...) 回复。",
+		MCPServers: []agentruntime.MCPServerSpec{{
+			Name:    "orchestrate",
+			URL:     srv.URL + "/mcp/orchestrate/",
+			Headers: map[string]string{"Authorization": "Bearer tok"},
+			Tools:   []string{"ask", "reply"},
+		}},
+	})
+	require.NoError(t, err)
+	for range events { //nolint:revive // draining
+	}
+
+	calls := snapshot()
+	require.Len(t, calls["ask"], 1, "ask back to form the cycle")
+	assert.Equal(t, "CEO 助手", calls["ask"][0]["agent"])
+	assert.Empty(t, calls["reply"], "deadlock path must not reply")
+}
+
+// dispatch 与 ask 互斥:dispatch 的 brief 里嵌了 e2e-orch-ask 指令时,本轮只 dispatch,不对自己
+// ask(否则死锁构造里 leader 会自问、污染等待图)。
+func TestRun_DispatchSuppressesAskSameTurn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv, snapshot := toolCaptureServer(t)
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 32,
+		UserText:  "e2e-orch-dispatch:E2E Member:e2e-orch-ask:CEO 助手:回环",
+		MCPServers: []agentruntime.MCPServerSpec{{
+			Name:    "orchestrate",
+			URL:     srv.URL + "/mcp/orchestrate/",
+			Headers: map[string]string{"Authorization": "Bearer tok"},
+			Tools:   []string{"dispatch", "ask", "reply", "finish"},
+		}},
+	})
+	require.NoError(t, err)
+	for range events { //nolint:revive // draining
+	}
+
+	calls := snapshot()
+	require.Len(t, calls["dispatch"], 1)
+	assert.Equal(t, "E2E Member", calls["dispatch"][0]["agent"])
+	assert.Empty(t, calls["ask"], "dispatch turn must not also ask (mutual exclusion)")
+}
+
+// parseInjectedAskID:从注入抬头解出 ask_id;提问方自身指令不含 ask_id= → !ok。
+func TestParseInjectedAskID(t *testing.T) {
+	id, ok := parseInjectedAskID("【收到提问 ask_id=abc-123】问题")
+	require.True(t, ok)
+	assert.Equal(t, "abc-123", id)
+
+	for _, bad := range []string{"e2e-orch-ask:X:q", "无 ask 标记", "ask_id="} {
+		_, ok := parseInjectedAskID(bad)
+		assert.False(t, ok, "input=%q", bad)
+	}
+}
+
 // toolCaptureServer 收集本轮 fake 发出的全部 tools/call,按 tool 名归档参数。
 func toolCaptureServer(t *testing.T) (*httptest.Server, func() map[string][]map[string]any) {
 	t.Helper()

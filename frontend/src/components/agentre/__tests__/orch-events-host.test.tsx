@@ -46,10 +46,9 @@ describe("OrchEventsHost", () => {
     const handlers = mountHostAndGetHandlers();
     // 断言每个事件都被订阅
     for (const name of Object.values(ORCH_EVENTS)) {
-      expect(
-        handlers.has(name),
-        `OrchEventsHost 必须订阅事件 ${name}`,
-      ).toBe(true);
+      expect(handlers.has(name), `OrchEventsHost 必须订阅事件 ${name}`).toBe(
+        true,
+      );
     }
   });
 
@@ -57,10 +56,7 @@ describe("OrchEventsHost", () => {
     const handlers = mountHostAndGetHandlers();
 
     // spy on store actions
-    const onRunEvent = vi.spyOn(
-      useOrchRunStore.getState(),
-      "onRunEvent",
-    );
+    const onRunEvent = vi.spyOn(useOrchRunStore.getState(), "onRunEvent");
     const load = vi
       .spyOn(useOrchRunListStore.getState(), "load")
       .mockResolvedValue();
@@ -77,10 +73,7 @@ describe("OrchEventsHost", () => {
   it("收到 orch:run:deadlock 时转发 onRunEvent(含 cycle)并触发 load", async () => {
     const handlers = mountHostAndGetHandlers();
 
-    const onRunEvent = vi.spyOn(
-      useOrchRunStore.getState(),
-      "onRunEvent",
-    );
+    const onRunEvent = vi.spyOn(useOrchRunStore.getState(), "onRunEvent");
     const load = vi
       .spyOn(useOrchRunListStore.getState(), "load")
       .mockResolvedValue();

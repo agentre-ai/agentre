@@ -187,4 +187,49 @@ describe("chat-tabs-persistence · v2 升级", () => {
     writePersistedTabs(tabs, "n");
     expect(readPersistedTabs()?.tabs).toHaveLength(0);
   });
+
+  it("attach terminal tab 不被持久化,普通 terminal tab 被持久化", () => {
+    const attachTab: ChatTab = {
+      id: "at",
+      meta: {
+        kind: "terminal",
+        projectId: 0,
+        deviceId: "",
+        terminalId: "some-uuid-123",
+        attach: true,
+        command: "pnpm test",
+      },
+      isPreview: false,
+      isPinned: false,
+      pinAt: 0,
+      openedAt: 10,
+    };
+    const regularTab: ChatTab = {
+      id: "rt",
+      meta: {
+        kind: "terminal",
+        projectId: 7,
+        deviceId: "",
+        terminalId: "term-real",
+      },
+      isPreview: false,
+      isPinned: false,
+      pinAt: 0,
+      openedAt: 20,
+      title: "终端",
+    };
+    writePersistedTabs([attachTab, regularTab], "rt");
+    const restored = readPersistedTabs();
+    // attach tab must NOT be persisted
+    expect(
+      restored?.tabs.some((t) => t.id === "at"),
+      "attach tab should not be persisted",
+    ).toBe(false);
+    // regular terminal tab must be persisted
+    expect(
+      restored?.tabs.some((t) => t.id === "rt"),
+      "regular terminal tab should be persisted",
+    ).toBe(true);
+    expect(restored?.tabs).toHaveLength(1);
+  });
 });

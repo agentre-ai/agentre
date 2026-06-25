@@ -3571,9 +3571,37 @@ func (s *chatSvc) EnsureSession(ctx context.Context, req *EnsureSessionRequest) 
 		return s.createSubagentSession(ctx, req.AgentID, req.ProjectID, req.Title)
 	case SessionPurposeOrchChild:
 		return s.createOrchChildSession(ctx, req.AgentID, req.ProjectID, req.RunID, req.Title)
+	case SessionPurposeUserChat:
+		return s.createUserChatSession(ctx, req.AgentID, req.ProjectID, req.Title)
 	default:
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
+}
+
+// createUserChatSession 建一个普通用户会话(每次新建)。与 createSubagentSession 同形, 唯一区别:
+// Purpose 留空 —— 这是用户在侧栏可见、可继续对话的正常会话, 不是隐藏的隔离子会话。
+// 供 ! 命令在「新会话占位态」(还没 sessionId)先坐实会话, 之后命令有 cwd 可解析、卡片有 transcript 可渲染。
+func (s *chatSvc) createUserChatSession(ctx context.Context, agentID, projectID int64, title string) (*EnsureSessionResponse, error) {
+	if agentID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	permissionMode := s.launchPermissionModeForAgent(ctx, agentID)
+	sess := &chat_entity.Session{
+		AgentID:                agentID,
+		ProjectID:              projectID,
+		PermissionMode:         permissionMode,
+		PermissionModeAtLaunch: permissionMode,
+		Title:                  strings.TrimSpace(title),
+		AgentStatus:            "idle",
+		Status:                 consts.ACTIVE,
+		// Purpose 留空 = 普通用户会话。
+	}
+	if err := chat_repo.Session().Create(ctx, sess); err != nil {
+		logger.Ctx(ctx).Error("chat_svc.createUserChatSession: create failed",
+			zap.Int64("agentId", agentID), zap.Error(err))
+		return nil, i18n.NewError(ctx, code.OperationFailed)
+	}
+	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil
 }
 
 // createSubagentSession 为子 agent 调用建一个全新的一次性隔离会话(每次新建)。

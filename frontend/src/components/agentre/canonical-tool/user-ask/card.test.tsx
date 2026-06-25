@@ -248,7 +248,13 @@ describe("UserAskCard", () => {
         kind: "user.ask",
         userAsk: {
           requestId: "req-exp",
-          questions: [{ question: "?", header: "h", options: [{ label: "A", description: "" }] }],
+          questions: [
+            {
+              question: "?",
+              header: "h",
+              options: [{ label: "A", description: "" }],
+            },
+          ],
           expired: true,
         },
       },
@@ -261,9 +267,9 @@ describe("UserAskCard", () => {
 
   it("on submit failure shows expired message and locks the card", async () => {
     const user = userEvent.setup();
-    (AnswerUserQuestion as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      "no waiting AskUserQuestion",
-    );
+    (
+      AnswerUserQuestion as unknown as ReturnType<typeof vi.fn>
+    ).mockRejectedValueOnce("no waiting AskUserQuestion");
     const block = {
       type: "tool_use",
       toolName: "AskUserQuestion",
@@ -271,7 +277,13 @@ describe("UserAskCard", () => {
         kind: "user.ask",
         userAsk: {
           requestId: "req-1",
-          questions: [{ question: "?", header: "h", options: [{ label: "A", description: "" }] }],
+          questions: [
+            {
+              question: "?",
+              header: "h",
+              options: [{ label: "A", description: "" }],
+            },
+          ],
         },
       },
     } as unknown as ChatBlockData;

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"

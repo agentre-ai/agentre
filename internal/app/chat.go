@@ -18,6 +18,21 @@ func (a *App) ListChatAgentSessions(req *chat_svc.ListAgentSessionsRequest) (*ch
 	return chat_svc.Chat().ListAgentSessions(a.ctx, req)
 }
 
+// EnsureChatSession 为某 agent 建一个普通用户会话并返回 sessionId（不发消息、不起 turn）。
+// 供前端 ! 命令在「新会话占位态」(还没 sessionId)先坐实一个真实会话，之后命令才有
+// cwd 可解析、卡片有 transcript 可渲染。projectID 可为 0(自由会话)。
+func (a *App) EnsureChatSession(agentID int64, projectID int64) (int64, error) {
+	resp, err := chat_svc.Chat().EnsureSession(a.ctx, &chat_svc.EnsureSessionRequest{
+		Purpose:   chat_svc.SessionPurposeUserChat,
+		AgentID:   agentID,
+		ProjectID: projectID,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return resp.SessionID, nil
+}
+
 // LoadChatSession 拉单个 session 的 detail + 全部消息。
 func (a *App) LoadChatSession(req *chat_svc.LoadSessionRequest) (*chat_svc.LoadSessionResponse, error) {
 	return chat_svc.Chat().LoadSession(a.ctx, req)

@@ -90,6 +90,7 @@ import {
   GetChatGoal,
   GetChatLaunchCommand,
   MarkChatSessionRead,
+  EnsureChatSession,
   RegenerateChatMessage,
   RenameChatSession,
   SendChatMessage,
@@ -1210,11 +1211,30 @@ function ChatPanel({
     }
   }
 
-  function runLocalCommand(targetSessionId: number, command: string) {
+  async function runLocalCommand(targetSessionId: number, command: string) {
+    // 新会话占位态(还没 sessionId):先坐实一个普通用户会话, 命令才有 cwd 可解析、
+    // 卡片有 transcript 可渲染。坐实后切到新会话并刷新侧栏(与普通发消息同款)。
+    let sid = targetSessionId;
+    if (!sid && newSessionAgent) {
+      try {
+        sid = await EnsureChatSession(
+          newSessionAgent.id,
+          newSessionContext?.projectId ?? 0,
+        );
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setNotice({ kind: "error", text: t("chatPanel.errors.send", { msg }) });
+        return;
+      }
+      onSessionCreated?.(sid, newSessionAgent.id);
+      onSidebarShouldReload?.();
+    }
+    if (!sid) return; // 既无会话也无 newSessionAgent —— 无处可跑。
+
     const terminalId = crypto.randomUUID();
     useLocalCommandsStore.getState().start({
       id: terminalId,
-      sessionId: targetSessionId,
+      sessionId: sid,
       command,
       createdAt: Date.now(),
     });
@@ -1231,11 +1251,9 @@ function ChatPanel({
       EventsOff(dataEvent);
       EventsOff(exitEvent);
     });
-    void TerminalRunCommand(terminalId, targetSessionId, command, 80, 24).catch(
+    void TerminalRunCommand(terminalId, sid, command, 80, 24).catch(
       (e: unknown) => {
-        useLocalCommandsStore
-          .getState()
-          .appendOutput(terminalId, String(e));
+        useLocalCommandsStore.getState().appendOutput(terminalId, String(e));
         useLocalCommandsStore.getState().finish(terminalId, "failed", -1);
         EventsOff(dataEvent);
         EventsOff(exitEvent);

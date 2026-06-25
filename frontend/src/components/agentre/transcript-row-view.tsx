@@ -26,6 +26,7 @@ import { PlanApproveCard } from "./canonical-tool/plan-approve-request/card";
 import type { PlanActionStream } from "./canonical-tool/props";
 import { CanonicalToolRouter } from "./canonical-tool/registry";
 import { CompactBoundaryDivider } from "./compact-boundary-divider";
+import { LocalCommandCard } from "./local-command/card";
 import { MarkdownText, StreamingMarkdown } from "./markdown-text";
 import { MessageRow, MessageCopyButton } from "./message-row";
 import { ToolApprovalCard } from "./tool-approval/card";
@@ -33,6 +34,7 @@ import { ThinkingBlock } from "./thinking-block";
 import type { TranscriptRow, TranscriptRowItem } from "./transcript-rows";
 import type { AgentColor } from "./types";
 import type { ChatBlockData, RetryNotice } from "@/stores/chat-streams-store";
+import { useChatTabsStore } from "@/stores/chat-tabs-store";
 
 // ─── 会话级静态渲染依赖 ───────────────────────────────────────────────────────
 
@@ -585,7 +587,23 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
   compacting,
 }: TranscriptRowViewProps) {
   const ctx = React.useContext(TranscriptRenderContext);
+  // local_command 行无 message 引用,独立成卡(无头像/footer chrome)在此提前返回。
+  if (row.item.type === "local_command") {
+    const entry = row.item.entry;
+    return (
+      <LocalCommandCard
+        entryId={entry.id}
+        onOpenInTerminal={(id) =>
+          useChatTabsStore
+            .getState()
+            .attachTerminal({ terminalId: id, command: entry.command })
+        }
+      />
+    );
+  }
   const m = row.message;
+  // 类型收窄:只有 local_command 行缺 message(已在上方返回),其余行恒有 message。
+  if (!m) return null;
   const isAssistant = m.role === "assistant";
   // 每条 assistant 都允许重新生成；后端按消息 id 截断后重跑。
   const rerunHandler = isAssistant ? () => ctx?.onRerun(m.id) : undefined;

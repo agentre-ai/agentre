@@ -6,12 +6,14 @@ package workflow_svc
 
 // WorkflowItem 单条流程(含使用中 Run 数,给列表/预览/删除确认用)。
 type WorkflowItem struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
-	RunCount   int    `json:"runCount"`
-	Createtime int64  `json:"createtime"`
-	Updatetime int64  `json:"updatetime"`
+	ID         int64    `json:"id"`
+	Name       string   `json:"name"`
+	Content    string   `json:"content"`
+	Tags       []string `json:"tags"`
+	Outline    []string `json:"outline"`
+	RunCount   int      `json:"runCount"`
+	Createtime int64    `json:"createtime"`
+	Updatetime int64    `json:"updatetime"`
 }
 
 // ListWorkflowsRequest 占位。
@@ -24,8 +26,10 @@ type ListWorkflowsResponse struct {
 
 // CreateWorkflowRequest 新建流程(name 必填,trim 后校验)。
 type CreateWorkflowRequest struct {
-	Name    string `json:"name" binding:"required"`
-	Content string `json:"content"`
+	Name    string   `json:"name" binding:"required"`
+	Content string   `json:"content"`
+	Tags    []string `json:"tags"`
+	Outline []string `json:"outline"`
 }
 
 type CreateWorkflowResponse struct {
@@ -34,9 +38,11 @@ type CreateWorkflowResponse struct {
 
 // UpdateWorkflowRequest 编辑流程名称/正文;进行中的群下一轮注入即取到最新正文。
 type UpdateWorkflowRequest struct {
-	ID      int64  `json:"id" binding:"required"`
-	Name    string `json:"name" binding:"required"`
-	Content string `json:"content"`
+	ID      int64    `json:"id" binding:"required"`
+	Name    string   `json:"name" binding:"required"`
+	Content string   `json:"content"`
+	Tags    []string `json:"tags"`
+	Outline []string `json:"outline"`
 }
 
 type UpdateWorkflowResponse struct {

@@ -10,6 +10,8 @@ export type TabKind =
       projectId: number;
       deviceId: string;
       terminalId: string;
+      attach?: boolean;
+      command?: string;
     }
   | { kind: "run"; runId: number; title: string };
 
@@ -52,6 +54,7 @@ type Actions = {
     deviceId: string,
     deviceName?: string,
   ) => void;
+  attachTerminal: (args: { terminalId: string; command?: string }) => void;
 };
 
 // nextId: 测试用例可以 stub。生产环境用 crypto.randomUUID。
@@ -309,6 +312,29 @@ export const useChatTabsStore = create<State & Actions>((set, _get) => ({
         openedAt: now(),
         title: deviceName
           ? i18n.t("chatTabs.terminal.titleWithDevice", { deviceName })
+          : i18n.t("chatTabs.terminal.title"),
+      };
+      return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
+    }),
+  attachTerminal: ({ terminalId, command }) =>
+    set((state) => {
+      // attach 复用同一 terminalId(绑定到卡片已在跑的 PTY),不 nextId() 新建 PTY。
+      const newTab: ChatTab = {
+        id: nextId(),
+        meta: {
+          kind: "terminal",
+          projectId: 0,
+          deviceId: "",
+          terminalId,
+          attach: true,
+          command,
+        },
+        isPreview: false,
+        isPinned: false,
+        pinAt: 0,
+        openedAt: now(),
+        title: command
+          ? i18n.t("chatTabs.terminal.titleWithCommand", { command })
           : i18n.t("chatTabs.terminal.title"),
       };
       return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
