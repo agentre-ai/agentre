@@ -423,6 +423,10 @@
       "shortcuts": {
         "edit": "↵ Save · Esc Cancel",
         "send": "↵ Send · ⇧↵ New line"
+      },
+      "command": {
+        "banner": "Command mode · runs in the project directory · Enter to run · delete ! to exit",
+        "run": "Run command"
       }
     },
     "compacting": {
@@ -2305,5 +2309,19 @@
       "waitingYou": "A branch is awaiting your approval: {{goal}}",
       "view": "View"
     }
+  },
+  "localCommand": {
+    "localChip": "Local command",
+    "notSharedWithAI": "Not sent to AI",
+    "status": {
+      "running": "Running",
+      "done": "Done",
+      "failed": "Failed",
+      "stopped": "Stopped"
+    },
+    "exitCode": "Exit {{code}}",
+    "elapsed": "{{seconds}}s",
+    "stop": "Stop",
+    "openInTerminal": "Open in terminal"
   }
 }
