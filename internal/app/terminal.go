@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 
+	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 	"github.com/agentre-ai/agentre/internal/service/project_svc"
 )
 
@@ -20,6 +21,19 @@ func (a *App) TerminalOpen(terminalID string, projectID int64, deviceID string, 
 		return err
 	}
 	return a.terminalSvc.Open(a.ctx, terminalID, deviceID, cwd, cols, rows)
+}
+
+// TerminalRunCommand 在会话工作目录下,以 `$SHELL -l -c command` 跑一条本地命令(绕开 AI agent)。
+// terminalID 由前端生成,与普通终端一致;输出走相同的 terminal:<id>:data/exit 事件。
+func (a *App) TerminalRunCommand(terminalID string, sessionID int64, command string, cols, rows uint16) error {
+	if a.terminalSvc == nil {
+		return errTerminalSvcNotInitialized
+	}
+	cwd, deviceID, err := chat_svc.Chat().ResolveSessionExecTarget(a.ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	return a.terminalSvc.OpenCommand(a.ctx, terminalID, deviceID, cwd, command, cols, rows)
 }
 
 // TerminalWrite sends input bytes (typically keystrokes) to the running PTY.
