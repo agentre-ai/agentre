@@ -5,6 +5,7 @@ type TerminalOpenParams struct {
 	SessionID int64    `json:"sessionId"`
 	Cwd       string   `json:"cwd"`
 	Shell     string   `json:"shell,omitempty"`
+	Command   string   `json:"command,omitempty"`
 	Env       []string `json:"env,omitempty"`
 	Cols      uint16   `json:"cols"`
 	Rows      uint16   `json:"rows"`

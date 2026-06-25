@@ -193,6 +193,28 @@ func TestTerminal_Pump_EmitsExitAndClearsMap(t *testing.T) {
 	assert.ErrorIs(t, err, handlers.ErrTerminalNotFound)
 }
 
+func TestTerminal_Open_ForwardsCommandToSpec(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mbe := mock_handlers.NewMockPTYBackend(ctrl)
+	mh := mock_handlers.NewMockPTYHandle(ctrl)
+	mh.EXPECT().Data().AnyTimes().Return(make(chan []byte))
+	mh.EXPECT().Exit().AnyTimes().Return(make(chan pty.ExitInfo))
+	mbe.EXPECT().
+		Open(gomock.Any(), gomock.AssignableToTypeOf(pty.Spec{})).
+		DoAndReturn(func(_ context.Context, spec pty.Spec) (handlers.PTYHandle, error) {
+			assert.Equal(t, "go test ./...", spec.Command)
+			return mh, nil
+		})
+
+	h := handlers.NewTerminalHandlers(mbe, &recordingEmitter{})
+	res, err := h.Open(context.Background(), protocol.TerminalOpenParams{
+		SessionID: 1, Cwd: "/tmp", Command: "go test ./...", Cols: 80, Rows: 24,
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, res.TerminalID)
+}
+
 // blockingEmitter starts in blocked state. Emit calls queue the event but
 // block until unblock() is called.
 type blockingEmitter struct {

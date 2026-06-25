@@ -39,7 +39,7 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 	defer cancel()
 	var res protocol.TerminalOpenResult
 	if err := b.client.Call(openCtx, "terminal.open", protocol.TerminalOpenParams{
-		Cwd: spec.Cwd, Shell: spec.Shell, Env: spec.Env, Cols: spec.Cols, Rows: spec.Rows,
+		Cwd: spec.Cwd, Shell: spec.Shell, Command: spec.Command, Env: spec.Env, Cols: spec.Cols, Rows: spec.Rows,
 	}, &res); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, ErrDaemonTimeout
