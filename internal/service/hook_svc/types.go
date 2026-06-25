@@ -81,3 +81,10 @@ type RunHookResult struct {
 	DupCount   int              `json:"dupCount"`
 	Persisted  bool             `json:"persisted"`
 }
+
+// InterpreterOption 是某解释器在本机的可用性,供前端下拉过滤/置灰/占位。
+type InterpreterOption struct {
+	Key       string `json:"key"`
+	Path      string `json:"path"`
+	Installed bool   `json:"installed"`
+}

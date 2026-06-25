@@ -3,6 +3,7 @@ package hook_svc
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ type HookSvc interface {
 	ToggleHook(ctx context.Context, id int64, enabled bool) (*HookItem, error)
 	RunHook(ctx context.Context, req *RunHookRequest) (*RunHookResult, error)
 	StartScheduler(ctx context.Context) context.CancelFunc
+	ProbeInterpreters(ctx context.Context) ([]InterpreterOption, error)
 }
 
 type hookSvc struct {
@@ -275,4 +277,13 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+func (s *hookSvc) ProbeInterpreters(_ context.Context) ([]InterpreterOption, error) {
+	avail := hookexec.Probe(runtime.GOOS)
+	out := make([]InterpreterOption, 0, len(avail))
+	for _, a := range avail {
+		out = append(out, InterpreterOption{Key: a.Key, Path: a.Path, Installed: a.Installed})
+	}
+	return out, nil
 }
