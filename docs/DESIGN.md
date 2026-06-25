@@ -596,7 +596,7 @@ export default function ExamplePage() {
 
 ## 12. Sources & verification
 
-**Visual companion:** the design-system boards in `agentre.pen` (on Desktop, not in the repo):
+**Visual companion:** the design-system boards in `agentre.pen` (at the workspace root `/Users/codfrm/Code/agentre/`, outside the git repo):
 - **设计系统 — 颜色 Tokens** — the full color palette
 - **设计系统 — 排版·圆角·间距** — typography scale, radius steps, spacing dimensions
 - **设计系统 — 基础组件 · Light·Dark** — the component palette
