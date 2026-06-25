@@ -4,6 +4,7 @@ package workflow_svc
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/cago-frame/cago/pkg/consts"
@@ -45,11 +46,38 @@ func (s *workflowSvc) runCounts(ctx context.Context) (map[int64]int, error) {
 	return counts, nil
 }
 
+// decodeStringList 把 JSON 文本解成 []string;空/非法 → nil(DTO 给前端就是空数组)。
+func decodeStringList(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "[]" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+// encodeStringList 把 []string 编成 JSON 文本;空 → "[]"。
+func encodeStringList(v []string) string {
+	if len(v) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
 func toItem(w *workflow_entity.Workflow, runCount int) *WorkflowItem {
 	return &WorkflowItem{
 		ID:         w.ID,
 		Name:       w.Name,
 		Content:    w.Content,
+		Tags:       decodeStringList(w.Tags),
+		Outline:    decodeStringList(w.Outline),
 		RunCount:   runCount,
 		Createtime: w.Createtime,
 		Updatetime: w.Updatetime,
@@ -90,6 +118,8 @@ func (s *workflowSvc) Create(ctx context.Context, req *CreateWorkflowRequest) (*
 	w := &workflow_entity.Workflow{
 		Name:    strings.TrimSpace(req.Name),
 		Content: req.Content,
+		Tags:    encodeStringList(req.Tags),
+		Outline: encodeStringList(req.Outline),
 		Status:  consts.ACTIVE,
 	}
 	if err := w.Check(ctx); err != nil {
@@ -109,6 +139,8 @@ func (s *workflowSvc) Update(ctx context.Context, req *UpdateWorkflowRequest) (*
 	}
 	w.Name = strings.TrimSpace(req.Name)
 	w.Content = req.Content
+	w.Tags = encodeStringList(req.Tags)
+	w.Outline = encodeStringList(req.Outline)
 	if err := w.Check(ctx); err != nil {
 		return nil, err
 	}

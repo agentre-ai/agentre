@@ -170,6 +170,58 @@ func TestUpdateWorkflow(t *testing.T) {
 	})
 }
 
+func TestCreateWorkflow_TagsOutline(t *testing.T) {
+	convey.Convey("新建流程带 tags/outline", t, func() {
+		ctx, wfMock, _, svc := setupSvc(t)
+
+		convey.Convey("tags/outline 编码成 JSON 落库,DTO 平铺回 []string", func() {
+			wfMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, w *workflow_entity.Workflow) error {
+					assert.Equal(t, `["通用","新功能"]`, w.Tags)
+					assert.Equal(t, `["需求拆解","方案设计"]`, w.Outline)
+					w.ID = 5
+					return nil
+				})
+			resp, err := svc.Create(ctx, &CreateWorkflowRequest{
+				Name:    "标准功能开发流",
+				Content: "# 标准功能开发流",
+				Tags:    []string{"通用", "新功能"},
+				Outline: []string{"需求拆解", "方案设计"},
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, []string{"通用", "新功能"}, resp.Item.Tags)
+			assert.Equal(t, []string{"需求拆解", "方案设计"}, resp.Item.Outline)
+		})
+
+		convey.Convey("空 tags/outline 编码成 []，DTO 平铺成 nil", func() {
+			wfMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, w *workflow_entity.Workflow) error {
+					assert.Equal(t, "[]", w.Tags)
+					assert.Equal(t, "[]", w.Outline)
+					return nil
+				})
+			resp, err := svc.Create(ctx, &CreateWorkflowRequest{Name: "x"})
+			assert.NoError(t, err)
+			assert.Empty(t, resp.Item.Tags)
+			assert.Empty(t, resp.Item.Outline)
+		})
+	})
+}
+
+func TestListWorkflow_DecodesTagsOutline(t *testing.T) {
+	convey.Convey("列表解码 tags/outline", t, func() {
+		ctx, wfMock, runMock, svc := setupSvc(t)
+		wfMock.EXPECT().List(gomock.Any()).Return([]*workflow_entity.Workflow{
+			{ID: 1, Name: "x", Tags: `["修复"]`, Outline: `["复现","定位"]`, Status: 1},
+		}, nil)
+		runMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+		resp, err := svc.List(ctx, &ListWorkflowsRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"修复"}, resp.Items[0].Tags)
+		assert.Equal(t, []string{"复现", "定位"}, resp.Items[0].Outline)
+	})
+}
+
 func TestDeleteWorkflow(t *testing.T) {
 	convey.Convey("删除流程", t, func() {
 		ctx, wfMock, _, svc := setupSvc(t)

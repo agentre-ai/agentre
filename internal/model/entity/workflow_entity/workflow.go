@@ -17,6 +17,8 @@ type Workflow struct {
 	ID         int64  `gorm:"column:id;primaryKey;autoIncrement"`
 	Name       string `gorm:"column:name;type:text;not null;default:''"`
 	Content    string `gorm:"column:content;type:text;not null;default:''"`
+	Tags       string `gorm:"column:tags;type:text;not null;default:'[]'"`    // JSON []string,仅展示,不注入
+	Outline    string `gorm:"column:outline;type:text;not null;default:'[]'"` // JSON []string,仅展示,不注入
 	Status     int    `gorm:"column:status;type:int;not null;default:1"`
 	Createtime int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
 	Updatetime int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
