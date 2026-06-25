@@ -96,8 +96,12 @@ import {
   SetChatGoal,
   StartChatGoal,
   StopChatMessage,
+  TerminalRunCommand,
 } from "../../../wailsjs/go/app/App";
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
 import { chat_svc } from "../../../wailsjs/go/models";
+import { useLocalCommandsStore } from "@/stores/local-commands-store";
+import { makeStreamDecoder } from "./local-command/decode";
 
 type SvcChatMessage = chat_svc.ChatMessage;
 type ChatAgentItem = chat_svc.ChatAgentItem;
@@ -1206,6 +1210,39 @@ function ChatPanel({
     }
   }
 
+  function runLocalCommand(targetSessionId: number, command: string) {
+    const terminalId = crypto.randomUUID();
+    useLocalCommandsStore.getState().start({
+      id: terminalId,
+      sessionId: targetSessionId,
+      command,
+      createdAt: Date.now(),
+    });
+    const dataEvent = `terminal:${terminalId}:data`;
+    const exitEvent = `terminal:${terminalId}:exit`;
+    const decode = makeStreamDecoder();
+    EventsOn(dataEvent, (p: { data: string }) =>
+      useLocalCommandsStore.getState().appendOutput(terminalId, decode(p.data)),
+    );
+    EventsOn(exitEvent, (p: { code: number; reason: string }) => {
+      const status =
+        p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
+      useLocalCommandsStore.getState().finish(terminalId, status, p.code);
+      EventsOff(dataEvent);
+      EventsOff(exitEvent);
+    });
+    void TerminalRunCommand(terminalId, targetSessionId, command, 80, 24).catch(
+      (e: unknown) => {
+        useLocalCommandsStore
+          .getState()
+          .appendOutput(terminalId, String(e));
+        useLocalCommandsStore.getState().finish(terminalId, "failed", -1);
+        EventsOff(dataEvent);
+        EventsOff(exitEvent);
+      },
+    );
+  }
+
   async function doCompact(sid: number) {
     if (!sid) return;
     try {
@@ -2047,6 +2084,7 @@ function ChatPanel({
                 }}
                 backendType={activeBackendType}
                 supportsImageInput={supportsImageInput}
+                onRunCommand={(command) => runLocalCommand(sessionId, command)}
                 onSlashRpc={(cmd) => {
                   console.warn(
                     `slash rpc not wired: cmd=${cmd.name} backend=${activeBackendType}`,
