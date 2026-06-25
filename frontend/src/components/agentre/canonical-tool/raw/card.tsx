@@ -160,7 +160,7 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
         )}
         {allowedBadge && (
           <span
-            className="inline-flex shrink-0 items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-emerald-600 dark:text-emerald-400"
+            className="inline-flex shrink-0 items-center gap-1 rounded bg-status-running-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-status-running"
             title={t("canonical.raw.approvedTitle")}
           >
             <Check className="size-2.5" aria-hidden="true" />

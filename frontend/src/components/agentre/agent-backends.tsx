@@ -2191,7 +2191,7 @@ function DefaultPermissionModeField({
         </span>
       ) : null}
       {showRootHint ? (
-        <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-2xs text-amber-700 dark:text-amber-300">
+        <div className="flex flex-wrap items-center gap-2 rounded border border-status-waiting/40 bg-status-waiting-bg px-2 py-1.5 text-2xs text-status-waiting">
           <span className="min-w-0 flex-1">
             {t("agentBackends.permission.remoteRootHintPrefix")}{" "}
             <span className="font-mono">IS_SANDBOX=1</span>{" "}

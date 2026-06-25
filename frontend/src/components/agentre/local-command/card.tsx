@@ -14,13 +14,13 @@ const STATUS_CONFIG: Record<
   { dot: string; pill: string; labelKey: string }
 > = {
   running: {
-    dot: "bg-amber-500",
-    pill: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+    dot: "bg-status-waiting",
+    pill: "bg-status-waiting-bg text-status-waiting",
     labelKey: "localCommand.status.running",
   },
   done: {
-    dot: "bg-emerald-500",
-    pill: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+    dot: "bg-status-running",
+    pill: "bg-status-running-bg text-status-running",
     labelKey: "localCommand.status.done",
   },
   failed: {
@@ -90,8 +90,8 @@ export function LocalCommandCard({
       </div>
 
       {/* Output area */}
-      <div className="max-h-48 overflow-y-auto bg-[#1a1a1a] px-3.5 py-2.5">
-        <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-[#d4d4d4]">
+      <div className="max-h-48 overflow-y-auto bg-code-surface px-3.5 py-2.5">
+        <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-code-foreground">
           {stripAnsi(entry.output)}
         </pre>
       </div>

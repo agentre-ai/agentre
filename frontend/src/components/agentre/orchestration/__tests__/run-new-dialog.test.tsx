@@ -91,4 +91,88 @@ describe("RunNewDialog", () => {
       screen.getByText("Require approval for dangerous operations"),
     ).toBeInTheDocument();
   });
+
+  describe("flowMode 三态按钮组", () => {
+    it("默认显示三个 flowMode 按钮(none/library/adhoc)", async () => {
+      renderDialog();
+      await screen.findByTestId("run-goal"); // 等渲染完成
+      expect(screen.getByTestId("run-flow-mode-none")).toBeInTheDocument();
+      expect(screen.getByTestId("run-flow-mode-library")).toBeInTheDocument();
+      expect(screen.getByTestId("run-flow-mode-adhoc")).toBeInTheDocument();
+    });
+
+    it("点击 library 按钮切换 flowMode 并显示流程库 picker(多标签全显)", async () => {
+      appMocks.WorkflowList.mockResolvedValue({
+        items: [
+          {
+            id: 1,
+            name: "标准功能开发流",
+            tags: ["通用", "研发"],
+            outline: ["需求拆解", "方案设计"],
+          },
+        ],
+      });
+      renderDialog();
+      await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
+      // 切到「流程库」模式
+      screen.getByTestId("run-flow-mode-library").click();
+      // 流程库 picker 显示名称 + 所有标签 chip + 步骤面包屑
+      expect(await screen.findByText("标准功能开发流")).toBeInTheDocument();
+      expect(screen.getByText("通用")).toBeInTheDocument();
+      expect(screen.getByText("研发")).toBeInTheDocument();
+      expect(screen.getByText("需求拆解")).toBeInTheDocument();
+      expect(screen.getByText("方案设计")).toBeInTheDocument();
+    });
+
+    it("点击流程行后选中该流程(单选)", async () => {
+      appMocks.WorkflowList.mockResolvedValue({
+        items: [
+          {
+            id: 1,
+            name: "流程A",
+            tags: [],
+            outline: [],
+          },
+          {
+            id: 2,
+            name: "流程B",
+            tags: [],
+            outline: [],
+          },
+        ],
+      });
+      renderDialog();
+      await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
+      screen.getByTestId("run-flow-mode-library").click();
+      // 选中流程A
+      const rowA = await screen.findByTestId("run-flow-pick-1");
+      rowA.click();
+      // 选中流程B 后 RunCreate 应带 flowId=2
+      const rowB = screen.getByTestId("run-flow-pick-2");
+      rowB.click();
+      // 填目标 + 选 leader 再提交确认 flowId 正确
+      fireEvent.change(screen.getByTestId("run-goal"), {
+        target: { value: "测试目标" },
+      });
+      // 直接检测按钮的选中视觉态(data-testid="run-flow-pick-2" 有 border-primary)
+      expect(rowA.className).not.toContain("border-primary");
+      expect(rowB.className).toContain("border-primary");
+    });
+
+    it("点击 adhoc 按钮后显示临时流程文本区", async () => {
+      renderDialog();
+      await screen.findByTestId("run-goal");
+      screen.getByTestId("run-flow-mode-adhoc").click();
+      expect(await screen.findByTestId("run-flow-content")).toBeInTheDocument();
+    });
+
+    it("点击 none 按钮后不显示 picker 也不显示文本区", async () => {
+      renderDialog();
+      await screen.findByTestId("run-goal");
+      // 先切到 library 再切回 none
+      screen.getByTestId("run-flow-mode-library").click();
+      screen.getByTestId("run-flow-mode-none").click();
+      expect(screen.queryByTestId("run-flow-content")).toBeNull();
+    });
+  });
 });

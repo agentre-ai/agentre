@@ -124,7 +124,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
         "rounded-md border bg-card text-card-foreground shadow-sm",
         isResolved && !payload.allowed
           ? "border-destructive/40"
-          : "border-amber-500/40",
+          : "border-status-waiting/40",
       )}
     >
       <button
@@ -140,9 +140,9 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
             "h-4 w-4 shrink-0",
             isResolved
               ? payload.allowed
-                ? "text-emerald-500"
+                ? "text-status-running"
                 : "text-destructive"
-              : "text-amber-500",
+              : "text-status-waiting",
           )}
         />
         <span data-copyable-control-text="true" className="font-medium">
@@ -163,7 +163,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
               className={cn(
                 "rounded px-1.5 py-0.5",
                 payload.allowed
-                  ? "bg-emerald-500/10 text-emerald-600"
+                  ? "bg-status-running-bg text-status-running"
                   : "bg-destructive/10 text-destructive",
               )}
             >

@@ -12,6 +12,8 @@ export type WorkflowItem = {
   id: number;
   name: string;
   content: string;
+  tags: string[];
+  outline: string[];
   runCount: number;
   createtime: number;
   updatetime: number;
@@ -32,6 +34,8 @@ export function useWorkflows() {
           id: i.id,
           name: i.name,
           content: i.content,
+          tags: i.tags ?? [],
+          outline: i.outline ?? [],
           runCount: i.runCount,
           createtime: i.createtime,
           updatetime: i.updatetime,
@@ -54,16 +58,27 @@ export function useWorkflows() {
   }, [reload]);
 
   const create = useCallback(
-    async (name: string, content: string) => {
-      await WorkflowCreate({ name, content });
+    async (
+      name: string,
+      content: string,
+      tags: string[],
+      outline: string[],
+    ) => {
+      await WorkflowCreate({ name, content, tags, outline });
       await reload();
     },
     [reload],
   );
 
   const update = useCallback(
-    async (id: number, name: string, content: string) => {
-      await WorkflowUpdate({ id, name, content });
+    async (
+      id: number,
+      name: string,
+      content: string,
+      tags: string[],
+      outline: string[],
+    ) => {
+      await WorkflowUpdate({ id, name, content, tags, outline });
       await reload();
     },
     [reload],

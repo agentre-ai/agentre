@@ -45,7 +45,7 @@ function tlsBadgeLabel(mode: string, t: TFunction): string {
 
 function dotColor(device: DeviceView): string {
   if (device.lastError === "tofu_mismatch") return "bg-destructive";
-  if (device.online) return "bg-emerald-500";
+  if (device.online) return "bg-status-running";
   return "bg-muted-foreground";
 }
 

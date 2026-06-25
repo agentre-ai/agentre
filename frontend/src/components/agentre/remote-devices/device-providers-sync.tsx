@@ -201,7 +201,7 @@ export function DeviceProvidersSync({ deviceId }: Props) {
               <div className="flex items-center gap-2">
                 {row.synced ? (
                   <CheckCircle2
-                    className="h-3.5 w-3.5 shrink-0 text-emerald-500"
+                    className="h-3.5 w-3.5 shrink-0 text-status-running"
                     aria-label={t("remoteDevices.providers.synced")}
                   />
                 ) : (
@@ -248,7 +248,7 @@ export function DeviceProvidersSync({ deviceId }: Props) {
                   >
                     {isCopied ? (
                       <CheckCircle2
-                        className="h-3 w-3 text-emerald-500"
+                        className="h-3 w-3 text-status-running"
                         aria-hidden="true"
                       />
                     ) : (

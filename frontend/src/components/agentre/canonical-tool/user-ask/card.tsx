@@ -339,15 +339,15 @@ function StatusPill({
   }
   if (answered) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-emerald-500/15 px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-emerald-600 dark:text-emerald-400">
+      <span className="flex items-center gap-1.5 rounded-sm bg-status-running-bg px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-status-running">
         <Check className="h-2.5 w-2.5" />
         {t("canonical.userAsk.answered")}
       </span>
     );
   }
   return (
-    <span className="flex items-center gap-1.5 rounded-sm bg-amber-500/15 px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-amber-600 dark:text-amber-400">
-      <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+    <span className="flex items-center gap-1.5 rounded-sm bg-status-waiting-bg px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-status-waiting">
+      <span className="h-1.5 w-1.5 rounded-full bg-status-waiting" />
       {t("canonical.userAsk.waiting")}
     </span>
   );
@@ -386,7 +386,7 @@ function QuestionTabs({
               <CheckCircle2
                 className={cn(
                   "h-3 w-3",
-                  active ? "text-primary" : "text-emerald-500/70",
+                  active ? "text-primary" : "text-status-running/70",
                 )}
               />
             ) : (
