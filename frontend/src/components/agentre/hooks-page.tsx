@@ -383,7 +383,7 @@ function RunResultCard({ result, t }: { result: RunHookResult; t: TFunction }) {
             <span className="font-mono text-[10px] text-muted-foreground">
               {t("hooks.run.stdout")}
             </span>
-            <pre className="overflow-x-auto rounded-md border border-border bg-[#121418] p-3 font-mono text-[11px] leading-relaxed text-[#9aa0ab]">
+            <pre className="overflow-x-auto rounded-md border border-border bg-code-surface p-3 font-mono text-[11px] leading-relaxed text-code-muted-foreground">
               {result.stdout}
             </pre>
           </div>
@@ -393,7 +393,7 @@ function RunResultCard({ result, t }: { result: RunHookResult; t: TFunction }) {
             <span className="font-mono text-[10px] text-muted-foreground">
               {t("hooks.run.stderr")}
             </span>
-            <pre className="overflow-x-auto rounded-md border border-border bg-[#121418] p-3 font-mono text-[11px] leading-relaxed text-status-error">
+            <pre className="overflow-x-auto rounded-md border border-border bg-code-surface p-3 font-mono text-[11px] leading-relaxed text-status-error">
               {result.stderr}
             </pre>
           </div>
@@ -587,7 +587,7 @@ function ScriptTab({
           placeholder={t("hooks.script.commandPlaceholder")}
           aria-label={t("hooks.script.title")}
           spellCheck={false}
-          className="min-h-56 rounded-md border-border bg-[#121418] font-mono text-xs leading-relaxed text-[#e6e6e6]"
+          className="min-h-56 rounded-md border-border bg-code-surface font-mono text-xs leading-relaxed text-code-foreground"
         />
       </SectionCard>
 
@@ -770,7 +770,7 @@ function RunLogTab({
               <span className="font-mono text-[10px] text-muted-foreground">
                 {t("hooks.log.payload")}
               </span>
-              <pre className="overflow-x-auto rounded-md border border-border bg-[#121418] p-3 font-mono text-[11px] leading-relaxed text-[#9aa0ab]">
+              <pre className="overflow-x-auto rounded-md border border-border bg-code-surface p-3 font-mono text-[11px] leading-relaxed text-code-muted-foreground">
                 {selected.payloadJson}
               </pre>
             </div>

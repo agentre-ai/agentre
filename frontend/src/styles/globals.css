@@ -65,6 +65,12 @@
   --destructive-foreground: #ffffff;
   --destructive-soft: #fef2f2;
 
+  /* Code / console surfaces — monospace output (hook logs, command output).
+     Light-adaptive: a light code surface in light theme, deep console near-black in dark. */
+  --code-surface: #f4f4f5;
+  --code-foreground: #3f3f46;
+  --code-muted-foreground: #71717a;
+
   /* Agent palette — 600-700 saturated shades hold up on light bg.
      agent-3 sky / agent-6 cyan avoid clash with status-running & primary teal. */
   --agent-1: #2563eb;
@@ -156,6 +162,11 @@
   --destructive-foreground: #fafafa;
   --destructive-soft: #2a1414;
 
+  /* Code / console surfaces */
+  --code-surface: #121418;
+  --code-foreground: #e6e8eb;
+  --code-muted-foreground: #9aa0ab;
+
   /* Agent palette — 300-400 light shades for dark bg.
      agent-3 sky / agent-6 cyan avoid clash with status-running & primary teal. */
   --agent-1: #60a5fa;
@@ -222,6 +233,9 @@
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-destructive-soft: var(--destructive-soft);
+  --color-code-surface: var(--code-surface);
+  --color-code-foreground: var(--code-foreground);
+  --color-code-muted-foreground: var(--code-muted-foreground);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
   --color-input: var(--input);
