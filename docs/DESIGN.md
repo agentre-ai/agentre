@@ -24,6 +24,13 @@ This doc restates the [`frontend.md`](./frontend.md) hard rules only where neede
 Every UI change must satisfy all of these. They are the bar for "consistent, friendly UI/UX" in this codebase.
 
 - **Use tokens, not literal colors — one value, one place.** Never write a hex (`#3b6896`), an `rgb()`, or a palette class (`text-blue-500`). Always use a semantic token — `bg-background`, `text-foreground`, `border-border`, `text-primary`, `text-primary-text`, `text-muted-foreground`, … (§3). All color values live in exactly one place — the token definitions in [`globals.css`](../frontend/src/styles/globals.css) — so the palette stays unified and a single edit re-skins everything. One semantic concept maps to **one** token: before adding a color, check §3 for an existing token and reuse it; don't introduce a near-duplicate. Only add a new token when the concept is genuinely new — with both light and dark values — and document it in §3.
+
+  > **Sanctioned literal-color exceptions** (everything else must be a token): the xterm ANSI
+  > palette in [`terminal/terminal-theme.ts`](../frontend/src/components/agentre/terminal/terminal-theme.ts)
+  > (xterm.js can't consume CSS variables); the `#94a3b8` slate **avatar fallback** when agent meta is
+  > missing (§3.6); neutral black-alpha **shadows/scrim** (`box-shadow rgba(0,0,0,…)`, the `Dialog`
+  > backdrop) — there are no `--shadow-*` tokens by design (§3.12); and `bg-neutral-600` as the
+  > **`"neutral"` agent** identity fill (§3.6).
 - **Both themes, always.** Light and dark are first-class. Because every color comes from a token that has a `:root` and a `.dark` value, using tokens makes a component theme-correct for free. Verify on real light *and* dark before considering anything done (§4).
 - **This is a desktop window, not a web page.** The shell is a fixed Wails frame — title bar → icon rail → resizable sidebar → tab strip → panel → status bar (§7). `html, body, #root` are `height:100%; overflow:hidden`, and the body defaults to `user-select:none`; text selection is **opted into** per region, not the default (§7). There is **no mobile breakpoint** and no `useIsMobile` — design for a resizable desktop window (min `860×640`), not a phone.
 - **No inline `style={{}}` for what Tailwind can express.** Compose utility classes via `cn()` (`clsx` + `tailwind-merge`); build variants with `class-variance-authority` (CVA). Inline styles only for genuinely dynamic values (a computed width, a per-agent `var(--agent-N)` color, a `display` toggle).
@@ -192,6 +199,16 @@ Don't restyle scrollbars per-container; the global rules in [`globals.css`](../f
 | `destructive` | `#dc2626` | `#f87171` | Dangerous / delete / error actions |
 | `destructive-foreground` | `#ffffff` | `#fafafa` | Text on solid destructive |
 | `destructive-soft` | `#fef2f2` | `#2a1414` | Soft red wash — error cards, error toasts, the `error` status pill |
+
+### 3.11a Code / console surface
+
+Monospace **console output** surfaces (hook stdout/stderr, local-command output) — theme-adaptive, distinct from the `secondary`-based `CodeBlock` container.
+
+| Token / class | Light | Dark | Use |
+| --- | --- | --- | --- |
+| `code-surface` | `#f4f4f5` | `#121418` | Console/output box fill (`bg-code-surface`) |
+| `code-foreground` | `#3f3f46` | `#e6e8eb` | Primary monospace text on `code-surface` |
+| `code-muted-foreground` | `#71717a` | `#9aa0ab` | De-emphasized monospace text (stdout) |
 
 ### 3.12 Elevation (surfaces & shadows)
 
@@ -578,6 +595,11 @@ export default function ExamplePage() {
 ---
 
 ## 12. Sources & verification
+
+**Visual companion:** the design-system boards in `agentre.pen` (on Desktop, not in the repo):
+- **设计系统 — 颜色 Tokens** — the full color palette
+- **设计系统 — 排版·圆角·间距** — typography scale, radius steps, spacing dimensions
+- **设计系统 — 基础组件 · Light·Dark** — the component palette
 
 **Implementation source of truth (read/edit these when changing the design):**
 
