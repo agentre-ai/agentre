@@ -83,7 +83,10 @@ export function QueuedMessagesBar({ queued, onCancel, onClearAll }: Props) {
               className="size-3 shrink-0 text-muted-foreground"
               aria-hidden="true"
             />
-            <span className="min-w-0 flex-1 truncate text-xs text-foreground">
+            <span
+              data-selectable-text="true"
+              className="min-w-0 flex-1 truncate text-xs text-foreground"
+            >
               {q.text}
             </span>
             {q.cancellable ? (
