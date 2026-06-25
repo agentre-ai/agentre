@@ -92,19 +92,20 @@ func (s *hookSvc) CreateHook(ctx context.Context, req *CreateHookRequest) (*Hook
 	}
 	now := s.now()
 	h := &hook_entity.Hook{
-		Name:         strings.TrimSpace(req.Name),
-		Interpreter:  strings.TrimSpace(req.Interpreter),
-		Command:      req.Command,
-		TriggerType:  hook_entity.TriggerSchedule,
-		ScheduleExpr: strings.TrimSpace(req.ScheduleExpr),
-		Timezone:     orDefault(req.Timezone, defaultTimezone),
-		EnvJSON:      marshalEnv(req.Env),
-		StateJSON:    "{}",
-		Enabled:      boolInt(req.Enabled),
-		NextRunAt:    now, // 首个 tick 即到期
-		Status:       consts.ACTIVE,
-		Createtime:   now,
-		Updatetime:   now,
+		Name:            strings.TrimSpace(req.Name),
+		Interpreter:     strings.TrimSpace(req.Interpreter),
+		InterpreterPath: strings.TrimSpace(req.InterpreterPath),
+		Command:         req.Command,
+		TriggerType:     hook_entity.TriggerSchedule,
+		ScheduleExpr:    strings.TrimSpace(req.ScheduleExpr),
+		Timezone:        orDefault(req.Timezone, defaultTimezone),
+		EnvJSON:         marshalEnv(req.Env),
+		StateJSON:       "{}",
+		Enabled:         boolInt(req.Enabled),
+		NextRunAt:       now, // 首个 tick 即到期
+		Status:          consts.ACTIVE,
+		Createtime:      now,
+		Updatetime:      now,
 	}
 	if err := h.Check(ctx); err != nil {
 		return nil, err
@@ -135,6 +136,7 @@ func (s *hookSvc) UpdateHook(ctx context.Context, req *UpdateHookRequest) (*Hook
 	}
 	h.Name = newName
 	h.Interpreter = strings.TrimSpace(req.Interpreter)
+	h.InterpreterPath = strings.TrimSpace(req.InterpreterPath)
 	h.Command = req.Command
 	h.ScheduleExpr = strings.TrimSpace(req.ScheduleExpr)
 	h.Timezone = orDefault(req.Timezone, defaultTimezone)
@@ -197,7 +199,7 @@ func toHookItem(h *hook_entity.Hook) *HookItem {
 		}
 	}
 	return &HookItem{
-		ID: h.ID, Name: h.Name, Interpreter: h.Interpreter, Command: h.Command,
+		ID: h.ID, Name: h.Name, Interpreter: h.Interpreter, InterpreterPath: h.InterpreterPath, Command: h.Command,
 		ScheduleExpr: h.ScheduleExpr, Timezone: h.Timezone,
 		Env: env, Enabled: h.IsEnabled(), NextRunAt: h.NextRunAt, LastRunAt: h.LastRunAt,
 		LastStatus: h.LastStatus, LastError: h.LastError, LastDurationMs: h.LastDurationMs,

@@ -163,6 +163,38 @@ func TestRunHook_DryRunFailureWritesNoEvent(t *testing.T) {
 	}
 }
 
+type captureRunner struct {
+	res  *hookexec.RunResult
+	spec hookexec.RunSpec
+}
+
+func (c *captureRunner) Run(_ context.Context, spec hookexec.RunSpec) (*hookexec.RunResult, error) {
+	c.spec = spec
+	return c.res, nil
+}
+
+func TestRunHook_ThreadsInterpreterPath(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mh := mock_hook_repo.NewMockHookRepo(ctrl)
+	hook_repo.RegisterHook(mh)
+	hook_repo.RegisterHookEvent(mock_hook_repo.NewMockHookEventRepo(ctrl))
+
+	mh.EXPECT().Find(gomock.Any(), int64(1)).Return(&hook_entity.Hook{
+		ID: 1, Name: "j", Interpreter: "python", InterpreterPath: "/opt/py/bin/python3",
+		Command: "x", EnvJSON: "[]", StateJSON: "{}",
+	}, nil)
+
+	cap := &captureRunner{res: &hookexec.RunResult{ExitCode: 0}}
+	svc := &hookSvc{now: func() int64 { return 1000 }, runner: cap}
+
+	if _, err := svc.RunHook(context.Background(), &RunHookRequest{ID: 1, DryRun: true}); err != nil {
+		t.Fatalf("RunHook: %v", err)
+	}
+	if cap.spec.InterpreterPath != "/opt/py/bin/python3" {
+		t.Errorf("spec.InterpreterPath = %q, want threaded path", cap.spec.InterpreterPath)
+	}
+}
+
 func TestRunHook_NonZeroExitMarksFailed(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mh := mock_hook_repo.NewMockHookRepo(ctrl)

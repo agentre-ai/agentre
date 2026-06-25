@@ -8,22 +8,23 @@ type EnvVar struct {
 }
 
 type HookItem struct {
-	ID             int64    `json:"id"`
-	Name           string   `json:"name"`
-	Interpreter    string   `json:"interpreter"`
-	Command        string   `json:"command"`
-	ScheduleExpr   string   `json:"scheduleExpr"`
-	Timezone       string   `json:"timezone"`
-	Env            []EnvVar `json:"env"`
-	Enabled        bool     `json:"enabled"`
-	NextRunAt      int64    `json:"nextRunAt"`
-	LastRunAt      int64    `json:"lastRunAt"`
-	LastStatus     string   `json:"lastStatus"`
-	LastError      string   `json:"lastError"`
-	LastDurationMs int64    `json:"lastDurationMs"`
-	TotalCount     int64    `json:"totalCount"`
-	Createtime     int64    `json:"createtime"`
-	Updatetime     int64    `json:"updatetime"`
+	ID              int64    `json:"id"`
+	Name            string   `json:"name"`
+	Interpreter     string   `json:"interpreter"`
+	InterpreterPath string   `json:"interpreterPath"`
+	Command         string   `json:"command"`
+	ScheduleExpr    string   `json:"scheduleExpr"`
+	Timezone        string   `json:"timezone"`
+	Env             []EnvVar `json:"env"`
+	Enabled         bool     `json:"enabled"`
+	NextRunAt       int64    `json:"nextRunAt"`
+	LastRunAt       int64    `json:"lastRunAt"`
+	LastStatus      string   `json:"lastStatus"`
+	LastError       string   `json:"lastError"`
+	LastDurationMs  int64    `json:"lastDurationMs"`
+	TotalCount      int64    `json:"totalCount"`
+	Createtime      int64    `json:"createtime"`
+	Updatetime      int64    `json:"updatetime"`
 }
 
 type HookEventItem struct {
@@ -48,13 +49,14 @@ type LoadHooksResponse struct {
 }
 
 type CreateHookRequest struct {
-	Name         string   `json:"name" binding:"required"`
-	Interpreter  string   `json:"interpreter" binding:"required"`
-	Command      string   `json:"command"`
-	ScheduleExpr string   `json:"scheduleExpr"`
-	Timezone     string   `json:"timezone"`
-	Env          []EnvVar `json:"env"`
-	Enabled      bool     `json:"enabled"`
+	Name            string   `json:"name" binding:"required"`
+	Interpreter     string   `json:"interpreter" binding:"required"`
+	InterpreterPath string   `json:"interpreterPath"`
+	Command         string   `json:"command"`
+	ScheduleExpr    string   `json:"scheduleExpr"`
+	Timezone        string   `json:"timezone"`
+	Env             []EnvVar `json:"env"`
+	Enabled         bool     `json:"enabled"`
 }
 
 type UpdateHookRequest struct {

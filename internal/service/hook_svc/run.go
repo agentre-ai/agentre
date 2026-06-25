@@ -48,11 +48,12 @@ func (s *hookSvc) RunHook(ctx context.Context, req *RunHookRequest) (*RunHookRes
 // executeHook 跑一次脚本；dryRun=true 时不读 / 不写库、不改 state（调度器以 dryRun=false 复用）。
 func (s *hookSvc) executeHook(ctx context.Context, h *hook_entity.Hook, dryRun bool) (*RunHookResult, error) {
 	spec := hookexec.RunSpec{
-		Interpreter:    h.Interpreter,
-		Command:        h.Command,
-		Env:            buildEnv(h),
-		Timeout:        runTimeout,
-		MaxOutputBytes: runMaxOutBytes,
+		Interpreter:     h.Interpreter,
+		InterpreterPath: h.InterpreterPath,
+		Command:         h.Command,
+		Env:             buildEnv(h),
+		Timeout:         runTimeout,
+		MaxOutputBytes:  runMaxOutBytes,
 	}
 	res, runErr := s.runner.Run(ctx, spec)
 	out := &RunHookResult{}
