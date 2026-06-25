@@ -158,3 +158,39 @@ func TestLocalBackend_NaturalExit_EmitsNatural(t *testing.T) {
 		t.Fatal("did not receive natural exit within 3s")
 	}
 }
+
+func TestLocalBackend_OpenCommand_RunsAndExits(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	be := local.NewBackend()
+	h, err := be.Open(ctx, pty.Spec{
+		Cwd: os.TempDir(), Shell: "/bin/sh",
+		Command: "echo cmd-mode-ok", Cols: 80, Rows: 24,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+
+	deadline := time.After(3 * time.Second)
+	var buf bytes.Buffer
+	for {
+		select {
+		case chunk, ok := <-h.Data():
+			buf.Write(chunk)
+			if bytes.Contains(buf.Bytes(), []byte("cmd-mode-ok")) {
+				goto awaitExit
+			}
+			if !ok {
+				t.Fatalf("data closed before output; got %q", buf.String())
+			}
+		case <-deadline:
+			t.Fatalf("timeout; got %q", buf.String())
+		}
+	}
+awaitExit:
+	select {
+	case info := <-h.Exit():
+		require.Equal(t, 0, info.Code)
+	case <-time.After(3 * time.Second):
+		t.Fatal("command did not exit")
+	}
+}

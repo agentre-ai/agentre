@@ -68,7 +68,7 @@ func NewTerminalHandlers(be PTYBackend, emitter Emitter) *TerminalHandlers {
 
 func (h *TerminalHandlers) Open(ctx context.Context, p protocol.TerminalOpenParams) (protocol.TerminalOpenResult, error) {
 	hd, err := h.be.Open(ctx, pty.Spec{
-		Cwd: p.Cwd, Shell: p.Shell, Env: p.Env,
+		Cwd: p.Cwd, Shell: p.Shell, Command: p.Command, Env: p.Env,
 		Cols: p.Cols, Rows: p.Rows,
 	})
 	if err != nil {

@@ -175,6 +175,27 @@ func TestService_Open_CancelledByClose_NoLeakedHandle(t *testing.T) {
 	require.ErrorIs(t, svc.Write(context.Background(), "t1", "x"), terminal_svc.ErrTerminalClosed)
 }
 
+func TestService_OpenCommand_PassesCommandToBackend(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockBE := mocks.NewMockPTYBackend(ctrl)
+	mockH := mocks.NewMockHandle(ctrl)
+	mockH.EXPECT().Data().AnyTimes().Return(make(chan []byte))
+	mockH.EXPECT().Exit().AnyTimes().Return(make(chan pty.ExitInfo))
+	mockBE.EXPECT().
+		Open(gomock.Any(), pty.Spec{Cwd: "/tmp", Command: "go test ./...", Cols: 80, Rows: 24}).
+		Return(mockH, nil)
+
+	sel := terminal_svc.NewBackendSelector(mockBE, func(string) (terminal_svc.PTYBackend, error) {
+		t.Fatal("should not call remote factory for local")
+		return nil, nil
+	})
+	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
+
+	require.NoError(t, svc.OpenCommand(context.Background(), "t1", "", "/tmp", "go test ./...", 80, 24))
+}
+
 type recordingEmitter struct {
 	mu     sync.Mutex
 	events []recordedEvent

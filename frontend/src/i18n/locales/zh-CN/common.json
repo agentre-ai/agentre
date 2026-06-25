@@ -423,6 +423,10 @@
       "shortcuts": {
         "edit": "↵ 保存 · Esc 取消",
         "send": "↵ 发送 · ⇧↵ 换行"
+      },
+      "command": {
+        "banner": "命令模式 · 在项目目录直接执行 · Enter 运行 · 删除 ! 退出",
+        "run": "运行命令"
       }
     },
     "compacting": {
@@ -2305,5 +2309,19 @@
       "waitingYou": "有分支在等待你审批:{{goal}}",
       "view": "查看"
     }
+  },
+  "localCommand": {
+    "localChip": "本地命令",
+    "notSharedWithAI": "不发送给 AI",
+    "status": {
+      "running": "运行中",
+      "done": "完成",
+      "failed": "失败",
+      "stopped": "已停止"
+    },
+    "exitCode": "退出码 {{code}}",
+    "elapsed": "{{seconds}}s",
+    "stop": "停止",
+    "openInTerminal": "在终端中打开"
   }
 }

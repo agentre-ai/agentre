@@ -3,11 +3,13 @@ import type { TFunction } from "i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Check,
+  EyeOff,
   Gauge,
   ImagePlus,
   LoaderCircle,
   Pencil,
   SendHorizontal,
+  SquareTerminal,
   TriangleAlert,
   Wrench,
   X,
@@ -19,6 +21,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 import type { PlanActionStream } from "./canonical-tool/props";
+import type { Editor } from "@tiptap/react";
 import { AIChatInput, type AIChatInputHandle } from "./chat-input";
 import { CodeBlock } from "./code-block";
 import { CompactHistoryFold } from "./compact-history-fold";
@@ -185,6 +188,10 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
     cmd: import("./slash-commands").SlashCommand,
     exec: Extract<import("./slash-commands").SlashExec, { kind: "rpc" }>,
   ) => void;
+  /** 本地命令回调:用户在命令模式下提交时调用(去掉前缀 ! 后的内容)。 */
+  onRunCommand?: (command: string) => void;
+  /** 透传给内层 AIChatInput 的编辑器 ref,供测试驱动编辑器内容。 */
+  editorRef?: React.RefObject<Editor | null>;
 };
 
 export type ChatImageAttachment = {
@@ -439,6 +446,8 @@ function ChatComposer({
   backendType,
   supportsImageInput = true,
   onSlashRpc,
+  onRunCommand,
+  editorRef,
   onPasteCapture,
   ...props
 }: ChatComposerProps) {
@@ -448,6 +457,7 @@ function ChatComposer({
   const [isEmpty, setIsEmpty] = React.useState(true);
   const [images, setImages] = React.useState<ChatImageAttachment[]>([]);
   const [imageError, setImageError] = React.useState("");
+  const [commandMode, setCommandMode] = React.useState(false);
 
   // 切换到编辑模式（或换了编辑目标）时把目标文本载进 TipTap，并把光标抓回输入框；
   // 退出编辑模式时清空输入，免得上一次的编辑残留干扰下一条新消息。
@@ -666,6 +676,24 @@ function ChatComposer({
             </button>
           </div>
         ) : null}
+        {!editing && commandMode ? (
+          <div
+            role="status"
+            className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-[11px]"
+          >
+            <SquareTerminal
+              className="size-3 shrink-0 text-primary-text"
+              aria-hidden="true"
+            />
+            <span className="min-w-0 flex-1 truncate font-medium text-primary-text">
+              {t("chat.composer.command.banner")}
+            </span>
+            <span className="inline-flex items-center gap-1 text-muted-foreground">
+              <EyeOff className="size-3" aria-hidden="true" />
+              {t("localCommand.notSharedWithAI")}
+            </span>
+          </div>
+        ) : null}
         <div className="flex flex-col gap-1 px-3.5 pt-2.5 pb-1">
           {!editing && images.length > 0 ? (
             <div className="flex flex-wrap gap-2 pb-1">
@@ -698,8 +726,11 @@ function ChatComposer({
           ) : null}
           <AIChatInput
             ref={inputRef}
+            editorRef={editorRef}
             onSubmit={handleSend}
             onEmptyChange={setIsEmpty}
+            onCommandModeChange={setCommandMode}
+            onCommandSubmit={onRunCommand}
             sendOnEnter
             userMessageHistory={userMessageHistory}
             placeholder={placeholder ?? t("chat.composer.placeholder")}
@@ -751,13 +782,22 @@ function ChatComposer({
               <div className="flex items-center">{permissionModeSlot}</div>
             ) : null}
             <div className="min-w-0 flex-1" />
-            {!editing ? (
+            {!editing && !commandMode ? (
               <QuotaMeter data={quotaUsage} deviceLabel={quotaDeviceLabel} />
             ) : null}
-            {contextUsage && contextUsage.max > 0 && !editing ? (
+            {contextUsage && contextUsage.max > 0 && !editing && !commandMode ? (
               <ContextMeter used={contextUsage.used} max={contextUsage.max} />
             ) : null}
-            {editing ? (
+            {!editing && commandMode ? (
+              <Button
+                type="submit"
+                size="icon-sm"
+                aria-label={t("chat.composer.command.run")}
+                title={t("chat.composer.command.run")}
+              >
+                <SquareTerminal data-icon="only" aria-hidden="true" />
+              </Button>
+            ) : editing ? (
               <Button
                 type="submit"
                 disabled={isEmpty}

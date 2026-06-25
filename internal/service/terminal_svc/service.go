@@ -55,7 +55,18 @@ func NewService(sel *BackendSelector, emitter Emitter) *Service {
 	}
 }
 
+// Open opens an interactive login shell (original behavior).
 func (s *Service) Open(ctx context.Context, terminalID string, deviceID string, cwd string, cols, rows uint16) error {
+	return s.open(ctx, terminalID, deviceID, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows})
+}
+
+// OpenCommand runs a one-shot command under cwd, reusing the same
+// streaming/exit/kill machinery as Open.
+func (s *Service) OpenCommand(ctx context.Context, terminalID string, deviceID string, cwd string, command string, cols, rows uint16) error {
+	return s.open(ctx, terminalID, deviceID, pty.Spec{Cwd: cwd, Command: command, Cols: cols, Rows: rows})
+}
+
+func (s *Service) open(ctx context.Context, terminalID string, deviceID string, spec pty.Spec) error {
 	backend, err := s.selector.Pick(deviceID)
 	if err != nil {
 		return err
@@ -80,7 +91,7 @@ func (s *Service) Open(ctx context.Context, terminalID string, deviceID string, 
 	s.inFlight[terminalID] = attempt
 	s.mu.Unlock()
 
-	h, err := backend.Open(openCtx, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows})
+	h, err := backend.Open(openCtx, spec)
 
 	// 3. Atomically unregister inFlight and (on success) register handle —
 	//    unless a concurrent Close (or newer Open) already removed/replaced our

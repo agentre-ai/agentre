@@ -39,7 +39,11 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 		return nil, ctx.Err()
 	default:
 	}
-	cmd := exec.Command(shell, "-l") //nolint:gosec // G204: shell is from user spec or $SHELL env; not from request input
+	args := []string{"-l"}
+	if spec.Command != "" {
+		args = append(args, "-c", spec.Command)
+	}
+	cmd := exec.Command(shell, args...) //nolint:gosec // G204: shell from spec/$SHELL; command is the user's own authorized local shell input
 	cmd.Dir = spec.Cwd
 	cmd.Env = append(os.Environ(), append(spec.Env, "TERM=xterm-256color")...)
 
