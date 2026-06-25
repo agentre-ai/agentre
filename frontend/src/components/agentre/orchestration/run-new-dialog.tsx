@@ -100,7 +100,12 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
       .then((resp) => {
         setWorkflows(
           (resp?.items ?? []).map(
-            (w: { id: number; name: string; tags?: string[]; outline?: string[] }) => ({
+            (w: {
+              id: number;
+              name: string;
+              tags?: string[];
+              outline?: string[];
+            }) => ({
               id: w.id,
               name: w.name,
               tags: w.tags ?? [],

@@ -17,7 +17,10 @@ export function RunFlowBlueprint({ flowId }: { flowId: number }) {
       data-testid="run-flow-blueprint"
       className="flex items-center gap-2.5 border-b border-border bg-muted/40 px-4 py-2"
     >
-      <Route className="size-3.5 shrink-0 text-subtle-foreground" aria-hidden="true" />
+      <Route
+        className="size-3.5 shrink-0 text-subtle-foreground"
+        aria-hidden="true"
+      />
       <span className="text-2xs text-subtle-foreground">
         {t("orchestration.run.blueprintTitle")}
       </span>
