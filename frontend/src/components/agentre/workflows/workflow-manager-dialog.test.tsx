@@ -206,6 +206,29 @@ describe("WorkflowManagerDialog · tags/outline", () => {
     expect(screen.getByText("需求拆解")).toBeInTheDocument();
     expect(screen.getByText("方案设计")).toBeInTheDocument();
   });
+
+  it("编辑保存时把 tags/outline 一并提交给 update", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<WorkflowManagerDialog />);
+    useWorkflowManagerStore.getState().openBrowse();
+    await waitFor(() => expect(screen.getByText("标准功能开发流")).toBeTruthy());
+    await user.click(screen.getByTestId("workflow-row-3"));
+    await user.click(screen.getByTestId("workflow-edit-button"));
+    // seed tags/outline already loaded from the item; add one more step
+    const stepInput = screen.getByTestId("workflow-outline-input");
+    fireEvent.change(stepInput, { target: { value: "测试验收" } });
+    fireEvent.keyDown(stepInput, { key: "Enter" });
+    await user.click(screen.getByTestId("workflow-save-button"));
+    await waitFor(() =>
+      expect(workflowUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 3,
+          tags: ["通用"],
+          outline: ["需求拆解", "方案设计", "测试验收"],
+        }),
+      ),
+    );
+  });
 });
 
 describe("WorkflowManagerDialog · 内联删除", () => {
