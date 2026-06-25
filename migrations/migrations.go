@@ -39,5 +39,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202606240001(), // 编排能力基座:Run/Task 表 + chat_sessions.run_id + orchestrate 工具种子
 		migration202606240002(), // Hooks 脚本驱动重构:删 source/rule/event,建 hooks + hook_events
 		migration202606240003(), // 删群聊(能力并入编排):DROP 群 4 表 + chat_sessions.group_id + 重置工具种子
+		migration202606250001(), // hooks.interpreter_path:自定义解释器二进制路径
 	}
 }

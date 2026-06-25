@@ -20,25 +20,26 @@ var ValidInterpreters = map[string]struct{}{
 
 // Hook 是一段可调度的脚本：拉数据→stdout 产出 {events,state}。
 type Hook struct {
-	ID             int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	Name           string `gorm:"column:name;type:text;not null"`
-	Interpreter    string `gorm:"column:interpreter;type:text;not null;default:'bash'"`
-	Command        string `gorm:"column:command;type:text;not null;default:''"`
-	TriggerType    string `gorm:"column:trigger_type;type:text;not null;default:'schedule'"`
-	ScheduleExpr   string `gorm:"column:schedule_expr;type:text;not null;default:''"` // cron 表达式
-	Timezone       string `gorm:"column:timezone;type:text;not null;default:'Asia/Shanghai'"`
-	EnvJSON        string `gorm:"column:env_json;type:text;not null;default:'[]'"`
-	StateJSON      string `gorm:"column:state_json;type:text;not null;default:'{}'"`
-	NextRunAt      int64  `gorm:"column:next_run_at;type:bigint;not null;default:0"`
-	Enabled        int    `gorm:"column:enabled;type:int;not null;default:1"`
-	LastRunAt      int64  `gorm:"column:last_run_at;type:bigint;not null;default:0"`
-	LastStatus     string `gorm:"column:last_status;type:text;not null;default:''"`
-	LastError      string `gorm:"column:last_error;type:text;not null;default:''"`
-	LastDurationMs int64  `gorm:"column:last_duration_ms;type:bigint;not null;default:0"`
-	TotalCount     int64  `gorm:"column:total_count;type:bigint;not null;default:0"`
-	Status         int    `gorm:"column:status;type:int;not null;default:1"`
-	Createtime     int64
-	Updatetime     int64
+	ID              int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	Name            string `gorm:"column:name;type:text;not null"`
+	Interpreter     string `gorm:"column:interpreter;type:text;not null;default:'bash'"`
+	InterpreterPath string `gorm:"column:interpreter_path;type:text;not null;default:''"`
+	Command         string `gorm:"column:command;type:text;not null;default:''"`
+	TriggerType     string `gorm:"column:trigger_type;type:text;not null;default:'schedule'"`
+	ScheduleExpr    string `gorm:"column:schedule_expr;type:text;not null;default:''"` // cron 表达式
+	Timezone        string `gorm:"column:timezone;type:text;not null;default:'Asia/Shanghai'"`
+	EnvJSON         string `gorm:"column:env_json;type:text;not null;default:'[]'"`
+	StateJSON       string `gorm:"column:state_json;type:text;not null;default:'{}'"`
+	NextRunAt       int64  `gorm:"column:next_run_at;type:bigint;not null;default:0"`
+	Enabled         int    `gorm:"column:enabled;type:int;not null;default:1"`
+	LastRunAt       int64  `gorm:"column:last_run_at;type:bigint;not null;default:0"`
+	LastStatus      string `gorm:"column:last_status;type:text;not null;default:''"`
+	LastError       string `gorm:"column:last_error;type:text;not null;default:''"`
+	LastDurationMs  int64  `gorm:"column:last_duration_ms;type:bigint;not null;default:0"`
+	TotalCount      int64  `gorm:"column:total_count;type:bigint;not null;default:0"`
+	Status          int    `gorm:"column:status;type:int;not null;default:1"`
+	Createtime      int64
+	Updatetime      int64
 }
 
 func (*Hook) TableName() string { return "hooks" }
