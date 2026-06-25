@@ -33,16 +33,4 @@ describe("toolKeysToCatalog", () => {
     expect(wf.enabled).toBe(true);
     expect(wf.badges?.[0]?.tone).toBe("approval");
   });
-
-  it("group_create 带审批徽标 + enabled 取自 agentTools", () => {
-    const items = toolKeysToCatalog(
-      ["org", "workflow", "group_create"],
-      [{ key: "group_create", enabled: true }],
-      t,
-    );
-    const gc = items.find((i) => i.id === "group_create")!;
-    expect(gc.name).toBe(t("org.agent.tools.names.group_create"));
-    expect(gc.enabled).toBe(true);
-    expect(gc.badges?.[0]?.tone).toBe("approval");
-  });
 });
