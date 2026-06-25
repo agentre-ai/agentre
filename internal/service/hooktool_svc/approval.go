@@ -79,13 +79,14 @@ func (s *hooktoolSvc) createHook(ctx context.Context, rawArgs json.RawMessage) (
 		enabled = *args.Enabled
 	}
 	item, err := s.hooks.CreateHook(ctx, &hook_svc.CreateHookRequest{
-		Name:         args.Name,
-		Interpreter:  args.Interpreter,
-		Command:      args.Command,
-		ScheduleExpr: args.ScheduleExpr,
-		Timezone:     args.Timezone,
-		Env:          args.Env,
-		Enabled:      enabled,
+		Name:            args.Name,
+		Interpreter:     args.Interpreter,
+		InterpreterPath: args.InterpreterPath,
+		Command:         args.Command,
+		ScheduleExpr:    args.ScheduleExpr,
+		Timezone:        args.Timezone,
+		Env:             args.Env,
+		Enabled:         enabled,
 	})
 	if err != nil {
 		return "", err
@@ -107,6 +108,7 @@ func (s *hooktoolSvc) updateHook(ctx context.Context, rawArgs json.RawMessage) (
 	req := &hook_svc.UpdateHookRequest{ID: args.ID}
 	req.Name = orStr(args.Name, cur.Name)
 	req.Interpreter = orStr(args.Interpreter, cur.Interpreter)
+	req.InterpreterPath = orStr(args.InterpreterPath, cur.InterpreterPath)
 	req.Command = orStr(args.Command, cur.Command)
 	req.ScheduleExpr = orStr(args.ScheduleExpr, cur.ScheduleExpr)
 	req.Timezone = orStr(args.Timezone, cur.Timezone)

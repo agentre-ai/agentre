@@ -208,6 +208,114 @@ func TestHookApproval_RunDryApproved(t *testing.T) {
 	})
 }
 
+func TestHookApproval_CreateWithInterpreterPath(t *testing.T) {
+	Convey("hook_create 带 interpreterPath → CreateHookRequest 透传该字段", t, func() {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		s, d := newWriteSvc(ctrl)
+		d.lookup.EXPECT().Find(gomock.Any(), int64(7)).Return(hookEnabledAgent(7), nil)
+		apvCh := make(chan bool, 1)
+		d.apv.EXPECT().BeginToolApproval(gomock.Any(), int64(99), gomock.Any()).Return((<-chan bool)(apvCh), nil)
+		var mu sync.Mutex
+		var gotReq *hook_svc.CreateHookRequest
+		d.hooks.EXPECT().CreateHook(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, req *hook_svc.CreateHookRequest) (*hook_svc.HookItem, error) {
+				mu.Lock()
+				gotReq = req
+				mu.Unlock()
+				return &hook_svc.HookItem{ID: 9, Name: req.Name}, nil
+			})
+		d.apv.EXPECT().FinishToolApproval(gomock.Any(), int64(99), gomock.Any(), "approved", gomock.Any()).Return(nil)
+
+		token := s.mcpHandlerInit().MintToken(7, 99)
+		w, done := callWrite(s, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hook_create","arguments":{"name":"自定义解释器","interpreter":"python","interpreterPath":"/opt/homebrew/bin/python3","command":"echo {}","scheduleExpr":"*/10 * * * *"}}}`, token)
+		apvCh <- true
+		<-done
+		So(w.Code, ShouldEqual, http.StatusOK)
+
+		mu.Lock()
+		defer mu.Unlock()
+		So(gotReq.InterpreterPath, ShouldEqual, "/opt/homebrew/bin/python3")
+		So(gotReq.Interpreter, ShouldEqual, "python")
+	})
+}
+
+func TestHookApproval_UpdateInterpreterPath(t *testing.T) {
+	Convey("hook_update 传 interpreterPath → 更新该字段;不传则沿用现值", t, func() {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		s, d := newWriteSvc(ctrl)
+		d.lookup.EXPECT().Find(gomock.Any(), int64(7)).Return(hookEnabledAgent(7), nil)
+		apvCh := make(chan bool, 1)
+		d.apv.EXPECT().BeginToolApproval(gomock.Any(), int64(99), gomock.Any()).Return((<-chan bool)(apvCh), nil)
+		d.hooks.EXPECT().Load(gomock.Any(), &hook_svc.LoadHooksRequest{HookID: 5}).Return(&hook_svc.LoadHooksResponse{
+			Hooks: []*hook_svc.HookItem{{
+				ID: 5, Name: "巡检2", Interpreter: "python", InterpreterPath: "/usr/bin/python3",
+				Command: "echo {}", ScheduleExpr: "*/5 * * * *", Timezone: "Asia/Shanghai", Enabled: true,
+			}},
+		}, nil)
+		var mu sync.Mutex
+		var gotReq *hook_svc.UpdateHookRequest
+		d.hooks.EXPECT().UpdateHook(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, req *hook_svc.UpdateHookRequest) (*hook_svc.HookItem, error) {
+				mu.Lock()
+				gotReq = req
+				mu.Unlock()
+				return &hook_svc.HookItem{ID: 5, Name: req.Name}, nil
+			})
+		d.apv.EXPECT().FinishToolApproval(gomock.Any(), int64(99), gomock.Any(), "approved", gomock.Any()).Return(nil)
+
+		token := s.mcpHandlerInit().MintToken(7, 99)
+		// 传新的 interpreterPath
+		w, done := callWrite(s, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hook_update","arguments":{"id":5,"interpreterPath":"/opt/homebrew/bin/python3.12"}}}`, token)
+		apvCh <- true
+		<-done
+		So(w.Code, ShouldEqual, http.StatusOK)
+
+		mu.Lock()
+		defer mu.Unlock()
+		So(gotReq.InterpreterPath, ShouldEqual, "/opt/homebrew/bin/python3.12") // 已更新
+		So(gotReq.Interpreter, ShouldEqual, "python")                           // 未传 → 沿用
+	})
+
+	Convey("hook_update 不传 interpreterPath → 沿用现值", t, func() {
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+		s, d := newWriteSvc(ctrl)
+		d.lookup.EXPECT().Find(gomock.Any(), int64(7)).Return(hookEnabledAgent(7), nil)
+		apvCh := make(chan bool, 1)
+		d.apv.EXPECT().BeginToolApproval(gomock.Any(), int64(99), gomock.Any()).Return((<-chan bool)(apvCh), nil)
+		d.hooks.EXPECT().Load(gomock.Any(), &hook_svc.LoadHooksRequest{HookID: 5}).Return(&hook_svc.LoadHooksResponse{
+			Hooks: []*hook_svc.HookItem{{
+				ID: 5, Name: "巡检2", Interpreter: "python", InterpreterPath: "/usr/bin/python3",
+				Command: "echo {}", ScheduleExpr: "*/5 * * * *", Timezone: "Asia/Shanghai", Enabled: true,
+			}},
+		}, nil)
+		var mu sync.Mutex
+		var gotReq *hook_svc.UpdateHookRequest
+		d.hooks.EXPECT().UpdateHook(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, req *hook_svc.UpdateHookRequest) (*hook_svc.HookItem, error) {
+				mu.Lock()
+				gotReq = req
+				mu.Unlock()
+				return &hook_svc.HookItem{ID: 5, Name: req.Name}, nil
+			})
+		d.apv.EXPECT().FinishToolApproval(gomock.Any(), int64(99), gomock.Any(), "approved", gomock.Any()).Return(nil)
+
+		token := s.mcpHandlerInit().MintToken(7, 99)
+		// 不传 interpreterPath,只改 command
+		w, done := callWrite(s, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hook_update","arguments":{"id":5,"command":"new echo {}"}}}`, token)
+		apvCh <- true
+		<-done
+		So(w.Code, ShouldEqual, http.StatusOK)
+
+		mu.Lock()
+		defer mu.Unlock()
+		So(gotReq.InterpreterPath, ShouldEqual, "/usr/bin/python3") // 沿用现值
+		So(gotReq.Command, ShouldEqual, "new echo {}")              // 已更新
+	})
+}
+
 func TestHookApproval_DeleteApproved(t *testing.T) {
 	Convey("hook_delete allow=true → DeleteHook 执行", t, func() {
 		ctrl := gomock.NewController(t)

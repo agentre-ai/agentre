@@ -6,24 +6,26 @@ import "github.com/agentre-ai/agentre/internal/service/hook_svc"
 // 与"显式置空";env 用 *[]EnvVar 区分"不动 env"与"整体替换"。
 
 type createHookArgs struct {
-	Name         string            `json:"name"`
-	Interpreter  string            `json:"interpreter"`
-	Command      string            `json:"command"`
-	ScheduleExpr string            `json:"scheduleExpr"`
-	Timezone     string            `json:"timezone"`
-	Env          []hook_svc.EnvVar `json:"env"`
-	Enabled      *bool             `json:"enabled"` // 省略=默认启用
+	Name            string            `json:"name"`
+	Interpreter     string            `json:"interpreter"`
+	InterpreterPath string            `json:"interpreterPath"`
+	Command         string            `json:"command"`
+	ScheduleExpr    string            `json:"scheduleExpr"`
+	Timezone        string            `json:"timezone"`
+	Env             []hook_svc.EnvVar `json:"env"`
+	Enabled         *bool             `json:"enabled"` // 省略=默认启用
 }
 
 type updateHookArgs struct {
-	ID           int64              `json:"id"`
-	Name         *string            `json:"name"`
-	Interpreter  *string            `json:"interpreter"`
-	Command      *string            `json:"command"`
-	ScheduleExpr *string            `json:"scheduleExpr"`
-	Timezone     *string            `json:"timezone"`
-	Env          *[]hook_svc.EnvVar `json:"env"` // 非 nil=整体替换;nil=沿用现值(密钥 ******** 由 hook_svc 保留)
-	Enabled      *bool              `json:"enabled"`
+	ID              int64              `json:"id"`
+	Name            *string            `json:"name"`
+	Interpreter     *string            `json:"interpreter"`
+	InterpreterPath *string            `json:"interpreterPath"`
+	Command         *string            `json:"command"`
+	ScheduleExpr    *string            `json:"scheduleExpr"`
+	Timezone        *string            `json:"timezone"`
+	Env             *[]hook_svc.EnvVar `json:"env"` // 非 nil=整体替换;nil=沿用现值(密钥 ******** 由 hook_svc 保留)
+	Enabled         *bool              `json:"enabled"`
 }
 
 type deleteHookArgs struct {
