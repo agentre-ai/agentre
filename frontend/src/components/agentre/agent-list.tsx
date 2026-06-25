@@ -224,7 +224,11 @@ function AgentGroup({
               title={t("agentList.running")}
               aria-label={t("agentList.runningAria", { name })}
             >
-              <StatusDot status="running" size="xs" className="animate-pulse" />
+              <StatusDot
+                status="running"
+                size="xs"
+                className="motion-safe:animate-pulse"
+              />
             </span>
           ) : null}
           {onTogglePin ? (

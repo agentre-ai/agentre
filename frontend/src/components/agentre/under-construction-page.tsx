@@ -55,7 +55,7 @@ function UnderConstructionPage({
           >
             <span
               aria-hidden="true"
-              className="inline-block size-1.5 animate-pulse rounded-full bg-status-waiting"
+              className="inline-block size-1.5 motion-safe:animate-pulse rounded-full bg-status-waiting"
             />
             {t("underConstruction.badge")}
           </Badge>
