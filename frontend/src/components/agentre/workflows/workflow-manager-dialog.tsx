@@ -54,6 +54,8 @@ function WorkflowManagerBody({
   const [confirmingDelete, setConfirmingDelete] = React.useState(false);
   const [draftName, setDraftName] = React.useState("");
   const [draftContent, setDraftContent] = React.useState("");
+  const [draftTags, setDraftTags] = React.useState<string[]>([]);
+  const [draftOutline, setDraftOutline] = React.useState<string[]>([]);
   const [formError, setFormError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -66,6 +68,8 @@ function WorkflowManagerBody({
       setEditingId(0);
       setDraftName("");
       setDraftContent("");
+      setDraftTags([]);
+      setDraftOutline([]);
       setFormError(null);
     }
   }, [intent]);
@@ -86,6 +90,8 @@ function WorkflowManagerBody({
     setEditingId(0);
     setDraftName("");
     setDraftContent("");
+    setDraftTags([]);
+    setDraftOutline([]);
     setFormError(null);
     setConfirmingDelete(false);
   };
@@ -94,6 +100,8 @@ function WorkflowManagerBody({
     setEditingId(w.id);
     setDraftName(w.name);
     setDraftContent(w.content);
+    setDraftTags(w.tags);
+    setDraftOutline(w.outline);
     setFormError(null);
     setConfirmingDelete(false);
   };
@@ -109,10 +117,10 @@ function WorkflowManagerBody({
     setSubmitting(true);
     try {
       if (editingId > 0) {
-        await update(editingId, draftName.trim(), draftContent);
+        await update(editingId, draftName.trim(), draftContent, draftTags, draftOutline);
         setSelectedId(editingId);
       } else {
-        await create(draftName.trim(), draftContent);
+        await create(draftName.trim(), draftContent, draftTags, draftOutline);
         setSelectedId(0);
       }
       setMode("view");
@@ -249,6 +257,11 @@ function WorkflowManagerBody({
                       <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
                         {w.name}
                       </span>
+                      {w.tags.length > 0 ? (
+                        <span className="shrink-0 rounded bg-accent px-1 py-0.5 text-2xs text-muted-foreground">
+                          {w.tags[0]}
+                        </span>
+                      ) : null}
                       {w.runCount > 0 ? (
                         <span className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-2xs text-muted-foreground">
                           {t("workflows.runCount", { count: w.runCount })}
@@ -277,10 +290,14 @@ function WorkflowManagerBody({
                 editing={editingId > 0}
                 name={draftName}
                 content={draftContent}
+                tags={draftTags}
+                outline={draftOutline}
                 error={formError}
                 canSave={canSave}
                 onNameChange={setDraftName}
                 onContentChange={setDraftContent}
+                onTagsChange={setDraftTags}
+                onOutlineChange={setDraftOutline}
                 onCancel={cancelEdit}
                 onSave={() => void submit()}
                 onKeyDown={onEditorKeyDown}
@@ -344,6 +361,48 @@ function ViewPane({
         </div>
         <p className="text-2xs text-muted-foreground">{meta}</p>
       </header>
+      {workflow.tags.length > 0 || workflow.outline.length > 0 ? (
+        <div
+          data-testid="workflow-blueprint-band"
+          className="flex flex-col gap-2 border-b border-border bg-muted/40 px-5 py-3"
+        >
+          {workflow.tags.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-2xs text-subtle-foreground">
+                {t("workflows.preview.blueprintTags")}
+              </span>
+              {workflow.tags.map((tag, i) => (
+                <span
+                  key={`${tag}-${i}`}
+                  className="rounded bg-accent px-1.5 py-0.5 text-2xs text-foreground"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {workflow.outline.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-2xs text-subtle-foreground">
+                {t("workflows.preview.blueprintSteps")}
+              </span>
+              {workflow.outline.map((step, i) => (
+                <React.Fragment key={`${step}-${i}`}>
+                  {i > 0 ? (
+                    <span className="text-2xs text-subtle-foreground">›</span>
+                  ) : null}
+                  <span className="rounded border border-border bg-card px-1.5 py-0.5 text-2xs text-foreground">
+                    {step}
+                  </span>
+                </React.Fragment>
+              ))}
+            </div>
+          ) : null}
+          <span className="text-2xs text-subtle-foreground">
+            {t("workflows.preview.blueprintHint")}
+          </span>
+        </div>
+      ) : null}
       <div className="flex-1 overflow-y-auto px-5 py-4">
         <MarkdownText text={workflow.content} />
       </div>
@@ -439,10 +498,14 @@ function EditorPane({
   editing,
   name,
   content,
+  tags,
+  outline,
   error,
   canSave,
   onNameChange,
   onContentChange,
+  onTagsChange,
+  onOutlineChange,
   onCancel,
   onSave,
   onKeyDown,
@@ -450,10 +513,14 @@ function EditorPane({
   editing: boolean;
   name: string;
   content: string;
+  tags: string[];
+  outline: string[];
   error: string | null;
   canSave: boolean;
   onNameChange: (v: string) => void;
   onContentChange: (v: string) => void;
+  onTagsChange: (v: string[]) => void;
+  onOutlineChange: (v: string[]) => void;
   onCancel: () => void;
   onSave: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
@@ -475,9 +542,13 @@ function EditorPane({
         <WorkflowEditorForm
           name={name}
           content={content}
+          tags={tags}
+          outline={outline}
           error={error}
           onNameChange={onNameChange}
           onContentChange={onContentChange}
+          onTagsChange={onTagsChange}
+          onOutlineChange={onOutlineChange}
         />
       </div>
       <footer className="flex items-center gap-2 border-t border-border px-5 py-3">

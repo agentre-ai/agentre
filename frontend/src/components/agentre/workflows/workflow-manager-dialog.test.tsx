@@ -95,6 +95,8 @@ describe("WorkflowManagerDialog · 内联编辑", () => {
       expect(workflowCreate).toHaveBeenCalledWith({
         name: "评审流程",
         content: "",
+        tags: [],
+        outline: [],
       }),
     );
     expect(workflowList.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -143,6 +145,66 @@ describe("WorkflowManagerDialog · 内联编辑", () => {
       expect(screen.getByTestId("workflow-edit-button")).toBeTruthy(),
     );
     expect(screen.queryByRole("textbox", { name: "Name" })).toBeNull();
+  });
+});
+
+const itemsWithTagsOutline = [
+  {
+    id: 3,
+    name: "标准功能开发流",
+    content: "# 标准功能开发流",
+    tags: ["通用"],
+    outline: ["需求拆解", "方案设计"],
+    runCount: 0,
+    createtime: 1700000000000,
+    updatetime: 1700000000000,
+  },
+];
+
+describe("WorkflowManagerDialog · tags/outline", () => {
+  beforeEach(() => {
+    workflowList.mockReset().mockResolvedValue({ items: itemsWithTagsOutline });
+    workflowCreate.mockReset().mockResolvedValue({ item: { id: 9 } });
+    workflowUpdate.mockReset().mockResolvedValue({ item: { id: 3 } });
+    workflowDelete.mockReset().mockResolvedValue({});
+    useWorkflowManagerStore.setState({ open: false, intent: "browse" });
+  });
+
+  it("新建保存时把 tags/outline 一并提交", async () => {
+    render(<WorkflowManagerDialog />);
+    useWorkflowManagerStore.getState().openCreate();
+    await waitFor(() =>
+      expect(screen.getByTestId("workflow-name-input")).toBeTruthy(),
+    );
+    fireEvent.change(screen.getByTestId("workflow-name-input"), {
+      target: { value: "标准功能开发流" },
+    });
+    const tagInput = screen.getByTestId("workflow-tags-input");
+    fireEvent.change(tagInput, { target: { value: "通用" } });
+    fireEvent.keyDown(tagInput, { key: "Enter" });
+    const stepInput = screen.getByTestId("workflow-outline-input");
+    fireEvent.change(stepInput, { target: { value: "需求拆解" } });
+    fireEvent.keyDown(stepInput, { key: "Enter" });
+    fireEvent.click(screen.getByTestId("workflow-save-button"));
+    await waitFor(() =>
+      expect(workflowCreate).toHaveBeenCalledWith({
+        name: "标准功能开发流",
+        content: "",
+        tags: ["通用"],
+        outline: ["需求拆解"],
+      }),
+    );
+  });
+
+  it("预览态渲染蓝图 band(标签 + 步骤面包屑)", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<WorkflowManagerDialog />);
+    useWorkflowManagerStore.getState().openBrowse();
+    await waitFor(() => expect(screen.getByText("标准功能开发流")).toBeTruthy());
+    await user.click(screen.getByTestId("workflow-row-3"));
+    expect(screen.getByTestId("workflow-blueprint-band")).toBeInTheDocument();
+    expect(screen.getByText("需求拆解")).toBeInTheDocument();
+    expect(screen.getByText("方案设计")).toBeInTheDocument();
   });
 });
 

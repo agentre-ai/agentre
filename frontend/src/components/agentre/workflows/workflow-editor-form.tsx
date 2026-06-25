@@ -9,17 +9,17 @@ import { Textarea } from "@/components/ui/textarea";
 export type WorkflowEditorFormProps = {
   name: string;
   content: string;
-  /** Display-only tags (chips). Default []. */
-  tags?: string[];
-  /** Display-only ordered steps. Default []. */
-  outline?: string[];
+  /** Display-only tags (chips). */
+  tags: string[];
+  /** Display-only ordered steps. */
+  outline: string[];
   error: string | null;
   onNameChange: (v: string) => void;
   onContentChange: (v: string) => void;
   /** Called with the new tags array when the user adds or removes a tag. */
-  onTagsChange?: (v: string[]) => void;
+  onTagsChange: (v: string[]) => void;
   /** Called with the new outline array when the user mutates steps. */
-  onOutlineChange?: (v: string[]) => void;
+  onOutlineChange: (v: string[]) => void;
 };
 
 // 受控编辑表单:名称 + 标签(chips) + 步骤(outline 有序) + 正文(Markdown)。
@@ -27,13 +27,13 @@ export type WorkflowEditorFormProps = {
 export function WorkflowEditorForm({
   name,
   content,
-  tags = [],
-  outline = [],
+  tags,
+  outline,
   error,
   onNameChange,
   onContentChange,
-  onTagsChange = () => {},
-  onOutlineChange = () => {},
+  onTagsChange,
+  onOutlineChange,
 }: WorkflowEditorFormProps) {
   const { t } = useTranslation();
   const [tagDraft, setTagDraft] = React.useState("");
