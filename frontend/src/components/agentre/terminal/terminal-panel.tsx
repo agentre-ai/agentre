@@ -13,6 +13,7 @@ import "@xterm/xterm/css/xterm.css";
 import { toast } from "sonner";
 
 import { useTerminal } from "./use-terminal";
+import { useAttachedTerminal } from "./use-attached-terminal";
 import { resolveTerminalTheme } from "./terminal-theme";
 import { attachXtermRolloverGuard } from "./xterm-rollover-guard";
 
@@ -21,6 +22,9 @@ export interface TerminalPanelProps {
   projectId: number;
   deviceId: string;
   active?: boolean;
+  // attach=true:接管别处已起的 PTY(本地命令卡片),从 store seed + 增量渲染,
+  // 不开 / 不关 PTY。默认 false 走既有 live 路径。
+  attach?: boolean;
   onClose: () => void;
 }
 
@@ -60,6 +64,7 @@ export function TerminalPanel({
   projectId,
   deviceId,
   active = true,
+  attach = false,
   onClose,
 }: TerminalPanelProps) {
   const { t } = useTranslation();
@@ -74,16 +79,8 @@ export function TerminalPanel({
     onClose();
   }, [onClose]);
 
-  const { state, write, resize } = useTerminal({
-    terminalID,
-    projectId,
-    deviceId,
-    cols: 80,
-    rows: 24,
-    onData: (data) => {
-      xtermRef.current?.write(data);
-    },
-    onExit: (info) => {
+  const handleExit = useCallback(
+    (info: { code: number; reason: string; msg?: string }) => {
       if (info.reason === "connection_lost") {
         setConnectionLost(true);
         toast.error(t("terminal.toast.connectionLost"));
@@ -109,7 +106,29 @@ export function TerminalPanel({
       // natural code=0 or killed → silent close.
       onClose();
     },
+    [onClose, t],
+  );
+
+  // 两个数据源 hook 都无条件调用(满足 hooks 规则),各自被 enabled 关掉一个;
+  // attach 模式接管已起 PTY,live 模式开新 PTY。
+  const live = useTerminal({
+    terminalID,
+    projectId,
+    deviceId,
+    cols: 80,
+    rows: 24,
+    enabled: !attach,
+    onData: (data) => {
+      xtermRef.current?.write(data);
+    },
+    onExit: handleExit,
   });
+  const attached = useAttachedTerminal({
+    terminalID,
+    xtermRef,
+    enabled: attach,
+  });
+  const { state, write, resize } = attach ? attached : live;
 
   const fitAndResize = useCallback(() => {
     const f = fitRef.current;

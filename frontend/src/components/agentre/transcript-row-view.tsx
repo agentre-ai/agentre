@@ -34,6 +34,7 @@ import { ThinkingBlock } from "./thinking-block";
 import type { TranscriptRow, TranscriptRowItem } from "./transcript-rows";
 import type { AgentColor } from "./types";
 import type { ChatBlockData, RetryNotice } from "@/stores/chat-streams-store";
+import { useChatTabsStore } from "@/stores/chat-tabs-store";
 
 // ─── 会话级静态渲染依赖 ───────────────────────────────────────────────────────
 
@@ -588,11 +589,15 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
   const ctx = React.useContext(TranscriptRenderContext);
   // local_command 行无 message 引用,独立成卡(无头像/footer chrome)在此提前返回。
   if (row.item.type === "local_command") {
-    // F8 wires attachTerminal here
+    const entry = row.item.entry;
     return (
       <LocalCommandCard
-        entryId={row.item.entry.id}
-        onOpenInTerminal={() => {}}
+        entryId={entry.id}
+        onOpenInTerminal={(id) =>
+          useChatTabsStore
+            .getState()
+            .attachTerminal({ terminalId: id, command: entry.command })
+        }
       />
     );
   }

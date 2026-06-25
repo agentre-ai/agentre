@@ -666,6 +666,7 @@
     },
     "terminal": {
       "title": "Terminal",
+      "titleWithCommand": "Command: {{command}}",
       "titleWithDevice": "Terminal · {{deviceName}}"
     },
     "tooltip": {

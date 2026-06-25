@@ -17,6 +17,9 @@ export interface UseTerminalArgs {
   deviceId: string;
   cols: number;
   rows: number;
+  // enabled=false 时本 hook 完全 inert:不 EventsOn / TerminalOpen,卸载也不 TerminalClose。
+  // attach 模式(接管别处已起的 PTY)用它把 live 路径关掉。默认启用,既有调用方不受影响。
+  enabled?: boolean;
   onData?: (data: Uint8Array) => void;
   onExit?: (info: { code: number; reason: Reason; msg?: string }) => void;
 }
@@ -28,6 +31,9 @@ export function useTerminal(args: UseTerminalArgs) {
   const exitEvent = `terminal:${args.terminalID}:exit`;
 
   useEffect(() => {
+    // attach 模式下完全不注册监听 / 不开 PTY,清理也不 TerminalClose,
+    // 避免与 F6 store 这个唯一的 Wails 订阅者互删监听。
+    if (args.enabled === false) return;
     let cancelled = false;
 
     EventsOn(dataEvent, (payload: { data: string }) => {

@@ -666,6 +666,7 @@
     },
     "terminal": {
       "title": "终端",
+      "titleWithCommand": "命令:{{command}}",
       "titleWithDevice": "终端 · {{deviceName}}"
     },
     "tooltip": {
