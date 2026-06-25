@@ -2,6 +2,7 @@ package hook_svc
 
 import (
 	"context"
+	"runtime"
 	"testing"
 
 	"go.uber.org/mock/gomock"
@@ -10,6 +11,28 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/hook_repo"
 	"github.com/agentre-ai/agentre/internal/repository/hook_repo/mock_hook_repo"
 )
+
+func TestProbeInterpreters_ReturnsPlatformList(t *testing.T) {
+	got, err := Hook().ProbeInterpreters(context.Background())
+	if err != nil {
+		t.Fatalf("ProbeInterpreters: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("expected non-empty interpreter list")
+	}
+	for _, o := range got {
+		if _, ok := hook_entity.ValidInterpreters[o.Key]; !ok {
+			t.Errorf("returned key %q not in ValidInterpreters allowlist", o.Key)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		for _, o := range got {
+			if o.Key == "cmd" || o.Key == "powershell" {
+				t.Errorf("non-windows must hide %q", o.Key)
+			}
+		}
+	}
+}
 
 func TestCreateHook_RejectsDuplicateName(t *testing.T) {
 	ctrl := gomock.NewController(t)

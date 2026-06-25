@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -22,11 +24,12 @@ type ScriptRunner interface {
 
 // RunSpec 描述一次脚本执行所需的全部输入。
 type RunSpec struct {
-	Interpreter    string
-	Command        string
-	Env            map[string]string
-	Timeout        time.Duration
-	MaxOutputBytes int
+	Interpreter     string
+	InterpreterPath string
+	Command         string
+	Env             map[string]string
+	Timeout         time.Duration
+	MaxOutputBytes  int
 }
 
 // RunResult 是一次脚本执行的采集结果。
@@ -50,6 +53,7 @@ type interpDef struct {
 	candidates []string // 按序探测的二进制名
 	args       []string
 	ext        string
+	goos       []string // 空=全平台;仅 cmd/powershell 标 {"windows"}
 }
 
 var registry = map[string]interpDef{
@@ -58,15 +62,63 @@ var registry = map[string]interpDef{
 	"node":       {candidates: []string{"node"}, ext: ".mjs"},
 	"python":     {candidates: []string{"python3", "python"}, ext: ".py"},
 	"pwsh":       {candidates: []string{"pwsh"}, args: []string{"-NoProfile", "-File"}, ext: ".ps1"},
-	"powershell": {candidates: []string{"powershell"}, args: []string{"-NoProfile", "-File"}, ext: ".ps1"},
-	"cmd":        {candidates: []string{"cmd"}, args: []string{"/c"}, ext: ".bat"},
+	"powershell": {candidates: []string{"powershell"}, args: []string{"-NoProfile", "-File"}, ext: ".ps1", goos: []string{"windows"}},
+	"cmd":        {candidates: []string{"cmd"}, args: []string{"/c"}, ext: ".bat", goos: []string{"windows"}},
 }
 
-// Resolve 校验解释器并解析其二进制路径。
-func Resolve(interpreter string) (*Interp, error) {
+// interpOrder 决定 Probe 输出顺序(map 无序)。
+var interpOrder = []string{"bash", "sh", "node", "python", "pwsh", "powershell", "cmd"}
+
+// Available 是一个解释器在当前机器上的可用性。
+type Available struct {
+	Key       string `json:"key"`
+	Path      string `json:"path"`
+	Installed bool   `json:"installed"`
+}
+
+func appliesTo(def interpDef, goos string) bool {
+	if len(def.goos) == 0 {
+		return true
+	}
+	for _, g := range def.goos {
+		if g == goos {
+			return true
+		}
+	}
+	return false
+}
+
+// Probe 列出在 goos 平台下适用的解释器及其安装情况。
+func Probe(goos string) []Available {
+	out := make([]Available, 0, len(interpOrder))
+	for _, key := range interpOrder {
+		def := registry[key]
+		if !appliesTo(def, goos) {
+			continue
+		}
+		a := Available{Key: key}
+		for _, name := range def.candidates {
+			if bin, err := exec.LookPath(name); err == nil {
+				a.Path, a.Installed = bin, true
+				break
+			}
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// Resolve 校验解释器并解析其二进制路径;interpreterPath 非空时覆盖二进制(args/ext 仍取预设)。
+func Resolve(interpreter, interpreterPath string) (*Interp, error) {
 	def, ok := registry[interpreter]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownInterpreter, interpreter)
+	}
+	if p := strings.TrimSpace(interpreterPath); p != "" {
+		if info, err := os.Stat(p); err != nil || info.IsDir() {
+			return nil, fmt.Errorf("%w: %q", ErrInterpreterNotInstalled, p)
+		}
+		return &Interp{Bin: p, Args: def.args, Ext: def.ext}, nil
 	}
 	for _, name := range def.candidates {
 		if bin, err := exec.LookPath(name); err == nil {

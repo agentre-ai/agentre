@@ -73,6 +73,14 @@ function setBridge(over: AnyRecord = {}) {
         persisted: false,
       }),
     ),
+    ProbeInterpreters: vi.fn(() =>
+      Promise.resolve([
+        { key: "bash", path: "/bin/bash", installed: true },
+        { key: "node", path: "/usr/bin/node", installed: true },
+        { key: "python", path: "/usr/bin/python3", installed: true },
+        { key: "pwsh", path: "", installed: false },
+      ]),
+    ),
     ...over,
   };
   Object.defineProperty(window, "go", {
@@ -87,6 +95,19 @@ afterEach(() => {
 });
 
 describe("HooksPage", () => {
+  it("grows to fill the available width as a flex child (flex-1)", async () => {
+    setBridge();
+    const { container } = render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+
+    // The page mounts directly into AppLayout's horizontal flex row, so its
+    // root must grow (flex-1) to fill the space left of the nav rail — without
+    // it the page collapses to its content width and leaves a gap on the right.
+    const root = container.firstChild as HTMLElement;
+    expect(root).toHaveClass("flex-1");
+    expect(root).toHaveClass("min-w-0");
+  });
+
   it("loads and lists hooks, auto-selecting the first into the header", async () => {
     setBridge();
     render(<HooksPage />);
@@ -183,6 +204,41 @@ describe("HooksPage", () => {
     expect(screen.getByText(/"severity":"high"/)).toBeInTheDocument();
   });
 
+  it("flags failure events distinctly and keeps the failure log in the payload", async () => {
+    const failureEvent = {
+      id: 200,
+      hookId: 2,
+      kind: "failure",
+      title: "execution timed out",
+      dedupeKey: "",
+      payloadJson:
+        '{"exitCode":124,"timedOut":true,"stderr":"deadline exceeded"}',
+      receivedAt: Math.floor(Date.now() / 1000) - 30,
+      createtime: 0,
+    };
+    setBridge({
+      LoadHooks: vi.fn(() =>
+        Promise.resolve({
+          hooks: [makeHook()],
+          events: [failureEvent, sampleEvent],
+        }),
+      ),
+    });
+    render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+    await userEvent.click(screen.getByRole("tab", { name: /Run Log/ }));
+
+    // The failure row is marked "Failed" (so it reads apart from script output)…
+    expect(
+      (await screen.findAllByText("execution timed out")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("Failed").length).toBeGreaterThan(0);
+    // …and the retained stderr is inspectable in the payload detail.
+    expect(screen.getByText(/deadline exceeded/)).toBeInTheDocument();
+    // Plain output rows carry no failure marker.
+    expect(screen.getByText("payment callback timeout")).toBeInTheDocument();
+  });
+
   it("toggles the selected hook", async () => {
     const app = setBridge();
     render(<HooksPage />);
@@ -201,5 +257,53 @@ describe("HooksPage", () => {
     expect(screen.getByLabelText("Name")).toHaveValue("New Hook");
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(app.CreateHook).toHaveBeenCalled());
+  });
+});
+
+describe("HooksPage interpreter dropdown (probe-driven)", () => {
+  it("lists probed interpreters and disables not-installed ones", async () => {
+    setBridge();
+    render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+
+    // Open the interpreter select
+    fireEvent.click(screen.getByRole("combobox", { name: "Interpreter" }));
+
+    // Wait for the probed options to appear
+    const pwshOption = await screen.findByText("PowerShell");
+    // The not-installed option should be rendered inside a disabled SelectItem
+    const optionEl = pwshOption.closest("[data-disabled]");
+    expect(optionEl).not.toBeNull();
+  });
+
+  it("shows not-installed label next to uninstalled interpreter", async () => {
+    setBridge();
+    render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Interpreter" }));
+    await screen.findByText("PowerShell");
+    expect(await screen.findByText("Not installed")).toBeInTheDocument();
+  });
+
+  it("submits interpreterPath in create payload", async () => {
+    const app = setBridge();
+    render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+
+    // Click the + button to open the create form
+    fireEvent.click(screen.getByTestId("hook-create"));
+
+    // Fill in the binary path field
+    const pathInput = await screen.findByLabelText("Binary path");
+    fireEvent.change(pathInput, { target: { value: "/opt/py/bin/python3" } });
+
+    // Submit
+    fireEvent.click(screen.getByTestId("hook-save"));
+    await waitFor(() =>
+      expect(app.CreateHook).toHaveBeenCalledWith(
+        expect.objectContaining({ interpreterPath: "/opt/py/bin/python3" }),
+      ),
+    );
   });
 });

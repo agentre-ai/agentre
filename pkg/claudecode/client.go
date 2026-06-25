@@ -141,7 +141,7 @@ func (c *Client) Model() string { return c.model }
 func (c *Client) McpConfig() string { return c.mcpConfig }
 
 // AllowedTools 返回 Client 当前累加的 --allowedTools 白名单（WithAllowedTools 没
-// 设置时为空切片）。供单测断言注入的 tool 名（如 mcp__group__group_send）进了 Client。
+// 设置时为空切片）。供单测断言注入的 tool 名（如 mcp__orchestrate__dispatch）进了 Client。
 func (c *Client) AllowedTools() []string { return c.allowedTools }
 
 // Env 返回 Client 当前持有的增量 env map（WithEnv 没设置时为 nil）。

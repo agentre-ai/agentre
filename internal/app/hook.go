@@ -33,3 +33,8 @@ func (a *App) ToggleHook(id int64, enabled bool) (*hook_svc.HookItem, error) {
 func (a *App) RunHook(req *hook_svc.RunHookRequest) (*hook_svc.RunHookResult, error) {
 	return hook_svc.Hook().RunHook(a.ctx, req)
 }
+
+// ProbeInterpreters 返回本平台可用的解释器及其安装情况(供 Hook 表单下拉)。
+func (a *App) ProbeInterpreters() ([]hook_svc.InterpreterOption, error) {
+	return hook_svc.Hook().ProbeInterpreters(a.ctx)
+}

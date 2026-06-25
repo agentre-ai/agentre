@@ -20,8 +20,8 @@ export function reloadSidebarSources(): void {
 }
 
 // isSessionKnownToSidebar 判断某 session 是否已经被左栏收录。chat-agents-store 是
-// 「agent → 其会话」的唯一索引 (sessionIds 是去重后的全量 session id), 群聊成员的
-// backing session 也归在对应成员 agent 名下, 所以这里只需问 chat-agents-store。
+// 「agent → 其会话」的唯一索引 (sessionIds 是去重后的全量 session id), 每个 agent 的
+// 所有会话都归在其名下, 所以这里只需问 chat-agents-store。
 export function isSessionKnownToSidebar(sessionId: number): boolean {
   if (sessionId <= 0) return false;
   for (const a of useChatAgentsStore.getState().agents) {
@@ -35,9 +35,8 @@ export function isSessionKnownToSidebar(sessionId: number): boolean {
 // 无谓 RPC。
 //
 // 为什么需要它: 普通单聊靠 ChatPanel.onSidebarShouldReload 在 turn 起手/落定时
-// reload 左栏。但有些会话是在 ChatPanel 之外被创建的 —— 当前是群聊成员被 @ 那轮
-// 才惰性新建的 backing session (group-events-host 收到 member_run_state running
-// 时调用), 后续也可能是「远程调用创建会话」等路径。这些都绕开了 onSidebarShouldReload,
+// reload 左栏。但有些会话是在 ChatPanel 之外被创建的 —— 如编排子轮惰性新建的
+// backing session, 后续也可能是「远程调用创建会话」等路径。这些都绕开了 onSidebarShouldReload,
 // 左栏拿不到新行 (行不在 → 列表里没有, running 状态也无处挂)。统一走这一个入口即可。
 export function ensureSessionInSidebar(sessionId: number): void {
   if (sessionId <= 0) return;

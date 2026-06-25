@@ -46,7 +46,7 @@ func TestClaudeCodeCapabilities(t *testing.T) {
 		// 图片,Run 经 handle.Stream 透传。
 		So(caps.Has(capability.CapImageInput), ShouldBeTrue)
 		// CapMCPTools=true:claudecode runtime 接受 RunRequest.MCPServers,可带注入
-		// 的 MCP tool 服务器启动;群聊是首个消费者,入群资格门控于此 cap。
+		// 的 MCP tool 服务器启动;编排是首个消费者,入群资格门控于此 cap。
 		So(caps.Has(capability.CapMCPTools), ShouldBeTrue)
 		// CapAutonomousTurn=true:CLI 后台任务完成自主续轮;必须实现 AutonomousTurnSource。
 		So(caps.Has(capability.CapAutonomousTurn), ShouldBeTrue)
@@ -112,7 +112,7 @@ func TestRun_ForwardsUserBlockImages(t *testing.T) {
 // TestRun_BlockedSpawnDoesNotWedgeOtherSessions 回归「单个 session 卡死 → 整个
 // claudecode runtime 宕掉」。
 //
-// 现场(2026-06-05 sess-453/458):群聊成员轮带 --mcp-config 启动 claude CLI,CLI
+// 现场(2026-06-05 sess-453/458):编排子轮带 --mcp-config 启动 claude CLI,CLI
 // 卡在 MCP 初始化;acquireSession 旧实现持**单把全局 r.mu** 串行化所有 session 的
 // get-or-spawn,并在锁内做阻塞子进程操作(spawn / 同步 SetPermissionMode)。卡住的
 // 那一轮一直占着全局锁 → 之后**每一个**单聊 turn 都堵在 acquireSession 的锁上,既不
@@ -158,7 +158,7 @@ func TestRun_BlockedSpawnDoesNotWedgeOtherSessions(t *testing.T) {
 			return ch
 		}
 
-		// session 1:卡在 factory(模拟群聊成员轮 CLI 挂起);Run 同步段会一直阻塞。
+		// session 1:卡在 factory(模拟编排子轮 CLI 挂起);Run 同步段会一直阻塞。
 		done1 := run(1, cwd1, "hang")
 		<-entered // 确保 session 1 已进入 factory(bug 下此刻全局锁被它独占)
 

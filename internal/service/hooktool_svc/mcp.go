@@ -156,7 +156,7 @@ func (s *hooktoolSvc) handleList(w http.ResponseWriter, r *http.Request, rpcID j
 	rows := make([]hookListRow, 0, len(resp.Hooks))
 	for _, h := range resp.Hooks {
 		rows = append(rows, hookListRow{
-			ID: h.ID, Name: h.Name, Interpreter: h.Interpreter,
+			ID: h.ID, Name: h.Name, Interpreter: h.Interpreter, InterpreterPath: h.InterpreterPath,
 			ScheduleExpr: h.ScheduleExpr, Enabled: h.Enabled,
 			LastStatus: h.LastStatus, LastRunAt: h.LastRunAt,
 			NextRunAt: h.NextRunAt, TotalCount: h.TotalCount,
@@ -196,15 +196,16 @@ func (s *hooktoolSvc) handleGet(w http.ResponseWriter, r *http.Request, rpcID js
 
 // hookListRow 是 hook_list 的精简行(剔除 command 正文与 env,省 token)。
 type hookListRow struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	Interpreter  string `json:"interpreter"`
-	ScheduleExpr string `json:"scheduleExpr"`
-	Enabled      bool   `json:"enabled"`
-	LastStatus   string `json:"lastStatus"`
-	LastRunAt    int64  `json:"lastRunAt"`
-	NextRunAt    int64  `json:"nextRunAt"`
-	TotalCount   int64  `json:"totalCount"`
+	ID              int64  `json:"id"`
+	Name            string `json:"name"`
+	Interpreter     string `json:"interpreter"`
+	InterpreterPath string `json:"interpreterPath"`
+	ScheduleExpr    string `json:"scheduleExpr"`
+	Enabled         bool   `json:"enabled"`
+	LastStatus      string `json:"lastStatus"`
+	LastRunAt       int64  `json:"lastRunAt"`
+	NextRunAt       int64  `json:"nextRunAt"`
+	TotalCount      int64  `json:"totalCount"`
 }
 
 // hookToolSchemas 返回 hook server 暴露的 6 个 MCP 工具 schema。4 个写工具(create/update/delete/run)
@@ -254,13 +255,14 @@ func hookToolSchemas() []any {
 				"type":     "object",
 				"required": []string{"name", "interpreter", "command", "scheduleExpr"},
 				"properties": map[string]any{
-					"name":         map[string]any{"type": "string", "description": "Hook 名称(唯一)"},
-					"interpreter":  map[string]any{"type": "string", "description": interpDesc},
-					"command":      map[string]any{"type": "string", "description": "脚本正文(按 interpreter 解释)"},
-					"scheduleExpr": map[string]any{"type": "string", "description": "cron 表达式,如 */5 * * * *"},
-					"timezone":     map[string]any{"type": "string", "description": "cron 时区,默认 Asia/Shanghai"},
-					"enabled":      map[string]any{"type": "boolean", "description": "是否启用,省略=启用"},
-					"env":          envSchema(envItems),
+					"name":            map[string]any{"type": "string", "description": "Hook 名称(唯一)"},
+					"interpreter":     map[string]any{"type": "string", "description": interpDesc},
+					"interpreterPath": map[string]any{"type": "string", "description": "可选:解释器二进制的自定义路径;留空则按 interpreter 自动解析(LookPath)。"},
+					"command":         map[string]any{"type": "string", "description": "脚本正文(按 interpreter 解释)"},
+					"scheduleExpr":    map[string]any{"type": "string", "description": "cron 表达式,如 */5 * * * *"},
+					"timezone":        map[string]any{"type": "string", "description": "cron 时区,默认 Asia/Shanghai"},
+					"enabled":         map[string]any{"type": "boolean", "description": "是否启用,省略=启用"},
+					"env":             envSchema(envItems),
 				},
 			},
 		},
@@ -271,14 +273,15 @@ func hookToolSchemas() []any {
 				"type":     "object",
 				"required": []string{"id"},
 				"properties": map[string]any{
-					"id":           map[string]any{"type": "integer", "description": "hook id(必填)"},
-					"name":         map[string]any{"type": "string"},
-					"interpreter":  map[string]any{"type": "string", "description": interpDesc},
-					"command":      map[string]any{"type": "string"},
-					"scheduleExpr": map[string]any{"type": "string"},
-					"timezone":     map[string]any{"type": "string"},
-					"enabled":      map[string]any{"type": "boolean"},
-					"env":          envSchema("传入即整体替换 env;不传则不动"),
+					"id":              map[string]any{"type": "integer", "description": "hook id(必填)"},
+					"name":            map[string]any{"type": "string"},
+					"interpreter":     map[string]any{"type": "string", "description": interpDesc},
+					"interpreterPath": map[string]any{"type": "string", "description": "可选:解释器二进制的自定义路径;留空则按 interpreter 自动解析(LookPath)。"},
+					"command":         map[string]any{"type": "string"},
+					"scheduleExpr":    map[string]any{"type": "string"},
+					"timezone":        map[string]any{"type": "string"},
+					"enabled":         map[string]any{"type": "boolean"},
+					"env":             envSchema("传入即整体替换 env;不传则不动"),
 				},
 			},
 		},

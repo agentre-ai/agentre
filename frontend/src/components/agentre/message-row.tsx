@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { AgentAvatar } from "./primitives";
 import type { AgentColor } from "./types";
 
-// MESSAGE_AVATAR_CLASS：单聊/群聊统一的彩色头像尺寸(以单聊为准)。抽成常量，
+// MESSAGE_AVATAR_CLASS：统一的彩色头像尺寸(以单聊为准)。抽成常量，
 // 杜绝两处各写 size-6 / size-7 的漂移。size="md" 的 size-8 被 twMerge 去重成 size-7。
 export const MESSAGE_AVATAR_CLASS = "size-7 rounded-lg text-[11px]";
 
@@ -21,7 +21,7 @@ type MessageRowProps = Omit<React.ComponentProps<"article">, "children"> & {
   avatarInitials?: string;
   /** 名字行；传 null 时不显名(单聊 user 行)。 */
   name?: React.ReactNode;
-  /** 名字行右侧附加内容：时间 / 群聊「仅 X 收到」灰字。 */
+  /** 名字行右侧附加内容：时间 / 附加灰字说明。 */
   headerExtra?: React.ReactNode;
   /** 动作行 / token 行的挂载点(复制按钮)。 */
   footer?: React.ReactNode;
@@ -29,7 +29,7 @@ type MessageRowProps = Omit<React.ComponentProps<"article">, "children"> & {
 };
 
 // MessageRow：单条消息的布局骨架(头像列 + 内容列)。纯展示，不取数据、不决定业务。
-// 单聊 ChatMessage 与群聊 transcript 共用，保证头像尺寸/布局一致，并给群聊提供 footer 槽。
+// 单聊 ChatMessage 与编排 transcript 共用，保证头像尺寸/布局一致，并提供 footer 槽。
 function MessageRow({
   avatar,
   avatarName = "",

@@ -3,6 +3,7 @@ package hook_svc
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ type HookSvc interface {
 	ToggleHook(ctx context.Context, id int64, enabled bool) (*HookItem, error)
 	RunHook(ctx context.Context, req *RunHookRequest) (*RunHookResult, error)
 	StartScheduler(ctx context.Context) context.CancelFunc
+	ProbeInterpreters(ctx context.Context) ([]InterpreterOption, error)
 }
 
 type hookSvc struct {
@@ -92,19 +94,20 @@ func (s *hookSvc) CreateHook(ctx context.Context, req *CreateHookRequest) (*Hook
 	}
 	now := s.now()
 	h := &hook_entity.Hook{
-		Name:         strings.TrimSpace(req.Name),
-		Interpreter:  strings.TrimSpace(req.Interpreter),
-		Command:      req.Command,
-		TriggerType:  hook_entity.TriggerSchedule,
-		ScheduleExpr: strings.TrimSpace(req.ScheduleExpr),
-		Timezone:     orDefault(req.Timezone, defaultTimezone),
-		EnvJSON:      marshalEnv(req.Env),
-		StateJSON:    "{}",
-		Enabled:      boolInt(req.Enabled),
-		NextRunAt:    now, // 首个 tick 即到期
-		Status:       consts.ACTIVE,
-		Createtime:   now,
-		Updatetime:   now,
+		Name:            strings.TrimSpace(req.Name),
+		Interpreter:     strings.TrimSpace(req.Interpreter),
+		InterpreterPath: strings.TrimSpace(req.InterpreterPath),
+		Command:         req.Command,
+		TriggerType:     hook_entity.TriggerSchedule,
+		ScheduleExpr:    strings.TrimSpace(req.ScheduleExpr),
+		Timezone:        orDefault(req.Timezone, defaultTimezone),
+		EnvJSON:         marshalEnv(req.Env),
+		StateJSON:       "{}",
+		Enabled:         boolInt(req.Enabled),
+		NextRunAt:       now, // 首个 tick 即到期
+		Status:          consts.ACTIVE,
+		Createtime:      now,
+		Updatetime:      now,
 	}
 	if err := h.Check(ctx); err != nil {
 		return nil, err
@@ -135,6 +138,7 @@ func (s *hookSvc) UpdateHook(ctx context.Context, req *UpdateHookRequest) (*Hook
 	}
 	h.Name = newName
 	h.Interpreter = strings.TrimSpace(req.Interpreter)
+	h.InterpreterPath = strings.TrimSpace(req.InterpreterPath)
 	h.Command = req.Command
 	h.ScheduleExpr = strings.TrimSpace(req.ScheduleExpr)
 	h.Timezone = orDefault(req.Timezone, defaultTimezone)
@@ -197,7 +201,7 @@ func toHookItem(h *hook_entity.Hook) *HookItem {
 		}
 	}
 	return &HookItem{
-		ID: h.ID, Name: h.Name, Interpreter: h.Interpreter, Command: h.Command,
+		ID: h.ID, Name: h.Name, Interpreter: h.Interpreter, InterpreterPath: h.InterpreterPath, Command: h.Command,
 		ScheduleExpr: h.ScheduleExpr, Timezone: h.Timezone,
 		Env: env, Enabled: h.IsEnabled(), NextRunAt: h.NextRunAt, LastRunAt: h.LastRunAt,
 		LastStatus: h.LastStatus, LastError: h.LastError, LastDurationMs: h.LastDurationMs,
@@ -210,9 +214,17 @@ func toEventItem(e *hook_entity.HookEvent) *HookEventItem {
 		return nil
 	}
 	return &HookEventItem{
-		ID: e.ID, HookID: e.HookID, Title: e.Title, DedupeKey: e.DedupeKey,
+		ID: e.ID, HookID: e.HookID, Kind: orOutputKind(e.Kind), Title: e.Title, DedupeKey: e.DedupeKey,
 		PayloadJSON: e.PayloadJSON, ReceivedAt: e.ReceivedAt, Createtime: e.Createtime,
 	}
+}
+
+// orOutputKind 把空 kind 兜底成 output(历史行 / 默认值缺失),前端无需处理空串。
+func orOutputKind(kind string) string {
+	if strings.TrimSpace(kind) == "" {
+		return hook_entity.HookEventKindOutput
+	}
+	return kind
 }
 
 func parseEnv(raw string) []EnvVar {
@@ -265,4 +277,13 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+func (s *hookSvc) ProbeInterpreters(_ context.Context) ([]InterpreterOption, error) {
+	avail := hookexec.Probe(runtime.GOOS)
+	out := make([]InterpreterOption, 0, len(avail))
+	for _, a := range avail {
+		out = append(out, InterpreterOption{Key: a.Key, Path: a.Path, Installed: a.Installed})
+	}
+	return out, nil
 }

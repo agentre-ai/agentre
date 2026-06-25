@@ -8,27 +8,29 @@ type EnvVar struct {
 }
 
 type HookItem struct {
-	ID             int64    `json:"id"`
-	Name           string   `json:"name"`
-	Interpreter    string   `json:"interpreter"`
-	Command        string   `json:"command"`
-	ScheduleExpr   string   `json:"scheduleExpr"`
-	Timezone       string   `json:"timezone"`
-	Env            []EnvVar `json:"env"`
-	Enabled        bool     `json:"enabled"`
-	NextRunAt      int64    `json:"nextRunAt"`
-	LastRunAt      int64    `json:"lastRunAt"`
-	LastStatus     string   `json:"lastStatus"`
-	LastError      string   `json:"lastError"`
-	LastDurationMs int64    `json:"lastDurationMs"`
-	TotalCount     int64    `json:"totalCount"`
-	Createtime     int64    `json:"createtime"`
-	Updatetime     int64    `json:"updatetime"`
+	ID              int64    `json:"id"`
+	Name            string   `json:"name"`
+	Interpreter     string   `json:"interpreter"`
+	InterpreterPath string   `json:"interpreterPath"`
+	Command         string   `json:"command"`
+	ScheduleExpr    string   `json:"scheduleExpr"`
+	Timezone        string   `json:"timezone"`
+	Env             []EnvVar `json:"env"`
+	Enabled         bool     `json:"enabled"`
+	NextRunAt       int64    `json:"nextRunAt"`
+	LastRunAt       int64    `json:"lastRunAt"`
+	LastStatus      string   `json:"lastStatus"`
+	LastError       string   `json:"lastError"`
+	LastDurationMs  int64    `json:"lastDurationMs"`
+	TotalCount      int64    `json:"totalCount"`
+	Createtime      int64    `json:"createtime"`
+	Updatetime      int64    `json:"updatetime"`
 }
 
 type HookEventItem struct {
 	ID          int64  `json:"id"`
 	HookID      int64  `json:"hookId"`
+	Kind        string `json:"kind"` // "output"（脚本产出）| "failure"（运行失败留痕）
 	Title       string `json:"title"`
 	DedupeKey   string `json:"dedupeKey"`
 	PayloadJSON string `json:"payloadJson"`
@@ -47,13 +49,14 @@ type LoadHooksResponse struct {
 }
 
 type CreateHookRequest struct {
-	Name         string   `json:"name" binding:"required"`
-	Interpreter  string   `json:"interpreter" binding:"required"`
-	Command      string   `json:"command"`
-	ScheduleExpr string   `json:"scheduleExpr"`
-	Timezone     string   `json:"timezone"`
-	Env          []EnvVar `json:"env"`
-	Enabled      bool     `json:"enabled"`
+	Name            string   `json:"name" binding:"required"`
+	Interpreter     string   `json:"interpreter" binding:"required"`
+	InterpreterPath string   `json:"interpreterPath"`
+	Command         string   `json:"command"`
+	ScheduleExpr    string   `json:"scheduleExpr"`
+	Timezone        string   `json:"timezone"`
+	Env             []EnvVar `json:"env"`
+	Enabled         bool     `json:"enabled"`
 }
 
 type UpdateHookRequest struct {
@@ -77,4 +80,11 @@ type RunHookResult struct {
 	NewCount   int              `json:"newCount"` // 去重后将/已入库数
 	DupCount   int              `json:"dupCount"`
 	Persisted  bool             `json:"persisted"`
+}
+
+// InterpreterOption 是某解释器在本机的可用性,供前端下拉过滤/置灰/占位。
+type InterpreterOption struct {
+	Key       string `json:"key"`
+	Path      string `json:"path"`
+	Installed bool   `json:"installed"`
 }

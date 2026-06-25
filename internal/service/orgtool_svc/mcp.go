@@ -20,7 +20,7 @@ type orgRef struct{ agentID, sessionID int64 }
 
 // orgMCP 是组织架构工具的 MCP-over-HTTP server(挂在 gateway /mcp/org/)。
 //
-// 身份: 与 group_send 同款无状态签名 token —— `b64url(agent:session).b64url(HMAC(secret, agent:session))`,
+// 身份: 无状态签名 token —— `b64url(agent:session).b64url(HMAC(secret, agent:session))`,
 // 投递时塞进 mcp-config 的 Authorization header。token 在 CLI spawn 时随 --mcp-config 注入、
 // 复用轮不重发,因此必须与子进程同寿命:确定性(同 (agent, session) 每次同值)。lookup 只验签
 // (无状态),工具开关由 tools/call 时实时查 DB(agentLookup.Find + ToolEnabled)判定 —— 用户
