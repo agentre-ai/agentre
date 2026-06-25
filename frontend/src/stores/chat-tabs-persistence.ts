@@ -48,7 +48,7 @@ function getStorage(): Storage | null {
 
 function persistable(t: ChatTab): PersistMeta | null {
   if (t.meta.kind === "session" && !t.isPreview) return t.meta;
-  if (t.meta.kind === "terminal") return t.meta;
+  if (t.meta.kind === "terminal") return t.meta.attach ? null : t.meta;
   return null;
 }
 

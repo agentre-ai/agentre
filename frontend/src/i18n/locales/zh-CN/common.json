@@ -2321,7 +2321,6 @@
       "stopped": "已停止"
     },
     "exitCode": "退出码 {{code}}",
-    "elapsed": "{{seconds}}s",
     "stop": "停止",
     "openInTerminal": "在终端中打开"
   }

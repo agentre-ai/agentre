@@ -2321,7 +2321,6 @@
       "stopped": "Stopped"
     },
     "exitCode": "Exit {{code}}",
-    "elapsed": "{{seconds}}s",
     "stop": "Stop",
     "openInTerminal": "Open in terminal"
   }

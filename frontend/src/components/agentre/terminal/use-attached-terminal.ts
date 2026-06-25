@@ -6,6 +6,10 @@ import { useLocalCommandsStore } from "@/stores/local-commands-store";
 // attach 模式数据源:不开 / 不关 PTY,不订阅 Wails terminal 事件(单一订阅者是
 // F6 的 store)。从 useLocalCommandsStore 里取该 terminalId 的 output 做 seed,
 // 订阅 store 增量写 xterm;stdin 走 App.TerminalWrite,resize 走 App.TerminalResize。
+//
+// 注意:增量输出依赖宿主会话 ChatPanel 里的 F6 store 订阅存活(它是唯一的
+// Wails `terminal:<id>:data` 事件订阅者);若宿主 Tab 被关闭,store 停止更新,
+// attach tab 的显示会停滞,但后端 PTY 仍在运行。这是单订阅者设计的固有行为。
 export function useAttachedTerminal({
   terminalID,
   xtermRef,
