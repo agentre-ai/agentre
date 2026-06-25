@@ -45,19 +45,23 @@ describe("useWorkflows", () => {
     const { result } = renderHook(() => useWorkflows());
     await waitFor(() => expect(result.current.workflows).toHaveLength(1));
     await act(async () => {
-      await result.current.create("新流程", "# 新");
+      await result.current.create("新流程", "# 新", [], []);
     });
     expect(workflowCreate).toHaveBeenCalledWith({
       name: "新流程",
       content: "# 新",
+      tags: [],
+      outline: [],
     });
     await act(async () => {
-      await result.current.update(1, "改名", "# 改");
+      await result.current.update(1, "改名", "# 改", [], []);
     });
     expect(workflowUpdate).toHaveBeenCalledWith({
       id: 1,
       name: "改名",
       content: "# 改",
+      tags: [],
+      outline: [],
     });
     await act(async () => {
       await result.current.remove(1);
