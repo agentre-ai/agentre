@@ -425,7 +425,7 @@ func sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLite {
 }
 
 // activeStreamName 给 LoadSession 用:turn 进行中时,让中途打开该会话的前端能重挂到
-// per-turn 实时流。per-turn 流名只在用户主动 Send 时由响应给出;群聊 / 自主轮等"非前端
+// per-turn 实时流。per-turn 流名只在用户主动 Send 时由响应给出;编排子轮 / 自主轮等"非前端
 // 发起"的 turn 前端拿不到这个名字 —— 这里按在跑 turn 的(末条)assistant 消息把它重建出来,
 // 前端据此 openStream 续看。无活跃 turn / 还没建出 assistant 消息时返回空串。
 func activeStreamName(activeTurn bool, sessionID int64, msgs []*chat_entity.Message) string {
@@ -477,7 +477,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 	// idle),但若 serve 时已有活跃 turn 却吐 非 running/waiting,就是后端侧能直接抓到
 	// 的不一致。配合前端 LogClient 上报的 apply 时刻能把竞态时间线对上。
 	_, activeTurn := s.activeCancels.Load(sess.ID)
-	// ActiveStream 让中途打开本会话的前端重挂到 per-turn 实时流(群聊成员轮 / 自主轮等
+	// ActiveStream 让中途打开本会话的前端重挂到 per-turn 实时流(编排子轮 / 自主轮等
 	// 非前端发起的 turn 没有 Send 响应入口)。无活跃 turn 时为空,前端不重挂。
 	resp.Session.ActiveStream = activeStreamName(activeTurn, sess.ID, msgs)
 	if activeTurn &&

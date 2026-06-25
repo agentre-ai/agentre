@@ -297,7 +297,7 @@ type RunRequest struct {
 	Compact           bool                  // Codex 原生 compact turn；不创建普通 user prompt
 
 	// MCPServers 非空 = 给本轮 CLI 注入额外 MCP tool server。仅声明 CapMCPTools
-	// 的 runtime(claudecode/codex)消费; 其它 runtime 忽略。群聊经此注入 group_send tool。
+	// 的 runtime(claudecode/codex)消费; 其它 runtime 忽略。编排经此注入 dispatch 等工具。
 	MCPServers []MCPServerSpec
 
 	// EnabledPlugins 非空 = 给本轮 CLI 注入 plugin/skill-pack 覆盖(仅 agent 的显式

@@ -266,7 +266,7 @@ func ccBuildClientOpts(spec ccLaunchSpec, binary string) []claudecode.Option {
 	if eff := spec.Req.Backend.ReasoningEffort; eff != "" {
 		opts = append(opts, claudecode.WithEffort(eff))
 	}
-	// 群聊 / 其它编排注入的 MCP tool server:翻成 --mcp-config + 把对应 tool 放进
+	// 编排注入的 MCP tool server:翻成 --mcp-config + 把对应 tool 放进
 	// --allowedTools。仅 claudecode runtime(声明 CapMCPTools)消费,其它 runtime 忽略
 	// RunRequest.MCPServers。
 	if len(spec.Req.MCPServers) > 0 {
@@ -278,7 +278,7 @@ func ccBuildClientOpts(spec ccLaunchSpec, binary string) []claudecode.Option {
 }
 
 // buildMcpConfigJSON 把 MCPServerSpec 列表转成 claude CLI 的 --mcp-config JSON,
-// 并返回需要加进 --allowedTools 的 tool 名(约定 mcp__<Name>__group_send)。
+// 并返回需要加进 --allowedTools 的 tool 名(约定 mcp__<Name>__<tool>(如 mcp__orchestrate__dispatch))。
 // JSON 形态对齐 transport spike:
 // {"mcpServers":{"<name>":{"type":"http","url":"...","headers":{...}}}}
 func buildMcpConfigJSON(specs []agentruntime.MCPServerSpec) (string, []string) {

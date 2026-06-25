@@ -34,7 +34,7 @@ func TestWithModel_PropagatesToArgs(t *testing.T) {
 
 // TestWithAllowedTools_AppendsAndSkipsEmpty 锁住 WithAllowedTools 的承重契约：
 // 多次调用累加（而非覆盖），且空串被跳过。这是它相对普通 setter 存在的全部理由
-// —— 群聊注入工具时要叠加在已有 allowedTools 之上。生产当前只调一次，契约靠本测试守住，
+// —— 编排注入工具时要叠加在已有 allowedTools 之上。生产当前只调一次，契约靠本测试守住，
 // 防止未来重构悄悄退化成覆盖语义。
 func TestWithAllowedTools_AppendsAndSkipsEmpty(t *testing.T) {
 	c := New(WithAllowedTools("Read"), WithAllowedTools("Bash", ""))

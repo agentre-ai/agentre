@@ -401,7 +401,7 @@ type ChatSessionDetail struct {
 	AgentStatus     string `json:"agentStatus"`
 	// ActiveStream 仅在 LoadSession 时填:该会话有正在跑的 turn 时,给出其 per-turn
 	// wails 事件名("chat:event:<sessionID>:<assistantMessageID>"),让中途打开本会话的
-	// 前端 openStream 重挂到实时流。群聊成员轮 / 自主轮等"非前端发起"的 turn 没有 Send
+	// 前端 openStream 重挂到实时流。编排子轮 / 自主轮等"非前端发起"的 turn 没有 Send
 	// 响应入口,只能靠这个字段重挂。无活跃 turn 时为空(omitempty),前端不重挂。
 	ActiveStream string `json:"activeStream,omitempty"`
 	// NeedsAttention 是由 AgentStatus=="waiting" 派生的兼容字段，不单独持久化。

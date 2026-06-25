@@ -1469,7 +1469,7 @@ describe("ProjectsPage focus query param", () => {
     localStorage.clear();
   });
 
-  // 群聊设置页点「项目」会 navigate(`/projects?focus=<id>`);projects 页应据此打开该项目的
+  // 会话设置页点「项目」会 navigate(`/projects?focus=<id>`);projects 页应据此打开该项目的
   // 设置抽屉(selection 是会话级的,没有「只选中项目」语义,设置抽屉是唯一纯项目 id 入口)。
   it("Given /projects?focus=<id> for an existing project, Then it opens that project's settings drawer", async () => {
     renderProjectsPage("/projects?focus=1");
