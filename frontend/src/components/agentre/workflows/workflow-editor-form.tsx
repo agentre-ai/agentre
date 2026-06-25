@@ -106,7 +106,10 @@ export function WorkflowEditorForm({
                 aria-label={t("workflows.editor.removeItem")}
                 onClick={() => onTagsChange(tags.filter((_, k) => k !== i))}
               >
-                <X className="size-3 text-muted-foreground" aria-hidden="true" />
+                <X
+                  className="size-3 text-muted-foreground"
+                  aria-hidden="true"
+                />
               </button>
             </span>
           ))}
@@ -180,7 +183,9 @@ export function WorkflowEditorForm({
                 size="icon-xs"
                 data-testid={`workflow-outline-remove-${i}`}
                 aria-label={t("workflows.editor.removeItem")}
-                onClick={() => onOutlineChange(outline.filter((_, k) => k !== i))}
+                onClick={() =>
+                  onOutlineChange(outline.filter((_, k) => k !== i))
+                }
               >
                 <X className="size-3" aria-hidden="true" />
               </Button>

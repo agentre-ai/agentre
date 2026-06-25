@@ -58,7 +58,12 @@ export function useWorkflows() {
   }, [reload]);
 
   const create = useCallback(
-    async (name: string, content: string, tags: string[], outline: string[]) => {
+    async (
+      name: string,
+      content: string,
+      tags: string[],
+      outline: string[],
+    ) => {
       await WorkflowCreate({ name, content, tags, outline });
       await reload();
     },

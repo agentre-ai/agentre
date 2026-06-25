@@ -117,7 +117,13 @@ function WorkflowManagerBody({
     setSubmitting(true);
     try {
       if (editingId > 0) {
-        await update(editingId, draftName.trim(), draftContent, draftTags, draftOutline);
+        await update(
+          editingId,
+          draftName.trim(),
+          draftContent,
+          draftTags,
+          draftOutline,
+        );
         setSelectedId(editingId);
       } else {
         await create(draftName.trim(), draftContent, draftTags, draftOutline);

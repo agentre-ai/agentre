@@ -200,7 +200,9 @@ describe("WorkflowManagerDialog · tags/outline", () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<WorkflowManagerDialog />);
     useWorkflowManagerStore.getState().openBrowse();
-    await waitFor(() => expect(screen.getByText("标准功能开发流")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText("标准功能开发流")).toBeTruthy(),
+    );
     await user.click(screen.getByTestId("workflow-row-3"));
     expect(screen.getByTestId("workflow-blueprint-band")).toBeInTheDocument();
     expect(screen.getByText("需求拆解")).toBeInTheDocument();
@@ -211,7 +213,9 @@ describe("WorkflowManagerDialog · tags/outline", () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<WorkflowManagerDialog />);
     useWorkflowManagerStore.getState().openBrowse();
-    await waitFor(() => expect(screen.getByText("标准功能开发流")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText("标准功能开发流")).toBeTruthy(),
+    );
     await user.click(screen.getByTestId("workflow-row-3"));
     await user.click(screen.getByTestId("workflow-edit-button"));
     // seed tags/outline already loaded from the item; add one more step
