@@ -37,3 +37,35 @@ func TestResolve_PwshArgs(t *testing.T) {
 		t.Fatalf("pwsh should pass -File before script path: %+v", in.Args)
 	}
 }
+
+func TestProbe_DarwinHidesWindowsOnly(t *testing.T) {
+	got := Probe("darwin")
+	keys := map[string]Available{}
+	for _, a := range got {
+		keys[a.Key] = a
+	}
+	for _, win := range []string{"cmd", "powershell"} {
+		if _, ok := keys[win]; ok {
+			t.Errorf("Probe(darwin) should hide windows-only %q", win)
+		}
+	}
+	if _, ok := keys["sh"]; !ok {
+		t.Fatal("Probe(darwin) should list sh")
+	}
+	if !keys["sh"].Installed || keys["sh"].Path == "" {
+		t.Errorf("sh should resolve on unix CI, got %+v", keys["sh"])
+	}
+}
+
+func TestProbe_WindowsListsCmd(t *testing.T) {
+	got := Probe("windows")
+	var hasCmd bool
+	for _, a := range got {
+		if a.Key == "cmd" {
+			hasCmd = true
+		}
+	}
+	if !hasCmd {
+		t.Error("Probe(windows) should list cmd")
+	}
+}

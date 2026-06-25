@@ -50,6 +50,7 @@ type interpDef struct {
 	candidates []string // 按序探测的二进制名
 	args       []string
 	ext        string
+	goos       []string // 空=全平台;仅 cmd/powershell 标 {"windows"}
 }
 
 var registry = map[string]interpDef{
@@ -58,8 +59,50 @@ var registry = map[string]interpDef{
 	"node":       {candidates: []string{"node"}, ext: ".mjs"},
 	"python":     {candidates: []string{"python3", "python"}, ext: ".py"},
 	"pwsh":       {candidates: []string{"pwsh"}, args: []string{"-NoProfile", "-File"}, ext: ".ps1"},
-	"powershell": {candidates: []string{"powershell"}, args: []string{"-NoProfile", "-File"}, ext: ".ps1"},
-	"cmd":        {candidates: []string{"cmd"}, args: []string{"/c"}, ext: ".bat"},
+	"powershell": {candidates: []string{"powershell"}, args: []string{"-NoProfile", "-File"}, ext: ".ps1", goos: []string{"windows"}},
+	"cmd":        {candidates: []string{"cmd"}, args: []string{"/c"}, ext: ".bat", goos: []string{"windows"}},
+}
+
+// interpOrder 决定 Probe 输出顺序(map 无序)。
+var interpOrder = []string{"bash", "sh", "node", "python", "pwsh", "powershell", "cmd"}
+
+// Available 是一个解释器在当前机器上的可用性。
+type Available struct {
+	Key       string `json:"key"`
+	Path      string `json:"path"`
+	Installed bool   `json:"installed"`
+}
+
+func appliesTo(def interpDef, goos string) bool {
+	if len(def.goos) == 0 {
+		return true
+	}
+	for _, g := range def.goos {
+		if g == goos {
+			return true
+		}
+	}
+	return false
+}
+
+// Probe 列出在 goos 平台下适用的解释器及其安装情况。
+func Probe(goos string) []Available {
+	out := make([]Available, 0, len(interpOrder))
+	for _, key := range interpOrder {
+		def := registry[key]
+		if !appliesTo(def, goos) {
+			continue
+		}
+		a := Available{Key: key}
+		for _, name := range def.candidates {
+			if bin, err := exec.LookPath(name); err == nil {
+				a.Path, a.Installed = bin, true
+				break
+			}
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // Resolve 校验解释器并解析其二进制路径。
