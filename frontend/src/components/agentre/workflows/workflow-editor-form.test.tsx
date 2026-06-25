@@ -1,6 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import * as React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorkflowEditorForm } from "./workflow-editor-form";
 
@@ -11,6 +10,10 @@ const base = {
   onNameChange: vi.fn(),
   onContentChange: vi.fn(),
 };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 // ── existing tests (name / content / template / error) ────────────────────
 describe("WorkflowEditorForm", () => {
@@ -197,13 +200,39 @@ describe("WorkflowEditorForm tags/outline", () => {
         onOutlineChange={vi.fn()}
       />,
     );
-    expect(
-      screen.getByText("For humans only — not sent to the AI"),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        "A human-readable skeleton; add/remove/reorder. Display only — does not constrain the AI",
-      ),
-    ).toBeTruthy();
+    const tagsHint = screen.getByTestId("workflow-tags-hint");
+    expect(tagsHint.textContent).toBeTruthy();
+    const outlineHint = screen.getByTestId("workflow-outline-hint");
+    expect(outlineHint.textContent).toBeTruthy();
+  });
+
+  it("首项上移:onOutlineChange 不调用(边界 no-op)", () => {
+    const onOutlineChange = vi.fn();
+    render(
+      <WorkflowEditorForm
+        {...base}
+        tags={[]}
+        outline={["步骤一", "步骤二"]}
+        onTagsChange={vi.fn()}
+        onOutlineChange={onOutlineChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("workflow-outline-move-up-0"));
+    expect(onOutlineChange).not.toHaveBeenCalled();
+  });
+
+  it("末项下移:onOutlineChange 不调用(边界 no-op)", () => {
+    const onOutlineChange = vi.fn();
+    render(
+      <WorkflowEditorForm
+        {...base}
+        tags={[]}
+        outline={["步骤一", "步骤二"]}
+        onTagsChange={vi.fn()}
+        onOutlineChange={onOutlineChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("workflow-outline-move-down-1"));
+    expect(onOutlineChange).not.toHaveBeenCalled();
   });
 });

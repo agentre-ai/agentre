@@ -125,7 +125,10 @@ export function WorkflowEditorForm({
             className="h-7 w-40 text-2xs"
           />
         </div>
-        <span className="text-2xs text-muted-foreground">
+        <span
+          data-testid="workflow-tags-hint"
+          className="text-2xs text-muted-foreground"
+        >
           {t("workflows.editor.tagsHint")}
         </span>
       </div>
@@ -198,7 +201,10 @@ export function WorkflowEditorForm({
             className="h-7 text-2xs"
           />
         </div>
-        <span className="text-2xs text-muted-foreground">
+        <span
+          data-testid="workflow-outline-hint"
+          className="text-2xs text-muted-foreground"
+        >
           {t("workflows.editor.outlineHint")}
         </span>
       </div>
