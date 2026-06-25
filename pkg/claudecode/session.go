@@ -317,6 +317,21 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 		return nil
 	}
 	if isNonTurnFrame(f) {
+		// status:"compacting" 例外:它是手动 /compact 轮的起步首帧 —— 既是子进程「正在压缩、
+		// 还活着」的存活证据,又是该轮的进度信号。轮起步(active==nil)有 user Turn 排队时认领
+		// 它并把进度喂进去:让 runtime 起步看门狗解除(否则大上下文压缩 >120s 会被误判卡死硬杀
+		// 成 errStartupTimeout),前端也能显示「压缩中」。非阻塞 select 保住 isNonTurnFrame 的
+		// 「空闲态不认领排队轮」不变量:确有排队轮才认领,没有则退回按通用 non-turn 帧丢弃,
+		// 不会把 readLoop 卡死在 <-pendingTurns 上。
+		if isCompactingStatusFrame(f) {
+			select {
+			case at := <-s.pendingTurns:
+				s.active = at
+				s.sinkMu.Unlock()
+				return at
+			default:
+			}
+		}
 		s.sinkMu.Unlock()
 		return nil // 会话级帧,空闲到达无归属轮:不认领 user Turn slot
 	}
@@ -368,6 +383,14 @@ func isNonTurnFrame(f rawFrame) bool {
 		return true
 	}
 	return false
+}
+
+// isCompactingStatusFrame 判定一帧是否是 status:"compacting" —— 手动 /compact(及自动
+// 压缩)起步时 CLI 立刻推的进度帧。它虽属 system{subtype:"status"}(被 isNonTurnFrame 归为
+// 会话级帧),但在轮起步、有 user Turn 排队时必须由 currentTurn 认领该轮:它是压缩进行中
+// 子进程仍存活的唯一信号,丢了会让 runtime 起步看门狗把一次正常的长压缩误判为卡死。
+func isCompactingStatusFrame(f rawFrame) bool {
+	return f.Type == "system" && f.Subtype == "status" && f.Status == "compacting"
 }
 
 // isIdleBackgroundSubagentFrame 判定一帧是否为「后台 subagent(run_in_background 的

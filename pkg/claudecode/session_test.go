@@ -180,6 +180,24 @@ func fakePassiveMode(stdin io.Reader, stdout io.Writer) {
 	}
 }
 
+// fakeManualCompact 复刻真实 CLI 收到手动 /compact(作为普通 user 帧)时的帧序列:
+// 轮起步即推一帧 status:"compacting"(压缩进行中、子进程还活着的唯一信号),压缩完成
+// 后才推 compact_boundary,最后 result 收尾。真实压缩(大上下文)可耗时 >120s;这里
+// 用帧顺序复刻,不真睡。注意 resume 轮没有 per-turn init —— status 帧就是本轮首帧。
+func fakeManualCompact(stdin io.Reader, stdout io.Writer) {
+	const sid = "sess-manual-compact"
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	for sc.Scan() {
+		if !strings.Contains(sc.Text(), `"type":"user"`) {
+			continue
+		}
+		writeFrame(stdout, `{"type":"system","subtype":"status","status":"compacting","session_id":%q}`, sid)
+		writeFrame(stdout, `{"type":"system","subtype":"compact_boundary","compact_metadata":{"pre_tokens":30117,"post_tokens":2697,"trigger":"manual","duration_ms":20696},"session_id":%q}`, sid)
+		writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+	}
+}
+
 // resumeMissingStderr 复刻真实 CLI 命中 `claude --resume <gone-id>` 时的 stderr 输出。
 const resumeMissingStderr = "No conversation found with session ID: 07dcda59-d426-4d66-b6d3-12d6d59bc5a3\n"
 
@@ -218,6 +236,38 @@ func TestSession_MultiTurn(t *testing.T) {
 	require.NoError(t, err)
 	got2 := drainText(t, ch2)
 	assert.Equal(t, "echo:beta", got2)
+
+	require.NoError(t, sess.Close(ctx))
+}
+
+// TestSession_ManualCompactStatusReachesTurn 钉死:手动 /compact 轮的起步帧
+// status:"compacting" 必须路由进本轮事件流。它是子进程「正在压缩、还活着」的唯一存活
+// 信号 —— 曾被 isNonTurnFrame 当会话级噪音丢弃,导致 runtime 起步看门狗在压缩 >120s 时
+// 把健康子进程误判为卡死硬杀(errStartupTimeout,用户侧表现为 /compact 总是报错)。
+func TestSession_ManualCompactStatusReachesTurn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeManualCompact))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+
+	ch, err := sess.Turn(ctx, "/compact")
+	require.NoError(t, err)
+
+	var sawCompacting, sawBoundary bool
+	for ev := range ch {
+		switch ev.Kind {
+		case EventStatus:
+			if ev.Status == "compacting" {
+				sawCompacting = true
+			}
+		case EventCompactBoundary:
+			sawBoundary = true
+		}
+	}
+	assert.True(t, sawCompacting, "status:compacting 起步帧应路由进本轮事件流(否则看门狗看不到存活信号)")
+	assert.True(t, sawBoundary, "compact_boundary 帧仍应到达本轮")
 
 	require.NoError(t, sess.Close(ctx))
 }
