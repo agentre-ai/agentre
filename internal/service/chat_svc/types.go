@@ -525,6 +525,10 @@ const (
 	// SessionPurposeOrchChild 编排 Run 的子 agent 会话(每次新建, 不复用, run_id>0)。
 	// 值与落库的 chat_entity.SessionPurposeOrchChild 同源, 防两处字面量漂移。
 	SessionPurposeOrchChild SessionPurpose = SessionPurpose(chat_entity.SessionPurposeOrchChild)
+	// SessionPurposeUserChat 普通用户会话(每次新建)。供 ! 命令在「新会话占位态」先坐实一个
+	// 真实会话用 —— 与子会话不同, 落库 Purpose 留空, 出现在侧栏、可继续对话。这是请求层的
+	// 派发键, 不与某个 chat_entity.SessionPurpose 同源(普通会话本就是空 Purpose)。
+	SessionPurposeUserChat SessionPurpose = "user_chat"
 )
 
 type EnsureSessionRequest struct {
