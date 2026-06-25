@@ -19,6 +19,9 @@ AI 对话发送框(`AIChatInput` / `ChatComposer`)目前只能给 agent 发消�
 | 长任务/交互 | **Stream + Stop + Open-in-terminal**:走 PTY,输出实时流入内联卡片;可停止;可「在终端中打开」接管同一进程拿到完整 stdin/颜色/回滚 |
 | 持久化 | **临时(仅前端)**:本地命令记录存在前端 store,刷新可见、整应用重启后消失;**不落库、无迁移** |
 | 结果落点 | **内联**进 transcript,视觉上明确区分于 AI 工具卡(标注「本地命令 · 不发送给 AI」) |
+| 并发 | **非阻塞**:`!` 独立于 agent turn —— AI 流式输出时也**即时运行**,不排队、不打断生成;普通消息照常排队/steer,`!` 例外。两条流(AI 文本 + 命令输出)并行进 transcript;`运行` 跑命令、`停止生成` 只停 AI turn,互不影响 |
+
+> 视觉规格以 Pencil 设计稿为准(`agentre.pen`,位于 `Agent Chat — Light` 右侧三屏):① `Agent Chat — ! 命令模式`(命令模式发送框 + 运行中卡片)、② `本地命令 — 状态 & 接管`(运行中/完成/失败/已停止 + 在终端中打开)、③ `本地命令 — 交互 & 并发`(AI 生成中并发执行)。
 
 ## 设计原则
 
@@ -95,10 +98,10 @@ LocalCommandEntry {
 
 - 视觉**明确区别于 AI 工具卡**:终端 glyph 头部 + 「本地命令 · 不发送给 AI」标记(`localCommand.notSharedWithAI`),命令以等宽展示。
 - 命令的发起单点收口在 `ChatPanel.onRunCommand`(生成 `terminalId`、push `running` 条目、调 `TerminalRunCommand`,见数据流);**卡片是纯渲染+订阅方**:按条目的 `terminalId` 订阅 `terminal data/exit` 事件(复用 `use-terminal.ts` 里 base64 解码逻辑)→ 把输出 append 进 store 条目。
-- 渲染:**输出(ANSI 去码后的 tail,等宽可滚)** + 状态胶囊(运行中+计时 / 完成+退出码 / 失败 / 已停止)+ 动作:
-  - **停止**(运行中):调 `TerminalClose(terminalId)` → 状态置 `stopped`。
-  - **在终端中打开**(运行中):见 D。
-  - 退出后保留最终输出;退出码非 0 ⇒ `failed`。
+- 渲染:**输出(ANSI 去码后的 tail,等宽可滚)** + 状态胶囊(运行中+计时(琥珀)/ 完成+退出码(绿)/ 失败+退出码(红)/ 已停止(灰))+ 动作:
+  - **运行中**:`停止`(调 `TerminalClose(terminalId)` → `stopped`)+ `在终端中打开`(见 D)。
+  - **退出后(done/failed/stopped)**:**无动作按钮** —— 仅保留最终输出 + 状态。退出码非 0 ⇒ `failed`;`SIGHUP/SIGKILL` ⇒ `stopped`。不提供「重新运行」(PTY 已结束;要重跑就再 `!`)。
+- 「在终端中打开」**只在运行中出现**(PTY 还在);退出后按钮消失。
 - 内联卡片只做**只读输出**;完整保真(颜色/stdin/回滚)交给「在终端中打开」。
 
 > ANSI:内联卡片去码展示(轻量);真彩交互在终端 tab 的 xterm 里。
