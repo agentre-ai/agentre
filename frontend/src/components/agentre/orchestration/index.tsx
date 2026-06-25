@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
+import { RunFlowBlueprint } from "./run-flow-blueprint";
 import { RunHeader } from "./run-header";
 import { StructureGraph } from "./structure-graph";
 import { ActivityFeed } from "./activity-feed";
@@ -42,6 +43,7 @@ export function OrchestrationRun({
           {/* 主区域：头部 + 中视图 */}
           <main className="flex min-w-0 flex-1 flex-col">
             <RunHeader detail={detail} view={view} onView={setView} />
+            <RunFlowBlueprint flowId={detail.run.flowId ?? 0} />
             <div className="min-h-0 flex-1 overflow-auto">
               {view === "graph" ? (
                 <StructureGraph
