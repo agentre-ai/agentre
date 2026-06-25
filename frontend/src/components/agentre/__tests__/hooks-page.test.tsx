@@ -73,6 +73,14 @@ function setBridge(over: AnyRecord = {}) {
         persisted: false,
       }),
     ),
+    ProbeInterpreters: vi.fn(() =>
+      Promise.resolve([
+        { key: "bash", path: "/bin/bash", installed: true },
+        { key: "node", path: "/usr/bin/node", installed: true },
+        { key: "python", path: "/usr/bin/python3", installed: true },
+        { key: "pwsh", path: "", installed: false },
+      ]),
+    ),
     ...over,
   };
   Object.defineProperty(window, "go", {
@@ -249,5 +257,53 @@ describe("HooksPage", () => {
     expect(screen.getByLabelText("Name")).toHaveValue("New Hook");
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(app.CreateHook).toHaveBeenCalled());
+  });
+});
+
+describe("HooksPage interpreter dropdown (probe-driven)", () => {
+  it("lists probed interpreters and disables not-installed ones", async () => {
+    setBridge();
+    render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+
+    // Open the interpreter select
+    fireEvent.click(screen.getByRole("combobox", { name: "Interpreter" }));
+
+    // Wait for the probed options to appear
+    const pwshOption = await screen.findByText("PowerShell");
+    // The not-installed option should be rendered inside a disabled SelectItem
+    const optionEl = pwshOption.closest("[data-disabled]");
+    expect(optionEl).not.toBeNull();
+  });
+
+  it("shows not-installed label next to uninstalled interpreter", async () => {
+    setBridge();
+    render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Interpreter" }));
+    await screen.findByText("PowerShell");
+    expect(await screen.findByText("Not installed")).toBeInTheDocument();
+  });
+
+  it("submits interpreterPath in create payload", async () => {
+    const app = setBridge();
+    render(<HooksPage />);
+    await screen.findAllByText("Jira urgent");
+
+    // Click the + button to open the create form
+    fireEvent.click(screen.getByTestId("hook-create"));
+
+    // Fill in the binary path field
+    const pathInput = await screen.findByLabelText("Binary path");
+    fireEvent.change(pathInput, { target: { value: "/opt/py/bin/python3" } });
+
+    // Submit
+    fireEvent.click(screen.getByTestId("hook-save"));
+    await waitFor(() =>
+      expect(app.CreateHook).toHaveBeenCalledWith(
+        expect.objectContaining({ interpreterPath: "/opt/py/bin/python3" }),
+      ),
+    );
   });
 });

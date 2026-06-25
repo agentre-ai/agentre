@@ -52,10 +52,13 @@ import { cn } from "@/lib/utils";
 
 type EnvVar = { key: string; value: string; secret: boolean };
 
+type InterpreterOption = { key: string; path: string; installed: boolean };
+
 type HookItem = {
   id: number;
   name: string;
   interpreter: string;
+  interpreterPath: string;
   command: string;
   scheduleExpr: string;
   timezone: string;
@@ -100,6 +103,7 @@ type RunHookResult = {
 type HookWriteRequest = {
   name: string;
   interpreter: string;
+  interpreterPath: string;
   command: string;
   scheduleExpr: string;
   timezone: string;
@@ -117,12 +121,14 @@ type HookBridge = {
   DeleteHook: (id: number) => Promise<void>;
   ToggleHook: (id: number, enabled: boolean) => Promise<HookItem>;
   RunHook: (req: { id: number; dryRun: boolean }) => Promise<RunHookResult>;
+  ProbeInterpreters: () => Promise<InterpreterOption[]>;
 };
 
 type Draft = {
   id: number | null; // null = creating a new hook
   name: string;
   interpreter: string;
+  interpreterPath: string;
   command: string;
   scheduleExpr: string;
   timezone: string;
@@ -153,15 +159,6 @@ const INTERP_META: Record<
   cmd: { abbrev: "CMD", icon: Terminal, color: "agent-15" },
 };
 
-const INTERP_OPTIONS = [
-  "bash",
-  "sh",
-  "node",
-  "python",
-  "pwsh",
-  "powershell",
-  "cmd",
-];
 const TZ_OPTIONS = [
   "Asia/Shanghai",
   "UTC",
@@ -222,6 +219,7 @@ function draftFromHook(h: HookItem): Draft {
     id: h.id,
     name: h.name,
     interpreter: h.interpreter,
+    interpreterPath: h.interpreterPath ?? "",
     command: h.command,
     scheduleExpr: h.scheduleExpr,
     timezone: h.timezone || "Asia/Shanghai",
@@ -235,6 +233,7 @@ function emptyDraft(t: TFunction): Draft {
     id: null,
     name: t("hooks.create.defaultName"),
     interpreter: "bash",
+    interpreterPath: "",
     command: "",
     scheduleExpr: "*/5 * * * *",
     timezone: "Asia/Shanghai",
@@ -445,13 +444,28 @@ function SectionCard({
 function ScriptTab({
   draft,
   onChange,
+  interpreters,
   t,
 }: {
   draft: Draft;
   onChange: (next: Draft) => void;
+  interpreters: InterpreterOption[];
   t: TFunction;
 }) {
   const setEnv = (env: EnvVar[]) => onChange({ ...draft, env });
+
+  // Ensure the currently selected interpreter always appears even if not in
+  // the probed list (e.g. while probing or on a platform mismatch).
+  const options =
+    interpreters.some((o) => o.key === draft.interpreter) ||
+    interpreters.length === 0
+      ? interpreters
+      : [
+          { key: draft.interpreter, path: "", installed: false },
+          ...interpreters,
+        ];
+  const selected = options.find((o) => o.key === draft.interpreter);
+
   return (
     <div className="flex flex-col gap-4">
       <SectionCard
@@ -488,13 +502,42 @@ function ScriptTab({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {INTERP_OPTIONS.map((v) => (
-                  <SelectItem key={v} value={v}>
-                    {t(`hooks.interp.${v}`)}
+                {options.map((opt) => (
+                  <SelectItem
+                    key={opt.key}
+                    value={opt.key}
+                    disabled={!opt.installed}
+                  >
+                    {t(`hooks.interp.${opt.key}`)}
+                    {!opt.installed && (
+                      <span className="ml-1.5 text-[10px] text-muted-foreground">
+                        {t("hooks.interp.notInstalled")}
+                      </span>
+                    )}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-muted-foreground">
+              {t("hooks.trigger.interpreterPath")}
+            </span>
+            <Input
+              value={draft.interpreterPath}
+              onChange={(e) =>
+                onChange({ ...draft, interpreterPath: e.target.value })
+              }
+              placeholder={
+                selected?.installed && selected.path
+                  ? t("hooks.trigger.interpreterPathAuto", {
+                      path: selected.path,
+                    })
+                  : t("hooks.trigger.interpreterPathPlaceholder")
+              }
+              className="w-72 font-mono text-xs"
+              aria-label={t("hooks.trigger.interpreterPath")}
+            />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] text-muted-foreground">
@@ -761,6 +804,9 @@ export function HooksPage() {
     null,
   );
   const [deleteTarget, setDeleteTarget] = React.useState<HookItem | null>(null);
+  const [interpreters, setInterpreters] = React.useState<InterpreterOption[]>(
+    [],
+  );
 
   const flashOk = React.useCallback(
     (text: string) => setFlash({ kind: "ok", text }),
@@ -840,6 +886,12 @@ export function HooksPage() {
     };
   }, [loadEvents, flashErr, t]);
 
+  React.useEffect(() => {
+    getBridgeMethod("ProbeInterpreters")()
+      .then(setInterpreters)
+      .catch(() => setInterpreters([]));
+  }, []);
+
   const startCreate = () => {
     setSelectedId(null);
     setDraft(emptyDraft(t));
@@ -852,6 +904,7 @@ export function HooksPage() {
     const payload: HookWriteRequest = {
       name: draft.name,
       interpreter: draft.interpreter,
+      interpreterPath: draft.interpreterPath,
       command: draft.command,
       scheduleExpr: draft.scheduleExpr,
       timezone: draft.timezone,
@@ -964,6 +1017,7 @@ export function HooksPage() {
               size="icon"
               className="h-6 w-6"
               aria-label={t("hooks.list.addAria")}
+              data-testid="hook-create"
               onClick={startCreate}
             >
               <Plus className="h-3.5 w-3.5" />
@@ -1186,13 +1240,19 @@ export function HooksPage() {
             <div className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
               {activeTab === "script" ? (
                 <div className="flex flex-col gap-4">
-                  <ScriptTab draft={draft} onChange={setDraft} t={t} />
+                  <ScriptTab
+                    draft={draft}
+                    onChange={setDraft}
+                    interpreters={interpreters}
+                    t={t}
+                  />
                   {runResult ? (
                     <RunResultCard result={runResult} t={t} />
                   ) : null}
                   <div className="flex justify-end">
                     <Button
                       type="button"
+                      data-testid="hook-save"
                       onClick={save}
                       disabled={busy || !draft.name.trim()}
                     >

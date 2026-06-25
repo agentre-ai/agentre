@@ -457,6 +457,14 @@ function mockHooks() {
         persisted: false,
       }),
     ),
+    ProbeInterpreters: vi.fn(() =>
+      Promise.resolve([
+        { key: "bash", path: "/bin/bash", installed: true },
+        { key: "node", path: "/usr/bin/node", installed: true },
+        { key: "python", path: "/usr/bin/python3", installed: true },
+        { key: "pwsh", path: "", installed: false },
+      ]),
+    ),
   };
   Object.defineProperty(window, "go", {
     configurable: true,
