@@ -81,12 +81,32 @@ func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, quest
 		}
 	}
 
+	// 快照 emit（避免后续 goroutine 延迟读 s.emit 与 RegisterDeps 产生 data race）。
+	emit := s.emit
+	if emit != nil {
+		emit.Emit(ctx, "orch:run:ask", map[string]any{
+			"runId": from.RunID, "askId": askID,
+			"askerAgentId": from.AgentID, "askerSessionId": fromSessionID,
+			"targetAgentId": target.ID, "targetSessionId": toSession,
+			"question": question,
+		})
+	}
+	emitReply := func(answer string, timedOut bool) {
+		if emit != nil {
+			emit.Emit(ctx, "orch:run:reply", map[string]any{
+				"runId": env.runID, "askId": askID, "answer": answer, "timedOut": timedOut,
+			})
+		}
+	}
 	select {
 	case ans := <-env.reply:
+		emitReply(ans, false)
 		return ans, nil
 	case <-ctx.Done():
+		emitReply("", true)
 		return "", ctx.Err()
 	case <-timeAfter(s.approvalTimeout):
+		emitReply("", true)
 		return "", fmt.Errorf("orch.Ask: 等待 %s 回复超时", agentName)
 	}
 }

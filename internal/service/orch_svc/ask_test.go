@@ -163,6 +163,35 @@ func TestAsk_EscapesXMLInQuestionAndAskerName(t *testing.T) {
 	})
 }
 
+func TestAsk_EmitsAskAndReplyEvents(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	emit := mock_orch_svc.NewMockEmitter(ctrl)
+	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, emit)
+
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500}, nil)
+	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
+	agents.EXPECT().Find(gomock.Any(), gomock.Any()).Return(&agent_entity.Agent{ID: 2, Name: "前端"}, nil).AnyTimes()
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 8, AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
+	injCh := make(chan string, 1)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(700), gomock.Any()).DoAndReturn(func(_ context.Context, _ int64, m string) error { injCh <- m; return nil })
+	askEvt := make(chan struct{}, 1)
+	emit.EXPECT().Emit(gomock.Any(), "orch:run:ask", gomock.Any()).Do(func(_ context.Context, _ string, _ any) { askEvt <- struct{}{} })
+	emit.EXPECT().Emit(gomock.Any(), "orch:run:reply", gomock.Any())
+	emit.EXPECT().Emit(gomock.Any(), "orch:run:deadlock", gomock.Any()).AnyTimes()
+
+	Convey("Ask emit ask 事件, reply 后 emit reply 事件", t, func() {
+		go func() { _, _ = orch_svc.Default().Ask(context.Background(), 500, "王", "鉴权?") }()
+		<-askEvt
+		askID := parseAskID(<-injCh)
+		So(orch_svc.Default().Reply(context.Background(), 1, askID, "ok"), ShouldBeNil)
+		time.Sleep(50 * time.Millisecond) // 让 select 收到 reply 并 emit
+	})
+}
+
 func TestReply_RejectsForeignReplier(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
