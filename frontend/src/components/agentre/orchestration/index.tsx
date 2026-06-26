@@ -1,11 +1,18 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { MessageSquare, SendHorizontal } from "lucide-react";
+import {
+  CircleCheck,
+  MessageSquare,
+  Pause,
+  SendHorizontal,
+  Square,
+  TriangleAlert,
+} from "lucide-react";
 import { useChatAgents } from "@/hooks/use-chat-agents";
 import { Button } from "@/components/ui/button";
 import type { AgentColor } from "../types";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
-import { RunSpeak } from "../../../../wailsjs/go/app/App";
+import { RunResume, RunSpeak } from "../../../../wailsjs/go/app/App";
 import { RunHeader } from "./run-header";
 import { StructureGraph } from "./structure-graph";
 import { ActivityFeed } from "./activity-feed";
@@ -14,10 +21,10 @@ import { ConversationPanel } from "./conversation-panel";
 import { ToggleBar } from "./toggle-bar";
 import { useRunSubagents } from "./use-run-subagents";
 import type { app } from "../../../../wailsjs/go/models";
+import { buildGraph, lifecycle } from "./graph-data";
 
 // 稳定空 detail:detail 未就绪时给 useRunSubagents 一个恒定身份的占位,避免每渲染触发懒加载 effect。
 const EMPTY_RUN_DETAIL = { tasks: [] } as unknown as app.RunDetailDTO;
-import { buildGraph } from "./graph-data";
 
 export function OrchestrationRun({
   runId,
@@ -79,6 +86,9 @@ export function OrchestrationRun({
   // Footer speak-to-Leader state
   const [leaderMsg, setLeaderMsg] = React.useState("");
 
+  // Ref for footer input — used by deadlock "intervene" banner action to focus it
+  const footerInputRef = React.useRef<HTMLInputElement>(null);
+
   // 切换 Run 时重置选中
   React.useEffect(() => {
     setSelectedSessionId(null);
@@ -103,6 +113,19 @@ export function OrchestrationRun({
     );
     return leaderTask?.sessionId ?? null;
   }, [detail]);
+
+  // Phase + deadlock detection for banners (shared logic with structure-graph)
+  const phase = detail ? lifecycle(detail) : null;
+  const cycle = useOrchRunStore((s) =>
+    runId !== undefined ? s.deadlocks.get(runId) : undefined,
+  );
+  const hasDeadlock = React.useMemo(() => {
+    if (!cycle || cycle.length === 0) return false;
+    const sessionIds = new Set<number>(cycle);
+    return (detail?.tasks ?? []).some(
+      (task) => task.sessionId && sessionIds.has(task.sessionId),
+    );
+  }, [cycle, detail]);
 
   const handleLeaderSend = React.useCallback(async () => {
     if (!leaderSessionId || !leaderMsg.trim()) return;
@@ -144,6 +167,105 @@ export function OrchestrationRun({
 
             <ToggleBar view={view} onView={setView} stats={toggleStats} />
 
+            {/* Phase banners: between ToggleBar and content, visible in both views */}
+            {detail && (
+              <>
+                {/* Deadlock banner — highest priority, any phase */}
+                {hasDeadlock && (
+                  <div
+                    data-testid="graph-deadlock-banner"
+                    className="flex items-center gap-2.5 border-l-[3px] border-destructive bg-destructive-soft px-5 py-3 text-destructive"
+                  >
+                    <TriangleAlert
+                      className="size-4 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <div className="flex flex-1 flex-col gap-px">
+                      <span className="text-[12.5px] font-semibold">
+                        {t("orchestration.graph.deadlock")}
+                      </span>
+                      <span className="text-[11px]">
+                        {t("orchestration.graph.deadlockBannerDetail")}
+                      </span>
+                    </div>
+                    <Button
+                      data-testid="banner-intervene-btn"
+                      size="sm"
+                      className="shrink-0 rounded-md bg-destructive px-3 py-1.5 text-xs font-semibold text-white"
+                      onClick={() => footerInputRef.current?.focus()}
+                    >
+                      {t("orchestration.graph.interveneBtn")}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Completed banner */}
+                {!hasDeadlock && phase === "completed" && (
+                  <div
+                    data-testid="graph-completed-banner"
+                    className="flex items-center gap-2.5 border-l-[3px] border-status-running bg-status-running-bg px-5 py-3 text-status-running"
+                  >
+                    <CircleCheck
+                      className="size-4 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <div className="flex flex-1 flex-col gap-px">
+                      <span className="text-[12.5px] font-semibold">
+                        {t("orchestration.graph.completedBanner")}
+                      </span>
+                      <span className="text-[11px]">
+                        {t("orchestration.graph.completedBannerDetail")}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Paused banner */}
+                {!hasDeadlock && phase === "paused" && (
+                  <div
+                    data-testid="graph-paused-banner"
+                    className="flex items-center gap-2.5 border-l-[3px] border-status-waiting bg-status-waiting-bg px-5 py-3 text-status-waiting"
+                  >
+                    <Pause className="size-4 shrink-0" aria-hidden="true" />
+                    <div className="flex flex-1 flex-col gap-px">
+                      <span className="text-[12.5px] font-semibold">
+                        {t("orchestration.graph.pausedBanner")}
+                      </span>
+                      <span className="text-[11px]">
+                        {t("orchestration.graph.pausedBannerDetail")}
+                      </span>
+                    </div>
+                    <Button
+                      data-testid="banner-resume-btn"
+                      size="sm"
+                      className="shrink-0 rounded-md border border-status-waiting bg-status-waiting-bg px-3 py-1.5 text-xs font-semibold text-status-waiting hover:bg-status-waiting-bg/80"
+                      onClick={() => void RunResume(runId).catch(() => {})}
+                    >
+                      {t("orchestration.graph.resumeBtn")}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Stopped banner */}
+                {!hasDeadlock && phase === "stopped" && (
+                  <div
+                    data-testid="graph-stopped-banner"
+                    className="flex items-center gap-2.5 border-l-[3px] border-border bg-muted px-5 py-3 text-muted-foreground"
+                  >
+                    <Square className="size-4 shrink-0" aria-hidden="true" />
+                    <div className="flex flex-1 flex-col gap-px">
+                      <span className="text-[12.5px] font-semibold">
+                        {t("orchestration.graph.stoppedBanner")}
+                      </span>
+                      <span className="text-[11px]">
+                        {t("orchestration.graph.stoppedBannerDetail")}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
             {/* Content: graph | feed */}
             <div
               data-testid="orch-content"
@@ -170,6 +292,7 @@ export function OrchestrationRun({
                   aria-hidden="true"
                 />
                 <input
+                  ref={footerInputRef}
                   type="text"
                   className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                   placeholder={t("orchestration.run.speakLeaderPlaceholder")}

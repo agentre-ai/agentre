@@ -19,7 +19,7 @@ vi.mock("../../../../../wailsjs/go/app/App", () => ({
     tasks: [],
   }),
   RunPause: vi.fn(),
-  RunResume: vi.fn(),
+  RunResume: vi.fn().mockResolvedValue(undefined),
   RunStop: vi.fn(),
   RunSpeak: vi.fn(),
   LoadChatSession: vi.fn().mockResolvedValue({ messages: [] }),
@@ -345,6 +345,326 @@ describe("OrchestrationRun shell", () => {
   });
 
   // ── End Task 1 RED tests ─────────────────────────────────────────────────
+
+  // ── Task 9 RED tests: banner relocation + restyle ────────────────────────
+
+  it("Task9: completed phase → graph-completed-banner 在 orch-main 中, 在 orch-content 之前", () => {
+    const detail = makeDetail({
+      runId: 1,
+      runStatus: "done",
+      tasks: [
+        {
+          id: 1,
+          runId: 1,
+          agentId: 2,
+          sessionId: 0,
+          parentTaskId: 0,
+          kind: "dispatch",
+          status: "done",
+          brief: "t1",
+          result: "",
+          callSeq: 1,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        {
+          id: 2,
+          runId: 1,
+          agentId: 3,
+          sessionId: 0,
+          parentTaskId: 1,
+          kind: "dispatch",
+          status: "done",
+          brief: "t2",
+          result: "",
+          callSeq: 2,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+      ],
+    });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    const main = screen.getByTestId("orch-main");
+    const banner = screen.getByTestId("graph-completed-banner");
+    const content = screen.getByTestId("orch-content");
+
+    // banner must be inside orch-main
+    expect(main).toContainElement(banner);
+    // banner appears before orch-content in DOM
+    expect(
+      banner.compareDocumentPosition(content) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("Task9: paused phase → graph-paused-banner 在 orch-main 中, 含 resume 动作按钮", () => {
+    const detail = makeDetail({
+      runId: 1,
+      runStatus: "paused",
+      tasks: [
+        {
+          id: 1,
+          runId: 1,
+          agentId: 2,
+          sessionId: 0,
+          parentTaskId: 0,
+          kind: "dispatch",
+          status: "running",
+          brief: "t1",
+          result: "",
+          callSeq: 1,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        {
+          id: 2,
+          runId: 1,
+          agentId: 3,
+          sessionId: 0,
+          parentTaskId: 1,
+          kind: "dispatch",
+          status: "running",
+          brief: "t2",
+          result: "",
+          callSeq: 2,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+      ],
+    });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    const main = screen.getByTestId("orch-main");
+    const banner = screen.getByTestId("graph-paused-banner");
+    expect(main).toContainElement(banner);
+
+    // The resume action button must be present in the banner
+    const resumeBtn = banner.querySelector("[data-testid='banner-resume-btn']");
+    expect(resumeBtn).toBeInTheDocument();
+  });
+
+  it("Task9: paused banner resume 按钮点击 → 调用 RunResume(runId)", async () => {
+    const RunResumeMock = (await import("../../../../../wailsjs/go/app/App"))
+      .RunResume as ReturnType<typeof vi.fn>;
+
+    const detail = makeDetail({
+      runId: 1,
+      runStatus: "paused",
+      tasks: [
+        {
+          id: 1,
+          runId: 1,
+          agentId: 2,
+          sessionId: 0,
+          parentTaskId: 0,
+          kind: "dispatch",
+          status: "running",
+          brief: "t1",
+          result: "",
+          callSeq: 1,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        {
+          id: 2,
+          runId: 1,
+          agentId: 3,
+          sessionId: 0,
+          parentTaskId: 1,
+          kind: "dispatch",
+          status: "running",
+          brief: "t2",
+          result: "",
+          callSeq: 2,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+      ],
+    });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    const resumeBtn = screen.getByTestId("banner-resume-btn");
+    fireEvent.click(resumeBtn);
+
+    await waitFor(() => {
+      expect(RunResumeMock).toHaveBeenCalledWith(1);
+    });
+  });
+
+  it("Task9: stopped phase → graph-stopped-banner 在 orch-main 中, 无动作按钮", () => {
+    const detail = makeDetail({
+      runId: 1,
+      runStatus: "stopped",
+      tasks: [
+        {
+          id: 1,
+          runId: 1,
+          agentId: 2,
+          sessionId: 0,
+          parentTaskId: 0,
+          kind: "dispatch",
+          status: "done",
+          brief: "t1",
+          result: "",
+          callSeq: 1,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        {
+          id: 2,
+          runId: 1,
+          agentId: 3,
+          sessionId: 0,
+          parentTaskId: 1,
+          kind: "dispatch",
+          status: "done",
+          brief: "t2",
+          result: "",
+          callSeq: 2,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+      ],
+    });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    const main = screen.getByTestId("orch-main");
+    const banner = screen.getByTestId("graph-stopped-banner");
+    expect(main).toContainElement(banner);
+
+    // No action button for stopped
+    expect(banner.querySelector("button")).not.toBeInTheDocument();
+  });
+
+  it("Task9: deadlock → graph-deadlock-banner 在 orch-main 中, 含 intervene 按钮", () => {
+    const runId = 5;
+    const sessionId = 88;
+    useOrchRunStore.setState({
+      deadlocks: new Map([[runId, [sessionId]]]),
+    });
+    const detail = makeDetail({
+      runId,
+      runStatus: "running",
+      tasks: [
+        {
+          id: 1,
+          runId,
+          agentId: 2,
+          sessionId: 0,
+          parentTaskId: 0,
+          kind: "dispatch",
+          status: "running",
+          brief: "t1",
+          result: "",
+          callSeq: 1,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        {
+          id: 2,
+          runId,
+          agentId: 3,
+          sessionId,
+          parentTaskId: 1,
+          kind: "dispatch",
+          status: "awaiting-user",
+          brief: "t2",
+          result: "",
+          callSeq: 2,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+      ],
+    });
+    useOrchRunStore.setState({ details: new Map([[runId, detail]]) });
+
+    render(<OrchestrationRun runId={runId} title="测试运行" />);
+
+    const main = screen.getByTestId("orch-main");
+    const banner = screen.getByTestId("graph-deadlock-banner");
+    expect(main).toContainElement(banner);
+
+    const interveneBtn = screen.getByTestId("banner-intervene-btn");
+    expect(interveneBtn).toBeInTheDocument();
+  });
+
+  it("Task9: deadlock intervene 按钮点击 → footer input 获得焦点", () => {
+    const runId = 6;
+    const sessionId = 77;
+    useOrchRunStore.setState({
+      deadlocks: new Map([[runId, [sessionId]]]),
+    });
+    // Include a leader task with a valid sessionId so the footer input is enabled (not disabled)
+    const detail = makeDetail({
+      runId,
+      runStatus: "running",
+      tasks: [
+        // leader agent (agentId=2) task with sessionId → enables footer input
+        {
+          id: 1,
+          runId,
+          agentId: 2,
+          sessionId: 500,
+          parentTaskId: 0,
+          kind: "dispatch",
+          status: "running",
+          brief: "leader",
+          result: "",
+          callSeq: 1,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        {
+          id: 2,
+          runId,
+          agentId: 3,
+          sessionId,
+          parentTaskId: 1,
+          kind: "dispatch",
+          status: "awaiting-user",
+          brief: "t2",
+          result: "",
+          callSeq: 2,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+      ],
+    });
+    useOrchRunStore.setState({ details: new Map([[runId, detail]]) });
+
+    render(<OrchestrationRun runId={runId} title="测试运行" />);
+
+    const interveneBtn = screen.getByTestId("banner-intervene-btn");
+    fireEvent.click(interveneBtn);
+
+    // The footer input should have focus
+    const footer = screen.getByTestId("orch-footer");
+    const footerInput = footer.querySelector("input") as HTMLInputElement;
+    expect(footerInput).toHaveFocus();
+  });
+
+  // ── End Task 9 RED tests ─────────────────────────────────────────────────
 
   it("选中 session 后右栏切到 ConversationPanel, 返回回到任务板", () => {
     // 注入含 task(agentId=3, sessionId=900) 的 detail

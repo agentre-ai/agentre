@@ -567,53 +567,11 @@ export function StructureGraph({
     return result;
   }, [cycle, detail.tasks]);
 
-  const hasDeadlock = deadlockAgentIds.size > 0;
-
   // 节点是否应该被暗化（paused 态）
   const dimmed = phase === "paused";
 
   return (
     <div className="flex flex-col gap-0">
-      {/* 死锁横幅（优先级最高，任何 phase 下只要有死锁就显示） */}
-      {hasDeadlock && (
-        <div
-          data-testid="graph-deadlock-banner"
-          className="flex items-center gap-2 border-b border-destructive/30 bg-destructive-soft px-4 py-2 text-sm font-medium text-destructive"
-        >
-          <span>{t("orchestration.graph.deadlock")}</span>
-        </div>
-      )}
-
-      {/* 完成横幅 */}
-      {phase === "completed" && (
-        <div
-          data-testid="graph-completed-banner"
-          className="flex items-center gap-2 border-b border-status-running/30 bg-status-running-bg px-4 py-2 text-sm font-medium text-status-running"
-        >
-          <span>{t("orchestration.graph.completedBanner")}</span>
-        </div>
-      )}
-
-      {/* 暂停横幅 */}
-      {phase === "paused" && (
-        <div
-          data-testid="graph-paused-banner"
-          className="flex items-center gap-2 border-b border-status-waiting/30 bg-status-waiting-bg px-4 py-2 text-sm font-medium text-status-waiting"
-        >
-          <span>{t("orchestration.graph.pausedBanner")}</span>
-        </div>
-      )}
-
-      {/* 停止横幅 */}
-      {phase === "stopped" && (
-        <div
-          data-testid="graph-stopped-banner"
-          className="flex items-center gap-2 border-b border-border bg-muted px-4 py-2 text-sm font-medium text-muted-foreground"
-        >
-          <span>{t("orchestration.graph.stoppedBanner")}</span>
-        </div>
-      )}
-
       {/* 主体区域 */}
       {phase === "empty" ? (
         // 起步态：居中引导文案

@@ -116,8 +116,9 @@ beforeEach(() => {
 });
 
 describe("StructureGraph", () => {
-  it("lifecycle=completed (run.status=done) 时渲染 graph-completed-banner", () => {
-    // 终态 done → lifecycle 返回 completed，应有 banner
+  it("lifecycle=completed (run.status=done) 时节点渲染(banner 已移至 index.tsx 主列)", () => {
+    // 终态 done → lifecycle 返回 completed，banner 已由 index.tsx 负责渲染
+    // StructureGraph 应渲染节点(不再有 completed banner)
     const detail = makeDetail({
       runStatus: "done",
       tasks: [makeTask(1, 2, "done"), makeTask(2, 3, "done", 1)],
@@ -125,10 +126,16 @@ describe("StructureGraph", () => {
 
     render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
 
-    expect(screen.getByTestId("graph-completed-banner")).toBeInTheDocument();
+    // banner relocated to index.tsx — not here
+    expect(
+      screen.queryByTestId("graph-completed-banner"),
+    ).not.toBeInTheDocument();
+    // nodes are still rendered (phase !== empty since tasks.length > 1)
+    expect(screen.getByTestId("node-2")).toBeInTheDocument();
+    expect(screen.getByTestId("node-3")).toBeInTheDocument();
   });
 
-  it("store deadlocks 有 [runId → [sessionId]] 且 task 含该 sessionId → graph-deadlock-banner 可见", () => {
+  it("store deadlocks 有 [runId → [sessionId]] 且 task 含该 sessionId → 死锁节点有红环, banner 已移至 index.tsx", () => {
     const runId = 42;
     const sessionId = 99;
     // 注入死锁信息到 store
@@ -149,7 +156,10 @@ describe("StructureGraph", () => {
 
     render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
 
-    expect(screen.getByTestId("graph-deadlock-banner")).toBeInTheDocument();
+    // banner relocated to index.tsx — not here
+    expect(
+      screen.queryByTestId("graph-deadlock-banner"),
+    ).not.toBeInTheDocument();
     // 死锁高亮必须落在正确的节点:cycle sessionId(99)→该任务 agentId(3),
     // Leader(agentId 2)不在环上,不应被红环。验证 sessionId→agentId 映射真发生。
     expect(screen.getByTestId("node-3").className).toMatch(/ring-destructive/);
@@ -261,6 +271,77 @@ describe("StructureGraph", () => {
     render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
     expect(screen.queryByTestId("node-3-asking")).not.toBeInTheDocument();
   });
+
+  // ── Task 9: banners relocated — StructureGraph must NOT render them ────────
+
+  it("Task9: completed phase → StructureGraph 不再渲染 graph-completed-banner", () => {
+    const detail = makeDetail({
+      runStatus: "done",
+      tasks: [makeTask(1, 2, "done"), makeTask(2, 3, "done", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(
+      screen.queryByTestId("graph-completed-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Task9: paused phase → StructureGraph 不再渲染 graph-paused-banner", () => {
+    const detail = makeDetail({
+      runStatus: "paused",
+      tasks: [makeTask(1, 2, "running"), makeTask(2, 3, "running", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(screen.queryByTestId("graph-paused-banner")).not.toBeInTheDocument();
+  });
+
+  it("Task9: stopped phase → StructureGraph 不再渲染 graph-stopped-banner", () => {
+    const detail = makeDetail({
+      runStatus: "stopped",
+      tasks: [makeTask(1, 2, "done"), makeTask(2, 3, "done", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(
+      screen.queryByTestId("graph-stopped-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Task9: deadlock → StructureGraph 不再渲染 graph-deadlock-banner", () => {
+    const runId = 42;
+    const sessionId = 99;
+    useOrchRunStore.setState({
+      deadlocks: new Map([[runId, [sessionId]]]),
+    });
+    const detail = makeDetail({
+      runId,
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0),
+        makeTask(2, 3, "awaiting-user", 1, sessionId),
+      ],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(
+      screen.queryByTestId("graph-deadlock-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Task9: node-asking 徽标仍由 StructureGraph 渲染(未移除)", () => {
+    useOrchRunStore.setState({
+      activeAsks: new Map([
+        [1, [{ askId: "k", askerAgentId: 3, targetAgentId: 2 }]],
+      ]),
+    });
+    const detail = makeDetail({
+      runId: 1,
+      runStatus: "running",
+      tasks: [makeTask(1, 2, "running"), makeTask(2, 3, "running", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    // asking badge still rendered by StructureGraph
+    expect(screen.getByTestId("node-3-asking")).toBeInTheDocument();
+  });
+
+  // ── End Task 9 ────────────────────────────────────────────────────────────
 
   it("agent 的 task session 有 CLI 子代理 → 节点挂 +N 子代理 徽标", async () => {
     const detail = makeDetail({
