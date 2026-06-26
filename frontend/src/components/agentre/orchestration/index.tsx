@@ -11,6 +11,8 @@ import { StructureGraph } from "./structure-graph";
 import { ActivityFeed } from "./activity-feed";
 import { TaskBoard } from "./task-board";
 import { ConversationPanel } from "./conversation-panel";
+import { ToggleBar } from "./toggle-bar";
+import { buildGraph } from "./graph-data";
 
 export function OrchestrationRun({
   runId,
@@ -30,6 +32,38 @@ export function OrchestrationRun({
   const [selectedSessionId, setSelectedSessionId] = React.useState<
     number | null
   >(null);
+
+  // Compute ToggleBar stats from existing data (no additional fetches)
+  const toggleStats = React.useMemo(() => {
+    const tasks = detail?.tasks ?? [];
+    const done = tasks.filter((t) => t.status === "done").length;
+    const total = tasks.length;
+    if (!detail) {
+      return {
+        done,
+        total,
+        depth: 0,
+        agentCount: 0,
+        subCount: 0,
+        subagentCount: 0,
+      };
+    }
+    const graph = buildGraph(detail);
+    const agentCount = graph.stats.nodes;
+    const subCount = graph.stats.subagents;
+    // subagentCount: subagents spawned via local_agent tool (tracked per-session by useRunSubagents).
+    // Not available as a simple number without store subscription in this component —
+    // fall back to graph.stats.subagents (node-level subagent count) as best available approximation.
+    const subagentCount = graph.stats.subagents;
+    return {
+      done,
+      total,
+      depth: graph.stats.depth,
+      agentCount,
+      subCount,
+      subagentCount,
+    };
+  }, [detail]);
 
   // Footer speak-to-Leader state
   const [leaderMsg, setLeaderMsg] = React.useState("");
@@ -97,36 +131,7 @@ export function OrchestrationRun({
           >
             <RunHeader detail={detail} />
 
-            {/* Minimal ToggleBar placeholder (Task 4 replaces with real ToggleBar) */}
-            <div
-              data-testid="orch-toggle"
-              className="flex shrink-0 items-center gap-1 border-b border-border px-4 py-1.5"
-            >
-              <button
-                type="button"
-                data-testid="toggle-graph"
-                onClick={() => setView("graph")}
-                className={
-                  view === "graph"
-                    ? "rounded-md bg-accent px-3 py-1 text-xs font-medium text-foreground"
-                    : "rounded-md px-3 py-1 text-xs text-muted-foreground hover:bg-accent/50"
-                }
-              >
-                {t("orchestration.header.viewGraph")}
-              </button>
-              <button
-                type="button"
-                data-testid="toggle-feed"
-                onClick={() => setView("feed")}
-                className={
-                  view === "feed"
-                    ? "rounded-md bg-accent px-3 py-1 text-xs font-medium text-foreground"
-                    : "rounded-md px-3 py-1 text-xs text-muted-foreground hover:bg-accent/50"
-                }
-              >
-                {t("orchestration.header.viewFeed")}
-              </button>
-            </div>
+            <ToggleBar view={view} onView={setView} stats={toggleStats} />
 
             {/* Content: graph | feed */}
             <div

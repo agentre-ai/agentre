@@ -2364,6 +2364,12 @@
       "backToBoard": "Back to board",
       "speakPlaceholder": "Speak to it… (sends to this session)",
       "speakSend": "Send"
+    },
+    "toggle": {
+      "tasks": "tasks",
+      "depth": "Depth",
+      "agents": "{{agentCount}} agent · {{subCount}} sub",
+      "subagents": "subagents"
     }
   },
   "localCommand": {
