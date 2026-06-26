@@ -14,6 +14,7 @@ import (
 // askEnvelope 记录一个在飞的 ask：ask_id、提问方会话、接收方 agent 与会话、答案通道。
 type askEnvelope struct {
 	askID         string
+	runID         int64
 	askerSession  int64
 	targetAgentID int64
 	targetSession int64

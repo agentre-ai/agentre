@@ -58,6 +58,20 @@ func (mr *MockChatGatewayMockRecorder) AgentStatus(ctx, sessionID any) *gomock.C
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AgentStatus", reflect.TypeOf((*MockChatGateway)(nil).AgentStatus), ctx, sessionID)
 }
 
+// Enqueue mocks base method.
+func (m *MockChatGateway) Enqueue(ctx context.Context, sessionID int64, text string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Enqueue", ctx, sessionID, text)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Enqueue indicates an expected call of Enqueue.
+func (mr *MockChatGatewayMockRecorder) Enqueue(ctx, sessionID, text any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Enqueue", reflect.TypeOf((*MockChatGateway)(nil).Enqueue), ctx, sessionID, text)
+}
+
 // EnsureOrchSession mocks base method.
 func (m *MockChatGateway) EnsureOrchSession(ctx context.Context, in orch_svc.EnsureOrchSessionInput) (int64, error) {
 	m.ctrl.T.Helper()

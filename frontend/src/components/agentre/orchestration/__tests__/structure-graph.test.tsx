@@ -6,6 +6,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../../../../wailsjs/go/app/App", () => ({
   ListChatAgents: vi.fn().mockResolvedValue({ agents: [] }),
   RunLoad: vi.fn().mockResolvedValue({ run: undefined, tasks: [] }),
+  LoadChatSession: vi.fn().mockResolvedValue({
+    messages: [
+      {
+        blocks: [
+          {
+            type: "tool_use",
+            toolUseId: "s",
+            subagent: { kind: "local_agent", status: "running" },
+          },
+        ],
+      },
+    ],
+  }),
 }));
 
 // 从 hooks 层 mock useChatAgents，返回确定的 agent 列表
@@ -37,6 +50,7 @@ vi.mock("../../../../../hooks/use-chat-agents", () => ({
 
 import type { app } from "../../../../../wailsjs/go/models";
 import { useOrchRunStore } from "../../../../stores/orch-run-store";
+import { useOrchSubagentsStore } from "../../../../stores/orch-subagents-store";
 import { StructureGraph } from "../structure-graph";
 
 // 工厂: 构造 RunDetailDTO
@@ -97,6 +111,7 @@ function makeTask(
 
 beforeEach(() => {
   useOrchRunStore.getState().__reset();
+  useOrchSubagentsStore.getState().__reset();
   vi.clearAllMocks();
 });
 
@@ -108,7 +123,7 @@ describe("StructureGraph", () => {
       tasks: [makeTask(1, 2, "done"), makeTask(2, 3, "done", 1)],
     });
 
-    render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
 
     expect(screen.getByTestId("graph-completed-banner")).toBeInTheDocument();
   });
@@ -132,7 +147,7 @@ describe("StructureGraph", () => {
       ],
     });
 
-    render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
 
     expect(screen.getByTestId("graph-deadlock-banner")).toBeInTheDocument();
     // 死锁高亮必须落在正确的节点:cycle sessionId(99)→该任务 agentId(3),
@@ -150,25 +165,26 @@ describe("StructureGraph", () => {
       tasks: [makeTask(1, 2, "running")],
     });
 
-    render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
 
     expect(screen.getByTestId("graph-empty")).toBeInTheDocument();
   });
 
-  it("点击节点 node-{agentId} 调 onSelectNode(agentId)", () => {
-    const onSelectNode = vi.fn();
-    // 两个节点：Leader(2) + Sub(3)
+  it("点击单调用节点 → onSelectSession(该 task sessionId)", () => {
+    const onSelectSession = vi.fn();
     const detail = makeDetail({
       runStatus: "running",
-      tasks: [makeTask(1, 2, "running"), makeTask(2, 3, "running", 1)],
+      tasks: [makeTask(1, 2, "running"), makeTask(2, 3, "running", 1, 555)],
     });
 
-    render(<StructureGraph detail={detail} onSelectNode={onSelectNode} />);
+    render(
+      <StructureGraph detail={detail} onSelectSession={onSelectSession} />,
+    );
 
     // 点击子 agent 节点
     fireEvent.click(screen.getByTestId("node-3"));
 
-    expect(onSelectNode).toHaveBeenCalledWith(3);
+    expect(onSelectSession).toHaveBeenCalledWith(555);
   });
 
   it("非顶层 subagent 多次调用 → node 显示 ×N 合并徽标, 不逐条列 call 子行", () => {
@@ -182,7 +198,7 @@ describe("StructureGraph", () => {
       ],
     });
 
-    render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
 
     // 合并徽标可见、文案含 ×2
     expect(screen.getByTestId("node-4-multi")).toHaveTextContent("×2");
@@ -201,7 +217,7 @@ describe("StructureGraph", () => {
       ],
     });
 
-    render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
 
     // 头部「2 会话」分组标记(i18n 未 mock → t() 回显 key, 用 count 插值断言)
     expect(screen.getByTestId("node-3")).toHaveTextContent("2");
@@ -219,5 +235,18 @@ describe("StructureGraph", () => {
       .getByTestId("node-3")
       .querySelector("div > span > span");
     expect(headerSpan?.textContent).toMatch(/·\s2/);
+  });
+
+  it("agent 的 task session 有 CLI 子代理 → 节点挂 +N 子代理 徽标", async () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0),
+        makeTask(2, 3, "running", 1, 700),
+      ],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    const badge = await screen.findByTestId("node-3-subagents");
+    expect(badge).toHaveTextContent("1");
   });
 });

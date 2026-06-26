@@ -45,8 +45,10 @@ export type TranscriptRenderContextValue = {
   sessionId: number;
   tabStateKey?: string;
   onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void;
-  onRerun: (messageId: number) => void;
-  onEdit: (messageId: number) => void;
+  /** 只读模式下不传；有值时才渲染「重新生成」按钮。 */
+  onRerun?: (messageId: number) => void;
+  /** 只读模式下不传；有值时才渲染「编辑」按钮。 */
+  onEdit?: (messageId: number) => void;
 };
 
 export const TranscriptRenderContext =
@@ -605,8 +607,9 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
   // 类型收窄:只有 local_command 行缺 message(已在上方返回),其余行恒有 message。
   if (!m) return null;
   const isAssistant = m.role === "assistant";
-  // 每条 assistant 都允许重新生成；后端按消息 id 截断后重跑。
-  const rerunHandler = isAssistant ? () => ctx?.onRerun(m.id) : undefined;
+  // 每条 assistant 都允许重新生成；只读模式下 ctx.onRerun 为 undefined 时不渲染按钮。
+  const rerunHandler =
+    isAssistant && ctx?.onRerun ? () => ctx.onRerun!(m.id) : undefined;
   const copyText =
     isAssistant && row.isLastOfMessage
       ? extractAssistantOutputText(m.blocks ?? [], liveBlocks ?? [], liveTail)
@@ -641,8 +644,8 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
       onRerun={rerunHandler}
       copyText={copyText}
     />
-  ) : !isAssistant ? (
-    <UserMessageActions onEdit={() => ctx?.onEdit(m.id)} />
+  ) : !isAssistant && ctx?.onEdit ? (
+    <UserMessageActions onEdit={() => ctx.onEdit!(m.id)} />
   ) : undefined;
 
   if (row.isFirstOfMessage) {

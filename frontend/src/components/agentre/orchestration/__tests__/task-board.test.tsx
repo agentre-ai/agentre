@@ -11,6 +11,23 @@ vi.mock("../../../../../wailsjs/go/app/App", () => ({
   RunResume: vi.fn(),
   RunStop: vi.fn(),
   RunSpeak: vi.fn(),
+  LoadChatSession: vi.fn().mockResolvedValue({
+    messages: [
+      {
+        blocks: [
+          {
+            type: "tool_use",
+            toolUseId: "s1",
+            subagent: {
+              kind: "local_agent",
+              subagentType: "用例生成器",
+              status: "completed",
+            },
+          },
+        ],
+      },
+    ],
+  }),
 }));
 
 vi.mock("../../../../../hooks/use-chat-agents", () => ({
@@ -41,6 +58,7 @@ vi.mock("../../../../../hooks/use-chat-agents", () => ({
 
 import type { app } from "../../../../../wailsjs/go/models";
 import { useOrchRunStore } from "../../../../stores/orch-run-store";
+import { useOrchSubagentsStore } from "../../../../stores/orch-subagents-store";
 import { TaskBoard } from "../task-board";
 
 // 构造 RunDetailDTO
@@ -87,6 +105,7 @@ function makeTask(
 
 beforeEach(() => {
   useOrchRunStore.getState().__reset();
+  useOrchSubagentsStore.getState().__reset();
   vi.clearAllMocks();
 });
 
@@ -99,8 +118,8 @@ describe("TaskBoard", () => {
       render(
         <TaskBoard
           detail={detail}
-          selectedAgentId={null}
-          onSelectTask={vi.fn()}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
         />,
       );
 
@@ -108,37 +127,25 @@ describe("TaskBoard", () => {
       expect(screen.getByTestId("board-task-2")).toBeInTheDocument();
     });
 
-    it("点击任务行调用 onSelectTask(agentId)", () => {
-      const onSelectTask = vi.fn();
-      const tasks = [makeTask(1, 2), makeTask(2, 3, { parentTaskId: 1 })];
+    it("点击任务行调用 onSelectSession(该 task sessionId)", () => {
+      const onSelectSession = vi.fn();
+      const tasks = [
+        makeTask(1, 2, { sessionId: 11 }),
+        makeTask(2, 3, { parentTaskId: 1, sessionId: 22 }),
+      ];
       const detail = makeDetail(tasks);
 
       render(
         <TaskBoard
           detail={detail}
-          selectedAgentId={null}
-          onSelectTask={onSelectTask}
+          selectedSessionId={null}
+          onSelectSession={onSelectSession}
         />,
       );
 
       fireEvent.click(screen.getByTestId("board-task-2"));
 
-      expect(onSelectTask).toHaveBeenCalledWith(3);
-    });
-
-    it("selectedAgentId 非 null 时渲染 board-drilldown 钻入面板", () => {
-      const tasks = [makeTask(1, 2)];
-      const detail = makeDetail(tasks);
-
-      render(
-        <TaskBoard
-          detail={detail}
-          selectedAgentId={2}
-          onSelectTask={vi.fn()}
-        />,
-      );
-
-      expect(screen.getByTestId("board-drilldown")).toBeInTheDocument();
+      expect(onSelectSession).toHaveBeenCalledWith(22);
     });
 
     it("子任务（parentTaskId !== 0）渲染时有缩进 class", () => {
@@ -148,8 +155,8 @@ describe("TaskBoard", () => {
       render(
         <TaskBoard
           detail={detail}
-          selectedAgentId={null}
-          onSelectTask={vi.fn()}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
         />,
       );
 
@@ -164,8 +171,8 @@ describe("TaskBoard", () => {
       render(
         <TaskBoard
           detail={detail}
-          selectedAgentId={null}
-          onSelectTask={vi.fn()}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
         />,
       );
 
@@ -187,7 +194,11 @@ describe("TaskBoard", () => {
         makeTask(3, 3, { status: "running", parentTaskId: 1 }),
       ];
       render(
-        <TaskBoard detail={makeDetail(tasks)} selectedAgentId={null} onSelectTask={vi.fn()} />,
+        <TaskBoard
+          detail={makeDetail(tasks)}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
+        />,
       );
       expect(screen.getByTestId("board-progress")).toHaveTextContent("2");
       expect(screen.getByTestId("board-progress")).toHaveTextContent("3");
@@ -198,11 +209,25 @@ describe("TaskBoard", () => {
     it("同 agent 多次调用 → 分组头 + 每次调用一条 per-call 行", () => {
       const tasks = [
         makeTask(1, 2, { status: "running" }), // Leader 单调用
-        makeTask(2, 3, { status: "running", parentTaskId: 1, callSeq: 1, sessionId: 501 }),
-        makeTask(3, 3, { status: "done", parentTaskId: 1, callSeq: 2, sessionId: 502 }),
+        makeTask(2, 3, {
+          status: "running",
+          parentTaskId: 1,
+          callSeq: 1,
+          sessionId: 501,
+        }),
+        makeTask(3, 3, {
+          status: "done",
+          parentTaskId: 1,
+          callSeq: 2,
+          sessionId: 502,
+        }),
       ];
       render(
-        <TaskBoard detail={makeDetail(tasks)} selectedAgentId={null} onSelectTask={vi.fn()} />,
+        <TaskBoard
+          detail={makeDetail(tasks)}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
+        />,
       );
       // agent 3 多调用 → 分组头 + 两条 per-call 行
       expect(screen.getByTestId("board-agent-3")).toBeInTheDocument();
@@ -211,6 +236,30 @@ describe("TaskBoard", () => {
       // agent 2 单调用 → 无分组头
       expect(screen.queryByTestId("board-agent-2")).not.toBeInTheDocument();
       expect(screen.getByTestId("board-task-1")).toBeInTheDocument();
+    });
+
+    it("有 CLI 子代理的 call 行下挂折叠 board-subagents-{taskId}, 点开展开只读子行", async () => {
+      const tasks = [
+        makeTask(1, 2, { status: "running" }),
+        makeTask(2, 3, { status: "running", parentTaskId: 1, sessionId: 501 }),
+      ];
+      render(
+        <TaskBoard
+          detail={makeDetail(tasks)}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
+        />,
+      );
+      // 懒加载完成后折叠行出现(+1 子代理)
+      const toggle = await screen.findByTestId("board-subagents-2");
+      expect(toggle).toHaveTextContent("1");
+      // 默认折叠:子行不在
+      expect(
+        screen.queryByTestId("board-subagent-2-0"),
+      ).not.toBeInTheDocument();
+      // 点开 → 子行出现
+      fireEvent.click(toggle);
+      expect(screen.getByTestId("board-subagent-2-0")).toBeInTheDocument();
     });
   });
 
@@ -221,8 +270,8 @@ describe("TaskBoard", () => {
       render(
         <TaskBoard
           detail={detail}
-          selectedAgentId={null}
-          onSelectTask={vi.fn()}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
         />,
       );
 
@@ -241,8 +290,8 @@ describe("TaskBoard", () => {
       render(
         <TaskBoard
           detail={detail}
-          selectedAgentId={null}
-          onSelectTask={vi.fn()}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
         />,
       );
 

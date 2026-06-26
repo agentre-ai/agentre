@@ -2472,3 +2472,107 @@ describe("ChatTranscript compact_boundary fold", () => {
     ).toBeNull();
   });
 });
+
+describe("ChatTranscript read-only mode (no onRerun / no onEdit)", () => {
+  // 验收：只读调用方（如 ConversationPanel）不传 onRerun/onEdit 时，
+  // 「重新生成」和「编辑」按钮不渲染；传入后仍正常工作（回归保护）。
+  function assistantMsg(): chat_svc.ChatMessage {
+    return {
+      blocks: [{ type: "text", text: "resp" } as ChatBlockData],
+      cacheCreationTokens: 0,
+      cachedTokens: 0,
+      completionTokens: 10,
+      createtime: new Date("2026-06-01T10:00:00Z").getTime(),
+      durationMs: 500,
+      errorText: "",
+      id: 20,
+      model: "claude-sonnet-4-6",
+      promptTokens: 5,
+      reasoningTokens: 0,
+      role: "assistant",
+      seq: 1,
+      sessionId: 1,
+      totalInputTokens: 0,
+    } as unknown as chat_svc.ChatMessage;
+  }
+
+  function userMsg(): chat_svc.ChatMessage {
+    return {
+      blocks: [{ type: "text", text: "question" } as ChatBlockData],
+      cacheCreationTokens: 0,
+      cachedTokens: 0,
+      completionTokens: 0,
+      createtime: new Date("2026-06-01T10:00:00Z").getTime(),
+      durationMs: 0,
+      errorText: "",
+      id: 19,
+      model: "",
+      promptTokens: 0,
+      reasoningTokens: 0,
+      role: "user",
+      seq: 1,
+      sessionId: 1,
+      totalInputTokens: 0,
+    } as unknown as chat_svc.ChatMessage;
+  }
+
+  it("只读模式：不传 onRerun → 不渲染「重新生成」按钮", () => {
+    // onRerun 未传；之前因稳定代理恒 truthy 错误渲染该按钮。
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="TestAgent"
+        messages={[userMsg(), assistantMsg()]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /Regenerate/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("只读模式：不传 onEdit → 不渲染「编辑」按钮", () => {
+    // onEdit 未传；UserMessageActions 的 onEdit 箭头函数在无 ctx.onEdit 时不渲染。
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="TestAgent"
+        messages={[userMsg(), assistantMsg()]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /edit/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("有 onRerun → 「重新生成」按钮正常渲染并回调（回归保护）", () => {
+    const calls: number[] = [];
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="TestAgent"
+        messages={[userMsg(), assistantMsg()]}
+        onRerun={(id) => calls.push(id)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Regenerate/ }));
+    expect(calls).toEqual([20]);
+  });
+
+  it("有 onEdit → 「编辑」按钮正常渲染并回调（回归保护）", () => {
+    const calls: number[] = [];
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="TestAgent"
+        messages={[userMsg(), assistantMsg()]}
+        onEdit={(id) => calls.push(id)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    expect(calls).toEqual([19]);
+  });
+});

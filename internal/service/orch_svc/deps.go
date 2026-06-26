@@ -28,6 +28,8 @@ type TurnDone struct {
 type ChatGateway interface {
 	EnsureOrchSession(ctx context.Context, in EnsureOrchSessionInput) (int64, error)
 	SendAndForget(ctx context.Context, sessionID int64, text string) error
+	// Enqueue 把文本 steer 进该会话**正在进行**的 turn（对方 busy 时用，复用 chat_svc.Enqueue）。
+	Enqueue(ctx context.Context, sessionID int64, text string) error
 	ObserveTurn(sessionID int64) (<-chan TurnDone, func())
 	FinalAssistantText(ctx context.Context, sessionID int64) (string, error)
 	AgentStatus(ctx context.Context, sessionID int64) (string, error)
