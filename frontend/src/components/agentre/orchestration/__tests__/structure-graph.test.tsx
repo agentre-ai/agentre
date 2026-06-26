@@ -170,4 +170,54 @@ describe("StructureGraph", () => {
 
     expect(onSelectNode).toHaveBeenCalledWith(3);
   });
+
+  it("非顶层 subagent 多次调用 → node 显示 ×N 合并徽标, 不逐条列 call 子行", () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader
+        makeTask(2, 3, "running", 1, 0), // 后端(顶层)
+        makeTask(3, 4, "running", 2, 410), // 验签助手 #1, 父=后端(3)
+        makeTask(4, 4, "done", 2, 411), // 验签助手 #2
+      ],
+    });
+
+    render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
+
+    // 合并徽标可见、文案含 ×2
+    expect(screen.getByTestId("node-4-multi")).toHaveTextContent("×2");
+    // 合并节点不列 per-call 子行(那是任务板的事)
+    expect(screen.queryByTestId("node-4-call-3")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("node-4-call-4")).not.toBeInTheDocument();
+  });
+
+  it("顶层 agent 多次对话 → 分组容器, 头部 N 会话 + 每次调用一条子行", () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader
+        makeTask(2, 3, "running", 1, 501), // 前端 会话#1, 父=Leader 根(1)
+        makeTask(3, 3, "done", 1, 502), // 前端 会话#2
+      ],
+    });
+
+    render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
+
+    // 头部「2 会话」分组标记(i18n 未 mock → t() 回显 key, 用 count 插值断言)
+    expect(screen.getByTestId("node-3")).toHaveTextContent("2");
+    // 两条 per-call 子行
+    expect(screen.getByTestId("node-3-call-2")).toBeInTheDocument();
+    expect(screen.getByTestId("node-3-call-3")).toBeInTheDocument();
+    // 顶层分组不显示 ×N 合并徽标(分组 ≠ 合并)
+    expect(screen.queryByTestId("node-3-multi")).not.toBeInTheDocument();
+
+    // Fix 1 guard: 分组头部的中间点分隔符必须带空格 "· N sessions",
+    // 断言 textContent 含 "· 2" (middot + space + count),区分意外的 "·2"。
+    // toHaveTextContent 内部对空格 normalize 使得连续空格折叠为单格,但 "· 2"
+    // 与 "·2" 仍有区别: 前者在 substring 中存在 middot+space。
+    const headerSpan = screen
+      .getByTestId("node-3")
+      .querySelector("div > span > span");
+    expect(headerSpan?.textContent).toMatch(/·\s2/);
+  });
 });

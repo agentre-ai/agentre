@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
@@ -14,7 +14,7 @@ import { toast } from "sonner";
 
 import { useTerminal } from "./use-terminal";
 import { useAttachedTerminal } from "./use-attached-terminal";
-import { resolveTerminalTheme } from "./terminal-theme";
+import { TERMINAL_FONT_FAMILY, readTerminalTheme } from "./terminal-theme";
 import { attachXtermRolloverGuard } from "./xterm-rollover-guard";
 
 export interface TerminalPanelProps {
@@ -26,37 +26,6 @@ export interface TerminalPanelProps {
   // 不开 / 不关 PTY。默认 false 走既有 live 路径。
   attach?: boolean;
   onClose: () => void;
-}
-
-// 平台等宽字体放最前，Nerd Font 仅作图标/powerline 兜底。把 Nerd Font 排在前面时，
-// 若某个变体缺 Bold 字面，浏览器会对一行里部分字符合成 faux-bold → 出现粗细混杂的
-// 马赛克；平台 mono(mac→Menlo / win→Consolas / linux→DejaVu)自带匹配的 Bold，放前面
-// 可消除这个问题。CJK 字体兜底中文等宽。
-const TERMINAL_FONT_FAMILY = [
-  "Menlo",
-  "Consolas",
-  "'DejaVu Sans Mono'",
-  "'JetBrainsMono NFM'",
-  "'JetBrainsMono Nerd Font Mono'",
-  "'JetBrains Mono'",
-  "'Symbols Nerd Font Mono'",
-  "'Noto Sans Mono CJK SC'",
-  "monospace",
-].join(", ");
-
-// 跟随应用主题：用 .dark class 选 light/dark 调色板，并把应用实时的 --background/
-// --foreground 叠加为终端底色，使终端与周围 UI 一致；完整 16 色 ANSI 由 resolveTerminalTheme
-// 提供，避免只设 bg/fg 时浅色模式下 ANSI 亮色发白看不清。
-function readTerminalTheme(): ITheme {
-  if (typeof document === "undefined") {
-    return resolveTerminalTheme(true);
-  }
-  const root = document.documentElement;
-  const isDark = root.classList.contains("dark");
-  const styles = getComputedStyle(root);
-  const bg = styles.getPropertyValue("--background").trim();
-  const fg = styles.getPropertyValue("--foreground").trim();
-  return resolveTerminalTheme(isDark, bg, fg);
 }
 
 export function TerminalPanel({

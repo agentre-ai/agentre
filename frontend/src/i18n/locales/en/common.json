@@ -415,7 +415,7 @@
         "unsupported": "Only PNG, JPEG, and WebP are supported. Each image must be under 5 MB."
       },
       "dropHint": "Drop to add files / folder paths",
-      "placeholder": "Type a message or / for commands",
+      "placeholder": "Type a message · / for commands · ! to run in terminal",
       "removeImage": "Remove image {{name}}",
       "saveEdit": "Save edit",
       "send": "Send",
@@ -1872,6 +1872,9 @@
     },
     "goal": {
       "description": "Set or view the current Codex goal"
+    },
+    "new": {
+      "description": "Start a new chat with the same setup"
     }
   },
   "settings": {
@@ -2290,7 +2293,10 @@
       "pausedBanner": "Paused — click Resume to continue",
       "stoppedBanner": "Hard stopped",
       "deadlock": "Waiting cycle detected — resolve it",
-      "leaderCrown": "Leader"
+      "leaderCrown": "Leader",
+      "callCount": "×{{count}}",
+      "sessionsCount": "{{count}} sessions",
+      "callLabel": "Session #{{seq}}"
     },
     "feed": {
       "deadlock": "Ask waiting cycle detected",
@@ -2315,7 +2321,8 @@
       "statusAwaitingUser": "Awaiting you",
       "statusAwaitingChildren": "Awaiting subtasks",
       "statusError": "Error",
-      "statusPending": "Pending"
+      "statusPending": "Pending",
+      "progress": "{{done}}/{{total}} tasks"
     },
     "notify": {
       "completed": "Orchestration run completed: {{goal}}",
@@ -2338,6 +2345,7 @@
     },
     "exitCode": "Exit {{code}}",
     "stop": "Stop",
-    "openInTerminal": "Open in terminal"
+    "openInTerminal": "Open in terminal",
+    "dismiss": "Dismiss command"
   }
 }

@@ -44,6 +44,20 @@ describe("slash command registry", () => {
     );
   });
 
+  it.each(["claudecode", "codex", "piagent", "builtin"])(
+    "%s 可用 /new,resolve 返回 literal_text /new(纯前端 tab 操作,与 backend 无关)",
+    (backend) => {
+      const xs = listAvailable(backend);
+      expect(xs.map((c) => c.name)).toContain("new");
+      const cmd = xs.find((c) => c.name === "new")!;
+      const exec = cmd.resolve(backend)!;
+      expect(exec.kind).toBe("literal_text");
+      expect((exec as Extract<SlashExec, { kind: "literal_text" }>).text).toBe(
+        "/new",
+      );
+    },
+  );
+
   it("空 backend 返回空列表", () => {
     expect(listAvailable("")).toEqual([]);
   });

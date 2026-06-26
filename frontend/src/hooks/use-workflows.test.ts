@@ -45,23 +45,28 @@ describe("useWorkflows", () => {
     const { result } = renderHook(() => useWorkflows());
     await waitFor(() => expect(result.current.workflows).toHaveLength(1));
     await act(async () => {
-      await result.current.create("新流程", "# 新", [], []);
+      await result.current.create(
+        "新流程",
+        "# 新",
+        ["通用"],
+        ["需求拆解", "方案设计"],
+      );
     });
     expect(workflowCreate).toHaveBeenCalledWith({
       name: "新流程",
       content: "# 新",
-      tags: [],
-      outline: [],
+      tags: ["通用"],
+      outline: ["需求拆解", "方案设计"],
     });
     await act(async () => {
-      await result.current.update(1, "改名", "# 改", [], []);
+      await result.current.update(1, "改名", "# 改", ["修复"], ["复现"]);
     });
     expect(workflowUpdate).toHaveBeenCalledWith({
       id: 1,
       name: "改名",
       content: "# 改",
-      tags: [],
-      outline: [],
+      tags: ["修复"],
+      outline: ["复现"],
     });
     await act(async () => {
       await result.current.remove(1);
@@ -69,6 +74,38 @@ describe("useWorkflows", () => {
     expect(workflowDelete).toHaveBeenCalledWith({ id: 1 });
     // 初始 1 次 + 三个写操作后各 reload 1 次
     expect(workflowList).toHaveBeenCalledTimes(4);
+  });
+
+  it("reload 保留 tags/outline(无值时 fallback 空数组)", async () => {
+    workflowList.mockResolvedValueOnce({
+      items: [
+        {
+          id: 1,
+          name: "w1",
+          content: "c1",
+          runCount: 0,
+          createtime: 0,
+          updatetime: 0,
+          tags: ["tag1"],
+          outline: ["step1"],
+        },
+        {
+          id: 2,
+          name: "w2",
+          content: "c2",
+          runCount: 0,
+          createtime: 0,
+          updatetime: 0,
+          // tags/outline 缺省 → 兜底为 []
+        },
+      ],
+    });
+    const { result } = renderHook(() => useWorkflows());
+    await waitFor(() => expect(result.current.workflows).toHaveLength(2));
+    expect(result.current.workflows[0].tags).toEqual(["tag1"]);
+    expect(result.current.workflows[0].outline).toEqual(["step1"]);
+    expect(result.current.workflows[1].tags).toEqual([]);
+    expect(result.current.workflows[1].outline).toEqual([]);
   });
 
   it("加载失败落 error", async () => {

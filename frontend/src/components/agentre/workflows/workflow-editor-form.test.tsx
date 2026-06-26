@@ -50,9 +50,7 @@ describe("WorkflowEditorForm", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Insert template" }));
-    expect(onContentChange).toHaveBeenCalledWith(
-      expect.stringMatching(/^#/),
-    );
+    expect(onContentChange).toHaveBeenCalledWith(expect.stringMatching(/^#/));
   });
 
   it("非空正文插入模板:追加不覆盖", () => {
@@ -171,7 +169,11 @@ describe("WorkflowEditorForm tags/outline", () => {
     );
     // move index 1 up → should become [步骤二, 步骤一, 步骤三]
     fireEvent.click(screen.getByTestId("workflow-outline-move-up-1"));
-    expect(onOutlineChange).toHaveBeenCalledWith(["步骤二", "步骤一", "步骤三"]);
+    expect(onOutlineChange).toHaveBeenCalledWith([
+      "步骤二",
+      "步骤一",
+      "步骤三",
+    ]);
   });
 
   it("下移步骤 → 交换位置", () => {
@@ -187,7 +189,11 @@ describe("WorkflowEditorForm tags/outline", () => {
     );
     // move index 1 down → should become [步骤一, 步骤三, 步骤二]
     fireEvent.click(screen.getByTestId("workflow-outline-move-down-1"));
-    expect(onOutlineChange).toHaveBeenCalledWith(["步骤一", "步骤三", "步骤二"]);
+    expect(onOutlineChange).toHaveBeenCalledWith([
+      "步骤一",
+      "步骤三",
+      "步骤二",
+    ]);
   });
 
   it("提示文案渲染:tags hint 和 outline hint", () => {

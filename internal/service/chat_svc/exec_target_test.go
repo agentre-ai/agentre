@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"

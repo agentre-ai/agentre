@@ -37,7 +37,8 @@ describe("graph-data", () => {
     );
     expect(g.nodes).toHaveLength(2); // agent 2 + agent 3
     const a3 = g.nodes.find((n) => n.agentId === 3)!;
-    expect(a3.tasks).toHaveLength(2); // 卡内两任务行
+    expect(a3.calls).toHaveLength(2); // 同 agent 两次调用合并进一节点
+    expect(a3.callCount).toBe(2);
     expect(a3.status).toBe("running"); // 聚合: 有 running
     expect(g.edges).toContainEqual({ from: 2, to: 3, kind: "dispatch" });
     expect(g.stats.nodes).toBe(2);
@@ -117,5 +118,100 @@ describe("graph-data", () => {
     expect(() =>
       buildGraph({ tasks: [] } as unknown as app.RunDetailDTO),
     ).not.toThrow();
+  });
+  it("非顶层 subagent 多次 dispatch → 单节点, callCount=N, isTopLevel=false", () => {
+    // Leader(2) → 后端(3) → 验签助手(4) 被 dispatch 两次
+    const g = buildGraph(
+      detail([
+        { id: 1, agentId: 2, parentTaskId: 0, status: "running" }, // Leader 根
+        { id: 2, agentId: 3, parentTaskId: 1, status: "running" }, // 后端(顶层)
+        { id: 3, agentId: 4, parentTaskId: 2, status: "running", callSeq: 1 }, // 验签助手 #1
+        { id: 4, agentId: 4, parentTaskId: 2, status: "done", callSeq: 2 }, // 验签助手 #2
+      ]),
+    );
+    const helper = g.nodes.find((n) => n.agentId === 4)!;
+    expect(helper.callCount).toBe(2); // ×2 合并
+    expect(helper.isTopLevel).toBe(false); // 父是 后端(3), 不是 Leader
+    expect(helper.calls).toHaveLength(2);
+  });
+  it("顶层 agent(父=Leader) 多次 dispatch → isTopLevel=true, calls 携带 sessionId/callSeq/brief", () => {
+    // Leader(2) → 前端(3) 派发两次不同对话
+    const g = buildGraph(
+      detail([
+        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+        {
+          id: 2,
+          agentId: 3,
+          parentTaskId: 1,
+          status: "running",
+          callSeq: 1,
+          sessionId: 501,
+          brief: "支付表单",
+        },
+        {
+          id: 3,
+          agentId: 3,
+          parentTaskId: 1,
+          status: "done",
+          callSeq: 2,
+          sessionId: 502,
+          brief: "退款流程",
+        },
+      ]),
+    );
+    const fe = g.nodes.find((n) => n.agentId === 3)!;
+    expect(fe.isTopLevel).toBe(true);
+    expect(fe.callCount).toBe(2);
+    // calls 按 callSeq 升序, 携带 per-call 身份
+    expect(fe.calls.map((c) => c.sessionId)).toEqual([501, 502]);
+    expect(fe.calls.map((c) => c.callSeq)).toEqual([1, 2]);
+    expect(fe.calls[0].brief).toBe("支付表单");
+    expect(fe.calls[0].status).toBe("running");
+    expect(fe.calls[1].status).toBe("done");
+  });
+
+  it("calls 乱序输入(callSeq [2,1]) → sort 后 calls 升序 [1,2]", () => {
+    // 验证 sort 比较器真实有效: fixture 以 callSeq 降序输入
+    const g = buildGraph(
+      detail([
+        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+        {
+          id: 3,
+          agentId: 3,
+          parentTaskId: 1,
+          status: "done",
+          callSeq: 2,
+          sessionId: 502,
+          brief: "第二次",
+        },
+        {
+          id: 2,
+          agentId: 3,
+          parentTaskId: 1,
+          status: "running",
+          callSeq: 1,
+          sessionId: 501,
+          brief: "第一次",
+        },
+      ]),
+    );
+    const fe = g.nodes.find((n) => n.agentId === 3)!;
+    // sort 后必须升序
+    expect(fe.calls.map((c) => c.callSeq)).toEqual([1, 2]);
+    expect(fe.calls[0].brief).toBe("第一次");
+    expect(fe.calls[1].brief).toBe("第二次");
+  });
+
+  it("Leader 节点本身 isTopLevel === false", () => {
+    // Leader 是根节点, 没有 leader 派发者 → isTopLevel 应为 false
+    const g = buildGraph(
+      detail([
+        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+        { id: 2, agentId: 3, parentTaskId: 1, status: "running" },
+      ]),
+    );
+    const leader = g.nodes.find((n) => n.agentId === 2)!;
+    expect(leader.isLeader).toBe(true);
+    expect(leader.isTopLevel).toBe(false);
   });
 });

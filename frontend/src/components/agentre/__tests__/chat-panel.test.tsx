@@ -271,6 +271,7 @@ import {
   loadTranscriptScrollState,
 } from "../chat-panel-scroll-state";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import { useChatTabsStore } from "@/stores/chat-tabs-store";
 
 /** 清 store streams 以避免测试间串台 */
 function resetStore() {
@@ -1802,5 +1803,41 @@ describe("ChatPanel · T29 subagent_activity_started 旁路订阅", () => {
     // (c) session must NOT be marked running — background activity keeps session idle
     const status = useSessionStatusStore.getState().statuses.get(1);
     expect(status?.agentStatus).not.toBe("running");
+  });
+});
+
+describe("ChatPanel · /new 斜杠命令", () => {
+  it("exact /new 在新 tab 中开同 agent+项目的空白会话并跳转,不动当前会话", () => {
+    resetStore();
+    useChatTabsStore.setState({ tabs: [], activeTabId: null });
+    mockSessionStore.session = makeSession({
+      backendType: "claudecode",
+      id: 42,
+      agentId: 7,
+      projectId: 3,
+      permissionMode: "default",
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+    expect(submit).toBeDefined();
+
+    act(() => {
+      submit?.("/new");
+    });
+
+    const state = useChatTabsStore.getState();
+    expect(state.tabs).toHaveLength(1);
+    expect(state.tabs[0].meta).toMatchObject({
+      kind: "new",
+      agentId: 7,
+      projectId: 3,
+    });
+    expect(state.activeTabId).toBe(state.tabs[0].id);
+    // 当前会话完全不受影响:既不发消息,也不压缩。
+    expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
+    expect(appMocks.CompactChatSession).not.toHaveBeenCalled();
   });
 });

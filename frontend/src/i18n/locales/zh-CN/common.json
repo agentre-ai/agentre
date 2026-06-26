@@ -415,7 +415,7 @@
         "unsupported": "仅支持 PNG、JPEG、WebP，单张不超过 5MB"
       },
       "dropHint": "松开以添加文件 / 文件夹路径",
-      "placeholder": "输入消息或 / 触发命令",
+      "placeholder": "输入消息 · / 触发命令 · ! 执行终端命令",
       "removeImage": "移除图片 {{name}}",
       "saveEdit": "保存编辑",
       "send": "发送",
@@ -1872,6 +1872,9 @@
     },
     "goal": {
       "description": "设置或查看 Codex 当前目标"
+    },
+    "new": {
+      "description": "开一个相同配置的全新对话"
     }
   },
   "settings": {
@@ -2290,7 +2293,10 @@
       "pausedBanner": "已暂停，点击「继续」恢复运行",
       "stoppedBanner": "已硬停止",
       "deadlock": "检测到等待环，请去裁决",
-      "leaderCrown": "Leader"
+      "leaderCrown": "Leader",
+      "callCount": "×{{count}}",
+      "sessionsCount": "{{count}} 会话",
+      "callLabel": "会话#{{seq}}"
     },
     "feed": {
       "deadlock": "检测到 ask 等待环",
@@ -2315,7 +2321,8 @@
       "statusAwaitingUser": "等待你",
       "statusAwaitingChildren": "等待子任务",
       "statusError": "出错",
-      "statusPending": "待启动"
+      "statusPending": "待启动",
+      "progress": "{{done}}/{{total}} 任务"
     },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",
@@ -2338,6 +2345,7 @@
     },
     "exitCode": "退出码 {{code}}",
     "stop": "停止",
-    "openInTerminal": "在终端中打开"
+    "openInTerminal": "在终端中打开",
+    "dismiss": "移除此命令"
   }
 }

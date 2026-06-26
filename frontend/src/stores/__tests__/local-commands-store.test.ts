@@ -24,4 +24,20 @@ describe("useLocalCommandsStore", () => {
     const list = useLocalCommandsStore.getState().listForSession(5);
     expect(list.map((e) => e.id)).toEqual(["a", "b"]);
   });
+
+  it("remove deletes only the targeted entry", () => {
+    const s = useLocalCommandsStore.getState();
+    s.start({ id: "r1", sessionId: 5, command: "x", createdAt: 100 });
+    s.start({ id: "r2", sessionId: 5, command: "y", createdAt: 200 });
+    s.remove("r1");
+    expect(useLocalCommandsStore.getState().get("r1")).toBeUndefined();
+    expect(useLocalCommandsStore.getState().get("r2")).toBeDefined();
+  });
+
+  it("remove on an unknown id is a no-op", () => {
+    const s = useLocalCommandsStore.getState();
+    s.start({ id: "r1", sessionId: 5, command: "x", createdAt: 100 });
+    s.remove("missing");
+    expect(useLocalCommandsStore.getState().listForSession(5)).toHaveLength(1);
+  });
 });
