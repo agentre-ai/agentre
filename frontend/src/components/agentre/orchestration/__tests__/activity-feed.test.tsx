@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // 测试位于 orchestration/__tests__/, 距 wailsjs 五层
@@ -35,7 +35,6 @@ vi.mock("../../../../../hooks/use-chat-agents", () => ({
   }),
 }));
 
-import * as AppBindings from "../../../../../wailsjs/go/app/App";
 import type { app } from "../../../../../wailsjs/go/models";
 import { useOrchRunStore } from "../../../../stores/orch-run-store";
 import { ActivityFeed } from "../activity-feed";
@@ -125,36 +124,32 @@ describe("ActivityFeed", () => {
     expect(screen.getByText("已完成X")).toBeInTheDocument();
   });
 
-  it("在 feed-speak-input 输入文字后点击 feed-speak-send，调用 RunSpeak(根会话ID, msg)", async () => {
-    // 根 task 的 sessionId=500，RunSpeak 应收到 500 而非 run.id(100)
-    const rootTask = makeTask({
-      id: 1,
-      parentTaskId: 0,
-      sessionId: 500,
-      agentId: 2,
-    });
-    const detail = makeDetail({ runId: 100, rootTaskId: 1, tasks: [rootTask] });
-
+  // 外壳 (index.tsx) 已统一负责 banners + footer；ActivityFeed 只渲染事件列表
+  it("ActivityFeed 不渲染自带的 speak footer (feed-speak-input/feed-speak-send)", () => {
+    const detail = makeDetail();
     render(<ActivityFeed detail={detail} />);
-
-    const input = screen.getByTestId("feed-speak-input");
-    const sendBtn = screen.getByTestId("feed-speak-send");
-
-    fireEvent.change(input, { target: { value: "对Leader的话" } });
-    fireEvent.click(sendBtn);
-
-    await waitFor(() => {
-      expect(AppBindings.RunSpeak).toHaveBeenCalledWith(500, "对Leader的话");
-    });
+    expect(screen.queryByTestId("feed-speak-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("feed-speak-send")).not.toBeInTheDocument();
   });
 
-  it("有 awaiting-user 任务时显示 feed-blocking-bar", () => {
+  it("ActivityFeed 不渲染阻塞条 (feed-blocking-bar)，即使有 awaiting-user 任务", () => {
     const tasks = [makeTask({ id: 1, agentId: 2, status: "awaiting-user" })];
     const detail = makeDetail({ tasks });
-
     render(<ActivityFeed detail={detail} />);
+    expect(screen.queryByTestId("feed-blocking-bar")).not.toBeInTheDocument();
+  });
 
-    expect(screen.getByTestId("feed-blocking-bar")).toBeInTheDocument();
+  it("ActivityFeed 不渲染阶段横幅 (feed-deadlock-banner / feed-completed-banner / feed-paused-banner)", () => {
+    // completed 状态
+    const detail = makeDetail({ runStatus: "done" });
+    render(<ActivityFeed detail={detail} />);
+    expect(
+      screen.queryByTestId("feed-deadlock-banner"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("feed-completed-banner"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("feed-paused-banner")).not.toBeInTheDocument();
   });
 
   it("渲染 ask/reply 条目: testid + 动态文本可见", () => {

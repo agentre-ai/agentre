@@ -36,13 +36,13 @@ function iconColorClass(isActive: boolean): string {
   return isActive ? "text-primary-text" : "text-sidebar-icon";
 }
 
-// 状态描述文本（设计中 "3 running · 2 done" / "等待审批 · 1 ask" 等为动态数据，不翻译）
-function statusMeta(status: string): string {
-  if (status === "running") return "running";
-  if (status === "paused") return "paused";
-  if (status === "done") return "done";
-  if (status === "stopped") return "stopped";
-  return status;
+// 状态标签 i18n key 映射（复用 run-header 里 PHASE_CONFIG 已有的 orchestration.header.* 键）
+function statusI18nKey(status: string): string {
+  if (status === "running") return "orchestration.header.running";
+  if (status === "paused") return "orchestration.header.paused";
+  if (status === "done") return "orchestration.header.completed";
+  if (status === "stopped") return "orchestration.header.stopped";
+  return "orchestration.header.pending";
 }
 
 export function RunList({
@@ -172,7 +172,7 @@ export function RunList({
                       {run.goal}
                     </span>
                     <span className="truncate font-mono text-[9.5px] text-muted-foreground leading-tight">
-                      {statusMeta(run.status)}
+                      {t(statusI18nKey(run.status))}
                     </span>
                   </span>
 

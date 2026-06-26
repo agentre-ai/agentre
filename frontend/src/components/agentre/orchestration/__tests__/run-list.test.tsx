@@ -148,5 +148,17 @@ describe("RunList", () => {
       expect(screen.getByTestId("run-row-10")).toBeInTheDocument();
       expect(screen.getByTestId("run-row-11")).toBeInTheDocument();
     });
+
+    it("run-row 状态文本已本地化，不显示原始英文 status 字符串", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} />);
+      // run-row-10 is "running" → must NOT show raw "running"
+      // (i18n 在测试环境返回 key 本身如 "orchestration.header.running"，总是不等于 "running")
+      const row10 = screen.getByTestId("run-row-10");
+      expect(row10).not.toHaveTextContent(/^running$/i);
+      // run-row-11 is "paused" → must NOT show raw "paused"
+      const row11 = screen.getByTestId("run-row-11");
+      expect(row11).not.toHaveTextContent(/^paused$/i);
+    });
   });
 });

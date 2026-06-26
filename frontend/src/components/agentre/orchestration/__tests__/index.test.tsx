@@ -191,8 +191,11 @@ describe("OrchestrationRun shell", () => {
     // 默认是 graph 视图，点击 ToggleBar 中的 toggle-feed（view-feed 已从 RunHeader 移除）
     fireEvent.click(screen.getByTestId("toggle-feed"));
 
-    // ActivityFeed 中有 feed-speak-input
-    expect(screen.getByTestId("feed-speak-input")).toBeInTheDocument();
+    // 切换后结构图消失，外壳的 orch-footer (speak to leader) 仍在
+    expect(
+      screen.queryByTestId("stub-structure-graph"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("orch-footer")).toBeInTheDocument();
   });
 
   it("detail 不存在时渲染 loading 占位（根元素仍有 data-testid）", () => {
@@ -258,8 +261,11 @@ describe("OrchestrationRun shell", () => {
     // 点击 toggle-feed
     fireEvent.click(screen.getByTestId("toggle-feed"));
 
-    // 切换后应显示 ActivityFeed (feed-speak-input 是 ActivityFeed 内的 testid)
-    expect(screen.getByTestId("feed-speak-input")).toBeInTheDocument();
+    // 切换后结构图消失；外壳 footer 仍在（feed 自身不再渲染独立 footer）
+    expect(
+      screen.queryByTestId("stub-structure-graph"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("orch-footer")).toBeInTheDocument();
   });
 
   it("orch-footer 存在且包含 orch-speak-leader-send 按钮", () => {
