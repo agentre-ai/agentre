@@ -6,6 +6,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../../../../wailsjs/go/app/App", () => ({
   ListChatAgents: vi.fn().mockResolvedValue({ agents: [] }),
   RunLoad: vi.fn().mockResolvedValue({ run: undefined, tasks: [] }),
+  LoadChatSession: vi.fn().mockResolvedValue({
+    messages: [
+      {
+        blocks: [
+          {
+            type: "tool_use",
+            toolUseId: "s",
+            subagent: { kind: "local_agent", status: "running" },
+          },
+        ],
+      },
+    ],
+  }),
 }));
 
 // 从 hooks 层 mock useChatAgents，返回确定的 agent 列表
@@ -37,6 +50,7 @@ vi.mock("../../../../../hooks/use-chat-agents", () => ({
 
 import type { app } from "../../../../../wailsjs/go/models";
 import { useOrchRunStore } from "../../../../stores/orch-run-store";
+import { useOrchSubagentsStore } from "../../../../stores/orch-subagents-store";
 import { StructureGraph } from "../structure-graph";
 
 // 工厂: 构造 RunDetailDTO
@@ -97,6 +111,7 @@ function makeTask(
 
 beforeEach(() => {
   useOrchRunStore.getState().__reset();
+  useOrchSubagentsStore.getState().__reset();
   vi.clearAllMocks();
 });
 
@@ -219,5 +234,15 @@ describe("StructureGraph", () => {
       .getByTestId("node-3")
       .querySelector("div > span > span");
     expect(headerSpan?.textContent).toMatch(/·\s2/);
+  });
+
+  it("agent 的 task session 有 CLI 子代理 → 节点挂 +N 子代理 徽标", async () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [makeTask(1, 2, "running", 0, 0), makeTask(2, 3, "running", 1, 700)],
+    });
+    render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
+    const badge = await screen.findByTestId("node-3-subagents");
+    expect(badge).toHaveTextContent("1");
   });
 });

@@ -10,6 +10,7 @@ import { AgentAvatar, StatusDot } from "../primitives";
 import type { AgentColor, AgentStatus } from "../types";
 import { buildGraph, lifecycle } from "./graph-data";
 import type { GraphCall, GraphNode, NodeStatus } from "./graph-data";
+import { useRunSubagents } from "./use-run-subagents";
 
 // module-level map: NodeStatus → AgentStatus (allocation-free, rebuilt once)
 const CALL_DOT: Record<NodeStatus, AgentStatus> = {
@@ -49,6 +50,7 @@ function NodeCard({
   agentAvatarDataUrl,
   hasDeadlock,
   leaderLabel,
+  subagentCount,
   onClick,
 }: {
   node: GraphNode;
@@ -58,6 +60,7 @@ function NodeCard({
   agentAvatarDataUrl?: string;
   hasDeadlock: boolean;
   leaderLabel: string;
+  subagentCount: number;
   onClick: () => void;
 }) {
   const { t } = useTranslation();
@@ -111,6 +114,14 @@ function NodeCard({
             aria-label={leaderLabel}
             className="size-3.5 shrink-0 text-status-waiting"
           />
+        )}
+        {subagentCount > 0 && (
+          <span
+            data-testid={`node-${node.agentId}-subagents`}
+            className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
+          >
+            {t("orchestration.subagent.badge", { count: subagentCount })}
+          </span>
         )}
       </div>
 
@@ -208,6 +219,7 @@ function NodeTree({
   deadlockAgentIds,
   agentMap,
   leaderLabel,
+  countForAgent,
   onSelectNode,
 }: {
   nodes: GraphNode[];
@@ -223,6 +235,7 @@ function NodeTree({
     }
   >;
   leaderLabel: string;
+  countForAgent: (agentId: number) => number;
   onSelectNode: (agentId: number) => void;
 }) {
   const depths = computeDepths(nodes, edges);
@@ -258,6 +271,7 @@ function NodeTree({
                 agentAvatarDataUrl={agentInfo?.avatarDataUrl}
                 hasDeadlock={deadlockAgentIds.has(node.agentId)}
                 leaderLabel={leaderLabel}
+                subagentCount={countForAgent(node.agentId)}
                 onClick={() => onSelectNode(node.agentId)}
               />
             );
@@ -279,6 +293,7 @@ export function StructureGraph({
   const { agents } = useChatAgents();
   const { nodes, edges } = buildGraph(detail);
   const phase = lifecycle(detail);
+  const subagents = useRunSubagents(detail);
 
   // agentId → {name, color} 查找表
   const agentMap = React.useMemo(() => {
@@ -385,6 +400,7 @@ export function StructureGraph({
             deadlockAgentIds={deadlockAgentIds}
             agentMap={agentMap}
             leaderLabel={t("orchestration.graph.leaderCrown")}
+            countForAgent={subagents.countForAgent}
             onSelectNode={onSelectNode}
           />
         </div>
