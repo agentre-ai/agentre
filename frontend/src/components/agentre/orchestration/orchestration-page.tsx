@@ -18,7 +18,7 @@ export function OrchestrationPage() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       {/* 左:Run 侧栏(仅 Run, 不混会话) */}
-      <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-r border-border bg-sidebar">
+      <aside className="flex w-80 shrink-0 flex-col overflow-y-auto border-r border-border bg-sidebar">
         <RunList
           activeRunId={runId ?? undefined}
           onSelect={(id) => navigate(`/orchestration/${id}`)}

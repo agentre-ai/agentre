@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // 测试位于 orchestration/__tests__/, wailsjs 需要 5 层 ../
@@ -222,6 +222,129 @@ describe("OrchestrationRun shell", () => {
     expect(screen.getByTestId("board-tab-tasks")).toBeInTheDocument();
     expect(screen.queryByTestId("conversation-panel")).not.toBeInTheDocument();
   });
+
+  // ── Task 1 RED tests: 3-pane shell ──────────────────────────────────────
+
+  it("detail 存在时渲染 orch-main, orch-toggle, orch-content 容器", () => {
+    const detail = makeDetail({ runId: 1 });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    expect(screen.getByTestId("orch-main")).toBeInTheDocument();
+    expect(screen.getByTestId("orch-toggle")).toBeInTheDocument();
+    expect(screen.getByTestId("orch-content")).toBeInTheDocument();
+  });
+
+  it("orch-toggle 中 toggle-graph 和 toggle-feed 按钮存在", () => {
+    const detail = makeDetail({ runId: 1 });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    expect(screen.getByTestId("toggle-graph")).toBeInTheDocument();
+    expect(screen.getByTestId("toggle-feed")).toBeInTheDocument();
+  });
+
+  it("view 默认 graph: orch-content 显示结构图, 点击 toggle-feed 切换到 feed", () => {
+    const detail = makeDetail({ runId: 1 });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    // 默认结构图可见
+    expect(screen.getByTestId("stub-structure-graph")).toBeInTheDocument();
+
+    // 点击 toggle-feed
+    fireEvent.click(screen.getByTestId("toggle-feed"));
+
+    // 切换后应显示 ActivityFeed (feed-speak-input 是 ActivityFeed 内的 testid)
+    expect(screen.getByTestId("feed-speak-input")).toBeInTheDocument();
+  });
+
+  it("orch-footer 存在且包含 orch-speak-leader-send 按钮", () => {
+    const detail = makeDetail({ runId: 1 });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    expect(screen.getByTestId("orch-footer")).toBeInTheDocument();
+    expect(screen.getByTestId("orch-speak-leader-send")).toBeInTheDocument();
+  });
+
+  it("leader session 不存在时 orch-speak-leader-send 按钮 disabled", () => {
+    // detail.run.leaderAgentId=2, tasks 中无 agentId=2 的 task → no leader session
+    const detail = makeDetail({ runId: 1, tasks: [] });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    expect(screen.getByTestId("orch-speak-leader-send")).toBeDisabled();
+  });
+
+  it("leader session 存在时 orch-speak-leader-send 可用, 发送后调 RunSpeak 并清空输入", async () => {
+    const RunSpeakMock = (await import("../../../../../wailsjs/go/app/App"))
+      .RunSpeak as ReturnType<typeof vi.fn>;
+
+    // agentId=2 (leaderAgentId) 有 sessionId=500 的 task
+    const detail = makeDetail({
+      runId: 1,
+      tasks: [
+        {
+          id: 5,
+          runId: 1,
+          agentId: 2,
+          sessionId: 500,
+          parentTaskId: 0,
+          kind: "dispatch",
+          status: "running",
+          brief: "leader task",
+          result: "",
+          callSeq: 1,
+          refs: "",
+          createtime: Date.now(),
+          updatetime: Date.now(),
+        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+      ],
+    });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    const sendBtn = screen.getByTestId("orch-speak-leader-send");
+    expect(sendBtn).not.toBeDisabled();
+
+    // 找到 footer 内的 input 并输入消息
+    const footer = screen.getByTestId("orch-footer");
+    const input = footer.querySelector("input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "调整优先级" } });
+
+    // 点发送
+    fireEvent.click(sendBtn);
+
+    await waitFor(() => {
+      expect(RunSpeakMock).toHaveBeenCalledWith(500, "调整优先级");
+    });
+
+    // 输入已清空
+    expect(input.value).toBe("");
+  });
+
+  it("RunFlowBlueprint 不再渲染在 Main 列中(已移除)", () => {
+    const detail = makeDetail({ runId: 1 });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    // run-flow-blueprint 是 RunFlowBlueprint 的 data-testid
+    // flowId=0 时本来就 null,这里只验证 orch-main 不含它
+    const main = screen.getByTestId("orch-main");
+    expect(main).not.toContainElement(
+      document.querySelector('[data-testid="run-flow-blueprint"]'),
+    );
+  });
+
+  // ── End Task 1 RED tests ─────────────────────────────────────────────────
 
   it("选中 session 后右栏切到 ConversationPanel, 返回回到任务板", () => {
     // 注入含 task(agentId=3, sessionId=900) 的 detail
