@@ -344,6 +344,43 @@ describe("ConversationPanel", () => {
     expect(subtitle).toHaveTextContent("2");
   });
 
+  it("who-subtitle: 有任务但未全完成且无 running(idle)→ 不显示 Done，显示 In progress", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    useOrchRunStore.setState({
+      details: new Map([
+        [
+          40,
+          {
+            run: { id: 40, status: "running" } as never,
+            tasks: [
+              // agentId=5: one done + one not-yet-run, none running → idle (in progress)
+              { id: 1, agentId: 5, status: "done" } as never,
+              { id: 2, agentId: 5, status: "pending" } as never,
+            ],
+          } as never,
+        ],
+      ]),
+    });
+
+    render(
+      <ConversationPanel
+        sessionId={801}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+        runId={40}
+        agentId={5}
+      />,
+    );
+    const subtitle = screen.getByTestId("conversation-who-subtitle");
+    // has tasks, not all done, none running → idle, must NOT read "Done"
+    expect(subtitle).not.toHaveTextContent("Done");
+    // idle label (en locale)
+    expect(subtitle).toHaveTextContent("In progress");
+    // count = 2 tasks for agentId=5
+    expect(subtitle).toHaveTextContent("2");
+  });
+
   it("who-row 渲染状态点 testid", () => {
     loadSession.mockResolvedValue({ messages: [] });
     render(

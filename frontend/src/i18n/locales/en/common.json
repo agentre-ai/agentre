@@ -2355,6 +2355,7 @@
       "statusAwaitingChildren": "Awaiting subtasks",
       "statusError": "Error",
       "statusPending": "Pending",
+      "statusIdle": "In progress",
       "progress": "{{done}} / {{total}} done"
     },
     "notify": {

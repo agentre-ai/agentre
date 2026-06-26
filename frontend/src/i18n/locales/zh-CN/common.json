@@ -2355,6 +2355,7 @@
       "statusAwaitingChildren": "等待子任务",
       "statusError": "出错",
       "statusPending": "待启动",
+      "statusIdle": "进行中",
       "progress": "{{done}} / {{total}} 完成"
     },
     "notify": {
