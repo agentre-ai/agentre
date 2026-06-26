@@ -2296,7 +2296,8 @@
       "leaderCrown": "Leader",
       "callCount": "×{{count}}",
       "sessionsCount": "{{count}} 会话",
-      "callLabel": "会话#{{seq}}"
+      "callLabel": "会话#{{seq}}",
+      "askWaiting": "提问·等待回复"
     },
     "feed": {
       "deadlock": "检测到 ask 等待环",

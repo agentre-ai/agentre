@@ -2296,7 +2296,8 @@
       "leaderCrown": "Leader",
       "callCount": "×{{count}}",
       "sessionsCount": "{{count}} sessions",
-      "callLabel": "Session #{{seq}}"
+      "callLabel": "Session #{{seq}}",
+      "askWaiting": "Asking · waiting"
     },
     "feed": {
       "deadlock": "Ask waiting cycle detected",
