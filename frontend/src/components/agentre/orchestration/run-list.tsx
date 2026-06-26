@@ -163,7 +163,12 @@ export function RunList({
 
                   {/* text stack: name + status meta */}
                   <span className="flex min-w-0 flex-1 flex-col gap-px">
-                    <span className="truncate text-[12.5px] font-semibold text-foreground leading-tight">
+                    <span
+                      className={cn(
+                        "truncate text-[12.5px] leading-tight text-foreground",
+                        isActive ? "font-semibold" : "font-medium",
+                      )}
+                    >
                       {run.goal}
                     </span>
                     <span className="truncate font-mono text-[9.5px] text-muted-foreground leading-tight">
