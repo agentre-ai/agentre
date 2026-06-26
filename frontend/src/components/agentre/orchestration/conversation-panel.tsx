@@ -27,7 +27,7 @@ export function ConversationPanel({
   const messages = messagesBySession.get(sessionId) ?? EMPTY_MESSAGES;
   const [draft, setDraft] = React.useState("");
   const [sending, setSending] = React.useState(false);
-  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const [scrollEl, setScrollEl] = React.useState<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     if (sessionId) ensureLoaded(sessionId);
@@ -65,13 +65,13 @@ export function ConversationPanel({
       </div>
 
       {/* read-only transcript: omit live/onRerun/onEdit props */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={setScrollEl} className="min-h-0 flex-1 overflow-y-auto">
         <ChatTranscript
           agentName={agentName}
           agentColor={agentColor}
           sessionId={sessionId}
           messages={messages}
-          scrollElement={scrollRef.current}
+          scrollElement={scrollEl}
           virtualize
           active
         />
