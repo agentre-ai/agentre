@@ -29,12 +29,12 @@ export function OrchestrationRun({
     number | null
   >(null);
 
-  // Run が切り替わったら選択をリセット
+  // 切换 Run 时重置选中
   React.useEffect(() => {
     setSelectedSessionId(null);
   }, [runId]);
 
-  // 選中 session 対応エージェントを解決
+  // 解析选中 session 对应的 agent
   const { agents } = useChatAgents();
   const selTask = (detail?.tasks ?? []).find(
     (t) => t.sessionId === selectedSessionId,
