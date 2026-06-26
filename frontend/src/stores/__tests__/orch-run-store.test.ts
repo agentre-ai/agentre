@@ -19,4 +19,26 @@ describe("orch-run-store", () => {
       .onRunEvent("orch:run:deadlock", { runId: 1, cycle: [700, 800] });
     expect(useOrchRunStore.getState().deadlocks.get(1)).toEqual([700, 800]);
   });
+  it("onRunEvent ask → activeAsks + askLog 增; reply → activeAsks 清、askLog 加 reply", () => {
+    const s = useOrchRunStore.getState();
+    s.onRunEvent("orch:run:ask", {
+      runId: 1,
+      askId: "k1",
+      askerAgentId: 2,
+      askerSessionId: 50,
+      targetAgentId: 3,
+      targetSessionId: 70,
+      question: "鉴权?",
+    } as never);
+    expect(useOrchRunStore.getState().activeAsks.get(1)).toHaveLength(1);
+    expect(useOrchRunStore.getState().askLog.get(1)).toHaveLength(1);
+    s.onRunEvent("orch:run:reply", {
+      runId: 1,
+      askId: "k1",
+      answer: "ok",
+      timedOut: false,
+    } as never);
+    expect(useOrchRunStore.getState().activeAsks.get(1) ?? []).toHaveLength(0);
+    expect(useOrchRunStore.getState().askLog.get(1)).toHaveLength(2);
+  });
 });

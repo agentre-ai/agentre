@@ -5,6 +5,8 @@ export const ORCH_EVENTS = {
   resumed: "orch:run:resumed",
   stopped: "orch:run:stopped",
   deadlock: "orch:run:deadlock",
+  ask: "orch:run:ask",
+  reply: "orch:run:reply",
 } as const;
 
 export type OrchEventName = (typeof ORCH_EVENTS)[keyof typeof ORCH_EVENTS];
