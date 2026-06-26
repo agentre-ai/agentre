@@ -194,6 +194,26 @@ describe("TaskBoard", () => {
     });
   });
 
+  describe("agent 分组", () => {
+    it("同 agent 多次调用 → 分组头 + 每次调用一条 per-call 行", () => {
+      const tasks = [
+        makeTask(1, 2, { status: "running" }), // Leader 单调用
+        makeTask(2, 3, { status: "running", parentTaskId: 1, callSeq: 1, sessionId: 501 }),
+        makeTask(3, 3, { status: "done", parentTaskId: 1, callSeq: 2, sessionId: 502 }),
+      ];
+      render(
+        <TaskBoard detail={makeDetail(tasks)} selectedAgentId={null} onSelectTask={vi.fn()} />,
+      );
+      // agent 3 多调用 → 分组头 + 两条 per-call 行
+      expect(screen.getByTestId("board-agent-3")).toBeInTheDocument();
+      expect(screen.getByTestId("board-task-2")).toBeInTheDocument();
+      expect(screen.getByTestId("board-task-3")).toBeInTheDocument();
+      // agent 2 单调用 → 无分组头
+      expect(screen.queryByTestId("board-agent-2")).not.toBeInTheDocument();
+      expect(screen.getByTestId("board-task-1")).toBeInTheDocument();
+    });
+  });
+
   describe("产出物 tab", () => {
     it("点击 board-tab-outputs 切换到产出物视图，渲染 board-outputs", () => {
       const detail = makeDetail();

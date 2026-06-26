@@ -141,6 +141,26 @@ export function TaskBoard({
     [tasks],
   );
 
+  // 按 agent 分组,保留 task 首次出现顺序;agent 内按 callSeq 升序。
+  const agentGroups = React.useMemo(() => {
+    const order: number[] = [];
+    const byAgent = new Map<number, app.TaskDTO[]>();
+    for (const tk of tasks) {
+      if (!byAgent.has(tk.agentId)) {
+        byAgent.set(tk.agentId, []);
+        order.push(tk.agentId);
+      }
+      byAgent.get(tk.agentId)!.push(tk);
+    }
+    return order.map((agentId) => ({
+      agentId,
+      tasks: byAgent
+        .get(agentId)!
+        .slice()
+        .sort((a, b) => a.callSeq - b.callSeq || a.id - b.id),
+    }));
+  }, [tasks]);
+
   return (
     <div className="flex h-full flex-col">
       {/* Tab 分段控件 */}
@@ -193,46 +213,75 @@ export function TaskBoard({
               </p>
             ) : (
               <ul className="flex flex-col gap-0">
-                {tasks.map((task, index) => {
-                  const isChild = task.parentTaskId !== 0;
+                {agentGroups.map((group) => {
                   const agentName =
-                    agentNameMap.get(task.agentId) ?? `#${task.agentId}`;
-                  const isSelected = task.agentId === selectedAgentId;
-                  const seq = task.callSeq > 0 ? task.callSeq : index + 1;
-                  return (
-                    <li key={task.id}>
-                      <button
-                        type="button"
-                        data-testid={`board-task-${task.id}`}
-                        onClick={() => onSelectTask(task.agentId)}
-                        className={cn(
-                          "flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-muted/50",
-                          isChild && "pl-6",
-                          isSelected && "bg-muted",
-                        )}
-                      >
-                        {/* 序号 */}
-                        <span className="shrink-0 text-muted-foreground/60">
-                          #{seq}
-                        </span>
-                        {/* 状态点 */}
-                        <span
+                    agentNameMap.get(group.agentId) ?? `#${group.agentId}`;
+                  const isSelected = group.agentId === selectedAgentId;
+                  const multi = group.tasks.length >= 2;
+
+                  const renderRow = (task: app.TaskDTO, indented: boolean) => {
+                    const isChild = task.parentTaskId !== 0;
+                    const seq = task.callSeq > 0 ? task.callSeq : task.id;
+                    return (
+                      <li key={task.id}>
+                        <button
+                          type="button"
+                          data-testid={`board-task-${task.id}`}
+                          onClick={() => onSelectTask(task.agentId)}
                           className={cn(
-                            "h-1.5 w-1.5 shrink-0 rounded-full",
-                            statusDotClass(task.status),
+                            "flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-muted/50",
+                            !indented && isChild && "pl-6",
+                            indented && "pl-8",
+                            isSelected && "bg-muted",
                           )}
-                        />
-                        {/* Agent 名称 */}
-                        <span className="shrink-0 font-medium text-foreground">
-                          {agentName}
-                        </span>
-                        {/* 任务 brief（动态内容不走 t()） */}
-                        {task.brief && (
-                          <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                            {task.brief}
+                        >
+                          {/* 序号 */}
+                          <span className="shrink-0 text-muted-foreground/60">
+                            #{seq}
                           </span>
-                        )}
-                      </button>
+                          {/* 状态点 */}
+                          <span
+                            className={cn(
+                              "h-1.5 w-1.5 shrink-0 rounded-full",
+                              statusDotClass(task.status),
+                            )}
+                          />
+                          {/* Agent 名称（缩进子行不重复显示） */}
+                          {!indented && (
+                            <span className="shrink-0 font-medium text-foreground">
+                              {agentName}
+                            </span>
+                          )}
+                          {/* 任务 brief（动态内容不走 t()） */}
+                          {task.brief && (
+                            <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                              {task.brief}
+                            </span>
+                          )}
+                        </button>
+                      </li>
+                    );
+                  };
+
+                  if (!multi) {
+                    return renderRow(group.tasks[0], false);
+                  }
+                  return (
+                    <li key={`agent-${group.agentId}`}>
+                      <div
+                        data-testid={`board-agent-${group.agentId}`}
+                        className="flex items-center gap-2 px-3 pt-2 pb-1 text-xs font-medium text-foreground"
+                      >
+                        <span>{agentName}</span>
+                        <span className="text-muted-foreground">
+                          {t("orchestration.graph.sessionsCount", {
+                            count: group.tasks.length,
+                          })}
+                        </span>
+                      </div>
+                      <ul className="flex flex-col gap-0">
+                        {group.tasks.map((task) => renderRow(task, true))}
+                      </ul>
                     </li>
                   );
                 })}
