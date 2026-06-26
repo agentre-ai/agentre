@@ -2328,7 +2328,12 @@
       "speakPlaceholder": "对 Leader 说…",
       "speakSend": "发送",
       "ask": "{{name}} 提问",
-      "reply": "{{name}} 回复"
+      "reply": "{{name}} 回复",
+      "kindDispatch": "派发任务",
+      "kindReport": "汇报",
+      "kindFinish": "完成",
+      "kindBlocked": "阻塞",
+      "executing": "正在执行"
     },
     "board": {
       "title": "任务板",

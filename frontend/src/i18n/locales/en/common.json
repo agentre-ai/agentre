@@ -2328,7 +2328,12 @@
       "speakPlaceholder": "Message the Leader…",
       "speakSend": "Send",
       "ask": "{{name}} asked",
-      "reply": "{{name}} replied"
+      "reply": "{{name}} replied",
+      "kindDispatch": "dispatched",
+      "kindReport": "reported",
+      "kindFinish": "finished",
+      "kindBlocked": "blocked",
+      "executing": "is executing"
     },
     "board": {
       "title": "Task Board",

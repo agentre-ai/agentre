@@ -189,4 +189,163 @@ describe("ActivityFeed", () => {
     expect(replyItem).toBeInTheDocument();
     expect(replyItem).toHaveTextContent("ok");
   });
+
+  // === Task 7: design-fidelity restyle tests ===
+
+  it("ev 行: 渲染 AgentAvatar + header + 消息文本", () => {
+    // dispatch task (parentTaskId=1) → ev 行
+    const tasks = [
+      makeTask({
+        id: 2,
+        agentId: 2,
+        parentTaskId: 1,
+        status: "running",
+        brief: "派发任务内容",
+        createtime: 100,
+        updatetime: 150,
+      }),
+    ];
+    const detail = makeDetail({ tasks });
+
+    render(<ActivityFeed detail={detail} />);
+
+    // AgentAvatar 存在 (role="img") — 由 AgentAvatar 渲染
+    const avatars = screen.getAllByRole("img");
+    expect(avatars.length).toBeGreaterThan(0);
+
+    // 消息文本存在
+    expect(screen.getByText("派发任务内容")).toBeInTheDocument();
+
+    // header 行中至少存在一个 "Leader Agent" 文本元素
+    const headerNames = screen.getAllByText(/Leader Agent|#2/);
+    expect(headerNames.length).toBeGreaterThan(0);
+  });
+
+  it("ask 行保留 amber 样式 (data-testid 可见 + 包含问题文本)", () => {
+    const detail = makeDetail({ runId: 5 });
+
+    useOrchRunStore.setState((s) => {
+      const log = new Map(s.askLog);
+      log.set(5, [
+        {
+          kind: "ask",
+          askId: "amber1",
+          agentId: 3,
+          text: "需要决策",
+          ts: 50,
+        },
+      ]);
+      return { askLog: log };
+    });
+
+    render(<ActivityFeed detail={detail} />);
+
+    const askEl = screen.getByTestId("feed-ask-amber1");
+    expect(askEl).toBeInTheDocument();
+    expect(askEl).toHaveTextContent("需要决策");
+  });
+
+  it("reply 行保留 testid 和内容", () => {
+    const detail = makeDetail({ runId: 6 });
+
+    useOrchRunStore.setState((s) => {
+      const log = new Map(s.askLog);
+      log.set(6, [
+        {
+          kind: "reply",
+          askId: "r1",
+          agentId: 2,
+          text: "已回复",
+          ts: 60,
+        },
+      ]);
+      return { askLog: log };
+    });
+
+    render(<ActivityFeed detail={detail} />);
+
+    const replyEl = screen.getByTestId("feed-reply-r1");
+    expect(replyEl).toBeInTheDocument();
+    expect(replyEl).toHaveTextContent("已回复");
+  });
+
+  it("有 running 状态任务时渲染 typing 行 (data-testid 存在 + 含执行文本)", () => {
+    const tasks = [
+      makeTask({
+        id: 10,
+        agentId: 3,
+        parentTaskId: 1,
+        status: "running",
+        brief: "联调中",
+        createtime: 10,
+        updatetime: 20,
+      }),
+    ];
+    const detail = makeDetail({ tasks });
+
+    render(<ActivityFeed detail={detail} />);
+
+    // typing 行存在，包含 brief 文本和动态执行文字
+    const typingRow = screen.getByTestId("feed-typing-row");
+    expect(typingRow).toBeInTheDocument();
+    // 包含 brief 内容
+    expect(typingRow).toHaveTextContent("联调中");
+  });
+
+  it("无 running 任务时不渲染 typing 行", () => {
+    const tasks = [
+      makeTask({
+        id: 11,
+        agentId: 2,
+        parentTaskId: 0,
+        status: "done",
+        brief: "",
+        result: "已完成",
+        createtime: 5,
+        updatetime: 10,
+      }),
+    ];
+    const detail = makeDetail({ tasks, runStatus: "done" });
+
+    render(<ActivityFeed detail={detail} />);
+
+    expect(screen.queryByTestId("feed-typing-row")).not.toBeInTheDocument();
+  });
+
+  it("feed 按 ts 升序排列: dispatch(ts=100)先于 reply(ts=200)", () => {
+    const tasks = [
+      makeTask({
+        id: 20,
+        agentId: 2,
+        parentTaskId: 1,
+        status: "running",
+        brief: "先发出的任务",
+        createtime: 100,
+        updatetime: 150,
+      }),
+    ];
+    const detail = makeDetail({ runId: 9, tasks });
+
+    useOrchRunStore.setState((s) => {
+      const log = new Map(s.askLog);
+      log.set(9, [
+        {
+          kind: "reply",
+          askId: "ord1",
+          agentId: 3,
+          text: "后来的回复",
+          ts: 200,
+        },
+      ]);
+      return { askLog: log };
+    });
+
+    render(<ActivityFeed detail={detail} />);
+
+    const items = screen.getAllByRole("listitem");
+    // 第一个 listitem 应包含先发出的文本
+    expect(items[0]).toHaveTextContent("先发出的任务");
+    // 第二个包含后来的回复
+    expect(items[1]).toHaveTextContent("后来的回复");
+  });
 });

@@ -7,6 +7,8 @@ import { RunSpeak } from "../../../../wailsjs/go/app/App";
 import type { app } from "../../../../wailsjs/go/models";
 import { useChatAgents } from "@/hooks/use-chat-agents";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
+import { AgentAvatar } from "../primitives";
+import type { AgentColor } from "../types";
 import { buildFeed, type FeedItem } from "./feed-data";
 
 // 根据 agentId 从 agents 列表中解析 agent 名称，找不到则用 #{agentId} 作为 fallback
@@ -18,21 +20,43 @@ function resolveAgentName(
   return agent?.name ?? `#${agentId}`;
 }
 
-// 根据 feed item 的 kind 返回对应的颜色 class
-function kindClass(kind: FeedItem["kind"]): string {
+// 根据 agentId 解析 agent 颜色
+function resolveAgentColor(
+  agentId: number,
+  agents: ReturnType<typeof useChatAgents>["agents"],
+): AgentColor {
+  const agent = agents.find((a) => a.id === agentId);
+  return (agent?.avatarColor as AgentColor) || "agent-1";
+}
+
+// 根据 agentId 解析 avatar 相关字段
+function resolveAgentAvatar(
+  agentId: number,
+  agents: ReturnType<typeof useChatAgents>["agents"],
+): { avatarDataUrl?: string; avatarIcon?: string } {
+  const agent = agents.find((a) => a.id === agentId);
+  return {
+    avatarDataUrl: agent?.avatarDataUrl || undefined,
+    avatarIcon: agent?.avatarIcon || undefined,
+  };
+}
+
+// badge 样式映射（header 行右侧小徽章）
+function kindBadgeClass(kind: FeedItem["kind"]): string {
   switch (kind) {
     case "dispatch":
-      return "bg-primary";
+      return "bg-primary-soft text-primary-text";
     case "report":
     case "finish":
-      return "bg-status-running";
+      return "bg-status-running-bg text-status-running";
     case "blocked":
+      return "bg-destructive-soft text-destructive";
     case "ask":
-      return "bg-destructive";
+      return "bg-status-waiting-bg text-status-waiting";
     case "reply":
-      return "bg-status-waiting";
+      return "bg-status-running-bg text-status-running";
     default:
-      return "bg-muted-foreground";
+      return "bg-secondary text-muted-foreground";
   }
 }
 
@@ -67,6 +91,12 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
 
   // 构造 feed 条目列表（含 ask/reply 日志）
   const feedItems = buildFeed(detail, askLog);
+
+  // 找到当前 running 的任务中，取第一个非根任务（有 parentTaskId）的运行中任务
+  // 用于 typing 行显示；若无则取所有 running 任务里第一个
+  const runningTask =
+    tasks.find((t) => t.status === "running" && t.parentTaskId) ??
+    tasks.find((t) => t.status === "running");
 
   // 发送「对 Leader 说」消息，目标是根 task 的 session（非 run.id）
   async function handleSend() {
@@ -142,51 +172,70 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
   })();
 
   return (
-    <div className="flex h-full flex-col gap-0">
+    <div className="flex h-full flex-col gap-0 bg-background">
       {/* 顶部状态条 */}
       {topStrip && (
         <div className="shrink-0 border-b border-border p-3">{topStrip}</div>
       )}
 
       {/* 中栏：时间线 feed，可滚动 */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {feedItems.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground">
             {t("orchestration.feed.empty")}
           </p>
         ) : (
-          <ul className="flex flex-col gap-2">
+          <ul className="flex flex-col gap-3.5">
             {feedItems.map((item) => {
               const agentName = resolveAgentName(item.agentId, agents);
+              const agentColor = resolveAgentColor(item.agentId, agents);
+              const agentAvatarProps = resolveAgentAvatar(item.agentId, agents);
 
-              // ask/reply 使用专属 i18n 标签 + 动态文本
+              // ask/reply 使用专属样式：amber for ask-waiting
               if (item.kind === "ask" || item.kind === "reply") {
                 const label =
                   item.kind === "ask"
                     ? t("orchestration.feed.ask", { name: agentName })
                     : t("orchestration.feed.reply", { name: agentName });
-                // askId 从 item.id 中提取（格式: ask-{askId} 或 reply-{askId}）
                 const askId = item.id.replace(/^(ask|reply)-/, "");
+                const isAsk = item.kind === "ask";
                 return (
                   <li
                     key={item.id}
                     data-testid={`feed-${item.kind}-${askId}`}
-                    className="flex items-start gap-2 text-sm"
+                    className="flex items-start gap-2.5"
                   >
-                    <span
-                      className={cn(
-                        "mt-1.5 h-2 w-2 shrink-0 rounded-full",
-                        kindClass(item.kind),
-                      )}
+                    {/* Avatar */}
+                    <AgentAvatar
+                      name={agentName}
+                      color={agentColor}
+                      size="sm"
+                      className="mt-0.5 shrink-0 rounded-full"
+                      {...agentAvatarProps}
                     />
-                    <div className="min-w-0 flex-1">
-                      <span className="mr-1 font-medium text-foreground">
-                        {label}
-                      </span>
-                      {/* 动态问题/回答内容不翻译 */}
-                      <span className="break-words text-muted-foreground">
+                    {/* Body */}
+                    <div className="min-w-0 flex-1 flex-col gap-1">
+                      {/* Header row */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[12.5px] font-semibold text-foreground">
+                          {agentName}
+                        </span>
+                        {/* ask/reply badge */}
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                            isAsk
+                              ? "bg-status-waiting-bg text-status-waiting"
+                              : "bg-status-running-bg text-status-running",
+                          )}
+                        >
+                          {label}
+                        </span>
+                      </div>
+                      {/* Message text */}
+                      <p className="mt-0.5 break-words text-[12.5px] leading-[1.4] text-foreground">
                         {item.text}
-                      </span>
+                      </p>
                     </div>
                   </li>
                 );
@@ -198,29 +247,102 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
                   ? t("orchestration.feed.blocked")
                   : item.text;
 
+              // i18n badge label（静态）
+              const kindLabel = (() => {
+                switch (item.kind) {
+                  case "dispatch":
+                    return t("orchestration.feed.kindDispatch");
+                  case "report":
+                    return t("orchestration.feed.kindReport");
+                  case "finish":
+                    return t("orchestration.feed.kindFinish");
+                  case "blocked":
+                    return t("orchestration.feed.kindBlocked");
+                  default:
+                    return null;
+                }
+              })();
+
               return (
-                <li key={item.id} className="flex items-start gap-2 text-sm">
-                  {/* 种类指示点 */}
-                  <span
-                    className={cn(
-                      "mt-1.5 h-2 w-2 shrink-0 rounded-full",
-                      kindClass(item.kind),
-                    )}
+                <li key={item.id} className="flex items-start gap-2.5">
+                  {/* Avatar: 24px round */}
+                  <AgentAvatar
+                    name={agentName}
+                    color={agentColor}
+                    size="sm"
+                    className="mt-0.5 shrink-0 rounded-full"
+                    {...agentAvatarProps}
                   />
+                  {/* Body */}
                   <div className="min-w-0 flex-1">
-                    {/* agent 名称 */}
-                    <span className="mr-1 font-medium text-foreground">
-                      {agentName}
-                    </span>
-                    {/* 动态内容保持原文，不走 t() */}
-                    <span className="break-words text-muted-foreground">
+                    {/* Header row: name + optional badge + spacer + timestamp */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[12.5px] font-semibold text-foreground">
+                        {agentName}
+                      </span>
+                      {kindLabel && (
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                            kindBadgeClass(item.kind),
+                          )}
+                        >
+                          {kindLabel}
+                        </span>
+                      )}
+                      {/* flex spacer */}
+                      <span className="flex-1" />
+                      {/* timestamp */}
+                      <span className="shrink-0 font-mono text-[10px] text-subtle-foreground">
+                        {new Date(item.ts).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </div>
+                    {/* Message text */}
+                    <p className="mt-1 break-words text-[12.5px] leading-[1.4] text-foreground">
                       {displayText}
-                    </span>
+                    </p>
                   </div>
                 </li>
               );
             })}
           </ul>
+        )}
+
+        {/* Typing row: only rendered when there is an active running task */}
+        {runningTask && (
+          <div
+            data-testid="feed-typing-row"
+            className="mt-3.5 flex items-center gap-2.5"
+          >
+            {/* Avatar */}
+            <AgentAvatar
+              name={resolveAgentName(runningTask.agentId, agents)}
+              color={resolveAgentColor(runningTask.agentId, agents)}
+              size="sm"
+              className="shrink-0 rounded-full"
+              {...resolveAgentAvatar(runningTask.agentId, agents)}
+            />
+            {/* Text + dots */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[12px] text-muted-foreground">
+                {resolveAgentName(runningTask.agentId, agents)}{" "}
+                {t("orchestration.feed.executing")}{" "}
+                <span className="font-mono">
+                  #{runningTask.callSeq ?? runningTask.id}
+                </span>
+                {runningTask.brief ? ` · ${runningTask.brief}` : ""}
+              </span>
+              {/* 3 animated dots */}
+              <span className="inline-flex items-center gap-0.5">
+                <span className="size-1 rounded-full bg-subtle-foreground motion-safe:animate-pulse" />
+                <span className="size-1 rounded-full bg-subtle-foreground motion-safe:animate-pulse [animation-delay:150ms]" />
+                <span className="size-1 rounded-full bg-subtle-foreground motion-safe:animate-pulse [animation-delay:300ms]" />
+              </span>
+            </div>
+          </div>
         )}
       </div>
 
