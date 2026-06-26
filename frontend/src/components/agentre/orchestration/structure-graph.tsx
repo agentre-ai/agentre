@@ -58,9 +58,9 @@ function NodeCard({
     status === "waiting-user" || status === "waiting"
       ? "waiting"
       : (status as AgentStatus) in { running: 1, idle: 1, error: 1, done: 1 }
-        ? (status === "done"
-            ? "idle"
-            : (status as AgentStatus))
+        ? status === "done"
+          ? "idle"
+          : (status as AgentStatus)
         : "idle";
 
   return (
@@ -88,7 +88,10 @@ function NodeCard({
           {agentName}
           {isGroup && (
             <span className="ml-1 text-xs font-normal text-muted-foreground">
-              · {t("orchestration.graph.sessionsCount", { count: node.callCount })}
+              {"·"}
+              {t("orchestration.graph.sessionsCount", {
+                count: node.callCount,
+              })}
             </span>
           )}
         </span>
