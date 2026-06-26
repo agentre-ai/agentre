@@ -136,10 +136,24 @@ export function TaskBoard({
       ? (agentNameMap.get(selectedAgentId) ?? `#${selectedAgentId}`)
       : "";
 
+  const doneCount = React.useMemo(
+    () => tasks.filter((tk) => tk.status === "done").length,
+    [tasks],
+  );
+
   return (
     <div className="flex h-full flex-col">
       {/* Tab 分段控件 */}
       <div className="flex shrink-0 items-center gap-1 border-b border-border p-2">
+        <span
+          data-testid="board-progress"
+          className="mr-1 shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground tabular-nums"
+        >
+          {t("orchestration.board.progress", {
+            done: doneCount,
+            total: tasks.length,
+          })}
+        </span>
         <Button
           data-testid="board-tab-tasks"
           variant={tab === "tasks" ? "default" : "ghost"}

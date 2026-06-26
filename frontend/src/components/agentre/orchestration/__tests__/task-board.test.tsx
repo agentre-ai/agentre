@@ -179,6 +179,21 @@ describe("TaskBoard", () => {
     });
   });
 
+  describe("头部计数徽标", () => {
+    it("头部 board-progress 显示 done/total(完成数/任务数)", () => {
+      const tasks = [
+        makeTask(1, 2, { status: "done" }),
+        makeTask(2, 3, { status: "done", parentTaskId: 1 }),
+        makeTask(3, 3, { status: "running", parentTaskId: 1 }),
+      ];
+      render(
+        <TaskBoard detail={makeDetail(tasks)} selectedAgentId={null} onSelectTask={vi.fn()} />,
+      );
+      expect(screen.getByTestId("board-progress")).toHaveTextContent("2");
+      expect(screen.getByTestId("board-progress")).toHaveTextContent("3");
+    });
+  });
+
   describe("产出物 tab", () => {
     it("点击 board-tab-outputs 切换到产出物视图，渲染 board-outputs", () => {
       const detail = makeDetail();

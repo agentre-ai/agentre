@@ -2321,7 +2321,8 @@
       "statusAwaitingUser": "Awaiting you",
       "statusAwaitingChildren": "Awaiting subtasks",
       "statusError": "Error",
-      "statusPending": "Pending"
+      "statusPending": "Pending",
+      "progress": "{{done}}/{{total}} tasks"
     },
     "notify": {
       "completed": "Orchestration run completed: {{goal}}",

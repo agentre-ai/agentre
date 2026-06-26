@@ -2321,7 +2321,8 @@
       "statusAwaitingUser": "等待你",
       "statusAwaitingChildren": "等待子任务",
       "statusError": "出错",
-      "statusPending": "待启动"
+      "statusPending": "待启动",
+      "progress": "{{done}}/{{total}} 任务"
     },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",
