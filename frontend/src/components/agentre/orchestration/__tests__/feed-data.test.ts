@@ -39,4 +39,29 @@ describe("feed-data", () => {
     expect(items.map((i) => i.kind)).toEqual(["ask", "reply"]);
     expect(items[0].text).toBe("鉴权?");
   });
+
+  it("buildFeed 携带 targetAgentId 到 ask/reply FeedItem", () => {
+    const items = buildFeed({ tasks: [] } as never, [
+      {
+        kind: "ask",
+        askId: "a1",
+        agentId: 2,
+        targetAgentId: 3,
+        text: "提问内容",
+        ts: 10,
+      },
+      {
+        kind: "reply",
+        askId: "a1",
+        agentId: 3,
+        targetAgentId: 2,
+        text: "回答内容",
+        ts: 20,
+      },
+    ]);
+    const askItem = items.find((i) => i.kind === "ask");
+    const replyItem = items.find((i) => i.kind === "reply");
+    expect(askItem?.targetAgentId).toBe(3);
+    expect(replyItem?.targetAgentId).toBe(2);
+  });
 });

@@ -2311,6 +2311,12 @@
       "pausedBanner": "Paused — click Resume to continue",
       "stoppedBanner": "Hard stopped",
       "deadlock": "Waiting cycle detected — resolve it",
+      "deadlockBannerDetail": "Multiple agents are waiting on each other; intervene or instruct the Leader to break the cycle",
+      "interveneBtn": "Intervene",
+      "completedBannerDetail": "All tasks finished — orchestration complete",
+      "pausedBannerDetail": "Orchestration is paused; resume at any time",
+      "resumeBtn": "Resume",
+      "stoppedBannerDetail": "Orchestration was hard-stopped",
       "leaderCrown": "Leader",
       "callCount": "×{{count}}",
       "sessionsCount": "{{count}} sessions",
@@ -2327,10 +2333,16 @@
       "blocked": "Awaiting you",
       "speakPlaceholder": "Message the Leader…",
       "speakSend": "Send",
-      "ask": "{{name}} asked",
-      "reply": "{{name}} replied"
+      "kindDispatch": "dispatched",
+      "kindReport": "reported",
+      "kindFinish": "finished",
+      "kindBlocked": "blocked",
+      "kindAsk": "asked",
+      "kindReply": "replied",
+      "executing": "is executing"
     },
     "board": {
+      "title": "Task Board",
       "tabTasks": "Tasks",
       "tabOutputs": "Outputs",
       "tasksEmpty": "No tasks yet",
@@ -2343,7 +2355,7 @@
       "statusAwaitingChildren": "Awaiting subtasks",
       "statusError": "Error",
       "statusPending": "Pending",
-      "progress": "{{done}}/{{total}} tasks"
+      "progress": "{{done}} / {{total}} done"
     },
     "notify": {
       "completed": "Orchestration run completed: {{goal}}",
@@ -2363,7 +2375,16 @@
     "conversation": {
       "backToBoard": "Back to board",
       "speakPlaceholder": "Speak to it… (sends to this session)",
-      "speakSend": "Send"
+      "speakSend": "Send",
+      "awaitingReply": "Awaiting reply",
+      "sessionLabel": "session",
+      "tasksUnit": "tasks"
+    },
+    "toggle": {
+      "tasks": "tasks",
+      "depth": "Depth",
+      "agents": "{{agentCount}} agent · {{subCount}} sub",
+      "subagents": "subagents"
     }
   },
   "localCommand": {

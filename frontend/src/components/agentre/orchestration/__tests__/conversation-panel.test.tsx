@@ -15,11 +15,11 @@ vi.mock("../../chat", () => ({
   ),
 }));
 
-import { useOrchSubagentsStore } from "../../../../stores/orch-subagents-store";
+import { useOrchRunStore } from "../../../../stores/orch-run-store";
 import { ConversationPanel } from "../conversation-panel";
 
 beforeEach(() => {
-  useOrchSubagentsStore.getState().__reset();
+  useOrchRunStore.getState().__reset();
   runSpeak.mockClear();
   loadSession.mockReset();
 });
@@ -114,5 +114,248 @@ describe("ConversationPanel", () => {
     await waitFor(() =>
       expect(screen.getByTestId("stub-transcript")).toHaveTextContent("1"),
     );
+  });
+
+  // ── 新 cvHead/cvInput 结构断言 (Step 1 RED) ────────────────────────────
+
+  it("渲染 cvHead: 返回按钮 + agentName 展示", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端工程师"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    // 返回按钮存在
+    expect(screen.getByTestId("conversation-back")).toBeInTheDocument();
+    // agent name 展示在 who 行
+    expect(screen.getByTestId("conversation-who-name")).toHaveTextContent(
+      "后端工程师",
+    );
+  });
+
+  it("cvInput: 输入框与发送按钮均渲染", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("conversation-speak-input")).toBeInTheDocument();
+    expect(screen.getByTestId("conversation-speak-send")).toBeInTheDocument();
+  });
+
+  it("只读 transcript: 无 Edit/Regenerate 按钮(no onRerun/onEdit props)", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    // stub 不渲染 edit/rerun 按钮
+    expect(screen.queryByTestId("message-rerun")).toBeNull();
+    expect(screen.queryByTestId("message-edit")).toBeNull();
+  });
+
+  it("等待高亮: runId+agentId 提供且 activeAsks 含该 agent → 展示 waiting callout", async () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    // 直接注入 activeAsks 状态(跳过 onRunEvent 以避免触发 RunLoad)
+    const asks = new Map([
+      [10, [{ askId: "ask-1", askerAgentId: 5, targetAgentId: 99 }]],
+    ]);
+    useOrchRunStore.setState({ activeAsks: asks });
+
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+        runId={10}
+        agentId={5}
+      />,
+    );
+    expect(
+      screen.getByTestId("conversation-awaiting-callout"),
+    ).toBeInTheDocument();
+  });
+
+  it("等待高亮: agentId 不在 activeAsks 中时不展示 waiting callout", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+        runId={10}
+        agentId={999}
+      />,
+    );
+    // no active ask for agentId=999
+    expect(screen.queryByTestId("conversation-awaiting-callout")).toBeNull();
+  });
+
+  // ── Finding #3: who-row 副标题 + 状态点 + "· 会话" 后缀 (RED→GREEN) ─────
+
+  it("who-name 展示 agentName + session suffix", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端工程师"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    // name line includes agentName
+    expect(screen.getByTestId("conversation-who-name")).toHaveTextContent(
+      "后端工程师",
+    );
+    // suffix label is rendered (i18n key: sessionLabel → "session" in en locale)
+    expect(screen.getByTestId("conversation-who-name")).toHaveTextContent(
+      "session",
+    );
+  });
+
+  it("who-subtitle: 无 runId 时渲染 idle 状态标签 + 0 任务", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    // subtitle element is present
+    expect(screen.getByTestId("conversation-who-subtitle")).toBeInTheDocument();
+  });
+
+  it("who-subtitle: runId+agentId 有 running 任务 → 展示 running 状态 + 任务数", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    // inject detail with tasks for agentId=5 in run 10
+    useOrchRunStore.setState({
+      details: new Map([
+        [
+          10,
+          {
+            run: { id: 10, status: "running" } as never,
+            tasks: [
+              { id: 1, agentId: 5, status: "running" } as never,
+              { id: 2, agentId: 5, status: "done" } as never,
+              { id: 3, agentId: 99, status: "running" } as never, // different agent
+            ],
+          } as never,
+        ],
+      ]),
+    });
+
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+        runId={10}
+        agentId={5}
+      />,
+    );
+    const subtitle = screen.getByTestId("conversation-who-subtitle");
+    // agentId=5 has 2 tasks; one is running → status label "Running" / "运行中"
+    expect(subtitle).toBeInTheDocument();
+    // task count: 2 tasks for agentId=5
+    expect(subtitle).toHaveTextContent("2");
+  });
+
+  it("who-subtitle: 0 任务(pending) → 不显示 Done，显示 Pending", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    useOrchRunStore.setState({
+      details: new Map([
+        [
+          30,
+          {
+            run: { id: 30, status: "running" } as never,
+            tasks: [
+              // agentId=8 has no tasks; agentId=99 has a task
+              { id: 1, agentId: 99, status: "running" } as never,
+            ],
+          } as never,
+        ],
+      ]),
+    });
+
+    render(
+      <ConversationPanel
+        sessionId={801}
+        agentName="新 Agent"
+        agentColor="agent-4"
+        onBack={vi.fn()}
+        runId={30}
+        agentId={8}
+      />,
+    );
+    const subtitle = screen.getByTestId("conversation-who-subtitle");
+    // agentId=8 has 0 tasks → should NOT read "Done"
+    expect(subtitle).not.toHaveTextContent("Done");
+    // should read "Pending" (en locale)
+    expect(subtitle).toHaveTextContent("Pending");
+    // task count: 0 tasks for agentId=8
+    expect(subtitle).toHaveTextContent("0");
+  });
+
+  it("who-subtitle: 全 done 任务 → done 状态 + 任务数", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    useOrchRunStore.setState({
+      details: new Map([
+        [
+          20,
+          {
+            run: { id: 20, status: "running" } as never,
+            tasks: [
+              { id: 1, agentId: 7, status: "done" } as never,
+              { id: 2, agentId: 7, status: "done" } as never,
+            ],
+          } as never,
+        ],
+      ]),
+    });
+
+    render(
+      <ConversationPanel
+        sessionId={801}
+        agentName="前端"
+        agentColor="agent-3"
+        onBack={vi.fn()}
+        runId={20}
+        agentId={7}
+      />,
+    );
+    const subtitle = screen.getByTestId("conversation-who-subtitle");
+    // all done → done status, count=2
+    expect(subtitle).toHaveTextContent("2");
+  });
+
+  it("who-row 渲染状态点 testid", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByTestId("conversation-who-status-dot"),
+    ).toBeInTheDocument();
   });
 });

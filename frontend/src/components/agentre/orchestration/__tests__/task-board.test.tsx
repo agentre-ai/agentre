@@ -263,6 +263,93 @@ describe("TaskBoard", () => {
     });
   });
 
+  describe("头部标题与格式", () => {
+    it("渲染 board-head-title 元素", () => {
+      render(
+        <TaskBoard
+          detail={makeDetail([])}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId("board-head-title")).toBeInTheDocument();
+      // text comes from i18n key orchestration.board.title (locale-dependent)
+      expect(
+        screen.getByTestId("board-head-title").textContent?.length,
+      ).toBeGreaterThan(0);
+    });
+
+    it("board-progress 显示 done / total 完成 格式", () => {
+      const tasks = [
+        makeTask(1, 2, { status: "done" }),
+        makeTask(2, 3, { status: "running" }),
+      ];
+      render(
+        <TaskBoard
+          detail={makeDetail(tasks)}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
+        />,
+      );
+      const prog = screen.getByTestId("board-progress");
+      expect(prog).toHaveTextContent("1");
+      expect(prog).toHaveTextContent("2");
+    });
+  });
+
+  describe("任务行状态图标", () => {
+    it("done 任务行渲染 status-icon-done testid", () => {
+      const tasks = [makeTask(1, 2, { status: "done" })];
+      render(
+        <TaskBoard
+          detail={makeDetail(tasks)}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId("board-task-1-status")).toBeInTheDocument();
+    });
+
+    it("running 任务行渲染 status icon testid", () => {
+      const tasks = [makeTask(1, 2, { status: "running" })];
+      render(
+        <TaskBoard
+          detail={makeDetail(tasks)}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId("board-task-1-status")).toBeInTheDocument();
+    });
+
+    it("任务行显示 #id (任务序号)", () => {
+      const tasks = [makeTask(5, 2, { callSeq: 5 })];
+      render(
+        <TaskBoard
+          detail={makeDetail(tasks)}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
+        />,
+      );
+      const row = screen.getByTestId("board-task-5");
+      expect(row).toHaveTextContent("#5");
+    });
+
+    it("任务行显示 brief 标题", () => {
+      const tasks = [makeTask(1, 2, { brief: "实现网关适配层" })];
+      render(
+        <TaskBoard
+          detail={makeDetail(tasks)}
+          selectedSessionId={null}
+          onSelectSession={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId("board-task-1")).toHaveTextContent(
+        "实现网关适配层",
+      );
+    });
+  });
+
   describe("产出物 tab", () => {
     it("点击 board-tab-outputs 切换到产出物视图，渲染 board-outputs", () => {
       const detail = makeDetail();

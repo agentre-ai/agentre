@@ -1,16 +1,30 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { MessageSquare, SendHorizontal } from "lucide-react";
+import {
+  CircleCheck,
+  MessageSquare,
+  Pause,
+  SendHorizontal,
+  Square,
+  TriangleAlert,
+} from "lucide-react";
 import { useChatAgents } from "@/hooks/use-chat-agents";
 import { Button } from "@/components/ui/button";
 import type { AgentColor } from "../types";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
-import { RunSpeak } from "../../../../wailsjs/go/app/App";
+import { RunResume, RunSpeak } from "../../../../wailsjs/go/app/App";
 import { RunHeader } from "./run-header";
 import { StructureGraph } from "./structure-graph";
 import { ActivityFeed } from "./activity-feed";
 import { TaskBoard } from "./task-board";
 import { ConversationPanel } from "./conversation-panel";
+import { ToggleBar } from "./toggle-bar";
+import { useRunSubagents } from "./use-run-subagents";
+import type { app } from "../../../../wailsjs/go/models";
+import { buildGraph, hasDeadlockCycle, lifecycle } from "./graph-data";
+
+// 稳定空 detail:detail 未就绪时给 useRunSubagents 一个恒定身份的占位,避免每渲染触发懒加载 effect。
+const EMPTY_RUN_DETAIL = { tasks: [] } as unknown as app.RunDetailDTO;
 
 export function OrchestrationRun({
   runId,
@@ -31,8 +45,49 @@ export function OrchestrationRun({
     number | null
   >(null);
 
+  // 子代理(spawned local_agent)计数:复用 useRunSubagents 懒加载缓存(任务板同源,按 session 缓存)
+  const subagents = useRunSubagents(detail ?? EMPTY_RUN_DETAIL);
+
+  // Compute ToggleBar stats from existing data (no additional fetches)
+  const toggleStats = React.useMemo(() => {
+    const tasks = detail?.tasks ?? [];
+    const done = tasks.filter((t) => t.status === "done").length;
+    const total = tasks.length;
+    if (!detail) {
+      return {
+        done,
+        total,
+        depth: 0,
+        agentCount: 0,
+        subCount: 0,
+        subagentCount: 0,
+      };
+    }
+    const graph = buildGraph(detail);
+    const agentCount = graph.stats.nodes;
+    const subCount = graph.stats.subagents;
+    // subagentCount:真正 spawned 的子代理(local_agent tool use)总数,跨所有 task session 求和
+    // (与 chip3 的「sub」=图节点级子代理计数语义不同,设计稿两者本就是不同数字)。
+    const subagentCount = tasks.reduce(
+      (n, task) =>
+        n + (task.sessionId ? subagents.forSession(task.sessionId).length : 0),
+      0,
+    );
+    return {
+      done,
+      total,
+      depth: graph.stats.depth,
+      agentCount,
+      subCount,
+      subagentCount,
+    };
+  }, [detail, subagents]);
+
   // Footer speak-to-Leader state
   const [leaderMsg, setLeaderMsg] = React.useState("");
+
+  // Ref for footer input — used by deadlock "intervene" banner action to focus it
+  const footerInputRef = React.useRef<HTMLInputElement>(null);
 
   // 切换 Run 时重置选中
   React.useEffect(() => {
@@ -58,6 +113,16 @@ export function OrchestrationRun({
     );
     return leaderTask?.sessionId ?? null;
   }, [detail]);
+
+  // Phase + deadlock detection for banners (shared logic with structure-graph)
+  const phase = detail ? lifecycle(detail) : null;
+  const cycle = useOrchRunStore((s) =>
+    runId !== undefined ? s.deadlocks.get(runId) : undefined,
+  );
+  const hasDeadlock = React.useMemo(
+    () => hasDeadlockCycle(cycle, detail?.tasks ?? []),
+    [cycle, detail],
+  );
 
   const handleLeaderSend = React.useCallback(async () => {
     if (!leaderSessionId || !leaderMsg.trim()) return;
@@ -97,36 +162,107 @@ export function OrchestrationRun({
           >
             <RunHeader detail={detail} />
 
-            {/* Minimal ToggleBar placeholder (Task 4 replaces with real ToggleBar) */}
-            <div
-              data-testid="orch-toggle"
-              className="flex shrink-0 items-center gap-1 border-b border-border px-4 py-1.5"
-            >
-              <button
-                type="button"
-                data-testid="toggle-graph"
-                onClick={() => setView("graph")}
-                className={
-                  view === "graph"
-                    ? "rounded-md bg-accent px-3 py-1 text-xs font-medium text-foreground"
-                    : "rounded-md px-3 py-1 text-xs text-muted-foreground hover:bg-accent/50"
-                }
-              >
-                {t("orchestration.header.viewGraph")}
-              </button>
-              <button
-                type="button"
-                data-testid="toggle-feed"
-                onClick={() => setView("feed")}
-                className={
-                  view === "feed"
-                    ? "rounded-md bg-accent px-3 py-1 text-xs font-medium text-foreground"
-                    : "rounded-md px-3 py-1 text-xs text-muted-foreground hover:bg-accent/50"
-                }
-              >
-                {t("orchestration.header.viewFeed")}
-              </button>
-            </div>
+            <ToggleBar view={view} onView={setView} stats={toggleStats} />
+
+            {/* Phase banners: between ToggleBar and content, visible in both views */}
+            {detail && (
+              <>
+                {/* Deadlock banner — highest priority, any phase */}
+                {hasDeadlock && (
+                  <div
+                    data-testid="graph-deadlock-banner"
+                    className="flex items-center gap-2.5 border-l-[3px] border-destructive bg-destructive-soft px-5 py-3 text-destructive"
+                  >
+                    <TriangleAlert
+                      className="size-4 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <div className="flex flex-1 flex-col gap-px">
+                      <span className="text-[12.5px] font-semibold">
+                        {t("orchestration.graph.deadlock")}
+                      </span>
+                      <span className="text-[11px]">
+                        {t("orchestration.graph.deadlockBannerDetail")}
+                      </span>
+                    </div>
+                    <Button
+                      data-testid="banner-intervene-btn"
+                      variant="destructive"
+                      size="sm"
+                      className="shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold"
+                      onClick={() => footerInputRef.current?.focus()}
+                    >
+                      {t("orchestration.graph.interveneBtn")}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Completed banner */}
+                {!hasDeadlock && phase === "completed" && (
+                  <div
+                    data-testid="graph-completed-banner"
+                    className="flex items-center gap-2.5 border-l-[3px] border-status-running bg-status-running-bg px-5 py-3 text-status-running"
+                  >
+                    <CircleCheck
+                      className="size-4 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <div className="flex flex-1 flex-col gap-px">
+                      <span className="text-[12.5px] font-semibold">
+                        {t("orchestration.graph.completedBanner")}
+                      </span>
+                      <span className="text-[11px]">
+                        {t("orchestration.graph.completedBannerDetail")}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Paused banner */}
+                {!hasDeadlock && phase === "paused" && (
+                  <div
+                    data-testid="graph-paused-banner"
+                    className="flex items-center gap-2.5 border-l-[3px] border-status-waiting bg-status-waiting-bg px-5 py-3 text-status-waiting"
+                  >
+                    <Pause className="size-4 shrink-0" aria-hidden="true" />
+                    <div className="flex flex-1 flex-col gap-px">
+                      <span className="text-[12.5px] font-semibold">
+                        {t("orchestration.graph.pausedBanner")}
+                      </span>
+                      <span className="text-[11px]">
+                        {t("orchestration.graph.pausedBannerDetail")}
+                      </span>
+                    </div>
+                    <Button
+                      data-testid="banner-resume-btn"
+                      size="sm"
+                      className="shrink-0 rounded-md border border-status-waiting bg-status-waiting-bg px-3 py-1.5 text-xs font-semibold text-status-waiting hover:bg-status-waiting-bg/80"
+                      onClick={() => void RunResume(runId).catch(() => {})}
+                    >
+                      {t("orchestration.graph.resumeBtn")}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Stopped banner */}
+                {!hasDeadlock && phase === "stopped" && (
+                  <div
+                    data-testid="graph-stopped-banner"
+                    className="flex items-center gap-2.5 border-l-[3px] border-border bg-muted px-5 py-3 text-muted-foreground"
+                  >
+                    <Square className="size-4 shrink-0" aria-hidden="true" />
+                    <div className="flex flex-1 flex-col gap-px">
+                      <span className="text-[12.5px] font-semibold">
+                        {t("orchestration.graph.stoppedBanner")}
+                      </span>
+                      <span className="text-[11px]">
+                        {t("orchestration.graph.stoppedBannerDetail")}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
 
             {/* Content: graph | feed */}
             <div
@@ -154,6 +290,7 @@ export function OrchestrationRun({
                   aria-hidden="true"
                 />
                 <input
+                  ref={footerInputRef}
                   type="text"
                   className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                   placeholder={t("orchestration.run.speakLeaderPlaceholder")}
@@ -187,6 +324,8 @@ export function OrchestrationRun({
                 agentName={selAgentName}
                 agentColor={selAgentColor}
                 onBack={() => setSelectedSessionId(null)}
+                runId={runId}
+                agentId={selTask?.agentId}
               />
             ) : (
               <TaskBoard

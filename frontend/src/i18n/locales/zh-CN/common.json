@@ -2311,6 +2311,12 @@
       "pausedBanner": "已暂停，点击「继续」恢复运行",
       "stoppedBanner": "已硬停止",
       "deadlock": "检测到等待环，请去裁决",
+      "deadlockBannerDetail": "多个 agent 互相等待，请介入或指示 Leader 打破循环",
+      "interveneBtn": "介入处理",
+      "completedBannerDetail": "所有任务已完成，编排结束",
+      "pausedBannerDetail": "编排已暂停，可随时恢复运行",
+      "resumeBtn": "继续",
+      "stoppedBannerDetail": "编排已硬停止",
       "leaderCrown": "Leader",
       "callCount": "×{{count}}",
       "sessionsCount": "{{count}} 会话",
@@ -2327,12 +2333,18 @@
       "blocked": "等待你",
       "speakPlaceholder": "对 Leader 说…",
       "speakSend": "发送",
-      "ask": "{{name}} 提问",
-      "reply": "{{name}} 回复"
+      "kindDispatch": "派发任务",
+      "kindReport": "汇报",
+      "kindFinish": "完成",
+      "kindBlocked": "阻塞",
+      "kindAsk": "提问",
+      "kindReply": "回复",
+      "executing": "正在执行"
     },
     "board": {
+      "title": "任务板",
       "tabTasks": "任务",
-      "tabOutputs": "输出",
+      "tabOutputs": "产出",
       "tasksEmpty": "暂无任务",
       "outputsEmpty": "暂无输出",
       "drilldownTitle": "详情",
@@ -2343,7 +2355,7 @@
       "statusAwaitingChildren": "等待子任务",
       "statusError": "出错",
       "statusPending": "待启动",
-      "progress": "{{done}}/{{total}} 任务"
+      "progress": "{{done}} / {{total}} 完成"
     },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",
@@ -2363,7 +2375,16 @@
     "conversation": {
       "backToBoard": "返回任务板",
       "speakPlaceholder": "对它说…(发送给该会话)",
-      "speakSend": "发送"
+      "speakSend": "发送",
+      "awaitingReply": "等待回复中",
+      "sessionLabel": "会话",
+      "tasksUnit": "任务"
+    },
+    "toggle": {
+      "tasks": "任务",
+      "depth": "深度",
+      "agents": "{{agentCount}} agent · {{subCount}} sub",
+      "subagents": "子代理"
     }
   },
   "localCommand": {

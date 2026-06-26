@@ -116,8 +116,9 @@ beforeEach(() => {
 });
 
 describe("StructureGraph", () => {
-  it("lifecycle=completed (run.status=done) 时渲染 graph-completed-banner", () => {
-    // 终态 done → lifecycle 返回 completed，应有 banner
+  it("lifecycle=completed (run.status=done) 时节点渲染(banner 已移至 index.tsx 主列)", () => {
+    // 终态 done → lifecycle 返回 completed，banner 已由 index.tsx 负责渲染
+    // StructureGraph 应渲染节点(不再有 completed banner)
     const detail = makeDetail({
       runStatus: "done",
       tasks: [makeTask(1, 2, "done"), makeTask(2, 3, "done", 1)],
@@ -125,10 +126,16 @@ describe("StructureGraph", () => {
 
     render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
 
-    expect(screen.getByTestId("graph-completed-banner")).toBeInTheDocument();
+    // banner relocated to index.tsx — not here
+    expect(
+      screen.queryByTestId("graph-completed-banner"),
+    ).not.toBeInTheDocument();
+    // nodes are still rendered (phase !== empty since tasks.length > 1)
+    expect(screen.getByTestId("node-2")).toBeInTheDocument();
+    expect(screen.getByTestId("node-3")).toBeInTheDocument();
   });
 
-  it("store deadlocks 有 [runId → [sessionId]] 且 task 含该 sessionId → graph-deadlock-banner 可见", () => {
+  it("store deadlocks 有 [runId → [sessionId]] 且 task 含该 sessionId → 死锁节点有红环, banner 已移至 index.tsx", () => {
     const runId = 42;
     const sessionId = 99;
     // 注入死锁信息到 store
@@ -149,7 +156,10 @@ describe("StructureGraph", () => {
 
     render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
 
-    expect(screen.getByTestId("graph-deadlock-banner")).toBeInTheDocument();
+    // banner relocated to index.tsx — not here
+    expect(
+      screen.queryByTestId("graph-deadlock-banner"),
+    ).not.toBeInTheDocument();
     // 死锁高亮必须落在正确的节点:cycle sessionId(99)→该任务 agentId(3),
     // Leader(agentId 2)不在环上,不应被红环。验证 sessionId→agentId 映射真发生。
     expect(screen.getByTestId("node-3").className).toMatch(/ring-destructive/);
@@ -262,6 +272,77 @@ describe("StructureGraph", () => {
     expect(screen.queryByTestId("node-3-asking")).not.toBeInTheDocument();
   });
 
+  // ── Task 9: banners relocated — StructureGraph must NOT render them ────────
+
+  it("Task9: completed phase → StructureGraph 不再渲染 graph-completed-banner", () => {
+    const detail = makeDetail({
+      runStatus: "done",
+      tasks: [makeTask(1, 2, "done"), makeTask(2, 3, "done", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(
+      screen.queryByTestId("graph-completed-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Task9: paused phase → StructureGraph 不再渲染 graph-paused-banner", () => {
+    const detail = makeDetail({
+      runStatus: "paused",
+      tasks: [makeTask(1, 2, "running"), makeTask(2, 3, "running", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(screen.queryByTestId("graph-paused-banner")).not.toBeInTheDocument();
+  });
+
+  it("Task9: stopped phase → StructureGraph 不再渲染 graph-stopped-banner", () => {
+    const detail = makeDetail({
+      runStatus: "stopped",
+      tasks: [makeTask(1, 2, "done"), makeTask(2, 3, "done", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(
+      screen.queryByTestId("graph-stopped-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Task9: deadlock → StructureGraph 不再渲染 graph-deadlock-banner", () => {
+    const runId = 42;
+    const sessionId = 99;
+    useOrchRunStore.setState({
+      deadlocks: new Map([[runId, [sessionId]]]),
+    });
+    const detail = makeDetail({
+      runId,
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0),
+        makeTask(2, 3, "awaiting-user", 1, sessionId),
+      ],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(
+      screen.queryByTestId("graph-deadlock-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Task9: node-asking 徽标仍由 StructureGraph 渲染(未移除)", () => {
+    useOrchRunStore.setState({
+      activeAsks: new Map([
+        [1, [{ askId: "k", askerAgentId: 3, targetAgentId: 2 }]],
+      ]),
+    });
+    const detail = makeDetail({
+      runId: 1,
+      runStatus: "running",
+      tasks: [makeTask(1, 2, "running"), makeTask(2, 3, "running", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    // asking badge still rendered by StructureGraph
+    expect(screen.getByTestId("node-3-asking")).toBeInTheDocument();
+  });
+
+  // ── End Task 9 ────────────────────────────────────────────────────────────
+
   it("agent 的 task session 有 CLI 子代理 → 节点挂 +N 子代理 徽标", async () => {
     const detail = makeDetail({
       runStatus: "running",
@@ -273,5 +354,110 @@ describe("StructureGraph", () => {
     render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
     const badge = await screen.findByTestId("node-3-subagents");
     expect(badge).toHaveTextContent("1");
+  });
+
+  // ── Task 5: top-down layout ────────────────────────────────────────────────
+
+  it("top-down: leader 节点在 children 容器之前(DOM 顺序)", () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader
+        makeTask(2, 3, "running", 1, 500), // child
+      ],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+
+    const leaderNode = screen.getByTestId("node-2");
+    const childNode = screen.getByTestId("node-3");
+
+    // Leader must appear before child in DOM order (top-down)
+    expect(
+      leaderNode.compareDocumentPosition(childNode) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("top-down: 有子节点时渲染 graph-bus 横向连接线", () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader
+        makeTask(2, 3, "running", 1, 500), // child
+      ],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(screen.getByTestId("graph-bus")).toBeInTheDocument();
+  });
+
+  it("top-down: 仅 leader 无子节点时不渲染 graph-bus", () => {
+    // lifecycle=empty 时(只有1个task)显示 graph-empty,无 bus
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [makeTask(1, 2, "running")],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(screen.queryByTestId("graph-bus")).not.toBeInTheDocument();
+  });
+
+  it("top-down: leader-only 结构图(2任务但只有leader节点)→ 无 graph-bus", () => {
+    // 2 tasks, both belong to the same leader agent → single node, no children
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0),
+        makeTask(2, 2, "done", 0, 0), // same agent, still leader-only graph
+      ],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    // No children nodes → no bus
+    expect(screen.queryByTestId("graph-bus")).not.toBeInTheDocument();
+  });
+
+  it("top-down: 已有 testid 和 onSelectSession 行为均保留", () => {
+    const onSelectSession = vi.fn();
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader
+        makeTask(2, 3, "running", 1, 600), // child
+      ],
+    });
+    render(
+      <StructureGraph detail={detail} onSelectSession={onSelectSession} />,
+    );
+
+    // Both node testids present
+    expect(screen.getByTestId("node-2")).toBeInTheDocument();
+    expect(screen.getByTestId("node-3")).toBeInTheDocument();
+
+    // Click child node → onSelectSession called
+    fireEvent.click(screen.getByTestId("node-3"));
+    expect(onSelectSession).toHaveBeenCalledWith(600);
+  });
+
+  // ── FIX 1: cycle guard regression ─────────────────────────────────────────
+  // Construct a cycle: agent 2 (leader) dispatches to agent 3,
+  // agent 3 dispatches back to agent 2. buildGraph produces edges 2→3 and 3→2.
+  // Without the visited-set guard, SubNodeColumn would recurse infinitely → stack overflow.
+  // With the guard, the back-edge is suppressed and both nodes render exactly once.
+  it("SubNodeColumn 有环路守卫：A→B→A 死锁环不导致爆栈，节点正常渲染", () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader (agent 2), parentTaskId=0 → root
+        makeTask(2, 3, "running", 1, 600), // agent 3, parent=task1(agent 2) → edge 2→3
+        makeTask(3, 2, "running", 2, 0), // agent 2 again, parent=task2(agent 3) → edge 3→2 (CYCLE)
+      ],
+    });
+
+    // Without the cycle guard this would throw "Maximum call stack size exceeded"
+    expect(() =>
+      render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />),
+    ).not.toThrow();
+
+    // Both nodes must appear exactly once (guard stops re-entry)
+    expect(screen.getByTestId("node-2")).toBeInTheDocument();
+    expect(screen.getByTestId("node-3")).toBeInTheDocument();
   });
 });
