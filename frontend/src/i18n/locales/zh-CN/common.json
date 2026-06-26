@@ -2336,6 +2336,11 @@
     "subagent": {
       "badge": "+{{count}} 子代理",
       "autoMerge": "auto-merge"
+    },
+    "conversation": {
+      "backToBoard": "返回任务板",
+      "speakPlaceholder": "对它说…(发送给该会话)",
+      "speakSend": "发送"
     }
   },
   "localCommand": {

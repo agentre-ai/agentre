@@ -2336,6 +2336,11 @@
     "subagent": {
       "badge": "+{{count}} subagents",
       "autoMerge": "auto-merge"
+    },
+    "conversation": {
+      "backToBoard": "Back to board",
+      "speakPlaceholder": "Speak to it… (sends to this session)",
+      "speakSend": "Send"
     }
   },
   "localCommand": {
