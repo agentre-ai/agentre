@@ -239,7 +239,10 @@ describe("StructureGraph", () => {
   it("agent 的 task session 有 CLI 子代理 → 节点挂 +N 子代理 徽标", async () => {
     const detail = makeDetail({
       runStatus: "running",
-      tasks: [makeTask(1, 2, "running", 0, 0), makeTask(2, 3, "running", 1, 700)],
+      tasks: [
+        makeTask(1, 2, "running", 0, 0),
+        makeTask(2, 3, "running", 1, 700),
+      ],
     });
     render(<StructureGraph detail={detail} onSelectNode={vi.fn()} />);
     const badge = await screen.findByTestId("node-3-subagents");

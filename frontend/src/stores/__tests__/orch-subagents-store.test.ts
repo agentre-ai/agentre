@@ -16,13 +16,23 @@ describe("orch-subagents-store", () => {
   it("ensureLoaded 调 LoadChatSession 并缓存 derive 结果", async () => {
     loadMock.mockResolvedValue({
       messages: [
-        { blocks: [{ type: "tool_use", toolUseId: "a", subagent: { kind: "local_agent", status: "completed" } }] },
+        {
+          blocks: [
+            {
+              type: "tool_use",
+              toolUseId: "a",
+              subagent: { kind: "local_agent", status: "completed" },
+            },
+          ],
+        },
       ],
     });
     useOrchSubagentsStore.getState().ensureLoaded(501);
     // 等微任务队列 flush
     await vi.waitFor(() =>
-      expect(useOrchSubagentsStore.getState().bySession.get(501)).toHaveLength(1),
+      expect(useOrchSubagentsStore.getState().bySession.get(501)).toHaveLength(
+        1,
+      ),
     );
     expect(loadMock).toHaveBeenCalledTimes(1);
   });
