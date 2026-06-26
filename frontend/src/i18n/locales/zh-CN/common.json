@@ -2331,8 +2331,9 @@
       "reply": "{{name}} 回复"
     },
     "board": {
+      "title": "任务板",
       "tabTasks": "任务",
-      "tabOutputs": "输出",
+      "tabOutputs": "产出",
       "tasksEmpty": "暂无任务",
       "outputsEmpty": "暂无输出",
       "drilldownTitle": "详情",
@@ -2343,7 +2344,7 @@
       "statusAwaitingChildren": "等待子任务",
       "statusError": "出错",
       "statusPending": "待启动",
-      "progress": "{{done}}/{{total}} 任务"
+      "progress": "{{done}} / {{total}} 完成"
     },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",
