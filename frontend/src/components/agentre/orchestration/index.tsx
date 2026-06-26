@@ -12,6 +12,11 @@ import { ActivityFeed } from "./activity-feed";
 import { TaskBoard } from "./task-board";
 import { ConversationPanel } from "./conversation-panel";
 import { ToggleBar } from "./toggle-bar";
+import { useRunSubagents } from "./use-run-subagents";
+import type { app } from "../../../../wailsjs/go/models";
+
+// 稳定空 detail:detail 未就绪时给 useRunSubagents 一个恒定身份的占位,避免每渲染触发懒加载 effect。
+const EMPTY_RUN_DETAIL = { tasks: [] } as unknown as app.RunDetailDTO;
 import { buildGraph } from "./graph-data";
 
 export function OrchestrationRun({
@@ -33,6 +38,9 @@ export function OrchestrationRun({
     number | null
   >(null);
 
+  // 子代理(spawned local_agent)计数:复用 useRunSubagents 懒加载缓存(任务板同源,按 session 缓存)
+  const subagents = useRunSubagents(detail ?? EMPTY_RUN_DETAIL);
+
   // Compute ToggleBar stats from existing data (no additional fetches)
   const toggleStats = React.useMemo(() => {
     const tasks = detail?.tasks ?? [];
@@ -51,10 +59,13 @@ export function OrchestrationRun({
     const graph = buildGraph(detail);
     const agentCount = graph.stats.nodes;
     const subCount = graph.stats.subagents;
-    // subagentCount: subagents spawned via local_agent tool (tracked per-session by useRunSubagents).
-    // Not available as a simple number without store subscription in this component —
-    // fall back to graph.stats.subagents (node-level subagent count) as best available approximation.
-    const subagentCount = graph.stats.subagents;
+    // subagentCount:真正 spawned 的子代理(local_agent tool use)总数,跨所有 task session 求和
+    // (与 chip3 的「sub」=图节点级子代理计数语义不同,设计稿两者本就是不同数字)。
+    const subagentCount = tasks.reduce(
+      (n, task) =>
+        n + (task.sessionId ? subagents.forSession(task.sessionId).length : 0),
+      0,
+    );
     return {
       done,
       total,
@@ -63,7 +74,7 @@ export function OrchestrationRun({
       subCount,
       subagentCount,
     };
-  }, [detail]);
+  }, [detail, subagents]);
 
   // Footer speak-to-Leader state
   const [leaderMsg, setLeaderMsg] = React.useState("");
