@@ -12,8 +12,7 @@ export type TabKind =
       terminalId: string;
       attach?: boolean;
       command?: string;
-    }
-  | { kind: "run"; runId: number; title: string };
+    };
 
 export type ChatTab = {
   id: string;
@@ -38,7 +37,6 @@ type Actions = {
     agentId: number,
     workMode: string,
   ) => void;
-  openRun: (runId: number, title: string) => void;
   promoteCurrent: () => void;
   togglePin: (id: string) => void;
   closeTab: (id: string) => void;
@@ -121,24 +119,6 @@ export const useChatTabsStore = create<State & Actions>((set, _get) => ({
       const newTab: ChatTab = {
         id: nextId(),
         meta: { kind: "new", projectId, agentId, workMode },
-        isPreview: false,
-        isPinned: false,
-        pinAt: 0,
-        openedAt: now(),
-      };
-      return { tabs: [...state.tabs, newTab], activeTabId: newTab.id };
-    }),
-  openRun: (runId, title) =>
-    set((state) => {
-      const existing = state.tabs.find(
-        (t) => t.meta.kind === "run" && t.meta.runId === runId,
-      );
-      if (existing) {
-        return { activeTabId: existing.id };
-      }
-      const newTab: ChatTab = {
-        id: nextId(),
-        meta: { kind: "run", runId, title },
         isPreview: false,
         isPinned: false,
         pinAt: 0,

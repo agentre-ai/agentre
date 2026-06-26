@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -20,7 +21,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useChatTabsStore } from "../../../stores/chat-tabs-store";
 
 import {
   ListChatAgents,
@@ -51,6 +51,7 @@ export type RunNewDialogProps = {
 
 export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   const [agents, setAgents] = React.useState<AgentItem[]>([]);
   const [workflows, setWorkflows] = React.useState<WorkflowOption[]>([]);
@@ -142,7 +143,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
       });
       // run 可能为 undefined, 用可选链保护
       if (d.run?.id) {
-        useChatTabsStore.getState().openRun(d.run.id, goal.trim());
+        navigate(`/orchestration/${d.run.id}`);
       }
       onOpenChange(false);
     } catch (err) {

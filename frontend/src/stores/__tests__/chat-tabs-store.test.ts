@@ -554,34 +554,6 @@ describe("chat-tabs-store · moveTab", () => {
   });
 });
 
-describe("chat-tabs-store · openRun", () => {
-  beforeEach(() => {
-    useChatTabsStore.setState({ tabs: [], activeTabId: null });
-    let nid = 1;
-    __setNextIdFactoryForTesting(() => `t${nid++}`);
-    __setNowForTesting(() => 1000);
-  });
-
-  it("openRun 新建 kind:'run' tab 并激活", () => {
-    useChatTabsStore.getState().openRun(1, "X");
-    const { tabs, activeTabId } = useChatTabsStore.getState();
-    expect(tabs).toHaveLength(1);
-    expect(tabs[0].meta).toEqual({ kind: "run", runId: 1, title: "X" });
-    expect(tabs[0].isPreview).toBe(false);
-    expect(tabs[0].isPinned).toBe(false);
-    expect(activeTabId).toBe(tabs[0].id);
-  });
-
-  it("openRun 相同 runId 不重复新建, 只激活已有 tab", () => {
-    useChatTabsStore.getState().openRun(1, "X");
-    const firstTabId = useChatTabsStore.getState().tabs[0].id;
-    useChatTabsStore.getState().openRun(1, "X");
-    const { tabs, activeTabId } = useChatTabsStore.getState();
-    expect(tabs).toHaveLength(1);
-    expect(activeTabId).toBe(firstTabId);
-  });
-});
-
 describe("chat-tabs-store · openTerminal", () => {
   beforeEach(() => {
     useChatTabsStore.setState({ tabs: [], activeTabId: null });

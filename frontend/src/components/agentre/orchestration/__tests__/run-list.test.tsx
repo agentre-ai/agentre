@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // 注意: 测试位于 orchestration/__tests__/, 比组件深一层
 // 组件 import ../../../../wailsjs → 测试需要 ../../../../../wailsjs (5 层)
+vi.mock("react-router-dom", () => ({
+  useNavigate: () => vi.fn(),
+}));
+
 vi.mock("../../../../../wailsjs/go/app/App", () => ({
   RunList: vi.fn().mockResolvedValue([]),
   ListChatAgents: vi.fn().mockResolvedValue({ agents: [] }),
