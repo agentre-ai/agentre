@@ -177,7 +177,9 @@ describe("StructureGraph", () => {
       tasks: [makeTask(1, 2, "running"), makeTask(2, 3, "running", 1, 555)],
     });
 
-    render(<StructureGraph detail={detail} onSelectSession={onSelectSession} />);
+    render(
+      <StructureGraph detail={detail} onSelectSession={onSelectSession} />,
+    );
 
     // 点击子 agent 节点
     fireEvent.click(screen.getByTestId("node-3"));

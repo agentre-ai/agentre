@@ -129,7 +129,10 @@ describe("TaskBoard", () => {
 
     it("点击任务行调用 onSelectSession(该 task sessionId)", () => {
       const onSelectSession = vi.fn();
-      const tasks = [makeTask(1, 2, { sessionId: 11 }), makeTask(2, 3, { parentTaskId: 1, sessionId: 22 })];
+      const tasks = [
+        makeTask(1, 2, { sessionId: 11 }),
+        makeTask(2, 3, { parentTaskId: 1, sessionId: 22 }),
+      ];
       const detail = makeDetail(tasks);
 
       render(

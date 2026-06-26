@@ -59,5 +59,9 @@ export const useOrchSubagentsStore = create<State>((set, get) => ({
   },
   messagesFor: (sessionId) => get().messagesBySession.get(sessionId) ?? [],
   __reset: () =>
-    set({ bySession: new Map(), messagesBySession: new Map(), loading: new Set() }),
+    set({
+      bySession: new Map(),
+      messagesBySession: new Map(),
+      loading: new Set(),
+    }),
 }));
