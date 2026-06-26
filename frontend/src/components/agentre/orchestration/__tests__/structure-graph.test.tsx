@@ -354,4 +354,29 @@ describe("StructureGraph", () => {
     fireEvent.click(screen.getByTestId("node-3"));
     expect(onSelectSession).toHaveBeenCalledWith(600);
   });
+
+  // ── FIX 1: cycle guard regression ─────────────────────────────────────────
+  // Construct a cycle: agent 2 (leader) dispatches to agent 3,
+  // agent 3 dispatches back to agent 2. buildGraph produces edges 2→3 and 3→2.
+  // Without the visited-set guard, SubNodeColumn would recurse infinitely → stack overflow.
+  // With the guard, the back-edge is suppressed and both nodes render exactly once.
+  it("SubNodeColumn 有环路守卫：A→B→A 死锁环不导致爆栈，节点正常渲染", () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader (agent 2), parentTaskId=0 → root
+        makeTask(2, 3, "running", 1, 600), // agent 3, parent=task1(agent 2) → edge 2→3
+        makeTask(3, 2, "running", 2, 0), // agent 2 again, parent=task2(agent 3) → edge 3→2 (CYCLE)
+      ],
+    });
+
+    // Without the cycle guard this would throw "Maximum call stack size exceeded"
+    expect(() =>
+      render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />),
+    ).not.toThrow();
+
+    // Both nodes must appear exactly once (guard stops re-entry)
+    expect(screen.getByTestId("node-2")).toBeInTheDocument();
+    expect(screen.getByTestId("node-3")).toBeInTheDocument();
+  });
 });

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Crown, GitMerge } from "lucide-react";
+import { Crown, GitMerge, ListChecks } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import type { app } from "../../../../wailsjs/go/models";
@@ -53,6 +53,7 @@ function NodeCard({
   subagentCount,
   isAsking,
   isLeaderStyle,
+  depth,
   onSelectSession,
 }: {
   node: GraphNode;
@@ -65,6 +66,8 @@ function NodeCard({
   subagentCount: number;
   isAsking: boolean;
   isLeaderStyle?: boolean;
+  /** Depth in the tree: 0 = leader, 1 = direct child, 2+ = grandchild */
+  depth?: number;
   onSelectSession: (sessionId: number) => void;
 }) {
   const { t } = useTranslation();
@@ -105,7 +108,9 @@ function NodeCard({
                 : "border-primary",
             )
           : cn(
-              "w-52 border-2",
+              // FIX 2: 1px border (design strokeWidth:1); FIX 3: depth-aware width
+              (depth ?? 1) >= 2 ? "w-[116px]" : "w-[152px]",
+              "border",
               hasDeadlock
                 ? "border-destructive ring-2 ring-destructive/40"
                 : nodeBorderClass(node.status),
@@ -171,7 +176,10 @@ function NodeCard({
       {isLeaderStyle && node.calls.length > 0 && (
         <div className="flex items-center gap-1.5">
           <span className="flex items-center gap-1 rounded-md bg-secondary px-2 py-0.5 text-2xs text-muted-foreground">
-            {node.calls.length}/{node.callCount}
+            <ListChecks className="size-2.5 shrink-0" aria-hidden />
+            <span className="font-mono">
+              {node.calls.length}/{node.callCount}
+            </span>
           </span>
           <span className="flex-1" />
           <span className="rounded-full bg-status-running-bg px-2 py-0.5 text-2xs font-semibold text-status-running">
@@ -280,6 +288,8 @@ function computeDepths(
 // 布局: vl(竖线) → nodeCard, 如有子节点继续 vl + subbus + subcols
 function SubNodeColumn({
   node,
+  depth,
+  visited,
   childrenMap,
   deadlockAgentIds,
   agentMap,
@@ -289,6 +299,10 @@ function SubNodeColumn({
   onSelectSession,
 }: {
   node: GraphNode;
+  /** Depth of this node in the tree (1 = direct child of leader, 2+ = grandchild) */
+  depth: number;
+  /** FIX 1: visited set for cycle guard — prevents infinite recursion on A→B→A cycles */
+  visited: ReadonlySet<number>;
   childrenMap: Map<number, GraphNode[]>;
   deadlockAgentIds: Set<number>;
   agentMap: Map<
@@ -305,16 +319,22 @@ function SubNodeColumn({
   askingAgentIds: Set<number>;
   onSelectSession: (sessionId: number) => void;
 }) {
+  // FIX 1: cycle guard — if this node is already in the ancestor chain, stop recursing
+  if (visited.has(node.agentId)) return null;
+
   const agentInfo = agentMap.get(node.agentId);
   const agentName = agentInfo?.name ?? `#${node.agentId}`;
   const agentColor: AgentColor = agentInfo?.color ?? "agent-1";
   const grandchildren = childrenMap.get(node.agentId) ?? [];
 
+  // New visited set for children: add current node to prevent re-entry
+  const nextVisited = new Set([...visited, node.agentId]);
+
   return (
     <div className="flex flex-col items-center">
       {/* 竖向连接线: vl */}
       <div className="h-3.5 w-0.5 bg-border-strong" />
-      {/* 节点卡片 */}
+      {/* 节点卡片 — FIX 3: pass depth for width selection */}
       <NodeCard
         node={node}
         agentName={agentName}
@@ -325,6 +345,7 @@ function SubNodeColumn({
         leaderLabel={leaderLabel}
         subagentCount={countForAgent(node.agentId)}
         isAsking={askingAgentIds.has(node.agentId)}
+        depth={depth}
         onSelectSession={onSelectSession}
       />
       {/* 深层子节点: vl + subbus + subcols */}
@@ -339,6 +360,8 @@ function SubNodeColumn({
               <SubNodeColumn
                 key={gc.agentId}
                 node={gc}
+                depth={depth + 1}
+                visited={nextVisited}
                 childrenMap={childrenMap}
                 deadlockAgentIds={deadlockAgentIds}
                 agentMap={agentMap}
@@ -463,6 +486,11 @@ function NodeTree({
               <SubNodeColumn
                 key={node.agentId}
                 node={node}
+                depth={1}
+                visited={
+                  // FIX 1: seed visited with leader + all already-rendered depth-0 ids
+                  new Set((byDepth.get(0) ?? []).map((n) => n.agentId))
+                }
                 childrenMap={childrenMap}
                 deadlockAgentIds={deadlockAgentIds}
                 agentMap={agentMap}
