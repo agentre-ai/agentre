@@ -78,5 +78,6 @@ describe("ConversationPanel", () => {
     await waitFor(() =>
       expect(runSpeak).toHaveBeenCalledWith(701, "改用 sqlmock"),
     );
+    await waitFor(() => expect(input.value).toBe(""));
   });
 });
