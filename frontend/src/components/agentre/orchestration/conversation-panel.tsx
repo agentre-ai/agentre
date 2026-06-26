@@ -23,6 +23,7 @@ export function ConversationPanel({
 }) {
   const { t } = useTranslation();
   const ensureLoaded = useOrchSubagentsStore((s) => s.ensureLoaded);
+  const reload = useOrchSubagentsStore((s) => s.reload);
   const messagesBySession = useOrchSubagentsStore((s) => s.messagesBySession);
   const messages = messagesBySession.get(sessionId) ?? EMPTY_MESSAGES;
   const [draft, setDraft] = React.useState("");
@@ -40,6 +41,7 @@ export function ConversationPanel({
     try {
       await RunSpeak(sessionId, text);
       setDraft("");
+      reload(sessionId);
     } finally {
       setSending(false);
     }

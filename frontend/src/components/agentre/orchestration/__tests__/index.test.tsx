@@ -51,8 +51,8 @@ vi.mock("../../../../../hooks/use-chat-agents", () => ({
   }),
 }));
 
-// StructureGraph stub: 渲染一个按钮，点击时调 onSelectSession(900)
-// 用于二态切换测试：模拟用户点击节点选中 session
+// StructureGraph stub: 渲染两个按钮，分别触发 onSelectSession(900) 和 onSelectSession(0)
+// 用于二态切换测试：session=900 打开面板，session=0（Leader/未启动节点哨兵值）保留看板
 vi.mock("../structure-graph", () => ({
   StructureGraph: ({
     onSelectSession,
@@ -66,6 +66,13 @@ vi.mock("../structure-graph", () => ({
         onClick={() => onSelectSession(900)}
       >
         select session 900
+      </button>
+      <button
+        type="button"
+        data-testid="stub-select-session-0"
+        onClick={() => onSelectSession(0)}
+      >
+        select session 0
       </button>
     </div>
   ),
@@ -196,6 +203,24 @@ describe("OrchestrationRun shell", () => {
     expect(root).toBeInTheDocument();
     // 没有 RunHeader 的内容
     expect(screen.queryByTestId("view-graph")).not.toBeInTheDocument();
+  });
+
+  it("sessionId=0 (Leader/未启动节点哨兵值) 不打开 ConversationPanel，看板保持可见", () => {
+    const detail = makeDetail({ runId: 1 });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    // 初始看板可见
+    expect(screen.getByTestId("board-tab-tasks")).toBeInTheDocument();
+    expect(screen.queryByTestId("conversation-panel")).not.toBeInTheDocument();
+
+    // 点击 sessionId=0 的节点（Leader 根任务或未启动子任务的哨兵值）
+    fireEvent.click(screen.getByTestId("stub-select-session-0"));
+
+    // 看板依然可见，不应打开 ConversationPanel
+    expect(screen.getByTestId("board-tab-tasks")).toBeInTheDocument();
+    expect(screen.queryByTestId("conversation-panel")).not.toBeInTheDocument();
   });
 
   it("选中 session 后右栏切到 ConversationPanel, 返回回到任务板", () => {

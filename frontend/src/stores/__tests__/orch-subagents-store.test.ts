@@ -65,4 +65,34 @@ describe("orch-subagents-store", () => {
   it("未加载的 session messagesFor 返回空数组", () => {
     expect(useOrchSubagentsStore.getState().messagesFor(999)).toEqual([]);
   });
+
+  it("reload 即使 session 已缓存也重新拉取 LoadChatSession", async () => {
+    // 先 ensureLoaded 缓存 1 条消息
+    loadMock.mockResolvedValueOnce({
+      messages: [{ id: 1, blocks: [] }],
+    });
+    useOrchSubagentsStore.getState().ensureLoaded(901);
+    await vi.waitFor(() =>
+      expect(useOrchSubagentsStore.getState().messagesFor(901)).toHaveLength(1),
+    );
+    expect(loadMock).toHaveBeenCalledTimes(1);
+
+    // reload 绕过缓存，重新拉取（返回 2 条消息）
+    loadMock.mockResolvedValueOnce({
+      messages: [
+        { id: 1, blocks: [] },
+        { id: 2, blocks: [] },
+      ],
+    });
+    useOrchSubagentsStore.getState().reload(901);
+    await vi.waitFor(() =>
+      expect(useOrchSubagentsStore.getState().messagesFor(901)).toHaveLength(2),
+    );
+    expect(loadMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reload 对 sessionId=0 是 no-op", () => {
+    useOrchSubagentsStore.getState().reload(0);
+    expect(loadMock).not.toHaveBeenCalled();
+  });
 });

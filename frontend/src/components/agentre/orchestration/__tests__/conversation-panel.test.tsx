@@ -80,4 +80,39 @@ describe("ConversationPanel", () => {
     );
     await waitFor(() => expect(input.value).toBe(""));
   });
+
+  it("RunSpeak 成功后调 LoadChatSession reload，刷新显示已发消息", async () => {
+    // 初始加载返回空
+    loadSession.mockResolvedValueOnce({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={702}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    // 等初始加载完成
+    await waitFor(() => expect(loadSession).toHaveBeenCalledTimes(1));
+
+    // RunSpeak 成功后 reload 应再次调 LoadChatSession
+    loadSession.mockResolvedValueOnce({
+      messages: [{ id: 1, blocks: [{ type: "text", text: "改用 sqlmock" }] }],
+    });
+    const input = screen.getByTestId(
+      "conversation-speak-input",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "改用 sqlmock" } });
+    fireEvent.click(screen.getByTestId("conversation-speak-send"));
+
+    await waitFor(() =>
+      expect(runSpeak).toHaveBeenCalledWith(702, "改用 sqlmock"),
+    );
+    // reload 调 LoadChatSession 第 2 次
+    await waitFor(() => expect(loadSession).toHaveBeenCalledTimes(2));
+    // transcript 展示 reload 后的消息数
+    await waitFor(() =>
+      expect(screen.getByTestId("stub-transcript")).toHaveTextContent("1"),
+    );
+  });
 });

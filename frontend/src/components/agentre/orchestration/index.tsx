@@ -75,19 +75,20 @@ export function OrchestrationRun({
           </main>
 
           {/* 右侧：任务看板 ⇄ 会话面板 二态 */}
+          {/* selectedSessionId=0 是「未启动/Leader 节点无会话」的哨兵值,falsy 均回落到看板 */}
           <aside className="w-80 shrink-0 border-l border-border">
-            {selectedSessionId === null ? (
-              <TaskBoard
-                detail={detail}
-                selectedSessionId={selectedSessionId}
-                onSelectSession={setSelectedSessionId}
-              />
-            ) : (
+            {selectedSessionId ? (
               <ConversationPanel
                 sessionId={selectedSessionId}
                 agentName={selAgentName}
                 agentColor={selAgentColor}
                 onBack={() => setSelectedSessionId(null)}
+              />
+            ) : (
+              <TaskBoard
+                detail={detail}
+                selectedSessionId={selectedSessionId}
+                onSelectSession={setSelectedSessionId}
               />
             )}
           </aside>
