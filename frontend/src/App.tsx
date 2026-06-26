@@ -17,6 +17,7 @@ import buildingCommunityIcon from "@iconify-icons/tabler/building-community";
 import layoutKanbanIcon from "@iconify-icons/tabler/layout-kanban";
 import messageCircleIcon from "@iconify-icons/tabler/message-circle";
 import settingsIcon from "@iconify-icons/tabler/settings";
+import topologyStar3Icon from "@iconify-icons/tabler/topology-star-3";
 import webhookIcon from "@iconify-icons/tabler/webhook";
 
 import {
@@ -33,6 +34,7 @@ import {
   HooksPage,
   IssuesPage,
   OrgChartPage,
+  OrchestrationPage,
   PaletteScopeBridge,
   WorkflowManagerDialog,
   ProjectsPage,
@@ -96,6 +98,11 @@ const navItems: NavItem[] = [
     labelKey: "nav.hooks",
     icon: webhookIcon,
   },
+  {
+    path: "/orchestration",
+    labelKey: "nav.orchestration",
+    icon: topologyStar3Icon,
+  },
 ];
 
 const settingsNavItem: NavItem = {
@@ -110,6 +117,7 @@ const pageBreadcrumbKeys: Record<string, string> = {
   "/hooks": "nav.hooks",
   "/issues": "nav.issues",
   "/org": "nav.org",
+  "/orchestration": "nav.orchestration",
   "/settings": "nav.settings",
 };
 
@@ -766,7 +774,11 @@ function AppLayout() {
     reconcileMissingSessions(existing);
   }, [agents, reconcileMissingSessions]);
 
-  const breadcrumbKey = pageBreadcrumbKeys[location.pathname];
+  const breadcrumbKey =
+    pageBreadcrumbKeys[location.pathname] ??
+    (location.pathname.startsWith("/orchestration")
+      ? "nav.orchestration"
+      : undefined);
   const breadcrumb = breadcrumbKey ? t(breadcrumbKey) : "";
   const hasChat =
     location.pathname === "/chat" || location.pathname === "/projects";
@@ -879,6 +891,8 @@ function App() {
           <Route path="/issues" element={<IssuesPage />} />
           <Route path="/hooks" element={<HooksPage />} />
           <Route path="/org" element={<OrgChartPage />} />
+          <Route path="/orchestration" element={<OrchestrationPage />} />
+          <Route path="/orchestration/:runId" element={<OrchestrationPage />} />
           <Route path="/settings" element={<SettingsRoute />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Route>

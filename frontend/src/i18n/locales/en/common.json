@@ -1264,6 +1264,7 @@
     "hooks": "Hooks",
     "issues": "Issues",
     "org": "Organization",
+    "orchestration": "Orchestration",
     "projects": "Projects",
     "settings": "Settings"
   },
