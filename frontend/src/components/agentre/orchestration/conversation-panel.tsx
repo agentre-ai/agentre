@@ -14,17 +14,32 @@ const EMPTY_MESSAGES: never[] = [];
 
 /**
  * Derive agent status from the tasks belonging to this agent in a run.
- * Rule: if any task is "running" → running; if all done → done (mapped to idle
- * since AgentStatus has no "done"); else → idle.
+ * Rule: if any task is "running" → running; if all done → "done" (sentinel);
+ * if no tasks → "idle" (not started); else → "idle".
+ * Note: AgentStatus has no "done" value — we use "idle" for both; the
+ * statusLabelKey distinguishes "pending" (0 tasks) from "done" (all tasks done).
  */
+export type AgentTaskStatus = "idle" | "pending" | "done" | "running" | "error";
+
+export function deriveAgentTaskStatus(
+  tasks: Array<{ agentId: number; status: string }>,
+  agentId: number,
+): AgentTaskStatus {
+  const agentTasks = tasks.filter((t) => t.agentId === agentId);
+  if (agentTasks.length === 0) return "pending";
+  if (agentTasks.some((t) => t.status === "running")) return "running";
+  if (agentTasks.every((t) => t.status === "done")) return "done";
+  return "idle";
+}
+
+// Keep backward-compat shim for existing callers that expect AgentStatus
 function deriveAgentStatus(
   tasks: Array<{ agentId: number; status: string }>,
   agentId: number,
 ): AgentStatus {
-  const agentTasks = tasks.filter((t) => t.agentId === agentId);
-  if (agentTasks.length === 0) return "idle";
-  if (agentTasks.some((t) => t.status === "running")) return "running";
-  if (agentTasks.every((t) => t.status === "done")) return "idle";
+  const ts = deriveAgentTaskStatus(tasks, agentId);
+  if (ts === "running") return "running";
+  if (ts === "error") return "error";
   return "idle";
 }
 
@@ -78,6 +93,14 @@ export function ConversationPanel({
     return deriveAgentStatus(detail.tasks, agentId);
   });
 
+  // Richer task-status for the who-row subtitle label
+  const agentTaskStatus = useOrchRunStore((s): AgentTaskStatus => {
+    if (!runId || !agentId) return "pending";
+    const detail = s.details.get(runId);
+    if (!detail?.tasks) return "pending";
+    return deriveAgentTaskStatus(detail.tasks, agentId);
+  });
+
   React.useEffect(() => {
     if (sessionId) ensureLoaded(sessionId);
   }, [sessionId, ensureLoaded]);
@@ -96,12 +119,15 @@ export function ConversationPanel({
   };
 
   // Status label: reuse board status keys
+  // pending = no tasks yet (not started); done = all tasks done; running/error as-is; idle = in progress but not all done
   const statusLabelKey =
-    agentStatus === "running"
+    agentTaskStatus === "running"
       ? "orchestration.board.statusRunning"
-      : agentStatus === "error"
+      : agentTaskStatus === "error"
         ? "orchestration.board.statusError"
-        : "orchestration.board.statusDone";
+        : agentTaskStatus === "pending"
+          ? "orchestration.board.statusPending"
+          : "orchestration.board.statusDone";
 
   return (
     <div

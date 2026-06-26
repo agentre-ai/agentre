@@ -16,34 +16,46 @@ import { AgentAvatar } from "../primitives";
 import type { AgentColor } from "../types";
 import { buildFeed, type FeedItem } from "./feed-data";
 
-// 根据 agentId 从 agents 列表中解析 agent 名称，找不到则用 #{agentId} 作为 fallback
-function resolveAgentName(
+// 合并三次 agents.find() 为单次查找，返回所有渲染所需字段
+function resolveAgent(
   agentId: number,
   agents: ReturnType<typeof useChatAgents>["agents"],
-): string {
-  const agent = agents.find((a) => a.id === agentId);
-  return agent?.name ?? `#${agentId}`;
-}
-
-// 根据 agentId 解析 agent 颜色
-function resolveAgentColor(
-  agentId: number,
-  agents: ReturnType<typeof useChatAgents>["agents"],
-): AgentColor {
-  const agent = agents.find((a) => a.id === agentId);
-  return (agent?.avatarColor as AgentColor) || "agent-1";
-}
-
-// 根据 agentId 解析 avatar 相关字段
-function resolveAgentAvatar(
-  agentId: number,
-  agents: ReturnType<typeof useChatAgents>["agents"],
-): { avatarDataUrl?: string; avatarIcon?: string } {
+): {
+  name: string;
+  color: AgentColor;
+  avatarDataUrl?: string;
+  avatarIcon?: string;
+} {
   const agent = agents.find((a) => a.id === agentId);
   return {
+    name: agent?.name ?? `#${agentId}`,
+    color: (agent?.avatarColor as AgentColor) || "agent-1",
     avatarDataUrl: agent?.avatarDataUrl || undefined,
     avatarIcon: agent?.avatarIcon || undefined,
   };
+}
+
+// badge 静态标签（ask/reply 走 kindAsk/kindReply）
+function kindLabel(
+  kind: FeedItem["kind"],
+  t: ReturnType<typeof useTranslation>["t"],
+): string | null {
+  switch (kind) {
+    case "dispatch":
+      return t("orchestration.feed.kindDispatch");
+    case "report":
+      return t("orchestration.feed.kindReport");
+    case "finish":
+      return t("orchestration.feed.kindFinish");
+    case "blocked":
+      return t("orchestration.feed.kindBlocked");
+    case "ask":
+      return t("orchestration.feed.kindAsk");
+    case "reply":
+      return t("orchestration.feed.kindReply");
+    default:
+      return null;
+  }
 }
 
 // badge 样式映射（header 行右侧小徽章）
@@ -108,26 +120,6 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
     tasks.find((t) => t.status === "running" && t.parentTaskId) ??
     tasks.find((t) => t.status === "running");
 
-  // badge 静态标签（ask/reply 走 kindAsk/kindReply）
-  function kindLabel(kind: FeedItem["kind"]): string | null {
-    switch (kind) {
-      case "dispatch":
-        return t("orchestration.feed.kindDispatch");
-      case "report":
-        return t("orchestration.feed.kindReport");
-      case "finish":
-        return t("orchestration.feed.kindFinish");
-      case "blocked":
-        return t("orchestration.feed.kindBlocked");
-      case "ask":
-        return t("orchestration.feed.kindAsk");
-      case "reply":
-        return t("orchestration.feed.kindReply");
-      default:
-        return null;
-    }
-  }
-
   return (
     <div className="flex h-full flex-col bg-background">
       {/* 时间线 feed，可滚动 */}
@@ -139,9 +131,12 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
         ) : (
           <ul className="flex flex-col gap-3.5">
             {feedItems.map((item) => {
-              const agentName = resolveAgentName(item.agentId, agents);
-              const agentColor = resolveAgentColor(item.agentId, agents);
-              const agentAvatarProps = resolveAgentAvatar(item.agentId, agents);
+              const agent = resolveAgent(item.agentId, agents);
+              const {
+                name: agentName,
+                color: agentColor,
+                ...agentAvatarProps
+              } = agent;
               const isLeader =
                 leaderAgentId !== undefined && item.agentId === leaderAgentId;
 
@@ -151,7 +146,7 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
                   ? t("orchestration.feed.blocked")
                   : item.text;
 
-              const label = kindLabel(item.kind);
+              const label = kindLabel(item.kind, t);
 
               // ask/reply 使用专属 testid；ev 行无 testid
               const testId =
@@ -203,8 +198,8 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
                           {(item.kind === "ask" || item.kind === "reply") &&
                             item.targetAgentId !== undefined && (
                               <span>
-                                {" @"}
-                                {resolveAgentName(item.targetAgentId, agents)}
+                                {"@"}
+                                {resolveAgent(item.targetAgentId, agents).name}
                               </span>
                             )}
                         </span>
@@ -236,31 +231,38 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
             data-testid="feed-typing-row"
             className="mt-3.5 flex items-center gap-2.5"
           >
-            {/* Avatar */}
-            <AgentAvatar
-              name={resolveAgentName(runningTask.agentId, agents)}
-              color={resolveAgentColor(runningTask.agentId, agents)}
-              size="sm"
-              className="shrink-0 rounded-full"
-              {...resolveAgentAvatar(runningTask.agentId, agents)}
-            />
-            {/* Text + dots */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[12px] text-muted-foreground">
-                {resolveAgentName(runningTask.agentId, agents)}{" "}
-                {t("orchestration.feed.executing")}{" "}
-                <span className="font-mono">
-                  #{runningTask.callSeq ?? runningTask.id}
-                </span>
-                {runningTask.brief ? ` · ${runningTask.brief}` : ""}
-              </span>
-              {/* 3 animated dots */}
-              <span className="inline-flex items-center gap-0.5">
-                <span className="size-1 rounded-full bg-subtle-foreground motion-safe:animate-pulse" />
-                <span className="size-1 rounded-full bg-subtle-foreground motion-safe:animate-pulse [animation-delay:150ms]" />
-                <span className="size-1 rounded-full bg-subtle-foreground motion-safe:animate-pulse [animation-delay:300ms]" />
-              </span>
-            </div>
+            {(() => {
+              const ra = resolveAgent(runningTask.agentId, agents);
+              return (
+                <>
+                  {/* Avatar */}
+                  <AgentAvatar
+                    name={ra.name}
+                    color={ra.color}
+                    size="sm"
+                    className="shrink-0 rounded-full"
+                    avatarDataUrl={ra.avatarDataUrl}
+                    avatarIcon={ra.avatarIcon}
+                  />
+                  {/* Text + dots */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[12px] text-muted-foreground">
+                      {ra.name} {t("orchestration.feed.executing")}{" "}
+                      <span className="font-mono">
+                        #{runningTask.callSeq ?? runningTask.id}
+                      </span>
+                      {runningTask.brief ? ` · ${runningTask.brief}` : ""}
+                    </span>
+                    {/* 3 animated dots */}
+                    <span className="inline-flex items-center gap-0.5">
+                      <span className="size-1 rounded-full bg-subtle-foreground motion-safe:animate-pulse" />
+                      <span className="size-1 rounded-full bg-subtle-foreground motion-safe:animate-pulse [animation-delay:150ms]" />
+                      <span className="size-1 rounded-full bg-subtle-foreground motion-safe:animate-pulse [animation-delay:300ms]" />
+                    </span>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
       </div>

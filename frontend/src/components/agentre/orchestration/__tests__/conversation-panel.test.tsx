@@ -276,6 +276,42 @@ describe("ConversationPanel", () => {
     expect(subtitle).toHaveTextContent("2");
   });
 
+  it("who-subtitle: 0 任务(pending) → 不显示 Done，显示 Pending", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    useOrchRunStore.setState({
+      details: new Map([
+        [
+          30,
+          {
+            run: { id: 30, status: "running" } as never,
+            tasks: [
+              // agentId=8 has no tasks; agentId=99 has a task
+              { id: 1, agentId: 99, status: "running" } as never,
+            ],
+          } as never,
+        ],
+      ]),
+    });
+
+    render(
+      <ConversationPanel
+        sessionId={801}
+        agentName="新 Agent"
+        agentColor="agent-4"
+        onBack={vi.fn()}
+        runId={30}
+        agentId={8}
+      />,
+    );
+    const subtitle = screen.getByTestId("conversation-who-subtitle");
+    // agentId=8 has 0 tasks → should NOT read "Done"
+    expect(subtitle).not.toHaveTextContent("Done");
+    // should read "Pending" (en locale)
+    expect(subtitle).toHaveTextContent("Pending");
+    // task count: 0 tasks for agentId=8
+    expect(subtitle).toHaveTextContent("0");
+  });
+
   it("who-subtitle: 全 done 任务 → done 状态 + 任务数", () => {
     loadSession.mockResolvedValue({ messages: [] });
     useOrchRunStore.setState({

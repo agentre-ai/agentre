@@ -21,7 +21,7 @@ import { ConversationPanel } from "./conversation-panel";
 import { ToggleBar } from "./toggle-bar";
 import { useRunSubagents } from "./use-run-subagents";
 import type { app } from "../../../../wailsjs/go/models";
-import { buildGraph, lifecycle } from "./graph-data";
+import { buildGraph, hasDeadlockCycle, lifecycle } from "./graph-data";
 
 // 稳定空 detail:detail 未就绪时给 useRunSubagents 一个恒定身份的占位,避免每渲染触发懒加载 effect。
 const EMPTY_RUN_DETAIL = { tasks: [] } as unknown as app.RunDetailDTO;
@@ -119,13 +119,10 @@ export function OrchestrationRun({
   const cycle = useOrchRunStore((s) =>
     runId !== undefined ? s.deadlocks.get(runId) : undefined,
   );
-  const hasDeadlock = React.useMemo(() => {
-    if (!cycle || cycle.length === 0) return false;
-    const sessionIds = new Set<number>(cycle);
-    return (detail?.tasks ?? []).some(
-      (task) => task.sessionId && sessionIds.has(task.sessionId),
-    );
-  }, [cycle, detail]);
+  const hasDeadlock = React.useMemo(
+    () => hasDeadlockCycle(cycle, detail?.tasks ?? []),
+    [cycle, detail],
+  );
 
   const handleLeaderSend = React.useCallback(async () => {
     if (!leaderSessionId || !leaderMsg.trim()) return;
@@ -190,8 +187,9 @@ export function OrchestrationRun({
                     </div>
                     <Button
                       data-testid="banner-intervene-btn"
+                      variant="destructive"
                       size="sm"
-                      className="shrink-0 rounded-md bg-destructive px-3 py-1.5 text-xs font-semibold text-white"
+                      className="shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold"
                       onClick={() => footerInputRef.current?.focus()}
                     >
                       {t("orchestration.graph.interveneBtn")}

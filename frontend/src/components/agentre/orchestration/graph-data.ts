@@ -140,6 +140,20 @@ export function buildGraph(detail: app.RunDetailDTO): {
   };
 }
 
+/**
+ * Pure helper: returns true if the given deadlock cycle (session IDs) overlaps
+ * with at least one task in the provided tasks list.
+ * Used by index.tsx and optionally structure-graph.tsx to compute `hasDeadlock`.
+ */
+export function hasDeadlockCycle(
+  cycle: number[] | undefined,
+  tasks: Array<{ sessionId?: number }>,
+): boolean {
+  if (!cycle || cycle.length === 0) return false;
+  const sessionIds = new Set<number>(cycle);
+  return tasks.some((task) => task.sessionId && sessionIds.has(task.sessionId));
+}
+
 export function lifecycle(
   detail: app.RunDetailDTO,
 ): "empty" | "running" | "completed" | "paused" | "stopped" {

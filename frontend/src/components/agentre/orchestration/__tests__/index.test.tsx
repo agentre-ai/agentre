@@ -278,6 +278,31 @@ describe("OrchestrationRun shell", () => {
     expect(screen.getByTestId("orch-speak-leader-send")).toBeInTheDocument();
   });
 
+  // ── Regression guard: exactly ONE speak-to-Leader send control in Main ────
+  // Prevents activity-feed or any view from re-introducing a second footer.
+
+  it("graph 视图: Main 列中 orch-speak-leader-send 有且仅有一个", () => {
+    const detail = makeDetail({ runId: 1 });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    // Default view is graph
+    expect(screen.getAllByTestId("orch-speak-leader-send")).toHaveLength(1);
+  });
+
+  it("feed 视图: Main 列中 orch-speak-leader-send 有且仅有一个", () => {
+    const detail = makeDetail({ runId: 1 });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    // Switch to feed view
+    fireEvent.click(screen.getByTestId("toggle-feed"));
+
+    expect(screen.getAllByTestId("orch-speak-leader-send")).toHaveLength(1);
+  });
+
   it("leader session 不存在时 orch-speak-leader-send 按钮 disabled", () => {
     // detail.run.leaderAgentId=2, tasks 中无 agentId=2 的 task → no leader session
     const detail = makeDetail({ runId: 1, tasks: [] });
