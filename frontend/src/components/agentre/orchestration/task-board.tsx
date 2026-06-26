@@ -6,24 +6,6 @@ import { useChatAgents } from "@/hooks/use-chat-agents";
 import type { app } from "../../../../wailsjs/go/models";
 import { useRunSubagents } from "./use-run-subagents";
 
-// 任务状态 → 可读文字 key
-function statusKey(status: string): string {
-  switch (status) {
-    case "running":
-      return "orchestration.board.statusRunning";
-    case "done":
-      return "orchestration.board.statusDone";
-    case "awaiting-user":
-      return "orchestration.board.statusAwaitingUser";
-    case "awaiting-children":
-      return "orchestration.board.statusAwaitingChildren";
-    case "error":
-      return "orchestration.board.statusError";
-    default:
-      return "orchestration.board.statusPending";
-  }
-}
-
 // 任务状态对应的颜色 class
 function statusDotClass(status: string): string {
   switch (status) {
@@ -41,74 +23,14 @@ function statusDotClass(status: string): string {
   }
 }
 
-// 节点钻入面板：展示选中 agent 的任务详情
-function DrilldownPanel({
-  tasks,
-  agentName,
-}: {
-  tasks: app.TaskDTO[];
-  agentName: string;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div
-      data-testid="board-drilldown"
-      className="flex flex-col gap-3 border-b border-border p-3"
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-foreground">{agentName}</span>
-        <span className="text-xs text-muted-foreground">
-          {t("orchestration.board.drilldownTitle")}
-        </span>
-      </div>
-      {/* TODO(plan-1b): 嵌入该会话 ChatPanel 只读 transcript + 对它说 */}
-      <div className="flex flex-col gap-2">
-        {tasks.map((task) => (
-          <div
-            key={task.id}
-            className="rounded-md border border-border bg-card p-2 text-xs"
-          >
-            {/* 任务 brief（动态内容不走 t()） */}
-            <div className="mb-1 font-medium text-foreground">
-              {task.brief || `#${task.id}`}
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  statusDotClass(task.status),
-                )}
-              />
-              <span className="text-muted-foreground">
-                {t(statusKey(task.status))}
-              </span>
-            </div>
-            {/* 结果（动态内容不走 t()） */}
-            {task.result && (
-              <div className="mt-1 truncate text-muted-foreground">
-                {task.result}
-              </div>
-            )}
-          </div>
-        ))}
-        {tasks.length === 0 && (
-          <p className="text-center text-xs text-muted-foreground">
-            {t("orchestration.board.drilldownEmpty")}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export function TaskBoard({
   detail,
-  selectedAgentId,
-  onSelectTask,
+  selectedSessionId,
+  onSelectSession,
 }: {
   detail: app.RunDetailDTO;
-  selectedAgentId: number | null;
-  onSelectTask: (agentId: number) => void;
+  selectedSessionId: number | null;
+  onSelectSession: (sessionId: number) => void;
 }) {
   const { t } = useTranslation();
   const { agents } = useChatAgents();
@@ -138,18 +60,6 @@ export function TaskBoard({
     }
     return m;
   }, [agents]);
-
-  // 选中 agent 的所有任务（用于钻入面板）
-  const selectedAgentTasks = React.useMemo(() => {
-    if (selectedAgentId === null) return [];
-    return tasks.filter((task) => task.agentId === selectedAgentId);
-  }, [tasks, selectedAgentId]);
-
-  // 选中 agent 的名称
-  const selectedAgentName =
-    selectedAgentId !== null
-      ? (agentNameMap.get(selectedAgentId) ?? `#${selectedAgentId}`)
-      : "";
 
   const doneCount = React.useMemo(
     () => tasks.filter((tk) => tk.status === "done").length,
@@ -213,14 +123,6 @@ export function TaskBoard({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tab === "tasks" ? (
           <>
-            {/* 节点钻入面板（选中 agent 时显示） */}
-            {selectedAgentId !== null && (
-              <DrilldownPanel
-                tasks={selectedAgentTasks}
-                agentName={selectedAgentName}
-              />
-            )}
-
             {/* 任务清单 */}
             {tasks.length === 0 ? (
               <p className="p-3 text-center text-xs text-muted-foreground">
@@ -231,7 +133,6 @@ export function TaskBoard({
                 {agentGroups.map((group) => {
                   const agentName =
                     agentNameMap.get(group.agentId) ?? `#${group.agentId}`;
-                  const isSelected = group.agentId === selectedAgentId;
                   const multi = group.tasks.length >= 2;
 
                   const renderRow = (task: app.TaskDTO, indented: boolean) => {
@@ -239,12 +140,13 @@ export function TaskBoard({
                     const seq = task.callSeq > 0 ? task.callSeq : task.id;
                     const subs = subagents.forSession(task.sessionId);
                     const open = expandedSub.has(task.id);
+                    const isSelected = task.sessionId === selectedSessionId;
                     return (
                       <li key={task.id}>
                         <button
                           type="button"
                           data-testid={`board-task-${task.id}`}
-                          onClick={() => onSelectTask(task.agentId)}
+                          onClick={() => onSelectSession(task.sessionId)}
                           className={cn(
                             "flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-muted/50",
                             !indented && isChild && "pl-6",

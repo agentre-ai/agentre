@@ -41,7 +41,7 @@ function nodeBorderClass(s: NodeStatus): string {
 // 单个 agent 节点卡片:三态
 //  ① callCount<=1            → 单行 brief(现状)
 //  ② !isTopLevel && >=2      → 合并 ×N 徽标, 不列子行(子代理保持图干净)
-//  ③ isTopLevel && >=2       → 分组容器: 头部「N 会话」+ 每次调用一条只读子行
+//  ③ isTopLevel && >=2       → 分组容器: 头部「N 会话」+ 每次调用一条可点击子行
 function NodeCard({
   node,
   agentName,
@@ -51,7 +51,7 @@ function NodeCard({
   hasDeadlock,
   leaderLabel,
   subagentCount,
-  onClick,
+  onSelectSession,
 }: {
   node: GraphNode;
   agentName: string;
@@ -61,7 +61,7 @@ function NodeCard({
   hasDeadlock: boolean;
   leaderLabel: string;
   subagentCount: number;
-  onClick: () => void;
+  onSelectSession: (sessionId: number) => void;
 }) {
   const { t } = useTranslation();
   const isMerged = !node.isLeader && !node.isTopLevel && node.callCount >= 2;
@@ -69,13 +69,30 @@ function NodeCard({
 
   const callDot = (status: GraphCall["status"]) => CALL_DOT[status];
 
+  // 整卡点击:取首个 call 的 sessionId(单调用 / 合并节点均取第一个)
+  const handleCardClick = () => {
+    if (node.calls[0]) {
+      onSelectSession(node.calls[0].sessionId);
+    }
+  };
+
+  const handleCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleCardClick();
+    }
+  };
+
   return (
-    <button
-      type="button"
+    // Change B: root 改为 div role="button" 以允许内部嵌套 <button>(顶层分组子行)
+    <div
+      role="button"
+      tabIndex={0}
       data-testid={`node-${node.agentId}`}
-      onClick={onClick}
+      onClick={handleCardClick}
+      onKeyDown={handleCardKeyDown}
       className={cn(
-        "flex w-52 cursor-pointer flex-col gap-2 rounded-lg border-2 bg-card p-3 text-left shadow-sm transition-shadow hover:shadow-md",
+        "flex w-52 cursor-pointer flex-col gap-2 rounded-lg border-2 bg-card p-3 text-left shadow-sm transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring",
         hasDeadlock
           ? "border-destructive ring-2 ring-destructive/40"
           : nodeBorderClass(node.status),
@@ -125,24 +142,30 @@ function NodeCard({
         )}
       </div>
 
-      {/* 分组容器:每次调用一条只读子行(钻入留给 S6) */}
+      {/* 分组容器:每次调用一条可点击子行(钻入会话) */}
       {isGroup ? (
         <ul className="flex flex-col gap-1">
           {node.calls.map((call, i) => (
-            <li
-              key={call.taskId}
-              data-testid={`node-${node.agentId}-call-${call.taskId}`}
-              className="flex items-center gap-1.5"
-            >
-              <StatusDot status={callDot(call.status)} size="xs" />
-              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                {t("orchestration.graph.callLabel", {
-                  seq: call.callSeq || i + 1,
-                })}
-              </span>
-              <span className="truncate text-xs text-muted-foreground">
-                {call.brief || `#${call.taskId}`}
-              </span>
+            <li key={call.taskId} className="flex items-center gap-1.5">
+              <button
+                type="button"
+                data-testid={`node-${node.agentId}-call-${call.taskId}`}
+                className="flex min-w-0 flex-1 items-center gap-1.5"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectSession(call.sessionId);
+                }}
+              >
+                <StatusDot status={callDot(call.status)} size="xs" />
+                <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                  {t("orchestration.graph.callLabel", {
+                    seq: call.callSeq || i + 1,
+                  })}
+                </span>
+                <span className="truncate text-xs text-muted-foreground">
+                  {call.brief || `#${call.taskId}`}
+                </span>
+              </button>
             </li>
           ))}
         </ul>
@@ -162,7 +185,7 @@ function NodeCard({
           </ul>
         )
       )}
-    </button>
+    </div>
   );
 }
 
@@ -220,7 +243,7 @@ function NodeTree({
   agentMap,
   leaderLabel,
   countForAgent,
-  onSelectNode,
+  onSelectSession,
 }: {
   nodes: GraphNode[];
   edges: { from: number; to: number }[];
@@ -236,7 +259,7 @@ function NodeTree({
   >;
   leaderLabel: string;
   countForAgent: (agentId: number) => number;
-  onSelectNode: (agentId: number) => void;
+  onSelectSession: (sessionId: number) => void;
 }) {
   const depths = computeDepths(nodes, edges);
 
@@ -272,7 +295,7 @@ function NodeTree({
                 hasDeadlock={deadlockAgentIds.has(node.agentId)}
                 leaderLabel={leaderLabel}
                 subagentCount={countForAgent(node.agentId)}
-                onClick={() => onSelectNode(node.agentId)}
+                onSelectSession={onSelectSession}
               />
             );
           })}
@@ -284,10 +307,10 @@ function NodeTree({
 
 export function StructureGraph({
   detail,
-  onSelectNode,
+  onSelectSession,
 }: {
   detail: app.RunDetailDTO;
-  onSelectNode: (agentId: number) => void;
+  onSelectSession: (sessionId: number) => void;
 }) {
   const { t } = useTranslation();
   const { agents } = useChatAgents();
@@ -401,7 +424,7 @@ export function StructureGraph({
             agentMap={agentMap}
             leaderLabel={t("orchestration.graph.leaderCrown")}
             countForAgent={subagents.countForAgent}
-            onSelectNode={onSelectNode}
+            onSelectSession={onSelectSession}
           />
         </div>
       )}
