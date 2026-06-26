@@ -2271,7 +2271,12 @@
       "create": "Create"
     },
     "list": {
-      "newButton": "New Orchestration"
+      "newButton": "New Orchestration",
+      "title": "Orchestration Runs",
+      "newBtnLabel": "New",
+      "filterAll": "All",
+      "filterRunning": "Running",
+      "filterDone": "Done"
     },
     "onboarding": {
       "cta": "Start multi-agent orchestration",

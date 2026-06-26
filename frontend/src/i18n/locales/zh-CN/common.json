@@ -2271,7 +2271,12 @@
       "create": "创建"
     },
     "list": {
-      "newButton": "新建编排"
+      "newButton": "新建编排",
+      "title": "编排 Runs",
+      "newBtnLabel": "新建",
+      "filterAll": "全部",
+      "filterRunning": "运行中",
+      "filterDone": "已完成"
     },
     "onboarding": {
       "cta": "开启多 Agent 协作编排",

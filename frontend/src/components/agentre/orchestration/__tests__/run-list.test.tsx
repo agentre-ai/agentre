@@ -79,4 +79,74 @@ describe("RunList", () => {
 
     expect(await screen.findByTestId("run-goal")).toBeInTheDocument();
   });
+
+  // ── 新结构断言 ──────────────────────────────────────────────────
+  describe("has-runs 路径 — 新结构", () => {
+    const twoRuns = [
+      {
+        id: 10,
+        goal: "支付重构",
+        status: "running",
+        leaderAgentId: 0,
+        projectId: 0,
+        flowId: 0,
+        flowContent: "",
+        rootTaskId: 0,
+        createtime: Date.now(),
+        updatetime: Date.now(),
+      },
+      {
+        id: 11,
+        goal: "数据迁移",
+        status: "paused",
+        leaderAgentId: 0,
+        projectId: 0,
+        flowId: 0,
+        flowContent: "",
+        rootTaskId: 0,
+        createtime: Date.now(),
+        updatetime: Date.now(),
+      },
+    ];
+
+    it("展示 listHead 标题区域", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} />);
+      // listHead 必须存在
+      expect(screen.getByTestId("run-list-head")).toBeInTheDocument();
+    });
+
+    it("展示新建按钮 run-new-button", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} />);
+      expect(screen.getByTestId("run-new-button")).toBeInTheDocument();
+    });
+
+    it("展示筛选 chip 行", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} />);
+      expect(screen.getByTestId("run-filter-chips")).toBeInTheDocument();
+    });
+
+    it("activeRunId 匹配时 run-row 带 active 样式标记", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} activeRunId={10} />);
+      const activeRow = screen.getByTestId("run-row-10");
+      expect(activeRow).toHaveAttribute("data-active", "true");
+    });
+
+    it("非 active run-row data-active=false", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} activeRunId={10} />);
+      const inactiveRow = screen.getByTestId("run-row-11");
+      expect(inactiveRow).toHaveAttribute("data-active", "false");
+    });
+
+    it("run-row 展示 run goal 文本", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} />);
+      expect(screen.getByTestId("run-row-10")).toBeInTheDocument();
+      expect(screen.getByTestId("run-row-11")).toBeInTheDocument();
+    });
+  });
 });
