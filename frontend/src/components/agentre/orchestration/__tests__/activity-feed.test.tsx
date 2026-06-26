@@ -348,4 +348,95 @@ describe("ActivityFeed", () => {
     // 第二个包含后来的回复
     expect(items[1]).toHaveTextContent("后来的回复");
   });
+
+  // === Review-fix: timestamp + crown chip ===
+
+  it("ask 行包含时间戳 (ts 字段存在即渲染 mono 时间)", () => {
+    // ts=0 → toLocaleTimeString 应输出 12:00 AM 或 00:00，总之不为空
+    const detail = makeDetail({ runId: 20 });
+
+    useOrchRunStore.setState((s) => {
+      const log = new Map(s.askLog);
+      log.set(20, [
+        {
+          kind: "ask",
+          askId: "ts1",
+          agentId: 3,
+          text: "时间戳测试",
+          ts: new Date("2025-01-01T10:30:00").getTime(),
+        },
+      ]);
+      return { askLog: log };
+    });
+
+    render(<ActivityFeed detail={detail} />);
+
+    const askEl = screen.getByTestId("feed-ask-ts1");
+    // 行内存在某种 HH:MM 形式的时间文本（mono span 已渲染）
+    expect(askEl).toHaveTextContent(/\d{1,2}:\d{2}/);
+  });
+
+  it("reply 行包含时间戳", () => {
+    const detail = makeDetail({ runId: 21 });
+
+    useOrchRunStore.setState((s) => {
+      const log = new Map(s.askLog);
+      log.set(21, [
+        {
+          kind: "reply",
+          askId: "ts2",
+          agentId: 2,
+          text: "回复时间戳测试",
+          ts: new Date("2025-01-01T15:45:00").getTime(),
+        },
+      ]);
+      return { askLog: log };
+    });
+
+    render(<ActivityFeed detail={detail} />);
+
+    const replyEl = screen.getByTestId("feed-reply-ts2");
+    expect(replyEl).toHaveTextContent(/\d{1,2}:\d{2}/);
+  });
+
+  it("Leader 行渲染皇冠 chip (feed-leader-crown testid 存在)", () => {
+    // agentId=2 是 leaderAgentId=2 的行 → 皇冠
+    const tasks = [
+      makeTask({
+        id: 30,
+        agentId: 2, // === leaderAgentId
+        parentTaskId: 1,
+        status: "running",
+        brief: "Leader 的任务",
+        createtime: 300,
+        updatetime: 350,
+      }),
+    ];
+    const detail = makeDetail({ tasks, leaderAgentId: 2 });
+
+    render(<ActivityFeed detail={detail} />);
+
+    const crowns = screen.getAllByTestId("feed-leader-crown");
+    expect(crowns.length).toBeGreaterThan(0);
+  });
+
+  it("非 Leader 行不渲染皇冠 chip", () => {
+    // agentId=3，但 leaderAgentId=2 → 无皇冠
+    const tasks = [
+      makeTask({
+        id: 31,
+        agentId: 3, // !== leaderAgentId
+        parentTaskId: 1,
+        status: "running",
+        brief: "子 Agent 的任务",
+        createtime: 310,
+        updatetime: 360,
+      }),
+    ];
+    const detail = makeDetail({ tasks, leaderAgentId: 2 });
+
+    render(<ActivityFeed detail={detail} />);
+
+    expect(screen.queryByTestId("feed-leader-crown")).not.toBeInTheDocument();
+  });
 });

@@ -2333,6 +2333,8 @@
       "kindReport": "reported",
       "kindFinish": "finished",
       "kindBlocked": "blocked",
+      "kindAsk": "asked",
+      "kindReply": "replied",
       "executing": "is executing"
     },
     "board": {

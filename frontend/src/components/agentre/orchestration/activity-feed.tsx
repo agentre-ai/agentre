@@ -1,5 +1,14 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  Check,
+  CornerDownRight,
+  CornerUpLeft,
+  Crown,
+  MessageCircle,
+  MessageSquare,
+  TriangleAlert,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -60,6 +69,26 @@ function kindBadgeClass(kind: FeedItem["kind"]): string {
   }
 }
 
+// badge 图标映射（每种 kind 对应的 lucide 图标）
+function KindBadgeIcon({ kind }: { kind: FeedItem["kind"] }) {
+  const cls = "size-2.5";
+  switch (kind) {
+    case "dispatch":
+      return <CornerDownRight className={cls} />;
+    case "finish":
+    case "report":
+      return <Check className={cls} />;
+    case "ask":
+      return <MessageCircle className={cls} />;
+    case "reply":
+      return <CornerUpLeft className={cls} />;
+    case "blocked":
+      return <TriangleAlert className={cls} />;
+    default:
+      return <MessageSquare className={cls} />;
+  }
+}
+
 export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
   const { t } = useTranslation();
   const { agents } = useChatAgents();
@@ -77,6 +106,9 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
 
   const tasks = detail.tasks ?? [];
   const runStatus = detail.run?.status;
+
+  // Leader agent id（用于渲染皇冠 chip）
+  const leaderAgentId = detail.run?.leaderAgentId;
 
   // 解析根任务会话 ID：优先匹配 rootTaskId，退而匹配 parentTaskId===0
   const rootSessionId =
@@ -171,6 +203,26 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
     return null;
   })();
 
+  // badge 静态标签（ask/reply 走 kindAsk/kindReply）
+  function kindLabel(kind: FeedItem["kind"]): string | null {
+    switch (kind) {
+      case "dispatch":
+        return t("orchestration.feed.kindDispatch");
+      case "report":
+        return t("orchestration.feed.kindReport");
+      case "finish":
+        return t("orchestration.feed.kindFinish");
+      case "blocked":
+        return t("orchestration.feed.kindBlocked");
+      case "ask":
+        return t("orchestration.feed.kindAsk");
+      case "reply":
+        return t("orchestration.feed.kindReply");
+      default:
+        return null;
+    }
+  }
+
   return (
     <div className="flex h-full flex-col gap-0 bg-background">
       {/* 顶部状态条 */}
@@ -190,56 +242,8 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
               const agentName = resolveAgentName(item.agentId, agents);
               const agentColor = resolveAgentColor(item.agentId, agents);
               const agentAvatarProps = resolveAgentAvatar(item.agentId, agents);
-
-              // ask/reply 使用专属样式：amber for ask-waiting
-              if (item.kind === "ask" || item.kind === "reply") {
-                const label =
-                  item.kind === "ask"
-                    ? t("orchestration.feed.ask", { name: agentName })
-                    : t("orchestration.feed.reply", { name: agentName });
-                const askId = item.id.replace(/^(ask|reply)-/, "");
-                const isAsk = item.kind === "ask";
-                return (
-                  <li
-                    key={item.id}
-                    data-testid={`feed-${item.kind}-${askId}`}
-                    className="flex items-start gap-2.5"
-                  >
-                    {/* Avatar */}
-                    <AgentAvatar
-                      name={agentName}
-                      color={agentColor}
-                      size="sm"
-                      className="mt-0.5 shrink-0 rounded-full"
-                      {...agentAvatarProps}
-                    />
-                    {/* Body */}
-                    <div className="min-w-0 flex-1 flex-col gap-1">
-                      {/* Header row */}
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-[12.5px] font-semibold text-foreground">
-                          {agentName}
-                        </span>
-                        {/* ask/reply badge */}
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-                            isAsk
-                              ? "bg-status-waiting-bg text-status-waiting"
-                              : "bg-status-running-bg text-status-running",
-                          )}
-                        >
-                          {label}
-                        </span>
-                      </div>
-                      {/* Message text */}
-                      <p className="mt-0.5 break-words text-[12.5px] leading-[1.4] text-foreground">
-                        {item.text}
-                      </p>
-                    </div>
-                  </li>
-                );
-              }
+              const isLeader =
+                leaderAgentId !== undefined && item.agentId === leaderAgentId;
 
               // blocked 类型且 text 为空时使用 i18n fallback 文案
               const displayText =
@@ -247,24 +251,20 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
                   ? t("orchestration.feed.blocked")
                   : item.text;
 
-              // i18n badge label（静态）
-              const kindLabel = (() => {
-                switch (item.kind) {
-                  case "dispatch":
-                    return t("orchestration.feed.kindDispatch");
-                  case "report":
-                    return t("orchestration.feed.kindReport");
-                  case "finish":
-                    return t("orchestration.feed.kindFinish");
-                  case "blocked":
-                    return t("orchestration.feed.kindBlocked");
-                  default:
-                    return null;
-                }
-              })();
+              const label = kindLabel(item.kind);
+
+              // ask/reply 使用专属 testid；ev 行无 testid
+              const testId =
+                item.kind === "ask" || item.kind === "reply"
+                  ? `feed-${item.kind}-${item.id.replace(/^(ask|reply)-/, "")}`
+                  : undefined;
 
               return (
-                <li key={item.id} className="flex items-start gap-2.5">
+                <li
+                  key={item.id}
+                  data-testid={testId}
+                  className="flex items-start gap-2.5"
+                >
                   {/* Avatar: 24px round */}
                   <AgentAvatar
                     name={agentName}
@@ -273,21 +273,33 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
                     className="mt-0.5 shrink-0 rounded-full"
                     {...agentAvatarProps}
                   />
-                  {/* Body */}
-                  <div className="min-w-0 flex-1">
-                    {/* Header row: name + optional badge + spacer + timestamp */}
+                  {/* Body: flex-col gap-1 */}
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    {/* Header row: name + optional crown + kind badge + spacer + timestamp */}
                     <div className="flex items-center gap-1.5">
                       <span className="text-[12.5px] font-semibold text-foreground">
                         {agentName}
                       </span>
-                      {kindLabel && (
+                      {/* Crown chip: only for Leader */}
+                      {isLeader && (
+                        <span
+                          data-testid="feed-leader-crown"
+                          className="inline-flex items-center gap-[3px] rounded-full bg-primary-soft px-1.5 py-px text-[10px] font-semibold text-primary-text"
+                        >
+                          <Crown className="size-2.5" />
+                          {t("orchestration.header.leaderLabel")}
+                        </span>
+                      )}
+                      {/* Kind badge */}
+                      {label && (
                         <span
                           className={cn(
-                            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                            "inline-flex items-center gap-1 rounded-full px-[7px] py-0.5 text-[10px] font-semibold",
                             kindBadgeClass(item.kind),
                           )}
                         >
-                          {kindLabel}
+                          <KindBadgeIcon kind={item.kind} />
+                          {label}
                         </span>
                       )}
                       {/* flex spacer */}
@@ -301,7 +313,7 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
                       </span>
                     </div>
                     {/* Message text */}
-                    <p className="mt-1 break-words text-[12.5px] leading-[1.4] text-foreground">
+                    <p className="break-words text-[12.5px] leading-[1.4] text-foreground">
                       {displayText}
                     </p>
                   </div>
