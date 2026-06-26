@@ -237,6 +237,31 @@ describe("StructureGraph", () => {
     expect(headerSpan?.textContent).toMatch(/·\s2/);
   });
 
+  it("activeAsks 含某 asker → 其节点挂 提问·等待回复 徽标", () => {
+    useOrchRunStore.setState({
+      activeAsks: new Map([
+        [1, [{ askId: "k", askerAgentId: 3, targetAgentId: 2 }]],
+      ]),
+    });
+    const detail = makeDetail({
+      runId: 1,
+      runStatus: "running",
+      tasks: [makeTask(1, 2, "running"), makeTask(2, 3, "running", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(screen.getByTestId("node-3-asking")).toBeInTheDocument();
+  });
+
+  it("activeAsks 为空 → 不显示 asking 徽标", () => {
+    const detail = makeDetail({
+      runId: 1,
+      runStatus: "running",
+      tasks: [makeTask(1, 2, "running"), makeTask(2, 3, "running", 1)],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(screen.queryByTestId("node-3-asking")).not.toBeInTheDocument();
+  });
+
   it("agent 的 task session 有 CLI 子代理 → 节点挂 +N 子代理 徽标", async () => {
     const detail = makeDetail({
       runStatus: "running",

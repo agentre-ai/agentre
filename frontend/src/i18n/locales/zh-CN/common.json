@@ -1264,6 +1264,7 @@
     "hooks": "Hooks",
     "issues": "Issues",
     "org": "组织",
+    "orchestration": "编排",
     "projects": "项目",
     "settings": "设置"
   },
@@ -1675,8 +1676,18 @@
         "add": "添加工具",
         "empty": "暂无可用工具",
         "approval": "需审批",
-        "names": { "org": "组织架构", "workflow": "流程库", "subagent": "调用子 Agent", "hook": "脚本 Hook" },
-        "descriptions": { "org": "允许该 Agent 查询并管理部门与成员（写操作需你审批）", "workflow": "允许该 Agent 查询并管理协作流程（写操作需你审批）", "subagent": "把子任务委派给另一个已配置的 Agent 执行并同步取回结果。子 Agent 在隔离的一次性会话中运行；用作子 Agent 的成员建议使用自动批准的权限模式。", "hook": "允许该 Agent 编写、试运行并按 cron 调度脚本 Hook，定时产出事件（创建/修改/删除/执行均需你审批）" }
+        "names": {
+          "org": "组织架构",
+          "workflow": "流程库",
+          "subagent": "调用子 Agent",
+          "hook": "脚本 Hook"
+        },
+        "descriptions": {
+          "org": "允许该 Agent 查询并管理部门与成员（写操作需你审批）",
+          "workflow": "允许该 Agent 查询并管理协作流程（写操作需你审批）",
+          "subagent": "把子任务委派给另一个已配置的 Agent 执行并同步取回结果。子 Agent 在隔离的一次性会话中运行；用作子 Agent 的成员建议使用自动批准的权限模式。",
+          "hook": "允许该 Agent 编写、试运行并按 cron 调度脚本 Hook，定时产出事件（创建/修改/删除/执行均需你审批）"
+        }
       },
       "toolPicker": {
         "title": "添加工具",
@@ -2260,7 +2271,12 @@
       "create": "创建"
     },
     "list": {
-      "newButton": "新建编排"
+      "newButton": "新建编排",
+      "title": "编排 Runs",
+      "newBtnLabel": "新建",
+      "filterAll": "全部",
+      "filterRunning": "运行中",
+      "filterDone": "已完成"
     },
     "onboarding": {
       "cta": "开启多 Agent 协作编排",
@@ -2285,7 +2301,9 @@
       "pause": "暂停",
       "resume": "继续",
       "stop": "硬停止",
-      "softWarning": "停止后不可恢复，确认继续？"
+      "softWarning": "停止后不可恢复，确认继续？",
+      "leaderLabel": "Leader",
+      "more": "更多"
     },
     "graph": {
       "empty": "暂无节点",
@@ -2296,7 +2314,8 @@
       "leaderCrown": "Leader",
       "callCount": "×{{count}}",
       "sessionsCount": "{{count}} 会话",
-      "callLabel": "会话#{{seq}}"
+      "callLabel": "会话#{{seq}}",
+      "askWaiting": "提问·等待回复"
     },
     "feed": {
       "deadlock": "检测到 ask 等待环",
@@ -2307,7 +2326,9 @@
       "empty": "暂无活动",
       "blocked": "等待你",
       "speakPlaceholder": "对 Leader 说…",
-      "speakSend": "发送"
+      "speakSend": "发送",
+      "ask": "{{name}} 提问",
+      "reply": "{{name}} 回复"
     },
     "board": {
       "tabTasks": "任务",
@@ -2331,7 +2352,9 @@
     },
     "run": {
       "blueprintTitle": "流程蓝图",
-      "blueprintRef": "仅参考 · 不约束执行"
+      "blueprintRef": "仅参考 · 不约束执行",
+      "speakLeaderPlaceholder": "对 Leader 说:调整优先级 / 追加约束 / 批准任务…",
+      "send": "发送"
     },
     "subagent": {
       "badge": "+{{count}} 子代理",

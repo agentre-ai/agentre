@@ -114,6 +114,84 @@ func TestAsk_BusyTargetSteersIntoCurrentTurn(t *testing.T) {
 	})
 }
 
+func TestAsk_EscapesXMLInQuestionAndAskerName(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, nil)
+
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500}, nil)
+	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
+	// askerName 含 < > " 以覆盖属性转义
+	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: `前端 <"x">`}, nil).AnyTimes()
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 8, AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
+	injCh := make(chan string, 1)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(700), gomock.Any()).DoAndReturn(func(_ context.Context, _ int64, msg string) error {
+		injCh <- msg
+		return nil
+	})
+
+	Convey("Ask 注入消息:question/askerName 中的 < > & \" 必须被 HTML 转义", t, func() {
+		done := make(chan string, 1)
+		// question 含 <script> 和 "双引号"
+		go func() {
+			ans, _ := orch_svc.Default().Ask(context.Background(), 500, "王", `用 <script> 吗? & "yes"`)
+			done <- ans
+		}()
+		msg := <-injCh
+		// 信封标签本身不应被转义
+		So(msg, ShouldContainSubstring, "<peer_ask")
+		So(msg, ShouldContainSubstring, "</peer_ask>")
+		// question 中的 < 必须转义为 &lt;
+		So(msg, ShouldNotContainSubstring, "<script")
+		So(msg, ShouldContainSubstring, "&lt;script")
+		// askerName 中的 < 也必须转义
+		So(msg, ShouldNotContainSubstring, `前端 <"x">`)
+		So(msg, ShouldContainSubstring, "前端 &lt;")
+		// Reply 让 goroutine 退出，防 goroutine 泄漏
+		askID := parseAskID(msg)
+		So(askID, ShouldNotBeBlank)
+		So(orch_svc.Default().Reply(context.Background(), 1, askID, "已转义"), ShouldBeNil)
+		select {
+		case ans := <-done:
+			So(ans, ShouldEqual, "已转义")
+		case <-time.After(time.Second):
+			t.Fatal("ask 未在超时内返回")
+		}
+	})
+}
+
+func TestAsk_EmitsAskAndReplyEvents(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	emit := mock_orch_svc.NewMockEmitter(ctrl)
+	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, emit)
+
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500}, nil)
+	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
+	agents.EXPECT().Find(gomock.Any(), gomock.Any()).Return(&agent_entity.Agent{ID: 2, Name: "前端"}, nil).AnyTimes()
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 8, AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
+	injCh := make(chan string, 1)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(700), gomock.Any()).DoAndReturn(func(_ context.Context, _ int64, m string) error { injCh <- m; return nil })
+	askEvt := make(chan struct{}, 1)
+	emit.EXPECT().Emit(gomock.Any(), "orch:run:ask", gomock.Any()).Do(func(_ context.Context, _ string, _ any) { askEvt <- struct{}{} })
+	emit.EXPECT().Emit(gomock.Any(), "orch:run:reply", gomock.Any())
+	emit.EXPECT().Emit(gomock.Any(), "orch:run:deadlock", gomock.Any()).AnyTimes()
+
+	Convey("Ask emit ask 事件, reply 后 emit reply 事件", t, func() {
+		go func() { _, _ = orch_svc.Default().Ask(context.Background(), 500, "王", "鉴权?") }()
+		<-askEvt
+		askID := parseAskID(<-injCh)
+		So(orch_svc.Default().Reply(context.Background(), 1, askID, "ok"), ShouldBeNil)
+		time.Sleep(50 * time.Millisecond) // 让 select 收到 reply 并 emit
+	})
+}
+
 func TestReply_RejectsForeignReplier(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)

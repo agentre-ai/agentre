@@ -51,6 +51,7 @@ function NodeCard({
   hasDeadlock,
   leaderLabel,
   subagentCount,
+  isAsking,
   onSelectSession,
 }: {
   node: GraphNode;
@@ -61,6 +62,7 @@ function NodeCard({
   hasDeadlock: boolean;
   leaderLabel: string;
   subagentCount: number;
+  isAsking: boolean;
   onSelectSession: (sessionId: number) => void;
 }) {
   const { t } = useTranslation();
@@ -138,6 +140,14 @@ function NodeCard({
             className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
           >
             {t("orchestration.subagent.badge", { count: subagentCount })}
+          </span>
+        )}
+        {isAsking && (
+          <span
+            data-testid={`node-${node.agentId}-asking`}
+            className="shrink-0 rounded bg-status-waiting-bg px-1.5 py-0.5 text-xs text-status-waiting"
+          >
+            {t("orchestration.graph.askWaiting")}
           </span>
         )}
       </div>
@@ -243,6 +253,7 @@ function NodeTree({
   agentMap,
   leaderLabel,
   countForAgent,
+  askingAgentIds,
   onSelectSession,
 }: {
   nodes: GraphNode[];
@@ -259,6 +270,7 @@ function NodeTree({
   >;
   leaderLabel: string;
   countForAgent: (agentId: number) => number;
+  askingAgentIds: Set<number>;
   onSelectSession: (sessionId: number) => void;
 }) {
   const depths = computeDepths(nodes, edges);
@@ -295,6 +307,7 @@ function NodeTree({
                 hasDeadlock={deadlockAgentIds.has(node.agentId)}
                 leaderLabel={leaderLabel}
                 subagentCount={countForAgent(node.agentId)}
+                isAsking={askingAgentIds.has(node.agentId)}
                 onSelectSession={onSelectSession}
               />
             );
@@ -340,10 +353,17 @@ export function StructureGraph({
     return m;
   }, [agents]);
 
-  // 死锁环: 从 store 读，映射 sessionId → agentId
+  // 死锁环 + 提问中: 从 store 读
   const runId = detail.run?.id;
   const cycle = useOrchRunStore((s) =>
     runId !== undefined ? s.deadlocks.get(runId) : undefined,
+  );
+  const activeAsks = useOrchRunStore((s) =>
+    runId !== undefined ? s.activeAsks.get(runId) : undefined,
+  );
+  const askingAgentIds = React.useMemo(
+    () => new Set((activeAsks ?? []).map((a) => a.askerAgentId)),
+    [activeAsks],
   );
 
   const deadlockAgentIds = React.useMemo(() => {
@@ -424,6 +444,7 @@ export function StructureGraph({
             agentMap={agentMap}
             leaderLabel={t("orchestration.graph.leaderCrown")}
             countForAgent={subagents.countForAgent}
+            askingAgentIds={askingAgentIds}
             onSelectSession={onSelectSession}
           />
         </div>

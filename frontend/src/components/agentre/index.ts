@@ -36,6 +36,7 @@ export {
 } from "./chat";
 export { CodeBlock } from "./code-block";
 export { MarkdownText } from "./markdown-text";
+export { OrchestrationPage } from "./orchestration/orchestration-page";
 export { SettingsPage } from "./settings";
 export {
   ShortcutsProvider,

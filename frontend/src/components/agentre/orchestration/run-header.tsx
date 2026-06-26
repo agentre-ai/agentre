@@ -1,7 +1,16 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  Waypoints,
+  Target,
+  Pause,
+  Square,
+  Ellipsis,
+  Circle,
+} from "lucide-react";
 import { buildGraph } from "./graph-data";
+import { useChatAgents } from "@/hooks/use-chat-agents";
 import { RunPause, RunResume, RunStop } from "../../../../wailsjs/go/app/App";
 import type { app } from "../../../../wailsjs/go/models";
 
@@ -14,201 +23,201 @@ function isTerminal(status: string | undefined): boolean {
   return status === "done" || status === "stopped";
 }
 
-export function RunHeader({
-  detail,
-  view,
-  onView,
-}: {
-  detail: app.RunDetailDTO;
-  view: "graph" | "feed";
-  onView: (v: "graph" | "feed") => void;
-}) {
+// 状态胶囊配置
+const PHASE_CONFIG: Record<
+  string,
+  { labelKey: string; bgClass: string; textClass: string; dotClass: string }
+> = {
+  running: {
+    labelKey: "orchestration.header.running",
+    bgClass: "bg-status-running-bg",
+    textClass: "text-status-running",
+    dotClass: "text-status-running",
+  },
+  paused: {
+    labelKey: "orchestration.header.paused",
+    bgClass: "bg-status-waiting-bg",
+    textClass: "text-status-waiting",
+    dotClass: "text-status-waiting",
+  },
+  done: {
+    labelKey: "orchestration.header.completed",
+    bgClass: "bg-status-running-bg",
+    textClass: "text-status-running",
+    dotClass: "text-status-running",
+  },
+  stopped: {
+    labelKey: "orchestration.header.stopped",
+    bgClass: "bg-muted",
+    textClass: "text-muted-foreground",
+    dotClass: "text-muted-foreground",
+  },
+  pending: {
+    labelKey: "orchestration.header.pending",
+    bgClass: "bg-muted",
+    textClass: "text-muted-foreground",
+    dotClass: "text-muted-foreground",
+  },
+};
+
+export function RunHeader({ detail }: { detail: app.RunDetailDTO }) {
   const { t } = useTranslation();
+  const { agents } = useChatAgents();
   const { stats } = buildGraph(detail);
-  const tasks = detail.tasks ?? [];
 
-  // 按状态统计任务数
-  const countRunning = tasks.filter((task) => task.status === "running").length;
-  const countWaitingYou = tasks.filter(
-    (task) => task.status === "awaiting-user",
-  ).length;
-  const countDone = tasks.filter((task) => task.status === "done").length;
-
-  // 运行状态文本映射
   const runStatus = detail.run?.status;
-  const statusTextKey = (() => {
-    switch (runStatus) {
-      case "running":
-        return "orchestration.header.running";
-      case "done":
-        return "orchestration.header.completed";
-      case "paused":
-        return "orchestration.header.paused";
-      case "stopped":
-        return "orchestration.header.stopped";
-      case "pending":
-        return "orchestration.header.pending";
-      default:
-        return "orchestration.header.pending";
-    }
-  })();
+  const runId = detail.run?.id;
+  const goal = detail.run?.goal ?? "";
 
-  // 软阈值预警：子agent数或树深超过软上限时显示非阻塞黄条
+  // 软阈值预警
   const showSoftWarning =
     stats.subagents > SOFT_SUBAGENTS || stats.depth > SOFT_DEPTH;
 
-  const runId = detail.run?.id;
+  // 状态胶囊配置
+  const phaseConfig =
+    PHASE_CONFIG[runStatus ?? "pending"] ?? PHASE_CONFIG["pending"];
+
+  // Leader name for subline
+  const leaderAgentId = detail.run?.leaderAgentId;
+  const leaderAgent = agents.find((a) => a.id === leaderAgentId);
+  const leaderName =
+    leaderAgent?.name ?? (leaderAgentId ? `#${leaderAgentId}` : "");
 
   return (
-    <div className="flex flex-col gap-3 border-b border-border p-4">
-      {/* 第一行：标题 + 视图切换分段控件 */}
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="truncate text-base font-semibold text-foreground">
-          {detail.run?.goal}
+    <div
+      data-testid="run-header"
+      className="flex flex-col gap-2 border-b border-border bg-card px-5 py-3.5"
+    >
+      {/* Topline: icon badge + title + status pill + spacer + controls */}
+      <div className="flex items-center gap-2.5">
+        {/* Icon badge */}
+        <div
+          data-testid="run-header-icon"
+          className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-primary-soft"
+        >
+          <Waypoints className="size-4 text-primary-text" aria-hidden="true" />
+        </div>
+
+        {/* Title: goal · #runId */}
+        <h2
+          data-testid="run-header-title"
+          className="truncate text-base font-bold text-foreground"
+        >
+          {goal}
+          {runId !== undefined && (
+            <span className="ml-1.5 font-normal text-muted-foreground">
+              · #{runId}
+            </span>
+          )}
         </h2>
 
-        {/* 视图分段控件：两个 Button 组合成 segmented control */}
-        <div className="flex items-center rounded-md border border-border bg-muted p-0.5">
-          <Button
-            data-testid="view-graph"
-            variant={view === "graph" ? "default" : "ghost"}
-            size="sm"
-            className={cn(
-              "h-7 rounded-sm px-3 text-xs",
-              view !== "graph" && "text-muted-foreground hover:text-foreground",
-            )}
-            onClick={() => onView("graph")}
-          >
-            {t("orchestration.header.viewGraph")}
-          </Button>
-          <Button
-            data-testid="view-feed"
-            variant={view === "feed" ? "default" : "ghost"}
-            size="sm"
-            className={cn(
-              "h-7 rounded-sm px-3 text-xs",
-              view !== "feed" && "text-muted-foreground hover:text-foreground",
-            )}
-            onClick={() => onView("feed")}
-          >
-            {t("orchestration.header.viewFeed")}
-          </Button>
-        </div>
-      </div>
-
-      {/* 第二行：状态文本 + 客观计数 chips */}
-      <div className="flex flex-wrap items-center gap-2">
-        {/* 运行状态文本 */}
-        <span className="text-sm text-muted-foreground">
-          {t(statusTextKey)}
-        </span>
-
-        <span className="text-muted-foreground/40">·</span>
-
-        {/* 运行中计数 chip */}
-        <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-          <span>{t("orchestration.header.countRunning")}</span>
-          <span className="font-medium text-foreground">{countRunning}</span>
-        </span>
-
-        {/* 等待你计数 chip：> 0 时琥珀高亮 */}
-        <span
-          data-testid="count-waiting-you"
+        {/* Status pill */}
+        <div
+          data-testid="run-header-status-pill"
           className={cn(
-            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
-            countWaitingYou > 0
-              ? "bg-status-waiting-bg text-status-waiting"
-              : "bg-muted text-muted-foreground",
+            "flex shrink-0 items-center gap-1.5 rounded-full px-2 py-[3px]",
+            phaseConfig.bgClass,
           )}
         >
-          <span>{t("orchestration.header.countWaitingYou")}</span>
-          <span
-            className={cn(
-              "font-medium",
-              countWaitingYou > 0 ? "text-status-waiting" : "text-foreground",
-            )}
-          >
-            {countWaitingYou}
+          <Circle
+            className={cn("size-1.5 fill-current", phaseConfig.dotClass)}
+            aria-hidden="true"
+          />
+          <span className={cn("text-2xs font-semibold", phaseConfig.textClass)}>
+            {t(phaseConfig.labelKey)}
           </span>
-        </span>
-
-        {/* 已完成计数 chip */}
-        <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-          <span>{t("orchestration.header.countDone")}</span>
-          <span className="font-medium text-foreground">{countDone}</span>
-        </span>
-      </div>
-
-      {/* 第三行：树规模 + token/时长占位 */}
-      <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-        <span>
-          {t("orchestration.header.treeSize", {
-            nodes: stats.nodes,
-            subagents: stats.subagents,
-            depth: stats.depth,
-          })}
-        </span>
-
-        {/* token 占位（后端暂未统计） */}
-        <span>
-          {t("orchestration.header.tokens")}
-          <span className="ml-1 text-foreground/40">—</span>
-        </span>
-
-        {/* 时长占位（后端暂未统计） */}
-        <span>
-          {t("orchestration.header.duration")}
-          <span className="ml-1 text-foreground/40">—</span>
-        </span>
-      </div>
-
-      {/* 第四行：干预控件（暂停/继续 + 硬停止），guard detail.run?.id */}
-      {runId !== undefined && (
-        <div className="flex items-center gap-2">
-          {/* 暂停/继续按钮：按运行状态切换 */}
-          {runStatus === "running" && (
-            <Button
-              data-testid="run-pause"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void RunPause(runId).catch(() => {});
-              }}
-            >
-              {t("orchestration.header.pause")}
-            </Button>
-          )}
-          {runStatus === "paused" && (
-            <Button
-              data-testid="run-resume"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void RunResume(runId).catch(() => {});
-              }}
-            >
-              {t("orchestration.header.resume")}
-            </Button>
-          )}
-
-          {/* 硬停止按钮：终态时禁用 */}
-          <Button
-            data-testid="run-stop"
-            variant="destructive"
-            size="sm"
-            disabled={isTerminal(runStatus)}
-            onClick={() => {
-              void RunStop(runId).catch(() => {});
-            }}
-          >
-            {t("orchestration.header.stop")}
-          </Button>
         </div>
-      )}
+
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* Controls (only when runId is defined) */}
+        {runId !== undefined && (
+          <div className="flex items-center gap-2">
+            {/* Pause / Resume button — phase-gated */}
+            {runStatus === "running" && (
+              <Button
+                data-testid="run-pause"
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-normal"
+                onClick={() => {
+                  void RunPause(runId).catch(() => {});
+                }}
+              >
+                <Pause className="size-3 shrink-0" aria-hidden="true" />
+                {t("orchestration.header.pause")}
+              </Button>
+            )}
+            {runStatus === "paused" && (
+              <Button
+                data-testid="run-resume"
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-normal"
+                onClick={() => {
+                  void RunResume(runId).catch(() => {});
+                }}
+              >
+                <Pause className="size-3 shrink-0" aria-hidden="true" />
+                {t("orchestration.header.resume")}
+              </Button>
+            )}
+
+            {/* Stop button */}
+            <Button
+              data-testid="run-stop"
+              variant="outline"
+              size="sm"
+              disabled={isTerminal(runStatus)}
+              className="flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-normal text-destructive hover:text-destructive"
+              onClick={() => {
+                void RunStop(runId).catch(() => {});
+              }}
+            >
+              <Square className="size-3 shrink-0" aria-hidden="true" />
+              {t("orchestration.header.stop")}
+            </Button>
+
+            {/* More button */}
+            <button
+              type="button"
+              data-testid="run-header-more"
+              className="flex h-7 w-[30px] items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:text-foreground"
+              aria-label={t("orchestration.header.more")}
+            >
+              <Ellipsis className="size-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Subline: target icon + goal · Leader name */}
+      <div
+        data-testid="run-header-subline"
+        className="flex min-w-0 items-center gap-1.5"
+      >
+        <Target
+          className="size-3 shrink-0 text-muted-foreground"
+          aria-hidden="true"
+        />
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          {goal}
+          {leaderName && (
+            <>
+              {" "}
+              · {t("orchestration.header.leaderLabel")} {leaderName}
+            </>
+          )}
+        </span>
+      </div>
 
       {/* 软阈值预警黄条（非阻塞，仅提示） */}
       {showSoftWarning && (
-        <div className="rounded-md border border-status-waiting/30 bg-status-waiting-bg px-3 py-2 text-xs text-status-waiting">
+        <div
+          data-testid="run-header-soft-warning"
+          className="rounded-md border border-status-waiting/30 bg-status-waiting-bg px-3 py-2 text-xs text-status-waiting"
+        >
           {t("orchestration.header.softWarning")}
         </div>
       )}

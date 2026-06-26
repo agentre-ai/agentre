@@ -2,11 +2,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/cago-frame/cago/pkg/utils/httputils"
+
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 	"github.com/agentre-ai/agentre/internal/service/orch_svc"
@@ -47,11 +51,28 @@ func (a *orchChatAdapter) EnsureOrchSession(ctx context.Context, in orch_svc.Ens
 }
 
 // SendAndForget 非阻塞触发该会话下一轮。
+// 当 chat_svc 返回 ChatSendInFlight（会话已有进行中的 turn），映射为
+// orch_svc.ErrSessionBusy，让 orch.Ask 回退到 Enqueue（steer）路径。
 func (a *orchChatAdapter) SendAndForget(ctx context.Context, sessionID int64, text string) error {
 	_, err := chat_svc.Chat().Send(ctx, &chat_svc.SendRequest{
 		SessionID:             sessionID,
 		Text:                  text,
 		EmitTurnStartedBypass: true,
+	})
+	if err != nil {
+		var herr *httputils.Error
+		if errors.As(err, &herr) && herr.Code == code.ChatSendInFlight {
+			return orch_svc.ErrSessionBusy // 让 orch.Ask 回退 steer
+		}
+	}
+	return err
+}
+
+// Enqueue 把文本 steer 进该会话正在进行的 turn（对方 busy 时用）。
+func (a *orchChatAdapter) Enqueue(ctx context.Context, sessionID int64, text string) error {
+	_, err := chat_svc.Chat().Enqueue(ctx, &chat_svc.EnqueueRequest{
+		SessionID: sessionID,
+		Text:      text,
 	})
 	return err
 }

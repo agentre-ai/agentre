@@ -6,7 +6,6 @@ import { useTranslation } from "react-i18next";
 import { ChatPanel } from "../chat-panel";
 import { pruneChatPanelScrollState } from "../chat-panel-scroll-state";
 import { TerminalPanel } from "../terminal/terminal-panel";
-import { OrchestrationRun } from "../orchestration";
 import { reloadSidebarSources } from "@/stores/sidebar-reload";
 import type { ChatTab, TabKind } from "@/stores/chat-tabs-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
@@ -98,12 +97,6 @@ export function ChatPanelHost() {
       {panelTabs.map((t) =>
         t.meta.kind === "terminal" ? (
           <HostedTerminalPanel
-            key={t.id}
-            tab={t}
-            active={t.id === activeTabId}
-          />
-        ) : t.meta.kind === "run" ? (
-          <HostedOrchestrationRun
             key={t.id}
             tab={t}
             active={t.id === activeTabId}
@@ -252,27 +245,6 @@ const HostedTerminalPanel = React.memo(function HostedTerminalPanel({
         attach={meta.attach}
         onClose={handleClose}
       />
-    </div>
-  );
-});
-
-// run tab 的面板框包装器，与 HostedTerminalPanel 结构完全一致，确保非激活时不可见
-const HostedOrchestrationRun = React.memo(function HostedOrchestrationRun({
-  tab,
-  active,
-}: {
-  tab: ChatTab;
-  active: boolean;
-}) {
-  const meta = tab.meta as Extract<TabKind, { kind: "run" }>;
-  return (
-    <div
-      data-tab-id={tab.id}
-      data-active={active}
-      aria-hidden={!active}
-      className={panelFrameClassName(active)}
-    >
-      <OrchestrationRun runId={meta.runId} title={meta.title} />
     </div>
   );
 });

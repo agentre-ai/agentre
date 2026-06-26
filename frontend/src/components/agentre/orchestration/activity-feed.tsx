@@ -29,6 +29,8 @@ function kindClass(kind: FeedItem["kind"]): string {
     case "blocked":
     case "ask":
       return "bg-destructive";
+    case "reply":
+      return "bg-status-waiting";
     default:
       return "bg-muted-foreground";
   }
@@ -44,6 +46,11 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
     detail.run?.id ? s.deadlocks.get(detail.run.id) : undefined,
   );
 
+  // 从 store 读取该 run 的 askLog（undefined 时用稳定空数组）
+  const runId = detail.run?.id;
+  const askLog =
+    useOrchRunStore((s) => (runId ? s.askLog.get(runId) : undefined)) ?? [];
+
   const tasks = detail.tasks ?? [];
   const runStatus = detail.run?.status;
 
@@ -58,8 +65,8 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
   const awaitingTasks = tasks.filter((t) => t.status === "awaiting-user");
   const awaitingCount = awaitingTasks.length;
 
-  // 构造 feed 条目列表
-  const feedItems = buildFeed(detail);
+  // 构造 feed 条目列表（含 ask/reply 日志）
+  const feedItems = buildFeed(detail, askLog);
 
   // 发送「对 Leader 说」消息，目标是根 task 的 session（非 run.id）
   async function handleSend() {
@@ -150,12 +157,46 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
         ) : (
           <ul className="flex flex-col gap-2">
             {feedItems.map((item) => {
+              const agentName = resolveAgentName(item.agentId, agents);
+
+              // ask/reply 使用专属 i18n 标签 + 动态文本
+              if (item.kind === "ask" || item.kind === "reply") {
+                const label =
+                  item.kind === "ask"
+                    ? t("orchestration.feed.ask", { name: agentName })
+                    : t("orchestration.feed.reply", { name: agentName });
+                // askId 从 item.id 中提取（格式: ask-{askId} 或 reply-{askId}）
+                const askId = item.id.replace(/^(ask|reply)-/, "");
+                return (
+                  <li
+                    key={item.id}
+                    data-testid={`feed-${item.kind}-${askId}`}
+                    className="flex items-start gap-2 text-sm"
+                  >
+                    <span
+                      className={cn(
+                        "mt-1.5 h-2 w-2 shrink-0 rounded-full",
+                        kindClass(item.kind),
+                      )}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <span className="mr-1 font-medium text-foreground">
+                        {label}
+                      </span>
+                      {/* 动态问题/回答内容不翻译 */}
+                      <span className="break-words text-muted-foreground">
+                        {item.text}
+                      </span>
+                    </div>
+                  </li>
+                );
+              }
+
               // blocked 类型且 text 为空时使用 i18n fallback 文案
               const displayText =
                 item.kind === "blocked" && !item.text.trim()
                   ? t("orchestration.feed.blocked")
                   : item.text;
-              const agentName = resolveAgentName(item.agentId, agents);
 
               return (
                 <li key={item.id} className="flex items-start gap-2 text-sm">

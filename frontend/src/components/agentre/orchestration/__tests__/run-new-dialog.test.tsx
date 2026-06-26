@@ -12,12 +12,10 @@ const appMocks = vi.hoisted(() => ({
 
 vi.mock("../../../../../wailsjs/go/app/App", () => appMocks);
 
-// mock chat-tabs-store 的 openRun
-const openRunMock = vi.fn();
-vi.mock("../../../../stores/chat-tabs-store", () => ({
-  useChatTabsStore: {
-    getState: () => ({ openRun: openRunMock }),
-  },
+// mock react-router-dom useNavigate
+const mockNavigate = vi.fn();
+vi.mock("react-router-dom", () => ({
+  useNavigate: () => mockNavigate,
 }));
 
 import { RunNewDialog } from "../run-new-dialog";
@@ -60,6 +58,22 @@ describe("RunNewDialog", () => {
       expect(appMocks.RunCreate).toHaveBeenCalledWith(
         expect.objectContaining({ goal: "做登录页", leaderAgentId: 2 }),
       ),
+    );
+  });
+
+  it("RunCreate 成功后 navigate 到 /orchestration/:runId", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderDialog();
+
+    fireEvent.change(await screen.findByTestId("run-goal"), {
+      target: { value: "做登录页" },
+    });
+    await user.click(screen.getByTestId("run-leader"));
+    await user.click(await screen.findByRole("option", { name: "架构师" }));
+
+    fireEvent.click(screen.getByTestId("run-create"));
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith("/orchestration/7"),
     );
   });
 

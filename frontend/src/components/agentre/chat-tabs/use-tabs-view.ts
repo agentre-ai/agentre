@@ -13,17 +13,13 @@ import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
-import {
-  avatarFromMeta,
-  firstLetter,
-  tokenToCssColor,
-} from "../session-avatar";
+import { avatarFromMeta, tokenToCssColor } from "../session-avatar";
 import type { TabStatus } from "./tab";
 
 export type TabView = {
   id: string;
   title: string;
-  kind: "session" | "new" | "terminal" | "run";
+  kind: "session" | "new" | "terminal";
   avatar: { letter: string; color: string };
   isPreview: boolean;
   isPinned: boolean;
@@ -56,26 +52,6 @@ export function useTabsView(): TabView[] {
   }, [attentionItems]);
 
   return tabs.map((tab) => {
-    // run tab: 标题由 meta 自带,不走 session-meta 反查,状态恒为 idle。
-    if (tab.meta.kind === "run") {
-      const runTitle = tab.meta.title || t("chatTabs.fallbackSession");
-      return {
-        id: tab.id,
-        title: runTitle,
-        kind: "run" as const,
-        avatar: { letter: firstLetter(runTitle), color: "#94a3b8" },
-        isPreview: tab.isPreview,
-        isPinned: tab.isPinned,
-        status: "idle" as const,
-        projectColor: null,
-        worktree: false,
-        pillText: null,
-        sessionId: 0,
-        projectChain: null,
-        worktreeBranch: null,
-        lastMessageAt: 0,
-      };
-    }
     const sid = sessionIdOf(tab.meta);
     const live = sid ? statuses.get(sid) : undefined;
     const reason = sid ? (attentionBySid.get(sid) ?? null) : null;

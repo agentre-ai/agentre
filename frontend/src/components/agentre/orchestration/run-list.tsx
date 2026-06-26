@@ -1,11 +1,10 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { Plus, Waypoints } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { relativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
 import { useOrchRunListStore } from "../../../stores/orch-run-list-store";
-import { StatusDot } from "../primitives";
 import type { AgentStatus } from "../types";
 
 import { RunNewDialog } from "./run-new-dialog";
@@ -19,6 +18,31 @@ function runStatusToDot(status: string): AgentStatus {
   if (status === "running") return "running";
   if (status === "paused") return "waiting";
   return "idle";
+}
+
+// 状态点颜色 token（不依赖 StatusDot 组件，设计用纯 ellipse 7px）
+function statusDotClass(status: string): string {
+  const s = runStatusToDot(status);
+  if (s === "running") return "bg-status-running motion-safe:animate-pulse";
+  if (s === "waiting") return "bg-status-waiting";
+  return "bg-status-idle";
+}
+
+// 图标容器 token: active run 用 primary-soft / primary-text；其余用 secondary / sidebar-icon
+function iconBgClass(isActive: boolean): string {
+  return isActive ? "bg-primary-soft" : "bg-secondary";
+}
+function iconColorClass(isActive: boolean): string {
+  return isActive ? "text-primary-text" : "text-sidebar-icon";
+}
+
+// 状态描述文本（设计中 "3 running · 2 done" / "等待审批 · 1 ask" 等为动态数据，不翻译）
+function statusMeta(status: string): string {
+  if (status === "running") return "running";
+  if (status === "paused") return "paused";
+  if (status === "done") return "done";
+  if (status === "stopped") return "stopped";
+  return status;
 }
 
 export function RunList({
@@ -66,45 +90,99 @@ export function RunList({
   return (
     <>
       <div className="flex flex-col">
-        {/* 顶部新建按钮 */}
-        <div className="p-2">
-          <Button
+        {/* listHead: padding=[14,14,8,14] → pt-3.5 pr-3.5 pb-2 pl-3.5, gap-2 items-center */}
+        <div
+          data-testid="run-list-head"
+          className="flex items-center gap-2 pb-2 pl-3.5 pr-3.5 pt-3.5"
+        >
+          <span className="text-[13px] font-semibold text-foreground font-sans">
+            {t("orchestration.list.title")}
+          </span>
+          {/* spacer */}
+          <span className="flex-1" />
+          {/* newBtn: bg-primary rounded-md px-2 py-1, plus icon + label */}
+          <button
             type="button"
-            size="sm"
-            className="w-full"
             data-testid="run-new-button"
+            className="flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-primary-foreground transition-opacity hover:opacity-90"
             onClick={() => setDialogOpen(true)}
           >
-            {t("orchestration.list.newButton")}
-          </Button>
+            <Plus className="h-[11px] w-[11px]" />
+            <span className="font-mono text-[10px] font-semibold">
+              {t("orchestration.list.newBtnLabel")}
+            </span>
+          </button>
         </div>
 
-        {/* Run 列表 */}
-        <ul className="flex flex-col gap-0.5 px-1">
+        {/* filters: padding=[0,14,10,14], gap-6
+            FUTURE: wire up filtering logic in a future slice — currently static visual chips */}
+        <div
+          data-testid="run-filter-chips"
+          className="flex items-center gap-6 pb-[10px] pl-3.5 pr-3.5"
+        >
+          {/* Active chip: bg-secondary border border-border */}
+          <span className="rounded-full border border-border bg-secondary px-2 py-[3px] text-[11px] font-semibold text-foreground">
+            {t("orchestration.list.filterAll")}
+          </span>
+          <span className="rounded-full px-2 py-[3px] text-[11px] text-muted-foreground">
+            {t("orchestration.list.filterRunning")}
+          </span>
+          <span className="rounded-full px-2 py-[3px] text-[11px] text-muted-foreground">
+            {t("orchestration.list.filterDone")}
+          </span>
+        </div>
+
+        {/* runs: padding=[0,8], gap-2, vertical */}
+        <ul className="flex flex-col gap-2 px-2">
           {runs.map((run) => {
             const isActive = run.id === activeRunId;
-            const time = relativeTime(run.updatetime || run.createtime);
 
             return (
               <li key={run.id}>
                 <button
                   type="button"
                   data-testid={`run-row-${run.id}`}
+                  data-active={isActive ? "true" : "false"}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors hover:bg-accent",
-                    isActive && "bg-accent",
+                    "flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors",
+                    isActive ? "bg-secondary" : "hover:bg-muted/60",
                   )}
                   onClick={() => onSelect(run.id)}
                 >
-                  <StatusDot status={runStatusToDot(run.status)} size="xs" />
-                  <span className="min-w-0 flex-1 truncate font-medium">
-                    {run.goal}
+                  {/* icon container: 22x22 rounded-md */}
+                  <span
+                    className={cn(
+                      "flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md",
+                      iconBgClass(isActive),
+                    )}
+                  >
+                    <Waypoints
+                      className={cn("h-3 w-3", iconColorClass(isActive))}
+                    />
                   </span>
-                  {time ? (
-                    <span className="shrink-0 text-2xs text-muted-foreground">
-                      {time}
+
+                  {/* text stack: name + status meta */}
+                  <span className="flex min-w-0 flex-1 flex-col gap-px">
+                    <span
+                      className={cn(
+                        "truncate text-[12.5px] leading-tight text-foreground",
+                        isActive ? "font-semibold" : "font-medium",
+                      )}
+                    >
+                      {run.goal}
                     </span>
-                  ) : null}
+                    <span className="truncate font-mono text-[9.5px] text-muted-foreground leading-tight">
+                      {statusMeta(run.status)}
+                    </span>
+                  </span>
+
+                  {/* status dot ellipse 7×7 */}
+                  <span
+                    className={cn(
+                      "h-[7px] w-[7px] shrink-0 rounded-full",
+                      statusDotClass(run.status),
+                    )}
+                  />
                 </button>
               </li>
             );

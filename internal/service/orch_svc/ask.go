@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,9 +64,11 @@ func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, quest
 	}
 
 	// XML 注入：闭合标签是天然边界，busy steer 进对方当前 turn 时不被其输出污染。
+	// askerName/question 来自 LLM 输出，可能含 < > & " → html.EscapeString 转义防破坏 XML 边界。
+	// askID 是 UUID，无需转义。
 	msg := fmt.Sprintf(
 		`<peer_ask ask_id="%s" from="%s">%s</peer_ask>`+"\n"+`请调用 reply(ask_id="%s", answer=...) 回复。`,
-		askID, askerName, question, askID,
+		askID, html.EscapeString(askerName), html.EscapeString(question), askID,
 	)
 	if err := s.chat.SendAndForget(ctx, toSession, msg); err != nil {
 		if errors.Is(err, ErrSessionBusy) {
@@ -78,12 +81,32 @@ func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, quest
 		}
 	}
 
+	// 快照 emit（避免后续 goroutine 延迟读 s.emit 与 RegisterDeps 产生 data race）。
+	emit := s.emit
+	if emit != nil {
+		emit.Emit(ctx, "orch:run:ask", map[string]any{
+			"runId": from.RunID, "askId": askID,
+			"askerAgentId": from.AgentID, "askerSessionId": fromSessionID,
+			"targetAgentId": target.ID, "targetSessionId": toSession,
+			"question": question,
+		})
+	}
+	emitReply := func(answer string, timedOut bool) {
+		if emit != nil {
+			emit.Emit(ctx, "orch:run:reply", map[string]any{
+				"runId": env.runID, "askId": askID, "answer": answer, "timedOut": timedOut,
+			})
+		}
+	}
 	select {
 	case ans := <-env.reply:
+		emitReply(ans, false)
 		return ans, nil
 	case <-ctx.Done():
+		emitReply("", true)
 		return "", ctx.Err()
 	case <-timeAfter(s.approvalTimeout):
+		emitReply("", true)
 		return "", fmt.Errorf("orch.Ask: 等待 %s 回复超时", agentName)
 	}
 }

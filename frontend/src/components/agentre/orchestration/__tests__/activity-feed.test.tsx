@@ -156,4 +156,37 @@ describe("ActivityFeed", () => {
 
     expect(screen.getByTestId("feed-blocking-bar")).toBeInTheDocument();
   });
+
+  it("渲染 ask/reply 条目: testid + 动态文本可见", () => {
+    const detail = makeDetail({ runId: 1 });
+
+    // 注入 askLog 到 store
+    useOrchRunStore.setState((s) => {
+      const log = new Map(s.askLog);
+      log.set(1, [
+        {
+          kind: "ask",
+          askId: "k",
+          agentId: 2,
+          targetAgentId: 3,
+          text: "鉴权?",
+          ts: 10,
+        },
+        { kind: "reply", askId: "k", agentId: 3, text: "ok", ts: 20 },
+      ]);
+      return { askLog: log };
+    });
+
+    render(<ActivityFeed detail={detail} />);
+
+    // ask 条目: testid = feed-ask-k, 包含问题文本
+    const askItem = screen.getByTestId("feed-ask-k");
+    expect(askItem).toBeInTheDocument();
+    expect(askItem).toHaveTextContent("鉴权?");
+
+    // reply 条目: testid = feed-reply-k, 包含回答文本
+    const replyItem = screen.getByTestId("feed-reply-k");
+    expect(replyItem).toBeInTheDocument();
+    expect(replyItem).toHaveTextContent("ok");
+  });
 });

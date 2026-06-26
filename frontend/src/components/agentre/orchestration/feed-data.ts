@@ -2,13 +2,25 @@ import type { app } from "../../../../wailsjs/go/models";
 
 export interface FeedItem {
   id: string;
-  kind: "dispatch" | "report" | "finish" | "blocked" | "ask";
+  kind: "dispatch" | "report" | "finish" | "blocked" | "ask" | "reply";
   agentId: number;
   text: string;
   ts: number;
 }
 
-export function buildFeed(detail: app.RunDetailDTO): FeedItem[] {
+export interface AskLogItem {
+  kind: "ask" | "reply";
+  askId: string;
+  agentId: number;
+  targetAgentId?: number;
+  text: string;
+  ts: number;
+}
+
+export function buildFeed(
+  detail: app.RunDetailDTO,
+  askLog: AskLogItem[] = [],
+): FeedItem[] {
   const items: FeedItem[] = [];
   for (const t of detail.tasks ?? []) {
     if (t.parentTaskId) {
@@ -38,6 +50,15 @@ export function buildFeed(detail: app.RunDetailDTO): FeedItem[] {
         ts: t.updatetime ?? 0,
       });
     }
+  }
+  for (const a of askLog) {
+    items.push({
+      id: `${a.kind}-${a.askId}`,
+      kind: a.kind,
+      agentId: a.agentId,
+      text: a.text,
+      ts: a.ts,
+    });
   }
   return items.sort((a, b) => a.ts - b.ts);
 }

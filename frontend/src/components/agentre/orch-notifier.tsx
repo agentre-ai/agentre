@@ -1,13 +1,14 @@
 import * as React from "react";
+import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-import { useChatTabsStore } from "../../stores/chat-tabs-store";
 import { useOrchRunStore } from "../../stores/orch-run-store";
 
 // OrchNotifier 常驻 App 根、不渲染任何 UI；检测编排 Run 完成和等待你状态并弹 toast。
 export function OrchNotifier(): null {
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   React.useEffect(() => {
     // 初始化 prev-status 映射，避免首次加载时对已有 done/awaiting 误报。
@@ -36,7 +37,7 @@ export function OrchNotifier(): null {
           toast.success(t("orchestration.notify.completed", { goal }), {
             action: {
               label: t("orchestration.notify.view"),
-              onClick: () => useChatTabsStore.getState().openRun(runId, goal),
+              onClick: () => navigate(`/orchestration/${runId}`),
             },
           });
         }
@@ -56,7 +57,7 @@ export function OrchNotifier(): null {
             toast(t("orchestration.notify.waitingYou", { goal }), {
               action: {
                 label: t("orchestration.notify.view"),
-                onClick: () => useChatTabsStore.getState().openRun(runId, goal),
+                onClick: () => navigate(`/orchestration/${runId}`),
               },
             });
           }
@@ -65,7 +66,7 @@ export function OrchNotifier(): null {
     });
 
     return unsub;
-  }, [t]);
+  }, [t, navigate]);
 
   return null;
 }

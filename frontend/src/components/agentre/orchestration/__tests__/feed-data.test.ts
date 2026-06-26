@@ -23,4 +23,20 @@ describe("feed-data", () => {
     expect(items.map((i) => i.kind)).toContain("report");
     expect(items.find((i) => i.kind === "report")!.text).toContain("已完成X");
   });
+
+  it("askLog 合并进 feed: ask + reply 两条按 ts 排序", () => {
+    const items = buildFeed({ tasks: [] } as never, [
+      {
+        kind: "ask",
+        askId: "k",
+        agentId: 2,
+        targetAgentId: 3,
+        text: "鉴权?",
+        ts: 10,
+      },
+      { kind: "reply", askId: "k", agentId: 3, text: "ok", ts: 20 },
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["ask", "reply"]);
+    expect(items[0].text).toBe("鉴权?");
+  });
 });
