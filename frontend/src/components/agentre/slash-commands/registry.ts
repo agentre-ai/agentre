@@ -63,6 +63,16 @@ export const slashCommands: SlashCommand[] = [
       return null;
     },
   },
+  {
+    // 纯前端 tab 操作:Enter 时由 chat-panel 拦截恰为 `/new` 的文本,沿用当前会话的
+    // agent / 项目开一个全新空白会话 tab 并跳转。与 backend 无关,故所有非空 backend 都可用。
+    name: "new",
+    label: "/new",
+    description: i18n.t("slashCommands.new.description"),
+    resolve(backend) {
+      return backend ? { kind: "literal_text", text: "/new" } : null;
+    },
+  },
 ];
 
 // listAvailable 返回当前 backend 下可用的命令清单。UI 用它做下拉候选。

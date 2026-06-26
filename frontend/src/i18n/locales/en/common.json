@@ -415,7 +415,7 @@
         "unsupported": "Only PNG, JPEG, and WebP are supported. Each image must be under 5 MB."
       },
       "dropHint": "Drop to add files / folder paths",
-      "placeholder": "Type a message or / for commands",
+      "placeholder": "Type a message · / for commands · ! to run in terminal",
       "removeImage": "Remove image {{name}}",
       "saveEdit": "Save edit",
       "send": "Send",
@@ -1872,6 +1872,9 @@
     },
     "goal": {
       "description": "Set or view the current Codex goal"
+    },
+    "new": {
+      "description": "Start a new chat with the same setup"
     }
   },
   "settings": {
@@ -2338,6 +2341,7 @@
     },
     "exitCode": "Exit {{code}}",
     "stop": "Stop",
-    "openInTerminal": "Open in terminal"
+    "openInTerminal": "Open in terminal",
+    "dismiss": "Dismiss command"
   }
 }

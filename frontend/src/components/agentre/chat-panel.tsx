@@ -48,6 +48,7 @@ import { cn } from "@/lib/utils";
 import { useSessionAttention } from "@/stores/attention-store";
 import { useClearedBackgroundTasksStore } from "@/stores/cleared-background-tasks-store";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useQueuedMessagesStore } from "@/stores/queued-messages-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
@@ -225,6 +226,10 @@ function isChatStopNoActiveError(msg: string): boolean {
 
 function isExactCompactCommand(text: string): boolean {
   return text.trim() === "/compact";
+}
+
+function isExactNewCommand(text: string): boolean {
+  return text.trim() === "/new";
 }
 
 type GoalCommand =
@@ -2026,6 +2031,21 @@ function ChatPanel({
                   }
                   if (activeEditing) {
                     void confirmEdit(text);
+                    return;
+                  }
+                  // `/new`:沿用当前会话(或未首发新 tab)的 agent / 项目,新开一个全新
+                  // 空白会话 tab 并跳转过去;当前会话完全不受影响(不发消息、不压缩)。
+                  // 真正的 DB 会话由新 tab 首发消息时惰性创建,与「+ / ⌘N 新建会话」一致。
+                  if (isExactNewCommand(text)) {
+                    const newAgentId =
+                      session?.agentId ?? newSessionAgent?.id ?? 0;
+                    if (newAgentId > 0) {
+                      const newProjectId =
+                        session?.projectId ?? newSessionContext?.projectId ?? 0;
+                      useChatTabsStore
+                        .getState()
+                        .openNewSession(newProjectId, newAgentId, "");
+                    }
                     return;
                   }
                   const goalCommand =
