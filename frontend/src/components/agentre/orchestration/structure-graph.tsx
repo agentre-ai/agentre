@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Crown } from "lucide-react";
+import { Crown, GitMerge } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import type { app } from "../../../../wailsjs/go/models";
@@ -52,6 +52,7 @@ function NodeCard({
   leaderLabel,
   subagentCount,
   isAsking,
+  isLeaderStyle,
   onSelectSession,
 }: {
   node: GraphNode;
@@ -63,6 +64,7 @@ function NodeCard({
   leaderLabel: string;
   subagentCount: number;
   isAsking: boolean;
+  isLeaderStyle?: boolean;
   onSelectSession: (sessionId: number) => void;
 }) {
   const { t } = useTranslation();
@@ -86,7 +88,7 @@ function NodeCard({
   };
 
   return (
-    // Change B: root 改为 div role="button" 以允许内部嵌套 <button>(顶层分组子行)
+    // root div role="button" 以允许内部嵌套 <button>(顶层分组子行)
     <div
       role="button"
       tabIndex={0}
@@ -94,13 +96,23 @@ function NodeCard({
       onClick={handleCardClick}
       onKeyDown={handleCardKeyDown}
       className={cn(
-        "flex w-52 cursor-pointer flex-col gap-2 rounded-lg border-2 bg-card p-3 text-left shadow-sm transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring",
-        hasDeadlock
-          ? "border-destructive ring-2 ring-destructive/40"
-          : nodeBorderClass(node.status),
+        "flex cursor-pointer flex-col gap-2 rounded-xl bg-card p-3 text-left shadow-sm transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring",
+        isLeaderStyle
+          ? cn(
+              "w-[212px] border-[1.5px]",
+              hasDeadlock
+                ? "border-destructive ring-2 ring-destructive/40"
+                : "border-primary",
+            )
+          : cn(
+              "w-52 border-2",
+              hasDeadlock
+                ? "border-destructive ring-2 ring-destructive/40"
+                : nodeBorderClass(node.status),
+            ),
       )}
     >
-      {/* 头部: 头像 + 名称 + (N 会话 / 皇冠 / ×N) */}
+      {/* 头部: 头像 + 名称/角色 + 状态点 */}
       <div className="flex items-center gap-2">
         <AgentAvatar
           name={agentName}
@@ -131,14 +143,15 @@ function NodeCard({
         {node.isLeader && (
           <Crown
             aria-label={leaderLabel}
-            className="size-3.5 shrink-0 text-status-waiting"
+            className="size-3.5 shrink-0 text-primary-text"
           />
         )}
         {subagentCount > 0 && (
           <span
             data-testid={`node-${node.agentId}-subagents`}
-            className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
+            className="flex shrink-0 items-center gap-1 rounded-md bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
           >
+            <GitMerge className="size-2.5" />
             {t("orchestration.subagent.badge", { count: subagentCount })}
           </span>
         )}
@@ -150,51 +163,69 @@ function NodeCard({
             {t("orchestration.graph.askWaiting")}
           </span>
         )}
+        {/* Status dot — always visible on right */}
+        <StatusDot status={CALL_DOT[node.status]} size="xs" />
       </div>
 
+      {/* Leader 元信息行: 任务计数 chip + spacer + 状态 chip */}
+      {isLeaderStyle && node.calls.length > 0 && (
+        <div className="flex items-center gap-1.5">
+          <span className="flex items-center gap-1 rounded-md bg-secondary px-2 py-0.5 text-2xs text-muted-foreground">
+            {node.calls.length}/{node.callCount}
+          </span>
+          <span className="flex-1" />
+          <span className="rounded-full bg-status-running-bg px-2 py-0.5 text-2xs font-semibold text-status-running">
+            {t(
+              `orchestration.header.${node.status === "running" ? "running" : node.status === "done" ? "completed" : "pending"}`,
+            )}
+          </span>
+        </div>
+      )}
+
       {/* 分组容器:每次调用一条可点击子行(钻入会话) */}
-      {isGroup ? (
-        <ul className="flex flex-col gap-1">
-          {node.calls.map((call, i) => (
-            <li key={call.taskId} className="flex items-center gap-1.5">
-              <button
-                type="button"
-                data-testid={`node-${node.agentId}-call-${call.taskId}`}
-                className="flex min-w-0 flex-1 items-center gap-1.5"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectSession(call.sessionId);
-                }}
-              >
-                <StatusDot status={callDot(call.status)} size="xs" />
-                <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                  {t("orchestration.graph.callLabel", {
-                    seq: call.callSeq || i + 1,
-                  })}
-                </span>
-                <span className="truncate text-xs text-muted-foreground">
-                  {call.brief || `#${call.taskId}`}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        // 单次调用:单行 brief(合并 ×N 节点不列子行)
-        !isMerged &&
-        node.calls.length > 0 && (
+      {!isLeaderStyle &&
+        (isGroup ? (
           <ul className="flex flex-col gap-1">
-            {node.calls.map((call) => (
+            {node.calls.map((call, i) => (
               <li key={call.taskId} className="flex items-center gap-1.5">
-                <StatusDot status={callDot(call.status)} size="xs" />
-                <span className="truncate text-xs text-muted-foreground">
-                  {call.brief || `#${call.taskId}`}
-                </span>
+                <button
+                  type="button"
+                  data-testid={`node-${node.agentId}-call-${call.taskId}`}
+                  className="flex min-w-0 flex-1 items-center gap-1.5"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectSession(call.sessionId);
+                  }}
+                >
+                  <StatusDot status={callDot(call.status)} size="xs" />
+                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    {t("orchestration.graph.callLabel", {
+                      seq: call.callSeq || i + 1,
+                    })}
+                  </span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {call.brief || `#${call.taskId}`}
+                  </span>
+                </button>
               </li>
             ))}
           </ul>
-        )
-      )}
+        ) : (
+          // 单次调用:单行 brief(合并 ×N 节点不列子行)
+          !isMerged &&
+          node.calls.length > 0 && (
+            <ul className="flex flex-col gap-1">
+              {node.calls.map((call) => (
+                <li key={call.taskId} className="flex items-center gap-1.5">
+                  <StatusDot status={callDot(call.status)} size="xs" />
+                  <span className="truncate text-xs text-muted-foreground">
+                    {call.brief || `#${call.taskId}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )
+        ))}
     </div>
   );
 }
@@ -245,7 +276,90 @@ function computeDepths(
   return depths;
 }
 
-// 树形层级节点区域
+// 递归渲染一个节点及其子树(depth ≥ 1)
+// 布局: vl(竖线) → nodeCard, 如有子节点继续 vl + subbus + subcols
+function SubNodeColumn({
+  node,
+  childrenMap,
+  deadlockAgentIds,
+  agentMap,
+  leaderLabel,
+  countForAgent,
+  askingAgentIds,
+  onSelectSession,
+}: {
+  node: GraphNode;
+  childrenMap: Map<number, GraphNode[]>;
+  deadlockAgentIds: Set<number>;
+  agentMap: Map<
+    number,
+    {
+      name: string;
+      color: AgentColor;
+      avatarIcon?: string;
+      avatarDataUrl?: string;
+    }
+  >;
+  leaderLabel: string;
+  countForAgent: (agentId: number) => number;
+  askingAgentIds: Set<number>;
+  onSelectSession: (sessionId: number) => void;
+}) {
+  const agentInfo = agentMap.get(node.agentId);
+  const agentName = agentInfo?.name ?? `#${node.agentId}`;
+  const agentColor: AgentColor = agentInfo?.color ?? "agent-1";
+  const grandchildren = childrenMap.get(node.agentId) ?? [];
+
+  return (
+    <div className="flex flex-col items-center">
+      {/* 竖向连接线: vl */}
+      <div className="h-3.5 w-0.5 bg-border-strong" />
+      {/* 节点卡片 */}
+      <NodeCard
+        node={node}
+        agentName={agentName}
+        agentColor={agentColor}
+        agentAvatarIcon={agentInfo?.avatarIcon}
+        agentAvatarDataUrl={agentInfo?.avatarDataUrl}
+        hasDeadlock={deadlockAgentIds.has(node.agentId)}
+        leaderLabel={leaderLabel}
+        subagentCount={countForAgent(node.agentId)}
+        isAsking={askingAgentIds.has(node.agentId)}
+        onSelectSession={onSelectSession}
+      />
+      {/* 深层子节点: vl + subbus + subcols */}
+      {grandchildren.length > 0 && (
+        <>
+          <div className="h-3.5 w-0.5 bg-border-strong" />
+          {grandchildren.length > 1 && (
+            <div className="h-0.5 w-full bg-border-strong" />
+          )}
+          <div className="flex flex-row items-start justify-center gap-2.5">
+            {grandchildren.map((gc) => (
+              <SubNodeColumn
+                key={gc.agentId}
+                node={gc}
+                childrenMap={childrenMap}
+                deadlockAgentIds={deadlockAgentIds}
+                agentMap={agentMap}
+                leaderLabel={leaderLabel}
+                countForAgent={countForAgent}
+                askingAgentIds={askingAgentIds}
+                onSelectSession={onSelectSession}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Top-down 树形布局:
+//   leader node (top center)
+//     ↓ vl
+//   bus (horizontal line spanning children row)
+//     ↓ columns of depth-1 children (each column may have deeper subtrees)
 function NodeTree({
   nodes,
   edges,
@@ -275,7 +389,23 @@ function NodeTree({
 }) {
   const depths = computeDepths(nodes, edges);
 
-  // 按深度分组
+  // Build children map: parentId → [child nodes] for the SubNodeColumn recursion
+  const nodeById = new Map(nodes.map((n) => [n.agentId, n]));
+  const childrenMap = new Map<number, GraphNode[]>();
+  for (const e of edges) {
+    if (!childrenMap.has(e.from)) childrenMap.set(e.from, []);
+    const child = nodeById.get(e.to);
+    if (child) childrenMap.get(e.from)!.push(child);
+  }
+
+  const leaderNode = nodes.find((n) => n.isLeader) ?? nodes[0];
+  // depth-1 direct children of the leader
+  const depth1Children = leaderNode
+    ? (childrenMap.get(leaderNode.agentId) ?? [])
+    : [];
+
+  // Any nodes not reachable from leader via edges (depth computed but not connected)
+  // We still show them by falling back to all non-leader nodes at depth ≥ 1
   const byDepth = new Map<number, GraphNode[]>();
   for (const node of nodes) {
     const d = depths.get(node.agentId) ?? 0;
@@ -283,37 +413,68 @@ function NodeTree({
     byDepth.get(d)!.push(node);
   }
 
-  // 兜底 0:byDepth 为空时 Math.max(...[]) 会得 -Infinity,加 0 锚定不变量
-  const maxDepth = Math.max(...[...byDepth.keys()], 0);
+  // Collect all non-leader depth-1 nodes including those not in childrenMap
+  const connectedChildIds = new Set(depth1Children.map((n) => n.agentId));
+  const orphanChildren = (byDepth.get(1) ?? []).filter(
+    (n) => !connectedChildIds.has(n.agentId),
+  );
+  const allDepth1 = [...depth1Children, ...orphanChildren];
+
+  const hasChildren = allDepth1.length > 0;
+
+  const leaderInfo = leaderNode ? agentMap.get(leaderNode.agentId) : undefined;
+  const leaderName = leaderInfo?.name ?? `#${leaderNode?.agentId ?? "?"}`;
+  const leaderColor: AgentColor = leaderInfo?.color ?? "agent-1";
 
   return (
-    // TODO(plan-1b): 大图时加缩放/适应/折叠/小地图工具条
-    <div className="flex flex-row items-start gap-8 overflow-x-auto p-4">
-      {Array.from({ length: maxDepth + 1 }, (_, d) => (
-        <div key={d} className="flex flex-col gap-4">
-          {/* 深度 d > 0 时展示缩进分隔线提示层级关系 */}
-          {(byDepth.get(d) ?? []).map((node) => {
-            const agentInfo = agentMap.get(node.agentId);
-            const agentName = agentInfo?.name ?? `#${node.agentId}`;
-            const agentColor: AgentColor = agentInfo?.color ?? "agent-1";
-            return (
-              <NodeCard
+    <div className="flex flex-col items-center overflow-auto p-[30px_20px]">
+      {/* Leader node at top center */}
+      {leaderNode && (
+        <NodeCard
+          node={leaderNode}
+          agentName={leaderName}
+          agentColor={leaderColor}
+          agentAvatarIcon={leaderInfo?.avatarIcon}
+          agentAvatarDataUrl={leaderInfo?.avatarDataUrl}
+          hasDeadlock={deadlockAgentIds.has(leaderNode.agentId)}
+          leaderLabel={leaderLabel}
+          subagentCount={countForAgent(leaderNode.agentId)}
+          isAsking={askingAgentIds.has(leaderNode.agentId)}
+          isLeaderStyle={true}
+          onSelectSession={onSelectSession}
+        />
+      )}
+
+      {/* Only render connector + children if there are child nodes */}
+      {hasChildren && (
+        <>
+          {/* Vertical connector: vl */}
+          <div className="h-[22px] w-0.5 bg-border-strong" />
+
+          {/* Horizontal bus spanning the children columns */}
+          <div
+            data-testid="graph-bus"
+            className="h-0.5 w-full bg-border-strong"
+          />
+
+          {/* Children columns */}
+          <div className="flex flex-row items-start justify-center gap-5">
+            {allDepth1.map((node) => (
+              <SubNodeColumn
                 key={node.agentId}
                 node={node}
-                agentName={agentName}
-                agentColor={agentColor}
-                agentAvatarIcon={agentInfo?.avatarIcon}
-                agentAvatarDataUrl={agentInfo?.avatarDataUrl}
-                hasDeadlock={deadlockAgentIds.has(node.agentId)}
+                childrenMap={childrenMap}
+                deadlockAgentIds={deadlockAgentIds}
+                agentMap={agentMap}
                 leaderLabel={leaderLabel}
-                subagentCount={countForAgent(node.agentId)}
-                isAsking={askingAgentIds.has(node.agentId)}
+                countForAgent={countForAgent}
+                askingAgentIds={askingAgentIds}
                 onSelectSession={onSelectSession}
               />
-            );
-          })}
-        </div>
-      ))}
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -435,7 +596,7 @@ export function StructureGraph({
           <span className="text-sm">{t("orchestration.graph.empty")}</span>
         </div>
       ) : (
-        // 有节点：树形布局
+        // 有节点：top-down 树形布局
         <div className={cn(dimmed && "opacity-50")}>
           <NodeTree
             nodes={nodes}

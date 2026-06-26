@@ -274,4 +274,84 @@ describe("StructureGraph", () => {
     const badge = await screen.findByTestId("node-3-subagents");
     expect(badge).toHaveTextContent("1");
   });
+
+  // ── Task 5: top-down layout ────────────────────────────────────────────────
+
+  it("top-down: leader 节点在 children 容器之前(DOM 顺序)", () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader
+        makeTask(2, 3, "running", 1, 500), // child
+      ],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+
+    const leaderNode = screen.getByTestId("node-2");
+    const childNode = screen.getByTestId("node-3");
+
+    // Leader must appear before child in DOM order (top-down)
+    expect(
+      leaderNode.compareDocumentPosition(childNode) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("top-down: 有子节点时渲染 graph-bus 横向连接线", () => {
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader
+        makeTask(2, 3, "running", 1, 500), // child
+      ],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(screen.getByTestId("graph-bus")).toBeInTheDocument();
+  });
+
+  it("top-down: 仅 leader 无子节点时不渲染 graph-bus", () => {
+    // lifecycle=empty 时(只有1个task)显示 graph-empty,无 bus
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [makeTask(1, 2, "running")],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    expect(screen.queryByTestId("graph-bus")).not.toBeInTheDocument();
+  });
+
+  it("top-down: leader-only 结构图(2任务但只有leader节点)→ 无 graph-bus", () => {
+    // 2 tasks, both belong to the same leader agent → single node, no children
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0),
+        makeTask(2, 2, "done", 0, 0), // same agent, still leader-only graph
+      ],
+    });
+    render(<StructureGraph detail={detail} onSelectSession={vi.fn()} />);
+    // No children nodes → no bus
+    expect(screen.queryByTestId("graph-bus")).not.toBeInTheDocument();
+  });
+
+  it("top-down: 已有 testid 和 onSelectSession 行为均保留", () => {
+    const onSelectSession = vi.fn();
+    const detail = makeDetail({
+      runStatus: "running",
+      tasks: [
+        makeTask(1, 2, "running", 0, 0), // Leader
+        makeTask(2, 3, "running", 1, 600), // child
+      ],
+    });
+    render(
+      <StructureGraph detail={detail} onSelectSession={onSelectSession} />,
+    );
+
+    // Both node testids present
+    expect(screen.getByTestId("node-2")).toBeInTheDocument();
+    expect(screen.getByTestId("node-3")).toBeInTheDocument();
+
+    // Click child node → onSelectSession called
+    fireEvent.click(screen.getByTestId("node-3"));
+    expect(onSelectSession).toHaveBeenCalledWith(600);
+  });
 });
