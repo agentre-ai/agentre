@@ -2327,8 +2327,6 @@
       "blocked": "等待你",
       "speakPlaceholder": "对 Leader 说…",
       "speakSend": "发送",
-      "ask": "{{name}} 提问",
-      "reply": "{{name}} 回复",
       "kindDispatch": "派发任务",
       "kindReport": "汇报",
       "kindFinish": "完成",

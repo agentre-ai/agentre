@@ -2327,8 +2327,6 @@
       "blocked": "Awaiting you",
       "speakPlaceholder": "Message the Leader…",
       "speakSend": "Send",
-      "ask": "{{name}} asked",
-      "reply": "{{name}} replied",
       "kindDispatch": "dispatched",
       "kindReport": "reported",
       "kindFinish": "finished",

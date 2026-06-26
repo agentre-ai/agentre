@@ -104,6 +104,7 @@ export const useOrchRunStore = create<OrchRunState>((set, get) => ({
           kind: "reply" as const,
           askId: p.askId,
           agentId: prevAsk?.targetAgentId ?? 0,
+          targetAgentId: prevAsk?.askerAgentId,
           text: p.timedOut ? "" : p.answer,
           ts: Date.now(),
         },

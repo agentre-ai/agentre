@@ -41,4 +41,27 @@ describe("orch-run-store", () => {
     expect(useOrchRunStore.getState().activeAsks.get(1) ?? []).toHaveLength(0);
     expect(useOrchRunStore.getState().askLog.get(1)).toHaveLength(2);
   });
+
+  it("reply log item 记录 targetAgentId = 原始 asker (askerAgentId)", () => {
+    const s = useOrchRunStore.getState();
+    // ask: askerAgentId=2, targetAgentId=3
+    s.onRunEvent("orch:run:ask", {
+      runId: 2,
+      askId: "q1",
+      askerAgentId: 2,
+      targetAgentId: 3,
+      question: "测试?",
+    } as never);
+    // reply: replier=targetAgentId(3), should record targetAgentId=askerAgentId(2)
+    s.onRunEvent("orch:run:reply", {
+      runId: 2,
+      askId: "q1",
+      answer: "回答",
+      timedOut: false,
+    } as never);
+    const log = useOrchRunStore.getState().askLog.get(2) ?? [];
+    const replyItem = log.find((i) => i.kind === "reply");
+    expect(replyItem).toBeDefined();
+    expect(replyItem!.targetAgentId).toBe(2); // original asker
+  });
 });

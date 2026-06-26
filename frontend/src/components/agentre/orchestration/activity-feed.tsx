@@ -300,6 +300,13 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
                         >
                           <KindBadgeIcon kind={item.kind} />
                           {label}
+                          {(item.kind === "ask" || item.kind === "reply") &&
+                            item.targetAgentId !== undefined && (
+                              <span>
+                                {" @"}
+                                {resolveAgentName(item.targetAgentId, agents)}
+                              </span>
+                            )}
                         </span>
                       )}
                       {/* flex spacer */}

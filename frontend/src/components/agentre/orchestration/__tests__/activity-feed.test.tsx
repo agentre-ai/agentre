@@ -420,6 +420,82 @@ describe("ActivityFeed", () => {
     expect(crowns.length).toBeGreaterThan(0);
   });
 
+  it("ask 行 badge 包含 @目标 agentId (targetAgentId 已设置时渲染 @<name>)", () => {
+    const detail = makeDetail({ runId: 50 });
+
+    // ask: agentId=2 asks targetAgentId=99 (unique id to confirm it's rendered)
+    useOrchRunStore.setState((s) => {
+      const log = new Map(s.askLog);
+      log.set(50, [
+        {
+          kind: "ask",
+          askId: "badge1",
+          agentId: 2,
+          targetAgentId: 99,
+          text: "你能完成吗?",
+          ts: 100,
+        },
+      ]);
+      return { askLog: log };
+    });
+
+    render(<ActivityFeed detail={detail} />);
+
+    const askEl = screen.getByTestId("feed-ask-badge1");
+    // badge should contain the target agent id rendered as @#99 (fallback since no agent named 99)
+    expect(askEl).toHaveTextContent("@#99");
+  });
+
+  it("reply 行 badge 包含 @原始提问 agentId (targetAgentId = asker id)", () => {
+    const detail = makeDetail({ runId: 51 });
+
+    // reply: agentId=3 replies, targetAgentId=88 (original asker, unique id to confirm)
+    useOrchRunStore.setState((s) => {
+      const log = new Map(s.askLog);
+      log.set(51, [
+        {
+          kind: "reply",
+          askId: "badge2",
+          agentId: 3,
+          targetAgentId: 88,
+          text: "已完成",
+          ts: 110,
+        },
+      ]);
+      return { askLog: log };
+    });
+
+    render(<ActivityFeed detail={detail} />);
+
+    const replyEl = screen.getByTestId("feed-reply-badge2");
+    // badge should contain the original asker id rendered as @#88 (fallback since no agent named 88)
+    expect(replyEl).toHaveTextContent("@#88");
+  });
+
+  it("ask 行无 targetAgentId 时 badge 不渲染 @", () => {
+    const detail = makeDetail({ runId: 52 });
+
+    useOrchRunStore.setState((s) => {
+      const log = new Map(s.askLog);
+      log.set(52, [
+        {
+          kind: "ask",
+          askId: "badge3",
+          agentId: 2,
+          // no targetAgentId
+          text: "无目标问题",
+          ts: 120,
+        },
+      ]);
+      return { askLog: log };
+    });
+
+    render(<ActivityFeed detail={detail} />);
+
+    const askEl = screen.getByTestId("feed-ask-badge3");
+    expect(askEl).not.toHaveTextContent("@#");
+  });
+
   it("非 Leader 行不渲染皇冠 chip", () => {
     // agentId=3，但 leaderAgentId=2 → 无皇冠
     const tasks = [

@@ -4,6 +4,7 @@ export interface FeedItem {
   id: string;
   kind: "dispatch" | "report" | "finish" | "blocked" | "ask" | "reply";
   agentId: number;
+  targetAgentId?: number;
   text: string;
   ts: number;
 }
@@ -56,6 +57,7 @@ export function buildFeed(
       id: `${a.kind}-${a.askId}`,
       kind: a.kind,
       agentId: a.agentId,
+      targetAgentId: a.targetAgentId,
       text: a.text,
       ts: a.ts,
     });
