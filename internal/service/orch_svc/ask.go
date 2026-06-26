@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,9 +64,11 @@ func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, quest
 	}
 
 	// XML 注入：闭合标签是天然边界，busy steer 进对方当前 turn 时不被其输出污染。
+	// askerName/question 来自 LLM 输出，可能含 < > & " → html.EscapeString 转义防破坏 XML 边界。
+	// askID 是 UUID，无需转义。
 	msg := fmt.Sprintf(
 		`<peer_ask ask_id="%s" from="%s">%s</peer_ask>`+"\n"+`请调用 reply(ask_id="%s", answer=...) 回复。`,
-		askID, askerName, question, askID,
+		askID, html.EscapeString(askerName), html.EscapeString(question), askID,
 	)
 	if err := s.chat.SendAndForget(ctx, toSession, msg); err != nil {
 		if errors.Is(err, ErrSessionBusy) {
