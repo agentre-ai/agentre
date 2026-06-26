@@ -12,10 +12,15 @@ vi.mock("../../../../wailsjs/go/app/App", () => ({
   RunList: vi.fn().mockResolvedValue([]),
 }));
 
+// mock react-router-dom useNavigate
+const mockNavigate = vi.fn();
+vi.mock("react-router-dom", () => ({
+  useNavigate: () => mockNavigate,
+}));
+
 import { toast } from "sonner";
 import type { app } from "../../../../wailsjs/go/models";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
-import { useChatTabsStore } from "../../../stores/chat-tabs-store";
 import { OrchNotifier } from "../orch-notifier";
 
 // 构造测试用 RunDetailDTO，避免 TypeScript 类型不兼容。
@@ -29,7 +34,6 @@ function makeDetail(
 beforeEach(() => {
   vi.clearAllMocks();
   useOrchRunStore.getState().__reset();
-  useChatTabsStore.setState({ tabs: [], activeTabId: null });
 });
 
 describe("OrchNotifier", () => {
@@ -137,9 +141,7 @@ describe("OrchNotifier", () => {
     expect(toast).not.toHaveBeenCalled();
   });
 
-  it("点击 toast action 调用 openRun", async () => {
-    const openRun = vi.spyOn(useChatTabsStore.getState(), "openRun");
-
+  it("点击 toast action 导航到 /orchestration/:runId", async () => {
     render(<OrchNotifier />);
     await act(async () => {});
 
@@ -157,6 +159,6 @@ describe("OrchNotifier", () => {
       action: { onClick: () => void };
     };
     opts.action.onClick();
-    expect(openRun).toHaveBeenCalledWith(5, "TestGoal");
+    expect(mockNavigate).toHaveBeenCalledWith("/orchestration/5");
   });
 });
