@@ -2293,7 +2293,10 @@
       "pausedBanner": "已暂停，点击「继续」恢复运行",
       "stoppedBanner": "已硬停止",
       "deadlock": "检测到等待环，请去裁决",
-      "leaderCrown": "Leader"
+      "leaderCrown": "Leader",
+      "callCount": "×{{count}}",
+      "sessionsCount": "{{count}} 会话",
+      "callLabel": "会话#{{seq}}"
     },
     "feed": {
       "deadlock": "检测到 ask 等待环",

@@ -9,7 +9,7 @@ import { useOrchRunStore } from "../../../stores/orch-run-store";
 import { AgentAvatar, StatusDot } from "../primitives";
 import type { AgentColor, AgentStatus } from "../types";
 import { buildGraph, lifecycle } from "./graph-data";
-import type { GraphNode, NodeStatus } from "./graph-data";
+import type { GraphCall, GraphNode, NodeStatus } from "./graph-data";
 
 // NodeStatus → 边框样式
 function nodeBorderClass(s: NodeStatus): string {
@@ -27,7 +27,10 @@ function nodeBorderClass(s: NodeStatus): string {
   }
 }
 
-// 单个 agent 节点卡片
+// 单个 agent 节点卡片:三态
+//  ① callCount<=1            → 单行 brief(现状)
+//  ② !isTopLevel && >=2      → 合并 ×N 徽标, 不列子行(子代理保持图干净)
+//  ③ isTopLevel && >=2       → 分组容器: 头部「N 会话」+ 每次调用一条只读子行
 function NodeCard({
   node,
   agentName,
@@ -47,6 +50,19 @@ function NodeCard({
   leaderLabel: string;
   onClick: () => void;
 }) {
+  const { t } = useTranslation();
+  const isMerged = !node.isLeader && !node.isTopLevel && node.callCount >= 2;
+  const isGroup = node.isTopLevel && node.callCount >= 2;
+
+  const callDot = (status: GraphCall["status"]) =>
+    status === "waiting-user" || status === "waiting"
+      ? "waiting"
+      : (status as AgentStatus) in { running: 1, idle: 1, error: 1, done: 1 }
+        ? (status === "done"
+            ? "idle"
+            : (status as AgentStatus))
+        : "idle";
+
   return (
     <button
       type="button"
@@ -59,7 +75,7 @@ function NodeCard({
           : nodeBorderClass(node.status),
       )}
     >
-      {/* 头部: 头像 + 名称 + 皇冠 */}
+      {/* 头部: 头像 + 名称 + (N 会话 / 皇冠 / ×N) */}
       <div className="flex items-center gap-2">
         <AgentAvatar
           name={agentName}
@@ -70,7 +86,20 @@ function NodeCard({
         />
         <span className="flex-1 truncate text-sm font-medium text-foreground">
           {agentName}
+          {isGroup && (
+            <span className="ml-1 text-xs font-normal text-muted-foreground">
+              · {t("orchestration.graph.sessionsCount", { count: node.callCount })}
+            </span>
+          )}
         </span>
+        {isMerged && (
+          <span
+            data-testid={`node-${node.agentId}-multi`}
+            className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground"
+          >
+            {t("orchestration.graph.callCount", { count: node.callCount })}
+          </span>
+        )}
         {node.isLeader && (
           <Crown
             aria-label={leaderLabel}
@@ -79,29 +108,42 @@ function NodeCard({
         )}
       </div>
 
-      {/* 任务行列表 */}
-      {node.tasks.length > 0 && (
+      {/* 分组容器:每次调用一条只读子行(钻入留给 S6) */}
+      {isGroup ? (
         <ul className="flex flex-col gap-1">
-          {node.tasks.map((task) => (
-            <li key={task.id} className="flex items-center gap-1.5">
-              <StatusDot
-                status={
-                  task.status === "awaiting-user" ||
-                  task.status === "awaiting-children"
-                    ? "waiting"
-                    : (task.status as AgentStatus) in
-                        { running: 1, waiting: 1, idle: 1, error: 1 }
-                      ? (task.status as AgentStatus)
-                      : "idle"
-                }
-                size="xs"
-              />
+          {node.calls.map((call, i) => (
+            <li
+              key={call.taskId}
+              data-testid={`node-${node.agentId}-call-${call.taskId}`}
+              className="flex items-center gap-1.5"
+            >
+              <StatusDot status={callDot(call.status)} size="xs" />
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                {t("orchestration.graph.callLabel", {
+                  seq: call.callSeq || i + 1,
+                })}
+              </span>
               <span className="truncate text-xs text-muted-foreground">
-                {task.brief || `#${task.id}`}
+                {call.brief || `#${call.taskId}`}
               </span>
             </li>
           ))}
         </ul>
+      ) : (
+        // 单次调用:单行 brief(合并 ×N 节点不列子行)
+        !isMerged &&
+        node.calls.length > 0 && (
+          <ul className="flex flex-col gap-1">
+            {node.calls.map((call) => (
+              <li key={call.taskId} className="flex items-center gap-1.5">
+                <StatusDot status={callDot(call.status)} size="xs" />
+                <span className="truncate text-xs text-muted-foreground">
+                  {call.brief || `#${call.taskId}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )
       )}
     </button>
   );

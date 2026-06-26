@@ -2293,7 +2293,10 @@
       "pausedBanner": "Paused — click Resume to continue",
       "stoppedBanner": "Hard stopped",
       "deadlock": "Waiting cycle detected — resolve it",
-      "leaderCrown": "Leader"
+      "leaderCrown": "Leader",
+      "callCount": "×{{count}}",
+      "sessionsCount": "{{count}} sessions",
+      "callLabel": "Session #{{seq}}"
     },
     "feed": {
       "deadlock": "Ask waiting cycle detected",
