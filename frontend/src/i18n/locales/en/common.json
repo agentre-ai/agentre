@@ -2369,7 +2369,8 @@
     "conversation": {
       "backToBoard": "Back to board",
       "speakPlaceholder": "Speak to it… (sends to this session)",
-      "speakSend": "Send"
+      "speakSend": "Send",
+      "awaitingReply": "Awaiting reply"
     },
     "toggle": {
       "tasks": "tasks",

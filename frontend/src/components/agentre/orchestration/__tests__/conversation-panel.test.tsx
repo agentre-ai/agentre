@@ -15,11 +15,11 @@ vi.mock("../../chat", () => ({
   ),
 }));
 
-import { useOrchSubagentsStore } from "../../../../stores/orch-subagents-store";
+import { useOrchRunStore } from "../../../../stores/orch-run-store";
 import { ConversationPanel } from "../conversation-panel";
 
 beforeEach(() => {
-  useOrchSubagentsStore.getState().__reset();
+  useOrchRunStore.getState().__reset();
   runSpeak.mockClear();
   loadSession.mockReset();
 });
@@ -114,5 +114,93 @@ describe("ConversationPanel", () => {
     await waitFor(() =>
       expect(screen.getByTestId("stub-transcript")).toHaveTextContent("1"),
     );
+  });
+
+  // ── 新 cvHead/cvInput 结构断言 (Step 1 RED) ────────────────────────────
+
+  it("渲染 cvHead: 返回按钮 + agentName 展示", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端工程师"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    // 返回按钮存在
+    expect(screen.getByTestId("conversation-back")).toBeTruthy();
+    // agent name 展示在 who 行
+    expect(screen.getByTestId("conversation-who-name")).toHaveTextContent(
+      "后端工程师",
+    );
+  });
+
+  it("cvInput: 输入框与发送按钮均渲染", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("conversation-speak-input")).toBeTruthy();
+    expect(screen.getByTestId("conversation-speak-send")).toBeTruthy();
+  });
+
+  it("只读 transcript: 无 Edit/Regenerate 按钮(no onRerun/onEdit props)", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    // stub 不渲染 edit/rerun 按钮
+    expect(screen.queryByTestId("message-rerun")).toBeNull();
+    expect(screen.queryByTestId("message-edit")).toBeNull();
+  });
+
+  it("等待高亮: runId+agentId 提供且 activeAsks 含该 agent → 展示 waiting callout", async () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    // 直接注入 activeAsks 状态(跳过 onRunEvent 以避免触发 RunLoad)
+    const asks = new Map([
+      [10, [{ askId: "ask-1", askerAgentId: 5, targetAgentId: 99 }]],
+    ]);
+    useOrchRunStore.setState({ activeAsks: asks });
+
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+        runId={10}
+        agentId={5}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("conversation-awaiting-callout")).toBeTruthy(),
+    );
+  });
+
+  it("等待高亮: agentId 不在 activeAsks 中时不展示 waiting callout", async () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+        runId={10}
+        agentId={999}
+      />,
+    );
+    // no active ask for agentId=999
+    expect(screen.queryByTestId("conversation-awaiting-callout")).toBeNull();
   });
 });

@@ -203,6 +203,8 @@ export function OrchestrationRun({
                 agentName={selAgentName}
                 agentColor={selAgentColor}
                 onBack={() => setSelectedSessionId(null)}
+                runId={runId}
+                agentId={selTask?.agentId}
               />
             ) : (
               <TaskBoard

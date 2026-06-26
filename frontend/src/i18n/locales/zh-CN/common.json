@@ -2369,7 +2369,8 @@
     "conversation": {
       "backToBoard": "返回任务板",
       "speakPlaceholder": "对它说…(发送给该会话)",
-      "speakSend": "发送"
+      "speakSend": "发送",
+      "awaitingReply": "等待回复中"
     },
     "toggle": {
       "tasks": "任务",
