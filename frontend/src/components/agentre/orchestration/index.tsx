@@ -1,11 +1,14 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { useChatAgents } from "@/hooks/use-chat-agents";
+import type { AgentColor } from "../types";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
 import { RunFlowBlueprint } from "./run-flow-blueprint";
 import { RunHeader } from "./run-header";
 import { StructureGraph } from "./structure-graph";
 import { ActivityFeed } from "./activity-feed";
 import { TaskBoard } from "./task-board";
+import { ConversationPanel } from "./conversation-panel";
 
 export function OrchestrationRun({
   runId,
@@ -22,9 +25,24 @@ export function OrchestrationRun({
   }, [runId]);
 
   const [view, setView] = React.useState<"graph" | "feed">("graph");
-  const [selectedAgentId, setSelectedAgentId] = React.useState<number | null>(
-    null,
+  const [selectedSessionId, setSelectedSessionId] = React.useState<
+    number | null
+  >(null);
+
+  // Run が切り替わったら選択をリセット
+  React.useEffect(() => {
+    setSelectedSessionId(null);
+  }, [runId]);
+
+  // 選中 session 対応エージェントを解決
+  const { agents } = useChatAgents();
+  const selTask = (detail?.tasks ?? []).find(
+    (t) => t.sessionId === selectedSessionId,
   );
+  const selAgent = agents.find((a) => a.id === selTask?.agentId);
+  const selAgentName = selAgent?.name ?? (selTask ? `#${selTask.agentId}` : "");
+  const selAgentColor: AgentColor =
+    (selAgent?.avatarColor as AgentColor) ?? "agent-1";
 
   return (
     <div
@@ -48,7 +66,7 @@ export function OrchestrationRun({
               {view === "graph" ? (
                 <StructureGraph
                   detail={detail}
-                  onSelectNode={setSelectedAgentId}
+                  onSelectSession={setSelectedSessionId}
                 />
               ) : (
                 <ActivityFeed detail={detail} />
@@ -56,13 +74,22 @@ export function OrchestrationRun({
             </div>
           </main>
 
-          {/* 右侧：任务看板 */}
+          {/* 右侧：任务看板 ⇄ 会话面板 二态 */}
           <aside className="w-80 shrink-0 border-l border-border">
-            <TaskBoard
-              detail={detail}
-              selectedAgentId={selectedAgentId}
-              onSelectTask={(agentId) => setSelectedAgentId(agentId)}
-            />
+            {selectedSessionId === null ? (
+              <TaskBoard
+                detail={detail}
+                selectedSessionId={selectedSessionId}
+                onSelectSession={setSelectedSessionId}
+              />
+            ) : (
+              <ConversationPanel
+                sessionId={selectedSessionId}
+                agentName={selAgentName}
+                agentColor={selAgentColor}
+                onBack={() => setSelectedSessionId(null)}
+              />
+            )}
           </aside>
         </>
       )}
