@@ -5,6 +5,7 @@ import {
   Waypoints,
   Target,
   Pause,
+  Play,
   Square,
   Ellipsis,
   Circle,
@@ -159,7 +160,7 @@ export function RunHeader({ detail }: { detail: app.RunDetailDTO }) {
                   void RunResume(runId).catch(() => {});
                 }}
               >
-                <Pause className="size-3 shrink-0" aria-hidden="true" />
+                <Play className="size-3 shrink-0" aria-hidden="true" />
                 {t("orchestration.header.resume")}
               </Button>
             )}
