@@ -70,6 +70,7 @@ export const useOrchSubagentsStore = create<State>((set, get) => ({
   },
   reload: (sessionId) => {
     if (!sessionId) return;
+    if (get().loading.has(sessionId)) return; // in-flight 去重（仍绕 bySession 缓存）
     set((s) => {
       const ld = new Set(s.loading);
       ld.add(sessionId);

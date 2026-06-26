@@ -95,4 +95,18 @@ describe("orch-subagents-store", () => {
     useOrchSubagentsStore.getState().reload(0);
     expect(loadMock).not.toHaveBeenCalled();
   });
+
+  it("两次同步 reload 同一 session 只触发一次 LoadChatSession(in-flight 去重)", async () => {
+    let resolve!: (v: unknown) => void;
+    loadMock.mockReturnValue(new Promise((r) => (resolve = r)));
+    // 两次同步调用 reload，第二次应被 in-flight 去重挡住
+    useOrchSubagentsStore.getState().reload(777);
+    useOrchSubagentsStore.getState().reload(777);
+    expect(loadMock).toHaveBeenCalledTimes(1);
+    // resolve 保证不泄漏 pending promise
+    resolve({ messages: [] });
+    await vi.waitFor(() =>
+      expect(useOrchSubagentsStore.getState().loading.has(777)).toBe(false),
+    );
+  });
 });
