@@ -1,12 +1,12 @@
 import { useTranslation } from "react-i18next";
-import { SquareTerminal } from "lucide-react";
+import { SquareTerminal, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
 import { TerminalClose } from "../../../../wailsjs/go/app/App";
 import { useLocalCommandsStore } from "../../../stores/local-commands-store";
 import type { LocalCommandStatus } from "../../../stores/local-commands-store";
-import { stripAnsi } from "./ansi";
+import { OutputTerminal } from "./output-terminal";
 
 // Status → visual style map (DRY — one place for all status styles).
 const STATUS_CONFIG: Record<
@@ -87,14 +87,24 @@ export function LocalCommandCard({
             </>
           )}
         </span>
+
+        {/* Dismiss — only once finished; running cards must be stopped first. */}
+        {!isRunning && (
+          <button
+            type="button"
+            aria-label={t("localCommand.dismiss")}
+            title={t("localCommand.dismiss")}
+            className="-mr-1 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            onClick={() => useLocalCommandsStore.getState().remove(entryId)}
+          >
+            <X className="size-3.5" aria-hidden="true" />
+          </button>
+        )}
       </div>
 
-      {/* Output area */}
-      <div className="max-h-48 overflow-y-auto bg-code-surface px-3.5 py-2.5">
-        <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-code-foreground">
-          {stripAnsi(entry.output)}
-        </pre>
-      </div>
+      {/* Output area — rendered through a read-only xterm so ANSI/OSC/control
+          sequences are interpreted (real color), not stripped into 乱码. */}
+      <OutputTerminal terminalId={entry.id} />
 
       {/* Actions — only while running */}
       {isRunning && (

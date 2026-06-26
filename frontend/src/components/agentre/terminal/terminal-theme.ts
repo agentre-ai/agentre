@@ -71,3 +71,34 @@ export function resolveTerminalTheme(
   const foreground = fg?.trim() || base.foreground;
   return { ...base, background, foreground };
 }
+
+// 平台等宽字体放最前，Nerd Font 仅作图标/powerline 兜底。把 Nerd Font 排在前面时，
+// 若某个变体缺 Bold 字面，浏览器会对一行里部分字符合成 faux-bold → 出现粗细混杂的
+// 马赛克；平台 mono(mac→Menlo / win→Consolas / linux→DejaVu)自带匹配的 Bold，放前面
+// 可消除这个问题。CJK 字体兜底中文等宽。交互终端与只读命令卡片共用同一字栈。
+export const TERMINAL_FONT_FAMILY = [
+  "Menlo",
+  "Consolas",
+  "'DejaVu Sans Mono'",
+  "'JetBrainsMono NFM'",
+  "'JetBrainsMono Nerd Font Mono'",
+  "'JetBrains Mono'",
+  "'Symbols Nerd Font Mono'",
+  "'Noto Sans Mono CJK SC'",
+  "monospace",
+].join(", ");
+
+// 跟随应用主题：用 .dark class 选 light/dark 调色板，并把应用实时的 --background/
+// --foreground 叠加为终端底色，使终端与周围 UI 一致。SSR / 无 document 时回退 dark
+// 默认调色板。交互终端与只读命令卡片共用同一主题解析,确保两处颜色一致。
+export function readTerminalTheme(): ITheme {
+  if (typeof document === "undefined") {
+    return resolveTerminalTheme(true);
+  }
+  const root = document.documentElement;
+  const isDark = root.classList.contains("dark");
+  const styles = getComputedStyle(root);
+  const bg = styles.getPropertyValue("--background").trim();
+  const fg = styles.getPropertyValue("--foreground").trim();
+  return resolveTerminalTheme(isDark, bg, fg);
+}
