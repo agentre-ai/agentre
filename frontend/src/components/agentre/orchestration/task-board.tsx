@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useChatAgents } from "@/hooks/use-chat-agents";
 import type { app } from "../../../../wailsjs/go/models";
+import { useRunSubagents } from "./use-run-subagents";
 
 // 任务状态 → 可读文字 key
 function statusKey(status: string): string {
@@ -112,6 +113,20 @@ export function TaskBoard({
   const { t } = useTranslation();
   const { agents } = useChatAgents();
   const [tab, setTab] = React.useState<"tasks" | "outputs">("tasks");
+  const subagents = useRunSubagents(detail);
+  const [expandedSub, setExpandedSub] = React.useState<Set<number>>(
+    () => new Set(),
+  );
+  const toggleSub = (taskId: number) =>
+    setExpandedSub((prev) => {
+      const next = new Set(prev);
+      if (next.has(taskId)) {
+        next.delete(taskId);
+      } else {
+        next.add(taskId);
+      }
+      return next;
+    });
 
   const tasks = React.useMemo(() => detail.tasks ?? [], [detail.tasks]);
 
@@ -222,6 +237,8 @@ export function TaskBoard({
                   const renderRow = (task: app.TaskDTO, indented: boolean) => {
                     const isChild = task.parentTaskId !== 0;
                     const seq = task.callSeq > 0 ? task.callSeq : task.id;
+                    const subs = subagents.forSession(task.sessionId);
+                    const open = expandedSub.has(task.id);
                     return (
                       <li key={task.id}>
                         <button
@@ -259,6 +276,45 @@ export function TaskBoard({
                             </span>
                           )}
                         </button>
+                        {subs.length > 0 && (
+                          <div className={cn(indented ? "pl-12" : "pl-8")}>
+                            <button
+                              type="button"
+                              data-testid={`board-subagents-${task.id}`}
+                              onClick={() => toggleSub(task.id)}
+                              aria-expanded={open}
+                              className="flex items-center gap-1 px-3 py-1 text-xs text-subtle-foreground hover:text-muted-foreground"
+                            >
+                              <span>{open ? "▾" : "▸"}</span>
+                              <span>
+                                {t("orchestration.subagent.badge", {
+                                  count: subs.length,
+                                })}
+                              </span>
+                              <span className="text-muted-foreground/60">
+                                {"· "}
+                                {t("orchestration.subagent.autoMerge")}
+                              </span>
+                            </button>
+                            {open && (
+                              <ul className="flex flex-col gap-0.5 pb-1">
+                                {subs.map((sa, i) => (
+                                  <li
+                                    key={sa.toolUseId}
+                                    data-testid={`board-subagent-${task.id}-${i}`}
+                                    className="flex items-center gap-2 px-3 py-1 pl-8 text-xs text-muted-foreground"
+                                  >
+                                    <span className="truncate">
+                                      {sa.role ||
+                                        sa.description ||
+                                        sa.toolUseId}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
                       </li>
                     );
                   };

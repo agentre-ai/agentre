@@ -2332,6 +2332,10 @@
     "run": {
       "blueprintTitle": "Flow blueprint",
       "blueprintRef": "Reference only · does not constrain execution"
+    },
+    "subagent": {
+      "badge": "+{{count}} subagents",
+      "autoMerge": "auto-merge"
     }
   },
   "localCommand": {

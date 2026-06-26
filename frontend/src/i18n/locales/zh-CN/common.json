@@ -2332,6 +2332,10 @@
     "run": {
       "blueprintTitle": "流程蓝图",
       "blueprintRef": "仅参考 · 不约束执行"
+    },
+    "subagent": {
+      "badge": "+{{count}} 子代理",
+      "autoMerge": "auto-merge"
     }
   },
   "localCommand": {
