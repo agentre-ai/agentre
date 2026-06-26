@@ -169,4 +169,49 @@ describe("graph-data", () => {
     expect(fe.calls[0].status).toBe("running");
     expect(fe.calls[1].status).toBe("done");
   });
+
+  it("calls 乱序输入(callSeq [2,1]) → sort 后 calls 升序 [1,2]", () => {
+    // 验证 sort 比较器真实有效: fixture 以 callSeq 降序输入
+    const g = buildGraph(
+      detail([
+        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+        {
+          id: 3,
+          agentId: 3,
+          parentTaskId: 1,
+          status: "done",
+          callSeq: 2,
+          sessionId: 502,
+          brief: "第二次",
+        },
+        {
+          id: 2,
+          agentId: 3,
+          parentTaskId: 1,
+          status: "running",
+          callSeq: 1,
+          sessionId: 501,
+          brief: "第一次",
+        },
+      ]),
+    );
+    const fe = g.nodes.find((n) => n.agentId === 3)!;
+    // sort 后必须升序
+    expect(fe.calls.map((c) => c.callSeq)).toEqual([1, 2]);
+    expect(fe.calls[0].brief).toBe("第一次");
+    expect(fe.calls[1].brief).toBe("第二次");
+  });
+
+  it("Leader 节点本身 isTopLevel === false", () => {
+    // Leader 是根节点, 没有 leader 派发者 → isTopLevel 应为 false
+    const g = buildGraph(
+      detail([
+        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+        { id: 2, agentId: 3, parentTaskId: 1, status: "running" },
+      ]),
+    );
+    const leader = g.nodes.find((n) => n.agentId === 2)!;
+    expect(leader.isLeader).toBe(true);
+    expect(leader.isTopLevel).toBe(false);
+  });
 });

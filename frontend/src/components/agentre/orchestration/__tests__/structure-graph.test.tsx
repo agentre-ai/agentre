@@ -210,5 +210,14 @@ describe("StructureGraph", () => {
     expect(screen.getByTestId("node-3-call-3")).toBeInTheDocument();
     // 顶层分组不显示 ×N 合并徽标(分组 ≠ 合并)
     expect(screen.queryByTestId("node-3-multi")).not.toBeInTheDocument();
+
+    // Fix 1 guard: 分组头部的中间点分隔符必须带空格 "· N sessions",
+    // 断言 textContent 含 "· 2" (middot + space + count),区分意外的 "·2"。
+    // toHaveTextContent 内部对空格 normalize 使得连续空格折叠为单格,但 "· 2"
+    // 与 "·2" 仍有区别: 前者在 substring 中存在 middot+space。
+    const headerSpan = screen
+      .getByTestId("node-3")
+      .querySelector("div > span > span");
+    expect(headerSpan?.textContent).toMatch(/·\s2/);
   });
 });

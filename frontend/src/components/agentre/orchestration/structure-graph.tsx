@@ -11,6 +11,16 @@ import type { AgentColor, AgentStatus } from "../types";
 import { buildGraph, lifecycle } from "./graph-data";
 import type { GraphCall, GraphNode, NodeStatus } from "./graph-data";
 
+// module-level map: NodeStatus → AgentStatus (allocation-free, rebuilt once)
+const CALL_DOT: Record<NodeStatus, AgentStatus> = {
+  running: "running",
+  error: "error",
+  idle: "idle",
+  done: "idle",
+  "waiting-user": "waiting",
+  waiting: "waiting",
+};
+
 // NodeStatus → 边框样式
 function nodeBorderClass(s: NodeStatus): string {
   switch (s) {
@@ -54,14 +64,7 @@ function NodeCard({
   const isMerged = !node.isLeader && !node.isTopLevel && node.callCount >= 2;
   const isGroup = node.isTopLevel && node.callCount >= 2;
 
-  const callDot = (status: GraphCall["status"]) =>
-    status === "waiting-user" || status === "waiting"
-      ? "waiting"
-      : (status as AgentStatus) in { running: 1, idle: 1, error: 1, done: 1 }
-        ? status === "done"
-          ? "idle"
-          : (status as AgentStatus)
-        : "idle";
+  const callDot = (status: GraphCall["status"]) => CALL_DOT[status];
 
   return (
     <button
@@ -88,7 +91,7 @@ function NodeCard({
           {agentName}
           {isGroup && (
             <span className="ml-1 text-xs font-normal text-muted-foreground">
-              {"·"}
+              {"· "}
               {t("orchestration.graph.sessionsCount", {
                 count: node.callCount,
               })}
