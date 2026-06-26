@@ -1054,9 +1054,11 @@ const ChatTranscript = React.forwardRef<
       agentColor,
       agentName,
       cwd,
-      onEdit: stableOnEdit,
+      // 只读调用方不传 onEdit/onRerun 时，上游 ref 为 undefined；
+      // 此处有条件地传入稳定代理，让行视图能用 ctx?.onEdit 作存在性门控。
+      onEdit: onEdit ? stableOnEdit : undefined,
       onPlanActionStarted: stableOnPlanActionStarted,
-      onRerun: stableOnRerun,
+      onRerun: onRerun ? stableOnRerun : undefined,
       sessionId: sessionId ?? 0,
       tabStateKey,
     }),
@@ -1064,6 +1066,8 @@ const ChatTranscript = React.forwardRef<
       agentColor,
       agentName,
       cwd,
+      onEdit,
+      onRerun,
       sessionId,
       stableOnEdit,
       stableOnPlanActionStarted,
