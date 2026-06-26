@@ -226,9 +226,9 @@ export function TaskBoard({
             data-testid="board-tab-tasks"
             onClick={() => setTab("tasks")}
             className={cn(
-              "flex-1 rounded-md px-3 py-1 text-[12px] font-semibold transition-colors",
+              "flex-1 rounded-md px-3 py-1 text-[12px] font-normal transition-colors",
               tab === "tasks"
-                ? "border border-border bg-card text-foreground"
+                ? "border border-border bg-card font-semibold text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
