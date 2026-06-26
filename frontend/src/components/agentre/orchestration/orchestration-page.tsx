@@ -8,7 +8,10 @@ export function OrchestrationPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { runId: runIdParam } = useParams();
-  const runId = runIdParam ? Number(runIdParam) : null;
+  const parsedRunId = runIdParam ? Number(runIdParam) : null;
+  // 非法 :runId(如 /orchestration/abc → NaN)归一为 null, 不外泄到 activeRunId/主区
+  const runId =
+    parsedRunId !== null && Number.isFinite(parsedRunId) ? parsedRunId : null;
   const runs = useOrchRunListStore((s) => s.runs);
   const goal = runId ? (runs.find((r) => r.id === runId)?.goal ?? "") : "";
 
@@ -23,7 +26,7 @@ export function OrchestrationPage() {
       </aside>
 
       {/* 主区:选中 Run 渲 OrchestrationRun, 否则起步态(完整总览=S8) */}
-      {runId && Number.isFinite(runId) ? (
+      {runId ? (
         <div className="flex min-h-0 min-w-0 flex-1">
           <OrchestrationRun runId={runId} title={goal} />
         </div>

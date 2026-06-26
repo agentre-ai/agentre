@@ -63,4 +63,10 @@ describe("OrchestrationPage", () => {
     renderAt("/orchestration/1");
     expect(screen.getByTestId("orchestration-run")).toBeInTheDocument();
   });
+
+  it("非法 :runId(NaN)回退起步主区, 不渲染 OrchestrationRun", () => {
+    renderAt("/orchestration/abc");
+    expect(screen.getByTestId("orchestration-empty-main")).toBeInTheDocument();
+    expect(screen.queryByTestId("orchestration-run")).not.toBeInTheDocument();
+  });
 });
