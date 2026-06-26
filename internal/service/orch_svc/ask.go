@@ -12,6 +12,10 @@ import (
 var (
 	errUnknownAsk      = errors.New("orch: 未知或已过期的 ask_id")
 	errReplyForeignAsk = errors.New("orch: 你不是该提问的接收者")
+
+	// ErrSessionBusy 目标会话正在跑 turn，SendAndForget 拒绝注入新消息。
+	// Ask 收到此哨兵后回退到 Enqueue（steer 进当前 turn）。
+	ErrSessionBusy = errors.New("orch: target session has an in-flight turn")
 )
 
 // Ask 向另一个 agent 提问：把带 ask_id 的问题注入对方活会话（保留其上下文），阻塞等其 reply（≤4 分钟）。
@@ -31,6 +35,7 @@ func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, quest
 	askID := uuid.NewString()
 	env := askEnvelope{
 		askID:         askID,
+		runID:         from.RunID,
 		askerSession:  fromSessionID,
 		targetAgentID: target.ID,
 		targetSession: toSession,
@@ -51,10 +56,26 @@ func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, quest
 		s.clearAskWait(fromSessionID)
 	}()
 
-	// 注入对方活会话：它带着自己的上下文回答，并被告知用 ask_id 调 reply。
-	msg := fmt.Sprintf("【收到提问 ask_id=%s】%s\n请根据你自己的上下文，调用 reply(ask_id=\"%s\", answer=...) 回复。", askID, question, askID)
+	// 取发问方 agent 名，用于 XML 属性 from（对方可见自己被哪个 agent 提问）。
+	askerName := ""
+	if a, _ := s.agents.Find(ctx, from.AgentID); a != nil {
+		askerName = a.Name
+	}
+
+	// XML 注入：闭合标签是天然边界，busy steer 进对方当前 turn 时不被其输出污染。
+	msg := fmt.Sprintf(
+		`<peer_ask ask_id="%s" from="%s">%s</peer_ask>`+"\n"+`请调用 reply(ask_id="%s", answer=...) 回复。`,
+		askID, askerName, question, askID,
+	)
 	if err := s.chat.SendAndForget(ctx, toSession, msg); err != nil {
-		return "", err
+		if errors.Is(err, ErrSessionBusy) {
+			// 对方正在跑 turn → steer 进它当前 turn。
+			if e2 := s.chat.Enqueue(ctx, toSession, msg); e2 != nil {
+				return "", e2
+			}
+		} else {
+			return "", err
+		}
 	}
 
 	select {
