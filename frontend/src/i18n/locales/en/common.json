@@ -2301,7 +2301,9 @@
       "pause": "Pause",
       "resume": "Resume",
       "stop": "Hard Stop",
-      "softWarning": "This cannot be undone. Continue?"
+      "softWarning": "This cannot be undone. Continue?",
+      "leaderLabel": "Leader",
+      "more": "More"
     },
     "graph": {
       "empty": "No nodes yet",

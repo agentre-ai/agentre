@@ -2301,7 +2301,9 @@
       "pause": "暂停",
       "resume": "继续",
       "stop": "硬停止",
-      "softWarning": "停止后不可恢复，确认继续？"
+      "softWarning": "停止后不可恢复，确认继续？",
+      "leaderLabel": "Leader",
+      "more": "更多"
     },
     "graph": {
       "empty": "暂无节点",

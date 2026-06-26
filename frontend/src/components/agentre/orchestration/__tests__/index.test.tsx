@@ -182,14 +182,14 @@ describe("OrchestrationRun shell", () => {
     expect(screen.getByText("测试目标 G")).toBeInTheDocument();
   });
 
-  it("detail 存在时，点击 view-feed 切换到活动 feed 视图", () => {
+  it("detail 存在时，点击 toggle-feed 切换到活动 feed 视图", () => {
     const detail = makeDetail({ runId: 1 });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
 
     render(<OrchestrationRun runId={1} title="测试运行" />);
 
-    // 默认是 graph 视图，点击 view-feed
-    fireEvent.click(screen.getByTestId("view-feed"));
+    // 默认是 graph 视图，点击 ToggleBar 中的 toggle-feed（view-feed 已从 RunHeader 移除）
+    fireEvent.click(screen.getByTestId("toggle-feed"));
 
     // ActivityFeed 中有 feed-speak-input
     expect(screen.getByTestId("feed-speak-input")).toBeInTheDocument();

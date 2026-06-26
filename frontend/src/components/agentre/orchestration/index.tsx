@@ -95,7 +95,7 @@ export function OrchestrationRun({
             data-testid="orch-main"
             className="flex min-h-0 min-w-0 flex-1 flex-col bg-background"
           >
-            <RunHeader detail={detail} view={view} onView={setView} />
+            <RunHeader detail={detail} />
 
             {/* Minimal ToggleBar placeholder (Task 4 replaces with real ToggleBar) */}
             <div
