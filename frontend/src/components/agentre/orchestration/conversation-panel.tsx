@@ -1,16 +1,32 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, SendHorizontal, Clock } from "lucide-react";
+import { ArrowLeft, SendHorizontal, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ChatTranscript } from "../chat";
-import type { AgentColor } from "../types";
+import type { AgentColor, AgentStatus } from "../types";
 import { AgentAvatar, StatusDot } from "../primitives";
 import { useOrchSubagentsStore } from "../../../stores/orch-subagents-store";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
 import { RunSpeak } from "../../../../wailsjs/go/app/App";
 
 const EMPTY_MESSAGES: never[] = [];
+
+/**
+ * Derive agent status from the tasks belonging to this agent in a run.
+ * Rule: if any task is "running" → running; if all done → done (mapped to idle
+ * since AgentStatus has no "done"); else → idle.
+ */
+function deriveAgentStatus(
+  tasks: Array<{ agentId: number; status: string }>,
+  agentId: number,
+): AgentStatus {
+  const agentTasks = tasks.filter((t) => t.agentId === agentId);
+  if (agentTasks.length === 0) return "idle";
+  if (agentTasks.some((t) => t.status === "running")) return "running";
+  if (agentTasks.every((t) => t.status === "done")) return "idle";
+  return "idle";
+}
 
 export function ConversationPanel({
   sessionId,
@@ -46,6 +62,22 @@ export function ConversationPanel({
     );
   });
 
+  // Derive agent task count from run detail (primitive — no re-render loop)
+  const agentTaskCount = useOrchRunStore((s) => {
+    if (!runId || !agentId) return 0;
+    const detail = s.details.get(runId);
+    if (!detail?.tasks) return 0;
+    return detail.tasks.filter((t) => t.agentId === agentId).length;
+  });
+
+  // Derive agent status from run detail (primitive — no re-render loop)
+  const agentStatus = useOrchRunStore((s): AgentStatus => {
+    if (!runId || !agentId) return "idle";
+    const detail = s.details.get(runId);
+    if (!detail?.tasks) return "idle";
+    return deriveAgentStatus(detail.tasks, agentId);
+  });
+
   React.useEffect(() => {
     if (sessionId) ensureLoaded(sessionId);
   }, [sessionId, ensureLoaded]);
@@ -63,6 +95,14 @@ export function ConversationPanel({
     }
   };
 
+  // Status label: reuse board status keys
+  const statusLabelKey =
+    agentStatus === "running"
+      ? "orchestration.board.statusRunning"
+      : agentStatus === "error"
+        ? "orchestration.board.statusError"
+        : "orchestration.board.statusDone";
+
   return (
     <div
       data-testid="conversation-panel"
@@ -70,20 +110,20 @@ export function ConversationPanel({
     >
       {/* cvHead: bg-card, padding [12,14], border-b, gap-2, vertical */}
       <div className="flex shrink-0 flex-col gap-2 border-b border-border bg-card px-3.5 py-3">
-        {/* back row: chevron-left + label, gap=4px */}
-        <button
+        {/* back row: arrow-left + label, gap=4px — shadcn Button */}
+        <Button
           data-testid="conversation-back"
-          className="flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
+          variant="ghost"
+          size="sm"
+          className="h-auto gap-1 p-0 text-[11px] font-normal text-muted-foreground hover:bg-transparent hover:text-foreground"
           onClick={onBack}
           type="button"
         >
-          <ChevronLeft className="size-3 shrink-0" aria-hidden="true" />
-          <span className="text-[11px]">
-            {t("orchestration.conversation.backToBoard")}
-          </span>
-        </button>
+          <ArrowLeft className="size-3 shrink-0" aria-hidden="true" />
+          {t("orchestration.conversation.backToBoard")}
+        </Button>
 
-        {/* who row: avatar + name column fill + status dot */}
+        {/* who row: avatar(26px circle) + name-column fill + status dot */}
         <div className="flex items-center gap-2" data-testid="conversation-who">
           <AgentAvatar
             name={agentName}
@@ -91,16 +131,27 @@ export function ConversationPanel({
             size="sm"
             className="size-[26px] shrink-0 rounded-full"
           />
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <div className="flex min-w-0 flex-1 flex-col gap-px">
+            {/* Line 1: agentName · 会话 (13px/600) */}
             <span
               data-testid="conversation-who-name"
               className="truncate text-[13px] font-semibold leading-none text-foreground"
             >
-              {agentName}
+              {agentName} · {t("orchestration.conversation.sessionLabel")}
+            </span>
+            {/* Line 2: statusLabel · N 任务 (10px mono muted) */}
+            <span
+              data-testid="conversation-who-subtitle"
+              className="truncate font-mono text-[10px] leading-none text-muted-foreground"
+            >
+              {t(statusLabelKey)} · {agentTaskCount}{" "}
+              {t("orchestration.conversation.tasksUnit")}
             </span>
           </div>
+          {/* Trailing 7px status dot */}
           <StatusDot
-            status={isAwaiting ? "waiting" : "running"}
+            data-testid="conversation-who-status-dot"
+            status={isAwaiting ? "waiting" : agentStatus}
             size="xs"
             className="size-[7px] shrink-0"
           />
@@ -108,10 +159,7 @@ export function ConversationPanel({
       </div>
 
       {/* cvBody: bg-sidebar, padding 14, gap-3, vertical, overflow hidden */}
-      <div
-        ref={setScrollEl}
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden bg-sidebar p-3.5"
-      >
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden bg-sidebar p-3.5">
         {/* waiting callout — shown only when agent is awaiting a peer reply */}
         {isAwaiting && (
           <div
@@ -129,7 +177,8 @@ export function ConversationPanel({
         )}
 
         {/* read-only transcript: omit live/onRerun/onEdit props */}
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* ref={setScrollEl} on the actual scrolling element */}
+        <div ref={setScrollEl} className="min-h-0 flex-1 overflow-y-auto">
           <ChatTranscript
             agentName={agentName}
             agentColor={agentColor}

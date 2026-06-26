@@ -129,7 +129,7 @@ describe("ConversationPanel", () => {
       />,
     );
     // 返回按钮存在
-    expect(screen.getByTestId("conversation-back")).toBeTruthy();
+    expect(screen.getByTestId("conversation-back")).toBeInTheDocument();
     // agent name 展示在 who 行
     expect(screen.getByTestId("conversation-who-name")).toHaveTextContent(
       "后端工程师",
@@ -146,8 +146,8 @@ describe("ConversationPanel", () => {
         onBack={vi.fn()}
       />,
     );
-    expect(screen.getByTestId("conversation-speak-input")).toBeTruthy();
-    expect(screen.getByTestId("conversation-speak-send")).toBeTruthy();
+    expect(screen.getByTestId("conversation-speak-input")).toBeInTheDocument();
+    expect(screen.getByTestId("conversation-speak-send")).toBeInTheDocument();
   });
 
   it("只读 transcript: 无 Edit/Regenerate 按钮(no onRerun/onEdit props)", () => {
@@ -183,12 +183,12 @@ describe("ConversationPanel", () => {
         agentId={5}
       />,
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("conversation-awaiting-callout")).toBeTruthy(),
-    );
+    expect(
+      screen.getByTestId("conversation-awaiting-callout"),
+    ).toBeInTheDocument();
   });
 
-  it("等待高亮: agentId 不在 activeAsks 中时不展示 waiting callout", async () => {
+  it("等待高亮: agentId 不在 activeAsks 中时不展示 waiting callout", () => {
     loadSession.mockResolvedValue({ messages: [] });
     render(
       <ConversationPanel
@@ -202,5 +202,124 @@ describe("ConversationPanel", () => {
     );
     // no active ask for agentId=999
     expect(screen.queryByTestId("conversation-awaiting-callout")).toBeNull();
+  });
+
+  // ── Finding #3: who-row 副标题 + 状态点 + "· 会话" 后缀 (RED→GREEN) ─────
+
+  it("who-name 展示 agentName + session suffix", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端工程师"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    // name line includes agentName
+    expect(screen.getByTestId("conversation-who-name")).toHaveTextContent(
+      "后端工程师",
+    );
+    // suffix label is rendered (i18n key: sessionLabel → "session" in en locale)
+    expect(screen.getByTestId("conversation-who-name")).toHaveTextContent(
+      "session",
+    );
+  });
+
+  it("who-subtitle: 无 runId 时渲染 idle 状态标签 + 0 任务", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    // subtitle element is present
+    expect(screen.getByTestId("conversation-who-subtitle")).toBeInTheDocument();
+  });
+
+  it("who-subtitle: runId+agentId 有 running 任务 → 展示 running 状态 + 任务数", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    // inject detail with tasks for agentId=5 in run 10
+    useOrchRunStore.setState({
+      details: new Map([
+        [
+          10,
+          {
+            run: { id: 10, status: "running" } as never,
+            tasks: [
+              { id: 1, agentId: 5, status: "running" } as never,
+              { id: 2, agentId: 5, status: "done" } as never,
+              { id: 3, agentId: 99, status: "running" } as never, // different agent
+            ],
+          } as never,
+        ],
+      ]),
+    });
+
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+        runId={10}
+        agentId={5}
+      />,
+    );
+    const subtitle = screen.getByTestId("conversation-who-subtitle");
+    // agentId=5 has 2 tasks; one is running → status label "Running" / "运行中"
+    expect(subtitle).toBeInTheDocument();
+    // task count: 2 tasks for agentId=5
+    expect(subtitle).toHaveTextContent("2");
+  });
+
+  it("who-subtitle: 全 done 任务 → done 状态 + 任务数", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    useOrchRunStore.setState({
+      details: new Map([
+        [
+          20,
+          {
+            run: { id: 20, status: "running" } as never,
+            tasks: [
+              { id: 1, agentId: 7, status: "done" } as never,
+              { id: 2, agentId: 7, status: "done" } as never,
+            ],
+          } as never,
+        ],
+      ]),
+    });
+
+    render(
+      <ConversationPanel
+        sessionId={801}
+        agentName="前端"
+        agentColor="agent-3"
+        onBack={vi.fn()}
+        runId={20}
+        agentId={7}
+      />,
+    );
+    const subtitle = screen.getByTestId("conversation-who-subtitle");
+    // all done → done status, count=2
+    expect(subtitle).toHaveTextContent("2");
+  });
+
+  it("who-row 渲染状态点 testid", () => {
+    loadSession.mockResolvedValue({ messages: [] });
+    render(
+      <ConversationPanel
+        sessionId={701}
+        agentName="后端"
+        agentColor="agent-2"
+        onBack={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByTestId("conversation-who-status-dot"),
+    ).toBeInTheDocument();
   });
 });

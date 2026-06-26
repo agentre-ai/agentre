@@ -2370,7 +2370,9 @@
       "backToBoard": "返回任务板",
       "speakPlaceholder": "对它说…(发送给该会话)",
       "speakSend": "发送",
-      "awaitingReply": "等待回复中"
+      "awaitingReply": "等待回复中",
+      "sessionLabel": "会话",
+      "tasksUnit": "任务"
     },
     "toggle": {
       "tasks": "任务",
