@@ -51,4 +51,18 @@ describe("orch-subagents-store", () => {
     useOrchSubagentsStore.getState().ensureLoaded(0);
     expect(loadMock).not.toHaveBeenCalled();
   });
+
+  it("ensureLoaded 同时缓存原始 messages, messagesFor 可取", async () => {
+    loadMock.mockResolvedValue({
+      messages: [{ id: 1, blocks: [{ type: "text", text: "hi" }] }],
+    });
+    useOrchSubagentsStore.getState().ensureLoaded(801);
+    await vi.waitFor(() =>
+      expect(useOrchSubagentsStore.getState().messagesFor(801)).toHaveLength(1),
+    );
+  });
+
+  it("未加载的 session messagesFor 返回空数组", () => {
+    expect(useOrchSubagentsStore.getState().messagesFor(999)).toEqual([]);
+  });
 });
