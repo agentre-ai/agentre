@@ -148,9 +148,9 @@ export function OrchestrationRun({
               data-testid="orch-footer"
               className="shrink-0 border-t border-border bg-card px-5 py-3 flex items-center gap-2.5"
             >
-              <div className="flex flex-1 items-center gap-2 rounded-lg border border-border bg-input-bg px-3 py-2">
+              <div className="flex flex-1 items-center gap-2 rounded-lg border border-border bg-input-bg px-3 py-[9px]">
                 <MessageSquare
-                  className="size-4 shrink-0 text-muted-foreground"
+                  className="size-3.5 shrink-0 text-muted-foreground"
                   aria-hidden="true"
                 />
                 <input
@@ -166,12 +166,14 @@ export function OrchestrationRun({
               <Button
                 data-testid="orch-speak-leader-send"
                 size="sm"
-                className="shrink-0 bg-primary px-4 py-2.5 text-primary-foreground"
+                className="shrink-0 rounded-lg bg-primary px-4 py-[9px] text-primary-foreground"
                 disabled={!leaderSessionId}
                 onClick={() => void handleLeaderSend()}
               >
-                <SendHorizontal className="size-4" aria-hidden="true" />
-                <span>{t("orchestration.run.send")}</span>
+                <SendHorizontal className="size-3.5" aria-hidden="true" />
+                <span className="font-semibold">
+                  {t("orchestration.run.send")}
+                </span>
               </Button>
             </div>
           </div>
