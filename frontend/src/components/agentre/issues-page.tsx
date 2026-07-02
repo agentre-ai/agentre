@@ -13,7 +13,6 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -32,7 +31,9 @@ import { useIssues } from "@/hooks/use-issues";
 import { useProjectList } from "@/hooks/use-project-list";
 
 import { IssueNewDialog } from "./issue-new-dialog";
+import { IssueLabels } from "./issue-labels";
 import { toneClass } from "./issue-tones";
+import { IssuesBoard } from "./kanban/issues-board";
 import { IssueDelete, IssueSetState } from "../../../wailsjs/go/app/App";
 import type { app } from "../../../wailsjs/go/models";
 
@@ -52,19 +53,29 @@ function statusIcon(agentStatus: string) {
 
 function IssuesPage() {
   const { t } = useTranslation();
-  const [view, setView] = React.useState<IssueView>("list");
+  const [view, setView] = React.useState<IssueView>("board");
   const [tab, setTab] = React.useState<"open" | "closed">("open");
   const [labelIDs, setLabelIDs] = React.useState<number[]>([]);
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<app.IssueItem | null>(null);
 
   const effectiveState = view === "board" ? "" : tab;
-  const { issues, labels, openCount, closedCount, loading, error, reload } =
-    useIssues({
-      state: effectiveState,
-      projectID: 0,
-      labelIDs,
-    });
+  const {
+    issues,
+    labels,
+    openCount,
+    closedCount,
+    stageCounts,
+    loading,
+    error,
+    reload,
+    moveIssue,
+  } = useIssues({
+    state: effectiveState,
+    projectID: 0,
+    labelIDs,
+    sort: view === "board" ? "position" : "updated",
+  });
   const { projects } = useProjectList();
 
   const summary = t("issues.summary.counts", {
@@ -127,9 +138,20 @@ function IssuesPage() {
           onSetState={setState}
           onDelete={remove}
         />
-      ) : (
-        <IssuesBoard issues={issues} onEdit={openEdit} />
-      )}
+      ) : view === "board" ? (
+        <IssuesBoard
+          issues={issues}
+          stageCounts={stageCounts}
+          onEdit={openEdit}
+          onMove={async (id, stage, afterID) => {
+            try {
+              await moveIssue(id, stage, afterID);
+            } finally {
+              void reload();
+            }
+          }}
+        />
+      ) : null}
       <IssueNewDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
@@ -381,28 +403,6 @@ function LabelFilter({
   );
 }
 
-function IssueLabels({ labels }: { labels: app.LabelItem[] }) {
-  if (!labels || labels.length === 0) {
-    return null;
-  }
-  return (
-    <span className="flex shrink-0 flex-wrap items-center gap-1.5">
-      {labels.map((label) => (
-        <Badge
-          variant="secondary"
-          className={cn(
-            "rounded-full border-0 px-2 py-px font-mono text-2xs font-semibold",
-            toneClass(label.tone),
-          )}
-          key={label.id}
-        >
-          {label.name}
-        </Badge>
-      ))}
-    </span>
-  );
-}
-
 type RowActionsProps = {
   issue: app.IssueItem;
   onEdit: (issue: app.IssueItem) => void;
@@ -519,62 +519,6 @@ function IssueUpdatedAt({ value }: { value?: number }) {
     <span className="truncate text-muted-foreground">
       · {new Date(value).toLocaleDateString()}
     </span>
-  );
-}
-
-function IssuesBoard({
-  issues,
-  onEdit,
-}: {
-  issues: app.IssueItem[];
-  onEdit: (issue: app.IssueItem) => void;
-}) {
-  const { t } = useTranslation();
-  const backlog = issues.filter((i) => i.state === "open");
-  const closed = issues.filter((i) => i.state === "closed");
-  const columns = [
-    { id: "backlog", title: t("issues.columns.backlog"), items: backlog },
-    { id: "closed", title: t("issues.columns.closed"), items: closed },
-  ];
-  return (
-    <section
-      aria-label={t("issues.board.aria")}
-      className="min-h-0 flex-1 overflow-auto bg-sidebar px-5 py-4"
-    >
-      <div className="flex min-w-max items-start gap-4">
-        {columns.map((column) => (
-          <section
-            key={column.id}
-            className="flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border bg-card p-2.5"
-          >
-            <div className="flex items-center gap-2 border-b border-border px-1.5 pb-2">
-              <h2 className="text-xs font-semibold">{column.title}</h2>
-              <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-secondary px-1.5 py-px font-mono text-2xs font-semibold text-muted-foreground">
-                {column.items.length}
-              </span>
-            </div>
-            <div className="flex flex-col gap-2">
-              {column.items.map((issue) => (
-                <button
-                  type="button"
-                  key={issue.id}
-                  onClick={() => onEdit(issue)}
-                  className="flex cursor-pointer flex-col gap-2 rounded-md border border-border bg-background px-3 py-2.5 text-left shadow-xs"
-                >
-                  <span className="font-mono text-2xs font-semibold text-primary-text">
-                    #{issue.id}
-                  </span>
-                  <h3 className="line-clamp-2 text-xs font-semibold leading-normal">
-                    {issue.title}
-                  </h3>
-                  <IssueLabels labels={issue.labels} />
-                </button>
-              ))}
-            </div>
-          </section>
-        ))}
-      </div>
-    </section>
   );
 }
 
