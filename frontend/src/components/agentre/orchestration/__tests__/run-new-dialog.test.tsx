@@ -170,6 +170,22 @@ describe("RunNewDialog", () => {
       expect(screen.getByText("研发")).toBeInTheDocument();
     });
 
+    it("选中流程后渲染流程步骤面包屑(run-flow-outline)", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      appMocks.WorkflowList.mockResolvedValue({
+        items: [
+          { id: 1, name: "标准功能开发流", tags: ["通用", "研发"], outline: ["需求拆解", "方案设计"] },
+        ],
+      });
+      renderDialog();
+      await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
+      await user.click(screen.getByTestId("run-flow-mode-library"));
+      await user.click(await screen.findByTestId("run-flow-select"));
+      await user.click(await screen.findByRole("option", { name: /标准功能开发流/ }));
+      expect(await screen.findByTestId("run-flow-outline")).toBeInTheDocument();
+      expect(screen.getByText("需求拆解")).toBeInTheDocument();
+    });
+
     it("从下拉选中流程后, RunCreate 带上该 flowId", async () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
