@@ -49,6 +49,8 @@ export function OrgChartPage() {
     availableTools,
     moveAgent,
     moveDepartment,
+    reorderAgents,
+    reorderDepartments,
     updateDepartment,
     deleteDepartment,
     updateAgent,
@@ -293,6 +295,12 @@ export function OrgChartPage() {
                   newParentId: parentId,
                   newSortOrder: 0,
                 });
+              }}
+              onReorderAgent={(departmentId, parentAgentId, orderedIds) => {
+                void reorderAgents(departmentId, parentAgentId, orderedIds);
+              }}
+              onReorderDepartment={(parentId, orderedIds) => {
+                void reorderDepartments(parentId, orderedIds);
               }}
             />
           ) : (
