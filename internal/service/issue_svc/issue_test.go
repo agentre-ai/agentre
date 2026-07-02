@@ -183,6 +183,7 @@ func TestIssueSvcList(t *testing.T) {
 	require.Len(t, got.Issues, 2)
 	assert.Equal(t, int64(2), got.OpenCount)
 	assert.Equal(t, int64(5), got.ClosedCount)
+	assert.Equal(t, int64(2), got.StageCounts[issue_entity.StageTodo])
 
 	require.Len(t, got.Issues[0].Labels, 1)
 	assert.Equal(t, int64(10), got.Issues[0].Labels[0].ID)
@@ -348,5 +349,27 @@ func TestIssueSvcMove_TopOfColumn(t *testing.T) {
 	ml.EXPECT().ListByIDs(ctx, gomock.Nil()).Return(nil, nil)
 
 	_, err := svc.Move(ctx, &issue_svc.MoveIssueRequest{ID: 5, Stage: issue_entity.StageReview, AfterID: 0})
+	require.NoError(t, err)
+}
+
+func TestIssueSvcMove_WithinColumnReorder_FiltersSelf(t *testing.T) {
+	ctx, mi, ml, mil, svc := setupIssueSvc(t)
+	moving := &issue_entity.Issue{ID: 3, Stage: issue_entity.StageDoing, Position: 10, State: issue_entity.StateOpen}
+	mi.EXPECT().Find(ctx, int64(3)).Return(moving, nil)
+	// 目标列 doing 含自身(id=3) + id=4；AfterID=4 → computePosition 先过滤 id=3，剩 [{4,20}]，4 是末位 → 20+step。
+	mi.EXPECT().List(ctx, issue_repo.ListFilter{Stage: issue_entity.StageDoing, Sort: "position"}).
+		Return([]*issue_entity.Issue{
+			{ID: 3, Stage: issue_entity.StageDoing, Position: 10},
+			{ID: 4, Stage: issue_entity.StageDoing, Position: 20},
+		}, nil)
+	mi.EXPECT().Update(ctx, gomock.Any()).DoAndReturn(func(_ context.Context, i *issue_entity.Issue) error {
+		// 自过滤后 siblings=[{4,20}]，afterID=4 是末位 → 20 + step
+		assert.Equal(t, float64(20+65536), i.Position)
+		return nil
+	})
+	mil.EXPECT().ListByIssue(ctx, int64(3)).Return(nil, nil)
+	ml.EXPECT().ListByIDs(ctx, gomock.Nil()).Return(nil, nil)
+
+	_, err := svc.Move(ctx, &issue_svc.MoveIssueRequest{ID: 3, Stage: issue_entity.StageDoing, AfterID: 4})
 	require.NoError(t, err)
 }
