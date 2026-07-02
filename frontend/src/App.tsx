@@ -89,6 +89,11 @@ const navItems: NavItem[] = [
     icon: layoutKanbanIcon,
   },
   {
+    path: "/orchestration",
+    labelKey: "nav.orchestration",
+    icon: topologyStar3Icon,
+  },
+  {
     path: "/org",
     labelKey: "nav.org",
     icon: buildingCommunityIcon,
@@ -97,11 +102,6 @@ const navItems: NavItem[] = [
     path: "/hooks",
     labelKey: "nav.hooks",
     icon: webhookIcon,
-  },
-  {
-    path: "/orchestration",
-    labelKey: "nav.orchestration",
-    icon: topologyStar3Icon,
   },
 ];
 
