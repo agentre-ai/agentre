@@ -12,6 +12,8 @@ import {
   LoadOrg,
   MoveAgent,
   MoveDepartment,
+  ReorderAgents,
+  ReorderDepartments,
   UpdateAgent,
   UpdateDepartment,
   UploadAgentAvatar,
@@ -23,6 +25,7 @@ import type {
 } from "../../../../wailsjs/go/models";
 
 import type { OrgAgent, OrgDepartment } from "./types";
+import { applyAgentOrder, applyDepartmentOrder } from "./reorder";
 
 type State = {
   loading: boolean;
@@ -112,6 +115,26 @@ export function useOrgData() {
       mutate(() => UploadAgentAvatar(req)),
     deleteAgentAvatar: (req: agent_svc.DeleteAvatarRequest) =>
       mutate(() => DeleteAgentAvatar(req)),
+    reorderAgents: (
+      departmentId: number,
+      parentAgentId: number,
+      orderedIds: number[],
+    ) => {
+      setState((s) => ({
+        ...s,
+        agents: applyAgentOrder(s.agents, departmentId, parentAgentId, orderedIds),
+      }));
+      return mutate(() =>
+        ReorderAgents({ departmentId, parentAgentId, orderedIds }),
+      );
+    },
+    reorderDepartments: (parentId: number, orderedIds: number[]) => {
+      setState((s) => ({
+        ...s,
+        departments: applyDepartmentOrder(s.departments, parentId, orderedIds),
+      }));
+      return mutate(() => ReorderDepartments({ parentId, orderedIds }));
+    },
   };
 }
 

@@ -1,0 +1,63 @@
+import type { OrgAgent, OrgDepartment } from "./types";
+
+/**
+ * Produces a new ordered ID array after dragging `draggedId` to `insertIndex`.
+ * The `orderedIds` param is the current complete sibling list in display order.
+ */
+export function computeReorder(
+  orderedIds: number[],
+  draggedId: number,
+  insertIndex: number,
+): number[] {
+  const without = orderedIds.filter((id) => id !== draggedId);
+  without.splice(insertIndex, 0, draggedId);
+  return without;
+}
+
+/**
+ * Applies a new sortOrder to agents that belong to the given
+ * (departmentId, parentAgentId) group, based on orderedIds position.
+ * Agents outside the group are returned unchanged.
+ */
+export function applyAgentOrder(
+  agents: OrgAgent[],
+  departmentId: number,
+  parentAgentId: number,
+  orderedIds: number[],
+): OrgAgent[] {
+  const positionMap = new Map<number, number>(
+    orderedIds.map((id, index) => [id, index + 1]),
+  );
+  return agents.map((agent) => {
+    const newPos = positionMap.get(agent.id);
+    if (newPos === undefined) return agent;
+    // Only touch agents in the matching group
+    if (
+      agent.departmentId !== departmentId ||
+      (agent.parentAgentId ?? 0) !== parentAgentId
+    ) {
+      return agent;
+    }
+    return Object.assign(Object.create(Object.getPrototypeOf(agent) as object) as OrgAgent, agent, { sortOrder: newPos }) as OrgAgent;
+  });
+}
+
+/**
+ * Applies a new sortOrder to departments under the given parentId,
+ * based on orderedIds position. Departments in other groups are unchanged.
+ */
+export function applyDepartmentOrder(
+  departments: OrgDepartment[],
+  parentId: number,
+  orderedIds: number[],
+): OrgDepartment[] {
+  const positionMap = new Map<number, number>(
+    orderedIds.map((id, index) => [id, index + 1]),
+  );
+  return departments.map((dept) => {
+    const newPos = positionMap.get(dept.id);
+    if (newPos === undefined) return dept;
+    if (dept.parentId !== parentId) return dept;
+    return Object.assign(Object.create(Object.getPrototypeOf(dept) as object) as OrgDepartment, dept, { sortOrder: newPos }) as OrgDepartment;
+  });
+}

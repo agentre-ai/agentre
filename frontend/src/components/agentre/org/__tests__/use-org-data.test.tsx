@@ -20,6 +20,8 @@ type AppMockShape = {
   UpdateAgent: AnyFn;
   MoveAgent: AnyFn;
   DeleteAgent: AnyFn;
+  ReorderAgents: AnyFn;
+  ReorderDepartments: AnyFn;
 };
 
 let appMock: AppMockShape;
@@ -36,6 +38,8 @@ function installAppMock(overrides: Partial<AppMockShape> = {}) {
     UpdateAgent: vi.fn(() => Promise.resolve({ item: {} })),
     MoveAgent: vi.fn(() => Promise.resolve({ item: {} })),
     DeleteAgent: vi.fn(() => Promise.resolve({})),
+    ReorderAgents: vi.fn(() => Promise.resolve()),
+    ReorderDepartments: vi.fn(() => Promise.resolve()),
   };
   appMock = { ...base, ...overrides };
   Object.defineProperty(window, "go", {
