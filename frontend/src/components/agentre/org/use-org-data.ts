@@ -122,7 +122,12 @@ export function useOrgData() {
     ) => {
       setState((s) => ({
         ...s,
-        agents: applyAgentOrder(s.agents, departmentId, parentAgentId, orderedIds),
+        agents: applyAgentOrder(
+          s.agents,
+          departmentId,
+          parentAgentId,
+          orderedIds,
+        ),
       }));
       return mutate(() =>
         ReorderAgents({ departmentId, parentAgentId, orderedIds }),

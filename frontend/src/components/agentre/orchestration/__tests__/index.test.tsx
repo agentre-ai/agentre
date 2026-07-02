@@ -138,6 +138,14 @@ describe("OrchestrationRun shell", () => {
     expect(screen.getByTestId("orchestration-run")).toBeInTheDocument();
   });
 
+  it("根元素横向撑满父级主区, 避免右侧留下空白", () => {
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+    expect(screen.getByTestId("orchestration-run")).toHaveClass(
+      "min-w-0",
+      "flex-1",
+    );
+  });
+
   it("store 中有 detail 时，默认渲染结构图（graph 视图）", () => {
     const detail = makeDetail({
       runId: 1,

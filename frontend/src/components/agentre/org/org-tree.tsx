@@ -11,6 +11,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 
@@ -18,6 +19,13 @@ import { cn } from "@/lib/utils";
 
 import { AgentAvatar } from "../primitives";
 import { agentColorClassNames, type AgentColor } from "../types";
+import { computeReorder } from "./reorder";
+import {
+  buildInsertZones,
+  isZoneValidTarget,
+  type ActiveDrag,
+  type InsertZone,
+} from "./tree-insert-zones";
 import {
   iconForKey,
   safeAgentColor,
@@ -42,6 +50,12 @@ export type OrgTreeProps = {
     placement: { departmentId: number; parentAgentId: number },
   ) => void;
   onMoveDepartment: (departmentId: number, parentId: number) => void;
+  onReorderAgent?: (
+    departmentId: number,
+    parentAgentId: number,
+    orderedIds: number[],
+  ) => void;
+  onReorderDepartment?: (parentId: number, orderedIds: number[]) => void;
 };
 
 type DragId = `agent-${number}` | `dept-${number}`;
@@ -501,6 +515,7 @@ export function OrgTree(props: OrgTreeProps) {
     originX: number;
     originY: number;
   } | null>(null);
+  const [active, setActive] = React.useState<ActiveDrag | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, {
@@ -508,14 +523,45 @@ export function OrgTree(props: OrgTreeProps) {
     }),
   );
 
+  const handleDragStart = React.useCallback((e: DragStartEvent) => {
+    setActive((e.active.data.current as ActiveDrag | undefined) ?? null);
+  }, []);
+
+  const handleDragCancel = React.useCallback(() => {
+    setActive(null);
+  }, []);
+
   const handleDragEnd = React.useCallback(
     (e: DragEndEvent) => {
+      setActive(null);
       if (!e.over) return;
+      const overId = String(e.over.id);
+      if (overId.startsWith("insert-")) {
+        const zone = e.over.data.current as InsertZone | undefined;
+        const activeData = e.active.data.current as ActiveDrag | undefined;
+        if (!zone || !activeData || !isZoneValidTarget(zone, activeData))
+          return;
+        const orderedIds = computeReorder(
+          zone.orderedIds,
+          activeData.id,
+          zone.index,
+        );
+        if (zone.kind === "agent") {
+          props.onReorderAgent?.(
+            zone.departmentId,
+            zone.parentAgentId,
+            orderedIds,
+          );
+        } else {
+          props.onReorderDepartment?.(zone.parentId, orderedIds);
+        }
+        return;
+      }
       const intent = getOrgDragIntent(
         props.departments,
         props.agents,
         String(e.active.id),
-        String(e.over.id),
+        overId,
       );
       if (!intent) return;
       if (intent.kind === "agent") {
@@ -538,6 +584,16 @@ export function OrgTree(props: OrgTreeProps) {
         departments: props.departments,
       }),
     [props.agents, props.collapse, props.departments],
+  );
+
+  const insertZones = React.useMemo(
+    () =>
+      buildInsertZones(layout, {
+        agents: props.agents,
+        departments: props.departments,
+        collapse: props.collapse,
+      }),
+    [layout, props.agents, props.departments, props.collapse],
   );
 
   const handlePointerDown = React.useCallback(
@@ -609,7 +665,12 @@ export function OrgTree(props: OrgTreeProps) {
   );
 
   return (
-    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+    <DndContext
+      sensors={sensors}
+      onDragStart={handleDragStart}
+      onDragCancel={handleDragCancel}
+      onDragEnd={handleDragEnd}
+    >
       <div
         data-slot="org-tree-viewport"
         onPointerDown={handlePointerDown}
@@ -638,7 +699,12 @@ export function OrgTree(props: OrgTreeProps) {
             }}
             className="inline-flex flex-col items-center gap-4"
           >
-            <TreeCanvas all={props} layout={layout} />
+            <TreeCanvas
+              all={props}
+              layout={layout}
+              zones={insertZones}
+              active={active}
+            />
           </div>
         </div>
       </div>
@@ -649,9 +715,13 @@ export function OrgTree(props: OrgTreeProps) {
 function TreeCanvas({
   all,
   layout,
+  zones,
+  active,
 }: {
   all: OrgTreeProps;
   layout: OrgTreeLayout;
+  zones: InsertZone[];
+  active: ActiveDrag | null;
 }) {
   return (
     <div
@@ -692,6 +762,42 @@ function TreeCanvas({
           <TreeLayoutNode all={all} node={node} />
         </div>
       ))}
+      {zones.map((zone) => (
+        <InsertZoneView key={zone.id} zone={zone} active={active} />
+      ))}
+    </div>
+  );
+}
+
+function InsertZoneView({
+  zone,
+  active,
+}: {
+  zone: InsertZone;
+  active: ActiveDrag | null;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: zone.id, data: zone });
+  const valid = active != null && isZoneValidTarget(zone, active);
+  return (
+    <div
+      ref={setNodeRef}
+      data-slot="org-insert-zone"
+      className="absolute flex items-center justify-center"
+      style={{
+        left: zone.x - 10,
+        top: zone.y,
+        width: 20,
+        height: zone.height,
+        // 只有正在拖 + 合法目标时才吃事件,避免平时挡住节点点击
+        pointerEvents: active && valid ? "auto" : "none",
+      }}
+    >
+      {valid && isOver && (
+        <span
+          className="w-0.5 rounded-full bg-primary"
+          style={{ height: zone.height }}
+        />
+      )}
     </div>
   );
 }
@@ -740,7 +846,16 @@ function DepartmentBanner({
   const { t } = useTranslation();
   const dragId: DragId = `dept-${dept.id}`;
   const dropId: DropId = `dept-${dept.id}`;
-  const drag = useDraggable({ id: dragId });
+  const drag = useDraggable({
+    id: dragId,
+    data: {
+      id: dept.id,
+      kind: "dept",
+      departmentId: 0,
+      parentAgentId: 0,
+      parentId: dept.parentId ?? 0,
+    } satisfies ActiveDrag,
+  });
   const drop = useDroppable({ id: dropId });
   const setRefs = React.useCallback(
     (node: HTMLDivElement | null) => {
@@ -859,6 +974,13 @@ function AgentCard({
   const drag = useDraggable({
     id: dragId,
     disabled: agent.systemBadge === "DEFAULT",
+    data: {
+      id: agent.id,
+      kind: "agent",
+      departmentId: agent.departmentId ?? 0,
+      parentAgentId: agent.parentAgentId ?? 0,
+      parentId: 0,
+    } satisfies ActiveDrag,
   });
   const drop = useDroppable({ id: dropId });
   const setRefs = React.useCallback(

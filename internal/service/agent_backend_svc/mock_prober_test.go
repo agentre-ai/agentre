@@ -11,9 +11,9 @@ package agent_backend_svc
 
 import (
 	context "context"
-	agent_backend_entity "github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	reflect "reflect"
 
+	agent_backend_entity "github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 

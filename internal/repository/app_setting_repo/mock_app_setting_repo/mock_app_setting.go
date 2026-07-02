@@ -11,9 +11,9 @@ package mock_app_setting_repo
 
 import (
 	context "context"
-	app_setting_entity "github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
 	reflect "reflect"
 
+	app_setting_entity "github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 

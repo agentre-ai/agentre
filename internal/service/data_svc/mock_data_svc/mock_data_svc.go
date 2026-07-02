@@ -11,9 +11,9 @@ package mock_data_svc
 
 import (
 	context "context"
-	data_svc "github.com/agentre-ai/agentre/internal/service/data_svc"
 	reflect "reflect"
 
+	data_svc "github.com/agentre-ai/agentre/internal/service/data_svc"
 	gomock "go.uber.org/mock/gomock"
 )
 

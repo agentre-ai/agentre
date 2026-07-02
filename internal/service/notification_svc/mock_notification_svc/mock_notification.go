@@ -11,9 +11,9 @@ package mock_notification_svc
 
 import (
 	context "context"
-	notification_svc "github.com/agentre-ai/agentre/internal/service/notification_svc"
 	reflect "reflect"
 
+	notification_svc "github.com/agentre-ai/agentre/internal/service/notification_svc"
 	gomock "go.uber.org/mock/gomock"
 )
 

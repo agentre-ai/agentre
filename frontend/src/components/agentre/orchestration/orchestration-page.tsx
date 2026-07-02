@@ -5,6 +5,7 @@ import { useOrchRunListStore } from "../../../stores/orch-run-list-store";
 import { useWorkflowManagerStore } from "@/stores/workflow-manager-store";
 import { OrchestrationRun } from ".";
 import { RunList } from "./run-list";
+import { OrchestrationOverview } from "./orchestration-overview";
 
 export function OrchestrationPage() {
   const { t } = useTranslation();
@@ -44,12 +45,7 @@ export function OrchestrationPage() {
           <OrchestrationRun runId={runId} title={goal} />
         </div>
       ) : (
-        <div
-          data-testid="orchestration-empty-main"
-          className="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground"
-        >
-          {t("orchestration.onboarding.cta")}
-        </div>
+        <OrchestrationOverview />
       )}
     </div>
   );

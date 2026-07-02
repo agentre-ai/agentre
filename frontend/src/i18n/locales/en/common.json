@@ -980,12 +980,6 @@
       "review": "In review",
       "done": "Done"
     },
-    "columns": {
-      "backlog": "Backlog",
-      "closed": "Closed",
-      "running": "In Progress",
-      "waiting": "Waiting"
-    },
     "form": {
       "stage": "Stage"
     },
@@ -1795,7 +1789,8 @@
       "expand": "Expand {{name}}",
       "lead": "Lead · {{name}}",
       "memberCount": "{{count}} members"
-    }
+    },
+    "reorderFailed": "Failed to save order, please retry"
   },
   "workflows": {
     "title": "Workflows",
@@ -2275,7 +2270,7 @@
       "team": "Participating agents",
       "teamSelected": "{{count}} selected",
       "teamHint": "Leave empty to allow any agent to participate",
-      "flow": "Starting flow",
+      "flow": "Orchestration flow",
       "flowNone": "Start from scratch (AI plans)",
       "flowAdhoc": "Ad-hoc",
       "flowSelect": "Choose from library",
@@ -2404,6 +2399,20 @@
       "depth": "Depth",
       "agents": "{{agentCount}} agent · {{subCount}} sub",
       "subagents": "subagents"
+    },
+    "overview": {
+      "title": "Orchestration",
+      "subtitle": "Multi-agent orchestration overview",
+      "statRunning": "Running",
+      "statWaiting": "Waiting",
+      "statDoneThisWeek": "Done this week",
+      "statAvgDuration": "Avg duration",
+      "noDuration": "—",
+      "inProgress": "In progress",
+      "inProgressEmpty": "No runs in progress",
+      "recentDone": "Recently completed",
+      "recentDoneEmpty": "No completed runs",
+      "progress": "{{done}}/{{total}}"
     }
   },
   "localCommand": {

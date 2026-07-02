@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { applyAgentOrder, applyDepartmentOrder, computeReorder } from "../reorder";
+import {
+  applyAgentOrder,
+  applyDepartmentOrder,
+  computeReorder,
+} from "../reorder";
 import type { OrgAgent, OrgDepartment } from "../types";
 
-const mkAgent = (id: number, sortOrder: number, departmentId = 0, parentAgentId = 0): OrgAgent =>
+const mkAgent = (
+  id: number,
+  sortOrder: number,
+  departmentId = 0,
+  parentAgentId = 0,
+): OrgAgent =>
   ({
     id,
     name: `Agent ${id}`,
@@ -97,10 +106,7 @@ describe("applyAgentOrder", () => {
   });
 
   it("updates sortOrder for agents in matching parentAgentId group", () => {
-    const agents = [
-      mkAgent(10, 1, 0, 99),
-      mkAgent(11, 2, 0, 99),
-    ];
+    const agents = [mkAgent(10, 1, 0, 99), mkAgent(11, 2, 0, 99)];
     const result = applyAgentOrder(agents, 0, 99, [11, 10]);
     const a10 = result.find((a) => a.id === 10)!;
     const a11 = result.find((a) => a.id === 11)!;

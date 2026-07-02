@@ -11,9 +11,9 @@ package mock_llm_provider_repo
 
 import (
 	context "context"
-	llm_provider_entity "github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	reflect "reflect"
 
+	llm_provider_entity "github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 

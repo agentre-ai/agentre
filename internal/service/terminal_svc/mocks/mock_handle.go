@@ -11,9 +11,9 @@ package mocks
 
 import (
 	context "context"
-	pty "github.com/agentre-ai/agentre/internal/pkg/pty"
 	reflect "reflect"
 
+	pty "github.com/agentre-ai/agentre/internal/pkg/pty"
 	gomock "go.uber.org/mock/gomock"
 )
 

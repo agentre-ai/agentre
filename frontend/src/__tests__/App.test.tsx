@@ -639,6 +639,26 @@ describe("App", () => {
     expect(Array.from(navRail.children).at(-1)).toBe(settingsButton);
   });
 
+  it("places orchestration after issues in the left rail workflow group", () => {
+    render(<App />);
+
+    const navRail = screen.getByRole("complementary", {
+      name: "Primary navigation",
+    });
+    const labels = within(navRail)
+      .getAllByRole("button")
+      .map((button) => button.getAttribute("aria-label"));
+
+    expect(labels.slice(0, 6)).toEqual([
+      "Chat",
+      "Projects",
+      "Issues",
+      "Orchestration",
+      "Organization",
+      "Hooks",
+    ]);
+  });
+
   it("restores the saved Wails window size before showing the hidden startup window", async () => {
     const runtime = mockWailsRuntime();
 

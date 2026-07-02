@@ -145,7 +145,7 @@ export function OrchestrationRun({
     <div
       data-testid="orchestration-run"
       aria-label={title}
-      className="flex h-full"
+      className="flex h-full min-w-0 flex-1"
     >
       {!detail || !detail.run ? (
         // 加载占位:detail 未就绪 或 run 字段缺失(可选字段)时显示,

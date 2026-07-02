@@ -11,9 +11,9 @@ package mock_project_location_svc
 
 import (
 	context "context"
-	project_location_svc "github.com/agentre-ai/agentre/internal/service/project_location_svc"
 	reflect "reflect"
 
+	project_location_svc "github.com/agentre-ai/agentre/internal/service/project_location_svc"
 	gomock "go.uber.org/mock/gomock"
 )
 

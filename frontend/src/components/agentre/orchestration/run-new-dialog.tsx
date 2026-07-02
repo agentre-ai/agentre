@@ -145,6 +145,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
 
   // 是否可以提交: 目标非空 + 已选 Leader(Leader 是必选的编排枢纽,leaderAgentId=0 无效)
   const canSubmit = goal.trim().length > 0 && leaderId > 0 && !submitting;
+  const selectedWorkflow = workflows.find((w) => w.id === flowId);
 
   // 切换团队成员勾选
   const toggleAllowed = (agentId: number, checked: boolean) => {
@@ -274,7 +275,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
             </div>
           </div>
 
-          {/* 流程库选择: 单选行列表,显示名称 + 标签 chip + 步骤面包屑 */}
+          {/* 流程库选择: 下拉框,显示名称 + 标签 chip;选中后展示步骤面包屑 */}
           {flowMode === "library" ? (
             <div className="flex flex-col gap-1.5 text-xs">
               <span className="flex items-center gap-2">
@@ -290,51 +291,52 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
                   {t("orchestration.new.flowManage")} →
                 </button>
               </span>
-              <div className="flex flex-col gap-1.5">
-                {workflows.map((w) => (
-                  <button
-                    key={w.id}
-                    type="button"
-                    data-testid={`run-flow-pick-${w.id}`}
-                    onClick={() => setFlowId(w.id)}
-                    className={
-                      flowId === w.id
-                        ? "flex flex-col gap-1 rounded-md border border-primary bg-primary-soft px-3 py-2 text-left"
-                        : "flex flex-col gap-1 rounded-md border border-border px-3 py-2 text-left hover:bg-accent/50"
-                    }
-                  >
-                    <span className="flex items-center gap-2">
-                      <span className="font-medium text-foreground">
-                        {w.name}
-                      </span>
-                      {w.tags.map((tag) => (
-                        <span
-                          key={tag}
-                          className="rounded bg-accent px-1 py-0.5 text-2xs text-muted-foreground"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </span>
-                    {w.outline.length > 0 ? (
-                      <span className="flex flex-wrap items-center gap-1">
-                        {w.outline.map((step, i) => (
-                          <React.Fragment key={`${step}-${i}`}>
-                            {i > 0 ? (
-                              <span className="text-2xs text-subtle-foreground">
-                                ›
-                              </span>
-                            ) : null}
-                            <span className="rounded border border-border bg-card px-1.5 py-0.5 text-2xs text-muted-foreground">
-                              {step}
-                            </span>
-                          </React.Fragment>
+              <Select
+                value={flowId ? String(flowId) : ""}
+                onValueChange={(v) => setFlowId(Number(v))}
+              >
+                <SelectTrigger
+                  data-testid="run-flow-select"
+                  aria-label={t("orchestration.new.flowSelect")}
+                  className="h-9 text-xs"
+                >
+                  <SelectValue placeholder={t("orchestration.new.flowSelectPlaceholder")} />
+                </SelectTrigger>
+                <SelectContent>
+                  {workflows.map((w) => (
+                    <SelectItem key={w.id} value={String(w.id)}>
+                      <span className="flex items-center gap-2">
+                        <span>{w.name}</span>
+                        {w.tags.map((tag) => (
+                          <span
+                            key={tag}
+                            className="rounded bg-accent px-1 py-0.5 text-2xs text-muted-foreground"
+                          >
+                            {tag}
+                          </span>
                         ))}
                       </span>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedWorkflow && selectedWorkflow.outline.length > 0 ? (
+                <span
+                  data-testid="run-flow-outline"
+                  className="flex flex-wrap items-center gap-1"
+                >
+                  {selectedWorkflow.outline.map((step, i) => (
+                    <React.Fragment key={`${step}-${i}`}>
+                      {i > 0 ? (
+                        <span className="text-2xs text-subtle-foreground">›</span>
+                      ) : null}
+                      <span className="rounded border border-border bg-card px-1.5 py-0.5 text-2xs text-muted-foreground">
+                        {step}
+                      </span>
+                    </React.Fragment>
+                  ))}
+                </span>
+              ) : null}
             </div>
           ) : null}
 

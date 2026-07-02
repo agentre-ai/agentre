@@ -980,12 +980,6 @@
       "review": "待审",
       "done": "已完成"
     },
-    "columns": {
-      "backlog": "待派发",
-      "closed": "已关闭",
-      "running": "进行中",
-      "waiting": "待审批"
-    },
     "form": {
       "stage": "阶段"
     },
@@ -1795,7 +1789,8 @@
       "expand": "展开 {{name}}",
       "lead": "Lead · {{name}}",
       "memberCount": "{{count}} 名成员"
-    }
+    },
+    "reorderFailed": "排序保存失败，请重试"
   },
   "workflows": {
     "title": "流程库",
@@ -2275,7 +2270,7 @@
       "team": "可参与 agent",
       "teamSelected": "已选 {{count}}",
       "teamHint": "留空则不限制可参与的 Agent",
-      "flow": "起始流程",
+      "flow": "编排流程",
       "flowNone": "从零开始（AI 自动拆解）",
       "flowAdhoc": "临时",
       "flowSelect": "选择流程库",
@@ -2404,6 +2399,20 @@
       "depth": "深度",
       "agents": "{{agentCount}} agent · {{subCount}} sub",
       "subagents": "子代理"
+    },
+    "overview": {
+      "title": "编排",
+      "subtitle": "多 Agent 协作编排总览",
+      "statRunning": "运行中",
+      "statWaiting": "等待",
+      "statDoneThisWeek": "本周完成",
+      "statAvgDuration": "平均时长",
+      "noDuration": "—",
+      "inProgress": "进行中",
+      "inProgressEmpty": "暂无进行中的 Run",
+      "recentDone": "最近完成",
+      "recentDoneEmpty": "暂无已完成的 Run",
+      "progress": "{{done}}/{{total}}"
     }
   },
   "localCommand": {
