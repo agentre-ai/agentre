@@ -7,17 +7,21 @@ import (
 
 // IssueItem issue 摘要（含标签），列表 / 看板 / 详情共用。
 type IssueItem struct {
-	ID          int64        `json:"id"`
-	ProjectID   int64        `json:"projectID"`
-	Title       string       `json:"title"`
-	Body        string       `json:"body"`
-	State       string       `json:"state"`
-	AgentStatus string       `json:"agentStatus"`
-	Source      string       `json:"source"`
-	ClosedAt    int64        `json:"closedAt"`
-	Createtime  int64        `json:"createtime"`
-	Updatetime  int64        `json:"updatetime"`
-	Labels      []*LabelItem `json:"labels"`
+	ID              int64        `json:"id"`
+	ProjectID       int64        `json:"projectID"`
+	Title           string       `json:"title"`
+	Body            string       `json:"body"`
+	State           string       `json:"state"`
+	AgentStatus     string       `json:"agentStatus"`
+	Source          string       `json:"source"`
+	ClosedAt        int64        `json:"closedAt"`
+	Createtime      int64        `json:"createtime"`
+	Updatetime      int64        `json:"updatetime"`
+	Labels          []*LabelItem `json:"labels"`
+	Stage           string       `json:"stage"`
+	Position        float64      `json:"position"`
+	AssigneeAgentID int64        `json:"assigneeAgentID"`
+	SessionID       int64        `json:"sessionID"`
 }
 
 // LabelItem 标签 DTO。
@@ -35,9 +39,10 @@ type IssueListRequest struct {
 }
 
 type IssueListResponse struct {
-	Issues      []*IssueItem `json:"issues"`
-	OpenCount   int64        `json:"openCount"`
-	ClosedCount int64        `json:"closedCount"`
+	Issues      []*IssueItem      `json:"issues"`
+	OpenCount   int64             `json:"openCount"`
+	ClosedCount int64             `json:"closedCount"`
+	StageCounts map[string]int64  `json:"stageCounts"`
 }
 
 type IssueCreateRequest struct {
@@ -45,6 +50,13 @@ type IssueCreateRequest struct {
 	Title     string  `json:"title"`
 	Body      string  `json:"body"`
 	LabelIDs  []int64 `json:"labelIDs"`
+	Stage     string  `json:"stage"`
+}
+
+type IssueMoveRequest struct {
+	ID      int64  `json:"id"`
+	Stage   string `json:"stage"`
+	AfterID int64  `json:"afterID"`
 }
 
 type IssueUpdateRequest struct {
@@ -70,17 +82,21 @@ func toIssueItem(d *issue_svc.IssueDetail) *IssueItem {
 		labels = append(labels, toLabelItem(l))
 	}
 	return &IssueItem{
-		ID:          d.Issue.ID,
-		ProjectID:   d.Issue.ProjectID,
-		Title:       d.Issue.Title,
-		Body:        d.Issue.Body,
-		State:       d.Issue.State,
-		AgentStatus: d.Issue.AgentStatus,
-		Source:      d.Issue.Source,
-		ClosedAt:    d.Issue.ClosedAt,
-		Createtime:  d.Issue.Createtime,
-		Updatetime:  d.Issue.Updatetime,
-		Labels:      labels,
+		ID:              d.Issue.ID,
+		ProjectID:       d.Issue.ProjectID,
+		Title:           d.Issue.Title,
+		Body:            d.Issue.Body,
+		State:           d.Issue.State,
+		AgentStatus:     d.Issue.AgentStatus,
+		Source:          d.Issue.Source,
+		ClosedAt:        d.Issue.ClosedAt,
+		Createtime:      d.Issue.Createtime,
+		Updatetime:      d.Issue.Updatetime,
+		Labels:          labels,
+		Stage:           d.Issue.Stage,
+		Position:        d.Issue.Position,
+		AssigneeAgentID: d.Issue.AssigneeAgentID,
+		SessionID:       d.Issue.SessionID,
 	}
 }
 
@@ -96,7 +112,7 @@ func (a *App) IssueList(req *IssueListRequest) (*IssueListResponse, error) {
 	for _, d := range resp.Issues {
 		items = append(items, toIssueItem(d))
 	}
-	return &IssueListResponse{Issues: items, OpenCount: resp.OpenCount, ClosedCount: resp.ClosedCount}, nil
+	return &IssueListResponse{Issues: items, OpenCount: resp.OpenCount, ClosedCount: resp.ClosedCount, StageCounts: resp.StageCounts}, nil
 }
 
 // IssueGet 取单条 issue。
@@ -111,7 +127,7 @@ func (a *App) IssueGet(id int64) (*IssueItem, error) {
 // IssueCreate 创建 issue。
 func (a *App) IssueCreate(req *IssueCreateRequest) (*IssueItem, error) {
 	d, err := issue_svc.Default().Create(a.ctx, &issue_svc.CreateIssueRequest{
-		ProjectID: req.ProjectID, Title: req.Title, Body: req.Body, LabelIDs: req.LabelIDs,
+		ProjectID: req.ProjectID, Title: req.Title, Body: req.Body, LabelIDs: req.LabelIDs, Stage: req.Stage,
 	})
 	if err != nil {
 		return nil, err
@@ -155,4 +171,15 @@ func (a *App) IssueListLabels() ([]*LabelItem, error) {
 		items = append(items, toLabelItem(l))
 	}
 	return items, nil
+}
+
+// IssueMove 拖拽:改 stage + 列内 position。
+func (a *App) IssueMove(req *IssueMoveRequest) (*IssueItem, error) {
+	d, err := issue_svc.Default().Move(a.ctx, &issue_svc.MoveIssueRequest{
+		ID: req.ID, Stage: req.Stage, AfterID: req.AfterID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return toIssueItem(d), nil
 }

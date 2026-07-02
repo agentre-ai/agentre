@@ -27,3 +27,14 @@ func TestToIssueItem_NoLabels(t *testing.T) {
 	assert.NotNil(t, item.Labels) // 非 nil 空切片，便于前端
 	assert.Len(t, item.Labels, 0)
 }
+
+func TestToIssueItem_MapsStagePosition(t *testing.T) {
+	d := &issue_svc.IssueDetail{Issue: &issue_entity.Issue{
+		ID: 1, Stage: issue_entity.StageDoing, Position: 12.5, AssigneeAgentID: 3, SessionID: 4,
+	}}
+	item := toIssueItem(d)
+	assert.Equal(t, "doing", item.Stage)
+	assert.Equal(t, 12.5, item.Position)
+	assert.Equal(t, int64(3), item.AssigneeAgentID)
+	assert.Equal(t, int64(4), item.SessionID)
+}
