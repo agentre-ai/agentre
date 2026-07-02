@@ -222,3 +222,19 @@ func TestAgentSetPinned(t *testing.T) {
 	require.NoError(t, repo.SetPinned(ctx, 42, true))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestAgentReorderSiblings(t *testing.T) {
+	ctx, mock, repo := setupRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE agents SET sort_order = \\?, updatetime = \\? WHERE id = \\? AND department_id = \\? AND parent_agent_id = \\? AND status = \\?").
+		WithArgs(1, sqlmock.AnyArg(), int64(3), int64(2), int64(0), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE agents SET sort_order = \\?, updatetime = \\? WHERE id = \\? AND department_id = \\? AND parent_agent_id = \\? AND status = \\?").
+		WithArgs(2, sqlmock.AnyArg(), int64(1), int64(2), int64(0), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := repo.ReorderSiblings(ctx, 2, 0, []int64{3, 1})
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
