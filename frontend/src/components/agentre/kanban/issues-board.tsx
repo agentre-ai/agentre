@@ -3,6 +3,7 @@ import {
   KeyboardSensor,
   PointerSensor,
   closestCorners,
+  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -125,7 +126,7 @@ export function IssuesBoard({
                   items={items.map((i) => i.id)}
                   strategy={verticalListSortingStrategy}
                 >
-                  <div className="flex flex-col gap-2" data-stage={stage.id}>
+                  <ColumnDropZone stageId={stage.id}>
                     {items.map((issue) => (
                       <BoardCard key={issue.id} issue={issue} onEdit={onEdit} />
                     ))}
@@ -134,7 +135,7 @@ export function IssuesBoard({
                         {t("issues.board.emptyColumn")}
                       </p>
                     ) : null}
-                  </div>
+                  </ColumnDropZone>
                 </SortableContext>
               </section>
             );
@@ -142,6 +143,21 @@ export function IssuesBoard({
         </div>
       </section>
     </DndContext>
+  );
+}
+
+function ColumnDropZone({
+  stageId,
+  children,
+}: {
+  stageId: StageId;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef } = useDroppable({ id: `col:${stageId}` });
+  return (
+    <div ref={setNodeRef} className="flex flex-col gap-2" data-stage={stageId}>
+      {children}
+    </div>
   );
 }
 
