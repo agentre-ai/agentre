@@ -183,7 +183,7 @@ func TestIssueStageCounts(t *testing.T) {
 func TestIssueUpdate_WritesStagePosition(t *testing.T) {
 	ctx, mock, repo := setupIssueRepo(t)
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `issues` SET").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE `issues` SET.*`position`.*`stage`").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	err := repo.Update(ctx, &issue_entity.Issue{ID: 7, Stage: issue_entity.StageDoing, Position: 12.5})
