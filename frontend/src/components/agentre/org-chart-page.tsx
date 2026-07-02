@@ -310,6 +310,9 @@ export function OrgChartPage() {
               backends={backends}
               selected={view.selected}
               onSelect={view.setSelected}
+              onReorderAgent={(departmentId, parentAgentId, orderedIds) => {
+                void reorderAgents(departmentId, parentAgentId, orderedIds);
+              }}
             />
           )}
         </div>

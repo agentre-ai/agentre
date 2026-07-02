@@ -1,4 +1,18 @@
 import * as React from "react";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import { ArrowDown, ArrowUp, Puzzle, Search, Wrench, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -15,6 +29,7 @@ import { cn } from "@/lib/utils";
 
 import type { agent_backend_svc } from "../../../../wailsjs/go/models";
 import { AgentAvatar } from "../primitives";
+import { bucketByPlacement } from "./reorder";
 import { buildReportToMap } from "./reporting";
 import {
   safeAgentColor,
@@ -31,6 +46,11 @@ export type OrgListProps = {
   backends: BackendItem[];
   selected: OrgSelection;
   onSelect: (sel: OrgSelection) => void;
+  onReorderAgent: (
+    departmentId: number,
+    parentAgentId: number,
+    orderedIds: number[],
+  ) => void;
 };
 
 type SortKey = "hierarchy" | "name";
@@ -102,7 +122,7 @@ function expandLineage(
 
 export function OrgList(props: OrgListProps) {
   const { t } = useTranslation();
-  const { departments, agents, backends, selected, onSelect } = props;
+  const { departments, agents, backends, selected, onSelect, onReorderAgent } = props;
 
   const [search, setSearch] = React.useState("");
   const [backendFilter, setBackendFilter] = React.useState<number>(0);
@@ -179,6 +199,36 @@ export function OrgList(props: OrgListProps) {
     sortDir,
   ]);
 
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const dragEnabled = sortKey === "hierarchy";
+
+  const handleDragEnd = React.useCallback(
+    (e: DragEndEvent) => {
+      if (!dragEnabled || !e.over || e.active.id === e.over.id) return;
+      const activeId = Number(String(e.active.id));
+      const overId = Number(String(e.over.id));
+      const ap = effectiveParent.get(activeId) ?? 0;
+      const op = effectiveParent.get(overId) ?? 0;
+      if (ap !== op) return; // 只在同一有效父级内排序
+      const blockIds = rows
+        .map((r) => r.agent.id)
+        .filter((id) => (effectiveParent.get(id) ?? 0) === ap);
+      const from = blockIds.indexOf(activeId);
+      const to = blockIds.indexOf(overId);
+      if (from < 0 || to < 0) return;
+      const reordered = blockIds.slice();
+      reordered.splice(to, 0, reordered.splice(from, 1)[0]);
+      for (const bucket of bucketByPlacement(agentById, reordered)) {
+        onReorderAgent(bucket.departmentId, bucket.parentAgentId, bucket.orderedIds);
+      }
+    },
+    [dragEnabled, effectiveParent, rows, agentById, onReorderAgent],
+  );
+
   return (
     <div
       className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-card"
@@ -219,23 +269,36 @@ export function OrgList(props: OrgListProps) {
               {t("org.list.empty")}
             </div>
           ) : (
-            rows.map((row) => {
-              const pid = effectiveParent.get(row.agent.id) ?? 0;
-              const parentAgent =
-                pid !== 0 ? (agentById.get(pid) ?? null) : null;
-              return (
-                <ListRow
-                  key={row.agent.id}
-                  row={row}
-                  isSelected={
-                    selected?.kind === "agent" && selected.id === row.agent.id
-                  }
-                  parentAgent={parentAgent}
-                  showIndentConnector={sortKey === "hierarchy" && row.depth > 0}
-                  onClick={() => onSelect({ kind: "agent", id: row.agent.id })}
-                />
-              );
-            })
+            <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+              <SortableContext
+                items={rows.map((r) => String(r.agent.id))}
+                strategy={verticalListSortingStrategy}
+              >
+                {rows.map((row) => {
+                  const pid = effectiveParent.get(row.agent.id) ?? 0;
+                  const parentAgent =
+                    pid !== 0 ? (agentById.get(pid) ?? null) : null;
+                  return (
+                    <SortableListRow
+                      key={row.agent.id}
+                      row={row}
+                      dragEnabled={dragEnabled}
+                      isSelected={
+                        selected?.kind === "agent" &&
+                        selected.id === row.agent.id
+                      }
+                      parentAgent={parentAgent}
+                      showIndentConnector={
+                        sortKey === "hierarchy" && row.depth > 0
+                      }
+                      onClick={() =>
+                        onSelect({ kind: "agent", id: row.agent.id })
+                      }
+                    />
+                  );
+                })}
+              </SortableContext>
+            </DndContext>
           )}
         </div>
       </div>
@@ -454,7 +517,42 @@ type ListRowProps = {
   parentAgent: OrgAgent | null;
   showIndentConnector: boolean;
   onClick: () => void;
+  drag?: {
+    setNodeRef: (node: HTMLElement | null) => void;
+    listeners: React.HTMLAttributes<HTMLElement>;
+    style: React.CSSProperties;
+    isDragging: boolean;
+  };
 };
+
+function SortableListRow({
+  dragEnabled,
+  ...rowProps
+}: ListRowProps & { dragEnabled: boolean }) {
+  const { setNodeRef, listeners, transform, transition, isDragging } =
+    useSortable({ id: String(rowProps.row.agent.id), disabled: !dragEnabled });
+  const style: React.CSSProperties = {
+    transform: transform
+      ? `translate3d(0, ${transform.y}px, 0)`
+      : undefined,
+    transition,
+  };
+  return (
+    <ListRow
+      {...rowProps}
+      drag={
+        dragEnabled
+          ? {
+              setNodeRef,
+              listeners: listeners ?? {},
+              style,
+              isDragging,
+            }
+          : undefined
+      }
+    />
+  );
+}
 
 function ListRow({
   row,
@@ -462,6 +560,7 @@ function ListRow({
   parentAgent,
   showIndentConnector,
   onClick,
+  drag,
 }: ListRowProps) {
   const { t } = useTranslation();
   const { agent, depth } = row;
@@ -485,6 +584,9 @@ function ListRow({
 
   return (
     <button
+      ref={drag?.setNodeRef}
+      style={drag?.style}
+      {...(drag?.listeners ?? {})}
       type="button"
       role="option"
       aria-selected={isSelected}
@@ -497,6 +599,7 @@ function ListRow({
         isSelected
           ? "border-l-primary bg-primary-soft"
           : "border-l-transparent",
+        drag?.isDragging && "opacity-50",
       )}
     >
       <div className="flex min-w-0 flex-1 items-center gap-3">

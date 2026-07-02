@@ -1789,7 +1789,8 @@
       "expand": "展开 {{name}}",
       "lead": "Lead · {{name}}",
       "memberCount": "{{count}} 名成员"
-    }
+    },
+    "reorderFailed": "排序保存失败，请重试"
   },
   "workflows": {
     "title": "流程库",

@@ -1789,7 +1789,8 @@
       "expand": "Expand {{name}}",
       "lead": "Lead · {{name}}",
       "memberCount": "{{count}} members"
-    }
+    },
+    "reorderFailed": "Failed to save order, please retry"
   },
   "workflows": {
     "title": "Workflows",
