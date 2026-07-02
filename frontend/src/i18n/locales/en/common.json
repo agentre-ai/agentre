@@ -968,9 +968,16 @@
     "board": {
       "addCard": "Add Card",
       "addToColumn": "Add to {{column}}",
-      "aria": "Issue board",
+      "aria": "Kanban board",
+      "emptyColumn": "Empty",
       "lastFailure": "exit={{code}} · last fail {{minutes}}m ago",
       "viewAllClosed": "View all {{count}} →"
+    },
+    "stages": {
+      "todo": "To do",
+      "doing": "In progress",
+      "review": "In review",
+      "done": "Done"
     },
     "columns": {
       "backlog": "Backlog",
@@ -2272,6 +2279,7 @@
       "flowLibrary": "From library",
       "flowContent": "Flow Content",
       "flowContentPlaceholder": "Enter or paste flow definition…",
+      "flowManage": "Manage library",
       "create": "Create & start run"
     },
     "list": {
@@ -2281,7 +2289,8 @@
       "filterAll": "All",
       "filterRunning": "Running",
       "filterDone": "Done",
-      "filterEmpty": "No matching runs"
+      "filterEmpty": "No matching runs",
+      "libraryEntry": "Flow Library"
     },
     "onboarding": {
       "cta": "Start multi-agent orchestration",

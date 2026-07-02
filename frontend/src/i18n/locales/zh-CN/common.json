@@ -968,9 +968,16 @@
     "board": {
       "addCard": "添加卡片",
       "addToColumn": "添加到{{column}}",
-      "aria": "Issue 看板",
+      "aria": "看板",
+      "emptyColumn": "暂无",
       "lastFailure": "exit={{code}} · last fail {{minutes}} 分钟前",
       "viewAllClosed": "查看全部 {{count}} 个 →"
+    },
+    "stages": {
+      "todo": "待办",
+      "doing": "进行中",
+      "review": "待审",
+      "done": "已完成"
     },
     "columns": {
       "backlog": "待派发",
@@ -2272,6 +2279,7 @@
       "flowLibrary": "从流程库选择",
       "flowContent": "流程内容",
       "flowContentPlaceholder": "输入或粘贴流程定义…",
+      "flowManage": "管理流程库",
       "create": "创建并启动 Run"
     },
     "list": {
@@ -2281,7 +2289,8 @@
       "filterAll": "全部",
       "filterRunning": "运行中",
       "filterDone": "已完成",
-      "filterEmpty": "没有匹配的 Run"
+      "filterEmpty": "没有匹配的 Run",
+      "libraryEntry": "流程库"
     },
     "onboarding": {
       "cta": "开启多 Agent 协作编排",

@@ -18,6 +18,7 @@ vi.mock("react-router-dom", () => ({
   useNavigate: () => mockNavigate,
 }));
 
+import { useWorkflowManagerStore } from "../../../../stores/workflow-manager-store";
 import { RunNewDialog } from "../run-new-dialog";
 
 function renderDialog() {
@@ -27,6 +28,7 @@ function renderDialog() {
 describe("RunNewDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useWorkflowManagerStore.setState({ open: false, intent: "browse" });
     appMocks.RunCreate.mockResolvedValue({ run: { id: 7 }, tasks: [] });
     appMocks.ListChatAgents.mockResolvedValue({
       agents: [
@@ -219,6 +221,14 @@ describe("RunNewDialog", () => {
       screen.getByTestId("run-flow-mode-library").click();
       screen.getByTestId("run-flow-mode-none").click();
       expect(screen.queryByTestId("run-flow-content")).toBeNull();
+    });
+
+    it("library 模式下「管理流程库」链接点击打开流程库弹窗", async () => {
+      renderDialog();
+      await screen.findByTestId("run-goal");
+      screen.getByTestId("run-flow-mode-library").click();
+      fireEvent.click(await screen.findByTestId("run-flow-manage"));
+      expect(useWorkflowManagerStore.getState().open).toBe(true);
     });
   });
 });
