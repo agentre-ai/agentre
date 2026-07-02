@@ -20,6 +20,10 @@ function run(over: Partial<{ id: number; status: string; createtime: number; upd
 }
 
 describe("computeRunStats", () => {
+  it("空列表返回全零统计", () => {
+    expect(computeRunStats([], NOW)).toEqual({ running: 0, waiting: 0, doneThisWeek: 0, avgDurationMs: 0 });
+  });
+
   it("统计 running / waiting(paused) / 本周完成 / 平均时长", () => {
     const runs = [
       run({ id: 1, status: "running" }),
@@ -43,6 +47,14 @@ describe("computeRunStats", () => {
 });
 
 describe("inProgressRuns / recentDoneRuns", () => {
+  it("inProgressRuns 空列表返回空数组", () => {
+    expect(inProgressRuns([])).toEqual([]);
+  });
+
+  it("recentDoneRuns 空列表返回空数组", () => {
+    expect(recentDoneRuns([], 5)).toEqual([]);
+  });
+
   it("inProgressRuns 只取 running 并按 updatetime 倒序", () => {
     const runs = [
       run({ id: 1, status: "running", updatetime: NOW - 3 * HOUR }),
@@ -80,5 +92,14 @@ describe("formatDuration", () => {
     expect(formatDuration(2 * HOUR)).toBe("2h");
     expect(formatDuration(1 * DAY)).toBe("1d");
     expect(formatDuration(0)).toBe("");
+  });
+
+  it("负数输入返回空字符串", () => {
+    expect(formatDuration(-1000)).toBe("");
+  });
+
+  it("亚分钟非零时长返回 '0m'(当前行为特征测试)", () => {
+    // 30 秒 < 1 分钟: Math.floor(30000/60000)=0 → "0m"; 记录当前行为,勿改实现
+    expect(formatDuration(30_000)).toBe("0m");
   });
 });
