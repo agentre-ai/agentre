@@ -238,4 +238,25 @@ func TestLoad_ToolsProjectionAndAvailableTools(t *testing.T) {
 	})
 }
 
+func TestReorderDepartments(t *testing.T) {
+	convey.Convey("部门同级排序", t, func() {
+		ctx, deptMock, _, svc := setupSvc(t)
+
+		convey.Convey("成功重排顶层", func() {
+			deptMock.EXPECT().ListByParent(gomock.Any(), int64(0)).
+				Return([]*department_entity.Department{{ID: 4}, {ID: 5}}, nil)
+			deptMock.EXPECT().ReorderSiblings(gomock.Any(), int64(0), []int64{5, 4}).Return(nil)
+			err := svc.Reorder(ctx, &ReorderDepartmentsRequest{ParentID: 0, OrderedIDs: []int64{5, 4}})
+			convey.So(err, convey.ShouldBeNil)
+		})
+
+		convey.Convey("集合不全 → 参数错误", func() {
+			deptMock.EXPECT().ListByParent(gomock.Any(), int64(0)).
+				Return([]*department_entity.Department{{ID: 4}, {ID: 5}}, nil)
+			err := svc.Reorder(ctx, &ReorderDepartmentsRequest{ParentID: 0, OrderedIDs: []int64{5}})
+			convey.So(err, convey.ShouldNotBeNil)
+		})
+	})
+}
+
 var _ = code.DepartmentLeadNotInDepartment

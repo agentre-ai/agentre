@@ -28,3 +28,8 @@ func (a *App) MoveDepartment(req *department_svc.MoveDepartmentRequest) (*depart
 func (a *App) DeleteDepartment(req *department_svc.DeleteDepartmentRequest) (*department_svc.DeleteDepartmentResponse, error) {
 	return department_svc.Department().Delete(a.ctx, req)
 }
+
+// ReorderDepartments 同级密集重排（orderedIds 为该父级下完整集合）。
+func (a *App) ReorderDepartments(req *department_svc.ReorderDepartmentsRequest) error {
+	return department_svc.Department().Reorder(a.ctx, req)
+}

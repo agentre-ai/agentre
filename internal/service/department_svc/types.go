@@ -122,3 +122,9 @@ type DeleteDepartmentRequest struct {
 }
 
 type DeleteDepartmentResponse struct{}
+
+// ReorderDepartmentsRequest 同级密集重排:orderedIds 必须是该父级下的完整集合。
+type ReorderDepartmentsRequest struct {
+	ParentID   int64   `json:"parentId"`
+	OrderedIDs []int64 `json:"orderedIds"`
+}
