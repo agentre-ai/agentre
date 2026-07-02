@@ -118,12 +118,16 @@ func TestIssueCountByState(t *testing.T) {
 func TestIssueUpdate(t *testing.T) {
 	ctx, mock, repo := setupIssueRepo(t)
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `issues` SET `agent_status`=\\?,`body`=\\?,`closed_at`=\\?,`project_id`=\\?,`state`=\\?,`title`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+	mock.ExpectExec("UPDATE `issues` SET `agent_status`=\\?,`assignee_agent_id`=\\?,`body`=\\?,`closed_at`=\\?,`position`=\\?,`project_id`=\\?,`session_id`=\\?,`stage`=\\?,`state`=\\?,`title`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
 		WithArgs(
 			issue_entity.AgentStatusIdle, // agent_status
+			int64(0),                     // assignee_agent_id
 			"body",                       // body
 			int64(0),                     // closed_at
+			float64(0),                   // position
 			int64(5),                     // project_id
+			int64(0),                     // session_id
+			"",                           // stage
 			issue_entity.StateOpen,       // state
 			"new title",                  // title
 			sqlmock.AnyArg(),             // updatetime
@@ -142,6 +146,47 @@ func TestIssueUpdate(t *testing.T) {
 		AgentStatus: issue_entity.AgentStatusIdle,
 		Status:      consts.ACTIVE,
 	})
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIssueList_PositionSort(t *testing.T) {
+	ctx, mock, repo := setupIssueRepo(t)
+	mock.ExpectQuery("SELECT \\* FROM `issues` WHERE status = \\? AND stage = \\? ORDER BY stage, position ASC, id ASC").
+		WithArgs(consts.ACTIVE, issue_entity.StageDoing).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "stage", "position"}).
+			AddRow(int64(3), issue_entity.StageDoing, 10.0).
+			AddRow(int64(4), issue_entity.StageDoing, 20.0))
+
+	rows, err := repo.List(ctx, issue_repo.ListFilter{Stage: issue_entity.StageDoing, Sort: "position"})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, int64(3), rows[0].ID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIssueStageCounts(t *testing.T) {
+	ctx, mock, repo := setupIssueRepo(t)
+	mock.ExpectQuery("SELECT stage, count\\(\\*\\) as cnt FROM `issues` WHERE status = \\? GROUP BY `stage`").
+		WithArgs(consts.ACTIVE).
+		WillReturnRows(sqlmock.NewRows([]string{"stage", "cnt"}).
+			AddRow(issue_entity.StageTodo, int64(2)).
+			AddRow(issue_entity.StageDone, int64(5)))
+
+	got, err := repo.StageCounts(ctx, issue_repo.ListFilter{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), got[issue_entity.StageTodo])
+	assert.Equal(t, int64(5), got[issue_entity.StageDone])
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIssueUpdate_WritesStagePosition(t *testing.T) {
+	ctx, mock, repo := setupIssueRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `issues` SET").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := repo.Update(ctx, &issue_entity.Issue{ID: 7, Stage: issue_entity.StageDoing, Position: 12.5})
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

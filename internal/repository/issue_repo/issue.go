@@ -18,9 +18,10 @@ import (
 // ListFilter List 查询过滤条件。
 type ListFilter struct {
 	State     string  // "" = 不筛选；open / closed
+	Stage     string  // "" = 不筛选
 	ProjectID int64   // 0 = 不筛选
 	LabelIDs  []int64 // 非空 = 仅含这些 label 的 issue
-	Sort      string  // 预留；当前恒按 updatetime DESC
+	Sort      string  // "position" = 按 stage, position ASC, id ASC；否则 updatetime DESC
 }
 
 // IssueRepo Issue 仓储接口。
@@ -30,6 +31,7 @@ type IssueRepo interface {
 	Find(ctx context.Context, id int64) (*issue_entity.Issue, error)
 	List(ctx context.Context, filter ListFilter) ([]*issue_entity.Issue, error)
 	CountByState(ctx context.Context, projectID int64) (open int64, closed int64, err error)
+	StageCounts(ctx context.Context, filter ListFilter) (map[string]int64, error)
 	Delete(ctx context.Context, id int64) error
 }
 
@@ -55,13 +57,17 @@ func (r *issueRepo) Update(ctx context.Context, i *issue_entity.Issue) error {
 	return db.Ctx(ctx).Model(&issue_entity.Issue{}).
 		Where("id = ? AND status = ?", i.ID, consts.ACTIVE).
 		Updates(map[string]any{
-			"project_id":   i.ProjectID,
-			"title":        i.Title,
-			"body":         i.Body,
-			"state":        i.State,
-			"agent_status": i.AgentStatus,
-			"closed_at":    i.ClosedAt,
-			"updatetime":   i.Updatetime,
+			"project_id":        i.ProjectID,
+			"title":             i.Title,
+			"body":              i.Body,
+			"state":             i.State,
+			"agent_status":      i.AgentStatus,
+			"stage":             i.Stage,
+			"position":          i.Position,
+			"assignee_agent_id": i.AssigneeAgentID,
+			"session_id":        i.SessionID,
+			"closed_at":         i.ClosedAt,
+			"updatetime":        i.Updatetime,
 		}).Error
 }
 
@@ -82,6 +88,9 @@ func (r *issueRepo) List(ctx context.Context, filter ListFilter) ([]*issue_entit
 	if filter.State != "" {
 		q = q.Where("state = ?", filter.State)
 	}
+	if filter.Stage != "" {
+		q = q.Where("stage = ?", filter.Stage)
+	}
 	if filter.ProjectID > 0 {
 		q = q.Where("project_id = ?", filter.ProjectID)
 	}
@@ -90,8 +99,12 @@ func (r *issueRepo) List(ctx context.Context, filter ListFilter) ([]*issue_entit
 			Select("issue_id").Where("label_id IN ?", filter.LabelIDs)
 		q = q.Where("id IN (?)", sub)
 	}
+	order := "updatetime DESC, id DESC"
+	if filter.Sort == "position" {
+		order = "stage, position ASC, id ASC"
+	}
 	var rows []*issue_entity.Issue
-	err := q.Order("updatetime DESC, id DESC").Find(&rows).Error
+	err := q.Order(order).Find(&rows).Error
 	return rows, err
 }
 
@@ -120,6 +133,33 @@ func (r *issueRepo) CountByState(ctx context.Context, projectID int64) (int64, i
 		}
 	}
 	return open, closed, nil
+}
+
+func (r *issueRepo) StageCounts(ctx context.Context, filter ListFilter) (map[string]int64, error) {
+	type agg struct {
+		Stage string
+		Cnt   int64
+	}
+	q := db.Ctx(ctx).Model(&issue_entity.Issue{}).
+		Select("stage, count(*) as cnt").
+		Where("status = ?", consts.ACTIVE)
+	if filter.ProjectID > 0 {
+		q = q.Where("project_id = ?", filter.ProjectID)
+	}
+	if len(filter.LabelIDs) > 0 {
+		sub := db.Ctx(ctx).Model(&issue_entity.IssueLabel{}).
+			Select("issue_id").Where("label_id IN ?", filter.LabelIDs)
+		q = q.Where("id IN (?)", sub)
+	}
+	var rows []agg
+	if err := q.Group("stage").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]int64, 4)
+	for _, row := range rows {
+		out[row.Stage] = row.Cnt
+	}
+	return out, nil
 }
 
 func (r *issueRepo) Delete(ctx context.Context, id int64) error {
