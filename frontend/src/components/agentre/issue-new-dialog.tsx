@@ -159,23 +159,25 @@ function IssueNewDialog({
               </SelectContent>
             </Select>
           </label>
-          <label className="flex flex-col gap-1.5 text-xs">
-            <span className="font-medium text-foreground">
-              {t("issues.form.stage")}
-            </span>
-            <Select value={stage} onValueChange={setStage}>
-              <SelectTrigger className="h-9 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STAGES.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {t(s.labelKey)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
+          {!editing && (
+            <label className="flex flex-col gap-1.5 text-xs">
+              <span className="font-medium text-foreground">
+                {t("issues.form.stage")}
+              </span>
+              <Select value={stage} onValueChange={setStage}>
+                <SelectTrigger className="h-9 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STAGES.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {t(s.labelKey)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+          )}
           <div className="flex flex-col gap-1.5 text-xs">
             <span className="font-medium text-foreground">
               {t("issues.dialog.labelsLabel")}
