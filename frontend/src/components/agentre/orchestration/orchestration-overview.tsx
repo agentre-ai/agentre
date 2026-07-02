@@ -46,7 +46,10 @@ export function OrchestrationOverview() {
       .catch(() => setAgents([]));
   }, []);
 
-  const [now] = React.useState(() => Date.now());
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    setNow(Date.now());
+  }, [runs]);
   const stats = React.useMemo(() => computeRunStats(runs, now), [runs, now]);
   const inProgress = React.useMemo(() => inProgressRuns(runs), [runs]);
   const recent = React.useMemo(() => recentDoneRuns(runs), [runs]);
@@ -155,7 +158,14 @@ export function OrchestrationOverview() {
                     </span>
                   </span>
                   <span className="flex items-center gap-2">
-                    <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
+                    <span
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={pct}
+                      aria-label={t("orchestration.overview.progress")}
+                      className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary"
+                    >
                       <span
                         className="block h-full rounded-full bg-status-running"
                         style={{ width: `${pct}%` }}

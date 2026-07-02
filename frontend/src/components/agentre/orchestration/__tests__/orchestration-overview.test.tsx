@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -108,6 +108,12 @@ describe("OrchestrationOverview", () => {
     expect(
       await screen.findByTestId("overview-inprogress-progress-1"),
     ).toHaveTextContent("1/2");
+    const bar = within(
+      await screen.findByTestId("overview-inprogress-card-1"),
+    ).getByRole("progressbar");
+    expect(bar).toHaveAttribute("aria-valuenow", "50");
+    const fill = bar.firstElementChild as HTMLElement;
+    expect(fill).toHaveStyle({ width: "50%" });
   });
 
   it("点击进行中卡片 navigate 到该 Run", async () => {
