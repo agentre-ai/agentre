@@ -2,14 +2,19 @@ import type { ChatBlockData } from "@/stores/chat-streams-store";
 
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
-import type { BackgroundTask, BackgroundTaskStatus } from "./types";
+import type {
+  BackgroundTask,
+  BackgroundTaskKind,
+  BackgroundTaskStatus,
+} from "./types";
 
 // deriveBackgroundTasks 从历史消息 + 当前 live blocks 中提取所有后台任务。
-// 只收真正的后台 bash：kind==="local_bash" **且** 工具入参 run_in_background===true。
-// 真实 CLI 对*每一次* Bash 都发 task_type:"local_bash" 帧(不只是后台 bash),所以
-// 光看 kind 会把所有前台 bash 也收进来 —— 唯一可靠的「后台」信号是 Bash 入参的
-// run_in_background(与 RawToolCard 内联「后台运行」pill 同款判据)。local_agent
-// subagent 整体排除。按 toolUseId dedupe：live 覆盖 history（live 更新）。
+// 收真正的后台任务：kind 为 local_bash(后台 Bash)或 local_agent(后台 subagent),
+// **且** 工具入参 run_in_background===true。真实 CLI 对*每一次* Bash / 每个 subagent
+// 都发 task 帧(不只是后台的),所以光看 kind 会把前台 bash / 前台 subagent 也收进来
+// —— 唯一可靠的「后台」信号是工具入参 run_in_background(后台 Bash 与后台 Agent 工具
+// 都带此入参,与 RawToolCard 内联「后台运行」pill 同款判据)。按 toolUseId dedupe：
+// live 覆盖 history（live 更新）。
 // VisitableBlock 是 visit 只需读取的最小结构投影。subagent 直接复用生成的
 // ChatBlockSubagent，让 ChatBlockData（subagent: ChatBlockSubagent）无需 cast
 // 即可传入；持久化 chat_svc.ChatBlock 走双重 cast 投影。toolInput 是工具 raw 入参
@@ -33,18 +38,19 @@ export function deriveBackgroundTasks(
     const sa = block.subagent;
     const toolUseId = block.toolUseId;
     if (!toolUseId || !sa) return;
-    // 只收 run_in_background bash;subagent(local_agent)整体排除(真 CLI 无法区分
-    // 前台/后台 subagent,产品决策只展示真正后台的 bash 任务)。
-    if (sa.kind !== "local_bash") return;
-    // CLI 对每一次 Bash 都发 local_bash 帧,kind 不足以判定「后台」;唯一可靠信号是
-    // 工具入参 run_in_background===true(前台 bash 无此入参,被这里排除)。
+    // 只收后台 Bash(local_bash)与后台 subagent(local_agent);空/未知 kind(旧帧)
+    // 排除,避免展示无法归类的神秘块。
+    if (sa.kind !== "local_bash" && sa.kind !== "local_agent") return;
+    // CLI 对每一次 Bash / 每个 subagent 都发 task 帧,kind 不足以判定「后台」;唯一可靠
+    // 信号是工具入参 run_in_background===true(前台 bash / 前台 subagent 无此入参,被这里
+    // 排除)。后台 Bash 与后台 Agent 工具都携带此入参。
     if (block.toolInput?.run_in_background !== true) return;
     if (clearedToolUseIds?.has(toolUseId)) return;
     const prev = byId.get(toolUseId);
     byId.set(toolUseId, {
       toolUseId,
       taskId: sa.taskId || prev?.taskId,
-      kind: "local_bash",
+      kind: sa.kind as BackgroundTaskKind,
       description: sa.taskDescription ?? prev?.description ?? "",
       status: mapStatus(sa.status),
       startedAt: startedAt ?? prev?.startedAt,

@@ -578,6 +578,7 @@
       "failed": "失败",
       "empty": "暂无后台任务",
       "bash": "bash",
+      "subagent": "子代理",
       "aria": "后台任务",
       "clearCompleted": "清理已完成"
     },

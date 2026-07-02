@@ -1,4 +1,4 @@
-import { Terminal } from "lucide-react";
+import { Bot, Terminal } from "lucide-react";
 import React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -89,13 +89,23 @@ export function BackgroundTasksPopoverContent({
               elapsedLabel = formatElapsed(task.durationMs);
             }
 
+            const isSubagent = task.kind === "local_agent";
+            // 静态 t() key:两条分支各用字面量 key,便于 i18n 静态校验(避免 t(cond?…)) 。
+            const kindLabel = isSubagent
+              ? t("chatPanel.backgroundTasks.subagent")
+              : t("chatPanel.backgroundTasks.bash");
+
             return (
               <li key={task.toolUseId} className="flex items-center gap-2.5">
                 <span
                   className="inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-primary-soft text-primary-text"
                   aria-hidden="true"
                 >
-                  <Terminal className="size-3.5" />
+                  {isSubagent ? (
+                    <Bot className="size-3.5" />
+                  ) : (
+                    <Terminal className="size-3.5" />
+                  )}
                 </span>
                 <div className="min-w-0 flex-1">
                   {/* description is dynamic agent output — do NOT pass through t() */}
@@ -104,7 +114,7 @@ export function BackgroundTasksPopoverContent({
                   </p>
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <span className="font-mono text-[10px] text-muted-foreground">
-                      {t("chatPanel.backgroundTasks.bash")}
+                      {kindLabel}
                     </span>
                     {task.taskId && (
                       <>

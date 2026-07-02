@@ -240,6 +240,26 @@ describe("BackgroundTasksPopoverContent — elapsed + summary", () => {
     render(<BackgroundTasksPopoverContent tasks={tasks} />);
     expect(screen.getByTestId("elapsed")).toHaveTextContent("1h 02m");
   });
+
+  it("labels each row by kind — bash for local_bash, subagent for local_agent", () => {
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-bash",
+        kind: "local_bash",
+        description: "sleep 20",
+        status: "running",
+      },
+      {
+        toolUseId: "tu-agent",
+        kind: "local_agent",
+        description: "Explore repo",
+        status: "running",
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    expect(screen.getByText("bash")).toBeInTheDocument();
+    expect(screen.getByText("subagent")).toBeInTheDocument();
+  });
 });
 
 describe("BackgroundTasksChip — new design (badge + clearCompleted)", () => {

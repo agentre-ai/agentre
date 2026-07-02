@@ -578,6 +578,7 @@
       "failed": "Failed",
       "empty": "No background tasks",
       "bash": "bash",
+      "subagent": "subagent",
       "aria": "Background tasks",
       "clearCompleted": "Clear completed"
     },
