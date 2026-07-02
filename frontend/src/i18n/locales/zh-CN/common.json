@@ -986,6 +986,9 @@
       "running": "进行中",
       "waiting": "待审批"
     },
+    "form": {
+      "stage": "阶段"
+    },
     "dialog": {
       "title": "新建 Issue",
       "editTitle": "编辑 Issue",

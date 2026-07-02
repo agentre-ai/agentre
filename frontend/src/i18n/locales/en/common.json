@@ -986,6 +986,9 @@
       "running": "In Progress",
       "waiting": "Waiting"
     },
+    "form": {
+      "stage": "Stage"
+    },
     "dialog": {
       "title": "New Issue",
       "editTitle": "Edit Issue",
