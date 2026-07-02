@@ -44,6 +44,8 @@ agent，并整体提升弹窗 UI/UX。当前「可参与团队」是一整片扁
 ```
 可参与团队                                      [已选 N 人]   ← 标签行 + 计数 pill
 ┌───────────────────────────────────────────────────────┐
+│ 🔍 搜索 agent…                                     ⌘K  │  ← 顶部全局搜索（跨部门）
+├───────────────────────────────────────────────────────┤
 │ 部门            │  研发部 · 4 名成员            [全选] ☑ │  ← 右栏头：当前部门 + 全选
 │ ─────────────── │ ───────────────────────────────────── │
 │ 👥 全部 Agent 16│  ☑ ● 王一之            Claude Code    │
@@ -56,6 +58,13 @@ agent，并整体提升弹窗 UI/UX。当前「可参与团队」是一整片扁
 └───────────────────────────────────────────────────────┘
 留空 = 不限制可参与 Agent                                    ← footer hint 保留
 ```
+
+### 顶部搜索（全局）
+
+- 选择器框顶部固定一条**全局搜索**（放大镜图标 + 「搜索 agent…」占位 + `⌘K` 聚焦提示），横跨双栏。
+- 输入时**右栏切换为跨部门的扁平搜索结果**（匹配名称的可参与 agent，不再受左栏当前部门约束）；
+  左栏可弱化/标注「搜索结果」态。清空输入即恢复默认双栏视图。
+- 搜索只影响**展示与定位**，不改变已选集合；结果里的勾选/取消照常写回全局选择态。
 
 ### 左栏（部门导航）
 
@@ -111,12 +120,12 @@ type PickerModel = { all: PickerAgent[]; departments: PickerDept[]; ungrouped: P
 新增键（`zh-CN` + `en` 同步，`orchestration.new.*` 命名空间）：
 `teamAllAgents`（全部 Agent）、`teamUngrouped`（未分组）、`teamSelectAll`（全选）、
 `teamDeptMembers`（`{{count}} 名成员`）、`teamSummary`（本次团队）、`teamTotal`（`共 {{count}} 人`）、
-`teamSearchPlaceholder`（如保留搜索）。沿用现有 `team / teamSelected / teamHint`。
+`teamSearchPlaceholder`（搜索 agent…）、`teamSearchEmpty`（无匹配 agent）。沿用现有 `team / teamSelected / teamHint`。
 
 ## 测试计划（TDD）
 
 1. `team-picker-data.test.ts`：`groupAgentsByDepartment` 边界（先红后绿）。
-2. `team-department-picker.test.tsx`：渲染分组、点左栏切部门、勾选/全选、汇总计数、空态。
+2. `team-department-picker.test.tsx`：渲染分组、点左栏切部门、勾选/全选、汇总计数、**搜索过滤（跨部门扁平结果 + 无匹配空态）**、空态。
 3. `run-new-dialog.test.tsx`（已存在）：更新为新选择器仍能产出 `allowedAgentIds` 并提交；
    `ListChatAgents`/`LoadOrg` 的 wails mock。
 4. `i18n.test.ts`：新键 zh/en 覆盖。
@@ -130,5 +139,5 @@ type PickerModel = { all: PickerAgent[]; departments: PickerDept[]; ungrouped: P
 
 ## Pencil 参考
 
-`agentre.pen` 顶层：`方案 A 分组列表 = FGW6l`、**`方案 B 双栏 = aVYSk`（本设计）**、`方案 C 部门为单位 = UQvRq`。
-A / C 为对比稿，落地以 B 为准（保留于画布备查，可按需删除）。
+`agentre.pen` 顶层：**`方案 B 双栏 = aVYSk`（本设计，含顶部全局搜索）**。
+对比稿方案 A / C 已按用户要求从画布删除，落地以 B 为准。
