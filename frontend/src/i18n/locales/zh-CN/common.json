@@ -2399,6 +2399,20 @@
       "depth": "深度",
       "agents": "{{agentCount}} agent · {{subCount}} sub",
       "subagents": "子代理"
+    },
+    "overview": {
+      "title": "编排",
+      "subtitle": "多 Agent 协作编排总览",
+      "statRunning": "运行中",
+      "statWaiting": "等待",
+      "statDoneThisWeek": "本周完成",
+      "statAvgDuration": "平均时长",
+      "noDuration": "—",
+      "inProgress": "进行中",
+      "inProgressEmpty": "暂无进行中的 Run",
+      "recentDone": "最近完成",
+      "recentDoneEmpty": "暂无已完成的 Run",
+      "progress": "{{done}}/{{total}}"
     }
   },
   "localCommand": {

@@ -55,7 +55,7 @@ describe("OrchestrationPage", () => {
   it("无选中 Run:渲染 RunList(起步 CTA)+ 起步主区", () => {
     renderAt("/orchestration");
     expect(screen.getByTestId("run-onboarding-cta")).toBeInTheDocument();
-    expect(screen.getByTestId("orchestration-empty-main")).toBeInTheDocument();
+    expect(screen.getByTestId("orchestration-overview")).toBeInTheDocument();
   });
 
   it("带 :runId:主区渲染 OrchestrationRun", () => {
@@ -68,7 +68,7 @@ describe("OrchestrationPage", () => {
 
   it("非法 :runId(NaN)回退起步主区, 不渲染 OrchestrationRun", () => {
     renderAt("/orchestration/abc");
-    expect(screen.getByTestId("orchestration-empty-main")).toBeInTheDocument();
+    expect(screen.getByTestId("orchestration-overview")).toBeInTheDocument();
     expect(screen.queryByTestId("orchestration-run")).not.toBeInTheDocument();
   });
 
