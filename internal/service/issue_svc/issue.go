@@ -16,6 +16,8 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 )
 
+const positionStep = 65536.0
+
 // IssueSvc Issue 模块应用服务。
 type IssueSvc interface {
 	Create(ctx context.Context, req *CreateIssueRequest) (*IssueDetail, error)
@@ -25,6 +27,7 @@ type IssueSvc interface {
 	Get(ctx context.Context, id int64) (*IssueDetail, error)
 	List(ctx context.Context, req *ListIssuesRequest) (*ListIssuesResponse, error)
 	ListLabels(ctx context.Context) ([]*issue_entity.Label, error)
+	Move(ctx context.Context, req *MoveIssueRequest) (*IssueDetail, error)
 }
 
 type issueSvc struct {
@@ -47,20 +50,33 @@ func New() IssueSvc {
 func (s *issueSvc) Create(ctx context.Context, req *CreateIssueRequest) (*IssueDetail, error) {
 	now := s.now()
 	labelIDs := uniqueInt64s(req.LabelIDs)
+	stage := req.Stage
+	if stage == "" {
+		stage = issue_entity.StageTodo
+	}
 	issue := &issue_entity.Issue{
 		ProjectID:   req.ProjectID,
 		Title:       strings.TrimSpace(req.Title),
 		Body:        req.Body,
 		State:       issue_entity.StateOpen,
+		Stage:       stage,
 		AgentStatus: issue_entity.AgentStatusIdle,
 		Source:      issue_entity.SourceManual,
 		Status:      consts.ACTIVE,
 		Createtime:  now,
 		Updatetime:  now,
 	}
+	if stage == issue_entity.StageDone {
+		issue.SetStage(issue_entity.StageDone, now)
+	}
 	if err := issue.Check(ctx); err != nil {
 		return nil, err
 	}
+	pos, err := s.appendPosition(ctx, stage)
+	if err != nil {
+		return nil, err
+	}
+	issue.Position = pos
 	labels, err := s.resolveLabels(ctx, labelIDs)
 	if err != nil {
 		return nil, err
@@ -196,7 +212,13 @@ func (s *issueSvc) List(ctx context.Context, req *ListIssuesRequest) (*ListIssue
 	if err != nil {
 		return nil, err
 	}
-	return &ListIssuesResponse{Issues: details, OpenCount: open, ClosedCount: closed}, nil
+	stageCounts, err := issue_repo.Issue().StageCounts(ctx, issue_repo.ListFilter{
+		ProjectID: req.ProjectID, LabelIDs: req.LabelIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ListIssuesResponse{Issues: details, OpenCount: open, ClosedCount: closed, StageCounts: stageCounts}, nil
 }
 
 func (s *issueSvc) ListLabels(ctx context.Context) ([]*issue_entity.Label, error) {
@@ -243,4 +265,72 @@ func (s *issueSvc) hydrate(ctx context.Context, issue *issue_entity.Issue) (*Iss
 		return nil, err
 	}
 	return &IssueDetail{Issue: issue, Labels: labels}, nil
+}
+
+// appendPosition 返回目标 stage 末位之后的 position。
+func (s *issueSvc) appendPosition(ctx context.Context, stage string) (float64, error) {
+	rows, err := issue_repo.Issue().List(ctx, issue_repo.ListFilter{Stage: stage, Sort: "position"})
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return positionStep, nil
+	}
+	return rows[len(rows)-1].Position + positionStep, nil
+}
+
+// Move 改 stage + 计算列内 position（AfterID 之后 / 顶部）。
+func (s *issueSvc) Move(ctx context.Context, req *MoveIssueRequest) (*IssueDetail, error) {
+	if !issue_entity.IsKnownStage(req.Stage) || req.Stage == "" {
+		return nil, i18n.NewError(ctx, code.IssueInvalidState)
+	}
+	issue, err := issue_repo.Issue().Find(ctx, req.ID)
+	if err != nil {
+		return nil, err
+	}
+	if issue == nil {
+		return nil, i18n.NewError(ctx, code.IssueNotFound)
+	}
+	siblings, err := issue_repo.Issue().List(ctx, issue_repo.ListFilter{Stage: req.Stage, Sort: "position"})
+	if err != nil {
+		return nil, err
+	}
+	pos := computePosition(siblings, req.ID, req.AfterID)
+	issue.SetStage(req.Stage, s.now())
+	issue.Position = pos
+	logger.Ctx(ctx).Info("issue_svc.Move: reposition",
+		zap.Int64("issueId", req.ID), zap.String("stage", req.Stage), zap.Float64("position", pos))
+	if err := issue_repo.Issue().Update(ctx, issue); err != nil {
+		return nil, err
+	}
+	return s.hydrate(ctx, issue)
+}
+
+// computePosition 在 siblings（按 position 升序，可能含自身）中，
+// 把卡片放到 afterID 之后。afterID=0 → 顶部。落点相邻两卡取中点；顶/底外扩 step。
+func computePosition(siblings []*issue_entity.Issue, movingID, afterID int64) float64 {
+	// 过滤掉自身，得到目标列的稳定序列。
+	seq := make([]*issue_entity.Issue, 0, len(siblings))
+	for _, it := range siblings {
+		if it.ID != movingID {
+			seq = append(seq, it)
+		}
+	}
+	if len(seq) == 0 {
+		return positionStep
+	}
+	if afterID == 0 {
+		return seq[0].Position - positionStep
+	}
+	for idx, it := range seq {
+		if it.ID != afterID {
+			continue
+		}
+		if idx == len(seq)-1 {
+			return it.Position + positionStep
+		}
+		return (it.Position + seq[idx+1].Position) / 2
+	}
+	// afterID 不在目标列（异常）→ 落底。
+	return seq[len(seq)-1].Position + positionStep
 }

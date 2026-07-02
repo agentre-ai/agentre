@@ -6,7 +6,14 @@ type CreateIssueRequest struct {
 	ProjectID int64
 	Title     string
 	Body      string
+	Stage     string // "" = todo
 	LabelIDs  []int64
+}
+
+type MoveIssueRequest struct {
+	ID      int64
+	Stage   string
+	AfterID int64 // 0 = 落在目标列顶部
 }
 
 type UpdateIssueRequest struct {
@@ -30,9 +37,10 @@ type IssueDetail struct {
 	Labels []*issue_entity.Label
 }
 
-// ListIssuesResponse 列表结果 + open/closed 计数。
+// ListIssuesResponse 列表结果 + open/closed 计数 + 各 stage 数量。
 type ListIssuesResponse struct {
 	Issues      []*IssueDetail
 	OpenCount   int64
 	ClosedCount int64
+	StageCounts map[string]int64
 }
