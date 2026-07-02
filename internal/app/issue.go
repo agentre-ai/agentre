@@ -39,10 +39,10 @@ type IssueListRequest struct {
 }
 
 type IssueListResponse struct {
-	Issues      []*IssueItem      `json:"issues"`
-	OpenCount   int64             `json:"openCount"`
-	ClosedCount int64             `json:"closedCount"`
-	StageCounts map[string]int64  `json:"stageCounts"`
+	Issues      []*IssueItem     `json:"issues"`
+	OpenCount   int64            `json:"openCount"`
+	ClosedCount int64            `json:"closedCount"`
+	StageCounts map[string]int64 `json:"stageCounts"`
 }
 
 type IssueCreateRequest struct {
