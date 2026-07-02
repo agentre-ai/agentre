@@ -2054,6 +2054,10 @@
       "hint": "Uses TabStrip order (pinned + normal + preview)",
       "label": "Switch to Tab N"
     },
+    "chatTabCycle": {
+      "hint": "Next / previous tab (wraps around)",
+      "label": "Cycle Through Tabs"
+    },
     "conflict": {
       "inUse": "Already used by \"{{label}}\"",
       "systemReserved": "This chord is reserved by the system. Choose another one."
@@ -2251,24 +2255,24 @@
     "section": "Orchestration",
     "loading": "Loading…",
     "new": {
-      "title": "New Orchestration",
+      "title": "New Orchestration Run",
       "goal": "Goal",
+      "goalHint": "The leader breaks this down into subtasks",
       "goalPlaceholder": "Describe what you want to achieve…",
-      "leader": "Leader",
+      "leader": "Leader Agent",
       "leaderPlaceholder": "Choose the leader agent…",
-      "team": "Limit Team",
+      "team": "Participating agents",
+      "teamSelected": "{{count}} selected",
       "teamHint": "Leave empty to allow any agent to participate",
-      "flow": "Flow",
-      "flowNone": "None",
+      "flow": "Starting flow",
+      "flowNone": "Start from scratch (AI plans)",
       "flowAdhoc": "Ad-hoc",
       "flowSelect": "Choose from library",
       "flowSelectPlaceholder": "Search flows…",
-      "flowLibrary": "Flow Library",
+      "flowLibrary": "From library",
       "flowContent": "Flow Content",
       "flowContentPlaceholder": "Enter or paste flow definition…",
-      "dangerAuto": "Auto-approve dangerous operations",
-      "dangerApproval": "Require approval for dangerous operations",
-      "create": "Create"
+      "create": "Create & start run"
     },
     "list": {
       "newButton": "New Orchestration",

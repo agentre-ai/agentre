@@ -29,6 +29,7 @@ type ConflictMessage = {
 function ShortcutRow({
   def,
   chord,
+  chordLabel,
   recording,
   highlighted,
   fixed,
@@ -37,6 +38,9 @@ function ShortcutRow({
 }: {
   def: ShortcutDef;
   chord: KeyChord | null;
+  // chordLabel —— 直接渲染的按键文案，用于无法表达成 KeyChord 的固定快捷键
+  // （如 Ctrl+Tab，"Tab" 不在 ACCEPTABLE_KEY 集里）。给出时优先于 formatChord。
+  chordLabel?: string;
   recording: boolean;
   highlighted: boolean;
   fixed?: boolean;
@@ -68,9 +72,11 @@ function ShortcutRow({
         >
           {recording
             ? t("shortcuts.recording")
-            : chord
-              ? formatChord(chord, platform)
-              : t("shortcuts.unbound")}
+            : chordLabel
+              ? chordLabel
+              : chord
+                ? formatChord(chord, platform)
+                : t("shortcuts.unbound")}
         </span>
         {fixed ? (
           <span className="rounded-md bg-muted px-2 py-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -192,6 +198,12 @@ export function KeyboardShortcutsPanel(): React.ReactElement {
   const chatTabDef = getDef(TAB_CHIP_IDS[0]!)!;
   const tabCloseDef = getDef(TAB_CLOSE_ID)!;
 
+  // Ctrl+Tab 循环切换 —— 固定、不可重绑（Ctrl 在 macOS 不是主修饰键，"Tab" 也不是
+  // 可绑定键，无法表达成 KeyChord），因此直接给出按键文案。macOS 用 ⌃ 控制键符号。
+  const isMac = platform === "darwin";
+  const cycleFwdLabel = isMac ? "⌃Tab" : "Ctrl+Tab";
+  const cycleBackLabel = isMac ? "⌃⇧Tab" : "Ctrl+Shift+Tab";
+
   const performReset = () => {
     resetAll();
     setRecordingId(null);
@@ -248,6 +260,25 @@ export function KeyboardShortcutsPanel(): React.ReactElement {
             )} · ${t("shortcuts.chatTab.hint")}`,
           }}
           chord={bindings.get(chatTabDef.id) ?? null}
+          recording={false}
+          highlighted={false}
+          onStartRecord={() => {}}
+          onCancelRecord={() => {}}
+        />
+        <ShortcutRow
+          fixed
+          def={{
+            id: "chat.tab.cycle",
+            label: t("shortcuts.chatTabCycle.label"),
+            hint: `${cycleFwdLabel} / ${cycleBackLabel} · ${t(
+              "shortcuts.chatTabCycle.hint",
+            )}`,
+            scope: "tabs",
+            defaultBinding: { mod: "primary", key: "" },
+            rebindable: false,
+          }}
+          chord={null}
+          chordLabel={cycleFwdLabel}
           recording={false}
           highlighted={false}
           onStartRecord={() => {}}

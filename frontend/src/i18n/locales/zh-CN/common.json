@@ -2054,6 +2054,10 @@
       "hint": "按 TabStrip 排列顺序（固定 + 普通 + 预览）",
       "label": "切换到第 N 个 Tab"
     },
+    "chatTabCycle": {
+      "hint": "下一个 / 上一个标签页（两端环绕）",
+      "label": "循环切换标签页"
+    },
     "conflict": {
       "inUse": "已被「{{label}}」占用",
       "systemReserved": "该组合键由系统保留,请换一个"
@@ -2251,24 +2255,24 @@
     "section": "编排",
     "loading": "加载中…",
     "new": {
-      "title": "新建编排流程",
+      "title": "新建编排 Run",
       "goal": "目标",
+      "goalHint": "Leader 会据此拆解子任务",
       "goalPlaceholder": "描述你希望达成的目标…",
-      "leader": "Leader",
+      "leader": "Leader Agent",
       "leaderPlaceholder": "选择负责主持的 Agent…",
-      "team": "限定团队",
+      "team": "可参与 agent",
+      "teamSelected": "已选 {{count}}",
       "teamHint": "留空则不限制可参与的 Agent",
-      "flow": "编排流程",
-      "flowNone": "无",
+      "flow": "起始流程",
+      "flowNone": "从零开始（AI 自动拆解）",
       "flowAdhoc": "临时",
       "flowSelect": "选择流程库",
       "flowSelectPlaceholder": "搜索流程…",
-      "flowLibrary": "流程库",
+      "flowLibrary": "从流程库选择",
       "flowContent": "流程内容",
       "flowContentPlaceholder": "输入或粘贴流程定义…",
-      "dangerAuto": "危险操作自动放行",
-      "dangerApproval": "危险操作需审批",
-      "create": "创建"
+      "create": "创建并启动 Run"
     },
     "list": {
       "newButton": "新建编排",

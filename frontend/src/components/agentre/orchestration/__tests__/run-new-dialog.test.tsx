@@ -93,17 +93,49 @@ describe("RunNewDialog", () => {
     expect(btn.disabled).toBe(true);
   });
 
-  it("团队成员按 defaultPermissionMode 展示危险操作姿态徽标", async () => {
-    renderDialog();
-    // 等 agents 渲染到团队列表; bypassPermissions→自动放行, 其它→需审批
-    await waitFor(() => {
-      expect(
-        screen.getByText("Auto-approve dangerous operations"),
-      ).toBeInTheDocument();
+  describe("可参与 agent chips", () => {
+    it("按名字显示可参与 agent chips", async () => {
+      renderDialog();
+      expect(await screen.findByTestId("run-team-2")).toBeInTheDocument();
+      expect(screen.getByTestId("run-team-3")).toBeInTheDocument();
+      expect(screen.getByText("架构师")).toBeInTheDocument();
+      expect(screen.getByText("危险Agent")).toBeInTheDocument();
     });
-    expect(
-      screen.getByText("Require approval for dangerous operations"),
-    ).toBeInTheDocument();
+
+    it("点击 chip 切换选中态(aria-pressed)", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      renderDialog();
+      const chip = await screen.findByTestId("run-team-3");
+      expect(chip).toHaveAttribute("aria-pressed", "false");
+      await user.click(chip);
+      await waitFor(() => expect(chip).toHaveAttribute("aria-pressed", "true"));
+    });
+
+    it("选中的 agent 进入 RunCreate.allowedAgentIds", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      renderDialog();
+      fireEvent.change(await screen.findByTestId("run-goal"), {
+        target: { value: "做登录页" },
+      });
+      await user.click(screen.getByTestId("run-leader"));
+      await user.click(await screen.findByRole("option", { name: "架构师" }));
+      await user.click(screen.getByTestId("run-team-3"));
+      await user.click(screen.getByTestId("run-create"));
+      await waitFor(() =>
+        expect(appMocks.RunCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ allowedAgentIds: [3] }),
+        ),
+      );
+    });
+
+    it("已选计数随选择更新", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      renderDialog();
+      const count = await screen.findByTestId("run-team-count");
+      expect(count.textContent).toMatch(/0/);
+      await user.click(screen.getByTestId("run-team-3"));
+      await waitFor(() => expect(count.textContent).toMatch(/1/));
+    });
   });
 
   describe("flowMode 三态按钮组", () => {
