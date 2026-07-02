@@ -4,6 +4,8 @@ package department_repo
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/cago-frame/cago/database/db"
 	"github.com/cago-frame/cago/pkg/consts"
@@ -23,6 +25,7 @@ type DepartmentRepo interface {
 	List(ctx context.Context) ([]*department_entity.Department, error)
 	ListByParent(ctx context.Context, parentID int64) ([]*department_entity.Department, error)
 	NextSortOrder(ctx context.Context, parentID int64) (int, error)
+	ReorderSiblings(ctx context.Context, parentID int64, orderedIDs []int64) error
 	Delete(ctx context.Context, id int64) error
 	ReparentChildren(ctx context.Context, fromID, toParentID int64) error
 }
@@ -105,6 +108,26 @@ func (r *departmentRepo) NextSortOrder(ctx context.Context, parentID int64) (int
 		return 0, err
 	}
 	return maxOrder + 1, nil
+}
+
+func (r *departmentRepo) ReorderSiblings(ctx context.Context, parentID int64, orderedIDs []int64) error {
+	now := time.Now().Unix()
+	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+		for idx, id := range orderedIDs {
+			sortOrder := idx + 1
+			result := tx.Exec(
+				"UPDATE departments SET sort_order = ?, updatetime = ? WHERE id = ? AND parent_id = ? AND status = ?",
+				sortOrder, now, id, parentID, consts.ACTIVE,
+			)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("department reorder affected %d rows for id %d", result.RowsAffected, id)
+			}
+		}
+		return nil
+	})
 }
 
 func (r *departmentRepo) Delete(ctx context.Context, id int64) error {
