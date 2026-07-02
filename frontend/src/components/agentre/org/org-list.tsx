@@ -122,7 +122,8 @@ function expandLineage(
 
 export function OrgList(props: OrgListProps) {
   const { t } = useTranslation();
-  const { departments, agents, backends, selected, onSelect, onReorderAgent } = props;
+  const { departments, agents, backends, selected, onSelect, onReorderAgent } =
+    props;
 
   const [search, setSearch] = React.useState("");
   const [backendFilter, setBackendFilter] = React.useState<number>(0);
@@ -201,7 +202,9 @@ export function OrgList(props: OrgListProps) {
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
   );
 
   const dragEnabled = sortKey === "hierarchy";
@@ -223,7 +226,11 @@ export function OrgList(props: OrgListProps) {
       const reordered = blockIds.slice();
       reordered.splice(to, 0, reordered.splice(from, 1)[0]);
       for (const bucket of bucketByPlacement(agentById, reordered)) {
-        onReorderAgent(bucket.departmentId, bucket.parentAgentId, bucket.orderedIds);
+        onReorderAgent(
+          bucket.departmentId,
+          bucket.parentAgentId,
+          bucket.orderedIds,
+        );
       }
     },
     [dragEnabled, effectiveParent, rows, agentById, onReorderAgent],
@@ -532,9 +539,7 @@ function SortableListRow({
   const { setNodeRef, listeners, transform, transition, isDragging } =
     useSortable({ id: String(rowProps.row.agent.id), disabled: !dragEnabled });
   const style: React.CSSProperties = {
-    transform: transform
-      ? `translate3d(0, ${transform.y}px, 0)`
-      : undefined,
+    transform: transform ? `translate3d(0, ${transform.y}px, 0)` : undefined,
     transition,
   };
   return (

@@ -57,6 +57,6 @@ describe("buildOrgTreeLayout — sortOrder stable ordering", () => {
     expect(node3).toBeDefined();
 
     // sortOrder=1 (agent-3) should appear to the LEFT of sortOrder=2 (agent-2)
-    expect((node3?.x ?? Infinity)).toBeLessThan(node2?.x ?? -Infinity);
+    expect(node3?.x ?? Infinity).toBeLessThan(node2?.x ?? -Infinity);
   });
 });

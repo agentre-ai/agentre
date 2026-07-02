@@ -49,7 +49,11 @@ export function applyAgentOrder(
     ) {
       return agent;
     }
-    return Object.assign(Object.create(Object.getPrototypeOf(agent) as object) as OrgAgent, agent, { sortOrder: newPos }) as OrgAgent;
+    return Object.assign(
+      Object.create(Object.getPrototypeOf(agent) as object) as OrgAgent,
+      agent,
+      { sortOrder: newPos },
+    ) as OrgAgent;
   });
 }
 
@@ -69,7 +73,11 @@ export function applyDepartmentOrder(
     const newPos = positionMap.get(dept.id);
     if (newPos === undefined) return dept;
     if (dept.parentId !== parentId) return dept;
-    return Object.assign(Object.create(Object.getPrototypeOf(dept) as object) as OrgDepartment, dept, { sortOrder: newPos }) as OrgDepartment;
+    return Object.assign(
+      Object.create(Object.getPrototypeOf(dept) as object) as OrgDepartment,
+      dept,
+      { sortOrder: newPos },
+    ) as OrgDepartment;
   });
 }
 
@@ -82,7 +90,11 @@ export function applyDepartmentOrder(
 export function bucketByPlacement(
   agentById: Map<number, OrgAgent>,
   orderedIds: number[],
-): Array<{ departmentId: number; parentAgentId: number; orderedIds: number[] }> {
+): Array<{
+  departmentId: number;
+  parentAgentId: number;
+  orderedIds: number[];
+}> {
   const buckets = new Map<
     string,
     { departmentId: number; parentAgentId: number; orderedIds: number[] }
