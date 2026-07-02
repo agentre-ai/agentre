@@ -1471,12 +1471,19 @@ function ChatPanel({
   async function doStop(sid: number) {
     try {
       await StopChatMessage({ sessionId: sid });
+      // 「重启遗孤」会话(DB 卡在 running/waiting 但本地无活跃 stream):后端已把它
+      // reconcile 回 idle,但这类会话没有活跃 stream 不会推 aborted 事件,doneTick
+      // effect 也不会触发 reload —— 必须主动 reload 才能让那颗一直亮着的「停止」按钮
+      // 回灰。正常活跃 turn 的 abort 仍由 aborted 事件驱动 reload,这里多一次读无害。
+      await reloadSession();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       // turn 已自然完成与点击 Stop 发生 race —— 后端 activeCancels 已经清掉了，
-      // 不算错，静默即可（用户的意图是「让这轮停下」，结果已经停了）。
+      // 不算错，静默即可（用户的意图是「让这轮停下」，结果已经停了）。但前端视图可能
+      // 还停在 running,reload 一次把 DB 的终态拉回来,避免按钮一直亮着点了没反应。
       if (isChatStopNoActiveError(msg)) {
         console.warn("[chat] stop race-lost (turn already finished)");
+        await reloadSession();
         return;
       }
       console.error("[chat] stop failed", e);

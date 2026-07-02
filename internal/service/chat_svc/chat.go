@@ -1519,7 +1519,14 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 	}
 	raw, ok := s.activeCancels.LoadAndDelete(req.SessionID)
 	if !ok {
-		return nil, i18n.NewError(ctx, code.ChatStopNoActive)
+		// 内存里没有活跃 turn,两种情况:
+		//   (a) turn 自然刚跑完、Stop 与收尾 race —— DB 已是 idle/error,无害。
+		//   (b)「重启遗孤」:app crash / wails dev 热重载 / 第二实例 让 turn goroutine
+		//      死了,但 DB agent_status 还停在 running/waiting(ResetActiveSessions
+		//      只在主实例 Startup 后才扫,这些路径漏网),而 activeCancels(内存)已空。
+		//      此时前端按 DB 状态把「停止」按钮亮着可点,旧逻辑直接返 ChatStopNoActive
+		//      被前端静默吞掉 → 会话永远停不掉。这里 reconcile 回 idle 让停止生效。
+		return s.reconcileOrphanStop(ctx, req.SessionID)
 	}
 	cancel, _ := raw.(context.CancelFunc)
 	s.aborted.Store(req.SessionID, struct{}{})
@@ -1547,6 +1554,34 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 	}
 	if cancel != nil {
 		cancel()
+	}
+	return &StopResponse{Stopped: true}, nil
+}
+
+// reconcileOrphanStop 处理「Stop 时内存里没有活跃 turn」的情况:
+//   - 会话查不到 / 已是终态(idle/error)→ turn 早就收尾,返 ChatStopNoActive(无害的
+//     「太晚了」,前端静默)。
+//   - 会话还停在 running/waiting 但没有活跃 turn,即「重启遗孤」→ 翻回 idle(等同 abort
+//     收尾)并落库,让前端那颗按 DB 状态一直亮着的「停止」按钮真能把会话停下来。
+//
+// 不去 emit StreamSessionStatus:遗孤会话没有活跃 stream 订阅(stream 名按
+// sessionID+assistantMsgID 双键),推了也送不到;前端 doStop 成功后会主动 reload
+// 把按钮收回去。
+func (s *chatSvc) reconcileOrphanStop(ctx context.Context, sessionID int64) (*StopResponse, error) {
+	sess, err := chat_repo.Session().Find(ctx, sessionID)
+	if err != nil || sess == nil {
+		return nil, i18n.NewError(ctx, code.ChatStopNoActive)
+	}
+	if sess.AgentStatus != "running" && sess.AgentStatus != "waiting" {
+		return nil, i18n.NewError(ctx, code.ChatStopNoActive)
+	}
+	logger.Ctx(ctx).Info("chat_svc.Stop: reconciling orphan session to idle",
+		zap.Int64("sessionId", sessionID),
+		zap.String("prevStatus", sess.AgentStatus))
+	sess.AgentStatus = "idle"
+	sess.NeedsAttention = false
+	if perr := s.persistSessionStatus(ctx, sess); perr != nil {
+		return nil, perr
 	}
 	return &StopResponse{Stopped: true}, nil
 }

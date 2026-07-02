@@ -59,6 +59,9 @@ func (s *Stream) handleInbound(ctx context.Context, in appInbound, preSeen map[s
 		s.emitError(err, in.Params)
 		return false
 	}
+	if !s.ownsNotification(n) {
+		return false
+	}
 	if n.ThreadID != "" {
 		s.setSessionID(n.ThreadID)
 	}
@@ -133,6 +136,24 @@ func (s *Stream) handleInbound(ctx context.Context, in appInbound, preSeen map[s
 		s.emitError(fmt.Errorf("codex app-server: %s", string(in.Params)), in.Params)
 	}
 	return false
+}
+
+func (s *Stream) ownsNotification(n appNotification) bool {
+	s.mu.RLock()
+	sessionID := s.sessionID
+	turnID := s.turnID
+	s.mu.RUnlock()
+
+	if n.ThreadID != "" && sessionID != "" && n.ThreadID != sessionID {
+		return false
+	}
+	if n.TurnID != "" && turnID != "" && n.TurnID != turnID {
+		return false
+	}
+	if n.Turn != nil && n.Turn.ID != "" && turnID != "" && n.Turn.ID != turnID {
+		return false
+	}
+	return true
 }
 
 func (s *Stream) isManualCompactStream() bool {
