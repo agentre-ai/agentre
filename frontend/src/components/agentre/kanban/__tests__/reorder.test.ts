@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 
+import type { app } from "../../../../../wailsjs/go/models";
 import { afterIdForDrop, groupByStage } from "../reorder";
 
 const mk = (id: number, stage: string, position: number) =>
-  ({ id, stage, position, labels: [] }) as any;
+  ({ id, stage, position, labels: [] }) as unknown as app.IssueItem;
 
 describe("groupByStage", () => {
   it("按 stage 分组且列内按 position 升序", () => {
-    const g = groupByStage([mk(2, "todo", 20), mk(1, "todo", 10), mk(3, "done", 5)]);
+    const g = groupByStage([
+      mk(2, "todo", 20),
+      mk(1, "todo", 10),
+      mk(3, "done", 5),
+    ]);
     expect(g.todo.map((i) => i.id)).toEqual([1, 2]);
     expect(g.done.map((i) => i.id)).toEqual([3]);
     expect(g.doing).toEqual([]);
