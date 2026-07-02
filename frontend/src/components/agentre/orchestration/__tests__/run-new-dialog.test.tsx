@@ -141,6 +141,11 @@ describe("RunNewDialog", () => {
   });
 
   describe("flowMode 三态按钮组", () => {
+    it("起始流程 label 文案为「编排流程」(en: Orchestration flow)", async () => {
+      renderDialog();
+      expect(await screen.findByText("Orchestration flow")).toBeInTheDocument();
+    });
+
     it("默认显示三个 flowMode 按钮(none/library/adhoc)", async () => {
       renderDialog();
       await screen.findByTestId("run-goal"); // 等渲染完成
@@ -149,62 +154,44 @@ describe("RunNewDialog", () => {
       expect(screen.getByTestId("run-flow-mode-adhoc")).toBeInTheDocument();
     });
 
-    it("点击 library 按钮切换 flowMode 并显示流程库 picker(多标签全显)", async () => {
+    it("切到 library 模式后下拉列出流程(名称 + 标签)", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
         items: [
-          {
-            id: 1,
-            name: "标准功能开发流",
-            tags: ["通用", "研发"],
-            outline: ["需求拆解", "方案设计"],
-          },
+          { id: 1, name: "标准功能开发流", tags: ["通用", "研发"], outline: ["需求拆解", "方案设计"] },
         ],
       });
       renderDialog();
       await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
-      // 切到「流程库」模式
-      screen.getByTestId("run-flow-mode-library").click();
-      // 流程库 picker 显示名称 + 所有标签 chip + 步骤面包屑
-      expect(await screen.findByText("标准功能开发流")).toBeInTheDocument();
+      await user.click(screen.getByTestId("run-flow-mode-library"));
+      await user.click(await screen.findByTestId("run-flow-select"));
+      expect(await screen.findByRole("option", { name: /标准功能开发流/ })).toBeInTheDocument();
       expect(screen.getByText("通用")).toBeInTheDocument();
       expect(screen.getByText("研发")).toBeInTheDocument();
-      expect(screen.getByText("需求拆解")).toBeInTheDocument();
-      expect(screen.getByText("方案设计")).toBeInTheDocument();
     });
 
-    it("点击流程行后选中该流程(单选)", async () => {
+    it("从下拉选中流程后, RunCreate 带上该 flowId", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
         items: [
-          {
-            id: 1,
-            name: "流程A",
-            tags: [],
-            outline: [],
-          },
-          {
-            id: 2,
-            name: "流程B",
-            tags: [],
-            outline: [],
-          },
+          { id: 1, name: "流程A", tags: [], outline: [] },
+          { id: 2, name: "流程B", tags: [], outline: [] },
         ],
       });
       renderDialog();
       await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
-      screen.getByTestId("run-flow-mode-library").click();
-      // 选中流程A
-      const rowA = await screen.findByTestId("run-flow-pick-1");
-      rowA.click();
-      // 选中流程B 后 RunCreate 应带 flowId=2
-      const rowB = screen.getByTestId("run-flow-pick-2");
-      rowB.click();
-      // 填目标 + 选 leader 再提交确认 flowId 正确
-      fireEvent.change(screen.getByTestId("run-goal"), {
-        target: { value: "测试目标" },
-      });
-      // 直接检测按钮的选中视觉态(data-testid="run-flow-pick-2" 有 border-primary)
-      expect(rowA.className).not.toContain("border-primary");
-      expect(rowB.className).toContain("border-primary");
+      await user.click(screen.getByTestId("run-flow-mode-library"));
+      await user.click(await screen.findByTestId("run-flow-select"));
+      await user.click(await screen.findByRole("option", { name: /流程B/ }));
+      fireEvent.change(screen.getByTestId("run-goal"), { target: { value: "测试目标" } });
+      await user.click(screen.getByTestId("run-leader"));
+      await user.click(await screen.findByRole("option", { name: "架构师" }));
+      await user.click(screen.getByTestId("run-create"));
+      await waitFor(() =>
+        expect(appMocks.RunCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ flowId: 2 }),
+        ),
+      );
     });
 
     it("点击 adhoc 按钮后显示临时流程文本区", async () => {

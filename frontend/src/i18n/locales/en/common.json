@@ -2270,7 +2270,7 @@
       "team": "Participating agents",
       "teamSelected": "{{count}} selected",
       "teamHint": "Leave empty to allow any agent to participate",
-      "flow": "Starting flow",
+      "flow": "Orchestration flow",
       "flowNone": "Start from scratch (AI plans)",
       "flowAdhoc": "Ad-hoc",
       "flowSelect": "Choose from library",
