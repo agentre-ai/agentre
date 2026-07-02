@@ -4,9 +4,11 @@ import type { chat_svc } from "../../../../wailsjs/go/models";
 
 import { deriveBackgroundTasks } from "./derive";
 
-// A genuine background task block carries BOTH a local_bash overlay AND the
-// run_in_background tool input — the helpers default to that so fixtures stay
-// valid under the corrected "is this a background task" contract.
+// A genuine background task block carries a local_bash OR local_agent overlay
+// AND the run_in_background tool input — the discriminator is run_in_background,
+// not the kind (both a backgrounded Bash and a backgrounded Agent qualify). The
+// helpers default to run_in_background:true so fixtures stay valid under that
+// "is this a background task" contract.
 const makeBlock = (
   type: string,
   toolUseId: string,
@@ -47,7 +49,7 @@ describe("deriveBackgroundTasks", () => {
     ]);
   });
 
-  it("excludes local_agent from persisted-message tool_use tasks (only local_bash is shown)", () => {
+  it("includes a background local_agent (run_in_background subagent) with its real kind", () => {
     const msg = {
       blocks: [
         tu({
@@ -61,7 +63,12 @@ describe("deriveBackgroundTasks", () => {
       ],
     };
     const tasks = deriveBackgroundTasks([msg as never], []);
-    expect(tasks).toHaveLength(0);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      toolUseId: "tu2",
+      kind: "local_agent",
+      description: "Explore repo",
+    });
   });
 
   it("live overrides history for the same toolUseId (dedupe, live wins)", () => {
@@ -227,7 +234,7 @@ describe("deriveBackgroundTasks", () => {
     });
   });
 
-  it("excludes local_agent subagents — only run_in_background bash is shown", () => {
+  it("includes both a background bash and a background subagent, each with its kind", () => {
     const messages = [
       makeMessage(1000, [
         makeBlock("tool_use", "tu-bash", {
@@ -243,8 +250,27 @@ describe("deriveBackgroundTasks", () => {
       ]),
     ];
     const tasks = deriveBackgroundTasks(messages, []);
-    expect(tasks.map((t) => t.toolUseId)).toEqual(["tu-bash"]);
-    expect(tasks[0].kind).toBe("local_bash");
+    expect(tasks.map((t) => t.toolUseId)).toEqual(["tu-bash", "tu-agent"]);
+    expect(tasks.map((t) => t.kind)).toEqual(["local_bash", "local_agent"]);
+  });
+
+  it("excludes a foreground subagent — local_agent without run_in_background is not a background task", () => {
+    // Foreground subagents emit task_type:"local_agent" frames too; the Agent
+    // tool_use only carries run_in_background:true when it was backgrounded, so
+    // that flag (not the kind) is what separates background from foreground.
+    const foreground = {
+      type: "tool_use",
+      toolUseId: "tu-fg-agent",
+      toolName: "Agent",
+      toolInput: { subagent_type: "general-purpose", description: "explore" },
+      subagent: {
+        kind: "local_agent",
+        status: "running",
+        taskDescription: "Explore repo",
+      },
+    } as unknown as Parameters<typeof deriveBackgroundTasks>[1][number];
+    const tasks = deriveBackgroundTasks([], [foreground]);
+    expect(tasks).toHaveLength(0);
   });
 
   it("carries the real task_id through to BackgroundTask.taskId", () => {

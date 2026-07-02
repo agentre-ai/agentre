@@ -33,6 +33,7 @@ type DepartmentSvc interface {
 	Update(ctx context.Context, req *UpdateDepartmentRequest) (*UpdateDepartmentResponse, error)
 	Move(ctx context.Context, req *MoveDepartmentRequest) (*MoveDepartmentResponse, error)
 	Delete(ctx context.Context, req *DeleteDepartmentRequest) (*DeleteDepartmentResponse, error)
+	Reorder(ctx context.Context, req *ReorderDepartmentsRequest) error
 }
 
 type departmentSvc struct {
@@ -329,6 +330,38 @@ func (s *departmentSvc) Move(ctx context.Context, req *MoveDepartmentRequest) (*
 		return nil, err
 	}
 	return &MoveDepartmentResponse{Item: toDepartmentItem(existing, nil, 0, 0, 0)}, nil
+}
+
+// Reorder 同级密集重排：orderedIds 必须是该父级下的完整集合。
+func (s *departmentSvc) Reorder(ctx context.Context, req *ReorderDepartmentsRequest) error {
+	if req == nil || req.ParentID < 0 || len(req.OrderedIDs) == 0 {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	siblings, err := department_repo.Department().ListByParent(ctx, req.ParentID)
+	if err != nil {
+		return err
+	}
+	if len(siblings) != len(req.OrderedIDs) {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	allowed := make(map[int64]struct{}, len(siblings))
+	for _, d := range siblings {
+		allowed[d.ID] = struct{}{}
+	}
+	seen := make(map[int64]struct{}, len(req.OrderedIDs))
+	for _, id := range req.OrderedIDs {
+		if id <= 0 {
+			return i18n.NewError(ctx, code.InvalidParameter)
+		}
+		if _, ok := allowed[id]; !ok {
+			return i18n.NewError(ctx, code.InvalidParameter)
+		}
+		if _, ok := seen[id]; ok {
+			return i18n.NewError(ctx, code.InvalidParameter)
+		}
+		seen[id] = struct{}{}
+	}
+	return department_repo.Department().ReorderSiblings(ctx, req.ParentID, req.OrderedIDs)
 }
 
 // Delete 软删部门，支持 reparent / cascade。

@@ -578,6 +578,7 @@
       "failed": "Failed",
       "empty": "No background tasks",
       "bash": "bash",
+      "subagent": "subagent",
       "aria": "Background tasks",
       "clearCompleted": "Clear completed"
     },
@@ -968,15 +969,25 @@
     "board": {
       "addCard": "Add Card",
       "addToColumn": "Add to {{column}}",
-      "aria": "Issue board",
+      "aria": "Kanban board",
+      "emptyColumn": "Empty",
       "lastFailure": "exit={{code}} · last fail {{minutes}}m ago",
       "viewAllClosed": "View all {{count}} →"
+    },
+    "stages": {
+      "todo": "To do",
+      "doing": "In progress",
+      "review": "In review",
+      "done": "Done"
     },
     "columns": {
       "backlog": "Backlog",
       "closed": "Closed",
       "running": "In Progress",
       "waiting": "Waiting"
+    },
+    "form": {
+      "stage": "Stage"
     },
     "dialog": {
       "title": "New Issue",
@@ -2272,6 +2283,7 @@
       "flowLibrary": "From library",
       "flowContent": "Flow Content",
       "flowContentPlaceholder": "Enter or paste flow definition…",
+      "flowManage": "Manage library",
       "create": "Create & start run"
     },
     "list": {
@@ -2280,7 +2292,9 @@
       "newBtnLabel": "New",
       "filterAll": "All",
       "filterRunning": "Running",
-      "filterDone": "Done"
+      "filterDone": "Done",
+      "filterEmpty": "No matching runs",
+      "libraryEntry": "Flow Library"
     },
     "onboarding": {
       "cta": "Start multi-agent orchestration",

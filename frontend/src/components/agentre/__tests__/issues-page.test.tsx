@@ -28,6 +28,8 @@ describe("IssuesPage", () => {
           id: 142,
           title: "fix OAuth state loss",
           state: "open",
+          stage: "todo",
+          position: 10,
           agentStatus: "idle",
           updatetime: 0,
           labels: [{ id: 1, name: "bug", tone: "bug" }],
@@ -35,6 +37,7 @@ describe("IssuesPage", () => {
       ],
       openCount: 1,
       closedCount: 0,
+      stageCounts: { todo: 1, doing: 0, review: 0, done: 0 },
     });
   });
 
@@ -45,7 +48,11 @@ describe("IssuesPage", () => {
   });
 
   it("uses the row action menu label and hides empty timestamps", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<IssuesPage />);
+    // 默认是 board 视图；先切到 list 才有 RowActions
+    await screen.findByText("fix OAuth state loss");
+    await user.click(screen.getByRole("button", { name: /List/i }));
     expect(await screen.findByText("fix OAuth state loss")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "More actions" }),
@@ -66,6 +73,9 @@ describe("IssuesPage", () => {
   it("switching to the Closed tab refetches with state=closed", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<IssuesPage />);
+    // 默认是 board 视图；先切到 list 才有 Closed 标签
+    await screen.findByText("fix OAuth state loss");
+    await user.click(screen.getByRole("button", { name: /List/i }));
     await screen.findByText("fix OAuth state loss");
     await user.click(screen.getByRole("button", { name: /Closed/i }));
     await waitFor(() =>

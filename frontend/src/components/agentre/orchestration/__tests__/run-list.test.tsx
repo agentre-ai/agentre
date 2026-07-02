@@ -160,5 +160,29 @@ describe("RunList", () => {
       const row11 = screen.getByTestId("run-row-11");
       expect(row11).not.toHaveTextContent(/^paused$/i);
     });
+
+    it("点击「运行中」筛选后只显示 running 的 Run", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} />);
+      fireEvent.click(screen.getByTestId("run-filter-running"));
+      expect(screen.getByTestId("run-row-10")).toBeInTheDocument();
+      expect(screen.queryByTestId("run-row-11")).toBeNull();
+    });
+
+    it("点击「已完成」筛选且无匹配时显示空匹配提示", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} />);
+      fireEvent.click(screen.getByTestId("run-filter-done"));
+      expect(screen.queryByTestId("run-row-10")).toBeNull();
+      expect(screen.queryByTestId("run-row-11")).toBeNull();
+      expect(screen.getByTestId("run-filter-empty")).toBeInTheDocument();
+    });
+
+    it("默认筛选 all,两个 Run 都显示", () => {
+      useOrchRunListStore.setState({ runs: twoRuns });
+      render(<RunList onSelect={vi.fn()} />);
+      expect(screen.getByTestId("run-row-10")).toBeInTheDocument();
+      expect(screen.getByTestId("run-row-11")).toBeInTheDocument();
+    });
   });
 });

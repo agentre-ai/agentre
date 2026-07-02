@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { useWorkflowManagerStore } from "@/stores/workflow-manager-store";
 
 import { firstLetter, tokenToCssColor } from "../session-avatar";
 import {
@@ -276,8 +277,18 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
           {/* 流程库选择: 单选行列表,显示名称 + 标签 chip + 步骤面包屑 */}
           {flowMode === "library" ? (
             <div className="flex flex-col gap-1.5 text-xs">
-              <span className="font-medium text-foreground">
-                {t("orchestration.new.flowSelect")}
+              <span className="flex items-center gap-2">
+                <span className="font-medium text-foreground">
+                  {t("orchestration.new.flowSelect")}
+                </span>
+                <button
+                  type="button"
+                  data-testid="run-flow-manage"
+                  onClick={() => useWorkflowManagerStore.getState().openBrowse()}
+                  className="ml-auto text-2xs text-primary-text hover:underline"
+                >
+                  {t("orchestration.new.flowManage")} →
+                </button>
               </span>
               <div className="flex flex-col gap-1.5">
                 {workflows.map((w) => (

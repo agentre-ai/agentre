@@ -4,6 +4,8 @@ package agent_repo
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/cago-frame/cago/database/db"
 	"github.com/cago-frame/cago/pkg/consts"
@@ -35,6 +37,7 @@ type AgentRepo interface {
 	ClearLeadOfDepartment(ctx context.Context, agentID int64) error
 	Delete(ctx context.Context, id int64) error
 	DeleteByDepartment(ctx context.Context, departmentID int64) error
+	ReorderSiblings(ctx context.Context, departmentID, parentAgentID int64, orderedIDs []int64) error
 }
 
 var defaultAgent AgentRepo
@@ -183,6 +186,26 @@ func (r *agentRepo) UpdatePlacement(ctx context.Context, id, departmentID, paren
 			"parent_agent_id": parentAgentID,
 			"sort_order":      sortOrder,
 		}).Error
+}
+
+func (r *agentRepo) ReorderSiblings(ctx context.Context, departmentID, parentAgentID int64, orderedIDs []int64) error {
+	now := time.Now().Unix()
+	return db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+		for idx, id := range orderedIDs {
+			sortOrder := idx + 1
+			result := tx.Exec(
+				"UPDATE agents SET sort_order = ?, updatetime = ? WHERE id = ? AND department_id = ? AND parent_agent_id = ? AND status = ?",
+				sortOrder, now, id, departmentID, parentAgentID, consts.ACTIVE,
+			)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("agent reorder affected %d rows for id %d", result.RowsAffected, id)
+			}
+		}
+		return nil
+	})
 }
 
 func (r *agentRepo) UpdateAvatar(ctx context.Context, id int64, avatarDataURL string, updatetime int64) error {

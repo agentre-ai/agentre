@@ -11,9 +11,9 @@ package mock_agent_repo
 
 import (
 	context "context"
-	agent_entity "github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	reflect "reflect"
 
+	agent_entity "github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -245,6 +245,20 @@ func (m *MockAgentRepo) NextSortOrderByParent(ctx context.Context, parentAgentID
 func (mr *MockAgentRepoMockRecorder) NextSortOrderByParent(ctx, parentAgentID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NextSortOrderByParent", reflect.TypeOf((*MockAgentRepo)(nil).NextSortOrderByParent), ctx, parentAgentID)
+}
+
+// ReorderSiblings mocks base method.
+func (m *MockAgentRepo) ReorderSiblings(ctx context.Context, departmentID, parentAgentID int64, orderedIDs []int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReorderSiblings", ctx, departmentID, parentAgentID, orderedIDs)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReorderSiblings indicates an expected call of ReorderSiblings.
+func (mr *MockAgentRepoMockRecorder) ReorderSiblings(ctx, departmentID, parentAgentID, orderedIDs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReorderSiblings", reflect.TypeOf((*MockAgentRepo)(nil).ReorderSiblings), ctx, departmentID, parentAgentID, orderedIDs)
 }
 
 // ReparentChildren mocks base method.

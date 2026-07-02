@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { IssueList, IssueListLabels, IssueMove } from "../../wailsjs/go/app/App";
+import {
+  IssueList,
+  IssueListLabels,
+  IssueMove,
+} from "../../wailsjs/go/app/App";
 import type { app } from "../../wailsjs/go/models";
 
 export type IssueFilter = {
@@ -56,7 +60,14 @@ export function useIssues(filter: IssueFilter) {
   }, [reload]);
 
   return {
-    issues, labels, openCount, closedCount, stageCounts,
-    loading, error, reload, moveIssue,
+    issues,
+    labels,
+    openCount,
+    closedCount,
+    stageCounts,
+    loading,
+    error,
+    reload,
+    moveIssue,
   };
 }

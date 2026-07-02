@@ -23,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import { toneClass } from "./issue-tones";
+import { STAGES } from "./kanban/stages";
 import type { ProjectFlat } from "@/hooks/use-project-list";
 import { IssueCreate, IssueUpdate } from "../../../wailsjs/go/app/App";
 import type { app } from "../../../wailsjs/go/models";
@@ -49,6 +50,7 @@ function IssueNewDialog({
   const [body, setBody] = React.useState("");
   const [projectID, setProjectID] = React.useState(0);
   const [labelIDs, setLabelIDs] = React.useState<number[]>([]);
+  const [stage, setStage] = React.useState<string>("todo");
   const [submitError, setSubmitError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -61,6 +63,7 @@ function IssueNewDialog({
     setBody(editing?.body ?? "");
     setProjectID(editing?.projectID ?? 0);
     setLabelIDs((editing?.labels ?? []).map((l) => l.id));
+    setStage(editing?.stage ?? "todo");
     setSubmitError(null);
   }, [open, editing]);
 
@@ -90,6 +93,7 @@ function IssueNewDialog({
           title: title.trim(),
           body: body.trim(),
           labelIDs,
+          stage,
         });
       }
       onSaved();
@@ -155,6 +159,25 @@ function IssueNewDialog({
               </SelectContent>
             </Select>
           </label>
+          {!editing && (
+            <label className="flex flex-col gap-1.5 text-xs">
+              <span className="font-medium text-foreground">
+                {t("issues.form.stage")}
+              </span>
+              <Select value={stage} onValueChange={setStage}>
+                <SelectTrigger className="h-9 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STAGES.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {t(s.labelKey)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+          )}
           <div className="flex flex-col gap-1.5 text-xs">
             <span className="font-medium text-foreground">
               {t("issues.dialog.labelsLabel")}

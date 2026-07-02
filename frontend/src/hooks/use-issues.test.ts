@@ -7,7 +7,11 @@ vi.mock("../../wailsjs/go/app/App", () => ({
   IssueMove: vi.fn(),
 }));
 
-import { IssueList, IssueListLabels, IssueMove } from "../../wailsjs/go/app/App";
+import {
+  IssueList,
+  IssueListLabels,
+  IssueMove,
+} from "../../wailsjs/go/app/App";
 import { useIssues } from "./use-issues";
 
 const issueList = IssueList as ReturnType<typeof vi.fn>;
@@ -34,7 +38,12 @@ describe("useIssues", () => {
       stageCounts: { doing: 1 },
     });
     issueListLabels.mockResolvedValue([{ id: 1, name: "bug", tone: "bug" }]);
-    issueMove.mockResolvedValue({ id: 1, stage: "review", position: 5, labels: [] });
+    issueMove.mockResolvedValue({
+      id: 1,
+      stage: "review",
+      position: 5,
+      labels: [],
+    });
   });
 
   it("loads issues, labels and counts on mount", async () => {
@@ -75,6 +84,10 @@ describe("useIssues", () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     await result.current.moveIssue(1, "review", 0);
-    expect(issueMove).toHaveBeenCalledWith({ id: 1, stage: "review", afterID: 0 });
+    expect(issueMove).toHaveBeenCalledWith({
+      id: 1,
+      stage: "review",
+      afterID: 0,
+    });
   });
 });

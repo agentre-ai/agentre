@@ -578,6 +578,7 @@
       "failed": "失败",
       "empty": "暂无后台任务",
       "bash": "bash",
+      "subagent": "子代理",
       "aria": "后台任务",
       "clearCompleted": "清理已完成"
     },
@@ -968,15 +969,25 @@
     "board": {
       "addCard": "添加卡片",
       "addToColumn": "添加到{{column}}",
-      "aria": "Issue 看板",
+      "aria": "看板",
+      "emptyColumn": "暂无",
       "lastFailure": "exit={{code}} · last fail {{minutes}} 分钟前",
       "viewAllClosed": "查看全部 {{count}} 个 →"
+    },
+    "stages": {
+      "todo": "待办",
+      "doing": "进行中",
+      "review": "待审",
+      "done": "已完成"
     },
     "columns": {
       "backlog": "待派发",
       "closed": "已关闭",
       "running": "进行中",
       "waiting": "待审批"
+    },
+    "form": {
+      "stage": "阶段"
     },
     "dialog": {
       "title": "新建 Issue",
@@ -2272,6 +2283,7 @@
       "flowLibrary": "从流程库选择",
       "flowContent": "流程内容",
       "flowContentPlaceholder": "输入或粘贴流程定义…",
+      "flowManage": "管理流程库",
       "create": "创建并启动 Run"
     },
     "list": {
@@ -2280,7 +2292,9 @@
       "newBtnLabel": "新建",
       "filterAll": "全部",
       "filterRunning": "运行中",
-      "filterDone": "已完成"
+      "filterDone": "已完成",
+      "filterEmpty": "没有匹配的 Run",
+      "libraryEntry": "流程库"
     },
     "onboarding": {
       "cta": "开启多 Agent 协作编排",

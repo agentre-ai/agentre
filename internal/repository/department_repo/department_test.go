@@ -142,3 +142,19 @@ func TestReparentChildren(t *testing.T) {
 	require.NoError(t, repo.ReparentChildren(ctx, 7, 0))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestDepartmentReorderSiblings(t *testing.T) {
+	ctx, mock, repo := setupRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE departments SET sort_order = \\?, updatetime = \\? WHERE id = \\? AND parent_id = \\? AND status = \\?").
+		WithArgs(1, sqlmock.AnyArg(), int64(5), int64(0), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE departments SET sort_order = \\?, updatetime = \\? WHERE id = \\? AND parent_id = \\? AND status = \\?").
+		WithArgs(2, sqlmock.AnyArg(), int64(4), int64(0), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := repo.ReorderSiblings(ctx, 0, []int64{5, 4})
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

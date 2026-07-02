@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,6 +33,7 @@ vi.mock("../conversation-panel", () => ({
 }));
 
 import { useOrchRunListStore } from "../../../../stores/orch-run-list-store";
+import { useWorkflowManagerStore } from "../../../../stores/workflow-manager-store";
 import { OrchestrationPage } from "../orchestration-page";
 
 const renderAt = (path: string) =>
@@ -47,6 +48,7 @@ const renderAt = (path: string) =>
 
 beforeEach(() => {
   useOrchRunListStore.setState({ runs: [] });
+  useWorkflowManagerStore.setState({ open: false, intent: "browse" });
 });
 
 describe("OrchestrationPage", () => {
@@ -68,5 +70,11 @@ describe("OrchestrationPage", () => {
     renderAt("/orchestration/abc");
     expect(screen.getByTestId("orchestration-empty-main")).toBeInTheDocument();
     expect(screen.queryByTestId("orchestration-run")).not.toBeInTheDocument();
+  });
+
+  it("侧栏底部「流程库」入口点击打开流程库弹窗", () => {
+    renderAt("/orchestration");
+    fireEvent.click(screen.getByTestId("run-library-entry"));
+    expect(useWorkflowManagerStore.getState().open).toBe(true);
   });
 });

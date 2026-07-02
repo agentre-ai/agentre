@@ -55,6 +55,19 @@ export function RunList({
   const { t } = useTranslation();
   const runs = useOrchRunListStore((s) => s.runs);
   const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [filter, setFilter] = React.useState<"all" | "running" | "done">("all");
+
+  const shownRuns = React.useMemo(
+    () =>
+      runs.filter((r) =>
+        filter === "all"
+          ? true
+          : filter === "running"
+            ? r.status === "running"
+            : r.status === "done",
+      ),
+    [runs, filter],
+  );
 
   // 组件挂载时加载 Run 列表
   React.useEffect(() => {
@@ -114,27 +127,42 @@ export function RunList({
           </button>
         </div>
 
-        {/* filters: padding=[0,14,10,14], gap-6
-            FUTURE: wire up filtering logic in a future slice — currently static visual chips */}
+        {/* filters: padding=[0,14,10,14], gap-6 */}
         <div
           data-testid="run-filter-chips"
           className="flex items-center gap-6 pb-[10px] pl-3.5 pr-3.5"
         >
-          {/* Active chip: bg-secondary border border-border */}
-          <span className="rounded-full border border-border bg-secondary px-2 py-[3px] text-[11px] font-semibold text-foreground">
-            {t("orchestration.list.filterAll")}
-          </span>
-          <span className="rounded-full px-2 py-[3px] text-[11px] text-muted-foreground">
-            {t("orchestration.list.filterRunning")}
-          </span>
-          <span className="rounded-full px-2 py-[3px] text-[11px] text-muted-foreground">
-            {t("orchestration.list.filterDone")}
-          </span>
+          {(
+            [
+              { key: "all", labelKey: "orchestration.list.filterAll" },
+              { key: "running", labelKey: "orchestration.list.filterRunning" },
+              { key: "done", labelKey: "orchestration.list.filterDone" },
+            ] as const
+          ).map(({ key, labelKey }) => {
+            const active = filter === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                data-testid={`run-filter-${key}`}
+                data-active={active ? "true" : "false"}
+                onClick={() => setFilter(key)}
+                className={cn(
+                  "rounded-full px-2 py-[3px] text-[11px] transition-colors",
+                  active
+                    ? "border border-border bg-secondary font-semibold text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t(labelKey)}
+              </button>
+            );
+          })}
         </div>
 
         {/* runs: padding=[0,8], gap-2, vertical */}
         <ul className="flex flex-col gap-2 px-2">
-          {runs.map((run) => {
+          {shownRuns.map((run) => {
             const isActive = run.id === activeRunId;
 
             return (
@@ -188,6 +216,14 @@ export function RunList({
             );
           })}
         </ul>
+        {shownRuns.length === 0 ? (
+          <p
+            data-testid="run-filter-empty"
+            className="px-3.5 py-6 text-center text-xs text-muted-foreground"
+          >
+            {t("orchestration.list.filterEmpty")}
+          </p>
+        ) : null}
       </div>
       <RunNewDialog open={dialogOpen} onOpenChange={setDialogOpen} />
     </>

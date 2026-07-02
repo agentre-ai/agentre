@@ -77,6 +77,13 @@ const agentBorderClassNames: Record<AgentColor, string> = {
   neutral: "border-border",
 };
 
+function bySortOrder(
+  a: { sortOrder?: number; id: number },
+  b: { sortOrder?: number; id: number },
+): number {
+  return (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.id - b.id;
+}
+
 function parseId(id: string): { kind: "agent" | "dept"; id: number } | null {
   if (id.startsWith("agent-")) {
     const parsed = Number(id.slice(6));
@@ -393,6 +400,7 @@ function shiftLayout(
 function agentChildren(agent: OrgAgent, all: OrgTreeLayoutInput) {
   return all.agents
     .filter((a) => (a.parentAgentId ?? 0) === agent.id && a.id !== agent.id)
+    .sort(bySortOrder)
     .map((a) => buildAgentNode(a, all));
 }
 
@@ -414,10 +422,12 @@ function buildDepartmentNode(
   all: OrgTreeLayoutInput,
 ): TreeNodeWithChildren {
   const collapsed = !!all.collapse[dept.id];
-  const childAgents = all.agents.filter(
-    (a) => a.departmentId === dept.id && (a.parentAgentId ?? 0) === 0,
-  );
-  const childDepts = all.departments.filter((d) => d.parentId === dept.id);
+  const childAgents = all.agents
+    .filter((a) => a.departmentId === dept.id && (a.parentAgentId ?? 0) === 0)
+    .sort(bySortOrder);
+  const childDepts = all.departments
+    .filter((d) => d.parentId === dept.id)
+    .sort(bySortOrder);
 
   return {
     children: collapsed
@@ -435,13 +445,17 @@ function buildDepartmentNode(
 
 function buildLayoutRoots(all: OrgTreeLayoutInput): TreeNodeWithChildren[] {
   const ceo = all.agents.find((a) => a.systemBadge === "DEFAULT") ?? null;
-  const topDepartments = all.departments.filter((d) => d.parentId === 0);
-  const topAgents = all.agents.filter(
-    (a) =>
-      a.systemBadge !== "DEFAULT" &&
-      ((a.parentAgentId ?? 0) === ceo?.id ||
-        (a.departmentId === 0 && (a.parentAgentId ?? 0) === 0)),
-  );
+  const topDepartments = all.departments
+    .filter((d) => d.parentId === 0)
+    .sort(bySortOrder);
+  const topAgents = all.agents
+    .filter(
+      (a) =>
+        a.systemBadge !== "DEFAULT" &&
+        ((a.parentAgentId ?? 0) === ceo?.id ||
+          (a.departmentId === 0 && (a.parentAgentId ?? 0) === 0)),
+    )
+    .sort(bySortOrder);
   const rootChildren: TreeNodeWithChildren[] = [
     ...topAgents.map((agent) => buildAgentNode(agent, all)),
     ...topDepartments.map((dept) => buildDepartmentNode(dept, all)),
@@ -776,7 +790,7 @@ function DepartmentBanner({
           ? "border-primary bg-primary-soft shadow-md shadow-primary/10"
           : agentBorderClassNames[accent],
         drop.isOver && "ring-2 ring-primary/60",
-        drag.isDragging && "relative z-20 opacity-80 shadow-lg",
+        drag.isDragging && "relative z-20 opacity-80 shadow-lg transition-none",
       )}
     >
       <span
@@ -886,7 +900,7 @@ function AgentCard({
               ? `border-2 ${agentBorderClassNames[color]}`
               : "border-border",
         drop.isOver && "ring-2 ring-primary/60",
-        drag.isDragging && "relative z-20 opacity-80 shadow-lg",
+        drag.isDragging && "relative z-20 opacity-80 shadow-lg transition-none",
       )}
     >
       <span className="flex min-w-0 items-center gap-2.5">

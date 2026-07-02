@@ -71,6 +71,13 @@ type UploadAvatarResponse struct {
 	Item *AgentItem `json:"item"`
 }
 
+// ReorderAgentsRequest 同级密集重排:orderedIds 必须是该组的完整集合。
+type ReorderAgentsRequest struct {
+	DepartmentID  int64   `json:"departmentId"`
+	ParentAgentID int64   `json:"parentAgentId"`
+	OrderedIDs    []int64 `json:"orderedIds"`
+}
+
 // DeleteAvatarRequest 清空 Agent 头像，回退到首字母。
 type DeleteAvatarRequest struct {
 	ID int64 `json:"id" binding:"required"`

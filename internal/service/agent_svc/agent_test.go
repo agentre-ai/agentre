@@ -384,6 +384,32 @@ func TestUpdateAgent_WithTools(t *testing.T) {
 	})
 }
 
+func TestReorderAgents(t *testing.T) {
+	convey.Convey("Agent 同级排序", t, func() {
+		ctx, agentMock, _, _, svc := setupSvc(t)
+
+		convey.Convey("部门下成功重排", func() {
+			agentMock.EXPECT().ListByDepartment(gomock.Any(), int64(2)).
+				Return([]*agent_entity.Agent{{ID: 1}, {ID: 3}}, nil)
+			agentMock.EXPECT().ReorderSiblings(gomock.Any(), int64(2), int64(0), []int64{3, 1}).Return(nil)
+			err := svc.Reorder(ctx, &ReorderAgentsRequest{DepartmentID: 2, OrderedIDs: []int64{3, 1}})
+			convey.So(err, convey.ShouldBeNil)
+		})
+
+		convey.Convey("外来 id 拒绝", func() {
+			agentMock.EXPECT().ListByDepartment(gomock.Any(), int64(2)).
+				Return([]*agent_entity.Agent{{ID: 1}, {ID: 3}}, nil)
+			err := svc.Reorder(ctx, &ReorderAgentsRequest{DepartmentID: 2, OrderedIDs: []int64{3, 9}})
+			convey.So(err, convey.ShouldNotBeNil)
+		})
+
+		convey.Convey("既没部门也没上级 → 参数错误", func() {
+			err := svc.Reorder(ctx, &ReorderAgentsRequest{OrderedIDs: []int64{1}})
+			convey.So(err, convey.ShouldNotBeNil)
+		})
+	})
+}
+
 func TestAgentSvc_SetPinned(t *testing.T) {
 	convey.Convey("SetPinned 透传到 repo", t, func() {
 		ctx, agentMock, _, _, svc := setupSvc(t)
