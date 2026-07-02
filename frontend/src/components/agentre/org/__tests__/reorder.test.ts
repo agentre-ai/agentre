@@ -57,6 +57,19 @@ describe("computeReorder", () => {
   it("is a no-op when item stays at same relative position", () => {
     expect(computeReorder([1, 2, 3], 1, 0)).toEqual([1, 2, 3]);
   });
+
+  it("drags rightward past self into a middle slot (full-group index)", () => {
+    // drag id=1 to slot 2 ("between original 2 and 3") → [2, 1, 3], not [2, 3, 1]
+    expect(computeReorder([1, 2, 3], 1, 2)).toEqual([2, 1, 3]);
+  });
+
+  it("is a no-op when dropped in the slot just after the dragged element", () => {
+    expect(computeReorder([1, 2, 3], 2, 2)).toEqual([1, 2, 3]);
+  });
+
+  it("is a no-op when dropped in the slot just before the dragged element", () => {
+    expect(computeReorder([1, 2, 3], 2, 1)).toEqual([1, 2, 3]);
+  });
 });
 
 describe("applyAgentOrder", () => {

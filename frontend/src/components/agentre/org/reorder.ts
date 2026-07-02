@@ -3,14 +3,25 @@ import type { OrgAgent, OrgDepartment } from "./types";
 /**
  * Produces a new ordered ID array after dragging `draggedId` to `insertIndex`.
  * The `orderedIds` param is the current complete sibling list in display order.
+ *
+ * `insertIndex` is a slot over the FULL group (0..n, meaning "before the element
+ * currently at position i", or "after the last" when i === n) — this is what the
+ * tree's static insert-zones emit, since they don't know which element is being
+ * dragged. After the dragged element is removed, any target slot to its right
+ * shifts left by one; dropping in either slot adjacent to the pick-up point is a
+ * no-op.
  */
 export function computeReorder(
   orderedIds: number[],
   draggedId: number,
   insertIndex: number,
 ): number[] {
+  const from = orderedIds.indexOf(draggedId);
+  if (from < 0) return orderedIds.slice();
   const without = orderedIds.filter((id) => id !== draggedId);
-  without.splice(insertIndex, 0, draggedId);
+  const adjusted = insertIndex > from ? insertIndex - 1 : insertIndex;
+  const clamped = Math.max(0, Math.min(adjusted, without.length));
+  without.splice(clamped, 0, draggedId);
   return without;
 }
 
