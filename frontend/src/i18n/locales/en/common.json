@@ -2280,7 +2280,8 @@
       "newBtnLabel": "New",
       "filterAll": "All",
       "filterRunning": "Running",
-      "filterDone": "Done"
+      "filterDone": "Done",
+      "filterEmpty": "No matching runs"
     },
     "onboarding": {
       "cta": "Start multi-agent orchestration",

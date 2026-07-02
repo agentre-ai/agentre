@@ -2280,7 +2280,8 @@
       "newBtnLabel": "新建",
       "filterAll": "全部",
       "filterRunning": "运行中",
-      "filterDone": "已完成"
+      "filterDone": "已完成",
+      "filterEmpty": "没有匹配的 Run"
     },
     "onboarding": {
       "cta": "开启多 Agent 协作编排",
