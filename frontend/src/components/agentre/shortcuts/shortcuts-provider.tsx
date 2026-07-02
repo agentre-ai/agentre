@@ -43,11 +43,13 @@ type SessionScope = {
   onSelect: (agentId: number, sessionId: number) => void;
 };
 
-// TabsScope —— ⌘1..9 切换 sortedTabs 中第 N 个 Tab，⌘W 关闭当前 Tab。
+// TabsScope —— ⌘1..9 切换 sortedTabs 中第 N 个 Tab，⌘W 关闭当前 Tab，
+// Ctrl+Tab / Ctrl+Shift+Tab 循环切换到下一个 / 上一个 Tab（cycle）。
 // 由 ChatTabsShortcuts 组件注册，挂在 ShortcutsProvider 里的 tabsScopeRef 上。
 type TabsScope = {
   switchTo: (idx: number) => void;
   close: () => void;
+  cycle: (delta: number) => void;
 };
 
 type ShortcutsContextValue = {
@@ -195,6 +197,21 @@ export function ShortcutsProvider({
       // 也会触发 keydown，event.isComposing=true 表明 keystroke 属于输入法，
       // 不能当作 ⌘P / ⌘1-9 / nav.* 来用。
       if (event.isComposing) return;
+
+      // Ctrl+Tab / Ctrl+Shift+Tab —— 浏览器式循环切换到下一个 / 上一个 Tab。
+      // 它不是可重绑的 KeyChord：Ctrl 在 macOS 不是主修饰键，"Tab" 也不在
+      // ACCEPTABLE_KEY 集里，所以在这里作为固定 chord 直接派发给 tabsScope.cycle。
+      // 要求 ctrlKey && !metaKey，从而放行 macOS 的 ⌘Tab（系统 App 切换）。
+      if (
+        event.key === "Tab" &&
+        event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey
+      ) {
+        tabsScopeRef.current?.cycle(event.shiftKey ? -1 : 1);
+        event.preventDefault();
+        return;
+      }
 
       const p = platformRef.current;
       if (!isPrimaryModifier(event, p)) return;

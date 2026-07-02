@@ -1,10 +1,17 @@
 import * as React from "react";
-import { Loader2 } from "lucide-react";
+import {
+  LibraryBig,
+  Loader2,
+  type LucideIcon,
+  Play,
+  Sparkles,
+  SquarePen,
+  Waypoints,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogBody,
@@ -21,19 +28,34 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 
+import { firstLetter, tokenToCssColor } from "../session-avatar";
 import {
   ListChatAgents,
   RunCreate,
   WorkflowList,
 } from "../../../../wailsjs/go/app/App";
 
-// 流程模式: 流程库 | 临时写 | 不使用
-type FlowMode = "library" | "adhoc" | "none";
+// 流程模式: 从零开始(AI 自拆) | 从流程库 | 临时写
+type FlowMode = "none" | "library" | "adhoc";
+
+// 起始流程分段控件配置(顺序即渲染顺序)
+const FLOW_SEGMENTS: { mode: FlowMode; icon: LucideIcon; labelKey: string }[] =
+  [
+    { mode: "none", icon: Sparkles, labelKey: "orchestration.new.flowNone" },
+    {
+      mode: "library",
+      icon: LibraryBig,
+      labelKey: "orchestration.new.flowLibrary",
+    },
+    { mode: "adhoc", icon: SquarePen, labelKey: "orchestration.new.flowAdhoc" },
+  ];
 
 type AgentItem = {
   id: number;
   name: string;
+  avatarColor: string;
   defaultPermissionMode: string;
 };
 
@@ -86,10 +108,12 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
             (a: {
               id: number;
               name: string;
+              avatarColor: string;
               defaultPermissionMode: string;
             }) => ({
               id: a.id,
               name: a.name,
+              avatarColor: a.avatarColor,
               defaultPermissionMode: a.defaultPermissionMode,
             }),
           ),
@@ -155,16 +179,25 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[540px]">
+      <DialogContent className="max-w-[560px]">
         <DialogHeader>
-          <DialogTitle>{t("orchestration.new.title")}</DialogTitle>
+          <div className="flex items-center gap-2.5">
+            <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary-text">
+              <Waypoints className="size-4" aria-hidden="true" />
+            </span>
+            <DialogTitle>{t("orchestration.new.title")}</DialogTitle>
+          </div>
         </DialogHeader>
-        <DialogBody className="flex flex-col gap-3.5">
+        <DialogBody className="flex flex-col gap-4">
           {/* 目标 */}
           <label className="flex flex-col gap-1.5 text-xs">
-            <span className="font-medium text-foreground">
-              {t("orchestration.new.goal")}
-              <span className="ml-0.5 text-destructive">*</span>
+            <span className="flex items-center gap-2">
+              <span className="font-medium text-foreground">
+                {t("orchestration.new.goal")}
+              </span>
+              <span className="ml-auto font-normal text-subtle-foreground">
+                {t("orchestration.new.goalHint")}
+              </span>
             </span>
             <Textarea
               data-testid="run-goal"
@@ -176,7 +209,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
             />
           </label>
 
-          {/* Leader 选择 */}
+          {/* Leader 选择: trigger 与选项均显示身份色头像 + 名字 */}
           <label className="flex flex-col gap-1.5 text-xs">
             <span className="font-medium text-foreground">
               {t("orchestration.new.leader")}
@@ -197,6 +230,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
               <SelectContent>
                 {agents.map((a) => (
                   <SelectItem key={a.id} value={String(a.id)}>
+                    <AgentDot color={a.avatarColor} name={a.name} />
                     {a.name}
                   </SelectItem>
                 ))}
@@ -204,30 +238,38 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
             </Select>
           </label>
 
-          {/* 流程模式: 三态按钮组 */}
+          {/* 起始流程: 分段控件(从零开始 / 从流程库 / 临时) */}
           <div className="flex flex-col gap-1.5 text-xs">
             <span className="font-medium text-foreground">
               {t("orchestration.new.flow")}
             </span>
-            <div className="flex gap-1.5">
-              {(["none", "library", "adhoc"] as FlowMode[]).map((m) => (
-                <Button
-                  key={m}
-                  type="button"
-                  size="sm"
-                  variant={flowMode === m ? "default" : "outline"}
-                  data-testid={`run-flow-mode-${m}`}
-                  onClick={() => setFlowMode(m)}
-                >
-                  {t(
-                    m === "none"
-                      ? "orchestration.new.flowNone"
-                      : m === "library"
-                        ? "orchestration.new.flowLibrary"
-                        : "orchestration.new.flowAdhoc",
-                  )}
-                </Button>
-              ))}
+            <div className="flex gap-0.5 rounded-lg bg-secondary p-0.5">
+              {FLOW_SEGMENTS.map(({ mode, icon: Icon, labelKey }) => {
+                const active = flowMode === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    data-testid={`run-flow-mode-${mode}`}
+                    onClick={() => setFlowMode(mode)}
+                    className={cn(
+                      "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-center text-xs leading-tight transition-colors",
+                      active
+                        ? "border border-border bg-card font-medium text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <Icon
+                      className={cn(
+                        "size-3.5 shrink-0",
+                        active ? "text-primary-text" : "",
+                      )}
+                      aria-hidden="true"
+                    />
+                    <span>{t(labelKey)}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -302,44 +344,48 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
             </label>
           ) : null}
 
-          {/* 限定团队成员（可选），每个 agent 旁显示危险操作姿态徽标 */}
+          {/* 可参与 agent: 身份色药丸 chips 多选; 留空则不限制 */}
           {agents.length > 0 ? (
             <div className="flex flex-col gap-1.5 text-xs">
-              <span className="font-medium text-foreground">
-                {t("orchestration.new.team")}
+              <span className="flex items-center gap-2">
+                <span className="font-medium text-foreground">
+                  {t("orchestration.new.team")}
+                </span>
+                <span
+                  className="ml-auto text-subtle-foreground"
+                  data-testid="run-team-count"
+                >
+                  {t("orchestration.new.teamSelected", {
+                    count: allowedAgentIds.length,
+                  })}
+                </span>
               </span>
-              <div className="flex flex-col gap-2">
-                {agents.map((a) => (
-                  <div key={a.id} className="flex items-center gap-2">
-                    <Checkbox
-                      id={`agent-allowed-${a.id}`}
-                      checked={allowedAgentIds.includes(a.id)}
-                      onCheckedChange={(checked) =>
-                        toggleAllowed(a.id, checked === true)
-                      }
-                    />
-                    <label
-                      htmlFor={`agent-allowed-${a.id}`}
-                      className="flex flex-1 cursor-pointer items-center gap-2"
+              <div className="flex flex-wrap gap-1.5">
+                {agents.map((a) => {
+                  const selected = allowedAgentIds.includes(a.id);
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      data-testid={`run-team-${a.id}`}
+                      aria-pressed={selected}
+                      onClick={() => toggleAllowed(a.id, !selected)}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                        selected
+                          ? "border-primary bg-primary-soft font-medium text-primary-text"
+                          : "border-border bg-card text-muted-foreground hover:text-foreground",
+                      )}
                     >
+                      <AgentDot
+                        color={a.avatarColor}
+                        name={a.name}
+                        showLetter={false}
+                      />
                       <span>{a.name}</span>
-                      {/* 危险操作姿态徽标:
-                          bypassPermissions = 工具调用自动放行（危险）
-                          其他模式(default/approve等) = 需要用户审批（安全）*/}
-                      <span
-                        className={
-                          a.defaultPermissionMode === "bypassPermissions"
-                            ? "rounded px-1 py-0.5 text-2xs font-medium bg-destructive/10 text-destructive"
-                            : "rounded px-1 py-0.5 text-2xs font-medium bg-muted text-muted-foreground"
-                        }
-                      >
-                        {a.defaultPermissionMode === "bypassPermissions"
-                          ? t("orchestration.new.dangerAuto")
-                          : t("orchestration.new.dangerApproval")}
-                      </span>
-                    </label>
-                  </div>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
               <span className="text-2xs text-muted-foreground">
                 {t("orchestration.new.teamHint")}
@@ -356,7 +402,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
         <DialogFooter>
           <Button
             type="button"
-            variant="ghost"
+            variant="outline"
             onClick={() => onOpenChange(false)}
             disabled={submitting}
           >
@@ -370,11 +416,45 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
           >
             {submitting ? (
               <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-            ) : null}
+            ) : (
+              <Play className="size-3.5" aria-hidden="true" />
+            )}
             {t("orchestration.new.create")}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// AgentDot: 身份色圆点/头像; showLetter=true 时显示名字首字(用于 Leader 下拉),
+// 否则只是纯色小圆点(用于可参与 agent chips)。始终 aria-hidden, 名字由旁边文本承载。
+function AgentDot({
+  color,
+  name,
+  showLetter = true,
+}: {
+  color: string;
+  name: string;
+  showLetter?: boolean;
+}) {
+  const bg = tokenToCssColor(color) ?? "#94a3b8";
+  if (!showLetter) {
+    return (
+      <span
+        aria-hidden="true"
+        className="size-2 shrink-0 rounded-full"
+        style={{ backgroundColor: bg }}
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className="flex size-5 shrink-0 items-center justify-center rounded-full text-2xs font-semibold text-white"
+      style={{ backgroundColor: bg }}
+    >
+      {firstLetter(name)}
+    </span>
   );
 }

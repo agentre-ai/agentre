@@ -119,7 +119,8 @@ export function ConversationPanel({
   };
 
   // Status label: reuse board status keys
-  // pending = no tasks yet (not started); done = all tasks done; running/error as-is; idle = in progress but not all done
+  // pending = no tasks yet (not started); done = all tasks done; running/error as-is;
+  // idle = has tasks but not all done and none running (in progress / queued)
   const statusLabelKey =
     agentTaskStatus === "running"
       ? "orchestration.board.statusRunning"
@@ -127,7 +128,9 @@ export function ConversationPanel({
         ? "orchestration.board.statusError"
         : agentTaskStatus === "pending"
           ? "orchestration.board.statusPending"
-          : "orchestration.board.statusDone";
+          : agentTaskStatus === "idle"
+            ? "orchestration.board.statusIdle"
+            : "orchestration.board.statusDone";
 
   return (
     <div

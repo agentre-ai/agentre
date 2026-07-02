@@ -11,10 +11,10 @@ package mock_issue_repo
 
 import (
 	context "context"
-	issue_entity "github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
-	issue_repo "github.com/agentre-ai/agentre/internal/repository/issue_repo"
 	reflect "reflect"
 
+	issue_entity "github.com/agentre-ai/agentre/internal/model/entity/issue_entity"
+	issue_repo "github.com/agentre-ai/agentre/internal/repository/issue_repo"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -114,6 +114,21 @@ func (m *MockIssueRepo) List(ctx context.Context, filter issue_repo.ListFilter) 
 func (mr *MockIssueRepoMockRecorder) List(ctx, filter any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockIssueRepo)(nil).List), ctx, filter)
+}
+
+// StageCounts mocks base method.
+func (m *MockIssueRepo) StageCounts(ctx context.Context, filter issue_repo.ListFilter) (map[string]int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "StageCounts", ctx, filter)
+	ret0, _ := ret[0].(map[string]int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// StageCounts indicates an expected call of StageCounts.
+func (mr *MockIssueRepoMockRecorder) StageCounts(ctx, filter any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StageCounts", reflect.TypeOf((*MockIssueRepo)(nil).StageCounts), ctx, filter)
 }
 
 // Update mocks base method.

@@ -124,6 +124,8 @@ const mockSessionStore: {
 
 // setMessagesSpy 允许断言 setMessages 是否被调用（T29 subagent_activity_started）
 const setMessagesSpy = vi.hoisted(() => vi.fn());
+// reloadSpy 允许断言点「停止」后是否主动 reload 会话（重启遗孤 reconcile 后收回按钮）
+const reloadSpy = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 vi.mock("@/hooks/use-chat-session", () => ({
   useChatSession: () => ({
@@ -131,7 +133,7 @@ vi.mock("@/hooks/use-chat-session", () => ({
     messages: mockSessionStore.messages,
     loading: false,
     error: null,
-    reload: () => Promise.resolve(),
+    reload: reloadSpy,
     setMessages: setMessagesSpy,
   }),
 }));
@@ -281,6 +283,7 @@ function resetStore() {
   runtimeMocks.EventsOn.mockReset();
   runtimeMocks.EventsOn.mockImplementation(() => vi.fn());
   setMessagesSpy.mockClear();
+  reloadSpy.mockClear();
   componentMocks.chatComposerProps.length = 0;
   componentMocks.chatTranscriptProps.length = 0;
   componentMocks.permissionModePillProps.length = 0;
@@ -1839,5 +1842,34 @@ describe("ChatPanel · /new 斜杠命令", () => {
     // 当前会话完全不受影响:既不发消息,也不压缩。
     expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
     expect(appMocks.CompactChatSession).not.toHaveBeenCalled();
+  });
+});
+
+// ─── 停止「重启遗孤」会话:Stop 成功后主动 reload 把死按钮收回去 ──────────────────
+
+describe("ChatPanel · 停止重启遗孤会话", () => {
+  it("Given DB 卡在 running 但本地无活跃 stream, When 点停止且后端 reconcile 成功, Then 主动 reload 收回按钮", async () => {
+    resetStore();
+    // 重启遗孤:turn goroutine 早死了,DB agent_status 还停在 running,本地 store 无 stream。
+    // 后端 Stop 会把它 reconcile 回 idle 并返 stopped:true;但这类会话没有活跃 stream
+    // 不会推 aborted 事件,前端必须主动 reload 才能让「停止」按钮回灰。
+    appMocks.StopChatMessage.mockResolvedValue({ stopped: true });
+    mockSessionStore.session = makeSession({ id: 42, agentStatus: "running" });
+
+    render(<ChatPanel sessionId={42} />);
+
+    const stopBtn = screen.getByRole("button", { name: "Stop" });
+    expect(stopBtn).toBeEnabled();
+
+    // 只断言点击后那一次 reload,排除 mount 期可能的 reload 干扰。
+    reloadSpy.mockClear();
+    fireEvent.click(stopBtn);
+
+    await waitFor(() => {
+      expect(appMocks.StopChatMessage).toHaveBeenCalledWith({ sessionId: 42 });
+    });
+    await waitFor(() => {
+      expect(reloadSpy).toHaveBeenCalled();
+    });
   });
 });

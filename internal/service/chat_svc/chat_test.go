@@ -5141,10 +5141,70 @@ func TestCancelQueued_SessionNotFound(t *testing.T) {
 }
 
 func TestStop_NoActiveTurnReturnsError(t *testing.T) {
-	convey.Convey("Stop 无活跃 turn → ChatStopNoActive", t, func() {
+	convey.Convey("Stop 无活跃 turn 且会话已是终态 → ChatStopNoActive", t, func() {
 		m := setupChatTest(t)
+		// activeCancels 没记录 + DB 会话已是 idle:turn 早自然收尾,没有遗孤要
+		// reconcile,保持原 ChatStopNoActive 语义(前端静默,无害的「太晚了」)。
+		m.session.EXPECT().Find(m.ctx, int64(100)).Return(
+			&chat_entity.Session{ID: 100, AgentStatus: "idle", Status: consts.ACTIVE}, nil)
 		_, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 100})
-		assert.Error(t, err, "activeCancels 没记录就应当返错，不去查 DB")
+		assert.Error(t, err, "无活跃 turn 且会话已终态应返 ChatStopNoActive")
+	})
+}
+
+func TestStop_NoActiveTurnSessionGoneReturnsError(t *testing.T) {
+	convey.Convey("Stop 无活跃 turn 且会话查不到 → ChatStopNoActive", t, func() {
+		m := setupChatTest(t)
+		m.session.EXPECT().Find(m.ctx, int64(101)).Return(nil, nil)
+		_, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 101})
+		assert.Error(t, err, "会话不存在没什么可 reconcile,仍返 ChatStopNoActive")
+	})
+}
+
+func TestStop_OrphanRunningSessionReconciledToIdle(t *testing.T) {
+	convey.Convey("Stop 无活跃 turn 但会话卡在 running(重启遗孤)→ reconcile 回 idle", t, func() {
+		m := setupChatTest(t)
+		// 复现「重启后旧会话停不掉」:app crash / wails dev 热重载 / 第二实例 让 turn
+		// goroutine 死了但 DB agent_status 还停在 running,内存 activeCancels 已空。
+		// 旧逻辑直接返 ChatStopNoActive 被前端静默吞掉 → 会话永远停不下来。新逻辑把它
+		// reconcile 回 idle(等同 abort 收尾),让那颗一直亮着的「停止」按钮真能生效。
+		m.session.EXPECT().Find(m.ctx, int64(200)).Return(
+			&chat_entity.Session{ID: 200, AgentStatus: "running", Status: consts.ACTIVE}, nil)
+		var updated *chat_entity.Session
+		m.session.EXPECT().Update(m.ctx, gomock.Any()).DoAndReturn(
+			func(_ context.Context, s *chat_entity.Session) error {
+				updated = s
+				return nil
+			})
+
+		resp, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 200})
+
+		assert.NoError(t, err, "遗孤会话点停止不应报错")
+		assert.NotNil(t, resp)
+		assert.True(t, resp.Stopped, "应当回报已停止")
+		assert.NotNil(t, updated, "应当把状态落库")
+		assert.Equal(t, "idle", updated.AgentStatus, "遗孤会话应被 reconcile 回 idle")
+	})
+}
+
+func TestStop_OrphanWaitingSessionReconciledToIdle(t *testing.T) {
+	convey.Convey("Stop 无活跃 turn 但会话卡在 waiting → reconcile 回 idle 并清 attention", t, func() {
+		m := setupChatTest(t)
+		m.session.EXPECT().Find(m.ctx, int64(201)).Return(
+			&chat_entity.Session{ID: 201, AgentStatus: "waiting", NeedsAttention: true, Status: consts.ACTIVE}, nil)
+		var updated *chat_entity.Session
+		m.session.EXPECT().Update(m.ctx, gomock.Any()).DoAndReturn(
+			func(_ context.Context, s *chat_entity.Session) error {
+				updated = s
+				return nil
+			})
+
+		resp, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 201})
+
+		assert.NoError(t, err)
+		assert.True(t, resp.Stopped)
+		assert.Equal(t, "idle", updated.AgentStatus)
+		assert.False(t, updated.NeedsAttention, "reconcile 同时清掉 attention 标记")
 	})
 }
 

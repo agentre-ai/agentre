@@ -102,6 +102,64 @@ func TestClientStream_StartThreadAndMapsEvents(t *testing.T) {
 	assert.Equal(t, "/tmp/work", runner.opts[0].Cwd)
 }
 
+func TestStream_IgnoresSubagentThreadMessages(t *testing.T) {
+	// Given a main Codex turn that receives app-server notifications for a
+	// different collab-agent thread.
+	stream := newStream(nil, 0, "thread-main", "turn-main", "")
+	seen := map[string]struct{}{}
+
+	// When the subagent thread streams a message delta.
+	done := stream.handleInbound(context.Background(), appInbound{
+		Kind:   appInboundNotification,
+		Method: appMethodItemAgentMessageDelta,
+		Params: json.RawMessage(`{"threadId":"thread-sub-1","turnId":"turn-sub-1","itemId":"sub-msg-1","delta":"subagent output"}`),
+	}, seen)
+
+	// Then it is not exposed as a main assistant TextDelta and the main thread id
+	// is preserved.
+	require.False(t, done)
+	assertNoStreamEvent(t, stream)
+	assert.Equal(t, "thread-main", stream.SessionID())
+
+	// When the same foreign thread completes an agentMessage item with full text.
+	done = stream.handleInbound(context.Background(), appInbound{
+		Kind:   appInboundNotification,
+		Method: appMethodItemCompleted,
+		Params: json.RawMessage(`{"threadId":"thread-sub-1","turnId":"turn-sub-1","item":{"type":"agentMessage","id":"sub-msg-2","text":"second subagent output"}}`),
+	}, seen)
+
+	// Then that full text is also kept out of the main assistant stream.
+	require.False(t, done)
+	assertNoStreamEvent(t, stream)
+	assert.Equal(t, "thread-main", stream.SessionID())
+
+	// When multiple subagent threads interleave with the main thread.
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`{"threadId":"thread-sub-1","turnId":"turn-sub-1","itemId":"sub-msg-3","delta":"subagent one"}`),
+		json.RawMessage(`{"threadId":"thread-sub-2","turnId":"turn-sub-2","itemId":"sub-msg-4","delta":"subagent two"}`),
+		json.RawMessage(`{"threadId":"thread-main","turnId":"turn-main","itemId":"main-msg-1","delta":"main output"}`),
+	} {
+		done = stream.handleInbound(context.Background(), appInbound{
+			Kind:   appInboundNotification,
+			Method: appMethodItemAgentMessageDelta,
+			Params: raw,
+		}, seen)
+		require.False(t, done)
+	}
+
+	// Then only the main-thread delta is delivered.
+	select {
+	case ev := <-stream.events:
+		require.Equal(t, EventTextDelta, ev.Kind)
+		assert.Equal(t, "thread-main", ev.SessionID)
+		assert.Equal(t, "main output", ev.Text)
+	default:
+		t.Fatalf("expected main thread text event")
+	}
+	assertNoStreamEvent(t, stream)
+	assert.Equal(t, "thread-main", stream.SessionID())
+}
+
 func TestClientStream_ResumeThread(t *testing.T) {
 	// Given an existing provider thread id.
 	runner := &fakeAppServerRunner{t: t}
@@ -1634,4 +1692,13 @@ func TestStream_SteerExpectedTurnMismatchReturnsNoActiveTurn(t *testing.T) {
 	for stream.Next() {
 	}
 	require.NoError(t, stream.Close(ctx))
+}
+
+func assertNoStreamEvent(t *testing.T, stream *Stream) {
+	t.Helper()
+	select {
+	case ev := <-stream.events:
+		t.Fatalf("expected no stream event, got %#v", ev)
+	default:
+	}
 }

@@ -39,4 +39,19 @@ describe("KeyboardShortcutsPanel", () => {
     expect(scope.queryByText(/attention 会话/)).not.toBeInTheDocument();
     expect(scope.queryByText(/sidebar 自上而下/)).not.toBeInTheDocument();
   });
+
+  it("lists the Ctrl+Tab cycle shortcut as a fixed row", () => {
+    renderPanel();
+
+    const chatSection = screen
+      .getByRole("heading", { name: "Chat Page" })
+      .closest("section");
+    const scope = within(chatSection!);
+
+    expect(scope.getByText("Cycle Through Tabs")).toBeInTheDocument();
+    // darwin platform → ⌃ (control) glyph for both directions.
+    expect(
+      scope.getByText("⌃Tab / ⌃⇧Tab · Next / previous tab (wraps around)"),
+    ).toBeInTheDocument();
+  });
 });
