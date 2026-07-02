@@ -980,12 +980,6 @@
       "review": "In review",
       "done": "Done"
     },
-    "columns": {
-      "backlog": "Backlog",
-      "closed": "Closed",
-      "running": "In Progress",
-      "waiting": "Waiting"
-    },
     "form": {
       "stage": "Stage"
     },

@@ -980,12 +980,6 @@
       "review": "待审",
       "done": "已完成"
     },
-    "columns": {
-      "backlog": "待派发",
-      "closed": "已关闭",
-      "running": "进行中",
-      "waiting": "待审批"
-    },
     "form": {
       "stage": "阶段"
     },
