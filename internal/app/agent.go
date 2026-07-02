@@ -20,6 +20,11 @@ func (a *App) MoveAgent(req *agent_svc.MoveAgentRequest) (*agent_svc.MoveAgentRe
 	return agent_svc.Agent().Move(a.ctx, req)
 }
 
+// ReorderAgents 同级密集重排(orderedIds 为该组完整集合)。
+func (a *App) ReorderAgents(req *agent_svc.ReorderAgentsRequest) error {
+	return agent_svc.Agent().Reorder(a.ctx, req)
+}
+
 // DeleteAgent 软删 Agent。CEO 拒绝。
 func (a *App) DeleteAgent(req *agent_svc.DeleteAgentRequest) (*agent_svc.DeleteAgentResponse, error) {
 	return agent_svc.Agent().Delete(a.ctx, req)

@@ -40,6 +40,7 @@ type AgentSvc interface {
 	UploadAvatar(ctx context.Context, req *UploadAvatarRequest) (*UploadAvatarResponse, error)
 	DeleteAvatar(ctx context.Context, req *DeleteAvatarRequest) (*DeleteAvatarResponse, error)
 	SetPinned(ctx context.Context, req *SetPinnedRequest) (*SetPinnedResponse, error)
+	Reorder(ctx context.Context, req *ReorderAgentsRequest) error
 }
 
 type agentSvc struct {
@@ -164,6 +165,47 @@ func (s *agentSvc) Move(ctx context.Context, req *MoveAgentRequest) (*MoveAgentR
 	existing.ParentAgentID = req.NewParentAgentID
 	existing.SortOrder = sortOrder
 	return &MoveAgentResponse{Item: toItem(existing)}, nil
+}
+
+func (s *agentSvc) Reorder(ctx context.Context, req *ReorderAgentsRequest) error {
+	if req == nil || len(req.OrderedIDs) == 0 {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	// 与实体 Check 一致:恰好挂在部门或上级之一。
+	if (req.DepartmentID > 0) == (req.ParentAgentID > 0) {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	var siblings []*agent_entity.Agent
+	var err error
+	if req.ParentAgentID > 0 {
+		siblings, err = agent_repo.Agent().ListByParent(ctx, req.ParentAgentID)
+	} else {
+		siblings, err = agent_repo.Agent().ListByDepartment(ctx, req.DepartmentID)
+	}
+	if err != nil {
+		return err
+	}
+	if len(siblings) != len(req.OrderedIDs) {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	allowed := make(map[int64]struct{}, len(siblings))
+	for _, a := range siblings {
+		allowed[a.ID] = struct{}{}
+	}
+	seen := make(map[int64]struct{}, len(req.OrderedIDs))
+	for _, id := range req.OrderedIDs {
+		if id <= 0 {
+			return i18n.NewError(ctx, code.InvalidParameter)
+		}
+		if _, ok := allowed[id]; !ok {
+			return i18n.NewError(ctx, code.InvalidParameter)
+		}
+		if _, ok := seen[id]; ok {
+			return i18n.NewError(ctx, code.InvalidParameter)
+		}
+		seen[id] = struct{}{}
+	}
+	return agent_repo.Agent().ReorderSiblings(ctx, req.DepartmentID, req.ParentAgentID, req.OrderedIDs)
 }
 
 func (s *agentSvc) Delete(ctx context.Context, req *DeleteAgentRequest) (*DeleteAgentResponse, error) {
