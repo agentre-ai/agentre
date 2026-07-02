@@ -11,9 +11,9 @@ package mock_agentruntime
 
 import (
 	context "context"
-	agentruntime "github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	reflect "reflect"
 
+	agentruntime "github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	gomock "go.uber.org/mock/gomock"
 )
 

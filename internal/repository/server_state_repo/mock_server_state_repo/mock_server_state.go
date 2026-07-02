@@ -11,9 +11,9 @@ package mock_server_state_repo
 
 import (
 	context "context"
-	server_state_entity "github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 	reflect "reflect"
 
+	server_state_entity "github.com/agentre-ai/agentre/internal/model/entity/server_state_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 

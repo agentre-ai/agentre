@@ -11,9 +11,9 @@ package mock_project_repo
 
 import (
 	context "context"
-	project_entity "github.com/agentre-ai/agentre/internal/model/entity/project_entity"
 	reflect "reflect"
 
+	project_entity "github.com/agentre-ai/agentre/internal/model/entity/project_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 

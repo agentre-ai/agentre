@@ -11,10 +11,10 @@ package mock_remote_device_svc
 
 import (
 	context "context"
-	client "github.com/agentre-ai/agentre/internal/daemon/client"
-	remote_device_svc "github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	reflect "reflect"
 
+	client "github.com/agentre-ai/agentre/internal/daemon/client"
+	remote_device_svc "github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	gomock "go.uber.org/mock/gomock"
 )
 

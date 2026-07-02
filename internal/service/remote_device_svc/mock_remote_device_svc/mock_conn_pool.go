@@ -12,10 +12,10 @@ package mock_remote_device_svc
 import (
 	context "context"
 	json "encoding/json"
-	agentruntime "github.com/agentre-ai/agentre/internal/pkg/agentruntime"
-	remote_device_svc "github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	reflect "reflect"
 
+	agentruntime "github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	remote_device_svc "github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	gomock "go.uber.org/mock/gomock"
 )
 

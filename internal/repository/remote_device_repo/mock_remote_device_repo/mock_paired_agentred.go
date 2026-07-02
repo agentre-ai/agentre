@@ -11,9 +11,9 @@ package mock_remote_device_repo
 
 import (
 	context "context"
-	paired_agentred_entity "github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 	reflect "reflect"
 
+	paired_agentred_entity "github.com/agentre-ai/agentre/internal/model/entity/paired_agentred_entity"
 	gomock "go.uber.org/mock/gomock"
 )
 
