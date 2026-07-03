@@ -20,17 +20,17 @@ const (
 
 // OrchestrationRun 一次编排 Run。
 type OrchestrationRun struct {
-	ID            int64  `gorm:"column:id;primaryKey;autoIncrement"`
-	Goal          string `gorm:"column:goal;type:text;not null;default:''"`
-	LeaderAgentID int64  `gorm:"column:leader_agent_id;type:bigint;not null;default:0"`
-	FlowID        int64  `gorm:"column:flow_id;type:bigint;not null;default:0"`     // 编排流程库引用，0=临时/无
-	FlowContent   string `gorm:"column:flow_content;type:text;not null;default:''"` // 创建时快照的流程正文（注入 Leader）
-	Status        string `gorm:"column:status;type:text;not null;default:'pending'"`
-	RootTaskID    int64  `gorm:"column:root_task_id;type:bigint;not null;default:0"`
-	ProjectID     int64  `gorm:"column:project_id;type:bigint;not null;default:0"`
+	ID              int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	Goal            string `gorm:"column:goal;type:text;not null;default:''"`
+	LeaderAgentID   int64  `gorm:"column:leader_agent_id;type:bigint;not null;default:0"`
+	FlowID          int64  `gorm:"column:flow_id;type:bigint;not null;default:0"`     // 编排流程库引用，0=临时/无
+	FlowContent     string `gorm:"column:flow_content;type:text;not null;default:''"` // 创建时快照的流程正文（注入 Leader）
+	Status          string `gorm:"column:status;type:text;not null;default:'pending'"`
+	RootTaskID      int64  `gorm:"column:root_task_id;type:bigint;not null;default:0"`
+	ProjectID       int64  `gorm:"column:project_id;type:bigint;not null;default:0"`
 	AllowedAgentIDs string `gorm:"column:allowed_agent_ids;type:text;not null;default:''"` // JSON []int64；空=全部可参与
-	Createtime    int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
-	Updatetime    int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	Createtime      int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
+	Updatetime      int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
 }
 
 func (*OrchestrationRun) TableName() string { return "orchestration_runs" }
