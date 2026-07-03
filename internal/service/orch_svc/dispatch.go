@@ -37,6 +37,7 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 	if err != nil {
 		return 0, err
 	}
+	// run 定位不到 → 放行(fail-open:可参与是团队编成、非安全边界;勿改成 fail-closed)。
 	if run != nil && !run.IsAgentAllowed(target.ID, run.LeaderAgentID) {
 		return 0, errAgentNotAllowed
 	}

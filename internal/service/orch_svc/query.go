@@ -3,6 +3,9 @@ package orch_svc
 import (
 	"context"
 
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 )
@@ -23,12 +26,21 @@ func (s *orchSvc) ListAllowedAgents(ctx context.Context, sessionID int64) ([]*ag
 	if err != nil {
 		return nil, err
 	}
+	// 定位不到 Run(会话无任务 / DB 错误)→ 放行全部(fail-open:可参与是团队编成、非安全边界)。
 	tk, err := s.tasks.FindBySession(ctx, sessionID)
-	if err != nil || tk == nil {
+	if err != nil {
+		logger.Ctx(ctx).Warn("orch.ListAllowedAgents: 定位会话任务失败,放行全部", zap.Int64("session", sessionID), zap.Error(err))
+		return all, nil
+	}
+	if tk == nil {
 		return all, nil
 	}
 	run, err := s.runs.Find(ctx, tk.RunID)
-	if err != nil || run == nil {
+	if err != nil {
+		logger.Ctx(ctx).Warn("orch.ListAllowedAgents: 取 Run 失败,放行全部", zap.Int64("run", tk.RunID), zap.Error(err))
+		return all, nil
+	}
+	if run == nil {
 		return all, nil
 	}
 	set := run.AllowedSet()

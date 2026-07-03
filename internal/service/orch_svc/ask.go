@@ -33,6 +33,7 @@ func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, quest
 	if err != nil {
 		return "", err
 	}
+	// run 定位不到 → 放行(fail-open:可参与是团队编成、非安全边界;勿改成 fail-closed)。
 	if run != nil && !run.IsAgentAllowed(target.ID, run.LeaderAgentID) {
 		return "", errAgentNotAllowed
 	}
