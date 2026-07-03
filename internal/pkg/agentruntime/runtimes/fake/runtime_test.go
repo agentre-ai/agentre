@@ -256,6 +256,59 @@ func TestRun_PostsHookCreateOnDirective(t *testing.T) {
 	assert.NotEmpty(t, args["scheduleExpr"])
 }
 
+// 子任务结算回报续轮:leader 收到 <task_done…> 轻量通知(切片 A 回报分层信封,取代旧
+// 「【子任务」纯文本)+ 注入 finish 工具 → fake 自动调一次 finish 收口。守护:reportToParent
+// 改信封后编排 e2e 链路仍能自动收口(旧「【子任务」检测已随之更新)。
+func TestRun_AutoFinishesOnTaskDoneEnvelope(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv, snapshot := toolCaptureServer(t)
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 40,
+		UserText:  `<task_done task_id="2" agent="3" call_seq="1">e2e-fake-reply: 子活干完了(read(task_id=2) 看全文)</task_done>`,
+		MCPServers: []agentruntime.MCPServerSpec{{
+			Name:    "orchestrate",
+			URL:     srv.URL + "/mcp/orchestrate/",
+			Headers: map[string]string{"Authorization": "Bearer tok"},
+			Tools:   []string{"dispatch", "finish"},
+		}},
+	})
+	require.NoError(t, err)
+	for range events { //nolint:revive // draining
+	}
+
+	calls := snapshot()
+	require.Len(t, calls["finish"], 1)
+	assert.Equal(t, "e2e-orchestration-complete", calls["finish"][0]["summary"])
+}
+
+// 子任务技术崩溃回报续轮:leader 收到 <task_error…> 通知 → fake 同样自动收口(与 done 同路)。
+func TestRun_AutoFinishesOnTaskErrorEnvelope(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv, snapshot := toolCaptureServer(t)
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 41,
+		UserText:  `<task_error task_id="2" agent="3" reason="运行时崩溃">(read(task_id=2) 看详情)</task_error>`,
+		MCPServers: []agentruntime.MCPServerSpec{{
+			Name:    "orchestrate",
+			URL:     srv.URL + "/mcp/orchestrate/",
+			Headers: map[string]string{"Authorization": "Bearer tok"},
+			Tools:   []string{"dispatch", "finish"},
+		}},
+	})
+	require.NoError(t, err)
+	for range events { //nolint:revive // draining
+	}
+
+	calls := snapshot()
+	require.Len(t, calls["finish"], 1)
+}
+
 // e2e-orch-ask:<agent>:<question> + 注入 orchestrate 工具 → fake 调一次 ask。
 func TestRun_PostsOrchAskOnDirective(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
