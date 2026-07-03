@@ -59,3 +59,31 @@ func TestCreateRun_BuildsRunRootSessionAndTask(t *testing.T) {
 		So(got.Run.Status, ShouldEqual, orch_entity.RunRunning)
 	})
 }
+
+func TestCreateRun_PersistsAllowedAgentIDs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
+
+	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "L"}, nil)
+	runs.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, r *orch_entity.OrchestrationRun) error {
+		So(r.AllowedAgentIDs, ShouldEqual, "[3,4]") // 去重剔零后 JSON
+		r.ID = 100
+		return nil
+	})
+	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).Return(int64(500), nil)
+	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error { tk.ID = 9; return nil })
+	runs.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(500), gomock.Any()).Return(nil)
+
+	Convey("CreateRun 把 allowedAgentIds 去重剔零后落库", t, func() {
+		_, err := orch_svc.Default().CreateRun(context.Background(), &orch_svc.CreateRunRequest{
+			Goal: "g", LeaderAgentID: 2, AllowedAgentIDs: []int64{3, 4, 3, 0},
+		})
+		So(err, ShouldBeNil)
+	})
+}

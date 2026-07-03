@@ -2,6 +2,7 @@ package orch_svc
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -35,10 +36,13 @@ func (s *orchSvc) CreateRun(ctx context.Context, req *CreateRunRequest) (*RunDet
 		return nil, errLeaderNotFound
 	}
 
+	allowed := marshalAllowedAgentIDs(req.AllowedAgentIDs)
+
 	run := &orch_entity.OrchestrationRun{
 		Goal: req.Goal, LeaderAgentID: req.LeaderAgentID,
 		FlowID: req.FlowID, FlowContent: req.FlowContent,
 		ProjectID: req.ProjectID, Status: orch_entity.RunRunning,
+		AllowedAgentIDs: allowed,
 	}
 	if err := s.runs.Create(ctx, run); err != nil {
 		return nil, err
@@ -73,4 +77,22 @@ func (s *orchSvc) CreateRun(ctx context.Context, req *CreateRunRequest) (*RunDet
 
 	logger.Ctx(ctx).Info("orch.CreateRun: 已创建编排 Run", zap.Int64("run", run.ID), zap.Int64("leader", req.LeaderAgentID))
 	return &RunDetail{Run: run, RootTask: root}, nil
+}
+
+// marshalAllowedAgentIDs 去重 + 剔 0 后 JSON 化；空切片 → ""（表示不限制）。
+func marshalAllowedAgentIDs(ids []int64) string {
+	seen := make(map[int64]bool, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
 }
