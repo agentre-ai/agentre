@@ -290,7 +290,7 @@ func orchToolSchemas() []any {
 	return []any{
 		map[string]any{
 			"name":        "agent_list",
-			"description": "列出可调度的全部 agent(id/名称/描述/能力)。据此拆活、按名 dispatch。",
+			"description": "列出你本次可调度的 agent(受可参与范围约束;id/名称/描述/能力)。据此拆活、按名 dispatch。",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		map[string]any{
