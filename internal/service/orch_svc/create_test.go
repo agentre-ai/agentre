@@ -35,6 +35,8 @@ func TestCreateRun_BuildsRunRootSessionAndTask(t *testing.T) {
 		So(in.RunID, ShouldEqual, 100)
 		So(in.ParentSessionID, ShouldEqual, 0)
 		So(in.AgentID, ShouldEqual, 2)
+		// 根会话标题 = Run 目标, 避免侧栏显示「(未命名会话)」。
+		So(in.Title, ShouldEqual, "做个登录页")
 		return 500, nil
 	})
 	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {

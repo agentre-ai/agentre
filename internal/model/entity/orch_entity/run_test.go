@@ -35,3 +35,25 @@ func TestRun_StatusConstsAreObjectiveLifecycle(t *testing.T) {
 	assert.NotContains(t, all, "error")
 	_ = consts.ACTIVE
 }
+
+func TestOrchestrationRun_IsAgentAllowed(t *testing.T) {
+	t.Run("空集合=全部允许", func(t *testing.T) {
+		r := &orch_entity.OrchestrationRun{AllowedAgentIDs: ""}
+		assert.True(t, r.IsAgentAllowed(9, 2))
+		r2 := &orch_entity.OrchestrationRun{AllowedAgentIDs: "[]"}
+		assert.True(t, r2.IsAgentAllowed(9, 2))
+	})
+	t.Run("集合内允许、集合外拒绝", func(t *testing.T) {
+		r := &orch_entity.OrchestrationRun{AllowedAgentIDs: "[3,4]"}
+		assert.True(t, r.IsAgentAllowed(3, 2))
+		assert.False(t, r.IsAgentAllowed(9, 2))
+	})
+	t.Run("Leader 恒允许(即便不在集合)", func(t *testing.T) {
+		r := &orch_entity.OrchestrationRun{AllowedAgentIDs: "[3,4]"}
+		assert.True(t, r.IsAgentAllowed(2, 2))
+	})
+	t.Run("非法 JSON → 不限制", func(t *testing.T) {
+		r := &orch_entity.OrchestrationRun{AllowedAgentIDs: "not-json"}
+		assert.True(t, r.IsAgentAllowed(9, 2))
+	})
+}

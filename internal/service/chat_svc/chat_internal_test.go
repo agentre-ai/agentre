@@ -297,7 +297,7 @@ func TestCreatePermissionMode_DefaultFallback(t *testing.T) {
 			Type:                  string(agent_backend_entity.TypeClaudeCode),
 			DefaultPermissionMode: "plan",
 		}
-		mode, err := createPermissionMode(ctx, be, "")
+		mode, err := createPermissionMode(ctx, be, "", true)
 		assert.NoError(t, err)
 		assert.Equal(t, "plan", mode)
 	})
@@ -307,7 +307,7 @@ func TestCreatePermissionMode_DefaultFallback(t *testing.T) {
 		be := &agent_backend_entity.AgentBackend{
 			Type: string(agent_backend_entity.TypeClaudeCode),
 		}
-		mode, err := createPermissionMode(ctx, be, "")
+		mode, err := createPermissionMode(ctx, be, "", true)
 		assert.NoError(t, err)
 		assert.Equal(t, "", mode)
 	})
@@ -318,7 +318,7 @@ func TestCreatePermissionMode_DefaultFallback(t *testing.T) {
 			Type:                  string(agent_backend_entity.TypeClaudeCode),
 			DefaultPermissionMode: "plan",
 		}
-		mode, err := createPermissionMode(ctx, be, "bypassPermissions")
+		mode, err := createPermissionMode(ctx, be, "bypassPermissions", true)
 		assert.NoError(t, err)
 		assert.Equal(t, "bypassPermissions", mode)
 	})
@@ -338,9 +338,20 @@ func TestCreatePermissionMode_BypassDefaultStartsInPlan(t *testing.T) {
 			Type:                  string(agent_backend_entity.TypeClaudeCode),
 			DefaultPermissionMode: "bypassPermissions",
 		}
-		mode, err := createPermissionMode(ctx, be, "")
+		mode, err := createPermissionMode(ctx, be, "", true)
 		assert.NoError(t, err)
 		assert.Equal(t, "plan", mode)
+	})
+
+	convey.Convey("Given claudecode + bypass default, When planFirst=false (自律会话), Then 直接落 bypass 不强切 plan", t, func() {
+		ctx := context.Background()
+		be := &agent_backend_entity.AgentBackend{
+			Type:                  string(agent_backend_entity.TypeClaudeCode),
+			DefaultPermissionMode: "bypassPermissions",
+		}
+		mode, err := createPermissionMode(ctx, be, "", false)
+		assert.NoError(t, err)
+		assert.Equal(t, "bypassPermissions", mode)
 	})
 
 	convey.Convey("Given claudecode + bypass default, When raw 显式非空, Then 尊重 raw 不强切 plan", t, func() {
@@ -349,7 +360,7 @@ func TestCreatePermissionMode_BypassDefaultStartsInPlan(t *testing.T) {
 			Type:                  string(agent_backend_entity.TypeClaudeCode),
 			DefaultPermissionMode: "bypassPermissions",
 		}
-		mode, err := createPermissionMode(ctx, be, "acceptEdits")
+		mode, err := createPermissionMode(ctx, be, "acceptEdits", true)
 		assert.NoError(t, err)
 		assert.Equal(t, "acceptEdits", mode)
 	})
@@ -362,7 +373,7 @@ func TestCreatePermissionMode_BypassDefaultStartsInPlan(t *testing.T) {
 			Type:                  string(agent_backend_entity.TypeCodex),
 			DefaultPermissionMode: "bypassPermissions",
 		}
-		mode, err := createPermissionMode(ctx, be, "")
+		mode, err := createPermissionMode(ctx, be, "", true)
 		// codex 不允许 bypassPermissions, validate 会回 ChatPermissionModeInvalid;
 		// 关键是这里没有走 plan 分支, 错误从 validateRequestedPermissionMode 抛出。
 		assert.Error(t, err)

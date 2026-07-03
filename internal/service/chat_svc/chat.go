@@ -966,7 +966,7 @@ func (s *chatSvc) StartGoal(ctx context.Context, req *StartGoalRequest) (*StartG
 	if err != nil {
 		return nil, err
 	}
-	permissionMode, err := createPermissionMode(ctx, be, req.PermissionMode)
+	permissionMode, err := createPermissionMode(ctx, be, req.PermissionMode, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1197,7 +1197,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		if perr != nil {
 			return nil, perr
 		}
-		permissionMode, perr := createPermissionMode(ctx, be, req.PermissionMode)
+		permissionMode, perr := createPermissionMode(ctx, be, req.PermissionMode, true)
 		if perr != nil {
 			return nil, perr
 		}
@@ -1648,7 +1648,11 @@ func validateRequestedPermissionMode(ctx context.Context, backendType agent_back
 	return mode, nil
 }
 
-func createPermissionMode(ctx context.Context, be *agent_backend_entity.AgentBackend, raw string) (string, error) {
+// createPermissionMode 解析新建会话的初始权限模式。planFirst 决定是否套用
+// 「先 plan 后 bypass」派生: 交互式会话(有人审阅计划再批准)传 true, 自律会话
+// (编排子会话 / subagent 调用, 没人审批)传 false —— 后者必须尊重配置的 bypass
+// 直接起手, 否则会卡在 plan mode 出计划等审批, 配的 bypass 从未生效。
+func createPermissionMode(ctx context.Context, be *agent_backend_entity.AgentBackend, raw string, planFirst bool) (string, error) {
 	if be == nil {
 		return "", nil
 	}
@@ -1656,12 +1660,12 @@ func createPermissionMode(ctx context.Context, be *agent_backend_entity.AgentBac
 	if strings.TrimSpace(raw) != "" {
 		return validateRequestedPermissionMode(ctx, backendType, raw)
 	}
-	// claudecode + admin 配 bypass 时, 新会话以 plan 起手: CLI 仍按 bypass 启动(由
+	// claudecode + admin 配 bypass 时, 交互式新会话以 plan 起手: CLI 仍按 bypass 启动(由
 	// runtime resolveLaunchMode 保证), session.PermissionMode=plan 让前端 pill 显
 	// 示 Plan, spawn 后由 runtime SetPermissionMode 把 CLI 切到 plan。"先 plan 后
 	// bypass"工作流靠这条派生 + 现有 PlanApproveCard 主按钮(launch==bypass → Bypass)
-	// 完成闭环。
-	if be.IsClaudeCode() && strings.TrimSpace(be.DefaultPermissionMode) == "bypassPermissions" {
+	// 完成闭环。自律会话(planFirst=false)跳过这条, 直接落 bypass。
+	if planFirst && be.IsClaudeCode() && strings.TrimSpace(be.DefaultPermissionMode) == "bypassPermissions" {
 		return "plan", nil
 	}
 	// backend.DefaultPermissionMode 管理员预设兜底(目前 entity.Check 仅放行
@@ -3620,7 +3624,8 @@ func (s *chatSvc) createUserChatSession(ctx context.Context, agentID, projectID 
 	if agentID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
-	permissionMode := s.launchPermissionModeForAgent(ctx, agentID)
+	// 普通用户会话是交互式的(有人审阅), 套用「先 plan 后 bypass」派生 → planFirst=true。
+	permissionMode := s.launchPermissionModeForAgent(ctx, agentID, true)
 	sess := &chat_entity.Session{
 		AgentID:                agentID,
 		ProjectID:              projectID,
@@ -3645,7 +3650,8 @@ func (s *chatSvc) createSubagentSession(ctx context.Context, agentID, projectID 
 	if agentID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
-	permissionMode := s.launchPermissionModeForAgent(ctx, agentID)
+	// 子 agent 调用是自律执行(没人审阅计划), 直接尊重配置的 bypass → planFirst=false。
+	permissionMode := s.launchPermissionModeForAgent(ctx, agentID, false)
 	sess := &chat_entity.Session{
 		AgentID:                agentID,
 		ProjectID:              projectID,
@@ -3670,7 +3676,8 @@ func (s *chatSvc) createOrchChildSession(ctx context.Context, agentID, projectID
 	if agentID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
-	permissionMode := s.launchPermissionModeForAgent(ctx, agentID)
+	// 编排子会话是自律执行(编排里没人审批计划), 直接尊重配置的 bypass → planFirst=false。
+	permissionMode := s.launchPermissionModeForAgent(ctx, agentID, false)
 	sess := &chat_entity.Session{
 		AgentID:                agentID,
 		ProjectID:              projectID,
@@ -3696,7 +3703,9 @@ func (s *chatSvc) createOrchChildSession(ctx context.Context, agentID, projectID
 // 只做轻量只读解析(agent → backend → createPermissionMode), 不做 provider/gateway 可聊性校验
 // —— 那些属于 send 起手时的职责。解析不出(agent/后端缺失或后端无权限模式概念)时返回空串,
 // 由 runtime 首轮回填 at_launch 兜底。
-func (s *chatSvc) launchPermissionModeForAgent(ctx context.Context, agentID int64) string {
+// planFirst: 交互式会话传 true(套用「先 plan 后 bypass」派生), 自律会话
+// (编排子会话 / subagent)传 false(直接尊重配置的 bypass)。
+func (s *chatSvc) launchPermissionModeForAgent(ctx context.Context, agentID int64, planFirst bool) string {
 	a, err := agent_repo.Agent().Find(ctx, agentID)
 	if err != nil || a == nil {
 		return ""
@@ -3705,7 +3714,7 @@ func (s *chatSvc) launchPermissionModeForAgent(ctx context.Context, agentID int6
 	if err != nil || be == nil {
 		return ""
 	}
-	mode, err := createPermissionMode(ctx, be, "")
+	mode, err := createPermissionMode(ctx, be, "", planFirst)
 	if err != nil {
 		return ""
 	}

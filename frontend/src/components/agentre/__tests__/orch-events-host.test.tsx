@@ -13,6 +13,13 @@ vi.mock("../../../../wailsjs/go/app/App", () => ({
   RunList: vi.fn().mockResolvedValue([]),
 }));
 
+// 拦截 sidebar-reload: 断言 orch 事件确实触发了左侧 sidebar 刷新, 同时避免拉起
+// 两个真实 store 的 reload(会打其它 wails 绑定)。
+vi.mock("@/stores/sidebar-reload", () => ({
+  reloadSidebarSources: vi.fn(),
+}));
+
+import { reloadSidebarSources } from "@/stores/sidebar-reload";
 import { useOrchRunListStore } from "@/stores/orch-run-list-store";
 import { useOrchRunStore } from "@/stores/orch-run-store";
 import { EventsOff, EventsOn } from "../../../../wailsjs/runtime/runtime";
@@ -68,6 +75,30 @@ describe("OrchEventsHost", () => {
 
     expect(onRunEvent).toHaveBeenCalledWith(ORCH_EVENTS.updated, payload);
     expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("收到 orch:run:updated 时刷新左侧 sidebar(新派发/新建的子会话进侧栏)", () => {
+    const handlers = mountHostAndGetHandlers();
+    vi.spyOn(useOrchRunStore.getState(), "onRunEvent");
+    vi.spyOn(useOrchRunListStore.getState(), "load").mockResolvedValue();
+    (reloadSidebarSources as ReturnType<typeof vi.fn>).mockClear();
+
+    const h = handlers.get(ORCH_EVENTS.updated);
+    expect(h, "必须订阅 orch:run:updated").toBeDefined();
+    h!({ runId: 42 });
+
+    expect(reloadSidebarSources).toHaveBeenCalledTimes(1);
+  });
+
+  it("收到 orch:run:ask 时也刷新左侧 sidebar(ask 会新建子会话)", () => {
+    const handlers = mountHostAndGetHandlers();
+    (reloadSidebarSources as ReturnType<typeof vi.fn>).mockClear();
+
+    const h = handlers.get(ORCH_EVENTS.ask);
+    expect(h, "必须订阅 orch:run:ask").toBeDefined();
+    h!({ runId: 9 });
+
+    expect(reloadSidebarSources).toHaveBeenCalledTimes(1);
   });
 
   it("收到 orch:run:deadlock 时转发 onRunEvent(含 cycle)并触发 load", async () => {

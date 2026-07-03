@@ -2270,6 +2270,15 @@
       "team": "可参与 agent",
       "teamSelected": "已选 {{count}}",
       "teamHint": "留空则不限制可参与的 Agent",
+      "teamAllAgents": "全部 Agent",
+      "teamUngrouped": "未分组",
+      "teamSelectAll": "全选",
+      "teamDeptMembers": "{{count}} 名成员",
+      "teamSummary": "本次团队",
+      "teamTotal": "共 {{count}} 人",
+      "teamSearchPlaceholder": "搜索 agent…",
+      "teamSearchEmpty": "无匹配 agent",
+      "teamSearchResults": "搜索结果",
       "flow": "编排流程",
       "flowNone": "从零开始（AI 自动拆解）",
       "flowAdhoc": "临时",
@@ -2279,7 +2288,9 @@
       "flowContent": "流程内容",
       "flowContentPlaceholder": "输入或粘贴流程定义…",
       "flowManage": "管理流程库",
-      "create": "创建并启动 Run"
+      "create": "创建并启动 Run",
+      "project": "项目",
+      "projectNone": "无（使用 Agent 默认目录）"
     },
     "list": {
       "newButton": "新建编排",

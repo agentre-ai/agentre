@@ -46,6 +46,7 @@ func (s *orchSvc) CreateRun(ctx context.Context, req *CreateRunRequest) (*RunDet
 
 	rootSessionID, err := s.chat.EnsureOrchSession(ctx, EnsureOrchSessionInput{
 		AgentID: req.LeaderAgentID, ParentSessionID: 0, ProjectID: req.ProjectID, RunID: run.ID,
+		Title: req.Goal, // 根会话标题 = Run 目标(首条消息), 与普通会话首消息起标题对齐。
 	})
 	if err != nil {
 		return nil, err

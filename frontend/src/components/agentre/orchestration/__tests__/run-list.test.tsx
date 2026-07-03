@@ -12,6 +12,8 @@ vi.mock("../../../../../wailsjs/go/app/App", () => ({
   ListChatAgents: vi.fn().mockResolvedValue({ agents: [] }),
   WorkflowList: vi.fn().mockResolvedValue({ items: [] }),
   RunCreate: vi.fn(),
+  ProjectListTree: vi.fn().mockResolvedValue([]),
+  LoadOrg: vi.fn().mockResolvedValue({ departments: [], agents: [] }),
 }));
 
 import { useOrchRunListStore } from "../../../../stores/orch-run-list-store";

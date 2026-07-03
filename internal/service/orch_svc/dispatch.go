@@ -33,11 +33,18 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 		return 0, err
 	}
 
+	projectID, err := s.runProjectID(ctx, parent.RunID)
+	if err != nil {
+		return 0, err
+	}
+
 	childSession, err := s.chat.EnsureOrchSession(ctx, EnsureOrchSessionInput{
 		AgentID:         target.ID,
 		ParentSessionID: parentSessionID,
 		RunID:           parent.RunID,
 		Isolate:         isolate,
+		Title:           brief, // 子会话标题 = 派发 brief(首条消息), 避免侧栏显示「(未命名会话)」。
+		ProjectID:       projectID,
 	})
 	if err != nil {
 		return 0, err
@@ -82,4 +89,16 @@ func (s *orchSvc) fireEnqueue(runID int64, task *orch_entity.Task, brief string)
 		return
 	}
 	s.enqueueRun(runID, task, brief)
+}
+
+// runProjectID 查询 Run 并返回其 ProjectID；Run 不存在时返回 0（无工作目录）。
+func (s *orchSvc) runProjectID(ctx context.Context, runID int64) (int64, error) {
+	run, err := s.runs.Find(ctx, runID)
+	if err != nil {
+		return 0, err
+	}
+	if run == nil {
+		return 0, nil
+	}
+	return run.ProjectID, nil
 }

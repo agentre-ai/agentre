@@ -29,7 +29,7 @@ func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, quest
 	if err != nil || target == nil {
 		return "", errAgentNotFound
 	}
-	toSession, err := s.resolveOrCreateAgentSession(ctx, from.RunID, target.ID)
+	toSession, err := s.resolveOrCreateAgentSession(ctx, from.RunID, target.ID, question)
 	if err != nil {
 		return "", err
 	}
@@ -127,7 +127,8 @@ func (s *orchSvc) Reply(_ context.Context, replierAgentID int64, askID, answer s
 }
 
 // resolveOrCreateAgentSession 取目标 agent 在 Run 内的活会话（带上下文）；没有则新建一条。
-func (s *orchSvc) resolveOrCreateAgentSession(ctx context.Context, runID, agentID int64) (int64, error) {
+// title 仅在新建时用作会话标题种子(取提问内容)，复用已有会话时忽略。
+func (s *orchSvc) resolveOrCreateAgentSession(ctx context.Context, runID, agentID int64, title string) (int64, error) {
 	rows, err := s.tasks.ListByRun(ctx, runID)
 	if err != nil {
 		return 0, err
@@ -146,7 +147,11 @@ func (s *orchSvc) resolveOrCreateAgentSession(ctx context.Context, runID, agentI
 		return fallback, nil // 退而求其次：该 agent 在本 Run 的历史会话（仍带上下文）
 	}
 	// 该 agent 在本 Run 还没有会话 → 建一条（无前置任务上下文，只能据 persona + 问题答）。
-	return s.chat.EnsureOrchSession(ctx, EnsureOrchSessionInput{AgentID: agentID, RunID: runID})
+	projectID, err := s.runProjectID(ctx, runID)
+	if err != nil {
+		return 0, err
+	}
+	return s.chat.EnsureOrchSession(ctx, EnsureOrchSessionInput{AgentID: agentID, RunID: runID, Title: title, ProjectID: projectID})
 }
 
 // recordAskWait/clearAskWait 维护 ask 等待边（死锁检测用，Task 13 读 askWaits）。
