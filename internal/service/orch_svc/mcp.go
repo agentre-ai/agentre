@@ -152,6 +152,8 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 		m.handleSend(w, r, id, ref, args)
 	case "finish":
 		m.handleFinish(w, r, id, ref, args)
+	case "report":
+		m.handleReport(w, r, id, ref, args)
 	default:
 		writeRPCError(w, id, -32601, "unknown tool")
 	}
@@ -260,6 +262,25 @@ func (m *orchMCP) handleFinish(w http.ResponseWriter, r *http.Request, id json.R
 	writeRPCResult(w, id, textResult("已收口"))
 }
 
+func (m *orchMCP) handleReport(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
+	var p struct {
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		writeRPCError(w, id, -32700, "parse error: "+err.Error())
+		return
+	}
+	if p.Note == "" {
+		writeRPCError(w, id, -32602, "note is required")
+		return
+	}
+	if err := m.svc.Report(r.Context(), ref.sessionID, p.Note); err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult("已汇报"))
+}
+
 // textResult 将文本包装成 MCP content 格式（Tasks 10/11/12 复用）。
 func textResult(s string) map[string]any {
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": s}}}
@@ -350,6 +371,17 @@ func orchToolSchemas() []any {
 				"required": []string{"summary"},
 				"properties": map[string]any{
 					"summary": map[string]any{"type": "string"},
+				},
+			},
+		},
+		map[string]any{
+			"name":        "report",
+			"description": "运行中向派发你的上级主动汇报一条中途进展/中间结论(不收口、不改状态)。默认完成时上级只收到通知,主动 report/finish 才把内容内联给它。",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"note"},
+				"properties": map[string]any{
+					"note": map[string]any{"type": "string"},
 				},
 			},
 		},
