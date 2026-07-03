@@ -38,6 +38,7 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 		ParentSessionID: parentSessionID,
 		RunID:           parent.RunID,
 		Isolate:         isolate,
+		Title:           brief, // 子会话标题 = 派发 brief(首条消息), 避免侧栏显示「(未命名会话)」。
 	})
 	if err != nil {
 		return 0, err

@@ -43,6 +43,7 @@ func (a *orchChatAdapter) EnsureOrchSession(ctx context.Context, in orch_svc.Ens
 		AgentID:   in.AgentID,
 		ProjectID: in.ProjectID,
 		RunID:     in.RunID,
+		Title:     in.Title,
 	})
 	if err != nil {
 		return 0, err

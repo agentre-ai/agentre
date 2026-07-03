@@ -76,6 +76,51 @@ func TestAsk_InjectLiveSessionThenReplyResolves(t *testing.T) {
 	})
 }
 
+// TestAsk_CreatesSessionWithQuestionTitle: 目标 agent 在 Run 内还没有会话时,
+// Ask 新建一条会话, 其标题应为提问内容(而非落空 → 侧栏显示「(未命名会话)」)。
+func TestAsk_CreatesSessionWithQuestionTitle(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, nil)
+
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500}, nil)
+	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
+	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "李"}, nil).AnyTimes()
+	// 王(agentID=1)在该 Run 无任何会话 → resolveOrCreateAgentSession 走新建分支。
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 9, AgentID: 2, SessionID: 500, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
+	titleCh := make(chan string, 1)
+	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, in orch_svc.EnsureOrchSessionInput) (int64, error) {
+		titleCh <- in.Title
+		return 800, nil
+	})
+	injCh := make(chan string, 1)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(800), gomock.Any()).DoAndReturn(func(_ context.Context, _ int64, msg string) error {
+		injCh <- msg
+		return nil
+	})
+
+	Convey("ask 新建会话时以提问内容为标题", t, func() {
+		done := make(chan string, 1)
+		go func() {
+			ans, _ := orch_svc.Default().Ask(context.Background(), 500, "王", "鉴权用什么?")
+			done <- ans
+		}()
+		So(<-titleCh, ShouldEqual, "鉴权用什么?")
+		askID := parseAskID(<-injCh)
+		So(askID, ShouldNotBeBlank)
+		So(orch_svc.Default().Reply(context.Background(), 1, askID, "用 session+cookie"), ShouldBeNil)
+		select {
+		case ans := <-done:
+			So(ans, ShouldEqual, "用 session+cookie")
+		case <-time.After(time.Second):
+			t.Fatal("ask 未在超时内返回")
+		}
+	})
+}
+
 func TestAsk_BusyTargetSteersIntoCurrentTurn(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)

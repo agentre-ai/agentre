@@ -38,6 +38,8 @@ func TestDispatch_SpawnsChildSessionAndTask(t *testing.T) {
 		So(in.RunID, ShouldEqual, 100)
 		So(in.AgentID, ShouldEqual, 3)
 		So(in.Isolate, ShouldBeTrue)
+		// 子会话标题 = 派发 brief, 避免侧栏显示「(未命名会话)」。
+		So(in.Title, ShouldEqual, "实现登录表单")
 		return 600, nil
 	})
 	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {

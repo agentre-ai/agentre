@@ -16,6 +16,10 @@ type EnsureOrchSessionInput struct {
 	ProjectID       int64
 	RunID           int64
 	Isolate         bool // true = 独立 git worktree
+	// Title 会话标题种子文本（Leader=Goal、派发子会话=Brief、Ask 会话=问题）。
+	// 编排会话是先建会话再发消息，走不到 chat_svc 首条消息自动起标题的分支，
+	// 故在此显式传入, 否则标题落空、侧栏显示「(未命名会话)」。
+	Title string
 }
 
 // TurnDone 一轮跑完的信号（结果文本另经 FinalAssistantText 取）。
