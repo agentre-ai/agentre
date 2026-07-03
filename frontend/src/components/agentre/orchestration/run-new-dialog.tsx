@@ -34,9 +34,11 @@ import { useWorkflowManagerStore } from "@/stores/workflow-manager-store";
 import { firstLetter, tokenToCssColor } from "../session-avatar";
 import {
   ListChatAgents,
+  ProjectListTree,
   RunCreate,
   WorkflowList,
 } from "../../../../wailsjs/go/app/App";
+import { app } from "../../../../wailsjs/go/models";
 
 // 流程模式: 从零开始(AI 自拆) | 从流程库 | 临时写
 type FlowMode = "none" | "library" | "adhoc";
@@ -67,6 +69,20 @@ type WorkflowOption = {
   outline: string[];
 };
 
+type FlatProject = { id: number; name: string; depth: number };
+
+// flattenTree 把项目树拍平成 [{id,name,depth}] 供下拉用(与 project-new-dialog 同款，
+// depth 决定缩进)。就地复刻以避免改动无关文件。
+function flattenTree(nodes: app.ProjectTreeNode[], depth = 0): FlatProject[] {
+  const out: FlatProject[] = [];
+  for (const n of nodes) {
+    if (!n.project) continue;
+    out.push({ id: n.project.id, name: n.project.name, depth });
+    if (n.children) out.push(...flattenTree(n.children, depth + 1));
+  }
+  return out;
+}
+
 export type RunNewDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -78,6 +94,8 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
 
   const [agents, setAgents] = React.useState<AgentItem[]>([]);
   const [workflows, setWorkflows] = React.useState<WorkflowOption[]>([]);
+  const [projects, setProjects] = React.useState<FlatProject[]>([]);
+  const [projectId, setProjectId] = React.useState(0);
 
   const [goal, setGoal] = React.useState("");
   const [leaderId, setLeaderId] = React.useState(0);
@@ -99,6 +117,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
     setFlowId(0);
     setFlowContent("");
     setAllowedAgentIds([]);
+    setProjectId(0);
     setError(null);
 
     // 并发加载 agents 和 workflows
@@ -141,6 +160,10 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
         );
       })
       .catch(() => setWorkflows([]));
+
+    ProjectListTree()
+      .then((tree) => setProjects(flattenTree(tree ?? [])))
+      .catch(() => setProjects([]));
   }, [open]);
 
   // 是否可以提交: 目标非空 + 已选 Leader(Leader 是必选的编排枢纽,leaderAgentId=0 无效)
@@ -164,7 +187,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
         // 流程库模式传 flowId, 临时写传 flowContent, 留空两者为 0/""
         flowId: flowMode === "library" ? flowId : 0,
         flowContent: flowMode === "adhoc" ? flowContent : "",
-        projectId: 0,
+        projectId,
         allowedAgentIds,
       });
       // run 可能为 undefined, 用可选链保护
@@ -356,6 +379,37 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
               />
             </label>
           ) : null}
+
+          {/* 项目: 可选; 选中后该 Run 全部 agent 以项目目录为工作目录 */}
+          <label className="flex flex-col gap-1.5 text-xs">
+            <span className="font-medium text-foreground">
+              {t("orchestration.new.project")}
+            </span>
+            <Select
+              value={String(projectId)}
+              onValueChange={(v) => setProjectId(Number(v))}
+            >
+              <SelectTrigger
+                data-testid="run-project"
+                aria-label={t("orchestration.new.project")}
+                className="h-9 text-xs"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="0">
+                  {t("orchestration.new.projectNone")}
+                </SelectItem>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={String(p.id)}>
+                    <span style={{ paddingInlineStart: `${p.depth * 12}px` }}>
+                      {p.name}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
 
           {/* 可参与 agent: 身份色药丸 chips 多选; 留空则不限制 */}
           {agents.length > 0 ? (

@@ -8,6 +8,7 @@ const appMocks = vi.hoisted(() => ({
   RunCreate: vi.fn(),
   ListChatAgents: vi.fn(),
   WorkflowList: vi.fn(),
+  ProjectListTree: vi.fn(),
 }));
 
 vi.mock("../../../../../wailsjs/go/app/App", () => appMocks);
@@ -41,6 +42,9 @@ describe("RunNewDialog", () => {
       ],
     });
     appMocks.WorkflowList.mockResolvedValue({ items: [] });
+    appMocks.ProjectListTree.mockResolvedValue([
+      { project: { id: 5, name: "我的项目" }, children: [] },
+    ]);
   });
 
   it("填目标 + 选 Leader → 点创建 调 RunCreate(带 leaderAgentId)", async () => {
@@ -232,6 +236,43 @@ describe("RunNewDialog", () => {
       screen.getByTestId("run-flow-mode-library").click();
       fireEvent.click(await screen.findByTestId("run-flow-manage"));
       expect(useWorkflowManagerStore.getState().open).toBe(true);
+    });
+  });
+
+  describe("项目选择", () => {
+    it("默认不选项目 → RunCreate 带 projectId: 0", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      renderDialog();
+      fireEvent.change(await screen.findByTestId("run-goal"), {
+        target: { value: "做登录页" },
+      });
+      await user.click(screen.getByTestId("run-leader"));
+      await user.click(await screen.findByRole("option", { name: "架构师" }));
+      fireEvent.click(screen.getByTestId("run-create"));
+      await waitFor(() =>
+        expect(appMocks.RunCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ projectId: 0 }),
+        ),
+      );
+    });
+
+    it("选中项目 → RunCreate 带该 projectId", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      renderDialog();
+      await waitFor(() => expect(appMocks.ProjectListTree).toHaveBeenCalled());
+      fireEvent.change(await screen.findByTestId("run-goal"), {
+        target: { value: "做登录页" },
+      });
+      await user.click(screen.getByTestId("run-leader"));
+      await user.click(await screen.findByRole("option", { name: "架构师" }));
+      await user.click(screen.getByTestId("run-project"));
+      await user.click(await screen.findByRole("option", { name: /我的项目/ }));
+      fireEvent.click(screen.getByTestId("run-create"));
+      await waitFor(() =>
+        expect(appMocks.RunCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ projectId: 5 }),
+        ),
+      );
     });
   });
 });

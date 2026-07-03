@@ -2279,7 +2279,9 @@
       "flowContent": "Flow Content",
       "flowContentPlaceholder": "Enter or paste flow definition…",
       "flowManage": "Manage library",
-      "create": "Create & start run"
+      "create": "Create & start run",
+      "project": "Project",
+      "projectNone": "None (agent default directory)"
     },
     "list": {
       "newButton": "New Orchestration",
