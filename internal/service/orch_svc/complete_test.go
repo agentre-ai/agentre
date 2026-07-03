@@ -227,9 +227,9 @@ func TestWatchCompletion_TechnicalErrorEscalates(t *testing.T) {
 	})
 }
 
-// TestWatchCompletion_PrefersFinishSummary — 子任务已被 agent 显式 finish(Result 已落库)时,
-// watcher 的 idle 分支优先用该 Result 作为回报正文,而非 FinalAssistantText(C1:finish 与
-// watcher 不再各回报一次,watcher 是唯一回报者且认显式小结)。
+// TestWatchCompletion_PrefersFinishSummary — 子任务已被 agent 显式 finish(Summary 已落库)时,
+// watcher 的 idle 分支据 Summary 内联 task_report 作为回报正文(Result 始终落末条正文供 read);
+// FinalAssistantText 不作为回报正文(C1:finish 与 watcher 不再各回报一次,watcher 是唯一回报者且认显式小结)。
 func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -242,7 +242,7 @@ func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 
 	turnCh := make(chan orch_svc.TurnDone, 1)
 	chat.EXPECT().AgentStatus(gomock.Any(), int64(600)).Return("idle", nil)
-	// FinalAssistantText 仍可能被调用(退路),但本例 fresh.Result 非空 → 不作为回报来源。
+	// FinalAssistantText 始终落 Result(供 read),但本例 fresh.Summary 非空 → 回报正文取 Summary。
 	chat.EXPECT().FinalAssistantText(gomock.Any(), int64(600)).Return("末条 assistant 正文(不应被采用)", nil).AnyTimes()
 	// idle 分支重读子任务:Summary 已由先前 finish 写入。
 	tasks.EXPECT().Find(gomock.Any(), int64(13)).Return(
@@ -282,6 +282,7 @@ func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 		So(capturedSendMsg, ShouldContainSubstring, "<task_report")
 		So(capturedSendMsg, ShouldContainSubstring, "final=\"true\"")
 		So(capturedSendMsg, ShouldContainSubstring, finishSummary)
+		So(capturedSendMsg, ShouldNotContainSubstring, "不应被采用")
 	})
 }
 
