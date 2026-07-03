@@ -141,7 +141,7 @@ func (s *orchSvc) MCPHandler() http.Handler {
 func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, name string, args json.RawMessage) {
 	switch name {
 	case "agent_list":
-		m.handleAgentList(w, r, id)
+		m.handleAgentList(w, r, id, ref)
 	case "dispatch":
 		m.handleDispatch(w, r, id, ref, args)
 	case "ask":
@@ -272,8 +272,8 @@ type agentListItem struct {
 	SystemBadge string `json:"systemBadge,omitempty"`
 }
 
-func (m *orchMCP) handleAgentList(w http.ResponseWriter, r *http.Request, id json.RawMessage) {
-	list, err := m.svc.agents.List(r.Context())
+func (m *orchMCP) handleAgentList(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef) {
+	list, err := m.svc.ListAllowedAgents(r.Context(), ref.sessionID)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
