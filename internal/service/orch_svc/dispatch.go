@@ -97,15 +97,3 @@ func (s *orchSvc) fireEnqueue(runID int64, task *orch_entity.Task, brief string)
 	}
 	s.enqueueRun(runID, task, brief)
 }
-
-// runProjectID 查询 Run 并返回其 ProjectID；Run 不存在时返回 0（无工作目录）。
-func (s *orchSvc) runProjectID(ctx context.Context, runID int64) (int64, error) {
-	run, err := s.runs.Find(ctx, runID)
-	if err != nil {
-		return 0, err
-	}
-	if run == nil {
-		return 0, nil
-	}
-	return run.ProjectID, nil
-}
