@@ -33,9 +33,16 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 		return 0, err
 	}
 
-	projectID, err := s.runProjectID(ctx, parent.RunID)
+	run, err := s.runs.Find(ctx, parent.RunID)
 	if err != nil {
 		return 0, err
+	}
+	if run != nil && !run.IsAgentAllowed(target.ID, run.LeaderAgentID) {
+		return 0, errAgentNotAllowed
+	}
+	var projectID int64
+	if run != nil {
+		projectID = run.ProjectID
 	}
 
 	childSession, err := s.chat.EnsureOrchSession(ctx, EnsureOrchSessionInput{

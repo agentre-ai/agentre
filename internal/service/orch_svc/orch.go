@@ -22,9 +22,10 @@ type askEnvelope struct {
 }
 
 var (
-	errLeaderNotFound = errors.New("orch: leader agent not found")
-	errAgentNotFound  = errors.New("orch: target agent not found")
-	errRunNotActive   = errors.New("orch: run not active")
+	errLeaderNotFound  = errors.New("orch: leader agent not found")
+	errAgentNotFound   = errors.New("orch: target agent not found")
+	errAgentNotAllowed = errors.New("orch: target agent not in allowed set")
+	errRunNotActive    = errors.New("orch: run not active")
 )
 
 type orchSvc struct {
