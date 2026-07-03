@@ -83,17 +83,21 @@ func TestAsk_CreatesSessionWithQuestionTitle(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
-	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, nil)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
 	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "李"}, nil).AnyTimes()
 	// 王(agentID=1)在该 Run 无任何会话 → resolveOrCreateAgentSession 走新建分支。
 	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 9, AgentID: 2, SessionID: 500, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100, ProjectID: 55}, nil)
 	titleCh := make(chan string, 1)
+	projectIDCh := make(chan int64, 1)
 	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, in orch_svc.EnsureOrchSessionInput) (int64, error) {
 		titleCh <- in.Title
+		projectIDCh <- in.ProjectID
 		return 800, nil
 	})
 	injCh := make(chan string, 1)
@@ -102,13 +106,14 @@ func TestAsk_CreatesSessionWithQuestionTitle(t *testing.T) {
 		return nil
 	})
 
-	Convey("ask 新建会话时以提问内容为标题", t, func() {
+	Convey("ask 新建会话时以提问内容为标题且继承 Run 的 ProjectID", t, func() {
 		done := make(chan string, 1)
 		go func() {
 			ans, _ := orch_svc.Default().Ask(context.Background(), 500, "王", "鉴权用什么?")
 			done <- ans
 		}()
 		So(<-titleCh, ShouldEqual, "鉴权用什么?")
+		So(<-projectIDCh, ShouldEqual, int64(55))
 		askID := parseAskID(<-injCh)
 		So(askID, ShouldNotBeBlank)
 		So(orch_svc.Default().Reply(context.Background(), 1, askID, "用 session+cookie"), ShouldBeNil)

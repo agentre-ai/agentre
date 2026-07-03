@@ -147,7 +147,11 @@ func (s *orchSvc) resolveOrCreateAgentSession(ctx context.Context, runID, agentI
 		return fallback, nil // 退而求其次：该 agent 在本 Run 的历史会话（仍带上下文）
 	}
 	// 该 agent 在本 Run 还没有会话 → 建一条（无前置任务上下文，只能据 persona + 问题答）。
-	return s.chat.EnsureOrchSession(ctx, EnsureOrchSessionInput{AgentID: agentID, RunID: runID, Title: title})
+	projectID, err := s.runProjectID(ctx, runID)
+	if err != nil {
+		return 0, err
+	}
+	return s.chat.EnsureOrchSession(ctx, EnsureOrchSessionInput{AgentID: agentID, RunID: runID, Title: title, ProjectID: projectID})
 }
 
 // recordAskWait/clearAskWait 维护 ask 等待边（死锁检测用，Task 13 读 askWaits）。
