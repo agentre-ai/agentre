@@ -9,6 +9,7 @@ const appMocks = vi.hoisted(() => ({
   ListChatAgents: vi.fn(),
   WorkflowList: vi.fn(),
   ProjectListTree: vi.fn(),
+  LoadOrg: vi.fn(),
 }));
 
 vi.mock("../../../../../wailsjs/go/app/App", () => appMocks);
@@ -33,12 +34,35 @@ describe("RunNewDialog", () => {
     appMocks.RunCreate.mockResolvedValue({ run: { id: 7 }, tasks: [] });
     appMocks.ListChatAgents.mockResolvedValue({
       agents: [
-        { id: 2, name: "架构师", defaultPermissionMode: "default" },
+        {
+          id: 2,
+          name: "架构师",
+          avatarColor: "agent-1",
+          backendType: "claudecode",
+          defaultPermissionMode: "default",
+        },
         {
           id: 3,
           name: "危险Agent",
+          avatarColor: "agent-4",
+          backendType: "codex",
           defaultPermissionMode: "bypassPermissions",
         },
+      ],
+    });
+    appMocks.LoadOrg.mockResolvedValue({
+      departments: [
+        {
+          id: 10,
+          name: "研发部",
+          icon: "code",
+          accentColor: "agent-1",
+          sortOrder: 0,
+        },
+      ],
+      agents: [
+        { id: 2, departmentId: 10 },
+        { id: 3, departmentId: 0 },
       ],
     });
     appMocks.WorkflowList.mockResolvedValue({ items: [] });
@@ -99,25 +123,14 @@ describe("RunNewDialog", () => {
     expect(btn.disabled).toBe(true);
   });
 
-  describe("可参与 agent chips", () => {
-    it("按名字显示可参与 agent chips", async () => {
+  describe("可参与团队(双栏部门选择器)", () => {
+    it("默认 全部 视图列出可参与 agent", async () => {
       renderDialog();
-      expect(await screen.findByTestId("run-team-2")).toBeInTheDocument();
-      expect(screen.getByTestId("run-team-3")).toBeInTheDocument();
-      expect(screen.getByText("架构师")).toBeInTheDocument();
-      expect(screen.getByText("危险Agent")).toBeInTheDocument();
+      expect(await screen.findByTestId("run-team-agent-2")).toBeInTheDocument();
+      expect(screen.getByTestId("run-team-agent-3")).toBeInTheDocument();
     });
 
-    it("点击 chip 切换选中态(aria-pressed)", async () => {
-      const user = userEvent.setup({ pointerEventsCheck: 0 });
-      renderDialog();
-      const chip = await screen.findByTestId("run-team-3");
-      expect(chip).toHaveAttribute("aria-pressed", "false");
-      await user.click(chip);
-      await waitFor(() => expect(chip).toHaveAttribute("aria-pressed", "true"));
-    });
-
-    it("选中的 agent 进入 RunCreate.allowedAgentIds", async () => {
+    it("勾选的 agent 进入 RunCreate.allowedAgentIds", async () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       renderDialog();
       fireEvent.change(await screen.findByTestId("run-goal"), {
@@ -125,7 +138,7 @@ describe("RunNewDialog", () => {
       });
       await user.click(screen.getByTestId("run-leader"));
       await user.click(await screen.findByRole("option", { name: "架构师" }));
-      await user.click(screen.getByTestId("run-team-3"));
+      await user.click(await screen.findByTestId("run-team-agent-3"));
       await user.click(screen.getByTestId("run-create"));
       await waitFor(() =>
         expect(appMocks.RunCreate).toHaveBeenCalledWith(
@@ -139,8 +152,26 @@ describe("RunNewDialog", () => {
       renderDialog();
       const count = await screen.findByTestId("run-team-count");
       expect(count.textContent).toMatch(/0/);
-      await user.click(screen.getByTestId("run-team-3"));
+      await user.click(await screen.findByTestId("run-team-agent-3"));
       await waitFor(() => expect(count.textContent).toMatch(/1/));
+    });
+
+    it("部门『全选』把该部门成员写入 allowedAgentIds", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      renderDialog();
+      fireEvent.change(await screen.findByTestId("run-goal"), {
+        target: { value: "x" },
+      });
+      await user.click(screen.getByTestId("run-leader"));
+      await user.click(await screen.findByRole("option", { name: "架构师" }));
+      await user.click(await screen.findByTestId("run-team-scope-10"));
+      await user.click(screen.getByTestId("run-team-select-all"));
+      await user.click(screen.getByTestId("run-create"));
+      await waitFor(() =>
+        expect(appMocks.RunCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ allowedAgentIds: [2] }),
+        ),
+      );
     });
   });
 
@@ -162,14 +193,21 @@ describe("RunNewDialog", () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
         items: [
-          { id: 1, name: "标准功能开发流", tags: ["通用", "研发"], outline: ["需求拆解", "方案设计"] },
+          {
+            id: 1,
+            name: "标准功能开发流",
+            tags: ["通用", "研发"],
+            outline: ["需求拆解", "方案设计"],
+          },
         ],
       });
       renderDialog();
       await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
       await user.click(screen.getByTestId("run-flow-mode-library"));
       await user.click(await screen.findByTestId("run-flow-select"));
-      expect(await screen.findByRole("option", { name: /标准功能开发流/ })).toBeInTheDocument();
+      expect(
+        await screen.findByRole("option", { name: /标准功能开发流/ }),
+      ).toBeInTheDocument();
       expect(screen.getByText("通用")).toBeInTheDocument();
       expect(screen.getByText("研发")).toBeInTheDocument();
     });
@@ -178,14 +216,21 @@ describe("RunNewDialog", () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
         items: [
-          { id: 1, name: "标准功能开发流", tags: ["通用", "研发"], outline: ["需求拆解", "方案设计"] },
+          {
+            id: 1,
+            name: "标准功能开发流",
+            tags: ["通用", "研发"],
+            outline: ["需求拆解", "方案设计"],
+          },
         ],
       });
       renderDialog();
       await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
       await user.click(screen.getByTestId("run-flow-mode-library"));
       await user.click(await screen.findByTestId("run-flow-select"));
-      await user.click(await screen.findByRole("option", { name: /标准功能开发流/ }));
+      await user.click(
+        await screen.findByRole("option", { name: /标准功能开发流/ }),
+      );
       expect(await screen.findByTestId("run-flow-outline")).toBeInTheDocument();
       expect(screen.getByText("需求拆解")).toBeInTheDocument();
     });
@@ -203,7 +248,9 @@ describe("RunNewDialog", () => {
       await user.click(screen.getByTestId("run-flow-mode-library"));
       await user.click(await screen.findByTestId("run-flow-select"));
       await user.click(await screen.findByRole("option", { name: /流程B/ }));
-      fireEvent.change(screen.getByTestId("run-goal"), { target: { value: "测试目标" } });
+      fireEvent.change(screen.getByTestId("run-goal"), {
+        target: { value: "测试目标" },
+      });
       await user.click(screen.getByTestId("run-leader"));
       await user.click(await screen.findByRole("option", { name: "架构师" }));
       await user.click(screen.getByTestId("run-create"));

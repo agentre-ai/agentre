@@ -34,11 +34,18 @@ import { useWorkflowManagerStore } from "@/stores/workflow-manager-store";
 import { firstLetter, tokenToCssColor } from "../session-avatar";
 import {
   ListChatAgents,
+  LoadOrg,
   ProjectListTree,
   RunCreate,
   WorkflowList,
 } from "../../../../wailsjs/go/app/App";
 import { app } from "../../../../wailsjs/go/models";
+import { TeamDepartmentPicker } from "./team-department-picker";
+import {
+  groupAgentsByDepartment,
+  type OrgAgentLite,
+  type OrgDeptLite,
+} from "./team-picker-data";
 
 // 流程模式: 从零开始(AI 自拆) | 从流程库 | 临时写
 type FlowMode = "none" | "library" | "adhoc";
@@ -59,6 +66,7 @@ type AgentItem = {
   id: number;
   name: string;
   avatarColor: string;
+  backendType: string;
   defaultPermissionMode: string;
 };
 
@@ -96,6 +104,8 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
   const [workflows, setWorkflows] = React.useState<WorkflowOption[]>([]);
   const [projects, setProjects] = React.useState<FlatProject[]>([]);
   const [projectId, setProjectId] = React.useState(0);
+  const [orgDepartments, setOrgDepartments] = React.useState<OrgDeptLite[]>([]);
+  const [orgAgents, setOrgAgents] = React.useState<OrgAgentLite[]>([]);
 
   const [goal, setGoal] = React.useState("");
   const [leaderId, setLeaderId] = React.useState(0);
@@ -118,6 +128,8 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
     setFlowContent("");
     setAllowedAgentIds([]);
     setProjectId(0);
+    setOrgDepartments([]);
+    setOrgAgents([]);
     setError(null);
 
     // 并发加载 agents 和 workflows
@@ -129,17 +141,42 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
               id: number;
               name: string;
               avatarColor: string;
+              backendType: string;
               defaultPermissionMode: string;
             }) => ({
               id: a.id,
               name: a.name,
               avatarColor: a.avatarColor,
+              backendType: a.backendType,
               defaultPermissionMode: a.defaultPermissionMode,
             }),
           ),
         );
       })
       .catch(() => setAgents([]));
+
+    LoadOrg()
+      .then((resp) => {
+        setOrgDepartments(
+          (resp?.departments ?? []).map((d) => ({
+            id: d.id,
+            name: d.name,
+            icon: d.icon,
+            accentColor: d.accentColor,
+            sortOrder: d.sortOrder,
+          })),
+        );
+        setOrgAgents(
+          (resp?.agents ?? []).map((a) => ({
+            id: a.id,
+            departmentId: a.departmentId,
+          })),
+        );
+      })
+      .catch(() => {
+        setOrgDepartments([]);
+        setOrgAgents([]);
+      });
 
     WorkflowList()
       .then((resp) => {
@@ -169,13 +206,10 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
   // 是否可以提交: 目标非空 + 已选 Leader(Leader 是必选的编排枢纽,leaderAgentId=0 无效)
   const canSubmit = goal.trim().length > 0 && leaderId > 0 && !submitting;
   const selectedWorkflow = workflows.find((w) => w.id === flowId);
-
-  // 切换团队成员勾选
-  const toggleAllowed = (agentId: number, checked: boolean) => {
-    setAllowedAgentIds((prev) =>
-      checked ? [...prev, agentId] : prev.filter((id) => id !== agentId),
-    );
-  };
+  const pickerModel = React.useMemo(
+    () => groupAgentsByDepartment(agents, orgDepartments, orgAgents),
+    [agents, orgDepartments, orgAgents],
+  );
 
   const submit = async () => {
     setError(null);
@@ -308,7 +342,9 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
                 <button
                   type="button"
                   data-testid="run-flow-manage"
-                  onClick={() => useWorkflowManagerStore.getState().openBrowse()}
+                  onClick={() =>
+                    useWorkflowManagerStore.getState().openBrowse()
+                  }
                   className="ml-auto text-2xs text-primary-text hover:underline"
                 >
                   {t("orchestration.new.flowManage")} →
@@ -323,7 +359,9 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
                   aria-label={t("orchestration.new.flowSelect")}
                   className="h-9 text-xs"
                 >
-                  <SelectValue placeholder={t("orchestration.new.flowSelectPlaceholder")} />
+                  <SelectValue
+                    placeholder={t("orchestration.new.flowSelectPlaceholder")}
+                  />
                 </SelectTrigger>
                 <SelectContent>
                   {workflows.map((w) => (
@@ -351,7 +389,9 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
                   {selectedWorkflow.outline.map((step, i) => (
                     <React.Fragment key={`${step}-${i}`}>
                       {i > 0 ? (
-                        <span className="text-2xs text-subtle-foreground">›</span>
+                        <span className="text-2xs text-subtle-foreground">
+                          ›
+                        </span>
                       ) : null}
                       <span className="rounded border border-border bg-card px-1.5 py-0.5 text-2xs text-muted-foreground">
                         {step}
@@ -411,54 +451,12 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
             </Select>
           </label>
 
-          {/* 可参与 agent: 身份色药丸 chips 多选; 留空则不限制 */}
-          {agents.length > 0 ? (
-            <div className="flex flex-col gap-1.5 text-xs">
-              <span className="flex items-center gap-2">
-                <span className="font-medium text-foreground">
-                  {t("orchestration.new.team")}
-                </span>
-                <span
-                  className="ml-auto text-subtle-foreground"
-                  data-testid="run-team-count"
-                >
-                  {t("orchestration.new.teamSelected", {
-                    count: allowedAgentIds.length,
-                  })}
-                </span>
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                {agents.map((a) => {
-                  const selected = allowedAgentIds.includes(a.id);
-                  return (
-                    <button
-                      key={a.id}
-                      type="button"
-                      data-testid={`run-team-${a.id}`}
-                      aria-pressed={selected}
-                      onClick={() => toggleAllowed(a.id, !selected)}
-                      className={cn(
-                        "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
-                        selected
-                          ? "border-primary bg-primary-soft font-medium text-primary-text"
-                          : "border-border bg-card text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      <AgentDot
-                        color={a.avatarColor}
-                        name={a.name}
-                        showLetter={false}
-                      />
-                      <span>{a.name}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              <span className="text-2xs text-muted-foreground">
-                {t("orchestration.new.teamHint")}
-              </span>
-            </div>
-          ) : null}
+          {/* 可参与团队: 双栏部门选择器 */}
+          <TeamDepartmentPicker
+            model={pickerModel}
+            value={allowedAgentIds}
+            onChange={setAllowedAgentIds}
+          />
 
           {error ? (
             <div className="rounded-md border border-destructive bg-destructive-soft px-3 py-2 text-2xs text-destructive">
