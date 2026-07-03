@@ -25,7 +25,7 @@ func TestFinish_RootCollapsesRun(t *testing.T) {
 	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100, RootTaskID: 9, Status: orch_entity.RunRunning}, nil)
 	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
 		So(tk.Status, ShouldEqual, orch_entity.TaskDone)
-		So(tk.Result, ShouldEqual, "全部完成,已交付")
+		So(tk.Summary, ShouldEqual, "全部完成,已交付")
 		return nil
 	})
 	runs.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, r *orch_entity.OrchestrationRun) error {
@@ -86,22 +86,22 @@ func TestFinish_NonRootRecordsResultNoReport(t *testing.T) {
 		&orch_entity.OrchestrationRun{ID: 100, RootTaskID: 9, Status: orch_entity.RunRunning},
 		nil,
 	)
-	// 非根 finish 只「记录」显式小结:Update 写入 Result + done,且只调用一次。
-	var capturedStatus, capturedResult string
+	// 非根 finish 只「记录」显式小结:Update 写入 Summary + done,且只调用一次。
+	var capturedStatus, capturedSummary string
 	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
 		So(tk.ID, ShouldEqual, int64(11))
 		capturedStatus = tk.Status
-		capturedResult = tk.Result
+		capturedSummary = tk.Summary
 		return nil
 	})
 
 	// 关键回归:非根 finish 不得回报父(watcher 才是唯一回报者),也不得收口 Run。
 	// gomock 严格控制器会因任何未声明的调用(SendAndForget/runs.Update/Find/ListByRun)而失败。
 
-	Convey("非根 finish → 只记录 Result+done,不回报父、不收口 Run", t, func() {
+	Convey("非根 finish → 只记录 Summary+done,不回报父、不收口 Run", t, func() {
 		err := orch_svc.Default().Finish(context.Background(), 600, "子任务完成小结")
 		So(err, ShouldBeNil)
 		So(capturedStatus, ShouldEqual, orch_entity.TaskDone)
-		So(capturedResult, ShouldEqual, "子任务完成小结")
+		So(capturedSummary, ShouldEqual, "子任务完成小结")
 	})
 }

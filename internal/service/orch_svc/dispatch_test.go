@@ -156,3 +156,29 @@ func TestDispatch_EnsureOrchSessionError(t *testing.T) {
 		So(err.Error(), ShouldContainSubstring, "boom-ensure")
 	})
 }
+
+func TestDispatch_RejectsAgentOutsideAllowedSet(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
+	orch_svc.Default().SetEnqueueForTest(func(int64, *orch_entity.Task, string) {})
+	t.Cleanup(func() { orch_svc.Default().SetEnqueueForTest(nil) })
+
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(
+		&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500, Status: orch_entity.TaskRunning}, nil)
+	agents.EXPECT().FindByName(gomock.Any(), "外人").Return(&agent_entity.Agent{ID: 9, Name: "外人"}, nil)
+	tasks.EXPECT().CountByRunAgent(gomock.Any(), int64(100), int64(9)).Return(int64(0), nil)
+	// 可参与集 {3,4}、Leader=2；目标 9 不在集内且非 Leader → 拒绝，不建会话/任务。
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(
+		&orch_entity.OrchestrationRun{ID: 100, LeaderAgentID: 2, AllowedAgentIDs: "[3,4]"}, nil)
+
+	Convey("dispatch 集外 agent → errAgentNotAllowed", t, func() {
+		_, err := orch_svc.Default().Dispatch(context.Background(), 500, "外人", "brief", false)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "not in allowed set")
+	})
+}

@@ -33,9 +33,17 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 		return 0, err
 	}
 
-	projectID, err := s.runProjectID(ctx, parent.RunID)
+	run, err := s.runs.Find(ctx, parent.RunID)
 	if err != nil {
 		return 0, err
+	}
+	// run 定位不到 → 放行(fail-open:可参与是团队编成、非安全边界;勿改成 fail-closed)。
+	if run != nil && !run.IsAgentAllowed(target.ID, run.LeaderAgentID) {
+		return 0, errAgentNotAllowed
+	}
+	var projectID int64
+	if run != nil {
+		projectID = run.ProjectID
 	}
 
 	childSession, err := s.chat.EnsureOrchSession(ctx, EnsureOrchSessionInput{
@@ -89,16 +97,4 @@ func (s *orchSvc) fireEnqueue(runID int64, task *orch_entity.Task, brief string)
 		return
 	}
 	s.enqueueRun(runID, task, brief)
-}
-
-// runProjectID 查询 Run 并返回其 ProjectID；Run 不存在时返回 0（无工作目录）。
-func (s *orchSvc) runProjectID(ctx context.Context, runID int64) (int64, error) {
-	run, err := s.runs.Find(ctx, runID)
-	if err != nil {
-		return 0, err
-	}
-	if run == nil {
-		return 0, nil
-	}
-	return run.ProjectID, nil
 }

@@ -42,12 +42,14 @@ func TestAsk_InjectLiveSessionThenReplyResolves(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
-	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, nil)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
 	agents.EXPECT().Find(gomock.Any(), int64(0)).Return(nil, nil).AnyTimes()
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100}, nil)
 	// 王 在该 Run 已有「活会话」700 → 问题注入 700(保留王的上下文)。
 	// AnyTimes：Ask 内部调两次 ListByRun（resolveOrCreateAgentSession + detectAskCycle）。
 	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 8, AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
@@ -131,12 +133,14 @@ func TestAsk_BusyTargetSteersIntoCurrentTurn(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
-	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, nil)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
 	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "前端"}, nil).AnyTimes()
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100}, nil)
 	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 8, AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
 	// 目标 busy:SendAndForget 返 ErrSessionBusy → 必须回退 Enqueue
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(700), gomock.Any()).Return(orch_svc.ErrSessionBusy)
@@ -169,13 +173,15 @@ func TestAsk_EscapesXMLInQuestionAndAskerName(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
-	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, nil)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
 	// askerName 含 < > " 以覆盖属性转义
 	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: `前端 <"x">`}, nil).AnyTimes()
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100}, nil)
 	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 8, AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
 	injCh := make(chan string, 1)
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(700), gomock.Any()).DoAndReturn(func(_ context.Context, _ int64, msg string) error {
@@ -218,13 +224,15 @@ func TestAsk_EmitsAskAndReplyEvents(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
 	emit := mock_orch_svc.NewMockEmitter(ctrl)
-	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, emit)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, emit)
 
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1, Name: "王"}, nil)
 	agents.EXPECT().Find(gomock.Any(), gomock.Any()).Return(&agent_entity.Agent{ID: 2, Name: "前端"}, nil).AnyTimes()
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100}, nil)
 	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{ID: 8, AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
 	injCh := make(chan string, 1)
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(700), gomock.Any()).DoAndReturn(func(_ context.Context, _ int64, m string) error { injCh <- m; return nil })
@@ -242,16 +250,40 @@ func TestAsk_EmitsAskAndReplyEvents(t *testing.T) {
 	})
 }
 
+func TestAsk_RejectsAgentOutsideAllowedSet(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
+
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(
+		&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500}, nil)
+	agents.EXPECT().FindByName(gomock.Any(), "外人").Return(&agent_entity.Agent{ID: 9, Name: "外人"}, nil)
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(
+		&orch_entity.OrchestrationRun{ID: 100, LeaderAgentID: 2, AllowedAgentIDs: "[3,4]"}, nil)
+
+	Convey("ask 集外 agent → errAgentNotAllowed(不注入不建会话)", t, func() {
+		_, err := orch_svc.Default().Ask(context.Background(), 500, "外人", "q?")
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "not in allowed set")
+	})
+}
+
 func TestReply_RejectsForeignReplier(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
-	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, nil)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "王").Return(&agent_entity.Agent{ID: 1}, nil)
 	agents.EXPECT().Find(gomock.Any(), int64(0)).Return(nil, nil).AnyTimes()
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100}, nil)
 	// AnyTimes：Ask 内部调两次 ListByRun（resolveOrCreateAgentSession + detectAskCycle）。
 	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{{AgentID: 1, SessionID: 700, Status: orch_entity.TaskRunning}}, nil).AnyTimes()
 	injCh := make(chan string, 1)

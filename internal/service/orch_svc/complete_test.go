@@ -33,9 +33,9 @@ func TestWatchCompletion_ReportsToParentAndMarksDone(t *testing.T) {
 
 	child := &orch_entity.Task{ID: 11, RunID: 100, AgentID: 3, SessionID: 600, ParentTaskID: 9, CallSeq: 1, Status: orch_entity.TaskRunning}
 
-	// idle 分支重读子任务:无显式 finish 小结(Result 为空)→ 退回 FinalAssistantText。
+	// idle 分支重读子任务:无显式 finish 小结(Result:"", Summary:"")→ 退回 FinalAssistantText 走 ping。
 	tasks.EXPECT().Find(gomock.Any(), int64(11)).Return(
-		&orch_entity.Task{ID: 11, RunID: 100, SessionID: 600, Status: orch_entity.TaskRunning, Result: ""}, nil)
+		&orch_entity.Task{ID: 11, RunID: 100, SessionID: 600, Status: orch_entity.TaskRunning, Result: "", Summary: ""}, nil)
 	// 子任务标 done + 写 Result。
 	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
 		if tk.ID == 11 {
@@ -68,6 +68,8 @@ func TestWatchCompletion_ReportsToParentAndMarksDone(t *testing.T) {
 		So(capturedChildStatus, ShouldEqual, orch_entity.TaskDone)
 		So(capturedChildResult, ShouldContainSubstring, "登录表单已实现")
 		So(capturedSendMsg, ShouldContainSubstring, "登录表单已实现")
+		So(capturedSendMsg, ShouldContainSubstring, "<task_done")
+		So(capturedSendMsg, ShouldContainSubstring, "read(task_id=11)")
 	})
 }
 
@@ -220,13 +222,14 @@ func TestWatchCompletion_TechnicalErrorEscalates(t *testing.T) {
 		<-done
 
 		So(capturedChildStatus, ShouldEqual, orch_entity.TaskError)
-		So(capturedSendMsg, ShouldContainSubstring, "技术中断")
+		So(capturedSendMsg, ShouldContainSubstring, "<task_error")
+		So(capturedSendMsg, ShouldContainSubstring, "运行时崩溃")
 	})
 }
 
-// TestWatchCompletion_PrefersFinishSummary — 子任务已被 agent 显式 finish(Result 已落库)时,
-// watcher 的 idle 分支优先用该 Result 作为回报正文,而非 FinalAssistantText(C1:finish 与
-// watcher 不再各回报一次,watcher 是唯一回报者且认显式小结)。
+// TestWatchCompletion_PrefersFinishSummary — 子任务已被 agent 显式 finish(Summary 已落库)时,
+// watcher 的 idle 分支据 Summary 内联 task_report 作为回报正文(Result 始终落末条正文供 read);
+// FinalAssistantText 不作为回报正文(C1:finish 与 watcher 不再各回报一次,watcher 是唯一回报者且认显式小结)。
 func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -239,11 +242,11 @@ func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 
 	turnCh := make(chan orch_svc.TurnDone, 1)
 	chat.EXPECT().AgentStatus(gomock.Any(), int64(600)).Return("idle", nil)
-	// FinalAssistantText 仍可能被调用(退路),但本例 fresh.Result 非空 → 不作为回报来源。
+	// FinalAssistantText 始终落 Result(供 read),但本例 fresh.Summary 非空 → 回报正文取 Summary。
 	chat.EXPECT().FinalAssistantText(gomock.Any(), int64(600)).Return("末条 assistant 正文(不应被采用)", nil).AnyTimes()
-	// idle 分支重读子任务:Result 已由先前 finish 写入。
+	// idle 分支重读子任务:Summary 已由先前 finish 写入。
 	tasks.EXPECT().Find(gomock.Any(), int64(13)).Return(
-		&orch_entity.Task{ID: 13, RunID: 100, SessionID: 600, Status: orch_entity.TaskDone, Result: finishSummary}, nil)
+		&orch_entity.Task{ID: 13, RunID: 100, SessionID: 600, Status: orch_entity.TaskDone, Summary: finishSummary}, nil)
 
 	child := &orch_entity.Task{ID: 13, RunID: 100, AgentID: 3, SessionID: 600, ParentTaskID: 9, CallSeq: 1, Status: orch_entity.TaskRunning}
 
@@ -264,7 +267,7 @@ func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 		return nil
 	}).Times(1)
 
-	Convey("idle 时优先采用已落库的 finish 小结作为回报正文", t, func() {
+	Convey("idle 时优先采用已落库的 finish 小结内联 task_report 回报", t, func() {
 		done := make(chan struct{})
 		go func() {
 			orch_svc.Default().WatchCompletionForTest(context.Background(), child, (<-chan orch_svc.TurnDone)(turnCh), func() {})
@@ -274,7 +277,10 @@ func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 		close(turnCh)
 		<-done
 
-		So(capturedResult, ShouldEqual, finishSummary)
+		// Result 始终落末条正文(供 read);Summary 决定回报正文。
+		So(capturedResult, ShouldContainSubstring, "末条 assistant 正文")
+		So(capturedSendMsg, ShouldContainSubstring, "<task_report")
+		So(capturedSendMsg, ShouldContainSubstring, "final=\"true\"")
 		So(capturedSendMsg, ShouldContainSubstring, finishSummary)
 		So(capturedSendMsg, ShouldNotContainSubstring, "不应被采用")
 	})
@@ -298,9 +304,9 @@ func TestWatchCompletion_ParentFlipEmitsRunUpdated(t *testing.T) {
 
 	chat.EXPECT().AgentStatus(gomock.Any(), int64(600)).Return("idle", nil)
 	chat.EXPECT().FinalAssistantText(gomock.Any(), int64(600)).Return("登录表单已实现", nil)
-	// idle 分支重读子任务：Result 为空 → 退回 FinalAssistantText。
+	// idle 分支重读子任务：Result:"", Summary:"" → 退回 FinalAssistantText 走 ping。
 	tasks.EXPECT().Find(gomock.Any(), int64(11)).Return(
-		&orch_entity.Task{ID: 11, RunID: 100, SessionID: 600, Status: orch_entity.TaskRunning, Result: ""}, nil)
+		&orch_entity.Task{ID: 11, RunID: 100, SessionID: 600, Status: orch_entity.TaskRunning, Result: "", Summary: ""}, nil)
 	// 子任务标 done。
 	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	// 父任务翻转：awaiting-children → running（父翻转路径触发条件）。
