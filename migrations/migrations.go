@@ -44,5 +44,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202606250002(), // workflows.tags/outline:流程库展示层(标签/步骤概览)
 		migration202607020001(), // issue 看板:stage/position/assignee_agent_id/session_id + 回填
 		migration202607030001(), // 编排可参与范围:orchestration_runs.allowed_agent_ids
+		migration202607030002(), // 回报分层:orch_tasks.summary
 	}
 }
