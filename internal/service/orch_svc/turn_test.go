@@ -118,3 +118,21 @@ func TestBuildTurnExtras_NeverInjectsTagsOutline(t *testing.T) {
 	// tripwire 2：suffix 以 flowBody 结尾，确保 FlowContent 之后没有额外内容追加。
 	assert.True(t, strings.HasSuffix(suffix, flowBody), "suffix 应以 FlowContent 结尾，有额外追加则失败")
 }
+
+func TestBuildTurnExtras_GuidanceMentionsReadAndReport(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(nil, nil, nil, tasks, nil, nil)
+	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
+
+	// 非根任务(避免触发 flow 注入分支);FindBySession 返回带父任务。
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(600)).Return(
+		&orch_entity.Task{ID: 11, RunID: 100, ParentTaskID: 9, SessionID: 600}, nil).AnyTimes()
+
+	a := enableOrch(&agent_entity.Agent{ID: 3})
+	_, suffix, ok := orch_svc.Default().BuildTurnExtras(context.Background(), a, 600, 0)
+	assert.True(t, ok)
+	assert.True(t, strings.Contains(suffix, "read(task_id"), "guidance should mention read(task_id)")
+	assert.True(t, strings.Contains(suffix, "report"), "guidance should mention report")
+}
