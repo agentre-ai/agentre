@@ -44,7 +44,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - agentre
+        - github.com/agentre-ai/agentre
   exclusions:
     paths:
       - .claude

@@ -49,7 +49,8 @@ export function LocalCommandCard({
 
   const cfg = STATUS_CONFIG[entry.status];
   const isRunning = entry.status === "running";
-  const showExitCode = entry.status !== "running" && entry.exitCode !== undefined;
+  const showExitCode =
+    entry.status !== "running" && entry.exitCode !== undefined;
 
   return (
     <div className="rounded-lg border border-border bg-card text-foreground shadow-sm">

@@ -787,7 +787,10 @@ function ChatComposer({
             {!editing && !commandMode ? (
               <QuotaMeter data={quotaUsage} deviceLabel={quotaDeviceLabel} />
             ) : null}
-            {contextUsage && contextUsage.max > 0 && !editing && !commandMode ? (
+            {contextUsage &&
+            contextUsage.max > 0 &&
+            !editing &&
+            !commandMode ? (
               <ContextMeter used={contextUsage.used} max={contextUsage.max} />
             ) : null}
             {!editing && commandMode ? (

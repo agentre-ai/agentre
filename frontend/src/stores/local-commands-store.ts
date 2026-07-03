@@ -12,9 +12,18 @@ export interface LocalCommandEntry {
 }
 interface State {
   entries: Record<string, LocalCommandEntry>;
-  start(e: { id: string; sessionId: number; command: string; createdAt: number }): void;
+  start(e: {
+    id: string;
+    sessionId: number;
+    command: string;
+    createdAt: number;
+  }): void;
   appendOutput(id: string, chunk: string): void;
-  finish(id: string, status: Exclude<LocalCommandStatus, "running">, exitCode?: number): void;
+  finish(
+    id: string,
+    status: Exclude<LocalCommandStatus, "running">,
+    exitCode?: number,
+  ): void;
   remove(id: string): void;
   get(id: string): LocalCommandEntry | undefined;
   listForSession(sessionId: number): LocalCommandEntry[];
@@ -24,13 +33,18 @@ export const useLocalCommandsStore = create<State>((set, get) => ({
   entries: {},
   start: (e) =>
     set((s) => ({
-      entries: { ...s.entries, [e.id]: { ...e, status: "running", output: "" } },
+      entries: {
+        ...s.entries,
+        [e.id]: { ...e, status: "running", output: "" },
+      },
     })),
   appendOutput: (id, chunk) =>
     set((s) => {
       const cur = s.entries[id];
       if (!cur) return s;
-      return { entries: { ...s.entries, [id]: { ...cur, output: cur.output + chunk } } };
+      return {
+        entries: { ...s.entries, [id]: { ...cur, output: cur.output + chunk } },
+      };
     }),
   finish: (id, status, exitCode) =>
     set((s) => {

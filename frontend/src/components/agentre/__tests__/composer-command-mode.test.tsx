@@ -38,9 +38,7 @@ describe("ChatComposer command mode", () => {
       editorRef.current!.commands.insertContent("!ls");
     });
 
-    expect(
-      screen.getByText(/命令模式|Command mode/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/命令模式|Command mode/)).toBeInTheDocument();
   });
 
   it("run button replaces send button in command mode", async () => {
@@ -88,16 +86,12 @@ describe("ChatComposer command mode", () => {
     act(() => {
       editorRef.current!.commands.insertContent("!cmd");
     });
-    expect(
-      screen.getByText(/命令模式|Command mode/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/命令模式|Command mode/)).toBeInTheDocument();
 
     act(() => {
       editorRef.current!.commands.clearContent();
     });
 
-    expect(
-      screen.queryByText(/命令模式|Command mode/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/命令模式|Command mode/)).not.toBeInTheDocument();
   });
 });

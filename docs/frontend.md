@@ -60,15 +60,15 @@ Go:
 
 ```bash
 gofmt -w <files>
-goimports -w <files>       # local-prefixes: agentre
+goimports -w <files>       # local-prefixes: github.com/agentre-ai/agentre
 make lint                  # golangci-lint + frontend ESLint
 make lint-fix              # auto-fix (use on a small scope)
 ```
 
-`goimports` groups local imports under the `agentre` prefix, matching `.golangci.yml`.
+`goimports` groups local imports under the `github.com/agentre-ai/agentre` prefix, matching `.golangci.yml`.
 
 Frontend: follow the existing TS/CSS style; **do not** introduce a large formatting-only diff.
 
 ## Module Path
 
-The Go module is `agentre`; **do not** invent a `github.com/...` prefix.
+The Go module is `github.com/agentre-ai/agentre`; use that prefix for in-repo Go imports.

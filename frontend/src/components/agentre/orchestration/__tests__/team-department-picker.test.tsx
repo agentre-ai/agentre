@@ -4,23 +4,61 @@ import { describe, expect, it, vi } from "vitest";
 import { TeamDepartmentPicker } from "../team-department-picker";
 import type { PickerModel } from "../team-picker-data";
 
-const dev = { id: 1, name: "王一之", avatarColor: "agent-1", backendType: "claudecode", departmentId: 10 };
-const dev2 = { id: 2, name: "阿则", avatarColor: "agent-3", backendType: "codex", departmentId: 10 };
-const prod = { id: 3, name: "见野", avatarColor: "agent-2", backendType: "claudecode", departmentId: 20 };
-const loose = { id: 4, name: "游侠", avatarColor: "agent-5", backendType: "codex", departmentId: 0 };
+const dev = {
+  id: 1,
+  name: "王一之",
+  avatarColor: "agent-1",
+  backendType: "claudecode",
+  departmentId: 10,
+};
+const dev2 = {
+  id: 2,
+  name: "阿则",
+  avatarColor: "agent-3",
+  backendType: "codex",
+  departmentId: 10,
+};
+const prod = {
+  id: 3,
+  name: "见野",
+  avatarColor: "agent-2",
+  backendType: "claudecode",
+  departmentId: 20,
+};
+const loose = {
+  id: 4,
+  name: "游侠",
+  avatarColor: "agent-5",
+  backendType: "codex",
+  departmentId: 0,
+};
 
 const model: PickerModel = {
   all: [dev, dev2, prod, loose],
   departments: [
-    { id: 10, name: "研发部", icon: "code", accentColor: "agent-1", agents: [dev, dev2] },
-    { id: 20, name: "产品部", icon: "palette", accentColor: "agent-2", agents: [prod] },
+    {
+      id: 10,
+      name: "研发部",
+      icon: "code",
+      accentColor: "agent-1",
+      agents: [dev, dev2],
+    },
+    {
+      id: 20,
+      name: "产品部",
+      icon: "palette",
+      accentColor: "agent-2",
+      agents: [prod],
+    },
   ],
   ungrouped: [loose],
 };
 
 function setup(value: number[] = []) {
   const onChange = vi.fn();
-  render(<TeamDepartmentPicker model={model} value={value} onChange={onChange} />);
+  render(
+    <TeamDepartmentPicker model={model} value={value} onChange={onChange} />,
+  );
   return { onChange };
 }
 
@@ -61,8 +99,14 @@ describe("TeamDepartmentPicker", () => {
 
   it("aria-pressed 反映选中态", () => {
     setup([3]);
-    expect(screen.getByTestId("run-team-agent-3")).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("run-team-agent-1")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("run-team-agent-3")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("run-team-agent-1")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 
   it("研发部『全选』→ onChange 含该部门全部成员", () => {
@@ -79,14 +123,18 @@ describe("TeamDepartmentPicker", () => {
 
   it("搜索过滤到跨部门扁平结果", () => {
     setup();
-    fireEvent.change(screen.getByTestId("run-team-search"), { target: { value: "见" } });
+    fireEvent.change(screen.getByTestId("run-team-search"), {
+      target: { value: "见" },
+    });
     expect(screen.getByTestId("run-team-agent-3")).toBeInTheDocument();
     expect(screen.queryByTestId("run-team-agent-1")).toBeNull();
   });
 
   it("搜索无匹配 → 空态", () => {
     setup();
-    fireEvent.change(screen.getByTestId("run-team-search"), { target: { value: "zzz" } });
+    fireEvent.change(screen.getByTestId("run-team-search"), {
+      target: { value: "zzz" },
+    });
     expect(screen.getByTestId("run-team-search-empty")).toBeInTheDocument();
   });
 

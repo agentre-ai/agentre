@@ -27,7 +27,11 @@ function backendLabel(t: string): string {
   return BACKEND_LABEL[t] ?? t;
 }
 
-export function TeamDepartmentPicker({ model, value, onChange }: TeamDepartmentPickerProps) {
+export function TeamDepartmentPicker({
+  model,
+  value,
+  onChange,
+}: TeamDepartmentPickerProps) {
   const { t } = useTranslation();
   const [scope, setScope] = React.useState<Scope>("all");
   const [query, setQuery] = React.useState("");
@@ -54,9 +58,14 @@ export function TeamDepartmentPicker({ model, value, onChange }: TeamDepartmentP
   };
 
   const shownIds = shown.map((a) => a.id);
-  const allShownSelected = shownIds.length > 0 && shownIds.every((id) => selected.has(id));
+  const allShownSelected =
+    shownIds.length > 0 && shownIds.every((id) => selected.has(id));
   const someShownSelected = shownIds.some((id) => selected.has(id));
-  const selectAllState: CbState = allShownSelected ? "checked" : someShownSelected ? "partial" : "empty";
+  const selectAllState: CbState = allShownSelected
+    ? "checked"
+    : someShownSelected
+      ? "partial"
+      : "empty";
   const toggleSelectAll = () => {
     const next = new Set(value);
     if (allShownSelected) shownIds.forEach((id) => next.delete(id));
@@ -79,7 +88,9 @@ export function TeamDepartmentPicker({ model, value, onChange }: TeamDepartmentP
   return (
     <div className="flex flex-col gap-2 text-xs">
       <div className="flex items-center gap-2">
-        <span className="font-medium text-foreground">{t("orchestration.new.team")}</span>
+        <span className="font-medium text-foreground">
+          {t("orchestration.new.team")}
+        </span>
         <span
           data-testid="run-team-count"
           className="ml-auto rounded-full bg-primary-soft px-2 py-0.5 text-primary-text"
@@ -106,7 +117,12 @@ export function TeamDepartmentPicker({ model, value, onChange }: TeamDepartmentP
                 testid="run-team-scope-all"
                 active={scope === "all"}
                 onClick={() => setScope("all")}
-                icon={<Users className="size-3.5 text-muted-foreground" aria-hidden="true" />}
+                icon={
+                  <Users
+                    className="size-3.5 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                }
                 name={t("orchestration.new.teamAllAgents")}
                 count={model.all.length}
               />
@@ -121,9 +137,15 @@ export function TeamDepartmentPicker({ model, value, onChange }: TeamDepartmentP
                     icon={
                       <span
                         className="flex size-4 items-center justify-center rounded-sm"
-                        style={{ backgroundColor: tokenToCssColor(d.accentColor) ?? "#94a3b8" }}
+                        style={{
+                          backgroundColor:
+                            tokenToCssColor(d.accentColor) ?? "#94a3b8",
+                        }}
                       >
-                        <Icon className="size-2.5 text-white" aria-hidden="true" />
+                        <Icon
+                          className="size-2.5 text-white"
+                          aria-hidden="true"
+                        />
                       </span>
                     }
                     name={d.name}
@@ -136,7 +158,12 @@ export function TeamDepartmentPicker({ model, value, onChange }: TeamDepartmentP
                   testid="run-team-scope-ungrouped"
                   active={scope === "ungrouped"}
                   onClick={() => setScope("ungrouped")}
-                  icon={<CircleDashed className="size-3.5 text-muted-foreground" aria-hidden="true" />}
+                  icon={
+                    <CircleDashed
+                      className="size-3.5 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                  }
                   name={t("orchestration.new.teamUngrouped")}
                   count={model.ungrouped.length}
                 />
@@ -149,7 +176,9 @@ export function TeamDepartmentPicker({ model, value, onChange }: TeamDepartmentP
               <span className="font-semibold text-foreground">{title}</span>
               {shown.length > 0 ? (
                 <span className="text-subtle-foreground">
-                  {t("orchestration.new.teamDeptMembers", { count: shown.length })}
+                  {t("orchestration.new.teamDeptMembers", {
+                    count: shown.length,
+                  })}
                 </span>
               ) : null}
               {shown.length > 0 ? (
@@ -190,7 +219,14 @@ export function TeamDepartmentPicker({ model, value, onChange }: TeamDepartmentP
                     >
                       <CheckBox state={on ? "checked" : "empty"} />
                       <AgentDot color={a.avatarColor} name={a.name} />
-                      <span className={cn("text-foreground", on ? "font-medium" : "")}>{a.name}</span>
+                      <span
+                        className={cn(
+                          "text-foreground",
+                          on ? "font-medium" : "",
+                        )}
+                      >
+                        {a.name}
+                      </span>
                       {a.backendType ? (
                         <span className="ml-auto rounded-sm bg-secondary px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
                           {backendLabel(a.backendType)}
@@ -209,23 +245,36 @@ export function TeamDepartmentPicker({ model, value, onChange }: TeamDepartmentP
             data-testid="run-team-summary"
             className="flex items-center gap-2 border-t border-border bg-muted px-3 py-2"
           >
-            <span className="font-medium text-muted-foreground">{t("orchestration.new.teamSummary")}</span>
+            <span className="font-medium text-muted-foreground">
+              {t("orchestration.new.teamSummary")}
+            </span>
             <span className="flex items-center gap-1">
               {selectedAgents.slice(0, 8).map((a) => (
-                <AgentDot key={a.id} color={a.avatarColor} name={a.name} small />
+                <AgentDot
+                  key={a.id}
+                  color={a.avatarColor}
+                  name={a.name}
+                  small
+                />
               ))}
               {selectedAgents.length > 8 ? (
-                <span className="text-2xs text-muted-foreground">+{selectedAgents.length - 8}</span>
+                <span className="text-2xs text-muted-foreground">
+                  +{selectedAgents.length - 8}
+                </span>
               ) : null}
             </span>
             <span className="ml-auto font-medium text-foreground">
-              {t("orchestration.new.teamTotal", { count: selectedAgents.length })}
+              {t("orchestration.new.teamTotal", {
+                count: selectedAgents.length,
+              })}
             </span>
           </div>
         ) : null}
       </div>
 
-      <span className="text-2xs text-muted-foreground">{t("orchestration.new.teamHint")}</span>
+      <span className="text-2xs text-muted-foreground">
+        {t("orchestration.new.teamHint")}
+      </span>
     </div>
   );
 }
@@ -252,7 +301,9 @@ function NavItem({
       onClick={onClick}
       className={cn(
         "mx-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-left",
-        active ? "bg-primary-soft font-medium text-primary-text" : "text-foreground hover:bg-accent",
+        active
+          ? "bg-primary-soft font-medium text-primary-text"
+          : "text-foreground hover:bg-accent",
       )}
     >
       {icon}
@@ -265,19 +316,36 @@ function NavItem({
 type CbState = "checked" | "partial" | "empty";
 function CheckBox({ state }: { state: CbState }) {
   if (state === "empty") {
-    return <span className="size-4 shrink-0 rounded-sm border-[1.5px] border-border-strong" aria-hidden="true" />;
+    return (
+      <span
+        className="size-4 shrink-0 rounded-sm border-[1.5px] border-border-strong"
+        aria-hidden="true"
+      />
+    );
   }
   return (
     <span
       className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-primary text-white"
       aria-hidden="true"
     >
-      {state === "partial" ? <Minus className="size-3" /> : <Check className="size-3" />}
+      {state === "partial" ? (
+        <Minus className="size-3" />
+      ) : (
+        <Check className="size-3" />
+      )}
     </span>
   );
 }
 
-function AgentDot({ color, name, small = false }: { color: string; name: string; small?: boolean }) {
+function AgentDot({
+  color,
+  name,
+  small = false,
+}: {
+  color: string;
+  name: string;
+  small?: boolean;
+}) {
   const bg = tokenToCssColor(color) ?? "#94a3b8";
   return (
     <span
