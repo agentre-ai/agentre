@@ -19,9 +19,10 @@ func TestDispatch_EmitsRunUpdated(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
 	emit := mock_orch_svc.NewMockEmitter(ctrl)
-	orch_svc.Default().RegisterDeps(chat, agents, nil, tasks, nil, emit)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, emit)
 
 	// no-op enqueue 钩子:emit(orch:run:updated)在 Dispatch 内同步发出,不依赖调度器 goroutine。
 	// 注入空 enqueue 避免该 goroutine 泄漏到后续测试——否则它的 ObserveTurn/SendAndForget 会在
@@ -32,6 +33,7 @@ func TestDispatch_EmitsRunUpdated(t *testing.T) {
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500, Status: orch_entity.TaskRunning}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "李").Return(&agent_entity.Agent{ID: 3, Name: "李"}, nil)
 	tasks.EXPECT().CountByRunAgent(gomock.Any(), int64(100), int64(3)).Return(int64(0), nil)
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100, ProjectID: 0}, nil)
 	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).Return(int64(600), nil)
 	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()

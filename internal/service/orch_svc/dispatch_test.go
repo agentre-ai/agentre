@@ -33,6 +33,7 @@ func TestDispatch_SpawnsChildSessionAndTask(t *testing.T) {
 		&orch_entity.Task{ID: 9, RunID: 100, AgentID: 2, SessionID: 500, Status: orch_entity.TaskRunning}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "李").Return(&agent_entity.Agent{ID: 3, Name: "李"}, nil)
 	tasks.EXPECT().CountByRunAgent(gomock.Any(), int64(100), int64(3)).Return(int64(0), nil)
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100, ProjectID: 42}, nil)
 	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, in orch_svc.EnsureOrchSessionInput) (int64, error) {
 		So(in.ParentSessionID, ShouldEqual, 500)
 		So(in.RunID, ShouldEqual, 100)
@@ -40,6 +41,7 @@ func TestDispatch_SpawnsChildSessionAndTask(t *testing.T) {
 		So(in.Isolate, ShouldBeTrue)
 		// 子会话标题 = 派发 brief, 避免侧栏显示「(未命名会话)」。
 		So(in.Title, ShouldEqual, "实现登录表单")
+		So(in.ProjectID, ShouldEqual, int64(42))
 		return 600, nil
 	})
 	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
@@ -145,6 +147,7 @@ func TestDispatch_EnsureOrchSessionError(t *testing.T) {
 		&orch_entity.Task{ID: 12, RunID: 400, AgentID: 2, SessionID: 504, Status: orch_entity.TaskRunning}, nil)
 	agents.EXPECT().FindByName(gomock.Any(), "李").Return(&agent_entity.Agent{ID: 3, Name: "李"}, nil)
 	tasks.EXPECT().CountByRunAgent(gomock.Any(), int64(400), int64(3)).Return(int64(0), nil)
+	runs.EXPECT().Find(gomock.Any(), int64(400)).Return(&orch_entity.OrchestrationRun{ID: 400, ProjectID: 0}, nil)
 	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).Return(int64(0), boomEnsure)
 
 	Convey("EnsureOrchSession error → propagated", t, func() {
