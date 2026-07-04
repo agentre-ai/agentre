@@ -16,6 +16,8 @@ type RunItemDTO struct {
 	FlowID int64 `json:"flowId"`
 	// FlowContent 创建时快照的流程正文。
 	FlowContent string `json:"flowContent"`
+	// FlowGraph 创建时快照的 graph JSON（overlay 用；空=无流程）。
+	FlowGraph string `json:"flowGraph"`
 	// RootTaskID 根 Task 的 ID。
 	RootTaskID int64 `json:"rootTaskId"`
 	Createtime int64 `json:"createtime"`
@@ -35,7 +37,9 @@ type TaskDTO struct {
 	Result       string `json:"result"`
 	CallSeq      int    `json:"callSeq"`
 	// Refs JSON 格式的被引用产物/任务列表。
-	Refs       string `json:"refs"`
+	Refs string `json:"refs"`
+	// NodeRef 该任务对应的流程节点 label（overlay 用；空=未打标）。
+	NodeRef    string `json:"nodeRef"`
 	Createtime int64  `json:"createtime"`
 	Updatetime int64  `json:"updatetime"`
 }
@@ -65,6 +69,7 @@ func toRunItem(r *orch_entity.OrchestrationRun) *RunItemDTO {
 		ProjectID:     r.ProjectID,
 		FlowID:        r.FlowID,
 		FlowContent:   r.FlowContent,
+		FlowGraph:     r.FlowGraph,
 		RootTaskID:    r.RootTaskID,
 		Createtime:    r.Createtime,
 		Updatetime:    r.Updatetime,
@@ -84,6 +89,7 @@ func toTaskDTO(t *orch_entity.Task) *TaskDTO {
 		Result:       t.Result,
 		CallSeq:      t.CallSeq,
 		Refs:         t.Refs,
+		NodeRef:      t.NodeRef,
 		Createtime:   t.Createtime,
 		Updatetime:   t.Updatetime,
 	}
