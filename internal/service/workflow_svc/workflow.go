@@ -78,9 +78,21 @@ func toItem(w *workflow_entity.Workflow, runCount int) *WorkflowItem {
 		Content:    w.Content,
 		Tags:       decodeStringList(w.Tags),
 		Outline:    decodeStringList(w.Outline),
+		Graph:      w.Graph,
+		IsDefault:  w.IsDefault == 1,
 		RunCount:   runCount,
 		Createtime: w.Createtime,
 		Updatetime: w.Updatetime,
+	}
+}
+
+// applyGraph 若 req 带合法 graph，则 graph 为真源：投影覆写 content/outline，并回存 graph JSON。
+func applyGraph(w *workflow_entity.Workflow, graph string) {
+	w.Graph = strings.TrimSpace(graph)
+	if g, ok := ParseFlowGraph(w.Graph); ok {
+		content, outline := ProjectGraph(w.Name, g)
+		w.Content = content
+		w.Outline = encodeStringList(outline)
 	}
 }
 
@@ -122,6 +134,7 @@ func (s *workflowSvc) Create(ctx context.Context, req *CreateWorkflowRequest) (*
 		Outline: encodeStringList(req.Outline),
 		Status:  consts.ACTIVE,
 	}
+	applyGraph(w, req.Graph)
 	if err := w.Check(ctx); err != nil {
 		return nil, err
 	}
@@ -141,6 +154,7 @@ func (s *workflowSvc) Update(ctx context.Context, req *UpdateWorkflowRequest) (*
 	w.Content = req.Content
 	w.Tags = encodeStringList(req.Tags)
 	w.Outline = encodeStringList(req.Outline)
+	applyGraph(w, req.Graph)
 	if err := w.Check(ctx); err != nil {
 		return nil, err
 	}
