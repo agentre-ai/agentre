@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/agentre-ai/agentre/internal/pkg/agenttool"
 	"github.com/agentre-ai/agentre/internal/service/orch_svc"
 )
 
@@ -36,4 +37,18 @@ func TestMCP_RejectsBadToken(t *testing.T) {
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
 	assert.Equal(t, http.StatusForbidden, rw.Code)
+}
+
+func TestOrchestrateToolNamesCoverSchemas(t *testing.T) {
+	def, ok := agenttool.Lookup(agenttool.KeyOrchestrate)
+	require.True(t, ok)
+	allow := map[string]bool{}
+	for _, n := range def.ToolNames {
+		allow[n] = true
+	}
+	for _, name := range orch_svc.OrchToolSchemaNames() {
+		assert.Truef(t, allow[name],
+			"工具 %q 有 schema 却不在 agenttool ToolNames 白名单里"+
+				"(CLI --allowedTools / codex enabled_tools / piagent allow 会拦掉,agent 调不到)", name)
+	}
 }
