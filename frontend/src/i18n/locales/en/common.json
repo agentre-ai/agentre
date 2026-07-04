@@ -1839,7 +1839,11 @@
       "dependsOn": "Depends on",
       "dependsOnHint": "Runs after the selected earlier steps",
       "bounce": "On failure → bounce to",
-      "bounceNone": "None"
+      "bounceNone": "None",
+      "addNode": "Add node",
+      "graphTitle": "Flow graph",
+      "previewTitle": "Live prompt preview",
+      "previewEmpty": "Add nodes to see the projected prompt"
     },
     "deleteConfirm": {
       "title": "Delete workflow",
