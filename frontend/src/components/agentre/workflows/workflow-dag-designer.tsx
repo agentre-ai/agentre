@@ -40,7 +40,8 @@ export function WorkflowDagDesigner({
   const [preview, setPreview] = React.useState("");
 
   // graphJSON 作为依赖: graph 变化才重新预览(结构比较), 250ms 防抖。
-  const graphJSON = graphToJSON(graph);
+  // useMemo 避免无关 re-render(如 preview state 更新)时反复 stringify 整图。
+  const graphJSON = React.useMemo(() => graphToJSON(graph), [graph]);
   React.useEffect(() => {
     let alive = true;
     const timer = setTimeout(() => {
@@ -58,7 +59,10 @@ export function WorkflowDagDesigner({
     };
   }, [name, graphJSON]);
 
-  const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+  const nodeById = React.useMemo(
+    () => new Map(graph.nodes.map((n) => [n.id, n])),
+    [graph],
+  );
   const earlierNodes = (id: string) =>
     earlierNodeIds(graph, id)
       .map((eid) => nodeById.get(eid))

@@ -76,4 +76,21 @@ describe("WorkflowNodeForm", () => {
       (screen.getByTestId("node-n2-remove") as HTMLButtonElement).disabled,
     ).toBe(true);
   });
+
+  it("bounce Select 选中节点回调其 id", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const props = renderForm();
+    expect(screen.getByTestId("node-n2-bounce")).toBeInTheDocument();
+    await user.click(screen.getByTestId("node-n2-bounce"));
+    await user.click(await screen.findByRole("option", { name: "Plan" }));
+    expect(props.onBounceChange).toHaveBeenCalledWith("n1");
+  });
+
+  it("bounce Select 选「无」回调 null", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const props = renderForm({ bounce: "n1" });
+    await user.click(screen.getByTestId("node-n2-bounce"));
+    await user.click(await screen.findByRole("option", { name: "None" }));
+    expect(props.onBounceChange).toHaveBeenCalledWith(null);
+  });
 });

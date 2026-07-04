@@ -62,5 +62,6 @@ describe("WorkflowDagDesigner", () => {
       ),
     );
     expect(await screen.findByText("Projected prompt")).toBeInTheDocument();
+    expect(screen.getByTestId("designer-prompt-preview")).toBeInTheDocument();
   });
 });

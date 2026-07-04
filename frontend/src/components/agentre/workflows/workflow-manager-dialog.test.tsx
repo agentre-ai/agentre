@@ -111,12 +111,13 @@ describe("WorkflowManagerDialog · 内联编辑", () => {
     expect(workflowList.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("intent=create 打开即编辑器", async () => {
+  it("intent=create 打开即进 DAG 设计器(名称 + add-node)", async () => {
     render(<WorkflowManagerDialog />);
     useWorkflowManagerStore.getState().openCreate();
     await waitFor(() =>
       expect(screen.getByRole("textbox", { name: "Name" })).toBeTruthy(),
     );
+    expect(screen.getByTestId("designer-add-node")).toBeInTheDocument();
   });
 
   it("选中后点编辑 → 预填名称 → 保存调 WorkflowUpdate", async () => {
