@@ -11,27 +11,62 @@ const NOW = 1_700_000_000_000;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
-function run(over: Partial<{ id: number; status: string; createtime: number; updatetime: number }>) {
+function run(
+  over: Partial<{
+    id: number;
+    status: string;
+    createtime: number;
+    updatetime: number;
+  }>,
+) {
   return {
-    id: 1, goal: "g", leaderAgentId: 0, status: "running", projectId: 0,
-    flowId: 0, flowContent: "", rootTaskId: 0, createtime: NOW, updatetime: NOW,
+    id: 1,
+    goal: "g",
+    leaderAgentId: 0,
+    status: "running",
+    projectId: 0,
+    flowId: 0,
+    flowContent: "",
+    rootTaskId: 0,
+    createtime: NOW,
+    updatetime: NOW,
     ...over,
   } as never;
 }
 
 describe("computeRunStats", () => {
   it("空列表返回全零统计", () => {
-    expect(computeRunStats([], NOW)).toEqual({ running: 0, waiting: 0, doneThisWeek: 0, avgDurationMs: 0 });
+    expect(computeRunStats([], NOW)).toEqual({
+      running: 0,
+      waiting: 0,
+      doneThisWeek: 0,
+      avgDurationMs: 0,
+    });
   });
 
   it("统计 running / waiting(paused) / 本周完成 / 平均时长", () => {
     const runs = [
       run({ id: 1, status: "running" }),
       run({ id: 2, status: "paused" }),
-      run({ id: 3, status: "done", createtime: NOW - 2 * HOUR, updatetime: NOW - 1 * HOUR }),
-      run({ id: 4, status: "done", createtime: NOW - 4 * HOUR, updatetime: NOW - 1 * HOUR }),
+      run({
+        id: 3,
+        status: "done",
+        createtime: NOW - 2 * HOUR,
+        updatetime: NOW - 1 * HOUR,
+      }),
+      run({
+        id: 4,
+        status: "done",
+        createtime: NOW - 4 * HOUR,
+        updatetime: NOW - 1 * HOUR,
+      }),
       // 8 天前完成 → 不计入本周完成
-      run({ id: 5, status: "done", createtime: NOW - 9 * DAY, updatetime: NOW - 8 * DAY }),
+      run({
+        id: 5,
+        status: "done",
+        createtime: NOW - 9 * DAY,
+        updatetime: NOW - 8 * DAY,
+      }),
     ];
     const s = computeRunStats(runs, NOW);
     expect(s.running).toBe(1);
@@ -42,7 +77,9 @@ describe("computeRunStats", () => {
   });
 
   it("无 done 时平均时长为 0", () => {
-    expect(computeRunStats([run({ status: "running" })], NOW).avgDurationMs).toBe(0);
+    expect(
+      computeRunStats([run({ status: "running" })], NOW).avgDurationMs,
+    ).toBe(0);
   });
 });
 
@@ -77,7 +114,9 @@ describe("inProgressRuns / recentDoneRuns", () => {
 describe("runProgress", () => {
   it("done = status==='done' 计数, total = 长度", () => {
     const tasks = [
-      { status: "done" }, { status: "running" }, { status: "done" },
+      { status: "done" },
+      { status: "running" },
+      { status: "done" },
     ] as never[];
     expect(runProgress(tasks)).toEqual({ done: 2, total: 3 });
   });

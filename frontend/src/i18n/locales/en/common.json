@@ -1828,6 +1828,19 @@
       "moveDown": "Move down",
       "removeItem": "Remove"
     },
+    "designer": {
+      "nodeLabel": "Node name",
+      "nodeLabelPlaceholder": "e.g. Break down requirements",
+      "nodeKind": "Type",
+      "kindTask": "Delegated task",
+      "kindLeader": "Leader step",
+      "nodeBrief": "Task brief",
+      "nodeBriefPlaceholder": "What to do + acceptance criteria",
+      "dependsOn": "Depends on",
+      "dependsOnHint": "Runs after the selected earlier steps",
+      "bounce": "On failure → bounce to",
+      "bounceNone": "None"
+    },
     "deleteConfirm": {
       "title": "Delete workflow",
       "desc": "\"{{name}}\" is used by {{count}} runs; after deletion they fall back to \"no workflow\". This cannot be undone.",
@@ -2280,7 +2293,6 @@
       "teamSearchEmpty": "No matching agents",
       "teamSearchResults": "Search results",
       "flow": "Orchestration flow",
-      "flowNone": "Start from scratch (AI plans)",
       "flowAdhoc": "Ad-hoc",
       "flowSelect": "Choose from library",
       "flowSelectPlaceholder": "Search flows…",
@@ -2288,6 +2300,7 @@
       "flowContent": "Flow Content",
       "flowContentPlaceholder": "Enter or paste flow definition…",
       "flowManage": "Manage library",
+      "flowPreview": "Flow preview (DAG)",
       "create": "Create & start run",
       "project": "Project",
       "projectNone": "None (agent default directory)"

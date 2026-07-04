@@ -11,6 +11,8 @@ type WorkflowItem struct {
 	Content    string   `json:"content"`
 	Tags       []string `json:"tags"`
 	Outline    []string `json:"outline"`
+	Graph      string   `json:"graph"`
+	IsDefault  bool     `json:"isDefault"`
 	RunCount   int      `json:"runCount"`
 	Createtime int64    `json:"createtime"`
 	Updatetime int64    `json:"updatetime"`
@@ -30,6 +32,7 @@ type CreateWorkflowRequest struct {
 	Content string   `json:"content"`
 	Tags    []string `json:"tags"`
 	Outline []string `json:"outline"`
+	Graph   string   `json:"graph,omitempty"`
 }
 
 type CreateWorkflowResponse struct {
@@ -43,6 +46,7 @@ type UpdateWorkflowRequest struct {
 	Content string   `json:"content"`
 	Tags    []string `json:"tags"`
 	Outline []string `json:"outline"`
+	Graph   string   `json:"graph,omitempty"`
 }
 
 type UpdateWorkflowResponse struct {

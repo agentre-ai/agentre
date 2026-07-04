@@ -3,8 +3,20 @@ import { describe, expect, it } from "vitest";
 import { groupAgentsByDepartment } from "../team-picker-data";
 
 const depts = [
-  { id: 10, name: "研发部", icon: "code", accentColor: "agent-1", sortOrder: 1 },
-  { id: 20, name: "产品部", icon: "palette", accentColor: "agent-2", sortOrder: 0 },
+  {
+    id: 10,
+    name: "研发部",
+    icon: "code",
+    accentColor: "agent-1",
+    sortOrder: 1,
+  },
+  {
+    id: 20,
+    name: "产品部",
+    icon: "palette",
+    accentColor: "agent-2",
+    sortOrder: 0,
+  },
 ];
 
 describe("groupAgentsByDepartment", () => {
@@ -22,7 +34,12 @@ describe("groupAgentsByDepartment", () => {
       [{ id: 1, departmentId: 10 }],
     );
     expect(m.departments).toHaveLength(1);
-    expect(m.departments[0]).toMatchObject({ id: 10, name: "研发部", icon: "code", accentColor: "agent-1" });
+    expect(m.departments[0]).toMatchObject({
+      id: 10,
+      name: "研发部",
+      icon: "code",
+      accentColor: "agent-1",
+    });
     expect(m.departments[0].agents.map((a) => a.id)).toEqual([1]);
     expect(m.departments[0].agents[0].backendType).toBe("claudecode");
     expect(m.ungrouped).toEqual([]);
@@ -36,7 +53,9 @@ describe("groupAgentsByDepartment", () => {
   });
 
   it("departmentId 指向不存在的部门 → 未分组", () => {
-    const m = groupAgentsByDepartment([{ id: 3, name: "X" }], depts, [{ id: 3, departmentId: 999 }]);
+    const m = groupAgentsByDepartment([{ id: 3, name: "X" }], depts, [
+      { id: 3, departmentId: 999 },
+    ]);
     expect(m.ungrouped.map((a) => a.id)).toEqual([3]);
     expect(m.departments).toEqual([]);
   });

@@ -80,7 +80,13 @@ export function groupAgentsByDepartment(
   for (const [deptId, agents] of byDept) {
     const d = deptById.get(deptId);
     if (!d) continue;
-    departments.push({ id: d.id, name: d.name, icon: d.icon, accentColor: d.accentColor, agents });
+    departments.push({
+      id: d.id,
+      name: d.name,
+      icon: d.icon,
+      accentColor: d.accentColor,
+      agents,
+    });
   }
   departments.sort((a, b) => {
     const da = deptById.get(a.id)!;

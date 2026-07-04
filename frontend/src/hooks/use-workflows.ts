@@ -12,6 +12,7 @@ export type WorkflowItem = {
   id: number;
   name: string;
   content: string;
+  graph: string;
   tags: string[];
   outline: string[];
   runCount: number;
@@ -34,6 +35,7 @@ export function useWorkflows() {
           id: i.id,
           name: i.name,
           content: i.content,
+          graph: i.graph ?? "",
           tags: i.tags ?? [],
           outline: i.outline ?? [],
           runCount: i.runCount,
@@ -63,8 +65,9 @@ export function useWorkflows() {
       content: string,
       tags: string[],
       outline: string[],
+      graph = "",
     ) => {
-      await WorkflowCreate({ name, content, tags, outline });
+      await WorkflowCreate({ name, content, tags, outline, graph });
       await reload();
     },
     [reload],
@@ -77,8 +80,9 @@ export function useWorkflows() {
       content: string,
       tags: string[],
       outline: string[],
+      graph = "",
     ) => {
-      await WorkflowUpdate({ id, name, content, tags, outline });
+      await WorkflowUpdate({ id, name, content, tags, outline, graph });
       await reload();
     },
     [reload],

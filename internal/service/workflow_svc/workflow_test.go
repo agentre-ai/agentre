@@ -295,3 +295,54 @@ func TestDeleteWorkflow(t *testing.T) {
 		})
 	})
 }
+
+func TestCreateWorkflow_ProjectsGraphIntoContent(t *testing.T) {
+	convey.Convey("Create 传 graph → content/outline 被投影覆写", t, func() {
+		ctx, wfMock, _, svc := setupSvc(t)
+		var saved *workflow_entity.Workflow
+		wfMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, w *workflow_entity.Workflow) error { saved = w; w.ID = 5; return nil },
+		)
+		graph := `{"version":1,"nodes":[{"id":"a","label":"Plan","kind":"leader"},{"id":"b","label":"Do","kind":"task","brief":"do it"}],"edges":[{"from":"a","to":"b"}]}`
+		resp, err := svc.Create(ctx, &CreateWorkflowRequest{Name: "F", Content: "ignored user text", Graph: graph})
+		assert.NoError(t, err)
+		assert.Contains(t, saved.Content, "# F")
+		assert.Contains(t, saved.Content, "finish with a summary @user") // sink=Do
+		assert.NotEqual(t, "ignored user text", saved.Content)           // 图存在时投影覆写
+		assert.Equal(t, graph, saved.Graph)
+		assert.Contains(t, resp.Item.Content, "# F")
+	})
+}
+
+func TestListWorkflows_ExposesDefaultAndGraph(t *testing.T) {
+	convey.Convey("List DTO 带 isDefault/graph", t, func() {
+		ctx, wfMock, runMock, svc := setupSvc(t)
+		wfMock.EXPECT().List(gomock.Any()).Return([]*workflow_entity.Workflow{
+			{ID: 1, Name: "D", Content: "# D", Graph: `{"version":1}`, IsDefault: 1, Status: 1},
+		}, nil)
+		runMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+		resp, err := svc.List(ctx, &ListWorkflowsRequest{})
+		assert.NoError(t, err)
+		assert.True(t, resp.Items[0].IsDefault)
+		assert.Equal(t, `{"version":1}`, resp.Items[0].Graph)
+	})
+}
+
+func TestUpdateWorkflow_EmptyGraphPreservesStoredGraph(t *testing.T) {
+	convey.Convey("Update 不传 graph → 已存 graph 不被清空", t, func() {
+		ctx, wfMock, runMock, svc := setupSvc(t)
+		wfMock.EXPECT().Find(gomock.Any(), int64(3)).Return(&workflow_entity.Workflow{
+			ID: 3, Name: "旧名", Status: 1,
+			Graph:   `{"version":1,"nodes":[{"id":"a","label":"A","kind":"leader"}],"edges":[]}`,
+			Content: "# 旧名",
+		}, nil)
+		var saved *workflow_entity.Workflow
+		wfMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, w *workflow_entity.Workflow) error { saved = w; return nil })
+		runMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+		_, err := svc.Update(ctx, &UpdateWorkflowRequest{ID: 3, Name: "新名", Content: "## body"})
+		assert.NoError(t, err)
+		assert.NotEmpty(t, saved.Graph) // 已存 graph 未被清空
+		assert.Contains(t, saved.Graph, `"kind":"leader"`)
+	})
+}

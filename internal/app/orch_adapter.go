@@ -12,6 +12,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/workflow_repo"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 	"github.com/agentre-ai/agentre/internal/service/orch_svc"
 )
@@ -148,4 +149,22 @@ type orchEmitter struct{ a *App }
 
 func (e orchEmitter) Emit(_ context.Context, name string, payload any) {
 	wailsruntime.EventsEmit(e.a.ctx, name, payload)
+}
+
+// ──────────────────────────────────────────────────────────
+// orchWorkflowAdapter — orch_svc.WorkflowReader → workflow_repo.Workflow()
+// ──────────────────────────────────────────────────────────
+
+// orchWorkflowAdapter 让 orch_svc 经 workflow_repo 取已投影的流程正文(软删/不存在 → 空)。
+type orchWorkflowAdapter struct{}
+
+func (orchWorkflowAdapter) FlowContentByID(ctx context.Context, id int64) (string, error) {
+	w, err := workflow_repo.Workflow().Find(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if w == nil || !w.IsActive() {
+		return "", nil
+	}
+	return w.Content, nil
 }

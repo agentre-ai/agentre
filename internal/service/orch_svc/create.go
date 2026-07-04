@@ -38,9 +38,20 @@ func (s *orchSvc) CreateRun(ctx context.Context, req *CreateRunRequest) (*RunDet
 
 	allowed := marshalAllowedAgentIDs(req.AllowedAgentIDs)
 
+	// 库模式(只传 FlowID、未直传 FlowContent)→ 快照该流程已投影的正文进 run.FlowContent，
+	// 否则 turn.go 只读 run.FlowContent、库流程将注入为空。adhoc 直传 FlowContent 时跳过。
+	flowContent := req.FlowContent
+	if flowContent == "" && req.FlowID > 0 && s.wf != nil {
+		if c, err := s.wf.FlowContentByID(ctx, req.FlowID); err == nil {
+			flowContent = c
+		} else {
+			logger.Ctx(ctx).Warn("orch.CreateRun: 取流程正文失败,按无流程继续", zap.Int64("flow", req.FlowID), zap.Error(err))
+		}
+	}
+
 	run := &orch_entity.OrchestrationRun{
 		Goal: req.Goal, LeaderAgentID: req.LeaderAgentID,
-		FlowID: req.FlowID, FlowContent: req.FlowContent,
+		FlowID: req.FlowID, FlowContent: flowContent,
 		ProjectID: req.ProjectID, Status: orch_entity.RunRunning,
 		AllowedAgentIDs: allowed,
 	}
