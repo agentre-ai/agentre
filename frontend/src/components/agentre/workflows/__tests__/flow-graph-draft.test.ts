@@ -66,6 +66,29 @@ describe("flow-graph-draft", () => {
     expect(moveNode(g, "n2", -1).nodes.map((n) => n.id)).toEqual(["n2", "n1"]);
   });
 
+  it("moveNode 重排后剔除变「向后」的 sequence 依赖边, 保留 bounce", () => {
+    let g = addNode(emptyDraftGraph()); // n1, n2
+    g = setDependsOn(g, "n2", ["n1"]); // n1->n2 sequence(n2 依赖 n1)
+    g = setBounce(g, "n2", "n1"); // n2->n1 bounce
+    // 把 n2 移到 n1 之前 → n1->n2 变向后 → 剔除该依赖; bounce 是回退语义, 保留
+    g = moveNode(g, "n2", -1);
+    expect(g.nodes.map((n) => n.id)).toEqual(["n2", "n1"]);
+    expect(nodeDependsOn(g, "n2")).toEqual([]);
+    expect(nodeBounce(g, "n2")).toBe("n1");
+  });
+
+  it("removeNode 连带删除该节点的 bounce 边", () => {
+    let g = addNode(emptyDraftGraph()); // n1, n2
+    g = setBounce(g, "n2", "n1"); // n2->n1 bounce
+    g = removeNode(g, "n1"); // 删 bounce 目标端点 → 边也删
+    expect(g.edges).toEqual([]);
+  });
+
+  it("updateNode 未知 id 原样返回(no-op)", () => {
+    const g = emptyDraftGraph();
+    expect(updateNode(g, "nope", { label: "X" })).toEqual(g);
+  });
+
   it("earlierNodeIds 只返回 nodes[] 里排在目标之前的节点", () => {
     const g = addNode(addNode(emptyDraftGraph())); // n1, n2, n3
     expect(earlierNodeIds(g, "n1")).toEqual([]);
