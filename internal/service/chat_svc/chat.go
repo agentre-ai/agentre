@@ -200,7 +200,11 @@ type chatSvc struct {
 	// 用它防同一 session 重复起后台 subagent 活动 watcher(每会话一个,惰性启动);watcher
 	// 在底层 SubagentActivity channel close(子进程 evict / CloseSession)时退出并清这条。
 	subagentActivityWatchers sync.Map
-	gateway                  httpgateway.TokenIssuer
+	// bgRunning: sessionID(int64) → *bgRunningSet。per-session「运行中后台 subagent 的
+	// tool_use_id 集合」。集合非空 = 该会话有后台 subagent 在跑。后台 subagent 易失
+	// (随 CLI 子进程/重启消失)，故不落库；重启后 map 空 = 0 天然正确。见 bg_running.go。
+	bgRunning sync.Map
+	gateway   httpgateway.TokenIssuer
 	// chatTokens 缓存每个 chat session 的常驻 gateway token(sessionID int64 → token string)。
 	// 该 token 在 spawn 时烤进 claude 子进程 env 给 PostToolUse hook 用,子进程跨轮复用
 	// 时 env 不重建 —— 所以 token 必须签成永久(ttl=0)并跨轮稳定复用,否则长会话(>15min)
