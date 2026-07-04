@@ -35,6 +35,8 @@ export function computeAttention(
   if (input.agentStatus === "running") return "running";
   const unread = input.lastMessageAt > input.lastReadAt;
   if (input.agentStatus === "error" && unread) return "error";
+  // bg_running 独立于已读/未读：idle 会话只要有后台 subagent 在跑就冒。压过 unread，让位 error/running。
+  if (input.bgRunning) return "bg_running";
   if (input.agentStatus === "idle" && unread) return "unread";
   return null;
 }
@@ -51,6 +53,7 @@ export function useSessionAttention(sessionId: number): {
       needsAttention: view.needsAttention,
       lastMessageAt: view.lastMessageAt,
       lastReadAt: view.lastReadAt,
+      bgRunning: view.bgRunning,
     });
     return { reason, isAttention: reason !== null };
   }, [view]);
@@ -81,6 +84,7 @@ export function useSessionAttentionList(
         needsAttention: status?.needsAttention ?? false,
         lastMessageAt: meta.lastMessageAt ?? 0,
         lastReadAt,
+        bgRunning: status?.bgRunning ?? false,
       });
       if (reason !== null) out.push({ sessionId: sid, reason });
     }
