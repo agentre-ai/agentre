@@ -113,6 +113,11 @@ func (a *orchChatAdapter) FinalAssistantText(ctx context.Context, sessionID int6
 	return chat_svc.Chat().FinalAssistantText(ctx, info.msgID)
 }
 
+// LatestAssistantText 按 sessionID 取会话末条 assistant 文本(running peek)。
+func (a *orchChatAdapter) LatestAssistantText(ctx context.Context, sessionID int64) (string, error) {
+	return chat_svc.Chat().LatestAssistantText(ctx, sessionID)
+}
+
 // AgentStatus 从 stash 读取最近完成轮的 agent 状态（"idle" | "error"）。
 // stash 中尚无记录时默认返回 "idle"（表示尚未跑过，orch 的 watchCompletion 不会误判）。
 func (a *orchChatAdapter) AgentStatus(_ context.Context, sessionID int64) (string, error) {
@@ -121,6 +126,19 @@ func (a *orchChatAdapter) AgentStatus(_ context.Context, sessionID int64) (strin
 		return "idle", nil
 	}
 	return v.(turnInfo).status, nil
+}
+
+// AbortTurn 尽力硬打断会话在跑的一轮(复用 chat_svc.Stop)。
+// 无活跃 turn(ChatStopNoActive)视作无害成功:软取消已生效,硬打断无对象。
+func (a *orchChatAdapter) AbortTurn(ctx context.Context, sessionID int64) error {
+	_, err := chat_svc.Chat().Stop(ctx, &chat_svc.StopRequest{SessionID: sessionID})
+	if err != nil {
+		var herr *httputils.Error
+		if errors.As(err, &herr) && herr.Code == code.ChatStopNoActive {
+			return nil
+		}
+	}
+	return err
 }
 
 // ──────────────────────────────────────────────────────────

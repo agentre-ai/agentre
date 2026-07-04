@@ -2330,6 +2330,7 @@
     "header": {
       "viewGraph": "Graph",
       "viewFeed": "Feed",
+      "viewFlow": "Flow",
       "running": "Running",
       "completed": "Completed",
       "paused": "Paused",
@@ -2399,7 +2400,9 @@
       "statusError": "Error",
       "statusPending": "Pending",
       "statusIdle": "In progress",
-      "progress": "{{done}} / {{total}} done"
+      "progress": "{{done}} / {{total}} done",
+      "filteredBy": "Filtered: {{label}}",
+      "clearFilter": "Clear filter"
     },
     "notify": {
       "completed": "Orchestration run completed: {{goal}}",
@@ -2423,6 +2426,9 @@
       "awaitingReply": "Awaiting reply",
       "sessionLabel": "session",
       "tasksUnit": "tasks"
+    },
+    "flow": {
+      "empty": "This run has no flow to overlay"
     },
     "toggle": {
       "tasks": "tasks",

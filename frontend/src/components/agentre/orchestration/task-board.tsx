@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronRight, Circle, GitMerge, Loader } from "lucide-react";
+import { Check, ChevronRight, Circle, GitMerge, Loader, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useChatAgents } from "@/hooks/use-chat-agents";
 import {
@@ -9,6 +9,7 @@ import {
 } from "@/components/agentre/types";
 import type { app } from "../../../../wailsjs/go/models";
 import { useRunSubagents } from "./use-run-subagents";
+import { taskMatchesNode } from "./flow-overlay";
 
 // 任务状态 → lucide 图标 + 颜色 class
 function StatusIcon({ status, testId }: { status: string; testId: string }) {
@@ -44,10 +45,15 @@ export function TaskBoard({
   detail,
   selectedSessionId,
   onSelectSession,
+  filterNodeRef,
+  onClearFilter,
 }: {
   detail: app.RunDetailDTO;
   selectedSessionId: number | null;
   onSelectSession: (sessionId: number) => void;
+  // filterNodeRef:非空时只显示 nodeRef 匹配该流程节点 label 的任务(点 Flow 节点触发)。
+  filterNodeRef?: string | null;
+  onClearFilter?: () => void;
 }) {
   const { t } = useTranslation();
   const { agents } = useChatAgents();
@@ -67,7 +73,12 @@ export function TaskBoard({
       return next;
     });
 
-  const tasks = React.useMemo(() => detail.tasks ?? [], [detail.tasks]);
+  const tasks = React.useMemo(() => {
+    const all = detail.tasks ?? [];
+    return filterNodeRef
+      ? all.filter((tk) => taskMatchesNode(tk.nodeRef, filterNodeRef))
+      : all;
+  }, [detail.tasks, filterNodeRef]);
 
   // agentId → agent 名称 + 颜色
   const agentInfoMap = React.useMemo(() => {
@@ -218,6 +229,24 @@ export function TaskBoard({
             })}
           </span>
         </div>
+
+        {/* 流程节点筛选 chip:点 Flow 节点后出现,点它清除筛选 */}
+        {filterNodeRef && (
+          <button
+            type="button"
+            data-testid="board-filter-chip"
+            onClick={onClearFilter}
+            className="flex items-center gap-1 self-start rounded-full border border-border bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <span className="truncate">
+              {t("orchestration.board.filteredBy", { label: filterNodeRef })}
+            </span>
+            <X className="size-3 shrink-0" aria-hidden="true" />
+            <span className="sr-only">
+              {t("orchestration.board.clearFilter")}
+            </span>
+          </button>
+        )}
 
         {/* tabs: bg-secondary rounded-lg p-0.5 */}
         <div className="flex items-center gap-0.5 rounded-lg bg-secondary p-0.5">

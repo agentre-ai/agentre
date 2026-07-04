@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { deriveNodeOverlay } from "../flow-overlay";
+import { deriveNodeOverlay, taskMatchesNode } from "../flow-overlay";
 
 const graph = JSON.stringify({
   version: 1,
@@ -79,5 +79,20 @@ describe("deriveNodeOverlay", () => {
   it("非法/空 graph → 空对象", () => {
     expect(deriveNodeOverlay("", [])).toEqual({});
     expect(deriveNodeOverlay(null, [])).toEqual({});
+  });
+});
+
+describe("taskMatchesNode", () => {
+  it("按 label trim+小写匹配(与 deriveNodeOverlay 同口径)", () => {
+    expect(taskMatchesNode("FE", "fe")).toBe(true);
+    expect(taskMatchesNode("  QA ", "qa")).toBe(true);
+    expect(taskMatchesNode("FE", "BE")).toBe(false);
+  });
+
+  it("空 nodeRef / 空 label → false(不误纳未打标任务)", () => {
+    expect(taskMatchesNode("", "FE")).toBe(false);
+    expect(taskMatchesNode(undefined, "FE")).toBe(false);
+    expect(taskMatchesNode("FE", null)).toBe(false);
+    expect(taskMatchesNode("FE", "")).toBe(false);
   });
 });

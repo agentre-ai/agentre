@@ -117,6 +117,8 @@ type ChatSvc interface {
 	FinishToolApproval(ctx context.Context, sessionID int64, requestID, status, result string) error
 	// FinalAssistantText 读取某 assistant message 的纯文本(拼接所有 TextBlock)。
 	FinalAssistantText(ctx context.Context, messageID int64) (string, error)
+	// LatestAssistantText 按 sessionID 取末条 assistant 文本(running peek;无 → 空串)。
+	LatestAssistantText(ctx context.Context, sessionID int64) (string, error)
 	// SessionProjectID 返回某会话所属的 project id(0=未挂项目);子 agent 工具用它继承调用方项目/cwd。
 	SessionProjectID(ctx context.Context, sessionID int64) (int64, error)
 }

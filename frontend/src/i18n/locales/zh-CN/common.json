@@ -2330,6 +2330,7 @@
     "header": {
       "viewGraph": "结构图",
       "viewFeed": "活动流",
+      "viewFlow": "流程",
       "running": "自主运行中",
       "completed": "已完成",
       "paused": "已暂停",
@@ -2399,7 +2400,9 @@
       "statusError": "出错",
       "statusPending": "待启动",
       "statusIdle": "进行中",
-      "progress": "{{done}} / {{total}} 完成"
+      "progress": "{{done}} / {{total}} 完成",
+      "filteredBy": "筛选: {{label}}",
+      "clearFilter": "清除筛选"
     },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",
@@ -2423,6 +2426,9 @@
       "awaitingReply": "等待回复中",
       "sessionLabel": "会话",
       "tasksUnit": "任务"
+    },
+    "flow": {
+      "empty": "本次编排没有可叠加进度的流程"
     },
     "toggle": {
       "tasks": "任务",

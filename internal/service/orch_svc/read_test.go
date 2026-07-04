@@ -34,6 +34,46 @@ func TestReadTask_ReturnsSettledResult(t *testing.T) {
 	})
 }
 
+func TestReadTask_RunningPeek(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
+
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(
+		&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500}, nil)
+	tasks.EXPECT().Find(gomock.Any(), int64(11)).Return(
+		&orch_entity.Task{ID: 11, RunID: 100, SessionID: 800, Status: orch_entity.TaskRunning}, nil)
+	chat.EXPECT().LatestAssistantText(gomock.Any(), int64(800)).Return("我正在写测试", nil)
+
+	Convey("read 撞 running 任务 → 取会话当前最新 assistant 文本(peek)", t, func() {
+		out, err := orch_svc.Default().ReadTask(context.Background(), 500, 11)
+		So(err, ShouldBeNil)
+		So(out, ShouldContainSubstring, "我正在写测试")
+	})
+}
+
+func TestReadTask_RunningPeek_Empty(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
+
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(
+		&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500}, nil)
+	tasks.EXPECT().Find(gomock.Any(), int64(11)).Return(
+		&orch_entity.Task{ID: 11, RunID: 100, SessionID: 800, Status: orch_entity.TaskRunning}, nil)
+	chat.EXPECT().LatestAssistantText(gomock.Any(), int64(800)).Return("", nil)
+
+	Convey("read 撞 running 且尚无输出 → 兜底文案", t, func() {
+		out, err := orch_svc.Default().ReadTask(context.Background(), 500, 11)
+		So(err, ShouldBeNil)
+		So(out, ShouldContainSubstring, "尚无输出")
+	})
+}
+
 func TestReadTask_RejectsForeignRunTask(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)

@@ -50,3 +50,25 @@ func (s *orchSvc) SchedulerPausedForTest(runID int64) bool {
 	defer sc.mu.Unlock()
 	return sc.paused
 }
+
+// FormatRunStatusForTest 仅测试用:暴露私有 formatRunStatus。
+func FormatRunStatusForTest(tasks []*orch_entity.Task, agentNames map[int64]string) string {
+	return formatRunStatus(tasks, agentNames)
+}
+
+// OrchToolSchemaNames 仅测试用:返回 orchToolSchemas() 暴露的全部工具名，
+// 供 parity 守卫比对 agenttool 白名单。
+func OrchToolSchemaNames() []string {
+	schemas := orchToolSchemas()
+	names := make([]string, 0, len(schemas))
+	for _, s := range schemas {
+		m, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		if n, ok := m["name"].(string); ok {
+			names = append(names, n)
+		}
+	}
+	return names
+}

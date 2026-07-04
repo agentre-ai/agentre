@@ -37,7 +37,9 @@ func TestBuildTurnMCP_InjectsWhenEnabled(t *testing.T) {
 	assert.NotEmpty(t, specs)
 	assert.Equal(t, agenttool.KeyOrchestrate, specs[0].Name)
 	assert.Equal(t, "http://127.0.0.1:9/mcp/orchestrate/", specs[0].URL)
-	assert.ElementsMatch(t, []string{"agent_list", "dispatch", "ask", "send", "finish", "reply"}, specs[0].Tools)
+	// 断言注入的 Tools == 注册表 ToolNames 本尊(随白名单增减自适应,只验 BuildTurnMCP 把注册表原样透传)。
+	def, _ := agenttool.Lookup(agenttool.KeyOrchestrate)
+	assert.ElementsMatch(t, def.ToolNames, specs[0].Tools)
 	assert.NotEmpty(t, specs[0].Headers["Authorization"])
 
 	// No gateway → nil even when enabled.

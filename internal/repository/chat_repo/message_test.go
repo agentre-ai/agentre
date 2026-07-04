@@ -469,6 +469,32 @@ func TestMessageRepo_FindAssistantBySubagentToolUseID_EmptyToolUseID(t *testing.
 	assert.Nil(t, got, "空 toolUseID 短路返回 (nil, nil),不查库")
 }
 
+func TestMessageRepo_LatestAssistant(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	// gorm appends `,`chat_messages`.`id`` to ORDER BY when using First(); regex adjusted to match.
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY seq DESC,`chat_messages`.`id` LIMIT \\?").
+		WithArgs(int64(7), "assistant", 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "seq"}).
+			AddRow(42, 7, "assistant", 9))
+	got, err := chat_repo.NewMessage().LatestAssistant(ctx, 7)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, int64(42), got.ID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMessageRepo_LatestAssistant_None(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	// gorm appends `,`chat_messages`.`id`` to ORDER BY when using First(); regex adjusted to match.
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY seq DESC,`chat_messages`.`id` LIMIT \\?").
+		WithArgs(int64(7), "assistant", 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	got, err := chat_repo.NewMessage().LatestAssistant(ctx, 7)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestMessageRepo_Update(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 

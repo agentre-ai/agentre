@@ -200,6 +200,8 @@ func TestWatchCompletion_TechnicalErrorEscalates(t *testing.T) {
 		}
 		return nil
 	}).AnyTimes()
+	// error 分支让位守卫:重读子任务,非 canceled → 继续标 error。
+	tasks.EXPECT().Find(gomock.Any(), int64(12)).Return(&orch_entity.Task{ID: 12, RunID: 200, Status: orch_entity.TaskRunning}, nil)
 	// reportToParent: 取父任务。
 	tasks.EXPECT().Find(gomock.Any(), int64(20)).Return(&orch_entity.Task{ID: 20, RunID: 200, SessionID: 700, Status: orch_entity.TaskRunning}, nil)
 	tasks.EXPECT().ListByRun(gomock.Any(), int64(200)).Return([]*orch_entity.Task{
@@ -338,6 +340,33 @@ func TestWatchCompletion_ParentFlipEmitsRunUpdated(t *testing.T) {
 		<-done
 		// 父翻转路径应触发至少 2 次 emit（子 done 1 次 + 父翻转后 1 次）。
 		So(atomic.LoadInt64(&emitCount), ShouldBeGreaterThanOrEqualTo, 2)
+	})
+}
+
+// TestWatchCompletion_YieldsToCanceled — watcher 见任务已被取消 → 让位:不覆盖状态、不回报父。
+func TestWatchCompletion_YieldsToCanceled(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
+	orch_svc.Default().SetSchedulerCapForTest(1)
+	t.Cleanup(func() { orch_svc.Default().ResetSchedulersForTest(); orch_svc.Default().SetSchedulerCapForTest(0) })
+
+	task := &orch_entity.Task{ID: 9, RunID: 100, SessionID: 800, Status: orch_entity.TaskRunning}
+	// 会话 abort → 状态 error;watcher 重读 fresh 发现已被取消 → 让位。
+	chat.EXPECT().AgentStatus(gomock.Any(), int64(800)).Return("error", nil)
+	tasks.EXPECT().Find(gomock.Any(), int64(9)).Return(
+		&orch_entity.Task{ID: 9, RunID: 100, Status: orch_entity.TaskCanceled}, nil)
+	// 关键:被取消 → 不得 Update、不得 injectToParent(无其它 mock EXPECT 即验证)。
+
+	ch := make(chan orch_svc.TurnDone, 1)
+	ch <- orch_svc.TurnDone{SessionID: 800, OK: false}
+	close(ch)
+
+	Convey("watcher 见任务已取消 → 让位:不覆盖状态、不回报父", t, func() {
+		orch_svc.Default().WatchCompletionForTest(context.Background(), task, ch, func() {})
+		// 无 tasks.Update / chat.SendAndForget 期望被调用即通过(gomock 严格模式会在多余调用时 fail)。
 	})
 }
 

@@ -18,6 +18,7 @@ import { StructureGraph } from "./structure-graph";
 import { ActivityFeed } from "./activity-feed";
 import { TaskBoard } from "./task-board";
 import { ConversationPanel } from "./conversation-panel";
+import { RunFlowOverlay } from "./run-flow-overlay";
 import { ToggleBar } from "./toggle-bar";
 import { useRunSubagents } from "./use-run-subagents";
 import type { app } from "../../../../wailsjs/go/models";
@@ -40,10 +41,21 @@ export function OrchestrationRun({
     void useOrchRunStore.getState().loadRun(runId);
   }, [runId]);
 
-  const [view, setView] = React.useState<"graph" | "feed">("graph");
+  const [view, setView] = React.useState<"graph" | "feed" | "flow">("graph");
   const [selectedSessionId, setSelectedSessionId] = React.useState<
     number | null
   >(null);
+  // 点 Flow 节点 → 按该节点 label 筛任务板;点同节点/清除 chip → 复位。持久跨 tab。
+  const [filterNodeLabel, setFilterNodeLabel] = React.useState<string | null>(
+    null,
+  );
+  const handleFlowNodeClick = React.useCallback((label: string) => {
+    setFilterNodeLabel((prev) =>
+      prev && prev.trim().toLowerCase() === label.trim().toLowerCase()
+        ? null
+        : label,
+    );
+  }, []);
 
   // 子代理(spawned local_agent)计数:复用 useRunSubagents 懒加载缓存(任务板同源,按 session 缓存)
   const subagents = useRunSubagents(detail ?? EMPTY_RUN_DETAIL);
@@ -89,9 +101,10 @@ export function OrchestrationRun({
   // Ref for footer input — used by deadlock "intervene" banner action to focus it
   const footerInputRef = React.useRef<HTMLInputElement>(null);
 
-  // 切换 Run 时重置选中
+  // 切换 Run 时重置选中 + 流程节点筛选
   React.useEffect(() => {
     setSelectedSessionId(null);
+    setFilterNodeLabel(null);
   }, [runId]);
 
   // 解析选中 session 对应的 agent
@@ -141,6 +154,9 @@ export function OrchestrationRun({
     [handleLeaderSend],
   );
 
+  const hasFlow = !!detail?.run?.flowGraph;
+  const effView = view === "flow" && !hasFlow ? "graph" : view;
+
   return (
     <div
       data-testid="orchestration-run"
@@ -162,7 +178,12 @@ export function OrchestrationRun({
           >
             <RunHeader detail={detail} />
 
-            <ToggleBar view={view} onView={setView} stats={toggleStats} />
+            <ToggleBar
+              view={effView}
+              onView={setView}
+              stats={toggleStats}
+              showFlow={hasFlow}
+            />
 
             {/* Phase banners: between ToggleBar and content, visible in both views */}
             {detail && (
@@ -269,7 +290,13 @@ export function OrchestrationRun({
               data-testid="orch-content"
               className="flex min-h-0 flex-1 flex-col bg-background overflow-auto"
             >
-              {view === "graph" ? (
+              {effView === "flow" ? (
+                <RunFlowOverlay
+                  detail={detail}
+                  onNodeClick={handleFlowNodeClick}
+                  selectedLabel={filterNodeLabel}
+                />
+              ) : effView === "graph" ? (
                 <StructureGraph
                   detail={detail}
                   onSelectSession={setSelectedSessionId}
@@ -332,6 +359,8 @@ export function OrchestrationRun({
                 detail={detail}
                 selectedSessionId={selectedSessionId}
                 onSelectSession={setSelectedSessionId}
+                filterNodeRef={filterNodeLabel}
+                onClearFilter={() => setFilterNodeLabel(null)}
               />
             )}
           </aside>

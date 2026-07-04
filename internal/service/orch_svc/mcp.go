@@ -156,6 +156,10 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 		m.handleReport(w, r, id, ref, args)
 	case "read":
 		m.handleRead(w, r, id, ref, args)
+	case "status":
+		m.handleStatus(w, r, id, ref)
+	case "cancel":
+		m.handleCancel(w, r, id, ref, args)
 	default:
 		writeRPCError(w, id, -32601, "unknown tool")
 	}
@@ -304,6 +308,35 @@ func (m *orchMCP) handleRead(w http.ResponseWriter, r *http.Request, id json.Raw
 	writeRPCResult(w, id, textResult(out))
 }
 
+func (m *orchMCP) handleStatus(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef) {
+	out, err := m.svc.RunStatus(r.Context(), ref.sessionID)
+	if err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult(out))
+}
+
+func (m *orchMCP) handleCancel(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
+	var p struct {
+		TaskID int64 `json:"task_id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		writeRPCError(w, id, -32700, "parse error: "+err.Error())
+		return
+	}
+	if p.TaskID <= 0 {
+		writeRPCError(w, id, -32602, "task_id is required")
+		return
+	}
+	n, err := m.svc.CancelTask(r.Context(), ref.sessionID, p.TaskID)
+	if err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult(fmt.Sprintf("已请求取消 %d 个任务(目标 #%d 及其子孙);进行中的一轮会尽力打断。", n, p.TaskID)))
+}
+
 // textResult 将文本包装成 MCP content 格式（Tasks 10/11/12 复用）。
 func textResult(s string) map[string]any {
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": s}}}
@@ -411,7 +444,23 @@ func orchToolSchemas() []any {
 		},
 		map[string]any{
 			"name":        "read",
-			"description": "读取你派发/同 Run 内某任务的输出(默认完成只发通知,用它按需拉全文)。传通知里给出的 task_id。",
+			"description": "读取你派发/同 Run 内某任务的输出:已完成→拉小结+完整正文;运行中→peek 它当前最新进展。传通知/status 里给出的 task_id。",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"task_id"},
+				"properties": map[string]any{
+					"task_id": map[string]any{"type": "integer"},
+				},
+			},
+		},
+		map[string]any{
+			"name":        "status",
+			"description": "查看本次编排整棵任务树的实时快照(每个子任务的 id/agent/类型/状态/brief/是否已主动汇报/所属流程节点/在等哪些子任务)。两次回报之间用它掌握全局。",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		map[string]any{
+			"name":        "cancel",
+			"description": "中止一个跑偏/卡住的子任务(软取消 + 尽力打断在跑的一轮),并级联取消它派生的全部子孙任务。仅能取消你所在编排内的任务。",
 			"inputSchema": map[string]any{
 				"type":     "object",
 				"required": []string{"task_id"},
