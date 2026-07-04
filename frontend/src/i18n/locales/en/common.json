@@ -2330,6 +2330,7 @@
     "header": {
       "viewGraph": "Graph",
       "viewFeed": "Feed",
+      "viewFlow": "Flow",
       "running": "Running",
       "completed": "Completed",
       "paused": "Paused",
@@ -2423,6 +2424,9 @@
       "awaitingReply": "Awaiting reply",
       "sessionLabel": "session",
       "tasksUnit": "tasks"
+    },
+    "flow": {
+      "empty": "This run has no flow to overlay"
     },
     "toggle": {
       "tasks": "tasks",
