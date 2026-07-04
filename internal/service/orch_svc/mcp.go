@@ -156,6 +156,8 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 		m.handleReport(w, r, id, ref, args)
 	case "read":
 		m.handleRead(w, r, id, ref, args)
+	case "status":
+		m.handleStatus(w, r, id, ref)
 	default:
 		writeRPCError(w, id, -32601, "unknown tool")
 	}
@@ -304,6 +306,15 @@ func (m *orchMCP) handleRead(w http.ResponseWriter, r *http.Request, id json.Raw
 	writeRPCResult(w, id, textResult(out))
 }
 
+func (m *orchMCP) handleStatus(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef) {
+	out, err := m.svc.RunStatus(r.Context(), ref.sessionID)
+	if err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult(out))
+}
+
 // textResult 将文本包装成 MCP content 格式（Tasks 10/11/12 复用）。
 func textResult(s string) map[string]any {
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": s}}}
@@ -419,6 +430,11 @@ func orchToolSchemas() []any {
 					"task_id": map[string]any{"type": "integer"},
 				},
 			},
+		},
+		map[string]any{
+			"name":        "status",
+			"description": "查看本次编排整棵任务树的实时快照(每个子任务的 id/agent/类型/状态/brief/是否已主动汇报/所属流程节点/在等哪些子任务)。两次回报之间用它掌握全局。",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 	}
 }

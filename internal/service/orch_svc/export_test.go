@@ -51,6 +51,11 @@ func (s *orchSvc) SchedulerPausedForTest(runID int64) bool {
 	return sc.paused
 }
 
+// FormatRunStatusForTest 仅测试用:暴露私有 formatRunStatus。
+func FormatRunStatusForTest(tasks []*orch_entity.Task, agentNames map[int64]string) string {
+	return formatRunStatus(tasks, agentNames)
+}
+
 // OrchToolSchemaNames 仅测试用:返回 orchToolSchemas() 暴露的全部工具名，
 // 供 parity 守卫比对 agenttool 白名单。
 func OrchToolSchemaNames() []string {

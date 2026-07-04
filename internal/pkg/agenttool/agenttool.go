@@ -35,7 +35,7 @@ var registry = []Definition{
 		"workflow_list", "workflow_create", "workflow_update", "workflow_delete",
 	}},
 	{Key: KeySubagent, MCPPath: "/mcp/subagent/", ToolNames: []string{"agent_list", "agent_call"}},
-	{Key: KeyOrchestrate, MCPPath: "/mcp/orchestrate/", ToolNames: []string{"agent_list", "dispatch", "ask", "send", "finish", "reply", "report", "read"}},
+	{Key: KeyOrchestrate, MCPPath: "/mcp/orchestrate/", ToolNames: []string{"agent_list", "dispatch", "ask", "send", "finish", "reply", "report", "read", "status"}},
 	{Key: KeyHook, MCPPath: "/mcp/hook/", ToolNames: []string{
 		"hook_list", "hook_get", "hook_create", "hook_update", "hook_delete", "hook_run",
 	}},
