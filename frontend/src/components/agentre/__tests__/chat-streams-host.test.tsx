@@ -258,4 +258,33 @@ describe("ChatStreamsHost", () => {
       false,
     );
   });
+
+  it("session_status event with bgRunning:true ingests bgRunning into session-status-store", async () => {
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+
+    render(<ChatStreamsHost />);
+
+    await waitFor(() => expect(runtimeMocks.EventsOn).toHaveBeenCalled());
+    const handler = registeredHandler();
+
+    act(() => {
+      handler({
+        kind: "session_status",
+        sessionStatus: {
+          agentStatus: "running",
+          needsAttention: false,
+          bgRunning: true,
+        },
+      });
+    });
+
+    expect(
+      useSessionStatusStore.getState().statuses.get(42)?.bgRunning,
+    ).toBe(true);
+  });
 });

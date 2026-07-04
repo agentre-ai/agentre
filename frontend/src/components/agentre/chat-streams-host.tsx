@@ -262,6 +262,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
               : (prev?.needsAttention ?? false),
             permissionMode:
               ev.sessionStatus.permissionMode || prev?.permissionMode,
+            bgRunning: ev.sessionStatus.bgRunning,
           });
           return;
         }
