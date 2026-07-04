@@ -55,6 +55,9 @@ type MessageRepo interface {
 	// 的发起卡所在消息)。toolUseID 空 / 无命中 / 该会话没有这类消息时返回 (nil, nil)。
 	// 仅读取定位,不改写。
 	FindAssistantBySubagentToolUseID(ctx context.Context, sessionID int64, toolUseID string) (*chat_entity.Message, error)
+	// LatestAssistant 取某会话 seq 最大的一条 assistant 消息(无 → nil,nil)。
+	// 用于 peek 运行中子任务的当前输出（read 工具的 running 分支）。
+	LatestAssistant(ctx context.Context, sessionID int64) (*chat_entity.Message, error)
 }
 
 // flipSubagentScanLimit 是 FlipSubagentStatus 倒序扫描的最近 assistant 消息条数上限。
@@ -111,6 +114,22 @@ func (r *messageRepo) Find(ctx context.Context, id int64) (*chat_entity.Message,
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
+		return nil, err
+	}
+	return &m, nil
+}
+
+func (r *messageRepo) LatestAssistant(ctx context.Context, sessionID int64) (*chat_entity.Message, error) {
+	var m chat_entity.Message
+	err := db.Ctx(ctx).
+		Where("session_id = ? AND role = ?", sessionID, "assistant").
+		Order("seq DESC").
+		Limit(1).
+		First(&m).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &m, nil

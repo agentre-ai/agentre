@@ -128,6 +128,21 @@ func (mr *MockMessageRepoMockRecorder) FlipSubagentStatus(ctx, sessionID, toolUs
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FlipSubagentStatus", reflect.TypeOf((*MockMessageRepo)(nil).FlipSubagentStatus), ctx, sessionID, toolUseID, status, summary)
 }
 
+// LatestAssistant mocks base method.
+func (m *MockMessageRepo) LatestAssistant(ctx context.Context, sessionID int64) (*chat_entity.Message, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LatestAssistant", ctx, sessionID)
+	ret0, _ := ret[0].(*chat_entity.Message)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LatestAssistant indicates an expected call of LatestAssistant.
+func (mr *MockMessageRepoMockRecorder) LatestAssistant(ctx, sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LatestAssistant", reflect.TypeOf((*MockMessageRepo)(nil).LatestAssistant), ctx, sessionID)
+}
+
 // List mocks base method.
 func (m *MockMessageRepo) List(ctx context.Context, sessionID int64) ([]*chat_entity.Message, error) {
 	m.ctrl.T.Helper()
