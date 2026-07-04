@@ -125,8 +125,8 @@ describe("OrgDetailDepartment auto-save", () => {
 
   it("removes the cancel and save footer buttons", () => {
     render(<OrgDetailDepartment {...baseProps()} />);
-    expect(screen.queryByRole("button", { name: "保存" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "取消" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
   });
 
   it("saves the name on blur", async () => {
