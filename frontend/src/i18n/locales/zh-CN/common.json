@@ -1828,6 +1828,19 @@
       "moveDown": "下移",
       "removeItem": "删除"
     },
+    "designer": {
+      "nodeLabel": "节点名称",
+      "nodeLabelPlaceholder": "如:拆解需求",
+      "nodeKind": "类型",
+      "kindTask": "委派任务",
+      "kindLeader": "Leader 步骤",
+      "nodeBrief": "任务说明",
+      "nodeBriefPlaceholder": "做什么 + 验收标准",
+      "dependsOn": "依赖",
+      "dependsOnHint": "在所选的前序步骤之后执行",
+      "bounce": "失败打回 →",
+      "bounceNone": "无"
+    },
     "deleteConfirm": {
       "title": "删除流程",
       "desc": "「{{name}}」正被 {{count}} 个 Run 使用;删除后这些 Run 按「不绑定流程」处理,且不可恢复。",
