@@ -327,3 +327,22 @@ func TestListWorkflows_ExposesDefaultAndGraph(t *testing.T) {
 		assert.Equal(t, `{"version":1}`, resp.Items[0].Graph)
 	})
 }
+
+func TestUpdateWorkflow_EmptyGraphPreservesStoredGraph(t *testing.T) {
+	convey.Convey("Update 不传 graph → 已存 graph 不被清空", t, func() {
+		ctx, wfMock, runMock, svc := setupSvc(t)
+		wfMock.EXPECT().Find(gomock.Any(), int64(3)).Return(&workflow_entity.Workflow{
+			ID: 3, Name: "旧名", Status: 1,
+			Graph:   `{"version":1,"nodes":[{"id":"a","label":"A","kind":"leader"}],"edges":[]}`,
+			Content: "# 旧名",
+		}, nil)
+		var saved *workflow_entity.Workflow
+		wfMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, w *workflow_entity.Workflow) error { saved = w; return nil })
+		runMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+		_, err := svc.Update(ctx, &UpdateWorkflowRequest{ID: 3, Name: "新名", Content: "## body"})
+		assert.NoError(t, err)
+		assert.NotEmpty(t, saved.Graph) // 已存 graph 未被清空
+		assert.Contains(t, saved.Graph, `"kind":"leader"`)
+	})
+}

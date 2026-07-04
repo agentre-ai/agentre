@@ -87,8 +87,13 @@ func toItem(w *workflow_entity.Workflow, runCount int) *WorkflowItem {
 }
 
 // applyGraph 若 req 带合法 graph，则 graph 为真源：投影覆写 content/outline，并回存 graph JSON。
+// graph 为空 → 严格 no-op（不动 Graph/Content/Outline），避免 Update 未回传 graph 时清空已存的图。
 func applyGraph(w *workflow_entity.Workflow, graph string) {
-	w.Graph = strings.TrimSpace(graph)
+	trimmed := strings.TrimSpace(graph)
+	if trimmed == "" {
+		return
+	}
+	w.Graph = trimmed
 	if g, ok := ParseFlowGraph(w.Graph); ok {
 		content, outline := ProjectGraph(w.Name, g)
 		w.Content = content
