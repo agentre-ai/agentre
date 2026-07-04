@@ -102,6 +102,21 @@ func (mr *MockChatGatewayMockRecorder) FinalAssistantText(ctx, sessionID any) *g
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FinalAssistantText", reflect.TypeOf((*MockChatGateway)(nil).FinalAssistantText), ctx, sessionID)
 }
 
+// LatestAssistantText mocks base method.
+func (m *MockChatGateway) LatestAssistantText(ctx context.Context, sessionID int64) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LatestAssistantText", ctx, sessionID)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LatestAssistantText indicates an expected call of LatestAssistantText.
+func (mr *MockChatGatewayMockRecorder) LatestAssistantText(ctx, sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LatestAssistantText", reflect.TypeOf((*MockChatGateway)(nil).LatestAssistantText), ctx, sessionID)
+}
+
 // ObserveTurn mocks base method.
 func (m *MockChatGateway) ObserveTurn(sessionID int64) (<-chan orch_svc.TurnDone, func()) {
 	m.ctrl.T.Helper()

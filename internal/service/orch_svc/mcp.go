@@ -422,7 +422,7 @@ func orchToolSchemas() []any {
 		},
 		map[string]any{
 			"name":        "read",
-			"description": "读取你派发/同 Run 内某任务的输出(默认完成只发通知,用它按需拉全文)。传通知里给出的 task_id。",
+			"description": "读取你派发/同 Run 内某任务的输出:已完成→拉小结+完整正文;运行中→peek 它当前最新进展。传通知/status 里给出的 task_id。",
 			"inputSchema": map[string]any{
 				"type":     "object",
 				"required": []string{"task_id"},

@@ -36,6 +36,8 @@ type ChatGateway interface {
 	Enqueue(ctx context.Context, sessionID int64, text string) error
 	ObserveTurn(sessionID int64) (<-chan TurnDone, func())
 	FinalAssistantText(ctx context.Context, sessionID int64) (string, error)
+	// LatestAssistantText 取会话「当前/末条」assistant 文本(running 任务 peek;settled 用 FinalAssistantText)。
+	LatestAssistantText(ctx context.Context, sessionID int64) (string, error)
 	AgentStatus(ctx context.Context, sessionID int64) (string, error)
 }
 
