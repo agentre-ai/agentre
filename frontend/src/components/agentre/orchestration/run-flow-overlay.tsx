@@ -6,8 +6,16 @@ import { parseFlowGraph } from "./flow-graph";
 import { FlowGraphView } from "./flow-graph-view";
 import { deriveNodeOverlay } from "./flow-overlay";
 
-// RunFlowOverlay: 把当前 Run 的任务实况叠加到快照的 flow DAG 上(只读)。
-export function RunFlowOverlay({ detail }: { detail: app.RunDetailDTO }) {
+// RunFlowOverlay: 把当前 Run 的任务实况叠加到快照的 flow DAG 上(只读 + 可点节点筛任务)。
+export function RunFlowOverlay({
+  detail,
+  onNodeClick,
+  selectedLabel,
+}: {
+  detail: app.RunDetailDTO;
+  onNodeClick?: (label: string) => void;
+  selectedLabel?: string | null;
+}) {
   const { t } = useTranslation();
   const graph = detail.run?.flowGraph ?? "";
   const rawTasks = detail.tasks;
@@ -37,7 +45,12 @@ export function RunFlowOverlay({ detail }: { detail: app.RunDetailDTO }) {
 
   return (
     <div data-testid="run-flow-overlay" className="p-5">
-      <FlowGraphView graph={graph} overlay={overlay} />
+      <FlowGraphView
+        graph={graph}
+        overlay={overlay}
+        onNodeClick={onNodeClick}
+        selectedLabel={selectedLabel}
+      />
     </div>
   );
 }

@@ -2400,7 +2400,9 @@
       "statusError": "出错",
       "statusPending": "待启动",
       "statusIdle": "进行中",
-      "progress": "{{done}} / {{total}} 完成"
+      "progress": "{{done}} / {{total}} 完成",
+      "filteredBy": "筛选: {{label}}",
+      "clearFilter": "清除筛选"
     },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",

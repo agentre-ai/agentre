@@ -390,3 +390,56 @@ describe("TaskBoard", () => {
     });
   });
 });
+
+describe("TaskBoard 流程节点筛选", () => {
+  it("filterNodeRef 只显示 nodeRef 匹配的任务", () => {
+    const tasks = [
+      makeTask(1, 2, { nodeRef: "FE" }),
+      makeTask(2, 3, { nodeRef: "BE" }),
+    ];
+    render(
+      <TaskBoard
+        detail={makeDetail(tasks)}
+        selectedSessionId={null}
+        onSelectSession={vi.fn()}
+        filterNodeRef="fe"
+      />,
+    );
+    expect(screen.getByTestId("board-task-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("board-task-2")).not.toBeInTheDocument();
+  });
+
+  it("显示筛选 chip,点击调用 onClearFilter", () => {
+    const onClearFilter = vi.fn();
+    render(
+      <TaskBoard
+        detail={makeDetail([makeTask(1, 2, { nodeRef: "FE" })])}
+        selectedSessionId={null}
+        onSelectSession={vi.fn()}
+        filterNodeRef="FE"
+        onClearFilter={onClearFilter}
+      />,
+    );
+    const chip = screen.getByTestId("board-filter-chip");
+    expect(chip).toBeInTheDocument();
+    fireEvent.click(chip);
+    expect(onClearFilter).toHaveBeenCalled();
+  });
+
+  it("无 filterNodeRef → 不显示 chip、显示全部任务", () => {
+    const tasks = [
+      makeTask(1, 2, { nodeRef: "FE" }),
+      makeTask(2, 3, { nodeRef: "BE" }),
+    ];
+    render(
+      <TaskBoard
+        detail={makeDetail(tasks)}
+        selectedSessionId={null}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("board-filter-chip")).not.toBeInTheDocument();
+    expect(screen.getByTestId("board-task-1")).toBeInTheDocument();
+    expect(screen.getByTestId("board-task-2")).toBeInTheDocument();
+  });
+});

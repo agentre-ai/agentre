@@ -2400,7 +2400,9 @@
       "statusError": "Error",
       "statusPending": "Pending",
       "statusIdle": "In progress",
-      "progress": "{{done}} / {{total}} done"
+      "progress": "{{done}} / {{total}} done",
+      "filteredBy": "Filtered: {{label}}",
+      "clearFilter": "Clear filter"
     },
     "notify": {
       "completed": "Orchestration run completed: {{goal}}",

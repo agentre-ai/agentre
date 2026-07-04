@@ -24,6 +24,16 @@ const NON_TERMINAL = new Set([
 
 const norm = (s: string) => s.trim().toLowerCase();
 
+// taskMatchesNode: 任务是否属于某流程节点(按 label trim+小写,与 deriveNodeOverlay 同口径)。
+// 空 nodeRef(未打标)/ 空 label → false,避免筛选时误纳未打标任务。
+export function taskMatchesNode(
+  nodeRef: string | null | undefined,
+  nodeLabel: string | null | undefined,
+): boolean {
+  if (!nodeRef || !nodeLabel) return false;
+  return norm(nodeRef) === norm(nodeLabel);
+}
+
 // statusOf: task-kind 节点按匹配任务聚合状态。优先级 error > running > done > pending。
 // 全终态(含 canceled-only)统一记 done(已了结)——总函数, 覆盖 spec 的边界。
 function statusOf(tasks: OverlayTask[]): NodeStatus {
