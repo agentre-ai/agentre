@@ -238,19 +238,59 @@ describe("computeAttention", () => {
   });
 
   it("idle + read + bgRunning → bg_running (independent of read state)", () => {
-    expect(computeAttention({ agentStatus: "idle", needsAttention: false, lastMessageAt: 100, lastReadAt: 100, bgRunning: true })).toBe("bg_running");
+    expect(
+      computeAttention({
+        agentStatus: "idle",
+        needsAttention: false,
+        lastMessageAt: 100,
+        lastReadAt: 100,
+        bgRunning: true,
+      }),
+    ).toBe("bg_running");
   });
   it("idle + unread + bgRunning → bg_running (outranks unread)", () => {
-    expect(computeAttention({ agentStatus: "idle", needsAttention: false, lastMessageAt: 200, lastReadAt: 100, bgRunning: true })).toBe("bg_running");
+    expect(
+      computeAttention({
+        agentStatus: "idle",
+        needsAttention: false,
+        lastMessageAt: 200,
+        lastReadAt: 100,
+        bgRunning: true,
+      }),
+    ).toBe("bg_running");
   });
   it("running + bgRunning → running (running wins)", () => {
-    expect(computeAttention({ agentStatus: "running", needsAttention: false, lastMessageAt: 100, lastReadAt: 100, bgRunning: true })).toBe("running");
+    expect(
+      computeAttention({
+        agentStatus: "running",
+        needsAttention: false,
+        lastMessageAt: 100,
+        lastReadAt: 100,
+        bgRunning: true,
+      }),
+    ).toBe("running");
   });
   it("error + unread + bgRunning → error (error outranks bg_running)", () => {
-    expect(computeAttention({ agentStatus: "error", needsAttention: false, lastMessageAt: 200, lastReadAt: 100, bgRunning: true })).toBe("error");
+    expect(
+      computeAttention({
+        agentStatus: "error",
+        needsAttention: false,
+        lastMessageAt: 200,
+        lastReadAt: 100,
+        bgRunning: true,
+      }),
+    ).toBe("error");
   });
   it("idle + read + no bgRunning → null (nothing to surface)", () => {
-    expect(computeAttention({ agentStatus: "idle", needsAttention: false, lastMessageAt: 100, lastReadAt: 100, bgRunning: false })).toBeNull();
+    expect(
+      computeAttention({
+        agentStatus: "idle",
+        needsAttention: false,
+        lastMessageAt: 100,
+        lastReadAt: 100,
+        bgRunning: false,
+      }),
+    ).toBeNull();
   });
 });
 

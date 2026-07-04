@@ -741,7 +741,14 @@ describe("ChatPage sidebar — 状态筛选与顶部新建", () => {
 });
 
 it("agentSessionFromMeta: bg_running session shows the background pill, not 'running'", () => {
-  const s = agentSessionFromMeta(1, "T", 0, "idle", "bg_running", i18n.t.bind(i18n));
+  const s = agentSessionFromMeta(
+    1,
+    "T",
+    0,
+    "idle",
+    "bg_running",
+    i18n.t.bind(i18n),
+  );
   expect(s.trailingLabel).toBe(reasonToPillText("bg_running"));
   expect(s.trailingLabel).not.toBe("running");
 });

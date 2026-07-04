@@ -283,8 +283,8 @@ describe("ChatStreamsHost", () => {
       });
     });
 
-    expect(
-      useSessionStatusStore.getState().statuses.get(42)?.bgRunning,
-    ).toBe(true);
+    expect(useSessionStatusStore.getState().statuses.get(42)?.bgRunning).toBe(
+      true,
+    );
   });
 });

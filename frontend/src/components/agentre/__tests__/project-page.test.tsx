@@ -69,7 +69,11 @@ vi.mock("@dnd-kit/sortable", () => ({
   verticalListSortingStrategy: {},
 }));
 
-import { ProjectsPage, NewTerminalSubMenu, projectSessionToAgentSession } from "../project-page";
+import {
+  ProjectsPage,
+  NewTerminalSubMenu,
+  projectSessionToAgentSession,
+} from "../project-page";
 import i18n from "@/i18n";
 import { reasonToPillText } from "@/lib/attention-display";
 import { ProjectSettingsDrawer } from "../project-settings-drawer";
