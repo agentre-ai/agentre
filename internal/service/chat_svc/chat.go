@@ -2371,6 +2371,7 @@ func (s *chatSvc) markSessionWaiting(ctx context.Context, sess *chat_entity.Sess
 		SessionStatus: &ChatSessionStatusPatch{
 			AgentStatus:    sess.AgentStatus,
 			NeedsAttention: sess.NeedsAttention,
+			BgRunning:      s.bgRunningActive(sess.ID),
 		},
 	})
 }
@@ -2395,6 +2396,7 @@ func (s *chatSvc) markSessionRunning(ctx context.Context, sess *chat_entity.Sess
 		SessionStatus: &ChatSessionStatusPatch{
 			AgentStatus:    sess.AgentStatus,
 			NeedsAttention: sess.NeedsAttention,
+			BgRunning:      s.bgRunningActive(sess.ID),
 		},
 	})
 }
@@ -2816,6 +2818,7 @@ func (s *chatSvc) runTurn(
 			SessionStatus: &ChatSessionStatusPatch{
 				AgentStatus:    sess.AgentStatus,
 				NeedsAttention: sess.NeedsAttention,
+				BgRunning:      s.bgRunningActive(sess.ID),
 			},
 		})
 	}
@@ -3291,6 +3294,7 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 		SessionStatus: &ChatSessionStatusPatch{
 			AgentStatus:    sess.AgentStatus,
 			NeedsAttention: sess.NeedsAttention,
+			BgRunning:      s.bgRunningActive(sess.ID),
 		},
 	})
 	s.emitter.Emit(ctx, stream, ChatStreamEvent{
