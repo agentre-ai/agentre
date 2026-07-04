@@ -1,17 +1,57 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const runSpeak = vi.fn().mockResolvedValue(undefined);
-const loadSession = vi.fn();
-vi.mock("../../../../../wailsjs/go/app/App", () => ({
-  RunSpeak: (...a: unknown[]) => runSpeak(...a),
-  LoadChatSession: (...a: unknown[]) => loadSession(...a),
-  ListChatAgents: vi.fn().mockResolvedValue({ agents: [] }),
+// conversation-panel.tsx 不再直接 import wailsjs,但它 transitively 引入
+// permission-mode barrel(use-permission-mode.ts 里静态 import 了
+// wailsjs/go/app/App 的 SetChatPermissionMode)。per-file mock 保持隔离、不碰真
+// wails runtime。
+vi.mock("../../../../../wailsjs/runtime/runtime", () => ({
+  EventsOn: () => () => {},
+  EventsOff: () => {},
+  EventsEmit: () => {},
 }));
-// ChatTranscript 是重组件,这里 stub 成可断言消息数的轻量占位
+vi.mock("../../../../../wailsjs/go/app/App", () => ({
+  RunLoad: vi.fn(),
+  SetChatPermissionMode: vi.fn(),
+}));
+
+const liveConv = {
+  messages: [{ id: 1, role: "assistant" }],
+  live: {
+    liveDelta: "streaming-text",
+    liveThinking: "",
+    liveBlocks: [],
+    liveRetry: null,
+    liveStreamStartedAt: 1,
+    streaming: true,
+    liveCompacting: false,
+  },
+  submit: vi.fn(),
+  sending: false,
+  isModeSwitchable: false,
+  supportsImageInput: true,
+  permissionMode: { mode: "default" },
+  permissionModeMeta: { order: [] },
+  backendType: "claudecode",
+  contextUsage: { used: 0, max: 0 },
+};
+vi.mock("@/hooks/use-live-conversation", () => ({
+  useLiveConversation: () => liveConv,
+}));
+
+// ChatTranscript / ChatComposer 是重组件，这里 stub 成可断言 props 透传的轻量占位
 vi.mock("../../chat", () => ({
-  ChatTranscript: ({ messages }: { messages: unknown[] }) => (
-    <div data-testid="stub-transcript">{messages.length}</div>
+  ChatTranscript: (p: { liveDelta?: string }) => (
+    <div data-testid="tx" data-live={p.liveDelta} />
+  ),
+  ChatComposer: (p: { onSubmit?: (m: unknown) => void }) => (
+    <button
+      type="button"
+      data-testid="composer"
+      onClick={() => p.onSubmit?.({ text: "hello" })}
+    >
+      send
+    </button>
   ),
 }));
 
@@ -20,33 +60,11 @@ import { ConversationPanel } from "../conversation-panel";
 
 beforeEach(() => {
   useOrchRunStore.getState().__reset();
-  runSpeak.mockClear();
-  loadSession.mockReset();
+  liveConv.submit.mockClear();
 });
 
 describe("ConversationPanel", () => {
-  it("加载该 session 并把 messages 喂给 ChatTranscript", async () => {
-    loadSession.mockResolvedValue({
-      messages: [
-        { id: 1, blocks: [] },
-        { id: 2, blocks: [] },
-      ],
-    });
-    render(
-      <ConversationPanel
-        sessionId={701}
-        agentName="后端"
-        agentColor="agent-2"
-        onBack={vi.fn()}
-      />,
-    );
-    await waitFor(() =>
-      expect(screen.getByTestId("stub-transcript")).toHaveTextContent("2"),
-    );
-  });
-
   it("返回按钮调 onBack", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     const onBack = vi.fn();
     render(
       <ConversationPanel
@@ -60,66 +78,7 @@ describe("ConversationPanel", () => {
     expect(onBack).toHaveBeenCalled();
   });
 
-  it("对它说 → RunSpeak(sessionId, text) 并清空输入", async () => {
-    loadSession.mockResolvedValue({ messages: [] });
-    render(
-      <ConversationPanel
-        sessionId={701}
-        agentName="后端"
-        agentColor="agent-2"
-        onBack={vi.fn()}
-      />,
-    );
-    const input = screen.getByTestId(
-      "conversation-speak-input",
-    ) as HTMLTextAreaElement;
-    fireEvent.change(input, { target: { value: "改用 sqlmock" } });
-    fireEvent.click(screen.getByTestId("conversation-speak-send"));
-    await waitFor(() =>
-      expect(runSpeak).toHaveBeenCalledWith(701, "改用 sqlmock"),
-    );
-    await waitFor(() => expect(input.value).toBe(""));
-  });
-
-  it("RunSpeak 成功后调 LoadChatSession reload，刷新显示已发消息", async () => {
-    // 初始加载返回空
-    loadSession.mockResolvedValueOnce({ messages: [] });
-    render(
-      <ConversationPanel
-        sessionId={702}
-        agentName="后端"
-        agentColor="agent-2"
-        onBack={vi.fn()}
-      />,
-    );
-    // 等初始加载完成
-    await waitFor(() => expect(loadSession).toHaveBeenCalledTimes(1));
-
-    // RunSpeak 成功后 reload 应再次调 LoadChatSession
-    loadSession.mockResolvedValueOnce({
-      messages: [{ id: 1, blocks: [{ type: "text", text: "改用 sqlmock" }] }],
-    });
-    const input = screen.getByTestId(
-      "conversation-speak-input",
-    ) as HTMLTextAreaElement;
-    fireEvent.change(input, { target: { value: "改用 sqlmock" } });
-    fireEvent.click(screen.getByTestId("conversation-speak-send"));
-
-    await waitFor(() =>
-      expect(runSpeak).toHaveBeenCalledWith(702, "改用 sqlmock"),
-    );
-    // reload 调 LoadChatSession 第 2 次
-    await waitFor(() => expect(loadSession).toHaveBeenCalledTimes(2));
-    // transcript 展示 reload 后的消息数
-    await waitFor(() =>
-      expect(screen.getByTestId("stub-transcript")).toHaveTextContent("1"),
-    );
-  });
-
-  // ── 新 cvHead/cvInput 结构断言 (Step 1 RED) ────────────────────────────
-
   it("渲染 cvHead: 返回按钮 + agentName 展示", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     render(
       <ConversationPanel
         sessionId={701}
@@ -128,30 +87,13 @@ describe("ConversationPanel", () => {
         onBack={vi.fn()}
       />,
     );
-    // 返回按钮存在
     expect(screen.getByTestId("conversation-back")).toBeInTheDocument();
-    // agent name 展示在 who 行
     expect(screen.getByTestId("conversation-who-name")).toHaveTextContent(
       "后端工程师",
     );
   });
 
-  it("cvInput: 输入框与发送按钮均渲染", () => {
-    loadSession.mockResolvedValue({ messages: [] });
-    render(
-      <ConversationPanel
-        sessionId={701}
-        agentName="后端"
-        agentColor="agent-2"
-        onBack={vi.fn()}
-      />,
-    );
-    expect(screen.getByTestId("conversation-speak-input")).toBeInTheDocument();
-    expect(screen.getByTestId("conversation-speak-send")).toBeInTheDocument();
-  });
-
   it("只读 transcript: 无 Edit/Regenerate 按钮(no onRerun/onEdit props)", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     render(
       <ConversationPanel
         sessionId={701}
@@ -165,9 +107,7 @@ describe("ConversationPanel", () => {
     expect(screen.queryByTestId("message-edit")).toBeNull();
   });
 
-  it("等待高亮: runId+agentId 提供且 activeAsks 含该 agent → 展示 waiting callout", async () => {
-    loadSession.mockResolvedValue({ messages: [] });
-    // 直接注入 activeAsks 状态(跳过 onRunEvent 以避免触发 RunLoad)
+  it("等待高亮: runId+agentId 提供且 activeAsks 含该 agent → 展示 waiting callout", () => {
     const asks = new Map([
       [10, [{ askId: "ask-1", askerAgentId: 5, targetAgentId: 99 }]],
     ]);
@@ -189,7 +129,6 @@ describe("ConversationPanel", () => {
   });
 
   it("等待高亮: agentId 不在 activeAsks 中时不展示 waiting callout", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     render(
       <ConversationPanel
         sessionId={701}
@@ -200,14 +139,10 @@ describe("ConversationPanel", () => {
         agentId={999}
       />,
     );
-    // no active ask for agentId=999
     expect(screen.queryByTestId("conversation-awaiting-callout")).toBeNull();
   });
 
-  // ── Finding #3: who-row 副标题 + 状态点 + "· 会话" 后缀 (RED→GREEN) ─────
-
   it("who-name 展示 agentName + session suffix", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     render(
       <ConversationPanel
         sessionId={701}
@@ -216,7 +151,6 @@ describe("ConversationPanel", () => {
         onBack={vi.fn()}
       />,
     );
-    // name line includes agentName
     expect(screen.getByTestId("conversation-who-name")).toHaveTextContent(
       "后端工程师",
     );
@@ -227,7 +161,6 @@ describe("ConversationPanel", () => {
   });
 
   it("who-subtitle: 无 runId 时渲染 idle 状态标签 + 0 任务", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     render(
       <ConversationPanel
         sessionId={701}
@@ -236,13 +169,10 @@ describe("ConversationPanel", () => {
         onBack={vi.fn()}
       />,
     );
-    // subtitle element is present
     expect(screen.getByTestId("conversation-who-subtitle")).toBeInTheDocument();
   });
 
   it("who-subtitle: runId+agentId 有 running 任务 → 展示 running 状态 + 任务数", () => {
-    loadSession.mockResolvedValue({ messages: [] });
-    // inject detail with tasks for agentId=5 in run 10
     useOrchRunStore.setState({
       details: new Map([
         [
@@ -270,24 +200,18 @@ describe("ConversationPanel", () => {
       />,
     );
     const subtitle = screen.getByTestId("conversation-who-subtitle");
-    // agentId=5 has 2 tasks; one is running → status label "Running" / "运行中"
     expect(subtitle).toBeInTheDocument();
-    // task count: 2 tasks for agentId=5
     expect(subtitle).toHaveTextContent("2");
   });
 
   it("who-subtitle: 0 任务(pending) → 不显示 Done，显示 Pending", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     useOrchRunStore.setState({
       details: new Map([
         [
           30,
           {
             run: { id: 30, status: "running" } as never,
-            tasks: [
-              // agentId=8 has no tasks; agentId=99 has a task
-              { id: 1, agentId: 99, status: "running" } as never,
-            ],
+            tasks: [{ id: 1, agentId: 99, status: "running" } as never],
           } as never,
         ],
       ]),
@@ -304,16 +228,12 @@ describe("ConversationPanel", () => {
       />,
     );
     const subtitle = screen.getByTestId("conversation-who-subtitle");
-    // agentId=8 has 0 tasks → should NOT read "Done"
     expect(subtitle).not.toHaveTextContent("Done");
-    // should read "Pending" (en locale)
     expect(subtitle).toHaveTextContent("Pending");
-    // task count: 0 tasks for agentId=8
     expect(subtitle).toHaveTextContent("0");
   });
 
   it("who-subtitle: 全 done 任务 → done 状态 + 任务数", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     useOrchRunStore.setState({
       details: new Map([
         [
@@ -340,12 +260,10 @@ describe("ConversationPanel", () => {
       />,
     );
     const subtitle = screen.getByTestId("conversation-who-subtitle");
-    // all done → done status, count=2
     expect(subtitle).toHaveTextContent("2");
   });
 
   it("who-subtitle: 有任务但未全完成且无 running(idle)→ 不显示 Done，显示 In progress", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     useOrchRunStore.setState({
       details: new Map([
         [
@@ -353,7 +271,6 @@ describe("ConversationPanel", () => {
           {
             run: { id: 40, status: "running" } as never,
             tasks: [
-              // agentId=5: one done + one not-yet-run, none running → idle (in progress)
               { id: 1, agentId: 5, status: "done" } as never,
               { id: 2, agentId: 5, status: "pending" } as never,
             ],
@@ -373,16 +290,12 @@ describe("ConversationPanel", () => {
       />,
     );
     const subtitle = screen.getByTestId("conversation-who-subtitle");
-    // has tasks, not all done, none running → idle, must NOT read "Done"
     expect(subtitle).not.toHaveTextContent("Done");
-    // idle label (en locale)
     expect(subtitle).toHaveTextContent("In progress");
-    // count = 2 tasks for agentId=5
     expect(subtitle).toHaveTextContent("2");
   });
 
   it("who-row 渲染状态点 testid", () => {
-    loadSession.mockResolvedValue({ messages: [] });
     render(
       <ConversationPanel
         sessionId={701}
@@ -394,5 +307,40 @@ describe("ConversationPanel", () => {
     expect(
       screen.getByTestId("conversation-who-status-dot"),
     ).toBeInTheDocument();
+  });
+
+  // ── Task 3: 流式化(live overlay 透传 ChatTranscript + 换 ChatComposer) ────
+
+  it("把 live overlay 透传给 ChatTranscript", () => {
+    render(
+      <ConversationPanel
+        sessionId={7}
+        agentName="Alice"
+        agentColor="agent-1"
+        onBack={() => {}}
+        runId={1}
+        agentId={3}
+      />,
+    );
+    expect(screen.getByTestId("tx").getAttribute("data-live")).toBe(
+      "streaming-text",
+    );
+  });
+
+  it("ChatComposer onSubmit → hook.submit", () => {
+    render(
+      <ConversationPanel
+        sessionId={7}
+        agentName="Alice"
+        agentColor="agent-1"
+        onBack={() => {}}
+        runId={1}
+        agentId={3}
+      />,
+    );
+    screen.getByTestId("composer").click();
+    expect(liveConv.submit).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "hello" }),
+    );
   });
 });
