@@ -27,8 +27,8 @@ func TestFormatRunStatus(t *testing.T) {
 		So(out, ShouldContainSubstring, `"task_id":2`)
 		So(out, ShouldContainSubstring, `"agent":"小前"`)
 		So(out, ShouldContainSubstring, `"node":"FE"`)
-		So(out, ShouldContainSubstring, `"has_summary":true`)  // task#3 有 Summary
-		So(out, ShouldContainSubstring, `"blocked_on":[2]`)    // task#1 awaiting-children,活跃子=#2
+		So(out, ShouldContainSubstring, `"has_summary":true`) // task#3 有 Summary
+		So(out, ShouldContainSubstring, `"blocked_on":[2]`)   // task#1 awaiting-children,活跃子=#2
 	})
 }
 
