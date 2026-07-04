@@ -32,7 +32,7 @@ type CreateWorkflowRequest struct {
 	Content string   `json:"content"`
 	Tags    []string `json:"tags"`
 	Outline []string `json:"outline"`
-	Graph   string   `json:"graph"`
+	Graph   string   `json:"graph,omitempty"`
 }
 
 type CreateWorkflowResponse struct {
@@ -46,7 +46,7 @@ type UpdateWorkflowRequest struct {
 	Content string   `json:"content"`
 	Tags    []string `json:"tags"`
 	Outline []string `json:"outline"`
-	Graph   string   `json:"graph"`
+	Graph   string   `json:"graph,omitempty"`
 }
 
 type UpdateWorkflowResponse struct {
