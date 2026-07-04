@@ -4,7 +4,6 @@ import {
   Loader2,
   type LucideIcon,
   Play,
-  Sparkles,
   SquarePen,
   Waypoints,
 } from "lucide-react";
@@ -40,6 +39,7 @@ import {
   WorkflowList,
 } from "../../../../wailsjs/go/app/App";
 import { app } from "../../../../wailsjs/go/models";
+import { FlowGraphView } from "./flow-graph-view";
 import { TeamDepartmentPicker } from "./team-department-picker";
 import {
   groupAgentsByDepartment,
@@ -47,13 +47,12 @@ import {
   type OrgDeptLite,
 } from "./team-picker-data";
 
-// 流程模式: 从零开始(AI 自拆) | 从流程库 | 临时写
-type FlowMode = "none" | "library" | "adhoc";
+// 流程模式: 从流程库 | 临时写
+type FlowMode = "library" | "adhoc";
 
 // 起始流程分段控件配置(顺序即渲染顺序)
 const FLOW_SEGMENTS: { mode: FlowMode; icon: LucideIcon; labelKey: string }[] =
   [
-    { mode: "none", icon: Sparkles, labelKey: "orchestration.new.flowNone" },
     {
       mode: "library",
       icon: LibraryBig,
@@ -75,6 +74,8 @@ type WorkflowOption = {
   name: string;
   tags: string[];
   outline: string[];
+  graph: string;
+  isDefault: boolean;
 };
 
 type FlatProject = { id: number; name: string; depth: number };
@@ -109,7 +110,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
 
   const [goal, setGoal] = React.useState("");
   const [leaderId, setLeaderId] = React.useState(0);
-  const [flowMode, setFlowMode] = React.useState<FlowMode>("none");
+  const [flowMode, setFlowMode] = React.useState<FlowMode>("library");
   const [flowId, setFlowId] = React.useState(0);
   const [flowContent, setFlowContent] = React.useState("");
   const [allowedAgentIds, setAllowedAgentIds] = React.useState<number[]>([]);
@@ -123,7 +124,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
 
     setGoal("");
     setLeaderId(0);
-    setFlowMode("none");
+    setFlowMode("library");
     setFlowId(0);
     setFlowContent("");
     setAllowedAgentIds([]);
@@ -180,21 +181,17 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
 
     WorkflowList()
       .then((resp) => {
-        setWorkflows(
-          (resp?.items ?? []).map(
-            (w: {
-              id: number;
-              name: string;
-              tags?: string[];
-              outline?: string[];
-            }) => ({
-              id: w.id,
-              name: w.name,
-              tags: w.tags ?? [],
-              outline: w.outline ?? [],
-            }),
-          ),
-        );
+        const items = (resp?.items ?? []).map((w) => ({
+          id: w.id,
+          name: w.name,
+          tags: w.tags ?? [],
+          outline: w.outline ?? [],
+          graph: w.graph ?? "",
+          isDefault: w.isDefault ?? false,
+        }));
+        setWorkflows(items);
+        const def = items.find((w) => w.isDefault);
+        if (def) setFlowId(def.id);
       })
       .catch(() => setWorkflows([]));
 
@@ -381,7 +378,17 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
                   ))}
                 </SelectContent>
               </Select>
-              {selectedWorkflow && selectedWorkflow.outline.length > 0 ? (
+              {selectedWorkflow && selectedWorkflow.graph ? (
+                <div
+                  data-testid="run-flow-preview"
+                  className="flex flex-col gap-1.5"
+                >
+                  <span className="text-2xs text-subtle-foreground">
+                    {t("orchestration.new.flowPreview")}
+                  </span>
+                  <FlowGraphView graph={selectedWorkflow.graph} />
+                </div>
+              ) : selectedWorkflow && selectedWorkflow.outline.length > 0 ? (
                 <span
                   data-testid="run-flow-outline"
                   className="flex flex-wrap items-center gap-1"

@@ -181,12 +181,55 @@ describe("RunNewDialog", () => {
       expect(await screen.findByText("Orchestration flow")).toBeInTheDocument();
     });
 
-    it("默认显示三个 flowMode 按钮(none/library/adhoc)", async () => {
+    it("不再有「从零开始」段, 只有 library/adhoc 两段", async () => {
       renderDialog();
-      await screen.findByTestId("run-goal"); // 等渲染完成
-      expect(screen.getByTestId("run-flow-mode-none")).toBeInTheDocument();
+      await screen.findByTestId("run-goal");
+      expect(screen.queryByTestId("run-flow-mode-none")).toBeNull();
       expect(screen.getByTestId("run-flow-mode-library")).toBeInTheDocument();
       expect(screen.getByTestId("run-flow-mode-adhoc")).toBeInTheDocument();
+    });
+
+    it("默认落在 library 并预选 isDefault 流程 → RunCreate 带该 flowId", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      appMocks.WorkflowList.mockResolvedValue({
+        items: [
+          {
+            id: 1,
+            name: "Custom",
+            tags: [],
+            outline: [],
+            graph: "",
+            isDefault: false,
+          },
+          {
+            id: 2,
+            name: "Default Orchestration Flow",
+            tags: ["Default"],
+            outline: [],
+            graph: JSON.stringify({
+              version: 1,
+              nodes: [{ id: "a", label: "See", kind: "leader" }],
+              edges: [],
+            }),
+            isDefault: true,
+          },
+        ],
+      });
+      renderDialog();
+      await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
+      // 预选默认流程 → 渲染其 mini-DAG(flow-node-a)
+      expect(await screen.findByTestId("flow-node-a")).toBeInTheDocument();
+      fireEvent.change(screen.getByTestId("run-goal"), {
+        target: { value: "g" },
+      });
+      await user.click(screen.getByTestId("run-leader"));
+      await user.click(await screen.findByRole("option", { name: "架构师" }));
+      await user.click(screen.getByTestId("run-create"));
+      await waitFor(() =>
+        expect(appMocks.RunCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ flowId: 2 }),
+        ),
+      );
     });
 
     it("切到 library 模式后下拉列出流程(名称 + 标签)", async () => {
@@ -266,15 +309,6 @@ describe("RunNewDialog", () => {
       await screen.findByTestId("run-goal");
       screen.getByTestId("run-flow-mode-adhoc").click();
       expect(await screen.findByTestId("run-flow-content")).toBeInTheDocument();
-    });
-
-    it("点击 none 按钮后不显示 picker 也不显示文本区", async () => {
-      renderDialog();
-      await screen.findByTestId("run-goal");
-      // 先切到 library 再切回 none
-      screen.getByTestId("run-flow-mode-library").click();
-      screen.getByTestId("run-flow-mode-none").click();
-      expect(screen.queryByTestId("run-flow-content")).toBeNull();
     });
 
     it("library 模式下「管理流程库」链接点击打开流程库弹窗", async () => {

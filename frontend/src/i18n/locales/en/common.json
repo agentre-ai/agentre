@@ -2280,7 +2280,6 @@
       "teamSearchEmpty": "No matching agents",
       "teamSearchResults": "Search results",
       "flow": "Orchestration flow",
-      "flowNone": "Start from scratch (AI plans)",
       "flowAdhoc": "Ad-hoc",
       "flowSelect": "Choose from library",
       "flowSelectPlaceholder": "Search flows…",
@@ -2288,6 +2287,7 @@
       "flowContent": "Flow Content",
       "flowContentPlaceholder": "Enter or paste flow definition…",
       "flowManage": "Manage library",
+      "flowPreview": "Flow preview (DAG)",
       "create": "Create & start run",
       "project": "Project",
       "projectNone": "None (agent default directory)"
