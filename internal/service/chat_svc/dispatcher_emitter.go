@@ -305,6 +305,7 @@ func sessionStatusFromMap(raw any) *ChatSessionStatusPatch {
 	out := &ChatSessionStatusPatch{
 		AgentStatus:    stringOf(m, "agentStatus"),
 		NeedsAttention: boolOf(m, "needsAttention"),
+		BgRunning:      boolOf(m, "bgRunning"),
 		PermissionMode: stringOf(m, "permissionMode"),
 	}
 	if v, ok := m["contextWindow"]; ok {

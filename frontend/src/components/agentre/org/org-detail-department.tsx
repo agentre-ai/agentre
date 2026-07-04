@@ -7,7 +7,6 @@ import {
   CornerDownRight,
   Crown,
   FolderPlus,
-  History,
   Plus,
   Trash2,
   UserPlus,
@@ -50,6 +49,8 @@ import {
   type OrgAgent,
   type OrgDepartment,
 } from "./types";
+import { useAutoSave } from "./use-auto-save";
+import { AutoSaveStatus } from "./auto-save-status";
 
 type Props = {
   department: OrgDepartment;
@@ -69,17 +70,27 @@ type Props = {
 
 export function OrgDetailDepartment(props: Props) {
   const { t } = useTranslation();
-  const [name, setName] = React.useState(props.department.name);
-  const [description, setDescription] = React.useState(
-    props.department.description,
-  );
-  const [icon, setIcon] = React.useState(props.department.icon || "puzzle");
-  const [accentColor, setAccentColor] = React.useState<AgentColor>(
-    safeAgentColor(props.department.accentColor),
-  );
-  const [leadAgentId, setLeadAgentId] = React.useState<number>(
-    props.department.leadAgentId,
-  );
+  const { values, patch, flush, wrap, status, pendingInvalid, retry } =
+    useAutoSave({
+      initial: {
+        name: props.department.name,
+        description: props.department.description,
+        icon: props.department.icon || "puzzle",
+        accentColor: safeAgentColor(props.department.accentColor),
+        leadAgentId: props.department.leadAgentId,
+      },
+      isValid: (v) => v.name.trim() !== "",
+      save: (v) =>
+        props.onUpdate({
+          id: props.department.id,
+          name: v.name,
+          description: v.description,
+          icon: v.icon,
+          accentColor: v.accentColor,
+          leadAgentId: v.leadAgentId,
+        }),
+    });
+  const { name, description, icon, accentColor, leadAgentId } = values;
   const [parentId, setParentId] = React.useState<number>(
     props.department.parentId,
   );
@@ -87,32 +98,6 @@ export function OrgDetailDepartment(props: Props) {
   const [strategy, setStrategy] = React.useState<"reparent" | "cascade">(
     "reparent",
   );
-
-  const dirty =
-    name !== props.department.name ||
-    description !== props.department.description ||
-    icon !== (props.department.icon || "puzzle") ||
-    accentColor !== safeAgentColor(props.department.accentColor) ||
-    leadAgentId !== props.department.leadAgentId ||
-    parentId !== props.department.parentId;
-
-  const handleSave = React.useCallback(async () => {
-    await props.onUpdate({
-      id: props.department.id,
-      name,
-      description,
-      icon,
-      accentColor,
-      leadAgentId,
-    });
-    if (parentId !== props.department.parentId) {
-      await props.onMove({
-        id: props.department.id,
-        newParentId: parentId,
-        newSortOrder: 0,
-      });
-    }
-  }, [name, description, icon, accentColor, leadAgentId, parentId, props]);
 
   const handleConfirmDelete = React.useCallback(async () => {
     await props.onDelete({ id: props.department.id, strategy });
@@ -223,7 +208,8 @@ export function OrgDetailDepartment(props: Props) {
             </label>
             <Input
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => patch({ name: e.target.value })}
+              onBlur={flush}
               aria-label={t("org.department.name")}
             />
           </div>
@@ -238,7 +224,8 @@ export function OrgDetailDepartment(props: Props) {
             </div>
             <Input
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => patch({ description: e.target.value })}
+              onBlur={flush}
               aria-label={t("org.department.description")}
             />
           </div>
@@ -252,7 +239,7 @@ export function OrgDetailDepartment(props: Props) {
               </label>
               <IconPicker
                 value={icon}
-                onChange={setIcon}
+                onChange={(v) => patch({ icon: v }, { immediate: true })}
                 accentColor={accentColor}
                 ariaLabel={t("org.department.icon")}
                 className="h-[38px] px-2.5 py-1.5"
@@ -276,7 +263,9 @@ export function OrgDetailDepartment(props: Props) {
                     aria-label={t("org.department.themeColorNamed", {
                       color: c,
                     })}
-                    onClick={() => setAccentColor(c)}
+                    onClick={() =>
+                      patch({ accentColor: c }, { immediate: true })
+                    }
                     className={cn(
                       "size-6 rounded-full ring-offset-2 transition-all",
                       agentColorClassNames[c],
@@ -298,7 +287,17 @@ export function OrgDetailDepartment(props: Props) {
           </h3>
           <Select
             value={String(parentId)}
-            onValueChange={(v) => setParentId(Number(v))}
+            onValueChange={(v) => {
+              const p = Number(v);
+              setParentId(p);
+              void wrap(() =>
+                props.onMove({
+                  id: props.department.id,
+                  newParentId: p,
+                  newSortOrder: 0,
+                }),
+              );
+            }}
           >
             <SelectTrigger
               aria-label={t("org.department.parent")}
@@ -356,7 +355,9 @@ export function OrgDetailDepartment(props: Props) {
           </div>
           <Select
             value={String(leadAgentId)}
-            onValueChange={(v) => setLeadAgentId(Number(v))}
+            onValueChange={(v) =>
+              patch({ leadAgentId: Number(v) }, { immediate: true })
+            }
           >
             <SelectTrigger
               aria-label={t("org.department.leader")}
@@ -512,18 +513,11 @@ export function OrgDetailDepartment(props: Props) {
         </section>
       </div>
 
-      <footer className="flex items-center gap-2 border-t border-border bg-secondary/40 px-5 py-3">
-        <span className="flex flex-1 items-center gap-1.5 font-mono text-2xs text-muted-foreground">
-          <History className="size-3" aria-hidden="true" />
-          {dirty ? t("common.unsavedChanges") : t("common.saved")}
-        </span>
-        <Button variant="outline" size="sm" onClick={props.onClose}>
-          {t("common.cancel")}
-        </Button>
-        <Button size="sm" disabled={!dirty} onClick={handleSave}>
-          {t("common.save")}
-        </Button>
-      </footer>
+      <AutoSaveStatus
+        status={status}
+        pendingInvalid={pendingInvalid}
+        onRetry={retry}
+      />
 
       <Dialog
         open={deletePromptOpen}

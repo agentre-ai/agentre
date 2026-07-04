@@ -181,6 +181,7 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 				zap.String("toolUseId", completedRef.ToolUseID),
 				zap.Error(err))
 		}
+		s.reconcileBgRunningOnComplete(finalCtx, sess, completedRef.ToolUseID, stream)
 	}
 
 	final := chatMessageForEvent(sess, assistantMsg)

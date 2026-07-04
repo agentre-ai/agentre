@@ -200,7 +200,11 @@ type chatSvc struct {
 	// 用它防同一 session 重复起后台 subagent 活动 watcher(每会话一个,惰性启动);watcher
 	// 在底层 SubagentActivity channel close(子进程 evict / CloseSession)时退出并清这条。
 	subagentActivityWatchers sync.Map
-	gateway                  httpgateway.TokenIssuer
+	// bgRunning: sessionID(int64) → *bgRunningSet。per-session「运行中后台 subagent 的
+	// tool_use_id 集合」。集合非空 = 该会话有后台 subagent 在跑。后台 subagent 易失
+	// (随 CLI 子进程/重启消失)，故不落库；重启后 map 空 = 0 天然正确。见 bg_running.go。
+	bgRunning sync.Map
+	gateway   httpgateway.TokenIssuer
 	// chatTokens 缓存每个 chat session 的常驻 gateway token(sessionID int64 → token string)。
 	// 该 token 在 spawn 时烤进 claude 子进程 env 给 PostToolUse hook 用,子进程跨轮复用
 	// 时 env 不重建 —— 所以 token 必须签成永久(ttl=0)并跨轮稳定复用,否则长会话(>15min)
@@ -355,7 +359,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		item.RecentCount = len(sessions)
 		item.Sessions = make([]ChatSessionLite, 0, len(sessions))
 		for _, sess := range sessions {
-			item.Sessions = append(item.Sessions, sessionLiteFromEntity(sess))
+			item.Sessions = append(item.Sessions, s.sessionLiteFromEntity(sess))
 		}
 
 		// sidebar 折叠态 attention bubble：拉所有 running/waiting/error 会话。
@@ -366,7 +370,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		}
 		item.AttentionSessions = make([]ChatSessionLite, 0, len(attention))
 		for _, sess := range attention {
-			item.AttentionSessions = append(item.AttentionSessions, sessionLiteFromEntity(sess))
+			item.AttentionSessions = append(item.AttentionSessions, s.sessionLiteFromEntity(sess))
 		}
 		resp.Agents = append(resp.Agents, item)
 	}
@@ -410,12 +414,12 @@ func (s *chatSvc) ListAgentSessions(ctx context.Context, req *ListAgentSessionsR
 		HasMore:  int64(req.Offset+len(sessions)) < total,
 	}
 	for _, sess := range sessions {
-		resp.Sessions = append(resp.Sessions, sessionLiteFromEntity(sess))
+		resp.Sessions = append(resp.Sessions, s.sessionLiteFromEntity(sess))
 	}
 	return resp, nil
 }
 
-func sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLite {
+func (s *chatSvc) sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLite {
 	if sess == nil {
 		return ChatSessionLite{}
 	}
@@ -424,6 +428,7 @@ func sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLite {
 		Title:          sess.Title,
 		Status:         sess.AgentStatus,
 		NeedsAttention: sess.IsWaitingForUser(),
+		BgRunning:      s.bgRunningActive(sess.ID),
 		LastMessageAt:  sess.LastMessageAt,
 		LastReadAt:     sess.LastReadAt,
 	}
@@ -468,6 +473,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 			Title:                  sess.Title,
 			AgentStatus:            sess.AgentStatus,
 			NeedsAttention:         sess.IsWaitingForUser(),
+			BgRunning:              s.bgRunningActive(sess.ID),
 			LastMessageAt:          sess.LastMessageAt,
 			LastReadAt:             sess.LastReadAt,
 			Createtime:             sess.Createtime,
@@ -2772,6 +2778,13 @@ func (s *chatSvc) runTurn(
 		}
 	}
 	_ = s.persistSessionStatus(finalCtx, sess)
+	if aborted || stopErr != nil {
+		if s.clearBgRunning(sess.ID) {
+			s.emitBgRunningStatus(finalCtx, sess, stream)
+		}
+	} else {
+		s.reconcileBgRunningOnFinalize(finalCtx, sess, finalBlocks, stream)
+	}
 	// 诊断: 落库的最终(或自动接续中间态)agent_status。下面那段只在 error/waiting 时
 	// emit+log,idle 收尾历史上完全没日志 —— 这正是 agentre.log 里看不到 running→idle
 	// 翻转、排查「状态停在 running / 被过期快照盖回 idle」时无从对时间线的原因。这里补一条

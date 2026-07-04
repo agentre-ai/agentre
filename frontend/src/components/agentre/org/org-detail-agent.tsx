@@ -5,7 +5,6 @@ import {
   Ban,
   Boxes,
   CornerDownRight,
-  History,
   Info,
   Network,
   Trash2,
@@ -55,6 +54,8 @@ import { resolveReportTo } from "./reporting";
 import { toolKeysToCatalog, APPROVAL_TOOLS } from "./tool-catalog";
 import { useSkillCatalog } from "./use-skill-catalog";
 import { safeAgentColor, type OrgAgent, type OrgDepartment } from "./types";
+import { useAutoSave } from "./use-auto-save";
+import { AutoSaveStatus } from "./auto-save-status";
 
 type Props = {
   agent: OrgAgent;
@@ -90,34 +91,55 @@ type BackendSummaryLike = Pick<
 export function OrgDetailAgent(props: Props) {
   const { t } = useTranslation();
   const isCEO = props.agent.systemBadge === "DEFAULT";
-  const [name, setName] = React.useState(props.agent.name);
-  const [description, setDescription] = React.useState(props.agent.description);
-  const [avatarColor, setAvatarColor] = React.useState<AgentColor>(
-    safeAgentColor(props.agent.avatarColor),
-  );
-  const [avatarIcon, setAvatarIcon] = React.useState<string>(
-    props.agent.avatarIcon || "",
-  );
-  const [backendId, setBackendId] = React.useState<number>(
-    props.agent.agentBackendId,
-  );
-  const [prompt, setPrompt] = React.useState(
-    (props.agent.prompt ?? []).join("\n"),
-  );
-  const [skills, setSkills] = React.useState<department_svc.AgentSkillDTO[]>(
-    () => (props.agent.skills ?? []).map((s) => ({ ...s })),
-  );
-  const [tools, setTools] = React.useState<department_svc.AgentToolDTO[]>(
-    () => {
-      const cur = new Map(
-        (props.agent.tools ?? []).map((t) => [t.key, t.enabled]),
-      );
-      return (props.availableTools ?? []).map((key) => ({
-        key,
-        enabled: cur.get(key) ?? false,
-      }));
-    },
-  );
+
+  const { values, patch, flush, wrap, status, pendingInvalid, retry } =
+    useAutoSave({
+      initial: {
+        name: props.agent.name,
+        description: props.agent.description,
+        avatarColor: safeAgentColor(props.agent.avatarColor),
+        avatarIcon: props.agent.avatarIcon || "",
+        backendId: props.agent.agentBackendId,
+        prompt: (props.agent.prompt ?? []).join("\n"),
+        skills: (props.agent.skills ?? []).map((s) => ({ ...s })),
+        tools: ((): department_svc.AgentToolDTO[] => {
+          const cur = new Map(
+            (props.agent.tools ?? []).map((tl) => [tl.key, tl.enabled]),
+          );
+          return (props.availableTools ?? []).map((key) => ({
+            key,
+            enabled: cur.get(key) ?? false,
+          }));
+        })(),
+      },
+      isValid: (v) => v.name.trim() !== "",
+      save: (v) =>
+        props.onUpdate(
+          agent_svc.UpdateAgentRequest.createFrom({
+            id: props.agent.id,
+            name: v.name,
+            description: v.description,
+            avatarColor: v.avatarColor,
+            avatarIcon: v.avatarIcon,
+            agentBackendId: v.backendId,
+            prompt: v.prompt.split("\n").filter((s) => s.trim() !== ""),
+            skills: v.skills,
+            tools: v.tools,
+          }),
+        ),
+    });
+
+  const {
+    name,
+    description,
+    avatarColor,
+    avatarIcon,
+    backendId,
+    prompt,
+    skills,
+    tools,
+  } = values;
+
   const [deletePromptOpen, setDeletePromptOpen] = React.useState(false);
 
   // 汇报对象走统一解析：显式上级 ▸ 部门 leader（沿父部门链递归） ▸ CEO 兜底。
@@ -139,22 +161,6 @@ export function OrgDetailAgent(props: Props) {
   const skillCatalog = useSkillCatalog(props.agent.id, skillsCapOn);
   const [skillPickerOpen, setSkillPickerOpen] = React.useState(false);
 
-  const handleSave = async () => {
-    await props.onUpdate(
-      agent_svc.UpdateAgentRequest.createFrom({
-        id: props.agent.id,
-        name,
-        description,
-        avatarColor,
-        avatarIcon,
-        agentBackendId: backendId,
-        prompt: prompt.split("\n").filter((s) => s.trim() !== ""),
-        skills,
-        tools,
-      }),
-    );
-  };
-
   const handleUploadFile = async (file: File) => {
     const dataUrl = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -162,11 +168,11 @@ export function OrgDetailAgent(props: Props) {
       reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(file);
     });
-    await props.onUploadAvatar({ id: props.agent.id, dataUrl });
+    await wrap(() => props.onUploadAvatar({ id: props.agent.id, dataUrl }));
   };
 
   const handleDeleteAvatar = async () => {
-    await props.onDeleteAvatar({ id: props.agent.id });
+    await wrap(() => props.onDeleteAvatar({ id: props.agent.id }));
   };
 
   const handleConfirmDeleteAgent = async () => {
@@ -186,12 +192,22 @@ export function OrgDetailAgent(props: Props) {
     }));
   const toolItems = toolKeysToCatalog(props.availableTools ?? [], tools, t);
   const toggleToolGrant = (key: string) =>
-    setTools((prev) =>
-      prev.map((tl) => (tl.key === key ? { ...tl, enabled: !tl.enabled } : tl)),
+    patch(
+      {
+        tools: tools.map((tl) =>
+          tl.key === key ? { ...tl, enabled: !tl.enabled } : tl,
+        ),
+      },
+      { immediate: true },
     );
   const removeTool = (key: string) =>
-    setTools((prev) =>
-      prev.map((tl) => (tl.key === key ? { ...tl, enabled: false } : tl)),
+    patch(
+      {
+        tools: tools.map((tl) =>
+          tl.key === key ? { ...tl, enabled: false } : tl,
+        ),
+      },
+      { immediate: true },
     );
 
   // 已授予芯片：label 由 id 派生(strip @marketplace)，count 来自已拉过的目录缓存。
@@ -214,15 +230,20 @@ export function OrgDetailAgent(props: Props) {
     if (!s) return "inherit";
     return s.enabled ? "on" : "off";
   };
-  const setSkillState = (id: string, next: TriState) =>
-    setSkills((prev) => {
-      const rest = prev.filter((s) => s.id !== id);
-      if (next === "inherit") return rest;
-      return [
-        ...rest,
-        department_svc.AgentSkillDTO.createFrom({ id, enabled: next === "on" }),
-      ];
-    });
+  const setSkillState = (id: string, next: TriState) => {
+    const rest = skills.filter((s) => s.id !== id);
+    const nextSkills =
+      next === "inherit"
+        ? rest
+        : [
+            ...rest,
+            department_svc.AgentSkillDTO.createFrom({
+              id,
+              enabled: next === "on",
+            }),
+          ];
+    patch({ skills: nextSkills }, { immediate: true });
+  };
 
   const triLabels: Record<TriState, string> = {
     inherit: t("capability.triState.inherit"),
@@ -266,7 +287,7 @@ export function OrgDetailAgent(props: Props) {
     if (!skillCatalog.fetched) void skillCatalog.load(false);
   };
   const removeSkillOverride = (id: string) =>
-    setSkills((prev) => prev.filter((s) => s.id !== id));
+    patch({ skills: skills.filter((s) => s.id !== id) }, { immediate: true });
 
   const promptCharCount = prompt.replace(/\s/g, "").length;
 
@@ -279,7 +300,7 @@ export function OrgDetailAgent(props: Props) {
             avatarColor={avatarColor}
             avatarIcon={avatarIcon}
             avatarDataUrl={props.agent.avatarDataUrl}
-            onChangeIcon={setAvatarIcon}
+            onChangeIcon={(v) => patch({ avatarIcon: v }, { immediate: true })}
             showImageMode={false}
             triggerSize="lg"
           />
@@ -356,7 +377,8 @@ export function OrgDetailAgent(props: Props) {
             </label>
             <Input
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => patch({ name: e.target.value })}
+              onBlur={flush}
               aria-label={t("org.department.name")}
             />
           </div>
@@ -371,7 +393,8 @@ export function OrgDetailAgent(props: Props) {
             </div>
             <Input
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => patch({ description: e.target.value })}
+              onBlur={flush}
               aria-label={t("org.department.description")}
             />
           </div>
@@ -385,7 +408,9 @@ export function OrgDetailAgent(props: Props) {
                 avatarColor={avatarColor}
                 avatarIcon={avatarIcon}
                 avatarDataUrl={props.agent.avatarDataUrl}
-                onChangeIcon={setAvatarIcon}
+                onChangeIcon={(v) =>
+                  patch({ avatarIcon: v }, { immediate: true })
+                }
                 showImageMode={false}
                 triggerSize="lg"
                 triggerClassName="size-12 rounded-lg"
@@ -420,7 +445,9 @@ export function OrgDetailAgent(props: Props) {
                   aria-label={t("org.chart.newAgent.avatarColorNamed", {
                     color: c,
                   })}
-                  onClick={() => setAvatarColor(c)}
+                  onClick={() =>
+                    patch({ avatarColor: c as AgentColor }, { immediate: true })
+                  }
                   className={cn(
                     "size-7 rounded-full ring-offset-2 transition-all",
                     agentColorClassNames[c],
@@ -438,7 +465,9 @@ export function OrgDetailAgent(props: Props) {
           </h3>
           <Select
             value={backendId > 0 ? String(backendId) : ""}
-            onValueChange={(v) => setBackendId(Number(v))}
+            onValueChange={(v) =>
+              patch({ backendId: Number(v) }, { immediate: true })
+            }
           >
             <SelectTrigger
               aria-label={t("org.agent.backend.title")}
@@ -496,7 +525,8 @@ export function OrgDetailAgent(props: Props) {
           </div>
           <Textarea
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => patch({ prompt: e.target.value })}
+            onBlur={flush}
             aria-label={t("org.agent.systemPrompt")}
             className="min-h-[160px] font-mono text-xs"
           />
@@ -604,22 +634,11 @@ export function OrgDetailAgent(props: Props) {
         )}
       </div>
 
-      <footer className="flex items-center gap-2 border-t border-border bg-secondary/40 px-5 py-3">
-        <span className="flex flex-1 items-center gap-1.5 font-mono text-2xs text-muted-foreground">
-          <History className="size-3" aria-hidden="true" />
-          {props.agent.updatetime > 0
-            ? t("org.agent.savedAt", {
-                time: formatRelativeTime(props.agent.updatetime, t),
-              })
-            : t("org.agent.unsaved")}
-        </span>
-        <Button variant="outline" size="sm" onClick={props.onClose}>
-          {t("common.cancel")}
-        </Button>
-        <Button size="sm" onClick={handleSave}>
-          {t("common.save")}
-        </Button>
-      </footer>
+      <AutoSaveStatus
+        status={status}
+        pendingInvalid={pendingInvalid}
+        onRetry={retry}
+      />
 
       <Dialog
         open={deletePromptOpen}
@@ -691,23 +710,4 @@ function backendProviderSummary(
     return model;
   }
   return t("org.agent.backend.unlinkedProvider");
-}
-
-function formatRelativeTime(unixSeconds: number, t: TFunction): string {
-  const now = Math.floor(Date.now() / 1000);
-  const diff = now - unixSeconds;
-  if (diff < 60) return t("org.agent.relativeTime.justNow");
-  if (diff < 3600) {
-    return t("org.agent.relativeTime.minutesAgo", {
-      count: Math.floor(diff / 60),
-    });
-  }
-  if (diff < 86400) {
-    return t("org.agent.relativeTime.hoursAgo", {
-      count: Math.floor(diff / 3600),
-    });
-  }
-  return t("org.agent.relativeTime.daysAgo", {
-    count: Math.floor(diff / 86400),
-  });
 }

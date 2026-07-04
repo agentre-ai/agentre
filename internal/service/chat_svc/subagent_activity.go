@@ -35,6 +35,7 @@ func (s *chatSvc) startSubagentActivityWatcher(sessionID int64, be *agent_backen
 	beCopy := *be
 	go func() {
 		defer s.subagentActivityWatchers.Delete(sessionID)
+		defer s.clearBgRunningOnSourceClosed(sessionID)
 		for act := range src.SubagentActivity(sessionID) {
 			s.driveSubagentActivity(context.Background(), sessionID, &beCopy, act)
 		}

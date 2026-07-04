@@ -215,6 +215,9 @@ type ChatStreamUsage struct {
 type ChatSessionStatusPatch struct {
 	AgentStatus    string `json:"agentStatus"`
 	NeedsAttention bool   `json:"needsAttention"`
+	// BgRunning 会话是否有后台 subagent 在跑(run_in_background)。总是带最新值；
+	// 独立于 AgentStatus——后台 subagent 期间 AgentStatus 仍为 idle。见 bg_running.go。
+	BgRunning bool `json:"bgRunning"`
 	// PermissionMode 可选：只在 CLI 通报 permission mode 变更时填（被动 ExitPlanMode 流程）。
 	// 缺省（omitempty）时前端不动 ChatSessionDetail.permissionMode；带值时直接覆盖。
 	PermissionMode string `json:"permissionMode,omitempty"`
@@ -376,6 +379,7 @@ type ChatSessionLite struct {
 	Title          string `json:"title"`
 	Status         string `json:"status"`
 	NeedsAttention bool   `json:"needsAttention"`
+	BgRunning      bool   `json:"bgRunning"`
 	LastMessageAt  int64  `json:"lastMessageAt"`
 	// LastReadAt 由 chat_svc.MarkSessionRead 推进；前端 sidebar 折叠态 attention bubble 用
 	// LastMessageAt > LastReadAt 判定「未读」。
@@ -407,8 +411,11 @@ type ChatSessionDetail struct {
 	// NeedsAttention 是由 AgentStatus=="waiting" 派生的兼容字段，不单独持久化。
 	// 前端 toolbar 同时叠 displayStatus 兜底：即便 session_status stream 事件丢失，
 	// LoadSession 拉到这个字段为 true 也能把状态翻成橙色 WAITING。
-	NeedsAttention bool  `json:"needsAttention"`
-	LastMessageAt  int64 `json:"lastMessageAt"`
+	NeedsAttention bool `json:"needsAttention"`
+	// BgRunning 会话是否有后台 subagent 在跑；LoadSession 时从内存 bgRunning map 填充，
+	// 与 session_status 事件同源，让页面重载后状态不丢。
+	BgRunning     bool  `json:"bgRunning"`
+	LastMessageAt int64 `json:"lastMessageAt"`
 	LastReadAt     int64 `json:"lastReadAt"`
 	Createtime     int64 `json:"createtime"`
 	// ContextWindow 当前 agent 绑定 backend 的主 LLM provider 的上下文窗口（token 数）。

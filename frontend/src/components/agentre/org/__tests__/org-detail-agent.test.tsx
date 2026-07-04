@@ -306,11 +306,6 @@ describe("OrgDetailAgent", () => {
       await screen.findByRole("checkbox", { name: "Org Structure" }),
     );
     await user.click(screen.getByText("Done"));
-    const saveBtn = screen
-      .getAllByRole("button")
-      .find((b) => b.textContent?.trim() === "Save");
-    if (!saveBtn) throw new Error("Save button not found");
-    await user.click(saveBtn);
     await waitFor(() => expect(onUpdate).toHaveBeenCalled());
     expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -345,11 +340,6 @@ describe("OrgDetailAgent", () => {
       await screen.findByRole("checkbox", { name: "Workflow Library" }),
     );
     await user.click(screen.getByText("Done"));
-    const saveBtn = screen
-      .getAllByRole("button")
-      .find((b) => b.textContent?.trim() === "Save");
-    if (!saveBtn) throw new Error("Save button not found");
-    await user.click(saveBtn);
     await waitFor(() => expect(onUpdate).toHaveBeenCalled());
     expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -452,11 +442,6 @@ describe("OrgDetailAgent", () => {
     // 三态行的「Off」分段：把该 installed pack 强制关。
     await user.click(await screen.findByRole("button", { name: "Off" }));
     await user.click(screen.getByText("Done"));
-    const saveBtn = screen
-      .getAllByRole("button")
-      .find((b) => b.textContent?.trim() === "Save");
-    if (!saveBtn) throw new Error("Save button not found");
-    await user.click(saveBtn);
     await waitFor(() => expect(onUpdate).toHaveBeenCalled());
     expect(onUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -465,5 +450,24 @@ describe("OrgDetailAgent", () => {
         ]),
       }),
     );
+  });
+
+  describe("OrgDetailAgent auto-save", () => {
+    it("removes the cancel and save footer buttons", () => {
+      renderPanel();
+      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    });
+
+    it("saves the name on blur", async () => {
+      const { onUpdate } = renderPanel();
+      const input = screen.getByLabelText("Name");
+      fireEvent.change(input, { target: { value: "Boris 二号" } });
+      fireEvent.blur(input);
+      await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+      expect(onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "Boris 二号" }),
+      );
+    });
   });
 });
