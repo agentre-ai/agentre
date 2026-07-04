@@ -33,3 +33,12 @@ describe("reasonToPillText", () => {
     expect(reasonToPillText(null)).toBeNull();
   });
 });
+
+import i18n from "@/i18n";
+
+it("maps bg_running to the running display color", () => {
+  expect(reasonToDisplayStatus("bg_running", "idle")).toBe("running");
+});
+it("pill text for bg_running is the background label", () => {
+  expect(reasonToPillText("bg_running")).toBe(i18n.t("attention.background"));
+});

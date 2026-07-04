@@ -34,6 +34,7 @@
     "runningAria": "{{name}} 有运行中的会话"
   },
   "attention": {
+    "background": "后台",
     "error": "出错",
     "needsAttention": "审批",
     "unread": "未读"
