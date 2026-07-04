@@ -1,16 +1,13 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, SendHorizontal, Clock } from "lucide-react";
+import { ArrowLeft, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { ChatTranscript } from "../chat";
+import { useLiveConversation } from "@/hooks/use-live-conversation";
+import { ChatComposer, ChatTranscript, type ChatComposerSubmit } from "../chat";
+import { PermissionModePill } from "../permission-mode";
 import type { AgentColor, AgentStatus } from "../types";
 import { AgentAvatar, StatusDot } from "../primitives";
-import { useOrchSubagentsStore } from "../../../stores/orch-subagents-store";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
-import { RunSpeak } from "../../../../wailsjs/go/app/App";
-
-const EMPTY_MESSAGES: never[] = [];
 
 /**
  * Derive agent status from the tasks belonging to this agent in a run.
@@ -61,12 +58,17 @@ export function ConversationPanel({
   agentId?: number;
 }) {
   const { t } = useTranslation();
-  const ensureLoaded = useOrchSubagentsStore((s) => s.ensureLoaded);
-  const reload = useOrchSubagentsStore((s) => s.reload);
-  const messagesBySession = useOrchSubagentsStore((s) => s.messagesBySession);
-  const messages = messagesBySession.get(sessionId) ?? EMPTY_MESSAGES;
-  const [draft, setDraft] = React.useState("");
-  const [sending, setSending] = React.useState(false);
+  const {
+    messages,
+    live,
+    submit,
+    isModeSwitchable,
+    supportsImageInput,
+    permissionMode,
+    permissionModeMeta,
+    backendType,
+    contextUsage,
+  } = useLiveConversation(sessionId, agentId ?? 0);
   const [scrollEl, setScrollEl] = React.useState<HTMLDivElement | null>(null);
 
   // Derive awaiting state: is this agent currently waiting for a peer reply?
@@ -100,23 +102,6 @@ export function ConversationPanel({
     if (!detail?.tasks) return "pending";
     return deriveAgentTaskStatus(detail.tasks, agentId);
   });
-
-  React.useEffect(() => {
-    if (sessionId) ensureLoaded(sessionId);
-  }, [sessionId, ensureLoaded]);
-
-  const speak = async () => {
-    const text = draft.trim();
-    if (!text || sending) return;
-    setSending(true);
-    try {
-      await RunSpeak(sessionId, text);
-      setDraft("");
-      reload(sessionId);
-    } finally {
-      setSending(false);
-    }
-  };
 
   // Status label: reuse board status keys
   // pending = no tasks yet (not started); done = all tasks done; running/error as-is;
@@ -205,7 +190,8 @@ export function ConversationPanel({
           </div>
         )}
 
-        {/* read-only transcript: omit live/onRerun/onEdit props */}
+        {/* read-only transcript: omit onRerun/onEdit props; live overlay wired
+            from useLiveConversation so streaming deltas render live. */}
         {/* ref={setScrollEl} on the actual scrolling element */}
         <div ref={setScrollEl} className="min-h-0 flex-1 overflow-y-auto">
           <ChatTranscript
@@ -216,31 +202,45 @@ export function ConversationPanel({
             scrollElement={scrollEl}
             virtualize
             active
+            liveDelta={live.liveDelta}
+            liveThinking={live.liveThinking}
+            liveBlocks={live.liveBlocks}
+            liveRetry={live.liveRetry}
+            liveStreamStartedAt={live.liveStreamStartedAt}
+            streaming={live.streaming}
+            liveCompacting={live.liveCompacting}
           />
         </div>
       </div>
 
-      {/* cvInput: bg-card, padding [10,12], border-t, items-center, gap-2 */}
-      <div className="flex shrink-0 items-center gap-2 border-t border-border bg-card px-3 py-2.5">
-        {/* textarea: bg-input-bg rounded-lg border px-2.5 py-2 */}
-        <Textarea
-          data-testid="conversation-speak-input"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+      {/* cvInput: ChatComposer replaces the bare textarea + send button so
+          orchestration conversations get the same slash-menu/image/permission-mode
+          affordances as the main chat panel. */}
+      <div className="shrink-0 border-t border-border bg-card px-3 py-2.5">
+        <ChatComposer
           placeholder={t("orchestration.conversation.speakPlaceholder")}
-          rows={1}
-          className="min-h-0 flex-1 resize-none rounded-lg border bg-input-bg px-2.5 py-2 text-xs"
+          backendType={backendType}
+          supportsImageInput={supportsImageInput}
+          contextUsage={contextUsage}
+          permissionModeSlot={
+            isModeSwitchable ? (
+              <PermissionModePill
+                mode={permissionMode.mode}
+                modes={permissionModeMeta.order}
+                onSelect={permissionMode.setMode}
+                errorMessage={permissionMode.error}
+                runtimeKey={backendType}
+                permissionModeAtLaunch={permissionMode.permissionModeAtLaunch}
+                hasActiveSession={permissionMode.hasActiveSession}
+              />
+            ) : null
+          }
+          onShiftTab={isModeSwitchable ? permissionMode.cycleMode : undefined}
+          onSubmit={(m: ChatComposerSubmit | string) => {
+            const msg = typeof m === "string" ? { text: m } : m;
+            void submit(msg);
+          }}
         />
-        {/* send button: bg-primary rounded-lg w-[30px] h-[30px] */}
-        <Button
-          data-testid="conversation-speak-send"
-          className="size-[30px] shrink-0 rounded-lg bg-primary p-0 text-primary-foreground hover:bg-primary/90"
-          disabled={!draft.trim() || sending}
-          onClick={() => void speak()}
-          aria-label={t("orchestration.conversation.speakSend")}
-        >
-          <SendHorizontal className="size-3.5" aria-hidden="true" />
-        </Button>
       </div>
     </div>
   );

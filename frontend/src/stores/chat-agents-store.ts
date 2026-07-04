@@ -137,6 +137,7 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
               {
                 agentStatus: snapshotStatus,
                 needsAttention: s.needsAttention ?? false,
+                bgRunning: s.bgRunning ?? false,
               },
             ]);
           }

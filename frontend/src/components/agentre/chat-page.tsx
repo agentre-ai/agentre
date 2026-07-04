@@ -48,7 +48,7 @@ import type { AgentColor, AgentStatus } from "./types";
 
 // agentSessionFromMeta: 从 meta-store 数据和 reason 投影成 AgentSession。
 // 展开态常规列表（buildSessions 等价）和 attention bubble 共用。
-function agentSessionFromMeta(
+export function agentSessionFromMeta(
   sid: number,
   title: string,
   lastMessageAt: number,
@@ -62,13 +62,15 @@ function agentSessionFromMeta(
     (agentStatus as AgentStatus) || "idle",
   );
   const trailingLabel =
-    status === "running"
-      ? "running"
-      : status === "waiting"
-        ? (reasonToPillText(reason) ?? "")
-        : status === "error"
-          ? "error"
-          : relativeTime(lastMessageAt);
+    reason === "bg_running"
+      ? (reasonToPillText(reason) ?? "")
+      : status === "running"
+        ? "running"
+        : status === "waiting"
+          ? (reasonToPillText(reason) ?? "")
+          : status === "error"
+            ? "error"
+            : relativeTime(lastMessageAt);
   return {
     id: String(sid),
     status,

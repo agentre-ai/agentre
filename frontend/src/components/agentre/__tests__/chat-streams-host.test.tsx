@@ -258,4 +258,71 @@ describe("ChatStreamsHost", () => {
       false,
     );
   });
+
+  it("permission-mode-only session_status preserves existing bgRunning=true (no spurious clear)", async () => {
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+    // Seed store: session 42 has a bg subagent running.
+    useSessionStatusStore.getState().upsert(42, {
+      agentStatus: "idle",
+      needsAttention: false,
+      bgRunning: true,
+    });
+
+    render(<ChatStreamsHost />);
+
+    await waitFor(() => expect(runtimeMocks.EventsOn).toHaveBeenCalled());
+    const handler = registeredHandler();
+
+    // Simulate a permission-mode-only frame (hasStatus=false, hasMode=true, bgRunning omitted/false).
+    act(() => {
+      handler({
+        kind: "session_status",
+        sessionStatus: {
+          agentStatus: "",
+          needsAttention: false,
+          permissionMode: "default",
+          bgRunning: false,
+        },
+      });
+    });
+
+    // bgRunning must be preserved — frame had no agentStatus so it must not overwrite.
+    expect(useSessionStatusStore.getState().statuses.get(42)?.bgRunning).toBe(
+      true,
+    );
+  });
+
+  it("session_status event with bgRunning:true ingests bgRunning into session-status-store", async () => {
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+
+    render(<ChatStreamsHost />);
+
+    await waitFor(() => expect(runtimeMocks.EventsOn).toHaveBeenCalled());
+    const handler = registeredHandler();
+
+    act(() => {
+      handler({
+        kind: "session_status",
+        sessionStatus: {
+          agentStatus: "running",
+          needsAttention: false,
+          bgRunning: true,
+        },
+      });
+    });
+
+    expect(useSessionStatusStore.getState().statuses.get(42)?.bgRunning).toBe(
+      true,
+    );
+  });
 });

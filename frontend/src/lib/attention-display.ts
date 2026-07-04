@@ -11,7 +11,7 @@ export function reasonToDisplayStatus(
   fallback: AgentStatus,
 ): AgentStatus {
   if (reason === "needs_attention" || reason === "unread") return "waiting";
-  if (reason === "running") return "running";
+  if (reason === "running" || reason === "bg_running") return "running";
   if (reason === "error") return "error";
   return fallback;
 }
@@ -22,5 +22,6 @@ export function reasonToPillText(
   if (reason === "needs_attention") return i18n.t("attention.needsAttention");
   if (reason === "error") return i18n.t("attention.error");
   if (reason === "unread") return i18n.t("attention.unread");
+  if (reason === "bg_running") return i18n.t("attention.background");
   return null;
 }

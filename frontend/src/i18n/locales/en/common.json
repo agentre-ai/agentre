@@ -34,6 +34,7 @@
     "runningAria": "{{name}} has running sessions"
   },
   "attention": {
+    "background": "Background",
     "error": "Error",
     "needsAttention": "Approval",
     "unread": "Unread"

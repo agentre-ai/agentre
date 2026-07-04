@@ -44,6 +44,7 @@ export function useSessionWithOverlays(sessionId: number): SessionView | null {
       agentStatus: status?.agentStatus ?? "idle",
       needsAttention: status?.needsAttention ?? false,
       permissionMode: status?.permissionMode,
+      bgRunning: status?.bgRunning ?? false,
       lastReadAt,
     };
   }, [sessionId, meta, status, readOverride]);

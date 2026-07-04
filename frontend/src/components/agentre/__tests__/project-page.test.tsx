@@ -69,7 +69,13 @@ vi.mock("@dnd-kit/sortable", () => ({
   verticalListSortingStrategy: {},
 }));
 
-import { ProjectsPage, NewTerminalSubMenu } from "../project-page";
+import {
+  ProjectsPage,
+  NewTerminalSubMenu,
+  projectSessionToAgentSession,
+} from "../project-page";
+import i18n from "@/i18n";
+import { reasonToPillText } from "@/lib/attention-display";
 import { ProjectSettingsDrawer } from "../project-settings-drawer";
 
 function renderProjectsPage(initialPath = "/projects") {
@@ -1482,4 +1488,22 @@ describe("ProjectsPage focus query param", () => {
     await screen.findByText("Agentre");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
+});
+
+it("projectSessionToAgentSession: bg_running session shows the background pill, not 'running'", () => {
+  const s = projectSessionToAgentSession(
+    {
+      id: 1,
+      agentID: 7,
+      title: "T",
+      agentStatus: "idle",
+      lastMessageAt: 0,
+      lastReadAt: 0,
+      needsAttention: false,
+    },
+    "bg_running",
+    i18n.t.bind(i18n),
+  );
+  expect(s.trailingLabel).toBe(reasonToPillText("bg_running"));
+  expect(s.trailingLabel).not.toBe("running");
 });

@@ -32,6 +32,7 @@ export type SessionStatusPatch = {
   agentStatus: AgentStatus;
   needsAttention: boolean;
   permissionMode?: string;
+  bgRunning?: boolean;
 };
 
 // SessionView: useSessionWithOverlays 返回的合并投影。
@@ -48,6 +49,7 @@ export type SessionView = {
   needsAttention: boolean;
   permissionMode?: string;
   lastReadAt: number;
+  bgRunning?: boolean;
 };
 
 // AttentionInput: computeAttention 纯函数的输入类型。
@@ -56,13 +58,15 @@ export type AttentionInput = {
   needsAttention: boolean;
   lastMessageAt: number;
   lastReadAt: number;
+  bgRunning?: boolean;
 };
 
-// AttentionReason: 4 种 attention 状态，平权。UI 层据此选色 / 文案。
+// AttentionReason: 5 种 attention 状态，平权。UI 层据此选色 / 文案。
 export type AttentionReason =
   | "needs_attention"
   | "running"
   | "error"
+  | "bg_running"
   | "unread";
 
 // ChatSessionStatusEvent: 后端 SSE 透传的 session_status 字段类型。
@@ -73,4 +77,5 @@ export type ChatSessionStatusEvent = {
   needsAttention: boolean;
   permissionMode?: string;
   contextWindow?: number;
+  bgRunning?: boolean;
 };

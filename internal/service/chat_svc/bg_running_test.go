@@ -5,8 +5,11 @@ import (
 	"testing"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
+	"go.uber.org/mock/gomock"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
 
@@ -141,5 +144,66 @@ func TestClearBgRunningOnSourceClosed_ClearsSet(t *testing.T) {
 	s.clearBgRunningOnSourceClosed(3)
 	if s.bgRunningActive(3) {
 		t.Fatal("want inactive after source closed")
+	}
+}
+
+// TestMarkSessionWaiting_CarriesBgRunning verifies that markSessionWaiting emits
+// BgRunning=true when the session has an active background subagent.
+func TestMarkSessionWaiting_CarriesBgRunning(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
+	prev := chat_repo.Session()
+	chat_repo.RegisterSession(sessRepo)
+	t.Cleanup(func() { chat_repo.RegisterSession(prev) })
+	sessRepo.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	rec := &captureEmitter{}
+	s := &chatSvc{emitter: rec}
+	s.addBgRunning(20, "tu-bg")
+
+	sess := &chat_entity.Session{ID: 20, AgentStatus: "running"}
+	s.markSessionWaiting(context.Background(), sess, "stream-20")
+
+	if len(rec.events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(rec.events))
+	}
+	ev := rec.events[0]
+	if ev.SessionStatus == nil {
+		t.Fatal("want session_status event with non-nil SessionStatus")
+	}
+	if !ev.SessionStatus.BgRunning {
+		t.Fatal("want BgRunning=true when bg subagent is active")
+	}
+}
+
+// TestMarkSessionRunning_CarriesBgRunning verifies that markSessionRunning emits
+// BgRunning=true when the session has an active background subagent.
+func TestMarkSessionRunning_CarriesBgRunning(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
+	prev := chat_repo.Session()
+	chat_repo.RegisterSession(sessRepo)
+	t.Cleanup(func() { chat_repo.RegisterSession(prev) })
+	sessRepo.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	rec := &captureEmitter{}
+	s := &chatSvc{emitter: rec}
+	s.addBgRunning(21, "tu-bg")
+
+	// Start from waiting so markSessionRunning doesn't short-circuit.
+	sess := &chat_entity.Session{ID: 21, AgentStatus: "waiting", NeedsAttention: true}
+	s.markSessionRunning(context.Background(), sess, "stream-21")
+
+	if len(rec.events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(rec.events))
+	}
+	ev := rec.events[0]
+	if ev.SessionStatus == nil {
+		t.Fatal("want session_status event with non-nil SessionStatus")
+	}
+	if !ev.SessionStatus.BgRunning {
+		t.Fatal("want BgRunning=true when bg subagent is active")
 	}
 }
