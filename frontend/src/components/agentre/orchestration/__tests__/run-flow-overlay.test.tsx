@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import type { app } from "../../../../wailsjs/go/models";
+import type { app } from "../../../../../wailsjs/go/models";
 import { RunFlowOverlay } from "../run-flow-overlay";
 
 const graph = JSON.stringify({
