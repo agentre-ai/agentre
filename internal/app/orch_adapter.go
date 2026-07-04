@@ -128,6 +128,19 @@ func (a *orchChatAdapter) AgentStatus(_ context.Context, sessionID int64) (strin
 	return v.(turnInfo).status, nil
 }
 
+// AbortTurn 尽力硬打断会话在跑的一轮(复用 chat_svc.Stop)。
+// 无活跃 turn(ChatStopNoActive)视作无害成功:软取消已生效,硬打断无对象。
+func (a *orchChatAdapter) AbortTurn(ctx context.Context, sessionID int64) error {
+	_, err := chat_svc.Chat().Stop(ctx, &chat_svc.StopRequest{SessionID: sessionID})
+	if err != nil {
+		var herr *httputils.Error
+		if errors.As(err, &herr) && herr.Code == code.ChatStopNoActive {
+			return nil
+		}
+	}
+	return err
+}
+
 // ──────────────────────────────────────────────────────────
 // orchAgentAdapter — orch_svc.AgentLookup → agent_repo.Agent()
 // ──────────────────────────────────────────────────────────

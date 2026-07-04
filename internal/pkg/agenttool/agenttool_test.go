@@ -75,7 +75,7 @@ func TestRegistry_HasOrchestrate(t *testing.T) {
 	d, ok := Lookup(KeyOrchestrate)
 	assert.True(t, ok)
 	assert.Equal(t, "/mcp/orchestrate/", d.MCPPath)
-	assert.ElementsMatch(t, []string{"agent_list", "dispatch", "ask", "send", "finish", "reply", "report", "read", "status"}, d.ToolNames)
+	assert.ElementsMatch(t, []string{"agent_list", "dispatch", "ask", "send", "finish", "reply", "report", "read", "status", "cancel"}, d.ToolNames)
 	assert.Contains(t, Keys(), KeyOrchestrate)
 }
 

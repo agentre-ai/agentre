@@ -28,11 +28,16 @@ func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Task, c
 		}
 		switch status {
 		case "idle":
+			fresh, _ := s.tasks.Find(ctx, task.ID)
+			if fresh != nil && fresh.Status == orch_entity.TaskCanceled {
+				logger.Ctx(ctx).Info("orch.watchCompletion: 任务已被取消,watcher 让位不回报", zap.Int64("task", task.ID))
+				return
+			}
 			// 完整正文始终落 Result(供 read);Summary 由显式 finish 写,决定内联 vs ping。
 			result, _ := s.chat.FinalAssistantText(ctx, task.SessionID)
 			task.Status = orch_entity.TaskDone
 			task.Result = result
-			if fresh, _ := s.tasks.Find(ctx, task.ID); fresh != nil && fresh.Summary != "" {
+			if fresh != nil && fresh.Summary != "" {
 				task.Summary = fresh.Summary
 			}
 			if err := s.tasks.Update(ctx, task); err != nil {
@@ -42,6 +47,10 @@ func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Task, c
 			s.reportToParent(ctx, task.ParentTaskID, task)
 			return
 		case "error":
+			if fresh, _ := s.tasks.Find(ctx, task.ID); fresh != nil && fresh.Status == orch_entity.TaskCanceled {
+				logger.Ctx(ctx).Info("orch.watchCompletion: 任务已被取消,watcher 让位(不标 error)", zap.Int64("task", task.ID))
+				return
+			}
 			s.markTaskError(ctx, task, "运行时崩溃")
 			s.emitRunUpdated(ctx, task.RunID)
 			return

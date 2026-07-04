@@ -43,6 +43,20 @@ func (m *MockChatGateway) EXPECT() *MockChatGatewayMockRecorder {
 	return m.recorder
 }
 
+// AbortTurn mocks base method.
+func (m *MockChatGateway) AbortTurn(ctx context.Context, sessionID int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AbortTurn", ctx, sessionID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// AbortTurn indicates an expected call of AbortTurn.
+func (mr *MockChatGatewayMockRecorder) AbortTurn(ctx, sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AbortTurn", reflect.TypeOf((*MockChatGateway)(nil).AbortTurn), ctx, sessionID)
+}
+
 // AgentStatus mocks base method.
 func (m *MockChatGateway) AgentStatus(ctx context.Context, sessionID int64) (string, error) {
 	m.ctrl.T.Helper()
