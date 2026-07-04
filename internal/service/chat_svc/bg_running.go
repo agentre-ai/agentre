@@ -1,10 +1,12 @@
 package chat_svc
 
 import (
+	"context"
 	"sync"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
 
@@ -92,6 +94,22 @@ func (s *chatSvc) bgRunningActive(sessionID int64) bool {
 	set.mu.Lock()
 	defer set.mu.Unlock()
 	return len(set.ids) > 0
+}
+
+// emitBgRunningStatus 推一帧 session_status，携带当前 agentStatus/needsAttention + 最新
+// bgRunning。后台 subagent 起/完成时调用，让前端 store 即时刷新。stream 为空则不 emit。
+func (s *chatSvc) emitBgRunningStatus(ctx context.Context, sess *chat_entity.Session, stream string) {
+	if sess == nil || stream == "" {
+		return
+	}
+	s.emitter.Emit(ctx, stream, ChatStreamEvent{
+		Kind: StreamSessionStatus,
+		SessionStatus: &ChatSessionStatusPatch{
+			AgentStatus:    sess.AgentStatus,
+			NeedsAttention: sess.NeedsAttention,
+			BgRunning:      s.bgRunningActive(sess.ID),
+		},
+	})
 }
 
 // runningBgSubagentIDs 从一批已 finalize 的块里挑出「运行中后台 subagent」的父 tool_use_id。

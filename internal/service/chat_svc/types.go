@@ -215,6 +215,9 @@ type ChatStreamUsage struct {
 type ChatSessionStatusPatch struct {
 	AgentStatus    string `json:"agentStatus"`
 	NeedsAttention bool   `json:"needsAttention"`
+	// BgRunning 会话是否有后台 subagent 在跑(run_in_background)。总是带最新值；
+	// 独立于 AgentStatus——后台 subagent 期间 AgentStatus 仍为 idle。见 bg_running.go。
+	BgRunning bool `json:"bgRunning"`
 	// PermissionMode 可选：只在 CLI 通报 permission mode 变更时填（被动 ExitPlanMode 流程）。
 	// 缺省（omitempty）时前端不动 ChatSessionDetail.permissionMode；带值时直接覆盖。
 	PermissionMode string `json:"permissionMode,omitempty"`

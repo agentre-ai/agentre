@@ -1,10 +1,12 @@
 package chat_svc
 
 import (
+	"context"
 	"testing"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
 
@@ -39,6 +41,28 @@ func TestBgRunningSet_AddRemoveClearActive(t *testing.T) {
 	}
 	if s.clearBgRunning(7) {
 		t.Fatal("clear empty should be no-op")
+	}
+}
+
+func TestEmitBgRunningStatus_CarriesFlag(t *testing.T) {
+	rec := &captureEmitter{}
+	s := &chatSvc{emitter: rec}
+	s.addBgRunning(9, "tu-x")
+	sess := &chat_entity.Session{ID: 9, AgentStatus: "idle"}
+	s.emitBgRunningStatus(context.Background(), sess, "stream-9")
+
+	if len(rec.events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(rec.events))
+	}
+	ev := rec.events[0]
+	if ev.Kind != StreamSessionStatus || ev.SessionStatus == nil {
+		t.Fatalf("want session_status event, got %+v", ev)
+	}
+	if !ev.SessionStatus.BgRunning {
+		t.Fatal("want BgRunning=true")
+	}
+	if ev.SessionStatus.AgentStatus != "idle" {
+		t.Fatalf("want agentStatus idle, got %q", ev.SessionStatus.AgentStatus)
 	}
 }
 
