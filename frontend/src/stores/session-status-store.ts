@@ -159,3 +159,17 @@ export function useSessionStatus(sessionId: number): SessionStatusValue | null {
     sessionId > 0 ? (s.statuses.get(sessionId) ?? null) : null,
   );
 }
+
+// markSessionRunning 在 Send / Regenerate / Edit 成功返回后乐观把 session 翻成
+// running 态。后端落库已经是 running,但 turn 起手没 emit session_status 事件,
+// 不补一刀的话 tab / toolbar / sidebar 读 session-status-store 会停在 idle。
+// permissionMode 取 store 当前值,避免覆盖刚 set 的 plan/default 等。
+export function markSessionRunning(sessionId: number): void {
+  if (!sessionId) return;
+  const prev = useSessionStatusStore.getState().statuses.get(sessionId);
+  useSessionStatusStore.getState().upsert(sessionId, {
+    agentStatus: "running",
+    needsAttention: false,
+    permissionMode: prev?.permissionMode,
+  });
+}

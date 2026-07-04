@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useSessionStatusStore } from "../session-status-store";
+import {
+  markSessionRunning,
+  useSessionStatusStore,
+} from "../session-status-store";
 
 describe("session-status-store", () => {
   beforeEach(() => {
@@ -193,5 +196,24 @@ describe("session-status-store", () => {
     expect(
       useSessionStatusStore.getState().statuses.get(3)?.lastDoneEvent?.kind,
     ).toBe("done");
+  });
+
+  it("markSessionRunning 把 sid 乐观翻成 running 且保留原 permissionMode", () => {
+    useSessionStatusStore.getState().upsert(4, {
+      agentStatus: "idle",
+      needsAttention: true,
+      permissionMode: "plan",
+    });
+    markSessionRunning(4);
+    const v = useSessionStatusStore.getState().statuses.get(4);
+    expect(v?.agentStatus).toBe("running");
+    expect(v?.needsAttention).toBe(false);
+    expect(v?.permissionMode).toBe("plan");
+  });
+
+  it("markSessionRunning 对 sessionId=0 是 no-op", () => {
+    const before = useSessionStatusStore.getState().statuses;
+    markSessionRunning(0);
+    expect(useSessionStatusStore.getState().statuses).toBe(before);
   });
 });
