@@ -216,4 +216,35 @@ describe("session-status-store", () => {
     markSessionRunning(0);
     expect(useSessionStatusStore.getState().statuses).toBe(before);
   });
+
+  it("carries explicit bgRunning through upsert", () => {
+    useSessionStatusStore.getState().upsert(1, { agentStatus: "idle", needsAttention: false, bgRunning: true });
+    expect(useSessionStatusStore.getState().statuses.get(1)?.bgRunning).toBe(true);
+  });
+
+  it("preserves bgRunning when a later patch omits it (markSessionRunning-style flip)", () => {
+    const s = useSessionStatusStore.getState();
+    s.upsert(2, { agentStatus: "idle", needsAttention: false, bgRunning: true });
+    s.upsert(2, { agentStatus: "running", needsAttention: false }); // omits bgRunning
+    expect(useSessionStatusStore.getState().statuses.get(2)?.bgRunning).toBe(true);
+  });
+
+  it("respects an explicit bgRunning:false", () => {
+    const s = useSessionStatusStore.getState();
+    s.upsert(3, { agentStatus: "idle", needsAttention: false, bgRunning: true });
+    s.upsert(3, { agentStatus: "idle", needsAttention: false, bgRunning: false });
+    expect(useSessionStatusStore.getState().statuses.get(3)?.bgRunning).toBe(false);
+  });
+
+  it("isSamePatch short-circuits on omitted bgRunning but writes on a real flip", () => {
+    const s = useSessionStatusStore.getState();
+    s.upsert(4, { agentStatus: "idle", needsAttention: false, bgRunning: false });
+    const ref1 = useSessionStatusStore.getState().statuses.get(4);
+    s.upsert(4, { agentStatus: "idle", needsAttention: false }); // omit → no change
+    expect(useSessionStatusStore.getState().statuses.get(4)).toBe(ref1);
+    s.upsert(4, { agentStatus: "idle", needsAttention: false, bgRunning: true }); // flip → change
+    const ref2 = useSessionStatusStore.getState().statuses.get(4);
+    expect(ref2).not.toBe(ref1);
+    expect(ref2?.bgRunning).toBe(true);
+  });
 });

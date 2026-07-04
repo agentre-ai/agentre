@@ -48,6 +48,9 @@ export type SessionStatusValue = {
   // permissionMode 只有 claudecode 被动 ExitPlanMode 透传时才带值；
   // 详情页 Composer 据此回写 useChatSession session.permissionMode。
   permissionMode?: string;
+  // bgRunning 为 true 时表示该 session 有后台运行中的子任务；
+  // 由 reconcileBgRunningOnFinalize 写入，任何 upsert patch 若省略则保留旧值。
+  bgRunning: boolean;
   // doneTick 每次 turn 结束（done/error/aborted/closed/steer_consumed）自增一次；
   // ChatPanel 订阅变化后调 reload，拿到后端写好的最终 blocks。
   doneTick: number;
@@ -77,7 +80,8 @@ function isSamePatch(a: SessionStatusValue, b: SessionStatusPatch): boolean {
   return (
     a.agentStatus === b.agentStatus &&
     a.needsAttention === b.needsAttention &&
-    (a.permissionMode ?? "") === (b.permissionMode ?? "")
+    (a.permissionMode ?? "") === (b.permissionMode ?? "") &&
+    (b.bgRunning ?? a.bgRunning ?? false) === (a.bgRunning ?? false)
   );
 }
 
@@ -93,6 +97,7 @@ export const useSessionStatusStore = create<State & Actions>((set) => ({
         agentStatus: patch.agentStatus,
         needsAttention: patch.needsAttention,
         permissionMode: patch.permissionMode,
+        bgRunning: patch.bgRunning ?? prev?.bgRunning ?? false,
         doneTick: prev?.doneTick ?? 0,
         lastDoneEvent: prev?.lastDoneEvent ?? null,
       });
@@ -110,6 +115,7 @@ export const useSessionStatusStore = create<State & Actions>((set) => ({
           agentStatus: patch.agentStatus,
           needsAttention: patch.needsAttention,
           permissionMode: patch.permissionMode,
+          bgRunning: patch.bgRunning ?? prev?.bgRunning ?? false,
           doneTick: prev?.doneTick ?? 0,
           lastDoneEvent: prev?.lastDoneEvent ?? null,
         });
@@ -133,6 +139,7 @@ export const useSessionStatusStore = create<State & Actions>((set) => ({
         agentStatus: prev?.agentStatus ?? "idle",
         needsAttention: prev?.needsAttention ?? false,
         permissionMode: prev?.permissionMode,
+        bgRunning: prev?.bgRunning ?? false,
         doneTick: (prev?.doneTick ?? 0) + 1,
         lastDoneEvent: ev,
       };
