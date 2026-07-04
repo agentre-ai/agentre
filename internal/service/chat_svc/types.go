@@ -416,8 +416,8 @@ type ChatSessionDetail struct {
 	// 与 session_status 事件同源，让页面重载后状态不丢。
 	BgRunning     bool  `json:"bgRunning"`
 	LastMessageAt int64 `json:"lastMessageAt"`
-	LastReadAt     int64 `json:"lastReadAt"`
-	Createtime     int64 `json:"createtime"`
+	LastReadAt    int64 `json:"lastReadAt"`
+	Createtime    int64 `json:"createtime"`
 	// ContextWindow 当前 agent 绑定 backend 的主 LLM provider 的上下文窗口（token 数）。
 	// 解析顺序：provider.ContextWindow > 0 → 直接用；否则 cago 内置 catalog 兜底；都没有 → 0
 	// （前端约定 0 时不展示上下文用量条）。
