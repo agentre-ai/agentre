@@ -8,7 +8,6 @@ import { PermissionModePill } from "../permission-mode";
 import type { AgentColor, AgentStatus } from "../types";
 import { AgentAvatar, StatusDot } from "../primitives";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
-import type { ChatBlockData, RetryNotice } from "@/stores/chat-streams-store";
 
 /**
  * Derive agent status from the tasks belonging to this agent in a run.
@@ -61,7 +60,7 @@ export function ConversationPanel({
   const { t } = useTranslation();
   const {
     messages,
-    live: liveRaw,
+    live,
     submit,
     isModeSwitchable,
     supportsImageInput,
@@ -70,19 +69,6 @@ export function ConversationPanel({
     backendType,
     contextUsage,
   } = useLiveConversation(sessionId, agentId ?? 0);
-  // useLiveConversation's EMPTY_LIVE sentinel types liveBlocks/liveRetry as
-  // unknown[]/unknown (rather than ChatBlockData[]/RetryNotice | null), which
-  // widens `live`'s inferred union type. Normalize once here at the boundary
-  // instead of casting at every ChatTranscript prop below.
-  const live = liveRaw as {
-    liveDelta: string;
-    liveThinking: string;
-    liveBlocks: ChatBlockData[];
-    liveRetry: RetryNotice | null;
-    liveStreamStartedAt: number | null;
-    streaming: boolean;
-    liveCompacting: boolean;
-  };
   const [scrollEl, setScrollEl] = React.useState<HTMLDivElement | null>(null);
 
   // Derive awaiting state: is this agent currently waiting for a peer reply?

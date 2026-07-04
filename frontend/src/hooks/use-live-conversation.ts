@@ -3,7 +3,11 @@ import * as React from "react";
 import type { ChatImageAttachment } from "@/components/agentre/chat";
 import { useChatSession } from "@/hooks/use-chat-session";
 import { useChatStream, type ChatStreamEvent } from "@/hooks/use-chat-stream";
-import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import {
+  useChatStreamsStore,
+  type ChatBlockData,
+  type RetryNotice,
+} from "@/stores/chat-streams-store";
 import {
   markSessionRunning,
   useSessionStatusStore,
@@ -17,8 +21,8 @@ type SvcChatMessage = chat_svc.ChatMessage;
 const EMPTY_LIVE = {
   liveDelta: "",
   liveThinking: "",
-  liveBlocks: [] as unknown[],
-  liveRetry: null as unknown,
+  liveBlocks: [] as ChatBlockData[],
+  liveRetry: null as RetryNotice | null,
   liveStreamStartedAt: 0,
   streaming: false,
   liveCompacting: false,
