@@ -2778,6 +2778,13 @@ func (s *chatSvc) runTurn(
 		}
 	}
 	_ = s.persistSessionStatus(finalCtx, sess)
+	if aborted || stopErr != nil {
+		if s.clearBgRunning(sess.ID) {
+			s.emitBgRunningStatus(finalCtx, sess, stream)
+		}
+	} else {
+		s.reconcileBgRunningOnFinalize(finalCtx, sess, finalBlocks, stream)
+	}
 	// 诊断: 落库的最终(或自动接续中间态)agent_status。下面那段只在 error/waiting 时
 	// emit+log,idle 收尾历史上完全没日志 —— 这正是 agentre.log 里看不到 running→idle
 	// 翻转、排查「状态停在 running / 被过期快照盖回 idle」时无从对时间线的原因。这里补一条

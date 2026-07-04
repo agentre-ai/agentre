@@ -112,6 +112,18 @@ func (s *chatSvc) emitBgRunningStatus(ctx context.Context, sess *chat_entity.Ses
 	})
 }
 
+// reconcileBgRunningOnFinalize 在一轮 finalize 后，把该轮新起的后台 subagent 加入会话集合，
+// 有变化则 emit session_status。主轮 / 自主轮 finalize 都调它。
+func (s *chatSvc) reconcileBgRunningOnFinalize(ctx context.Context, sess *chat_entity.Session, finalBlocks []cagoblocks.ContentBlock, stream string) {
+	if sess == nil {
+		return
+	}
+	ids := runningBgSubagentIDs(finalBlocks)
+	if s.addBgRunning(sess.ID, ids...) {
+		s.emitBgRunningStatus(ctx, sess, stream)
+	}
+}
+
 // runningBgSubagentIDs 从一批已 finalize 的块里挑出「运行中后台 subagent」的父 tool_use_id。
 // 判据与前端 background-tasks/derive.ts 同款：SubagentStateBlock.Status=="running" 且其父
 // tool_use(ParentToolCallID)入参 run_in_background===true。前台 subagent(无该入参)不纳入。

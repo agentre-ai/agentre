@@ -76,6 +76,25 @@ func TestSessionLiteFromEntity_CarriesBgRunning(t *testing.T) {
 	}
 }
 
+func TestReconcileBgRunningOnFinalize_AddsAndEmits(t *testing.T) {
+	rec := &captureEmitter{}
+	s := &chatSvc{emitter: rec}
+	sess := &chat_entity.Session{}
+	sess.ID = 5
+	sess.AgentStatus = "idle"
+	final := []cagoblocks.ContentBlock{
+		&cagoblocks.ToolUseBlock{ID: "bg-1", Input: map[string]any{"run_in_background": true}},
+		&blocks.SubagentStateBlock{ParentToolCallID: "bg-1", Kind: "local_agent", Status: "running"},
+	}
+	s.reconcileBgRunningOnFinalize(context.Background(), sess, final, "stream-5")
+	if !s.bgRunningActive(5) {
+		t.Fatal("want active after finalize with running bg subagent")
+	}
+	if len(rec.events) != 1 || !rec.events[0].SessionStatus.BgRunning {
+		t.Fatalf("want 1 session_status event with BgRunning=true, got %+v", rec.events)
+	}
+}
+
 func TestRunningBgSubagentIDs(t *testing.T) {
 	blks := []cagoblocks.ContentBlock{
 		// 后台 subagent: Agent tool_use run_in_background=true + running subagent_state
