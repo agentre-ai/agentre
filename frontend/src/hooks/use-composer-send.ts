@@ -2,6 +2,7 @@ import * as React from "react";
 
 import type { ChatImageAttachment } from "@/components/agentre/chat";
 import { useBackendCapabilities } from "@/components/agentre/capability/use-backend-capabilities";
+import { useSessionCapabilities } from "@/components/agentre/capability/use-session-capabilities";
 import { usePermissionMode } from "@/components/agentre/permission-mode";
 import { useChatStreamsStore } from "@/stores/chat-streams-store";
 import { markSessionRunning } from "@/stores/session-status-store";
@@ -55,9 +56,13 @@ export function useComposerSend(args: {
     hasActiveSession,
   } = args;
   const openStream = useChatStreamsStore((s) => s.openStream);
-  const { caps } = useBackendCapabilities(
+  const { caps: sessionCaps } = useSessionCapabilities(
+    sessionId > 0 ? sessionId : undefined,
+  );
+  const { caps: backendCaps } = useBackendCapabilities(
     sessionId > 0 ? undefined : backendType,
   );
+  const caps = sessionCaps ?? backendCaps;
   const isModeSwitchable = !!caps?.has("set_permission_mode");
   const supportsImageInput = !!caps?.has("image_input");
   const permissionModeMeta = caps?.permissionModeMeta ?? EMPTY_META;

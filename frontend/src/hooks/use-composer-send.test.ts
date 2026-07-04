@@ -27,6 +27,12 @@ vi.mock("@/components/agentre/capability/use-backend-capabilities", () => ({
     caps: new Set(["set_permission_mode", "image_input"]),
   }),
 }));
+const sessionCapsMock = vi.fn(
+  (..._a: unknown[]): { caps: Set<string> | null } => ({ caps: null }),
+);
+vi.mock("@/components/agentre/capability/use-session-capabilities", () => ({
+  useSessionCapabilities: (...a: unknown[]) => sessionCapsMock(...a),
+}));
 vi.mock("@/components/agentre/permission-mode", () => ({
   usePermissionMode: () => ({ mode: "default", setMode: vi.fn() }),
   PermissionModePill: () => null,
@@ -40,6 +46,8 @@ describe("useComposerSend", () => {
     enqueueMock.mockReset();
     openStreamMock.mockReset();
     markRunningMock.mockReset();
+    sessionCapsMock.mockReset();
+    sessionCapsMock.mockReturnValue({ caps: null });
   });
 
   it("idle 时 submit 走 SendChatMessage + openStream + optimistic", async () => {
@@ -113,5 +121,36 @@ describe("useComposerSend", () => {
     });
     expect(sendMock).not.toHaveBeenCalled();
     expect(enqueueMock).not.toHaveBeenCalled();
+  });
+
+  it("已有会话(sessionId>0)时 caps 取自 useSessionCapabilities 而非 useBackendCapabilities", () => {
+    // 会话能力矩阵里没有 set_permission_mode/image_input(即便 backend caps mock 里有)
+    sessionCapsMock.mockReturnValue({
+      caps: new Set<string>(),
+    });
+    const { result: withoutModeResult } = renderHook(() =>
+      useComposerSend({
+        sessionId: 7,
+        agentId: 3,
+        backendType: "claudecode",
+        isRunning: false,
+      }),
+    );
+    expect(withoutModeResult.current.isModeSwitchable).toBe(false);
+    expect(withoutModeResult.current.supportsImageInput).toBe(false);
+
+    sessionCapsMock.mockReturnValue({
+      caps: new Set(["set_permission_mode", "image_input"]),
+    });
+    const { result: withModeResult } = renderHook(() =>
+      useComposerSend({
+        sessionId: 7,
+        agentId: 3,
+        backendType: "claudecode",
+        isRunning: false,
+      }),
+    );
+    expect(withModeResult.current.isModeSwitchable).toBe(true);
+    expect(withModeResult.current.supportsImageInput).toBe(true);
   });
 });
