@@ -95,6 +95,25 @@ func TestReconcileBgRunningOnFinalize_AddsAndEmits(t *testing.T) {
 	}
 }
 
+func TestReconcileBgRunningOnComplete_RemovesAndEmits(t *testing.T) {
+	rec := &captureEmitter{}
+	s := &chatSvc{emitter: rec}
+	s.addBgRunning(11, "bg-done")
+	if !s.bgRunningActive(11) {
+		t.Fatal("precondition: active")
+	}
+	sess := &chat_entity.Session{}
+	sess.ID = 11
+	sess.AgentStatus = "idle"
+	s.reconcileBgRunningOnComplete(context.Background(), sess, "bg-done", "stream-11")
+	if s.bgRunningActive(11) {
+		t.Fatal("want inactive after complete removes bg-done")
+	}
+	if len(rec.events) != 1 || rec.events[0].SessionStatus.BgRunning {
+		t.Fatalf("want 1 session_status event with BgRunning=false, got %+v", rec.events)
+	}
+}
+
 func TestRunningBgSubagentIDs(t *testing.T) {
 	blks := []cagoblocks.ContentBlock{
 		// 后台 subagent: Agent tool_use run_in_background=true + running subagent_state
