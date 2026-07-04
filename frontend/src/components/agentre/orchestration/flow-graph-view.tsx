@@ -5,6 +5,7 @@ import {
   layoutFlowGraph,
   parseFlowGraph,
 } from "./flow-graph";
+import type { NodeOverlay, NodeStatus } from "./flow-overlay";
 
 const COL_W = 118;
 const ROW_H = 52;
@@ -37,12 +38,30 @@ function kindBadge(g: FlowGraph, id: string, kind: string, isSink: boolean) {
   return { label, cls };
 }
 
+// overlayClass: 节点状态 → 卡片边框/背景色(复用 run-status banner 的既有 token)。
+function overlayClass(status: NodeStatus): string {
+  switch (status) {
+    case "done":
+      return "border-status-running bg-status-running-bg";
+    case "running":
+      return "border-status-waiting bg-status-waiting-bg";
+    case "error":
+      return "border-destructive bg-destructive-soft";
+    case "neutral":
+      return "opacity-60";
+    default: // pending
+      return "";
+  }
+}
+
 export function FlowGraphView({
   graph,
   className,
+  overlay,
 }: {
   graph?: string | FlowGraph;
   className?: string;
+  overlay?: Record<string, NodeOverlay>;
 }) {
   const g = typeof graph === "string" ? parseFlowGraph(graph) : (graph ?? null);
   if (!g) return null;
@@ -92,10 +111,14 @@ export function FlowGraphView({
           (e) => e.kind !== "bounce" && e.from === p.node.id,
         );
         const badge = kindBadge(g, p.node.id, p.node.kind, isSink);
+        const ov = overlay?.[p.node.id];
         return (
           <div
             key={p.node.id}
-            className="absolute flex flex-col justify-center rounded-md border border-border bg-card px-2 py-1"
+            className={cn(
+              "absolute flex flex-col justify-center rounded-md border border-border bg-card px-2 py-1",
+              ov ? overlayClass(ov.status) : undefined,
+            )}
             style={{
               left: pos.get(p.node.id)!.x,
               top: pos.get(p.node.id)!.y,
@@ -109,6 +132,14 @@ export function FlowGraphView({
               {p.node.label}
             </span>
             <span className={cn("text-[9px]", badge.cls)}>{badge.label}</span>
+            {ov && ov.count > 0 ? (
+              <span
+                data-testid={`flow-node-${p.node.id}-count`}
+                className="absolute -right-1.5 -top-1.5 flex size-4 items-center justify-center rounded-full bg-foreground text-[9px] font-semibold text-background"
+              >
+                {ov.count}
+              </span>
+            ) : null}
           </div>
         );
       })}
