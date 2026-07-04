@@ -57,6 +57,7 @@ describe("useWorkflows", () => {
       content: "# 新",
       tags: ["通用"],
       outline: ["需求拆解", "方案设计"],
+      graph: "",
     });
     await act(async () => {
       await result.current.update(1, "改名", "# 改", ["修复"], ["复现"]);
@@ -67,6 +68,7 @@ describe("useWorkflows", () => {
       content: "# 改",
       tags: ["修复"],
       outline: ["复现"],
+      graph: "",
     });
     await act(async () => {
       await result.current.remove(1);

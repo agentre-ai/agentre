@@ -103,7 +103,10 @@ export function WorkflowNodeForm({
         <span className="w-16 shrink-0 text-2xs text-muted-foreground">
           {t("workflows.designer.nodeKind")}
         </span>
-        <Select value={node.kind} onValueChange={(v) => onKindChange(v as FlowKind)}>
+        <Select
+          value={node.kind}
+          onValueChange={(v) => onKindChange(v as FlowKind)}
+        >
           <SelectTrigger
             data-testid={`node-${node.id}-kind`}
             className="h-7 flex-1 text-2xs"
@@ -111,8 +114,12 @@ export function WorkflowNodeForm({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="task">{t("workflows.designer.kindTask")}</SelectItem>
-            <SelectItem value="leader">{t("workflows.designer.kindLeader")}</SelectItem>
+            <SelectItem value="task">
+              {t("workflows.designer.kindTask")}
+            </SelectItem>
+            <SelectItem value="leader">
+              {t("workflows.designer.kindLeader")}
+            </SelectItem>
           </SelectContent>
         </Select>
       </div>

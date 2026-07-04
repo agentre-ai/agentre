@@ -168,3 +168,14 @@ func (orchWorkflowAdapter) FlowContentByID(ctx context.Context, id int64) (strin
 	}
 	return w.Content, nil
 }
+
+func (orchWorkflowAdapter) FlowGraphByID(ctx context.Context, id int64) (string, error) {
+	w, err := workflow_repo.Workflow().Find(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if w == nil || !w.IsActive() {
+		return "", nil
+	}
+	return w.Graph, nil
+}

@@ -15,6 +15,9 @@ import { cn } from "@/lib/utils";
 import { useWorkflowManagerStore } from "@/stores/workflow-manager-store";
 
 import { MarkdownText } from "../markdown-text";
+import { parseFlowGraph, type FlowGraph } from "../orchestration/flow-graph";
+import { emptyDraftGraph, graphToJSON } from "./flow-graph-draft";
+import { WorkflowDagDesigner } from "./workflow-dag-designer";
 import { WorkflowEditorForm } from "./workflow-editor-form";
 
 // 摘要首行:跳过空行与 markdown 标题行,取第一行正文。
@@ -56,6 +59,7 @@ function WorkflowManagerBody({
   const [draftContent, setDraftContent] = React.useState("");
   const [draftTags, setDraftTags] = React.useState<string[]>([]);
   const [draftOutline, setDraftOutline] = React.useState<string[]>([]);
+  const [draftGraph, setDraftGraph] = React.useState<FlowGraph | null>(null);
   const [formError, setFormError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -70,6 +74,7 @@ function WorkflowManagerBody({
       setDraftContent("");
       setDraftTags([]);
       setDraftOutline([]);
+      setDraftGraph(emptyDraftGraph());
       setFormError(null);
     }
   }, [intent]);
@@ -92,6 +97,7 @@ function WorkflowManagerBody({
     setDraftContent("");
     setDraftTags([]);
     setDraftOutline([]);
+    setDraftGraph(emptyDraftGraph());
     setFormError(null);
     setConfirmingDelete(false);
   };
@@ -102,6 +108,7 @@ function WorkflowManagerBody({
     setDraftContent(w.content);
     setDraftTags(w.tags);
     setDraftOutline(w.outline);
+    setDraftGraph(w.graph ? parseFlowGraph(w.graph) : null);
     setFormError(null);
     setConfirmingDelete(false);
   };
@@ -110,12 +117,19 @@ function WorkflowManagerBody({
     setFormError(null);
   };
 
-  const canSave = draftName.trim().length > 0 && !submitting;
+  const canSave =
+    !submitting &&
+    draftName.trim().length > 0 &&
+    (draftGraph
+      ? draftGraph.nodes.length > 0 &&
+        draftGraph.nodes.every((n) => n.label.trim().length > 0)
+      : true);
   const submit = async () => {
     if (!canSave) return;
     setFormError(null);
     setSubmitting(true);
     try {
+      const graphStr = draftGraph ? graphToJSON(draftGraph) : "";
       if (editingId > 0) {
         await update(
           editingId,
@@ -123,10 +137,17 @@ function WorkflowManagerBody({
           draftContent,
           draftTags,
           draftOutline,
+          graphStr,
         );
         setSelectedId(editingId);
       } else {
-        await create(draftName.trim(), draftContent, draftTags, draftOutline);
+        await create(
+          draftName.trim(),
+          draftContent,
+          draftTags,
+          draftOutline,
+          graphStr,
+        );
         setSelectedId(0);
       }
       setMode("view");
@@ -169,7 +190,10 @@ function WorkflowManagerBody({
           }
         }}
         className={cn(
-          "flex h-[640px] max-h-[88vh] w-[920px] max-w-[94vw] flex-col gap-0 overflow-hidden p-0",
+          "flex h-[640px] max-h-[88vh] flex-col gap-0 overflow-hidden p-0",
+          mode === "editor" && draftGraph
+            ? "w-[1200px] max-w-[96vw]"
+            : "w-[920px] max-w-[94vw]",
         )}
       >
         <DialogTitle className="sr-only">{t("workflows.title")}</DialogTitle>
@@ -292,22 +316,38 @@ function WorkflowManagerBody({
 
           <section className="flex min-w-0 flex-1 flex-col bg-muted/10">
             {mode === "editor" ? (
-              <EditorPane
-                editing={editingId > 0}
-                name={draftName}
-                content={draftContent}
-                tags={draftTags}
-                outline={draftOutline}
-                error={formError}
-                canSave={canSave}
-                onNameChange={setDraftName}
-                onContentChange={setDraftContent}
-                onTagsChange={setDraftTags}
-                onOutlineChange={setDraftOutline}
-                onCancel={cancelEdit}
-                onSave={() => void submit()}
-                onKeyDown={onEditorKeyDown}
-              />
+              draftGraph ? (
+                <DesignerPane
+                  editing={editingId > 0}
+                  name={draftName}
+                  graph={draftGraph}
+                  error={formError}
+                  canSave={canSave}
+                  onNameChange={setDraftName}
+                  onGraphChange={setDraftGraph}
+                  onCancel={cancelEdit}
+                  onSave={() => void submit()}
+                  onKeyDown={onEditorKeyDown}
+                />
+              ) : (
+                <EditorPane
+                  editing={editingId > 0}
+                  name={draftName}
+                  content={draftContent}
+                  tags={draftTags}
+                  outline={draftOutline}
+                  error={formError}
+                  canSave={canSave}
+                  onNameChange={setDraftName}
+                  onContentChange={setDraftContent}
+                  onTagsChange={setDraftTags}
+                  onOutlineChange={setDraftOutline}
+                  onConvertToDag={() => setDraftGraph(emptyDraftGraph())}
+                  onCancel={cancelEdit}
+                  onSave={() => void submit()}
+                  onKeyDown={onEditorKeyDown}
+                />
+              )
             ) : selected ? (
               <ViewPane
                 workflow={selected}
@@ -512,6 +552,7 @@ function EditorPane({
   onContentChange,
   onTagsChange,
   onOutlineChange,
+  onConvertToDag,
   onCancel,
   onSave,
   onKeyDown,
@@ -527,6 +568,7 @@ function EditorPane({
   onContentChange: (v: string) => void;
   onTagsChange: (v: string[]) => void;
   onOutlineChange: (v: string[]) => void;
+  onConvertToDag: () => void;
   onCancel: () => void;
   onSave: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
@@ -545,6 +587,20 @@ function EditorPane({
         </h2>
       </header>
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-4">
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-dashed border-border bg-muted/40 px-3 py-2">
+          <span className="text-2xs text-muted-foreground">
+            {t("workflows.designer.convertHint")}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid="workflow-convert-dag"
+            onClick={onConvertToDag}
+          >
+            {t("workflows.designer.convertToDag")}
+          </Button>
+        </div>
         <WorkflowEditorForm
           name={name}
           content={content}
@@ -555,6 +611,74 @@ function EditorPane({
           onContentChange={onContentChange}
           onTagsChange={onTagsChange}
           onOutlineChange={onOutlineChange}
+        />
+      </div>
+      <footer className="flex items-center gap-2 border-t border-border px-5 py-3">
+        <span className="text-2xs text-muted-foreground">
+          {t("workflows.manager.saveHint")}
+        </span>
+        <div className="flex-1" />
+        <Button type="button" variant="outline" size="sm" onClick={onCancel}>
+          {t("common.cancel")}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          disabled={!canSave}
+          data-testid="workflow-save-button"
+          onClick={onSave}
+        >
+          <Check className="size-3.5" aria-hidden="true" />
+          {t("workflows.editor.save")}
+        </Button>
+      </footer>
+    </div>
+  );
+}
+
+function DesignerPane({
+  editing,
+  name,
+  graph,
+  error,
+  canSave,
+  onNameChange,
+  onGraphChange,
+  onCancel,
+  onSave,
+  onKeyDown,
+}: {
+  editing: boolean;
+  name: string;
+  graph: FlowGraph;
+  error: string | null;
+  canSave: boolean;
+  onNameChange: (v: string) => void;
+  onGraphChange: (g: FlowGraph) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" onKeyDown={onKeyDown}>
+      <header className="flex items-center gap-2.5 border-b border-border px-5 py-3">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary-soft">
+          <Pencil className="size-4 text-primary-text" aria-hidden="true" />
+        </span>
+        <h2 className="text-sm font-semibold text-foreground">
+          {editing
+            ? t("workflows.editor.editTitle")
+            : t("workflows.editor.createTitle")}
+        </h2>
+      </header>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-4">
+        <WorkflowDagDesigner
+          name={name}
+          graph={graph}
+          error={error}
+          onNameChange={onNameChange}
+          onGraphChange={onGraphChange}
         />
       </div>
       <footer className="flex items-center gap-2 border-t border-border px-5 py-3">

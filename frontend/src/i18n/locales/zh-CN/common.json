@@ -1839,7 +1839,13 @@
       "dependsOn": "依赖",
       "dependsOnHint": "在所选的前序步骤之后执行",
       "bounce": "失败打回 →",
-      "bounceNone": "无"
+      "bounceNone": "无",
+      "addNode": "添加节点",
+      "graphTitle": "流程图",
+      "previewTitle": "实时提示词预览",
+      "previewEmpty": "添加节点后显示投影出的提示词",
+      "convertToDag": "转成 DAG 设计器",
+      "convertHint": "改用结构化流程重建;保存时会用投影正文替换当前自由文本正文。"
     },
     "deleteConfirm": {
       "title": "删除流程",

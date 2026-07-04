@@ -51,7 +51,14 @@ export function moveNode(g: FlowGraph, id: string, dir: -1 | 1): FlowGraph {
   if (i < 0 || j < 0 || j >= g.nodes.length) return g;
   const nodes = [...g.nodes];
   [nodes[i], nodes[j]] = [nodes[j], nodes[i]];
-  return { ...g, nodes };
+  // 重排后剔除变「向后」的 sequence 依赖边(from 必须排在 to 之前),否则 toggle UI
+  // (earlierNodes 已不列该前驱)与持久化 graph 会静默不一致。bounce 是回退语义, 不动。
+  const order = new Map(nodes.map((n, k) => [n.id, k]));
+  const edges = g.edges.filter(
+    (e) =>
+      e.kind === "bounce" || (order.get(e.from) ?? 0) < (order.get(e.to) ?? 0),
+  );
+  return { ...g, nodes, edges };
 }
 
 // earlierNodeIds: nodes[] 顺序中排在 id 之前的节点 —— depends-on 候选 + 天然防环。

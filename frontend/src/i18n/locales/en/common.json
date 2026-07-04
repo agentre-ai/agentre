@@ -1839,7 +1839,13 @@
       "dependsOn": "Depends on",
       "dependsOnHint": "Runs after the selected earlier steps",
       "bounce": "On failure → bounce to",
-      "bounceNone": "None"
+      "bounceNone": "None",
+      "addNode": "Add node",
+      "graphTitle": "Flow graph",
+      "previewTitle": "Live prompt preview",
+      "previewEmpty": "Add nodes to see the projected prompt",
+      "convertToDag": "Convert to DAG designer",
+      "convertHint": "Rebuild as a structured flow; saving replaces the free-text body with the generated one."
     },
     "deleteConfirm": {
       "title": "Delete workflow",

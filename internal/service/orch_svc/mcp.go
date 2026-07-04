@@ -166,6 +166,7 @@ func (m *orchMCP) handleDispatch(w http.ResponseWriter, r *http.Request, id json
 		Agent   string `json:"agent"`
 		Brief   string `json:"brief"`
 		Isolate bool   `json:"isolate"`
+		Node    string `json:"node"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		writeRPCError(w, id, -32700, "parse error: "+err.Error())
@@ -175,7 +176,7 @@ func (m *orchMCP) handleDispatch(w http.ResponseWriter, r *http.Request, id json
 		writeRPCError(w, id, -32602, "agent and brief are required")
 		return
 	}
-	taskID, err := m.svc.Dispatch(r.Context(), ref.sessionID, p.Agent, p.Brief, p.Isolate)
+	taskID, err := m.svc.Dispatch(r.Context(), ref.sessionID, p.Agent, p.Brief, p.Isolate, p.Node)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
@@ -346,6 +347,7 @@ func orchToolSchemas() []any {
 					"agent":   map[string]any{"type": "string", "description": "目标 agent 名(取自 agent_list)"},
 					"brief":   map[string]any{"type": "string", "description": "任务说明 + 验证目标;需要的产物引用写进来"},
 					"isolate": map[string]any{"type": "boolean", "description": "true=独立 git worktree 隔离;默认 false 共享工作区"},
+					"node":    map[string]any{"type": "string", "description": "可选:本次工作对应流程里的哪个步骤,传该步骤名(如 FE),仅用于进度可视化;不确定就留空,不影响派活"},
 				},
 			},
 		},

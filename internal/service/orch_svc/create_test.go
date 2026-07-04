@@ -105,6 +105,7 @@ func TestCreateRun_LibraryModeSnapshotsFlowContent(t *testing.T) {
 
 	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "L"}, nil)
 	wf.EXPECT().FlowContentByID(gomock.Any(), int64(9)).Return("# Flow\nprojected body", nil)
+	wf.EXPECT().FlowGraphByID(gomock.Any(), int64(9)).Return("", nil)
 
 	var savedFlow string
 	runs.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, r *orch_entity.OrchestrationRun) error {
@@ -143,6 +144,7 @@ func TestCreateRun_LibraryModeFlowReadError(t *testing.T) {
 	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "L"}, nil)
 	// 取流程正文失败 → 记 Warn 并按无流程继续，Run 仍需建成。
 	wf.EXPECT().FlowContentByID(gomock.Any(), int64(9)).Return("", errors.New("boom"))
+	wf.EXPECT().FlowGraphByID(gomock.Any(), int64(9)).Return("", nil)
 
 	var savedFlow string
 	runs.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, r *orch_entity.OrchestrationRun) error {
@@ -161,5 +163,43 @@ func TestCreateRun_LibraryModeFlowReadError(t *testing.T) {
 		})
 		So(err, ShouldBeNil)
 		So(savedFlow, ShouldEqual, "")
+	})
+}
+
+func TestCreateRun_LibraryModeSnapshotsFlowGraph(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	wf := mock_orch_svc.NewMockWorkflowReader(ctrl)
+
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
+	orch_svc.Default().RegisterWorkflowReader(wf)
+	t.Cleanup(func() { orch_svc.Default().RegisterWorkflowReader(nil) })
+
+	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "L"}, nil)
+	wf.EXPECT().FlowContentByID(gomock.Any(), int64(9)).Return("# Flow", nil)
+	wf.EXPECT().FlowGraphByID(gomock.Any(), int64(9)).Return(`{"version":1,"nodes":[{"id":"n1","label":"FE","kind":"task"}],"edges":[]}`, nil)
+
+	var savedGraph string
+	runs.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, r *orch_entity.OrchestrationRun) error {
+		savedGraph = r.FlowGraph
+		r.ID = 100
+		return nil
+	})
+	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).Return(int64(500), nil)
+	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error { tk.ID = 9; return nil })
+	runs.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(500), gomock.Any()).Return(nil)
+
+	Convey("库模式 → 快照 workflow.graph 进 run.FlowGraph", t, func() {
+		_, err := orch_svc.Default().CreateRun(context.Background(), &orch_svc.CreateRunRequest{
+			Goal: "g", LeaderAgentID: 2, FlowID: 9,
+		})
+		So(err, ShouldBeNil)
+		So(savedGraph, ShouldContainSubstring, `"label":"FE"`)
 	})
 }

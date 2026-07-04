@@ -1169,9 +1169,11 @@ git commit frontend/src/components/agentre/workflows/workflow-dag-designer.tsx \
 
 **Files:**
 - Modify: `frontend/src/components/agentre/workflows/workflow-manager-dialog.tsx`
-- Test: `frontend/src/components/agentre/workflows/__tests__/workflow-manager-dialog.test.tsx`
+- Modify (existing, co-located): `frontend/src/components/agentre/workflows/workflow-manager-dialog.test.tsx` — this file **already exists** and tests the pre-Phase-2 behavior (new = free-text editor). Do **not** create a new `__tests__/` copy. Migrate it in place.
 - Modify: `frontend/src/i18n/locales/zh-CN/common.json`
 - Modify: `frontend/src/i18n/locales/en/common.json`
+
+> **Test-migration context (why this file changes):** The co-located `workflow-manager-dialog.test.tsx` predates Phase 2. Its App mock uses closure fns (`const workflowCreate = vi.fn(); vi.mock("../../../../wailsjs/go/app/App", () => ({ WorkflowCreate: (...a) => workflowCreate(...a), ... }))`) — **not** a `vi.hoisted` object. It has **no** runtime mock (MarkdownText renders fine without one because `BrowserOpenURL` is only invoked on click). Task 2 already made `WorkflowCreate/Update` receive `graph: ""`; the pre-existing exact-match create assertions were updated for `use-workflows.test.ts` but the two create-path assertions **here** must be migrated as part of this task, because this task also changes "new" from the free-text editor to the DAG designer.
 
 **Interfaces:**
 - Consumes: Task 2 `use-workflows`(`create/update` 增 `graph`;`WorkflowItem.graph`);Task 4 `WorkflowDagDesigner`;Task 1 `emptyDraftGraph/graphToJSON`;`parseFlowGraph`+`FlowGraph` from `../orchestration/flow-graph`。
@@ -1197,99 +1199,79 @@ In `frontend/src/i18n/locales/zh-CN/common.json`, add to `workflows.designer`:
 
 - [ ] **Step 2: Write the failing test**
 
-Create `frontend/src/components/agentre/workflows/__tests__/workflow-manager-dialog.test.tsx`:
+Migrate the **existing** co-located `frontend/src/components/agentre/workflows/workflow-manager-dialog.test.tsx`. Four edits (A–D). Keep the file's existing closure-fn mock style — do NOT switch to `vi.hoisted`, do NOT add a runtime mock.
+
+**Edit A — add `WorkflowPreviewGraph` to the App mock.** The designer's live-preview effect calls it; without it the mock returns `undefined` and the effect throws inside its `setTimeout`. Add a closure fn and wire it into the existing `vi.mock`, and reset it in both `resetAll()` and the `tags/outline` describe's `beforeEach`:
 
 ```tsx
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+const workflowPreviewGraph = vi.fn();
 
-// 管理器 → ViewPane/设计器 → MarkdownText → RichLink 间接 import wailsjs runtime
-vi.mock("../../../../../wailsjs/runtime/runtime", async () => {
-  const actual = await vi.importActual<
-    typeof import("../../../../../wailsjs/runtime/runtime")
-  >("../../../../../wailsjs/runtime/runtime");
-  return { ...actual, BrowserOpenURL: vi.fn() };
-});
-
-const appMocks = vi.hoisted(() => ({
-  WorkflowList: vi.fn(),
-  WorkflowCreate: vi.fn(),
-  WorkflowUpdate: vi.fn(),
-  WorkflowDelete: vi.fn(),
-  WorkflowPreviewGraph: vi.fn(),
+vi.mock("../../../../wailsjs/go/app/App", () => ({
+  WorkflowList: (...a: unknown[]) => workflowList(...a),
+  WorkflowCreate: (...a: unknown[]) => workflowCreate(...a),
+  WorkflowUpdate: (...a: unknown[]) => workflowUpdate(...a),
+  WorkflowDelete: (...a: unknown[]) => workflowDelete(...a),
+  WorkflowPreviewGraph: (...a: unknown[]) => workflowPreviewGraph(...a),
 }));
-vi.mock("../../../../../wailsjs/go/app/App", () => appMocks);
+```
 
-import { useWorkflowManagerStore } from "../../../../stores/workflow-manager-store";
-import { WorkflowManagerDialog } from "../workflow-manager-dialog";
+In `resetAll()` and in the `tags/outline` `beforeEach`, add this line alongside the other `mockReset()` calls:
 
-const graphN1 = JSON.stringify({
-  version: 1,
-  nodes: [{ id: "n1", label: "Plan", kind: "leader" }],
-  edges: [],
-});
+```tsx
+  workflowPreviewGraph.mockReset().mockResolvedValue({ content: "", outline: [] });
+```
 
-function listItem(over: Record<string, unknown> = {}) {
-  return {
-    id: 1,
-    name: "Legacy",
-    content: "free text",
-    tags: [],
-    outline: [],
-    runCount: 0,
-    createtime: 0,
-    updatetime: 0,
-    graph: "",
-    ...over,
-  };
-}
+**Edit B — migrate the create test to the designer flow.** "New" now opens the DAG designer, not the free-text editor. Replace the existing test `it("新建按钮 → 编辑器 → 保存调 WorkflowCreate", ...)` (the whole `it(...)` block) with:
 
-describe("WorkflowManagerDialog DAG 设计器接入", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    useWorkflowManagerStore.setState({ open: false, intent: "browse" });
-    appMocks.WorkflowList.mockResolvedValue({ items: [] });
-    appMocks.WorkflowCreate.mockResolvedValue({});
-    appMocks.WorkflowUpdate.mockResolvedValue({});
-    appMocks.WorkflowPreviewGraph.mockResolvedValue({ content: "", outline: [] });
-  });
-
-  it("新建流程直接进 DAG 设计器", async () => {
-    useWorkflowManagerStore.getState().openCreate();
-    render(<WorkflowManagerDialog />);
-    expect(await screen.findByTestId("designer-add-node")).toBeInTheDocument();
-  });
-
-  it("保存设计器流程 → WorkflowCreate 带 graph(含节点)", async () => {
+```tsx
+  it("新建按钮 → DAG 设计器 → 保存调 WorkflowCreate(带 graph)", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    useWorkflowManagerStore.getState().openCreate();
     render(<WorkflowManagerDialog />);
+    useWorkflowManagerStore.getState().openBrowse();
+    await waitFor(() => expect(screen.getByText("产品开发流程")).toBeTruthy());
+    await user.click(screen.getByTestId("workflow-new-button"));
+    // 新建默认进设计器: 名称 + 首个节点 label(满足保存条件)
     fireEvent.change(await screen.findByTestId("workflow-name-input"), {
-      target: { value: "My Flow" },
+      target: { value: "评审流程" },
     });
     fireEvent.change(screen.getByTestId("node-n1-label"), {
-      target: { value: "Kickoff" },
+      target: { value: "启动评审" },
     });
     await user.click(screen.getByTestId("workflow-save-button"));
     await waitFor(() =>
-      expect(appMocks.WorkflowCreate).toHaveBeenCalledWith(
+      expect(workflowCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          name: "My Flow",
-          graph: expect.stringContaining("Kickoff"),
+          name: "评审流程",
+          graph: expect.stringContaining("启动评审"),
         }),
       ),
     );
+    expect(workflowList.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+```
+
+**Edit C — delete the obsolete create-with-tags test.** Remove the entire `it("新建保存时把 tags/outline 一并提交", ...)` block (in the `tags/outline` describe). Rationale: "new" is now always the DAG designer, so creating a free-text workflow with tags/outline is no longer reachable; the sibling test `it("编辑保存时把 tags/outline 一并提交给 update", ...)` already covers tags/outline submission via editing a graphless workflow, and stays green (it edits a graphless item → free-text form; `WorkflowUpdate` now also gets `graph: ""` but the assertion uses `objectContaining`).
+
+**Edit D — append a designer describe block** at the end of the file, using the file's existing mock closure vars (`workflowList`, `resetAll`):
+
+```tsx
+describe("WorkflowManagerDialog · DAG 设计器", () => {
+  beforeEach(resetAll);
+
+  it("新建流程直接进 DAG 设计器", async () => {
+    render(<WorkflowManagerDialog />);
+    useWorkflowManagerStore.getState().openCreate();
+    expect(await screen.findByTestId("designer-add-node")).toBeInTheDocument();
   });
 
-  it("编辑 legacy 无 graph 流程 → 自由文本表单 + 转 DAG 入口, 点转换进设计器", async () => {
+  it("编辑 legacy 无 graph 流程 → 自由文本 + 转 DAG 入口, 点转换进设计器", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    appMocks.WorkflowList.mockResolvedValue({ items: [listItem()] });
-    useWorkflowManagerStore.getState().openBrowse();
     render(<WorkflowManagerDialog />);
-    await user.click(await screen.findByTestId("workflow-row-1"));
-    await user.click(await screen.findByTestId("workflow-edit-button"));
-    expect(await screen.findByTestId("workflow-content-input")).toBeInTheDocument();
+    useWorkflowManagerStore.getState().openBrowse();
+    await waitFor(() => expect(screen.getByText("产品开发流程")).toBeTruthy());
+    await user.click(screen.getByTestId("workflow-row-1"));
+    await user.click(screen.getByTestId("workflow-edit-button"));
+    expect(screen.getByTestId("workflow-content-input")).toBeInTheDocument();
     expect(screen.getByTestId("workflow-convert-dag")).toBeInTheDocument();
     await user.click(screen.getByTestId("workflow-convert-dag"));
     expect(await screen.findByTestId("designer-add-node")).toBeInTheDocument();
@@ -1297,22 +1279,39 @@ describe("WorkflowManagerDialog DAG 设计器接入", () => {
 
   it("编辑有 graph 的流程 → 设计器载入其节点(flow-node-n1)", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    appMocks.WorkflowList.mockResolvedValue({
-      items: [listItem({ id: 2, name: "DAG flow", graph: graphN1 })],
+    workflowList.mockResolvedValue({
+      items: [
+        {
+          id: 5,
+          name: "DAG 流程",
+          content: "",
+          runCount: 0,
+          createtime: 1700000000000,
+          updatetime: 1700000000000,
+          graph: JSON.stringify({
+            version: 1,
+            nodes: [{ id: "n1", label: "Plan", kind: "leader" }],
+            edges: [],
+          }),
+        },
+      ],
     });
-    useWorkflowManagerStore.getState().openBrowse();
     render(<WorkflowManagerDialog />);
-    await user.click(await screen.findByTestId("workflow-row-2"));
-    await user.click(await screen.findByTestId("workflow-edit-button"));
+    useWorkflowManagerStore.getState().openBrowse();
+    await waitFor(() => expect(screen.getByText("DAG 流程")).toBeTruthy());
+    await user.click(screen.getByTestId("workflow-row-5"));
+    await user.click(screen.getByTestId("workflow-edit-button"));
     expect(await screen.findByTestId("flow-node-n1")).toBeInTheDocument();
   });
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+The remaining pre-existing tests (browse, delete, edit-update, Esc, blueprint band, edit-tags/outline) edit **graphless** items → the free-text path → unaffected (they now also send `graph: ""`, but their assertions use `objectContaining`, and `intent=create` renders the designer whose name Input still has accessible name "Name").
 
-Run: `cd frontend && pnpm test -- --run src/components/agentre/workflows/__tests__/workflow-manager-dialog.test.tsx`
-Expected: FAIL — `designer-add-node` / `workflow-convert-dag` 不存在(管理器尚未接入设计器)。
+- [ ] **Step 3: Run the migrated test — expect the new designer cases to fail (component not wired yet)**
+
+Run: `cd frontend && pnpm test -- --run src/components/agentre/workflows/workflow-manager-dialog.test.tsx`
+Expected: the three `DAG 设计器` cases + the migrated create case FAIL — `designer-add-node` / `workflow-convert-dag` / `node-n1-label` don't exist yet (manager not wired to the designer).
 
 - [ ] **Step 4a: Add imports**
 
@@ -1551,8 +1550,8 @@ function DesignerPane({
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd frontend && pnpm test -- --run src/components/agentre/workflows/__tests__/workflow-manager-dialog.test.tsx`
-Expected: PASS(4 passed)。
+Run: `cd frontend && pnpm test -- --run src/components/agentre/workflows/workflow-manager-dialog.test.tsx`
+Expected: PASS — all cases green (the migrated create case, the 3 new `DAG 设计器` cases, and every pre-existing browse/edit/delete case).
 
 - [ ] **Step 6: Verify i18n coverage still green**
 
@@ -1563,7 +1562,7 @@ Expected: PASS。
 
 ```bash
 git commit frontend/src/components/agentre/workflows/workflow-manager-dialog.tsx \
-  frontend/src/components/agentre/workflows/__tests__/workflow-manager-dialog.test.tsx \
+  frontend/src/components/agentre/workflows/workflow-manager-dialog.test.tsx \
   frontend/src/i18n/locales/en/common.json \
   frontend/src/i18n/locales/zh-CN/common.json \
   -m "✨ orchestration: 流程库管理器接入 DAG 设计器(新建/编辑/legacy 转换/保存串 graph)"

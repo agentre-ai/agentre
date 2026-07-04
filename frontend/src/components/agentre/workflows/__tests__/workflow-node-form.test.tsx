@@ -7,7 +7,9 @@ import { WorkflowNodeForm } from "../workflow-node-form";
 
 const base: FlowNode = { id: "n2", label: "Build", kind: "task" };
 
-function renderForm(overrides: Partial<Parameters<typeof WorkflowNodeForm>[0]> = {}) {
+function renderForm(
+  overrides: Partial<Parameters<typeof WorkflowNodeForm>[0]> = {},
+) {
   const props = {
     node: base,
     index: 1,
@@ -58,7 +60,9 @@ describe("WorkflowNodeForm", () => {
 
   it("已选依赖 chip 标记 aria-pressed", () => {
     renderForm({ dependsOn: ["n1"] });
-    expect(screen.getByTestId("node-n2-dep-n1").getAttribute("aria-pressed")).toBe("true");
+    expect(
+      screen.getByTestId("node-n2-dep-n1").getAttribute("aria-pressed"),
+    ).toBe("true");
   });
 
   it("无前序节点时不渲染依赖区", () => {
@@ -68,6 +72,25 @@ describe("WorkflowNodeForm", () => {
 
   it("删除禁用当 canRemove=false", () => {
     renderForm({ canRemove: false });
-    expect((screen.getByTestId("node-n2-remove") as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByTestId("node-n2-remove") as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("bounce Select 选中节点回调其 id", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const props = renderForm();
+    expect(screen.getByTestId("node-n2-bounce")).toBeInTheDocument();
+    await user.click(screen.getByTestId("node-n2-bounce"));
+    await user.click(await screen.findByRole("option", { name: "Plan" }));
+    expect(props.onBounceChange).toHaveBeenCalledWith("n1");
+  });
+
+  it("bounce Select 选「无」回调 null", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const props = renderForm({ bounce: "n1" });
+    await user.click(screen.getByTestId("node-n2-bounce"));
+    await user.click(await screen.findByRole("option", { name: "None" }));
+    expect(props.onBounceChange).toHaveBeenCalledWith(null);
   });
 });
