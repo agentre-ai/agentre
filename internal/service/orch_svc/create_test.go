@@ -87,3 +87,39 @@ func TestCreateRun_PersistsAllowedAgentIDs(t *testing.T) {
 		So(err, ShouldBeNil)
 	})
 }
+
+func TestCreateRun_LibraryModeSnapshotsFlowContent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	wf := mock_orch_svc.NewMockWorkflowReader(ctrl)
+
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
+	orch_svc.Default().RegisterWorkflowReader(wf)
+
+	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "L"}, nil)
+	wf.EXPECT().FlowContentByID(gomock.Any(), int64(9)).Return("# Flow\nprojected body", nil)
+
+	var savedFlow string
+	runs.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, r *orch_entity.OrchestrationRun) error {
+		savedFlow = r.FlowContent
+		r.ID = 100
+		return nil
+	})
+	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).Return(int64(500), nil)
+	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error { tk.ID = 9; return nil })
+	runs.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(500), gomock.Any()).Return(nil)
+
+	Convey("库模式(只传 FlowID)→ 快照 workflow.content 进 run.FlowContent", t, func() {
+		_, err := orch_svc.Default().CreateRun(context.Background(), &orch_svc.CreateRunRequest{
+			Goal: "g", LeaderAgentID: 2, FlowID: 9,
+		})
+		So(err, ShouldBeNil)
+		So(savedFlow, ShouldEqual, "# Flow\nprojected body")
+	})
+}

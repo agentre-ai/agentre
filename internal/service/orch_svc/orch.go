@@ -36,6 +36,7 @@ type orchSvc struct {
 	tasks    orch_repo.TaskRepo
 	approval ApprovalGateway
 	emit     Emitter
+	wf       WorkflowReader
 
 	gatewayBaseURL string
 
@@ -70,6 +71,9 @@ func Default() *orchSvc { return defaultOrch }
 func (s *orchSvc) RegisterDeps(chat ChatGateway, agents AgentLookup, runs orch_repo.RunRepo, tasks orch_repo.TaskRepo, approval ApprovalGateway, emit Emitter) {
 	s.chat, s.agents, s.runs, s.tasks, s.approval, s.emit = chat, agents, runs, tasks, approval, emit
 }
+
+// RegisterWorkflowReader 注入流程库读取器(bootstrap/app 接线)；测试注 mock。
+func (s *orchSvc) RegisterWorkflowReader(wr WorkflowReader) { s.wf = wr }
 
 // SetGatewayBaseURL 由 bootstrap 在 gateway 起好后注入；mirror subagent_svc。
 func (s *orchSvc) SetGatewayBaseURL(u string) { s.gatewayBaseURL = u }

@@ -288,3 +288,42 @@ func (mr *MockApprovalGatewayMockRecorder) FinishToolApproval(ctx, sessionID, re
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FinishToolApproval", reflect.TypeOf((*MockApprovalGateway)(nil).FinishToolApproval), ctx, sessionID, requestID, status, result)
 }
+
+// MockWorkflowReader is a mock of WorkflowReader interface.
+type MockWorkflowReader struct {
+	ctrl     *gomock.Controller
+	recorder *MockWorkflowReaderMockRecorder
+	isgomock struct{}
+}
+
+// MockWorkflowReaderMockRecorder is the mock recorder for MockWorkflowReader.
+type MockWorkflowReaderMockRecorder struct {
+	mock *MockWorkflowReader
+}
+
+// NewMockWorkflowReader creates a new mock instance.
+func NewMockWorkflowReader(ctrl *gomock.Controller) *MockWorkflowReader {
+	mock := &MockWorkflowReader{ctrl: ctrl}
+	mock.recorder = &MockWorkflowReaderMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockWorkflowReader) EXPECT() *MockWorkflowReaderMockRecorder {
+	return m.recorder
+}
+
+// FlowContentByID mocks base method.
+func (m *MockWorkflowReader) FlowContentByID(ctx context.Context, id int64) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FlowContentByID", ctx, id)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FlowContentByID indicates an expected call of FlowContentByID.
+func (mr *MockWorkflowReaderMockRecorder) FlowContentByID(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FlowContentByID", reflect.TypeOf((*MockWorkflowReader)(nil).FlowContentByID), ctx, id)
+}
