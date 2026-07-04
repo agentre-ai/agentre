@@ -359,7 +359,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		item.RecentCount = len(sessions)
 		item.Sessions = make([]ChatSessionLite, 0, len(sessions))
 		for _, sess := range sessions {
-			item.Sessions = append(item.Sessions, sessionLiteFromEntity(sess))
+			item.Sessions = append(item.Sessions, s.sessionLiteFromEntity(sess))
 		}
 
 		// sidebar 折叠态 attention bubble：拉所有 running/waiting/error 会话。
@@ -370,7 +370,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		}
 		item.AttentionSessions = make([]ChatSessionLite, 0, len(attention))
 		for _, sess := range attention {
-			item.AttentionSessions = append(item.AttentionSessions, sessionLiteFromEntity(sess))
+			item.AttentionSessions = append(item.AttentionSessions, s.sessionLiteFromEntity(sess))
 		}
 		resp.Agents = append(resp.Agents, item)
 	}
@@ -414,12 +414,12 @@ func (s *chatSvc) ListAgentSessions(ctx context.Context, req *ListAgentSessionsR
 		HasMore:  int64(req.Offset+len(sessions)) < total,
 	}
 	for _, sess := range sessions {
-		resp.Sessions = append(resp.Sessions, sessionLiteFromEntity(sess))
+		resp.Sessions = append(resp.Sessions, s.sessionLiteFromEntity(sess))
 	}
 	return resp, nil
 }
 
-func sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLite {
+func (s *chatSvc) sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLite {
 	if sess == nil {
 		return ChatSessionLite{}
 	}
@@ -428,6 +428,7 @@ func sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLite {
 		Title:          sess.Title,
 		Status:         sess.AgentStatus,
 		NeedsAttention: sess.IsWaitingForUser(),
+		BgRunning:      s.bgRunningActive(sess.ID),
 		LastMessageAt:  sess.LastMessageAt,
 		LastReadAt:     sess.LastReadAt,
 	}
@@ -472,6 +473,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 			Title:                  sess.Title,
 			AgentStatus:            sess.AgentStatus,
 			NeedsAttention:         sess.IsWaitingForUser(),
+			BgRunning:              s.bgRunningActive(sess.ID),
 			LastMessageAt:          sess.LastMessageAt,
 			LastReadAt:             sess.LastReadAt,
 			Createtime:             sess.Createtime,

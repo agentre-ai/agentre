@@ -66,6 +66,16 @@ func TestEmitBgRunningStatus_CarriesFlag(t *testing.T) {
 	}
 }
 
+func TestSessionLiteFromEntity_CarriesBgRunning(t *testing.T) {
+	s := &chatSvc{}
+	s.addBgRunning(42, "tu-bg")
+	sess := &chat_entity.Session{ID: 42, AgentStatus: "idle"}
+	lite := s.sessionLiteFromEntity(sess)
+	if !lite.BgRunning {
+		t.Fatal("want ChatSessionLite.BgRunning=true after addBgRunning")
+	}
+}
+
 func TestRunningBgSubagentIDs(t *testing.T) {
 	blks := []cagoblocks.ContentBlock{
 		// 后台 subagent: Agent tool_use run_in_background=true + running subagent_state
