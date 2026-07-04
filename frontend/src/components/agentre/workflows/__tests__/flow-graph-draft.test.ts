@@ -25,7 +25,11 @@ describe("flow-graph-draft", () => {
 
   it("nextNodeId 取现有 n<k> 最大值 + 1", () => {
     expect(nextNodeId(emptyDraftGraph())).toBe("n2");
-    const g = { version: 1, nodes: [{ id: "n5", label: "x", kind: "task" as const }], edges: [] };
+    const g = {
+      version: 1,
+      nodes: [{ id: "n5", label: "x", kind: "task" as const }],
+      edges: [],
+    };
     expect(nextNodeId(g)).toBe("n6");
   });
 
@@ -36,8 +40,15 @@ describe("flow-graph-draft", () => {
   });
 
   it("updateNode 只改目标节点的 label/kind/brief", () => {
-    const g = updateNode(emptyDraftGraph(), "n1", { label: "See", kind: "leader" });
-    expect(g.nodes[0]).toMatchObject({ id: "n1", label: "See", kind: "leader" });
+    const g = updateNode(emptyDraftGraph(), "n1", {
+      label: "See",
+      kind: "leader",
+    });
+    expect(g.nodes[0]).toMatchObject({
+      id: "n1",
+      label: "See",
+      kind: "leader",
+    });
   });
 
   it("removeNode 删节点并连带删除其所有边", () => {
@@ -56,7 +67,7 @@ describe("flow-graph-draft", () => {
   });
 
   it("earlierNodeIds 只返回 nodes[] 里排在目标之前的节点", () => {
-    let g = addNode(addNode(emptyDraftGraph())); // n1, n2, n3
+    const g = addNode(addNode(emptyDraftGraph())); // n1, n2, n3
     expect(earlierNodeIds(g, "n1")).toEqual([]);
     expect(earlierNodeIds(g, "n3")).toEqual(["n1", "n2"]);
   });
