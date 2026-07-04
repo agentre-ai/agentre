@@ -71,7 +71,9 @@ vi.mock("../../../../wailsjs/runtime/runtime", () => ({
   EventsOn: runtimeMocks.EventsOn,
 }));
 
-import { ChatPage } from "../chat-page";
+import { ChatPage, agentSessionFromMeta } from "../chat-page";
+import i18n from "@/i18n";
+import { reasonToPillText } from "@/lib/attention-display";
 
 // renderChatPage: ChatPage は sidebar のみをレンダリングするので、
 // ChatStreamsHost は不要になった。
@@ -736,4 +738,10 @@ describe("ChatPage sidebar — 状态筛选与顶部新建", () => {
       initialQuery: "> ",
     });
   });
+});
+
+it("agentSessionFromMeta: bg_running session shows the background pill, not 'running'", () => {
+  const s = agentSessionFromMeta(1, "T", 0, "idle", "bg_running", i18n.t.bind(i18n));
+  expect(s.trailingLabel).toBe(reasonToPillText("bg_running"));
+  expect(s.trailingLabel).not.toBe("running");
 });

@@ -112,7 +112,7 @@ type ProjectSelection =
 
 // projectSessionToAgentSession —— 把 ProjectSessionItem + attention reason
 // 投影成 SessionGroup 需要的 AgentSession。
-function projectSessionToAgentSession(
+export function projectSessionToAgentSession(
   s: ProjectSessionItem,
   reason: AttentionReason | "selected" | null,
   t: TFunction,
@@ -124,13 +124,15 @@ function projectSessionToAgentSession(
     (s.agentStatus as AgentStatus) || "idle",
   );
   const trailing =
-    status === "running"
-      ? "running"
-      : status === "waiting"
-        ? (reasonToPillText(attentionReason) ?? "")
-        : status === "error"
-          ? "error"
-          : relativeTime(s.lastMessageAt);
+    attentionReason === "bg_running"
+      ? (reasonToPillText(attentionReason) ?? "")
+      : status === "running"
+        ? "running"
+        : status === "waiting"
+          ? (reasonToPillText(attentionReason) ?? "")
+          : status === "error"
+            ? "error"
+            : relativeTime(s.lastMessageAt);
   return {
     id: String(s.id),
     ...(reason === "selected" ? { selected: true } : {}),
