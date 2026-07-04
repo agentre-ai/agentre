@@ -21,8 +21,40 @@ vi.mock("../../../../../wailsjs/go/app/App", () => ({
   RunPause: vi.fn(),
   RunResume: vi.fn().mockResolvedValue(undefined),
   RunStop: vi.fn(),
-  RunSpeak: vi.fn(),
   LoadChatSession: vi.fn().mockResolvedValue({ messages: [] }),
+}));
+
+// Task 4: footer 换 ChatComposer,经 useComposerSend 发送(sender-only,不订阅流)。
+const mockComposerSubmit = vi.fn().mockResolvedValue(null);
+vi.mock("@/hooks/use-composer-send", () => ({
+  useComposerSend: () => ({
+    submit: mockComposerSubmit,
+    sending: false,
+    error: null,
+    backendType: "claudecode",
+    isModeSwitchable: false,
+    supportsImageInput: true,
+    permissionMode: { mode: "default" },
+    permissionModeMeta: { order: [] },
+  }),
+}));
+
+// ChatComposer stub: 渲染一个按钮，点击即触发 onSubmit({text: "to leader"})，
+// 用来在不拉起真实富文本编辑器的前提下驱动 footer 提交路径。
+vi.mock("../../chat", () => ({
+  ChatComposer: ({
+    onSubmit,
+  }: {
+    onSubmit?: (m: { text: string }) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="leader-composer-send"
+      onClick={() => onSubmit?.({ text: "to leader" })}
+    >
+      send
+    </button>
+  ),
 }));
 
 vi.mock("../../../../../hooks/use-chat-agents", () => ({
@@ -125,6 +157,26 @@ function makeDetail(
     } as app.RunItemDTO,
     tasks,
   } as app.RunDetailDTO;
+}
+
+// 构造一条 leader(agentId=2)task,携带 sessionId,用于驱动 footer 渲染 ChatComposer
+// 的场景(leaderSessionId 由 index.tsx 从 detail.tasks 中派生)。
+function makeLeaderTask(sessionId: number): app.TaskDTO {
+  return {
+    id: 5,
+    runId: 1,
+    agentId: 2,
+    sessionId,
+    parentTaskId: 0,
+    kind: "dispatch",
+    status: "running",
+    brief: "leader task",
+    result: "",
+    callSeq: 1,
+    refs: "",
+    createtime: Date.now(),
+    updatetime: Date.now(),
+  } as app.TaskDTO;
 }
 
 beforeEach(() => {
@@ -276,31 +328,31 @@ describe("OrchestrationRun shell", () => {
     expect(screen.getByTestId("orch-footer")).toBeInTheDocument();
   });
 
-  it("orch-footer 存在且包含 orch-speak-leader-send 按钮", () => {
-    const detail = makeDetail({ runId: 1 });
+  it("orch-footer 存在且渲染 ChatComposer（leader session 存在时）", () => {
+    const detail = makeDetail({ runId: 1, tasks: [makeLeaderTask(500)] });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
 
     render(<OrchestrationRun runId={1} title="测试运行" />);
 
     expect(screen.getByTestId("orch-footer")).toBeInTheDocument();
-    expect(screen.getByTestId("orch-speak-leader-send")).toBeInTheDocument();
+    expect(screen.getByTestId("leader-composer-send")).toBeInTheDocument();
   });
 
   // ── Regression guard: exactly ONE speak-to-Leader send control in Main ────
   // Prevents activity-feed or any view from re-introducing a second footer.
 
-  it("graph 视图: Main 列中 orch-speak-leader-send 有且仅有一个", () => {
-    const detail = makeDetail({ runId: 1 });
+  it("graph 视图: Main 列中 leader ChatComposer 有且仅有一个", () => {
+    const detail = makeDetail({ runId: 1, tasks: [makeLeaderTask(500)] });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
 
     render(<OrchestrationRun runId={1} title="测试运行" />);
 
     // Default view is graph
-    expect(screen.getAllByTestId("orch-speak-leader-send")).toHaveLength(1);
+    expect(screen.getAllByTestId("leader-composer-send")).toHaveLength(1);
   });
 
-  it("feed 视图: Main 列中 orch-speak-leader-send 有且仅有一个", () => {
-    const detail = makeDetail({ runId: 1 });
+  it("feed 视图: Main 列中 leader ChatComposer 有且仅有一个", () => {
+    const detail = makeDetail({ runId: 1, tasks: [makeLeaderTask(500)] });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
 
     render(<OrchestrationRun runId={1} title="测试运行" />);
@@ -308,65 +360,47 @@ describe("OrchestrationRun shell", () => {
     // Switch to feed view
     fireEvent.click(screen.getByTestId("toggle-feed"));
 
-    expect(screen.getAllByTestId("orch-speak-leader-send")).toHaveLength(1);
+    expect(screen.getAllByTestId("leader-composer-send")).toHaveLength(1);
   });
 
-  it("leader session 不存在时 orch-speak-leader-send 按钮 disabled", () => {
+  it("leader session 不存在时不渲染 ChatComposer（无可发送目标）", () => {
     // detail.run.leaderAgentId=2, tasks 中无 agentId=2 的 task → no leader session
     const detail = makeDetail({ runId: 1, tasks: [] });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
 
     render(<OrchestrationRun runId={1} title="测试运行" />);
 
-    expect(screen.getByTestId("orch-speak-leader-send")).toBeDisabled();
+    expect(screen.getByTestId("orch-footer")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("leader-composer-send"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("orch-footer-no-leader")).toBeInTheDocument();
   });
 
-  it("leader session 存在时 orch-speak-leader-send 可用, 发送后调 RunSpeak 并清空输入", async () => {
-    const RunSpeakMock = (await import("../../../../../wailsjs/go/app/App"))
-      .RunSpeak as ReturnType<typeof vi.fn>;
-
+  it("leader session 存在时提交 footer → useComposerSend.submit 被调用, 且右栏切到 Leader ConversationPanel", async () => {
     // agentId=2 (leaderAgentId) 有 sessionId=500 的 task
-    const detail = makeDetail({
-      runId: 1,
-      tasks: [
-        {
-          id: 5,
-          runId: 1,
-          agentId: 2,
-          sessionId: 500,
-          parentTaskId: 0,
-          kind: "dispatch",
-          status: "running",
-          brief: "leader task",
-          result: "",
-          callSeq: 1,
-          refs: "",
-          createtime: Date.now(),
-          updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
-      ],
-    });
+    const detail = makeDetail({ runId: 1, tasks: [makeLeaderTask(500)] });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
 
     render(<OrchestrationRun runId={1} title="测试运行" />);
 
-    const sendBtn = screen.getByTestId("orch-speak-leader-send");
-    expect(sendBtn).not.toBeDisabled();
+    // 初始右栏是任务板，ConversationPanel 未渲染
+    expect(screen.getByTestId("board-tab-tasks")).toBeInTheDocument();
+    expect(screen.queryByTestId("conversation-panel")).not.toBeInTheDocument();
 
-    // 找到 footer 内的 input 并输入消息
-    const footer = screen.getByTestId("orch-footer");
-    const input = footer.querySelector("input") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "调整优先级" } });
+    // 点击 stub ChatComposer 的发送按钮（触发 onSubmit({text:"to leader"})）
+    fireEvent.click(screen.getByTestId("leader-composer-send"));
 
-    // 点发送
-    fireEvent.click(sendBtn);
+    expect(mockComposerSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "to leader" }),
+    );
 
+    // submit 的 Promise resolve 后，index.tsx 应 setSelectedSessionId(leaderSessionId)
+    // 切到 Leader 的 ConversationPanel（stub 渲染 conv-session-id）
     await waitFor(() => {
-      expect(RunSpeakMock).toHaveBeenCalledWith(500, "调整优先级");
+      expect(screen.getByTestId("conversation-panel")).toBeInTheDocument();
     });
-
-    // 输入已清空
-    expect(input.value).toBe("");
+    expect(screen.getByTestId("conv-session-id")).toHaveTextContent("500");
   });
 
   it("RunFlowBlueprint 不再渲染在 Main 列中(已移除)", () => {
@@ -646,18 +680,18 @@ describe("OrchestrationRun shell", () => {
     expect(interveneBtn).toBeInTheDocument();
   });
 
-  it("Task9: deadlock intervene 按钮点击 → footer input 获得焦点", () => {
+  it("Task9: deadlock intervene 按钮点击 → 切到 Leader ConversationPanel", () => {
     const runId = 6;
     const sessionId = 77;
     useOrchRunStore.setState({
       deadlocks: new Map([[runId, [sessionId]]]),
     });
-    // Include a leader task with a valid sessionId so the footer input is enabled (not disabled)
+    // Include a leader task with a valid sessionId so there is a Leader session to switch to
     const detail = makeDetail({
       runId,
       runStatus: "running",
       tasks: [
-        // leader agent (agentId=2) task with sessionId → enables footer input
+        // leader agent (agentId=2) task with sessionId → leaderSessionId resolves
         {
           id: 1,
           runId,
@@ -697,10 +731,9 @@ describe("OrchestrationRun shell", () => {
     const interveneBtn = screen.getByTestId("banner-intervene-btn");
     fireEvent.click(interveneBtn);
 
-    // The footer input should have focus
-    const footer = screen.getByTestId("orch-footer");
-    const footerInput = footer.querySelector("input") as HTMLInputElement;
-    expect(footerInput).toHaveFocus();
+    // Right rail should switch to the Leader's ConversationPanel (sessionId=500)
+    expect(screen.getByTestId("conversation-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("conv-session-id")).toHaveTextContent("500");
   });
 
   // ── End Task 9 RED tests ─────────────────────────────────────────────────

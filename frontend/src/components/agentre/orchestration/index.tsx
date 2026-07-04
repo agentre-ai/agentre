@@ -1,18 +1,12 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import {
-  CircleCheck,
-  MessageSquare,
-  Pause,
-  SendHorizontal,
-  Square,
-  TriangleAlert,
-} from "lucide-react";
+import { CircleCheck, Pause, Square, TriangleAlert } from "lucide-react";
 import { useChatAgents } from "@/hooks/use-chat-agents";
+import { useComposerSend } from "@/hooks/use-composer-send";
 import { Button } from "@/components/ui/button";
 import type { AgentColor } from "../types";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
-import { RunResume, RunSpeak } from "../../../../wailsjs/go/app/App";
+import { RunResume } from "../../../../wailsjs/go/app/App";
 import { RunHeader } from "./run-header";
 import { StructureGraph } from "./structure-graph";
 import { ActivityFeed } from "./activity-feed";
@@ -23,6 +17,8 @@ import { ToggleBar } from "./toggle-bar";
 import { useRunSubagents } from "./use-run-subagents";
 import type { app } from "../../../../wailsjs/go/models";
 import { buildGraph, hasDeadlockCycle, lifecycle } from "./graph-data";
+import { ChatComposer, type ChatComposerSubmit } from "../chat";
+import { PermissionModePill } from "../permission-mode";
 
 // 稳定空 detail:detail 未就绪时给 useRunSubagents 一个恒定身份的占位,避免每渲染触发懒加载 effect。
 const EMPTY_RUN_DETAIL = { tasks: [] } as unknown as app.RunDetailDTO;
@@ -95,12 +91,6 @@ export function OrchestrationRun({
     };
   }, [detail, subagents]);
 
-  // Footer speak-to-Leader state
-  const [leaderMsg, setLeaderMsg] = React.useState("");
-
-  // Ref for footer input — used by deadlock "intervene" banner action to focus it
-  const footerInputRef = React.useRef<HTMLInputElement>(null);
-
   // 切换 Run 时重置选中 + 流程节点筛选
   React.useEffect(() => {
     setSelectedSessionId(null);
@@ -127,6 +117,16 @@ export function OrchestrationRun({
     return leaderTask?.sessionId ?? null;
   }, [detail]);
 
+  // Footer: speak-to-Leader sender (sender-only — no stream subscription; the
+  // right-rail ConversationPanel owns the live transcript/streaming view).
+  const leaderAgent = agents.find((a) => a.id === detail?.run?.leaderAgentId);
+  const leaderSender = useComposerSend({
+    sessionId: leaderSessionId ?? 0,
+    agentId: detail?.run?.leaderAgentId ?? 0,
+    backendType: (leaderAgent?.backendType as string) ?? "",
+    isRunning: false,
+  });
+
   // Phase + deadlock detection for banners (shared logic with structure-graph)
   const phase = detail ? lifecycle(detail) : null;
   const cycle = useOrchRunStore((s) =>
@@ -135,23 +135,6 @@ export function OrchestrationRun({
   const hasDeadlock = React.useMemo(
     () => hasDeadlockCycle(cycle, detail?.tasks ?? []),
     [cycle, detail],
-  );
-
-  const handleLeaderSend = React.useCallback(async () => {
-    if (!leaderSessionId || !leaderMsg.trim()) return;
-    const msg = leaderMsg.trim();
-    setLeaderMsg("");
-    await RunSpeak(leaderSessionId, msg);
-  }, [leaderSessionId, leaderMsg]);
-
-  const handleLeaderKeyDown = React.useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        void handleLeaderSend();
-      }
-    },
-    [handleLeaderSend],
   );
 
   const hasFlow = !!detail?.run?.flowGraph;
@@ -211,7 +194,7 @@ export function OrchestrationRun({
                       variant="destructive"
                       size="sm"
                       className="shrink-0 rounded-md px-3 py-1.5 text-xs font-semibold"
-                      onClick={() => footerInputRef.current?.focus()}
+                      onClick={() => setSelectedSessionId(leaderSessionId)}
                     >
                       {t("orchestration.graph.interveneBtn")}
                     </Button>
@@ -306,39 +289,44 @@ export function OrchestrationRun({
               )}
             </div>
 
-            {/* Footer: speak to Leader */}
+            {/* Footer: speak to Leader — sender-only ChatComposer; on submit,
+                switch the right rail to the Leader's ConversationPanel so the
+                user watches the reply stream in. No leader session yet →
+                don't render the composer at all (nothing to send to). */}
             <div
               data-testid="orch-footer"
-              className="shrink-0 border-t border-border bg-card px-5 py-3 flex items-center gap-2.5"
+              className="shrink-0 border-t border-border bg-card px-5 py-3"
             >
-              <div className="flex flex-1 items-center gap-2 rounded-lg border border-border bg-input-bg px-3 py-[9px]">
-                <MessageSquare
-                  className="size-3.5 shrink-0 text-muted-foreground"
+              {leaderSessionId ? (
+                <ChatComposer
+                  placeholder={t("orchestration.run.speakLeaderPlaceholder")}
+                  backendType={leaderSender.backendType}
+                  supportsImageInput={leaderSender.supportsImageInput}
+                  permissionModeSlot={
+                    leaderSender.isModeSwitchable ? (
+                      <PermissionModePill
+                        mode={leaderSender.permissionMode.mode}
+                        modes={leaderSender.permissionModeMeta.order}
+                        onSelect={leaderSender.permissionMode.setMode}
+                        runtimeKey={leaderSender.backendType}
+                      />
+                    ) : null
+                  }
+                  onSubmit={(m: ChatComposerSubmit | string) => {
+                    if (!leaderSessionId) return;
+                    const msg = typeof m === "string" ? { text: m } : m;
+                    void leaderSender.submit(msg).then(() => {
+                      setSelectedSessionId(leaderSessionId);
+                    });
+                  }}
+                />
+              ) : (
+                <div
+                  data-testid="orch-footer-no-leader"
+                  className="rounded-lg border border-border bg-input-bg px-3 py-[9px] text-sm text-muted-foreground"
                   aria-hidden="true"
                 />
-                <input
-                  ref={footerInputRef}
-                  type="text"
-                  className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-                  placeholder={t("orchestration.run.speakLeaderPlaceholder")}
-                  value={leaderMsg}
-                  onChange={(e) => setLeaderMsg(e.target.value)}
-                  onKeyDown={handleLeaderKeyDown}
-                  disabled={!leaderSessionId}
-                />
-              </div>
-              <Button
-                data-testid="orch-speak-leader-send"
-                size="sm"
-                className="shrink-0 rounded-lg bg-primary px-4 py-[9px] text-primary-foreground"
-                disabled={!leaderSessionId}
-                onClick={() => void handleLeaderSend()}
-              >
-                <SendHorizontal className="size-3.5" aria-hidden="true" />
-                <span className="font-semibold">
-                  {t("orchestration.run.send")}
-                </span>
-              </Button>
+              )}
             </div>
           </div>
 
