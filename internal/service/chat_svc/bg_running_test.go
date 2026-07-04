@@ -131,3 +131,15 @@ func TestRunningBgSubagentIDs(t *testing.T) {
 		t.Fatalf("want [bg-1], got %v", got)
 	}
 }
+
+func TestClearBgRunningOnSourceClosed_ClearsSet(t *testing.T) {
+	s := &chatSvc{}
+	s.addBgRunning(3, "bg-x")
+	if !s.bgRunningActive(3) {
+		t.Fatal("precondition: session 3 should be active")
+	}
+	s.clearBgRunningOnSourceClosed(3)
+	if s.bgRunningActive(3) {
+		t.Fatal("want inactive after source closed")
+	}
+}

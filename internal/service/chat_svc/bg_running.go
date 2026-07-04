@@ -160,3 +160,9 @@ func runningBgSubagentIDs(finalBlocks []cagoblocks.ContentBlock) []string {
 	}
 	return out
 }
+
+// clearBgRunningOnSourceClosed 后台活动 channel 关闭(子进程 evict/CloseSession)时清空会话
+// 集合——CLI 子进程死了它派的后台 subagent 也都死了，防止 bgRunning 永久泄漏。
+func (s *chatSvc) clearBgRunningOnSourceClosed(sessionID int64) {
+	s.clearBgRunning(sessionID)
+}
