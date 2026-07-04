@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -107,6 +107,50 @@ describe("OrgDetailDepartment editor layout", () => {
       "Boris",
     );
     expect(screen.getAllByText("后端工程师").length).toBeGreaterThan(0);
+  });
+});
+
+describe("OrgDetailDepartment auto-save", () => {
+  const baseProps = (onUpdate = vi.fn().mockResolvedValue(undefined)) => ({
+    department: dept({ id: 1, name: "开发组", parentId: 0, leadAgentId: 0 }),
+    allDepartments: [dept({ id: 1, name: "开发组" })],
+    allAgents: [],
+    leadCandidates: [],
+    onUpdate,
+    onMove: vi.fn().mockResolvedValue(undefined),
+    onDelete: vi.fn().mockResolvedValue(undefined),
+    onSelect: vi.fn(),
+    onClose: vi.fn(),
+  });
+
+  it("removes the cancel and save footer buttons", () => {
+    render(<OrgDetailDepartment {...baseProps()} />);
+    expect(screen.queryByRole("button", { name: "保存" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "取消" })).toBeNull();
+  });
+
+  it("saves the name on blur", async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    render(<OrgDetailDepartment {...baseProps(onUpdate)} />);
+    const input = screen.getByLabelText("Name");
+    fireEvent.change(input, { target: { value: "开发二组" } });
+    await act(async () => {
+      fireEvent.blur(input);
+    });
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1, name: "开发二组" }),
+    );
+  });
+
+  it("saves immediately when a theme color is picked", async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    render(<OrgDetailDepartment {...baseProps(onUpdate)} />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("radio", { name: /agent-5/ }));
+    });
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ accentColor: "agent-5" }),
+    );
   });
 });
 
