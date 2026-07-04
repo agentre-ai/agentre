@@ -7,7 +7,9 @@ import { WorkflowNodeForm } from "../workflow-node-form";
 
 const base: FlowNode = { id: "n2", label: "Build", kind: "task" };
 
-function renderForm(overrides: Partial<Parameters<typeof WorkflowNodeForm>[0]> = {}) {
+function renderForm(
+  overrides: Partial<Parameters<typeof WorkflowNodeForm>[0]> = {},
+) {
   const props = {
     node: base,
     index: 1,
@@ -58,7 +60,9 @@ describe("WorkflowNodeForm", () => {
 
   it("已选依赖 chip 标记 aria-pressed", () => {
     renderForm({ dependsOn: ["n1"] });
-    expect(screen.getByTestId("node-n2-dep-n1").getAttribute("aria-pressed")).toBe("true");
+    expect(
+      screen.getByTestId("node-n2-dep-n1").getAttribute("aria-pressed"),
+    ).toBe("true");
   });
 
   it("无前序节点时不渲染依赖区", () => {
@@ -68,6 +72,8 @@ describe("WorkflowNodeForm", () => {
 
   it("删除禁用当 canRemove=false", () => {
     renderForm({ canRemove: false });
-    expect((screen.getByTestId("node-n2-remove") as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByTestId("node-n2-remove") as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });
