@@ -69,6 +69,9 @@ export function useAutoSave<T extends object>(
   const patch = React.useCallback(
     (partial: Partial<T>, patchOpts?: { immediate?: boolean }) => {
       const next = { ...valuesRef.current, ...partial };
+      // 必须在此同步写 valuesRef：immediate patch 会紧接着同步调 saveNow()
+      // 读取 valuesRef.current；下面的 useLayoutEffect 同步太晚（本次事件之后才跑），
+      // 删掉这行会让即时保存读到合并前的旧值。
       valuesRef.current = next;
       setValues(next);
 
