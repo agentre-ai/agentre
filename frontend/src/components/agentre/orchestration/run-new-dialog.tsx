@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { useOrchRunListStore } from "@/stores/orch-run-list-store";
 import { useWorkflowManagerStore } from "@/stores/workflow-manager-store";
 
 import { firstLetter, tokenToCssColor } from "../session-avatar";
@@ -223,6 +224,10 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
       });
       // run 可能为 undefined, 用可选链保护
       if (d.run?.id) {
+        // 乐观写进左侧列表 store: 后端 RunCreate 不发 orch:run:* 事件, 而 RunList
+        // 常驻不随 /orchestration/:id 重挂 → 不主动 upsert 就得切页才刷新。列表按
+        // updatetime DESC 排序, 新 Run 最新, upsert 前插正好对齐。
+        useOrchRunListStore.getState().upsert(d.run);
         navigate(`/orchestration/${d.run.id}`);
       }
       onOpenChange(false);

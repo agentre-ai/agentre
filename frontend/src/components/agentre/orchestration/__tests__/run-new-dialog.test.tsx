@@ -20,6 +20,7 @@ vi.mock("react-router-dom", () => ({
   useNavigate: () => mockNavigate,
 }));
 
+import { useOrchRunListStore } from "../../../../stores/orch-run-list-store";
 import { useWorkflowManagerStore } from "../../../../stores/workflow-manager-store";
 import { RunNewDialog } from "../run-new-dialog";
 
@@ -104,6 +105,28 @@ describe("RunNewDialog", () => {
     fireEvent.click(screen.getByTestId("run-create"));
     await waitFor(() =>
       expect(mockNavigate).toHaveBeenCalledWith("/orchestration/7"),
+    );
+  });
+
+  it("RunCreate 成功后把新 Run 写进左侧列表 store(免切页刷新)", async () => {
+    // 回归: 创建并启动 Run 后左侧列表不更新, 需切页才刷新。
+    // 根因是 submit() 建完 Run 只 navigate/关弹窗, 从不刷新 orch-run-list-store,
+    // 而后端 RunCreate 也不发 orch:run:* 事件 → OrchEventsHost 不会带外 load()。
+    useOrchRunListStore.getState().__reset();
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderDialog();
+
+    fireEvent.change(await screen.findByTestId("run-goal"), {
+      target: { value: "做登录页" },
+    });
+    await user.click(screen.getByTestId("run-leader"));
+    await user.click(await screen.findByRole("option", { name: "架构师" }));
+
+    fireEvent.click(screen.getByTestId("run-create"));
+    await waitFor(() =>
+      expect(useOrchRunListStore.getState().runs.some((r) => r.id === 7)).toBe(
+        true,
+      ),
     );
   });
 
