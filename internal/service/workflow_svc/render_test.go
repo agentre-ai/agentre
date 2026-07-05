@@ -1,6 +1,7 @@
 package workflow_svc
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,6 +45,32 @@ func TestRenderTemplate(t *testing.T) {
 	})
 	t.Run("坏语法→报错", func(t *testing.T) {
 		_, err := RenderTemplate("{{ if }}", "F", "DAG")
+		require.Error(t, err)
+	})
+}
+
+func TestRenderWorkflowContent(t *testing.T) {
+	graph := `{"version":1,"nodes":[{"id":"a","label":"Plan","kind":"leader"},{"id":"b","label":"Do","kind":"task","brief":"x"}],"edges":[{"from":"a","to":"b"}]}`
+	t.Run("graph 投影嵌入 + outline", func(t *testing.T) {
+		content, outline, err := RenderWorkflowContent(" F ", graph, "head\n{{ DAGPrompt }}")
+		require.NoError(t, err)
+		assert.Contains(t, content, "head\n")
+		assert.Contains(t, content, "# F") // name 去空白
+		assert.NotEmpty(t, outline)
+	})
+	t.Run("空 template 回落占位符 = 纯投影", func(t *testing.T) {
+		content, _, err := RenderWorkflowContent("F", graph, "")
+		require.NoError(t, err)
+		assert.True(t, strings.HasPrefix(content, "# F"))
+	})
+	t.Run("无 graph → outline nil、DAGPrompt 空", func(t *testing.T) {
+		content, outline, err := RenderWorkflowContent("F", "", "x{{ DAGPrompt }}y")
+		require.NoError(t, err)
+		assert.Equal(t, "xy", content)
+		assert.Nil(t, outline)
+	})
+	t.Run("坏模板→报错", func(t *testing.T) {
+		_, _, err := RenderWorkflowContent("F", graph, "{{ DAGPromt }}")
 		require.Error(t, err)
 	})
 }

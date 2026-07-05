@@ -101,18 +101,14 @@ func applyTemplate(w *workflow_entity.Workflow, graph, tmpl string) error {
 		raw = DefaultTemplate
 	}
 	w.Template = raw
-
-	var dagPrompt string
-	if g, ok := ParseFlowGraph(w.Graph); ok {
-		content, outline := ProjectGraph(w.Name, g)
-		dagPrompt = content
-		w.Outline = encodeStringList(outline)
-	}
-	rendered, err := RenderTemplate(w.Template, w.Name, dagPrompt)
+	content, outline, err := RenderWorkflowContent(w.Name, w.Graph, w.Template)
 	if err != nil {
 		return fmt.Errorf("workflow_svc: 渲染流程模板失败: %w", err)
 	}
-	w.Content = rendered
+	w.Content = content
+	if outline != nil {
+		w.Outline = encodeStringList(outline)
+	}
 	return nil
 }
 

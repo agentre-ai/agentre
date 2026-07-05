@@ -1,8 +1,6 @@
 package app
 
 import (
-	"strings"
-
 	"github.com/agentre-ai/agentre/internal/service/workflow_svc"
 )
 
@@ -43,16 +41,7 @@ type WorkflowPreviewResponse struct {
 
 // WorkflowPreviewGraph 与保存渲染同源:先投影 graph 得 DAG 提示词,再渲染用户 template。
 func (a *App) WorkflowPreviewGraph(req *WorkflowPreviewRequest) (*WorkflowPreviewResponse, error) {
-	var dagPrompt string
-	var outline []string
-	if g, ok := workflow_svc.ParseFlowGraph(req.Graph); ok {
-		dagPrompt, outline = workflow_svc.ProjectGraph(req.Name, g)
-	}
-	tmpl := req.Template
-	if strings.TrimSpace(tmpl) == "" {
-		tmpl = workflow_svc.DefaultTemplate
-	}
-	content, err := workflow_svc.RenderTemplate(tmpl, req.Name, dagPrompt)
+	content, outline, err := workflow_svc.RenderWorkflowContent(req.Name, req.Graph, req.Template)
 	if err != nil {
 		// 模板 parse/execute 失败经响应 Error 字段回传前端(设计器展示报错态、置灰保存),
 		// 不作为 Go error——预览调用永不失败,故此处 return nil error 是有意的。
