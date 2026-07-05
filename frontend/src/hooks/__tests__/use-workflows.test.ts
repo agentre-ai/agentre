@@ -31,7 +31,8 @@ describe("useWorkflows graph 打通", () => {
           runCount: 0,
           createtime: 0,
           updatetime: 0,
-          graph: '{"version":1,"nodes":[{"id":"n1","label":"x","kind":"task"}],"edges":[]}',
+          graph:
+            '{"version":1,"nodes":[{"id":"n1","label":"x","kind":"task"}],"edges":[]}',
         },
       ],
     });

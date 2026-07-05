@@ -7,8 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
 	. "github.com/smartystreets/goconvey/convey"
+
+	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
 )
 
 func mustCodexSkill(t *testing.T, skillsDir, name string) {

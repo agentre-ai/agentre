@@ -5,8 +5,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 	"github.com/cago-frame/cago/pkg/logger"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 )
 
 // setRunStatus 加载 Run、设状态、持久化、推事件（三步原子序列，任一失败即返回错误）。

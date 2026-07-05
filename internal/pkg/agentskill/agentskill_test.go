@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	. "github.com/smartystreets/goconvey/convey"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 )
 
 type fakeDisc struct{ packs []SkillPack }

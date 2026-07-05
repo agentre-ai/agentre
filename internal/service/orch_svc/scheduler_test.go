@@ -1,6 +1,8 @@
 package orch_svc_test
 
 import (
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,6 +72,105 @@ func TestScheduler_CapsConcurrency(t *testing.T) {
 			// correct: 3rd fired after slot was freed
 		case <-time.After(500 * time.Millisecond):
 			t.Fatal("3rd task did not launch after OnTaskSettled")
+		}
+	})
+}
+
+func TestScheduler_RetriesTransientSendBusy(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
+	orch_svc.Default().ResetSchedulersForTest()
+	orch_svc.Default().SetSchedulerCapForTest(1)
+	restoreBackoff := orch_svc.SetSendRetryBackoffForTest([]time.Duration{0})
+	t.Cleanup(func() {
+		restoreBackoff()
+		orch_svc.Default().SetSchedulerCapForTest(0)
+		orch_svc.Default().ResetSchedulersForTest()
+	})
+
+	done := make(chan orch_svc.TurnDone)
+	close(done)
+	chat.EXPECT().ObserveTurn(int64(601)).
+		Return((<-chan orch_svc.TurnDone)(done), func() {})
+
+	var attempts atomic.Int32
+	sendCh := make(chan struct{}, 2)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(601), "go").
+		DoAndReturn(func(_ any, _ int64, _ string) error {
+			attempts.Add(1)
+			sendCh <- struct{}{}
+			return errors.New("database is locked (5) (SQLITE_BUSY)")
+		})
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(601), "go").
+		DoAndReturn(func(_ any, _ int64, _ string) error {
+			attempts.Add(1)
+			sendCh <- struct{}{}
+			return nil
+		})
+
+	Convey("SQLite 写锁瞬时冲突时重试发送子任务", t, func() {
+		orch_svc.Default().EnqueueRunForTest(100,
+			&orch_entity.Task{ID: 1, RunID: 100, SessionID: 601},
+			"go")
+
+		select {
+		case <-sendCh:
+		case <-time.After(time.Second):
+			t.Fatal("first SendAndForget was not called")
+		}
+		select {
+		case <-sendCh:
+		case <-time.After(time.Second):
+			t.Fatal("SendAndForget was not retried")
+		}
+		So(attempts.Load(), ShouldEqual, 2)
+	})
+}
+
+func TestScheduler_MarksTaskErrorWhenSendFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
+	orch_svc.Default().ResetSchedulersForTest()
+	orch_svc.Default().SetSchedulerCapForTest(1)
+	restoreBackoff := orch_svc.SetSendRetryBackoffForTest(nil)
+	t.Cleanup(func() {
+		restoreBackoff()
+		orch_svc.Default().SetSchedulerCapForTest(0)
+		orch_svc.Default().ResetSchedulersForTest()
+	})
+
+	done := make(chan orch_svc.TurnDone)
+	close(done)
+	chat.EXPECT().ObserveTurn(int64(601)).
+		Return((<-chan orch_svc.TurnDone)(done), func() {})
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(601), "go").
+		Return(errors.New("send failed"))
+
+	updated := make(chan *orch_entity.Task, 1)
+	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ any, task *orch_entity.Task) error {
+			updated <- task
+			return nil
+		})
+
+	Convey("发送子任务最终失败时任务落 error 而不是永久 running", t, func() {
+		orch_svc.Default().EnqueueRunForTest(100,
+			&orch_entity.Task{ID: 1, RunID: 100, SessionID: 601},
+			"go")
+
+		select {
+		case task := <-updated:
+			So(task.Status, ShouldEqual, orch_entity.TaskError)
+		case <-time.After(time.Second):
+			t.Fatal("task was not marked error")
 		}
 	})
 }

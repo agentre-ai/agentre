@@ -5,8 +5,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 	"github.com/cago-frame/cago/pkg/logger"
+
+	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 )
 
 // detectAskCycle 合并 dispatch 等待边（父等子回报）+ ask 等待边，DFS 找有向环。
