@@ -1848,7 +1848,16 @@
       "previewTitle": "Live prompt preview",
       "previewEmpty": "Add nodes to see the projected prompt",
       "convertToDag": "Convert to DAG designer",
-      "convertHint": "Rebuild as a structured flow; saving replaces the free-text body with the generated one."
+      "convertHint": "Rebuild as a structured flow; saving replaces the free-text body with the generated one.",
+      "templateTitle": "Prompt template",
+      "editableBadge": "Editable",
+      "tabEdit": "Edit",
+      "tabPreview": "Preview",
+      "insertToken": "Insert",
+      "tokenHint": "{{token}} = prompt from the flow graph · Go template",
+      "templatePlaceholder": "Write the prompt here; use {{token}} to insert the flow-graph prompt",
+      "templateHint": "With {{token}} = embed the flow graph; without = plain text; no graph = pure prompt. Uses Go text/template.",
+      "templateErrorLabel": "Template error: "
     },
     "deleteConfirm": {
       "title": "Delete workflow",
