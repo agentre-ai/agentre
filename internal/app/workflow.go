@@ -54,7 +54,9 @@ func (a *App) WorkflowPreviewGraph(req *WorkflowPreviewRequest) (*WorkflowPrevie
 	}
 	content, err := workflow_svc.RenderTemplate(tmpl, req.Name, dagPrompt)
 	if err != nil {
-		return &WorkflowPreviewResponse{Error: err.Error()}, nil
+		// 模板 parse/execute 失败经响应 Error 字段回传前端(设计器展示报错态、置灰保存),
+		// 不作为 Go error——预览调用永不失败,故此处 return nil error 是有意的。
+		return &WorkflowPreviewResponse{Error: err.Error()}, nil //nolint:nilerr // 错误走响应 Error 字段,见上
 	}
 	return &WorkflowPreviewResponse{Content: content, Outline: outline}, nil
 }
