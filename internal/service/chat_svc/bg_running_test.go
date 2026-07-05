@@ -119,19 +119,34 @@ func TestReconcileBgRunningOnComplete_RemovesAndEmits(t *testing.T) {
 
 func TestRunningBgSubagentIDs(t *testing.T) {
 	blks := []cagoblocks.ContentBlock{
-		// 后台 subagent: Agent tool_use run_in_background=true + running subagent_state
+		// 后台 subagent(显式): Agent tool_use run_in_background=true + running
 		&cagoblocks.ToolUseBlock{ID: "bg-1", Input: map[string]any{"run_in_background": true}},
 		&blocks.SubagentStateBlock{ParentToolCallID: "bg-1", Kind: "local_agent", Status: "running"},
-		// 前台 subagent: 无 run_in_background → 不纳入
-		&cagoblocks.ToolUseBlock{ID: "fg-1", Input: map[string]any{}},
+		// 后台 subagent(默认): Agent 工具默认后台,run_in_background 缺省即后台 → 纳入
+		&cagoblocks.ToolUseBlock{ID: "bg-default", Input: map[string]any{}},
+		&blocks.SubagentStateBlock{ParentToolCallID: "bg-default", Kind: "local_agent", Status: "running"},
+		// 前台(同步) subagent: 显式 run_in_background=false → 不纳入
+		&cagoblocks.ToolUseBlock{ID: "fg-1", Input: map[string]any{"run_in_background": false}},
 		&blocks.SubagentStateBlock{ParentToolCallID: "fg-1", Kind: "local_agent", Status: "running"},
+		// 前台 Bash: local_bash 默认前台,无 run_in_background → 不纳入
+		&cagoblocks.ToolUseBlock{ID: "bash-fg", Input: map[string]any{}},
+		&blocks.SubagentStateBlock{ParentToolCallID: "bash-fg", Kind: "local_bash", Status: "running"},
+		// 后台 Bash: local_bash + run_in_background=true → 纳入
+		&cagoblocks.ToolUseBlock{ID: "bash-bg", Input: map[string]any{"run_in_background": true}},
+		&blocks.SubagentStateBlock{ParentToolCallID: "bash-bg", Kind: "local_bash", Status: "running"},
 		// 后台但已完成 → status 非 running → 不纳入
 		&cagoblocks.ToolUseBlock{ID: "done-1", Input: map[string]any{"run_in_background": true}},
 		&blocks.SubagentStateBlock{ParentToolCallID: "done-1", Kind: "local_agent", Status: "completed"},
 	}
 	got := runningBgSubagentIDs(blks)
-	if len(got) != 1 || got[0] != "bg-1" {
-		t.Fatalf("want [bg-1], got %v", got)
+	want := map[string]bool{"bg-1": true, "bg-default": true, "bash-bg": true}
+	if len(got) != len(want) {
+		t.Fatalf("want %d ids %v, got %v", len(want), want, got)
+	}
+	for _, id := range got {
+		if !want[id] {
+			t.Fatalf("unexpected id %q in %v (want exactly %v)", id, got, want)
+		}
 	}
 }
 

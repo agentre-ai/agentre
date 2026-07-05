@@ -24,6 +24,7 @@ const EMPTY_LIVE = {
   liveBlocks: [] as ChatBlockData[],
   liveRetry: null as RetryNotice | null,
   liveStreamStartedAt: 0,
+  liveTargetId: null as number | null,
   streaming: false,
   liveCompacting: false,
 };
@@ -105,6 +106,11 @@ export function useLiveConversation(sessionId: number, agentId: number) {
         liveBlocks: stream.liveBlocks,
         liveRetry: stream.liveRetry,
         liveStreamStartedAt: stream.streamStartedAt,
+        // liveTargetId 指向本轮在跑的 assistant 消息(与 chat-panel.tsx 同源:
+        // currentStream.assistantMessageId)。ChatTranscript 靠它把 live tail /
+        // liveBlocks 挂到对应消息行;缺失则 buildTranscriptRows 的 isLive 恒 false,
+        // 流式文字整块落空 —— 编排会话就不会像对话模块那样流式输出。
+        liveTargetId: stream.assistantMessageId,
         streaming: true,
         liveCompacting: stream.liveCompacting,
       }

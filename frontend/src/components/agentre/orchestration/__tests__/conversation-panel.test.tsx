@@ -23,6 +23,7 @@ const liveConv = {
     liveBlocks: [],
     liveRetry: null,
     liveStreamStartedAt: 1,
+    liveTargetId: 200,
     streaming: true,
     liveCompacting: false,
   },
@@ -41,8 +42,12 @@ vi.mock("@/hooks/use-live-conversation", () => ({
 
 // ChatTranscript / ChatComposer 是重组件，这里 stub 成可断言 props 透传的轻量占位
 vi.mock("../../chat", () => ({
-  ChatTranscript: (p: { liveDelta?: string }) => (
-    <div data-testid="tx" data-live={p.liveDelta} />
+  ChatTranscript: (p: { liveDelta?: string; liveTargetId?: number | null }) => (
+    <div
+      data-testid="tx"
+      data-live={p.liveDelta}
+      data-target={p.liveTargetId ?? ""}
+    />
   ),
   ChatComposer: (p: { onSubmit?: (m: unknown) => void }) => (
     <button
@@ -325,6 +330,9 @@ describe("ConversationPanel", () => {
     expect(screen.getByTestId("tx").getAttribute("data-live")).toBe(
       "streaming-text",
     );
+    // liveTargetId 必须一并透传:否则 ChatTranscript 找不到「哪条消息挂 live tail」,
+    // 流式文字不会渲染 —— 编排会话就不会像对话模块那样流式输出。
+    expect(screen.getByTestId("tx").getAttribute("data-target")).toBe("200");
   });
 
   it("ChatComposer onSubmit → hook.submit", () => {

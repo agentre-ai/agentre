@@ -254,15 +254,39 @@ describe("deriveBackgroundTasks", () => {
     expect(tasks.map((t) => t.kind)).toEqual(["local_bash", "local_agent"]);
   });
 
-  it("excludes a foreground subagent — local_agent without run_in_background is not a background task", () => {
-    // Foreground subagents emit task_type:"local_agent" frames too; the Agent
-    // tool_use only carries run_in_background:true when it was backgrounded, so
-    // that flag (not the kind) is what separates background from foreground.
+  it("includes a background local_agent even without run_in_background (Agent tool defaults to background)", () => {
+    // Unlike Bash (foreground by default), the real CLI Agent tool runs subagents
+    // in the BACKGROUND by default and only carries run_in_background:false when
+    // made synchronous — so a local_agent overlay with NO run_in_background input
+    // is a genuine background task (verified against real transcripts: 63 background
+    // Agent calls all omit the flag).
+    const background = {
+      type: "tool_use",
+      toolUseId: "tu-bg-agent",
+      toolName: "Agent",
+      toolInput: { subagent_type: "general-purpose", description: "explore" },
+      subagent: {
+        kind: "local_agent",
+        status: "running",
+        taskDescription: "Explore repo",
+      },
+    } as unknown as Parameters<typeof deriveBackgroundTasks>[1][number];
+    const tasks = deriveBackgroundTasks([], [background]);
+    expect(tasks.map((t) => t.toolUseId)).toEqual(["tu-bg-agent"]);
+  });
+
+  it("excludes a foreground (synchronous) local_agent — run_in_background:false", () => {
+    // Passing run_in_background:false makes the Agent run synchronously/inline;
+    // that is the ONLY case a subagent is not a background task.
     const foreground = {
       type: "tool_use",
       toolUseId: "tu-fg-agent",
       toolName: "Agent",
-      toolInput: { subagent_type: "general-purpose", description: "explore" },
+      toolInput: {
+        subagent_type: "general-purpose",
+        description: "explore",
+        run_in_background: false,
+      },
       subagent: {
         kind: "local_agent",
         status: "running",
