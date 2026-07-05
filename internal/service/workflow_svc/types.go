@@ -8,7 +8,8 @@ package workflow_svc
 type WorkflowItem struct {
 	ID         int64    `json:"id"`
 	Name       string   `json:"name"`
-	Content    string   `json:"content"`
+	Content    string   `json:"content"`  // 渲染产物(展示/摘要用)
+	Template   string   `json:"template"` // 用户模板真源(编辑载入用)
 	Tags       []string `json:"tags"`
 	Outline    []string `json:"outline"`
 	Graph      string   `json:"graph"`
@@ -28,11 +29,11 @@ type ListWorkflowsResponse struct {
 
 // CreateWorkflowRequest 新建流程(name 必填,trim 后校验)。
 type CreateWorkflowRequest struct {
-	Name    string   `json:"name" binding:"required"`
-	Content string   `json:"content"`
-	Tags    []string `json:"tags"`
-	Outline []string `json:"outline"`
-	Graph   string   `json:"graph,omitempty"`
+	Name     string   `json:"name" binding:"required"`
+	Template string   `json:"template"` // 用户模板;空→回落 DefaultTemplate
+	Tags     []string `json:"tags"`
+	Outline  []string `json:"outline"`
+	Graph    string   `json:"graph,omitempty"`
 }
 
 type CreateWorkflowResponse struct {
@@ -41,12 +42,12 @@ type CreateWorkflowResponse struct {
 
 // UpdateWorkflowRequest 编辑流程名称/正文;进行中的群下一轮注入即取到最新正文。
 type UpdateWorkflowRequest struct {
-	ID      int64    `json:"id" binding:"required"`
-	Name    string   `json:"name" binding:"required"`
-	Content string   `json:"content"`
-	Tags    []string `json:"tags"`
-	Outline []string `json:"outline"`
-	Graph   string   `json:"graph,omitempty"`
+	ID       int64    `json:"id" binding:"required"`
+	Name     string   `json:"name" binding:"required"`
+	Template string   `json:"template"`
+	Tags     []string `json:"tags"`
+	Outline  []string `json:"outline"`
+	Graph    string   `json:"graph,omitempty"`
 }
 
 type UpdateWorkflowResponse struct {
