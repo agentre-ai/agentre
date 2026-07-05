@@ -1848,7 +1848,16 @@
       "previewTitle": "实时提示词预览",
       "previewEmpty": "添加节点后显示投影出的提示词",
       "convertToDag": "转成 DAG 设计器",
-      "convertHint": "改用结构化流程重建;保存时会用投影正文替换当前自由文本正文。"
+      "convertHint": "改用结构化流程重建;保存时会用投影正文替换当前自由文本正文。",
+      "templateTitle": "提示词模板",
+      "editableBadge": "可编辑",
+      "tabEdit": "编辑",
+      "tabPreview": "预览",
+      "insertToken": "插入",
+      "tokenHint": "{{token}} = 流程图生成的提示词 · Go 模板",
+      "templatePlaceholder": "在这里编写提示词;用 {{token}} 插入流程图生成的提示词",
+      "templateHint": "放 {{token}} = 嵌入流程图;不放 = 纯自由文本;不画流程图 = 纯提示词。模板走 Go text/template。",
+      "templateErrorLabel": "模板错误:"
     },
     "deleteConfirm": {
       "title": "删除流程",

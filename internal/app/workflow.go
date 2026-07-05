@@ -1,6 +1,8 @@
 package app
 
 import (
+	"strings"
+
 	"github.com/agentre-ai/agentre/internal/service/workflow_svc"
 )
 
@@ -24,24 +26,35 @@ func (a *App) WorkflowDelete(req *workflow_svc.DeleteWorkflowRequest) (*workflow
 	return workflow_svc.Workflow().Delete(a.ctx, req)
 }
 
-// WorkflowPreviewRequest 设计器实时预览入参（未落库的草稿 graph）。
+// WorkflowPreviewRequest 设计器实时预览入参(未落库的草稿 graph + template)。
 type WorkflowPreviewRequest struct {
-	Name  string `json:"name"`
-	Graph string `json:"graph"`
+	Name     string `json:"name"`
+	Graph    string `json:"graph"`
+	Template string `json:"template"`
 }
 
-// WorkflowPreviewResponse 投影结果（content 即将注入 Leader 的正文；outline 仅展示）。
+// WorkflowPreviewResponse 预览结果:content=渲染后即将注入 Leader 的正文;
+// outline 仅展示;error=模板 parse/execute 失败时的说明(前端展示报错态,不算 Go error)。
 type WorkflowPreviewResponse struct {
 	Content string   `json:"content"`
 	Outline []string `json:"outline"`
+	Error   string   `json:"error"`
 }
 
-// WorkflowPreviewGraph 把草稿 graph 投影成正文/大纲，供 DAG 设计器实时预览（投影只有后端一份实现）。
+// WorkflowPreviewGraph 与保存渲染同源:先投影 graph 得 DAG 提示词,再渲染用户 template。
 func (a *App) WorkflowPreviewGraph(req *WorkflowPreviewRequest) (*WorkflowPreviewResponse, error) {
-	g, ok := workflow_svc.ParseFlowGraph(req.Graph)
-	if !ok {
-		return &WorkflowPreviewResponse{}, nil
+	var dagPrompt string
+	var outline []string
+	if g, ok := workflow_svc.ParseFlowGraph(req.Graph); ok {
+		dagPrompt, outline = workflow_svc.ProjectGraph(req.Name, g)
 	}
-	content, outline := workflow_svc.ProjectGraph(req.Name, g)
+	tmpl := req.Template
+	if strings.TrimSpace(tmpl) == "" {
+		tmpl = workflow_svc.DefaultTemplate
+	}
+	content, err := workflow_svc.RenderTemplate(tmpl, req.Name, dagPrompt)
+	if err != nil {
+		return &WorkflowPreviewResponse{Error: err.Error()}, nil
+	}
 	return &WorkflowPreviewResponse{Content: content, Outline: outline}, nil
 }

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CircleCheck, Pause, Square, TriangleAlert } from "lucide-react";
 import { useChatAgents } from "@/hooks/use-chat-agents";
 import { useComposerSend } from "@/hooks/use-composer-send";
+import { useSessionStatusStore } from "@/stores/session-status-store";
 import { Button } from "@/components/ui/button";
 import type { AgentColor } from "../types";
 import { useOrchRunStore } from "../../../stores/orch-run-store";
@@ -117,6 +118,15 @@ export function OrchestrationRun({
     return leaderTask?.sessionId ?? null;
   }, [detail]);
 
+  // Leader 是编排者,发起 turn 后大多数时间处于 running 态。footer 是用户中途
+  // 介入(intervene)的唯一入口 —— 若 isRunning 硬编码 false,忙时提交会撞
+  // ChatSendInFlight 被 useComposerSend 吞掉,ChatComposer 又已经清空输入框,
+  // 消息静默消失。改从 session-status-store 读(纯 store 读,非流订阅),
+  // 忙时让 useComposerSend 走 enqueue/steer 而不是直接发送。
+  const leaderRunning = useSessionStatusStore(
+    (s) => s.statuses.get(leaderSessionId ?? 0)?.agentStatus === "running",
+  );
+
   // Footer: speak-to-Leader sender (sender-only — no stream subscription; the
   // right-rail ConversationPanel owns the live transcript/streaming view).
   const leaderAgent = agents.find((a) => a.id === detail?.run?.leaderAgentId);
@@ -124,7 +134,7 @@ export function OrchestrationRun({
     sessionId: leaderSessionId ?? 0,
     agentId: detail?.run?.leaderAgentId ?? 0,
     backendType: (leaderAgent?.backendType as string) ?? "",
-    isRunning: false,
+    isRunning: leaderRunning,
   });
 
   // Phase + deadlock detection for banners (shared logic with structure-graph)

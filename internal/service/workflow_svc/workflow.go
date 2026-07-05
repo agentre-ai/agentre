@@ -5,6 +5,7 @@ package workflow_svc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/cago-frame/cago/pkg/consts"
@@ -76,6 +77,7 @@ func toItem(w *workflow_entity.Workflow, runCount int) *WorkflowItem {
 		ID:         w.ID,
 		Name:       w.Name,
 		Content:    w.Content,
+		Template:   w.Template,
 		Tags:       decodeStringList(w.Tags),
 		Outline:    decodeStringList(w.Outline),
 		Graph:      w.Graph,
@@ -86,19 +88,32 @@ func toItem(w *workflow_entity.Workflow, runCount int) *WorkflowItem {
 	}
 }
 
-// applyGraph 若 req 带合法 graph，则 graph 为真源：投影覆写 content/outline，并回存 graph JSON。
-// graph 为空 → 严格 no-op（不动 Graph/Content/Outline），避免 Update 未回传 graph 时清空已存的图。
-func applyGraph(w *workflow_entity.Workflow, graph string) {
-	trimmed := strings.TrimSpace(graph)
-	if trimmed == "" {
-		return
+// applyTemplate 用 graph(若合法)投影出 DAG 提示词 + outline,再渲染用户 template 成 content。
+//   - graph 空 → 保留已存 graph(no-op 守卫,避免 Update 未回传 graph 时清空),dagPrompt 为空;
+//   - template 空 → 回落 DefaultTemplate;
+//   - 渲染失败返回 error(不写坏 content)。
+func applyTemplate(w *workflow_entity.Workflow, graph, tmpl string) error {
+	if g := strings.TrimSpace(graph); g != "" {
+		w.Graph = g
 	}
-	w.Graph = trimmed
+	raw := tmpl
+	if strings.TrimSpace(raw) == "" {
+		raw = DefaultTemplate
+	}
+	w.Template = raw
+
+	var dagPrompt string
 	if g, ok := ParseFlowGraph(w.Graph); ok {
 		content, outline := ProjectGraph(w.Name, g)
-		w.Content = content
+		dagPrompt = content
 		w.Outline = encodeStringList(outline)
 	}
+	rendered, err := RenderTemplate(w.Template, w.Name, dagPrompt)
+	if err != nil {
+		return fmt.Errorf("workflow_svc: 渲染流程模板失败: %w", err)
+	}
+	w.Content = rendered
+	return nil
 }
 
 // List 返回全部 active 流程 + 各自使用中 Run 数。
@@ -134,12 +149,13 @@ func (s *workflowSvc) findActive(ctx context.Context, id int64) (*workflow_entit
 func (s *workflowSvc) Create(ctx context.Context, req *CreateWorkflowRequest) (*CreateWorkflowResponse, error) {
 	w := &workflow_entity.Workflow{
 		Name:    strings.TrimSpace(req.Name),
-		Content: req.Content,
 		Tags:    encodeStringList(req.Tags),
 		Outline: encodeStringList(req.Outline),
 		Status:  consts.ACTIVE,
 	}
-	applyGraph(w, req.Graph)
+	if err := applyTemplate(w, req.Graph, req.Template); err != nil {
+		return nil, err
+	}
 	if err := w.Check(ctx); err != nil {
 		return nil, err
 	}
@@ -156,10 +172,11 @@ func (s *workflowSvc) Update(ctx context.Context, req *UpdateWorkflowRequest) (*
 		return nil, err
 	}
 	w.Name = strings.TrimSpace(req.Name)
-	w.Content = req.Content
 	w.Tags = encodeStringList(req.Tags)
 	w.Outline = encodeStringList(req.Outline)
-	applyGraph(w, req.Graph)
+	if err := applyTemplate(w, req.Graph, req.Template); err != nil {
+		return nil, err
+	}
 	if err := w.Check(ctx); err != nil {
 		return nil, err
 	}

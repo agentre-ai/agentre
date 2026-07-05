@@ -1,9 +1,11 @@
 import * as React from "react";
-import { Plus } from "lucide-react";
+import { Braces, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 
 import type { FlowGraph, FlowKind } from "../orchestration/flow-graph";
 import { FlowGraphView } from "../orchestration/flow-graph-view";
@@ -23,21 +25,32 @@ import {
 } from "./flow-graph-draft";
 import { WorkflowNodeForm } from "./workflow-node-form";
 
+const DAG_TOKEN = "{{ DAGPrompt }}";
+
 export function WorkflowDagDesigner({
   name,
   graph,
+  template,
   error,
   onNameChange,
   onGraphChange,
+  onTemplateChange,
+  onTemplateError,
 }: {
   name: string;
   graph: FlowGraph;
+  template: string;
   error: string | null;
   onNameChange: (v: string) => void;
   onGraphChange: (g: FlowGraph) => void;
+  onTemplateChange: (v: string) => void;
+  onTemplateError: (hasError: boolean) => void;
 }) {
   const { t } = useTranslation();
   const [preview, setPreview] = React.useState("");
+  const [previewError, setPreviewError] = React.useState("");
+  const [tab, setTab] = React.useState<"edit" | "preview">("edit");
+  const taRef = React.useRef<HTMLTextAreaElement>(null);
 
   // graphJSON 作为依赖: graph 变化才重新预览(结构比较), 250ms 防抖。
   // useMemo 避免无关 re-render(如 preview state 更新)时反复 stringify 整图。
@@ -45,19 +58,37 @@ export function WorkflowDagDesigner({
   React.useEffect(() => {
     let alive = true;
     const timer = setTimeout(() => {
-      WorkflowPreviewGraph({ name, graph: graphJSON })
+      WorkflowPreviewGraph({ name, graph: graphJSON, template })
         .then((resp) => {
-          if (alive) setPreview(resp?.content ?? "");
+          if (!alive) return;
+          const err = resp?.error ?? "";
+          setPreviewError(err);
+          setPreview(err ? "" : (resp?.content ?? ""));
+          onTemplateError(!!err);
         })
         .catch(() => {
-          if (alive) setPreview("");
+          if (!alive) return;
+          setPreviewError("");
+          setPreview("");
+          onTemplateError(false);
         });
     }, 250);
     return () => {
       alive = false;
       clearTimeout(timer);
     };
-  }, [name, graphJSON]);
+  }, [name, graphJSON, template, onTemplateError]);
+
+  const insertToken = () => {
+    const el = taRef.current;
+    if (!el) {
+      onTemplateChange(template + DAG_TOKEN);
+      return;
+    }
+    const s = el.selectionStart ?? template.length;
+    const e = el.selectionEnd ?? template.length;
+    onTemplateChange(template.slice(0, s) + DAG_TOKEN + template.slice(e));
+  };
 
   const nodeById = React.useMemo(
     () => new Map(graph.nodes.map((n) => [n.id, n])),
@@ -140,7 +171,7 @@ export function WorkflowDagDesigner({
           </Button>
         </div>
 
-        {/* 右栏: 上 DAG + 下实时提示词 */}
+        {/* 右栏: 上 DAG + 下模板 pane */}
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <span className="text-2xs text-subtle-foreground">
@@ -149,21 +180,99 @@ export function WorkflowDagDesigner({
             <FlowGraphView graph={graph} />
           </div>
           <div className="flex min-h-0 flex-1 flex-col gap-1.5">
-            <span className="text-2xs text-subtle-foreground">
-              {t("workflows.designer.previewTitle")}
-            </span>
-            <div
-              data-testid="designer-prompt-preview"
-              className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border bg-card/40 px-3 py-2"
-            >
-              {preview.trim() ? (
-                <MarkdownText text={preview} />
-              ) : (
-                <span className="text-2xs text-muted-foreground">
-                  {t("workflows.designer.previewEmpty")}
-                </span>
-              )}
+            <div className="flex items-center gap-2">
+              <span className="text-2xs font-medium text-foreground">
+                {t("workflows.designer.templateTitle")}
+              </span>
+              <span className="rounded bg-primary-soft px-1.5 py-0.5 text-2xs font-medium text-primary-text">
+                {t("workflows.designer.editableBadge")}
+              </span>
+              <div className="flex-1" />
+              <div className="flex items-center gap-0.5 rounded-md bg-secondary p-0.5">
+                <button
+                  type="button"
+                  data-testid="designer-tab-edit"
+                  onClick={() => setTab("edit")}
+                  className={cn(
+                    "rounded px-2.5 py-0.5 text-2xs",
+                    tab === "edit"
+                      ? "bg-card font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  {t("workflows.designer.tabEdit")}
+                </button>
+                <button
+                  type="button"
+                  data-testid="designer-tab-preview"
+                  onClick={() => setTab("preview")}
+                  className={cn(
+                    "rounded px-2.5 py-0.5 text-2xs",
+                    tab === "preview"
+                      ? "bg-card font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  {t("workflows.designer.tabPreview")}
+                </button>
+              </div>
             </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                data-testid="designer-insert-token"
+                onClick={insertToken}
+              >
+                <Braces className="size-3.5" aria-hidden="true" />
+                {t("workflows.designer.insertToken")}{" "}
+                <code className="ml-1 font-mono">{DAG_TOKEN}</code>
+              </Button>
+              <span className="truncate text-2xs text-muted-foreground">
+                {t("workflows.designer.tokenHint", { token: DAG_TOKEN })}
+              </span>
+            </div>
+
+            {tab === "edit" ? (
+              <Textarea
+                ref={taRef}
+                data-testid="designer-template-input"
+                aria-label={t("workflows.designer.templateTitle")}
+                value={template}
+                onChange={(e) => onTemplateChange(e.target.value)}
+                placeholder={t("workflows.designer.templatePlaceholder", {
+                  token: DAG_TOKEN,
+                })}
+                className="min-h-0 flex-1 resize-none font-mono text-xs"
+              />
+            ) : previewError ? (
+              <div
+                data-testid="designer-template-error"
+                className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-destructive bg-destructive-soft px-3 py-2 text-2xs text-destructive"
+              >
+                {t("workflows.designer.templateErrorLabel")}
+                {previewError}
+              </div>
+            ) : (
+              <div
+                data-testid="designer-prompt-preview"
+                className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border bg-card/40 px-3 py-2"
+              >
+                {preview.trim() ? (
+                  <MarkdownText text={preview} />
+                ) : (
+                  <span className="text-2xs text-muted-foreground">
+                    {t("workflows.designer.previewEmpty")}
+                  </span>
+                )}
+              </div>
+            )}
+
+            <span className="text-2xs text-muted-foreground">
+              {t("workflows.designer.templateHint", { token: DAG_TOKEN })}
+            </span>
           </div>
         </div>
       </div>

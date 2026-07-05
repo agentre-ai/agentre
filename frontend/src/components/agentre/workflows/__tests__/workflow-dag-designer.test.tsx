@@ -1,67 +1,98 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import * as React from "react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// 设计器 → MarkdownText → RichLink 间接 import wailsjs runtime
-vi.mock("../../../../../wailsjs/runtime/runtime", async () => {
-  const actual = await vi.importActual<
-    typeof import("../../../../../wailsjs/runtime/runtime")
-  >("../../../../../wailsjs/runtime/runtime");
-  return { ...actual, BrowserOpenURL: vi.fn() };
-});
+const previewGraph = vi.fn();
+vi.mock("../../../../wailsjs/go/app/App", () => ({
+  WorkflowPreviewGraph: (...a: unknown[]) => previewGraph(...a),
+}));
 
-const appMocks = vi.hoisted(() => ({ WorkflowPreviewGraph: vi.fn() }));
-vi.mock("../../../../../wailsjs/go/app/App", () => appMocks);
-
-import type { FlowGraph } from "../../orchestration/flow-graph";
-import { emptyDraftGraph } from "../flow-graph-draft";
 import { WorkflowDagDesigner } from "../workflow-dag-designer";
+import type { FlowGraph } from "../../orchestration/flow-graph";
 
-// 受控 harness: 持有 graph/name state, 让设计器的编辑真正回写。
-function Harness() {
-  const [name, setName] = React.useState("Flow");
-  const [graph, setGraph] = React.useState<FlowGraph>(emptyDraftGraph());
-  return (
+const graph: FlowGraph = {
+  version: 1,
+  nodes: [{ id: "n1", label: "拆解", kind: "leader" }],
+  edges: [],
+};
+
+function setup(template = "{{ DAGPrompt }}") {
+  const onTemplateChange = vi.fn();
+  const onTemplateError = vi.fn();
+  render(
     <WorkflowDagDesigner
-      name={name}
+      name="F"
       graph={graph}
+      template={template}
       error={null}
-      onNameChange={setName}
-      onGraphChange={setGraph}
-    />
+      onNameChange={() => {}}
+      onGraphChange={() => {}}
+      onTemplateChange={onTemplateChange}
+      onTemplateError={onTemplateError}
+    />,
   );
+  return { onTemplateChange, onTemplateError };
 }
 
-describe("WorkflowDagDesigner", () => {
+describe("WorkflowDagDesigner 模板 pane", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    appMocks.WorkflowPreviewGraph.mockResolvedValue({
-      content: "## Projected prompt",
-      outline: [],
+    previewGraph
+      .mockReset()
+      .mockResolvedValue({ content: "# F\nRENDERED", outline: [], error: "" });
+  });
+
+  it("编辑态渲染可编辑模板文本域", () => {
+    setup("hello");
+    expect(screen.getByTestId("designer-template-input")).toHaveValue("hello");
+  });
+
+  it("改文本域回调 onTemplateChange", () => {
+    const { onTemplateChange } = setup("a");
+    fireEvent.change(screen.getByTestId("designer-template-input"), {
+      target: { value: "ab" },
     });
+    expect(onTemplateChange).toHaveBeenCalledWith("ab");
   });
 
-  it("渲染初始节点到 DAG(flow-node-n1)", () => {
-    render(<Harness />);
-    expect(screen.getByTestId("flow-node-n1")).toBeInTheDocument();
+  it("插入按钮把 {{ DAGPrompt }} 拼进模板", () => {
+    const { onTemplateChange } = setup("x");
+    fireEvent.click(screen.getByTestId("designer-insert-token"));
+    expect(onTemplateChange).toHaveBeenCalledWith(
+      expect.stringContaining("{{ DAGPrompt }}"),
+    );
   });
 
-  it("点击「添加节点」后 DAG 出现 flow-node-n2", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    render(<Harness />);
-    await user.click(screen.getByTestId("designer-add-node"));
-    expect(await screen.findByTestId("flow-node-n2")).toBeInTheDocument();
-  });
-
-  it("防抖后调用 WorkflowPreviewGraph 并展示投影正文", async () => {
-    render(<Harness />);
+  it("切到预览显示渲染 content", async () => {
+    setup("{{ DAGPrompt }}");
+    fireEvent.click(screen.getByTestId("designer-tab-preview"));
     await waitFor(() =>
-      expect(appMocks.WorkflowPreviewGraph).toHaveBeenCalledWith(
-        expect.objectContaining({ name: "Flow" }),
+      expect(screen.getByTestId("designer-prompt-preview")).toHaveTextContent(
+        "RENDERED",
       ),
     );
-    expect(await screen.findByText("Projected prompt")).toBeInTheDocument();
-    expect(screen.getByTestId("designer-prompt-preview")).toBeInTheDocument();
+  });
+
+  it("预览报错→显示错误并回调 onTemplateError(true)", async () => {
+    previewGraph.mockResolvedValue({
+      content: "",
+      outline: [],
+      error: 'function "DAGPromt" not defined',
+    });
+    const { onTemplateError } = setup("{{ DAGPromt }}");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(onTemplateError).toHaveBeenCalledWith(true));
+    fireEvent.click(screen.getByTestId("designer-tab-preview"));
+    await waitFor(() =>
+      expect(screen.getByTestId("designer-template-error")).toHaveTextContent(
+        "DAGPromt",
+      ),
+    );
   });
 });

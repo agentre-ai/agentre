@@ -25,18 +25,20 @@ vi.mock("../../../../../wailsjs/go/app/App", () => ({
 }));
 
 // Task 4: footer 换 ChatComposer,经 useComposerSend 发送(sender-only,不订阅流)。
+// mockUseComposerSend 是 spy,记录每次调用的 args,供断言 isRunning 派生是否正确。
 const mockComposerSubmit = vi.fn().mockResolvedValue(null);
+const mockUseComposerSend = vi.fn((_args?: unknown) => ({
+  submit: mockComposerSubmit,
+  sending: false,
+  error: null,
+  backendType: "claudecode",
+  isModeSwitchable: false,
+  supportsImageInput: true,
+  permissionMode: { mode: "default" },
+  permissionModeMeta: { order: [] },
+}));
 vi.mock("@/hooks/use-composer-send", () => ({
-  useComposerSend: () => ({
-    submit: mockComposerSubmit,
-    sending: false,
-    error: null,
-    backendType: "claudecode",
-    isModeSwitchable: false,
-    supportsImageInput: true,
-    permissionMode: { mode: "default" },
-    permissionModeMeta: { order: [] },
-  }),
+  useComposerSend: (args: unknown) => mockUseComposerSend(args),
 }));
 
 // ChatComposer stub: 渲染一个按钮，点击即触发 onSubmit({text: "to leader"})，
@@ -131,6 +133,7 @@ vi.mock("../conversation-panel", () => ({
 
 import type { app } from "../../../../../wailsjs/go/models";
 import { useOrchRunStore } from "../../../../stores/orch-run-store";
+import { useSessionStatusStore } from "../../../../stores/session-status-store";
 import { OrchestrationRun } from "../index";
 
 // 构造 RunDetailDTO 的工厂函数
@@ -181,6 +184,7 @@ function makeLeaderTask(sessionId: number): app.TaskDTO {
 
 beforeEach(() => {
   useOrchRunStore.getState().__reset();
+  useSessionStatusStore.getState().__reset();
   vi.clearAllMocks();
 });
 
@@ -336,6 +340,51 @@ describe("OrchestrationRun shell", () => {
 
     expect(screen.getByTestId("orch-footer")).toBeInTheDocument();
     expect(screen.getByTestId("leader-composer-send")).toBeInTheDocument();
+  });
+
+  // ── Bug fix: leader footer must steer (not silently drop) while Leader is
+  // mid-turn. isRunning 派生自 session-status-store,而非硬编码 false。
+
+  it("Leader session 处于 running 态 → useComposerSend 收到 isRunning: true(忙时 steer,而非静默丢弃)", () => {
+    const detail = makeDetail({ runId: 1, tasks: [makeLeaderTask(500)] });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+    useSessionStatusStore.getState().upsert(500, {
+      agentStatus: "running",
+      needsAttention: false,
+    });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    expect(mockUseComposerSend).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 500, isRunning: true }),
+    );
+  });
+
+  it("Leader session 处于 idle 态(或状态缺失)→ useComposerSend 收到 isRunning: false", () => {
+    const detail = makeDetail({ runId: 1, tasks: [makeLeaderTask(500)] });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+    useSessionStatusStore.getState().upsert(500, {
+      agentStatus: "idle",
+      needsAttention: false,
+    });
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    expect(mockUseComposerSend).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 500, isRunning: false }),
+    );
+  });
+
+  it("Leader session 状态未知(store 无记录)→ useComposerSend 收到 isRunning: false", () => {
+    const detail = makeDetail({ runId: 1, tasks: [makeLeaderTask(500)] });
+    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
+    // 不写入 session-status-store,模拟状态未知/尚未加载
+
+    render(<OrchestrationRun runId={1} title="测试运行" />);
+
+    expect(mockUseComposerSend).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 500, isRunning: false }),
+    );
   });
 
   // ── Regression guard: exactly ONE speak-to-Leader send control in Main ────

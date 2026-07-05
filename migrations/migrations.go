@@ -47,5 +47,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202607030002(), // 回报分层:orch_tasks.summary
 		migration202607040001(), // workflows.graph/is_default + seed 默认流程
 		migration202607040002(), // 运行时进度 overlay:orch_tasks.node_ref + orchestration_runs.flow_graph
+		migration202607050001(), // workflows.template + 回填(带图=占位符 / 无图=content)
 	}
 }

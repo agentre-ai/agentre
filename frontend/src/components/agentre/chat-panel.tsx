@@ -76,6 +76,7 @@ import {
   saveTranscriptScrollState,
 } from "./chat-panel-scroll-state";
 import { deriveBackgroundTasks } from "./background-tasks/derive";
+import { flipSubagentStatusInMessages } from "./background-tasks/flip-subagent-status";
 import { deriveTaskProgress } from "./task-progress/derive";
 import { TaskProgressBar } from "./task-progress/task-progress-bar";
 import type { AgentColor, AgentStatus } from "./types";
@@ -519,14 +520,19 @@ function ChatPanel({
       if (ev.kind !== "autonomous_started") {
         return;
       }
-      // 先翻转后台任务状态 (completedTask 可能在没有 assistantMessage 时也存在)
+      // 先翻转后台任务状态 (completedTask 可能在没有 assistantMessage 时也存在)。
+      // 后台任务完成是跨轮的:发起它的主轮早已结束,那条 tool_use block 已从 liveBlocks
+      // 落进 messages。mergeSubagentMeta 只翻 liveBlocks(覆盖极少数仍在流的竞态),真正
+      // 命中的是 messages —— 必须一并翻,否则面板胶囊 + 行内 pill 永远 spin (bug #2)。
       if (ev.completedTask?.toolUseId) {
-        useChatStreamsStore
-          .getState()
-          .mergeSubagentMeta(sessionId, ev.completedTask.toolUseId, {
-            status: ev.completedTask.status,
-            summary: ev.completedTask.summary,
-          } as chat_svc.ChatBlockSubagent);
+        const { toolUseId, status, summary } = ev.completedTask;
+        useChatStreamsStore.getState().mergeSubagentMeta(sessionId, toolUseId, {
+          status,
+          summary,
+        } as chat_svc.ChatBlockSubagent);
+        setMessages((prev) =>
+          flipSubagentStatusInMessages(prev, toolUseId, status, summary),
+        );
       }
       if (!ev.assistantMessage || !ev.stream) {
         return;

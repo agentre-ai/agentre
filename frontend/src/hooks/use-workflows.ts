@@ -12,6 +12,7 @@ export type WorkflowItem = {
   id: number;
   name: string;
   content: string;
+  template: string;
   graph: string;
   tags: string[];
   outline: string[];
@@ -35,6 +36,7 @@ export function useWorkflows() {
           id: i.id,
           name: i.name,
           content: i.content,
+          template: i.template ?? "",
           graph: i.graph ?? "",
           tags: i.tags ?? [],
           outline: i.outline ?? [],
@@ -62,12 +64,12 @@ export function useWorkflows() {
   const create = useCallback(
     async (
       name: string,
-      content: string,
+      template: string,
       tags: string[],
       outline: string[],
       graph = "",
     ) => {
-      await WorkflowCreate({ name, content, tags, outline, graph });
+      await WorkflowCreate({ name, template, tags, outline, graph });
       await reload();
     },
     [reload],
@@ -77,12 +79,12 @@ export function useWorkflows() {
     async (
       id: number,
       name: string,
-      content: string,
+      template: string,
       tags: string[],
       outline: string[],
       graph = "",
     ) => {
-      await WorkflowUpdate({ id, name, content, tags, outline, graph });
+      await WorkflowUpdate({ id, name, template, tags, outline, graph });
       await reload();
     },
     [reload],

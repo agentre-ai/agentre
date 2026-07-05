@@ -73,7 +73,7 @@ func (s *workflowtoolSvc) createWorkflow(ctx context.Context, rawArgs json.RawMe
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return "", err
 	}
-	resp, err := s.command.Create(ctx, &workflow_svc.CreateWorkflowRequest{Name: args.Name, Content: args.Content})
+	resp, err := s.command.Create(ctx, &workflow_svc.CreateWorkflowRequest{Name: args.Name, Template: args.Content})
 	if err != nil {
 		return "", err
 	}
@@ -93,11 +93,11 @@ func (s *workflowtoolSvc) updateWorkflow(ctx context.Context, rawArgs json.RawMe
 	if args.Name != nil {
 		name = *args.Name
 	}
-	content := cur.Content
+	template := cur.Template
 	if args.Content != nil {
-		content = *args.Content
+		template = *args.Content
 	}
-	resp, err := s.command.Update(ctx, &workflow_svc.UpdateWorkflowRequest{ID: args.ID, Name: name, Content: content})
+	resp, err := s.command.Update(ctx, &workflow_svc.UpdateWorkflowRequest{ID: args.ID, Name: name, Template: template})
 	if err != nil {
 		return "", err
 	}

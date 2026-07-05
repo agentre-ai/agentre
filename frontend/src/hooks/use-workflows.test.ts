@@ -54,7 +54,7 @@ describe("useWorkflows", () => {
     });
     expect(workflowCreate).toHaveBeenCalledWith({
       name: "新流程",
-      content: "# 新",
+      template: "# 新",
       tags: ["通用"],
       outline: ["需求拆解", "方案设计"],
       graph: "",
@@ -65,7 +65,7 @@ describe("useWorkflows", () => {
     expect(workflowUpdate).toHaveBeenCalledWith({
       id: 1,
       name: "改名",
-      content: "# 改",
+      template: "# 改",
       tags: ["修复"],
       outline: ["复现"],
       graph: "",

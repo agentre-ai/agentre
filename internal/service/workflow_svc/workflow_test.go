@@ -3,6 +3,7 @@ package workflow_svc
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cago-frame/cago/pkg/consts"
@@ -96,7 +97,7 @@ func TestCreateWorkflow(t *testing.T) {
 					w.ID = 7
 					return nil
 				})
-			resp, err := svc.Create(ctx, &CreateWorkflowRequest{Name: "  产品开发流程 ", Content: "# 产品开发流程"})
+			resp, err := svc.Create(ctx, &CreateWorkflowRequest{Name: "  产品开发流程 "})
 			assert.NoError(t, err)
 			assert.Equal(t, int64(7), resp.Item.ID)
 			assert.Equal(t, 0, resp.Item.RunCount)
@@ -114,18 +115,19 @@ func TestUpdateWorkflow(t *testing.T) {
 	convey.Convey("编辑流程", t, func() {
 		ctx, wfMock, runMock, svc := setupSvc(t)
 
-		convey.Convey("成功:改名改正文并回带 Run 数", func() {
+		convey.Convey("成功:改名 + 模板渲染进 content 并回带 Run 数", func() {
 			wfMock.EXPECT().Find(gomock.Any(), int64(3)).
 				Return(&workflow_entity.Workflow{ID: 3, Name: "旧名", Status: 1}, nil)
 			wfMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
 				func(_ context.Context, w *workflow_entity.Workflow) error {
 					assert.Equal(t, "新名", w.Name)
-					assert.Equal(t, "## 新正文", w.Content)
+					assert.Equal(t, "hi 新名", w.Content) // 无 graph → DAGPrompt 空,只渲染 .FlowName
+					assert.Equal(t, "hi {{ .FlowName }}", w.Template)
 					return nil
 				})
 			runMock.EXPECT().List(gomock.Any()).
 				Return([]*orch_entity.OrchestrationRun{{ID: 1, FlowID: 3}}, nil)
-			resp, err := svc.Update(ctx, &UpdateWorkflowRequest{ID: 3, Name: " 新名 ", Content: "## 新正文"})
+			resp, err := svc.Update(ctx, &UpdateWorkflowRequest{ID: 3, Name: " 新名 ", Template: "hi {{ .FlowName }}"})
 			assert.NoError(t, err)
 			assert.Equal(t, 1, resp.Item.RunCount)
 		})
@@ -184,7 +186,6 @@ func TestCreateWorkflow_TagsOutline(t *testing.T) {
 				})
 			resp, err := svc.Create(ctx, &CreateWorkflowRequest{
 				Name:    "标准功能开发流",
-				Content: "# 标准功能开发流",
 				Tags:    []string{"通用", "新功能"},
 				Outline: []string{"需求拆解", "方案设计"},
 			})
@@ -304,12 +305,12 @@ func TestCreateWorkflow_ProjectsGraphIntoContent(t *testing.T) {
 			func(_ context.Context, w *workflow_entity.Workflow) error { saved = w; w.ID = 5; return nil },
 		)
 		graph := `{"version":1,"nodes":[{"id":"a","label":"Plan","kind":"leader"},{"id":"b","label":"Do","kind":"task","brief":"do it"}],"edges":[{"from":"a","to":"b"}]}`
-		resp, err := svc.Create(ctx, &CreateWorkflowRequest{Name: "F", Content: "ignored user text", Graph: graph})
+		resp, err := svc.Create(ctx, &CreateWorkflowRequest{Name: "F", Graph: graph})
 		assert.NoError(t, err)
 		assert.Contains(t, saved.Content, "# F")
-		assert.Contains(t, saved.Content, "finish with a summary @user") // sink=Do
-		assert.NotEqual(t, "ignored user text", saved.Content)           // 图存在时投影覆写
+		assert.Contains(t, saved.Content, "finish with a summary @user")
 		assert.Equal(t, graph, saved.Graph)
+		assert.Equal(t, "{{ DAGPrompt }}", saved.Template) // 空模板回落默认
 		assert.Contains(t, resp.Item.Content, "# F")
 	})
 }
@@ -340,9 +341,53 @@ func TestUpdateWorkflow_EmptyGraphPreservesStoredGraph(t *testing.T) {
 		wfMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
 			func(_ context.Context, w *workflow_entity.Workflow) error { saved = w; return nil })
 		runMock.EXPECT().List(gomock.Any()).Return(nil, nil)
-		_, err := svc.Update(ctx, &UpdateWorkflowRequest{ID: 3, Name: "新名", Content: "## body"})
+		_, err := svc.Update(ctx, &UpdateWorkflowRequest{ID: 3, Name: "新名"})
 		assert.NoError(t, err)
 		assert.NotEmpty(t, saved.Graph) // 已存 graph 未被清空
 		assert.Contains(t, saved.Graph, `"kind":"leader"`)
+	})
+}
+
+func TestCreateWorkflow_RendersTemplateWithDAG(t *testing.T) {
+	convey.Convey("Create:模板包裹 DAG 占位符 → content 为渲染产物", t, func() {
+		ctx, wfMock, _, svc := setupSvc(t)
+		var saved *workflow_entity.Workflow
+		wfMock.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, w *workflow_entity.Workflow) error { saved = w; w.ID = 5; return nil })
+		graph := `{"version":1,"nodes":[{"id":"a","label":"Do","kind":"task","brief":"do it"}],"edges":[]}`
+		_, err := svc.Create(ctx, &CreateWorkflowRequest{
+			Name: "F", Graph: graph, Template: "intro\n{{ DAGPrompt }}\noutro",
+		})
+		assert.NoError(t, err)
+		assert.True(t, strings.HasPrefix(saved.Content, "intro\n"))
+		assert.Contains(t, saved.Content, "# F") // DAG 投影嵌入
+		assert.True(t, strings.HasSuffix(saved.Content, "\noutro"))
+		assert.Equal(t, "intro\n{{ DAGPrompt }}\noutro", saved.Template)
+	})
+}
+
+func TestCreateWorkflow_RenderErrorBlocksSave(t *testing.T) {
+	convey.Convey("Create:模板语法错误 → 返回 error 且不落库", t, func() {
+		ctx, _, _, svc := setupSvc(t) // 不 EXPECT Create,被调用即失败
+		_, err := svc.Create(ctx, &CreateWorkflowRequest{Name: "F", Template: "{{ DAGPromt }}"})
+		assert.Error(t, err)
+	})
+}
+
+func TestUpdateWorkflow_PreservedGraphRecomputesOutline(t *testing.T) {
+	convey.Convey("Update 省略 graph 但已存 graph → outline 按已存 graph 重算(不保留 req.Outline)", t, func() {
+		ctx, wfMock, runMock, svc := setupSvc(t)
+		wfMock.EXPECT().Find(gomock.Any(), int64(3)).Return(&workflow_entity.Workflow{
+			ID: 3, Name: "旧名", Status: 1,
+			Graph: `{"version":1,"nodes":[{"id":"a","label":"Plan","kind":"leader"},{"id":"b","label":"Do","kind":"task","brief":"x"}],"edges":[{"from":"a","to":"b"}]}`,
+		}, nil)
+		var saved *workflow_entity.Workflow
+		wfMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, w *workflow_entity.Workflow) error { saved = w; return nil })
+		runMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+		_, err := svc.Update(ctx, &UpdateWorkflowRequest{ID: 3, Name: "新名", Outline: []string{"stale-outline"}})
+		assert.NoError(t, err)
+		assert.Contains(t, saved.Outline, "Plan")             // outline 由已存 graph 投影重算
+		assert.NotContains(t, saved.Outline, "stale-outline") // 未保留 req 的 stale 值
 	})
 }

@@ -1809,6 +1809,77 @@ describe("ChatPanel · T29 subagent_activity_started 旁路订阅", () => {
   });
 });
 
+// ─── T30: 后台任务完成翻转 ────────────────────────────────────────────────────
+// 后台任务(run_in_background bash / subagent)的完成是跨轮的:主轮结束后,发起它的
+// tool_use block 已从 liveBlocks 落进 messages。autonomous_started 携带 completedTask
+// 到达时,只翻 liveBlocks(mergeSubagentMeta)翻不到那条块 —— 必须同时翻 messages,
+// 否则后台任务面板胶囊 + 行内 pill 永远 spin(bug #2)。
+describe("ChatPanel · T30 后台任务完成翻转 messages", () => {
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  it("Given an autonomous_started with completedTask, When it arrives, Then setMessages flips the persisted background block to completed", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 1 });
+    mockSessionStore.messages = [
+      {
+        id: 42,
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolUseId: "toolu_bg",
+            toolInput: { run_in_background: true },
+            subagent: { kind: "local_bash", status: "running" },
+          },
+        ],
+      },
+    ];
+
+    render(<ChatPanel sessionId={1} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:1",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(1);
+    act(() => {
+      handler!({
+        kind: "autonomous_started",
+        sessionId: 1,
+        completedTask: {
+          toolUseId: "toolu_bg",
+          status: "completed",
+          summary: "Background command finished (exit 0)",
+        },
+      } as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    expect(setMessagesSpy).toHaveBeenCalled();
+    const updater = setMessagesSpy.mock.calls.at(-1)![0] as (
+      prev: Array<Record<string, unknown>>,
+    ) => Array<Record<string, unknown>>;
+    const result = updater(
+      mockSessionStore.messages as Array<Record<string, unknown>>,
+    );
+    const block = (result[0].blocks as Array<Record<string, unknown>>)[0];
+    const subagent = block.subagent as Record<string, unknown>;
+    expect(subagent.status).toBe("completed");
+    expect(subagent.summary).toBe("Background command finished (exit 0)");
+  });
+});
+
 describe("ChatPanel · /new 斜杠命令", () => {
   it("exact /new 在新 tab 中开同 agent+项目的空白会话并跳转,不动当前会话", () => {
     resetStore();
