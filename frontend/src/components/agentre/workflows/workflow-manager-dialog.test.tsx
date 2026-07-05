@@ -104,6 +104,7 @@ describe("WorkflowManagerDialog · 内联编辑", () => {
       expect(workflowCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           name: "评审流程",
+          template: "{{ DAGPrompt }}",
           graph: expect.stringContaining("启动评审"),
         }),
       ),
@@ -321,5 +322,25 @@ describe("WorkflowManagerDialog · DAG 设计器", () => {
     await user.click(screen.getByTestId("workflow-row-5"));
     await user.click(screen.getByTestId("workflow-edit-button"));
     expect(await screen.findByTestId("flow-node-n1")).toBeInTheDocument();
+  });
+
+  it("模板报错(预览返回 error)→ 保存按钮置灰", async () => {
+    workflowPreviewGraph.mockReset().mockResolvedValue({
+      content: "",
+      outline: [],
+      error: 'function "DAGPromt" not defined',
+    });
+    render(<WorkflowManagerDialog />);
+    useWorkflowManagerStore.getState().openCreate();
+    fireEvent.change(await screen.findByTestId("workflow-name-input"), {
+      target: { value: "报错流程" },
+    });
+    fireEvent.change(screen.getByTestId("node-n1-label"), {
+      target: { value: "步骤一" },
+    });
+    // 名称+节点都有效,唯一能禁用保存的就是 templateError(来自 250ms 防抖预览)
+    await waitFor(() =>
+      expect(screen.getByTestId("workflow-save-button")).toBeDisabled(),
+    );
   });
 });
