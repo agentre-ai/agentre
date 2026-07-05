@@ -32,6 +32,8 @@ function firstSummaryLine(content: string): string {
 
 type DetailMode = "view" | "editor";
 
+const DEFAULT_TEMPLATE = "{{ DAGPrompt }}";
+
 export function WorkflowManagerDialog() {
   const open = useWorkflowManagerStore((s) => s.open);
   const intent = useWorkflowManagerStore((s) => s.intent);
@@ -56,7 +58,8 @@ function WorkflowManagerBody({
   const [query, setQuery] = React.useState("");
   const [confirmingDelete, setConfirmingDelete] = React.useState(false);
   const [draftName, setDraftName] = React.useState("");
-  const [draftContent, setDraftContent] = React.useState("");
+  const [draftTemplate, setDraftTemplate] = React.useState(DEFAULT_TEMPLATE);
+  const [templateError, setTemplateError] = React.useState(false);
   const [draftTags, setDraftTags] = React.useState<string[]>([]);
   const [draftOutline, setDraftOutline] = React.useState<string[]>([]);
   const [draftGraph, setDraftGraph] = React.useState<FlowGraph | null>(null);
@@ -71,7 +74,8 @@ function WorkflowManagerBody({
       setMode("editor");
       setEditingId(0);
       setDraftName("");
-      setDraftContent("");
+      setDraftTemplate(DEFAULT_TEMPLATE);
+      setTemplateError(false);
       setDraftTags([]);
       setDraftOutline([]);
       setDraftGraph(emptyDraftGraph());
@@ -94,7 +98,8 @@ function WorkflowManagerBody({
     setMode("editor");
     setEditingId(0);
     setDraftName("");
-    setDraftContent("");
+    setDraftTemplate(DEFAULT_TEMPLATE);
+    setTemplateError(false);
     setDraftTags([]);
     setDraftOutline([]);
     setDraftGraph(emptyDraftGraph());
@@ -105,7 +110,8 @@ function WorkflowManagerBody({
     setMode("editor");
     setEditingId(w.id);
     setDraftName(w.name);
-    setDraftContent(w.content);
+    setDraftTemplate(w.template || DEFAULT_TEMPLATE);
+    setTemplateError(false);
     setDraftTags(w.tags);
     setDraftOutline(w.outline);
     setDraftGraph(w.graph ? parseFlowGraph(w.graph) : null);
@@ -119,6 +125,7 @@ function WorkflowManagerBody({
 
   const canSave =
     !submitting &&
+    !templateError &&
     draftName.trim().length > 0 &&
     (draftGraph
       ? draftGraph.nodes.length > 0 &&
@@ -134,7 +141,7 @@ function WorkflowManagerBody({
         await update(
           editingId,
           draftName.trim(),
-          draftContent,
+          draftTemplate,
           draftTags,
           draftOutline,
           graphStr,
@@ -143,7 +150,7 @@ function WorkflowManagerBody({
       } else {
         await create(
           draftName.trim(),
-          draftContent,
+          draftTemplate,
           draftTags,
           draftOutline,
           graphStr,
@@ -321,10 +328,13 @@ function WorkflowManagerBody({
                   editing={editingId > 0}
                   name={draftName}
                   graph={draftGraph}
+                  template={draftTemplate}
                   error={formError}
                   canSave={canSave}
                   onNameChange={setDraftName}
                   onGraphChange={setDraftGraph}
+                  onTemplateChange={setDraftTemplate}
+                  onTemplateError={setTemplateError}
                   onCancel={cancelEdit}
                   onSave={() => void submit()}
                   onKeyDown={onEditorKeyDown}
@@ -333,13 +343,13 @@ function WorkflowManagerBody({
                 <EditorPane
                   editing={editingId > 0}
                   name={draftName}
-                  content={draftContent}
+                  content={draftTemplate}
                   tags={draftTags}
                   outline={draftOutline}
                   error={formError}
                   canSave={canSave}
                   onNameChange={setDraftName}
-                  onContentChange={setDraftContent}
+                  onContentChange={setDraftTemplate}
                   onTagsChange={setDraftTags}
                   onOutlineChange={setDraftOutline}
                   onConvertToDag={() => setDraftGraph(emptyDraftGraph())}
@@ -640,10 +650,13 @@ function DesignerPane({
   editing,
   name,
   graph,
+  template,
   error,
   canSave,
   onNameChange,
   onGraphChange,
+  onTemplateChange,
+  onTemplateError,
   onCancel,
   onSave,
   onKeyDown,
@@ -651,10 +664,13 @@ function DesignerPane({
   editing: boolean;
   name: string;
   graph: FlowGraph;
+  template: string;
   error: string | null;
   canSave: boolean;
   onNameChange: (v: string) => void;
   onGraphChange: (g: FlowGraph) => void;
+  onTemplateChange: (v: string) => void;
+  onTemplateError: (hasError: boolean) => void;
   onCancel: () => void;
   onSave: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
@@ -676,9 +692,12 @@ function DesignerPane({
         <WorkflowDagDesigner
           name={name}
           graph={graph}
+          template={template}
           error={error}
           onNameChange={onNameChange}
           onGraphChange={onGraphChange}
+          onTemplateChange={onTemplateChange}
+          onTemplateError={onTemplateError}
         />
       </div>
       <footer className="flex items-center gap-2 border-t border-border px-5 py-3">
