@@ -20,6 +20,7 @@ type Workflow struct {
 	Tags       string `gorm:"column:tags;type:text;not null;default:'[]'"`    // JSON []string,仅展示,不注入
 	Outline    string `gorm:"column:outline;type:text;not null;default:'[]'"` // JSON []string,仅展示,不注入
 	Graph      string `gorm:"column:graph;type:text;not null;default:''"`     // 流程 DAG 的 JSON 真源(空=adhoc/无图)
+	Template   string `gorm:"column:template;type:text;not null;default:''"`  // 用户编辑的提示词模板(Go text/template 真源);content 是其渲染产物
 	IsDefault  int    `gorm:"column:is_default;type:int;not null;default:0"`  // 1=内置默认流程(仿 system_badge)
 	Status     int    `gorm:"column:status;type:int;not null;default:1"`
 	Createtime int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
