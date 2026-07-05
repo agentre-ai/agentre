@@ -296,8 +296,8 @@ func TestSessionRepo_Create(t *testing.T) {
 
 func TestSessionRepo_ListByProject(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
-	mock.ExpectQuery("SELECT \\* FROM `chat_sessions` WHERE .project_id = \\? AND status = \\?. AND purpose <> \\? AND run_id = \\? ORDER BY last_message_at DESC, id DESC").
-		WithArgs(int64(7), consts.ACTIVE, chat_entity.SessionPurposeSubagent, int64(0)).
+	mock.ExpectQuery("SELECT \\* FROM `chat_sessions` WHERE .project_id = \\? AND status = \\?. AND purpose <> \\? ORDER BY last_message_at DESC, id DESC").
+		WithArgs(int64(7), consts.ACTIVE, chat_entity.SessionPurposeSubagent).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "agent_id", "project_id"}).
 			AddRow(int64(101), int64(42), int64(7)).
 			AddRow(int64(102), int64(43), int64(7)))
@@ -311,7 +311,7 @@ func TestSessionRepo_ListByProject(t *testing.T) {
 func TestSessionRepo_CountActiveByProject(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	mock.ExpectQuery("SELECT count\\(\\*\\) FROM `chat_sessions`").
-		WithArgs(int64(7), consts.ACTIVE, "running", "waiting", chat_entity.SessionPurposeSubagent, int64(0)).
+		WithArgs(int64(7), consts.ACTIVE, "running", "waiting", chat_entity.SessionPurposeSubagent).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 
 	n, err := chat_repo.NewSession().CountActiveByProject(ctx, 7, []string{"running", "waiting"})
@@ -480,15 +480,22 @@ func TestSessionRepo_ListAttentionByAgent_FiltersOrchSessions(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestSessionRepo_ListByProject_FiltersOrchSessions(t *testing.T) {
+// 编排 Run 绑定项目后, 其 Leader 根会话与子 agent 会话(run_id>0, purpose=orch_child)
+// 都应出现在项目会话列表里: SQL 不挂 defaultSessionScope(无 run_id 过滤),
+// 与呼吸灯口径的 CountRunningByAgents 一致。子 agent 委派会话(purpose=subagent_call)
+// 仍被 purpose <> ? 排除。
+func TestSessionRepo_ListByProject_IncludesOrchSessions(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 
-	mock.ExpectQuery("SELECT \\* FROM `chat_sessions` WHERE .project_id = \\? AND status = \\?. AND purpose <> \\? AND run_id = \\? ORDER BY last_message_at DESC, id DESC").
-		WithArgs(int64(7), consts.ACTIVE, chat_entity.SessionPurposeSubagent, int64(0)).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	mock.ExpectQuery("SELECT \\* FROM `chat_sessions` WHERE .project_id = \\? AND status = \\?. AND purpose <> \\? ORDER BY last_message_at DESC, id DESC").
+		WithArgs(int64(7), consts.ACTIVE, chat_entity.SessionPurposeSubagent).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "run_id", "purpose"}).
+			AddRow(int64(101), int64(0), "").
+			AddRow(int64(102), int64(9), chat_entity.SessionPurposeOrchChild))
 
-	_, err := chat_repo.NewSession().ListByProject(ctx, 7)
+	rows, err := chat_repo.NewSession().ListByProject(ctx, 7)
 	assert.NoError(t, err)
+	assert.Len(t, rows, 2, "普通会话与编排会话都应返回")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -532,11 +539,14 @@ func TestSessionRepo_CountRunningByAgents_IncludesOrchSessions(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestSessionRepo_CountActiveByProject_FiltersOrchSessions(t *testing.T) {
+// 编排 Run 绑定项目后, 项目下正在运行/等待的编排会话应计入删除守卫计数: SQL 不挂
+// defaultSessionScope(无 run_id 过滤), 避免在编排跑到一半时把项目删掉。
+// 子 agent 委派会话(purpose=subagent_call)仍被 purpose <> ? 排除。
+func TestSessionRepo_CountActiveByProject_IncludesOrchSessions(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 
-	mock.ExpectQuery("SELECT count\\(\\*\\) FROM `chat_sessions` WHERE .project_id = \\? AND status = \\?. AND agent_status IN .\\?,\\?. AND purpose <> \\? AND run_id = \\?").
-		WithArgs(int64(7), consts.ACTIVE, "running", "waiting", chat_entity.SessionPurposeSubagent, int64(0)).
+	mock.ExpectQuery("SELECT count\\(\\*\\) FROM `chat_sessions` WHERE .project_id = \\? AND status = \\?. AND agent_status IN .\\?,\\?. AND purpose <> \\?").
+		WithArgs(int64(7), consts.ACTIVE, "running", "waiting", chat_entity.SessionPurposeSubagent).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 
 	_, err := chat_repo.NewSession().CountActiveByProject(ctx, 7, []string{"running", "waiting"})
