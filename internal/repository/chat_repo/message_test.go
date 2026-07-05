@@ -221,9 +221,9 @@ func TestMessageRepo_FlipSubagentStatus_FlipsMatchingBlock(t *testing.T) {
 
 	blocksJSON := `[{"type":"subagent_state","data":{"parent_tool_call_id":"tu1","kind":"local_bash","description":"sleep 20","status":"running"}}]`
 
-	// 倒序拉近 N 条 assistant 消息。
-	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY seq DESC LIMIT \\?").
-		WithArgs(int64(3), "assistant", 50).
+	// 按 blocks_json LIKE toolUseID 定位发起消息(不受近因窗口限制)。
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? AND blocks_json LIKE \\? ORDER BY seq DESC").
+		WithArgs(int64(3), "assistant", "%tu1%").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
 			AddRow(42, 3, "assistant", blocksJSON, 4))
 
@@ -257,12 +257,30 @@ func TestMessageRepo_FlipSubagentStatus_NoMatchSilentNil(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 
 	// 没有任何 subagent_state 命中 → 不写库,静默返回 nil。
-	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY seq DESC LIMIT \\?").
-		WithArgs(int64(3), "assistant", 50).
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? AND blocks_json LIKE \\? ORDER BY seq DESC").
+		WithArgs(int64(3), "assistant", "%tu-missing%").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
 			AddRow(42, 3, "assistant", `[{"type":"text","data":{"text":"hi"}}]`, 4))
 
 	err := chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "tu-missing", "completed", "")
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestMessageRepo_FlipSubagentStatus_FiltersByToolUseID 锁定 bug #2 修复:后台任务的
+// 发起消息可能落在近 N 条 assistant 消息之外(长会话),旧实现 seq DESC LIMIT 50 盲扫会
+// 漏掉它 → DB 永远卡 running。改为按 blocks_json LIKE toolUseID 定位那条消息,不受近因
+// 窗口限制。此处断言查询带 blocks_json LIKE 过滤、且不再传 LIMIT 实参。
+func TestMessageRepo_FlipSubagentStatus_FiltersByToolUseID(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? AND blocks_json LIKE \\? ORDER BY seq DESC").
+		WithArgs(int64(3), "assistant", "%toolu_old%").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
+			AddRow(7, 3, "assistant", `[{"type":"text","data":{"text":"hi"}}]`, 1))
+
+	// 命中的行不含 subagent_state → 不写库,静默返回 nil。核心断言是上面的查询形状。
+	err := chat_repo.NewMessage().FlipSubagentStatus(ctx, 3, "toolu_old", "completed", "")
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

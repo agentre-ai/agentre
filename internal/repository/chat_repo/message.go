@@ -147,11 +147,14 @@ func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, t
 	logger.Ctx(ctx).Info("chat_repo.FlipSubagentStatus: flipping subagent_state status",
 		zap.Int64("sessionId", sessionID), zap.String("toolUseId", toolUseID), zap.String("status", status))
 
+	// 按 blocks_json LIKE toolUseID 定位发起消息,而非 seq DESC LIMIT N 近因盲扫:
+	// 后台任务完成是跨轮的,长会话里发起消息可能已滑出近 N 条窗口 → 旧实现漏掉它,DB
+	// 永远卡 running(bug #2)。toolUseID 是长且唯一的串,LIKE 只会命中发起消息(即便
+	// 偶有子串误命中,下面 FlipSubagentInBlocksJSON 不含匹配 subagent_state 时自然跳过)。
 	var rows []*chat_entity.Message
 	if err := db.Ctx(ctx).
-		Where("session_id = ? AND role = ?", sessionID, "assistant").
+		Where("session_id = ? AND role = ? AND blocks_json LIKE ?", sessionID, "assistant", "%"+toolUseID+"%").
 		Order("seq DESC").
-		Limit(flipSubagentScanLimit).
 		Find(&rows).Error; err != nil {
 		return err
 	}
