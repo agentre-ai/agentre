@@ -373,3 +373,21 @@ func TestCreateWorkflow_RenderErrorBlocksSave(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+func TestUpdateWorkflow_PreservedGraphRecomputesOutline(t *testing.T) {
+	convey.Convey("Update 省略 graph 但已存 graph → outline 按已存 graph 重算(不保留 req.Outline)", t, func() {
+		ctx, wfMock, runMock, svc := setupSvc(t)
+		wfMock.EXPECT().Find(gomock.Any(), int64(3)).Return(&workflow_entity.Workflow{
+			ID: 3, Name: "旧名", Status: 1,
+			Graph: `{"version":1,"nodes":[{"id":"a","label":"Plan","kind":"leader"},{"id":"b","label":"Do","kind":"task","brief":"x"}],"edges":[{"from":"a","to":"b"}]}`,
+		}, nil)
+		var saved *workflow_entity.Workflow
+		wfMock.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, w *workflow_entity.Workflow) error { saved = w; return nil })
+		runMock.EXPECT().List(gomock.Any()).Return(nil, nil)
+		_, err := svc.Update(ctx, &UpdateWorkflowRequest{ID: 3, Name: "新名", Outline: []string{"stale-outline"}})
+		assert.NoError(t, err)
+		assert.Contains(t, saved.Outline, "Plan")             // outline 由已存 graph 投影重算
+		assert.NotContains(t, saved.Outline, "stale-outline") // 未保留 req 的 stale 值
+	})
+}
