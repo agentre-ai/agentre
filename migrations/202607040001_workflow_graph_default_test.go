@@ -14,8 +14,7 @@ func TestMigration202607040001_AddsGraphColumn(t *testing.T) {
 	assert.NoError(t, RunMigrations(db))
 
 	// 旧内置「Default Orchestration Flow」已被 202607080001 取代并删除;
-	// 这里只验证 202607040001 durable 贡献 = graph 列可用、且存在带 task 节点的流程图。
-	var n int64
-	assert.NoError(t, db.Table("workflows").Where("graph LIKE ?", `%"kind":"task"%`).Count(&n).Error)
-	assert.GreaterOrEqual(t, n, int64(1))
+	// graph 列本身又被 202607080002 DROP(步骤/DAG 退场)。202607040001 已无 durable
+	// 贡献留存,这里只验证迁移链能干净跑通、列确已不在。
+	assert.False(t, db.Migrator().HasColumn("workflows", "graph"))
 }

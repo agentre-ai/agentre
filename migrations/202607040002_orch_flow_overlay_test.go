@@ -13,15 +13,8 @@ func TestMigration202607040002_AddsFlowOverlayColumns(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NoError(t, RunMigrations(db))
 
-	// node_ref 列可写可读
-	assert.NoError(t, db.Exec(`INSERT INTO orch_tasks (run_id, node_ref) VALUES (1, 'FE')`).Error)
-	var nodeRef string
-	assert.NoError(t, db.Raw(`SELECT node_ref FROM orch_tasks WHERE run_id = 1`).Scan(&nodeRef).Error)
-	assert.Equal(t, "FE", nodeRef)
-
-	// flow_graph 列可写可读
-	assert.NoError(t, db.Exec(`INSERT INTO orchestration_runs (goal, flow_graph) VALUES ('g', '{"version":1}')`).Error)
-	var fg string
-	assert.NoError(t, db.Raw(`SELECT flow_graph FROM orchestration_runs WHERE goal = 'g'`).Scan(&fg).Error)
-	assert.Equal(t, `{"version":1}`, fg)
+	// node_ref / flow_graph 两列都已被 202607080002 DROP(运行时进度 overlay 随步骤/DAG
+	// 退场)。202607040002 已无 durable 贡献留存,这里只验证迁移链能干净跑通、列确已不在。
+	assert.False(t, db.Migrator().HasColumn("orch_tasks", "node_ref"))
+	assert.False(t, db.Migrator().HasColumn("orchestration_runs", "flow_graph"))
 }
