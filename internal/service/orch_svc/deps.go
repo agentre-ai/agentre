@@ -61,8 +61,7 @@ type ApprovalGateway interface {
 	FinishToolApproval(ctx context.Context, sessionID int64, requestID, status, result string) error
 }
 
-// WorkflowReader 编排对流程库的最小依赖：按 ID 取已投影的流程正文 + 原始 graph JSON(用于 CreateRun 快照)。
+// WorkflowReader 编排对流程库的最小依赖：按 ID 取已投影的流程正文(用于 CreateRun 快照)。
 type WorkflowReader interface {
 	FlowContentByID(ctx context.Context, id int64) (string, error)
-	FlowGraphByID(ctx context.Context, id int64) (string, error)
 }

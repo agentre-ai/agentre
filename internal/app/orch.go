@@ -16,8 +16,6 @@ type RunItemDTO struct {
 	FlowID int64 `json:"flowId"`
 	// FlowContent 创建时快照的流程正文。
 	FlowContent string `json:"flowContent"`
-	// FlowGraph 创建时快照的 graph JSON（overlay 用；空=无流程）。
-	FlowGraph string `json:"flowGraph"`
 	// RootTaskID 根 Task 的 ID。
 	RootTaskID int64 `json:"rootTaskId"`
 	Createtime int64 `json:"createtime"`
@@ -67,7 +65,6 @@ func toRunItem(r *orch_entity.OrchestrationRun) *RunItemDTO {
 		ProjectID:     r.ProjectID,
 		FlowID:        r.FlowID,
 		FlowContent:   r.FlowContent,
-		FlowGraph:     r.FlowGraph,
 		RootTaskID:    r.RootTaskID,
 		Createtime:    r.Createtime,
 		Updatetime:    r.Updatetime,

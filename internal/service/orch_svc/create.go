@@ -49,19 +49,9 @@ func (s *orchSvc) CreateRun(ctx context.Context, req *CreateRunRequest) (*RunDet
 		}
 	}
 
-	// 库模式额外快照原始 graph JSON 进 run.FlowGraph(overlay 用；取失败按无图继续)。
-	var flowGraph string
-	if req.FlowID > 0 && s.wf != nil {
-		if g, err := s.wf.FlowGraphByID(ctx, req.FlowID); err == nil {
-			flowGraph = g
-		} else {
-			logger.Ctx(ctx).Warn("orch.CreateRun: 取流程 graph 失败,按无图继续", zap.Int64("flow", req.FlowID), zap.Error(err))
-		}
-	}
-
 	run := &orch_entity.OrchestrationRun{
 		Goal: req.Goal, LeaderAgentID: req.LeaderAgentID,
-		FlowID: req.FlowID, FlowContent: flowContent, FlowGraph: flowGraph,
+		FlowID: req.FlowID, FlowContent: flowContent,
 		ProjectID: req.ProjectID, Status: orch_entity.RunRunning,
 		AllowedAgentIDs: allowed,
 	}
