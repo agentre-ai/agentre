@@ -8,13 +8,14 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestMigration202607050001_BackfillsTemplate(t *testing.T) {
+func TestMigration202607050001_AddsTemplateColumn(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	assert.NoError(t, RunMigrations(db))
 
-	// seed 的默认流程带 graph → 回填成占位符模板
-	var row struct{ Template string }
-	assert.NoError(t, db.Table("workflows").Where("is_default = 1").Scan(&row).Error)
-	assert.Equal(t, "{{ DAGPrompt }}", row.Template)
+	// 旧默认流程(占位符模板)已被 202607080001 取代;这里验证 template 列可用、
+	// 且带图流程有非空 template(新内置流程为手写全文)。
+	var n int64
+	assert.NoError(t, db.Table("workflows").Where("graph != '' AND template != ''").Count(&n).Error)
+	assert.GreaterOrEqual(t, n, int64(1))
 }

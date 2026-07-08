@@ -315,16 +315,15 @@ func TestCreateWorkflow_ProjectsGraphIntoContent(t *testing.T) {
 	})
 }
 
-func TestListWorkflows_ExposesDefaultAndGraph(t *testing.T) {
-	convey.Convey("List DTO 带 isDefault/graph", t, func() {
+func TestListWorkflows_ExposesGraph(t *testing.T) {
+	convey.Convey("List DTO 带 graph", t, func() {
 		ctx, wfMock, runMock, svc := setupSvc(t)
 		wfMock.EXPECT().List(gomock.Any()).Return([]*workflow_entity.Workflow{
-			{ID: 1, Name: "D", Content: "# D", Graph: `{"version":1}`, IsDefault: 1, Status: 1},
+			{ID: 1, Name: "D", Content: "# D", Graph: `{"version":1}`, Status: 1},
 		}, nil)
 		runMock.EXPECT().List(gomock.Any()).Return(nil, nil)
 		resp, err := svc.List(ctx, &ListWorkflowsRequest{})
 		assert.NoError(t, err)
-		assert.True(t, resp.Items[0].IsDefault)
 		assert.Equal(t, `{"version":1}`, resp.Items[0].Graph)
 	})
 }

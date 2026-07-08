@@ -13,7 +13,6 @@ type WorkflowItem struct {
 	Tags       []string `json:"tags"`
 	Outline    []string `json:"outline"`
 	Graph      string   `json:"graph"`
-	IsDefault  bool     `json:"isDefault"`
 	RunCount   int      `json:"runCount"`
 	Createtime int64    `json:"createtime"`
 	Updatetime int64    `json:"updatetime"`

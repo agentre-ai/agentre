@@ -81,7 +81,6 @@ func toItem(w *workflow_entity.Workflow, runCount int) *WorkflowItem {
 		Tags:       decodeStringList(w.Tags),
 		Outline:    decodeStringList(w.Outline),
 		Graph:      w.Graph,
-		IsDefault:  w.IsDefault == 1,
 		RunCount:   runCount,
 		Createtime: w.Createtime,
 		Updatetime: w.Updatetime,

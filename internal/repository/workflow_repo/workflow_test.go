@@ -34,8 +34,8 @@ func TestWorkflowRepo_Update(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec("(?s)UPDATE `workflows` SET .* WHERE `id` = \\?").
 		WithArgs(
-			// SET 全列(name, content, tags, outline, graph, template, is_default, status, createtime, updatetime)
-			"产品开发流程", "# 流程", "", "", "", "", int64(0), consts.ACTIVE, int64(0), sqlmock.AnyArg(),
+			// SET 全列(name, content, tags, outline, graph, template, status, createtime, updatetime)
+			"产品开发流程", "# 流程", "", "", "", "", consts.ACTIVE, int64(0), sqlmock.AnyArg(),
 			int64(3), // WHERE: id 主键
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
