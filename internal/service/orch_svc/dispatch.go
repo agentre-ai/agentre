@@ -11,7 +11,7 @@ import (
 
 // Dispatch 把子任务异步派给某 agent：建子会话 + Task，触发其首轮，立即返回 taskID。
 // 子任务完成由 watchCompletion(Task 8) 回报派发者。
-func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName, brief string, isolate bool, node string) (int64, error) {
+func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName, brief string, isolate bool) (int64, error) {
 	parent, err := s.tasks.FindBySession(ctx, parentSessionID)
 	if err != nil {
 		return 0, err
@@ -66,7 +66,6 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 		Kind:         orch_entity.TaskKindDispatch,
 		Status:       orch_entity.TaskRunning,
 		Brief:        brief,
-		NodeRef:      node,
 		CallSeq:      int(n) + 1,
 	}
 	if err := s.tasks.Create(ctx, child); err != nil {

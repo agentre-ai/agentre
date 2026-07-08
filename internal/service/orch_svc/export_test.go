@@ -2,6 +2,7 @@ package orch_svc
 
 import (
 	"context"
+	"time"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 )
@@ -41,6 +42,13 @@ func (s *orchSvc) EnqueueRunForTest(runID int64, task *orch_entity.Task, brief s
 // OnTaskSettledForTest 仅测试用：直接调用 onTaskSettled（手动释放调度槽）。
 func (s *orchSvc) OnTaskSettledForTest(runID int64) {
 	s.onTaskSettled(runID)
+}
+
+// SetSendRetryBackoffForTest 仅测试用：覆盖调度器发送重试间隔。
+func SetSendRetryBackoffForTest(delays []time.Duration) func() {
+	old := sendRetryBackoff
+	sendRetryBackoff = delays
+	return func() { sendRetryBackoff = old }
 }
 
 // SchedulerPausedForTest 仅测试用：返回某 Run 调度器的 paused 标志（由 PauseRun/ResumeRun 控制）。

@@ -51,6 +51,9 @@ import {
 // 流程模式: 从流程库 | 临时写
 type FlowMode = "library" | "adhoc";
 
+// 上次选择的流程 id 持久化 key(sticky 预选;localStorage 是本仓前端持久化套路)
+const LAST_FLOW_KEY = "agentre.orchestration.lastFlowId";
+
 // 起始流程分段控件配置(顺序即渲染顺序)
 const FLOW_SEGMENTS: { mode: FlowMode; icon: LucideIcon; labelKey: string }[] =
   [
@@ -76,7 +79,6 @@ type WorkflowOption = {
   tags: string[];
   outline: string[];
   graph: string;
-  isDefault: boolean;
 };
 
 type FlatProject = { id: number; name: string; depth: number };
@@ -188,11 +190,12 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
           tags: w.tags ?? [],
           outline: w.outline ?? [],
           graph: w.graph ?? "",
-          isDefault: w.isDefault ?? false,
         }));
         setWorkflows(items);
-        const def = items.find((w) => w.isDefault);
-        if (def) setFlowId(def.id);
+        // sticky: 上次选择(若仍在列表)否则首个
+        const lastId = Number(localStorage.getItem(LAST_FLOW_KEY) || 0);
+        const picked = items.find((w) => w.id === lastId) ?? items[0];
+        if (picked) setFlowId(picked.id);
       })
       .catch(() => setWorkflows([]));
 
@@ -222,6 +225,10 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
         projectId,
         allowedAgentIds,
       });
+      // 记录本次实际使用的流程,供下次打开预选
+      if (flowMode === "library" && flowId > 0) {
+        localStorage.setItem(LAST_FLOW_KEY, String(flowId));
+      }
       // run 可能为 undefined, 用可选链保护
       if (d.run?.id) {
         // 乐观写进左侧列表 store: 后端 RunCreate 不发 orch:run:* 事件, 而 RunList

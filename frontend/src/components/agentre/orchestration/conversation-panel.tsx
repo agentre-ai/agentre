@@ -204,6 +204,7 @@ export function ConversationPanel({
             active
             liveDelta={live.liveDelta}
             liveThinking={live.liveThinking}
+            liveTargetId={live.liveTargetId}
             liveBlocks={live.liveBlocks}
             liveRetry={live.liveRetry}
             liveStreamStartedAt={live.liveStreamStartedAt}

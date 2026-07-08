@@ -102,6 +102,7 @@ export function RunHeader({ detail }: { detail: app.RunDetailDTO }) {
         {/* Title: goal · #runId */}
         <h2
           data-testid="run-header-title"
+          data-selectable-text="true"
           className="truncate text-base font-bold text-foreground"
         >
           {goal}

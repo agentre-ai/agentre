@@ -135,8 +135,8 @@ func (s *chatSvc) reconcileBgRunningOnComplete(ctx context.Context, sess *chat_e
 }
 
 // runningBgSubagentIDs 从一批已 finalize 的块里挑出「运行中后台 subagent」的父 tool_use_id。
-// 判据与前端 background-tasks/derive.ts 同款：SubagentStateBlock.Status=="running" 且其父
-// tool_use(ParentToolCallID)入参 run_in_background===true。前台 subagent(无该入参)不纳入。
+// 判据与前端 background-tasks/derive.ts 同款：SubagentStateBlock.Status=="running" 且
+// isBackgroundSubagent(kind, 父 tool_use 入参) 为真。前台 / 同步 subagent 不纳入。
 func runningBgSubagentIDs(finalBlocks []cagoblocks.ContentBlock) []string {
 	inputByToolUse := map[string]map[string]any{}
 	for _, b := range finalBlocks {
@@ -153,12 +153,30 @@ func runningBgSubagentIDs(finalBlocks []cagoblocks.ContentBlock) []string {
 		if !ok || sb.Status != "running" || sb.ParentToolCallID == "" {
 			continue
 		}
-		input := inputByToolUse[sb.ParentToolCallID]
-		if bg, _ := input["run_in_background"].(bool); bg {
+		if isBackgroundSubagent(sb.Kind, inputByToolUse[sb.ParentToolCallID]) {
 			out = append(out, sb.ParentToolCallID)
 		}
 	}
 	return out
+}
+
+// isBackgroundSubagent 判定一个 subagent 是否「后台」。两种工具默认相反,判据按 kind
+// 分叉(与前端 background-tasks/derive.ts 的 isBackground 同款):
+//   - local_bash(Bash)默认前台,仅工具入参 run_in_background===true 为后台;
+//   - local_agent(subagent / Agent 工具)默认后台,run_in_background 缺省即后台,
+//     仅显式 run_in_background===false 才是前台(同步)。
+//
+// 空/未知 kind 不纳入,与前端 derive 的 kind 白名单一致。
+func isBackgroundSubagent(kind string, input map[string]any) bool {
+	rib, present := input["run_in_background"].(bool)
+	switch kind {
+	case "local_bash":
+		return present && rib
+	case "local_agent":
+		return !present || rib
+	default:
+		return false
+	}
 }
 
 // clearBgRunningOnSourceClosed 后台活动 channel 关闭(子进程 evict/CloseSession)时清空会话

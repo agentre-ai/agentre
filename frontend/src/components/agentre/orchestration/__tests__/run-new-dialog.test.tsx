@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -31,6 +37,7 @@ function renderDialog() {
 describe("RunNewDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     useWorkflowManagerStore.setState({ open: false, intent: "browse" });
     appMocks.RunCreate.mockResolvedValue({ run: { id: 7 }, tasks: [] });
     appMocks.ListChatAgents.mockResolvedValue({
@@ -212,36 +219,64 @@ describe("RunNewDialog", () => {
       expect(screen.getByTestId("run-flow-mode-adhoc")).toBeInTheDocument();
     });
 
-    it("默认落在 library 并预选 isDefault 流程 → RunCreate 带该 flowId", async () => {
+    it("无 localStorage 时预选列表首个流程 → RunCreate 带该 flowId", async () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
         items: [
           {
             id: 1,
-            name: "Custom",
-            tags: [],
+            name: "Parallel Decompose",
+            tags: ["General"],
             outline: [],
             graph: "",
-            isDefault: false,
           },
           {
             id: 2,
-            name: "Default Orchestration Flow",
-            tags: ["Default"],
+            name: "Sequential Pipeline",
+            tags: ["Pipeline"],
             outline: [],
-            graph: JSON.stringify({
-              version: 1,
-              nodes: [{ id: "a", label: "See", kind: "leader" }],
-              edges: [],
-            }),
-            isDefault: true,
+            graph: "",
           },
         ],
       });
       renderDialog();
       await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
-      // 预选默认流程 → 渲染其 mini-DAG(flow-node-a)
-      expect(await screen.findByTestId("flow-node-a")).toBeInTheDocument();
+      fireEvent.change(screen.getByTestId("run-goal"), {
+        target: { value: "g" },
+      });
+      await user.click(screen.getByTestId("run-leader"));
+      await user.click(await screen.findByRole("option", { name: "架构师" }));
+      await user.click(screen.getByTestId("run-create"));
+      await waitFor(() =>
+        expect(appMocks.RunCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ flowId: 1 }),
+        ),
+      );
+    });
+
+    it("localStorage 有上次选择的流程 → 预选它", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      localStorage.setItem("agentre.orchestration.lastFlowId", "2");
+      appMocks.WorkflowList.mockResolvedValue({
+        items: [
+          {
+            id: 1,
+            name: "Parallel Decompose",
+            tags: [],
+            outline: [],
+            graph: "",
+          },
+          {
+            id: 2,
+            name: "Sequential Pipeline",
+            tags: [],
+            outline: [],
+            graph: "",
+          },
+        ],
+      });
+      renderDialog();
+      await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
       fireEvent.change(screen.getByTestId("run-goal"), {
         target: { value: "g" },
       });
@@ -251,6 +286,81 @@ describe("RunNewDialog", () => {
       await waitFor(() =>
         expect(appMocks.RunCreate).toHaveBeenCalledWith(
           expect.objectContaining({ flowId: 2 }),
+        ),
+      );
+    });
+
+    it("localStorage 上次选择已不在列表 → 回退首个流程", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      localStorage.setItem("agentre.orchestration.lastFlowId", "999");
+      appMocks.WorkflowList.mockResolvedValue({
+        items: [
+          {
+            id: 1,
+            name: "Parallel Decompose",
+            tags: [],
+            outline: [],
+            graph: "",
+          },
+          {
+            id: 2,
+            name: "Sequential Pipeline",
+            tags: [],
+            outline: [],
+            graph: "",
+          },
+        ],
+      });
+      renderDialog();
+      await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
+      fireEvent.change(screen.getByTestId("run-goal"), {
+        target: { value: "g" },
+      });
+      await user.click(screen.getByTestId("run-leader"));
+      await user.click(await screen.findByRole("option", { name: "架构师" }));
+      await user.click(screen.getByTestId("run-create"));
+      await waitFor(() =>
+        expect(appMocks.RunCreate).toHaveBeenCalledWith(
+          expect.objectContaining({ flowId: 1 }),
+        ),
+      );
+    });
+
+    it("library 模式提交成功后把所选流程写入 localStorage", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      appMocks.WorkflowList.mockResolvedValue({
+        items: [
+          {
+            id: 1,
+            name: "Parallel Decompose",
+            tags: [],
+            outline: [],
+            graph: "",
+          },
+          {
+            id: 2,
+            name: "Sequential Pipeline",
+            tags: [],
+            outline: [],
+            graph: "",
+          },
+        ],
+      });
+      renderDialog();
+      await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
+      await user.click(screen.getByTestId("run-flow-select"));
+      await user.click(
+        await screen.findByRole("option", { name: /Sequential Pipeline/ }),
+      );
+      fireEvent.change(screen.getByTestId("run-goal"), {
+        target: { value: "g" },
+      });
+      await user.click(screen.getByTestId("run-leader"));
+      await user.click(await screen.findByRole("option", { name: "架构师" }));
+      await user.click(screen.getByTestId("run-create"));
+      await waitFor(() =>
+        expect(localStorage.getItem("agentre.orchestration.lastFlowId")).toBe(
+          "2",
         ),
       );
     });
@@ -271,11 +381,15 @@ describe("RunNewDialog", () => {
       await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
       await user.click(screen.getByTestId("run-flow-mode-library"));
       await user.click(await screen.findByTestId("run-flow-select"));
-      expect(
-        await screen.findByRole("option", { name: /标准功能开发流/ }),
-      ).toBeInTheDocument();
-      expect(screen.getByText("通用")).toBeInTheDocument();
-      expect(screen.getByText("研发")).toBeInTheDocument();
+      // 唯一流程项现已被 sticky 预选(见 Step 2c: 无 localStorage 匹配时兜底
+      // items[0]),trigger 会克隆同一份 tag chip 文案 → 用 within(option) 把
+      // 断言限定在下拉选项本身,避免与 trigger 里的克隆内容重复匹配。
+      const option = await screen.findByRole("option", {
+        name: /标准功能开发流/,
+      });
+      expect(option).toBeInTheDocument();
+      expect(within(option).getByText("通用")).toBeInTheDocument();
+      expect(within(option).getByText("研发")).toBeInTheDocument();
     });
 
     it("选中流程后渲染流程步骤面包屑(run-flow-outline)", async () => {

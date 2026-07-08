@@ -84,6 +84,7 @@ describe("useLiveConversation", () => {
 
   it("chat-streams-store 有 LiveStream 时把 live overlay 透出", () => {
     liveStream = {
+      assistantMessageId: 200,
       liveDelta: "partial",
       liveThinking: "",
       liveBlocks: [],
@@ -94,6 +95,15 @@ describe("useLiveConversation", () => {
     const { result } = renderHook(() => useLiveConversation(7, 3));
     expect(result.current.live.liveDelta).toBe("partial");
     expect(result.current.live.streaming).toBe(true);
+    // liveTargetId 必须从 stream.assistantMessageId 透出 —— ChatTranscript 用它
+    // 定位「哪条 assistant 消息挂 live tail」。缺失则 buildTranscriptRows 的
+    // isLive 恒 false,流式文字整块落空,编排会话就不会像对话模块那样流式输出。
+    expect(result.current.live.liveTargetId).toBe(200);
+  });
+
+  it("无 LiveStream 时 liveTargetId 为 null", () => {
+    const { result } = renderHook(() => useLiveConversation(7, 3));
+    expect(result.current.live.liveTargetId).toBeNull();
   });
 
   it("doneTick 自增 → 调 reload 对账持久消息", () => {

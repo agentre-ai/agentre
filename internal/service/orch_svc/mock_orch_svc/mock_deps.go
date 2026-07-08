@@ -356,18 +356,3 @@ func (mr *MockWorkflowReaderMockRecorder) FlowContentByID(ctx, id any) *gomock.C
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FlowContentByID", reflect.TypeOf((*MockWorkflowReader)(nil).FlowContentByID), ctx, id)
 }
-
-// FlowGraphByID mocks base method.
-func (m *MockWorkflowReader) FlowGraphByID(ctx context.Context, id int64) (string, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FlowGraphByID", ctx, id)
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FlowGraphByID indicates an expected call of FlowGraphByID.
-func (mr *MockWorkflowReaderMockRecorder) FlowGraphByID(ctx, id any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FlowGraphByID", reflect.TypeOf((*MockWorkflowReader)(nil).FlowGraphByID), ctx, id)
-}

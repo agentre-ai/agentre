@@ -17,7 +17,7 @@ import (
 func TestFormatRunStatus(t *testing.T) {
 	tasks := []*orch_entity.Task{
 		{ID: 1, AgentID: 10, Kind: "dispatch", Status: orch_entity.TaskAwaitingChildren, Brief: "根", CallSeq: 1, ParentTaskID: 0},
-		{ID: 2, AgentID: 11, Kind: "dispatch", Status: orch_entity.TaskRunning, Brief: "前端", CallSeq: 1, ParentTaskID: 1, NodeRef: "FE"},
+		{ID: 2, AgentID: 11, Kind: "dispatch", Status: orch_entity.TaskRunning, Brief: "前端", CallSeq: 1, ParentTaskID: 1},
 		{ID: 3, AgentID: 12, Kind: "dispatch", Status: orch_entity.TaskDone, Brief: "后端", CallSeq: 1, ParentTaskID: 1, Summary: "完工"},
 	}
 	names := map[int64]string{10: "组长", 11: "小前", 12: "小后"}
@@ -26,7 +26,6 @@ func TestFormatRunStatus(t *testing.T) {
 		out := orch_svc.FormatRunStatusForTest(tasks, names)
 		So(out, ShouldContainSubstring, `"task_id":2`)
 		So(out, ShouldContainSubstring, `"agent":"小前"`)
-		So(out, ShouldContainSubstring, `"node":"FE"`)
 		So(out, ShouldContainSubstring, `"has_summary":true`) // task#3 有 Summary
 		So(out, ShouldContainSubstring, `"blocked_on":[2]`)   // task#1 awaiting-children,活跃子=#2
 	})

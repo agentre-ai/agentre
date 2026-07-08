@@ -3,10 +3,21 @@ package orch_svc
 import (
 	"context"
 	"runtime"
+	"strings"
 	"sync"
+	"time"
+
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 )
+
+var sendRetryBackoff = []time.Duration{
+	25 * time.Millisecond,
+	75 * time.Millisecond,
+	150 * time.Millisecond,
+}
 
 // queued 是等待被调度器发射的一个子任务。
 type queued struct {
@@ -81,14 +92,44 @@ func (s *orchSvc) kick(runID int64) {
 			// 订阅必须早于 Send(ObserveTurn 契约):快 turn 的终态回执会在订阅前发出而丢失,
 			// watchCompletion 的 range 会永久阻塞 → 任务永不 done、调度槽泄漏、Run 卡死。
 			ch, cancel := s.chat.ObserveTurn(q.task.SessionID)
-			if err := s.chat.SendAndForget(ctx, q.task.SessionID, q.brief); err != nil {
+			if err := s.sendAndForgetWithRetry(ctx, q.task.SessionID, q.brief); err != nil {
 				cancel()
+				s.markTaskError(ctx, q.task, "启动子任务失败: "+err.Error())
+				s.emitRunUpdated(ctx, q.task.RunID)
 				s.onTaskSettled(runID)
 				return
 			}
 			s.watchCompletion(ctx, q.task, ch, cancel)
 		}(q)
 	}
+}
+
+func (s *orchSvc) sendAndForgetWithRetry(ctx context.Context, sessionID int64, brief string) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		err = s.chat.SendAndForget(ctx, sessionID, brief)
+		if err == nil {
+			return nil
+		}
+		if !isTransientSendError(err) || attempt >= len(sendRetryBackoff) {
+			return err
+		}
+		delay := sendRetryBackoff[attempt]
+		logger.Ctx(ctx).Warn("orch_svc.sendAndForgetWithRetry: retry child task send",
+			zap.Int64("session_id", sessionID), zap.Int("attempt", attempt+1),
+			zap.Duration("delay", delay), zap.Error(err))
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+	}
+}
+
+func isTransientSendError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
 }
 
 // onTaskSettled 释放调度并发槽，然后 kick 尝试发射下一个 pending 任务。

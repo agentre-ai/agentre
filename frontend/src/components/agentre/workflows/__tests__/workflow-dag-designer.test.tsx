@@ -77,6 +77,20 @@ describe("WorkflowDagDesigner 模板 pane", () => {
     );
   });
 
+  it("预览态渲染容器可选中复制(data-selectable-text)", async () => {
+    setup("{{ DAGPrompt }}");
+    fireEvent.click(screen.getByTestId("designer-tab-preview"));
+    await waitFor(() =>
+      expect(screen.getByTestId("designer-prompt-preview")).toHaveTextContent(
+        "RENDERED",
+      ),
+    );
+    expect(screen.getByTestId("designer-prompt-preview")).toHaveAttribute(
+      "data-selectable-text",
+      "true",
+    );
+  });
+
   it("预览报错→显示错误并回调 onTemplateError(true)", async () => {
     previewGraph.mockResolvedValue({
       content: "",

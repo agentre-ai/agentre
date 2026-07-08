@@ -383,7 +383,10 @@ function RunResultCard({ result, t }: { result: RunHookResult; t: TFunction }) {
             <span className="font-mono text-[10px] text-muted-foreground">
               {t("hooks.run.stdout")}
             </span>
-            <pre className="overflow-x-auto rounded-md border border-border bg-code-surface p-3 font-mono text-[11px] leading-relaxed text-code-muted-foreground">
+            <pre
+              data-selectable-text="true"
+              className="overflow-x-auto rounded-md border border-border bg-code-surface p-3 font-mono text-[11px] leading-relaxed text-code-muted-foreground"
+            >
               {result.stdout}
             </pre>
           </div>
@@ -393,7 +396,10 @@ function RunResultCard({ result, t }: { result: RunHookResult; t: TFunction }) {
             <span className="font-mono text-[10px] text-muted-foreground">
               {t("hooks.run.stderr")}
             </span>
-            <pre className="overflow-x-auto rounded-md border border-border bg-code-surface p-3 font-mono text-[11px] leading-relaxed text-status-error">
+            <pre
+              data-selectable-text="true"
+              className="overflow-x-auto rounded-md border border-border bg-code-surface p-3 font-mono text-[11px] leading-relaxed text-status-error"
+            >
               {result.stderr}
             </pre>
           </div>
@@ -761,7 +767,10 @@ function RunLogTab({
                 </span>
               </span>
               {selected.dedupeKey ? (
-                <span className="font-mono text-[10px] text-muted-foreground">
+                <span
+                  data-selectable-text="true"
+                  className="font-mono text-[10px] text-muted-foreground"
+                >
                   {t("hooks.log.dedupeKey")}: {selected.dedupeKey}
                 </span>
               ) : null}
@@ -770,7 +779,10 @@ function RunLogTab({
               <span className="font-mono text-[10px] text-muted-foreground">
                 {t("hooks.log.payload")}
               </span>
-              <pre className="overflow-x-auto rounded-md border border-border bg-code-surface p-3 font-mono text-[11px] leading-relaxed text-code-muted-foreground">
+              <pre
+                data-selectable-text="true"
+                className="overflow-x-auto rounded-md border border-border bg-code-surface p-3 font-mono text-[11px] leading-relaxed text-code-muted-foreground"
+              >
                 {selected.payloadJson}
               </pre>
             </div>

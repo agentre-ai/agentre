@@ -61,7 +61,7 @@ func TestListAllowedAgents_FiltersToAllowedSetPlusLeader(t *testing.T) {
 	Convey("agent_list 只回 allowed∪{leader}", t, func() {
 		got, err := orch_svc.Default().ListAllowedAgents(context.Background(), 500)
 		So(err, ShouldBeNil)
-		ids := []int64{}
+		ids := make([]int64, 0, len(got))
 		for _, a := range got {
 			ids = append(ids, a.ID)
 		}
