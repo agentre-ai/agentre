@@ -1,14 +1,11 @@
 package migrations
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
-
-	"github.com/agentre-ai/agentre/internal/service/workflow_svc"
 )
 
 func TestMigration202607080001_SeedsPresetFlows(t *testing.T) {
@@ -17,11 +14,10 @@ func TestMigration202607080001_SeedsPresetFlows(t *testing.T) {
 	assert.NoError(t, RunMigrations(db))
 
 	type row struct {
-		Name, Content, Template, Graph, Tags, Outline string
-		Updatetime                                    int64
+		Name, Content, Tags string
 	}
 	var rows []row
-	assert.NoError(t, db.Table("workflows").Order("updatetime DESC").Scan(&rows).Error)
+	assert.NoError(t, db.Table("workflows").Select("name,content,tags").Order("updatetime DESC").Scan(&rows).Error)
 
 	// 恰好 4 个内置流程,顺序(updatetime DESC)= Parallel Decompose 第一
 	names := make([]string, len(rows))
@@ -42,15 +38,9 @@ func TestMigration202607080001_SeedsPresetFlows(t *testing.T) {
 		assert.NotEqual(t, "is_default", c.Name)
 	}
 
-	// 一致性:每行 content==render(template)、outline==ProjectGraph(graph)、tags 非空
+	// 每行 content / tags 非空
 	for _, r := range rows {
+		assert.NotEmpty(t, r.Content, r.Name)
 		assert.NotEmpty(t, r.Tags, r.Name)
-		gotContent, gotOutline, err := workflow_svc.RenderWorkflowContent(r.Name, r.Graph, r.Template)
-		assert.NoError(t, err, r.Name)
-		assert.Equal(t, gotContent, r.Content, "content 应等于 template 渲染产物: "+r.Name)
-
-		var storedOutline []string
-		assert.NoError(t, json.Unmarshal([]byte(r.Outline), &storedOutline), r.Name)
-		assert.Equal(t, gotOutline, storedOutline, "outline 应等于 ProjectGraph 投影: "+r.Name)
 	}
 }

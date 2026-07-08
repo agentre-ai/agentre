@@ -209,7 +209,7 @@ func TestWorkflowApproval_UpdateMerge(t *testing.T) {
 		// loadWorkflow 内部调 query.List 找现值
 		d.query.EXPECT().List(gomock.Any(), gomock.Any()).Return(&workflow_svc.ListWorkflowsResponse{
 			Items: []*workflow_svc.WorkflowItem{
-				{ID: 3, Name: "旧名称", Content: "已渲染正文(不应被读取)", Template: "步骤一:原始内容", RunCount: 2},
+				{ID: 3, Name: "旧名称", Content: "步骤一:原始内容", RunCount: 2},
 			},
 		}, nil)
 		apvCh := beginCh(d, 99)
@@ -235,9 +235,8 @@ func TestWorkflowApproval_UpdateMerge(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		So(updateReq.ID, ShouldEqual, 3)
-		So(updateReq.Name, ShouldEqual, "新名称")                 // 显式传入的
-		So(updateReq.Template, ShouldEqual, "步骤一:原始内容")        // 沿用现值
-		So(updateReq.Template, ShouldNotEqual, "已渲染正文(不应被读取)") // 不应读到 Content
+		So(updateReq.Name, ShouldEqual, "新名称")         // 显式传入的
+		So(updateReq.Content, ShouldEqual, "步骤一:原始内容") // 沿用现值
 	})
 }
 
