@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
@@ -25,7 +26,17 @@ func TestBuildTurnMCP_InjectsWhenEnabled(t *testing.T) {
 	orch_svc.Default().SetGatewayBaseURL("http://127.0.0.1:9/")
 	t.Cleanup(func() { orch_svc.Default().SetGatewayBaseURL("") })
 
-	// Disabled agent → nil.
+	// BuildTurnMCP 现会对未开 orchestrate 的 agent 查会话是否为编排会话;显式接线一个
+	// 返回「无绑定」的 tasks mock,把「非编排会话」这个前置条件钉死,不受包内其他用例
+	// 遗留在 Default() 单例上的 tasks mock 干扰。
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks.EXPECT().FindBySession(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	orch_svc.Default().RegisterDeps(nil, nil, nil, tasks, nil, nil)
+	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
+
+	// Disabled agent + 非编排会话 → nil.
 	disabled := &agent_entity.Agent{ID: 1}
 	if got := orch_svc.Default().BuildTurnMCP(context.Background(), disabled, 500, 0); got != nil {
 		t.Fatalf("disabled agent should get no spec, got %v", got)
@@ -119,6 +130,79 @@ func TestBuildTurnExtras_NeverInjectsTagsOutline(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(suffix, "### "), "suffix 应只含两个 ### 段落，多则说明有额外注入")
 	// tripwire 2：suffix 以 flowBody 结尾，确保 FlowContent 之后没有额外内容追加。
 	assert.True(t, strings.HasSuffix(suffix, flowBody), "suffix 应以 FlowContent 结尾，有额外追加则失败")
+}
+
+// TestBuildTurnMCP_InjectsForOrchestrationSessionEvenWhenDisabled 回归：
+// 经编排创建的会话(绑定了编排 Task)即便其 agent 未勾 orchestrate 工具,也应注入
+// 全套编排 MCP 工具 —— 否则 Leader/子任务拿不到 dispatch/report/finish 等能力,
+// 整条 Run 静默降级成普通聊天(dev sess-53 根因)。
+func TestBuildTurnMCP_InjectsForOrchestrationSessionEvenWhenDisabled(t *testing.T) {
+	orch_svc.Default().SetGatewayBaseURL("http://127.0.0.1:9/")
+	t.Cleanup(func() { orch_svc.Default().SetGatewayBaseURL("") })
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(nil, nil, nil, tasks, nil, nil)
+	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
+
+	// 会话 700 绑定了编排 Task(被派发子任务)→ 视为编排会话。
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(700)).
+		Return(&orch_entity.Task{ID: 7, RunID: 100, SessionID: 700, ParentTaskID: 3}, nil).AnyTimes()
+
+	disabled := &agent_entity.Agent{ID: 1} // orchestrate 未开
+	specs := orch_svc.Default().BuildTurnMCP(context.Background(), disabled, 700, 0)
+	require.NotEmpty(t, specs, "编排会话即便 agent 未开 orchestrate 也应注入工具")
+	assert.Equal(t, agenttool.KeyOrchestrate, specs[0].Name)
+
+	// 对照:非编排会话(FindBySession 无绑定)+ 未开 → 仍不注入。
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(701)).Return(nil, nil).AnyTimes()
+	if got := orch_svc.Default().BuildTurnMCP(context.Background(), disabled, 701, 0); got != nil {
+		t.Fatalf("非编排会话且未开 orchestrate 应得 nil, got %v", got)
+	}
+}
+
+// TestBuildTurnExtras_InjectsForRootSessionEvenWhenDisabled 回归：根(Leader)会话即便
+// 其 agent 未勾 orchestrate,也应注入编排指引 + 本次编排流程正文(dev sess-53 根因)。
+func TestBuildTurnExtras_InjectsForRootSessionEvenWhenDisabled(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
+	orch_svc.Default().RegisterDeps(nil, nil, runs, tasks, nil, nil)
+	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
+
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).
+		Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500, ParentTaskID: 0}, nil).AnyTimes()
+	runs.EXPECT().Find(gomock.Any(), int64(100)).
+		Return(&orch_entity.OrchestrationRun{ID: 100, RootTaskID: 9, FlowContent: "先拆分再并行"}, nil).AnyTimes()
+
+	disabled := &agent_entity.Agent{ID: 1} // orchestrate 未开
+	_, suffix, ok := orch_svc.Default().BuildTurnExtras(context.Background(), disabled, 500, 0)
+	assert.True(t, ok, "根会话即便 agent 未开 orchestrate 也应注入")
+	assert.Contains(t, suffix, "先拆分再并行") // 流程正文
+	assert.Contains(t, suffix, "一切结果")   // 编排指引
+}
+
+// TestBuildTurnExtras_InjectsGuidanceForChildEvenWhenDisabled 回归：被派发的子任务
+// 即便其 agent 未勾 orchestrate,也应注入编排指引(让注进去的工具可用),但**不**注入
+// 流程正文(整条 Run 的计划仅归 Leader)。
+func TestBuildTurnExtras_InjectsGuidanceForChildEvenWhenDisabled(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	orch_svc.Default().RegisterDeps(nil, nil, nil, tasks, nil, nil)
+	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
+
+	// 子任务:ParentTaskID != 0 → 不进流程正文分支(不查 runs)。
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(800)).
+		Return(&orch_entity.Task{ID: 12, RunID: 100, ParentTaskID: 9, SessionID: 800}, nil).AnyTimes()
+
+	disabled := &agent_entity.Agent{ID: 1} // orchestrate 未开
+	_, suffix, ok := orch_svc.Default().BuildTurnExtras(context.Background(), disabled, 800, 0)
+	assert.True(t, ok, "子任务即便 agent 未开 orchestrate 也应注入指引")
+	assert.Contains(t, suffix, "一切结果") // 编排指引在
+	assert.Equal(t, 1, strings.Count(suffix, "### "), "子任务只含「编排指引」一段,无流程正文")
 }
 
 func TestBuildTurnExtras_GuidanceMentionsReadAndReport(t *testing.T) {
