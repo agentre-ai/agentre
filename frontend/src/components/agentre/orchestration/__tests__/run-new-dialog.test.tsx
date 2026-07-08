@@ -223,20 +223,8 @@ describe("RunNewDialog", () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
         items: [
-          {
-            id: 1,
-            name: "Parallel Decompose",
-            tags: ["General"],
-            outline: [],
-            graph: "",
-          },
-          {
-            id: 2,
-            name: "Sequential Pipeline",
-            tags: ["Pipeline"],
-            outline: [],
-            graph: "",
-          },
+          { id: 1, name: "Parallel Decompose", tags: ["General"] },
+          { id: 2, name: "Sequential Pipeline", tags: ["Pipeline"] },
         ],
       });
       renderDialog();
@@ -259,20 +247,8 @@ describe("RunNewDialog", () => {
       localStorage.setItem("agentre.orchestration.lastFlowId", "2");
       appMocks.WorkflowList.mockResolvedValue({
         items: [
-          {
-            id: 1,
-            name: "Parallel Decompose",
-            tags: [],
-            outline: [],
-            graph: "",
-          },
-          {
-            id: 2,
-            name: "Sequential Pipeline",
-            tags: [],
-            outline: [],
-            graph: "",
-          },
+          { id: 1, name: "Parallel Decompose", tags: [] },
+          { id: 2, name: "Sequential Pipeline", tags: [] },
         ],
       });
       renderDialog();
@@ -295,20 +271,8 @@ describe("RunNewDialog", () => {
       localStorage.setItem("agentre.orchestration.lastFlowId", "999");
       appMocks.WorkflowList.mockResolvedValue({
         items: [
-          {
-            id: 1,
-            name: "Parallel Decompose",
-            tags: [],
-            outline: [],
-            graph: "",
-          },
-          {
-            id: 2,
-            name: "Sequential Pipeline",
-            tags: [],
-            outline: [],
-            graph: "",
-          },
+          { id: 1, name: "Parallel Decompose", tags: [] },
+          { id: 2, name: "Sequential Pipeline", tags: [] },
         ],
       });
       renderDialog();
@@ -330,20 +294,8 @@ describe("RunNewDialog", () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
         items: [
-          {
-            id: 1,
-            name: "Parallel Decompose",
-            tags: [],
-            outline: [],
-            graph: "",
-          },
-          {
-            id: 2,
-            name: "Sequential Pipeline",
-            tags: [],
-            outline: [],
-            graph: "",
-          },
+          { id: 1, name: "Parallel Decompose", tags: [] },
+          { id: 2, name: "Sequential Pipeline", tags: [] },
         ],
       });
       renderDialog();
@@ -368,14 +320,7 @@ describe("RunNewDialog", () => {
     it("切到 library 模式后下拉列出流程(名称 + 标签)", async () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
-        items: [
-          {
-            id: 1,
-            name: "标准功能开发流",
-            tags: ["通用", "研发"],
-            outline: ["需求拆解", "方案设计"],
-          },
-        ],
+        items: [{ id: 1, name: "标准功能开发流", tags: ["通用", "研发"] }],
       });
       renderDialog();
       await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
@@ -392,35 +337,12 @@ describe("RunNewDialog", () => {
       expect(within(option).getByText("研发")).toBeInTheDocument();
     });
 
-    it("选中流程后渲染流程步骤面包屑(run-flow-outline)", async () => {
-      const user = userEvent.setup({ pointerEventsCheck: 0 });
-      appMocks.WorkflowList.mockResolvedValue({
-        items: [
-          {
-            id: 1,
-            name: "标准功能开发流",
-            tags: ["通用", "研发"],
-            outline: ["需求拆解", "方案设计"],
-          },
-        ],
-      });
-      renderDialog();
-      await waitFor(() => expect(appMocks.WorkflowList).toHaveBeenCalled());
-      await user.click(screen.getByTestId("run-flow-mode-library"));
-      await user.click(await screen.findByTestId("run-flow-select"));
-      await user.click(
-        await screen.findByRole("option", { name: /标准功能开发流/ }),
-      );
-      expect(await screen.findByTestId("run-flow-outline")).toBeInTheDocument();
-      expect(screen.getByText("需求拆解")).toBeInTheDocument();
-    });
-
     it("从下拉选中流程后, RunCreate 带上该 flowId", async () => {
       const user = userEvent.setup({ pointerEventsCheck: 0 });
       appMocks.WorkflowList.mockResolvedValue({
         items: [
-          { id: 1, name: "流程A", tags: [], outline: [] },
-          { id: 2, name: "流程B", tags: [], outline: [] },
+          { id: 1, name: "流程A", tags: [] },
+          { id: 2, name: "流程B", tags: [] },
         ],
       });
       renderDialog();

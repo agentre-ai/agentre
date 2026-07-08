@@ -40,7 +40,6 @@ import {
   WorkflowList,
 } from "../../../../wailsjs/go/app/App";
 import { app } from "../../../../wailsjs/go/models";
-import { FlowGraphView } from "./flow-graph-view";
 import { TeamDepartmentPicker } from "./team-department-picker";
 import {
   groupAgentsByDepartment,
@@ -77,8 +76,6 @@ type WorkflowOption = {
   id: number;
   name: string;
   tags: string[];
-  outline: string[];
-  graph: string;
 };
 
 type FlatProject = { id: number; name: string; depth: number };
@@ -188,8 +185,6 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
           id: w.id,
           name: w.name,
           tags: w.tags ?? [],
-          outline: w.outline ?? [],
-          graph: w.graph ?? "",
         }));
         setWorkflows(items);
         // sticky: 上次选择(若仍在列表)否则首个
@@ -206,7 +201,6 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
 
   // 是否可以提交: 目标非空 + 已选 Leader(Leader 是必选的编排枢纽,leaderAgentId=0 无效)
   const canSubmit = goal.trim().length > 0 && leaderId > 0 && !submitting;
-  const selectedWorkflow = workflows.find((w) => w.id === flowId);
   const pickerModel = React.useMemo(
     () => groupAgentsByDepartment(agents, orgDepartments, orgAgents),
     [agents, orgDepartments, orgAgents],
@@ -341,7 +335,7 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
             </div>
           </div>
 
-          {/* 流程库选择: 下拉框,显示名称 + 标签 chip;选中后展示步骤面包屑 */}
+          {/* 流程库选择: 下拉框,显示名称 + 标签 chip */}
           {flowMode === "library" ? (
             <div className="flex flex-col gap-1.5 text-xs">
               <span className="flex items-center gap-2">
@@ -390,35 +384,6 @@ export function RunNewDialog({ open, onOpenChange }: RunNewDialogProps) {
                   ))}
                 </SelectContent>
               </Select>
-              {selectedWorkflow && selectedWorkflow.graph ? (
-                <div
-                  data-testid="run-flow-preview"
-                  className="flex flex-col gap-1.5"
-                >
-                  <span className="text-2xs text-subtle-foreground">
-                    {t("orchestration.new.flowPreview")}
-                  </span>
-                  <FlowGraphView graph={selectedWorkflow.graph} />
-                </div>
-              ) : selectedWorkflow && selectedWorkflow.outline.length > 0 ? (
-                <span
-                  data-testid="run-flow-outline"
-                  className="flex flex-wrap items-center gap-1"
-                >
-                  {selectedWorkflow.outline.map((step, i) => (
-                    <React.Fragment key={`${step}-${i}`}>
-                      {i > 0 ? (
-                        <span className="text-2xs text-subtle-foreground">
-                          ›
-                        </span>
-                      ) : null}
-                      <span className="rounded border border-border bg-card px-1.5 py-0.5 text-2xs text-muted-foreground">
-                        {step}
-                      </span>
-                    </React.Fragment>
-                  ))}
-                </span>
-              ) : null}
             </div>
           ) : null}
 

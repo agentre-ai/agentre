@@ -2284,7 +2284,6 @@
       "flowContent": "流程内容",
       "flowContentPlaceholder": "输入或粘贴流程定义…",
       "flowManage": "管理流程库",
-      "flowPreview": "流程预览（DAG）",
       "create": "创建并启动 Run",
       "project": "项目",
       "projectNone": "无（使用 Agent 默认目录）"
@@ -2378,9 +2377,7 @@
       "statusError": "出错",
       "statusPending": "待启动",
       "statusIdle": "进行中",
-      "progress": "{{done}} / {{total}} 完成",
-      "filteredBy": "筛选: {{label}}",
-      "clearFilter": "清除筛选"
+      "progress": "{{done}} / {{total}} 完成"
     },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",
@@ -2388,8 +2385,6 @@
       "view": "查看"
     },
     "run": {
-      "blueprintTitle": "流程蓝图",
-      "blueprintRef": "仅参考 · 不约束执行",
       "speakLeaderPlaceholder": "对 Leader 说:调整优先级 / 追加约束 / 批准任务…",
       "send": "发送"
     },
@@ -2404,9 +2399,6 @@
       "awaitingReply": "等待回复中",
       "sessionLabel": "会话",
       "tasksUnit": "任务"
-    },
-    "flow": {
-      "empty": "本次编排没有可叠加进度的流程"
     },
     "toggle": {
       "tasks": "任务",

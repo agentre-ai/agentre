@@ -2284,7 +2284,6 @@
       "flowContent": "Flow Content",
       "flowContentPlaceholder": "Enter or paste flow definition…",
       "flowManage": "Manage library",
-      "flowPreview": "Flow preview (DAG)",
       "create": "Create & start run",
       "project": "Project",
       "projectNone": "None (agent default directory)"
@@ -2378,9 +2377,7 @@
       "statusError": "Error",
       "statusPending": "Pending",
       "statusIdle": "In progress",
-      "progress": "{{done}} / {{total}} done",
-      "filteredBy": "Filtered: {{label}}",
-      "clearFilter": "Clear filter"
+      "progress": "{{done}} / {{total}} done"
     },
     "notify": {
       "completed": "Orchestration run completed: {{goal}}",
@@ -2388,8 +2385,6 @@
       "view": "View"
     },
     "run": {
-      "blueprintTitle": "Flow blueprint",
-      "blueprintRef": "Reference only · does not constrain execution",
       "speakLeaderPlaceholder": "Tell the Leader: adjust priority / add constraints / approve tasks…",
       "send": "Send"
     },
@@ -2404,9 +2399,6 @@
       "awaitingReply": "Awaiting reply",
       "sessionLabel": "session",
       "tasksUnit": "tasks"
-    },
-    "flow": {
-      "empty": "This run has no flow to overlay"
     },
     "toggle": {
       "tasks": "tasks",
