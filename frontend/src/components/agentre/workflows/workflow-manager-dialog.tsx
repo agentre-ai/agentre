@@ -15,9 +15,6 @@ import { cn } from "@/lib/utils";
 import { useWorkflowManagerStore } from "@/stores/workflow-manager-store";
 
 import { MarkdownText } from "../markdown-text";
-import { parseFlowGraph, type FlowGraph } from "../orchestration/flow-graph";
-import { emptyDraftGraph, graphToJSON } from "./flow-graph-draft";
-import { WorkflowDagDesigner } from "./workflow-dag-designer";
 import { WorkflowEditorForm } from "./workflow-editor-form";
 
 // 摘要首行:跳过空行与 markdown 标题行,取第一行正文。
@@ -31,8 +28,6 @@ function firstSummaryLine(content: string): string {
 }
 
 type DetailMode = "view" | "editor";
-
-const DEFAULT_TEMPLATE = "{{ DAGPrompt }}";
 
 export function WorkflowManagerDialog() {
   const open = useWorkflowManagerStore((s) => s.open);
@@ -58,11 +53,8 @@ function WorkflowManagerBody({
   const [query, setQuery] = React.useState("");
   const [confirmingDelete, setConfirmingDelete] = React.useState(false);
   const [draftName, setDraftName] = React.useState("");
-  const [draftTemplate, setDraftTemplate] = React.useState(DEFAULT_TEMPLATE);
-  const [templateError, setTemplateError] = React.useState(false);
+  const [draftContent, setDraftContent] = React.useState("");
   const [draftTags, setDraftTags] = React.useState<string[]>([]);
-  const [draftOutline, setDraftOutline] = React.useState<string[]>([]);
-  const [draftGraph, setDraftGraph] = React.useState<FlowGraph | null>(null);
   const [formError, setFormError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -74,11 +66,8 @@ function WorkflowManagerBody({
       setMode("editor");
       setEditingId(0);
       setDraftName("");
-      setDraftTemplate(DEFAULT_TEMPLATE);
-      setTemplateError(false);
+      setDraftContent("");
       setDraftTags([]);
-      setDraftOutline([]);
-      setDraftGraph(emptyDraftGraph());
       setFormError(null);
     }
   }, [intent]);
@@ -98,11 +87,8 @@ function WorkflowManagerBody({
     setMode("editor");
     setEditingId(0);
     setDraftName("");
-    setDraftTemplate(DEFAULT_TEMPLATE);
-    setTemplateError(false);
+    setDraftContent("");
     setDraftTags([]);
-    setDraftOutline([]);
-    setDraftGraph(emptyDraftGraph());
     setFormError(null);
     setConfirmingDelete(false);
   };
@@ -110,11 +96,8 @@ function WorkflowManagerBody({
     setMode("editor");
     setEditingId(w.id);
     setDraftName(w.name);
-    setDraftTemplate(w.template || DEFAULT_TEMPLATE);
-    setTemplateError(false);
+    setDraftContent(w.content);
     setDraftTags(w.tags);
-    setDraftOutline(w.outline);
-    setDraftGraph(w.graph ? parseFlowGraph(w.graph) : null);
     setFormError(null);
     setConfirmingDelete(false);
   };
@@ -123,38 +106,17 @@ function WorkflowManagerBody({
     setFormError(null);
   };
 
-  const canSave =
-    !submitting &&
-    !templateError &&
-    draftName.trim().length > 0 &&
-    (draftGraph
-      ? draftGraph.nodes.length > 0 &&
-        draftGraph.nodes.every((n) => n.label.trim().length > 0)
-      : true);
+  const canSave = !submitting && draftName.trim().length > 0;
   const submit = async () => {
     if (!canSave) return;
     setFormError(null);
     setSubmitting(true);
     try {
-      const graphStr = draftGraph ? graphToJSON(draftGraph) : "";
       if (editingId > 0) {
-        await update(
-          editingId,
-          draftName.trim(),
-          draftTemplate,
-          draftTags,
-          draftOutline,
-          graphStr,
-        );
+        await update(editingId, draftName.trim(), draftContent, draftTags);
         setSelectedId(editingId);
       } else {
-        await create(
-          draftName.trim(),
-          draftTemplate,
-          draftTags,
-          draftOutline,
-          graphStr,
-        );
+        await create(draftName.trim(), draftContent, draftTags);
         setSelectedId(0);
       }
       setMode("view");
@@ -196,12 +158,7 @@ function WorkflowManagerBody({
             cancelEdit();
           }
         }}
-        className={cn(
-          "flex h-[640px] max-h-[88vh] flex-col gap-0 overflow-hidden p-0",
-          mode === "editor" && draftGraph
-            ? "w-[1200px] max-w-[96vw]"
-            : "w-[920px] max-w-[94vw]",
-        )}
+        className="flex h-[640px] max-h-[88vh] w-[920px] max-w-[94vw] flex-col gap-0 overflow-hidden p-0"
       >
         <DialogTitle className="sr-only">{t("workflows.title")}</DialogTitle>
         <DialogDescription className="sr-only">
@@ -323,41 +280,20 @@ function WorkflowManagerBody({
 
           <section className="flex min-w-0 flex-1 flex-col bg-muted/10">
             {mode === "editor" ? (
-              draftGraph ? (
-                <DesignerPane
-                  editing={editingId > 0}
-                  name={draftName}
-                  graph={draftGraph}
-                  template={draftTemplate}
-                  error={formError}
-                  canSave={canSave}
-                  onNameChange={setDraftName}
-                  onGraphChange={setDraftGraph}
-                  onTemplateChange={setDraftTemplate}
-                  onTemplateError={setTemplateError}
-                  onCancel={cancelEdit}
-                  onSave={() => void submit()}
-                  onKeyDown={onEditorKeyDown}
-                />
-              ) : (
-                <EditorPane
-                  editing={editingId > 0}
-                  name={draftName}
-                  content={draftTemplate}
-                  tags={draftTags}
-                  outline={draftOutline}
-                  error={formError}
-                  canSave={canSave}
-                  onNameChange={setDraftName}
-                  onContentChange={setDraftTemplate}
-                  onTagsChange={setDraftTags}
-                  onOutlineChange={setDraftOutline}
-                  onConvertToDag={() => setDraftGraph(emptyDraftGraph())}
-                  onCancel={cancelEdit}
-                  onSave={() => void submit()}
-                  onKeyDown={onEditorKeyDown}
-                />
-              )
+              <EditorPane
+                editing={editingId > 0}
+                name={draftName}
+                content={draftContent}
+                tags={draftTags}
+                error={formError}
+                canSave={canSave}
+                onNameChange={setDraftName}
+                onContentChange={setDraftContent}
+                onTagsChange={setDraftTags}
+                onCancel={cancelEdit}
+                onSave={() => void submit()}
+                onKeyDown={onEditorKeyDown}
+              />
             ) : selected ? (
               <ViewPane
                 workflow={selected}
@@ -417,43 +353,24 @@ function ViewPane({
         </div>
         <p className="text-2xs text-muted-foreground">{meta}</p>
       </header>
-      {workflow.tags.length > 0 || workflow.outline.length > 0 ? (
+      {workflow.tags.length > 0 ? (
         <div
           data-testid="workflow-blueprint-band"
           className="flex flex-col gap-2 border-b border-border bg-muted/40 px-5 py-3"
         >
-          {workflow.tags.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-2xs text-subtle-foreground">
-                {t("workflows.preview.blueprintTags")}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-2xs text-subtle-foreground">
+              {t("workflows.preview.blueprintTags")}
+            </span>
+            {workflow.tags.map((tag, i) => (
+              <span
+                key={`${tag}-${i}`}
+                className="rounded bg-accent px-1.5 py-0.5 text-2xs text-foreground"
+              >
+                {tag}
               </span>
-              {workflow.tags.map((tag, i) => (
-                <span
-                  key={`${tag}-${i}`}
-                  className="rounded bg-accent px-1.5 py-0.5 text-2xs text-foreground"
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
-          ) : null}
-          {workflow.outline.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-2xs text-subtle-foreground">
-                {t("workflows.preview.blueprintSteps")}
-              </span>
-              {workflow.outline.map((step, i) => (
-                <React.Fragment key={`${step}-${i}`}>
-                  {i > 0 ? (
-                    <span className="text-2xs text-subtle-foreground">›</span>
-                  ) : null}
-                  <span className="rounded border border-border bg-card px-1.5 py-0.5 text-2xs text-foreground">
-                    {step}
-                  </span>
-                </React.Fragment>
-              ))}
-            </div>
-          ) : null}
+            ))}
+          </div>
           <span className="text-2xs text-subtle-foreground">
             {t("workflows.preview.blueprintHint")}
           </span>
@@ -559,14 +476,11 @@ function EditorPane({
   name,
   content,
   tags,
-  outline,
   error,
   canSave,
   onNameChange,
   onContentChange,
   onTagsChange,
-  onOutlineChange,
-  onConvertToDag,
   onCancel,
   onSave,
   onKeyDown,
@@ -575,14 +489,11 @@ function EditorPane({
   name: string;
   content: string;
   tags: string[];
-  outline: string[];
   error: string | null;
   canSave: boolean;
   onNameChange: (v: string) => void;
   onContentChange: (v: string) => void;
   onTagsChange: (v: string[]) => void;
-  onOutlineChange: (v: string[]) => void;
-  onConvertToDag: () => void;
   onCancel: () => void;
   onSave: () => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
@@ -601,107 +512,14 @@ function EditorPane({
         </h2>
       </header>
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-4">
-        <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-dashed border-border bg-muted/40 px-3 py-2">
-          <span className="text-2xs text-muted-foreground">
-            {t("workflows.designer.convertHint")}
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            data-testid="workflow-convert-dag"
-            onClick={onConvertToDag}
-          >
-            {t("workflows.designer.convertToDag")}
-          </Button>
-        </div>
         <WorkflowEditorForm
           name={name}
           content={content}
           tags={tags}
-          outline={outline}
           error={error}
           onNameChange={onNameChange}
           onContentChange={onContentChange}
           onTagsChange={onTagsChange}
-          onOutlineChange={onOutlineChange}
-        />
-      </div>
-      <footer className="flex items-center gap-2 border-t border-border px-5 py-3">
-        <span className="text-2xs text-muted-foreground">
-          {t("workflows.manager.saveHint")}
-        </span>
-        <div className="flex-1" />
-        <Button type="button" variant="outline" size="sm" onClick={onCancel}>
-          {t("common.cancel")}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          disabled={!canSave}
-          data-testid="workflow-save-button"
-          onClick={onSave}
-        >
-          <Check className="size-3.5" aria-hidden="true" />
-          {t("workflows.editor.save")}
-        </Button>
-      </footer>
-    </div>
-  );
-}
-
-function DesignerPane({
-  editing,
-  name,
-  graph,
-  template,
-  error,
-  canSave,
-  onNameChange,
-  onGraphChange,
-  onTemplateChange,
-  onTemplateError,
-  onCancel,
-  onSave,
-  onKeyDown,
-}: {
-  editing: boolean;
-  name: string;
-  graph: FlowGraph;
-  template: string;
-  error: string | null;
-  canSave: boolean;
-  onNameChange: (v: string) => void;
-  onGraphChange: (g: FlowGraph) => void;
-  onTemplateChange: (v: string) => void;
-  onTemplateError: (hasError: boolean) => void;
-  onCancel: () => void;
-  onSave: () => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex min-h-0 flex-1 flex-col" onKeyDown={onKeyDown}>
-      <header className="flex items-center gap-2.5 border-b border-border px-5 py-3">
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary-soft">
-          <Pencil className="size-4 text-primary-text" aria-hidden="true" />
-        </span>
-        <h2 className="text-sm font-semibold text-foreground">
-          {editing
-            ? t("workflows.editor.editTitle")
-            : t("workflows.editor.createTitle")}
-        </h2>
-      </header>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-4">
-        <WorkflowDagDesigner
-          name={name}
-          graph={graph}
-          template={template}
-          error={error}
-          onNameChange={onNameChange}
-          onGraphChange={onGraphChange}
-          onTemplateChange={onTemplateChange}
-          onTemplateError={onTemplateError}
         />
       </div>
       <footer className="flex items-center gap-2 border-t border-border px-5 py-3">
