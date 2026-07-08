@@ -71,6 +71,19 @@ describe("WorkflowManagerDialog · 浏览态", () => {
     );
   });
 
+  it("查看态正文容器可选中复制(data-selectable-text)", async () => {
+    render(<WorkflowManagerDialog />);
+    useWorkflowManagerStore.getState().openBrowse();
+    await waitFor(() => expect(screen.getByText("产品开发流程")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("workflow-row-1"));
+    await waitFor(() =>
+      expect(screen.getByTestId("workflow-view-content")).toHaveAttribute(
+        "data-selectable-text",
+        "true",
+      ),
+    );
+  });
+
   it("空列表显示空态", async () => {
     workflowList.mockResolvedValue({ items: [] });
     render(<WorkflowManagerDialog />);

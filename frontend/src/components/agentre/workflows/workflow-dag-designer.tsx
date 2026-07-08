@@ -250,6 +250,7 @@ export function WorkflowDagDesigner({
             ) : previewError ? (
               <div
                 data-testid="designer-template-error"
+                data-selectable-text="true"
                 className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-destructive bg-destructive-soft px-3 py-2 text-2xs text-destructive"
               >
                 {t("workflows.designer.templateErrorLabel")}
@@ -258,6 +259,7 @@ export function WorkflowDagDesigner({
             ) : (
               <div
                 data-testid="designer-prompt-preview"
+                data-selectable-text="true"
                 className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border bg-card/40 px-3 py-2"
               >
                 {preview.trim() ? (

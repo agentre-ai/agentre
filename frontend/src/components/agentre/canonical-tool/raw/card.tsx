@@ -184,7 +184,10 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
         </span>
       </button>
       {expanded && (
-        <div className="flex flex-col gap-3 border-t border-border px-3 py-3">
+        <div
+          data-selectable-text="true"
+          className="flex flex-col gap-3 border-t border-border px-3 py-3"
+        >
           <Section label={t("canonical.raw.sections.params")}>
             {params.length === 0 ? (
               <div className="text-muted-foreground">

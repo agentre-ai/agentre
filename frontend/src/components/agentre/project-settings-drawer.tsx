@@ -598,7 +598,10 @@ function MemberRow({
       {location ? (
         <div className="mt-1 flex items-center gap-1.5 pl-7 text-2xs text-muted-foreground">
           <span className="font-mono text-subtle-foreground">cwd</span>
-          <span className="min-w-0 flex-1 truncate font-mono">
+          <span
+            data-selectable-text="true"
+            className="min-w-0 flex-1 truncate font-mono"
+          >
             {location.path}
           </span>
         </div>

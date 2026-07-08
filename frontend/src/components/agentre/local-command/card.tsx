@@ -64,7 +64,10 @@ export function LocalCommandCard({
         </span>
 
         {/* Command */}
-        <span className="font-mono text-xs font-semibold text-foreground">
+        <span
+          data-selectable-text="true"
+          className="font-mono text-xs font-semibold text-foreground"
+        >
           {entry.command}
         </span>
 

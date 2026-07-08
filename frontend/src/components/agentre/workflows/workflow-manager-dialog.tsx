@@ -459,7 +459,11 @@ function ViewPane({
           </span>
         </div>
       ) : null}
-      <div className="flex-1 overflow-y-auto px-5 py-4">
+      <div
+        data-testid="workflow-view-content"
+        data-selectable-text="true"
+        className="flex-1 overflow-y-auto px-5 py-4"
+      >
         <MarkdownText text={workflow.content} />
       </div>
       {confirmingDelete ? (

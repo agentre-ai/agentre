@@ -313,7 +313,10 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
       </button>
 
       {expanded ? (
-        <div className="max-h-[480px] overflow-auto px-4 py-3">
+        <div
+          data-selectable-text="true"
+          className="max-h-[480px] overflow-auto px-4 py-3"
+        >
           {bodyText ? (
             <MarkdownText text={bodyText} />
           ) : (

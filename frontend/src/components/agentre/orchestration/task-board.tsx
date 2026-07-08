@@ -343,6 +343,7 @@ export function TaskBoard({
                 .map((task) => (
                   <div
                     key={task.id}
+                    data-selectable-text="true"
                     className="rounded-md border border-border bg-card p-2 text-xs text-muted-foreground"
                   >
                     {/* refs 是 JSON 字符串（动态内容不走 t()） */}
