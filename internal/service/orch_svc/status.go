@@ -19,7 +19,6 @@ type statusRow struct {
 	Brief      string  `json:"brief"`
 	CallSeq    int     `json:"call_seq"`
 	HasSummary bool    `json:"has_summary"`
-	Node       string  `json:"node,omitempty"`
 	ParentTask int64   `json:"parent_task_id,omitempty"`
 	BlockedOn  []int64 `json:"blocked_on,omitempty"`
 }
@@ -48,7 +47,6 @@ func formatRunStatus(tasks []*orch_entity.Task, agentNames map[int64]string) str
 			Brief:      t.Brief,
 			CallSeq:    t.CallSeq,
 			HasSummary: t.Summary != "",
-			Node:       t.NodeRef,
 			ParentTask: t.ParentTaskID,
 		}
 		if t.Status == orch_entity.TaskAwaitingChildren {

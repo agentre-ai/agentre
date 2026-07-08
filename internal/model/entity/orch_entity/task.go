@@ -28,11 +28,10 @@ type Task struct {
 	Kind         string `gorm:"column:kind;type:text;not null;default:'dispatch'"`
 	Status       string `gorm:"column:status;type:text;not null;default:'pending'"`
 	Brief        string `gorm:"column:brief;type:text;not null;default:''"`
-	Result       string `gorm:"column:result;type:text;not null;default:''"`   // agent 自报语义报告（完整正文，供 read）
-	Summary      string `gorm:"column:summary;type:text;not null;default:''"`  // 显式小结（仅 finish/report 写；非空=主动汇报）
-	CallSeq      int    `gorm:"column:call_seq;type:int;not null;default:0"`   // 同 agent 第几次被 dispatch
-	Refs         string `gorm:"column:refs;type:text;not null;default:''"`     // JSON：被引用的产物/任务
-	NodeRef      string `gorm:"column:node_ref;type:text;not null;default:''"` // 对应的流程节点 label(Leader 打标)；空=未打标
+	Result       string `gorm:"column:result;type:text;not null;default:''"`  // agent 自报语义报告（完整正文，供 read）
+	Summary      string `gorm:"column:summary;type:text;not null;default:''"` // 显式小结（仅 finish/report 写；非空=主动汇报）
+	CallSeq      int    `gorm:"column:call_seq;type:int;not null;default:0"`  // 同 agent 第几次被 dispatch
+	Refs         string `gorm:"column:refs;type:text;not null;default:''"`    // JSON：被引用的产物/任务
 	Createtime   int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
 	Updatetime   int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
 }

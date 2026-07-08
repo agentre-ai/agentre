@@ -49,7 +49,7 @@ func TestDispatch_EmitsRunUpdated(t *testing.T) {
 	}).MinTimes(1)
 
 	Convey("dispatch 触发 orch:run:updated 并携带正确 runId", t, func() {
-		_, err := orch_svc.Default().Dispatch(context.Background(), 500, "李", "做X", false, "")
+		_, err := orch_svc.Default().Dispatch(context.Background(), 500, "李", "做X", false)
 		So(err, ShouldBeNil)
 		So(capturedRunID, ShouldEqual, int64(100))
 	})

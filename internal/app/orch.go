@@ -37,9 +37,7 @@ type TaskDTO struct {
 	Result       string `json:"result"`
 	CallSeq      int    `json:"callSeq"`
 	// Refs JSON 格式的被引用产物/任务列表。
-	Refs string `json:"refs"`
-	// NodeRef 该任务对应的流程节点 label（overlay 用；空=未打标）。
-	NodeRef    string `json:"nodeRef"`
+	Refs       string `json:"refs"`
 	Createtime int64  `json:"createtime"`
 	Updatetime int64  `json:"updatetime"`
 }
@@ -89,7 +87,6 @@ func toTaskDTO(t *orch_entity.Task) *TaskDTO {
 		Result:       t.Result,
 		CallSeq:      t.CallSeq,
 		Refs:         t.Refs,
-		NodeRef:      t.NodeRef,
 		Createtime:   t.Createtime,
 		Updatetime:   t.Updatetime,
 	}
