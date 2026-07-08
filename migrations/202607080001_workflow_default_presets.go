@@ -19,14 +19,18 @@ func migration202607080001() *gormigrate.Migration {
 			if err := tx.Exec(`DELETE FROM workflows WHERE is_default = 1`).Error; err != nil {
 				return err
 			}
-			// 2) 插 4 个新流程(按 name 守卫幂等)
+			// 2) 插 4 个新流程(按 name 守卫幂等)。单基准时间戳(循环前取一次)+ tsOffset
+			//    递减偏移,保证 updatetime DESC 排序确定性,不受插入跨秒边界影响。
+			var baseTS int64
+			if err := tx.Raw(`SELECT CAST(strftime('%s','now') AS INTEGER) * 1000`).Row().Scan(&baseTS); err != nil {
+				return err
+			}
 			for _, f := range presetFlows202607080001 {
+				ts := baseTS + int64(f.tsOffset)
 				if err := tx.Exec(`INSERT INTO workflows (name, content, template, tags, outline, graph, status, createtime, updatetime)
-SELECT ?, ?, ?, ?, ?, ?, 1,
-	CAST(strftime('%s','now') AS INTEGER) * 1000 + ?,
-	CAST(strftime('%s','now') AS INTEGER) * 1000 + ?
+SELECT ?, ?, ?, ?, ?, ?, 1, ?, ?
 WHERE NOT EXISTS (SELECT 1 FROM workflows WHERE name = ?)`,
-					f.name, f.prompt, f.prompt, f.tags, f.outline, f.graph, f.tsOffset, f.tsOffset, f.name).Error; err != nil {
+					f.name, f.prompt, f.prompt, f.tags, f.outline, f.graph, ts, ts, f.name).Error; err != nil {
 					return err
 				}
 			}
