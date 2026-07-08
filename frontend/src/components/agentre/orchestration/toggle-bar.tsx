@@ -1,12 +1,5 @@
 import { useTranslation } from "react-i18next";
-import {
-  GitFork,
-  GitMerge,
-  List,
-  ListChecks,
-  Users,
-  Waypoints,
-} from "lucide-react";
+import { GitFork, GitMerge, List, ListChecks, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface ToggleBarStats {
@@ -19,18 +12,12 @@ export interface ToggleBarStats {
 }
 
 interface ToggleBarProps {
-  view: "graph" | "feed" | "flow";
-  onView: (v: "graph" | "feed" | "flow") => void;
+  view: "graph" | "feed";
+  onView: (v: "graph" | "feed") => void;
   stats: ToggleBarStats;
-  showFlow?: boolean;
 }
 
-export function ToggleBar({
-  view,
-  onView,
-  stats,
-  showFlow = false,
-}: ToggleBarProps) {
+export function ToggleBar({ view, onView, stats }: ToggleBarProps) {
   const { t } = useTranslation();
 
   return (
@@ -40,22 +27,6 @@ export function ToggleBar({
     >
       {/* Segmented control */}
       <div className="flex items-center gap-0.5 rounded-lg bg-secondary p-0.5">
-        {showFlow ? (
-          <button
-            type="button"
-            data-testid="toggle-flow"
-            onClick={() => onView("flow")}
-            className={cn(
-              "flex items-center gap-1.5 rounded-md px-3 py-[5px] text-xs",
-              view === "flow"
-                ? "border border-border bg-card font-semibold text-foreground"
-                : "text-muted-foreground",
-            )}
-          >
-            <Waypoints className="size-3 shrink-0" aria-hidden="true" />
-            {t("orchestration.header.viewFlow")}
-          </button>
-        ) : null}
         <button
           type="button"
           data-testid="toggle-graph"

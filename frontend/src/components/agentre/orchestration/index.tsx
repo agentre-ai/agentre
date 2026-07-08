@@ -37,7 +37,7 @@ export function OrchestrationRun({
     void useOrchRunStore.getState().loadRun(runId);
   }, [runId]);
 
-  const [view, setView] = React.useState<"graph" | "feed" | "flow">("graph");
+  const [view, setView] = React.useState<"graph" | "feed">("graph");
   const [selectedSessionId, setSelectedSessionId] = React.useState<
     number | null
   >(null);

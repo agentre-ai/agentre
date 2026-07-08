@@ -2307,7 +2307,6 @@
     "header": {
       "viewGraph": "Graph",
       "viewFeed": "Feed",
-      "viewFlow": "Flow",
       "running": "Running",
       "completed": "Completed",
       "paused": "Paused",
