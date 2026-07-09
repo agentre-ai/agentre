@@ -212,16 +212,17 @@ export type OrchTaskRow = {
   parentTaskId: number;
 };
 
-// orchTaskRows returns all orch_tasks rows (id, status, parentTaskId) ordered by id.
+// orchTaskRows returns all orch_dispatches rows (id, status, parentTaskId) ordered by id.
 // Read-only — proves dispatch created sub-tasks and they reached terminal state at the source of
-// truth, independent of the UI.
+// truth, independent of the UI. (The dispatch tree lives in orch_dispatches since the task→dispatch
+// rename; orch_tasks was reclaimed by the checklist and has no parent column.)
 export function orchTaskRows(): OrchTaskRow[] {
   const db = new DatabaseSync(dbPath(), { readOnly: true });
   try {
     db.exec("PRAGMA busy_timeout = 5000");
     return db
       .prepare(
-        "SELECT id, status, parent_task_id AS parentTaskId FROM orch_tasks ORDER BY id ASC",
+        "SELECT id, status, parent_dispatch_id AS parentTaskId FROM orch_dispatches ORDER BY id ASC",
       )
       .all() as OrchTaskRow[];
   } finally {
@@ -237,7 +238,7 @@ export function orchTaskRowsByRun(runId: number): OrchTaskRow[] {
     db.exec("PRAGMA busy_timeout = 5000");
     return db
       .prepare(
-        "SELECT id, status, parent_task_id AS parentTaskId FROM orch_tasks WHERE run_id = ? ORDER BY id ASC",
+        "SELECT id, status, parent_dispatch_id AS parentTaskId FROM orch_dispatches WHERE run_id = ? ORDER BY id ASC",
       )
       .all(runId) as OrchTaskRow[];
   } finally {
