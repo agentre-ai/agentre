@@ -118,6 +118,15 @@ func TestMCP_ToolsCall_RejectsNonOrchestrationSessionWhenDisabled(t *testing.T) 
 	assert.Equal(t, http.StatusForbidden, rw.Code, "普通会话+未开 orchestrate 应保持 403")
 }
 
+// TestOrchToolSchemas_NoCancel 锁死 cancel 工具已彻底移除,不再出现在 tools/list schema 里。
+func TestOrchToolSchemas_NoCancel(t *testing.T) {
+	for _, name := range orch_svc.OrchToolSchemaNames() {
+		if name == "cancel" {
+			t.Fatalf("cancel 工具应已移除")
+		}
+	}
+}
+
 func TestOrchestrateToolNamesCoverSchemas(t *testing.T) {
 	def, ok := agenttool.Lookup(agenttool.KeyOrchestrate)
 	require.True(t, ok)
