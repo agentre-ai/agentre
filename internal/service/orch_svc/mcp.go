@@ -424,7 +424,7 @@ func orchToolSchemas() []any {
 		},
 		map[string]any{
 			"name":        "ask",
-			"description": "向另一个 agent 提问并等待其回复;问题会被注入对方的活会话(它带着自己的上下文回答),答案回报你。用于咨询同伴上下文里才有的信息,不新增任务节点。",
+			"description": "向另一个 agent 提问并等待其回复;问题会被注入对方的活会话(它带着自己的上下文回答),答案回报你。用于咨询同伴上下文里才有的信息,不新增派发。",
 			"inputSchema": map[string]any{
 				"type":     "object",
 				"required": []string{"agent", "question"},
@@ -448,7 +448,7 @@ func orchToolSchemas() []any {
 		},
 		map[string]any{
 			"name":        "send",
-			"description": "往你派发的某任务会话里发后续/返工反馈(同会话续做),更新后的结果再回报你。返工=对原任务再 send,不新增节点。",
+			"description": "往你派发的某任务会话里发后续/返工反馈(同会话续做),更新后的结果再回报你。返工=对原派发再 send,不新增派发。",
 			"inputSchema": map[string]any{
 				"type":     "object",
 				"required": []string{"dispatch_id", "message"},
@@ -493,7 +493,7 @@ func orchToolSchemas() []any {
 		},
 		map[string]any{
 			"name":        "status",
-			"description": "查看本次编排整棵任务树的实时快照(每个子任务的 id/agent/类型/状态/brief/是否已主动汇报/所属流程节点/在等哪些子任务)。两次回报之间用它掌握全局。",
+			"description": "查看本次编排整棵派发树的实时快照(每个子任务的 id/agent/类型/状态/brief/是否已主动汇报/父派发/在等哪些子任务)。两次回报之间用它掌握全局。",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		map[string]any{
