@@ -63,8 +63,8 @@ func (r *taskRepo) ListByRun(ctx context.Context, runID int64) ([]*orch_entity.T
 }
 
 func (r *taskRepo) MaxSeq(ctx context.Context, runID int64) (int, error) {
-	var max struct{ M int }
+	var maxSeq struct{ M int }
 	err := db.Ctx(ctx).Model(&orch_entity.Task{}).
-		Select("COALESCE(MAX(seq),0) AS m").Where("run_id = ?", runID).Scan(&max).Error
-	return max.M, err
+		Select("COALESCE(MAX(seq),0) AS m").Where("run_id = ?", runID).Scan(&maxSeq).Error
+	return maxSeq.M, err
 }
