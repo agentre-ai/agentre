@@ -169,9 +169,8 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 
 func (m *orchMCP) handleDispatch(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
 	var p struct {
-		Agent   string `json:"agent"`
-		Brief   string `json:"brief"`
-		Isolate bool   `json:"isolate"`
+		Agent string `json:"agent"`
+		Brief string `json:"brief"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		writeRPCError(w, id, -32700, "parse error: "+err.Error())
@@ -181,7 +180,7 @@ func (m *orchMCP) handleDispatch(w http.ResponseWriter, r *http.Request, id json
 		writeRPCError(w, id, -32602, "agent and brief are required")
 		return
 	}
-	taskID, err := m.svc.Dispatch(r.Context(), ref.sessionID, p.Agent, p.Brief, p.Isolate)
+	taskID, err := m.svc.Dispatch(r.Context(), ref.sessionID, p.Agent, p.Brief)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
@@ -358,9 +357,8 @@ func orchToolSchemas() []any {
 				"type":     "object",
 				"required": []string{"agent", "brief"},
 				"properties": map[string]any{
-					"agent":   map[string]any{"type": "string", "description": "目标 agent 名(取自 agent_list)"},
-					"brief":   map[string]any{"type": "string", "description": "任务说明 + 验证目标;需要的产物引用写进来"},
-					"isolate": map[string]any{"type": "boolean", "description": "true=独立 git worktree 隔离;默认 false 共享工作区"},
+					"agent": map[string]any{"type": "string", "description": "目标 agent 名(取自 agent_list)"},
+					"brief": map[string]any{"type": "string", "description": "任务说明 + 验证目标;需要的产物引用写进来"},
 				},
 			},
 		},

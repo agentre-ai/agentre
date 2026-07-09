@@ -38,7 +38,6 @@ func TestDispatch_SpawnsChildSessionAndTask(t *testing.T) {
 		So(in.ParentSessionID, ShouldEqual, 500)
 		So(in.RunID, ShouldEqual, 100)
 		So(in.AgentID, ShouldEqual, 3)
-		So(in.Isolate, ShouldBeTrue)
 		// 子会话标题 = 派发 brief, 避免侧栏显示「(未命名会话)」。
 		So(in.Title, ShouldEqual, "实现登录表单")
 		So(in.ProjectID, ShouldEqual, int64(42))
@@ -55,7 +54,7 @@ func TestDispatch_SpawnsChildSessionAndTask(t *testing.T) {
 	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
 
 	Convey("dispatch 异步起子会话 + Dispatch 并立刻返回 taskID", t, func() {
-		id, err := orch_svc.Default().Dispatch(context.Background(), 500, "李", "实现登录表单", true)
+		id, err := orch_svc.Default().Dispatch(context.Background(), 500, "李", "实现登录表单")
 		So(err, ShouldBeNil)
 		So(id, ShouldEqual, 11)
 	})
@@ -76,7 +75,7 @@ func TestDispatch_NilParent(t *testing.T) {
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(501)).Return(nil, nil)
 
 	Convey("nil parent → run not active error", t, func() {
-		_, err := orch_svc.Default().Dispatch(context.Background(), 501, "李", "brief", false)
+		_, err := orch_svc.Default().Dispatch(context.Background(), 501, "李", "brief")
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "run not active")
 	})
@@ -99,7 +98,7 @@ func TestDispatch_NilAgent(t *testing.T) {
 	agents.EXPECT().FindByName(gomock.Any(), "nobody").Return(nil, nil)
 
 	Convey("nil agent → target agent not found error", t, func() {
-		_, err := orch_svc.Default().Dispatch(context.Background(), 502, "nobody", "brief", false)
+		_, err := orch_svc.Default().Dispatch(context.Background(), 502, "nobody", "brief")
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "target agent not found")
 	})
@@ -124,7 +123,7 @@ func TestDispatch_CountByRunAgentError(t *testing.T) {
 	tasks.EXPECT().CountByRunAgent(gomock.Any(), int64(300), int64(3)).Return(int64(0), boomCount)
 
 	Convey("CountByRunAgent error → propagated", t, func() {
-		_, err := orch_svc.Default().Dispatch(context.Background(), 503, "李", "brief", false)
+		_, err := orch_svc.Default().Dispatch(context.Background(), 503, "李", "brief")
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "boom-count")
 	})
@@ -151,7 +150,7 @@ func TestDispatch_EnsureOrchSessionError(t *testing.T) {
 	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).Return(int64(0), boomEnsure)
 
 	Convey("EnsureOrchSession error → propagated", t, func() {
-		_, err := orch_svc.Default().Dispatch(context.Background(), 504, "李", "brief", false)
+		_, err := orch_svc.Default().Dispatch(context.Background(), 504, "李", "brief")
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "boom-ensure")
 	})
@@ -177,7 +176,7 @@ func TestDispatch_RejectsAgentOutsideAllowedSet(t *testing.T) {
 		&orch_entity.OrchestrationRun{ID: 100, LeaderAgentID: 2, AllowedAgentIDs: "[3,4]"}, nil)
 
 	Convey("dispatch 集外 agent → errAgentNotAllowed", t, func() {
-		_, err := orch_svc.Default().Dispatch(context.Background(), 500, "外人", "brief", false)
+		_, err := orch_svc.Default().Dispatch(context.Background(), 500, "外人", "brief")
 		So(err, ShouldNotBeNil)
 		So(err.Error(), ShouldContainSubstring, "not in allowed set")
 	})

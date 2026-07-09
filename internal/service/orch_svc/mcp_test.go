@@ -127,6 +127,23 @@ func TestOrchToolSchemas_NoCancel(t *testing.T) {
 	}
 }
 
+// TestDispatchSchema_NoIsolate 锁死 dispatch 工具已删除死参 isolate:schema 宣称
+// true=独立 git worktree 隔离,但 app 层(orch_adapter.go)从未接线、直接丢弃,
+// 只会误导调用方以为传了就生效。worktree 隔离真做时另开工具/参数。
+func TestDispatchSchema_NoIsolate(t *testing.T) {
+	h := orch_svc.Default().MCPHandler()
+	tok := orch_svc.Default().MintToken(2, 500)
+
+	body := bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/orchestrate/", body)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	require.Equal(t, http.StatusOK, rw.Code)
+	assert.NotContains(t, rw.Body.String(), "isolate")
+}
+
 func TestOrchestrateToolNamesCoverSchemas(t *testing.T) {
 	def, ok := agenttool.Lookup(agenttool.KeyOrchestrate)
 	require.True(t, ok)
