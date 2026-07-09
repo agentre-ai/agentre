@@ -10,20 +10,20 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 )
 
-var errNotYourTask = errors.New("orch: 只能 send 给自己派发的任务")
+var errNotYourDispatch = errors.New("orch: 只能 send 给自己派发的任务")
 
 // Send 往自己派发的某任务会话发后续/返工；同节点再次 running，不新增节点。
-func (s *orchSvc) Send(ctx context.Context, callerSessionID, taskID int64, message string) error {
+func (s *orchSvc) Send(ctx context.Context, callerSessionID, dispatchID int64, message string) error {
 	caller, err := s.dispatches.FindBySession(ctx, callerSessionID)
 	if err != nil || caller == nil {
 		return errRunNotActive
 	}
-	tk, err := s.dispatches.Find(ctx, taskID)
+	tk, err := s.dispatches.Find(ctx, dispatchID)
 	if err != nil || tk == nil {
 		return errAgentNotFound
 	}
 	if tk.ParentDispatchID != caller.ID {
-		return errNotYourTask
+		return errNotYourDispatch
 	}
 
 	tk.Status = orch_entity.DispatchRunning

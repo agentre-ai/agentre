@@ -51,7 +51,7 @@ func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Dispatc
 				logger.Ctx(ctx).Info("orch.watchCompletion: 任务已被取消,watcher 让位(不标 error)", zap.Int64("task", task.ID))
 				return
 			}
-			s.markTaskError(ctx, task, "运行时崩溃")
+			s.markDispatchError(ctx, task, "运行时崩溃")
 			s.emitRunUpdated(ctx, task.RunID)
 			return
 		default:
@@ -62,22 +62,22 @@ func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Dispatc
 }
 
 // reportToParent 子任务完成回报:有显式小结 → 内联 task_report;否则 → task_done 轻量通知。
-func (s *orchSvc) reportToParent(ctx context.Context, parentTaskID int64, child *orch_entity.Dispatch) {
+func (s *orchSvc) reportToParent(ctx context.Context, parentDispatchID int64, child *orch_entity.Dispatch) {
 	var msg string
 	if child.Summary != "" {
-		msg = taskReportMsg(child.ID, child.AgentID, child.CallSeq, child.Summary, true)
+		msg = dispatchReportMsg(child.ID, child.AgentID, child.CallSeq, child.Summary, true)
 	} else {
-		msg = taskDoneMsg(child.ID, child.AgentID, child.CallSeq, firstLine(child.Result, 120))
+		msg = dispatchDoneMsg(child.ID, child.AgentID, child.CallSeq, firstLine(child.Result, 120))
 	}
-	s.injectToParent(ctx, parentTaskID, msg)
+	s.injectToParent(ctx, parentDispatchID, msg)
 }
 
 // injectToParent 把一条消息注入父会话续轮,并在无未决子任务时把父翻回 running。
-func (s *orchSvc) injectToParent(ctx context.Context, parentTaskID int64, msg string) {
-	if parentTaskID == 0 {
+func (s *orchSvc) injectToParent(ctx context.Context, parentDispatchID int64, msg string) {
+	if parentDispatchID == 0 {
 		return // 根任务无父:根的收口只认 Leader 显式 finish
 	}
-	parent, err := s.dispatches.Find(ctx, parentTaskID)
+	parent, err := s.dispatches.Find(ctx, parentDispatchID)
 	if err != nil || parent == nil {
 		return
 	}
@@ -93,14 +93,14 @@ func (s *orchSvc) injectToParent(ctx context.Context, parentTaskID int64, msg st
 	}
 }
 
-// markTaskError 技术崩溃:标 error,把崩溃当 task_error 轻量通知上抛父会话(与 done 同一续轮路)。
-func (s *orchSvc) markTaskError(ctx context.Context, task *orch_entity.Dispatch, reason string) {
+// markDispatchError 技术崩溃:标 error,把崩溃当 task_error 轻量通知上抛父会话(与 done 同一续轮路)。
+func (s *orchSvc) markDispatchError(ctx context.Context, task *orch_entity.Dispatch, reason string) {
 	task.Status = orch_entity.DispatchError
 	task.Result = reason
 	if err := s.dispatches.Update(ctx, task); err != nil {
-		logger.Ctx(ctx).Error("orch.markTaskError: 写子任务 error 态失败(可被对账纠正)", zap.Int64("task", task.ID), zap.String("status", task.Status), zap.Error(err))
+		logger.Ctx(ctx).Error("orch.markDispatchError: 写子任务 error 态失败(可被对账纠正)", zap.Int64("task", task.ID), zap.String("status", task.Status), zap.Error(err))
 	}
-	s.injectToParent(ctx, task.ParentDispatchID, taskErrorMsg(task.ID, task.AgentID, reason))
+	s.injectToParent(ctx, task.ParentDispatchID, dispatchErrorMsg(task.ID, task.AgentID, reason))
 }
 
 // allChildrenSettled 该任务的全部 dispatch 子任务是否都到终态。

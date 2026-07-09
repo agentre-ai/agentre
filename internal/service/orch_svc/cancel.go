@@ -24,7 +24,7 @@ func (s *orchSvc) CancelTask(ctx context.Context, sessionID, taskID int64) (int,
 		return 0, err
 	}
 	if target == nil || target.RunID != caller.RunID {
-		return 0, errForeignTask
+		return 0, errForeignDispatch
 	}
 	rows, err := s.dispatches.ListByRun(ctx, caller.RunID)
 	if err != nil {

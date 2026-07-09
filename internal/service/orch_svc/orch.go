@@ -26,7 +26,7 @@ var (
 	errAgentNotFound   = errors.New("orch: target agent not found")
 	errAgentNotAllowed = errors.New("orch: target agent not in allowed set")
 	errRunNotActive    = errors.New("orch: run not active")
-	errForeignTask     = errors.New("orch: task not in this run")
+	errForeignDispatch = errors.New("orch: task not in this run")
 )
 
 type orchSvc struct {

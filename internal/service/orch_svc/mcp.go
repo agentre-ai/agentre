@@ -303,7 +303,7 @@ func (m *orchMCP) handleRead(w http.ResponseWriter, r *http.Request, id json.Raw
 		writeRPCError(w, id, -32602, "task_id is required")
 		return
 	}
-	out, err := m.svc.ReadTask(r.Context(), ref.sessionID, p.DispatchID)
+	out, err := m.svc.ReadDispatch(r.Context(), ref.sessionID, p.DispatchID)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return

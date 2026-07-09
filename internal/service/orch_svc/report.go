@@ -12,6 +12,6 @@ func (s *orchSvc) Report(ctx context.Context, sessionID int64, note string) erro
 	if tk == nil {
 		return errRunNotActive
 	}
-	s.injectToParent(ctx, tk.ParentDispatchID, taskReportMsg(tk.ID, tk.AgentID, tk.CallSeq, note, false))
+	s.injectToParent(ctx, tk.ParentDispatchID, dispatchReportMsg(tk.ID, tk.AgentID, tk.CallSeq, note, false))
 	return nil
 }

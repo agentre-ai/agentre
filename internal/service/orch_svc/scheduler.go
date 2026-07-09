@@ -94,7 +94,7 @@ func (s *orchSvc) kick(runID int64) {
 			ch, cancel := s.chat.ObserveTurn(q.task.SessionID)
 			if err := s.sendAndForgetWithRetry(ctx, q.task.SessionID, q.brief); err != nil {
 				cancel()
-				s.markTaskError(ctx, q.task, "启动子任务失败: "+err.Error())
+				s.markDispatchError(ctx, q.task, "启动子任务失败: "+err.Error())
 				s.emitRunUpdated(ctx, q.task.RunID)
 				s.onTaskSettled(runID)
 				return

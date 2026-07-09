@@ -6,27 +6,27 @@ import (
 	"strings"
 )
 
-// taskDoneMsg 子任务完成、无显式小结 → 轻量通知(首行摘要 + read 提示)。
-func taskDoneMsg(taskID, agentID int64, callSeq int, excerpt string) string {
+// dispatchDoneMsg 子任务完成、无显式小结 → 轻量通知(首行摘要 + read 提示)。
+func dispatchDoneMsg(dispatchID, agentID int64, callSeq int, excerpt string) string {
 	return fmt.Sprintf(
 		`<task_done task_id="%d" agent="%d" call_seq="%d">%s(read(task_id=%d) 看全文)</task_done>`,
-		taskID, agentID, callSeq, html.EscapeString(excerpt), taskID,
+		dispatchID, agentID, callSeq, html.EscapeString(excerpt), dispatchID,
 	)
 }
 
-// taskReportMsg 子任务主动小结(finish→final:true / report→final:false)→ 内联回报。
-func taskReportMsg(taskID, agentID int64, callSeq int, summary string, final bool) string {
+// dispatchReportMsg 子任务主动小结(finish→final:true / report→final:false)→ 内联回报。
+func dispatchReportMsg(dispatchID, agentID int64, callSeq int, summary string, final bool) string {
 	return fmt.Sprintf(
 		`<task_report task_id="%d" agent="%d" call_seq="%d" final="%t">%s</task_report>`,
-		taskID, agentID, callSeq, final, html.EscapeString(summary),
+		dispatchID, agentID, callSeq, final, html.EscapeString(summary),
 	)
 }
 
-// taskErrorMsg 子任务技术崩溃 → 轻量通知(read 看详情)。
-func taskErrorMsg(taskID, agentID int64, reason string) string {
+// dispatchErrorMsg 子任务技术崩溃 → 轻量通知(read 看详情)。
+func dispatchErrorMsg(dispatchID, agentID int64, reason string) string {
 	return fmt.Sprintf(
 		`<task_error task_id="%d" agent="%d" reason="%s">(read(task_id=%d) 看详情;决定重试/换 agent/放弃该分支)</task_error>`,
-		taskID, agentID, html.EscapeString(reason), taskID,
+		dispatchID, agentID, html.EscapeString(reason), dispatchID,
 	)
 }
 
