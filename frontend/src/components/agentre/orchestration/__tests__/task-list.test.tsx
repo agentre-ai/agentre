@@ -1,8 +1,18 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { app } from "../../../../../wailsjs/go/models";
 import { TaskList } from "../task-list";
+
+// mock useChatAgents: agent 5 = Worker(agent-3),用于认领人徽标断言。
+vi.mock("@/hooks/use-chat-agents", () => ({
+  useChatAgents: () => ({
+    agents: [
+      { id: 2, name: "Leader", avatarColor: "agent-1" },
+      { id: 5, name: "Worker", avatarColor: "agent-3" },
+    ],
+  }),
+}));
 
 function makeTask(
   id: number,
@@ -104,6 +114,17 @@ describe("TaskList", () => {
     render(<TaskList detail={detail} />);
 
     expect(screen.getByTestId("task-list-empty")).toBeInTheDocument();
+  });
+
+  it("renders the assignee badge (name) for a claimed task, and none for unclaimed", () => {
+    const tasks = [
+      makeTask(1, { text: "Claimed", assigneeAgentId: 5 }),
+      makeTask(2, { text: "Unclaimed", assigneeAgentId: 0 }),
+    ];
+    render(<TaskList detail={makeDetail(tasks)} />);
+
+    expect(screen.getByTestId("task-assignee-1")).toHaveTextContent("Worker");
+    expect(screen.queryByTestId("task-assignee-2")).not.toBeInTheDocument();
   });
 
   it("marks the root container as selectable text (read-only, no copy button)", () => {
