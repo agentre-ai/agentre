@@ -3,12 +3,20 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import { useTranslation } from "react-i18next";
 
 import { useLocalCommandsStore } from "@/stores/local-commands-store";
 import {
   TERMINAL_FONT_FAMILY,
   readTerminalTheme,
 } from "../terminal/terminal-theme";
+import {
+  computeTerminalHeight,
+  MIN_ROWS,
+  MAX_ROWS,
+  PADDING_PX,
+  FALLBACK_CELL_PX,
+} from "./terminal-height";
 
 // 本地命令(`!cmd`)输出的只读展示。复用交互终端同一套 xterm 渲染:让 xterm 自己解释
 // ANSI/OSC/控制序列(颜色、光标、标题序列…),而不是用正则剥转义 —— 后者会漏掉前导
@@ -24,6 +32,12 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
   const fitRef = useRef<FitAddon | null>(null);
   const writtenLenRef = useRef(0);
   const [mounted, setMounted] = useState(false);
+  const { t } = useTranslation();
+  const cellHeightRef = useRef(FALLBACK_CELL_PX);
+  const isEmptyFinished = useLocalCommandsStore((s) => {
+    const e = s.entries[terminalId];
+    return !!e && e.status !== "running" && e.output === "";
+  });
 
   // 懒挂载门控。
   useEffect(() => {
@@ -70,9 +84,29 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
     };
   }, [mounted]);
 
-  // seed + 增量:把 store output 的新增片段原样写进 xterm(保留 ANSI)。
+  // seed + 增量:写新增片段 + 每次按内容重算容器高度(自适应且封顶)。
   useEffect(() => {
     if (!mounted) return;
+    const applyHeight = () => {
+      const term = xtermRef.current;
+      const el = containerRef.current;
+      if (!term || !el) return;
+      // 有真实布局时用它反推行高(容器高 - padding)/ 行数;happy-dom 下退回兜底常量。
+      if (el.clientHeight > 0 && term.rows > 0) {
+        const m = (el.clientHeight - PADDING_PX) / term.rows;
+        if (Number.isFinite(m) && m > 0) cellHeightRef.current = m;
+      }
+      const b = term.buffer.active;
+      const contentRows = b.baseY + b.cursorY + 1;
+      el.style.height = `${computeTerminalHeight({
+        contentRows,
+        cellHeight: cellHeightRef.current,
+        minRows: MIN_ROWS,
+        maxRows: MAX_ROWS,
+        paddingPx: PADDING_PX,
+      })}px`;
+      fitRef.current?.fit();
+    };
     const writeDelta = () => {
       const entry = useLocalCommandsStore.getState().get(terminalId);
       const term = xtermRef.current;
@@ -81,8 +115,9 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
         term.write(entry.output.slice(writtenLenRef.current));
         writtenLenRef.current = entry.output.length;
       }
+      applyHeight();
     };
-    writeDelta(); // 首帧 seed。
+    writeDelta(); // 首帧 seed + 定高。
     const unsub = useLocalCommandsStore.subscribe(writeDelta);
     return () => unsub();
   }, [mounted, terminalId]);
@@ -111,11 +146,22 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
     return () => obs.disconnect();
   }, [mounted]);
 
+  if (isEmptyFinished) {
+    return (
+      <div
+        data-testid="local-command-terminal"
+        className="bg-code-surface px-3 py-2 text-2xs text-muted-foreground"
+      >
+        {t("localCommand.noOutput")}
+      </div>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
       data-testid="local-command-terminal"
-      className="h-44 w-full overflow-hidden bg-code-surface px-2 py-1.5"
+      className="w-full overflow-hidden bg-code-surface px-2 py-1.5"
     />
   );
 }

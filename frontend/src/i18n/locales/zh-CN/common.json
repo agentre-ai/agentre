@@ -2432,6 +2432,9 @@
     "exitCode": "退出码 {{code}}",
     "stop": "停止",
     "openInTerminal": "在终端中打开",
-    "dismiss": "移除此命令"
+    "dismiss": "移除此命令",
+    "noOutput": "无输出",
+    "expand": "展开输出",
+    "collapse": "折叠输出"
   }
 }

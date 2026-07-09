@@ -2432,6 +2432,9 @@
     "exitCode": "Exit {{code}}",
     "stop": "Stop",
     "openInTerminal": "Open in terminal",
-    "dismiss": "Dismiss command"
+    "dismiss": "Dismiss command",
+    "noOutput": "No output",
+    "expand": "Expand output",
+    "collapse": "Collapse output"
   }
 }

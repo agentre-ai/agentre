@@ -20,7 +20,7 @@ vi.mock("@xterm/xterm", () => ({
       focus: vi.fn(),
       cols: 80,
       rows: 24,
-      buffer: { active: { length: 1 } },
+      buffer: { active: { length: 1, baseY: 0, cursorY: 0 } },
       options: { theme: undefined as Record<string, string> | undefined },
     };
   }),
@@ -149,5 +149,37 @@ describe("OutputTerminal", () => {
 
     expect(Terminal).toHaveBeenCalled();
     expect(writeMock).toHaveBeenCalledWith("hidden output");
+  });
+
+  it("sizes the container to content (min rows) instead of a fixed 176px void", () => {
+    delete (globalThis as { IntersectionObserver?: unknown })
+      .IntersectionObserver;
+    useLocalCommandsStore
+      .getState()
+      .start({ id: "h1", sessionId: 1, command: "echo", createdAt: 1 });
+    useLocalCommandsStore.getState().appendOutput("h1", "one line\n");
+
+    const { getByTestId } = render(<OutputTerminal terminalId="h1" />);
+
+    // 1 content row → clamped to MIN_ROWS(3): 3*18(fallback)+12 = 66px. No h-44.
+    const box = getByTestId("local-command-terminal");
+    expect(box.style.height).toBe("66px");
+    expect(box.className).not.toContain("h-44");
+  });
+
+  it("finished command with empty output shows a 无输出 placeholder, builds no xterm", () => {
+    delete (globalThis as { IntersectionObserver?: unknown })
+      .IntersectionObserver;
+    useLocalCommandsStore
+      .getState()
+      .start({ id: "e1", sessionId: 1, command: "touch x", createdAt: 1 });
+    useLocalCommandsStore.getState().finish("e1", "done", 0);
+
+    const { getByTestId } = render(<OutputTerminal terminalId="e1" />);
+
+    expect(getByTestId("local-command-terminal").textContent).toMatch(
+      /无输出|No output/,
+    );
+    expect(Terminal).not.toHaveBeenCalled();
   });
 });
