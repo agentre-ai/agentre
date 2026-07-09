@@ -76,7 +76,7 @@ export function BackgroundTasksPopoverContent({
           {t("chatPanel.backgroundTasks.empty")}
         </p>
       ) : (
-        <ul className="flex flex-col gap-1.5">
+        <ul className="flex max-h-72 flex-col gap-1.5 overflow-y-auto overscroll-contain pr-0.5">
           {tasks.map((task) => {
             let elapsedLabel: string | undefined;
             if (task.status === "running" && task.startedAt != null) {
@@ -108,8 +108,9 @@ export function BackgroundTasksPopoverContent({
                   )}
                 </span>
                 <div className="min-w-0 flex-1">
-                  {/* description is dynamic agent output — do NOT pass through t() */}
-                  <p className="break-words text-xs leading-snug text-foreground">
+                  {/* description is dynamic agent output — do NOT pass through t()。
+                      只展示单行标题(truncate),完整提示词内容不再铺开,避免过长撑高。 */}
+                  <p className="truncate text-xs leading-snug text-foreground">
                     {task.description || " "}
                   </p>
                   <div className="mt-0.5 flex items-center gap-1.5">
