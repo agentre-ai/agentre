@@ -2,6 +2,7 @@ package orch_svc_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -211,6 +212,67 @@ func TestDispatchSchema_NoIsolate(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rw.Code)
 	assert.NotContains(t, rw.Body.String(), "isolate")
+}
+
+// TestOrchToolSchemas_IncludesTaskTools 锁死待办清单三工具已挂进 schema。
+func TestOrchToolSchemas_IncludesTaskTools(t *testing.T) {
+	names := map[string]bool{}
+	for _, n := range orch_svc.OrchToolSchemaNames() {
+		names[n] = true
+	}
+	for _, want := range []string{"task_list", "task_add", "task_update"} {
+		assert.Truef(t, names[want], "orchToolSchemas() 应含 %q", want)
+	}
+}
+
+// TestMCP_ToolsCall_TaskAdd task_add 经 dispatchTool 命中 handleTaskAdd:校验 service 收到
+// (sessionID, agentID, text) 三元组，返回文本含 task_id。
+func TestMCP_ToolsCall_TaskAdd(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	const (
+		agentID   = int64(4)
+		sessionID = int64(903)
+		runID     = int64(300)
+	)
+	leader := &agent_entity.Agent{ID: agentID, Name: "Leader"}
+
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	agents.EXPECT().Find(gomock.Any(), agentID).Return(leader, nil).AnyTimes()
+
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
+	tasks.EXPECT().FindBySession(gomock.Any(), sessionID).
+		Return(&orch_entity.Dispatch{ID: 11, RunID: runID, SessionID: sessionID}, nil).AnyTimes()
+
+	todos := mock_orch_repo.NewMockTaskRepo(ctrl)
+	todos.EXPECT().MaxSeq(gomock.Any(), runID).Return(0, nil)
+	todos.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, task *orch_entity.Task) error {
+			assert.Equal(t, runID, task.RunID)
+			assert.Equal(t, agentID, task.CreatedByAgentID)
+			assert.Equal(t, "写测试", task.Text)
+			task.ID = 42
+			return nil
+		})
+
+	orch_svc.Default().RegisterDeps(nil, agents, nil, tasks, nil, nil)
+	orch_svc.Default().RegisterTodoRepo(todos)
+	t.Cleanup(func() {
+		orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil)
+		orch_svc.Default().RegisterTodoRepo(nil)
+	})
+
+	h := orch_svc.Default().MCPHandler()
+	tok := orch_svc.Default().MintToken(agentID, sessionID)
+	body := bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_add","arguments":{"text":"写测试"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/orchestrate/", body)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	require.Equal(t, http.StatusOK, rw.Code)
+	assert.Contains(t, rw.Body.String(), "task_id=42")
 }
 
 func TestOrchestrateToolNamesCoverSchemas(t *testing.T) {
