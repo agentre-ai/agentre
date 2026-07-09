@@ -12,9 +12,6 @@ export function computeTerminalHeight(args: {
   maxRows: number;
   paddingPx: number;
 }): number {
-  const rows = Math.min(
-    Math.max(args.contentRows, args.minRows),
-    args.maxRows,
-  );
+  const rows = Math.min(Math.max(args.contentRows, args.minRows), args.maxRows);
   return rows * args.cellHeight + args.paddingPx;
 }
