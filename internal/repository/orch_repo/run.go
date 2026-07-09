@@ -1,4 +1,4 @@
-// Package orch_repo 编排 Run/Task 仓储。
+// Package orch_repo 编排 Run/Dispatch 仓储。
 package orch_repo
 
 import (

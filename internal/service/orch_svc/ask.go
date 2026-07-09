@@ -21,7 +21,7 @@ var (
 
 // Ask 向另一个 agent 提问：把带 ask_id 的问题注入对方活会话（保留其上下文），阻塞等其 reply（≤4 分钟）。
 func (s *orchSvc) Ask(ctx context.Context, fromSessionID int64, agentName, question string) (string, error) {
-	from, err := s.tasks.FindBySession(ctx, fromSessionID)
+	from, err := s.dispatches.FindBySession(ctx, fromSessionID)
 	if err != nil || from == nil {
 		return "", errRunNotActive
 	}
@@ -142,7 +142,7 @@ func (s *orchSvc) Reply(_ context.Context, replierAgentID int64, askID, answer s
 // title 仅在新建时用作会话标题种子(取提问内容)，复用已有会话时忽略。
 // projectID 由调用方从已加载的 run 中提取（避免二次查库）。
 func (s *orchSvc) resolveOrCreateAgentSession(ctx context.Context, runID, projectID, agentID int64, title string) (int64, error) {
-	rows, err := s.tasks.ListByRun(ctx, runID)
+	rows, err := s.dispatches.ListByRun(ctx, runID)
 	if err != nil {
 		return 0, err
 	}

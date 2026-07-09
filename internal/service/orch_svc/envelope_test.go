@@ -21,7 +21,7 @@ func TestTaskDoneMsg_ShapeAndEscape(t *testing.T) {
 	}
 }
 
-func TestTaskReportMsg_FinalFlagAndEscape(t *testing.T) {
+func TestDispatchReportMsg_FinalFlagAndEscape(t *testing.T) {
 	fin := taskReportMsg(11, 3, 2, "已完成", true)
 	if !strings.Contains(fin, `final="true"`) || !strings.Contains(fin, "已完成") {
 		t.Fatalf("bad final report: %s", fin)

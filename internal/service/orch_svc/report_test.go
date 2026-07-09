@@ -18,17 +18,17 @@ func TestReport_InjectsInterimReportToParent(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
 
 	// 调用者子任务(有父 9)。
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(600)).Return(
-		&orch_entity.Task{ID: 11, RunID: 100, AgentID: 3, SessionID: 600, ParentTaskID: 9, CallSeq: 2, Status: orch_entity.TaskRunning}, nil)
+		&orch_entity.Dispatch{ID: 11, RunID: 100, AgentID: 3, SessionID: 600, ParentDispatchID: 9, CallSeq: 2, Status: orch_entity.DispatchRunning}, nil)
 	// injectToParent 取父 + 判定 settled(此处父仍 running,不翻转)。
 	tasks.EXPECT().Find(gomock.Any(), int64(9)).Return(
-		&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500, Status: orch_entity.TaskRunning}, nil)
-	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{
-		{ID: 11, ParentTaskID: 9, Kind: orch_entity.TaskKindDispatch, Status: orch_entity.TaskRunning},
+		&orch_entity.Dispatch{ID: 9, RunID: 100, SessionID: 500, Status: orch_entity.DispatchRunning}, nil)
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Dispatch{
+		{ID: 11, ParentDispatchID: 9, Kind: orch_entity.DispatchKindDispatch, Status: orch_entity.DispatchRunning},
 	}, nil).AnyTimes()
 
 	var msg string

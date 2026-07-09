@@ -23,7 +23,7 @@ func TestListRuns(t *testing.T) {
 		chat := mock_orch_svc.NewMockChatGateway(ctrl)
 		agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 		runs := mock_orch_repo.NewMockRunRepo(ctrl)
-		tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+		tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 
 		orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
@@ -48,13 +48,13 @@ func TestListAllowedAgents_FiltersToAllowedSetPlusLeader(t *testing.T) {
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 	agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{
 		{ID: 2, Name: "L"}, {ID: 3, Name: "A"}, {ID: 4, Name: "B"}, {ID: 9, Name: "X"},
 	}, nil)
-	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{RunID: 100}, nil)
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Dispatch{RunID: 100}, nil)
 	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(
 		&orch_entity.OrchestrationRun{ID: 100, LeaderAgentID: 2, AllowedAgentIDs: "[3,4]"}, nil)
 
@@ -75,11 +75,11 @@ func TestListAllowedAgents_EmptySetReturnsAll(t *testing.T) {
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 	agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{{ID: 3}, {ID: 9}}, nil)
-	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{RunID: 100}, nil)
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Dispatch{RunID: 100}, nil)
 	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100, AllowedAgentIDs: ""}, nil)
 
 	Convey("空集合 → 回全部", t, func() {
@@ -91,27 +91,27 @@ func TestListAllowedAgents_EmptySetReturnsAll(t *testing.T) {
 
 func TestLoadRun(t *testing.T) {
 	Convey("LoadRun", t, func() {
-		Convey("找到 Run 时返回 Run+Tasks", func() {
+		Convey("找到 Run 时返回 Run+Dispatches", func() {
 			ctrl := gomock.NewController(t)
 
 			chat := mock_orch_svc.NewMockChatGateway(ctrl)
 			agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 			runs := mock_orch_repo.NewMockRunRepo(ctrl)
-			tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+			tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 			orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 			run := &orch_entity.OrchestrationRun{ID: 42, Goal: "做个登录页", Status: orch_entity.RunRunning}
-			task1 := &orch_entity.Task{ID: 1, RunID: 42, Kind: orch_entity.TaskKindDispatch}
-			task2 := &orch_entity.Task{ID: 2, RunID: 42, Kind: orch_entity.TaskKindAsk}
+			task1 := &orch_entity.Dispatch{ID: 1, RunID: 42, Kind: orch_entity.DispatchKindDispatch}
+			task2 := &orch_entity.Dispatch{ID: 2, RunID: 42, Kind: orch_entity.DispatchKindAsk}
 
 			runs.EXPECT().Find(gomock.Any(), int64(42)).Return(run, nil)
-			tasks.EXPECT().ListByRun(gomock.Any(), int64(42)).Return([]*orch_entity.Task{task1, task2}, nil)
+			tasks.EXPECT().ListByRun(gomock.Any(), int64(42)).Return([]*orch_entity.Dispatch{task1, task2}, nil)
 
 			got, err := orch_svc.Default().LoadRun(context.Background(), 42)
 			So(err, ShouldBeNil)
 			So(got, ShouldNotBeNil)
 			So(got.Run.ID, ShouldEqual, 42)
-			So(len(got.Tasks), ShouldEqual, 2)
+			So(len(got.Dispatches), ShouldEqual, 2)
 
 			ctrl.Finish()
 		})
@@ -122,7 +122,7 @@ func TestLoadRun(t *testing.T) {
 			chat := mock_orch_svc.NewMockChatGateway(ctrl)
 			agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 			runs := mock_orch_repo.NewMockRunRepo(ctrl)
-			tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+			tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 			orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 			runs.EXPECT().Find(gomock.Any(), int64(99)).Return(nil, nil)

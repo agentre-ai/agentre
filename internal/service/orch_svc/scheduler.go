@@ -21,7 +21,7 @@ var sendRetryBackoff = []time.Duration{
 
 // queued 是等待被调度器发射的一个子任务。
 type queued struct {
-	task  *orch_entity.Task
+	task  *orch_entity.Dispatch
 	brief string
 }
 
@@ -52,7 +52,7 @@ func (s *orchSvc) schedulerFor(runID int64) *scheduler {
 }
 
 // enqueueRun 将子任务加入该 Run 的调度队列，然后 kick 尝试发射。
-func (s *orchSvc) enqueueRun(runID int64, task *orch_entity.Task, brief string) {
+func (s *orchSvc) enqueueRun(runID int64, task *orch_entity.Dispatch, brief string) {
 	sc := s.schedulerFor(runID)
 	sc.mu.Lock()
 	sc.pending = append(sc.pending, queued{task: task, brief: brief})

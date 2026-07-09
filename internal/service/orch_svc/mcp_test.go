@@ -45,7 +45,7 @@ func TestMCP_RejectsBadToken(t *testing.T) {
 }
 
 // TestMCP_ToolsCall_AllowsOrchestrationSessionEvenWhenDisabled 回归:经编排创建的会话
-// (绑定了编排 Task)即便其 agent 未勾 orchestrate,tools/call(如 agent_list)也应放行 ——
+// (绑定了编排 Dispatch)即便其 agent 未勾 orchestrate,tools/call(如 agent_list)也应放行 ——
 // 否则注入门(turn.go)已把工具塞进去、调用门(mcp.go)却仍按 ToolEnabled 401→403,
 // Leader 看得到工具却每次调用都 403,整条 Run 静默降级成它一个人干(dev sess-53 根因)。
 func TestMCP_ToolsCall_AllowsOrchestrationSessionEvenWhenDisabled(t *testing.T) {
@@ -63,9 +63,9 @@ func TestMCP_ToolsCall_AllowsOrchestrationSessionEvenWhenDisabled(t *testing.T) 
 	agents.EXPECT().Find(gomock.Any(), agentID).Return(disabled, nil).AnyTimes()
 	agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{disabled}, nil).AnyTimes()
 
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	tasks.EXPECT().FindBySession(gomock.Any(), sessionID).
-		Return(&orch_entity.Task{ID: 7, RunID: runID, SessionID: sessionID, ParentTaskID: 0}, nil).AnyTimes()
+		Return(&orch_entity.Dispatch{ID: 7, RunID: runID, SessionID: sessionID, ParentDispatchID: 0}, nil).AnyTimes()
 
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	runs.EXPECT().Find(gomock.Any(), runID).
@@ -87,7 +87,7 @@ func TestMCP_ToolsCall_AllowsOrchestrationSessionEvenWhenDisabled(t *testing.T) 
 }
 
 // TestMCP_ToolsCall_RejectsNonOrchestrationSessionWhenDisabled 边界护栏:普通会话(未绑定
-// 编排 Task)且 agent 未勾 orchestrate → tools/call 仍应 403,确保上面的放行不是把门拆了。
+// 编排 Dispatch)且 agent 未勾 orchestrate → tools/call 仍应 403,确保上面的放行不是把门拆了。
 func TestMCP_ToolsCall_RejectsNonOrchestrationSessionWhenDisabled(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -101,7 +101,7 @@ func TestMCP_ToolsCall_RejectsNonOrchestrationSessionWhenDisabled(t *testing.T) 
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 	agents.EXPECT().Find(gomock.Any(), agentID).Return(disabled, nil).AnyTimes()
 
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	tasks.EXPECT().FindBySession(gomock.Any(), sessionID).Return(nil, nil).AnyTimes() // 非编排会话
 
 	orch_svc.Default().RegisterDeps(nil, agents, nil, tasks, nil, nil)

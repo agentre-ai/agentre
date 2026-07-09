@@ -11,13 +11,13 @@ import (
 
 // Finish 收口当前任务；若为 Run 根任务则整个 Run done。
 func (s *orchSvc) Finish(ctx context.Context, sessionID int64, summary string) error {
-	tk, err := s.tasks.FindBySession(ctx, sessionID)
+	tk, err := s.dispatches.FindBySession(ctx, sessionID)
 	if err != nil || tk == nil {
 		return errRunNotActive
 	}
-	tk.Status = orch_entity.TaskDone
+	tk.Status = orch_entity.DispatchDone
 	tk.Summary = summary
-	if err := s.tasks.Update(ctx, tk); err != nil {
+	if err := s.dispatches.Update(ctx, tk); err != nil {
 		return err
 	}
 	run, err := s.runs.Find(ctx, tk.RunID)

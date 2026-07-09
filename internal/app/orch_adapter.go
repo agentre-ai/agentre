@@ -36,7 +36,7 @@ type orchChatAdapter struct {
 }
 
 // EnsureOrchSession 创建编排子会话（run_id>0，不复用）。
-// ParentSessionID 由 orch_svc 的 Task 树追踪，不传给 chat_svc。
+// ParentSessionID 由 orch_svc 的 Dispatch 树追踪，不传给 chat_svc。
 // Isolate/worktree 暂不支持（chat_svc.EnsureSessionRequest 尚无对应字段），留作后续扩展。
 func (a *orchChatAdapter) EnsureOrchSession(ctx context.Context, in orch_svc.EnsureOrchSessionInput) (int64, error) {
 	resp, err := chat_svc.Chat().EnsureSession(ctx, &chat_svc.EnsureSessionRequest{

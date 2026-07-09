@@ -12,21 +12,21 @@ import (
 // CancelTask 软取消 + 尽力硬打断目标任务及其全部 dispatch 子孙(限调用者同 Run)。
 // 返回被标记取消的活任务数。watcher 侧的让位守卫保证被取消任务不会被误翻/误回报。
 func (s *orchSvc) CancelTask(ctx context.Context, sessionID, taskID int64) (int, error) {
-	caller, err := s.tasks.FindBySession(ctx, sessionID)
+	caller, err := s.dispatches.FindBySession(ctx, sessionID)
 	if err != nil {
 		return 0, err
 	}
 	if caller == nil {
 		return 0, errRunNotActive
 	}
-	target, err := s.tasks.Find(ctx, taskID)
+	target, err := s.dispatches.Find(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
 	if target == nil || target.RunID != caller.RunID {
 		return 0, errForeignTask
 	}
-	rows, err := s.tasks.ListByRun(ctx, caller.RunID)
+	rows, err := s.dispatches.ListByRun(ctx, caller.RunID)
 	if err != nil {
 		return 0, err
 	}
@@ -35,8 +35,8 @@ func (s *orchSvc) CancelTask(ctx context.Context, sessionID, taskID int64) (int,
 		if !tk.IsActive() {
 			continue
 		}
-		tk.Status = orch_entity.TaskCanceled
-		if uerr := s.tasks.Update(ctx, tk); uerr != nil {
+		tk.Status = orch_entity.DispatchCanceled
+		if uerr := s.dispatches.Update(ctx, tk); uerr != nil {
 			logger.Ctx(ctx).Error("orch.CancelTask: 标记取消失败", zap.Int64("task", tk.ID), zap.Error(uerr))
 			continue
 		}
@@ -51,14 +51,14 @@ func (s *orchSvc) CancelTask(ctx context.Context, sessionID, taskID int64) (int,
 }
 
 // collectSubtree 返回 rootID 及其全部 dispatch 子孙任务(BFS,防环)。
-func collectSubtree(rows []*orch_entity.Task, rootID int64) []*orch_entity.Task {
-	byID := map[int64]*orch_entity.Task{}
-	byParent := map[int64][]*orch_entity.Task{}
+func collectSubtree(rows []*orch_entity.Dispatch, rootID int64) []*orch_entity.Dispatch {
+	byID := map[int64]*orch_entity.Dispatch{}
+	byParent := map[int64][]*orch_entity.Dispatch{}
 	for _, t := range rows {
 		byID[t.ID] = t
-		byParent[t.ParentTaskID] = append(byParent[t.ParentTaskID], t)
+		byParent[t.ParentDispatchID] = append(byParent[t.ParentDispatchID], t)
 	}
-	var out []*orch_entity.Task
+	var out []*orch_entity.Dispatch
 	seen := map[int64]bool{}
 	queue := []int64{rootID}
 	for len(queue) > 0 {
@@ -72,7 +72,7 @@ func collectSubtree(rows []*orch_entity.Task, rootID int64) []*orch_entity.Task 
 			out = append(out, t)
 		}
 		for _, c := range byParent[id] {
-			if c.Kind == orch_entity.TaskKindDispatch {
+			if c.Kind == orch_entity.DispatchKindDispatch {
 				queue = append(queue, c.ID)
 			}
 		}

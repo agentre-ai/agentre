@@ -28,7 +28,7 @@ func (s *orchSvc) BuildTurnMCP(ctx context.Context, a *agent_entity.Agent, sessi
 	if a == nil || s.gatewayBaseURL == "" {
 		return nil
 	}
-	// 编排会话(根/被派发子任务,即绑定了编排 Task 的会话)无条件注入编排工具,不看
+	// 编排会话(根/被派发子任务,即绑定了编排 Dispatch 的会话)无条件注入编排工具,不看
 	// agent 的 orchestrate 开关 —— 否则经编排创建的会话拿不到 dispatch/report/finish 等
 	// 能力,整条 Run 静默降级成普通聊天。普通会话仍按 agent 配置;短路:已开则不查库。
 	if !a.ToolEnabled(agenttool.KeyOrchestrate) && !s.sessionInRun(ctx, sessionID) {
@@ -52,18 +52,18 @@ func (s *orchSvc) BuildTurnExtras(ctx context.Context, a *agent_entity.Agent, se
 	if a == nil {
 		return nil, "", false
 	}
-	// 取该会话绑定的编排 Task(非编排会话 → nil)。编排会话无条件注入编排指引,不看
+	// 取该会话绑定的编排 Dispatch(非编排会话 → nil)。编排会话无条件注入编排指引,不看
 	// agent 的 orchestrate 开关;普通会话仍按 agent 配置。
-	var tk *orch_entity.Task
-	if s.tasks != nil {
-		tk, _ = s.tasks.FindBySession(ctx, sessionID)
+	var tk *orch_entity.Dispatch
+	if s.dispatches != nil {
+		tk, _ = s.dispatches.FindBySession(ctx, sessionID)
 	}
 	if !a.ToolEnabled(agenttool.KeyOrchestrate) && tk == nil {
 		return nil, "", false
 	}
 	suffix := "\n\n### 编排指引\n" + orchGuidance
 	// 本次编排流程正文仅归根(Leader)会话;被派发的子任务只拿指引,不拿整条 Run 的计划。
-	if tk != nil && tk.ParentTaskID == 0 && s.runs != nil {
+	if tk != nil && tk.ParentDispatchID == 0 && s.runs != nil {
 		if run, _ := s.runs.Find(ctx, tk.RunID); run != nil && run.RootTaskID == tk.ID && strings.TrimSpace(run.FlowContent) != "" {
 			suffix += "\n\n### 本次编排流程(用户首条消息可临时覆盖)\n" + strings.TrimSpace(run.FlowContent)
 		}
@@ -71,11 +71,11 @@ func (s *orchSvc) BuildTurnExtras(ctx context.Context, a *agent_entity.Agent, se
 	return nil, suffix, true
 }
 
-// sessionInRun 报告该会话是否为编排会话(绑定了编排 Task);tasks 未接线时保守返回 false。
+// sessionInRun 报告该会话是否为编排会话(绑定了编排 Dispatch);dispatches 未接线时保守返回 false。
 func (s *orchSvc) sessionInRun(ctx context.Context, sessionID int64) bool {
-	if s.tasks == nil {
+	if s.dispatches == nil {
 		return false
 	}
-	tk, _ := s.tasks.FindBySession(ctx, sessionID)
+	tk, _ := s.dispatches.FindBySession(ctx, sessionID)
 	return tk != nil
 }

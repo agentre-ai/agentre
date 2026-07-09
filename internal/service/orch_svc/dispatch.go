@@ -9,10 +9,10 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/orch_entity"
 )
 
-// Dispatch 把子任务异步派给某 agent：建子会话 + Task，触发其首轮，立即返回 taskID。
+// Dispatch 把子任务异步派给某 agent：建子会话 + Dispatch，触发其首轮，立即返回 taskID。
 // 子任务完成由 watchCompletion(Task 8) 回报派发者。
 func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName, brief string, isolate bool) (int64, error) {
-	parent, err := s.tasks.FindBySession(ctx, parentSessionID)
+	parent, err := s.dispatches.FindBySession(ctx, parentSessionID)
 	if err != nil {
 		return 0, err
 	}
@@ -28,7 +28,7 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 		return 0, errAgentNotFound
 	}
 
-	n, err := s.tasks.CountByRunAgent(ctx, parent.RunID, target.ID)
+	n, err := s.dispatches.CountByRunAgent(ctx, parent.RunID, target.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -58,23 +58,23 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 		return 0, err
 	}
 
-	child := &orch_entity.Task{
-		RunID:        parent.RunID,
-		AgentID:      target.ID,
-		SessionID:    childSession,
-		ParentTaskID: parent.ID,
-		Kind:         orch_entity.TaskKindDispatch,
-		Status:       orch_entity.TaskRunning,
-		Brief:        brief,
-		CallSeq:      int(n) + 1,
+	child := &orch_entity.Dispatch{
+		RunID:            parent.RunID,
+		AgentID:          target.ID,
+		SessionID:        childSession,
+		ParentDispatchID: parent.ID,
+		Kind:             orch_entity.DispatchKindDispatch,
+		Status:           orch_entity.DispatchRunning,
+		Brief:            brief,
+		CallSeq:          int(n) + 1,
 	}
-	if err := s.tasks.Create(ctx, child); err != nil {
+	if err := s.dispatches.Create(ctx, child); err != nil {
 		return 0, err
 	}
 
 	// 派发者进入「等子任务」（Task 8 在子回报时改回 running）。
-	parent.Status = orch_entity.TaskAwaitingChildren
-	if err := s.tasks.Update(ctx, parent); err != nil {
+	parent.Status = orch_entity.DispatchAwaitingChildren
+	if err := s.dispatches.Update(ctx, parent); err != nil {
 		logger.Ctx(ctx).Warn("orch.Dispatch: 更新父任务状态失败(非致命,子任务照常跑)", zap.Int64("task", parent.ID), zap.Error(err))
 	}
 
@@ -91,7 +91,7 @@ func (s *orchSvc) Dispatch(ctx context.Context, parentSessionID int64, agentName
 }
 
 // fireEnqueue 路由到真实 enqueueRun 或测试注入的 no-op 钩子。
-func (s *orchSvc) fireEnqueue(runID int64, task *orch_entity.Task, brief string) {
+func (s *orchSvc) fireEnqueue(runID int64, task *orch_entity.Dispatch, brief string) {
 	if s.enqueue != nil {
 		s.enqueue(runID, task, brief)
 		return

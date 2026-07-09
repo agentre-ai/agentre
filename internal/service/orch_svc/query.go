@@ -14,10 +14,10 @@ import (
 // 导出以便调用方(如 app 绑定层)用 errors.Is 判别。
 var ErrRunNotActive = errRunNotActive
 
-// RunLoadResult LoadRun 的返回值:Run 与其全部 Task。
+// RunLoadResult LoadRun 的返回值:Run 与其全部 Dispatch。
 type RunLoadResult struct {
-	Run   *orch_entity.OrchestrationRun
-	Tasks []*orch_entity.Task
+	Run        *orch_entity.OrchestrationRun
+	Dispatches []*orch_entity.Dispatch
 }
 
 // ListAllowedAgents 返回调用者所在 Run 的可参与 agent（allowed∪{leader}；集合空/定位不到 Run → 全部）。
@@ -27,7 +27,7 @@ func (s *orchSvc) ListAllowedAgents(ctx context.Context, sessionID int64) ([]*ag
 		return nil, err
 	}
 	// 定位不到 Run(会话无任务 / DB 错误)→ 放行全部(fail-open:可参与是团队编成、非安全边界)。
-	tk, err := s.tasks.FindBySession(ctx, sessionID)
+	tk, err := s.dispatches.FindBySession(ctx, sessionID)
 	if err != nil {
 		logger.Ctx(ctx).Warn("orch.ListAllowedAgents: 定位会话任务失败,放行全部", zap.Int64("session", sessionID), zap.Error(err))
 		return all, nil
@@ -61,7 +61,7 @@ func (s *orchSvc) ListRuns(ctx context.Context) ([]*orch_entity.OrchestrationRun
 	return s.runs.List(ctx)
 }
 
-// LoadRun 取指定 Run 及其全部 Task;Run 不存在时返回 ErrRunNotActive。
+// LoadRun 取指定 Run 及其全部 Dispatch;Run 不存在时返回 ErrRunNotActive。
 func (s *orchSvc) LoadRun(ctx context.Context, id int64) (*RunLoadResult, error) {
 	run, err := s.runs.Find(ctx, id)
 	if err != nil {
@@ -70,9 +70,9 @@ func (s *orchSvc) LoadRun(ctx context.Context, id int64) (*RunLoadResult, error)
 	if run == nil {
 		return nil, errRunNotActive
 	}
-	tasks, err := s.tasks.ListByRun(ctx, id)
+	dispatches, err := s.dispatches.ListByRun(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return &RunLoadResult{Run: run, Tasks: tasks}, nil
+	return &RunLoadResult{Run: run, Dispatches: dispatches}, nil
 }

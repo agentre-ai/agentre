@@ -12,25 +12,25 @@ import (
 )
 
 type statusRow struct {
-	TaskID     int64   `json:"task_id"`
-	Agent      string  `json:"agent"`
-	Kind       string  `json:"kind"`
-	Status     string  `json:"status"`
-	Brief      string  `json:"brief"`
-	CallSeq    int     `json:"call_seq"`
-	HasSummary bool    `json:"has_summary"`
-	ParentTask int64   `json:"parent_task_id,omitempty"`
-	BlockedOn  []int64 `json:"blocked_on,omitempty"`
+	DispatchID     int64   `json:"dispatch_id"`
+	Agent          string  `json:"agent"`
+	Kind           string  `json:"kind"`
+	Status         string  `json:"status"`
+	Brief          string  `json:"brief"`
+	CallSeq        int     `json:"call_seq"`
+	HasSummary     bool    `json:"has_summary"`
+	ParentDispatch int64   `json:"parent_dispatch_id,omitempty"`
+	BlockedOn      []int64 `json:"blocked_on,omitempty"`
 }
 
-// formatRunStatus 把 Run 任务树渲染成紧凑 JSON 快照(供 Leader status 工具)。
+// formatRunStatus 把 Run 派发树渲染成紧凑 JSON 快照(供 Leader status 工具)。
 // 无时钟依赖的纯函数;agentNames 缺省用 "agent#<id>"。
-func formatRunStatus(tasks []*orch_entity.Task, agentNames map[int64]string) string {
+func formatRunStatus(tasks []*orch_entity.Dispatch, agentNames map[int64]string) string {
 	// 预计算每个父任务下仍活跃的 dispatch 子任务 id(blocked_on 只给 awaiting-children)。
 	activeChildren := map[int64][]int64{}
 	for _, t := range tasks {
-		if t.Kind == orch_entity.TaskKindDispatch && t.IsActive() && t.ParentTaskID != 0 {
-			activeChildren[t.ParentTaskID] = append(activeChildren[t.ParentTaskID], t.ID)
+		if t.Kind == orch_entity.DispatchKindDispatch && t.IsActive() && t.ParentDispatchID != 0 {
+			activeChildren[t.ParentDispatchID] = append(activeChildren[t.ParentDispatchID], t.ID)
 		}
 	}
 	rows := make([]statusRow, 0, len(tasks))
@@ -40,16 +40,16 @@ func formatRunStatus(tasks []*orch_entity.Task, agentNames map[int64]string) str
 			name = "agent#" + strconv.FormatInt(t.AgentID, 10)
 		}
 		row := statusRow{
-			TaskID:     t.ID,
-			Agent:      name,
-			Kind:       t.Kind,
-			Status:     t.Status,
-			Brief:      t.Brief,
-			CallSeq:    t.CallSeq,
-			HasSummary: t.Summary != "",
-			ParentTask: t.ParentTaskID,
+			DispatchID:     t.ID,
+			Agent:          name,
+			Kind:           t.Kind,
+			Status:         t.Status,
+			Brief:          t.Brief,
+			CallSeq:        t.CallSeq,
+			HasSummary:     t.Summary != "",
+			ParentDispatch: t.ParentDispatchID,
 		}
-		if t.Status == orch_entity.TaskAwaitingChildren {
+		if t.Status == orch_entity.DispatchAwaitingChildren {
 			row.BlockedOn = activeChildren[t.ID]
 		}
 		rows = append(rows, row)
@@ -58,16 +58,16 @@ func formatRunStatus(tasks []*orch_entity.Task, agentNames map[int64]string) str
 	return string(b)
 }
 
-// RunStatus 返回调用者所在 Run 的任务树 JSON 快照。
+// RunStatus 返回调用者所在 Run 的派发树 JSON 快照。
 func (s *orchSvc) RunStatus(ctx context.Context, sessionID int64) (string, error) {
-	caller, err := s.tasks.FindBySession(ctx, sessionID)
+	caller, err := s.dispatches.FindBySession(ctx, sessionID)
 	if err != nil {
 		return "", err
 	}
 	if caller == nil {
 		return "", errRunNotActive
 	}
-	rows, err := s.tasks.ListByRun(ctx, caller.RunID)
+	rows, err := s.dispatches.ListByRun(ctx, caller.RunID)
 	if err != nil {
 		return "", err
 	}

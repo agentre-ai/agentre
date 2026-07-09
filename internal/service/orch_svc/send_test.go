@@ -18,19 +18,19 @@ func TestSend_ReopensSameTaskNoNewNode(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
 
-	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500}, nil)
-	tasks.EXPECT().Find(gomock.Any(), int64(11)).Return(&orch_entity.Task{ID: 11, RunID: 100, ParentTaskID: 9, SessionID: 600, Status: orch_entity.TaskDone}, nil)
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Dispatch{ID: 9, RunID: 100, SessionID: 500}, nil)
+	tasks.EXPECT().Find(gomock.Any(), int64(11)).Return(&orch_entity.Dispatch{ID: 11, RunID: 100, ParentDispatchID: 9, SessionID: 600, Status: orch_entity.DispatchDone}, nil)
 	// Update is called at least once: assert task 11 is set to running.
 	// Also accept the caller flip (task 9 → AwaitingChildren) via AnyTimes.
-	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
+	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Dispatch) error {
 		switch tk.ID {
 		case 11:
-			So(tk.Status, ShouldEqual, orch_entity.TaskRunning)
+			So(tk.Status, ShouldEqual, orch_entity.DispatchRunning)
 		case 9:
-			So(tk.Status, ShouldEqual, orch_entity.TaskAwaitingChildren)
+			So(tk.Status, ShouldEqual, orch_entity.DispatchAwaitingChildren)
 		}
 		return nil
 	}).AnyTimes()
@@ -68,12 +68,12 @@ func TestSend_RejectsForeignTask(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
 
-	// caller has ID=9; task has ParentTaskID=7 (NOT 9) → errNotYourTask.
-	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500}, nil)
-	tasks.EXPECT().Find(gomock.Any(), int64(22)).Return(&orch_entity.Task{ID: 22, RunID: 100, ParentTaskID: 7, SessionID: 700, Status: orch_entity.TaskDone}, nil)
+	// caller has ID=9; task has ParentDispatchID=7 (NOT 9) → errNotYourTask.
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Dispatch{ID: 9, RunID: 100, SessionID: 500}, nil)
+	tasks.EXPECT().Find(gomock.Any(), int64(22)).Return(&orch_entity.Dispatch{ID: 22, RunID: 100, ParentDispatchID: 7, SessionID: 700, Status: orch_entity.DispatchDone}, nil)
 	// No SendAndForget or enqueue should happen — return before enqueueRun.
 
 	Convey("send 拒绝非自己派发的任务", t, func() {

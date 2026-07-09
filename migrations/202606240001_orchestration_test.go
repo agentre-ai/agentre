@@ -40,7 +40,8 @@ func TestMigration202606240001_Orchestration(t *testing.T) {
 	require.NoError(t, RunMigrations(db))
 
 	require.True(t, tableExists(t, db, "orchestration_runs"))
-	require.True(t, tableExists(t, db, "orch_tasks"))
+	// orch_tasks 已被 202607090001 改名为 orch_dispatches(执行节点改名腾出 task 给待办清单)。
+	require.True(t, tableExists(t, db, "orch_dispatches"))
 	require.True(t, columnExists(t, db, "chat_sessions", "run_id"))
 
 	// DEFAULT agent 应被种上 orchestrate 工具。

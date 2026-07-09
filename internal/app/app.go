@@ -233,7 +233,7 @@ func (a *App) registerChatService() {
 	// ApprovalGateway 由 chat_svc.Chat() 满足(BeginToolApproval/FinishToolApproval)。
 	orch_svc.Default().RegisterDeps(
 		&orchChatAdapter{}, orchAgentAdapter{},
-		orch_repo.Run(), orch_repo.Task(),
+		orch_repo.Run(), orch_repo.Dispatch(),
 		chat_svc.Chat(), orchEmitter{a: a},
 	)
 	orch_svc.Default().RegisterWorkflowReader(orchWorkflowAdapter{})

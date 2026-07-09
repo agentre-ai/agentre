@@ -16,34 +16,34 @@ type RunItemDTO struct {
 	FlowID int64 `json:"flowId"`
 	// FlowContent 创建时快照的流程正文。
 	FlowContent string `json:"flowContent"`
-	// RootTaskID 根 Task 的 ID。
+	// RootTaskID 根 Dispatch 的 ID。
 	RootTaskID int64 `json:"rootTaskId"`
 	Createtime int64 `json:"createtime"`
 	Updatetime int64 `json:"updatetime"`
 }
 
-// TaskDTO 编排 Task 条目。
-type TaskDTO struct {
-	ID           int64  `json:"id"`
-	RunID        int64  `json:"runId"`
-	AgentID      int64  `json:"agentId"`
-	SessionID    int64  `json:"sessionId"`
-	ParentTaskID int64  `json:"parentTaskId"`
-	Kind         string `json:"kind"`
-	Status       string `json:"status"`
-	Brief        string `json:"brief"`
-	Result       string `json:"result"`
-	CallSeq      int    `json:"callSeq"`
+// DispatchDTO 编排 Dispatch 条目。
+type DispatchDTO struct {
+	ID               int64  `json:"id"`
+	RunID            int64  `json:"runId"`
+	AgentID          int64  `json:"agentId"`
+	SessionID        int64  `json:"sessionId"`
+	ParentDispatchID int64  `json:"parentDispatchId"`
+	Kind             string `json:"kind"`
+	Status           string `json:"status"`
+	Brief            string `json:"brief"`
+	Result           string `json:"result"`
+	CallSeq          int    `json:"callSeq"`
 	// Refs JSON 格式的被引用产物/任务列表。
 	Refs       string `json:"refs"`
 	Createtime int64  `json:"createtime"`
 	Updatetime int64  `json:"updatetime"`
 }
 
-// RunDetailDTO 编排 Run 详情（Run + 全部 Task）。
+// RunDetailDTO 编排 Run 详情（Run + 全部 Dispatch）。
 type RunDetailDTO struct {
-	Run   *RunItemDTO `json:"run"`
-	Tasks []*TaskDTO  `json:"tasks"`
+	Run        *RunItemDTO    `json:"run"`
+	Dispatches []*DispatchDTO `json:"dispatches"`
 }
 
 // RunCreateRequest 创建编排 Run 的前端请求。
@@ -71,25 +71,25 @@ func toRunItem(r *orch_entity.OrchestrationRun) *RunItemDTO {
 	}
 }
 
-func toTaskDTO(t *orch_entity.Task) *TaskDTO {
-	return &TaskDTO{
-		ID:           t.ID,
-		RunID:        t.RunID,
-		AgentID:      t.AgentID,
-		SessionID:    t.SessionID,
-		ParentTaskID: t.ParentTaskID,
-		Kind:         t.Kind,
-		Status:       t.Status,
-		Brief:        t.Brief,
-		Result:       t.Result,
-		CallSeq:      t.CallSeq,
-		Refs:         t.Refs,
-		Createtime:   t.Createtime,
-		Updatetime:   t.Updatetime,
+func toDispatchDTO(t *orch_entity.Dispatch) *DispatchDTO {
+	return &DispatchDTO{
+		ID:               t.ID,
+		RunID:            t.RunID,
+		AgentID:          t.AgentID,
+		SessionID:        t.SessionID,
+		ParentDispatchID: t.ParentDispatchID,
+		Kind:             t.Kind,
+		Status:           t.Status,
+		Brief:            t.Brief,
+		Result:           t.Result,
+		CallSeq:          t.CallSeq,
+		Refs:             t.Refs,
+		Createtime:       t.Createtime,
+		Updatetime:       t.Updatetime,
 	}
 }
 
-// RunCreate 创建编排 Run，返回 Run 详情（含根 Task）。
+// RunCreate 创建编排 Run，返回 Run 详情（含根 Dispatch）。
 func (a *App) RunCreate(req *RunCreateRequest) (*RunDetailDTO, error) {
 	d, err := orch_svc.Default().CreateRun(a.ctx, &orch_svc.CreateRunRequest{
 		Goal:            req.Goal,
@@ -102,7 +102,7 @@ func (a *App) RunCreate(req *RunCreateRequest) (*RunDetailDTO, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RunDetailDTO{Run: toRunItem(d.Run), Tasks: []*TaskDTO{toTaskDTO(d.RootTask)}}, nil
+	return &RunDetailDTO{Run: toRunItem(d.Run), Dispatches: []*DispatchDTO{toDispatchDTO(d.RootTask)}}, nil
 }
 
 // RunList 返回全部 Run 列表。
@@ -118,17 +118,17 @@ func (a *App) RunList() ([]*RunItemDTO, error) {
 	return out, nil
 }
 
-// RunLoad 加载指定 Run 的详情（Run + 全部 Task）。
+// RunLoad 加载指定 Run 的详情（Run + 全部 Dispatch）。
 func (a *App) RunLoad(id int64) (*RunDetailDTO, error) {
 	d, err := orch_svc.Default().LoadRun(a.ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	tasks := make([]*TaskDTO, 0, len(d.Tasks))
-	for _, t := range d.Tasks {
-		tasks = append(tasks, toTaskDTO(t))
+	dispatches := make([]*DispatchDTO, 0, len(d.Dispatches))
+	for _, t := range d.Dispatches {
+		dispatches = append(dispatches, toDispatchDTO(t))
 	}
-	return &RunDetailDTO{Run: toRunItem(d.Run), Tasks: tasks}, nil
+	return &RunDetailDTO{Run: toRunItem(d.Run), Dispatches: dispatches}, nil
 }
 
 // RunPause 暂停指定 Run。

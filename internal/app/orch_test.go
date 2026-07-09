@@ -37,29 +37,29 @@ func TestToRunItem_MapsAllFields(t *testing.T) {
 	})
 }
 
-func TestToTaskDTO_MapsAllFields(t *testing.T) {
-	Convey("toTaskDTO 应把 Task 所有字段映射到 TaskDTO", t, func() {
-		tk := &orch_entity.Task{
-			ID:           99,
-			RunID:        42,
-			AgentID:      7,
-			SessionID:    500,
-			ParentTaskID: 3,
-			Kind:         orch_entity.TaskKindDispatch,
-			Status:       orch_entity.TaskRunning,
-			Brief:        "实现登录接口",
-			Result:       "已完成",
-			CallSeq:      2,
-			Refs:         `["task:1"]`,
-			Createtime:   3000,
-			Updatetime:   4000,
+func TestToDispatchDTO_MapsAllFields(t *testing.T) {
+	Convey("toDispatchDTO 应把 Dispatch 所有字段映射到 DispatchDTO", t, func() {
+		tk := &orch_entity.Dispatch{
+			ID:               99,
+			RunID:            42,
+			AgentID:          7,
+			SessionID:        500,
+			ParentDispatchID: 3,
+			Kind:             orch_entity.DispatchKindDispatch,
+			Status:           orch_entity.DispatchRunning,
+			Brief:            "实现登录接口",
+			Result:           "已完成",
+			CallSeq:          2,
+			Refs:             `["task:1"]`,
+			Createtime:       3000,
+			Updatetime:       4000,
 		}
-		dto := toTaskDTO(tk)
+		dto := toDispatchDTO(tk)
 		So(dto.ID, ShouldEqual, tk.ID)
 		So(dto.RunID, ShouldEqual, tk.RunID)
 		So(dto.AgentID, ShouldEqual, tk.AgentID)
 		So(dto.SessionID, ShouldEqual, tk.SessionID)
-		So(dto.ParentTaskID, ShouldEqual, tk.ParentTaskID)
+		So(dto.ParentDispatchID, ShouldEqual, tk.ParentDispatchID)
 		So(dto.Kind, ShouldEqual, tk.Kind)
 		So(dto.Status, ShouldEqual, tk.Status)
 		So(dto.Brief, ShouldEqual, tk.Brief)
@@ -82,10 +82,10 @@ func TestToRunItem_ZeroValues(t *testing.T) {
 	})
 }
 
-func TestToTaskDTO_ZeroValues(t *testing.T) {
-	Convey("toTaskDTO 对零值 Task 返回零值 DTO", t, func() {
-		tk := &orch_entity.Task{}
-		dto := toTaskDTO(tk)
+func TestToDispatchDTO_ZeroValues(t *testing.T) {
+	Convey("toDispatchDTO 对零值 Dispatch 返回零值 DTO", t, func() {
+		tk := &orch_entity.Dispatch{}
+		dto := toDispatchDTO(tk)
 		So(dto.ID, ShouldEqual, 0)
 		So(dto.Kind, ShouldEqual, "")
 		So(dto.CallSeq, ShouldEqual, 0)

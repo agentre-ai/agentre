@@ -123,7 +123,7 @@ func (s *orchSvc) MCPHandler() http.Handler {
 		case "tools/call":
 			// Capability gate — mirror the injection gate in turn.go BuildTurnMCP:
 			// 放行条件 = agent 勾了 orchestrate 工具 或 会话本身是编排会话(绑定了编排
-			// Task)。后者让经编排创建的 Leader/子任务会话即便其 agent 未勾 orchestrate,
+			// Dispatch)。后者让经编排创建的 Leader/子任务会话即便其 agent 未勾 orchestrate,
 			// 也能真正调用注进去的工具 —— 否则注入门放行、调用门 403,整条 Run 静默降级。
 			if m.svc.agents == nil {
 				http.Error(w, "service unavailable", http.StatusServiceUnavailable)
@@ -235,18 +235,18 @@ func (m *orchMCP) handleReply(w http.ResponseWriter, r *http.Request, id json.Ra
 
 func (m *orchMCP) handleSend(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
 	var p struct {
-		TaskID  int64  `json:"task_id"`
-		Message string `json:"message"`
+		DispatchID int64  `json:"task_id"`
+		Message    string `json:"message"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		writeRPCError(w, id, -32700, "parse error: "+err.Error())
 		return
 	}
-	if p.TaskID <= 0 || p.Message == "" {
+	if p.DispatchID <= 0 || p.Message == "" {
 		writeRPCError(w, id, -32602, "task_id and message are required")
 		return
 	}
-	if err := m.svc.Send(r.Context(), ref.sessionID, p.TaskID, p.Message); err != nil {
+	if err := m.svc.Send(r.Context(), ref.sessionID, p.DispatchID, p.Message); err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
 	}
@@ -293,17 +293,17 @@ func (m *orchMCP) handleReport(w http.ResponseWriter, r *http.Request, id json.R
 
 func (m *orchMCP) handleRead(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
 	var p struct {
-		TaskID int64 `json:"task_id"`
+		DispatchID int64 `json:"task_id"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		writeRPCError(w, id, -32700, "parse error: "+err.Error())
 		return
 	}
-	if p.TaskID <= 0 {
+	if p.DispatchID <= 0 {
 		writeRPCError(w, id, -32602, "task_id is required")
 		return
 	}
-	out, err := m.svc.ReadTask(r.Context(), ref.sessionID, p.TaskID)
+	out, err := m.svc.ReadTask(r.Context(), ref.sessionID, p.DispatchID)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
@@ -322,22 +322,22 @@ func (m *orchMCP) handleStatus(w http.ResponseWriter, r *http.Request, id json.R
 
 func (m *orchMCP) handleCancel(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
 	var p struct {
-		TaskID int64 `json:"task_id"`
+		DispatchID int64 `json:"task_id"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		writeRPCError(w, id, -32700, "parse error: "+err.Error())
 		return
 	}
-	if p.TaskID <= 0 {
+	if p.DispatchID <= 0 {
 		writeRPCError(w, id, -32602, "task_id is required")
 		return
 	}
-	n, err := m.svc.CancelTask(r.Context(), ref.sessionID, p.TaskID)
+	n, err := m.svc.CancelTask(r.Context(), ref.sessionID, p.DispatchID)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
 	}
-	writeRPCResult(w, id, textResult(fmt.Sprintf("已请求取消 %d 个任务(目标 #%d 及其子孙);进行中的一轮会尽力打断。", n, p.TaskID)))
+	writeRPCResult(w, id, textResult(fmt.Sprintf("已请求取消 %d 个任务(目标 #%d 及其子孙);进行中的一轮会尽力打断。", n, p.DispatchID)))
 }
 
 // textResult 将文本包装成 MCP content 格式（Tasks 10/11/12 复用）。

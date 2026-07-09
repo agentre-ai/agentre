@@ -31,7 +31,7 @@ func TestBuildTurnMCP_InjectsWhenEnabled(t *testing.T) {
 	// 遗留在 Default() 单例上的 tasks mock 干扰。
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	tasks.EXPECT().FindBySession(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	orch_svc.Default().RegisterDeps(nil, nil, nil, tasks, nil, nil)
 	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
@@ -64,14 +64,14 @@ func TestBuildTurnExtras_AppendsFlowForRootSession(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	// Inject mock deps; restore via cleanup (re-register with nils).
 	orch_svc.Default().RegisterDeps(nil, nil, runs, tasks, nil, nil)
 	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
 
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).
-		Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500, ParentTaskID: 0}, nil)
+		Return(&orch_entity.Dispatch{ID: 9, RunID: 100, SessionID: 500, ParentDispatchID: 0}, nil)
 	runs.EXPECT().Find(gomock.Any(), int64(100)).
 		Return(&orch_entity.OrchestrationRun{ID: 100, RootTaskID: 9, FlowContent: "先拆分再并行"}, nil)
 
@@ -108,7 +108,7 @@ func TestBuildTurnExtras_NeverInjectsTagsOutline(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	orch_svc.Default().RegisterDeps(nil, nil, runs, tasks, nil, nil)
 	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
@@ -116,7 +116,7 @@ func TestBuildTurnExtras_NeverInjectsTagsOutline(t *testing.T) {
 	const flowBody = "正文-FLOW-BODY"
 
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(600)).
-		Return(&orch_entity.Task{ID: 50, RunID: 200, SessionID: 600, ParentTaskID: 0}, nil)
+		Return(&orch_entity.Dispatch{ID: 50, RunID: 200, SessionID: 600, ParentDispatchID: 0}, nil)
 	runs.EXPECT().Find(gomock.Any(), int64(200)).
 		Return(&orch_entity.OrchestrationRun{ID: 200, RootTaskID: 50, FlowContent: flowBody}, nil)
 
@@ -133,7 +133,7 @@ func TestBuildTurnExtras_NeverInjectsTagsOutline(t *testing.T) {
 }
 
 // TestBuildTurnMCP_InjectsForOrchestrationSessionEvenWhenDisabled 回归：
-// 经编排创建的会话(绑定了编排 Task)即便其 agent 未勾 orchestrate 工具,也应注入
+// 经编排创建的会话(绑定了编排 Dispatch)即便其 agent 未勾 orchestrate 工具,也应注入
 // 全套编排 MCP 工具 —— 否则 Leader/子任务拿不到 dispatch/report/finish 等能力,
 // 整条 Run 静默降级成普通聊天(dev sess-53 根因)。
 func TestBuildTurnMCP_InjectsForOrchestrationSessionEvenWhenDisabled(t *testing.T) {
@@ -142,13 +142,13 @@ func TestBuildTurnMCP_InjectsForOrchestrationSessionEvenWhenDisabled(t *testing.
 
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(nil, nil, nil, tasks, nil, nil)
 	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
 
-	// 会话 700 绑定了编排 Task(被派发子任务)→ 视为编排会话。
+	// 会话 700 绑定了编排 Dispatch(被派发子任务)→ 视为编排会话。
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(700)).
-		Return(&orch_entity.Task{ID: 7, RunID: 100, SessionID: 700, ParentTaskID: 3}, nil).AnyTimes()
+		Return(&orch_entity.Dispatch{ID: 7, RunID: 100, SessionID: 700, ParentDispatchID: 3}, nil).AnyTimes()
 
 	disabled := &agent_entity.Agent{ID: 1} // orchestrate 未开
 	specs := orch_svc.Default().BuildTurnMCP(context.Background(), disabled, 700, 0)
@@ -167,13 +167,13 @@ func TestBuildTurnMCP_InjectsForOrchestrationSessionEvenWhenDisabled(t *testing.
 func TestBuildTurnExtras_InjectsForRootSessionEvenWhenDisabled(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	orch_svc.Default().RegisterDeps(nil, nil, runs, tasks, nil, nil)
 	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
 
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).
-		Return(&orch_entity.Task{ID: 9, RunID: 100, SessionID: 500, ParentTaskID: 0}, nil).AnyTimes()
+		Return(&orch_entity.Dispatch{ID: 9, RunID: 100, SessionID: 500, ParentDispatchID: 0}, nil).AnyTimes()
 	runs.EXPECT().Find(gomock.Any(), int64(100)).
 		Return(&orch_entity.OrchestrationRun{ID: 100, RootTaskID: 9, FlowContent: "先拆分再并行"}, nil).AnyTimes()
 
@@ -190,13 +190,13 @@ func TestBuildTurnExtras_InjectsForRootSessionEvenWhenDisabled(t *testing.T) {
 func TestBuildTurnExtras_InjectsGuidanceForChildEvenWhenDisabled(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(nil, nil, nil, tasks, nil, nil)
 	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
 
-	// 子任务:ParentTaskID != 0 → 不进流程正文分支(不查 runs)。
+	// 子任务:ParentDispatchID != 0 → 不进流程正文分支(不查 runs)。
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(800)).
-		Return(&orch_entity.Task{ID: 12, RunID: 100, ParentTaskID: 9, SessionID: 800}, nil).AnyTimes()
+		Return(&orch_entity.Dispatch{ID: 12, RunID: 100, ParentDispatchID: 9, SessionID: 800}, nil).AnyTimes()
 
 	disabled := &agent_entity.Agent{ID: 1} // orchestrate 未开
 	_, suffix, ok := orch_svc.Default().BuildTurnExtras(context.Background(), disabled, 800, 0)
@@ -208,13 +208,13 @@ func TestBuildTurnExtras_InjectsGuidanceForChildEvenWhenDisabled(t *testing.T) {
 func TestBuildTurnExtras_GuidanceMentionsReadAndReport(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(nil, nil, nil, tasks, nil, nil)
 	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
 
 	// 非根任务(避免触发 flow 注入分支);FindBySession 返回带父任务。
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(600)).Return(
-		&orch_entity.Task{ID: 11, RunID: 100, ParentTaskID: 9, SessionID: 600}, nil).AnyTimes()
+		&orch_entity.Dispatch{ID: 11, RunID: 100, ParentDispatchID: 9, SessionID: 600}, nil).AnyTimes()
 
 	a := enableOrch(&agent_entity.Agent{ID: 3})
 	_, suffix, ok := orch_svc.Default().BuildTurnExtras(context.Background(), a, 600, 0)
