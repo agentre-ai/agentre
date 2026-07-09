@@ -121,13 +121,17 @@ func (s *orchSvc) MCPHandler() http.Handler {
 		case "tools/list":
 			writeRPCResult(w, rpc.ID, map[string]any{"tools": orchToolSchemas()})
 		case "tools/call":
-			// Capability gate: only agents with orchestrate tool enabled may call.
+			// Capability gate — mirror the injection gate in turn.go BuildTurnMCP:
+			// 放行条件 = agent 勾了 orchestrate 工具 或 会话本身是编排会话(绑定了编排
+			// Task)。后者让经编排创建的 Leader/子任务会话即便其 agent 未勾 orchestrate,
+			// 也能真正调用注进去的工具 —— 否则注入门放行、调用门 403,整条 Run 静默降级。
 			if m.svc.agents == nil {
 				http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			a, err := m.svc.agents.Find(r.Context(), ref.agentID)
-			if err != nil || a == nil || !a.ToolEnabled(agenttool.KeyOrchestrate) {
+			if err != nil || a == nil ||
+				(!a.ToolEnabled(agenttool.KeyOrchestrate) && !m.svc.sessionInRun(r.Context(), ref.sessionID)) {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
