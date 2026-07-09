@@ -939,6 +939,86 @@ func TestSession_BackgroundTaskAutonomousTurn(t *testing.T) {
 	assert.Equal(t, "echo:beta", drainText(t, ch2))
 }
 
+// fakeBackgroundTasksChanged 复刻真实 CLI 2.1.205 抓到的「后台任务空闲完成」帧序 ——
+// 与 fakeBackgroundTask(2.1.162)的唯一差别:2.1.205 在 result#1 之后、task_updated
+// 之前,先吐一帧 system{subtype:"background_tasks_changed"}(后台任务清单变化推送)。
+// 真机抓帧(sleep 18 后台任务、turn 先结束)的空闲帧序:
+//
+//	result#1 → background_tasks_changed → task_updated → task_notification(后台型)
+//	→ init → assistant → result#2
+//
+// background_tasks_changed 空闲到达时,既非后台型 task_notification、也不在旧
+// isNonTurnFrame 白名单里(2.1.162 尚未有此 subtype),readLoop 会把它当 turn 起始帧
+// 卡死在 <-pendingTurns 上 —— 后面的 task_notification / 自主续轮永远读不到(sess-1535
+// 「后台任务完成续不上对话」复发,与 sess-429 同类,只是新增了一个 subtype)。
+func fakeBackgroundTasksChanged(stdin io.Reader, stdout io.Writer) {
+	const sid = "sess-bgtaskschanged"
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	turn := 0
+	for sc.Scan() {
+		turn++
+		reply := extractTextField(sc.Text())
+		if turn == 1 {
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 18","run_in_background":true}}]}}`)
+			writeFrame(stdout, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Command running in background with ID: bg1"}]}}`)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a2","content":[{"type":"text","text":"started:%s"}]}}`, reply)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+			// —— 空闲自主续轮:2.1.205 先吐 background_tasks_changed(清单变化),再吐
+			// task_updated(状态 patch),最后 task_notification(后台型)起自主续轮。
+			writeFrame(stdout, `{"type":"system","subtype":"background_tasks_changed","tasks":[],"session_id":%q}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"task_updated","task_id":"bg1","patch":{"status":"completed","end_time":1783590366870},"session_id":%q}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"task_notification","task_id":"bg1","tool_use_id":"tu1","status":"completed","output_file":"/tmp/tasks/bg1.output","summary":"Background command completed"}`)
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a3","content":[{"type":"text","text":"autonomous:listing"}]}}`)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":2,"output_tokens":2}}`, sid)
+			continue
+		}
+		writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+		writeFrame(stdout, `{"type":"assistant","message":{"id":"a4","content":[{"type":"text","text":"echo:%s"}]}}`, reply)
+		writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+	}
+}
+
+// TestSession_BackgroundTasksChangedFrameKeepsReaderAlive 钉死 sess-1535 复发:CLI 2.1.205
+// 在后台任务空闲完成时,于 task_notification 之前先吐一帧 background_tasks_changed。它空闲
+// 到达、既非后台型 task_notification 也不在旧 isNonTurnFrame 白名单 —— 修复前 readLoop 卡死
+// 在 <-pendingTurns,后台完成的自主续轮永远到不了 autoCh,本测试会超时。
+func TestSession_BackgroundTasksChangedFrameKeepsReaderAlive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeBackgroundTasksChanged))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// (a) Turn1 干净收尾,不吞自主续轮帧。
+	ch1, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	got1 := drainText(t, ch1)
+	assert.Equal(t, "started:alpha", got1)
+	assert.NotContains(t, got1, "autonomous", "Turn1 不应吞掉自主续轮帧")
+
+	// (b) background_tasks_changed 空闲到达不得卡死读循环:自主续轮必须仍能浮现。
+	var at *AutoTurn
+	select {
+	case at = <-sess.AutonomousTurns():
+	case <-time.After(2 * time.Second):
+		t.Fatal("background_tasks_changed 空闲到达后读循环卡死:自主续轮从未到达 " +
+			"(该帧落入 <-pendingTurns 阻塞,task_notification 再也读不到)")
+	}
+	require.NotNil(t, at)
+	assert.Equal(t, "background_task", at.Trigger)
+	assert.Equal(t, "autonomous:listing", drainText(t, at.Events))
+
+	// (c) Turn2 无错位。
+	ch2, err := sess.Turn(ctx, "beta")
+	require.NoError(t, err)
+	assert.Equal(t, "echo:beta", drainText(t, ch2))
+}
+
 // fakeIdleSetModeThenAutonomous 模拟「空闲(无 user turn 在飞)切 mode → 后台任务完成
 // 自主续轮」:控制帧到达即回 control_response + system{status,permissionMode}(对齐真
 // CLI,见 SetPermissionMode doc),随后不等任何 stdin 自主吐一轮后台完成续轮
