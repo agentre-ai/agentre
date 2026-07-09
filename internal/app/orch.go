@@ -40,10 +40,23 @@ type DispatchDTO struct {
 	Updatetime int64  `json:"updatetime"`
 }
 
-// RunDetailDTO 编排 Run 详情（Run + 全部 Dispatch）。
+// TaskItemDTO 编排待办清单条目（与派发树 DispatchDTO 无关的协作白板）。
+type TaskItemDTO struct {
+	ID              int64  `json:"id"`
+	RunID           int64  `json:"runId"`
+	Seq             int    `json:"seq"`
+	Text            string `json:"text"`
+	Status          string `json:"status"`
+	AssigneeAgentID int64  `json:"assigneeAgentId"`
+	Createtime      int64  `json:"createtime"`
+	Updatetime      int64  `json:"updatetime"`
+}
+
+// RunDetailDTO 编排 Run 详情（Run + 全部 Dispatch + 待办清单）。
 type RunDetailDTO struct {
 	Run        *RunItemDTO    `json:"run"`
 	Dispatches []*DispatchDTO `json:"dispatches"`
+	Tasks      []*TaskItemDTO `json:"tasks"`
 }
 
 // RunCreateRequest 创建编排 Run 的前端请求。
@@ -89,6 +102,19 @@ func toDispatchDTO(t *orch_entity.Dispatch) *DispatchDTO {
 	}
 }
 
+func toTaskItemDTO(t *orch_entity.Task) *TaskItemDTO {
+	return &TaskItemDTO{
+		ID:              t.ID,
+		RunID:           t.RunID,
+		Seq:             t.Seq,
+		Text:            t.Text,
+		Status:          t.Status,
+		AssigneeAgentID: t.AssigneeAgentID,
+		Createtime:      t.Createtime,
+		Updatetime:      t.Updatetime,
+	}
+}
+
 // RunCreate 创建编排 Run，返回 Run 详情（含根 Dispatch）。
 func (a *App) RunCreate(req *RunCreateRequest) (*RunDetailDTO, error) {
 	d, err := orch_svc.Default().CreateRun(a.ctx, &orch_svc.CreateRunRequest{
@@ -118,7 +144,7 @@ func (a *App) RunList() ([]*RunItemDTO, error) {
 	return out, nil
 }
 
-// RunLoad 加载指定 Run 的详情（Run + 全部 Dispatch）。
+// RunLoad 加载指定 Run 的详情（Run + 全部 Dispatch + 待办清单）。
 func (a *App) RunLoad(id int64) (*RunDetailDTO, error) {
 	d, err := orch_svc.Default().LoadRun(a.ctx, id)
 	if err != nil {
@@ -128,7 +154,15 @@ func (a *App) RunLoad(id int64) (*RunDetailDTO, error) {
 	for _, t := range d.Dispatches {
 		dispatches = append(dispatches, toDispatchDTO(t))
 	}
-	return &RunDetailDTO{Run: toRunItem(d.Run), Dispatches: dispatches}, nil
+	todos, err := orch_svc.Default().ListTasks(a.ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]*TaskItemDTO, 0, len(todos))
+	for _, t := range todos {
+		tasks = append(tasks, toTaskItemDTO(t))
+	}
+	return &RunDetailDTO{Run: toRunItem(d.Run), Dispatches: dispatches, Tasks: tasks}, nil
 }
 
 // RunPause 暂停指定 Run。

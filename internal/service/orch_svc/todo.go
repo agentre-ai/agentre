@@ -81,6 +81,12 @@ type taskRow struct {
 	Assignee int64  `json:"assignee_agent_id,omitempty"`
 }
 
+// ListTasks 直接按 runID 列出该 Run 的整份待办清单(结构化实体;供 app 绑定层 RunLoad 映射成 DTO)。
+// 与 TaskList 的区别：TaskList 按调用者 sessionID 定位 Run 并渲染成 JSON 文本给 agent 读。
+func (s *orchSvc) ListTasks(ctx context.Context, runID int64) ([]*orch_entity.Task, error) {
+	return s.todos.ListByRun(ctx, runID)
+}
+
 // TaskList 列出调用者所在 Run 的整份待办清单(JSON 数组文本)。
 func (s *orchSvc) TaskList(ctx context.Context, sessionID int64) (string, error) {
 	runID, err := s.runIDForSession(ctx, sessionID)

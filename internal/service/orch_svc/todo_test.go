@@ -134,3 +134,20 @@ func TestTaskList_RendersJSON(t *testing.T) {
 		So(out, ShouldContainSubstring, `"assignee_agent_id":7`)
 	})
 }
+
+func TestListTasks_DelegatesToTodosListByRun(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	_, tasks := setupTodoDeps(t, ctrl)
+
+	want := []*orch_entity.Task{
+		{ID: 42, RunID: 100, Seq: 1, Text: "写测试", Status: orch_entity.TaskStatusPending},
+	}
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return(want, nil)
+
+	Convey("ListTasks 直接透传 todos.ListByRun(runID) 的结果", t, func() {
+		got, err := orch_svc.Default().ListTasks(context.Background(), 100)
+		So(err, ShouldBeNil)
+		So(got, ShouldResemble, want)
+	})
+}
