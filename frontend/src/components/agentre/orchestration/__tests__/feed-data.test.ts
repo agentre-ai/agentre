@@ -5,11 +5,11 @@ describe("feed-data", () => {
   it("dispatch + 完成报告各成一条, 按时间排", () => {
     const items = buildFeed({
       run: { id: 1, leaderAgentId: 2, status: "running" },
-      tasks: [
+      dispatches: [
         {
           id: 2,
           agentId: 3,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "done",
           brief: "做X",
@@ -25,7 +25,7 @@ describe("feed-data", () => {
   });
 
   it("askLog 合并进 feed: ask + reply 两条按 ts 排序", () => {
-    const items = buildFeed({ tasks: [] } as never, [
+    const items = buildFeed({ dispatches: [] } as never, [
       {
         kind: "ask",
         askId: "k",
@@ -41,7 +41,7 @@ describe("feed-data", () => {
   });
 
   it("buildFeed 携带 targetAgentId 到 ask/reply FeedItem", () => {
-    const items = buildFeed({ tasks: [] } as never, [
+    const items = buildFeed({ dispatches: [] } as never, [
       {
         kind: "ask",
         askId: "a1",

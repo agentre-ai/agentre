@@ -106,7 +106,7 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
   const askLog =
     useOrchRunStore((s) => (runId ? s.askLog.get(runId) : undefined)) ?? [];
 
-  const tasks = detail.tasks ?? [];
+  const tasks = detail.dispatches ?? [];
 
   // Leader agent id（用于渲染皇冠 chip）
   const leaderAgentId = detail.run?.leaderAgentId;
@@ -114,10 +114,10 @@ export function ActivityFeed({ detail }: { detail: app.RunDetailDTO }) {
   // 构造 feed 条目列表（含 ask/reply 日志）
   const feedItems = buildFeed(detail, askLog);
 
-  // 找到当前 running 的任务中，取第一个非根任务（有 parentTaskId）的运行中任务
+  // 找到当前 running 的任务中，取第一个非根任务（有 parentDispatchId）的运行中任务
   // 用于 typing 行显示；若无则取所有 running 任务里第一个
   const runningTask =
-    tasks.find((t) => t.status === "running" && t.parentTaskId) ??
+    tasks.find((t) => t.status === "running" && t.parentDispatchId) ??
     tasks.find((t) => t.status === "running");
 
   return (

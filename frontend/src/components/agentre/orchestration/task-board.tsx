@@ -67,7 +67,10 @@ export function TaskBoard({
       return next;
     });
 
-  const tasks = React.useMemo(() => detail.tasks ?? [], [detail.tasks]);
+  const tasks = React.useMemo(
+    () => detail.dispatches ?? [],
+    [detail.dispatches],
+  );
 
   // agentId → agent 名称 + 颜色
   const agentInfoMap = React.useMemo(() => {
@@ -89,7 +92,7 @@ export function TaskBoard({
   // 按 agent 分组,保留 task 首次出现顺序;agent 内按 callSeq 升序。
   const agentGroups = React.useMemo(() => {
     const order: number[] = [];
-    const byAgent = new Map<number, app.TaskDTO[]>();
+    const byAgent = new Map<number, app.DispatchDTO[]>();
     for (const tk of tasks) {
       if (!byAgent.has(tk.agentId)) {
         byAgent.set(tk.agentId, []);
@@ -106,8 +109,8 @@ export function TaskBoard({
     }));
   }, [tasks]);
 
-  const renderTaskRow = (task: app.TaskDTO, indented: boolean) => {
-    const isChild = task.parentTaskId !== 0;
+  const renderTaskRow = (task: app.DispatchDTO, indented: boolean) => {
+    const isChild = task.parentDispatchId !== 0;
     const seq = task.callSeq > 0 ? task.callSeq : task.id;
     const subs = subagents.forSession(task.sessionId);
     const open = expandedSub.has(task.id);
@@ -125,7 +128,7 @@ export function TaskBoard({
           className={cn(
             "flex w-full items-center gap-2 rounded-md py-[7px] pr-2 text-left transition-colors hover:bg-secondary/70",
             // Base left padding matches design padding=[7,8,7,14] → pl-[14px]
-            // Non-indented child row (parentTaskId != 0 but single agent) → pl-6
+            // Non-indented child row (parentDispatchId != 0 but single agent) → pl-6
             // Indented (multi-agent group) → pl-8
             !indented && isChild ? "pl-6" : !indented ? "pl-[14px]" : "pl-8",
             isSelected && "bg-secondary",

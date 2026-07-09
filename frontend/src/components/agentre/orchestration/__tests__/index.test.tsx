@@ -16,7 +16,7 @@ vi.mock("../../../../../wailsjs/go/app/App", () => ({
       createtime: Date.now(),
       updatetime: Date.now(),
     },
-    tasks: [],
+    dispatches: [],
   }),
   RunPause: vi.fn(),
   RunResume: vi.fn().mockResolvedValue(undefined),
@@ -141,7 +141,7 @@ function makeDetail(
   overrides: Partial<{
     runStatus: string;
     runId: number;
-    tasks: app.TaskDTO[];
+    tasks: app.DispatchDTO[];
   }> = {},
 ): app.RunDetailDTO {
   const { runStatus = "running", runId = 1, tasks = [] } = overrides;
@@ -158,19 +158,19 @@ function makeDetail(
       createtime: Date.now(),
       updatetime: Date.now(),
     } as app.RunItemDTO,
-    tasks,
+    dispatches: tasks,
   } as app.RunDetailDTO;
 }
 
 // 构造一条 leader(agentId=2)task,携带 sessionId,用于驱动 footer 渲染 ChatComposer
 // 的场景(leaderSessionId 由 index.tsx 从 detail.tasks 中派生)。
-function makeLeaderTask(sessionId: number): app.TaskDTO {
+function makeLeaderTask(sessionId: number): app.DispatchDTO {
   return {
     id: 5,
     runId: 1,
     agentId: 2,
     sessionId,
-    parentTaskId: 0,
+    parentDispatchId: 0,
     kind: "dispatch",
     status: "running",
     brief: "leader task",
@@ -179,7 +179,7 @@ function makeLeaderTask(sessionId: number): app.TaskDTO {
     refs: "",
     createtime: Date.now(),
     updatetime: Date.now(),
-  } as app.TaskDTO;
+  } as app.DispatchDTO;
 }
 
 beforeEach(() => {
@@ -211,7 +211,7 @@ describe("OrchestrationRun shell", () => {
           runId: 1,
           agentId: 2,
           sessionId: 0,
-          parentTaskId: 0,
+          parentDispatchId: 0,
           kind: "dispatch",
           status: "running",
           brief: "任务一",
@@ -220,13 +220,13 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as app.TaskDTO,
+        } as app.DispatchDTO,
         {
           id: 2,
           runId: 1,
           agentId: 3,
           sessionId: 0,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "running",
           brief: "子任务",
@@ -235,7 +235,7 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as app.TaskDTO,
+        } as app.DispatchDTO,
       ],
     });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
@@ -466,7 +466,7 @@ describe("OrchestrationRun shell", () => {
           runId: 1,
           agentId: 2,
           sessionId: 0,
-          parentTaskId: 0,
+          parentDispatchId: 0,
           kind: "dispatch",
           status: "done",
           brief: "t1",
@@ -475,13 +475,13 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
         {
           id: 2,
           runId: 1,
           agentId: 3,
           sessionId: 0,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "done",
           brief: "t2",
@@ -490,7 +490,7 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
       ],
     });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
@@ -520,7 +520,7 @@ describe("OrchestrationRun shell", () => {
           runId: 1,
           agentId: 2,
           sessionId: 0,
-          parentTaskId: 0,
+          parentDispatchId: 0,
           kind: "dispatch",
           status: "running",
           brief: "t1",
@@ -529,13 +529,13 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
         {
           id: 2,
           runId: 1,
           agentId: 3,
           sessionId: 0,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "running",
           brief: "t2",
@@ -544,7 +544,7 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
       ],
     });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
@@ -573,7 +573,7 @@ describe("OrchestrationRun shell", () => {
           runId: 1,
           agentId: 2,
           sessionId: 0,
-          parentTaskId: 0,
+          parentDispatchId: 0,
           kind: "dispatch",
           status: "running",
           brief: "t1",
@@ -582,13 +582,13 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
         {
           id: 2,
           runId: 1,
           agentId: 3,
           sessionId: 0,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "running",
           brief: "t2",
@@ -597,7 +597,7 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
       ],
     });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
@@ -622,7 +622,7 @@ describe("OrchestrationRun shell", () => {
           runId: 1,
           agentId: 2,
           sessionId: 0,
-          parentTaskId: 0,
+          parentDispatchId: 0,
           kind: "dispatch",
           status: "done",
           brief: "t1",
@@ -631,13 +631,13 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
         {
           id: 2,
           runId: 1,
           agentId: 3,
           sessionId: 0,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "done",
           brief: "t2",
@@ -646,7 +646,7 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
       ],
     });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
@@ -676,7 +676,7 @@ describe("OrchestrationRun shell", () => {
           runId,
           agentId: 2,
           sessionId: 0,
-          parentTaskId: 0,
+          parentDispatchId: 0,
           kind: "dispatch",
           status: "running",
           brief: "t1",
@@ -685,13 +685,13 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
         {
           id: 2,
           runId,
           agentId: 3,
           sessionId,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "awaiting-user",
           brief: "t2",
@@ -700,7 +700,7 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
       ],
     });
     useOrchRunStore.setState({ details: new Map([[runId, detail]]) });
@@ -732,7 +732,7 @@ describe("OrchestrationRun shell", () => {
           runId,
           agentId: 2,
           sessionId: 500,
-          parentTaskId: 0,
+          parentDispatchId: 0,
           kind: "dispatch",
           status: "running",
           brief: "leader",
@@ -741,13 +741,13 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
         {
           id: 2,
           runId,
           agentId: 3,
           sessionId,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "awaiting-user",
           brief: "t2",
@@ -756,7 +756,7 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as import("../../../../../wailsjs/go/models").app.TaskDTO,
+        } as import("../../../../../wailsjs/go/models").app.DispatchDTO,
       ],
     });
     useOrchRunStore.setState({ details: new Map([[runId, detail]]) });
@@ -783,7 +783,7 @@ describe("OrchestrationRun shell", () => {
           runId: 1,
           agentId: 3,
           sessionId: 900,
-          parentTaskId: 0,
+          parentDispatchId: 0,
           kind: "dispatch",
           status: "running",
           brief: "子任务",
@@ -792,7 +792,7 @@ describe("OrchestrationRun shell", () => {
           refs: "",
           createtime: Date.now(),
           updatetime: Date.now(),
-        } as app.TaskDTO,
+        } as app.DispatchDTO,
       ],
     });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });

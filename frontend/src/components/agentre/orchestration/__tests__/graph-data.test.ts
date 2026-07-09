@@ -2,10 +2,13 @@ import { describe, it, expect } from "vitest";
 import { buildGraph, lifecycle } from "../graph-data";
 import type { app } from "../../../../../wailsjs/go/models";
 
-const detail = (tasks: Array<Partial<app.TaskDTO>>, runStatus = "running") =>
+const detail = (
+  dispatches: Array<Partial<app.DispatchDTO>>,
+  runStatus = "running",
+) =>
   ({
     run: { id: 1, leaderAgentId: 2, status: runStatus },
-    tasks,
+    dispatches,
   }) as unknown as app.RunDetailDTO;
 
 describe("graph-data", () => {
@@ -15,21 +18,21 @@ describe("graph-data", () => {
         {
           id: 1,
           agentId: 2,
-          parentTaskId: 0,
+          parentDispatchId: 0,
           kind: "dispatch",
           status: "running",
         }, // Leader 根
         {
           id: 2,
           agentId: 3,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "running",
         },
         {
           id: 3,
           agentId: 3,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           kind: "dispatch",
           status: "done",
         }, // 同 agent 第二任务 → 同节点
@@ -46,8 +49,8 @@ describe("graph-data", () => {
   it("awaiting-user 聚合为 waiting-user(等待你)", () => {
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
-        { id: 2, agentId: 4, parentTaskId: 1, status: "awaiting-user" },
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "running" },
+        { id: 2, agentId: 4, parentDispatchId: 1, status: "awaiting-user" },
       ]),
     );
     expect(g.nodes.find((n) => n.agentId === 4)!.status).toBe("waiting-user");
@@ -55,7 +58,7 @@ describe("graph-data", () => {
   it("lifecycle: 只有 Leader 根任务时为 empty", () => {
     expect(
       lifecycle(
-        detail([{ id: 1, agentId: 2, parentTaskId: 0, status: "running" }]),
+        detail([{ id: 1, agentId: 2, parentDispatchId: 0, status: "running" }]),
       ),
     ).toBe("empty");
     expect(lifecycle(detail([], "done"))).toBe("completed");
@@ -63,9 +66,9 @@ describe("graph-data", () => {
   it("error + awaiting-user 同节点时 等待你 优先于 error(琥珀胜)", () => {
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
-        { id: 2, agentId: 5, parentTaskId: 1, status: "error" },
-        { id: 3, agentId: 5, parentTaskId: 1, status: "awaiting-user" }, // 同节点同时 error + 等待你
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "running" },
+        { id: 2, agentId: 5, parentDispatchId: 1, status: "error" },
+        { id: 3, agentId: 5, parentDispatchId: 1, status: "awaiting-user" }, // 同节点同时 error + 等待你
       ]),
     );
     expect(g.nodes.find((n) => n.agentId === 5)!.status).toBe("waiting-user");
@@ -73,8 +76,8 @@ describe("graph-data", () => {
   it("全 error 节点聚合为 error", () => {
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
-        { id: 2, agentId: 6, parentTaskId: 1, status: "error" },
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "running" },
+        { id: 2, agentId: 6, parentDispatchId: 1, status: "error" },
       ]),
     );
     expect(g.nodes.find((n) => n.agentId === 6)!.status).toBe("error");
@@ -82,7 +85,7 @@ describe("graph-data", () => {
   it("awaiting-children 聚合为 waiting", () => {
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "awaiting-children" },
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "awaiting-children" },
       ]),
     );
     expect(g.nodes.find((n) => n.agentId === 2)!.status).toBe("waiting");
@@ -90,10 +93,10 @@ describe("graph-data", () => {
   it("stats.subagents 数唯一子agent 节点(排除 Leader), 非任务总数", () => {
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "running" }, // Leader
-        { id: 2, agentId: 3, parentTaskId: 1, status: "running" },
-        { id: 3, agentId: 3, parentTaskId: 1, status: "done" }, // 同 agent 第二任务
-        { id: 4, agentId: 7, parentTaskId: 1, status: "done" },
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "running" }, // Leader
+        { id: 2, agentId: 3, parentDispatchId: 1, status: "running" },
+        { id: 3, agentId: 3, parentDispatchId: 1, status: "done" }, // 同 agent 第二任务
+        { id: 4, agentId: 7, parentDispatchId: 1, status: "done" },
       ]),
     );
     expect(g.stats.nodes).toBe(3); // agent 2/3/7
@@ -102,31 +105,37 @@ describe("graph-data", () => {
   it("stats.depth 取最长 parentTask 链", () => {
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
-        { id: 2, agentId: 3, parentTaskId: 1, status: "running" },
-        { id: 3, agentId: 4, parentTaskId: 2, status: "running" }, // 深度 2
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "running" },
+        { id: 2, agentId: 3, parentDispatchId: 1, status: "running" },
+        { id: 3, agentId: 4, parentDispatchId: 2, status: "running" }, // 深度 2
       ]),
     );
     expect(g.stats.depth).toBe(2);
   });
   it("lifecycle: paused / stopped 跟随 run 状态", () => {
-    const one = [{ id: 1, agentId: 2, parentTaskId: 0, status: "running" }];
+    const one = [{ id: 1, agentId: 2, parentDispatchId: 0, status: "running" }];
     expect(lifecycle(detail(one, "paused"))).toBe("paused");
     expect(lifecycle(detail(one, "stopped"))).toBe("stopped");
   });
   it("buildGraph 容忍 run 缺失(可选字段)不抛", () => {
     expect(() =>
-      buildGraph({ tasks: [] } as unknown as app.RunDetailDTO),
+      buildGraph({ dispatches: [] } as unknown as app.RunDetailDTO),
     ).not.toThrow();
   });
   it("非顶层 subagent 多次 dispatch → 单节点, callCount=N, isTopLevel=false", () => {
     // Leader(2) → 后端(3) → 验签助手(4) 被 dispatch 两次
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "running" }, // Leader 根
-        { id: 2, agentId: 3, parentTaskId: 1, status: "running" }, // 后端(顶层)
-        { id: 3, agentId: 4, parentTaskId: 2, status: "running", callSeq: 1 }, // 验签助手 #1
-        { id: 4, agentId: 4, parentTaskId: 2, status: "done", callSeq: 2 }, // 验签助手 #2
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "running" }, // Leader 根
+        { id: 2, agentId: 3, parentDispatchId: 1, status: "running" }, // 后端(顶层)
+        {
+          id: 3,
+          agentId: 4,
+          parentDispatchId: 2,
+          status: "running",
+          callSeq: 1,
+        }, // 验签助手 #1
+        { id: 4, agentId: 4, parentDispatchId: 2, status: "done", callSeq: 2 }, // 验签助手 #2
       ]),
     );
     const helper = g.nodes.find((n) => n.agentId === 4)!;
@@ -138,11 +147,11 @@ describe("graph-data", () => {
     // Leader(2) → 前端(3) 派发两次不同对话
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "running" },
         {
           id: 2,
           agentId: 3,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           status: "running",
           callSeq: 1,
           sessionId: 501,
@@ -151,7 +160,7 @@ describe("graph-data", () => {
         {
           id: 3,
           agentId: 3,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           status: "done",
           callSeq: 2,
           sessionId: 502,
@@ -174,11 +183,11 @@ describe("graph-data", () => {
     // 验证 sort 比较器真实有效: fixture 以 callSeq 降序输入
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "running" },
         {
           id: 3,
           agentId: 3,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           status: "done",
           callSeq: 2,
           sessionId: 502,
@@ -187,7 +196,7 @@ describe("graph-data", () => {
         {
           id: 2,
           agentId: 3,
-          parentTaskId: 1,
+          parentDispatchId: 1,
           status: "running",
           callSeq: 1,
           sessionId: 501,
@@ -206,8 +215,8 @@ describe("graph-data", () => {
     // Leader 是根节点, 没有 leader 派发者 → isTopLevel 应为 false
     const g = buildGraph(
       detail([
-        { id: 1, agentId: 2, parentTaskId: 0, status: "running" },
-        { id: 2, agentId: 3, parentTaskId: 1, status: "running" },
+        { id: 1, agentId: 2, parentDispatchId: 0, status: "running" },
+        { id: 2, agentId: 3, parentDispatchId: 1, status: "running" },
       ]),
     );
     const leader = g.nodes.find((n) => n.agentId === 2)!;

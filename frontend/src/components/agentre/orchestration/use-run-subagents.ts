@@ -8,7 +8,10 @@ export function useRunSubagents(detail: app.RunDetailDTO): {
   forSession: (sessionId: number) => SubagentLite[];
   countForAgent: (agentId: number) => number;
 } {
-  const tasks = React.useMemo(() => detail.tasks ?? [], [detail.tasks]);
+  const tasks = React.useMemo(
+    () => detail.dispatches ?? [],
+    [detail.dispatches],
+  );
   const bySession = useOrchSubagentsStore((s) => s.bySession);
   const ensureLoaded = useOrchSubagentsStore((s) => s.ensureLoaded);
 

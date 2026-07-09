@@ -39,7 +39,7 @@ describe("RunNewDialog", () => {
     vi.clearAllMocks();
     localStorage.clear();
     useWorkflowManagerStore.setState({ open: false, intent: "browse" });
-    appMocks.RunCreate.mockResolvedValue({ run: { id: 7 }, tasks: [] });
+    appMocks.RunCreate.mockResolvedValue({ run: { id: 7 }, dispatches: [] });
     appMocks.ListChatAgents.mockResolvedValue({
       agents: [
         {

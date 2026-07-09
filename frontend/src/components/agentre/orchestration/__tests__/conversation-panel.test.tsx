@@ -184,7 +184,7 @@ describe("ConversationPanel", () => {
           10,
           {
             run: { id: 10, status: "running" } as never,
-            tasks: [
+            dispatches: [
               { id: 1, agentId: 5, status: "running" } as never,
               { id: 2, agentId: 5, status: "done" } as never,
               { id: 3, agentId: 99, status: "running" } as never, // different agent
@@ -216,7 +216,7 @@ describe("ConversationPanel", () => {
           30,
           {
             run: { id: 30, status: "running" } as never,
-            tasks: [{ id: 1, agentId: 99, status: "running" } as never],
+            dispatches: [{ id: 1, agentId: 99, status: "running" } as never],
           } as never,
         ],
       ]),
@@ -245,7 +245,7 @@ describe("ConversationPanel", () => {
           20,
           {
             run: { id: 20, status: "running" } as never,
-            tasks: [
+            dispatches: [
               { id: 1, agentId: 7, status: "done" } as never,
               { id: 2, agentId: 7, status: "done" } as never,
             ],
@@ -275,7 +275,7 @@ describe("ConversationPanel", () => {
           40,
           {
             run: { id: 40, status: "running" } as never,
-            tasks: [
+            dispatches: [
               { id: 1, agentId: 5, status: "done" } as never,
               { id: 2, agentId: 5, status: "pending" } as never,
             ],

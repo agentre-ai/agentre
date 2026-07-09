@@ -1,6 +1,6 @@
 import type { app } from "../../../../wailsjs/go/models";
 
-export type TaskLite = app.TaskDTO;
+export type TaskLite = app.DispatchDTO;
 export type NodeStatus =
   | "running"
   | "waiting"
@@ -71,7 +71,7 @@ export function buildGraph(detail: app.RunDetailDTO): {
   edges: GraphEdge[];
   stats: TreeStats;
 } {
-  const tasks = detail.tasks ?? [];
+  const tasks = detail.dispatches ?? [];
   const leaderAgent = detail.run?.leaderAgentId;
   const taskById = new Map(tasks.map((t) => [t.id, t]));
 
@@ -95,7 +95,7 @@ export function buildGraph(detail: app.RunDetailDTO): {
     // 顶层 = 其某个 task 的父 task 由 Leader 派发(父 task.agentId === leaderAgentId)。
     // 用「父 task 的 agent」判定,不依赖 rootTaskId 是否填充,既有测试夹具(无 rootTaskId)也成立。
     const isTopLevel = ts.some(
-      (t) => taskById.get(t.parentTaskId)?.agentId === leaderAgent,
+      (t) => taskById.get(t.parentDispatchId)?.agentId === leaderAgent,
     );
     return {
       agentId,
@@ -111,8 +111,8 @@ export function buildGraph(detail: app.RunDetailDTO): {
   const seen = new Set<string>();
   const edges: GraphEdge[] = [];
   for (const t of tasks) {
-    if (!t.parentTaskId) continue;
-    const parent = taskById.get(t.parentTaskId);
+    if (!t.parentDispatchId) continue;
+    const parent = taskById.get(t.parentDispatchId);
     if (!parent || parent.agentId === t.agentId) continue;
     const key = `${parent.agentId}->${t.agentId}`;
     if (seen.has(key)) continue;
@@ -120,11 +120,11 @@ export function buildGraph(detail: app.RunDetailDTO): {
     edges.push({ from: parent.agentId, to: t.agentId, kind: "dispatch" });
   }
 
-  // 树深:沿 parentTaskId 最长链。
+  // 树深:沿 parentDispatchId 最长链。
   const depthOf = (id: number, guard = 0): number => {
     const t = taskById.get(id);
-    if (!t || !t.parentTaskId || guard > 64) return 0;
-    return 1 + depthOf(t.parentTaskId, guard + 1);
+    if (!t || !t.parentDispatchId || guard > 64) return 0;
+    return 1 + depthOf(t.parentDispatchId, guard + 1);
   };
   const depth = tasks.reduce((m, t) => Math.max(m, depthOf(t.id)), 0);
 
@@ -161,7 +161,7 @@ export function lifecycle(
   if (st === "done") return "completed";
   if (st === "paused") return "paused";
   if (st === "stopped") return "stopped";
-  const tasks = detail.tasks ?? [];
+  const tasks = detail.dispatches ?? [];
   if (tasks.length <= 1) return "empty";
   return "running";
 }

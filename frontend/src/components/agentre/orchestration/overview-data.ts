@@ -57,7 +57,7 @@ export function recentDoneRuns(
 }
 
 // Run 进度:done/total。镜像 task-board.tsx(done=status==="done" 计数,total=tasks.length)。
-export function runProgress(tasks: app.TaskDTO[] | undefined): {
+export function runProgress(tasks: app.DispatchDTO[] | undefined): {
   done: number;
   total: number;
 } {

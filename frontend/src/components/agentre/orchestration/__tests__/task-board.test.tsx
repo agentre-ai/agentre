@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../../../../wailsjs/go/app/App", () => ({
   RunLoad: vi.fn().mockResolvedValue({
     run: { id: 1, goal: "G", status: "running", leaderAgentId: 2 },
-    tasks: [],
+    dispatches: [],
   }),
   RunPause: vi.fn(),
   RunResume: vi.fn(),
@@ -62,7 +62,7 @@ import { useOrchSubagentsStore } from "../../../../stores/orch-subagents-store";
 import { TaskBoard } from "../task-board";
 
 // 构造 RunDetailDTO
-function makeDetail(tasks: app.TaskDTO[] = []): app.RunDetailDTO {
+function makeDetail(tasks: app.DispatchDTO[] = []): app.RunDetailDTO {
   return {
     run: {
       id: 1,
@@ -76,21 +76,21 @@ function makeDetail(tasks: app.TaskDTO[] = []): app.RunDetailDTO {
       createtime: Date.now(),
       updatetime: Date.now(),
     } as app.RunItemDTO,
-    tasks,
+    dispatches: tasks,
   } as app.RunDetailDTO;
 }
 
 function makeTask(
   id: number,
   agentId: number,
-  overrides: Partial<app.TaskDTO> = {},
-): app.TaskDTO {
+  overrides: Partial<app.DispatchDTO> = {},
+): app.DispatchDTO {
   return {
     id,
     runId: 1,
     agentId,
     sessionId: 0,
-    parentTaskId: 0,
+    parentDispatchId: 0,
     kind: "dispatch",
     status: "running",
     brief: `Task ${id}`,
@@ -100,7 +100,7 @@ function makeTask(
     createtime: Date.now(),
     updatetime: Date.now(),
     ...overrides,
-  } as app.TaskDTO;
+  } as app.DispatchDTO;
 }
 
 beforeEach(() => {
@@ -112,7 +112,7 @@ beforeEach(() => {
 describe("TaskBoard", () => {
   describe("任务看板 tab", () => {
     it("为每个任务渲染 board-task-${id} 行", () => {
-      const tasks = [makeTask(1, 2), makeTask(2, 3, { parentTaskId: 1 })];
+      const tasks = [makeTask(1, 2), makeTask(2, 3, { parentDispatchId: 1 })];
       const detail = makeDetail(tasks);
 
       render(
@@ -131,7 +131,7 @@ describe("TaskBoard", () => {
       const onSelectSession = vi.fn();
       const tasks = [
         makeTask(1, 2, { sessionId: 11 }),
-        makeTask(2, 3, { parentTaskId: 1, sessionId: 22 }),
+        makeTask(2, 3, { parentDispatchId: 1, sessionId: 22 }),
       ];
       const detail = makeDetail(tasks);
 
@@ -148,8 +148,8 @@ describe("TaskBoard", () => {
       expect(onSelectSession).toHaveBeenCalledWith(22);
     });
 
-    it("子任务（parentTaskId !== 0）渲染时有缩进 class", () => {
-      const tasks = [makeTask(1, 2), makeTask(2, 3, { parentTaskId: 1 })];
+    it("子任务（parentDispatchId !== 0）渲染时有缩进 class", () => {
+      const tasks = [makeTask(1, 2), makeTask(2, 3, { parentDispatchId: 1 })];
       const detail = makeDetail(tasks);
 
       render(
@@ -190,8 +190,8 @@ describe("TaskBoard", () => {
     it("头部 board-progress 显示 done/total(完成数/任务数)", () => {
       const tasks = [
         makeTask(1, 2, { status: "done" }),
-        makeTask(2, 3, { status: "done", parentTaskId: 1 }),
-        makeTask(3, 3, { status: "running", parentTaskId: 1 }),
+        makeTask(2, 3, { status: "done", parentDispatchId: 1 }),
+        makeTask(3, 3, { status: "running", parentDispatchId: 1 }),
       ];
       render(
         <TaskBoard
@@ -211,13 +211,13 @@ describe("TaskBoard", () => {
         makeTask(1, 2, { status: "running" }), // Leader 单调用
         makeTask(2, 3, {
           status: "running",
-          parentTaskId: 1,
+          parentDispatchId: 1,
           callSeq: 1,
           sessionId: 501,
         }),
         makeTask(3, 3, {
           status: "done",
-          parentTaskId: 1,
+          parentDispatchId: 1,
           callSeq: 2,
           sessionId: 502,
         }),
@@ -241,7 +241,11 @@ describe("TaskBoard", () => {
     it("有 CLI 子代理的 call 行下挂折叠 board-subagents-{taskId}, 点开展开只读子行", async () => {
       const tasks = [
         makeTask(1, 2, { status: "running" }),
-        makeTask(2, 3, { status: "running", parentTaskId: 1, sessionId: 501 }),
+        makeTask(2, 3, {
+          status: "running",
+          parentDispatchId: 1,
+          sessionId: 501,
+        }),
       ];
       render(
         <TaskBoard

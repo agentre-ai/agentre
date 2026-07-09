@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../../../../wailsjs/go/app/App", () => ({
   RunSpeak: vi.fn().mockResolvedValue(undefined),
   ListChatAgents: vi.fn().mockResolvedValue({ agents: [] }),
-  RunLoad: vi.fn().mockResolvedValue({ run: undefined, tasks: [] }),
+  RunLoad: vi.fn().mockResolvedValue({ run: undefined, dispatches: [] }),
 }));
 
 // mock useChatAgents，返回已知 agent 列表
@@ -44,7 +44,7 @@ function makeDetail(
   overrides: Partial<{
     runId: number;
     runStatus: string;
-    tasks: app.TaskDTO[];
+    tasks: app.DispatchDTO[];
     leaderAgentId: number;
     rootTaskId: number;
   }> = {},
@@ -69,18 +69,18 @@ function makeDetail(
       createtime: 1000,
       updatetime: 2000,
     } as app.RunItemDTO,
-    tasks,
+    dispatches: tasks,
   } as app.RunDetailDTO;
 }
 
 function makeTask(
-  overrides: Partial<app.TaskDTO> & { id: number },
-): app.TaskDTO {
+  overrides: Partial<app.DispatchDTO> & { id: number },
+): app.DispatchDTO {
   return {
     runId: 1,
     agentId: 2,
     sessionId: 0,
-    parentTaskId: 0,
+    parentDispatchId: 0,
     kind: "dispatch",
     status: "running",
     brief: "",
@@ -90,7 +90,7 @@ function makeTask(
     createtime: 1000,
     updatetime: 2000,
     ...overrides,
-  } as app.TaskDTO;
+  } as app.DispatchDTO;
 }
 
 beforeEach(() => {
@@ -100,13 +100,13 @@ beforeEach(() => {
 
 describe("ActivityFeed", () => {
   it("渲染 dispatch 任务的 brief 和 done 任务的 result", () => {
-    // dispatch 任务：parentTaskId=1 触发 dispatch 条目
+    // dispatch 任务：parentDispatchId=1 触发 dispatch 条目
     // done 任务：status=done + result 触发 report 条目
     const tasks = [
       makeTask({
         id: 2,
         agentId: 3,
-        parentTaskId: 1,
+        parentDispatchId: 1,
         status: "done",
         brief: "做X",
         result: "已完成X",
@@ -188,12 +188,12 @@ describe("ActivityFeed", () => {
   // === Task 7: design-fidelity restyle tests ===
 
   it("ev 行: 渲染 AgentAvatar + header + 消息文本", () => {
-    // dispatch task (parentTaskId=1) → ev 行
+    // dispatch task (parentDispatchId=1) → ev 行
     const tasks = [
       makeTask({
         id: 2,
         agentId: 2,
-        parentTaskId: 1,
+        parentDispatchId: 1,
         status: "running",
         brief: "派发任务内容",
         createtime: 100,
@@ -269,7 +269,7 @@ describe("ActivityFeed", () => {
       makeTask({
         id: 10,
         agentId: 3,
-        parentTaskId: 1,
+        parentDispatchId: 1,
         status: "running",
         brief: "联调中",
         createtime: 10,
@@ -292,7 +292,7 @@ describe("ActivityFeed", () => {
       makeTask({
         id: 11,
         agentId: 2,
-        parentTaskId: 0,
+        parentDispatchId: 0,
         status: "done",
         brief: "",
         result: "已完成",
@@ -312,7 +312,7 @@ describe("ActivityFeed", () => {
       makeTask({
         id: 20,
         agentId: 2,
-        parentTaskId: 1,
+        parentDispatchId: 1,
         status: "running",
         brief: "先发出的任务",
         createtime: 100,
@@ -400,7 +400,7 @@ describe("ActivityFeed", () => {
       makeTask({
         id: 30,
         agentId: 2, // === leaderAgentId
-        parentTaskId: 1,
+        parentDispatchId: 1,
         status: "running",
         brief: "Leader 的任务",
         createtime: 300,
@@ -497,7 +497,7 @@ describe("ActivityFeed", () => {
       makeTask({
         id: 31,
         agentId: 3, // !== leaderAgentId
-        parentTaskId: 1,
+        parentDispatchId: 1,
         status: "running",
         brief: "子 Agent 的任务",
         createtime: 310,

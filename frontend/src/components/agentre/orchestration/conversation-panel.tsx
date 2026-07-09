@@ -83,24 +83,24 @@ export function ConversationPanel({
   const agentTaskCount = useOrchRunStore((s) => {
     if (!runId || !agentId) return 0;
     const detail = s.details.get(runId);
-    if (!detail?.tasks) return 0;
-    return detail.tasks.filter((t) => t.agentId === agentId).length;
+    if (!detail?.dispatches) return 0;
+    return detail.dispatches.filter((t) => t.agentId === agentId).length;
   });
 
   // Derive agent status from run detail (primitive — no re-render loop)
   const agentStatus = useOrchRunStore((s): AgentStatus => {
     if (!runId || !agentId) return "idle";
     const detail = s.details.get(runId);
-    if (!detail?.tasks) return "idle";
-    return deriveAgentStatus(detail.tasks, agentId);
+    if (!detail?.dispatches) return "idle";
+    return deriveAgentStatus(detail.dispatches, agentId);
   });
 
   // Richer task-status for the who-row subtitle label
   const agentTaskStatus = useOrchRunStore((s): AgentTaskStatus => {
     if (!runId || !agentId) return "pending";
     const detail = s.details.get(runId);
-    if (!detail?.tasks) return "pending";
-    return deriveAgentTaskStatus(detail.tasks, agentId);
+    if (!detail?.dispatches) return "pending";
+    return deriveAgentTaskStatus(detail.dispatches, agentId);
   });
 
   // Status label: reuse board status keys
