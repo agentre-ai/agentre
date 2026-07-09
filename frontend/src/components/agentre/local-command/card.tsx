@@ -1,11 +1,16 @@
 import { useTranslation } from "react-i18next";
-import { SquareTerminal, X } from "lucide-react";
+import { SquareTerminal, X, ChevronRight, ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
 import { TerminalClose } from "../../../../wailsjs/go/app/App";
-import { useLocalCommandsStore } from "../../../stores/local-commands-store";
+import {
+  useLocalCommandsStore,
+  isCollapsed,
+} from "../../../stores/local-commands-store";
 import type { LocalCommandStatus } from "../../../stores/local-commands-store";
+import { shouldIgnoreClickForSelection } from "../copyable-text";
+import { formatDuration } from "./format-duration";
 import { OutputTerminal } from "./output-terminal";
 
 // Status → visual style map (DRY — one place for all status styles).
@@ -51,7 +56,83 @@ export function LocalCommandCard({
   const isRunning = entry.status === "running";
   const showExitCode =
     entry.status !== "running" && entry.exitCode !== undefined;
+  const collapsed = isCollapsed(entry);
+  const duration =
+    entry.finishedAt !== undefined
+      ? formatDuration(entry.finishedAt - entry.createdAt)
+      : null;
 
+  const statusPill = (
+    <span
+      className={`flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-2xs font-semibold tracking-wider ${cfg.pill}`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
+      {t(cfg.labelKey)}
+      {showExitCode && (
+        <>
+          <span className="opacity-50">·</span>
+          {t("localCommand.exitCode", { code: entry.exitCode })}
+        </>
+      )}
+    </span>
+  );
+
+  const dismissBtn = (
+    <button
+      type="button"
+      aria-label={t("localCommand.dismiss")}
+      title={t("localCommand.dismiss")}
+      className="-mr-1 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      onClick={(e) => {
+        e.stopPropagation();
+        useLocalCommandsStore.getState().remove(entryId);
+      }}
+    >
+      <X className="size-3.5" aria-hidden="true" />
+    </button>
+  );
+
+  // ── Collapsed: one-line summary (command + status + exit + duration). ──
+  if (collapsed) {
+    const toggle = () =>
+      useLocalCommandsStore.getState().toggleExpanded(entryId);
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label={t("localCommand.expand")}
+        onClick={(e) => {
+          if (shouldIgnoreClickForSelection(e)) return;
+          toggle();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggle();
+          }
+        }}
+        className="flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-card px-3.5 py-2 text-foreground shadow-sm transition-colors hover:bg-accent/40"
+      >
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <SquareTerminal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span
+          data-selectable-text="true"
+          className="min-w-0 flex-1 truncate font-mono text-xs font-semibold text-foreground"
+        >
+          {entry.command}
+        </span>
+        {duration && (
+          <span className="shrink-0 text-2xs tabular-nums text-muted-foreground">
+            {duration}
+          </span>
+        )}
+        {statusPill}
+        {dismissBtn}
+      </div>
+    );
+  }
+
+  // ── Expanded: full header + output terminal. ──
   return (
     <div className="rounded-lg border border-border bg-card text-foreground shadow-sm">
       {/* Header */}
@@ -78,36 +159,35 @@ export function LocalCommandCard({
           {t("localCommand.notSharedWithAI")}
         </span>
 
-        {/* Status pill */}
-        <span
-          className={`flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-2xs font-semibold tracking-wider ${cfg.pill}`}
-        >
-          <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
-          {t(cfg.labelKey)}
-          {showExitCode && (
-            <>
-              <span className="opacity-50">·</span>
-              {t("localCommand.exitCode", { code: entry.exitCode })}
-            </>
-          )}
-        </span>
+        {duration && (
+          <span className="text-2xs tabular-nums text-muted-foreground">
+            {duration}
+          </span>
+        )}
 
-        {/* Dismiss — only once finished; running cards must be stopped first. */}
+        {/* Status pill */}
+        {statusPill}
+
+        {/* Collapse — only once finished (running stays open to stream). */}
         {!isRunning && (
           <button
             type="button"
-            aria-label={t("localCommand.dismiss")}
-            title={t("localCommand.dismiss")}
+            aria-label={t("localCommand.collapse")}
+            title={t("localCommand.collapse")}
             className="-mr-1 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            onClick={() => useLocalCommandsStore.getState().remove(entryId)}
+            onClick={() =>
+              useLocalCommandsStore.getState().toggleExpanded(entryId)
+            }
           >
-            <X className="size-3.5" aria-hidden="true" />
+            <ChevronDown className="size-3.5" aria-hidden="true" />
           </button>
         )}
+
+        {/* Dismiss — only once finished; running cards must be stopped first. */}
+        {!isRunning && dismissBtn}
       </div>
 
-      {/* Output area — rendered through a read-only xterm so ANSI/OSC/control
-          sequences are interpreted (real color), not stripped into 乱码. */}
+      {/* Output area — read-only xterm; ANSI/OSC 交给 xterm 解释,不剥转义。 */}
       <OutputTerminal terminalId={entry.id} />
 
       {/* Actions — only while running */}

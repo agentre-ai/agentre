@@ -56,6 +56,44 @@ func (s *orchSvc) ListAllowedAgents(ctx context.Context, sessionID int64) ([]*ag
 	return out, nil
 }
 
+// AgentWithLoad 一个可参与 agent 及其当前负载(本 Run 内非终态派发数)。
+type AgentWithLoad struct {
+	Agent   *agent_entity.Agent
+	Running int
+}
+
+// ListAllowedAgentsWithLoad 在 ListAllowedAgents 基础上,给每个 agent 附上它在当前 Run 内
+// 正在跑(非终态)的派发数 —— 让 Leader 拆活时一眼看谁忙。定位不到 Run 时 Running 恒为 0
+// (与 ListAllowedAgents 一致的 fail-open 语义:可参与是团队编成、非安全边界)。
+func (s *orchSvc) ListAllowedAgentsWithLoad(ctx context.Context, sessionID int64) ([]AgentWithLoad, error) {
+	list, err := s.ListAllowedAgents(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var runID int64
+	if tk, err := s.dispatches.FindBySession(ctx, sessionID); err != nil {
+		logger.Ctx(ctx).Warn("orch.ListAllowedAgentsWithLoad: 定位会话任务失败,running 计数留 0",
+			zap.Int64("session", sessionID), zap.Error(err))
+	} else if tk != nil {
+		runID = tk.RunID
+	}
+	out := make([]AgentWithLoad, 0, len(list))
+	for _, a := range list {
+		var running int
+		if runID != 0 {
+			n, err := s.dispatches.CountActiveByRunAgent(ctx, runID, a.ID)
+			if err != nil {
+				logger.Ctx(ctx).Warn("orch.ListAllowedAgentsWithLoad: 统计 running 失败,留 0",
+					zap.Int64("run", runID), zap.Int64("agent", a.ID), zap.Error(err))
+			} else {
+				running = int(n)
+			}
+		}
+		out = append(out, AgentWithLoad{Agent: a, Running: running})
+	}
+	return out, nil
+}
+
 // ListRuns 按更新时间倒序返回全部 Run。
 func (s *orchSvc) ListRuns(ctx context.Context) ([]*orch_entity.OrchestrationRun, error) {
 	return s.runs.List(ctx)

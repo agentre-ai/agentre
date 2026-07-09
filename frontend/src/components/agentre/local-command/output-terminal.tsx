@@ -3,12 +3,20 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import { useTranslation } from "react-i18next";
 
 import { useLocalCommandsStore } from "@/stores/local-commands-store";
 import {
   TERMINAL_FONT_FAMILY,
   readTerminalTheme,
 } from "../terminal/terminal-theme";
+import {
+  computeTerminalHeight,
+  MIN_ROWS,
+  MAX_ROWS,
+  PADDING_PX,
+  FALLBACK_CELL_PX,
+} from "./terminal-height";
 
 // 本地命令(`!cmd`)输出的只读展示。复用交互终端同一套 xterm 渲染:让 xterm 自己解释
 // ANSI/OSC/控制序列(颜色、光标、标题序列…),而不是用正则剥转义 —— 后者会漏掉前导
@@ -24,6 +32,18 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
   const fitRef = useRef<FitAddon | null>(null);
   const writtenLenRef = useRef(0);
   const [mounted, setMounted] = useState(false);
+  const { t } = useTranslation();
+  const cellHeightRef = useRef(FALLBACK_CELL_PX);
+  const isEmptyFinished = useLocalCommandsStore((s) => {
+    const e = s.entries[terminalId];
+    return !!e && e.status !== "running" && e.output === "";
+  });
+  // 组合门控:懒挂载 && 未落到「空输出已结束」占位分支。一个静默、长跑的命令可能
+  // 在运行中(尚无输出)就滚入视口挂载了真实 xterm;结束时若输出仍是空串,组件会
+  // 切到占位分支 —— 但 mounted 这个一次性锁存不会回落,若仍用它做依赖,四个
+  // xterm 生命周期 effect 都不会重跑清理,Terminal/两个 Observer/store 订阅就此泄漏。
+  // 用 active 替代 mounted 让 isEmptyFinished 翻真时也能触发一次 cleanup。
+  const active = mounted && !isEmptyFinished;
 
   // 懒挂载门控。
   useEffect(() => {
@@ -45,7 +65,7 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
 
   // 构建只读 xterm(layout effect:在写入前先建好实例)。
   useLayoutEffect(() => {
-    if (!mounted || !containerRef.current) return;
+    if (!active || !containerRef.current) return;
     const term = new Terminal({
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 13,
@@ -68,11 +88,31 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
       xtermRef.current = null;
       fitRef.current = null;
     };
-  }, [mounted]);
+  }, [active]);
 
-  // seed + 增量:把 store output 的新增片段原样写进 xterm(保留 ANSI)。
+  // seed + 增量:写新增片段 + 每次按内容重算容器高度(自适应且封顶)。
   useEffect(() => {
-    if (!mounted) return;
+    if (!active) return;
+    const applyHeight = () => {
+      const term = xtermRef.current;
+      const el = containerRef.current;
+      if (!term || !el) return;
+      // 有真实布局时用它反推行高(容器高 - padding)/ 行数;happy-dom 下退回兜底常量。
+      if (el.clientHeight > 0 && term.rows > 0) {
+        const m = (el.clientHeight - PADDING_PX) / term.rows;
+        if (Number.isFinite(m) && m > 0) cellHeightRef.current = m;
+      }
+      const b = term.buffer.active;
+      const contentRows = b.baseY + b.cursorY + 1;
+      el.style.height = `${computeTerminalHeight({
+        contentRows,
+        cellHeight: cellHeightRef.current,
+        minRows: MIN_ROWS,
+        maxRows: MAX_ROWS,
+        paddingPx: PADDING_PX,
+      })}px`;
+      fitRef.current?.fit();
+    };
     const writeDelta = () => {
       const entry = useLocalCommandsStore.getState().get(terminalId);
       const term = xtermRef.current;
@@ -81,23 +121,24 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
         term.write(entry.output.slice(writtenLenRef.current));
         writtenLenRef.current = entry.output.length;
       }
+      applyHeight();
     };
-    writeDelta(); // 首帧 seed。
+    writeDelta(); // 首帧 seed + 定高。
     const unsub = useLocalCommandsStore.subscribe(writeDelta);
     return () => unsub();
-  }, [mounted, terminalId]);
+  }, [active, terminalId]);
 
   // 容器宽度变化时重新 fit(只换列宽以正确回绕,不 resize PTY)。
   useEffect(() => {
-    if (!mounted || !containerRef.current) return;
+    if (!active || !containerRef.current) return;
     const ro = new ResizeObserver(() => fitRef.current?.fit());
     ro.observe(containerRef.current);
     return () => ro.disconnect();
-  }, [mounted]);
+  }, [active]);
 
   // 跟随 app light/dark 切换重置终端主题(与交互终端一致)。
   useEffect(() => {
-    if (!mounted || typeof document === "undefined") return;
+    if (!active || typeof document === "undefined") return;
     const apply = () => {
       const term = xtermRef.current;
       if (term) term.options.theme = readTerminalTheme();
@@ -109,13 +150,24 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
       attributeFilter: ["class"],
     });
     return () => obs.disconnect();
-  }, [mounted]);
+  }, [active]);
+
+  if (isEmptyFinished) {
+    return (
+      <div
+        data-testid="local-command-terminal"
+        className="bg-code-surface px-3 py-2 text-2xs text-muted-foreground"
+      >
+        {t("localCommand.noOutput")}
+      </div>
+    );
+  }
 
   return (
     <div
       ref={containerRef}
       data-testid="local-command-terminal"
-      className="h-44 w-full overflow-hidden bg-code-surface px-2 py-1.5"
+      className="w-full overflow-hidden bg-code-surface px-2 py-1.5"
     />
   );
 }

@@ -126,7 +126,7 @@ export function OrchestrationOverview() {
         ) : (
           <div className="flex flex-col gap-2">
             {inProgress.map((r) => {
-              const prog = runProgress(details.get(r.id)?.tasks);
+              const prog = runProgress(details.get(r.id)?.dispatches);
               const pct =
                 prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : 0;
               const leader = leaderOf(r.leaderAgentId);

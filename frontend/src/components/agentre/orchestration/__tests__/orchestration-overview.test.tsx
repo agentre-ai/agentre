@@ -59,13 +59,13 @@ beforeEach(() => {
   });
   appMocks.RunLoad.mockResolvedValue({
     run: runningRun,
-    tasks: [
+    dispatches: [
       {
         id: 10,
         runId: 1,
         agentId: 2,
         sessionId: 0,
-        parentTaskId: 0,
+        parentDispatchId: 0,
         kind: "orch",
         status: "done",
         brief: "",
@@ -80,7 +80,7 @@ beforeEach(() => {
         runId: 1,
         agentId: 2,
         sessionId: 0,
-        parentTaskId: 0,
+        parentDispatchId: 0,
         kind: "orch",
         status: "running",
         brief: "",

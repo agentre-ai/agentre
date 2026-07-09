@@ -26,9 +26,9 @@ import { OrchNotifier } from "../orch-notifier";
 // 构造测试用 RunDetailDTO，避免 TypeScript 类型不兼容。
 function makeDetail(
   run: { id: number; goal: string; status: string },
-  tasks: { id: number; status: string }[],
+  dispatches: { id: number; status: string }[],
 ): app.RunDetailDTO {
-  return { run, tasks } as unknown as app.RunDetailDTO;
+  return { run, dispatches } as unknown as app.RunDetailDTO;
 }
 
 beforeEach(() => {

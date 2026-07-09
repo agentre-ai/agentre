@@ -2362,21 +2362,18 @@
       "executing": "is executing"
     },
     "board": {
-      "title": "Task Board",
-      "tabTasks": "Tasks",
-      "tabOutputs": "Outputs",
-      "tasksEmpty": "No tasks yet",
-      "outputsEmpty": "No outputs yet",
-      "drilldownTitle": "Details",
-      "drilldownEmpty": "No details available",
       "statusRunning": "Running",
       "statusDone": "Done",
       "statusAwaitingUser": "Awaiting you",
       "statusAwaitingChildren": "Awaiting subtasks",
       "statusError": "Error",
       "statusPending": "Pending",
-      "statusIdle": "In progress",
-      "progress": "{{done}} / {{total}} done"
+      "statusIdle": "In progress"
+    },
+    "tasks": {
+      "title": "Tasks",
+      "empty": "No tasks yet",
+      "progress": "{{done}}/{{total}} done"
     },
     "notify": {
       "completed": "Orchestration run completed: {{goal}}",
@@ -2432,6 +2429,9 @@
     "exitCode": "Exit {{code}}",
     "stop": "Stop",
     "openInTerminal": "Open in terminal",
-    "dismiss": "Dismiss command"
+    "dismiss": "Dismiss command",
+    "noOutput": "No output",
+    "expand": "Expand output",
+    "collapse": "Collapse output"
   }
 }

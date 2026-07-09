@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // wailsjs/go/app/App → 被 chat-agents-store 间接 import，需要 mock
 vi.mock("../../../../../wailsjs/go/app/App", () => ({
   ListChatAgents: vi.fn().mockResolvedValue({ agents: [] }),
-  RunLoad: vi.fn().mockResolvedValue({ run: undefined, tasks: [] }),
+  RunLoad: vi.fn().mockResolvedValue({ run: undefined, dispatches: [] }),
   LoadChatSession: vi.fn().mockResolvedValue({
     messages: [
       {
@@ -58,7 +58,7 @@ function makeDetail(
   overrides: Partial<{
     runStatus: string;
     runId: number;
-    tasks: app.TaskDTO[];
+    tasks: app.DispatchDTO[];
     leaderAgentId: number;
   }> = {},
 ): app.RunDetailDTO {
@@ -81,7 +81,7 @@ function makeDetail(
       createtime: Date.now(),
       updatetime: Date.now(),
     } as app.RunItemDTO,
-    tasks,
+    dispatches: tasks,
   } as app.RunDetailDTO;
 }
 
@@ -89,15 +89,15 @@ function makeTask(
   id: number,
   agentId: number,
   status: string,
-  parentTaskId = 0,
+  parentDispatchId = 0,
   sessionId = 0,
-): app.TaskDTO {
+): app.DispatchDTO {
   return {
     id,
     runId: 1,
     agentId,
     sessionId,
-    parentTaskId,
+    parentDispatchId,
     kind: "dispatch",
     status,
     brief: `Task ${id}`,
@@ -106,7 +106,7 @@ function makeTask(
     refs: "",
     createtime: Date.now(),
     updatetime: Date.now(),
-  } as app.TaskDTO;
+  } as app.DispatchDTO;
 }
 
 beforeEach(() => {
@@ -445,7 +445,7 @@ describe("StructureGraph", () => {
     const detail = makeDetail({
       runStatus: "running",
       tasks: [
-        makeTask(1, 2, "running", 0, 0), // Leader (agent 2), parentTaskId=0 → root
+        makeTask(1, 2, "running", 0, 0), // Leader (agent 2), parentDispatchId=0 → root
         makeTask(2, 3, "running", 1, 600), // agent 3, parent=task1(agent 2) → edge 2→3
         makeTask(3, 2, "running", 2, 0), // agent 2 again, parent=task2(agent 3) → edge 3→2 (CYCLE)
       ],

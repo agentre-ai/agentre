@@ -39,7 +39,7 @@ function makeDetail(
     runId: number;
     goal: string;
     leaderAgentId: number;
-    tasks: app.TaskDTO[];
+    tasks: app.DispatchDTO[];
   }> = {},
 ): app.RunDetailDTO {
   const {
@@ -62,17 +62,17 @@ function makeDetail(
       createtime: Date.now(),
       updatetime: Date.now(),
     } as app.RunItemDTO,
-    tasks,
+    dispatches: tasks,
   } as app.RunDetailDTO;
 }
 
-function makeTask(status: string, id = 1): app.TaskDTO {
+function makeTask(status: string, id = 1): app.DispatchDTO {
   return {
     id,
     runId: 1,
     agentId: 2,
     sessionId: 0,
-    parentTaskId: 0,
+    parentDispatchId: 0,
     kind: "dispatch",
     status,
     brief: "",
@@ -81,7 +81,7 @@ function makeTask(status: string, id = 1): app.TaskDTO {
     refs: "",
     createtime: Date.now(),
     updatetime: Date.now(),
-  } as app.TaskDTO;
+  } as app.DispatchDTO;
 }
 
 beforeEach(() => {
@@ -193,7 +193,7 @@ describe("RunHeader", () => {
 
   it("runId 为 undefined 时不渲染 run-pause/run-resume/run-stop", () => {
     // 构造没有 run 的 detail
-    const detail = { tasks: [] } as unknown as app.RunDetailDTO;
+    const detail = { dispatches: [] } as unknown as app.RunDetailDTO;
     render(<RunHeader detail={detail} />);
     expect(screen.queryByTestId("run-pause")).not.toBeInTheDocument();
     expect(screen.queryByTestId("run-resume")).not.toBeInTheDocument();

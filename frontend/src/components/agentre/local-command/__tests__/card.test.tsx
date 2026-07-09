@@ -67,4 +67,57 @@ describe("LocalCommandCard", () => {
     expect(useLocalCommandsStore.getState().get("t4")).toBeUndefined();
     expect(screen.queryByText("echo hi")).toBeNull();
   });
+
+  it("finished command defaults to a collapsed one-line summary (no chip / no 'not sent to AI')", () => {
+    useLocalCommandsStore.setState({
+      entries: {
+        s1: {
+          id: "s1",
+          sessionId: 1,
+          command: "git status",
+          createdAt: 1000,
+          finishedAt: 2200, // 1.2s
+          status: "done",
+          exitCode: 0,
+          output: "clean\n",
+        },
+      },
+    });
+    render(<LocalCommandCard entryId="s1" onOpenInTerminal={vi.fn()} />);
+
+    expect(screen.getByText("git status")).toBeInTheDocument();
+    expect(screen.getByText("1.2s")).toBeInTheDocument();
+    expect(screen.getByText(/退出码 0|Exit 0/)).toBeInTheDocument();
+    // 折叠行不含 chip 与 "不发送给 AI"
+    expect(screen.queryByText(/本地命令|Local command/)).toBeNull();
+    expect(screen.queryByText(/不发送给 AI|Not sent to AI/)).toBeNull();
+  });
+
+  it("clicking a collapsed summary expands it to reveal the header chip", async () => {
+    useLocalCommandsStore.setState({
+      entries: {
+        s2: {
+          id: "s2",
+          sessionId: 1,
+          command: "ls",
+          createdAt: 1000,
+          finishedAt: 1500,
+          status: "done",
+          exitCode: 0,
+          output: "a\n",
+        },
+      },
+    });
+    render(<LocalCommandCard entryId="s2" onOpenInTerminal={vi.fn()} />);
+    // collapsed: no chip yet
+    expect(screen.queryByText(/本地命令|Local command/)).toBeNull();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /展开输出|Expand output/ }),
+    );
+
+    // expanded header now shows chip + "not sent to AI"
+    expect(screen.getByText(/本地命令|Local command/)).toBeInTheDocument();
+    expect(screen.getByText(/不发送给 AI|Not sent to AI/)).toBeInTheDocument();
+  });
 });

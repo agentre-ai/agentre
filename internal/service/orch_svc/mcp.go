@@ -162,6 +162,12 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 		m.handleRead(w, r, id, ref, args)
 	case "status":
 		m.handleStatus(w, r, id, ref)
+	case "task_list":
+		m.handleTaskList(w, r, id, ref)
+	case "task_add":
+		m.handleTaskAdd(w, r, id, ref, args)
+	case "task_update":
+		m.handleTaskUpdate(w, r, id, ref, args)
 	default:
 		writeRPCError(w, id, -32601, "unknown tool")
 	}
@@ -169,9 +175,8 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 
 func (m *orchMCP) handleDispatch(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
 	var p struct {
-		Agent   string `json:"agent"`
-		Brief   string `json:"brief"`
-		Isolate bool   `json:"isolate"`
+		Agent string `json:"agent"`
+		Brief string `json:"brief"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		writeRPCError(w, id, -32700, "parse error: "+err.Error())
@@ -181,7 +186,7 @@ func (m *orchMCP) handleDispatch(w http.ResponseWriter, r *http.Request, id json
 		writeRPCError(w, id, -32602, "agent and brief are required")
 		return
 	}
-	taskID, err := m.svc.Dispatch(r.Context(), ref.sessionID, p.Agent, p.Brief, p.Isolate)
+	taskID, err := m.svc.Dispatch(r.Context(), ref.sessionID, p.Agent, p.Brief)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
@@ -318,6 +323,56 @@ func (m *orchMCP) handleStatus(w http.ResponseWriter, r *http.Request, id json.R
 	writeRPCResult(w, id, textResult(out))
 }
 
+func (m *orchMCP) handleTaskList(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef) {
+	out, err := m.svc.TaskList(r.Context(), ref.sessionID)
+	if err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult(out))
+}
+
+func (m *orchMCP) handleTaskAdd(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
+	var p struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		writeRPCError(w, id, -32700, "parse error: "+err.Error())
+		return
+	}
+	if p.Text == "" {
+		writeRPCError(w, id, -32602, "text is required")
+		return
+	}
+	tid, err := m.svc.TaskAdd(r.Context(), ref.sessionID, ref.agentID, p.Text)
+	if err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult(fmt.Sprintf("已加入清单,task_id=%d", tid)))
+}
+
+func (m *orchMCP) handleTaskUpdate(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
+	var p struct {
+		TaskID int64  `json:"task_id"`
+		Status string `json:"status"`
+		Claim  bool   `json:"claim"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		writeRPCError(w, id, -32700, "parse error: "+err.Error())
+		return
+	}
+	if p.TaskID <= 0 || (p.Status == "" && !p.Claim) {
+		writeRPCError(w, id, -32602, "task_id required; give status or claim")
+		return
+	}
+	if err := m.svc.TaskUpdate(r.Context(), ref.sessionID, ref.agentID, p.TaskID, p.Status, p.Claim); err != nil {
+		writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	writeRPCResult(w, id, textResult("已更新"))
+}
+
 // textResult 将文本包装成 MCP content 格式（Tasks 10/11/12 复用）。
 func textResult(s string) map[string]any {
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": s}}}
@@ -328,17 +383,21 @@ type agentListItem struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	SystemBadge string `json:"systemBadge,omitempty"`
+	Running     int    `json:"running"`
 }
 
 func (m *orchMCP) handleAgentList(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef) {
-	list, err := m.svc.ListAllowedAgents(r.Context(), ref.sessionID)
+	list, err := m.svc.ListAllowedAgentsWithLoad(r.Context(), ref.sessionID)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
 	}
 	out := make([]agentListItem, 0, len(list))
-	for _, a := range list {
-		out = append(out, agentListItem{ID: a.ID, Name: a.Name, Description: a.Description, SystemBadge: a.SystemBadge})
+	for _, aw := range list {
+		out = append(out, agentListItem{
+			ID: aw.Agent.ID, Name: aw.Agent.Name, Description: aw.Agent.Description,
+			SystemBadge: aw.Agent.SystemBadge, Running: aw.Running,
+		})
 	}
 	b, _ := json.Marshal(out)
 	writeRPCResult(w, id, map[string]any{"content": []any{map[string]any{"type": "text", "text": string(b)}}})
@@ -348,7 +407,7 @@ func orchToolSchemas() []any {
 	return []any{
 		map[string]any{
 			"name":        "agent_list",
-			"description": "列出你本次可调度的 agent(受可参与范围约束;id/名称/描述/能力)。据此拆活、按名 dispatch。",
+			"description": "列出你本次可调度的 agent(受可参与范围约束;id/名称/描述/能力/running——每个 agent 当前在跑的派发数)。据此拆活、按名 dispatch,优先派给 running 低的 agent。",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		map[string]any{
@@ -358,9 +417,8 @@ func orchToolSchemas() []any {
 				"type":     "object",
 				"required": []string{"agent", "brief"},
 				"properties": map[string]any{
-					"agent":   map[string]any{"type": "string", "description": "目标 agent 名(取自 agent_list)"},
-					"brief":   map[string]any{"type": "string", "description": "任务说明 + 验证目标;需要的产物引用写进来"},
-					"isolate": map[string]any{"type": "boolean", "description": "true=独立 git worktree 隔离;默认 false 共享工作区"},
+					"agent": map[string]any{"type": "string", "description": "目标 agent 名(取自 agent_list)"},
+					"brief": map[string]any{"type": "string", "description": "任务说明 + 验证目标;需要的产物引用写进来"},
 				},
 			},
 		},
@@ -437,6 +495,35 @@ func orchToolSchemas() []any {
 			"name":        "status",
 			"description": "查看本次编排整棵任务树的实时快照(每个子任务的 id/agent/类型/状态/brief/是否已主动汇报/所属流程节点/在等哪些子任务)。两次回报之间用它掌握全局。",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		map[string]any{
+			"name":        "task_list",
+			"description": "读取本次编排的待办清单(所有 agent 共享的协作白板;与派发树无关)。返回每条 task_id/seq/文本/状态/认领人。",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		map[string]any{
+			"name":        "task_add",
+			"description": "往待办清单加一条(一句话)。返回 task_id。清单纯组织思路、给人看进度,不触发任何执行。",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"text"},
+				"properties": map[string]any{
+					"text": map[string]any{"type": "string"},
+				},
+			},
+		},
+		map[string]any{
+			"name":        "task_update",
+			"description": "更新某待办:改状态(pending/in_progress/done)或认领(claim=true 把自己设为负责人)。至少给一个。",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []string{"task_id"},
+				"properties": map[string]any{
+					"task_id": map[string]any{"type": "integer"},
+					"status":  map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "done"}},
+					"claim":   map[string]any{"type": "boolean"},
+				},
+			},
 		},
 	}
 }

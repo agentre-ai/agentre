@@ -23,8 +23,8 @@ export function buildFeed(
   askLog: AskLogItem[] = [],
 ): FeedItem[] {
   const items: FeedItem[] = [];
-  for (const t of detail.tasks ?? []) {
-    if (t.parentTaskId) {
+  for (const t of detail.dispatches ?? []) {
+    if (t.parentDispatchId) {
       items.push({
         id: `d${t.id}`,
         kind: "dispatch",

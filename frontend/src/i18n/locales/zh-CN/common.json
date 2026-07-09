@@ -2362,21 +2362,18 @@
       "executing": "正在执行"
     },
     "board": {
-      "title": "任务板",
-      "tabTasks": "任务",
-      "tabOutputs": "产出",
-      "tasksEmpty": "暂无任务",
-      "outputsEmpty": "暂无输出",
-      "drilldownTitle": "详情",
-      "drilldownEmpty": "暂无详情",
       "statusRunning": "运行中",
       "statusDone": "已完成",
       "statusAwaitingUser": "等待你",
       "statusAwaitingChildren": "等待子任务",
       "statusError": "出错",
       "statusPending": "待启动",
-      "statusIdle": "进行中",
-      "progress": "{{done}} / {{total}} 完成"
+      "statusIdle": "进行中"
+    },
+    "tasks": {
+      "title": "任务清单",
+      "empty": "暂无待办",
+      "progress": "{{done}}/{{total}} 完成"
     },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",
@@ -2432,6 +2429,9 @@
     "exitCode": "退出码 {{code}}",
     "stop": "停止",
     "openInTerminal": "在终端中打开",
-    "dismiss": "移除此命令"
+    "dismiss": "移除此命令",
+    "noOutput": "无输出",
+    "expand": "展开输出",
+    "collapse": "折叠输出"
   }
 }

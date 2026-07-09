@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../../../wailsjs/go/app/App", () => ({
   RunLoad: vi.fn().mockResolvedValue({
     run: { id: 1, goal: "G", status: "running", leaderAgentId: 2 },
-    tasks: [],
+    dispatches: [],
   }),
   ListChatAgents: vi.fn().mockResolvedValue({ agents: [] }),
   LoadChatSession: vi.fn().mockResolvedValue({ messages: [] }),

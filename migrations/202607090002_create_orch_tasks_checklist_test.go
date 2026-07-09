@@ -8,7 +8,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestMigration202607090001_RenameOrchTasksToDispatches(t *testing.T) {
+func TestMigration202607090002_CreatesOrchTasksChecklist(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	assert.NoError(t, err)
 	assert.NoError(t, RunMigrations(db))
@@ -30,10 +30,12 @@ func TestMigration202607090001_RenameOrchTasksToDispatches(t *testing.T) {
 		return n > 0
 	}
 
-	// orch_tasks 改名为 orch_dispatches, parent_task_id 改名为 parent_dispatch_id。
-	// 注意:202607090002 复用 orch_tasks 表名重建为待办清单(新语义),
-	// 故全链路迁移后 orch_tasks 会重新存在,此处不再断言其不存在。
+	// orch_tasks 复用被 202607090001 腾空的表名,重建为待办清单(与派发树零联动)。
+	assert.True(t, hasTable("orch_tasks"))
+	assert.True(t, hasCol("orch_tasks", "text"))
+	assert.True(t, hasCol("orch_tasks", "status"))
+	assert.True(t, hasCol("orch_tasks", "assignee_agent_id"))
+
+	// orch_dispatches(202607090001 改名后的执行节点表)仍在,两表并存。
 	assert.True(t, hasTable("orch_dispatches"))
-	assert.True(t, hasCol("orch_dispatches", "parent_dispatch_id"))
-	assert.False(t, hasCol("orch_dispatches", "parent_task_id"))
 }

@@ -22,11 +22,13 @@ type askEnvelope struct {
 }
 
 var (
-	errLeaderNotFound  = errors.New("orch: leader agent not found")
-	errAgentNotFound   = errors.New("orch: target agent not found")
-	errAgentNotAllowed = errors.New("orch: target agent not in allowed set")
-	errRunNotActive    = errors.New("orch: run not active")
-	errForeignDispatch = errors.New("orch: task not in this run")
+	errLeaderNotFound    = errors.New("orch: leader agent not found")
+	errAgentNotFound     = errors.New("orch: target agent not found")
+	errAgentNotAllowed   = errors.New("orch: target agent not in allowed set")
+	errRunNotActive      = errors.New("orch: run not active")
+	errForeignDispatch   = errors.New("orch: task not in this run")
+	errForeignTask       = errors.New("orch: todo not in this run")
+	errInvalidTaskStatus = errors.New("orch: invalid task status")
 )
 
 type orchSvc struct {
@@ -37,6 +39,7 @@ type orchSvc struct {
 	approval   ApprovalGateway
 	emit       Emitter
 	wf         WorkflowReader
+	todos      orch_repo.TaskRepo
 
 	gatewayBaseURL string
 
@@ -74,6 +77,10 @@ func (s *orchSvc) RegisterDeps(chat ChatGateway, agents AgentLookup, runs orch_r
 
 // RegisterWorkflowReader 注入流程库读取器(bootstrap/app 接线)；测试注 mock。
 func (s *orchSvc) RegisterWorkflowReader(wr WorkflowReader) { s.wf = wr }
+
+// RegisterTodoRepo 注入待办清单仓储(bootstrap/app 接线)；测试注 mock。独立方法而非
+// RegisterDeps 末位形参，避免 churn 现有全部 RegisterDeps 调用点。
+func (s *orchSvc) RegisterTodoRepo(impl orch_repo.TaskRepo) { s.todos = impl }
 
 // SetGatewayBaseURL 由 bootstrap 在 gateway 起好后注入；mirror subagent_svc。
 func (s *orchSvc) SetGatewayBaseURL(u string) { s.gatewayBaseURL = u }

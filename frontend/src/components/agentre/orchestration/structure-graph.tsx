@@ -559,13 +559,13 @@ export function StructureGraph({
     if (!cycle || cycle.length === 0) return new Set<number>();
     const sessionIds = new Set<number>(cycle);
     const result = new Set<number>();
-    for (const task of detail.tasks ?? []) {
+    for (const task of detail.dispatches ?? []) {
       if (task.sessionId && sessionIds.has(task.sessionId)) {
         result.add(task.agentId);
       }
     }
     return result;
-  }, [cycle, detail.tasks]);
+  }, [cycle, detail.dispatches]);
 
   // 节点是否应该被暗化（paused 态）
   const dimmed = phase === "paused";

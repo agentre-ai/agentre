@@ -11,7 +11,7 @@ import { RunResume } from "../../../../wailsjs/go/app/App";
 import { RunHeader } from "./run-header";
 import { StructureGraph } from "./structure-graph";
 import { ActivityFeed } from "./activity-feed";
-import { TaskBoard } from "./task-board";
+import { TaskList } from "./task-list";
 import { ConversationPanel } from "./conversation-panel";
 import { ToggleBar } from "./toggle-bar";
 import { useRunSubagents } from "./use-run-subagents";
@@ -21,7 +21,7 @@ import { ChatComposer, type ChatComposerSubmit } from "../chat";
 import { PermissionModePill } from "../permission-mode";
 
 // 稳定空 detail:detail 未就绪时给 useRunSubagents 一个恒定身份的占位,避免每渲染触发懒加载 effect。
-const EMPTY_RUN_DETAIL = { tasks: [] } as unknown as app.RunDetailDTO;
+const EMPTY_RUN_DETAIL = { dispatches: [] } as unknown as app.RunDetailDTO;
 
 export function OrchestrationRun({
   runId,
@@ -47,7 +47,7 @@ export function OrchestrationRun({
 
   // Compute ToggleBar stats from existing data (no additional fetches)
   const toggleStats = React.useMemo(() => {
-    const tasks = detail?.tasks ?? [];
+    const tasks = detail?.dispatches ?? [];
     const done = tasks.filter((t) => t.status === "done").length;
     const total = tasks.length;
     if (!detail) {
@@ -87,7 +87,7 @@ export function OrchestrationRun({
 
   // 解析选中 session 对应的 agent
   const { agents } = useChatAgents();
-  const selTask = (detail?.tasks ?? []).find(
+  const selTask = (detail?.dispatches ?? []).find(
     (t) => t.sessionId === selectedSessionId,
   );
   const selAgent = agents.find((a) => a.id === selTask?.agentId);
@@ -99,7 +99,7 @@ export function OrchestrationRun({
   const leaderSessionId = React.useMemo(() => {
     const leaderAgentId = detail?.run?.leaderAgentId;
     if (!leaderAgentId) return null;
-    const leaderTask = (detail?.tasks ?? []).find(
+    const leaderTask = (detail?.dispatches ?? []).find(
       (task) => task.agentId === leaderAgentId && task.sessionId > 0,
     );
     return leaderTask?.sessionId ?? null;
@@ -130,7 +130,7 @@ export function OrchestrationRun({
     runId !== undefined ? s.deadlocks.get(runId) : undefined,
   );
   const hasDeadlock = React.useMemo(
-    () => hasDeadlockCycle(cycle, detail?.tasks ?? []),
+    () => hasDeadlockCycle(cycle, detail?.dispatches ?? []),
     [cycle, detail],
   );
 
@@ -326,11 +326,7 @@ export function OrchestrationRun({
                 agentId={selTask?.agentId}
               />
             ) : (
-              <TaskBoard
-                detail={detail}
-                selectedSessionId={selectedSessionId}
-                onSelectSession={setSelectedSessionId}
-              />
+              <TaskList detail={detail} />
             )}
           </aside>
         </>
