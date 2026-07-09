@@ -19,7 +19,7 @@ export function OrchNotifier(): null {
       if (detail.run) {
         prevStatus.set(runId, detail.run.status);
       }
-      for (const task of detail.tasks ?? []) {
+      for (const task of detail.dispatches ?? []) {
         if (task.status === "awaiting-user") {
           notifiedAwaitingTaskIds.add(task.id);
         }
@@ -47,7 +47,7 @@ export function OrchNotifier(): null {
         }
 
         // 等待你通知：任务首次进入 awaiting-user 时触发，去重。
-        for (const task of detail.tasks ?? []) {
+        for (const task of detail.dispatches ?? []) {
           if (
             task.status === "awaiting-user" &&
             !notifiedAwaitingTaskIds.has(task.id)
