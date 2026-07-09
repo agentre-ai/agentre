@@ -2362,21 +2362,13 @@
       "executing": "is executing"
     },
     "board": {
-      "title": "Task Board",
-      "tabTasks": "Tasks",
-      "tabOutputs": "Outputs",
-      "tasksEmpty": "No tasks yet",
-      "outputsEmpty": "No outputs yet",
-      "drilldownTitle": "Details",
-      "drilldownEmpty": "No details available",
       "statusRunning": "Running",
       "statusDone": "Done",
       "statusAwaitingUser": "Awaiting you",
       "statusAwaitingChildren": "Awaiting subtasks",
       "statusError": "Error",
       "statusPending": "Pending",
-      "statusIdle": "In progress",
-      "progress": "{{done}} / {{total}} done"
+      "statusIdle": "In progress"
     },
     "tasks": {
       "title": "Tasks",
