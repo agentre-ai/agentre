@@ -237,6 +237,7 @@ func (a *App) registerChatService() {
 		chat_svc.Chat(), orchEmitter{a: a},
 	)
 	orch_svc.Default().RegisterWorkflowReader(orchWorkflowAdapter{})
+	orch_svc.Default().RegisterTodoRepo(orch_repo.Task())
 
 	// hooktool_svc 依赖:hook_svc.Hook() 满足 HookService;agent_repo.Agent() 满足 AgentLookup;
 	// chat_svc.Chat() 满足 ApprovalGateway。须在 RegisterChat 之后(chat_svc.Chat() 非 nil)。
