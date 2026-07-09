@@ -122,6 +122,20 @@ export function orchestrationRunStatusById(id: number): string | null {
   }
 }
 
+// orchestrationRunIdByGoal returns the Run id for a unique test goal.
+export function orchestrationRunIdByGoal(goal: string): number | null {
+  const db = new DatabaseSync(dbPath(), { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    const row = db
+      .prepare("SELECT id FROM orchestration_runs WHERE goal = ? ORDER BY id DESC LIMIT 1")
+      .get(goal) as { id: number } | undefined;
+    return row?.id ?? null;
+  } finally {
+    db.close();
+  }
+}
+
 // orchTaskStatusById returns one orch_task's status (e.g. assert the root task cascaded to
 // 'canceled' on hard-stop). Read-only.
 export function orchTaskStatusById(id: number): string | null {

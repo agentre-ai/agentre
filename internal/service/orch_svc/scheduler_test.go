@@ -15,6 +15,18 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/orch_svc/mock_orch_svc"
 )
 
+type operationFailedLike struct {
+	cause error
+}
+
+func (e operationFailedLike) Error() string {
+	return "Operation failed"
+}
+
+func (e operationFailedLike) Unwrap() error {
+	return e.cause
+}
+
 func TestScheduler_CapsConcurrency(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -126,6 +138,61 @@ func TestScheduler_RetriesTransientSendBusy(t *testing.T) {
 		case <-sendCh:
 		case <-time.After(time.Second):
 			t.Fatal("SendAndForget was not retried")
+		}
+		So(attempts.Load(), ShouldEqual, 2)
+	})
+}
+
+func TestScheduler_RetriesWrappedTransientSendBusy(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
+	orch_svc.Default().ResetSchedulersForTest()
+	orch_svc.Default().SetSchedulerCapForTest(1)
+	restoreBackoff := orch_svc.SetSendRetryBackoffForTest([]time.Duration{0})
+	t.Cleanup(func() {
+		restoreBackoff()
+		orch_svc.Default().SetSchedulerCapForTest(0)
+		orch_svc.Default().ResetSchedulersForTest()
+	})
+
+	done := make(chan orch_svc.TurnDone)
+	close(done)
+	chat.EXPECT().ObserveTurn(int64(601)).
+		Return((<-chan orch_svc.TurnDone)(done), func() {})
+
+	var attempts atomic.Int32
+	sendCh := make(chan struct{}, 2)
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(601), "go").
+		DoAndReturn(func(_ any, _ int64, _ string) error {
+			attempts.Add(1)
+			sendCh <- struct{}{}
+			return operationFailedLike{cause: errors.New("database is locked (5) (SQLITE_BUSY)")}
+		})
+	chat.EXPECT().SendAndForget(gomock.Any(), int64(601), "go").
+		DoAndReturn(func(_ any, _ int64, _ string) error {
+			attempts.Add(1)
+			sendCh <- struct{}{}
+			return nil
+		})
+
+	Convey("SQLite 写锁被 chat 层包装成业务错误时仍按底层 cause 重试", t, func() {
+		orch_svc.Default().EnqueueRunForTest(100,
+			&orch_entity.Dispatch{ID: 1, RunID: 100, SessionID: 601},
+			"go")
+
+		select {
+		case <-sendCh:
+		case <-time.After(time.Second):
+			t.Fatal("first SendAndForget was not called")
+		}
+		select {
+		case <-sendCh:
+		case <-time.After(time.Second):
+			t.Fatal("wrapped transient SendAndForget was not retried")
 		}
 		So(attempts.Load(), ShouldEqual, 2)
 	})

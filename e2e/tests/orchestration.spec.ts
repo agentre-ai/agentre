@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
-  orchestrationRunStatus,
-  orchTaskRows,
+  orchestrationRunStatusById,
+  orchTaskRowsByRun,
   runningSessionCount,
 } from "../fixtures/db";
 
@@ -87,12 +87,12 @@ test("orchestration engine: dispatch sub-task then finish run", async ({
   // 4. 等 DB 权威来源:orchestration_runs.status 变为 'done'(超时 30s)。
   //    链路:dispatch → 子 agent 轮 → reportToParent 续轮 → finish → done。
   await expect
-    .poll(() => orchestrationRunStatus(), { timeout: 30_000 })
+    .poll(() => orchestrationRunStatusById(runDetail.run.id), { timeout: 30_000 })
     .toBe("done");
 
   // 5. 断言 orch_tasks:≥2 行(根任务 + 至少一个 dispatch 子任务),全部 done,
   //    至少有一行 parentTaskId != 0(子任务有父引用)。
-  const tasks = orchTaskRows();
+  const tasks = orchTaskRowsByRun(runDetail.run.id);
   expect(tasks.length).toBeGreaterThanOrEqual(2);
   for (const t of tasks) {
     expect(t.status).toBe("done");
