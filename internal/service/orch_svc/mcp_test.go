@@ -2,6 +2,7 @@ package orch_svc_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -66,6 +67,7 @@ func TestMCP_ToolsCall_AllowsOrchestrationSessionEvenWhenDisabled(t *testing.T) 
 	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	tasks.EXPECT().FindBySession(gomock.Any(), sessionID).
 		Return(&orch_entity.Dispatch{ID: 7, RunID: runID, SessionID: sessionID, ParentDispatchID: 0}, nil).AnyTimes()
+	tasks.EXPECT().CountActiveByRunAgent(gomock.Any(), runID, agentID).Return(int64(0), nil).AnyTimes()
 
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
 	runs.EXPECT().Find(gomock.Any(), runID).
@@ -116,6 +118,73 @@ func TestMCP_ToolsCall_RejectsNonOrchestrationSessionWhenDisabled(t *testing.T) 
 	h.ServeHTTP(rw, req)
 
 	assert.Equal(t, http.StatusForbidden, rw.Code, "普通会话+未开 orchestrate 应保持 403")
+}
+
+// TestMCP_HandleAgentList_IncludesRunningCount agent_list 返回项须含每个 agent 当前在跑
+// (非终态)的派发数 running,供 Leader 拆活时一眼看谁忙(Task 4)。
+func TestMCP_HandleAgentList_IncludesRunningCount(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	const (
+		agentID   = int64(2)
+		sessionID = int64(902)
+		runID     = int64(200)
+	)
+	leader := &agent_entity.Agent{ID: agentID, Name: "Leader"}
+	worker := &agent_entity.Agent{ID: 3, Name: "Worker"}
+
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	agents.EXPECT().Find(gomock.Any(), agentID).Return(leader, nil).AnyTimes()
+	agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{leader, worker}, nil).AnyTimes()
+
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
+	tasks.EXPECT().FindBySession(gomock.Any(), sessionID).
+		Return(&orch_entity.Dispatch{ID: 9, RunID: runID, SessionID: sessionID}, nil).AnyTimes()
+	tasks.EXPECT().CountActiveByRunAgent(gomock.Any(), runID, agentID).Return(int64(0), nil).AnyTimes()
+	tasks.EXPECT().CountActiveByRunAgent(gomock.Any(), runID, int64(3)).Return(int64(2), nil).AnyTimes()
+
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
+	runs.EXPECT().Find(gomock.Any(), runID).
+		Return(&orch_entity.OrchestrationRun{ID: runID, LeaderAgentID: agentID}, nil).AnyTimes()
+
+	orch_svc.Default().RegisterDeps(nil, agents, runs, tasks, nil, nil)
+	t.Cleanup(func() { orch_svc.Default().RegisterDeps(nil, nil, nil, nil, nil, nil) })
+
+	h := orch_svc.Default().MCPHandler()
+	tok := orch_svc.Default().MintToken(agentID, sessionID)
+	body := bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"agent_list"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/orchestrate/", body)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	require.Equal(t, http.StatusOK, rw.Code)
+
+	var envelope struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(rw.Body.Bytes(), &envelope))
+	require.Len(t, envelope.Result.Content, 1)
+
+	var items []struct {
+		ID      int64  `json:"id"`
+		Name    string `json:"name"`
+		Running int    `json:"running"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(envelope.Result.Content[0].Text), &items))
+	require.Len(t, items, 2)
+
+	byName := map[string]int{}
+	for _, it := range items {
+		byName[it.Name] = it.Running
+	}
+	assert.Equal(t, 0, byName["Leader"])
+	assert.Equal(t, 2, byName["Worker"])
 }
 
 // TestOrchToolSchemas_NoCancel 锁死 cancel 工具已彻底移除,不再出现在 tools/list schema 里。

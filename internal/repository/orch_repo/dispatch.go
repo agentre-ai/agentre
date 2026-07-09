@@ -21,6 +21,7 @@ type DispatchRepo interface {
 	FindBySession(ctx context.Context, sessionID int64) (*orch_entity.Dispatch, error)
 	ListByRun(ctx context.Context, runID int64) ([]*orch_entity.Dispatch, error)
 	CountByRunAgent(ctx context.Context, runID, agentID int64) (int64, error)
+	CountActiveByRunAgent(ctx context.Context, runID, agentID int64) (int64, error)
 }
 
 var defaultDispatch DispatchRepo
@@ -79,6 +80,19 @@ func (r *dispatchRepo) CountByRunAgent(ctx context.Context, runID, agentID int64
 	var n int64
 	err := db.Ctx(ctx).Model(&orch_entity.Dispatch{}).
 		Where("run_id = ? AND agent_id = ? AND kind = ?", runID, agentID, orch_entity.DispatchKindDispatch).
+		Count(&n).Error
+	return n, err
+}
+
+// CountActiveByRunAgent 统计某 Run 内某 agent 当前非终态(仍在跑)的 dispatch 数,
+// 供 agent_list 给每个 agent 标一个 running 计数,让 Leader 拆活时一眼看谁忙。
+func (r *dispatchRepo) CountActiveByRunAgent(ctx context.Context, runID, agentID int64) (int64, error) {
+	var n int64
+	err := db.Ctx(ctx).Model(&orch_entity.Dispatch{}).
+		Where("run_id = ? AND agent_id = ? AND kind = ?", runID, agentID, orch_entity.DispatchKindDispatch).
+		Where("status NOT IN (?)", []string{
+			orch_entity.DispatchDone, orch_entity.DispatchCanceled, orch_entity.DispatchError,
+		}).
 		Count(&n).Error
 	return n, err
 }

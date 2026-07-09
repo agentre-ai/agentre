@@ -41,6 +41,21 @@ func (m *MockDispatchRepo) EXPECT() *MockDispatchRepoMockRecorder {
 	return m.recorder
 }
 
+// CountActiveByRunAgent mocks base method.
+func (m *MockDispatchRepo) CountActiveByRunAgent(ctx context.Context, runID, agentID int64) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountActiveByRunAgent", ctx, runID, agentID)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountActiveByRunAgent indicates an expected call of CountActiveByRunAgent.
+func (mr *MockDispatchRepoMockRecorder) CountActiveByRunAgent(ctx, runID, agentID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountActiveByRunAgent", reflect.TypeOf((*MockDispatchRepo)(nil).CountActiveByRunAgent), ctx, runID, agentID)
+}
+
 // CountByRunAgent mocks base method.
 func (m *MockDispatchRepo) CountByRunAgent(ctx context.Context, runID, agentID int64) (int64, error) {
 	m.ctrl.T.Helper()

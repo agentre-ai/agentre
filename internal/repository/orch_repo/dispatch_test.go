@@ -88,6 +88,19 @@ func TestDispatchRepo_CountByRunAgent(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestDispatchRepo_CountActiveByRunAgent(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	mock.ExpectQuery(`SELECT count\(\*\) FROM .orch_dispatches. WHERE .run_id = \? AND agent_id = \? AND kind = \?. AND status NOT IN \(\?,\?,\?\)`).
+		WithArgs(int64(1), int64(5), orch_entity.DispatchKindDispatch,
+			orch_entity.DispatchDone, orch_entity.DispatchCanceled, orch_entity.DispatchError).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	n, err := orch_repo.NewDispatch().CountActiveByRunAgent(ctx, 1, 5)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestDispatchRepo_ListByRun(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	mock.ExpectQuery("SELECT \\* FROM `orch_dispatches` WHERE run_id = \\? ORDER BY id ASC").

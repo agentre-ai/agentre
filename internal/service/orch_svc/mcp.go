@@ -327,17 +327,21 @@ type agentListItem struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	SystemBadge string `json:"systemBadge,omitempty"`
+	Running     int    `json:"running"`
 }
 
 func (m *orchMCP) handleAgentList(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef) {
-	list, err := m.svc.ListAllowedAgents(r.Context(), ref.sessionID)
+	list, err := m.svc.ListAllowedAgentsWithLoad(r.Context(), ref.sessionID)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
 	}
 	out := make([]agentListItem, 0, len(list))
-	for _, a := range list {
-		out = append(out, agentListItem{ID: a.ID, Name: a.Name, Description: a.Description, SystemBadge: a.SystemBadge})
+	for _, aw := range list {
+		out = append(out, agentListItem{
+			ID: aw.Agent.ID, Name: aw.Agent.Name, Description: aw.Agent.Description,
+			SystemBadge: aw.Agent.SystemBadge, Running: aw.Running,
+		})
 	}
 	b, _ := json.Marshal(out)
 	writeRPCResult(w, id, map[string]any{"content": []any{map[string]any{"type": "text", "text": string(b)}}})
@@ -347,7 +351,7 @@ func orchToolSchemas() []any {
 	return []any{
 		map[string]any{
 			"name":        "agent_list",
-			"description": "列出你本次可调度的 agent(受可参与范围约束;id/名称/描述/能力)。据此拆活、按名 dispatch。",
+			"description": "列出你本次可调度的 agent(受可参与范围约束;id/名称/描述/能力/running——每个 agent 当前在跑的派发数)。据此拆活、按名 dispatch,优先派给 running 低的 agent。",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		map[string]any{

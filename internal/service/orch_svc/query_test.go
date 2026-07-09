@@ -89,6 +89,37 @@ func TestListAllowedAgents_EmptySetReturnsAll(t *testing.T) {
 	})
 }
 
+func TestListAllowedAgentsWithLoad_AttachesRunningCount(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	chat := mock_orch_svc.NewMockChatGateway(ctrl)
+	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
+	runs := mock_orch_repo.NewMockRunRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
+	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
+
+	agents.EXPECT().List(gomock.Any()).Return([]*agent_entity.Agent{
+		{ID: 3, Name: "A"}, {ID: 4, Name: "B"},
+	}, nil)
+	// FindBySession 会被调用两次：一次是 ListAllowedAgents 内部定位 Run，一次是本方法自己取 runID。
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).
+		Return(&orch_entity.Dispatch{RunID: 100}, nil).Times(2)
+	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(
+		&orch_entity.OrchestrationRun{ID: 100, AllowedAgentIDs: ""}, nil)
+	tasks.EXPECT().CountActiveByRunAgent(gomock.Any(), int64(100), int64(3)).Return(int64(2), nil)
+	tasks.EXPECT().CountActiveByRunAgent(gomock.Any(), int64(100), int64(4)).Return(int64(0), nil)
+
+	Convey("agent_list 富化每个 agent 的 running 在跑计数", t, func() {
+		got, err := orch_svc.Default().ListAllowedAgentsWithLoad(context.Background(), 500)
+		So(err, ShouldBeNil)
+		So(len(got), ShouldEqual, 2)
+		So(got[0].Agent.ID, ShouldEqual, 3)
+		So(got[0].Running, ShouldEqual, 2)
+		So(got[1].Agent.ID, ShouldEqual, 4)
+		So(got[1].Running, ShouldEqual, 0)
+	})
+}
+
 func TestLoadRun(t *testing.T) {
 	Convey("LoadRun", t, func() {
 		Convey("找到 Run 时返回 Run+Dispatches", func() {
