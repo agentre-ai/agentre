@@ -2378,6 +2378,11 @@
       "statusIdle": "进行中",
       "progress": "{{done}} / {{total}} 完成"
     },
+    "tasks": {
+      "title": "任务清单",
+      "empty": "暂无待办",
+      "progress": "{{done}}/{{total}} 完成"
+    },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",
       "waitingYou": "有分支在等待你审批:{{goal}}",

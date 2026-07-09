@@ -2378,6 +2378,11 @@
       "statusIdle": "In progress",
       "progress": "{{done}} / {{total}} done"
     },
+    "tasks": {
+      "title": "Tasks",
+      "empty": "No tasks yet",
+      "progress": "{{done}}/{{total}} done"
+    },
     "notify": {
       "completed": "Orchestration run completed: {{goal}}",
       "waitingYou": "A branch is awaiting your approval: {{goal}}",

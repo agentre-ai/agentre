@@ -56,7 +56,7 @@ export function recentDoneRuns(
     .slice(0, limit);
 }
 
-// Run 进度:done/total。镜像 task-board.tsx(done=status==="done" 计数,total=tasks.length)。
+// Run 进度:done/total。镜像 index.tsx toggleStats(done=status==="done" 计数,total=tasks.length)。
 export function runProgress(tasks: app.DispatchDTO[] | undefined): {
   done: number;
   total: number;

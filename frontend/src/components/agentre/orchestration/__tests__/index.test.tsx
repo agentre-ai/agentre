@@ -272,21 +272,21 @@ describe("OrchestrationRun shell", () => {
     expect(screen.queryByTestId("view-graph")).not.toBeInTheDocument();
   });
 
-  it("sessionId=0 (Leader/未启动节点哨兵值) 不打开 ConversationPanel，看板保持可见", () => {
+  it("sessionId=0 (Leader/未启动节点哨兵值) 不打开 ConversationPanel，任务清单保持可见", () => {
     const detail = makeDetail({ runId: 1 });
     useOrchRunStore.setState({ details: new Map([[1, detail]]) });
 
     render(<OrchestrationRun runId={1} title="测试运行" />);
 
-    // 初始看板可见
-    expect(screen.getByTestId("board-tab-tasks")).toBeInTheDocument();
+    // 初始任务清单可见
+    expect(screen.getByTestId("task-list")).toBeInTheDocument();
     expect(screen.queryByTestId("conversation-panel")).not.toBeInTheDocument();
 
     // 点击 sessionId=0 的节点（Leader 根任务或未启动子任务的哨兵值）
     fireEvent.click(screen.getByTestId("stub-select-session-0"));
 
-    // 看板依然可见，不应打开 ConversationPanel
-    expect(screen.getByTestId("board-tab-tasks")).toBeInTheDocument();
+    // 任务清单依然可见，不应打开 ConversationPanel
+    expect(screen.getByTestId("task-list")).toBeInTheDocument();
     expect(screen.queryByTestId("conversation-panel")).not.toBeInTheDocument();
   });
 
@@ -433,8 +433,8 @@ describe("OrchestrationRun shell", () => {
 
     render(<OrchestrationRun runId={1} title="测试运行" />);
 
-    // 初始右栏是任务板，ConversationPanel 未渲染
-    expect(screen.getByTestId("board-tab-tasks")).toBeInTheDocument();
+    // 初始右栏是任务清单，ConversationPanel 未渲染
+    expect(screen.getByTestId("task-list")).toBeInTheDocument();
     expect(screen.queryByTestId("conversation-panel")).not.toBeInTheDocument();
 
     // 点击 stub ChatComposer 的发送按钮（触发 onSubmit({text:"to leader"})）
@@ -773,7 +773,7 @@ describe("OrchestrationRun shell", () => {
 
   // ── End Task 9 RED tests ─────────────────────────────────────────────────
 
-  it("选中 session 后右栏切到 ConversationPanel, 返回回到任务板", () => {
+  it("选中 session 后右栏切到 ConversationPanel, 返回回到任务清单", () => {
     // 注入含 task(agentId=3, sessionId=900) 的 detail
     const detail = makeDetail({
       runId: 1,
@@ -799,21 +799,21 @@ describe("OrchestrationRun shell", () => {
 
     render(<OrchestrationRun runId={1} title="测试运行" />);
 
-    // 初始状态: 右栏显示 TaskBoard（board-tab-tasks 可见），ConversationPanel 不可见
-    expect(screen.getByTestId("board-tab-tasks")).toBeInTheDocument();
+    // 初始状态: 右栏显示 TaskList（task-list 可见），ConversationPanel 不可见
+    expect(screen.getByTestId("task-list")).toBeInTheDocument();
     expect(screen.queryByTestId("conversation-panel")).not.toBeInTheDocument();
 
     // 点击结构图节点（stub 触发 onSelectSession(900)）
     fireEvent.click(screen.getByTestId("stub-select-session-900"));
 
-    // 切换后: ConversationPanel 出现，TaskBoard 消失
+    // 切换后: ConversationPanel 出现，TaskList 消失
     expect(screen.getByTestId("conversation-panel")).toBeInTheDocument();
     expect(screen.getByTestId("conv-session-id")).toHaveTextContent("900");
-    expect(screen.queryByTestId("board-tab-tasks")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("task-list")).not.toBeInTheDocument();
 
-    // 点击返回按钮: 回到任务板
+    // 点击返回按钮: 回到任务清单
     fireEvent.click(screen.getByTestId("conversation-back"));
     expect(screen.queryByTestId("conversation-panel")).not.toBeInTheDocument();
-    expect(screen.getByTestId("board-tab-tasks")).toBeInTheDocument();
+    expect(screen.getByTestId("task-list")).toBeInTheDocument();
   });
 });

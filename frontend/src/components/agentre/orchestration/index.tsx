@@ -11,7 +11,7 @@ import { RunResume } from "../../../../wailsjs/go/app/App";
 import { RunHeader } from "./run-header";
 import { StructureGraph } from "./structure-graph";
 import { ActivityFeed } from "./activity-feed";
-import { TaskBoard } from "./task-board";
+import { TaskList } from "./task-list";
 import { ConversationPanel } from "./conversation-panel";
 import { ToggleBar } from "./toggle-bar";
 import { useRunSubagents } from "./use-run-subagents";
@@ -326,11 +326,7 @@ export function OrchestrationRun({
                 agentId={selTask?.agentId}
               />
             ) : (
-              <TaskBoard
-                detail={detail}
-                selectedSessionId={selectedSessionId}
-                onSelectSession={setSelectedSessionId}
-              />
+              <TaskList detail={detail} />
             )}
           </aside>
         </>
