@@ -121,13 +121,17 @@ func (s *orchSvc) MCPHandler() http.Handler {
 		case "tools/list":
 			writeRPCResult(w, rpc.ID, map[string]any{"tools": orchToolSchemas()})
 		case "tools/call":
-			// Capability gate: only agents with orchestrate tool enabled may call.
+			// Capability gate — mirror the injection gate in turn.go BuildTurnMCP:
+			// 放行条件 = agent 勾了 orchestrate 工具 或 会话本身是编排会话(绑定了编排
+			// Dispatch)。后者让经编排创建的 Leader/子任务会话即便其 agent 未勾 orchestrate,
+			// 也能真正调用注进去的工具 —— 否则注入门放行、调用门 403,整条 Run 静默降级。
 			if m.svc.agents == nil {
 				http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 				return
 			}
 			a, err := m.svc.agents.Find(r.Context(), ref.agentID)
-			if err != nil || a == nil || !a.ToolEnabled(agenttool.KeyOrchestrate) {
+			if err != nil || a == nil ||
+				(!a.ToolEnabled(agenttool.KeyOrchestrate) && !m.svc.sessionInRun(r.Context(), ref.sessionID)) {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
@@ -158,8 +162,6 @@ func (m *orchMCP) dispatchTool(w http.ResponseWriter, r *http.Request, id json.R
 		m.handleRead(w, r, id, ref, args)
 	case "status":
 		m.handleStatus(w, r, id, ref)
-	case "cancel":
-		m.handleCancel(w, r, id, ref, args)
 	default:
 		writeRPCError(w, id, -32601, "unknown tool")
 	}
@@ -231,18 +233,18 @@ func (m *orchMCP) handleReply(w http.ResponseWriter, r *http.Request, id json.Ra
 
 func (m *orchMCP) handleSend(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
 	var p struct {
-		TaskID  int64  `json:"task_id"`
-		Message string `json:"message"`
+		DispatchID int64  `json:"task_id"`
+		Message    string `json:"message"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		writeRPCError(w, id, -32700, "parse error: "+err.Error())
 		return
 	}
-	if p.TaskID <= 0 || p.Message == "" {
+	if p.DispatchID <= 0 || p.Message == "" {
 		writeRPCError(w, id, -32602, "task_id and message are required")
 		return
 	}
-	if err := m.svc.Send(r.Context(), ref.sessionID, p.TaskID, p.Message); err != nil {
+	if err := m.svc.Send(r.Context(), ref.sessionID, p.DispatchID, p.Message); err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
 	}
@@ -289,17 +291,17 @@ func (m *orchMCP) handleReport(w http.ResponseWriter, r *http.Request, id json.R
 
 func (m *orchMCP) handleRead(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
 	var p struct {
-		TaskID int64 `json:"task_id"`
+		DispatchID int64 `json:"task_id"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		writeRPCError(w, id, -32700, "parse error: "+err.Error())
 		return
 	}
-	if p.TaskID <= 0 {
+	if p.DispatchID <= 0 {
 		writeRPCError(w, id, -32602, "task_id is required")
 		return
 	}
-	out, err := m.svc.ReadTask(r.Context(), ref.sessionID, p.TaskID)
+	out, err := m.svc.ReadDispatch(r.Context(), ref.sessionID, p.DispatchID)
 	if err != nil {
 		writeRPCError(w, id, -32000, err.Error())
 		return
@@ -314,26 +316,6 @@ func (m *orchMCP) handleStatus(w http.ResponseWriter, r *http.Request, id json.R
 		return
 	}
 	writeRPCResult(w, id, textResult(out))
-}
-
-func (m *orchMCP) handleCancel(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
-	var p struct {
-		TaskID int64 `json:"task_id"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		writeRPCError(w, id, -32700, "parse error: "+err.Error())
-		return
-	}
-	if p.TaskID <= 0 {
-		writeRPCError(w, id, -32602, "task_id is required")
-		return
-	}
-	n, err := m.svc.CancelTask(r.Context(), ref.sessionID, p.TaskID)
-	if err != nil {
-		writeRPCError(w, id, -32000, err.Error())
-		return
-	}
-	writeRPCResult(w, id, textResult(fmt.Sprintf("已请求取消 %d 个任务(目标 #%d 及其子孙);进行中的一轮会尽力打断。", n, p.TaskID)))
 }
 
 // textResult 将文本包装成 MCP content 格式（Tasks 10/11/12 复用）。
@@ -455,17 +437,6 @@ func orchToolSchemas() []any {
 			"name":        "status",
 			"description": "查看本次编排整棵任务树的实时快照(每个子任务的 id/agent/类型/状态/brief/是否已主动汇报/所属流程节点/在等哪些子任务)。两次回报之间用它掌握全局。",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
-		},
-		map[string]any{
-			"name":        "cancel",
-			"description": "中止一个跑偏/卡住的子任务(软取消 + 尽力打断在跑的一轮),并级联取消它派生的全部子孙任务。仅能取消你所在编排内的任务。",
-			"inputSchema": map[string]any{
-				"type":     "object",
-				"required": []string{"task_id"},
-				"properties": map[string]any{
-					"task_id": map[string]any{"type": "integer"},
-				},
-			},
 		},
 	}
 }

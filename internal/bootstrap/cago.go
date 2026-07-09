@@ -117,7 +117,7 @@ func Init(ctx context.Context) (*Runtime, error) {
 	project_location_repo.RegisterProjectLocation(project_location_repo.NewProjectLocation())
 	workflow_repo.RegisterWorkflow(workflow_repo.NewWorkflow())
 	orch_repo.RegisterRun(orch_repo.NewRun())
-	orch_repo.RegisterTask(orch_repo.NewTask())
+	orch_repo.RegisterDispatch(orch_repo.NewDispatch())
 	project_svc.SetDefault(project_svc.New())
 	issue_repo.RegisterIssue(issue_repo.NewIssue())
 	issue_repo.RegisterLabel(issue_repo.NewLabel())

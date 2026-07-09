@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,14 +12,12 @@ const workflowList = vi.fn();
 const workflowCreate = vi.fn();
 const workflowUpdate = vi.fn();
 const workflowDelete = vi.fn();
-const workflowPreviewGraph = vi.fn();
 
 vi.mock("../../../../wailsjs/go/app/App", () => ({
   WorkflowList: (...a: unknown[]) => workflowList(...a),
   WorkflowCreate: (...a: unknown[]) => workflowCreate(...a),
   WorkflowUpdate: (...a: unknown[]) => workflowUpdate(...a),
   WorkflowDelete: (...a: unknown[]) => workflowDelete(...a),
-  WorkflowPreviewGraph: (...a: unknown[]) => workflowPreviewGraph(...a),
 }));
 
 import { WorkflowManagerDialog } from "./workflow-manager-dialog";
@@ -23,7 +27,8 @@ const items = [
   {
     id: 1,
     name: "产品开发流程",
-    content: "# 产品开发流程\n\n适用:新功能完整交付。\n\n## 角色",
+    content: "正文第一行\n\n适用:新功能完整交付。",
+    tags: ["通用"],
     runCount: 2,
     createtime: 1700000000000,
     updatetime: 1700000000000,
@@ -32,6 +37,7 @@ const items = [
     id: 2,
     name: "紧急修复流程",
     content: "",
+    tags: [],
     runCount: 0,
     createtime: 1700000000000,
     updatetime: 1700000000000,
@@ -43,9 +49,6 @@ function resetAll() {
   workflowCreate.mockReset().mockResolvedValue({ item: { id: 9 } });
   workflowUpdate.mockReset().mockResolvedValue({ item: { id: 1 } });
   workflowDelete.mockReset().mockResolvedValue({});
-  workflowPreviewGraph
-    .mockReset()
-    .mockResolvedValue({ content: "", outline: [] });
   useWorkflowManagerStore.setState({ open: false, intent: "browse" });
 }
 
@@ -65,10 +68,14 @@ describe("WorkflowManagerDialog · 浏览态", () => {
     expect(screen.getByText("Select a workflow to preview")).toBeTruthy();
     await user.click(screen.getByTestId("workflow-row-1"));
     await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { level: 1, name: "产品开发流程" }),
-      ).toBeTruthy(),
+      expect(screen.getByTestId("workflow-view-content")).toBeTruthy(),
     );
+    expect(
+      within(screen.getByTestId("workflow-view-content")).getByText(
+        "正文第一行",
+        { exact: false },
+      ),
+    ).toBeTruthy();
   });
 
   it("查看态正文容器可选中复制(data-selectable-text)", async () => {
@@ -94,47 +101,57 @@ describe("WorkflowManagerDialog · 浏览态", () => {
       ).toBeTruthy(),
     );
   });
+
+  it("预览态渲染蓝图 band(标签)", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<WorkflowManagerDialog />);
+    useWorkflowManagerStore.getState().openBrowse();
+    await waitFor(() => expect(screen.getByText("产品开发流程")).toBeTruthy());
+    await user.click(screen.getByTestId("workflow-row-1"));
+    const band = screen.getByTestId("workflow-blueprint-band");
+    expect(band).toBeInTheDocument();
+    expect(within(band).getByText("通用")).toBeInTheDocument();
+  });
 });
 
-describe("WorkflowManagerDialog · 内联编辑", () => {
+describe("WorkflowManagerDialog · 内联编辑(纯文本)", () => {
   beforeEach(resetAll);
 
-  it("新建按钮 → DAG 设计器 → 保存调 WorkflowCreate(带 graph)", async () => {
+  it("新建按钮 → 只渲染表单(无 DAG 设计器) → 保存调 WorkflowCreate({name, content, tags})", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<WorkflowManagerDialog />);
     useWorkflowManagerStore.getState().openBrowse();
     await waitFor(() => expect(screen.getByText("产品开发流程")).toBeTruthy());
     await user.click(screen.getByTestId("workflow-new-button"));
-    // 新建默认进设计器: 名称 + 首个节点 label(满足保存条件)
+    expect(screen.queryByTestId("designer-add-node")).toBeNull();
     fireEvent.change(await screen.findByTestId("workflow-name-input"), {
       target: { value: "评审流程" },
     });
-    fireEvent.change(screen.getByTestId("node-n1-label"), {
-      target: { value: "启动评审" },
+    fireEvent.change(screen.getByTestId("workflow-content-input"), {
+      target: { value: "# 评审流程" },
     });
     await user.click(screen.getByTestId("workflow-save-button"));
     await waitFor(() =>
-      expect(workflowCreate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: "评审流程",
-          template: "{{ DAGPrompt }}",
-          graph: expect.stringContaining("启动评审"),
-        }),
-      ),
+      expect(workflowCreate).toHaveBeenCalledWith({
+        name: "评审流程",
+        content: "# 评审流程",
+        tags: [],
+      }),
     );
     expect(workflowList.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("intent=create 打开即进 DAG 设计器(名称 + add-node)", async () => {
+  it("intent=create 打开即进纯文本编辑器(名称输入框可见)", async () => {
     render(<WorkflowManagerDialog />);
     useWorkflowManagerStore.getState().openCreate();
     await waitFor(() =>
       expect(screen.getByRole("textbox", { name: "Name" })).toBeTruthy(),
     );
-    expect(screen.getByTestId("designer-add-node")).toBeInTheDocument();
+    expect(screen.queryByTestId("designer-add-node")).toBeNull();
+    expect(screen.getByTestId("workflow-content-input")).toBeInTheDocument();
   });
 
-  it("选中后点编辑 → 预填名称 → 保存调 WorkflowUpdate", async () => {
+  it("选中后点编辑 → 预填名称/正文/标签 → 保存调 WorkflowUpdate({id, name, content, tags})", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     render(<WorkflowManagerDialog />);
     useWorkflowManagerStore.getState().openBrowse();
@@ -145,12 +162,19 @@ describe("WorkflowManagerDialog · 内联编辑", () => {
       name: "Name",
     }) as HTMLInputElement;
     expect(nameInput.value).toBe("产品开发流程");
+    const contentInput = screen.getByTestId(
+      "workflow-content-input",
+    ) as HTMLTextAreaElement;
+    expect(contentInput.value).toBe(items[0].content);
     fireEvent.change(nameInput, { target: { value: "产品开发流程 v2" } });
     await user.click(screen.getByTestId("workflow-save-button"));
     await waitFor(() =>
-      expect(workflowUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 1, name: "产品开发流程 v2" }),
-      ),
+      expect(workflowUpdate).toHaveBeenCalledWith({
+        id: 1,
+        name: "产品开发流程 v2",
+        content: items[0].content,
+        tags: ["通用"],
+      }),
     );
   });
 
@@ -169,70 +193,6 @@ describe("WorkflowManagerDialog · 内联编辑", () => {
       expect(screen.getByTestId("workflow-edit-button")).toBeTruthy(),
     );
     expect(screen.queryByRole("textbox", { name: "Name" })).toBeNull();
-  });
-});
-
-const itemsWithTagsOutline = [
-  {
-    id: 3,
-    name: "标准功能开发流",
-    content: "# 标准功能开发流",
-    tags: ["通用"],
-    outline: ["需求拆解", "方案设计"],
-    runCount: 0,
-    createtime: 1700000000000,
-    updatetime: 1700000000000,
-  },
-];
-
-describe("WorkflowManagerDialog · tags/outline", () => {
-  beforeEach(() => {
-    workflowList.mockReset().mockResolvedValue({ items: itemsWithTagsOutline });
-    workflowCreate.mockReset().mockResolvedValue({ item: { id: 9 } });
-    workflowUpdate.mockReset().mockResolvedValue({ item: { id: 3 } });
-    workflowDelete.mockReset().mockResolvedValue({});
-    workflowPreviewGraph
-      .mockReset()
-      .mockResolvedValue({ content: "", outline: [] });
-    useWorkflowManagerStore.setState({ open: false, intent: "browse" });
-  });
-
-  it("预览态渲染蓝图 band(标签 + 步骤面包屑)", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    render(<WorkflowManagerDialog />);
-    useWorkflowManagerStore.getState().openBrowse();
-    await waitFor(() =>
-      expect(screen.getByText("标准功能开发流")).toBeTruthy(),
-    );
-    await user.click(screen.getByTestId("workflow-row-3"));
-    expect(screen.getByTestId("workflow-blueprint-band")).toBeInTheDocument();
-    expect(screen.getByText("需求拆解")).toBeInTheDocument();
-    expect(screen.getByText("方案设计")).toBeInTheDocument();
-  });
-
-  it("编辑保存时把 tags/outline 一并提交给 update", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    render(<WorkflowManagerDialog />);
-    useWorkflowManagerStore.getState().openBrowse();
-    await waitFor(() =>
-      expect(screen.getByText("标准功能开发流")).toBeTruthy(),
-    );
-    await user.click(screen.getByTestId("workflow-row-3"));
-    await user.click(screen.getByTestId("workflow-edit-button"));
-    // seed tags/outline already loaded from the item; add one more step
-    const stepInput = screen.getByTestId("workflow-outline-input");
-    fireEvent.change(stepInput, { target: { value: "测试验收" } });
-    fireEvent.keyDown(stepInput, { key: "Enter" });
-    await user.click(screen.getByTestId("workflow-save-button"));
-    await waitFor(() =>
-      expect(workflowUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: 3,
-          tags: ["通用"],
-          outline: ["需求拆解", "方案设计", "测试验收"],
-        }),
-      ),
-    );
   });
 });
 
@@ -279,81 +239,9 @@ describe("WorkflowManagerDialog · 内联删除", () => {
     await user.click(screen.getByTestId("workflow-row-1"));
     await user.click(screen.getByTestId("workflow-delete-button"));
     await user.click(screen.getByTestId("workflow-delete-confirm-button"));
-    // 失败:错误展示 + 仍在预览态(ViewPane h2 标题在),不回空态
+    // 失败:错误展示 + 仍在预览态(编辑按钮还在),不回空态
     await waitFor(() => expect(screen.getByText("boom")).toBeTruthy());
-    expect(
-      screen.getByRole("heading", { level: 2, name: "产品开发流程" }),
-    ).toBeTruthy();
+    expect(screen.getByTestId("workflow-edit-button")).toBeTruthy();
     expect(screen.queryByText("Select a workflow to preview")).toBeNull();
-  });
-});
-
-describe("WorkflowManagerDialog · DAG 设计器", () => {
-  beforeEach(resetAll);
-
-  it("新建流程直接进 DAG 设计器", async () => {
-    render(<WorkflowManagerDialog />);
-    useWorkflowManagerStore.getState().openCreate();
-    expect(await screen.findByTestId("designer-add-node")).toBeInTheDocument();
-  });
-
-  it("编辑 legacy 无 graph 流程 → 自由文本 + 转 DAG 入口, 点转换进设计器", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    render(<WorkflowManagerDialog />);
-    useWorkflowManagerStore.getState().openBrowse();
-    await waitFor(() => expect(screen.getByText("产品开发流程")).toBeTruthy());
-    await user.click(screen.getByTestId("workflow-row-1"));
-    await user.click(screen.getByTestId("workflow-edit-button"));
-    expect(screen.getByTestId("workflow-content-input")).toBeInTheDocument();
-    expect(screen.getByTestId("workflow-convert-dag")).toBeInTheDocument();
-    await user.click(screen.getByTestId("workflow-convert-dag"));
-    expect(await screen.findByTestId("designer-add-node")).toBeInTheDocument();
-  });
-
-  it("编辑有 graph 的流程 → 设计器载入其节点(flow-node-n1)", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    workflowList.mockResolvedValue({
-      items: [
-        {
-          id: 5,
-          name: "DAG 流程",
-          content: "",
-          runCount: 0,
-          createtime: 1700000000000,
-          updatetime: 1700000000000,
-          graph: JSON.stringify({
-            version: 1,
-            nodes: [{ id: "n1", label: "Plan", kind: "leader" }],
-            edges: [],
-          }),
-        },
-      ],
-    });
-    render(<WorkflowManagerDialog />);
-    useWorkflowManagerStore.getState().openBrowse();
-    await waitFor(() => expect(screen.getByText("DAG 流程")).toBeTruthy());
-    await user.click(screen.getByTestId("workflow-row-5"));
-    await user.click(screen.getByTestId("workflow-edit-button"));
-    expect(await screen.findByTestId("flow-node-n1")).toBeInTheDocument();
-  });
-
-  it("模板报错(预览返回 error)→ 保存按钮置灰", async () => {
-    workflowPreviewGraph.mockReset().mockResolvedValue({
-      content: "",
-      outline: [],
-      error: 'function "DAGPromt" not defined',
-    });
-    render(<WorkflowManagerDialog />);
-    useWorkflowManagerStore.getState().openCreate();
-    fireEvent.change(await screen.findByTestId("workflow-name-input"), {
-      target: { value: "报错流程" },
-    });
-    fireEvent.change(screen.getByTestId("node-n1-label"), {
-      target: { value: "步骤一" },
-    });
-    // 名称+节点都有效,唯一能禁用保存的就是 templateError(来自 250ms 防抖预览)
-    await waitFor(() =>
-      expect(screen.getByTestId("workflow-save-button")).toBeDisabled(),
-    );
   });
 });

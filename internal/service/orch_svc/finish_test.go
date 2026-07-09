@@ -18,13 +18,13 @@ func TestFinish_RootCollapsesRun(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, runs, tasks, nil, nil)
 
-	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, ParentTaskID: 0, SessionID: 500, Status: orch_entity.TaskRunning}, nil)
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Dispatch{ID: 9, RunID: 100, ParentDispatchID: 0, SessionID: 500, Status: orch_entity.DispatchRunning}, nil)
 	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100, RootTaskID: 9, Status: orch_entity.RunRunning}, nil)
-	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
-		So(tk.Status, ShouldEqual, orch_entity.TaskDone)
+	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Dispatch) error {
+		So(tk.Status, ShouldEqual, orch_entity.DispatchDone)
 		So(tk.Summary, ShouldEqual, "全部完成,已交付")
 		return nil
 	})
@@ -43,14 +43,14 @@ func TestFinish_RootEmitsRunDoneEvent(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	emit := mock_orch_svc.NewMockEmitter(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, runs, tasks, nil, emit)
 
-	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Task{ID: 9, RunID: 100, ParentTaskID: 0, SessionID: 500, Status: orch_entity.TaskRunning}, nil)
+	tasks.EXPECT().FindBySession(gomock.Any(), int64(500)).Return(&orch_entity.Dispatch{ID: 9, RunID: 100, ParentDispatchID: 0, SessionID: 500, Status: orch_entity.DispatchRunning}, nil)
 	runs.EXPECT().Find(gomock.Any(), int64(100)).Return(&orch_entity.OrchestrationRun{ID: 100, RootTaskID: 9, Status: orch_entity.RunRunning}, nil)
-	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
-		So(tk.Status, ShouldEqual, orch_entity.TaskDone)
+	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Dispatch) error {
+		So(tk.Status, ShouldEqual, orch_entity.DispatchDone)
 		return nil
 	})
 	runs.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, r *orch_entity.OrchestrationRun) error {
@@ -73,12 +73,12 @@ func TestFinish_NonRootRecordsResultNoReport(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, runs, tasks, nil, nil)
 
 	// FindBySession → 非根任务(ID:11 ≠ RootTaskID:9)
 	tasks.EXPECT().FindBySession(gomock.Any(), int64(600)).Return(
-		&orch_entity.Task{ID: 11, RunID: 100, ParentTaskID: 9, SessionID: 600, Status: orch_entity.TaskRunning},
+		&orch_entity.Dispatch{ID: 11, RunID: 100, ParentDispatchID: 9, SessionID: 600, Status: orch_entity.DispatchRunning},
 		nil,
 	)
 	// runs.Find → RootTaskID=9(≠ tk.ID=11,即非根)
@@ -88,7 +88,7 @@ func TestFinish_NonRootRecordsResultNoReport(t *testing.T) {
 	)
 	// 非根 finish 只「记录」显式小结:Update 写入 Summary + done,且只调用一次。
 	var capturedStatus, capturedSummary string
-	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
+	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Dispatch) error {
 		So(tk.ID, ShouldEqual, int64(11))
 		capturedStatus = tk.Status
 		capturedSummary = tk.Summary
@@ -101,7 +101,7 @@ func TestFinish_NonRootRecordsResultNoReport(t *testing.T) {
 	Convey("非根 finish → 只记录 Summary+done,不回报父、不收口 Run", t, func() {
 		err := orch_svc.Default().Finish(context.Background(), 600, "子任务完成小结")
 		So(err, ShouldBeNil)
-		So(capturedStatus, ShouldEqual, orch_entity.TaskDone)
+		So(capturedStatus, ShouldEqual, orch_entity.DispatchDone)
 		So(capturedSummary, ShouldEqual, "子任务完成小结")
 	})
 }

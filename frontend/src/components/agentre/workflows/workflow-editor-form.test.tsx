@@ -6,29 +6,23 @@ import { WorkflowEditorForm } from "./workflow-editor-form";
 const base = {
   name: "n",
   content: "c",
+  tags: [] as string[],
   error: null,
   onNameChange: vi.fn(),
   onContentChange: vi.fn(),
+  onTagsChange: vi.fn(),
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// ── existing tests (name / content / template / error) ────────────────────
+// ── name / content / template / error ──────────────────────────────────────
 describe("WorkflowEditorForm", () => {
   it("编辑名称回写", () => {
     const onNameChange = vi.fn();
     render(
-      <WorkflowEditorForm
-        {...base}
-        name=""
-        tags={[]}
-        outline={[]}
-        onNameChange={onNameChange}
-        onTagsChange={vi.fn()}
-        onOutlineChange={vi.fn()}
-      />,
+      <WorkflowEditorForm {...base} name="" onNameChange={onNameChange} />,
     );
     fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
       target: { value: "评审流程" },
@@ -42,11 +36,7 @@ describe("WorkflowEditorForm", () => {
       <WorkflowEditorForm
         {...base}
         content=""
-        tags={[]}
-        outline={[]}
         onContentChange={onContentChange}
-        onTagsChange={vi.fn()}
-        onOutlineChange={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Insert template" }));
@@ -59,11 +49,7 @@ describe("WorkflowEditorForm", () => {
       <WorkflowEditorForm
         {...base}
         content="已有内容"
-        tags={[]}
-        outline={[]}
         onContentChange={onContentChange}
-        onTagsChange={vi.fn()}
-        onOutlineChange={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Insert template" }));
@@ -73,34 +59,20 @@ describe("WorkflowEditorForm", () => {
   });
 
   it("error 非空时渲染错误条", () => {
-    render(
-      <WorkflowEditorForm
-        name="x"
-        content=""
-        error="boom"
-        tags={[]}
-        outline={[]}
-        onNameChange={() => {}}
-        onContentChange={() => {}}
-        onTagsChange={() => {}}
-        onOutlineChange={() => {}}
-      />,
-    );
+    render(<WorkflowEditorForm {...base} content="" error="boom" />);
     expect(screen.getByText("boom")).toBeTruthy();
   });
 });
 
-// ── tags / outline (Task 7) ────────────────────────────────────────────────
-describe("WorkflowEditorForm tags/outline", () => {
+// ── tags ─────────────────────────────────────────────────────────────────
+describe("WorkflowEditorForm tags", () => {
   it("回车添加标签 → onTagsChange 追加", () => {
     const onTagsChange = vi.fn();
     render(
       <WorkflowEditorForm
         {...base}
         tags={["通用"]}
-        outline={[]}
         onTagsChange={onTagsChange}
-        onOutlineChange={vi.fn()}
       />,
     );
     const input = screen.getByTestId("workflow-tags-input");
@@ -115,130 +87,28 @@ describe("WorkflowEditorForm tags/outline", () => {
       <WorkflowEditorForm
         {...base}
         tags={["通用", "新功能"]}
-        outline={[]}
         onTagsChange={onTagsChange}
-        onOutlineChange={vi.fn()}
       />,
     );
     fireEvent.click(screen.getByTestId("workflow-tag-remove-0"));
     expect(onTagsChange).toHaveBeenCalledWith(["新功能"]);
   });
 
-  it("回车添加步骤 → onOutlineChange 追加", () => {
-    const onOutlineChange = vi.fn();
-    render(
-      <WorkflowEditorForm
-        {...base}
-        tags={[]}
-        outline={["需求拆解"]}
-        onTagsChange={vi.fn()}
-        onOutlineChange={onOutlineChange}
-      />,
-    );
-    const input = screen.getByTestId("workflow-outline-input");
-    fireEvent.change(input, { target: { value: "方案设计" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(onOutlineChange).toHaveBeenCalledWith(["需求拆解", "方案设计"]);
-  });
-
-  it("删除步骤 → onOutlineChange 去掉该项", () => {
-    const onOutlineChange = vi.fn();
-    render(
-      <WorkflowEditorForm
-        {...base}
-        tags={[]}
-        outline={["需求拆解", "方案设计"]}
-        onTagsChange={vi.fn()}
-        onOutlineChange={onOutlineChange}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("workflow-outline-remove-0"));
-    expect(onOutlineChange).toHaveBeenCalledWith(["方案设计"]);
-  });
-
-  it("上移步骤 → 交换位置", () => {
-    const onOutlineChange = vi.fn();
-    render(
-      <WorkflowEditorForm
-        {...base}
-        tags={[]}
-        outline={["步骤一", "步骤二", "步骤三"]}
-        onTagsChange={vi.fn()}
-        onOutlineChange={onOutlineChange}
-      />,
-    );
-    // move index 1 up → should become [步骤二, 步骤一, 步骤三]
-    fireEvent.click(screen.getByTestId("workflow-outline-move-up-1"));
-    expect(onOutlineChange).toHaveBeenCalledWith([
-      "步骤二",
-      "步骤一",
-      "步骤三",
-    ]);
-  });
-
-  it("下移步骤 → 交换位置", () => {
-    const onOutlineChange = vi.fn();
-    render(
-      <WorkflowEditorForm
-        {...base}
-        tags={[]}
-        outline={["步骤一", "步骤二", "步骤三"]}
-        onTagsChange={vi.fn()}
-        onOutlineChange={onOutlineChange}
-      />,
-    );
-    // move index 1 down → should become [步骤一, 步骤三, 步骤二]
-    fireEvent.click(screen.getByTestId("workflow-outline-move-down-1"));
-    expect(onOutlineChange).toHaveBeenCalledWith([
-      "步骤一",
-      "步骤三",
-      "步骤二",
-    ]);
-  });
-
-  it("提示文案渲染:tags hint 和 outline hint", () => {
-    render(
-      <WorkflowEditorForm
-        {...base}
-        tags={[]}
-        outline={[]}
-        onTagsChange={vi.fn()}
-        onOutlineChange={vi.fn()}
-      />,
-    );
+  it("提示文案渲染:tags hint", () => {
+    render(<WorkflowEditorForm {...base} />);
     const tagsHint = screen.getByTestId("workflow-tags-hint");
     expect(tagsHint.textContent).toBeTruthy();
-    const outlineHint = screen.getByTestId("workflow-outline-hint");
-    expect(outlineHint.textContent).toBeTruthy();
   });
+});
 
-  it("首项上移:onOutlineChange 不调用(边界 no-op)", () => {
-    const onOutlineChange = vi.fn();
-    render(
-      <WorkflowEditorForm
-        {...base}
-        tags={[]}
-        outline={["步骤一", "步骤二"]}
-        onTagsChange={vi.fn()}
-        onOutlineChange={onOutlineChange}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("workflow-outline-move-up-0"));
-    expect(onOutlineChange).not.toHaveBeenCalled();
-  });
-
-  it("末项下移:onOutlineChange 不调用(边界 no-op)", () => {
-    const onOutlineChange = vi.fn();
-    render(
-      <WorkflowEditorForm
-        {...base}
-        tags={[]}
-        outline={["步骤一", "步骤二"]}
-        onTagsChange={vi.fn()}
-        onOutlineChange={onOutlineChange}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("workflow-outline-move-down-1"));
-    expect(onOutlineChange).not.toHaveBeenCalled();
+// ── DAG designer surface removed ────────────────────────────────────────────
+describe("WorkflowEditorForm 不再渲染步骤(outline)/DAG 相关控件", () => {
+  it("不渲染 outline 输入/上移/下移控件", () => {
+    render(<WorkflowEditorForm {...base} />);
+    expect(screen.queryByTestId("workflow-outline-input")).toBeNull();
+    expect(
+      screen.queryByTestId(/workflow-outline-move-(up|down)-0/),
+    ).toBeNull();
+    expect(screen.queryByTestId("workflow-outline-hint")).toBeNull();
   });
 });

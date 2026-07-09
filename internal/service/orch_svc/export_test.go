@@ -8,17 +8,17 @@ import (
 )
 
 // SetEnqueueForTest 仅测试用:替换异步触发,避免 goroutine 与 ctrl.Finish 竞态。
-func (s *orchSvc) SetEnqueueForTest(fn func(int64, *orch_entity.Task, string)) {
+func (s *orchSvc) SetEnqueueForTest(fn func(int64, *orch_entity.Dispatch, string)) {
 	s.enqueue = fn
 }
 
 // WatchCompletionForTest 仅测试用:暴露私有 watchCompletion 供外部测试包驱动(ch/cancel 直传)。
-func (s *orchSvc) WatchCompletionForTest(ctx context.Context, t *orch_entity.Task, ch <-chan TurnDone, cancel func()) {
+func (s *orchSvc) WatchCompletionForTest(ctx context.Context, t *orch_entity.Dispatch, ch <-chan TurnDone, cancel func()) {
 	s.watchCompletion(ctx, t, ch, cancel)
 }
 
 // AllChildrenSettledForTest 仅测试用:暴露私有 allChildrenSettled 供外部测试包驱动边界用例。
-func (s *orchSvc) AllChildrenSettledForTest(ctx context.Context, parent *orch_entity.Task) bool {
+func (s *orchSvc) AllChildrenSettledForTest(ctx context.Context, parent *orch_entity.Dispatch) bool {
 	return s.allChildrenSettled(ctx, parent)
 }
 
@@ -35,7 +35,7 @@ func (s *orchSvc) ResetSchedulersForTest() {
 }
 
 // EnqueueRunForTest 仅测试用：直接调用 enqueueRun（绕过 fireEnqueue / enqueue 钩子）。
-func (s *orchSvc) EnqueueRunForTest(runID int64, task *orch_entity.Task, brief string) {
+func (s *orchSvc) EnqueueRunForTest(runID int64, task *orch_entity.Dispatch, brief string) {
 	s.enqueueRun(runID, task, brief)
 }
 
@@ -60,7 +60,7 @@ func (s *orchSvc) SchedulerPausedForTest(runID int64) bool {
 }
 
 // FormatRunStatusForTest 仅测试用:暴露私有 formatRunStatus。
-func FormatRunStatusForTest(tasks []*orch_entity.Task, agentNames map[int64]string) string {
+func FormatRunStatusForTest(tasks []*orch_entity.Dispatch, agentNames map[int64]string) string {
 	return formatRunStatus(tasks, agentNames)
 }
 

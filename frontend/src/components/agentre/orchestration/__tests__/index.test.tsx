@@ -452,20 +452,6 @@ describe("OrchestrationRun shell", () => {
     expect(screen.getByTestId("conv-session-id")).toHaveTextContent("500");
   });
 
-  it("RunFlowBlueprint 不再渲染在 Main 列中(已移除)", () => {
-    const detail = makeDetail({ runId: 1 });
-    useOrchRunStore.setState({ details: new Map([[1, detail]]) });
-
-    render(<OrchestrationRun runId={1} title="测试运行" />);
-
-    // run-flow-blueprint 是 RunFlowBlueprint 的 data-testid
-    // flowId=0 时本来就 null,这里只验证 orch-main 不含它
-    const main = screen.getByTestId("orch-main");
-    expect(main).not.toContainElement(
-      document.querySelector('[data-testid="run-flow-blueprint"]'),
-    );
-  });
-
   // ── End Task 1 RED tests ─────────────────────────────────────────────────
 
   // ── Task 9 RED tests: banner relocation + restyle ────────────────────────

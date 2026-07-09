@@ -36,7 +36,7 @@ type orchChatAdapter struct {
 }
 
 // EnsureOrchSession 创建编排子会话（run_id>0，不复用）。
-// ParentSessionID 由 orch_svc 的 Task 树追踪，不传给 chat_svc。
+// ParentSessionID 由 orch_svc 的 Dispatch 树追踪，不传给 chat_svc。
 // Isolate/worktree 暂不支持（chat_svc.EnsureSessionRequest 尚无对应字段），留作后续扩展。
 func (a *orchChatAdapter) EnsureOrchSession(ctx context.Context, in orch_svc.EnsureOrchSessionInput) (int64, error) {
 	resp, err := chat_svc.Chat().EnsureSession(ctx, &chat_svc.EnsureSessionRequest{
@@ -126,19 +126,6 @@ func (a *orchChatAdapter) AgentStatus(_ context.Context, sessionID int64) (strin
 		return "idle", nil
 	}
 	return v.(turnInfo).status, nil
-}
-
-// AbortTurn 尽力硬打断会话在跑的一轮(复用 chat_svc.Stop)。
-// 无活跃 turn(ChatStopNoActive)视作无害成功:软取消已生效,硬打断无对象。
-func (a *orchChatAdapter) AbortTurn(ctx context.Context, sessionID int64) error {
-	_, err := chat_svc.Chat().Stop(ctx, &chat_svc.StopRequest{SessionID: sessionID})
-	if err != nil {
-		var herr *httputils.Error
-		if errors.As(err, &herr) && herr.Code == code.ChatStopNoActive {
-			return nil
-		}
-	}
-	return err
 }
 
 // ──────────────────────────────────────────────────────────

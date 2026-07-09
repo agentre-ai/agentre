@@ -50,5 +50,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202607050001(), // workflows.template + 回填(带图=占位符 / 无图=content)
 		migration202607080001(), // 四内置流程取代旧默认 + DROP is_default
 		migration202607080002(), // 删步骤/DAG 列:workflows.graph/template/outline, runs.flow_graph, orch_tasks.node_ref
+		migration202607090001(), // 执行节点改名:orch_tasks → orch_dispatches
 	}
 }

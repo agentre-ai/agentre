@@ -23,6 +23,7 @@ describe("useWorkflows", () => {
           id: 1,
           name: "产品开发流程",
           content: "# A",
+          tags: ["通用"],
           runCount: 2,
           createtime: 1,
           updatetime: 2,
@@ -38,59 +39,13 @@ describe("useWorkflows", () => {
     const { result } = renderHook(() => useWorkflows());
     await waitFor(() => expect(result.current.workflows).toHaveLength(1));
     expect(result.current.workflows[0].name).toBe("产品开发流程");
+    expect(result.current.workflows[0].tags).toEqual(["通用"]);
     expect(result.current.workflows[0].runCount).toBe(2);
   });
 
-  it("create/update/remove 调绑定后重新加载", async () => {
-    const { result } = renderHook(() => useWorkflows());
-    await waitFor(() => expect(result.current.workflows).toHaveLength(1));
-    await act(async () => {
-      await result.current.create(
-        "新流程",
-        "# 新",
-        ["通用"],
-        ["需求拆解", "方案设计"],
-      );
-    });
-    expect(workflowCreate).toHaveBeenCalledWith({
-      name: "新流程",
-      template: "# 新",
-      tags: ["通用"],
-      outline: ["需求拆解", "方案设计"],
-      graph: "",
-    });
-    await act(async () => {
-      await result.current.update(1, "改名", "# 改", ["修复"], ["复现"]);
-    });
-    expect(workflowUpdate).toHaveBeenCalledWith({
-      id: 1,
-      name: "改名",
-      template: "# 改",
-      tags: ["修复"],
-      outline: ["复现"],
-      graph: "",
-    });
-    await act(async () => {
-      await result.current.remove(1);
-    });
-    expect(workflowDelete).toHaveBeenCalledWith({ id: 1 });
-    // 初始 1 次 + 三个写操作后各 reload 1 次
-    expect(workflowList).toHaveBeenCalledTimes(4);
-  });
-
-  it("reload 保留 tags/outline(无值时 fallback 空数组)", async () => {
+  it("reload 兜底缺省 tags 为空数组", async () => {
     workflowList.mockResolvedValueOnce({
       items: [
-        {
-          id: 1,
-          name: "w1",
-          content: "c1",
-          runCount: 0,
-          createtime: 0,
-          updatetime: 0,
-          tags: ["tag1"],
-          outline: ["step1"],
-        },
         {
           id: 2,
           name: "w2",
@@ -98,16 +53,41 @@ describe("useWorkflows", () => {
           runCount: 0,
           createtime: 0,
           updatetime: 0,
-          // tags/outline 缺省 → 兜底为 []
+          // tags 缺省 → 兜底为 []
         },
       ],
     });
     const { result } = renderHook(() => useWorkflows());
-    await waitFor(() => expect(result.current.workflows).toHaveLength(2));
-    expect(result.current.workflows[0].tags).toEqual(["tag1"]);
-    expect(result.current.workflows[0].outline).toEqual(["step1"]);
-    expect(result.current.workflows[1].tags).toEqual([]);
-    expect(result.current.workflows[1].outline).toEqual([]);
+    await waitFor(() => expect(result.current.workflows).toHaveLength(1));
+    expect(result.current.workflows[0].tags).toEqual([]);
+  });
+
+  it("create/update/remove 调绑定后重新加载", async () => {
+    const { result } = renderHook(() => useWorkflows());
+    await waitFor(() => expect(result.current.workflows).toHaveLength(1));
+    await act(async () => {
+      await result.current.create("新流程", "# 新", ["通用"]);
+    });
+    expect(workflowCreate).toHaveBeenCalledWith({
+      name: "新流程",
+      content: "# 新",
+      tags: ["通用"],
+    });
+    await act(async () => {
+      await result.current.update(1, "改名", "# 改", ["修复"]);
+    });
+    expect(workflowUpdate).toHaveBeenCalledWith({
+      id: 1,
+      name: "改名",
+      content: "# 改",
+      tags: ["修复"],
+    });
+    await act(async () => {
+      await result.current.remove(1);
+    });
+    expect(workflowDelete).toHaveBeenCalledWith({ id: 1 });
+    // 初始 1 次 + 三个写操作后各 reload 1 次
+    expect(workflowList).toHaveBeenCalledTimes(4);
   });
 
   it("加载失败落 error", async () => {

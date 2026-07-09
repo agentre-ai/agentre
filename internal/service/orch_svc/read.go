@@ -8,20 +8,20 @@ import (
 
 // ReadTask 拉取本 Run 内某任务的最终输出(settled 分支):Summary(有则)+ 完整 Result。
 // 目标任务须与调用者同 Run。running/peek 属切片 B。
-func (s *orchSvc) ReadTask(ctx context.Context, sessionID, taskID int64) (string, error) {
-	caller, err := s.tasks.FindBySession(ctx, sessionID)
+func (s *orchSvc) ReadDispatch(ctx context.Context, sessionID, dispatchID int64) (string, error) {
+	caller, err := s.dispatches.FindBySession(ctx, sessionID)
 	if err != nil {
 		return "", err
 	}
 	if caller == nil {
 		return "", errRunNotActive
 	}
-	tk, err := s.tasks.Find(ctx, taskID)
+	tk, err := s.dispatches.Find(ctx, dispatchID)
 	if err != nil {
 		return "", err
 	}
 	if tk == nil || tk.RunID != caller.RunID {
-		return "", errForeignTask
+		return "", errForeignDispatch
 	}
 	if !tk.IsTerminal() {
 		var b strings.Builder

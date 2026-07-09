@@ -17,7 +17,7 @@ func TestStopRun_CascadeCancels(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	emit := mock_orch_svc.NewMockEmitter(ctrl)
 	orch_svc.Default().RegisterDeps(nil, nil, runs, tasks, nil, emit)
 	t.Cleanup(func() { orch_svc.Default().ResetSchedulersForTest() })
@@ -27,12 +27,12 @@ func TestStopRun_CascadeCancels(t *testing.T) {
 		So(r.Status, ShouldEqual, orch_entity.RunStopped)
 		return nil
 	})
-	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Task{
-		{ID: 1, Status: orch_entity.TaskRunning}, {ID: 2, Status: orch_entity.TaskDone},
+	tasks.EXPECT().ListByRun(gomock.Any(), int64(100)).Return([]*orch_entity.Dispatch{
+		{ID: 1, Status: orch_entity.DispatchRunning}, {ID: 2, Status: orch_entity.DispatchDone},
 	}, nil)
-	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
+	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Dispatch) error {
 		So(tk.ID, ShouldEqual, 1) // 只取消活任务，不动已 done
-		So(tk.Status, ShouldEqual, orch_entity.TaskCanceled)
+		So(tk.Status, ShouldEqual, orch_entity.DispatchCanceled)
 		return nil
 	})
 	emit.EXPECT().Emit(gomock.Any(), "orch:run:stopped", gomock.Any())

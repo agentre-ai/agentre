@@ -9,6 +9,8 @@ export interface LocalCommandEntry {
   status: LocalCommandStatus;
   exitCode?: number;
   output: string;
+  finishedAt?: number;
+  expanded?: boolean;
 }
 interface State {
   entries: Record<string, LocalCommandEntry>;
@@ -24,6 +26,7 @@ interface State {
     status: Exclude<LocalCommandStatus, "running">,
     exitCode?: number,
   ): void;
+  toggleExpanded(id: string): void;
   remove(id: string): void;
   get(id: string): LocalCommandEntry | undefined;
   listForSession(sessionId: number): LocalCommandEntry[];
@@ -50,7 +53,22 @@ export const useLocalCommandsStore = create<State>((set, get) => ({
     set((s) => {
       const cur = s.entries[id];
       if (!cur) return s;
-      return { entries: { ...s.entries, [id]: { ...cur, status, exitCode } } };
+      return {
+        entries: {
+          ...s.entries,
+          [id]: { ...cur, status, exitCode, finishedAt: Date.now() },
+        },
+      };
+    }),
+  toggleExpanded: (id) =>
+    set((s) => {
+      const cur = s.entries[id];
+      if (!cur) return s;
+      const collapsed = isCollapsed(cur);
+      // 折叠中 → 展开(expanded=true);展开中 → 折叠(expanded=false)。
+      return {
+        entries: { ...s.entries, [id]: { ...cur, expanded: collapsed } },
+      };
     }),
   remove: (id) =>
     set((s) => {
@@ -64,3 +82,10 @@ export const useLocalCommandsStore = create<State>((set, get) => ({
       .filter((e) => e.sessionId === sessionId)
       .sort((a, b) => a.createdAt - b.createdAt),
 }));
+
+// 折叠态派生:未手动切换过时,运行中展开、完成后折叠;切换过则以显式 expanded 为准。
+export function isCollapsed(entry: LocalCommandEntry): boolean {
+  return entry.expanded === undefined
+    ? entry.status !== "running"
+    : !entry.expanded;
+}

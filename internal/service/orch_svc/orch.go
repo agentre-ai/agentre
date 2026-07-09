@@ -26,24 +26,24 @@ var (
 	errAgentNotFound   = errors.New("orch: target agent not found")
 	errAgentNotAllowed = errors.New("orch: target agent not in allowed set")
 	errRunNotActive    = errors.New("orch: run not active")
-	errForeignTask     = errors.New("orch: task not in this run")
+	errForeignDispatch = errors.New("orch: task not in this run")
 )
 
 type orchSvc struct {
-	chat     ChatGateway
-	agents   AgentLookup
-	runs     orch_repo.RunRepo
-	tasks    orch_repo.TaskRepo
-	approval ApprovalGateway
-	emit     Emitter
-	wf       WorkflowReader
+	chat       ChatGateway
+	agents     AgentLookup
+	runs       orch_repo.RunRepo
+	dispatches orch_repo.DispatchRepo
+	approval   ApprovalGateway
+	emit       Emitter
+	wf         WorkflowReader
 
 	gatewayBaseURL string
 
 	approvalTimeout time.Duration
 
 	// enqueue 异步触发钩子：nil = 使用 enqueueRun 真实实现；测试注入 no-op 避免竞态。
-	enqueue func(runID int64, task *orch_entity.Task, brief string)
+	enqueue func(runID int64, task *orch_entity.Dispatch, brief string)
 
 	mcp     *orchMCP
 	mcpOnce sync.Once
@@ -68,8 +68,8 @@ var defaultOrch = &orchSvc{
 func Default() *orchSvc { return defaultOrch }
 
 // RegisterDeps bootstrap 接线；测试注 mock。
-func (s *orchSvc) RegisterDeps(chat ChatGateway, agents AgentLookup, runs orch_repo.RunRepo, tasks orch_repo.TaskRepo, approval ApprovalGateway, emit Emitter) {
-	s.chat, s.agents, s.runs, s.tasks, s.approval, s.emit = chat, agents, runs, tasks, approval, emit
+func (s *orchSvc) RegisterDeps(chat ChatGateway, agents AgentLookup, runs orch_repo.RunRepo, dispatches orch_repo.DispatchRepo, approval ApprovalGateway, emit Emitter) {
+	s.chat, s.agents, s.runs, s.dispatches, s.approval, s.emit = chat, agents, runs, dispatches, approval, emit
 }
 
 // RegisterWorkflowReader 注入流程库读取器(bootstrap/app 接线)；测试注 mock。

@@ -31,21 +31,21 @@ func (s *orchSvc) detectAskCycle(ctx context.Context, runID int64) ([]int64, boo
 	s.askMu.Unlock()
 
 	// dispatch 边：父任务 P（awaiting-children）→ 非终态 dispatch 子任务 C。
-	rows, err := s.tasks.ListByRun(ctx, runID)
+	rows, err := s.dispatches.ListByRun(ctx, runID)
 	if err != nil {
 		logger.Ctx(ctx).Warn("orch.detectAskCycle: 取任务列表失败(死锁检测降级,仅用 ask 等待边)", zap.Int64("run", runID), zap.Error(err))
 	}
-	// 先建 ID→Task 索引，方便 O(1) 查父任务。
-	byID := make(map[int64]*orch_entity.Task, len(rows))
+	// 先建 ID→Dispatch 索引，方便 O(1) 查父任务。
+	byID := make(map[int64]*orch_entity.Dispatch, len(rows))
 	for _, t := range rows {
 		byID[t.ID] = t
 	}
 	for _, c := range rows {
-		if c.Kind != orch_entity.TaskKindDispatch || c.IsTerminal() || c.ParentTaskID == 0 {
+		if c.Kind != orch_entity.DispatchKindDispatch || c.IsTerminal() || c.ParentDispatchID == 0 {
 			continue
 		}
-		p, ok := byID[c.ParentTaskID]
-		if !ok || p.Status != orch_entity.TaskAwaitingChildren {
+		p, ok := byID[c.ParentDispatchID]
+		if !ok || p.Status != orch_entity.DispatchAwaitingChildren {
 			continue
 		}
 		// P 等 C 回报：P.SessionID → C.SessionID

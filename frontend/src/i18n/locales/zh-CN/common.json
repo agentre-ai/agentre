@@ -1809,7 +1809,6 @@
       "liveHint": "修改即时生效:进行中的 Run 下一轮即注入最新正文",
       "empty": "选择左侧流程查看正文",
       "blueprintTags": "标签",
-      "blueprintSteps": "步骤",
       "blueprintHint": "仅供一眼读懂流程 · 不约束 AI"
     },
     "editor": {
@@ -1824,40 +1823,7 @@
       "tags": "标签",
       "tagsHint": "仅展示给人,不注入 AI",
       "tagsPlaceholder": "输入标签后回车",
-      "outline": "步骤(概览)",
-      "outlineHint": "给人看的流程骨架,可增删排序;仅展示,不约束 AI",
-      "outlinePlaceholder": "输入步骤后回车",
-      "moveUp": "上移",
-      "moveDown": "下移",
       "removeItem": "删除"
-    },
-    "designer": {
-      "nodeLabel": "节点名称",
-      "nodeLabelPlaceholder": "如:拆解需求",
-      "nodeKind": "类型",
-      "kindTask": "委派任务",
-      "kindLeader": "Leader 步骤",
-      "nodeBrief": "任务说明",
-      "nodeBriefPlaceholder": "做什么 + 验收标准",
-      "dependsOn": "依赖",
-      "dependsOnHint": "在所选的前序步骤之后执行",
-      "bounce": "失败打回 →",
-      "bounceNone": "无",
-      "addNode": "添加节点",
-      "graphTitle": "流程图",
-      "previewTitle": "实时提示词预览",
-      "previewEmpty": "添加节点后显示投影出的提示词",
-      "convertToDag": "转成 DAG 设计器",
-      "convertHint": "改用结构化流程重建;保存时会用投影正文替换当前自由文本正文。",
-      "templateTitle": "提示词模板",
-      "editableBadge": "可编辑",
-      "tabEdit": "编辑",
-      "tabPreview": "预览",
-      "insertToken": "插入",
-      "tokenHint": "{{token}} = 流程图生成的提示词 · Go 模板",
-      "templatePlaceholder": "在这里编写提示词;用 {{token}} 插入流程图生成的提示词",
-      "templateHint": "放 {{token}} = 嵌入流程图;不放 = 纯自由文本;不画流程图 = 纯提示词。模板走 Go text/template。",
-      "templateErrorLabel": "模板错误:"
     },
     "deleteConfirm": {
       "title": "删除流程",
@@ -2318,7 +2284,6 @@
       "flowContent": "流程内容",
       "flowContentPlaceholder": "输入或粘贴流程定义…",
       "flowManage": "管理流程库",
-      "flowPreview": "流程预览（DAG）",
       "create": "创建并启动 Run",
       "project": "项目",
       "projectNone": "无（使用 Agent 默认目录）"
@@ -2342,7 +2307,6 @@
     "header": {
       "viewGraph": "结构图",
       "viewFeed": "活动流",
-      "viewFlow": "流程",
       "running": "自主运行中",
       "completed": "已完成",
       "paused": "已暂停",
@@ -2412,9 +2376,7 @@
       "statusError": "出错",
       "statusPending": "待启动",
       "statusIdle": "进行中",
-      "progress": "{{done}} / {{total}} 完成",
-      "filteredBy": "筛选: {{label}}",
-      "clearFilter": "清除筛选"
+      "progress": "{{done}} / {{total}} 完成"
     },
     "notify": {
       "completed": "编排 Run 已完成:{{goal}}",
@@ -2422,8 +2384,6 @@
       "view": "查看"
     },
     "run": {
-      "blueprintTitle": "流程蓝图",
-      "blueprintRef": "仅参考 · 不约束执行",
       "speakLeaderPlaceholder": "对 Leader 说:调整优先级 / 追加约束 / 批准任务…",
       "send": "发送"
     },
@@ -2438,9 +2398,6 @@
       "awaitingReply": "等待回复中",
       "sessionLabel": "会话",
       "tasksUnit": "任务"
-    },
-    "flow": {
-      "empty": "本次编排没有可叠加进度的流程"
     },
     "toggle": {
       "tasks": "任务",

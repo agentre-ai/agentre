@@ -22,12 +22,12 @@ func TestCreateRun_BuildsRunRootSessionAndTask(t *testing.T) {
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 
 	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "架构师"}, nil)
-	// 先建 Run（拿 RunID）→ 建根会话 → 建根 Task → 回填 RootTaskID。
+	// 先建 Run（拿 RunID）→ 建根会话 → 建根 Dispatch → 回填 RootTaskID。
 	runs.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, r *orch_entity.OrchestrationRun) error {
 		r.ID = 100
 		return nil
@@ -40,9 +40,9 @@ func TestCreateRun_BuildsRunRootSessionAndTask(t *testing.T) {
 		So(in.Title, ShouldEqual, "做个登录页")
 		return 500, nil
 	})
-	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error {
+	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Dispatch) error {
 		So(tk.SessionID, ShouldEqual, 500)
-		So(tk.Kind, ShouldEqual, orch_entity.TaskKindDispatch)
+		So(tk.Kind, ShouldEqual, orch_entity.DispatchKindDispatch)
 		tk.ID = 9
 		return nil
 	})
@@ -50,7 +50,7 @@ func TestCreateRun_BuildsRunRootSessionAndTask(t *testing.T) {
 	// 用流程注入触发 Leader 首轮。
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(500), gomock.Any()).Return(nil)
 
-	Convey("CreateRun 建 Run + 根会话 + 根 Task 并触发 Leader 首轮", t, func() {
+	Convey("CreateRun 建 Run + 根会话 + 根 Dispatch 并触发 Leader 首轮", t, func() {
 		got, err := orch_svc.Default().CreateRun(context.Background(), &orch_svc.CreateRunRequest{
 			Goal: "做个登录页", LeaderAgentID: 2, FlowContent: "先拆分再并行",
 		})
@@ -67,7 +67,7 @@ func TestCreateRun_PersistsAllowedAgentIDs(t *testing.T) {
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
 
 	agents.EXPECT().Find(gomock.Any(), int64(2)).Return(&agent_entity.Agent{ID: 2, Name: "L"}, nil)
@@ -77,7 +77,7 @@ func TestCreateRun_PersistsAllowedAgentIDs(t *testing.T) {
 		return nil
 	})
 	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).Return(int64(500), nil)
-	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error { tk.ID = 9; return nil })
+	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Dispatch) error { tk.ID = 9; return nil })
 	runs.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(500), gomock.Any()).Return(nil)
 
@@ -96,7 +96,7 @@ func TestCreateRun_LibraryModeSnapshotsFlowContent(t *testing.T) {
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	wf := mock_orch_svc.NewMockWorkflowReader(ctrl)
 
 	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
@@ -113,7 +113,7 @@ func TestCreateRun_LibraryModeSnapshotsFlowContent(t *testing.T) {
 		return nil
 	})
 	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).Return(int64(500), nil)
-	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error { tk.ID = 9; return nil })
+	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Dispatch) error { tk.ID = 9; return nil })
 	runs.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(500), gomock.Any()).Return(nil)
 
@@ -133,7 +133,7 @@ func TestCreateRun_LibraryModeFlowReadError(t *testing.T) {
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
 	agents := mock_orch_svc.NewMockAgentLookup(ctrl)
 	runs := mock_orch_repo.NewMockRunRepo(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	wf := mock_orch_svc.NewMockWorkflowReader(ctrl)
 
 	orch_svc.Default().RegisterDeps(chat, agents, runs, tasks, nil, nil)
@@ -151,7 +151,7 @@ func TestCreateRun_LibraryModeFlowReadError(t *testing.T) {
 		return nil
 	})
 	chat.EXPECT().EnsureOrchSession(gomock.Any(), gomock.Any()).Return(int64(500), nil)
-	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Task) error { tk.ID = 9; return nil })
+	tasks.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tk *orch_entity.Dispatch) error { tk.ID = 9; return nil })
 	runs.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil)
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(500), gomock.Any()).Return(nil)
 

@@ -1809,7 +1809,6 @@
       "liveHint": "Changes take effect immediately: in-progress runs get the latest content next round",
       "empty": "Select a workflow to preview",
       "blueprintTags": "Tags",
-      "blueprintSteps": "Steps",
       "blueprintHint": "At-a-glance only · does not constrain the AI"
     },
     "editor": {
@@ -1824,40 +1823,7 @@
       "tags": "Tags",
       "tagsHint": "For humans only — not sent to the AI",
       "tagsPlaceholder": "Type a tag, press Enter",
-      "outline": "Steps (overview)",
-      "outlineHint": "A human-readable skeleton; add/remove/reorder. Display only — does not constrain the AI",
-      "outlinePlaceholder": "Type a step, press Enter",
-      "moveUp": "Move up",
-      "moveDown": "Move down",
       "removeItem": "Remove"
-    },
-    "designer": {
-      "nodeLabel": "Node name",
-      "nodeLabelPlaceholder": "e.g. Break down requirements",
-      "nodeKind": "Type",
-      "kindTask": "Delegated task",
-      "kindLeader": "Leader step",
-      "nodeBrief": "Task brief",
-      "nodeBriefPlaceholder": "What to do + acceptance criteria",
-      "dependsOn": "Depends on",
-      "dependsOnHint": "Runs after the selected earlier steps",
-      "bounce": "On failure → bounce to",
-      "bounceNone": "None",
-      "addNode": "Add node",
-      "graphTitle": "Flow graph",
-      "previewTitle": "Live prompt preview",
-      "previewEmpty": "Add nodes to see the projected prompt",
-      "convertToDag": "Convert to DAG designer",
-      "convertHint": "Rebuild as a structured flow; saving replaces the free-text body with the generated one.",
-      "templateTitle": "Prompt template",
-      "editableBadge": "Editable",
-      "tabEdit": "Edit",
-      "tabPreview": "Preview",
-      "insertToken": "Insert",
-      "tokenHint": "{{token}} = prompt from the flow graph · Go template",
-      "templatePlaceholder": "Write the prompt here; use {{token}} to insert the flow-graph prompt",
-      "templateHint": "With {{token}} = embed the flow graph; without = plain text; no graph = pure prompt. Uses Go text/template.",
-      "templateErrorLabel": "Template error: "
     },
     "deleteConfirm": {
       "title": "Delete workflow",
@@ -2318,7 +2284,6 @@
       "flowContent": "Flow Content",
       "flowContentPlaceholder": "Enter or paste flow definition…",
       "flowManage": "Manage library",
-      "flowPreview": "Flow preview (DAG)",
       "create": "Create & start run",
       "project": "Project",
       "projectNone": "None (agent default directory)"
@@ -2342,7 +2307,6 @@
     "header": {
       "viewGraph": "Graph",
       "viewFeed": "Feed",
-      "viewFlow": "Flow",
       "running": "Running",
       "completed": "Completed",
       "paused": "Paused",
@@ -2412,9 +2376,7 @@
       "statusError": "Error",
       "statusPending": "Pending",
       "statusIdle": "In progress",
-      "progress": "{{done}} / {{total}} done",
-      "filteredBy": "Filtered: {{label}}",
-      "clearFilter": "Clear filter"
+      "progress": "{{done}} / {{total}} done"
     },
     "notify": {
       "completed": "Orchestration run completed: {{goal}}",
@@ -2422,8 +2384,6 @@
       "view": "View"
     },
     "run": {
-      "blueprintTitle": "Flow blueprint",
-      "blueprintRef": "Reference only · does not constrain execution",
       "speakLeaderPlaceholder": "Tell the Leader: adjust priority / add constraints / approve tasks…",
       "send": "Send"
     },
@@ -2438,9 +2398,6 @@
       "awaitingReply": "Awaiting reply",
       "sessionLabel": "session",
       "tasksUnit": "tasks"
-    },
-    "flow": {
-      "empty": "This run has no flow to overlay"
     },
     "toggle": {
       "tasks": "tasks",

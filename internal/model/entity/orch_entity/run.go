@@ -1,5 +1,5 @@
-// Package orch_entity 维护编排 Run 与 Task 的充血实体。Run = 一次编排（会话容器），
-// Task = 树上的一个任务（一个 agent + 一段 brief + 一条持久会话）。
+// Package orch_entity 维护编排 Run 与 Dispatch 的充血实体。Run = 一次编排（会话容器），
+// Dispatch = 树上的一个执行节点（一个 agent + 一段 brief + 一条持久会话）。
 package orch_entity
 
 import (
@@ -9,7 +9,7 @@ import (
 	"github.com/cago-frame/cago/pkg/consts"
 )
 
-// Run 客观生命周期（与流程无关；Run 不单设 error，根任务技术崩溃由 Task.error 体现）。
+// Run 客观生命周期（与流程无关；Run 不单设 error，根任务技术崩溃由 Dispatch.error 体现）。
 const (
 	RunPending = "pending"
 	RunRunning = "running"

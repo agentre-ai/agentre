@@ -23,10 +23,10 @@ type CreateRunRequest struct {
 // RunDetail 创建结果。
 type RunDetail struct {
 	Run      *orch_entity.OrchestrationRun
-	RootTask *orch_entity.Task
+	RootTask *orch_entity.Dispatch
 }
 
-// CreateRun 建 Run + Leader 根会话 + 根 Task，注入编排流程并触发 Leader 首轮。
+// CreateRun 建 Run + Leader 根会话 + 根 Dispatch，注入编排流程并触发 Leader 首轮。
 func (s *orchSvc) CreateRun(ctx context.Context, req *CreateRunRequest) (*RunDetail, error) {
 	leader, err := s.agents.Find(ctx, req.LeaderAgentID)
 	if err != nil {
@@ -67,11 +67,11 @@ func (s *orchSvc) CreateRun(ctx context.Context, req *CreateRunRequest) (*RunDet
 		return nil, err
 	}
 
-	root := &orch_entity.Task{
+	root := &orch_entity.Dispatch{
 		RunID: run.ID, AgentID: req.LeaderAgentID, SessionID: rootSessionID,
-		Kind: orch_entity.TaskKindDispatch, Status: orch_entity.TaskRunning, Brief: req.Goal,
+		Kind: orch_entity.DispatchKindDispatch, Status: orch_entity.DispatchRunning, Brief: req.Goal,
 	}
-	if err := s.tasks.Create(ctx, root); err != nil {
+	if err := s.dispatches.Create(ctx, root); err != nil {
 		return nil, err
 	}
 

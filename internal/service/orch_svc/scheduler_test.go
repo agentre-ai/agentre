@@ -20,7 +20,7 @@ func TestScheduler_CapsConcurrency(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
 	// Reset stale state from any prior test that touched the singleton.
 	orch_svc.Default().ResetSchedulersForTest()
@@ -48,7 +48,7 @@ func TestScheduler_CapsConcurrency(t *testing.T) {
 	Convey("cap=2 时第三个任务排队，settle 后才发射", t, func() {
 		for i := 1; i <= 3; i++ {
 			orch_svc.Default().EnqueueRunForTest(100,
-				&orch_entity.Task{ID: int64(i), RunID: 100, SessionID: int64(600 + i)},
+				&orch_entity.Dispatch{ID: int64(i), RunID: 100, SessionID: int64(600 + i)},
 				"go")
 		}
 
@@ -81,7 +81,7 @@ func TestScheduler_RetriesTransientSendBusy(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
 	orch_svc.Default().ResetSchedulersForTest()
 	orch_svc.Default().SetSchedulerCapForTest(1)
@@ -114,7 +114,7 @@ func TestScheduler_RetriesTransientSendBusy(t *testing.T) {
 
 	Convey("SQLite 写锁瞬时冲突时重试发送子任务", t, func() {
 		orch_svc.Default().EnqueueRunForTest(100,
-			&orch_entity.Task{ID: 1, RunID: 100, SessionID: 601},
+			&orch_entity.Dispatch{ID: 1, RunID: 100, SessionID: 601},
 			"go")
 
 		select {
@@ -136,7 +136,7 @@ func TestScheduler_MarksTaskErrorWhenSendFails(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 
 	chat := mock_orch_svc.NewMockChatGateway(ctrl)
-	tasks := mock_orch_repo.NewMockTaskRepo(ctrl)
+	tasks := mock_orch_repo.NewMockDispatchRepo(ctrl)
 	orch_svc.Default().RegisterDeps(chat, nil, nil, tasks, nil, nil)
 	orch_svc.Default().ResetSchedulersForTest()
 	orch_svc.Default().SetSchedulerCapForTest(1)
@@ -154,21 +154,21 @@ func TestScheduler_MarksTaskErrorWhenSendFails(t *testing.T) {
 	chat.EXPECT().SendAndForget(gomock.Any(), int64(601), "go").
 		Return(errors.New("send failed"))
 
-	updated := make(chan *orch_entity.Task, 1)
+	updated := make(chan *orch_entity.Dispatch, 1)
 	tasks.EXPECT().Update(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ any, task *orch_entity.Task) error {
+		DoAndReturn(func(_ any, task *orch_entity.Dispatch) error {
 			updated <- task
 			return nil
 		})
 
 	Convey("发送子任务最终失败时任务落 error 而不是永久 running", t, func() {
 		orch_svc.Default().EnqueueRunForTest(100,
-			&orch_entity.Task{ID: 1, RunID: 100, SessionID: 601},
+			&orch_entity.Dispatch{ID: 1, RunID: 100, SessionID: 601},
 			"go")
 
 		select {
 		case task := <-updated:
-			So(task.Status, ShouldEqual, orch_entity.TaskError)
+			So(task.Status, ShouldEqual, orch_entity.DispatchError)
 		case <-time.After(time.Second):
 			t.Fatal("task was not marked error")
 		}

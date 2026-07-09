@@ -9,7 +9,6 @@ vi.mock("react-i18next", () => ({
       const map: Record<string, string> = {
         "orchestration.header.viewGraph": "结构图",
         "orchestration.header.viewFeed": "活动流",
-        "orchestration.header.viewFlow": "流程",
         "orchestration.toggle.tasks": "任务",
         "orchestration.toggle.depth": "深度",
         "orchestration.toggle.subagents": "子代理",
@@ -118,19 +117,5 @@ describe("ToggleBar", () => {
     expect(screen.getByTestId("toggle-stat-tasks")).toHaveTextContent("0/7");
     expect(screen.getByTestId("toggle-stat-depth")).toHaveTextContent("1");
     expect(screen.getByTestId("toggle-stat-subagents")).toHaveTextContent("0");
-  });
-
-  it("showFlow=false(默认)不渲染 Flow tab", () => {
-    render(<ToggleBar view="graph" onView={vi.fn()} stats={defaultStats} />);
-    expect(screen.queryByTestId("toggle-flow")).toBeNull();
-  });
-
-  it("showFlow=true 渲染 Flow tab, 点击调用 onView('flow')", () => {
-    const onView = vi.fn();
-    render(
-      <ToggleBar view="graph" onView={onView} stats={defaultStats} showFlow />,
-    );
-    fireEvent.click(screen.getByTestId("toggle-flow"));
-    expect(onView).toHaveBeenCalledWith("flow");
   });
 });

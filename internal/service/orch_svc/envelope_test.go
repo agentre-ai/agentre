@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func TestTaskDoneMsg_ShapeAndEscape(t *testing.T) {
-	got := taskDoneMsg(11, 3, 2, `实现完成 <ok> & "done"`)
+func TestDispatchDoneMsg_ShapeAndEscape(t *testing.T) {
+	got := dispatchDoneMsg(11, 3, 2, `实现完成 <ok> & "done"`)
 	if !strings.HasPrefix(got, `<task_done task_id="11" agent="3" call_seq="2">`) {
 		t.Fatalf("bad prefix: %s", got)
 	}
@@ -21,19 +21,19 @@ func TestTaskDoneMsg_ShapeAndEscape(t *testing.T) {
 	}
 }
 
-func TestTaskReportMsg_FinalFlagAndEscape(t *testing.T) {
-	fin := taskReportMsg(11, 3, 2, "已完成", true)
+func TestDispatchReportMsg_FinalFlagAndEscape(t *testing.T) {
+	fin := dispatchReportMsg(11, 3, 2, "已完成", true)
 	if !strings.Contains(fin, `final="true"`) || !strings.Contains(fin, "已完成") {
 		t.Fatalf("bad final report: %s", fin)
 	}
-	interim := taskReportMsg(11, 3, 2, `中途 <x>`, false)
+	interim := dispatchReportMsg(11, 3, 2, `中途 <x>`, false)
 	if !strings.Contains(interim, `final="false"`) || !strings.Contains(interim, "&lt;x&gt;") {
 		t.Fatalf("bad interim report: %s", interim)
 	}
 }
 
-func TestTaskErrorMsg_ReasonEscaped(t *testing.T) {
-	got := taskErrorMsg(12, 4, `崩溃 <boom>`)
+func TestDispatchErrorMsg_ReasonEscaped(t *testing.T) {
+	got := dispatchErrorMsg(12, 4, `崩溃 <boom>`)
 	if !strings.Contains(got, `task_id="12" agent="4"`) || !strings.Contains(got, `reason="崩溃 &lt;boom&gt;"`) {
 		t.Fatalf("bad error msg: %s", got)
 	}
