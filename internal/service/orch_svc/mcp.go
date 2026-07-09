@@ -191,7 +191,7 @@ func (m *orchMCP) handleDispatch(w http.ResponseWriter, r *http.Request, id json
 		writeRPCError(w, id, -32000, err.Error())
 		return
 	}
-	writeRPCResult(w, id, textResult(fmt.Sprintf("已派发,task_id=%d", taskID)))
+	writeRPCResult(w, id, textResult(fmt.Sprintf("已派发,dispatch_id=%d", taskID)))
 }
 
 func (m *orchMCP) handleAsk(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
@@ -238,7 +238,7 @@ func (m *orchMCP) handleReply(w http.ResponseWriter, r *http.Request, id json.Ra
 
 func (m *orchMCP) handleSend(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
 	var p struct {
-		DispatchID int64  `json:"task_id"`
+		DispatchID int64  `json:"dispatch_id"`
 		Message    string `json:"message"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
@@ -246,7 +246,7 @@ func (m *orchMCP) handleSend(w http.ResponseWriter, r *http.Request, id json.Raw
 		return
 	}
 	if p.DispatchID <= 0 || p.Message == "" {
-		writeRPCError(w, id, -32602, "task_id and message are required")
+		writeRPCError(w, id, -32602, "dispatch_id and message are required")
 		return
 	}
 	if err := m.svc.Send(r.Context(), ref.sessionID, p.DispatchID, p.Message); err != nil {
@@ -296,14 +296,14 @@ func (m *orchMCP) handleReport(w http.ResponseWriter, r *http.Request, id json.R
 
 func (m *orchMCP) handleRead(w http.ResponseWriter, r *http.Request, id json.RawMessage, ref orchRef, args json.RawMessage) {
 	var p struct {
-		DispatchID int64 `json:"task_id"`
+		DispatchID int64 `json:"dispatch_id"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		writeRPCError(w, id, -32700, "parse error: "+err.Error())
 		return
 	}
 	if p.DispatchID <= 0 {
-		writeRPCError(w, id, -32602, "task_id is required")
+		writeRPCError(w, id, -32602, "dispatch_id is required")
 		return
 	}
 	out, err := m.svc.ReadDispatch(r.Context(), ref.sessionID, p.DispatchID)
@@ -451,10 +451,10 @@ func orchToolSchemas() []any {
 			"description": "往你派发的某任务会话里发后续/返工反馈(同会话续做),更新后的结果再回报你。返工=对原任务再 send,不新增节点。",
 			"inputSchema": map[string]any{
 				"type":     "object",
-				"required": []string{"task_id", "message"},
+				"required": []string{"dispatch_id", "message"},
 				"properties": map[string]any{
-					"task_id": map[string]any{"type": "integer"},
-					"message": map[string]any{"type": "string"},
+					"dispatch_id": map[string]any{"type": "integer"},
+					"message":     map[string]any{"type": "string"},
 				},
 			},
 		},
@@ -482,12 +482,12 @@ func orchToolSchemas() []any {
 		},
 		map[string]any{
 			"name":        "read",
-			"description": "读取你派发/同 Run 内某任务的输出:已完成→拉小结+完整正文;运行中→peek 它当前最新进展。传通知/status 里给出的 task_id。",
+			"description": "读取你派发/同 Run 内某任务的输出:已完成→拉小结+完整正文;运行中→peek 它当前最新进展。传通知/status 里给出的 dispatch_id。",
 			"inputSchema": map[string]any{
 				"type":     "object",
-				"required": []string{"task_id"},
+				"required": []string{"dispatch_id"},
 				"properties": map[string]any{
-					"task_id": map[string]any{"type": "integer"},
+					"dispatch_id": map[string]any{"type": "integer"},
 				},
 			},
 		},

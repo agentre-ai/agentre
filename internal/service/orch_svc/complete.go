@@ -61,7 +61,7 @@ func (s *orchSvc) watchCompletion(ctx context.Context, task *orch_entity.Dispatc
 	}
 }
 
-// reportToParent 子任务完成回报:有显式小结 → 内联 task_report;否则 → task_done 轻量通知。
+// reportToParent 子任务完成回报:有显式小结 → 内联 dispatch_report;否则 → dispatch_done 轻量通知。
 func (s *orchSvc) reportToParent(ctx context.Context, parentDispatchID int64, child *orch_entity.Dispatch) {
 	var msg string
 	if child.Summary != "" {
@@ -93,7 +93,7 @@ func (s *orchSvc) injectToParent(ctx context.Context, parentDispatchID int64, ms
 	}
 }
 
-// markDispatchError 技术崩溃:标 error,把崩溃当 task_error 轻量通知上抛父会话(与 done 同一续轮路)。
+// markDispatchError 技术崩溃:标 error,把崩溃当 dispatch_error 轻量通知上抛父会话(与 done 同一续轮路)。
 func (s *orchSvc) markDispatchError(ctx context.Context, task *orch_entity.Dispatch, reason string) {
 	task.Status = orch_entity.DispatchError
 	task.Result = reason

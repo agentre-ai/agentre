@@ -7,16 +7,16 @@ import (
 
 func TestDispatchDoneMsg_ShapeAndEscape(t *testing.T) {
 	got := dispatchDoneMsg(11, 3, 2, `实现完成 <ok> & "done"`)
-	if !strings.HasPrefix(got, `<task_done task_id="11" agent="3" call_seq="2">`) {
+	if !strings.HasPrefix(got, `<dispatch_done dispatch_id="11" agent="3" call_seq="2">`) {
 		t.Fatalf("bad prefix: %s", got)
 	}
-	if !strings.Contains(got, `read(task_id=11)`) {
+	if !strings.Contains(got, `read(dispatch_id=11)`) {
 		t.Fatalf("missing read hint: %s", got)
 	}
 	if strings.Contains(got, "<ok>") || !strings.Contains(got, "&lt;ok&gt;") {
 		t.Fatalf("excerpt not escaped: %s", got)
 	}
-	if !strings.HasSuffix(got, `</task_done>`) {
+	if !strings.HasSuffix(got, `</dispatch_done>`) {
 		t.Fatalf("bad suffix: %s", got)
 	}
 }
@@ -34,10 +34,10 @@ func TestDispatchReportMsg_FinalFlagAndEscape(t *testing.T) {
 
 func TestDispatchErrorMsg_ReasonEscaped(t *testing.T) {
 	got := dispatchErrorMsg(12, 4, `崩溃 <boom>`)
-	if !strings.Contains(got, `task_id="12" agent="4"`) || !strings.Contains(got, `reason="崩溃 &lt;boom&gt;"`) {
+	if !strings.Contains(got, `dispatch_id="12" agent="4"`) || !strings.Contains(got, `reason="崩溃 &lt;boom&gt;"`) {
 		t.Fatalf("bad error msg: %s", got)
 	}
-	if !strings.Contains(got, `read(task_id=12)`) {
+	if !strings.Contains(got, `read(dispatch_id=12)`) {
 		t.Fatalf("missing read hint: %s", got)
 	}
 }

@@ -37,10 +37,10 @@ func TestReport_InjectsInterimReportToParent(t *testing.T) {
 		return nil
 	})
 
-	Convey("report 中途向父注入 task_report(final=false),不改状态", t, func() {
+	Convey("report 中途向父注入 dispatch_report(final=false),不改状态", t, func() {
 		err := orch_svc.Default().Report(context.Background(), 600, "进度:表单已搭好,正在接接口")
 		So(err, ShouldBeNil)
-		So(strings.Contains(msg, `<task_report`), ShouldBeTrue)
+		So(strings.Contains(msg, `<dispatch_report`), ShouldBeTrue)
 		So(strings.Contains(msg, `final="false"`), ShouldBeTrue)
 		So(strings.Contains(msg, "正在接接口"), ShouldBeTrue)
 	})
