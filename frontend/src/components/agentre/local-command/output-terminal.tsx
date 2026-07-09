@@ -38,6 +38,12 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
     const e = s.entries[terminalId];
     return !!e && e.status !== "running" && e.output === "";
   });
+  // 组合门控:懒挂载 && 未落到「空输出已结束」占位分支。一个静默、长跑的命令可能
+  // 在运行中(尚无输出)就滚入视口挂载了真实 xterm;结束时若输出仍是空串,组件会
+  // 切到占位分支 —— 但 mounted 这个一次性锁存不会回落,若仍用它做依赖,四个
+  // xterm 生命周期 effect 都不会重跑清理,Terminal/两个 Observer/store 订阅就此泄漏。
+  // 用 active 替代 mounted 让 isEmptyFinished 翻真时也能触发一次 cleanup。
+  const active = mounted && !isEmptyFinished;
 
   // 懒挂载门控。
   useEffect(() => {
@@ -59,7 +65,7 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
 
   // 构建只读 xterm(layout effect:在写入前先建好实例)。
   useLayoutEffect(() => {
-    if (!mounted || !containerRef.current) return;
+    if (!active || !containerRef.current) return;
     const term = new Terminal({
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 13,
@@ -82,11 +88,11 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
       xtermRef.current = null;
       fitRef.current = null;
     };
-  }, [mounted]);
+  }, [active]);
 
   // seed + 增量:写新增片段 + 每次按内容重算容器高度(自适应且封顶)。
   useEffect(() => {
-    if (!mounted) return;
+    if (!active) return;
     const applyHeight = () => {
       const term = xtermRef.current;
       const el = containerRef.current;
@@ -120,19 +126,19 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
     writeDelta(); // 首帧 seed + 定高。
     const unsub = useLocalCommandsStore.subscribe(writeDelta);
     return () => unsub();
-  }, [mounted, terminalId]);
+  }, [active, terminalId]);
 
   // 容器宽度变化时重新 fit(只换列宽以正确回绕,不 resize PTY)。
   useEffect(() => {
-    if (!mounted || !containerRef.current) return;
+    if (!active || !containerRef.current) return;
     const ro = new ResizeObserver(() => fitRef.current?.fit());
     ro.observe(containerRef.current);
     return () => ro.disconnect();
-  }, [mounted]);
+  }, [active]);
 
   // 跟随 app light/dark 切换重置终端主题(与交互终端一致)。
   useEffect(() => {
-    if (!mounted || typeof document === "undefined") return;
+    if (!active || typeof document === "undefined") return;
     const apply = () => {
       const term = xtermRef.current;
       if (term) term.options.theme = readTerminalTheme();
@@ -144,7 +150,7 @@ export function OutputTerminal({ terminalId }: { terminalId: string }) {
       attributeFilter: ["class"],
     });
     return () => obs.disconnect();
-  }, [mounted]);
+  }, [active]);
 
   if (isEmptyFinished) {
     return (

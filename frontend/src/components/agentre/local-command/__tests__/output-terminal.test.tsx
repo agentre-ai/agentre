@@ -182,4 +182,30 @@ describe("OutputTerminal", () => {
     );
     expect(Terminal).not.toHaveBeenCalled();
   });
+
+  it("disposes the mounted xterm instead of leaking it when a running-empty command finishes with still-empty output", () => {
+    // No IntersectionObserver → eager mount, so the terminal builds immediately
+    // while the (silent, long-running) command is still "running".
+    delete (globalThis as { IntersectionObserver?: unknown })
+      .IntersectionObserver;
+    useLocalCommandsStore
+      .getState()
+      .start({ id: "e2", sessionId: 1, command: "sleep 3", createdAt: 1 });
+
+    const { getByTestId } = render(<OutputTerminal terminalId="e2" />);
+
+    // running + empty output → not isEmptyFinished → a real xterm was built.
+    expect(Terminal).toHaveBeenCalled();
+    disposeMock.mockClear();
+
+    // Command finishes without ever having produced output.
+    act(() => useLocalCommandsStore.getState().finish("e2", "done", 0));
+
+    // The component now renders the placeholder branch — the previously
+    // mounted xterm must have been disposed, not leaked.
+    expect(disposeMock).toHaveBeenCalled();
+    expect(getByTestId("local-command-terminal").textContent).toMatch(
+      /无输出|No output/,
+    );
+  });
 });
