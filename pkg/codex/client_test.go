@@ -619,6 +619,43 @@ func TestClientStream_PassesCollaborationModeWithThreadModel(t *testing.T) {
 	require.NoError(t, stream.Close(ctx))
 }
 
+func TestSession_ModelUsesThreadStartModel(t *testing.T) {
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		startReq := readRPCReq(t, sc)
+		assert.Equal(t, "thread/start", startReq.Method)
+		respondRPC(h, startReq, map[string]any{
+			"thread": map[string]any{"id": "thread-model"},
+			"model":  "gpt-5.6-sol",
+		})
+
+		turnReq := readRPCReq(t, sc)
+		assert.Equal(t, "turn/start", turnReq.Method)
+		respondRPC(h, turnReq, map[string]any{"turn": map[string]any{"id": "turn-model", "status": "inProgress"}})
+		h.send(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread-model", "turnId": "turn-model", "turn": map[string]any{"id": "turn-model", "status": "completed"}}})
+	}
+
+	client := New(WithAppServerRunnerForTesting(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	sess, err := client.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, sess.Close(context.Background())) }()
+
+	stream, err := sess.Stream(ctx, "hello")
+	require.NoError(t, err)
+	for stream.Next() {
+	}
+	require.NoError(t, stream.Close(ctx))
+
+	assert.Equal(t, "gpt-5.6-sol", sess.Model())
+}
+
 func TestTurnStartParams_CollaborationModeUsesDefaultModel(t *testing.T) {
 	params, err := turnStartParams(
 		appThreadStartResult{ThreadID: "thread-default"},

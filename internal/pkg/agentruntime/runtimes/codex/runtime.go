@@ -338,6 +338,9 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		modelID = strings.TrimSpace(req.Provider.Model)
 	}
 	if modelID == "" {
+		modelID = strings.TrimSpace(sess.Model())
+	}
+	if modelID == "" {
 		modelID = defaultModelID
 	}
 	result := &agentruntime.RunResult{ProviderSessionID: sess.ID(), Model: modelID}

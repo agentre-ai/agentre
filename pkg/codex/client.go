@@ -36,6 +36,7 @@ type Session struct {
 	mu          sync.Mutex
 	turnMu      sync.Mutex
 	sid         string
+	model       string
 	threadReady bool
 	closed      bool
 	active      *Stream
@@ -164,6 +165,12 @@ func (s *Session) ID() string {
 	return s.sid
 }
 
+func (s *Session) Model() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.model
+}
+
 func (s *Session) Stream(ctx context.Context, prompt string, opts ...RunOption) (*Stream, error) {
 	return s.StreamInput(ctx, userInput(prompt), opts...)
 }
@@ -177,6 +184,7 @@ func (s *Session) StreamInput(ctx context.Context, input []UserInput, opts ...Ru
 	if strings.TrimSpace(spec.resumeID) != "" {
 		s.mu.Lock()
 		s.sid = strings.TrimSpace(spec.resumeID)
+		s.model = ""
 		s.threadReady = false
 		s.mu.Unlock()
 	}
@@ -472,7 +480,7 @@ func (s *Session) ensureThread(ctx context.Context, spec runSpec) (appThreadStar
 		return appThreadStartResult{}, errors.New("codex: session closed")
 	}
 	if s.threadReady && strings.TrimSpace(s.sid) != "" {
-		thread := appThreadStartResult{ThreadID: s.sid}
+		thread := appThreadStartResult{ThreadID: s.sid, Model: s.model}
 		s.mu.Unlock()
 		return thread, nil
 	}
@@ -487,6 +495,7 @@ func (s *Session) ensureThread(ctx context.Context, spec runSpec) (appThreadStar
 	}
 	s.mu.Lock()
 	s.sid = thread.ThreadID
+	s.model = strings.TrimSpace(thread.Model)
 	s.threadReady = true
 	s.mu.Unlock()
 	return thread, nil

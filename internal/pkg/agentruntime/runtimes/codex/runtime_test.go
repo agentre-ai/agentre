@@ -10,6 +10,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	pkgcodex "github.com/agentre-ai/agentre/pkg/codex"
@@ -103,9 +104,9 @@ func TestSubmitToolPermission(t *testing.T) {
 }
 
 func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
-	Convey("codex runtime 在 CLI 自身登录态下回填默认模型", t, func() {
+	Convey("codex runtime 在 CLI 自身登录态下回填 app-server resolved model", t, func() {
 		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
-			return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-default"}, nil
+			return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-default", model: "gpt-5.6-sol"}, nil
 		})
 		defer restore()
 
@@ -123,8 +124,57 @@ func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 		for range events {
 		}
 
-		So(result.Model, ShouldEqual, "gpt-5.5")
+		So(result.Model, ShouldEqual, "gpt-5.6-sol")
 		So(result.ProviderSessionID, ShouldEqual, "thread-default")
+	})
+}
+
+func TestRun_ModelResolution(t *testing.T) {
+	Convey("codex runtime model resolution", t, func() {
+		Convey("Given app-server does not report model, when provider is missing, then fallback default is used", func() {
+			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-default"}, nil
+			})
+			defer restore()
+
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.Model, ShouldEqual, "gpt-5.5")
+		})
+
+		Convey("Given provider model is configured, when app-server reports a different model, then provider model wins", func() {
+			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-provider", model: "gpt-5.6-sol"}, nil
+			})
+			defer restore()
+
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:  &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.Model, ShouldEqual, "gpt-5.4")
+		})
 	})
 }
 
@@ -561,12 +611,14 @@ func TestRun_ErrorFollowedOnlyByMetadataKeepsStopErr(t *testing.T) {
 type fakeRuntimeSession struct {
 	stream cxStream
 	sid    string
+	model  string
 
 	setGoalReq pkgcodex.GoalUpdate
 }
 
 func (s *fakeRuntimeSession) Close(context.Context) error { return nil }
 func (s *fakeRuntimeSession) ID() string                  { return s.sid }
+func (s *fakeRuntimeSession) Model() string               { return s.model }
 func (s *fakeRuntimeSession) Stream(context.Context, string, string) (cxStream, error) {
 	return s.stream, nil
 }
@@ -613,6 +665,9 @@ func (s *countingRuntimeSession) Close(context.Context) error {
 	return nil
 }
 func (s *countingRuntimeSession) ID() string { return s.sid }
+func (s *countingRuntimeSession) Model() string {
+	return ""
+}
 func (s *countingRuntimeSession) Stream(context.Context, string, string) (cxStream, error) {
 	stream := s.streams[s.streamCalls]
 	s.streamCalls++
