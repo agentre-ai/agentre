@@ -33,4 +33,17 @@ describe("toolKeysToCatalog", () => {
     expect(wf.enabled).toBe(true);
     expect(wf.badges?.[0]?.tone).toBe("approval");
   });
+
+  it("localizes the orchestrate tool instead of exposing its i18n key", () => {
+    const [orchestrate] = toolKeysToCatalog(
+      ["orchestrate"],
+      [{ key: "orchestrate", enabled: true }],
+      t,
+    );
+
+    expect(orchestrate.name).toBe("Agent Orchestration");
+    expect(orchestrate.description).not.toBe(
+      "org.agent.tools.descriptions.orchestrate",
+    );
+  });
 });
