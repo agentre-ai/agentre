@@ -50,7 +50,9 @@ describe("parseMentionXml", () => {
 
   it("parses a project tag with path and unescapes entities", () => {
     expect(
-      parseMentionXml('<project id="3" path="/p/&quot;q&quot;">a &amp; b</project>'),
+      parseMentionXml(
+        '<project id="3" path="/p/&quot;q&quot;">a &amp; b</project>',
+      ),
     ).toEqual([
       {
         type: "mention",

@@ -11,7 +11,7 @@ vi.mock("../../../wailsjs/go/app/App", () => appMocks);
 import { IssueNewDialog } from "./issue-new-dialog";
 
 const labels = [{ id: 1, name: "bug", tone: "bug" }];
-const projects = [{ id: 5, name: "Agentre" }];
+const projects = [{ id: 5, name: "Agentre", path: "", color: "" }];
 
 describe("IssueNewDialog", () => {
   beforeEach(() => {

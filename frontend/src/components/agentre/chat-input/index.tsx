@@ -35,6 +35,13 @@ import {
   shouldIgnoreEditorShortcut,
   shouldStartInputHistory,
 } from "./keyboard";
+import {
+  Mention,
+  MentionPopover,
+  useMentionMenu,
+  type MentionItem,
+  type MentionSources,
+} from "./mentions";
 import type { AIChatInputHandle, ProseMirrorLikeNode } from "./types";
 
 export type { AIChatInputDraft, AIChatInputHandle } from "./types";
@@ -64,6 +71,8 @@ export interface AIChatInputProps {
    *  命令文本填回编辑器(不自动发送,等用户回车),所以父组件只需要处理 rpc 类。
    *  省略则 slash menu 不启用(等价于没 backend)。 */
   onSlashSelect?: (cmd: SlashCommand, exec: SlashExec) => void;
+  /** 项目 / agent 提及数据源。提供且非空时启用 @ 菜单;省略则不启用。 */
+  mentionSources?: MentionSources;
 }
 
 const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
@@ -82,6 +91,7 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
       editorRef,
       backendType,
       onSlashSelect,
+      mentionSources,
     },
     ref,
   ) {
@@ -94,6 +104,9 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     const lastIsEmptyRef = useRef<boolean | null>(null);
     const triggerSubmitRef = useRef<() => void>(() => {});
     const slashKeyDownRef = useRef<(e: KeyboardEvent) => boolean>(() => false);
+    const mentionKeyDownRef = useRef<(e: KeyboardEvent) => boolean>(
+      () => false,
+    );
     const slashSelectRef = useRef(onSlashSelect);
     const onCommandModeChangeRef = useRef(onCommandModeChange);
     const onCommandSubmitRef = useRef(onCommandSubmit);
@@ -152,6 +165,7 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
         SlashHighlight.configure({
           getValidNames: () => validNamesRef.current,
         }),
+        Mention,
       ],
       editorProps: {
         attributes: {
@@ -173,7 +187,10 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           if (shouldIgnoreEditorShortcut(view, event)) return false;
           // slash menu 打开时拦截 Up/Down/Enter/Tab/Esc;关闭时透明。
           // 命令模式下不弹 slash,直接跳过。
-          if (!commandModeRef.current && slashKeyDownRef.current(event))
+          if (
+            !commandModeRef.current &&
+            (mentionKeyDownRef.current(event) || slashKeyDownRef.current(event))
+          )
             return true;
 
           const shouldSendOnEnter = sendOnEnterRef.current;
@@ -349,6 +366,26 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
       slashKeyDownRef.current = slashMenu.onKeyDown;
     }, [slashMenu.onKeyDown]);
 
+    // ── @ mention menu 集成 ──────────────────────────────────────────────────
+    // 只在 mentionSources 存在且非空时启用,行为与上面的 slash menu 对称。
+    const mentionEnabled = !!(
+      mentionSources &&
+      mentionSources.agents.length + mentionSources.projects.length > 0
+    );
+    const emptySources = useMemo<MentionSources>(
+      () => ({ agents: [], projects: [] }),
+      [],
+    );
+    const mentionMenu = useMentionMenu({
+      editor: mentionEnabled ? (editor ?? null) : null,
+      sources: mentionSources ?? emptySources,
+      // 插入由 hook 内部完成(insert mention node);父组件无需处理。
+      onPick: (_item: MentionItem) => {},
+    });
+    useEffect(() => {
+      mentionKeyDownRef.current = mentionMenu.onKeyDown;
+    }, [mentionMenu.onKeyDown]);
+
     return (
       <>
         <EditorContent editor={editor} />
@@ -357,6 +394,13 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
             state={slashMenu.state}
             onPick={slashMenu.pick}
             onHover={slashMenu.setSelectedIndex}
+          />
+        ) : null}
+        {mentionEnabled ? (
+          <MentionPopover
+            state={mentionMenu.state}
+            onPick={mentionMenu.pick}
+            onHover={mentionMenu.setSelectedIndex}
           />
         ) : null}
       </>

@@ -236,7 +236,7 @@ func (s *chatSvc) CountActiveSessions(ctx context.Context) (int, error) {
 func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAgentsResponse, error) {
 	agents, err := agent_repo.Agent().List(ctx)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	resp := &ListAgentsResponse{Agents: make([]ChatAgentItem, 0, len(agents))}
 	if len(agents) == 0 {
@@ -246,12 +246,12 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 	backendIDs := uniqueNonZeroBackendIDs(agents)
 	backends, err := agent_backend_repo.AgentBackend().BatchFind(ctx, backendIDs)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	providerKeys := uniqueProviderKeys(backends)
 	providers, err := llm_provider_repo.LLMProvider().BatchFindByKey(ctx, providerKeys)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 
 	// 批量查远端 device 视图，避免 per-agent 单次查询的 N+1 问题。
@@ -280,15 +280,15 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 	}
 	counts, err := chat_repo.Session().CountRunningByAgents(ctx, agentIDs)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	totals, err := chat_repo.Session().CountByAgentsIncludingGroups(ctx, agentIDs)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	sessionIDs, err := chat_repo.Session().ListIDsByAgentsIncludingGroups(ctx, agentIDs)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 
 	for _, a := range agents {
@@ -354,7 +354,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 
 		sessions, err := chat_repo.Session().ListByAgentIncludingGroups(ctx, a.ID, 5)
 		if err != nil {
-			return nil, i18n.NewError(ctx, code.OperationFailed)
+			return nil, operationFailedWithCause(ctx, err)
 		}
 		item.RecentCount = len(sessions)
 		item.Sessions = make([]ChatSessionLite, 0, len(sessions))
@@ -366,7 +366,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		// 不受 5 行常规列表的约束；limit=20 防异常数据撑爆 UI，前端去重与本组 sessions 的重叠。
 		attention, err := chat_repo.Session().ListAttentionByAgentIncludingGroups(ctx, a.ID, 20)
 		if err != nil {
-			return nil, i18n.NewError(ctx, code.OperationFailed)
+			return nil, operationFailedWithCause(ctx, err)
 		}
 		item.AttentionSessions = make([]ChatSessionLite, 0, len(attention))
 		for _, sess := range attention {
@@ -401,11 +401,11 @@ func (s *chatSvc) ListAgentSessions(ctx context.Context, req *ListAgentSessionsR
 
 	sessions, err := chat_repo.Session().ListByAgentPagedIncludingGroups(ctx, req.AgentID, req.Offset, limit)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	total, err := chat_repo.Session().CountByAgentIncludingGroups(ctx, req.AgentID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 
 	resp := &ListAgentSessionsResponse{
@@ -453,18 +453,18 @@ func activeStreamName(activeTurn bool, sessionID int64, msgs []*chat_entity.Mess
 func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*LoadSessionResponse, error) {
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 	a, err := agent_repo.Agent().Find(ctx, sess.AgentID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	msgs, err := chat_repo.Message().List(ctx, sess.ID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	resp := &LoadSessionResponse{
 		Session: ChatSessionDetail{
@@ -587,14 +587,14 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	}
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 	a, err := agent_repo.Agent().Find(ctx, sess.AgentID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if a == nil {
 		return nil, i18n.NewError(ctx, code.AgentNotFound)
@@ -604,7 +604,7 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	}
 	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if be.IsBuiltin() {
 		return nil, i18n.NewError(ctx, code.ChatLaunchCommandNotAvailable)
@@ -614,7 +614,7 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	if be.LLMProviderKey != "" {
 		prov, err = llm_provider_repo.LLMProvider().FindByKey(ctx, be.LLMProviderKey)
 		if err != nil {
-			return nil, i18n.NewError(ctx, code.OperationFailed)
+			return nil, operationFailedWithCause(ctx, err)
 		}
 	}
 
@@ -876,7 +876,7 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	}
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
@@ -989,7 +989,7 @@ func (s *chatSvc) StartGoal(ctx context.Context, req *StartGoalRequest) (*StartG
 		Status:                 consts.ACTIVE,
 	}
 	if err := chat_repo.Session().Create(ctx, sess); err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	setReq := &SetGoalRequest{
 		SessionID:   sess.ID,
@@ -1009,11 +1009,9 @@ func (s *chatSvc) StartGoal(ctx context.Context, req *StartGoalRequest) (*StartG
 		}
 		sess.SetProviderSession(providerSessionID)
 		if err := chat_repo.Session().Update(ctx, sess); err != nil {
-			logger.Ctx(ctx).Warn("chat_svc.StartGoal: persist provider_session_id failed",
+			return nil, operationFailedWithCause(ctx, err,
 				zap.Int64("sessionId", sess.ID),
-				zap.String("providerSessionID", providerSessionID),
-				zap.Error(err))
-			return nil, i18n.NewError(ctx, code.OperationFailed)
+				zap.String("providerSessionID", providerSessionID))
 		}
 	}
 	return &StartGoalResponse{SessionID: sess.ID, Goal: resp.Goal}, nil
@@ -1041,7 +1039,7 @@ func (s *chatSvc) ClearGoal(ctx context.Context, req *ClearGoalRequest) (*ClearG
 func (s *chatSvc) goalSessionContext(ctx context.Context, sessionID int64) (*chat_entity.Session, *agent_entity.Agent, *agent_backend_entity.AgentBackend, *llm_provider_entity.LLMProvider, error) {
 	sess, err := chat_repo.Session().Find(ctx, sessionID)
 	if err != nil {
-		return nil, nil, nil, nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, nil, nil, nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, nil, nil, nil, i18n.NewError(ctx, code.ChatSessionNotFound)
@@ -1174,7 +1172,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		var err error
 		sess, err = chat_repo.Session().Find(ctx, req.SessionID)
 		if err != nil {
-			return nil, i18n.NewError(ctx, code.OperationFailed)
+			return nil, operationFailedWithCause(ctx, err)
 		}
 		if sess == nil {
 			return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
@@ -1224,7 +1222,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 			Status:      consts.ACTIVE,
 		}
 		if err := chat_repo.Session().Create(ctx, sess); err != nil {
-			return nil, i18n.NewError(ctx, code.OperationFailed)
+			return nil, operationFailedWithCause(ctx, err)
 		}
 	} else {
 		planWaiting, err := s.canContinuePlanWaiting(ctx, sess, be, opts.allowPlanWaiting)
@@ -1293,7 +1291,7 @@ func (s *chatSvc) resolveProjectContext(ctx context.Context, projectID int64, ag
 	}
 	p, err := project_repo.Project().Find(ctx, projectID)
 	if err != nil {
-		return 0, i18n.NewError(ctx, code.OperationFailed)
+		return 0, operationFailedWithCause(ctx, err)
 	}
 	if p == nil || !p.IsActive() {
 		return 0, i18n.NewError(ctx, code.ProjectNotFound)
@@ -1314,7 +1312,7 @@ func (s *chatSvc) isAgentInProjectChain(ctx context.Context, agentID int64, p *p
 	for cur.ParentID > 0 {
 		parent, err := project_repo.Project().Find(ctx, cur.ParentID)
 		if err != nil {
-			return false, i18n.NewError(ctx, code.OperationFailed)
+			return false, operationFailedWithCause(ctx, err)
 		}
 		if parent == nil {
 			break
@@ -1324,7 +1322,7 @@ func (s *chatSvc) isAgentInProjectChain(ctx context.Context, agentID int64, p *p
 	}
 	mapByProj, err := project_repo.ProjectAgent().ListByProjects(ctx, ids)
 	if err != nil {
-		return false, i18n.NewError(ctx, code.OperationFailed)
+		return false, operationFailedWithCause(ctx, err)
 	}
 	for _, list := range mapByProj {
 		for _, pa := range list {
@@ -1346,7 +1344,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 ) {
 	a, err := agent_repo.Agent().Find(ctx, agentID)
 	if err != nil {
-		return nil, nil, nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, nil, nil, operationFailedWithCause(ctx, err)
 	}
 	if a == nil {
 		return nil, nil, nil, i18n.NewError(ctx, code.NotFound)
@@ -1356,7 +1354,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 	}
 	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
 	if err != nil {
-		return nil, nil, nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, nil, nil, operationFailedWithCause(ctx, err)
 	}
 	if be == nil {
 		return nil, nil, nil, i18n.NewError(ctx, code.ChatAgentNotChattable)
@@ -1371,7 +1369,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 	case agent_backend_entity.TypeBuiltin:
 		prov, err = llm_provider_repo.LLMProvider().FindByKey(ctx, be.LLMProviderKey)
 		if err != nil {
-			return nil, nil, nil, i18n.NewError(ctx, code.OperationFailed)
+			return nil, nil, nil, operationFailedWithCause(ctx, err)
 		}
 		if prov == nil || !prov.IsActive() {
 			return nil, nil, nil, i18n.NewError(ctx, code.ChatAgentNotChattable)
@@ -1380,7 +1378,7 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 		if be.LLMProviderKey != "" {
 			prov, err = llm_provider_repo.LLMProvider().FindByKey(ctx, be.LLMProviderKey)
 			if err != nil {
-				return nil, nil, nil, i18n.NewError(ctx, code.OperationFailed)
+				return nil, nil, nil, operationFailedWithCause(ctx, err)
 			}
 			if prov == nil || !prov.IsActive() ||
 				!kind.ProviderTypeMatch(llm_provider_entity.ProviderType(prov.Type)) {
@@ -1456,7 +1454,7 @@ func (s *chatSvc) Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueRes
 
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
@@ -1722,7 +1720,7 @@ func (s *chatSvc) canContinuePlanWaiting(
 	}
 	msgs, err := chat_repo.Message().List(ctx, sess.ID)
 	if err != nil {
-		return false, i18n.NewError(ctx, code.OperationFailed)
+		return false, operationFailedWithCause(ctx, err)
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i] == nil || msgs[i].Role != "assistant" {
@@ -1828,7 +1826,7 @@ func (s *chatSvc) SetPermissionMode(ctx context.Context, req *SetPermissionModeR
 
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
@@ -1865,7 +1863,7 @@ func (s *chatSvc) CancelQueued(ctx context.Context, req *CancelQueuedRequest) (*
 
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
@@ -1928,7 +1926,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
@@ -1936,7 +1934,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 
 	target, err := chat_repo.Message().Find(ctx, req.MessageID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if target == nil || target.SessionID != sess.ID {
 		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
@@ -1948,7 +1946,7 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	// 找紧邻 target 之前的最后一条 user 消息（按 seq）。
 	all, err := chat_repo.Message().List(ctx, sess.ID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	var userAnchor *chat_entity.Message
 	for _, m := range all {
@@ -2009,7 +2007,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
@@ -2017,7 +2015,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 
 	target, err := chat_repo.Message().Find(ctx, req.MessageID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if target == nil || target.SessionID != sess.ID {
 		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
@@ -2122,7 +2120,7 @@ func (s *chatSvc) backendForkAnchor(
 func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Session, userMsg *chat_entity.Message) (string, error) {
 	msgs, err := chat_repo.Message().List(ctx, sess.ID)
 	if err != nil {
-		return "", i18n.NewError(ctx, code.OperationFailed)
+		return "", operationFailedWithCause(ctx, err)
 	}
 	numTurns := 0
 	for _, m := range msgs {
@@ -2214,14 +2212,12 @@ func (s *chatSvc) startTurn(
 		return chat_repo.Session().Update(txCtx, sess)
 	}); err != nil {
 		lock.Unlock()
-		// 持久化失败比较罕见(SQLite 锁 / disk full),前端只看到 OperationFailed,
-		// 真错(包括 preTx hook 的 sentinel)要进日志才能排查。
-		logger.Ctx(ctx).Error("chat_svc.startTurn: persist user+assistant messages failed",
+		// 持久化失败比较罕见(SQLite 锁 / disk full)。cause 随 Error() 透到前端,
+		// sessionId/agentId/backendType 一并进日志供事后排查。
+		return nil, operationFailedWithCause(ctx, err,
 			zap.Int64("sessionId", sess.ID),
 			zap.Int64("agentId", a.ID),
-			zap.String("backendType", be.Type),
-			zap.Error(err))
-		return nil, operationFailedWithCause(ctx, err)
+			zap.String("backendType", be.Type))
 	}
 
 	stream := StreamName(sess.ID, assistantMsg.ID)
@@ -2305,12 +2301,10 @@ func (s *chatSvc) startCompactTurn(
 		return chat_repo.Session().Update(txCtx, sess)
 	}); err != nil {
 		lock.Unlock()
-		logger.Ctx(ctx).Error("chat_svc.startCompactTurn: persist assistant message failed",
+		return nil, operationFailedWithCause(ctx, err,
 			zap.Int64("sessionId", sess.ID),
 			zap.Int64("agentId", a.ID),
-			zap.String("backendType", be.Type),
-			zap.Error(err))
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+			zap.String("backendType", be.Type))
 	}
 
 	stream := StreamName(sess.ID, assistantMsg.ID)
@@ -3333,21 +3327,21 @@ func (s *chatSvc) Rename(ctx context.Context, req *RenameRequest) (*RenameRespon
 	}
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 	sess.Title = title
 	if err := chat_repo.Session().Update(ctx, sess); err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	return &RenameResponse{}, nil
 }
 
 func (s *chatSvc) Delete(ctx context.Context, req *DeleteRequest) (*DeleteResponse, error) {
 	if err := chat_repo.Session().SoftDelete(ctx, req.SessionID); err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	// DB 已删，释放该 session 的常驻 CLI 子进程（best-effort，cache miss 时 no-op）。
 	claudecodert.Default().CloseSession(ctx, req.SessionID)
@@ -3369,7 +3363,7 @@ func (s *chatSvc) MarkSessionRead(ctx context.Context, req *MarkSessionReadReque
 		ts = time.Now().UnixMilli()
 	}
 	if err := chat_repo.Session().MarkRead(ctx, req.SessionID, ts); err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	return &MarkSessionReadResponse{}, nil
 }
@@ -3642,9 +3636,7 @@ func (s *chatSvc) createUserChatSession(ctx context.Context, agentID, projectID 
 		// Purpose 留空 = 普通用户会话。
 	}
 	if err := chat_repo.Session().Create(ctx, sess); err != nil {
-		logger.Ctx(ctx).Error("chat_svc.createUserChatSession: create failed",
-			zap.Int64("agentId", agentID), zap.Error(err))
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err, zap.Int64("agentId", agentID))
 	}
 	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil
 }
@@ -3668,9 +3660,7 @@ func (s *chatSvc) createSubagentSession(ctx context.Context, agentID, projectID 
 		Status:                 consts.ACTIVE,
 	}
 	if err := chat_repo.Session().Create(ctx, sess); err != nil {
-		logger.Ctx(ctx).Error("chat_svc.createSubagentSession: create failed",
-			zap.Int64("agentId", agentID), zap.Error(err))
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err, zap.Int64("agentId", agentID))
 	}
 	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil
 }

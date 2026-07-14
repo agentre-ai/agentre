@@ -1,5 +1,7 @@
 import type { Editor } from "@tiptap/react";
 
+import type { MentionKind } from "./mentions/xml";
+
 export interface AIChatInputDraft {
   content: string;
 }
@@ -25,9 +27,20 @@ export interface TipTapTextNode {
   text: string;
 }
 
+export interface TipTapMentionNode {
+  type: "mention";
+  attrs: {
+    kind: MentionKind;
+    refId: number;
+    label: string;
+    path: string;
+    color?: string;
+  };
+}
+
 export interface TipTapParagraphNode {
   type: "paragraph";
-  content?: TipTapTextNode[];
+  content?: (TipTapTextNode | TipTapMentionNode)[];
 }
 
 export interface TipTapDocNode {

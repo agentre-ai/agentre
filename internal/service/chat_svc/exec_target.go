@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/cago-frame/cago/pkg/i18n"
-	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
@@ -27,26 +26,20 @@ func execDeviceID(be *agent_backend_entity.AgentBackend) string {
 func (s *chatSvc) ResolveSessionExecTarget(ctx context.Context, sessionID int64) (string, string, error) {
 	sess, err := chat_repo.Session().Find(ctx, sessionID)
 	if err != nil {
-		logger.Ctx(ctx).Error("chat_svc.ResolveSessionExecTarget: find session",
-			zap.Int64("sessionId", sessionID), zap.Error(err))
-		return "", "", i18n.NewError(ctx, code.OperationFailed)
+		return "", "", operationFailedWithCause(ctx, err, zap.Int64("sessionId", sessionID))
 	}
 	if sess == nil {
 		return "", "", i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 	a, err := agent_repo.Agent().Find(ctx, sess.AgentID)
 	if err != nil {
-		logger.Ctx(ctx).Error("chat_svc.ResolveSessionExecTarget: find agent",
-			zap.Int64("agentId", sess.AgentID), zap.Error(err))
-		return "", "", i18n.NewError(ctx, code.OperationFailed)
+		return "", "", operationFailedWithCause(ctx, err, zap.Int64("agentId", sess.AgentID))
 	}
 	var be *agent_backend_entity.AgentBackend
 	if a != nil && a.AgentBackendID > 0 {
 		be, err = agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
 		if err != nil {
-			logger.Ctx(ctx).Error("chat_svc.ResolveSessionExecTarget: find backend",
-				zap.Int64("backendId", a.AgentBackendID), zap.Error(err))
-			return "", "", i18n.NewError(ctx, code.OperationFailed)
+			return "", "", operationFailedWithCause(ctx, err, zap.Int64("backendId", a.AgentBackendID))
 		}
 	}
 	cwd, err := resolveSessionCwd(ctx, sess, be)

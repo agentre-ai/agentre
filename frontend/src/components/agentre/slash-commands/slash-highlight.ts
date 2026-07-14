@@ -17,8 +17,20 @@
 // ProseMirror 的 doc 遍历 + DecorationSet 上。
 
 import { Extension } from "@tiptap/core";
+import type { Node as PMNode } from "@tiptap/pm/model";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
+
+// ProseMirror 的 textContent(等价于不传 leafText 的 textBetween)给非文本 leaf
+// 节点(hardBreak/mention 等 atom)0 个字符,但每个 leaf 在文档里仍占 1 个位置——
+// 于是「字符串下标」与「文档位置」按前面出现过的 leaf 个数逐个错位,decoration
+// 会画到错误的区间上。给每个 leaf 恰好 1 个字符即可对齐:hardBreak → "\n"
+// (语义即换行),其它 atom(如 mention chip)→ "￼"(不可见占位,视作词内字符)。
+// 注:slash-commands/use-slash-menu.ts 与 chat-input/mentions/use-mention-menu.ts
+// 各自持有一份同样的 helper —— 各模块刻意不互相依赖。
+function leafText(node: PMNode): string {
+  return node.type.name === "hardBreak" ? "\n" : "￼";
+}
 
 export type SlashRange = { from: number; to: number };
 
@@ -79,7 +91,7 @@ function buildDecorations(
   const decos: Decoration[] = [];
   doc.descendants((node, pos) => {
     if (!node.isTextblock) return;
-    const text = node.textContent;
+    const text = node.textBetween(0, node.content.size, undefined, leafText);
     if (!text) return;
     const ranges = findValidSlashRanges(text, validNames);
     // textblock 内部 text 的绝对位置 = pos + 1 + offsetInsideTextblock
