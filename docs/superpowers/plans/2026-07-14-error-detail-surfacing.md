@@ -36,9 +36,10 @@ Vitest + shadcn `@/components/ui/*`。
 | --- | --- | --- |
 | `internal/service/chat_svc/errors.go` | 修改 | 错误类型:`Error()` 携带 cause;helper 记日志 |
 | `internal/service/chat_svc/errors_internal_test.go` | 新建 | 上述类型的单测(须 `package chat_svc`,符号未导出) |
-| `internal/service/chat_svc/chat.go` | 修改 | 47 处调用点转换 + 3 处日志去重 + 1 处过期注释 |
+| `internal/service/chat_svc/chat.go` | 修改 | 47 处调用点转换 + 4 处日志折叠(含 2219)+ 1 处过期注释 |
+| `internal/service/chat_svc/chat_test.go` | 修改 | 追加路径级回归测试 |
 | `internal/service/chat_svc/git_state.go` | 修改 | 3 处调用点转换 |
-| `internal/service/chat_svc/exec_target.go` | 修改 | 3 处调用点转换 + 3 处日志去重 |
+| `internal/service/chat_svc/exec_target.go` | 修改 | 3 处调用点转换 + 3 处日志折叠 |
 | `frontend/src/lib/error-detail.ts` | 新建 | `splitErrorDetail` 纯函数 |
 | `frontend/src/lib/error-detail.test.ts` | 新建 | 上述函数单测(`lib/` 用同目录共置约定) |
 | `frontend/src/components/agentre/chat-panel.tsx` | 修改 | notice 加 detail 槽 + 12 个错误分支接线 |
@@ -55,10 +56,12 @@ Vitest + shadcn `@/components/ui/*`。
 **Interfaces:**
 - Consumes: 无(本任务是链路起点)
 - Produces:
-  - `operationFailedWithCause(ctx context.Context, cause error) error` —— 签名**不变**(已存在),
-    但行为改变:`cause != nil` 时 `Error()` 返回 `"操作失败\n" + cause.Error()`,且内部记一行日志。
-  - `cause == nil` 时行为不变,`Error()` 仍为 `"操作失败"`。
-  - Task 2 的 53 处调用点全部消费此函数。
+  - `operationFailedWithCause(ctx context.Context, cause error, fields ...zap.Field) error`
+    —— 在已存在的签名上**追加可变 `fields`**(原有 2 参调用点保持兼容)。
+  - `cause != nil` 时:`Error()` 返回 `"操作失败\n" + cause.Error()`,并记**一行**日志,
+    `fields` 原样带入该行(与 `zap.Error(cause)` 并列)。
+  - `cause == nil` 时行为不变,`Error()` 仍为 `"操作失败"`,**不记日志**。
+  - Task 2 的 53 处调用点全部消费此函数;其中 6 处传入排查字段(见 Task 2 Step 3)。
 
 **背景(实现者必读):** `localizedCauseError` 由 `f527a50` 为 `orch_svc` 的 SQLite busy 重试引入,
 但编排模块已整个删除,其 `Unwrap()` / `As()` **当前零消费者**。因此改 `Error()` **不会**打断任何现存链路。
@@ -179,15 +182,16 @@ func (e *localizedCauseError) As(target any) bool {
 
 // operationFailedWithCause 把通用的 OperationFailed 与真实 cause 绑在一起:
 // cause 既进日志(供事后排查),也随 Error() 透到前端(供当场排查)。
+// fields 用于带上调用点独有的排查字段(sessionId / agentId / …),让调用点无需自己再记一行。
 //
 // 日志 message 用固定串:helper 内拿不到调用方方法名,精确位置由 AddCallerSkip(1) 产生的
 // caller 字段(file:line)给出 —— 那本就是 docs/debugging.md 指定的最快过滤维度。
-func operationFailedWithCause(ctx context.Context, cause error) error {
+func operationFailedWithCause(ctx context.Context, cause error, fields ...zap.Field) error {
 	if cause == nil {
 		return i18n.NewError(ctx, code.OperationFailed)
 	}
 	logger.Ctx(ctx).WithOptions(zap.AddCallerSkip(1)).
-		Error("chat_svc: operation failed", zap.Error(cause))
+		Error("chat_svc: operation failed", append(fields, zap.Error(cause))...)
 	return &localizedCauseError{
 		httpErr: &httputils.Error{
 			Status: http.StatusBadRequest,
@@ -217,7 +221,7 @@ git commit internal/service/chat_svc/errors.go internal/service/chat_svc/errors_
 
 ---
 
-### Task 2: 后端调用点 —— 53 处转换 + 6 处日志去重
+### Task 2: 后端调用点 —— 53 处转换 + 7 处日志折叠
 
 **Files:**
 - Modify: `internal/service/chat_svc/chat.go`(47 处转换,3 处去重,1 处过期注释)
@@ -244,82 +248,7 @@ grep -c "i18n.NewError(ctx, code.OperationFailed)" chat.go git_state.go exec_tar
 预期输出:`chat.go:47`、`git_state.go:3`、`exec_target.go:3`。
 **数字对不上就停下来** —— 说明分支已变,须重新盘点再动手。
 
-- [ ] **Step 2: 机械转换 53 处**
-
-逐处把:
-
-```go
-	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
-	}
-```
-
-改成:
-
-```go
-	if err != nil {
-		return nil, operationFailedWithCause(ctx, err)
-	}
-```
-
-注意事项:
-- 返回值元数不尽相同(有 `return nil, …`、`return 0, …`、`return …` 等),**只换错误表达式,别动返回值形状**。
-- `if x, err := repo.Foo(ctx); err != nil {` 这类,`err` 同样在作用域内,照换。
-- 转换后 `i18n` / `code` 两个 import 可能在某些文件里变成未使用 —— 由 Step 5 的 `make lint` 兜住;
-  **仅删真正未使用的 import,不要顺手整理其它 import**。
-
-- [ ] **Step 3: 删掉 6 处重复日志**
-
-这 6 处已手写 logger,helper 现在接管了记录,保留会让同一个错误记两遍:
-
-| 文件 | logger 行 | OperationFailed 行 |
-| --- | --- | --- |
-| `chat.go` | 2308 | 2313 |
-| `chat.go` | 3645 | 3647 |
-| `chat.go` | 3671 | 3673 |
-| `exec_target.go` | 30 | 32 |
-| `exec_target.go` | 39 | 41 |
-| `exec_target.go` | 47 | 49 |
-
-> 行号是改动前的,转换过程中会漂移 —— 按 `logger.Ctx(ctx).Error(` 紧邻 `operationFailedWithCause` 的形态定位,
-> 别死认行号。
-
-删除整个 `logger.Ctx(ctx).Error(...)` 调用(含其多行 zap 字段),只留 `return …, operationFailedWithCause(ctx, err)`。
-若删后该文件的 `logger` / `zap` import 未使用则一并删。
-
-**例外 —— `chat.go:2219`(startTurn)不在去重表内:** 它带 `sessionId` / `agentId` / `backendType` 三个
-排查用字段,helper 的固定日志给不了。**保留该 logger**,并把它上方 2217-2218 行的注释改掉 —— 它写着
-「前端只看到 OperationFailed,真错要进日志才能排查」,本改动后前端已看得到 cause,该说法即刻过期:
-
-```go
-	}); err != nil {
-		lock.Unlock()
-		// 持久化失败比较罕见(SQLite 锁 / disk full)。cause 会随 Error() 透到前端,
-		// 这里额外记 sessionId/agentId/backendType 供事后排查(helper 的通用日志给不了这些字段)。
-		logger.Ctx(ctx).Error("chat_svc.startTurn: persist user+assistant messages failed",
-			zap.Int64("sessionId", sess.ID),
-			zap.Int64("agentId", a.ID),
-			zap.String("backendType", be.Type),
-			zap.Error(err))
-		return nil, operationFailedWithCause(ctx, err)
-	}
-```
-
-> 注:2219 这处**本就**已在调 `operationFailedWithCause`(全仓唯一一处),Step 2 不会碰它;本步只改注释。
-> 它会因 helper 加了日志而变成「记两行」—— 这是有意的:一行通用 + 一行带业务字段。
-
-- [ ] **Step 4: 确认转换彻底**
-
-```bash
-cd /Users/codfrm/Code/agentre/agentre/internal/service/chat_svc
-grep -c "i18n.NewError(ctx, code.OperationFailed)" chat.go git_state.go exec_target.go
-grep -c "operationFailedWithCause" chat.go git_state.go exec_target.go
-```
-
-预期:第一条在三个文件中**均为 0**(errors.go 的 fallback 不在此列);
-第二条 `chat.go:48`(47 转换 + 原有的 2224 那处)、`git_state.go:3`、`exec_target.go:3`。
-
-- [ ] **Step 4.5: 补一个路径级测试(证明 cause 真的从 repo 穿到调用方)**
+- [ ] **Step 1.5: 写路径级失败测试(red —— 必须在转换之前)**
 
 Task 1 只测了 helper 本身。这里锁的是**整条链路**:repo 报错 → service 返回的 error 里带得到 cause。
 追加到 `internal/service/chat_svc/chat_test.go` 末尾(**`package chat_svc_test`**,走公开 API):
@@ -357,17 +286,98 @@ func TestListAgents_SurfacesRepoCause(t *testing.T) {
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 ```
 
-跑:
+跑,**确认它按预期失败**:
 
 ```bash
 cd /Users/codfrm/Code/agentre/agentre
 go test -race -run 'TestListAgents_SurfacesRepoCause' ./internal/service/chat_svc/
 ```
 
-预期:PASS(Step 2 已完成转换)。
+预期:**FAIL** —— `err.Error()` 此刻只有「操作失败」,`assert.Contains` 找不到 `no such column: run_id`。
+**若它意外 PASS,停下来查原因,不要继续。**
 
-> **顺序提示**:若想严格 red-first,可在 Step 2 之前先写此测试并看它失败(`err.Error()` 只有「操作失败」),
-> 再做转换。若已先做了转换,则此测试是**事后护栏**,至少要确认它在 `git stash` 掉 chat.go 改动后会失败。
+(Step 2 完成转换后它会转绿,在 Step 5 一并验证。)
+
+- [ ] **Step 2: 机械转换 53 处**
+
+逐处把:
+
+```go
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.OperationFailed)
+	}
+```
+
+改成:
+
+```go
+	if err != nil {
+		return nil, operationFailedWithCause(ctx, err)
+	}
+```
+
+注意事项:
+- 返回值元数不尽相同(有 `return nil, …`、`return 0, …`、`return …` 等),**只换错误表达式,别动返回值形状**。
+- `if x, err := repo.Foo(ctx); err != nil {` 这类,`err` 同样在作用域内,照换。
+- 转换后 `i18n` / `code` 两个 import 可能在某些文件里变成未使用 —— 由 Step 5 的 `make lint` 兜住;
+  **仅删真正未使用的 import,不要顺手整理其它 import**。
+
+- [ ] **Step 3: 7 处手写 logger —— 字段传进 helper,删掉 logger**
+
+这 7 处已手写 logger 且**带有排查字段**。helper 现在接管记录:**把字段作为 `fields` 传进去,再删掉原 logger**。
+既不丢字段,也不重复记录(每个错误仍只有一行日志)。
+
+| 文件 | logger 行 | OperationFailed 行 | 要传入的 fields |
+| --- | --- | --- | --- |
+| `exec_target.go` | 30 | 32 | `zap.Int64("sessionId", sessionID)` |
+| `exec_target.go` | 39 | 41 | `zap.Int64("agentId", sess.AgentID)` |
+| `exec_target.go` | 47 | 49 | `zap.Int64("backendId", a.AgentBackendID)` |
+| `chat.go` | 2308 | 2313 | 照搬该 logger 原有的 zap 字段 |
+| `chat.go` | 3645 | 3647 | 照搬该 logger 原有的 zap 字段 |
+| `chat.go` | 3671 | 3673 | 照搬该 logger 原有的 zap 字段 |
+| `chat.go` | 2219 | 2224 | `sessionId` / `agentId` / `backendType`(见下) |
+
+> 行号是改动前的,转换中会漂移 —— 按 `logger.Ctx(ctx).Error(` 紧邻 `OperationFailed` / `operationFailedWithCause`
+> 的形态定位,**别死认行号**。
+> **`zap.Error(err)` 不要传** —— helper 自己会加;只传其余业务字段。
+
+`exec_target.go:28-33` 的完整改法(另两处同理):
+
+```go
+	sess, err := chat_repo.Session().Find(ctx, sessionID)
+	if err != nil {
+		return "", "", operationFailedWithCause(ctx, err, zap.Int64("sessionId", sessionID))
+	}
+```
+
+**`chat.go:2219`(startTurn)** —— 它本就是全仓唯一已在调 `operationFailedWithCause` 的地方(Step 2 不碰它),
+本步把它的 logger 也折叠进去,并改掉 2217-2218 行那条**即将过期**的注释(它写着「前端只看到
+OperationFailed,真错要进日志才能排查」,而本改动后前端已看得到 cause):
+
+```go
+	}); err != nil {
+		lock.Unlock()
+		// 持久化失败比较罕见(SQLite 锁 / disk full)。cause 随 Error() 透到前端,
+		// sessionId/agentId/backendType 一并进日志供事后排查。
+		return nil, operationFailedWithCause(ctx, err,
+			zap.Int64("sessionId", sess.ID),
+			zap.Int64("agentId", a.ID),
+			zap.String("backendType", be.Type))
+	}
+```
+
+删完后若某文件的 `logger` import 变成未使用则删掉;**`zap` import 多半仍在用(fields 还在传),别误删**。
+
+- [ ] **Step 4: 确认转换彻底**
+
+```bash
+cd /Users/codfrm/Code/agentre/agentre/internal/service/chat_svc
+grep -c "i18n.NewError(ctx, code.OperationFailed)" chat.go git_state.go exec_target.go
+grep -c "operationFailedWithCause" chat.go git_state.go exec_target.go
+```
+
+预期:第一条在三个文件中**均为 0**(errors.go 的 fallback 不在此列);
+第二条 `chat.go:48`(47 转换 + 原有的 2224 那处)、`git_state.go:3`、`exec_target.go:3`。
 
 - [ ] **Step 5: 跑 chat_svc 全包测试 + lint**
 
