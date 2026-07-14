@@ -1944,3 +1944,57 @@ describe("ChatPanel · 停止重启遗孤会话", () => {
     });
   });
 });
+
+// ─── notice 错误详情:后端 cause 拆分渲染 ─────────────────────────────────────
+
+describe("ChatPanel · notice 错误详情", () => {
+  it("Given 后端错误带 cause, When 发送失败, Then 详情块渲染 cause 且可选中复制", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ backendType: "builtin", id: 42 });
+    appMocks.SendChatMessage.mockRejectedValue(
+      new Error(
+        "操作失败\nSQL logic error: table chat_sessions has no column named run_id (1)",
+      ),
+    );
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+    expect(submit).toBeDefined();
+
+    act(() => {
+      submit?.("hi");
+    });
+
+    const detail = await screen.findByTestId("notice-detail");
+    expect(detail).toHaveTextContent(
+      "SQL logic error: table chat_sessions has no column named run_id (1)",
+    );
+    // 可选中复制(globals.css 全局 user-select:none 的 opt-in),而不是加复制按钮
+    expect(detail).toHaveAttribute("data-selectable-text", "true");
+  });
+
+  it("Given 后端错误无 cause, When 发送失败, Then 不渲染详情块", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ backendType: "builtin", id: 42 });
+    appMocks.SendChatMessage.mockRejectedValue(new Error("操作失败"));
+
+    render(<ChatPanel sessionId={42} />);
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+
+    act(() => {
+      submit?.("hi");
+    });
+
+    // 先等 notice 出现,再断言详情块不存在 —— 否则可能在 notice 渲染前就通过了。
+    await waitFor(() => {
+      expect(appMocks.SendChatMessage).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("notice-detail")).toBeNull();
+    });
+  });
+});

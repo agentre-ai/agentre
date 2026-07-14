@@ -42,6 +42,7 @@ import { useVisibleMessageId } from "@/hooks/use-visible-message-id";
 import i18n from "@/i18n";
 import { reasonToDisplayStatus } from "@/lib/attention-display";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
+import { splitErrorDetail } from "@/lib/error-detail";
 import { findProjectColorToken, projectChain } from "@/lib/project-chain";
 import { relativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
@@ -468,6 +469,7 @@ function ChatPanel({
   const [notice, setNotice] = React.useState<{
     kind: "error" | "info";
     text: string;
+    detail?: string;
   } | null>(null);
   // 「编辑用户消息」：点编辑后把目标消息文本直接载入 Composer。带 sessionId 在切换会话
   // 时自动失效，免得弄个 useEffect 在会话切换时手动 setState 一遍。
@@ -1216,9 +1218,13 @@ function ChatPanel({
       // 立刻 reload 让左侧 sidebar 同步出现新会话 + running 状态，不用等 turn 结束。
       onSidebarShouldReload?.();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       console.error("[chat] send failed", e);
-      setNotice({ kind: "error", text: t("chatPanel.errors.send", { msg }) });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.send", { msg }),
+        detail,
+      });
     }
   }
 
@@ -1233,8 +1239,12 @@ function ChatPanel({
           newSessionContext?.projectId ?? 0,
         );
       } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setNotice({ kind: "error", text: t("chatPanel.errors.send", { msg }) });
+        const { msg, detail } = splitErrorDetail(e);
+        setNotice({
+          kind: "error",
+          text: t("chatPanel.errors.send", { msg }),
+          detail,
+        });
         return;
       }
       onSessionCreated?.(sid, newSessionAgent.id);
@@ -1297,11 +1307,12 @@ function ChatPanel({
       });
       onSidebarShouldReload?.();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       console.error("[chat] compact failed", e);
       setNotice({
         kind: "error",
         text: t("chatPanel.errors.compact", { msg }),
+        detail,
       });
     }
   }
@@ -1346,9 +1357,13 @@ function ChatPanel({
         await doSend(sid, agentId, { text: cmd.objective });
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       console.error("[chat] goal failed", e);
-      setNotice({ kind: "error", text: t("chatPanel.errors.goal", { msg }) });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.goal", { msg }),
+        detail,
+      });
     }
   }
 
@@ -1380,9 +1395,13 @@ function ChatPanel({
         await doSend(resp.sessionId, agentId, { text: cmd.objective });
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       console.error("[chat] start goal failed", e);
-      setNotice({ kind: "error", text: t("chatPanel.errors.goal", { msg }) });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.goal", { msg }),
+        detail,
+      });
     }
   }
 
@@ -1443,7 +1462,7 @@ function ChatPanel({
         cancellable: resp.cancellable,
       });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       if (isChatSteerNoActiveError(msg)) {
         // turn 已结束（done/closed 事件即将到 / 已到），按普通 send 重新起一轮。
         await doSend(sid, agentId, { text });
@@ -1453,6 +1472,7 @@ function ChatPanel({
       setNotice({
         kind: "error",
         text: t("chatPanel.errors.enqueue", { msg }),
+        detail,
       });
     }
   }
@@ -1462,11 +1482,12 @@ function ChatPanel({
       const resp = await CancelQueuedChatMessage({ sessionId: sid, queuedId });
       useQueuedMessagesStore.getState().consume(sid, resp.removed);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       console.error("[chat] cancel queued failed", e);
       setNotice({
         kind: "error",
         text: t("chatPanel.errors.cancelQueued", { msg }),
+        detail,
       });
     }
   }
@@ -1483,7 +1504,7 @@ function ChatPanel({
       // 回灰。正常活跃 turn 的 abort 仍由 aborted 事件驱动 reload,这里多一次读无害。
       await reloadSession();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       // turn 已自然完成与点击 Stop 发生 race —— 后端 activeCancels 已经清掉了，
       // 不算错，静默即可（用户的意图是「让这轮停下」，结果已经停了）。但前端视图可能
       // 还停在 running,reload 一次把 DB 的终态拉回来,避免按钮一直亮着点了没反应。
@@ -1493,7 +1514,11 @@ function ChatPanel({
         return;
       }
       console.error("[chat] stop failed", e);
-      setNotice({ kind: "error", text: t("chatPanel.errors.stop", { msg }) });
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.stop", { msg }),
+        detail,
+      });
     }
   }
 
@@ -1546,10 +1571,11 @@ function ChatPanel({
       onSidebarShouldReload?.();
     } catch (e: unknown) {
       console.error("[chat] regenerate failed", e);
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       setNotice({
         kind: "error",
         text: t("chatPanel.errors.regenerate", { msg }),
+        detail,
       });
     }
   }
@@ -1567,11 +1593,12 @@ function ChatPanel({
       await RenameChatSession({ sessionId: id, title: next });
       onSidebarShouldReload?.();
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       console.error("[chat] rename failed", e);
       setNotice({
         kind: "error",
         text: t("chatPanel.errors.rename", { msg }),
+        detail,
       });
     }
   }
@@ -1589,11 +1616,12 @@ function ChatPanel({
         successDescription: t("chatPanel.launchCommand.copyDescription"),
       });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const { msg, detail } = splitErrorDetail(e);
       console.error("[chat] copy launch command failed", e);
       setNotice({
         kind: "error",
         text: t("chatPanel.errors.copyLaunchCommand", { msg }),
+        detail,
       });
     }
   }
@@ -1659,8 +1687,12 @@ function ChatPanel({
       onSidebarShouldReload?.();
     } catch (e: unknown) {
       console.error("[chat] edit failed", e);
-      const msg = e instanceof Error ? e.message : String(e);
-      setNotice({ kind: "error", text: t("chatPanel.errors.edit", { msg }) });
+      const { msg, detail } = splitErrorDetail(e);
+      setNotice({
+        kind: "error",
+        text: t("chatPanel.errors.edit", { msg }),
+        detail,
+      });
     }
   }
 
@@ -1972,9 +2004,20 @@ function ChatPanel({
                   >
                     <TriangleAlert aria-hidden="true" />
                     <AlertDescription className="flex min-w-0 items-start gap-2">
-                      <span className="min-w-0 flex-1 break-words text-xs leading-snug">
-                        {notice.text}
-                      </span>
+                      <div className="flex min-w-0 flex-1 flex-col gap-1">
+                        <span className="min-w-0 break-words text-xs leading-snug">
+                          {notice.text}
+                        </span>
+                        {notice.detail ? (
+                          <span
+                            data-testid="notice-detail"
+                            data-selectable-text="true"
+                            className="min-w-0 break-words font-mono text-[11px] leading-snug opacity-80"
+                          >
+                            {notice.detail}
+                          </span>
+                        ) : null}
+                      </div>
                       <button
                         type="button"
                         aria-label={t("chatPanel.notice.close")}
