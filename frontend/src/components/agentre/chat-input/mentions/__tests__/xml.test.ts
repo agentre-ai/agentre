@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseMentionXml, serializeMentionXml } from "../xml";
+import {
+  mentionsToDisplayText,
+  parseMentionXml,
+  serializeMentionXml,
+} from "../xml";
 
 describe("serializeMentionXml", () => {
   it("agent → id + label element text", () => {
@@ -77,5 +81,37 @@ describe("parseMentionXml", () => {
     expect(parseMentionXml(serializeMentionXml(ref))).toEqual([
       { type: "mention", ref },
     ]);
+  });
+});
+
+describe("mentionsToDisplayText", () => {
+  it("renders an agent tag as @label", () => {
+    expect(mentionsToDisplayText('<agent id="1">CEO 助手</agent>')).toBe(
+      "@CEO 助手",
+    );
+  });
+
+  it("renders a project tag as @label, dropping the path attr", () => {
+    expect(
+      mentionsToDisplayText(
+        '<project id="2" path="/Users/me/web">Web</project>',
+      ),
+    ).toBe("@Web");
+  });
+
+  it("preserves surrounding text", () => {
+    expect(
+      mentionsToDisplayText('ping <agent id="1">CEO 助手</agent> now'),
+    ).toBe("ping @CEO 助手 now");
+  });
+
+  it("unescapes XML-escaped labels", () => {
+    expect(mentionsToDisplayText('<agent id="1">a &amp; b</agent>')).toBe(
+      "@a & b",
+    );
+  });
+
+  it("leaves plain text with no tags unchanged", () => {
+    expect(mentionsToDisplayText("just text")).toBe("just text");
   });
 });

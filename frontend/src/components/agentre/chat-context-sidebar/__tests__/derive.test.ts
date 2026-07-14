@@ -74,6 +74,12 @@ describe("deriveOutline", () => {
   it("returns empty array for empty input", () => {
     expect(deriveOutline([])).toEqual([]);
   });
+
+  it("renders @ mention XML in the message text as readable @label, not raw tags", () => {
+    const msgs = [userMsg(1, 'ping <agent id="1">CEO 助手</agent> now')];
+    const out = deriveOutline(msgs);
+    expect(out[0].text).toBe("ping @CEO 助手 now");
+  });
 });
 
 describe("deriveFiles", () => {

@@ -72,3 +72,11 @@ export function parseMentionXml(text: string): MentionSegment[] {
   if (out.length === 0) out.push({ type: "text", value: text });
   return out;
 }
+
+// mentionsToDisplayText 把消息正文里的 @ 提及 XML 还原成可读文本(`@label`),
+// 供只能显示纯文本的地方用(如右侧 outline 列表)。转录区不要用它 —— 那里渲染真 chip。
+export function mentionsToDisplayText(raw: string): string {
+  return parseMentionXml(raw)
+    .map((s) => (s.type === "text" ? s.value : `@${s.ref.label}`))
+    .join("");
+}

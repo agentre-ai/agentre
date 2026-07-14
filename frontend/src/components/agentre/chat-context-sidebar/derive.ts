@@ -1,3 +1,5 @@
+import { mentionsToDisplayText } from "../chat-input/mentions/xml";
+
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
 type Msg = chat_svc.ChatMessage;
@@ -76,7 +78,7 @@ export function deriveOutline(messages: Msg[]): OutlineItem[] {
     out.push({
       messageId: m.id,
       turn,
-      text: textOf(m).slice(0, 200),
+      text: mentionsToDisplayText(textOf(m)).slice(0, 200),
       time: m.createtime ?? 0,
       edits,
       err,
