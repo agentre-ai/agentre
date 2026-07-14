@@ -1009,11 +1009,9 @@ func (s *chatSvc) StartGoal(ctx context.Context, req *StartGoalRequest) (*StartG
 		}
 		sess.SetProviderSession(providerSessionID)
 		if err := chat_repo.Session().Update(ctx, sess); err != nil {
-			logger.Ctx(ctx).Warn("chat_svc.StartGoal: persist provider_session_id failed",
+			return nil, operationFailedWithCause(ctx, err,
 				zap.Int64("sessionId", sess.ID),
-				zap.String("providerSessionID", providerSessionID),
-				zap.Error(err))
-			return nil, operationFailedWithCause(ctx, err)
+				zap.String("providerSessionID", providerSessionID))
 		}
 	}
 	return &StartGoalResponse{SessionID: sess.ID, Goal: resp.Goal}, nil
