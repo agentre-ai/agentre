@@ -1,10 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import type { Node as PMNode } from "@tiptap/pm/model";
 import type { Editor } from "@tiptap/react";
 
 import { MENTION_NODE_NAME } from "./mention-node";
 import { detectAtTrigger } from "./trigger";
 import type { MentionItem, MentionMenuState, MentionSources } from "./types";
+
+// ProseMirror 的 textBetween 默认给非文本 leaf 节点 0 个字符,但每个 leaf 在文档里
+// 仍占 1 个位置 —— 于是「字符串下标」与「文档位置」按前面 leaf 的个数错位,
+// deleteRange 会多吃掉前一个 chip(实测:3 个 mention 会吃掉中间那个)。
+// 给每个 leaf 恰好 1 个字符即可对齐:hardBreak → "\n"(语义即换行,允许其后触发),
+// 其它 atom(如 mention chip)→ "￼"(不可见占位,视作词内字符,不触发)。
+// 注:slash-commands/use-slash-menu.ts 与 chat-input/mentions/use-mention-menu.ts
+// 各自持有一份同样的 helper —— 两模块刻意不互相依赖。
+function leafText(node: PMNode): string {
+  return node.type.name === "hardBreak" ? "\n" : "￼";
+}
 
 function filterItems(all: MentionItem[], query: string): MentionItem[] {
   const q = query.trim().toLowerCase();
@@ -69,7 +81,12 @@ export function useMentionMenu({
         if (open) close();
         return;
       }
-      const before = $from.parent.textBetween(0, $from.parentOffset);
+      const before = $from.parent.textBetween(
+        0,
+        $from.parentOffset,
+        undefined,
+        leafText,
+      );
       const hit = detectAtTrigger(before);
       if (!hit) {
         if (open) close();
@@ -99,7 +116,12 @@ export function useMentionMenu({
     (item: MentionItem) => {
       if (editor) {
         const { $from } = editor.state.selection;
-        const before = $from.parent.textBetween(0, $from.parentOffset);
+        const before = $from.parent.textBetween(
+          0,
+          $from.parentOffset,
+          undefined,
+          leafText,
+        );
         const hit = detectAtTrigger(before);
         if (hit) {
           const from = $from.start() + hit.startOffset;
