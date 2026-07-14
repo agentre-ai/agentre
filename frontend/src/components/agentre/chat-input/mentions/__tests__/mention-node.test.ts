@@ -2,6 +2,7 @@ import Document from "@tiptap/extension-document";
 import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
 import { Editor } from "@tiptap/core";
+import type { JSONContent } from "@tiptap/core";
 import { describe, expect, it } from "vitest";
 
 import { Mention } from "../mention-node";
@@ -47,7 +48,9 @@ describe("Mention node", () => {
       '<p><span data-mention-kind="project" data-ref-id="3" data-label="Web" data-path="/w">@Web</span></p>',
     );
     const json = editor.getJSON();
-    const node = json.content?.[0]?.content?.[0];
+    const node = (json.content?.[0]?.content?.[0] ?? undefined) as
+      | JSONContent
+      | undefined;
     expect(node?.type).toBe("mention");
     expect(node?.attrs).toMatchObject({
       kind: "project",
