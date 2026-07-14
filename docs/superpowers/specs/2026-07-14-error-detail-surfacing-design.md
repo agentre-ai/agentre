@@ -53,8 +53,13 @@
 
 - **Wails 边界只过字符串**。前端一律 `e instanceof Error ? e.message : String(e)`,没有结构化通道。
   detail 必须由 `Error()` 自己携带,前端再拆。
-- **`Unwrap()` / `As()` 必须保持行为**。`f527a50` 的 SQLite busy 重试依赖 `errors.Is/As` 穿透到 cause;
-  改 `Error()` 不能破坏这条链路。
+- **`Unwrap()` / `As()` 目前零消费者**(已验证)。`f527a50` 引入 cause 是给 `orch_svc/scheduler.go` 用的
+  (`errors.Unwrap(err)` 后判 `database is locked` 重试),而编排模块已于 `202607140001` 整个删除,该消费者随之消失;
+  `As()` 侧全仓亦无人 `errors.As` 到本类型的 `httputils.Error`(唯一使用 `httputils.Error` 的
+  `agent_backend_svc/scan_create.go` 与本类型无关)。
+
+  因此**不存在「改 `Error()` 会打断 busy 重试」的风险**——本设计反而是给这套遗留机制接上第一个真实消费者(UI)。
+  `Unwrap()` 仍**保留**:错误确实包着 cause,支持 `errors.Is/As` 是 Go 的通用契约,与是否已有消费者无关。
 - **`logger.Ctx(ctx)` 返回 `*zap.Logger`**,因此 `.WithOptions(zap.AddCallerSkip(1))` 可用 —— helper 内记日志时
   `caller` 字段仍能指向真实调用点,而不是 `errors.go`。
 
@@ -64,9 +69,9 @@
 
 | 文件 | 处数 | 备注 |
 | --- | --- | --- |
-| `chat.go` | 47 | 其中 2 处已手写 logger |
-| `git_state.go` | 3 | — |
-| `exec_target.go` | 3 | 3 处均已手写 logger |
+| `chat.go` | 47 | 其中 3 处已手写 logger(行 2313 / 3647 / 3673) |
+| `git_state.go` | 3 | 均无 logger |
+| `exec_target.go` | 3 | 3 处均已手写 logger(行 32 / 41 / 49) |
 
 `errors.go` 内另有 3 处 `code.OperationFailed`,是 helper 自身的 fallback 与结构体字段,**不是调用点**。
 
@@ -111,8 +116,11 @@ repo/db 返回真实 err
 
 53 处 `i18n.NewError(ctx, code.OperationFailed)` → `operationFailedWithCause(ctx, err)`。
 
-5 处已手写 logger 的(`exec_target.go` ×3、`chat.go` ×2)**删掉原有 logger 调用**,由 helper 接管,
-否则同一个错误会被记两遍。
+6 处已手写 logger 的(`chat.go` 行 2313 / 3647 / 3673、`exec_target.go` 行 32 / 41 / 49)**删掉原有 logger 调用**,
+由 helper 接管,否则同一个错误会被记两遍。
+
+其中 `chat.go:2217-2218` 的注释「前端只看到 OperationFailed,真错要进日志才能排查」在本改动后即刻过期
+(前端从此看得到 cause),需一并删除或改写。
 
 ### C. 前端 — 错误提取
 
@@ -142,8 +150,8 @@ detail 块以次要样式渲染在 headline 下方,挂 `data-selectable-text="tr
 
 1. `Error()` 在 cause 存在时返回 `"操作失败\n<cause>"`。
 2. `cause == nil` 时退化,`Error()` 仍为 `"操作失败"`。
-3. `errors.Is(err, target)` 仍能穿透到 cause —— 锁死 `f527a50` 的 busy 重试不被破坏。
-4. `errors.As(err, **httputils.Error)` 仍拿得到 `Code == code.OperationFailed`。
+3. `errors.Is(err, sentinel)` 能穿透到 cause —— 作为**契约测试**(非回归护栏:原消费者 `orch_svc` 已删)。
+4. `errors.As(err, **httputils.Error)` 仍拿得到 `Code == code.OperationFailed` —— 同为契约测试。
 5. 关键路径(以 mock repo 注入失败)断言返回的 error 文本含 cause。
 
 **前端(Vitest):**
