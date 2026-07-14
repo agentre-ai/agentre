@@ -44,8 +44,11 @@ import type { AgentColor, AgentStatus } from "./types";
 import { statusConfig } from "./types";
 import type { ChatBlockData, RetryNotice } from "@/stores/chat-streams-store";
 import { useLocalCommandsStore } from "@/stores/local-commands-store";
+import { useChatAgents } from "@/hooks/use-chat-agents";
+import { useProjectList } from "@/hooks/use-project-list";
 import { ChatReadDroppedImages } from "../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../wailsjs/go/models";
+import { buildMentionSources } from "./chat-input/mentions/build-sources";
 import { resolveDroppedPaths } from "./chat-input/drop";
 import { useFileDropZone } from "./chat-input/use-file-drop";
 
@@ -454,6 +457,12 @@ function ChatComposer({
   ...props
 }: ChatComposerProps) {
   const { t } = useTranslation();
+  const { agents } = useChatAgents();
+  const { projects } = useProjectList();
+  const mentionSources = React.useMemo(
+    () => buildMentionSources(agents, projects),
+    [agents, projects],
+  );
   const inputRef = React.useRef<AIChatInputHandle>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [isEmpty, setIsEmpty] = React.useState(true);
@@ -738,6 +747,7 @@ function ChatComposer({
             placeholder={placeholder ?? t("chat.composer.placeholder")}
             autoFocus={autoFocusOnMount}
             backendType={backendType}
+            mentionSources={mentionSources}
             onSlashSelect={(cmd, exec) => {
               // literal_text 由 AIChatInput 内部直接填回编辑器(不自动发送),
               // 这里只接 rpc 类命令转交给父组件。

@@ -3,11 +3,13 @@ import { useCallback, useEffect, useState } from "react";
 import { ProjectListTree } from "../../wailsjs/go/app/App";
 import type { app } from "../../wailsjs/go/models";
 
-// 平铺投影：命令面板项目下拉只需要 id/name，不需要 tree 结构。
+// 平铺投影：命令面板项目下拉只需要 id/name；mention 菜单额外需要 path/color。
 // 父子关系命令面板里不显示。
 export type ProjectFlat = {
   id: number;
   name: string;
+  path: string;
+  color: string;
 };
 
 function flatten(nodes: app.ProjectTreeNode[]): ProjectFlat[] {
@@ -18,6 +20,8 @@ function flatten(nodes: app.ProjectTreeNode[]): ProjectFlat[] {
         out.push({
           id: n.project.id,
           name: n.project.name,
+          path: n.project.path,
+          color: n.project.color,
         });
       }
       if (n.children) walk(n.children);
