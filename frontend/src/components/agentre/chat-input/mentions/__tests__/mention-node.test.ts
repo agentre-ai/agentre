@@ -48,9 +48,7 @@ describe("Mention node", () => {
       '<p><span data-mention-kind="project" data-ref-id="3" data-label="Web" data-path="/w">@Web</span></p>',
     );
     const json = editor.getJSON();
-    const node = (json.content?.[0]?.content?.[0] ?? undefined) as
-      | JSONContent
-      | undefined;
+    const node = json.content?.[0]?.content?.[0] as JSONContent | undefined;
     expect(node?.type).toBe("mention");
     expect(node?.attrs).toMatchObject({
       kind: "project",
@@ -58,6 +56,30 @@ describe("Mention node", () => {
       label: "Web",
       path: "/w",
     });
+    editor.destroy();
+  });
+
+  it("falls back to kind=agent for an unknown data-mention-kind", () => {
+    const editor = makeEditor();
+    editor.commands.setContent(
+      '<p><span data-mention-kind="garbage" data-ref-id="1" data-label="X">@X</span></p>',
+    );
+    const node = editor.getJSON().content?.[0]?.content?.[0] as
+      | JSONContent
+      | undefined;
+    expect(node?.attrs?.kind).toBe("agent");
+    editor.destroy();
+  });
+
+  it("falls back to refId=0 for a non-numeric data-ref-id", () => {
+    const editor = makeEditor();
+    editor.commands.setContent(
+      '<p><span data-mention-kind="agent" data-ref-id="abc" data-label="X">@X</span></p>',
+    );
+    const node = editor.getJSON().content?.[0]?.content?.[0] as
+      | JSONContent
+      | undefined;
+    expect(node?.attrs?.refId).toBe(0);
     editor.destroy();
   });
 });
