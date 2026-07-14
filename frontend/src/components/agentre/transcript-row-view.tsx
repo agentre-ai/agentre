@@ -25,6 +25,10 @@ import { AutoTriggerBanner } from "./auto-trigger-banner";
 import { PlanApproveCard } from "./canonical-tool/plan-approve-request/card";
 import type { PlanActionStream } from "./canonical-tool/props";
 import { CanonicalToolRouter } from "./canonical-tool/registry";
+import {
+  makeMentionDecorator,
+  prepareMentionText,
+} from "./chat-input/mentions/transcript";
 import { CompactBoundaryDivider } from "./compact-boundary-divider";
 import { LocalCommandCard } from "./local-command/card";
 import { MarkdownText, StreamingMarkdown } from "./markdown-text";
@@ -462,6 +466,31 @@ function extractAssistantOutputText(
   return text + liveTail;
 }
 
+// MessageBody 渲染定稿(非流式)文本消息:先 prepareMentionText 把 @mention XML
+// 换成哨兵,再按需构建 decorator。抽成独立组件是因为调用点在 RenderItemView 的
+// switch 分支里 —— 直接在 case 里调 useMemo 会违反 hooks 规则(只在 item.type
+// === "text" 时执行,不满足每次渲染都调用同一组 hooks)。
+function MessageBody({
+  item,
+  cwd,
+}: {
+  item: Extract<TranscriptRowItem, { type: "text" }>;
+  cwd?: string;
+}) {
+  const { text: mentionText, refs: mentionRefs } = React.useMemo(
+    () => prepareMentionText(item.text),
+    [item.text],
+  );
+  const mentionDecorator = React.useMemo(
+    () =>
+      mentionRefs.length > 0 ? makeMentionDecorator(mentionRefs) : undefined,
+    [mentionRefs],
+  );
+  return (
+    <MarkdownText cwd={cwd} text={mentionText} decorator={mentionDecorator} />
+  );
+}
+
 // ─── RenderItem → JSX ────────────────────────────────────────────────────────
 
 function RenderItemView({ item }: { item: TranscriptRowItem }) {
@@ -474,7 +503,7 @@ function RenderItemView({ item }: { item: TranscriptRowItem }) {
       return item.streaming ? (
         <StreamingMarkdown cwd={ctx?.cwd} text={item.text} />
       ) : (
-        <MarkdownText cwd={ctx?.cwd} text={item.text} />
+        <MessageBody item={item} cwd={ctx?.cwd} />
       );
     case "plan":
       return (
