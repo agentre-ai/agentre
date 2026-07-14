@@ -93,7 +93,7 @@ export function useChatSession(sessionId: number) {
         permissionMode: resp.session.permissionMode,
         bgRunning: resp.session.bgRunning ?? false,
       });
-      // 重挂活跃 turn 的实时流。编排子轮 / 自主轮等"非前端发起"的 turn 没有 Send
+      // 重挂活跃 turn 的实时流。自主轮 / subagent 子轮等"非前端发起"的 turn 没有 Send
       // 响应入口给出 per-turn 流名,中途打开会话就看不到"生成中"和流式内容 ——
       // LoadSession 在有活跃 turn 时回传 activeStream,这里据此 openStream 续看。
       // 已有活跃 LiveStream 时不覆盖(避免打断正常 Send 已开的流);流名指向在跑的

@@ -52,8 +52,8 @@ type Runtime struct {
 	// session 并发首轮 double-spawn。
 	//
 	// **绝不能退回单把全局锁**:acquireSession 在锁内做阻塞子进程操作(spawn + 同步
-	// SetPermissionMode);某个 session 的 CLI 启动期挂起(实测:编排子轮带
-	// --mcp-config 卡在 MCP 初始化)会一直占着全局锁 → 其它**所有** session 的 turn 全
+	// SetPermissionMode);某个 session 的 CLI 启动期挂起(实测:带 --mcp-config 的子轮
+	// 卡在 MCP 初始化)会一直占着全局锁 → 其它**所有** session 的 turn 全
 	// 堵在 acquireSession 的锁上,整个 claudecode runtime 宕掉(单聊不输出/停不掉/再发
 	// 报 in-flight)。回归见 TestRun_BlockedSpawnDoesNotWedgeOtherSessions。
 	//
@@ -115,7 +115,7 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			// extractImages 从 RunRequest.UserBlocks 抽 inline 图片经 handle.Stream 透传。
 			capability.CapImageInput: true,
 			// RunRequest.MCPServers 注入支持:claudecode CLI 接受 --mcp-config 传入
-			// 额外 MCP tool 服务器;编排是首个消费者,入群资格门控于此 cap。
+			// 额外 MCP tool 服务器;org/subagent/hook 工具注入消费此 cap。
 			capability.CapMCPTools: true,
 			// CLI 在 run_in_background Bash 任务完成后自主跑续轮;实现 AutonomousTurnSource。
 			capability.CapAutonomousTurn: true,

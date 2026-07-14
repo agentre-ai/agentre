@@ -2,7 +2,7 @@ import type { OrgAgent, OrgDepartment } from "./types";
 
 // "汇报给" 单一事实源。
 //
-// 规则（与 docs/superpowers/specs/2026-05-14-agent-orchestration-design.md 对齐）：
+// 规则（与 docs/superpowers/specs/2026-06-11-agent-org-tool-design.md 对齐）：
 //   1. 显式 parent_agent_id 优先（必须指向真实存在、且不是自己）；
 //   2. 沿 department.parentId 向上找第一个 leadAgentId 不是自己的部门，用该部门的 leader；
 //   3. 都没有就兜底到 CEO 助手（systemBadge === "DEFAULT"）；

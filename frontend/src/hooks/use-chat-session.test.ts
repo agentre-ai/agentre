@@ -26,7 +26,7 @@ describe("useChatSession", () => {
     useChatStreamsStore.setState({ streams: new Map() });
   });
 
-  // Bug: 编排子轮(及任何非前端发起的 turn)在中途打开会话时,前端没有 per-turn
+  // Bug: 自主轮/subagent 子轮(及任何非前端发起的 turn)在中途打开会话时,前端没有 per-turn
   // 流入口 → 看不到"生成中"和流式内容。修复:LoadSession 在有活跃 turn 时回传
   // activeStream;hook 据此 openStream 重挂实时流。
   it("reattaches live stream on load when activeStream is present", async () => {
