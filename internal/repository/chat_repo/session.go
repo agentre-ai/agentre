@@ -61,17 +61,9 @@ func Session() SessionRepo             { return defaultSession }
 func RegisterSession(impl SessionRepo) { defaultSession = impl }
 func NewSession() SessionRepo          { return &sessionRepo{} }
 
-// defaultSessionScope 限定为「普通会话」(排除编排子会话)。所有默认会话列表/计数查询统一
-// 挂这个 scope, 避免逐个手写 run_id = 0 漏一个。
-// run_id = 0 将 dispatch 创建的编排子会话（run_id>0）挡出普通会话列表。
-func defaultSessionScope(db *gorm.DB) *gorm.DB {
-	return db.Where("run_id = ?", 0)
-}
-
 // nonSubagentScope 排除子 agent 委派会话(purpose='subagent_call')。这类会话由 agent_call
 // 同步委派出来、一次性隔离, 不是用户顶层会话, 不应出现在任何 agent/项目的会话列表或计数里。
-// 不挂 defaultSessionScope 的 *IncludingGroups 变体仍需隐藏它, 所以本 scope 必须无条件挂在
-// 每个列表/计数查询上, 否则它会从侧栏(走 IncludingGroups)漏出来。
+// 本 scope 必须无条件挂在每个列表/计数查询上, 否则它会从侧栏(走 IncludingGroups 变体)漏出来。
 func nonSubagentScope(db *gorm.DB) *gorm.DB {
 	return db.Where("purpose <> ?", chat_entity.SessionPurposeSubagent)
 }
@@ -107,9 +99,6 @@ func (r *sessionRepo) listByAgent(ctx context.Context, agentID int64, limit int,
 	q := db.Ctx(ctx).
 		Where("agent_id = ? AND status = ?", agentID, consts.ACTIVE).
 		Scopes(nonSubagentScope)
-	if ordinaryOnly {
-		q = q.Scopes(defaultSessionScope)
-	}
 	err := q.
 		Order("last_message_at DESC, id DESC").
 		Limit(limit).
@@ -133,9 +122,6 @@ func (r *sessionRepo) listByAgentPaged(ctx context.Context, agentID int64, offse
 	q := db.Ctx(ctx).
 		Where("agent_id = ? AND status = ?", agentID, consts.ACTIVE).
 		Scopes(nonSubagentScope)
-	if ordinaryOnly {
-		q = q.Scopes(defaultSessionScope)
-	}
 	err := q.
 		Order("last_message_at DESC, id DESC").
 		Offset(offset).
@@ -167,9 +153,6 @@ func (r *sessionRepo) listIDsByAgents(ctx context.Context, agentIDs []int64, ord
 		Select("agent_id, id").
 		Where("agent_id IN ? AND status = ?", agentIDs, consts.ACTIVE).
 		Scopes(nonSubagentScope)
-	if ordinaryOnly {
-		q = q.Scopes(defaultSessionScope)
-	}
 	err := q.
 		Order("agent_id ASC, last_message_at DESC, id DESC").
 		Scan(&rows).Error
@@ -199,9 +182,6 @@ func (r *sessionRepo) listAttentionByAgent(ctx context.Context, agentID int64, l
 		Where("agent_id = ? AND status = ? AND agent_status IN ?",
 			agentID, consts.ACTIVE, []string{"running", "waiting", "error"}).
 		Scopes(nonSubagentScope)
-	if ordinaryOnly {
-		q = q.Scopes(defaultSessionScope)
-	}
 	err := q.
 		Order("last_message_at DESC, id DESC").
 		Limit(limit).
@@ -235,9 +215,6 @@ func (r *sessionRepo) countByAgents(ctx context.Context, agentIDs []int64, ordin
 		Select("agent_id, COUNT(*) AS n").
 		Where("agent_id IN ? AND status = ?", agentIDs, consts.ACTIVE).
 		Scopes(nonSubagentScope)
-	if ordinaryOnly {
-		q = q.Scopes(defaultSessionScope)
-	}
 	err := q.
 		Group("agent_id").
 		Scan(&rows).Error
@@ -265,9 +242,6 @@ func (r *sessionRepo) countByAgent(ctx context.Context, agentID int64, ordinaryO
 		Model(&chat_entity.Session{}).
 		Where("agent_id = ? AND status = ?", agentID, consts.ACTIVE).
 		Scopes(nonSubagentScope)
-	if ordinaryOnly {
-		q = q.Scopes(defaultSessionScope)
-	}
 	err := q.Count(&n).Error
 	return n, err
 }
@@ -277,10 +251,7 @@ func (r *sessionRepo) countByAgent(ctx context.Context, agentID int64, ordinaryO
 // 注意:不要把 consts.ACTIVE(软删除位)误用为"运行中"语义 —— 那会让任何有历史会话的
 // agent 一直亮灯。真实"是否在跑"由 chat_sessions.agent_status 表达。
 //
-// 不挂 defaultSessionScope: 编排子会话(run_id>0)的运行轮同样让 agent 忙,必须计入呼吸灯,
-// 且要与不挂 scope 的 *IncludingGroups attention bubble 一致 —— 否则 agent 仅在跑编排轮时
-// 呼吸灯不亮。
-// 但挂 nonSubagentScope: 子 agent 委派会话从侧栏隐藏、点不进去,让它点亮呼吸灯会留下
+// 挂 nonSubagentScope: 子 agent 委派会话从侧栏隐藏、点不进去,让它点亮呼吸灯会留下
 // 「亮灯却无会话可看」的死角,故运行中的子 agent 轮不计入呼吸灯。
 func (r *sessionRepo) CountRunningByAgents(ctx context.Context, agentIDs []int64) (map[int64]int, error) {
 	out := make(map[int64]int, len(agentIDs))
@@ -309,9 +280,7 @@ func (r *sessionRepo) CountRunningByAgents(ctx context.Context, agentIDs []int64
 
 // ListByProject 返回该项目下的全部未软删除会话，按 last_message_at DESC 排。
 // 项目页 ChatProjectList 用它把 sessions 挂在 ProjectCard 下。
-// 不挂 defaultSessionScope: 绑定了该项目的编排 Run 会话(Leader 根会话 + 子 agent
-// 会话, run_id>0, purpose=orch_child)也应出现在项目会话列表里, 与 CountRunningByAgents
-// 呼吸灯口径一致。子 agent 委派会话(purpose=subagent_call)仍被 nonSubagentScope 排除。
+// 子 agent 委派会话(purpose=subagent_call)仍被 nonSubagentScope 排除。
 func (r *sessionRepo) ListByProject(ctx context.Context, projectID int64) ([]*chat_entity.Session, error) {
 	var rows []*chat_entity.Session
 	err := db.Ctx(ctx).
@@ -325,8 +294,7 @@ func (r *sessionRepo) ListByProject(ctx context.Context, projectID int64) ([]*ch
 
 // CountActiveByProject 统计项目下 status=ACTIVE 且 agent_status 在指定集合内的会话数。
 // project_svc.Delete 用它做守门：还有 running/waiting 会话时拒绝删项目。
-// 不挂 defaultSessionScope: 绑定该项目的编排 Run 会话(run_id>0)也计入, 避免在编排跑到
-// 一半时把项目删掉; 与 ListByProject 口径一致。子 agent 委派会话仍被 nonSubagentScope 排除。
+// 子 agent 委派会话仍被 nonSubagentScope 排除。
 func (r *sessionRepo) CountActiveByProject(ctx context.Context, projectID int64, agentStatuses []string) (int64, error) {
 	q := db.Ctx(ctx).
 		Model(&chat_entity.Session{}).

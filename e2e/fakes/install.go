@@ -93,16 +93,12 @@ func Install(ctx context.Context) {
 		AgentBackendID: backendID,
 		// 开启工具:本 Update 会整体覆写工具数组(丢掉 migration 默认),故所有 e2e 用到
 		// 的工具都要在这里显式开。让 CEO 单聊轮注入对应 MCP server:
-		//   - workflow → /mcp/workflow/(workflow-tool.spec:建流程审批)
 		//   - subagent → /mcp/subagent/(subagent-tool.spec:agent_call 委派,无审批)
 		//   - org → /mcp/org/(org-tool.spec:org_create_department 写工具审批)
-		//   - orchestrate → /mcp/orchestrate/(orchestration.spec:dispatch/ask/finish)
 		//   - hook → /mcp/hook/(hooks MCP 创作工具:hook_create 写工具审批)
 		Tools: []department_svc.AgentToolDTO{
-			{Key: agenttool.KeyWorkflow, Enabled: true},
 			{Key: agenttool.KeySubagent, Enabled: true},
 			{Key: agenttool.KeyOrg, Enabled: true},
-			{Key: agenttool.KeyOrchestrate, Enabled: true},
 			{Key: agenttool.KeyHook, Enabled: true},
 		},
 	}); err != nil {
@@ -110,34 +106,28 @@ func Install(ctx context.Context) {
 		return
 	}
 
-	// seed 编排成员(挂 CEO 汇报线;子 agent 与编排可调度池同口径)。
-	// E2E Member 覆盖执行人链路;E2E Reviewer 覆盖验证/审查/动态招募链路。
-	// 开 orchestrate 工具:成员被 dispatch 后才能自己再 dispatch(多级编排)/ reply 回应 ask。
-	memberTools := []department_svc.AgentToolDTO{{Key: agenttool.KeyOrchestrate, Enabled: true}}
-	for _, memberName := range []string{"E2E Member", "E2E Reviewer"} {
-		if existing, err := agent_repo.Agent().FindByName(ctx, memberName); err != nil {
-			logger.Ctx(ctx).Error("e2efakes.Install: lookup member agent failed",
-				zap.String("name", memberName), zap.Error(err))
-			return
-		} else if existing == nil {
-			if _, err := agent_svc.Agent().Create(ctx, &agent_svc.CreateAgentRequest{
-				Name:           memberName,
-				ParentAgentID:  ceo.ID,
-				AgentBackendID: backendID,
-				Tools:          memberTools,
-			}); err != nil {
-				logger.Ctx(ctx).Error("e2efakes.Install: create member agent failed",
-					zap.String("name", memberName), zap.Error(err))
-				return
-			}
-		} else if _, err := agent_svc.Agent().Update(ctx, &agent_svc.UpdateAgentRequest{
-			// wails dev 热重载复用已存在成员:补开 orchestrate(首次建已带,这里兜底)。
-			ID: existing.ID, Name: existing.Name, AgentBackendID: backendID, Tools: memberTools,
+	// seed E2E Member(挂 CEO 汇报线),供 subagent-tool.spec 的 agent_call 委派用。
+	const memberName = "E2E Member"
+	if existing, err := agent_repo.Agent().FindByName(ctx, memberName); err != nil {
+		logger.Ctx(ctx).Error("e2efakes.Install: lookup member agent failed",
+			zap.String("name", memberName), zap.Error(err))
+		return
+	} else if existing == nil {
+		if _, err := agent_svc.Agent().Create(ctx, &agent_svc.CreateAgentRequest{
+			Name:           memberName,
+			ParentAgentID:  ceo.ID,
+			AgentBackendID: backendID,
 		}); err != nil {
-			logger.Ctx(ctx).Error("e2efakes.Install: update member tools failed",
+			logger.Ctx(ctx).Error("e2efakes.Install: create member agent failed",
 				zap.String("name", memberName), zap.Error(err))
 			return
 		}
+	} else if _, err := agent_svc.Agent().Update(ctx, &agent_svc.UpdateAgentRequest{
+		ID: existing.ID, Name: existing.Name, AgentBackendID: backendID,
+	}); err != nil {
+		logger.Ctx(ctx).Error("e2efakes.Install: update member agent failed",
+			zap.String("name", memberName), zap.Error(err))
+		return
 	}
 
 	const codexBackendName = "E2E Codex Backend"

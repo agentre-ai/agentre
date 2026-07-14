@@ -387,10 +387,7 @@
       "org_delete_department": "Delete department",
       "org_create_agent": "Create agent",
       "org_update_agent": "Update agent",
-      "org_delete_agent": "Delete agent",
-      "workflow_create": "Create workflow",
-      "workflow_update": "Update workflow",
-      "workflow_delete": "Delete workflow"
+      "org_delete_agent": "Delete agent"
     }
   },
   "chat": {
@@ -742,10 +739,7 @@
       "commandPlaceholder": "Type a command...",
       "sessionPlaceholder": "Search sessions..."
     },
-    "title": "Command Palette",
-    "workflows": {
-      "heading": "Actions"
-    }
+    "title": "Command Palette"
   },
   "dataBackup": {
     "actions": {
@@ -1272,7 +1266,6 @@
     "hooks": "Hooks",
     "issues": "Issues",
     "org": "Organization",
-    "orchestration": "Orchestration",
     "projects": "Projects",
     "settings": "Settings"
   },
@@ -1686,16 +1679,12 @@
         "approval": "Approval",
         "names": {
           "org": "Org Structure",
-          "workflow": "Workflow Library",
           "subagent": "Call Sub-agent",
-          "orchestrate": "Agent Orchestration",
           "hook": "Script Hooks"
         },
         "descriptions": {
           "org": "Allow this agent to read and manage departments and members (writes require your approval)",
-          "workflow": "Allow this agent to read and manage collaboration workflows (writes require your approval)",
           "subagent": "Delegate a subtask to another configured agent and get its result back synchronously. The sub-agent runs in an isolated one-shot session; agents used as sub-agents should use an auto-approving permission mode.",
-          "orchestrate": "Allow this agent to dispatch work to other agents, track progress, coordinate rework, and consolidate results",
           "hook": "Let this agent author, dry-run and schedule script Hooks on a cron to emit events (create/update/delete/run all require your approval)"
         }
       },
@@ -1796,57 +1785,6 @@
       "memberCount": "{{count}} members"
     },
     "reorderFailed": "Failed to save order, please retry"
-  },
-  "workflows": {
-    "title": "Workflows",
-    "subtitle": "Reusable collaboration SOPs; the host gets the latest bound workflow every round",
-    "new": "New workflow",
-    "empty": "No workflows yet — click \"New workflow\" to start",
-    "runCount": "Used by {{count}} runs",
-    "runCount_one": "Used by 1 run",
-    "updatedAt": "Updated {{time}}",
-    "edit": "Edit workflow",
-    "delete": "Delete",
-    "preview": {
-      "liveHint": "Changes take effect immediately: in-progress runs get the latest content next round",
-      "empty": "Select a workflow to preview",
-      "blueprintTags": "Tags",
-      "blueprintHint": "At-a-glance only · does not constrain the AI"
-    },
-    "editor": {
-      "createTitle": "New workflow",
-      "editTitle": "Edit workflow",
-      "name": "Name",
-      "namePlaceholder": "e.g. Product development workflow",
-      "content": "Workflow content (Markdown)",
-      "insertTemplate": "Insert template",
-      "save": "Save",
-      "template": "# Workflow name\n\nApplies to: when to use this workflow.\n\n## Roles\n- Role A: responsibility and deliverable\n- Role B: responsibility and deliverable\n(Use abstract roles, not agent names; map to the run's agents by duty, dispatch to a sub-agent or ask the user when a role is missing)\n\n## Steps\n1. Role A: input → output, deliver .agentre/handoff/<run>/task-N-xxx.md with acceptance criteria\n2. Role B: continue from the previous deliverable\n3. Parallel verification: mark parallelizable steps explicitly (verification tasks reference the verified task)\n4. All pass → summarize @user; issues → send back to the owning step (new task card)\n\n## Discipline\n- Hand over every step with a task card; write deliverable paths explicitly\n- Never parallelize tasks that may touch the same code\n- Put acceptance criteria into the brief when assigning",
-      "tags": "Tags",
-      "tagsHint": "For humans only — not sent to the AI",
-      "tagsPlaceholder": "Type a tag, press Enter",
-      "removeItem": "Remove"
-    },
-    "deleteConfirm": {
-      "title": "Delete workflow",
-      "desc": "\"{{name}}\" is used by {{count}} runs; after deletion they fall back to \"no workflow\". This cannot be undone.",
-      "desc_one": "\"{{name}}\" is used by 1 run; after deletion it falls back to \"no workflow\". This cannot be undone.",
-      "descUnused": "Deleting \"{{name}}\" cannot be undone.",
-      "confirm": "Delete workflow"
-    },
-    "manager": {
-      "searchPlaceholder": "Search workflow name or body",
-      "metaLive": "Used by {{count}} runs · updated {{time}} · changes apply immediately",
-      "metaLive_one": "Used by 1 run · updated {{time}} · changes apply immediately",
-      "metaUnused": "Unused · updated {{time}} · changes apply immediately",
-      "saveHint": "⌘ + Enter to save · Esc to cancel"
-    },
-    "actions": {
-      "openLibrary": "Open workflow library",
-      "openLibraryHint": "Browse / create / edit cross-run workflows",
-      "newWorkflow": "New workflow",
-      "newWorkflowHint": "Open a blank workflow editor"
-    }
   },
   "permissionMode": {
     "active": "ACTIVE",
@@ -2254,169 +2192,6 @@
       "inherit": "Inherit",
       "on": "On",
       "off": "Off"
-    }
-  },
-  "orchestration": {
-    "section": "Orchestration",
-    "loading": "Loading…",
-    "new": {
-      "title": "New Orchestration Run",
-      "goal": "Goal",
-      "goalHint": "The leader breaks this down into subtasks",
-      "goalPlaceholder": "Describe what you want to achieve…",
-      "leader": "Leader Agent",
-      "leaderPlaceholder": "Choose the leader agent…",
-      "team": "Participating agents",
-      "teamSelected": "{{count}} selected",
-      "teamHint": "Leave empty to allow any agent to participate",
-      "teamAllAgents": "All agents",
-      "teamUngrouped": "Ungrouped",
-      "teamSelectAll": "Select all",
-      "teamDeptMembers": "{{count}} members",
-      "teamSummary": "This team",
-      "teamTotal": "{{count}} total",
-      "teamSearchPlaceholder": "Search agents…",
-      "teamSearchEmpty": "No matching agents",
-      "teamSearchResults": "Search results",
-      "flow": "Orchestration flow",
-      "flowAdhoc": "Ad-hoc",
-      "flowSelect": "Choose from library",
-      "flowSelectPlaceholder": "Search flows…",
-      "flowLibrary": "From library",
-      "flowContent": "Flow Content",
-      "flowContentPlaceholder": "Enter or paste flow definition…",
-      "flowManage": "Manage library",
-      "create": "Create & start run",
-      "project": "Project",
-      "projectNone": "None (agent default directory)"
-    },
-    "list": {
-      "newButton": "New Orchestration",
-      "title": "Orchestration Runs",
-      "newBtnLabel": "New",
-      "filterAll": "All",
-      "filterRunning": "Running",
-      "filterDone": "Done",
-      "filterEmpty": "No matching runs",
-      "libraryEntry": "Flow Library"
-    },
-    "onboarding": {
-      "cta": "Start multi-agent orchestration",
-      "step1": "Assign a Leader agent to coordinate",
-      "step2": "Set a goal — Leader breaks it down and delegates tasks",
-      "step3": "Track the structure graph and activity feed in real time"
-    },
-    "header": {
-      "viewGraph": "Graph",
-      "viewFeed": "Feed",
-      "running": "Running",
-      "completed": "Completed",
-      "paused": "Paused",
-      "stopped": "Stopped",
-      "pending": "Pending",
-      "countRunning": "{{count}} running",
-      "countWaitingYou": "{{count}} awaiting you",
-      "countDone": "{{count}} done",
-      "treeSize": "Nodes {{nodes}} · Subagents {{subagents}} · Depth {{depth}}",
-      "tokens": "{{count}} tokens",
-      "duration": "{{duration}}",
-      "pause": "Pause",
-      "resume": "Resume",
-      "stop": "Hard Stop",
-      "softWarning": "This cannot be undone. Continue?",
-      "leaderLabel": "Leader",
-      "more": "More"
-    },
-    "graph": {
-      "empty": "No nodes yet",
-      "completedBanner": "✓ Orchestration completed",
-      "pausedBanner": "Paused — click Resume to continue",
-      "stoppedBanner": "Hard stopped",
-      "deadlock": "Waiting cycle detected — resolve it",
-      "deadlockBannerDetail": "Multiple agents are waiting on each other; intervene or instruct the Leader to break the cycle",
-      "interveneBtn": "Intervene",
-      "completedBannerDetail": "All tasks finished — orchestration complete",
-      "pausedBannerDetail": "Orchestration is paused; resume at any time",
-      "resumeBtn": "Resume",
-      "stoppedBannerDetail": "Orchestration was hard-stopped",
-      "leaderCrown": "Leader",
-      "callCount": "×{{count}}",
-      "sessionsCount": "{{count}} sessions",
-      "callLabel": "Session #{{seq}}",
-      "askWaiting": "Asking · waiting"
-    },
-    "feed": {
-      "deadlock": "Ask waiting cycle detected",
-      "blockingCount": "{{count}} branch(es) awaiting your approval",
-      "blockingView": "Resolve",
-      "completed": "Orchestration completed",
-      "paused": "Orchestration paused",
-      "empty": "No activity yet",
-      "blocked": "Awaiting you",
-      "speakPlaceholder": "Message the Leader…",
-      "speakSend": "Send",
-      "kindDispatch": "dispatched",
-      "kindReport": "reported",
-      "kindFinish": "finished",
-      "kindBlocked": "blocked",
-      "kindAsk": "asked",
-      "kindReply": "replied",
-      "executing": "is executing"
-    },
-    "board": {
-      "statusRunning": "Running",
-      "statusDone": "Done",
-      "statusAwaitingUser": "Awaiting you",
-      "statusAwaitingChildren": "Awaiting subtasks",
-      "statusError": "Error",
-      "statusPending": "Pending",
-      "statusIdle": "In progress"
-    },
-    "tasks": {
-      "title": "Tasks",
-      "empty": "No tasks yet",
-      "progress": "{{done}}/{{total}} done"
-    },
-    "notify": {
-      "completed": "Orchestration run completed: {{goal}}",
-      "waitingYou": "A branch is awaiting your approval: {{goal}}",
-      "view": "View"
-    },
-    "run": {
-      "speakLeaderPlaceholder": "Tell the Leader: adjust priority / add constraints / approve tasks…",
-      "send": "Send"
-    },
-    "subagent": {
-      "badge": "+{{count}} subagents",
-      "autoMerge": "auto-merge"
-    },
-    "conversation": {
-      "backToBoard": "Back to board",
-      "speakPlaceholder": "Speak to it… (sends to this session)",
-      "speakSend": "Send",
-      "awaitingReply": "Awaiting reply",
-      "sessionLabel": "session",
-      "tasksUnit": "tasks"
-    },
-    "toggle": {
-      "tasks": "tasks",
-      "depth": "Depth",
-      "agents": "{{agentCount}} agent · {{subCount}} sub",
-      "subagents": "subagents"
-    },
-    "overview": {
-      "title": "Orchestration",
-      "subtitle": "Multi-agent orchestration overview",
-      "statRunning": "Running",
-      "statWaiting": "Waiting",
-      "statDoneThisWeek": "Done this week",
-      "statAvgDuration": "Avg duration",
-      "noDuration": "—",
-      "inProgress": "In progress",
-      "inProgressEmpty": "No runs in progress",
-      "recentDone": "Recently completed",
-      "recentDoneEmpty": "No completed runs",
-      "progress": "{{done}}/{{total}}"
     }
   },
   "localCommand": {

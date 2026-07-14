@@ -53,5 +53,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202607090001(), // 执行节点改名:orch_tasks → orch_dispatches
 		migration202607090002(), // 待办清单表 orch_tasks(新语义)
 		migration202607090003(), // 刷新四内置流程正文:删死参 isolate/死概念 node + 织入待办清单
+		migration202607140001(), // 移除编排子系统:DROP 编排/流程库 4 表 + chat_sessions.run_id + 清 orchestrate/workflow 工具种子
 	}
 }

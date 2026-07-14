@@ -3,7 +3,6 @@ package chat_svc
 
 import (
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
-	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/view"
 )
@@ -260,7 +259,7 @@ type ChatBlock struct {
 	// tool_permission_request block 专用：工具审批载荷与决策状态。
 	ToolPermission *ChatBlockToolPermission `json:"toolPermission,omitempty"`
 
-	// tool_approval block 专用：agent 内置工具(org / workflow 等)写操作审批卡。
+	// tool_approval block 专用：agent 内置工具(org / hook 等)写操作审批卡。
 	ToolApproval *ChatBlockToolApproval `json:"toolApproval,omitempty"`
 
 	// Canonical 是 runtime translator 算出的统一工具识别投影 — wire 形态由
@@ -325,7 +324,7 @@ type ChatBlockToolPermission struct {
 	AlwaysAllow bool           `json:"alwaysAllow,omitempty"`
 }
 
-// ChatBlockToolApproval agent 内置工具(org / workflow 等)写操作审批卡的前端投影。
+// ChatBlockToolApproval agent 内置工具(org / hook 等)写操作审批卡的前端投影。
 // ToolKey 标识来源工具,前端据此选标题/文案与 approved 后处理。
 type ChatBlockToolApproval struct {
 	ToolKey   string         `json:"toolKey"`
@@ -405,7 +404,7 @@ type ChatSessionDetail struct {
 	AgentStatus     string `json:"agentStatus"`
 	// ActiveStream 仅在 LoadSession 时填:该会话有正在跑的 turn 时,给出其 per-turn
 	// wails 事件名("chat:event:<sessionID>:<assistantMessageID>"),让中途打开本会话的
-	// 前端 openStream 重挂到实时流。编排子轮 / 自主轮等"非前端发起"的 turn 没有 Send
+	// 前端 openStream 重挂到实时流。子 agent 调用轮 / 自主轮等"非前端发起"的 turn 没有 Send
 	// 响应入口,只能靠这个字段重挂。无活跃 turn 时为空(omitempty),前端不重挂。
 	ActiveStream string `json:"activeStream,omitempty"`
 	// NeedsAttention 是由 AgentStatus=="waiting" 派生的兼容字段，不单独持久化。
@@ -529,9 +528,6 @@ const (
 	// SessionPurposeSubagentCall 子 agent 调用的一次性隔离会话(每次新建, 不复用)。
 	// 值与落库的 chat_entity.SessionPurposeSubagent 同源, 防两处字面量漂移。
 	SessionPurposeSubagentCall SessionPurpose = SessionPurpose(chat_entity.SessionPurposeSubagent)
-	// SessionPurposeOrchChild 编排 Run 的子 agent 会话(每次新建, 不复用, run_id>0)。
-	// 值与落库的 chat_entity.SessionPurposeOrchChild 同源, 防两处字面量漂移。
-	SessionPurposeOrchChild SessionPurpose = SessionPurpose(chat_entity.SessionPurposeOrchChild)
 	// SessionPurposeUserChat 普通用户会话(每次新建)。供 ! 命令在「新会话占位态」先坐实一个
 	// 真实会话用 —— 与子会话不同, 落库 Purpose 留空, 出现在侧栏、可继续对话。这是请求层的
 	// 派发键, 不与某个 chat_entity.SessionPurpose 同源(普通会话本就是空 Purpose)。
@@ -542,7 +538,6 @@ type EnsureSessionRequest struct {
 	Purpose   SessionPurpose
 	AgentID   int64
 	ProjectID int64
-	RunID     int64
 	Title     string
 }
 
@@ -564,14 +559,11 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
-	// MCPServers 透传到 RunRequest.MCPServers(注入额外 MCP tool server)。编排用; 普通会话空。
-	MCPServers []agentruntime.MCPServerSpec `json:"-"`
-	// SystemPromptSuffix 追加到 RunRequest.SystemPrompt 之后(编排上下文/角色)。编排用; 普通会话空。
-	SystemPromptSuffix string `json:"-"`
-	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(编排子轮经调度),
-	// 需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话已打开(可能在后台)
-	// 的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者(前端 Send 响应)能拿到流名。
-	// 前端 Send 默认 false: 发起者自己已从响应拿到流名, 重复推会双开流。编排用; 普通会话空。
+	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(子 agent 调用经 subagent_svc
+	// 阻塞起轮),需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话
+	// 已打开(可能在后台)的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者
+	// (前端 Send 响应)能拿到流名。
+	// 前端 Send 默认 false: 发起者自己已从响应拿到流名, 重复推会双开流。子 agent 调用用; 普通会话空。
 	EmitTurnStartedBypass bool `json:"-"`
 }
 type SendImage struct {

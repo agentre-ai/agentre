@@ -35,7 +35,7 @@ export function isSessionKnownToSidebar(sessionId: number): boolean {
 // 无谓 RPC。
 //
 // 为什么需要它: 普通单聊靠 ChatPanel.onSidebarShouldReload 在 turn 起手/落定时
-// reload 左栏。但有些会话是在 ChatPanel 之外被创建的 —— 如编排子轮惰性新建的
+// reload 左栏。但有些会话是在 ChatPanel 之外被创建的 —— 如 subagent 委派惰性新建的
 // backing session, 后续也可能是「远程调用创建会话」等路径。这些都绕开了 onSidebarShouldReload,
 // 左栏拿不到新行 (行不在 → 列表里没有, running 状态也无处挂)。统一走这一个入口即可。
 export function ensureSessionInSidebar(sessionId: number): void {

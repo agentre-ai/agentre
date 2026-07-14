@@ -493,10 +493,12 @@ Expected: all clean, i18n parity test green.
 
 Run:
 ```bash
-rg -n "orch_svc|orch_repo|orch_entity|workflow_svc|workflow_repo|workflowtool_svc|OrchestrationPage|WorkflowManagerDialog|KeyOrchestrate|KeyWorkflow|SessionPurposeOrchChild|RegisterTurnExtrasProvider" internal frontend/src cmd \
+rg -n "orch_svc|orch_repo|orch_entity|workflow_svc|workflow_repo|workflowtool_svc|OrchestrationPage|WorkflowManagerDialog|KeyOrchestrate|KeyWorkflow|SessionPurposeOrchChild|RegisterTurnExtrasProvider" internal frontend/src cmd e2e \
   | rg -v "_test\.go|node_modules"
 ```
 Expected: no output. Any hit is a missed reference — remove it and re-run the affected task's gate before finishing.
+
+**NOTE (learned during execution):** the committed `e2e/tests/*.spec.ts` suite (run by CI `make e2e`) and `e2e/fixtures/db.ts` also referenced removed symbols (`App.RunCreate`, `/mcp/workflow/`, dropped-table oracle helpers). These are NOT under `internal/frontend/src/cmd`, so the original sweep missed them. `e2e/` is now included above. The broken specs (`orchestration.spec.ts`, `orchestration-ui.spec.ts`, `workflow-tool.spec.ts`) were deleted and the dead DB-oracle helpers pruned from `db.ts` (gitignored `e2e/scratch/*orch*` leftovers were also removed locally).
 
 - [ ] **Step 4: Confirm the branch state**
 

@@ -363,7 +363,6 @@ Project blocks in [`components/agentre/primitives.tsx`](../frontend/src/componen
 | Component | Use |
 | --- | --- |
 | `AgentAvatar` | Agent identity avatar. Sizes `sm`/`md`/`lg` (`size-6`/`8`/`10`). Renders, in priority: a custom image (`avatarDataUrl`), a registry icon (`avatarIcon`), else initials — on the `agentColorClassNames[color]` fill with white text. Defaults: `color="agent-1"`, `size="md"`. |
-| `RunAvatar` | Orchestration Run avatar — `primary-soft` fill + `primary-text` glyph, distinct from solid agent avatars. Decorative (`aria-hidden`). |
 | `StatusDot` | Colored run-state dot. Sizes `xs`/`sm`/`md` (`size-1.5`/`2`/`2.5`); `aria-label` = `"<status> status"`. |
 | `StatusPill` | Dot + uppercase label pill — `font-mono text-2xs`, `rounded-sm`, on the status' tinted bg. The canonical "agent is RUNNING/WAITING/…" chip. |
 | `SidebarButton` | Icon rail button — `ghost`/`icon`, `size-10 rounded-lg`, `sidebar-icon` color; active = `bg-primary-soft text-sidebar-icon-active shadow-xs`; ships its own hover/focus tooltip (300ms hover delay) and `aria-current`. |

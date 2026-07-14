@@ -29,7 +29,7 @@ type MessageRowProps = Omit<React.ComponentProps<"article">, "children"> & {
 };
 
 // MessageRow：单条消息的布局骨架(头像列 + 内容列)。纯展示，不取数据、不决定业务。
-// 单聊 ChatMessage 与编排 transcript 共用，保证头像尺寸/布局一致，并提供 footer 槽。
+// 单条聊天消息在不同 transcript 视图间共用，保证头像尺寸/布局一致，并提供 footer 槽。
 function MessageRow({
   avatar,
   avatarName = "",

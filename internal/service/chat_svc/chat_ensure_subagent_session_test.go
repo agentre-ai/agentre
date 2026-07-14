@@ -117,48 +117,6 @@ func TestEnsureSession_SubagentCall(t *testing.T) {
 	})
 }
 
-// TestEnsureSession_OrchChild_BypassHonored 锁死「编排子会话尊重 bypass 配置」这条不变量。
-//
-// 编排子会话是自律执行(没有人审阅计划再点批准), 所以 claudecode agent 配
-// DefaultPermissionMode=bypassPermissions 时, 子会话必须直接以 bypass 起手 ——
-// 不能套用交互式会话的「先 plan 后 bypass」派生(那条会让子会话卡在 plan mode
-// 出计划等审批, 而编排里没人审批 → 配的 bypass 从未生效)。
-func TestEnsureSession_OrchChild_BypassHonored(t *testing.T) {
-	Convey("Given claudecode agent + DefaultPermissionMode=bypass, When EnsureSession creates an orch child (autonomous), Then the session honors bypass directly (no plan-first override)", t, func() {
-		ctrl := gomock.NewController(t)
-		t.Cleanup(ctrl.Finish)
-
-		sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
-		prev := chat_repo.Session()
-		chat_repo.RegisterSession(sessRepo)
-		t.Cleanup(func() { chat_repo.RegisterSession(prev) })
-		registerAgentBackendForSubagentSession(t, ctrl, int64(7), "bypassPermissions")
-
-		ctx := context.Background()
-
-		sessRepo.EXPECT().
-			Create(gomock.Any(), gomock.Any()).
-			DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
-				So(s.Purpose, ShouldEqual, chat_entity.SessionPurposeOrchChild)
-				So(s.PermissionMode, ShouldEqual, "bypassPermissions")
-				So(s.PermissionModeAtLaunch, ShouldEqual, "bypassPermissions")
-				s.ID = 301
-				return nil
-			})
-
-		svc := chat_svc.NewChat(chat_svc.NoopEmitter{})
-		resp, err := svc.EnsureSession(ctx, &chat_svc.EnsureSessionRequest{
-			Purpose: chat_svc.SessionPurposeOrchChild,
-			AgentID: 7,
-			RunID:   99,
-			Title:   "orch child",
-		})
-		So(err, ShouldBeNil)
-		So(resp.SessionID, ShouldEqual, 301)
-		So(resp.Created, ShouldBeTrue)
-	})
-}
-
 func TestSessionProjectID(t *testing.T) {
 	Convey("Given a session with a project, When SessionProjectID is called, Then it returns that project id", t, func() {
 		ctrl := gomock.NewController(t)

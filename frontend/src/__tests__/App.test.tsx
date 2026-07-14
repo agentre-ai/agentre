@@ -639,7 +639,7 @@ describe("App", () => {
     expect(Array.from(navRail.children).at(-1)).toBe(settingsButton);
   });
 
-  it("places orchestration after issues in the left rail workflow group", () => {
+  it("places organization after issues in the left rail workflow group", () => {
     render(<App />);
 
     const navRail = screen.getByRole("complementary", {
@@ -649,11 +649,10 @@ describe("App", () => {
       .getAllByRole("button")
       .map((button) => button.getAttribute("aria-label"));
 
-    expect(labels.slice(0, 6)).toEqual([
+    expect(labels.slice(0, 5)).toEqual([
       "Chat",
       "Projects",
       "Issues",
-      "Orchestration",
       "Organization",
       "Hooks",
     ]);

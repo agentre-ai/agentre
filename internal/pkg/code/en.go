@@ -204,7 +204,4 @@ var enUS = map[int]string{
 	DataImportDuplicateLocal:     "Multiple local records share the same name, cannot auto-overwrite",
 	DataImportRollback:           "Import failed, all changes rolled back",
 	DataImportInvalidAction:      "Unknown import action",
-
-	// workflow
-	WorkflowNotFound: "Workflow not found",
 }

@@ -107,7 +107,7 @@ type ChatSvc interface {
 	CountActiveSessions(ctx context.Context) (int, error)
 	// BeginToolApproval 在 sessionID 当前活跃 turn 上登记一条 pending 工具审批、推流,
 	// 并返回等待 channel;无活跃 turn → error(工具 MCP handler 据此拒绝工具调用)。
-	// org / workflow 等内置写工具共用此入口。
+	// org / hook 等内置写工具共用此入口。
 	BeginToolApproval(ctx context.Context, sessionID int64, blk *chatblocks.ToolApprovalBlock) (<-chan bool, error)
 	// AnswerToolApproval 按 requestID 唤醒挂起的写工具调用(前端审批入口的唯一后端方法);
 	// 未知/重复/已超时 → error。
@@ -181,7 +181,7 @@ type chatSvc struct {
 	// activeTurnStreams: sessionID(int64) → 当前活跃 turn 的 per-turn 流名(string)。
 	// runTurn 起止维护;工具审批(BeginToolApproval)据此路由审批卡到正确的流。
 	activeTurnStreams sync.Map
-	// toolApprovals: 本会话进行中 turn 上挂起/已决的工具审批 block(org / workflow 等内置
+	// toolApprovals: 本会话进行中 turn 上挂起/已决的工具审批 block(org / hook 等内置
 	// 写工具共用),finalize 时 merge 进 assistant 消息;LoadSession 时 overlay 到投影。
 	toolApprovalsMu sync.Mutex
 	toolApprovals   map[int64][]*chatblocks.ToolApprovalBlock
@@ -435,8 +435,8 @@ func (s *chatSvc) sessionLiteFromEntity(sess *chat_entity.Session) ChatSessionLi
 }
 
 // activeStreamName 给 LoadSession 用:turn 进行中时,让中途打开该会话的前端能重挂到
-// per-turn 实时流。per-turn 流名只在用户主动 Send 时由响应给出;编排子轮 / 自主轮等"非前端
-// 发起"的 turn 前端拿不到这个名字 —— 这里按在跑 turn 的(末条)assistant 消息把它重建出来,
+// per-turn 实时流。per-turn 流名只在用户主动 Send 时由响应给出;子 agent 调用轮 / 自主轮等"非
+// 前端发起"的 turn 前端拿不到这个名字 —— 这里按在跑 turn 的(末条)assistant 消息把它重建出来,
 // 前端据此 openStream 续看。无活跃 turn / 还没建出 assistant 消息时返回空串。
 func activeStreamName(activeTurn bool, sessionID int64, msgs []*chat_entity.Message) string {
 	if !activeTurn {
@@ -488,7 +488,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 	// idle),但若 serve 时已有活跃 turn 却吐 非 running/waiting,就是后端侧能直接抓到
 	// 的不一致。配合前端 LogClient 上报的 apply 时刻能把竞态时间线对上。
 	_, activeTurn := s.activeCancels.Load(sess.ID)
-	// ActiveStream 让中途打开本会话的前端重挂到 per-turn 实时流(编排子轮 / 自主轮等
+	// ActiveStream 让中途打开本会话的前端重挂到 per-turn 实时流(子 agent 调用轮 / 自主轮等
 	// 非前端发起的 turn 没有 Send 响应入口)。无活跃 turn 时为空,前端不重挂。
 	resp.Session.ActiveStream = activeStreamName(activeTurn, sess.ID, msgs)
 	if activeTurn &&
@@ -1237,8 +1237,6 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	}
 
 	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, "" /*forkAnchor*/, turnExtras{
-		mcpServers:            req.MCPServers,
-		systemPromptSuffix:    req.SystemPromptSuffix,
 		emitTurnStartedBypass: req.EmitTurnStartedBypass,
 	})
 }
@@ -1658,7 +1656,7 @@ func validateRequestedPermissionMode(ctx context.Context, backendType agent_back
 
 // createPermissionMode 解析新建会话的初始权限模式。planFirst 决定是否套用
 // 「先 plan 后 bypass」派生: 交互式会话(有人审阅计划再批准)传 true, 自律会话
-// (编排子会话 / subagent 调用, 没人审批)传 false —— 后者必须尊重配置的 bypass
+// (subagent 调用, 没人审批)传 false —— 后者必须尊重配置的 bypass
 // 直接起手, 否则会卡在 plan mode 出计划等审批, 配的 bypass 从未生效。
 func createPermissionMode(ctx context.Context, be *agent_backend_entity.AgentBackend, raw string, planFirst bool) (string, error) {
 	if be == nil {
@@ -2150,12 +2148,9 @@ func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Ses
 // preTx, if non-nil, runs at the very top of the transaction — before NextSeq —
 // so it can free up seq numbers by truncating older rows. Returning a non-nil
 // error from preTx aborts the whole turn (and unlocks).
-// turnExtras 是从 SendRequest 透传到 RunRequest 的领域无关可选项;普通会话一律零值,
-// 编排会话由 orch provider 填(额外 MCP server + system-prompt 后缀)。
+// turnExtras 是从 SendRequest 透传到 runTurn 的领域无关可选项;普通会话一律零值。
 // 在同一会话的自动续轮(auto-continue)里需要保持不变,所以随 runTurn 一路携带。
 type turnExtras struct {
-	mcpServers         []agentruntime.MCPServerSpec
-	systemPromptSuffix string
 	// emitTurnStartedBypass: 见 SendRequest.EmitTurnStartedBypass。startTurn 在建好
 	// assistant 消息后, 经会话级旁路把 per-turn 流名推给已打开的查看者。
 	emitTurnStartedBypass bool
@@ -2172,11 +2167,6 @@ func (s *chatSvc) startTurn(
 	forkAnchor string,
 	extras turnExtras,
 ) (*SendResponse, error) {
-	// 编排会话(RunID>0)若 extras 未带 turn 上下文(用户直接 Send/Edit/Regenerate,非经 orch
-	// 调度),经 provider 补齐编排指引 + 流程后缀(C2)。普通会话(RunID=0)整体跳过;
-	// 调度路径已填满则跳过。
-	extras = fillGroupTurnExtras(ctx, a, sess.ID, sess.RunID, extras)
-
 	lock := s.lockFor(sess.ID)
 	if !lock.TryLock() {
 		return nil, i18n.NewError(ctx, code.ChatSendInFlight)
@@ -2474,18 +2464,16 @@ func (s *chatSvc) runTurn(
 		return
 	}
 	req := agentruntime.RunRequest{
-		Backend:   be,
-		Provider:  prov,
-		AgentID:   a.ID,
-		SessionID: sess.ID,
-		Cwd:       cwd,
-		// SystemPromptSuffix 普通会话为空 ⇒ 与今日 strings.Join(...) 逐字节一致(raw concat);
-		// 编排会话由 orch provider 自带前导换行格式化,此处只做原样追加。
-		SystemPrompt:      strings.Join(a.GetPrompt(), "\n") + extras.systemPromptSuffix,
+		Backend:           be,
+		Provider:          prov,
+		AgentID:           a.ID,
+		SessionID:         sess.ID,
+		Cwd:               cwd,
+		SystemPrompt:      strings.Join(a.GetPrompt(), "\n"),
 		ProviderSessionID: sess.ProviderSessionID,
 		Compact:           compact,
 		ForkAnchor:        forkAnchor,
-		MCPServers:        appendTurnMCP(ctx, extras.mcpServers, a, sess.ID, runner.Capabilities().Has(capability.CapMCPTools)),
+		MCPServers:        appendTurnMCP(ctx, nil, a, sess.ID, runner.Capabilities().Has(capability.CapMCPTools)),
 		EnabledPlugins:    enabledPluginsForTurn(ctx, a, runner.Capabilities().Has(capability.CapSkills)),
 	}
 	if userMsg != nil {
@@ -3627,8 +3615,6 @@ func (s *chatSvc) EnsureSession(ctx context.Context, req *EnsureSessionRequest) 
 	switch req.Purpose {
 	case SessionPurposeSubagentCall:
 		return s.createSubagentSession(ctx, req.AgentID, req.ProjectID, req.Title)
-	case SessionPurposeOrchChild:
-		return s.createOrchChildSession(ctx, req.AgentID, req.ProjectID, req.RunID, req.Title)
 	case SessionPurposeUserChat:
 		return s.createUserChatSession(ctx, req.AgentID, req.ProjectID, req.Title)
 	default:
@@ -3689,41 +3675,12 @@ func (s *chatSvc) createSubagentSession(ctx context.Context, agentID, projectID 
 	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil
 }
 
-// createOrchChildSession 为编排 Run 的子 agent 建一个全新的一次性会话(run_id>0,每次新建)。
-// 与 subagent_call 类似,不做幂等复用 —— 每次 dispatch 都要干净的隔离上下文。
-func (s *chatSvc) createOrchChildSession(ctx context.Context, agentID, projectID, runID int64, title string) (*EnsureSessionResponse, error) {
-	if agentID <= 0 {
-		return nil, i18n.NewError(ctx, code.InvalidParameter)
-	}
-	// 编排子会话是自律执行(编排里没人审批计划), 直接尊重配置的 bypass → planFirst=false。
-	permissionMode := s.launchPermissionModeForAgent(ctx, agentID, false)
-	sess := &chat_entity.Session{
-		AgentID:                agentID,
-		ProjectID:              projectID,
-		RunID:                  runID,
-		Purpose:                chat_entity.SessionPurposeOrchChild,
-		PermissionMode:         permissionMode,
-		PermissionModeAtLaunch: permissionMode,
-		Title:                  strings.TrimSpace(title),
-		AgentStatus:            "idle",
-		Status:                 consts.ACTIVE,
-	}
-	if err := chat_repo.Session().Create(ctx, sess); err != nil {
-		logger.Ctx(ctx).Error("chat_svc.createOrchChildSession: create failed",
-			zap.Int64("agentId", agentID),
-			zap.Int64("runId", runID),
-			zap.Error(err))
-		return nil, i18n.NewError(ctx, code.OperationFailed)
-	}
-	return &EnsureSessionResponse{SessionID: sess.ID, Created: true}, nil
-}
-
 // launchPermissionModeForAgent 解析某 agent 后端在新建会话时的默认权限模式。
 // 只做轻量只读解析(agent → backend → createPermissionMode), 不做 provider/gateway 可聊性校验
 // —— 那些属于 send 起手时的职责。解析不出(agent/后端缺失或后端无权限模式概念)时返回空串,
 // 由 runtime 首轮回填 at_launch 兜底。
 // planFirst: 交互式会话传 true(套用「先 plan 后 bypass」派生), 自律会话
-// (编排子会话 / subagent)传 false(直接尊重配置的 bypass)。
+// (subagent 调用)传 false(直接尊重配置的 bypass)。
 func (s *chatSvc) launchPermissionModeForAgent(ctx context.Context, agentID int64, planFirst bool) string {
 	a, err := agent_repo.Agent().Find(ctx, agentID)
 	if err != nil || a == nil {

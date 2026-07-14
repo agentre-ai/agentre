@@ -17,7 +17,6 @@ import buildingCommunityIcon from "@iconify-icons/tabler/building-community";
 import layoutKanbanIcon from "@iconify-icons/tabler/layout-kanban";
 import messageCircleIcon from "@iconify-icons/tabler/message-circle";
 import settingsIcon from "@iconify-icons/tabler/settings";
-import topologyStar3Icon from "@iconify-icons/tabler/topology-star-3";
 import webhookIcon from "@iconify-icons/tabler/webhook";
 
 import {
@@ -25,8 +24,6 @@ import {
   AppTopBar,
   ChatPage,
   ChatStreamsHost,
-  OrchEventsHost,
-  OrchNotifier,
   ChatTabsShortcuts,
   TurnCompleteNotifier,
   NotificationToastViewport,
@@ -34,9 +31,7 @@ import {
   HooksPage,
   IssuesPage,
   OrgChartPage,
-  OrchestrationPage,
   PaletteScopeBridge,
-  WorkflowManagerDialog,
   ProjectsPage,
   QuitConfirmDialog,
   ShortcutsProvider,
@@ -89,11 +84,6 @@ const navItems: NavItem[] = [
     icon: layoutKanbanIcon,
   },
   {
-    path: "/orchestration",
-    labelKey: "nav.orchestration",
-    icon: topologyStar3Icon,
-  },
-  {
     path: "/org",
     labelKey: "nav.org",
     icon: buildingCommunityIcon,
@@ -117,7 +107,6 @@ const pageBreadcrumbKeys: Record<string, string> = {
   "/hooks": "nav.hooks",
   "/issues": "nav.issues",
   "/org": "nav.org",
-  "/orchestration": "nav.orchestration",
   "/settings": "nav.settings",
 };
 
@@ -774,11 +763,7 @@ function AppLayout() {
     reconcileMissingSessions(existing);
   }, [agents, reconcileMissingSessions]);
 
-  const breadcrumbKey =
-    pageBreadcrumbKeys[location.pathname] ??
-    (location.pathname.startsWith("/orchestration")
-      ? "nav.orchestration"
-      : undefined);
+  const breadcrumbKey = pageBreadcrumbKeys[location.pathname];
   const breadcrumb = breadcrumbKey ? t(breadcrumbKey) : "";
   const hasChat =
     location.pathname === "/chat" || location.pathname === "/projects";
@@ -849,7 +834,6 @@ function AppLayout() {
         />
         <PaletteScopeBridge />
         <CommandPalette />
-        <WorkflowManagerDialog />
         <Toaster position="bottom-right" richColors theme={effectiveTheme} />
       </div>
     </ShortcutsProvider>
@@ -876,10 +860,6 @@ function App() {
           unmount,但这里继续维持 Wails EventsOn,把 chunk/tool 事件累到全局
           store,切回来时 ChatPanel 能从 store 还原完整流式状态。*/}
       <ChatStreamsHost />
-      {/* 编排运行态常驻订阅器:订阅全部 6 个 orch:run:* 事件,刷新 orch-run-store
-          与 orch-run-list-store,跨路由保持编排列表与详情实时更新。*/}
-      <OrchEventsHost />
-      <OrchNotifier />
       <TurnCompleteNotifier />
       <NotificationToastViewport />
       {/* 退出二次确认:常驻订阅 "app:quit-blocked",活跃会话存在时拦截退出弹框。*/}
@@ -891,8 +871,6 @@ function App() {
           <Route path="/issues" element={<IssuesPage />} />
           <Route path="/hooks" element={<HooksPage />} />
           <Route path="/org" element={<OrgChartPage />} />
-          <Route path="/orchestration" element={<OrchestrationPage />} />
-          <Route path="/orchestration/:runId" element={<OrchestrationPage />} />
           <Route path="/settings" element={<SettingsRoute />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Route>

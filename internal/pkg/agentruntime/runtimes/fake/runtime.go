@@ -27,10 +27,6 @@ const ReplyPrefix = "e2e-fake-reply: "
 // SystemAssertDirectivePrefix 触发 system prompt 可观测断言:e2e-assert-system:<needle>。
 const SystemAssertDirectivePrefix = "e2e-assert-system:"
 
-// WorkflowCreateDirectivePrefix 触发流程管理工具建流程的用户指令:
-// e2e-workflow-create:<name>。需 agent 开启 workflow 工具(注入 /mcp/workflow/)。
-const WorkflowCreateDirectivePrefix = "e2e-workflow-create:"
-
 // SubagentCallDirectivePrefix 触发调用子 agent 的用户指令:
 // e2e-subagent-call:<子agent名>:<交给它的prompt>。需 agent 开启 subagent 工具
 // (注入 /mcp/subagent/);agent_call 无审批,同步阻塞到子 agent 跑完返回其文本。
@@ -40,22 +36,6 @@ const SubagentCallDirectivePrefix = "e2e-subagent-call:"
 // e2e-org-create-dept:<部门名>。需 agent 开启 org 工具(注入 /mcp/org/);
 // org 写工具需用户审批,调用挂起直至 e2e spec 点批准。
 const OrgCreateDeptDirectivePrefix = "e2e-org-create-dept:"
-
-// OrchestrateDispatchDirectivePrefix 触发编排引擎派发子任务的用户指令:
-// e2e-orch-dispatch:<agentName>:<brief>。需 agent 开启 orchestrate 工具(注入 /mcp/orchestrate/);
-// dispatch 异步派发(不阻塞当前 turn),子 agent 在独立会话跑完后报告给 leader。
-const OrchestrateDispatchDirectivePrefix = "e2e-orch-dispatch:"
-
-// OrchestrateFinishDirectivePrefix 触发编排引擎完成 Run 的用户指令:
-// e2e-orch-finish:<summary>。需 agent 开启 orchestrate 工具(注入 /mcp/orchestrate/);
-// finish 把根 Task 标为 done 并把 Run 推进到 done。
-const OrchestrateFinishDirectivePrefix = "e2e-orch-finish:"
-
-// OrchestrateAskDirectivePrefix 触发编排 ask 的用户指令:e2e-orch-ask:<agentName>:<question>。
-// 需 agent 开启 orchestrate 工具;ask 把带 ask_id 的问题注入对方活会话并阻塞等其 reply。
-// 当 <question> 本身又是一条 e2e-orch-ask 指令时,接收方会 ask 回去 → 形成 A↔B 等待环,
-// 驱动死锁检测 emit orch:run:deadlock(e2e 死锁场景)。
-const OrchestrateAskDirectivePrefix = "e2e-orch-ask:"
 
 // AskUserQuestionDirectivePrefix 触发 AskUserQuestion 失效终态的用户指令:e2e-ask:<question>。
 // fake emit 一条 UserAskRequest(单问两选)后直接 Done 而不等回答 → chat_svc finalize 把未答的
@@ -74,7 +54,7 @@ type Runtime struct{}
 func New() *Runtime { return &Runtime{} }
 
 // Capabilities 返回最小能力集:CapAbort 支撑停止按钮;
-// CapMCPTools 让 e2e 的 MCP 工具注入接缝生效(org/subagent/orchestrate 等写工具
+// CapMCPTools 让 e2e 的 MCP 工具注入接缝生效(org/subagent/hook 等写工具
 // 需要 backend 声明此 cap 才会被注入)。fake 实际消费注入的 MCPServers(调各 tool
 // endpoint),但不真正执行 LLM,只回显文本。
 func (r *Runtime) Capabilities() capability.Capabilities {
@@ -120,18 +100,6 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 			case out <- agentruntime.TextDelta{Text: chunk}:
 			}
 		}
-		// 流程工具接缝:agent 开启 workflow 工具时注入 /mcp/workflow/;按 e2e-workflow-create
-		// 指令调 workflow_create(挂起等 UI 批准,e2e spec 负责点批准)。失败只写 stderr。
-		if spec, ok := findGroupToolServer(req.MCPServers, "workflow_create"); ok {
-			if name, found := parseWorkflowCreateDirective(req.UserText); found {
-				if err := postToolCall(ctx, spec, "workflow_create", map[string]any{
-					"name":    name,
-					"content": "e2e-workflow-content: " + name,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: workflow_create failed: %v\n", err)
-				}
-			}
-		}
 		// subagent 接缝:agent 开启 subagent 工具时注入 /mcp/subagent/;按指令调 agent_call
 		// (无审批,同步阻塞到子 agent 在隔离会话跑完返回其文本)。失败只写 stderr。
 		if spec, ok := findGroupToolServer(req.MCPServers, "agent_call"); ok {
@@ -155,45 +123,6 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 				}
 			}
 		}
-		// orchestrate dispatch 接缝:leader agent 开启 orchestrate 工具时注入 /mcp/orchestrate/;
-		// 按 e2e-orch-dispatch:<agentName>:<brief> 指令调 dispatch(异步派发,立即返回)。
-		// 失败只写 stderr。dispatched 记录本轮是否已派发,使 dispatch 与 ask 互斥(见下)。
-		dispatched := false
-		if spec, ok := findGroupToolServer(req.MCPServers, "dispatch"); ok {
-			if agentName, brief, found := parseTwoPartDirective(req.UserText, OrchestrateDispatchDirectivePrefix); found {
-				dispatched = true
-				if err := postToolCall(ctx, spec, "dispatch", map[string]any{
-					"agent": agentName,
-					"brief": brief,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: orchestrate dispatch failed: %v\n", err)
-				}
-			}
-		}
-		// orchestrate ask/reply 接缝(ask 与 reply 同在 /mcp/orchestrate/):
-		//   - 提问方轮含 e2e-orch-ask:<agent>:<question> → 调 ask(阻塞等 reply / 超时)。
-		//   - 接收方轮收到注入的「【收到提问 ask_id=X】」→ 调 reply 回复;
-		//     但若注入的问题体本身又是一条 e2e-orch-ask 指令(死锁场景),则优先 ask 回去,
-		//     不 reply → A↔B 互等触发死锁检测。失败只写 stderr。
-		// dispatch 与 ask 互斥(一轮只做一个编排动作):否则当 dispatch 的 brief 里又嵌一条
-		// e2e-orch-ask 指令(死锁构造)时,本轮会既 dispatch 又对自己 ask,污染等待图。
-		if spec, ok := findGroupToolServer(req.MCPServers, "ask"); ok && !dispatched {
-			if agentName, question, found := parseTwoPartDirective(req.UserText, OrchestrateAskDirectivePrefix); found {
-				if err := postToolCall(ctx, spec, "ask", map[string]any{
-					"agent":    agentName,
-					"question": question,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: orchestrate ask failed: %v\n", err)
-				}
-			} else if askID, found := parseInjectedAskID(req.UserText); found {
-				if err := postToolCall(ctx, spec, "reply", map[string]any{
-					"ask_id": askID,
-					"answer": "e2e-orch-reply: ok",
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: orchestrate reply failed: %v\n", err)
-				}
-			}
-		}
 		// hook 接缝:agent 开启 hook 工具时注入 /mcp/hook/;按 e2e-hook-create:<name> 指令调
 		// hook_create(写工具需审批,挂起等 UI 批准,镜像 org 接缝)。失败只写 stderr。
 		if spec, ok := findGroupToolServer(req.MCPServers, "hook_create"); ok {
@@ -205,26 +134,6 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 					"scheduleExpr": "*/5 * * * *",
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "fake: hook_create failed: %v\n", err)
-				}
-			}
-		}
-		// orchestrate finish 接缝:按 e2e-orch-finish:<summary> 指令调 finish(收口 Run)。
-		// 另外:子任务完成/报错回报续轮时 UserText 含 <dispatch_done…>/<dispatch_error…> 结算通知
-		//(切片 A 回报分层信封,取代旧的「【子任务」纯文本前缀)→ 自动调 finish 避免 leader
-		// 永挂。两者都在同一个 finish tool server 上操作,失败只写 stderr。
-		if spec, ok := findGroupToolServer(req.MCPServers, "finish"); ok {
-			if summary, found := parseOnePartDirective(req.UserText, OrchestrateFinishDirectivePrefix); found {
-				if err := postToolCall(ctx, spec, "finish", map[string]any{
-					"summary": summary,
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: orchestrate finish (directive) failed: %v\n", err)
-				}
-			} else if strings.Contains(req.UserText, "<dispatch_done") || strings.Contains(req.UserText, "<dispatch_error") {
-				// 子任务结算回报续轮:leader 收到 <dispatch_done…> / <dispatch_error…> 轻量通知 → 自动收口。
-				if err := postToolCall(ctx, spec, "finish", map[string]any{
-					"summary": "e2e-orchestration-complete",
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "fake: orchestrate finish (auto) failed: %v\n", err)
 				}
 			}
 		}
@@ -256,25 +165,6 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		}
 	}()
 	return out, result, nil
-}
-
-// parseInjectedAskID 从编排 ask 注入消息「【收到提问 ask_id=<uuid>】…」里解出 ask_id。
-// 接收方 fake 据此调 reply。提问方自己的 e2e-orch-ask 指令文本不含 ask_id= → 返回 !ok。
-func parseInjectedAskID(text string) (string, bool) {
-	const marker = "ask_id="
-	idx := strings.Index(text, marker)
-	if idx < 0 {
-		return "", false
-	}
-	rest := text[idx+len(marker):]
-	if i := strings.IndexAny(rest, "】\n "); i >= 0 {
-		rest = rest[:i]
-	}
-	rest = strings.TrimSpace(rest)
-	if rest == "" {
-		return "", false
-	}
-	return rest, true
 }
 
 // findGroupToolServer 返回首个广告 tool 的注入 MCP server(无 → !ok)。
@@ -314,11 +204,6 @@ func parseTwoPartDirective(text, prefix string) (first, second string, ok bool) 
 		return "", "", false
 	}
 	return first, second, true
-}
-
-// parseWorkflowCreateDirective 解出 e2e-workflow-create:<name>(取指令所在行;空段 → !ok)。
-func parseWorkflowCreateDirective(text string) (name string, ok bool) {
-	return parseOnePartDirective(text, WorkflowCreateDirectivePrefix)
 }
 
 // postToolCall 对注入的 group MCP server 发一次无状态 tools/call(原 postGroupSend 泛化)。

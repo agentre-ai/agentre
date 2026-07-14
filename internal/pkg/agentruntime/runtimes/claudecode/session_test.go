@@ -13,7 +13,7 @@ import (
 
 // TestCCBuildClientOpts_MCPServersInjectTool 锁住 AM2:RunRequest.MCPServers 非空时
 // ccBuildClientOpts 把它翻译成 (a) --mcp-config 的 spike 形态 JSON,带 server 的
-// name / url / header,(b) --allowedTools 里追加 mcp__<name>__<tool>(如 mcp__orchestrate__dispatch)。
+// name / url / header,(b) --allowedTools 里追加 mcp__<name>__<tool>(如 mcp__org__org_create_department)。
 // 通过 Client accessor 断言,不 spawn 真子进程。
 func TestCCBuildClientOpts_MCPServersInjectTool(t *testing.T) {
 	Convey("Given RunRequest 带一个 http MCP server", t, func() {

@@ -73,9 +73,7 @@ jq -c 'select(.session_id == 42)' "$LOG"
 | `app_settings` | UI/runtime prefs persisted by the app |
 | `departments` | Org structure for the org-chart UI |
 | `projects`, `project_agents`, `project_locations` | Projects, their member agents, and working-directory locations |
-| `orchestration_runs`, `orch_tasks` | Orchestration: active runs and dispatched tasks |
 | `issues`, `labels`, `issue_labels` | Issue tracker (issues + labels + join) |
-| `workflows` | Reusable workflow (process) library |
 | `paired_agentreds` | Paired remote `agentred` (LAN daemon) records |
 | `server_state` | Desktop ↔ SaaS Server connection state (single row, `id=1`) |
 | `migrations` | gormigrate ledger — one row per applied migration id |

@@ -248,26 +248,3 @@ export const ChatReadDroppedImages = windowBackedMock(
   "ChatReadDroppedImages",
   () => Promise.resolve({ items: [] }),
 );
-
-// Workflow bindings
-export const WorkflowList = windowBackedMock("WorkflowList", () =>
-  Promise.resolve({ items: [] }),
-);
-export const WorkflowCreate = windowBackedMock("WorkflowCreate", () =>
-  Promise.resolve({ item: null }),
-);
-export const WorkflowUpdate = windowBackedMock("WorkflowUpdate", () =>
-  Promise.resolve({ item: null }),
-);
-export const WorkflowDelete = windowBackedMock("WorkflowDelete", () =>
-  Promise.resolve({}),
-);
-
-// Orchestration run bindings
-export const RunLoad = windowBackedMock("RunLoad", () =>
-  Promise.resolve({ run: undefined, tasks: [] }),
-);
-export const RunPause = windowBackedMock("RunPause", () => Promise.resolve());
-export const RunResume = windowBackedMock("RunResume", () => Promise.resolve());
-export const RunStop = windowBackedMock("RunStop", () => Promise.resolve());
-export const RunSpeak = windowBackedMock("RunSpeak", () => Promise.resolve());

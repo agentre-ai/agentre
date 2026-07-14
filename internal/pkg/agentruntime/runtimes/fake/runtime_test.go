@@ -86,56 +86,15 @@ func TestRun_HonorsChunkDelayEnv(t *testing.T) {
 	assert.GreaterOrEqual(t, time.Since(start), 20*time.Millisecond)
 }
 
-// 流程建指令:e2e-workflow-create:<name>,取指令所在行;空段/无指令 → !ok。
-func TestParseWorkflowCreateDirective(t *testing.T) {
-	name, ok := parseWorkflowCreateDirective("(来自 用户)\ne2e-workflow-create:评审流程")
-	require.True(t, ok)
-	assert.Equal(t, "评审流程", name)
-
-	for _, bad := range []string{"无指令", "e2e-workflow-create:", "e2e-workflow-create:   "} {
-		_, ok := parseWorkflowCreateDirective(bad)
-		assert.False(t, ok, "input=%q", bad)
-	}
-}
-
-// 单聊轮注入 workflow 工具 + e2e-workflow-create 指令 → fake 调一次 workflow_create
-// (挂起等审批由 svc 侧负责,这里 server 即时应答)。
-func TestRun_PostsWorkflowCreateOnDirective(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	srv, snapshot := toolCaptureServer(t)
-
-	r := New()
-	events, _, err := r.Run(ctx, agentruntime.RunRequest{
-		SessionID: 25,
-		UserText:  "e2e-workflow-create:评审流程",
-		MCPServers: []agentruntime.MCPServerSpec{{
-			Name:    "workflow",
-			URL:     srv.URL + "/mcp/workflow/",
-			Headers: map[string]string{"Authorization": "Bearer tok"},
-			Tools:   []string{"workflow_create"},
-		}},
-	})
-	require.NoError(t, err)
-	for range events { //nolint:revive // draining
-	}
-
-	calls := snapshot()
-	require.Len(t, calls["workflow_create"], 1)
-	args := calls["workflow_create"][0]
-	assert.Equal(t, "评审流程", args["name"])
-	assert.Equal(t, "e2e-workflow-content: 评审流程", args["content"])
-}
-
-// CapMCPTools 必须声明,才能让 MCP 工具注入接缝(org/subagent/orchestrate)在 e2e 里生效。
+// CapMCPTools 必须声明,才能让 MCP 工具注入接缝(org/subagent/hook)在 e2e 里生效。
 func TestCapabilities_DeclaresMCPTools(t *testing.T) {
 	caps := New().Capabilities()
 	assert.True(t, caps.Has(capability.CapMCPTools))
 	assert.True(t, caps.Has(capability.CapAbort))
 }
 
-// System prompt 断言指令只服务本地 e2e:用真实 RunRequest.SystemPrompt 证明 workflow /
-// handoff 等主持人提示确实注入,再经普通 fake 回复暴露成 UI/DB 可观测文本。
+// System prompt 断言指令只服务本地 e2e:用真实 RunRequest.SystemPrompt 证明主持人提示确实
+// 注入,再经普通 fake 回复暴露成 UI/DB 可观测文本。
 func TestRun_ReportsSystemPromptNeedle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -143,8 +102,8 @@ func TestRun_ReportsSystemPromptNeedle(t *testing.T) {
 	r := New()
 	events, _, err := r.Run(ctx, agentruntime.RunRequest{
 		SessionID:      20,
-		UserText:       "(来自 用户)\ne2e-assert-system:E2E_WORKFLOW_SENTINEL",
-		SystemPrompt:   "主持人流程:E2E_WORKFLOW_SENTINEL; .agentre/handoff/5/",
+		UserText:       "(来自 用户)\ne2e-assert-system:E2E_SYSTEM_SENTINEL",
+		SystemPrompt:   "主持人提示:E2E_SYSTEM_SENTINEL; .agentre/handoff/5/",
 		MCPServers:     nil,
 		PermissionMode: "",
 	})
@@ -156,7 +115,7 @@ func TestRun_ReportsSystemPromptNeedle(t *testing.T) {
 			text += delta.Text
 		}
 	}
-	assert.Contains(t, text, "e2e-system-ok:E2E_WORKFLOW_SENTINEL")
+	assert.Contains(t, text, "e2e-system-ok:E2E_SYSTEM_SENTINEL")
 }
 
 func TestRun_ReportsMissingSystemPromptNeedle(t *testing.T) {
@@ -166,8 +125,8 @@ func TestRun_ReportsMissingSystemPromptNeedle(t *testing.T) {
 	r := New()
 	events, _, err := r.Run(ctx, agentruntime.RunRequest{
 		SessionID:    21,
-		UserText:     "(来自 用户)\ne2e-assert-system:E2E_WORKFLOW_SENTINEL",
-		SystemPrompt: "主持人流程:别的内容",
+		UserText:     "(来自 用户)\ne2e-assert-system:E2E_SYSTEM_SENTINEL",
+		SystemPrompt: "主持人提示:别的内容",
 	})
 	require.NoError(t, err)
 
@@ -177,7 +136,7 @@ func TestRun_ReportsMissingSystemPromptNeedle(t *testing.T) {
 			text += delta.Text
 		}
 	}
-	assert.Contains(t, text, "e2e-system-missing:E2E_WORKFLOW_SENTINEL")
+	assert.Contains(t, text, "e2e-system-missing:E2E_SYSTEM_SENTINEL")
 }
 
 // e2e-ask:<question> → fake emit 一条未答的 UserAskRequest(带问题/选项)后 Done。
@@ -254,182 +213,6 @@ func TestRun_PostsHookCreateOnDirective(t *testing.T) {
 	assert.Equal(t, "bash", args["interpreter"])
 	assert.NotEmpty(t, args["command"])
 	assert.NotEmpty(t, args["scheduleExpr"])
-}
-
-// 子任务结算回报续轮:leader 收到 <dispatch_done…> 轻量通知(切片 A 回报分层信封,取代旧
-// 「【子任务」纯文本)+ 注入 finish 工具 → fake 自动调一次 finish 收口。守护:reportToParent
-// 改信封后编排 e2e 链路仍能自动收口(旧「【子任务」检测已随之更新)。
-func TestRun_AutoFinishesOnTaskDoneEnvelope(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	srv, snapshot := toolCaptureServer(t)
-
-	r := New()
-	events, _, err := r.Run(ctx, agentruntime.RunRequest{
-		SessionID: 40,
-		UserText:  `<dispatch_done dispatch_id="2" agent="3" call_seq="1">e2e-fake-reply: 子活干完了(read(dispatch_id=2) 看全文)</dispatch_done>`,
-		MCPServers: []agentruntime.MCPServerSpec{{
-			Name:    "orchestrate",
-			URL:     srv.URL + "/mcp/orchestrate/",
-			Headers: map[string]string{"Authorization": "Bearer tok"},
-			Tools:   []string{"dispatch", "finish"},
-		}},
-	})
-	require.NoError(t, err)
-	for range events { //nolint:revive // draining
-	}
-
-	calls := snapshot()
-	require.Len(t, calls["finish"], 1)
-	assert.Equal(t, "e2e-orchestration-complete", calls["finish"][0]["summary"])
-}
-
-// 子任务技术崩溃回报续轮:leader 收到 <dispatch_error…> 通知 → fake 同样自动收口(与 done 同路)。
-func TestRun_AutoFinishesOnTaskErrorEnvelope(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	srv, snapshot := toolCaptureServer(t)
-
-	r := New()
-	events, _, err := r.Run(ctx, agentruntime.RunRequest{
-		SessionID: 41,
-		UserText:  `<dispatch_error dispatch_id="2" agent="3" reason="运行时崩溃">(read(dispatch_id=2) 看详情)</dispatch_error>`,
-		MCPServers: []agentruntime.MCPServerSpec{{
-			Name:    "orchestrate",
-			URL:     srv.URL + "/mcp/orchestrate/",
-			Headers: map[string]string{"Authorization": "Bearer tok"},
-			Tools:   []string{"dispatch", "finish"},
-		}},
-	})
-	require.NoError(t, err)
-	for range events { //nolint:revive // draining
-	}
-
-	calls := snapshot()
-	require.Len(t, calls["finish"], 1)
-}
-
-// e2e-orch-ask:<agent>:<question> + 注入 orchestrate 工具 → fake 调一次 ask。
-func TestRun_PostsOrchAskOnDirective(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	srv, snapshot := toolCaptureServer(t)
-
-	r := New()
-	events, _, err := r.Run(ctx, agentruntime.RunRequest{
-		SessionID: 27,
-		UserText:  "e2e-orch-ask:E2E Member:你完成了吗",
-		MCPServers: []agentruntime.MCPServerSpec{{
-			Name:    "orchestrate",
-			URL:     srv.URL + "/mcp/orchestrate/",
-			Headers: map[string]string{"Authorization": "Bearer tok"},
-			Tools:   []string{"ask", "reply", "dispatch", "finish"},
-		}},
-	})
-	require.NoError(t, err)
-	for range events { //nolint:revive // draining
-	}
-
-	calls := snapshot()
-	require.Len(t, calls["ask"], 1)
-	assert.Equal(t, "E2E Member", calls["ask"][0]["agent"])
-	assert.Equal(t, "你完成了吗", calls["ask"][0]["question"])
-	assert.Empty(t, calls["reply"], "asker must not also reply")
-}
-
-// 收到注入的「【收到提问 ask_id=X】」(普通问题体)→ fake 调 reply 带回 ask_id。
-func TestRun_PostsReplyOnInjectedAsk(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	srv, snapshot := toolCaptureServer(t)
-
-	r := New()
-	events, _, err := r.Run(ctx, agentruntime.RunRequest{
-		SessionID: 28,
-		UserText:  "【收到提问 ask_id=abc-123】你完成了吗\n请调用 reply(ask_id=\"abc-123\", answer=...) 回复。",
-		MCPServers: []agentruntime.MCPServerSpec{{
-			Name:    "orchestrate",
-			URL:     srv.URL + "/mcp/orchestrate/",
-			Headers: map[string]string{"Authorization": "Bearer tok"},
-			Tools:   []string{"ask", "reply"},
-		}},
-	})
-	require.NoError(t, err)
-	for range events { //nolint:revive // draining
-	}
-
-	calls := snapshot()
-	require.Len(t, calls["reply"], 1)
-	assert.Equal(t, "abc-123", calls["reply"][0]["ask_id"])
-	assert.NotEmpty(t, calls["reply"][0]["answer"])
-	assert.Empty(t, calls["ask"], "plain injected question must reply, not ask back")
-}
-
-// 死锁场景:注入的问题体本身又是 e2e-orch-ask 指令 → fake 优先 ask 回去,不 reply。
-func TestRun_AsksBackWhenInjectedQuestionIsAskDirective(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	srv, snapshot := toolCaptureServer(t)
-
-	r := New()
-	events, _, err := r.Run(ctx, agentruntime.RunRequest{
-		SessionID: 29,
-		UserText:  "【收到提问 ask_id=xyz-9】e2e-orch-ask:CEO 助手:回环\n请调用 reply(...) 回复。",
-		MCPServers: []agentruntime.MCPServerSpec{{
-			Name:    "orchestrate",
-			URL:     srv.URL + "/mcp/orchestrate/",
-			Headers: map[string]string{"Authorization": "Bearer tok"},
-			Tools:   []string{"ask", "reply"},
-		}},
-	})
-	require.NoError(t, err)
-	for range events { //nolint:revive // draining
-	}
-
-	calls := snapshot()
-	require.Len(t, calls["ask"], 1, "ask back to form the cycle")
-	assert.Equal(t, "CEO 助手", calls["ask"][0]["agent"])
-	assert.Empty(t, calls["reply"], "deadlock path must not reply")
-}
-
-// dispatch 与 ask 互斥:dispatch 的 brief 里嵌了 e2e-orch-ask 指令时,本轮只 dispatch,不对自己
-// ask(否则死锁构造里 leader 会自问、污染等待图)。
-func TestRun_DispatchSuppressesAskSameTurn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	srv, snapshot := toolCaptureServer(t)
-
-	r := New()
-	events, _, err := r.Run(ctx, agentruntime.RunRequest{
-		SessionID: 32,
-		UserText:  "e2e-orch-dispatch:E2E Member:e2e-orch-ask:CEO 助手:回环",
-		MCPServers: []agentruntime.MCPServerSpec{{
-			Name:    "orchestrate",
-			URL:     srv.URL + "/mcp/orchestrate/",
-			Headers: map[string]string{"Authorization": "Bearer tok"},
-			Tools:   []string{"dispatch", "ask", "reply", "finish"},
-		}},
-	})
-	require.NoError(t, err)
-	for range events { //nolint:revive // draining
-	}
-
-	calls := snapshot()
-	require.Len(t, calls["dispatch"], 1)
-	assert.Equal(t, "E2E Member", calls["dispatch"][0]["agent"])
-	assert.Empty(t, calls["ask"], "dispatch turn must not also ask (mutual exclusion)")
-}
-
-// parseInjectedAskID:从注入抬头解出 ask_id;提问方自身指令不含 ask_id= → !ok。
-func TestParseInjectedAskID(t *testing.T) {
-	id, ok := parseInjectedAskID("【收到提问 ask_id=abc-123】问题")
-	require.True(t, ok)
-	assert.Equal(t, "abc-123", id)
-
-	for _, bad := range []string{"e2e-orch-ask:X:q", "无 ask 标记", "ask_id="} {
-		_, ok := parseInjectedAskID(bad)
-		assert.False(t, ok, "input=%q", bad)
-	}
 }
 
 // toolCaptureServer 收集本轮 fake 发出的全部 tools/call,按 tool 名归档参数。
