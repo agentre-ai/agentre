@@ -11,8 +11,10 @@ import (
 )
 
 // MessageTextMaxBytes — defensive ceiling on a single user message body.
-// 字节而非 rune 是兜底，token 上限由 provider 自己再算。
-const MessageTextMaxBytes = 16000
+// 字节而非 rune 是兜底，token 上限由 provider 自己再算；这里只防异常的
+// 超大 blob（整个多 MB 文件误粘）撑爆 DB / UI。256 KiB ≈ 8.7 万汉字，
+// 足够粘贴大段日志 / 文件。
+const MessageTextMaxBytes = 256 * 1024
 
 var allowedMessageRoles = map[string]struct{}{
 	"user":      {},
