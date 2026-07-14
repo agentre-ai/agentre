@@ -68,8 +68,8 @@ func TestWatchCompletion_ReportsToParentAndMarksDone(t *testing.T) {
 		So(capturedChildStatus, ShouldEqual, orch_entity.DispatchDone)
 		So(capturedChildResult, ShouldContainSubstring, "登录表单已实现")
 		So(capturedSendMsg, ShouldContainSubstring, "登录表单已实现")
-		So(capturedSendMsg, ShouldContainSubstring, "<task_done")
-		So(capturedSendMsg, ShouldContainSubstring, "read(task_id=11)")
+		So(capturedSendMsg, ShouldContainSubstring, "<dispatch_done")
+		So(capturedSendMsg, ShouldContainSubstring, "read(dispatch_id=11)")
 	})
 }
 
@@ -224,13 +224,13 @@ func TestWatchCompletion_TechnicalErrorEscalates(t *testing.T) {
 		<-done
 
 		So(capturedChildStatus, ShouldEqual, orch_entity.DispatchError)
-		So(capturedSendMsg, ShouldContainSubstring, "<task_error")
+		So(capturedSendMsg, ShouldContainSubstring, "<dispatch_error")
 		So(capturedSendMsg, ShouldContainSubstring, "运行时崩溃")
 	})
 }
 
 // TestWatchCompletion_PrefersFinishSummary — 子任务已被 agent 显式 finish(Summary 已落库)时,
-// watcher 的 idle 分支据 Summary 内联 task_report 作为回报正文(Result 始终落末条正文供 read);
+// watcher 的 idle 分支据 Summary 内联 dispatch_report 作为回报正文(Result 始终落末条正文供 read);
 // FinalAssistantText 不作为回报正文(C1:finish 与 watcher 不再各回报一次,watcher 是唯一回报者且认显式小结)。
 func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -269,7 +269,7 @@ func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 		return nil
 	}).Times(1)
 
-	Convey("idle 时优先采用已落库的 finish 小结内联 task_report 回报", t, func() {
+	Convey("idle 时优先采用已落库的 finish 小结内联 dispatch_report 回报", t, func() {
 		done := make(chan struct{})
 		go func() {
 			orch_svc.Default().WatchCompletionForTest(context.Background(), child, (<-chan orch_svc.TurnDone)(turnCh), func() {})
@@ -281,7 +281,7 @@ func TestWatchCompletion_PrefersFinishSummary(t *testing.T) {
 
 		// Result 始终落末条正文(供 read);Summary 决定回报正文。
 		So(capturedResult, ShouldContainSubstring, "末条 assistant 正文")
-		So(capturedSendMsg, ShouldContainSubstring, "<task_report")
+		So(capturedSendMsg, ShouldContainSubstring, "<dispatch_report")
 		So(capturedSendMsg, ShouldContainSubstring, "final=\"true\"")
 		So(capturedSendMsg, ShouldContainSubstring, finishSummary)
 		So(capturedSendMsg, ShouldNotContainSubstring, "不应被采用")

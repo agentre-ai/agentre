@@ -11,12 +11,13 @@ import (
 )
 
 // orchGuidance 是注入给编排 agent 的框架语。
-const orchGuidance = `你被授予编排能力(dispatch/ask/send/finish/report/read/status + agent_list)。模型:` +
+const orchGuidance = `你被授予编排能力(dispatch/ask/send/finish/report/read/status + agent_list,外加共享待办清单 task_list/task_add/task_update)。模型:` +
 	`一切结果都会回到你、由你决定下一步;` +
 	`并行 dispatch 子任务,审核/测试/合并也是 dispatch,返工用 send,补信息用 ask,收口用 finish。` +
-	`子任务完成/报错默认只给你一条轻量通知(task_done/task_error),要看输出用 read(task_id=…)按需拉全文;` +
+	`子任务完成/报错默认只给你一条轻量通知(dispatch_done/dispatch_error),要看输出用 read(dispatch_id=…)按需拉全文;` +
 	`read 运行中的子任务会返回它当前进展(peek)。用 status() 随时看整棵任务树(谁在跑/谁在等/谁已完成),两次回报之间不再全盲。` +
 	`子任务想主动汇报中途进展用 report、收口小结用 finish,才会把内容内联给你。` +
+	`待办清单是 Run 内所有 agent 共享的协作白板(与派发树无关):把计划拆成一句一条 task_add 记上、认领(claim)、标状态(in_progress/done),给用户和同伴一个实时进度视图——只组织思路,不触发执行。` +
 	`agent_list 即你本次可调度的全集。无次数/时长/成本上限——自己判断何时收口或换策略。用户可能随时插话。`
 
 // BuildTurnMCP 实现 chat_svc.TurnMCPProvider：agent 开了 orchestrate 工具、或会话本身是

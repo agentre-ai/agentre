@@ -342,6 +342,18 @@
     -webkit-user-select: none;
     user-select: none;
   }
+
+  /* Alert（含 chat composer 上方的错误 notice）与 sonner toast 都是只读的
+     通知 / 错误文本，用户常需选中复制来排查——放开选中。内部按钮（× 关闭、
+     action 等）各自命中 button / [role="button"] 的 user-select:none 规则，
+     直接匹配胜过继承，仍保持不可选。 */
+  [data-slot="alert-title"],
+  [data-slot="alert-description"],
+  [data-sonner-toast] [data-title],
+  [data-sonner-toast] [data-description] {
+    -webkit-user-select: text;
+    user-select: text;
+  }
 }
 
 @layer utilities {

@@ -2231,7 +2231,7 @@ func (s *chatSvc) startTurn(
 			zap.Int64("agentId", a.ID),
 			zap.String("backendType", be.Type),
 			zap.Error(err))
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 
 	stream := StreamName(sess.ID, assistantMsg.ID)

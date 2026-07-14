@@ -219,6 +219,9 @@ func TestBuildTurnExtras_GuidanceMentionsReadAndReport(t *testing.T) {
 	a := enableOrch(&agent_entity.Agent{ID: 3})
 	_, suffix, ok := orch_svc.Default().BuildTurnExtras(context.Background(), a, 600, 0)
 	assert.True(t, ok)
-	assert.True(t, strings.Contains(suffix, "read(task_id"), "guidance should mention read(task_id)")
+	assert.True(t, strings.Contains(suffix, "read(dispatch_id"), "guidance should mention read(dispatch_id)")
 	assert.True(t, strings.Contains(suffix, "report"), "guidance should mention report")
+	// 共享待办清单工具应被引导语介绍(所有编排会话都拿得到,含被派发子任务)。
+	assert.True(t, strings.Contains(suffix, "待办清单"), "guidance should introduce the shared checklist")
+	assert.True(t, strings.Contains(suffix, "task_add"), "guidance should name task_add")
 }

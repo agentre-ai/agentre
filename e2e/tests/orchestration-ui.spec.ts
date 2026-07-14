@@ -1,7 +1,8 @@
 import { test, expect } from "@playwright/test";
 import {
-  orchestrationRunStatus,
-  orchTaskRows,
+  orchestrationRunIdByGoal,
+  orchestrationRunStatusById,
+  orchTaskRowsByRun,
   runningSessionCount,
 } from "../fixtures/db";
 
@@ -75,10 +76,20 @@ test("orchestration UI: 通过界面创建 Run 并等待结构图完成", async 
     timeout: 10_000,
   });
 
+  let runId: number | null = null;
+  await expect
+    .poll(() => {
+      runId = orchestrationRunIdByGoal(goal);
+      return runId;
+    }, { timeout: 10_000 })
+    .not.toBeNull();
+  expect(runId).not.toBeNull();
+  if (runId === null) throw new Error("created run id not found");
+
   // 9. 等待 DB 权威来源:orchestration_runs.status 变为 'done'(超时 30s)。
   //    链路:dispatch → 子 agent 轮 → reportToParent 续轮 → finish → done。
   await expect
-    .poll(() => orchestrationRunStatus(), { timeout: 30_000 })
+    .poll(() => orchestrationRunStatusById(runId), { timeout: 30_000 })
     .toBe("done");
 
   // 10. 断言结构图显示完成态横幅(graph-completed-banner 可见)。
@@ -89,7 +100,7 @@ test("orchestration UI: 通过界面创建 Run 并等待结构图完成", async 
 
   // 11. DB 孪生断言:orch_tasks ≥2 行(根任务 + 至少一个子任务),全部 done,
   //     至少有一行 parentTaskId != 0(dispatch 出来的子任务有父引用)。
-  const tasks = orchTaskRows();
+  const tasks = orchTaskRowsByRun(runId);
   expect(tasks.length).toBeGreaterThanOrEqual(2);
   for (const t of tasks) {
     expect(t.status).toBe("done");

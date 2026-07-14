@@ -363,11 +363,13 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 //     一轮的起始帧 —— 轮内到达由 active 轮承接(currentTurn 在 active!=nil 时已先返回),
 //     空闲到达则无归属轮,其事件随 route 的 nil 返回被丢弃(set_permission_mode 的回执
 //     已由 SetPermissionMode 调用方拿到,主动切 mode 不依赖这条空闲 status)。
-//   - system{subtype:"task_started"/"task_updated"/"task_progress"}:后台任务(及
-//     subagent)生命周期的状态推送。真 CLI 2.1.162 在后台任务完成、自主续轮的
-//     task_notification 之前先吐一帧 task_updated(状态 patch);它空闲到达时既非
-//     后台 task_notification 也非 status,旧逻辑会把读循环卡死在 <-pendingTurns,
-//     后续 task_notification / 自主续轮永远读不到(sess-429「续不上对话」复发)。
+//   - system{subtype:"task_started"/"task_updated"/"task_progress"/
+//     "background_tasks_changed"}:后台任务(及 subagent)生命周期的状态推送。真 CLI
+//     2.1.162 在后台任务完成、自主续轮的 task_notification 之前先吐一帧 task_updated
+//     (状态 patch);2.1.205 起在其更前面还先吐一帧 background_tasks_changed(后台任务
+//     清单变化)。它们空闲到达时既非后台 task_notification 也非 status,旧逻辑会把读循环
+//     卡死在 <-pendingTurns,后续 task_notification / 自主续轮永远读不到(sess-429 →
+//     sess-1535「续不上对话」复发,后者只是新增了 background_tasks_changed 这个 subtype)。
 //     这些状态帧从不作为一轮的起始帧:轮内到达由 active 轮承接,空闲到达直接丢弃。
 //     注意后台型 task_notification 不在此列 —— 它正是自主轮的起始标记(见
 //     isBackgroundTaskNotification),由 currentTurn 在本判定之前优先处理。
@@ -379,7 +381,7 @@ func isNonTurnFrame(f rawFrame) bool {
 		return false
 	}
 	switch f.Subtype {
-	case "status", "task_started", "task_updated", "task_progress":
+	case "status", "task_started", "task_updated", "task_progress", "background_tasks_changed":
 		return true
 	}
 	return false

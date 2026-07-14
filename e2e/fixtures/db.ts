@@ -122,6 +122,20 @@ export function orchestrationRunStatusById(id: number): string | null {
   }
 }
 
+// orchestrationRunIdByGoal returns the Run id for a unique test goal.
+export function orchestrationRunIdByGoal(goal: string): number | null {
+  const db = new DatabaseSync(dbPath(), { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    const row = db
+      .prepare("SELECT id FROM orchestration_runs WHERE goal = ? ORDER BY id DESC LIMIT 1")
+      .get(goal) as { id: number } | undefined;
+    return row?.id ?? null;
+  } finally {
+    db.close();
+  }
+}
+
 // orchTaskStatusById returns one orch_task's status (e.g. assert the root task cascaded to
 // 'canceled' on hard-stop). Read-only.
 export function orchTaskStatusById(id: number): string | null {
@@ -212,16 +226,17 @@ export type OrchTaskRow = {
   parentTaskId: number;
 };
 
-// orchTaskRows returns all orch_tasks rows (id, status, parentTaskId) ordered by id.
+// orchTaskRows returns all orch_dispatches rows (id, status, parentTaskId) ordered by id.
 // Read-only — proves dispatch created sub-tasks and they reached terminal state at the source of
-// truth, independent of the UI.
+// truth, independent of the UI. (The dispatch tree lives in orch_dispatches since the task→dispatch
+// rename; orch_tasks was reclaimed by the checklist and has no parent column.)
 export function orchTaskRows(): OrchTaskRow[] {
   const db = new DatabaseSync(dbPath(), { readOnly: true });
   try {
     db.exec("PRAGMA busy_timeout = 5000");
     return db
       .prepare(
-        "SELECT id, status, parent_task_id AS parentTaskId FROM orch_tasks ORDER BY id ASC",
+        "SELECT id, status, parent_dispatch_id AS parentTaskId FROM orch_dispatches ORDER BY id ASC",
       )
       .all() as OrchTaskRow[];
   } finally {
@@ -237,7 +252,7 @@ export function orchTaskRowsByRun(runId: number): OrchTaskRow[] {
     db.exec("PRAGMA busy_timeout = 5000");
     return db
       .prepare(
-        "SELECT id, status, parent_task_id AS parentTaskId FROM orch_tasks WHERE run_id = ? ORDER BY id ASC",
+        "SELECT id, status, parent_dispatch_id AS parentTaskId FROM orch_dispatches WHERE run_id = ? ORDER BY id ASC",
       )
       .all(runId) as OrchTaskRow[];
   } finally {

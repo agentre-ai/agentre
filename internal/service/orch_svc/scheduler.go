@@ -2,6 +2,7 @@ package orch_svc
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"strings"
 	"sync"
@@ -125,11 +126,14 @@ func (s *orchSvc) sendAndForgetWithRetry(ctx context.Context, sessionID int64, b
 }
 
 func isTransientSendError(err error) bool {
-	if err == nil {
-		return false
+	for err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy") {
+			return true
+		}
+		err = errors.Unwrap(err)
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
+	return false
 }
 
 // onTaskSettled 释放调度并发槽，然后 kick 尝试发射下一个 pending 任务。

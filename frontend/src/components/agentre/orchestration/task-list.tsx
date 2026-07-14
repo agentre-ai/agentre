@@ -2,6 +2,11 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Circle, Loader } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useChatAgents } from "@/hooks/use-chat-agents";
+import {
+  agentColorClassNames,
+  type AgentColor,
+} from "@/components/agentre/types";
 import type { app } from "../../../../wailsjs/go/models";
 
 function StatusIcon({ status }: { status: string }) {
@@ -32,11 +37,24 @@ function StatusIcon({ status }: { status: string }) {
 
 export function TaskList({ detail }: { detail: app.RunDetailDTO }) {
   const { t } = useTranslation();
+  const { agents } = useChatAgents();
   const tasks = React.useMemo(() => detail.tasks ?? [], [detail.tasks]);
   const doneCount = React.useMemo(
     () => tasks.filter((tk) => tk.status === "done").length,
     [tasks],
   );
+
+  // assigneeAgentId → 认领人名字 + 颜色（0 = 未认领,不显示徽标）。
+  const agentInfoMap = React.useMemo(() => {
+    const m = new Map<number, { name: string; color: AgentColor }>();
+    for (const a of agents) {
+      m.set(a.id, {
+        name: a.name,
+        color: (a.avatarColor as AgentColor) || "agent-1",
+      });
+    }
+    return m;
+  }, [agents]);
 
   return (
     <div
@@ -86,6 +104,26 @@ export function TaskList({ detail }: { detail: app.RunDetailDTO }) {
                 >
                   {task.text}
                 </span>
+                {task.assigneeAgentId !== 0 &&
+                  (() => {
+                    const info = agentInfoMap.get(task.assigneeAgentId);
+                    return (
+                      <span
+                        data-testid={`task-assignee-${task.id}`}
+                        className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground"
+                      >
+                        <span
+                          className={cn(
+                            "size-1.5 shrink-0 rounded-full",
+                            agentColorClassNames[info?.color ?? "agent-1"],
+                          )}
+                        />
+                        <span className="max-w-[80px] truncate">
+                          {info?.name ?? `#${task.assigneeAgentId}`}
+                        </span>
+                      </span>
+                    );
+                  })()}
               </li>
             ))}
           </ul>

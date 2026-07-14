@@ -209,7 +209,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 			}
 		}
 		// orchestrate finish 接缝:按 e2e-orch-finish:<summary> 指令调 finish(收口 Run)。
-		// 另外:子任务完成/报错回报续轮时 UserText 含 <task_done…>/<task_error…> 结算通知
+		// 另外:子任务完成/报错回报续轮时 UserText 含 <dispatch_done…>/<dispatch_error…> 结算通知
 		//(切片 A 回报分层信封,取代旧的「【子任务」纯文本前缀)→ 自动调 finish 避免 leader
 		// 永挂。两者都在同一个 finish tool server 上操作,失败只写 stderr。
 		if spec, ok := findGroupToolServer(req.MCPServers, "finish"); ok {
@@ -219,8 +219,8 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "fake: orchestrate finish (directive) failed: %v\n", err)
 				}
-			} else if strings.Contains(req.UserText, "<task_done") || strings.Contains(req.UserText, "<task_error") {
-				// 子任务结算回报续轮:leader 收到 <task_done…> / <task_error…> 轻量通知 → 自动收口。
+			} else if strings.Contains(req.UserText, "<dispatch_done") || strings.Contains(req.UserText, "<dispatch_error") {
+				// 子任务结算回报续轮:leader 收到 <dispatch_done…> / <dispatch_error…> 轻量通知 → 自动收口。
 				if err := postToolCall(ctx, spec, "finish", map[string]any{
 					"summary": "e2e-orchestration-complete",
 				}); err != nil {

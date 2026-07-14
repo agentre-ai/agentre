@@ -56,6 +56,15 @@ type cxClientAdapter struct {
 }
 
 func (a *cxClientAdapter) ID() string { return a.sid }
+func (a *cxClientAdapter) Model() string {
+	a.streamMu.Lock()
+	sess := a.sess
+	a.streamMu.Unlock()
+	if sess == nil {
+		return ""
+	}
+	return sess.Model()
+}
 func (a *cxClientAdapter) Close(ctx context.Context) error {
 	a.streamMu.Lock()
 	sess := a.sess
@@ -302,6 +311,7 @@ func imageExt(mediaType string) string {
 type cxSessionHandle interface {
 	Close(context.Context) error
 	ID() string
+	Model() string
 	Stream(ctx context.Context, prompt string, collaborationMode string) (cxStream, error)
 	StreamInput(ctx context.Context, input []codex.UserInput, collaborationMode string) (cxStream, error)
 	Compact(ctx context.Context) (cxStream, error)
