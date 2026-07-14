@@ -5,8 +5,12 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 )
@@ -46,4 +50,43 @@ func TestOperationFailedWithCause_AsHTTPError(t *testing.T) {
 	var httpErr *httputils.Error
 	assert.True(t, errors.As(err, &httpErr))
 	assert.Equal(t, code.OperationFailed, httpErr.Code)
+}
+
+// cause 存在时:恰好记一行 Error 级别日志,message 为固定串。
+// 曾经翻过车——某调用点残留手写 logger,导致同一错误被记两遍,靠人眼复审才抓到;
+// 这条测试就是补那道护栏。
+func TestOperationFailedWithCause_LogsExactlyOneEntry(t *testing.T) {
+	core, logs := observer.New(zapcore.ErrorLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	_ = operationFailedWithCause(ctx, errors.New("boom"))
+
+	assert.Equal(t, 1, logs.Len())
+	entry := logs.All()[0]
+	assert.Equal(t, zapcore.ErrorLevel, entry.Level)
+	assert.Equal(t, "chat_svc: operation failed", entry.Message)
+}
+
+// 传入的 fields 原样带入这一行日志,且同一行还带着 cause(error 字段)。
+func TestOperationFailedWithCause_LogsFieldsAndCause(t *testing.T) {
+	core, logs := observer.New(zapcore.ErrorLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+	cause := errors.New("boom")
+
+	_ = operationFailedWithCause(ctx, cause, zap.Int64("sessionId", 7))
+
+	assert.Equal(t, 1, logs.Len())
+	fields := logs.All()[0].ContextMap()
+	assert.Equal(t, int64(7), fields["sessionId"])
+	assert.Equal(t, cause.Error(), fields["error"])
+}
+
+// cause 为 nil 时不应该记任何日志——退化路径连日志都不产生。
+func TestOperationFailedWithCause_NilCauseLogsNothing(t *testing.T) {
+	core, logs := observer.New(zapcore.ErrorLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	_ = operationFailedWithCause(ctx, nil)
+
+	assert.Equal(t, 0, logs.Len())
 }
