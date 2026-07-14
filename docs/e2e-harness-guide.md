@@ -232,11 +232,11 @@ in mind when changing it.
   **Not implemented yet** — it's the intended seam; add it red→green (with a fake-runtime unit
   test) when a spec first needs it.
 - **Fake an injected MCP tool call** → when the real backend would call an injected MCP tool, the
-  fake makes the same HTTP `tools/call` like a real CLI. **Done for orchestration tools** (workflow,
-  org, subagent, dispatch, finish): when the agent has the relevant tool enabled, the real backend
-  injects the MCP server, so the fake `Run` detects it (`findGroupToolServer`) and POSTs the
-  appropriate tool call to the gateway endpoint — driving the real service handler. Model any future
-  injected-tool fidelity on this; it's the deterministic-fake-as-MCP-client seam.
+  fake makes the same HTTP `tools/call` like a real CLI. **Done for the `org`/`subagent` tools**:
+  when the agent has the relevant tool enabled, the real backend injects the MCP server, so the
+  fake `Run` detects it (`findGroupToolServer`) and POSTs the appropriate tool call to the gateway
+  endpoint — driving the real service handler. Model any future injected-tool fidelity on this;
+  it's the deterministic-fake-as-MCP-client seam.
 - **Fake another backend** (codex / builtin / remote) → add a fake package under `//go:build e2e`
   + one more `RegisterRuntime` line in `e2e_install.go`. Never a patch to production control flow.
 - **A new UI assertion target** → add a `data-testid` (additive) in the same style as §5.
@@ -258,7 +258,7 @@ in mind when changing it.
 | `e2e_install.go` (`//go:build e2e`) / `e2e_install_noop.go` (`//go:build !e2e`) | register the fake + seed / no-op | yes |
 | `internal/pkg/agentruntime/runtimes/fake/` | the deterministic fake runtime (entire package `//go:build e2e`) | yes |
 
-claudecode backend only. The committed suite covers single-chat, session reload, and
-orchestration flows (the fake acts as an MCP client for injected tool servers — see §8).
+claudecode backend only. The committed suite covers single-chat and session reload
+(the fake acts as an MCP client for injected tool servers — see §8).
 Settings / multi-backend / codex / remote e2e remain future specs that reuse this same harness
 and the fake-runtime seam above.

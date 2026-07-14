@@ -1,6 +1,6 @@
 # Session Lifecycle
 
-This doc owns the rules for creating and reusing `chat_sessions`. Read it before adding a feature that starts agent work from outside the normal chat composer, such as orchestration dispatch, issues, hooks, or remote dispatch.
+This doc owns the rules for creating and reusing `chat_sessions`. Read it before adding a feature that starts agent work from outside the normal chat composer, such as issues, hooks, or remote dispatch.
 
 ## Creation Boundary
 
@@ -8,7 +8,7 @@ This doc owns the rules for creating and reusing `chat_sessions`. Read it before
 
 - Use `chat_svc.EnsureSession(ctx, req)` for domain-driven session creation.
 - Keep the Wails binding thin: parse request -> call the owning service -> return.
-- Other domains such as `orch_svc`, `issue_svc`, and `hook_svc` must not call `chat_repo.Session().Create` directly.
+- Other domains such as `issue_svc` and `hook_svc` must not call `chat_repo.Session().Create` directly.
 - Repositories stay persistence-only; they do not decide whether a session should exist.
 
 New domain-driven creation paths should use `EnsureSession`.
@@ -19,21 +19,13 @@ New domain-driven creation paths should use `EnsureSession`.
 
 Normal chat creation still happens through `chat_svc.Send` with `SessionID=0`. The first user message creates the session, persists the user and assistant rows, and starts the runtime turn.
 
-### Orchestration Child Sessions
-
-Orchestration dispatches sub-tasks to child agents via `orch_svc`. Child agent sessions are created lazily:
-
-- Creating a Run does not pre-create child sessions.
-- The orchestration scheduler creates/reuses a child session only when a task is actually dispatched to that agent.
-- After creation the session is a normal `chat_sessions` row; it reuses chat history, runtime selection, steering, tool approval, permission mode, and remote execution behavior.
-
 ### Sidebar Visibility For Out-Of-Band Sessions
 
 The left sidebar reads from `chat-agents-store`, a snapshot loaded by the `ListChatAgents` RPC. For normal chat it stays fresh because `ChatPanel` calls `onSidebarShouldReload` → `reloadSidebarSources()` on new-session / turn-done / steer.
 
-Sessions created **outside** a `ChatPanel` bypass that path: they will not appear in the sidebar list — and, having no row, cannot show a running indicator — until some unrelated reload happens. An orchestration child session is exactly this case: it is created lazily on the first dispatch turn and runs through the orch scheduler, never through a `ChatPanel`.
+Sessions created **outside** a `ChatPanel` bypass that path: they will not appear in the sidebar list — and, having no row, cannot show a running indicator — until some unrelated reload happens.
 
-The single reusable entry point is `ensureSessionInSidebar(sessionId)` in `frontend/src/stores/sidebar-reload.ts`: if the id is not yet known to `chat-agents-store` it triggers `reloadSidebarSources()`, otherwise it short-circuits (cheap to call per turn). Any orch frontend event handler that learns of a new child session should call this so the session enters the list and the agent's run-light turns on.
+The single reusable entry point is `ensureSessionInSidebar(sessionId)` in `frontend/src/stores/sidebar-reload.ts`: if the id is not yet known to `chat-agents-store` it triggers `reloadSidebarSources()`, otherwise it short-circuits (cheap to call per turn). Any frontend event handler that learns of a new out-of-band session should call this so the session enters the list and the agent's run-light turns on.
 
 Any future out-of-band session-creation path — a remote daemon creating a session, issue/hook dispatch — should reuse `ensureSessionInSidebar` from its frontend event handler instead of re-implementing the reload, so the sidebar stays correct without each producer hand-rolling it.
 
@@ -49,7 +41,7 @@ Remote execution does not move session creation to `agentred`.
 
 The desktop app owns the local database and creates/reuses the `chat_sessions` row through `chat_svc`. When a turn starts, runtime selection decides whether execution is local or proxied through `remote.Runtime` to an `agentred` daemon. The remote daemon executes the turn and reports runtime state; it does not own the desktop session lifecycle.
 
-This keeps session identity, sidebar state, read state, orch run linkage, issue linkage, and notifications in one local source of truth.
+This keeps session identity, sidebar state, read state, issue linkage, and notifications in one local source of truth.
 
 ## Adding A New Session Purpose
 
@@ -59,5 +51,5 @@ When adding a new feature that creates sessions:
 2. Add the smallest `SessionPurpose` and request fields needed by `chat_svc.EnsureSession`.
 3. Keep the feature service dependent on a narrow gateway/interface rather than on `chat_repo`.
 4. Emit a domain event if the creating service stores the returned `SessionID` and the frontend needs to update live state.
-5. If the session is created outside a `ChatPanel` (orch child, remote dispatch, issue/hook), have the frontend event handler call `ensureSessionInSidebar(sessionId)` so the new row appears in the sidebar and can show run state.
+5. If the session is created outside a `ChatPanel` (remote dispatch, issue/hook), have the frontend event handler call `ensureSessionInSidebar(sessionId)` so the new row appears in the sidebar and can show run state.
 6. Document the new purpose in this file.
