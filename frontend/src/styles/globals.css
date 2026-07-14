@@ -503,7 +503,8 @@
   }
 }
 
-/* @ mention chip in the composer (rendered by the TipTap mention node). */
+/* @ mention chip, shared by the composer (rendered by the TipTap mention node)
+   and the transcript's MentionChip button. */
 .agentre-mention {
   display: inline-flex;
   align-items: center;
