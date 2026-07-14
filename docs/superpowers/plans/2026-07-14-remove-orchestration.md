@@ -427,14 +427,14 @@ rm -f plans/2026-06-03-group-chat-orchestration.md \
   plans/2026-07-05-orchestration-flow-prompt-template.md \
   plans/2026-07-08-orchestration-default-flow-library.md \
   plans/2026-07-08-orchestration-remove-flow-dag-steps.md \
-  plans/2026-07-09-orch-dispatch-rename-and-task-checklist.md \
-  plans/2026-06-11-agent-org-tool.md \
-  plans/2026-06-15-subagent-call-tool.md
-rm -f specs/2026-06-11-agent-org-tool-design.md \
-  specs/2026-06-15-subagent-call-tool-design.md \
-  specs/2026-06-15-group-create-tool-gating-design.md
+  plans/2026-07-09-orch-dispatch-rename-and-task-checklist.md
+rm -f specs/2026-06-15-group-create-tool-gating-design.md
 ```
-Note: `org`/`subagent` tools are KEPT in code (Task 1/2), but their historical build **specs/plans** describe the orchestration lineage; per the maintainer's "remove all related docs" they are deleted here. If you'd rather keep the org/subagent build docs, drop the last two `rm` blocks — confirm with the reviewer.
+Note: `org`/`subagent` tools are KEPT in code (Task 1/2), so their build docs
+(`2026-06-11-agent-org-tool*`, `2026-06-15-subagent-call-tool*`) document living
+features and are **kept**. Only the `group-create-tool-gating` spec is deleted here
+(its `group_create` tool was already removed with group chat). Do NOT delete the
+org/subagent specs or plans.
 
 - [ ] **Step 2: Surgical doc edits**
 
