@@ -1261,6 +1261,15 @@
       "nameRequired": "Name is required"
     }
   },
+  "mentions": {
+    "aria": "Mention a project or agent",
+    "group": { "agents": "Agents", "projects": "Projects" },
+    "empty": "No matches",
+    "chip": {
+      "agentTitle": "Agent: {{name}}",
+      "projectTitle": "Project: {{name}}"
+    }
+  },
   "nav": {
     "chat": "Chat",
     "hooks": "Hooks",
