@@ -21,29 +21,4 @@ describe("toolKeysToCatalog", () => {
     const items = toolKeysToCatalog(["org"], [], t);
     expect(items[0].enabled).toBe(false);
   });
-
-  it("workflow 带审批徽标 + 名称来自 i18n", () => {
-    const items = toolKeysToCatalog(
-      ["org", "workflow"],
-      [{ key: "workflow", enabled: true }],
-      t,
-    );
-    const wf = items.find((i) => i.id === "workflow")!;
-    expect(wf.name).toBe(t("org.agent.tools.names.workflow"));
-    expect(wf.enabled).toBe(true);
-    expect(wf.badges?.[0]?.tone).toBe("approval");
-  });
-
-  it("localizes the orchestrate tool instead of exposing its i18n key", () => {
-    const [orchestrate] = toolKeysToCatalog(
-      ["orchestrate"],
-      [{ key: "orchestrate", enabled: true }],
-      t,
-    );
-
-    expect(orchestrate.name).toBe("Agent Orchestration");
-    expect(orchestrate.description).not.toBe(
-      "org.agent.tools.descriptions.orchestrate",
-    );
-  });
 });

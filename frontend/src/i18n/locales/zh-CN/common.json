@@ -387,10 +387,7 @@
       "org_delete_department": "删除部门",
       "org_create_agent": "创建 Agent",
       "org_update_agent": "修改 Agent",
-      "org_delete_agent": "删除 Agent",
-      "workflow_create": "新建流程",
-      "workflow_update": "更新流程",
-      "workflow_delete": "删除流程"
+      "org_delete_agent": "删除 Agent"
     }
   },
   "chat": {
@@ -1682,16 +1679,12 @@
         "approval": "需审批",
         "names": {
           "org": "组织架构",
-          "workflow": "流程库",
           "subagent": "调用子 Agent",
-          "orchestrate": "Agent 编排",
           "hook": "脚本 Hook"
         },
         "descriptions": {
           "org": "允许该 Agent 查询并管理部门与成员（写操作需你审批）",
-          "workflow": "允许该 Agent 查询并管理协作流程（写操作需你审批）",
           "subagent": "把子任务委派给另一个已配置的 Agent 执行并同步取回结果。子 Agent 在隔离的一次性会话中运行；用作子 Agent 的成员建议使用自动批准的权限模式。",
-          "orchestrate": "允许该 Agent 将任务派发给其他 Agent、跟踪进度、协调返工并汇总结果",
           "hook": "允许该 Agent 编写、试运行并按 cron 调度脚本 Hook，定时产出事件（创建/修改/删除/执行均需你审批）"
         }
       },

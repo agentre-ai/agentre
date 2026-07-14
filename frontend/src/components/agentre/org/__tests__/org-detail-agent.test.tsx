@@ -327,41 +327,6 @@ describe("OrgDetailAgent", () => {
     expect(screen.getByText("Org Structure")).toBeInTheDocument();
   });
 
-  it("grants the workflow tool via the tool picker and saves it", async () => {
-    withCaps(["skills", "mcp_tools"]);
-    const user = userEvent.setup();
-    const { onUpdate } = renderPanel(
-      { tools: [], agentBackendId: 5 },
-      [backend({ id: 5, type: "claudecode" })],
-      ["org", "workflow"],
-    );
-    await user.click(await screen.findByRole("button", { name: "Add Tool" }));
-    await user.click(
-      await screen.findByRole("checkbox", { name: "Workflow Library" }),
-    );
-    await user.click(screen.getByText("Done"));
-    await waitFor(() => expect(onUpdate).toHaveBeenCalled());
-    expect(onUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tools: expect.arrayContaining([
-          expect.objectContaining({ key: "workflow", enabled: true }),
-        ]),
-      }),
-    );
-  });
-
-  it("renders the Workflow Library chip when the workflow tool is enabled", async () => {
-    withCaps(["skills", "mcp_tools"]);
-    renderPanel(
-      { tools: [{ key: "workflow", enabled: true }], agentBackendId: 5 },
-      [backend({ id: 5, type: "claudecode" })],
-      ["org", "workflow"],
-    );
-    await screen.findByText("Tools · TOOLS");
-    expect(screen.getByText("Workflow Library")).toBeInTheDocument();
-    expect(screen.getByText("Approval")).toBeInTheDocument();
-  });
-
   it("renders a globally-on pack as a locked (non-removable) inherited chip", async () => {
     withCaps(
       ["skills"],
