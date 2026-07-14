@@ -1,0 +1,167 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import type { Editor } from "@tiptap/react";
+
+import { MENTION_NODE_NAME } from "./mention-node";
+import { detectAtTrigger } from "./trigger";
+import type { MentionItem, MentionMenuState, MentionSources } from "./types";
+
+function filterItems(all: MentionItem[], query: string): MentionItem[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return all;
+  return all.filter((i) => i.label.toLowerCase().includes(q));
+}
+
+export function useMentionMenu({
+  editor,
+  sources,
+  onPick,
+}: {
+  editor: Editor | null;
+  sources: MentionSources;
+  onPick?: (item: MentionItem) => void;
+}): {
+  state: MentionMenuState;
+  onKeyDown: (event: KeyboardEvent) => boolean;
+  pick: (item: MentionItem) => void;
+  setSelectedIndex: (idx: number) => void;
+  close: () => void;
+} {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [anchorRect, setAnchorRect] = useState<
+    MentionMenuState["anchorRect"] | null
+  >(null);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  // agents 在前、projects 在后 —— MentionPopover 按此顺序分组。
+  const available = useMemo(
+    () => [...sources.agents, ...sources.projects],
+    [sources.agents, sources.projects],
+  );
+  const items = useMemo(
+    () => filterItems(available, query),
+    [available, query],
+  );
+
+  useEffect(() => {
+    if (selectedIndex >= items.length) {
+      setSelectedIndex(items.length > 0 ? items.length - 1 : 0);
+    }
+  }, [items.length, selectedIndex]);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setAnchorRect(null);
+    setQuery("");
+    setSelectedIndex(0);
+  }, []);
+
+  useEffect(() => {
+    if (!editor) return;
+    const recompute = () => {
+      if (available.length === 0) {
+        if (open) close();
+        return;
+      }
+      const { $from, empty } = editor.state.selection;
+      if (!empty) {
+        if (open) close();
+        return;
+      }
+      const before = $from.parent.textBetween(0, $from.parentOffset);
+      const hit = detectAtTrigger(before);
+      if (!hit) {
+        if (open) close();
+        return;
+      }
+      const triggerPos = $from.start() + hit.startOffset;
+      let rect: MentionMenuState["anchorRect"];
+      try {
+        const c = editor.view.coordsAtPos(triggerPos);
+        rect = { left: c.left, top: c.top, bottom: c.bottom };
+      } catch {
+        rect = null;
+      }
+      setQuery(hit.query);
+      setAnchorRect(rect);
+      setOpen(true);
+    };
+    editor.on("update", recompute);
+    editor.on("selectionUpdate", recompute);
+    return () => {
+      editor.off("update", recompute);
+      editor.off("selectionUpdate", recompute);
+    };
+  }, [editor, available, open, close]);
+
+  const confirm = useCallback(
+    (item: MentionItem) => {
+      if (editor) {
+        const { $from } = editor.state.selection;
+        const before = $from.parent.textBetween(0, $from.parentOffset);
+        const hit = detectAtTrigger(before);
+        if (hit) {
+          const from = $from.start() + hit.startOffset;
+          const to = $from.pos;
+          editor
+            .chain()
+            .focus()
+            .deleteRange({ from, to })
+            .insertContent({
+              type: MENTION_NODE_NAME,
+              attrs: {
+                kind: item.kind,
+                refId: item.refId,
+                label: item.label,
+                path: item.path ?? "",
+                color: item.color ?? "",
+              },
+            })
+            .insertContent(" ")
+            .run();
+        }
+      }
+      close();
+      onPick?.(item);
+    },
+    [close, editor, onPick],
+  );
+
+  const onKeyDown = useCallback(
+    (event: KeyboardEvent): boolean => {
+      if (!open || items.length === 0) return false;
+      switch (event.key) {
+        case "ArrowDown":
+          event.preventDefault();
+          setSelectedIndex((i) => (i + 1) % items.length);
+          return true;
+        case "ArrowUp":
+          event.preventDefault();
+          setSelectedIndex((i) => (i - 1 + items.length) % items.length);
+          return true;
+        case "Enter":
+        case "Tab": {
+          event.preventDefault();
+          const item = items[selectedIndex] ?? items[0];
+          if (item) confirm(item);
+          return true;
+        }
+        case "Escape":
+          event.preventDefault();
+          close();
+          return true;
+        default:
+          return false;
+      }
+    },
+    [open, items, selectedIndex, confirm, close],
+  );
+
+  const state: MentionMenuState = useMemo(
+    () => ({ open, anchorRect, items, selectedIndex, query }),
+    [open, anchorRect, items, selectedIndex, query],
+  );
+
+  return { state, onKeyDown, pick: confirm, setSelectedIndex, close };
+}
