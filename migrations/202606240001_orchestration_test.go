@@ -3,10 +3,13 @@ package migrations
 import (
 	"testing"
 
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+// 编排能力于 202607140001 整体移除后,原属本文件的
+// TestMigration202606240001_Orchestration 已删除;此文件仅保留
+// tableExists / columnExists 两个迁移测试共享助手(drop_group 等仍在用)。
 
 func tableExists(t *testing.T, db *gorm.DB, name string) bool {
 	t.Helper()
@@ -32,21 +35,4 @@ func columnExists(t *testing.T, db *gorm.DB, table, col string) bool {
 		}
 	}
 	return false
-}
-
-func TestMigration202606240001_Orchestration(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, RunMigrations(db))
-
-	require.True(t, tableExists(t, db, "orchestration_runs"))
-	// orch_tasks 已被 202607090001 改名为 orch_dispatches(执行节点改名腾出 task 给待办清单)。
-	require.True(t, tableExists(t, db, "orch_dispatches"))
-	require.True(t, columnExists(t, db, "chat_sessions", "run_id"))
-
-	// DEFAULT agent 应被种上 orchestrate 工具。
-	var toolsJSON string
-	require.NoError(t, db.Raw(
-		`SELECT tools_json FROM agents WHERE system_badge='DEFAULT' LIMIT 1`).Scan(&toolsJSON).Error)
-	require.Contains(t, toolsJSON, `"orchestrate"`)
 }
