@@ -19,7 +19,9 @@ describe("buildEditorDocFromMessage with mention XML", () => {
 
   it("keeps plain lines as plain text (no mention nodes)", () => {
     const doc = buildEditorDocFromMessage("just text");
-    expect(doc.content[0].content).toEqual([{ type: "text", text: "just text" }]);
+    expect(doc.content[0].content).toEqual([
+      { type: "text", text: "just text" },
+    ]);
   });
 
   it("handles multiple lines, mention on the second", () => {
