@@ -45,7 +45,6 @@ const appMocks = vi.hoisted(() => ({
   ListChatAgentSessions: vi
     .fn()
     .mockResolvedValue({ sessions: [], total: 0, hasMore: false }),
-  WorkflowList: vi.fn().mockResolvedValue({ items: [] }),
   SetAgentPinned: vi.fn().mockResolvedValue({ id: 0, pinned: false }),
 }));
 

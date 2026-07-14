@@ -109,36 +109,4 @@ describe("ToolApprovalCard", () => {
     expect(screen.getByText("Expired")).toBeDefined();
     expect(screen.queryByText("Approve")).toBeNull();
   });
-
-  describe("workflow", () => {
-    const workflowCreatePending = (
-      overrides: Partial<ToolApprovalData> = {},
-    ): ToolApprovalData => ({
-      toolKey: "workflow",
-      requestId: "wf-1",
-      toolName: "workflow_create",
-      toolInput: { name: "评审流程" },
-      status: "pending",
-      ...overrides,
-    });
-
-    it("routes workflow_create answers through the unified AnswerToolApproval", async () => {
-      const user = userEvent.setup();
-      render(
-        <ToolApprovalCard approval={workflowCreatePending()} sessionId={42} />,
-      );
-      expect(screen.getByText("Create workflow")).toBeDefined();
-      await user.click(screen.getByText("Approve"));
-      await waitFor(() => {
-        expect(AnswerToolApproval).toHaveBeenCalledTimes(1);
-      });
-      expect(AnswerToolApproval).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sessionId: 42,
-          requestId: "wf-1",
-          allow: true,
-        }),
-      );
-    });
-  });
 });

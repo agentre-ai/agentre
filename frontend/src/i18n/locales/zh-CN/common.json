@@ -742,10 +742,7 @@
       "commandPlaceholder": "输入命令…",
       "sessionPlaceholder": "搜索会话…"
     },
-    "title": "命令面板",
-    "workflows": {
-      "heading": "操作"
-    }
+    "title": "命令面板"
   },
   "dataBackup": {
     "actions": {
@@ -1272,7 +1269,6 @@
     "hooks": "Hooks",
     "issues": "Issues",
     "org": "组织",
-    "orchestration": "编排",
     "projects": "项目",
     "settings": "设置"
   },
@@ -1797,57 +1793,6 @@
     },
     "reorderFailed": "排序保存失败，请重试"
   },
-  "workflows": {
-    "title": "流程库",
-    "subtitle": "跨 Run 复用的协作流程(SOP);主持人每轮注入绑定流程的最新内容",
-    "new": "新建流程",
-    "empty": "还没有流程,点击「新建流程」开始",
-    "runCount": "{{count}} 个 Run 使用中",
-    "runCount_one": "{{count}} 个 Run 使用中",
-    "updatedAt": "更新于 {{time}}",
-    "edit": "编辑流程",
-    "delete": "删除",
-    "preview": {
-      "liveHint": "修改即时生效:进行中的 Run 下一轮即注入最新正文",
-      "empty": "选择左侧流程查看正文",
-      "blueprintTags": "标签",
-      "blueprintHint": "仅供一眼读懂流程 · 不约束 AI"
-    },
-    "editor": {
-      "createTitle": "新建流程",
-      "editTitle": "编辑流程",
-      "name": "名称",
-      "namePlaceholder": "如:产品开发流程",
-      "content": "流程正文(Markdown)",
-      "insertTemplate": "插入骨架模板",
-      "save": "保存",
-      "template": "# 流程名称\n\n适用:什么场景用这个流程。\n\n## 角色\n- 角色 A:职责与产出\n- 角色 B:职责与产出\n(用抽象角色,不写 agent 真名;按编排成员职责对号入座,缺角色先 dispatch 派活给子 agent 或询问用户)\n\n## 步骤\n1. 角色 A:输入 → 产出,交付 .agentre/handoff/<run>/task-N-xxx.md,含验收标准\n2. 角色 B:依据上一棒交付物继续\n3. 并行验证:可并行的环节明确标注(验证任务回指被验证任务)\n4. 全部通过 → 汇总 @用户;有问题 → 打回对应环节(新任务卡)\n\n## 纪律\n- 每一步都用任务卡交接,交付物写明路径\n- 可能改同一片代码的任务不要并行\n- 验收标准在派活时写进 brief",
-      "tags": "标签",
-      "tagsHint": "仅展示给人,不注入 AI",
-      "tagsPlaceholder": "输入标签后回车",
-      "removeItem": "删除"
-    },
-    "deleteConfirm": {
-      "title": "删除流程",
-      "desc": "「{{name}}」正被 {{count}} 个 Run 使用;删除后这些 Run 按「不绑定流程」处理,且不可恢复。",
-      "desc_one": "「{{name}}」正被 1 个 Run 使用;删除后该 Run 按「不绑定流程」处理,且不可恢复。",
-      "descUnused": "删除「{{name}}」后不可恢复。",
-      "confirm": "删除流程"
-    },
-    "manager": {
-      "searchPlaceholder": "搜索流程名称或正文",
-      "metaLive": "{{count}} 个 Run 使用中 · 更新于 {{time}} · 修改即时生效",
-      "metaLive_one": "{{count}} 个 Run 使用中 · 更新于 {{time}} · 修改即时生效",
-      "metaUnused": "未使用 · 更新于 {{time}} · 修改即时生效",
-      "saveHint": "⌘ + Enter 保存 · Esc 取消"
-    },
-    "actions": {
-      "openLibrary": "打开流程库",
-      "openLibraryHint": "浏览 / 新建 / 编辑跨 Run 协作流程",
-      "newWorkflow": "新建流程",
-      "newWorkflowHint": "直接打开空白流程编辑器"
-    }
-  },
   "permissionMode": {
     "active": "ACTIVE",
     "aria": "权限模式：{{label}}（Shift+Tab 切换）",
@@ -2254,169 +2199,6 @@
       "inherit": "继承",
       "on": "开",
       "off": "关"
-    }
-  },
-  "orchestration": {
-    "section": "编排",
-    "loading": "加载中…",
-    "new": {
-      "title": "新建编排 Run",
-      "goal": "目标",
-      "goalHint": "Leader 会据此拆解子任务",
-      "goalPlaceholder": "描述你希望达成的目标…",
-      "leader": "Leader Agent",
-      "leaderPlaceholder": "选择负责主持的 Agent…",
-      "team": "可参与 agent",
-      "teamSelected": "已选 {{count}}",
-      "teamHint": "留空则不限制可参与的 Agent",
-      "teamAllAgents": "全部 Agent",
-      "teamUngrouped": "未分组",
-      "teamSelectAll": "全选",
-      "teamDeptMembers": "{{count}} 名成员",
-      "teamSummary": "本次团队",
-      "teamTotal": "共 {{count}} 人",
-      "teamSearchPlaceholder": "搜索 agent…",
-      "teamSearchEmpty": "无匹配 agent",
-      "teamSearchResults": "搜索结果",
-      "flow": "编排流程",
-      "flowAdhoc": "临时",
-      "flowSelect": "选择流程库",
-      "flowSelectPlaceholder": "搜索流程…",
-      "flowLibrary": "从流程库选择",
-      "flowContent": "流程内容",
-      "flowContentPlaceholder": "输入或粘贴流程定义…",
-      "flowManage": "管理流程库",
-      "create": "创建并启动 Run",
-      "project": "项目",
-      "projectNone": "无（使用 Agent 默认目录）"
-    },
-    "list": {
-      "newButton": "新建编排",
-      "title": "编排 Runs",
-      "newBtnLabel": "新建",
-      "filterAll": "全部",
-      "filterRunning": "运行中",
-      "filterDone": "已完成",
-      "filterEmpty": "没有匹配的 Run",
-      "libraryEntry": "流程库"
-    },
-    "onboarding": {
-      "cta": "开启多 Agent 协作编排",
-      "step1": "指定一个 Leader Agent 负责主持",
-      "step2": "设定目标，Leader 自动拆解并分派任务",
-      "step3": "实时跟踪结构图与活动流"
-    },
-    "header": {
-      "viewGraph": "结构图",
-      "viewFeed": "活动流",
-      "running": "自主运行中",
-      "completed": "已完成",
-      "paused": "已暂停",
-      "stopped": "已停止",
-      "pending": "等待启动",
-      "countRunning": "{{count}} 运行中",
-      "countWaitingYou": "{{count}} 等待你",
-      "countDone": "{{count}} 已完成",
-      "treeSize": "节点 {{nodes}} · 子Agent {{subagents}} · 深度 {{depth}}",
-      "tokens": "{{count}} tokens",
-      "duration": "{{duration}}",
-      "pause": "暂停",
-      "resume": "继续",
-      "stop": "硬停止",
-      "softWarning": "停止后不可恢复，确认继续？",
-      "leaderLabel": "Leader",
-      "more": "更多"
-    },
-    "graph": {
-      "empty": "暂无节点",
-      "completedBanner": "✓ 编排已完成",
-      "pausedBanner": "已暂停，点击「继续」恢复运行",
-      "stoppedBanner": "已硬停止",
-      "deadlock": "检测到等待环，请去裁决",
-      "deadlockBannerDetail": "多个 agent 互相等待，请介入或指示 Leader 打破循环",
-      "interveneBtn": "介入处理",
-      "completedBannerDetail": "所有任务已完成，编排结束",
-      "pausedBannerDetail": "编排已暂停，可随时恢复运行",
-      "resumeBtn": "继续",
-      "stoppedBannerDetail": "编排已硬停止",
-      "leaderCrown": "Leader",
-      "callCount": "×{{count}}",
-      "sessionsCount": "{{count}} 会话",
-      "callLabel": "会话#{{seq}}",
-      "askWaiting": "提问·等待回复"
-    },
-    "feed": {
-      "deadlock": "检测到 ask 等待环",
-      "blockingCount": "{{count}} 个分支等待你审批",
-      "blockingView": "去裁决",
-      "completed": "编排已完成",
-      "paused": "编排已暂停",
-      "empty": "暂无活动",
-      "blocked": "等待你",
-      "speakPlaceholder": "对 Leader 说…",
-      "speakSend": "发送",
-      "kindDispatch": "派发任务",
-      "kindReport": "汇报",
-      "kindFinish": "完成",
-      "kindBlocked": "阻塞",
-      "kindAsk": "提问",
-      "kindReply": "回复",
-      "executing": "正在执行"
-    },
-    "board": {
-      "statusRunning": "运行中",
-      "statusDone": "已完成",
-      "statusAwaitingUser": "等待你",
-      "statusAwaitingChildren": "等待子任务",
-      "statusError": "出错",
-      "statusPending": "待启动",
-      "statusIdle": "进行中"
-    },
-    "tasks": {
-      "title": "任务清单",
-      "empty": "暂无待办",
-      "progress": "{{done}}/{{total}} 完成"
-    },
-    "notify": {
-      "completed": "编排 Run 已完成:{{goal}}",
-      "waitingYou": "有分支在等待你审批:{{goal}}",
-      "view": "查看"
-    },
-    "run": {
-      "speakLeaderPlaceholder": "对 Leader 说:调整优先级 / 追加约束 / 批准任务…",
-      "send": "发送"
-    },
-    "subagent": {
-      "badge": "+{{count}} 子代理",
-      "autoMerge": "auto-merge"
-    },
-    "conversation": {
-      "backToBoard": "返回任务板",
-      "speakPlaceholder": "对它说…(发送给该会话)",
-      "speakSend": "发送",
-      "awaitingReply": "等待回复中",
-      "sessionLabel": "会话",
-      "tasksUnit": "任务"
-    },
-    "toggle": {
-      "tasks": "任务",
-      "depth": "深度",
-      "agents": "{{agentCount}} agent · {{subCount}} sub",
-      "subagents": "子代理"
-    },
-    "overview": {
-      "title": "编排",
-      "subtitle": "多 Agent 协作编排总览",
-      "statRunning": "运行中",
-      "statWaiting": "等待",
-      "statDoneThisWeek": "本周完成",
-      "statAvgDuration": "平均时长",
-      "noDuration": "—",
-      "inProgress": "进行中",
-      "inProgressEmpty": "暂无进行中的 Run",
-      "recentDone": "最近完成",
-      "recentDoneEmpty": "暂无已完成的 Run",
-      "progress": "{{done}}/{{total}}"
     }
   },
   "localCommand": {
