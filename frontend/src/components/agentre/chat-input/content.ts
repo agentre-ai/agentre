@@ -1,3 +1,4 @@
+import { serializeMentionXml, type MentionKind } from "./mentions/xml";
 import type {
   AIChatInputDraft,
   ProseMirrorLikeNode,
@@ -15,6 +16,13 @@ export function extractPlainText(doc: ProseMirrorLikeNode): string {
       out += node.text ?? "";
     } else if (node.type.name === "hardBreak") {
       out += "\n";
+    } else if (node.type.name === "mention") {
+      out += serializeMentionXml({
+        kind: (node.attrs.kind as MentionKind) ?? "agent",
+        refId: Number(node.attrs.refId ?? 0),
+        label: String(node.attrs.label ?? ""),
+        path: node.attrs.path ? String(node.attrs.path) : undefined,
+      });
     } else if (node.type.name === "paragraph" && out.length > 0) {
       out += "\n";
     }
