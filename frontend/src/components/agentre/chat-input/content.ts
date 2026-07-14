@@ -1,8 +1,9 @@
-import { serializeMentionXml, type MentionKind } from "./mentions/xml";
+import { parseMentionXml, serializeMentionXml, type MentionKind } from "./mentions/xml";
 import type {
   AIChatInputDraft,
   ProseMirrorLikeNode,
   TipTapDocNode,
+  TipTapMentionNode,
   TipTapParagraphNode,
   TipTapTextNode,
 } from "./types";
@@ -47,11 +48,25 @@ export function buildEditorDocFromMessage(
   const paragraphs: TipTapParagraphNode[] = [];
   const segments = content.split("\n");
   for (const seg of segments) {
-    const textNodes: TipTapTextNode[] =
-      seg.length > 0 ? [{ type: "text", text: seg }] : [];
+    const nodes: (TipTapTextNode | TipTapMentionNode)[] = [];
+    for (const part of parseMentionXml(seg)) {
+      if (part.type === "text") {
+        if (part.value.length > 0) nodes.push({ type: "text", text: part.value });
+      } else {
+        nodes.push({
+          type: "mention",
+          attrs: {
+            kind: part.ref.kind,
+            refId: part.ref.refId,
+            label: part.ref.label,
+            path: part.ref.path ?? "",
+          },
+        });
+      }
+    }
     paragraphs.push(
-      textNodes.length > 0
-        ? { type: "paragraph", content: textNodes }
+      nodes.length > 0
+        ? { type: "paragraph", content: nodes }
         : { type: "paragraph" },
     );
   }
