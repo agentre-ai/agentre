@@ -10,7 +10,10 @@ describe("detectAtTrigger", () => {
     expect(detectAtTrigger("@rev")).toEqual({ startOffset: 0, query: "rev" });
   });
   it("after whitespace triggers with correct offset", () => {
-    expect(detectAtTrigger("hi @rev")).toEqual({ startOffset: 3, query: "rev" });
+    expect(detectAtTrigger("hi @rev")).toEqual({
+      startOffset: 3,
+      query: "rev",
+    });
   });
   it("email-like foo@bar does not trigger", () => {
     expect(detectAtTrigger("foo@bar")).toBeNull();
