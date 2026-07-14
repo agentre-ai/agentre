@@ -22,28 +22,6 @@ export function runningSessionCount(): number {
   }
 }
 
-export type WorkflowRow = {
-  id: number;
-  name: string;
-  content: string;
-  status: number;
-};
-
-export function workflowByName(name: string): WorkflowRow | null {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    const row = db
-      .prepare(
-        "SELECT id, name, content, status FROM workflows WHERE name = ? ORDER BY id DESC LIMIT 1",
-      )
-      .get(name) as WorkflowRow | undefined;
-    return row ?? null;
-  } finally {
-    db.close();
-  }
-}
-
 export function chatUserMessageCountContaining(text: string): number {
   const db = new DatabaseSync(dbPath(), { readOnly: true });
   try {
@@ -91,100 +69,6 @@ export function departmentCountByName(name: string): number {
   }
 }
 
-// orchestrationRunStatus returns the status of the latest orchestration_run, or null if none.
-// Read-only — proves the orchestration engine actually advanced the Run lifecycle at the source of
-// truth (DB), independent of the UI.
-export function orchestrationRunStatus(): string | null {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    const row = db
-      .prepare("SELECT status FROM orchestration_runs ORDER BY id DESC LIMIT 1")
-      .get() as { status: string } | undefined;
-    return row?.status ?? null;
-  } finally {
-    db.close();
-  }
-}
-
-// orchestrationRunStatusById pins the assertion to one Run id (the one the spec created via
-// RunCreate), instead of "latest" — robust when prior specs in the shared DB left other Runs.
-export function orchestrationRunStatusById(id: number): string | null {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    const row = db
-      .prepare("SELECT status FROM orchestration_runs WHERE id = ?")
-      .get(id) as { status: string } | undefined;
-    return row?.status ?? null;
-  } finally {
-    db.close();
-  }
-}
-
-// orchestrationRunIdByGoal returns the Run id for a unique test goal.
-export function orchestrationRunIdByGoal(goal: string): number | null {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    const row = db
-      .prepare("SELECT id FROM orchestration_runs WHERE goal = ? ORDER BY id DESC LIMIT 1")
-      .get(goal) as { id: number } | undefined;
-    return row?.id ?? null;
-  } finally {
-    db.close();
-  }
-}
-
-// orchTaskStatusById returns one orch_task's status (e.g. assert the root task cascaded to
-// 'canceled' on hard-stop). Read-only.
-export function orchTaskStatusById(id: number): string | null {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    const row = db
-      .prepare("SELECT status FROM orch_tasks WHERE id = ?")
-      .get(id) as { status: string } | undefined;
-    return row?.status ?? null;
-  } finally {
-    db.close();
-  }
-}
-
-// chatMessageCountContaining counts chat_messages (any role) whose blocks_json contains the text.
-// Role-agnostic twin of chatUserMessageCountContaining — used to prove an orchestration ask injected
-// its「【收到提问 ask_id=…】」message into the target session (the injected message's role varies).
-export function chatMessageCountContaining(text: string): number {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    const row = db
-      .prepare(
-        "SELECT COUNT(*) AS n FROM chat_messages WHERE blocks_json LIKE '%' || ? || '%'",
-      )
-      .get(text) as { n: number };
-    return row.n;
-  } finally {
-    db.close();
-  }
-}
-
-// sessionAgentStatus returns one chat_session's agent_status ('idle'/'running'/'waiting'/…), or
-// null. Read-only — used to prove an orchestration ask's reply round-tripped quickly (asker session
-// returns to 'idle' within seconds) rather than blocking on the 4-min ask timeout.
-export function sessionAgentStatus(sessionId: number): string | null {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    const row = db
-      .prepare("SELECT agent_status FROM chat_sessions WHERE id = ?")
-      .get(sessionId) as { agent_status: string } | undefined;
-    return row?.agent_status ?? null;
-  } finally {
-    db.close();
-  }
-}
-
 // expiredUserAskCountContaining counts persisted chat_messages whose blocks_json carries BOTH the
 // given marker (the per-test unique question text) AND "expired":true. Read-only — proves the
 // turn-finalize path marked the unanswered AskUserQuestion expired and persisted it (the ask-card
@@ -215,46 +99,6 @@ export function hookCountByName(name: string): number {
       .prepare("SELECT COUNT(*) AS n FROM hooks WHERE name = ?")
       .get(name) as { n: number };
     return row.n;
-  } finally {
-    db.close();
-  }
-}
-
-export type OrchTaskRow = {
-  id: number;
-  status: string;
-  parentTaskId: number;
-};
-
-// orchTaskRows returns all orch_dispatches rows (id, status, parentTaskId) ordered by id.
-// Read-only — proves dispatch created sub-tasks and they reached terminal state at the source of
-// truth, independent of the UI. (The dispatch tree lives in orch_dispatches since the task→dispatch
-// rename; orch_tasks was reclaimed by the checklist and has no parent column.)
-export function orchTaskRows(): OrchTaskRow[] {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    return db
-      .prepare(
-        "SELECT id, status, parent_dispatch_id AS parentTaskId FROM orch_dispatches ORDER BY id ASC",
-      )
-      .all() as OrchTaskRow[];
-  } finally {
-    db.close();
-  }
-}
-
-// orchTaskRowsByRun scopes orchTaskRows to one Run id — required in the shared scratch DB where
-// prior specs left tasks from other Runs (a global "all tasks are done" assertion would be polluted).
-export function orchTaskRowsByRun(runId: number): OrchTaskRow[] {
-  const db = new DatabaseSync(dbPath(), { readOnly: true });
-  try {
-    db.exec("PRAGMA busy_timeout = 5000");
-    return db
-      .prepare(
-        "SELECT id, status, parent_dispatch_id AS parentTaskId FROM orch_dispatches WHERE run_id = ? ORDER BY id ASC",
-      )
-      .all(runId) as OrchTaskRow[];
   } finally {
     db.close();
   }
