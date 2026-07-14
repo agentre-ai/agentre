@@ -5869,3 +5869,23 @@ func TestSend_StreamToolUseCarriesCanonical(t *testing.T) {
 	assert.Equal(t, "/y.go", writeEv.Canonical.FileWrite.Path)
 	assert.Equal(t, "hello\n", writeEv.Canonical.FileWrite.Content)
 }
+
+// repo 报错时,ListAgents 返回的 error 必须带上真实 cause —— 这是 2026-07-14「新建对话发送失败:
+// 操作失败」事故的回归护栏:当时 53 处调用点把 err 整个丢掉,前端和日志都只剩一句「操作失败」。
+func TestListAgents_SurfacesRepoCause(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	agentMock := mock_agent_repo.NewMockAgentRepo(ctrl)
+	prev := agent_repo.Agent()
+	agent_repo.RegisterAgent(agentMock)
+	t.Cleanup(func() { agent_repo.RegisterAgent(prev) })
+
+	cause := errors.New("SQL logic error: no such column: run_id (1)")
+	agentMock.EXPECT().List(gomock.Any()).Return(nil, cause)
+
+	svc := chat_svc.NewChat(chat_svc.NoopEmitter{})
+	_, err := svc.ListAgents(context.Background(), &chat_svc.ListAgentsRequest{})
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no such column: run_id")
+	assert.ErrorIs(t, err, cause)
+}

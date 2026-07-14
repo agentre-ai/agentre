@@ -99,20 +99,20 @@ func (s *chatSvc) GetSessionGitState(ctx context.Context, req *GetSessionGitStat
 	}
 	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	if sess == nil {
 		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
 	a, err := agent_repo.Agent().Find(ctx, sess.AgentID)
 	if err != nil {
-		return nil, i18n.NewError(ctx, code.OperationFailed)
+		return nil, operationFailedWithCause(ctx, err)
 	}
 	var be *agent_backend_entity.AgentBackend
 	if a != nil && a.AgentBackendID > 0 {
 		be, err = agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
 		if err != nil {
-			return nil, i18n.NewError(ctx, code.OperationFailed)
+			return nil, operationFailedWithCause(ctx, err)
 		}
 	}
 	return s.getSessionGitStateForSession(ctx, sess, be)
