@@ -9,8 +9,8 @@ import (
 
 // TurnMCPProvider 按 (agent, session) 给 turn 注入额外 MCP server —— agent 级
 // 内置工具体系的接缝。bootstrap 注册 orgtool_svc 的实现;空列表 = 不注入。
-// groupID 形参为历史残留(恒传 0),orch 等 provider 忽略它。
-// 在 runTurn 单点生效,单聊/编排/Regenerate 全覆盖。
+// groupID 形参为历史残留(恒传 0),现有 provider 均忽略它。
+// 在 runTurn 单点生效,单聊/Regenerate 全覆盖。
 type TurnMCPProvider func(ctx context.Context, a *agent_entity.Agent, sessionID, groupID int64) []agentruntime.MCPServerSpec
 
 var turnMCPProviders []TurnMCPProvider

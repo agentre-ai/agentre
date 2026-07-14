@@ -13,7 +13,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 )
 
-// SessionPurposeUserChat 给 ! 命令在新会话态先坐实一个「普通用户会话」用 —— 与 subagent/orch
+// SessionPurposeUserChat 给 ! 命令在新会话态先坐实一个「普通用户会话」用 —— 与 subagent
 // 子会话不同:Purpose 必须为空,这样它出现在侧栏、可继续对话(不被 repo 隐藏)。
 func TestEnsureSession_UserChat(t *testing.T) {
 	Convey("Given SessionPurposeUserChat, When EnsureSession is called, Then it creates a normal idle session with empty Purpose", t, func() {

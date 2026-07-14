@@ -27,22 +27,18 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/hook_repo"
 	"github.com/agentre-ai/agentre/internal/repository/issue_repo"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
-	"github.com/agentre-ai/agentre/internal/repository/orch_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_location_repo"
 	"github.com/agentre-ai/agentre/internal/repository/project_repo"
-	"github.com/agentre-ai/agentre/internal/repository/workflow_repo"
 	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 	"github.com/agentre-ai/agentre/internal/service/app_settings_svc"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 	"github.com/agentre-ai/agentre/internal/service/hooktool_svc"
 	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 	"github.com/agentre-ai/agentre/internal/service/notification_svc"
-	"github.com/agentre-ai/agentre/internal/service/orch_svc"
 	"github.com/agentre-ai/agentre/internal/service/orgtool_svc"
 	"github.com/agentre-ai/agentre/internal/service/project_svc"
 	"github.com/agentre-ai/agentre/internal/service/skill_svc"
 	"github.com/agentre-ai/agentre/internal/service/subagent_svc"
-	"github.com/agentre-ai/agentre/internal/service/workflowtool_svc"
 	"github.com/agentre-ai/agentre/migrations"
 
 	"github.com/cago-frame/cago"
@@ -115,10 +111,6 @@ func Init(ctx context.Context) (*Runtime, error) {
 	project_repo.RegisterProject(project_repo.NewProject())
 	project_repo.RegisterProjectAgent(project_repo.NewProjectAgent())
 	project_location_repo.RegisterProjectLocation(project_location_repo.NewProjectLocation())
-	workflow_repo.RegisterWorkflow(workflow_repo.NewWorkflow())
-	orch_repo.RegisterRun(orch_repo.NewRun())
-	orch_repo.RegisterDispatch(orch_repo.NewDispatch())
-	orch_repo.RegisterTask(orch_repo.NewTask())
 	project_svc.SetDefault(project_svc.New())
 	issue_repo.RegisterIssue(issue_repo.NewIssue())
 	issue_repo.RegisterLabel(issue_repo.NewLabel())
@@ -160,23 +152,11 @@ func Init(ctx context.Context) (*Runtime, error) {
 	gw.RegisterMCP("/mcp/org/", orgtool_svc.Default().MCPHandler())
 	orgtool_svc.Default().SetGatewayBaseURL(gw.BaseURL())
 	chat_svc.RegisterTurnMCPProvider(orgtool_svc.Default().BuildTurnMCP)
-	// agent 开了流程库工具的会话 turn 注入该 MCP server(写操作审批在服务端,见 workflowtool_svc)。
-	gw.RegisterMCP("/mcp/workflow/", workflowtool_svc.Default().MCPHandler())
-	workflowtool_svc.Default().SetGatewayBaseURL(gw.BaseURL())
-	chat_svc.RegisterTurnMCPProvider(workflowtool_svc.Default().BuildTurnMCP)
 	// 挂「调用子 agent」工具 MCP handler(/mcp/subagent/) + 注册 TurnMCPProvider:
 	// agent 开了 subagent 工具的会话 turn 注入该 MCP server(无审批门, 见 subagent_svc)。
 	gw.RegisterMCP("/mcp/subagent/", subagent_svc.Default().MCPHandler())
 	subagent_svc.Default().SetGatewayBaseURL(gw.BaseURL())
 	chat_svc.RegisterTurnMCPProvider(subagent_svc.Default().BuildTurnMCP)
-	// 挂编排工具 MCP handler(/mcp/orchestrate/) + 注册 TurnMCPProvider/TurnExtrasProvider:
-	// agent 开了 orchestrate 工具的会话 turn 注入该 MCP server；BuildTurnExtras 注入编排
-	// 框架语+流程指引(根会话专属)。RegisterDeps 延迟到 app.go registerChatService() 中
-	// RegisterChat 之后，此处只挂 gateway + provider。
-	gw.RegisterMCP("/mcp/orchestrate/", orch_svc.Default().MCPHandler())
-	orch_svc.Default().SetGatewayBaseURL(gw.BaseURL())
-	chat_svc.RegisterTurnMCPProvider(orch_svc.Default().BuildTurnMCP)
-	chat_svc.RegisterTurnExtrasProvider(orch_svc.Default().BuildTurnExtras)
 	// 挂脚本 Hook 工具 MCP handler(/mcp/hook/) + 注册 TurnMCPProvider:agent 开了 hook 工具
 	// 的会话 turn 注入该 MCP server(写操作/执行审批在服务端,见 hooktool_svc)。RegisterDeps
 	// (含 chat_svc.Chat())延迟到 app.go registerChatService() 中 RegisterChat 之后执行。
@@ -184,7 +164,7 @@ func Init(ctx context.Context) (*Runtime, error) {
 	hooktool_svc.Default().SetGatewayBaseURL(gw.BaseURL())
 	chat_svc.RegisterTurnMCPProvider(hooktool_svc.Default().BuildTurnMCP)
 	// 远端执行(agentred):daemon 上 CLI 子进程访问内置工具 MCP(org/subagent/
-	// workflow)会被 daemon 改写成 daemon 本地 URL,再经 WS 反向请求隧道回 desktop。这里
+	// hook)会被 daemon 改写成 daemon 本地 URL,再经 WS 反向请求隧道回 desktop。这里
 	// 装配把隧道请求重放到 desktop 本机 gateway 的 dispatcher。无 client 超时:approval 类
 	// 工具可挂几分钟,由 MCP handler 自身上限收口(见 approvalTimeout)。
 	remote.RegisterMCPProxyDispatcher(remote.NewLocalGatewayDispatcher(gw.BaseURL, &http.Client{}))
@@ -239,7 +219,7 @@ func loadProxyAddr(ctx context.Context) (string, int) {
 	}
 	// 环境变量覆盖(最高优先级):e2e 用 AGENTRE_PROXY_PORT=0 绑 OS 临时端口,与已运行的正式
 	// Agentre(固定 52401)互不抢端口,保证 gateway 在 e2e 中可靠起来(否则 BaseURL 为空、
-	// orchestrate 之类经 gateway 的回投全部失效)。生产不设此变量,行为不变。
+	// 内置工具之类经 gateway 的回投全部失效)。生产不设此变量,行为不变。
 	if p, ok := proxyPortFromEnv(); ok {
 		port = p
 	}

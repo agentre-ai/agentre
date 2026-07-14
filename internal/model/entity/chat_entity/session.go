@@ -29,12 +29,6 @@ var allowedAgentStatuses = map[string]struct{}{
 // chat_svc.SessionPurposeSubagentCall(请求侧 DTO)以此为唯一来源，避免两处字面量漂移。
 const SessionPurposeSubagent = "subagent_call"
 
-// SessionPurposeOrchChild 是 chat_sessions.purpose 中标记「编排 Run 子会话」的值。
-// orch_svc 经 EnsureOrchSession 创建子 agent 会话时落此值；这类会话已经由
-// run_id > 0 在默认会话列表中隐藏，purpose 提供额外语义标识。
-// chat_svc.SessionPurposeOrchChild(请求侧 DTO)以此为唯一来源。
-const SessionPurposeOrchChild = "orch_child"
-
 // Session is one open or historical chat thread scoped to a single Agent.
 type Session struct {
 	ID            int64  `gorm:"column:id;primaryKey;autoIncrement"`
@@ -52,9 +46,6 @@ type Session struct {
 	NeedsAttention bool `gorm:"-"`
 	// ProjectID = 0 表示自由会话（保留老行为，spec Q5/B 兜底）；> 0 时受 project_svc 管控。
 	ProjectID int64 `gorm:"column:project_id;type:bigint;not null;default:0"`
-	// RunID = 0 表示普通会话；> 0 时为编排 Run 的子会话（dispatch 分配给子 agent 的一次性会话）。
-	// 编排子会话在默认会话列表中按 run_id=0 过滤隐藏。
-	RunID int64 `gorm:"column:run_id;type:bigint;not null;default:0"`
 	// Purpose 标识会话的内部用途；普通顶层会话为空串。子 agent 委派会话(agent_call)
 	// 落 SessionPurposeSubagent —— 这类会话一次性隔离、不是用户顶层会话，repo 层在所有
 	// 会话列表/计数里无条件隐藏它。

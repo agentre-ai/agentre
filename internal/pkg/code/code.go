@@ -269,8 +269,3 @@ const (
 	DataImportRollback                          // 导入失败,所有改动已回滚
 	DataImportInvalidAction                     // 未知的导入 action
 )
-
-// 流程库(workflow)20800~
-const (
-	WorkflowNotFound = iota + 20800 // 流程不存在
-)

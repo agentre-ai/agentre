@@ -204,7 +204,4 @@ var zhCN = map[int]string{
 	DataImportDuplicateLocal:     "本地存在多条同名记录,无法自动覆盖",
 	DataImportRollback:           "导入失败,所有改动已回滚",
 	DataImportInvalidAction:      "未知的导入 action 类型",
-
-	// 流程库
-	WorkflowNotFound: "流程不存在",
 }
