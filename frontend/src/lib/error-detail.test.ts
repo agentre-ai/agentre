@@ -10,7 +10,8 @@ describe("splitErrorDetail", () => {
 
     expect(splitErrorDetail(e)).toEqual({
       msg: "操作失败",
-      detail: "SQL logic error: table chat_sessions has no column named run_id (1)",
+      detail:
+        "SQL logic error: table chat_sessions has no column named run_id (1)",
     });
   });
 
@@ -31,7 +32,10 @@ describe("splitErrorDetail", () => {
   });
 
   it("非 Error 值退回 String(e)", () => {
-    expect(splitErrorDetail("boom")).toEqual({ msg: "boom", detail: undefined });
+    expect(splitErrorDetail("boom")).toEqual({
+      msg: "boom",
+      detail: undefined,
+    });
   });
 
   it("detail 两侧空白被裁掉;裁完为空则视作无 detail", () => {
