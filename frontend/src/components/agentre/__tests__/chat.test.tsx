@@ -1482,11 +1482,13 @@ describe("ChatTranscript message meta", () => {
     expect(metaContainer.className).not.toMatch(/transition-opacity/);
     expect(metaContainer.className).not.toMatch(/group-hover/);
     expect(metaContainer.className).not.toMatch(/focus-visible/);
-    expect(metaContainer.className).toContain("text-subtle-foreground");
+    expect(metaContainer.className).toContain("text-meta");
+    expect(metaContainer.className).toContain("text-muted-foreground");
   });
 
-  it("renders the content column under max-w-[720px] inside the article", () => {
+  it("renders the content column under max-w-measure inside the article", () => {
     // 历史上是 760px;统一与 ToolCall / ApprovalGate / ErrorCard 一致为 720px,
+    // 现在统一走 --container-measure token(max-w-measure),
     // 避免三种 max-w 在 transcript 里错位形成阶梯式 dead space。
     render(
       <ChatTranscript
@@ -1501,7 +1503,7 @@ describe("ChatTranscript message meta", () => {
     const contentColumn = trigger.parentElement!.parentElement!.parentElement!;
 
     expect(contentColumn.tagName).toBe("DIV");
-    expect(contentColumn.className).toMatch(/max-w-\[720px\]/);
+    expect(contentColumn.className).toMatch(/max-w-measure/);
     expect(contentColumn.parentElement!.tagName).toBe("ARTICLE");
   });
 
