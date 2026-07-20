@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import type { ToolApprovalData } from "@/stores/chat-streams-store";
 import { AnswerToolApproval } from "../../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../../wailsjs/go/models";
-import { TranscriptCard } from "../transcript-card";
+import { TranscriptCard, TranscriptPill } from "../transcript-card";
 
 // ToolApprovalCard 渲染 agent 内置写工具(org_create_department / org_update_agent /
 // ...)的审批卡。视觉对齐 canonical-tool/tool-permission/card.tsx,但走
@@ -85,17 +85,17 @@ export const ToolApprovalCard: React.FC<{
           {t("toolApproval.title")}
         </span>
         {!isPending && (
-          <span
+          <TranscriptPill
             data-copyable-control-text="true"
             className={cn(
-              "ml-auto rounded px-1.5 py-0.5 text-aux",
+              "ml-auto",
               isApproved
                 ? "bg-status-running-bg text-status-running"
                 : "bg-destructive/10 text-destructive",
             )}
           >
             {t(`toolApproval.status.${approval.status}`)}
-          </span>
+          </TranscriptPill>
         )}
       </div>
 

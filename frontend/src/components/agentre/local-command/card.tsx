@@ -10,6 +10,7 @@ import {
 } from "../../../stores/local-commands-store";
 import type { LocalCommandStatus } from "../../../stores/local-commands-store";
 import { shouldIgnoreClickForSelection } from "../copyable-text";
+import { TranscriptPill } from "../transcript-card";
 import { formatDuration } from "./format-duration";
 import { OutputTerminal } from "./output-terminal";
 
@@ -63,9 +64,7 @@ export function LocalCommandCard({
       : null;
 
   const statusPill = (
-    <span
-      className={`flex items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-meta font-semibold tracking-wider ${cfg.pill}`}
-    >
+    <TranscriptPill className={cfg.pill}>
       <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
       {t(cfg.labelKey)}
       {showExitCode && (
@@ -74,7 +73,7 @@ export function LocalCommandCard({
           {t("localCommand.exitCode", { code: entry.exitCode })}
         </>
       )}
-    </span>
+    </TranscriptPill>
   );
 
   const dismissBtn = (

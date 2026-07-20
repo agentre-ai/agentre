@@ -219,9 +219,10 @@ const markdownComponentsStatic: Components = {
         codeChild.props.className ??
         markdownClassName(codeChild.props.node?.properties?.className);
       // 不要把 `pre` 元素的属性 spread 到 CodeBlock —— pre 的 HTMLAttributes
-      // (ref / onCopy 等) 都是 HTMLPreElement 类型,与 CodeBlock 包的 <div>
-      // (HTMLDivElement) 类型不兼容,tsc -b 严格模式会卡。react-markdown 实际
-      // 也几乎不会在 pre 上注入事件处理器,直接丢弃 props 不影响渲染。
+      // (ref / onCopy 等) 都是 HTMLPreElement 类型,与 CodeBlock 包的 <section>
+      // (HTMLElement,经 TranscriptCard) 类型不兼容,tsc -b 严格模式会卡。
+      // react-markdown 实际也几乎不会在 pre 上注入事件处理器,直接丢弃 props
+      // 不影响渲染。
       void props;
       return (
         <CodeBlock

@@ -22,7 +22,7 @@ import {
   loadTranscriptDraftState,
   saveTranscriptDraftState,
 } from "../../chat-panel-scroll-state";
-import { TranscriptCard } from "../../transcript-card";
+import { TranscriptCard, TranscriptPill } from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type {
@@ -321,33 +321,33 @@ function StatusPill({
   const { t } = useTranslation();
   if (expired) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-meta font-semibold tracking-wider text-muted-foreground">
+      <TranscriptPill tone="default">
         <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
         {t("canonical.userAsk.expired")}
-      </span>
+      </TranscriptPill>
     );
   }
   if (skipped) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-meta font-semibold tracking-wider text-muted-foreground">
+      <TranscriptPill tone="default">
         <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
         {t("canonical.userAsk.skipped")}
-      </span>
+      </TranscriptPill>
     );
   }
   if (answered) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-status-running-bg px-1.5 py-0.5 text-meta font-semibold tracking-wider text-status-running">
+      <TranscriptPill tone="done">
         <Check className="h-2.5 w-2.5" />
         {t("canonical.userAsk.answered")}
-      </span>
+      </TranscriptPill>
     );
   }
   return (
-    <span className="flex items-center gap-1.5 rounded-sm bg-status-waiting-bg px-1.5 py-0.5 text-meta font-semibold tracking-wider text-status-waiting">
+    <TranscriptPill tone="pending">
       <span className="h-1.5 w-1.5 rounded-full bg-status-waiting" />
       {t("canonical.userAsk.waiting")}
-    </span>
+    </TranscriptPill>
   );
 }
 
@@ -469,7 +469,7 @@ function QuestionGroup({
                 </span>
               </div>
               {opt.description && (
-                <p className="pl-[26px] text-xs leading-[1.55] text-muted-foreground">
+                <p className="pl-[26px] text-xs text-muted-foreground">
                   {opt.description}
                 </p>
               )}

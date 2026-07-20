@@ -21,6 +21,10 @@ const RULES: { group: RuleGroup; pattern: RegExp; why: string }[] = [
   { group: "radius", pattern: /rounded-md/, why: "对话流卡片统一 rounded-lg" },
 ];
 
+// 已知位于对话流链路上、但本轮刻意未纳入护栏的文件及原因(别误当成漏项):
+// - chat-input/mentions/transcript.tsx:正被另一个并发会话大改(@ 提及序列化/
+//   还原),本轮不碰,等它落地后再评估是否收编。
+//
 // SCANNED:对话流渲染链路上的组件。新增 transcript 组件时必须加进来 ——
 // 让「加进对话流」成为一个需要过目排版护栏的动作。
 // skip:该文件豁免的规则组,每一项都要写清理由。
@@ -32,6 +36,13 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "markdown-text.tsx" },
   { file: "code-block.tsx" },
   { file: "thinking-block.tsx" },
+  // rich-link.tsx 被 markdown-text.tsx 注册为 markdown 的 `a` 渲染器,每条含链接
+  // 的消息都会渲染它,是对话流组件。7 处 rounded-md 分两类:3 处是手写的 Copy
+  // <button>,故意与全局 shadcn Button 保持一致的 rounded-md;4 处是 HoverCard
+  // 悬浮预览里的内层信息条/详情块,悬浮卡外壳本身是 HoverCardContent(已经
+  // rounded-lg),这 4 处不是「卡片外壳」,不受 rounded-lg 约束。故整文件豁免
+  // radius 组。
+  { file: "rich-link.tsx", skip: ["radius"] },
   { file: "canonical-tool/raw/card.tsx" },
   { file: "canonical-tool/file-edit/card.tsx" },
   { file: "canonical-tool/file-edit/hunk-renderer.tsx" },

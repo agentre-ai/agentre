@@ -10,7 +10,7 @@ import { AnswerToolPermission as wailsAnswerToolPermission } from "../../../../.
 import type { chat_svc } from "../../../../../wailsjs/go/models";
 
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
-import { TranscriptCard } from "../../transcript-card";
+import { TranscriptCard, TranscriptPill } from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type { CanonicalDTO, ToolPermissionDTO } from "../types";
@@ -159,21 +159,20 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
         )}
         <span className="ml-auto flex items-center gap-2 text-aux text-muted-foreground">
           {isResolved && (
-            <span
+            <TranscriptPill
               data-copyable-control-text="true"
-              className={cn(
-                "rounded px-1.5 py-0.5",
+              className={
                 payload.allowed
                   ? "bg-status-running-bg text-status-running"
-                  : "bg-destructive/10 text-destructive",
-              )}
+                  : "bg-destructive/10 text-destructive"
+              }
             >
               {payload.allowed
                 ? payload.alwaysAllow
                   ? t("canonical.toolPermission.allowedSession")
                   : t("canonical.toolPermission.allowed")
                 : t("canonical.toolPermission.denied")}
-            </span>
+            </TranscriptPill>
           )}
           <ChevronDown
             className={cn(

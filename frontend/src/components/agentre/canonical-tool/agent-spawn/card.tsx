@@ -20,7 +20,11 @@ import { cn } from "@/lib/utils";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
-import { TranscriptCard, TranscriptCardHeader } from "../../transcript-card";
+import {
+  TranscriptCard,
+  TranscriptCardHeader,
+  TranscriptPill,
+} from "../../transcript-card";
 import { statusConfig, type AgentStatus } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import { summarizeRawTool } from "../raw/summary";
@@ -274,12 +278,9 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
             <span>{tokens}</span>
           </span>
         ) : null}
-        <span
+        <TranscriptPill
           data-copyable-control-text="true"
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-meta font-semibold tracking-[0.04em]",
-            pillClassName,
-          )}
+          className={pillClassName}
         >
           <StatusIcon
             className={cn(
@@ -289,7 +290,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
             aria-hidden="true"
           />
           {statusLabel}
-        </span>
+        </TranscriptPill>
       </TranscriptCardHeader>
       <div
         data-slot="agent-spawn-details"
@@ -479,19 +480,16 @@ function AgentSpawnStepCard({
           </>
         ) : null}
         <span className="min-w-0 flex-1" />
-        <span
+        <TranscriptPill
           data-copyable-control-text="true"
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-meta font-semibold tracking-[0.04em]",
-            statusConfig[stepStatus].pillClassName,
-          )}
+          className={statusConfig[stepStatus].pillClassName}
         >
           <StepStatusIcon
             className={cn("size-2.5", isRunning && "animate-spin")}
             aria-hidden="true"
           />
           {stepLabel}
-        </span>
+        </TranscriptPill>
       </button>
       <div
         aria-hidden={!expanded}
