@@ -273,7 +273,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
               />
             )}
             {error && (
-              <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 {error}
               </div>
             )}
@@ -441,7 +441,7 @@ function QuestionGroup({
               disabled={locked}
               onClick={() => onToggle(qIdx, opt.label, multi)}
               className={cn(
-                "flex w-full flex-col gap-1.5 rounded-lg border px-3.5 py-3 text-left transition-colors",
+                "flex w-full flex-col gap-1.5 rounded-md border px-3.5 py-3 text-left transition-colors",
                 selected
                   ? "border-primary bg-primary-soft"
                   : "border-border bg-card hover:border-primary/40",
@@ -479,7 +479,7 @@ function QuestionGroup({
 
         <div
           className={cn(
-            "flex items-center gap-2.5 rounded-lg border border-dashed px-3.5 py-2.5",
+            "flex items-center gap-2.5 rounded-md border border-dashed px-3.5 py-2.5",
             labels.includes(OTHER_LABEL)
               ? "border-primary/60 bg-primary-soft"
               : "border-border-strong",

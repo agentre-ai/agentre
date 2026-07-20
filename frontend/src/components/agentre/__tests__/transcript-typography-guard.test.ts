@@ -40,7 +40,11 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "canonical-tool/plan/card.tsx" },
   { file: "tool-approval/card.tsx" },
   { file: "canonical-tool/tool-permission/card.tsx" },
-  { file: "canonical-tool/user-ask/card.tsx" },
+  // user-ask/card.tsx 的选项按钮 / “其他”输入行 / 错误横幅是手写交互控件,
+  // 故意与全局 shadcn Button/Input 保持一致的 rounded-md,不跟卡片外壳走
+  // rounded-lg —— 否则同一张卡片里手写按钮与底部共享 Button 圆角会打架。
+  // 卡片外壳圆角由 TranscriptCard 提供,不是这个文件里的字面量,不受此豁免影响。
+  { file: "canonical-tool/user-ask/card.tsx", skip: ["radius"] },
   { file: "local-command/card.tsx" },
 ];
 
