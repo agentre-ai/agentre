@@ -148,6 +148,55 @@ func TestRealCodexCLIPlanThenDefaultResumeExecutes(t *testing.T) {
 	assert.Equal(t, "PLAN_EXECUTION_PROBE", strings.TrimSpace(executed))
 }
 
+func TestRealCodexCLIGoalThenTurnStreamsText(t *testing.T) {
+	if os.Getenv("CODEX_REAL_CLI") != "1" {
+		t.Skip("set CODEX_REAL_CLI=1 to run against the local codex CLI")
+	}
+	binary, err := exec.LookPath("codex")
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	client := New(
+		WithBinary(binary),
+		WithCwd(t.TempDir()),
+		WithSandbox(SandboxReadOnly),
+		WithApproval(ApprovalNever),
+		WithKillGrace(2*time.Second),
+		WithConfig(`model_reasoning_effort="low"`),
+	)
+	sess, err := client.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	objective := "Reply exactly with GOAL_STREAM_PROBE when asked to execute this goal."
+	status := GoalStatusActive
+	goal, err := sess.SetGoal(ctx, GoalUpdate{Objective: &objective, Status: &status})
+	require.NoError(t, err)
+	require.NotNil(t, goal)
+	require.NotEmpty(t, sess.ID())
+
+	stream, err := sess.Stream(ctx, "Execute the goal now. Reply exactly with: GOAL_STREAM_PROBE")
+	require.NoError(t, err)
+	var text strings.Builder
+	var done bool
+	for stream.Next() {
+		ev := stream.Event()
+		switch ev.Kind {
+		case EventTextDelta:
+			text.WriteString(ev.Text)
+		case EventDone:
+			done = true
+		case EventError:
+			require.NoError(t, ev.Err)
+		}
+	}
+	require.NoError(t, stream.Err())
+	assert.True(t, done)
+	assert.Equal(t, "GOAL_STREAM_PROBE", strings.TrimSpace(text.String()))
+}
+
 func collectRealCodexTurn(t *testing.T, ctx context.Context, client *Client, prompt string, opts ...RunOption) (string, string) {
 	t.Helper()
 
