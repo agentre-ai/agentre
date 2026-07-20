@@ -95,11 +95,11 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
           ) : (
             w.content.split("\n").map((text, i) => (
               <div key={i} className="flex items-center px-3 py-0.5">
-                <span className="w-8 text-right text-[11px] text-subtle-foreground">
+                <span className="w-8 text-right text-meta text-subtle-foreground">
                   {i + 1}
                 </span>
                 <span
-                  className="w-5 text-center text-[11px] text-subtle-foreground"
+                  className="w-5 text-center text-meta text-subtle-foreground"
                   aria-hidden="true"
                 >
                   {" "}
@@ -152,7 +152,7 @@ function TruncatedBar({ content, lines }: { content: string; lines: number }) {
 
   return (
     <div className="mt-1 flex items-center gap-2 border-t border-border px-3 py-1">
-      <span className="text-[11px] text-muted-foreground">
+      <span className="text-meta text-muted-foreground">
         {t("canonical.fileWrite.truncated", { lines })}
       </span>
       <span className="ml-auto" />

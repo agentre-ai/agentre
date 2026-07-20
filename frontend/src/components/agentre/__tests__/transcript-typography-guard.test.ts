@@ -14,6 +14,7 @@ type RuleGroup = "type" | "measure" | "shadow" | "radius";
 const RULES: { group: RuleGroup; pattern: RegExp; why: string }[] = [
   { group: "type", pattern: /text-\[9px\]/, why: "低于可读下限,用 text-meta" },
   { group: "type", pattern: /text-\[10px\]/, why: "低于可读下限,用 text-meta" },
+  { group: "type", pattern: /text-\[11px\]/, why: "低于可读下限,用 text-meta" },
   { group: "measure", pattern: /max-w-\[720px\]/, why: "用 max-w-measure" },
   { group: "measure", pattern: /max-w-\[580px\]/, why: "用 max-w-measure" },
   { group: "shadow", pattern: /shadow-sm/, why: "对话流卡片不带阴影" },
@@ -25,7 +26,9 @@ const RULES: { group: RuleGroup; pattern: RegExp; why: string }[] = [
 // skip:该文件豁免的规则组,每一项都要写清理由。
 export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "transcript-card.tsx" },
-  { file: "message-row.tsx" },
+  // message-row.tsx 的 MESSAGE_AVATAR_CLASS 用 text-[11px] 画 28px 圆形头像里的
+  // 姓名首字母字形,不是正文/元信息文字。那是头像专属尺寸,不归 12px text-meta 管。
+  { file: "message-row.tsx", skip: ["type"] },
   { file: "markdown-text.tsx" },
   { file: "code-block.tsx" },
   { file: "thinking-block.tsx" },
