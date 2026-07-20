@@ -213,6 +213,18 @@
      this up via the --text-* token convention → utility `text-2xs`. */
   --text-2xs: 0.6875rem;
   --text-2xs--line-height: 1rem;
+  /* 对话流排版阶梯 —— 4 级,替代此前散落的 9/10/11/12/13/14/15/16 八级。
+     命名避开 secondary / muted 等已被 --color-* 占用的词:否则 text-secondary
+     会同时是字号和文字颜色,产生歧义。 */
+  --text-prose: 0.9375rem;
+  --text-prose--line-height: 1.7;
+  --text-aux: 0.8125rem;
+  --text-aux--line-height: 1.65;
+  --text-meta: 0.75rem;
+  --text-meta--line-height: 1.25rem;
+  /* 对话流正文栏宽。此前是 9 个文件各写一遍的 max-w-[720px] 字面量。
+     --container-* 是 Tailwind v4 的 max-w/w 命名空间 → 工具类 max-w-measure。 */
+  --container-measure: 45rem;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
