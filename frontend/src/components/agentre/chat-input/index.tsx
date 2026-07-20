@@ -27,6 +27,7 @@ import {
   type SlashExec,
 } from "../slash-commands";
 
+import { parsePlainTextClipboard } from "./clipboard";
 import { extractPlainText } from "./content";
 import {
   applyInputHistoryMessage,
@@ -168,6 +169,7 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
         Mention,
       ],
       editorProps: {
+        clipboardTextParser: parsePlainTextClipboard,
         attributes: {
           class: cn(
             "ProseMirror min-h-10 max-h-[25vh] overflow-y-auto text-sm outline-none resize-none",
