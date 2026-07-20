@@ -37,7 +37,8 @@ import {
 } from "./transcript-row-view";
 import {
   buildTranscriptRows,
-  estimateRowSize,
+  estimateRowSizeWithSpacing,
+  isLastRowOfMessage,
   type TranscriptRow,
 } from "./transcript-rows";
 import { TranscriptUIStateProvider } from "./transcript-ui-state";
@@ -1154,12 +1155,13 @@ const ChatTranscript = React.forwardRef<
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual intentionally owns mutable measurement callbacks.
   const virtualizer = useVirtualizer({
     count: rows.length,
-    estimateSize: (index) => {
-      const row = rows[index];
-      // 132→148:与 transcript-rows.ts 的 estimateRowSize 同源校准(正文行高
-      // 14×1.625→15×1.7,比例 ≈1.12),兜底走同一档不再落回旧字号年代的估值。
-      return row ? estimateRowSize(row) : 148;
-    },
+    estimateSize: (index) =>
+      // estimateRowSize(内容高度,按 132→148 等同源校准比例缩放)之上,再按
+      // isLastRowOfMessage 补上 rowWrapperPad 的间距增量(消息末行 pb-7=28px /
+      // 块内行 pb-2.5=10px,与纯乘法缩放旧 padding 得到的 ≈22.4px/≈8.97px 有
+      // ≈5.6px/≈1px 缺口——两处 padding 打在同一个 measureElement div 上,详见
+      // transcript-rows.ts:estimateRowSizeWithSpacing 的注释)。
+      estimateRowSizeWithSpacing(rows, index),
     getItemKey: (index) => rows[index]?.key ?? index,
     getScrollElement: () => scrollElement ?? null,
     initialRect: {
@@ -1380,14 +1382,11 @@ const ChatTranscript = React.forwardRef<
         lastVirtualTotalSizeRef.current || rows.length * 54;
 
   // 行间距:消息末行 pb-7(消息间距),消息内分片行 pb-2.5(block 间距)。padding
-  // 打在行 wrapper 上,跟随 measureElement 一起计入行高。
-  const rowWrapperPad = (index: number): string => {
-    const row = rows[index];
-    const next = rows[index + 1];
-    return next == null || next.messageId !== row?.messageId
-      ? "pb-7"
-      : "pb-2.5";
-  };
+  // 打在行 wrapper 上,跟随 measureElement 一起计入行高 —— isLastRowOfMessage 与
+  // estimateSize 里 estimateRowSizeWithSpacing 补间距增量共用同一份边界判断,避免
+  // 两处"是否消息末行"各算各的而漂移。
+  const rowWrapperPad = (index: number): string =>
+    isLastRowOfMessage(rows, index) ? "pb-7" : "pb-2.5";
 
   return (
     <TooltipProvider delayDuration={200}>

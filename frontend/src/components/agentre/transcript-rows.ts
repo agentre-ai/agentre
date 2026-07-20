@@ -569,6 +569,59 @@ export function estimateRowSize(row: TranscriptRow): number {
   }
 }
 
+// ─── 行间距增量(virtualizer estimateSize 用,Task 10 复审 Important 缺口补丁) ───
+//
+// chat.tsx 把行间距 padding 打在与 measureElement 同一个 div 上(见 chat.tsx
+// rowWrapperPad 的注释:「padding 打在行 wrapper 上,跟随 measureElement 一起计入
+// 行高」)——消息末行 pb-5→pb-7(20px→28px),消息内分片行 pb-2→pb-2.5(8px→10px)。
+// 这意味着上面 estimateRowSize() 表里的每一档旧估值(132/160/40/48/120)本就是在
+// 旧 padding(20px/8px)年代靠肉眼观测校准出来的整行高度,已经隐含烘焙了旧 padding。
+// ROW_SIZE_SCALE 只覆盖字号/间距"整体变大"的乘法关系(14×1.625→15×1.7),并不知道
+// padding 本身是从 20/8 加法跳到 28/10、不是等比例放大的。用 ROW_SIZE_SCALE 缩放旧
+// padding 只会放大到 20×SCALE≈22.4px / 8×SCALE≈8.97px,分别比新值少 ≈5.6px / ≈1px
+// —— 这正是下面两个常量要在 estimateRowSize() 之上补回的差值,与具体 item 类型无关
+// (类型差异已经在 estimateRowSize 里算过了)。
+const OLD_ROW_END_PADDING_PX = 20; // 重构前 pb-5(消息末行)
+const OLD_ROW_MID_PADDING_PX = 8; // 重构前 pb-2(消息内分片行)
+const NEW_ROW_END_PADDING_PX = 28; // chat.tsx rowWrapperPad 的 pb-7
+const NEW_ROW_MID_PADDING_PX = 10; // chat.tsx rowWrapperPad 的 pb-2.5
+
+/** 消息末行间距增量,≈5.6px(28 - 20×ROW_SIZE_SCALE)。 */
+export const ROW_END_PADDING_DELTA =
+  NEW_ROW_END_PADDING_PX - OLD_ROW_END_PADDING_PX * ROW_SIZE_SCALE;
+/** 消息内分片行间距增量,≈1px(10 - 8×ROW_SIZE_SCALE)。 */
+export const ROW_MID_PADDING_DELTA =
+  NEW_ROW_MID_PADDING_PX - OLD_ROW_MID_PADDING_PX * ROW_SIZE_SCALE;
+
+// isLastRowOfMessage:该虚拟行是否为其所属消息的最后一行(下一行不存在,或属于另一
+// 条消息 / local_command)。与 chat.tsx:rowWrapperPad 选 pb-7 还是 pb-2.5 用的是
+// 完全相同的边界判断——两处必须共用这一份逻辑,否则实际渲染的 padding 与虚拟化估值
+// 的间距增量会各算各的,重新制造出一个新的系统性偏差。
+export function isLastRowOfMessage(
+  rows: readonly TranscriptRow[],
+  index: number,
+): boolean {
+  const current = rows[index];
+  const next = rows[index + 1];
+  return next == null || next.messageId !== current?.messageId;
+}
+
+// estimateRowSizeWithSpacing:virtualizer estimateSize 回调用的完整估值 ——
+// estimateRowSize 只负责按 item 类型估内容高度,这里再按 isLastRowOfMessage 补上
+// 对应的间距增量(消息末行 / 块内行)。index 越界(row 不存在)时回退到与旧
+// chat.tsx:estimateSize 兜底值一致的 148。
+export function estimateRowSizeWithSpacing(
+  rows: readonly TranscriptRow[],
+  index: number,
+): number {
+  const current = rows[index];
+  if (!current) return 148;
+  const delta = isLastRowOfMessage(rows, index)
+    ? ROW_END_PADDING_DELTA
+    : ROW_MID_PADDING_DELTA;
+  return Math.round(estimateRowSize(current) + delta);
+}
+
 export function stableBlockIdentity(block?: ChatBlockData): string | undefined {
   if (!block) return undefined;
   if (block.toolUseId) return `tool:${block.toolUseId}`;

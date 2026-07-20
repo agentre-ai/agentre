@@ -4,6 +4,10 @@ import {
   buildRenderItems,
   buildTranscriptRows,
   estimateRowSize,
+  estimateRowSizeWithSpacing,
+  isLastRowOfMessage,
+  ROW_END_PADDING_DELTA,
+  ROW_MID_PADDING_DELTA,
   type TranscriptRow,
   type TranscriptRowItem,
 } from "@/components/agentre/transcript-rows";
@@ -592,5 +596,88 @@ describe("estimateRowSize", () => {
   it("text 与 placeholder 共享同一档估值(148),与兜底 chat.tsx:estimateSize 的 148 一致", () => {
     expect(estimateRowSize(row(makeItem("text")))).toBe(148);
     expect(estimateRowSize(row(makeItem("placeholder")))).toBe(148);
+  });
+});
+
+// estimateRowSizeWithSpacing / isLastRowOfMessage:复审对 Task 10 提出的 Important
+// 缺口 —— 上面的 estimateRowSize 只做了字号/间距的乘法缩放(ROW_SIZE_SCALE),没处理
+// chat.tsx rowWrapperPad 的加法部分:消息末行 padding pb-5→pb-7(20→28px),消息内
+// 分片行 padding pb-2→pb-2.5(8→10px)。这两档 padding 打在与 measureElement 同一个
+// div 上(chat.tsx 注释「padding 打在行 wrapper 上,跟随 measureElement 一起计入行
+// 高」),所以上面 estimateRowSize 表里的旧值本就隐含了旧 padding;纯乘法只把它放大到
+// 20×SCALE≈22.4px / 8×SCALE≈8.97px,分别比新值少 ≈5.6px / ≈1px。
+// estimateRowSizeWithSpacing 在 estimateRowSize 之上,按 isLastRowOfMessage(与
+// chat.tsx:rowWrapperPad 共用同一份边界判断)补回这段差值。
+describe("estimateRowSizeWithSpacing / isLastRowOfMessage", () => {
+  const SCALE = 25.5 / 22.75;
+
+  function makeRow(
+    messageId: number,
+    key: string,
+    item: TranscriptRowItem = { text: "x", type: "text", uiStateKey: key },
+  ): TranscriptRow {
+    return {
+      autonomous: false,
+      isFirstOfMessage: false,
+      isLastOfMessage: false,
+      item,
+      key,
+      messageId,
+    };
+  }
+
+  it("下一行不存在 → 视为消息末行", () => {
+    const rows = [makeRow(1, "a")];
+    expect(isLastRowOfMessage(rows, 0)).toBe(true);
+  });
+
+  it("下一行属于另一条消息 → 视为消息末行", () => {
+    const rows = [makeRow(1, "a"), makeRow(2, "b")];
+    expect(isLastRowOfMessage(rows, 0)).toBe(true);
+  });
+
+  it("下一行属于同一条消息 → 视为块内行,不是消息末行", () => {
+    const rows = [makeRow(1, "a"), makeRow(1, "b")];
+    expect(isLastRowOfMessage(rows, 0)).toBe(false);
+  });
+
+  it("间距增量常量 = 新 padding - 旧 padding×ROW_SIZE_SCALE:消息末行 ≈5.6px,块内行 ≈1px,末行显著大于块内行", () => {
+    expect(ROW_END_PADDING_DELTA).toBeCloseTo(28 - 20 * SCALE, 5);
+    expect(ROW_MID_PADDING_DELTA).toBeCloseTo(10 - 8 * SCALE, 5);
+    expect(ROW_END_PADDING_DELTA).toBeGreaterThan(ROW_MID_PADDING_DELTA);
+  });
+
+  it("同类型行:消息末行估值 = estimateRowSize + ROW_END_PADDING_DELTA(四舍五入),块内行 = + ROW_MID_PADDING_DELTA", () => {
+    const rows = [
+      makeRow(1, "a", { text: "x", type: "text", uiStateKey: "a" }),
+      makeRow(1, "b", { text: "y", type: "text", uiStateKey: "b" }),
+    ];
+    const base = estimateRowSize(rows[0]);
+
+    expect(estimateRowSizeWithSpacing(rows, 0)).toBe(
+      Math.round(base + ROW_MID_PADDING_DELTA),
+    );
+    expect(estimateRowSizeWithSpacing(rows, 1)).toBe(
+      Math.round(base + ROW_END_PADDING_DELTA),
+    );
+  });
+
+  it("间距增量只取决于是否消息末行,与 item 类型无关(类型差异已经在 estimateRowSize 里算过)", () => {
+    const rows = [
+      makeRow(1, "a", { type: "tool", uiStateKey: "a" }),
+      makeRow(1, "b", {
+        block: {} as ChatBlockData,
+        streaming: false,
+        type: "thinking",
+        uiStateKey: "b",
+      }),
+    ];
+    expect(estimateRowSizeWithSpacing(rows, 0)).toBe(
+      Math.round(estimateRowSize(rows[0]) + ROW_MID_PADDING_DELTA),
+    );
+  });
+
+  it("越界下标返回安全兜底值(不抛异常)", () => {
+    expect(estimateRowSizeWithSpacing([], 0)).toBeGreaterThan(0);
   });
 });
