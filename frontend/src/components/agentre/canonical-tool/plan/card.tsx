@@ -20,6 +20,7 @@ import {
   saveTranscriptDraftState,
 } from "../../chat-panel-scroll-state";
 import { MarkdownText } from "../../markdown-text";
+import { TranscriptCard } from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps, PlanActionStream } from "../props";
 import type { CanonicalDTO, PlanActionDTO } from "../types";
@@ -257,18 +258,11 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
       : t("canonical.plan.subtitle.saved");
 
   return (
-    <section
+    <TranscriptCard
       data-testid="plan-card"
       role="region"
       aria-label={t("canonical.plan.aria")}
-      className={cn(
-        "w-full max-w-[720px] overflow-hidden rounded-md border bg-card",
-        resolved
-          ? approved
-            ? "border-status-running/50"
-            : "border-border"
-          : "border-primary",
-      )}
+      tone={!resolved ? "pending" : approved ? "done" : "default"}
     >
       <button
         type="button"
@@ -283,7 +277,7 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
       >
         <span
           className={cn(
-            "flex size-7 shrink-0 items-center justify-center rounded-md",
+            "flex size-7 shrink-0 items-center justify-center rounded-lg",
             approved
               ? "bg-status-running-bg text-status-running"
               : "bg-primary text-primary-foreground",
@@ -304,7 +298,7 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
           </div>
         </div>
         {activePlan.text ? (
-          <span className="rounded-sm border border-border bg-card px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+          <span className="rounded-sm border border-border bg-card px-2 py-0.5 font-mono text-meta text-muted-foreground">
             {t("canonical.plan.charCount", {
               count: activePlan.text.length,
             })}
@@ -392,7 +386,7 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
             className="text-sm"
           />
           <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-[10px] text-subtle-foreground">
+            <span className="font-mono text-meta text-subtle-foreground">
               {t("canonical.plan.feedback.charCount", {
                 count: feedback.length,
               })}
@@ -410,6 +404,6 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
           </div>
         </div>
       ) : null}
-    </section>
+    </TranscriptCard>
   );
 };

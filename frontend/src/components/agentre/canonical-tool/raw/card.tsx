@@ -12,6 +12,12 @@ import {
 import { cn } from "@/lib/utils";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 
+import {
+  TranscriptCard,
+  TranscriptCardBody,
+  TranscriptCardHeader,
+  TranscriptPill,
+} from "../../transcript-card";
 import { statusConfig, type AgentStatus } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
@@ -103,19 +109,15 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
       : t("canonical.raw.waitingResult");
 
   return (
-    <section
+    <TranscriptCard
       data-testid="raw-tool-card"
       aria-label={t("canonical.raw.aria", { tool: toolName })}
-      className={cn(
-        "w-full max-w-[720px] overflow-hidden rounded-md border bg-card font-mono text-xs",
-        isError ? "border-status-error/40" : "border-border",
-      )}
+      tone={isError ? "error" : "default"}
+      className="font-mono text-aux"
     >
-      <button
-        type="button"
+      <TranscriptCardHeader
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/40"
       >
         <ChevronRight
           className={cn(
@@ -141,9 +143,9 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
         )}
         <span className="min-w-0 flex-1" />
         {bgRunning && (
-          <span
+          <TranscriptPill
             data-testid="bg-running-pill"
-            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
+            className="rounded-full border border-border"
           >
             <LoaderCircle
               className="size-2.5 animate-spin"
@@ -156,23 +158,15 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
                 <span className="font-mono">{bgTaskId}</span>
               </>
             )}
-          </span>
+          </TranscriptPill>
         )}
         {allowedBadge && (
-          <span
-            className="inline-flex shrink-0 items-center gap-1 rounded bg-status-running-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-status-running"
-            title={t("canonical.raw.approvedTitle")}
-          >
+          <TranscriptPill tone="done" title={t("canonical.raw.approvedTitle")}>
             <Check className="size-2.5" aria-hidden="true" />
             {allowedBadge}
-          </span>
+          </TranscriptPill>
         )}
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em]",
-            pillConfig.pillClassName,
-          )}
-        >
+        <TranscriptPill className={pillConfig.pillClassName}>
           <StatusIcon
             className={cn(
               "size-2.5",
@@ -181,12 +175,12 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
             aria-hidden="true"
           />
           {statusLabel}
-        </span>
-      </button>
+        </TranscriptPill>
+      </TranscriptCardHeader>
       {expanded && (
-        <div
+        <TranscriptCardBody
           data-selectable-text="true"
-          className="flex flex-col gap-3 border-t border-border px-3 py-3"
+          className="flex flex-col gap-3"
         >
           <Section label={t("canonical.raw.sections.params")}>
             {params.length === 0 ? (
@@ -243,7 +237,7 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
               )}
             </div>
           </Section>
-        </div>
+        </TranscriptCardBody>
       )}
       {showOverlay && perm && (
         <ToolPermissionOverlay
@@ -251,7 +245,7 @@ export const RawToolCard: React.FC<CanonicalCardProps> = ({
           sessionId={sessionId}
         />
       )}
-    </section>
+    </TranscriptCard>
   );
 };
 
@@ -267,11 +261,11 @@ function Section({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
-        <span className="font-sans text-[11px] font-semibold tracking-wide text-muted-foreground">
+        <span className="font-sans text-meta font-semibold text-muted-foreground">
           {label}
         </span>
         {meta ? (
-          <span className="font-mono text-[10px] text-subtle-foreground">
+          <span className="font-mono text-meta text-muted-foreground">
             {meta}
           </span>
         ) : null}

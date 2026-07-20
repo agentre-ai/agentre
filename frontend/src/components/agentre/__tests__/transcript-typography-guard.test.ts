@@ -29,6 +29,12 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "markdown-text.tsx" },
   { file: "code-block.tsx" },
   { file: "thinking-block.tsx" },
+  { file: "canonical-tool/raw/card.tsx" },
+  { file: "canonical-tool/file-edit/card.tsx" },
+  { file: "canonical-tool/file-edit/hunk-renderer.tsx" },
+  { file: "canonical-tool/file-write/card.tsx" },
+  { file: "canonical-tool/agent-spawn/card.tsx" },
+  { file: "canonical-tool/plan/card.tsx" },
 ];
 
 function violations(source: string, skip: RuleGroup[] = []): string[] {

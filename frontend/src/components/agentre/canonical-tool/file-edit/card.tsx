@@ -4,6 +4,11 @@ import { Check, ChevronRight, LoaderCircle, Pencil } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
+import {
+  TranscriptCard,
+  TranscriptCardHeader,
+  TranscriptPill,
+} from "../../transcript-card";
 import { statusConfig } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
@@ -46,19 +51,15 @@ export const FileEditCard: React.FC<CanonicalCardProps> = ({
   const StatusIcon = hasResult || isError ? Check : LoaderCircle;
 
   return (
-    <section
+    <TranscriptCard
       data-testid="file-edit-card"
       aria-label={t("canonical.fileEdit.aria", { tool: toolBlock.toolName })}
-      className={cn(
-        "w-full max-w-[720px] overflow-hidden rounded-md border bg-card font-mono text-xs",
-        isError ? "border-status-error/40" : "border-border",
-      )}
+      tone={isError ? "error" : "default"}
+      className="font-mono text-aux"
     >
-      <button
-        type="button"
+      <TranscriptCardHeader
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/40"
       >
         <ChevronRight
           className={cn(
@@ -87,24 +88,17 @@ export const FileEditCard: React.FC<CanonicalCardProps> = ({
           <span className="font-semibold text-destructive">−{totalMinus}</span>
         )}
         {files.some((f) => f.replaceAll) && (
-          <span className="rounded-sm bg-muted px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-muted-foreground">
-            replace_all
-          </span>
+          <TranscriptPill>replace_all</TranscriptPill>
         )}
         <span className="min-w-0 flex-1" />
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em]",
-            pillConfig.pillClassName,
-          )}
-        >
+        <TranscriptPill className={pillConfig.pillClassName}>
           <StatusIcon
             className={cn("size-2.5", !hasResult && !isError && "animate-spin")}
             aria-hidden="true"
           />
           {statusLabel}
-        </span>
-      </button>
+        </TranscriptPill>
+      </TranscriptCardHeader>
       {expanded && (
         <div className="border-t border-border">
           {files.map((file, fi) => (
@@ -112,7 +106,7 @@ export const FileEditCard: React.FC<CanonicalCardProps> = ({
           ))}
         </div>
       )}
-    </section>
+    </TranscriptCard>
   );
 };
 
