@@ -23,7 +23,9 @@ const RULES: { group: RuleGroup; pattern: RegExp; why: string }[] = [
 // SCANNED:对话流渲染链路上的组件。新增 transcript 组件时必须加进来 ——
 // 让「加进对话流」成为一个需要过目排版护栏的动作。
 // skip:该文件豁免的规则组,每一项都要写清理由。
-export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [];
+export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
+  { file: "transcript-card.tsx" },
+];
 
 function violations(source: string, skip: RuleGroup[] = []): string[] {
   return RULES.filter(
