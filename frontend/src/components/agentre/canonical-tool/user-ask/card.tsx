@@ -22,6 +22,7 @@ import {
   loadTranscriptDraftState,
   saveTranscriptDraftState,
 } from "../../chat-panel-scroll-state";
+import { TranscriptCard } from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type {
@@ -212,13 +213,10 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
   if (!payload?.questions?.length) return null;
 
   return (
-    <div
+    <TranscriptCard
       data-testid="user-ask-card"
       data-selectable-text="true"
-      className={cn(
-        "rounded-lg border border-border bg-card text-foreground shadow-sm outline-none",
-        isLocked && "opacity-95",
-      )}
+      className={cn("text-foreground outline-none", isLocked && "opacity-95")}
     >
       <button
         type="button"
@@ -240,7 +238,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
         {headerLabel && (
           <>
             <span className="font-mono text-xs text-muted-foreground">·</span>
-            <span className="rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-2xs font-medium text-primary">
+            <span className="rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-meta font-medium text-primary">
               {headerLabel}
             </span>
           </>
@@ -275,7 +273,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
               />
             )}
             {error && (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 {error}
               </div>
             )}
@@ -307,7 +305,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
           )}
         </div>
       )}
-    </div>
+    </TranscriptCard>
   );
 };
 
@@ -323,7 +321,7 @@ function StatusPill({
   const { t } = useTranslation();
   if (expired) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-muted-foreground">
+      <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-meta font-semibold tracking-wider text-muted-foreground">
         <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
         {t("canonical.userAsk.expired")}
       </span>
@@ -331,7 +329,7 @@ function StatusPill({
   }
   if (skipped) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-muted-foreground">
+      <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-meta font-semibold tracking-wider text-muted-foreground">
         <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
         {t("canonical.userAsk.skipped")}
       </span>
@@ -339,14 +337,14 @@ function StatusPill({
   }
   if (answered) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-status-running-bg px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-status-running">
+      <span className="flex items-center gap-1.5 rounded-sm bg-status-running-bg px-1.5 py-0.5 text-meta font-semibold tracking-wider text-status-running">
         <Check className="h-2.5 w-2.5" />
         {t("canonical.userAsk.answered")}
       </span>
     );
   }
   return (
-    <span className="flex items-center gap-1.5 rounded-sm bg-status-waiting-bg px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-status-waiting">
+    <span className="flex items-center gap-1.5 rounded-sm bg-status-waiting-bg px-1.5 py-0.5 text-meta font-semibold tracking-wider text-status-waiting">
       <span className="h-1.5 w-1.5 rounded-full bg-status-waiting" />
       {t("canonical.userAsk.waiting")}
     </span>
@@ -421,10 +419,10 @@ function QuestionGroup({
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-start gap-2.5">
-        <p className="flex-1 text-[15px] font-semibold leading-[1.4] text-foreground">
+        <p className="flex-1 text-prose font-semibold leading-[1.4] text-foreground">
           {q.question}
         </p>
-        <span className="flex shrink-0 items-center gap-1 rounded-sm border border-border bg-muted px-1.5 py-0.5 text-2xs font-semibold tracking-wide text-muted-foreground">
+        <span className="flex shrink-0 items-center gap-1 rounded-sm border border-border bg-muted px-1.5 py-0.5 text-meta font-semibold tracking-wide text-muted-foreground">
           {multi ? (
             <SquareCheck className="h-2.5 w-2.5" />
           ) : (
@@ -443,7 +441,7 @@ function QuestionGroup({
               disabled={locked}
               onClick={() => onToggle(qIdx, opt.label, multi)}
               className={cn(
-                "flex w-full flex-col gap-1.5 rounded-md border px-3.5 py-3 text-left transition-colors",
+                "flex w-full flex-col gap-1.5 rounded-lg border px-3.5 py-3 text-left transition-colors",
                 selected
                   ? "border-primary bg-primary-soft"
                   : "border-border bg-card hover:border-primary/40",
@@ -463,7 +461,7 @@ function QuestionGroup({
                 )}
                 <span
                   className={cn(
-                    "text-[13px] font-semibold",
+                    "text-aux font-semibold",
                     selected ? "text-primary-text" : "text-foreground",
                   )}
                 >
@@ -481,7 +479,7 @@ function QuestionGroup({
 
         <div
           className={cn(
-            "flex items-center gap-2.5 rounded-md border border-dashed px-3.5 py-2.5",
+            "flex items-center gap-2.5 rounded-lg border border-dashed px-3.5 py-2.5",
             labels.includes(OTHER_LABEL)
               ? "border-primary/60 bg-primary-soft"
               : "border-border-strong",

@@ -10,6 +10,7 @@ import { AnswerToolPermission as wailsAnswerToolPermission } from "../../../../.
 import type { chat_svc } from "../../../../../wailsjs/go/models";
 
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
+import { TranscriptCard } from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type { CanonicalDTO, ToolPermissionDTO } from "../types";
@@ -117,11 +118,11 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
     : "";
 
   return (
-    <div
+    <TranscriptCard
       data-testid="tool-permission-card"
       data-selectable-text="true"
       className={cn(
-        "rounded-md border bg-card text-card-foreground shadow-sm",
+        "text-card-foreground",
         isResolved && !payload.allowed
           ? "border-destructive/40"
           : "border-status-waiting/40",
@@ -151,12 +152,12 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
         {summary && (
           <span
             data-copyable-control-text="true"
-            className="truncate text-xs text-muted-foreground"
+            className="truncate text-aux text-muted-foreground"
           >
             {summary}
           </span>
         )}
-        <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="ml-auto flex items-center gap-2 text-aux text-muted-foreground">
           {isResolved && (
             <span
               data-copyable-control-text="true"
@@ -184,7 +185,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
       </button>
 
       {!collapsed && inputJson && (
-        <pre className="max-h-64 overflow-auto border-t border-border bg-muted/40 px-3 py-2 text-xs">
+        <pre className="max-h-64 overflow-auto border-t border-border bg-muted/40 px-3 py-2 text-aux">
           <code>{inputJson}</code>
         </pre>
       )}
@@ -216,9 +217,9 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
             <X className="mr-1 h-3.5 w-3.5" />
             {t("common.reject")}
           </Button>
-          {error && <span className="text-xs text-destructive">{error}</span>}
+          {error && <span className="text-aux text-destructive">{error}</span>}
         </div>
       )}
-    </div>
+    </TranscriptCard>
   );
 };

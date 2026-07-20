@@ -38,6 +38,10 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "canonical-tool/file-write/card.tsx" },
   { file: "canonical-tool/agent-spawn/card.tsx" },
   { file: "canonical-tool/plan/card.tsx" },
+  { file: "tool-approval/card.tsx" },
+  { file: "canonical-tool/tool-permission/card.tsx" },
+  { file: "canonical-tool/user-ask/card.tsx" },
+  { file: "local-command/card.tsx" },
 ];
 
 function violations(source: string, skip: RuleGroup[] = []): string[] {
