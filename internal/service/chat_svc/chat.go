@@ -8,6 +8,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"html"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -3304,8 +3306,22 @@ type trylockMutex struct{ mu sync.Mutex }
 func (t *trylockMutex) TryLock() bool { return t.mu.TryLock() }
 func (t *trylockMutex) Unlock()       { t.mu.Unlock() }
 
+// mentionXMLRe 匹配 @ 提及序列化进消息正文的 XML 标签,捕获其可读 label。
+var mentionXMLRe = regexp.MustCompile(`<(agent|project)\b[^>]*>([\s\S]*?)</(?:agent|project)>`)
+
+// sessionTitleFromFirstMessage 从首条用户消息派生会话标题。
+// @ 提及会把 `<agent id="1">名字</agent>` 这类 XML 写进消息正文(设计见
+// docs/superpowers/specs/2026-07-14-chat-mention-references-design.md),正文里是对的,
+// 但标题会显示在 tab / 侧栏 / 标题栏 —— 直接用会露出一坨裸 XML。这里把标签还原成可读的 `@名字`。
 func sessionTitleFromFirstMessage(text string) string {
-	return strings.TrimSpace(text)
+	out := mentionXMLRe.ReplaceAllStringFunc(text, func(m string) string {
+		sub := mentionXMLRe.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		return "@" + html.UnescapeString(sub[2])
+	})
+	return strings.TrimSpace(out)
 }
 
 func textOfMessage(m *chat_entity.Message) string {

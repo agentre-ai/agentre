@@ -1264,7 +1264,6 @@
   "mentions": {
     "aria": "提及项目或 agent",
     "group": { "agents": "Agent", "projects": "项目" },
-    "empty": "无匹配项",
     "chip": {
       "agentTitle": "Agent：{{name}}",
       "projectTitle": "项目：{{name}}"

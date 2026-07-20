@@ -6,6 +6,7 @@ vi.mock("../../../wailsjs/go/app/App", () => ({
 }));
 
 import { ProjectListTree } from "../../../wailsjs/go/app/App";
+import { useProjectListStore } from "../../stores/project-list-store";
 import { useProjectList } from "../use-project-list";
 
 const projectListTree = ProjectListTree as ReturnType<typeof vi.fn>;
@@ -13,6 +14,7 @@ const projectListTree = ProjectListTree as ReturnType<typeof vi.fn>;
 describe("useProjectList", () => {
   beforeEach(() => {
     projectListTree.mockReset();
+    useProjectListStore.getState().__reset();
   });
 
   it("loads projects on mount", async () => {

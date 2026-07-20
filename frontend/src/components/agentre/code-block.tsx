@@ -4,9 +4,10 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
-import { cn } from "@/lib/utils";
 
-export type CodeBlockProps = React.ComponentProps<"div"> & {
+import { TranscriptCard } from "./transcript-card";
+
+export type CodeBlockProps = React.ComponentProps<"section"> & {
   children: React.ReactNode;
   language?: string;
 };
@@ -72,15 +73,9 @@ export function CodeBlock({
   }
 
   return (
-    <div
-      className={cn(
-        "w-full max-w-[580px] overflow-hidden rounded-md border border-border bg-secondary",
-        className,
-      )}
-      {...props}
-    >
-      <div className="flex items-center gap-2 border-b border-border px-2.5 py-1.5">
-        <span className="font-mono text-[10px] font-semibold text-muted-foreground">
+    <TranscriptCard className={className} {...props}>
+      <div className="flex items-center gap-2 border-b border-border px-3.5 py-2">
+        <span className="text-meta font-semibold text-muted-foreground">
           {language}
         </span>
         <span className="min-w-0 flex-1" />
@@ -88,7 +83,7 @@ export function CodeBlock({
           type="button"
           variant="ghost"
           size="xs"
-          className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
+          className="h-6 gap-1 px-1.5 text-meta text-muted-foreground"
           onClick={() => void handleCopy()}
         >
           <Copy data-icon="inline-start" aria-hidden="true" />
@@ -101,10 +96,10 @@ export function CodeBlock({
       </div>
       <pre
         data-selectable-text="true"
-        className="overflow-auto px-3 py-2.5 font-mono text-xs leading-relaxed text-foreground"
+        className="overflow-auto px-3.5 py-3 font-mono text-aux text-foreground"
       >
         {children}
       </pre>
-    </div>
+    </TranscriptCard>
   );
 }
