@@ -106,7 +106,7 @@ function ChatMessage({
           <span
             aria-label={t("chat.message.me")}
             role="img"
-            className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-[11px] font-semibold text-muted-foreground"
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-meta font-semibold text-muted-foreground"
           >
             {t("chat.message.me")}
           </span>
@@ -117,9 +117,7 @@ function ChatMessage({
       avatarColor={avatarColor}
       name={isUser ? null : author}
       headerExtra={
-        <span className="font-mono text-[10px] text-muted-foreground">
-          {time}
-        </span>
+        <span className="text-meta text-muted-foreground">{time}</span>
       }
       footer={meta}
       {...props}
@@ -212,7 +210,7 @@ function MessageMeta({
             <span>{durationLabel}</span>
           </button>
         </TooltipTrigger>
-        <TooltipContent className="font-mono text-[11px]">
+        <TooltipContent className="font-mono text-meta">
           <table className="border-separate border-spacing-x-3 border-spacing-y-0.5">
             <tbody>
               {rows.map((row) => (
@@ -232,7 +230,7 @@ function MessageMeta({
           type="button"
           variant="ghost"
           size="xs"
-          className="ml-1 h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
+          className="ml-1 h-6 gap-1 px-1.5 text-meta text-muted-foreground"
           onClick={onRerun}
         >
           <RefreshCw data-icon="inline-start" aria-hidden="true" />
@@ -303,7 +301,7 @@ function UserMessageActions({ onEdit }: { onEdit: () => void }) {
         type="button"
         variant="ghost"
         size="xs"
-        className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
+        className="h-6 gap-1 px-1.5 text-meta text-muted-foreground"
         onClick={onEdit}
       >
         <Pencil data-icon="inline-start" aria-hidden="true" />
@@ -318,13 +316,13 @@ function ErrorCard({ text, onRerun }: { text: string; onRerun?: () => void }) {
   return (
     <section
       data-selectable-text="true"
-      className="flex w-full max-w-[720px] items-center gap-3 rounded-md border border-status-error/40 bg-destructive-soft px-4 py-2.5"
+      className="flex w-full max-w-measure items-center gap-3 rounded-lg border border-status-error/40 bg-destructive-soft px-4 py-2.5"
     >
       <TriangleAlert
         className="size-4 shrink-0 text-status-error"
         aria-hidden="true"
       />
-      <span className="min-w-0 flex-1 text-xs text-status-error">
+      <span className="min-w-0 flex-1 text-aux text-status-error">
         {t("chat.errorCard.message", { text })}
       </span>
       {onRerun ? (
@@ -355,7 +353,7 @@ function RetryNoticeCard({ retry }: { retry: RetryNotice }) {
       data-selectable-text="true"
       role="status"
       aria-label={t("chat.retry.aria")}
-      className="flex w-full max-w-[720px] items-start gap-3 rounded-md border border-status-warning/45 bg-status-warning/10 px-4 py-2.5"
+      className="flex w-full max-w-measure items-start gap-3 rounded-lg border border-status-warning/45 bg-status-warning/10 px-4 py-2.5"
     >
       <RefreshCw
         className="mt-0.5 size-4 shrink-0 animate-spin text-status-warning motion-reduce:animate-none"
@@ -363,20 +361,20 @@ function RetryNoticeCard({ retry }: { retry: RetryNotice }) {
       />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-xs font-semibold text-status-warning">
+          <span className="text-aux font-semibold text-status-warning">
             {title}
           </span>
           {at ? (
-            <span className="font-mono text-[10px] text-muted-foreground">
+            <span className="font-mono text-meta text-muted-foreground">
               {at}
             </span>
           ) : null}
         </div>
-        <div className="mt-1 min-w-0 break-words font-mono text-[11px] text-foreground">
+        <div className="mt-1 min-w-0 break-words font-mono text-meta text-foreground">
           {message}
         </div>
         {retry.details ? (
-          <div className="mt-1 min-w-0 break-words text-[11px] leading-snug text-muted-foreground">
+          <div className="mt-1 min-w-0 break-words text-meta leading-snug text-muted-foreground">
             {retry.details}
           </div>
         ) : null}
@@ -418,7 +416,7 @@ function CompactingIndicator() {
       aria-label={t("chat.compacting.aria")}
       role="status"
       aria-live="polite"
-      className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
+      className="flex items-center gap-2 py-1 text-aux text-muted-foreground"
     >
       <div className="flex items-center gap-1">
         <span className={dotClass} />
@@ -443,7 +441,7 @@ function ImageBlockView({ block }: { block: ChatBlockData }) {
       href={image.dataUrl}
       target="_blank"
       rel="noreferrer"
-      className="block w-fit overflow-hidden rounded-md border border-border bg-muted"
+      className="block w-fit overflow-hidden rounded-lg border border-border bg-muted"
     >
       <img
         src={image.dataUrl}
@@ -583,7 +581,7 @@ function RenderItemView({ item }: { item: TranscriptRowItem }) {
     }
     case "unknown":
       return (
-        <div className="rounded-md border border-dashed border-border px-3 py-2 font-mono text-xs text-muted-foreground">
+        <div className="rounded-lg border border-dashed border-border px-3 py-2 font-mono text-aux text-muted-foreground">
           {t("chat.debug.unknownBlock", { type: item.block.type })}
         </div>
       );
@@ -697,20 +695,17 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
   }
 
   // 消息的后续分片行:左侧 w-7 幽灵 gutter 对齐头像列,内容列与 MessageRow
-  // 完全同构(max-w-[720px] / data-selectable-text / footer 槽样式)。
+  // 完全同构(max-w-measure / data-selectable-text / footer 槽样式)。
   return (
     <div className="flex gap-3 text-sm">
       <div aria-hidden className="w-7 shrink-0" />
-      <div className="flex min-w-0 max-w-[720px] flex-1 flex-col gap-1">
-        <div
-          data-selectable-text="true"
-          className="flex flex-col gap-2 leading-[1.55]"
-        >
+      <div className="flex min-w-0 max-w-measure flex-1 flex-col gap-1">
+        <div data-selectable-text="true" className="flex flex-col gap-2">
           <RenderItemView item={row.item} />
           {tailAttachments}
         </div>
         {meta ? (
-          <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-subtle-foreground">
+          <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-meta text-muted-foreground">
             {meta}
           </div>
         ) : null}

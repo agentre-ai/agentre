@@ -46,6 +46,11 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   // 卡片外壳圆角由 TranscriptCard 提供,不是这个文件里的字面量,不受此豁免影响。
   { file: "canonical-tool/user-ask/card.tsx", skip: ["radius"] },
   { file: "local-command/card.tsx" },
+  { file: "transcript-row-view.tsx" },
+  // chat.tsx 同时装着 transcript 和 composer —— 646/654/714/726 行的圆角与阴影
+  // 属于输入框 / 拖放提示层 / 附件缩略图,不归对话流卡片系统管,故意不跟随
+  // rounded-lg / 去阴影;字号与 measure 约束（type/measure 两组）仍然全文件生效。
+  { file: "chat.tsx", skip: ["shadow", "radius"] },
 ];
 
 function violations(source: string, skip: RuleGroup[] = []): string[] {
