@@ -25,6 +25,8 @@ const RULES: { group: RuleGroup; pattern: RegExp; why: string }[] = [
 // skip:该文件豁免的规则组,每一项都要写清理由。
 export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "transcript-card.tsx" },
+  { file: "message-row.tsx" },
+  { file: "markdown-text.tsx" },
 ];
 
 function violations(source: string, skip: RuleGroup[] = []): string[] {

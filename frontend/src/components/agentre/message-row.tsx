@@ -54,7 +54,7 @@ function MessageRow({
           className={MESSAGE_AVATAR_CLASS}
         />
       )}
-      <div className="flex min-w-0 max-w-[720px] flex-1 flex-col gap-1">
+      <div className="flex min-w-0 max-w-measure flex-1 flex-col gap-1">
         {showHeader ? (
           <div className="flex items-center gap-2">
             {name != null ? (
@@ -63,14 +63,11 @@ function MessageRow({
             {headerExtra}
           </div>
         ) : null}
-        <div
-          data-selectable-text="true"
-          className="flex flex-col gap-2 leading-[1.55]"
-        >
+        <div data-selectable-text="true" className="flex flex-col gap-2">
           {children}
         </div>
         {footer ? (
-          <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-subtle-foreground">
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-meta text-muted-foreground">
             {footer}
           </div>
         ) : null}
@@ -113,7 +110,7 @@ function MessageCopyButton({
       type="button"
       variant="ghost"
       size="xs"
-      className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
+      className="h-6 gap-1 px-1.5 text-meta text-muted-foreground"
       aria-label={ariaLabel ?? visible}
       onClick={() => void handleCopy()}
     >

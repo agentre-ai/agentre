@@ -182,19 +182,19 @@ const markdownComponentsStatic: Components = {
   h1: ({ node: _node, className, ...props }) => (
     <h1
       {...props}
-      className={cn("mt-3 mb-1 text-base font-semibold", className)}
+      className={cn("mt-4 mb-1.5 text-lg font-semibold", className)}
     />
   ),
   h2: ({ node: _node, className, ...props }) => (
     <h2
       {...props}
-      className={cn("mt-3 mb-1 text-[15px] font-semibold", className)}
+      className={cn("mt-4 mb-1.5 text-base font-semibold", className)}
     />
   ),
   h3: ({ node: _node, className, ...props }) => (
     <h3
       {...props}
-      className={cn("mt-2 mb-1 text-sm font-semibold", className)}
+      className={cn("mt-3 mb-1 text-prose font-semibold", className)}
     />
   ),
   hr: ({ node: _node, className, ...props }) => (
@@ -238,7 +238,7 @@ const markdownComponentsStatic: Components = {
       <pre
         {...props}
         className={cn(
-          "my-2 overflow-auto rounded-md bg-muted p-3 font-mono text-xs leading-relaxed",
+          "my-2 overflow-auto rounded-lg bg-muted p-3 font-mono text-aux",
           className,
         )}
       >
@@ -250,7 +250,7 @@ const markdownComponentsStatic: Components = {
     <div className="my-2 overflow-auto">
       <table
         {...props}
-        className={cn("w-full border-collapse text-xs", className)}
+        className={cn("w-full border-collapse text-aux", className)}
       />
     </div>
   ),
@@ -362,7 +362,7 @@ export const MarkdownText = React.memo(function MarkdownText({
   decorator?: MarkdownInlineDecorator;
 }) {
   return (
-    <div className="markdown-body break-words text-sm leading-relaxed">
+    <div className="markdown-body break-words text-prose">
       <MarkdownInner text={text} cwd={cwd} decorator={decorator} />
     </div>
   );
@@ -391,7 +391,7 @@ export const StreamingMarkdown = React.memo(function StreamingMarkdown({
     [text],
   );
   return (
-    <div className="markdown-body break-words text-sm leading-relaxed">
+    <div className="markdown-body break-words text-prose">
       {committed.map((segment, i) => (
         <MarkdownInner key={i} text={segment} cwd={cwd} />
       ))}
