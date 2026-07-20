@@ -35,12 +35,12 @@ export function CompactBoundaryDivider({
 
   return (
     <div
-      className="flex items-center gap-3 py-2"
+      className="flex w-full max-w-measure items-center gap-3 py-2"
       role="separator"
       aria-label={t("compactBoundary.aria")}
     >
       <div className="h-px flex-1 bg-border" />
-      <div className="flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-meta text-muted-foreground">
         <span className="font-medium">{t("compactBoundary.label")}</span>
         <span aria-hidden="true">·</span>
         <span>{triggerLabel}</span>

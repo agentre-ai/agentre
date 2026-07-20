@@ -18,12 +18,12 @@ export function CompactHistoryFold({
   const { t } = useTranslation();
 
   return (
-    <div className="flex justify-center py-2">
+    <div className="flex w-full max-w-measure justify-center py-2">
       <Button
         type="button"
         variant="outline"
         size="sm"
-        className="gap-2 text-xs text-muted-foreground"
+        className="gap-2 text-aux text-muted-foreground"
         onClick={onExpand}
       >
         <History className="h-3.5 w-3.5" aria-hidden="true" />

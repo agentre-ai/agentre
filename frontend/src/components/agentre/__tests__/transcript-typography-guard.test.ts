@@ -51,6 +51,9 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   // 属于输入框 / 拖放提示层 / 附件缩略图,不归对话流卡片系统管,故意不跟随
   // rounded-lg / 去阴影;字号与 measure 约束（type/measure 两组）仍然全文件生效。
   { file: "chat.tsx", skip: ["shadow", "radius"] },
+  { file: "compact-boundary-divider.tsx" },
+  { file: "compact-history-fold.tsx" },
+  { file: "auto-trigger-banner.tsx" },
 ];
 
 function violations(source: string, skip: RuleGroup[] = []): string[] {
