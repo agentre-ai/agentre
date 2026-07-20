@@ -1156,7 +1156,9 @@ const ChatTranscript = React.forwardRef<
     count: rows.length,
     estimateSize: (index) => {
       const row = rows[index];
-      return row ? estimateRowSize(row) : 132;
+      // 132→148:与 transcript-rows.ts 的 estimateRowSize 同源校准(正文行高
+      // 14×1.625→15×1.7,比例 ≈1.12),兜底走同一档不再落回旧字号年代的估值。
+      return row ? estimateRowSize(row) : 148;
     },
     getItemKey: (index) => rows[index]?.key ?? index,
     getScrollElement: () => scrollElement ?? null,
@@ -1373,7 +1375,9 @@ const ChatTranscript = React.forwardRef<
   const virtualSpacerSize =
     virtualTotalSize > 0
       ? virtualTotalSize
-      : lastVirtualTotalSizeRef.current || rows.length * 48;
+      : // 48→54:同上,per-row 兜底估值随字号/间距校准同步调整,避免首帧 spacer
+        // 高度系统性偏矮。
+        lastVirtualTotalSizeRef.current || rows.length * 54;
 
   // 行间距:消息末行 pb-7(消息间距),消息内分片行 pb-2.5(block 间距)。padding
   // 打在行 wrapper 上,跟随 measureElement 一起计入行高。

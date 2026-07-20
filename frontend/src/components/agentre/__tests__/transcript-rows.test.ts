@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildRenderItems,
   buildTranscriptRows,
+  estimateRowSize,
   type TranscriptRow,
+  type TranscriptRowItem,
 } from "@/components/agentre/transcript-rows";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
+import type { LocalCommandEntry } from "@/stores/local-commands-store";
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
 // buildRenderItems 是 renderMessageBlocks 状态机的纯函数抽取。这些单测把配对 /
@@ -499,5 +502,95 @@ describe("buildTranscriptRows", () => {
     expect(second.rows[0]).toBe(first.rows[0]);
     // live 消息:每次现场重建,不进缓存。
     expect(second.rows[1]).not.toBe(first.rows[1]);
+  });
+});
+
+// estimateRowSize:虚拟化 estimateSize 的估值表。这组测试是**分析性**校准的执行
+// 断言,不是布局测试 —— jsdom 没有真实排版引擎,测不出这些数字是否等于组件实际
+// 渲染高度(那部分只能靠 `make dev` 里的人工滚动观察验证)。这里只钉死两件事:
+// ①估值确实按 Task 10 校准比例(25.5/22.75,对话流正文 14×1.625→15×1.7)从旧值
+// 缩放而来,不是随手改的数;②每一档都严格大于重构前的旧值,防止"只改了兜底、
+// 漏了某个 case"的回归 —— 那正是本任务存在的理由(虚拟化行高系统性偏小)。
+describe("estimateRowSize", () => {
+  const ROW_SIZE_SCALE = 25.5 / 22.75;
+
+  function row(item: TranscriptRowItem): TranscriptRow {
+    return {
+      autonomous: false,
+      isFirstOfMessage: true,
+      isLastOfMessage: true,
+      item,
+      key: "k",
+      messageId: 1,
+    };
+  }
+
+  // [item.type, 重构前(旧字号 14/1.625)的估值] —— 旧值来自 git 历史
+  // (transcript-rows.ts 改动前),用来断言"新值 = 旧值 × 比例"而非凭空数字。
+  const PRE_CALIBRATION_BASELINE: [TranscriptRowItem["type"], number][] = [
+    ["text", 132],
+    ["placeholder", 132],
+    ["image", 160],
+    ["thinking", 40],
+    ["compact_boundary", 48],
+    ["local_command", 120],
+    ["tool", 48],
+  ];
+
+  function makeItem(type: TranscriptRowItem["type"]): TranscriptRowItem {
+    switch (type) {
+      case "text":
+        return { text: "hello", type: "text", uiStateKey: "k" };
+      case "placeholder":
+        return { type: "placeholder" };
+      case "image":
+        return { block: {} as ChatBlockData, type: "image", uiStateKey: "k" };
+      case "thinking":
+        return {
+          block: {} as ChatBlockData,
+          streaming: false,
+          type: "thinking",
+          uiStateKey: "k",
+        };
+      case "compact_boundary":
+        return {
+          block: {} as ChatBlockData,
+          type: "compact_boundary",
+          uiStateKey: "k",
+        };
+      case "local_command": {
+        const entry: LocalCommandEntry = {
+          command: "!ls",
+          createdAt: 0,
+          id: "cmd-1",
+          output: "",
+          sessionId: 1,
+          status: "done",
+        };
+        return { entry, type: "local_command" };
+      }
+      default:
+        // tool / plan / tool_permission_request / tool_approval / unknown 全部
+        // 落进 estimateRowSize 的 default 分支,取 "tool" 代表整档。
+        return { type: "tool", uiStateKey: "k" };
+    }
+  }
+
+  it("每一档都等于旧值(重构前)按 25.5/22.75 的比例缩放并四舍五入", () => {
+    for (const [type, before] of PRE_CALIBRATION_BASELINE) {
+      const expected = Math.round(before * ROW_SIZE_SCALE);
+      expect(estimateRowSize(row(makeItem(type)))).toBe(expected);
+    }
+  });
+
+  it("新估值严格大于重构前的旧估值(防止漏改某个 case 导致的系统性偏小)", () => {
+    for (const [type, before] of PRE_CALIBRATION_BASELINE) {
+      expect(estimateRowSize(row(makeItem(type)))).toBeGreaterThan(before);
+    }
+  });
+
+  it("text 与 placeholder 共享同一档估值(148),与兜底 chat.tsx:estimateSize 的 148 一致", () => {
+    expect(estimateRowSize(row(makeItem("text")))).toBe(148);
+    expect(estimateRowSize(row(makeItem("placeholder")))).toBe(148);
   });
 });

@@ -529,25 +529,43 @@ export function buildTranscriptRows({
   return { firstRowIndexByMessageId, rowIndexByKey, rows };
 }
 
-// estimateRowSize:按 item 类型估行高,供虚拟器 estimateSize 用。text/placeholder
-// 维持 132(与 message 级虚拟化的整消息估高一致 —— 纯文本消息恰好一行,含 chrome);
-// 真实高度由 measureElement 动态测量覆盖,估值只影响冷跳收敛速度。
+// estimateRowSize:按 item 类型估行高,供虚拟器 estimateSize 用。真实高度由
+// measureElement 动态测量覆盖,估值只影响冷跳收敛速度 —— 但如果估值系统性偏小,
+// 会导致 getTotalSize() 系统性偏小,滚动条长度/贴底位置在测量前后跳变。
+//
+// 校准基准(2026-07-20,对话流字号/间距重构后):正文 --text-prose 从 14px/1.625
+// 变成 15px/1.7,单行行高 14×1.625=22.75px → 15×1.7=25.5px,比例 25.5/22.75 ≈
+// 1.1209。这一档同时是 text/placeholder 行原有估值 132(单行纯文本消息,含头像/
+// 名字/时间戳/footer chrome)的缩放依据:132 × 1.1209 ≈ 148。
+//
+// 其余档位(折叠态卡片/thinking/图片/本地命令/compact 分隔线)虽不是"正文一行",
+// 但共享同一份 chrome 增长:卡片内边距 px-3 py-2 → px-3.5 py-2.5(头部),元信息
+// 字号 9/10/11px → 统一 12px/20px(--text-meta),工具卡/代码/思考正文 12px →
+// 13px(--text-aux,1.65 行高)。这些增量换算成相对值与 25.5/22.75 同一量级,
+// 故对全部档位统一按同一比例缩放,而不是只调 text 一档 —— 否则非文本行会重新
+// 变成新的系统性偏小来源。
+const ROW_SIZE_SCALE = 25.5 / 22.75;
+
+function scaleRowSize(base: number): number {
+  return Math.round(base * ROW_SIZE_SCALE);
+}
+
 export function estimateRowSize(row: TranscriptRow): number {
   switch (row.item.type) {
     case "text":
     case "placeholder":
-      return 132;
+      return scaleRowSize(132); // 148
     case "image":
-      return 160;
+      return scaleRowSize(160); // 179
     case "thinking":
-      return 40;
+      return scaleRowSize(40); // 45
     case "compact_boundary":
-      return 48;
+      return scaleRowSize(48); // 54
     case "local_command":
-      return 120;
+      return scaleRowSize(120); // 135
     default:
       // tool / plan / tool_permission_request / unknown:折叠态卡片。
-      return 48;
+      return scaleRowSize(48); // 54
   }
 }
 
