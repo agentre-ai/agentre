@@ -27,6 +27,7 @@ export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "transcript-card.tsx" },
   { file: "message-row.tsx" },
   { file: "markdown-text.tsx" },
+  { file: "code-block.tsx" },
 ];
 
 function violations(source: string, skip: RuleGroup[] = []): string[] {
