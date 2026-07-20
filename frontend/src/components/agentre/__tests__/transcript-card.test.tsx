@@ -7,6 +7,7 @@ import {
   TranscriptCardHeader,
   TranscriptPill,
 } from "../transcript-card";
+import { ThinkingBlock } from "../thinking-block";
 
 describe("TranscriptCard", () => {
   it("默认 tone 用中性边框 + measure 栏宽 + 无阴影", () => {
@@ -67,5 +68,15 @@ describe("TranscriptCard", () => {
     );
     expect(screen.getByTestId("p").className).toContain("bg-status-running-bg");
     expect(screen.getByTestId("p").className).toContain("text-status-running");
+  });
+});
+
+describe("ThinkingBlock 排版契约", () => {
+  it("即使脱离 MessageRow 也受 measure 约束", () => {
+    const { container } = render(
+      <ThinkingBlock text="思考内容" streaming={false} />,
+    );
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain("max-w-measure");
   });
 });

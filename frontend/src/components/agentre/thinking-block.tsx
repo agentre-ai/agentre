@@ -5,6 +5,11 @@ import { Brain, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { shouldIgnoreClickForSelection } from "./copyable-text";
+import {
+  TranscriptCard,
+  TranscriptCardHeader,
+  TranscriptPill,
+} from "./transcript-card";
 import { useTranscriptBooleanState } from "./transcript-ui-state";
 
 type ThinkingBlockProps = {
@@ -105,18 +110,13 @@ export function ThinkingBlock({
   };
 
   return (
-    <div
-      data-selectable-text="true"
-      className="overflow-hidden rounded-lg border border-border bg-card"
-    >
-      <button
-        type="button"
+    <TranscriptCard data-selectable-text="true">
+      <TranscriptCardHeader
         onClick={handleToggle}
         aria-expanded={expanded}
         aria-label={
           streaming ? t("thinking.toggleStreaming") : t("thinking.toggleDone")
         }
-        className="flex w-full cursor-pointer items-center gap-2 px-3.5 py-2.5 text-left hover:bg-muted/40"
       >
         <Brain
           aria-hidden
@@ -132,16 +132,16 @@ export function ThinkingBlock({
           {streaming ? t("thinking.streaming") : t("thinking.done")}
         </span>
         {streaming ? (
-          <span
+          <TranscriptPill
             data-copyable-control-text="true"
-            className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-2xs font-medium text-primary-text"
+            className="bg-primary-soft text-primary-text"
           >
             {liveSeconds}s
-          </span>
+          </TranscriptPill>
         ) : metaText ? (
           <span
             data-copyable-control-text="true"
-            className="text-xs text-muted-foreground"
+            className="text-meta text-muted-foreground"
           >
             {metaText}
           </span>
@@ -160,7 +160,7 @@ export function ThinkingBlock({
             expanded && "rotate-180",
           )}
         />
-      </button>
+      </TranscriptCardHeader>
       <div
         data-slot="thinking-block-content"
         className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
@@ -172,18 +172,18 @@ export function ThinkingBlock({
             {streaming ? (
               <div
                 ref={streamingBodyRef}
-                className="max-h-[132px] overflow-hidden whitespace-pre-wrap break-words px-3.5 py-3 text-xs italic leading-[1.55] text-muted-foreground"
+                className="max-h-[132px] overflow-hidden whitespace-pre-wrap break-words px-3.5 py-3 text-aux italic text-muted-foreground"
               >
                 {text}
               </div>
             ) : (
-              <div className="whitespace-pre-wrap break-words px-3.5 py-3 text-xs italic leading-[1.55] text-muted-foreground">
+              <div className="whitespace-pre-wrap break-words px-3.5 py-3 text-aux italic text-muted-foreground">
                 {text}
               </div>
             )}
           </div>
         </div>
       </div>
-    </div>
+    </TranscriptCard>
   );
 }
