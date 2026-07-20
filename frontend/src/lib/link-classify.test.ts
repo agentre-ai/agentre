@@ -43,6 +43,26 @@ describe("classifyLink", () => {
   });
 
   describe("Local absolute paths", () => {
+    it("Given an encoded non-ASCII absolute path, when classified, then OpenPath receives the decoded filesystem path", () => {
+      expect(
+        classifyLink("/Users/me/proj/docs/%E6%9C%AC%E5%9C%B0%20E2E.md", CWD),
+      ).toEqual({
+        kind: "local-internal",
+        fullPath: "/Users/me/proj/docs/本地 E2E.md",
+        pathKind: "file",
+        relPath: "docs/本地 E2E.md",
+      });
+    });
+
+    it("Given a malformed percent escape, when classified, then it remains usable instead of throwing", () => {
+      expect(classifyLink("/Users/me/proj/docs/100%.md", CWD)).toEqual({
+        kind: "local-internal",
+        fullPath: "/Users/me/proj/docs/100%.md",
+        pathKind: "file",
+        relPath: "docs/100%.md",
+      });
+    });
+
     it("when POSIX absolute path inside cwd then kind=local-internal with relPath", () => {
       expect(classifyLink("/Users/me/proj/src/foo.go", CWD)).toEqual({
         kind: "local-internal",

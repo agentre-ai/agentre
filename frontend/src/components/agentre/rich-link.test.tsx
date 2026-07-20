@@ -72,6 +72,21 @@ describe("RichLink", () => {
   });
 
   describe("Local file link — in cwd", () => {
+    it("clicking an encoded non-ASCII path calls OpenPath with the decoded filesystem path", () => {
+      render(
+        <RichLink
+          href="/Users/me/proj/docs/%E6%9C%AC%E5%9C%B0%20E2E.md"
+          cwd={CWD}
+        >
+          本地 E2E
+        </RichLink>,
+      );
+      fireEvent.click(screen.getByRole("link", { name: /本地 E2E/ }));
+      expect(openPathMock).toHaveBeenCalledWith(
+        "/Users/me/proj/docs/本地 E2E.md",
+      );
+    });
+
     it("clicking calls OpenPath with full path + line suffix", () => {
       render(
         <RichLink href="/Users/me/proj/src/foo.go:42" cwd={CWD}>

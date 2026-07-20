@@ -40,18 +40,22 @@ function stripLineSuffix(p: string): {
   };
 }
 
+function decodeLocalPath(path: string): string {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
 function fileURLToPath(href: string): string {
   // file:///Users/x/foo.go → /Users/x/foo.go
   // file:///C:/Users/x/foo.go → C:/Users/x/foo.go
-  let p = href.slice("file://".length);
-  if (p.startsWith("/") && /^[A-Za-z]:/.test(p.slice(1))) {
-    p = p.slice(1);
+  let path = href.slice("file://".length);
+  if (path.startsWith("/") && /^[A-Za-z]:/.test(path.slice(1))) {
+    path = path.slice(1);
   }
-  try {
-    return decodeURI(p);
-  } catch {
-    return p;
-  }
+  return decodeLocalPath(path);
 }
 
 function classifyLocalPathKind(fullPath: string, cwd?: string): LocalPathKind {
@@ -73,7 +77,7 @@ export function classifyLink(
   if (FILE_PROTOCOL.test(href)) {
     rawPath = fileURLToPath(href);
   } else if (ABS_POSIX.test(href) || ABS_WINDOWS.test(href)) {
-    rawPath = href;
+    rawPath = decodeLocalPath(href);
   } else {
     return { kind: "unknown", href };
   }
