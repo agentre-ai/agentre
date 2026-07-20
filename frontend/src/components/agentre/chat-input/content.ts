@@ -27,6 +27,7 @@ export function extractPlainText(doc: ProseMirrorLikeNode): string {
         refId: Number(node.attrs.refId ?? 0),
         label: String(node.attrs.label ?? ""),
         path: node.attrs.path ? String(node.attrs.path) : undefined,
+        color: node.attrs.color ? String(node.attrs.color) : undefined,
       });
     } else if (node.type.name === "paragraph" && out.length > 0) {
       out += "\n";
@@ -65,6 +66,7 @@ export function buildEditorDocFromMessage(
             refId: part.ref.refId,
             label: part.ref.label,
             path: part.ref.path ?? "",
+            ...(part.ref.color ? { color: part.ref.color } : {}),
           },
         });
       }

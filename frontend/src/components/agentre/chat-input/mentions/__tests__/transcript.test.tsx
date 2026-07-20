@@ -35,4 +35,21 @@ describe("MarkdownText + mention decorator", () => {
     );
     expect(screen.getByText("@Bob")).toBeInTheDocument();
   });
+
+  it("Given a colored sent mention, When the transcript renders it, Then it keeps the mention background color", () => {
+    const { text, refs } = prepareMentionText(
+      '<agent id="1" color="agent-3">Bob</agent>',
+    );
+    expect(refs).toEqual([
+      { kind: "agent", refId: 1, label: "Bob", color: "agent-3" },
+    ]);
+    render(
+      <MemoryRouter>
+        <MarkdownText text={text} decorator={makeMentionDecorator(refs)} />
+      </MemoryRouter>,
+    );
+    expect(
+      screen.getByText("@Bob").style.getPropertyValue("--mention-color"),
+    ).toBe("var(--agent-3)");
+  });
 });

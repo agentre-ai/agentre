@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 
 import type { MarkdownInlineDecorator } from "../../markdown-text";
+import { tokenToCssColor } from "../../session-avatar";
 import { parseMentionXml, type MentionRef } from "./xml";
 
 // 私有区哨兵:markdown 无 rehype-raw 会吃掉 <agent>/<project> 原始标签,所以
@@ -39,12 +40,18 @@ export function MentionChip({
     refData.kind === "agent"
       ? t("mentions.chip.agentTitle", { name: refData.label })
       : t("mentions.chip.projectTitle", { name: refData.label });
+  const color = tokenToCssColor(refData.color ?? "");
   return (
     <button
       type="button"
       title={title}
       onClick={() => navigate(refData.kind === "agent" ? "/org" : "/projects")}
       className="agentre-mention cursor-pointer"
+      style={
+        color
+          ? ({ "--mention-color": color } as React.CSSProperties)
+          : undefined
+      }
     >
       @{refData.label}
     </button>

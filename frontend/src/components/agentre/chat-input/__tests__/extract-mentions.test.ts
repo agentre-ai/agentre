@@ -42,6 +42,21 @@ describe("extractPlainText with mention nodes", () => {
     );
   });
 
+  it("Given a colored mention, When it is sent, Then its display color is preserved", () => {
+    const doc = docWith([
+      mention({
+        kind: "agent",
+        refId: 12,
+        label: "Reviewer",
+        path: "",
+        color: "agent-3",
+      }),
+    ]);
+    expect(extractPlainText(doc)).toBe(
+      '<agent id="12" color="agent-3">Reviewer</agent>',
+    );
+  });
+
   it("serializes a project mention with path", () => {
     const doc = docWith([
       mention({ kind: "project", refId: 3, label: "Web", path: "/w" }),

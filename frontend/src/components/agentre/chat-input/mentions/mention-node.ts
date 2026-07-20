@@ -1,7 +1,7 @@
 // mention 是 inline atom 节点:承载 @ 引用的结构化数据(kind/refId/label/path),
 // 以纯 DOM (renderHTML/parseHTML) 渲染成一个 pill,不使用 React node-view ——
 // 保持可测 + 与仓库现有「只用 decoration 插件」的编辑器风格一致。
-// color 仅用于显示着色 (从选中项带入),不参与 XML 序列化。
+// color 用于显示着色，并随 XML 往返以保持发送前后的 chip 视觉一致。
 import { Node, mergeAttributes } from "@tiptap/core";
 
 import { tokenToCssColor } from "../../session-avatar";
