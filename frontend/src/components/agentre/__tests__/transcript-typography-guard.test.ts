@@ -45,9 +45,9 @@ describe("transcript typography guard", () => {
   });
 
   it("检测器尊重 skip", () => {
-    expect(
-      violations('<div className="rounded-md" />', ["radius"]),
-    ).toEqual([]);
+    expect(violations('<div className="rounded-md" />', ["radius"])).toEqual(
+      [],
+    );
   });
 
   it("对话流组件不含被禁的排版字面量", () => {
