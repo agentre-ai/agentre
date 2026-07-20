@@ -119,7 +119,9 @@ describe("AIChatInput @ mention integration", () => {
     await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
     act(() => screen.getByTestId("submit").click());
     expect(onSubmit).toHaveBeenCalledWith(
-      expect.stringContaining('<agent id="12">Reviewer</agent>'),
+      expect.stringContaining(
+        '<agent id="12" color="agent-3">Reviewer</agent>',
+      ),
     );
   });
 
@@ -138,8 +140,12 @@ describe("AIChatInput @ mention integration", () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     const sent = onSubmit.mock.calls[0]?.[0] as string;
-    expect(sent.match(/<agent id="12">Reviewer<\/agent>/g)).toHaveLength(2);
-    expect(sent).toContain('<project id="3" path="/w">Web</project>');
+    expect(
+      sent.match(/<agent id="12" color="agent-3">Reviewer<\/agent>/g),
+    ).toHaveLength(2);
+    expect(sent).toContain(
+      '<project id="3" path="/w" color="agent-5">Web</project>',
+    );
   });
 
   // 回归:两个 chip 之后再选中 slash 命令,不应吃掉前面的 chip —— slash 模块和
@@ -173,8 +179,10 @@ describe("AIChatInput @ mention integration", () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     const sent = onSubmit.mock.calls[0]?.[0] as string;
-    expect(sent).toContain('<agent id="12">Reviewer</agent>');
-    expect(sent).toContain('<project id="3" path="/w">Web</project>');
+    expect(sent).toContain('<agent id="12" color="agent-3">Reviewer</agent>');
+    expect(sent).toContain(
+      '<project id="3" path="/w" color="agent-5">Web</project>',
+    );
     expect(sent).toContain("/compact");
   });
 });

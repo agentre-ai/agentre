@@ -1947,7 +1947,7 @@ function ChatPanel({
                   ref={setTranscriptNode}
                   data-testid="chat-transcript-scroll"
                   onScroll={handleTranscriptScroll}
-                  className="min-h-0 flex-1 overflow-auto px-7 py-5"
+                  className="min-h-0 flex-1 overflow-auto px-7 py-6"
                 >
                   <ChatTranscript
                     ref={transcriptHandleRef}

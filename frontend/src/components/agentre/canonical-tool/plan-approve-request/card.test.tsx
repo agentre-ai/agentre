@@ -436,6 +436,56 @@ describe("PlanApproveCard", () => {
     ).toBeDefined();
   });
 
+  // TranscriptCard tone 派生:未决→pending(border-primary)、已批准→done
+  // (border-status-running/50)、其余已解决态(如 refine)→default(border-border)。
+  // 三态各锁一个断言,防止 tone 三元表达式静默回归。
+  it("Given an unresolved plan, When rendered, Then the card uses the pending tone border", () => {
+    const block = blockWithActions([
+      { id: "plan.approve.accept_edits", kind: "approve" },
+      { id: "plan.refine", kind: "refine", requiresFeedback: true },
+    ]);
+    render(<PlanApproveCard toolBlock={block} sessionId={1} />);
+    expect(screen.getByTestId("plan-card")).toHaveClass("border-primary");
+  });
+
+  it("Given a resolved and approved plan, When rendered, Then the card uses the done tone border", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "ExitPlanMode",
+      canonical: {
+        kind: "plan.approve_request",
+        planApprove: {
+          requestId: "req-1",
+          planText: "x",
+          resolved: true,
+          allowed: true,
+        },
+      },
+    } as unknown as ChatBlockData;
+    render(<PlanApproveCard toolBlock={block} sessionId={1} />);
+    expect(screen.getByTestId("plan-card")).toHaveClass(
+      "border-status-running/50",
+    );
+  });
+
+  it("Given a resolved but not-approved plan, When rendered, Then the card uses the default tone border", () => {
+    const block = {
+      type: "tool_use",
+      toolName: "ExitPlanMode",
+      canonical: {
+        kind: "plan.approve_request",
+        planApprove: {
+          requestId: "req-1",
+          planText: "x",
+          resolved: true,
+          allowed: false,
+        },
+      },
+    } as unknown as ChatBlockData;
+    render(<PlanApproveCard toolBlock={block} sessionId={1} />);
+    expect(screen.getByTestId("plan-card")).toHaveClass("border-border");
+  });
+
   it("requestless plan.refine action sends feedback through ResolvePlanAction", async () => {
     render(<PlanApproveCard toolBlock={actionPlanBlock()} sessionId={1} />);
     fireEvent.click(screen.getByText("Refine Plan"));

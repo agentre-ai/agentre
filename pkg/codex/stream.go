@@ -59,6 +59,9 @@ func (s *Stream) handleInbound(ctx context.Context, in appInbound, preSeen map[s
 		s.emitError(err, in.Params)
 		return false
 	}
+	if in.Method == appMethodTurnStarted {
+		s.adoptStartedTurn(n)
+	}
 	if !s.ownsNotification(n) {
 		return false
 	}
@@ -136,6 +139,21 @@ func (s *Stream) handleInbound(ctx context.Context, in appInbound, preSeen map[s
 		s.emitError(fmt.Errorf("codex app-server: %s", string(in.Params)), in.Params)
 	}
 	return false
+}
+
+// adoptStartedTurn treats turn/started as the authoritative turn identity.
+// With an active goal, Codex 0.144.4 can return a provisional id from
+// turn/start and then execute the turn under a different id.
+func (s *Stream) adoptStartedTurn(n appNotification) {
+	if n.Turn == nil || strings.TrimSpace(n.Turn.ID) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n.ThreadID != "" && s.sessionID != "" && n.ThreadID != s.sessionID {
+		return
+	}
+	s.turnID = n.Turn.ID
 }
 
 func (s *Stream) ownsNotification(n appNotification) bool {

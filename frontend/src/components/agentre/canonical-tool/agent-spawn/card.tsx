@@ -20,6 +20,11 @@ import { cn } from "@/lib/utils";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
+import {
+  TranscriptCard,
+  TranscriptCardHeader,
+  TranscriptPill,
+} from "../../transcript-card";
 import { statusConfig, type AgentStatus } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import { summarizeRawTool } from "../raw/summary";
@@ -196,26 +201,22 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
   const tokens = spawn.totalTokens ? formatTokens(spawn.totalTokens) : "";
 
   return (
-    <section
+    <TranscriptCard
       data-testid="agent-spawn-card"
       aria-label={t("canonical.agentSpawn.aria", {
         name:
           description || subagentType || t("canonical.agentSpawn.defaultName"),
       })}
       data-selectable-text="true"
-      className={cn(
-        "w-full max-w-[720px] overflow-hidden rounded-md border bg-card font-mono text-xs",
-        status === "error" ? "border-status-error/40" : "border-border",
-      )}
+      tone={status === "error" ? "error" : "default"}
+      className="font-mono text-aux"
     >
-      <button
-        type="button"
+      <TranscriptCardHeader
         onClick={(event) => {
           if (shouldIgnoreClickForSelection(event)) return;
           setExpanded((v) => !v);
         }}
         aria-expanded={expanded}
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/40"
       >
         <ChevronRight
           className={cn(
@@ -248,7 +249,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
         {subagentType ? (
           <span
             data-copyable-control-text="true"
-            className="ml-1 inline-flex shrink-0 items-center rounded-sm bg-secondary px-1.5 py-0.5 text-2xs font-medium text-foreground"
+            className="ml-1 inline-flex shrink-0 items-center rounded-sm bg-secondary px-1.5 py-0.5 text-meta font-medium text-foreground"
           >
             {subagentType}
           </span>
@@ -257,7 +258,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
         {toolUses > 0 ? (
           <span
             data-copyable-control-text="true"
-            className="inline-flex shrink-0 items-center gap-1 text-2xs text-muted-foreground"
+            className="inline-flex shrink-0 items-center gap-1 text-meta text-muted-foreground"
           >
             <Wrench className="size-2.5" aria-hidden="true" />
             <span>
@@ -271,18 +272,15 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
         {tokens ? (
           <span
             data-copyable-control-text="true"
-            className="inline-flex shrink-0 items-center gap-1 text-2xs text-muted-foreground"
+            className="inline-flex shrink-0 items-center gap-1 text-meta text-muted-foreground"
           >
             <Coins className="size-2.5" aria-hidden="true" />
             <span>{tokens}</span>
           </span>
         ) : null}
-        <span
+        <TranscriptPill
           data-copyable-control-text="true"
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-semibold tracking-[0.04em]",
-            pillClassName,
-          )}
+          className={pillClassName}
         >
           <StatusIcon
             className={cn(
@@ -292,8 +290,8 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
             aria-hidden="true"
           />
           {statusLabel}
-        </span>
-      </button>
+        </TranscriptPill>
+      </TranscriptCardHeader>
       <div
         data-slot="agent-spawn-details"
         aria-hidden={!expanded}
@@ -354,7 +352,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
           </div>
         </div>
       </div>
-    </section>
+    </TranscriptCard>
   );
 };
 
@@ -370,11 +368,11 @@ function AgentSpawnSection({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
-        <span className="font-sans text-2xs font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+        <span className="font-sans text-meta font-semibold uppercase tracking-[0.06em] text-muted-foreground">
           {label}
         </span>
         {meta ? (
-          <span className="font-mono text-2xs text-subtle-foreground">
+          <span className="font-mono text-meta text-subtle-foreground">
             {meta}
           </span>
         ) : null}
@@ -436,7 +434,7 @@ function AgentSpawnStepCard({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-md border bg-background",
+        "overflow-hidden rounded-lg border bg-background",
         isError
           ? "border-status-error/50 border-l-2 border-l-status-error"
           : isRunning
@@ -482,19 +480,16 @@ function AgentSpawnStepCard({
           </>
         ) : null}
         <span className="min-w-0 flex-1" />
-        <span
+        <TranscriptPill
           data-copyable-control-text="true"
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-semibold tracking-[0.04em]",
-            statusConfig[stepStatus].pillClassName,
-          )}
+          className={statusConfig[stepStatus].pillClassName}
         >
           <StepStatusIcon
             className={cn("size-2.5", isRunning && "animate-spin")}
             aria-hidden="true"
           />
           {stepLabel}
-        </span>
+        </TranscriptPill>
       </button>
       <div
         aria-hidden={!expanded}

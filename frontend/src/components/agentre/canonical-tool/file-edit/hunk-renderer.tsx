@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
+import { TranscriptPill } from "../../transcript-card";
 import type { DiffHunk, DiffLine, FileEditPatch } from "../types";
 
 // FileBlock 渲染单个文件的 diff(可能多 hunks);showHeader=true 时画出文件名条。
@@ -17,24 +18,24 @@ export function FileBlock({
     <div>
       {showHeader && (
         <div className="flex items-center gap-2 border-y border-border bg-secondary px-3 py-1.5">
-          <span className="font-mono text-[11px] font-semibold text-foreground">
+          <span className="font-mono text-meta font-semibold text-foreground">
             {file.path}
           </span>
           {file.kind === "created" && (
-            <span className="rounded-sm bg-status-running-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-status-running">
+            <TranscriptPill tone="done">
               {t("canonical.fileEdit.badge.new")}
-            </span>
+            </TranscriptPill>
           )}
           {file.kind === "deleted" && (
-            <span className="rounded-sm bg-destructive-soft px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-destructive">
+            <TranscriptPill tone="error">
               {t("canonical.fileEdit.badge.deleted")}
-            </span>
+            </TranscriptPill>
           )}
-          <span className="ml-auto font-mono text-[10px] font-semibold text-status-running">
+          <span className="ml-auto font-mono text-meta font-semibold text-status-running">
             +{file.plus}
           </span>
           {file.minus > 0 && (
-            <span className="font-mono text-[10px] font-semibold text-destructive">
+            <span className="font-mono text-meta font-semibold text-destructive">
               −{file.minus}
             </span>
           )}
@@ -48,7 +49,7 @@ export function FileBlock({
         file.hunks.map((hunk, hi) => <HunkBlock key={hi} hunk={hunk} />)
       )}
       {file.truncated && (
-        <div className="border-t border-border bg-secondary px-3 py-1 text-[11px] text-muted-foreground">
+        <div className="border-t border-border bg-secondary px-3 py-1 text-meta text-muted-foreground">
           {t("canonical.fileEdit.truncated", {
             count: file.plus + file.minus,
             shown: 200,
@@ -62,7 +63,7 @@ export function FileBlock({
 function HunkBlock({ hunk }: { hunk: DiffHunk }) {
   return (
     <>
-      <div className="bg-secondary px-3 py-1 font-mono text-[11px] font-semibold text-muted-foreground">
+      <div className="bg-secondary px-3 py-1 font-mono text-meta font-semibold text-muted-foreground">
         @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
         {hunk.header ? (
           <span className="ml-3 font-normal text-subtle-foreground">
@@ -92,14 +93,14 @@ function DiffLineRow({ line }: { line: DiffLine }) {
         : "text-subtle-foreground";
   return (
     <div className={cn("flex items-center px-3 py-0.5", bg)}>
-      <span className="w-8 text-right text-[11px] text-subtle-foreground">
+      <span className="w-8 text-right text-meta text-subtle-foreground">
         {line.old ?? " "}
       </span>
-      <span className="w-8 text-right text-[11px] text-subtle-foreground">
+      <span className="w-8 text-right text-meta text-subtle-foreground">
         {line.new ?? " "}
       </span>
       <span
-        className={cn("w-5 text-center text-[11px] font-semibold", markColor)}
+        className={cn("w-5 text-center text-meta font-semibold", markColor)}
       >
         {line.op}
       </span>

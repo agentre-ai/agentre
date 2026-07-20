@@ -108,8 +108,16 @@ func TestStream_IgnoresSubagentThreadMessages(t *testing.T) {
 	stream := newStream(nil, 0, "thread-main", "turn-main", "")
 	seen := map[string]struct{}{}
 
-	// When the subagent thread streams a message delta.
+	// A foreign turn/started notification must not rebind the main stream.
 	done := stream.handleInbound(context.Background(), appInbound{
+		Kind:   appInboundNotification,
+		Method: appMethodTurnStarted,
+		Params: json.RawMessage(`{"threadId":"thread-sub-1","turn":{"id":"turn-sub-1","status":"inProgress"}}`),
+	}, seen)
+	require.False(t, done)
+
+	// When the subagent thread streams a message delta.
+	done = stream.handleInbound(context.Background(), appInbound{
 		Kind:   appInboundNotification,
 		Method: appMethodItemAgentMessageDelta,
 		Params: json.RawMessage(`{"threadId":"thread-sub-1","turnId":"turn-sub-1","itemId":"sub-msg-1","delta":"subagent output"}`),
@@ -288,6 +296,64 @@ func TestSessionStream_ReusesSingleAppServerAcrossTurns(t *testing.T) {
 	require.Len(t, runner.opts, 1)
 	assert.Equal(t, "thread-reused", sess.ID())
 	assert.Equal(t, "thread-reused", second.SessionID())
+}
+
+func TestSessionStream_GoalTurnUsesStartedTurnID(t *testing.T) {
+	// Given an active goal whose turn/start response id differs from the actual
+	// turn/started notification id (Codex CLI 0.144.4 behavior).
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondRPC(h, readRPCReq(t, sc), map[string]any{})
+		_ = readRPCReq(t, sc) // initialized
+
+		startReq := readRPCReq(t, sc)
+		assert.Equal(t, appMethodThreadStart, startReq.Method)
+		respondRPC(h, startReq, map[string]any{"thread": map[string]any{"id": "thread-goal-stream"}})
+
+		goalReq := readRPCReq(t, sc)
+		assert.Equal(t, appMethodThreadGoalSet, goalReq.Method)
+		respondRPC(h, goalReq, map[string]any{"goal": map[string]any{
+			"threadId": "thread-goal-stream", "objective": "ship it", "status": "active",
+		}})
+
+		turnReq := readRPCReq(t, sc)
+		assert.Equal(t, appMethodTurnStart, turnReq.Method)
+		respondRPC(h, turnReq, map[string]any{"turn": map[string]any{"id": "turn-request", "status": "inProgress"}})
+		h.send(map[string]any{"method": "turn/started", "params": map[string]any{
+			"threadId": "thread-goal-stream", "turn": map[string]any{"id": "turn-actual", "status": "inProgress"},
+		}})
+		h.send(map[string]any{"method": appMethodItemAgentMessageDelta, "params": map[string]any{
+			"threadId": "thread-goal-stream", "turnId": "turn-actual", "itemId": "msg-1", "delta": "goal output",
+		}})
+		h.send(map[string]any{"method": appMethodTurnCompleted, "params": map[string]any{
+			"threadId": "thread-goal-stream", "turn": map[string]any{"id": "turn-actual", "status": "completed"},
+		}})
+	}
+
+	client := New(WithAppServerRunnerForTesting(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sess, err := client.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	objective := "ship it"
+	status := GoalStatusActive
+	_, err = sess.SetGoal(ctx, GoalUpdate{Objective: &objective, Status: &status})
+	require.NoError(t, err)
+	stream, err := sess.Stream(ctx, "execute the goal")
+	require.NoError(t, err)
+
+	var events []Event
+	for stream.Next() {
+		events = append(events, stream.Event())
+	}
+	require.NoError(t, stream.Err())
+	require.Len(t, events, 2)
+	assert.Equal(t, EventTextDelta, events[0].Kind)
+	assert.Equal(t, "goal output", events[0].Text)
+	assert.Equal(t, EventDone, events[1].Kind)
 }
 
 func TestClientCompact_SendsThreadCompactStartRPC(t *testing.T) {

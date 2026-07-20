@@ -14,20 +14,57 @@ type RuleGroup = "type" | "measure" | "shadow" | "radius";
 const RULES: { group: RuleGroup; pattern: RegExp; why: string }[] = [
   { group: "type", pattern: /text-\[9px\]/, why: "低于可读下限,用 text-meta" },
   { group: "type", pattern: /text-\[10px\]/, why: "低于可读下限,用 text-meta" },
+  { group: "type", pattern: /text-\[11px\]/, why: "低于可读下限,用 text-meta" },
   { group: "measure", pattern: /max-w-\[720px\]/, why: "用 max-w-measure" },
   { group: "measure", pattern: /max-w-\[580px\]/, why: "用 max-w-measure" },
   { group: "shadow", pattern: /shadow-sm/, why: "对话流卡片不带阴影" },
   { group: "radius", pattern: /rounded-md/, why: "对话流卡片统一 rounded-lg" },
 ];
 
+// 已知位于对话流链路上、但本轮刻意未纳入护栏的文件及原因(别误当成漏项):
+// - chat-input/mentions/transcript.tsx:正被另一个并发会话大改(@ 提及序列化/
+//   还原),本轮不碰,等它落地后再评估是否收编。
+//
 // SCANNED:对话流渲染链路上的组件。新增 transcript 组件时必须加进来 ——
 // 让「加进对话流」成为一个需要过目排版护栏的动作。
 // skip:该文件豁免的规则组,每一项都要写清理由。
 export const SCANNED: { file: string; skip?: RuleGroup[] }[] = [
   { file: "transcript-card.tsx" },
-  { file: "message-row.tsx" },
+  // message-row.tsx 的 MESSAGE_AVATAR_CLASS 用 text-[11px] 画 28px 圆形头像里的
+  // 姓名首字母字形,不是正文/元信息文字。那是头像专属尺寸,不归 12px text-meta 管。
+  { file: "message-row.tsx", skip: ["type"] },
   { file: "markdown-text.tsx" },
   { file: "code-block.tsx" },
+  { file: "thinking-block.tsx" },
+  // rich-link.tsx 被 markdown-text.tsx 注册为 markdown 的 `a` 渲染器,每条含链接
+  // 的消息都会渲染它,是对话流组件。7 处 rounded-md 分两类:3 处是手写的 Copy
+  // <button>,故意与全局 shadcn Button 保持一致的 rounded-md;4 处是 HoverCard
+  // 悬浮预览里的内层信息条/详情块,悬浮卡外壳本身是 HoverCardContent(已经
+  // rounded-lg),这 4 处不是「卡片外壳」,不受 rounded-lg 约束。故整文件豁免
+  // radius 组。
+  { file: "rich-link.tsx", skip: ["radius"] },
+  { file: "canonical-tool/raw/card.tsx" },
+  { file: "canonical-tool/file-edit/card.tsx" },
+  { file: "canonical-tool/file-edit/hunk-renderer.tsx" },
+  { file: "canonical-tool/file-write/card.tsx" },
+  { file: "canonical-tool/agent-spawn/card.tsx" },
+  { file: "canonical-tool/plan/card.tsx" },
+  { file: "tool-approval/card.tsx" },
+  { file: "canonical-tool/tool-permission/card.tsx" },
+  // user-ask/card.tsx 的选项按钮 / “其他”输入行 / 错误横幅是手写交互控件,
+  // 故意与全局 shadcn Button/Input 保持一致的 rounded-md,不跟卡片外壳走
+  // rounded-lg —— 否则同一张卡片里手写按钮与底部共享 Button 圆角会打架。
+  // 卡片外壳圆角由 TranscriptCard 提供,不是这个文件里的字面量,不受此豁免影响。
+  { file: "canonical-tool/user-ask/card.tsx", skip: ["radius"] },
+  { file: "local-command/card.tsx" },
+  { file: "transcript-row-view.tsx" },
+  // chat.tsx 同时装着 transcript 和 composer —— 646/654/714/726 行的圆角与阴影
+  // 属于输入框 / 拖放提示层 / 附件缩略图,不归对话流卡片系统管,故意不跟随
+  // rounded-lg / 去阴影;字号与 measure 约束（type/measure 两组）仍然全文件生效。
+  { file: "chat.tsx", skip: ["shadow", "radius"] },
+  { file: "compact-boundary-divider.tsx" },
+  { file: "compact-history-fold.tsx" },
+  { file: "auto-trigger-banner.tsx" },
 ];
 
 function violations(source: string, skip: RuleGroup[] = []): string[] {
@@ -45,9 +82,9 @@ describe("transcript typography guard", () => {
   });
 
   it("检测器尊重 skip", () => {
-    expect(
-      violations('<div className="rounded-md" />', ["radius"]),
-    ).toEqual([]);
+    expect(violations('<div className="rounded-md" />', ["radius"])).toEqual(
+      [],
+    );
   });
 
   it("对话流组件不含被禁的排版字面量", () => {

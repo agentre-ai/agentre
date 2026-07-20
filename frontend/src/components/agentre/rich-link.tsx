@@ -123,7 +123,7 @@ function URLPopover({ kind }: { kind: Extract<LinkClass, { kind: "url" }> }) {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
+        <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-meta font-semibold text-primary-foreground">
           <LinkIcon className="size-3" aria-hidden /> {t("richLink.url")}
         </span>
         <div className="flex-1" />
@@ -138,7 +138,7 @@ function URLPopover({ kind }: { kind: Extract<LinkClass, { kind: "url" }> }) {
       <code className="break-all font-mono text-xs text-foreground">
         {kind.url}
       </code>
-      <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-meta text-muted-foreground">
         <MousePointerClick className="size-3" aria-hidden />
         {t("richLink.openInBrowser")}
       </div>
@@ -149,7 +149,7 @@ function URLPopover({ kind }: { kind: Extract<LinkClass, { kind: "url" }> }) {
 function LineChip({ line, col }: { line?: number; col?: number }) {
   if (line === undefined) return null;
   return (
-    <span className="inline-flex items-center rounded-full border border-border bg-secondary px-2 py-0.5 font-mono text-[10px]">
+    <span className="inline-flex items-center rounded-full border border-border bg-secondary px-2 py-0.5 font-mono text-meta">
       L{line}
       {col !== undefined ? `:${col}` : ""}
     </span>
@@ -173,7 +173,7 @@ function LocalInternalPopover({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="inline-flex items-center gap-1 rounded-full bg-agent-2 px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
+        <span className="inline-flex items-center gap-1 rounded-full bg-agent-2 px-2 py-0.5 text-meta font-semibold text-primary-foreground">
           <PathIcon className="size-3" aria-hidden /> {label}
         </span>
         <LineChip line={kind.line} col={kind.col} />
@@ -188,7 +188,7 @@ function LocalInternalPopover({
       </div>
       <div className="flex flex-col gap-0.5 rounded-md bg-secondary px-2.5 py-1.5">
         <div className="flex items-baseline gap-2">
-          <span className="w-12 shrink-0 text-[10px] font-semibold text-muted-foreground">
+          <span className="w-12 shrink-0 text-meta font-semibold text-muted-foreground">
             {t("richLink.projectRoot")}
           </span>
           <code className="min-w-0 flex-1 break-all whitespace-normal font-mono text-xs text-muted-foreground">
@@ -196,7 +196,7 @@ function LocalInternalPopover({
           </code>
         </div>
         <div className="flex items-baseline gap-2">
-          <span className="w-12 shrink-0 text-[10px] font-semibold text-muted-foreground">
+          <span className="w-12 shrink-0 text-meta font-semibold text-muted-foreground">
             {t("richLink.relative")}
           </span>
           <code className="min-w-0 flex-1 break-all whitespace-normal font-mono text-xs font-semibold text-foreground">
@@ -204,10 +204,10 @@ function LocalInternalPopover({
           </code>
         </div>
       </div>
-      <code className="break-all font-mono text-[11px] text-muted-foreground">
+      <code className="break-all font-mono text-meta text-muted-foreground">
         {full}
       </code>
-      <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-meta text-muted-foreground">
         <MousePointerClick className="size-3" aria-hidden />
         {t("richLink.openWithDefaultApp")}
       </div>
@@ -230,7 +230,7 @@ function LocalExternalPopover({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <span className="inline-flex items-center gap-1 rounded-full bg-muted-foreground px-2 py-0.5 text-[10px] font-semibold text-background">
+        <span className="inline-flex items-center gap-1 rounded-full bg-muted-foreground px-2 py-0.5 text-meta font-semibold text-background">
           <PathIcon className="size-3" aria-hidden /> {label}
         </span>
         <LineChip line={kind.line} col={kind.col} />
@@ -246,10 +246,10 @@ function LocalExternalPopover({
       <code className="break-all font-mono text-xs font-semibold text-foreground">
         {full}
       </code>
-      <div className="text-[11px] text-muted-foreground">
+      <div className="text-meta text-muted-foreground">
         {t("richLink.outsideCwd")}
       </div>
-      <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-meta text-muted-foreground">
         <MousePointerClick className="size-3" aria-hidden />
         {t("richLink.openWithDefaultApp")}
       </div>

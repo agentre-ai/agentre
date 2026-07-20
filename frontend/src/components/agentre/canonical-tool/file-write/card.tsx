@@ -6,6 +6,11 @@ import { Button } from "@/components/ui/button";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
 import { cn } from "@/lib/utils";
 
+import {
+  TranscriptCard,
+  TranscriptCardHeader,
+  TranscriptPill,
+} from "../../transcript-card";
 import { statusConfig } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
@@ -39,19 +44,15 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
   const StatusIcon = hasResult || isError ? Check : LoaderCircle;
 
   return (
-    <section
+    <TranscriptCard
       data-testid="file-write-card"
       aria-label={t("canonical.fileWrite.aria")}
-      className={cn(
-        "w-full max-w-[720px] overflow-hidden rounded-md border bg-card font-mono text-xs",
-        isError ? "border-status-error/40" : "border-border",
-      )}
+      tone={isError ? "error" : "default"}
+      className="font-mono text-aux"
     >
-      <button
-        type="button"
+      <TranscriptCardHeader
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/40"
       >
         <ChevronRight
           className={cn(
@@ -69,26 +70,21 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
         </span>
         <span className="text-muted-foreground">·</span>
         <span className="min-w-0 truncate text-muted-foreground">{path}</span>
-        <span className="rounded-sm bg-status-running-bg px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em] text-status-running">
+        <TranscriptPill tone="done">
           {t("canonical.fileWrite.newBadge")}
-        </span>
+        </TranscriptPill>
         {w.lines > 0 && (
           <span className="font-semibold text-status-running">+{w.lines}</span>
         )}
         <span className="min-w-0 flex-1" />
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold tracking-[0.04em]",
-            pillConfig.pillClassName,
-          )}
-        >
+        <TranscriptPill className={pillConfig.pillClassName}>
           <StatusIcon
             className={cn("size-2.5", !hasResult && !isError && "animate-spin")}
             aria-hidden="true"
           />
           {statusLabel}
-        </span>
-      </button>
+        </TranscriptPill>
+      </TranscriptCardHeader>
 
       {expanded && (
         <div className="border-t border-border py-2">
@@ -99,11 +95,11 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
           ) : (
             w.content.split("\n").map((text, i) => (
               <div key={i} className="flex items-center px-3 py-0.5">
-                <span className="w-8 text-right text-[11px] text-subtle-foreground">
+                <span className="w-8 text-right text-meta text-subtle-foreground">
                   {i + 1}
                 </span>
                 <span
-                  className="w-5 text-center text-[11px] text-subtle-foreground"
+                  className="w-5 text-center text-meta text-subtle-foreground"
                   aria-hidden="true"
                 >
                   {" "}
@@ -115,7 +111,7 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
           {w.truncated && <TruncatedBar content={w.content} lines={w.lines} />}
         </div>
       )}
-    </section>
+    </TranscriptCard>
   );
 };
 
@@ -156,7 +152,7 @@ function TruncatedBar({ content, lines }: { content: string; lines: number }) {
 
   return (
     <div className="mt-1 flex items-center gap-2 border-t border-border px-3 py-1">
-      <span className="text-[11px] text-muted-foreground">
+      <span className="text-meta text-muted-foreground">
         {t("canonical.fileWrite.truncated", { lines })}
       </span>
       <span className="ml-auto" />
@@ -164,7 +160,7 @@ function TruncatedBar({ content, lines }: { content: string; lines: number }) {
         type="button"
         variant="ghost"
         size="xs"
-        className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
+        className="h-5 gap-1 px-1.5 text-meta text-muted-foreground"
         onClick={() => void handleCopy()}
       >
         <Copy data-icon="inline-start" aria-hidden="true" />

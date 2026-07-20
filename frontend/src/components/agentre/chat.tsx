@@ -26,6 +26,7 @@ import type { Editor } from "@tiptap/react";
 import { AIChatInput, type AIChatInputHandle } from "./chat-input";
 import { CodeBlock } from "./code-block";
 import { CompactHistoryFold } from "./compact-history-fold";
+import { TranscriptCard } from "./transcript-card";
 import {
   ChatMessage,
   ErrorCard,
@@ -36,7 +37,8 @@ import {
 } from "./transcript-row-view";
 import {
   buildTranscriptRows,
-  estimateRowSize,
+  estimateRowSizeWithSpacing,
+  isLastRowOfMessage,
   type TranscriptRow,
 } from "./transcript-rows";
 import { TranscriptUIStateProvider } from "./transcript-ui-state";
@@ -71,15 +73,12 @@ function ToolCall({
   const StatusIcon = status === "waiting" ? LoaderCircle : Check;
 
   return (
-    <div
+    <TranscriptCard
       data-selectable-text="true"
-      className={cn(
-        "flex w-full max-w-[720px] flex-col gap-1.5 rounded-md border border-border bg-card px-3 py-2.5",
-        className,
-      )}
+      className={cn("flex flex-col gap-1.5 px-3 py-2.5", className)}
       {...props}
     >
-      <div className="flex min-w-0 items-center gap-1.5 font-mono text-xs">
+      <div className="flex min-w-0 items-center gap-1.5 font-mono text-aux">
         <Wrench className="size-3.5 shrink-0 text-primary-text" />
         <span className="font-semibold text-primary-text">{toolName}</span>
         {path ? (
@@ -91,13 +90,13 @@ function ToolCall({
           </>
         ) : null}
       </div>
-      <div className="flex items-center gap-1.5 font-mono text-[11px]">
+      <div className="flex items-center gap-1.5 font-mono text-meta">
         <StatusIcon className={cn("size-3", config.textClassName)} />
         <span className={status === "running" ? config.textClassName : ""}>
           {statusLabel}
         </span>
       </div>
-    </div>
+    </TranscriptCard>
   );
 }
 
@@ -118,9 +117,9 @@ function ApprovalGate({
 }: ApprovalGateProps) {
   const { t } = useTranslation();
   return (
-    <section
+    <TranscriptCard
       className={cn(
-        "flex w-full max-w-[720px] items-center gap-3 rounded-lg border border-status-waiting bg-status-waiting-bg px-4 py-3",
+        "flex items-center gap-3 border-status-waiting bg-status-waiting-bg px-4 py-3",
         className,
       )}
       {...props}
@@ -130,8 +129,10 @@ function ApprovalGate({
         aria-hidden="true"
       />
       <div className="min-w-0 flex-1">
-        <div className="text-xs font-semibold text-status-waiting">{title}</div>
-        <div className="mt-0.5 text-xs leading-snug">{description}</div>
+        <div className="text-aux font-semibold text-status-waiting">
+          {title}
+        </div>
+        <div className="mt-0.5 text-aux leading-snug">{description}</div>
       </div>
       <Button
         type="button"
@@ -150,7 +151,7 @@ function ApprovalGate({
       >
         {t("chat.actions.approve")}
       </Button>
-    </section>
+    </TranscriptCard>
   );
 }
 
@@ -316,7 +317,7 @@ function QuotaMeter({
   return (
     <div
       className={cn(
-        "flex items-center gap-1.5 font-mono text-[10px] tabular-nums",
+        "flex items-center gap-1.5 font-mono text-meta tabular-nums",
         offline ? "text-subtle-foreground" : tone,
       )}
       aria-label={t("chat.quota.aria", {
@@ -404,7 +405,7 @@ function ContextMeter({ used, max }: { used: number; max: number }) {
         : "bg-primary";
   return (
     <div
-      className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground"
+      className="flex items-center gap-2 font-mono text-meta text-muted-foreground"
       aria-label={t("chat.context.aria", { max, used: safeUsed })}
     >
       <Gauge className="size-2.5" aria-hidden="true" />
@@ -633,7 +634,7 @@ function ChatComposer({
     <form
       ref={dropRef}
       className={cn(
-        "relative w-full border-t border-border bg-background px-5 py-3.5",
+        "relative w-full border-t border-border bg-background px-7 py-3.5",
         className,
       )}
       onSubmit={handleFormSubmit}
@@ -663,7 +664,7 @@ function ChatComposer({
           <div
             role="status"
             aria-label={t("chat.composer.editing.aria")}
-            className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-[11px]"
+            className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-meta"
           >
             <Pencil
               className="size-3 shrink-0 text-primary-text"
@@ -690,7 +691,7 @@ function ChatComposer({
         {!editing && commandMode ? (
           <div
             role="status"
-            className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-[11px]"
+            className="flex items-center gap-2 border-b border-primary-text/20 bg-primary-soft px-3 py-1.5 text-meta"
           >
             <SquareTerminal
               className="size-3 shrink-0 text-primary-text"
@@ -755,7 +756,7 @@ function ChatComposer({
             }}
           />
           {imageError ? (
-            <div className="text-[11px] text-status-error" role="alert">
+            <div className="text-meta text-status-error" role="alert">
               {imageError}
             </div>
           ) : null}
@@ -785,7 +786,7 @@ function ChatComposer({
                 </Button>
               </>
             ) : null}
-            <span className="font-mono text-[10px] leading-none text-subtle-foreground">
+            <span className="font-mono text-meta leading-none text-subtle-foreground">
               {editing
                 ? t("chat.composer.shortcuts.edit")
                 : t("chat.composer.shortcuts.send")}
@@ -1154,10 +1155,13 @@ const ChatTranscript = React.forwardRef<
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual intentionally owns mutable measurement callbacks.
   const virtualizer = useVirtualizer({
     count: rows.length,
-    estimateSize: (index) => {
-      const row = rows[index];
-      return row ? estimateRowSize(row) : 132;
-    },
+    estimateSize: (index) =>
+      // estimateRowSize(内容高度,按 132→148 等同源校准比例缩放)之上,再按
+      // isLastRowOfMessage 补上 rowWrapperPad 的间距增量(消息末行 pb-7=28px /
+      // 块内行 pb-2.5=10px,与纯乘法缩放旧 padding 得到的 ≈22.4px/≈8.97px 有
+      // ≈5.6px/≈1px 缺口——两处 padding 打在同一个 measureElement div 上,详见
+      // transcript-rows.ts:estimateRowSizeWithSpacing 的注释)。
+      estimateRowSizeWithSpacing(rows, index),
     getItemKey: (index) => rows[index]?.key ?? index,
     getScrollElement: () => scrollElement ?? null,
     initialRect: {
@@ -1373,21 +1377,22 @@ const ChatTranscript = React.forwardRef<
   const virtualSpacerSize =
     virtualTotalSize > 0
       ? virtualTotalSize
-      : lastVirtualTotalSizeRef.current || rows.length * 48;
+      : // 48→54:同上,per-row 兜底估值随字号/间距校准同步调整,避免首帧 spacer
+        // 高度系统性偏矮。
+        lastVirtualTotalSizeRef.current || rows.length * 54;
 
-  // 行间距:消息末行 pb-5(消息间距),消息内分片行 pb-2(block 间距)。padding
-  // 打在行 wrapper 上,跟随 measureElement 一起计入行高。
-  const rowWrapperPad = (index: number): string => {
-    const row = rows[index];
-    const next = rows[index + 1];
-    return next == null || next.messageId !== row?.messageId ? "pb-5" : "pb-2";
-  };
+  // 行间距:消息末行 pb-7(消息间距),消息内分片行 pb-2.5(block 间距)。padding
+  // 打在行 wrapper 上,跟随 measureElement 一起计入行高 —— isLastRowOfMessage 与
+  // estimateSize 里 estimateRowSizeWithSpacing 补间距增量共用同一份边界判断,避免
+  // 两处"是否消息末行"各算各的而漂移。
+  const rowWrapperPad = (index: number): string =>
+    isLastRowOfMessage(rows, index) ? "pb-7" : "pb-2.5";
 
   return (
     <TooltipProvider delayDuration={200}>
       <TranscriptUIStateProvider>
         <TranscriptRenderContext.Provider value={renderCtx}>
-          {/* 不再加 max-w-4xl —— 内部 ChatMessage 已经 cap 在 720px,
+          {/* 不再加 max-w-4xl —— 内部 ChatMessage 已经 cap 在 max-w-measure,
           这里再叠一层外层 max-w 没有任何收紧效果,只会留出 phantom 空白。 */}
           <div className={shouldVirtualize ? "min-h-full" : "flex flex-col"}>
             {folding && foldedCount > 0 ? (

@@ -20,6 +20,11 @@ import {
   saveTranscriptDraftState,
 } from "../../chat-panel-scroll-state";
 import { MarkdownText } from "../../markdown-text";
+import {
+  TranscriptCard,
+  TranscriptCardBody,
+  TranscriptCardHeader,
+} from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps, PlanActionStream } from "../props";
 import type { CanonicalDTO, PlanActionDTO } from "../types";
@@ -257,33 +262,23 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
       : t("canonical.plan.subtitle.saved");
 
   return (
-    <section
+    <TranscriptCard
       data-testid="plan-card"
       role="region"
       aria-label={t("canonical.plan.aria")}
-      className={cn(
-        "w-full max-w-[720px] overflow-hidden rounded-md border bg-card",
-        resolved
-          ? approved
-            ? "border-status-running/50"
-            : "border-border"
-          : "border-primary",
-      )}
+      tone={!resolved ? "pending" : approved ? "done" : "default"}
     >
-      <button
-        type="button"
+      <TranscriptCardHeader
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
         className={cn(
-          "flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left transition-colors",
-          resolved
-            ? "hover:bg-muted/40"
-            : "bg-status-waiting-bg/40 hover:bg-status-waiting-bg/60",
+          "gap-3",
+          !resolved && "bg-status-waiting-bg/40 hover:bg-status-waiting-bg/60",
         )}
       >
         <span
           className={cn(
-            "flex size-7 shrink-0 items-center justify-center rounded-md",
+            "flex size-7 shrink-0 items-center justify-center rounded-lg",
             approved
               ? "bg-status-running-bg text-status-running"
               : "bg-primary text-primary-foreground",
@@ -304,18 +299,18 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
           </div>
         </div>
         {activePlan.text ? (
-          <span className="rounded-sm border border-border bg-card px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+          <span className="rounded-sm border border-border bg-card px-2 py-0.5 font-mono text-meta text-muted-foreground">
             {t("canonical.plan.charCount", {
               count: activePlan.text.length,
             })}
           </span>
         ) : null}
-      </button>
+      </TranscriptCardHeader>
 
       {expanded ? (
-        <div
+        <TranscriptCardBody
           data-selectable-text="true"
-          className="max-h-[480px] overflow-auto px-4 py-3"
+          className="max-h-[480px] overflow-auto"
         >
           {bodyText ? (
             <MarkdownText text={bodyText} />
@@ -324,11 +319,11 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
               {t("canonical.plan.empty")}
             </div>
           )}
-        </div>
+        </TranscriptCardBody>
       ) : null}
 
       {visibleActions.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2.5">
+        <TranscriptCardBody className="flex flex-wrap items-center gap-2">
           {primaryActions.map((action) => {
             const meta = metaFor(action, activePlan, t);
             const Icon = meta.icon;
@@ -369,11 +364,11 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
           {error ? (
             <span className="text-xs text-destructive">{error}</span>
           ) : null}
-        </div>
+        </TranscriptCardBody>
       ) : null}
 
       {feedbackOpen && refineAction ? (
-        <div className="flex flex-col gap-2 border-t border-border bg-muted/50 px-4 py-3">
+        <TranscriptCardBody className="flex flex-col gap-2 bg-muted/50">
           <div className="flex items-center gap-1.5 text-xs text-foreground">
             <MessageSquareText className="size-3.5 text-muted-foreground" />
             <span className="font-medium">
@@ -392,7 +387,7 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
             className="text-sm"
           />
           <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-[10px] text-subtle-foreground">
+            <span className="font-mono text-meta text-subtle-foreground">
               {t("canonical.plan.feedback.charCount", {
                 count: feedback.length,
               })}
@@ -408,8 +403,8 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
                 : t("canonical.plan.feedback.sendWithoutFeedback")}
             </Button>
           </div>
-        </div>
+        </TranscriptCardBody>
       ) : null}
-    </section>
+    </TranscriptCard>
   );
 };

@@ -10,6 +10,12 @@ import { AnswerToolPermission as wailsAnswerToolPermission } from "../../../../.
 import type { chat_svc } from "../../../../../wailsjs/go/models";
 
 import { shouldIgnoreClickForSelection } from "../../copyable-text";
+import {
+  TranscriptCard,
+  TranscriptCardBody,
+  TranscriptCardHeader,
+  TranscriptPill,
+} from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type { CanonicalDTO, ToolPermissionDTO } from "../types";
@@ -117,23 +123,22 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
     : "";
 
   return (
-    <div
+    <TranscriptCard
       data-testid="tool-permission-card"
       data-selectable-text="true"
       className={cn(
-        "rounded-md border bg-card text-card-foreground shadow-sm",
+        "text-card-foreground",
         isResolved && !payload.allowed
           ? "border-destructive/40"
           : "border-status-waiting/40",
       )}
     >
-      <button
-        type="button"
+      <TranscriptCardHeader
         onClick={(event) => {
           if (shouldIgnoreClickForSelection(event)) return;
           setCollapsed((c) => !c);
         }}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        aria-expanded={!collapsed}
       >
         <ShieldAlert
           className={cn(
@@ -151,28 +156,27 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
         {summary && (
           <span
             data-copyable-control-text="true"
-            className="truncate text-xs text-muted-foreground"
+            className="truncate text-aux text-muted-foreground"
           >
             {summary}
           </span>
         )}
-        <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="ml-auto flex items-center gap-2 text-aux text-muted-foreground">
           {isResolved && (
-            <span
+            <TranscriptPill
               data-copyable-control-text="true"
-              className={cn(
-                "rounded px-1.5 py-0.5",
+              className={
                 payload.allowed
                   ? "bg-status-running-bg text-status-running"
-                  : "bg-destructive/10 text-destructive",
-              )}
+                  : "bg-destructive/10 text-destructive"
+              }
             >
               {payload.allowed
                 ? payload.alwaysAllow
                   ? t("canonical.toolPermission.allowedSession")
                   : t("canonical.toolPermission.allowed")
                 : t("canonical.toolPermission.denied")}
-            </span>
+            </TranscriptPill>
           )}
           <ChevronDown
             className={cn(
@@ -181,16 +185,18 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
             )}
           />
         </span>
-      </button>
+      </TranscriptCardHeader>
 
       {!collapsed && inputJson && (
-        <pre className="max-h-64 overflow-auto border-t border-border bg-muted/40 px-3 py-2 text-xs">
-          <code>{inputJson}</code>
-        </pre>
+        <TranscriptCardBody>
+          <pre className="max-h-64 overflow-auto rounded-sm bg-muted/40 px-2.5 py-2 text-aux">
+            <code>{inputJson}</code>
+          </pre>
+        </TranscriptCardBody>
       )}
 
       {!isResolved && (
-        <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2">
+        <TranscriptCardBody className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             disabled={submitting}
@@ -216,9 +222,9 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
             <X className="mr-1 h-3.5 w-3.5" />
             {t("common.reject")}
           </Button>
-          {error && <span className="text-xs text-destructive">{error}</span>}
-        </div>
+          {error && <span className="text-aux text-destructive">{error}</span>}
+        </TranscriptCardBody>
       )}
-    </div>
+    </TranscriptCard>
   );
 };

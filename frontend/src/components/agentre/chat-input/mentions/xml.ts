@@ -7,6 +7,7 @@ export type MentionRef = {
   kind: MentionKind;
   refId: number;
   label: string;
+  color?: string;
   // 仅 project 有;agent 省略。
   path?: string;
 };
@@ -33,11 +34,12 @@ function xmlUnescape(s: string): string {
 
 export function serializeMentionXml(ref: MentionRef): string {
   const label = xmlEscape(ref.label);
+  const color = ref.color ? ` color="${xmlEscape(ref.color)}"` : "";
   if (ref.kind === "project") {
     const path = xmlEscape(ref.path ?? "");
-    return `<project id="${ref.refId}" path="${path}">${label}</project>`;
+    return `<project id="${ref.refId}" path="${path}"${color}>${label}</project>`;
   }
-  return `<agent id="${ref.refId}">${label}</agent>`;
+  return `<agent id="${ref.refId}"${color}>${label}</agent>`;
 }
 
 // 同时匹配 <agent …>…</agent> 与 <project …>…</project>。属性顺序固定
@@ -45,6 +47,7 @@ export function serializeMentionXml(ref: MentionRef): string {
 const TAG_RE = /<(agent|project)\b([^>]*)>([\s\S]*?)<\/\1>/g;
 const ID_RE = /\bid="(\d+)"/;
 const PATH_RE = /\bpath="([^"]*)"/;
+const COLOR_RE = /\bcolor="([^"]*)"/;
 
 export function parseMentionXml(text: string): MentionSegment[] {
   const out: MentionSegment[] = [];
@@ -60,6 +63,8 @@ export function parseMentionXml(text: string): MentionSegment[] {
     const id = Number(ID_RE.exec(attrs)?.[1] ?? "0");
     const label = xmlUnescape(m[3]);
     const ref: MentionRef = { kind, refId: id, label };
+    const color = COLOR_RE.exec(attrs)?.[1];
+    if (color) ref.color = xmlUnescape(color);
     if (kind === "project") {
       ref.path = xmlUnescape(PATH_RE.exec(attrs)?.[1] ?? "");
     }

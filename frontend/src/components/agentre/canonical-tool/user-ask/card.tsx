@@ -22,6 +22,11 @@ import {
   loadTranscriptDraftState,
   saveTranscriptDraftState,
 } from "../../chat-panel-scroll-state";
+import {
+  TranscriptCard,
+  TranscriptCardBody,
+  TranscriptPill,
+} from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type {
@@ -212,13 +217,10 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
   if (!payload?.questions?.length) return null;
 
   return (
-    <div
+    <TranscriptCard
       data-testid="user-ask-card"
       data-selectable-text="true"
-      className={cn(
-        "rounded-lg border border-border bg-card text-foreground shadow-sm outline-none",
-        isLocked && "opacity-95",
-      )}
+      className={cn("text-foreground outline-none", isLocked && "opacity-95")}
     >
       <button
         type="button"
@@ -240,7 +242,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
         {headerLabel && (
           <>
             <span className="font-mono text-xs text-muted-foreground">·</span>
-            <span className="rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-2xs font-medium text-primary">
+            <span className="rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-meta font-medium text-primary">
               {headerLabel}
             </span>
           </>
@@ -263,7 +265,10 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
               onSelect={setActiveQIdx}
             />
           )}
-          <div className="flex flex-col gap-3 px-4 py-3.5">
+          {/* header 已用 border-b 分隔(单问题时是唯一分隔线,多问题时 QuestionTabs
+          再补一条 border-b),这里不重复套 TranscriptCardBody 的 border-t,只借它的
+          水平内边距 token,避免在 tabs/内容边界叠出两条相邻的分隔线。 */}
+          <TranscriptCardBody className="flex flex-col gap-3 border-t-0">
             {payload.questions[activeQIdx] && (
               <QuestionGroup
                 q={payload.questions[activeQIdx]}
@@ -279,7 +284,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
                 {error}
               </div>
             )}
-          </div>
+          </TranscriptCardBody>
 
           {!isLocked && (
             <div className="flex items-center gap-2 border-t border-border px-3.5 py-2.5">
@@ -307,7 +312,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
           )}
         </div>
       )}
-    </div>
+    </TranscriptCard>
   );
 };
 
@@ -323,33 +328,33 @@ function StatusPill({
   const { t } = useTranslation();
   if (expired) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-muted-foreground">
+      <TranscriptPill tone="default">
         <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
         {t("canonical.userAsk.expired")}
-      </span>
+      </TranscriptPill>
     );
   }
   if (skipped) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-muted px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-muted-foreground">
+      <TranscriptPill tone="default">
         <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
         {t("canonical.userAsk.skipped")}
-      </span>
+      </TranscriptPill>
     );
   }
   if (answered) {
     return (
-      <span className="flex items-center gap-1.5 rounded-sm bg-status-running-bg px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-status-running">
+      <TranscriptPill tone="done">
         <Check className="h-2.5 w-2.5" />
         {t("canonical.userAsk.answered")}
-      </span>
+      </TranscriptPill>
     );
   }
   return (
-    <span className="flex items-center gap-1.5 rounded-sm bg-status-waiting-bg px-1.5 py-0.5 text-2xs font-semibold tracking-wider text-status-waiting">
+    <TranscriptPill tone="pending">
       <span className="h-1.5 w-1.5 rounded-full bg-status-waiting" />
       {t("canonical.userAsk.waiting")}
-    </span>
+    </TranscriptPill>
   );
 }
 
@@ -421,10 +426,10 @@ function QuestionGroup({
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-start gap-2.5">
-        <p className="flex-1 text-[15px] font-semibold leading-[1.4] text-foreground">
+        <p className="flex-1 text-prose font-semibold leading-[1.4] text-foreground">
           {q.question}
         </p>
-        <span className="flex shrink-0 items-center gap-1 rounded-sm border border-border bg-muted px-1.5 py-0.5 text-2xs font-semibold tracking-wide text-muted-foreground">
+        <span className="flex shrink-0 items-center gap-1 rounded-sm border border-border bg-muted px-1.5 py-0.5 text-meta font-semibold tracking-wide text-muted-foreground">
           {multi ? (
             <SquareCheck className="h-2.5 w-2.5" />
           ) : (
@@ -463,7 +468,7 @@ function QuestionGroup({
                 )}
                 <span
                   className={cn(
-                    "text-[13px] font-semibold",
+                    "text-aux font-semibold",
                     selected ? "text-primary-text" : "text-foreground",
                   )}
                 >
@@ -471,7 +476,7 @@ function QuestionGroup({
                 </span>
               </div>
               {opt.description && (
-                <p className="pl-[26px] text-xs leading-[1.55] text-muted-foreground">
+                <p className="pl-[26px] text-xs text-muted-foreground">
                   {opt.description}
                 </p>
               )}

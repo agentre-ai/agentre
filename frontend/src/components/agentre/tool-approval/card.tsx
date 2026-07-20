@@ -7,6 +7,11 @@ import { cn } from "@/lib/utils";
 import type { ToolApprovalData } from "@/stores/chat-streams-store";
 import { AnswerToolApproval } from "../../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../../wailsjs/go/models";
+import {
+  TranscriptCard,
+  TranscriptCardBody,
+  TranscriptPill,
+} from "../transcript-card";
 
 // ToolApprovalCard 渲染 agent 内置写工具(org_create_department / org_update_agent /
 // ...)的审批卡。视觉对齐 canonical-tool/tool-permission/card.tsx,但走
@@ -54,17 +59,20 @@ export const ToolApprovalCard: React.FC<{
     : "";
 
   return (
-    <div
+    <TranscriptCard
       data-testid="tool-approval-card"
       data-selectable-text="true"
       className={cn(
-        "rounded-md border bg-card text-card-foreground shadow-sm",
+        "text-card-foreground",
         !isPending && !isApproved
           ? "border-destructive/40"
           : "border-status-waiting/40",
       )}
     >
-      <div className="flex items-center gap-2 px-3 py-2">
+      {/* 静态标题行,非交互(该卡没有折叠/展开),不套 TranscriptCardHeader —— 那是
+      个 <button>,套上会制造"可点击"的假象。仅手动把内边距对齐到 px-3.5 py-2.5,
+      与其它卡片头视觉对齐。 */}
+      <div className="flex items-center gap-2 px-3.5 py-2.5">
         <ShieldAlert
           className={cn(
             "h-4 w-4 shrink-0",
@@ -80,32 +88,34 @@ export const ToolApprovalCard: React.FC<{
             defaultValue: approval.toolName,
           })}
         </span>
-        <span className="text-xs text-muted-foreground">
+        <span className="text-aux text-muted-foreground">
           {t("toolApproval.title")}
         </span>
         {!isPending && (
-          <span
+          <TranscriptPill
             data-copyable-control-text="true"
             className={cn(
-              "ml-auto rounded px-1.5 py-0.5 text-xs",
+              "ml-auto",
               isApproved
                 ? "bg-status-running-bg text-status-running"
                 : "bg-destructive/10 text-destructive",
             )}
           >
             {t(`toolApproval.status.${approval.status}`)}
-          </span>
+          </TranscriptPill>
         )}
       </div>
 
       {isPending && inputJson && (
-        <pre className="max-h-64 overflow-auto border-t border-border bg-muted/40 px-3 py-2 text-xs">
-          <code>{inputJson}</code>
-        </pre>
+        <TranscriptCardBody>
+          <pre className="max-h-64 overflow-auto rounded-sm bg-muted/40 px-2.5 py-2 text-aux">
+            <code>{inputJson}</code>
+          </pre>
+        </TranscriptCardBody>
       )}
 
       {isPending ? (
-        <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2">
+        <TranscriptCardBody className="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={submitting} onClick={() => answer(true)}>
             <Check className="mr-1 h-3.5 w-3.5" />
             {t("toolApproval.approve")}
@@ -119,13 +129,13 @@ export const ToolApprovalCard: React.FC<{
             <X className="mr-1 h-3.5 w-3.5" />
             {t("toolApproval.deny")}
           </Button>
-          {error && <span className="text-xs text-destructive">{error}</span>}
-        </div>
+          {error && <span className="text-aux text-destructive">{error}</span>}
+        </TranscriptCardBody>
       ) : approval.result ? (
-        <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+        <TranscriptCardBody className="text-aux text-muted-foreground">
           {approval.result}
-        </div>
+        </TranscriptCardBody>
       ) : null}
-    </div>
+    </TranscriptCard>
   );
 };

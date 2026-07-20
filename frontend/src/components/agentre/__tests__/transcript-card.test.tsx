@@ -7,6 +7,10 @@ import {
   TranscriptCardHeader,
   TranscriptPill,
 } from "../transcript-card";
+import { ThinkingBlock } from "../thinking-block";
+import { AutoTriggerBanner } from "../auto-trigger-banner";
+import { CompactBoundaryDivider } from "../compact-boundary-divider";
+import { CompactHistoryFold } from "../compact-history-fold";
 
 describe("TranscriptCard", () => {
   it("默认 tone 用中性边框 + measure 栏宽 + 无阴影", () => {
@@ -67,5 +71,37 @@ describe("TranscriptCard", () => {
     );
     expect(screen.getByTestId("p").className).toContain("bg-status-running-bg");
     expect(screen.getByTestId("p").className).toContain("text-status-running");
+  });
+});
+
+describe("ThinkingBlock 排版契约", () => {
+  it("即使脱离 MessageRow 也受 measure 约束", () => {
+    const { container } = render(
+      <ThinkingBlock text="思考内容" streaming={false} />,
+    );
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain("max-w-measure");
+  });
+});
+
+describe("脱离 MessageRow 渲染的块也守 measure", () => {
+  it("CompactBoundaryDivider 受 measure 约束", () => {
+    const { container } = render(<CompactBoundaryDivider at={0} />);
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain("max-w-measure");
+  });
+
+  it("CompactHistoryFold 受 measure 约束", () => {
+    const { container } = render(
+      <CompactHistoryFold count={3} onExpand={() => {}} />,
+    );
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain("max-w-measure");
+  });
+
+  it("AutoTriggerBanner 受 measure 约束", () => {
+    const { container } = render(<AutoTriggerBanner />);
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain("max-w-measure");
   });
 });
