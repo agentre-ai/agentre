@@ -22,7 +22,11 @@ import {
   loadTranscriptDraftState,
   saveTranscriptDraftState,
 } from "../../chat-panel-scroll-state";
-import { TranscriptCard, TranscriptPill } from "../../transcript-card";
+import {
+  TranscriptCard,
+  TranscriptCardBody,
+  TranscriptPill,
+} from "../../transcript-card";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import type { CanonicalCardProps } from "../props";
 import type {
@@ -261,7 +265,10 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
               onSelect={setActiveQIdx}
             />
           )}
-          <div className="flex flex-col gap-3 px-4 py-3.5">
+          {/* header 已用 border-b 分隔(单问题时是唯一分隔线,多问题时 QuestionTabs
+          再补一条 border-b),这里不重复套 TranscriptCardBody 的 border-t,只借它的
+          水平内边距 token,避免在 tabs/内容边界叠出两条相邻的分隔线。 */}
+          <TranscriptCardBody className="flex flex-col gap-3 border-t-0">
             {payload.questions[activeQIdx] && (
               <QuestionGroup
                 q={payload.questions[activeQIdx]}
@@ -277,7 +284,7 @@ export const UserAskCard: React.FC<CanonicalCardProps> = ({
                 {error}
               </div>
             )}
-          </div>
+          </TranscriptCardBody>
 
           {!isLocked && (
             <div className="flex items-center gap-2 border-t border-border px-3.5 py-2.5">
