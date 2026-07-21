@@ -1368,6 +1368,59 @@ func TestSession_IdleSessionLevelSystemFramesKeepReaderAlive(t *testing.T) {
 	assert.Equal(t, "echo:beta", drainText(t, ch2))
 }
 
+// fakeDiesOnControlRequest 模拟「子进程收到 control_request 后直接死掉、不回
+// control_response」:普通 user 轮正常回声;一旦从 stdin 读到 control_request 就
+// 返回 —— stdout 随之 EOF,readLoop 收尾。
+func fakeDiesOnControlRequest(stdin io.Reader, stdout io.Writer) {
+	const sid = "sess-dies-on-control"
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.Contains(line, `"control_request"`) {
+			return // 子进程崩了:回执永远不会来
+		}
+		reply := extractTextField(line)
+		writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+		writeFrame(stdout, `{"type":"assistant","message":{"id":"a1","content":[{"type":"text","text":"echo:%s"}]}}`, reply)
+		writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+	}
+}
+
+// TestSession_ControlRequestUnblocksWhenReaderDies 钉死「等 control_response 的调用方
+// 必须随 readLoop 收尾一起被打醒」:子进程死掉后再没有人 dispatch 回执,若只等
+// ctx / ch,调用链就永久静默挂起 —— 这正是 sess-2014 里 SetPermissionMode 卡住、
+// Send 的 Wails RPC 不返回、前端连报错都弹不出来的那条路径。
+//
+// 修复前:shutdownReader 只收尾 active / pendingTurns,不碰 ctrlPending,本测试超时。
+func TestSession_ControlRequestUnblocksWhenReaderDies(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeDiesOnControlRequest, withExitCode(1)))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// 先跑一轮,确认会话本来是健康的。
+	ch, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, "echo:alpha", drainText(t, ch))
+
+	done := make(chan error, 1)
+	go func() { done <- sess.SetPermissionMode(ctx, "plan") }()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "子进程已退出,SetPermissionMode 必须带错误返回而不是静默成功")
+		assert.Contains(t, err.Error(), "set_permission_mode",
+			"错误应指明是哪个 control_request 被中断,便于排查")
+	case <-time.After(2 * time.Second):
+		t.Fatal("子进程已退出、readLoop 已收尾,SetPermissionMode 仍在等 control_response —— " +
+			"调用方永久挂起(ctrlPending 没被 shutdownReader 打醒)")
+	}
+}
+
 // TestCanStartUserTurn 锁死反转后的归属白名单:只有「轮内容帧」有资格认领排队的
 // user Turn,其余一律不认领(未知帧默认丢弃,而不是把 readLoop 卡死)。
 func TestCanStartUserTurn(t *testing.T) {

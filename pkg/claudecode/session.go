@@ -78,6 +78,13 @@ type Session struct {
 	pendingTurns chan *activeTurn // 已写 stdin、等待其帧到达的 user Turn(FIFO)
 	autoCh       chan *AutoTurn   // AutonomousTurns() 返回的 channel;子进程退出时 close
 	subagentCh   chan *SubagentActivity // 后台 subagent 活动轮的出口(无消费方时缓冲兜底)
+
+	// readerDone 在 readLoop 收尾(子进程 EOF / Close)时 close。等 control_response
+	// 的调用方必须一并 select 它:reader 一走就再没有人 dispatch 回执,只等 ch / ctx
+	// 会永久静默挂起(Wails RPC 的 ctx 没有 deadline,表现为「发送没反应且不报错」)。
+	// 刻意用它而不是 proc.exit —— 子进程退出后 reader 可能还在 drain 缓冲里的帧,
+	// 那期间合法回执仍会到达;readLoop 真正收尾才是「回执不可能再来」的准确时点。
+	readerDone chan struct{}
 }
 
 // controlResponse 是 control_response 帧 response 字段的最小子集。
@@ -151,6 +158,7 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 		pendingTurns: make(chan *activeTurn, 4),
 		autoCh:       make(chan *AutoTurn, 8),
 		subagentCh:   make(chan *SubagentActivity, 8),
+		readerDone:   make(chan struct{}),
 	}
 	go s.readLoop()
 	return s, nil
@@ -462,9 +470,13 @@ func (s *Session) markAbandoned(at *activeTurn) {
 	}
 }
 
-// shutdownReader 在 scanner 退出后收尾:close 当前活跃轮 + 排空 pendingTurns(让
-// 各自 Turn 的 waiter 解除阻塞)+ close autoCh。
+// shutdownReader 在 scanner 退出后收尾:打醒等 control_response 的调用方 + close
+// 当前活跃轮 + 排空 pendingTurns(让各自 Turn 的 waiter 解除阻塞)+ close autoCh。
+//
+// readerDone 必须**第一个**关:后面几步会 close 一串 channel、可能触发调用方立刻
+// 重试,让「回执不会再来」这个事实先对所有等待者可见,少一个中间态。
 func (s *Session) shutdownReader() {
+	close(s.readerDone)
 	s.sinkMu.Lock()
 	at := s.active
 	s.active = nil
@@ -683,6 +695,8 @@ func (s *Session) Interrupt(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.readerDone:
+		return s.controlRequestAbortedErr("interrupt")
 	case resp := <-ch:
 		if resp.Subtype != "success" {
 			if resp.Error != "" {
@@ -692,6 +706,16 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+// controlRequestAbortedErr 给「readLoop 已收尾、回执不可能再来」的等待者一个明确
+// 错误。带上 ExitErr 的首因(ErrSessionNotFound / 非 0 退出等),让上层能 errors.Is
+// 判定并给用户人话提示 —— 而不是静默挂到天荒地老。
+func (s *Session) controlRequestAbortedErr(subtype string) error {
+	if err := s.ExitErr(); err != nil {
+		return fmt.Errorf("claudecode: %s aborted, session ended: %w", subtype, err)
+	}
+	return fmt.Errorf("claudecode: %s aborted: session ended before control_response", subtype)
 }
 
 func (s *Session) forgetControlRequest(reqID string) {
@@ -766,11 +790,15 @@ func (s *Session) SetPermissionMode(ctx context.Context, mode string) error {
 	defer s.forgetControlRequest(reqID)
 
 	// 持久 readLoop 一直在 drain scanner,control_response 一定被 dispatch 到 ch
-	// (不论此刻有没有 user turn 在飞),这里只需等 ch 或 ctx —— 不再需要在 Turn
-	// 不在场时自己 TryLock turnMu drain scanner(那会和 readLoop 抢同一个 scanner)。
+	// (不论此刻有没有 user turn 在飞),这里只需等 ch / readerDone / ctx —— 不再需要
+	// 在 Turn 不在场时自己 TryLock turnMu drain scanner(那会和 readLoop 抢同一个
+	// scanner)。readerDone 是必须的第三条腿:reader 一走就没人 dispatch 回执了,
+	// 只等 ch 与一个无 deadline 的 ctx = 永久静默挂起。
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.readerDone:
+		return s.controlRequestAbortedErr("set_permission_mode")
 	case resp := <-ch:
 		return setPermissionModeResponseErr(resp)
 	}
