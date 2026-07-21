@@ -17,7 +17,7 @@ import { create } from "zustand";
 import { ListChatAgents } from "../../wailsjs/go/app/App";
 import type { chat_svc } from "../../wailsjs/go/models";
 
-import { useChatStreamsStore } from "./chat-streams-store";
+import { hasSessionStream, useChatStreamsStore } from "./chat-streams-store";
 import {
   useSessionStatusStore,
   type SessionStatusPatch,
@@ -113,7 +113,7 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         for (const a of agents) {
           for (const s of listKnownSessions(a)) {
             const snapshotStatus = (s.status as AgentStatus) || "idle";
-            const hasActiveStream = streamsState.streams.has(s.id);
+            const hasActiveStream = hasSessionStream(streamsState, s.id);
             if (hasActiveStream) {
               const prev = statusesState.statuses.get(s.id);
               if (

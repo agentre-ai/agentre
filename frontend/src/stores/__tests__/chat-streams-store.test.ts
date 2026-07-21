@@ -11,17 +11,25 @@
 //     并把 doneTick 自增 → 订阅者据此 reload 持久化消息。
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useChatStreamsStore } from "../chat-streams-store";
+import {
+  hasSessionStream,
+  streamForMessage,
+  useChatStreamsStore,
+} from "../chat-streams-store";
 import { useQueuedMessagesStore } from "../queued-messages-store";
 import { useSessionStatusStore } from "../session-status-store";
 
 import type { chat_svc, view } from "../../../wailsjs/go/models";
 
 function resetStore() {
-  useChatStreamsStore.getState().streams.clear();
+  useChatStreamsStore.setState({ streams: new Map() });
   useQueuedMessagesStore.getState().__reset();
   useSessionStatusStore.getState().__reset();
 }
+
+/** live 取绑在 assistantMessageId=1(baseStream 的默认值)上的那条流。 */
+const live = (sessionId: number, messageId = 1) =>
+  streamForMessage(useChatStreamsStore.getState(), sessionId, messageId);
 
 const baseStream = (sessionId: number) => ({
   name: `chat:event:${sessionId}:1`,
@@ -37,7 +45,7 @@ describe("chat-streams-store", () => {
 
   it("openStream initializes empty live state", () => {
     useChatStreamsStore.getState().openStream(baseStream(7));
-    const s = useChatStreamsStore.getState().streams.get(7);
+    const s = live(7);
     expect(s).toBeTruthy();
     expect(s!.liveDelta).toBe("");
     expect(s!.liveThinking).toBe("");
@@ -47,9 +55,9 @@ describe("chat-streams-store", () => {
   it("appendLiveText appends to liveDelta (not yet frozen)", () => {
     const { openStream, appendLiveText } = useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveText(7, "hello ");
-    appendLiveText(7, "world");
-    const s = useChatStreamsStore.getState().streams.get(7);
+    appendLiveText(7, 1, "hello ");
+    appendLiveText(7, 1, "world");
+    const s = live(7);
     expect(s!.liveDelta).toBe("hello world");
     expect(s!.liveBlocks).toHaveLength(0);
   });
@@ -58,13 +66,13 @@ describe("chat-streams-store", () => {
     const { openStream, appendLiveText, appendLiveToolUse } =
       useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveText(7, "let me check ");
-    appendLiveToolUse(7, {
+    appendLiveText(7, 1, "let me check ");
+    appendLiveToolUse(7, 1, {
       toolName: "read_file",
       toolUseId: "t1",
       toolInput: { path: "a" },
     });
-    const s = useChatStreamsStore.getState().streams.get(7);
+    const s = live(7);
     expect(s!.liveDelta).toBe("");
     expect(s!.liveBlocks).toHaveLength(2);
     expect(s!.liveBlocks[0]).toMatchObject({
@@ -83,12 +91,12 @@ describe("chat-streams-store", () => {
     const { openStream, appendLiveText, appendLiveToolResult } =
       useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveText(7, "x");
-    appendLiveToolResult(7, {
+    appendLiveText(7, 1, "x");
+    appendLiveToolResult(7, 1, {
       toolUseId: "t1",
       text: "ok",
     });
-    const s = useChatStreamsStore.getState().streams.get(7);
+    const s = live(7);
     expect(s!.liveDelta).toBe("x");
     expect(s!.liveBlocks).toHaveLength(1);
     expect(s!.liveBlocks[0]).toMatchObject({ type: "tool_result" });
@@ -100,12 +108,12 @@ describe("chat-streams-store", () => {
     // liveBlocks) 在 turn 结束前永远拿不到真实 taskId, TaskCreate 不会实时入列表。
     const { openStream, appendLiveToolResult } = useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveToolResult(7, {
+    appendLiveToolResult(7, 1, {
       toolUseId: "toolu_A",
       text: "Task #1 created successfully: probe",
       toolResultMeta: { task: { id: "1", subject: "probe" } },
     });
-    const s = useChatStreamsStore.getState().streams.get(7);
+    const s = live(7);
     expect(s!.liveBlocks).toHaveLength(1);
     expect(s!.liveBlocks[0]).toMatchObject({
       type: "tool_result",
@@ -118,7 +126,7 @@ describe("chat-streams-store", () => {
     const { openStream, appendLiveText, appendLivePlanUpdate } =
       useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveText(7, "preface");
+    appendLiveText(7, 1, "preface");
     const first = {
       kind: "plan.update",
       planUpdate: {
@@ -126,7 +134,7 @@ describe("chat-streams-store", () => {
         steps: [{ step: "Inspect", status: "inProgress" }],
       },
     } as unknown as view.CanonicalDTO;
-    appendLivePlanUpdate(7, "# Plan\n\n1. Inspect", first);
+    appendLivePlanUpdate(7, 1, "# Plan\n\n1. Inspect", first);
 
     const second = {
       kind: "plan.update",
@@ -138,9 +146,9 @@ describe("chat-streams-store", () => {
         ],
       },
     } as unknown as view.CanonicalDTO;
-    appendLivePlanUpdate(7, "# Plan\n\n1. Inspect\n2. Test", second);
+    appendLivePlanUpdate(7, 1, "# Plan\n\n1. Inspect\n2. Test", second);
 
-    const s = useChatStreamsStore.getState().streams.get(7)!;
+    const s = live(7)!;
     expect(s.liveDelta).toBe("");
     expect(s.liveBlocks).toHaveLength(2);
     expect(s.liveBlocks[0]).toMatchObject({ type: "text", text: "preface" });
@@ -155,10 +163,10 @@ describe("chat-streams-store", () => {
     const { openStream, appendLiveText, appendLiveThinking } =
       useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveThinking(7, "think ");
-    appendLiveText(7, "answer");
-    appendLiveThinking(7, "more");
-    const s = useChatStreamsStore.getState().streams.get(7);
+    appendLiveThinking(7, 1, "think ");
+    appendLiveText(7, 1, "answer");
+    appendLiveThinking(7, 1, "more");
+    const s = live(7);
     expect(s!.liveThinking).toBe("think more");
     expect(s!.liveDelta).toBe("answer");
     expect(s!.liveBlocks).toHaveLength(0);
@@ -168,19 +176,19 @@ describe("chat-streams-store", () => {
     // 切走时 openStream 已被 closeStream 调用 → 后续晚到的事件不应崩
     const { appendLiveText, appendLiveToolUse } =
       useChatStreamsStore.getState();
-    appendLiveText(99, "ghost");
-    appendLiveToolUse(99, { toolName: "x" } as chat_svc.ChatBlock);
-    expect(useChatStreamsStore.getState().streams.has(99)).toBe(false);
+    appendLiveText(99, 1, "ghost");
+    appendLiveToolUse(99, 1, { toolName: "x" } as chat_svc.ChatBlock);
+    expect(hasSessionStream(useChatStreamsStore.getState(), 99)).toBe(false);
   });
 
   it("finishStream closes the LiveStream, bumps doneTick and stores last done event", () => {
     const { openStream, finishStream } = useChatStreamsStore.getState();
     openStream(baseStream(7));
-    finishStream(7, {
+    finishStream(7, 1, {
       kind: "done",
       message: { id: 100, sessionId: 7 } as chat_svc.ChatMessage,
     });
-    expect(useChatStreamsStore.getState().streams.has(7)).toBe(false);
+    expect(hasSessionStream(useChatStreamsStore.getState(), 7)).toBe(false);
     const status = useSessionStatusStore.getState().statuses.get(7);
     expect(status?.doneTick).toBe(1);
     expect(status?.lastDoneEvent?.kind).toBe("done");
@@ -189,9 +197,9 @@ describe("chat-streams-store", () => {
   it("finishStream tick increments monotonically per session", () => {
     const { openStream, finishStream } = useChatStreamsStore.getState();
     openStream(baseStream(7));
-    finishStream(7, { kind: "done" });
+    finishStream(7, 1, { kind: "done" });
     openStream(baseStream(7));
-    finishStream(7, { kind: "done" });
+    finishStream(7, 1, { kind: "done" });
     expect(useSessionStatusStore.getState().statuses.get(7)?.doneTick).toBe(2);
   });
 
@@ -199,7 +207,7 @@ describe("chat-streams-store", () => {
     const { openStream, appendLiveText, consumeSteer } =
       useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveText(7, "before");
+    appendLiveText(7, 1, "before");
     useQueuedMessagesStore
       .getState()
       .append(7, { id: "qid-1", text: "next", cancellable: true });
@@ -207,7 +215,7 @@ describe("chat-streams-store", () => {
       .getState()
       .append(7, { id: "qid-2", text: "later", cancellable: true });
 
-    consumeSteer(7, {
+    consumeSteer(7, 1, {
       kind: "steer_consumed",
       queuedIds: ["qid-1"],
       assistantMessage: { id: 22, sessionId: 7 } as chat_svc.ChatMessage,
@@ -215,9 +223,10 @@ describe("chat-streams-store", () => {
 
     const remaining = useQueuedMessagesStore.getState().queuedBySession.get(7);
     expect(remaining?.map((q) => q.id)).toEqual(["qid-2"]);
-    const s = useChatStreamsStore.getState();
-    expect(s.streams.get(7)!.assistantMessageId).toBe(22);
-    expect(s.streams.get(7)!.liveDelta).toBe("");
+    // steer 换了 assistant 占位 → 流按新 messageId 重挂,旧 key 不再存在。
+    expect(live(7, 1)).toBeNull();
+    expect(live(7, 22)!.assistantMessageId).toBe(22);
+    expect(live(7, 22)!.liveDelta).toBe("");
     const status = useSessionStatusStore.getState().statuses.get(7);
     expect(status?.doneTick).toBe(1);
     expect(status?.lastDoneEvent?.kind).toBe("steer_consumed");
@@ -235,21 +244,19 @@ describe("chat-streams-store", () => {
       clearLiveRetry,
     } = useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveText(7, "partial");
-    appendLiveThinking(7, "thought");
-    setLiveRetry(7, {
+    appendLiveText(7, 1, "partial");
+    appendLiveThinking(7, 1, "thought");
+    setLiveRetry(7, 1, {
       attempt: 1,
       maxAttempts: 10,
       message: "HTTP 529 rate_limit",
       details: "≈0.6s 后重试",
       at: 1700000000000,
     });
-    expect(
-      useChatStreamsStore.getState().streams.get(7)!.liveRetry,
-    ).not.toBeNull();
+    expect(live(7)!.liveRetry).not.toBeNull();
 
-    clearLiveRetry(7);
-    const s = useChatStreamsStore.getState().streams.get(7)!;
+    clearLiveRetry(7, 1);
+    const s = live(7)!;
     expect(s.liveRetry).toBeNull();
     expect(s.liveDelta).toBe("partial");
     expect(s.liveThinking).toBe("thought");
@@ -262,12 +269,12 @@ describe("chat-streams-store", () => {
     const { clearLiveRetry } = useChatStreamsStore.getState();
 
     const before1 = useChatStreamsStore.getState().streams;
-    clearLiveRetry(99);
+    clearLiveRetry(99, 1);
     expect(useChatStreamsStore.getState().streams).toBe(before1);
 
     useChatStreamsStore.getState().openStream(baseStream(7));
     const before2 = useChatStreamsStore.getState().streams;
-    clearLiveRetry(7); // liveRetry 本就是 null
+    clearLiveRetry(7, 1); // liveRetry 本就是 null
     expect(useChatStreamsStore.getState().streams).toBe(before2);
   });
 
@@ -295,8 +302,8 @@ describe("chat-streams-store", () => {
         alwaysAllow: false,
       },
     } as unknown as view.CanonicalDTO;
-    appendLiveToolPermissionRequest(7, payload, canonical);
-    const s = useChatStreamsStore.getState().streams.get(7)!;
+    appendLiveToolPermissionRequest(7, 1, payload, canonical);
+    const s = live(7)!;
     expect(s.liveBlocks).toHaveLength(1);
     expect(s.liveBlocks[0]).toMatchObject({
       type: "tool_permission_request",
@@ -331,16 +338,16 @@ describe("chat-streams-store", () => {
         alwaysAllow: false,
       },
     } as unknown as view.CanonicalDTO;
-    appendLiveToolPermissionRequest(7, initial, canonical);
+    appendLiveToolPermissionRequest(7, 1, initial, canonical);
 
-    markToolPermissionResolved(7, {
+    markToolPermissionResolved(7, 1, {
       ...initial,
       resolved: true,
       allowed: true,
       alwaysAllow: true,
     } as chat_svc.ChatBlockToolPermission);
 
-    const block = useChatStreamsStore.getState().streams.get(7)!.liveBlocks[0];
+    const block = live(7)!.liveBlocks[0];
     expect(block.toolPermission).toMatchObject({
       resolved: true,
       allowed: true,
@@ -361,14 +368,14 @@ describe("chat-streams-store", () => {
     const { openStream, appendLiveToolApproval } =
       useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveToolApproval(7, {
+    appendLiveToolApproval(7, 1, {
       toolKey: "org",
       requestId: "org-1",
       toolName: "org_create_department",
       toolInput: { name: "研发部" },
       status: "pending",
     });
-    const s = useChatStreamsStore.getState().streams.get(7)!;
+    const s = live(7)!;
     expect(s.liveBlocks).toHaveLength(1);
     expect(s.liveBlocks[0]).toMatchObject({
       type: "tool_approval",
@@ -385,21 +392,21 @@ describe("chat-streams-store", () => {
     const { openStream, appendLiveToolApproval, markToolApprovalResolved } =
       useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveToolApproval(7, {
+    appendLiveToolApproval(7, 1, {
       toolKey: "org",
       requestId: "org-2",
       toolName: "org_delete_agent",
       toolInput: { id: 9 },
       status: "pending",
     });
-    markToolApprovalResolved(7, {
+    markToolApprovalResolved(7, 1, {
       toolKey: "org",
       requestId: "org-2",
       toolName: "org_delete_agent",
       status: "approved",
       result: "已删除 Agent #9",
     });
-    const block = useChatStreamsStore.getState().streams.get(7)!.liveBlocks[0];
+    const block = live(7)!.liveBlocks[0];
     expect(block.toolApproval).toMatchObject({
       requestId: "org-2",
       status: "approved",
@@ -411,14 +418,14 @@ describe("chat-streams-store", () => {
     const { openStream, appendLiveToolApproval, markToolApprovalResolved } =
       useChatStreamsStore.getState();
     openStream(baseStream(7));
-    appendLiveToolApproval(7, {
+    appendLiveToolApproval(7, 1, {
       toolKey: "org",
       requestId: "org-3",
       toolName: "org_update_agent",
       status: "pending",
     });
     const before = useChatStreamsStore.getState().streams;
-    markToolApprovalResolved(7, {
+    markToolApprovalResolved(7, 1, {
       toolKey: "org",
       requestId: "does-not-exist",
       toolName: "org_update_agent",
@@ -426,7 +433,7 @@ describe("chat-streams-store", () => {
     });
     // 未知 requestId 既不改块也不重建 Map(referential no-op)。
     expect(useChatStreamsStore.getState().streams).toBe(before);
-    const block = useChatStreamsStore.getState().streams.get(7)!.liveBlocks[0];
+    const block = live(7)!.liveBlocks[0];
     expect(block.toolApproval).toMatchObject({ status: "pending" });
   });
 });

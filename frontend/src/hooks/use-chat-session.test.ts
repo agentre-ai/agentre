@@ -4,7 +4,11 @@ import { useChatSession } from "./use-chat-session";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
-import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import {
+  hasSessionStream,
+  streamForMessage,
+  useChatStreamsStore,
+} from "@/stores/chat-streams-store";
 
 vi.mock("../../wailsjs/go/app/App", () => ({
   LoadChatSession: vi.fn(),
@@ -49,7 +53,7 @@ describe("useChatSession", () => {
     const { result } = renderHook(() => useChatSession(9));
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    const live = useChatStreamsStore.getState().streams.get(9);
+    const live = streamForMessage(useChatStreamsStore.getState(), 9, 42);
     expect(live?.name).toBe("chat:event:9:42");
     expect(live?.assistantMessageId).toBe(42);
   });
@@ -104,7 +108,7 @@ describe("useChatSession", () => {
     expect((lastMsg.blocks ?? []).some((b) => b.type === "text")).toBe(true);
 
     // ② live store 里出现该块,挂在重挂流上。
-    const live = useChatStreamsStore.getState().streams.get(9);
+    const live = streamForMessage(useChatStreamsStore.getState(), 9, 42);
     expect(live?.assistantMessageId).toBe(42);
     expect(live?.liveBlocks).toHaveLength(1);
     expect(live?.liveBlocks[0]).toMatchObject({
@@ -114,7 +118,7 @@ describe("useChatSession", () => {
 
     // ③ resolved 事件现在命中 liveBlocks,卡片翻 approved。
     act(() => {
-      useChatStreamsStore.getState().markToolApprovalResolved(9, {
+      useChatStreamsStore.getState().markToolApprovalResolved(9, 42, {
         toolKey: "org",
         requestId: "org-1",
         toolName: "org_create_department",
@@ -122,7 +126,7 @@ describe("useChatSession", () => {
         result: "department created",
       });
     });
-    const updated = useChatStreamsStore.getState().streams.get(9)!
+    const updated = streamForMessage(useChatStreamsStore.getState(), 9, 42)!
       .liveBlocks[0];
     expect(updated.toolApproval).toMatchObject({
       status: "approved",
@@ -173,9 +177,9 @@ describe("useChatSession", () => {
           b.type === "tool_approval" && b.toolApproval?.status === "approved",
       ),
     ).toBe(true);
-    expect(useChatStreamsStore.getState().streams.get(9)?.liveBlocks).toEqual(
-      [],
-    );
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 9, 42)?.liveBlocks,
+    ).toEqual([]);
   });
 
   // 同 tab 已有活跃流且 liveBlocks 已含同 requestId(流事件路径已写入)时,
@@ -188,7 +192,7 @@ describe("useChatSession", () => {
         assistantMessageId: 42,
         streamStartedAt: 123,
       });
-      useChatStreamsStore.getState().appendLiveToolApproval(9, {
+      useChatStreamsStore.getState().appendLiveToolApproval(9, 42, {
         toolKey: "org",
         requestId: "org-1",
         toolName: "org_create_department",
@@ -232,7 +236,7 @@ describe("useChatSession", () => {
     expect((lastMsg.blocks ?? []).some((b) => b.type === "tool_approval")).toBe(
       false,
     );
-    const live = useChatStreamsStore.getState().streams.get(9);
+    const live = streamForMessage(useChatStreamsStore.getState(), 9, 42);
     expect(live?.liveBlocks).toHaveLength(1);
   });
 
@@ -254,7 +258,7 @@ describe("useChatSession", () => {
     const { result } = renderHook(() => useChatSession(9));
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(useChatStreamsStore.getState().streams.get(9)).toBeUndefined();
+    expect(hasSessionStream(useChatStreamsStore.getState(), 9)).toBe(false);
   });
 
   it("does not clobber an already-open live stream", async () => {
@@ -285,7 +289,7 @@ describe("useChatSession", () => {
     const { result } = renderHook(() => useChatSession(9));
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    const live = useChatStreamsStore.getState().streams.get(9);
+    const live = streamForMessage(useChatStreamsStore.getState(), 9, 1);
     expect(live?.name).toBe("chat:event:9:1");
     expect(live?.assistantMessageId).toBe(1);
   });

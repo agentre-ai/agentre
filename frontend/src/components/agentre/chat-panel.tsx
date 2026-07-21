@@ -48,7 +48,11 @@ import { relativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
 import { useSessionAttention } from "@/stores/attention-store";
 import { useClearedBackgroundTasksStore } from "@/stores/cleared-background-tasks-store";
-import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import {
+  useChatStreamsStore,
+  type ChatBlockData,
+  type LiveStream,
+} from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useQueuedMessagesStore } from "@/stores/queued-messages-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
@@ -63,6 +67,7 @@ import {
   type ChatComposerSubmit,
   type ChatTranscriptHandle,
   type ChatImageAttachment,
+  type TranscriptLiveContent,
 } from "./chat";
 import { ChatContextSidebar } from "./chat-context-sidebar";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
@@ -437,9 +442,20 @@ function ChatPanel({
   // zustand store 里。ChatPanel 只做「读 + 派发」,不再持有状态副本,这样切到 /projects
   // 等其它路由再切回来时,store 里累积的 liveDelta / liveBlocks / queued 都能直接还原。
   const openStream = useChatStreamsStore((s) => s.openStream);
-  const currentStream = useChatStreamsStore((s) =>
+  // 本会话的全部在流(用户轮 / 自主续轮 / 后台 subagent 活动轮),按 assistantMessageId
+  // 索引。引用只在本会话有流增删 / 内容变动时才变,别的会话在流不会触发本 panel 重渲染。
+  const sessionStreams = useChatStreamsStore((s) =>
     sessionId ? (s.streams.get(sessionId) ?? null) : null,
   );
+  // 主流 = 最近开的那条,供会话级读数(进度条 / typing indicator / 停止按钮)。
+  const currentStream = React.useMemo(() => {
+    if (!sessionStreams || sessionStreams.size === 0) return null;
+    let best: LiveStream | null = null;
+    for (const s of sessionStreams.values()) {
+      if (!best || s.streamStartedAt >= best.streamStartedAt) best = s;
+    }
+    return best;
+  }, [sessionStreams]);
   const currentQueued = useQueuedMessagesStore(
     (s) => s.queuedBySession.get(sessionId) ?? null,
   );
@@ -528,10 +544,16 @@ function ChatPanel({
       // 命中的是 messages —— 必须一并翻,否则面板胶囊 + 行内 pill 永远 spin (bug #2)。
       if (ev.completedTask?.toolUseId) {
         const { toolUseId, status, summary } = ev.completedTask;
-        useChatStreamsStore.getState().mergeSubagentMeta(sessionId, toolUseId, {
-          status,
-          summary,
-        } as chat_svc.ChatBlockSubagent);
+        // 发起该后台任务的那条 tool_use 可能还挂在本会话任意一条在流的消息上
+        // (哪条不确定,后台任务是跨轮的),逐条流试着翻一遍;真正命中的多半是
+        // 下面的 messages。store 对未知 toolUseId 是 no-op。
+        const streamsState = useChatStreamsStore.getState();
+        for (const mid of streamsState.streams.get(sessionId)?.keys() ?? []) {
+          streamsState.mergeSubagentMeta(sessionId, mid, toolUseId, {
+            status,
+            summary,
+          } as chat_svc.ChatBlockSubagent);
+        }
         setMessages((prev) =>
           flipSubagentStatusInMessages(prev, toolUseId, status, summary),
         );
@@ -800,14 +822,32 @@ function ChatPanel({
   // ── 当前选中会话的派生视图 ──
   // 没有 LiveStream entry 表示该会话当前不在生成中；UI 的 typing indicator /
   // liveDelta / liveThinking / liveBlocks 全部来自 store,天然按 sessionId 隔离。
-  const liveDelta = currentStream?.liveDelta ?? "";
-  const liveThinking = currentStream?.liveThinking ?? "";
-  const liveBlocks = currentStream?.liveBlocks ?? null;
-  const liveRetry = currentStream?.liveRetry ?? null;
+  // 逐条 assistant 消息的流式内容表 —— 多条流并存时各渲各的,喂给 ChatTranscript。
+  // 不能只喂主流:后台任务完成的自主续轮与用户轮会重叠,只喂一条会让另一条瞬间
+  // 掉回持久化态(用户可见症状:「已输出内容清空回退」,sess-1950)。
+  const liveByMessageId = React.useMemo(() => {
+    const out = new Map<number, TranscriptLiveContent>();
+    if (!sessionStreams) return out;
+    for (const s of sessionStreams.values()) {
+      out.set(s.assistantMessageId, {
+        liveTail: s.liveDelta,
+        liveThinking: s.liveThinking,
+        liveThinkingStartedAt: s.streamStartedAt,
+        liveBlocks: s.liveBlocks,
+        liveRetry: s.liveRetry,
+      });
+    }
+    return out;
+  }, [sessionStreams]);
+  // 全部在流的 liveBlocks 拍平 —— 后台任务面板 / task-progress 是**会话级**视图,
+  // 用户轮和后台流里起的任务都要收进来。
+  const allLiveBlocks = React.useMemo(() => {
+    if (!sessionStreams) return [] as ChatBlockData[];
+    return Array.from(sessionStreams.values()).flatMap((s) => s.liveBlocks);
+  }, [sessionStreams]);
+  // 会话级读数取主流。
   const liveUsage = currentStream?.liveUsage ?? null;
   const liveContextWindow = currentStream?.liveContextWindow ?? 0;
-  const liveStreamStartedAt = currentStream?.streamStartedAt ?? null;
-  const liveTargetId = currentStream?.assistantMessageId ?? null;
   const liveCompacting = currentStream?.liveCompacting ?? false;
   const streaming = currentStream !== null;
 
@@ -863,21 +903,16 @@ function ChatPanel({
     [messages, effectiveContextWindow, liveUsage],
   );
   const taskProgress = React.useMemo(
-    () => deriveTaskProgress(messages, currentStream?.liveBlocks ?? []),
-    [messages, currentStream?.liveBlocks],
+    () => deriveTaskProgress(messages, allLiveBlocks),
+    [messages, allLiveBlocks],
   );
   const clearedList = useClearedBackgroundTasksStore((s) =>
     sessionId > 0 ? (s.cleared[sessionId] ?? EMPTY_CLEARED) : EMPTY_CLEARED,
   );
   const clearedSet = React.useMemo(() => new Set(clearedList), [clearedList]);
   const backgroundTasks = React.useMemo(
-    () =>
-      deriveBackgroundTasks(
-        messages,
-        currentStream?.liveBlocks ?? [],
-        clearedSet,
-      ),
-    [messages, currentStream?.liveBlocks, clearedSet],
+    () => deriveBackgroundTasks(messages, allLiveBlocks, clearedSet),
+    [messages, allLiveBlocks, clearedSet],
   );
   const clearCompletedTasks = useClearedBackgroundTasksStore(
     (s) => s.clearCompleted,
@@ -972,16 +1007,7 @@ function ChatPanel({
     }
     pendingScrollRestoreRef.current = null;
     restoredScrollStateKeyRef.current = scrollStateKey;
-  }, [
-    messages,
-    liveDelta,
-    liveThinking,
-    liveBlocks,
-    liveRetry,
-    scrollStateKey,
-    sessionId,
-    transcriptElement,
-  ]);
+  }, [messages, liveByMessageId, scrollStateKey, sessionId, transcriptElement]);
 
   React.useLayoutEffect(() => {
     if (pendingScrollRestoreRef.current?.key === scrollStateKey) {
@@ -1025,14 +1051,7 @@ function ChatPanel({
       return;
     }
     saveBottomScrollPosition(readScrollMetrics(el));
-  }, [
-    liveDelta,
-    liveThinking,
-    liveBlocks,
-    liveRetry,
-    scrollStateKey,
-    saveBottomScrollPosition,
-  ]);
+  }, [liveByMessageId, scrollStateKey, saveBottomScrollPosition]);
 
   // tab 从隐藏(display:none)切回可见时，上面的 useLayoutEffect 在隐藏期间
   // 会被 clientHeight===0 跳过。这里由父层 HostedPanel 传入的 active 信号
@@ -1961,12 +1980,7 @@ function ChatPanel({
                     virtualize
                     active={active}
                     messages={messages}
-                    liveDelta={liveDelta}
-                    liveThinking={liveThinking}
-                    liveBlocks={liveBlocks ?? undefined}
-                    liveRetry={liveRetry}
-                    liveStreamStartedAt={liveStreamStartedAt}
-                    liveTargetId={liveTargetId}
+                    liveByMessageId={liveByMessageId}
                     streaming={streaming}
                     liveCompacting={liveCompacting}
                     onRerun={(messageId) => void handleRegenerate(messageId)}

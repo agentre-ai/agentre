@@ -68,11 +68,13 @@ describe("ChatTranscript live re-render isolation", () => {
 
     const transcript = (liveDelta: string) => (
       <ChatTranscript
+        liveByMessageId={
+          new Map([
+            [2, { liveTail: liveDelta, liveBlocks: toolPair("toolu-live-1") }],
+          ])
+        }
         agentColor="agent-1"
         agentName="A"
-        liveBlocks={toolPair("toolu-live-1")}
-        liveDelta={liveDelta}
-        liveTargetId={2}
         messages={messages}
         streaming
       />

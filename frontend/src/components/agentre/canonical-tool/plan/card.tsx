@@ -11,7 +11,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import {
+  hasSessionStream,
+  useChatStreamsStore,
+} from "@/stores/chat-streams-store";
 import { ResolvePlanAction as wailsResolvePlanAction } from "../../../../../wailsjs/go/app/App";
 
 import {
@@ -144,7 +147,7 @@ export const PlanCard: React.FC<CanonicalCardProps> = ({
       ? `planFeedback:${plan.requestId || uiStateKey}`
       : undefined;
   const streamActive = useChatStreamsStore((s) =>
-    sessionId ? s.streams.has(sessionId) : false,
+    sessionId ? hasSessionStream(s, sessionId) : false,
   );
 
   const [expanded, setExpanded] = useTranscriptBooleanState(

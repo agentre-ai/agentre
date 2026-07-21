@@ -53,6 +53,7 @@ function formatToolSummary(
 export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
   toolBlock,
   sessionId,
+  messageId,
   uiStateKey,
 }) => {
   const { t } = useTranslation();
@@ -83,7 +84,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
         alwaysAllow: alwaysAllowSession,
       } as chat_svc.ChatBlockToolPermission;
       try {
-        markToolPermissionResolved(sessionId, optimistic);
+        markToolPermissionResolved(sessionId, messageId ?? 0, optimistic);
         await wailsAnswerToolPermission({
           sessionId,
           requestId: payload.requestId,
@@ -94,7 +95,7 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
         // 后端 takePermWaiter 在 RespondToControl 失败前已经 take+delete,
         // 回滚后再点也会 "no waiting tool permission" 失败;切回未决态只是
         // 为了把错误文案露出来。
-        markToolPermissionResolved(sessionId, {
+        markToolPermissionResolved(sessionId, messageId ?? 0, {
           ...optimistic,
           resolved: false,
           allowed: false,
@@ -109,7 +110,15 @@ export const ToolPermissionCard: React.FC<CanonicalCardProps> = ({
         setSubmitting(false);
       }
     },
-    [payload, sessionId, isResolved, submitting, markToolPermissionResolved, t],
+    [
+      payload,
+      sessionId,
+      messageId,
+      isResolved,
+      submitting,
+      markToolPermissionResolved,
+      t,
+    ],
   );
 
   if (!payload || !payload.requestId) return null;

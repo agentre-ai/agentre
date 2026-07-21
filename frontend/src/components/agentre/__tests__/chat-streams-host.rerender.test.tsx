@@ -42,13 +42,13 @@ describe("ChatStreamsHost re-render isolation", () => {
 
     // 模拟连续 chunk:每次只改 liveDelta(appendLiveText 会重建 streams Map)。
     act(() => {
-      useChatStreamsStore.getState().appendLiveText(42, "a");
+      useChatStreamsStore.getState().appendLiveText(42, 1001, "a");
     });
     act(() => {
-      useChatStreamsStore.getState().appendLiveText(42, "b");
+      useChatStreamsStore.getState().appendLiveText(42, 1001, "b");
     });
     act(() => {
-      useChatStreamsStore.getState().appendLiveText(42, "c");
+      useChatStreamsStore.getState().appendLiveText(42, 1001, "c");
     });
 
     // 身份集合(sessionId + name)没变 → host 不该重渲染订阅树 → 计数不增。

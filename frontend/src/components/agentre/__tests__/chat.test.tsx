@@ -938,10 +938,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, {}]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveTargetId={2}
         messages={[textMessage(1, "user", "go"), manyToolMessage(2, 3)]}
         scrollElement={scrollElement}
         streaming
@@ -1015,11 +1015,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     const { rerender } = render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(2) }]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveBlocks={liveToolBlocks(2)}
-        liveTargetId={2}
         messages={messages}
         scrollElement={scrollElement}
         streaming
@@ -1031,11 +1030,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     rerender(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(3) }]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveBlocks={liveToolBlocks(3)}
-        liveTargetId={2}
         messages={messages}
         scrollElement={scrollElement}
         streaming
@@ -1102,11 +1100,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     const { rerender } = render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveBlocks: [] }]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveBlocks={[]}
-        liveTargetId={2}
         messages={messages}
         scrollElement={scrollElement}
         streaming
@@ -1118,11 +1115,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     rerender(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(1) }]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveBlocks={liveToolBlocks(1)}
-        liveTargetId={2}
         messages={messages}
         scrollElement={scrollElement}
         streaming
@@ -1186,16 +1182,24 @@ describe("ChatTranscript message tail attachments", () => {
   it("Given a live retry notice, When rendered on the live target, Then the RetryNoticeCard is visible", () => {
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([
+            [
+              2,
+              {
+                liveRetry: {
+                  attempt: 2,
+                  maxAttempts: 5,
+                  message: "overloaded",
+                  details: "",
+                  at: new Date("2026-05-18T10:00:00Z").getTime(),
+                },
+              },
+            ],
+          ])
+        }
         agentColor="agent-1"
         agentName="A"
-        liveRetry={{
-          attempt: 2,
-          maxAttempts: 5,
-          message: "overloaded",
-          details: "",
-          at: new Date("2026-05-18T10:00:00Z").getTime(),
-        }}
-        liveTargetId={2}
         messages={[
           textMessage(1, "user", "hi"),
           {
@@ -1713,10 +1717,9 @@ describe("ChatTranscript typing indicator", () => {
   it("places the indicator after the live tail text in DOM order", () => {
     render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveTail: "streaming chunk" }]])}
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveDelta="streaming chunk"
-        liveTargetId={2}
         messages={[userMessage(1, "hi"), assistantMessage(2, [])]}
         streaming
       />,
@@ -1735,10 +1738,11 @@ describe("ChatTranscript typing indicator", () => {
     // 且所有 block 落在同一个 .markdown-body 容器里(间距与一次性解析一致)。
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([[2, { liveTail: "committed para\n\ngrowing tail" }]])
+        }
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveDelta={"committed para\n\ngrowing tail"}
-        liveTargetId={2}
         messages={[userMessage(1, "hi"), assistantMessage(2, [])]}
         streaming
       />,
@@ -1851,10 +1855,9 @@ describe("ChatTranscript thinking blocks", () => {
   it("renders liveThinking as a streaming thinking card on the live target", () => {
     render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveThinking: "正在分析问题…" }]])}
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveThinking="正在分析问题…"
-        liveTargetId={2}
         messages={[assistantMsg(2, [])]}
         streaming
       />,
@@ -1870,18 +1873,26 @@ describe("ChatTranscript thinking blocks", () => {
     // 思考卡片就被挤到工具卡之后,出现「思考 still 14s,工具却已经在上面」的视觉错乱。
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([
+            [
+              2,
+              {
+                liveThinking: "先看一下目录结构",
+                liveBlocks: [
+                  {
+                    toolInput: { path: "." },
+                    toolName: "ls",
+                    toolUseId: "call_x",
+                    type: "tool_use",
+                  } as ChatBlockData,
+                ],
+              },
+            ],
+          ])
+        }
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveBlocks={[
-          {
-            toolInput: { path: "." },
-            toolName: "ls",
-            toolUseId: "call_x",
-            type: "tool_use",
-          } as ChatBlockData,
-        ]}
-        liveThinking="先看一下目录结构"
-        liveTargetId={2}
         messages={[assistantMsg(2, [])]}
         streaming
       />,
@@ -1899,11 +1910,11 @@ describe("ChatTranscript thinking blocks", () => {
   it("liveThinking collapses to done when text deltas start (liveDelta non-empty)", () => {
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([[2, { liveTail: "结果是", liveThinking: "正在分析问题…" }]])
+        }
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveDelta="结果是"
-        liveThinking="正在分析问题…"
-        liveTargetId={2}
         messages={[assistantMsg(2, [])]}
         streaming
       />,
@@ -1922,18 +1933,26 @@ describe("ChatTranscript thinking blocks", () => {
     // 卡住不动。tool_use 本身已经是「思考之后的输出」,理应把思考收为「思考完成」。
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([
+            [
+              2,
+              {
+                liveThinking: "先看一下目录结构",
+                liveBlocks: [
+                  {
+                    toolInput: { command: "ls" },
+                    toolName: "Bash",
+                    toolUseId: "call_x",
+                    type: "tool_use",
+                  } as ChatBlockData,
+                ],
+              },
+            ],
+          ])
+        }
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveBlocks={[
-          {
-            toolInput: { command: "ls" },
-            toolName: "Bash",
-            toolUseId: "call_x",
-            type: "tool_use",
-          } as ChatBlockData,
-        ]}
-        liveThinking="先看一下目录结构"
-        liveTargetId={2}
         messages={[assistantMsg(2, [])]}
         streaming
       />,

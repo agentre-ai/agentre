@@ -1,7 +1,10 @@
 import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import {
+  streamForMessage,
+  useChatStreamsStore,
+} from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
@@ -102,7 +105,8 @@ describe("ChatStreamsHost", () => {
     });
 
     expect(
-      useChatStreamsStore.getState().streams.get(42)?.liveContextWindow,
+      streamForMessage(useChatStreamsStore.getState(), 42, 1001)
+        ?.liveContextWindow,
     ).toBe(258400);
     expect(useSessionStatusStore.getState().statuses.get(42)).toMatchObject({
       agentStatus: "running",
@@ -155,7 +159,7 @@ describe("ChatStreamsHost", () => {
       streamStartedAt: Date.now(),
     });
     // 提前在 liveDelta 累一段文本,确认 boundary 到达时被 flush 为 text block。
-    useChatStreamsStore.getState().appendLiveText(42, "before-compact");
+    useChatStreamsStore.getState().appendLiveText(42, 1001, "before-compact");
 
     render(<ChatStreamsHost />);
 
@@ -175,7 +179,7 @@ describe("ChatStreamsHost", () => {
       });
     });
 
-    const stream = useChatStreamsStore.getState().streams.get(42);
+    const stream = streamForMessage(useChatStreamsStore.getState(), 42, 1001);
     expect(stream?.liveBlocks).toHaveLength(2);
     expect(stream?.liveBlocks[0]).toMatchObject({
       type: "text",
@@ -202,9 +206,10 @@ describe("ChatStreamsHost", () => {
     const handler = registeredHandler();
 
     // 起点:openStream 默认 liveCompacting=false。
-    expect(useChatStreamsStore.getState().streams.get(42)?.liveCompacting).toBe(
-      false,
-    );
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 42, 1001)
+        ?.liveCompacting,
+    ).toBe(false);
 
     // CLI 通报 compacting 开始。
     act(() => {
@@ -213,9 +218,10 @@ describe("ChatStreamsHost", () => {
         runtimeStatus: { status: "compacting", compacting: true },
       });
     });
-    expect(useChatStreamsStore.getState().streams.get(42)?.liveCompacting).toBe(
-      true,
-    );
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 42, 1001)
+        ?.liveCompacting,
+    ).toBe(true);
 
     // compact_boundary 到达即视为压缩结束 —— 自动清旗,不依赖 CLI 显式发 status:""。
     act(() => {
@@ -230,9 +236,10 @@ describe("ChatStreamsHost", () => {
         },
       });
     });
-    expect(useChatStreamsStore.getState().streams.get(42)?.liveCompacting).toBe(
-      false,
-    );
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 42, 1001)
+        ?.liveCompacting,
+    ).toBe(false);
   });
 
   it("runtime_status with non-compacting status does not flip compacting flag", async () => {
@@ -254,9 +261,10 @@ describe("ChatStreamsHost", () => {
         runtimeStatus: { status: "requesting", compacting: false },
       });
     });
-    expect(useChatStreamsStore.getState().streams.get(42)?.liveCompacting).toBe(
-      false,
-    );
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 42, 1001)
+        ?.liveCompacting,
+    ).toBe(false);
   });
 
   it("permission-mode-only session_status preserves existing bgRunning=true (no spurious clear)", async () => {

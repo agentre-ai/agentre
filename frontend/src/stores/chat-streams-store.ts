@@ -67,8 +67,22 @@ export type LiveStream = {
   liveCompacting: boolean;
 };
 
+// State.streams 是 **两层** Map:sessionId → (assistantMessageId → LiveStream)。
+//
+// 一个会话在同一时刻合法地可以有多条流并存,它们各自绑定不同的 assistant 消息:
+//   - 用户轮        —— doSend 拿到 SendChatMessage.stream 后 openStream;
+//   - 自主续轮      —— 后台任务完成,CLI 自主跑的一轮(chat:autonomous 旁路);
+//   - 后台 subagent 活动轮 —— 绑在**已存在**的发起消息上。
+// 后两者由后台任务驱动、与用户操作无关,随时可能与用户轮重叠。早先这里是单层
+// `Map<sessionId, LiveStream>`,openStream 无条件覆盖 —— 用户在自主续轮流式中再发
+// 一条消息就会把自主轮已经流到屏幕、尚未落库的内容整段抹掉(用户可见症状:「已输出
+// 内容清空回退」),订阅也被切走导致该轮后续事件无人接收(sess-1950)。
+//
+// 嵌套而非 `Map<`${sid}:${mid}`, LiveStream>` 复合键:会话级 selector
+// (`s.streams.get(sessionId)`)保持 O(1) 且引用稳定 —— 别的会话在流不会让本
+// panel 重渲染。
 type State = {
-  streams: Map<number, LiveStream>;
+  streams: Map<number, Map<number, LiveStream>>;
 };
 
 type Actions = {
@@ -84,17 +98,27 @@ type Actions = {
       | "liveCompacting"
     >,
   ) => void;
-  closeStream: (sessionId: number) => void;
-  appendLiveText: (sessionId: number, delta: string) => void;
-  appendLiveThinking: (sessionId: number, delta: string) => void;
+  closeStream: (sessionId: number, assistantMessageId: number) => void;
+  appendLiveText: (
+    sessionId: number,
+    assistantMessageId: number,
+    delta: string,
+  ) => void;
+  appendLiveThinking: (
+    sessionId: number,
+    assistantMessageId: number,
+    delta: string,
+  ) => void;
   // 接受不带 type 的 partial:action 会统一 stamp 成 "tool_use" / "tool_result",
   // 避免每个 caller 都重复填同样的字段。
   appendLiveToolUse: (
     sessionId: number,
+    assistantMessageId: number,
     block: Omit<ChatBlockData, "type">,
   ) => void;
   appendLiveToolResult: (
     sessionId: number,
+    assistantMessageId: number,
     block: Omit<ChatBlockData, "type">,
   ) => void;
   // appendLivePlanUpdate 在 stream 上插入或更新 Codex/Cli runtime 上报的计划。
@@ -102,6 +126,7 @@ type Actions = {
   // 时刷出一串重复计划卡。
   appendLivePlanUpdate: (
     sessionId: number,
+    assistantMessageId: number,
     text: string,
     canonical?: view.CanonicalDTO,
   ) => void;
@@ -110,6 +135,7 @@ type Actions = {
   // 字段做浅 merge：新事件未带的字段保留旧值（task_progress 不带 prompt 不会清掉它）。
   mergeSubagentMeta: (
     sessionId: number,
+    assistantMessageId: number,
     toolUseId: string,
     meta: chat_svc.ChatBlockSubagent,
   ) => void;
@@ -119,6 +145,7 @@ type Actions = {
   // CanonicalToolRouter 在 live 路径与 replay 路径走同一份卡片。
   appendLiveAskUserQuestion: (
     sessionId: number,
+    assistantMessageId: number,
     payload: chat_svc.ChatBlockAskUserQuestion,
     canonical?: view.CanonicalDTO,
   ) => void;
@@ -126,6 +153,7 @@ type Actions = {
   // 更新 Answered/Answers/Skipped 字段。用户提交答案时调用，做乐观更新。
   markAskUserQuestionAnswered: (
     sessionId: number,
+    assistantMessageId: number,
     payload: chat_svc.ChatBlockAskUserQuestion,
     canonical?: view.CanonicalDTO,
   ) => void;
@@ -135,6 +163,7 @@ type Actions = {
   // kind=tool.permission 会 fallback 到 RawToolCard (空标题"tool" + 简化 overlay)。
   appendLiveToolPermissionRequest: (
     sessionId: number,
+    assistantMessageId: number,
     payload: chat_svc.ChatBlockToolPermission,
     canonical?: view.CanonicalDTO,
   ) => void;
@@ -144,6 +173,7 @@ type Actions = {
   // canonical 合成 resolved/allowed 标志);后端 echo 路径直接传整份新 canonical。
   markToolPermissionResolved: (
     sessionId: number,
+    assistantMessageId: number,
     payload: chat_svc.ChatBlockToolPermission,
     canonical?: view.CanonicalDTO,
   ) => void;
@@ -152,44 +182,71 @@ type Actions = {
   // CanonicalToolRouter,直接按 block.type==="tool_approval" 由 transcript 路由。
   appendLiveToolApproval: (
     sessionId: number,
+    assistantMessageId: number,
     payload: ToolApprovalData,
   ) => void;
   // markToolApprovalResolved 按 toolApproval.requestId 找到对应 block 覆盖 status/result。
   // 后端 emit approved/denied/expired 决议更新(同 requestId)时调用;未知 requestId no-op。
   markToolApprovalResolved: (
     sessionId: number,
+    assistantMessageId: number,
     payload: ToolApprovalData,
   ) => void;
   // patchLiveUsage 把后端推来的 per-call usage 快照写到 LiveStream.liveUsage 上。
   // Composer 进度条用它在 turn 内随工具循环实时刷新「已用上下文」，turn 结束
   // entry 被销毁后回落到 messages 扫描。无 stream entry 时静默丢弃（极端 race：
   // usage 帧先于 openStream 到达 —— 下一帧或者 reload 都能兜回来）。
-  patchLiveUsage: (sessionId: number, usage: ChatStreamUsage) => void;
+  patchLiveUsage: (
+    sessionId: number,
+    assistantMessageId: number,
+    usage: ChatStreamUsage,
+  ) => void;
   // appendLiveCompactBoundary 把后端 compact_boundary 事件落成一个 live block。
   // 先 flush liveDelta(让边界前已经流出的文本固化为 text block),再插入
   // type=compact_boundary 块,之后流出的内容会落在边界之后。
   appendLiveCompactBoundary: (
     sessionId: number,
+    assistantMessageId: number,
     compact: { preTokens?: number; trigger?: "auto" | "manual"; at: number },
   ) => void;
   // patchLiveContextWindow 写入 runtime mid-turn 探到的模型窗口大小。
-  patchLiveContextWindow: (sessionId: number, contextWindow: number) => void;
+  patchLiveContextWindow: (
+    sessionId: number,
+    assistantMessageId: number,
+    contextWindow: number,
+  ) => void;
   // setLiveCompacting 设置/清空 liveCompacting 旗。chat-streams-host 在收到
   // runtime_status 事件时按 ev.runtimeStatus.compacting 调用。无 stream entry 时
   // 静默丢弃,避免 race (status 帧先于 openStream)。
-  setLiveCompacting: (sessionId: number, compacting: boolean) => void;
-  setLiveRetry: (sessionId: number, retry: RetryNotice) => void;
+  setLiveCompacting: (
+    sessionId: number,
+    assistantMessageId: number,
+    compacting: boolean,
+  ) => void;
+  setLiveRetry: (
+    sessionId: number,
+    assistantMessageId: number,
+    retry: RetryNotice,
+  ) => void;
   // clearLiveRetry 把 liveRetry 置空。retry 是「正在等下次尝试」的瞬时态,下一个非 retry
   // 的进展事件(chunk/thinking/tool_use 等)到达 = 重试已成功 = 状态过期。由 ChatStreamsHost
   // 在那些事件入口顺手调一次,避免回复内容已经流出来了 RetryNoticeCard 还挂着。
   // 无 stream 或 liveRetry 本就是 null 时是 referential no-op,不触发 zustand 重渲染。
-  clearLiveRetry: (sessionId: number) => void;
-  // finishStream 统一处理 done/error/closed:写入 lastDoneEvent 缓存、bump tick、删 stream entry、
-  // 清空该会话排队。给 host 一处调用,避免散落多分支。
-  finishStream: (sessionId: number, event: ChatStreamEvent) => void;
+  clearLiveRetry: (sessionId: number, assistantMessageId: number) => void;
+  // finishStream 统一处理 done/error/closed:写入 lastDoneEvent 缓存、bump tick、删掉**这一条**
+  // stream entry;该会话再无流在跑时才清空排队。给 host 一处调用,避免散落多分支。
+  finishStream: (
+    sessionId: number,
+    assistantMessageId: number,
+    event: ChatStreamEvent,
+  ) => void;
   // consumeSteer 处理后端确认已消费的排队消息：清掉对应 queue chip，
   // 把 live stream 切到新的 assistant 占位，并 bump tick 让 ChatPanel reload 消息段。
-  consumeSteer: (sessionId: number, event: ChatStreamEvent) => void;
+  consumeSteer: (
+    sessionId: number,
+    assistantMessageId: number,
+    event: ChatStreamEvent,
+  ) => void;
 };
 
 function flushLiveDelta(s: LiveStream): LiveStream {
@@ -201,13 +258,124 @@ function flushLiveDelta(s: LiveStream): LiveStream {
   };
 }
 
+// ── 两层 Map 的读写辅助 ────────────────────────────────────────────────────────
+// 所有 action 都经 updateStream 改一条流,嵌套 Map 的不可变拷贝只在这一处做。
+
+/** sessionStreamMap 取某会话的全部在流(引用稳定,可直接喂 zustand selector)。 */
+export function sessionStreamMap(
+  state: State,
+  sessionId: number,
+): Map<number, LiveStream> | null {
+  return state.streams.get(sessionId) ?? null;
+}
+
+/** streamForMessage 取绑在某条 assistant 消息上的流。 */
+export function streamForMessage(
+  state: State,
+  sessionId: number,
+  assistantMessageId: number,
+): LiveStream | null {
+  return state.streams.get(sessionId)?.get(assistantMessageId) ?? null;
+}
+
+/**
+ * primaryStream 取会话的「主流」= 最近一次 openStream 的那条。
+ *
+ * 会话级读数(composer 进度条的 liveUsage / liveContextWindow、typing indicator 的
+ * liveCompacting、停止按钮的 canStop)都读它:这些是「这个会话此刻在干什么」的
+ * 概览,不需要 per-message 精度。逐条消息的流式内容走 streamForMessage。
+ */
+export function primaryStream(
+  state: State,
+  sessionId: number,
+): LiveStream | null {
+  const perMessage = state.streams.get(sessionId);
+  if (!perMessage || perMessage.size === 0) return null;
+  let best: LiveStream | null = null;
+  for (const s of perMessage.values()) {
+    if (!best || s.streamStartedAt >= best.streamStartedAt) best = s;
+  }
+  return best;
+}
+
+/** hasSessionStream 判会话是否有任意一条流在跑。 */
+export function hasSessionStream(state: State, sessionId: number): boolean {
+  const perMessage = state.streams.get(sessionId);
+  return !!perMessage && perMessage.size > 0;
+}
+
+/**
+ * updateStream 对一条流做不可变更新。updater 返回 null 或原引用 → 整体 no-op
+ * (返回原 state,不重建 Map,zustand 不会触发多余重渲染)。
+ */
+function updateStream(
+  state: State,
+  sessionId: number,
+  assistantMessageId: number,
+  updater: (cur: LiveStream) => LiveStream | null,
+): State {
+  const perMessage = state.streams.get(sessionId);
+  const cur = perMessage?.get(assistantMessageId);
+  if (!perMessage || !cur) return state;
+  const updated = updater(cur);
+  if (!updated || updated === cur) return state;
+  const nextPerMessage = new Map(perMessage);
+  nextPerMessage.set(assistantMessageId, updated);
+  const streams = new Map(state.streams);
+  streams.set(sessionId, nextPerMessage);
+  return { streams };
+}
+
+/** dropStream 删掉一条流;会话最后一条被删时连会话的空 Map 一起摘掉。 */
+function dropStream(
+  state: State,
+  sessionId: number,
+  assistantMessageId: number,
+): State {
+  const perMessage = state.streams.get(sessionId);
+  if (!perMessage || !perMessage.has(assistantMessageId)) return state;
+  const streams = new Map(state.streams);
+  const nextPerMessage = new Map(perMessage);
+  nextPerMessage.delete(assistantMessageId);
+  if (nextPerMessage.size === 0) streams.delete(sessionId);
+  else streams.set(sessionId, nextPerMessage);
+  return { streams };
+}
+
+/**
+ * findLastBlockIndex 倒序找最近一个满足 pred 的 live block。同一 id 在一轮里通常
+ * 只出现一次,但倒序更稳 —— 能正确处理流式过程中尚未匹配到的边界态。
+ */
+function findLastBlockIndex(
+  blocks: ChatBlockData[],
+  pred: (b: ChatBlockData) => boolean,
+): number {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (pred(blocks[i])) return i;
+  }
+  return -1;
+}
+
+/** replaceBlock 返回把第 idx 块换成 next 的新数组。 */
+function replaceBlock(
+  blocks: ChatBlockData[],
+  idx: number,
+  next: ChatBlockData,
+): ChatBlockData[] {
+  const out = [...blocks];
+  out[idx] = next;
+  return out;
+}
+
 export const useChatStreamsStore = create<State & Actions>((set) => ({
   streams: new Map(),
 
   openStream: (s) =>
     set((state) => {
-      const next = new Map(state.streams);
-      next.set(s.sessionId, {
+      const streams = new Map(state.streams);
+      // 只 set 自己那条 —— 同会话其它流(自主续轮 / 后台 subagent 活动轮)原样保留。
+      const perMessage = new Map(streams.get(s.sessionId) ?? []);
+      perMessage.set(s.assistantMessageId, {
         ...s,
         liveDelta: "",
         liveThinking: "",
@@ -217,421 +385,392 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
         liveContextWindow: 0,
         liveCompacting: false,
       });
-      return { streams: next };
-    }),
-
-  closeStream: (sessionId) =>
-    set((state) => {
-      if (!state.streams.has(sessionId)) return state;
-      const next = new Map(state.streams);
-      next.delete(sessionId);
-      return { streams: next };
-    }),
-
-  appendLiveText: (sessionId, delta) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || !delta) return state;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveDelta: cur.liveDelta + delta });
-      return { streams: next };
-    }),
-
-  appendLiveThinking: (sessionId, delta) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || !delta) return state;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveThinking: cur.liveThinking + delta });
-      return { streams: next };
-    }),
-
-  patchLiveUsage: (sessionId, usage) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur) return state;
-      // 同值短路：所有 token 字段一致就不重建 Map，避免 zustand 触发多余重渲染。
-      // 消息 id 也比一下 —— turn 内换 assistant 段（steer_consumed）时它会变。
-      const prev = cur.liveUsage;
-      if (
-        prev &&
-        prev.messageId === usage.messageId &&
-        prev.promptTokens === usage.promptTokens &&
-        prev.completionTokens === usage.completionTokens &&
-        prev.cachedTokens === usage.cachedTokens &&
-        prev.cacheCreationTokens === usage.cacheCreationTokens &&
-        prev.reasoningTokens === usage.reasoningTokens
-      ) {
-        return state;
-      }
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveUsage: usage });
-      return { streams: next };
-    }),
-
-  patchLiveContextWindow: (sessionId, contextWindow) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || contextWindow <= 0) return state;
-      if (cur.liveContextWindow === contextWindow) return state;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveContextWindow: contextWindow });
-      return { streams: next };
-    }),
-
-  setLiveCompacting: (sessionId, compacting) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur) return state;
-      if (cur.liveCompacting === compacting) return state;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveCompacting: compacting });
-      return { streams: next };
-    }),
-
-  setLiveRetry: (sessionId, retry) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur) return state;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveRetry: retry });
-      return { streams: next };
-    }),
-
-  clearLiveRetry: (sessionId) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || cur.liveRetry === null) return state;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveRetry: null });
-      return { streams: next };
-    }),
-
-  appendLiveToolUse: (sessionId, block) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur) return state;
-      const flushed = flushLiveDelta(cur);
-      const next = new Map(state.streams);
-      next.set(sessionId, {
-        ...flushed,
-        liveBlocks: [...flushed.liveBlocks, { ...block, type: "tool_use" }],
-      });
-      return { streams: next };
-    }),
-
-  appendLiveToolResult: (sessionId, block) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur) return state;
-      // 故意不 flush liveDelta:tool_use→tool_result 之间通常没有用户可见的文字,
-      // 把累积的 liveDelta 留给"下一段文字 + 下次 tool_use"那个 flush 时机。
-      const next = new Map(state.streams);
-      next.set(sessionId, {
-        ...cur,
-        liveBlocks: [...cur.liveBlocks, { ...block, type: "tool_result" }],
-      });
-      return { streams: next };
-    }),
-
-  appendLiveCompactBoundary: (sessionId, compact) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur) return state;
-      const flushed = flushLiveDelta(cur);
-      const next = new Map(state.streams);
-      next.set(sessionId, {
-        ...flushed,
-        liveBlocks: [
-          ...flushed.liveBlocks,
-          {
-            type: "compact_boundary",
-            compact: {
-              preTokens: compact.preTokens,
-              trigger: compact.trigger,
-              at: compact.at,
-            },
-          },
-        ],
-        // compact_boundary 到达 = 压缩流程结束 → 自动清 liveCompacting,
-        // 不依赖 CLI 显式再推一帧 status:"" 清旗。
-        liveCompacting: false,
-      });
-      return { streams: next };
-    }),
-
-  appendLivePlanUpdate: (sessionId, text, canonical) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur) return state;
-      const hasPlanPayload = text || canonical?.kind === "plan.update";
-      const planText = hasPlanPayload
-        ? (canonical?.planUpdate?.text ?? text)
-        : text;
-      if (!planText && canonical?.kind !== "plan.update") return state;
-      const flushed = flushLiveDelta(cur);
-      const nextBlock: ChatBlockData = {
-        type: "plan",
-        text: planText,
-        canonical,
-      };
-      const targetIdx = flushed.liveBlocks.findIndex(
-        (b) => b.type === "plan" && b.canonical?.kind === "plan.update",
-      );
-      const nextBlocks =
-        targetIdx >= 0
-          ? flushed.liveBlocks.map((b, i) => (i === targetIdx ? nextBlock : b))
-          : [...flushed.liveBlocks, nextBlock];
-      const next = new Map(state.streams);
-      next.set(sessionId, {
-        ...flushed,
-        liveBlocks: nextBlocks,
-      });
-      return { streams: next };
-    }),
-
-  appendLiveAskUserQuestion: (sessionId, payload, canonical) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || !payload || !payload.requestId) return state;
-      const flushed = flushLiveDelta(cur);
-      const next = new Map(state.streams);
-      next.set(sessionId, {
-        ...flushed,
-        liveBlocks: [
-          ...flushed.liveBlocks,
-          {
-            type: "ask_user_question",
-            askUserQuestion: payload,
-            canonical,
-          },
-        ],
-      });
-      return { streams: next };
-    }),
-
-  markAskUserQuestionAnswered: (sessionId, payload, canonical) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || !payload || !payload.requestId) return state;
-      const target = payload.requestId;
-      // 倒序找最近一个匹配的 ask_user_question block。乐观更新 + 后端回填都走这里。
-      let targetIdx = -1;
-      for (let i = cur.liveBlocks.length - 1; i >= 0; i--) {
-        const b = cur.liveBlocks[i];
-        if (
-          b.type === "ask_user_question" &&
-          b.askUserQuestion?.requestId === target
-        ) {
-          targetIdx = i;
-          break;
-        }
-      }
-      if (targetIdx < 0) return state;
-      const existing = cur.liveBlocks[targetIdx];
-      const mergedQuestion = {
-        ...(existing.askUserQuestion ?? payload),
-        ...payload,
-      } as chat_svc.ChatBlockAskUserQuestion;
-      const merged: ChatBlockData = {
-        ...existing,
-        askUserQuestion: mergedQuestion,
-        canonical: canonical ?? existing.canonical,
-      };
-      const nextBlocks = [...cur.liveBlocks];
-      nextBlocks[targetIdx] = merged;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveBlocks: nextBlocks });
-      return { streams: next };
-    }),
-
-  appendLiveToolPermissionRequest: (sessionId, payload, canonical) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || !payload || !payload.requestId) return state;
-      const flushed = flushLiveDelta(cur);
-      const next = new Map(state.streams);
-      next.set(sessionId, {
-        ...flushed,
-        liveBlocks: [
-          ...flushed.liveBlocks,
-          {
-            type: "tool_permission_request",
-            toolPermission: payload,
-            canonical,
-          },
-        ],
-      });
-      return { streams: next };
-    }),
-
-  markToolPermissionResolved: (sessionId, payload, canonical) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || !payload || !payload.requestId) return state;
-      const target = payload.requestId;
-      let targetIdx = -1;
-      for (let i = cur.liveBlocks.length - 1; i >= 0; i--) {
-        const b = cur.liveBlocks[i];
-        if (
-          b.type === "tool_permission_request" &&
-          b.toolPermission?.requestId === target
-        ) {
-          targetIdx = i;
-          break;
-        }
-      }
-      if (targetIdx < 0) return state;
-      const existing = cur.liveBlocks[targetIdx];
-      const mergedSidecar = {
-        ...(existing.toolPermission ?? payload),
-        ...payload,
-      } as chat_svc.ChatBlockToolPermission;
-      // canonical 同步更新,避免乐观更新 race —— 新卡读 canonical 为 truth。
-      // 调用方传了完整 canonical(后端 echo 路径)直接覆盖;否则按 existing canonical
-      // 拷出新对象,只推进 resolved/allowed/alwaysAllow 三个标志位(乐观更新路径)。
-      // toolPermission/planApprove 在对应 kind 下必填(后端 dispatcher_emitter 保证),
-      // 但 wails 生成 TS 类型为 optional + class 含 convertValues,所以用 cast
-      // 构造纯数据对象(运行时只用字段,不调 convertValues)。
-      let mergedCanonical = canonical ?? existing.canonical;
-      if (
-        !canonical &&
-        mergedCanonical?.kind === "tool.permission" &&
-        mergedCanonical.toolPermission
-      ) {
-        mergedCanonical = {
-          ...mergedCanonical,
-          toolPermission: {
-            ...mergedCanonical.toolPermission,
-            resolved: !!payload.resolved,
-            allowed: !!payload.allowed,
-            alwaysAllow: !!payload.alwaysAllow,
-          },
-        } as view.CanonicalDTO;
-      } else if (
-        !canonical &&
-        mergedCanonical?.kind === "plan.approve_request" &&
-        mergedCanonical.planApprove
-      ) {
-        mergedCanonical = {
-          ...mergedCanonical,
-          planApprove: {
-            ...mergedCanonical.planApprove,
-            resolved: !!payload.resolved,
-            allowed: !!payload.allowed,
-          },
-        } as view.CanonicalDTO;
-      }
-      const merged: ChatBlockData = {
-        ...existing,
-        toolPermission: mergedSidecar,
-        canonical: mergedCanonical,
-      };
-      const nextBlocks = [...cur.liveBlocks];
-      nextBlocks[targetIdx] = merged;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveBlocks: nextBlocks });
-      return { streams: next };
-    }),
-
-  appendLiveToolApproval: (sessionId, payload) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || !payload || !payload.requestId) return state;
-      const flushed = flushLiveDelta(cur);
-      const next = new Map(state.streams);
-      next.set(sessionId, {
-        ...flushed,
-        liveBlocks: [
-          ...flushed.liveBlocks,
-          {
-            type: "tool_approval",
-            toolApproval: payload,
-          },
-        ],
-      });
-      return { streams: next };
-    }),
-
-  markToolApprovalResolved: (sessionId, payload) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || !payload || !payload.requestId) return state;
-      const target = payload.requestId;
-      let targetIdx = -1;
-      for (let i = cur.liveBlocks.length - 1; i >= 0; i--) {
-        const b = cur.liveBlocks[i];
-        if (
-          b.type === "tool_approval" &&
-          b.toolApproval?.requestId === target
-        ) {
-          targetIdx = i;
-          break;
-        }
-      }
-      // 未知 requestId no-op:不重建 Map,避免触发多余重渲染。
-      if (targetIdx < 0) return state;
-      const existing = cur.liveBlocks[targetIdx];
-      const mergedApproval = {
-        ...(existing.toolApproval ?? payload),
-        ...payload,
-      } as ToolApprovalData;
-      const merged: ChatBlockData = {
-        ...existing,
-        toolApproval: mergedApproval,
-      };
-      const nextBlocks = [...cur.liveBlocks];
-      nextBlocks[targetIdx] = merged;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveBlocks: nextBlocks });
-      return { streams: next };
-    }),
-
-  mergeSubagentMeta: (sessionId, toolUseId, meta) =>
-    set((state) => {
-      const cur = state.streams.get(sessionId);
-      if (!cur || !toolUseId) return state;
-      // 倒序找最近一个匹配的 tool_use block（同一 toolUseId 在一轮里只会出现一次，
-      // 但倒序更稳，能正确处理流式过程中尚未匹配到的边界态）。
-      let targetIdx = -1;
-      for (let i = cur.liveBlocks.length - 1; i >= 0; i--) {
-        const b = cur.liveBlocks[i];
-        if (b.type === "tool_use" && b.toolUseId === toolUseId) {
-          targetIdx = i;
-          break;
-        }
-      }
-      if (targetIdx < 0) return state;
-      const target = cur.liveBlocks[targetIdx];
-      const merged: ChatBlockData = {
-        ...target,
-        subagent: { ...(target.subagent ?? {}), ...meta },
-      };
-      const nextBlocks = [...cur.liveBlocks];
-      nextBlocks[targetIdx] = merged;
-      const next = new Map(state.streams);
-      next.set(sessionId, { ...cur, liveBlocks: nextBlocks });
-      return { streams: next };
-    }),
-
-  finishStream: (sessionId, event) =>
-    set((state) => {
-      const streams = new Map(state.streams);
-      streams.delete(sessionId);
-      useQueuedMessagesStore.getState().clear(sessionId);
-      useSessionStatusStore.getState().bumpDone(sessionId, event as DoneEvent);
+      streams.set(s.sessionId, perMessage);
       return { streams };
     }),
 
-  consumeSteer: (sessionId, event) =>
-    set((state) => {
-      const streams = new Map(state.streams);
-      const cur = streams.get(sessionId);
-      if (cur) {
-        streams.set(sessionId, {
+  closeStream: (sessionId, assistantMessageId) =>
+    set((state) => dropStream(state, sessionId, assistantMessageId)),
+
+  appendLiveText: (sessionId, assistantMessageId, delta) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) =>
+        delta ? { ...cur, liveDelta: cur.liveDelta + delta } : null,
+      ),
+    ),
+
+  appendLiveThinking: (sessionId, assistantMessageId, delta) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) =>
+        delta ? { ...cur, liveThinking: cur.liveThinking + delta } : null,
+      ),
+    ),
+
+  patchLiveUsage: (sessionId, assistantMessageId, usage) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        // 同值短路：所有 token 字段一致就不重建 Map，避免 zustand 触发多余重渲染。
+        // 消息 id 也比一下 —— turn 内换 assistant 段（steer_consumed）时它会变。
+        const prev = cur.liveUsage;
+        if (
+          prev &&
+          prev.messageId === usage.messageId &&
+          prev.promptTokens === usage.promptTokens &&
+          prev.completionTokens === usage.completionTokens &&
+          prev.cachedTokens === usage.cachedTokens &&
+          prev.cacheCreationTokens === usage.cacheCreationTokens &&
+          prev.reasoningTokens === usage.reasoningTokens
+        ) {
+          return null;
+        }
+        return { ...cur, liveUsage: usage };
+      }),
+    ),
+
+  patchLiveContextWindow: (sessionId, assistantMessageId, contextWindow) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) =>
+        contextWindow > 0 && cur.liveContextWindow !== contextWindow
+          ? { ...cur, liveContextWindow: contextWindow }
+          : null,
+      ),
+    ),
+
+  setLiveCompacting: (sessionId, assistantMessageId, compacting) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) =>
+        cur.liveCompacting === compacting
+          ? null
+          : { ...cur, liveCompacting: compacting },
+      ),
+    ),
+
+  setLiveRetry: (sessionId, assistantMessageId, retry) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => ({
+        ...cur,
+        liveRetry: retry,
+      })),
+    ),
+
+  clearLiveRetry: (sessionId, assistantMessageId) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) =>
+        cur.liveRetry === null ? null : { ...cur, liveRetry: null },
+      ),
+    ),
+
+  appendLiveToolUse: (sessionId, assistantMessageId, block) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        const flushed = flushLiveDelta(cur);
+        return {
+          ...flushed,
+          liveBlocks: [...flushed.liveBlocks, { ...block, type: "tool_use" }],
+        };
+      }),
+    ),
+
+  appendLiveToolResult: (sessionId, assistantMessageId, block) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => ({
+        // 故意不 flush liveDelta:tool_use→tool_result 之间通常没有用户可见的文字,
+        // 把累积的 liveDelta 留给"下一段文字 + 下次 tool_use"那个 flush 时机。
+        ...cur,
+        liveBlocks: [...cur.liveBlocks, { ...block, type: "tool_result" }],
+      })),
+    ),
+
+  appendLiveCompactBoundary: (sessionId, assistantMessageId, compact) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        const flushed = flushLiveDelta(cur);
+        return {
+          ...flushed,
+          liveBlocks: [
+            ...flushed.liveBlocks,
+            {
+              type: "compact_boundary",
+              compact: {
+                preTokens: compact.preTokens,
+                trigger: compact.trigger,
+                at: compact.at,
+              },
+            },
+          ],
+          // compact_boundary 到达 = 压缩流程结束 → 自动清 liveCompacting,
+          // 不依赖 CLI 显式再推一帧 status:"" 清旗。
+          liveCompacting: false,
+        };
+      }),
+    ),
+
+  appendLivePlanUpdate: (sessionId, assistantMessageId, text, canonical) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        const hasPlanPayload = text || canonical?.kind === "plan.update";
+        const planText = hasPlanPayload
+          ? (canonical?.planUpdate?.text ?? text)
+          : text;
+        if (!planText && canonical?.kind !== "plan.update") return null;
+        const flushed = flushLiveDelta(cur);
+        const nextBlock: ChatBlockData = {
+          type: "plan",
+          text: planText,
+          canonical,
+        };
+        const targetIdx = flushed.liveBlocks.findIndex(
+          (b) => b.type === "plan" && b.canonical?.kind === "plan.update",
+        );
+        return {
+          ...flushed,
+          liveBlocks:
+            targetIdx >= 0
+              ? replaceBlock(flushed.liveBlocks, targetIdx, nextBlock)
+              : [...flushed.liveBlocks, nextBlock],
+        };
+      }),
+    ),
+
+  appendLiveAskUserQuestion: (
+    sessionId,
+    assistantMessageId,
+    payload,
+    canonical,
+  ) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        if (!payload || !payload.requestId) return null;
+        const flushed = flushLiveDelta(cur);
+        return {
+          ...flushed,
+          liveBlocks: [
+            ...flushed.liveBlocks,
+            {
+              type: "ask_user_question",
+              askUserQuestion: payload,
+              canonical,
+            },
+          ],
+        };
+      }),
+    ),
+
+  markAskUserQuestionAnswered: (
+    sessionId,
+    assistantMessageId,
+    payload,
+    canonical,
+  ) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        if (!payload || !payload.requestId) return null;
+        const targetIdx = findLastBlockIndex(
+          cur.liveBlocks,
+          (b) =>
+            b.type === "ask_user_question" &&
+            b.askUserQuestion?.requestId === payload.requestId,
+        );
+        if (targetIdx < 0) return null;
+        const existing = cur.liveBlocks[targetIdx];
+        const merged: ChatBlockData = {
+          ...existing,
+          askUserQuestion: {
+            ...(existing.askUserQuestion ?? payload),
+            ...payload,
+          } as chat_svc.ChatBlockAskUserQuestion,
+          canonical: canonical ?? existing.canonical,
+        };
+        return {
           ...cur,
-          assistantMessageId:
-            event.assistantMessage?.id ?? cur.assistantMessageId,
+          liveBlocks: replaceBlock(cur.liveBlocks, targetIdx, merged),
+        };
+      }),
+    ),
+
+  appendLiveToolPermissionRequest: (
+    sessionId,
+    assistantMessageId,
+    payload,
+    canonical,
+  ) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        if (!payload || !payload.requestId) return null;
+        const flushed = flushLiveDelta(cur);
+        return {
+          ...flushed,
+          liveBlocks: [
+            ...flushed.liveBlocks,
+            {
+              type: "tool_permission_request",
+              toolPermission: payload,
+              canonical,
+            },
+          ],
+        };
+      }),
+    ),
+
+  markToolPermissionResolved: (
+    sessionId,
+    assistantMessageId,
+    payload,
+    canonical,
+  ) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        if (!payload || !payload.requestId) return null;
+        const targetIdx = findLastBlockIndex(
+          cur.liveBlocks,
+          (b) =>
+            b.type === "tool_permission_request" &&
+            b.toolPermission?.requestId === payload.requestId,
+        );
+        if (targetIdx < 0) return null;
+        const existing = cur.liveBlocks[targetIdx];
+        const mergedSidecar = {
+          ...(existing.toolPermission ?? payload),
+          ...payload,
+        } as chat_svc.ChatBlockToolPermission;
+        // canonical 同步更新,避免乐观更新 race —— 新卡读 canonical 为 truth。
+        // 调用方传了完整 canonical(后端 echo 路径)直接覆盖;否则按 existing canonical
+        // 拷出新对象,只推进 resolved/allowed/alwaysAllow 三个标志位(乐观更新路径)。
+        // toolPermission/planApprove 在对应 kind 下必填(后端 dispatcher_emitter 保证),
+        // 但 wails 生成 TS 类型为 optional + class 含 convertValues,所以用 cast
+        // 构造纯数据对象(运行时只用字段,不调 convertValues)。
+        let mergedCanonical = canonical ?? existing.canonical;
+        if (
+          !canonical &&
+          mergedCanonical?.kind === "tool.permission" &&
+          mergedCanonical.toolPermission
+        ) {
+          mergedCanonical = {
+            ...mergedCanonical,
+            toolPermission: {
+              ...mergedCanonical.toolPermission,
+              resolved: !!payload.resolved,
+              allowed: !!payload.allowed,
+              alwaysAllow: !!payload.alwaysAllow,
+            },
+          } as view.CanonicalDTO;
+        } else if (
+          !canonical &&
+          mergedCanonical?.kind === "plan.approve_request" &&
+          mergedCanonical.planApprove
+        ) {
+          mergedCanonical = {
+            ...mergedCanonical,
+            planApprove: {
+              ...mergedCanonical.planApprove,
+              resolved: !!payload.resolved,
+              allowed: !!payload.allowed,
+            },
+          } as view.CanonicalDTO;
+        }
+        const merged: ChatBlockData = {
+          ...existing,
+          toolPermission: mergedSidecar,
+          canonical: mergedCanonical,
+        };
+        return {
+          ...cur,
+          liveBlocks: replaceBlock(cur.liveBlocks, targetIdx, merged),
+        };
+      }),
+    ),
+
+  appendLiveToolApproval: (sessionId, assistantMessageId, payload) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        if (!payload || !payload.requestId) return null;
+        const flushed = flushLiveDelta(cur);
+        return {
+          ...flushed,
+          liveBlocks: [
+            ...flushed.liveBlocks,
+            {
+              type: "tool_approval",
+              toolApproval: payload,
+            },
+          ],
+        };
+      }),
+    ),
+
+  markToolApprovalResolved: (sessionId, assistantMessageId, payload) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        if (!payload || !payload.requestId) return null;
+        const targetIdx = findLastBlockIndex(
+          cur.liveBlocks,
+          (b) =>
+            b.type === "tool_approval" &&
+            b.toolApproval?.requestId === payload.requestId,
+        );
+        // 未知 requestId no-op:不重建 Map,避免触发多余重渲染。
+        if (targetIdx < 0) return null;
+        const existing = cur.liveBlocks[targetIdx];
+        const merged: ChatBlockData = {
+          ...existing,
+          toolApproval: {
+            ...(existing.toolApproval ?? payload),
+            ...payload,
+          } as ToolApprovalData,
+        };
+        return {
+          ...cur,
+          liveBlocks: replaceBlock(cur.liveBlocks, targetIdx, merged),
+        };
+      }),
+    ),
+
+  mergeSubagentMeta: (sessionId, assistantMessageId, toolUseId, meta) =>
+    set((state) =>
+      updateStream(state, sessionId, assistantMessageId, (cur) => {
+        if (!toolUseId) return null;
+        const targetIdx = findLastBlockIndex(
+          cur.liveBlocks,
+          (b) => b.type === "tool_use" && b.toolUseId === toolUseId,
+        );
+        if (targetIdx < 0) return null;
+        const target = cur.liveBlocks[targetIdx];
+        const merged: ChatBlockData = {
+          ...target,
+          subagent: { ...(target.subagent ?? {}), ...meta },
+        };
+        return {
+          ...cur,
+          liveBlocks: replaceBlock(cur.liveBlocks, targetIdx, merged),
+        };
+      }),
+    ),
+
+  finishStream: (sessionId, assistantMessageId, event) =>
+    set((state) => {
+      const next = dropStream(state, sessionId, assistantMessageId);
+      // 排队消息属于「用户那一轮」。只有本会话再没有任何流在跑时才清空 —— 否则
+      // 一条自主续轮收尾会把用户排给活跃用户轮的消息误清掉。
+      if (!hasSessionStream(next, sessionId)) {
+        useQueuedMessagesStore.getState().clear(sessionId);
+      }
+      useSessionStatusStore.getState().bumpDone(sessionId, event as DoneEvent);
+      return next;
+    }),
+
+  consumeSteer: (sessionId, assistantMessageId, event) =>
+    set((state) => {
+      const perMessage = state.streams.get(sessionId);
+      const cur = perMessage?.get(assistantMessageId);
+      let streams = state.streams;
+      if (perMessage && cur) {
+        // steer 把本轮切到新的 assistant 占位 → 换 key 重挂,内容清零重来。
+        const nextId = event.assistantMessage?.id ?? cur.assistantMessageId;
+        const nextPerMessage = new Map(perMessage);
+        nextPerMessage.delete(assistantMessageId);
+        nextPerMessage.set(nextId, {
+          ...cur,
+          assistantMessageId: nextId,
           streamStartedAt: Date.now(),
           liveDelta: "",
           liveThinking: "",
@@ -640,6 +779,8 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
           // 新 assistant 段开始 → 清掉上一段的 compacting chip。
           liveCompacting: false,
         });
+        streams = new Map(state.streams);
+        streams.set(sessionId, nextPerMessage);
       }
 
       const ids = event.queuedIds ?? [];

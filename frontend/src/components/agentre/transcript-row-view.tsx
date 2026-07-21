@@ -491,7 +491,15 @@ function MessageBody({
 
 // ─── RenderItem → JSX ────────────────────────────────────────────────────────
 
-function RenderItemView({ item }: { item: TranscriptRowItem }) {
+// messageId 是本行所属的 assistant 消息 —— 审批 / 权限卡做乐观更新时要用它定位
+// chat-streams-store 里对应的那条流(一个会话可同时有多条流,只给 sessionId 定位不到)。
+function RenderItemView({
+  item,
+  messageId,
+}: {
+  item: TranscriptRowItem;
+  messageId: number;
+}) {
   const { t } = useTranslation();
   const ctx = React.useContext(TranscriptRenderContext);
   switch (item.type) {
@@ -537,6 +545,7 @@ function RenderItemView({ item }: { item: TranscriptRowItem }) {
         <CanonicalToolRouter
           cwd={ctx?.cwd}
           sessionId={ctx?.sessionId ?? 0}
+          messageId={messageId}
           resultBlock={item.resultBlock}
           toolBlock={item.toolBlock ?? { type: "tool_use" }}
           childBlocks={item.childBlocks}
@@ -552,6 +561,7 @@ function RenderItemView({ item }: { item: TranscriptRowItem }) {
         <CanonicalToolRouter
           cwd={ctx?.cwd}
           sessionId={ctx?.sessionId ?? 0}
+          messageId={messageId}
           toolBlock={item.block}
           onPlanActionStarted={ctx?.onPlanActionStarted}
           uiStateKey={item.uiStateKey}
@@ -687,7 +697,7 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
           time={formatHHmm(m.createtime)}
           meta={meta}
         >
-          <RenderItemView item={row.item} />
+          <RenderItemView item={row.item} messageId={row.messageId} />
           {tailAttachments}
         </ChatMessage>
       </>
@@ -701,7 +711,7 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
       <div aria-hidden className="w-7 shrink-0" />
       <div className="flex min-w-0 max-w-measure flex-1 flex-col gap-1">
         <div data-selectable-text="true" className="flex flex-col gap-2">
-          <RenderItemView item={row.item} />
+          <RenderItemView item={row.item} messageId={row.messageId} />
           {tailAttachments}
         </div>
         {meta ? (

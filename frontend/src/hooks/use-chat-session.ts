@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { LoadChatSession } from "../../wailsjs/go/app/App";
 import type { chat_svc } from "../../wailsjs/go/models";
 import { clientLog } from "@/lib/client-log";
-import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import {
+  hasSessionStream,
+  primaryStream,
+  streamForMessage,
+  useChatStreamsStore,
+} from "@/stores/chat-streams-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 import { useSessionWithOverlays } from "./use-session-with-overlays";
@@ -68,7 +73,7 @@ export function useChatSession(sessionId: number) {
       // 详情说 agentStatus="error"/"idle", 大概率是 reload 在 turn 起手前发起、
       // 响应到达时 Send 已经把 DB 翻 "running" —— 旧快照覆盖乐观值会让 tab
       // 翻红/翻灰而内容仍在流。命中即埋根因证据。
-      const live = useChatStreamsStore.getState().streams.get(sessionId);
+      const live = primaryStream(useChatStreamsStore.getState(), sessionId);
       if (
         live &&
         resp.session.agentStatus !== "running" &&
@@ -131,7 +136,10 @@ export function useChatSession(sessionId: number) {
             } as ChatMessage;
           }
           // 已有活跃 LiveStream 时不覆盖(避免打断正常 Send 已开的流)。
-          if (!streamsStore.streams.get(sessionId) && lastAssistant.id > 0) {
+          if (
+            !hasSessionStream(streamsStore, sessionId) &&
+            lastAssistant.id > 0
+          ) {
             streamsStore.openStream({
               name: resp.session.activeStream,
               sessionId,
@@ -142,9 +150,11 @@ export function useChatSession(sessionId: number) {
           for (const block of pendingApprovals) {
             const approval = block.toolApproval;
             if (!approval?.requestId) continue;
-            const liveNow = useChatStreamsStore
-              .getState()
-              .streams.get(sessionId);
+            const liveNow = streamForMessage(
+              useChatStreamsStore.getState(),
+              sessionId,
+              lastAssistant.id,
+            );
             const exists = liveNow?.liveBlocks.some(
               (b) =>
                 b.type === "tool_approval" &&
@@ -153,7 +163,7 @@ export function useChatSession(sessionId: number) {
             if (!exists) {
               useChatStreamsStore
                 .getState()
-                .appendLiveToolApproval(sessionId, approval);
+                .appendLiveToolApproval(sessionId, lastAssistant.id, approval);
             }
           }
         }

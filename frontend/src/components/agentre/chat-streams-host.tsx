@@ -2,7 +2,10 @@ import * as React from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { clientLog } from "@/lib/client-log";
-import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import {
+  streamForMessage,
+  useChatStreamsStore,
+} from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
@@ -28,15 +31,24 @@ function bumpSessionTabToAfterPinned(sessionId: number): void {
 //
 // 这里不该有任何业务判断,只做「Wails event → store action」一次翻译。
 export function ChatStreamsHost(): React.ReactElement | null {
-  // 只订阅「当前有哪些流」这一身份集合(sessionId + 事件流名),不订阅流内容。
+  // 只订阅「当前有哪些流」这一身份集合(sessionId + assistantMessageId + 事件流名),不订阅流内容。
   // appendLiveText 等每个 chunk 都重建 streams Map,但 host 只用 name 挂 EventsOn
-  // 订阅 + 用 sessionId 路由事件 —— 这两者在一条流的整个生命周期里都不变。把身份
-  // 编码成 `${sessionId}\n${name}` 的字符串数组(原始值,useShallow 可逐项浅比较),
+  // 订阅 + 用 (sessionId, assistantMessageId) 路由事件 —— 这些在一条流的整个生命周期里都不变。把身份
+  // 编码成 `${sessionId}\n${assistantMessageId}\n${name}` 的字符串数组(原始值,可逐项浅比较),
   // 内容变、身份集合不变时浅相等 → host 不再每 chunk 重渲染整棵订阅树;流增删时
-  // 数组变 → 正常重挂订阅。sessionId 为数字、name 为后端事件名,\n 不会出现在两者中。
+  // 数组变 → 正常重挂订阅。两个 id 为数字、name 为后端事件名,\n 不会出现在三者中。
+  //
+  // 注意这里是 **两层** 遍历:一个会话可同时有用户轮 / 自主续轮 / 后台 subagent 活动轮
+  // 三条流在跑,每条都要各自挂一个 EventsOn。早先按 sessionId 单条订阅,后台流一起来就会
+  // 把用户轮的订阅顶掉,那一轮剩下的事件全丢(sess-1950)。
   const streamKeys = useChatStreamsStore(
     useShallow((s) =>
-      Array.from(s.streams.values(), (st) => `${st.sessionId}\n${st.name}`),
+      Array.from(s.streams.values()).flatMap((perMessage) =>
+        Array.from(
+          perMessage.values(),
+          (st) => `${st.sessionId}\n${st.assistantMessageId}\n${st.name}`,
+        ),
+      ),
     ),
   );
   const appendLiveText = useChatStreamsStore((s) => s.appendLiveText);
@@ -81,7 +93,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
   const setLiveCompacting = useChatStreamsStore((s) => s.setLiveCompacting);
 
   const handleEvent = React.useCallback(
-    (sessionId: number, ev: ChatStreamEvent) => {
+    (sessionId: number, assistantMessageId: number, ev: ChatStreamEvent) => {
       // retry 是「正在等下次尝试」的瞬时态;下面这些进展事件到达就意味着上一次重试已经成功
       // 拿到了新内容,RetryNoticeCard 该撤掉。store 内部 null→null 是 referential no-op,
       // 这里只要在事件入口顺手调一次就够了。done/error/closed/aborted/steer_consumed
@@ -89,21 +101,21 @@ export function ChatStreamsHost(): React.ReactElement | null {
       switch (ev.kind) {
         case "chunk":
           if (ev.delta) {
-            clearLiveRetry(sessionId);
-            appendLiveText(sessionId, ev.delta);
+            clearLiveRetry(sessionId, assistantMessageId);
+            appendLiveText(sessionId, assistantMessageId, ev.delta);
           }
           return;
         case "thinking":
           if (ev.delta) {
-            clearLiveRetry(sessionId);
-            appendLiveThinking(sessionId, ev.delta);
+            clearLiveRetry(sessionId, assistantMessageId);
+            appendLiveThinking(sessionId, assistantMessageId, ev.delta);
           }
           return;
         case "tool_use":
           // toolUseId / toolName 任一存在才算有效 —— 与旧版 applyLiveToolUse 行为一致。
           if (!ev.toolUseId && !ev.toolName) return;
-          clearLiveRetry(sessionId);
-          appendLiveToolUse(sessionId, {
+          clearLiveRetry(sessionId, assistantMessageId);
+          appendLiveToolUse(sessionId, assistantMessageId, {
             toolUseId: ev.toolUseId,
             toolName: ev.toolName,
             toolInput: ev.toolInput,
@@ -114,12 +126,12 @@ export function ChatStreamsHost(): React.ReactElement | null {
           return;
         case "tool_result":
           if (!ev.toolUseId && typeof ev.toolResult === "undefined") return;
-          clearLiveRetry(sessionId);
+          clearLiveRetry(sessionId, assistantMessageId);
           // toolResultMeta 必传 —— claudecode TaskCreate 的真实 task id 走这里
           // 透出(meta.task.id),backend 的 task_aggregator 消费后合成 canonical.
           // PlanUpdate 推回前端。漏掉 → backend 拿不到 id → task-progress 列表里
           // 该任务永远停在 pending 且 TaskUpdate 找不到 id 落空。
-          appendLiveToolResult(sessionId, {
+          appendLiveToolResult(sessionId, assistantMessageId, {
             toolUseId: ev.toolUseId,
             text: ev.toolResult ?? "",
             isError: !!ev.isError,
@@ -131,12 +143,17 @@ export function ChatStreamsHost(): React.ReactElement | null {
         case "subagent_progress":
         case "subagent_done":
           if (ev.toolUseId && ev.subagent) {
-            clearLiveRetry(sessionId);
-            mergeSubagentMeta(sessionId, ev.toolUseId, ev.subagent);
+            clearLiveRetry(sessionId, assistantMessageId);
+            mergeSubagentMeta(
+              sessionId,
+              assistantMessageId,
+              ev.toolUseId,
+              ev.subagent,
+            );
           }
           return;
         case "retry":
-          setLiveRetry(sessionId, {
+          setLiveRetry(sessionId, assistantMessageId, {
             attempt: ev.retryAttempt ?? 0,
             maxAttempts: ev.retryMaxAttempts ?? 0,
             message: ev.retryMessage ?? "",
@@ -146,10 +163,11 @@ export function ChatStreamsHost(): React.ReactElement | null {
           return;
         case "ask_user_question":
           if (!ev.askUserQuestion) return;
-          clearLiveRetry(sessionId);
+          clearLiveRetry(sessionId, assistantMessageId);
           if (isResolvedAskState(ev.askUserQuestion)) {
             markAskUserQuestionAnswered(
               sessionId,
+              assistantMessageId,
               ev.askUserQuestion,
               ev.canonical,
             );
@@ -157,24 +175,31 @@ export function ChatStreamsHost(): React.ReactElement | null {
             bumpSessionTabToAfterPinned(sessionId);
             appendLiveAskUserQuestion(
               sessionId,
+              assistantMessageId,
               ev.askUserQuestion,
               ev.canonical,
             );
           }
           return;
         case "plan_update":
-          clearLiveRetry(sessionId);
-          appendLivePlanUpdate(sessionId, ev.delta ?? "", ev.canonical);
+          clearLiveRetry(sessionId, assistantMessageId);
+          appendLivePlanUpdate(
+            sessionId,
+            assistantMessageId,
+            ev.delta ?? "",
+            ev.canonical,
+          );
           return;
         case "tool_permission_request":
           if (!ev.toolPermission) return;
-          clearLiveRetry(sessionId);
+          clearLiveRetry(sessionId, assistantMessageId);
           // ev.canonical 必须随事件落到 store —— 后端 dispatcher_emitter 已经为
           // tool.permission / plan.approve_request 计算好 canonical, 漏传会让
           // CanonicalToolRouter fallback 到 RawToolCard (空标题 + 简化 overlay)。
           if (ev.toolPermission.resolved) {
             markToolPermissionResolved(
               sessionId,
+              assistantMessageId,
               ev.toolPermission,
               ev.canonical,
             );
@@ -182,6 +207,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
             bumpSessionTabToAfterPinned(sessionId);
             appendLiveToolPermissionRequest(
               sessionId,
+              assistantMessageId,
               ev.toolPermission,
               ev.canonical,
             );
@@ -190,7 +216,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
         case "tool_approval": {
           // 内置写工具审批。pending=新卡,其余=同 requestId 决议更新。
           if (!ev.requestId) return;
-          clearLiveRetry(sessionId);
+          clearLiveRetry(sessionId, assistantMessageId);
           const payload = {
             toolKey: ev.toolKey ?? "",
             requestId: ev.requestId,
@@ -201,9 +227,9 @@ export function ChatStreamsHost(): React.ReactElement | null {
           };
           if (ev.status === "pending") {
             bumpSessionTabToAfterPinned(sessionId);
-            appendLiveToolApproval(sessionId, payload);
+            appendLiveToolApproval(sessionId, assistantMessageId, payload);
           } else {
-            markToolApprovalResolved(sessionId, payload);
+            markToolApprovalResolved(sessionId, assistantMessageId, payload);
           }
           return;
         }
@@ -215,6 +241,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
           if ((ev.sessionStatus.contextWindow ?? 0) > 0) {
             patchLiveContextWindow(
               sessionId,
+              assistantMessageId,
               ev.sessionStatus.contextWindow ?? 0,
             );
           }
@@ -228,7 +255,11 @@ export function ChatStreamsHost(): React.ReactElement | null {
           // 末端 emit 走在 StreamError 之前但 StreamClosed 之后流就应当结束)。
           // 命中即埋根因证据, 一并打 prev/next/streamActive 让排查不用回放事件。
           if (hasStatus && nextStatus === "error") {
-            const live = useChatStreamsStore.getState().streams.get(sessionId);
+            const live = streamForMessage(
+              useChatStreamsStore.getState(),
+              sessionId,
+              assistantMessageId,
+            );
             if (live) {
               clientLog.warn(
                 "chat-streams-host",
@@ -273,7 +304,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
           // LiveStream.liveUsage 上让 Composer 进度条实时刷新。不动 liveRetry：
           // usage 帧本身不算「正在重试」的成功信号（chunk/tool_use 才算）。
           if (!ev.usage) return;
-          patchLiveUsage(sessionId, ev.usage);
+          patchLiveUsage(sessionId, assistantMessageId, ev.usage);
           return;
         case "compact_boundary":
           // claudecode CLI 通报上下文已压缩 (manual /compact 或 auto 阈值触发)。
@@ -281,8 +312,8 @@ export function ChatStreamsHost(): React.ReactElement | null {
           // + 折叠之前的旧消息。trigger / preTokens 不一定有,UI 退化即可。
           // store 内部同步把 liveCompacting 清回 false,不必再单独发 status:""。
           if (!ev.compact) return;
-          clearLiveRetry(sessionId);
-          appendLiveCompactBoundary(sessionId, {
+          clearLiveRetry(sessionId, assistantMessageId);
+          appendLiveCompactBoundary(sessionId, assistantMessageId, {
             preTokens: ev.compact.preTokens,
             trigger: ev.compact.trigger,
             at: ev.compact.at,
@@ -292,10 +323,14 @@ export function ChatStreamsHost(): React.ReactElement | null {
           // claudecode CLI 的会话级运行状态过渡 (manual /compact 或 auto 阈值开始
           // 时一帧 compacting:true,压缩结束由 compact_boundary 自动清旗)。
           if (!ev.runtimeStatus) return;
-          setLiveCompacting(sessionId, !!ev.runtimeStatus.compacting);
+          setLiveCompacting(
+            sessionId,
+            assistantMessageId,
+            !!ev.runtimeStatus.compacting,
+          );
           return;
         case "steer_consumed":
-          consumeSteer(sessionId, ev);
+          consumeSteer(sessionId, assistantMessageId, ev);
           return;
         case "done":
         case "error":
@@ -304,7 +339,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
           if (ev.kind !== "closed") {
             bumpSessionTabToAfterPinned(sessionId);
           }
-          finishStream(sessionId, ev);
+          finishStream(sessionId, assistantMessageId, ev);
           return;
       }
     },
@@ -335,14 +370,15 @@ export function ChatStreamsHost(): React.ReactElement | null {
   return (
     <>
       {streamKeys.map((key) => {
-        const sep = key.indexOf("\n");
-        const sessionId = Number(key.slice(0, sep));
-        const streamName = key.slice(sep + 1);
+        const [rawSessionId, rawMessageId, ...rest] = key.split("\n");
+        const sessionId = Number(rawSessionId);
+        const assistantMessageId = Number(rawMessageId);
+        const streamName = rest.join("\n");
         return (
           <StreamSubscriber
-            key={sessionId}
+            key={`${sessionId}:${assistantMessageId}`}
             streamName={streamName}
-            onEvent={(ev) => handleEvent(sessionId, ev)}
+            onEvent={(ev) => handleEvent(sessionId, assistantMessageId, ev)}
           />
         );
       })}

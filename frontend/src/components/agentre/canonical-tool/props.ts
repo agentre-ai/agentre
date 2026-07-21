@@ -16,6 +16,8 @@ export type CanonicalCardProps = {
   resultBlock?: ChatBlockData;
   cwd?: string;
   sessionId?: number;
+  /** 本卡所属的 assistant 消息 id —— 审批类卡片做乐观更新时用它定位对应的那条 LiveStream。 */
+  messageId?: number;
   onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void;
   /** Stable key for transcript-local UI state that must survive virtualization unmounts. */
   uiStateKey?: string;
