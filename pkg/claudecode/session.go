@@ -264,7 +264,8 @@ func (s *Session) route(f rawFrame, events []Event, done bool) {
 // subagentOwnerID 取一帧空闲后台 subagent 活动帧所属的 Agent 工具 tool_use_id。
 // 有效来源仅限 assistant/user 帧携带的 parent_tool_use_id —— 这是子 agent 内部
 // API 轮的归属标识符。系统帧(task_notification 等)不携带有效 owner:它们要么
-// 已被 isBackgroundTaskNotification 认领起自主续轮,要么在 isNonTurnFrame 被丢弃。
+// 已被 isBackgroundTaskNotification 认领起自主续轮,要么因 canStartUserTurn 为 false
+// 被丢弃。
 // 让 system 帧的 tool_use_id 充当 owner 会在空闲态收到非后台 task_notification
 // 时错误地开启一个活动轮,与无 user Turn 等待时的 Phase-1 丢弃语义冲突。
 // 取不到返回 ""(调用方按 Phase-1 丢弃)。
@@ -278,9 +279,9 @@ func subagentOwnerID(f rawFrame) string {
 // currentTurn 返回当前活跃轮;轮间(active==nil)时按归属规则建立新轮:
 //   - 活动轮收到「后台型完成通知」→ 收尾活动轮,落到下方起自主续轮。
 //   - 后台型 task_notification → 自主轮,经 autoCh 吐出,返回 nil(调用方丢弃起始标记)。
-//   - 非 turn 帧(control_response / 空闲 status)→ 返回 nil,不认领排队的 user Turn;
-//     否则读循环会被这些会话级帧卡死在 <-pendingTurns 上,后续 Turn / 自主轮再也读不
-//     到 stdout(见 isNonTurnFrame)。
+//   - 无资格起轮的帧(control_response / 空闲 status / 后台任务状态帧 / 任何未知
+//     类型)→ 返回 nil,不认领排队的 user Turn;否则读循环会被这些会话级帧卡死在
+//     <-pendingTurns 上,后续 Turn / 自主轮再也读不到 stdout(见 canStartUserTurn)。
 //   - 空闲后台 subagent 帧(有 owner) → 开活动轮,经 subagentCh 吐出,首帧也喂进去。
 //   - 空闲后台 subagent 帧(无 owner) → 丢弃(兜底,不卡读循环)。
 //   - 否则 → 取 FIFO 队首 user Turn(stdin 已写 → push 紧随,阻塞极短)。
@@ -316,12 +317,12 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 		}
 		return nil
 	}
-	if isNonTurnFrame(f) {
+	if !canStartUserTurn(f) {
 		// status:"compacting" 例外:它是手动 /compact 轮的起步首帧 —— 既是子进程「正在压缩、
 		// 还活着」的存活证据,又是该轮的进度信号。轮起步(active==nil)有 user Turn 排队时认领
 		// 它并把进度喂进去:让 runtime 起步看门狗解除(否则大上下文压缩 >120s 会被误判卡死硬杀
-		// 成 errStartupTimeout),前端也能显示「压缩中」。非阻塞 select 保住 isNonTurnFrame 的
-		// 「空闲态不认领排队轮」不变量:确有排队轮才认领,没有则退回按通用 non-turn 帧丢弃,
+		// 成 errStartupTimeout),前端也能显示「压缩中」。非阻塞 select 保住 canStartUserTurn 的
+		// 「无资格帧不认领排队轮」不变量:确有排队轮才认领,没有则退回按会话级帧丢弃,
 		// 不会把 readLoop 卡死在 <-pendingTurns 上。
 		if isCompactingStatusFrame(f) {
 			select {
@@ -355,51 +356,60 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 	return at
 }
 
-// isNonTurnFrame 判定一帧是否「不归属任何一轮」—— 即便在轮间(空闲)到达,也不该认领
-// 一个排队的 user Turn。三类:
-//   - control_response:control_request(Interrupt / SetPermissionMode)的回执,已在
-//     parseLine 阶段按 request_id dispatch 给等待者,不携带 turn 事件。
-//   - system{subtype:"status"}:会话级状态推送(permissionMode / 运行态),从不作为某
-//     一轮的起始帧 —— 轮内到达由 active 轮承接(currentTurn 在 active!=nil 时已先返回),
-//     空闲到达则无归属轮,其事件随 route 的 nil 返回被丢弃(set_permission_mode 的回执
-//     已由 SetPermissionMode 调用方拿到,主动切 mode 不依赖这条空闲 status)。
-//   - system{subtype:"task_started"/"task_updated"/"task_progress"/
-//     "background_tasks_changed"}:后台任务(及 subagent)生命周期的状态推送。真 CLI
-//     2.1.162 在后台任务完成、自主续轮的 task_notification 之前先吐一帧 task_updated
-//     (状态 patch);2.1.205 起在其更前面还先吐一帧 background_tasks_changed(后台任务
-//     清单变化)。它们空闲到达时既非后台 task_notification 也非 status,旧逻辑会把读循环
-//     卡死在 <-pendingTurns,后续 task_notification / 自主续轮永远读不到(sess-429 →
-//     sess-1535「续不上对话」复发,后者只是新增了 background_tasks_changed 这个 subtype)。
-//     这些状态帧从不作为一轮的起始帧:轮内到达由 active 轮承接,空闲到达直接丢弃。
-//     注意后台型 task_notification 不在此列 —— 它正是自主轮的起始标记(见
-//     isBackgroundTaskNotification),由 currentTurn 在本判定之前优先处理。
-func isNonTurnFrame(f rawFrame) bool {
-	if f.Type == "control_response" {
+// canStartUserTurn 判定一帧是否有资格认领一个排队中的 user Turn(pendingTurns 队首)。
+//
+// 这里刻意是**正向白名单**:只有「轮内容帧」——即 parseLine 会为其产出 turn 事件的
+// 那几类 —— 才允许起一轮;其余一律不认领,空闲到达时直接丢弃。
+//
+//   - assistant / user / stream_event / result:一轮的正文与收尾。
+//   - system{subtype:"init"}:每轮起手的会话初始化帧,通常就是一轮的首帧。
+//   - system{subtype:"compact_boundary"}:压缩轮的正文帧(压缩轮首帧是
+//     status:"compacting",见 isCompactingStatusFrame 的非阻塞认领)。
+//
+// 其余全部返回 false,含:control_response(control_request 的回执,已在 parseLine
+// 按 request_id dispatch 给等待者)、system{subtype:"status"}(会话级状态推送)、
+// 后台任务生命周期帧(task_started / task_updated / task_progress /
+// background_tasks_changed / task_notification)、以及**任何未知的 system 子类型或
+// 未知顶层类型**。
+//
+// 为什么是白名单而不是黑名单:这里原本是一张「非 turn 帧」黑名单,CLI 每加一个会话级
+// 子类型就要手工补一个名字,补漏一次就是一次生产事故 —— 帧落到函数末尾的
+// `<-s.pendingTurns` 上永久阻塞,readLoop 死掉,该 session 之后既收不到任何 CLI 输出
+// (自主续轮再也浮不出来),也拿不到任何 control_request 回执(SetPermissionMode 永久
+// 挂起 → 前端「发不出去」且无报错)。已经复发三次:
+//
+//	sess-429  (CLI 2.1.162 新增 task_updated)
+//	sess-1535 (CLI 2.1.205 新增 background_tasks_changed)
+//	sess-2014 (CLI 2.1.216 新增 post_turn_summary / task_summary / hook_* /
+//	           session_state_changed)
+//
+// 反转成白名单后,默认行为从「阻塞」变成「丢弃」:CLI 将来再加新帧类型,最坏是少渲染
+// 一条会话级状态,而不是整条会话卡死。
+func canStartUserTurn(f rawFrame) bool {
+	switch f.Type {
+	case "assistant", "user", "stream_event", "result":
 		return true
-	}
-	if f.Type != "system" {
-		return false
-	}
-	switch f.Subtype {
-	case "status", "task_started", "task_updated", "task_progress", "background_tasks_changed":
-		return true
+	case "system":
+		return f.Subtype == "init" || f.Subtype == "compact_boundary"
 	}
 	return false
 }
 
 // isCompactingStatusFrame 判定一帧是否是 status:"compacting" —— 手动 /compact(及自动
-// 压缩)起步时 CLI 立刻推的进度帧。它虽属 system{subtype:"status"}(被 isNonTurnFrame 归为
-// 会话级帧),但在轮起步、有 user Turn 排队时必须由 currentTurn 认领该轮:它是压缩进行中
-// 子进程仍存活的唯一信号,丢了会让 runtime 起步看门狗把一次正常的长压缩误判为卡死。
+// 压缩)起步时 CLI 立刻推的进度帧。它虽属 system{subtype:"status"}(canStartUserTurn
+// 为 false 的会话级帧),但在轮起步、有 user Turn 排队时必须由 currentTurn 认领该轮:
+// 它是压缩进行中子进程仍存活的唯一信号,丢了会让 runtime 起步看门狗把一次正常的长压缩
+// 误判为卡死。
 func isCompactingStatusFrame(f rawFrame) bool {
 	return f.Type == "system" && f.Subtype == "status" && f.Status == "compacting"
 }
 
 // isIdleBackgroundSubagentFrame 判定一帧是否为「后台 subagent(run_in_background 的
 // Agent/Task 工具)在空闲态(轮间)产生的内部活动」。这类帧既非后台型 task_notification
-// (isBackgroundTaskNotification 已在 currentTurn 中先行认领、起自主续轮),也不在
-// isNonTurnFrame 的会话级白名单里,但同样不该认领一个排队的 user Turn —— 否则 readLoop
-// 卡死在 <-pendingTurns 上,后台 subagent 完成的续轮永远读不到(与 sess-429 同类)。
+// (isBackgroundTaskNotification 已在 currentTurn 中先行认领、起自主续轮),又恰好是
+// canStartUserTurn 放行的 assistant / user 帧,但同样不该认领一个排队的 user Turn ——
+// 否则 readLoop 卡死在 <-pendingTurns 上,后台 subagent 完成的续轮永远读不到
+// (与 sess-429 同类)。
 //
 // 真 CLI 2.1.185 抓帧实测:后台 subagent 起一轮后主 agent 即 result 收尾、会话转空闲,
 // 子 agent 的内部子对话随后在空闲态实时流出。两类需要在此拦下:

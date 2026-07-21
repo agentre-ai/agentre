@@ -3,6 +3,7 @@ package claudecode
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"regexp"
@@ -1276,4 +1277,138 @@ func TestSession_IdleBackgroundSubagentKeepsReaderAlive(t *testing.T) {
 	ch2, err := sess.Turn(ctx, "beta")
 	require.NoError(t, err)
 	assert.Equal(t, "echo:beta", drainText(t, ch2))
+}
+
+// fakeIdleSessionLevelSystemFrames 复刻 CLI 2.1.216 的「后台任务空闲完成」帧序 ——
+// 与 fakeBackgroundTasksChanged(2.1.205)的差别:2.1.216 在 result#1 之后、后台任务
+// 状态帧之前,还会先吐若干**新增的**会话级 system 子类型:
+//
+//	result#1 → post_turn_summary → task_summary → hook_started → hook_response
+//	→ session_state_changed → background_tasks_changed → task_updated
+//	→ task_notification(后台型) → init → assistant → result#2
+//
+// 这几个新 subtype 都不在旧 isNonTurnFrame 白名单里(该白名单每次 CLI 升级都要手工
+// 补名字:2.1.162 补 task_updated、2.1.205 补 background_tasks_changed),空闲到达时
+// 会被当成 turn 起始帧卡死在 <-pendingTurns 上 —— 后面的 task_notification / 自主
+// 续轮永远读不到,且该 session 的 control_request 回执也再无人 dispatch
+// (sess-2014「会话还在跑但发不出去、也收不到新内容」)。
+func fakeIdleSessionLevelSystemFrames(stdin io.Reader, stdout io.Writer) {
+	const sid = "sess-idle-system-frames"
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	turn := 0
+	for sc.Scan() {
+		turn++
+		reply := extractTextField(sc.Text())
+		if turn == 1 {
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 18","run_in_background":true}}]}}`)
+			writeFrame(stdout, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Command running in background with ID: bg1"}]}}`)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a2","content":[{"type":"text","text":"started:%s"}]}}`, reply)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+			// —— 空闲:2.1.216 新增的会话级 system 帧,一帧都不该认领排队的 user Turn ——
+			writeFrame(stdout, `{"type":"system","subtype":"post_turn_summary","detail":"","session_id":%q}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"task_summary","detail":"1 background task","session_id":%q}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"hook_started","hook_id":"h1","hook_name":"post-tool","hook_event":"PostToolUse","session_id":%q}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"hook_response","hook_id":"h1","session_id":%q}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"session_state_changed","state":"idle","session_id":%q}`, sid)
+			// —— 已知的后台任务帧序(2.1.205 起)——
+			writeFrame(stdout, `{"type":"system","subtype":"background_tasks_changed","tasks":[],"session_id":%q}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"task_updated","task_id":"bg1","patch":{"status":"completed"},"session_id":%q}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"task_notification","task_id":"bg1","tool_use_id":"tu1","status":"completed","output_file":"/tmp/tasks/bg1.output","summary":"Background command completed"}`)
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a3","content":[{"type":"text","text":"autonomous:listing"}]}}`)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":2,"output_tokens":2}}`, sid)
+			continue
+		}
+		writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+		writeFrame(stdout, `{"type":"assistant","message":{"id":"a4","content":[{"type":"text","text":"echo:%s"}]}}`, reply)
+		writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+	}
+}
+
+// TestSession_IdleSessionLevelSystemFramesKeepReaderAlive 钉死 sess-2014:CLI 升级
+// 新增的会话级 system 子类型(post_turn_summary / task_summary / hook_* /
+// session_state_changed)空闲到达时,不得认领排队的 user Turn、不得卡死 readLoop。
+//
+// 这是同一个坑的第三次复发(sess-429 → sess-1535 → sess-2014),所以断言的是**类**
+// 而不是某个具体 subtype:白名单已反转成 canStartUserTurn,任何非「轮内容帧」的
+// system 子类型(含将来新增的)都必须走丢弃路径。
+func TestSession_IdleSessionLevelSystemFramesKeepReaderAlive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeIdleSessionLevelSystemFrames))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// (a) Turn1 干净收尾,不吞自主续轮帧。
+	ch1, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	got1 := drainText(t, ch1)
+	assert.Equal(t, "started:alpha", got1)
+	assert.NotContains(t, got1, "autonomous", "Turn1 不应吞掉自主续轮帧")
+
+	// (b) 新增会话级 system 帧空闲到达不得卡死读循环:自主续轮必须仍能浮现。
+	var at *AutoTurn
+	select {
+	case at = <-sess.AutonomousTurns():
+	case <-time.After(2 * time.Second):
+		t.Fatal("会话级 system 帧(post_turn_summary/task_summary/hook_*/session_state_changed)" +
+			"空闲到达后读循环卡死:自主续轮从未到达(该帧落入 <-pendingTurns 阻塞)")
+	}
+	require.NotNil(t, at)
+	assert.Equal(t, "background_task", at.Trigger)
+	assert.Equal(t, "autonomous:listing", drainText(t, at.Events))
+
+	// (c) Turn2 无错位 —— 读循环仍然活着,后续 user 轮能正常起。
+	ch2, err := sess.Turn(ctx, "beta")
+	require.NoError(t, err)
+	assert.Equal(t, "echo:beta", drainText(t, ch2))
+}
+
+// TestCanStartUserTurn 锁死反转后的归属白名单:只有「轮内容帧」有资格认领排队的
+// user Turn,其余一律不认领(未知帧默认丢弃,而不是把 readLoop 卡死)。
+func TestCanStartUserTurn(t *testing.T) {
+	parse := func(s string) rawFrame {
+		var f rawFrame
+		if err := json.Unmarshal([]byte(s), &f); err != nil {
+			t.Fatalf("bad fixture: %v", err)
+		}
+		return f
+	}
+
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"assistant 帧", `{"type":"assistant","message":{"id":"a1","content":[]}}`, true},
+		{"user 帧", `{"type":"user","message":{"content":[]}}`, true},
+		{"result 帧", `{"type":"result","subtype":"success"}`, true},
+		{"stream_event 帧", `{"type":"stream_event","event":{"type":"message_start"}}`, true},
+		{"system init 帧", `{"type":"system","subtype":"init","model":"m"}`, true},
+		{"system compact_boundary 帧", `{"type":"system","subtype":"compact_boundary"}`, true},
+
+		{"system status 帧", `{"type":"system","subtype":"status","status":"compacting"}`, false},
+		{"system task_started", `{"type":"system","subtype":"task_started","task_id":"bg1"}`, false},
+		{"system task_updated", `{"type":"system","subtype":"task_updated","task_id":"bg1"}`, false},
+		{"system task_progress", `{"type":"system","subtype":"task_progress","task_id":"bg1"}`, false},
+		{"system background_tasks_changed", `{"type":"system","subtype":"background_tasks_changed"}`, false},
+		{"system task_notification", `{"type":"system","subtype":"task_notification","task_id":"bg1"}`, false},
+		// —— 2.1.216 新增,以及一切将来新增的 system 子类型 ——
+		{"system post_turn_summary", `{"type":"system","subtype":"post_turn_summary"}`, false},
+		{"system task_summary", `{"type":"system","subtype":"task_summary"}`, false},
+		{"system hook_started", `{"type":"system","subtype":"hook_started","hook_id":"h1"}`, false},
+		{"system session_state_changed", `{"type":"system","subtype":"session_state_changed"}`, false},
+		{"system 未知子类型", `{"type":"system","subtype":"brand_new_subtype_from_the_future"}`, false},
+		{"control_response", `{"type":"control_response","response":{"request_id":"r1"}}`, false},
+		{"未知顶层类型", `{"type":"queue-operation","operation":"enqueue"}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, canStartUserTurn(parse(c.line)))
+		})
+	}
 }

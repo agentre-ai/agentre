@@ -248,7 +248,7 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 // SetPermissionMode 实现 PermissionModeSetter。语义同顶层 SetPermissionMode。
 //
 // CLI 切换成功后必须同步 active.permissionMode 快照:CLI 的空闲 status 回显帧被
-// demux reader 丢弃(pkg/claudecode session.go isNonTurnFrame),复用进程的下一轮
+// demux reader 丢弃(pkg/claudecode session.go canStartUserTurn),复用进程的下一轮
 // 也不重发 mode —— 不写这里,快照会停留在 spawn 时的值,handleControlRequest 的
 // bypassPermissions 短路就会吞掉本应弹审批的 control_request。
 func (r *Runtime) SetPermissionMode(ctx context.Context, sessionID int64, mode string) error {
