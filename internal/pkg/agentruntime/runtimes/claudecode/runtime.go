@@ -332,6 +332,11 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	// stream.Next() 拿到 EOF 解阻塞、本轮以 errStartupTimeout 收尾,而不是永久挂起。
 	// 首帧到达即解除看门狗 —— 合法的长 turn(等审批 / 长工具调用都在首帧之后)不受影响;
 	// 起步之后的中途卡死由 CLI 自身 MCP_TOOL_TIMEOUT / approvalTimeout 兜底,不归这里管。
+	//
+	// 带外轮豁免:本 session 上有自主续轮 / 后台 subagent 活动轮在流时,帧流被它占着,
+	// 本轮的 user 帧虽已写进 stdin,但真 CLI 要等那一轮 result 之后才为它起 init ——
+	// 「没帧」此刻是排队而非卡死。超时点命中带外轮时重新起表而不是杀,否则会硬杀一个
+	// 健康子进程,同时腰斩正在流的那轮带外输出(sess-1950)。
 	firstFrame := make(chan struct{})
 	var firstFrameOnce sync.Once
 	signalFirstFrame := func() { firstFrameOnce.Do(func() { close(firstFrame) }) }
@@ -340,15 +345,27 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		timer := time.NewTimer(r.startupTimeout)
 		go func() {
 			defer timer.Stop()
-			select {
-			case <-firstFrame:
-			case <-timer.C:
-				startupKilled.Store(true)
-				logger.Ctx(ctx).Warn("claudecode runtime: no frame within startup timeout, killing wedged subprocess",
-					zap.Int64("sessionID", req.SessionID),
-					zap.String("providerSessionID", a.handle.ID()),
-					zap.Duration("startupTimeout", r.startupTimeout))
-				_ = a.handle.Kill(ctx)
+			for {
+				select {
+				case <-firstFrame:
+					return
+				case <-timer.C:
+					if a.outOfBandActive() {
+						logger.Ctx(ctx).Info("claudecode runtime: startup watchdog deferred, out-of-band turn holds the frame stream",
+							zap.Int64("sessionID", req.SessionID),
+							zap.String("providerSessionID", a.handle.ID()),
+							zap.Duration("startupTimeout", r.startupTimeout))
+						timer.Reset(r.startupTimeout)
+						continue
+					}
+					startupKilled.Store(true)
+					logger.Ctx(ctx).Warn("claudecode runtime: no frame within startup timeout, killing wedged subprocess",
+						zap.Int64("sessionID", req.SessionID),
+						zap.String("providerSessionID", a.handle.ID()),
+						zap.Duration("startupTimeout", r.startupTimeout))
+					_ = a.handle.Kill(ctx)
+					return
+				}
 			}
 		}()
 	}

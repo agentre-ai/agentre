@@ -328,6 +328,114 @@ func TestRun_StartupWatchdogKillsWedgedTurn(t *testing.T) {
 	})
 }
 
+// busyUntilCCStream 模拟「子进程健康但忙」:Next() 阻塞到 released 关闭才结束。
+// 对应真实形态 —— CLI 正在跑自主续轮,pkg/claudecode.Session 的活跃槽位被自主轮
+// 占着,排队中的 user Turn 在自主轮 result 之前一帧都收不到(真 CLI 2.1.216 抓帧
+// 实证:mid-turn 写进 stdin 的 user 帧被 CLI 排到当前轮 result 之后才起 init)。
+// killed 用于让 Kill 也能解阻塞(硬杀 → stdout EOF)。
+type busyUntilCCStream struct {
+	released chan struct{}
+	killed   chan struct{}
+}
+
+func (s *busyUntilCCStream) Next() bool {
+	select {
+	case <-s.released:
+	case <-s.killed:
+	}
+	return false
+}
+func (s *busyUntilCCStream) Event() claudecode.Event { return claudecode.Event{} }
+func (s *busyUntilCCStream) SessionID() string       { return "" }
+
+// TestRun_UserTurnQueuedBehindAutonomousTurnIsNotStartupKilled 钉死 sess-1950:
+// 用户在「后台任务完成的自主续轮」进行中又发了一条消息。
+//
+// 真实链路(真 CLI 2.1.216 抓帧实证):自主续轮占着 Session 的活跃槽位,新 user Turn
+// 的 user 帧虽已写进 stdin,但 CLI 要等当前轮 result 之后才为它起 init —— 即排队中的
+// user turn 在自主续轮结束前 **一帧都收不到**。这不是卡死:子进程健康、正在为自主轮
+// 正常产出。
+//
+// 但 startup 看门狗只认「本 turn 起步后 startupTimeout 内无帧」,分不清「卡死」和
+// 「排在自主续轮后面」。自主续轮跑超过 startupTimeout(生产默认 120s;sess-1950 的
+// 自主轮跑了 3m35s)时,它会 **硬杀一个健康的子进程**:user turn 以 errStartupTimeout
+// 失败,正在流的自主续轮也被腰斩(readLoop 拿 EOF → 活跃轮 channel 被 close)。
+//
+// 期望:自主续轮在飞期间,看门狗不得杀子进程。
+func TestRun_UserTurnQueuedBehindAutonomousTurnIsNotStartupKilled(t *testing.T) {
+	Convey("自主续轮在飞时排队的 user turn 不该被 startup 看门狗硬杀", t, func() {
+		killed := make(chan struct{})
+		autoDone := make(chan struct{})
+		// 自主续轮仍在流:AutonomousTurns 已吐出一轮,其 Events 尚未 close。
+		autoTurns := make(chan *claudecode.AutoTurn, 1)
+		autoEvents := make(chan claudecode.Event)
+		autoTurns <- &claudecode.AutoTurn{
+			Events:        autoEvents,
+			SessionID:     "sess-busy",
+			Trigger:       "background_task",
+			CompletedTask: &claudecode.CompletedBackgroundTask{ToolUseID: "tu1", Status: "completed"},
+		}
+
+		h := &fakeCCHandle{
+			id:        "busy-with-autonomous-turn",
+			killed:    killed,
+			autoTurns: autoTurns,
+			stream:    &busyUntilCCStream{released: autoDone, killed: killed},
+		}
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			return h, nil
+		})
+		defer restore()
+
+		r := New()
+		r.startupTimeout = 100 * time.Millisecond
+		ctx := context.Background()
+
+		events, result, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 1950,
+			Cwd:       t.TempDir(),
+			UserText:  "给 e2e 补一个 AI 场景 spec",
+		})
+		So(err, ShouldBeNil)
+
+		// 镜像 chat_svc.startAutonomousWatcher:Run 之后惰性订阅并并发 drain 自主轮。
+		autoDrained := make(chan struct{})
+		go func() {
+			defer close(autoDrained)
+			for at := range r.AutonomousTurns(1950) {
+				for range at.Events { //nolint:revive // drain
+				}
+			}
+		}()
+
+		// 自主续轮比 startupTimeout 跑得久(生产里 3m35s vs 120s)。
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			close(autoEvents) // 自主轮自然收尾
+			close(autoTurns)  // 没有更多自主轮
+			close(autoDone)   // CLI 这才为排队的 user turn 起 init
+		}()
+
+		done := make(chan struct{})
+		go func() {
+			for range events { //nolint:revive // drain
+			}
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("Run events channel 没关闭")
+		}
+
+		// 核心断言:健康的子进程不该被杀 —— 杀了它就等于腰斩正在流的自主续轮。
+		So(atomic.LoadInt32(&h.killCalls), ShouldEqual, 0)
+		So(errors.Is(result.StopErr, errStartupTimeout), ShouldBeFalse)
+		r.CloseAllSessions(ctx)
+	})
+}
+
 // TestRun_NoChatRepoRegistered 回归 daemon 路径下的 nil panic:
 // agentred daemon 不 bootstrap cago/chat_repo,Runtime.acquireSession 旧实现
 // 直接调 chat_repo.Session().UpdatePermissionModeAtLaunch,在 chat_repo 未
