@@ -127,6 +127,7 @@ func TestStreamDiagnosticsIncludeFinalErrorFrameAndStderrTail(t *testing.T) {
 
 	for s.Next() {
 	}
+	<-s.proc.stderrDone
 
 	d := s.Diagnostics()
 	assert.Equal(t, "agent_end", d.FinalErrorEventType)
@@ -150,6 +151,7 @@ func TestStreamDiagnosticsTruncateLongStderrTail(t *testing.T) {
 
 	for s.Next() {
 	}
+	<-s.proc.stderrDone
 
 	d := s.Diagnostics()
 	assert.Len(t, d.StderrTail, diagnosticStderrTailLimit)

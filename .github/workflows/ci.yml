@@ -78,10 +78,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/go/bin/wails
-          key: ${{ runner.os }}-wails-v2.10.2
+          key: ${{ runner.os }}-wails-v2.12.0
       - name: Install Wails CLI
         if: steps.cache-wails.outputs.cache-hit != 'true'
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
       - name: Create frontend dist placeholder
         run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
       - name: Generate Wails bindings
@@ -122,11 +122,11 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/go/bin/wails
-          key: ${{ runner.os }}-wails-v2.10.2
+          key: ${{ runner.os }}-wails-v2.12.0
 
       - name: Install Wails CLI
         if: steps.cache-wails.outputs.cache-hit != 'true'
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
       - name: Cache Playwright browsers
         id: cache-playwright
