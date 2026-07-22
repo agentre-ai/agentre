@@ -8,6 +8,7 @@ import { ListChatAgents } from "../../../wailsjs/go/app/App";
 import { useChatAgentsStore } from "../chat-agents-store";
 import { useSessionMetaStore } from "../session-meta-store";
 import { useSessionStatusStore } from "../session-status-store";
+import { useChatStreamsStore } from "../chat-streams-store";
 
 const listChatAgents = ListChatAgents as ReturnType<typeof vi.fn>;
 
@@ -17,6 +18,37 @@ describe("chat-agents-store", () => {
     useChatAgentsStore.getState().__reset();
     useSessionMetaStore.getState().__reset();
     useSessionStatusStore.getState().__reset();
+    useChatStreamsStore.setState({ streams: new Map() });
+  });
+
+  it("does not let an idle list snapshot override running while a live stream is active", async () => {
+    useSessionStatusStore.getState().upsert(9, {
+      agentStatus: "running",
+      needsAttention: false,
+    });
+    useChatStreamsStore.getState().openStream({
+      name: "chat:event:9:42",
+      sessionId: 9,
+      assistantMessageId: 42,
+      streamStartedAt: 123,
+    });
+    listChatAgents.mockResolvedValueOnce({
+      agents: [
+        {
+          id: 1,
+          name: "Eng",
+          pinned: false,
+          chattable: true,
+          sessions: [{ id: 9, status: "idle", needsAttention: false }],
+        },
+      ],
+    });
+
+    await useChatAgentsStore.getState().reload();
+
+    expect(useSessionStatusStore.getState().statuses.get(9)?.agentStatus).toBe(
+      "running",
+    );
   });
 
   it("reload 拉新数据并写入 agents", async () => {

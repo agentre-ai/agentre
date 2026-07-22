@@ -185,6 +185,14 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 	}
 
 	final := chatMessageForEvent(sess, assistantMsg)
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+		Kind: StreamSessionStatus,
+		SessionStatus: &ChatSessionStatusPatch{
+			AgentStatus:    sess.AgentStatus,
+			NeedsAttention: sess.NeedsAttention,
+			BgRunning:      s.bgRunningActive(sess.ID),
+		},
+	})
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
 }

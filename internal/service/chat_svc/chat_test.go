@@ -2537,6 +2537,26 @@ func TestSend_CodexPlanEmptyTurnPersistsFallbackText(t *testing.T) {
 		t.Fatalf("expected TextBlock, got %T", gotBlocks[0])
 	}
 	assert.Contains(t, text, "Plan mode completed")
+
+	// 正常收尾也必须在 StreamDone 前主动发布 idle。否则前端会先删除
+	// LiveStream（底部停止输出），tab 却仍保留上一帧 running，直到异步 reload 完成。
+	doneIdx, idleIdx := -1, -1
+	for i, ev := range m.events {
+		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+		if !ok {
+			continue
+		}
+		if idleIdx < 0 && payload.Kind == chat_svc.StreamSessionStatus &&
+			payload.SessionStatus != nil && payload.SessionStatus.AgentStatus == "idle" {
+			idleIdx = i
+		}
+		if doneIdx < 0 && payload.Kind == chat_svc.StreamDone {
+			doneIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, idleIdx, 0, "正常收尾缺 session_status(idle)")
+	require.GreaterOrEqual(t, doneIdx, 0, "正常收尾缺 StreamDone")
+	assert.Less(t, idleIdx, doneIdx, "session_status(idle) 必须先于 StreamDone")
 }
 
 func TestSend_StreamErrorEventCarriesFinalAssistantMessage(t *testing.T) {
@@ -3334,7 +3354,7 @@ func TestRegenerate_PersistFailureDoesNotPersistRunning(t *testing.T) {
 // TestSend_AskUserQuestionFlipsSessionToWaiting:
 //   - 收到 EventAskUserQuestion 应 emit StreamSessionStatus{agentStatus=waiting, needsAttention=true}
 //   - 收到 EventAskUserQuestionAnswered 应 emit StreamSessionStatus{agentStatus=running, needsAttention=false}
-//   - turn 收尾后 session 最终落库 AgentStatus=idle + NeedsAttention=false
+//   - turn 收尾后落库并 emit StreamSessionStatus{agentStatus=idle, needsAttention=false}
 func TestSend_AskUserQuestionFlipsSessionToWaiting(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := m.ctx
@@ -3363,11 +3383,13 @@ func TestSend_AskUserQuestionFlipsSessionToWaiting(t *testing.T) {
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 
 	patches := captureSessionStatusPatches(m.events)
-	require.Len(t, patches, 2, "AskUserQuestion + Answered 各 emit 一帧 StreamSessionStatus")
+	require.Len(t, patches, 3, "AskUserQuestion + Answered + turn 收尾各 emit 一帧 StreamSessionStatus")
 	assert.Equal(t, "waiting", patches[0].AgentStatus)
 	assert.True(t, patches[0].NeedsAttention)
 	assert.Equal(t, "running", patches[1].AgentStatus)
 	assert.False(t, patches[1].NeedsAttention)
+	assert.Equal(t, "idle", patches[2].AgentStatus)
+	assert.False(t, patches[2].NeedsAttention)
 
 	require.NotEmpty(t, *captured, "session 至少落库一次")
 	final := (*captured)[len(*captured)-1]
@@ -3625,7 +3647,7 @@ func toolResultIDForTest(t *testing.T, b blocks.ContentBlock) string {
 }
 
 // TestSend_ToolPermissionFlipsSessionToWaiting: ToolPermissionRequest / Resolved
-// 对称走 ask 一样的 waiting → running 翻转。
+// 对称走 ask 一样的 waiting → running → idle 翻转。
 func TestSend_ToolPermissionFlipsSessionToWaiting(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := m.ctx
@@ -3653,11 +3675,13 @@ func TestSend_ToolPermissionFlipsSessionToWaiting(t *testing.T) {
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 
 	patches := captureSessionStatusPatches(m.events)
-	require.Len(t, patches, 2, "ToolPermission Request + Resolved 各 emit 一帧 StreamSessionStatus")
+	require.Len(t, patches, 3, "ToolPermission Request + Resolved + turn 收尾各 emit 一帧 StreamSessionStatus")
 	assert.Equal(t, "waiting", patches[0].AgentStatus)
 	assert.True(t, patches[0].NeedsAttention)
 	assert.Equal(t, "running", patches[1].AgentStatus)
 	assert.False(t, patches[1].NeedsAttention)
+	assert.Equal(t, "idle", patches[2].AgentStatus)
+	assert.False(t, patches[2].NeedsAttention)
 
 	require.NotEmpty(t, *captured)
 	final := (*captured)[len(*captured)-1]

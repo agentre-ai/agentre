@@ -207,10 +207,10 @@ func TestClientStream_ResumeThread(t *testing.T) {
 	assert.Equal(t, "thread-old", stream.SessionID())
 }
 
-func TestClientStreamInput_SendsLocalImage(t *testing.T) {
+func TestClientStreamInput_SendsImageWithoutText(t *testing.T) {
 	// Given a Codex app-server that accepts multimodal user input,
-	// when the client starts a turn with text and a local image,
-	// then turn/start receives both input items.
+	// when the client starts a turn with only a local image,
+	// then turn/start receives the image without placeholder text.
 	runner := &fakeAppServerRunner{t: t}
 	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
 		sc := bufio.NewScanner(h.stdinR)
@@ -226,7 +226,6 @@ func TestClientStreamInput_SendsLocalImage(t *testing.T) {
 		assert.JSONEq(t, `{
 			"threadId":"thread-image",
 			"input":[
-				{"type":"text","text":"describe this","text_elements":[]},
 				{"type":"localImage","path":"/tmp/screenshot.png","detail":"high"}
 			]
 		}`, string(turnReq.Params))
@@ -238,7 +237,6 @@ func TestClientStreamInput_SendsLocalImage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	stream, err := client.StreamInput(ctx, []UserInput{
-		TextInput("describe this"),
 		LocalImageInput("/tmp/screenshot.png", ImageDetailHigh),
 	})
 	require.NoError(t, err)
@@ -1228,6 +1226,51 @@ type fakeAppServerRunner struct {
 
 	mu   sync.Mutex
 	opts []procOptions
+}
+
+func TestClientStream_DoesNotBlockTurnStartResponseBehindNotificationBurst(t *testing.T) {
+	// Given app-server emits more notifications than the legacy incoming buffer
+	// before its turn/start response, when a turn starts, then the response must
+	// still be routed and the queued notifications must remain consumable.
+	runner := &fakeAppServerRunner{t: t}
+	runner.handler = func(t *testing.T, h *fakeAppServerHandle) {
+		sc := bufio.NewScanner(h.stdinR)
+		respondAppServerInit(t, h, sc)
+		respondThreadStart(t, h, sc, `{"approvalPolicy":"never"}`, "thread-burst")
+
+		turnReq := readRPCReq(t, sc)
+		assert.Equal(t, "turn/start", turnReq.Method)
+		for i := 0; i < 129; i++ {
+			h.send(map[string]any{
+				"method": "thread/tokenUsage/updated",
+				"params": map[string]any{"threadId": "thread-burst"},
+			})
+		}
+		respondRPC(h, turnReq, map[string]any{"turn": map[string]any{"id": "turn-burst", "status": "inProgress"}})
+		h.send(map[string]any{
+			"method": "turn/completed",
+			"params": map[string]any{
+				"threadId": "thread-burst",
+				"turnId":   "turn-burst",
+				"turn":     map[string]any{"id": "turn-burst", "status": "completed"},
+			},
+		})
+	}
+
+	client := New(WithAppServerRunnerForTesting(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	stream, err := client.Stream(ctx, "burst")
+	require.NoError(t, err)
+	done := false
+	for stream.Next() {
+		if stream.Event().Kind == EventDone {
+			done = true
+		}
+	}
+	require.NoError(t, stream.Close(ctx))
+	assert.True(t, done, "stream ended without EventDone")
 }
 
 func (r *fakeAppServerRunner) Start(ctx context.Context, opts procOptions) (processHandle, error) {

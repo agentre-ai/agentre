@@ -137,6 +137,23 @@ func TestDriveAutonomousTurn_PersistsPureAssistantTurn(t *testing.T) {
 
 		convey.Convey("session 收尾翻 idle", func() {
 			assert.Equal(t, "idle", sess.AgentStatus)
+			var idleIdx, doneIdx = -1, -1
+			for i, ev := range m.events {
+				p, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+				if !ok {
+					continue
+				}
+				if idleIdx < 0 && p.Kind == chat_svc.StreamSessionStatus &&
+					p.SessionStatus != nil && p.SessionStatus.AgentStatus == "idle" {
+					idleIdx = i
+				}
+				if doneIdx < 0 && p.Kind == chat_svc.StreamDone {
+					doneIdx = i
+				}
+			}
+			require.GreaterOrEqual(t, idleIdx, 0, "自主轮收尾缺 session_status(idle)")
+			require.GreaterOrEqual(t, doneIdx, 0, "自主轮收尾缺 StreamDone")
+			assert.Less(t, idleIdx, doneIdx, "自主轮 idle 必须先于 StreamDone")
 		})
 	})
 }

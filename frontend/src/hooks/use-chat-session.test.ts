@@ -294,6 +294,43 @@ describe("useChatSession", () => {
     expect(live?.assistantMessageId).toBe(1);
   });
 
+  it("does not let an idle detail snapshot override running while a live stream is active", async () => {
+    act(() => {
+      useSessionStatusStore.getState().upsert(9, {
+        agentStatus: "running",
+        needsAttention: false,
+      });
+      useChatStreamsStore.getState().openStream({
+        name: "chat:event:9:42",
+        sessionId: 9,
+        assistantMessageId: 42,
+        streamStartedAt: 123,
+      });
+    });
+    loadChatSession.mockResolvedValueOnce({
+      session: {
+        id: 9,
+        agentId: 1,
+        agentName: "Eng",
+        title: "x",
+        agentStatus: "idle",
+        lastMessageAt: 0,
+        createtime: 0,
+      },
+      messages: [
+        { id: 42, sessionId: 9, role: "assistant", blocks: [], seq: 1 },
+      ],
+    });
+
+    const { result } = renderHook(() => useChatSession(9));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.session?.agentStatus).toBe("running");
+    expect(useSessionStatusStore.getState().statuses.get(9)?.agentStatus).toBe(
+      "running",
+    );
+  });
+
   it("returns null when sessionId is 0", async () => {
     const { result } = renderHook(() => useChatSession(0));
     await waitFor(() => expect(result.current.loading).toBe(false));

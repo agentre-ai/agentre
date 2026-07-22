@@ -55,7 +55,7 @@ func newCaptureClient(stdout string) (*Client, *captureProc) {
 	return New(WithRPCProcessRunnerForTesting(&captureRunner{proc: proc})), proc
 }
 
-func TestStreamPromptCarriesImages(t *testing.T) {
+func TestStreamPromptCarriesImagesWithoutText(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"agent_end","messages":[]}`,
@@ -63,7 +63,7 @@ func TestStreamPromptCarriesImages(t *testing.T) {
 	}, "\n")
 	client, proc := newCaptureClient(script)
 
-	s, err := client.Stream(context.Background(), "what color?", WithImages([]Image{
+	s, err := client.Stream(context.Background(), "", WithImages([]Image{
 		{Data: []byte{1, 2, 3}, MimeType: "image/png"},
 	}))
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestStreamPromptCarriesImages(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(first), &frame))
 
 	assert.Equal(t, "prompt", frame.Type)
-	assert.Equal(t, "what color?", frame.Message)
+	assert.Empty(t, frame.Message)
 	require.Len(t, frame.Images, 1)
 	assert.Equal(t, "image", frame.Images[0].Type)
 	assert.Equal(t, "image/png", frame.Images[0].MimeType)

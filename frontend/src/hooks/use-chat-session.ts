@@ -9,7 +9,10 @@ import {
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
-import { useSessionStatusStore } from "@/stores/session-status-store";
+import {
+  normalizeSessionSnapshot,
+  useSessionStatusStore,
+} from "@/stores/session-status-store";
 import { useSessionWithOverlays } from "./use-session-with-overlays";
 import type { AgentStatus } from "@/stores/types";
 
@@ -71,8 +74,8 @@ export function useChatSession(sessionId: number) {
       //
       // 诊断: LoadChatSession 是异步 DB 快照。若本 sid 仍有活跃 LiveStream 而
       // 详情说 agentStatus="error"/"idle", 大概率是 reload 在 turn 起手前发起、
-      // 响应到达时 Send 已经把 DB 翻 "running" —— 旧快照覆盖乐观值会让 tab
-      // 翻红/翻灰而内容仍在流。命中即埋根因证据。
+      // 响应到达时 Send 已经把 DB 翻 "running"。normalizeSessionSnapshot 会忽略
+      // 这次旧状态覆盖；这里保留诊断证据。
       const live = primaryStream(useChatStreamsStore.getState(), sessionId);
       if (
         live &&
@@ -82,7 +85,7 @@ export function useChatSession(sessionId: number) {
         const prev = useSessionStatusStore.getState().statuses.get(sessionId);
         clientLog.warn(
           "use-chat-session",
-          "LoadChatSession upsert about to override agentStatus while LiveStream is active",
+          "ignored stale LoadChatSession agentStatus while LiveStream is active",
           {
             sessionId,
             prevAgentStatus: prev?.agentStatus,
@@ -91,13 +94,18 @@ export function useChatSession(sessionId: number) {
           },
         );
       }
-      useSessionStatusStore.getState().upsert(sessionId, {
-        // Wails boundary: backend sends agentStatus as string; cast to AgentStatus.
-        agentStatus: resp.session.agentStatus as AgentStatus,
-        needsAttention: resp.session.needsAttention,
-        permissionMode: resp.session.permissionMode,
-        bgRunning: resp.session.bgRunning ?? false,
-      });
+      const snapshot = normalizeSessionSnapshot(
+        sessionId,
+        {
+          // Wails boundary: backend sends agentStatus as string; cast to AgentStatus.
+          agentStatus: resp.session.agentStatus as AgentStatus,
+          needsAttention: resp.session.needsAttention,
+          permissionMode: resp.session.permissionMode,
+          bgRunning: resp.session.bgRunning ?? false,
+        },
+        !!live,
+      );
+      useSessionStatusStore.getState().upsert(sessionId, snapshot);
       // 重挂活跃 turn 的实时流。自主轮 / subagent 子轮等"非前端发起"的 turn 没有 Send
       // 响应入口给出 per-turn 流名,中途打开会话就看不到"生成中"和流式内容 ——
       // LoadSession 在有活跃 turn 时回传 activeStream,这里据此 openStream 续看。

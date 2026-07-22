@@ -219,6 +219,37 @@ describe("ChatComposer context meter", () => {
     });
   });
 
+  it("Given only an image attachment, When Enter is pressed, Then it submits without placeholder text", async () => {
+    const onSubmit = vi.fn();
+    const { container } = render(<ChatComposer onSubmit={onSubmit} />);
+    const input = container.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+      type: "image/png",
+    });
+
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => {
+      expect(screen.getByAltText("shot.png")).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith({
+        text: "",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+    });
+  });
+
   it("Given an image on the clipboard, When it is pasted into the composer, Then it is added as an attachment", async () => {
     const onSubmit = vi.fn();
     render(<ChatComposer onSubmit={onSubmit} />);

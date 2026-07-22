@@ -612,6 +612,21 @@ function ChatComposer({
   // （TipTap editor / 按钮）时都会冒泡到 form，preventDefault 拦掉默认 tab 切换。
   // 编辑模式下不消费 Shift+Tab，让无障碍 tab 反向焦点正常工作。
   function handleFormKeyDown(event: React.KeyboardEvent<HTMLFormElement>) {
+    if (
+      !editing &&
+      isEmpty &&
+      images.length > 0 &&
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.nativeEvent.isComposing
+    ) {
+      event.preventDefault();
+      handleSend("");
+      return;
+    }
     if (editing && event.key === "Escape") {
       event.preventDefault();
       onCancelEdit?.();

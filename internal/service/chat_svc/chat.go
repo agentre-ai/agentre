@@ -2782,11 +2782,10 @@ func (s *chatSvc) runTurn(
 		zap.Bool("needsAttention", sess.NeedsAttention),
 		zap.Bool("aborted", aborted),
 		zap.Int("pending", len(pending)))
-	// 末端状态翻转主动推一帧 session_status:后台 session 出错/等审批时,前端 tab
-	// 只订阅本会话 stream,StreamError 走 finishStream→bumpDone 不动 agentStatus,
-	// 不补一刀 tab 红点要等下次 ListChatAgents 才同步。idle 不发 —— turn 正常收尾
-	// 走 StreamDone,前端 chat-panel doneTick effect 会 reloadSession 主动拉一次。
-	if (stopErr != nil && !aborted) || awaitingPlanAction {
+	// 最后一轮收尾统一先推 session_status，再推 done/error/aborted。前端底部输出由
+	// LiveStream 生命周期驱动，tab/toolbar/sidebar 由 session-status-store 驱动；若
+	// idle 只靠 done 后异步 reload 回填，两套视图必然存在不一致窗口。
+	if len(pending) == 0 {
 		logger.Ctx(finalCtx).Info("chat_svc: session_status emit",
 			zap.Int64("sessionId", sess.ID),
 			zap.Int64("assistantMsgId", assistantMsg.ID),
@@ -2839,6 +2838,14 @@ func (s *chatSvc) runTurn(
 		sess.AgentStatus = "idle"
 		sess.NeedsAttention = false
 		_ = s.persistSessionStatus(finalCtx, sess)
+		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+			Kind: StreamSessionStatus,
+			SessionStatus: &ChatSessionStatusPatch{
+				AgentStatus:    sess.AgentStatus,
+				NeedsAttention: sess.NeedsAttention,
+				BgRunning:      s.bgRunningActive(sess.ID),
+			},
+		})
 	}
 
 	final := chatMessageForEvent(sess, assistantMsg)

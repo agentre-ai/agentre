@@ -19,6 +19,7 @@ import type { chat_svc } from "../../wailsjs/go/models";
 
 import { hasSessionStream, useChatStreamsStore } from "./chat-streams-store";
 import {
+  normalizeSessionSnapshot,
   useSessionStatusStore,
   type SessionStatusPatch,
 } from "./session-status-store";
@@ -103,10 +104,10 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
         // bulkUpsert 内部逐条同值短路, 一刷只在真有差异时才换 Map 引用。
         const entries: [number, SessionStatusPatch][] = [];
         // 诊断: ListChatAgents 是远 DB 异步快照, 与 stream 内乐观写 / session_status
-        // 推帧之间存在 race。命中以下两类时打 warn, 是排查「tab 翻红但内容还在流」
-        // 的关键线索:
+        // 推帧之间存在 race。命中以下两类时打 warn, 是排查状态时序的关键线索:
         //   (a) sid 有活跃 LiveStream 但快照说 status="error" / "idle" —— 说明
-        //       响应是 Send 把 DB 翻 "running" 之前抓的旧快照, 即将覆盖乐观 "running"。
+        //       响应是 Send 把 DB 翻 "running" 之前抓的旧快照；统一归一化入口会
+        //       忽略它对实时运行态的覆盖。
         //   (b) sid 没有活跃 stream 但快照与 store 现值不一致, 仅 dev 调试观察用。
         const streamsState = useChatStreamsStore.getState();
         const statusesState = useSessionStatusStore.getState();
@@ -123,7 +124,7 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
                 snapshotStatus !== "waiting"
               ) {
                 console.warn(
-                  "[chat-agents-store] bulkUpsert about to override agentStatus while LiveStream is active",
+                  "[chat-agents-store] ignored stale agentStatus snapshot while LiveStream is active",
                   {
                     sessionId: s.id,
                     prevAgentStatus: prev.agentStatus,
@@ -134,11 +135,15 @@ export const useChatAgentsStore = create<State & Actions>((set) => ({
             }
             entries.push([
               s.id,
-              {
-                agentStatus: snapshotStatus,
-                needsAttention: s.needsAttention ?? false,
-                bgRunning: s.bgRunning ?? false,
-              },
+              normalizeSessionSnapshot(
+                s.id,
+                {
+                  agentStatus: snapshotStatus,
+                  needsAttention: s.needsAttention ?? false,
+                  bgRunning: s.bgRunning ?? false,
+                },
+                hasActiveStream,
+              ),
             ]);
           }
         }
