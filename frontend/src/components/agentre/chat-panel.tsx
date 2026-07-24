@@ -109,6 +109,7 @@ import {
   SendChatMessage,
   SetChatGoal,
   StartChatGoal,
+  StopBackgroundTask,
   StopChatMessage,
   TerminalRunCommand,
 } from "../../../wailsjs/go/app/App";
@@ -910,6 +911,7 @@ function ChatPanel({
   );
   const caps = sessionCaps ?? backendCaps;
   const isModeSwitchable = !!caps?.has("set_permission_mode");
+  const canStopBackgroundTask = !!caps?.has("stop_background_task");
   const supportsImageInput = !!caps?.has("image_input");
   const supportsCompactRPC = caps
     ? caps.has("compact")
@@ -945,10 +947,33 @@ function ChatPanel({
   const handleClearCompleted = React.useCallback(() => {
     if (sessionId <= 0) return;
     const doneIds = backgroundTasks
-      .filter((tk) => tk.status === "completed" || tk.status === "failed")
+      .filter((tk) => tk.status !== "running")
       .map((tk) => tk.toolUseId);
     clearCompletedTasks(sessionId, doneIds);
   }, [sessionId, backgroundTasks, clearCompletedTasks]);
+  // handleStopSubagent 停掉一个正在运行的后台任务/子 agent(下发 CLI stop_task,按发起它的
+  // tool_use_id 定位;后端从持久化 subagent_state 读出 CLI task_id)。停成功后把块翻 canceled,
+  // reload 让面板/卡片显示「已停止」。后台任务面板与转录 AgentSpawn 卡片共用它。
+  const handleStopSubagent = React.useCallback(
+    async (toolUseId: string) => {
+      if (sessionId <= 0 || !toolUseId) return;
+      try {
+        await StopBackgroundTask({ sessionId, toolUseId });
+        await reloadSession();
+      } catch (e: unknown) {
+        const { msg, detail } = splitErrorDetail(e);
+        console.error("[chat] stop background task failed", e);
+        setNotice({
+          kind: "error",
+          text: t("chatPanel.errors.stopBackgroundTask", { msg }),
+          detail,
+        });
+        // 后端没停成(如缺 task_id / 已 evict):reload 把真实状态拉回,避免按钮点了没反应。
+        await reloadSession();
+      }
+    },
+    [sessionId, reloadSession, t],
+  );
   // PermissionMode pill 数据从 caps.permissionModeMeta 拉;caps 未到位时
   // 用空 meta 做 placeholder(pill 整体被 isModeSwitchable 守护)。
   const permissionModeMeta = caps?.permissionModeMeta ?? {
@@ -1854,6 +1879,11 @@ function ChatPanel({
                         <BackgroundTasksChip
                           tasks={backgroundTasks}
                           onClearCompleted={handleClearCompleted}
+                          onStopTask={
+                            canStopBackgroundTask
+                              ? (task) => handleStopSubagent(task.toolUseId)
+                              : undefined
+                          }
                         />
                         {(() => {
                           // canStop 双源：
@@ -2011,6 +2041,9 @@ function ChatPanel({
                     onRerun={(messageId) => void handleRegenerate(messageId)}
                     onEdit={(messageId) => handleEdit(messageId)}
                     onPlanActionStarted={handlePlanActionStarted}
+                    onStopSubagent={
+                      canStopBackgroundTask ? handleStopSubagent : undefined
+                    }
                     tabStateKey={scrollStateKey}
                   />
                   {showBackToBottom ? (

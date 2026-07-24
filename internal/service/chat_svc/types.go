@@ -755,6 +755,20 @@ type StopResponse struct {
 	Stopped bool `json:"stopped"`
 }
 
+// StopBackgroundTaskRequest 用户点某条后台任务 / 子 agent 的「停止」。ToolUseID 是发起它
+// 的 tool_use_id（前后端统一 join key）；chat_svc 据此从持久化 subagent_state 块读出 CLI
+// task_id 再下发 stop_task —— 停的是这一个后台任务，不是整个 turn。
+type StopBackgroundTaskRequest struct {
+	SessionID int64  `json:"sessionId"`
+	ToolUseID string `json:"toolUseId"`
+}
+
+// StopBackgroundTaskResponse Stopped=true 表示 stop_task 已下发（或任务已是终态 / 已被
+// evict，按幂等成功处理）。前端乐观把该行翻「已停止」并 reload 对齐 DB。
+type StopBackgroundTaskResponse struct {
+	Stopped bool `json:"stopped"`
+}
+
 // SetPermissionModeRequest 用户切换 CLI 会话模式。
 // claudecode 可取 {default, acceptEdits, plan, bypassPermissions}；
 // codex 可取 {default, plan}。

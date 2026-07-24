@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent/mcpbridge"
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
@@ -141,6 +144,18 @@ func sessionFilePath(dir string, sessionID int64) string {
 	return filepath.Join(dir, fmt.Sprintf("agentre-%d.jsonl", sessionID))
 }
 
+// piRawFrameSink 返回一个把 pi-agent 每行原始 stdout 帧打到 debug 日志的回调。
+// 语义同 claudecode 的 ccRawFrameSink:由「Debug Logging」开关热控(关时 zap 直接丢弃,
+// 近零开销),用 logger.Default() 取当前全局 logger 故热重载即时生效。
+func piRawFrameSink(sessionID int64, providerSessionID string) func([]byte) {
+	return func(line []byte) {
+		logger.Default().Debug("piagent runtime: raw frame",
+			zap.Int64("sessionID", sessionID),
+			zap.String("providerSessionID", providerSessionID),
+			zap.ByteString("frame", line))
+	}
+}
+
 var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cwd string) (sessionHandle, error) {
 	binary := strings.TrimSpace(req.Backend.CLIPath)
 	if binary == "" {
@@ -175,6 +190,7 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 		piagent.WithModel(model),
 		piagent.WithSystemPrompt(req.SystemPrompt),
 		piagent.WithThinking(req.Backend.ReasoningEffort),
+		piagent.WithRawSink(piRawFrameSink(req.SessionID, req.ProviderSessionID)),
 	}
 	if extPath != "" {
 		opts = append(opts, piagent.WithExtension(extPath))

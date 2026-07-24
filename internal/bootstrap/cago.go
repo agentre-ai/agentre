@@ -17,6 +17,7 @@ import (
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/claudeskill"  // 触发 discoverer init 注册
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/codexskill"   // 触发 discoverer init 注册
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/piagentskill" // 触发 discoverer init 注册
+	"github.com/agentre-ai/agentre/internal/pkg/ctlendpoint"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
 	"github.com/agentre-ai/agentre/internal/pkg/sysnotify"
@@ -33,6 +34,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/agent_backend_svc"
 	"github.com/agentre-ai/agentre/internal/service/app_settings_svc"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
+	"github.com/agentre-ai/agentre/internal/service/ctl_svc"
 	"github.com/agentre-ai/agentre/internal/service/hooktool_svc"
 	"github.com/agentre-ai/agentre/internal/service/issue_svc"
 	"github.com/agentre-ai/agentre/internal/service/notification_svc"
@@ -164,6 +166,18 @@ func Init(ctx context.Context) (*Runtime, error) {
 	gw.RegisterMCP("/mcp/hook/", hooktool_svc.Default().MCPHandler())
 	hooktool_svc.Default().SetGatewayBaseURL(gw.BaseURL())
 	chat_svc.RegisterTurnMCPProvider(hooktool_svc.Default().BuildTurnMCP)
+
+	// 本地控制 API(/ctl/*):供外部 `agentre ctl` CLI 驱动——列 agent/项目、给指定 agent
+	// 建会话并派发任务(等价于「@ 某 agent 发消息」),无需注入 MCP。deps 走 repo/svc 单例
+	// (chat 网关懒解析 chat_svc.Chat(),兼容 RegisterChat 尚未执行的时序)。BaseURL 就绪后把
+	// 「实际 URL + 控制 token」写进 AppDataDir 的握手文件,CLI 据此定位并鉴权。
+	ctl_svc.Default().RegisterDeps(agent_repo.Agent(), ctl_svc.ProjectSvcGateway(), ctl_svc.ChatSvcGateway())
+	gw.RegisterControl(ctl_svc.Default().ControlHandler())
+	if base := gw.BaseURL(); base != "" {
+		if err := ctlendpoint.Write(dataDir, ctlendpoint.Endpoint{URL: base, Token: ctl_svc.Default().Token()}); err != nil {
+			logger.Default().Warn("ctl endpoint file write", zap.Error(err))
+		}
+	}
 	// 远端执行(agentred):daemon 上 CLI 子进程访问内置工具 MCP(org/subagent/
 	// hook)会被 daemon 改写成 daemon 本地 URL,再经 WS 反向请求隧道回 desktop。这里
 	// 装配把隧道请求重放到 desktop 本机 gateway 的 dispatcher。无 client 超时:approval 类

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,11 @@ type Session struct {
 	proc *process
 
 	scanner *bufio.Scanner
+
+	// rawSink 若非 nil,readLoop 每读到一行非空 stdout 就同步回调一次(未解析的
+	// stream-json 帧)。debug 级原始帧转储用;由 OpenSession 从 Client.rawSink 注入。
+	// 回调收到的 []byte 是 scanner 复用缓冲,不得跨调用留存。
+	rawSink func([]byte)
 
 	sessionID string // 由 system init 帧填入；首次 Turn 后稳定
 	model     string // 由 system init 帧 model 字段填入；新一轮如果换 model CLI 会重新发 init
@@ -74,9 +80,9 @@ type Session struct {
 	// task_notification」开头 → 自主轮(经 autoCh 吐出);否则按 FIFO 取一个 pendingTurns
 	// 里等待的 user Turn。
 	sinkMu       sync.Mutex
-	active       *activeTurn      // 当前正在投递帧的轮;nil = 轮间空闲
-	pendingTurns chan *activeTurn // 已写 stdin、等待其帧到达的 user Turn(FIFO)
-	autoCh       chan *AutoTurn   // AutonomousTurns() 返回的 channel;子进程退出时 close
+	active       *activeTurn            // 当前正在投递帧的轮;nil = 轮间空闲
+	pendingTurns chan *activeTurn       // 已写 stdin、等待其帧到达的 user Turn(FIFO)
+	autoCh       chan *AutoTurn         // AutonomousTurns() 返回的 channel;子进程退出时 close
 	subagentCh   chan *SubagentActivity // 后台 subagent 活动轮的出口(无消费方时缓冲兜底)
 
 	// readerDone 在 readLoop 收尾(子进程 EOF / Close)时 close。等 control_response
@@ -154,6 +160,7 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 	s := &Session{
 		proc:         p,
 		scanner:      sc,
+		rawSink:      c.rawSink,
 		sessionID:    spec.sessionID,
 		pendingTurns: make(chan *activeTurn, 4),
 		autoCh:       make(chan *AutoTurn, 8),
@@ -244,6 +251,9 @@ func (s *Session) readLoop() {
 		if len(line) == 0 {
 			continue
 		}
+		if s.rawSink != nil {
+			s.rawSink(line)
+		}
 		events, done := s.parseLine(line) // 同时把 control_response dispatch 给 ctrlPending
 		var f rawFrame
 		_ = json.Unmarshal(line, &f) // 仅供归属判定(后台型 task_notification)
@@ -319,7 +329,7 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 			CompletedTask: &CompletedBackgroundTask{
 				ToolUseID: f.ToolUseID,
 				TaskID:    f.TaskID,
-				Status:    f.Status,
+				Status:    normalizeTaskStatus(f.Status),
 				Summary:   f.Summary,
 			},
 		}
@@ -554,6 +564,14 @@ func (s *Session) parseLine(line []byte) ([]Event, bool) {
 		}
 		return nil, false
 	case "assistant":
+		// isApiErrorMessage:true —— CLI 合成的 API 错误帧(model:"<synthetic>"),不是模型
+		// 正文。翻成 EventError 走上层 stopErr → error_text → 独立 ErrorCard,不拼进文本
+		// block(见 sess-2153)。非终结:turn 结束仍由随后的 result 帧驱动。
+		if f.IsAPIErrorMessage {
+			if ev, ok := apiErrorEvent(f, s.sessionID); ok {
+				return []Event{ev}, false
+			}
+		}
 		events, usage := parseAssistantContentWithUsage(f.Message, s.sessionID, f.ParentToolUseID)
 		// 仅记录主 agent 帧的 usage：parent_tool_use_id != "" 的帧来自 Task/Agent
 		// subagent 内部 API call，那是独立 Anthropic 会话（自己的 system prompt /
@@ -706,6 +724,74 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+// StopTask 写一帧 control_request{subtype:"stop_task", task_id:…} 让 CLI 停掉某个
+// 具体的后台任务(run_in_background Bash / subagent),而非中断整个 turn —— 后台任务
+// 在 turn 结束后仍存活,常驻 readLoop 在轮间照样 dispatch control_response(见
+// SetPermissionMode 注释),所以空闲态也能停。CLI 停掉任务后会另发一帧后台型
+// task_notification(status cancelled/failed),经既有自主续轮把 subagent_state 翻终态。
+//
+// 调用约束同 Interrupt:与 Turn 可并发(只持 stdinMu 写帧);Close 后返错。
+// CLI 若回执 not_found / not_running(任务已自然结束/竞态)视为幂等成功返 nil。
+func (s *Session) StopTask(ctx context.Context, taskID string) error {
+	s.stdinMu.Lock()
+	if s.closed {
+		s.stdinMu.Unlock()
+		return errors.New("claudecode: session closed")
+	}
+	reqID := newControlRequestID()
+	ch := make(chan controlResponse, 1)
+	s.ctrlMu.Lock()
+	if s.ctrlPending == nil {
+		s.ctrlPending = map[string]chan controlResponse{}
+	}
+	s.ctrlPending[reqID] = ch
+	s.ctrlMu.Unlock()
+
+	frame := map[string]any{
+		"type":       "control_request",
+		"request_id": reqID,
+		"request":    map[string]any{"subtype": "stop_task", "task_id": taskID},
+	}
+	enc, mErr := json.Marshal(frame)
+	if mErr != nil {
+		s.stdinMu.Unlock()
+		s.forgetControlRequest(reqID)
+		return mErr
+	}
+	if _, err := fmt.Fprintf(s.proc.stdin, "%s\n", enc); err != nil {
+		s.stdinMu.Unlock()
+		s.forgetControlRequest(reqID)
+		return err
+	}
+	s.stdinMu.Unlock()
+
+	defer s.forgetControlRequest(reqID)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.readerDone:
+		return s.controlRequestAbortedErr("stop_task")
+	case resp := <-ch:
+		return stopTaskResponseErr(resp)
+	}
+}
+
+// stopTaskResponseErr 把 control_response 翻成 StopTask 返回错误。subtype=="success"
+// → nil;CLI 报 not_found / not_running 表示任务已不在跑,当幂等成功;其它 subtype
+// 带原始 error 文本以便排查。
+func stopTaskResponseErr(resp controlResponse) error {
+	if resp.Subtype == "success" {
+		return nil
+	}
+	if strings.Contains(resp.Error, "not_found") || strings.Contains(resp.Error, "not_running") {
+		return nil
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("claudecode: stop_task rejected: %s", resp.Error)
+	}
+	return fmt.Errorf("claudecode: stop_task rejected (subtype=%q)", resp.Subtype)
 }
 
 // controlRequestAbortedErr 给「readLoop 已收尾、回执不可能再来」的等待者一个明确
@@ -900,6 +986,41 @@ func isZeroUsage(u *rawUsage) bool {
 		u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0
 }
 
+// apiErrorEvent 把 CLI 的 isApiErrorMessage:true 合成 assistant 帧翻成 EventError。
+//
+// 文本取 message.content 里第一个非空 text block(即 "API Error: ..." 提示);缺失时
+// 用顶层 error 分类码(f.ErrorField)兜底。两个 decoder —— Session.parseLine 与
+// frameDecoder.decodeLine —— 共用本函数,避免平行副本漂移。返回 (Event{}, false)
+// 表示这帧没有可用文本,调用方回退到正常 assistant 解析(不吞帧)。
+func apiErrorEvent(f rawFrame, sid string) (Event, bool) {
+	text := firstAssistantText(f.Message)
+	if text == "" {
+		text = f.ErrorField
+	}
+	if text == "" {
+		return Event{}, false
+	}
+	return Event{Kind: EventError, SessionID: sid, Err: &APIError{Text: text, Code: f.ErrorField}}, true
+}
+
+// firstAssistantText 返回 assistant message.content 里第一个非空 text block 的文本;
+// 没有则返回空串。
+func firstAssistantText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m rawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	for _, c := range m.Content {
+		if c.Type == "text" && c.Text != "" {
+			return c.Text
+		}
+	}
+	return ""
+}
+
 func parseAssistantContentWithUsage(raw json.RawMessage, sid, parentToolUseID string) ([]Event, *rawUsage) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -1026,7 +1147,7 @@ func parseSystemTask(f rawFrame, sid string) (Event, bool) {
 		TaskDescription: f.Description,
 		Prompt:          f.Prompt,
 		LastToolName:    f.LastToolName,
-		Status:          f.Status,
+		Status:          normalizeTaskStatus(f.Status),
 	}
 	if len(f.Usage) > 0 {
 		var u taskUsage

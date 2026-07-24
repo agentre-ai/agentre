@@ -200,6 +200,8 @@ type fakeCCHandle struct {
 	id                     string
 	setPermissionModeCalls []string
 	setPermissionModeErr   error
+	stopTaskCalls          []string // 记录 StopTask 收到的 taskID
+	stopTaskErr            error
 	stream                 ccStream
 	// gotPrompt / gotImages 记录最近一次 Stream 收到的入参,Run 透传断言用。
 	gotPrompt string
@@ -231,6 +233,10 @@ func (f *fakeCCHandle) Kill(context.Context) error {
 func (f *fakeCCHandle) SetPermissionMode(_ context.Context, mode string) error {
 	f.setPermissionModeCalls = append(f.setPermissionModeCalls, mode)
 	return f.setPermissionModeErr
+}
+func (f *fakeCCHandle) StopTask(_ context.Context, taskID string) error {
+	f.stopTaskCalls = append(f.stopTaskCalls, taskID)
+	return f.stopTaskErr
 }
 func (f *fakeCCHandle) RespondToControl(_ context.Context, _ string, res claudecode.PermissionResult) error {
 	if f.respondedResults != nil {
@@ -623,6 +629,41 @@ func TestAutonomousTurns_BridgesCompletedTask(t *testing.T) {
 		So(got.CompletedTask.Summary, ShouldEqual, "sum")
 
 		r.CloseAllSessions(ctx)
+	})
+}
+
+// TestRuntime_StopBackgroundTask 钉死 BackgroundTaskStopper:turn 结束(idle)后仍能
+// 按 task_id 停后台任务(不校验 inTurn);空 taskID / 会话不在缓存的错误路径。
+func TestRuntime_StopBackgroundTask(t *testing.T) {
+	Convey("turn 结束后仍下发 stop_task(不要求 inTurn)", t, func() {
+		h := &fakeCCHandle{id: "fake-sid", stream: &eventCCStream{events: []claudecode.Event{{Kind: claudecode.EventDone}}}}
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) { return h, nil })
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		events, _, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 42,
+			Cwd:       t.TempDir(),
+			UserText:  "start a bg task",
+		})
+		So(err, ShouldBeNil)
+		for range events { //nolint:revive // drain 到 turn 结束(inTurn=false)
+		}
+
+		So(r.StopBackgroundTask(ctx, 42, "b0n82mqaj"), ShouldBeNil)
+		So(h.stopTaskCalls, ShouldResemble, []string{"b0n82mqaj"})
+		r.CloseAllSessions(ctx)
+	})
+
+	Convey("空 taskID 直接返错,不下发", t, func() {
+		So(New().StopBackgroundTask(context.Background(), 42, ""), ShouldNotBeNil)
+	})
+
+	Convey("会话不在缓存(已 evict/未 spawn)→ ErrNoActiveTurn", t, func() {
+		err := New().StopBackgroundTask(context.Background(), 999, "b0n82mqaj")
+		So(errors.Is(err, agentruntime.ErrNoActiveTurn), ShouldBeTrue)
 	})
 }
 

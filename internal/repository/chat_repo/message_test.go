@@ -35,6 +35,50 @@ func (m blocksJSONContainsMatcher) Match(v driver.Value) bool {
 	return true
 }
 
+// TestFindSubagentStateInBlocksJSON 单测按 toolUseID 读出 subagent_state 的 task_id +
+// status(供 StopBackgroundTask 定位 CLI task_id)。
+func TestFindSubagentStateInBlocksJSON(t *testing.T) {
+	const input = `[` +
+		`{"type":"subagent_state","data":{"parent_tool_call_id":"tu1","task_id":"b0n82mqaj","kind":"local_bash","status":"running"}},` +
+		`{"type":"text","data":{"text":"hi"}}` +
+		`]`
+
+	t.Run("命中返回 task_id + status", func(t *testing.T) {
+		taskID, status, found, err := chat_repo.FindSubagentStateInBlocksJSON(input, "tu1")
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, "b0n82mqaj", taskID)
+		assert.Equal(t, "running", status)
+	})
+
+	t.Run("旧块无 task_id:found=true 但 taskID 空", func(t *testing.T) {
+		const legacy = `[{"type":"subagent_state","data":{"parent_tool_call_id":"tu1","kind":"local_bash","status":"running"}}]`
+		taskID, status, found, err := chat_repo.FindSubagentStateInBlocksJSON(legacy, "tu1")
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, "", taskID)
+		assert.Equal(t, "running", status)
+	})
+
+	t.Run("无命中返回 found=false", func(t *testing.T) {
+		_, _, found, err := chat_repo.FindSubagentStateInBlocksJSON(input, "tu-missing")
+		require.NoError(t, err)
+		assert.False(t, found)
+	})
+
+	t.Run("空 JSON 返回 false 不报错", func(t *testing.T) {
+		_, _, found, err := chat_repo.FindSubagentStateInBlocksJSON("", "tu1")
+		require.NoError(t, err)
+		assert.False(t, found)
+	})
+
+	t.Run("非法 JSON 返回 error", func(t *testing.T) {
+		_, _, found, err := chat_repo.FindSubagentStateInBlocksJSON("{not json", "tu1")
+		require.Error(t, err)
+		assert.False(t, found)
+	})
+}
+
 // TestFlipSubagentInBlocksJSON 直接单测 JSON 改写核心:翻转命中块的 status,其余字段
 // (含 total_tokens/duration_ms/tool_uses 数字 + nested_tool_call_ids 数组)字节级保留,
 // 防 float64 强转把整数写成 1e+03 之类。

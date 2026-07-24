@@ -248,6 +248,7 @@
     "agentSpawn": {
       "aria": "Subagent {{name}}",
       "defaultName": "Agent",
+      "stop": "Stop",
       "emptyPrompt": "No prompt",
       "emptyResult": "(empty result)",
       "emptySteps": "No child steps",
@@ -527,7 +528,8 @@
       "regenerate": "Regeneration failed: {{msg}}",
       "rename": "Rename failed: {{msg}}",
       "send": "Send failed: {{msg}}",
-      "stop": "Stop failed: {{msg}}"
+      "stop": "Stop failed: {{msg}}",
+      "stopBackgroundTask": "Failed to stop background task: {{msg}}"
     },
     "launchCommand": {
       "copy": "Copy Launch Command",
@@ -577,11 +579,13 @@
       "running": "Running",
       "completed": "Done",
       "failed": "Failed",
+      "canceled": "Stopped",
       "empty": "No background tasks",
       "bash": "bash",
       "subagent": "subagent",
       "aria": "Background tasks",
-      "clearCompleted": "Clear completed"
+      "clearCompleted": "Clear completed",
+      "stop": "Stop"
     },
     "toolbar": {
       "aria": "Session toolbar",

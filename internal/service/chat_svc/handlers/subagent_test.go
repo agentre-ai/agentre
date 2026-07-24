@@ -58,6 +58,44 @@ func TestSubagentStarted_PersistsKindAndDescription(t *testing.T) {
 	})
 }
 
+func TestSubagentStarted_PersistsTaskID(t *testing.T) {
+	Convey("SubagentStarted 落 CLI task_id(供 stop_task 定位)", t, func() {
+		acc := turn.New()
+		err := SubagentStartedHandler{}.Apply(context.Background(),
+			agentruntime.SubagentStarted{
+				ToolCallID: "tu1",
+				Info: agentruntime.SubagentInfo{
+					TaskID:          "b0n82mqaj",
+					Kind:            "local_agent",
+					TaskDescription: "background subagent",
+				},
+			}, acc, nil, nil, &turn.TurnContext{})
+		So(err, ShouldBeNil)
+
+		sb := acc.Finalize()[0].(*blocks.SubagentStateBlock)
+		So(sb.TaskID, ShouldEqual, "b0n82mqaj")
+	})
+}
+
+func TestSubagentProgress_BackfillsTaskID(t *testing.T) {
+	Convey("Started 缺 task_id 时,Progress 帧回填", t, func() {
+		acc := turn.New()
+		_ = SubagentStartedHandler{}.Apply(context.Background(),
+			agentruntime.SubagentStarted{
+				ToolCallID: "tu1",
+				Info:       agentruntime.SubagentInfo{Kind: "local_agent"},
+			}, acc, nil, nil, &turn.TurnContext{})
+		_ = SubagentProgressHandler{}.Apply(context.Background(),
+			agentruntime.SubagentProgress{
+				ToolCallID: "tu1",
+				Info:       agentruntime.SubagentInfo{TaskID: "b0n82mqaj", ToolUses: 2},
+			}, acc, nil, nil, &turn.TurnContext{})
+
+		sb := acc.Finalize()[0].(*blocks.SubagentStateBlock)
+		So(sb.TaskID, ShouldEqual, "b0n82mqaj")
+	})
+}
+
 func TestSubagentStarted_ForegroundBash_NoOverlay(t *testing.T) {
 	Convey("前台 bash(无 run_in_background)的 local_bash 帧不建 overlay", t, func() {
 		acc := turn.New()

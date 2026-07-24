@@ -108,6 +108,13 @@ func (a *App) StopChatMessage(req *chat_svc.StopRequest) (*chat_svc.StopResponse
 	return chat_svc.Chat().Stop(a.ctx, req)
 }
 
+// StopBackgroundTask 停掉某个后台任务 / 子 agent(run_in_background bash / subagent),
+// 而非中断整个 turn。走 CLI control_request{stop_task}。仅 claudecode 后端支持(按
+// capability 门控前端按钮);缺 task_id 的老会话返 ChatStopBgTaskUnknown。
+func (a *App) StopBackgroundTask(req *chat_svc.StopBackgroundTaskRequest) (*chat_svc.StopBackgroundTaskResponse, error) {
+	return chat_svc.Chat().StopBackgroundTask(a.ctx, req)
+}
+
 // SetChatPermissionMode 切换 claude code 会话的 permission mode（default /
 // acceptEdits / plan / bypassPermissions）。对齐 Claude TUI 的 Shift+Tab 行为。
 // 仅 claudecode 后端支持；codex / builtin 返 ChatPermissionModeUnsupported。

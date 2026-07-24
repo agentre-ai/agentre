@@ -248,6 +248,7 @@
     "agentSpawn": {
       "aria": "Subagent {{name}}",
       "defaultName": "Agent",
+      "stop": "停止",
       "emptyPrompt": "无 prompt",
       "emptyResult": "(empty result)",
       "emptySteps": "无子步骤",
@@ -527,7 +528,8 @@
       "regenerate": "重新生成失败：{{msg}}",
       "rename": "重命名失败：{{msg}}",
       "send": "发送失败：{{msg}}",
-      "stop": "停止失败：{{msg}}"
+      "stop": "停止失败：{{msg}}",
+      "stopBackgroundTask": "停止后台任务失败：{{msg}}"
     },
     "launchCommand": {
       "copy": "复制启动命令",
@@ -577,11 +579,13 @@
       "running": "运行中",
       "completed": "已完成",
       "failed": "失败",
+      "canceled": "已停止",
       "empty": "暂无后台任务",
       "bash": "bash",
       "subagent": "子代理",
       "aria": "后台任务",
-      "clearCompleted": "清理已完成"
+      "clearCompleted": "清理已完成",
+      "stop": "停止"
     },
     "toolbar": {
       "aria": "会话工具栏",

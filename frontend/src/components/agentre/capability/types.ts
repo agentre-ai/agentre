@@ -6,6 +6,7 @@ export type Capability =
   | "cancel_steer"
   | "drain_steer"
   | "abort"
+  | "stop_background_task"
   | "image_input"
   | "set_permission_mode"
   | "answer_user_ask"

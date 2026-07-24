@@ -56,3 +56,9 @@ func WithEffort(level string) Option { return func(c *Client) { c.effort = level
 func WithPermissionPromptTool(tool string) Option {
 	return func(c *Client) { c.permissionPromptTool = tool }
 }
+
+// WithRawSink 注册一个原始行回调:子进程每读到一行非空 stdout(未解析的 stream-json
+// 帧)就同步调用一次。用于 debug 级原始帧转储 —— runtime 层把它接到 logger.Debug,
+// 由「Debug Logging」开关热控。回调收到的 []byte 是 scanner 的复用缓冲,**不得跨调用
+// 留存**(要留存自行 copy)。nil(默认)= 零采样开销。
+func WithRawSink(sink func([]byte)) Option { return func(c *Client) { c.rawSink = sink } }

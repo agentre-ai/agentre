@@ -24,6 +24,10 @@ type Client struct {
 	extraArgs    []string
 	killGrace    time.Duration
 	runner       appServerRunner
+
+	// rawSink 若非 nil,app-server 每读到一行原始 stdout(未解析的 JSON-RPC 帧)就同步
+	// 回调一次。debug 级原始帧转储用;经 startApp → newAppClient 注入 appClient.readLoop。
+	rawSink func([]byte)
 }
 
 // Session is a persistent codex app-server process that can host multiple
@@ -434,7 +438,7 @@ func (c *Client) startApp(ctx context.Context) (*appClient, error) {
 		Args:   buildAppServerArgs(c.config, c.extraArgs),
 		Cwd:    c.cwd,
 		Env:    buildEnv(c.env),
-	})
+	}, c.rawSink)
 }
 
 func initializeApp(ctx context.Context, app *appClient) error {

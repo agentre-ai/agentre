@@ -5240,6 +5240,97 @@ func TestStop_InvalidRequestReturnsError(t *testing.T) {
 	})
 }
 
+// stopBgRunner 是实现 BackgroundTaskStopper 的最小 runner,记录 StopBackgroundTask 入参。
+type stopBgRunner struct {
+	gotSid  int64
+	gotTask string
+	stopErr error
+}
+
+func (*stopBgRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{capability.CapStopBackgroundTask: true}}
+}
+
+func (*stopBgRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event)
+	close(ch)
+	return ch, &agentruntime.RunResult{}, nil
+}
+
+func (r *stopBgRunner) StopBackgroundTask(_ context.Context, sid int64, taskID string) error {
+	r.gotSid = sid
+	r.gotTask = taskID
+	return r.stopErr
+}
+
+func TestStopBackgroundTask_InvalidRequest(t *testing.T) {
+	convey.Convey("SessionID<=0 或 ToolUseID 空 → InvalidParameter", t, func() {
+		m := setupChatTest(t)
+		_, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 0, ToolUseID: "tu1"})
+		assert.Error(t, err)
+		_, err = m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 1, ToolUseID: ""})
+		assert.Error(t, err)
+	})
+}
+
+func TestStopBackgroundTask_SessionNotFound(t *testing.T) {
+	convey.Convey("会话查不到 → ChatSessionNotFound", t, func() {
+		m := setupChatTest(t)
+		m.session.EXPECT().Find(m.ctx, int64(101)).Return(nil, nil)
+		_, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 101, ToolUseID: "tu1"})
+		assert.Error(t, err)
+	})
+}
+
+func TestStopBackgroundTask_AlreadyTerminalIsIdempotent(t *testing.T) {
+	convey.Convey("任务已终态(completed) → 幂等 Stopped=true,不碰 runner", t, func() {
+		m := setupChatTest(t)
+		m.session.EXPECT().Find(m.ctx, int64(42)).Return(
+			&chat_entity.Session{ID: 42, AgentID: 7, Status: consts.ACTIVE}, nil)
+		m.message.EXPECT().FindSubagentState(m.ctx, int64(42), "tu1").Return("b0", "completed", true, nil)
+
+		resp, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 42, ToolUseID: "tu1"})
+		assert.NoError(t, err)
+		assert.True(t, resp.Stopped)
+	})
+}
+
+func TestStopBackgroundTask_NoTaskIDReturnsUnknown(t *testing.T) {
+	convey.Convey("running 但缺 task_id(老会话)→ ChatStopBgTaskUnknown", t, func() {
+		m := setupChatTest(t)
+		m.session.EXPECT().Find(m.ctx, int64(42)).Return(
+			&chat_entity.Session{ID: 42, AgentID: 7, Status: consts.ACTIVE}, nil)
+		m.message.EXPECT().FindSubagentState(m.ctx, int64(42), "tu1").Return("", "running", true, nil)
+
+		_, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 42, ToolUseID: "tu1"})
+		assert.Error(t, err)
+	})
+}
+
+func TestStopBackgroundTask_SuccessFlipsCanceled(t *testing.T) {
+	convey.Convey("running + task_id → 下发 stop_task 并把块翻 canceled", t, func() {
+		m := setupChatTest(t)
+		runner := &stopBgRunner{}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+		defer restore()
+
+		m.session.EXPECT().Find(m.ctx, int64(42)).Return(
+			&chat_entity.Session{ID: 42, AgentID: 7, Status: consts.ACTIVE}, nil)
+		m.message.EXPECT().FindSubagentState(m.ctx, int64(42), "tu1").Return("b0n82mqaj", "running", true, nil)
+		m.agent.EXPECT().Find(m.ctx, int64(7)).Return(
+			&agent_entity.Agent{ID: 7, AgentBackendID: 3, Status: consts.ACTIVE}, nil)
+		m.backend.EXPECT().Find(m.ctx, int64(3)).Return(
+			&agent_backend_entity.AgentBackend{ID: 3, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE}, nil)
+		m.message.EXPECT().FlipSubagentStatus(m.ctx, int64(42), "tu1", "canceled", "").Return(nil)
+
+		resp, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 42, ToolUseID: "tu1"})
+		assert.NoError(t, err)
+		assert.True(t, resp.Stopped)
+		assert.Equal(t, int64(42), runner.gotSid)
+		assert.Equal(t, "b0n82mqaj", runner.gotTask)
+	})
+}
+
 func TestListAgentSessions(t *testing.T) {
 	convey.Convey("ListAgentSessions", t, func() {
 		m := setupChatTest(t)

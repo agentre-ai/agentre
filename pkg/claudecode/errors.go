@@ -13,7 +13,28 @@ var (
 	ErrBinaryNotFound  = errors.New("claudecode: claude binary not found in PATH or configured CLIPath")
 	ErrSessionNotFound = errors.New("claudecode: provider session no longer exists")
 	ErrSchemaUnknown   = errors.New("claudecode: stream-json schema unrecognized; please update agentre")
+	// ErrAPIError 标记 CLI 合成的 API 错误消息帧（isApiErrorMessage:true）。上层用
+	// errors.Is 把「turn 被 API 错误终止」这一类与普通子进程退出错误区分开。
+	ErrAPIError = errors.New("claudecode: api error")
 )
+
+// APIError 承载 CLI isApiErrorMessage 帧的错误文本与顶层 error 分类码。
+//
+// CLI 在一次 API 调用不可恢复地中断（连接中途断开 / 服务端 5xx 等）时，会把提示文案
+// 塞进一个 model:"<synthetic>" 的合成 assistant 帧，并在帧顶层打 isApiErrorMessage:true
+// + error:"<code>"。这**不是**模型正文——agentre 把它翻成 EventError，让上层落
+// error_text / 渲染独立 ErrorCard，而不是当 EventTextDelta 拼进正文 block（见 sess-2153：
+// "API Error: Connection closed mid-response. The response above may be incomplete."
+// 曾被直接续在上一段真实输出后面）。
+type APIError struct {
+	Text string // 面向用户的提示，如 "API Error: Connection closed mid-response. ..."
+	Code string // CLI 顶层 error 分类码，如 "server_error"
+}
+
+func (e *APIError) Error() string { return e.Text }
+
+// Is 让 errors.Is(err, ErrAPIError) 命中，供上层分类而不依赖文案匹配。
+func (e *APIError) Is(target error) bool { return target == ErrAPIError }
 
 // ProcessExitError 子进程非 0 退出时的结构化错误，便于上层（agent_backend_svc/prober）
 // 用 errors.As 精确拿到 exit code 和 stderr 文本。

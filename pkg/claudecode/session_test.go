@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,6 +96,27 @@ func fakeSetMode(stdin io.Reader, stdout io.Writer) {
 			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
 			writeFrame(stdout, `{"type":"assistant","message":{"id":"m%d","content":[{"type":"text","text":"echo:%s"}]}}`, turn, reply)
 			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+		}
+	}
+}
+
+// fakeStopTask 模拟空闲态收到 control_request{stop_task}：抓 task_id 塞进 gotTaskID
+// 供断言,回 control_response{success}。不处理 user frame —— StopTask 走空闲控制通道,
+// 由常驻 readLoop dispatch control_response。
+func fakeStopTask(gotTaskID chan<- string) fakeCLIFunc {
+	return func(stdin io.Reader, stdout io.Writer) {
+		sc := bufio.NewScanner(stdin)
+		sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+		for sc.Scan() {
+			line := sc.Text()
+			if strings.Contains(line, `"type":"control_request"`) && strings.Contains(line, `"subtype":"stop_task"`) {
+				reqID := extractStringField(line, "request_id")
+				select {
+				case gotTaskID <- extractStringField(line, "task_id"):
+				default:
+				}
+				writeFrame(stdout, `{"type":"control_response","response":{"subtype":"success","request_id":%q}}`, reqID)
+			}
 		}
 	}
 }
@@ -334,6 +356,43 @@ func TestSession_InterruptAfterClose(t *testing.T) {
 	require.NoError(t, sess.Close(ctx))
 
 	assert.Error(t, sess.Interrupt(ctx))
+}
+
+// TestSession_StopTask 验证 control_request{stop_task} 路径：写出帧带 subtype
+// stop_task + task_id,fake 回 control_response{success} → StopTask 返 nil。
+// 空闲态(无 turn 在飞)也能停 —— 常驻 readLoop dispatch control_response。
+func TestSession_StopTask(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	gotTaskID := make(chan string, 1)
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeStopTask(gotTaskID)))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	require.NoError(t, sess.StopTask(ctx, "b0n82mqaj"))
+
+	select {
+	case id := <-gotTaskID:
+		assert.Equal(t, "b0n82mqaj", id, "stop_task 帧应带 CLI task_id")
+	case <-ctx.Done():
+		t.Fatal("fake CLI never received stop_task control_request")
+	}
+}
+
+// TestSession_StopTaskAfterClose 验证 Close 之后 StopTask 返错(不 panic)。
+func TestSession_StopTaskAfterClose(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	gotTaskID := make(chan string, 1)
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeStopTask(gotTaskID)))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	require.NoError(t, sess.Close(ctx))
+
+	assert.Error(t, sess.StopTask(ctx, "b0n82mqaj"))
 }
 
 // TestSession_SetPermissionMode 验证 control_request{set_permission_mode} 路径：
@@ -1464,4 +1523,81 @@ func TestCanStartUserTurn(t *testing.T) {
 			assert.Equal(t, c.want, canStartUserTurn(parse(c.line)))
 		})
 	}
+}
+
+// TestSession_APIErrorMessageFrameBecomesEventError 回归 sess-2153:CLI 2.1.216 在
+// API 连接中途断开时,吐一个 model:"<synthetic>" 的合成 assistant 帧,顶层带
+// isApiErrorMessage:true + error:"server_error",content 是
+// "API Error: Connection closed mid-response. The response above may be incomplete."。
+// 旧逻辑把它当 EventTextDelta 拼进上一段真实输出的正文 block(前端就混着渲染);
+// 现在必须翻成 EventError,让上层落 error_text / 独立 ErrorCard。
+func TestSession_APIErrorMessageFrameBecomesEventError(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m1","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: Connection closed mid-response. The response above may be incomplete."}]},"error":"server_error","isApiErrorMessage":true,"session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	require.Len(t, events, 1)
+	ev := events[0]
+	assert.Equal(t, EventError, ev.Kind)
+	require.Error(t, ev.Err)
+	assert.ErrorIs(t, ev.Err, ErrAPIError)
+	assert.Contains(t, ev.Err.Error(), "Connection closed mid-response")
+
+	var apiErr *APIError
+	require.ErrorAs(t, ev.Err, &apiErr)
+	assert.Equal(t, "server_error", apiErr.Code)
+
+	// 不抢终结:真正的 turn 结束仍由随后的 result(EventDone)帧驱动,避免 CLI 若补发
+	// result 造成 double-terminate。
+	assert.False(t, isResult)
+
+	// 关键回归:这句提示不能作为文本增量泄漏进正文。
+	for _, e := range events {
+		assert.NotEqual(t, EventTextDelta, e.Kind, "API 错误帧不应产出 EventTextDelta")
+	}
+}
+
+// TestSession_NormalAssistantFrameStillEmitsText 防过度拦截:没有 isApiErrorMessage
+// 标记的普通 assistant 帧照常出 EventTextDelta。
+func TestSession_NormalAssistantFrameStillEmitsText(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m2","model":"claude-opus-4-8","role":"assistant","content":[{"type":"text","text":"hello world"}]},"session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	require.NotEmpty(t, events)
+	assert.Equal(t, EventTextDelta, events[0].Kind)
+	assert.Equal(t, "hello world", events[0].Text)
+	assert.False(t, isResult)
+}
+
+// TestSession_RawSinkReceivesFramesFromReadLoop 校验生产多轮路径(Session.readLoop)
+// 也把每帧原始 stdout 喂给 rawSink,而不仅是一次性 Stream 路径。
+func TestSession_RawSinkReceivesFramesFromReadLoop(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var mu sync.Mutex
+	var got []string
+	c := New(WithBinary("fake"), pipeSpawner(t, fakePersistent), WithRawSink(func(b []byte) {
+		mu.Lock()
+		got = append(got, string(b))
+		mu.Unlock()
+	}))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.Close(ctx) })
+
+	ch, err := sess.Turn(ctx, "hello")
+	require.NoError(t, err)
+	for range ch { //nolint:revive // 只为把这一轮 drain 完
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(got, "\n")
+	assert.Contains(t, joined, `"subtype":"init"`)
+	assert.Contains(t, joined, `"type":"assistant"`)
+	assert.Contains(t, joined, `"type":"result"`)
 }

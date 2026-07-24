@@ -77,9 +77,11 @@ type appClient struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	stderr   *lockedBuffer
+	// rawSink 若非 nil,readLoop 每读到一行原始 stdout 就同步回调一次。见 Client.rawSink。
+	rawSink func([]byte)
 }
 
-func newAppClient(ctx context.Context, runner appServerRunner, opts procOptions) (*appClient, error) {
+func newAppClient(ctx context.Context, runner appServerRunner, opts procOptions, rawSink func([]byte)) (*appClient, error) {
 	proc, err := runner.Start(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -92,6 +94,7 @@ func newAppClient(ctx context.Context, runner appServerRunner, opts procOptions)
 		done:     make(chan struct{}),
 		stop:     make(chan struct{}),
 		stderr:   &lockedBuffer{},
+		rawSink:  rawSink,
 	}
 	go func() { _, _ = io.Copy(c.stderr, proc.Stderr()) }()
 	go c.dispatchIncoming()
@@ -170,6 +173,9 @@ func (c *appClient) readLoop() {
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 scan:
 	for sc.Scan() {
+		if c.rawSink != nil {
+			c.rawSink(sc.Bytes())
+		}
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || !strings.HasPrefix(line, "{") {
 			continue

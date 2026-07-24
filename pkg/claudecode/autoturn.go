@@ -72,3 +72,15 @@ func isBackgroundTaskNotification(f rawFrame) bool {
 		f.OutputFile != "" &&
 		f.SubagentType == ""
 }
+
+// normalizeTaskStatus 把 CLI 的任务状态拼写归一到内部取值。CLI 用英式 "cancelled"
+// (task status 枚举 working|input_required|completed|failed|cancelled),内部 /
+// SubagentStateBlock 用美式 "canceled"(见 blocks.SubagentStateBlock.Status 注释)。
+// 在 CLI 状态进入内部模型的边界归一一次,下游(前端 mapStatus / AgentSpawnCard)不必
+// 各自兼容两种拼写。
+func normalizeTaskStatus(status string) string {
+	if status == "cancelled" {
+		return "canceled"
+	}
+	return status
+}

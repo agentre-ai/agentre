@@ -30,6 +30,7 @@ const (
 	MethodCancelSteer          = "runtime.cancelSteer"
 	MethodDrainPending         = "runtime.drainPending"
 	MethodAbort                = "runtime.abort"
+	MethodStopBackgroundTask   = "runtime.stopBackgroundTask"
 	MethodSetPermissionMode    = "runtime.setPermissionMode"
 	MethodSubmitAnswer         = "runtime.submitAnswer"
 	MethodSubmitToolPermission = "runtime.submitToolPermission"
@@ -270,6 +271,12 @@ type DrainResult struct {
 // AbortParams 等同 agentruntime.Aborter.Abort 的入参。
 type AbortParams struct {
 	SessionID int64 `json:"sessionId"`
+}
+
+// StopBackgroundTaskParams 等同 agentruntime.BackgroundTaskStopper.StopBackgroundTask 的入参。
+type StopBackgroundTaskParams struct {
+	SessionID int64  `json:"sessionId"`
+	TaskID    string `json:"taskId"`
 }
 
 // SetPermissionModeParams 等同 agentruntime.PermissionModeSetter.SetPermissionMode 的入参。
