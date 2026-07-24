@@ -22,18 +22,23 @@
 - 不保存任何真实 token；
 - 不让 Codex 开始实现。
 
-## 2. 推荐结论
+## 2. 已确认结论
 
-**推荐把 OpenClaw 做成 Gateway-native runtime，而不是 CLI wrapper。**
+**OpenClaw 使用 Gateway WebSocket RPC 实现完整的 Gateway-native runtime，不以“接通聊天”为目标做简化兼容层。**
 
-- 主链路：OpenClaw Gateway WebSocket RPC；
-- 备选/诊断：`openclaw agent` CLI，仅用于本地诊断或未来降级，不作为 MVP 运行链路；
+该技术路线已于 2026-07-24 确认：
+
+- 唯一正式运行主链路：OpenClaw Gateway WebSocket RPC；
+- `openclaw acp`、OpenResponses / Chat Completions HTTP API 不作为正式 backend 运行链路；
+- `openclaw agent` CLI 仅保留为开发期协议对照、诊断和应急排障工具，不进入正常 turn 生命周期；
+- MVP 的设计必须覆盖完整连接生命周期、协议协商、session、流式事件、工具事件、usage、abort、重连对账、幂等和安全存储，不能因为 HTTP/CLI 更容易接入而降低架构目标；
+- approvals、ask-user、subagent、session 管理等高级能力允许按迭代交付，但底层连接和事件模型必须从第一版开始为这些能力保留完整扩展点；
 - Agentre 前端仍只调用 `internal/app` Wails bindings，不新增 HTTP API；
 - 本地 backend 由桌面进程直连 Gateway；远端 backend 由 `agentred` 所在设备直连 Gateway；
 - 每条 Agentre `chat_session` 稳定映射到一个 OpenClaw `sessionKey`，并把该 key 存入现有 `ProviderSessionID`；
 - OpenClaw token 作为专用 secret 字段处理，不写日志、不进 Mockup、不塞进通用 `env_json`。
 
-## 3. 为什么不优先走 CLI
+## 3. 为什么选择 Gateway WebSocket RPC
 
 | 维度 | Gateway WebSocket RPC | `openclaw agent` CLI |
 | --- | --- | --- |
@@ -315,21 +320,55 @@ OpenClaw backend 应像现有 CLI backend 一样支持 `DeviceID`：
 6. **现有 backend 编辑器过大**：新增类型时拆出专属字段组件与纯函数，避免继续堆条件分支。
 7. **工具事件结构不完全统一**：Gateway adapter 负责 normalizing，chat_svc 不感知 OpenClaw 私有 schema。
 
-## 15. 评审时需要确认的产品决策
+## 15. 产品决策状态
 
-1. 是否接受 Gateway WebSocket RPC 为唯一 MVP 主链路，CLI 只做后续诊断？
-2. OpenClaw backend 默认是否采用“一条 Agentre chat session = 一条 OpenClaw session”？（推荐是）
-3. MVP 是否先只支持本机 Gateway，远端 `agentred` 放 P1？（若现有 secret store 可复用，可一起做）
-4. 删除 Agentre 会话时，是否默认保留 OpenClaw 远端 session？（推荐保留）
-5. approvals / ask-user 是否接受分阶段：首版保证展示和 abort，完整回写在真实协议 fixture 验证后进入 P1？
+### 已确认
+
+1. Gateway WebSocket RPC 是唯一正式运行主链路；不采用 ACP、HTTP 或 CLI 作为简化主链路。
+2. 方案必须面向完整 OpenClaw 能力设计，不能只满足基础文本聊天。
+3. CLI 仅用于开发期协议对照、诊断和应急排障。
+
+### 仍需在实现前确认
+
+1. OpenClaw backend 默认是否采用“一条 Agentre chat session = 一条 OpenClaw session”？（推荐是）
+2. MVP 是否先只支持本机 Gateway，远端 `agentred` 放 P1？（若现有 secret store 可复用，可一起做）
+3. 删除 Agentre 会话时，是否默认保留 OpenClaw 远端 session？（推荐保留）
+4. approvals / ask-user 是否接受分阶段：首版保证展示和 abort，完整回写在真实协议 fixture 验证后进入 P1？
 
 ## 16. Mockup
 
-可交互 Mockup：[`docs/mockups/openclaw-integration.html`](../../mockups/openclaw-integration.html)
+旧的独立 HTML 概念稿已删除，不再作为 UI 评审依据。
+
+当前 Mockup 使用 AgentRE 真实的 Tailwind design tokens、shadcn/ui 组件、`AgentreDialog`、表格、按钮、表单和应用布局密度，通过独立 Vite 入口运行，不修改生产入口：
+
+```bash
+cd frontend
+pnpm dev --host 127.0.0.1
+```
+
+访问：
+
+- 后端列表：`/openclaw-mockup.html?view=list`
+- Gateway 配置：`/openclaw-mockup.html?view=dialog`
+- 聊天与审批：`/openclaw-mockup.html?view=chat`
+
+源文件：
+
+- `frontend/openclaw-mockup.html`
+- `frontend/src/mockups/openclaw-main.tsx`
+- `frontend/src/mockups/openclaw-integration.tsx`
+
+截图：
+
+- [`docs/mockups/openclaw-integration-list.png`](../../mockups/openclaw-integration-list.png)
+- [`docs/mockups/openclaw-integration-dialog.png`](../../mockups/openclaw-integration-dialog.png)
+- [`docs/mockups/openclaw-integration-chat.png`](../../mockups/openclaw-integration-chat.png)
 
 覆盖：
 
-- Backend 列表中的 OpenClaw 类型；
-- 新建/编辑配置、连接探测、agent/model 选择；
-- 聊天页连接状态、session 映射、工具调用与审批卡；
-- 断线/重连和 scope 错误展示。
+- Backend 列表中的 OpenClaw Gateway-native 类型；
+- WebSocket 地址、secret token、协议握手、agent/model 和 session 策略；
+- 连接超时、重连对账和删除 session 策略；
+- 聊天页连接状态、session key、工具流与 exec approval。
+
+该入口仅是 UI Mockup，不包含正式 Go runtime、数据库字段、Wails binding 或真实 Gateway 连接。
