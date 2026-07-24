@@ -1665,7 +1665,7 @@ describe("ChatTranscript message meta", () => {
     expect(trigger.textContent ?? "").not.toMatch(/^\s*·/);
   });
 
-  it("Given an assistant message with markdown text, When copying AI output, Then the raw text blocks are written to clipboard", async () => {
+  it("Given an assistant message with multiple output sections, When copying AI output, Then only the last section is written to clipboard", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1693,7 +1693,7 @@ describe("ChatTranscript message meta", () => {
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(
-        "## Plan\n\n- keep **markdown**\n\n```ts\nconst ok = true;\n```",
+        "\n\n```ts\nconst ok = true;\n```",
       );
     });
     expect(sonnerMocks.toast.success).toHaveBeenCalledWith(
@@ -1706,6 +1706,29 @@ describe("ChatTranscript message meta", () => {
     const assistant = {
       ...assistantWithUsage(),
       blocks: [
+        { type: "thinking", text: "still reasoning" },
+      ] as ChatBlockData[],
+    } as chat_svc.ChatMessage;
+
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[assistant]}
+        onRerun={() => undefined}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Copy AI output" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given the last assistant output section has no text, When rendered, Then earlier text cannot be copied", () => {
+    const assistant = {
+      ...assistantWithUsage(),
+      blocks: [
+        { type: "text", text: "outdated section" },
         { type: "thinking", text: "still reasoning" },
       ] as ChatBlockData[],
     } as chat_svc.ChatMessage;

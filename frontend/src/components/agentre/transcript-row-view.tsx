@@ -459,8 +459,16 @@ function extractAssistantOutputText(
   liveBlocks: ChatBlockData[] = [],
   liveTail: string = "",
 ): string {
-  const text = [...blocks, ...liveBlocks]
-    .filter((block) => block.type === "text")
+  const allBlocks = [...blocks, ...liveBlocks];
+  let lastSectionStart = -1;
+  for (let index = allBlocks.length - 1; index >= 0; index -= 1) {
+    if (allBlocks[index].type !== "text") {
+      lastSectionStart = index;
+      break;
+    }
+  }
+  const text = allBlocks
+    .slice(lastSectionStart + 1)
     .map((block) => block.text ?? "")
     .join("");
   return text + liveTail;
