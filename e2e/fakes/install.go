@@ -46,6 +46,21 @@ func (codexSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery) 
 	}, nil
 }
 
+type claudeSkillDiscoverer struct{}
+
+func (claudeSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery) ([]agentskill.SkillPack, error) {
+	return []agentskill.SkillPack{
+		{
+			ID:              "superpowers@claude-plugins-official",
+			Name:            "superpowers",
+			Skills:          []string{"tdd"},
+			Source:          agentskill.SourceInstalled,
+			Installed:       true,
+			GloballyEnabled: true,
+		},
+	}, nil
+}
+
 // Install 仅在 `-tags e2e` 构建中编译:
 //  1. 用确定性 fake 覆盖 claudecode runtime(无子进程/无登录);
 //  2. seed 一个本地 claudecode backend 并挂到默认 CEO agent,
@@ -54,6 +69,7 @@ func (codexSkillDiscoverer) Discover(context.Context, agentskill.DiscoverQuery) 
 // 失败只记日志不 panic:e2e 环境异常应让 Playwright 用例红,而不是让 app 崩。
 func Install(ctx context.Context) {
 	agentruntime.RegisterRuntime(agent_backend_entity.TypeClaudeCode, fakert.New())
+	agentskill.RegisterDiscoverer(agent_backend_entity.TypeClaudeCode, claudeSkillDiscoverer{})
 	agentskill.RegisterDiscoverer(agent_backend_entity.TypeCodex, codexSkillDiscoverer{})
 
 	// 幂等:正常每次 e2e run 用全新 AGENTRE_DATA_DIR(临时目录),但 wails dev 热重载

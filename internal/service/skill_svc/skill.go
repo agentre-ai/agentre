@@ -2,6 +2,7 @@ package skill_svc
 
 import (
 	"context"
+	"strings"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
@@ -17,6 +18,7 @@ type Service struct {
 
 type discoveryResult struct {
 	backendType agent_backend_entity.BackendType
+	backend     *agent_backend_entity.AgentBackend
 	packs       []agentskill.SkillPack
 }
 
@@ -32,7 +34,7 @@ func (s *Service) discover(ctx context.Context, a *agent_entity.Agent) (discover
 	if be.IsRemote() {
 		deviceID, ok := be.DeviceIDInt()
 		if !ok || s.remote == nil {
-			return discoveryResult{backendType: backendType, packs: []agentskill.SkillPack{}}, nil
+			return discoveryResult{backendType: backendType, backend: be, packs: []agentskill.SkillPack{}}, nil
 		}
 		packs, err := s.remote.ListSkills(ctx, deviceID, be.Type)
 		if err != nil {
@@ -41,31 +43,32 @@ func (s *Service) discover(ctx context.Context, a *agent_entity.Agent) (discover
 		if packs == nil {
 			packs = []agentskill.SkillPack{}
 		}
-		return discoveryResult{backendType: backendType, packs: packs}, nil
+		return discoveryResult{backendType: backendType, backend: be, packs: packs}, nil
 	}
 	d, ok := agentskill.DiscovererFor(backendType)
 	if !ok {
-		return discoveryResult{backendType: backendType, packs: []agentskill.SkillPack{}}, nil
+		return discoveryResult{backendType: backendType, backend: be, packs: []agentskill.SkillPack{}}, nil
 	}
 	packs, err := d.Discover(ctx, agentskill.DiscoverQuery{
 		BackendType: backendType,
 		CLIPath:     be.CLIPath,
 	})
-	return discoveryResult{backendType: backendType, packs: packs}, err
+	return discoveryResult{backendType: backendType, backend: be, packs: packs}, err
 }
 
 // mergeResult 合并后的包列表及对应的 enabled 标注。
 type mergeResult struct {
-	packs   []agentskill.SkillPack
-	enabled []bool
+	packs            []agentskill.SkillPack
+	enabled          []bool
+	effectiveEnabled []bool
 }
 
 // merge 推荐 + 发现 按 id 去重,标注 enabled。
 // installed 先入,recommended 后 OR 入 Recommended 旗标。
-func merge(recommended, installed []agentskill.SkillPack, enabledIDs []string) mergeResult {
-	enabled := map[string]bool{}
-	for _, id := range enabledIDs {
-		enabled[id] = true
+func merge(recommended, installed []agentskill.SkillPack, overrides []agent_entity.AgentSkillItem) mergeResult {
+	overrideByID := map[string]bool{}
+	for _, override := range overrides {
+		overrideByID[override.ID] = override.Enabled
 	}
 	type entry struct {
 		pack agentskill.SkillPack
@@ -100,12 +103,22 @@ func merge(recommended, installed []agentskill.SkillPack, enabledIDs []string) m
 
 	packs := make([]agentskill.SkillPack, len(order))
 	enabledFlags := make([]bool, len(order))
+	effectiveFlags := make([]bool, len(order))
 	for _, id := range order {
 		e := byID[id]
 		packs[e.idx] = e.pack
-		enabledFlags[e.idx] = enabled[id]
+		override, overridden := overrideByID[id]
+		enabledFlags[e.idx] = overridden && override
+		effectiveFlags[e.idx] = e.pack.Installed && e.pack.GloballyEnabled
+		if overridden {
+			effectiveFlags[e.idx] = e.pack.Installed && override
+		}
 	}
-	return mergeResult{packs: packs, enabled: enabledFlags}
+	return mergeResult{
+		packs:            packs,
+		enabled:          enabledFlags,
+		effectiveEnabled: effectiveFlags,
+	}
 }
 
 // ListAgentSkillPacks 合并推荐 + 发现 + agent 授权,产出目录。refresh 预留(未来强制重发现),当前忽略。
@@ -118,22 +131,99 @@ func (s *Service) ListAgentSkillPacks(ctx context.Context, agentID int64, _ bool
 	if err != nil {
 		return SkillCatalogDTO{}, err
 	}
-	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, a.GetEnabledPackIDs())
+	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, a.GetSkills())
 	dto := make([]SkillPackDTO, 0, len(mr.packs))
 	for i, p := range mr.packs {
 		dto = append(dto, SkillPackDTO{
-			ID:              p.ID,
-			Name:            p.Name,
-			Description:     p.Description,
-			Skills:          p.Skills,
-			Source:          string(p.Source),
-			Recommended:     p.Recommended,
-			Installed:       p.Installed,
-			Enabled:         mr.enabled[i],
-			GloballyEnabled: p.GloballyEnabled,
+			ID:               p.ID,
+			Name:             p.Name,
+			Description:      p.Description,
+			Skills:           p.Skills,
+			Source:           string(p.Source),
+			Recommended:      p.Recommended,
+			Installed:        p.Installed,
+			Enabled:          mr.enabled[i],
+			GloballyEnabled:  p.GloballyEnabled,
+			EffectiveEnabled: mr.effectiveEnabled[i],
 		})
 	}
 	return SkillCatalogDTO{Packs: dto}, nil
+}
+
+// ListAgentSkillCommands 返回当前 agent 在 cwd 中可调用的 Skill 命令。
+// 已安装 plugin 的生效态由目录合并结果决定；本地 backend 再合并 CLI 自己解析的
+// user/project/system Skill。远端 backend 当前由 daemon 的 plugin 目录提供命令。
+func (s *Service) ListAgentSkillCommands(ctx context.Context, agentID int64, cwd string) (SkillCommandCatalogDTO, error) {
+	a, err := s.agent.Find(ctx, agentID)
+	if err != nil || a == nil {
+		return SkillCommandCatalogDTO{}, err
+	}
+	discovered, err := s.discover(ctx, a)
+	if err != nil {
+		return SkillCommandCatalogDTO{}, err
+	}
+
+	mr := merge(agentskill.RecommendedFor(discovered.backendType), discovered.packs, a.GetSkills())
+	commands := make([]SkillCommandDTO, 0)
+	seen := map[string]struct{}{}
+	appendCommand := func(name, description string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		commands = append(commands, SkillCommandDTO{
+			Name:        name,
+			Description: strings.TrimSpace(description),
+		})
+	}
+
+	for i, pack := range mr.packs {
+		if !mr.effectiveEnabled[i] {
+			continue
+		}
+		for _, rawSkill := range pack.Skills {
+			skill := strings.TrimSpace(rawSkill)
+			if skill == "" {
+				continue
+			}
+			name := skill
+			if !strings.Contains(skill, ":") && strings.TrimSpace(pack.Name) != "" {
+				name = strings.TrimSpace(pack.Name) + ":" + skill
+			}
+			appendCommand(name, pack.Description)
+		}
+	}
+
+	if discovered.backend != nil && discovered.backend.IsLocal() {
+		if commandDiscoverer, ok := agentskill.CommandDiscovererFor(discovered.backendType); ok {
+			native, err := commandDiscoverer.DiscoverCommands(ctx, agentskill.CommandDiscoverQuery{
+				BackendType:    discovered.backendType,
+				CLIPath:        discovered.backend.CLIPath,
+				Cwd:            strings.TrimSpace(cwd),
+				EnabledPlugins: enabledPlugins(a.GetSkills()),
+			})
+			if err != nil {
+				return SkillCommandCatalogDTO{}, err
+			}
+			for _, command := range native {
+				appendCommand(command.Name, command.Description)
+			}
+		}
+	}
+
+	return SkillCommandCatalogDTO{Commands: commands}, nil
+}
+
+func enabledPlugins(items []agent_entity.AgentSkillItem) map[string]bool {
+	out := make(map[string]bool, len(items))
+	for _, item := range items {
+		out[item.ID] = item.Enabled
+	}
+	return out
 }
 
 // EnabledPluginsMap 返回该 agent 的显式覆盖(强制开=true / 强制关=false)。
@@ -143,9 +233,5 @@ func (s *Service) EnabledPluginsMap(ctx context.Context, agentID int64) (map[str
 	if err != nil || a == nil {
 		return nil, err
 	}
-	out := map[string]bool{}
-	for _, it := range a.GetSkills() {
-		out[it.ID] = it.Enabled
-	}
-	return out, nil
+	return enabledPlugins(a.GetSkills()), nil
 }

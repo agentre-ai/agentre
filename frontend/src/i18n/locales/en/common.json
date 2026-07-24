@@ -416,6 +416,8 @@
       },
       "dropHint": "Drop to add files / folder paths",
       "placeholder": "Type a message or / for commands",
+      "placeholderClaude": "Type a message or / for commands and skills",
+      "placeholderCodex": "Type a message, / for commands, or $ for skills",
       "removeImage": "Remove image {{name}}",
       "saveEdit": "Save edit",
       "send": "Send",
@@ -2022,12 +2024,16 @@
     "viewAll": "View all {{count}} sessions"
   },
   "slashCommands": {
-    "aria": "Slash commands",
+    "aria": "Command and skill suggestions",
     "compact": {
       "description": "Compact the chat context and keep only the summary"
     },
     "goal": {
       "description": "Set or view the current Codex goal"
+    },
+    "skill": {
+      "claudeDescription": "Invoke a Claude Code skill",
+      "codexDescription": "Invoke a Codex skill"
     }
   },
   "settings": {

@@ -39,6 +39,7 @@ export function SlashPopover({
 
   return (
     <div
+      data-testid="command-suggestions"
       role="listbox"
       aria-label={t("slashCommands.aria")}
       style={style}
@@ -48,7 +49,7 @@ export function SlashPopover({
         const active = idx === state.selectedIndex;
         return (
           <button
-            key={cmd.name}
+            key={`${cmd.trigger}:${cmd.name}`}
             type="button"
             role="option"
             aria-selected={active}

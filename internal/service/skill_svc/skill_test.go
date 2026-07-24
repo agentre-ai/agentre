@@ -18,6 +18,12 @@ func (f fakeDisc) Discover(_ context.Context, _ agentskill.DiscoverQuery) ([]age
 	return f.packs, nil
 }
 
+type fakeCommandDisc struct{ commands []agentskill.SkillCommand }
+
+func (f fakeCommandDisc) DiscoverCommands(_ context.Context, _ agentskill.CommandDiscoverQuery) ([]agentskill.SkillCommand, error) {
+	return f.commands, nil
+}
+
 func newForTest(a AgentLookup, b BackendLookup) *Service { return &Service{agent: a, backend: b} }
 
 func newForTestRemote(a AgentLookup, b BackendLookup, r RemoteDiscoverer) *Service {
@@ -108,6 +114,36 @@ func TestListAgentSkillPacks(t *testing.T) {
 			So(byID["superpowers@claude-plugins-official"].GloballyEnabled, ShouldBeTrue)
 			So(byID["opsctl@opskat"].GloballyEnabled, ShouldBeFalse)
 		})
+		Convey("Given installed packs with inherited and explicit states, When listing the catalog, Then EffectiveEnabled reports the launch-time truth", func() {
+			ag.SetSkills([]agent_entity.AgentSkillItem{
+				{ID: "superpowers@claude-plugins-official", Enabled: false}, // 显式关覆盖全局开
+				{ID: "opsctl@opskat", Enabled: true},                        // 显式开覆盖全局关
+			})
+
+			cat, err := s.ListAgentSkillPacks(context.Background(), 1, false)
+			So(err, ShouldBeNil)
+			byID := map[string]SkillPackDTO{}
+			for _, p := range cat.Packs {
+				byID[p.ID] = p
+			}
+
+			So(byID["superpowers@claude-plugins-official"].EffectiveEnabled, ShouldBeFalse)
+			So(byID["opsctl@opskat"].EffectiveEnabled, ShouldBeTrue)
+			So(byID["code-review@claude-plugins-official"].EffectiveEnabled, ShouldBeFalse)
+		})
+		Convey("Given an installed globally-enabled pack without an agent override, When listing the catalog, Then it is effectively enabled by inheritance", func() {
+			ag.SetSkills(nil)
+
+			cat, err := s.ListAgentSkillPacks(context.Background(), 1, false)
+			So(err, ShouldBeNil)
+			byID := map[string]SkillPackDTO{}
+			for _, p := range cat.Packs {
+				byID[p.ID] = p
+			}
+
+			So(byID["superpowers@claude-plugins-official"].EffectiveEnabled, ShouldBeTrue)
+			So(byID["opsctl@opskat"].EffectiveEnabled, ShouldBeFalse)
+		})
 		Convey("EnabledPluginsMap 只发 agent 显式覆盖(true/false),其余继承", func() {
 			ag.SetSkills([]agent_entity.AgentSkillItem{
 				{ID: "superpowers@claude-plugins-official", Enabled: true},      // 强制开
@@ -148,5 +184,36 @@ func TestListAgentSkillPacks(t *testing.T) {
 		So(hasClaudeSuperpowers, ShouldBeFalse)
 		_, hasClaudeCodeReview := byID["code-review@claude-plugins-official"]
 		So(hasClaudeCodeReview, ShouldBeFalse)
+	})
+}
+
+func TestListAgentSkillCommands(t *testing.T) {
+	Convey("Given an agent with inherited plugin skills plus backend-native standalone skills", t, func() {
+		ctrl := gomock.NewController(t)
+		al := mock_skill_svc.NewMockAgentLookup(ctrl)
+		bl := mock_skill_svc.NewMockBackendLookup(ctrl)
+		ag := &agent_entity.Agent{ID: 3, AgentBackendID: 12}
+		al.EXPECT().Find(gomock.Any(), int64(3)).Return(ag, nil).AnyTimes()
+		bl.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeCodex)}, nil).AnyTimes()
+		restorePacks := agentskill.SwapDiscovererForTest(agent_backend_entity.TypeCodex, fakeDisc{[]agentskill.SkillPack{
+			{ID: "browser@openai-bundled", Name: "browser", Skills: []string{"browser"}, Installed: true, Source: agentskill.SourceInstalled, GloballyEnabled: true},
+			{ID: "superpowers@openai-curated", Name: "superpowers", Skills: []string{"tdd"}, Installed: true, Source: agentskill.SourceInstalled, GloballyEnabled: false},
+		}})
+		defer restorePacks()
+		restoreCommands := agentskill.SwapCommandDiscovererForTest(agent_backend_entity.TypeCodex, fakeCommandDisc{[]agentskill.SkillCommand{
+			{Name: "browser:browser"}, // duplicate of enabled plugin-derived command
+			{Name: "shadcn", Description: "Compose shadcn UI"},
+		}})
+		defer restoreCommands()
+		s := newForTest(al, bl)
+
+		Convey("When commands are listed, Then enabled plugin and standalone names merge once while disabled packs stay hidden", func() {
+			catalog, err := s.ListAgentSkillCommands(context.Background(), 3, "/tmp/project")
+			So(err, ShouldBeNil)
+			So(catalog.Commands, ShouldResemble, []SkillCommandDTO{
+				{Name: "browser:browser"},
+				{Name: "shadcn", Description: "Compose shadcn UI"},
+			})
+		})
 	})
 }

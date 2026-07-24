@@ -22,7 +22,8 @@ type commandRunner func(ctx context.Context, name string, args ...string) ([]byt
 
 // Discoverer 用 claude CLI 枚举已安装技能包。run 为 nil 时走真实 exec(生产默认)。
 type Discoverer struct {
-	run commandRunner
+	run        commandRunner
+	skillRoots func(cwd string) []string
 }
 
 // runner 取命令执行器:未注入 → 真实 exec.CommandContext().Output()。
@@ -50,7 +51,10 @@ func scanSkills(installPath string) []string {
 	if installPath == "" {
 		return nil
 	}
-	skillsDir := filepath.Join(installPath, "skills")
+	return scanSkillRoot(filepath.Join(installPath, "skills"))
+}
+
+func scanSkillRoot(skillsDir string) []string {
 	entries, err := os.ReadDir(skillsDir)
 	if err != nil {
 		return nil
@@ -66,6 +70,38 @@ func scanSkills(installPath string) []string {
 		out = append(out, e.Name())
 	}
 	return out
+}
+
+func defaultSkillRoots(cwd string) []string {
+	var roots []string
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		roots = append(roots, filepath.Join(home, ".claude", "skills"))
+	}
+	if strings.TrimSpace(cwd) != "" {
+		roots = append(roots, filepath.Join(strings.TrimSpace(cwd), ".claude", "skills"))
+	}
+	return roots
+}
+
+// DiscoverCommands enumerates standalone Claude Code skills. Plugin skills are
+// merged separately by skill_svc so per-agent plugin overrides remain authoritative.
+func (d Discoverer) DiscoverCommands(_ context.Context, q agentskill.CommandDiscoverQuery) ([]agentskill.SkillCommand, error) {
+	roots := defaultSkillRoots(q.Cwd)
+	if d.skillRoots != nil {
+		roots = d.skillRoots(q.Cwd)
+	}
+	seen := map[string]struct{}{}
+	commands := []agentskill.SkillCommand{}
+	for _, root := range roots {
+		for _, name := range scanSkillRoot(root) {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			commands = append(commands, agentskill.SkillCommand{Name: name})
+		}
+	}
+	return commands, nil
 }
 
 func parsePluginList(b []byte) ([]agentskill.SkillPack, error) {

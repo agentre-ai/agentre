@@ -44,3 +44,8 @@ func (a *App) SetAgentPinned(req *agent_svc.SetPinnedRequest) (*agent_svc.SetPin
 func (a *App) ListAgentSkillPacks(agentID int64, refresh bool) (skill_svc.SkillCatalogDTO, error) {
 	return skill_svc.Default().ListAgentSkillPacks(a.ctx, agentID, refresh)
 }
+
+// ListAgentSkillCommands 返回当前 agent 在 cwd 中可调用的 Skill 命令目录。
+func (a *App) ListAgentSkillCommands(agentID int64, cwd string) (skill_svc.SkillCommandCatalogDTO, error) {
+	return skill_svc.Default().ListAgentSkillCommands(a.ctx, agentID, cwd)
+}

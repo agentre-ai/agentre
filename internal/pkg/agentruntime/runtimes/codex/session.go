@@ -344,7 +344,7 @@ func buildLaunchSpec(req agentruntime.RunRequest, env map[string]string, cwd str
 		config:       BuildCodexConfig(gatewayDeps(req)),
 	}
 	spec.config = append(spec.config, buildMCPServerConfig(req.MCPServers)...)
-	spec.config = append(spec.config, buildPluginConfig(req.EnabledPlugins)...)
+	spec.config = append(spec.config, codex.PluginEnabledConfig(req.EnabledPlugins)...)
 	if eff := reasoningEffortConfigValue(req.Backend.ReasoningEffort); eff != "" {
 		spec.config = append(spec.config, `model_reasoning_effort="`+eff+`"`)
 	}
@@ -387,25 +387,6 @@ func buildMCPServerConfig(specs []agentruntime.MCPServerSpec) []string {
 			out = append(out, prefix+".enabled_tools="+tomlStringArray(s.Tools))
 			out = append(out, prefix+".default_tools_approval_mode="+strconv.Quote("approve"))
 		}
-	}
-	return out
-}
-
-func buildPluginConfig(enabled map[string]bool) []string {
-	if len(enabled) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(enabled))
-	for k := range enabled {
-		if strings.TrimSpace(k) != "" {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		id := strings.TrimSpace(k)
-		out = append(out, "plugins."+strconv.Quote(id)+".enabled="+strconv.FormatBool(enabled[k]))
 	}
 	return out
 }

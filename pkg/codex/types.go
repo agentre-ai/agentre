@@ -32,6 +32,7 @@ const (
 	appMethodTurnSteer       = "turn/steer"
 	appMethodTurnInterrupt   = "turn/interrupt"
 	appMethodTurnCompleted   = "turn/completed"
+	appMethodSkillsList      = "skills/list"
 
 	appMethodItemStarted                   = "item/started"
 	appMethodItemCompleted                 = "item/completed"

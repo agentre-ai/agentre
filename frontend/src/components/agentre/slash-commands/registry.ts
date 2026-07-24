@@ -30,6 +30,9 @@ export type SlashCommand = {
   name: string;
   // 下拉里显示的命令字面值,通常等于 `/${name}`。
   label: string;
+  // 触发字符:Claude Code 命令/技能和各 backend 内置命令用 /;
+  // Codex skill mention 按 CLI 协议用 $。
+  trigger: "/" | "$";
   // 一句话说明,会在下拉项右侧 muted 显示。
   description?: string;
   // 返回当前 backend 下的执行策略;null 表示该 backend 不支持此命令。
@@ -40,6 +43,7 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "compact",
     label: "/compact",
+    trigger: "/",
     description: i18n.t("slashCommands.compact.description"),
     resolve(backend) {
       if (
@@ -55,6 +59,7 @@ export const slashCommands: SlashCommand[] = [
   {
     name: "goal",
     label: "/goal",
+    trigger: "/",
     description: i18n.t("slashCommands.goal.description"),
     resolve(backend) {
       if (backend === "codex") {
@@ -65,10 +70,72 @@ export const slashCommands: SlashCommand[] = [
   },
 ];
 
+export type SkillCommandSource = {
+  name: string;
+  description?: string;
+};
+
+export function skillCommandPrefix(backendType: string): "/" | "$" | null {
+  switch (backendType) {
+    case "claudecode":
+      return "/";
+    case "codex":
+      return "$";
+    default:
+      return null;
+  }
+}
+
+// skillCommandsFromCatalog 把后端已解析的裸 Skill 名称映射为输入命令。
+// service 返回的名称不带触发前缀；这里也容忍带前缀的输入，确保 UI 只添加一次。
+export function skillCommandsFromCatalog(
+  backendType: string,
+  catalog: SkillCommandSource[],
+): SlashCommand[] {
+  const trigger = skillCommandPrefix(backendType);
+  if (!trigger) return [];
+
+  const fallbackDescription =
+    backendType === "codex"
+      ? i18n.t("slashCommands.skill.codexDescription")
+      : i18n.t("slashCommands.skill.claudeDescription");
+  const seen = new Set<string>();
+  const commands: SlashCommand[] = [];
+  for (const source of catalog) {
+    let name = source.name.trim();
+    if (name.startsWith(trigger)) name = name.slice(trigger.length).trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const label = `${trigger}${name}`;
+    commands.push({
+      name,
+      label,
+      trigger,
+      description: source.description?.trim() || fallbackDescription,
+      resolve(currentBackend) {
+        return currentBackend === backendType
+          ? { kind: "literal_text", text: label }
+          : null;
+      },
+    });
+  }
+  return commands;
+}
+
 // listAvailable 返回当前 backend 下可用的命令清单。UI 用它做下拉候选。
-export function listAvailable(backendType: string): SlashCommand[] {
+export function listAvailable(
+  backendType: string,
+  dynamicCommands: SlashCommand[] = [],
+): SlashCommand[] {
   if (!backendType) return [];
-  return slashCommands.filter((c) => c.resolve(backendType) !== null);
+  const seen = new Set<string>();
+  return [...slashCommands, ...dynamicCommands].filter((command) => {
+    if (command.resolve(backendType) === null) return false;
+    const key = `${command.trigger}:${command.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // filterByQuery 在 listAvailable 基础上按用户输入的 query 做前缀匹配
@@ -76,8 +143,12 @@ export function listAvailable(backendType: string): SlashCommand[] {
 export function filterByQuery(
   commands: SlashCommand[],
   query: string,
+  trigger?: "/" | "$",
 ): SlashCommand[] {
   const q = query.trim().toLowerCase();
-  if (!q) return commands;
-  return commands.filter((c) => c.name.toLowerCase().startsWith(q));
+  return commands.filter(
+    (c) =>
+      (!trigger || c.trigger === trigger) &&
+      (!q || c.name.toLowerCase().startsWith(q)),
+  );
 }

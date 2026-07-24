@@ -14,6 +14,7 @@ const pack = (over: Record<string, unknown> = {}) => ({
   installed: true,
   enabled: false,
   globallyEnabled: false,
+  effectiveEnabled: false,
   ...over,
 });
 

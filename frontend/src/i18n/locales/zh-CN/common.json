@@ -416,6 +416,8 @@
       },
       "dropHint": "松开以添加文件 / 文件夹路径",
       "placeholder": "输入消息或 / 触发命令",
+      "placeholderClaude": "输入消息，或用 / 触发命令和 Skill",
+      "placeholderCodex": "输入消息，/ 触发命令，$ 调用 Skill",
       "removeImage": "移除图片 {{name}}",
       "saveEdit": "保存编辑",
       "send": "发送",
@@ -2022,12 +2024,16 @@
     "viewAll": "查看全部 {{count}} 个会话"
   },
   "slashCommands": {
-    "aria": "斜杠命令",
+    "aria": "命令与 Skill 提示",
     "compact": {
       "description": "压缩对话上下文,只保留摘要"
     },
     "goal": {
       "description": "设置或查看 Codex 当前目标"
+    },
+    "skill": {
+      "claudeDescription": "调用 Claude Code Skill",
+      "codexDescription": "调用 Codex Skill"
     }
   },
   "settings": {
