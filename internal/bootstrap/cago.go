@@ -14,8 +14,9 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
-	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/claudeskill" // 触发 discoverer init 注册
-	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/codexskill"  // 触发 discoverer init 注册
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/claudeskill"  // 触发 discoverer init 注册
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/codexskill"   // 触发 discoverer init 注册
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/piagentskill" // 触发 discoverer init 注册
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
 	"github.com/agentre-ai/agentre/internal/pkg/sysnotify"

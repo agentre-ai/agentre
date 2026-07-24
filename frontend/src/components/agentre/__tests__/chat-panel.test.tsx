@@ -1979,6 +1979,117 @@ describe("ChatPanel · T31 自主续轮流式中再发消息", () => {
   });
 });
 
+// ─── T32: 自主轮/后台活动轮的 per-turn 终态被漏(sess-2146)──────────────────────
+// per-turn 流的 openStream(ChatPanel 收到 autonomous_started 才调)与 EventsOn 订阅
+// (ChatStreamsHost 下一 render 才挂)跨 render 解耦。短轮的 per-turn done/closed 可能
+// 赶在订阅注册前发完、被 fire-and-forget 事件丢掉 → LiveStream 永远留在 store →
+// streaming 卡死:输入框被逼走 doEnqueue 发不出、自主轮那条空 assistant 行也不 reload
+// 回填内容(用户可见症状:「发不出消息 + 有结果也不显示」)。
+// 修复:收尾在**会话级**流(ChatPanel 挂载即订阅、无此 race)补发 autonomous_finished,
+// 前端据 launchMessageId 兜底 finishStream(幂等)→ streaming 解卡 + doneTick 触发 reload。
+describe("ChatPanel · T32 会话级 autonomous_finished 兜底漏掉的 per-turn 终态", () => {
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  it("Given an autonomous turn's per-turn done was missed (orphan stream), When autonomous_finished arrives on the session channel, Then the stream is finished and the session reloads", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      id: 2146,
+      backendType: "claudecode",
+    });
+    mockSessionStore.messages = [{ id: 5001, role: "assistant", blocks: [] }];
+
+    render(<ChatPanel sessionId={2146} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:2146",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(2146);
+    expect(handler).toBeTruthy();
+
+    // 自主轮开始:插入 assistant 行 + openStream。随后模拟「per-turn done 被漏掉」——
+    // 本测试没挂 ChatStreamsHost,per-turn 流根本没有订阅者,done 发到虚空,orphan 成立。
+    act(() => {
+      handler!({
+        kind: "autonomous_started",
+        sessionId: 2146,
+        stream: "chat:event:2146:5001",
+        trigger: "background_task",
+        assistantMessage: { id: 5001, role: "assistant", blocks: [] },
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+    // orphan 流在 store 里 → streaming=true(输入框被卡)。
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 2146, 5001),
+    ).toBeTruthy();
+
+    // 初次挂载的 reload 不算数,清掉,只断言兜底触发的那次。
+    reloadSpy.mockClear();
+
+    // 会话级流补发终态兜底。
+    act(() => {
+      handler!({
+        kind: "autonomous_finished",
+        sessionId: 2146,
+        launchMessageId: 5001,
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    // orphan 流被 finish → streaming 解卡。
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 2146, 5001),
+    ).toBeNull();
+    // doneTick 自增 → ChatPanel 兜底 reload,把空 assistant 行回填成落库的最终内容。
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalled());
+  });
+
+  it("Given the per-turn done was already received (stream gone), When autonomous_finished arrives, Then it is a no-op (idempotent, no extra reload)", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      id: 2146,
+      backendType: "claudecode",
+    });
+    mockSessionStore.messages = [{ id: 5001, role: "assistant", blocks: [] }];
+
+    render(<ChatPanel sessionId={2146} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:2146",
+        expect.any(Function),
+      ),
+    );
+    const handler = getAutonomousHandler(2146);
+
+    // 没有任何 orphan 流(per-turn done 正常收到、流已被移除的场景)。
+    reloadSpy.mockClear();
+    act(() => {
+      handler!({
+        kind: "autonomous_finished",
+        sessionId: 2146,
+        launchMessageId: 5001,
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 2146, 5001),
+    ).toBeNull();
+    // 流本就不在 → 不 finishStream → 不额外 reload。
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("ChatPanel · /new 斜杠命令", () => {
   it("exact /new 在新 tab 中开同 agent+项目的空白会话并跳转,不动当前会话", () => {
     resetStore();

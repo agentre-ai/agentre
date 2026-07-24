@@ -49,7 +49,8 @@ export type ChatStreamEvent = {
     | "compact_boundary"
     | "runtime_status"
     | "autonomous_started"
-    | "subagent_activity_started";
+    | "subagent_activity_started"
+    | "autonomous_finished";
   delta?: string;
   message?: chat_svc.ChatMessage;
   error?: string;
@@ -153,6 +154,9 @@ export type ChatStreamEvent = {
   //   subagent 的 per-turn 事件名;launchMessageId 是发起此 subagent 的 assistant
   //   消息 id（已在 transcript 中）;toolUseId 是对应的外层 Agent tool_use id。
   //   前端只调 openStream 把活动流绑到发起消息，不插入新消息行，不翻 running。
+  // autonomous_finished — 自主轮 / 后台 subagent 活动轮收尾时经会话级流补发的终态兜底;
+  //   launchMessageId 是该轮收尾的 assistant / 发起消息 id。会话级流常驻订阅、无
+  //   subscribe-after-emit race,前端据此兜底 finishStream 漏掉 per-turn done 的 orphan 流。
   stream?: string;
   trigger?: string;
   completedTask?: { toolUseId: string; status: string; summary?: string };

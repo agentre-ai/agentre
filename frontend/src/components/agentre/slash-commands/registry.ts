@@ -30,8 +30,8 @@ export type SlashCommand = {
   name: string;
   // 下拉里显示的命令字面值,通常等于 `/${name}`。
   label: string;
-  // 触发字符:Claude Code 命令/技能和各 backend 内置命令用 /;
-  // Codex skill mention 按 CLI 协议用 $。
+  // 触发字符:Claude Code/Pi Skill 和各 backend 内置命令用 /;
+  // Codex Skill mention 按 CLI 协议用 $。
   trigger: "/" | "$";
   // 一句话说明,会在下拉项右侧 muted 显示。
   description?: string;
@@ -89,6 +89,7 @@ export type SkillCommandSource = {
 export function skillCommandPrefix(backendType: string): "/" | "$" | null {
   switch (backendType) {
     case "claudecode":
+    case "piagent":
       return "/";
     case "codex":
       return "$";
@@ -106,10 +107,13 @@ export function skillCommandsFromCatalog(
   const trigger = skillCommandPrefix(backendType);
   if (!trigger) return [];
 
-  const fallbackDescription =
+  const fallbackDescription = i18n.t(
     backendType === "codex"
-      ? i18n.t("slashCommands.skill.codexDescription")
-      : i18n.t("slashCommands.skill.claudeDescription");
+      ? "slashCommands.skill.codexDescription"
+      : backendType === "piagent"
+        ? "slashCommands.skill.piDescription"
+        : "slashCommands.skill.claudeDescription",
+  );
   const seen = new Set<string>();
   const commands: SlashCommand[] = [];
   for (const source of catalog) {

@@ -53,6 +53,7 @@ import { cn } from "@/lib/utils";
 import { useSessionAttention } from "@/stores/attention-store";
 import { useClearedBackgroundTasksStore } from "@/stores/cleared-background-tasks-store";
 import {
+  streamForMessage,
   useChatStreamsStore,
   type ChatBlockData,
   type LiveStream,
@@ -537,6 +538,21 @@ function ChatPanel({
           assistantMessageId: ev.launchMessageId,
           streamStartedAt: Date.now(),
         });
+        return;
+      }
+      // autonomous_finished:自主轮 / 后台 subagent 活动轮收尾时会话级流补发的终态兜底。
+      // per-turn 流的 openStream(ChatPanel)与 EventsOn 订阅(ChatStreamsHost)跨 render 解耦,
+      // 短轮的 per-turn done/closed 可能赶在订阅注册前发完被漏掉 → LiveStream 永远留在 store
+      // → streaming 卡死(发不出消息 / 空 assistant 行不回填)。会话级流常驻订阅、无此 race,
+      // 据 launchMessageId 兜底 finishStream。幂等:per-turn done 已被收到时该流已不在,
+      // streamForMessage 命中空直接跳过,不重复 bumpDone。
+      if (ev.kind === "autonomous_finished") {
+        const mid = ev.launchMessageId;
+        if (!mid) return;
+        const streamsState = useChatStreamsStore.getState();
+        if (streamForMessage(streamsState, sessionId, mid)) {
+          streamsState.finishStream(sessionId, mid, { kind: "done" });
+        }
         return;
       }
       if (ev.kind !== "autonomous_started") {

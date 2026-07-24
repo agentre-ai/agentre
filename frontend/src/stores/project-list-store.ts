@@ -22,11 +22,12 @@ export type ProjectFlat = {
   name: string;
   path: string;
   color: string;
+  depth?: number;
 };
 
 function flatten(nodes: app.ProjectTreeNode[]): ProjectFlat[] {
   const out: ProjectFlat[] = [];
-  const walk = (ns: app.ProjectTreeNode[]) => {
+  const walk = (ns: app.ProjectTreeNode[], depth: number) => {
     for (const n of ns) {
       if (n.project) {
         out.push({
@@ -34,12 +35,13 @@ function flatten(nodes: app.ProjectTreeNode[]): ProjectFlat[] {
           name: n.project.name,
           path: n.project.path,
           color: n.project.color,
+          depth,
         });
       }
-      if (n.children) walk(n.children);
+      if (n.children) walk(n.children, depth + 1);
     }
   };
-  walk(nodes);
+  walk(nodes, 0);
   return out;
 }
 

@@ -54,4 +54,21 @@ describe("useAgentSkillCommands", () => {
     expect(result.current).toEqual([]);
     expect(list).not.toHaveBeenCalled();
   });
+
+  it("Given a Pi agent with a project skill, When the composer mounts, Then it loads /skill:name suggestions", async () => {
+    const list = stubCatalog([
+      { name: "skill:review", description: "Review changes" },
+    ]);
+
+    const { result } = renderHook(() =>
+      useAgentSkillCommands(7, "piagent", "/work/project"),
+    );
+
+    await waitFor(() =>
+      expect(result.current.map((command) => command.label)).toEqual([
+        "/skill:review",
+      ]),
+    );
+    expect(list).toHaveBeenCalledWith(7, "/work/project");
+  });
 });

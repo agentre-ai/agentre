@@ -155,6 +155,32 @@ func TestDriveAutonomousTurn_PersistsPureAssistantTurn(t *testing.T) {
 			require.GreaterOrEqual(t, doneIdx, 0, "自主轮收尾缺 StreamDone")
 			assert.Less(t, idleIdx, doneIdx, "自主轮 idle 必须先于 StreamDone")
 		})
+
+		convey.Convey("会话级流补发 StreamAutonomousFinished 兜底(带收尾 assistant 消息 id)", func() {
+			var (
+				finIdx, closedIdx = -1, -1
+				finLaunch         int64
+				finName           string
+			)
+			for i, ev := range m.events {
+				p, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+				if !ok {
+					continue
+				}
+				if p.Kind == chat_svc.StreamAutonomousFinished {
+					finIdx = i
+					finLaunch = p.LaunchMessageID
+					finName = ev.Name
+				}
+				if p.Kind == chat_svc.StreamClosed {
+					closedIdx = i
+				}
+			}
+			require.GreaterOrEqual(t, finIdx, 0, "自主轮收尾缺 StreamAutonomousFinished")
+			assert.Equal(t, chat_svc.AutonomousStreamName(100), finName, "兜底终态必须走会话级流")
+			assert.Equal(t, int64(2001), finLaunch, "应携带收尾 assistant 消息 id")
+			assert.Greater(t, finIdx, closedIdx, "兜底终态在 per-turn StreamClosed 之后补发")
+		})
 	})
 }
 

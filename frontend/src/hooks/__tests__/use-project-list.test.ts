@@ -6,7 +6,10 @@ vi.mock("../../../wailsjs/go/app/App", () => ({
 }));
 
 import { ProjectListTree } from "../../../wailsjs/go/app/App";
-import { useProjectListStore } from "../../stores/project-list-store";
+import {
+  flattenProjects,
+  useProjectListStore,
+} from "../../stores/project-list-store";
 import { useProjectList } from "../use-project-list";
 
 const projectListTree = ProjectListTree as ReturnType<typeof vi.fn>;
@@ -17,6 +20,47 @@ describe("useProjectList", () => {
     useProjectListStore.getState().__reset();
   });
 
+  it("Given nested projects, When flattening the tree, Then preorder and depth are preserved", () => {
+    expect(
+      flattenProjects([
+        {
+          project: {
+            id: 1,
+            name: "Platform",
+            path: "/platform",
+            color: "agent-1",
+          },
+          children: [
+            {
+              project: {
+                id: 2,
+                name: "Desktop",
+                path: "/platform/desktop",
+                color: "agent-2",
+              },
+              children: [],
+            },
+          ],
+        },
+      ] as unknown as Parameters<typeof flattenProjects>[0]),
+    ).toEqual([
+      {
+        id: 1,
+        name: "Platform",
+        path: "/platform",
+        color: "agent-1",
+        depth: 0,
+      },
+      {
+        id: 2,
+        name: "Desktop",
+        path: "/platform/desktop",
+        color: "agent-2",
+        depth: 1,
+      },
+    ]);
+  });
+
   it("loads projects on mount", async () => {
     projectListTree.mockResolvedValueOnce([
       { project: { id: 1, name: "Agentre", path: "/a", color: "agent-1" } },
@@ -24,7 +68,7 @@ describe("useProjectList", () => {
     const { result } = renderHook(() => useProjectList());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.projects).toEqual([
-      { id: 1, name: "Agentre", path: "/a", color: "agent-1" },
+      { id: 1, name: "Agentre", path: "/a", color: "agent-1", depth: 0 },
     ]);
     expect(result.current.error).toBeNull();
   });
@@ -68,7 +112,7 @@ describe("useProjectList", () => {
     expect(a.current.projects).toEqual(b.current.projects);
     expect(a.current.projects).toEqual(c.current.projects);
     expect(a.current.projects).toEqual([
-      { id: 1, name: "Agentre", path: "/a", color: "agent-1" },
+      { id: 1, name: "Agentre", path: "/a", color: "agent-1", depth: 0 },
     ]);
   });
 });

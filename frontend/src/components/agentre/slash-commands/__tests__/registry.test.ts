@@ -89,6 +89,11 @@ describe("slash command registry", () => {
         { name: "cago", description: "Cago conventions" },
       ]).map((command) => command.label),
     ).toEqual(["/cago"]);
+    expect(
+      skillCommandsFromCatalog("piagent", [
+        { name: "skill:review", description: "Review changes" },
+      ]).map((command) => command.label),
+    ).toEqual(["/skill:review"]);
   });
 
   it("Given a Claude skill shadows a built-in slash command, When listing suggestions, Then the built-in command appears only once", () => {

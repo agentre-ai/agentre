@@ -187,23 +187,32 @@ function mockTextSelectionWithin(node: Node) {
 }
 
 describe("ChatComposer context meter", () => {
-  it("Given a Codex backend, When the composer is empty, Then its placeholder explains / commands and $ skills", () => {
+  it("Given a Codex backend, When the composer is empty, Then its placeholder explains @ mentions, / commands, and $ skills", () => {
     render(<ChatComposer backendType="codex" onSubmit={() => undefined} />);
 
     expect(screen.getByRole("textbox").querySelector("p")).toHaveAttribute(
       "data-placeholder",
-      "Type a message · / for commands · $ for skills · ! to run in terminal",
+      "Type a message · @ to mention · / for commands · $ for skills · ! to run in terminal",
     );
   });
 
-  it("Given a Claude Code backend, When the composer is empty, Then its placeholder explains that / includes skills", () => {
+  it("Given a Claude Code backend, When the composer is empty, Then its placeholder explains @ mentions and that / includes commands and skills", () => {
     render(
       <ChatComposer backendType="claudecode" onSubmit={() => undefined} />,
     );
 
     expect(screen.getByRole("textbox").querySelector("p")).toHaveAttribute(
       "data-placeholder",
-      "Type a message · / for commands and skills · ! to run in terminal",
+      "Type a message · @ to mention · / for commands and skills · ! to run in terminal",
+    );
+  });
+
+  it("Given a Pi backend, When the composer is empty, Then its placeholder explains @ mentions, / commands, and /skill:name skills", () => {
+    render(<ChatComposer backendType="piagent" onSubmit={() => undefined} />);
+
+    expect(screen.getByRole("textbox").querySelector("p")).toHaveAttribute(
+      "data-placeholder",
+      "Type a message · @ to mention · / for commands · /skill:name for skills · ! to run in terminal",
     );
   });
 

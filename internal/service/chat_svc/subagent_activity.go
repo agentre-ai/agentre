@@ -123,6 +123,14 @@ func (s *chatSvc) driveSubagentActivity(ctx context.Context, sessionID int64, be
 		zap.Int("childBlocks", len(childBlocks)))
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone})
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
+	// 会话级流补发终态兜底:StreamSubagentActivityStarted 是前端拿 per-turn 流名的唯一入口,
+	// 零子块的活动轮 started→done 背靠背,前端极可能还没 EventsOn 订阅 per-turn 流就漏掉
+	// StreamDone/StreamClosed → 发起卡那条 LiveStream 永远留在 store → streaming 卡死。
+	// 会话级流常驻订阅,补一发让前端据 LaunchMessageID 兜底 finishStream(幂等)。
+	s.emitter.Emit(finalCtx, AutonomousStreamName(sessionID), ChatStreamEvent{
+		Kind:            StreamAutonomousFinished,
+		LaunchMessageID: launchMsg.ID,
+	})
 }
 
 // subagentChildBlocks 从一轮活动的 Finalize 结果里挑出属于 parentToolUseID 的嵌套块

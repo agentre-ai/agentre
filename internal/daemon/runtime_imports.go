@@ -18,4 +18,5 @@ import (
 	// agentskill.DiscovererFor 反查,需这些 init() 自注册到发现器注册表。
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/claudeskill"
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/codexskill"
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/piagentskill"
 )

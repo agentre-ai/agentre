@@ -486,7 +486,9 @@ function ChatComposer({
         ? "chat.composer.placeholderCodex"
         : backendType === "claudecode"
           ? "chat.composer.placeholderClaude"
-          : "chat.composer.placeholder",
+          : backendType === "piagent"
+            ? "chat.composer.placeholderPi"
+            : "chat.composer.placeholder",
     );
 
   // 切换到编辑模式（或换了编辑目标）时把目标文本载进 TipTap，并把光标抓回输入框；

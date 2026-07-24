@@ -6,6 +6,7 @@ export type MentionItem = {
   label: string;
   path?: string; // project only
   color?: string; // agent/project color token, e.g. "agent-3"
+  depth?: number; // project tree depth, root = 0
 };
 
 export type MentionSources = {

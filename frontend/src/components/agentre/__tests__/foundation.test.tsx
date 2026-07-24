@@ -445,7 +445,7 @@ describe("Agentre foundation components", () => {
 
     expect(emptyParagraph).toHaveAttribute(
       "data-placeholder",
-      "Type a message · / for commands · ! to run in terminal",
+      "Type a message · @ to mention · / for commands · ! to run in terminal",
     );
   });
 
