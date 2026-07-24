@@ -43,6 +43,7 @@ var backendKinds = map[BackendType]BackendKind{
 	TypeClaudeCode: claudeCodeKind{},
 	TypeCodex:      codexKind{},
 	TypePiAgent:    piAgentKind{},
+	TypeOpenClaw:   openClawKind{},
 }
 
 // KindFor 查表，找不到返 nil。Service 在 Test/Create/Update 前用它分派 Prober。
@@ -167,6 +168,38 @@ func (piAgentKind) Type() BackendType      { return TypePiAgent }
 func (piAgentKind) KnownAliases() []string { return nil }
 func (piAgentKind) ProviderTypeMatch(llm_provider_entity.ProviderType) bool {
 	return false
+}
+
+// openClawKind 仅保存 Gateway-native 的非敏感配置。token/device private key
+// 由专用 keychain 管理，不进入 entity 或通用 env_json。
+type openClawKind struct{}
+
+func (openClawKind) Type() BackendType      { return TypeOpenClaw }
+func (openClawKind) KnownAliases() []string { return nil }
+func (openClawKind) ProviderTypeMatch(llm_provider_entity.ProviderType) bool {
+	return false
+}
+func (openClawKind) AllowsCLIPath() bool { return false }
+
+func (openClawKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
+	if strings.TrimSpace(b.LLMProviderKey) != "" ||
+		strings.TrimSpace(b.CLIPath) != "" ||
+		!isEmptyJSONObject(b.ModelRoutes) ||
+		strings.TrimSpace(b.Sandbox) != "" ||
+		strings.TrimSpace(b.Approval) != "" ||
+		!isEmptyJSONObject(b.EnvJSON) ||
+		strings.TrimSpace(b.ReasoningEffort) != "" ||
+		strings.TrimSpace(b.DefaultPermissionMode) != "" ||
+		strings.TrimSpace(b.DefaultModel) != "" {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if _, err := NormalizeOpenClawGatewayURL(b.OpenClawGatewayURL); err != nil {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if strings.TrimSpace(b.OpenClawSessionMode) != OpenClawSessionPerAgentRESession {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	return nil
 }
 func (piAgentKind) AllowsCLIPath() bool { return true }
 

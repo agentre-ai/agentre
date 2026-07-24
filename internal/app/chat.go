@@ -161,6 +161,12 @@ func (a *App) AnswerToolPermission(req *chat_svc.AnswerToolPermissionRequest) (*
 	return chat_svc.Chat().AnswerToolPermission(a.ctx, req)
 }
 
+// ResolveExecApproval returns an OpenClaw exec approval decision through the
+// active Gateway runtime. The service validates the session/backend/decision.
+func (a *App) ResolveExecApproval(req *chat_svc.ResolveExecApprovalRequest) (*chat_svc.ResolveExecApprovalResponse, error) {
+	return chat_svc.Chat().ResolveExecApproval(a.ctx, req)
+}
+
 // AnswerToolApproval agent 内置工具(org / hook 等)写操作的审批决策
 // (批准/拒绝),按 requestID 路由唤醒挂起的工具调用。各工具不再各自持 waiter / Answer,
 // 统一经此入口落到 chat_svc 的通用审批管线。

@@ -163,6 +163,37 @@ func (e ToolPermissionResolved) MarshalJSON() ([]byte, error) {
 	}{EventToolPermissionResolved, e.RequestID, e.Allowed, e.AlwaysAllow, e.DenyReason})
 }
 
+func (e ExecApprovalRequested) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Kind             EventKind `json:"kind"`
+		ID               string    `json:"id,omitempty"`
+		CommandText      string    `json:"commandText,omitempty"`
+		CommandPreview   string    `json:"commandPreview,omitempty"`
+		AllowedDecisions []string  `json:"allowedDecisions,omitempty"`
+		Host             string    `json:"host,omitempty"`
+		NodeID           string    `json:"nodeId,omitempty"`
+		AgentID          string    `json:"agentId,omitempty"`
+		SessionKey       string    `json:"sessionKey,omitempty"`
+		CreatedAtMs      int64     `json:"createdAtMs,omitempty"`
+		ExpiresAtMs      int64     `json:"expiresAtMs,omitempty"`
+	}{
+		EventExecApprovalRequested, e.ID, e.CommandText, e.CommandPreview,
+		e.AllowedDecisions, e.Host, e.NodeID, e.AgentID, e.SessionKey,
+		e.CreatedAtMs, e.ExpiresAtMs,
+	})
+}
+
+func (e ExecApprovalResolved) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Kind         EventKind `json:"kind"`
+		ID           string    `json:"id,omitempty"`
+		Status       string    `json:"status,omitempty"`
+		Decision     string    `json:"decision,omitempty"`
+		ResolvedBy   string    `json:"resolvedBy,omitempty"`
+		ResolvedAtMs int64     `json:"resolvedAtMs,omitempty"`
+	}{EventExecApprovalResolved, e.ID, e.Status, e.Decision, e.ResolvedBy, e.ResolvedAtMs})
+}
+
 func (e PermissionModeChanged) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Kind EventKind `json:"kind"`
@@ -417,6 +448,43 @@ func UnmarshalEvent(data []byte) (Event, error) {
 			Allowed:     w.Allowed,
 			AlwaysAllow: w.AlwaysAllow,
 			DenyReason:  w.DenyReason,
+		}, nil
+	case EventExecApprovalRequested:
+		var w struct {
+			ID               string   `json:"id"`
+			CommandText      string   `json:"commandText"`
+			CommandPreview   string   `json:"commandPreview"`
+			AllowedDecisions []string `json:"allowedDecisions"`
+			Host             string   `json:"host"`
+			NodeID           string   `json:"nodeId"`
+			AgentID          string   `json:"agentId"`
+			SessionKey       string   `json:"sessionKey"`
+			CreatedAtMs      int64    `json:"createdAtMs"`
+			ExpiresAtMs      int64    `json:"expiresAtMs"`
+		}
+		if err := json.Unmarshal(data, &w); err != nil {
+			return nil, err
+		}
+		return ExecApprovalRequested{
+			ID: w.ID, CommandText: w.CommandText, CommandPreview: w.CommandPreview,
+			AllowedDecisions: w.AllowedDecisions, Host: w.Host, NodeID: w.NodeID,
+			AgentID: w.AgentID, SessionKey: w.SessionKey,
+			CreatedAtMs: w.CreatedAtMs, ExpiresAtMs: w.ExpiresAtMs,
+		}, nil
+	case EventExecApprovalResolved:
+		var w struct {
+			ID           string `json:"id"`
+			Status       string `json:"status"`
+			Decision     string `json:"decision"`
+			ResolvedBy   string `json:"resolvedBy"`
+			ResolvedAtMs int64  `json:"resolvedAtMs"`
+		}
+		if err := json.Unmarshal(data, &w); err != nil {
+			return nil, err
+		}
+		return ExecApprovalResolved{
+			ID: w.ID, Status: w.Status, Decision: w.Decision,
+			ResolvedBy: w.ResolvedBy, ResolvedAtMs: w.ResolvedAtMs,
 		}, nil
 	case EventPermissionModeChanged:
 		var w struct {

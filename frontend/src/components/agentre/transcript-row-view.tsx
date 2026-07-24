@@ -33,6 +33,7 @@ import { CompactBoundaryDivider } from "./compact-boundary-divider";
 import { LocalCommandCard } from "./local-command/card";
 import { MarkdownText, StreamingMarkdown } from "./markdown-text";
 import { MessageRow, MessageCopyButton } from "./message-row";
+import { OpenClawExecApprovalCard } from "./openclaw-exec-approval/card";
 import { ToolApprovalCard } from "./tool-approval/card";
 import { ThinkingBlock } from "./thinking-block";
 import type { TranscriptRow, TranscriptRowItem } from "./transcript-rows";
@@ -574,6 +575,13 @@ function RenderItemView({
       return item.block.toolApproval ? (
         <ToolApprovalCard
           approval={item.block.toolApproval}
+          sessionId={ctx?.sessionId ?? 0}
+        />
+      ) : null;
+    case "exec_approval":
+      return item.block.execApproval ? (
+        <OpenClawExecApprovalCard
+          approval={item.block.execApproval}
           sessionId={ctx?.sessionId ?? 0}
         />
       ) : null;

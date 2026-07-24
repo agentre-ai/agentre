@@ -83,6 +83,12 @@ export function ChatStreamsHost(): React.ReactElement | null {
   const markToolApprovalResolved = useChatStreamsStore(
     (s) => s.markToolApprovalResolved,
   );
+  const appendLiveExecApproval = useChatStreamsStore(
+    (s) => s.appendLiveExecApproval,
+  );
+  const markExecApprovalResolved = useChatStreamsStore(
+    (s) => s.markExecApprovalResolved,
+  );
   const patchLiveUsage = useChatStreamsStore((s) => s.patchLiveUsage);
   const patchLiveContextWindow = useChatStreamsStore(
     (s) => s.patchLiveContextWindow,
@@ -233,6 +239,27 @@ export function ChatStreamsHost(): React.ReactElement | null {
           }
           return;
         }
+        case "exec_approval": {
+          if (!ev.execApproval?.id) return;
+          clearLiveRetry(sessionId, assistantMessageId);
+          if (ev.execApproval.status === "pending") {
+            bumpSessionTabToAfterPinned(sessionId);
+            appendLiveExecApproval(
+              sessionId,
+              assistantMessageId,
+              ev.execApproval,
+            );
+          } else {
+            // Resolution/expiry closes only the approval lifecycle. The turn
+            // remains subscribed until a distinct done/error/aborted event.
+            markExecApprovalResolved(
+              sessionId,
+              assistantMessageId,
+              ev.execApproval,
+            );
+          }
+          return;
+        }
         case "session_status": {
           if (!ev.sessionStatus) return;
           // session_status patch 一般只带 agentStatus + needsAttention,
@@ -360,6 +387,8 @@ export function ChatStreamsHost(): React.ReactElement | null {
       markToolPermissionResolved,
       appendLiveToolApproval,
       markToolApprovalResolved,
+      appendLiveExecApproval,
+      markExecApprovalResolved,
       patchLiveUsage,
       patchLiveContextWindow,
       appendLiveCompactBoundary,

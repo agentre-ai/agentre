@@ -10,6 +10,9 @@ package agent_backend_entity
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -31,6 +34,14 @@ const (
 	TypeCodex BackendType = "codex"
 	// TypePiAgent 包装本地 pi CLI（@earendil-works/pi-coding-agent RPC mode）。
 	TypePiAgent BackendType = "piagent"
+	// TypeOpenClaw 通过 OpenClaw Gateway WebSocket RPC protocol 4 运行 agent。
+	TypeOpenClaw BackendType = "openclaw"
+)
+
+const (
+	// OpenClawSessionPerAgentRESession 将每条 AgentRE chat_session 稳定映射到一条
+	// OpenClaw session。MVP 只支持这一种模式。
+	OpenClawSessionPerAgentRESession = "per-agentre-session"
 )
 
 // AgentBackend 一条 Agent 后端配置记录。
@@ -64,9 +75,18 @@ type AgentBackend struct {
 	// 绑了 provider 时 provider.Model 优先，本字段仅在 provider.Model 为空时兜底。
 	// 空串 = 不下发 --model，走 CLI 默认。其它后端类型必须保持空串。
 	DefaultModel string `gorm:"column:default_model;type:text;not null;default:''"`
-	Status       int    `gorm:"column:status;type:int;not null;default:1"`
-	Createtime   int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
-	Updatetime   int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	// OpenClawGatewayURL 是 OpenClaw Gateway WebSocket 地址。loopback 可使用 ws；
+	// 非 loopback 必须使用 wss。认证信息不得出现在 URL 中。
+	OpenClawGatewayURL string `gorm:"column:openclaw_gateway_url;type:text;not null;default:''"`
+	// OpenClawAgentID 为空时使用 Gateway 默认 agent。
+	OpenClawAgentID string `gorm:"column:openclaw_agent_id;type:text;not null;default:''"`
+	// OpenClawDefaultModel 为空时使用 OpenClaw agent/session 默认模型。
+	OpenClawDefaultModel string `gorm:"column:openclaw_default_model;type:text;not null;default:''"`
+	// OpenClawSessionMode MVP 固定为 per-agentre-session。
+	OpenClawSessionMode string `gorm:"column:openclaw_session_mode;type:text;not null;default:''"`
+	Status              int    `gorm:"column:status;type:int;not null;default:1"`
+	Createtime          int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
+	Updatetime          int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
 }
 
 // TableName 绑定表名。
@@ -90,6 +110,10 @@ func (b *AgentBackend) IsCodex() bool {
 
 func (b *AgentBackend) IsPiAgent() bool {
 	return b != nil && BackendType(b.Type) == TypePiAgent
+}
+
+func (b *AgentBackend) IsOpenClaw() bool {
+	return b != nil && BackendType(b.Type) == TypeOpenClaw
 }
 
 // IsLocal DeviceID 为空时为本地模式；nil receiver 返回 false。
@@ -139,6 +163,9 @@ func (b *AgentBackend) Check(ctx context.Context) error {
 	kind := b.Kind()
 	if kind == nil {
 		return i18n.NewError(ctx, code.AgentBackendInvalidType)
+	}
+	if !b.IsOpenClaw() && b.hasOpenClawConfig() {
+		return i18n.NewError(ctx, code.InvalidParameter)
 	}
 
 	// env_json：反序列化 + 保留键白名单。
@@ -190,6 +217,13 @@ func (b *AgentBackend) Check(ctx context.Context) error {
 	return kind.ValidateExtra(ctx, b)
 }
 
+func (b *AgentBackend) hasOpenClawConfig() bool {
+	return strings.TrimSpace(b.OpenClawGatewayURL) != "" ||
+		strings.TrimSpace(b.OpenClawAgentID) != "" ||
+		strings.TrimSpace(b.OpenClawDefaultModel) != "" ||
+		strings.TrimSpace(b.OpenClawSessionMode) != ""
+}
+
 // validPermissionModes 与 pkg/claudecode/session.go::validPermissionModes 对齐。
 // 空串单独由 caller 处理（claudecode 允许 "" = 走 acceptEdits 默认）。
 var validPermissionModes = map[string]struct{}{
@@ -203,4 +237,49 @@ var validPermissionModes = map[string]struct{}{
 func IsValidPermissionMode(mode string) bool {
 	_, ok := validPermissionModes[mode]
 	return ok
+}
+
+// NormalizeOpenClawGatewayURL validates and normalizes a Gateway WebSocket URL.
+// Plaintext WebSocket is intentionally limited to loopback. User info, query and
+// fragment components are rejected so credentials cannot be smuggled into a
+// persisted URL or later appear in logs/errors.
+func NormalizeOpenClawGatewayURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("openclaw gateway URL is required")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse openclaw gateway URL: %w", err)
+	}
+	u.Scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return "", fmt.Errorf("openclaw gateway URL must use ws or wss")
+	}
+	if u.Opaque != "" || u.Hostname() == "" {
+		return "", fmt.Errorf("openclaw gateway URL must include a host")
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return "", fmt.Errorf("openclaw gateway URL cannot contain credentials, query, or fragment")
+	}
+
+	hostname := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	loopback := hostname == "localhost"
+	if ip := net.ParseIP(hostname); ip != nil {
+		loopback = ip.IsLoopback()
+	}
+	if u.Scheme == "ws" && !loopback {
+		return "", fmt.Errorf("plaintext openclaw gateway URL is limited to loopback")
+	}
+
+	port := u.Port()
+	switch {
+	case port != "":
+		u.Host = net.JoinHostPort(hostname, port)
+	case strings.Contains(hostname, ":"):
+		u.Host = "[" + hostname + "]"
+	default:
+		u.Host = hostname
+	}
+	return u.String(), nil
 }

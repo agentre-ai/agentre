@@ -572,6 +572,16 @@ func TestRuntime_Run_BuiltinBackend_Rejected(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRuntime_Run_OpenClawRemoteSecretUnavailable(t *testing.T) {
+	ctx, _, _, _, h := setupRuntimeTest(t, nil)
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:   backendJSON(t, agent_backend_entity.AgentBackend{ID: 9, Type: string(agent_backend_entity.TypeOpenClaw), DeviceID: "7"}),
+		SessionID: 91,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "remote secret enrollment is unavailable")
+}
+
 func TestRuntime_Run_UnknownBackendType_Errors(t *testing.T) {
 	// runtimeFor returns nil for unknown type.
 	ctx, _, _, _, h := setupRuntimeTest(t, nil)

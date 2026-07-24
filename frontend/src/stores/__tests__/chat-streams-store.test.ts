@@ -436,4 +436,77 @@ describe("chat-streams-store", () => {
     const block = live(7)!.liveBlocks[0];
     expect(block.toolApproval).toMatchObject({ status: "pending" });
   });
+
+  // ── OpenClaw exec approval live path ──
+  it("Given pending text, When an exec approval arrives, Then text is flushed before one approval block", () => {
+    const { openStream, appendLiveText, appendLiveExecApproval } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    appendLiveText(7, 1, "Need approval first.");
+
+    appendLiveExecApproval(7, 1, {
+      id: "exec-1",
+      commandText: "pwd",
+      allowedDecisions: ["allow-once", "deny"],
+      status: "pending",
+    });
+
+    expect(live(7)?.liveDelta).toBe("");
+    expect(live(7)?.liveBlocks).toEqual([
+      expect.objectContaining({ type: "text", text: "Need approval first." }),
+      expect.objectContaining({
+        type: "exec_approval",
+        execApproval: expect.objectContaining({
+          id: "exec-1",
+          status: "pending",
+        }),
+      }),
+    ]);
+  });
+
+  it("Given a pending exec approval, When a terminal update arrives, Then it is merged by id without creating a completion block", () => {
+    const { openStream, appendLiveExecApproval, markExecApprovalResolved } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    appendLiveExecApproval(7, 1, {
+      id: "exec-2",
+      commandText: "false",
+      allowedDecisions: ["deny"],
+      status: "pending",
+    });
+
+    markExecApprovalResolved(7, 1, {
+      id: "exec-2",
+      commandText: "false",
+      status: "resolved",
+      decision: "deny",
+      resolvedBy: "operator-device-2",
+    });
+
+    expect(live(7)?.liveBlocks).toHaveLength(1);
+    expect(live(7)?.liveBlocks[0]).toMatchObject({
+      type: "exec_approval",
+      execApproval: {
+        id: "exec-2",
+        status: "resolved",
+        decision: "deny",
+        resolvedBy: "operator-device-2",
+      },
+    });
+  });
+
+  it("Given no matching exec approval, When a terminal update arrives, Then store identity is unchanged", () => {
+    const { openStream, markExecApprovalResolved } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    const before = useChatStreamsStore.getState().streams;
+
+    markExecApprovalResolved(7, 1, {
+      id: "missing",
+      commandText: "",
+      status: "expired",
+    });
+
+    expect(useChatStreamsStore.getState().streams).toBe(before);
+  });
 });

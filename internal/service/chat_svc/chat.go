@@ -42,6 +42,7 @@ import (
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/builtin"
 	claudecodert "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
 	codexrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/codex"
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/openclaw"
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
@@ -98,6 +99,7 @@ type ChatSvc interface {
 	MarkSessionRead(ctx context.Context, req *MarkSessionReadRequest) (*MarkSessionReadResponse, error)
 	AnswerUserQuestion(ctx context.Context, req *AnswerUserQuestionRequest) (*AnswerUserQuestionResponse, error)
 	AnswerToolPermission(ctx context.Context, req *AnswerToolPermissionRequest) (*AnswerToolPermissionResponse, error)
+	ResolveExecApproval(ctx context.Context, req *ResolveExecApprovalRequest) (*ResolveExecApprovalResponse, error)
 	ResolvePlanAction(ctx context.Context, req *ResolvePlanActionRequest) (*ResolvePlanActionResponse, error)
 	// EnsureSession 是 chat_sessions 的统一创建/复用边界。其它 domain 不直接写 chat_repo.Session().Create。
 	EnsureSession(ctx context.Context, req *EnsureSessionRequest) (*EnsureSessionResponse, error)
@@ -342,6 +344,12 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 					item.Chattable = true
 				} else if s.gateway == nil || s.gateway.Status().State != "running" {
 					item.ChattableHint = "本地网关未启动，CLI 后端暂不可用"
+				} else {
+					item.Chattable = true
+				}
+			case agent_backend_entity.TypeOpenClaw:
+				if be.IsRemote() {
+					item.ChattableHint = "远端 OpenClaw 暂不可用：agentred 尚无安全的 secret enrollment/reference"
 				} else {
 					item.Chattable = true
 				}
@@ -762,6 +770,12 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		case *chatblocks.ToolPermissionBlock:
 			if tb != nil {
 				out.Blocks = append(out.Blocks, toolPermissionBlockToChatBlock(*tb))
+			}
+		case chatblocks.ExecApprovalBlock:
+			out.Blocks = append(out.Blocks, execApprovalBlockToChatBlock(tb))
+		case *chatblocks.ExecApprovalBlock:
+			if tb != nil {
+				out.Blocks = append(out.Blocks, execApprovalBlockToChatBlock(*tb))
 			}
 		case chatblocks.ToolApprovalBlock:
 			out.Blocks = append(out.Blocks, toolApprovalBlockToChatBlock(tb))
@@ -1397,6 +1411,10 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 			}
 		}
 		// LLMProviderKey == "" → CLI 自身 login 状态生效，不强制 gateway。
+	case agent_backend_entity.TypeOpenClaw:
+		if be.IsRemote() {
+			return nil, nil, nil, fmt.Errorf("openclaw remote secret enrollment is unavailable")
+		}
 	default:
 		return nil, nil, nil, i18n.NewError(ctx, code.AgentBackendInvalidType)
 	}
@@ -2861,7 +2879,6 @@ func (s *chatSvc) runTurn(
 	default:
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
 	}
-	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
 	// turn 正常收尾(含 abort)的唯一终态回灌点。错误路径走 failTurn 后 return,
 	// 自动接续路径在递归 runTurn 的 finalize 回灌(本帧 len(pending)>0 已提前 return)。
 	s.publishTurnResult(sess.ID, TurnResult{
@@ -3293,7 +3310,6 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 		Error:   err.Error(),
 		Message: chatMessageForEvent(sess, msg),
 	})
-	s.emitter.Emit(ctx, stream, ChatStreamEvent{Kind: StreamClosed})
 	// 错误路径的唯一终态回灌点。failTurn 直线到此(无内部 early return),尾端单点
 	// publish 即覆盖全部退出路径;与 finalize 互斥(调用方 failTurn 后立即 return)。
 	s.publishTurnResult(sess.ID, TurnResult{

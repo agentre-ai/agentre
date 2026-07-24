@@ -194,10 +194,9 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 		},
 	})
 	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
-	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
 	// 会话级流补发终态兜底:StreamAutonomousStarted 是前端拿 per-turn 流名的唯一入口,
 	// 前端收到才 openStream、ChatStreamsHost 才在下一 render EventsOn 订阅。若本轮很短,
-	// 上面的 per-turn StreamDone/StreamClosed 可能赶在订阅注册前发完 → 前端漏终态 → 该
+	// 上面的 per-turn StreamDone 可能赶在订阅注册前发完 → 前端漏终态 → 该
 	// LiveStream 永远留在 store → streaming 卡死。会话级流由 ChatPanel 挂载即订阅、常驻,
 	// 先于本轮,补一发让前端据 LaunchMessageID 兜底 finishStream(幂等)。见 StreamAutonomousFinished。
 	s.emitter.Emit(finalCtx, AutonomousStreamName(sessionID), ChatStreamEvent{

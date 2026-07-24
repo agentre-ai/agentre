@@ -51,6 +51,9 @@ const (
 	// 时 emit。前端渲染审批卡片，用户决策后调 AnswerToolPermission 回灌。
 	// Resolved=true 的事件代表"已审批"态切换（按 RequestID 找到既有 block 更新）。
 	StreamToolPermissionRequest ChatStreamEventKind = "tool_permission_request"
+	// StreamExecApproval carries OpenClaw Gateway approval requested/resolved
+	// cards. A resolved card is not an exec/tool completion event.
+	StreamExecApproval ChatStreamEventKind = "exec_approval"
 	// StreamSessionStatus 推送 session 级 status patch（agentStatus + needsAttention）。
 	// 用于 turn 进行中遇到 ask / 审批等待时把 toolbar 翻成橙色 WAITING，应答后翻回
 	// RUNNING。前端按 stream name 已知 sessionId，patch 体只带新状态。
@@ -143,6 +146,7 @@ type ChatStreamEvent struct {
 
 	// StreamToolPermissionRequest 事件填充：审批载荷或审批后的状态切换。
 	ToolPermission *ChatBlockToolPermission `json:"toolPermission,omitempty"`
+	ExecApproval   *ChatBlockExecApproval   `json:"execApproval,omitempty"`
 
 	// StreamRetry 事件填充：后端/上游的非终态重试通知。本轮 turn 继续运行。
 	RetryAttempt     int    `json:"retryAttempt,omitempty"`
@@ -277,6 +281,9 @@ type ChatBlock struct {
 	// tool_permission_request block 专用：工具审批载荷与决策状态。
 	ToolPermission *ChatBlockToolPermission `json:"toolPermission,omitempty"`
 
+	// exec_approval block 专用：OpenClaw Gateway exec 审批生命周期。
+	ExecApproval *ChatBlockExecApproval `json:"execApproval,omitempty"`
+
 	// tool_approval block 专用：agent 内置工具(org / hook 等)写操作审批卡。
 	ToolApproval *ChatBlockToolApproval `json:"toolApproval,omitempty"`
 
@@ -340,6 +347,22 @@ type ChatBlockToolPermission struct {
 	Resolved    bool           `json:"resolved,omitempty"`
 	Allowed     bool           `json:"allowed,omitempty"`
 	AlwaysAllow bool           `json:"alwaysAllow,omitempty"`
+}
+
+type ChatBlockExecApproval struct {
+	ID               string   `json:"id"`
+	CommandText      string   `json:"commandText"`
+	CommandPreview   string   `json:"commandPreview,omitempty"`
+	AllowedDecisions []string `json:"allowedDecisions,omitempty"`
+	Host             string   `json:"host,omitempty"`
+	NodeID           string   `json:"nodeId,omitempty"`
+	AgentID          string   `json:"agentId,omitempty"`
+	Status           string   `json:"status"`
+	Decision         string   `json:"decision,omitempty"`
+	ResolvedBy       string   `json:"resolvedBy,omitempty"`
+	CreatedAtMs      int64    `json:"createdAtMs,omitempty"`
+	ExpiresAtMs      int64    `json:"expiresAtMs,omitempty"`
+	ResolvedAtMs     int64    `json:"resolvedAtMs,omitempty"`
 }
 
 // ChatBlockToolApproval agent 内置工具(org / hook 等)写操作审批卡的前端投影。

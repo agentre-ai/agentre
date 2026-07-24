@@ -109,6 +109,11 @@ func (d *dispatcherEmitter) Emit(ctx context.Context, stream string, raw any) {
 			}
 		}
 
+	case string(StreamExecApproval):
+		if block, ok := m["execApproval"].(*blocks.ExecApprovalBlock); ok && block != nil {
+			ev.ExecApproval = execApprovalBlockToDTO(*block)
+		}
+
 	case string(StreamSubagentStarted), string(StreamSubagentProgress), string(StreamSubagentDone):
 		ev.ToolUseID = stringOf(m, "toolUseId")
 		// info → ChatBlockSubagent (复用已有投影 subagentInfoToChatBlock)

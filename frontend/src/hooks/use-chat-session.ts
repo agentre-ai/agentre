@@ -134,12 +134,17 @@ export function useChatSession(sessionId: number) {
           const pendingApprovals = (lastAssistant.blocks ?? []).filter(
             isPendingToolApproval,
           );
-          if (pendingApprovals.length > 0) {
+          const isPendingExecApproval = (b: chat_svc.ChatBlock) =>
+            b.type === "exec_approval" && b.execApproval?.status === "pending";
+          const pendingExecApprovals = (lastAssistant.blocks ?? []).filter(
+            isPendingExecApproval,
+          );
+          if (pendingApprovals.length > 0 || pendingExecApprovals.length > 0) {
             loadedMessages = loadedMessages.slice();
             loadedMessages[lastAssistantIdx] = {
               ...lastAssistant,
               blocks: (lastAssistant.blocks ?? []).filter(
-                (b) => !isPendingToolApproval(b),
+                (b) => !isPendingToolApproval(b) && !isPendingExecApproval(b),
               ),
             } as ChatMessage;
           }
@@ -172,6 +177,25 @@ export function useChatSession(sessionId: number) {
               useChatStreamsStore
                 .getState()
                 .appendLiveToolApproval(sessionId, lastAssistant.id, approval);
+            }
+          }
+          for (const block of pendingExecApprovals) {
+            const approval = block.execApproval;
+            if (!approval?.id) continue;
+            const liveNow = streamForMessage(
+              useChatStreamsStore.getState(),
+              sessionId,
+              lastAssistant.id,
+            );
+            const exists = liveNow?.liveBlocks.some(
+              (b) =>
+                b.type === "exec_approval" &&
+                b.execApproval?.id === approval.id,
+            );
+            if (!exists) {
+              useChatStreamsStore
+                .getState()
+                .appendLiveExecApproval(sessionId, lastAssistant.id, approval);
             }
           }
         }

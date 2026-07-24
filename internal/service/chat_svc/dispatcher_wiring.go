@@ -23,6 +23,8 @@ func newPackageDispatcher(svc *chatSvc) *turn.Dispatcher {
 	d.Register((*agentruntime.UserAskResolved)(nil), handlers.UserAskResolvedHandler{})
 	d.Register((*agentruntime.ToolPermissionRequest)(nil), handlers.ToolPermissionRequestHandler{})
 	d.Register((*agentruntime.ToolPermissionResolved)(nil), handlers.ToolPermissionResolvedHandler{})
+	d.Register((*agentruntime.ExecApprovalRequested)(nil), handlers.ExecApprovalRequestedHandler{})
+	d.Register((*agentruntime.ExecApprovalResolved)(nil), handlers.ExecApprovalResolvedHandler{})
 	d.Register((*agentruntime.SubagentStarted)(nil), handlers.SubagentStartedHandler{})
 	d.Register((*agentruntime.SubagentProgress)(nil), handlers.SubagentProgressHandler{})
 	d.Register((*agentruntime.SubagentDone)(nil), handlers.SubagentDoneHandler{})

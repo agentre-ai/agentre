@@ -90,6 +90,18 @@ func TestEvent_RoundTrip(t *testing.T) {
 			RequestID: "p2", Allowed: false, DenyReason: "no thanks",
 		}},
 
+		// OpenClaw exec approval lifecycle is intentionally separate from tool
+		// completion. The available decisions come from the Gateway verbatim.
+		{"exec_approval_requested", ExecApprovalRequested{
+			ID: "approval-1", CommandText: "rm -rf build", CommandPreview: "rm -rf build",
+			AllowedDecisions: []string{"allow-once", "deny"}, Host: "gateway",
+			AgentID: "main", SessionKey: "agentre:12:34", CreatedAtMs: 100, ExpiresAtMs: 200,
+		}},
+		{"exec_approval_resolved", ExecApprovalResolved{
+			ID: "approval-1", Status: "resolved", Decision: "deny", ResolvedBy: "device-2", ResolvedAtMs: 150,
+		}},
+		{"exec_approval_expired", ExecApprovalResolved{ID: "approval-2", Status: "expired"}},
+
 		// PermissionModeChanged
 		{"permission_mode_changed", PermissionModeChanged{Mode: "bypassPermissions"}},
 
@@ -220,6 +232,8 @@ func TestEvent_WireKindMatchesType(t *testing.T) {
 		{EventAskUserQuestionAnswered, UserAskResolved{}},
 		{EventToolPermissionRequest, ToolPermissionRequest{}},
 		{EventToolPermissionResolved, ToolPermissionResolved{}},
+		{EventExecApprovalRequested, ExecApprovalRequested{}},
+		{EventExecApprovalResolved, ExecApprovalResolved{}},
 		{EventPermissionModeChanged, PermissionModeChanged{}},
 		{EventSubagentStarted, SubagentStarted{}},
 		{EventSubagentProgress, SubagentProgress{}},
@@ -255,6 +269,7 @@ func TestUnmarshalEvent_AllKindsCovered(t *testing.T) {
 		TextDelta{}, ThinkingDelta{}, ToolCall{}, ToolResult{}, SteerConsumed{},
 		UserAskRequest{}, UserAskResolved{},
 		ToolPermissionRequest{}, ToolPermissionResolved{},
+		ExecApprovalRequested{}, ExecApprovalResolved{},
 		PermissionModeChanged{},
 		SubagentStarted{}, SubagentProgress{}, SubagentDone{},
 		Retry{}, UsageUpdate{}, ContextWindowUpdated{}, CompactBoundary{}, RuntimeStatus{}, PlanUpdated{},

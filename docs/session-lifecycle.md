@@ -43,6 +43,12 @@ The desktop app owns the local database and creates/reuses the `chat_sessions` r
 
 This keeps session identity, sidebar state, read state, issue linkage, and notifications in one local source of truth.
 
+## Provider Session Mapping
+
+When a runtime has its own provider-side session identity, the AgentRE `chat_sessions` row remains the UI/history source of truth and stores only the provider mapping in `ProviderSessionID`. A runtime must not replace AgentRE message history with provider history during ordinary resume.
+
+The OpenClaw backend uses the deterministic key `agentre:<backendID>:<chatSessionID>` when `ProviderSessionID` is empty, returns that key through `RunResult.ProviderSessionID`, and reuses the persisted value on later turns. Reconnect reconciles the active Gateway run; it does not import or overwrite chat history.
+
 ## Adding A New Session Purpose
 
 When adding a new feature that creates sessions:

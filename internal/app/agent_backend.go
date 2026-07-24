@@ -14,9 +14,19 @@ func (a *App) CreateAgentBackend(req *agent_backend_svc.CreateBackendRequest) (*
 	return agent_backend_svc.AgentBackend().Create(a.ctx, req)
 }
 
+// CreateOpenClawAgentBackend accepts a transient token as a separate binding
+// argument. It is never represented in a Wails request/response model.
+func (a *App) CreateOpenClawAgentBackend(req *agent_backend_svc.CreateBackendRequest, token string) (*agent_backend_svc.CreateBackendResponse, error) {
+	return agent_backend_svc.AgentBackend().CreateOpenClaw(a.ctx, req, token)
+}
+
 // UpdateAgentBackend 更新 Agent 后端。Type 不可变。
 func (a *App) UpdateAgentBackend(req *agent_backend_svc.UpdateBackendRequest) (*agent_backend_svc.UpdateBackendResponse, error) {
 	return agent_backend_svc.AgentBackend().Update(a.ctx, req)
+}
+
+func (a *App) UpdateOpenClawAgentBackend(req *agent_backend_svc.UpdateBackendRequest, token string, clearToken bool) (*agent_backend_svc.UpdateBackendResponse, error) {
+	return agent_backend_svc.AgentBackend().UpdateOpenClaw(a.ctx, req, token, clearToken)
 }
 
 // DeleteAgentBackend 软删除 Agent 后端。
@@ -27,6 +37,10 @@ func (a *App) DeleteAgentBackend(req *agent_backend_svc.DeleteBackendRequest) (*
 // TestAgentBackend 跑一次连通性自检。OK=false 时 Message 含错误文案,不通过 error 返回。
 func (a *App) TestAgentBackend(req *agent_backend_svc.TestBackendRequest) (*agent_backend_svc.TestBackendResponse, error) {
 	return agent_backend_svc.AgentBackend().Test(a.ctx, req)
+}
+
+func (a *App) TestOpenClawAgentBackend(req *agent_backend_svc.TestBackendRequest, token string) (*agent_backend_svc.TestBackendResponse, error) {
+	return agent_backend_svc.AgentBackend().TestOpenClaw(a.ctx, req, token)
 }
 
 // CancelTestAgentBackend 中断一个还在跑的 TestAgentBackend。
