@@ -23,6 +23,7 @@ import {
   SendHorizontal,
   Server,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   SunMoon,
@@ -406,7 +407,8 @@ function OpenClawDialog({
           <ShieldCheck className="size-4 text-status-running" />
           <AlertTitle className="text-xs">协议握手成功 · 42ms</AlertTitle>
           <AlertDescription className="text-[11px]">
-            Protocol 4 · operator.read / operator.write · Gateway 2026.7.1-2
+            Protocol 4 · operator.read / operator.write / operator.approvals ·
+            Gateway 2026.7.1-2
           </AlertDescription>
         </Alert>
         <div className="grid grid-cols-2 gap-4">
@@ -600,9 +602,9 @@ function ChatView() {
                       </div>
                       <Badge
                         variant="secondary"
-                        className="rounded-sm px-1.5 py-0 font-mono text-[10px]"
+                        className="rounded-sm px-1.5 py-0 font-mono text-[10px] text-status-running"
                       >
-                        运行中
+                        已完成
                       </Badge>
                     </div>
                     <pre className="bg-code-surface px-3 py-2.5 font-mono text-[11px] leading-5 text-code-foreground">
@@ -610,14 +612,45 @@ function ChatView() {
                       · gateway reconnect
                     </pre>
                   </div>
-                  <Alert className="border-status-waiting/40 bg-status-waiting-bg">
-                    <ShieldCheck className="size-4 text-status-waiting" />
-                    <AlertTitle className="text-xs">需要批准命令</AlertTitle>
-                    <AlertDescription className="space-y-2 text-[11px]">
-                      <code className="block rounded bg-card px-2 py-1.5 font-mono">
+                  <div className="overflow-hidden rounded-md border border-status-waiting/45 bg-status-waiting-bg">
+                    <div className="flex items-start justify-between gap-3 border-b border-status-waiting/25 px-3 py-2.5">
+                      <div className="flex gap-2">
+                        <ShieldAlert className="mt-0.5 size-4 shrink-0 text-status-waiting" />
+                        <div>
+                          <div className="text-xs font-semibold">
+                            OpenClaw 请求执行权限
+                          </div>
+                          <div className="mt-0.5 text-[10px] text-muted-foreground">
+                            exec approval · Gateway host
+                          </div>
+                        </div>
+                      </div>
+                      <Badge
+                        variant="secondary"
+                        className="shrink-0 rounded-sm px-1.5 py-0 font-mono text-[10px] text-status-waiting"
+                      >
+                        等待审批
+                      </Badge>
+                    </div>
+                    <div className="space-y-2.5 px-3 py-2.5 text-[11px]">
+                      <code className="block rounded border border-border bg-code-surface px-2.5 py-2 font-mono text-code-foreground">
                         go test ./internal/pkg/agentruntime/... -race
                       </code>
-                      <div className="flex gap-2">
+                      <div className="grid grid-cols-3 gap-x-3 gap-y-1 font-mono text-[11px] text-muted-foreground">
+                        <span>Agent: main</span>
+                        <span>Host: gateway</span>
+                        <span>剩余: 29:42</span>
+                        <span className="col-span-2 truncate">
+                          CWD: /root/code/agentre/agentre
+                        </span>
+                        <span>ask: on-miss</span>
+                      </div>
+                      <div className="flex items-start gap-1.5 rounded bg-status-waiting/10 px-2 py-1.5 text-[10px] text-muted-foreground">
+                        <ShieldCheck className="mt-px size-3 shrink-0 text-status-waiting" />
+                        “始终允许”会把本命令规则写入该执行宿主上 main Agent 的
+                        allowlist。
+                      </div>
+                      <div className="flex flex-wrap gap-2">
                         <Button size="sm" className="h-7 text-xs">
                           <Play className="size-3" />
                           允许一次
@@ -627,12 +660,23 @@ function ChatView() {
                           variant="outline"
                           className="h-7 text-xs"
                         >
+                          <ShieldCheck className="size-3" />
+                          始终允许
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs text-destructive hover:text-destructive"
+                        >
                           <X className="size-3" />
                           拒绝
                         </Button>
                       </div>
-                    </AlertDescription>
-                  </Alert>
+                      <div className="font-mono text-[10px] text-muted-foreground">
+                        approval: 7b61c9… · session: agentre:3:184
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

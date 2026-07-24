@@ -32,7 +32,7 @@
 - `openclaw acp`、OpenResponses / Chat Completions HTTP API 不作为正式 backend 运行链路；
 - `openclaw agent` CLI 仅保留为开发期协议对照、诊断和应急排障工具，不进入正常 turn 生命周期；
 - MVP 的设计必须覆盖完整连接生命周期、协议协商、session、流式事件、工具事件、usage、abort、重连对账、幂等和安全存储，不能因为 HTTP/CLI 更容易接入而降低架构目标；
-- approvals、ask-user、subagent、session 管理等高级能力允许按迭代交付，但底层连接和事件模型必须从第一版开始为这些能力保留完整扩展点；
+- exec approvals 纳入 MVP；plugin approvals、ask-user、subagent 和高级 session 管理可按迭代交付，但底层连接和事件模型必须从第一版开始为这些能力保留完整扩展点；
 - Agentre 前端仍只调用 `internal/app` Wails bindings，不新增 HTTP API；
 - 本地 backend 由桌面进程直连 Gateway；远端 backend 由 `agentred` 所在设备直连 Gateway；
 - 每条 Agentre `chat_session` 稳定映射到一个 OpenClaw `sessionKey`，并把该 key 存入现有 `ProviderSessionID`；
@@ -128,7 +128,8 @@ connecting/ready -> disconnected -> reconnecting -> ready
 MVP 目标：
 
 - `operator.read`：探测、agents/models/session/history；
-- `operator.write`：发送、终止、创建 session、审批回写。
+- `operator.write`：发送、终止、创建 session；
+- `operator.approvals`：读取、接收和回写 exec/plugin approval。
 
 探测结果必须展示实际 granted scopes；scope 不足时保存配置可以允许，但运行前给出明确错误。
 
@@ -184,7 +185,9 @@ MVP 发送优先使用 `agent`：它直接接受 `message`、`agentId`、`model`
 | aborted | terminal abort | 支持 |
 | error | `ErrorEvent` | 支持 |
 | retry/rate limit | `Retry` | 支持 |
-| exec/plugin approval request | `ToolPermissionRequest` | MVP 视协议实测决定；至少展示 waiting 状态 |
+| `exec.approval.requested` | `ToolPermissionRequest` | MVP 支持 |
+| `exec.approval.resolved` | permission terminal update | MVP 支持，并与命令执行完成分开 |
+| plugin approval request/resolved | `ToolPermissionRequest` | P1，复用统一审批模型 |
 | ask-user tool/card | `AskUserQuestion` | P1；需明确可回写协议 |
 | subagent activity | `SubagentStarted/Progress/Done` | P1 |
 | plan/status | `PlanUpdated` / `RuntimeStatus` | 可映射则支持 |
@@ -197,10 +200,43 @@ MVP 发送优先使用 `agent`：它直接接受 `message`、`agentId`、`model`
 | --- | --- | --- |
 | `Aborter.Abort` | `chat.abort {sessionKey, runId}` | MVP |
 | `Steerer.Steer` | 当前 Gateway 无等价稳定 chat steer 时，排队到下一 turn | MVP 降级 |
-| `ToolPermissionSink` | exec/plugin approval resolve RPC | P1，协议 fixture 通过后开启 |
+| `ToolPermissionSink` | `exec.approval.resolve` | MVP |
 | `AskAnswerSink` | 对应 ask-user/tool result 回写 | P1 |
 | `GoalController` | OpenClaw goal tool/会话能力 | P2，不在首版承诺 |
 | compact/rewind | session compact/fork | P2 |
+
+### 8.4 Exec Approval 协议与状态机
+
+OpenClaw exec approval 是 Gateway/Node 宿主命令执行前的本地安全闸门，不是普通 chat tool event，也不是多租户用户鉴权边界。AgentRE 作为审批客户端必须在 `connect` 时申请 `operator.approvals`，并独立维护 pending approval 队列。
+
+正常流程：
+
+1. OpenClaw 根据 tool policy、elevated gating、`tools.exec.*`、执行宿主本地 approvals file、allowlist/safeBins 等规则计算有效策略；宿主 approvals 只能收紧，不能放宽配置策略；
+2. 需要人工审批时，Gateway 创建带过期时间的 pending record，广播 `exec.approval.requested`；
+3. AgentRE 展示命令、cwd、host/node、agent、session、风险分析、过期时间和服务端提供的 `allowedDecisions`；
+4. 用户选择后调用 `exec.approval.resolve { id, decision }`；decision 只能是该请求实际允许的 `allow-once`、`allow-always`、`deny`；
+5. Gateway 广播 `exec.approval.resolved`。该事件只表示审批完成，不表示命令执行完成；
+6. `allow-once` 仅放行当前执行；`allow-always` 在策略和命令形态允许时把规则写入实际执行宿主、对应 agent 的 allowlist；`deny` 不执行命令；
+7. Node 执行必须复用审批时保存的 canonical `systemRunPlan`。command/rawCommand、cwd、agentId、sessionKey 或绑定环境发生变化时拒绝执行；
+8. 最终执行结果继续通过 exec lifecycle/session followup 进入原会话，映射为 tool result / done / error，不能用 approval resolved 冒充执行结果。
+
+重连与竞态：
+
+- 首次 ready 和每次重连后调用 `exec.approval.list`，以 Gateway pending 列表为准恢复队列；
+- requested/resolved/list 都按 approval id 去重；
+- 多客户端并发审批时第一个成功决策生效，`APPROVAL_ALREADY_RESOLVED`、`APPROVAL_NOT_FOUND`、未知或过期 id 都应转为幂等终态并刷新列表；
+- 断线期间不自动批准、拒绝或重新创建审批；默认 pending timeout 为 30 分钟，默认无 UI/超时 fallback 为 deny；
+- `allowedDecisions` 必须动态渲染。例如有效策略要求每次都审批时，不显示 `allow-always`；
+- Gateway host 和 Node host 都在实际执行宿主强制审批；AgentRE 不能通过请求参数绕过更严格的宿主本地策略。
+
+建议内部状态：
+
+```text
+pending -> resolving -> allowed_once | allowed_always | denied
+        -> expired | already_resolved | unavailable
+```
+
+审批实体至少保存 `approvalID + sessionKey + agentID + runID/toolCallID（若可关联）+ host/nodeID + expiresAt`。审批命令和风险详情只按现有聊天安全策略展示/持久化，不额外写入 debug 日志。
 
 ## 9. Backend 探测与配置 UX
 
@@ -259,7 +295,8 @@ OpenClaw backend 应像现有 CLI backend 一样支持 `DeviceID`：
 | usage/model/context window | ✅ 尽力 | 精确 catalog |
 | abort | ✅ | — |
 | attachments | 文本/文件能力实测后择一 | 完整多模态 |
-| approvals | waiting 展示；回写视协议实测 | 完整 allow/deny/session rule |
+| exec approvals | ✅ list/requested/resolved、allow once/always/deny、重连对账 | richer risk UI |
+| plugin approvals | ❌ | P1，复用统一审批模型 |
 | ask-user | ❌ | P1 |
 | steer | 降级为下一 turn | 若 Gateway 提供稳定 RPC则原生支持 |
 | remote `agentred` | 设计兼容，是否进 MVP取决于 secret store | ✅ |
@@ -300,20 +337,26 @@ OpenClaw backend 应像现有 CLI backend 一样支持 `DeviceID`：
 - Green：run registry、dedupe、reconcile；
 - Refactor：session cache。
 
-### Slice 6：UI
+### Slice 6：exec approval
 
-- Red：创建 OpenClaw backend；测试后加载选项；token 不回显；错误状态可恢复；
-- Green：编辑器和状态 badge；
-- Refactor：拆分 `OpenClawBackendFields`，避免继续放大 `agent-backends.tsx`。
+- Red：requested 建卡、动态 decisions、resolve 成功、双客户端重复决策、过期、重连 list 对账、resolved 不冒充 exec finished；
+- Green：approval registry、Gateway event router、`ToolPermissionSink`；
+- Refactor：抽出 exec/plugin 可复用的 approval envelope，保留各自 payload adapter。
 
-### Slice 7：审批 / ask-user（P1）
+### Slice 7：UI
 
-必须先用真实 Gateway fixture 捕获请求/回写帧，再写回归测试；无法稳定复现则不宣称支持。
+- Red：创建 OpenClaw backend；测试后加载选项；token 不回显；错误状态可恢复；审批卡按 `allowedDecisions` 渲染；
+- Green：编辑器、状态 badge 和 exec approval 卡片；
+- Refactor：拆分 `OpenClawBackendFields` 和 `OpenClawApprovalCard`，避免继续放大现有组件。
+
+### Slice 8：plugin approval / ask-user（P1）
+
+plugin approval 复用审批队列与动态 decision UI；ask-user 必须先捕获真实请求/回写帧再写回归测试，无法稳定复现则不宣称支持。
 
 ## 14. 主要风险与对策
 
 1. **Gateway 协议版本变化**：connect 阶段协商；所有 schema fixture 带版本；未知字段宽容、未知事件记录类型不记录内容。
-2. **审批事件并非普通 chat event**：MVP 不强行承诺完整回写；先以协议实测决定。
+2. **审批事件并非普通 chat event**：独立订阅 `exec.approval.requested/resolved`，重连调用 `exec.approval.list`，并把审批终态与命令执行终态分开。
 3. **OpenClaw 与 Agentre 都持久化历史**：OpenClaw 是 provider-side 会话，Agentre DB 仍是 UI 事实来源；不把远端 history 无条件覆盖本地历史。
 4. **断线重试造成重复消息**：副作用 RPC 强制 idempotency key，重连后先 reconcile。
 5. **远端 token 泄漏**：使用 secret reference/store；条件不满足就延后远端能力。
@@ -333,7 +376,7 @@ OpenClaw backend 应像现有 CLI backend 一样支持 `DeviceID`：
 1. OpenClaw backend 默认是否采用“一条 Agentre chat session = 一条 OpenClaw session”？（推荐是）
 2. MVP 是否先只支持本机 Gateway，远端 `agentred` 放 P1？（若现有 secret store 可复用，可一起做）
 3. 删除 Agentre 会话时，是否默认保留 OpenClaw 远端 session？（推荐保留）
-4. approvals / ask-user 是否接受分阶段：首版保证展示和 abort，完整回写在真实协议 fixture 验证后进入 P1？
+4. exec approvals 已确认纳入 MVP；plugin approvals 与 ask-user 是否接受放到 P1？（推荐是）
 
 ## 16. Mockup
 
@@ -369,6 +412,6 @@ pnpm dev --host 127.0.0.1
 - Backend 列表中的 OpenClaw Gateway-native 类型；
 - WebSocket 地址、secret token、协议握手、agent/model 和 session 策略；
 - 连接超时、重连对账和删除 session 策略；
-- 聊天页连接状态、session key、工具流与 exec approval。
+- 聊天页连接状态、session key、工具流，以及符合真实 Gateway 协议的 exec approval：动态决策、宿主/agent/session/过期信息和 allowlist 影响提示。
 
 该入口仅是 UI Mockup，不包含正式 Go runtime、数据库字段、Wails binding 或真实 Gateway 连接。
