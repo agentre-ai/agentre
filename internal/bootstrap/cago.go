@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/agentre-ai/agentre/internal/buildinfo"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
@@ -17,6 +18,7 @@ import (
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/claudeskill"  // 触发 discoverer init 注册
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/codexskill"   // 触发 discoverer init 注册
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/piagentskill" // 触发 discoverer init 注册
+	"github.com/agentre-ai/agentre/internal/pkg/agrctlinstall"
 	"github.com/agentre-ai/agentre/internal/pkg/ctlendpoint"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
@@ -202,6 +204,23 @@ func Init(ctx context.Context) (*Runtime, error) {
 	// 之后 PostToolUse hook 子进程会 GET /hook/v1/inbox 拉走，turn 结束时
 	// chat_svc 还会调 runner.DrainPending 把残留转成下一轮的 user msg。
 	claudecode.Default().SetSteerInbox(gw.Steer())
+
+	// 安装 agrctl 伴随 CLI 并把 PostToolUse hook 指向它（<AppDataDir>/bin/agrctl）。hook 每次
+	// 工具调用都会 exec，用小二进制而非整个桌面 app。从随 app 打进 bundle 的源拷到可写的
+	// AppDataDir（版本变则重装）；dev 无 bundle 源则跳过安装。hookCLIPath 始终指向该确定路径，
+	// 缺失时该次 hook 优雅失败(不注入 steer)，绝不因回落到 agentre 而误 boot GUI。
+	if src, ok := agrctlinstall.BundledSourcePath(); ok {
+		if _, _, err := agrctlinstall.EnsureInstalled(dataDir, src, buildinfo.CommitID); err != nil {
+			logger.Default().Warn("agrctl install", zap.Error(err))
+		}
+	}
+	agrctlPath := agrctlinstall.InstalledPath(dataDir)
+	// dev 覆盖：无 bundle 源时(wails dev)自动安装不发生，开发者 `make agrctl` 后可用
+	// AGENTRE_AGRCTL_PATH 指向 build/bin/agrctl 让 hook/steer 在 dev 下也生效。
+	if override := strings.TrimSpace(os.Getenv("AGENTRE_AGRCTL_PATH")); override != "" {
+		agrctlPath = override
+	}
+	claudecode.Default().SetHookCLIPath(agrctlPath)
 
 	runtime = &Runtime{config: cfg, dataDir: dataDir}
 	return runtime, nil

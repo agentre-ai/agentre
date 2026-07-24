@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -63,6 +62,10 @@ type Runtime struct {
 	spawnLocks sync.Map // key(string) → *sync.Mutex
 	cache      *agentruntime.CLISessionPool
 	steer      *httpgateway.SteerInbox
+	// hookCLIPath 是注册进 PostToolUse hook 的可执行文件路径;bootstrap 注入
+	// <AppDataDir>/bin/agrctl。为空时回落 os.Executable()(供 agentred 守护进程——它自带
+	// claudecode 子命令)。见 hookBin。
+	hookCLIPath string
 	// startupTimeout 是 startup 看门狗阈值;NewWithPool 设默认值, 单测覆写成毫秒级。
 	startupTimeout time.Duration
 }
@@ -546,7 +549,7 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 	}
 
 	isolationUUID := newUUIDv4()
-	bin, err := os.Executable()
+	bin, err := r.hookBin()
 	if err != nil {
 		return nil, "", fmt.Errorf("agentruntime/runtimes/claudecode: resolve executable path: %w", err)
 	}
