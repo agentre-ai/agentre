@@ -414,6 +414,8 @@
       },
       "dropHint": "Drop to add files / folder paths",
       "placeholder": "Type a message · / for commands · ! to run in terminal",
+      "placeholderClaude": "Type a message · / for commands and skills · ! to run in terminal",
+      "placeholderCodex": "Type a message · / for commands · $ for skills · ! to run in terminal",
       "removeImage": "Remove image {{name}}",
       "saveEdit": "Save edit",
       "send": "Send",
@@ -1828,7 +1830,7 @@
     "viewAll": "View all {{count}} sessions"
   },
   "slashCommands": {
-    "aria": "Slash commands",
+    "aria": "Command and skill suggestions",
     "compact": {
       "description": "Compact the chat context and keep only the summary"
     },
@@ -1837,6 +1839,10 @@
     },
     "new": {
       "description": "Start a new chat with the same setup"
+    },
+    "skill": {
+      "claudeDescription": "Invoke a Claude Code skill",
+      "codexDescription": "Invoke a Codex skill"
     }
   },
   "settings": {

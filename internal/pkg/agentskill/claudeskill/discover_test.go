@@ -133,3 +133,27 @@ func TestScanSkills(t *testing.T) {
 		})
 	})
 }
+
+func TestDiscoverCommands(t *testing.T) {
+	Convey("Given Claude user and project skill roots", t, func() {
+		userRoot := t.TempDir()
+		projectRoot := t.TempDir()
+		mustSkill(t, userRoot, "cago")
+		mustSkill(t, projectRoot, "frontend-design")
+		So(os.MkdirAll(filepath.Join(userRoot, "not-a-skill"), 0o755), ShouldBeNil)
+
+		d := Discoverer{skillRoots: func(cwd string) []string {
+			So(cwd, ShouldEqual, "/tmp/project")
+			return []string{userRoot, projectRoot}
+		}}
+
+		Convey("When commands are discovered, Then standalone /skill names are returned and invalid directories are ignored", func() {
+			commands, err := d.DiscoverCommands(context.Background(), agentskill.CommandDiscoverQuery{Cwd: "/tmp/project"})
+			So(err, ShouldBeNil)
+			So(commands, ShouldResemble, []agentskill.SkillCommand{
+				{Name: "cago"},
+				{Name: "frontend-design"},
+			})
+		})
+	})
+}

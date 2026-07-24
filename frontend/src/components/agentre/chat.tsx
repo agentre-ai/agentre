@@ -54,6 +54,7 @@ import { chat_svc } from "../../../wailsjs/go/models";
 import { buildMentionSources } from "./chat-input/mentions/build-sources";
 import { resolveDroppedPaths } from "./chat-input/drop";
 import { useFileDropZone } from "./chat-input/use-file-drop";
+import { useAgentSkillCommands } from "./slash-commands";
 
 type ToolCallProps = React.ComponentProps<"div"> & {
   path?: string;
@@ -187,6 +188,10 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   /** 当前会话 backend 类型;让 AIChatInput 启用 slash menu 并按 backend 过滤候选命令。
    *  空串/省略 → 不启用 slash menu。 */
   backendType?: string;
+  /** 当前会话或新会话的 agent id,用于加载该 agent 最终生效的 skill 命令。 */
+  agentId?: number;
+  /** 当前会话/项目的工作目录,用于发现 project-scoped Skill。 */
+  cwd?: string;
   /** 当前 backend 是否支持图片输入。false 时不渲染图片附件入口。 */
   supportsImageInput?: boolean;
   /** slash menu rpc 类命令的回调(literal_text 类由 AIChatInput 内部直接填回编辑器,
@@ -451,6 +456,8 @@ function ChatComposer({
   onShiftTab,
   autoFocusOnMount = false,
   backendType,
+  agentId = 0,
+  cwd = "",
   supportsImageInput = true,
   onSlashRpc,
   onRunCommand,
@@ -471,6 +478,16 @@ function ChatComposer({
   const [images, setImages] = React.useState<ChatImageAttachment[]>([]);
   const [imageError, setImageError] = React.useState("");
   const [commandMode, setCommandMode] = React.useState(false);
+  const skillCommands = useAgentSkillCommands(agentId, backendType ?? "", cwd);
+  const resolvedPlaceholder =
+    placeholder ??
+    t(
+      backendType === "codex"
+        ? "chat.composer.placeholderCodex"
+        : backendType === "claudecode"
+          ? "chat.composer.placeholderClaude"
+          : "chat.composer.placeholder",
+    );
 
   // 切换到编辑模式（或换了编辑目标）时把目标文本载进 TipTap，并把光标抓回输入框；
   // 退出编辑模式时清空输入，免得上一次的编辑残留干扰下一条新消息。
@@ -761,10 +778,11 @@ function ChatComposer({
             onCommandSubmit={onRunCommand}
             sendOnEnter
             userMessageHistory={userMessageHistory}
-            placeholder={placeholder ?? t("chat.composer.placeholder")}
+            placeholder={resolvedPlaceholder}
             autoFocus={autoFocusOnMount}
             backendType={backendType}
             mentionSources={mentionSources}
+            skillCommands={skillCommands}
             onSlashSelect={(cmd, exec) => {
               // literal_text 由 AIChatInput 内部直接填回编辑器(不自动发送),
               // 这里只接 rpc 类命令转交给父组件。

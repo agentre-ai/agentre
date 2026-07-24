@@ -414,6 +414,8 @@
       },
       "dropHint": "松开以添加文件 / 文件夹路径",
       "placeholder": "输入消息 · / 触发命令 · ! 执行终端命令",
+      "placeholderClaude": "输入消息 · / 触发命令和 Skill · ! 执行终端命令",
+      "placeholderCodex": "输入消息 · / 触发命令 · $ 调用 Skill · ! 执行终端命令",
       "removeImage": "移除图片 {{name}}",
       "saveEdit": "保存编辑",
       "send": "发送",
@@ -1828,7 +1830,7 @@
     "viewAll": "查看全部 {{count}} 个会话"
   },
   "slashCommands": {
-    "aria": "斜杠命令",
+    "aria": "命令与 Skill 提示",
     "compact": {
       "description": "压缩对话上下文,只保留摘要"
     },
@@ -1837,6 +1839,10 @@
     },
     "new": {
       "description": "开一个相同配置的全新对话"
+    },
+    "skill": {
+      "claudeDescription": "调用 Claude Code Skill",
+      "codexDescription": "调用 Codex Skill"
     }
   },
   "settings": {

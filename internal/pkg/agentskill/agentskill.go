@@ -60,10 +60,41 @@ type Discoverer interface {
 	Discover(ctx context.Context, q DiscoverQuery) ([]SkillPack, error)
 }
 
+// SkillCommand is one backend-native command-addressable skill name. Name does
+// not include the input prefix (`$` for Codex, `/` for Claude Code).
+type SkillCommand struct {
+	Name        string
+	Description string
+}
+
+// CommandDiscoverQuery carries the launch context needed for a CLI to resolve
+// its effective user/project/plugin skill set without mutating shared config.
+type CommandDiscoverQuery struct {
+	BackendType    agent_backend_entity.BackendType
+	CLIPath        string
+	Cwd            string
+	EnabledPlugins map[string]bool
+}
+
+// CommandDiscoverer enumerates the skill names the current backend can invoke.
+// It is separate from Discoverer because standalone/system skills are not
+// configurable plugin packs and must not appear in the organization picker.
+type CommandDiscoverer interface {
+	DiscoverCommands(ctx context.Context, q CommandDiscoverQuery) ([]SkillCommand, error)
+}
+
 var discoverers = map[agent_backend_entity.BackendType]Discoverer{}
+var commandDiscoverers = map[agent_backend_entity.BackendType]CommandDiscoverer{}
 
 // RegisterDiscoverer init 注册(仿 runtime/prober);非线程安全,只在 init/bootstrap 调。
-func RegisterDiscoverer(t agent_backend_entity.BackendType, d Discoverer) { discoverers[t] = d }
+func RegisterDiscoverer(t agent_backend_entity.BackendType, d Discoverer) {
+	discoverers[t] = d
+	if commands, ok := d.(CommandDiscoverer); ok {
+		commandDiscoverers[t] = commands
+	} else {
+		delete(commandDiscoverers, t)
+	}
+}
 
 // SwapDiscovererForTest 单元测试临时替换发现器,返回 restore 闭包(仿 SwapRuntimeForTest)。
 func SwapDiscovererForTest(t agent_backend_entity.BackendType, d Discoverer) func() {
@@ -82,4 +113,23 @@ func SwapDiscovererForTest(t agent_backend_entity.BackendType, d Discoverer) fun
 func DiscovererFor(t agent_backend_entity.BackendType) (Discoverer, bool) {
 	d, ok := discoverers[t]
 	return d, ok
+}
+
+// CommandDiscovererFor returns the backend-native skill command discoverer.
+func CommandDiscovererFor(t agent_backend_entity.BackendType) (CommandDiscoverer, bool) {
+	d, ok := commandDiscoverers[t]
+	return d, ok
+}
+
+// SwapCommandDiscovererForTest temporarily replaces command discovery.
+func SwapCommandDiscovererForTest(t agent_backend_entity.BackendType, d CommandDiscoverer) func() {
+	old, existed := commandDiscoverers[t]
+	commandDiscoverers[t] = d
+	return func() {
+		if existed {
+			commandDiscoverers[t] = old
+		} else {
+			delete(commandDiscoverers, t)
+		}
+	}
 }

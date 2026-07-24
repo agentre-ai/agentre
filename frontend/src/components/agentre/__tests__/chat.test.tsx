@@ -187,6 +187,26 @@ function mockTextSelectionWithin(node: Node) {
 }
 
 describe("ChatComposer context meter", () => {
+  it("Given a Codex backend, When the composer is empty, Then its placeholder explains / commands and $ skills", () => {
+    render(<ChatComposer backendType="codex" onSubmit={() => undefined} />);
+
+    expect(screen.getByRole("textbox").querySelector("p")).toHaveAttribute(
+      "data-placeholder",
+      "Type a message · / for commands · $ for skills · ! to run in terminal",
+    );
+  });
+
+  it("Given a Claude Code backend, When the composer is empty, Then its placeholder explains that / includes skills", () => {
+    render(
+      <ChatComposer backendType="claudecode" onSubmit={() => undefined} />,
+    );
+
+    expect(screen.getByRole("textbox").querySelector("p")).toHaveAttribute(
+      "data-placeholder",
+      "Type a message · / for commands and skills · ! to run in terminal",
+    );
+  });
+
   it("submits an image-only message with image data URLs", async () => {
     const onSubmit = vi.fn();
     const { container } = render(<ChatComposer onSubmit={onSubmit} />);

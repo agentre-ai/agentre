@@ -42,3 +42,21 @@ export function findProjectColorToken(
   }
   return null;
 }
+
+// findProjectPath 返回目标项目配置的本地工作目录。找不到或未配置时返回空串，
+// 让调用方仅发现全局 Skill。
+export function findProjectPath(
+  nodes: ProjectTreeNode[],
+  targetId: number,
+): string {
+  for (const node of nodes) {
+    if ((node.project?.id ?? 0) === targetId) {
+      return node.project?.path ?? "";
+    }
+    if (node.children?.length) {
+      const path = findProjectPath(node.children, targetId);
+      if (path) return path;
+    }
+  }
+  return "";
+}

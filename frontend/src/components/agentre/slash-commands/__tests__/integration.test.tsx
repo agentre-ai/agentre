@@ -12,15 +12,24 @@ function Harness({
   onSubmit,
   backendType = "claudecode",
   onSlashSelect = () => {},
+  skillCommands = [],
 }: {
   onSubmit: (text: string) => void;
   backendType?: string;
   onSlashSelect?: ComponentProps<typeof AIChatInput>["onSlashSelect"];
+  skillCommands?: ComponentProps<typeof AIChatInput>["skillCommands"];
 }) {
   const editorRef = useRef<Editor | null>(null);
   const handleRef = useRef<AIChatInputHandle>(null);
   return (
     <>
+      <button
+        type="button"
+        data-testid="insert-dollar"
+        onClick={() => editorRef.current?.commands.insertContent("$")}
+      >
+        insert $
+      </button>
       <button
         type="button"
         data-testid="insert-slash"
@@ -48,6 +57,7 @@ function Harness({
         editorRef={editorRef}
         backendType={backendType}
         onSlashSelect={onSlashSelect}
+        skillCommands={skillCommands}
         autoFocus
       />
     </>
@@ -65,7 +75,7 @@ describe("AIChatInput slash menu integration", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("listbox", { name: "Slash commands" }),
+        screen.getByRole("listbox", { name: "Command and skill suggestions" }),
       ).toBeInTheDocument();
     });
     expect(screen.getByText("/compact")).toBeInTheDocument();
@@ -101,7 +111,7 @@ describe("AIChatInput slash menu integration", () => {
     // 给一拍时间让 selectionUpdate fire
     await new Promise((r) => setTimeout(r, 20));
     expect(
-      screen.queryByRole("listbox", { name: "Slash commands" }),
+      screen.queryByRole("listbox", { name: "Command and skill suggestions" }),
     ).toBeNull();
   });
 
@@ -127,7 +137,9 @@ describe("AIChatInput slash menu integration", () => {
     // 由用户再决定是否回车发送。
     await waitFor(() =>
       expect(
-        screen.queryByRole("listbox", { name: "Slash commands" }),
+        screen.queryByRole("listbox", {
+          name: "Command and skill suggestions",
+        }),
       ).toBeNull(),
     );
     expect(onSubmit).not.toHaveBeenCalled();
@@ -164,7 +176,9 @@ describe("AIChatInput slash menu integration", () => {
 
     await waitFor(() =>
       expect(
-        screen.queryByRole("listbox", { name: "Slash commands" }),
+        screen.queryByRole("listbox", {
+          name: "Command and skill suggestions",
+        }),
       ).toBeNull(),
     );
     // literal_text 由 AIChatInput 内部消化,不会冒泡到 onSlashSelect;
@@ -174,5 +188,81 @@ describe("AIChatInput slash menu integration", () => {
     expect(document.querySelector(".ProseMirror")?.textContent ?? "").toContain(
       "/compact",
     );
+  });
+
+  it("Given a Codex skill catalog, When typing $, Then the popover offers the $ skill and selection only fills the draft", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <Harness
+        onSubmit={onSubmit}
+        backendType="codex"
+        skillCommands={[
+          {
+            description: "Invoke a Codex skill",
+            label: "$browser:browser",
+            name: "browser:browser",
+            resolve: () => ({
+              kind: "literal_text",
+              text: "$browser:browser",
+            }),
+            trigger: "$",
+          },
+        ]}
+      />,
+    );
+
+    act(() => {
+      screen.getByTestId("insert-dollar").click();
+    });
+    const item = await screen.findByText("$browser:browser");
+    expect(screen.queryByText("/compact")).toBeNull();
+
+    act(() => {
+      item
+        .closest("button")!
+        .dispatchEvent(
+          new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+        );
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("listbox", {
+          name: "Command and skill suggestions",
+        }),
+      ).toBeNull(),
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(document.querySelector(".ProseMirror")?.textContent ?? "").toContain(
+      "$browser:browser",
+    );
+  });
+
+  it("Given a Claude Code skill catalog, When typing /, Then static commands and / skills share one popover", async () => {
+    render(
+      <Harness
+        onSubmit={() => undefined}
+        backendType="claudecode"
+        skillCommands={[
+          {
+            description: "Invoke a Claude Code skill",
+            label: "/superpowers:tdd",
+            name: "superpowers:tdd",
+            resolve: () => ({
+              kind: "literal_text",
+              text: "/superpowers:tdd",
+            }),
+            trigger: "/",
+          },
+        ]}
+      />,
+    );
+
+    act(() => {
+      screen.getByTestId("insert-slash").click();
+    });
+
+    expect(await screen.findByText("/compact")).toBeInTheDocument();
+    expect(screen.getByText("/superpowers:tdd")).toBeInTheDocument();
   });
 });

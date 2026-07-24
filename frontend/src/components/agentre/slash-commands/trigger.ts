@@ -13,20 +13,23 @@ export type SlashTriggerHit = {
   startOffset: number;
   // / 之后到光标位置的文本,不含 / 本身。
   query: string;
+  // 命中的触发字符;Codex skill 为 $,slash command / Claude skill 为 /。
+  trigger: "/" | "$";
 };
 
 export function detectSlashTrigger(
   textBeforeCursor: string,
+  enabledTriggers: readonly ("/" | "$")[] = ["/"],
 ): SlashTriggerHit | null {
   for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
     const ch = textBeforeCursor[i];
-    if (ch === "/") {
+    if ((ch === "/" || ch === "$") && enabledTriggers.includes(ch)) {
       // / 之前必须是行首(i==0) 或空白字符。
       if (i === 0 || isSpace(textBeforeCursor[i - 1])) {
         const query = textBeforeCursor.slice(i + 1);
         // query 包含空白 → 触发已被结束(用户已经在打参数)。
         if (containsSpace(query)) return null;
-        return { startOffset: i, query };
+        return { startOffset: i, query, trigger: ch };
       }
       // / 前不是空白(例如 foo/bar) → 不当触发。
       return null;

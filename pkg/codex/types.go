@@ -33,6 +33,7 @@ const (
 	appMethodTurnInterrupt   = "turn/interrupt"
 	appMethodTurnStarted     = "turn/started"
 	appMethodTurnCompleted   = "turn/completed"
+	appMethodSkillsList      = "skills/list"
 
 	appMethodItemStarted                   = "item/started"
 	appMethodItemCompleted                 = "item/completed"

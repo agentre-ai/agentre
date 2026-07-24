@@ -43,7 +43,11 @@ import i18n from "@/i18n";
 import { reasonToDisplayStatus } from "@/lib/attention-display";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
 import { splitErrorDetail } from "@/lib/error-detail";
-import { findProjectColorToken, projectChain } from "@/lib/project-chain";
+import {
+  findProjectColorToken,
+  findProjectPath,
+  projectChain,
+} from "@/lib/project-chain";
 import { relativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
 import { useSessionAttention } from "@/stores/attention-store";
@@ -584,6 +588,11 @@ function ChatPanel({
   const { tree } = useProjectTree();
   const sessionProjectId = session?.projectId ?? 0;
   const currentSessionId = session?.id ?? 0;
+  const composerCwd = React.useMemo(
+    () =>
+      session?.cwd ?? findProjectPath(tree, newSessionContext?.projectId ?? 0),
+    [newSessionContext?.projectId, session?.cwd, tree],
+  );
   const newSessionProjectName = React.useMemo(() => {
     const projectId = newSessionContext?.projectId ?? 0;
     if (projectId <= 0) return "";
@@ -2191,6 +2200,8 @@ function ChatPanel({
                   void doSend(sessionId, session?.agentId ?? 0, message);
                 }}
                 backendType={activeBackendType}
+                agentId={session?.agentId ?? newSessionAgent?.id ?? 0}
+                cwd={composerCwd}
                 supportsImageInput={supportsImageInput}
                 onRunCommand={(command) => runLocalCommand(sessionId, command)}
                 onSlashRpc={(cmd) => {

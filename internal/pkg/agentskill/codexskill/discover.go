@@ -11,6 +11,7 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
+	"github.com/agentre-ai/agentre/pkg/codex"
 )
 
 func init() {
@@ -18,10 +19,23 @@ func init() {
 }
 
 type commandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
+type skillLister func(ctx context.Context, binary, cwd string, config []string) ([]codex.Skill, error)
 
 // Discoverer 用 codex CLI 枚举已安装插件。run 为 nil 时走真实 exec(生产默认)。
 type Discoverer struct {
-	run commandRunner
+	run        commandRunner
+	listSkills skillLister
+}
+
+func (d Discoverer) skills(ctx context.Context, binary, cwd string, config []string) ([]codex.Skill, error) {
+	if d.listSkills != nil {
+		return d.listSkills(ctx, binary, cwd, config)
+	}
+	opts := []codex.Option{codex.WithBinary(binary), codex.WithCwd(cwd)}
+	for _, item := range config {
+		opts = append(opts, codex.WithConfig(item))
+	}
+	return codex.New(opts...).ListSkills(ctx, []string{cwd}, true)
 }
 
 func (d Discoverer) runner() commandRunner {
@@ -112,4 +126,38 @@ func (d Discoverer) Discover(ctx context.Context, q agentskill.DiscoverQuery) ([
 		return []agentskill.SkillPack{}, nil //nolint:nilerr // CLI 不可用 → 软降级(空发现)
 	}
 	return parsePluginList(b)
+}
+
+// DiscoverCommands delegates to Codex app-server skills/list so plugin, user,
+// project, and system skills follow the current CLI's own resolution rules.
+func (d Discoverer) DiscoverCommands(ctx context.Context, q agentskill.CommandDiscoverQuery) ([]agentskill.SkillCommand, error) {
+	bin := strings.TrimSpace(q.CLIPath)
+	if bin == "" {
+		bin = "codex"
+	}
+	cwd := strings.TrimSpace(q.Cwd)
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	skills, err := d.skills(ctx, bin, cwd, codex.PluginEnabledConfig(q.EnabledPlugins))
+	if err != nil {
+		return []agentskill.SkillCommand{}, nil //nolint:nilerr // Skill suggestions are optional and fail open to normal message input.
+	}
+	seen := map[string]struct{}{}
+	commands := []agentskill.SkillCommand{}
+	for _, skill := range skills {
+		name := strings.TrimSpace(skill.Name)
+		if !skill.Enabled || name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		commands = append(commands, agentskill.SkillCommand{
+			Name:        name,
+			Description: strings.TrimSpace(skill.Description),
+		})
+	}
+	return commands, nil
 }

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterByQuery,
   listAvailable,
+  skillCommandsFromCatalog,
   slashCommands,
   type SlashExec,
 } from "../registry";
@@ -74,5 +75,30 @@ describe("slash command registry", () => {
       "goal",
     ]);
     expect(filterByQuery(slashCommands, "xyz")).toEqual([]);
+  });
+
+  it("Given backend-native command names, When building suggestions, Then naked and plugin-qualified skills get the backend prefix exactly once", () => {
+    expect(
+      skillCommandsFromCatalog("codex", [
+        { name: "shadcn", description: "Compose UI" },
+        { name: "lore:lore-memory", description: "Recall" },
+      ]).map((command) => command.label),
+    ).toEqual(["$shadcn", "$lore:lore-memory"]);
+    expect(
+      skillCommandsFromCatalog("claudecode", [
+        { name: "cago", description: "Cago conventions" },
+      ]).map((command) => command.label),
+    ).toEqual(["/cago"]);
+  });
+
+  it("Given a Claude skill shadows a built-in slash command, When listing suggestions, Then the built-in command appears only once", () => {
+    const skills = skillCommandsFromCatalog("claudecode", [
+      { name: "compact" },
+      { name: "custom" },
+    ]);
+
+    expect(
+      listAvailable("claudecode", skills).map((command) => command.label),
+    ).toEqual(["/compact", "/new", "/custom"]);
   });
 });
