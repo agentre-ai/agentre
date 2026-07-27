@@ -221,8 +221,33 @@ func (a *activeTurn) reconcileApprovals() {
 	}
 	a.approvalMu.Unlock()
 	for _, id := range missing {
+		// 「不在 list 里」不等于「不存在」:真实网关的 exec.approval.list 只返回
+		// 本连接创建的(或管理员可见的)审批,看不到是常态。仅凭缺席就判过期,会把
+		// 网关那边仍在等决策的审批在 UI 上误标成「已失效」。必须由 exec.approval.get
+		// 明确回 APPROVAL_NOT_FOUND 才收敛;其它错误一律保持 pending,交给
+		// expiresAtMs 定时器兜底。
+		if !a.approvalGoneOnGateway(id) {
+			continue
+		}
 		a.markApprovalTerminal(id, agentruntime.ExecApprovalResolution{Status: approvalStatusExpired}, "", 0)
 	}
+}
+
+// approvalGoneOnGateway 只在网关明确说「这个审批 ID 不认识/已过期」时返回 true。
+func (a *activeTurn) approvalGoneOnGateway(id string) bool {
+	var payload json.RawMessage
+	err := a.client.Call(a.ctx, "exec.approval.get", map[string]any{"id": id}, &payload)
+	if err == nil {
+		return false
+	}
+	var rpcErr *openclawgateway.RPCError
+	if !errors.As(err, &rpcErr) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(rpcErr.Reason), approvalReasonNotFound) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(rpcErr.Message), "unknown or expired approval")
 }
 
 func (a *activeTurn) resolveApproval(ctx context.Context, approvalID, decision string) (agentruntime.ExecApprovalResolution, error) {

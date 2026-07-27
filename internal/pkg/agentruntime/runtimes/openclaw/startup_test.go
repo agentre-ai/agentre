@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/openclawgateway"
 )
 
 // startupReadRequest 与 runtimeReadRequest 的区别:测试结束连接被关闭时安静退出,
@@ -102,4 +103,89 @@ func TestRun_CancelDuringStartupReturnsErrAborted(t *testing.T) {
 	})
 
 	assert.True(t, errors.Is(err, agentruntime.ErrAborted), "want ErrAborted, got %v", err)
+}
+
+// reconcile 过去只要审批「不在 exec.approval.list 里」就判 expired。真实网关的 list
+// 看不到别的连接的审批,缺席 ≠ 不存在,误判会让 UI 显示「已失效」而网关仍在等决策。
+func TestReconcileApprovals_KeepsPendingUnlessGatewayConfirmsGone(t *testing.T) {
+	cases := []struct {
+		name       string
+		getOK      bool
+		getError   map[string]any
+		wantStatus string
+	}{
+		{
+			name:       "gateway still knows the approval",
+			getOK:      true,
+			wantStatus: "",
+		},
+		{
+			name:       "gateway reports APPROVAL_NOT_FOUND",
+			getError:   map[string]any{"code": "INVALID_REQUEST", "message": "unknown or expired approval id", "details": map[string]any{"reason": approvalReasonNotFound}},
+			wantStatus: approvalStatusExpired,
+		},
+		{
+			name:       "gateway get fails for another reason",
+			getError:   map[string]any{"code": "INTERNAL", "message": "boom"},
+			wantStatus: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
+				runtimeHandshake(t, conn, connection)
+				startupServe(conn, func(req runtimeRequestFrame) map[string]any {
+					switch req.Method {
+					case "exec.approval.list":
+						return map[string]any{"type": "res", "id": req.ID, "ok": true, "payload": []any{}}
+					case "exec.approval.get":
+						if tc.getOK {
+							return map[string]any{
+								"type": "res", "id": req.ID, "ok": true,
+								"payload": map[string]any{"id": "appr-1"},
+							}
+						}
+						return map[string]any{"type": "res", "id": req.ID, "ok": false, "error": tc.getError}
+					default:
+						return map[string]any{"type": "res", "id": req.ID, "ok": true, "payload": map[string]any{}}
+					}
+				})
+			})
+
+			identity, err := openclawgateway.NewDeviceIdentityFromSeed(make([]byte, 32))
+			require.NoError(t, err)
+			client, err := openclawgateway.NewClient(openclawgateway.Config{
+				URL: gatewayURL, Token: "t", Identity: identity, ClientVersion: "test",
+			})
+			require.NoError(t, err)
+			defer client.Close()
+			_, err = client.Start(context.Background())
+			require.NoError(t, err)
+
+			rt := New(nil)
+			active := &activeTurn{
+				runtime:    rt,
+				ctx:        context.Background(),
+				client:     client,
+				sessionID:  1,
+				sessionKey: "agent:main:agentre:7:1",
+				out:        make(chan agentruntime.Event, 8),
+				approvals:  map[string]*approvalState{},
+			}
+			rt.register(active)
+			active.approvals["appr-1"] = &approvalState{
+				request: agentruntime.ExecApprovalRequested{
+					ID: "appr-1", SessionKey: active.sessionKey, AllowedDecisions: []string{"allow-once", "deny"},
+				},
+			}
+
+			active.reconcileApprovals()
+
+			active.approvalMu.Lock()
+			got := active.approvals["appr-1"].terminal.Status
+			active.approvalMu.Unlock()
+			assert.Equal(t, tc.wantStatus, got)
+		})
+	}
 }
