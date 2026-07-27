@@ -45,6 +45,10 @@ import {
 } from "./mentions";
 import type { AIChatInputHandle, ProseMirrorLikeNode } from "./types";
 
+// 同 useSlashMenu 里的常量:行内 `[]` 默认值每次 render 都是新身份,会把 slash
+// 菜单的订阅 effect 变成「每次提交都重跑」。
+const EMPTY_SKILL_COMMANDS: SlashCommand[] = [];
+
 export type { AIChatInputDraft, AIChatInputHandle } from "./types";
 
 export interface AIChatInputProps {
@@ -96,7 +100,7 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
       backendType,
       onSlashSelect,
       mentionSources,
-      skillCommands = [],
+      skillCommands = EMPTY_SKILL_COMMANDS,
     },
     ref,
   ) {
