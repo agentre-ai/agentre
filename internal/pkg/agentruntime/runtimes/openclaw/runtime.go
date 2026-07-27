@@ -95,6 +95,10 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	hello, err := client.Start(ctx)
 	if err != nil {
 		client.Close()
+		if ctx.Err() != nil {
+			// 用户在握手期间点了停止 —— 是中止不是故障。
+			return nil, nil, agentruntime.ErrAborted
+		}
 		return nil, nil, err
 	}
 	if err := openclawgateway.ValidateRuntimeFeatures(hello); err != nil {
@@ -105,10 +109,17 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if hasGrantedScope(hello.Auth.Scopes, "operator.admin") {
 		modelOverride = strings.TrimSpace(req.Backend.OpenClawDefaultModel)
 	}
-	initialApprovals, err := listExecApprovals(ctx, client)
-	if err != nil {
-		client.Close()
-		return nil, nil, fmt.Errorf("openclaw runtime: list exec approvals: %w", err)
+	// 开轮对账是尽力而为:待审批本来也会通过 exec.approval.requested 事件到达,而
+	// exec.approval.list 在真实网关上只对创建该审批的连接/管理员可见,拿不到属常态。
+	// 早期版本把这里当致命错误,结果用户在这一次 RPC 往返期间点停止 → ctx cancel →
+	// 整轮以「故障」收场,会话卡死在 running。ctx 被取消要明确回 ErrAborted。
+	initialApprovals, listErr := listExecApprovals(ctx, client)
+	if listErr != nil {
+		if ctx.Err() != nil {
+			client.Close()
+			return nil, nil, agentruntime.ErrAborted
+		}
+		initialApprovals = nil
 	}
 	// Start publishes the initial ready snapshot. Drain it here so every value
 	// consumed by activeTurn means a reconnect and therefore requires state
@@ -153,6 +164,9 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if callErr != nil && !errors.Is(callErr, openclawgateway.ErrDisconnected) &&
 		!errors.Is(callErr, context.DeadlineExceeded) {
 		client.Close()
+		if ctx.Err() != nil {
+			return nil, nil, agentruntime.ErrAborted
+		}
 		return nil, nil, callErr
 	}
 
