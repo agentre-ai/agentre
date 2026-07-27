@@ -10,6 +10,7 @@ package agent_backend_entity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -243,24 +244,37 @@ func IsValidPermissionMode(mode string) bool {
 // Plaintext WebSocket is intentionally limited to loopback. User info, query and
 // fragment components are rejected so credentials cannot be smuggled into a
 // persisted URL or later appear in logs/errors.
+// OpenClaw Gateway URL 的各条拒绝原因都有自己的哨兵错误:调用方(service 层)据此
+// 给前端结构化的 Code,前端才能用本地化文案说清"错在哪个字段"。全部塌成一个
+// InvalidParameter 时,用户只会看到一句没有信息量的「参数错误」。
+var (
+	ErrOpenClawGatewayURLRequired        = errors.New("openclaw gateway URL is required")
+	ErrOpenClawGatewayURLInvalid         = errors.New("openclaw gateway URL is invalid")
+	ErrOpenClawGatewayURLScheme          = errors.New("openclaw gateway URL must use ws or wss")
+	ErrOpenClawGatewayURLHost            = errors.New("openclaw gateway URL must include a host")
+	ErrOpenClawGatewayURLCredentials     = errors.New("openclaw gateway URL cannot contain credentials, query, or fragment")
+	ErrOpenClawGatewayURLPlaintextRemote = errors.New("plaintext openclaw gateway URL is limited to loopback")
+	ErrOpenClawSessionModeInvalid        = errors.New("openclaw session mode is unsupported")
+)
+
 func NormalizeOpenClawGatewayURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", fmt.Errorf("openclaw gateway URL is required")
+		return "", ErrOpenClawGatewayURLRequired
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", fmt.Errorf("parse openclaw gateway URL: %w", err)
+		return "", fmt.Errorf("%w: %v", ErrOpenClawGatewayURLInvalid, err)
 	}
 	u.Scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
 	if u.Scheme != "ws" && u.Scheme != "wss" {
-		return "", fmt.Errorf("openclaw gateway URL must use ws or wss")
+		return "", ErrOpenClawGatewayURLScheme
 	}
 	if u.Opaque != "" || u.Hostname() == "" {
-		return "", fmt.Errorf("openclaw gateway URL must include a host")
+		return "", ErrOpenClawGatewayURLHost
 	}
 	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return "", fmt.Errorf("openclaw gateway URL cannot contain credentials, query, or fragment")
+		return "", ErrOpenClawGatewayURLCredentials
 	}
 
 	hostname := strings.ToLower(strings.TrimSpace(u.Hostname()))
@@ -269,7 +283,7 @@ func NormalizeOpenClawGatewayURL(raw string) (string, error) {
 		loopback = ip.IsLoopback()
 	}
 	if u.Scheme == "ws" && !loopback {
-		return "", fmt.Errorf("plaintext openclaw gateway URL is limited to loopback")
+		return "", ErrOpenClawGatewayURLPlaintextRemote
 	}
 
 	port := u.Port()

@@ -327,11 +327,17 @@ func (s *agentBackendSvc) test(ctx context.Context, req *TestBackendRequest, tra
 	if err != nil {
 		return nil, err
 	}
-	if err := entity.Check(ctx); err != nil {
-		return nil, err
-	}
 	if requireOpenClaw && !entity.IsOpenClaw() {
 		return nil, i18n.NewError(ctx, code.AgentBackendInvalidType)
+	}
+	// OpenClaw 草稿的配置问题走结构化 Code(前端本地化),不要塌成中文「参数错误」。
+	if entity.IsOpenClaw() {
+		if issue := openClawDraftIssue(entity); issue != nil {
+			return issue, nil
+		}
+	}
+	if err := entity.Check(ctx); err != nil {
+		return nil, err
 	}
 	if entity.IsOpenClaw() {
 		if entity.IsRemote() {
@@ -506,6 +512,41 @@ func (s *agentBackendSvc) testOpenClaw(
 	return response, nil
 }
 
+// openClawDraftIssue 把 OpenClaw 草稿的配置错误翻成结构化 Code。entity.Check 对所有
+// 这些情况一律返回 code.InvalidParameter,前端只能拿到后端 i18n 的中文「参数错误」:
+// 既分不清是 URL 还是名称有问题,还把中文糊进英文 UI。返回 nil 表示草稿本身没问题。
+func openClawDraftIssue(backend *agent_backend_entity.AgentBackend) *TestBackendResponse {
+	if backend == nil {
+		return nil
+	}
+	issue := func(code string) *TestBackendResponse {
+		return &TestBackendResponse{OK: false, Code: code}
+	}
+	if strings.TrimSpace(backend.Name) == "" {
+		return issue("OPENCLAW_NAME_REQUIRED")
+	}
+	if _, err := agent_backend_entity.NormalizeOpenClawGatewayURL(backend.OpenClawGatewayURL); err != nil {
+		switch {
+		case errors.Is(err, agent_backend_entity.ErrOpenClawGatewayURLRequired):
+			return issue("OPENCLAW_URL_REQUIRED")
+		case errors.Is(err, agent_backend_entity.ErrOpenClawGatewayURLScheme):
+			return issue("OPENCLAW_URL_SCHEME")
+		case errors.Is(err, agent_backend_entity.ErrOpenClawGatewayURLHost):
+			return issue("OPENCLAW_URL_HOST")
+		case errors.Is(err, agent_backend_entity.ErrOpenClawGatewayURLCredentials):
+			return issue("OPENCLAW_URL_CREDENTIALS")
+		case errors.Is(err, agent_backend_entity.ErrOpenClawGatewayURLPlaintextRemote):
+			return issue("OPENCLAW_URL_PLAINTEXT_REMOTE")
+		default:
+			return issue("OPENCLAW_URL_INVALID")
+		}
+	}
+	if strings.TrimSpace(backend.OpenClawSessionMode) != agent_backend_entity.OpenClawSessionPerAgentRESession {
+		return issue("OPENCLAW_SESSION_MODE_INVALID")
+	}
+	return nil
+}
+
 func (s *agentBackendSvc) openClawIdentity() (*openclawgateway.DeviceIdentity, error) {
 	s.identityMu.Lock()
 	defer s.identityMu.Unlock()
@@ -584,11 +625,39 @@ func ResolveOpenClawRuntimeConfig(ctx context.Context, backendID int64) (opencla
 	return service.resolveOpenClawRuntimeConfig(ctx, backendID)
 }
 
+// openClawGatewayAuthCodes 是网关直接给出的鉴权类 code。真实网关(2026.7.1-2)对
+// token 不匹配回的却是 INVALID_REQUEST + "unauthorized: ..." —— 只按 code 匹配会
+// 漏掉它,前端于是把原始协议串当文案显示。故同时看 details.reason 与 message。
+var openClawGatewayAuthCodes = map[string]struct{}{
+	"AUTH_FAILED": {}, "UNAUTHORIZED": {}, "FORBIDDEN": {},
+}
+
+func normalizeOpenClawRPCCode(rpcErr *openclawgateway.RPCError) string {
+	rpcCode := strings.ToUpper(strings.TrimSpace(rpcErr.Code))
+	reason := strings.ToLower(strings.TrimSpace(rpcErr.Reason))
+	message := strings.ToLower(rpcErr.Message)
+	switch {
+	case rpcCode == "NOT_PAIRED" || reason == "not_paired":
+		return "OPENCLAW_NOT_PAIRED"
+	default:
+	}
+	if _, ok := openClawGatewayAuthCodes[rpcCode]; ok {
+		return "AUTH_FAILED"
+	}
+	if reason == "unauthorized" || strings.HasPrefix(message, "unauthorized") {
+		return "AUTH_FAILED"
+	}
+	if rpcCode == "" {
+		return "OPENCLAW_CONNECTION_FAILED"
+	}
+	return rpcCode
+}
+
 func openClawProbeErrorCode(err error) string {
 	var rpcErr *openclawgateway.RPCError
 	switch {
 	case errors.As(err, &rpcErr):
-		return rpcErr.Code
+		return normalizeOpenClawRPCCode(rpcErr)
 	case errors.Is(err, openclawgateway.ErrRequiredScopeMissing):
 		return "OPENCLAW_SCOPE_MISSING"
 	case errors.Is(err, openclawgateway.ErrProtocolMismatch):

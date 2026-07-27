@@ -157,7 +157,16 @@
         "remoteUnavailable": "远端 OpenClaw 暂不可用，因为安全 secret reference 尚不能跨 agentred wire。",
         "scopeMissing": "Gateway 未授予全部必需的 operator scopes。",
         "secretUnavailable": "本机安全密钥存储不可用。",
-        "timeout": "Gateway 连接测试超时。"
+        "timeout": "Gateway 连接测试超时。",
+        "notPaired": "该 Gateway 需要先完成设备配对才会授予所申请的权限范围。请在 Gateway 上批准此设备后重试。",
+        "nameRequired": "请先填写后端名称再测试连接。",
+        "urlRequired": "请填写 Gateway WebSocket 地址。",
+        "urlInvalid": "不是合法的 Gateway WebSocket 地址。",
+        "urlScheme": "Gateway 地址必须以 ws:// 或 wss:// 开头。",
+        "urlHost": "Gateway 地址必须包含主机名。",
+        "urlCredentials": "Gateway 地址不能包含账号密码、查询参数或锚点。",
+        "urlPlaintextRemote": "明文 ws:// 仅允许环回地址,其它主机请使用 wss://。",
+        "sessionModeInvalid": "不支持的会话映射方式。OpenClaw 固定为每个 AgentRE 会话对应一个 Gateway 会话。"
       },
       "gatewayURL": "Gateway WebSocket 地址",
       "gatewayURLHint": "本机回环地址可用 ws://；其它主机必须使用 wss://。",
@@ -176,7 +185,8 @@
       "tokenHint": "Token 仅保存在本机安全密钥存储中，绝不会返回前端。",
       "tokenPlaceholder": "可选 Token",
       "tokenSavedHint": "除非输入新值替换或明确清除，否则保留已保存 Token。",
-      "tokenSavedPlaceholder": "Token 已安全保存；输入新值可替换。"
+      "tokenSavedPlaceholder": "Token 已安全保存；输入新值可替换。",
+      "modelOverrideUnauthorized": "该 Gateway 不允许当前 operator 连接覆盖模型,实际会使用 agent 自身的模型。"
     },
     "permission": {
       "addIsSandbox": "添加 IS_SANDBOX=1",
@@ -1331,7 +1341,10 @@
   },
   "mentions": {
     "aria": "提及项目或 agent",
-    "group": { "agents": "Agent", "projects": "项目" },
+    "group": {
+      "agents": "Agent",
+      "projects": "项目"
+    },
     "chip": {
       "agentTitle": "Agent：{{name}}",
       "projectTitle": "项目：{{name}}"

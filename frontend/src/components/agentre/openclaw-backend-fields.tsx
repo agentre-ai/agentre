@@ -55,6 +55,13 @@ export function OpenClawBackendFields({
   const { t } = useTranslation();
   const agents = probe?.openClawAgents ?? [];
   const models = probe?.openClawModels ?? [];
+  // 网关只对 operator.admin 连接放行 provider/model override(实测非 admin 调用会被
+  // 直接拒:"provider/model overrides are not authorized for this caller"),运行时也
+  // 因此只在拿到 admin scope 时才下发 model。探测已经带回授予的 scope,这里据此
+  // 说明清楚,免得用户选了一个永远不生效的模型。
+  const modelOverrideAllowed =
+    probe?.ok === true && (probe.grantedScopes ?? []).includes("operator.admin");
+  const modelOverrideBlocked = probe?.ok === true && !modelOverrideAllowed;
   const selectedAgent = agents.some((agent) => agent.id === agentID)
     ? agentID
     : "";
@@ -176,7 +183,11 @@ export function OpenClawBackendFields({
           {t("agentBackends.openclaw.model")}
         </FieldLabel>
         {models.length > 0 ? (
-          <Select value={selectedModel} onValueChange={onDefaultModelChange}>
+          <Select
+            value={selectedModel}
+            onValueChange={onDefaultModelChange}
+            disabled={modelOverrideBlocked}
+          >
             <SelectTrigger
               id="openclaw-model"
               aria-label={t("agentBackends.openclaw.model")}
@@ -205,8 +216,14 @@ export function OpenClawBackendFields({
             value={defaultModel}
             onChange={(event) => onDefaultModelChange(event.target.value)}
             placeholder={t("agentBackends.openclaw.modelPlaceholder")}
+            disabled={modelOverrideBlocked}
           />
         )}
+        {modelOverrideBlocked ? (
+          <FieldDescription>
+            {t("agentBackends.openclaw.modelOverrideUnauthorized")}
+          </FieldDescription>
+        ) : null}
       </Field>
 
       {probe?.ok ? (
