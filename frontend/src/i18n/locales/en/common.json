@@ -535,7 +535,9 @@
       "model": "Model",
       "prompt": "Sent (prompt)",
       "reasoning": "Reasoning",
-      "tokenDetails": "Token usage details"
+      "tokenDetails": "Token usage details",
+      "usage": "Usage",
+      "usageUnavailable": "Not reported by the backend"
     },
     "quota": {
       "aria": "Claude Code quota 5h {{five}}% 7d {{seven}}% from {{device}}",
