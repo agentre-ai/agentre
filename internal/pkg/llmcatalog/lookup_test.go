@@ -27,6 +27,40 @@ func TestLookup(t *testing.T) {
 		})
 	})
 
+	Convey("2026-07 新发布模型命中 catalog", t, func() {
+		// 同上一条的回归:catalog 落后于在用模型时上下文用量条会整块消失。
+		cases := []struct {
+			id     string
+			ctxWin int
+		}{
+			{"claude-opus-5", 1_000_000},
+			{"claude-sonnet-5", 1_000_000},
+			{"gpt-5.6-sol", 1_050_000},
+			{"gpt-5.6-terra", 1_050_000},
+			{"gpt-5.6-luna", 1_050_000},
+			{"kimi-k3", 1_048_576},
+		}
+		for _, c := range cases {
+			Convey(c.id, func() {
+				info, ok := Lookup(c.id)
+				So(ok, ShouldBeTrue)
+				So(info.ContextWindow, ShouldEqual, c.ctxWin)
+			})
+		}
+
+		Convey("裸 gpt-5.6 走别名落到 sol", func() {
+			info, ok := Lookup("gpt-5.6")
+			So(ok, ShouldBeTrue)
+			So(info.ID, ShouldEqual, "gpt-5.6-sol")
+		})
+
+		Convey("openrouter 路径前缀的 kimi-k3 归一化命中", func() {
+			info, ok := Lookup("moonshotai/kimi-k3")
+			So(ok, ShouldBeTrue)
+			So(info.ID, ShouldEqual, "kimi-k3")
+		})
+	})
+
 	Convey("大小写不敏感", t, func() {
 		info, ok := Lookup("Claude-Opus-4-7")
 		So(ok, ShouldBeTrue)
