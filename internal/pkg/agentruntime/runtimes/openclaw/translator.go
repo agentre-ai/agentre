@@ -35,9 +35,10 @@ func (a *activeTurn) handleGatewayEvent(event openclawgateway.Event) (needsRecon
 		if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != a.runID {
 			return false
 		}
-		if payload.SessionKey != "" && payload.SessionKey != a.sessionKey {
+		if !a.matchesSession(payload.SessionKey) {
 			return false
 		}
+		a.adoptSessionKey(payload.SessionKey)
 		if payload.Seq > 0 {
 			if payload.Seq <= a.lastAgentSeq {
 				return false
@@ -48,9 +49,11 @@ func (a *activeTurn) handleGatewayEvent(event openclawgateway.Event) (needsRecon
 		a.handleAgentPayload(payload)
 	case "chat":
 		var payload chatEventPayload
-		if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != a.runID || payload.SessionKey != a.sessionKey {
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != a.runID ||
+			!a.matchesSession(payload.SessionKey) {
 			return false
 		}
+		a.adoptSessionKey(payload.SessionKey)
 		if payload.Seq > 0 {
 			if payload.Seq <= a.lastChatSeq {
 				return false

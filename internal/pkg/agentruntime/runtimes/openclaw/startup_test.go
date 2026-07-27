@@ -79,7 +79,7 @@ func TestRun_ApprovalListErrorDoesNotAbortTurn(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotNil(t, events)
-	assert.Equal(t, "agent:main:agentre:7:1", result.ProviderSessionID)
+	assert.Equal(t, "agentre:7:1", result.ProviderSessionID)
 }
 
 // 用户在握手/开轮 RPC 还没回来时点停止:runtime 必须回 ErrAborted,让 chat_svc 走
