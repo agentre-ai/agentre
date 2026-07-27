@@ -23,6 +23,9 @@ type activeTurn struct {
 	runID      string
 	out        chan agentruntime.Event
 	result     *agentruntime.RunResult
+	// sessionDescribe 记录网关是否广播了可选的 sessions.describe —— 收轮补 usage
+	// 只在广播时才调。
+	sessionDescribe bool
 
 	finishOnce sync.Once
 	abortMu    sync.Mutex
@@ -140,6 +143,7 @@ func (a *activeTurn) emit(event agentruntime.Event) bool {
 func (a *activeTurn) finish(stopErr error) {
 	a.finishOnce.Do(func() {
 		a.expirePendingApprovals()
+		a.publishSessionUsage()
 		a.result.StopErr = stopErr
 		switch {
 		case stopErr == nil:

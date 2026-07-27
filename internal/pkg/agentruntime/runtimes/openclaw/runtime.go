@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -183,6 +184,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		runID:            runID,
 		out:              make(chan agentruntime.Event, 64),
 		result:           result,
+		sessionDescribe:  slices.Contains(hello.Features.Methods, sessionDescribeMethod),
 		approvals:        make(map[string]*approvalState),
 		initialApprovals: initialApprovals,
 	}

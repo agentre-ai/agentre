@@ -83,8 +83,22 @@ func runtimeHandshake(t *testing.T, conn *websocket.Conn, connection int) {
 	runtimeHandshakeWithScopes(t, conn, connection, openclawgateway.RequiredOperatorScopes)
 }
 
+// runtimeHandshakeWithMethods 广播额外的可选方法(如 sessions.describe):它们不属于
+// requiredRuntimeMethods,runtime 必须按 hello 里的广播来决定调不调。
+func runtimeHandshakeWithMethods(t *testing.T, conn *websocket.Conn, connection int, extraMethods ...string) {
+	runtimeHandshakeWith(t, conn, connection, openclawgateway.RequiredOperatorScopes, extraMethods)
+}
+
 func runtimeHandshakeWithScopes(t *testing.T, conn *websocket.Conn, connection int, scopes []string) {
+	runtimeHandshakeWith(t, conn, connection, scopes, nil)
+}
+
+func runtimeHandshakeWith(t *testing.T, conn *websocket.Conn, connection int, scopes, extraMethods []string) {
 	t.Helper()
+	methods := append([]string{
+		"agent", "agent.wait", "chat.abort", "agents.list", "models.list",
+		"exec.approval.list", "exec.approval.resolve",
+	}, extraMethods...)
 	runtimeWrite(t, conn, map[string]any{
 		"type": "event", "event": "connect.challenge", "seq": 1,
 		"payload": map[string]any{"nonce": "runtime-nonce", "ts": time.Now().UnixMilli()},
@@ -97,7 +111,7 @@ func runtimeHandshakeWithScopes(t *testing.T, conn *websocket.Conn, connection i
 			"type": "hello-ok", "protocol": 4,
 			"server": map[string]any{"version": "2026.7.1-2", "connId": fmt.Sprintf("runtime-%d", connection)},
 			"features": map[string]any{
-				"methods": []string{"agent", "agent.wait", "chat.abort", "agents.list", "models.list", "exec.approval.list", "exec.approval.resolve"},
+				"methods": methods,
 				"events":  []string{"agent", "chat", "exec.approval.requested", "exec.approval.resolved"},
 			},
 			"snapshot": map[string]any{"presence": []any{}, "health": map[string]any{}, "stateVersion": map[string]any{"presence": 1, "health": 1}, "uptimeMs": 1},
