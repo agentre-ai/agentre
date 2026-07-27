@@ -153,22 +153,27 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 		return nil, ctx.Err()
 	}
 
-	sc := bufio.NewScanner(p.stdout)
-	buf := make([]byte, 0, 64<<10)
-	sc.Buffer(buf, maxFrameBytes)
+	s := newSession(p, c.rawSink, spec.sessionID)
+	go s.readLoop()
+	return s, nil
+}
 
-	s := &Session{
+// newSession 组装一个 Session(不起读循环 —— 由调用方决定)。所有 channel 字段只在
+// 这里初始化:手写 &Session{...} 字面量漏掉一个,就是 nil channel 上的永久阻塞,
+// 所以构造只此一处。
+func newSession(p *process, rawSink func([]byte), sessionID string) *Session {
+	sc := bufio.NewScanner(p.stdout)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	return &Session{
 		proc:         p,
 		scanner:      sc,
-		rawSink:      c.rawSink,
-		sessionID:    spec.sessionID,
+		rawSink:      rawSink,
+		sessionID:    sessionID,
 		pendingTurns: make(chan *activeTurn, 4),
 		autoCh:       make(chan *AutoTurn, 8),
 		subagentCh:   make(chan *SubagentActivity, 8),
 		readerDone:   make(chan struct{}),
 	}
-	go s.readLoop()
-	return s, nil
 }
 
 // SessionID 返回 claude 报告的 session_id。Open 后到首个 Turn 完成之前可能为空——
@@ -196,7 +201,15 @@ func (s *Session) Turn(ctx context.Context, prompt string, images ...Image) (<-c
 		s.turnMu.Unlock()
 		return nil, err
 	}
+	// 先登记到 FIFO、再写 stdin。顺序是「登记在前」而不是反过来:这样「本轮的响应帧
+	// 到达时队列里一定已有本轮」成为硬不变量,currentTurn 才能对 pendingTurns 做**非
+	// 阻塞**认领 —— 空闲(无 Turn 在途)时到达的帧一律丢弃,而不是把 readLoop 永久卡在
+	// <-pendingTurns 上(见 currentTurn / canStartUserTurn 里的 sess-2187)。
+	at := newActiveTurn(false)
+	s.pendingTurns <- at
+
 	if _, err := fmt.Fprintf(s.proc.stdin, "%s\n", enc); err != nil {
+		s.unregisterPendingTurn(at) // 没写进去 = 本轮的帧永远不会来,别留在队里错配下一轮
 		s.stdinMu.Unlock()
 		s.turnMu.Unlock()
 		// broken pipe 几乎一定意味着子进程已经死了 —— 这种情况下用 reaper
@@ -209,12 +222,6 @@ func (s *Session) Turn(ctx context.Context, prompt string, images ...Image) (<-c
 		return nil, err
 	}
 	s.stdinMu.Unlock() // stdin 写完立刻释放，给 Interrupt 让路
-
-	// 注册到 FIFO,等 readLoop 在本轮帧到达时取走。stdin 写在前、push 在后:CLI 的
-	// 响应帧一定晚于这次本地 push;即便极端调度下 reader 先读到首帧,它在 currentTurn
-	// 里阻塞 <-pendingTurns 等这次 push,不会错配。
-	at := newActiveTurn(false)
-	s.pendingTurns <- at
 
 	go func() {
 		defer s.turnMu.Unlock() // 本轮 done(result/EOF)后再放 turn 锁
@@ -302,7 +309,8 @@ func subagentOwnerID(f rawFrame) string {
 //     <-pendingTurns 上,后续 Turn / 自主轮再也读不到 stdout(见 canStartUserTurn)。
 //   - 空闲后台 subagent 帧(有 owner) → 开活动轮,经 subagentCh 吐出,首帧也喂进去。
 //   - 空闲后台 subagent 帧(无 owner) → 丢弃(兜底,不卡读循环)。
-//   - 否则 → 取 FIFO 队首 user Turn(stdin 已写 → push 紧随,阻塞极短)。
+//   - 否则 → **非阻塞**取 FIFO 队首 user Turn;队空(无 Turn 在途)就丢弃本帧。
+//     Turn 的登记先于 stdin 写,所以真属于某轮的首帧到达时队首一定已就位。
 func (s *Session) currentTurn(f rawFrame) *activeTurn {
 	s.sinkMu.Lock()
 	if s.active != nil {
@@ -367,11 +375,38 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 		return nil // owner 取不到的兜底:仍按 Phase 1 丢弃,不卡读循环
 	}
 	s.sinkMu.Unlock()
-	at := <-s.pendingTurns // user 轮起始:取队首(对应的 Turn 已 push)
-	s.sinkMu.Lock()
-	s.active = at
-	s.sinkMu.Unlock()
-	return at
+	select {
+	case at := <-s.pendingTurns: // user 轮起始:取队首(登记先于 stdin 写,故一定已在队)
+		s.sinkMu.Lock()
+		s.active = at
+		s.sinkMu.Unlock()
+		return at
+	default:
+		// 空闲(没有任何 Turn 在途):轮内容帧也只丢弃。这是「readLoop 永不阻塞在
+		// pendingTurns 上」的最后一道保险,与 canStartUserTurn 白名单互补 —— 白名单
+		// 挡的是 CLI 新增的会话级 system 子类型,这里挡的是白名单**内部**的帧被子进程
+		// 在空闲态自发重播(sess-2187 的 system{subtype:"init"})。
+		return nil
+	}
+}
+
+// unregisterPendingTurn 把一个已登记、但最终没能写进 stdin 的轮从 FIFO 里摘掉,
+// 保持其余元素的顺序 —— 它的帧永远不会来,留在队里会被下一轮的首帧错配认领。
+func (s *Session) unregisterPendingTurn(target *activeTurn) {
+	keep := make([]*activeTurn, 0, cap(s.pendingTurns))
+	for drained := false; !drained; {
+		select {
+		case at := <-s.pendingTurns:
+			if at != target {
+				keep = append(keep, at)
+			}
+		default:
+			drained = true
+		}
+	}
+	for _, at := range keep {
+		s.pendingTurns <- at
+	}
 }
 
 // canStartUserTurn 判定一帧是否有资格认领一个排队中的 user Turn(pendingTurns 队首)。
@@ -403,6 +438,11 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 //
 // 反转成白名单后,默认行为从「阻塞」变成「丢弃」:CLI 将来再加新帧类型,最坏是少渲染
 // 一条会话级状态,而不是整条会话卡死。
+//
+// 白名单**本身**并不足以保证不阻塞:sess-2187(CLI 2.1.220)漏的是白名单内部的
+// system{subtype:"init"} —— 它确实通常是一轮的首帧,但 CLI 也会在 result 之后的空闲态
+// 自发重播它(会话 cwd 下的 skill 目录被后台 subagent 改动时)。真正的兜底在
+// currentTurn:认领 pendingTurns 改成非阻塞,空闲即丢弃。
 func canStartUserTurn(f rawFrame) bool {
 	switch f.Type {
 	case "assistant", "user", "stream_event", "result":

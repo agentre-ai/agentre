@@ -911,8 +911,7 @@ func TestSession_TurnReturnsExitErrWhenProcessDied(t *testing.T) {
 	p := newPipeProcess(t, ctx, nil, withExitCode(1), withStderr(resumeMissingStderr))
 	require.True(t, p.hasExited(), "nil fakeCLI 构造的 process 应当立刻报 hasExited=true")
 
-	sc := bufio.NewScanner(p.stdout)
-	s := &Session{proc: p, scanner: sc}
+	s := newSession(p, nil, "") // 不起读循环:本例只验 Turn 写 stdin 的失败路径
 
 	_, err := s.Turn(ctx, "hello")
 	require.Error(t, err)
@@ -1420,6 +1419,89 @@ func TestSession_IdleSessionLevelSystemFramesKeepReaderAlive(t *testing.T) {
 	require.NotNil(t, at)
 	assert.Equal(t, "background_task", at.Trigger)
 	assert.Equal(t, "autonomous:listing", drainText(t, at.Events))
+
+	// (c) Turn2 无错位 —— 读循环仍然活着,后续 user 轮能正常起。
+	ch2, err := sess.Turn(ctx, "beta")
+	require.NoError(t, err)
+	assert.Equal(t, "echo:beta", drainText(t, ch2))
+}
+
+// fakeIdleInitAfterResult 复刻 sess-2187 现场抓到的帧序(CLI 2.1.220):一轮以 result
+// 收尾、会话转空闲(没有任何排队的 user Turn)之后 15ms,子进程又自发推了一帧
+// system{subtype:"init"} —— 会话 cwd 下的 skill 目录被后台 subagent 改动,CLI 重新
+// 广播了一次会话初始化。随后后台 subagent 陆续完成,推 task_updated / task_notification。
+//
+// init 是 canStartUserTurn 白名单里的「轮内容帧」(它通常就是一轮的首帧),空闲到达时
+// 会一路落到 <-pendingTurns 上永久阻塞:readLoop 死掉,后面所有后台完成帧都读不出来。
+func fakeIdleInitAfterResult(stdin io.Reader, stdout io.Writer) {
+	const sid = "sess-idle-init-after-result"
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	turn := 0
+	for sc.Scan() {
+		turn++
+		reply := extractTextField(sc.Text())
+		if turn == 1 {
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"description":"eval1","run_in_background":true}}]}}`)
+			writeFrame(stdout, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":"Task running in background with ID: bgagent1"}]}}`)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a2","content":[{"type":"text","text":"started:%s"}]}}`, reply)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+			// —— 空闲:result 之后子进程自发重播的会话初始化帧(sess-2187 现场)——
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			// —— 后台 subagent 完成:必须仍能读到并起自主续轮 ——
+			writeFrame(stdout, `{"type":"system","subtype":"task_updated","task_id":"bgagent1","patch":{"status":"completed"},"session_id":%q}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"task_notification","task_id":"bgagent1","tool_use_id":"tu1","status":"completed","output_file":"/tmp/tasks/bgagent1.output","summary":"eval1 done"}`)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a3","content":[{"type":"text","text":"autonomous:graded"}]}}`)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":2,"output_tokens":2}}`, sid)
+			continue
+		}
+		writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+		writeFrame(stdout, `{"type":"assistant","message":{"id":"a4","content":[{"type":"text","text":"echo:%s"}]}}`, reply)
+		writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+	}
+}
+
+// TestSession_IdleInitFrameAfterResultKeepsReaderAlive 钉死 sess-2187:**轮内容帧本身**
+// 空闲到达也不得认领排队的 user Turn。
+//
+// 前四次复发(sess-429 / 1535 / 2014)全是 CLI 新增的会话级 system 子类型,靠把
+// isNonTurnFrame 反转成 canStartUserTurn 白名单挡住了;这次漏的是白名单**内部**的
+// system{subtype:"init"} —— 它确实是一轮的首帧,但 CLI 也会在空闲态自发重播它。
+// 于是 readLoop 卡死在 <-pendingTurns 上:6 个后台 subagent 里 4 个在之后 10 分钟内
+// 陆续完成,task_updated / task_notification 一帧都没被读出来 —— 前端 subagent 卡在
+// 「运行中」,自主续轮永不浮现,对话框再无任何新内容。
+//
+// 所以断言的是**类**不是某个 subtype:空闲(无 Send 在途)时任何帧都只能被丢弃。
+func TestSession_IdleInitFrameAfterResultKeepsReaderAlive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeIdleInitAfterResult))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// (a) Turn1 干净收尾,不吞后面的空闲帧。
+	ch1, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	got1 := drainText(t, ch1)
+	assert.Equal(t, "started:alpha", got1)
+	assert.NotContains(t, got1, "autonomous", "Turn1 不应吞掉自主续轮帧")
+
+	// (b) 空闲态自发重播的 init 不得卡死读循环:后台 subagent 完成的自主续轮必须仍能浮现。
+	var at *AutoTurn
+	select {
+	case at = <-sess.AutonomousTurns():
+	case <-time.After(2 * time.Second):
+		t.Fatal("result 之后空闲到达的 system{subtype:\"init\"} 卡死了读循环:" +
+			"后台 subagent 完成的自主续轮从未到达(该帧落入 <-pendingTurns 阻塞)")
+	}
+	require.NotNil(t, at)
+	assert.Equal(t, "background_task", at.Trigger)
+	require.NotNil(t, at.CompletedTask)
+	assert.Equal(t, "completed", at.CompletedTask.Status)
+	assert.Equal(t, "autonomous:graded", drainText(t, at.Events))
 
 	// (c) Turn2 无错位 —— 读循环仍然活着,后续 user 轮能正常起。
 	ch2, err := sess.Turn(ctx, "beta")
