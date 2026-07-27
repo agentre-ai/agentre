@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,11 @@ type Session struct {
 	proc *process
 
 	scanner *bufio.Scanner
+
+	// rawSink 若非 nil,readLoop 每读到一行非空 stdout 就同步回调一次(未解析的
+	// stream-json 帧)。debug 级原始帧转储用;由 OpenSession 从 Client.rawSink 注入。
+	// 回调收到的 []byte 是 scanner 复用缓冲,不得跨调用留存。
+	rawSink func([]byte)
 
 	sessionID string // 由 system init 帧填入；首次 Turn 后稳定
 	model     string // 由 system init 帧 model 字段填入；新一轮如果换 model CLI 会重新发 init
@@ -74,10 +80,17 @@ type Session struct {
 	// task_notification」开头 → 自主轮(经 autoCh 吐出);否则按 FIFO 取一个 pendingTurns
 	// 里等待的 user Turn。
 	sinkMu       sync.Mutex
-	active       *activeTurn      // 当前正在投递帧的轮;nil = 轮间空闲
-	pendingTurns chan *activeTurn // 已写 stdin、等待其帧到达的 user Turn(FIFO)
-	autoCh       chan *AutoTurn   // AutonomousTurns() 返回的 channel;子进程退出时 close
+	active       *activeTurn            // 当前正在投递帧的轮;nil = 轮间空闲
+	pendingTurns chan *activeTurn       // 已写 stdin、等待其帧到达的 user Turn(FIFO)
+	autoCh       chan *AutoTurn         // AutonomousTurns() 返回的 channel;子进程退出时 close
 	subagentCh   chan *SubagentActivity // 后台 subagent 活动轮的出口(无消费方时缓冲兜底)
+
+	// readerDone 在 readLoop 收尾(子进程 EOF / Close)时 close。等 control_response
+	// 的调用方必须一并 select 它:reader 一走就再没有人 dispatch 回执,只等 ch / ctx
+	// 会永久静默挂起(Wails RPC 的 ctx 没有 deadline,表现为「发送没反应且不报错」)。
+	// 刻意用它而不是 proc.exit —— 子进程退出后 reader 可能还在 drain 缓冲里的帧,
+	// 那期间合法回执仍会到达;readLoop 真正收尾才是「回执不可能再来」的准确时点。
+	readerDone chan struct{}
 }
 
 // controlResponse 是 control_response 帧 response 字段的最小子集。
@@ -140,20 +153,27 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 		return nil, ctx.Err()
 	}
 
-	sc := bufio.NewScanner(p.stdout)
-	buf := make([]byte, 0, 64<<10)
-	sc.Buffer(buf, maxFrameBytes)
+	s := newSession(p, c.rawSink, spec.sessionID)
+	go s.readLoop()
+	return s, nil
+}
 
-	s := &Session{
+// newSession 组装一个 Session(不起读循环 —— 由调用方决定)。所有 channel 字段只在
+// 这里初始化:手写 &Session{...} 字面量漏掉一个,就是 nil channel 上的永久阻塞,
+// 所以构造只此一处。
+func newSession(p *process, rawSink func([]byte), sessionID string) *Session {
+	sc := bufio.NewScanner(p.stdout)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	return &Session{
 		proc:         p,
 		scanner:      sc,
-		sessionID:    spec.sessionID,
+		rawSink:      rawSink,
+		sessionID:    sessionID,
 		pendingTurns: make(chan *activeTurn, 4),
 		autoCh:       make(chan *AutoTurn, 8),
 		subagentCh:   make(chan *SubagentActivity, 8),
+		readerDone:   make(chan struct{}),
 	}
-	go s.readLoop()
-	return s, nil
 }
 
 // SessionID 返回 claude 报告的 session_id。Open 后到首个 Turn 完成之前可能为空——
@@ -181,7 +201,15 @@ func (s *Session) Turn(ctx context.Context, prompt string, images ...Image) (<-c
 		s.turnMu.Unlock()
 		return nil, err
 	}
+	// 先登记到 FIFO、再写 stdin。顺序是「登记在前」而不是反过来:这样「本轮的响应帧
+	// 到达时队列里一定已有本轮」成为硬不变量,currentTurn 才能对 pendingTurns 做**非
+	// 阻塞**认领 —— 空闲(无 Turn 在途)时到达的帧一律丢弃,而不是把 readLoop 永久卡在
+	// <-pendingTurns 上(见 currentTurn / canStartUserTurn 里的 sess-2187)。
+	at := newActiveTurn(false)
+	s.pendingTurns <- at
+
 	if _, err := fmt.Fprintf(s.proc.stdin, "%s\n", enc); err != nil {
+		s.unregisterPendingTurn(at) // 没写进去 = 本轮的帧永远不会来,别留在队里错配下一轮
 		s.stdinMu.Unlock()
 		s.turnMu.Unlock()
 		// broken pipe 几乎一定意味着子进程已经死了 —— 这种情况下用 reaper
@@ -194,12 +222,6 @@ func (s *Session) Turn(ctx context.Context, prompt string, images ...Image) (<-c
 		return nil, err
 	}
 	s.stdinMu.Unlock() // stdin 写完立刻释放，给 Interrupt 让路
-
-	// 注册到 FIFO,等 readLoop 在本轮帧到达时取走。stdin 写在前、push 在后:CLI 的
-	// 响应帧一定晚于这次本地 push;即便极端调度下 reader 先读到首帧,它在 currentTurn
-	// 里阻塞 <-pendingTurns 等这次 push,不会错配。
-	at := newActiveTurn(false)
-	s.pendingTurns <- at
 
 	go func() {
 		defer s.turnMu.Unlock() // 本轮 done(result/EOF)后再放 turn 锁
@@ -236,6 +258,9 @@ func (s *Session) readLoop() {
 		if len(line) == 0 {
 			continue
 		}
+		if s.rawSink != nil {
+			s.rawSink(line)
+		}
 		events, done := s.parseLine(line) // 同时把 control_response dispatch 给 ctrlPending
 		var f rawFrame
 		_ = json.Unmarshal(line, &f) // 仅供归属判定(后台型 task_notification)
@@ -264,7 +289,8 @@ func (s *Session) route(f rawFrame, events []Event, done bool) {
 // subagentOwnerID 取一帧空闲后台 subagent 活动帧所属的 Agent 工具 tool_use_id。
 // 有效来源仅限 assistant/user 帧携带的 parent_tool_use_id —— 这是子 agent 内部
 // API 轮的归属标识符。系统帧(task_notification 等)不携带有效 owner:它们要么
-// 已被 isBackgroundTaskNotification 认领起自主续轮,要么在 isNonTurnFrame 被丢弃。
+// 已被 isBackgroundTaskNotification 认领起自主续轮,要么因 canStartUserTurn 为 false
+// 被丢弃。
 // 让 system 帧的 tool_use_id 充当 owner 会在空闲态收到非后台 task_notification
 // 时错误地开启一个活动轮,与无 user Turn 等待时的 Phase-1 丢弃语义冲突。
 // 取不到返回 ""(调用方按 Phase-1 丢弃)。
@@ -278,12 +304,13 @@ func subagentOwnerID(f rawFrame) string {
 // currentTurn 返回当前活跃轮;轮间(active==nil)时按归属规则建立新轮:
 //   - 活动轮收到「后台型完成通知」→ 收尾活动轮,落到下方起自主续轮。
 //   - 后台型 task_notification → 自主轮,经 autoCh 吐出,返回 nil(调用方丢弃起始标记)。
-//   - 非 turn 帧(control_response / 空闲 status)→ 返回 nil,不认领排队的 user Turn;
-//     否则读循环会被这些会话级帧卡死在 <-pendingTurns 上,后续 Turn / 自主轮再也读不
-//     到 stdout(见 isNonTurnFrame)。
+//   - 无资格起轮的帧(control_response / 空闲 status / 后台任务状态帧 / 任何未知
+//     类型)→ 返回 nil,不认领排队的 user Turn;否则读循环会被这些会话级帧卡死在
+//     <-pendingTurns 上,后续 Turn / 自主轮再也读不到 stdout(见 canStartUserTurn)。
 //   - 空闲后台 subagent 帧(有 owner) → 开活动轮,经 subagentCh 吐出,首帧也喂进去。
 //   - 空闲后台 subagent 帧(无 owner) → 丢弃(兜底,不卡读循环)。
-//   - 否则 → 取 FIFO 队首 user Turn(stdin 已写 → push 紧随,阻塞极短)。
+//   - 否则 → **非阻塞**取 FIFO 队首 user Turn;队空(无 Turn 在途)就丢弃本帧。
+//     Turn 的登记先于 stdin 写,所以真属于某轮的首帧到达时队首一定已就位。
 func (s *Session) currentTurn(f rawFrame) *activeTurn {
 	s.sinkMu.Lock()
 	if s.active != nil {
@@ -310,18 +337,18 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 			CompletedTask: &CompletedBackgroundTask{
 				ToolUseID: f.ToolUseID,
 				TaskID:    f.TaskID,
-				Status:    f.Status,
+				Status:    normalizeTaskStatus(f.Status),
 				Summary:   f.Summary,
 			},
 		}
 		return nil
 	}
-	if isNonTurnFrame(f) {
+	if !canStartUserTurn(f) {
 		// status:"compacting" 例外:它是手动 /compact 轮的起步首帧 —— 既是子进程「正在压缩、
 		// 还活着」的存活证据,又是该轮的进度信号。轮起步(active==nil)有 user Turn 排队时认领
 		// 它并把进度喂进去:让 runtime 起步看门狗解除(否则大上下文压缩 >120s 会被误判卡死硬杀
-		// 成 errStartupTimeout),前端也能显示「压缩中」。非阻塞 select 保住 isNonTurnFrame 的
-		// 「空闲态不认领排队轮」不变量:确有排队轮才认领,没有则退回按通用 non-turn 帧丢弃,
+		// 成 errStartupTimeout),前端也能显示「压缩中」。非阻塞 select 保住 canStartUserTurn 的
+		// 「无资格帧不认领排队轮」不变量:确有排队轮才认领,没有则退回按会话级帧丢弃,
 		// 不会把 readLoop 卡死在 <-pendingTurns 上。
 		if isCompactingStatusFrame(f) {
 			select {
@@ -348,58 +375,99 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 		return nil // owner 取不到的兜底:仍按 Phase 1 丢弃,不卡读循环
 	}
 	s.sinkMu.Unlock()
-	at := <-s.pendingTurns // user 轮起始:取队首(对应的 Turn 已 push)
-	s.sinkMu.Lock()
-	s.active = at
-	s.sinkMu.Unlock()
-	return at
+	select {
+	case at := <-s.pendingTurns: // user 轮起始:取队首(登记先于 stdin 写,故一定已在队)
+		s.sinkMu.Lock()
+		s.active = at
+		s.sinkMu.Unlock()
+		return at
+	default:
+		// 空闲(没有任何 Turn 在途):轮内容帧也只丢弃。这是「readLoop 永不阻塞在
+		// pendingTurns 上」的最后一道保险,与 canStartUserTurn 白名单互补 —— 白名单
+		// 挡的是 CLI 新增的会话级 system 子类型,这里挡的是白名单**内部**的帧被子进程
+		// 在空闲态自发重播(sess-2187 的 system{subtype:"init"})。
+		return nil
+	}
 }
 
-// isNonTurnFrame 判定一帧是否「不归属任何一轮」—— 即便在轮间(空闲)到达,也不该认领
-// 一个排队的 user Turn。三类:
-//   - control_response:control_request(Interrupt / SetPermissionMode)的回执,已在
-//     parseLine 阶段按 request_id dispatch 给等待者,不携带 turn 事件。
-//   - system{subtype:"status"}:会话级状态推送(permissionMode / 运行态),从不作为某
-//     一轮的起始帧 —— 轮内到达由 active 轮承接(currentTurn 在 active!=nil 时已先返回),
-//     空闲到达则无归属轮,其事件随 route 的 nil 返回被丢弃(set_permission_mode 的回执
-//     已由 SetPermissionMode 调用方拿到,主动切 mode 不依赖这条空闲 status)。
-//   - system{subtype:"task_started"/"task_updated"/"task_progress"/
-//     "background_tasks_changed"}:后台任务(及 subagent)生命周期的状态推送。真 CLI
-//     2.1.162 在后台任务完成、自主续轮的 task_notification 之前先吐一帧 task_updated
-//     (状态 patch);2.1.205 起在其更前面还先吐一帧 background_tasks_changed(后台任务
-//     清单变化)。它们空闲到达时既非后台 task_notification 也非 status,旧逻辑会把读循环
-//     卡死在 <-pendingTurns,后续 task_notification / 自主续轮永远读不到(sess-429 →
-//     sess-1535「续不上对话」复发,后者只是新增了 background_tasks_changed 这个 subtype)。
-//     这些状态帧从不作为一轮的起始帧:轮内到达由 active 轮承接,空闲到达直接丢弃。
-//     注意后台型 task_notification 不在此列 —— 它正是自主轮的起始标记(见
-//     isBackgroundTaskNotification),由 currentTurn 在本判定之前优先处理。
-func isNonTurnFrame(f rawFrame) bool {
-	if f.Type == "control_response" {
-		return true
+// unregisterPendingTurn 把一个已登记、但最终没能写进 stdin 的轮从 FIFO 里摘掉,
+// 保持其余元素的顺序 —— 它的帧永远不会来,留在队里会被下一轮的首帧错配认领。
+func (s *Session) unregisterPendingTurn(target *activeTurn) {
+	keep := make([]*activeTurn, 0, cap(s.pendingTurns))
+	for drained := false; !drained; {
+		select {
+		case at := <-s.pendingTurns:
+			if at != target {
+				keep = append(keep, at)
+			}
+		default:
+			drained = true
+		}
 	}
-	if f.Type != "system" {
-		return false
+	for _, at := range keep {
+		s.pendingTurns <- at
 	}
-	switch f.Subtype {
-	case "status", "task_started", "task_updated", "task_progress", "background_tasks_changed":
+}
+
+// canStartUserTurn 判定一帧是否有资格认领一个排队中的 user Turn(pendingTurns 队首)。
+//
+// 这里刻意是**正向白名单**:只有「轮内容帧」——即 parseLine 会为其产出 turn 事件的
+// 那几类 —— 才允许起一轮;其余一律不认领,空闲到达时直接丢弃。
+//
+//   - assistant / user / stream_event / result:一轮的正文与收尾。
+//   - system{subtype:"init"}:每轮起手的会话初始化帧,通常就是一轮的首帧。
+//   - system{subtype:"compact_boundary"}:压缩轮的正文帧(压缩轮首帧是
+//     status:"compacting",见 isCompactingStatusFrame 的非阻塞认领)。
+//
+// 其余全部返回 false,含:control_response(control_request 的回执,已在 parseLine
+// 按 request_id dispatch 给等待者)、system{subtype:"status"}(会话级状态推送)、
+// 后台任务生命周期帧(task_started / task_updated / task_progress /
+// background_tasks_changed / task_notification)、以及**任何未知的 system 子类型或
+// 未知顶层类型**。
+//
+// 为什么是白名单而不是黑名单:这里原本是一张「非 turn 帧」黑名单,CLI 每加一个会话级
+// 子类型就要手工补一个名字,补漏一次就是一次生产事故 —— 帧落到函数末尾的
+// `<-s.pendingTurns` 上永久阻塞,readLoop 死掉,该 session 之后既收不到任何 CLI 输出
+// (自主续轮再也浮不出来),也拿不到任何 control_request 回执(SetPermissionMode 永久
+// 挂起 → 前端「发不出去」且无报错)。已经复发三次:
+//
+//	sess-429  (CLI 2.1.162 新增 task_updated)
+//	sess-1535 (CLI 2.1.205 新增 background_tasks_changed)
+//	sess-2014 (CLI 2.1.216 新增 post_turn_summary / task_summary / hook_* /
+//	           session_state_changed)
+//
+// 反转成白名单后,默认行为从「阻塞」变成「丢弃」:CLI 将来再加新帧类型,最坏是少渲染
+// 一条会话级状态,而不是整条会话卡死。
+//
+// 白名单**本身**并不足以保证不阻塞:sess-2187(CLI 2.1.220)漏的是白名单内部的
+// system{subtype:"init"} —— 它确实通常是一轮的首帧,但 CLI 也会在 result 之后的空闲态
+// 自发重播它(会话 cwd 下的 skill 目录被后台 subagent 改动时)。真正的兜底在
+// currentTurn:认领 pendingTurns 改成非阻塞,空闲即丢弃。
+func canStartUserTurn(f rawFrame) bool {
+	switch f.Type {
+	case "assistant", "user", "stream_event", "result":
 		return true
+	case "system":
+		return f.Subtype == "init" || f.Subtype == "compact_boundary"
 	}
 	return false
 }
 
 // isCompactingStatusFrame 判定一帧是否是 status:"compacting" —— 手动 /compact(及自动
-// 压缩)起步时 CLI 立刻推的进度帧。它虽属 system{subtype:"status"}(被 isNonTurnFrame 归为
-// 会话级帧),但在轮起步、有 user Turn 排队时必须由 currentTurn 认领该轮:它是压缩进行中
-// 子进程仍存活的唯一信号,丢了会让 runtime 起步看门狗把一次正常的长压缩误判为卡死。
+// 压缩)起步时 CLI 立刻推的进度帧。它虽属 system{subtype:"status"}(canStartUserTurn
+// 为 false 的会话级帧),但在轮起步、有 user Turn 排队时必须由 currentTurn 认领该轮:
+// 它是压缩进行中子进程仍存活的唯一信号,丢了会让 runtime 起步看门狗把一次正常的长压缩
+// 误判为卡死。
 func isCompactingStatusFrame(f rawFrame) bool {
 	return f.Type == "system" && f.Subtype == "status" && f.Status == "compacting"
 }
 
 // isIdleBackgroundSubagentFrame 判定一帧是否为「后台 subagent(run_in_background 的
 // Agent/Task 工具)在空闲态(轮间)产生的内部活动」。这类帧既非后台型 task_notification
-// (isBackgroundTaskNotification 已在 currentTurn 中先行认领、起自主续轮),也不在
-// isNonTurnFrame 的会话级白名单里,但同样不该认领一个排队的 user Turn —— 否则 readLoop
-// 卡死在 <-pendingTurns 上,后台 subagent 完成的续轮永远读不到(与 sess-429 同类)。
+// (isBackgroundTaskNotification 已在 currentTurn 中先行认领、起自主续轮),又恰好是
+// canStartUserTurn 放行的 assistant / user 帧,但同样不该认领一个排队的 user Turn ——
+// 否则 readLoop 卡死在 <-pendingTurns 上,后台 subagent 完成的续轮永远读不到
+// (与 sess-429 同类)。
 //
 // 真 CLI 2.1.185 抓帧实测:后台 subagent 起一轮后主 agent 即 result 收尾、会话转空闲,
 // 子 agent 的内部子对话随后在空闲态实时流出。两类需要在此拦下:
@@ -452,9 +520,13 @@ func (s *Session) markAbandoned(at *activeTurn) {
 	}
 }
 
-// shutdownReader 在 scanner 退出后收尾:close 当前活跃轮 + 排空 pendingTurns(让
-// 各自 Turn 的 waiter 解除阻塞)+ close autoCh。
+// shutdownReader 在 scanner 退出后收尾:打醒等 control_response 的调用方 + close
+// 当前活跃轮 + 排空 pendingTurns(让各自 Turn 的 waiter 解除阻塞)+ close autoCh。
+//
+// readerDone 必须**第一个**关:后面几步会 close 一串 channel、可能触发调用方立刻
+// 重试,让「回执不会再来」这个事实先对所有等待者可见,少一个中间态。
 func (s *Session) shutdownReader() {
+	close(s.readerDone)
 	s.sinkMu.Lock()
 	at := s.active
 	s.active = nil
@@ -532,6 +604,14 @@ func (s *Session) parseLine(line []byte) ([]Event, bool) {
 		}
 		return nil, false
 	case "assistant":
+		// isApiErrorMessage:true —— CLI 合成的 API 错误帧(model:"<synthetic>"),不是模型
+		// 正文。翻成 EventError 走上层 stopErr → error_text → 独立 ErrorCard,不拼进文本
+		// block(见 sess-2153)。非终结:turn 结束仍由随后的 result 帧驱动。
+		if f.IsAPIErrorMessage {
+			if ev, ok := apiErrorEvent(f, s.sessionID); ok {
+				return []Event{ev}, false
+			}
+		}
 		events, usage := parseAssistantContentWithUsage(f.Message, s.sessionID, f.ParentToolUseID)
 		// 仅记录主 agent 帧的 usage：parent_tool_use_id != "" 的帧来自 Task/Agent
 		// subagent 内部 API call，那是独立 Anthropic 会话（自己的 system prompt /
@@ -673,6 +753,8 @@ func (s *Session) Interrupt(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.readerDone:
+		return s.controlRequestAbortedErr("interrupt")
 	case resp := <-ch:
 		if resp.Subtype != "success" {
 			if resp.Error != "" {
@@ -682,6 +764,84 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+// StopTask 写一帧 control_request{subtype:"stop_task", task_id:…} 让 CLI 停掉某个
+// 具体的后台任务(run_in_background Bash / subagent),而非中断整个 turn —— 后台任务
+// 在 turn 结束后仍存活,常驻 readLoop 在轮间照样 dispatch control_response(见
+// SetPermissionMode 注释),所以空闲态也能停。CLI 停掉任务后会另发一帧后台型
+// task_notification(status cancelled/failed),经既有自主续轮把 subagent_state 翻终态。
+//
+// 调用约束同 Interrupt:与 Turn 可并发(只持 stdinMu 写帧);Close 后返错。
+// CLI 若回执 not_found / not_running(任务已自然结束/竞态)视为幂等成功返 nil。
+func (s *Session) StopTask(ctx context.Context, taskID string) error {
+	s.stdinMu.Lock()
+	if s.closed {
+		s.stdinMu.Unlock()
+		return errors.New("claudecode: session closed")
+	}
+	reqID := newControlRequestID()
+	ch := make(chan controlResponse, 1)
+	s.ctrlMu.Lock()
+	if s.ctrlPending == nil {
+		s.ctrlPending = map[string]chan controlResponse{}
+	}
+	s.ctrlPending[reqID] = ch
+	s.ctrlMu.Unlock()
+
+	frame := map[string]any{
+		"type":       "control_request",
+		"request_id": reqID,
+		"request":    map[string]any{"subtype": "stop_task", "task_id": taskID},
+	}
+	enc, mErr := json.Marshal(frame)
+	if mErr != nil {
+		s.stdinMu.Unlock()
+		s.forgetControlRequest(reqID)
+		return mErr
+	}
+	if _, err := fmt.Fprintf(s.proc.stdin, "%s\n", enc); err != nil {
+		s.stdinMu.Unlock()
+		s.forgetControlRequest(reqID)
+		return err
+	}
+	s.stdinMu.Unlock()
+
+	defer s.forgetControlRequest(reqID)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.readerDone:
+		return s.controlRequestAbortedErr("stop_task")
+	case resp := <-ch:
+		return stopTaskResponseErr(resp)
+	}
+}
+
+// stopTaskResponseErr 把 control_response 翻成 StopTask 返回错误。subtype=="success"
+// → nil;CLI 报 not_found / not_running 表示任务已不在跑,当幂等成功;其它 subtype
+// 带原始 error 文本以便排查。
+func stopTaskResponseErr(resp controlResponse) error {
+	if resp.Subtype == "success" {
+		return nil
+	}
+	if strings.Contains(resp.Error, "not_found") || strings.Contains(resp.Error, "not_running") {
+		return nil
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("claudecode: stop_task rejected: %s", resp.Error)
+	}
+	return fmt.Errorf("claudecode: stop_task rejected (subtype=%q)", resp.Subtype)
+}
+
+// controlRequestAbortedErr 给「readLoop 已收尾、回执不可能再来」的等待者一个明确
+// 错误。带上 ExitErr 的首因(ErrSessionNotFound / 非 0 退出等),让上层能 errors.Is
+// 判定并给用户人话提示 —— 而不是静默挂到天荒地老。
+func (s *Session) controlRequestAbortedErr(subtype string) error {
+	if err := s.ExitErr(); err != nil {
+		return fmt.Errorf("claudecode: %s aborted, session ended: %w", subtype, err)
+	}
+	return fmt.Errorf("claudecode: %s aborted: session ended before control_response", subtype)
 }
 
 func (s *Session) forgetControlRequest(reqID string) {
@@ -756,11 +916,15 @@ func (s *Session) SetPermissionMode(ctx context.Context, mode string) error {
 	defer s.forgetControlRequest(reqID)
 
 	// 持久 readLoop 一直在 drain scanner,control_response 一定被 dispatch 到 ch
-	// (不论此刻有没有 user turn 在飞),这里只需等 ch 或 ctx —— 不再需要在 Turn
-	// 不在场时自己 TryLock turnMu drain scanner(那会和 readLoop 抢同一个 scanner)。
+	// (不论此刻有没有 user turn 在飞),这里只需等 ch / readerDone / ctx —— 不再需要
+	// 在 Turn 不在场时自己 TryLock turnMu drain scanner(那会和 readLoop 抢同一个
+	// scanner)。readerDone 是必须的第三条腿:reader 一走就没人 dispatch 回执了,
+	// 只等 ch 与一个无 deadline 的 ctx = 永久静默挂起。
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.readerDone:
+		return s.controlRequestAbortedErr("set_permission_mode")
 	case resp := <-ch:
 		return setPermissionModeResponseErr(resp)
 	}
@@ -860,6 +1024,41 @@ func isZeroUsage(u *rawUsage) bool {
 	}
 	return u.InputTokens == 0 && u.OutputTokens == 0 &&
 		u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0
+}
+
+// apiErrorEvent 把 CLI 的 isApiErrorMessage:true 合成 assistant 帧翻成 EventError。
+//
+// 文本取 message.content 里第一个非空 text block(即 "API Error: ..." 提示);缺失时
+// 用顶层 error 分类码(f.ErrorField)兜底。两个 decoder —— Session.parseLine 与
+// frameDecoder.decodeLine —— 共用本函数,避免平行副本漂移。返回 (Event{}, false)
+// 表示这帧没有可用文本,调用方回退到正常 assistant 解析(不吞帧)。
+func apiErrorEvent(f rawFrame, sid string) (Event, bool) {
+	text := firstAssistantText(f.Message)
+	if text == "" {
+		text = f.ErrorField
+	}
+	if text == "" {
+		return Event{}, false
+	}
+	return Event{Kind: EventError, SessionID: sid, Err: &APIError{Text: text, Code: f.ErrorField}}, true
+}
+
+// firstAssistantText 返回 assistant message.content 里第一个非空 text block 的文本;
+// 没有则返回空串。
+func firstAssistantText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m rawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	for _, c := range m.Content {
+		if c.Type == "text" && c.Text != "" {
+			return c.Text
+		}
+	}
+	return ""
 }
 
 func parseAssistantContentWithUsage(raw json.RawMessage, sid, parentToolUseID string) ([]Event, *rawUsage) {
@@ -988,7 +1187,7 @@ func parseSystemTask(f rawFrame, sid string) (Event, bool) {
 		TaskDescription: f.Description,
 		Prompt:          f.Prompt,
 		LastToolName:    f.LastToolName,
-		Status:          f.Status,
+		Status:          normalizeTaskStatus(f.Status),
 	}
 	if len(f.Usage) > 0 {
 		var u taskUsage

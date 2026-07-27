@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
@@ -47,11 +48,31 @@ const AskUserQuestionDirectivePrefix = "e2e-ask:"
 // (镜像 org_create_department 接缝)。
 const HookCreateDirectivePrefix = "e2e-hook-create:"
 
-// Runtime 实现 agentruntime.Runtime。
-type Runtime struct{}
+// BackgroundTaskDirectivePrefix 触发「后台任务完成 → CLI 自主续轮」接缝的用户指令:
+// e2e-bg-task:<label>。本轮照常回显收尾,随后延迟推一轮 agentruntime.AutonomousTurn
+// 到 AutonomousTurns(sessionID) 的 channel(详见 autoturn.go)。
+const BackgroundTaskDirectivePrefix = "e2e-bg-task:"
+
+// Runtime 实现 agentruntime.Runtime + agentruntime.AutonomousTurnSource(见 autoturn.go)。
+type Runtime struct {
+	// mu 保护 autoTurns。Run(每轮)与 AutonomousTurns(chat_svc 每会话订阅一次)
+	// 在不同 goroutine 并发访问同一张表。
+	mu sync.Mutex
+	// autoTurns:sessionID → 该会话的自主续轮 channel。惰性建,进程生命周期内常驻
+	// (fake 没有子进程 evict,故不 close;详见 autoturn.go 的契约说明)。
+	autoTurns map[int64]chan agentruntime.AutonomousTurn
+	// inTurn:sessionID → 进行中的用户轮数,镜像 claudecode 的 claudeActive.inTurn,
+	// 供 Steer 判定「有没有可注入的活跃用户轮」(见 autoturn.go)。
+	inTurn map[int64]int
+}
 
 // New 返回一个 fake runtime。
-func New() *Runtime { return &Runtime{} }
+func New() *Runtime {
+	return &Runtime{
+		autoTurns: make(map[int64]chan agentruntime.AutonomousTurn),
+		inTurn:    make(map[int64]int),
+	}
+}
 
 // Capabilities 返回最小能力集:CapAbort 支撑停止按钮;
 // CapMCPTools 让 e2e 的 MCP 工具注入接缝生效(org/subagent/hook 等写工具
@@ -82,8 +103,11 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		}
 	}
 	chunkDelay := configuredChunkDelay()
+	// 同步登记「用户轮进行中」(Run 返回时就得可见),供 Steer 判定活跃轮。
+	r.enterTurn(req.SessionID)
 	go func() {
 		defer close(out)
+		defer r.leaveTurn(req.SessionID)
 		for i, chunk := range splitChunks(reply, 8) {
 			if i > 0 && chunkDelay > 0 {
 				timer := time.NewTimer(chunkDelay)
@@ -162,6 +186,12 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		case <-ctx.Done():
 			return
 		case out <- agentruntime.Done{}:
+		}
+		// 后台任务接缝:e2e-bg-task:<label> → 本轮收尾后延迟推一轮自主续轮
+		// (镜像 CLI 在 run_in_background 任务完成后自主跑的一轮)。只在本轮真正跑完
+		// (没被 ctx 取消)时排,取消的轮不该凭空多出一条 assistant 轮。
+		if label, found := parseOnePartDirective(req.UserText, BackgroundTaskDirectivePrefix); found {
+			r.scheduleAutonomousTurn(req.SessionID, label)
 		}
 	}()
 	return out, result, nil

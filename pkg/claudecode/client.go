@@ -22,6 +22,11 @@ type Client struct {
 	effort               string
 	permissionPromptTool string
 
+	// rawSink 若非 nil,子进程每读到一行非空 stdout(未解析的 stream-json 帧)就同步
+	// 回调一次。用于 debug 级原始帧转储:runtime 层把它接到 logger.Debug,由「Debug
+	// Logging」开关热控。经 Stream / OpenSession 分别注入 frameDecoder / Session。
+	rawSink func([]byte)
+
 	// spawner 仅给单测注入用——nil 时走真实 startProcess。包内私有，不暴露 Exported
 	// Option；测试通过 pipeSpawner 注入返回 pipe-backed *process 的 fake spawner，
 	// 在 in-memory 里跑完整 stream-json 协议（避开真子进程的 spawn 开销 + 不依赖 sh）。
@@ -96,7 +101,9 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	// stdin 保持开：为常驻模式 / 多轮复用同一子进程留出空间。result 帧本身不依赖
 	// stdin EOF 触发——CLI 收到一条 user frame 处理完就 emit result，下一轮等下一条
 	// frame。Close 时统一关闭 stdin。
-	return &Stream{proc: p, dec: newFrameDecoder(p.stdout)}, nil
+	dec := newFrameDecoder(p.stdout)
+	dec.rawSink = c.rawSink
+	return &Stream{proc: p, dec: dec}, nil
 }
 
 // Text 一次性 prompt → assistant 完整文本：起 Stream、串接所有 EventTextDelta、

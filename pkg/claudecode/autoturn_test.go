@@ -7,6 +7,16 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestNormalizeTaskStatus 钉死 CLI 英式 "cancelled" 归一到内部美式 "canceled",
+// 其它状态原样透传(用户停止后 CLI 发的 task_notification 走这条边界)。
+func TestNormalizeTaskStatus(t *testing.T) {
+	assert.Equal(t, "canceled", normalizeTaskStatus("cancelled"))
+	assert.Equal(t, "canceled", normalizeTaskStatus("canceled"))
+	assert.Equal(t, "completed", normalizeTaskStatus("completed"))
+	assert.Equal(t, "failed", normalizeTaskStatus("failed"))
+	assert.Equal(t, "", normalizeTaskStatus(""))
+}
+
 // TestIsBackgroundTaskNotification 钉死后台型 task_notification 的辨析 —— 它是自主续轮
 // 的起始标记(有 output_file、无 subagent_type)。真实 CLI 2.1.185 抓帧显示:后台 bash
 // 与 run_in_background 子 agent 的「完成」通知都是后台型(都带 output_file、都不带

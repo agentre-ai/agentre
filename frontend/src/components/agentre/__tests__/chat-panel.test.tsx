@@ -272,7 +272,10 @@ import {
   __resetChatPanelScrollStateForTesting,
   loadTranscriptScrollState,
 } from "../chat-panel-scroll-state";
-import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import {
+  streamForMessage,
+  useChatStreamsStore,
+} from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 
 /** 清 store streams 以避免测试间串台 */
@@ -966,7 +969,7 @@ describe("ChatPanel · Codex collaboration mode", () => {
         sessionId: 42,
         streamStartedAt: Date.now(),
       });
-      useChatStreamsStore.getState().patchLiveContextWindow(42, 258400);
+      useChatStreamsStore.getState().patchLiveContextWindow(42, 1001, 258400);
     });
 
     render(<ChatPanel sessionId={42} />);
@@ -1184,9 +1187,9 @@ describe("ChatPanel · Codex collaboration mode", () => {
         });
       });
       expect(appMocks.SendChatMessage).not.toHaveBeenCalled();
-      expect(useChatStreamsStore.getState().streams.get(42)?.name).toBe(
-        "chat:event:42:1001",
-      );
+      expect(
+        streamForMessage(useChatStreamsStore.getState(), 42, 1001)?.name,
+      ).toBe("chat:event:42:1001");
     },
   );
 
@@ -1744,7 +1747,7 @@ describe("ChatPanel · T29 subagent_activity_started 旁路订阅", () => {
     });
 
     // (a) openStream was called with the launch message id and stream name
-    const liveStream = useChatStreamsStore.getState().streams.get(1);
+    const liveStream = streamForMessage(useChatStreamsStore.getState(), 1, 42);
     expect(liveStream).toBeDefined();
     expect(liveStream?.assistantMessageId).toBe(42);
     expect(liveStream?.name).toBe("chat:event:1:42");
@@ -1877,6 +1880,213 @@ describe("ChatPanel · T30 后台任务完成翻转 messages", () => {
     const subagent = block.subagent as Record<string, unknown>;
     expect(subagent.status).toBe("completed");
     expect(subagent.summary).toBe("Background command finished (exit 0)");
+  });
+});
+
+// ─── T31: 自主续轮进行中用户又发消息(sess-1950)────────────────────────────────
+// 后台任务完成 → 自主续轮正在流式输出。此时用户在输入框再发一条消息:
+//   1. streaming=true(自主轮已 openStream)→ 走 doEnqueue;
+//   2. 后端 Steer 只认 user turn 的 inTurn 标记,自主轮不置该标记 → 返
+//      ChatSteerNoActive → 前端 fallback 到 doSend 起新一轮;
+//   3. doSend 拿到新 assistant 行后调 openStream —— 而 chat-streams-store 的
+//      LiveStream 是 **按 sessionId 单槽位** 的,新 openStream 直接覆盖整条 entry:
+//      自主续轮已经流到屏幕上、但还没落库的 liveDelta / liveBlocks 全部丢失,
+//      transcript 回退到该消息的持久化态(sess-1950 里就是稀疏 checkpoint),
+//      同时 ChatStreamsHost 的订阅也从自主轮流名切走,自主轮后续事件无人接收。
+// 用户可见症状:「已经输出的内容清空回退」。
+describe("ChatPanel · T31 自主续轮流式中再发消息", () => {
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  it("Given an autonomous turn is streaming, When the user sends a new message, Then the autonomous turn's already-streamed output is not discarded", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      id: 1950,
+      backendType: "claudecode",
+    });
+    // 自主续轮的 assistant 行:落库时 blocks 还是空的(内容只在 liveDelta 里)。
+    mockSessionStore.messages = [{ id: 13912, role: "assistant", blocks: [] }];
+    // Enqueue 打到后端 → 自主轮没置 inTurn → ChatSteerNoActive(前端按文案前缀识别)。
+    appMocks.EnqueueChatMessage.mockRejectedValue(
+      new Error("没有进行中的对话可以插入消息"), // code.ChatSteerNoActive zh_cn 原文
+    );
+    appMocks.SendChatMessage.mockResolvedValue({
+      sessionId: 1950,
+      stream: "chat:event:1950:13914",
+      assistantMessageId: 13914,
+      userMessage: { id: 13913, role: "user", blocks: [] },
+      assistantMessage: { id: 13914, role: "assistant", blocks: [] },
+    });
+
+    render(<ChatPanel sessionId={1950} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:1950",
+        expect.any(Function),
+      ),
+    );
+
+    // 自主续轮开始并流出一段文字。
+    const handler = getAutonomousHandler(1950);
+    act(() => {
+      handler!({
+        kind: "autonomous_started",
+        sessionId: 1950,
+        stream: "chat:event:1950:13912",
+        trigger: "background_task",
+        assistantMessage: { id: 13912, role: "assistant", blocks: [] },
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+    act(() => {
+      useChatStreamsStore
+        .getState()
+        .appendLiveText(1950, 13912, "AUTONOMOUS-PARTIAL-OUTPUT");
+    });
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 1950, 13912)?.liveDelta,
+    ).toContain("AUTONOMOUS-PARTIAL-OUTPUT");
+
+    // 用户在自主轮流式中又发一条。
+    const submit = componentMocks.chatComposerProps.at(-1)?.onSubmit as
+      | ((text: string) => void)
+      | undefined;
+    expect(submit).toBeDefined();
+    await act(async () => {
+      submit!("给 e2e 补一个 AI 场景 spec");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // 已经流到屏幕上的自主轮输出不能凭空消失。
+    const live = streamForMessage(useChatStreamsStore.getState(), 1950, 13912);
+    const stillRenderable =
+      live?.liveDelta?.includes("AUTONOMOUS-PARTIAL-OUTPUT") ||
+      JSON.stringify(live?.liveBlocks ?? []).includes(
+        "AUTONOMOUS-PARTIAL-OUTPUT",
+      ) ||
+      JSON.stringify(mockSessionStore.messages).includes(
+        "AUTONOMOUS-PARTIAL-OUTPUT",
+      );
+    expect(stillRenderable).toBe(true);
+  });
+});
+
+// ─── T32: 自主轮/后台活动轮的 per-turn 终态被漏(sess-2146)──────────────────────
+// per-turn 流的 openStream(ChatPanel 收到 autonomous_started 才调)与 EventsOn 订阅
+// (ChatStreamsHost 下一 render 才挂)跨 render 解耦。短轮的 per-turn done/closed 可能
+// 赶在订阅注册前发完、被 fire-and-forget 事件丢掉 → LiveStream 永远留在 store →
+// streaming 卡死:输入框被逼走 doEnqueue 发不出、自主轮那条空 assistant 行也不 reload
+// 回填内容(用户可见症状:「发不出消息 + 有结果也不显示」)。
+// 修复:收尾在**会话级**流(ChatPanel 挂载即订阅、无此 race)补发 autonomous_finished,
+// 前端据 launchMessageId 兜底 finishStream(幂等)→ streaming 解卡 + doneTick 触发 reload。
+describe("ChatPanel · T32 会话级 autonomous_finished 兜底漏掉的 per-turn 终态", () => {
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  it("Given an autonomous turn's per-turn done was missed (orphan stream), When autonomous_finished arrives on the session channel, Then the stream is finished and the session reloads", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      id: 2146,
+      backendType: "claudecode",
+    });
+    mockSessionStore.messages = [{ id: 5001, role: "assistant", blocks: [] }];
+
+    render(<ChatPanel sessionId={2146} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:2146",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(2146);
+    expect(handler).toBeTruthy();
+
+    // 自主轮开始:插入 assistant 行 + openStream。随后模拟「per-turn done 被漏掉」——
+    // 本测试没挂 ChatStreamsHost,per-turn 流根本没有订阅者,done 发到虚空,orphan 成立。
+    act(() => {
+      handler!({
+        kind: "autonomous_started",
+        sessionId: 2146,
+        stream: "chat:event:2146:5001",
+        trigger: "background_task",
+        assistantMessage: { id: 5001, role: "assistant", blocks: [] },
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+    // orphan 流在 store 里 → streaming=true(输入框被卡)。
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 2146, 5001),
+    ).toBeTruthy();
+
+    // 初次挂载的 reload 不算数,清掉,只断言兜底触发的那次。
+    reloadSpy.mockClear();
+
+    // 会话级流补发终态兜底。
+    act(() => {
+      handler!({
+        kind: "autonomous_finished",
+        sessionId: 2146,
+        launchMessageId: 5001,
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    // orphan 流被 finish → streaming 解卡。
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 2146, 5001),
+    ).toBeNull();
+    // doneTick 自增 → ChatPanel 兜底 reload,把空 assistant 行回填成落库的最终内容。
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalled());
+  });
+
+  it("Given the per-turn done was already received (stream gone), When autonomous_finished arrives, Then it is a no-op (idempotent, no extra reload)", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      id: 2146,
+      backendType: "claudecode",
+    });
+    mockSessionStore.messages = [{ id: 5001, role: "assistant", blocks: [] }];
+
+    render(<ChatPanel sessionId={2146} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:2146",
+        expect.any(Function),
+      ),
+    );
+    const handler = getAutonomousHandler(2146);
+
+    // 没有任何 orphan 流(per-turn done 正常收到、流已被移除的场景)。
+    reloadSpy.mockClear();
+    act(() => {
+      handler!({
+        kind: "autonomous_finished",
+        sessionId: 2146,
+        launchMessageId: 5001,
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 2146, 5001),
+    ).toBeNull();
+    // 流本就不在 → 不 finishStream → 不额外 reload。
+    expect(reloadSpy).not.toHaveBeenCalled();
   });
 });
 

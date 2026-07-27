@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -63,6 +62,10 @@ type Runtime struct {
 	spawnLocks sync.Map // key(string) → *sync.Mutex
 	cache      *agentruntime.CLISessionPool
 	steer      *httpgateway.SteerInbox
+	// hookCLIPath 是注册进 PostToolUse hook 的可执行文件路径;bootstrap 注入
+	// <AppDataDir>/bin/agrctl。为空时回落 os.Executable()(供 agentred 守护进程——它自带
+	// claudecode 子命令)。见 hookBin。
+	hookCLIPath string
 	// startupTimeout 是 startup 看门狗阈值;NewWithPool 设默认值, 单测覆写成毫秒级。
 	startupTimeout time.Duration
 }
@@ -100,14 +103,17 @@ func sessionKey(id int64) string { return strconv.FormatInt(id, 10) }
 func (r *Runtime) Capabilities() capability.Capabilities {
 	return capability.Capabilities{
 		Set: map[capability.Capability]bool{
-			capability.CapSteer:          true,
-			capability.CapCancelSteer:    true,
-			capability.CapDrainSteer:     true,
-			capability.CapAbort:          true,
-			capability.CapSetPermission:  true,
-			capability.CapAnswerUserAsk:  true,
-			capability.CapToolPermission: true,
-			capability.CapForkSession:    true,
+			capability.CapSteer:       true,
+			capability.CapCancelSteer: true,
+			capability.CapDrainSteer:  true,
+			capability.CapAbort:       true,
+			// 停单个后台任务/子 agent(run_in_background)—— 实现 BackgroundTaskStopper,
+			// 下发 control_request{stop_task};前端据此在后台任务面板/AgentSpawn 卡片显示停止按钮。
+			capability.CapStopBackgroundTask: true,
+			capability.CapSetPermission:      true,
+			capability.CapAnswerUserAsk:      true,
+			capability.CapToolPermission:     true,
+			capability.CapForkSession:        true,
 			// translator.EventInit 路径用 llmcatalog 兜底 emit ContextWindowUpdated;
 			// Claude Code SDK 协议本身不报窗口,这里靠 catalog 给前端 turn 内总量。
 			capability.CapReportContextWindow: true,
@@ -245,10 +251,29 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 	return nil
 }
 
+// StopBackgroundTask 实现 BackgroundTaskStopper：停掉某个后台任务/子 agent(按 CLI
+// task_id)。与 Abort 不同,**不校验 inTurn** —— 后台任务在 turn 结束后仍存活,只要
+// 子进程还在 LRU 缓存里(还没 evict)就下发 control_request{stop_task}。子进程已 evict
+// (任务随之消失)→ ErrNoActiveTurn,由 chat_svc 当「任务已不在」处理。
+func (r *Runtime) StopBackgroundTask(ctx context.Context, sessionID int64, taskID string) error {
+	if taskID == "" {
+		return fmt.Errorf("agentruntime/runtimes/claudecode: empty taskID")
+	}
+	v, ok := r.cache.Get(sessionKey(sessionID))
+	if !ok {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a := v.(*claudeActive)
+	if a.handle == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	return a.handle.StopTask(ctx, taskID)
+}
+
 // SetPermissionMode 实现 PermissionModeSetter。语义同顶层 SetPermissionMode。
 //
 // CLI 切换成功后必须同步 active.permissionMode 快照:CLI 的空闲 status 回显帧被
-// demux reader 丢弃(pkg/claudecode session.go isNonTurnFrame),复用进程的下一轮
+// demux reader 丢弃(pkg/claudecode session.go canStartUserTurn),复用进程的下一轮
 // 也不重发 mode —— 不写这里,快照会停留在 spawn 时的值,handleControlRequest 的
 // bypassPermissions 短路就会吞掉本应弹审批的 control_request。
 func (r *Runtime) SetPermissionMode(ctx context.Context, sessionID int64, mode string) error {
@@ -332,6 +357,11 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	// stream.Next() 拿到 EOF 解阻塞、本轮以 errStartupTimeout 收尾,而不是永久挂起。
 	// 首帧到达即解除看门狗 —— 合法的长 turn(等审批 / 长工具调用都在首帧之后)不受影响;
 	// 起步之后的中途卡死由 CLI 自身 MCP_TOOL_TIMEOUT / approvalTimeout 兜底,不归这里管。
+	//
+	// 带外轮豁免:本 session 上有自主续轮 / 后台 subagent 活动轮在流时,帧流被它占着,
+	// 本轮的 user 帧虽已写进 stdin,但真 CLI 要等那一轮 result 之后才为它起 init ——
+	// 「没帧」此刻是排队而非卡死。超时点命中带外轮时重新起表而不是杀,否则会硬杀一个
+	// 健康子进程,同时腰斩正在流的那轮带外输出(sess-1950)。
 	firstFrame := make(chan struct{})
 	var firstFrameOnce sync.Once
 	signalFirstFrame := func() { firstFrameOnce.Do(func() { close(firstFrame) }) }
@@ -340,15 +370,27 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		timer := time.NewTimer(r.startupTimeout)
 		go func() {
 			defer timer.Stop()
-			select {
-			case <-firstFrame:
-			case <-timer.C:
-				startupKilled.Store(true)
-				logger.Ctx(ctx).Warn("claudecode runtime: no frame within startup timeout, killing wedged subprocess",
-					zap.Int64("sessionID", req.SessionID),
-					zap.String("providerSessionID", a.handle.ID()),
-					zap.Duration("startupTimeout", r.startupTimeout))
-				_ = a.handle.Kill(ctx)
+			for {
+				select {
+				case <-firstFrame:
+					return
+				case <-timer.C:
+					if a.outOfBandActive() {
+						logger.Ctx(ctx).Info("claudecode runtime: startup watchdog deferred, out-of-band turn holds the frame stream",
+							zap.Int64("sessionID", req.SessionID),
+							zap.String("providerSessionID", a.handle.ID()),
+							zap.Duration("startupTimeout", r.startupTimeout))
+						timer.Reset(r.startupTimeout)
+						continue
+					}
+					startupKilled.Store(true)
+					logger.Ctx(ctx).Warn("claudecode runtime: no frame within startup timeout, killing wedged subprocess",
+						zap.Int64("sessionID", req.SessionID),
+						zap.String("providerSessionID", a.handle.ID()),
+						zap.Duration("startupTimeout", r.startupTimeout))
+					_ = a.handle.Kill(ctx)
+					return
+				}
 			}
 		}()
 	}
@@ -507,7 +549,7 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 	}
 
 	isolationUUID := newUUIDv4()
-	bin, err := os.Executable()
+	bin, err := r.hookBin()
 	if err != nil {
 		return nil, "", fmt.Errorf("agentruntime/runtimes/claudecode: resolve executable path: %w", err)
 	}

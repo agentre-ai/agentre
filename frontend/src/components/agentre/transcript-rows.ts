@@ -369,17 +369,32 @@ export type BuildTranscriptRowsArgs = {
    * 按 createdAt 归并进消息行之间,不重排消息;空/缺省时输出与不传逐项一致。
    */
   localCommands?: LocalCommandEntry[];
-  liveTargetId?: number | null;
+  /**
+   * 各 assistant 消息各自的流式内容,按 messageId 索引。
+   *
+   * 一个会话可同时有多条流在跑(用户轮 / 后台任务完成的自主续轮 / 后台 subagent
+   * 活动轮),它们绑在不同的 assistant 消息上,所以这里必须是**表**而不是单个
+   * liveTargetId —— 早先的单目标契约下,后开的那条流会让先开那条的消息瞬间掉回
+   * 持久化态(用户可见症状:「已输出内容清空回退」,sess-1950)。
+   *
+   * 表里有 key 的消息即为 live:每 chunk 现场重建行,绕过 cache。
+   */
+  liveByMessageId?: ReadonlyMap<number, LiveRowContent>;
+  /**
+   * 实例级行缓存(WeakMap,键是消息对象)。persisted 消息的 blocks 引用稳定 →
+   * 缓存命中返回同一 row 对象数组 → 行组件 React.memo 恒命中;reload 换对象引用
+   * 自然失效。live 消息(liveByMessageId 里有 key 的)每 chunk 内容都在变,
+   * 绕过缓存现场重建。
+   */
+  cache?: WeakMap<chat_svc.ChatMessage, TranscriptRow[]>;
+};
+
+/** LiveRowContent 是一条 assistant 消息此刻的流式内容(尚未落库的部分)。 */
+export type LiveRowContent = {
   liveTail?: string;
   liveThinking?: string;
   liveThinkingStartedAt?: number | null;
   liveBlocks?: ChatBlockData[];
-  /**
-   * 实例级行缓存(WeakMap,键是消息对象)。persisted 消息的 blocks 引用稳定 →
-   * 缓存命中返回同一 row 对象数组 → 行组件 React.memo 恒命中;reload 换对象引用
-   * 自然失效。live 消息(liveTargetId)每 chunk 内容都在变,绕过缓存现场重建。
-   */
-  cache?: WeakMap<chat_svc.ChatMessage, TranscriptRow[]>;
 };
 
 function buildMessageRows(
@@ -443,11 +458,7 @@ export function buildTranscriptRows({
   displayMessages,
   autonomousIds,
   localCommands,
-  liveTargetId,
-  liveTail,
-  liveThinking,
-  liveThinkingStartedAt,
-  liveBlocks,
+  liveByMessageId,
   cache,
 }: BuildTranscriptRowsArgs): TranscriptRowsResult {
   // 阶段一:按 displayMessages 顺序产出各消息的行组(缓存/live 逻辑与历史一致),
@@ -455,16 +466,11 @@ export function buildTranscriptRows({
   const messageGroups: { rows: TranscriptRow[]; createtime: number }[] = [];
   for (const m of displayMessages) {
     const autonomous = autonomousIds.has(m.id);
-    const isLive = liveTargetId != null && m.id === liveTargetId;
+    const live = liveByMessageId?.get(m.id);
     let messageRows: TranscriptRow[];
-    if (isLive) {
+    if (live) {
       // live 消息每 chunk 重建,不读不写缓存。
-      messageRows = buildMessageRows(m, autonomous, {
-        liveBlocks,
-        liveTail,
-        liveThinking,
-        liveThinkingStartedAt,
-      });
+      messageRows = buildMessageRows(m, autonomous, live);
     } else {
       const cached = cache?.get(m);
       // autonomous 取决于前一条消息,与消息对象自身无关 —— 缓存命中但标志变了

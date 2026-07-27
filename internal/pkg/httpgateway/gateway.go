@@ -51,6 +51,9 @@ type Gateway struct {
 
 	mcpMu sync.RWMutex
 	mcps  map[string]http.Handler
+
+	ctlMu sync.RWMutex
+	ctl   http.Handler // 本地控制 API handler；RegisterControl 装配，未装配时 /ctl/* 返 404。
 }
 
 // New 构造 Gateway 但**不**绑端口。bootstrap 在 RunMigrations 后显式调用 Start。
@@ -78,7 +81,21 @@ func (g *Gateway) buildMux() *http.ServeMux {
 	mux.HandleFunc(RouteOpenAIChat, g.forwarder.OpenAIChatHandler())
 	mux.HandleFunc(RouteHookInbox, g.serveHookInbox)
 	mux.HandleFunc(RouteMCPPrefix, g.serveMCP)
+	mux.HandleFunc(RouteCtlPrefix, g.serveCtl)
 	return mux
+}
+
+// serveCtl 把 /ctl/* 全部转给 RegisterControl 装配的控制 handler；未装配返 404。
+// 鉴权/路由细节都在控制 handler 内部（见 ctl_svc）。
+func (g *Gateway) serveCtl(w http.ResponseWriter, r *http.Request) {
+	g.ctlMu.RLock()
+	h := g.ctl
+	g.ctlMu.RUnlock()
+	if h == nil {
+		http.NotFound(w, r)
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
 // serveMCP 在 /mcp/<server>/* 上按最长前缀匹配 mcps map；没注册返 404。
@@ -303,6 +320,14 @@ func (g *Gateway) RegisterMCP(prefix string, h http.Handler) {
 	g.mcpMu.Lock()
 	g.mcps[prefix] = h
 	g.mcpMu.Unlock()
+}
+
+// RegisterControl 装配本地控制 API 的 handler；接管 /ctl/* 全部路径。
+// 重复调用覆盖旧 handler。nil 恢复未装配（返回 404）。
+func (g *Gateway) RegisterControl(h http.Handler) {
+	g.ctlMu.Lock()
+	g.ctl = h
+	g.ctlMu.Unlock()
 }
 
 // IssueToken 给一个 backend 申请 token；ttl <= 0 视作永久（chat flow 用）。

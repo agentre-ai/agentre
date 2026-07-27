@@ -67,15 +67,21 @@ type appClient struct {
 	pending   map[string]chan rpcResponse
 
 	incoming chan appInbound
+	queueMu  sync.Mutex
+	queue    []appInbound
+	queueSig chan struct{}
+	queueEnd bool
 	done     chan struct{}
 	doneMu   sync.Mutex
 	doneErr  error
 	stop     chan struct{}
 	stopOnce sync.Once
 	stderr   *lockedBuffer
+	// rawSink 若非 nil,readLoop 每读到一行原始 stdout 就同步回调一次。见 Client.rawSink。
+	rawSink func([]byte)
 }
 
-func newAppClient(ctx context.Context, runner appServerRunner, opts procOptions) (*appClient, error) {
+func newAppClient(ctx context.Context, runner appServerRunner, opts procOptions, rawSink func([]byte)) (*appClient, error) {
 	proc, err := runner.Start(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -83,12 +89,15 @@ func newAppClient(ctx context.Context, runner appServerRunner, opts procOptions)
 	c := &appClient{
 		proc:     proc,
 		pending:  map[string]chan rpcResponse{},
-		incoming: make(chan appInbound, 128),
+		incoming: make(chan appInbound),
+		queueSig: make(chan struct{}, 1),
 		done:     make(chan struct{}),
 		stop:     make(chan struct{}),
 		stderr:   &lockedBuffer{},
+		rawSink:  rawSink,
 	}
 	go func() { _, _ = io.Copy(c.stderr, proc.Stderr()) }()
+	go c.dispatchIncoming()
 	go c.readLoop()
 	return c, nil
 }
@@ -164,6 +173,9 @@ func (c *appClient) readLoop() {
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 scan:
 	for sc.Scan() {
+		if c.rawSink != nil {
+			c.rawSink(sc.Bytes())
+		}
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || !strings.HasPrefix(line, "{") {
 			continue
@@ -189,7 +201,7 @@ scan:
 	}
 	c.setDoneErr(readErr)
 	c.failPending(failErr)
-	close(c.incoming)
+	c.closeIncomingQueue()
 	close(c.done)
 }
 
@@ -218,11 +230,65 @@ func (c *appClient) routeMessage(msg rpcMessage) bool {
 		in.Kind = appInboundRequest
 		in.ID = append(json.RawMessage(nil), msg.ID...)
 	}
-	select {
-	case c.incoming <- in:
-		return true
-	case <-c.stop:
+	return c.enqueueIncoming(in)
+}
+
+// enqueueIncoming keeps stdout reading independent from stream consumption.
+// app-server may emit a large notification burst before the response to the
+// turn/start request. Blocking the stdout reader on a bounded notification
+// channel at that point prevents it from ever reaching and routing the RPC
+// response, while the consumer cannot start until that response arrives.
+func (c *appClient) enqueueIncoming(in appInbound) bool {
+	c.queueMu.Lock()
+	if c.queueEnd || c.isStopping() {
+		c.queueMu.Unlock()
 		return false
+	}
+	c.queue = append(c.queue, in)
+	c.queueMu.Unlock()
+	select {
+	case c.queueSig <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (c *appClient) dispatchIncoming() {
+	defer close(c.incoming)
+	for {
+		c.queueMu.Lock()
+		if len(c.queue) > 0 {
+			in := c.queue[0]
+			c.queue[0] = appInbound{}
+			c.queue = c.queue[1:]
+			c.queueMu.Unlock()
+			select {
+			case c.incoming <- in:
+			case <-c.stop:
+				return
+			}
+			continue
+		}
+		ended := c.queueEnd
+		c.queueMu.Unlock()
+		if ended {
+			return
+		}
+		select {
+		case <-c.queueSig:
+		case <-c.stop:
+			return
+		}
+	}
+}
+
+func (c *appClient) closeIncomingQueue() {
+	c.queueMu.Lock()
+	c.queueEnd = true
+	c.queueMu.Unlock()
+	select {
+	case c.queueSig <- struct{}{}:
+	default:
 	}
 }
 

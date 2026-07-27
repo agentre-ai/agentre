@@ -167,6 +167,30 @@ export function useSessionStatus(sessionId: number): SessionStatusValue | null {
   );
 }
 
+// normalizeSessionSnapshot 在异步 RPC 快照进入运行态 store 前统一处理时序。
+// LiveStream 已存在时，较早发起的 LoadChatSession/ListChatAgents 可能仍返回
+// idle/error；这类快照不能覆盖实时事件已经写入的 running/waiting。其它字段仍取
+// 快照，避免把 bgRunning 等独立状态一起冻结。
+export function normalizeSessionSnapshot(
+  sessionId: number,
+  patch: SessionStatusPatch,
+  hasActiveStream: boolean,
+): SessionStatusPatch {
+  if (!hasActiveStream) return patch;
+  const live = useSessionStatusStore.getState().statuses.get(sessionId);
+  if (live?.agentStatus !== "running" && live?.agentStatus !== "waiting") {
+    return patch;
+  }
+  if (patch.agentStatus === "running" || patch.agentStatus === "waiting") {
+    return patch;
+  }
+  return {
+    ...patch,
+    agentStatus: live.agentStatus,
+    needsAttention: live.needsAttention,
+  };
+}
+
 // markSessionRunning 在 Send / Regenerate / Edit 成功返回后乐观把 session 翻成
 // running 态。后端落库已经是 running,但 turn 起手没 emit session_status 事件,
 // 不补一刀的话 tab / toolbar / sidebar 读 session-status-store 会停在 idle。

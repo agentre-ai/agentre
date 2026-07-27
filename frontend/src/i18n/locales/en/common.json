@@ -248,6 +248,7 @@
     "agentSpawn": {
       "aria": "Subagent {{name}}",
       "defaultName": "Agent",
+      "stop": "Stop",
       "emptyPrompt": "No prompt",
       "emptyResult": "(empty result)",
       "emptySteps": "No child steps",
@@ -413,7 +414,10 @@
         "unsupported": "Only PNG, JPEG, and WebP are supported. Each image must be under 5 MB."
       },
       "dropHint": "Drop to add files / folder paths",
-      "placeholder": "Type a message · / for commands · ! to run in terminal",
+      "placeholder": "Type a message · @ to mention · / for commands · ! to run in terminal",
+      "placeholderClaude": "Type a message · @ to mention · / for commands and skills · ! to run in terminal",
+      "placeholderCodex": "Type a message · @ to mention · / for commands · $ for skills · ! to run in terminal",
+      "placeholderPi": "Type a message · @ to mention · / for commands · /skill:name for skills · ! to run in terminal",
       "removeImage": "Remove image {{name}}",
       "saveEdit": "Save edit",
       "send": "Send",
@@ -524,7 +528,8 @@
       "regenerate": "Regeneration failed: {{msg}}",
       "rename": "Rename failed: {{msg}}",
       "send": "Send failed: {{msg}}",
-      "stop": "Stop failed: {{msg}}"
+      "stop": "Stop failed: {{msg}}",
+      "stopBackgroundTask": "Failed to stop background task: {{msg}}"
     },
     "launchCommand": {
       "copy": "Copy Launch Command",
@@ -574,11 +579,13 @@
       "running": "Running",
       "completed": "Done",
       "failed": "Failed",
+      "canceled": "Stopped",
       "empty": "No background tasks",
       "bash": "bash",
       "subagent": "subagent",
       "aria": "Background tasks",
-      "clearCompleted": "Clear completed"
+      "clearCompleted": "Clear completed",
+      "stop": "Stop"
     },
     "toolbar": {
       "aria": "Session toolbar",
@@ -1828,7 +1835,7 @@
     "viewAll": "View all {{count}} sessions"
   },
   "slashCommands": {
-    "aria": "Slash commands",
+    "aria": "Command and skill suggestions",
     "compact": {
       "description": "Compact the chat context and keep only the summary"
     },
@@ -1837,6 +1844,11 @@
     },
     "new": {
       "description": "Start a new chat with the same setup"
+    },
+    "skill": {
+      "claudeDescription": "Invoke a Claude Code skill",
+      "codexDescription": "Invoke a Codex skill",
+      "piDescription": "Invoke a Pi skill"
     }
   },
   "settings": {

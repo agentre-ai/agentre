@@ -57,6 +57,7 @@ func (SubagentStartedHandler) Apply(ctx context.Context, ev agentruntime.Event, 
 	}
 	blk := &blocks.SubagentStateBlock{
 		ParentToolCallID: r.ToolCallID,
+		TaskID:           r.Info.TaskID, // CLI task_id,供 StopBackgroundTask 下发 stop_task 定位
 		Kind:             r.Info.Kind,
 		Description:      r.Info.TaskDescription,
 		Status:           "running",
@@ -83,6 +84,9 @@ func (SubagentProgressHandler) Apply(ctx context.Context, ev agentruntime.Event,
 		b.TotalTokens = r.Info.TotalTokens
 		b.LastToolName = r.Info.LastToolName
 		b.ToolUses = r.Info.ToolUses
+		if b.TaskID == "" && r.Info.TaskID != "" {
+			b.TaskID = r.Info.TaskID // task_started 缺 task_id 时由 task_progress 回填
+		}
 	})
 	if !hit {
 		return nil

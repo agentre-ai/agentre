@@ -74,6 +74,9 @@ export interface AIChatInputProps {
   onSlashSelect?: (cmd: SlashCommand, exec: SlashExec) => void;
   /** 项目 / agent 提及数据源。提供且非空时启用 @ 菜单;省略则不启用。 */
   mentionSources?: MentionSources;
+  /** 当前 agent 最终生效的技能命令。Codex 用 $,Claude Code 用 /;
+   *  与静态 slash commands 合并后由同一 popover 渲染。 */
+  skillCommands?: SlashCommand[];
 }
 
 const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
@@ -93,6 +96,7 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
       backendType,
       onSlashSelect,
       mentionSources,
+      skillCommands = [],
     },
     ref,
   ) {
@@ -148,8 +152,16 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     // plugin 重算 decoration。
     const validNames = useMemo(() => {
       if (!backendType) return new Set<string>();
-      return new Set(listAvailable(backendType).map((c) => c.name));
-    }, [backendType]);
+      return new Set(
+        listAvailable(backendType, skillCommands)
+          .filter(
+            (command) =>
+              command.trigger === "/" &&
+              /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(command.name),
+          )
+          .map((command) => command.name),
+      );
+    }, [backendType, skillCommands]);
     const validNamesRef = useRef(validNames);
 
     const editor = useEditor({
@@ -362,6 +374,7 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     const slashMenu = useSlashMenu({
       editor: slashEnabled ? (editor ?? null) : null,
       backendType: backendType ?? "",
+      dynamicCommands: skillCommands,
       onSelect: slashSelectHandler,
     });
     useEffect(() => {

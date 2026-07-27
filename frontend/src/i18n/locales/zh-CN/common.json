@@ -248,6 +248,7 @@
     "agentSpawn": {
       "aria": "Subagent {{name}}",
       "defaultName": "Agent",
+      "stop": "停止",
       "emptyPrompt": "无 prompt",
       "emptyResult": "(empty result)",
       "emptySteps": "无子步骤",
@@ -413,7 +414,10 @@
         "unsupported": "仅支持 PNG、JPEG、WebP，单张不超过 5MB"
       },
       "dropHint": "松开以添加文件 / 文件夹路径",
-      "placeholder": "输入消息 · / 触发命令 · ! 执行终端命令",
+      "placeholder": "输入消息 · @ 引用 · / 触发命令 · ! 执行终端命令",
+      "placeholderClaude": "输入消息 · @ 引用 · / 触发命令和 Skill · ! 执行终端命令",
+      "placeholderCodex": "输入消息 · @ 引用 · / 触发命令 · $ 调用 Skill · ! 执行终端命令",
+      "placeholderPi": "输入消息 · @ 引用 · / 触发命令 · /skill:name 调用 Skill · ! 执行终端命令",
       "removeImage": "移除图片 {{name}}",
       "saveEdit": "保存编辑",
       "send": "发送",
@@ -524,7 +528,8 @@
       "regenerate": "重新生成失败：{{msg}}",
       "rename": "重命名失败：{{msg}}",
       "send": "发送失败：{{msg}}",
-      "stop": "停止失败：{{msg}}"
+      "stop": "停止失败：{{msg}}",
+      "stopBackgroundTask": "停止后台任务失败：{{msg}}"
     },
     "launchCommand": {
       "copy": "复制启动命令",
@@ -574,11 +579,13 @@
       "running": "运行中",
       "completed": "已完成",
       "failed": "失败",
+      "canceled": "已停止",
       "empty": "暂无后台任务",
       "bash": "bash",
       "subagent": "子代理",
       "aria": "后台任务",
-      "clearCompleted": "清理已完成"
+      "clearCompleted": "清理已完成",
+      "stop": "停止"
     },
     "toolbar": {
       "aria": "会话工具栏",
@@ -1828,7 +1835,7 @@
     "viewAll": "查看全部 {{count}} 个会话"
   },
   "slashCommands": {
-    "aria": "斜杠命令",
+    "aria": "命令与 Skill 提示",
     "compact": {
       "description": "压缩对话上下文,只保留摘要"
     },
@@ -1837,6 +1844,11 @@
     },
     "new": {
       "description": "开一个相同配置的全新对话"
+    },
+    "skill": {
+      "claudeDescription": "调用 Claude Code Skill",
+      "codexDescription": "调用 Codex Skill",
+      "piDescription": "调用 Pi Skill"
     }
   },
   "settings": {

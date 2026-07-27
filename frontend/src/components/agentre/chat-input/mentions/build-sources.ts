@@ -7,6 +7,7 @@ type ProjectLike = {
   name: string;
   path?: string | null;
   color?: string | null;
+  depth?: number;
 };
 
 export function buildMentionSources(
@@ -26,6 +27,7 @@ export function buildMentionSources(
       label: p.name,
       path: p.path ?? "",
       color: p.color ?? "",
+      depth: p.depth ?? 0,
     })),
   };
 }

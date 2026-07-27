@@ -10,6 +10,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
+	"github.com/agentre-ai/agentre/pkg/codex"
 )
 
 func mustCodexSkill(t *testing.T, skillsDir, name string) {
@@ -109,6 +110,36 @@ func TestDiscover(t *testing.T) {
 			packs, err := d.Discover(context.Background(), agentskill.DiscoverQuery{})
 			So(err, ShouldBeNil)
 			So(packs, ShouldResemble, []agentskill.SkillPack{})
+		})
+	})
+}
+
+func TestDiscoverCommands(t *testing.T) {
+	Convey("Given Codex app-server skill metadata and per-agent plugin overrides", t, func() {
+		var gotBinary, gotCwd string
+		var gotConfig []string
+		d := Discoverer{listSkills: func(_ context.Context, binary, cwd string, config []string) ([]codex.Skill, error) {
+			gotBinary, gotCwd, gotConfig = binary, cwd, config
+			return []codex.Skill{
+				{Name: "lore:lore-memory", Description: "Recall memory", Enabled: true},
+				{Name: "disabled-skill", Description: "Off", Enabled: false},
+			}, nil
+		}}
+
+		commands, err := d.DiscoverCommands(context.Background(), agentskill.CommandDiscoverQuery{
+			CLIPath: " /opt/codex ",
+			Cwd:     "/tmp/project",
+			EnabledPlugins: map[string]bool{
+				"browser@openai-bundled": true,
+			},
+		})
+
+		Convey("Then only enabled $skill candidates are returned and launch overrides reach app-server", func() {
+			So(err, ShouldBeNil)
+			So(gotBinary, ShouldEqual, "/opt/codex")
+			So(gotCwd, ShouldEqual, "/tmp/project")
+			So(gotConfig, ShouldResemble, []string{`plugins."browser@openai-bundled".enabled=true`})
+			So(commands, ShouldResemble, []agentskill.SkillCommand{{Name: "lore:lore-memory", Description: "Recall memory"}})
 		})
 	})
 }

@@ -80,6 +80,22 @@ const (
 	// 发起消息(LaunchMessageID)重开 per-turn 流(Stream),把活动块嵌套渲染回 AgentSpawnCard。
 	// 与 StreamAutonomousStarted 不同:不插入新 assistant 行(发起消息已存在)。
 	StreamSubagentActivityStarted ChatStreamEventKind = "subagent_activity_started"
+	// StreamAutonomousFinished 是自主轮 / 后台 subagent 活动轮收尾时,在**会话级**流
+	// AutonomousStreamName(sessionID) 上补发的终态兜底。
+	//
+	// 为什么需要它:这两类"非用户发起"的轮子,前端拿到 per-turn 流名的唯一入口是
+	// StreamAutonomousStarted / StreamSubagentActivityStarted —— 前端收到后才 openStream,
+	// ChatStreamsHost 也要等下一次 render 才 EventsOn 订阅该 per-turn 流。而后端可能在这个
+	// "openStream→EventsOn" 窗口内就把 per-turn StreamDone/StreamClosed 发完了(典型:零子块
+	// 的活动轮 started→done 背靠背)。fire-and-forget 事件对迟到的订阅者不重放 → 前端漏掉
+	// 终态 → LiveStream 永远留在 store → streaming 卡死(输入框被逼走 Enqueue 发不出、
+	// 自主轮那条空 assistant 行也不再 reload 回填内容)。用户轮没这个病:Send 的 RPC 响应
+	// 同步给出流名,订阅早于任何帧。
+	//
+	// AutonomousStreamName 这条会话级流由 ChatPanel 挂载即订阅、常驻,先于任何 bypass 轮,
+	// 不存在 subscribe-after-emit race。收尾在此补一发,前端据 LaunchMessageID 兜底
+	// finishStream(幂等:per-turn 已收到 done 时该流已不在,直接 no-op)。
+	StreamAutonomousFinished ChatStreamEventKind = "autonomous_finished"
 )
 
 // ChatStreamEvent 是 EventsEmit 出去的统一 payload。
@@ -157,6 +173,8 @@ type ChatStreamEvent struct {
 	// StreamSubagentActivityStarted 事件填充：LaunchMessageID 是后台 subagent 所属的
 	// 发起消息 ID,前端据此定位 AgentSpawnCard 并重开 per-turn 流(Stream 字段)。
 	// ToolUseID 复用上方字段,标识具体的 subagent tool_use block。
+	// StreamAutonomousFinished 复用 LaunchMessageID 携带该收尾的 assistant / 发起消息
+	// ID,前端据此定位并兜底 finishStream 那条 per-turn 流。
 	LaunchMessageID int64 `json:"launchMessageId,omitempty"`
 
 	// StreamAutonomousStarted 时,若该自主轮由后台命令完成触发,带上完成任务身份,
@@ -734,6 +752,20 @@ type StopRequest struct {
 // StopResponse Stopped=true 表示 abort 路径已经触发（不代表 turn 此刻已完全结束
 // —— 异步 cleanup 在 runTurn goroutine 完成）。前端按 StreamAborted 事件翻 UI。
 type StopResponse struct {
+	Stopped bool `json:"stopped"`
+}
+
+// StopBackgroundTaskRequest 用户点某条后台任务 / 子 agent 的「停止」。ToolUseID 是发起它
+// 的 tool_use_id（前后端统一 join key）；chat_svc 据此从持久化 subagent_state 块读出 CLI
+// task_id 再下发 stop_task —— 停的是这一个后台任务，不是整个 turn。
+type StopBackgroundTaskRequest struct {
+	SessionID int64  `json:"sessionId"`
+	ToolUseID string `json:"toolUseId"`
+}
+
+// StopBackgroundTaskResponse Stopped=true 表示 stop_task 已下发（或任务已是终态 / 已被
+// evict，按幂等成功处理）。前端乐观把该行翻「已停止」并 reload 对齐 DB。
+type StopBackgroundTaskResponse struct {
 	Stopped bool `json:"stopped"`
 }
 

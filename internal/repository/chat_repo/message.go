@@ -58,6 +58,11 @@ type MessageRepo interface {
 	// LatestAssistant 取某会话 seq 最大的一条 assistant 消息(无 → nil,nil)。
 	// 用于 peek 运行中子任务的当前输出（read 工具的 running 分支）。
 	LatestAssistant(ctx context.Context, sessionID int64) (*chat_entity.Message, error)
+	// FindSubagentState 按 parent_tool_call_id==toolUseID 定位本会话里的 subagent_state
+	// 块,返回它记录的 CLI task_id + 当前 status(供 StopBackgroundTask 下发 stop_task)。
+	// 定位方式同 FlipSubagentStatus(blocks_json LIKE toolUseID),只读不改。
+	// toolUseID 空 / 无命中时返回 (found=false)。
+	FindSubagentState(ctx context.Context, sessionID int64, toolUseID string) (taskID, status string, found bool, err error)
 }
 
 // flipSubagentScanLimit 是 FlipSubagentStatus 倒序扫描的最近 assistant 消息条数上限。
@@ -133,6 +138,62 @@ func (r *messageRepo) LatestAssistant(ctx context.Context, sessionID int64) (*ch
 		return nil, err
 	}
 	return &m, nil
+}
+
+func (r *messageRepo) FindSubagentState(ctx context.Context, sessionID int64, toolUseID string) (string, string, bool, error) {
+	if toolUseID == "" {
+		return "", "", false, nil
+	}
+	var rows []*chat_entity.Message
+	if err := db.Ctx(ctx).
+		Where("session_id = ? AND role = ? AND blocks_json LIKE ?", sessionID, "assistant", "%"+toolUseID+"%").
+		Order("seq DESC").
+		Find(&rows).Error; err != nil {
+		return "", "", false, err
+	}
+	for _, msg := range rows {
+		taskID, status, found, err := FindSubagentStateInBlocksJSON(msg.BlocksJSON, toolUseID)
+		if err != nil {
+			logger.Ctx(ctx).Warn("chat_repo.FindSubagentState: decode blocks failed; skipping message",
+				zap.Int64("messageId", msg.ID), zap.Error(err))
+			continue
+		}
+		if found {
+			return taskID, status, true, nil
+		}
+	}
+	return "", "", false, nil
+}
+
+// FindSubagentStateInBlocksJSON 在 blocks_json(StoredBlock 数组)里找 type=="subagent_state"
+// 且 data.parent_tool_call_id==toolUseID 的块,返回它的 task_id + status。遵循 FlipSubagentIn
+// BlocksJSON 相同的 UseNumber 解码纪律。导出以便直接单测。
+func FindSubagentStateInBlocksJSON(blocksJSON, toolUseID string) (string, string, bool, error) {
+	if blocksJSON == "" {
+		return "", "", false, nil
+	}
+	var stored []cagoblocks.StoredBlock
+	if err := json.Unmarshal([]byte(blocksJSON), &stored); err != nil {
+		return "", "", false, err
+	}
+	for i := range stored {
+		if stored[i].Type != "subagent_state" {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(stored[i].Data))
+		dec.UseNumber()
+		var data map[string]any
+		if err := dec.Decode(&data); err != nil {
+			return "", "", false, err
+		}
+		if parent, _ := data["parent_tool_call_id"].(string); parent != toolUseID {
+			continue
+		}
+		taskID, _ := data["task_id"].(string)
+		status, _ := data["status"].(string)
+		return taskID, status, true, nil
+	}
+	return "", "", false, nil
 }
 
 func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error {

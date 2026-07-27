@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { SuggestionPopover } from "../chat-input/suggestion-popover";
 import { cn } from "@/lib/utils";
 
 import type { SlashCommand } from "./registry";
@@ -27,53 +28,48 @@ export function SlashPopover({
 }): React.ReactElement | null {
   const { t } = useTranslation();
 
-  if (!state.open || !state.anchorRect || state.items.length === 0) return null;
-
-  // 弹层放在光标上方;留 4px 间距,避免遮住正在键入的 /xxx 文字。
-  const style: React.CSSProperties = {
-    position: "fixed",
-    left: state.anchorRect.left,
-    bottom: window.innerHeight - state.anchorRect.top + 4,
-    zIndex: 50,
-  };
-
   return (
-    <div
-      role="listbox"
-      aria-label={t("slashCommands.aria")}
-      style={style}
-      className="min-w-[14rem] max-w-[20rem] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+    <SuggestionPopover
+      open={state.open}
+      anchorRect={state.anchorRect}
+      selectedIndex={state.selectedIndex}
+      itemCount={state.items.length}
+      ariaLabel={t("slashCommands.aria")}
+      testId="command-suggestions"
     >
-      {state.items.map((cmd, idx) => {
-        const active = idx === state.selectedIndex;
-        return (
-          <button
-            key={cmd.name}
-            type="button"
-            role="option"
-            aria-selected={active}
-            onMouseEnter={() => onHover(idx)}
-            onMouseDown={(e) => {
-              // mousedown 而非 click —— 避免编辑器先 blur 再 click,弹层早就关了。
-              e.preventDefault();
-              onPick(cmd);
-            }}
-            className={cn(
-              "flex w-full cursor-pointer items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-left text-xs",
-              active
-                ? "bg-accent text-accent-foreground"
-                : "text-foreground hover:bg-accent/60",
-            )}
-          >
-            <span className="font-mono font-medium">{cmd.label}</span>
-            {cmd.description ? (
-              <span className="truncate text-muted-foreground">
-                {cmd.description}
-              </span>
-            ) : null}
-          </button>
-        );
-      })}
-    </div>
+      {(activeRef) =>
+        state.items.map((cmd, idx) => {
+          const active = idx === state.selectedIndex;
+          return (
+            <button
+              key={`${cmd.trigger}:${cmd.name}`}
+              type="button"
+              role="option"
+              ref={active ? activeRef : undefined}
+              aria-selected={active}
+              onMouseMove={() => onHover(idx)}
+              onMouseDown={(e) => {
+                // mousedown 而非 click —— 避免编辑器先 blur 再 click,弹层早就关了。
+                e.preventDefault();
+                onPick(cmd);
+              }}
+              className={cn(
+                "flex w-full cursor-pointer items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-left text-xs",
+                active
+                  ? "bg-accent text-accent-foreground"
+                  : "text-foreground hover:bg-accent/60",
+              )}
+            >
+              <span className="font-mono font-medium">{cmd.label}</span>
+              {cmd.description ? (
+                <span className="truncate text-muted-foreground">
+                  {cmd.description}
+                </span>
+              ) : null}
+            </button>
+          );
+        })
+      }
+    </SuggestionPopover>
   );
 }

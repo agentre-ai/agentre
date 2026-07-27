@@ -32,6 +32,11 @@ type Client struct {
 	extensions []string
 	killGrace  time.Duration
 	runner     processRunner
+
+	// rawSink 若非 nil,子进程每读到一行原始 stdout(未解析的 JSON-RPC 帧)就同步回调
+	// 一次。debug 级原始帧转储用;经 startRPC 注入 rpcProcess,由 drain /
+	// readSessionStatsContextWindow 两个读点调用。
+	rawSink func([]byte)
 }
 
 func New(opts ...Option) *Client {
@@ -124,25 +129,32 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 		return nil, err
 	}
 	p := &rpcProcess{
-		handle: h,
-		stdin:  h.Stdin(),
-		lines:  bufio.NewScanner(h.Stdout()),
-		stderr: &lockedBuffer{},
-		done:   make(chan error, 1),
+		handle:     h,
+		stdin:      h.Stdin(),
+		lines:      bufio.NewScanner(h.Stdout()),
+		rawSink:    c.rawSink,
+		stderr:     &lockedBuffer{},
+		stderrDone: make(chan struct{}),
+		done:       make(chan error, 1),
 	}
 	p.lines.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	go func() { _, _ = io.Copy(p.stderr, h.Stderr()) }()
+	go func() {
+		defer close(p.stderrDone)
+		_, _ = io.Copy(p.stderr, h.Stderr())
+	}()
 	go func() { p.done <- h.Wait() }()
 	return p, nil
 }
 
 type rpcProcess struct {
-	handle processHandle
-	stdin  io.Writer
-	lines  *bufio.Scanner
-	stderr *lockedBuffer
-	done   chan error
-	mu     sync.Mutex
+	handle     processHandle
+	stdin      io.Writer
+	lines      *bufio.Scanner
+	rawSink    func([]byte) // 非 nil 时每行原始 stdout 同步回调一次(debug 原始帧转储)
+	stderr     *lockedBuffer
+	stderrDone chan struct{}
+	done       chan error
+	mu         sync.Mutex
 }
 
 func (p *rpcProcess) writeJSON(v any) error {

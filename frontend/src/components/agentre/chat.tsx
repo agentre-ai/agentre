@@ -39,12 +39,13 @@ import {
   buildTranscriptRows,
   estimateRowSizeWithSpacing,
   isLastRowOfMessage,
+  type LiveRowContent,
   type TranscriptRow,
 } from "./transcript-rows";
 import { TranscriptUIStateProvider } from "./transcript-ui-state";
 import type { AgentColor, AgentStatus } from "./types";
 import { statusConfig } from "./types";
-import type { ChatBlockData, RetryNotice } from "@/stores/chat-streams-store";
+import type { RetryNotice } from "@/stores/chat-streams-store";
 import { useLocalCommandsStore } from "@/stores/local-commands-store";
 import { useChatAgents } from "@/hooks/use-chat-agents";
 import { useProjectList } from "@/hooks/use-project-list";
@@ -53,6 +54,7 @@ import { chat_svc } from "../../../wailsjs/go/models";
 import { buildMentionSources } from "./chat-input/mentions/build-sources";
 import { resolveDroppedPaths } from "./chat-input/drop";
 import { useFileDropZone } from "./chat-input/use-file-drop";
+import { useAgentSkillCommands } from "./slash-commands";
 
 type ToolCallProps = React.ComponentProps<"div"> & {
   path?: string;
@@ -186,6 +188,10 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   /** 当前会话 backend 类型;让 AIChatInput 启用 slash menu 并按 backend 过滤候选命令。
    *  空串/省略 → 不启用 slash menu。 */
   backendType?: string;
+  /** 当前会话或新会话的 agent id,用于加载该 agent 最终生效的 skill 命令。 */
+  agentId?: number;
+  /** 当前会话/项目的工作目录,用于发现 project-scoped Skill。 */
+  cwd?: string;
   /** 当前 backend 是否支持图片输入。false 时不渲染图片附件入口。 */
   supportsImageInput?: boolean;
   /** slash menu rpc 类命令的回调(literal_text 类由 AIChatInput 内部直接填回编辑器,
@@ -450,6 +456,8 @@ function ChatComposer({
   onShiftTab,
   autoFocusOnMount = false,
   backendType,
+  agentId = 0,
+  cwd = "",
   supportsImageInput = true,
   onSlashRpc,
   onRunCommand,
@@ -470,6 +478,18 @@ function ChatComposer({
   const [images, setImages] = React.useState<ChatImageAttachment[]>([]);
   const [imageError, setImageError] = React.useState("");
   const [commandMode, setCommandMode] = React.useState(false);
+  const skillCommands = useAgentSkillCommands(agentId, backendType ?? "", cwd);
+  const resolvedPlaceholder =
+    placeholder ??
+    t(
+      backendType === "codex"
+        ? "chat.composer.placeholderCodex"
+        : backendType === "claudecode"
+          ? "chat.composer.placeholderClaude"
+          : backendType === "piagent"
+            ? "chat.composer.placeholderPi"
+            : "chat.composer.placeholder",
+    );
 
   // 切换到编辑模式（或换了编辑目标）时把目标文本载进 TipTap，并把光标抓回输入框；
   // 退出编辑模式时清空输入，免得上一次的编辑残留干扰下一条新消息。
@@ -611,6 +631,21 @@ function ChatComposer({
   // （TipTap editor / 按钮）时都会冒泡到 form，preventDefault 拦掉默认 tab 切换。
   // 编辑模式下不消费 Shift+Tab，让无障碍 tab 反向焦点正常工作。
   function handleFormKeyDown(event: React.KeyboardEvent<HTMLFormElement>) {
+    if (
+      !editing &&
+      isEmpty &&
+      images.length > 0 &&
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.nativeEvent.isComposing
+    ) {
+      event.preventDefault();
+      handleSend("");
+      return;
+    }
     if (editing && event.key === "Escape") {
       event.preventDefault();
       onCancelEdit?.();
@@ -745,10 +780,11 @@ function ChatComposer({
             onCommandSubmit={onRunCommand}
             sendOnEnter
             userMessageHistory={userMessageHistory}
-            placeholder={placeholder ?? t("chat.composer.placeholder")}
+            placeholder={resolvedPlaceholder}
             autoFocus={autoFocusOnMount}
             backendType={backendType}
             mentionSources={mentionSources}
+            skillCommands={skillCommands}
             onSlashSelect={(cmd, exec) => {
               // literal_text 由 AIChatInput 内部直接填回编辑器(不自动发送),
               // 这里只接 rpc 类命令转交给父组件。
@@ -852,6 +888,15 @@ function ChatComposer({
 const STICK_TO_BOTTOM_THRESHOLD_PX = 32;
 const TRANSCRIPT_VIRTUAL_OVERSCAN = 6;
 
+/**
+ * TranscriptLiveContent 是一条 assistant 消息此刻的流式内容。在 transcript-rows
+ * 的 LiveRowContent 之上多带一个 liveRetry —— 后者只用于行视图的重试提示卡,
+ * 不参与行构建。
+ */
+export type TranscriptLiveContent = LiveRowContent & {
+  liveRetry?: RetryNotice | null;
+};
+
 type ChatTranscriptProps = {
   agentName: string;
   agentColor: AgentColor;
@@ -866,19 +911,16 @@ type ChatTranscriptProps = {
   /** 当前 tab 是否可见；从隐藏切回时触发虚拟列表重新测量。 */
   active?: boolean;
   messages: chat_svc.ChatMessage[];
-  liveDelta?: string;
-  /** 流式中累积的 thinking 增量。挂在 liveTargetId 对应的 assistant 上作为一张 streaming thinking 卡。 */
-  liveThinking?: string;
-  liveTargetId?: number | null;
   /**
-   * 本轮 turn 已冻结但还没持久化的 blocks（text/tool_use/tool_result），跨路由
-   * 由 chat-streams-store 维护。摆在 liveTargetId 对应的 assistant 的 persisted
-   * blocks 之后、liveDelta 之前，整体顺序与真实流入顺序一致。
+   * 各 assistant 消息各自的流式内容,按 messageId 索引;由 chat-streams-store
+   * 跨路由维护(每条 LiveStream 一项)。表里有 key 的消息就在流式中:其 liveBlocks
+   * 摆在 persisted blocks 之后、liveTail 之前,整体顺序与真实流入顺序一致。
+   *
+   * **必须传全表**:一个会话可同时有用户轮 / 自主续轮 / 后台 subagent 活动轮多条流
+   * 并存,只传一条(旧的单 liveTargetId 契约)会让其余几条的消息瞬间掉回持久化态。
+   * 复用 ChatTranscript 的调用方漏传整表 = 那些消息完全不流式(参见 sess-1950)。
    */
-  liveBlocks?: ChatBlockData[];
-  liveRetry?: RetryNotice | null;
-  /** 当前 stream 的开始时间，供合成 thinking 块计时使用。 */
-  liveStreamStartedAt?: number | null;
+  liveByMessageId?: ReadonlyMap<number, TranscriptLiveContent>;
   /** 用户点某条 assistant 上的「重新生成」时回调，参数是目标 assistant 的消息 id。 */
   onRerun?: (messageId: number) => void;
   /** 用户点某条 user 消息上的「编辑」时回调，参数是 user 消息 id。 */
@@ -889,6 +931,9 @@ type ChatTranscriptProps = {
    *  "正在压缩上下文…" chip,让用户知道这段时间在做什么。compact_boundary 到达自动清空。*/
   liveCompacting?: boolean;
   onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void;
+  /** 停掉某张 AgentSpawn 卡对应的正在运行的子 agent / 后台任务(按 tool_use_id 下发 stop_task)。
+   *  仅 backend 支持时由 ChatPanel 传入;未传 = 卡片不显示停止按钮。 */
+  onStopSubagent?: (toolUseId: string) => void;
   /** Stable mounted chat tab key for UI drafts that survive route/tab remounts. */
   tabStateKey?: string;
 };
@@ -937,15 +982,11 @@ const ChatTranscript = React.forwardRef<
     virtualize = false,
     active = true,
     messages,
-    liveDelta,
-    liveThinking,
-    liveTargetId,
-    liveBlocks,
-    liveRetry,
-    liveStreamStartedAt,
+    liveByMessageId,
     onRerun,
     onEdit,
     onPlanActionStarted,
+    onStopSubagent,
     tabStateKey,
     streaming = false,
     liveCompacting = false,
@@ -1010,10 +1051,12 @@ const ChatTranscript = React.forwardRef<
   const onRerunRef = React.useRef(onRerun);
   const onEditRef = React.useRef(onEdit);
   const onPlanActionStartedRef = React.useRef(onPlanActionStarted);
+  const onStopSubagentRef = React.useRef(onStopSubagent);
   React.useEffect(() => {
     onRerunRef.current = onRerun;
     onEditRef.current = onEdit;
     onPlanActionStartedRef.current = onPlanActionStarted;
+    onStopSubagentRef.current = onStopSubagent;
   });
   const stableOnRerun = React.useCallback((id: number) => {
     onRerunRef.current?.(id);
@@ -1027,6 +1070,9 @@ const ChatTranscript = React.forwardRef<
     },
     [],
   );
+  const stableOnStopSubagent = React.useCallback((toolUseId: string) => {
+    onStopSubagentRef.current?.(toolUseId);
+  }, []);
 
   // displayMessages → 虚拟行。persisted 消息的行缓存在实例级 WeakMap(引用稳定
   // → 行组件 memo 恒命中);live 消息每 chunk 现场重建,重渲上限 = 可见窗口行数。
@@ -1044,23 +1090,10 @@ const ChatTranscript = React.forwardRef<
         autonomousIds,
         cache: rowsCacheRef.current,
         displayMessages,
-        liveBlocks,
-        liveTail: liveDelta ?? "",
-        liveTargetId,
-        liveThinking: liveThinking ?? "",
-        liveThinkingStartedAt: liveStreamStartedAt,
+        liveByMessageId,
         localCommands,
       }),
-    [
-      autonomousIds,
-      displayMessages,
-      liveBlocks,
-      liveDelta,
-      liveStreamStartedAt,
-      liveTargetId,
-      liveThinking,
-      localCommands,
-    ],
+    [autonomousIds, displayMessages, liveByMessageId, localCommands],
   );
 
   const renderCtx = React.useMemo<TranscriptRenderContextValue>(
@@ -1072,6 +1105,7 @@ const ChatTranscript = React.forwardRef<
       // 此处有条件地传入稳定代理，让行视图能用 ctx?.onEdit 作存在性门控。
       onEdit: onEdit ? stableOnEdit : undefined,
       onPlanActionStarted: stableOnPlanActionStarted,
+      onStopSubagent: onStopSubagent ? stableOnStopSubagent : undefined,
       onRerun: onRerun ? stableOnRerun : undefined,
       sessionId: sessionId ?? 0,
       tabStateKey,
@@ -1082,9 +1116,11 @@ const ChatTranscript = React.forwardRef<
       cwd,
       onEdit,
       onRerun,
+      onStopSubagent,
       sessionId,
       stableOnEdit,
       stableOnPlanActionStarted,
+      stableOnStopSubagent,
       stableOnRerun,
       tabStateKey,
     ],
@@ -1121,10 +1157,9 @@ const ChatTranscript = React.forwardRef<
   // live 消息(和指示器宿主末行)重渲。
   const renderRowView = React.useCallback(
     (row: TranscriptRow) => {
-      const isLiveTail =
-        row.isLastOfMessage &&
-        liveTargetId != null &&
-        row.messageId === liveTargetId;
+      // 本行所属消息此刻的流式内容(没有 = 该消息不在流式中)。多条流并存时各查各的。
+      const live = liveByMessageId?.get(row.messageId);
+      const isLiveTail = row.isLastOfMessage && live != null;
       const showIndicator =
         row.isLastOfMessage &&
         streaming &&
@@ -1133,23 +1168,15 @@ const ChatTranscript = React.forwardRef<
       return (
         <TranscriptRowView
           row={row}
-          liveTail={isLiveTail ? (liveDelta ?? "") : ""}
-          liveBlocks={isLiveTail ? liveBlocks : undefined}
-          liveRetry={isLiveTail ? (liveRetry ?? null) : null}
+          liveTail={isLiveTail ? (live?.liveTail ?? "") : ""}
+          liveBlocks={isLiveTail ? live?.liveBlocks : undefined}
+          liveRetry={isLiveTail ? (live?.liveRetry ?? null) : null}
           showIndicator={showIndicator}
           compacting={showIndicator && isLiveTail && liveCompacting}
         />
       );
     },
-    [
-      lastAssistantId,
-      liveBlocks,
-      liveCompacting,
-      liveDelta,
-      liveRetry,
-      liveTargetId,
-      streaming,
-    ],
+    [lastAssistantId, liveByMessageId, liveCompacting, streaming],
   );
 
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual intentionally owns mutable measurement callbacks.

@@ -200,6 +200,8 @@ type fakeCCHandle struct {
 	id                     string
 	setPermissionModeCalls []string
 	setPermissionModeErr   error
+	stopTaskCalls          []string // 记录 StopTask 收到的 taskID
+	stopTaskErr            error
 	stream                 ccStream
 	// gotPrompt / gotImages 记录最近一次 Stream 收到的入参,Run 透传断言用。
 	gotPrompt string
@@ -231,6 +233,10 @@ func (f *fakeCCHandle) Kill(context.Context) error {
 func (f *fakeCCHandle) SetPermissionMode(_ context.Context, mode string) error {
 	f.setPermissionModeCalls = append(f.setPermissionModeCalls, mode)
 	return f.setPermissionModeErr
+}
+func (f *fakeCCHandle) StopTask(_ context.Context, taskID string) error {
+	f.stopTaskCalls = append(f.stopTaskCalls, taskID)
+	return f.stopTaskErr
 }
 func (f *fakeCCHandle) RespondToControl(_ context.Context, _ string, res claudecode.PermissionResult) error {
 	if f.respondedResults != nil {
@@ -324,6 +330,114 @@ func TestRun_StartupWatchdogKillsWedgedTurn(t *testing.T) {
 		So(atomic.LoadInt32(&h.killCalls), ShouldEqual, 1)
 		So(result.StopErr, ShouldNotBeNil)
 		So(errors.Is(result.StopErr, errStartupTimeout), ShouldBeTrue)
+		r.CloseAllSessions(ctx)
+	})
+}
+
+// busyUntilCCStream 模拟「子进程健康但忙」:Next() 阻塞到 released 关闭才结束。
+// 对应真实形态 —— CLI 正在跑自主续轮,pkg/claudecode.Session 的活跃槽位被自主轮
+// 占着,排队中的 user Turn 在自主轮 result 之前一帧都收不到(真 CLI 2.1.216 抓帧
+// 实证:mid-turn 写进 stdin 的 user 帧被 CLI 排到当前轮 result 之后才起 init)。
+// killed 用于让 Kill 也能解阻塞(硬杀 → stdout EOF)。
+type busyUntilCCStream struct {
+	released chan struct{}
+	killed   chan struct{}
+}
+
+func (s *busyUntilCCStream) Next() bool {
+	select {
+	case <-s.released:
+	case <-s.killed:
+	}
+	return false
+}
+func (s *busyUntilCCStream) Event() claudecode.Event { return claudecode.Event{} }
+func (s *busyUntilCCStream) SessionID() string       { return "" }
+
+// TestRun_UserTurnQueuedBehindAutonomousTurnIsNotStartupKilled 钉死 sess-1950:
+// 用户在「后台任务完成的自主续轮」进行中又发了一条消息。
+//
+// 真实链路(真 CLI 2.1.216 抓帧实证):自主续轮占着 Session 的活跃槽位,新 user Turn
+// 的 user 帧虽已写进 stdin,但 CLI 要等当前轮 result 之后才为它起 init —— 即排队中的
+// user turn 在自主续轮结束前 **一帧都收不到**。这不是卡死:子进程健康、正在为自主轮
+// 正常产出。
+//
+// 但 startup 看门狗只认「本 turn 起步后 startupTimeout 内无帧」,分不清「卡死」和
+// 「排在自主续轮后面」。自主续轮跑超过 startupTimeout(生产默认 120s;sess-1950 的
+// 自主轮跑了 3m35s)时,它会 **硬杀一个健康的子进程**:user turn 以 errStartupTimeout
+// 失败,正在流的自主续轮也被腰斩(readLoop 拿 EOF → 活跃轮 channel 被 close)。
+//
+// 期望:自主续轮在飞期间,看门狗不得杀子进程。
+func TestRun_UserTurnQueuedBehindAutonomousTurnIsNotStartupKilled(t *testing.T) {
+	Convey("自主续轮在飞时排队的 user turn 不该被 startup 看门狗硬杀", t, func() {
+		killed := make(chan struct{})
+		autoDone := make(chan struct{})
+		// 自主续轮仍在流:AutonomousTurns 已吐出一轮,其 Events 尚未 close。
+		autoTurns := make(chan *claudecode.AutoTurn, 1)
+		autoEvents := make(chan claudecode.Event)
+		autoTurns <- &claudecode.AutoTurn{
+			Events:        autoEvents,
+			SessionID:     "sess-busy",
+			Trigger:       "background_task",
+			CompletedTask: &claudecode.CompletedBackgroundTask{ToolUseID: "tu1", Status: "completed"},
+		}
+
+		h := &fakeCCHandle{
+			id:        "busy-with-autonomous-turn",
+			killed:    killed,
+			autoTurns: autoTurns,
+			stream:    &busyUntilCCStream{released: autoDone, killed: killed},
+		}
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) {
+			return h, nil
+		})
+		defer restore()
+
+		r := New()
+		r.startupTimeout = 100 * time.Millisecond
+		ctx := context.Background()
+
+		events, result, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 1950,
+			Cwd:       t.TempDir(),
+			UserText:  "给 e2e 补一个 AI 场景 spec",
+		})
+		So(err, ShouldBeNil)
+
+		// 镜像 chat_svc.startAutonomousWatcher:Run 之后惰性订阅并并发 drain 自主轮。
+		autoDrained := make(chan struct{})
+		go func() {
+			defer close(autoDrained)
+			for at := range r.AutonomousTurns(1950) {
+				for range at.Events { //nolint:revive // drain
+				}
+			}
+		}()
+
+		// 自主续轮比 startupTimeout 跑得久(生产里 3m35s vs 120s)。
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			close(autoEvents) // 自主轮自然收尾
+			close(autoTurns)  // 没有更多自主轮
+			close(autoDone)   // CLI 这才为排队的 user turn 起 init
+		}()
+
+		done := make(chan struct{})
+		go func() {
+			for range events { //nolint:revive // drain
+			}
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("Run events channel 没关闭")
+		}
+
+		// 核心断言:健康的子进程不该被杀 —— 杀了它就等于腰斩正在流的自主续轮。
+		So(atomic.LoadInt32(&h.killCalls), ShouldEqual, 0)
+		So(errors.Is(result.StopErr, errStartupTimeout), ShouldBeFalse)
 		r.CloseAllSessions(ctx)
 	})
 }
@@ -515,6 +629,41 @@ func TestAutonomousTurns_BridgesCompletedTask(t *testing.T) {
 		So(got.CompletedTask.Summary, ShouldEqual, "sum")
 
 		r.CloseAllSessions(ctx)
+	})
+}
+
+// TestRuntime_StopBackgroundTask 钉死 BackgroundTaskStopper:turn 结束(idle)后仍能
+// 按 task_id 停后台任务(不校验 inTurn);空 taskID / 会话不在缓存的错误路径。
+func TestRuntime_StopBackgroundTask(t *testing.T) {
+	Convey("turn 结束后仍下发 stop_task(不要求 inTurn)", t, func() {
+		h := &fakeCCHandle{id: "fake-sid", stream: &eventCCStream{events: []claudecode.Event{{Kind: claudecode.EventDone}}}}
+		restore := SetSessionFactoryForTest(func(ccLaunchSpec) (ccSessionHandle, error) { return h, nil })
+		defer restore()
+
+		r := New()
+		ctx := context.Background()
+		events, _, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+			SessionID: 42,
+			Cwd:       t.TempDir(),
+			UserText:  "start a bg task",
+		})
+		So(err, ShouldBeNil)
+		for range events { //nolint:revive // drain 到 turn 结束(inTurn=false)
+		}
+
+		So(r.StopBackgroundTask(ctx, 42, "b0n82mqaj"), ShouldBeNil)
+		So(h.stopTaskCalls, ShouldResemble, []string{"b0n82mqaj"})
+		r.CloseAllSessions(ctx)
+	})
+
+	Convey("空 taskID 直接返错,不下发", t, func() {
+		So(New().StopBackgroundTask(context.Background(), 42, ""), ShouldNotBeNil)
+	})
+
+	Convey("会话不在缓存(已 evict/未 spawn)→ ErrNoActiveTurn", t, func() {
+		err := New().StopBackgroundTask(context.Background(), 999, "b0n82mqaj")
+		So(errors.Is(err, agentruntime.ErrNoActiveTurn), ShouldBeTrue)
 	})
 }
 

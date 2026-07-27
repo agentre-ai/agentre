@@ -131,6 +131,18 @@ describe("MarkdownText URL whitelist", () => {
     );
   });
 
+  it("decodes a Markdown-encoded non-ASCII absolute path before rendering the local link target", () => {
+    const { container } = render(
+      <MarkdownText
+        text="[本地 E2E](/Users/me/docs/%E6%9C%AC%E5%9C%B0%20E2E.md)"
+        cwd="/Users/me"
+      />,
+    );
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(
+      "/Users/me/docs/本地 E2E.md",
+    );
+  });
+
   it("resolves file:// href to local path (RichLink handles it)", () => {
     const { container } = render(
       <MarkdownText text="[f](file:///Users/me/foo.go)" />,

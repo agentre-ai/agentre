@@ -664,3 +664,45 @@ func TestStream_StatusAndPermissionMode_BothEmitted(t *testing.T) {
 	assert.True(t, sawStatus, "status 字段非空应 emit EventStatus")
 	assert.True(t, sawMode, "permissionMode 字段非空仍应 emit EventPermissionModeChanged")
 }
+
+// TestStream_APIErrorMessageFrameBecomesEventError 与 session.parseLine 那条平行:
+// 一次性 Client.Stream 走的 frameDecoder.decodeLine 也要把 isApiErrorMessage 合成帧
+// 翻成 EventError,不泄漏成正文文本增量。两个 decoder 是刻意维护的平行副本。
+func TestStream_APIErrorMessageFrameBecomesEventError(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: Connection closed mid-response. The response above may be incomplete."}]},"error":"server_error","isApiErrorMessage":true,"session_id":"sess-xyz"}` + "\n"
+
+	d := newFrameDecoder(strings.NewReader(line))
+	var events []Event
+	for d.Next() {
+		events = append(events, d.Event())
+	}
+	require.NoError(t, d.Err())
+
+	require.Len(t, events, 1)
+	assert.Equal(t, EventError, events[0].Kind)
+	assert.ErrorIs(t, events[0].Err, ErrAPIError)
+	assert.Contains(t, events[0].Err.Error(), "Connection closed mid-response")
+	for _, e := range events {
+		assert.NotEqual(t, EventTextDelta, e.Kind)
+	}
+}
+
+// TestStream_RawSinkReceivesEveryRawLine 校验 frameDecoder 把每一行非空原始 stdout
+// (未解析的 stream-json 帧)原样喂给 rawSink —— debug 级原始帧转储的底座。
+func TestStream_RawSinkReceivesEveryRawLine(t *testing.T) {
+	const lines = `{"type":"system","subtype":"init","session_id":"s","model":"m"}` + "\n" +
+		`{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"hi"}]}}` + "\n" +
+		`{"type":"result","subtype":"success","session_id":"s","usage":{"input_tokens":1,"output_tokens":1}}` + "\n"
+
+	var got []string
+	d := newFrameDecoder(strings.NewReader(lines))
+	d.rawSink = func(b []byte) { got = append(got, string(b)) }
+	for d.Next() { //nolint:revive // 只为驱动 decode,事件本身不看
+	}
+	require.NoError(t, d.Err())
+
+	require.Len(t, got, 3)
+	assert.Contains(t, got[0], `"subtype":"init"`)
+	assert.Contains(t, got[1], `"type":"assistant"`)
+	assert.Contains(t, got[2], `"type":"result"`)
+}

@@ -187,6 +187,35 @@ function mockTextSelectionWithin(node: Node) {
 }
 
 describe("ChatComposer context meter", () => {
+  it("Given a Codex backend, When the composer is empty, Then its placeholder explains @ mentions, / commands, and $ skills", () => {
+    render(<ChatComposer backendType="codex" onSubmit={() => undefined} />);
+
+    expect(screen.getByRole("textbox").querySelector("p")).toHaveAttribute(
+      "data-placeholder",
+      "Type a message · @ to mention · / for commands · $ for skills · ! to run in terminal",
+    );
+  });
+
+  it("Given a Claude Code backend, When the composer is empty, Then its placeholder explains @ mentions and that / includes commands and skills", () => {
+    render(
+      <ChatComposer backendType="claudecode" onSubmit={() => undefined} />,
+    );
+
+    expect(screen.getByRole("textbox").querySelector("p")).toHaveAttribute(
+      "data-placeholder",
+      "Type a message · @ to mention · / for commands and skills · ! to run in terminal",
+    );
+  });
+
+  it("Given a Pi backend, When the composer is empty, Then its placeholder explains @ mentions, / commands, and /skill:name skills", () => {
+    render(<ChatComposer backendType="piagent" onSubmit={() => undefined} />);
+
+    expect(screen.getByRole("textbox").querySelector("p")).toHaveAttribute(
+      "data-placeholder",
+      "Type a message · @ to mention · / for commands · /skill:name for skills · ! to run in terminal",
+    );
+  });
+
   it("submits an image-only message with image data URLs", async () => {
     const onSubmit = vi.fn();
     const { container } = render(<ChatComposer onSubmit={onSubmit} />);
@@ -204,6 +233,37 @@ describe("ChatComposer context meter", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith({
+        text: "",
+        images: [
+          {
+            dataUrl: "data:image/png;base64,AQID",
+            mediaType: "image/png",
+            name: "shot.png",
+          },
+        ],
+      });
+    });
+  });
+
+  it("Given only an image attachment, When Enter is pressed, Then it submits without placeholder text", async () => {
+    const onSubmit = vi.fn();
+    const { container } = render(<ChatComposer onSubmit={onSubmit} />);
+    const input = container.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", {
+      type: "image/png",
+    });
+
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => {
+      expect(screen.getByAltText("shot.png")).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith({
@@ -938,10 +998,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, {}]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveTargetId={2}
         messages={[textMessage(1, "user", "go"), manyToolMessage(2, 3)]}
         scrollElement={scrollElement}
         streaming
@@ -1015,11 +1075,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     const { rerender } = render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(2) }]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveBlocks={liveToolBlocks(2)}
-        liveTargetId={2}
         messages={messages}
         scrollElement={scrollElement}
         streaming
@@ -1031,11 +1090,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     rerender(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(3) }]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveBlocks={liveToolBlocks(3)}
-        liveTargetId={2}
         messages={messages}
         scrollElement={scrollElement}
         streaming
@@ -1102,11 +1160,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     const { rerender } = render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveBlocks: [] }]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveBlocks={[]}
-        liveTargetId={2}
         messages={messages}
         scrollElement={scrollElement}
         streaming
@@ -1118,11 +1175,10 @@ describe("ChatTranscript block-level virtualization", () => {
 
     rerender(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveBlocks: liveToolBlocks(1) }]])}
         active
         agentColor="agent-1"
         agentName="A"
-        liveBlocks={liveToolBlocks(1)}
-        liveTargetId={2}
         messages={messages}
         scrollElement={scrollElement}
         streaming
@@ -1186,16 +1242,24 @@ describe("ChatTranscript message tail attachments", () => {
   it("Given a live retry notice, When rendered on the live target, Then the RetryNoticeCard is visible", () => {
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([
+            [
+              2,
+              {
+                liveRetry: {
+                  attempt: 2,
+                  maxAttempts: 5,
+                  message: "overloaded",
+                  details: "",
+                  at: new Date("2026-05-18T10:00:00Z").getTime(),
+                },
+              },
+            ],
+          ])
+        }
         agentColor="agent-1"
         agentName="A"
-        liveRetry={{
-          attempt: 2,
-          maxAttempts: 5,
-          message: "overloaded",
-          details: "",
-          at: new Date("2026-05-18T10:00:00Z").getTime(),
-        }}
-        liveTargetId={2}
         messages={[
           textMessage(1, "user", "hi"),
           {
@@ -1601,7 +1665,7 @@ describe("ChatTranscript message meta", () => {
     expect(trigger.textContent ?? "").not.toMatch(/^\s*·/);
   });
 
-  it("Given an assistant message with markdown text, When copying AI output, Then the raw text blocks are written to clipboard", async () => {
+  it("Given an assistant message with multiple output sections, When copying AI output, Then only the last section is written to clipboard", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1629,7 +1693,7 @@ describe("ChatTranscript message meta", () => {
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(
-        "## Plan\n\n- keep **markdown**\n\n```ts\nconst ok = true;\n```",
+        "\n\n```ts\nconst ok = true;\n```",
       );
     });
     expect(sonnerMocks.toast.success).toHaveBeenCalledWith(
@@ -1642,6 +1706,29 @@ describe("ChatTranscript message meta", () => {
     const assistant = {
       ...assistantWithUsage(),
       blocks: [
+        { type: "thinking", text: "still reasoning" },
+      ] as ChatBlockData[],
+    } as chat_svc.ChatMessage;
+
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[assistant]}
+        onRerun={() => undefined}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Copy AI output" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given the last assistant output section has no text, When rendered, Then earlier text cannot be copied", () => {
+    const assistant = {
+      ...assistantWithUsage(),
+      blocks: [
+        { type: "text", text: "outdated section" },
         { type: "thinking", text: "still reasoning" },
       ] as ChatBlockData[],
     } as chat_svc.ChatMessage;
@@ -1713,10 +1800,9 @@ describe("ChatTranscript typing indicator", () => {
   it("places the indicator after the live tail text in DOM order", () => {
     render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveTail: "streaming chunk" }]])}
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveDelta="streaming chunk"
-        liveTargetId={2}
         messages={[userMessage(1, "hi"), assistantMessage(2, [])]}
         streaming
       />,
@@ -1735,10 +1821,11 @@ describe("ChatTranscript typing indicator", () => {
     // 且所有 block 落在同一个 .markdown-body 容器里(间距与一次性解析一致)。
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([[2, { liveTail: "committed para\n\ngrowing tail" }]])
+        }
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveDelta={"committed para\n\ngrowing tail"}
-        liveTargetId={2}
         messages={[userMessage(1, "hi"), assistantMessage(2, [])]}
         streaming
       />,
@@ -1851,10 +1938,9 @@ describe("ChatTranscript thinking blocks", () => {
   it("renders liveThinking as a streaming thinking card on the live target", () => {
     render(
       <ChatTranscript
+        liveByMessageId={new Map([[2, { liveThinking: "正在分析问题…" }]])}
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveThinking="正在分析问题…"
-        liveTargetId={2}
         messages={[assistantMsg(2, [])]}
         streaming
       />,
@@ -1870,18 +1956,26 @@ describe("ChatTranscript thinking blocks", () => {
     // 思考卡片就被挤到工具卡之后,出现「思考 still 14s,工具却已经在上面」的视觉错乱。
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([
+            [
+              2,
+              {
+                liveThinking: "先看一下目录结构",
+                liveBlocks: [
+                  {
+                    toolInput: { path: "." },
+                    toolName: "ls",
+                    toolUseId: "call_x",
+                    type: "tool_use",
+                  } as ChatBlockData,
+                ],
+              },
+            ],
+          ])
+        }
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveBlocks={[
-          {
-            toolInput: { path: "." },
-            toolName: "ls",
-            toolUseId: "call_x",
-            type: "tool_use",
-          } as ChatBlockData,
-        ]}
-        liveThinking="先看一下目录结构"
-        liveTargetId={2}
         messages={[assistantMsg(2, [])]}
         streaming
       />,
@@ -1899,11 +1993,11 @@ describe("ChatTranscript thinking blocks", () => {
   it("liveThinking collapses to done when text deltas start (liveDelta non-empty)", () => {
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([[2, { liveTail: "结果是", liveThinking: "正在分析问题…" }]])
+        }
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveDelta="结果是"
-        liveThinking="正在分析问题…"
-        liveTargetId={2}
         messages={[assistantMsg(2, [])]}
         streaming
       />,
@@ -1922,18 +2016,26 @@ describe("ChatTranscript thinking blocks", () => {
     // 卡住不动。tool_use 本身已经是「思考之后的输出」,理应把思考收为「思考完成」。
     render(
       <ChatTranscript
+        liveByMessageId={
+          new Map([
+            [
+              2,
+              {
+                liveThinking: "先看一下目录结构",
+                liveBlocks: [
+                  {
+                    toolInput: { command: "ls" },
+                    toolName: "Bash",
+                    toolUseId: "call_x",
+                    type: "tool_use",
+                  } as ChatBlockData,
+                ],
+              },
+            ],
+          ])
+        }
         agentColor="agent-1"
         agentName="CEO 助手"
-        liveBlocks={[
-          {
-            toolInput: { command: "ls" },
-            toolName: "Bash",
-            toolUseId: "call_x",
-            type: "tool_use",
-          } as ChatBlockData,
-        ]}
-        liveThinking="先看一下目录结构"
-        liveTargetId={2}
         messages={[assistantMsg(2, [])]}
         streaming
       />,

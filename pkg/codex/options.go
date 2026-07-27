@@ -73,3 +73,9 @@ func WithAppServerRunnerForTesting(r appServerRunner) Option {
 		}
 	}
 }
+
+// WithRawSink 注册一个原始行回调:app-server 每读到一行原始 stdout(未解析的 JSON-RPC
+// 帧)就同步调用一次。用于 debug 级原始帧转储 —— runtime 层把它接到 logger.Debug,由
+// 「Debug Logging」开关热控。回调收到的 []byte 是 scanner 复用缓冲,**不得跨调用留存**。
+// nil(默认)= 零采样开销。
+func WithRawSink(sink func([]byte)) Option { return func(c *Client) { c.rawSink = sink } }

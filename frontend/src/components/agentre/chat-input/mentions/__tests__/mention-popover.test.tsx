@@ -44,6 +44,31 @@ describe("MentionPopover", () => {
     expect(screen.getByText("Projects")).toBeInTheDocument();
   });
 
+  it("Given a nested project, When rendered, Then hierarchy is indented and the project name keeps priority over its path", () => {
+    const nestedProject: MentionItem = {
+      kind: "project",
+      refId: 4,
+      label: "Desktop",
+      path: "/platform/desktop",
+      depth: 2,
+    };
+    render(
+      <MentionPopover
+        state={{ ...state, items: [nestedProject] }}
+        onPick={vi.fn()}
+        onHover={vi.fn()}
+      />,
+    );
+
+    const label = screen.getByText("Desktop");
+    expect(label).toHaveClass("min-w-0", "flex-1");
+    expect(label.closest("button")).toHaveStyle({ paddingLeft: "32px" });
+    expect(screen.getByText("/platform/desktop")).toHaveClass(
+      "max-w-[40%]",
+      "shrink-0",
+    );
+  });
+
   it("calls onPick on mousedown", () => {
     const onPick = vi.fn();
     render(<MentionPopover state={state} onPick={onPick} onHover={vi.fn()} />);

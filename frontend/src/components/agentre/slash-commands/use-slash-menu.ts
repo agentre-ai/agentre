@@ -33,6 +33,7 @@ export type SlashMenuState = {
   // 用户当前高亮的下标;items 变化时会被 clamp 回 0..items.length-1。
   selectedIndex: number;
   query: string;
+  trigger: "/" | "$";
 };
 
 export type UseSlashMenuOpts = {
@@ -40,6 +41,8 @@ export type UseSlashMenuOpts = {
   editor: Editor | null;
   // 当前会话的 backend 类型,决定可用命令清单。空串 hook 视作 disabled。
   backendType: string;
+  // 当前 agent 的动态 skill 命令;与静态 /compact 等共用同一套菜单。
+  dynamicCommands?: SlashCommand[];
   // 用户选中命令时调用;literal_text 由 chat-input 直接把文本填回编辑器(不自动发送),
   // rpc 由 chat-input 转交给 ChatPanel 走 Wails 绑定。
   onSelect: (cmd: SlashCommand, exec: SlashExec) => void;
@@ -56,6 +59,7 @@ export type UseSlashMenuOpts = {
 export function useSlashMenu({
   editor,
   backendType,
+  dynamicCommands = [],
   onSelect,
 }: UseSlashMenuOpts): {
   state: SlashMenuState;
@@ -74,11 +78,19 @@ export function useSlashMenu({
     SlashMenuState["anchorRect"] | null
   >(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [trigger, setTrigger] = useState<"/" | "$">("/");
 
-  const available = useMemo(() => listAvailable(backendType), [backendType]);
+  const available = useMemo(
+    () => listAvailable(backendType, dynamicCommands),
+    [backendType, dynamicCommands],
+  );
+  const triggers = useMemo(
+    () => Array.from(new Set(available.map((command) => command.trigger))),
+    [available],
+  );
   const items = useMemo(
-    () => filterByQuery(available, query),
-    [available, query],
+    () => filterByQuery(available, query, trigger),
+    [available, query, trigger],
   );
 
   // items 变化时把 selectedIndex 拉回有效范围。
@@ -92,6 +104,7 @@ export function useSlashMenu({
     setOpen(false);
     setAnchorRect(null);
     setQuery("");
+    setTrigger("/");
     setSelectedIndex(0);
   }, []);
 
@@ -115,7 +128,7 @@ export function useSlashMenu({
         undefined,
         leafText,
       );
-      const hit = detectSlashTrigger(before);
+      const hit = detectSlashTrigger(before, triggers);
       if (!hit) {
         if (open) close();
         return;
@@ -129,16 +142,18 @@ export function useSlashMenu({
         rect = null;
       }
       setQuery(hit.query);
+      setTrigger(hit.trigger);
       setAnchorRect(rect);
       setOpen(true);
     };
     editor.on("update", recompute);
     editor.on("selectionUpdate", recompute);
+    recompute();
     return () => {
       editor.off("update", recompute);
       editor.off("selectionUpdate", recompute);
     };
-  }, [editor, available, open, close]);
+  }, [editor, available, triggers, open, close]);
 
   // 选中命令:用 ProseMirror deleteRange 把 / + query 段从编辑器去掉,再回调 onSelect。
   // literal_text 由 chat-input 把完整命令文本填回编辑器(不自动发送);rpc 由 chat-input
@@ -159,7 +174,7 @@ export function useSlashMenu({
           undefined,
           leafText,
         );
-        const hit = detectSlashTrigger(before);
+        const hit = detectSlashTrigger(before, triggers);
         if (hit) {
           const from = $from.start() + hit.startOffset;
           const to = $from.pos;
@@ -169,7 +184,7 @@ export function useSlashMenu({
       close();
       onSelect(cmd, exec);
     },
-    [backendType, close, editor, onSelect],
+    [backendType, close, editor, onSelect, triggers],
   );
 
   const onKeyDown = useCallback(
@@ -203,8 +218,8 @@ export function useSlashMenu({
   );
 
   const state: SlashMenuState = useMemo(
-    () => ({ open, anchorRect, items, selectedIndex, query }),
-    [open, anchorRect, items, selectedIndex, query],
+    () => ({ open, anchorRect, items, selectedIndex, query, trigger }),
+    [open, anchorRect, items, selectedIndex, query, trigger],
   );
 
   return { state, onKeyDown, pick: confirm, setSelectedIndex, close };

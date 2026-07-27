@@ -446,6 +446,28 @@ type Aborter interface {
 	Abort(ctx context.Context, sessionID int64) error
 }
 
+// BackgroundTaskStopper is implemented by BackendRunners that support stopping a
+// single background task (run_in_background Bash / subagent) by CLI task_id —
+// used by the "停止" button on a background-task panel row / AgentSpawn card.
+// Distinct from Aborter: a background task outlives the turn that spawned it, so
+// implementations MUST NOT require an in-flight turn; they only need the still-
+// alive backend session. claudecode writes a control_request{stop_task}. The CLI
+// then emits a background task_notification (status canceled/failed) that flips
+// the subagent_state block to a terminal state through the existing autonomous-
+// turn path; chat_svc additionally flips it to "canceled" on success (idempotent).
+//
+// Returns ErrNoActiveTurn when the session is unknown to this runner (subprocess
+// evicted / never spawned) — chat_svc treats that as "task already gone".
+// Implementations MUST be idempotent and safe to call concurrently with the
+// runner's own drain goroutine.
+//
+// Defined as a separate interface (like Aborter) so a backend can be added
+// without stop-task support; only claudecode implements it today (codex/builtin
+// have no background-task concept), which auto-hides the button via capability.
+type BackgroundTaskStopper interface {
+	StopBackgroundTask(ctx context.Context, sessionID int64, taskID string) error
+}
+
 // PermissionModeSetter 由支持运行时切换 permission mode 的 runner 实现。
 // 当前只有 claudecode runner 实现；codex / builtin 不参与权限门概念。
 //

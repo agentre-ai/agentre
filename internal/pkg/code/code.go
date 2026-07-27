@@ -168,6 +168,12 @@ const (
 	ChatGitStateUnavailable = iota + 17100 // 当前 cwd 不是 git 仓库 / git 命令读取失败
 )
 
+// Chat stop background task 17110~
+const (
+	ChatStopBgUnsupported = iota + 17110 // 当前后端不支持停止后台任务
+	ChatStopBgTaskUnknown                // 该后台任务缺少 CLI task_id（老会话）/ 已不在运行,无法停止
+)
+
 // Project 18000~18999
 const (
 	ProjectNotFound          = iota + 18000 // 项目不存在

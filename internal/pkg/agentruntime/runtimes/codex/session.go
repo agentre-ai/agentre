@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/pkg/codex"
@@ -324,14 +326,16 @@ type cxSessionHandle interface {
 }
 
 type codexLaunchSpec struct {
-	binary       string
-	cwd          string
-	env          map[string]string
-	model        string
-	systemPrompt string
-	sandbox      codex.SandboxMode
-	approval     codex.ApprovalPolicy
-	config       []string
+	binary            string
+	cwd               string
+	env               map[string]string
+	model             string
+	systemPrompt      string
+	sandbox           codex.SandboxMode
+	approval          codex.ApprovalPolicy
+	config            []string
+	sessionID         int64  // chat_sessions.ID —— 仅给 raw-frame debug 日志定位用
+	providerSessionID string // codex thread/provider session —— 同上
 }
 
 func gatewayDeps(req agentruntime.RunRequest) CLIDeps {
@@ -347,14 +351,16 @@ func buildLaunchSpec(req agentruntime.RunRequest, env map[string]string, cwd str
 		binary = DefaultBinary()
 	}
 	spec := codexLaunchSpec{
-		binary:       binary,
-		cwd:          cwd,
-		env:          env,
-		systemPrompt: req.SystemPrompt,
-		config:       BuildCodexConfig(gatewayDeps(req)),
+		binary:            binary,
+		cwd:               cwd,
+		env:               env,
+		systemPrompt:      req.SystemPrompt,
+		config:            BuildCodexConfig(gatewayDeps(req)),
+		sessionID:         req.SessionID,
+		providerSessionID: req.ProviderSessionID,
 	}
 	spec.config = append(spec.config, buildMCPServerConfig(req.MCPServers)...)
-	spec.config = append(spec.config, buildPluginConfig(req.EnabledPlugins)...)
+	spec.config = append(spec.config, codex.PluginEnabledConfig(req.EnabledPlugins)...)
 	if eff := reasoningEffortConfigValue(req.Backend.ReasoningEffort); eff != "" {
 		spec.config = append(spec.config, `model_reasoning_effort="`+eff+`"`)
 	}
@@ -401,25 +407,6 @@ func buildMCPServerConfig(specs []agentruntime.MCPServerSpec) []string {
 	return out
 }
 
-func buildPluginConfig(enabled map[string]bool) []string {
-	if len(enabled) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(enabled))
-	for k := range enabled {
-		if strings.TrimSpace(k) != "" {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		id := strings.TrimSpace(k)
-		out = append(out, "plugins."+strconv.Quote(id)+".enabled="+strconv.FormatBool(enabled[k]))
-	}
-	return out
-}
-
 func tomlKey(s string) string {
 	return s
 }
@@ -457,6 +444,7 @@ func (s codexLaunchSpec) options() []codex.Option {
 		codex.WithCwd(s.cwd),
 		codex.WithEnv(s.env),
 		codex.WithSystemPrompt(s.systemPrompt),
+		codex.WithRawSink(cxRawFrameSink(s.sessionID, s.providerSessionID)),
 	}
 	if s.model != "" {
 		opts = append(opts, codex.WithModel(s.model))
@@ -471,6 +459,18 @@ func (s codexLaunchSpec) options() []codex.Option {
 		opts = append(opts, codex.WithApproval(s.approval))
 	}
 	return opts
+}
+
+// cxRawFrameSink 返回一个把 codex app-server 每行原始 stdout 帧打到 debug 日志的回调。
+// 语义同 claudecode 的 ccRawFrameSink:由「Debug Logging」开关热控(关时 zap 直接丢弃,
+// 近零开销),用 logger.Default() 取当前全局 logger 故热重载即时生效。
+func cxRawFrameSink(sessionID int64, providerSessionID string) func([]byte) {
+	return func(line []byte) {
+		logger.Default().Debug("codex runtime: raw frame",
+			zap.Int64("sessionID", sessionID),
+			zap.String("providerSessionID", providerSessionID),
+			zap.ByteString("frame", line))
+	}
 }
 
 // cxSessionFactory 生产路径;测试 SetSessionFactoryForTest 替换。

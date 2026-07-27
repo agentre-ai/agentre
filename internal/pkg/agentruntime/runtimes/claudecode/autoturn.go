@@ -57,7 +57,11 @@ func (r *Runtime) AutonomousTurns(sessionID int64) <-chan agentruntime.Autonomou
 			out <- agentruntime.AutonomousTurn{Events: evOut, Result: result, Trigger: at.Trigger, CompletedTask: completed}
 			stream := &ccChanStream{ch: at.Events, sidFn: func() string { return at.SessionID }}
 			// 自主续轮的子进程早已存活(由首轮 spawn),不存在「起步即卡死」, 不挂看门狗。
+			// 但本轮占着 Session 活跃槽位:期间起的 user turn 收不到任何帧,必须让它的
+			// startup 看门狗暂停计时,否则健康子进程会被误杀(见 claudeActive.outOfBand)。
+			a.enterOutOfBand()
 			drainStream(stream, evOut, result, a, nil)
+			a.leaveOutOfBand()
 			if sid := stream.SessionID(); sid != "" {
 				result.ProviderSessionID = sid
 			}
@@ -104,7 +108,10 @@ func (r *Runtime) SubagentActivity(sessionID int64) <-chan agentruntime.Subagent
 			out <- agentruntime.SubagentActivity{ToolUseID: sa.ToolUseID, Events: evOut}
 			stream := &ccChanStream{ch: sa.Events, sidFn: func() string { return sa.SessionID }}
 			// 活动轮的子进程早已存活(由首轮 spawn),不存在「起步即卡死」, 不挂看门狗。
+			// 与自主续轮同理:本轮占着 Session 活跃槽位,期间起的 user turn 收不到帧。
+			a.enterOutOfBand()
 			drainStream(stream, evOut, result, a, nil)
+			a.leaveOutOfBand()
 			close(evOut)
 		}
 	}()

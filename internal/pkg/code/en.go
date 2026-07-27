@@ -126,6 +126,9 @@ var enUS = map[int]string{
 
 	ChatGitStateUnavailable: "Git state unavailable for this session's working directory",
 
+	ChatStopBgUnsupported: "This backend does not support stopping background tasks",
+	ChatStopBgTaskUnknown: "This background task can't be stopped (no task id, or it already finished)",
+
 	ProjectNotFound:          "Project not found",
 	ProjectNameDuplicated:    "A sibling project with this name already exists",
 	ProjectInvalidColor:      "Invalid project accent color",

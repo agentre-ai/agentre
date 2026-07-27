@@ -536,6 +536,33 @@ func TestAbort_SuccessAndNoSession(t *testing.T) {
 	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 
+func TestStopBackgroundTask_SuccessAndNoSession(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ any, result any) error {
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: 4}
+			return nil
+		})
+	_, _, err := rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: "claudecode"},
+		SessionID: 4,
+	})
+	require.NoError(t, err)
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodStopBackgroundTask, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, _ any) error {
+			sp := params.(wire.StopBackgroundTaskParams)
+			assert.Equal(t, int64(4), sp.SessionID)
+			assert.Equal(t, "b0n82mqaj", sp.TaskID)
+			return nil
+		})
+	require.NoError(t, rt.StopBackgroundTask(context.Background(), 4, "b0n82mqaj"))
+
+	// Unknown session → ErrNoActiveTurn(不发 RPC)
+	err = rt.StopBackgroundTask(context.Background(), 999, "b0n82mqaj")
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
 func TestSetPermissionMode_Success(t *testing.T) {
 	_, cli, _, rt := setupRemote(t)
 	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).

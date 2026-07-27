@@ -88,6 +88,9 @@ func (s *Stream) drain(ctx context.Context) {
 	defer close(s.events)
 	promptAccepted := false
 	for s.proc.lines.Scan() {
+		if s.proc.rawSink != nil {
+			s.proc.rawSink(s.proc.lines.Bytes())
+		}
 		select {
 		case <-ctx.Done():
 			s.setErr(ctx.Err())
@@ -202,6 +205,9 @@ func (s *Stream) emitSessionStats(ctx context.Context) {
 
 func (s *Stream) readSessionStatsContextWindow() int {
 	for s.proc.lines.Scan() {
+		if s.proc.rawSink != nil {
+			s.proc.rawSink(s.proc.lines.Bytes())
+		}
 		line := strings.TrimSpace(s.proc.lines.Text())
 		if line == "" {
 			continue

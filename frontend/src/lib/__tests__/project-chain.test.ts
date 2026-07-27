@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { findProjectColorToken, projectChain } from "../project-chain";
+import {
+  findProjectColorToken,
+  findProjectPath,
+  projectChain,
+} from "../project-chain";
 import type { app } from "../../../wailsjs/go/models";
 
 type Node = app.ProjectTreeNode;
@@ -10,6 +14,7 @@ function makeNode(
   name: string,
   color: string,
   children: Node[] = [],
+  path = "",
 ): Node {
   return {
     project: {
@@ -19,7 +24,7 @@ function makeNode(
       parentID: 0,
       icon: "",
       description: "",
-      path: "",
+      path,
       isGitRepo: false,
       createtime: 0,
       updatetime: 0,
@@ -75,5 +80,22 @@ describe("findProjectColorToken", () => {
 
   it("找不到返回 null", () => {
     expect(findProjectColorToken(tree, 999)).toBeNull();
+  });
+});
+
+describe("findProjectPath", () => {
+  const tree: Node[] = [
+    makeNode(1, "Agentre", "agent-1", [
+      makeNode(2, "frontend", "agent-2", [], "/tmp/agentre/frontend"),
+    ]),
+  ];
+
+  it("Given a nested project, When resolving its composer cwd, Then its configured path is returned", () => {
+    expect(findProjectPath(tree, 2)).toBe("/tmp/agentre/frontend");
+  });
+
+  it("Given an unknown project or an empty path, When resolving cwd, Then discovery falls back to the global scope", () => {
+    expect(findProjectPath(tree, 1)).toBe("");
+    expect(findProjectPath(tree, 999)).toBe("");
   });
 });

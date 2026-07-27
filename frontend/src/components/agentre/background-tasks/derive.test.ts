@@ -49,6 +49,19 @@ describe("deriveBackgroundTasks", () => {
     ]);
   });
 
+  it("maps a stopped subagent status (canceled / CLI cancelled) to canceled", () => {
+    const american = deriveBackgroundTasks(
+      [],
+      [tu({ subagent: { kind: "local_bash", status: "canceled" } })],
+    );
+    expect(american[0].status).toBe("canceled");
+    const british = deriveBackgroundTasks(
+      [],
+      [tu({ subagent: { kind: "local_bash", status: "cancelled" } })],
+    );
+    expect(british[0].status).toBe("canceled");
+  });
+
   it("includes a background local_agent (run_in_background subagent) with its real kind", () => {
     const msg = {
       blocks: [
@@ -328,7 +341,7 @@ describe("deriveBackgroundTasks", () => {
     expect(tasks.map((t) => t.toolUseId)).toEqual(["tu-b"]);
   });
 
-  it("maps a canceled task to failed (terminal, clearable)", () => {
+  it("maps a canceled task to canceled (terminal, clearable — 用户停止)", () => {
     const messages = [
       makeMessage(1000, [
         makeBlock("tool_use", "tu-x", {
@@ -339,6 +352,6 @@ describe("deriveBackgroundTasks", () => {
       ]),
     ];
     const tasks = deriveBackgroundTasks(messages, []);
-    expect(tasks[0].status).toBe("failed");
+    expect(tasks[0].status).toBe("canceled");
   });
 });

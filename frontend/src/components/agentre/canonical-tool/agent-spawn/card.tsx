@@ -10,6 +10,7 @@ import {
   FileText,
   LoaderCircle,
   Search,
+  Square,
   Terminal,
   TriangleAlert,
   Users,
@@ -169,6 +170,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
   cwd,
   childBlocks = [],
   uiStateKey,
+  onStopSubagent,
 }) => {
   const { t } = useTranslation();
   const spawn = readSpawn(toolBlock);
@@ -278,6 +280,23 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
             <span>{tokens}</span>
           </span>
         ) : null}
+        {(status === "running" || status === "waiting") &&
+          spawn.taskId &&
+          onStopSubagent &&
+          toolBlock.toolUseId && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onStopSubagent(toolBlock.toolUseId!);
+              }}
+              aria-label={t("canonical.agentSpawn.stop")}
+              title={t("canonical.agentSpawn.stop")}
+              className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Square className="size-2.5 fill-current" />
+            </button>
+          )}
         <TranscriptPill
           data-copyable-control-text="true"
           className={pillClassName}

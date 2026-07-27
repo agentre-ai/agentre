@@ -2537,6 +2537,26 @@ func TestSend_CodexPlanEmptyTurnPersistsFallbackText(t *testing.T) {
 		t.Fatalf("expected TextBlock, got %T", gotBlocks[0])
 	}
 	assert.Contains(t, text, "Plan mode completed")
+
+	// 正常收尾也必须在 StreamDone 前主动发布 idle。否则前端会先删除
+	// LiveStream（底部停止输出），tab 却仍保留上一帧 running，直到异步 reload 完成。
+	doneIdx, idleIdx := -1, -1
+	for i, ev := range m.events {
+		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+		if !ok {
+			continue
+		}
+		if idleIdx < 0 && payload.Kind == chat_svc.StreamSessionStatus &&
+			payload.SessionStatus != nil && payload.SessionStatus.AgentStatus == "idle" {
+			idleIdx = i
+		}
+		if doneIdx < 0 && payload.Kind == chat_svc.StreamDone {
+			doneIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, idleIdx, 0, "正常收尾缺 session_status(idle)")
+	require.GreaterOrEqual(t, doneIdx, 0, "正常收尾缺 StreamDone")
+	assert.Less(t, idleIdx, doneIdx, "session_status(idle) 必须先于 StreamDone")
 }
 
 func TestSend_StreamErrorEventCarriesFinalAssistantMessage(t *testing.T) {
@@ -3334,7 +3354,7 @@ func TestRegenerate_PersistFailureDoesNotPersistRunning(t *testing.T) {
 // TestSend_AskUserQuestionFlipsSessionToWaiting:
 //   - 收到 EventAskUserQuestion 应 emit StreamSessionStatus{agentStatus=waiting, needsAttention=true}
 //   - 收到 EventAskUserQuestionAnswered 应 emit StreamSessionStatus{agentStatus=running, needsAttention=false}
-//   - turn 收尾后 session 最终落库 AgentStatus=idle + NeedsAttention=false
+//   - turn 收尾后落库并 emit StreamSessionStatus{agentStatus=idle, needsAttention=false}
 func TestSend_AskUserQuestionFlipsSessionToWaiting(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := m.ctx
@@ -3363,11 +3383,13 @@ func TestSend_AskUserQuestionFlipsSessionToWaiting(t *testing.T) {
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 
 	patches := captureSessionStatusPatches(m.events)
-	require.Len(t, patches, 2, "AskUserQuestion + Answered 各 emit 一帧 StreamSessionStatus")
+	require.Len(t, patches, 3, "AskUserQuestion + Answered + turn 收尾各 emit 一帧 StreamSessionStatus")
 	assert.Equal(t, "waiting", patches[0].AgentStatus)
 	assert.True(t, patches[0].NeedsAttention)
 	assert.Equal(t, "running", patches[1].AgentStatus)
 	assert.False(t, patches[1].NeedsAttention)
+	assert.Equal(t, "idle", patches[2].AgentStatus)
+	assert.False(t, patches[2].NeedsAttention)
 
 	require.NotEmpty(t, *captured, "session 至少落库一次")
 	final := (*captured)[len(*captured)-1]
@@ -3625,7 +3647,7 @@ func toolResultIDForTest(t *testing.T, b blocks.ContentBlock) string {
 }
 
 // TestSend_ToolPermissionFlipsSessionToWaiting: ToolPermissionRequest / Resolved
-// 对称走 ask 一样的 waiting → running 翻转。
+// 对称走 ask 一样的 waiting → running → idle 翻转。
 func TestSend_ToolPermissionFlipsSessionToWaiting(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := m.ctx
@@ -3653,11 +3675,13 @@ func TestSend_ToolPermissionFlipsSessionToWaiting(t *testing.T) {
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 
 	patches := captureSessionStatusPatches(m.events)
-	require.Len(t, patches, 2, "ToolPermission Request + Resolved 各 emit 一帧 StreamSessionStatus")
+	require.Len(t, patches, 3, "ToolPermission Request + Resolved + turn 收尾各 emit 一帧 StreamSessionStatus")
 	assert.Equal(t, "waiting", patches[0].AgentStatus)
 	assert.True(t, patches[0].NeedsAttention)
 	assert.Equal(t, "running", patches[1].AgentStatus)
 	assert.False(t, patches[1].NeedsAttention)
+	assert.Equal(t, "idle", patches[2].AgentStatus)
+	assert.False(t, patches[2].NeedsAttention)
 
 	require.NotEmpty(t, *captured)
 	final := (*captured)[len(*captured)-1]
@@ -5213,6 +5237,97 @@ func TestStop_InvalidRequestReturnsError(t *testing.T) {
 		m := setupChatTest(t)
 		_, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 0})
 		assert.Error(t, err)
+	})
+}
+
+// stopBgRunner 是实现 BackgroundTaskStopper 的最小 runner,记录 StopBackgroundTask 入参。
+type stopBgRunner struct {
+	gotSid  int64
+	gotTask string
+	stopErr error
+}
+
+func (*stopBgRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{capability.CapStopBackgroundTask: true}}
+}
+
+func (*stopBgRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event)
+	close(ch)
+	return ch, &agentruntime.RunResult{}, nil
+}
+
+func (r *stopBgRunner) StopBackgroundTask(_ context.Context, sid int64, taskID string) error {
+	r.gotSid = sid
+	r.gotTask = taskID
+	return r.stopErr
+}
+
+func TestStopBackgroundTask_InvalidRequest(t *testing.T) {
+	convey.Convey("SessionID<=0 或 ToolUseID 空 → InvalidParameter", t, func() {
+		m := setupChatTest(t)
+		_, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 0, ToolUseID: "tu1"})
+		assert.Error(t, err)
+		_, err = m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 1, ToolUseID: ""})
+		assert.Error(t, err)
+	})
+}
+
+func TestStopBackgroundTask_SessionNotFound(t *testing.T) {
+	convey.Convey("会话查不到 → ChatSessionNotFound", t, func() {
+		m := setupChatTest(t)
+		m.session.EXPECT().Find(m.ctx, int64(101)).Return(nil, nil)
+		_, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 101, ToolUseID: "tu1"})
+		assert.Error(t, err)
+	})
+}
+
+func TestStopBackgroundTask_AlreadyTerminalIsIdempotent(t *testing.T) {
+	convey.Convey("任务已终态(completed) → 幂等 Stopped=true,不碰 runner", t, func() {
+		m := setupChatTest(t)
+		m.session.EXPECT().Find(m.ctx, int64(42)).Return(
+			&chat_entity.Session{ID: 42, AgentID: 7, Status: consts.ACTIVE}, nil)
+		m.message.EXPECT().FindSubagentState(m.ctx, int64(42), "tu1").Return("b0", "completed", true, nil)
+
+		resp, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 42, ToolUseID: "tu1"})
+		assert.NoError(t, err)
+		assert.True(t, resp.Stopped)
+	})
+}
+
+func TestStopBackgroundTask_NoTaskIDReturnsUnknown(t *testing.T) {
+	convey.Convey("running 但缺 task_id(老会话)→ ChatStopBgTaskUnknown", t, func() {
+		m := setupChatTest(t)
+		m.session.EXPECT().Find(m.ctx, int64(42)).Return(
+			&chat_entity.Session{ID: 42, AgentID: 7, Status: consts.ACTIVE}, nil)
+		m.message.EXPECT().FindSubagentState(m.ctx, int64(42), "tu1").Return("", "running", true, nil)
+
+		_, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 42, ToolUseID: "tu1"})
+		assert.Error(t, err)
+	})
+}
+
+func TestStopBackgroundTask_SuccessFlipsCanceled(t *testing.T) {
+	convey.Convey("running + task_id → 下发 stop_task 并把块翻 canceled", t, func() {
+		m := setupChatTest(t)
+		runner := &stopBgRunner{}
+		restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, runner)
+		defer restore()
+
+		m.session.EXPECT().Find(m.ctx, int64(42)).Return(
+			&chat_entity.Session{ID: 42, AgentID: 7, Status: consts.ACTIVE}, nil)
+		m.message.EXPECT().FindSubagentState(m.ctx, int64(42), "tu1").Return("b0n82mqaj", "running", true, nil)
+		m.agent.EXPECT().Find(m.ctx, int64(7)).Return(
+			&agent_entity.Agent{ID: 7, AgentBackendID: 3, Status: consts.ACTIVE}, nil)
+		m.backend.EXPECT().Find(m.ctx, int64(3)).Return(
+			&agent_backend_entity.AgentBackend{ID: 3, Type: string(agent_backend_entity.TypeClaudeCode), Status: consts.ACTIVE}, nil)
+		m.message.EXPECT().FlipSubagentStatus(m.ctx, int64(42), "tu1", "canceled", "").Return(nil)
+
+		resp, err := m.svc.StopBackgroundTask(m.ctx, &chat_svc.StopBackgroundTaskRequest{SessionID: 42, ToolUseID: "tu1"})
+		assert.NoError(t, err)
+		assert.True(t, resp.Stopped)
+		assert.Equal(t, int64(42), runner.gotSid)
+		assert.Equal(t, "b0n82mqaj", runner.gotTask)
 	})
 }
 

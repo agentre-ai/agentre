@@ -384,6 +384,17 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 	return wire.OK{}, nil
 }
 
+func (h *RuntimeHandlers) StopBackgroundTask(ctx context.Context, p wire.StopBackgroundTaskParams) (wire.OK, error) {
+	s, err := resolveSessionCapability[agentruntime.BackgroundTaskStopper](h, p.SessionID)
+	if err != nil {
+		return wire.OK{}, err
+	}
+	if err := s.StopBackgroundTask(ctx, p.SessionID, p.TaskID); err != nil {
+		return wire.OK{}, err
+	}
+	return wire.OK{}, nil
+}
+
 func (h *RuntimeHandlers) SetPermissionMode(ctx context.Context, p wire.SetPermissionModeParams) (wire.OK, error) {
 	m, err := resolveSessionCapability[agentruntime.PermissionModeSetter](h, p.SessionID)
 	if err != nil {

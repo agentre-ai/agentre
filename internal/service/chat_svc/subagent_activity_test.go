@@ -120,6 +120,32 @@ func TestDriveSubagentActivity_NestsChildrenAndPersists(t *testing.T) {
 			assert.Equal(t, launchStream, doneStream)
 		})
 
+		convey.Convey("会话级流补发 StreamAutonomousFinished 兜底(带发起消息 id)", func() {
+			var (
+				finIdx, closedIdx = -1, -1
+				finLaunch         int64
+				finName           string
+			)
+			for i, ev := range m.events {
+				p, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+				if !ok {
+					continue
+				}
+				if p.Kind == chat_svc.StreamAutonomousFinished {
+					finIdx = i
+					finLaunch = p.LaunchMessageID
+					finName = ev.Name
+				}
+				if p.Kind == chat_svc.StreamClosed && ev.Name == launchStream {
+					closedIdx = i
+				}
+			}
+			require.GreaterOrEqual(t, finIdx, 0, "活动轮收尾缺 StreamAutonomousFinished")
+			assert.Equal(t, chat_svc.AutonomousStreamName(sid), finName, "兜底终态必须走会话级流")
+			assert.Equal(t, launchID, finLaunch, "应携带发起消息 id")
+			assert.Greater(t, finIdx, closedIdx, "兜底终态在 per-turn StreamClosed 之后补发")
+		})
+
 		convey.Convey("session 保持 idle(后台活动不翻 running)", func() {
 			assert.Equal(t, "idle", sess.AgentStatus)
 		})

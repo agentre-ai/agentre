@@ -9,6 +9,7 @@ const (
 	CapCancelSteer         Capability = "cancel_steer"
 	CapDrainSteer          Capability = "drain_steer"
 	CapAbort               Capability = "abort"
+	CapStopBackgroundTask  Capability = "stop_background_task"
 	CapImageInput          Capability = "image_input"
 	CapSetPermission       Capability = "set_permission_mode"
 	CapAnswerUserAsk       Capability = "answer_user_ask"

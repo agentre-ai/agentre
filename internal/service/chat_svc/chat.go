@@ -90,6 +90,7 @@ type ChatSvc interface {
 	Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueResponse, error)
 	CancelQueued(ctx context.Context, req *CancelQueuedRequest) (*CancelQueuedResponse, error)
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
+	StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error)
 	SetPermissionMode(ctx context.Context, req *SetPermissionModeRequest) (*SetPermissionModeResponse, error)
 	Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error)
 	Edit(ctx context.Context, req *EditRequest) (*SendResponse, error)
@@ -1592,6 +1593,79 @@ func (s *chatSvc) reconcileOrphanStop(ctx context.Context, sessionID int64) (*St
 	return &StopResponse{Stopped: true}, nil
 }
 
+// StopBackgroundTask 停掉某个后台任务 / 子 agent(run_in_background),而不是中断整个 turn。
+// 流程:
+//  1. 按 toolUseID 从持久化 subagent_state 读出 CLI task_id + 当前状态;
+//  2. 已终态 / 找不到 overlay → 幂等成功(任务已不在跑,前端 reload 自然对齐);
+//  3. 缺 task_id(老会话的块没记)→ ChatStopBgTaskUnknown,让前端提示;
+//  4. resolve runner,断言 BackgroundTaskStopper(否则 ChatStopBgUnsupported,正常已被
+//     capability 位挡在前端),下发 stop_task;
+//  5. 成功后主动把块 flip 成 "canceled" —— 前端 reload 立即显示「已停止」;CLI 停任务后
+//     另发的 task_notification(canceled/failed)经既有自主轮再幂等收敛一次。
+func (s *chatSvc) StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error) {
+	if req == nil || req.SessionID <= 0 || req.ToolUseID == "" {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
+	}
+
+	taskID, status, found, err := chat_repo.Message().FindSubagentState(ctx, req.SessionID, req.ToolUseID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || (status != "" && status != "running") {
+		// 任务已终态 / 无 overlay:当已停处理,幂等。
+		return &StopBackgroundTaskResponse{Stopped: true}, nil
+	}
+	if taskID == "" {
+		return nil, i18n.NewError(ctx, code.ChatStopBgTaskUnknown)
+	}
+
+	_, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID)
+	if berr != nil {
+		return nil, berr
+	}
+	runner, rerr := s.selectRunner(ctx, be, sess.ID)
+	if rerr != nil {
+		return nil, rerr
+	}
+	stopper, ok := runner.(agentruntime.BackgroundTaskStopper)
+	if !ok {
+		return nil, i18n.NewError(ctx, code.ChatStopBgUnsupported)
+	}
+
+	logger.Ctx(ctx).Info("chat_svc.StopBackgroundTask: stopping background task",
+		zap.Int64("sessionId", req.SessionID),
+		zap.String("toolUseId", req.ToolUseID),
+		zap.String("taskId", taskID))
+
+	if serr := stopper.StopBackgroundTask(ctx, req.SessionID, taskID); serr != nil {
+		if errors.Is(serr, agentruntime.ErrNoActiveTurn) {
+			// 子进程已 evict → 任务随之消失,当已停处理(幂等)。
+			return &StopBackgroundTaskResponse{Stopped: true}, nil
+		}
+		logger.Ctx(ctx).Warn("chat_svc.StopBackgroundTask: runner stop failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.String("taskId", taskID),
+			zap.Error(serr))
+		return nil, i18n.NewError(ctx, code.ChatStopInternal)
+	}
+
+	// 主动翻 canceled(summary 留空:不写后端硬编码文案,「已停止」由前端 StatusPill 出 i18n)。
+	if ferr := chat_repo.Message().FlipSubagentStatus(ctx, req.SessionID, req.ToolUseID, "canceled", ""); ferr != nil {
+		logger.Ctx(ctx).Warn("chat_svc.StopBackgroundTask: flip subagent_state failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.String("toolUseId", req.ToolUseID),
+			zap.Error(ferr))
+	}
+	return &StopBackgroundTaskResponse{Stopped: true}, nil
+}
+
 const (
 	permissionModeDefault           = "default"
 	permissionModeAcceptEdits       = "acceptEdits"
@@ -2782,11 +2856,10 @@ func (s *chatSvc) runTurn(
 		zap.Bool("needsAttention", sess.NeedsAttention),
 		zap.Bool("aborted", aborted),
 		zap.Int("pending", len(pending)))
-	// 末端状态翻转主动推一帧 session_status:后台 session 出错/等审批时,前端 tab
-	// 只订阅本会话 stream,StreamError 走 finishStream→bumpDone 不动 agentStatus,
-	// 不补一刀 tab 红点要等下次 ListChatAgents 才同步。idle 不发 —— turn 正常收尾
-	// 走 StreamDone,前端 chat-panel doneTick effect 会 reloadSession 主动拉一次。
-	if (stopErr != nil && !aborted) || awaitingPlanAction {
+	// 最后一轮收尾统一先推 session_status，再推 done/error/aborted。前端底部输出由
+	// LiveStream 生命周期驱动，tab/toolbar/sidebar 由 session-status-store 驱动；若
+	// idle 只靠 done 后异步 reload 回填，两套视图必然存在不一致窗口。
+	if len(pending) == 0 {
 		logger.Ctx(finalCtx).Info("chat_svc: session_status emit",
 			zap.Int64("sessionId", sess.ID),
 			zap.Int64("assistantMsgId", assistantMsg.ID),
@@ -2839,6 +2912,14 @@ func (s *chatSvc) runTurn(
 		sess.AgentStatus = "idle"
 		sess.NeedsAttention = false
 		_ = s.persistSessionStatus(finalCtx, sess)
+		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+			Kind: StreamSessionStatus,
+			SessionStatus: &ChatSessionStatusPatch{
+				AgentStatus:    sess.AgentStatus,
+				NeedsAttention: sess.NeedsAttention,
+				BgRunning:      s.bgRunningActive(sess.ID),
+			},
+		})
 	}
 
 	final := chatMessageForEvent(sess, assistantMsg)

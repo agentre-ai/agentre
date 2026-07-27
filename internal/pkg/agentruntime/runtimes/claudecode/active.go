@@ -27,6 +27,13 @@ type claudeActive struct {
 	pool        *agentruntime.CLISessionPool
 	poolKey     string
 	inTurn      atomic.Bool
+	// outOfBand 记录本 session 上正在流的「带外轮」数量 —— 自主续轮(后台任务完成
+	// CLI 自主跑的一轮)和后台 subagent 活动轮。它们占着 pkg/claudecode.Session 的
+	// 活跃槽位:期间新起的 user turn 虽已把 user 帧写进 stdin,但真 CLI 要等当前轮
+	// result 之后才为它起 init(2.1.216 抓帧实证),所以 user turn 在这段时间内
+	// **一帧都收不到**。startup 看门狗必须据此暂停计时,否则会把一个健康、正忙的
+	// 子进程当成「起步即卡死」硬杀(sess-1950)。
+	outOfBand atomic.Int32
 	// launchedEffort 记录 spawn 时下发给 claude CLI 的 --effort <level>。
 	// --effort 是启动期 flag,运行时改不掉;下一轮如果 backend.ReasoningEffort
 	// 变了,acquireSession 会用这个字段比对、强制 evict 重 spawn。
@@ -72,6 +79,14 @@ func (a *claudeActive) setPermissionModeSnapshot(mode string) {
 	a.permissionMode = mode
 	a.modeMu.Unlock()
 }
+
+// enterOutOfBand / leaveOutOfBand 圈住一轮带外轮(自主续轮 / 后台 subagent 活动轮)
+// 的 drain 期。outOfBandActive 供 startup 看门狗判定「此刻没帧是因为帧流被带外轮占着」。
+func (a *claudeActive) enterOutOfBand() { a.outOfBand.Add(1) }
+func (a *claudeActive) leaveOutOfBand() { a.outOfBand.Add(-1) }
+
+// outOfBandActive 报告此刻是否有带外轮在流。
+func (a *claudeActive) outOfBandActive() bool { return a.outOfBand.Load() > 0 }
 
 func (a *claudeActive) setOut(out chan<- agentruntime.Event) {
 	a.outMu.Lock()

@@ -43,12 +43,21 @@ import i18n from "@/i18n";
 import { reasonToDisplayStatus } from "@/lib/attention-display";
 import { copyTextWithToast } from "@/lib/clipboard-toast";
 import { splitErrorDetail } from "@/lib/error-detail";
-import { findProjectColorToken, projectChain } from "@/lib/project-chain";
+import {
+  findProjectColorToken,
+  findProjectPath,
+  projectChain,
+} from "@/lib/project-chain";
 import { relativeTime } from "@/lib/relative-time";
 import { cn } from "@/lib/utils";
 import { useSessionAttention } from "@/stores/attention-store";
 import { useClearedBackgroundTasksStore } from "@/stores/cleared-background-tasks-store";
-import { useChatStreamsStore } from "@/stores/chat-streams-store";
+import {
+  streamForMessage,
+  useChatStreamsStore,
+  type ChatBlockData,
+  type LiveStream,
+} from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useQueuedMessagesStore } from "@/stores/queued-messages-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
@@ -63,6 +72,7 @@ import {
   type ChatComposerSubmit,
   type ChatTranscriptHandle,
   type ChatImageAttachment,
+  type TranscriptLiveContent,
 } from "./chat";
 import { ChatContextSidebar } from "./chat-context-sidebar";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
@@ -99,6 +109,7 @@ import {
   SendChatMessage,
   SetChatGoal,
   StartChatGoal,
+  StopBackgroundTask,
   StopChatMessage,
   TerminalRunCommand,
 } from "../../../wailsjs/go/app/App";
@@ -437,9 +448,20 @@ function ChatPanel({
   // zustand store 里。ChatPanel 只做「读 + 派发」,不再持有状态副本,这样切到 /projects
   // 等其它路由再切回来时,store 里累积的 liveDelta / liveBlocks / queued 都能直接还原。
   const openStream = useChatStreamsStore((s) => s.openStream);
-  const currentStream = useChatStreamsStore((s) =>
+  // 本会话的全部在流(用户轮 / 自主续轮 / 后台 subagent 活动轮),按 assistantMessageId
+  // 索引。引用只在本会话有流增删 / 内容变动时才变,别的会话在流不会触发本 panel 重渲染。
+  const sessionStreams = useChatStreamsStore((s) =>
     sessionId ? (s.streams.get(sessionId) ?? null) : null,
   );
+  // 主流 = 最近开的那条,供会话级读数(进度条 / typing indicator / 停止按钮)。
+  const currentStream = React.useMemo(() => {
+    if (!sessionStreams || sessionStreams.size === 0) return null;
+    let best: LiveStream | null = null;
+    for (const s of sessionStreams.values()) {
+      if (!best || s.streamStartedAt >= best.streamStartedAt) best = s;
+    }
+    return best;
+  }, [sessionStreams]);
   const currentQueued = useQueuedMessagesStore(
     (s) => s.queuedBySession.get(sessionId) ?? null,
   );
@@ -519,6 +541,21 @@ function ChatPanel({
         });
         return;
       }
+      // autonomous_finished:自主轮 / 后台 subagent 活动轮收尾时会话级流补发的终态兜底。
+      // per-turn 流的 openStream(ChatPanel)与 EventsOn 订阅(ChatStreamsHost)跨 render 解耦,
+      // 短轮的 per-turn done/closed 可能赶在订阅注册前发完被漏掉 → LiveStream 永远留在 store
+      // → streaming 卡死(发不出消息 / 空 assistant 行不回填)。会话级流常驻订阅、无此 race,
+      // 据 launchMessageId 兜底 finishStream。幂等:per-turn done 已被收到时该流已不在,
+      // streamForMessage 命中空直接跳过,不重复 bumpDone。
+      if (ev.kind === "autonomous_finished") {
+        const mid = ev.launchMessageId;
+        if (!mid) return;
+        const streamsState = useChatStreamsStore.getState();
+        if (streamForMessage(streamsState, sessionId, mid)) {
+          streamsState.finishStream(sessionId, mid, { kind: "done" });
+        }
+        return;
+      }
       if (ev.kind !== "autonomous_started") {
         return;
       }
@@ -528,10 +565,16 @@ function ChatPanel({
       // 命中的是 messages —— 必须一并翻,否则面板胶囊 + 行内 pill 永远 spin (bug #2)。
       if (ev.completedTask?.toolUseId) {
         const { toolUseId, status, summary } = ev.completedTask;
-        useChatStreamsStore.getState().mergeSubagentMeta(sessionId, toolUseId, {
-          status,
-          summary,
-        } as chat_svc.ChatBlockSubagent);
+        // 发起该后台任务的那条 tool_use 可能还挂在本会话任意一条在流的消息上
+        // (哪条不确定,后台任务是跨轮的),逐条流试着翻一遍;真正命中的多半是
+        // 下面的 messages。store 对未知 toolUseId 是 no-op。
+        const streamsState = useChatStreamsStore.getState();
+        for (const mid of streamsState.streams.get(sessionId)?.keys() ?? []) {
+          streamsState.mergeSubagentMeta(sessionId, mid, toolUseId, {
+            status,
+            summary,
+          } as chat_svc.ChatBlockSubagent);
+        }
         setMessages((prev) =>
           flipSubagentStatusInMessages(prev, toolUseId, status, summary),
         );
@@ -562,6 +605,11 @@ function ChatPanel({
   const { tree } = useProjectTree();
   const sessionProjectId = session?.projectId ?? 0;
   const currentSessionId = session?.id ?? 0;
+  const composerCwd = React.useMemo(
+    () =>
+      session?.cwd ?? findProjectPath(tree, newSessionContext?.projectId ?? 0),
+    [newSessionContext?.projectId, session?.cwd, tree],
+  );
   const newSessionProjectName = React.useMemo(() => {
     const projectId = newSessionContext?.projectId ?? 0;
     if (projectId <= 0) return "";
@@ -800,14 +848,32 @@ function ChatPanel({
   // ── 当前选中会话的派生视图 ──
   // 没有 LiveStream entry 表示该会话当前不在生成中；UI 的 typing indicator /
   // liveDelta / liveThinking / liveBlocks 全部来自 store,天然按 sessionId 隔离。
-  const liveDelta = currentStream?.liveDelta ?? "";
-  const liveThinking = currentStream?.liveThinking ?? "";
-  const liveBlocks = currentStream?.liveBlocks ?? null;
-  const liveRetry = currentStream?.liveRetry ?? null;
+  // 逐条 assistant 消息的流式内容表 —— 多条流并存时各渲各的,喂给 ChatTranscript。
+  // 不能只喂主流:后台任务完成的自主续轮与用户轮会重叠,只喂一条会让另一条瞬间
+  // 掉回持久化态(用户可见症状:「已输出内容清空回退」,sess-1950)。
+  const liveByMessageId = React.useMemo(() => {
+    const out = new Map<number, TranscriptLiveContent>();
+    if (!sessionStreams) return out;
+    for (const s of sessionStreams.values()) {
+      out.set(s.assistantMessageId, {
+        liveTail: s.liveDelta,
+        liveThinking: s.liveThinking,
+        liveThinkingStartedAt: s.streamStartedAt,
+        liveBlocks: s.liveBlocks,
+        liveRetry: s.liveRetry,
+      });
+    }
+    return out;
+  }, [sessionStreams]);
+  // 全部在流的 liveBlocks 拍平 —— 后台任务面板 / task-progress 是**会话级**视图,
+  // 用户轮和后台流里起的任务都要收进来。
+  const allLiveBlocks = React.useMemo(() => {
+    if (!sessionStreams) return [] as ChatBlockData[];
+    return Array.from(sessionStreams.values()).flatMap((s) => s.liveBlocks);
+  }, [sessionStreams]);
+  // 会话级读数取主流。
   const liveUsage = currentStream?.liveUsage ?? null;
   const liveContextWindow = currentStream?.liveContextWindow ?? 0;
-  const liveStreamStartedAt = currentStream?.streamStartedAt ?? null;
-  const liveTargetId = currentStream?.assistantMessageId ?? null;
   const liveCompacting = currentStream?.liveCompacting ?? false;
   const streaming = currentStream !== null;
 
@@ -845,6 +911,7 @@ function ChatPanel({
   );
   const caps = sessionCaps ?? backendCaps;
   const isModeSwitchable = !!caps?.has("set_permission_mode");
+  const canStopBackgroundTask = !!caps?.has("stop_background_task");
   const supportsImageInput = !!caps?.has("image_input");
   const supportsCompactRPC = caps
     ? caps.has("compact")
@@ -863,21 +930,16 @@ function ChatPanel({
     [messages, effectiveContextWindow, liveUsage],
   );
   const taskProgress = React.useMemo(
-    () => deriveTaskProgress(messages, currentStream?.liveBlocks ?? []),
-    [messages, currentStream?.liveBlocks],
+    () => deriveTaskProgress(messages, allLiveBlocks),
+    [messages, allLiveBlocks],
   );
   const clearedList = useClearedBackgroundTasksStore((s) =>
     sessionId > 0 ? (s.cleared[sessionId] ?? EMPTY_CLEARED) : EMPTY_CLEARED,
   );
   const clearedSet = React.useMemo(() => new Set(clearedList), [clearedList]);
   const backgroundTasks = React.useMemo(
-    () =>
-      deriveBackgroundTasks(
-        messages,
-        currentStream?.liveBlocks ?? [],
-        clearedSet,
-      ),
-    [messages, currentStream?.liveBlocks, clearedSet],
+    () => deriveBackgroundTasks(messages, allLiveBlocks, clearedSet),
+    [messages, allLiveBlocks, clearedSet],
   );
   const clearCompletedTasks = useClearedBackgroundTasksStore(
     (s) => s.clearCompleted,
@@ -885,10 +947,33 @@ function ChatPanel({
   const handleClearCompleted = React.useCallback(() => {
     if (sessionId <= 0) return;
     const doneIds = backgroundTasks
-      .filter((tk) => tk.status === "completed" || tk.status === "failed")
+      .filter((tk) => tk.status !== "running")
       .map((tk) => tk.toolUseId);
     clearCompletedTasks(sessionId, doneIds);
   }, [sessionId, backgroundTasks, clearCompletedTasks]);
+  // handleStopSubagent 停掉一个正在运行的后台任务/子 agent(下发 CLI stop_task,按发起它的
+  // tool_use_id 定位;后端从持久化 subagent_state 读出 CLI task_id)。停成功后把块翻 canceled,
+  // reload 让面板/卡片显示「已停止」。后台任务面板与转录 AgentSpawn 卡片共用它。
+  const handleStopSubagent = React.useCallback(
+    async (toolUseId: string) => {
+      if (sessionId <= 0 || !toolUseId) return;
+      try {
+        await StopBackgroundTask({ sessionId, toolUseId });
+        await reloadSession();
+      } catch (e: unknown) {
+        const { msg, detail } = splitErrorDetail(e);
+        console.error("[chat] stop background task failed", e);
+        setNotice({
+          kind: "error",
+          text: t("chatPanel.errors.stopBackgroundTask", { msg }),
+          detail,
+        });
+        // 后端没停成(如缺 task_id / 已 evict):reload 把真实状态拉回,避免按钮点了没反应。
+        await reloadSession();
+      }
+    },
+    [sessionId, reloadSession, t],
+  );
   // PermissionMode pill 数据从 caps.permissionModeMeta 拉;caps 未到位时
   // 用空 meta 做 placeholder(pill 整体被 isModeSwitchable 守护)。
   const permissionModeMeta = caps?.permissionModeMeta ?? {
@@ -972,16 +1057,7 @@ function ChatPanel({
     }
     pendingScrollRestoreRef.current = null;
     restoredScrollStateKeyRef.current = scrollStateKey;
-  }, [
-    messages,
-    liveDelta,
-    liveThinking,
-    liveBlocks,
-    liveRetry,
-    scrollStateKey,
-    sessionId,
-    transcriptElement,
-  ]);
+  }, [messages, liveByMessageId, scrollStateKey, sessionId, transcriptElement]);
 
   React.useLayoutEffect(() => {
     if (pendingScrollRestoreRef.current?.key === scrollStateKey) {
@@ -1025,14 +1101,7 @@ function ChatPanel({
       return;
     }
     saveBottomScrollPosition(readScrollMetrics(el));
-  }, [
-    liveDelta,
-    liveThinking,
-    liveBlocks,
-    liveRetry,
-    scrollStateKey,
-    saveBottomScrollPosition,
-  ]);
+  }, [liveByMessageId, scrollStateKey, saveBottomScrollPosition]);
 
   // tab 从隐藏(display:none)切回可见时，上面的 useLayoutEffect 在隐藏期间
   // 会被 clientHeight===0 跳过。这里由父层 HostedPanel 传入的 active 信号
@@ -1810,6 +1879,11 @@ function ChatPanel({
                         <BackgroundTasksChip
                           tasks={backgroundTasks}
                           onClearCompleted={handleClearCompleted}
+                          onStopTask={
+                            canStopBackgroundTask
+                              ? (task) => handleStopSubagent(task.toolUseId)
+                              : undefined
+                          }
                         />
                         {(() => {
                           // canStop 双源：
@@ -1961,17 +2035,15 @@ function ChatPanel({
                     virtualize
                     active={active}
                     messages={messages}
-                    liveDelta={liveDelta}
-                    liveThinking={liveThinking}
-                    liveBlocks={liveBlocks ?? undefined}
-                    liveRetry={liveRetry}
-                    liveStreamStartedAt={liveStreamStartedAt}
-                    liveTargetId={liveTargetId}
+                    liveByMessageId={liveByMessageId}
                     streaming={streaming}
                     liveCompacting={liveCompacting}
                     onRerun={(messageId) => void handleRegenerate(messageId)}
                     onEdit={(messageId) => handleEdit(messageId)}
                     onPlanActionStarted={handlePlanActionStarted}
+                    onStopSubagent={
+                      canStopBackgroundTask ? handleStopSubagent : undefined
+                    }
                     tabStateKey={scrollStateKey}
                   />
                   {showBackToBottom ? (
@@ -2177,6 +2249,8 @@ function ChatPanel({
                   void doSend(sessionId, session?.agentId ?? 0, message);
                 }}
                 backendType={activeBackendType}
+                agentId={session?.agentId ?? newSessionAgent?.id ?? 0}
+                cwd={composerCwd}
                 supportsImageInput={supportsImageInput}
                 onRunCommand={(command) => runLocalCommand(sessionId, command)}
                 onSlashRpc={(cmd) => {

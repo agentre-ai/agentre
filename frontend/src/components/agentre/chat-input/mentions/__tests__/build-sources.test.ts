@@ -6,7 +6,7 @@ describe("buildMentionSources", () => {
   it("maps agents and projects into mention items", () => {
     const out = buildMentionSources(
       [{ id: 12, name: "Reviewer", avatarColor: "agent-3" }],
-      [{ id: 3, name: "Web", path: "/w", color: "agent-5" }],
+      [{ id: 3, name: "Web", path: "/w", color: "agent-5", depth: 2 }],
     );
     expect(out).toEqual({
       agents: [
@@ -19,6 +19,7 @@ describe("buildMentionSources", () => {
           label: "Web",
           path: "/w",
           color: "agent-5",
+          depth: 2,
         },
       ],
     });
@@ -39,6 +40,7 @@ describe("buildMentionSources", () => {
       refId: 2,
       label: "B",
       path: "",
+      depth: 0,
     });
   });
 });

@@ -4,17 +4,26 @@ import { detectSlashTrigger } from "../trigger";
 
 describe("detectSlashTrigger", () => {
   it("行首 / 触发,query 空", () => {
-    expect(detectSlashTrigger("/")).toEqual({ startOffset: 0, query: "" });
+    expect(detectSlashTrigger("/")).toEqual({
+      startOffset: 0,
+      query: "",
+      trigger: "/",
+    });
   });
 
   it("行首 /co 触发,query=co", () => {
-    expect(detectSlashTrigger("/co")).toEqual({ startOffset: 0, query: "co" });
+    expect(detectSlashTrigger("/co")).toEqual({
+      startOffset: 0,
+      query: "co",
+      trigger: "/",
+    });
   });
 
   it("空白后 /co 触发,startOffset 指向 /", () => {
     expect(detectSlashTrigger("hello /co")).toEqual({
       startOffset: 6,
       query: "co",
+      trigger: "/",
     });
   });
 
@@ -22,6 +31,7 @@ describe("detectSlashTrigger", () => {
     expect(detectSlashTrigger("first line\n/com")).toEqual({
       startOffset: 11,
       query: "com",
+      trigger: "/",
     });
   });
 
@@ -46,6 +56,19 @@ describe("detectSlashTrigger", () => {
     expect(detectSlashTrigger("foo /bar /co")).toEqual({
       startOffset: 9,
       query: "co",
+      trigger: "/",
     });
+  });
+
+  it("Given Codex skill triggers are enabled, When typing $ after whitespace, Then it returns the skill query", () => {
+    expect(detectSlashTrigger("ask $lore:lore", ["/", "$"])).toEqual({
+      startOffset: 4,
+      query: "lore:lore",
+      trigger: "$",
+    });
+  });
+
+  it("Given only slash triggers are enabled, When typing $, Then it stays ordinary message text", () => {
+    expect(detectSlashTrigger("$lore", ["/"])).toBeNull();
   });
 });

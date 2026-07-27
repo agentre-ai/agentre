@@ -411,15 +411,14 @@ describe("buildTranscriptRows", () => {
     ]);
   });
 
-  it("live 数据只注入 liveTargetId 那条消息", () => {
+  it("live 数据只注入 liveByMessageId 里有 key 的那条消息", () => {
     const { rows } = buildTranscriptRows({
       displayMessages: [
         message(1, "assistant", [text("old")]),
         message(2, "assistant", []),
       ],
       autonomousIds: new Set(),
-      liveTargetId: 2,
-      liveTail: "growing",
+      liveByMessageId: new Map([[2, { liveTail: "growing" }]]),
     });
 
     expect(rows.map((r) => [r.messageId, r.item.type])).toEqual([
@@ -435,13 +434,19 @@ describe("buildTranscriptRows", () => {
     const liveForm = buildTranscriptRows({
       displayMessages: [message(2, "assistant", [])],
       autonomousIds: new Set(),
-      liveTargetId: 2,
-      liveBlocks: [
-        text("frozen intro"),
-        toolUse("toolu-1"),
-        toolResult("toolu-1"),
-      ],
-      liveTail: "tail text",
+      liveByMessageId: new Map([
+        [
+          2,
+          {
+            liveBlocks: [
+              text("frozen intro"),
+              toolUse("toolu-1"),
+              toolResult("toolu-1"),
+            ],
+            liveTail: "tail text",
+          },
+        ],
+      ]),
     });
     // 落库形态:同样内容全部进 persisted blocks。
     const persistedForm = buildTranscriptRows({
@@ -465,20 +470,28 @@ describe("buildTranscriptRows", () => {
     const base = {
       displayMessages: [message(2, "assistant", [])],
       autonomousIds: new Set<number>(),
-      liveTargetId: 2,
     };
     const before = buildTranscriptRows({
       ...base,
-      liveBlocks: [text("intro"), toolUse("toolu-1")],
+      liveByMessageId: new Map([
+        [2, { liveBlocks: [text("intro"), toolUse("toolu-1")] }],
+      ]),
     });
     const after = buildTranscriptRows({
       ...base,
-      liveBlocks: [
-        text("intro"),
-        toolUse("toolu-1"),
-        toolResult("toolu-1"),
-        toolUse("toolu-2"),
-      ],
+      liveByMessageId: new Map([
+        [
+          2,
+          {
+            liveBlocks: [
+              text("intro"),
+              toolUse("toolu-1"),
+              toolResult("toolu-1"),
+              toolUse("toolu-2"),
+            ],
+          },
+        ],
+      ]),
     });
 
     const beforeKeys = before.rows.map((r) => r.key);
@@ -494,8 +507,7 @@ describe("buildTranscriptRows", () => {
     const args = {
       displayMessages: [persisted, live],
       autonomousIds: new Set<number>(),
-      liveTargetId: 2,
-      liveTail: "grow",
+      liveByMessageId: new Map([[2, { liveTail: "grow" }]]),
       cache,
     };
 

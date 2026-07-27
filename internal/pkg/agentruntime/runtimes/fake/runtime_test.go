@@ -215,6 +215,125 @@ func TestRun_PostsHookCreateOnDirective(t *testing.T) {
 	assert.NotEmpty(t, args["scheduleExpr"])
 }
 
+// e2e-bg-task:<label> → 本轮正常收尾后,fake 经 AutonomousTurns(sessionID) 推一轮
+// 「自主续轮」(镜像 claudecode 后台任务完成后 CLI 自主跑的一轮),其事件流带
+// AutonomousOutputPrefix+<label> 标记文本。
+func TestAutonomousTurns_DeliversTurnOnBackgroundTaskDirective(t *testing.T) {
+	t.Setenv("AGENTRE_E2E_FAKE_AUTOTURN_DELAY_MS", "10")
+	t.Setenv("AGENTRE_E2E_FAKE_AUTOTURN_CHUNK_MS", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	r := New()
+	// 订阅先于 Run —— 镜像 chat_svc:runTurn 拿到 Run 的 channel 后立刻 startAutonomousWatcher。
+	turns := r.AutonomousTurns(50)
+
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 50,
+		UserText:  "(来自 用户)\ne2e-bg-task:nightly",
+	})
+	require.NoError(t, err)
+	for range events { //nolint:revive // draining
+	}
+
+	var at agentruntime.AutonomousTurn
+	select {
+	case at = <-turns:
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected an AutonomousTurn after the e2e-bg-task directive")
+	}
+	assert.Equal(t, "background_task", at.Trigger)
+	require.NotNil(t, at.Result)
+	require.NotNil(t, at.Events)
+
+	var text string
+	var sawDone bool
+	for ev := range at.Events {
+		switch e := ev.(type) {
+		case agentruntime.TextDelta:
+			text += e.Text
+		case agentruntime.Done:
+			sawDone = true
+		}
+	}
+	assert.Contains(t, text, AutonomousOutputPrefix+"nightly")
+	assert.True(t, sawDone, "autonomous turn must finish with Done")
+}
+
+// 无 e2e-bg-task 指令 → 不推自主续轮(普通回显轮不应凭空多出一条 assistant 轮)。
+func TestAutonomousTurns_NoTurnWithoutDirective(t *testing.T) {
+	t.Setenv("AGENTRE_E2E_FAKE_AUTOTURN_DELAY_MS", "10")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	r := New()
+	turns := r.AutonomousTurns(51)
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{SessionID: 51, UserText: "ping"})
+	require.NoError(t, err)
+	for range events { //nolint:revive // draining
+	}
+
+	select {
+	case at, ok := <-turns:
+		if ok {
+			t.Fatalf("must not deliver an AutonomousTurn without the directive: %+v", at)
+		}
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// 从未跑过 turn 的会话调 AutonomousTurns 必须安全:拿到一个空闲 channel,不 panic 不阻塞。
+func TestAutonomousTurns_IdleForUnknownSession(t *testing.T) {
+	r := New()
+	turns := r.AutonomousTurns(9999)
+	require.NotNil(t, turns)
+	select {
+	case at, ok := <-turns:
+		if ok {
+			t.Fatalf("unknown session must stay idle, got %+v", at)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// fake 必须真正满足 chat_svc 惰性类型断言的接口,否则 watcher 根本不会挂上。
+func TestRuntime_ImplementsAutonomousTurnSource(t *testing.T) {
+	var _ agentruntime.AutonomousTurnSource = New()
+}
+
+// 自主续轮进行中(没有用户轮)时 Steer 必须报 ErrNoActiveTurn —— 镜像真实 claudecode
+// (a.inTurn=false)。chat_svc 把它翻成 ChatSteerNoActive,前端据此从"排队"回退成
+// "另起一轮 Send",这正是"自主轮流式中用户再发一条"的真实链路。
+func TestSteer_WithoutActiveUserTurn_ReturnsErrNoActiveTurn(t *testing.T) {
+	r := New()
+	err := r.Steer(context.Background(), 60, "q1", "hi")
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
+// 用户轮进行中 → 不是 ErrNoActiveTurn(fake 不支持真正的 mid-turn 注入,报别的错),
+// 否则前端会在正常流式中被误导成"另起一轮"。
+func TestSteer_DuringUserTurn_IsNotNoActiveTurn(t *testing.T) {
+	t.Setenv("AGENTRE_E2E_FAKE_CHUNK_DELAY_MS", "50")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	r := New()
+	events, _, err := r.Run(ctx, agentruntime.RunRequest{
+		SessionID: 61,
+		UserText:  "hello world this is long enough to span several chunks",
+	})
+	require.NoError(t, err)
+	<-events // 轮已开始
+
+	steerErr := r.Steer(ctx, 61, "q1", "hi")
+	assert.Error(t, steerErr)
+	assert.NotErrorIs(t, steerErr, agentruntime.ErrNoActiveTurn)
+
+	cancel()
+	for range events { //nolint:revive // draining
+	}
+}
+
 // toolCaptureServer 收集本轮 fake 发出的全部 tools/call,按 tool 名归档参数。
 func toolCaptureServer(t *testing.T) (*httptest.Server, func() map[string][]map[string]any) {
 	t.Helper()

@@ -194,11 +194,12 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 // claudecode 是 daemon 最常见的 backend,所以默认对齐它已知能力子集。
 var defaultCapsBeforePrefetch = capability.Capabilities{
 	Set: map[capability.Capability]bool{
-		capability.CapSteer:          true,
-		capability.CapAbort:          true,
-		capability.CapAnswerUserAsk:  true,
-		capability.CapToolPermission: true,
-		capability.CapSkills:         true,
+		capability.CapSteer:              true,
+		capability.CapAbort:              true,
+		capability.CapStopBackgroundTask: true,
+		capability.CapAnswerUserAsk:      true,
+		capability.CapToolPermission:     true,
+		capability.CapSkills:             true,
 	},
 	PermissionModeMeta: capability.PermissionModeMeta{
 		AllowedModes:         []string{"default", "acceptEdits", "plan", "bypassPermissions"},
@@ -470,6 +471,16 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 		return agentruntime.ErrNoActiveTurn
 	}
 	return r.callSentinel(ctx, wire.MethodAbort, wire.AbortParams{SessionID: sessionID}, &wire.OK{})
+}
+
+func (r *Runtime) StopBackgroundTask(ctx context.Context, sessionID int64, taskID string) error {
+	if !r.hasSession(sessionID) {
+		return agentruntime.ErrNoActiveTurn
+	}
+	return r.callSentinel(ctx, wire.MethodStopBackgroundTask, wire.StopBackgroundTaskParams{
+		SessionID: sessionID,
+		TaskID:    taskID,
+	}, &wire.OK{})
 }
 
 func (r *Runtime) SetPermissionMode(ctx context.Context, sessionID int64, mode string) error {
