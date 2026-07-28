@@ -13,8 +13,8 @@ import (
 )
 
 // captureProc 是一个把 stdin 写入捕获下来的假进程，让我们断言发给 Pi 的
-// prompt 帧形态（含 images）。stdout 预置一段「prompt 已接受 + agent_end」
-// 的脚本让 Stream 自然走完。
+// prompt 帧形态（含 images）。stdout 预置一段「prompt 已接受 + agent_end +
+// agent_settled」的 Pi 0.81.1 脚本让 Stream 自然走完。
 type captureProc struct {
 	stdin  *lockedBuffer
 	stdout io.Reader
@@ -58,7 +58,8 @@ func newCaptureClient(stdout string) (*Client, *captureProc) {
 func TestStreamPromptCarriesImagesWithoutText(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, proc := newCaptureClient(script)
@@ -93,7 +94,8 @@ func TestStreamPromptCarriesImagesWithoutText(t *testing.T) {
 func TestStreamPromptWithoutImagesOmitsField(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, proc := newCaptureClient(script)

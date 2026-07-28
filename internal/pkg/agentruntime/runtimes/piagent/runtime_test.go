@@ -114,6 +114,51 @@ func TestRun_ClosesSessionAfterDrain(t *testing.T) {
 	})
 }
 
+func TestRun_ClosesOutputAfterSessionClose(t *testing.T) {
+	Convey("Given a pi-agent session whose cleanup is still running", t, func() {
+		closeStarted := make(chan struct{})
+		allowClose := make(chan struct{})
+		sess := &fakeSession{
+			stream:       &emptyStream{},
+			sid:          "pi-session",
+			closeStarted: closeStarted,
+			allowClose:   allowClose,
+		}
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+			return sess, nil
+		})
+		defer restore()
+
+		Convey("When the stream has drained Then output remains open until session cleanup returns", func() {
+			events, _, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+
+			<-closeStarted
+			for len(events) > 0 {
+				<-events
+			}
+			select {
+			case _, open := <-events:
+				if !open {
+					t.Fatal("runtime closed output before session cleanup returned")
+				}
+				t.Fatal("runtime emitted an unexpected event while session cleanup was blocked")
+			default:
+			}
+
+			close(allowClose)
+			for range events {
+			}
+			So(sess.closed, ShouldBeTrue)
+		})
+	})
+}
+
 func TestRun_ForwardsUserBlockImagesToStream(t *testing.T) {
 	Convey("Given a pi-agent turn carrying an inline image block", t, func() {
 		sess := &fakeSession{stream: &emptyStream{}, sid: "pi-session"}
@@ -198,16 +243,27 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 }
 
 type fakeSession struct {
-	stream     stream
-	sid        string
-	gotImages  []pkgpiagent.Image
-	gotPrompt  string
-	streamCall int
-	closed     bool
+	stream       stream
+	sid          string
+	gotImages    []pkgpiagent.Image
+	gotPrompt    string
+	streamCall   int
+	closed       bool
+	closeStarted chan struct{}
+	allowClose   <-chan struct{}
 }
 
-func (s *fakeSession) Close(context.Context) error { s.closed = true; return nil }
-func (s *fakeSession) ID() string                  { return s.sid }
+func (s *fakeSession) Close(context.Context) error {
+	if s.closeStarted != nil {
+		close(s.closeStarted)
+	}
+	if s.allowClose != nil {
+		<-s.allowClose
+	}
+	s.closed = true
+	return nil
+}
+func (s *fakeSession) ID() string { return s.sid }
 func (s *fakeSession) Stream(_ context.Context, prompt, _ string, images []pkgpiagent.Image) (stream, error) {
 	s.streamCall++
 	s.gotPrompt = prompt

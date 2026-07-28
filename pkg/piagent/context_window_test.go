@@ -13,7 +13,8 @@ import (
 func TestStreamEmitsContextWindowFromSessionStats(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":1234,"contextWindow":1050000,"percent":0.12}}}`,
 		"",
 	}, "\n")
