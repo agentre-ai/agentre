@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -823,6 +824,24 @@ func TestGetLaunchCommand(t *testing.T) {
 			assert.Contains(t, command, "codex resume")
 			assert.Contains(t, command, " codex-thread-123")
 			assert.Contains(t, command, `-c 'model="gpt-5-codex"'`)
+		})
+
+		convey.Convey("piagent → 单行命令用确定的 session JSONL 路径恢复当前 chat session", func() {
+			m.session.EXPECT().Find(ctx, int64(9)).Return(&chat_entity.Session{
+				ID: 9, AgentID: 10, Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(ctx, int64(10)).Return(&agent_entity.Agent{
+				ID: 10, AgentBackendID: 24, Status: consts.ACTIVE,
+			}, nil)
+			m.backend.EXPECT().Find(ctx, int64(24)).Return(&agent_backend_entity.AgentBackend{
+				ID: 24, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+			}, nil)
+
+			command := loadLaunchCommand(t, m, ctx, 9, agent_backend_entity.TypePiAgent)
+			assert.Contains(t, command, "pi --session-dir")
+			assert.Contains(t, command, filepath.Join("piagent", "sessions"))
+			assert.Contains(t, command, filepath.Join("piagent", "sessions", "agentre-9.jsonl"))
+			assert.NotContains(t, command, "--mode rpc")
 		})
 
 		convey.Convey("builtin → ChatLaunchCommandNotAvailable", func() {

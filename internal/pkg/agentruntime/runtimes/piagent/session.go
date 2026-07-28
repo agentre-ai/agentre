@@ -2,9 +2,6 @@ package piagent
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -13,7 +10,6 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent/mcpbridge"
-	"github.com/agentre-ai/agentre/internal/pkg/paths"
 	"github.com/agentre-ai/agentre/pkg/piagent"
 )
 
@@ -117,33 +113,6 @@ type sessionHandle interface {
 	ActiveInterruptor() interruptable
 }
 
-// piAgentSessionsDir 是 Agentre 专用的 Pi session 存储目录：
-//
-//	<AppDataDir>/piagent/sessions/
-//
-// 独立于 Agent 工作目录（cwd），避免 Pi 把 session JSONL 写进用户项目里。
-func piAgentSessionsDir() (string, error) {
-	root, err := paths.AppDataDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(root, "piagent", "sessions")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
-// sessionFilePath 把 chat session id 映射到一个确定的 Pi session 文件路径，
-// 让同一会话跨 turn 用相同路径 resume。sessionID<=0 或 dir 为空时返回空串，
-// 表示不做 resume（如连通性探测）。
-func sessionFilePath(dir string, sessionID int64) string {
-	if dir == "" || sessionID <= 0 {
-		return ""
-	}
-	return filepath.Join(dir, fmt.Sprintf("agentre-%d.jsonl", sessionID))
-}
-
 // piRawFrameSink 返回一个把 pi-agent 每行原始 stdout 帧打到 debug 日志的回调。
 // 语义同 claudecode 的 ccRawFrameSink:由「Debug Logging」开关热控(关时 zap 直接丢弃,
 // 近零开销),用 logger.Default() 取当前全局 logger 故热重载即时生效。
@@ -198,9 +167,9 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 	// 跨 turn 上下文：把 session 存到专用目录，并按 chat session id 解析出确定的
 	// session 文件路径，Pi 第一轮新建、后续轮 resume。解析目录失败时退化为不
 	// resume（仍能跑单轮），不阻断 turn。
-	if sessionDir, derr := piAgentSessionsDir(); derr == nil {
+	if sessionDir, derr := agentruntime.PiAgentSessionsDir(); derr == nil {
 		opts = append(opts, piagent.WithSessionDir(sessionDir))
-		if path := sessionFilePath(sessionDir, req.SessionID); path != "" {
+		if path := agentruntime.PiAgentSessionFilePath(sessionDir, req.SessionID); path != "" {
 			opts = append(opts, piagent.WithSession(path))
 		}
 	}

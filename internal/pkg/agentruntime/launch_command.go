@@ -25,6 +25,9 @@ type LaunchCommandSpec struct {
 	Backend  *agent_backend_entity.AgentBackend
 	Provider *llm_provider_entity.LLMProvider
 	AgentID  int64
+	// SessionID 是 Agentre chat_sessions.id；piagent launch command 用它推导
+	// 确定的 --session JSONL 路径，对齐运行时跨 turn resume 行为。
+	SessionID int64
 	// Cwd 非空时作为 cd 目标；为空时回退 AgentCwd(AgentID)。chat_svc 调
 	// project_svc.ResolveSessionCwd 解析 project 维度 cwd 注入。
 	Cwd               string
