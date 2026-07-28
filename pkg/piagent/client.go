@@ -135,14 +135,14 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 		rawSink:    c.rawSink,
 		stderr:     &lockedBuffer{},
 		stderrDone: make(chan struct{}),
-		done:       make(chan error, 1),
+		done:       make(chan struct{}),
 	}
 	p.lines.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	go func() {
 		defer close(p.stderrDone)
 		_, _ = io.Copy(p.stderr, h.Stderr())
 	}()
-	go func() { p.done <- h.Wait() }()
+	go p.awaitExit()
 	return p, nil
 }
 
@@ -153,8 +153,28 @@ type rpcProcess struct {
 	rawSink    func([]byte) // 非 nil 时每行原始 stdout 同步回调一次(debug 原始帧转储)
 	stderr     *lockedBuffer
 	stderrDone chan struct{}
-	done       chan error
+	done       chan struct{} // closed when waitErr is available to every observer
+	waitErr    error         // immutable after done is closed
 	mu         sync.Mutex
+}
+
+func (p *rpcProcess) awaitExit() {
+	p.waitErr = p.handle.Wait()
+	close(p.done)
+}
+
+func (p *rpcProcess) waitResult() error {
+	<-p.done
+	return p.waitErr
+}
+
+func (p *rpcProcess) completedWaitResult() (error, bool) {
+	select {
+	case <-p.done:
+		return p.waitErr, true
+	default:
+		return nil, false
+	}
 }
 
 func (p *rpcProcess) writeJSON(v any) error {
@@ -177,11 +197,11 @@ func (p *rpcProcess) terminate(ctx context.Context, grace time.Duration) error {
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
 	select {
-	case err := <-p.done:
-		return wrapTerminateExitError(err, p.stderr.String())
+	case <-p.done:
+		return wrapTerminateExitError(p.waitErr, p.stderr.String())
 	case <-timer.C:
 		_ = p.handle.Kill()
-		return wrapExitError(<-p.done, p.stderr.String())
+		return wrapExitError(p.waitResult(), p.stderr.String())
 	case <-ctx.Done():
 		_ = p.handle.Kill()
 		return ctx.Err()
@@ -224,15 +244,13 @@ func processDeadOrScanError(p *rpcProcess) error {
 	if err := p.lines.Err(); err != nil {
 		return err
 	}
-	select {
-	case err := <-p.done:
+	if err, exited := p.completedWaitResult(); exited {
 		if err == nil {
 			return ErrProcessDead
 		}
 		return wrapExitError(err, p.stderr.String())
-	default:
-		return ErrProcessDead
 	}
+	return ErrProcessDead
 }
 
 func isAcceptedPromptResponse(r rpcResponse) bool {
@@ -240,14 +258,7 @@ func isAcceptedPromptResponse(r rpcResponse) bool {
 }
 
 func isTerminalEvent(ev rpcEvent) bool {
-	if ev.Type != "agent_end" {
-		return false
-	}
-	msg := lastAssistantFromAgentEnd(ev.Messages)
-	if msg == nil {
-		return true
-	}
-	return strings.TrimSpace(msg.StopReason) != "toolUse"
+	return ev.Type == "agent_settled"
 }
 
 func parseAssistantMessage(raw json.RawMessage) (*assistantMessage, error) {

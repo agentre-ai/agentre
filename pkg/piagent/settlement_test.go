@@ -31,7 +31,7 @@ func TestStreamWaitsForSettledAfterCompaction(t *testing.T) {
 
 	reader.Push(
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"before compact"}],"stopReason":"stop"}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"before compact"}],"stopReason":"stop"}],"willRetry":false}`,
 		`{"type":"compaction_start","reason":"threshold"}`,
 		`{"type":"compaction_end","reason":"threshold","result":{"summary":"condensed"}}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"after compact"}}`,
@@ -75,11 +75,11 @@ func TestStreamConsumesContinuationAfterSettlingBoundary(t *testing.T) {
 
 	reader.Push(
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"first step"}],"stopReason":"stop"}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"first step"}],"stopReason":"stop"}],"willRetry":false}`,
 		`{"type":"tool_execution_start","toolCallId":"call_2","toolName":"bash","args":{"command":"echo continued"}}`,
 		`{"type":"tool_execution_end","toolCallId":"call_2","toolName":"bash","result":{"content":[{"type":"text","text":"continued"}]},"isError":false}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"final continuation"}}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"final continuation"}],"stopReason":"stop"}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"final continuation"}],"stopReason":"stop"}],"willRetry":false}`,
 		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":2222,"contextWindow":222222,"percent":0.21}}}`,
 		preSettlementBarrierFrame(),
 	)
@@ -126,10 +126,11 @@ func TestStreamSuppressesRetriedAgentEndErrorUntilSettled(t *testing.T) {
 
 	reader.Push(
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"temporary failure"}],"stopReason":"error","errorMessage":"provider overloaded"}]}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"error","reason":"provider overloaded"}}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"temporary failure"}],"stopReason":"error","errorMessage":"provider overloaded"}],"willRetry":true}`,
 		`{"type":"auto_retry_start","errorMessage":"provider overloaded"}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"retry succeeded"}}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"retry succeeded"}],"stopReason":"stop"}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"retry succeeded"}],"stopReason":"stop"}],"willRetry":false}`,
 		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":2222,"contextWindow":333333,"percent":0.21}}}`,
 		preSettlementBarrierFrame(),
 	)
@@ -157,7 +158,7 @@ func TestStreamSuppressesRetriedAgentEndErrorUntilSettled(t *testing.T) {
 // agent_settled, when the prompt stream is consumed, then the final error is
 // withheld until settlement, retains diagnostics, and never emits Done.
 func TestStreamReportsSettledFinalAgentEndError(t *testing.T) {
-	finalFrame := `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"error","errorMessage":"final provider failure","model":"gpt-5.5(xhigh)"}]}`
+	finalFrame := `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"error","errorMessage":"final provider failure","model":"gpt-5.5(xhigh)"}],"willRetry":false}`
 	reader := newStreamingRPCReader()
 	client, proc := newStreamingCaptureClient(reader)
 	proc.stderr = strings.NewReader("pi stderr tail\n")
@@ -168,7 +169,7 @@ func TestStreamReportsSettledFinalAgentEndError(t *testing.T) {
 
 	reader.Push(
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"intermediate"}],"stopReason":"stop"}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"intermediate"}],"stopReason":"stop"}],"willRetry":false}`,
 		finalFrame,
 		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":3333,"contextWindow":444444,"percent":0.32}}}`,
 		preSettlementBarrierFrame(),
@@ -189,6 +190,106 @@ func TestStreamReportsSettledFinalAgentEndError(t *testing.T) {
 	assert.Equal(t, "final provider failure", diagnostics.FinalErrorMessage)
 	assert.JSONEq(t, finalFrame, diagnostics.FinalErrorFrame)
 	assert.Equal(t, "pi stderr tail", diagnostics.StderrTail)
+}
+
+// Given Pi's documented aborted stream sequence, when the assistant's
+// authoritative agent_end stops as aborted, then the staged error remains a
+// settled failure rather than being cleared as a successful agent_end.
+func TestStreamReportsSettledAbortedAgentEnd(t *testing.T) {
+	tests := []struct {
+		name               string
+		errorMessage       string
+		wantError          string
+		wantDiagnosticText string
+	}{
+		{
+			name:               "authoritative agent end error message supersedes streaming delta",
+			errorMessage:       "user requested abort",
+			wantError:          "piagent: user requested abort",
+			wantDiagnosticText: "user requested abort",
+		},
+		{
+			name:               "stop reason supplies fallback when agent end has no useful error message",
+			wantError:          "piagent: aborted",
+			wantDiagnosticText: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			finalFrame := abortedAgentEndFrame(tt.errorMessage)
+			reader := newStreamingRPCReader()
+			client, proc := newStreamingCaptureClient(reader)
+			t.Cleanup(reader.Close)
+
+			s, err := client.Stream(context.Background(), "abort this")
+			require.NoError(t, err)
+			require.NoError(t, s.Interrupt(context.Background()))
+
+			reader.Push(
+				`{"type":"response","command":"prompt","success":true}`,
+				`{"type":"message_update","assistantMessageEvent":{"type":"error","reason":"aborted"}}`,
+				finalFrame,
+				preSettlementBarrierFrame(),
+			)
+			preSettled := assertPreSettlementBarrier(t, s, proc, []EventKind{})
+			assert.NotContains(t, eventKinds(preSettled), EventError)
+			assert.NotContains(t, eventKinds(preSettled), EventDone)
+			assert.NoError(t, s.Err())
+
+			reader.Push(
+				`{"type":"agent_settled"}`,
+				`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":3333,"contextWindow":444444,"percent":0.32}}}`,
+			)
+			postSettled := collectUntilTerminal(t, s)
+			assert.Contains(t, eventKinds(postSettled), EventError)
+			assert.NotContains(t, eventKinds(postSettled), EventDone)
+			require.Error(t, s.Err())
+			assert.EqualError(t, s.Err(), tt.wantError)
+
+			diagnostics := s.Diagnostics()
+			assert.Equal(t, "agent_end", diagnostics.FinalErrorEventType)
+			assert.Equal(t, "aborted", diagnostics.FinalErrorStopReason)
+			assert.Equal(t, tt.wantDiagnosticText, diagnostics.FinalErrorMessage)
+			assert.JSONEq(t, finalFrame, diagnostics.FinalErrorFrame)
+
+			frames := stdinFrames(t, proc.stdin.String())
+			require.Len(t, frames, 2)
+			assert.Equal(t, "prompt", frames[0]["type"])
+			assert.Equal(t, "abort", frames[1]["type"])
+		})
+	}
+}
+
+func abortedAgentEndFrame(errorMessage string) string {
+	message := ""
+	if errorMessage != "" {
+		message = `,"errorMessage":"` + errorMessage + `"`
+	}
+	return `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"aborted"` + message + `}],"willRetry":false}`
+}
+
+// Given a prompt stream whose process ends after a nonterminal agent_end,
+// when Pi never emits agent_settled, then the stream reports process death
+// instead of completing cleanly.
+func TestStreamReportsProcessDeathBeforeSettled(t *testing.T) {
+	client, _ := newCaptureClient(strings.Join([]string{
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"unfinished"}],"stopReason":"stop"}],"willRetry":false}`,
+		"",
+	}, "\n"))
+
+	s, err := client.Stream(context.Background(), "wait for settlement")
+	require.NoError(t, err)
+
+	var kinds []EventKind
+	for s.Next() {
+		kinds = append(kinds, s.Event().Kind)
+	}
+
+	assert.Contains(t, kinds, EventError)
+	assert.NotContains(t, kinds, EventDone)
+	assert.ErrorIs(t, s.Err(), ErrProcessDead)
 }
 
 type streamingRPCReader struct {

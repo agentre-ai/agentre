@@ -42,7 +42,7 @@ Agentre 通过 Pi RPC 模式运行 `piagent`。Pi 的 `agent_end` 只表示一�
 - 不改变 80% 阈值、摘要模型或 reasoning level 配置。
 - 不新增前端 UI、通知卡片或新的 Wails API。
 - 不修复、删除或重写 `sess-2223` 已有的聊天消息、compaction 记录或 Agentre 数据库行。
-- 不为缺少 `agent_settled` 的旧版、非当前 Pi RPC 协议实现兼容回退；修复以当前已安装并有文档契约的 Pi 0.81.1 为基线。
+- 不为缺少 `agent_settled` 的旧版、非当前 Pi RPC 协议实现兼容回退；修复以故障诊断时的 Pi 0.81.1 与当前已安装的 Pi 0.82.1 共同文档化的契约为基线。
 
 ## 行为要求
 
@@ -104,7 +104,7 @@ Pi prompt 流维护一个“待结算错误”状态：
 
 ## 兼容性、安全、隐私与可访问性
 
-- **兼容性**：以 Pi 0.81.1 文档化的 `agent_settled` RPC 契约为基线；显式 compact 命令保留独立终止语义。
+- **兼容性**：以 Pi 0.81.1–0.82.1 共同文档化的 `agent_settled` RPC 契约为基线；本地验收使用当前安装的 Pi 0.82.1，显式 compact 命令保留独立终止语义。
 - **安全与隐私**：不新增数据上传、凭证读取或日志字段；诊断证据不得保存完整 session 内容、API key 或 token。
 - **可访问性**：无 UI 变化，不适用；现有前端状态展示只接收更准确的 Done/Error 生命周期。
 
@@ -115,12 +115,13 @@ Pi prompt 流维护一个“待结算错误”状态：
 3. **扩展迁移到 settled handler 并等待 callback**；拒绝只在 `turn_end` 增加 `ctx.isIdle()` 判断，因为 `turn_end` 本身仍位于活跃 run 内，不能保证工具链已经结束。
 4. **不隔离或禁用全局扩展**；Agentre 继续继承用户的 Pi 配置，修复客户端生命周期以真正兼容这些扩展，而不是绕开它们。
 5. **不直接修数据库或 JSONL**；现有数据格式有效，根因是运行时终止边界错误。
+6. **当前版本验收跟随已安装的 Pi 0.82.1**；2026-07-28 15:33 的外部 `pi update` 将环境从 0.81.1 升级到 0.82.1，后者仍保留相同的 `agent_settled` 契约，故不改变行为要求，只更新本地兼容验证基线。
 
 ## 测试接缝
 
 - **Go 模块边界**：`pkg/piagent` 的脚本化 RPC stream 测试，输入完整 JSONL 事件序列，观察 EventDone/EventError、compaction boundary、session stats 和 diagnostics。
 - **扩展边界**：用 fake `ExtensionAPI` / `ExtensionContext` 加载用户级触发扩展，观察注册事件、阈值判断、`ctx.compact` 调用时机及 handler Promise 是否等待 callback。
-- **本地集成验证**：运行真实 Pi 0.81.1 RPC 流或等价脚本，覆盖 `agent_end → compaction → agent_settled`，并确认现有 `agentre-2223.jsonl` 可被 Pi 解析/resume；验证时不向原 session 写入测试数据。
+- **本地集成验证**：使用当前真实 Pi 0.82.1 RPC（并保持对故障诊断时 Pi 0.81.1 同一事件契约的覆盖）或等价脚本，覆盖 `agent_end → compaction → agent_settled`，并确认现有 `agentre-2223.jsonl` 可被 Pi 解析/resume；验证时不向原 session 写入测试数据。
 
 ## 验收标准
 
@@ -169,7 +170,7 @@ Then 流仍以 compact response 正常结束，并继续上报 context window；
 ### A8（R4）现有 sess-2223 无迁移可读
 
 Given 当前 `agentre-2223.jsonl` 的副本包含既有 compaction entry；<br>
-When 当前 Pi 0.81.1 以只读验证方式加载/检查该副本，或在隔离副本上 resume；<br>
+When 当前已安装的 Pi 0.82.1 以只读验证方式加载/检查该副本，或在隔离副本上 resume；<br>
 Then session 可解析，原文件字节不变，且修复不要求 SQLite/JSONL 迁移。
 
 ## 参考

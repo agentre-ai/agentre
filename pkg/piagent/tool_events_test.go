@@ -17,7 +17,8 @@ func TestStreamEmitsSingleToolCallPerExecution(t *testing.T) {
 		`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","toolCall":{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}}}`,
 		`{"type":"tool_execution_start","toolCallId":"call_1","toolName":"bash","args":{"command":"echo hi"}}`,
 		`{"type":"tool_execution_end","toolCallId":"call_1","toolName":"bash","result":{"content":[{"type":"text","text":"hi"}]},"isError":false}`,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, _ := newCaptureClient(script)
@@ -43,20 +44,21 @@ func TestStreamEmitsSingleToolCallPerExecution(t *testing.T) {
 	assert.Equal(t, "hi", post[0].Tool.Content)
 }
 
-// Pi can emit agent_end after an assistant message whose stopReason is
-// toolUse. That frame only closes the current model/tool sub-step; the RPC
-// stream may continue with tool results and another assistant message. Agentre
-// must not treat that intermediate agent_end as terminal, otherwise long Pi
-// turns stop after every tool batch and the user has to send "continue".
+// Pi 0.81.1 can emit agent_end after an assistant message whose stopReason is
+// toolUse. Like every agent_end, that frame only closes one low-level run; the
+// RPC stream may continue with tool results and another assistant message until
+// agent_settled. Agentre must not stop after a tool batch and make the user send
+// "continue".
 func TestStreamContinuesAfterToolUseAgentEnd(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end","toolCall":{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}}}`,
 		`{"type":"tool_execution_start","toolCallId":"call_1","toolName":"bash","args":{"command":"echo hi"}}`,
 		`{"type":"tool_execution_end","toolCallId":"call_1","toolName":"bash","result":{"content":[{"type":"text","text":"hi"}]},"isError":false}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}],"stopReason":"toolUse"}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi"}}],"stopReason":"toolUse"}],"willRetry":false}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"done"}}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, _ := newCaptureClient(script)
@@ -80,13 +82,14 @@ func TestStreamContinuesAfterToolUseAgentEnd(t *testing.T) {
 }
 
 // Pi reports provider/transport failures on the final agent_end assistant
-// message. Agentre must surface that as EventError instead of treating the turn
-// as a clean Done, otherwise the UI silently shows a half-finished tool-only
-// answer.
+// message. Pi 0.81.1 settles the whole prompt afterward; Agentre must surface
+// that candidate as EventError only then instead of treating the turn as a
+// clean Done, otherwise the UI silently shows a half-finished tool-only answer.
 func TestStreamEmitsErrorFromFinalAgentEnd(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"error","errorMessage":"terminated"}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"error","errorMessage":"terminated"}],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, _ := newCaptureClient(script)
@@ -108,15 +111,16 @@ func TestStreamEmitsErrorFromFinalAgentEnd(t *testing.T) {
 	require.Equal(t, EventError, gotErr.Kind)
 	require.Error(t, gotErr.Err)
 	assert.EqualError(t, gotErr.Err, "piagent: terminated")
-	assert.False(t, done, "error terminal agent_end must not be reported as a clean done")
+	assert.False(t, done, "a settled final agent_end error must not be reported as a clean done")
 	assert.EqualError(t, s.Err(), "piagent: terminated")
 }
 
 func TestStreamDiagnosticsIncludeFinalErrorFrameAndStderrTail(t *testing.T) {
-	finalFrame := `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"error","errorMessage":"terminated","model":"gpt-5.5(xhigh)"}]}`
+	finalFrame := `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"error","errorMessage":"terminated","model":"gpt-5.5(xhigh)"}],"willRetry":false}`
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
 		finalFrame,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, proc := newCaptureClient(script)
@@ -140,7 +144,8 @@ func TestStreamDiagnosticsIncludeFinalErrorFrameAndStderrTail(t *testing.T) {
 func TestStreamDiagnosticsTruncateLongStderrTail(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"terminated"}]}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"terminated"}],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, proc := newCaptureClient(script)

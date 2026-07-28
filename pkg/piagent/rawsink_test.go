@@ -19,7 +19,8 @@ func TestStream_RawSinkReceivesFrames(t *testing.T) {
 	runner.process.stdout = strings.NewReader(strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"pong"}}`,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n"))
 	runner.process.finishOnSignal(interruptExitError(t))
@@ -45,4 +46,5 @@ func TestStream_RawSinkReceivesFrames(t *testing.T) {
 	joined := strings.Join(got, "\n")
 	assert.Contains(t, joined, `"command":"prompt"`)
 	assert.Contains(t, joined, `"type":"agent_end"`)
+	assert.Contains(t, joined, `"type":"agent_settled"`)
 }
