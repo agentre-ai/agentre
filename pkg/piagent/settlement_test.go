@@ -28,6 +28,7 @@ func TestStreamWaitsForSettledAfterCompaction(t *testing.T) {
 
 	s, err := client.Stream(context.Background(), "long task")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	reader.Push(
 		`{"type":"response","command":"prompt","success":true}`,
@@ -72,6 +73,7 @@ func TestStreamConsumesContinuationAfterSettlingBoundary(t *testing.T) {
 
 	s, err := client.Stream(context.Background(), "continue the task")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	reader.Push(
 		`{"type":"response","command":"prompt","success":true}`,
@@ -123,6 +125,7 @@ func TestStreamSuppressesRetriedAgentEndErrorUntilSettled(t *testing.T) {
 
 	s, err := client.Stream(context.Background(), "retry this")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	reader.Push(
 		`{"type":"response","command":"prompt","success":true}`,
@@ -166,6 +169,7 @@ func TestStreamReportsSettledFinalAgentEndError(t *testing.T) {
 
 	s, err := client.Stream(context.Background(), "fail at settlement")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	reader.Push(
 		`{"type":"response","command":"prompt","success":true}`,
@@ -224,6 +228,7 @@ func TestStreamReportsSettledAbortedAgentEnd(t *testing.T) {
 
 			s, err := client.Stream(context.Background(), "abort this")
 			require.NoError(t, err)
+			t.Cleanup(func() { _ = s.Close(context.Background()) })
 			require.NoError(t, s.Interrupt(context.Background()))
 
 			reader.Push(
@@ -281,6 +286,7 @@ func TestStreamReportsProcessDeathBeforeSettled(t *testing.T) {
 
 	s, err := client.Stream(context.Background(), "wait for settlement")
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	var kinds []EventKind
 	for s.Next() {
