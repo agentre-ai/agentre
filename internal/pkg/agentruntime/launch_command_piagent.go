@@ -16,6 +16,15 @@ func buildPiAgentShellCommand(spec LaunchCommandSpec, cwd string) (string, error
 		binary = "pi"
 	}
 	argv := []string{binary}
+	if spec.SessionID > 0 {
+		sessionDir, err := PiAgentSessionsDir()
+		if err != nil {
+			return "", err
+		}
+		if sessionPath := PiAgentSessionFilePath(sessionDir, spec.SessionID); sessionPath != "" {
+			argv = append(argv, "--session-dir", sessionDir, "--session", sessionPath)
+		}
+	}
 	if model := piAgentModel(spec.Backend, spec.ProviderSessionID); model != "" {
 		argv = append(argv, "--model", model)
 	}

@@ -257,15 +257,18 @@ func TestBuildLaunchCommand_PiAgentWithThinking(t *testing.T) {
 			ReasoningEffort: "high",
 			EnvJSON:         `{"PI_CODING_AGENT_DIR":"/tmp/pi-agentre"}`,
 		},
-		AgentID: 44,
+		AgentID:   44,
+		SessionID: 59,
 	})
 	require.NoError(t, err)
 
 	assert.NotContains(t, cmd, "\n", "命令必须是单行")
 	assert.True(t, strings.HasPrefix(cmd, "cd '"+cwd+"' && "), "前缀应为 cd '<cwd>' && ，got %q", cmd)
+	sessionDir := filepath.Join(filepath.Dir(filepath.Dir(cwd)), "piagent", "sessions")
+	sessionPath := filepath.Join(sessionDir, "agentre-59.jsonl")
 	assert.Contains(t, cmd, "PI_OFFLINE='1'")
 	assert.Contains(t, cmd, "PI_CODING_AGENT_DIR='/tmp/pi-agentre'")
-	assert.Contains(t, cmd, "pi --thinking high")
+	assert.Contains(t, cmd, "pi --session-dir "+shellQuoteArg(sessionDir)+" --session "+shellQuoteArg(sessionPath)+" --thinking high")
 	assert.NotContains(t, cmd, "--mode rpc", "copied pi command should be a human terminal command, not the internal RPC transport")
 	assert.NotContains(t, cmd, "--no-context-files", "copied pi command should preserve Pi's normal terminal context loading")
 	assert.NotContains(t, cmd, "--model", "pi backend should use the user's ~/.pi/agent default model unless explicitly configured")

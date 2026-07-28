@@ -642,6 +642,7 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 		Backend:           be,
 		Provider:          prov,
 		AgentID:           a.ID,
+		SessionID:         sess.ID,
 		Cwd:               cwd,
 		ProviderSessionID: sess.ProviderSessionID,
 		GatewayURL:        gatewayURL,
