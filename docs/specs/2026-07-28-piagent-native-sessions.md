@@ -127,7 +127,7 @@ Agentre **MUST NOT** 为已有专用 JSONL 提供迁移或运行时 fallback。
 
 | 变化 | 影响级别 | 影响既有数据 | 迁移与回滚 |
 | --- | --- | --- | --- |
-| `<AppDataDir>/piagent/sessions/agentre-*.jsonl` 从“活跃恢复来源”变为“新代码忽略的遗留文件” | needs migration | 每个安装中全部已有 Agentre 专用 Pi JSONL；当前开发机为 40 个文件、约 20 MB | 不执行迁移；不移动、不删除、不改写。回滚旧代码后重新作为恢复来源 |
+| `<AppDataDir>/piagent/sessions/agentre-*.jsonl` 从“活跃恢复来源”变为“新代码忽略的遗留文件” | needs migration | 每个安装中全部已有 Agentre 专用 Pi JSONL；当前开发机在 2026-07-28 17:00 +0800 的只读快照为 42 个文件、约 22 MB，该数量会随旧代码继续运行而增长 | 不执行迁移；不移动、不删除、不改写。回滚旧代码后重新作为恢复来源 |
 | Pi backend 的 `chat_sessions.provider_session_id` 从“通常为空”变为“Pi 原生 Session ID” | compatible for future writes | 既有空值不批量更新；用户下一次普通发送成功后按现有 session 更新流程写入新 ID | 回滚旧代码可读取该字段但会恢复旧专用 JSONL；再次升级后可继续使用已写入的原生 ID |
 
 - **不可逆部分：本次没有。** 旧 JSONL 和数据库 transcript 均不删除。直接切换造成的是上下文可见性断开，不是文件内容丢失。
