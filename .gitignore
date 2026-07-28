@@ -1,4 +1,9 @@
 .superpowers/
+
+# dev-kit runtime: plans, verification evidence and reports, isolated workspaces — local
+# working state, not committed
+/.dev-kit
+
 .omc/
 .worktrees/
 .DS_Store

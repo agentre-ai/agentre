@@ -69,6 +69,7 @@ Before writing code / fixing bugs / writing tests, read these docs first — the
 - [docs/session-lifecycle.md](docs/session-lifecycle.md) — rules for creating and reusing `chat_sessions`, including future issue/hook dispatch and remote-execution ownership.
 - [docs/e2e-harness-guide.md](docs/e2e-harness-guide.md) — the Playwright + fake-runtime e2e harness (root `e2e/` package): how to run (`make e2e` / `make e2e-scratch`), ad-hoc **feature verification** via throwaway specs in the gitignored `e2e/scratch/` (vs. the small committed `e2e/tests/` core suite), the cross-platform `run-e2e.mjs` runner, the build-tag seam that keeps the fake out of production builds, the `node:sqlite` DB oracle, data isolation / seeding, and how to write or extend a spec.
 - [docs/doc-maintenance.md](docs/doc-maintenance.md) — required reading before changing any contributor doc (`AGENTS.md` / `CLAUDE.md` / `docs/*`): git-aware fact-checking, fixing or deleting stale facts directly (leaving no deprecation comments), doc organization rules, and the one-command verification script.
+- [docs/specs/*](docs/specs) — approved executable behavior specs for active changes: requirements, non-goals, implementation decisions, test seams, and traceable acceptance criteria.
 
 > See the cago skill (`/cago`) for details — complete controller / service / repo / cron / queue unit-test examples.
 
