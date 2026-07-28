@@ -14,7 +14,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent/mcpbridge"
-	"github.com/agentre-ai/agentre/internal/pkg/llmcatalog"
 	pkgpi "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
@@ -194,14 +193,6 @@ func (a *activeSession) consumePendingSteer(text string) (agentruntime.ConsumedS
 	return agentruntime.ConsumedSteer{}, false
 }
 
-func contextWindowForModel(model string) int {
-	info, ok := llmcatalog.Lookup(model)
-	if !ok {
-		return 0
-	}
-	return info.ContextWindow
-}
-
 func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s stream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *activeSession) {
 	var usage *provider.Usage
 	var stopErr error
@@ -231,13 +222,10 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 		}
 		if raw.Model != "" {
 			// Pi 在 usage 帧上报真实模型 id；piagent 不绑 provider，靠这里把模型回
-			// 吐给 chat_svc（result.Model → assistantMsg.Model）。同时用 Agentre
-			// 宽容 catalog 查上下文窗口并实时上报，给前端 Composer 用量条提供分母。
+			// 吐给 chat_svc（result.Model → assistantMsg.Model）。上下文窗口只采用
+			// Pi RPC get_session_stats 返回值，避免自定义 provider 复用公共模型名时
+			// 被 Agentre catalog 的同名模型元数据错误覆盖。
 			result.Model = raw.Model
-			if cw := contextWindowForModel(raw.Model); cw > 0 && cw != result.ContextWindow {
-				result.ContextWindow = cw
-				out <- agentruntime.ContextWindowUpdated{Tokens: cw}
-			}
 		}
 		events, u, err := translate(raw)
 		for _, ev := range events {

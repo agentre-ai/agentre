@@ -359,8 +359,8 @@ type RunResult struct {
 	// ContextWindow 是 runtime 上报的模型上下文窗口大小（tokens）：
 	//   - codex：从 thread/tokenUsage/updated 通知的 modelContextWindow 字段抓（部分版本 codex
 	//     app-server 会推这个值）；
-	//   - piagent：优先读 Pi RPC get_session_stats.contextUsage.contextWindow，
-	//     再从 usage 帧的真实 model id 查 llmcatalog 兜底；
+	//   - piagent：只读 Pi RPC get_session_stats.contextUsage.contextWindow，避免
+	//     自定义 provider 复用公共模型名时误套 llmcatalog 元数据；
 	//   - claudecode：通过 ContextWindowUpdated 事件实时上报，RunResult 通常留 0；
 	//   - builtin：不报。
 	// 0 表示 runner 没探到，chat_svc 用 provider.ContextWindow > cago catalog 兜底。
