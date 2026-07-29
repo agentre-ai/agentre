@@ -71,10 +71,12 @@ func scanSkills(installPath string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() {
+		dir := filepath.Join(skillsDir, e.Name())
+		// 用 os.Stat(跟随软链):DirEntry.IsDir() 是 lstat 语义,会漏掉软链装进来的 skill。
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(skillsDir, e.Name(), "SKILL.md")); err != nil {
+		if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
 			continue
 		}
 		out = append(out, e.Name())

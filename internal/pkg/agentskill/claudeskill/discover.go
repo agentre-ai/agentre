@@ -24,6 +24,7 @@ type commandRunner func(ctx context.Context, name string, args ...string) ([]byt
 type Discoverer struct {
 	run        commandRunner
 	skillRoots func(cwd string) []string
+	pluginsDir func() string
 }
 
 // runner 取命令执行器:未注入 → 真实 exec.CommandContext().Output()。
@@ -61,15 +62,26 @@ func scanSkillRoot(skillsDir string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() {
+		dir := filepath.Join(skillsDir, e.Name())
+		if !isDir(dir) {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(skillsDir, e.Name(), "SKILL.md")); err != nil {
+		if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
 			continue // 没有 SKILL.md 的子目录不是 skill
 		}
 		out = append(out, e.Name())
 	}
 	return out
+}
+
+// isDir 判断路径是否为目录。必须用 os.Stat(跟随软链):os.ReadDir 给的
+// DirEntry.IsDir() 是 lstat 语义,会把软链装进来的 skill 目录判成非目录。
+func isDir(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func defaultSkillRoots(cwd string) []string {
@@ -104,7 +116,7 @@ func (d Discoverer) DiscoverCommands(_ context.Context, q agentskill.CommandDisc
 	return commands, nil
 }
 
-func parsePluginList(b []byte) ([]agentskill.SkillPack, error) {
+func (d Discoverer) parsePluginList(b []byte) ([]agentskill.SkillPack, error) {
 	out := []agentskill.SkillPack{}
 	if len(b) == 0 {
 		return out, nil
@@ -114,14 +126,11 @@ func parsePluginList(b []byte) ([]agentskill.SkillPack, error) {
 		return out, nil // 坏 JSON 视为无发现,不阻断
 	}
 	for _, r := range raws {
-		name := r.ID
-		if i := strings.Index(r.ID, "@"); i > 0 {
-			name = r.ID[:i]
-		}
+		name, _ := splitPluginID(r.ID)
 		out = append(out, agentskill.SkillPack{
 			ID:              r.ID,
 			Name:            name,
-			Skills:          scanSkills(r.InstallPath),
+			Skills:          scanSkills(d.pluginRoot(r)),
 			Source:          agentskill.SourceInstalled,
 			Installed:       true,
 			GloballyEnabled: r.Enabled,
@@ -140,5 +149,5 @@ func (d Discoverer) Discover(ctx context.Context, q agentskill.DiscoverQuery) ([
 	if err != nil {
 		return []agentskill.SkillPack{}, nil // CLI 不可用 → 软降级(空发现)
 	}
-	return parsePluginList(b)
+	return d.parsePluginList(b)
 }

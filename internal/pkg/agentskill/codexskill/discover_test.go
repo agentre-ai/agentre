@@ -73,6 +73,17 @@ func TestParsePluginList(t *testing.T) {
 			So(len(p), ShouldEqual, 1)
 			So(p[0].Name, ShouldEqual, "docs")
 		})
+
+		Convey("skills/ 下软链到别处的 skill 目录也算数(软链安装)", func() {
+			target := filepath.Join(t.TempDir(), "linked")
+			mustCodexSkill(t, filepath.Dir(target), "linked")
+			So(os.Symlink(target, filepath.Join(skills, "linked")), ShouldBeNil)
+
+			p, _ := parsePluginList([]byte(
+				`{"installed":[{"pluginId":"browser@openai-bundled","name":"browser","enabled":true,"source":{"path":"` + root + `"}}]}`))
+			So(len(p), ShouldEqual, 1)
+			So(p[0].Skills, ShouldResemble, []string{"browser", "linked", "qa"})
+		})
 	})
 }
 
