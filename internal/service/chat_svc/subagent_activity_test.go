@@ -15,6 +15,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/mock_agentruntime"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 )
 
@@ -149,6 +150,136 @@ func TestDriveSubagentActivity_NestsChildrenAndPersists(t *testing.T) {
 		convey.Convey("session 保持 idle(后台活动不翻 running)", func() {
 			assert.Equal(t, "idle", sess.AgentStatus)
 		})
+	})
+}
+
+// TestDriveSubagentActivity_ProgressUpdatesSpawnCard 锁定「后台 subagent 跑着,派遣卡
+// 上的工具数 / token 一直不动」:CLI 在会话空闲态每次工具调用都吐 task_progress,但这一轮
+// 活动用的是全新空 accumulator,SubagentProgressHandler 的 Mutate 命中不到发起消息里既有
+// 的 subagent_state overlay → 静默丢弃,既不推前端也不落库。
+//
+// Given 发起卡的进度快照停在 9 个工具 / 84739 token
+// When  空闲活动轮里到达 SubagentProgress(21 个工具 / 132480 token / Edit)
+// Then  ① 发起卡 per-turn 流上 emit subagent_progress,带新数值(实时)
+//
+//	② 新数值定向落回发起消息(重开会话不回退到旧数字)
+func TestDriveSubagentActivity_ProgressUpdatesSpawnCard(t *testing.T) {
+	convey.Convey("空闲活动轮里的 task_progress 更新发起卡进度", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		const sid = int64(100)
+		const launchID = int64(2001)
+		const toolUseID = "toolu_agent"
+		be := &agent_backend_entity.AgentBackend{ID: 12, Type: "claudecode"}
+
+		sess := &chat_entity.Session{ID: sid, AgentID: 7, AgentStatus: "idle", ProviderSessionID: "sess-abc"}
+		m.session.EXPECT().Find(gomock.Any(), sid).Return(sess, nil).AnyTimes()
+
+		// 发起消息里已有一份进度快照(派遣那一轮攒下的)。
+		launchMsg := &chat_entity.Message{
+			ID: launchID, SessionID: sid, Role: "assistant", Seq: 4,
+			BlocksJSON: `[` +
+				`{"type":"tool_use","data":{"id":"` + toolUseID + `","name":"Agent","input":{"description":"T7"}}},` +
+				`{"type":"subagent_state","data":{"parent_tool_call_id":"` + toolUseID + `","kind":"local_agent","description":"T7","status":"running","total_tokens":84739,"tool_uses":9,"last_tool_name":"Read","nested_tool_call_ids":[]}}` +
+				`]`,
+		}
+		m.message.EXPECT().
+			FindAssistantBySubagentToolUseID(gomock.Any(), sid, toolUseID).
+			Return(launchMsg, nil).Times(1)
+		m.message.EXPECT().
+			AppendSubagentChildren(gomock.Any(), sid, toolUseID, gomock.Any(), gomock.Any()).
+			Return(nil).AnyTimes()
+
+		var gotProgress chat_repo.SubagentProgress
+		m.message.EXPECT().
+			PatchSubagentProgress(gomock.Any(), sid, toolUseID, gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ int64, _ string, p chat_repo.SubagentProgress) error {
+				gotProgress = p
+				return nil
+			}).Times(1)
+
+		evs := make(chan agentruntime.Event, 3)
+		evs <- agentruntime.ToolCall{ID: "sub_edit", Name: "Edit", ParentToolCallID: toolUseID}
+		evs <- agentruntime.SubagentProgress{ToolCallID: toolUseID, Info: agentruntime.SubagentInfo{
+			ToolUses: 21, TotalTokens: 132480, LastToolName: "Edit",
+		}}
+		evs <- agentruntime.ToolResult{ToolCallID: "sub_edit", Content: "ok", ParentToolCallID: toolUseID}
+		close(evs)
+
+		chat_svc.DriveSubagentActivityForTest(ctx, m.svc, sid, be, agentruntime.SubagentActivity{ToolUseID: toolUseID, Events: evs})
+
+		convey.Convey("实时 emit subagent_progress 到发起卡 stream(带新数值)", func() {
+			launchStream := chat_svc.StreamName(sid, launchID)
+			var found *chat_svc.ChatStreamEvent
+			for i := range m.events {
+				p, ok := m.events[i].Payload.(chat_svc.ChatStreamEvent)
+				if ok && p.Kind == chat_svc.StreamSubagentProgress && m.events[i].Name == launchStream {
+					found = &p
+				}
+			}
+			require.NotNil(t, found, "应在发起卡 stream 上 emit subagent_progress")
+			assert.Equal(t, toolUseID, found.ToolUseID)
+			require.NotNil(t, found.Subagent)
+			assert.Equal(t, 21, found.Subagent.ToolUses)
+			assert.Equal(t, 132480, found.Subagent.TotalTokens)
+			assert.Equal(t, "Edit", found.Subagent.LastToolName)
+		})
+
+		convey.Convey("同一条 subagent_progress 镜像到会话级流(前端据此更新已落库的发起卡)", func() {
+			// per-turn 流的 meta 只会被合并进那条流的 liveBlocks,而空闲活动轮的派遣卡
+			// (Agent 工具的 tool_use 块)早已随发起消息落库、不在任何 liveBlocks 里 ——
+			// 只发 per-turn 那一份的话前端必然合并落空。会话级流由 ChatPanel 常驻订阅。
+			var found *chat_svc.ChatStreamEvent
+			for i := range m.events {
+				p, ok := m.events[i].Payload.(chat_svc.ChatStreamEvent)
+				if ok && p.Kind == chat_svc.StreamSubagentProgress && m.events[i].Name == chat_svc.AutonomousStreamName(sid) {
+					found = &p
+				}
+			}
+			require.NotNil(t, found, "应把 subagent_progress 镜像一份到会话级流")
+			assert.Equal(t, toolUseID, found.ToolUseID)
+			require.NotNil(t, found.Subagent)
+			assert.Equal(t, 21, found.Subagent.ToolUses)
+			assert.Equal(t, 132480, found.Subagent.TotalTokens)
+		})
+
+		convey.Convey("收尾把最新进度定向落回发起消息", func() {
+			assert.Equal(t, 21, gotProgress.ToolUses)
+			assert.Equal(t, 132480, gotProgress.TotalTokens)
+			assert.Equal(t, "Edit", gotProgress.LastToolName)
+		})
+	})
+}
+
+// TestDriveSubagentActivity_NoProgressSkipsPatch 无进度事件的活动轮不该白写一次库
+// (发起消息 blocks_json 动辄几百 KB,读-改-写不能每轮都来一遍)。
+func TestDriveSubagentActivity_NoProgressSkipsPatch(t *testing.T) {
+	convey.Convey("活动轮没有 task_progress 时不调 PatchSubagentProgress", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		const sid = int64(100)
+		const launchID = int64(2001)
+		const toolUseID = "toolu_agent"
+		be := &agent_backend_entity.AgentBackend{ID: 12, Type: "claudecode"}
+
+		sess := &chat_entity.Session{ID: sid, AgentID: 7, AgentStatus: "idle"}
+		m.session.EXPECT().Find(gomock.Any(), sid).Return(sess, nil).AnyTimes()
+		m.message.EXPECT().
+			FindAssistantBySubagentToolUseID(gomock.Any(), sid, toolUseID).
+			Return(launchMessageWithSubagentState(launchID, sid, toolUseID), nil).Times(1)
+		m.message.EXPECT().
+			AppendSubagentChildren(gomock.Any(), sid, toolUseID, gomock.Any(), gomock.Any()).
+			Return(nil).AnyTimes()
+		// 关键:不 EXPECT PatchSubagentProgress —— 调用即 ctrl.Finish 失败。
+
+		evs := make(chan agentruntime.Event, 2)
+		evs <- agentruntime.ToolCall{ID: "sub_bash", Name: "Bash", ParentToolCallID: toolUseID}
+		evs <- agentruntime.ToolResult{ToolCallID: "sub_bash", Content: "ok", ParentToolCallID: toolUseID}
+		close(evs)
+
+		chat_svc.DriveSubagentActivityForTest(ctx, m.svc, sid, be, agentruntime.SubagentActivity{ToolUseID: toolUseID, Events: evs})
 	})
 }
 

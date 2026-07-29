@@ -1883,6 +1883,86 @@ describe("ChatPanel · T30 后台任务完成翻转 messages", () => {
   });
 });
 
+// ─── T30b: 空闲态后台 subagent 的进度回写 messages(sess-2275)──────────────────
+// 后台 subagent 在会话空闲态一直跑,CLI 每次工具调用都吐 task_progress。派遣卡的
+// tool_use block 早已从 liveBlocks 落进 messages —— store 的 mergeSubagentMeta 只翻
+// liveBlocks,合并落空,卡片上的工具数 / token 会一直停在派遣那一刻不动。会话级流上
+// 镜像的那份 subagent_progress 必须同时合并进 messages。
+describe("ChatPanel · T30b 空闲后台 subagent 进度回写", () => {
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  it("Given a session-level subagent_progress, When it arrives, Then setMessages merges the new tool count / tokens into the persisted spawn card", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 1 });
+    mockSessionStore.messages = [
+      {
+        id: 42,
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolUseId: "toolu_agent",
+            toolInput: { run_in_background: true },
+            subagent: {
+              kind: "local_agent",
+              status: "running",
+              toolUses: 9,
+              totalTokens: 84739,
+            },
+          },
+        ],
+      },
+    ];
+
+    render(<ChatPanel sessionId={1} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:1",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(1);
+    act(() => {
+      handler!({
+        kind: "subagent_progress",
+        sessionId: 1,
+        toolUseId: "toolu_agent",
+        subagent: {
+          toolUses: 21,
+          totalTokens: 132480,
+          lastToolName: "Edit",
+        },
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    expect(setMessagesSpy).toHaveBeenCalled();
+    const updater = setMessagesSpy.mock.calls.at(-1)![0] as (
+      prev: Array<Record<string, unknown>>,
+    ) => Array<Record<string, unknown>>;
+    const result = updater(
+      mockSessionStore.messages as Array<Record<string, unknown>>,
+    );
+    const block = (result[0].blocks as Array<Record<string, unknown>>)[0];
+    const subagent = block.subagent as Record<string, unknown>;
+    expect(subagent.toolUses).toBe(21);
+    expect(subagent.totalTokens).toBe(132480);
+    expect(subagent.lastToolName).toBe("Edit");
+    // 这一帧没带的字段保持不变
+    expect(subagent.status).toBe("running");
+  });
+});
+
 // ─── T31: 自主续轮进行中用户又发消息(sess-1950)────────────────────────────────
 // 后台任务完成 → 自主续轮正在流式输出。此时用户在输入框再发一条消息:
 //   1. streaming=true(自主轮已 openStream)→ 走 doEnqueue;

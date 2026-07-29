@@ -87,7 +87,10 @@ import {
   saveTranscriptScrollState,
 } from "./chat-panel-scroll-state";
 import { deriveBackgroundTasks } from "./background-tasks/derive";
-import { flipSubagentStatusInMessages } from "./background-tasks/flip-subagent-status";
+import {
+  flipSubagentStatusInMessages,
+  mergeSubagentMetaInMessages,
+} from "./background-tasks/flip-subagent-status";
 import { deriveTaskProgress } from "./task-progress/derive";
 import { TaskProgressBar } from "./task-progress/task-progress-bar";
 import type { AgentColor, AgentStatus } from "./types";
@@ -539,6 +542,22 @@ function ChatPanel({
           assistantMessageId: ev.launchMessageId,
           streamStartedAt: Date.now(),
         });
+        return;
+      }
+      // subagent_started/progress/done:后端在 per-turn 流之外镜像到会话级流的那一份。
+      // 空闲态后台 subagent 的派遣卡早已落进 messages，ChatStreamsHost 那条只翻
+      // liveBlocks 的路径必然落空 —— 卡片上的工具数 / token 会一直停在派遣那一刻
+      // (sess-2275)。这里就地合并进 messages，与 completedTask 翻状态同一套做法。
+      if (
+        ev.kind === "subagent_started" ||
+        ev.kind === "subagent_progress" ||
+        ev.kind === "subagent_done"
+      ) {
+        if (!ev.toolUseId || !ev.subagent) return;
+        const { toolUseId, subagent } = ev;
+        setMessages((prev) =>
+          mergeSubagentMetaInMessages(prev, toolUseId, subagent),
+        );
         return;
       }
       // autonomous_finished:自主轮 / 后台 subagent 活动轮收尾时会话级流补发的终态兜底。

@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	chatblocks "github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
@@ -90,10 +91,14 @@ func (s *chatSvc) driveSubagentActivity(ctx context.Context, sessionID int64, be
 		ToolUseID:       act.ToolUseID,
 	})
 
-	// 新建空 accumulator:只累积本轮活动产出的块,Finalize 即"本次新增"。发起消息既有的块
-	// 不必 seed —— 它们已落库,本路径只追加新嵌套子块。
+	// accumulator 只累积本轮活动产出的块,Finalize 即"本次新增";发起消息既有的块不 seed
+	// —— 它们已落库,本路径只追加新嵌套子块。**唯一的例外是 subagent_state overlay**:
+	// SubagentProgress / SubagentDone 靠 turn.Mutate 命中它才更新+推流,不 seed 的话空闲期
+	// 的 task_progress 全被静默丢弃,派遣卡的工具数 / token 永远停在派遣那一刻(sess-2275)。
 	acc := turn.New()
-	dispEmit := &dispatcherEmitter{svc: s}
+	state := seedSubagentState(acc, launchMsg, act.ToolUseID)
+	progressBefore := progressOf(state)
+	dispEmit := &subagentActivityEmitter{inner: &dispatcherEmitter{svc: s}, sessionID: sessionID}
 	turnCtx := s.newTurnContext(launchMsg, sess, stream, be.Type)
 	for ev := range act.Events {
 		if err := s.dispatcher.Apply(ctx, ev, acc, dispEmit, nil, turnCtx); err != nil {
@@ -117,6 +122,16 @@ func (s *chatSvc) driveSubagentActivity(ctx context.Context, sessionID int64, be
 		}
 	}
 
+	// 进度快照:overlay 在本轮被 task_progress 就地 patch 过,定向落回发起消息。空闲活动轮
+	// 不重写整条消息(它属于一条早已收尾的旧消息),不落这一步的话重开会话又退回旧数字。
+	// 没变化就不写 —— 发起消息 blocks_json 动辄几百 KB,读-改-写不白跑一趟。
+	if progress := progressOf(state); progress != progressBefore {
+		if err := chat_repo.Message().PatchSubagentProgress(finalCtx, sessionID, act.ToolUseID, progress); err != nil {
+			logger.Ctx(finalCtx).Warn("chat_svc.driveSubagentActivity: PatchSubagentProgress failed",
+				zap.Int64("sessionId", sessionID), zap.String("toolUseId", act.ToolUseID), zap.Error(err))
+		}
+	}
+
 	logger.Ctx(finalCtx).Info("chat_svc: subagent activity finalized",
 		zap.Int64("sessionId", sessionID),
 		zap.Int64("launchMessageId", launchMsg.ID),
@@ -131,6 +146,75 @@ func (s *chatSvc) driveSubagentActivity(ctx context.Context, sessionID int64, be
 		Kind:            StreamAutonomousFinished,
 		LaunchMessageID: launchMsg.ID,
 	})
+}
+
+// subagentActivityEmitter 包住 dispatcherEmitter,把 subagent_started / progress / done
+// 额外镜像一份到会话级旁路流。
+//
+// 为什么要镜像:per-turn 流上的这几个事件,前端只会把 meta 合并进**那条流的 liveBlocks**;
+// 而空闲活动轮的派遣卡(Agent 工具的 tool_use 块)早已随发起消息落库,不在任何 liveBlocks
+// 里 —— 那一路合并必然落空,卡片头部的工具数 / token 只能等重开会话才刷新。会话级流由
+// ChatPanel 常驻订阅,它持有 messages,能就地合并进已落库的那张卡(与后台任务完成时
+// completedTask 同时翻 liveBlocks + messages 是同一套做法)。
+type subagentActivityEmitter struct {
+	inner     turn.Emitter
+	sessionID int64
+}
+
+func (e *subagentActivityEmitter) Emit(ctx context.Context, stream string, raw any) {
+	e.inner.Emit(ctx, stream, raw)
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return
+	}
+	switch kind, _ := m["kind"].(string); kind {
+	case string(StreamSubagentStarted), string(StreamSubagentProgress), string(StreamSubagentDone):
+		e.inner.Emit(ctx, AutonomousStreamName(e.sessionID), m)
+	}
+}
+
+// seedSubagentState 把发起消息里既有的 subagent_state overlay 复制一份进本轮 accumulator,
+// 并按 SubagentProgress / SubagentDone 用的 Mutate key 登记,让它们能命中并就地更新进度。
+// 复制而非直接引用:GetBlocks 解出的块只是本次解码的副本,后续只有 PatchSubagentProgress
+// 落库才算数。返回 nil 表示发起消息里没有这块(消息已被改写 / blocks 损坏)。
+func seedSubagentState(acc *turn.Accumulator, launchMsg *chat_entity.Message, toolUseID string) *chatblocks.SubagentStateBlock {
+	if launchMsg == nil || toolUseID == "" {
+		return nil
+	}
+	bs, err := launchMsg.GetBlocks()
+	if err != nil {
+		return nil
+	}
+	for _, b := range bs {
+		var st chatblocks.SubagentStateBlock
+		switch v := b.(type) {
+		case *chatblocks.SubagentStateBlock:
+			st = *v
+		case chatblocks.SubagentStateBlock:
+			st = v
+		default:
+			continue
+		}
+		if st.ParentToolCallID != toolUseID {
+			continue
+		}
+		acc.AddBlock(&st, "subagent_state:"+toolUseID)
+		return &st
+	}
+	return nil
+}
+
+// progressOf 取 overlay 的运行时进度快照;state 为 nil 时返回零值快照(IsZero,不触发落库)。
+func progressOf(state *chatblocks.SubagentStateBlock) chat_repo.SubagentProgress {
+	if state == nil {
+		return chat_repo.SubagentProgress{}
+	}
+	return chat_repo.SubagentProgress{
+		TotalTokens:  state.TotalTokens,
+		ToolUses:     state.ToolUses,
+		DurationMs:   state.DurationMs,
+		LastToolName: state.LastToolName,
+	}
 }
 
 // subagentChildBlocks 从一轮活动的 Finalize 结果里挑出属于 parentToolUseID 的嵌套块

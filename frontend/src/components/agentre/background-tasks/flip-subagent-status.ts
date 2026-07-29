@@ -15,7 +15,29 @@ export function flipSubagentStatusInMessages(
   status: string,
   summary?: string,
 ): chat_svc.ChatMessage[] {
-  if (!toolUseId || !status) return messages;
+  if (!status) return messages;
+  return mergeSubagentMetaInMessages(messages, toolUseId, {
+    status,
+    ...(summary ? { summary } : {}),
+  } as chat_svc.ChatBlockSubagent);
+}
+
+// mergeSubagentMetaInMessages 把一份 subagent meta 合并进 messages 里命中 toolUseId 的
+// tool_use block。后台 subagent 在会话空闲态跑的那段时间,CLI 一直吐 task_progress,而它
+// 的派遣卡早已从 liveBlocks 落进 messages —— store 的 mergeSubagentMeta 只翻 liveBlocks,
+// 合并必然落空,卡片上的工具数 / token 会一直停在派遣那一刻。
+//
+// 合并语义与 store 侧一致:后端 meta 字段全是 omitempty,这一帧没带的字段在 JSON 里直接
+// 缺席 → 展开时不会把已有值抹成 0/空。
+//
+// 不可变更新:命中才返回新数组/新消息/新块引用,未命中(或空参)原样返回同一引用,
+// 让 React setState 跳过无谓 re-render。
+export function mergeSubagentMetaInMessages(
+  messages: chat_svc.ChatMessage[],
+  toolUseId: string,
+  meta: chat_svc.ChatBlockSubagent,
+): chat_svc.ChatMessage[] {
+  if (!toolUseId || !meta) return messages;
 
   let hit = false;
   const next = messages.map((m) => {
@@ -27,11 +49,7 @@ export function flipSubagentStatusInMessages(
       blockHit = true;
       return {
         ...b,
-        subagent: {
-          ...b.subagent,
-          status,
-          ...(summary ? { summary } : {}),
-        },
+        subagent: { ...b.subagent, ...meta },
       } as chat_svc.ChatBlock;
     });
     if (!blockHit) return m;

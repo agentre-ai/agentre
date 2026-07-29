@@ -303,6 +303,10 @@ func subagentOwnerID(f rawFrame) string {
 
 // currentTurn 返回当前活跃轮;轮间(active==nil)时按归属规则建立新轮:
 //   - 活动轮收到「后台型完成通知」→ 收尾活动轮,落到下方起自主续轮。
+//   - 活动轮收到**另一个** owner 的空闲 subagent 帧 → 收尾当前活动轮,落到下方按新 owner
+//     另开一轮。同一轮里可以并发派多个 run_in_background subagent,它们在空闲态交替说话;
+//     不切轮的话单槽位被先到的 owner 占住,另一个的帧全被塞进它的活动轮,消费方按
+//     ToolUseID 过滤子块时整段丢弃(sess-2275)。
 //   - 后台型 task_notification → 自主轮,经 autoCh 吐出,返回 nil(调用方丢弃起始标记)。
 //   - 无资格起轮的帧(control_response / 空闲 status / 后台任务状态帧 / 任何未知
 //     类型)→ 返回 nil,不认领排队的 user Turn;否则读循环会被这些会话级帧卡死在
@@ -314,17 +318,20 @@ func subagentOwnerID(f rawFrame) string {
 func (s *Session) currentTurn(f rawFrame) *activeTurn {
 	s.sinkMu.Lock()
 	if s.active != nil {
-		// 后台 subagent 活动轮收到「后台型完成通知」→ 收尾活动轮,落到下方起自主续轮。
-		if s.active.subagentToolUseID != "" && isBackgroundTaskNotification(f) {
-			done := s.active
-			s.sinkMu.Unlock()
-			s.finishActiveTurn(done) // 清 active 槽 + close 活动轮 ch/done
-			s.sinkMu.Lock()
-		} else {
+		// 后台 subagent 活动轮要让位的两种情况:收到「后台型完成通知」(收尾后落到下方起
+		// 自主续轮),或收到另一个 subagent 的空闲活动帧(收尾后落到下方按新 owner 另开一轮)。
+		owner := subagentOwnerID(f)
+		yield := s.active.subagentToolUseID != "" &&
+			(isBackgroundTaskNotification(f) || (owner != "" && owner != s.active.subagentToolUseID))
+		if !yield {
 			at := s.active
 			s.sinkMu.Unlock()
 			return at
 		}
+		done := s.active
+		s.sinkMu.Unlock()
+		s.finishActiveTurn(done) // 清 active 槽 + close 活动轮 ch/done
+		s.sinkMu.Lock()
 	}
 	if isBackgroundTaskNotification(f) {
 		at := newActiveTurn(true)
