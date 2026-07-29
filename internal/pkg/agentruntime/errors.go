@@ -17,3 +17,7 @@ var ErrAborted = errors.New("agentruntime: chat aborted by user")
 
 // ErrUnsupported runtime 不支持的能力(对应 capability bool=false)。
 var ErrUnsupported = errors.New("agentruntime: capability unsupported by this runtime")
+
+// ErrSessionNotFound 表示 runtime 请求恢复的 provider 原生 Session 已不存在。
+// chat_svc 据此清空 provider_session_id，且当前轮失败而不是静默创建替代 Session。
+var ErrSessionNotFound = errors.New("agentruntime: provider session no longer exists")

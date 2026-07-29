@@ -47,6 +47,9 @@ func (r *captureRunner) Start(context.Context, procOptions) (processHandle, erro
 }
 
 func newCaptureClient(stdout string) (*Client, *captureProc) {
+	if !strings.Contains(stdout, `"command":"get_state"`) {
+		stdout = `{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"test-native-session"}}` + "\n" + stdout
+	}
 	proc := &captureProc{
 		stdin:  &lockedBuffer{},
 		stdout: strings.NewReader(stdout),
@@ -80,8 +83,9 @@ func TestStreamPromptCarriesImagesWithoutText(t *testing.T) {
 			MimeType string `json:"mimeType"`
 		} `json:"images"`
 	}
-	first := strings.SplitN(strings.TrimSpace(proc.stdin.String()), "\n", 2)[0]
-	require.NoError(t, json.Unmarshal([]byte(first), &frame))
+	frames := strings.Split(strings.TrimSpace(proc.stdin.String()), "\n")
+	require.GreaterOrEqual(t, len(frames), 2)
+	require.NoError(t, json.Unmarshal([]byte(frames[1]), &frame))
 
 	assert.Equal(t, "prompt", frame.Type)
 	assert.Empty(t, frame.Message)
@@ -105,6 +109,7 @@ func TestStreamPromptWithoutImagesOmitsField(t *testing.T) {
 	for s.Next() {
 	}
 
-	first := strings.SplitN(strings.TrimSpace(proc.stdin.String()), "\n", 2)[0]
-	assert.NotContains(t, first, "images")
+	frames := strings.Split(strings.TrimSpace(proc.stdin.String()), "\n")
+	require.GreaterOrEqual(t, len(frames), 2)
+	assert.NotContains(t, frames[1], "images")
 }

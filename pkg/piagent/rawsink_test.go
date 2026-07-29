@@ -17,6 +17,7 @@ import (
 func TestStream_RawSinkReceivesFrames(t *testing.T) {
 	runner := &fakeRunner{process: newFakeProcess(t)}
 	runner.process.stdout = strings.NewReader(strings.Join([]string{
+		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"test-native-session"}}`,
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"pong"}}`,
 		`{"type":"agent_end","messages":[],"willRetry":false}`,

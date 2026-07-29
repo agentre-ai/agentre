@@ -259,9 +259,10 @@ func TestStreamReportsSettledAbortedAgentEnd(t *testing.T) {
 			assert.JSONEq(t, finalFrame, diagnostics.FinalErrorFrame)
 
 			frames := stdinFrames(t, proc.stdin.String())
-			require.Len(t, frames, 2)
-			assert.Equal(t, "prompt", frames[0]["type"])
-			assert.Equal(t, "abort", frames[1]["type"])
+			require.Len(t, frames, 3)
+			assert.Equal(t, "get_state", frames[0]["type"])
+			assert.Equal(t, "prompt", frames[1]["type"])
+			assert.Equal(t, "abort", frames[2]["type"])
 		})
 	}
 }
@@ -347,6 +348,9 @@ func (r *streamingRPCReader) Close() {
 }
 
 func newStreamingCaptureClient(reader io.Reader) (*Client, *captureProc) {
+	if streaming, ok := reader.(*streamingRPCReader); ok {
+		streaming.Push(`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"test-native-session"}}`)
+	}
 	proc := &captureProc{
 		stdin:  &lockedBuffer{},
 		stdout: reader,
@@ -424,9 +428,10 @@ func collectUntilTerminal(t *testing.T, s *Stream) []Event {
 func assertStatsRequestedAfterSettlement(t *testing.T, proc *captureProc) {
 	t.Helper()
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 2)
-	assert.Equal(t, "prompt", frames[0]["type"])
-	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	require.Len(t, frames, 3)
+	assert.Equal(t, "get_state", frames[0]["type"])
+	assert.Equal(t, "prompt", frames[1]["type"])
+	assert.Equal(t, "get_session_stats", frames[2]["type"])
 }
 
 func contextWindows(events []Event) []int {

@@ -2,6 +2,7 @@ package piagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -80,7 +81,11 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		s, err = sess.Stream(ctx, req.UserText, req.CollaborationMode, extractImages(req.UserBlocks))
 	}
 	if err != nil {
-		return nil, nil, err
+		_ = sess.Close(context.Background())
+		if len(req.MCPServers) > 0 {
+			_ = mcpbridge.RemoveConfig(req.SessionID)
+		}
+		return nil, nil, mapSessionError(err)
 	}
 	active := &activeSession{stream: sess.ActiveStream(), interrupter: sess.ActiveInterruptor()}
 	r.register(req.SessionID, active)
@@ -110,9 +115,6 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		}
 		defer func() { _ = sess.Close(context.Background()) }()
 		drainStream(ctx, req, cwd, s, out, result, active)
-		if sid := s.SessionID(); sid != "" {
-			result.ProviderSessionID = sid
-		}
 	}()
 	return out, result, nil
 }
@@ -244,10 +246,8 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 	if usage != nil {
 		result.Usage = usage
 	}
-	if sid := s.SessionID(); sid != "" {
-		result.ProviderSessionID = sid
-	}
 	if stopErr != nil {
+		stopErr = mapSessionError(stopErr)
 		result.StopErr = stopErr
 		logPiFailureDiagnostics(ctx, req, cwd, s)
 		logger.Ctx(ctx).Warn("piagent runtime: turn failed", piTurnLogFields(req, cwd, result, stopErr)...)
@@ -256,6 +256,13 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 	}
 	logger.Ctx(ctx).Info("piagent runtime: turn done", piTurnLogFields(req, cwd, result, nil)...)
 	out <- agentruntime.Done{}
+}
+
+func mapSessionError(err error) error {
+	if err == nil || !errors.Is(err, pkgpi.ErrSessionNotFound) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", agentruntime.ErrSessionNotFound, err)
 }
 
 type diagnosticsStream interface {

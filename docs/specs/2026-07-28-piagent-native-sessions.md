@@ -75,7 +75,7 @@ Agentre **MUST NOT** 为普通 Pi 聊天、自动续轮、显式 compact 或复�
 
 Pi RPC 客户端 **MUST** 在发送首个 prompt 或 compact 命令前调用 `get_state`，读取非空 `sessionId`。
 
-- 该 ID 必须进入 `RunResult.ProviderSessionID`，并在事件流结束前即可由 chat service 持久化。
+- 该 ID 必须进入 `RunResult.ProviderSessionID`，并在事件流结束前即可由 chat service 持久化。提前持久化只保证身份不从 Agentre 丢失；Pi 是否已允许另一个进程恢复，仍取决于 Pi 何时首次写出原生 JSONL，当前 turn 继续由已启动的 Pi 进程持有。
 - `get_state` 失败、进程提前退出或返回空 `sessionId` 时，当前命令必须失败，且不得继续发送 prompt/compact，避免产生无法恢复的未跟踪 Session。
 - 日志只能记录 Session ID 和错误，不得记录 Session 文件内容或凭证。
 
@@ -188,7 +188,7 @@ Then 当前调用返回错误，stdin 中没有 prompt 命令，数据库中不�
 
 Given Pi RPC 已返回原生 Session ID，但 assistant turn 仍在运行；<br>
 When runtime 把 `RunResult` 交给 chat service；<br>
-Then chat service 在 runner-start 路径持久化该 ID，应用无需等待事件流关闭即可恢复这个 Session。
+Then chat service 在 runner-start 路径持久化该 ID，无需等待事件流关闭才记录身份；若 Pi 尚未首次写出原生 JSONL，则不得声称此时已可由另一个进程恢复。
 
 ### A4（R3）后续普通发送和自动续轮恢复同一 Session
 

@@ -79,6 +79,12 @@ func (s *Stream) SessionID() string {
 	return s.sessionID
 }
 
+func (s *Stream) setSessionID(sessionID string) {
+	s.mu.Lock()
+	s.sessionID = strings.TrimSpace(sessionID)
+	s.mu.Unlock()
+}
+
 func (s *Stream) Err() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

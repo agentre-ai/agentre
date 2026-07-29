@@ -69,6 +69,7 @@ func TestStreamClose(t *testing.T) {
 	convey.Convey("Given a pi-agent text probe that already reached agent_settled", t, func() {
 		runner := &fakeRunner{process: newFakeProcess(t)}
 		runner.process.stdout = strings.NewReader(strings.Join([]string{
+			`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"test-native-session"}}`,
 			`{"type":"response","command":"prompt","success":true}`,
 			`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"pong"}}`,
 			`{"type":"agent_end","messages":[],"willRetry":false}`,
@@ -143,12 +144,15 @@ func newFakeProcess(t *testing.T) *fakeProcess {
 }
 
 func (f *fakeProcess) rpcProcess() *rpcProcess {
+	stderrDone := make(chan struct{})
+	close(stderrDone)
 	p := &rpcProcess{
-		handle: f,
-		stdin:  io.Discard,
-		lines:  nil,
-		stderr: &lockedBuffer{},
-		done:   make(chan struct{}),
+		handle:     f,
+		stdin:      io.Discard,
+		lines:      nil,
+		stderr:     &lockedBuffer{},
+		stderrDone: stderrDone,
+		done:       make(chan struct{}),
 	}
 	go p.awaitExit()
 	return p

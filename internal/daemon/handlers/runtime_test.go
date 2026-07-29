@@ -458,7 +458,7 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 	}
 	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
 
-	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), Name: "x"}
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypePiAgent), Name: "x"}
 	ack, err := h.Run(ctx, wire.RunParams{
 		Backend:        backendJSON(t, be),
 		SessionID:      42,
@@ -470,6 +470,7 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), ack.SessionID)
+	assert.Equal(t, "psid-1", ack.ProviderSessionID)
 	require.Len(t, rt.runReqs, 1)
 	assert.True(t, rt.runReqs[0].req.Compact)
 	assert.Equal(t, map[string]bool{"browser@openai-bundled": true}, rt.runReqs[0].req.EnabledPlugins)

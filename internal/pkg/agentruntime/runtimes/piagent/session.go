@@ -64,6 +64,7 @@ func (a *clientAdapter) Stream(ctx context.Context, prompt string, mode string, 
 	if err != nil {
 		return nil, err
 	}
+	a.sid = s.SessionID()
 	a.streamMu.Lock()
 	a.stream = s
 	a.streamMu.Unlock()
@@ -75,6 +76,7 @@ func (a *clientAdapter) Compact(ctx context.Context) (stream, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.sid = s.SessionID()
 	a.streamMu.Lock()
 	a.stream = s
 	a.streamMu.Unlock()
@@ -164,14 +166,10 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 	if extPath != "" {
 		opts = append(opts, piagent.WithExtension(extPath))
 	}
-	// 跨 turn 上下文：把 session 存到专用目录，并按 chat session id 解析出确定的
-	// session 文件路径，Pi 第一轮新建、后续轮 resume。解析目录失败时退化为不
-	// resume（仍能跑单轮），不阻断 turn。
-	if sessionDir, derr := agentruntime.PiAgentSessionsDir(); derr == nil {
-		opts = append(opts, piagent.WithSessionDir(sessionDir))
-		if path := agentruntime.PiAgentSessionFilePath(sessionDir, req.SessionID); path != "" {
-			opts = append(opts, piagent.WithSession(path))
-		}
+	// 跨 turn 上下文由 Pi 原生 Session ID 绑定。首轮不下发任何 Session flag，
+	// 让 Pi 遵循自己的默认/用户配置存储；后续轮仅用 --session <native-id> 恢复。
+	if sessionID := strings.TrimSpace(req.ProviderSessionID); sessionID != "" {
+		opts = append(opts, piagent.WithSession(sessionID))
 	}
 	client := piagent.New(opts...)
 	return &clientAdapter{client: client, sid: req.ProviderSessionID}, nil

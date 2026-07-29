@@ -21,11 +21,12 @@ type Client struct {
 	model        string
 	thinking     string
 	systemPrompt string
+	// noSession 使用 Pi 的临时 Session 模式（--no-session），不写入 JSONL。
+	noSession bool
 	// sessionDir 是 Pi session JSONL 的存储目录（--session-dir）。和 cwd（工具
 	// 工作目录）分开，避免把 session 文件写进用户项目里。
 	sessionDir string
-	// session 非空时透传 --session <path>：Pi 会在该路径不存在时新建、存在时
-	// resume，从而跨 turn 复用同一会话历史。
+	// session 非空时透传 --session <path|id>，恢复指定 Pi 原生会话。
 	session string
 	// extensions 透传给 pi 的 --extension（可多次）。Agentre 用它加载内嵌的
 	// MCP 桥扩展，把注入的 HTTP MCP server 翻成 pi 一等工具。
@@ -62,7 +63,13 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	if err != nil {
 		return nil, err
 	}
+	sessionID, err := readSessionID(ctx, proc, c.session)
+	if err != nil {
+		_ = proc.terminate(context.Background(), c.killGrace)
+		return nil, err
+	}
 	stream := newStream(proc, c.killGrace)
+	stream.setSessionID(sessionID)
 	frame := map[string]any{"type": "prompt", "message": prompt}
 	if imgs := imagesToWire(spec.images); len(imgs) > 0 {
 		frame["images"] = imgs
@@ -107,7 +114,13 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 	if err != nil {
 		return nil, err
 	}
+	sessionID, err := readSessionID(ctx, proc, c.session)
+	if err != nil {
+		_ = proc.terminate(context.Background(), c.killGrace)
+		return nil, err
+	}
 	stream := newStream(proc, c.killGrace)
+	stream.setSessionID(sessionID)
 	if err := stream.send(ctx, map[string]any{"type": "compact"}); err != nil {
 		_ = stream.Close(context.Background())
 		return nil, err
@@ -117,6 +130,51 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 }
 
 func (c *Client) Close(_ context.Context) error { return nil }
+
+func readSessionID(ctx context.Context, proc *rpcProcess, expected string) (string, error) {
+	const requestID = "session-state"
+	if err := proc.writeJSON(map[string]any{"id": requestID, "type": "get_state"}); err != nil {
+		return "", err
+	}
+	for proc.lines.Scan() {
+		if proc.rawSink != nil {
+			proc.rawSink(proc.lines.Bytes())
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+		var response rpcResponse
+		if err := json.Unmarshal(proc.lines.Bytes(), &response); err != nil {
+			continue
+		}
+		if response.Type != "response" || response.Command != "get_state" || response.ID != requestID {
+			continue
+		}
+		if !response.Success {
+			return "", failureResponseError(response)
+		}
+		var state sessionStateWire
+		if err := json.Unmarshal(response.Data, &state); err != nil {
+			return "", fmt.Errorf("piagent decode get_state data: %w", err)
+		}
+		sessionID := strings.TrimSpace(state.SessionID)
+		if sessionID == "" {
+			return "", errors.New("piagent: get_state returned empty session id")
+		}
+		expected = strings.TrimSpace(expected)
+		if expected != "" && !looksLikeSessionPath(expected) && sessionID != expected {
+			return "", fmt.Errorf("piagent: get_state returned unexpected session id %q, want %q", sessionID, expected)
+		}
+		return sessionID, nil
+	}
+	return "", awaitProcessExitOrScanError(ctx, proc)
+}
+
+func looksLikeSessionPath(value string) bool {
+	return strings.ContainsAny(value, `/\\`) || strings.HasSuffix(value, ".jsonl")
+}
 
 func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 	h, err := c.runner.Start(ctx, procOptions{
@@ -160,21 +218,13 @@ type rpcProcess struct {
 
 func (p *rpcProcess) awaitExit() {
 	p.waitErr = p.handle.Wait()
+	<-p.stderrDone
 	close(p.done)
 }
 
 func (p *rpcProcess) waitResult() error {
 	<-p.done
 	return p.waitErr
-}
-
-func (p *rpcProcess) completedWaitResult() (error, bool) {
-	select {
-	case <-p.done:
-		return p.waitErr, true
-	default:
-		return nil, false
-	}
 }
 
 func (p *rpcProcess) writeJSON(v any) error {
@@ -212,6 +262,10 @@ func wrapExitError(err error, stderr string) error {
 	if err == nil {
 		return nil
 	}
+	trimmed := strings.TrimSpace(stderr)
+	if strings.Contains(strings.ToLower(trimmed), "no session found matching") {
+		return fmt.Errorf("%w: %s", ErrSessionNotFound, trimmed)
+	}
 	return &ExitError{Err: err, Stderr: stderr}
 }
 
@@ -244,13 +298,33 @@ func processDeadOrScanError(p *rpcProcess) error {
 	if err := p.lines.Err(); err != nil {
 		return err
 	}
-	if err, exited := p.completedWaitResult(); exited {
-		if err == nil {
+	select {
+	case <-p.done:
+		if p.waitErr == nil {
 			return ErrProcessDead
 		}
-		return wrapExitError(err, p.stderr.String())
+		return wrapExitError(p.waitErr, p.stderr.String())
+	case <-time.After(100 * time.Millisecond):
+		return ErrProcessDead
 	}
-	return ErrProcessDead
+}
+
+func awaitProcessExitOrScanError(ctx context.Context, p *rpcProcess) error {
+	if err := p.lines.Err(); err != nil {
+		return err
+	}
+	// During the startup handshake, stdout EOF can arrive before Wait and stderr
+	// collection finish. Their result is authoritative for classifying a missing
+	// resumed session, so wait unless the startup context is canceled.
+	select {
+	case <-p.done:
+		if p.waitErr == nil {
+			return ErrProcessDead
+		}
+		return wrapExitError(p.waitErr, p.stderr.String())
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func isAcceptedPromptResponse(r rpcResponse) bool {

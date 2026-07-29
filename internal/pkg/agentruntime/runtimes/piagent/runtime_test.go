@@ -91,6 +91,31 @@ func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 	})
 }
 
+func TestRun_MapsMissingNativeSession(t *testing.T) {
+	Convey("Given Pi reports that the requested native session no longer exists", t, func() {
+		sess := &fakeSession{streamErr: pkgpiagent.ErrSessionNotFound}
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+			return sess, nil
+		})
+		defer restore()
+
+		Convey("When the runtime starts the turn Then it returns the backend-neutral sentinel", func() {
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID:         1,
+				ProviderSessionID: "pi-native-gone",
+				Cwd:               t.TempDir(),
+				UserText:          "hello",
+			})
+
+			So(events, ShouldBeNil)
+			So(result, ShouldBeNil)
+			So(errors.Is(err, agentruntime.ErrSessionNotFound), ShouldBeTrue)
+			So(sess.closed, ShouldBeTrue)
+		})
+	})
+}
+
 func TestRun_ClosesSessionAfterDrain(t *testing.T) {
 	Convey("Given a pi-agent session", t, func() {
 		sess := &fakeSession{stream: &emptyStream{}, sid: "pi-session"}
@@ -248,6 +273,7 @@ type fakeSession struct {
 	gotImages    []pkgpiagent.Image
 	gotPrompt    string
 	streamCall   int
+	streamErr    error
 	closed       bool
 	closeStarted chan struct{}
 	allowClose   <-chan struct{}
@@ -268,9 +294,9 @@ func (s *fakeSession) Stream(_ context.Context, prompt, _ string, images []pkgpi
 	s.streamCall++
 	s.gotPrompt = prompt
 	s.gotImages = images
-	return s.stream, nil
+	return s.stream, s.streamErr
 }
-func (s *fakeSession) Compact(context.Context) (stream, error)          { return s.stream, nil }
+func (s *fakeSession) Compact(context.Context) (stream, error)          { return s.stream, s.streamErr }
 func (s *fakeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }
 func (s *fakeSession) ActiveStream() steerStream                        { return nil }
 func (s *fakeSession) ActiveInterruptor() interruptable                 { return nil }
