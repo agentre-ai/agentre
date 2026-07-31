@@ -809,6 +809,7 @@ func subagentStateToChatBlockSubagent(sb *chatblocks.SubagentStateBlock) *ChatBl
 		DurationMs:      sb.DurationMs,
 		Status:          sb.Status,
 		Summary:         sb.Summary,
+		Model:           sb.Model,
 	}
 }
 
@@ -889,9 +890,8 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	if err != nil {
 		return nil, err
 	}
-	// Codex compact needs an existing provider thread id. Pi Agent resumes by
-	// deterministic session file path (<AppDataDir>/piagent/sessions/agentre-<sid>.jsonl),
-	// so chat_sessions.provider_session_id is intentionally empty and must not gate compact.
+	// Codex and Pi Agent compact an existing provider-native session; neither may
+	// create an empty replacement session merely to satisfy an explicit compact.
 	if compactRequiresProviderSession(be) && strings.TrimSpace(sess.ProviderSessionID) == "" {
 		return nil, i18n.NewError(ctx, code.ChatCompactNoSession)
 	}
@@ -922,7 +922,7 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 }
 
 func compactRequiresProviderSession(be *agent_backend_entity.AgentBackend) bool {
-	return be != nil && be.IsCodex()
+	return be != nil && (be.IsCodex() || be.IsPiAgent())
 }
 
 func (s *chatSvc) GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error) {
@@ -2601,7 +2601,7 @@ func (s *chatSvc) runTurn(
 	// stream 在 SteerConsumed 分段时不变(同 turn 一个流名),Store 一次即可;收尾时清掉。
 	s.activeTurnStreams.Store(sess.ID, stream)
 	defer s.activeTurnStreams.Delete(sess.ID)
-	if result != nil && (be.IsClaudeCode() || be.IsCodex()) {
+	if result != nil && (be.IsClaudeCode() || be.IsCodex() || be.IsPiAgent()) {
 		s.persistProviderSessionID(ctx, sess, result.ProviderSessionID, "runner-start")
 	}
 	// runtime 若支持「自主续轮」(claudecode / remote claudecode 在 run_in_background
@@ -2975,6 +2975,7 @@ func eventShowsProgressAfterError(ev agentruntime.Event) bool {
 		agentruntime.SubagentStarted,
 		agentruntime.SubagentProgress,
 		agentruntime.SubagentDone,
+		agentruntime.SubagentModel,
 		agentruntime.Retry,
 		agentruntime.PlanUpdated,
 		agentruntime.CompactBoundary,
@@ -3292,8 +3293,8 @@ func (s *chatSvc) revokeChatToken(sessionID int64) {
 	}
 }
 
-// mapClaudeProviderError 命中 claudecode.ErrSessionNotFound（CLI 报告
-// "No conversation found with session ID: ..."）时做两件事：
+// mapProviderSessionError 命中 Claude Code 或通用 runtime 的 SessionNotFound
+// sentinel 时做两件事：
 //  1. 清空 sess.ProviderSessionID 并立即持久化（context.WithoutCancel 防 abort
 //     路径下 turnCtx 已 cancel 导致静默失败）—— 下一轮 Send 才能 spawn 全新
 //     CLI 会话，而不是一直拿 --resume 撞同一个失效 id。
@@ -3301,8 +3302,8 @@ func (s *chatSvc) revokeChatToken(sessionID int64) {
 //     "CLI 会话已过期 …" 中文人话，不是英文 stderr。
 //
 // 非 ErrSessionNotFound 原样返回，让上层走 default 失败路径。
-func (s *chatSvc) mapClaudeProviderError(ctx context.Context, sess *chat_entity.Session, src error) error {
-	if !errors.Is(src, claudecode.ErrSessionNotFound) {
+func (s *chatSvc) mapProviderSessionError(ctx context.Context, sess *chat_entity.Session, src error) error {
+	if !providerSessionNotFound(src) {
 		return src
 	}
 	if sess != nil && sess.HasProviderSession() {
@@ -3312,12 +3313,16 @@ func (s *chatSvc) mapClaudeProviderError(ctx context.Context, sess *chat_entity.
 	return i18n.NewError(ctx, code.ChatProviderSessionGone)
 }
 
+func providerSessionNotFound(err error) bool {
+	return errors.Is(err, claudecode.ErrSessionNotFound) || errors.Is(err, agentruntime.ErrSessionNotFound)
+}
+
 func (s *chatSvc) mapTurnError(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend, src error) error {
 	if src == nil {
 		return nil
 	}
-	if errors.Is(src, claudecode.ErrSessionNotFound) {
-		return s.mapClaudeProviderError(ctx, sess, src)
+	if providerSessionNotFound(src) {
+		return s.mapProviderSessionError(ctx, sess, src)
 	}
 	var rpcErr *daemonrpc.Error
 	if errors.As(src, &rpcErr) && rpcErr.Code == daemonrpc.ErrProviderMissing.Code {

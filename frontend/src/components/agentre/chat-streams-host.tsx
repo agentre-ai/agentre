@@ -12,6 +12,7 @@ import { useSessionStatusStore } from "@/stores/session-status-store";
 import { isResolvedAskState } from "./ask-event-state";
 import { StreamSubscriber } from "./stream-subscriber";
 
+import type { chat_svc } from "../../../wailsjs/go/models";
 import type { ChatStreamEvent } from "@/hooks/use-chat-stream";
 import type { AgentStatus } from "@/stores/types";
 
@@ -150,6 +151,16 @@ export function ChatStreamsHost(): React.ReactElement | null {
               ev.toolUseId,
               ev.subagent,
             );
+          }
+          return;
+        case "subagent_model":
+          // 只带 toolUseId + model 两个字段(不复用整份 Subagent 快照)——避免浅合并
+          // 把已累计的 toolUses/totalTokens/status 覆盖成空值(R4)。
+          if (ev.toolUseId && ev.model) {
+            clearLiveRetry(sessionId, assistantMessageId);
+            mergeSubagentMeta(sessionId, assistantMessageId, ev.toolUseId, {
+              model: ev.model,
+            } as chat_svc.ChatBlockSubagent);
           }
           return;
         case "retry":

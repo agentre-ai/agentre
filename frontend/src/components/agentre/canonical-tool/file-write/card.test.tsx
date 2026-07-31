@@ -78,6 +78,35 @@ describe("FileWriteCard", () => {
     expect(screen.getByText("DONE")).toBeDefined();
   });
 
+  // Given 一行超出卡片宽度的内容,When 展开,Then 内容区可横向滚动
+  // 且行盒撑到内容宽度(卡片本身 overflow-hidden,否则长行被裁掉且拖不出来)。
+  it("scrolls long content lines horizontally instead of clipping them", () => {
+    const longText = `const x = "${"y".repeat(400)}";`;
+    const block = {
+      type: "tool_use",
+      toolName: "Write",
+      canonical: {
+        kind: "file.write",
+        fileWrite: {
+          path: "/root/app/foo.ts",
+          content: `first\n${longText}`,
+          lines: 2,
+          bytes: longText.length + 6,
+        },
+      },
+    } as unknown as ChatBlockData;
+    render(<FileWriteCard toolBlock={block} cwd="/root/app" />);
+    fireEvent.click(screen.getByRole("button", { expanded: false }));
+
+    const scroller = screen.getByTestId("file-write-content-scroll");
+    expect(scroller.className).toContain("overflow-x-auto");
+
+    const row = screen.getByText(longText).parentElement as HTMLElement;
+    expect(scroller).toContainElement(row);
+    expect(row.className).toContain("w-max");
+    expect(row.className).toContain("min-w-full");
+  });
+
   it("Given a truncated write, When full content is copied, Then Sonner shows a timed success toast", async () => {
     const writeText = mockClipboard();
     const block = {

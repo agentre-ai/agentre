@@ -12,6 +12,7 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 // LogsDir 返回 Agentre 写日志的目录（<dataDir>/logs）。
@@ -23,6 +24,12 @@ func LogsDir() (string, error) {
 	}
 	return filepath.Join(dataDir, "logs"), nil
 }
+
+const (
+	logFileMaxSizeMB  = 30
+	logFileMaxBackups = 10
+	logFileMaxAgeDays = 30
+)
 
 // rebuildLogger 用给定 level 重建全局 cago logger，保留 控制台 + agentre.log/error.log
 // 三个 core。控制台 core 刻意与 logger.Logger 启动时的非 debug 分支逐字对齐
@@ -37,8 +44,8 @@ func rebuildLogger(level, logsDir string) error {
 				zapcore.Lock(os.Stdout),
 				lvl,
 			),
-			logger.NewFileCore(lvl, filepath.Join(logsDir, "agentre.log")),
-			logger.NewFileCore(logger.ToLevel("error"), filepath.Join(logsDir, "error.log")),
+			newRotatingFileCore(lvl, filepath.Join(logsDir, "agentre.log")),
+			newRotatingFileCore(logger.ToLevel("error"), filepath.Join(logsDir, "error.log")),
 		),
 	)
 	if err != nil {
@@ -46,6 +53,24 @@ func rebuildLogger(level, logsDir string) error {
 	}
 	logger.SetLogger(l)
 	return nil
+}
+
+func newRotatingFileCore(level zapcore.Level, filename string) zapcore.Core {
+	writer := &lumberjack.Logger{
+		Filename:   filename,
+		MaxSize:    logFileMaxSizeMB,
+		MaxBackups: logFileMaxBackups,
+		MaxAge:     logFileMaxAgeDays,
+		LocalTime:  true,
+		Compress:   false,
+	}
+	encoderConfig := zap.NewProductionEncoderConfig()
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	return zapcore.NewCore(
+		zapcore.NewJSONEncoder(encoderConfig),
+		zapcore.AddSync(writer),
+		level,
+	)
 }
 
 // applyLogLevel 把布尔开关翻译成 level 并重建 logger。
@@ -89,18 +114,16 @@ func SetDebugLogging(ctx context.Context, enabled bool) error {
 	return applyLogLevel(enabled)
 }
 
-// applyDebugLoggingOnBoot 在启动时按持久化的开关恢复日志级别（取代旧 AGENTRE_DEBUG 环境变量）。
-// best-effort：读不到/重建失败只 warn，不阻断启动。
+// applyDebugLoggingOnBoot 在启动时按持久化的开关恢复日志级别（取代旧 AGENTRE_DEBUG 环境变量），
+// 并统一换成 Agentre 的 30 MB 文件轮转配置。best-effort：读不到设置时按 info 重建，
+// 重建失败只 warn，不阻断启动。
 func applyDebugLoggingOnBoot(ctx context.Context) {
 	enabled, err := DebugLoggingEnabled(ctx)
 	if err != nil {
 		logger.Default().Warn("read debug logging setting", zap.Error(err))
-		return
+		enabled = false
 	}
-	if !enabled {
-		return
-	}
-	if err := applyLogLevel(true); err != nil {
+	if err := applyLogLevel(enabled); err != nil {
 		logger.Default().Warn("apply debug logging on boot", zap.Error(err))
 	}
 }

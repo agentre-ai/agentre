@@ -194,6 +194,14 @@ func (e SubagentDone) MarshalJSON() ([]byte, error) {
 	}{EventSubagentDone, e.ToolCallID, e.Info})
 }
 
+func (e SubagentModel) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Kind       EventKind `json:"kind"`
+		ToolCallID string    `json:"toolCallId,omitempty"`
+		Model      string    `json:"model,omitempty"`
+	}{EventSubagentModel, e.ToolCallID, e.Model})
+}
+
 func (e Retry) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Kind    EventKind `json:"kind"`
@@ -453,6 +461,15 @@ func UnmarshalEvent(data []byte) (Event, error) {
 			return nil, err
 		}
 		return SubagentDone{ToolCallID: w.ToolCallID, Info: w.Info}, nil
+	case EventSubagentModel:
+		var w struct {
+			ToolCallID string `json:"toolCallId"`
+			Model      string `json:"model"`
+		}
+		if err := json.Unmarshal(data, &w); err != nil {
+			return nil, err
+		}
+		return SubagentModel{ToolCallID: w.ToolCallID, Model: w.Model}, nil
 	case EventRetry:
 		var w struct {
 			Message string `json:"message"`

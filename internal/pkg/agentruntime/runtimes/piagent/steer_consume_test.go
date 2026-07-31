@@ -12,21 +12,21 @@ import (
 	pkgpi "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
-// Pi 在 usage 事件里上报真实模型 id（如 gpt-5.5(xhigh)）。runtime 必须把它写进
-// RunResult.Model，否则 chat_svc 落库的 assistant 消息模型为空（piagent 不绑
-// provider，初始 result.Model 就是空串）。
-func TestDrainStream_SessionStatsContextWindowOverridesCatalog(t *testing.T) {
+// Pi 在 usage 事件里上报真实模型 id（如 gpt-5.6-sol）。runtime 必须把它写进
+// RunResult.Model，但上下文窗口只能采用 Pi RPC 返回值：自定义 provider 可能复用
+// 公共模型名，却配置了不同的 contextWindow，不能先按 Agentre catalog 猜一个值。
+func TestDrainStream_PiContextWindowIsAuthoritative(t *testing.T) {
 	result := &agentruntime.RunResult{}
 	out := make(chan agentruntime.Event, 16)
 	drainStream(context.Background(), agentruntime.RunRequest{}, "", &scriptStream{events: []pkgpi.Event{
-		{Kind: pkgpi.EventUsage, Usage: provider.Usage{PromptTokens: 10, CompletionTokens: 2}, Model: "gpt-5.5(xhigh)"},
-		{Kind: pkgpi.EventContextWindow, ContextWindow: 200000},
+		{Kind: pkgpi.EventUsage, Usage: provider.Usage{PromptTokens: 10, CompletionTokens: 2}, Model: "gpt-5.6-sol"},
+		{Kind: pkgpi.EventContextWindow, ContextWindow: 258000},
 		{Kind: pkgpi.EventDone},
 	}}, out, result, nil)
 	close(out)
 
-	assert.Equal(t, "gpt-5.5(xhigh)", result.Model)
-	assert.Equal(t, 200000, result.ContextWindow)
+	assert.Equal(t, "gpt-5.6-sol", result.Model)
+	assert.Equal(t, 258000, result.ContextWindow)
 
 	var cws []int
 	for ev := range out {
@@ -34,20 +34,20 @@ func TestDrainStream_SessionStatsContextWindowOverridesCatalog(t *testing.T) {
 			cws = append(cws, cw.Tokens)
 		}
 	}
-	assert.Equal(t, []int{1_050_000, 200000}, cws)
+	assert.Equal(t, []int{258000}, cws)
 }
 
-func TestDrainStream_SurfacesObservedModelAndContextWindow(t *testing.T) {
+func TestDrainStream_DoesNotGuessContextWindowFromModelName(t *testing.T) {
 	result := &agentruntime.RunResult{}
 	out := make(chan agentruntime.Event, 16)
 	drainStream(context.Background(), agentruntime.RunRequest{}, "", &scriptStream{events: []pkgpi.Event{
-		{Kind: pkgpi.EventUsage, Usage: provider.Usage{PromptTokens: 10, CompletionTokens: 2}, Model: "gpt-5.5(xhigh)"},
+		{Kind: pkgpi.EventUsage, Usage: provider.Usage{PromptTokens: 10, CompletionTokens: 2}, Model: "gpt-5.6-sol"},
 		{Kind: pkgpi.EventDone},
 	}}, out, result, nil)
 	close(out)
 
-	assert.Equal(t, "gpt-5.5(xhigh)", result.Model)
-	assert.Equal(t, 1_050_000, result.ContextWindow)
+	assert.Equal(t, "gpt-5.6-sol", result.Model)
+	assert.Zero(t, result.ContextWindow)
 
 	var cws []agentruntime.ContextWindowUpdated
 	for ev := range out {
@@ -55,8 +55,7 @@ func TestDrainStream_SurfacesObservedModelAndContextWindow(t *testing.T) {
 			cws = append(cws, cw)
 		}
 	}
-	require.Len(t, cws, 1)
-	assert.Equal(t, 1_050_000, cws[0].Tokens)
+	assert.Empty(t, cws)
 }
 
 // scriptStream 把一串预置 pkgpi.Event 当成 Pi 流回放，用于驱动 drainStream。

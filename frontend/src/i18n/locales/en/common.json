@@ -254,6 +254,18 @@
       "emptySteps": "No child steps",
       "emptyStepsRunning": "Subagent has not called any tools yet...",
       "emptySummary": "No summary",
+      "meta": {
+        "model": "Model",
+        "tools": "Tools",
+        "tokens": "Tokens",
+        "duration": "Duration"
+      },
+      "progressAria": {
+        "tools": "{{count}} tools",
+        "tools_one": "{{count}} tool",
+        "tools_other": "{{count}} tools",
+        "tokens": "{{value}} tokens"
+      },
       "sections": {
         "prompt": "TASK PROMPT",
         "steps": "STEPS",
@@ -269,7 +281,6 @@
         "withDuration": "{{status}} · {{duration}}"
       },
       "summaryRunning": "Subagent is still running. Results will return later...",
-      "toolCount": "{{count}} tools",
       "waitingFirstStep": "Waiting for the first child call..."
     },
     "fileEdit": {

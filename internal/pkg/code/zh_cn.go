@@ -114,7 +114,7 @@ var zhCN = map[int]string{
 	ChatPermissionModeNoActive:    "请先发送一条消息让会话启动后再切换权限模式",
 	ChatPermissionModeInternal:    "切换权限模式失败，请稍后再试",
 	ChatCompactUnsupported:        "当前 Agent 后端不支持上下文压缩",
-	ChatCompactNoSession:          "请先发送一条消息让 Codex 会话启动后再压缩",
+	ChatCompactNoSession:          "请先发送一条消息让 CLI 会话启动后再压缩",
 	ChatCompactInternal:           "压缩上下文失败，请稍后再试",
 	ChatGoalUnsupported:           "当前 Agent 后端不支持目标状态",
 	ChatGoalNoSession:             "请先发送一条消息让 Codex 会话启动后再设置目标",

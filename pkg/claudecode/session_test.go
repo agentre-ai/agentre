@@ -1291,6 +1291,120 @@ func TestSession_BackgroundSubagentActivityTurn(t *testing.T) {
 	assert.Equal(t, "echo:beta", drainText(t, ch2))
 }
 
+const (
+	fakeBgSubAgentA = "toolu_agent_a"
+	fakeBgSubAgentB = "toolu_agent_b"
+)
+
+// fakeConcurrentBackgroundSubagents 复刻 sess-2275 抓到的「一轮里派两个 run_in_background
+// subagent」帧序:两个子 agent 在空闲态**交替**吐自己的内部活动(parent_tool_use_id 一个是
+// A 一个是 B),各自完成时再各发一帧后台型 task_notification。
+func fakeConcurrentBackgroundSubagents(stdin io.Reader, stdout io.Writer) {
+	const sid = "sess-bgsubagents"
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	turn := 0
+	for sc.Scan() {
+		turn++
+		reply := extractTextField(sc.Text())
+		if turn == 1 {
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a1","content":[{"type":"tool_use","id":%q,"name":"Agent","input":{"subagent_type":"general-purpose","description":"T7","prompt":"go","run_in_background":true}},{"type":"tool_use","id":%q,"name":"Agent","input":{"subagent_type":"general-purpose","description":"T10","prompt":"go","run_in_background":true}}]}}`, fakeBgSubAgentA, fakeBgSubAgentB)
+			writeFrame(stdout, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":%q,"content":"Async agent launched. output_file: /tmp/tasks/a.output"},{"type":"tool_result","tool_use_id":%q,"content":"Async agent launched. output_file: /tmp/tasks/b.output"}]}}`, fakeBgSubAgentA, fakeBgSubAgentB)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a2","content":[{"type":"text","text":"started:%s"}]}}`, reply)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+			// —— 空闲态:两个子 agent 交替产出内部活动 ——
+			writeFrame(stdout, `{"type":"assistant","parent_tool_use_id":%q,"message":{"id":"s1","content":[{"type":"tool_use","id":"sub_a1","name":"Read","input":{}}]}}`, fakeBgSubAgentA)
+			writeFrame(stdout, `{"type":"user","parent_tool_use_id":%q,"message":{"content":[{"type":"tool_result","tool_use_id":"sub_a1","content":"A1"}]}}`, fakeBgSubAgentA)
+			writeFrame(stdout, `{"type":"assistant","parent_tool_use_id":%q,"message":{"id":"s2","content":[{"type":"tool_use","id":"sub_b1","name":"Bash","input":{}}]}}`, fakeBgSubAgentB)
+			writeFrame(stdout, `{"type":"user","parent_tool_use_id":%q,"message":{"content":[{"type":"tool_result","tool_use_id":"sub_b1","content":"B1"}]}}`, fakeBgSubAgentB)
+			writeFrame(stdout, `{"type":"assistant","parent_tool_use_id":%q,"message":{"id":"s3","content":[{"type":"tool_use","id":"sub_a2","name":"Edit","input":{}}]}}`, fakeBgSubAgentA)
+			writeFrame(stdout, `{"type":"user","parent_tool_use_id":%q,"message":{"content":[{"type":"tool_result","tool_use_id":"sub_a2","content":"A2"}]}}`, fakeBgSubAgentA)
+			// A 完成 → 自主续轮;随后 B 完成 → 再一轮。
+			writeFrame(stdout, `{"type":"system","subtype":"task_notification","task_id":"ta","tool_use_id":%q,"status":"completed","output_file":"/tmp/tasks/a.output","summary":"A done"}`, fakeBgSubAgentA)
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a3","content":[{"type":"text","text":"autonomous:A"}]}}`)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":2,"output_tokens":2}}`, sid)
+			writeFrame(stdout, `{"type":"system","subtype":"task_notification","task_id":"tb","tool_use_id":%q,"status":"completed","output_file":"/tmp/tasks/b.output","summary":"B done"}`, fakeBgSubAgentB)
+			writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+			writeFrame(stdout, `{"type":"assistant","message":{"id":"a4","content":[{"type":"text","text":"autonomous:B"}]}}`)
+			writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":2,"output_tokens":2}}`, sid)
+			continue
+		}
+		writeFrame(stdout, `{"type":"system","subtype":"init","session_id":%q,"cwd":"/tmp","model":"m","tools":[]}`, sid)
+		writeFrame(stdout, `{"type":"assistant","message":{"id":"a5","content":[{"type":"text","text":"echo:%s"}]}}`, reply)
+		writeFrame(stdout, `{"type":"result","subtype":"success","session_id":%q,"usage":{"input_tokens":1,"output_tokens":1}}`, sid)
+	}
+}
+
+// TestSession_ConcurrentBackgroundSubagentsSplitByOwner 锁定 sess-2275 的第二处缺陷:
+// 同一轮派出的两个后台 subagent 在空闲态交替产出内部活动时,活动轮的单槽位(s.active)
+// 被先到的那个 owner 占住,之后**两个** subagent 的帧全被喂进同一轮 —— 消费方
+// (chat_svc.driveSubagentActivity)按 act.ToolUseID 过滤子块,另一个 subagent 这段时间的
+// 内部活动在收尾时被整段丢弃,既不落库也进不了它自己那张派遣卡。
+//
+// 断言:每一轮活动流里的帧都只属于该轮的 ToolUseID,且两个 owner 都拿到过自己的活动轮。
+func TestSession_ConcurrentBackgroundSubagentsSplitByOwner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := New(WithBinary("fake"), pipeSpawner(t, fakeConcurrentBackgroundSubagents))
+	sess, err := c.OpenSession(ctx)
+	require.NoError(t, err)
+	defer func() { _ = sess.Close(context.Background()) }()
+
+	// 活动轮 / 自主轮都要有人 drain,否则 readLoop 投递时阻塞。
+	type ownedTools struct {
+		owner string
+		tools []string
+	}
+	collected := make(chan ownedTools, 8)
+	go func() {
+		for act := range sess.SubagentActivity() {
+			got := ownedTools{owner: act.ToolUseID}
+			for ev := range act.Events {
+				if ev.Kind == EventPreToolUse && ev.Tool != nil {
+					got.tools = append(got.tools, ev.Tool.ID+"@"+ev.ParentToolUseID)
+				}
+			}
+			collected <- got
+		}
+		close(collected)
+	}()
+	go func() {
+		for at := range sess.AutonomousTurns() {
+			for range at.Events { //nolint:revive // drain
+			}
+		}
+	}()
+
+	ch1, err := sess.Turn(ctx, "alpha")
+	require.NoError(t, err)
+	assert.Equal(t, "started:alpha", drainText(t, ch1))
+
+	// 收齐三次内部工具调用(A 两次、B 一次)。A 的两次被 B 隔开 → A 会出现两轮活动流。
+	byOwner := map[string][]string{}
+	deadline := time.After(3 * time.Second)
+	for len(byOwner[fakeBgSubAgentA])+len(byOwner[fakeBgSubAgentB]) < 3 {
+		select {
+		case got, ok := <-collected:
+			if !ok {
+				t.Fatal("subagent activity channel closed before both owners appeared")
+			}
+			for _, tool := range got.tools {
+				assert.True(t, strings.HasSuffix(tool, "@"+got.owner),
+					"活动轮 %s 里混进了别的 subagent 的帧: %s", got.owner, tool)
+			}
+			byOwner[got.owner] = append(byOwner[got.owner], got.tools...)
+		case <-deadline:
+			t.Fatalf("timed out waiting for both owners' activity turns, got %v", byOwner)
+		}
+	}
+
+	assert.Contains(t, byOwner[fakeBgSubAgentA], "sub_a1@"+fakeBgSubAgentA)
+	assert.Contains(t, byOwner[fakeBgSubAgentB], "sub_b1@"+fakeBgSubAgentB)
+	assert.Contains(t, byOwner[fakeBgSubAgentA], "sub_a2@"+fakeBgSubAgentA)
+}
+
 // TestSession_IdleBackgroundSubagentKeepsReaderAlive 锁定 Phase 1 缺陷:后台 subagent
 // 的内部活动在空闲态(result#1 之后、无 user turn 在飞)实时流出时,读循环不得卡死。
 //
@@ -1651,6 +1765,99 @@ func TestSession_NormalAssistantFrameStillEmitsText(t *testing.T) {
 	require.NotEmpty(t, events)
 	assert.Equal(t, EventTextDelta, events[0].Kind)
 	assert.Equal(t, "hello world", events[0].Text)
+	assert.False(t, isResult)
+}
+
+// TestSession_SubagentModelEvent 验证 Session.parseLine 这条解码路径（与
+// frameDecoder.decodeLine 共用 parseAssistantContentWithUsage，见 stream_test.go
+// TestStream_SubagentModelEvent）同样满足 R2/R5：subagent 内部帧（parent_tool_use_id
+// 非空）携带非空 message.model 时产出 EventSubagentModel；主 agent 自己的帧即便带
+// model 也不产出。
+func TestSession_SubagentModelEvent(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"s1","model":"claude-haiku-4-5-20251001","content":[{"type":"tool_use","id":"sub-tu","name":"Bash","input":{"command":"echo hi"}}]},"parent_tool_use_id":"toolu-parent","session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	require.NotEmpty(t, events)
+	var modelEvents []Event
+	for _, e := range events {
+		if e.Kind == EventSubagentModel {
+			modelEvents = append(modelEvents, e)
+		}
+	}
+	require.Len(t, modelEvents, 1)
+	assert.Equal(t, "toolu-parent", modelEvents[0].ParentToolUseID)
+	assert.Equal(t, "claude-haiku-4-5-20251001", modelEvents[0].Model)
+	assert.False(t, isResult)
+}
+
+// TestSession_MainAgentFrameModelDoesNotEmitSubagentModel 隔离守卫（R5）：主 agent
+// 自己的帧（parent_tool_use_id 为空）即便带 message.model，也绝不能被误判成 subagent
+// 内部帧而产出 EventSubagentModel——那会污染主 agent 的模型展示。
+func TestSession_MainAgentFrameModelDoesNotEmitSubagentModel(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m1","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu-parent","name":"Agent","input":{"description":"probe"}}]},"session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	require.NotEmpty(t, events)
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "main agent frame must never produce EventSubagentModel")
+	}
+	assert.False(t, isResult)
+}
+
+// TestSession_SubagentFrameMissingModelDoesNotEmit 老 CLI 兼容：subagent 内部帧没有
+// message.model 字段时不产出 EventSubagentModel，正常路径（如 EventTextDelta）不受影响。
+func TestSession_SubagentFrameMissingModelDoesNotEmit(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"s2","content":[{"type":"text","text":"legacy subagent text"}]},"parent_tool_use_id":"toolu-parent","session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	require.NotEmpty(t, events)
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "subagent frame without message.model must not produce EventSubagentModel")
+	}
+	assert.False(t, isResult)
+}
+
+// TestSession_SubagentModelEvent_SyntheticSentinelNotEmitted 覆盖 wrap-up 复审第二轮
+// Finding 3:CLI 在 API 错误帧上用 model:"<synthetic>"(见 errors.go 顶部注释)。若一帧
+// isApiErrorMessage:true 的帧其首个 text 块与顶层 error 都为空,apiErrorEvent 会返回
+// ok=false 并落入 parseAssistantContentWithUsage;该帧若带 parent_tool_use_id,当前会
+// 产出 EventSubagentModel{Model:"<synthetic>"} —— first-wins 会把这个哨兵永久钉进
+// subagent_state.model 与数据库,徽标显示 "<synthetic>"。生产侧必须过滤掉这个已知哨兵值。
+func TestSession_SubagentModelEvent_SyntheticSentinelNotEmitted(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m1","model":"<synthetic>","content":[]},"parent_tool_use_id":"toolu-parent","isApiErrorMessage":true,"session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "CLI synthetic API-error sentinel model must never surface as EventSubagentModel")
+	}
+	assert.False(t, isResult)
+}
+
+// TestSession_SubagentModelEvent_APIErrorFlagGovernsRegardlessOfSentinelString 覆盖
+// 修订后的 R2 第二段:判定必须以帧的权威标志 isApiErrorMessage 为准,不能靠嗅探
+// message.model 的字符串值是否等于当前已知的占位符 "<synthetic>"。本测试用一个
+// 不同于该字面量的占位符值,模拟 CLI 未来改动占位符取值——isApiErrorMessage:true
+// 且首个 text 块与顶层 error 都为空,apiErrorEvent 因而放行,帧落进
+// parseAssistantContentWithUsage。若判定仍靠字符串嗅探,这个陌生占位符值会被当成
+// subagent 的实际模型产出 EventSubagentModel,first-wins 语义下永久钉进
+// subagent_state.model。
+func TestSession_SubagentModelEvent_APIErrorFlagGovernsRegardlessOfSentinelString(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m1","model":"<future-placeholder>","content":[]},"parent_tool_use_id":"toolu-parent","isApiErrorMessage":true,"session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "isApiErrorMessage:true frame must never surface a model, regardless of the placeholder string value")
+	}
 	assert.False(t, isResult)
 }
 

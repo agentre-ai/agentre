@@ -127,6 +127,12 @@ func (d *dispatcherEmitter) Emit(ctx context.Context, stream string, raw any) {
 			})
 		}
 
+	case string(StreamSubagentModel):
+		// 只带 toolUseId + model,不走 subagentInfoMapToChatBlock 那套整份快照投影
+		// (R4)——handler 已经只 emit 这两个 key,这里原样透传即可。
+		ev.ToolUseID = stringOf(m, "toolUseId")
+		ev.Model = stringOf(m, "model")
+
 	case string(StreamRetry):
 		ev.RetryAttempt = intOf(m, "retryAttempt")
 		ev.RetryMaxAttempts = intOf(m, "retryMaxAttempts")

@@ -18,6 +18,10 @@ type SubagentStateBlock struct {
 	LastToolName      string   `json:"last_tool_name,omitempty"`
 	ToolUses          int      `json:"tool_uses,omitempty"`
 	NestedToolCallIDs []string `json:"nested_tool_call_ids,omitempty"`
+	// Model 是子代理内部 assistant 帧解析出的实际模型(R2 覆盖派遣瞬间的入参别名)。
+	// first-wins(R3):一经记录不再改写,由 SubagentModelHandler 负责。随本块一起
+	// 落 blocks_json,replay 时随 subagentStateToChatBlockSubagent 一并投影(R6)。
+	Model string `json:"model,omitempty"`
 }
 
 func (SubagentStateBlock) Type() string                      { return "subagent_state" }

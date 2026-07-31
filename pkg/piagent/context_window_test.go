@@ -13,7 +13,8 @@ import (
 func TestStreamEmitsContextWindowFromSessionStats(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":1234,"contextWindow":1050000,"percent":0.12}}}`,
 		"",
 	}, "\n")
@@ -37,9 +38,10 @@ func TestStreamEmitsContextWindowFromSessionStats(t *testing.T) {
 	assert.Equal(t, []int{1_050_000}, windows)
 
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 2)
-	assert.Equal(t, "prompt", frames[0]["type"])
-	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	require.Len(t, frames, 3)
+	assert.Equal(t, "get_state", frames[0]["type"])
+	assert.Equal(t, "prompt", frames[1]["type"])
+	assert.Equal(t, "get_session_stats", frames[2]["type"])
 }
 
 func TestCompactStreamEmitsContextWindowFromSessionStats(t *testing.T) {
@@ -71,9 +73,10 @@ func TestCompactStreamEmitsContextWindowFromSessionStats(t *testing.T) {
 	assert.Equal(t, []int{200_000}, windows)
 
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 2)
-	assert.Equal(t, "compact", frames[0]["type"])
-	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	require.Len(t, frames, 3)
+	assert.Equal(t, "get_state", frames[0]["type"])
+	assert.Equal(t, "compact", frames[1]["type"])
+	assert.Equal(t, "get_session_stats", frames[2]["type"])
 }
 
 func stdinFrames(t *testing.T, raw string) []map[string]any {

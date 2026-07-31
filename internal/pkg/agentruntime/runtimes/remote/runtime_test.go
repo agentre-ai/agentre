@@ -100,19 +100,20 @@ func TestRun_Success_DispatchesEventsThenCloses(t *testing.T) {
 			assert.Equal(t, int64(42), rp.SessionID)
 			assert.Equal(t, "hello", rp.UserText)
 			assert.True(t, rp.Compact)
-			// echo session id back
-			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			// echo chat id and the provider-native session discovered before event drain.
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "psid-early"}
 			return nil
 		})
 
 	events, runResult, err := rt.Run(context.Background(), agentruntime.RunRequest{
-		Backend:   &agent_backend_entity.AgentBackend{Type: "claudecode", ID: 1, Name: "x"},
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), ID: 1, Name: "x"},
 		SessionID: 42,
 		UserText:  "hello",
 		Compact:   true,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, runResult)
+	assert.Equal(t, "psid-early", runResult.ProviderSessionID)
 
 	// Deliver a TextDelta then a runResultDone with Usage + Model.
 	textJSON, _ := json.Marshal(agentruntime.TextDelta{Text: "hi"})

@@ -37,3 +37,24 @@ func TestStreamSubagentActivityStarted_EventMarshal(t *testing.T) {
 	assert.Equal(t, "toolu_abc123", m["toolUseId"])
 	assert.Equal(t, "chat:event:1:99", m["stream"])
 }
+
+// TestStreamSubagentModel_EventMarshal 钉住 wire 形状:{kind, toolUseId, model}三个
+// 字段,不夹带 subagent 全量快照(R4)。
+func TestStreamSubagentModel_EventMarshal(t *testing.T) {
+	evt := chat_svc.ChatStreamEvent{
+		Kind:      chat_svc.StreamSubagentModel,
+		ToolUseID: "toolu_abc123",
+		Model:     "claude-haiku-4-5-20251001",
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data, &m))
+
+	assert.Equal(t, "subagent_model", m["kind"])
+	assert.Equal(t, "toolu_abc123", m["toolUseId"])
+	assert.Equal(t, "claude-haiku-4-5-20251001", m["model"])
+	_, hasSubagent := m["subagent"]
+	assert.False(t, hasSubagent, "subagent_model 不应携带 subagent 全量快照字段")
+}

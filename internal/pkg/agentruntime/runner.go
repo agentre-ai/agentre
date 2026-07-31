@@ -28,6 +28,13 @@ const (
 	EventSubagentStarted  EventKind = "subagent_started"
 	EventSubagentProgress EventKind = "subagent_progress"
 	EventSubagentDone     EventKind = "subagent_done"
+	// EventSubagentModel claudecode 从 subagent 内部帧解析出的实际模型（R2：实际执行
+	// 覆盖调用意图）。独立事件类型，刻意不复用 EventSubagentProgress ——
+	// SubagentProgressHandler 对 ToolUses/TotalTokens/LastToolName 是无条件赋值，混进
+	// 一个只带模型的 SubagentInfo 会把已累计的进度清零（R4）。chat_svc 把它并入对应
+	// 派遣的 subagent 累计态，只更新模型字段。first-wins（R3，同一子代理只认第一次）
+	// 由 chat_svc 累计态负责；claudecode 侧每次遇到都如实产出，不做去重。
+	EventSubagentModel EventKind = "subagent_model"
 	// EventAskUserQuestion backend 检测到 ask_user_question 类型的工具调用
 	// 时 emit（Claude Code 的内置 AskUserQuestion、Codex / 内置 Agent
 	// 后续注册的同语义 function tool 都翻译到这里）。service 接住后 push
@@ -359,8 +366,8 @@ type RunResult struct {
 	// ContextWindow 是 runtime 上报的模型上下文窗口大小（tokens）：
 	//   - codex：从 thread/tokenUsage/updated 通知的 modelContextWindow 字段抓（部分版本 codex
 	//     app-server 会推这个值）；
-	//   - piagent：优先读 Pi RPC get_session_stats.contextUsage.contextWindow，
-	//     再从 usage 帧的真实 model id 查 llmcatalog 兜底；
+	//   - piagent：只读 Pi RPC get_session_stats.contextUsage.contextWindow，避免
+	//     自定义 provider 复用公共模型名时误套 llmcatalog 元数据；
 	//   - claudecode：通过 ContextWindowUpdated 事件实时上报，RunResult 通常留 0；
 	//   - builtin：不报。
 	// 0 表示 runner 没探到，chat_svc 用 provider.ContextWindow > cago catalog 兜底。

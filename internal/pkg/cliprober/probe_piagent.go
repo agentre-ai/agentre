@@ -22,8 +22,8 @@ func probePiAgent(ctx context.Context, req ProbeRequest) (*ProbeResponse, error)
 	opts := []piagent.Option{
 		piagent.WithBinary(binary),
 		piagent.WithCwd(cwd),
-		// 探测会话隔离在临时目录里（defer RemoveAll 清掉），不落进 ~/.pi。
-		piagent.WithSessionDir(cwd),
+		// 连通性探测不应出现在用户的 Pi Session 列表中。
+		piagent.WithNoSession(),
 		piagent.WithEnv(req.Env),
 	}
 	if model := strings.TrimSpace(req.Model); model != "" {

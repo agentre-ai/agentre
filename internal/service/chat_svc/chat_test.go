@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -826,9 +825,9 @@ func TestGetLaunchCommand(t *testing.T) {
 			assert.Contains(t, command, `-c 'model="gpt-5-codex"'`)
 		})
 
-		convey.Convey("piagent → 单行命令用确定的 session JSONL 路径恢复当前 chat session", func() {
+		convey.Convey("piagent → 单行命令用原生 Session ID 恢复当前 chat session", func() {
 			m.session.EXPECT().Find(ctx, int64(9)).Return(&chat_entity.Session{
-				ID: 9, AgentID: 10, Status: consts.ACTIVE,
+				ID: 9, AgentID: 10, ProviderSessionID: "pi-native-9", Status: consts.ACTIVE,
 			}, nil)
 			m.agent.EXPECT().Find(ctx, int64(10)).Return(&agent_entity.Agent{
 				ID: 10, AgentBackendID: 24, Status: consts.ACTIVE,
@@ -838,9 +837,9 @@ func TestGetLaunchCommand(t *testing.T) {
 			}, nil)
 
 			command := loadLaunchCommand(t, m, ctx, 9, agent_backend_entity.TypePiAgent)
-			assert.Contains(t, command, "pi --session-dir")
-			assert.Contains(t, command, filepath.Join("piagent", "sessions"))
-			assert.Contains(t, command, filepath.Join("piagent", "sessions", "agentre-9.jsonl"))
+			assert.Contains(t, command, "pi --session pi-native-9")
+			assert.NotContains(t, command, "--session-dir")
+			assert.NotContains(t, command, "agentre-9.jsonl")
 			assert.NotContains(t, command, "--mode rpc")
 		})
 
@@ -1085,8 +1084,9 @@ func (r *goalRecordingRunner) ClearGoal(_ context.Context, req agentruntime.Goal
 }
 
 type blockingProviderSessionRunner struct {
-	started chan struct{}
-	release chan struct{}
+	started   chan struct{}
+	release   chan struct{}
+	sessionID string
 }
 
 func (r *blockingProviderSessionRunner) Capabilities() capability.Capabilities {
@@ -1101,7 +1101,11 @@ func (r *blockingProviderSessionRunner) Run(_ context.Context, _ agentruntime.Ru
 		events <- agentruntime.TextDelta{Text: "done"}
 		close(events)
 	}()
-	return events, &agentruntime.RunResult{ProviderSessionID: "early-sid"}, nil
+	sessionID := r.sessionID
+	if sessionID == "" {
+		sessionID = "early-sid"
+	}
+	return events, &agentruntime.RunResult{ProviderSessionID: sessionID}, nil
 }
 
 func TestSend_PersistsProviderSessionIDBeforeStreamDrains(t *testing.T) {
@@ -1592,49 +1596,89 @@ func TestCompact_CodexStartsCompactTurnWithoutUserMessage(t *testing.T) {
 	assert.True(t, sawCompactBoundary, "compact turn should emit compact boundary divider")
 }
 
-func TestCompact_PiAgentDoesNotRequireProviderSession(t *testing.T) {
+func TestSend_PiAgentPersistsNativeSessionBeforeTurnDrain(t *testing.T) {
+	m := setupChatTest(t)
+	runner := &blockingProviderSessionRunner{
+		started: make(chan struct{}), release: make(chan struct{}), sessionID: "pi-native-new",
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}", Status: consts.ACTIVE,
+	}, nil)
+
+	persisted := make(chan struct{}, 1)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
+		if s.ID == 100 && s.ProviderSessionID == "pi-native-new" {
+			select {
+			case persisted <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	}).AnyTimes()
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+		if msg.Role == "user" {
+			msg.ID = 1000
+		} else {
+			msg.ID = 1001
+		}
+		return nil
+	}).Times(2)
+	m.dbMock.ExpectCommit()
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Send(m.ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	<-runner.started
+	persistedBeforeDrain := false
+	select {
+	case <-persisted:
+		persistedBeforeDrain = true
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(runner.release)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	assert.True(t, persistedBeforeDrain, "Pi native session ID must be durable before the event stream finishes")
+}
+
+func TestCompact_PiAgentRequiresNativeProviderSession(t *testing.T) {
 	m := setupChatTest(t)
 	ctx := m.ctx
 	runner := &compactRecordingRunner{recordingRunner: &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}}
 	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
 	t.Cleanup(restore)
 
-	sess := &chat_entity.Session{
-		ID:          100,
-		AgentID:     7,
-		AgentStatus: "idle",
-		Status:      consts.ACTIVE,
-	}
-	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
 	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
 		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
 	}, nil)
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
-		ID: 12, Type: string(agent_backend_entity.TypePiAgent), LLMProviderKey: "", EnvJSON: "{}", Status: consts.ACTIVE,
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}", Status: consts.ACTIVE,
 	}, nil)
-	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
-
-	m.dbMock.ExpectBegin()
-	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(3, nil)
-	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
-			msg.ID = 1001
-			return nil
-		}).Times(1)
-	m.dbMock.ExpectCommit()
-	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
 
 	resp, err := m.svc.Compact(ctx, &chat_svc.CompactRequest{SessionID: 100})
-	assert.NoError(t, err)
-	assert.Equal(t, int64(100), resp.SessionID)
-	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "请先发送一条消息")
+	assert.Nil(t, resp)
 	select {
 	case req := <-runner.requests:
-		assert.True(t, req.Compact)
-		assert.Empty(t, req.ProviderSessionID)
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for runtime request")
+		t.Fatalf("Pi compact without a native provider session must not start runtime: %+v", req)
+	default:
 	}
 }
 
@@ -5649,13 +5693,17 @@ func TestSetPermissionMode_DBWriteFailure(t *testing.T) {
 // 清掉 sess.ProviderSessionID + emit i18n 错误。
 type providerSessionGoneRunner struct {
 	mode string // "early" → Run 直接返 err；"stop" → result.StopErr
+	err  error
 }
 
 func (providerSessionGoneRunner) Capabilities() capability.Capabilities {
 	return capability.Capabilities{}
 }
 func (r providerSessionGoneRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
-	wrapped := fmt.Errorf("%w: No conversation found with session ID: gone", claudecode.ErrSessionNotFound)
+	wrapped := r.err
+	if wrapped == nil {
+		wrapped = fmt.Errorf("%w: No conversation found with session ID: gone", claudecode.ErrSessionNotFound)
+	}
 	switch r.mode {
 	case "early":
 		return nil, nil, wrapped
@@ -5743,6 +5791,69 @@ func TestSend_ClaudeCodeProviderSessionGoneEarlyClearsAndSurfacesI18n(t *testing
 	defer clearedMu.Unlock()
 	assert.True(t, clearedSID,
 		"必须在 DB 上把 ProviderSessionID 置空，否则下一轮 Send 还会再撞同一个失效 id")
+}
+
+func TestSend_PiAgentNativeSessionGoneClearsAndSurfacesI18n(t *testing.T) {
+	m := setupChatTest(t)
+	runner := providerSessionGoneRunner{
+		mode: "early",
+		err:  fmt.Errorf("%w: No session found matching 'pi-native-gone'", agentruntime.ErrSessionNotFound),
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-native-gone", AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+	}, nil)
+
+	cleared := make(chan struct{}, 1)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, s *chat_entity.Session) error {
+		if s.ID == 100 && s.ProviderSessionID == "" {
+			select {
+			case cleared <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	}).AnyTimes()
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+		if msg.Role == "user" {
+			msg.ID = 1000
+		} else {
+			msg.ID = 1001
+		}
+		return nil
+	}).Times(2)
+	m.dbMock.ExpectCommit()
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+	resp, err := m.svc.Send(m.ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	var errorText string
+	for _, ev := range m.events {
+		if payload, ok := ev.Payload.(chat_svc.ChatStreamEvent); ok && payload.Kind == chat_svc.StreamError {
+			errorText = payload.Error
+			break
+		}
+	}
+	assert.Contains(t, errorText, "CLI 会话已过期")
+	assert.NotContains(t, errorText, "No session found matching")
+	select {
+	case <-cleared:
+	default:
+		t.Fatal("Pi native session loss must clear provider_session_id")
+	}
 }
 
 // TestSend_ClaudeCodeProviderSessionGoneViaStopErrClearsAndSurfacesI18n 修复点 ②

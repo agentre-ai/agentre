@@ -81,11 +81,22 @@ func (SubagentProgressHandler) Apply(ctx context.Context, ev agentruntime.Event,
 	// task_progress 帧不带 task_type,无法自己判前台/后台;靠 Mutate 是否命中既有
 	// overlay 来判定 —— 前台 bash 在 Started 已被跳过,这里命中不到 → 不 emit 孤儿事件。
 	hit := turn.Mutate[blocks.SubagentStateBlock](acc, "subagent_state:"+r.ToolCallID, func(b *blocks.SubagentStateBlock) {
-		b.TotalTokens = r.Info.TotalTokens
+		// R4/R10:TotalTokens/ToolUses/DurationMs 三者来自同一个 CLI usage 对象
+		// (taskUsage,值类型无存在性区分)。task_progress 帧偶尔缺 usage,解码成
+		// 零值后若无条件赋值,会把已经攒起来的 token 数 / 工具数 / 耗时抹回 0——
+		// 真实 CLI 帧本身单调递增,0 只可能是缺失/异常帧,故 0 值不覆盖已记录值。
+		if r.Info.TotalTokens != 0 {
+			b.TotalTokens = r.Info.TotalTokens
+		}
 		b.LastToolName = r.Info.LastToolName
-		b.ToolUses = r.Info.ToolUses
+		if r.Info.ToolUses != 0 {
+			b.ToolUses = r.Info.ToolUses
+		}
 		if b.TaskID == "" && r.Info.TaskID != "" {
 			b.TaskID = r.Info.TaskID // task_started 缺 task_id 时由 task_progress 回填
+		}
+		if r.Info.DurationMs != 0 {
+			b.DurationMs = r.Info.DurationMs
 		}
 	})
 	if !hit {
@@ -96,6 +107,49 @@ func (SubagentProgressHandler) Apply(ctx context.Context, ev agentruntime.Event,
 			"kind":      "subagent_progress",
 			"toolUseId": r.ToolCallID,
 			"info":      r.Info,
+		})
+	}
+	return nil
+}
+
+// SubagentModelHandler 接住 agentruntime.SubagentModel(claudecode 从 subagent 内部
+// assistant 帧解析出的实际模型,R2)。独立事件类型,刻意不复用 SubagentProgressHandler
+// —— 那个 handler 对 TotalTokens/LastToolName/ToolUses 是无条件赋值,混进一个只带
+// 模型的 SubagentInfo 会把已累计的进度清零(R4)。
+type SubagentModelHandler struct{}
+
+func (SubagentModelHandler) Apply(ctx context.Context, ev agentruntime.Event, acc *turn.Accumulator, emit turn.Emitter, _ turn.View, tc *turn.TurnContext) error {
+	r := ev.(agentruntime.SubagentModel)
+	if r.Model == "" {
+		// 这不是同进程内对生产者契约的重复判空(那一层已在 translator.go 删除,见
+		// wrap-up 复审第三轮 Finding 2)。此 handler 消费的 agentruntime.Event 在
+		// 远程执行场景下经 daemon 通过 WebSocket 把 wire JSON 反序列化而来
+		// (internal/pkg/agentruntime/event_wire.go),协议边界之外没有编译期保证
+		// 字段非空——这里是真正的信任边界,必须自己校验,不能假设上游守约。
+		return nil
+	}
+	var recorded bool
+	hit := turn.Mutate[blocks.SubagentStateBlock](acc, "subagent_state:"+r.ToolCallID, func(b *blocks.SubagentStateBlock) {
+		if b.Model != "" {
+			return // first-wins(R3):模型一经记录,后续内部帧不再改写
+		}
+		b.Model = r.Model
+		recorded = true
+	})
+	if !hit || !recorded {
+		// 命中不到既有 overlay(如前台 bash 从未 track)→ 不 emit 孤儿事件,同
+		// Progress/Done handler 的既有约定;命中但已记录过(first-wins 拒绝改写)
+		// 同样不必再通知前端。
+		return nil
+	}
+	if emit != nil {
+		// 只带 toolUseId + model,不携带 toolUses/totalTokens/status 等累计态字段
+		// (R4)—— 前端浅合并若拿到整个 info/block 快照,SubagentStateBlock.Status
+		// 的 JSON 标签没有 omitempty,会把已有状态覆盖成空串。
+		emit.Emit(ctx, streamOf(tc), map[string]any{
+			"kind":      "subagent_model",
+			"toolUseId": r.ToolCallID,
+			"model":     r.Model,
 		})
 	}
 	return nil
@@ -113,9 +167,18 @@ func (SubagentDoneHandler) Apply(ctx context.Context, ev agentruntime.Event, acc
 			status = "completed"
 		}
 		b.Status = status
-		b.TotalTokens = r.Info.TotalTokens
-		b.DurationMs = r.Info.DurationMs
-		b.ToolUses = r.Info.ToolUses
+		// 与 SubagentProgressHandler 同一守卫(R4):0 值不覆盖已记录值。一帧不带
+		// usage 对象的 task_notification 解码成零值 taskUsage{},若无条件赋值会把
+		// Progress 阶段已累计的 token 数 / 工具数 / 耗时清零。
+		if r.Info.TotalTokens != 0 {
+			b.TotalTokens = r.Info.TotalTokens
+		}
+		if r.Info.DurationMs != 0 {
+			b.DurationMs = r.Info.DurationMs
+		}
+		if r.Info.ToolUses != 0 {
+			b.ToolUses = r.Info.ToolUses
+		}
 	})
 	if !hit {
 		return nil

@@ -249,6 +249,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 
 	sess.mu.Lock()
 	sess.id = ack.SessionID
+	sess.result.ProviderSessionID = ack.ProviderSessionID
 	sess.result.LaunchPermissionMode = ack.LaunchPermissionMode
 	sess.mu.Unlock()
 	if ack.SessionID != req.SessionID {

@@ -6,7 +6,6 @@ import {
   ChevronRight,
   CircleSlash,
   Clock,
-  Coins,
   FileText,
   LoaderCircle,
   Search,
@@ -50,7 +49,20 @@ function readSpawn(toolBlock: ChatBlockData): AgentSpawnDTO | undefined {
     totalTokens: meta.totalTokens ?? base.totalTokens,
     durationMs: meta.durationMs ?? base.durationMs,
     status: narrowSpawnStatus(meta.status) ?? base.status,
+    // 子代理首帧的实际模型覆盖派遣瞬间的入参别名(R2);两者都缺时 model 仍是 undefined。
+    model: meta.model || base.model,
   };
+}
+
+// shortenModelName 归一化模型短名供头部徽标显示(R7):只剥 "claude-" 前缀与结尾
+// 8 位日期段,其余字符原样保留。第三方模型名(网关接入的任意串,如 glm-4.6)不含
+// 这两种模式,原样返回——裁剪规则不做进一步"美化",避免把不认识的名字改坏。
+// 展开区 meta 行使用未经裁剪的原值,不调用这个函数。
+export function shortenModelName(model: string): string {
+  const withoutPrefix = model.startsWith("claude-")
+    ? model.slice("claude-".length)
+    : model;
+  return withoutPrefix.replace(/-\d{8}$/, "");
 }
 
 function narrowSpawnStatus(
@@ -153,10 +165,55 @@ function formatDuration(ms: number): string {
   return `${m}m${rem.toString().padStart(2, "0")}s`;
 }
 
+// formatTokenCount 是纯数字形式(无 "tok" 单位),供头部极简进度(R9)使用;
+// formatTokens 在其后拼接单位,供展开区 meta 行(R8)使用。
+function formatTokenCount(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}K`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
 function formatTokens(n: number): string {
-  if (n < 1000) return `${n} tok`;
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}K tok`;
-  return `${(n / 1_000_000).toFixed(2)}M tok`;
+  return `${formatTokenCount(n)} tok`;
+}
+
+// buildProgressTick 拼出头部极简进度(R9):纯数字、无「个工具」「tok」字样,
+// 用 " · " 连接;任一侧为零则只留另一侧;两侧都为零时返回空串(不渲染)。
+function buildProgressTick(toolUses: number, totalTokens: number): string {
+  const parts: string[] = [];
+  if (toolUses > 0) parts.push(`${toolUses}`);
+  if (totalTokens > 0) parts.push(formatTokenCount(totalTokens));
+  return parts.join(" · ");
+}
+
+// buildProgressAriaLabel 给极简进度(R9)补一个无障碍标签:可见文案仍是
+// 无单位的 "3 · 14.5K"(不把「个工具」「tok」文案加回可见位置,否则推翻 R9),
+// 但 aria-label 让折叠态下的读屏用户也能知道这两个数字分别是什么,不必强制
+// 展开卡片才能获得语义。只用 aria-label,不用 title——title 会在鼠标悬停时
+// 可见地弹出同样的文案,等于把 R9 刚去掉的文案又从后门带回来。与
+// buildProgressTick 同样的"任一侧为零则只留另一侧"规则。
+function buildProgressAriaLabel(
+  t: TFunction,
+  toolUses: number,
+  totalTokens: number,
+): string {
+  const parts: string[] = [];
+  if (toolUses > 0) {
+    parts.push(
+      t("canonical.agentSpawn.progressAria.tools", { count: toolUses }),
+    );
+  }
+  if (totalTokens > 0) {
+    // count 是 i18next 的保留选项,会被送进 Intl.PluralRules.select() 做单
+    // 复数判定;formatTokenCount 产出的是展示用字符串(如 "14.5K"),不是可
+    // 数的语法数量,不应该借用这个保留名字,改用普通具名占位符 value。
+    parts.push(
+      t("canonical.agentSpawn.progressAria.tokens", {
+        value: formatTokenCount(totalTokens),
+      }),
+    );
+  }
+  return parts.join(", ");
 }
 
 // AgentSpawnCard 渲染 canonical.agent.spawn — 替代 SubagentInvocationCard。
@@ -197,10 +254,23 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
 
   const description = spawn.taskDescription || "";
   const subagentType = spawn.subagentType || "";
+  const modelBadge = spawn.model ? shortenModelName(spawn.model) : "";
   const prompt = spawn.prompt || "";
   const steps = pairChildBlocks(childBlocks);
   const toolUses = spawn.toolUses ?? steps.length;
-  const tokens = spawn.totalTokens ? formatTokens(spawn.totalTokens) : "";
+  const totalTokens = spawn.totalTokens ?? 0;
+  const durationMs = spawn.durationMs ?? 0;
+  // R9:极简进度只在运行态渲染,完成/取消/出错都不再显示。
+  const isRunningState = status === "running" || status === "waiting";
+  const progressTick = isRunningState
+    ? buildProgressTick(toolUses, totalTokens)
+    : "";
+  const progressAriaLabel = isRunningState
+    ? buildProgressAriaLabel(t, toolUses, totalTokens)
+    : "";
+  // R8:展开区 meta 行独立于运行状态存在,只要有值就列出;模型用未裁剪原值。
+  const hasMetaRow =
+    !!spawn.model || toolUses > 0 || totalTokens > 0 || durationMs > 0;
 
   return (
     <TranscriptCard
@@ -242,7 +312,11 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
             <span className="text-muted-foreground">·</span>
             <span
               data-copyable-control-text="true"
-              className="min-w-0 truncate text-muted-foreground"
+              // R11:让位次序第一名——flex-shrink 权重远大于极简进度(见下方
+              // agent-spawn-progress 的注释),这样无论两者各自的内容宽度比例
+              // 如何,横向空间不足时都是描述先被压缩到裁切,而非按同一收缩
+              // 因子与进度同时按比例挤压。
+              className="min-w-0 shrink-[20] truncate text-muted-foreground"
             >
               {description}
             </span>
@@ -250,34 +324,47 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
         ) : null}
         {subagentType ? (
           <span
+            data-testid="agent-spawn-role-badge"
             data-copyable-control-text="true"
             className="ml-1 inline-flex shrink-0 items-center rounded-sm bg-secondary px-1.5 py-0.5 text-meta font-medium text-foreground"
           >
             {subagentType}
           </span>
         ) : null}
-        <span className="min-w-0 flex-1" />
-        {toolUses > 0 ? (
+        {modelBadge ? (
           <span
+            data-testid="agent-spawn-model-badge"
             data-copyable-control-text="true"
-            className="inline-flex shrink-0 items-center gap-1 text-meta text-muted-foreground"
+            // R7(修订)/R11:不再用与宽度无关的固定 max-w 裁剪——横向空间充足
+            // 时徽标必须完整显示裁剪后的全文。空间不足时改为参与 R11 的
+            // flex-shrink 让位次序:排在描述(shrink-[20])与极简进度(默认
+            // shrink=1)都让位之后,shrink-[0.2] 是比两者都小的正因子,
+            // min-w-0 允许它在挤压下真正收缩到 0 而不是撑破容器。truncate
+            // 挪到内层 <span>、overflow-hidden 留在这个 flex 容器上——与下方
+            // agent-spawn-progress 同一写法:text-overflow:ellipsis 只在块级
+            // 容器生效,加在 inline-flex 容器本身,文本子节点会变成匿名 flex
+            // item,省略号永远不会绘制,只会齐字硬切。完整原值仍在展开区
+            // meta 行可见,截断不丢信息。
+            className="ml-1 inline-flex min-w-0 shrink-[0.2] items-center overflow-hidden rounded-sm border border-border-strong bg-transparent px-1.5 py-0.5 text-meta font-normal text-muted-foreground"
           >
-            <Wrench className="size-2.5" aria-hidden="true" />
-            <span>
-              {t("canonical.agentSpawn.toolCount", { count: toolUses })}
-            </span>
+            <span className="truncate">{modelBadge}</span>
           </span>
         ) : null}
-        {toolUses > 0 && tokens ? (
-          <span className="text-muted-foreground">·</span>
-        ) : null}
-        {tokens ? (
+        <span className="min-w-0 flex-1" />
+        {progressTick ? (
+          // R9/R11:纯数字极简进度,次级前景色、无文案。让位次序第二名——
+          // 保留默认 flex-shrink:1(通过 `shrink`),远小于描述的 `shrink-[20]`,
+          // 所以横向空间不足时几乎全部收缩量先记到描述头上,直到描述被压到
+          // min-w-0 的下限,余量才轮到这里继续收缩/裁切;状态胶囊(shrink-0)
+          // 完全不参与收缩,任何宽度下都保持完整。
           <span
+            data-testid="agent-spawn-progress"
             data-copyable-control-text="true"
-            className="inline-flex shrink-0 items-center gap-1 text-meta text-muted-foreground"
+            aria-label={progressAriaLabel}
+            className="inline-flex min-w-0 shrink items-center gap-1 overflow-hidden text-meta text-subtle-foreground"
           >
-            <Coins className="size-2.5" aria-hidden="true" />
-            <span>{tokens}</span>
+            <Wrench className="size-2.5 shrink-0" aria-hidden="true" />
+            <span className="truncate">{progressTick}</span>
           </span>
         ) : null}
         {(status === "running" || status === "waiting") &&
@@ -319,6 +406,41 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
       >
         <div className="min-h-0 overflow-hidden">
           <div className="flex flex-col gap-3 border-t border-border px-3 py-3">
+            {hasMetaRow ? (
+              <div
+                data-testid="agent-spawn-meta-row"
+                className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-meta"
+              >
+                {spawn.model ? (
+                  <AgentSpawnMetaItem
+                    testId="agent-spawn-meta-model"
+                    label={t("canonical.agentSpawn.meta.model")}
+                    value={spawn.model}
+                  />
+                ) : null}
+                {toolUses > 0 ? (
+                  <AgentSpawnMetaItem
+                    testId="agent-spawn-meta-tools"
+                    label={t("canonical.agentSpawn.meta.tools")}
+                    value={`${toolUses}`}
+                  />
+                ) : null}
+                {totalTokens > 0 ? (
+                  <AgentSpawnMetaItem
+                    testId="agent-spawn-meta-tokens"
+                    label={t("canonical.agentSpawn.meta.tokens")}
+                    value={formatTokens(totalTokens)}
+                  />
+                ) : null}
+                {durationMs > 0 ? (
+                  <AgentSpawnMetaItem
+                    testId="agent-spawn-meta-duration"
+                    label={t("canonical.agentSpawn.meta.duration")}
+                    value={formatDuration(durationMs)}
+                  />
+                ) : null}
+              </div>
+            ) : null}
             <AgentSpawnSection
               label={t("canonical.agentSpawn.sections.prompt")}
             >
@@ -374,6 +496,28 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
     </TranscriptCard>
   );
 };
+
+// AgentSpawnMetaItem 渲染展开区 meta 行的单个「标签 值」项(R8)。value 只放在
+// 独立的 testId 节点上,不与标签共用一个 textContent——下沉数字与调用方(测试/
+// 未来其它读者)需要精确取到裸值,不掺文案。
+function AgentSpawnMetaItem({
+  testId,
+  label,
+  value,
+}: {
+  testId: string;
+  label: string;
+  value: string;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="text-subtle-foreground">{label}</span>
+      <span data-testid={testId} className="text-foreground">
+        {value}
+      </span>
+    </span>
+  );
+}
 
 function AgentSpawnSection({
   children,

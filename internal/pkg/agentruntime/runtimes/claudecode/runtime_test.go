@@ -913,3 +913,15 @@ func TestSubagentActivity_BridgesSessionActivity(t *testing.T) {
 		}
 	})
 }
+
+// TestClaudeEventShowsProgressAfterError_SubagentModel 覆盖 wrap-up 复审第三轮
+// Finding 1:claudeEventShowsProgressAfterError 是 chat_svc.eventShowsProgressAfterError
+// 的运行时层镜像注册表,claudecode.EventSubagentModel 漏登记。这是两处注册表的一致性
+// 缺陷,不是已证实可触发的故障——唯一可能产出空内容 subagent 帧的场景是 `<synthetic>`
+// API 错误帧,而该帧已在 pkg/claudecode/session.go 过滤,不会以 EventSubagentModel
+// 形式流出 drainStream。
+func TestClaudeEventShowsProgressAfterError_SubagentModel(t *testing.T) {
+	Convey("claudeEventShowsProgressAfterError 应把 EventSubagentModel 视为错误后的进度(与 chat_svc 镜像一致)", t, func() {
+		So(claudeEventShowsProgressAfterError(claudecode.EventSubagentModel), ShouldBeTrue)
+	})
+}
