@@ -93,20 +93,31 @@ export const FileWriteCard: React.FC<CanonicalCardProps> = ({
               {t("canonical.fileWrite.empty")}
             </div>
           ) : (
-            w.content.split("\n").map((text, i) => (
-              <div key={i} className="flex items-center px-3 py-0.5">
-                <span className="w-8 text-right text-meta text-subtle-foreground">
-                  {i + 1}
-                </span>
-                <span
-                  className="w-5 text-center text-meta text-subtle-foreground"
-                  aria-hidden="true"
+            // 内容行不换行(whitespace-pre),超宽的行必须能横向滚动 —— 卡片本身
+            // 是 overflow-hidden,少了这层滚动容器长行就被直接裁掉且拖不出来。
+            // 行盒 w-max + min-w-full,滚动后整行(含行号列对齐)才不会断在卡片边缘。
+            <div
+              data-testid="file-write-content-scroll"
+              className="overflow-x-auto"
+            >
+              {w.content.split("\n").map((text, i) => (
+                <div
+                  key={i}
+                  className="flex w-max min-w-full items-center px-3 py-0.5"
                 >
-                  {" "}
-                </span>
-                <span className="whitespace-pre text-foreground">{text}</span>
-              </div>
-            ))
+                  <span className="w-8 shrink-0 text-right text-meta text-subtle-foreground">
+                    {i + 1}
+                  </span>
+                  <span
+                    className="w-5 shrink-0 text-center text-meta text-subtle-foreground"
+                    aria-hidden="true"
+                  >
+                    {" "}
+                  </span>
+                  <span className="whitespace-pre text-foreground">{text}</span>
+                </div>
+              ))}
+            </div>
           )}
           {w.truncated && <TruncatedBar content={w.content} lines={w.lines} />}
         </div>
