@@ -619,7 +619,7 @@ func (s *Session) parseLine(line []byte) ([]Event, bool) {
 				return []Event{ev}, false
 			}
 		}
-		events, usage := parseAssistantContentWithUsage(f.Message, s.sessionID, f.ParentToolUseID)
+		events, usage := parseAssistantContentWithUsage(f.Message, s.sessionID, f.ParentToolUseID, f.IsAPIErrorMessage)
 		// 仅记录主 agent 帧的 usage：parent_tool_use_id != "" 的帧来自 Task/Agent
 		// subagent 内部 API call，那是独立 Anthropic 会话（自己的 system prompt /
 		// context window），用它的用量覆盖主 agent 的会让进度条骤降到 subagent 的
@@ -1002,6 +1002,9 @@ func (s *Session) Close(ctx context.Context) error {
 // parentToolUseID 对应原始帧顶层的 parent_tool_use_id；主 agent 自己的帧传 ""；
 // subagent 内部帧透传外层 Agent.tool_use_id。
 //
+// isAPIErrorMessage 对应原始帧顶层的 isApiErrorMessage，是判定该帧是否为 CLI 合成
+// API 错误帧的权威标志（见下方模型解析处的用法），调用方需原样透传 rawFrame 上的值。
+//
 // 返回的 *rawUsage == nil 表示这一帧没带 usage 字段（老 CLI 或简化 stub）；
 // 调用方据此跟踪"最后一次 per-call 用量"以正确计算上下文窗口占用，参见
 // [resolveDoneUsage]。
@@ -1068,7 +1071,7 @@ func firstAssistantText(raw json.RawMessage) string {
 	return ""
 }
 
-func parseAssistantContentWithUsage(raw json.RawMessage, sid, parentToolUseID string) ([]Event, *rawUsage) {
+func parseAssistantContentWithUsage(raw json.RawMessage, sid, parentToolUseID string, isAPIErrorMessage bool) ([]Event, *rawUsage) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -1097,6 +1100,29 @@ func parseAssistantContentWithUsage(raw json.RawMessage, sid, parentToolUseID st
 				ParentToolUseID: parentToolUseID,
 			})
 		}
+	}
+	// R2：subagent 内部帧（parent_tool_use_id 非空）携带非空 message.model 时，
+	// 抬成独立事件透传给上游翻译层。主 agent 帧（parentToolUseID == ""）即便带
+	// model 也不产出——那是 EventInit/EventDone 的既有职责，不得被污染（R5）。
+	// 老 CLI 不发 message.model 时同样不产出。
+	//
+	// first-wins（R3，同一子代理只认第一个实际模型）由上游累计态负责去重，这里
+	// 每次遇到都如实产出一条，不做去重判断。
+	//
+	// isAPIErrorMessage 过滤:CLI 合成的 API 错误帧(isApiErrorMessage:true)的
+	// message.model 是占位符而非真实模型(见 errors.go 顶部注释)。正常情况下
+	// apiErrorEvent 会把这类帧接住翻成 EventError,不会走到这里;但若该帧首个
+	// text 块与顶层 error 都为空,apiErrorEvent 判定「无可用文本」而放行,帧就会
+	// 落进本函数的正常 assistant 解析路径。判定必须以调用方传入的权威标志为准
+	// (R2 修订),不能嗅探占位符字符串的值——占位符取值可能随 CLI 版本变化,而
+	// R3 的 first-wins 意味着一旦记错就永久钉进 subagent_state.model 与数据库。
+	if parentToolUseID != "" && m.Model != "" && !isAPIErrorMessage {
+		out = append(out, Event{
+			Kind:            EventSubagentModel,
+			SessionID:       sid,
+			Model:           m.Model,
+			ParentToolUseID: parentToolUseID,
+		})
 	}
 	return out, m.Usage
 }

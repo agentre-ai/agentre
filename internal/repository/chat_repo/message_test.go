@@ -629,6 +629,39 @@ func TestPatchSubagentProgressInBlocksJSON(t *testing.T) {
 		require.Error(t, err)
 		assert.False(t, ok)
 	})
+
+	// 后台子代理跨轮写回模型(R6/A9):子代理在会话空闲活动轮解出实际模型,靠这条
+	// 定向 patch 落回发起消息;其它字段(status/kind/进度数字)必须原样保留。
+	t.Run("模型字段被写入且不影响其它字段", func(t *testing.T) {
+		out, ok, err := chat_repo.PatchSubagentProgressInBlocksJSON(baseBlocks, "toolu_agent", chat_repo.SubagentProgress{
+			Model: "claude-haiku-4-5-20251001",
+		})
+		require.NoError(t, err)
+		assert.True(t, ok)
+		data := subagentData(t, out)
+		assert.Equal(t, "claude-haiku-4-5-20251001", data["model"])
+		// 非模型字段原样保留。
+		assert.Equal(t, json.Number("84739"), data["total_tokens"])
+		assert.Equal(t, json.Number("9"), data["tool_uses"])
+		assert.Equal(t, "Read", data["last_tool_name"])
+		assert.Equal(t, "running", data["status"])
+		assert.Equal(t, "local_agent", data["kind"])
+	})
+
+	t.Run("空模型不覆盖已记录模型", func(t *testing.T) {
+		const blocksWithModel = `[` +
+			`{"type":"tool_use","data":{"id":"toolu_agent","name":"Agent","input":{"description":"T7"}}},` +
+			`{"type":"subagent_state","data":{"parent_tool_call_id":"toolu_agent","kind":"local_agent","status":"running","total_tokens":84739,"tool_uses":9,"model":"claude-opus-5"}}` +
+			`]`
+		out, ok, err := chat_repo.PatchSubagentProgressInBlocksJSON(blocksWithModel, "toolu_agent", chat_repo.SubagentProgress{
+			ToolUses: 12, // 只有工具数更新,Model 留空(first-wins,已记录的模型不该被空值抹掉)
+		})
+		require.NoError(t, err)
+		assert.True(t, ok)
+		data := subagentData(t, out)
+		assert.Equal(t, json.Number("12"), data["tool_uses"])
+		assert.Equal(t, "claude-opus-5", data["model"], "空 Model 不该抹掉已记录模型")
+	})
 }
 
 // TestMessageRepo_PatchSubagentProgress_UpdatesMatchingBlock 走 repo:定位方式与

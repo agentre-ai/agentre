@@ -252,6 +252,150 @@ func TestDriveSubagentActivity_ProgressUpdatesSpawnCard(t *testing.T) {
 	})
 }
 
+// TestDriveSubagentActivity_ModelUpdatesSpawnCard 锁定 R6/A9:后台 subagent 在会话
+// **空闲活动轮**首次解出实际模型时,模型必须跨轮定向写回发起消息,且不改写该块已有的
+// 进度字段(工具数 / tokens / last_tool_name) —— 前台 per-turn 路径的 first-wins +
+// 不清空累计态语义(任务 3)在这条跨轮路径上同样成立。
+func TestDriveSubagentActivity_ModelUpdatesSpawnCard(t *testing.T) {
+	convey.Convey("空闲活动轮里首次解出模型时跨轮写回发起卡", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		const sid = int64(100)
+		const launchID = int64(2001)
+		const toolUseID = "toolu_agent"
+		be := &agent_backend_entity.AgentBackend{ID: 12, Type: "claudecode"}
+
+		sess := &chat_entity.Session{ID: sid, AgentID: 7, AgentStatus: "idle", ProviderSessionID: "sess-abc"}
+		m.session.EXPECT().Find(gomock.Any(), sid).Return(sess, nil).AnyTimes()
+
+		// 发起消息里已有派遣那一刻攒下的进度快照,但还没有模型(等的就是这一轮)。
+		launchMsg := &chat_entity.Message{
+			ID: launchID, SessionID: sid, Role: "assistant", Seq: 4,
+			BlocksJSON: `[` +
+				`{"type":"tool_use","data":{"id":"` + toolUseID + `","name":"Agent","input":{"description":"T7"}}},` +
+				`{"type":"subagent_state","data":{"parent_tool_call_id":"` + toolUseID + `","kind":"local_agent","description":"T7","status":"running","total_tokens":84739,"tool_uses":9,"last_tool_name":"Read","nested_tool_call_ids":[]}}` +
+				`]`,
+		}
+		m.message.EXPECT().
+			FindAssistantBySubagentToolUseID(gomock.Any(), sid, toolUseID).
+			Return(launchMsg, nil).Times(1)
+		m.message.EXPECT().
+			AppendSubagentChildren(gomock.Any(), sid, toolUseID, gomock.Any(), gomock.Any()).
+			Return(nil).AnyTimes()
+
+		var gotProgress chat_repo.SubagentProgress
+		m.message.EXPECT().
+			PatchSubagentProgress(gomock.Any(), sid, toolUseID, gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ int64, _ string, p chat_repo.SubagentProgress) error {
+				gotProgress = p
+				return nil
+			}).Times(1)
+
+		evs := make(chan agentruntime.Event, 1)
+		evs <- agentruntime.SubagentModel{ToolCallID: toolUseID, Model: "claude-haiku-4-5-20251001"}
+		close(evs)
+
+		chat_svc.DriveSubagentActivityForTest(ctx, m.svc, sid, be, agentruntime.SubagentActivity{ToolUseID: toolUseID, Events: evs})
+
+		convey.Convey("跨轮写回的进度快照带上新模型,且既有进度字段原样保留", func() {
+			assert.Equal(t, "claude-haiku-4-5-20251001", gotProgress.Model)
+			assert.Equal(t, 9, gotProgress.ToolUses, "模型更新不该改写已有工具数")
+			assert.Equal(t, 84739, gotProgress.TotalTokens, "模型更新不该改写已有 token 数")
+			assert.Equal(t, "Read", gotProgress.LastToolName, "模型更新不该改写已有 last_tool_name")
+		})
+	})
+}
+
+// TestDriveSubagentActivity_ModelMirroredToSessionStream 锁定 wrap-up 复审 Finding 1:
+// subagentActivityEmitter.Emit 的会话级镜像 switch(subagent_activity.go:170-173)只转发
+// subagent_started/progress/done,漏了 subagent_model。ChatStreamsHost 只把 per-turn 流的
+// 事件合并进那条流的 liveBlocks,而空闲活动轮的派遣卡(发起消息的 tool_use 块)早已落库、
+// 不在任何 liveBlocks 里 —— 这正是该镜像存在的原因(同一注释 + sess-2275)。模型事件不镜像
+// 到会话级流,活动轮里模型徽标就永远不出现,直到 StreamDone 触发 reloadSession() 才补上。
+func TestDriveSubagentActivity_ModelMirroredToSessionStream(t *testing.T) {
+	convey.Convey("空闲活动轮里 subagent_model 也要镜像到会话级流,前端才能实时刷新已落库的发起卡", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		const sid = int64(100)
+		const launchID = int64(2001)
+		const toolUseID = "toolu_agent"
+		be := &agent_backend_entity.AgentBackend{ID: 12, Type: "claudecode"}
+
+		sess := &chat_entity.Session{ID: sid, AgentID: 7, AgentStatus: "idle"}
+		m.session.EXPECT().Find(gomock.Any(), sid).Return(sess, nil).AnyTimes()
+
+		launchMsg := launchMessageWithSubagentState(launchID, sid, toolUseID)
+		m.message.EXPECT().
+			FindAssistantBySubagentToolUseID(gomock.Any(), sid, toolUseID).
+			Return(launchMsg, nil).Times(1)
+		m.message.EXPECT().
+			AppendSubagentChildren(gomock.Any(), sid, toolUseID, gomock.Any(), gomock.Any()).
+			Return(nil).AnyTimes()
+		m.message.EXPECT().
+			PatchSubagentProgress(gomock.Any(), sid, toolUseID, gomock.Any()).
+			Return(nil).AnyTimes()
+
+		evs := make(chan agentruntime.Event, 1)
+		evs <- agentruntime.SubagentModel{ToolCallID: toolUseID, Model: "claude-haiku-4-5-20251001"}
+		close(evs)
+
+		chat_svc.DriveSubagentActivityForTest(ctx, m.svc, sid, be, agentruntime.SubagentActivity{ToolUseID: toolUseID, Events: evs})
+
+		var found *chat_svc.ChatStreamEvent
+		for i := range m.events {
+			p, ok := m.events[i].Payload.(chat_svc.ChatStreamEvent)
+			if ok && p.Kind == chat_svc.StreamSubagentModel && m.events[i].Name == chat_svc.AutonomousStreamName(sid) {
+				found = &p
+			}
+		}
+		require.NotNil(t, found, "应把 subagent_model 镜像到会话级流,否则活动轮里模型徽标不出现")
+		assert.Equal(t, toolUseID, found.ToolUseID)
+		assert.Equal(t, "claude-haiku-4-5-20251001", found.Model)
+	})
+}
+
+// TestDriveSubagentActivity_ModelAlreadyRecorded_NoRedundantPatch 验证跨轮路径与
+// per-turn 路径(任务 3)一致的 first-wins:模型已记录后,同一子代理后续活动轮里再遇到
+// 别的内部模型帧,既不改写已记录的值,也不会仅为了「同一个模型」白跑一次读-改-写
+// (同 TestDriveSubagentActivity_NoProgressSkipsPatch 的动机)。
+func TestDriveSubagentActivity_ModelAlreadyRecorded_NoRedundantPatch(t *testing.T) {
+	convey.Convey("模型已记录时,后续内部模型帧既不改写记录也不触发多余的 patch", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		const sid = int64(100)
+		const launchID = int64(2001)
+		const toolUseID = "toolu_agent"
+		be := &agent_backend_entity.AgentBackend{ID: 12, Type: "claudecode"}
+
+		sess := &chat_entity.Session{ID: sid, AgentID: 7, AgentStatus: "idle"}
+		m.session.EXPECT().Find(gomock.Any(), sid).Return(sess, nil).AnyTimes()
+
+		launchMsg := &chat_entity.Message{
+			ID: launchID, SessionID: sid, Role: "assistant", Seq: 4,
+			BlocksJSON: `[` +
+				`{"type":"tool_use","data":{"id":"` + toolUseID + `","name":"Agent","input":{"description":"T7"}}},` +
+				`{"type":"subagent_state","data":{"parent_tool_call_id":"` + toolUseID + `","kind":"local_agent","description":"T7","status":"running","total_tokens":84739,"tool_uses":9,"model":"claude-opus-5"}}` +
+				`]`,
+		}
+		m.message.EXPECT().
+			FindAssistantBySubagentToolUseID(gomock.Any(), sid, toolUseID).
+			Return(launchMsg, nil).Times(1)
+		m.message.EXPECT().
+			AppendSubagentChildren(gomock.Any(), sid, toolUseID, gomock.Any(), gomock.Any()).
+			Return(nil).AnyTimes()
+		// 关键:不 EXPECT PatchSubagentProgress —— 调用即 ctrl.Finish 失败。
+
+		evs := make(chan agentruntime.Event, 1)
+		evs <- agentruntime.SubagentModel{ToolCallID: toolUseID, Model: "claude-haiku-4-5-20251001"}
+		close(evs)
+
+		chat_svc.DriveSubagentActivityForTest(ctx, m.svc, sid, be, agentruntime.SubagentActivity{ToolUseID: toolUseID, Events: evs})
+	})
+}
+
 // TestDriveSubagentActivity_NoProgressSkipsPatch 无进度事件的活动轮不该白写一次库
 // (发起消息 blocks_json 动辄几百 KB,读-改-写不能每轮都来一遍)。
 func TestDriveSubagentActivity_NoProgressSkipsPatch(t *testing.T) {

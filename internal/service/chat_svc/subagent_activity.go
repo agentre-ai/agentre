@@ -148,14 +148,18 @@ func (s *chatSvc) driveSubagentActivity(ctx context.Context, sessionID int64, be
 	})
 }
 
-// subagentActivityEmitter 包住 dispatcherEmitter,把 subagent_started / progress / done
-// 额外镜像一份到会话级旁路流。
+// subagentActivityEmitter 包住 dispatcherEmitter,把 subagent_started / progress / done /
+// model 额外镜像一份到会话级旁路流。
 //
 // 为什么要镜像:per-turn 流上的这几个事件,前端只会把 meta 合并进**那条流的 liveBlocks**;
 // 而空闲活动轮的派遣卡(Agent 工具的 tool_use 块)早已随发起消息落库,不在任何 liveBlocks
 // 里 —— 那一路合并必然落空,卡片头部的工具数 / token 只能等重开会话才刷新。会话级流由
 // ChatPanel 常驻订阅,它持有 messages,能就地合并进已落库的那张卡(与后台任务完成时
 // completedTask 同时翻 liveBlocks + messages 是同一套做法)。
+//
+// model 事件虽是 first-wins、一轮只发一次(不像进度那样反复刷新),但同一个「派遣卡不在
+// 任何 liveBlocks 里」的问题对它一样成立:模型只在子代理内部首帧到达时产出这一次,若不
+// 镜像到会话级流,这仅有的一次机会就会落空在 per-turn 流上,徽标同样要等重开会话才出现。
 type subagentActivityEmitter struct {
 	inner     turn.Emitter
 	sessionID int64
@@ -168,7 +172,7 @@ func (e *subagentActivityEmitter) Emit(ctx context.Context, stream string, raw a
 		return
 	}
 	switch kind, _ := m["kind"].(string); kind {
-	case string(StreamSubagentStarted), string(StreamSubagentProgress), string(StreamSubagentDone):
+	case string(StreamSubagentStarted), string(StreamSubagentProgress), string(StreamSubagentDone), string(StreamSubagentModel):
 		e.inner.Emit(ctx, AutonomousStreamName(e.sessionID), m)
 	}
 }
@@ -204,7 +208,8 @@ func seedSubagentState(acc *turn.Accumulator, launchMsg *chat_entity.Message, to
 	return nil
 }
 
-// progressOf 取 overlay 的运行时进度快照;state 为 nil 时返回零值快照(IsZero,不触发落库)。
+// progressOf 取 overlay 的运行时进度快照(含 Model,R6/A9 空闲活动轮解出的实际模型经
+// 这份快照跟其它进度字段一起跨轮写回);state 为 nil 时返回零值快照(IsZero,不触发落库)。
 func progressOf(state *chatblocks.SubagentStateBlock) chat_repo.SubagentProgress {
 	if state == nil {
 		return chat_repo.SubagentProgress{}
@@ -214,6 +219,7 @@ func progressOf(state *chatblocks.SubagentStateBlock) chat_repo.SubagentProgress
 		ToolUses:     state.ToolUses,
 		DurationMs:   state.DurationMs,
 		LastToolName: state.LastToolName,
+		Model:        state.Model,
 	}
 }
 

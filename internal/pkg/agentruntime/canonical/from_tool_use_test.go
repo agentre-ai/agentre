@@ -224,5 +224,48 @@ func TestFromToolUse(t *testing.T) {
 			_, ok = FromToolUse("Read", map[string]any{"file_path": "/tmp/x"})
 			So(ok, ShouldBeFalse)
 		})
+
+		Convey("Agent 工具入参含 model → AgentSpawn.Model 被填", func() {
+			c, ok := FromToolUse("Agent", map[string]any{
+				"description":   "probe",
+				"subagent_type": "general-purpose",
+				"model":         "haiku",
+				"prompt":        "Run echo",
+			})
+			So(ok, ShouldBeTrue)
+			as := c.(AgentSpawn)
+			So(as.Model, ShouldEqual, "haiku")
+			So(as.TaskDescription, ShouldEqual, "probe")
+		})
+
+		Convey("Task 工具不含 model 键 → AgentSpawn.Model 为空", func() {
+			c, ok := FromToolUse("Task", map[string]any{
+				"description":   "review",
+				"subagent_type": "code-reviewer",
+			})
+			So(ok, ShouldBeTrue)
+			as := c.(AgentSpawn)
+			So(as.Model, ShouldEqual, "")
+			So(as.TaskDescription, ShouldEqual, "review")
+		})
+
+		Convey("Agent 工具只有 model 但其它字段为空 → 不识别(走 raw 路径)", func() {
+			_, ok := FromToolUse("Agent", map[string]any{
+				"model": "haiku",
+			})
+			So(ok, ShouldBeFalse)
+		})
+
+		Convey("Agent 工具 model 为完整模型 ID → AgentSpawn.Model 保留原值", func() {
+			c, ok := FromToolUse("Agent", map[string]any{
+				"description":   "test",
+				"subagent_type": "general-purpose",
+				"model":         "claude-opus-5",
+				"prompt":        "test prompt",
+			})
+			So(ok, ShouldBeTrue)
+			as := c.(AgentSpawn)
+			So(as.Model, ShouldEqual, "claude-opus-5")
+		})
 	})
 }

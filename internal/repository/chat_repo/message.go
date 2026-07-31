@@ -340,11 +340,15 @@ type SubagentProgress struct {
 	ToolUses     int
 	DurationMs   int
 	LastToolName string
+	// Model 是子代理内部帧解析出的实际模型(R2)。first-wins 在上游 SubagentModelHandler
+	// 已经保证,这里只是把它跟其它进度字段一起搬进跨轮补丁;空值代表"这一轮没有新模型
+	// 可写",patch 时跳过,不抹掉已记录的值。
+	Model string
 }
 
 // IsZero 表示这份快照没带任何进度信息,调用方可据此跳过一次读-改-写。
 func (p SubagentProgress) IsZero() bool {
-	return p.TotalTokens == 0 && p.ToolUses == 0 && p.DurationMs == 0 && p.LastToolName == ""
+	return p.TotalTokens == 0 && p.ToolUses == 0 && p.DurationMs == 0 && p.LastToolName == "" && p.Model == ""
 }
 
 // PatchSubagentProgressInBlocksJSON 在 blocks_json 里就地更新命中 subagent_state 块的
@@ -366,6 +370,9 @@ func PatchSubagentProgressInBlocksJSON(blocksJSON, toolUseID string, p SubagentP
 		}
 		if p.LastToolName != "" {
 			data["last_tool_name"] = p.LastToolName
+		}
+		if p.Model != "" {
+			data["model"] = p.Model
 		}
 		return true
 	})

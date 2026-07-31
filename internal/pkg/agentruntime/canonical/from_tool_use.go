@@ -77,12 +77,14 @@ func IsAgentSpawnToolName(name string) bool {
 }
 
 // AgentSpawnFromInput 从 Task/Agent 工具 raw input 提取 AgentSpawn 静态字段
-// (description/subagent_type/prompt);运行时累计态由 SubagentStarted/Progress/Done
-// 经 SubagentStateBlock 维护,不在这里填。三字段全空返 (zero, false)。
+// (description/subagent_type/prompt/model);运行时累计态由 SubagentStarted/Progress/Done
+// 经 SubagentStateBlock 维护,不在这里填。三字段(description/subagent_type/prompt)全空返 (zero, false);
+// model 字段缺失时为空,不参与 zero 判断。
 func AgentSpawnFromInput(input map[string]any) (AgentSpawn, bool) {
 	description, _ := input["description"].(string)
 	subagentType, _ := input["subagent_type"].(string)
 	prompt, _ := input["prompt"].(string)
+	model, _ := input["model"].(string)
 	if description == "" && subagentType == "" && prompt == "" {
 		return AgentSpawn{}, false
 	}
@@ -90,6 +92,7 @@ func AgentSpawnFromInput(input map[string]any) (AgentSpawn, bool) {
 		TaskDescription: description,
 		SubagentType:    subagentType,
 		Prompt:          prompt,
+		Model:           model,
 	}, true
 }
 

@@ -27,11 +27,16 @@ const (
 	StreamSubagentStarted  ChatStreamEventKind = "subagent_started"
 	StreamSubagentProgress ChatStreamEventKind = "subagent_progress"
 	StreamSubagentDone     ChatStreamEventKind = "subagent_done"
-	StreamRetry            ChatStreamEventKind = "retry"
-	StreamMessageEnd       ChatStreamEventKind = "message_end"
-	StreamDone             ChatStreamEventKind = "done"
-	StreamError            ChatStreamEventKind = "error"
-	StreamClosed           ChatStreamEventKind = "closed"
+	// StreamSubagentModel claudecode 从 subagent 内部 assistant 帧解析出实际模型时 emit
+	// (R2)。独立 kind,只带 ToolUseID + Model 两个字段——不复用 StreamSubagentProgress
+	// 的整份 Subagent 快照,避免与已累计的 toolUses/totalTokens/status 混在一起经前端
+	// 浅合并时把已有状态覆盖掉(R4)。
+	StreamSubagentModel ChatStreamEventKind = "subagent_model"
+	StreamRetry         ChatStreamEventKind = "retry"
+	StreamMessageEnd    ChatStreamEventKind = "message_end"
+	StreamDone          ChatStreamEventKind = "done"
+	StreamError         ChatStreamEventKind = "error"
+	StreamClosed        ChatStreamEventKind = "closed"
 	// StreamAborted 用户点「停止」中断本轮 turn 时 emit。语义上是 Done 的兄弟：
 	// 流以正常方式结束（partial 内容保留 + agentStatus=idle），但前端要渲染成
 	// 「已停止」标签而不是 error 红字。Message 字段携带最终的 assistant 消息状态
@@ -137,6 +142,12 @@ type ChatStreamEvent struct {
 	// StreamSubagent* 事件填充：外层 Agent.tool_use_id + 元数据快照。
 	// 前端按 ToolUseID 找到对应的 ChatBlock 并 merge Subagent 字段。
 	Subagent *ChatBlockSubagent `json:"subagent,omitempty"`
+
+	// StreamSubagentModel 事件填充：ToolUseID(复用上方字段)关联到对应派遣，Model 是
+	// 子代理内部帧解析出的实际模型(R2 覆盖 R1 的入参别名)。只带这一个字段，不复用
+	// 上面的 Subagent 全量快照 —— SubagentStateBlock.Status 的 JSON 标签没有
+	// omitempty，若把整个快照甩给前端的浅合并，会把已有状态覆盖成空串。
+	Model string `json:"model,omitempty"`
 
 	// StreamAskUserQuestion 事件填充：交互问题载荷或答完后的状态切换。
 	AskUserQuestion *ChatBlockAskUserQuestion `json:"askUserQuestion,omitempty"`
@@ -369,6 +380,9 @@ type ChatBlockSubagent struct {
 	DurationMs      int    `json:"durationMs,omitempty"`
 	Status          string `json:"status,omitempty"`  // running | completed | failed
 	Summary         string `json:"summary,omitempty"` // CLI task_notification.summary（如退出码说明）
+	// Model 是子代理内部 assistant 帧解析出的实际模型(R2),first-wins(R3)。镜像
+	// blocks.SubagentStateBlock.Model；空值表示尚未有内部帧到达 / 老会话数据。
+	Model string `json:"model,omitempty"`
 }
 
 type ChatMessage struct {

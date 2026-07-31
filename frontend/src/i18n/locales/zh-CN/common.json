@@ -254,6 +254,18 @@
       "emptySteps": "无子步骤",
       "emptyStepsRunning": "subagent 还没调用任何工具…",
       "emptySummary": "无 summary",
+      "meta": {
+        "model": "模型",
+        "tools": "工具",
+        "tokens": "用量",
+        "duration": "耗时"
+      },
+      "progressAria": {
+        "tools": "{{count}} 个工具",
+        "tools_one": "{{count}} 个工具",
+        "tools_other": "{{count}} 个工具",
+        "tokens": "{{value}} tokens"
+      },
       "sections": {
         "prompt": "TASK PROMPT",
         "steps": "STEPS",
@@ -269,7 +281,6 @@
         "withDuration": "{{status}} · {{duration}}"
       },
       "summaryRunning": "subagent 还在跑，结果稍后返回…",
-      "toolCount": "{{count}} 个工具",
       "waitingFirstStep": "等待第一个子调用…"
     },
     "fileEdit": {

@@ -106,6 +106,16 @@ type SubagentDone struct {
 	Info       SubagentInfo
 }
 
+// SubagentModel 携带 subagent 内部帧解析出的实际模型（R2）。ToolCallID 指向外层
+// Agent/Task 工具的调用 id，与 SubagentStarted/Progress/Done 的 ToolCallID 同一
+// 命名空间。独立事件类型，不复用 SubagentProgress——那条事件的消费方对
+// ToolUses/TotalTokens/LastToolName 是无条件赋值，塞一个只带模型的 SubagentInfo
+// 会把已累计的进度清零；模型改走本事件，只更新模型字段，不清空既有累计态（R4）。
+type SubagentModel struct {
+	ToolCallID string
+	Model      string
+}
+
 // Retry 非终止 backend 重试通知。
 type Retry struct {
 	Message string
@@ -177,6 +187,7 @@ func (PermissionModeChanged) isEvent()  {}
 func (SubagentStarted) isEvent()        {}
 func (SubagentProgress) isEvent()       {}
 func (SubagentDone) isEvent()           {}
+func (SubagentModel) isEvent()          {}
 func (Retry) isEvent()                  {}
 func (UsageUpdate) isEvent()            {}
 func (ContextWindowUpdated) isEvent()   {}

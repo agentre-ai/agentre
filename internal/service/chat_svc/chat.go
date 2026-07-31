@@ -809,6 +809,7 @@ func subagentStateToChatBlockSubagent(sb *chatblocks.SubagentStateBlock) *ChatBl
 		DurationMs:      sb.DurationMs,
 		Status:          sb.Status,
 		Summary:         sb.Summary,
+		Model:           sb.Model,
 	}
 }
 
@@ -2974,6 +2975,7 @@ func eventShowsProgressAfterError(ev agentruntime.Event) bool {
 		agentruntime.SubagentStarted,
 		agentruntime.SubagentProgress,
 		agentruntime.SubagentDone,
+		agentruntime.SubagentModel,
 		agentruntime.Retry,
 		agentruntime.PlanUpdated,
 		agentruntime.CompactBoundary,

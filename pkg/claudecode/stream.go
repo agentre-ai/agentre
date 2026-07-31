@@ -107,7 +107,8 @@ type rawFrame struct {
 	Usage     json.RawMessage `json:"usage,omitempty"`
 
 	// system.init 帧上的 model 字段（"claude-sonnet-4-6" 之类）。仅 init 帧有值，
-	// 普通 assistant 帧的 Anthropic message.model 我们暂不消费——init 已经够用。
+	// 与内层 message.model（rawMessage.Model，parseAssistantContentWithUsage 消费，
+	// 用于 subagent 内部帧的 EventSubagentModel）是两个独立字段。
 	Model string `json:"model,omitempty"`
 
 	// subagent 内部的 assistant / user 帧顶层会带 parent_tool_use_id，
@@ -192,7 +193,13 @@ type taskUsage struct {
 }
 
 type rawMessage struct {
-	ID      string            `json:"id"`
+	ID string `json:"id"`
+	// Model 是 Anthropic message.model（"claude-haiku-4-5-20251001" 之类），几乎每个
+	// assistant 帧都带。主 agent 自己的帧不消费这份数据（该用途已由 system.init.model
+	// 满足，见 rawFrame.Model / EventInit / EventDone）；仅 subagent 内部帧
+	// （parent_tool_use_id 非空）用它产出 EventSubagentModel，见
+	// parseAssistantContentWithUsage。
+	Model   string            `json:"model,omitempty"`
 	Content []rawContentBlock `json:"content"`
 	// Usage 是这一次 API call 的 per-call 用量。Anthropic 在每个 assistant
 	// 帧的 inner message 上挂这个字段；pointer 区分"缺省"（老 CLI / stub）和"全 0
@@ -251,7 +258,7 @@ func (d *frameDecoder) decodeLine(line []byte) ([]Event, bool) {
 				return []Event{ev}, true
 			}
 		}
-		events, usage := parseAssistantContentWithUsage(f.Message, d.sessionID, f.ParentToolUseID)
+		events, usage := parseAssistantContentWithUsage(f.Message, d.sessionID, f.ParentToolUseID, f.IsAPIErrorMessage)
 		// 仅记录主 agent 帧的 usage：parent_tool_use_id != "" 的帧来自 Task/Agent
 		// subagent 内部 API call，那是独立 Anthropic 会话（自己的 system prompt /
 		// context window），用它的用量覆盖主 agent 的会让进度条骤降到 subagent 的

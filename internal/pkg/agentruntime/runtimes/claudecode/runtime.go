@@ -698,7 +698,8 @@ func claudeEventShowsProgressAfterError(kind claudecode.EventKind) bool {
 		claudecode.EventTaskNotification,
 		claudecode.EventRetry,
 		claudecode.EventCompactBoundary,
-		claudecode.EventControlRequest:
+		claudecode.EventControlRequest,
+		claudecode.EventSubagentModel:
 		return true
 	default:
 		return false

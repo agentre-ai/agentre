@@ -560,6 +560,19 @@ function ChatPanel({
         );
         return;
       }
+      // subagent_model:同上,会话级流镜像的模型事件(R2)只带 toolUseId + model 两个
+      // 字段(不复用整份 Subagent 快照)——避免浅合并把已累计的 toolUses/totalTokens/
+      // status 覆盖成空值(R4)。
+      if (ev.kind === "subagent_model") {
+        if (!ev.toolUseId || !ev.model) return;
+        const { toolUseId, model } = ev;
+        setMessages((prev) =>
+          mergeSubagentMetaInMessages(prev, toolUseId, {
+            model,
+          } as chat_svc.ChatBlockSubagent),
+        );
+        return;
+      }
       // autonomous_finished:自主轮 / 后台 subagent 活动轮收尾时会话级流补发的终态兜底。
       // per-turn 流的 openStream(ChatPanel)与 EventsOn 订阅(ChatStreamsHost)跨 render 解耦,
       // 短轮的 per-turn done/closed 可能赶在订阅注册前发完被漏掉 → LiveStream 永远留在 store

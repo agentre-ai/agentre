@@ -30,6 +30,7 @@ func TestPackageDispatcher_AllEventTypesRegistered(t *testing.T) {
 			agentruntime.SubagentStarted{},
 			agentruntime.SubagentProgress{},
 			agentruntime.SubagentDone{},
+			agentruntime.SubagentModel{},
 			agentruntime.PermissionModeChanged{},
 			agentruntime.UsageUpdate{},
 			agentruntime.ContextWindowUpdated{},

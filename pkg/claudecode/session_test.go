@@ -1768,6 +1768,99 @@ func TestSession_NormalAssistantFrameStillEmitsText(t *testing.T) {
 	assert.False(t, isResult)
 }
 
+// TestSession_SubagentModelEvent 验证 Session.parseLine 这条解码路径（与
+// frameDecoder.decodeLine 共用 parseAssistantContentWithUsage，见 stream_test.go
+// TestStream_SubagentModelEvent）同样满足 R2/R5：subagent 内部帧（parent_tool_use_id
+// 非空）携带非空 message.model 时产出 EventSubagentModel；主 agent 自己的帧即便带
+// model 也不产出。
+func TestSession_SubagentModelEvent(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"s1","model":"claude-haiku-4-5-20251001","content":[{"type":"tool_use","id":"sub-tu","name":"Bash","input":{"command":"echo hi"}}]},"parent_tool_use_id":"toolu-parent","session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	require.NotEmpty(t, events)
+	var modelEvents []Event
+	for _, e := range events {
+		if e.Kind == EventSubagentModel {
+			modelEvents = append(modelEvents, e)
+		}
+	}
+	require.Len(t, modelEvents, 1)
+	assert.Equal(t, "toolu-parent", modelEvents[0].ParentToolUseID)
+	assert.Equal(t, "claude-haiku-4-5-20251001", modelEvents[0].Model)
+	assert.False(t, isResult)
+}
+
+// TestSession_MainAgentFrameModelDoesNotEmitSubagentModel 隔离守卫（R5）：主 agent
+// 自己的帧（parent_tool_use_id 为空）即便带 message.model，也绝不能被误判成 subagent
+// 内部帧而产出 EventSubagentModel——那会污染主 agent 的模型展示。
+func TestSession_MainAgentFrameModelDoesNotEmitSubagentModel(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m1","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu-parent","name":"Agent","input":{"description":"probe"}}]},"session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	require.NotEmpty(t, events)
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "main agent frame must never produce EventSubagentModel")
+	}
+	assert.False(t, isResult)
+}
+
+// TestSession_SubagentFrameMissingModelDoesNotEmit 老 CLI 兼容：subagent 内部帧没有
+// message.model 字段时不产出 EventSubagentModel，正常路径（如 EventTextDelta）不受影响。
+func TestSession_SubagentFrameMissingModelDoesNotEmit(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"s2","content":[{"type":"text","text":"legacy subagent text"}]},"parent_tool_use_id":"toolu-parent","session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	require.NotEmpty(t, events)
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "subagent frame without message.model must not produce EventSubagentModel")
+	}
+	assert.False(t, isResult)
+}
+
+// TestSession_SubagentModelEvent_SyntheticSentinelNotEmitted 覆盖 wrap-up 复审第二轮
+// Finding 3:CLI 在 API 错误帧上用 model:"<synthetic>"(见 errors.go 顶部注释)。若一帧
+// isApiErrorMessage:true 的帧其首个 text 块与顶层 error 都为空,apiErrorEvent 会返回
+// ok=false 并落入 parseAssistantContentWithUsage;该帧若带 parent_tool_use_id,当前会
+// 产出 EventSubagentModel{Model:"<synthetic>"} —— first-wins 会把这个哨兵永久钉进
+// subagent_state.model 与数据库,徽标显示 "<synthetic>"。生产侧必须过滤掉这个已知哨兵值。
+func TestSession_SubagentModelEvent_SyntheticSentinelNotEmitted(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m1","model":"<synthetic>","content":[]},"parent_tool_use_id":"toolu-parent","isApiErrorMessage":true,"session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "CLI synthetic API-error sentinel model must never surface as EventSubagentModel")
+	}
+	assert.False(t, isResult)
+}
+
+// TestSession_SubagentModelEvent_APIErrorFlagGovernsRegardlessOfSentinelString 覆盖
+// 修订后的 R2 第二段:判定必须以帧的权威标志 isApiErrorMessage 为准,不能靠嗅探
+// message.model 的字符串值是否等于当前已知的占位符 "<synthetic>"。本测试用一个
+// 不同于该字面量的占位符值,模拟 CLI 未来改动占位符取值——isApiErrorMessage:true
+// 且首个 text 块与顶层 error 都为空,apiErrorEvent 因而放行,帧落进
+// parseAssistantContentWithUsage。若判定仍靠字符串嗅探,这个陌生占位符值会被当成
+// subagent 的实际模型产出 EventSubagentModel,first-wins 语义下永久钉进
+// subagent_state.model。
+func TestSession_SubagentModelEvent_APIErrorFlagGovernsRegardlessOfSentinelString(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m1","model":"<future-placeholder>","content":[]},"parent_tool_use_id":"toolu-parent","isApiErrorMessage":true,"session_id":"sess-xyz"}`
+
+	s := &Session{}
+	events, isResult := s.parseLine([]byte(line))
+
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "isApiErrorMessage:true frame must never surface a model, regardless of the placeholder string value")
+	}
+	assert.False(t, isResult)
+}
+
 // TestSession_RawSinkReceivesFramesFromReadLoop 校验生产多轮路径(Session.readLoop)
 // 也把每帧原始 stdout 喂给 rawSink,而不仅是一次性 Stream 路径。
 func TestSession_RawSinkReceivesFramesFromReadLoop(t *testing.T) {

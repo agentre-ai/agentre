@@ -300,6 +300,26 @@ func TestDispatcherEmitter_Subagent_AttachesAgentSpawn(t *testing.T) {
 	})
 }
 
+// TestDispatcherEmitter_SubagentModel 验证 kind=subagent_model 只透传 toolUseId +
+// model,不像 subagent_started/progress/done 那样走 subagentInfoMapToChatBlock 的
+// 整份快照投影(R4:避免混进 toolUses/totalTokens/status 等累计态字段)。
+func TestDispatcherEmitter_SubagentModel(t *testing.T) {
+	Convey("kind=subagent_model → ChatStreamEvent{ToolUseID, Model},Subagent 保持 nil", t, func() {
+		de, em := newTestDispatcherEmitter()
+		de.Emit(context.Background(), "s", map[string]any{
+			"kind":      "subagent_model",
+			"toolUseId": "task-1",
+			"model":     "claude-haiku-4-5-20251001",
+		})
+		So(em.events, ShouldHaveLength, 1)
+		ev := em.events[0]
+		So(ev.Kind, ShouldEqual, StreamSubagentModel)
+		So(ev.ToolUseID, ShouldEqual, "task-1")
+		So(ev.Model, ShouldEqual, "claude-haiku-4-5-20251001")
+		So(ev.Subagent, ShouldBeNil)
+	})
+}
+
 func TestDispatcherEmitter_Usage(t *testing.T) {
 	Convey("kind=usage → ChatStreamUsage 含 totalInputTokens", t, func() {
 		de, em := newTestDispatcherEmitter()

@@ -130,9 +130,11 @@ type Actions = {
     text: string,
     canonical?: view.CanonicalDTO,
   ) => void;
-  // mergeSubagentMeta 把 subagent_started/progress/done 事件携带的元数据合并到
+  // mergeSubagentMeta 把 subagent_started/progress/done/model 事件携带的元数据合并到
   // 对应外层 Agent tool_use block 上（按 toolUseId 匹配 liveBlocks 里最近一个）。
-  // 字段做浅 merge：新事件未带的字段保留旧值（task_progress 不带 prompt 不会清掉它）。
+  // 字段做浅 merge：新事件未带的字段保留旧值（task_progress 不带 prompt 不会清掉它；
+  // subagent_model 只带 model 一个字段，调用方必须只传这一个字段，不能拼一个带空值
+  // 其它字段的对象再 spread 进来，否则会把已累计的 status/toolUses 覆盖成空）。
   mergeSubagentMeta: (
     sessionId: number,
     assistantMessageId: number,

@@ -101,6 +101,10 @@ export type AgentSpawnDTO = {
   subagentType?: string;
   taskDescription?: string;
   prompt?: string;
+  // model 有两个互斥来源:入参别名(静态,如 "haiku")或子代理首帧实际模型
+  // (运行时,如 "claude-haiku-4-5-20251001")。card.tsx 的 readSpawn 用既有
+  // 「运行时非空覆盖静态」语义在渲染前解出最终值,这里只存原值,不做归一化。
+  model?: string;
   lastToolName?: string;
   toolUses?: number;
   totalTokens?: number;

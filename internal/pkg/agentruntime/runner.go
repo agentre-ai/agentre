@@ -28,6 +28,13 @@ const (
 	EventSubagentStarted  EventKind = "subagent_started"
 	EventSubagentProgress EventKind = "subagent_progress"
 	EventSubagentDone     EventKind = "subagent_done"
+	// EventSubagentModel claudecode 从 subagent 内部帧解析出的实际模型（R2：实际执行
+	// 覆盖调用意图）。独立事件类型，刻意不复用 EventSubagentProgress ——
+	// SubagentProgressHandler 对 ToolUses/TotalTokens/LastToolName 是无条件赋值，混进
+	// 一个只带模型的 SubagentInfo 会把已累计的进度清零（R4）。chat_svc 把它并入对应
+	// 派遣的 subagent 累计态，只更新模型字段。first-wins（R3，同一子代理只认第一次）
+	// 由 chat_svc 累计态负责；claudecode 侧每次遇到都如实产出，不做去重。
+	EventSubagentModel EventKind = "subagent_model"
 	// EventAskUserQuestion backend 检测到 ask_user_question 类型的工具调用
 	// 时 emit（Claude Code 的内置 AskUserQuestion、Codex / 内置 Agent
 	// 后续注册的同语义 function tool 都翻译到这里）。service 接住后 push

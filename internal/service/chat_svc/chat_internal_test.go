@@ -205,6 +205,7 @@ func TestToChatMessage_SubagentStateMergedOntoToolUseBlock(t *testing.T) {
 			DurationMs:       500,
 			LastToolName:     "computer",
 			ToolUses:         3,
+			Model:            "claude-haiku-4-5-20251001",
 		},
 	}))
 
@@ -226,6 +227,8 @@ func TestToChatMessage_SubagentStateMergedOntoToolUseBlock(t *testing.T) {
 	assert.Equal(t, 500, tb.Subagent.DurationMs)
 	assert.Equal(t, "computer", tb.Subagent.LastToolName)
 	assert.Equal(t, 3, tb.Subagent.ToolUses)
+	// R6:replay 路径下模型须与流式期间一致 —— 随 SubagentStateBlock.Model 一起投影。
+	assert.Equal(t, "claude-haiku-4-5-20251001", tb.Subagent.Model)
 }
 
 // TestToChatMessage_SubagentStateWithNoMatchingToolUse 无匹配 tool_use 时
@@ -805,5 +808,17 @@ func TestToolUseToChatBlock_Canonical(t *testing.T) {
 	convey.Convey("Bash → Canonical=nil(走 RawToolCard 兜底)", t, func() {
 		cb := toolUseToChatBlock("tu-4", "Bash", map[string]any{"command": "ls"})
 		convey.So(cb.Canonical, convey.ShouldBeNil)
+	})
+}
+
+// TestEventShowsProgressAfterError_SubagentModel 覆盖 wrap-up 复审第二轮 Finding 2:
+// eventShowsProgressAfterError 是「错误后收到哪些事件才清除 streamStopErr」的跨切面
+// 注册表,agentruntime.SubagentModel 漏登记 —— 瞬时 API 错误置上 streamStopErr 后,
+// 子代理下一帧内部 assistant 到达时该事件会在 runTurn 循环里被 continue 掉(既不清
+// 错误也不应用),要等随后的 ToolCall/SubagentProgress 才能自愈,凭空多一帧延迟。
+func TestEventShowsProgressAfterError_SubagentModel(t *testing.T) {
+	convey.Convey("SubagentModel 事件应被视为错误后的进度,从而清除 streamStopErr", t, func() {
+		ev := agentruntime.SubagentModel{ToolCallID: "task-1", Model: "claude-haiku-4-5-20251001"}
+		convey.So(eventShowsProgressAfterError(ev), convey.ShouldBeTrue)
 	})
 }
