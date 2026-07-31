@@ -186,6 +186,26 @@ describe("BackgroundTasksPopoverContent — elapsed + summary", () => {
     expect(screen.getByText(summary)).toBeInTheDocument();
   });
 
+  it("shows only the title for a subagent task, not its report body", () => {
+    // subagent summary 是子代理的完整回报正文,会把弹层撑得很高 —— 只展示标题。
+    const summary =
+      "Verification complete. Working tree untouched (hashes unchanged).";
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-sa",
+        kind: "local_agent",
+        description: "Verify validator against spec criteria",
+        status: "completed",
+        summary,
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    expect(
+      screen.getByText("Verify validator against spec criteria"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(summary)).toBeNull();
+  });
+
   it("does not show elapsed for a running task without startedAt", () => {
     const tasks: BackgroundTask[] = [
       {

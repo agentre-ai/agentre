@@ -145,8 +145,10 @@ export function BackgroundTasksPopoverContent({
                       </>
                     )}
                   </div>
-                  {/* summary is dynamic agent text (exit-code text) — do NOT pass through t() */}
-                  {task.summary && (
+                  {/* summary is dynamic agent text (exit-code text) — do NOT pass through t()。
+                      子代理的 summary 是整篇回报正文,会把弹层撑到失控,只展示标题;
+                      bash 的 summary 是一行 exit-code 文本,继续展示。 */}
+                  {!isSubagent && task.summary && (
                     <p className="mt-0.5 break-words text-[10px] text-muted-foreground">
                       {task.summary}
                     </p>
