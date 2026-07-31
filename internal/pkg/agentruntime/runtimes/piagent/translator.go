@@ -1,9 +1,12 @@
 package piagent
 
 import (
+	"encoding/json"
+
 	"github.com/cago-frame/agents/provider"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 	pkgpi "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
@@ -18,7 +21,12 @@ func translate(ev pkgpi.Event) (events []agentruntime.Event, usage *provider.Usa
 			events = append(events, agentruntime.ThinkingDelta{Text: ev.Text})
 		}
 	case pkgpi.EventPreToolUse:
-		events = append(events, agentruntime.ToolCall{ID: ev.Tool.ID, Name: ev.Tool.Name, Input: ev.Tool.Input})
+		events = append(events, agentruntime.ToolCall{
+			ID:        ev.Tool.ID,
+			Name:      ev.Tool.Name,
+			Input:     ev.Tool.Input,
+			Canonical: recognizeCanonical(ev.Tool.Name, ev.Tool.Input),
+		})
 	case pkgpi.EventPostToolUse:
 		events = append(events, agentruntime.ToolResult{ToolCallID: ev.Tool.ID, Content: ev.Tool.Content, IsError: ev.Tool.IsError})
 	case pkgpi.EventUsage:
@@ -39,4 +47,32 @@ func translate(ev pkgpi.Event) (events []agentruntime.Event, usage *provider.Usa
 		events = append(events, agentruntime.Done{})
 	}
 	return events, usage, stopErr
+}
+
+// piCanonicalToolNames 是 pi 内置的文件变更工具白名单。Pi 的工具名全小写且与
+// claudecode / codex 不重名(read/bash/edit/write/grep/find/ls),这里只认会改文件
+// 的两个;其余内置工具与注入的 MCP 工具一律走 raw 工具卡。
+//
+// 刻意不整表交给 canonical.FromToolUse:那条 switch 还认 task/agent(大小写不敏感)
+// 的 subagent 派遣形状,而 Pi 没有原生 subagent 协议,同名 MCP 工具会被误渲成
+// AgentSpawnCard。
+var piCanonicalToolNames = map[string]bool{"edit": true, "write": true}
+
+// recognizeCanonical 按工具名 + raw input JSON 识别 pi 文件工具的 canonical 形状。
+// 解析失败 / 工具不在白名单 → nil,走 raw tool_use 路径(前端通用 ToolInvocationCard)。
+//
+// 识别本身复用 canonical.FromToolUse —— live emit 路径(这里)和重放路径
+// (chat_svc 从持久化 tool_use 重建)共用同一份实现,避免两边漂移。
+func recognizeCanonical(name string, rawInput []byte) canonical.CanonicalTool {
+	if len(rawInput) == 0 || !piCanonicalToolNames[name] {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(rawInput, &m); err != nil {
+		return nil
+	}
+	if c, ok := canonical.FromToolUse(name, m); ok {
+		return c
+	}
+	return nil
 }

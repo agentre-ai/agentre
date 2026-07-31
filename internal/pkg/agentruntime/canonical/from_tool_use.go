@@ -18,7 +18,13 @@ const WriteContentByteCap = 64 * 1024
 func FromToolUse(toolName string, input map[string]any) (CanonicalTool, bool) {
 	switch toolName {
 	case "Write":
-		if fw, ok := fileWriteFromWriteInput(input); ok {
+		if fw, ok := fileWriteFromWriteInput(input, "file_path"); ok {
+			return fw, true
+		}
+	case "write":
+		// pi agent 的 write 工具:{path, content},与 claudecode Write 同语义,
+		// 只是路径键名不同。
+		if fw, ok := fileWriteFromWriteInput(input, "path"); ok {
 			return fw, true
 		}
 	case "Edit":
@@ -35,18 +41,11 @@ func FromToolUse(toolName string, input map[string]any) (CanonicalTool, bool) {
 		}
 		return FileEdit{Files: patches}, true
 	case "MultiEdit":
-		payload := diff.FromMultiEdit(input)
-		if len(payload.Files) == 0 {
-			return nil, false
-		}
-		totalHunks := 0
-		for _, f := range payload.Files {
-			totalHunks += len(f.Hunks)
-		}
-		if totalHunks == 0 {
-			return nil, false
-		}
-		return FileEdit{Files: PatchesFromDiff(payload)}, true
+		return fileEditFromEditList(diff.FromMultiEdit(input))
+	case "edit":
+		// pi agent 的 edit 工具:{path, edits:[{oldText,newText}]} —— 一次调用可带
+		// 多段替换,形状对应 claudecode MultiEdit 而非 Edit,故走同一条串联路径。
+		return fileEditFromEditList(diff.FromPiEdit(input))
 	case "file_change":
 		payload, ok := diff.FromFileChange(input)
 		if !ok || len(payload.Files) == 0 {
@@ -136,8 +135,27 @@ func normalizePlanStepStatus(status string) PlanStepStatus {
 	}
 }
 
-func fileWriteFromWriteInput(input map[string]any) (FileWrite, bool) {
-	path, _ := input["file_path"].(string)
+// fileEditFromEditList 把「一次调用多段替换」串成的 diff.Payload 降级到 FileEdit。
+// diff.FromMultiEdit / FromPiEdit 即使 edits 为空也会返单 File(0 hunks),这种空
+// patch 走 raw 路径更合适 —— 前端不需要为空 diff 起 DiffCard。
+func fileEditFromEditList(payload diff.Payload) (CanonicalTool, bool) {
+	if len(payload.Files) == 0 {
+		return nil, false
+	}
+	totalHunks := 0
+	for _, f := range payload.Files {
+		totalHunks += len(f.Hunks)
+	}
+	if totalHunks == 0 {
+		return nil, false
+	}
+	return FileEdit{Files: PatchesFromDiff(payload)}, true
+}
+
+// fileWriteFromWriteInput 把「整文件写入」工具的 input 降级到 FileWrite。
+// pathKey 是各后端 wire 上的路径键名(claudecode Write: file_path;pi write: path)。
+func fileWriteFromWriteInput(input map[string]any, pathKey string) (FileWrite, bool) {
+	path, _ := input[pathKey].(string)
 	content, ok := input["content"].(string)
 	if !ok {
 		return FileWrite{}, false

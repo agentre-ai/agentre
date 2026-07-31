@@ -20,7 +20,16 @@ export type FileEntry = {
   lastTurn: number;
 };
 
-const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "apply_patch"]);
+// 工具名按后端各自的原样大小写收录:claudecode 用 PascalCase,codex 用
+// apply_patch,pi agent 全小写(edit / write / read)。
+const EDIT_TOOLS = new Set([
+  "Edit",
+  "Write",
+  "MultiEdit",
+  "apply_patch",
+  "edit",
+  "write",
+]);
 const READ_TOOLS = new Set(["Read", "read"]);
 
 function textOf(m: Msg): string {

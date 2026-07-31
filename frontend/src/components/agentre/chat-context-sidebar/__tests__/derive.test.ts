@@ -110,6 +110,35 @@ describe("deriveFiles", () => {
     expect(files[0].path).toBe("b.go"); // tie on edits, b.go more recent
   });
 
+  it("counts pi agent lowercase edit/write tools (they use `path`, not `file_path`)", () => {
+    const msgs = [
+      userMsg(1, "u1"),
+      {
+        id: 2,
+        role: "assistant",
+        sessionId: 1,
+        blocks: [
+          { type: "tool_use", name: "edit", input: { path: "a.go" } },
+          { type: "tool_use", name: "write", input: { path: "b.go" } },
+          { type: "tool_use", name: "read", input: { path: "a.go" } },
+        ],
+        model: "",
+        promptTokens: 0,
+        completionTokens: 0,
+        durationMs: 0,
+        errorText: "",
+        seq: 0,
+        createtime: 0,
+      } as unknown as Msg,
+    ];
+    const files = deriveFiles(msgs);
+    const a = files.find((f: FileEntry) => f.path === "a.go")!;
+    const b = files.find((f: FileEntry) => f.path === "b.go")!;
+    expect(a.edits).toBe(1);
+    expect(a.reads).toBe(1);
+    expect(b.edits).toBe(1);
+  });
+
   it("returns empty array for empty input", () => {
     expect(deriveFiles([])).toEqual([]);
   });

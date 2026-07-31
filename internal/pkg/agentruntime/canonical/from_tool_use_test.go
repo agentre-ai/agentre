@@ -174,6 +174,50 @@ func TestFromToolUse(t *testing.T) {
 			So(ok, ShouldBeFalse)
 		})
 
+		Convey("pi edit tool → FileEdit 合并 hunks", func() {
+			c, ok := FromToolUse("edit", map[string]any{
+				"path": "/tmp/p.txt",
+				"edits": []any{
+					map[string]any{"oldText": "foo", "newText": "bar"},
+					map[string]any{"oldText": "baz", "newText": "qux"},
+				},
+			})
+			So(ok, ShouldBeTrue)
+			fe, ok := c.(FileEdit)
+			So(ok, ShouldBeTrue)
+			So(fe.Files, ShouldHaveLength, 1)
+			So(fe.Files[0].Path, ShouldEqual, "/tmp/p.txt")
+			So(fe.Files[0].Kind, ShouldEqual, ChangeModified)
+			So(fe.Files[0].Hunks, ShouldHaveLength, 2)
+			So(fe.Files[0].ReplaceAll, ShouldBeFalse)
+		})
+
+		Convey("pi edit edits 全空 → 不识别", func() {
+			_, ok := FromToolUse("edit", map[string]any{
+				"path":  "/tmp/p.txt",
+				"edits": []any{},
+			})
+			So(ok, ShouldBeFalse)
+		})
+
+		Convey("pi write tool → FileWrite(path 键,非 file_path)", func() {
+			c, ok := FromToolUse("write", map[string]any{
+				"path":    "/tmp/q.txt",
+				"content": "hello\nworld\n",
+			})
+			So(ok, ShouldBeTrue)
+			fw, ok := c.(FileWrite)
+			So(ok, ShouldBeTrue)
+			So(fw.Path, ShouldEqual, "/tmp/q.txt")
+			So(fw.Lines, ShouldEqual, 2)
+			So(fw.Bytes, ShouldEqual, 12)
+		})
+
+		Convey("pi write 没有 content → 不识别", func() {
+			_, ok := FromToolUse("write", map[string]any{"path": "/tmp/q.txt"})
+			So(ok, ShouldBeFalse)
+		})
+
 		Convey("Bash / 普通工具 → 不识别", func() {
 			_, ok := FromToolUse("Bash", map[string]any{"command": "ls"})
 			So(ok, ShouldBeFalse)
