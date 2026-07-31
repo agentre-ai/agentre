@@ -24,7 +24,7 @@ import (
 
 // ── fake Runtimes ───────────────────────────────────────────────────────────
 //
-// fullRT implements agentruntime.Runtime + ALL 7 optional sub-interfaces.
+// fullRT implements agentruntime.Runtime + ALL 8 optional sub-interfaces.
 // Use for happy-path tests. bareRT implements only Runtime so the handler
 // hits its "type assert failed → ErrUnsupported" branch.
 
@@ -55,6 +55,9 @@ type fullRT struct {
 	abortErr   error
 	abortCalls []int64
 
+	stopBgErr   error
+	stopBgCalls []stopBgCall
+
 	setModeErr   error
 	setModeCalls []setModeCall
 
@@ -84,6 +87,11 @@ type cancelSteerCall struct {
 type setModeCall struct {
 	sid  int64
 	mode string
+}
+
+type stopBgCall struct {
+	sid    int64
+	taskID string
 }
 
 type submitAnswerCall struct {
@@ -165,6 +173,13 @@ func (r *fullRT) Abort(_ context.Context, sid int64) error {
 	defer r.mu.Unlock()
 	r.abortCalls = append(r.abortCalls, sid)
 	return r.abortErr
+}
+
+func (r *fullRT) StopBackgroundTask(_ context.Context, sid int64, taskID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopBgCalls = append(r.stopBgCalls, stopBgCall{sid, taskID})
+	return r.stopBgErr
 }
 
 func (r *fullRT) SetPermissionMode(_ context.Context, sid int64, mode string) error {
@@ -443,7 +458,7 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 	}
 	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
 
-	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), Name: "x"}
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypePiAgent), Name: "x"}
 	ack, err := h.Run(ctx, wire.RunParams{
 		Backend:        backendJSON(t, be),
 		SessionID:      42,
@@ -455,6 +470,7 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), ack.SessionID)
+	assert.Equal(t, "psid-1", ack.ProviderSessionID)
 	require.Len(t, rt.runReqs, 1)
 	assert.True(t, rt.runReqs[0].req.Compact)
 	assert.Equal(t, map[string]bool{"browser@openai-bundled": true}, rt.runReqs[0].req.EnabledPlugins)
@@ -784,6 +800,13 @@ func TestRuntime_ControlRPCs_BackendUnsupported_ErrUnsupported(t *testing.T) {
 			},
 		},
 		{
+			name: "stop background task",
+			call: func() error {
+				_, err := h.StopBackgroundTask(ctx, wire.StopBackgroundTaskParams{SessionID: 5, TaskID: "b0"})
+				return err
+			},
+		},
+		{
 			name: "set permission mode",
 			call: func() error {
 				_, err := h.SetPermissionMode(ctx, wire.SetPermissionModeParams{SessionID: 5, Mode: "plan"})
@@ -866,6 +889,22 @@ func TestRuntime_Abort_Success(t *testing.T) {
 func TestRuntime_Abort_NoSession_ErrNoActiveTurn(t *testing.T) {
 	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
 	_, err := h.Abort(ctx, wire.AbortParams{SessionID: 7})
+	require.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
+func TestRuntime_StopBackgroundTask_Success(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 3)
+	defer close(live)
+
+	_, err := h.StopBackgroundTask(ctx, wire.StopBackgroundTaskParams{SessionID: 3, TaskID: "b0n82mqaj"})
+	require.NoError(t, err)
+	assert.Equal(t, []stopBgCall{{sid: 3, taskID: "b0n82mqaj"}}, rt.stopBgCalls)
+}
+
+func TestRuntime_StopBackgroundTask_NoSession_ErrNoActiveTurn(t *testing.T) {
+	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
+	_, err := h.StopBackgroundTask(ctx, wire.StopBackgroundTaskParams{SessionID: 7, TaskID: "b0"})
 	require.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 

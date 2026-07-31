@@ -7,13 +7,11 @@ import (
 	"encoding/hex"
 	"io/fs"
 	"log"
-	"os"
 	stdruntime "runtime"
 
 	"github.com/agentre-ai/agentre/e2e/fakes"
 	"github.com/agentre-ai/agentre/internal/app"
 	"github.com/agentre-ai/agentre/internal/bootstrap"
-	"github.com/agentre-ai/agentre/internal/cli/claudecodecmd"
 	"github.com/agentre-ai/agentre/internal/pkg/paths"
 
 	"github.com/cago-frame/cago/pkg/logger"
@@ -36,13 +34,10 @@ const (
 )
 
 func main() {
-	// CLI mode: when invoked as `agentre claudecode …` (e.g. by the claude
-	// code hook child process), short-circuit before booting wails/cago.
-	if len(os.Args) >= 2 && os.Args[1] == "claudecode" {
-		claudecodecmd.Main(os.Args[2:])
-		return
-	}
-
+	// The `claudecode` hook shim and the `ctl` control CLI now live in the
+	// standalone `agrctl` companion binary (installed by the app under
+	// <AppDataDir>/bin). The desktop binary is GUI-only — it no longer routes
+	// those subcommands, and the PostToolUse hook is pointed at agrctl.
 	runtime, err := bootstrap.Init(context.Background())
 	if err != nil {
 		log.Fatalf("init cago: %v", err)

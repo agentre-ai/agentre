@@ -276,6 +276,7 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	d.registry.Register(wire.MethodCancelSteer, wrapGuardedSentinel(rh.CancelSteer))
 	d.registry.Register(wire.MethodDrainPending, wrapGuarded(rh.DrainPending))
 	d.registry.Register(wire.MethodAbort, wrapGuardedSentinel(rh.Abort))
+	d.registry.Register(wire.MethodStopBackgroundTask, wrapGuardedSentinel(rh.StopBackgroundTask))
 	d.registry.Register(wire.MethodSetPermissionMode, wrapGuardedSentinel(rh.SetPermissionMode))
 	d.registry.Register(wire.MethodSubmitAnswer, wrapGuardedSentinel(rh.SubmitAnswer))
 	d.registry.Register(wire.MethodSubmitToolPermission, wrapGuardedSentinel(rh.SubmitToolPermission))

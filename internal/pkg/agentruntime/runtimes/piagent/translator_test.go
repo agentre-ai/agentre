@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 	pkgpi "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
@@ -52,6 +53,68 @@ func TestTranslate_ToolEvents(t *testing.T) {
 	assert.Equal(t, "tool-1", res.ToolCallID)
 	assert.Equal(t, "done", res.Content)
 	assert.True(t, res.IsError)
+}
+
+// Pi 内置文件工具的 wire 形状是 {path, edits:[{oldText,newText}]} / {path, content},
+// 与 claudecode 的 Edit/Write 同语义。translator 必须填 ToolCall.Canonical,前端才
+// 走 FileEditCard / FileWriteCard 而不是通用 raw 工具卡。
+func TestTranslate_RecognizesFileEditCanonical(t *testing.T) {
+	out, _, err := translate(pkgpi.Event{
+		Kind: pkgpi.EventPreToolUse,
+		Tool: pkgpi.ToolEvent{
+			ID:    "tool-edit",
+			Name:  "edit",
+			Input: []byte(`{"path":"/tmp/a.go","edits":[{"oldText":"foo\n","newText":"bar\n"}]}`),
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	call, ok := out[0].(agentruntime.ToolCall)
+	require.True(t, ok)
+	fe, ok := call.Canonical.(canonical.FileEdit)
+	require.True(t, ok, "edit tool 应识别成 canonical.FileEdit")
+	require.Len(t, fe.Files, 1)
+	assert.Equal(t, "/tmp/a.go", fe.Files[0].Path)
+	assert.Equal(t, canonical.ChangeModified, fe.Files[0].Kind)
+	assert.NotEmpty(t, fe.Files[0].Hunks)
+}
+
+func TestTranslate_RecognizesFileWriteCanonical(t *testing.T) {
+	out, _, err := translate(pkgpi.Event{
+		Kind: pkgpi.EventPreToolUse,
+		Tool: pkgpi.ToolEvent{
+			ID:    "tool-write",
+			Name:  "write",
+			Input: []byte(`{"path":"/tmp/b.go","content":"hello\nworld\n"}`),
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	call := out[0].(agentruntime.ToolCall)
+	fw, ok := call.Canonical.(canonical.FileWrite)
+	require.True(t, ok, "write tool 应识别成 canonical.FileWrite")
+	assert.Equal(t, "/tmp/b.go", fw.Path)
+	assert.Equal(t, 2, fw.Lines)
+}
+
+func TestTranslate_NonFileToolsStayRaw(t *testing.T) {
+	cases := []pkgpi.ToolEvent{
+		{ID: "t1", Name: "bash", Input: []byte(`{"command":"pwd"}`)},
+		{ID: "t2", Name: "read", Input: []byte(`{"path":"/tmp/a.go"}`)},
+		// 注入的 MCP 工具即使叫 agent / task 也不该被当 subagent 派遣卡:
+		// Pi 没有原生 subagent 协议。
+		{ID: "t3", Name: "agent", Input: []byte(`{"description":"x"}`)},
+		// input 解析不出已知形状时回落 raw。
+		{ID: "t4", Name: "edit", Input: []byte(`{"path":"/tmp/a.go"}`)},
+		{ID: "t5", Name: "edit", Input: nil},
+	}
+	for _, tool := range cases {
+		out, _, err := translate(pkgpi.Event{Kind: pkgpi.EventPreToolUse, Tool: tool})
+		require.NoError(t, err)
+		require.Len(t, out, 1)
+		call := out[0].(agentruntime.ToolCall)
+		assert.Nil(t, call.Canonical, "tool %s 应走 raw 路径", tool.Name)
+	}
 }
 
 func TestTranslate_Usage(t *testing.T) {

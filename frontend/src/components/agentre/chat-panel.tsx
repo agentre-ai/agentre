@@ -87,7 +87,10 @@ import {
   saveTranscriptScrollState,
 } from "./chat-panel-scroll-state";
 import { deriveBackgroundTasks } from "./background-tasks/derive";
-import { flipSubagentStatusInMessages } from "./background-tasks/flip-subagent-status";
+import {
+  flipSubagentStatusInMessages,
+  mergeSubagentMetaInMessages,
+} from "./background-tasks/flip-subagent-status";
 import { deriveTaskProgress } from "./task-progress/derive";
 import { TaskProgressBar } from "./task-progress/task-progress-bar";
 import type { AgentColor, AgentStatus } from "./types";
@@ -109,6 +112,7 @@ import {
   SendChatMessage,
   SetChatGoal,
   StartChatGoal,
+  StopBackgroundTask,
   StopChatMessage,
   TerminalRunCommand,
 } from "../../../wailsjs/go/app/App";
@@ -540,6 +544,35 @@ function ChatPanel({
         });
         return;
       }
+      // subagent_started/progress/done:后端在 per-turn 流之外镜像到会话级流的那一份。
+      // 空闲态后台 subagent 的派遣卡早已落进 messages，ChatStreamsHost 那条只翻
+      // liveBlocks 的路径必然落空 —— 卡片上的工具数 / token 会一直停在派遣那一刻
+      // (sess-2275)。这里就地合并进 messages，与 completedTask 翻状态同一套做法。
+      if (
+        ev.kind === "subagent_started" ||
+        ev.kind === "subagent_progress" ||
+        ev.kind === "subagent_done"
+      ) {
+        if (!ev.toolUseId || !ev.subagent) return;
+        const { toolUseId, subagent } = ev;
+        setMessages((prev) =>
+          mergeSubagentMetaInMessages(prev, toolUseId, subagent),
+        );
+        return;
+      }
+      // subagent_model:同上,会话级流镜像的模型事件(R2)只带 toolUseId + model 两个
+      // 字段(不复用整份 Subagent 快照)——避免浅合并把已累计的 toolUses/totalTokens/
+      // status 覆盖成空值(R4)。
+      if (ev.kind === "subagent_model") {
+        if (!ev.toolUseId || !ev.model) return;
+        const { toolUseId, model } = ev;
+        setMessages((prev) =>
+          mergeSubagentMetaInMessages(prev, toolUseId, {
+            model,
+          } as chat_svc.ChatBlockSubagent),
+        );
+        return;
+      }
       // autonomous_finished:自主轮 / 后台 subagent 活动轮收尾时会话级流补发的终态兜底。
       // per-turn 流的 openStream(ChatPanel)与 EventsOn 订阅(ChatStreamsHost)跨 render 解耦,
       // 短轮的 per-turn done/closed 可能赶在订阅注册前发完被漏掉 → LiveStream 永远留在 store
@@ -910,6 +943,7 @@ function ChatPanel({
   );
   const caps = sessionCaps ?? backendCaps;
   const isModeSwitchable = !!caps?.has("set_permission_mode");
+  const canStopBackgroundTask = !!caps?.has("stop_background_task");
   const supportsImageInput = !!caps?.has("image_input");
   const supportsCompactRPC = caps
     ? caps.has("compact")
@@ -945,10 +979,33 @@ function ChatPanel({
   const handleClearCompleted = React.useCallback(() => {
     if (sessionId <= 0) return;
     const doneIds = backgroundTasks
-      .filter((tk) => tk.status === "completed" || tk.status === "failed")
+      .filter((tk) => tk.status !== "running")
       .map((tk) => tk.toolUseId);
     clearCompletedTasks(sessionId, doneIds);
   }, [sessionId, backgroundTasks, clearCompletedTasks]);
+  // handleStopSubagent 停掉一个正在运行的后台任务/子 agent(下发 CLI stop_task,按发起它的
+  // tool_use_id 定位;后端从持久化 subagent_state 读出 CLI task_id)。停成功后把块翻 canceled,
+  // reload 让面板/卡片显示「已停止」。后台任务面板与转录 AgentSpawn 卡片共用它。
+  const handleStopSubagent = React.useCallback(
+    async (toolUseId: string) => {
+      if (sessionId <= 0 || !toolUseId) return;
+      try {
+        await StopBackgroundTask({ sessionId, toolUseId });
+        await reloadSession();
+      } catch (e: unknown) {
+        const { msg, detail } = splitErrorDetail(e);
+        console.error("[chat] stop background task failed", e);
+        setNotice({
+          kind: "error",
+          text: t("chatPanel.errors.stopBackgroundTask", { msg }),
+          detail,
+        });
+        // 后端没停成(如缺 task_id / 已 evict):reload 把真实状态拉回,避免按钮点了没反应。
+        await reloadSession();
+      }
+    },
+    [sessionId, reloadSession, t],
+  );
   // PermissionMode pill 数据从 caps.permissionModeMeta 拉;caps 未到位时
   // 用空 meta 做 placeholder(pill 整体被 isModeSwitchable 守护)。
   const permissionModeMeta = caps?.permissionModeMeta ?? {
@@ -1854,6 +1911,11 @@ function ChatPanel({
                         <BackgroundTasksChip
                           tasks={backgroundTasks}
                           onClearCompleted={handleClearCompleted}
+                          onStopTask={
+                            canStopBackgroundTask
+                              ? (task) => handleStopSubagent(task.toolUseId)
+                              : undefined
+                          }
                         />
                         {(() => {
                           // canStop 双源：
@@ -2011,6 +2073,9 @@ function ChatPanel({
                     onRerun={(messageId) => void handleRegenerate(messageId)}
                     onEdit={(messageId) => handleEdit(messageId)}
                     onPlanActionStarted={handlePlanActionStarted}
+                    onStopSubagent={
+                      canStopBackgroundTask ? handleStopSubagent : undefined
+                    }
                     tabStateKey={scrollStateKey}
                   />
                   {showBackToBottom ? (

@@ -195,6 +195,40 @@ func TestFromMultiEdit(t *testing.T) {
 	})
 }
 
+func TestFromPiEdit(t *testing.T) {
+	Convey("FromPiEdit · path + edits[oldText/newText] 串联进单 File", t, func() {
+		input := map[string]any{
+			"path": "/x.go",
+			"edits": []any{
+				map[string]any{"oldText": "a\n", "newText": "A\n"},
+				map[string]any{"oldText": "b\n", "newText": "B\n"},
+			},
+		}
+		p := diff.FromPiEdit(input)
+		So(p.Files, ShouldHaveLength, 1)
+		So(p.Files[0].Path, ShouldEqual, "/x.go")
+		So(p.Files[0].Kind, ShouldEqual, diff.KindModified)
+		So(p.Files[0].Plus, ShouldEqual, 2)
+		So(p.Files[0].Minus, ShouldEqual, 2)
+		So(p.Files[0].Hunks, ShouldHaveLength, 2)
+	})
+
+	Convey("FromPiEdit · edits 缺失仍返单 File(0 hunks)", t, func() {
+		p := diff.FromPiEdit(map[string]any{"path": "/x.go"})
+		So(p.Files, ShouldHaveLength, 1)
+		So(p.Files[0].Hunks, ShouldBeEmpty)
+	})
+
+	Convey("FromPiEdit · claudecode 键名不串味(old_string 不被认)", t, func() {
+		p := diff.FromPiEdit(map[string]any{
+			"path":  "/x.go",
+			"edits": []any{map[string]any{"old_string": "a", "new_string": "A"}},
+		})
+		So(p.Files, ShouldHaveLength, 1)
+		So(p.Files[0].Hunks, ShouldBeEmpty)
+	})
+}
+
 func TestFromFileChange(t *testing.T) {
 	Convey("FromFileChange · Codex 多文件返多 File", t, func() {
 		input := map[string]any{

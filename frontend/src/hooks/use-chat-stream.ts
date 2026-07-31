@@ -34,6 +34,7 @@ export type ChatStreamEvent = {
     | "subagent_started"
     | "subagent_progress"
     | "subagent_done"
+    | "subagent_model"
     | "retry"
     | "message_end"
     | "done"
@@ -85,6 +86,12 @@ export type ChatStreamEvent = {
   // meta merge 到对应 ChatBlock 的 subagent 字段。
   parentToolUseId?: string;
   subagent?: chat_svc.ChatBlockSubagent;
+
+  // subagent_model: ToolUseID(复用上方字段)关联到对应派遣,model 是子代理内部帧解析出的
+  // 实际模型(R2 覆盖 R1 的入参别名,R3 first-wins)。只带这一个字段,不复用上面的整份
+  // Subagent 快照 —— 后端故意避免整份快照的浅合并把已有 toolUses/totalTokens/status
+  // 覆盖成空值,前端消费时同样只取这个字段去合并(R4)。
+  model?: string;
 
   // ask_user_question: 携带交互问题载荷（初次到达）或答完后的状态切换
   // （Answered=true，前端按 requestId 找到既有 block 更新）。

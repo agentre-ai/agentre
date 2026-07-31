@@ -4,7 +4,7 @@
 // 命名约定:
 //   - 所有 RPC 方法都在 "runtime.*" 命名空间下,与 agentruntime.Runtime + 子接口一一对应。
 //   - 字段名一律 lowerCamelCase。
-//   - 错误码 -32010..-32013 是 agentruntime 标准 sentinel 的稳定 wire 值;
+//   - 错误码 -32010..-32014 是 agentruntime 标准 sentinel 的稳定 wire 值;
 //     ToJSONRPCError / FromJSONRPCError 双向翻译,让 errors.Is(err, agentruntime.ErrXxx)
 //     在客户端继续工作。
 package wire
@@ -30,6 +30,7 @@ const (
 	MethodCancelSteer          = "runtime.cancelSteer"
 	MethodDrainPending         = "runtime.drainPending"
 	MethodAbort                = "runtime.abort"
+	MethodStopBackgroundTask   = "runtime.stopBackgroundTask"
 	MethodSetPermissionMode    = "runtime.setPermissionMode"
 	MethodSubmitAnswer         = "runtime.submitAnswer"
 	MethodSubmitToolPermission = "runtime.submitToolPermission"
@@ -60,10 +61,11 @@ const (
 // ── Error codes ─────────────────────────────────────────────────────────────
 
 const (
-	ErrCodeNoActiveTurn  = -32010
-	ErrCodeSteerNotFound = -32011
-	ErrCodeUnsupported   = -32012
-	ErrCodeAborted       = -32013
+	ErrCodeNoActiveTurn    = -32010
+	ErrCodeSteerNotFound   = -32011
+	ErrCodeUnsupported     = -32012
+	ErrCodeAborted         = -32013
+	ErrCodeSessionNotFound = -32014
 )
 
 // ToJSONRPCError 把 agentruntime 的 sentinel 包成 *jsonrpc.Error,daemon 端返回。
@@ -102,6 +104,8 @@ func SentinelFromCode(code int) error {
 		return agentruntime.ErrUnsupported
 	case ErrCodeAborted:
 		return agentruntime.ErrAborted
+	case ErrCodeSessionNotFound:
+		return agentruntime.ErrSessionNotFound
 	}
 	return nil
 }
@@ -118,6 +122,8 @@ func CodeForSentinel(err error) (int, bool) {
 		return ErrCodeUnsupported, true
 	case errors.Is(err, agentruntime.ErrAborted):
 		return ErrCodeAborted, true
+	case errors.Is(err, agentruntime.ErrSessionNotFound):
+		return ErrCodeSessionNotFound, true
 	}
 	return 0, false
 }
@@ -227,6 +233,9 @@ type MCPProxyResponse struct {
 // RunAck 是 runtime.run 的同步返回,只回 echo 客户端传的 sessionID 供它确认。
 // 真实 events 走 NotifyEvent 异步推;终态 RunResult 走 NotifyRunResultDone。
 //
+// ProviderSessionID 是 runtime 在事件流开始前已经确认的 provider 原生
+// Session 身份（当前由 Pi Agent 使用），让 desktop 可在流结束前持久化。
+//
 // LaunchPermissionMode 是 daemon 端 runtime spawn CLI 子进程实际下发的
 // --permission-mode 值(claudecode 专用)。同步随 ack 回来,客户端立即写入
 // RunResult.LaunchPermissionMode,让 chat_svc 在主进程侧持久化到
@@ -234,6 +243,7 @@ type MCPProxyResponse struct {
 // 用现有 CLI 进程)。
 type RunAck struct {
 	SessionID            int64  `json:"sessionId"`
+	ProviderSessionID    string `json:"providerSessionId,omitempty"`
 	LaunchPermissionMode string `json:"launchPermissionMode,omitempty"`
 }
 
@@ -270,6 +280,12 @@ type DrainResult struct {
 // AbortParams 等同 agentruntime.Aborter.Abort 的入参。
 type AbortParams struct {
 	SessionID int64 `json:"sessionId"`
+}
+
+// StopBackgroundTaskParams 等同 agentruntime.BackgroundTaskStopper.StopBackgroundTask 的入参。
+type StopBackgroundTaskParams struct {
+	SessionID int64  `json:"sessionId"`
+	TaskID    string `json:"taskId"`
 }
 
 // SetPermissionModeParams 等同 agentruntime.PermissionModeSetter.SetPermissionMode 的入参。

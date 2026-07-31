@@ -91,6 +91,31 @@ func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 	})
 }
 
+func TestRun_MapsMissingNativeSession(t *testing.T) {
+	Convey("Given Pi reports that the requested native session no longer exists", t, func() {
+		sess := &fakeSession{streamErr: pkgpiagent.ErrSessionNotFound}
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+			return sess, nil
+		})
+		defer restore()
+
+		Convey("When the runtime starts the turn Then it returns the backend-neutral sentinel", func() {
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID:         1,
+				ProviderSessionID: "pi-native-gone",
+				Cwd:               t.TempDir(),
+				UserText:          "hello",
+			})
+
+			So(events, ShouldBeNil)
+			So(result, ShouldBeNil)
+			So(errors.Is(err, agentruntime.ErrSessionNotFound), ShouldBeTrue)
+			So(sess.closed, ShouldBeTrue)
+		})
+	})
+}
+
 func TestRun_ClosesSessionAfterDrain(t *testing.T) {
 	Convey("Given a pi-agent session", t, func() {
 		sess := &fakeSession{stream: &emptyStream{}, sid: "pi-session"}
@@ -107,6 +132,51 @@ func TestRun_ClosesSessionAfterDrain(t *testing.T) {
 				UserText:  "hello",
 			})
 			So(err, ShouldBeNil)
+			for range events {
+			}
+			So(sess.closed, ShouldBeTrue)
+		})
+	})
+}
+
+func TestRun_ClosesOutputAfterSessionClose(t *testing.T) {
+	Convey("Given a pi-agent session whose cleanup is still running", t, func() {
+		closeStarted := make(chan struct{})
+		allowClose := make(chan struct{})
+		sess := &fakeSession{
+			stream:       &emptyStream{},
+			sid:          "pi-session",
+			closeStarted: closeStarted,
+			allowClose:   allowClose,
+		}
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+			return sess, nil
+		})
+		defer restore()
+
+		Convey("When the stream has drained Then output remains open until session cleanup returns", func() {
+			events, _, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+
+			<-closeStarted
+			for len(events) > 0 {
+				<-events
+			}
+			select {
+			case _, open := <-events:
+				if !open {
+					t.Fatal("runtime closed output before session cleanup returned")
+				}
+				t.Fatal("runtime emitted an unexpected event while session cleanup was blocked")
+			default:
+			}
+
+			close(allowClose)
 			for range events {
 			}
 			So(sess.closed, ShouldBeTrue)
@@ -198,23 +268,35 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 }
 
 type fakeSession struct {
-	stream     stream
-	sid        string
-	gotImages  []pkgpiagent.Image
-	gotPrompt  string
-	streamCall int
-	closed     bool
+	stream       stream
+	sid          string
+	gotImages    []pkgpiagent.Image
+	gotPrompt    string
+	streamCall   int
+	streamErr    error
+	closed       bool
+	closeStarted chan struct{}
+	allowClose   <-chan struct{}
 }
 
-func (s *fakeSession) Close(context.Context) error { s.closed = true; return nil }
-func (s *fakeSession) ID() string                  { return s.sid }
+func (s *fakeSession) Close(context.Context) error {
+	if s.closeStarted != nil {
+		close(s.closeStarted)
+	}
+	if s.allowClose != nil {
+		<-s.allowClose
+	}
+	s.closed = true
+	return nil
+}
+func (s *fakeSession) ID() string { return s.sid }
 func (s *fakeSession) Stream(_ context.Context, prompt, _ string, images []pkgpiagent.Image) (stream, error) {
 	s.streamCall++
 	s.gotPrompt = prompt
 	s.gotImages = images
-	return s.stream, nil
+	return s.stream, s.streamErr
 }
-func (s *fakeSession) Compact(context.Context) (stream, error)          { return s.stream, nil }
+func (s *fakeSession) Compact(context.Context) (stream, error)          { return s.stream, s.streamErr }
 func (s *fakeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }
 func (s *fakeSession) ActiveStream() steerStream                        { return nil }
 func (s *fakeSession) ActiveInterruptor() interruptable                 { return nil }

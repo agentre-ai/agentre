@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -63,6 +62,10 @@ type Runtime struct {
 	spawnLocks sync.Map // key(string) → *sync.Mutex
 	cache      *agentruntime.CLISessionPool
 	steer      *httpgateway.SteerInbox
+	// hookCLIPath 是注册进 PostToolUse hook 的可执行文件路径;bootstrap 注入
+	// <AppDataDir>/bin/agrctl。为空时回落 os.Executable()(供 agentred 守护进程——它自带
+	// claudecode 子命令)。见 hookBin。
+	hookCLIPath string
 	// startupTimeout 是 startup 看门狗阈值;NewWithPool 设默认值, 单测覆写成毫秒级。
 	startupTimeout time.Duration
 }
@@ -100,14 +103,17 @@ func sessionKey(id int64) string { return strconv.FormatInt(id, 10) }
 func (r *Runtime) Capabilities() capability.Capabilities {
 	return capability.Capabilities{
 		Set: map[capability.Capability]bool{
-			capability.CapSteer:          true,
-			capability.CapCancelSteer:    true,
-			capability.CapDrainSteer:     true,
-			capability.CapAbort:          true,
-			capability.CapSetPermission:  true,
-			capability.CapAnswerUserAsk:  true,
-			capability.CapToolPermission: true,
-			capability.CapForkSession:    true,
+			capability.CapSteer:       true,
+			capability.CapCancelSteer: true,
+			capability.CapDrainSteer:  true,
+			capability.CapAbort:       true,
+			// 停单个后台任务/子 agent(run_in_background)—— 实现 BackgroundTaskStopper,
+			// 下发 control_request{stop_task};前端据此在后台任务面板/AgentSpawn 卡片显示停止按钮。
+			capability.CapStopBackgroundTask: true,
+			capability.CapSetPermission:      true,
+			capability.CapAnswerUserAsk:      true,
+			capability.CapToolPermission:     true,
+			capability.CapForkSession:        true,
 			// translator.EventInit 路径用 llmcatalog 兜底 emit ContextWindowUpdated;
 			// Claude Code SDK 协议本身不报窗口,这里靠 catalog 给前端 turn 内总量。
 			capability.CapReportContextWindow: true,
@@ -243,6 +249,25 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 		}
 	}
 	return nil
+}
+
+// StopBackgroundTask 实现 BackgroundTaskStopper：停掉某个后台任务/子 agent(按 CLI
+// task_id)。与 Abort 不同,**不校验 inTurn** —— 后台任务在 turn 结束后仍存活,只要
+// 子进程还在 LRU 缓存里(还没 evict)就下发 control_request{stop_task}。子进程已 evict
+// (任务随之消失)→ ErrNoActiveTurn,由 chat_svc 当「任务已不在」处理。
+func (r *Runtime) StopBackgroundTask(ctx context.Context, sessionID int64, taskID string) error {
+	if taskID == "" {
+		return fmt.Errorf("agentruntime/runtimes/claudecode: empty taskID")
+	}
+	v, ok := r.cache.Get(sessionKey(sessionID))
+	if !ok {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a := v.(*claudeActive)
+	if a.handle == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	return a.handle.StopTask(ctx, taskID)
 }
 
 // SetPermissionMode 实现 PermissionModeSetter。语义同顶层 SetPermissionMode。
@@ -524,7 +549,7 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 	}
 
 	isolationUUID := newUUIDv4()
-	bin, err := os.Executable()
+	bin, err := r.hookBin()
 	if err != nil {
 		return nil, "", fmt.Errorf("agentruntime/runtimes/claudecode: resolve executable path: %w", err)
 	}
@@ -673,7 +698,8 @@ func claudeEventShowsProgressAfterError(kind claudecode.EventKind) bool {
 		claudecode.EventTaskNotification,
 		claudecode.EventRetry,
 		claudecode.EventCompactBoundary,
-		claudecode.EventControlRequest:
+		claudecode.EventControlRequest,
+		claudecode.EventSubagentModel:
 		return true
 	default:
 		return false

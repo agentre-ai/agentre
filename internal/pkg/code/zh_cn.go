@@ -114,7 +114,7 @@ var zhCN = map[int]string{
 	ChatPermissionModeNoActive:    "请先发送一条消息让会话启动后再切换权限模式",
 	ChatPermissionModeInternal:    "切换权限模式失败，请稍后再试",
 	ChatCompactUnsupported:        "当前 Agent 后端不支持上下文压缩",
-	ChatCompactNoSession:          "请先发送一条消息让 Codex 会话启动后再压缩",
+	ChatCompactNoSession:          "请先发送一条消息让 CLI 会话启动后再压缩",
 	ChatCompactInternal:           "压缩上下文失败，请稍后再试",
 	ChatGoalUnsupported:           "当前 Agent 后端不支持目标状态",
 	ChatGoalNoSession:             "请先发送一条消息让 Codex 会话启动后再设置目标",
@@ -125,6 +125,9 @@ var zhCN = map[int]string{
 	ChatPlanActionUnknown: "无法识别的 plan 操作，请刷新会话重试",
 
 	ChatGitStateUnavailable: "当前会话的工作目录无法读取 git 状态",
+
+	ChatStopBgUnsupported: "当前 Agent 后端不支持停止后台任务",
+	ChatStopBgTaskUnknown: "该后台任务无法停止（缺少任务 ID，或已经结束）",
 
 	ProjectNotFound:          "项目不存在",
 	ProjectNameDuplicated:    "同级下已存在同名项目",

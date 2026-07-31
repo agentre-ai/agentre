@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,11 @@ type Session struct {
 	proc *process
 
 	scanner *bufio.Scanner
+
+	// rawSink 若非 nil,readLoop 每读到一行非空 stdout 就同步回调一次(未解析的
+	// stream-json 帧)。debug 级原始帧转储用;由 OpenSession 从 Client.rawSink 注入。
+	// 回调收到的 []byte 是 scanner 复用缓冲,不得跨调用留存。
+	rawSink func([]byte)
 
 	sessionID string // 由 system init 帧填入；首次 Turn 后稳定
 	model     string // 由 system init 帧 model 字段填入；新一轮如果换 model CLI 会重新发 init
@@ -74,9 +80,9 @@ type Session struct {
 	// task_notification」开头 → 自主轮(经 autoCh 吐出);否则按 FIFO 取一个 pendingTurns
 	// 里等待的 user Turn。
 	sinkMu       sync.Mutex
-	active       *activeTurn      // 当前正在投递帧的轮;nil = 轮间空闲
-	pendingTurns chan *activeTurn // 已写 stdin、等待其帧到达的 user Turn(FIFO)
-	autoCh       chan *AutoTurn   // AutonomousTurns() 返回的 channel;子进程退出时 close
+	active       *activeTurn            // 当前正在投递帧的轮;nil = 轮间空闲
+	pendingTurns chan *activeTurn       // 已写 stdin、等待其帧到达的 user Turn(FIFO)
+	autoCh       chan *AutoTurn         // AutonomousTurns() 返回的 channel;子进程退出时 close
 	subagentCh   chan *SubagentActivity // 后台 subagent 活动轮的出口(无消费方时缓冲兜底)
 
 	// readerDone 在 readLoop 收尾(子进程 EOF / Close)时 close。等 control_response
@@ -147,21 +153,27 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 		return nil, ctx.Err()
 	}
 
-	sc := bufio.NewScanner(p.stdout)
-	buf := make([]byte, 0, 64<<10)
-	sc.Buffer(buf, maxFrameBytes)
+	s := newSession(p, c.rawSink, spec.sessionID)
+	go s.readLoop()
+	return s, nil
+}
 
-	s := &Session{
+// newSession 组装一个 Session(不起读循环 —— 由调用方决定)。所有 channel 字段只在
+// 这里初始化:手写 &Session{...} 字面量漏掉一个,就是 nil channel 上的永久阻塞,
+// 所以构造只此一处。
+func newSession(p *process, rawSink func([]byte), sessionID string) *Session {
+	sc := bufio.NewScanner(p.stdout)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
+	return &Session{
 		proc:         p,
 		scanner:      sc,
-		sessionID:    spec.sessionID,
+		rawSink:      rawSink,
+		sessionID:    sessionID,
 		pendingTurns: make(chan *activeTurn, 4),
 		autoCh:       make(chan *AutoTurn, 8),
 		subagentCh:   make(chan *SubagentActivity, 8),
 		readerDone:   make(chan struct{}),
 	}
-	go s.readLoop()
-	return s, nil
 }
 
 // SessionID 返回 claude 报告的 session_id。Open 后到首个 Turn 完成之前可能为空——
@@ -189,7 +201,15 @@ func (s *Session) Turn(ctx context.Context, prompt string, images ...Image) (<-c
 		s.turnMu.Unlock()
 		return nil, err
 	}
+	// 先登记到 FIFO、再写 stdin。顺序是「登记在前」而不是反过来:这样「本轮的响应帧
+	// 到达时队列里一定已有本轮」成为硬不变量,currentTurn 才能对 pendingTurns 做**非
+	// 阻塞**认领 —— 空闲(无 Turn 在途)时到达的帧一律丢弃,而不是把 readLoop 永久卡在
+	// <-pendingTurns 上(见 currentTurn / canStartUserTurn 里的 sess-2187)。
+	at := newActiveTurn(false)
+	s.pendingTurns <- at
+
 	if _, err := fmt.Fprintf(s.proc.stdin, "%s\n", enc); err != nil {
+		s.unregisterPendingTurn(at) // 没写进去 = 本轮的帧永远不会来,别留在队里错配下一轮
 		s.stdinMu.Unlock()
 		s.turnMu.Unlock()
 		// broken pipe 几乎一定意味着子进程已经死了 —— 这种情况下用 reaper
@@ -202,12 +222,6 @@ func (s *Session) Turn(ctx context.Context, prompt string, images ...Image) (<-c
 		return nil, err
 	}
 	s.stdinMu.Unlock() // stdin 写完立刻释放，给 Interrupt 让路
-
-	// 注册到 FIFO,等 readLoop 在本轮帧到达时取走。stdin 写在前、push 在后:CLI 的
-	// 响应帧一定晚于这次本地 push;即便极端调度下 reader 先读到首帧,它在 currentTurn
-	// 里阻塞 <-pendingTurns 等这次 push,不会错配。
-	at := newActiveTurn(false)
-	s.pendingTurns <- at
 
 	go func() {
 		defer s.turnMu.Unlock() // 本轮 done(result/EOF)后再放 turn 锁
@@ -243,6 +257,9 @@ func (s *Session) readLoop() {
 		line := s.scanner.Bytes()
 		if len(line) == 0 {
 			continue
+		}
+		if s.rawSink != nil {
+			s.rawSink(line)
 		}
 		events, done := s.parseLine(line) // 同时把 control_response dispatch 给 ctrlPending
 		var f rawFrame
@@ -286,27 +303,35 @@ func subagentOwnerID(f rawFrame) string {
 
 // currentTurn 返回当前活跃轮;轮间(active==nil)时按归属规则建立新轮:
 //   - 活动轮收到「后台型完成通知」→ 收尾活动轮,落到下方起自主续轮。
+//   - 活动轮收到**另一个** owner 的空闲 subagent 帧 → 收尾当前活动轮,落到下方按新 owner
+//     另开一轮。同一轮里可以并发派多个 run_in_background subagent,它们在空闲态交替说话;
+//     不切轮的话单槽位被先到的 owner 占住,另一个的帧全被塞进它的活动轮,消费方按
+//     ToolUseID 过滤子块时整段丢弃(sess-2275)。
 //   - 后台型 task_notification → 自主轮,经 autoCh 吐出,返回 nil(调用方丢弃起始标记)。
 //   - 无资格起轮的帧(control_response / 空闲 status / 后台任务状态帧 / 任何未知
 //     类型)→ 返回 nil,不认领排队的 user Turn;否则读循环会被这些会话级帧卡死在
 //     <-pendingTurns 上,后续 Turn / 自主轮再也读不到 stdout(见 canStartUserTurn)。
 //   - 空闲后台 subagent 帧(有 owner) → 开活动轮,经 subagentCh 吐出,首帧也喂进去。
 //   - 空闲后台 subagent 帧(无 owner) → 丢弃(兜底,不卡读循环)。
-//   - 否则 → 取 FIFO 队首 user Turn(stdin 已写 → push 紧随,阻塞极短)。
+//   - 否则 → **非阻塞**取 FIFO 队首 user Turn;队空(无 Turn 在途)就丢弃本帧。
+//     Turn 的登记先于 stdin 写,所以真属于某轮的首帧到达时队首一定已就位。
 func (s *Session) currentTurn(f rawFrame) *activeTurn {
 	s.sinkMu.Lock()
 	if s.active != nil {
-		// 后台 subagent 活动轮收到「后台型完成通知」→ 收尾活动轮,落到下方起自主续轮。
-		if s.active.subagentToolUseID != "" && isBackgroundTaskNotification(f) {
-			done := s.active
-			s.sinkMu.Unlock()
-			s.finishActiveTurn(done) // 清 active 槽 + close 活动轮 ch/done
-			s.sinkMu.Lock()
-		} else {
+		// 后台 subagent 活动轮要让位的两种情况:收到「后台型完成通知」(收尾后落到下方起
+		// 自主续轮),或收到另一个 subagent 的空闲活动帧(收尾后落到下方按新 owner 另开一轮)。
+		owner := subagentOwnerID(f)
+		yield := s.active.subagentToolUseID != "" &&
+			(isBackgroundTaskNotification(f) || (owner != "" && owner != s.active.subagentToolUseID))
+		if !yield {
 			at := s.active
 			s.sinkMu.Unlock()
 			return at
 		}
+		done := s.active
+		s.sinkMu.Unlock()
+		s.finishActiveTurn(done) // 清 active 槽 + close 活动轮 ch/done
+		s.sinkMu.Lock()
 	}
 	if isBackgroundTaskNotification(f) {
 		at := newActiveTurn(true)
@@ -319,7 +344,7 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 			CompletedTask: &CompletedBackgroundTask{
 				ToolUseID: f.ToolUseID,
 				TaskID:    f.TaskID,
-				Status:    f.Status,
+				Status:    normalizeTaskStatus(f.Status),
 				Summary:   f.Summary,
 			},
 		}
@@ -357,11 +382,38 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 		return nil // owner 取不到的兜底:仍按 Phase 1 丢弃,不卡读循环
 	}
 	s.sinkMu.Unlock()
-	at := <-s.pendingTurns // user 轮起始:取队首(对应的 Turn 已 push)
-	s.sinkMu.Lock()
-	s.active = at
-	s.sinkMu.Unlock()
-	return at
+	select {
+	case at := <-s.pendingTurns: // user 轮起始:取队首(登记先于 stdin 写,故一定已在队)
+		s.sinkMu.Lock()
+		s.active = at
+		s.sinkMu.Unlock()
+		return at
+	default:
+		// 空闲(没有任何 Turn 在途):轮内容帧也只丢弃。这是「readLoop 永不阻塞在
+		// pendingTurns 上」的最后一道保险,与 canStartUserTurn 白名单互补 —— 白名单
+		// 挡的是 CLI 新增的会话级 system 子类型,这里挡的是白名单**内部**的帧被子进程
+		// 在空闲态自发重播(sess-2187 的 system{subtype:"init"})。
+		return nil
+	}
+}
+
+// unregisterPendingTurn 把一个已登记、但最终没能写进 stdin 的轮从 FIFO 里摘掉,
+// 保持其余元素的顺序 —— 它的帧永远不会来,留在队里会被下一轮的首帧错配认领。
+func (s *Session) unregisterPendingTurn(target *activeTurn) {
+	keep := make([]*activeTurn, 0, cap(s.pendingTurns))
+	for drained := false; !drained; {
+		select {
+		case at := <-s.pendingTurns:
+			if at != target {
+				keep = append(keep, at)
+			}
+		default:
+			drained = true
+		}
+	}
+	for _, at := range keep {
+		s.pendingTurns <- at
+	}
 }
 
 // canStartUserTurn 判定一帧是否有资格认领一个排队中的 user Turn(pendingTurns 队首)。
@@ -393,6 +445,11 @@ func (s *Session) currentTurn(f rawFrame) *activeTurn {
 //
 // 反转成白名单后,默认行为从「阻塞」变成「丢弃」:CLI 将来再加新帧类型,最坏是少渲染
 // 一条会话级状态,而不是整条会话卡死。
+//
+// 白名单**本身**并不足以保证不阻塞:sess-2187(CLI 2.1.220)漏的是白名单内部的
+// system{subtype:"init"} —— 它确实通常是一轮的首帧,但 CLI 也会在 result 之后的空闲态
+// 自发重播它(会话 cwd 下的 skill 目录被后台 subagent 改动时)。真正的兜底在
+// currentTurn:认领 pendingTurns 改成非阻塞,空闲即丢弃。
 func canStartUserTurn(f rawFrame) bool {
 	switch f.Type {
 	case "assistant", "user", "stream_event", "result":
@@ -554,7 +611,15 @@ func (s *Session) parseLine(line []byte) ([]Event, bool) {
 		}
 		return nil, false
 	case "assistant":
-		events, usage := parseAssistantContentWithUsage(f.Message, s.sessionID, f.ParentToolUseID)
+		// isApiErrorMessage:true —— CLI 合成的 API 错误帧(model:"<synthetic>"),不是模型
+		// 正文。翻成 EventError 走上层 stopErr → error_text → 独立 ErrorCard,不拼进文本
+		// block(见 sess-2153)。非终结:turn 结束仍由随后的 result 帧驱动。
+		if f.IsAPIErrorMessage {
+			if ev, ok := apiErrorEvent(f, s.sessionID); ok {
+				return []Event{ev}, false
+			}
+		}
+		events, usage := parseAssistantContentWithUsage(f.Message, s.sessionID, f.ParentToolUseID, f.IsAPIErrorMessage)
 		// 仅记录主 agent 帧的 usage：parent_tool_use_id != "" 的帧来自 Task/Agent
 		// subagent 内部 API call，那是独立 Anthropic 会话（自己的 system prompt /
 		// context window），用它的用量覆盖主 agent 的会让进度条骤降到 subagent 的
@@ -706,6 +771,74 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+// StopTask 写一帧 control_request{subtype:"stop_task", task_id:…} 让 CLI 停掉某个
+// 具体的后台任务(run_in_background Bash / subagent),而非中断整个 turn —— 后台任务
+// 在 turn 结束后仍存活,常驻 readLoop 在轮间照样 dispatch control_response(见
+// SetPermissionMode 注释),所以空闲态也能停。CLI 停掉任务后会另发一帧后台型
+// task_notification(status cancelled/failed),经既有自主续轮把 subagent_state 翻终态。
+//
+// 调用约束同 Interrupt:与 Turn 可并发(只持 stdinMu 写帧);Close 后返错。
+// CLI 若回执 not_found / not_running(任务已自然结束/竞态)视为幂等成功返 nil。
+func (s *Session) StopTask(ctx context.Context, taskID string) error {
+	s.stdinMu.Lock()
+	if s.closed {
+		s.stdinMu.Unlock()
+		return errors.New("claudecode: session closed")
+	}
+	reqID := newControlRequestID()
+	ch := make(chan controlResponse, 1)
+	s.ctrlMu.Lock()
+	if s.ctrlPending == nil {
+		s.ctrlPending = map[string]chan controlResponse{}
+	}
+	s.ctrlPending[reqID] = ch
+	s.ctrlMu.Unlock()
+
+	frame := map[string]any{
+		"type":       "control_request",
+		"request_id": reqID,
+		"request":    map[string]any{"subtype": "stop_task", "task_id": taskID},
+	}
+	enc, mErr := json.Marshal(frame)
+	if mErr != nil {
+		s.stdinMu.Unlock()
+		s.forgetControlRequest(reqID)
+		return mErr
+	}
+	if _, err := fmt.Fprintf(s.proc.stdin, "%s\n", enc); err != nil {
+		s.stdinMu.Unlock()
+		s.forgetControlRequest(reqID)
+		return err
+	}
+	s.stdinMu.Unlock()
+
+	defer s.forgetControlRequest(reqID)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.readerDone:
+		return s.controlRequestAbortedErr("stop_task")
+	case resp := <-ch:
+		return stopTaskResponseErr(resp)
+	}
+}
+
+// stopTaskResponseErr 把 control_response 翻成 StopTask 返回错误。subtype=="success"
+// → nil;CLI 报 not_found / not_running 表示任务已不在跑,当幂等成功;其它 subtype
+// 带原始 error 文本以便排查。
+func stopTaskResponseErr(resp controlResponse) error {
+	if resp.Subtype == "success" {
+		return nil
+	}
+	if strings.Contains(resp.Error, "not_found") || strings.Contains(resp.Error, "not_running") {
+		return nil
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("claudecode: stop_task rejected: %s", resp.Error)
+	}
+	return fmt.Errorf("claudecode: stop_task rejected (subtype=%q)", resp.Subtype)
 }
 
 // controlRequestAbortedErr 给「readLoop 已收尾、回执不可能再来」的等待者一个明确
@@ -869,6 +1002,9 @@ func (s *Session) Close(ctx context.Context) error {
 // parentToolUseID 对应原始帧顶层的 parent_tool_use_id；主 agent 自己的帧传 ""；
 // subagent 内部帧透传外层 Agent.tool_use_id。
 //
+// isAPIErrorMessage 对应原始帧顶层的 isApiErrorMessage，是判定该帧是否为 CLI 合成
+// API 错误帧的权威标志（见下方模型解析处的用法），调用方需原样透传 rawFrame 上的值。
+//
 // 返回的 *rawUsage == nil 表示这一帧没带 usage 字段（老 CLI 或简化 stub）；
 // 调用方据此跟踪"最后一次 per-call 用量"以正确计算上下文窗口占用，参见
 // [resolveDoneUsage]。
@@ -900,7 +1036,42 @@ func isZeroUsage(u *rawUsage) bool {
 		u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0
 }
 
-func parseAssistantContentWithUsage(raw json.RawMessage, sid, parentToolUseID string) ([]Event, *rawUsage) {
+// apiErrorEvent 把 CLI 的 isApiErrorMessage:true 合成 assistant 帧翻成 EventError。
+//
+// 文本取 message.content 里第一个非空 text block(即 "API Error: ..." 提示);缺失时
+// 用顶层 error 分类码(f.ErrorField)兜底。两个 decoder —— Session.parseLine 与
+// frameDecoder.decodeLine —— 共用本函数,避免平行副本漂移。返回 (Event{}, false)
+// 表示这帧没有可用文本,调用方回退到正常 assistant 解析(不吞帧)。
+func apiErrorEvent(f rawFrame, sid string) (Event, bool) {
+	text := firstAssistantText(f.Message)
+	if text == "" {
+		text = f.ErrorField
+	}
+	if text == "" {
+		return Event{}, false
+	}
+	return Event{Kind: EventError, SessionID: sid, Err: &APIError{Text: text, Code: f.ErrorField}}, true
+}
+
+// firstAssistantText 返回 assistant message.content 里第一个非空 text block 的文本;
+// 没有则返回空串。
+func firstAssistantText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m rawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	for _, c := range m.Content {
+		if c.Type == "text" && c.Text != "" {
+			return c.Text
+		}
+	}
+	return ""
+}
+
+func parseAssistantContentWithUsage(raw json.RawMessage, sid, parentToolUseID string, isAPIErrorMessage bool) ([]Event, *rawUsage) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -929,6 +1100,29 @@ func parseAssistantContentWithUsage(raw json.RawMessage, sid, parentToolUseID st
 				ParentToolUseID: parentToolUseID,
 			})
 		}
+	}
+	// R2：subagent 内部帧（parent_tool_use_id 非空）携带非空 message.model 时，
+	// 抬成独立事件透传给上游翻译层。主 agent 帧（parentToolUseID == ""）即便带
+	// model 也不产出——那是 EventInit/EventDone 的既有职责，不得被污染（R5）。
+	// 老 CLI 不发 message.model 时同样不产出。
+	//
+	// first-wins（R3，同一子代理只认第一个实际模型）由上游累计态负责去重，这里
+	// 每次遇到都如实产出一条，不做去重判断。
+	//
+	// isAPIErrorMessage 过滤:CLI 合成的 API 错误帧(isApiErrorMessage:true)的
+	// message.model 是占位符而非真实模型(见 errors.go 顶部注释)。正常情况下
+	// apiErrorEvent 会把这类帧接住翻成 EventError,不会走到这里;但若该帧首个
+	// text 块与顶层 error 都为空,apiErrorEvent 判定「无可用文本」而放行,帧就会
+	// 落进本函数的正常 assistant 解析路径。判定必须以调用方传入的权威标志为准
+	// (R2 修订),不能嗅探占位符字符串的值——占位符取值可能随 CLI 版本变化,而
+	// R3 的 first-wins 意味着一旦记错就永久钉进 subagent_state.model 与数据库。
+	if parentToolUseID != "" && m.Model != "" && !isAPIErrorMessage {
+		out = append(out, Event{
+			Kind:            EventSubagentModel,
+			SessionID:       sid,
+			Model:           m.Model,
+			ParentToolUseID: parentToolUseID,
+		})
 	}
 	return out, m.Usage
 }
@@ -1026,7 +1220,7 @@ func parseSystemTask(f rawFrame, sid string) (Event, bool) {
 		TaskDescription: f.Description,
 		Prompt:          f.Prompt,
 		LastToolName:    f.LastToolName,
-		Status:          f.Status,
+		Status:          normalizeTaskStatus(f.Status),
 	}
 	if len(f.Usage) > 0 {
 		var u taskUsage

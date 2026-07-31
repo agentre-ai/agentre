@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/UserExistsError/conpty v0.1.4
-	github.com/cago-frame/agents v0.0.0-20260610020000-640785b2d7a3
+	github.com/cago-frame/agents v0.0.0-20260727021936-d7bfede861b9
 	github.com/cago-frame/cago v0.0.0-20260609091633-ba2f550b2729
 	github.com/creack/pty v1.1.21
 	github.com/glebarez/sqlite v1.11.0
@@ -21,6 +21,7 @@ require (
 	github.com/zalando/go-keyring v0.2.8
 	go.uber.org/mock v0.4.0
 	go.uber.org/zap v1.28.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/gorm v1.25.12
 )
 
@@ -160,7 +161,6 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260128011058-8636f8732409 // indirect
 	google.golang.org/grpc v1.78.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.5.7 // indirect
 	gorm.io/plugin/opentelemetry v0.1.11 // indirect

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"sync"
 	"time"
 
@@ -45,6 +46,11 @@ type MessageRepo interface {
 	// 块状态改成 status(后台 bash 在之后的自主轮才完成,无法走 per-turn accumulator)。
 	// summary 非空时同时写入块的 summary 字段。找不到则静默返回 nil(任务可能已 evict / 非本会话)。
 	FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error
+	// PatchSubagentProgress 定向把 parent_tool_call_id==toolUseID 的 subagent_state 块的
+	// 运行时进度字段更新为最新快照。后台 subagent 在会话**空闲态**跑,发起它的那一轮
+	// accumulator 早已收尾,进度只能这样落回发起消息(否则重开会话看到的永远是派遣那一刻
+	// 的旧数字)。p 的零值字段跳过;全零 / 找不到命中块则静默返回 nil。
+	PatchSubagentProgress(ctx context.Context, sessionID int64, toolUseID string, p SubagentProgress) error
 	// AppendSubagentChildren 把后台 subagent 内部产生的子块追加进发起消息里对应
 	// subagent_state 块的 nested_tool_call_ids,同时把 childBlocksJSON 里的 StoredBlock
 	// 追加到该消息 blocks_json 的末尾。childIDs 自动去重(跳过已在数组中的 id)。
@@ -58,6 +64,11 @@ type MessageRepo interface {
 	// LatestAssistant 取某会话 seq 最大的一条 assistant 消息(无 → nil,nil)。
 	// 用于 peek 运行中子任务的当前输出（read 工具的 running 分支）。
 	LatestAssistant(ctx context.Context, sessionID int64) (*chat_entity.Message, error)
+	// FindSubagentState 按 parent_tool_call_id==toolUseID 定位本会话里的 subagent_state
+	// 块,返回它记录的 CLI task_id + 当前 status(供 StopBackgroundTask 下发 stop_task)。
+	// 定位方式同 FlipSubagentStatus(blocks_json LIKE toolUseID),只读不改。
+	// toolUseID 空 / 无命中时返回 (found=false)。
+	FindSubagentState(ctx context.Context, sessionID int64, toolUseID string) (taskID, status string, found bool, err error)
 }
 
 // flipSubagentScanLimit 是 FlipSubagentStatus 倒序扫描的最近 assistant 消息条数上限。
@@ -135,22 +146,79 @@ func (r *messageRepo) LatestAssistant(ctx context.Context, sessionID int64) (*ch
 	return &m, nil
 }
 
-func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error {
-	if toolUseID == "" || status == "" {
-		return nil
+func (r *messageRepo) FindSubagentState(ctx context.Context, sessionID int64, toolUseID string) (string, string, bool, error) {
+	if toolUseID == "" {
+		return "", "", false, nil
 	}
-	// serialize read-modify-write per session to avoid lost-update races with AppendSubagentChildren.
+	var rows []*chat_entity.Message
+	if err := db.Ctx(ctx).
+		Where("session_id = ? AND role = ? AND blocks_json LIKE ?", sessionID, "assistant", "%"+toolUseID+"%").
+		Order("seq DESC").
+		Find(&rows).Error; err != nil {
+		return "", "", false, err
+	}
+	for _, msg := range rows {
+		taskID, status, found, err := FindSubagentStateInBlocksJSON(msg.BlocksJSON, toolUseID)
+		if err != nil {
+			logger.Ctx(ctx).Warn("chat_repo.FindSubagentState: decode blocks failed; skipping message",
+				zap.Int64("messageId", msg.ID), zap.Error(err))
+			continue
+		}
+		if found {
+			return taskID, status, true, nil
+		}
+	}
+	return "", "", false, nil
+}
+
+// FindSubagentStateInBlocksJSON 在 blocks_json(StoredBlock 数组)里找 type=="subagent_state"
+// 且 data.parent_tool_call_id==toolUseID 的块,返回它的 task_id + status。遵循 FlipSubagentIn
+// BlocksJSON 相同的 UseNumber 解码纪律。导出以便直接单测。
+func FindSubagentStateInBlocksJSON(blocksJSON, toolUseID string) (string, string, bool, error) {
+	if blocksJSON == "" {
+		return "", "", false, nil
+	}
+	var stored []cagoblocks.StoredBlock
+	if err := json.Unmarshal([]byte(blocksJSON), &stored); err != nil {
+		return "", "", false, err
+	}
+	for i := range stored {
+		if stored[i].Type != "subagent_state" {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(stored[i].Data))
+		dec.UseNumber()
+		var data map[string]any
+		if err := dec.Decode(&data); err != nil {
+			return "", "", false, err
+		}
+		if parent, _ := data["parent_tool_call_id"].(string); parent != toolUseID {
+			continue
+		}
+		taskID, _ := data["task_id"].(string)
+		status, _ := data["status"].(string)
+		return taskID, status, true, nil
+	}
+	return "", "", false, nil
+}
+
+// rewriteSubagentMessage 按 blocks_json LIKE toolUseID 定位后台任务的发起消息,把第一条
+// 被 rewrite 改写的行写回库。rewrite 返回 (重写后的 JSON, 是否命中, error)。
+//
+// 用 LIKE 而非 seq DESC LIMIT N 近因盲扫:后台任务完成是跨轮的,长会话里发起消息可能已
+// 滑出近 N 条窗口 → 旧实现漏掉它,DB 永远卡 running(bug #2)。toolUseID 是长且唯一的串,
+// LIKE 只会命中发起消息(即便偶有子串误命中,该行不含匹配 subagent_state 时 rewrite 自然
+// 返回未命中)。没有任何命中时静默返回 nil:任务可能已 evict / 非本会话。
+func (r *messageRepo) rewriteSubagentMessage(
+	ctx context.Context, sessionID int64, toolUseID, caller string,
+	rewrite func(blocksJSON string) (string, bool, error),
+) error {
+	// serialize read-modify-write per session to avoid lost-update races between
+	// FlipSubagentStatus / PatchSubagentProgress / AppendSubagentChildren.
 	mu := lockForSession(sessionID)
 	mu.Lock()
 	defer mu.Unlock()
 
-	logger.Ctx(ctx).Info("chat_repo.FlipSubagentStatus: flipping subagent_state status",
-		zap.Int64("sessionId", sessionID), zap.String("toolUseId", toolUseID), zap.String("status", status))
-
-	// 按 blocks_json LIKE toolUseID 定位发起消息,而非 seq DESC LIMIT N 近因盲扫:
-	// 后台任务完成是跨轮的,长会话里发起消息可能已滑出近 N 条窗口 → 旧实现漏掉它,DB
-	// 永远卡 running(bug #2)。toolUseID 是长且唯一的串,LIKE 只会命中发起消息(即便
-	// 偶有子串误命中,下面 FlipSubagentInBlocksJSON 不含匹配 subagent_state 时自然跳过)。
 	var rows []*chat_entity.Message
 	if err := db.Ctx(ctx).
 		Where("session_id = ? AND role = ? AND blocks_json LIKE ?", sessionID, "assistant", "%"+toolUseID+"%").
@@ -160,34 +228,55 @@ func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, t
 	}
 
 	for _, msg := range rows {
-		rewritten, flipped, err := FlipSubagentInBlocksJSON(msg.BlocksJSON, toolUseID, status, summary)
+		rewritten, matched, err := rewrite(msg.BlocksJSON)
 		if err != nil {
 			// 单条消息 blocks 损坏不应阻断其它消息;跳过继续找。
-			logger.Ctx(ctx).Warn("chat_repo.FlipSubagentStatus: decode blocks failed; skipping message",
+			logger.Ctx(ctx).Warn(caller+": decode blocks failed; skipping message",
 				zap.Int64("messageId", msg.ID), zap.Error(err))
 			continue
 		}
-		if !flipped {
+		if !matched {
 			continue
 		}
 		msg.BlocksJSON = rewritten
 		return r.Update(ctx, msg)
 	}
-
-	// 没命中:任务可能已 evict / 非本会话,静默返回 nil。
 	return nil
 }
 
-// FlipSubagentInBlocksJSON 在 blocks_json(StoredBlock 数组)里就地翻转 type=="subagent_state"
-// 且 data.parent_tool_call_id==toolUseID 的块的 status,返回重写后的 JSON + 是否命中。
-// summary 非空时同时写入命中块的 summary 字段。
-// 只触碰命中块的 status / summary 字段,其余 data 原样保留;repo 层不依赖 service 的 block 类型,
-// 只按 StoredBlock 信封 + 该块的少数已知字段操作。
+func (r *messageRepo) FlipSubagentStatus(ctx context.Context, sessionID int64, toolUseID, status, summary string) error {
+	if toolUseID == "" || status == "" {
+		return nil
+	}
+	logger.Ctx(ctx).Info("chat_repo.FlipSubagentStatus: flipping subagent_state status",
+		zap.Int64("sessionId", sessionID), zap.String("toolUseId", toolUseID), zap.String("status", status))
+
+	return r.rewriteSubagentMessage(ctx, sessionID, toolUseID, "chat_repo.FlipSubagentStatus",
+		func(blocksJSON string) (string, bool, error) {
+			return FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status, summary)
+		})
+}
+
+func (r *messageRepo) PatchSubagentProgress(ctx context.Context, sessionID int64, toolUseID string, p SubagentProgress) error {
+	if toolUseID == "" || p.IsZero() {
+		return nil
+	}
+	return r.rewriteSubagentMessage(ctx, sessionID, toolUseID, "chat_repo.PatchSubagentProgress",
+		func(blocksJSON string) (string, bool, error) {
+			return PatchSubagentProgressInBlocksJSON(blocksJSON, toolUseID, p)
+		})
+}
+
+// patchSubagentStateInBlocksJSON 在 blocks_json(StoredBlock 数组)里遍历每个
+// type=="subagent_state" 且 data.parent_tool_call_id==toolUseID 的块,交给 apply 就地
+// 改写它的 data(apply 返回 false 表示这块没动),返回重写后的 JSON + 是否有块被改写。
+// repo 层不依赖 service 的 block 类型,只按 StoredBlock 信封 + 该块的少数已知字段操作;
+// 未被 apply 触碰的字段原样保留。
 //
 // 解 data 用 json.Decoder + UseNumber():数字字段(total_tokens / duration_ms /
 // tool_uses)保持 json.Number,避免经 map[string]any 的 float64 强转把整数重写成
-// 科学计数(如 1e+04)。导出以便直接单测 JSON 改写逻辑。
-func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status, summary string) (string, bool, error) {
+// 科学计数(如 1e+04)。
+func patchSubagentStateInBlocksJSON(blocksJSON, toolUseID string, apply func(data map[string]any) bool) (string, bool, error) {
 	if blocksJSON == "" {
 		return blocksJSON, false, nil
 	}
@@ -195,7 +284,7 @@ func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status, summary string) (st
 	if err := json.Unmarshal([]byte(blocksJSON), &stored); err != nil {
 		return blocksJSON, false, err
 	}
-	flipped := false
+	patched := false
 	for i := range stored {
 		if stored[i].Type != "subagent_state" {
 			continue
@@ -209,18 +298,17 @@ func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status, summary string) (st
 		if parent, _ := data["parent_tool_call_id"].(string); parent != toolUseID {
 			continue
 		}
-		data["status"] = status
-		if summary != "" {
-			data["summary"] = summary
+		if !apply(data) {
+			continue
 		}
 		buf, err := json.Marshal(data)
 		if err != nil {
 			return blocksJSON, false, err
 		}
 		stored[i].Data = buf
-		flipped = true
+		patched = true
 	}
-	if !flipped {
+	if !patched {
 		return blocksJSON, false, nil
 	}
 	out, err := json.Marshal(stored)
@@ -228,6 +316,66 @@ func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status, summary string) (st
 		return blocksJSON, false, err
 	}
 	return string(out), true, nil
+}
+
+// FlipSubagentInBlocksJSON 在 blocks_json 里就地翻转 type=="subagent_state" 且
+// data.parent_tool_call_id==toolUseID 的块的 status,返回重写后的 JSON + 是否命中。
+// summary 非空时同时写入命中块的 summary 字段。只触碰 status / summary 两个字段。
+// 导出以便直接单测 JSON 改写逻辑。
+func FlipSubagentInBlocksJSON(blocksJSON, toolUseID, status, summary string) (string, bool, error) {
+	return patchSubagentStateInBlocksJSON(blocksJSON, toolUseID, func(data map[string]any) bool {
+		data["status"] = status
+		if summary != "" {
+			data["summary"] = summary
+		}
+		return true
+	})
+}
+
+// SubagentProgress 是 subagent_state 块的运行时进度快照。零值字段代表「这一帧没带这项」,
+// patch 时跳过 —— CLI 的 task_progress 偶尔缺 usage,不该把已经攒起来的工具数 / token
+// 抹回 0。
+type SubagentProgress struct {
+	TotalTokens  int
+	ToolUses     int
+	DurationMs   int
+	LastToolName string
+	// Model 是子代理内部帧解析出的实际模型(R2)。first-wins 在上游 SubagentModelHandler
+	// 已经保证,这里只是把它跟其它进度字段一起搬进跨轮补丁;空值代表"这一轮没有新模型
+	// 可写",patch 时跳过,不抹掉已记录的值。
+	Model string
+}
+
+// IsZero 表示这份快照没带任何进度信息,调用方可据此跳过一次读-改-写。
+func (p SubagentProgress) IsZero() bool {
+	return p.TotalTokens == 0 && p.ToolUses == 0 && p.DurationMs == 0 && p.LastToolName == "" && p.Model == ""
+}
+
+// PatchSubagentProgressInBlocksJSON 在 blocks_json 里就地更新命中 subagent_state 块的
+// 进度字段,返回重写后的 JSON + 是否改写过。零值字段跳过(见 SubagentProgress)。
+// 导出以便直接单测 JSON 改写逻辑。
+func PatchSubagentProgressInBlocksJSON(blocksJSON, toolUseID string, p SubagentProgress) (string, bool, error) {
+	if p.IsZero() {
+		return blocksJSON, false, nil
+	}
+	return patchSubagentStateInBlocksJSON(blocksJSON, toolUseID, func(data map[string]any) bool {
+		if p.TotalTokens > 0 {
+			data["total_tokens"] = json.Number(strconv.Itoa(p.TotalTokens))
+		}
+		if p.ToolUses > 0 {
+			data["tool_uses"] = json.Number(strconv.Itoa(p.ToolUses))
+		}
+		if p.DurationMs > 0 {
+			data["duration_ms"] = json.Number(strconv.Itoa(p.DurationMs))
+		}
+		if p.LastToolName != "" {
+			data["last_tool_name"] = p.LastToolName
+		}
+		if p.Model != "" {
+			data["model"] = p.Model
+		}
+		return true
+	})
 }
 
 func (r *messageRepo) AppendSubagentChildren(ctx context.Context, sessionID int64, parentToolUseID, childBlocksJSON string, childIDs []string) error {

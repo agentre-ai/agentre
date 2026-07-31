@@ -15,16 +15,30 @@ func FromEdit(input map[string]any) Payload {
 // FromMultiEdit 处理 claudecode MultiEdit 工具的 input(map),把 edits 列表串成
 // 单 File 多 Hunk。edits 为空或全无效时仍返单 File(0 hunks)。
 func FromMultiEdit(input map[string]any) Payload {
-	filePath := pickString(input, "file_path")
-	editsRaw, _ := input["edits"].([]any)
+	return fromEditList(pickString(input, "file_path"), input["edits"], "old_string", "new_string")
+}
+
+// FromPiEdit 处理 pi agent edit 工具的 input(map),返回 diff.Payload。
+// wire 形状 {path, edits:[{oldText,newText}]} 与 claudecode MultiEdit 同构,
+// 只是键名不同,因此复用同一条 edits 串联逻辑。
+func FromPiEdit(input map[string]any) Payload {
+	return fromEditList(pickString(input, "path"), input["edits"], "oldText", "newText")
+}
+
+// fromEditList 把 edits 列表串成单 File 多 Hunk。oldKey / newKey 是各后端 wire 上
+// 的键名(claudecode MultiEdit: old_string/new_string;pi edit: oldText/newText)。
+// editsRaw 不是列表、为空或全无效时仍返单 File(0 hunks),由调用方决定是否降级
+// 成 raw 工具卡。
+func fromEditList(filePath string, editsRaw any, oldKey, newKey string) Payload {
+	edits, _ := editsRaw.([]any)
 	var allHunks []Hunk
 	var plus, minus int
-	for _, e := range editsRaw {
+	for _, e := range edits {
 		m, ok := e.(map[string]any)
 		if !ok {
 			continue
 		}
-		one := FromClaudeCodeEdit("", pickString(m, "old_string"), pickString(m, "new_string"), false)
+		one := FromClaudeCodeEdit("", pickString(m, oldKey), pickString(m, newKey), false)
 		if len(one.Files) == 0 {
 			continue
 		}

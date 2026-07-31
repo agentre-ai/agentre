@@ -72,6 +72,16 @@ const (
 	// 兜底 context window 大小,而不是等 EventDone 才知道窗口——前端进度条因此能在
 	// turn 内实时显示用量占比,不必"等一轮跑完才出条"。
 	EventInit EventKind = "init"
+	// EventSubagentModel 来自 subagent 内部 assistant 帧（parent_tool_use_id 非空）
+	// 携带的 message.model 字段。「实际执行」胜过「调用意图」（R2）——上游用它覆盖
+	// canonical 投影阶段记录的入参别名（如 "haiku"）。仅当 parent_tool_use_id 与
+	// message.model 都非空才 emit；主 agent 自己的帧（parent_tool_use_id 为空）即便
+	// 带 model 也不产出，避免污染 EventInit/EventDone 的既有 Model 语义（R5）。
+	// 老 CLI 不发 message.model 时同样不产出，走降级路径不阻断。
+	//
+	// 同一子代理只认第一个实际模型（R3 first-wins）由上游累计态负责去重；本层每次
+	// 遇到都如实产出一条，不做去重判断。
+	EventSubagentModel EventKind = "subagent_model"
 )
 
 // ToolEvent 在 EventPreToolUse / EventPostToolUse 上携带。
@@ -182,9 +192,12 @@ type Event struct {
 	// EventDone 时填写最终 usage。
 	Usage provider.Usage
 
-	// EventDone 时填写本轮 CLI 实际使用的模型 id（来自 system.init 帧）。
+	// EventInit / EventDone 时填写本轮 CLI 实际使用的模型 id（来自 system.init 帧）。
 	// 上游用它在不显式 --model 时回查模型 metadata（如 context window）。
 	// 老版本 CLI 不发 system.init.model → 留空，调用方需自己回退。
+	//
+	// EventSubagentModel 时复用本字段填写 subagent 内部帧 message.model 的值（与
+	// 上面两个 Kind 的取值来源、语义都不同，互不干扰）。
 	Model string
 
 	// ContextWindow 与 codex.Event.ContextWindow 字段对称。Claude Code SDK 不在 usage

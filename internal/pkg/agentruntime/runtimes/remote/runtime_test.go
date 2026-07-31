@@ -100,19 +100,20 @@ func TestRun_Success_DispatchesEventsThenCloses(t *testing.T) {
 			assert.Equal(t, int64(42), rp.SessionID)
 			assert.Equal(t, "hello", rp.UserText)
 			assert.True(t, rp.Compact)
-			// echo session id back
-			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			// echo chat id and the provider-native session discovered before event drain.
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "psid-early"}
 			return nil
 		})
 
 	events, runResult, err := rt.Run(context.Background(), agentruntime.RunRequest{
-		Backend:   &agent_backend_entity.AgentBackend{Type: "claudecode", ID: 1, Name: "x"},
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), ID: 1, Name: "x"},
 		SessionID: 42,
 		UserText:  "hello",
 		Compact:   true,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, runResult)
+	assert.Equal(t, "psid-early", runResult.ProviderSessionID)
 
 	// Deliver a TextDelta then a runResultDone with Usage + Model.
 	textJSON, _ := json.Marshal(agentruntime.TextDelta{Text: "hi"})
@@ -533,6 +534,33 @@ func TestAbort_SuccessAndNoSession(t *testing.T) {
 
 	// Unknown session
 	err = rt.Abort(context.Background(), 999)
+	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
+func TestStopBackgroundTask_SuccessAndNoSession(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ any, result any) error {
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: 4}
+			return nil
+		})
+	_, _, err := rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: "claudecode"},
+		SessionID: 4,
+	})
+	require.NoError(t, err)
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodStopBackgroundTask, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, _ any) error {
+			sp := params.(wire.StopBackgroundTaskParams)
+			assert.Equal(t, int64(4), sp.SessionID)
+			assert.Equal(t, "b0n82mqaj", sp.TaskID)
+			return nil
+		})
+	require.NoError(t, rt.StopBackgroundTask(context.Background(), 4, "b0n82mqaj"))
+
+	// Unknown session → ErrNoActiveTurn(不发 RPC)
+	err = rt.StopBackgroundTask(context.Background(), 999, "b0n82mqaj")
 	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
 }
 

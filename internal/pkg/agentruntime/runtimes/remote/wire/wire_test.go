@@ -25,6 +25,7 @@ func TestToFromJSONRPCError_RoundTrip(t *testing.T) {
 		{"steer not found", agentruntime.ErrSteerNotFound, ErrCodeSteerNotFound},
 		{"unsupported", agentruntime.ErrUnsupported, ErrCodeUnsupported},
 		{"aborted", agentruntime.ErrAborted, ErrCodeAborted},
+		{"session not found", agentruntime.ErrSessionNotFound, ErrCodeSessionNotFound},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +67,7 @@ func TestErrCodes_Stable(t *testing.T) {
 	assert.Equal(t, -32011, ErrCodeSteerNotFound)
 	assert.Equal(t, -32012, ErrCodeUnsupported)
 	assert.Equal(t, -32013, ErrCodeAborted)
+	assert.Equal(t, -32014, ErrCodeSessionNotFound)
 }
 
 // TestMethodNames_Stable pins RPC method names — wire protocol contract.

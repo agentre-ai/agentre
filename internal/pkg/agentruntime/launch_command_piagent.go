@@ -16,6 +16,9 @@ func buildPiAgentShellCommand(spec LaunchCommandSpec, cwd string) (string, error
 		binary = "pi"
 	}
 	argv := []string{binary}
+	if sessionID := strings.TrimSpace(spec.ProviderSessionID); sessionID != "" {
+		argv = append(argv, "--session", sessionID)
+	}
 	if model := piAgentModel(spec.Backend, spec.ProviderSessionID); model != "" {
 		argv = append(argv, "--model", model)
 	}

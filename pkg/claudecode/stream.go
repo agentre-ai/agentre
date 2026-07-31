@@ -27,6 +27,9 @@ type frameDecoder struct {
 	model     string // CLI 在 system.init 报告的实际模型 id（claude-sonnet-4-6 等）
 	err       error
 	done      bool // result frame 已抵达，后续 Next 不再读 stdout
+	// rawSink 若非 nil,每读到一行非空 stdout 就同步回调一次(未解析的原始帧)。
+	// debug 级原始帧转储用;由 Client.Stream 从 Client.rawSink 注入。
+	rawSink func([]byte)
 	// lastAssistantUsage 跟踪本轮**最后一帧 assistant.message.usage**，即最后一次内部
 	// API call 的 per-call 用量。result.usage 是整轮所有 API call 的累加，不是"当前
 	// 上下文占用"。前端进度条要 input + cache_read + cache_creation = 模型这一刻看到
@@ -77,6 +80,9 @@ func (d *frameDecoder) Next() bool {
 		if len(line) == 0 {
 			continue
 		}
+		if d.rawSink != nil {
+			d.rawSink(line)
+		}
 		events, ok := d.decodeLine(line)
 		if !ok {
 			continue
@@ -101,7 +107,8 @@ type rawFrame struct {
 	Usage     json.RawMessage `json:"usage,omitempty"`
 
 	// system.init 帧上的 model 字段（"claude-sonnet-4-6" 之类）。仅 init 帧有值，
-	// 普通 assistant 帧的 Anthropic message.model 我们暂不消费——init 已经够用。
+	// 与内层 message.model（rawMessage.Model，parseAssistantContentWithUsage 消费，
+	// 用于 subagent 内部帧的 EventSubagentModel）是两个独立字段。
 	Model string `json:"model,omitempty"`
 
 	// subagent 内部的 assistant / user 帧顶层会带 parent_tool_use_id，
@@ -161,6 +168,12 @@ type rawFrame struct {
 	// gateway 走时,后续 merged "assistant" 帧的 usage 字段是 message_start 状态的
 	// 0 拷贝,不可信。
 	Event json.RawMessage `json:"event,omitempty"`
+
+	// IsAPIErrorMessage 标记 CLI 合成的 API 错误帧(type:"assistant" + model:"<synthetic>")。
+	// 一次 API 调用不可恢复中断时,CLI 把 "API Error: ..." 提示塞进这帧的 content 并在
+	// 顶层打 isApiErrorMessage:true(+ error 分类码走 ErrorField)。它不是模型正文,
+	// case "assistant" 分支据此翻成 EventError 而非 EventTextDelta。见 apiErrorEvent。
+	IsAPIErrorMessage bool `json:"isApiErrorMessage,omitempty"`
 }
 
 // rawStreamEvent 是 stream_event.event 字段的解码壳。仅消费 type + usage,其他
@@ -180,7 +193,13 @@ type taskUsage struct {
 }
 
 type rawMessage struct {
-	ID      string            `json:"id"`
+	ID string `json:"id"`
+	// Model 是 Anthropic message.model（"claude-haiku-4-5-20251001" 之类），几乎每个
+	// assistant 帧都带。主 agent 自己的帧不消费这份数据（该用途已由 system.init.model
+	// 满足，见 rawFrame.Model / EventInit / EventDone）；仅 subagent 内部帧
+	// （parent_tool_use_id 非空）用它产出 EventSubagentModel，见
+	// parseAssistantContentWithUsage。
+	Model   string            `json:"model,omitempty"`
 	Content []rawContentBlock `json:"content"`
 	// Usage 是这一次 API call 的 per-call 用量。Anthropic 在每个 assistant
 	// 帧的 inner message 上挂这个字段；pointer 区分"缺省"（老 CLI / stub）和"全 0
@@ -232,7 +251,14 @@ func (d *frameDecoder) decodeLine(line []byte) ([]Event, bool) {
 		}
 		return nil, true
 	case "assistant":
-		events, usage := parseAssistantContentWithUsage(f.Message, d.sessionID, f.ParentToolUseID)
+		// 与 session.parseLine 同款:isApiErrorMessage 合成帧翻成 EventError,不泄漏成
+		// 正文文本增量。
+		if f.IsAPIErrorMessage {
+			if ev, ok := apiErrorEvent(f, d.sessionID); ok {
+				return []Event{ev}, true
+			}
+		}
+		events, usage := parseAssistantContentWithUsage(f.Message, d.sessionID, f.ParentToolUseID, f.IsAPIErrorMessage)
 		// 仅记录主 agent 帧的 usage：parent_tool_use_id != "" 的帧来自 Task/Agent
 		// subagent 内部 API call，那是独立 Anthropic 会话（自己的 system prompt /
 		// context window），用它的用量覆盖主 agent 的会让进度条骤降到 subagent 的

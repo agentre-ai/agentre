@@ -126,6 +126,8 @@ func TestEvent_RoundTrip(t *testing.T) {
 				Status: "completed",
 			},
 		}},
+		{"subagent_model", SubagentModel{ToolCallID: "tu_task", Model: "claude-haiku-4-5-20251001"}},
+		{"subagent_model_empty", SubagentModel{}},
 
 		// Retry
 		{"retry", Retry{
@@ -238,6 +240,7 @@ func TestEvent_WireKindMatchesType(t *testing.T) {
 		{EventSubagentStarted, SubagentStarted{}},
 		{EventSubagentProgress, SubagentProgress{}},
 		{EventSubagentDone, SubagentDone{}},
+		{EventSubagentModel, SubagentModel{}},
 		{EventRetry, Retry{}},
 		{EventUsage, UsageUpdate{}},
 		{EventContextWindowUpdated, ContextWindowUpdated{}},
@@ -271,7 +274,7 @@ func TestUnmarshalEvent_AllKindsCovered(t *testing.T) {
 		ToolPermissionRequest{}, ToolPermissionResolved{},
 		ExecApprovalRequested{}, ExecApprovalResolved{},
 		PermissionModeChanged{},
-		SubagentStarted{}, SubagentProgress{}, SubagentDone{},
+		SubagentStarted{}, SubagentProgress{}, SubagentDone{}, SubagentModel{},
 		Retry{}, UsageUpdate{}, ContextWindowUpdated{}, CompactBoundary{}, RuntimeStatus{}, PlanUpdated{},
 		Done{}, ErrorEvent{},
 	}
@@ -290,6 +293,25 @@ func TestSubagentStarted_KindRoundTrip(t *testing.T) {
 	got, err := UnmarshalEvent(b)
 	require.NoError(t, err)
 	assert.Equal(t, "local_bash", got.(SubagentStarted).Info.Kind)
+}
+
+// TestSubagentModel_KindRoundTrip 独立事件类型透传（不复用 SubagentProgress，见
+// spec 实现决策 3）：wire 上只有 toolCallId + model 两个字段，不携带
+// toolUses/totalTokens/status，保证反序列化端不会误以为这是一次完整的进度更新。
+func TestSubagentModel_KindRoundTrip(t *testing.T) {
+	ev := SubagentModel{ToolCallID: "tu1", Model: "claude-haiku-4-5-20251001"}
+	b, err := json.Marshal(ev)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(b, &raw))
+	assert.NotContains(t, raw, "toolUses")
+	assert.NotContains(t, raw, "totalTokens")
+	assert.NotContains(t, raw, "status")
+
+	got, err := UnmarshalEvent(b)
+	require.NoError(t, err)
+	assert.Equal(t, ev, got.(SubagentModel))
 }
 
 func TestUnmarshalEvent_ErrorPaths(t *testing.T) {

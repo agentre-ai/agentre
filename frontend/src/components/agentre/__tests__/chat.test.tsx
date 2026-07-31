@@ -1665,7 +1665,7 @@ describe("ChatTranscript message meta", () => {
     expect(trigger.textContent ?? "").not.toMatch(/^\s*·/);
   });
 
-  it("Given an assistant message with markdown text, When copying AI output, Then the raw text blocks are written to clipboard", async () => {
+  it("Given an assistant message with multiple output sections, When copying AI output, Then only the last section is written to clipboard", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1693,7 +1693,7 @@ describe("ChatTranscript message meta", () => {
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(
-        "## Plan\n\n- keep **markdown**\n\n```ts\nconst ok = true;\n```",
+        "\n\n```ts\nconst ok = true;\n```",
       );
     });
     expect(sonnerMocks.toast.success).toHaveBeenCalledWith(
@@ -1706,6 +1706,29 @@ describe("ChatTranscript message meta", () => {
     const assistant = {
       ...assistantWithUsage(),
       blocks: [
+        { type: "thinking", text: "still reasoning" },
+      ] as ChatBlockData[],
+    } as chat_svc.ChatMessage;
+
+    render(
+      <ChatTranscript
+        agentColor="agent-1"
+        agentName="CEO 助手"
+        messages={[assistant]}
+        onRerun={() => undefined}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Copy AI output" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Given the last assistant output section has no text, When rendered, Then earlier text cannot be copied", () => {
+    const assistant = {
+      ...assistantWithUsage(),
+      blocks: [
+        { type: "text", text: "outdated section" },
         { type: "thinking", text: "still reasoning" },
       ] as ChatBlockData[],
     } as chat_svc.ChatMessage;
@@ -2046,17 +2069,28 @@ describe("ChatTranscript subagent blocks", () => {
 
   it("renders Agent tool as SubagentInvocationCard, hides child blocks from top level", () => {
     const card = renderTranscriptWithSubagent();
-    // 头部是一行：Agent · probe + general-purpose chip + tool 计数 + DONE。
-    // last 工具名已从 header 去掉(只保留计数),避免一行过长。
+    // 头部是一行：Agent · probe + general-purpose chip + DONE 状态胶囊。R8/R9
+    // 把完整的工具数/tokens/耗时下沉到展开区 meta 行,完成态的头部不再渲染
+    // 任何数字形式的用量(旧的 "N tools" 文案与新的无文案极简进度都不出现)。
     expect(within(card).getByText("Agent")).toBeInTheDocument();
     expect(within(card).getByText("probe")).toBeInTheDocument();
     expect(within(card).getByText("general-purpose")).toBeInTheDocument();
-    expect(within(card).getByText(/^1 tools$/)).toBeInTheDocument();
     expect(within(card).queryByText(/last:/)).toBeNull();
     expect(within(card).getByText(/DONE · 7\.8s/)).toBeInTheDocument();
+    // 详情区(展开区 meta 行)折叠时仍常驻 DOM,只查全卡片文案测不出「头部
+    // 不再显示数字」——把查询限定在头部按钮本身。
+    const header = within(card).getByRole("button", { expanded: false });
+    expect(within(header).queryByText(/tools/i)).toBeNull();
+    expect(within(header).queryByTestId("agent-spawn-progress")).toBeNull();
 
     // 子 Bash 不应出现在与 Agent 同级的位置 —— 没有独立的 Bash 工具卡。
     expect(screen.queryByRole("region", { name: "Tool call Bash" })).toBeNull();
+
+    // 完整的工具数没有从卡片里彻底丢失 —— 只是挪进了展开区 meta 行(R8)。
+    fireEvent.click(within(card).getAllByRole("button")[0]);
+    expect(within(card).getByTestId("agent-spawn-meta-tools").textContent).toBe(
+      "1",
+    );
   });
 
   it("expanded card lists subagent inner Bash step + final summary", () => {

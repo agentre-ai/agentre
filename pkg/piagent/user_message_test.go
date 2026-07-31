@@ -17,7 +17,8 @@ func TestStreamSurfacesUserMessageEcho(t *testing.T) {
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"now do X instead"}],"timestamp":1}}`,
 		`{"type":"message_start","message":{"role":"assistant","content":[],"model":"gpt","timestamp":2}}`,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, _ := newCaptureClient(script)

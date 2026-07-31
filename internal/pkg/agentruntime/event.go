@@ -133,6 +133,16 @@ type SubagentDone struct {
 	Info       SubagentInfo
 }
 
+// SubagentModel 携带 subagent 内部帧解析出的实际模型（R2）。ToolCallID 指向外层
+// Agent/Task 工具的调用 id，与 SubagentStarted/Progress/Done 的 ToolCallID 同一
+// 命名空间。独立事件类型，不复用 SubagentProgress——那条事件的消费方对
+// ToolUses/TotalTokens/LastToolName 是无条件赋值，塞一个只带模型的 SubagentInfo
+// 会把已累计的进度清零；模型改走本事件，只更新模型字段，不清空既有累计态（R4）。
+type SubagentModel struct {
+	ToolCallID string
+	Model      string
+}
+
 // Retry 非终止 backend 重试通知。
 type Retry struct {
 	Message string
@@ -151,8 +161,8 @@ type UsageUpdate struct {
 
 // ContextWindowUpdated runtime 探到模型实际可用窗口大小变化时 emit。
 // Codex 读 app-server modelContextWindow；Claude Code 用模型 id 查 llmcatalog；
-// Pi Agent 优先读 Pi RPC get_session_stats.contextUsage.contextWindow,再用模型 id
-// 查 llmcatalog 兜底。Tokens=0 视为"未探到"。
+// Pi Agent 只读 Pi RPC get_session_stats.contextUsage.contextWindow，避免自定义
+// provider 复用公共模型名时误套 catalog 元数据。Tokens=0 视为"未探到"。
 type ContextWindowUpdated struct{ Tokens int }
 
 // PlanUpdated runtime 上报的计划更新(claudecode TodoWrite / codex update_plan +
@@ -206,6 +216,7 @@ func (PermissionModeChanged) isEvent()  {}
 func (SubagentStarted) isEvent()        {}
 func (SubagentProgress) isEvent()       {}
 func (SubagentDone) isEvent()           {}
+func (SubagentModel) isEvent()          {}
 func (Retry) isEvent()                  {}
 func (UsageUpdate) isEvent()            {}
 func (ContextWindowUpdated) isEvent()   {}

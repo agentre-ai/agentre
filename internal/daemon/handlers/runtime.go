@@ -186,6 +186,17 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		return wire.RunAck{}, err
 	}
 
+	// Pi 在首个 prompt 前已通过 get_state 确认原生 Session ID；同步放进 ack，
+	// desktop 才能在远端事件流结束前持久化。其它 runtime 的终态身份仍由
+	// runtime.runResultDone 回传，避免读取它们可能在 drain 中变化的结果字段。
+	ack := wire.RunAck{SessionID: p.SessionID}
+	if result != nil {
+		ack.LaunchPermissionMode = result.LaunchPermissionMode
+		if be.IsPiAgent() {
+			ack.ProviderSessionID = result.ProviderSessionID
+		}
+	}
+
 	h.register(p.SessionID, runtimeSession{backendType: bt})
 	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
 		p.SessionID, be.Type, p.AgentID, p.Cwd, len(p.UserText))
@@ -194,12 +205,6 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
 	if src, ok := rt.(agentruntime.AutonomousTurnSource); ok {
 		h.startAutonomousFanout(p.SessionID, src)
-	}
-	// LaunchPermissionMode 由 runtime 在 Run 返回前同步填(claudecode 专用),
-	// 通过 ack 回到客户端,chat_svc 在主进程侧落库到 session.PermissionModeAtLaunch。
-	ack := wire.RunAck{SessionID: p.SessionID}
-	if result != nil {
-		ack.LaunchPermissionMode = result.LaunchPermissionMode
 	}
 	return ack, nil
 }
@@ -382,6 +387,17 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 		return wire.OK{}, err
 	}
 	if err := a.Abort(ctx, p.SessionID); err != nil {
+		return wire.OK{}, err
+	}
+	return wire.OK{}, nil
+}
+
+func (h *RuntimeHandlers) StopBackgroundTask(ctx context.Context, p wire.StopBackgroundTaskParams) (wire.OK, error) {
+	s, err := resolveSessionCapability[agentruntime.BackgroundTaskStopper](h, p.SessionID)
+	if err != nil {
+		return wire.OK{}, err
+	}
+	if err := s.StopBackgroundTask(ctx, p.SessionID, p.TaskID); err != nil {
 		return wire.OK{}, err
 	}
 	return wire.OK{}, nil

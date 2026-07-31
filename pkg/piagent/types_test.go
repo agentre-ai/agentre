@@ -59,6 +59,13 @@ func TestBuildRPCArgs_Extensions(t *testing.T) {
 	}, args)
 }
 
+func TestBuildRPCArgsUsesEphemeralNativeSession(t *testing.T) {
+	args := buildRPCArgs(New(WithNoSession()))
+
+	assert.Equal(t, []string{"--mode", "rpc", "--no-session"}, args)
+	assert.NotContains(t, args, "--session-dir")
+}
+
 func TestBuildRPCArgs_NoExtensionByDefault(t *testing.T) {
 	c := New()
 	for _, a := range buildRPCArgs(c) {

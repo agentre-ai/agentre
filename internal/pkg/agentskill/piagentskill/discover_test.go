@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
+	. "github.com/smartystreets/goconvey/convey"
+
 	"github.com/agentre-ai/agentre/internal/pkg/agentskill"
 	"github.com/agentre-ai/agentre/pkg/piagent"
-	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestDiscoverCommands(t *testing.T) {

@@ -288,11 +288,24 @@
     "agentSpawn": {
       "aria": "Subagent {{name}}",
       "defaultName": "Agent",
+      "stop": "Stop",
       "emptyPrompt": "No prompt",
       "emptyResult": "(empty result)",
       "emptySteps": "No child steps",
       "emptyStepsRunning": "Subagent has not called any tools yet...",
       "emptySummary": "No summary",
+      "meta": {
+        "model": "Model",
+        "tools": "Tools",
+        "tokens": "Tokens",
+        "duration": "Duration"
+      },
+      "progressAria": {
+        "tools": "{{count}} tools",
+        "tools_one": "{{count}} tool",
+        "tools_other": "{{count}} tools",
+        "tokens": "{{value}} tokens"
+      },
       "sections": {
         "prompt": "TASK PROMPT",
         "steps": "STEPS",
@@ -308,7 +321,6 @@
         "withDuration": "{{status}} · {{duration}}"
       },
       "summaryRunning": "Subagent is still running. Results will return later...",
-      "toolCount": "{{count}} tools",
       "waitingFirstStep": "Waiting for the first child call..."
     },
     "fileEdit": {
@@ -592,7 +604,8 @@
       "regenerate": "Regeneration failed: {{msg}}",
       "rename": "Rename failed: {{msg}}",
       "send": "Send failed: {{msg}}",
-      "stop": "Stop failed: {{msg}}"
+      "stop": "Stop failed: {{msg}}",
+      "stopBackgroundTask": "Failed to stop background task: {{msg}}"
     },
     "launchCommand": {
       "copy": "Copy Launch Command",
@@ -642,11 +655,13 @@
       "running": "Running",
       "completed": "Done",
       "failed": "Failed",
+      "canceled": "Stopped",
       "empty": "No background tasks",
       "bash": "bash",
       "subagent": "subagent",
       "aria": "Background tasks",
-      "clearCompleted": "Clear completed"
+      "clearCompleted": "Clear completed",
+      "stop": "Stop"
     },
     "toolbar": {
       "aria": "Session toolbar",

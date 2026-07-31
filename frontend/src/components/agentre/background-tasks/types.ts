@@ -1,5 +1,9 @@
 export type BackgroundTaskKind = "local_bash" | "local_agent";
-export type BackgroundTaskStatus = "running" | "completed" | "failed";
+export type BackgroundTaskStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "canceled";
 
 export interface BackgroundTask {
   toolUseId: string;

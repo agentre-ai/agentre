@@ -3,6 +3,7 @@ package cliprober
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -88,6 +89,47 @@ func TestTruncateStderr(t *testing.T) {
 	out := truncateStderr(long)
 	assert.LessOrEqual(t, len(out), cliStderrSnippetLimit+len("…"))
 	assert.True(t, strings.HasSuffix(out, "…"))
+}
+
+func TestProbe_PiAgentUsesEphemeralNativeSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary not portable to windows")
+	}
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	fake := writeExecutable(t, dir, "pi", `
+printf '%s\n' "$@" > "$AGENTRE_TEST_PI_ARGS"
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"get_state"'*)
+      printf '%s\n' '{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"ephemeral-probe"}}'
+      ;;
+    *'"type":"prompt"'*)
+      printf '%s\n' '{"type":"response","command":"prompt","success":true}'
+      printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"pong"}}'
+      printf '%s\n' '{"type":"agent_end","messages":[],"willRetry":false}'
+      printf '%s\n' '{"type":"agent_settled"}'
+      ;;
+    *'"type":"get_session_stats"'*)
+      printf '%s\n' '{"type":"response","command":"get_session_stats","success":true,"data":{}}'
+      ;;
+  esac
+done`)
+
+	resp, err := Probe(context.Background(), ProbeRequest{
+		Type:    "piagent",
+		CLIPath: fake,
+		Env:     map[string]string{"AGENTRE_TEST_PI_ARGS": argsFile},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "pong", resp.Text)
+	argsRaw, err := os.ReadFile(argsFile) //nolint:gosec // test-owned temp path
+	require.NoError(t, err)
+	args := strings.Split(strings.TrimSpace(string(argsRaw)), "\n")
+	assert.Contains(t, args, "--no-session")
+	assert.NotContains(t, args, "--session-dir")
 }
 
 func TestProbe_ClaudeCode_FakeCLI_ExitNonZero(t *testing.T) {

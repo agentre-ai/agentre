@@ -388,4 +388,50 @@ describe("ChatStreamsHost", () => {
       true,
     );
   });
+
+  // subagent_model(R2/R4):后端只带 toolUseId + model 两个字段(不复用整份 Subagent
+  // 快照),避免浅合并把已累计的 status/toolUses/totalTokens 覆盖成空值。这里断言
+  // ChatStreamsHost 把它 merge 进对应 tool_use block 时同样只碰 model 字段。
+  it("Given a subagent_model event, When it arrives, Then it merges model into the tool_use block without clearing existing progress fields", async () => {
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+    useChatStreamsStore.getState().appendLiveToolUse(42, 1001, {
+      toolUseId: "toolu_agent",
+      toolName: "Agent",
+      subagent: {
+        status: "running",
+        toolUses: 3,
+        totalTokens: 500,
+      },
+    });
+
+    render(<ChatStreamsHost />);
+
+    await waitFor(() => expect(runtimeMocks.EventsOn).toHaveBeenCalled());
+    const handler = registeredHandler();
+
+    act(() => {
+      handler({
+        kind: "subagent_model",
+        toolUseId: "toolu_agent",
+        model: "claude-haiku-4-5-20251001",
+      });
+    });
+
+    const block = streamForMessage(
+      useChatStreamsStore.getState(),
+      42,
+      1001,
+    )?.liveBlocks.find((b) => b.toolUseId === "toolu_agent");
+    expect(block?.subagent).toMatchObject({
+      status: "running",
+      toolUses: 3,
+      totalTokens: 500,
+      model: "claude-haiku-4-5-20251001",
+    });
+  });
 });

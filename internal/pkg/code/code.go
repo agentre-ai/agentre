@@ -127,7 +127,7 @@ const (
 	ChatRegenerateNoUserAnchor                     // 目标 assistant 之前找不到 user 消息（不可恢复的脏数据）
 	ChatRegenerateUnsupported                      // 该后端尚未支持中段重新生成（Step 1 仅 builtin）
 	ChatEditNotUser                                // 编辑只能作用于 user 消息
-	ChatProviderSessionGone                        // CLI 的 provider session（claudecode --resume id）已不存在，本会话已重置
+	ChatProviderSessionGone                        // CLI 的 provider 原生 Session 已不存在，本会话已重置
 	ChatRemoteProviderNotConfigured                // 远端 agentred 未配置该 provider key
 	ChatAgentNoBackend                             // Agent 还没配置后端，对话前请先选择
 )
@@ -146,7 +146,7 @@ const (
 	ChatPermissionModeNoActive                   // 没有可切换的常驻会话（先发一轮消息让 CLI 起来）
 	ChatPermissionModeInternal                   // 切换 mode 失败（I/O 错误 / CLI 拒绝）
 	ChatCompactUnsupported                       // 当前后端不支持原生压缩
-	ChatCompactNoSession                         // Codex 尚无 provider thread 可压缩
+	ChatCompactNoSession                         // CLI backend 尚无 provider 原生会话可压缩
 	ChatCompactInternal                          // 压缩失败
 	ChatGoalUnsupported                          // 当前后端不支持目标状态
 	ChatGoalNoSession                            // Codex 尚无 provider thread 可设置目标
@@ -166,6 +166,12 @@ const (
 // Chat git state 17100~
 const (
 	ChatGitStateUnavailable = iota + 17100 // 当前 cwd 不是 git 仓库 / git 命令读取失败
+)
+
+// Chat stop background task 17110~
+const (
+	ChatStopBgUnsupported = iota + 17110 // 当前后端不支持停止后台任务
+	ChatStopBgTaskUnknown                // 该后台任务缺少 CLI task_id（老会话）/ 已不在运行,无法停止
 )
 
 // Project 18000~18999

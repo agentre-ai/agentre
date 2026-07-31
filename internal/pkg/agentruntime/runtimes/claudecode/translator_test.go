@@ -394,6 +394,25 @@ func TestTranslate_CompactBoundary(t *testing.T) {
 	})
 }
 
+// TestTranslate_SubagentModel EventSubagentModel → agentruntime.SubagentModel（R2）。
+// pkg/claudecode 侧 parseAssistantContentWithUsage 是 ParentToolUseID/Model 都非空
+// 这条不变量的唯一生产者(pkg/claudecode/session_test.go 已钉住该契约);translate 本身
+// 不再重复判空——wrap-up 复审第三轮 Finding 2 删掉了这里原有的冗余防御分支。
+func TestTranslate_SubagentModel(t *testing.T) {
+	Convey("EventSubagentModel → SubagentModel{ToolCallID, Model}", t, func() {
+		out, _, _ := translate(claudecode.Event{
+			Kind:            claudecode.EventSubagentModel,
+			ParentToolUseID: "toolu-parent",
+			Model:           "claude-haiku-4-5-20251001",
+		})
+		So(len(out), ShouldEqual, 1)
+		sm, ok := out[0].(agentruntime.SubagentModel)
+		So(ok, ShouldBeTrue)
+		So(sm.ToolCallID, ShouldEqual, "toolu-parent")
+		So(sm.Model, ShouldEqual, "claude-haiku-4-5-20251001")
+	})
+}
+
 // TestTranslate_RuntimeStatus EventStatus → RuntimeStatus 透传字段。空 Status 不 emit
 // (静默忽略,与 PermissionModeChanged 同款守门规则:无信号不要伪造事件)。
 func TestTranslate_RuntimeStatus(t *testing.T) {

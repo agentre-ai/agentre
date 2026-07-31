@@ -46,7 +46,13 @@ export function FileBlock({
           {t("canonical.fileEdit.noChanges")}
         </div>
       ) : (
-        file.hunks.map((hunk, hi) => <HunkBlock key={hi} hunk={hunk} />)
+        // diff 行不换行(whitespace-pre),超宽的行必须能横向滚动 —— 卡片本身
+        // 是 overflow-hidden,少了这层滚动容器长行就被直接裁掉且拖不出来。
+        <div data-testid="file-edit-diff-scroll" className="overflow-x-auto">
+          {file.hunks.map((hunk, hi) => (
+            <HunkBlock key={hi} hunk={hunk} />
+          ))}
+        </div>
       )}
       {file.truncated && (
         <div className="border-t border-border bg-secondary px-3 py-1 text-meta text-muted-foreground">
@@ -63,7 +69,7 @@ export function FileBlock({
 function HunkBlock({ hunk }: { hunk: DiffHunk }) {
   return (
     <>
-      <div className="bg-secondary px-3 py-1 font-mono text-meta font-semibold text-muted-foreground">
+      <div className="w-max min-w-full bg-secondary px-3 py-1 font-mono text-meta font-semibold text-muted-foreground">
         @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
         {hunk.header ? (
           <span className="ml-3 font-normal text-subtle-foreground">
@@ -92,15 +98,20 @@ function DiffLineRow({ line }: { line: DiffLine }) {
         ? "text-destructive"
         : "text-subtle-foreground";
   return (
-    <div className={cn("flex items-center px-3 py-0.5", bg)}>
-      <span className="w-8 text-right text-meta text-subtle-foreground">
+    // w-max + min-w-full:行盒撑到最长行的宽度,横向滚动后 +/- 的背景条
+    // 才会一路铺到行尾,而不是断在卡片可视边缘。
+    <div className={cn("flex w-max min-w-full items-center px-3 py-0.5", bg)}>
+      <span className="w-8 shrink-0 text-right text-meta text-subtle-foreground">
         {line.old ?? " "}
       </span>
-      <span className="w-8 text-right text-meta text-subtle-foreground">
+      <span className="w-8 shrink-0 text-right text-meta text-subtle-foreground">
         {line.new ?? " "}
       </span>
       <span
-        className={cn("w-5 text-center text-meta font-semibold", markColor)}
+        className={cn(
+          "w-5 shrink-0 text-center text-meta font-semibold",
+          markColor,
+        )}
       >
         {line.op}
       </span>

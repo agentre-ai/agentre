@@ -1883,6 +1883,161 @@ describe("ChatPanel · T30 后台任务完成翻转 messages", () => {
   });
 });
 
+// ─── T30b: 空闲态后台 subagent 的进度回写 messages(sess-2275)──────────────────
+// 后台 subagent 在会话空闲态一直跑,CLI 每次工具调用都吐 task_progress。派遣卡的
+// tool_use block 早已从 liveBlocks 落进 messages —— store 的 mergeSubagentMeta 只翻
+// liveBlocks,合并落空,卡片上的工具数 / token 会一直停在派遣那一刻不动。会话级流上
+// 镜像的那份 subagent_progress 必须同时合并进 messages。
+describe("ChatPanel · T30b 空闲后台 subagent 进度回写", () => {
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  it("Given a session-level subagent_progress, When it arrives, Then setMessages merges the new tool count / tokens into the persisted spawn card", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 1 });
+    mockSessionStore.messages = [
+      {
+        id: 42,
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolUseId: "toolu_agent",
+            toolInput: { run_in_background: true },
+            subagent: {
+              kind: "local_agent",
+              status: "running",
+              toolUses: 9,
+              totalTokens: 84739,
+            },
+          },
+        ],
+      },
+    ];
+
+    render(<ChatPanel sessionId={1} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:1",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(1);
+    act(() => {
+      handler!({
+        kind: "subagent_progress",
+        sessionId: 1,
+        toolUseId: "toolu_agent",
+        subagent: {
+          toolUses: 21,
+          totalTokens: 132480,
+          lastToolName: "Edit",
+        },
+      } as unknown as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    expect(setMessagesSpy).toHaveBeenCalled();
+    const updater = setMessagesSpy.mock.calls.at(-1)![0] as (
+      prev: Array<Record<string, unknown>>,
+    ) => Array<Record<string, unknown>>;
+    const result = updater(
+      mockSessionStore.messages as Array<Record<string, unknown>>,
+    );
+    const block = (result[0].blocks as Array<Record<string, unknown>>)[0];
+    const subagent = block.subagent as Record<string, unknown>;
+    expect(subagent.toolUses).toBe(21);
+    expect(subagent.totalTokens).toBe(132480);
+    expect(subagent.lastToolName).toBe("Edit");
+    // 这一帧没带的字段保持不变
+    expect(subagent.status).toBe("running");
+  });
+});
+
+// ─── T30c: 空闲态后台 subagent 的模型回写 messages ────────────────────────────
+// subagent_model 后端只带 toolUseId + model(不复用整份 Subagent 快照),避免浅合并
+// 把已累计的 toolUses/totalTokens/status 覆盖成空值(R4)。派遣卡的 tool_use block
+// 早已从 liveBlocks 落进 messages 时,会话级流上镜像的这份事件同样要合并进 messages。
+describe("ChatPanel · T30c 空闲后台 subagent 模型回写", () => {
+  function getAutonomousHandler(
+    sessionId: number,
+  ): ((ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void) | null {
+    const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+      [string, (ev: import("@/hooks/use-chat-stream").ChatStreamEvent) => void]
+    >;
+    const found = calls.find(
+      ([name]) => name === `chat:autonomous:${sessionId}`,
+    );
+    return found ? found[1] : null;
+  }
+
+  it("Given a session-level subagent_model, When it arrives, Then setMessages merges model into the persisted spawn card without clearing progress/status", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 1 });
+    mockSessionStore.messages = [
+      {
+        id: 42,
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            toolUseId: "toolu_agent",
+            toolInput: { run_in_background: true },
+            subagent: {
+              kind: "local_agent",
+              status: "running",
+              toolUses: 9,
+              totalTokens: 84739,
+            },
+          },
+        ],
+      },
+    ];
+
+    render(<ChatPanel sessionId={1} />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:autonomous:1",
+        expect.any(Function),
+      ),
+    );
+
+    const handler = getAutonomousHandler(1);
+    act(() => {
+      handler!({
+        kind: "subagent_model",
+        sessionId: 1,
+        toolUseId: "toolu_agent",
+        model: "claude-haiku-4-5-20251001",
+      } as import("@/hooks/use-chat-stream").ChatStreamEvent);
+    });
+
+    expect(setMessagesSpy).toHaveBeenCalled();
+    const updater = setMessagesSpy.mock.calls.at(-1)![0] as (
+      prev: Array<Record<string, unknown>>,
+    ) => Array<Record<string, unknown>>;
+    const result = updater(
+      mockSessionStore.messages as Array<Record<string, unknown>>,
+    );
+    const block = (result[0].blocks as Array<Record<string, unknown>>)[0];
+    const subagent = block.subagent as Record<string, unknown>;
+    expect(subagent.model).toBe("claude-haiku-4-5-20251001");
+    // 已累计的进度/状态字段不得被这次纯模型更新清空
+    expect(subagent.status).toBe("running");
+    expect(subagent.toolUses).toBe(9);
+    expect(subagent.totalTokens).toBe(84739);
+  });
+});
+
 // ─── T31: 自主续轮进行中用户又发消息(sess-1950)────────────────────────────────
 // 后台任务完成 → 自主续轮正在流式输出。此时用户在输入框再发一条消息:
 //   1. streaming=true(自主轮已 openStream)→ 走 doEnqueue;

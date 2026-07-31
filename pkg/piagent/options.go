@@ -16,14 +16,22 @@ type Option func(*Client)
 
 func WithBinary(path string) Option { return func(c *Client) { c.binary = path } }
 
+// WithRawSink 注册一个原始行回调:子进程每读到一行原始 stdout(未解析的 JSON-RPC 帧)
+// 就同步调用一次。用于 debug 级原始帧转储 —— runtime 层把它接到 logger.Debug,由
+// 「Debug Logging」开关热控。回调收到的 []byte 是 scanner 复用缓冲,**不得跨调用留存**。
+// nil(默认)= 零采样开销。
+func WithRawSink(sink func([]byte)) Option { return func(c *Client) { c.rawSink = sink } }
+
 func WithCwd(path string) Option { return func(c *Client) { c.cwd = path } }
+
+// WithNoSession 使用 Pi 的临时 Session 模式（--no-session），不持久化 JSONL。
+func WithNoSession() Option { return func(c *Client) { c.noSession = true } }
 
 // WithSessionDir 设置 Pi session JSONL 的存储目录（--session-dir），独立于 cwd。
 func WithSessionDir(path string) Option { return func(c *Client) { c.sessionDir = path } }
 
-// WithSession 设置要新建/resume 的 Pi session 文件路径（--session）。同一会话跨
-// turn 传入相同路径即可复用上下文。
-func WithSession(path string) Option { return func(c *Client) { c.session = path } }
+// WithSession 设置要恢复的 Pi session 文件路径或原生 ID（--session）。
+func WithSession(pathOrID string) Option { return func(c *Client) { c.session = pathOrID } }
 
 func WithEnv(env map[string]string) Option {
 	return func(c *Client) { c.env = cloneMap(env) }

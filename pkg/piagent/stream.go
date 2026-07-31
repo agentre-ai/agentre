@@ -22,6 +22,28 @@ type Stream struct {
 	cur         Event
 
 	closeOnce sync.Once
+
+	pendingAgentEndError       *agentEndError
+	pendingAssistantDeltaError error
+}
+
+type agentEndError struct {
+	err     error
+	event   rpcEvent
+	rawLine string
+}
+
+type agentEndOutcomeKind uint8
+
+const (
+	agentEndOutcomeUnknown agentEndOutcomeKind = iota
+	agentEndOutcomeSuccess
+	agentEndOutcomeFailure
+)
+
+type agentEndOutcome struct {
+	kind agentEndOutcomeKind
+	err  error
 }
 
 func newStream(proc *rpcProcess, killGrace time.Duration) *Stream {
@@ -57,6 +79,12 @@ func (s *Stream) SessionID() string {
 	return s.sessionID
 }
 
+func (s *Stream) setSessionID(sessionID string) {
+	s.mu.Lock()
+	s.sessionID = strings.TrimSpace(sessionID)
+	s.mu.Unlock()
+}
+
 func (s *Stream) Err() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -88,6 +116,9 @@ func (s *Stream) drain(ctx context.Context) {
 	defer close(s.events)
 	promptAccepted := false
 	for s.proc.lines.Scan() {
+		if s.proc.rawSink != nil {
+			s.proc.rawSink(s.proc.lines.Bytes())
+		}
 		select {
 		case <-ctx.Done():
 			s.setErr(ctx.Err())
@@ -136,14 +167,9 @@ func (s *Stream) drain(ctx context.Context) {
 			continue
 		}
 		s.handleRPCEvent(ev)
-		if err := finalAgentEndError(ev); err != nil {
-			s.recordFinalErrorDiagnostics(ev, line)
-			s.setErr(err)
-			s.emit(Event{Kind: EventError, Err: err})
-			return
-		}
+		s.observeAgentEnd(ev, line)
 		if isTerminalEvent(ev) {
-			s.finish(ctx)
+			s.settle(ctx)
 			return
 		}
 	}
@@ -156,6 +182,21 @@ func (s *Stream) drain(ctx context.Context) {
 func (s *Stream) finish(ctx context.Context) {
 	s.emitSessionStats(ctx)
 	s.emit(Event{Kind: EventDone})
+}
+
+func (s *Stream) settle(ctx context.Context) {
+	if candidate := s.pendingAgentEndError; candidate != nil {
+		s.recordFinalErrorDiagnostics(candidate.event, candidate.rawLine)
+		s.setErr(candidate.err)
+		s.emit(Event{Kind: EventError, Err: candidate.err})
+		return
+	}
+	if err := s.pendingAssistantDeltaError; err != nil {
+		s.setErr(err)
+		s.emit(Event{Kind: EventError, Err: err})
+		return
+	}
+	s.finish(ctx)
 }
 
 const sessionStatsTimeout = 2 * time.Second
@@ -202,6 +243,9 @@ func (s *Stream) emitSessionStats(ctx context.Context) {
 
 func (s *Stream) readSessionStatsContextWindow() int {
 	for s.proc.lines.Scan() {
+		if s.proc.rawSink != nil {
+			s.proc.rawSink(s.proc.lines.Bytes())
+		}
 		line := strings.TrimSpace(s.proc.lines.Text())
 		if line == "" {
 			continue
@@ -272,9 +316,9 @@ func (s *Stream) handleAssistantDelta(delta assistantDelta) {
 	// message_update/toolcall_end 和后续的 tool_execution_start（同一个
 	// toolCallId），PreToolUse 只从 tool_execution_start 出，避免下游工具卡重复。
 	case "error":
-		err := fmt.Errorf("piagent: %s", strings.TrimSpace(delta.Reason))
-		s.setErr(err)
-		s.emit(Event{Kind: EventError, Err: err})
+		if s.pendingAgentEndError == nil {
+			s.pendingAssistantDeltaError = fmt.Errorf("piagent: %s", strings.TrimSpace(delta.Reason))
+		}
 	}
 }
 
@@ -298,19 +342,51 @@ func (s *Stream) recordAssistantMessage(msg *assistantMessage) {
 	}
 }
 
-func finalAgentEndError(ev rpcEvent) error {
+func (s *Stream) observeAgentEnd(ev rpcEvent, rawLine string) {
 	if ev.Type != "agent_end" {
-		return nil
+		return
 	}
+	outcome := classifyFinalAgentEnd(ev)
+	switch outcome.kind {
+	case agentEndOutcomeFailure:
+		// agent_end carries the authoritative terminal message. It supersedes
+		// any preceding streaming error delta and is confirmed at settlement.
+		s.pendingAgentEndError = &agentEndError{err: outcome.err, event: ev, rawLine: rawLine}
+		s.pendingAssistantDeltaError = nil
+	case agentEndOutcomeSuccess:
+		// A completed low-level run clears retry candidates. Other outcomes
+		// deliberately leave a staged delta intact until agent_settled decides it.
+		s.pendingAgentEndError = nil
+		s.pendingAssistantDeltaError = nil
+	}
+}
+
+func classifyFinalAgentEnd(ev rpcEvent) agentEndOutcome {
 	msg := lastAssistantFromAgentEnd(ev.Messages)
-	if msg == nil || strings.TrimSpace(msg.StopReason) != "error" {
-		return nil
+	if msg == nil {
+		return agentEndOutcome{kind: agentEndOutcomeUnknown}
 	}
+	switch strings.TrimSpace(msg.StopReason) {
+	case "stop", "length", "toolUse":
+		return agentEndOutcome{kind: agentEndOutcomeSuccess}
+	case "error":
+		return agentEndFailure(msg, "unknown error")
+	case "aborted":
+		return agentEndFailure(msg, "aborted")
+	default:
+		return agentEndOutcome{kind: agentEndOutcomeUnknown}
+	}
+}
+
+func agentEndFailure(msg *assistantMessage, fallback string) agentEndOutcome {
 	errMsg := strings.TrimSpace(msg.ErrorMessage)
 	if errMsg == "" {
-		errMsg = "unknown error"
+		errMsg = fallback
 	}
-	return fmt.Errorf("piagent: %s", errMsg)
+	return agentEndOutcome{
+		kind: agentEndOutcomeFailure,
+		err:  fmt.Errorf("piagent: %s", errMsg),
+	}
 }
 
 func (s *Stream) emit(ev Event) {

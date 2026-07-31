@@ -509,4 +509,44 @@ describe("chat-streams-store", () => {
 
     expect(useChatStreamsStore.getState().streams).toBe(before);
   });
+
+  // R4: subagent_model 事件只带 model 一个字段(不复用整份 Subagent 快照),调用方
+  // 传入的 meta 也必须只有 model 一个 key —— 断言 mergeSubagentMeta 的浅合并在这种
+  // 输入下确实不清空已累计的 status/toolUses/totalTokens。
+  it("mergeSubagentMeta with a model-only patch does not clear existing progress/status fields", () => {
+    const { openStream, appendLiveToolUse, mergeSubagentMeta } =
+      useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    appendLiveToolUse(7, 1, {
+      toolUseId: "toolu_agent",
+      toolName: "Agent",
+      subagent: {
+        status: "running",
+        toolUses: 3,
+        totalTokens: 500,
+      } as chat_svc.ChatBlockSubagent,
+    });
+    mergeSubagentMeta(7, 1, "toolu_agent", {
+      model: "claude-haiku-4-5-20251001",
+    } as chat_svc.ChatBlockSubagent);
+    const block = live(7)!.liveBlocks.find(
+      (b) => b.toolUseId === "toolu_agent",
+    );
+    expect(block!.subagent).toMatchObject({
+      status: "running",
+      toolUses: 3,
+      totalTokens: 500,
+      model: "claude-haiku-4-5-20251001",
+    });
+  });
+
+  it("mergeSubagentMeta silently no-ops when the toolUseId has no matching block", () => {
+    const { openStream, mergeSubagentMeta } = useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    const before = useChatStreamsStore.getState().streams;
+    mergeSubagentMeta(7, 1, "toolu_missing", {
+      model: "claude-haiku-4-5-20251001",
+    } as chat_svc.ChatBlockSubagent);
+    expect(useChatStreamsStore.getState().streams).toBe(before);
+  });
 });

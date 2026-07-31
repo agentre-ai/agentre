@@ -1,4 +1,4 @@
-.PHONY: run dev build agentred agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-scratch
+.PHONY: run dev build agrctl agentred agentred-linux agentred-deploy agentred-deploy-restart agentred-deploy-local-coding agentred-local-coding generate test test-backend test-frontend test-cover lint lint-backend lint-frontend lint-fix lint-fix-backend lint-fix-frontend mock install install-deps clean check e2e e2e-scratch
 
 APP_NAME := Agentre
 VERSION ?= 0.1.0
@@ -6,10 +6,12 @@ ifeq ($(OS),Windows_NT)
 NULLDEV := NUL
 UNAME_S := Windows_NT
 WAILS ?= wails
+EXE := .exe
 else
 NULLDEV := /dev/null
 UNAME_S := $(shell uname -s 2>$(NULLDEV) || echo unknown)
 WAILS ?= $(shell command -v wails 2>$(NULLDEV) || printf "%s/bin/wails" "$$(go env GOPATH)")
+EXE :=
 endif
 COMMIT_ID := $(shell git rev-parse --short HEAD 2>$(NULLDEV) || echo unknown)
 VERSION_PKG := github.com/cago-frame/cago/configs
@@ -24,6 +26,7 @@ PREFIX ?= /usr/local
 WAILS_PLATFORM ?=
 WAILS_BUILD_FLAGS ?=
 AGENTRED_BUILD_DIR ?= build/bin
+AGRCTL_BINARY := $(AGENTRED_BUILD_DIR)/agrctl$(EXE)
 AGENTRED_LOCAL_BINARY := $(AGENTRED_BUILD_DIR)/agentred
 AGENTRED_GOOS ?= linux
 AGENTRED_GOARCH ?= amd64
@@ -40,9 +43,22 @@ dev:
 	@mkdir -p $(FRONTEND_DIR)/dist && [ -e $(FRONTEND_DIR)/dist/.keep ] || touch $(FRONTEND_DIR)/dist/.keep
 	"$(WAILS)" dev
 
-# 构建生产版本(默认当前平台；可用 WAILS_PLATFORM 跨平台构建)
+# 构建生产版本(默认当前平台；可用 WAILS_PLATFORM 跨平台构建)。
+# wails build 之后把 agrctl 伴随 CLI 放进最终位置：mac 进 .app bundle(随 ditto 安装带走)，
+# win/linux 与主二进制同目录。app 启动时从这里拷到 <AppDataDir>/bin 并把 PostToolUse hook 指向它。
+# 注：跨平台构建(WAILS_PLATFORM)时 agrctl 仍按宿主工具链编译，跨平台打包为 follow-up。
 build:
 	"$(WAILS)" build -ldflags="$(LDFLAGS)" $(if $(strip $(WAILS_PLATFORM)),-platform "$(WAILS_PLATFORM)") $(WAILS_BUILD_FLAGS)
+ifeq ($(UNAME_S),Darwin)
+	go build -ldflags="$(LDFLAGS)" -o "build/bin/$(APP_NAME).app/Contents/MacOS/agrctl" ./cmd/agrctl
+else
+	go build -ldflags="$(LDFLAGS)" -o "build/bin/agrctl$(EXE)" ./cmd/agrctl
+endif
+
+# 构建 agrctl 伴随 CLI(当前平台，独立产物，供 dev/手动)
+agrctl:
+	mkdir -p "$(AGENTRED_BUILD_DIR)"
+	go build -ldflags="$(LDFLAGS)" -o "$(AGRCTL_BINARY)" ./cmd/agrctl
 
 # 构建 agentred(当前平台)
 agentred:
@@ -106,7 +122,8 @@ else ifeq ($(OS),Windows_NT)
 	@exit 1
 else
 	install -Dm755 "build/bin/$(APP_NAME)" "$(DESTDIR)$(PREFIX)/bin/$(APP_NAME)"
-	@echo "已安装到 $(DESTDIR)$(PREFIX)/bin/$(APP_NAME)"
+	install -Dm755 "build/bin/agrctl" "$(DESTDIR)$(PREFIX)/bin/agrctl"
+	@echo "已安装到 $(DESTDIR)$(PREFIX)/bin/$(APP_NAME)（含 agrctl 伴随 CLI）"
 endif
 
 # 运行前后端测试

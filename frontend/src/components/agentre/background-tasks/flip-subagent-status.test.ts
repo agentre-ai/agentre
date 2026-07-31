@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
-import { flipSubagentStatusInMessages } from "./flip-subagent-status";
+import {
+  flipSubagentStatusInMessages,
+  mergeSubagentMetaInMessages,
+} from "./flip-subagent-status";
 
 // A background task's tool_use block lives in `messages` (not liveBlocks) by the
 // time its cross-turn completion (autonomous `completedTask`) arrives — the main
@@ -82,5 +85,64 @@ describe("flipSubagentStatusInMessages", () => {
     expect(flipSubagentStatusInMessages(messages, "", "completed")).toBe(
       messages,
     );
+  });
+});
+
+// A background subagent keeps working while the session is idle: the CLI streams
+// task_progress the whole time, but its spawn card (the Agent tool_use block) has
+// long since landed in `messages`. mergeSubagentMetaInMessages patches that
+// persisted block so the card's tool count / token pill keeps ticking live.
+describe("mergeSubagentMetaInMessages", () => {
+  it("merges live progress into the persisted spawn card", () => {
+    const messages = [
+      msg(1, [
+        toolUse("tu-agent", {
+          kind: "local_agent",
+          status: "running",
+          toolUses: 9,
+          totalTokens: 84739,
+          lastToolName: "Read",
+        }),
+      ]),
+    ];
+    const out = mergeSubagentMetaInMessages(messages, "tu-agent", {
+      toolUses: 21,
+      totalTokens: 132480,
+      lastToolName: "Edit",
+    } as unknown as chat_svc.ChatBlockSubagent);
+    expect(out[0].blocks[0].subagent?.toolUses).toBe(21);
+    expect(out[0].blocks[0].subagent?.totalTokens).toBe(132480);
+    expect(out[0].blocks[0].subagent?.lastToolName).toBe("Edit");
+    // fields the progress frame didn't carry stay put
+    expect(out[0].blocks[0].subagent?.status).toBe("running");
+    expect(out[0].blocks[0].subagent?.kind).toBe("local_agent");
+  });
+
+  it("does not mutate the input messages (immutable update)", () => {
+    const messages = [
+      msg(1, [toolUse("tu-agent", { status: "running", toolUses: 9 })]),
+    ];
+    mergeSubagentMetaInMessages(messages, "tu-agent", {
+      toolUses: 21,
+    } as unknown as chat_svc.ChatBlockSubagent);
+    expect(messages[0].blocks[0].subagent?.toolUses).toBe(9);
+  });
+
+  it("returns the same array reference on no-ops", () => {
+    const messages = [
+      msg(1, [toolUse("tu-agent", { status: "running", toolUses: 9 })]),
+    ];
+    expect(
+      mergeSubagentMetaInMessages(messages, "tu-missing", {
+        toolUses: 21,
+      } as unknown as chat_svc.ChatBlockSubagent),
+    ).toBe(messages);
+    expect(
+      mergeSubagentMetaInMessages(
+        messages,
+        "tu-agent",
+        undefined as unknown as chat_svc.ChatBlockSubagent,
+      ),
+    ).toBe(messages);
   });
 });

@@ -91,6 +91,7 @@ type ChatSvc interface {
 	Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueResponse, error)
 	CancelQueued(ctx context.Context, req *CancelQueuedRequest) (*CancelQueuedResponse, error)
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
+	StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error)
 	SetPermissionMode(ctx context.Context, req *SetPermissionModeRequest) (*SetPermissionModeResponse, error)
 	Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error)
 	Edit(ctx context.Context, req *EditRequest) (*SendResponse, error)
@@ -649,6 +650,7 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 		Backend:           be,
 		Provider:          prov,
 		AgentID:           a.ID,
+		SessionID:         sess.ID,
 		Cwd:               cwd,
 		ProviderSessionID: sess.ProviderSessionID,
 		GatewayURL:        gatewayURL,
@@ -821,6 +823,7 @@ func subagentStateToChatBlockSubagent(sb *chatblocks.SubagentStateBlock) *ChatBl
 		DurationMs:      sb.DurationMs,
 		Status:          sb.Status,
 		Summary:         sb.Summary,
+		Model:           sb.Model,
 	}
 }
 
@@ -901,9 +904,8 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	if err != nil {
 		return nil, err
 	}
-	// Codex compact needs an existing provider thread id. Pi Agent resumes by
-	// deterministic session file path (<AppDataDir>/piagent/sessions/agentre-<sid>.jsonl),
-	// so chat_sessions.provider_session_id is intentionally empty and must not gate compact.
+	// Codex and Pi Agent compact an existing provider-native session; neither may
+	// create an empty replacement session merely to satisfy an explicit compact.
 	if compactRequiresProviderSession(be) && strings.TrimSpace(sess.ProviderSessionID) == "" {
 		return nil, i18n.NewError(ctx, code.ChatCompactNoSession)
 	}
@@ -934,7 +936,7 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 }
 
 func compactRequiresProviderSession(be *agent_backend_entity.AgentBackend) bool {
-	return be != nil && be.IsCodex()
+	return be != nil && (be.IsCodex() || be.IsPiAgent())
 }
 
 func (s *chatSvc) GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error) {
@@ -1608,6 +1610,79 @@ func (s *chatSvc) reconcileOrphanStop(ctx context.Context, sessionID int64) (*St
 		return nil, perr
 	}
 	return &StopResponse{Stopped: true}, nil
+}
+
+// StopBackgroundTask 停掉某个后台任务 / 子 agent(run_in_background),而不是中断整个 turn。
+// 流程:
+//  1. 按 toolUseID 从持久化 subagent_state 读出 CLI task_id + 当前状态;
+//  2. 已终态 / 找不到 overlay → 幂等成功(任务已不在跑,前端 reload 自然对齐);
+//  3. 缺 task_id(老会话的块没记)→ ChatStopBgTaskUnknown,让前端提示;
+//  4. resolve runner,断言 BackgroundTaskStopper(否则 ChatStopBgUnsupported,正常已被
+//     capability 位挡在前端),下发 stop_task;
+//  5. 成功后主动把块 flip 成 "canceled" —— 前端 reload 立即显示「已停止」;CLI 停任务后
+//     另发的 task_notification(canceled/failed)经既有自主轮再幂等收敛一次。
+func (s *chatSvc) StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error) {
+	if req == nil || req.SessionID <= 0 || req.ToolUseID == "" {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	sess, err := chat_repo.Session().Find(ctx, req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
+	}
+
+	taskID, status, found, err := chat_repo.Message().FindSubagentState(ctx, req.SessionID, req.ToolUseID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || (status != "" && status != "running") {
+		// 任务已终态 / 无 overlay:当已停处理,幂等。
+		return &StopBackgroundTaskResponse{Stopped: true}, nil
+	}
+	if taskID == "" {
+		return nil, i18n.NewError(ctx, code.ChatStopBgTaskUnknown)
+	}
+
+	_, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID)
+	if berr != nil {
+		return nil, berr
+	}
+	runner, rerr := s.selectRunner(ctx, be, sess.ID)
+	if rerr != nil {
+		return nil, rerr
+	}
+	stopper, ok := runner.(agentruntime.BackgroundTaskStopper)
+	if !ok {
+		return nil, i18n.NewError(ctx, code.ChatStopBgUnsupported)
+	}
+
+	logger.Ctx(ctx).Info("chat_svc.StopBackgroundTask: stopping background task",
+		zap.Int64("sessionId", req.SessionID),
+		zap.String("toolUseId", req.ToolUseID),
+		zap.String("taskId", taskID))
+
+	if serr := stopper.StopBackgroundTask(ctx, req.SessionID, taskID); serr != nil {
+		if errors.Is(serr, agentruntime.ErrNoActiveTurn) {
+			// 子进程已 evict → 任务随之消失,当已停处理(幂等)。
+			return &StopBackgroundTaskResponse{Stopped: true}, nil
+		}
+		logger.Ctx(ctx).Warn("chat_svc.StopBackgroundTask: runner stop failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.String("taskId", taskID),
+			zap.Error(serr))
+		return nil, i18n.NewError(ctx, code.ChatStopInternal)
+	}
+
+	// 主动翻 canceled(summary 留空:不写后端硬编码文案,「已停止」由前端 StatusPill 出 i18n)。
+	if ferr := chat_repo.Message().FlipSubagentStatus(ctx, req.SessionID, req.ToolUseID, "canceled", ""); ferr != nil {
+		logger.Ctx(ctx).Warn("chat_svc.StopBackgroundTask: flip subagent_state failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.String("toolUseId", req.ToolUseID),
+			zap.Error(ferr))
+	}
+	return &StopBackgroundTaskResponse{Stopped: true}, nil
 }
 
 const (
@@ -2544,7 +2619,7 @@ func (s *chatSvc) runTurn(
 	// stream 在 SteerConsumed 分段时不变(同 turn 一个流名),Store 一次即可;收尾时清掉。
 	s.activeTurnStreams.Store(sess.ID, stream)
 	defer s.activeTurnStreams.Delete(sess.ID)
-	if result != nil && (be.IsClaudeCode() || be.IsCodex()) {
+	if result != nil && (be.IsClaudeCode() || be.IsCodex() || be.IsPiAgent()) {
 		s.persistProviderSessionID(ctx, sess, result.ProviderSessionID, "runner-start")
 	}
 	// runtime 若支持「自主续轮」(claudecode / remote claudecode 在 run_in_background
@@ -2917,6 +2992,7 @@ func eventShowsProgressAfterError(ev agentruntime.Event) bool {
 		agentruntime.SubagentStarted,
 		agentruntime.SubagentProgress,
 		agentruntime.SubagentDone,
+		agentruntime.SubagentModel,
 		agentruntime.Retry,
 		agentruntime.PlanUpdated,
 		agentruntime.CompactBoundary,
@@ -3234,8 +3310,8 @@ func (s *chatSvc) revokeChatToken(sessionID int64) {
 	}
 }
 
-// mapClaudeProviderError 命中 claudecode.ErrSessionNotFound（CLI 报告
-// "No conversation found with session ID: ..."）时做两件事：
+// mapProviderSessionError 命中 Claude Code 或通用 runtime 的 SessionNotFound
+// sentinel 时做两件事：
 //  1. 清空 sess.ProviderSessionID 并立即持久化（context.WithoutCancel 防 abort
 //     路径下 turnCtx 已 cancel 导致静默失败）—— 下一轮 Send 才能 spawn 全新
 //     CLI 会话，而不是一直拿 --resume 撞同一个失效 id。
@@ -3243,8 +3319,8 @@ func (s *chatSvc) revokeChatToken(sessionID int64) {
 //     "CLI 会话已过期 …" 中文人话，不是英文 stderr。
 //
 // 非 ErrSessionNotFound 原样返回，让上层走 default 失败路径。
-func (s *chatSvc) mapClaudeProviderError(ctx context.Context, sess *chat_entity.Session, src error) error {
-	if !errors.Is(src, claudecode.ErrSessionNotFound) {
+func (s *chatSvc) mapProviderSessionError(ctx context.Context, sess *chat_entity.Session, src error) error {
+	if !providerSessionNotFound(src) {
 		return src
 	}
 	if sess != nil && sess.HasProviderSession() {
@@ -3254,12 +3330,16 @@ func (s *chatSvc) mapClaudeProviderError(ctx context.Context, sess *chat_entity.
 	return i18n.NewError(ctx, code.ChatProviderSessionGone)
 }
 
+func providerSessionNotFound(err error) bool {
+	return errors.Is(err, claudecode.ErrSessionNotFound) || errors.Is(err, agentruntime.ErrSessionNotFound)
+}
+
 func (s *chatSvc) mapTurnError(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend, src error) error {
 	if src == nil {
 		return nil
 	}
-	if errors.Is(src, claudecode.ErrSessionNotFound) {
-		return s.mapClaudeProviderError(ctx, sess, src)
+	if providerSessionNotFound(src) {
+		return s.mapProviderSessionError(ctx, sess, src)
 	}
 	var rpcErr *daemonrpc.Error
 	if errors.As(src, &rpcErr) && rpcErr.Code == daemonrpc.ErrProviderMissing.Code {

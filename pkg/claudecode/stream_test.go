@@ -167,6 +167,93 @@ func TestStream_SubagentNestingAndTaskEvents(t *testing.T) {
 	assert.Contains(t, outerResult.Tool.Response, "Raw output")
 }
 
+// TestStream_SubagentModelEvent 验证 R2：parent_tool_use_id 非空 + message.model 非空
+// 的 subagent 内部帧产出 EventSubagentModel；主 agent 自己的帧（m1，parent 为空）即便
+// 带 message.model（"claude-opus-5"）也绝不产出该事件——隔离不变量（R5）不能因为新事件
+// 类型回退。fixture 里的 m2 帧对应真 CLI 2.1.220 抓帧第 12 帧的形状。
+func TestStream_SubagentModelEvent(t *testing.T) {
+	events, _ := collectAll(t, "testdata/stream_subagent.jsonl")
+
+	var modelEvents []Event
+	for _, e := range events {
+		if e.Kind == EventSubagentModel {
+			modelEvents = append(modelEvents, e)
+		}
+	}
+	require.Len(t, modelEvents, 1, "expected exactly one EventSubagentModel from the subagent-internal frame")
+	ev := modelEvents[0]
+	assert.Equal(t, "toolu-parent", ev.ParentToolUseID)
+	assert.Equal(t, "claude-haiku-4-5-20251001", ev.Model)
+	assert.Equal(t, "sess-sa", ev.SessionID)
+}
+
+// TestStream_MainAgentFrameModelDoesNotEmitSubagentModel 验证 R5 在 frameDecoder 路径上
+// 独立成立：主 agent 帧（parent_tool_use_id 为空）即便带 message.model，也绝不能产出
+// EventSubagentModel。必须扫描未经 Kind 过滤的原始 events——TestStream_SubagentModelEvent
+// 曾经在过滤后的 modelEvents 上做同样的断言，那个检查只在已知只有一个
+// EventSubagentModel 元素时才会执行，一旦主 agent 帧真的泄漏出第二个 EventSubagentModel，
+// 上面的 require.Len 会先失败并终止测试，那条断言永远执行不到，形同虚设。
+// 镜像 session_test.go 的 TestSession_MainAgentFrameModelDoesNotEmitSubagentModel（那条
+// 测试本来就直接扫未过滤的 events，session.parseLine 路径没有这个问题）。
+func TestStream_MainAgentFrameModelDoesNotEmitSubagentModel(t *testing.T) {
+	line := `{"type":"system","subtype":"init","session_id":"s"}` + "\n" +
+		`{"type":"assistant","message":{"id":"m1","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu-parent","name":"Agent","input":{"description":"probe"}}]}}` + "\n" +
+		`{"type":"result","subtype":"success","session_id":"s"}` + "\n"
+
+	d := newFrameDecoder(strings.NewReader(line))
+	var events []Event
+	for d.Next() {
+		events = append(events, d.Event())
+	}
+	require.NoError(t, d.Err())
+	require.NotEmpty(t, events)
+
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "main agent frame (parent empty) must never produce EventSubagentModel")
+	}
+}
+
+// TestStream_SubagentModelEvent_MissingModelNoEvent 验证老 CLI 兼容路径：subagent 内部
+// 帧没有 message.model 字段（老 CLI 不发）时不产出 EventSubagentModel，不报错、不阻断。
+func TestStream_SubagentModelEvent_MissingModelNoEvent(t *testing.T) {
+	line := `{"type":"system","subtype":"init","session_id":"s"}` + "\n" +
+		`{"type":"assistant","parent_tool_use_id":"toolu-old","message":{"id":"m1","content":[{"type":"text","text":"legacy subagent frame"}]}}` + "\n" +
+		`{"type":"result","subtype":"success","session_id":"s"}` + "\n"
+
+	d := newFrameDecoder(strings.NewReader(line))
+	var events []Event
+	for d.Next() {
+		events = append(events, d.Event())
+	}
+	require.NoError(t, d.Err())
+
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "old frame without message.model must not produce EventSubagentModel")
+	}
+}
+
+// TestStream_SubagentModelEvent_APIErrorFlagGovernsRegardlessOfSentinelString 镜像
+// session_test.go 的同名测试(TestSession_SubagentModelEvent_APIErrorFlagGovernsRegardlessOfSentinelString)，
+// 验证 frameDecoder.decodeLine 这条路径同样以 isApiErrorMessage 权威标志判定，而不是嗅探
+// message.model 是否等于当前已知占位符 "<synthetic>"。isApiErrorMessage:true 且首个 text
+// 块与顶层 error 都为空时 apiErrorEvent 放行，帧落进 parseAssistantContentWithUsage；换成
+// 一个不同于 "<synthetic>" 的占位符值，若判定仍靠字符串嗅探，这个陌生值会被当成 subagent
+// 的实际模型产出 EventSubagentModel。
+func TestStream_SubagentModelEvent_APIErrorFlagGovernsRegardlessOfSentinelString(t *testing.T) {
+	line := `{"type":"assistant","message":{"id":"m1","model":"<future-placeholder>","content":[]},"parent_tool_use_id":"toolu-parent","isApiErrorMessage":true,"session_id":"sess-xyz"}` + "\n"
+
+	d := newFrameDecoder(strings.NewReader(line))
+	var events []Event
+	for d.Next() {
+		events = append(events, d.Event())
+	}
+	require.NoError(t, d.Err())
+
+	for _, e := range events {
+		assert.NotEqual(t, EventSubagentModel, e.Kind, "isApiErrorMessage:true frame must never surface a model, regardless of the placeholder string value")
+	}
+}
+
 // TestStream_ApiRetry 验证 system.api_retry 帧被抬成 EventRetry：CLI 在 turn 内非终态重试
 // 期间会连发多条，每条都应当独立 emit 出来，字段（attempt/max_retries/retry_delay_ms/
 // error_status/error）逐一透传，最后接 result.success 仍能正常拿到 EventDone。
@@ -663,4 +750,46 @@ func TestStream_StatusAndPermissionMode_BothEmitted(t *testing.T) {
 	require.NoError(t, d.Err())
 	assert.True(t, sawStatus, "status 字段非空应 emit EventStatus")
 	assert.True(t, sawMode, "permissionMode 字段非空仍应 emit EventPermissionModeChanged")
+}
+
+// TestStream_APIErrorMessageFrameBecomesEventError 与 session.parseLine 那条平行:
+// 一次性 Client.Stream 走的 frameDecoder.decodeLine 也要把 isApiErrorMessage 合成帧
+// 翻成 EventError,不泄漏成正文文本增量。两个 decoder 是刻意维护的平行副本。
+func TestStream_APIErrorMessageFrameBecomesEventError(t *testing.T) {
+	const line = `{"type":"assistant","message":{"id":"m1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: Connection closed mid-response. The response above may be incomplete."}]},"error":"server_error","isApiErrorMessage":true,"session_id":"sess-xyz"}` + "\n"
+
+	d := newFrameDecoder(strings.NewReader(line))
+	var events []Event
+	for d.Next() {
+		events = append(events, d.Event())
+	}
+	require.NoError(t, d.Err())
+
+	require.Len(t, events, 1)
+	assert.Equal(t, EventError, events[0].Kind)
+	assert.ErrorIs(t, events[0].Err, ErrAPIError)
+	assert.Contains(t, events[0].Err.Error(), "Connection closed mid-response")
+	for _, e := range events {
+		assert.NotEqual(t, EventTextDelta, e.Kind)
+	}
+}
+
+// TestStream_RawSinkReceivesEveryRawLine 校验 frameDecoder 把每一行非空原始 stdout
+// (未解析的 stream-json 帧)原样喂给 rawSink —— debug 级原始帧转储的底座。
+func TestStream_RawSinkReceivesEveryRawLine(t *testing.T) {
+	const lines = `{"type":"system","subtype":"init","session_id":"s","model":"m"}` + "\n" +
+		`{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"hi"}]}}` + "\n" +
+		`{"type":"result","subtype":"success","session_id":"s","usage":{"input_tokens":1,"output_tokens":1}}` + "\n"
+
+	var got []string
+	d := newFrameDecoder(strings.NewReader(lines))
+	d.rawSink = func(b []byte) { got = append(got, string(b)) }
+	for d.Next() { //nolint:revive // 只为驱动 decode,事件本身不看
+	}
+	require.NoError(t, d.Err())
+
+	require.Len(t, got, 3)
+	assert.Contains(t, got[0], `"subtype":"init"`)
+	assert.Contains(t, got[1], `"type":"assistant"`)
+	assert.Contains(t, got[2], `"type":"result"`)
 }

@@ -186,6 +186,26 @@ describe("BackgroundTasksPopoverContent — elapsed + summary", () => {
     expect(screen.getByText(summary)).toBeInTheDocument();
   });
 
+  it("shows only the title for a subagent task, not its report body", () => {
+    // subagent summary 是子代理的完整回报正文,会把弹层撑得很高 —— 只展示标题。
+    const summary =
+      "Verification complete. Working tree untouched (hashes unchanged).";
+    const tasks: BackgroundTask[] = [
+      {
+        toolUseId: "tu-sa",
+        kind: "local_agent",
+        description: "Verify validator against spec criteria",
+        status: "completed",
+        summary,
+      },
+    ];
+    render(<BackgroundTasksPopoverContent tasks={tasks} />);
+    expect(
+      screen.getByText("Verify validator against spec criteria"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(summary)).toBeNull();
+  });
+
   it("does not show elapsed for a running task without startedAt", () => {
     const tasks: BackgroundTask[] = [
       {
@@ -259,6 +279,77 @@ describe("BackgroundTasksPopoverContent — elapsed + summary", () => {
     render(<BackgroundTasksPopoverContent tasks={tasks} />);
     expect(screen.getByText("bash")).toBeInTheDocument();
     expect(screen.getByText("subagent")).toBeInTheDocument();
+  });
+});
+
+describe("BackgroundTasksPopoverContent — stop button", () => {
+  it("renders a Stop button for a running task with taskId and calls onStopTask", async () => {
+    const onStop = vi.fn();
+    const task: BackgroundTask = {
+      toolUseId: "tu-r",
+      taskId: "b0",
+      kind: "local_bash",
+      description: "sleep 20",
+      status: "running",
+    };
+    render(
+      <BackgroundTasksPopoverContent tasks={[task]} onStopTask={onStop} />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /停止|stop/i }));
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onStop).toHaveBeenCalledWith(task);
+  });
+
+  it("does not render Stop when the running task has no taskId", () => {
+    const onStop = vi.fn();
+    render(
+      <BackgroundTasksPopoverContent
+        tasks={[
+          {
+            toolUseId: "tu-r",
+            kind: "local_bash",
+            description: "sleep 20",
+            status: "running",
+          },
+        ]}
+        onStopTask={onStop}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /停止|stop/i })).toBeNull();
+  });
+
+  it("does not render Stop when onStopTask is absent", () => {
+    render(
+      <BackgroundTasksPopoverContent
+        tasks={[
+          {
+            toolUseId: "tu-r",
+            taskId: "b0",
+            kind: "local_bash",
+            description: "sleep 20",
+            status: "running",
+          },
+        ]}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /停止|stop/i })).toBeNull();
+  });
+
+  it("renders the canceled (stopped) status pill", () => {
+    render(
+      <BackgroundTasksPopoverContent
+        tasks={[
+          {
+            toolUseId: "tu-x",
+            taskId: "b0",
+            kind: "local_bash",
+            description: "sleep 20",
+            status: "canceled",
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/已停止|stopped/i)).toBeInTheDocument();
   });
 });
 

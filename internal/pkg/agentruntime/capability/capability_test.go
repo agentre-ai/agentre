@@ -43,6 +43,7 @@ func TestCapabilityWireStrings(t *testing.T) {
 		So(string(CapCancelSteer), ShouldEqual, "cancel_steer")
 		So(string(CapDrainSteer), ShouldEqual, "drain_steer")
 		So(string(CapAbort), ShouldEqual, "abort")
+		So(string(CapStopBackgroundTask), ShouldEqual, "stop_background_task")
 		So(string(CapSetPermission), ShouldEqual, "set_permission_mode")
 		So(string(CapAnswerUserAsk), ShouldEqual, "answer_user_ask")
 		So(string(CapToolPermission), ShouldEqual, "tool_permission_gate")

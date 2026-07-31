@@ -174,11 +174,98 @@ func TestFromToolUse(t *testing.T) {
 			So(ok, ShouldBeFalse)
 		})
 
+		Convey("pi edit tool → FileEdit 合并 hunks", func() {
+			c, ok := FromToolUse("edit", map[string]any{
+				"path": "/tmp/p.txt",
+				"edits": []any{
+					map[string]any{"oldText": "foo", "newText": "bar"},
+					map[string]any{"oldText": "baz", "newText": "qux"},
+				},
+			})
+			So(ok, ShouldBeTrue)
+			fe, ok := c.(FileEdit)
+			So(ok, ShouldBeTrue)
+			So(fe.Files, ShouldHaveLength, 1)
+			So(fe.Files[0].Path, ShouldEqual, "/tmp/p.txt")
+			So(fe.Files[0].Kind, ShouldEqual, ChangeModified)
+			So(fe.Files[0].Hunks, ShouldHaveLength, 2)
+			So(fe.Files[0].ReplaceAll, ShouldBeFalse)
+		})
+
+		Convey("pi edit edits 全空 → 不识别", func() {
+			_, ok := FromToolUse("edit", map[string]any{
+				"path":  "/tmp/p.txt",
+				"edits": []any{},
+			})
+			So(ok, ShouldBeFalse)
+		})
+
+		Convey("pi write tool → FileWrite(path 键,非 file_path)", func() {
+			c, ok := FromToolUse("write", map[string]any{
+				"path":    "/tmp/q.txt",
+				"content": "hello\nworld\n",
+			})
+			So(ok, ShouldBeTrue)
+			fw, ok := c.(FileWrite)
+			So(ok, ShouldBeTrue)
+			So(fw.Path, ShouldEqual, "/tmp/q.txt")
+			So(fw.Lines, ShouldEqual, 2)
+			So(fw.Bytes, ShouldEqual, 12)
+		})
+
+		Convey("pi write 没有 content → 不识别", func() {
+			_, ok := FromToolUse("write", map[string]any{"path": "/tmp/q.txt"})
+			So(ok, ShouldBeFalse)
+		})
+
 		Convey("Bash / 普通工具 → 不识别", func() {
 			_, ok := FromToolUse("Bash", map[string]any{"command": "ls"})
 			So(ok, ShouldBeFalse)
 			_, ok = FromToolUse("Read", map[string]any{"file_path": "/tmp/x"})
 			So(ok, ShouldBeFalse)
+		})
+
+		Convey("Agent 工具入参含 model → AgentSpawn.Model 被填", func() {
+			c, ok := FromToolUse("Agent", map[string]any{
+				"description":   "probe",
+				"subagent_type": "general-purpose",
+				"model":         "haiku",
+				"prompt":        "Run echo",
+			})
+			So(ok, ShouldBeTrue)
+			as := c.(AgentSpawn)
+			So(as.Model, ShouldEqual, "haiku")
+			So(as.TaskDescription, ShouldEqual, "probe")
+		})
+
+		Convey("Task 工具不含 model 键 → AgentSpawn.Model 为空", func() {
+			c, ok := FromToolUse("Task", map[string]any{
+				"description":   "review",
+				"subagent_type": "code-reviewer",
+			})
+			So(ok, ShouldBeTrue)
+			as := c.(AgentSpawn)
+			So(as.Model, ShouldEqual, "")
+			So(as.TaskDescription, ShouldEqual, "review")
+		})
+
+		Convey("Agent 工具只有 model 但其它字段为空 → 不识别(走 raw 路径)", func() {
+			_, ok := FromToolUse("Agent", map[string]any{
+				"model": "haiku",
+			})
+			So(ok, ShouldBeFalse)
+		})
+
+		Convey("Agent 工具 model 为完整模型 ID → AgentSpawn.Model 保留原值", func() {
+			c, ok := FromToolUse("Agent", map[string]any{
+				"description":   "test",
+				"subagent_type": "general-purpose",
+				"model":         "claude-opus-5",
+				"prompt":        "test prompt",
+			})
+			So(ok, ShouldBeTrue)
+			as := c.(AgentSpawn)
+			So(as.Model, ShouldEqual, "claude-opus-5")
 		})
 	})
 }

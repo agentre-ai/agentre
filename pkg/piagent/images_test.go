@@ -13,8 +13,8 @@ import (
 )
 
 // captureProc 是一个把 stdin 写入捕获下来的假进程，让我们断言发给 Pi 的
-// prompt 帧形态（含 images）。stdout 预置一段「prompt 已接受 + agent_end」
-// 的脚本让 Stream 自然走完。
+// prompt 帧形态（含 images）。stdout 预置一段「prompt 已接受 + agent_end +
+// agent_settled」的 Pi 0.81.1 脚本让 Stream 自然走完。
 type captureProc struct {
 	stdin  *lockedBuffer
 	stdout io.Reader
@@ -47,6 +47,9 @@ func (r *captureRunner) Start(context.Context, procOptions) (processHandle, erro
 }
 
 func newCaptureClient(stdout string) (*Client, *captureProc) {
+	if !strings.Contains(stdout, `"command":"get_state"`) {
+		stdout = `{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"test-native-session"}}` + "\n" + stdout
+	}
 	proc := &captureProc{
 		stdin:  &lockedBuffer{},
 		stdout: strings.NewReader(stdout),
@@ -58,7 +61,8 @@ func newCaptureClient(stdout string) (*Client, *captureProc) {
 func TestStreamPromptCarriesImagesWithoutText(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, proc := newCaptureClient(script)
@@ -79,8 +83,9 @@ func TestStreamPromptCarriesImagesWithoutText(t *testing.T) {
 			MimeType string `json:"mimeType"`
 		} `json:"images"`
 	}
-	first := strings.SplitN(strings.TrimSpace(proc.stdin.String()), "\n", 2)[0]
-	require.NoError(t, json.Unmarshal([]byte(first), &frame))
+	frames := strings.Split(strings.TrimSpace(proc.stdin.String()), "\n")
+	require.GreaterOrEqual(t, len(frames), 2)
+	require.NoError(t, json.Unmarshal([]byte(frames[1]), &frame))
 
 	assert.Equal(t, "prompt", frame.Type)
 	assert.Empty(t, frame.Message)
@@ -93,7 +98,8 @@ func TestStreamPromptCarriesImagesWithoutText(t *testing.T) {
 func TestStreamPromptWithoutImagesOmitsField(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
 		"",
 	}, "\n")
 	client, proc := newCaptureClient(script)
@@ -103,6 +109,7 @@ func TestStreamPromptWithoutImagesOmitsField(t *testing.T) {
 	for s.Next() {
 	}
 
-	first := strings.SplitN(strings.TrimSpace(proc.stdin.String()), "\n", 2)[0]
-	assert.NotContains(t, first, "images")
+	frames := strings.Split(strings.TrimSpace(proc.stdin.String()), "\n")
+	require.GreaterOrEqual(t, len(frames), 2)
+	assert.NotContains(t, frames[1], "images")
 }

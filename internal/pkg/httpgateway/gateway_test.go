@@ -149,6 +149,36 @@ func TestGateway_RegisterMCPIgnoresBadPrefix(t *testing.T) {
 	assert.Equal(t, 0, len(g.mcps))
 }
 
+func TestGateway_RegisterControl(t *testing.T) {
+	g := New("127.0.0.1", 0, newFakeLookup())
+	assert.NoError(t, g.Start(context.Background()))
+	defer func() { _ = g.Stop(context.Background()) }()
+
+	// 未注册控制 handler 时 /ctl/* 返 404（gateway 起来了但外部控制未装配）。
+	resp, err := http.Get(g.URL() + "/ctl/v1/agents")
+	assert.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	hit := make(chan string, 1)
+	g.RegisterControl(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 命中：/ctl/* 全部转给控制 handler，路径原样透传。
+	resp, err = http.Get(g.URL() + "/ctl/v1/agents")
+	assert.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	select {
+	case got := <-hit:
+		assert.Equal(t, "/ctl/v1/agents", got)
+	case <-time.After(time.Second):
+		t.Fatal("control handler 未被调用")
+	}
+}
+
 func TestGateway_ServesAnthropicRouteEndToEnd(t *testing.T) {
 	upstream, rec := newRecordingUpstream(t, `{"id":"msg_x"}`)
 	lookup := newFakeLookup(newAnthropicProvider("key-1", upstream.URL))

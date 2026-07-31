@@ -15,17 +15,19 @@ import type { BackgroundTask } from "./types";
 type BackgroundTasksChipProps = {
   tasks: BackgroundTask[];
   onClearCompleted?: () => void;
+  onStopTask?: (task: BackgroundTask) => void;
 };
 
 export function BackgroundTasksChip({
   tasks,
   onClearCompleted,
+  onStopTask,
 }: BackgroundTasksChipProps) {
   const { t } = useTranslation();
 
   const runningCount = tasks.filter((task) => task.status === "running").length;
   const completedCount = tasks.filter(
-    (task) => task.status === "completed" || task.status === "failed",
+    (task) => task.status !== "running",
   ).length;
 
   // Hidden only when there is nothing to show at all.
@@ -66,6 +68,7 @@ export function BackgroundTasksChip({
         <BackgroundTasksPopoverContent
           tasks={tasks}
           onClearCompleted={onClearCompleted}
+          onStopTask={onStopTask}
         />
       </PopoverContent>
     </Popover>

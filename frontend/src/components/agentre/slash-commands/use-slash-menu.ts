@@ -36,6 +36,19 @@ export type SlashMenuState = {
   trigger: "/" | "$";
 };
 
+function sameRect(
+  a: SlashMenuState["anchorRect"] | null,
+  b: SlashMenuState["anchorRect"] | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.left === b.left && a.top === b.top && a.bottom === b.bottom;
+}
+
+// 默认值必须是模块级常量：写成行内 `[]` 会让每次 render 都产生新身份，下面
+// available / triggers 两个 useMemo 跟着变，订阅 editor 的 effect 便每次提交都重跑。
+const EMPTY_DYNAMIC_COMMANDS: SlashCommand[] = [];
+
 export type UseSlashMenuOpts = {
   // 编辑器实例;TipTap useEditor 返回的 Editor。null 时 hook noop。
   editor: Editor | null;
@@ -59,7 +72,7 @@ export type UseSlashMenuOpts = {
 export function useSlashMenu({
   editor,
   backendType,
-  dynamicCommands = [],
+  dynamicCommands = EMPTY_DYNAMIC_COMMANDS,
   onSelect,
 }: UseSlashMenuOpts): {
   state: SlashMenuState;
@@ -143,7 +156,10 @@ export function useSlashMenu({
       }
       setQuery(hit.query);
       setTrigger(hit.trigger);
-      setAnchorRect(rect);
+      // 按值比较：coordsAtPos 每次都返回新对象，直接 set 等于每次 recompute 都
+      // 保证一次重渲染；只要 effect 依赖再抖一下就成环（editor 事件 → setState →
+      // 重渲染 → effect 重订阅并再 recompute → …）。
+      setAnchorRect((prev) => (sameRect(prev, rect) ? prev : rect));
       setOpen(true);
     };
     editor.on("update", recompute);

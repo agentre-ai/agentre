@@ -13,6 +13,7 @@ func TestSubagentStateBlock(t *testing.T) {
 			ParentToolCallID:  "task-1",
 			Status:            "running",
 			ToolUses:          2,
+			Model:             "claude-haiku-4-5-20251001",
 			NestedToolCallIDs: []string{"n-1", "n-2"},
 		}
 		So(b.Type(), ShouldEqual, "subagent_state")
@@ -25,5 +26,7 @@ func TestSubagentStateBlock(t *testing.T) {
 		got, ok := decoded.(SubagentStateBlock)
 		So(ok, ShouldBeTrue)
 		So(got.NestedToolCallIDs, ShouldHaveLength, 2)
+		// R6:模型须随累计态一起持久化/replay。
+		So(got.Model, ShouldEqual, "claude-haiku-4-5-20251001")
 	})
 }

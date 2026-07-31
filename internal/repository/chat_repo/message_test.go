@@ -35,6 +35,50 @@ func (m blocksJSONContainsMatcher) Match(v driver.Value) bool {
 	return true
 }
 
+// TestFindSubagentStateInBlocksJSON 单测按 toolUseID 读出 subagent_state 的 task_id +
+// status(供 StopBackgroundTask 定位 CLI task_id)。
+func TestFindSubagentStateInBlocksJSON(t *testing.T) {
+	const input = `[` +
+		`{"type":"subagent_state","data":{"parent_tool_call_id":"tu1","task_id":"b0n82mqaj","kind":"local_bash","status":"running"}},` +
+		`{"type":"text","data":{"text":"hi"}}` +
+		`]`
+
+	t.Run("命中返回 task_id + status", func(t *testing.T) {
+		taskID, status, found, err := chat_repo.FindSubagentStateInBlocksJSON(input, "tu1")
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, "b0n82mqaj", taskID)
+		assert.Equal(t, "running", status)
+	})
+
+	t.Run("旧块无 task_id:found=true 但 taskID 空", func(t *testing.T) {
+		const legacy = `[{"type":"subagent_state","data":{"parent_tool_call_id":"tu1","kind":"local_bash","status":"running"}}]`
+		taskID, status, found, err := chat_repo.FindSubagentStateInBlocksJSON(legacy, "tu1")
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, "", taskID)
+		assert.Equal(t, "running", status)
+	})
+
+	t.Run("无命中返回 found=false", func(t *testing.T) {
+		_, _, found, err := chat_repo.FindSubagentStateInBlocksJSON(input, "tu-missing")
+		require.NoError(t, err)
+		assert.False(t, found)
+	})
+
+	t.Run("空 JSON 返回 false 不报错", func(t *testing.T) {
+		_, _, found, err := chat_repo.FindSubagentStateInBlocksJSON("", "tu1")
+		require.NoError(t, err)
+		assert.False(t, found)
+	})
+
+	t.Run("非法 JSON 返回 error", func(t *testing.T) {
+		_, _, found, err := chat_repo.FindSubagentStateInBlocksJSON("{not json", "tu1")
+		require.Error(t, err)
+		assert.False(t, found)
+	})
+}
+
 // TestFlipSubagentInBlocksJSON 直接单测 JSON 改写核心:翻转命中块的 status,其余字段
 // (含 total_tokens/duration_ms/tool_uses 数字 + nested_tool_call_ids 数组)字节级保留,
 // 防 float64 强转把整数写成 1e+03 之类。
@@ -523,6 +567,135 @@ func TestMessageRepo_Update(t *testing.T) {
 
 	m := &chat_entity.Message{ID: 42, SessionID: 3, Role: "assistant", BlocksJSON: `[{"type":"text"}]`, Seq: 2}
 	err := chat_repo.NewMessage().Update(ctx, m)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestPatchSubagentProgressInBlocksJSON 单测进度快照的就地改写:后台 subagent 在会话
+// **空闲态**跑的那段时间,CLI 持续吐 task_progress,但这些进度只能靠定向 patch 落回发起
+// 消息(per-turn accumulator 已经收尾)。零值字段不覆盖已有值 —— 缺 usage 的帧不该把
+// 已经攒起来的工具数 / token 抹回 0。
+func TestPatchSubagentProgressInBlocksJSON(t *testing.T) {
+	const baseBlocks = `[` +
+		`{"type":"tool_use","data":{"id":"toolu_agent","name":"Agent","input":{"description":"T7"}}},` +
+		`{"type":"subagent_state","data":{"parent_tool_call_id":"toolu_agent","kind":"local_agent","description":"T7","status":"running","total_tokens":84739,"tool_uses":9,"last_tool_name":"Read","nested_tool_call_ids":["n1"]}}` +
+		`]`
+
+	t.Run("命中块的进度字段被更新", func(t *testing.T) {
+		out, ok, err := chat_repo.PatchSubagentProgressInBlocksJSON(baseBlocks, "toolu_agent", chat_repo.SubagentProgress{
+			TotalTokens: 132480, ToolUses: 21, DurationMs: 754000, LastToolName: "Edit",
+		})
+		require.NoError(t, err)
+		assert.True(t, ok)
+		data := subagentData(t, out)
+		assert.Equal(t, json.Number("132480"), data["total_tokens"])
+		assert.Equal(t, json.Number("21"), data["tool_uses"])
+		assert.Equal(t, json.Number("754000"), data["duration_ms"])
+		assert.Equal(t, "Edit", data["last_tool_name"])
+		// 非进度字段原样保留。
+		assert.Equal(t, "running", data["status"])
+		assert.Equal(t, "local_agent", data["kind"])
+		assert.Equal(t, []any{"n1"}, data["nested_tool_call_ids"])
+	})
+
+	t.Run("零值字段不覆盖已有值", func(t *testing.T) {
+		out, ok, err := chat_repo.PatchSubagentProgressInBlocksJSON(baseBlocks, "toolu_agent", chat_repo.SubagentProgress{
+			ToolUses: 12, // 只有工具数是新的,其余零值
+		})
+		require.NoError(t, err)
+		assert.True(t, ok)
+		data := subagentData(t, out)
+		assert.Equal(t, json.Number("12"), data["tool_uses"])
+		assert.Equal(t, json.Number("84739"), data["total_tokens"], "零值 TotalTokens 不该抹掉已有值")
+		assert.Equal(t, "Read", data["last_tool_name"], "零值 LastToolName 不该抹掉已有值")
+	})
+
+	t.Run("全零进度不改写", func(t *testing.T) {
+		out, ok, err := chat_repo.PatchSubagentProgressInBlocksJSON(baseBlocks, "toolu_agent", chat_repo.SubagentProgress{})
+		require.NoError(t, err)
+		assert.False(t, ok)
+		assert.Equal(t, baseBlocks, out)
+	})
+
+	t.Run("无命中返回 false", func(t *testing.T) {
+		out, ok, err := chat_repo.PatchSubagentProgressInBlocksJSON(baseBlocks, "toolu_missing", chat_repo.SubagentProgress{ToolUses: 3})
+		require.NoError(t, err)
+		assert.False(t, ok)
+		assert.Equal(t, baseBlocks, out)
+	})
+
+	t.Run("非法 blocksJSON 返回 error", func(t *testing.T) {
+		_, ok, err := chat_repo.PatchSubagentProgressInBlocksJSON("{not json", "toolu_agent", chat_repo.SubagentProgress{ToolUses: 3})
+		require.Error(t, err)
+		assert.False(t, ok)
+	})
+
+	// 后台子代理跨轮写回模型(R6/A9):子代理在会话空闲活动轮解出实际模型,靠这条
+	// 定向 patch 落回发起消息;其它字段(status/kind/进度数字)必须原样保留。
+	t.Run("模型字段被写入且不影响其它字段", func(t *testing.T) {
+		out, ok, err := chat_repo.PatchSubagentProgressInBlocksJSON(baseBlocks, "toolu_agent", chat_repo.SubagentProgress{
+			Model: "claude-haiku-4-5-20251001",
+		})
+		require.NoError(t, err)
+		assert.True(t, ok)
+		data := subagentData(t, out)
+		assert.Equal(t, "claude-haiku-4-5-20251001", data["model"])
+		// 非模型字段原样保留。
+		assert.Equal(t, json.Number("84739"), data["total_tokens"])
+		assert.Equal(t, json.Number("9"), data["tool_uses"])
+		assert.Equal(t, "Read", data["last_tool_name"])
+		assert.Equal(t, "running", data["status"])
+		assert.Equal(t, "local_agent", data["kind"])
+	})
+
+	t.Run("空模型不覆盖已记录模型", func(t *testing.T) {
+		const blocksWithModel = `[` +
+			`{"type":"tool_use","data":{"id":"toolu_agent","name":"Agent","input":{"description":"T7"}}},` +
+			`{"type":"subagent_state","data":{"parent_tool_call_id":"toolu_agent","kind":"local_agent","status":"running","total_tokens":84739,"tool_uses":9,"model":"claude-opus-5"}}` +
+			`]`
+		out, ok, err := chat_repo.PatchSubagentProgressInBlocksJSON(blocksWithModel, "toolu_agent", chat_repo.SubagentProgress{
+			ToolUses: 12, // 只有工具数更新,Model 留空(first-wins,已记录的模型不该被空值抹掉)
+		})
+		require.NoError(t, err)
+		assert.True(t, ok)
+		data := subagentData(t, out)
+		assert.Equal(t, json.Number("12"), data["tool_uses"])
+		assert.Equal(t, "claude-opus-5", data["model"], "空 Model 不该抹掉已记录模型")
+	})
+}
+
+// TestMessageRepo_PatchSubagentProgress_UpdatesMatchingBlock 走 repo:定位方式与
+// FlipSubagentStatus 一致(blocks_json LIKE toolUseID,不受近因窗口限制),命中即重写该行。
+func TestMessageRepo_PatchSubagentProgress_UpdatesMatchingBlock(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	blocksJSON := `[{"type":"subagent_state","data":{"parent_tool_call_id":"tu1","kind":"local_agent","status":"running","tool_uses":9}}]`
+
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? AND blocks_json LIKE \\? ORDER BY seq DESC").
+		WithArgs(int64(3), "assistant", "%tu1%").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
+			AddRow(42, 3, "assistant", blocksJSON, 4))
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_messages` SET ").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := chat_repo.NewMessage().PatchSubagentProgress(ctx, 3, "tu1", chat_repo.SubagentProgress{ToolUses: 21, TotalTokens: 132480})
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestMessageRepo_PatchSubagentProgress_NoMatchSilentNil 无命中静默返回:任务可能已 evict。
+func TestMessageRepo_PatchSubagentProgress_NoMatchSilentNil(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	mock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? AND blocks_json LIKE \\? ORDER BY seq DESC").
+		WithArgs(int64(3), "assistant", "%tu-missing%").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "session_id", "role", "blocks_json", "seq"}).
+			AddRow(42, 3, "assistant", `[{"type":"text","data":{"text":"hi"}}]`, 4))
+
+	err := chat_repo.NewMessage().PatchSubagentProgress(ctx, 3, "tu-missing", chat_repo.SubagentProgress{ToolUses: 3})
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

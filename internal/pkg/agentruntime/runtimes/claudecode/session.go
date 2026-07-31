@@ -7,6 +7,9 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/pkg/claudecode"
 )
@@ -42,6 +45,10 @@ type ccSessionHandle interface {
 	// {default, acceptEdits, plan, bypassPermissions}。只能在 Turn 之间调用,
 	// 期间该方法会阻塞到当前 Turn 收尾。
 	SetPermissionMode(ctx context.Context, mode string) error
+	// StopTask 写一帧 control_request{subtype:"stop_task", task_id} 停掉某个后台任务
+	// (run_in_background Bash / subagent)。**子进程保留**;后台任务跨 turn 存活,
+	// 空闲态也能停。CLI 回 not_found/not_running 视为幂等成功。
+	StopTask(ctx context.Context, taskID string) error
 	// ExitErr 子进程已退出时返其分类后的退出错误(如 claudecode.ErrSessionNotFound
 	// 或 *claudecode.ProcessExitError);还活着 / 没 spawn 返 nil。
 	// 0-frame fallback 用它替换 "subprocess produced no events" 通用消息,
@@ -105,6 +112,15 @@ func (a *ccClientAdapter) Kill(_ context.Context) error {
 	}
 	a.sess.Kill()
 	return nil
+}
+
+// StopTask 转发到底层 claudecode.Session.StopTask,写 control_request{stop_task}
+// 停单个后台任务。**子进程不动**;后台任务跨 turn 存活,空闲态也能停。
+func (a *ccClientAdapter) StopTask(ctx context.Context, taskID string) error {
+	if a.sess == nil {
+		return errors.New("agentruntime/runtimes/claudecode: session not opened")
+	}
+	return a.sess.StopTask(ctx, taskID)
 }
 
 // SetPermissionMode 转发到底层 claudecode.Session.SetPermissionMode。抢 turnMu,
@@ -238,6 +254,7 @@ func ccBuildClientOpts(spec ccLaunchSpec, binary string) []claudecode.Option {
 		// permission gate 从 CLI 的 TUI 拉到 agentre UI;headless 下不开
 		// 这个 flag,AskUserQuestion 会被 CLI 自动 deny,turn 直接挂掉。
 		claudecode.WithPermissionPromptTool("stdio"),
+		claudecode.WithRawSink(ccRawFrameSink(spec.Req.SessionID, spec.SessionUUID)),
 	}
 	// --model 取值优先级:provider.Model(绑了 LLM provider,如 GLM / openrouter 等
 	// 非 Anthropic 直连场景,必须下发才能让 CLI 在 system.init 帧报真实模型 id) →
@@ -297,6 +314,22 @@ func buildMcpConfigJSON(specs []agentruntime.MCPServerSpec) (string, []string) {
 	}
 	b, _ := json.Marshal(map[string]any{"mcpServers": servers})
 	return string(b), allow
+}
+
+// ccRawFrameSink 返回一个把 claudecode 子进程每行原始 stdout 帧打到 debug 日志的回调。
+//
+// 由「Settings → Version & Update → Debug Logging」开关热控:关时全局 logger 落在
+// info 级,zap core 直接丢弃这条 Debug,zap.ByteString 不拷贝 line,近零开销;开时
+// 落全量原始帧。用 logger.Default()(而非 ctx logger)因为 Session 起在 context.Background()
+// 且 readLoop 跨多轮存活;Default() 每次取当前全局 logger,故热重载即时生效。定位字段
+// 带 chat sessionID + provider session UUID,便于按会话 grep(见 debugging.md)。
+func ccRawFrameSink(sessionID int64, providerSessionUUID string) func([]byte) {
+	return func(line []byte) {
+		logger.Default().Debug("claudecode runtime: raw frame",
+			zap.Int64("sessionID", sessionID),
+			zap.String("providerSessionID", providerSessionUUID),
+			zap.ByteString("frame", line))
+	}
 }
 
 var ccSessionFactory = func(spec ccLaunchSpec) (ccSessionHandle, error) {

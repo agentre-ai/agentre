@@ -57,6 +57,11 @@ type usageWire struct {
 	Cost       *costWire `json:"cost,omitempty"`
 }
 
+type sessionStateWire struct {
+	SessionID   string `json:"sessionId"`
+	SessionFile string `json:"sessionFile,omitempty"`
+}
+
 type sessionStatsWire struct {
 	ContextUsage *contextUsageWire `json:"contextUsage,omitempty"`
 }
@@ -96,6 +101,9 @@ func buildEnv(env map[string]string) []string {
 
 func buildRPCArgs(c *Client) []string {
 	args := []string{"--mode", "rpc"}
+	if c.noSession {
+		args = append(args, "--no-session")
+	}
 	if strings.TrimSpace(c.sessionDir) != "" {
 		args = append(args, "--session-dir", strings.TrimSpace(c.sessionDir))
 	}

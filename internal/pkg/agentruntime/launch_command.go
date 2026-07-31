@@ -25,10 +25,12 @@ type LaunchCommandSpec struct {
 	Backend  *agent_backend_entity.AgentBackend
 	Provider *llm_provider_entity.LLMProvider
 	AgentID  int64
+	// SessionID 是 Agentre chat_sessions.id；部分 backend 用它组装本地运行参数。
+	SessionID int64
 	// Cwd 非空时作为 cd 目标；为空时回退 AgentCwd(AgentID)。chat_svc 调
 	// project_svc.ResolveSessionCwd 解析 project 维度 cwd 注入。
 	Cwd               string
-	ProviderSessionID string // claudecode 用作 --resume；codex 用作 resume <session-id>
+	ProviderSessionID string // claudecode/piagent 用作 --resume/--session；codex 用作 resume <session-id>
 	GatewayURL        string // gateway URL，空字符串表示未关联 provider
 	Token             string // gateway token；非空时内联进命令；空时落 <TOKEN> 占位
 }

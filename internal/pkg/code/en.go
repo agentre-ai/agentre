@@ -114,7 +114,7 @@ var enUS = map[int]string{
 	ChatPermissionModeNoActive:    "Send a message first so the session starts, then switch permission mode",
 	ChatPermissionModeInternal:    "Failed to switch permission mode",
 	ChatCompactUnsupported:        "This backend does not support context compaction",
-	ChatCompactNoSession:          "Send a message first so the Codex thread exists, then compact",
+	ChatCompactNoSession:          "Send a message first so the CLI session exists, then compact",
 	ChatCompactInternal:           "Failed to compact the context",
 	ChatGoalUnsupported:           "This backend does not support goal state",
 	ChatGoalNoSession:             "Send a message first so the Codex thread exists, then set a goal",
@@ -125,6 +125,9 @@ var enUS = map[int]string{
 	ChatPlanActionUnknown: "Unknown plan action — please refresh the session and try again",
 
 	ChatGitStateUnavailable: "Git state unavailable for this session's working directory",
+
+	ChatStopBgUnsupported: "This backend does not support stopping background tasks",
+	ChatStopBgTaskUnknown: "This background task can't be stopped (no task id, or it already finished)",
 
 	ProjectNotFound:          "Project not found",
 	ProjectNameDuplicated:    "A sibling project with this name already exists",

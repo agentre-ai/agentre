@@ -1,4 +1,4 @@
-import { Bot, Terminal } from "lucide-react";
+import { Bot, Square, Terminal } from "lucide-react";
 import React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -22,11 +22,14 @@ function formatElapsed(ms: number): string {
 type BackgroundTasksPopoverContentProps = {
   tasks: BackgroundTask[];
   onClearCompleted?: () => void;
+  // onStopTask 停掉一个正在运行的后台任务/子 agent(仅当 backend 支持且该行有 taskId)。
+  onStopTask?: (task: BackgroundTask) => void;
 };
 
 export function BackgroundTasksPopoverContent({
   tasks,
   onClearCompleted,
+  onStopTask,
 }: BackgroundTasksPopoverContentProps) {
   const { t } = useTranslation();
 
@@ -41,9 +44,7 @@ export function BackgroundTasksPopoverContent({
   }, [hasLiveElapsed]);
 
   const runningCount = tasks.filter((tk) => tk.status === "running").length;
-  const hasCompleted = tasks.some(
-    (tk) => tk.status === "completed" || tk.status === "failed",
-  );
+  const hasCompleted = tasks.some((tk) => tk.status !== "running");
 
   return (
     <div className="flex min-w-[260px] max-w-[400px] flex-col gap-2">
@@ -144,13 +145,26 @@ export function BackgroundTasksPopoverContent({
                       </>
                     )}
                   </div>
-                  {/* summary is dynamic agent text (exit-code text) — do NOT pass through t() */}
-                  {task.summary && (
+                  {/* summary is dynamic agent text (exit-code text) — do NOT pass through t()。
+                      子代理的 summary 是整篇回报正文,会把弹层撑到失控,只展示标题;
+                      bash 的 summary 是一行 exit-code 文本,继续展示。 */}
+                  {!isSubagent && task.summary && (
                     <p className="mt-0.5 break-words text-[10px] text-muted-foreground">
                       {task.summary}
                     </p>
                   )}
                 </div>
+                {task.status === "running" && task.taskId && onStopTask && (
+                  <button
+                    type="button"
+                    onClick={() => onStopTask(task)}
+                    aria-label={t("chatPanel.backgroundTasks.stop")}
+                    title={t("chatPanel.backgroundTasks.stop")}
+                    className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <Square className="size-3 fill-current" />
+                  </button>
+                )}
                 <StatusPill status={task.status} />
               </li>
             );
@@ -183,6 +197,17 @@ function StatusPill({ status }: { status: BackgroundTask["status"] }) {
           aria-hidden="true"
         />
         {t("chatPanel.backgroundTasks.failed")}
+      </span>
+    );
+  }
+  if (status === "canceled") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+        <span
+          className="inline-block size-1.5 rounded-full bg-muted-foreground"
+          aria-hidden="true"
+        />
+        {t("chatPanel.backgroundTasks.canceled")}
       </span>
     );
   }

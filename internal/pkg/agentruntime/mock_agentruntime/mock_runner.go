@@ -246,6 +246,44 @@ func (mr *MockAborterMockRecorder) Abort(ctx, sessionID any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Abort", reflect.TypeOf((*MockAborter)(nil).Abort), ctx, sessionID)
 }
 
+// MockBackgroundTaskStopper is a mock of BackgroundTaskStopper interface.
+type MockBackgroundTaskStopper struct {
+	ctrl     *gomock.Controller
+	recorder *MockBackgroundTaskStopperMockRecorder
+	isgomock struct{}
+}
+
+// MockBackgroundTaskStopperMockRecorder is the mock recorder for MockBackgroundTaskStopper.
+type MockBackgroundTaskStopperMockRecorder struct {
+	mock *MockBackgroundTaskStopper
+}
+
+// NewMockBackgroundTaskStopper creates a new mock instance.
+func NewMockBackgroundTaskStopper(ctrl *gomock.Controller) *MockBackgroundTaskStopper {
+	mock := &MockBackgroundTaskStopper{ctrl: ctrl}
+	mock.recorder = &MockBackgroundTaskStopperMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockBackgroundTaskStopper) EXPECT() *MockBackgroundTaskStopperMockRecorder {
+	return m.recorder
+}
+
+// StopBackgroundTask mocks base method.
+func (m *MockBackgroundTaskStopper) StopBackgroundTask(ctx context.Context, sessionID int64, taskID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "StopBackgroundTask", ctx, sessionID, taskID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// StopBackgroundTask indicates an expected call of StopBackgroundTask.
+func (mr *MockBackgroundTaskStopperMockRecorder) StopBackgroundTask(ctx, sessionID, taskID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StopBackgroundTask", reflect.TypeOf((*MockBackgroundTaskStopper)(nil).StopBackgroundTask), ctx, sessionID, taskID)
+}
+
 // MockPermissionModeSetter is a mock of PermissionModeSetter interface.
 type MockPermissionModeSetter struct {
 	ctrl     *gomock.Controller
