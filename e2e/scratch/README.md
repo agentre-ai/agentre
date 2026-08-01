@@ -6,12 +6,12 @@ scripts are not committed; write, run, observe, delete.
 
 This is the GUI counterpart of "verify by observing": drive the real app, then read the
 observable side-effects (UI assertions + the temp DB + logs). Full workflow, conventions, and
-gotchas: **[docs/e2e-harness-guide.md](../../docs/e2e-harness-guide.md)** (§6).
+gotchas: **[e2e/README.md](../README.md)** (§6).
 
 ## Run
 
 ```bash
-make e2e-scratch             # runs every e2e/scratch/*.spec.ts via the live harness
+make e2e-scratch             # recursively runs every e2e/scratch/**/*.spec.ts via the live harness
 # or a single file (still through the runner, so cleanup happens):
 cd e2e && pnpm run test:scratch scratch/<file>.spec.ts
 ```
@@ -40,5 +40,23 @@ test("my feature works end-to-end", async ({ page }) => {
 });
 ```
 
+## Reporting
+
+The flat file above is right for a **quick look you delete in a minute**. When the run is
+**acceptance against a spec**, a **bug reproduction**, or anything whose result you are going to
+report to someone, give the scenario its own directory instead — Playwright's `testDir` is
+recursive, so the spec is still picked up:
+
+```
+e2e/scratch/<task-name>/
+├── verify.spec.ts   # the spec
+├── report.md        # created BEFORE the run, filled in as you go
+├── logs/  resources/  screenshots/
+```
+
+Copy the block under **Use This Shape** in [`docs/references/verification-report-template.md`](../../docs/references/verification-report-template.md) into `report.md` before starting the app. The discipline — which evidence form fits what you verified,
+how to state a bug reproduction without describing red as green, and the one-place-only verdict
+table — is **[docs/verification.md](../../docs/verification.md)**.
+
 If a flow proves to be **core and stable**, promote it: move the spec into `e2e/tests/`,
-harden it, and commit (see the harness guide §5). Otherwise just delete it.
+harden it, and commit (see [`e2e/README.md`](../README.md) §5). Otherwise just delete it.

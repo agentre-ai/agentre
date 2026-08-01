@@ -5,21 +5,23 @@ Agentre's code organization, layering conventions, remote execution architecture
 ## Project layout
 
 ```text
-main.go                        (wails bootstrap + `agentre claudecode …` CLI shim)
-cmd/agentred/                  (headless daemon binary — root.go / run.go / pair.go / status.go / client.go)
+main.go                        (wails bootstrap; GUI-only — no CLI subcommands)
+cmd/agentred/                  (headless daemon binary — main.go / root.go / run.go / pair.go / status.go / client.go / claudecode.go / llm.go)
+cmd/agrctl/                    (companion CLI binary: `claudecode` hook shim + `ctl` control CLI)
 internal/
   app/                         (Wails bindings — one file per domain: app.go / agent.go / chat.go / project.go / …,
                                 methods only do parse → svc.Xxx().Method(ctx, …) → return)
   bootstrap/                   (startup order: dataDir → cago memory config → logger → SQLite → migrations)
-  cli/claudecodecmd/           (CLI subcommands of the agentre binary, invoked by hook subprocesses)
+  cli/{claudecodecmd,ctlcmd}/  (subcommand implementations, compiled into the agrctl binary)
   daemon/                      (agentred-side daemon: client / handlers / sessions / pairing / rpc / remotefs / notifier / state)
   service/<domain>_svc/        (business logic; interface + singleton accessor + private implementation)
   repository/<domain>_repo/    (data access; interface + Register/accessor, uniformly going through db.Ctx(ctx))
     mock_<domain>_repo/        (mockgen output, injected into service unit tests)
   model/entity/<domain>_entity/(rich domain entity; GORM tag + business methods)
-  pkg/                         (cross-cutting internal packages: agentprovider / agentruntime / agentskill / agenttool / ccoauth /
-                                claudecodehook / clienv / cliprober / cliprocess / code (i18n error codes) / diff / httpgateway /
-                                jsonrpc / keychain / llmcatalog / paths / procattr / pty / remotefs / sysnotify)
+  pkg/                         (cross-cutting internal packages: agentprovider / agentruntime / agentskill / agenttool /
+                                agrctlinstall / ccoauth / claudecodehook / clienv / cliprober / cliprocess / code (i18n error
+                                codes) / ctlendpoint / diff / hookexec / httpgateway / jsonrpc / keychain / llmcatalog / paths /
+                                procattr / pty / remotefs / sysnotify)
   buildinfo/                   (CommitID ldflag target)
 migrations/                    (gormigrate sequential migrations, filename prefix YYYYMMDDNNNN)
 pkg/                           (externally reusable packages: claudecode / codex / piagent —— independently maintained CLI subprocess wrappers;
@@ -59,9 +61,52 @@ UI
   ```
 
 - **Service** — interface + singleton + private implementation; the service depends only on the repository interface (dependency inversion), which makes mockgen unit testing easy. Use `gogo.Go(func() error { … })` for background tasks, and **do not pass the request ctx into the goroutine.**
-- **Error / i18n** — error codes are defined in `internal/pkg/code/code.go` (allocated in segments of 10000+), with copy in `zh_cn.go` / `en.go`; call `i18n.NewError(ctx, code.Xxx)` to return them; for the HTTP status use `i18n.NewForbiddenError` / `i18n.NewErrorWithStatus`.
+- **Error / i18n** — error codes are defined in `internal/pkg/code/code.go`, allocated in domain-specific `iota + base` ranges beginning at 10000 (`OperationFailed = iota + 10000`, `LLMProviderNotFound = iota + 11000`, …), with copy in `zh_cn.go` / `en.go`. **`i18n.NewError(ctx, code.Xxx)` is the constructor in use**; there is no HTTP-status variant because application errors cross the Wails frontend boundary rather than an HTTP app API.
 - **Wails binding layer** — methods in `internal/app/*.go` only do: parse → call `svc.Xxx().Method(ctx, …)` → return. **Do not stuff business logic into the App struct**, otherwise go test will not cover it. Open a new file for each new domain.
 - **Entity over hardcoding** — use persisted fields (type/status/icon/color/config) as the source of truth, avoiding hardcoded default values in the service that bypass the entity.
+
+## Dependency direction (verifiable invariants)
+
+Dependencies flow **one way**: `internal/app → service → repository → model/entity`. `internal/pkg` is the cross-cutting leaf: every layer may import it, and it may use shared model/entity types, but it must never reverse-import `service` or `repository`. These are not aspirations — each invariant below is checkable and currently holds:
+
+```bash
+VERIFY_TREE="${VERIFY_TREE:-$(git write-tree)}"   # staged proposal; set VERIFY_TREE=HEAD for a committed-tree audit
+
+# internal/pkg must never reverse-import service / repository  → expect 0
+git grep -l 'agentre/internal/\(service\|repository\)' "$VERIFY_TREE" -- 'internal/pkg/*' | wc -l
+
+# a service must not hand-assemble queries; only two shapes are legitimate:
+#   db.Ctx(ctx).Transaction(...)                       — a transaction spanning repo calls
+#   db.WithContextDB(context.Background(), db.Ctx(ctx)) — carrying the handle onto a detached ctx
+# anything else is a service bypassing its own repo → currently 0
+git grep -n 'db\.Ctx(ctx)' "$VERIFY_TREE" -- 'internal/service/*' | grep -v 'Transaction\|WithContextDB' | wc -l
+
+# the frontend/backend boundary is Wails-only: no HTTP-style app API  → expect 0
+git grep -n 'http.HandleFunc\|gin\.' "$VERIFY_TREE" -- 'internal/app/*' | wc -l
+```
+
+**One sanctioned exception, and it is not a violation:** `internal/app/app.go` imports `agent_repo` in order to *wire* dependencies (`subagent_svc.Default().RegisterDeps(agent_repo.Agent(), …)`). `internal/app` is this project's **composition root** — assembling concrete implementations there is exactly what makes DIP and mock-injection possible. What the rule forbids is the binding layer **querying** through a repo or `db.Ctx` to serve a request; wiring at startup is not that.
+
+## Extension recipes
+
+Adding something of a kind that already exists? Follow the existing one rather than inventing a shape — and the fastest way to learn a recipe is to find the most recent addition of that kind and read its commit.
+
+**A new business domain** — the full vertical, in dependency order:
+
+1. `internal/model/entity/<domain>_entity/` — the rich entity: GORM tags, `Check(ctx)`, state predicates, field (de)serialization.
+2. `migrations/YYYYMMDDNNNN_<domain>.go` — native SQL DDL, appended to the **end** of `migrationList()`.
+3. `internal/repository/<domain>_repo/` — `type XxxRepo interface` + `func Xxx() XxxRepo` + `RegisterXxx(impl)`, all queries through `db.Ctx(ctx)`. Add the `//go:generate mockgen` line.
+4. `internal/service/<domain>_svc/` — interface + singleton accessor + private implementation, depending only on the repo **interface**.
+5. `internal/app/<domain>.go` — **one file per domain**, methods only parse → `svc.Xxx().Method(ctx, …)` → return.
+6. `make generate` to refresh the Wails bindings, then the frontend consumes `frontend/wailsjs/`.
+
+Tests come first at each layer, per [testing.md](testing.md) — repo through sqlmock, service through a mockgen mock, and no unit test for the binding.
+
+**A new agent backend** (claude-code / codex / pi / builtin style) — entity, migration, runtime, translator, capability matrix, daemon import, frontend gating. That recipe has its own document: [agent-backend.md](agent-backend.md).
+
+**A new cross-cutting concern** — a new single-responsibility package under `internal/pkg/<concern>`, self-contained, importing no service or repository. If it needs one, it is not cross-cutting and belongs in a domain.
+
+**A new externally reusable CLI wrapper** — `pkg/<name>/`, maintained independently of the app's layering (this is where `claudecode` / `codex` / `piagent` live).
 
 ## Storage and paths
 
@@ -70,16 +115,16 @@ All desktop persistence is centralized in **AppDataDir**:
 | Platform | AppDataDir                                              |
 | ------- | ------------------------------------------------------- |
 | macOS   | `~/Library/Application Support/agentre/`                |
-| Windows | `%LOCALAPPDATA%\agentre\`                               |
+| Windows | `%AppData%\agentre\`                                    |
 | Linux   | `~/.config/agentre/`                                    |
 
-Use `AGENTRE_DATA_DIR` to override during testing or troubleshooting.
+The table is the installed-app default. `wails dev` / `make dev` uses the sibling leaf `agentre-dev/` instead, so development never touches production state. `AGENTRE_DATA_DIR` has highest precedence and overrides both during testing or troubleshooting.
 
 ```text
 <AppDataDir>/
   agentre.db          ← SQLite business database (gorm + gormigrate)
   logs/
-    agentre.log       ← full log (info+, dropped to debug+ in DebugMode)
+    agentre.log       ← full log (info+, dropped to debug+ when Debug Logging is enabled)
     error.log         ← error+ only
 ```
 
@@ -92,7 +137,7 @@ Environment variables:
 
 - `AGENTRE_ENV` — `dev` / `test` / `pre` / `prod`, defaults to `dev`.
 
-Debug logging no longer goes through an environment variable: it is controlled by the "Settings → Version & Updates → Debug logging" toggle, persisted as `logger.debug_enabled` in the `app_settings` table; toggling it hot-reloads the logger (takes effect immediately, no restart needed), and on startup it is restored from the persisted value.
+Debug logging no longer goes through an environment variable: it is controlled by the "Settings → Version & Updates → Debug Logging" toggle, persisted as `logger.debug_enabled` in the `app_settings` table; toggling it hot-reloads the logger (takes effect immediately, no restart needed), and on startup it is restored from the persisted value.
 
 ## Database and migrations
 
@@ -109,8 +154,10 @@ Adding a migration:
 
 | Path                                | Producer                                 | Regenerate                  |
 | ----------------------------------- | ---------------------------------------- | --------------------------- |
-| `frontend/wailsjs/**`               | Wails (from `App` bindings + Go structs) | `make dev` / `wails build`  |
-| `internal/**/mock_*/`               | `mockgen`                                | `make mock`                 |
+| `frontend/wailsjs/**`               | Wails (from `App` bindings + Go structs) | `make generate`             |
+| `frontend/package.json.md5`         | Wails frontend package tracking          | `make dev` / `wails build` |
+| `build/windows/installer/wails_tools.nsh` | Wails Windows installer tooling | Windows `wails build -nsis` |
+| `internal/**/mock_*/`, `internal/**/mocks/`, co-located `mock_*_test.go` | `mockgen` | `make mock` |
 | `frontend/dist/`                    | Vite (embedded via `//go:embed`)         | `wails build`               |
 | `<AppDataDir>/agentre.db`           | gorm + gormigrate                        | auto-migrated on startup    |
 | `<AppDataDir>/logs/*.log`           | cago logger                              | rolled at runtime           |

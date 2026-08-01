@@ -2,7 +2,7 @@
 
 This is the path, the change points, the constraints, and the pitfalls you must walk through when adding a new Agent backend (e.g. Gemini CLI / your own CLI / another in-process SDK). Read all of it before writing code — the `agentruntime.Runtime` interface looks narrow, but the supporting pieces you have to fill in are spread across six layers: entity / repo / service / wire / daemon / frontend.
 
-> Prerequisite reading: [architecture.md](architecture.md) (layering conventions), [development.md](development.md) (TDD/BDD + Fix Discipline).
+> Prerequisite reading: [architecture.md](architecture.md) (layering conventions), [develop.md](develop.md) (TDD/BDD + Fix Discipline).
 
 ---
 
@@ -597,7 +597,7 @@ To make this path work:
 
 ## 4. The mandatory TDD / BDD test checklist
 
-**In the Red phase, write, run, and see the test fail first, then implement.** Do not write implementation code without a failing test — this is the hard rule of [development.md](development.md) §0.
+**In the Red phase, write, run, and see the test fail first, then implement.** Do not write implementation code without a failing test — this is the hard rule of [develop.md](develop.md#tdd--bdd-workflow).
 
 | Test | Location | What it verifies |
 | --- | --- | --- |
@@ -614,7 +614,7 @@ To make this path work:
 | Daemon registry | `daemon/runtime_imports_test.go` | the new backend appears in `RegisteredRuntimes()` |
 | Service create/update/delete | `agent_backend_svc/agent_backend_test.go` | mockgen mock repo, verifying validation + persisted fields |
 
-repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a real SQLite** — see [development.md](development.md) §test stack.
+repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a real SQLite** — see [testing.md](testing.md) §test stack.
 
 ---
 
@@ -629,7 +629,7 @@ repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a re
 7. **Do not invent your own error to express `ErrNoActiveTurn` / `ErrUnsupported`**. These sentinels are transparent across processes; an invented string would leave chat_svc unable to translate it.
 8. **Do not let the runtime reverse-depend on repository / chat_svc**. The daemon process did not bootstrap the repo — one call would nil-panic. State is returned via `RunResult`.
 9. **Do not ignore ctx**. After the ctx received by `Run` is canceled, it must unblock all I/O — this is the prerequisite for chat_svc to implement the "Stop" button (claudecode via control_request, codex via turn/interrupt, builtin via canceling turnCtx).
-10. **Do not do a drive-by refactor in the same commit that adds a capability**. The diff only touches the producer + its tests. When you see unrelated dirty data, flag it first — see CLAUDE.md / AGENTS.md §3 / [development.md](development.md) §Fix Discipline.
+10. **Do not do a drive-by refactor in the same commit that adds a capability**. The diff only touches the producer + its tests. When you see unrelated dirty data, flag it first — see [AGENTS.md](../AGENTS.md#high-priority-constraints-mandatory-non-negotiable) and [develop.md](develop.md#fix-discipline-hard-constraint).
 
 ---
 
@@ -649,7 +649,7 @@ repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a re
 - [ ] Remote: the `runtime_imports.go` blank import has been added; the new Event / sentinel has the wire codec + round-trip test added
 - [ ] The Wails type's new fields have stable json tags; `make generate` has regenerated `frontend/wailsjs/`
 - [ ] The Prober has been registered in `proberRegistry`; the CLI-kind backend's env wiring is in `agentruntime/clienv.go` and shared with the chat path
-- [ ] Key flows are logged: `logger.Ctx(ctx)`, message uses the lowercase `package.Method:` prefix, fields use `zap.Xxx` (see [development.md](development.md) §logging)
+- [ ] Key flows are logged: `logger.Ctx(ctx)`, message uses the lowercase `package.Method:` prefix, fields use `zap.Xxx` (see [observability.md](observability.md))
 - [ ] `make check` (lint + test) all passes; the new package's service/repository layer coverage ≥80%
 
 ---

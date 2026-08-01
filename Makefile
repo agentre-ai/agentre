@@ -138,13 +138,13 @@ test-frontend: generate
 	cd $(FRONTEND_DIR) && pnpm test
 
 # E2E:Playwright 驱动真实 wails dev(-tags e2e 的确定性 fake runtime)跑 GUI 端到端。
-# 详见 docs/e2e-harness-guide.md。一次性装依赖+浏览器:cd e2e && pnpm run setup(CI 在独立
+# 详见 e2e/README.md。一次性装依赖+浏览器:cd e2e && pnpm run setup(CI 在独立
 # 步骤装,故这里不重复)。编排与收尾清理(回收残留 vite、删临时目录)都在 e2e/run-e2e.mjs
 # 里用 Node 跨平台完成;配方只做 shell 无关的 cd && pnpm,cmd/sh 皆可。
 e2e:
 	cd e2e && pnpm test
 
-# 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 docs/e2e-harness-guide.md。
+# 临时功能验证:跑 e2e/scratch/ 里的一次性 spec(不提交)。约定/用法见 e2e/README.md。
 e2e-scratch:
 	cd e2e && pnpm run test:scratch
 

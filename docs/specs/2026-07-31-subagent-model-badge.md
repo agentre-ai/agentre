@@ -155,7 +155,7 @@ subagent 帧的模型与用量不得写入主 agent 的模型、用量或上下�
 - **安全与隐私**：模型名不是凭证，不新增任何外发数据；不因本改动增加 prompt / 工具结果的落盘。
 - **兼容性**：以真 CLI 2.1.220 抓帧为基线。老 CLI 不发 `message.model` 或工具入参不带 `model` 时走降级路径，不报错、不阻断。
 - **可访问性**：模型是可见文本，天然进入无障碍树，不依赖颜色或图标单独编码。极简进度去掉了「个工具」/「tok」**可见**文案，展开区 meta 行的带标签完整值承担完整语义；同时极简进度元素本身须带无障碍名（不可见，仅供屏幕阅读器），使折叠态下两个裸数字也可被理解。该无障碍名属静态 UI copy，走 `t(...)` 且两份 locale 同步，并须正确处理单复数。不得使用 `title` 之类会在悬停时**可见**地把文案带回来的属性——那会推翻 R9 对该元素「纯数字、无文案」的定义。
-- **视觉**：模型徽标使用既有 `border-strong` 描边与 `muted-foreground` 前景，极简进度使用 `subtle-foreground`，均为既有令牌，不新增颜色令牌。徽标沿用 `text-meta` + `font-mono`，与 `docs/DESIGN.md` 中「模型名用 `font-mono`」一致。
+- **视觉**：模型徽标使用既有 `border-strong` 描边与 `muted-foreground` 前景，极简进度使用 `subtle-foreground`，均为既有令牌，不新增颜色令牌。徽标沿用 `text-meta` + `font-mono`，与 `docs/design.md` 中「模型名用 `font-mono`」一致。
 
 ## 实现决策
 
@@ -277,5 +277,5 @@ Then meta 行只列出有值的项，不出现 `0 tok` 之类的空占位。
   - `.dev-kit/artifacts/2026-07-31-subagent-model-badge/mockups/slim-header.html`——头部瘦身后的四种活信号方案，宽度取实测区间 720px（卡片最大宽）与 520px（窗口最小宽扣掉导航栏与会话侧栏后的下限）。
   两份都使用 `frontend/src/styles/globals.css` 的真实令牌。决定性内容已写入 R7–R11 与实现决策 1、2、5，本规格不依赖打开这些文件即可读懂。
 - 真 CLI 2.1.220 抓帧（本地产物，不入 Git）：`.dev-kit/artifacts/2026-07-31-subagent-model-badge/cli-2.1.220-subagent-model.jsonl`。
-- `docs/DESIGN.md` §排版：模型名属 `font-mono` 一类。
+- `docs/design.md` §排版：模型名属 `font-mono` 一类。
 - `docs/agent-backend.md`：agent 后端接入与 translator / capability 约定。
