@@ -73,6 +73,7 @@ type TurnContext struct {
 	// ToolPermission Request handler 调 MarkWaiting;Resolved handler 调 MarkRunning。
 	// chat_svc 在 newTurnContext 时注入。
 	SessionTransitioner SessionTransitioner
+	Waits               *WaitTracker
 }
 
 // MessageUpdater handler 在 UsageUpdate / Error 等场景下写 assistantMsg 走这条。

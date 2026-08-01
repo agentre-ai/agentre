@@ -44,6 +44,7 @@ your checkout will masquerade as released (the "branch leakage" above is exactly
 | [`agent-backend.md`](./agent-backend.md) | The full path to wiring in a new AI Agent backend (entity / migration / runtime / translator / capability / daemon import / frontend gating). |
 | [`session-lifecycle.md`](./session-lifecycle.md) | Rules for creating and reusing `chat_sessions`, including future issue/hook dispatch and remote-execution ownership. |
 | [`e2e-harness-guide.md`](./e2e-harness-guide.md) | The Playwright + fake-runtime e2e harness (root `e2e/` package): `make e2e` / `make e2e-scratch`, ad-hoc feature verification via throwaway `e2e/scratch/` specs vs. the committed `e2e/tests/` core suite, the cross-platform `run-e2e.mjs` runner, the `e2e` build-tag seam, the `node:sqlite` DB oracle, data isolation / seeding, and how to write or extend a spec. |
+| [`codex-backend-eval.md`](./codex-backend-eval.md) | The deterministic, token-free Codex app-server behavior eval: machine-readable command, state-machine invariants, scenario rubric, independent judge guidance, and the optional real-CLI boundary. |
 | [`doc-maintenance.md`](./doc-maintenance.md) | This guide: doc organization rules + fact-checking / anti-drift discipline. |
 | [`specs/*`](./specs) | Approved executable behavior specs for active changes: requirements, non-goals, implementation decisions, test seams, and traceable acceptance criteria. |
 | [`README_zh.md`](./README_zh.md) / [`../README.md`](../README.md) | The user-facing Chinese / English project README — **not** a docs index; don't stuff contributor conventions into it. |
@@ -132,7 +133,7 @@ Link integrity — confirm every relative markdown link in the core docs resolve
 ```bash
 for doc in AGENTS.md CLAUDE.md docs/architecture.md docs/development.md docs/frontend.md docs/DESIGN.md \
            docs/debugging.md docs/agent-backend.md docs/session-lifecycle.md docs/e2e-harness-guide.md \
-           docs/doc-maintenance.md; do
+           docs/codex-backend-eval.md docs/doc-maintenance.md; do
   grep -oE '\]\(([^)]+)\)' "$doc" | sed -E 's/^\]\(|\)$//g' | grep -vE '^https?:|^#|^mailto:' | while read -r link; do
     target="$(dirname "$doc")/${link%%#*}"
     [ -e "$target" ] && echo "ok     $doc → $link" || echo "BROKEN $doc → $link"

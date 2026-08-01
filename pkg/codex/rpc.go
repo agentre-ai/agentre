@@ -24,10 +24,10 @@ func (e *rpcError) Error() string {
 	if e == nil {
 		return ""
 	}
-	if len(e.Data) == 0 {
-		return fmt.Sprintf("codex app-server: rpc error %d: %s", e.Code, e.Message)
-	}
-	return fmt.Sprintf("codex app-server: rpc error %d: %s: %s", e.Code, e.Message, string(e.Data))
+	// Data is intentionally omitted: upstream errors may echo request headers,
+	// tool arguments, or configuration values. The stable code and redacted
+	// message are sufficient to correlate the failure without leaking secrets.
+	return fmt.Sprintf("codex app-server: rpc error %d: %s", e.Code, sanitizeDiagnostic(e.Message))
 }
 
 type rpcMessage struct {
@@ -156,6 +156,16 @@ func (c *appClient) Respond(_ context.Context, id json.RawMessage, result any) e
 	return c.writeJSON(map[string]any{"id": json.RawMessage(id), "result": result})
 }
 
+func (c *appClient) RespondError(_ context.Context, id json.RawMessage, code int64, message string) error {
+	return c.writeJSON(map[string]any{
+		"id": json.RawMessage(id),
+		"error": map[string]any{
+			"code":    code,
+			"message": sanitizeDiagnostic(message),
+		},
+	})
+}
+
 func (c *appClient) writeJSON(v any) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -182,7 +192,9 @@ scan:
 		}
 		var msg rpcMessage
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			continue
+			readErr = fmt.Errorf("%w: invalid JSON-RPC message: %v", ErrProtocol, err)
+			_ = c.proc.Kill()
+			break scan
 		}
 		if !c.routeMessage(msg) {
 			break scan

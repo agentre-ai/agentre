@@ -62,7 +62,6 @@
       "label": "Approval Policy",
       "options": {
         "never": "Never ask for human approval",
-        "on-failure": "Ask when a tool fails",
         "on-request": "Ask when the model requests approval",
         "untrusted": "Auto-run trusted tools only"
       }

@@ -30,9 +30,7 @@ func (UserAskRequestHandler) Apply(ctx context.Context, ev agentruntime.Event, a
 			"askUserQuestion":  blk,
 		})
 	}
-	if tc != nil && tc.SessionTransitioner != nil && tc.Session != nil {
-		tc.SessionTransitioner.MarkWaiting(ctx, tc.Session, tc.Stream)
-	}
+	tc.BeginWait(ctx, "user_ask", r.RequestID)
 	return nil
 }
 
@@ -62,9 +60,7 @@ func (UserAskResolvedHandler) Apply(ctx context.Context, ev agentruntime.Event, 
 			"askUserQuestion":  blkPtr,
 		})
 	}
-	if tc != nil && tc.SessionTransitioner != nil && tc.Session != nil {
-		tc.SessionTransitioner.MarkRunning(ctx, tc.Session, tc.Stream)
-	}
+	tc.ResolveWait(ctx, "user_ask", r.RequestID)
 	return nil
 }
 

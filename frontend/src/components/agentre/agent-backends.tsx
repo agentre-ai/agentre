@@ -124,7 +124,7 @@ type FlashState =
   | null;
 
 type SandboxValue = "" | "read-only" | "workspace-write" | "danger-full-access";
-type ApprovalValue = "" | "untrusted" | "on-failure" | "on-request" | "never";
+type ApprovalValue = "" | "untrusted" | "on-request" | "never";
 type ReasoningEffortValue = "" | "low" | "medium" | "high" | "xhigh" | "max";
 type BackendDraft = {
   type: BackendType;
@@ -178,12 +178,7 @@ type ClaudeTier = (typeof CLAUDE_TIERS)[number];
 
 const APPROVAL_OPTIONS: {
   value: Exclude<ApprovalValue, "">;
-}[] = [
-  { value: "untrusted" },
-  { value: "on-failure" },
-  { value: "on-request" },
-  { value: "never" },
-];
+}[] = [{ value: "untrusted" }, { value: "on-request" }, { value: "never" }];
 
 const SANDBOX_OPTIONS: {
   value: Exclude<SandboxValue, "">;
@@ -2164,7 +2159,7 @@ function ApprovalField({
         value={value === "" ? "never" : value}
         onValueChange={(v) => onChange(v as ApprovalValue)}
       >
-        <SelectTrigger>
+        <SelectTrigger aria-label={t("agentBackends.approval.label")}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

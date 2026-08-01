@@ -3,8 +3,10 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cago-frame/agents/provider"
 )
@@ -19,15 +21,22 @@ func (s *Stream) drain(ctx context.Context) {
 	})
 
 	preSeen := map[string]struct{}{}
-	doneCh := s.app.Done()
+	cancelCh := ctx.Done()
+	var interruptTimer *time.Timer
+	var interruptDeadline <-chan time.Time
+	defer func() {
+		if interruptTimer != nil {
+			interruptTimer.Stop()
+		}
+	}()
 	for {
 		select {
 		case in, ok := <-s.app.Incoming():
 			if !ok {
 				if err := s.app.Err(); err != nil {
-					s.emitError(err, nil)
+					s.failProcess(err)
 				} else if !s.app.isStopping() {
-					s.emitError(ErrProcessDead, nil)
+					s.failProcess(ErrProcessDead)
 				}
 				return
 			}
@@ -35,15 +44,35 @@ func (s *Stream) drain(ctx context.Context) {
 			if done {
 				return
 			}
-		case <-doneCh:
-			if err := s.app.Err(); err != nil {
-				s.emitError(err, nil)
-			} else if !s.app.isStopping() {
-				s.emitError(ErrProcessDead, nil)
-			}
-			return
-		case <-ctx.Done():
+		case <-cancelCh:
+			cancelCh = nil
 			s.emitError(ctx.Err(), nil)
+			interruptCtx, cancel := context.WithTimeout(context.Background(), s.interruptGrace())
+			err := s.Interrupt(interruptCtx)
+			cancel()
+			if err != nil && !errors.Is(err, ErrNoActiveTurn) {
+				s.emitError(fmt.Errorf("codex: interrupt after context cancellation: %w", err), nil)
+				s.markReusable(false)
+				_, _ = s.transitionTerminal(TurnStateFailed)
+				_ = s.app.terminate(context.Background(), s.interruptGrace())
+				return
+			}
+			if errors.Is(err, ErrNoActiveTurn) {
+				changed, _ := s.beginInterrupt()
+				if changed {
+					s.signalInterrupt()
+				}
+			}
+		case <-s.interruptSignal:
+			if interruptTimer == nil {
+				interruptTimer = time.NewTimer(s.interruptGrace())
+				interruptDeadline = interruptTimer.C
+			}
+		case <-interruptDeadline:
+			s.emitError(errors.New("codex: interrupted turn did not reach a terminal notification before grace expired"), nil)
+			s.markReusable(false)
+			_, _ = s.transitionTerminal(TurnStateFailed)
+			_ = s.app.terminate(context.Background(), s.interruptGrace())
 			return
 		}
 	}
@@ -51,7 +80,13 @@ func (s *Stream) drain(ctx context.Context) {
 
 func (s *Stream) handleInbound(ctx context.Context, in appInbound, preSeen map[string]struct{}) bool {
 	if in.Kind == appInboundRequest {
-		_ = s.handleServerRequest(ctx, in)
+		if !s.ownsServerRequest(in) {
+			_ = s.app.RespondError(ctx, in.ID, -32001, "request does not belong to the active turn")
+			return false
+		}
+		if err := s.handleServerRequest(ctx, in); err != nil {
+			s.emitError(err, nil)
+		}
 		return false
 	}
 	n, err := parseNotification(in.Params)
@@ -65,10 +100,15 @@ func (s *Stream) handleInbound(ctx context.Context, in appInbound, preSeen map[s
 	if !s.ownsNotification(n) {
 		return false
 	}
+	if s.state != nil && s.state.Terminal() {
+		return in.Method == appMethodTurnCompleted
+	}
 	if n.ThreadID != "" {
 		s.setSessionID(n.ThreadID)
 	}
 	switch in.Method {
+	case appMethodItemPlanDelta:
+		s.emitPlanDelta(n, in.Params)
 	case appMethodItemAgentMessageDelta:
 		if n.ItemID != "" {
 			// If an agentMessage later completes with full text, avoid re-emitting it.
@@ -92,6 +132,8 @@ func (s *Stream) handleInbound(ctx context.Context, in appInbound, preSeen map[s
 		})
 	case appMethodTurnPlanUpdated:
 		s.emitPlan(n, in.Params)
+	case appMethodServerRequestResolved:
+		s.handleRequestResolved(n, in.Params)
 	case appMethodRawResponseItemCompleted:
 		if isCompactItem(n.Item) {
 			s.emitCompactBoundary(n, in.Params)
@@ -107,6 +149,14 @@ func (s *Stream) handleInbound(ctx context.Context, in appInbound, preSeen map[s
 	case appMethodThreadCompacted:
 		s.emitCompactBoundary(n, in.Params)
 		if s.isManualCompactStream() {
+			changed, transitionErr := s.transitionTerminal(TurnStateCompleted)
+			if transitionErr != nil {
+				s.emitError(transitionErr, in.Params)
+				return true
+			}
+			if !changed {
+				return true
+			}
 			s.emit(Event{
 				Kind:          EventDone,
 				SessionID:     s.SessionID(),
@@ -117,26 +167,20 @@ func (s *Stream) handleInbound(ctx context.Context, in appInbound, preSeen map[s
 			return true
 		}
 	case appMethodTurnCompleted:
-		if n.Turn != nil && s.turnID != "" && n.Turn.ID != s.turnID {
-			return false
-		}
-		if err := appTurnErr(n.Turn); err != nil {
-			s.emitError(err, in.Params)
-		}
-		s.emit(Event{
-			Kind:          EventDone,
-			SessionID:     s.SessionID(),
-			Usage:         s.currentUsage(),
-			ContextWindow: s.currentContextWindow(),
-			Raw:           in.Params,
-		})
-		return true
+		return s.handleTurnCompleted(n, in.Params)
 	case appMethodError:
 		if n.WillRetry {
 			s.emit(Event{Kind: EventRetry, SessionID: s.SessionID(), Retry: appRetryEvent(n), Raw: in.Params})
 			return false
 		}
-		s.emitError(fmt.Errorf("codex app-server: %s", string(in.Params)), in.Params)
+		message := "app-server reported an error"
+		if n.Error != nil && strings.TrimSpace(n.Error.Message) != "" {
+			message = n.Error.Message
+			if strings.TrimSpace(n.Error.AdditionalDetails) != "" {
+				message += ": " + n.Error.AdditionalDetails
+			}
+		}
+		s.emitError(fmt.Errorf("codex app-server: %s", sanitizeDiagnostic(message)), in.Params)
 	}
 	return false
 }
@@ -148,12 +192,21 @@ func (s *Stream) adoptStartedTurn(n appNotification) {
 	if n.Turn == nil || strings.TrimSpace(n.Turn.ID) == "" {
 		return
 	}
+	if s.history != nil && s.history.Contains(n.Turn.ID) {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if n.ThreadID != "" && s.sessionID != "" && n.ThreadID != s.sessionID {
 		return
 	}
+	if s.turnID != "" && s.turnID != n.Turn.ID && s.history != nil {
+		s.history.Remember(s.turnID)
+	}
 	s.turnID = n.Turn.ID
+	if s.state != nil {
+		_, _ = s.state.Transition(TurnStateRunning)
+	}
 }
 
 func (s *Stream) ownsNotification(n appNotification) bool {
@@ -191,10 +244,15 @@ func (s *Stream) handleItemStarted(n appNotification, raw json.RawMessage, preSe
 	case appItemUserMessage:
 		s.emitUserMessageIfMissing(item, raw, preSeen)
 		return
-	case appItemAgentMessage, appItemReasoning, appItemPlan:
+	case appItemAgentMessage, appItemReasoning, appItemPlan,
+		appItemHookPrompt, appItemEnteredReviewMode, appItemExitedReviewMode:
 		return
 	case appItemFileChange:
 		if len(item.Changes) == 0 {
+			return
+		}
+	default:
+		if !isToolItemType(item.Type) {
 			return
 		}
 	}
@@ -210,6 +268,9 @@ func (s *Stream) handleItemCompleted(n appNotification, raw json.RawMessage, pre
 		s.emitCompactBoundary(n, raw)
 		return
 	}
+	if item.ID != "" && !s.markItemCompleted(item.ID) {
+		return
+	}
 	switch item.Type {
 	case appItemUserMessage:
 		s.emitUserMessageIfMissing(item, raw, preSeen)
@@ -221,7 +282,8 @@ func (s *Stream) handleItemCompleted(n appNotification, raw json.RawMessage, pre
 		if strings.TrimSpace(item.Text) != "" {
 			s.emit(Event{Kind: EventPlanUpdated, SessionID: s.SessionID(), PlanText: item.Text, Raw: raw})
 		}
-	case appItemCommandExecution, appItemFileChange, appItemMCPToolCall, appItemDynamicToolCall, appItemCollabAgentTool:
+	case appItemCommandExecution, appItemFileChange, appItemMCPToolCall, appItemDynamicToolCall, appItemCollabAgentTool,
+		appItemWebSearch, appItemImageView, appItemSleep, appItemImageGeneration, appItemSubAgentActivity:
 		s.emitPreToolUseIfMissing(item, raw, preSeen)
 		s.emit(Event{
 			Kind:      EventPostToolUse,
@@ -391,7 +453,7 @@ func (s *Stream) handleServerRequest(ctx context.Context, in appInbound) error {
 	case appMethodItemToolCall:
 		return app.Respond(ctx, in.ID, map[string]any{"contentItems": []any{}, "success": false})
 	default:
-		return app.Respond(ctx, in.ID, map[string]any{})
+		return app.RespondError(ctx, in.ID, -32601, "Method not found")
 	}
 }
 
@@ -478,4 +540,217 @@ func (s *Stream) currentContextWindow() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.contextWindow
+}
+
+func (s *Stream) transition(next TurnState) (bool, error) {
+	if s.state == nil {
+		s.state = newTurnStateMachine()
+	}
+	return s.state.Transition(next)
+}
+
+func (s *Stream) interruptGrace() time.Duration {
+	if s.killGrace > 0 {
+		return s.killGrace
+	}
+	return 100 * time.Millisecond
+}
+
+func (s *Stream) markReusable(reusable bool) {
+	s.mu.Lock()
+	s.reusable = reusable
+	s.mu.Unlock()
+}
+
+func (s *Stream) failProcess(err error) {
+	if err == nil {
+		err = ErrProcessDead
+	}
+	s.markReusable(false)
+	if s.state == nil || !s.state.Terminal() {
+		_, _ = s.transitionTerminal(TurnStateFailed)
+		s.emitError(err, nil)
+	}
+}
+
+func (s *Stream) handleTurnCompleted(n appNotification, raw json.RawMessage) bool {
+	status := ""
+	turnID := n.TurnID
+	if n.Turn != nil {
+		status = n.Turn.Status
+		if n.Turn.ID != "" {
+			turnID = n.Turn.ID
+		}
+	}
+
+	target := TurnStateFailed
+	var terminalErr error
+	switch status {
+	case appStatusCompleted:
+		target = TurnStateCompleted
+	case appStatusInterrupted:
+		target = TurnStateCanceled
+	case appStatusFailed:
+		target = TurnStateFailed
+		terminalErr = appTurnErr(n.Turn)
+	default:
+		terminalErr = fmt.Errorf("codex: turn/completed carried non-terminal status %q", status)
+	}
+	changed, transitionErr := s.transitionTerminal(target)
+	if transitionErr != nil {
+		s.emitError(transitionErr, raw)
+		return true
+	}
+	if !changed {
+		return true
+	}
+	if s.history != nil {
+		s.history.Remember(turnID)
+	}
+	if terminalErr != nil {
+		s.emitError(terminalErr, raw)
+	}
+	s.emit(Event{
+		Kind:          EventDone,
+		SessionID:     s.SessionID(),
+		Usage:         s.currentUsage(),
+		ContextWindow: s.currentContextWindow(),
+		Raw:           raw,
+	})
+	return true
+}
+
+func (s *Stream) emitPlanDelta(n appNotification, raw json.RawMessage) {
+	if n.Delta == "" {
+		return
+	}
+	key := strings.TrimSpace(n.ItemID)
+	if key == "" {
+		key = strings.TrimSpace(n.TurnID) + ":plan"
+	}
+	if s.planText == nil {
+		s.planText = map[string]string{}
+	}
+	s.planText[key] += n.Delta
+	s.emit(Event{
+		Kind:      EventPlanUpdated,
+		SessionID: s.SessionID(),
+		PlanText:  s.planText[key],
+		Raw:       raw,
+	})
+}
+
+func (s *Stream) markItemCompleted(itemID string) bool {
+	if s.completedItems == nil {
+		s.completedItems = map[string]struct{}{}
+	}
+	if _, exists := s.completedItems[itemID]; exists {
+		return false
+	}
+	s.completedItems[itemID] = struct{}{}
+	return true
+}
+
+func isToolItemType(itemType string) bool {
+	switch itemType {
+	case appItemCommandExecution, appItemFileChange, appItemMCPToolCall,
+		appItemDynamicToolCall, appItemCollabAgentTool, appItemWebSearch,
+		appItemImageView, appItemSleep, appItemImageGeneration, appItemSubAgentActivity:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Stream) ownsServerRequest(in appInbound) bool {
+	if s == nil || s.app == nil || (s.state != nil && (s.state.Terminal() || s.state.State() == TurnStateInterrupting)) {
+		return false
+	}
+	var identity struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+	}
+	if len(in.Params) > 0 && json.Unmarshal(in.Params, &identity) != nil {
+		return false
+	}
+	return s.ownsNotification(appNotification{ThreadID: identity.ThreadID, TurnID: identity.TurnID})
+}
+
+func (s *Stream) handleRequestResolved(n appNotification, raw json.RawMessage) {
+	requestID := requestIDKey(n.RequestID)
+	if requestID == "" {
+		return
+	}
+	kind, found := s.removePendingRequest(requestID)
+	if !found {
+		return
+	}
+	s.emit(Event{
+		Kind:      EventRequestResolved,
+		SessionID: s.SessionID(),
+		RequestResolved: &RequestResolvedEvent{
+			RequestID: requestID,
+			Kind:      kind,
+		},
+		Raw: raw,
+	})
+}
+
+func (s *Stream) removePendingRequest(requestID string) (RequestKind, bool) {
+	s.userInputMu.Lock()
+	defer s.userInputMu.Unlock()
+	if _, exists := s.userInputRequests[requestID]; exists {
+		delete(s.userInputRequests, requestID)
+		s.updateWaitStateLocked()
+		return RequestKindUserInput, true
+	}
+	if _, exists := s.approvalRequests[requestID]; exists {
+		delete(s.approvalRequests, requestID)
+		s.updateWaitStateLocked()
+		return RequestKindApproval, true
+	}
+	return "", false
+}
+
+func (s *Stream) transitionTerminal(target TurnState) (bool, error) {
+	s.userInputMu.Lock()
+	defer s.userInputMu.Unlock()
+	changed, err := s.transition(target)
+	if changed {
+		clear(s.userInputRequests)
+		clear(s.approvalRequests)
+	}
+	return changed, err
+}
+
+func (s *Stream) beginInterrupt() (bool, error) {
+	s.userInputMu.Lock()
+	defer s.userInputMu.Unlock()
+	changed, err := s.transition(TurnStateInterrupting)
+	if changed {
+		clear(s.userInputRequests)
+		clear(s.approvalRequests)
+	}
+	return changed, err
+}
+
+func (s *Stream) signalInterrupt() {
+	if s == nil || s.interruptSignal == nil {
+		return
+	}
+	select {
+	case s.interruptSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Stream) updateWaitStateLocked() {
+	if s.state == nil || s.state.Terminal() || s.state.State() == TurnStateInterrupting {
+		return
+	}
+	target := TurnStateRunning
+	if len(s.userInputRequests)+len(s.approvalRequests) > 0 {
+		target = TurnStateWaiting
+	}
+	_, _ = s.state.Transition(target)
 }

@@ -2722,6 +2722,7 @@ func (s *chatSvc) runTurn(
 			s.checkpointAssistantNew(ctx, assistantMsg, acc)
 		}
 	}
+	turnCtx.ClearWaits()
 
 	if req.CollaborationMode == permissionModePlan && !compact && acc.Empty() {
 		acc.AddText("Plan mode completed without executable changes.")

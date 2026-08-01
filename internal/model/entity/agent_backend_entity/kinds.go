@@ -228,7 +228,7 @@ func validateSandbox(ctx context.Context, v string) error {
 // validateApproval 校验 codex approval policy 枚举；空字符串表示 never。
 func validateApproval(ctx context.Context, v string) error {
 	switch strings.TrimSpace(v) {
-	case "", "untrusted", "on-failure", "on-request", "never":
+	case "", "untrusted", "on-request", "never":
 		return nil
 	default:
 		return i18n.NewError(ctx, code.AgentBackendInvalidApproval)

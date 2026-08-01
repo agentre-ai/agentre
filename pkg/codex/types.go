@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -51,6 +52,7 @@ const (
 	appMethodThreadTokenUsageUpdated       = "thread/tokenUsage/updated"
 	appMethodThreadCompacted               = "thread/compacted"
 	appMethodTurnPlanUpdated               = "turn/plan/updated"
+	appMethodServerRequestResolved         = "serverRequest/resolved"
 	appMethodError                         = "error"
 
 	appItemUserMessage       = "userMessage"
@@ -63,6 +65,14 @@ const (
 	appItemDynamicToolCall   = "dynamicToolCall"
 	appItemCollabAgentTool   = "collabAgentToolCall"
 	appItemContextCompaction = "contextCompaction"
+	appItemWebSearch         = "webSearch"
+	appItemImageView         = "imageView"
+	appItemSleep             = "sleep"
+	appItemImageGeneration   = "imageGeneration"
+	appItemSubAgentActivity  = "subAgentActivity"
+	appItemHookPrompt        = "hookPrompt"
+	appItemEnteredReviewMode = "enteredReviewMode"
+	appItemExitedReviewMode  = "exitedReviewMode"
 
 	appStatusCompleted   = "completed"
 	appStatusInterrupted = "interrupted"
@@ -169,6 +179,7 @@ type appNotification struct {
 	Error     *appNotifyError `json:"error"`
 	Item      *appThreadItem  `json:"item"`
 	ItemID    string          `json:"itemId"`
+	RequestID json.RawMessage `json:"requestId"`
 	Delta     string          `json:"delta"`
 	Usage     *appTokenUsage  `json:"tokenUsage"`
 	Turn      *appTurn        `json:"turn"`
@@ -444,13 +455,21 @@ func appUsageToProvider(u *appTokenUsage) provider.Usage {
 }
 
 func appTurnErr(turn *appTurn) error {
-	if turn == nil || turn.Error == nil {
+	if turn == nil {
 		return nil
 	}
-	if turn.Error.AdditionalDetails != "" {
-		return fmt.Errorf("codex: %s: %s", turn.Error.Message, turn.Error.AdditionalDetails)
+	if turn.Error == nil {
+		if turn.Status == appStatusFailed {
+			return errors.New("codex: turn failed without error details")
+		}
+		return nil
 	}
-	return fmt.Errorf("codex: %s", turn.Error.Message)
+	message := sanitizeDiagnostic(turn.Error.Message)
+	details := sanitizeDiagnostic(turn.Error.AdditionalDetails)
+	if turn.Error.AdditionalDetails != "" {
+		return fmt.Errorf("codex: %s: %s", message, details)
+	}
+	return fmt.Errorf("codex: %s", message)
 }
 
 var appRetryCountRE = regexp.MustCompile(`(\d+)\s*/\s*(\d+)`)
@@ -458,8 +477,8 @@ var appRetryCountRE = regexp.MustCompile(`(\d+)\s*/\s*(\d+)`)
 func appRetryEvent(n appNotification) *RetryEvent {
 	retry := &RetryEvent{}
 	if n.Error != nil {
-		retry.Message = n.Error.Message
-		retry.AdditionalDetails = n.Error.AdditionalDetails
+		retry.Message = sanitizeDiagnostic(n.Error.Message)
+		retry.AdditionalDetails = sanitizeDiagnostic(n.Error.AdditionalDetails)
 	}
 	if m := appRetryCountRE.FindStringSubmatch(retry.Message); len(m) == 3 {
 		if attempt, err := strconv.Atoi(m[1]); err == nil {

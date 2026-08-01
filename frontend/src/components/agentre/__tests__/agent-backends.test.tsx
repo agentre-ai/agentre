@@ -1010,6 +1010,33 @@ describe("AgentBackendsPanel", () => {
     });
   });
 
+  it("Codex approval options match codex-cli 0.145.0 and omit on-failure", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "Approval Policy" }),
+    );
+
+    expect(
+      screen.getByRole("option", { name: /trusted tools/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /model requests/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /Never ask/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: /tool fails/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("codex 思考力度开放 xhigh，保存时透传 reasoningEffort=xhigh", async () => {
     const user = userEvent.setup();
     const mocks = installAppMock();

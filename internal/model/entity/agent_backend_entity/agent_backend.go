@@ -59,7 +59,7 @@ type AgentBackend struct {
 	ModelRoutes string `gorm:"column:model_routes;type:text;not null;default:'{}'"`
 	// Sandbox 仅 codex 使用：read-only / workspace-write / danger-full-access；空 = CLI 默认。
 	Sandbox string `gorm:"column:sandbox;type:text;not null;default:''"`
-	// Approval 仅 codex 使用：untrusted / on-failure / on-request / never；空 = never。
+	// Approval 仅 codex 使用：untrusted / on-request / never；空 = never。
 	Approval string `gorm:"column:approval;type:text;not null;default:''"`
 	// EnvJSON claudecode / codex 共用：`{"K":"V"}` 自定义透传环境变量；保留键拒入。
 	EnvJSON string `gorm:"column:env_json;type:text;not null;default:'{}'"`

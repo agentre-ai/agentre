@@ -62,7 +62,6 @@
       "label": "Approval Policy",
       "options": {
         "never": "从不需要人工确认",
-        "on-failure": "工具失败时人工确认",
         "on-request": "模型请求时人工确认",
         "untrusted": "仅信任的工具自动执行"
       }
