@@ -60,7 +60,8 @@ export function OpenClawBackendFields({
   // 因此只在拿到 admin scope 时才下发 model。探测已经带回授予的 scope,这里据此
   // 说明清楚,免得用户选了一个永远不生效的模型。
   const modelOverrideAllowed =
-    probe?.ok === true && (probe.grantedScopes ?? []).includes("operator.admin");
+    probe?.ok === true &&
+    (probe.grantedScopes ?? []).includes("operator.admin");
   const modelOverrideBlocked = probe?.ok === true && !modelOverrideAllowed;
   const selectedAgent = agents.some((agent) => agent.id === agentID)
     ? agentID

@@ -40,7 +40,9 @@ describe("openClawDraftIssue", () => {
   });
 
   it("requires a name before anything else", () => {
-    expect(openClawDraftIssue({ ...valid, name: "  " })).toBe("OPENCLAW_NAME_REQUIRED");
+    expect(openClawDraftIssue({ ...valid, name: "  " })).toBe(
+      "OPENCLAW_NAME_REQUIRED",
+    );
   });
 
   it("rejects an unsupported session mode", () => {
@@ -58,12 +60,18 @@ describe("error code → locale coverage", () => {
     ["zh-CN", zh as Record<string, unknown>],
   ];
 
-  it.each(locales)("%s has copy for every mapped OpenClaw error code", (_name, locale) => {
-    const errors = (
-      (locale.agentBackends as Record<string, unknown>).openclaw as Record<string, unknown>
-    ).errors as Record<string, string>;
-    for (const key of Object.values(OPENCLAW_ERROR_KEY_BY_CODE)) {
-      expect(errors[key], `missing errors.${key}`).toBeTruthy();
-    }
-  });
+  it.each(locales)(
+    "%s has copy for every mapped OpenClaw error code",
+    (_name, locale) => {
+      const errors = (
+        (locale.agentBackends as Record<string, unknown>).openclaw as Record<
+          string,
+          unknown
+        >
+      ).errors as Record<string, string>;
+      for (const key of Object.values(OPENCLAW_ERROR_KEY_BY_CODE)) {
+        expect(errors[key], `missing errors.${key}`).toBeTruthy();
+      }
+    },
+  );
 });
