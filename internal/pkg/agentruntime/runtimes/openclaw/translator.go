@@ -35,9 +35,10 @@ func (a *activeTurn) handleGatewayEvent(event openclawgateway.Event) (needsRecon
 		if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != a.runID {
 			return false
 		}
-		if payload.SessionKey != "" && payload.SessionKey != a.sessionKey {
+		if !a.matchesSession(payload.SessionKey) {
 			return false
 		}
+		a.adoptSessionKey(payload.SessionKey)
 		if payload.Seq > 0 {
 			if payload.Seq <= a.lastAgentSeq {
 				return false
@@ -48,9 +49,11 @@ func (a *activeTurn) handleGatewayEvent(event openclawgateway.Event) (needsRecon
 		a.handleAgentPayload(payload)
 	case "chat":
 		var payload chatEventPayload
-		if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != a.runID || payload.SessionKey != a.sessionKey {
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.RunID != a.runID ||
+			!a.matchesSession(payload.SessionKey) {
 			return false
 		}
+		a.adoptSessionKey(payload.SessionKey)
 		if payload.Seq > 0 {
 			if payload.Seq <= a.lastChatSeq {
 				return false
@@ -187,7 +190,12 @@ func (a *activeTurn) handleLifecycle(raw json.RawMessage) {
 }
 
 func (a *activeTurn) handleUsage(raw json.RawMessage) {
-	usage := decodeUsage(raw)
+	a.applyUsage(decodeUsage(raw))
+}
+
+// applyUsage 是 usage 的唯一出口:帧里带的 usage 和收轮时从会话记录补的 usage
+// 都走这里,保证 RunResult 与 UsageUpdate 始终一致。
+func (a *activeTurn) applyUsage(usage *provider.Usage) {
 	if usage == nil {
 		return
 	}

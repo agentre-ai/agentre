@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -95,6 +96,10 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	hello, err := client.Start(ctx)
 	if err != nil {
 		client.Close()
+		if ctx.Err() != nil {
+			// 用户在握手期间点了停止 —— 是中止不是故障。
+			return nil, nil, agentruntime.ErrAborted
+		}
 		return nil, nil, err
 	}
 	if err := openclawgateway.ValidateRuntimeFeatures(hello); err != nil {
@@ -105,10 +110,17 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if hasGrantedScope(hello.Auth.Scopes, "operator.admin") {
 		modelOverride = strings.TrimSpace(req.Backend.OpenClawDefaultModel)
 	}
-	initialApprovals, err := listExecApprovals(ctx, client)
-	if err != nil {
-		client.Close()
-		return nil, nil, fmt.Errorf("openclaw runtime: list exec approvals: %w", err)
+	// 开轮对账是尽力而为:待审批本来也会通过 exec.approval.requested 事件到达,而
+	// exec.approval.list 在真实网关上只对创建该审批的连接/管理员可见,拿不到属常态。
+	// 早期版本把这里当致命错误,结果用户在这一次 RPC 往返期间点停止 → ctx cancel →
+	// 整轮以「故障」收场,会话卡死在 running。ctx 被取消要明确回 ErrAborted。
+	initialApprovals, listErr := listExecApprovals(ctx, client)
+	if listErr != nil {
+		if ctx.Err() != nil {
+			client.Close()
+			return nil, nil, agentruntime.ErrAborted
+		}
+		initialApprovals = nil
 	}
 	// Start publishes the initial ready snapshot. Drain it here so every value
 	// consumed by activeTurn means a reconnect and therefore requires state
@@ -123,37 +135,94 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		sessionKey = fmt.Sprintf("agentre:%d:%d", req.Backend.ID, req.SessionID)
 	}
 	runID := uuid.NewString()
-	params := struct {
+	agentID := strings.TrimSpace(req.Backend.OpenClawAgentID)
+	// 开轮默认走 chat.send:网关只在这条路径上把「发起该轮的设备」记成审批 reviewer
+	// (server 侧 ApprovalReviewerDeviceId),agent 方法不绑 —— 用 agent 起轮，本设备
+	// 就看不到自己这一轮触发的 exec 审批,工具调用会一直挂着等一个永远看不见的决策。
+	// 唯一的例外是 admin 下发 model override:chat.send 没有 model 参数,而 admin
+	// 连接本来就能看见全部审批,不依赖 reviewer 绑定。
+	// chat.send 起的轮次不会广播 agent/chat 事件 —— 网关只发给
+	// sessions.messages.subscribe 的订阅者。订阅不了就只能退回 agent(它广播),
+	// 宁可丢掉审批可见性也不能让整轮没有流式输出。
+	canSubscribe := slices.Contains(hello.Features.Methods, sessionSubscribeMethod)
+	useChatSend := modelOverride == "" &&
+		slices.Contains(hello.Features.Methods, chatSendMethod) && canSubscribe
+	sessionKeyCanonical := strings.TrimSpace(req.ProviderSessionID) != ""
+	if useChatSend {
+		canonicalKey, subscribeErr := subscribeSessionMessages(ctx, client, sessionKey, agentID)
+		if subscribeErr != nil {
+			client.Close()
+			if ctx.Err() != nil {
+				return nil, nil, agentruntime.ErrAborted
+			}
+			return nil, nil, fmt.Errorf("openclaw runtime: subscribe session messages: %w", subscribeErr)
+		}
+		if canonicalKey != "" {
+			sessionKey = canonicalKey
+			sessionKeyCanonical = true
+		}
+	}
+	turnMethod := "chat.send"
+	var turnParams any = struct {
 		Message        string `json:"message"`
 		AgentID        string `json:"agentId,omitempty"`
-		Model          string `json:"model,omitempty"`
 		SessionKey     string `json:"sessionKey"`
 		Deliver        bool   `json:"deliver"`
 		IdempotencyKey string `json:"idempotencyKey"`
 	}{
 		Message:        req.UserText,
-		AgentID:        strings.TrimSpace(req.Backend.OpenClawAgentID),
-		Model:          modelOverride,
+		AgentID:        agentID,
 		SessionKey:     sessionKey,
 		Deliver:        false,
 		IdempotencyKey: runID,
+	}
+	if !useChatSend {
+		turnMethod = "agent"
+		turnParams = struct {
+			Message        string `json:"message"`
+			AgentID        string `json:"agentId,omitempty"`
+			Model          string `json:"model,omitempty"`
+			SessionKey     string `json:"sessionKey"`
+			Deliver        bool   `json:"deliver"`
+			IdempotencyKey string `json:"idempotencyKey"`
+		}{
+			Message:        req.UserText,
+			AgentID:        agentID,
+			Model:          modelOverride,
+			SessionKey:     sessionKey,
+			Deliver:        false,
+			IdempotencyKey: runID,
+		}
 	}
 	var ack struct {
 		RunID      string `json:"runId"`
 		Status     string `json:"status"`
 		SessionKey string `json:"sessionKey"`
 	}
-	callErr := client.Call(ctx, "agent", params, &ack)
+	callErr := client.Call(ctx, turnMethod, turnParams, &ack)
 	if callErr == nil && strings.TrimSpace(ack.RunID) != "" {
 		runID = strings.TrimSpace(ack.RunID)
 	}
+	// chat.send 只回 {runId,status};规范化后的 key 来自订阅应答,agent 则回在 ack 里。
 	if callErr == nil && strings.TrimSpace(ack.SessionKey) != "" {
 		sessionKey = strings.TrimSpace(ack.SessionKey)
+		sessionKeyCanonical = true
 	}
 	if callErr != nil && !errors.Is(callErr, openclawgateway.ErrDisconnected) &&
 		!errors.Is(callErr, context.DeadlineExceeded) {
 		client.Close()
+		if ctx.Err() != nil {
+			return nil, nil, agentruntime.ErrAborted
+		}
 		return nil, nil, callErr
+	}
+
+	// 开轮前记下会话记录的 endedAt 作基线 —— 收轮补 usage 时据此判断记录是否已刷新。
+	var usageBaselineEndedAt int64
+	if slices.Contains(hello.Features.Methods, sessionDescribeMethod) {
+		if record := describeSession(ctx, client, sessionKey); record != nil {
+			usageBaselineEndedAt = record.EndedAt
+		}
 	}
 
 	result := &agentruntime.RunResult{
@@ -161,16 +230,21 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		Model:             modelOverride,
 	}
 	active := &activeTurn{
-		runtime:          r,
-		ctx:              ctx,
-		client:           client,
-		sessionID:        req.SessionID,
-		sessionKey:       sessionKey,
-		runID:            runID,
-		out:              make(chan agentruntime.Event, 64),
-		result:           result,
-		approvals:        make(map[string]*approvalState),
-		initialApprovals: initialApprovals,
+		runtime:              r,
+		ctx:                  ctx,
+		client:               client,
+		sessionID:            req.SessionID,
+		sessionKey:           sessionKey,
+		runID:                runID,
+		out:                  make(chan agentruntime.Event, 64),
+		result:               result,
+		agentID:              agentID,
+		sessionKeyCanonical:  sessionKeyCanonical,
+		subscribeMessages:    useChatSend,
+		usageBaselineEndedAt: usageBaselineEndedAt,
+		sessionDescribe:      slices.Contains(hello.Features.Methods, sessionDescribeMethod),
+		approvals:            make(map[string]*approvalState),
+		initialApprovals:     initialApprovals,
 	}
 	if !r.register(active) {
 		client.Close()

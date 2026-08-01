@@ -74,6 +74,10 @@ import {
   OPENCLAW_SESSION_MODE,
   OpenClawBackendFields,
 } from "./openclaw-backend-fields";
+import {
+  OPENCLAW_ERROR_KEY_BY_CODE,
+  openClawDraftIssue,
+} from "./openclaw-validation";
 
 type Backend = agent_backend_svc.BackendItem;
 type Provider = llm_provider_svc.ProviderItem;
@@ -328,23 +332,7 @@ function openClawProbeErrorMessage(
   translate: (key: string) => string,
 ): string {
   const normalized = code.trim().toUpperCase();
-  const keyByCode: Record<string, string> = {
-    OPENCLAW_SCOPE_MISSING: "scopeMissing",
-    OPENCLAW_PROTOCOL_MISMATCH: "protocolMismatch",
-    OPENCLAW_AGENT_NOT_FOUND: "agentNotFound",
-    OPENCLAW_MODEL_NOT_FOUND: "modelNotFound",
-    OPENCLAW_METHOD_MISSING: "methodMissing",
-    OPENCLAW_EVENT_MISSING: "eventMissing",
-    OPENCLAW_SECRET_UNAVAILABLE: "secretUnavailable",
-    OPENCLAW_REMOTE_SECRET_UNAVAILABLE: "remoteUnavailable",
-    OPENCLAW_PROBE_CANCELED: "canceled",
-    OPENCLAW_PROBE_TIMEOUT: "timeout",
-    OPENCLAW_CONNECTION_FAILED: "connectionFailed",
-    AUTH_FAILED: "authFailed",
-    UNAUTHORIZED: "authFailed",
-    FORBIDDEN: "authFailed",
-  };
-  const key = keyByCode[normalized];
+  const key = OPENCLAW_ERROR_KEY_BY_CODE[normalized];
   return key
     ? translate(`agentBackends.openclaw.errors.${key}`)
     : fallback || translate("agentBackends.openclaw.errors.connectionFailed");
@@ -1293,6 +1281,22 @@ function BackendEditor({
       setAdvancedOpen(true);
       return;
     }
+    // OpenClaw 的保存路径只能拿到后端错误字符串(Wails 边界无结构化通道),不预校验
+    // 的话用户会看到后端 i18n 的中文「参数错误」。规则与服务端一致,服务端仍是权威。
+    if (type === "openclaw") {
+      const issue = openClawDraftIssue({
+        name,
+        gatewayURL: openClawGatewayURL,
+        sessionMode: OPENCLAW_SESSION_MODE,
+      });
+      if (issue) {
+        setSaveResult({
+          kind: "err",
+          text: openClawProbeErrorMessage(issue, "", t),
+        });
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const draft = buildDraft();
@@ -1748,7 +1752,9 @@ function BackendTypeSegmented({
       onValueChange={(next) => {
         if (next) onChange(next as BackendType);
       }}
-      className="grid w-full grid-cols-5"
+      // 5 个引擎在对话框宽度(~545px)下挤成 5 列时,每格只有 ~107px,标签会溢出格子
+      // 与相邻图标叠字。改成 3 列两行:每格 ~178px,最长的 "OpenClaw Gateway" 也放得下。
+      className="grid w-full grid-cols-3 gap-1"
       aria-label={t("agentBackends.fields.type")}
     >
       {items.map((backendType) => {

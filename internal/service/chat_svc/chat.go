@@ -2612,6 +2612,12 @@ func (s *chatSvc) runTurn(
 
 	events, result, err := runner.Run(ctx, req)
 	if err != nil {
+		// 用户在 Run 返回前就点了停止(网关型后端要先握手,这个窗口是真实存在的):
+		// 这是中止而不是故障,按 idle 收敛,别让会话卡在 running / 弹错误卡。
+		if s.turnAbortedByUser(sess.ID, err) {
+			s.abortTurnBeforeStream(ctx, sess, assistantMsg, stream)
+			return
+		}
 		s.failTurn(ctx, sess, assistantMsg, stream, s.mapTurnError(ctx, sess, be, err))
 		return
 	}
@@ -3363,22 +3369,32 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 		zap.String("stream", stream),
 		zap.String("agentStatus", sess.AgentStatus),
 		zap.Error(err))
+	// 终态一律用 WithoutCancel 落库:失败路径最常见的触发方式就是用户点「停止」把
+	// turnCtx cancel 掉,若沿用同一个 ctx,这两条 Update 会被 DB 层直接拒掉,结果
+	// agent_status 永远停在 running、error_text 也写不进去(前端既不报错也停不掉)。
+	finalCtx := context.WithoutCancel(ctx)
 	msg.ErrorText = err.Error()
-	_ = chat_repo.Message().Update(ctx, msg)
+	if uerr := chat_repo.Message().Update(finalCtx, msg); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.failTurn: persist error text failed",
+			zap.Int64("messageId", msg.ID), zap.Error(uerr))
+	}
 	sess.AgentStatus = "error"
 	sess.NeedsAttention = false
-	_ = chat_repo.Session().Update(ctx, sess)
+	if uerr := chat_repo.Session().Update(finalCtx, sess); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.failTurn: persist session status failed",
+			zap.Int64("sessionId", sess.ID), zap.Error(uerr))
+	}
 	// session_status 必须先于 StreamError emit:前端 chat-streams-host 收到 error
 	// 立刻 finishStream 删 LiveStream entry → StreamSubscriber 紧接着 unmount,后到
 	// 的 session_status 永远收不到。后台 session 出错时只靠 bumpDone 不会翻 tab 红点。
-	logger.Ctx(ctx).Info("chat_svc: session_status emit",
+	logger.Ctx(finalCtx).Info("chat_svc: session_status emit",
 		zap.Int64("sessionId", sess.ID),
 		zap.Int64("assistantMsgId", msg.ID),
 		zap.String("stream", stream),
 		zap.String("agentStatus", sess.AgentStatus),
 		zap.Bool("needsAttention", sess.NeedsAttention),
 		zap.String("source", "failTurn"))
-	s.emitter.Emit(ctx, stream, ChatStreamEvent{
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 		Kind: StreamSessionStatus,
 		SessionStatus: &ChatSessionStatusPatch{
 			AgentStatus:    sess.AgentStatus,
@@ -3386,7 +3402,7 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 			BgRunning:      s.bgRunningActive(sess.ID),
 		},
 	})
-	s.emitter.Emit(ctx, stream, ChatStreamEvent{
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 		Kind:    StreamError,
 		Error:   err.Error(),
 		Message: chatMessageForEvent(sess, msg),
@@ -3397,6 +3413,63 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 		SessionID:          sess.ID,
 		AssistantMessageID: msg.ID,
 		Err:                err,
+	})
+}
+
+// turnAbortedByUser 判定「runner.Run 返回的这个错误其实是用户点了停止」。
+// 只认两种信号:runtime 显式回 ErrAborted,或本会话已被 Stop 标记且错误确实是
+// ctx 取消。普通故障(拨号失败等)即使碰巧带着 abort 标记也仍按错误处理,免得把
+// 真故障伪装成"用户停的"。
+func (s *chatSvc) turnAbortedByUser(sessionID int64, err error) bool {
+	if errors.Is(err, agentruntime.ErrAborted) {
+		s.aborted.LoadAndDelete(sessionID)
+		return true
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if _, ok := s.aborted.Load(sessionID); !ok {
+		return false
+	}
+	s.aborted.LoadAndDelete(sessionID)
+	return true
+}
+
+// abortTurnBeforeStream 收敛「Run 还没返回就被 Stop」的那一轮。此时 runtime 侧
+// 还没注册 activeTurn(OpenClaw 要先跟网关握手),既没有流也没有产出,但会话已经是
+// running —— 必须在这里落回 idle,否则侧栏一直转圈、且只有重启 app 才洗得掉。
+// 与流式中途 abort 对齐:发 StreamAborted 而不是 StreamError,不写 ErrorText。
+func (s *chatSvc) abortTurnBeforeStream(ctx context.Context, sess *chat_entity.Session, msg *chat_entity.Message, stream string) {
+	finalCtx := context.WithoutCancel(ctx)
+	logger.Ctx(finalCtx).Info("chat_svc: turn aborted before stream started",
+		zap.Int64("sessionId", sess.ID),
+		zap.Int64("assistantMsgId", msg.ID),
+		zap.String("stream", stream))
+	if uerr := chat_repo.Message().Update(finalCtx, msg); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.abortTurnBeforeStream: persist message failed",
+			zap.Int64("messageId", msg.ID), zap.Error(uerr))
+	}
+	sess.AgentStatus = "idle"
+	sess.NeedsAttention = false
+	if uerr := chat_repo.Session().Update(finalCtx, sess); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.abortTurnBeforeStream: persist session status failed",
+			zap.Int64("sessionId", sess.ID), zap.Error(uerr))
+	}
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+		Kind: StreamSessionStatus,
+		SessionStatus: &ChatSessionStatusPatch{
+			AgentStatus:    sess.AgentStatus,
+			NeedsAttention: sess.NeedsAttention,
+			BgRunning:      s.bgRunningActive(sess.ID),
+		},
+	})
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+		Kind:    StreamAborted,
+		Message: chatMessageForEvent(sess, msg),
+	})
+	s.publishTurnResult(sess.ID, TurnResult{
+		SessionID:          sess.ID,
+		AssistantMessageID: msg.ID,
 	})
 }
 

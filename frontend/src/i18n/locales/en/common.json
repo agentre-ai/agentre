@@ -156,7 +156,16 @@
         "remoteUnavailable": "Remote OpenClaw is unavailable because a secure secret reference cannot cross the agentred wire yet.",
         "scopeMissing": "The Gateway did not grant all required operator scopes.",
         "secretUnavailable": "The local secure secret store is unavailable.",
-        "timeout": "The Gateway connection test timed out."
+        "timeout": "The Gateway connection test timed out.",
+        "notPaired": "This Gateway requires device pairing before granting the requested scopes. Approve the device on the Gateway, then test again.",
+        "nameRequired": "Give the backend a name before testing the connection.",
+        "urlRequired": "Enter the Gateway WebSocket URL.",
+        "urlInvalid": "That is not a valid Gateway WebSocket URL.",
+        "urlScheme": "The Gateway URL must start with ws:// or wss://.",
+        "urlHost": "The Gateway URL must include a host.",
+        "urlCredentials": "The Gateway URL cannot contain credentials, a query string, or a fragment.",
+        "urlPlaintextRemote": "Plaintext ws:// is only allowed for loopback hosts. Use wss:// for any other host.",
+        "sessionModeInvalid": "Unsupported session mapping. OpenClaw uses one Gateway session per AgentRE chat."
       },
       "gatewayURL": "Gateway WebSocket URL",
       "gatewayURLHint": "Loopback ws:// is allowed. Other hosts must use wss://.",
@@ -175,7 +184,8 @@
       "tokenHint": "The token is stored in the local secure secret store and is never returned to the UI.",
       "tokenPlaceholder": "Optional token",
       "tokenSavedHint": "The existing token is retained unless you replace or explicitly clear it.",
-      "tokenSavedPlaceholder": "Token is stored securely. Enter a new value to replace it."
+      "tokenSavedPlaceholder": "Token is stored securely. Enter a new value to replace it.",
+      "modelOverrideUnauthorized": "This Gateway does not authorize model overrides for this operator connection, so the agent's own model is used."
     },
     "permission": {
       "addIsSandbox": "Add IS_SANDBOX=1",
@@ -536,7 +546,9 @@
       "model": "Model",
       "prompt": "Sent (prompt)",
       "reasoning": "Reasoning",
-      "tokenDetails": "Token usage details"
+      "tokenDetails": "Token usage details",
+      "usage": "Usage",
+      "usageUnavailable": "Not reported by the backend"
     },
     "quota": {
       "aria": "Claude Code quota 5h {{five}}% 7d {{seven}}% from {{device}}",
@@ -1345,7 +1357,10 @@
   },
   "mentions": {
     "aria": "Mention a project or agent",
-    "group": { "agents": "Agents", "projects": "Projects" },
+    "group": {
+      "agents": "Agents",
+      "projects": "Projects"
+    },
     "chip": {
       "agentTitle": "Agent: {{name}}",
       "projectTitle": "Project: {{name}}"

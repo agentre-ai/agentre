@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,7 +68,44 @@ func runtimeReadRequest(t *testing.T, conn *websocket.Conn) runtimeRequestFrame 
 	return request
 }
 
-func runtimeReadAgentRequest(t *testing.T, conn *websocket.Conn) runtimeRequestFrame {
+// runtimeReadTurnRequest 吃掉开轮前的 exec.approval.list,返回真正的开轮请求。
+// 开轮方法有两种:默认 chat.send(网关据此把本设备记成审批 reviewer),仅在 admin
+// 下发 model override 时才用 agent。
+// runtimeCanonicalKey 复刻网关对会话 key 的规范化:agent:<agentId>:<key>,
+// 并在 sessions.messages.subscribe 的应答里回报(真实网关就是这么回的)。
+func runtimeCanonicalKey(t *testing.T, params json.RawMessage) string {
+	t.Helper()
+	var value struct {
+		Key     string `json:"key"`
+		AgentID string `json:"agentId"`
+	}
+	require.NoError(t, json.Unmarshal(params, &value))
+	agentID := value.AgentID
+	if agentID == "" {
+		agentID = "main"
+	}
+	if strings.HasPrefix(value.Key, "agent:") {
+		return value.Key
+	}
+	return "agent:" + agentID + ":" + value.Key
+}
+
+// runtimeReadAfterSubscribe 读下一条请求;若是 sessions.messages.subscribe 就先应答
+// 再读真正要断言的那条(chat.send 的轮次开轮前必订阅)。
+func runtimeReadAfterSubscribe(t *testing.T, conn *websocket.Conn) runtimeRequestFrame {
+	t.Helper()
+	request := runtimeReadRequest(t, conn)
+	if request.Method == "sessions.messages.subscribe" {
+		runtimeWrite(t, conn, map[string]any{
+			"type": "res", "id": request.ID, "ok": true,
+			"payload": map[string]any{"subscribed": true, "key": runtimeCanonicalKey(t, request.Params)},
+		})
+		request = runtimeReadRequest(t, conn)
+	}
+	return request
+}
+
+func runtimeReadTurnRequest(t *testing.T, conn *websocket.Conn) runtimeRequestFrame {
 	t.Helper()
 	list := runtimeReadRequest(t, conn)
 	require.Equal(t, "exec.approval.list", list.Method)
@@ -75,7 +113,15 @@ func runtimeReadAgentRequest(t *testing.T, conn *websocket.Conn) runtimeRequestF
 		"type": "res", "id": list.ID, "ok": true, "payload": []any{},
 	})
 	request := runtimeReadRequest(t, conn)
-	require.Equal(t, "agent", request.Method)
+	// chat.send 的事件只发给订阅者,所以开轮前会先 sessions.messages.subscribe。
+	if request.Method == "sessions.messages.subscribe" {
+		runtimeWrite(t, conn, map[string]any{
+			"type": "res", "id": request.ID, "ok": true,
+			"payload": map[string]any{"subscribed": true, "key": runtimeCanonicalKey(t, request.Params)},
+		})
+		request = runtimeReadRequest(t, conn)
+	}
+	require.Contains(t, []string{"chat.send", "agent"}, request.Method)
 	return request
 }
 
@@ -83,8 +129,40 @@ func runtimeHandshake(t *testing.T, conn *websocket.Conn, connection int) {
 	runtimeHandshakeWithScopes(t, conn, connection, openclawgateway.RequiredOperatorScopes)
 }
 
-func runtimeHandshakeWithScopes(t *testing.T, conn *websocket.Conn, connection int, scopes []string) {
+// runtimeHandshakeWithMethods 广播额外的可选方法(如 sessions.describe):它们不属于
+// requiredRuntimeMethods,runtime 必须按 hello 里的广播来决定调不调。
+func runtimeHandshakeWithMethods(t *testing.T, conn *websocket.Conn, connection int, extraMethods ...string) {
+	runtimeHandshakeWith(t, conn, connection, openclawgateway.RequiredOperatorScopes, extraMethods)
+}
+
+// runtimeHandshakeWithoutMethods 模拟老网关:不广播某些可选方法。
+func runtimeHandshakeWithoutMethods(t *testing.T, conn *websocket.Conn, connection int, drop ...string) {
 	t.Helper()
+	runtimeHandshakeWith(t, conn, connection, openclawgateway.RequiredOperatorScopes, nil, drop...)
+}
+
+func runtimeHandshakeWithScopes(t *testing.T, conn *websocket.Conn, connection int, scopes []string) {
+	runtimeHandshakeWith(t, conn, connection, scopes, nil)
+}
+
+func runtimeHandshakeWith(t *testing.T, conn *websocket.Conn, connection int, scopes, extraMethods []string, drop ...string) {
+	t.Helper()
+	// 与真实网关(2026.7.1-2)一致:除 requiredRuntimeMethods 外还广播 chat.send 与
+	// sessions.messages.subscribe —— 开轮走 chat.send 才能让本设备看到自己触发的审批。
+	methods := append([]string{
+		"agent", "agent.wait", "chat.abort", "agents.list", "models.list",
+		"exec.approval.list", "exec.approval.resolve",
+		"chat.send", "sessions.messages.subscribe",
+	}, extraMethods...)
+	if len(drop) > 0 {
+		kept := methods[:0]
+		for _, method := range methods {
+			if !slices.Contains(drop, method) {
+				kept = append(kept, method)
+			}
+		}
+		methods = kept
+	}
 	runtimeWrite(t, conn, map[string]any{
 		"type": "event", "event": "connect.challenge", "seq": 1,
 		"payload": map[string]any{"nonce": "runtime-nonce", "ts": time.Now().UnixMilli()},
@@ -97,7 +175,7 @@ func runtimeHandshakeWithScopes(t *testing.T, conn *websocket.Conn, connection i
 			"type": "hello-ok", "protocol": 4,
 			"server": map[string]any{"version": "2026.7.1-2", "connId": fmt.Sprintf("runtime-%d", connection)},
 			"features": map[string]any{
-				"methods": []string{"agent", "agent.wait", "chat.abort", "agents.list", "models.list", "exec.approval.list", "exec.approval.resolve"},
+				"methods": methods,
 				"events":  []string{"agent", "chat", "exec.approval.requested", "exec.approval.resolved"},
 			},
 			"snapshot": map[string]any{"presence": []any{}, "health": map[string]any{}, "stateVersion": map[string]any{"presence": 1, "health": 1}, "uptimeMs": 1},
@@ -164,7 +242,7 @@ func TestRuntimeOmitsModelOverrideWithoutAdminScope(t *testing.T) {
 		paramsSeen := make(chan runtimeAgentParams, 1)
 		gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 			runtimeHandshake(t, conn, connection)
-			request := runtimeReadAgentRequest(t, conn)
+			request := runtimeReadTurnRequest(t, conn)
 			var params runtimeAgentParams
 			require.NoError(t, json.Unmarshal(request.Params, &params))
 			paramsSeen <- params
@@ -200,10 +278,11 @@ func TestRuntimeAdoptsCanonicalSessionKeyFromAcceptedResponse(t *testing.T) {
 		const canonicalSessionKey = "agent:main:agentre:12:45"
 		gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 			runtimeHandshake(t, conn, connection)
-			request := runtimeReadAgentRequest(t, conn)
+			request := runtimeReadTurnRequest(t, conn)
 			var params runtimeAgentParams
 			require.NoError(t, json.Unmarshal(request.Params, &params))
-			require.Equal(t, "agentre:12:45", params.SessionKey)
+			// 订阅应答已把 key 规范化,开轮请求带的就是规范 key。
+			require.Equal(t, canonicalSessionKey, params.SessionKey)
 			runtimeWrite(t, conn, map[string]any{
 				"type": "res", "id": request.ID, "ok": true,
 				"payload": map[string]any{
@@ -251,7 +330,7 @@ func TestRuntimeExecApprovalUsesGatewayDecisionsAndDoesNotFinishTheExec(t *testi
 	var resolveCalls atomic.Int32
 	gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 		runtimeHandshake(t, conn, connection)
-		agentRequest := runtimeReadAgentRequest(t, conn)
+		agentRequest := runtimeReadTurnRequest(t, conn)
 		var params runtimeAgentParams
 		require.NoError(t, json.Unmarshal(agentRequest.Params, &params))
 		runtimeWrite(t, conn, map[string]any{"type": "res", "id": agentRequest.ID, "ok": true, "payload": map[string]any{"runId": params.IdempotencyKey, "status": "accepted"}})
@@ -329,7 +408,7 @@ func TestRuntimeExecApprovalTreatsExpiredAndRacingResolutionsAsIdempotentTermina
 	t.Run("Given the approval expires before it is shown when the initial list is reconciled then it is terminal without a resolve RPC", func(t *testing.T) {
 		gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 			runtimeHandshake(t, conn, connection)
-			list := runtimeReadRequest(t, conn)
+			list := runtimeReadAfterSubscribe(t, conn)
 			require.Equal(t, "exec.approval.list", list.Method)
 			runtimeWrite(t, conn, map[string]any{
 				"type": "res", "id": list.ID, "ok": true,
@@ -337,12 +416,13 @@ func TestRuntimeExecApprovalTreatsExpiredAndRacingResolutionsAsIdempotentTermina
 					"id": "approval-expired", "createdAtMs": int64(1), "expiresAtMs": int64(2),
 					"request": map[string]any{
 						"command": "date", "allowedDecisions": []string{"deny"},
-						"sessionKey": "agentre:12:40",
+						// 真实网关的审批记录一律用规范化 key。
+						"sessionKey": "agent:main:agentre:12:40",
 					},
 				}},
 			})
-			agentRequest := runtimeReadRequest(t, conn)
-			require.Equal(t, "agent", agentRequest.Method)
+			agentRequest := runtimeReadAfterSubscribe(t, conn)
+			require.Equal(t, "chat.send", agentRequest.Method)
 			var params runtimeAgentParams
 			require.NoError(t, json.Unmarshal(agentRequest.Params, &params))
 			runtimeWrite(t, conn, map[string]any{"type": "res", "id": agentRequest.ID, "ok": true, "payload": map[string]any{"runId": params.IdempotencyKey, "status": "accepted"}})
@@ -368,7 +448,7 @@ func TestRuntimeExecApprovalTreatsExpiredAndRacingResolutionsAsIdempotentTermina
 		allowFinish := make(chan struct{})
 		gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 			runtimeHandshake(t, conn, connection)
-			agentRequest := runtimeReadAgentRequest(t, conn)
+			agentRequest := runtimeReadTurnRequest(t, conn)
 			var params runtimeAgentParams
 			require.NoError(t, json.Unmarshal(agentRequest.Params, &params))
 			runtimeWrite(t, conn, map[string]any{"type": "res", "id": agentRequest.ID, "ok": true, "payload": map[string]any{"runId": params.IdempotencyKey, "status": "accepted"}})
@@ -411,7 +491,7 @@ func TestRuntimeExecApprovalExpiresWhileGatewayRemainsConnected(t *testing.T) {
 	allowFinish := make(chan struct{})
 	gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 		runtimeHandshake(t, conn, connection)
-		agentRequest := runtimeReadAgentRequest(t, conn)
+		agentRequest := runtimeReadTurnRequest(t, conn)
 		var params runtimeAgentParams
 		require.NoError(t, json.Unmarshal(agentRequest.Params, &params))
 		runtimeWrite(t, conn, map[string]any{"type": "res", "id": agentRequest.ID, "ok": true, "payload": map[string]any{"runId": params.IdempotencyKey, "status": "accepted"}})
@@ -465,13 +545,13 @@ func TestRuntimeExecApprovalReconnectListRestoresPendingWithoutReplayingTurn(t *
 	var sessionKey string
 	gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 		runtimeHandshake(t, conn, connection)
-		list := runtimeReadRequest(t, conn)
+		list := runtimeReadAfterSubscribe(t, conn)
 		require.Equal(t, "exec.approval.list", list.Method)
 		listCalls.Add(1)
 		if connection == 1 {
 			runtimeWrite(t, conn, map[string]any{"type": "res", "id": list.ID, "ok": true, "payload": []any{}})
-			agentRequest := runtimeReadRequest(t, conn)
-			require.Equal(t, "agent", agentRequest.Method)
+			agentRequest := runtimeReadAfterSubscribe(t, conn)
+			require.Equal(t, "chat.send", agentRequest.Method)
 			agentCalls.Add(1)
 			var params runtimeAgentParams
 			require.NoError(t, json.Unmarshal(agentRequest.Params, &params))
@@ -523,7 +603,7 @@ func TestRuntimeStreamsTurnAndCreatesStableSessionMapping(t *testing.T) {
 			append([]string(nil), openclawgateway.RequiredOperatorScopes...),
 			"operator.admin",
 		))
-		request := runtimeReadAgentRequest(t, conn)
+		request := runtimeReadTurnRequest(t, conn)
 		var params runtimeAgentParams
 		require.NoError(t, json.Unmarshal(request.Params, &params))
 		paramsSeen <- params
@@ -585,10 +665,11 @@ func TestRuntimeStreamsTurnAndCreatesStableSessionMapping(t *testing.T) {
 func TestRuntimeReusesProviderSessionAndIsolatesRunEvents(t *testing.T) {
 	gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 		runtimeHandshake(t, conn, connection)
-		request := runtimeReadAgentRequest(t, conn)
+		request := runtimeReadTurnRequest(t, conn)
 		var params runtimeAgentParams
 		require.NoError(t, json.Unmarshal(request.Params, &params))
-		require.Equal(t, "openclaw:existing-session", params.SessionKey)
+		// 订阅应答回报规范化 key,开轮请求带的是它。
+		require.Equal(t, "agent:main:openclaw:existing-session", params.SessionKey)
 		runtimeWrite(t, conn, map[string]any{"type": "res", "id": request.ID, "ok": true, "payload": map[string]any{"runId": params.IdempotencyKey, "status": "accepted"}})
 		frames := []map[string]any{
 			{"type": "event", "event": "agent", "seq": 2, "payload": map[string]any{"runId": "old-run", "sessionKey": params.SessionKey, "seq": 1, "stream": "assistant", "ts": 1, "data": map[string]any{"delta": "old"}}},
@@ -613,7 +694,7 @@ func TestRuntimeReusesProviderSessionAndIsolatesRunEvents(t *testing.T) {
 	assert.Equal(t, agentruntime.TextDelta{Text: "B"}, collected[1])
 	_, ok := collected[2].(agentruntime.Done)
 	assert.True(t, ok)
-	assert.Equal(t, "openclaw:existing-session", result.ProviderSessionID)
+	assert.Equal(t, "agent:main:openclaw:existing-session", result.ProviderSessionID)
 }
 
 func TestRuntimeAbortIsIdempotentAndDistinctFromCompletion(t *testing.T) {
@@ -621,7 +702,7 @@ func TestRuntimeAbortIsIdempotentAndDistinctFromCompletion(t *testing.T) {
 	allowTerminal := make(chan struct{})
 	gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 		runtimeHandshake(t, conn, connection)
-		agentRequest := runtimeReadAgentRequest(t, conn)
+		agentRequest := runtimeReadTurnRequest(t, conn)
 		var params runtimeAgentParams
 		require.NoError(t, json.Unmarshal(agentRequest.Params, &params))
 		runtimeWrite(t, conn, map[string]any{"type": "res", "id": agentRequest.ID, "ok": true, "payload": map[string]any{"runId": params.IdempotencyKey, "status": "accepted"}})
@@ -660,7 +741,7 @@ func TestRuntimeReconcilesAfterDisconnectWithoutResubmittingUserMessage(t *testi
 	gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 		runtimeHandshake(t, conn, connection)
 		if connection == 1 {
-			request := runtimeReadAgentRequest(t, conn)
+			request := runtimeReadTurnRequest(t, conn)
 			agentCalls.Add(1)
 			var params runtimeAgentParams
 			require.NoError(t, json.Unmarshal(request.Params, &params))
@@ -671,7 +752,7 @@ func TestRuntimeReconcilesAfterDisconnectWithoutResubmittingUserMessage(t *testi
 			_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "reconcile"), time.Now().Add(time.Second))
 			return
 		}
-		list := runtimeReadRequest(t, conn)
+		list := runtimeReadAfterSubscribe(t, conn)
 		require.Equal(t, "exec.approval.list", list.Method)
 		runtimeWrite(t, conn, map[string]any{"type": "res", "id": list.ID, "ok": true, "payload": []any{}})
 		request := runtimeReadRequest(t, conn)
@@ -704,7 +785,7 @@ func TestRuntimeReconcilesAfterDisconnectWithoutResubmittingUserMessage(t *testi
 func TestRuntimeSurfacesTerminalGatewayError(t *testing.T) {
 	gatewayURL := runtimeGateway(t, func(conn *websocket.Conn, connection int) {
 		runtimeHandshake(t, conn, connection)
-		request := runtimeReadAgentRequest(t, conn)
+		request := runtimeReadTurnRequest(t, conn)
 		var params runtimeAgentParams
 		require.NoError(t, json.Unmarshal(request.Params, &params))
 		runtimeWrite(t, conn, map[string]any{"type": "res", "id": request.ID, "ok": true, "payload": map[string]any{"runId": params.IdempotencyKey, "status": "accepted"}})
