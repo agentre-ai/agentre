@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -77,114 +78,255 @@ type Daemon struct {
 	mu  sync.RWMutex
 	lan *rpc.LANServer
 
-	// conns 是按设备指纹索引的活连接表:会话通知与 MCP 反向隧道共用这一份解析,
-	// daemon 上没有第二个「当前连接」的全局。
+	// conns 是 daemon 的推送路由表:会话通知按**会话**解析到发起它的那条连接,
+	// MCP 反向隧道从同一份状态里解析目标,daemon 上没有第二个「当前连接」的全局。
 	conns connRegistry
 }
 
-// connRegistry 按设备指纹索引「已认证且还活着」的连接。
-//
-// 它取代了原来那个「只记最后一条连接」的全局单槽。旧实现在 bindConn(LANServer 的
-// OnConn 回调)里登记,而 auth.pair / auth.connect 是之后才到的 RPC —— 于是任何完成
-// WS 升级却从不认证的连接(LAN 扫描器 / 鉴权失败的客户端 / 掉队的重连)都会顶掉正主,
-// 真设备的指纹从此解析为 nil:会话照常落库、一条推不出去,而客户端看不到错误也看不到
-// seq 跳号,补齐永不触发,整轮无限期卡住。
-//
-// 因此登记的唯一入口是鉴权成功那一刻(见 registerMethods 里的 auth.pair /
-// auth.connect),身份直接取连接上的 rpc.AuthState —— 不另造一套身份。
-//
-// 本轮规格的非目标仍排除「多客户端同时接入同一台 daemon」:这张表不是为了让多个
-// 客户端共享会话,只是让野连接顶不掉正主。
-type connRegistry struct {
-	mu    sync.Mutex
-	seq   uint64
-	conns map[string]registeredConn
+// sessionKey 是 daemon 侧的会话身份(R16):(对端设备指纹, 对端会话 id)。会话 id 是
+// 各客户端本地自增的,两个对端各自持有同一个 id 时是两条互不相干的会话。
+type sessionKey struct {
+	peer string
+	sid  int64
 }
 
-// registeredConn 记住登记时那条连接本身:撤销要按**连接身份**做,不能按指纹 ——
-// 同一台设备重连后,旧连接迟到的关闭清理绝不能把新连接的登记一并撤掉。
-type registeredConn struct {
+// connRegistry 记录 daemon 此刻能把通知推给谁,两张互补的表:
+//   - live:已认证且还活着的连接。登记只发生在 auth.pair / auth.connect 成功那一刻
+//     (bindConn 是 LANServer 的 OnConn 回调,跑在鉴权**之前**),所以完成 WS 升级却
+//     从不认证的连接(LAN 扫描器 / 鉴权失败的客户端 / 掉队的重连)根本进不来;
+//   - claims:每条会话的推送目标 —— **发起该会话的那条连接**。
+//
+// 为什么推送目标不能按设备指纹解析:一台桌面端会同时开 2-3 条**同指纹**的已认证连接
+// —— 连接池那条承载会话(chat_svc 的 remote.New(lease.Client())),设备监视心跳与刷新
+// 探测各占一条。按指纹索引时,后认证的心跳连接会抢走正在跑的会话的通知(daemon 侧推送
+// 「成功」,而发起会话的那条一条也收不到,没有错误也没有 seq 跳号),它关闭时还会把正在
+// 用的那条一并删掉(此后只落库不推送)。两种表现都是整轮无限期卡住,且不需要任何异常连接。
+//
+// 接管规则:一条会话的推送目标是最近为它发过 runtime.* 的那条连接,起点是创建它的
+// runtime.run(见 trackSessionOwner)。key 里的指纹取自发起调用的那条连接自己的
+// rpc.AuthState,所以只有**同指纹**的连接接得走一条会话 —— 指纹是接管的授权,不是路由
+// 键。属主连接断开 → 该会话的登记随之撤销 → 通知照常落库、不推送(会话挂起,R2),
+// 等同指纹的新连接再发一次 runtime.* 接管(与重连补齐是同一件事)。
+//
+// 不变量:claims 里的连接必然同时在 live 里(remove 在同一把锁下一起清)。
+//
+// 本轮规格的非目标仍排除「多客户端同时接入同一台 daemon」:这两张表不做会话共享、
+// 不向多个客户端扇出,每条会话在任一时刻只有一个推送目标。
+type connRegistry struct {
+	mu     sync.Mutex
+	seq    uint64
+	live   map[*rpc.Conn]liveConn
+	claims map[sessionKey]sessionClaim
+}
+
+// liveConn 是一条已认证活连接的推送端口 + 它完成鉴权的次序(隧道回落用)。
+type liveConn struct {
+	n  handlers.NotifierPort
+	at uint64
+}
+
+// sessionClaim 记住会话此刻的属主连接本身:撤销要按**连接身份**做,不能按指纹 ——
+// 同一台设备的另一条连接来去,不得影响正在跑的会话。
+type sessionClaim struct {
 	conn *rpc.Conn
-	n    handlers.NotifierPort
 	at   uint64
 }
 
-// add 在连接完成 auth.pair / auth.connect 之后登记它。未认证、或认证了却没有指纹的
-// 连接一律不进表(rpc/auth.go 的 HandlePair 不拒绝空 deviceFingerprint,空指纹不能
-// 构成可匹配身份,否则一条空指纹连接就能冒领所有会话的通知)。
-func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
-	if c == nil || n == nil {
-		return
+// peerIdentity 取连接的对端身份(设备指纹)。身份是鉴权成功那一刻才成立的,报了指纹
+// 没通过鉴权不算;空指纹不构成可匹配身份(否则一条空指纹连接就能冒领会话的通知),
+// 空指纹在 registerMethods 的 auth.* 入参处就已挡下,这里是第二道。
+func peerIdentity(c *rpc.Conn) (string, bool) {
+	if c == nil {
+		return "", false
 	}
 	auth := c.Auth()
 	if !auth.Authenticated || auth.DeviceFingerprint == "" {
+		return "", false
+	}
+	return auth.DeviceFingerprint, true
+}
+
+// connClosed 报告连接是否已经关闭。登记前必须查一次:Done 监视 goroutine 与登记是并发
+// 的,先关后登记会在表里留下一条指向死连接的陈旧条目,永远等不到清理。
+func connClosed(c *rpc.Conn) bool {
+	select {
+	case <-c.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// add 在连接完成 auth.pair / auth.connect 之后登记它。同一条连接改认另一个指纹时,
+// 它先前以旧指纹认领的会话一并作废 —— 否则旧对端的会话通知会推给一条已经属于别人的连接。
+func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
+	if n == nil {
+		return
+	}
+	if _, ok := peerIdentity(c); !ok {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.conns == nil {
-		r.conns = map[string]registeredConn{}
+	r.dropLocked(c) // 重新鉴权 = 重置这条连接的会话认领(它可以再发 runtime.* 认回来)
+	if connClosed(c) {
+		return
+	}
+	if r.live == nil {
+		r.live = map[*rpc.Conn]liveConn{}
 	}
 	r.seq++
-	r.conns[auth.DeviceFingerprint] = registeredConn{conn: c, n: n, at: r.seq}
+	r.live[c] = liveConn{n: n, at: r.seq}
 }
 
-// remove 撤销这条连接的登记(连接关闭时调用)。只在表里存的仍是它自己时才删。
+// claim 把会话的推送目标记成这条连接(发起 / 接管该会话的那条)。只有已登记的活连接
+// 认得了,且认领的必然是它自己指纹下的那条会话 —— 跨对端接管在 key 上就不成立。
+func (r *connRegistry) claim(c *rpc.Conn, sid int64) {
+	peer, ok := peerIdentity(c)
+	if !ok || sid == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, live := r.live[c]; !live {
+		return
+	}
+	if connClosed(c) {
+		r.dropLocked(c)
+		return
+	}
+	if r.claims == nil {
+		r.claims = map[sessionKey]sessionClaim{}
+	}
+	r.seq++
+	r.claims[sessionKey{peer: peer, sid: sid}] = sessionClaim{conn: c, at: r.seq}
+}
+
+// remove 撤销这条连接的一切登记(连接关闭时调用)。按连接身份撤销:同一台设备的其它
+// 连接、以及重连后的新连接,都不受这条迟到的清理影响。它认领过的会话就此挂起 ——
+// 通知继续落库、不推送,等同指纹的新连接接管。
 func (r *connRegistry) remove(c *rpc.Conn) {
 	if c == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for fp, rc := range r.conns {
-		if rc.conn == c {
-			delete(r.conns, fp)
+	r.dropLocked(c)
+}
+
+func (r *connRegistry) dropLocked(c *rpc.Conn) {
+	delete(r.live, c)
+	for k, cl := range r.claims {
+		if cl.conn == c {
+			delete(r.claims, k)
 		}
 	}
 }
 
-// lookup 返回「此刻活着的、且属于该对端的」推送端口,否则 nil(对端不在线:通知已经
-// 落库,等它重连后按游标补齐)。空指纹永不匹配 —— 表里根本不存在空键(见 add)。
-func (r *connRegistry) lookup(fingerprint string) handlers.NotifierPort {
+// ownerOf 返回该会话此刻的推送端口,没有活属主时 nil。
+func (r *connRegistry) ownerOf(k sessionKey) handlers.NotifierPort {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	rc, ok := r.conns[fingerprint]
+	cl, ok := r.claims[k]
 	if !ok {
 		return nil
 	}
-	return rc.n
+	return r.live[cl.conn].n
 }
 
-// latest 返回最近一条完成鉴权的连接,表空时 nil。给「请求身上没有对端标识」的解析用
-// (MCP 反向隧道:请求来自 daemon 本机的 CLI 子进程,是 HTTP 不是 RPC)。规格非目标
-// 排除多客户端同时接入,表里至多一条;真接多客户端时隧道目标要改成按会话的对端解析。
-func (r *connRegistry) latest() handlers.NotifierPort {
+// routerFor 返回该对端的会话通知出口;该对端此刻一条持有会话的活连接都没有时返回 nil
+// —— 调用方(handlers 的 sessionEmitter)据此走「只落库、不推送」的挂起路径。
+func (r *connRegistry) routerFor(peer string) handlers.NotifierPort {
+	if peer == "" {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var newest registeredConn
-	for _, rc := range r.conns {
-		if rc.at > newest.at {
-			newest = rc
+	for k := range r.claims {
+		if k.peer == peer {
+			return sessionRouter{reg: r, peer: peer}
 		}
 	}
-	if newest.n == nil {
-		return nil
+	return nil
+}
+
+// tunnelTarget 解析 MCP 反向隧道的目标。隧道请求来自 daemon 本机的 CLI 子进程(是 HTTP
+// 不是 RPC),身上只有 desktop 签的不透明 MCP token,没有会话标识,所以这里按「最近被
+// 认领的那条会话的属主连接」定目标 —— 跑着会话的那台设备就是这些子进程的发起端。
+// 一条会话都还没被认领时(daemon 刚起、或客户端刚重连还没发 runtime.*)回落到最近完成
+// 鉴权的活连接:desktop 侧的隧道 handler 是无状态的(把请求重放到它本机 gateway),
+// 同一台设备的哪条连接送达都等价。表空 → nil(无目标的应答由 handlers 决定)。
+func (r *connRegistry) tunnelTarget() handlers.NotifierPort {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var owner sessionClaim
+	for _, cl := range r.claims {
+		if cl.at > owner.at {
+			owner = cl
+		}
+	}
+	if owner.conn != nil {
+		return r.live[owner.conn].n
+	}
+	var newest liveConn
+	for _, lc := range r.live {
+		if lc.at > newest.at {
+			newest = lc
+		}
 	}
 	return newest.n
 }
 
-// notifierForPeer 解析某个对端的推送端口。每次发送时重新解析,绝不静态捕获 —— 断连
-// 重连会换一条连接,捕获下来的端口在重连后指向死连接。校对指纹是为了不把一个对端的
-// 会话通知推给另一台设备(R16)。
-func (d *Daemon) notifierForPeer(peer string) handlers.NotifierPort {
-	return d.conns.lookup(peer)
+// sessionRouter 是某个对端的会话通知出口:按帧上的 sessionId 把每条通知交给发起该会话
+// 的那条连接。sessionId 本来就是通知帧上的会话路由字段(见 wire 包注释),daemon 侧按它
+// 解析没有引入任何协议内容。
+type sessionRouter struct {
+	reg  *connRegistry
+	peer string
 }
 
-// tunnelTarget 解析 MCP 反向隧道的目标:与会话通知共用同一张活连接表,野连接因此
-// 同样顶不掉正主。隧道请求来自 daemon 本机的 CLI 子进程、身上没有对端标识,所以取表里
-// 最近完成鉴权的那条连接(见 connRegistry.latest)。
+func (s sessionRouter) Notify(method string, params any) error {
+	sid, ok := frameSessionID(params)
+	if !ok {
+		return fmt.Errorf("daemon: cannot route %s: frame %T carries no sessionId", method, params)
+	}
+	n := s.reg.ownerOf(sessionKey{peer: s.peer, sid: sid})
+	if n == nil {
+		// 发起该会话的连接已经断开:通知已经落库,等同指纹的新连接接管后补齐。
+		return fmt.Errorf("daemon: session %d has no live connection", sid)
+	}
+	return n.Notify(method, params)
+}
+
+func (s sessionRouter) Request(context.Context, string, any, any) error {
+	// 反向请求(MCP 隧道)不经这里:它的请求身上没有会话标识,由 tunnelTarget 解析。
+	return errors.New("daemon: reverse requests are not routable per session")
+}
+
+// frameSessionID 取通知帧上的会话 id。R1 的五类会话通知共用三种帧,每种都以 sessionId
+// 做会话路由。新增一类通知帧时必须在这里补一行 —— 漏了会以 error 形式在日志里点名具体
+// 类型,而不是静默推给别的连接。
+func frameSessionID(params any) (int64, bool) {
+	switch f := params.(type) {
+	case *wire.EventFrame:
+		return f.SessionID, true
+	case *wire.RunResultDoneFrame:
+		return f.SessionID, true
+	case *wire.AutonomousTurnStartedFrame:
+		return f.SessionID, true
+	}
+	return 0, false
+}
+
+// notifierForPeer 解析某个对端的推送出口。每次发送时重新解析,绝不静态捕获 —— 断连
+// 重连会换一条连接,捕获下来的端口在重连后指向死连接。
+func (d *Daemon) notifierForPeer(peer string) handlers.NotifierPort {
+	return d.conns.routerFor(peer)
+}
+
+// tunnelTarget 解析 MCP 反向隧道的目标(见 connRegistry.tunnelTarget)。
 func (d *Daemon) tunnelTarget() handlers.NotifierPort {
-	return d.conns.latest()
+	return d.conns.tunnelTarget()
 }
 
 // New constructs a Daemon from Options. It loads persistent state, creates
@@ -257,6 +399,11 @@ func (d *Daemon) registerMethods() {
 		if err := jsonUnmarshal(p, &pp); err != nil {
 			return nil, rpc.ErrInvalidParams
 		}
+		// 空指纹不是可匹配身份:rpc/auth.go 的 HandlePair 不拒绝它,配对下来会在
+		// PairedPeers 里留一条空键的对端,之后任何 auth.connect 都能顶着空指纹认证成功。
+		if pp.DeviceFingerprint == "" {
+			return nil, rpc.ErrInvalidParams
+		}
 		ip := ipFromContext(ctx)
 		res, err := d.auth.HandlePair(ctx, ip, pp)
 		if err != nil {
@@ -275,6 +422,9 @@ func (d *Daemon) registerMethods() {
 	d.registry.Register("auth.connect", func(ctx context.Context, p json.RawMessage) (any, error) {
 		var cp rpc.ConnectParams
 		if err := jsonUnmarshal(p, &cp); err != nil {
+			return nil, rpc.ErrInvalidParams
+		}
+		if cp.DeviceFingerprint == "" { // 同 auth.pair:空指纹不是可匹配身份
 			return nil, rpc.ErrInvalidParams
 		}
 		res, err := d.auth.HandleConnect(ctx, cp)
@@ -384,39 +534,42 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 // bindConn is called by LANServer once per accepted WebSocket connection.
-// 挂载 runtime.* 9 个 RPC（capabilities / run / steer / cancelSteer /
-// drainPending / abort / setPermissionMode / submitAnswer /
-// submitToolPermission）到共享 registry。RuntimeHandlers 持有 per-session backend
-// type cache,所以是 per-conn 构造的;会话通知**不**推回「这条」连接 —— 它按对端
-// 指纹在发送那一刻解析活连接(见 notifierForPeer),因为 fanout goroutine 会活过
+// 挂载 runtime.* 13 个 RPC 到共享 registry。RuntimeHandlers 持有 per-session backend
+// type cache,所以是 per-conn 构造的;会话通知**不**推回「这条」连接 —— 它在发送那一刻
+// 按会话解析属主连接(见 notifierForPeer / connRegistry),因为 fanout goroutine 会活过
 // 这条连接。
 //
 // bindConn 跑在鉴权**之前**(它是 OnConn 回调,auth.pair / auth.connect 是之后才到的
-// RPC),所以这里**不**把连接登记进活连接表 —— 登记只发生在鉴权成功那一刻,否则一条
-// 从不认证的连接就能顶掉正主(见 connRegistry)。
+// RPC),所以这里**不**把连接登记成推送目标 —— 登记只发生在鉴权成功那一刻,会话认领
+// 更要等到它真为某条会话发 runtime.*,否则一条从不认证的连接就能顶掉正主。
 func (d *Daemon) bindConn(c *rpc.Conn) {
 	n := notifier.New(c)
 	rh := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
-		// 会话通知的推送目标按对端在发送那一刻解析,不捕获 n:RuntimeHandlers 是
+		// 会话通知的推送目标在发送那一刻按会话解析,不捕获 n:RuntimeHandlers 是
 		// per-conn 的,而它起的 fanout goroutine 会活过这条连接。
 		NotifyFor: d.notifierForPeer,
 		Journal:   d.journal,
 		Gateway:   d.gateway,
 		Lookup:    NewProviderLookup(d.state),
 	})
-	d.registry.Register(wire.MethodCapabilities, wrapGuarded(rh.Capabilities))
-	d.registry.Register(wire.MethodRun, wrapGuarded(rh.Run))
-	d.registry.Register(wire.MethodSteer, wrapGuardedSentinel(rh.Steer))
-	d.registry.Register(wire.MethodCancelSteer, wrapGuardedSentinel(rh.CancelSteer))
-	d.registry.Register(wire.MethodDrainPending, wrapGuarded(rh.DrainPending))
-	d.registry.Register(wire.MethodAbort, wrapGuardedSentinel(rh.Abort))
-	d.registry.Register(wire.MethodStopBackgroundTask, wrapGuardedSentinel(rh.StopBackgroundTask))
-	d.registry.Register(wire.MethodSetPermissionMode, wrapGuardedSentinel(rh.SetPermissionMode))
-	d.registry.Register(wire.MethodSubmitAnswer, wrapGuardedSentinel(rh.SubmitAnswer))
-	d.registry.Register(wire.MethodSubmitToolPermission, wrapGuardedSentinel(rh.SubmitToolPermission))
-	d.registry.Register(wire.MethodGetGoal, wrapGuardedSentinel(rh.GetGoal))
-	d.registry.Register(wire.MethodSetGoal, wrapGuardedSentinel(rh.SetGoal))
-	d.registry.Register(wire.MethodClearGoal, wrapGuardedSentinel(rh.ClearGoal))
+	// runtime.* 全族都过 trackSessionOwner:哪条连接为某会话发了 runtime.*,该会话的
+	// 通知此后就推给它(见 connRegistry 的接管规则)。
+	regRuntime := func(method string, h rpc.HandlerFunc) {
+		d.registry.Register(method, d.trackSessionOwner(h))
+	}
+	regRuntime(wire.MethodCapabilities, wrapGuarded(rh.Capabilities))
+	regRuntime(wire.MethodRun, wrapGuarded(rh.Run))
+	regRuntime(wire.MethodSteer, wrapGuardedSentinel(rh.Steer))
+	regRuntime(wire.MethodCancelSteer, wrapGuardedSentinel(rh.CancelSteer))
+	regRuntime(wire.MethodDrainPending, wrapGuarded(rh.DrainPending))
+	regRuntime(wire.MethodAbort, wrapGuardedSentinel(rh.Abort))
+	regRuntime(wire.MethodStopBackgroundTask, wrapGuardedSentinel(rh.StopBackgroundTask))
+	regRuntime(wire.MethodSetPermissionMode, wrapGuardedSentinel(rh.SetPermissionMode))
+	regRuntime(wire.MethodSubmitAnswer, wrapGuardedSentinel(rh.SubmitAnswer))
+	regRuntime(wire.MethodSubmitToolPermission, wrapGuardedSentinel(rh.SubmitToolPermission))
+	regRuntime(wire.MethodGetGoal, wrapGuardedSentinel(rh.GetGoal))
+	regRuntime(wire.MethodSetGoal, wrapGuardedSentinel(rh.SetGoal))
+	regRuntime(wire.MethodClearGoal, wrapGuardedSentinel(rh.ClearGoal))
 
 	// Terminal: local PTY backend; per-conn emitter pushes terminal.data /
 	// terminal.exit events back over this ws connection (same per-conn rationale
@@ -435,10 +588,28 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	go func() {
 		<-c.Done()
 		termH.CloseAll()
-		// 连接断开 → 撤销它的登记(避免对死连接推通知 / 发反向请求)。按连接身份撤销:
-		// 同一台设备重连后,这条迟到的清理不能把新连接的登记一并删掉。
+		// 连接断开 → 撤销它的登记与会话认领(避免对死连接推通知 / 发反向请求)。
+		// 按连接身份撤销:同一台设备的其它连接、以及重连后的新连接都不受影响。
 		d.conns.remove(c)
 	}()
+}
+
+// trackSessionOwner 包住 runtime.* 的注册:调用方是哪条连接,该会话此后的通知就推给
+// 哪条(接管规则见 connRegistry)。会话 id 直接读参数上的 sessionId —— 13 个 runtime.*
+// 参数里除 capabilities 外都带它,没带的自然不认领。
+//
+// 必须在 handler **之前**认领:runtime.run 一返回,fanout goroutine 就开始推事件,
+// 记晚了首批事件会被当成「没有活属主」只落库,而客户端此刻还没有补齐能力。
+func (d *Daemon) trackSessionOwner(next rpc.HandlerFunc) rpc.HandlerFunc {
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var p struct {
+			SessionID int64 `json:"sessionId"`
+		}
+		if err := jsonUnmarshal(raw, &p); err == nil {
+			d.conns.claim(rpc.ConnFromContext(ctx), p.SessionID)
+		}
+		return next(ctx, raw)
+	}
 }
 
 // wrapGuarded is wrap + requireAuth check. Use for any method except auth.*.

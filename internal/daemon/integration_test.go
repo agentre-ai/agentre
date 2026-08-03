@@ -439,7 +439,14 @@ type pairedTestRig struct {
 	d      *Daemon
 	cli    *client.Client
 	runner *remote.Runtime
+	// token 是配对拿到的 deviceToken:同一台设备再开一条连接时走 auth.connect
+	// (真机上的设备监视心跳 / 刷新探测就是这么接的),见 connectSameDevice。
+	token string
 }
+
+// rigDeviceFingerprint 是 rig 里那台「桌面端」的设备指纹。同一台桌面同时开的多条
+// 连接共用它 —— 会话推送因此不能按指纹解析(见 connectSameDevice 的两个回归用例)。
+const rigDeviceFingerprint = "sha256:test-device"
 
 func bootRemoteRig(t *testing.T, script []agentruntime.Event) *pairedTestRig {
 	t.Helper()
@@ -491,11 +498,33 @@ func bootRemoteRig(t *testing.T, script []agentruntime.Event) *pairedTestRig {
 	require.NoError(t, cli.Call(ctx, "auth.pair", map[string]any{
 		"code":              code,
 		"deviceName":        "test-mac",
-		"deviceFingerprint": "sha256:test-device",
+		"deviceFingerprint": rigDeviceFingerprint,
 	}, &pairResp))
 	require.NotEmpty(t, pairResp.DeviceToken)
 
-	return &pairedTestRig{dir: dir, d: d, cli: cli, runner: remote.New(cli)}
+	return &pairedTestRig{dir: dir, d: d, cli: cli, runner: remote.New(cli), token: pairResp.DeviceToken}
+}
+
+// connectSameDevice 再开一条**同一台设备**的已认证连接(auth.connect,与桌面端的
+// 设备监视心跳 remote_device_svc/watcher.go / 刷新探测 refresh.go 走的是同一条路)。
+// 一台桌面端同时开 2-3 条这样的连接是常态:连接池那条承载会话,其余只做保活。
+func (r *pairedTestRig) connectSameDevice(t *testing.T) *client.Client {
+	t.Helper()
+	r.d.mu.RLock()
+	url := r.d.lan.URL()
+	r.d.mu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	cli, err := client.Dial(ctx, client.Options{URL: url})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	var res map[string]any
+	require.NoError(t, cli.Call(ctx, "auth.connect", map[string]any{
+		"deviceFingerprint": rigDeviceFingerprint,
+		"deviceToken":       r.token,
+	}, &res))
+	require.Equal(t, true, res["ok"], "second connection of the same device must authenticate")
+	return cli
 }
 
 func (r *pairedTestRig) startRun(t *testing.T, sid int64) (<-chan agentruntime.Event, *agentruntime.RunResult) {
@@ -686,6 +715,121 @@ func TestIntegration_StrayConnDoesNotStealSessionNotifications(t *testing.T) {
 	}
 	assert.Equal(t, []string{"hello", " world"}, texts,
 		"a stray unauthenticated connection must not divert the paired device's session notifications")
+}
+
+// gatedBackendRunner 把一轮执行的事件流劈成两段:先发 before,停在 gate 上,gate 关闭
+// 后再发 after。用它把「同一台设备的第二条连接接入」精确摆在一轮执行的**中途**,而不是
+// 与事件流赛跑 —— 否则用例会偶发地在事件全部送达之后才接入,复现不出被顶掉的时序。
+type gatedBackendRunner struct {
+	before []agentruntime.Event
+	gate   <-chan struct{}
+	after  []agentruntime.Event
+}
+
+func (*gatedBackendRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+
+func (g *gatedBackendRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event, 1)
+	go func() {
+		defer close(ch)
+		for _, ev := range g.before {
+			ch <- ev
+			time.Sleep(5 * time.Millisecond)
+		}
+		<-g.gate
+		for _, ev := range g.after {
+			ch <- ev
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	return ch, &agentruntime.RunResult{}, nil
+}
+
+// bootGatedRig 起一个 rig,并把 backend 换成受测试控制的 gatedBackendRunner。
+func bootGatedRig(t *testing.T, r *gatedBackendRunner) *pairedTestRig {
+	t.Helper()
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	// bootRemoteRig 自己也换过一次 backend;t.Cleanup 是后进先出,这里的还原先跑。
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, r))
+	return rig
+}
+
+// awaitText 等下一条 TextDelta 并断言文本,超时即失败(会话被推去了别处 / 挂起时就是
+// 这个表现:客户端既没有错误也没有事件,只是永远收不到)。
+func awaitText(t *testing.T, events <-chan agentruntime.Event, want string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatalf("events channel closed while waiting for %q", want)
+			}
+			if td, isText := ev.(agentruntime.TextDelta); isText {
+				require.Equal(t, want, td.Text)
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %q — the session's notifications never reached the connection that started it", want)
+		}
+	}
+}
+
+// TestIntegration_SecondConnOfSameDeviceDoesNotStealSessionNotifications 回归(评审在真
+// 环境复现的其一):一台桌面端同时开多条**同指纹**的已认证连接 —— 连接池那条承载会话
+// (chat_svc/chat.go 的 remote.New(lease.Client())),设备监视心跳(watcher.go)与刷新探测
+// (refresh.go)各占一条。按设备指纹解析推送目标时,后认证的心跳连接会把正在跑的会话的
+// 通知整个抢走:daemon 侧推送「成功」,而发起会话的那条连接一条也收不到,没有错误、没有
+// seq 跳号,会话永久卡住。
+//
+// 会话的推送目标必须是**发起该会话的那条连接**,同设备的其它连接接入不改变它。
+func TestIntegration_SecondConnOfSameDeviceDoesNotStealSessionNotifications(t *testing.T) {
+	gate := make(chan struct{})
+	rig := bootGatedRig(t, &gatedBackendRunner{
+		before: []agentruntime.Event{agentruntime.TextDelta{Text: "before"}},
+		gate:   gate,
+		after:  []agentruntime.Event{agentruntime.TextDelta{Text: "after"}, agentruntime.Done{}},
+	})
+
+	events, _ := rig.startRun(t, 800)
+	awaitText(t, events, "before") // 会话确实在跑,且推送落在发起它的这条连接上
+
+	rig.connectSameDevice(t) // 心跳连接接入并**留着**
+	close(gate)
+
+	awaitText(t, events, "after")
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
+}
+
+// TestIntegration_SameDeviceConnClosingDoesNotSuspendRunningSession 回归(评审在真环境
+// 复现的其二):同指纹的第二条连接**关闭**时,它的清理把正在用的那条从表里一并删掉 ——
+// 之后会话的通知只落库、推不出去,客户端永久收不到东西。撤销必须按连接身份做,
+// 一条与会话无关的连接来去不得影响会话的推送目标。
+func TestIntegration_SameDeviceConnClosingDoesNotSuspendRunningSession(t *testing.T) {
+	gate := make(chan struct{})
+	rig := bootGatedRig(t, &gatedBackendRunner{
+		before: []agentruntime.Event{agentruntime.TextDelta{Text: "before"}},
+		gate:   gate,
+		after:  []agentruntime.Event{agentruntime.TextDelta{Text: "after"}, agentruntime.Done{}},
+	})
+
+	events, _ := rig.startRun(t, 801)
+	awaitText(t, events, "before")
+
+	second := rig.connectSameDevice(t)
+	require.NoError(t, second.Close())
+	// 等 daemon 真的处理完这条连接的关闭(bindConn 的 Done 监视是异步的),否则用例会
+	// 在「删掉了正主」之前就放行事件,复现不出这个时序。
+	require.Eventually(t, func() bool {
+		rig.d.conns.mu.Lock()
+		defer rig.d.conns.mu.Unlock()
+		return len(rig.d.conns.live) == 1
+	}, 5*time.Second, 10*time.Millisecond, "daemon must drop the closed connection from its live table")
+
+	close(gate)
+
+	awaitText(t, events, "after")
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
 }
 
 // TestIntegration_ErrorCodeRehydration drives a control RPC against a backend

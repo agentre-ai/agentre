@@ -75,10 +75,15 @@ func sanitizeTunnelHeaders(h http.Header) map[string][]string {
 }
 
 // NewMCPTunnelHandler 返回挂在 daemon 本机 gateway /mcp/ 上的隧道入口:把 CLI 子进程的
-// MCP HTTP 请求装包,经当前活跃连接的 NotifierPort 反向请求(MethodMCPProxy)隧道回 desktop
-// 执行,再把应答原样写回 CLI。MCP-over-HTTP 是纯请求/应答,单帧足够。notifierFn 在请求时
-// 解析目标:它取的是 daemon 上**已认证**的活连接(与会话通知同一张表),完成 WS 升级却
-// 从不认证的连接不构成隧道目标;无目标 → 503。
+// MCP HTTP 请求装包,经 NotifierPort 反向请求(MethodMCPProxy)隧道回 desktop 执行,再把
+// 应答原样写回 CLI。MCP-over-HTTP 是纯请求/应答,单帧足够。
+//
+// notifierFn 在请求时解析目标,与会话通知共用 daemon 的同一份连接状态(没有第二个「当前
+// 连接」的全局):取最近被认领的那条会话的属主连接,一条会话都还没被认领时回落到最近完成
+// 鉴权的活连接 —— 完成 WS 升级却从不认证的连接永远不构成隧道目标。请求身上**没有**会话
+// 标识可用(路径是 /mcp/<server>/,鉴权头是 desktop 签的不透明 token,daemon 既不签也验不
+// 了),所以隧道只能定位到「跑着会话的那台设备」;好在 desktop 侧的隧道 handler 是无状态的
+// (把请求重放到它本机 gateway),同一台设备的哪条连接送达都等价。无目标 → 503。
 func NewMCPTunnelHandler(notifierFn func() NotifierPort) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := notifierFn()
