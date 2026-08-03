@@ -314,6 +314,16 @@ type SubmitToolPermissionParams struct {
 
 // ── Notification frames ─────────────────────────────────────────────────────
 
+// Seq 字段的共同约定(EventFrame / RunResultDoneFrame / AutonomousTurnStartedFrame):
+// 它是这条通知在 daemon 通知日志里的序号,同一会话内从 1 起单调递增、无洞。daemon 先
+// 落库拿到 seq 再推送,所以每条推出去的帧都带着它(R6);客户端据此判断跳号并按游标补齐。
+//
+// 它是**可选的追加字段**:老版本桌面端不认识 "seq",JSON 解码时直接忽略,行为与今天
+// 完全一致。因此新增它不需要版本协商,也永远不能变成必填。
+//
+// 日志里存的 payload 是**不含 seq** 的帧原样 —— seq 是日志行自己的列,实时推送与重连
+// 补齐都在发送时才把行上的 seq 盖到帧上,两条路径因此投递同一份字节 + 同一个 seq。
+
 // EventFrame wraps a single agentruntime.Event for delivery over NotifyEvent.
 // SessionID is transport metadata so the receiving end can route by session;
 // Event payload is the JSON output of one of the 19 sealed Event types
@@ -321,7 +331,12 @@ type SubmitToolPermissionParams struct {
 type EventFrame struct {
 	SessionID int64           `json:"sessionId"`
 	Event     json.RawMessage `json:"event"`
+	Seq       int64           `json:"seq,omitempty"`
 }
+
+// SetSeq 盖上该帧在通知日志里的序号。指针接收者:发送方先 marshal 出不含 seq 的
+// payload 落库,再把库分配到的 seq 写回帧本身,然后才推送。
+func (f *EventFrame) SetSeq(seq int64) { f.Seq = seq }
 
 // RunResultDoneFrame 在 daemon 端 events channel close 之后发一次,带完整 RunResult。
 // 客户端拿到后填回 *remote.Runtime 持有的 *RunResult 指针,然后才 close 客户端的
@@ -339,7 +354,11 @@ type RunResultDoneFrame struct {
 	ContextWindow     int        `json:"contextWindow,omitempty"`
 	StopErrMsg        string     `json:"stopErrMsg,omitempty"`
 	StopErrCode       int        `json:"stopErrCode,omitempty"`
+	Seq               int64      `json:"seq,omitempty"`
 }
+
+// SetSeq 盖上该帧在通知日志里的序号(见 EventFrame.SetSeq)。
+func (f *RunResultDoneFrame) SetSeq(seq int64) { f.Seq = seq }
 
 // AutonomousTurnStartedFrame 在一轮自主续轮开始时由 daemon 发一次。客户端据此
 // 新建一个 agentruntime.AutonomousTurn 推给 AutonomousTurns() 的消费方,并把随后
@@ -348,7 +367,11 @@ type RunResultDoneFrame struct {
 type AutonomousTurnStartedFrame struct {
 	SessionID int64  `json:"sessionId"`
 	Trigger   string `json:"trigger,omitempty"`
+	Seq       int64  `json:"seq,omitempty"`
 }
+
+// SetSeq 盖上该帧在通知日志里的序号(见 EventFrame.SetSeq)。
+func (f *AutonomousTurnStartedFrame) SetSeq(seq int64) { f.Seq = seq }
 
 // UsageWire mirrors provider.Usage with stable lowerCamelCase tags. provider.Usage
 // has no JSON tags so we wrap it for wire stability(同 event_wire.go 里同名 helper)。

@@ -18,6 +18,11 @@ func (n *Notifier) Notify(method string, params any) error {
 	return n.conn.Notify(method, params)
 }
 
+// Peer 返回这条连接对端的设备指纹,未握手时为空串。会话通知的推送方靠它确认
+// 「此刻活着的这条连接」确实属于该会话的对端,不把一台设备的通知推给另一台。
+// 惰性读取:连接刚建立时还没有指纹,auth.pair / auth.connect 成功后才写进 AuthState。
+func (n *Notifier) Peer() string { return n.conn.Auth().DeviceFingerprint }
+
 func (n *Notifier) Request(ctx context.Context, method string, params any, result any) error {
 	return n.conn.Call(ctx, method, params, result)
 }

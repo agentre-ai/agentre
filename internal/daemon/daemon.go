@@ -70,35 +70,57 @@ type Daemon struct {
 	// it through ctx (db.WithContextDB at the Run ctx boundary), never directly.
 	db *gorm.DB
 
+	// journal 是通知日志的写入口,Daemon 级一份(会话日志按 (对端, 会话) 分区,不随
+	// 连接生灭 —— 断连重连不重置任何序号)。
+	journal handlers.JournalPort
+
 	mu  sync.RWMutex
 	lan *rpc.LANServer
 
-	// mcpNotifier 是当前活跃连接的反向请求端口,供 daemon 本机 gateway 的 /mcp/ 隧道
-	// 把 CLI 子进程的内置工具 MCP 调用反向请求回 desktop。daemon 单客户端 MVP(见
-	// bindConn 注释):同一时刻一条连接,后连接覆盖、断开清空。
-	mcpNotifierMu sync.Mutex
-	mcpNotifier   handlers.NotifierPort
+	// activeNotifier 是当前活跃连接的推送 / 反向请求端口:daemon 本机 gateway 的 /mcp/
+	// 隧道靠它把 CLI 子进程的内置工具 MCP 调用反向请求回 desktop,会话通知也靠它找到
+	// 「此刻活着的那条连接」。daemon 单客户端 MVP(见 bindConn 注释):同一时刻一条
+	// 连接,后连接覆盖、断开清空。
+	// activePeer 惰性读该连接的设备指纹 —— bindConn 时还没握手,指纹要等 auth.pair /
+	// auth.connect 之后才在 rpc.AuthState 上。
+	activeMu       sync.Mutex
+	activeNotifier handlers.NotifierPort
+	activePeer     func() string
 }
 
-// setActiveNotifier / activeNotifier 维护当前连接的反向请求端口(MCP 隧道用)。
-func (d *Daemon) setActiveNotifier(n handlers.NotifierPort) {
-	d.mcpNotifierMu.Lock()
-	d.mcpNotifier = n
-	d.mcpNotifierMu.Unlock()
+// setActiveConn / activeConn 维护当前连接的推送端口(会话通知 + MCP 隧道共用)。
+func (d *Daemon) setActiveConn(n handlers.NotifierPort, peer func() string) {
+	d.activeMu.Lock()
+	d.activeNotifier, d.activePeer = n, peer
+	d.activeMu.Unlock()
 }
 
-func (d *Daemon) clearActiveNotifier(n handlers.NotifierPort) {
-	d.mcpNotifierMu.Lock()
-	if d.mcpNotifier == n { // 仅在仍是自己时清,避免误清后到的新连接
-		d.mcpNotifier = nil
+func (d *Daemon) clearActiveConn(n handlers.NotifierPort) {
+	d.activeMu.Lock()
+	if d.activeNotifier == n { // 仅在仍是自己时清,避免误清后到的新连接
+		d.activeNotifier, d.activePeer = nil, nil
 	}
-	d.mcpNotifierMu.Unlock()
+	d.activeMu.Unlock()
 }
 
-func (d *Daemon) activeNotifier() handlers.NotifierPort {
-	d.mcpNotifierMu.Lock()
-	defer d.mcpNotifierMu.Unlock()
-	return d.mcpNotifier
+func (d *Daemon) activeConn() handlers.NotifierPort {
+	d.activeMu.Lock()
+	defer d.activeMu.Unlock()
+	return d.activeNotifier
+}
+
+// notifierForPeer 返回「此刻活着的、且属于该对端的」推送端口,否则 nil(对端不在线:
+// 通知已经落库,等它重连后按游标补齐)。每次发送时重新解析,绝不静态捕获 —— 后一条
+// 连接会覆盖前一条(见 bindConn),捕获下来的端口在重连后指向死连接。
+// 校对指纹是为了不把一个对端的会话通知推给另一台设备(R16)。
+func (d *Daemon) notifierForPeer(peer string) handlers.NotifierPort {
+	d.activeMu.Lock()
+	n, peerOf := d.activeNotifier, d.activePeer
+	d.activeMu.Unlock()
+	if n == nil || peerOf == nil || peerOf() != peer {
+		return nil
+	}
+	return n
 }
 
 // New constructs a Daemon from Options. It loads persistent state, creates
@@ -140,6 +162,7 @@ func New(opts Options) (*Daemon, error) {
 
 	d := &Daemon{
 		opts: opts, state: st, db: gormDB,
+		journal:  notificationJournal{db: gormDB},
 		sessions: sessions.NewRegistry(), pairing: pm, ratelim: rl,
 		registry: reg, auth: auth,
 	}
@@ -148,7 +171,7 @@ func New(opts Options) (*Daemon, error) {
 	// 本机 gateway 的 /mcp/*(URL 已由 runtime.Run 改写成 daemon base),这里捕获后反向
 	// 请求回 desktop 执行(真 handler 在 desktop)。仅一条 catch-all,serveMCP 最长前缀
 	// 匹配下命中所有 /mcp/* 路径。
-	d.gateway.RegisterMCP(httpgateway.RouteMCPPrefix, handlers.NewMCPTunnelHandler(d.activeNotifier))
+	d.gateway.RegisterMCP(httpgateway.RouteMCPPrefix, handlers.NewMCPTunnelHandler(d.activeConn))
 	d.registerMethods()
 	return d, nil
 }
@@ -302,12 +325,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 // cache,所以是 per-conn 构造的。
 func (d *Daemon) bindConn(c *rpc.Conn) {
 	n := notifier.New(c)
-	// 把这条连接的反向请求端口登记为当前活跃端口,供 /mcp/ 隧道用(单客户端 MVP)。
-	d.setActiveNotifier(n)
+	// 把这条连接登记为当前活跃连接,供 /mcp/ 隧道与会话通知推送用(单客户端 MVP)。
+	d.setActiveConn(n, n.Peer)
 	rh := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
-		Notify:  n,
-		Gateway: d.gateway,
-		Lookup:  NewProviderLookup(d.state),
+		// 会话通知的推送目标按对端在发送那一刻解析,不捕获 n:RuntimeHandlers 是
+		// per-conn 的,而它起的 fanout goroutine 会活过这条连接。
+		NotifyFor: d.notifierForPeer,
+		Journal:   d.journal,
+		Gateway:   d.gateway,
+		Lookup:    NewProviderLookup(d.state),
 	})
 	d.registry.Register(wire.MethodCapabilities, wrapGuarded(rh.Capabilities))
 	d.registry.Register(wire.MethodRun, wrapGuarded(rh.Run))
@@ -340,7 +366,7 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	go func() {
 		<-c.Done()
 		termH.CloseAll()
-		d.clearActiveNotifier(n) // 连接断开 → 撤销 MCP 隧道端口(避免对死连接发反向请求)
+		d.clearActiveConn(n) // 连接断开 → 撤销推送端口(避免对死连接推通知 / 发反向请求)
 	}()
 }
 
@@ -426,6 +452,27 @@ func openDB(dataDir string) (*gorm.DB, error) {
 	// writers otherwise hit SQLITE_BUSY near-instantly instead of waiting.
 	dsn := dbPath + "?_pragma=busy_timeout(5000)"
 	return gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+}
+
+// notificationJournal 是 handlers.JournalPort 的 daemon 级实现:把「本该发出的通知」
+// 写进本实例的 daemon_notification_logs,seq 由仓储在同一条语句里分配。
+//
+// 它自己往 ctx 上注入本 Daemon 的 db 句柄:通知的生产者是脱离请求 ctx 的 fanout
+// goroutine(它可能拿到的只是一个裸 ctx),而 daemon 故意不写 db.SetDefault(同进程
+// 多个 Daemon 会互相串库,见 Daemon.db 注释),所以句柄只能从这里给。
+type notificationJournal struct{ db *gorm.DB }
+
+func (j notificationJournal) Append(ctx context.Context, peerFingerprint, peerSessionID, method string, payload json.RawMessage) (int64, error) {
+	row := &notification_repo.NotificationLog{
+		PeerFingerprint: peerFingerprint,
+		PeerSessionID:   peerSessionID,
+		Method:          method,
+		Payload:         string(payload),
+	}
+	if err := notification_repo.Notification().Append(dbpkg.WithContextDB(ctx, j.db), row); err != nil {
+		return 0, err
+	}
+	return row.Seq, nil
 }
 
 // closeDB 关闭 openDB 拿到的句柄。只在 New 的失败路径上用:Daemon 构造失败时若不关,

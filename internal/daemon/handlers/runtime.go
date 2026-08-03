@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strconv"
 	"sync"
 	"time"
 
@@ -36,7 +37,13 @@ import (
 // RuntimeDeps are the explicit constructor inputs for RuntimeHandlers. All
 // fields are required except RuntimeFor (defaults to agentruntime.RuntimeFor).
 type RuntimeDeps struct {
-	Notify     NotifierPort
+	// NotifyFor 解析「此刻活着的、属于该对端的」推送端口,没有则返回 nil。它是函数而
+	// 不是一个 NotifierPort,因为 RuntimeHandlers 是 per-connection 构造的,而 fanout /
+	// forwardAutonomousTurn 的 goroutine 会活过那条连接:静态捕获的端口在客户端重连后
+	// 仍指向已死的旧连接,通知就再也发不出去了(见 daemon.bindConn 注释)。
+	NotifyFor func(peerFingerprint string) NotifierPort
+	// Journal 是通知日志,Daemon 级(每个 daemon 一份),不随连接生灭。
+	Journal    JournalPort
 	Gateway    GatewayPort
 	Lookup     LLMProviderLookupPort
 	RuntimeFor func(agent_backend_entity.BackendType) agentruntime.Runtime
@@ -197,11 +204,14 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	h.register(p.SessionID, runtimeSession{backendType: bt})
 	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
 		p.SessionID, be.Type, p.AgentID, p.Cwd, len(p.UserText))
-	go h.fanout(p.SessionID, events, result)
+	// 通知出口必须在这里建:对端指纹只有请求 ctx 上有,而 fanout /
+	// forwardAutonomousTurn 跑在脱离 ctx 的 goroutine 里(见 sessionEmitter 注释)。
+	em := h.newEmitter(ctx, p.SessionID)
+	go h.fanout(em, events, result)
 	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
 	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
 	if src, ok := rt.(agentruntime.AutonomousTurnSource); ok {
-		h.startAutonomousFanout(p.SessionID, src)
+		h.startAutonomousFanout(em, src)
 	}
 	return ack, nil
 }
@@ -209,7 +219,8 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 // fanout 把 backend events channel 抽干推到 runtime.event,channel close 后再发
 // runtime.runResultDone 终态帧。日志按事件 kind 计数,turn 结束时打一条汇总,
 // 排查 stuck-turn / 漏事件时方便对账 client 端实际收到几条。
-func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result *agentruntime.RunResult) {
+func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Event, result *agentruntime.RunResult) {
+	sid := em.sid
 	count := 0
 	kindHist := map[string]int{}
 	for ev := range ch {
@@ -221,12 +232,10 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 		count++
 		kind := reflect.TypeOf(ev).Name()
 		kindHist[kind]++
-		if perr := h.deps.Notify.Notify(wire.NotifyEvent, wire.EventFrame{
+		if em.emit(wire.NotifyEvent, &wire.EventFrame{
 			SessionID: sid,
 			Event:     json.RawMessage(raw),
-		}); perr != nil {
-			log.Printf("runtime.event: notify failed sid=%d n=%d kind=%s err=%v", sid, count, kind, perr)
-		} else if !isNoisyEventKind(kind) {
+		}) && !isNoisyEventKind(kind) {
 			// text/thinking/usage 频率极高,kindHist 汇总即可,不逐条 log。
 			log.Printf("runtime.event: sid=%d n=%d kind=%s payload=%s", sid, count, kind, string(raw))
 		}
@@ -236,9 +245,7 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 	// 跨轮复用,寿命跟随子进程(见 sessionTokens 注释),轮末撤销会让下一轮复用
 	// 的子进程手里 token 失效。
 	h.unregister(sid)
-	if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
-		log.Printf("runtime.runResultDone: notify failed sid=%d err=%v", sid, perr)
-	}
+	em.emit(wire.NotifyRunResultDone, &frame)
 	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
 		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
 }
@@ -246,14 +253,15 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 // startAutonomousFanout 每会话起一个 goroutine,把真实 runtime 的自主续轮转发到
 // client(每轮:Started → Event* → Done)。去重防重复订阅;AutonomousTurns(sid)
 // channel close(子进程 evict)时 goroutine 退出并清去重位。
-func (h *RuntimeHandlers) startAutonomousFanout(sid int64, src agentruntime.AutonomousTurnSource) {
+func (h *RuntimeHandlers) startAutonomousFanout(em *sessionEmitter, src agentruntime.AutonomousTurnSource) {
+	sid := em.sid
 	if _, loaded := h.autoSubs.LoadOrStore(sid, struct{}{}); loaded {
 		return
 	}
 	go func() {
 		defer h.autoSubs.Delete(sid)
 		for at := range src.AutonomousTurns(sid) {
-			h.forwardAutonomousTurn(sid, at)
+			forwardAutonomousTurn(em, at)
 		}
 		log.Printf("runtime.autonomousTurn: source closed sid=%d", sid)
 	}()
@@ -261,13 +269,12 @@ func (h *RuntimeHandlers) startAutonomousFanout(sid int64, src agentruntime.Auto
 
 // forwardAutonomousTurn 转发一轮自主续轮:先 Started,再逐事件 Event,最后 Done
 // 带 RunResult(复用 runResultToFrame)。语义同 fanout,但走 autonomousTurn.* 方法。
-func (h *RuntimeHandlers) forwardAutonomousTurn(sid int64, at agentruntime.AutonomousTurn) {
-	if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+func forwardAutonomousTurn(em *sessionEmitter, at agentruntime.AutonomousTurn) {
+	sid := em.sid
+	em.emit(wire.NotifyAutonomousTurnStarted, &wire.AutonomousTurnStartedFrame{
 		SessionID: sid,
 		Trigger:   at.Trigger,
-	}); perr != nil {
-		log.Printf("runtime.autonomousTurn.started: notify failed sid=%d err=%v", sid, perr)
-	}
+	})
 	count := 0
 	for ev := range at.Events {
 		raw, err := json.Marshal(ev)
@@ -276,18 +283,110 @@ func (h *RuntimeHandlers) forwardAutonomousTurn(sid int64, at agentruntime.Auton
 			continue
 		}
 		count++
-		if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnEvent, wire.EventFrame{
+		em.emit(wire.NotifyAutonomousTurnEvent, &wire.EventFrame{
 			SessionID: sid,
 			Event:     json.RawMessage(raw),
-		}); perr != nil {
-			log.Printf("runtime.autonomousTurn.event: notify failed sid=%d n=%d err=%v", sid, count, perr)
-		}
+		})
 	}
 	frame := runResultToFrame(sid, at.Result)
-	if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnDone, frame); perr != nil {
-		log.Printf("runtime.autonomousTurn.done: notify failed sid=%d err=%v", sid, perr)
-	}
+	em.emit(wire.NotifyAutonomousTurnDone, &frame)
 	log.Printf("runtime.autonomousTurn: forwarded sid=%d trigger=%s events=%d", sid, at.Trigger, count)
+}
+
+// ── 会话通知出口(先落库,后推送)────────────────────────────────────────────
+
+// seqFrame 是能被盖上 seq 的通知帧。wire 的三个通知帧(EventFrame /
+// RunResultDoneFrame / AutonomousTurnStartedFrame)的指针都满足它。
+// 按 ISP 在消费方声明,wire 那边只留三个 SetSeq 方法。
+type seqFrame interface {
+	SetSeq(seq int64)
+}
+
+// sessionEmitter 是某个 (对端, 会话) 的通知出口:一条通知先落进 daemon 的通知日志拿到
+// seq,落库成功后才盖上 seq 推给此刻活着的那条连接。
+//
+// 它按**会话**构造(而不是按连接)有两个原因:
+//   - 对端指纹只在 runtime.run 的请求 ctx 上拿得到,而 fanout / forwardAutonomousTurn
+//     跑在脱离请求 ctx 的 goroutine 里,只能在 run 期间捕获后随会话带下去;
+//   - RuntimeHandlers 自己是 per-connection 构造的,把推送目标静态捕获进来会让客户端
+//     重连之后的通知一直发往那条死连接(见 daemon.bindConn 注释),所以推送目标每次
+//     发送时才解析。
+type sessionEmitter struct {
+	// ctx 派生自 runtime.run 的请求 ctx 但去掉了取消:落库要活过发起它的那次请求
+	// (fanout 的寿命是整轮执行),但 ctx 上的值(daemon 自己的 db 句柄)必须留着。
+	ctx           context.Context
+	journal       JournalPort
+	notifyFor     func(peerFingerprint string) NotifierPort
+	peer          string
+	peerSessionID string
+	sid           int64
+}
+
+// newEmitter 在 runtime.run 处理期间构造会话通知出口,捕获对端指纹。
+func (h *RuntimeHandlers) newEmitter(ctx context.Context, sid int64) *sessionEmitter {
+	return &sessionEmitter{
+		ctx:           context.WithoutCancel(ctx),
+		journal:       h.deps.Journal,
+		notifyFor:     h.deps.NotifyFor,
+		peer:          peerFingerprint(ctx),
+		peerSessionID: strconv.FormatInt(sid, 10),
+		sid:           sid,
+	}
+}
+
+// emit 先落库、后推送一条会话通知,返回是否真的推出去了(只给调用方决定要不要打
+// 成功日志)。三条硬规则:
+//   - 落库成功之后才推,推出去的帧带着库分配的 seq(R1 / R6);
+//   - 落库失败:不推、seq 不推进,记 error 日志 —— 日志里因此不会出现空洞,客户端拉到
+//     的连续 seq 就是完整序列(R3);
+//   - 推送失败:通知已经落库、seq 已经推进,记一条日志就继续下一条,不回滚不重试(R2)。
+func (e *sessionEmitter) emit(method string, frame seqFrame) bool {
+	payload, err := json.Marshal(frame)
+	if err != nil {
+		log.Printf("%s: marshal failed sid=%d err=%v", method, e.sid, err)
+		return false
+	}
+	if e.journal == nil {
+		// 没接日志就没有「事实」可言,只能连推送一起停:宁可整条出口静默失败被一眼看见,
+		// 也不能一边推一边丢事实(那样断连补齐会缺条,而没人会发现)。
+		log.Printf("%s: journal not wired sid=%d; notification dropped", method, e.sid)
+		return false
+	}
+	seq, err := e.journal.Append(e.ctx, e.peer, e.peerSessionID, method, payload)
+	if err != nil {
+		log.Printf("%s: journal append failed sid=%d peer=%q err=%v", method, e.sid, e.peer, err)
+		return false
+	}
+	frame.SetSeq(seq)
+	n := e.pushTarget()
+	if n == nil {
+		// 对端不在线:通知已经落库,等它重连后按游标补齐。
+		log.Printf("%s: no live peer sid=%d seq=%d; journaled only", method, e.sid, seq)
+		return false
+	}
+	if err := n.Notify(method, frame); err != nil {
+		log.Printf("%s: notify failed sid=%d seq=%d err=%v", method, e.sid, seq, err)
+		return false
+	}
+	return true
+}
+
+// pushTarget 解析此刻的推送目标;对端不在线返回 nil。
+func (e *sessionEmitter) pushTarget() NotifierPort {
+	if e.notifyFor == nil {
+		return nil
+	}
+	return e.notifyFor(e.peer)
+}
+
+// peerFingerprint 取发起这轮的对端设备指纹 —— 会话身份的前半段(R16)。它只在请求
+// ctx 上有(auth.pair / auth.connect 成功后写进 rpc.AuthState),所以必须在 runtime.run
+// 处理期间取,fanout 的 goroutine 里已经拿不到连接了。
+func peerFingerprint(ctx context.Context) string {
+	if c := rpc.ConnFromContext(ctx); c != nil {
+		return c.Auth().DeviceFingerprint
+	}
+	return ""
 }
 
 // isNoisyEventKind 标记单 turn 内可能上百次出现的事件类型,逐条 log 会刷屏。

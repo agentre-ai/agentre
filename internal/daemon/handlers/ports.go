@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/agentre-ai/agentre/internal/daemon/state"
@@ -45,6 +46,26 @@ type SessionRegistryPort interface {
 type NotifierPort interface {
 	Notify(method string, params any) error
 	Request(ctx context.Context, method string, params any, result any) error
+}
+
+// JournalPort 落库一条「本该发给客户端的通知」,返回库为它分配的 seq。
+//
+// 它是 R1「先落库,后推送」的接缝:会话通知的发送方先调 Append 拿到 seq,成功后才推送。
+// Append 返回 error 时 seq 不推进、该条通知也不推送(R3),因此日志里的 seq 连续无洞 ——
+// 客户端拉到的连续 seq 就是完整序列。
+//
+// 会话身份是 (peerFingerprint, peerSessionID) 的组合:会话 id 是各客户端本地自增的,
+// 不同客户端必然重号(R16)。payload 是那条通知的 params 原样、且**不含 seq**;seq 是
+// 日志行自己的属性,推送时(实时与重连补齐同样)才盖到帧上。
+//
+// 实现挂在 Daemon 级(一个 daemon 一份库),不是 per-connection —— 断连重连不该重置任何
+// 序号,见 daemon.bindConn 的注释。
+//
+// 「某会话最新的 seq」的唯一真相源是通知日志本身(该会话的 MAX(seq),仓储的原子分配语句
+// 读的就是它)。daemon_sessions.latest_seq 只是迁移里预留下来的列,没有写入者,任何地方
+// 都不要拿它当游标读 —— 两个真相源迟早对不上。
+type JournalPort interface {
+	Append(ctx context.Context, peerFingerprint, peerSessionID, method string, payload json.RawMessage) (seq int64, err error)
 }
 
 // GatewayPort daemon-side LLM gateway 端口：给 CLI 子进程签短 token、查 URL、回收 token。

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -234,10 +236,24 @@ func (bareRT) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentrun
 	return ch, &agentruntime.RunResult{}, nil
 }
 
-// recordingNotifier collects every notify call so tests can assert ordering.
-type recordingNotifier struct {
+// recordingOutbound 扮演会话通知出口的两半:通知日志(handlers.JournalPort)与推送
+// (handlers.NotifierPort)。两半合在一个 fake 里是为了共用一份有序 steps —— 「先落库
+// 后推送」只有在同一条时间线上才证得了:每条 notify 之前必须有它自己那条 append。
+type recordingOutbound struct {
 	mu      sync.Mutex
 	frames  []notifyFrame
+	rows    []journalRow
+	steps   []string
+	resolve []string // NotifyFor 每次解析推送目标时收到的对端指纹
+	nextSeq map[string]int64
+
+	// appendFail 返回非 nil 时该条通知落库失败:不记行、不分配 seq。
+	appendFail func(method string, payload json.RawMessage) error
+	// notifyFail 返回非 nil 时该条通知推送失败(连接已死 / 写超时)。
+	notifyFail func(method string) error
+	// offline 为真时解析不到活连接(对端不在线),推送无目标。
+	offline bool
+
 	notifyC chan struct{}
 }
 
@@ -246,24 +262,106 @@ type notifyFrame struct {
 	params any
 }
 
-func newRecordingNotifier() *recordingNotifier {
-	return &recordingNotifier{notifyC: make(chan struct{}, 64)}
+// journalRow 是 fake 日志里的一行,形状对齐 daemon_notification_logs。
+type journalRow struct {
+	peer    string
+	session string
+	method  string
+	payload string
+	seq     int64
 }
 
-func (n *recordingNotifier) Notify(method string, params any) error {
+func newRecordingOutbound() *recordingOutbound {
+	return &recordingOutbound{notifyC: make(chan struct{}, 64), nextSeq: map[string]int64{}}
+}
+
+// Append 模拟仓储的原子 seq 分配:每个 (对端, 会话) 从 1 起递增,失败时不推进。
+func (n *recordingOutbound) Append(_ context.Context, peer, session, method string, payload json.RawMessage) (int64, error) {
 	n.mu.Lock()
+	defer n.unlockAndSignal()
+	if n.appendFail != nil {
+		if err := n.appendFail(method, payload); err != nil {
+			n.steps = append(n.steps, "append-failed:"+method)
+			return 0, err
+		}
+	}
+	key := peer + "|" + session
+	n.nextSeq[key]++
+	seq := n.nextSeq[key]
+	n.rows = append(n.rows, journalRow{peer: peer, session: session, method: method, payload: string(payload), seq: seq})
+	n.steps = append(n.steps, stepKey("append", method, seq))
+	return seq, nil
+}
+
+// notifierFor 是注入给 handlers.RuntimeDeps.NotifyFor 的解析函数。
+func (n *recordingOutbound) notifierFor(peer string) handlers.NotifierPort {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.resolve = append(n.resolve, peer)
+	if n.offline {
+		return nil
+	}
+	return n
+}
+
+// resolvedPeers 返回 NotifyFor 每次被调用时收到的对端指纹,按调用顺序。
+func (n *recordingOutbound) resolvedPeers() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.resolve...)
+}
+
+func (n *recordingOutbound) setOffline(off bool) {
+	n.mu.Lock()
+	n.offline = off
+	n.mu.Unlock()
+}
+
+func (n *recordingOutbound) Notify(method string, params any) error {
+	n.mu.Lock()
+	defer n.unlockAndSignal()
+	if n.notifyFail != nil {
+		if err := n.notifyFail(method); err != nil {
+			n.steps = append(n.steps, stepKey("notify-failed", method, frameSeq(params)))
+			return err
+		}
+	}
 	n.frames = append(n.frames, notifyFrame{method, params})
+	n.steps = append(n.steps, stepKey("notify", method, frameSeq(params)))
+	return nil
+}
+
+func (*recordingOutbound) Request(_ context.Context, _ string, _ any, _ any) error { return nil }
+
+// unlockAndSignal 解锁并唤醒 waitFrames / waitSteps 的等待者(非阻塞)。
+func (n *recordingOutbound) unlockAndSignal() {
 	n.mu.Unlock()
 	select {
 	case n.notifyC <- struct{}{}:
 	default:
 	}
-	return nil
 }
 
-func (*recordingNotifier) Request(_ context.Context, _ string, _ any, _ any) error { return nil }
+// stepKey 把一步记成 "<动作>:<method>#<seq>",让 R1 的顺序断言能按 (method, seq)
+// 精确配对,而不是只数条数。
+func stepKey(action, method string, seq int64) string {
+	return fmt.Sprintf("%s:%s#%d", action, method, seq)
+}
 
-func (n *recordingNotifier) snapshot() []notifyFrame {
+// frameSeq 读出推送帧上盖的 seq。三个通知帧都以指针形式推送(SetSeq 是指针接收者)。
+func frameSeq(params any) int64 {
+	switch f := params.(type) {
+	case *wire.EventFrame:
+		return f.Seq
+	case *wire.RunResultDoneFrame:
+		return f.Seq
+	case *wire.AutonomousTurnStartedFrame:
+		return f.Seq
+	}
+	return -1
+}
+
+func (n *recordingOutbound) snapshot() []notifyFrame {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	out := make([]notifyFrame, len(n.frames))
@@ -271,19 +369,45 @@ func (n *recordingNotifier) snapshot() []notifyFrame {
 	return out
 }
 
+func (n *recordingOutbound) journalRows() []journalRow {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make([]journalRow, len(n.rows))
+	copy(out, n.rows)
+	return out
+}
+
+func (n *recordingOutbound) stepLog() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.steps...)
+}
+
 // waitFrames blocks until n.snapshot() yields at least want frames, or test fails.
-func (n *recordingNotifier) waitFrames(t *testing.T, want int) []notifyFrame {
+func (n *recordingOutbound) waitFrames(t *testing.T, want int) []notifyFrame {
+	t.Helper()
+	n.waitFor(t, func() bool { return len(n.snapshot()) >= want },
+		func() string { return fmt.Sprintf("%d notify frames; got %d", want, len(n.snapshot())) })
+	return n.snapshot()
+}
+
+// waitSteps 等到出口上至少发生了 want 步(落库 / 推送,含失败),用于推送必然失败、
+// 等不到 frame 的场景。
+func (n *recordingOutbound) waitSteps(t *testing.T, want int) []string {
+	t.Helper()
+	n.waitFor(t, func() bool { return len(n.stepLog()) >= want },
+		func() string { return fmt.Sprintf("%d outbound steps; got %v", want, n.stepLog()) })
+	return n.stepLog()
+}
+
+func (n *recordingOutbound) waitFor(t *testing.T, done func() bool, describe func() string) {
 	t.Helper()
 	deadline := time.After(2 * time.Second)
-	for {
-		got := n.snapshot()
-		if len(got) >= want {
-			return got
-		}
+	for !done() {
 		select {
 		case <-n.notifyC:
 		case <-deadline:
-			t.Fatalf("timed out waiting for %d notify frames; got %d", want, len(got))
+			t.Fatalf("timed out waiting for %s", describe())
 		}
 	}
 }
@@ -292,7 +416,7 @@ func (n *recordingNotifier) waitFrames(t *testing.T, want int) []notifyFrame {
 
 func setupRuntimeTest(t *testing.T, rt agentruntime.Runtime) (
 	context.Context,
-	*recordingNotifier,
+	*recordingOutbound,
 	*mock_handlers.MockGatewayPort,
 	*mock_handlers.MockLLMProviderLookupPort,
 	*handlers.RuntimeHandlers,
@@ -300,13 +424,14 @@ func setupRuntimeTest(t *testing.T, rt agentruntime.Runtime) (
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
-	notif := newRecordingNotifier()
+	notif := newRecordingOutbound()
 	gw := mock_handlers.NewMockGatewayPort(ctrl)
 	lookup := mock_handlers.NewMockLLMProviderLookupPort(ctrl)
 	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
-		Notify:  notif,
-		Gateway: gw,
-		Lookup:  lookup,
+		NotifyFor: notif.notifierFor,
+		Journal:   notif,
+		Gateway:   gw,
+		Lookup:    lookup,
 		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
 			return rt
 		},
@@ -483,14 +608,14 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 	assert.Equal(t, wire.NotifyRunResultDone, frames[2].method)
 
 	// First event frame must carry sessionId 42 and a text_delta event payload.
-	ef0, ok := frames[0].params.(wire.EventFrame)
+	ef0, ok := frames[0].params.(*wire.EventFrame)
 	require.True(t, ok, "expected wire.EventFrame, got %T", frames[0].params)
 	assert.Equal(t, int64(42), ef0.SessionID)
 	assert.Contains(t, string(ef0.Event), `"kind":"text_delta"`)
 	assert.Contains(t, string(ef0.Event), `"text":"hi"`)
 
 	// Final frame carries the RunResult fields.
-	done, ok := frames[2].params.(wire.RunResultDoneFrame)
+	done, ok := frames[2].params.(*wire.RunResultDoneFrame)
 	require.True(t, ok, "expected wire.RunResultDoneFrame, got %T", frames[2].params)
 	assert.Equal(t, int64(42), done.SessionID)
 	assert.Equal(t, "psid-1", done.ProviderSessionID)
@@ -551,16 +676,13 @@ func TestRuntime_Run_ForwardsAutonomousTurn(t *testing.T) {
 		switch f.method {
 		case wire.NotifyAutonomousTurnStarted:
 			order = append(order, "started")
-			fr := f.params.(wire.AutonomousTurnStartedFrame)
-			started = &fr
+			started = f.params.(*wire.AutonomousTurnStartedFrame)
 		case wire.NotifyAutonomousTurnEvent:
 			order = append(order, "event")
-			fr := f.params.(wire.EventFrame)
-			autoEvent = &fr
+			autoEvent = f.params.(*wire.EventFrame)
 		case wire.NotifyAutonomousTurnDone:
 			order = append(order, "done")
-			fr := f.params.(wire.RunResultDoneFrame)
-			autoDone = &fr
+			autoDone = f.params.(*wire.RunResultDoneFrame)
 		}
 	}
 	require.NotNil(t, started)
@@ -683,7 +805,7 @@ func TestRuntime_Run_StopErrAborted_RehydratesCode(t *testing.T) {
 	require.NoError(t, err)
 
 	frames := notif.waitFrames(t, 1)
-	done, ok := frames[0].params.(wire.RunResultDoneFrame)
+	done, ok := frames[0].params.(*wire.RunResultDoneFrame)
 	require.True(t, ok)
 	assert.Equal(t, wire.ErrCodeAborted, done.StopErrCode)
 	assert.Equal(t, agentruntime.ErrAborted.Error(), done.StopErrMsg)
@@ -706,7 +828,7 @@ func runWithRT(t *testing.T, h *handlers.RuntimeHandlers, ctx context.Context, s
 // given sid; the runtime's events channel stays open so the row stays alive.
 func runtimeWithLiveSession(t *testing.T, rt *fullRT, sid int64) (
 	context.Context,
-	*recordingNotifier,
+	*recordingOutbound,
 	*handlers.RuntimeHandlers,
 	chan agentruntime.Event,
 ) {
@@ -976,7 +1098,7 @@ func TestRuntime_AllEventsRoundTripThroughNotify(t *testing.T) {
 	for i := range events {
 		f := frames[i]
 		assert.Equal(t, wire.NotifyEvent, f.method)
-		ef, ok := f.params.(wire.EventFrame)
+		ef, ok := f.params.(*wire.EventFrame)
 		require.True(t, ok, "frame %d: expected EventFrame, got %T", i, f.params)
 		assert.Equal(t, int64(100), ef.SessionID)
 		var head struct {
@@ -985,4 +1107,235 @@ func TestRuntime_AllEventsRoundTripThroughNotify(t *testing.T) {
 		require.NoError(t, json.Unmarshal(ef.Event, &head))
 		assert.NotEmpty(t, head.Kind, "frame %d kind must be present", i)
 	}
+}
+
+// ── 会话通知出口:先落库,后推送 ───────────────────────────────────────────
+
+// assertJournaledBeforePushed 断言时间线上每条推送都排在它自己那条落库之后(R1),
+// 且没有任何一条通知是没落库就推出去的。按 (method, seq) 精确配对,不只数条数。
+func assertJournaledBeforePushed(t *testing.T, steps []string) {
+	t.Helper()
+	appendedAt := map[string]int{}
+	for i, s := range steps {
+		if key, ok := strings.CutPrefix(s, "append:"); ok {
+			appendedAt[key] = i
+		}
+	}
+	for i, s := range steps {
+		key, ok := strings.CutPrefix(s, "notify:")
+		if !ok {
+			continue
+		}
+		at, journaled := appendedAt[key]
+		require.Truef(t, journaled, "推送了一条没落库的通知 %s;时间线 %v", key, steps)
+		assert.Lessf(t, at, i, "通知 %s 的推送排在它自己的落库之前;时间线 %v", key, steps)
+	}
+}
+
+func journalSeqs(rows []journalRow) []int64 {
+	out := make([]int64, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.seq)
+	}
+	return out
+}
+
+func journalMethods(rows []journalRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.method)
+	}
+	return out
+}
+
+// TestRuntime_Run_JournalsEveryNotificationBeforePushingWithSeq 覆盖 R1 与 R6 的 daemon
+// 半边:五类会话通知(runtime.event / runtime.runResultDone / autonomousTurn.started /
+// .event / .done)每一条都先以下一个 seq 落进通知日志,落库成功之后才带着这个 seq 推出去。
+// 日志里存的是不含 seq 的帧原样,seq 是行自己的属性。
+// 会拒绝的错误实现:直接推不落库;落了库但帧上不盖 seq;推完再补落库;只覆盖 run 流的
+// 两类而漏掉自主续轮的三类。
+func TestRuntime_Run_JournalsEveryNotificationBeforePushingWithSeq(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.TextDelta{Text: "hi"}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid-1"}, nil
+	}
+	rt.autoFn = func(_ int64) <-chan agentruntime.AutonomousTurn {
+		out := make(chan agentruntime.AutonomousTurn, 1)
+		evs := make(chan agentruntime.Event, 1)
+		evs <- agentruntime.TextDelta{Text: "autonomous"}
+		close(evs)
+		out <- agentruntime.AutonomousTurn{Events: evs, Result: &agentruntime.RunResult{}, Trigger: "background_task"}
+		close(out)
+		return out
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42, Cwd: "/tmp", UserText: "hi"})
+	require.NoError(t, err)
+
+	// run 流 2 条(event + runResultDone)+ 自主续轮 3 条(started + event + done)。
+	frames := notif.waitFrames(t, 5)
+	rows := notif.journalRows()
+
+	require.Len(t, rows, 5, "五类通知每条都必须落库")
+	assert.ElementsMatch(t, []int64{1, 2, 3, 4, 5}, journalSeqs(rows), "seq 从 1 起单调无洞")
+	assert.ElementsMatch(t, []string{
+		wire.NotifyEvent,
+		wire.NotifyRunResultDone,
+		wire.NotifyAutonomousTurnStarted,
+		wire.NotifyAutonomousTurnEvent,
+		wire.NotifyAutonomousTurnDone,
+	}, journalMethods(rows), "五类通知一条都不能漏")
+
+	bySeq := map[int64]journalRow{}
+	for _, r := range rows {
+		bySeq[r.seq] = r
+		assert.Equal(t, "42", r.session, "会话身份的后半段是对端会话 id")
+		assert.NotContains(t, r.payload, `"seq"`, "日志里存的是不含 seq 的帧原样,seq 是行自己的列")
+	}
+
+	// 每条推出去的帧都盖着它那条日志行的 seq,且 method 与该行一致。
+	pushedSeqs := make([]int64, 0, len(frames))
+	for _, f := range frames {
+		seq := frameSeq(f.params)
+		row, ok := bySeq[seq]
+		require.Truef(t, ok, "推送帧带的 seq=%d 在日志里不存在(method=%s)", seq, f.method)
+		assert.Equal(t, row.method, f.method)
+		pushedSeqs = append(pushedSeqs, seq)
+	}
+	assert.ElementsMatch(t, []int64{1, 2, 3, 4, 5}, pushedSeqs, "每条推送都带自己的 seq")
+
+	assertJournaledBeforePushed(t, notif.stepLog())
+
+	// 落库与推送必须用同一个对端身份 —— 单测的 ctx 上没有连接,指纹为空串,这里钉的是
+	// 「两边取的是同一个值」,真实指纹的捕获由带真连接的集成路径覆盖。
+	resolved := notif.resolvedPeers()
+	require.NotEmpty(t, resolved, "推送目标必须在发送时解析")
+	for _, peer := range resolved {
+		assert.Equal(t, rows[0].peer, peer)
+	}
+}
+
+// TestRuntime_Run_PushFailureLeavesJournalIntact 覆盖 R2:推送失败(连接已死 / 写超时)
+// 时该条通知已经落库、seq 已经推进,daemon 记日志后继续处理下一条 —— 不回滚、不重试、
+// 不阻塞后续通知。会拒绝的错误实现:推送失败就删日志行 / 重试 / 中断 fanout。
+func TestRuntime_Run_PushFailureLeavesJournalIntact(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 2)
+		ch <- agentruntime.TextDelta{Text: "one"}
+		ch <- agentruntime.TextDelta{Text: "two"}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid-1"}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	notif.notifyFail = func(string) error { return errors.New("connection reset by peer") }
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypePiAgent), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42})
+	require.NoError(t, err)
+
+	// 2 条 event + 1 条 runResultDone,每条一次落库 + 一次失败推送 = 6 步。
+	steps := notif.waitSteps(t, 6)
+
+	rows := notif.journalRows()
+	require.Len(t, rows, 3, "推送失败不影响落库")
+	assert.Equal(t, []int64{1, 2, 3}, journalSeqs(rows), "推送失败不回滚 seq,后续通知照常推进")
+	assert.Equal(t, []string{wire.NotifyEvent, wire.NotifyEvent, wire.NotifyRunResultDone}, journalMethods(rows),
+		"第一条推送失败后,后面的通知仍然继续落库")
+	assert.Empty(t, notif.snapshot(), "推送全失败时不该有任何帧被记下")
+
+	attempts := 0
+	for _, s := range steps {
+		if strings.HasPrefix(s, "notify-failed:") {
+			attempts++
+		}
+	}
+	assert.Equal(t, 3, attempts, "每条通知只尝试推一次,不重试")
+}
+
+// TestRuntime_Run_JournalFailureSkipsPushAndDoesNotAdvanceSeq 覆盖 R3:落库失败时该条
+// 通知不推送,seq 也不推进 —— 后面那条通知拿到的是紧接着的 seq,客户端看到的连续 seq
+// 因此仍是完整序列。会拒绝的错误实现:落库失败照样推;或 handler 自己维护一个计数器当
+// seq(那样后一条会带 3 而不是 2,客户端会误判丢了一条并触发无谓补洞)。
+func TestRuntime_Run_JournalFailureSkipsPushAndDoesNotAdvanceSeq(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 3)
+		ch <- agentruntime.TextDelta{Text: "ok-1"}
+		ch <- agentruntime.TextDelta{Text: "boom"}
+		ch <- agentruntime.TextDelta{Text: "ok-2"}
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	notif.appendFail = func(_ string, payload json.RawMessage) error {
+		if strings.Contains(string(payload), "boom") {
+			return errors.New("disk I/O error")
+		}
+		return nil
+	}
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypePiAgent), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42})
+	require.NoError(t, err)
+
+	// 落库成功的 3 条(ok-1 / ok-2 / runResultDone)会被推出去;失败那条不推。
+	frames := notif.waitFrames(t, 3)
+	require.Len(t, frames, 3)
+
+	for _, f := range frames {
+		if ef, ok := f.params.(*wire.EventFrame); ok {
+			assert.NotContains(t, string(ef.Event), "boom", "落库失败的通知不得推送")
+		}
+	}
+	assert.Equal(t, []int64{1, 2, 3}, []int64{
+		frameSeq(frames[0].params), frameSeq(frames[1].params), frameSeq(frames[2].params),
+	}, "落库失败不推进 seq:后一条拿到的是紧接着的 seq,不是跳号")
+
+	rows := notif.journalRows()
+	require.Len(t, rows, 3, "失败那条不落行")
+	assert.Equal(t, []int64{1, 2, 3}, journalSeqs(rows))
+	assert.Contains(t, notif.stepLog(), "append-failed:"+wire.NotifyEvent)
+}
+
+// TestRuntime_Run_OfflinePeerJournalsAndResumesPushingOnReconnect 覆盖断连场景下的出口
+// 行为:对端不在线时通知照样落库(重连后才补得齐),而推送目标是**发送那一刻**才解析的
+// —— 对端回来之后,同一轮里后续的通知立刻又推得出去。会拒绝的错误实现:把推送端口在
+// runtime.run 期间静态捕获(重连后所有通知永远发往那条死连接),或对端不在线时干脆不落库。
+func TestRuntime_Run_OfflinePeerJournalsAndResumesPushingOnReconnect(t *testing.T) {
+	rt := &fullRT{}
+	live := make(chan agentruntime.Event)
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		return live, &agentruntime.RunResult{}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	notif.setOffline(true) // 客户端此刻断开着
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypePiAgent), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42})
+	require.NoError(t, err)
+
+	live <- agentruntime.TextDelta{Text: "while-offline"}
+	notif.waitSteps(t, 1)
+	require.Len(t, notif.journalRows(), 1, "对端不在线也必须落库")
+	assert.Empty(t, notif.snapshot(), "没有活连接时不推送")
+
+	notif.setOffline(false) // 客户端重连
+	live <- agentruntime.TextDelta{Text: "after-reconnect"}
+	frames := notif.waitFrames(t, 1)
+	require.Len(t, frames, 1)
+	assert.Equal(t, int64(2), frameSeq(frames[0].params), "断连期间那条已经占了 seq=1")
+
+	close(live)
+	frames = notif.waitFrames(t, 2)
+	assert.Equal(t, wire.NotifyRunResultDone, frames[1].method)
+	assert.Equal(t, int64(3), frameSeq(frames[1].params))
+	assert.Equal(t, []int64{1, 2, 3}, journalSeqs(notif.journalRows()))
+	assert.Len(t, notif.resolvedPeers(), 3,
+		"每条通知都要重新解析一次推送目标(解析一次就缓存下来的实现会一直推给旧连接)")
 }

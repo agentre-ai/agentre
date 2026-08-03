@@ -11,6 +11,7 @@ package mock_handlers
 
 import (
 	context "context"
+	json "encoding/json"
 	reflect "reflect"
 	time "time"
 
@@ -212,6 +213,45 @@ func (m *MockNotifierPort) Request(ctx context.Context, method string, params, r
 func (mr *MockNotifierPortMockRecorder) Request(ctx, method, params, result any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Request", reflect.TypeOf((*MockNotifierPort)(nil).Request), ctx, method, params, result)
+}
+
+// MockJournalPort is a mock of JournalPort interface.
+type MockJournalPort struct {
+	ctrl     *gomock.Controller
+	recorder *MockJournalPortMockRecorder
+	isgomock struct{}
+}
+
+// MockJournalPortMockRecorder is the mock recorder for MockJournalPort.
+type MockJournalPortMockRecorder struct {
+	mock *MockJournalPort
+}
+
+// NewMockJournalPort creates a new mock instance.
+func NewMockJournalPort(ctrl *gomock.Controller) *MockJournalPort {
+	mock := &MockJournalPort{ctrl: ctrl}
+	mock.recorder = &MockJournalPortMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockJournalPort) EXPECT() *MockJournalPortMockRecorder {
+	return m.recorder
+}
+
+// Append mocks base method.
+func (m *MockJournalPort) Append(ctx context.Context, peerFingerprint, peerSessionID, method string, payload json.RawMessage) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Append", ctx, peerFingerprint, peerSessionID, method, payload)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Append indicates an expected call of Append.
+func (mr *MockJournalPortMockRecorder) Append(ctx, peerFingerprint, peerSessionID, method, payload any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Append", reflect.TypeOf((*MockJournalPort)(nil).Append), ctx, peerFingerprint, peerSessionID, method, payload)
 }
 
 // MockGatewayPort is a mock of GatewayPort interface.
