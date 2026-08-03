@@ -10,6 +10,7 @@ import {
   Pencil,
   RefreshCw,
   TriangleAlert,
+  WifiOff,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -430,6 +431,36 @@ function CompactingIndicator() {
   );
 }
 
+// DisconnectedIndicator 是 TypingIndicator / CompactingIndicator 的第三个兄弟:
+// 本机与执行该会话那台远端 daemon 之间的通道断了、客户端正在退避重连时,它顶替
+// 打字指示器出现在转录流里同一个位置(随内容滚动,不是横幅、不常驻)。
+//
+// 断连不改会话的运行态取值 —— 远端此刻可能正在全速跑,所以文案要说清「远端仍在
+// 运行」。同一组点尺寸、同一 typing-dot keyframe,只把周期放慢一倍(--animate-
+// typing-dot-slow),让"网络在等"与"agent 在想"一眼可分。降级(prefers-reduced-
+// motion)时停动画、点降到低透明度,标签与图形都还在,信息不丢。
+function DisconnectedIndicator() {
+  const { t } = useTranslation();
+  const dotClass =
+    "size-1.5 rounded-full bg-muted-foreground animate-typing-dot-slow motion-reduce:animate-none motion-reduce:opacity-55";
+  return (
+    <div
+      aria-label={t("chat.disconnected.aria")}
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-2 py-1 text-aux text-muted-foreground"
+    >
+      <div className="flex items-center gap-1.5">
+        <span className={dotClass} />
+        <span className={cn(dotClass, "[animation-delay:0.15s]")} />
+        <span className={cn(dotClass, "[animation-delay:0.3s]")} />
+      </div>
+      <WifiOff aria-hidden className="size-3.5 shrink-0 opacity-75" />
+      <span>{t("chat.disconnected.label")}</span>
+    </div>
+  );
+}
+
 function ImageBlockView({ block }: { block: ChatBlockData }) {
   const { t } = useTranslation();
   const image = (
@@ -624,6 +655,9 @@ export type TranscriptRowViewProps = {
   showIndicator: boolean;
   /** showIndicator && compacting → 渲染 CompactingIndicator 替代 TypingIndicator。*/
   compacting: boolean;
+  /** showIndicator && reconnecting → 渲染 DisconnectedIndicator。通道断了就先说通道:
+   *  压缩与否此刻都观察不到,断连形态优先于压缩形态。*/
+  reconnecting: boolean;
 };
 
 // 行级 memo 是流式期间的重渲边界:persisted 消息的行对象来自 WeakMap 缓存(引用
@@ -635,6 +669,7 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
   liveRetry,
   showIndicator,
   compacting,
+  reconnecting,
 }: TranscriptRowViewProps) {
   const ctx = React.useContext(TranscriptRenderContext);
   // local_command 行无 message 引用,独立成卡(无头像/footer chrome)在此提前返回。
@@ -667,7 +702,9 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
     <>
       {liveRetry ? <RetryNoticeCard retry={liveRetry} /> : null}
       {showIndicator ? (
-        compacting ? (
+        reconnecting ? (
+          <DisconnectedIndicator />
+        ) : compacting ? (
           <CompactingIndicator />
         ) : (
           <TypingIndicator />

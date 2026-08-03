@@ -453,6 +453,10 @@
     "debug": {
       "unknownBlock": "(debug) 未实现 block 类型：{{type}}"
     },
+    "disconnected": {
+      "aria": "连接中断,重连中",
+      "label": "连接中断,重连中 · 远端仍在运行"
+    },
     "errorCard": {
       "message": "Agent 调用失败：{{text}}",
       "regenerate": "↻ 重新生成"

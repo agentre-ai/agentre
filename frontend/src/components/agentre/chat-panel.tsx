@@ -60,6 +60,7 @@ import {
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useQueuedMessagesStore } from "@/stores/queued-messages-store";
+import { useSessionConnectionState } from "@/stores/session-conn-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
@@ -908,6 +909,9 @@ function ChatPanel({
   const liveContextWindow = currentStream?.liveContextWindow ?? 0;
   const liveCompacting = currentStream?.liveCompacting ?? false;
   const streaming = currentStream !== null;
+  // 连接态是会话级的(不挂在某条流上),由 ChatStreamsHost 订阅 chat:conn:<sid> 写入。
+  // 断连期间会话仍然是「运行中」—— 这里只换活信号的形态,不碰 agentStatus。
+  const reconnecting = useSessionConnectionState(sessionId) === "reconnecting";
 
   // CLI mode 控件：claudecode 使用 permission mode，codex 使用 collaboration
   // mode 的 default/plan 子集。DB 是 source-of-truth；新会话还没有 sessionId
@@ -2070,6 +2074,7 @@ function ChatPanel({
                     liveByMessageId={liveByMessageId}
                     streaming={streaming}
                     liveCompacting={liveCompacting}
+                    reconnecting={reconnecting}
                     onRerun={(messageId) => void handleRegenerate(messageId)}
                     onEdit={(messageId) => handleEdit(messageId)}
                     onPlanActionStarted={handlePlanActionStarted}

@@ -6,6 +6,7 @@ import {
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useSessionConnStore } from "@/stores/session-conn-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { ChatStreamsHost } from "../chat-streams-host";
@@ -22,15 +23,25 @@ function resetStores() {
   useChatStreamsStore.setState({ streams: new Map() });
   useChatTabsStore.setState({ tabs: [], activeTabId: null });
   useSessionStatusStore.getState().__reset();
+  useSessionConnStore.getState().__reset();
   runtimeMocks.EventsOn.mockReset();
   runtimeMocks.EventsOn.mockImplementation(() => vi.fn());
 }
 
-function registeredHandler(): (ev: ChatStreamEvent) => void {
-  const calls = runtimeMocks.EventsOn.mock.calls as unknown as Array<
+function eventsOnCalls(): Array<[string, (ev: ChatStreamEvent) => void]> {
+  return runtimeMocks.EventsOn.mock.calls as unknown as Array<
     [string, (ev: ChatStreamEvent) => void]
   >;
-  return calls[0][1];
+}
+
+function registeredHandler(): (ev: ChatStreamEvent) => void {
+  return eventsOnCalls()[0][1];
+}
+
+function handlerFor(streamName: string): (ev: ChatStreamEvent) => void {
+  const call = eventsOnCalls().find(([name]) => name === streamName);
+  if (!call) throw new Error(`no EventsOn subscription for ${streamName}`);
+  return call[1];
 }
 
 describe("ChatStreamsHost", () => {
@@ -378,5 +389,71 @@ describe("ChatStreamsHost", () => {
       totalTokens: 500,
       model: "claude-haiku-4-5-20251001",
     });
+  });
+
+  // 连接态订阅必须挂在这个跨路由长存的宿主上,而不是 ChatPanel:panel 切走再切回
+  // (乃至根本没打开)期间的连接态变化只发一次,挂在 panel 上就会漏掉 —— 重新
+  // 挂载的转录流只能看到打字指示器,而真实情况是网断了。
+  it("Given a live session, When its connection drops, Then the session-level conn stream is subscribed by the long-lived host and flips the conn store", async () => {
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+
+    render(<ChatStreamsHost />);
+
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:conn:42",
+        expect.any(Function),
+      ),
+    );
+    const connHandler = handlerFor("chat:conn:42");
+
+    act(() => {
+      connHandler({
+        kind: "connection_state",
+        connectionState: "reconnecting",
+      });
+    });
+    expect(useSessionConnStore.getState().stateOf(42)).toBe("reconnecting");
+
+    act(() => {
+      connHandler({ kind: "connection_state", connectionState: "connected" });
+    });
+    expect(useSessionConnStore.getState().stateOf(42)).toBe("connected");
+  });
+
+  it("Given a session whose last stream ended, When the conn subscription drops, Then no stale connection state leaks into the next turn", async () => {
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+
+    render(<ChatStreamsHost />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:conn:42",
+        expect.any(Function),
+      ),
+    );
+    act(() => {
+      handlerFor("chat:conn:42")({
+        kind: "connection_state",
+        connectionState: "reconnecting",
+      });
+    });
+
+    act(() => {
+      useChatStreamsStore.getState().finishStream(42, 1001, { kind: "done" });
+    });
+
+    await waitFor(() =>
+      expect(useSessionConnStore.getState().stateOf(42)).toBe("connected"),
+    );
   });
 });

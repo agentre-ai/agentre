@@ -4,7 +4,10 @@ import type { chat_svc, view } from "../../wailsjs/go/models";
 
 // ChatSessionStatusPatch mirrors backend chat_svc.ChatSessionStatusPatch.
 // Type definition unified into @/stores/types (ChatSessionStatusEvent); import + re-export here.
-import type { ChatSessionStatusEvent } from "@/stores/types";
+import type {
+  ChatSessionStatusEvent,
+  SessionConnectionState,
+} from "@/stores/types";
 export type ChatSessionStatusPatch = ChatSessionStatusEvent;
 
 // ChatStreamUsage mirrors backend chat_svc.ChatStreamUsage. Carried on the
@@ -51,7 +54,8 @@ export type ChatStreamEvent = {
     | "runtime_status"
     | "autonomous_started"
     | "subagent_activity_started"
-    | "autonomous_finished";
+    | "autonomous_finished"
+    | "connection_state";
   delta?: string;
   message?: chat_svc.ChatMessage;
   error?: string;
@@ -168,6 +172,12 @@ export type ChatStreamEvent = {
   trigger?: string;
   completedTask?: { toolUseId: string; status: string; summary?: string };
   launchMessageId?: number;
+
+  // connection_state: 经会话级流 "chat:conn:<sessionId>"(后端
+  // chat_svc.ConnStateStreamName)推上来的**通道**状态 —— 本机与执行该会话那台
+  // 远端 daemon 之间连没连上,与 agentStatus 正交(重连期间远端仍在跑)。
+  // 走会话级流而不是 per-turn 流:断连时 per-turn 流恰好是没人收得到的那条。
+  connectionState?: SessionConnectionState;
 };
 
 export function useChatStream(

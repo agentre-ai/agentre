@@ -453,6 +453,10 @@
     "debug": {
       "unknownBlock": "(debug) unimplemented block type: {{type}}"
     },
+    "disconnected": {
+      "aria": "Connection lost, reconnecting",
+      "label": "Connection lost, reconnecting · the remote is still running"
+    },
     "errorCard": {
       "message": "Agent call failed: {{text}}",
       "regenerate": "↻ Regenerate"

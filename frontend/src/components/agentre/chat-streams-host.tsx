@@ -7,6 +7,7 @@ import {
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useSessionConnStore } from "@/stores/session-conn-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { isResolvedAskState } from "./ask-event-state";
@@ -51,6 +52,12 @@ export function ChatStreamsHost(): React.ReactElement | null {
         ),
       ),
     ),
+  );
+  // 有流在跑的会话集合 —— 连接态订阅按会话(而不是按流)挂一条。放在这个跨路由
+  // 长存的宿主上而不是 ChatPanel:连接态每次变化只发一帧,挂在会随路由/标签页
+  // 销毁的组件上,重新挂载的转录流就只剩打字指示器,而真实情况是网断了。
+  const liveSessionIds = useChatStreamsStore(
+    useShallow((s) => Array.from(s.streams.keys())),
   );
   const appendLiveText = useChatStreamsStore((s) => s.appendLiveText);
   const appendLiveThinking = useChatStreamsStore((s) => s.appendLiveThinking);
@@ -393,6 +400,31 @@ export function ChatStreamsHost(): React.ReactElement | null {
           />
         );
       })}
+      {liveSessionIds.map((sessionId) => (
+        <SessionConnSubscriber key={sessionId} sessionId={sessionId} />
+      ))}
     </>
+  );
+}
+
+// SessionConnSubscriber 订阅一个会话的连接态流 "chat:conn:<sessionId>"
+// (后端 chat_svc.ConnStateStreamName),把 connection_state 事件翻成 store 写入。
+// 卸载(= 该会话最后一条流结束)时清掉记录:留着旧的 reconnecting 会泄漏到下一轮。
+function SessionConnSubscriber({
+  sessionId,
+}: {
+  sessionId: number;
+}): React.ReactElement | null {
+  const setConnState = useSessionConnStore((s) => s.setConnState);
+  const clear = useSessionConnStore((s) => s.clear);
+  React.useEffect(() => () => clear(sessionId), [clear, sessionId]);
+  return (
+    <StreamSubscriber
+      streamName={`chat:conn:${sessionId}`}
+      onEvent={(ev) => {
+        if (ev.kind !== "connection_state" || !ev.connectionState) return;
+        setConnState(sessionId, ev.connectionState);
+      }}
+    />
   );
 }
