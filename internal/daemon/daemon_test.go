@@ -307,6 +307,39 @@ func TestConnRegistry_TakeoverIsPerSessionAndSameFingerprintOnly(t *testing.T) {
 	assertTarget(t, nOther, r.ownerOf(sessionKey{peer: "fp-other", sid: 7}), "它自己那条会话归它")
 }
 
+// TestConnRegistry_UndoClaimRestoresThePreviousOwner 覆盖被拒调用的还原(接管的凭据是
+// daemon **受理**了那条 runtime.*):认领必须跑在 handler 之前,所以 handler 拒了这一条时
+// 要把属主还原回认领前的那条连接 —— 还原成「无属主」同样是错的,那会让正在跑的会话平白
+// 挂起。已经被更晚的认领接走时不得回卷,前主此刻已经不在线时也不得把它写回去(那是一条
+// 指向死连接的陈旧条目)。
+func TestConnRegistry_UndoClaimRestoresThePreviousOwner(t *testing.T) {
+	var r connRegistry
+	owner, nOwner := registerAuthed(&r, "fp-desktop")
+	r.claim(owner, 7)
+
+	intruder, _ := registerAuthed(&r, "fp-desktop")
+	r.undoClaim(r.claim(intruder, 7))
+	assertTarget(t, nOwner, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}),
+		"被拒的 runtime.* 不接管:属主还原成认领前的那条连接")
+
+	r.undoClaim(r.claim(intruder, 9))
+	assert.Nil(t, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 9}),
+		"认领前没有属主的会话,还原之后仍然没有属主")
+
+	rolled := r.claim(intruder, 7)
+	later, nLater := registerAuthed(&r, "fp-desktop")
+	r.claim(later, 7) // 处理期间另一条连接接管了同一条会话
+	r.undoClaim(rolled)
+	assertTarget(t, nLater, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}),
+		"迟到的还原不得回卷更晚落定的接管")
+
+	stale := r.claim(intruder, 7)
+	r.remove(later) // 前主在 handler 处理期间掉线
+	r.undoClaim(stale)
+	assert.Nil(t, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}),
+		"前主已经不在线时,还原不得留下一条指向死连接的条目")
+}
+
 // TestConnRegistry_OwnerDeathSuspendsSessionUntilTakeover 覆盖挂起与恢复(R2):属主连接
 // 断开 → 该会话解析为「没有出口」(通知照常落库、不推送),同指纹的新连接**认证还不够**,
 // 要为它发一次 runtime.* 才接管回来。

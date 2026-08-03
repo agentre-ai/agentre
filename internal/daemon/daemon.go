@@ -179,27 +179,63 @@ func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
 	r.live[c] = liveConn{n: n, at: r.seq}
 }
 
+// claimTicket 是一次认领的回执,交给 undoClaim 还原用(见 trackSessionOwner:认领跑在
+// handler 之前,handler 拒了这一条就得还原)。ok 为假表示这次调用什么都没改。
+type claimTicket struct {
+	key  sessionKey
+	at   uint64
+	prev sessionClaim
+	ok   bool
+}
+
 // claim 把会话的推送目标记成这条连接(发起 / 接管该会话的那条)。只有已登记的活连接
 // 认得了,且认领的必然是它自己指纹下的那条会话 —— 跨对端接管在 key 上就不成立。
-func (r *connRegistry) claim(c *rpc.Conn, sid int64) {
+func (r *connRegistry) claim(c *rpc.Conn, sid int64) claimTicket {
 	peer, ok := peerIdentity(c)
 	if !ok || sid == 0 {
-		return
+		return claimTicket{}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, live := r.live[c]; !live {
-		return
+		return claimTicket{}
 	}
 	if connClosed(c) {
 		r.dropLocked(c)
-		return
+		return claimTicket{}
 	}
 	if r.claims == nil {
 		r.claims = map[sessionKey]sessionClaim{}
 	}
 	r.seq++
-	r.claims[sessionKey{peer: peer, sid: sid}] = sessionClaim{conn: c, at: r.seq}
+	k := sessionKey{peer: peer, sid: sid}
+	prev := r.claims[k]
+	r.claims[k] = sessionClaim{conn: c, at: r.seq}
+	return claimTicket{key: k, at: r.seq, prev: prev, ok: true}
+}
+
+// undoClaim 撤回一次认领,把属主还原成认领之前的那条连接(没有前主就还原成「无属主」)。
+// 还原**不能**简单地删掉这条会话:那会让一个正在被推送的会话平白挂起。三条守则:
+//   - 认领已经被更晚的一次接管取代(at 对不上)→ 一概不动,后来者说了算;
+//   - 前主此刻已经不在活连接表里(处理期间掉线 / 改认了别的指纹)→ 不写回去,
+//     否则表里留下一条指向死连接、或指向已属于别人的连接的条目;
+//   - 认领自己已经被撤销(属主连接刚关)→ 前主仍在线时把它还原回来,它才是属主。
+func (r *connRegistry) undoClaim(t claimTicket) {
+	if !t.ok {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cur, exists := r.claims[t.key]; exists && cur.at != t.at {
+		return
+	}
+	if fp, ok := peerIdentity(t.prev.conn); ok && fp == t.key.peer {
+		if _, live := r.live[t.prev.conn]; live {
+			r.claims[t.key] = t.prev
+			return
+		}
+	}
+	delete(r.claims, t.key)
 }
 
 // remove 撤销这条连接的一切登记(连接关闭时调用)。按连接身份撤销:同一台设备的其它
@@ -594,21 +630,31 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	}()
 }
 
-// trackSessionOwner 包住 runtime.* 的注册:调用方是哪条连接,该会话此后的通知就推给
-// 哪条(接管规则见 connRegistry)。会话 id 直接读参数上的 sessionId —— 13 个 runtime.*
-// 参数里除 capabilities 外都带它,没带的自然不认领。
+// trackSessionOwner 包住 runtime.* 的注册:daemon **受理**了哪条连接为某会话发的
+// runtime.*,该会话此后的通知就推给哪条(接管规则见 connRegistry)。会话 id 直接读参数
+// 上的 sessionId —— 13 个 runtime.* 参数里除 capabilities 外都带它,没带的自然不认领。
 //
 // 必须在 handler **之前**认领:runtime.run 一返回,fanout goroutine 就开始推事件,
 // 记晚了首批事件会被当成「没有活属主」只落库,而客户端此刻还没有补齐能力。
+//
+// 而 handler 拒了这一条时必须还原属主:接管的凭据是「daemon 受理了它」,不是「它发出过」。
+// 否则同指纹的另一条连接随便发一条会被拒的 runtime.*(会话 id 不存在于本 daemon、backend
+// 不支持该能力、参数非法……)就能把正在跑的会话的推送整个抢走 —— 它不消费,发起会话的那条
+// 从此一条也收不到,既没有错误也没有 seq 跳号。
 func (d *Daemon) trackSessionOwner(next rpc.HandlerFunc) rpc.HandlerFunc {
 	return func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var p struct {
 			SessionID int64 `json:"sessionId"`
 		}
+		var ticket claimTicket
 		if err := jsonUnmarshal(raw, &p); err == nil {
-			d.conns.claim(rpc.ConnFromContext(ctx), p.SessionID)
+			ticket = d.conns.claim(rpc.ConnFromContext(ctx), p.SessionID)
 		}
-		return next(ctx, raw)
+		res, err := next(ctx, raw)
+		if err != nil {
+			d.conns.undoClaim(ticket)
+		}
+		return res, err
 	}
 }
 

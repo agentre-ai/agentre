@@ -832,6 +832,37 @@ func TestIntegration_SameDeviceConnClosingDoesNotSuspendRunningSession(t *testin
 	_ = drainRuntimeEvents(t, events, 5*time.Second)
 }
 
+// TestIntegration_RejectedRuntimeCallDoesNotSeizeSessionOwnership 回归:接管的凭据是
+// daemon **受理**了那条 runtime.*,不是「发出过」。认领跑在 handler 之前(runtime.run
+// 一返回 fanout 就开始推,记晚了首批事件会丢),但 handler 拒了这一条时必须还原属主 ——
+// 否则同指纹的另一条连接随便发一条会被拒的 runtime.*(会话 id 不存在于本 daemon、
+// backend 不支持该能力、参数非法……)就能把正在跑的会话的推送整个抢过去:它不消费,
+// 发起会话的那条从此一条也收不到,既没有错误也没有 seq 跳号 —— 正是本任务要消灭的那个
+// 症状。这里用「backend 不实现 Aborter 的 runtime.abort」当那条被拒的调用。
+func TestIntegration_RejectedRuntimeCallDoesNotSeizeSessionOwnership(t *testing.T) {
+	gate := make(chan struct{})
+	rig := bootGatedRig(t, &gatedBackendRunner{
+		before: []agentruntime.Event{agentruntime.TextDelta{Text: "before"}},
+		gate:   gate,
+		after:  []agentruntime.Event{agentruntime.TextDelta{Text: "after"}, agentruntime.Done{}},
+	})
+
+	events, _ := rig.startRun(t, 802)
+	awaitText(t, events, "before")
+
+	second := rig.connectSameDevice(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var res map[string]any
+	require.Error(t, second.Call(ctx, wire.MethodAbort, map[string]any{"sessionId": 802}, &res),
+		"gatedBackendRunner does not implement Aborter — the daemon must reject this call")
+
+	close(gate)
+
+	awaitText(t, events, "after")
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
+}
+
 // TestIntegration_ErrorCodeRehydration drives a control RPC against a backend
 // that does NOT implement the corresponding sub-interface, asserting that the
 // daemon returns ErrUnsupported, the wire layer maps it to JSON-RPC error
