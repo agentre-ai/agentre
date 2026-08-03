@@ -150,15 +150,15 @@ func (mr *MockSessionCursorPortMockRecorder) LoadCursor(ctx, sessionID, daemonFi
 }
 
 // SaveCursor mocks base method.
-func (m *MockSessionCursorPort) SaveCursor(ctx context.Context, sessionID, seq int64) error {
+func (m *MockSessionCursorPort) SaveCursor(ctx context.Context, sessionID int64, daemonFingerprint string, seq int64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SaveCursor", ctx, sessionID, seq)
+	ret := m.ctrl.Call(m, "SaveCursor", ctx, sessionID, daemonFingerprint, seq)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // SaveCursor indicates an expected call of SaveCursor.
-func (mr *MockSessionCursorPortMockRecorder) SaveCursor(ctx, sessionID, seq any) *gomock.Call {
+func (mr *MockSessionCursorPortMockRecorder) SaveCursor(ctx, sessionID, daemonFingerprint, seq any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveCursor", reflect.TypeOf((*MockSessionCursorPort)(nil).SaveCursor), ctx, sessionID, seq)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveCursor", reflect.TypeOf((*MockSessionCursorPort)(nil).SaveCursor), ctx, sessionID, daemonFingerprint, seq)
 }

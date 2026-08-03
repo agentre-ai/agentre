@@ -441,16 +441,17 @@ func TestSessionRepo_UpdatePermissionModeAtLaunch(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestSessionRepo_UpdateExecDaemon 钉死「这条会话跑在哪台 daemon 上」的写入 SQL:
-// 只碰 exec_device_id / exec_daemon_fingerprint 两列(外加 updatetime),
-// 尤其不能顺手把 event_cursor 冲掉 —— 那会让已消费进度凭空回到 0。
+// TestSessionRepo_UpdateExecDaemon 钉死「这条会话跑在哪台 daemon 上」的写入 SQL。
+// 关键不变式:(实例标识, 游标) 必须始终是同一条通知日志上的一对 —— 改绑到另一台
+// daemon 时,老游标指的是老 daemon 日志里的位置,必须在同一条语句里归零;换成两次
+// 写(先改绑再清游标)会留下一个「游标看起来对新 daemon 有效」的崩溃窗口。
 func TestSessionRepo_UpdateExecDaemon(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := chat_repo.NewSession()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `chat_sessions` SET `exec_daemon_fingerprint`=\\?,`exec_device_id`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
-		WithArgs("sha256:beef", int64(3), sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+	mock.ExpectExec("UPDATE `chat_sessions` SET `event_cursor`=CASE WHEN exec_daemon_fingerprint = \\? THEN event_cursor ELSE 0 END,`exec_daemon_fingerprint`=\\?,`exec_device_id`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs("sha256:beef", "sha256:beef", int64(3), sqlmock.AnyArg(), int64(42), consts.ACTIVE).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -459,17 +460,19 @@ func TestSessionRepo_UpdateExecDaemon(t *testing.T) {
 }
 
 // TestSessionRepo_UpdateEventCursor 钉死游标推进的写入 SQL:只动 event_cursor,
-// 不能把执行位置或实例标识一起改掉(否则游标与 daemon 的绑定关系就断了)。
+// 不能把执行位置或实例标识一起改掉(否则游标与 daemon 的绑定关系就断了);
+// 且 WHERE 必须带上实例标识 —— 会话已改绑到别的 daemon 后,老连接上迟到的一条
+// 通知不得把老日志的 seq 写到新 daemon 的记录上。
 func TestSessionRepo_UpdateEventCursor(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := chat_repo.NewSession()
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `chat_sessions` SET `event_cursor`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
-		WithArgs(int64(17), sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+	mock.ExpectExec("UPDATE `chat_sessions` SET `event_cursor`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\? AND exec_daemon_fingerprint = \\?").
+		WithArgs(int64(17), sqlmock.AnyArg(), int64(42), consts.ACTIVE, "sha256:beef").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	require.NoError(t, repo.UpdateEventCursor(ctx, 42, 17))
+	require.NoError(t, repo.UpdateEventCursor(ctx, 42, "sha256:beef", 17))
 	require.NoError(t, mock.ExpectationsWereMet())
 }

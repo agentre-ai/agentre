@@ -92,17 +92,31 @@ func TestSessionCursorPort_SaveCursorThenLoad(t *testing.T) {
 	sessRepo, port := setupSessionCursorTest(t)
 
 	stored := &chat_entity.Session{ID: 42, ExecDeviceID: 3, ExecDaemonFingerprint: "sha256:beef", EventCursor: 17}
-	sessRepo.EXPECT().UpdateEventCursor(gomock.Any(), int64(42), int64(23)).
-		DoAndReturn(func(_ context.Context, _ int64, seq int64) error {
+	sessRepo.EXPECT().UpdateEventCursor(gomock.Any(), int64(42), "sha256:beef", int64(23)).
+		DoAndReturn(func(_ context.Context, _ int64, _ string, seq int64) error {
 			stored.EventCursor = seq
 			return nil
 		})
 	sessRepo.EXPECT().Find(gomock.Any(), int64(42)).Return(stored, nil)
 
-	require.NoError(t, port.SaveCursor(context.Background(), 42, 23))
+	require.NoError(t, port.SaveCursor(context.Background(), 42, "sha256:beef", 23))
 
 	seq, ok, err := port.LoadCursor(context.Background(), 42, "sha256:beef")
 	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, int64(23), seq)
+}
+
+// TestSessionCursorPort_SaveCursorCarriesDaemonIdentity —— 写入侧同样带 daemon 身份。
+// seq 是某一条通知日志里的位置,离开那条日志就是个错的数字:会话改绑到别的 daemon
+// 后,老连接上迟到的一条通知若把 seq 无条件写进去,记录就变成「新 daemon 的标识 +
+// 老 daemon 的 seq」,下次重连会从一个远超新日志长度的位置往后拉,整段 transcript
+// 永久丢失。端口把身份一路带到仓储的 WHERE 守卫上,调用方不需要(也无法安全地)
+// 自己先读后写。
+func TestSessionCursorPort_SaveCursorCarriesDaemonIdentity(t *testing.T) {
+	sessRepo, port := setupSessionCursorTest(t)
+
+	sessRepo.EXPECT().UpdateEventCursor(gomock.Any(), int64(42), "sha256:beef", int64(900)).Return(nil)
+
+	require.NoError(t, port.SaveCursor(context.Background(), 42, "sha256:beef", 900))
 }

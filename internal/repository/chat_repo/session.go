@@ -42,11 +42,15 @@ type SessionRepo interface {
 	// touches permission_mode.
 	UpdatePermissionModeAtLaunch(ctx context.Context, sessionID int64, mode string) error
 	// UpdateExecDaemon 记录执行该会话的配对 daemon(paired_agentreds.id)及其实例标识
-	// (sha256:<hex>)。deviceID=0 + 空标识表示回到本机执行。只碰这两列,不动 event_cursor。
+	// (sha256:<hex>)。deviceID=0 + 空标识表示回到本机执行。实例标识变了(改绑到别的
+	// daemon / 改回本机)时,event_cursor 在同一条语句里归零 —— 游标只在它所属的那条
+	// 通知日志里有意义,不能跟着会话漂到另一台 daemon 上。标识不变则原样保留游标。
 	UpdateExecDaemon(ctx context.Context, sessionID int64, deviceID int64, daemonFingerprint string) error
-	// UpdateEventCursor 记录桌面端已消费到的 daemon 通知 seq。只碰这一列,
-	// 执行位置与实例标识由 UpdateExecDaemon 负责。
-	UpdateEventCursor(ctx context.Context, sessionID int64, seq int64) error
+	// UpdateEventCursor 记录桌面端已消费到的 daemon 通知 seq。只碰这一列,执行位置与
+	// 实例标识由 UpdateExecDaemon 负责。daemonFingerprint 是 seq 所属的那条通知日志的
+	// daemon 实例标识,进 WHERE 做守卫:会话已改绑后老连接迟到的写入落空(不报错,同
+	// MarkRead 的「写不进也算成功」),下次重连至多重复拉取,而不会跳过新日志的开头。
+	UpdateEventCursor(ctx context.Context, sessionID int64, daemonFingerprint string, seq int64) error
 	// MarkRead 单调推进 last_read_at: 仅当 ts 严格大于当前值时写入。
 	// 避免 stream-done 与 LoadSession 乱序时把已读时间冲回旧值。
 	// 会话不存在 / 已软删 / ts 不更新 都算成功（不返回 ErrRecordNotFound）。
@@ -372,13 +376,18 @@ func (r *sessionRepo) UpdateExecDaemon(ctx context.Context, sessionID int64, dev
 		Updates(map[string]any{
 			"exec_device_id":          deviceID,
 			"exec_daemon_fingerprint": daemonFingerprint,
-			"updatetime":              time.Now().UnixMilli(),
+			// 换了一台 daemon 实例(含改回本机的空标识)就在同一条语句里把游标归零:
+			// 老游标指的是老 daemon 通知日志里的位置,留着会被下次 LoadCursor 当成对新
+			// daemon 有效。SQL 的 SET 右值一律读改写前的行值,所以这里比的是老标识。
+			"event_cursor": gorm.Expr(
+				"CASE WHEN exec_daemon_fingerprint = ? THEN event_cursor ELSE 0 END", daemonFingerprint),
+			"updatetime": time.Now().UnixMilli(),
 		}).Error
 }
 
-func (r *sessionRepo) UpdateEventCursor(ctx context.Context, sessionID int64, seq int64) error {
+func (r *sessionRepo) UpdateEventCursor(ctx context.Context, sessionID int64, daemonFingerprint string, seq int64) error {
 	return db.Ctx(ctx).Model(&chat_entity.Session{}).
-		Where("id = ? AND status = ?", sessionID, consts.ACTIVE).
+		Where("id = ? AND status = ? AND exec_daemon_fingerprint = ?", sessionID, consts.ACTIVE, daemonFingerprint).
 		Updates(map[string]any{
 			"event_cursor": seq,
 			"updatetime":   time.Now().UnixMilli(),

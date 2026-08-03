@@ -40,7 +40,8 @@ func (sessionCursorPort) LoadCursor(ctx context.Context, sessionID int64, daemon
 	return sess.EventCursor, true, nil
 }
 
-// SaveCursor 推进会话的通知消费游标。
-func (sessionCursorPort) SaveCursor(ctx context.Context, sessionID int64, seq int64) error {
-	return chat_repo.Session().UpdateEventCursor(ctx, sessionID, seq)
+// SaveCursor 推进会话的通知消费游标。身份一路带到仓储的 WHERE 守卫:会话已改绑到
+// 别的 daemon 时,老连接上迟到的这次写入落空,不会把老日志的 seq 记到新 daemon 名下。
+func (sessionCursorPort) SaveCursor(ctx context.Context, sessionID int64, daemonFingerprint string, seq int64) error {
+	return chat_repo.Session().UpdateEventCursor(ctx, sessionID, daemonFingerprint, seq)
 }

@@ -28,8 +28,11 @@ type SessionCursorPort interface {
 	// 不一致(daemon 重装、换机、数据目录被清)、或该会话根本不是在远端跑的，都返回
 	// ok=false：此时记录的游标指向另一条通知日志，调用方不得据此增量拉取。
 	LoadCursor(ctx context.Context, sessionID int64, daemonFingerprint string) (seq int64, ok bool, err error)
-	// SaveCursor 记录 sessionID 已消费到 seq。
-	SaveCursor(ctx context.Context, sessionID int64, seq int64) error
+	// SaveCursor 记录 sessionID 已消费到 seq。daemonFingerprint 是 seq 所属那条通知
+	// 日志的 daemon 实例标识 —— 与读侧对称:seq 离开它所属的日志就是个错的数字,
+	// 会话已改绑到别的 daemon 时这次写入落空(不报错),下次重连至多重复拉取,
+	// 而不会从一个远超新日志长度的位置往后拉、把整段 transcript 丢掉。
+	SaveCursor(ctx context.Context, sessionID int64, daemonFingerprint string, seq int64) error
 }
 
 // sessionCursor 是进程级注入点(单 desktop 进程一份)。nil = 未注入。
