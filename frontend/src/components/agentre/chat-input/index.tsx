@@ -49,6 +49,7 @@ import {
 import type {
   AIChatInputHandle,
   LocalCommandHistoryScope,
+  LocalCommandSubmitHandler,
   ProseMirrorLikeNode,
 } from "./types";
 
@@ -60,6 +61,7 @@ export type {
   AIChatInputDraft,
   AIChatInputHandle,
   LocalCommandHistoryScope,
+  LocalCommandSubmitHandler,
 } from "./types";
 
 export interface AIChatInputProps {
@@ -67,8 +69,8 @@ export interface AIChatInputProps {
   onEmptyChange?: (empty: boolean) => void;
   /** 编辑器内容以 ! 开头时进入命令模式,回调通知父组件切换 UI(横幅/按钮)。 */
   onCommandModeChange?: (active: boolean) => void;
-  /** 命令模式下按 Enter/Run 时触发,参数为去掉首个 ! 并 trim 后的命令字符串。 */
-  onCommandSubmit?: (command: string) => void;
+  /** 命令模式下按 Enter/Run 时触发；返回实际执行作用域后才写入 Shell 历史。 */
+  onCommandSubmit?: LocalCommandSubmitHandler;
   sendOnEnter?: boolean;
   userMessageHistory?: string[];
   placeholder?: string;
@@ -136,8 +138,6 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     const slashSelectRef = useRef(onSlashSelect);
     const onCommandModeChangeRef = useRef(onCommandModeChange);
     const onCommandSubmitRef = useRef(onCommandSubmit);
-    const localCommandHistoryScopeRef = useRef(localCommandHistoryScope);
-    localCommandHistoryScopeRef.current = localCommandHistoryScope;
     /** 命令模式去重 ref —— 避免每次 onUpdate 都触发回调 */
     const commandModeRef = useRef(false);
     useEffect(() => {
@@ -323,9 +323,20 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           const command = content.trimStart().slice(1).trim();
           historyIndexRef.current = -1;
           if (command) {
-            const scope = localCommandHistoryScopeRef.current;
-            if (scope) localCommandHistoryStore.record(scope, command);
-            onCommandSubmitRef.current?.(command);
+            const executionScope = onCommandSubmitRef.current?.(command);
+            if (executionScope) {
+              void Promise.resolve(executionScope).then((scope) => {
+                if (!scope) return;
+                try {
+                  localCommandHistoryStore.record(scope, command);
+                } catch (error) {
+                  console.warn(
+                    "[chat-input] failed to record local command history",
+                    error,
+                  );
+                }
+              });
+            }
           }
           editor.commands.clearContent(true);
           editor.commands.focus();

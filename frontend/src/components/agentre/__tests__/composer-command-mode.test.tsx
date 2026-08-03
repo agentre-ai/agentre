@@ -25,10 +25,31 @@ const historyScope: LocalCommandHistoryScope = {
   deviceId: "composer-device",
   cwd: "/composer/repo",
 };
+const newRemoteProjectScope: LocalCommandHistoryScope = {
+  deviceId: "7",
+  cwd: "/local/repo",
+};
+const resolvedRemoteProjectScope: LocalCommandHistoryScope = {
+  deviceId: "7",
+  cwd: "/home/me/proj",
+};
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   localCommandHistoryStore.clear(historyScope);
+  localCommandHistoryStore.clear(newRemoteProjectScope);
+  localCommandHistoryStore.clear(resolvedRemoteProjectScope);
 });
+
+function pressEnter(editor: Editor) {
+  editor.view.dom.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
 
 describe("ChatComposer command mode", () => {
   it("shows command-mode banner when input starts with !", async () => {
@@ -128,5 +149,63 @@ describe("ChatComposer command mode", () => {
     expect(
       await screen.findByRole("option", { name: "pnpm test" }),
     ).toBeInTheDocument();
+  });
+
+  it("Given a new remote project chat, When command execution resolves its scope, Then history records the resolved execution cwd instead of the local project path", async () => {
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onRunCommand = vi.fn().mockResolvedValue(resolvedRemoteProjectScope);
+
+    render(
+      <ChatComposer
+        editorRef={editorRef}
+        localCommandHistoryScope={newRemoteProjectScope}
+        onSubmit={() => undefined}
+        onRunCommand={onRunCommand}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    act(() => {
+      editorRef.current!.commands.insertContent("!pwd");
+      pressEnter(editorRef.current!);
+    });
+
+    expect(onRunCommand).toHaveBeenCalledWith("pwd");
+    await vi.waitFor(() => {
+      expect(localCommandHistoryStore.list(resolvedRemoteProjectScope)).toEqual(
+        [expect.objectContaining({ command: "pwd" })],
+      );
+    });
+    expect(localCommandHistoryStore.list(newRemoteProjectScope)).toEqual([]);
+  });
+
+  it("Given history persistence fails, When a command is submitted, Then execution still starts", async () => {
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onRunCommand = vi.fn().mockReturnValue(resolvedRemoteProjectScope);
+    const recordSpy = vi
+      .spyOn(localCommandHistoryStore, "record")
+      .mockImplementation(() => {
+        throw new Error("storage failed");
+      });
+
+    render(
+      <ChatComposer
+        editorRef={editorRef}
+        localCommandHistoryScope={newRemoteProjectScope}
+        onSubmit={() => undefined}
+        onRunCommand={onRunCommand}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    act(() => {
+      editorRef.current!.commands.insertContent("!pwd");
+      pressEnter(editorRef.current!);
+    });
+
+    expect(onRunCommand).toHaveBeenCalledWith("pwd");
+    await vi.waitFor(() => {
+      expect(recordSpy).toHaveBeenCalledWith(resolvedRemoteProjectScope, "pwd");
+    });
   });
 });

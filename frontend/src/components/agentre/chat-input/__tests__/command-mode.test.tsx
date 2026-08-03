@@ -284,7 +284,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it.each(["Enter", "Tab"])(
-    "Given ranked history, When ArrowDown and %s choose a row, Then the full ! body is replaced without execution and the next submit records before running",
+    "Given ranked history, When ArrowDown and %s choose a row, Then the full ! body is replaced without execution and the next submit records under the returned execution scope",
     async (selectionKey) => {
       localCommandHistoryStore.record(repoScope, "git cherry-pick master", 10);
       localCommandHistoryStore.record(repoScope, "git checkout main", 30);
@@ -301,6 +301,7 @@ describe("AIChatInput command mode", () => {
         });
       const onCommandSubmit = vi.fn((command: string) => {
         events.push(`submit:${command}`);
+        return repoScope;
       });
       const onSubmit = vi.fn();
 
@@ -374,10 +375,12 @@ describe("AIChatInput command mode", () => {
         pressEnter(editor);
       });
 
-      expect(events).toEqual([
-        "record:git cherry-pick master",
-        "submit:git cherry-pick master",
-      ]);
+      await vi.waitFor(() => {
+        expect(events).toEqual([
+          "submit:git cherry-pick master",
+          "record:git cherry-pick master",
+        ]);
+      });
       expect(onCommandSubmit).toHaveBeenCalledWith("git cherry-pick master");
       expect(editor.getText()).toBe("");
     },

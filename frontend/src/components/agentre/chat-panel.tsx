@@ -74,6 +74,7 @@ import {
   type ChatImageAttachment,
   type TranscriptLiveContent,
 } from "./chat";
+import type { LocalCommandHistoryScope } from "./chat-input";
 import { ChatContextSidebar } from "./chat-context-sidebar";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
@@ -515,6 +516,11 @@ function ChatPanel({
     error: sessionError,
     reload: reloadSession,
   } = useChatSession(sessionId);
+  const pendingLocalCommandRef = React.useRef<{
+    command: string;
+    resolve: (scope: LocalCommandHistoryScope | undefined) => void;
+    sessionId: number;
+  } | null>(null);
 
   const { reason: attentionReason } = useSessionAttention(sessionId);
 
@@ -919,7 +925,13 @@ function ChatPanel({
   // (已存在的会话),sessionId=0 新建态回退到 newSessionAgent —— 否则远端 agent 起的
   // 新会话还没发送时,quotaDeviceKey 会落到 "local" 把桌面本机配额错画上去。
   const activeDeviceID = session?.deviceID ?? newSessionAgent?.deviceID ?? "";
-  const commandHistoryScopeReady = sessionId <= 0 || session !== null;
+  const newRemoteProjectNeedsResolvedScope =
+    sessionId <= 0 &&
+    session === null &&
+    activeDeviceID !== "" &&
+    (newSessionContext?.projectId ?? 0) > 0;
+  const commandHistoryScopeReady =
+    (sessionId <= 0 || session !== null) && !newRemoteProjectNeedsResolvedScope;
   const localCommandHistoryScope = React.useMemo(
     () =>
       commandHistoryScopeReady
@@ -1337,10 +1349,76 @@ function ChatPanel({
     }
   }
 
-  async function runLocalCommand(targetSessionId: number, command: string) {
-    // 新会话占位态(还没 sessionId):先坐实一个普通用户会话, 命令才有 cwd 可解析、
-    // 卡片有 transcript 可渲染。坐实后切到新会话并刷新侧栏(与普通发消息同款)。
+  const launchLocalCommand = React.useCallback(
+    (
+      sid: number,
+      command: string,
+      executionScope: LocalCommandHistoryScope,
+    ) => {
+      const terminalId = crypto.randomUUID();
+      useLocalCommandsStore.getState().start({
+        id: terminalId,
+        sessionId: sid,
+        command,
+        createdAt: Date.now(),
+      });
+      const dataEvent = `terminal:${terminalId}:data`;
+      const exitEvent = `terminal:${terminalId}:exit`;
+      const decode = makeStreamDecoder();
+      EventsOn(dataEvent, (p: { data: string }) =>
+        useLocalCommandsStore
+          .getState()
+          .appendOutput(terminalId, decode(p.data)),
+      );
+      EventsOn(exitEvent, (p: { code: number; reason: string }) => {
+        const status =
+          p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
+        useLocalCommandsStore.getState().finish(terminalId, status, p.code);
+        EventsOff(dataEvent);
+        EventsOff(exitEvent);
+      });
+      void TerminalRunCommand(terminalId, sid, command, 80, 24).catch(
+        (e: unknown) => {
+          useLocalCommandsStore.getState().appendOutput(terminalId, String(e));
+          useLocalCommandsStore.getState().finish(terminalId, "failed", -1);
+          EventsOff(dataEvent);
+          EventsOff(exitEvent);
+        },
+      );
+      return executionScope;
+    },
+    [],
+  );
+
+  React.useEffect(() => {
+    const pending = pendingLocalCommandRef.current;
+    if (!pending || !session || session.id !== pending.sessionId) return;
+    pendingLocalCommandRef.current = null;
+    pending.resolve(
+      launchLocalCommand(pending.sessionId, pending.command, {
+        deviceId: session.deviceID ?? "",
+        cwd: session.cwd ?? "",
+      }),
+    );
+  }, [launchLocalCommand, session]);
+
+  React.useEffect(
+    () => () => {
+      const pending = pendingLocalCommandRef.current;
+      pendingLocalCommandRef.current = null;
+      pending?.resolve(undefined);
+    },
+    [],
+  );
+
+  async function runLocalCommand(
+    targetSessionId: number,
+    command: string,
+  ): Promise<LocalCommandHistoryScope | undefined> {
+    // 新会话占位态先坐实普通用户会话，再等既有 LoadChatSession 回填后端实际解析的
+    // deviceID + cwd。远端项目不能拿本机 project.path 猜执行目录。
     let sid = targetSessionId;
+    let createdAgentId = 0;
     if (!sid && newSessionAgent) {
       try {
         sid = await EnsureChatSession(
@@ -1354,41 +1432,29 @@ function ChatPanel({
           text: t("chatPanel.errors.send", { msg }),
           detail,
         });
-        return;
+        return undefined;
       }
-      onSessionCreated?.(sid, newSessionAgent.id);
-      onSidebarShouldReload?.();
+      createdAgentId = newSessionAgent.id;
     }
-    if (!sid) return; // 既无会话也无 newSessionAgent —— 无处可跑。
+    if (!sid) return undefined; // 既无会话也无 newSessionAgent —— 无处可跑。
 
-    const terminalId = crypto.randomUUID();
-    useLocalCommandsStore.getState().start({
-      id: terminalId,
-      sessionId: sid,
-      command,
-      createdAt: Date.now(),
-    });
-    const dataEvent = `terminal:${terminalId}:data`;
-    const exitEvent = `terminal:${terminalId}:exit`;
-    const decode = makeStreamDecoder();
-    EventsOn(dataEvent, (p: { data: string }) =>
-      useLocalCommandsStore.getState().appendOutput(terminalId, decode(p.data)),
-    );
-    EventsOn(exitEvent, (p: { code: number; reason: string }) => {
-      const status =
-        p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
-      useLocalCommandsStore.getState().finish(terminalId, status, p.code);
-      EventsOff(dataEvent);
-      EventsOff(exitEvent);
-    });
-    void TerminalRunCommand(terminalId, sid, command, 80, 24).catch(
-      (e: unknown) => {
-        useLocalCommandsStore.getState().appendOutput(terminalId, String(e));
-        useLocalCommandsStore.getState().finish(terminalId, "failed", -1);
-        EventsOff(dataEvent);
-        EventsOff(exitEvent);
+    if (session?.id === sid) {
+      return launchLocalCommand(sid, command, {
+        deviceId: session.deviceID ?? "",
+        cwd: session.cwd ?? "",
+      });
+    }
+
+    const resolvedScope = new Promise<LocalCommandHistoryScope | undefined>(
+      (resolve) => {
+        pendingLocalCommandRef.current = { command, resolve, sessionId: sid };
       },
     );
+    if (createdAgentId > 0) {
+      onSessionCreated?.(sid, createdAgentId);
+      onSidebarShouldReload?.();
+    }
+    return resolvedScope;
   }
 
   async function doCompact(sid: number) {

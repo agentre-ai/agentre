@@ -34,6 +34,7 @@ const appMocks = vi.hoisted(() => ({
   DeleteChatSession: vi.fn(),
   EditChatMessage: vi.fn(),
   EnqueueChatMessage: vi.fn(),
+  EnsureChatSession: vi.fn(),
   GetCCUsage: vi.fn().mockResolvedValue({ reason: "" }),
   GetChatLaunchCommand: vi.fn(),
   GetChatGoal: vi.fn(),
@@ -45,6 +46,7 @@ const appMocks = vi.hoisted(() => ({
   SetChatGoal: vi.fn(),
   StartChatGoal: vi.fn(),
   StopChatMessage: vi.fn(),
+  TerminalRunCommand: vi.fn(),
   ClearChatGoal: vi.fn(),
   GetSessionGitState: vi.fn().mockResolvedValue({
     state: {
@@ -99,7 +101,12 @@ vi.mock("@/hooks/use-project-tree", () => ({
         project: { id: 1, name: "Agentre" },
         children: [
           {
-            project: { id: 2, name: "backend", color: "agent-5" },
+            project: {
+              id: 2,
+              name: "backend",
+              color: "agent-5",
+              path: "/local/repo",
+            },
             children: [],
           },
         ],
@@ -311,7 +318,9 @@ function resetStore() {
   appMocks.StartChatGoal.mockReset();
   appMocks.CompactChatSession.mockReset();
   appMocks.EnqueueChatMessage.mockReset();
+  appMocks.EnsureChatSession.mockReset();
   appMocks.GetChatLaunchCommand.mockReset();
+  appMocks.TerminalRunCommand.mockReset();
   sonnerMocks.toast.error.mockClear();
   sonnerMocks.toast.success.mockClear();
 }
@@ -462,6 +471,69 @@ describe("ChatPanel · transcript cwd", () => {
     expect(
       componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
     ).toBeUndefined();
+  });
+
+  it("Given a new remote project chat, When a command creates the session, Then its resolved execution scope replaces the local project path", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    appMocks.EnsureChatSession.mockResolvedValue(99);
+    appMocks.TerminalRunCommand.mockResolvedValue(undefined);
+    const onSessionCreated = vi.fn();
+    const view = render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Remote Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            deviceID: "7",
+          } as never
+        }
+        newSessionContext={{ projectId: 2 }}
+        onSessionCreated={onSessionCreated}
+      />,
+    );
+    const initialComposerProps = componentMocks.chatComposerProps.at(-1);
+    const runCommand = initialComposerProps?.onRunCommand as
+      | ((command: string) => Promise<unknown>)
+      | undefined;
+    expect(runCommand).toBeDefined();
+
+    let executionScope: Promise<unknown> | undefined;
+    act(() => {
+      executionScope = runCommand?.("pwd");
+    });
+    await waitFor(() => {
+      expect(onSessionCreated).toHaveBeenCalledWith(99, 7);
+    });
+
+    expect.soft(initialComposerProps?.localCommandHistoryScope).toBeUndefined();
+    expect.soft(appMocks.TerminalRunCommand).not.toHaveBeenCalled();
+
+    mockSessionStore.session = makeSession({
+      cwd: "/home/me/proj",
+      deviceID: "7",
+      id: 99,
+      projectId: 2,
+    });
+    view.rerender(<ChatPanel sessionId={99} />);
+
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toEqual({ cwd: "/home/me/proj", deviceId: "7" });
+    await expect(executionScope).resolves.toEqual({
+      cwd: "/home/me/proj",
+      deviceId: "7",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledWith(
+      expect.any(String),
+      99,
+      "pwd",
+      80,
+      24,
+    );
   });
 });
 

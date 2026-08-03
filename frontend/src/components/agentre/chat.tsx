@@ -27,6 +27,7 @@ import {
   AIChatInput,
   type AIChatInputHandle,
   type LocalCommandHistoryScope,
+  type LocalCommandSubmitHandler,
 } from "./chat-input";
 import { CodeBlock } from "./code-block";
 import { CompactHistoryFold } from "./compact-history-fold";
@@ -204,8 +205,8 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
     cmd: import("./slash-commands").SlashCommand,
     exec: Extract<import("./slash-commands").SlashExec, { kind: "rpc" }>,
   ) => void;
-  /** 本地命令回调:用户在命令模式下提交时调用(去掉前缀 ! 后的内容)。 */
-  onRunCommand?: (command: string) => void;
+  /** 本地命令回调:启动命令后返回后端解析出的稳定设备与 cwd，供历史落盘。 */
+  onRunCommand?: LocalCommandSubmitHandler;
   /** 当前执行设备与 cwd 组成的 Shell 历史隔离作用域。 */
   localCommandHistoryScope?: LocalCommandHistoryScope;
   /** 透传给内层 AIChatInput 的编辑器 ref,供测试驱动编辑器内容。 */
