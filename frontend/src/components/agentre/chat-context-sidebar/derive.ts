@@ -21,11 +21,12 @@ export type FileEntry = {
 };
 
 // 工具名按后端各自的原样大小写收录:claudecode 用 PascalCase,codex 用
-// apply_patch,pi agent 全小写(edit / write / read)。
+// file_change(历史消息可能仍是 apply_patch),pi agent 全小写(edit / write / read)。
 const EDIT_TOOLS = new Set([
   "Edit",
   "Write",
   "MultiEdit",
+  "file_change",
   "apply_patch",
   "edit",
   "write",
@@ -42,15 +43,10 @@ function textOf(m: Msg): string {
 }
 
 function extractToolPaths(
-  block: unknown,
+  block: chat_svc.ChatBlock,
 ): { name: string; paths: string[] } | null {
-  const b = block as {
-    type?: string;
-    name?: string;
-    input?: Record<string, unknown>;
-  };
-  if (b.type !== "tool_use" || !b.name) return null;
-  const input = b.input ?? {};
+  if (block.type !== "tool_use" || !block.toolName) return null;
+  const input = block.toolInput ?? {};
   const paths: string[] = [];
   if (typeof input.file_path === "string") paths.push(input.file_path);
   if (typeof input.path === "string") paths.push(input.path);
@@ -60,7 +56,7 @@ function extractToolPaths(
       if (typeof c?.path === "string") paths.push(c.path);
     }
   }
-  return paths.length > 0 ? { name: b.name, paths } : null;
+  return paths.length > 0 ? { name: block.toolName, paths } : null;
 }
 
 export function deriveOutline(messages: Msg[]): OutlineItem[] {
