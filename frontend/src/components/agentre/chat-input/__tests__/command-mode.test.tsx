@@ -252,6 +252,37 @@ describe("AIChatInput command mode", () => {
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 
+  it("Given cursor coordinates are unavailable, When Enter submits a matching ! query, Then no hidden history row consumes the command", () => {
+    localCommandHistoryStore.record(repoScope, "git status", 10);
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onCommandSubmit = vi.fn();
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={onCommandSubmit}
+      />,
+    );
+    const editor = editorRef.current!;
+    vi.spyOn(editor.view, "coordsAtPos").mockImplementation(() => {
+      throw new Error("editor view is not measurable");
+    });
+
+    act(() => {
+      editor.commands.insertContent("!git");
+    });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    act(() => {
+      pressEnter(editor);
+    });
+
+    expect(onCommandSubmit).toHaveBeenCalledWith("git");
+    expect(editor.getText()).toBe("");
+  });
+
   it.each(["Enter", "Tab"])(
     "Given ranked history, When ArrowDown and %s choose a row, Then the full ! body is replaced without execution and the next submit records before running",
     async (selectionKey) => {

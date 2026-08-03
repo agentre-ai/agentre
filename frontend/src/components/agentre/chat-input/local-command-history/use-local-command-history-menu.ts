@@ -132,7 +132,8 @@ export function useLocalCommandHistoryMenu({
           bottom: rect.bottom,
         };
       } catch {
-        anchorRect = null;
+        setState(closedState(hit.query));
+        return;
       }
 
       setState((previous) => {

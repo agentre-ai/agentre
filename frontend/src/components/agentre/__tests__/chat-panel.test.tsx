@@ -452,6 +452,17 @@ describe("ChatPanel · transcript cwd", () => {
       deviceId: "remote-device-7",
     });
   });
+
+  it("Given an existing session target is still loading, When the composer renders, Then it exposes no local-default history scope", () => {
+    resetStore();
+    mockSessionStore.session = null;
+
+    render(<ChatPanel sessionId={42} />);
+
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBeUndefined();
+  });
 });
 
 describe("computeTopVisibleAnchor", () => {

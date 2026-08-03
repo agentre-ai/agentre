@@ -919,9 +919,13 @@ function ChatPanel({
   // (已存在的会话),sessionId=0 新建态回退到 newSessionAgent —— 否则远端 agent 起的
   // 新会话还没发送时,quotaDeviceKey 会落到 "local" 把桌面本机配额错画上去。
   const activeDeviceID = session?.deviceID ?? newSessionAgent?.deviceID ?? "";
+  const commandHistoryScopeReady = sessionId <= 0 || session !== null;
   const localCommandHistoryScope = React.useMemo(
-    () => ({ deviceId: activeDeviceID, cwd: composerCwd }),
-    [activeDeviceID, composerCwd],
+    () =>
+      commandHistoryScopeReady
+        ? { deviceId: activeDeviceID, cwd: composerCwd }
+        : undefined,
+    [activeDeviceID, commandHistoryScopeReady, composerCwd],
   );
   const activeDeviceName =
     session?.deviceName ?? newSessionAgent?.deviceName ?? "";
