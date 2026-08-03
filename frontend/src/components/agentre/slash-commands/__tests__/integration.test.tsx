@@ -1,4 +1,10 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { useRef, type ComponentProps } from "react";
@@ -43,6 +49,13 @@ function Harness({
         onClick={() => editorRef.current?.commands.insertContent("co")}
       >
         insert co
+      </button>
+      <button
+        type="button"
+        data-testid="insert-mp"
+        onClick={() => editorRef.current?.commands.insertContent("mp")}
+      >
+        insert mp
       </button>
       <button
         type="button"
@@ -98,6 +111,52 @@ describe("AIChatInput slash menu integration", () => {
     // 仍然能看到 /compact (co 是前缀)
     await waitFor(() =>
       expect(screen.getByText("/compact")).toBeInTheDocument(),
+    );
+  });
+
+  it("Given a manually highlighted candidate, When a non-prefix query changes ranking, Then the best result becomes selected", async () => {
+    render(
+      <Harness
+        onSubmit={() => undefined}
+        skillCommands={[
+          {
+            description: "mp documentation",
+            label: "/helper",
+            name: "helper",
+            resolve: () => ({ kind: "literal_text", text: "/helper" }),
+            trigger: "/",
+          },
+        ]}
+      />,
+    );
+
+    act(() => {
+      screen.getByTestId("insert-slash").click();
+    });
+    const editor = screen.getByRole("textbox");
+    await screen.findByText("/compact");
+
+    fireEvent.keyDown(editor, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /\/new/ })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+
+    act(() => {
+      screen.getByTestId("insert-mp").click();
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /\/compact/ })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+    expect(screen.getByRole("option", { name: /\/helper/ })).toHaveAttribute(
+      "aria-selected",
+      "false",
     );
   });
 
