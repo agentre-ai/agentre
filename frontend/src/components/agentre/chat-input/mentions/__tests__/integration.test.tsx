@@ -62,9 +62,7 @@ function Harness({
         onClick={() => {
           const current = editorRef.current;
           if (current) {
-            current.view.dispatch(
-              current.state.tr.setSelection(current.state.selection),
-            );
+            current.view.dispatch(current.state.tr.insertText(" ", 1));
           }
         }}
       >
