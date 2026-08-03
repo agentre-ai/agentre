@@ -4,6 +4,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/agents/provider"
@@ -265,14 +266,20 @@ type AskAnswerSink interface {
 }
 
 // PendingToolPermission is one still-blocked (non-AskUserQuestion) tool
-// approval waiter, carrying the same fields ToolPermissionEvent raised it
+// approval waiter, carrying the same fields ToolPermissionRequest raised it
 // with the first time (RequestID / ToolName / Input) — enough for a
 // reconnecting client to rebuild the approval card without a second,
 // parallel payload shape.
+//
+// Input is json.RawMessage, not []byte, for the same reason
+// ToolPermissionRequest.Input is: encoding/json renders []byte as base64,
+// so the reconnect payload would carry the tool input in a different shape
+// than the live event frame and the client would need two parsers for one
+// card.
 type PendingToolPermission struct {
 	RequestID string
 	ToolName  string
-	Input     []byte
+	Input     json.RawMessage
 }
 
 // PendingAskUserQuestion is one still-blocked AskUserQuestion waiter,

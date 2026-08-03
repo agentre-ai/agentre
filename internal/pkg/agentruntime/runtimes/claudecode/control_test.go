@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -314,5 +316,62 @@ func TestSubmitToolPermission_SecondSubmitOnSameRequestID_ErrWaiterNotFound(t *t
 
 		err = r.SubmitToolPermission(context.Background(), 4002, "req-dup-2", true, false, "")
 		So(errors.Is(err, agentruntime.ErrWaiterNotFound), ShouldBeTrue)
+	})
+}
+
+// TestPendingWaiters_ConcurrentWithRegisterAndTake 钉住枚举的并发安全:
+// PendingWaiters 是唯一一条在 drain goroutine 之外读 permWaiters/askWaiters 的
+// 路径,而它天然与 handleControlRequest 的 register、SubmitXxx 的 take 并发 ——
+// 重连的客户端查待决策时,远端那一轮正在照跑。
+//
+// 会被拒绝的错误实现:pendingWaiters 不持 permMu/askMu 就遍历 map。-race 下
+// 立即报 data race;不带 -race 时 Go 运行时也会对并发读写 map 直接 fatal。
+func TestPendingWaiters_ConcurrentWithRegisterAndTake(t *testing.T) {
+	Convey("Given 一轮在不停登记/取走 waiter, When 同时反复枚举, Then 无 data race 且每次快照自洽", t, func() {
+		a := &claudeActive{handle: &fakeCCHandle{}}
+
+		const n = 200
+		var wg sync.WaitGroup
+		wg.Add(3)
+
+		go func() {
+			defer wg.Done()
+			for i := range n {
+				id := "perm-" + strconv.Itoa(i)
+				a.registerPermWaiter(id, "Bash", json.RawMessage(`{"command":"ls"}`), nil)
+				a.takePermWaiter(id)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := range n {
+				id := "ask-" + strconv.Itoa(i)
+				a.registerAskWaiter(id, []agentruntime.AskQuestion{{Question: "q"}}, nil, nil)
+				a.takeAskWaiter(id)
+			}
+		}()
+		// goconvey 的 So 只能在测试主 goroutine 上调用,枚举侧先记账,Wait 后再断言。
+		var partial int
+		go func() {
+			defer wg.Done()
+			for range n {
+				snap := a.pendingWaiters()
+				// 每条枚举出来的记录都必须是完整载荷,不能读到半初始化的 waiter。
+				for _, p := range snap.ToolPermissions {
+					if p.RequestID == "" || p.ToolName != "Bash" || len(p.Input) == 0 {
+						partial++
+					}
+				}
+				for _, q := range snap.AskUserQuestions {
+					if q.RequestID == "" || len(q.Questions) != 1 {
+						partial++
+					}
+				}
+			}
+		}()
+
+		wg.Wait()
+		So(partial, ShouldEqual, 0)
+		So(a.pendingWaiters(), ShouldResemble, agentruntime.WaiterSnapshot{})
 	})
 }
