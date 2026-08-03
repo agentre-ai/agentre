@@ -160,6 +160,34 @@ describe("local command history storage failures", () => {
     },
   );
 
+  it("Given malformed scope metadata, when followed by a valid record, then storage is rebuilt without retaining out-of-schema history", () => {
+    localStorage.setItem(
+      LOCAL_COMMAND_HISTORY_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        scopes: {
+          "not-a-device-cwd-scope": [
+            { command: "should not survive", lastUsedAt: 10 },
+          ],
+        },
+      }),
+    );
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+
+    store.record(localRepo, "safe command", 50);
+
+    expect(
+      JSON.parse(localStorage.getItem(LOCAL_COMMAND_HISTORY_STORAGE_KEY)!),
+    ).toEqual({
+      version: 1,
+      scopes: {
+        [deriveLocalCommandHistoryScopeKey(localRepo)]: [
+          { command: "safe command", lastUsedAt: 50 },
+        ],
+      },
+    });
+  });
+
   it("Given unavailable reads and failing writes, when commands are recorded and cleared, then callers never receive an error and current-run memory remains usable", () => {
     const failingStorage = {
       getItem(): string | null {

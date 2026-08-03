@@ -38,6 +38,46 @@ function browserStorage(): LocalCommandHistoryStorage | null {
   }
 }
 
+function encodeScopeKey({ deviceId, cwd }: LocalCommandHistoryScope): string {
+  const deviceScope = deviceId ? ["remote", deviceId] : ["local"];
+  const cwdScope = cwd ? ["cwd", cwd] : ["default"];
+  return JSON.stringify([deviceScope, cwdScope]);
+}
+
+function isHistoryScopeKey(scopeKey: string): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(scopeKey);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(value) || value.length !== 2) return false;
+
+  const [deviceScope, cwdScope] = value;
+  if (!Array.isArray(deviceScope) || !Array.isArray(cwdScope)) return false;
+
+  const isLocal = deviceScope.length === 1 && deviceScope[0] === "local";
+  const isRemote =
+    deviceScope.length === 2 &&
+    deviceScope[0] === "remote" &&
+    typeof deviceScope[1] === "string" &&
+    deviceScope[1].length > 0;
+  const isDefault = cwdScope.length === 1 && cwdScope[0] === "default";
+  const isCwd =
+    cwdScope.length === 2 &&
+    cwdScope[0] === "cwd" &&
+    typeof cwdScope[1] === "string" &&
+    cwdScope[1].length > 0;
+  if ((!isLocal && !isRemote) || (!isDefault && !isCwd)) return false;
+
+  return (
+    encodeScopeKey({
+      deviceId: isRemote ? (deviceScope[1] as string) : "",
+      cwd: isCwd ? (cwdScope[1] as string) : "",
+    }) === scopeKey
+  );
+}
+
 function isHistoryEntry(value: unknown): value is LocalCommandHistoryEntry {
   if (!value || typeof value !== "object") return false;
   const entry = value as Partial<LocalCommandHistoryEntry>;
@@ -96,7 +136,13 @@ function decodePersistedHistory(
     LocalCommandHistoryEntry[]
   >;
   for (const [scopeKey, entries] of Object.entries(persisted.scopes)) {
-    if (!Array.isArray(entries) || !entries.every(isHistoryEntry)) return empty;
+    if (
+      !isHistoryScopeKey(scopeKey) ||
+      !Array.isArray(entries) ||
+      !entries.every(isHistoryEntry)
+    ) {
+      return empty;
+    }
     scopes[scopeKey] = normalizeEntries(entries);
   }
   return { version: LOCAL_COMMAND_HISTORY_VERSION, scopes };
@@ -127,13 +173,10 @@ function writePersistedHistory(
   }
 }
 
-export function deriveLocalCommandHistoryScopeKey({
-  deviceId,
-  cwd,
-}: LocalCommandHistoryScope): string {
-  const deviceScope = deviceId ? ["remote", deviceId] : ["local"];
-  const cwdScope = cwd ? ["cwd", cwd] : ["default"];
-  return JSON.stringify([deviceScope, cwdScope]);
+export function deriveLocalCommandHistoryScopeKey(
+  scope: LocalCommandHistoryScope,
+): string {
+  return encodeScopeKey(scope);
 }
 
 export function createLocalCommandHistoryStore(
