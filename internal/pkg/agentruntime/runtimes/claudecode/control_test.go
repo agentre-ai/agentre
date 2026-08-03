@@ -96,3 +96,122 @@ func TestSetPermissionMode_SyncsActiveSnapshot(t *testing.T) {
 		So(a.permissionModeSnapshot(), ShouldEqual, "bypassPermissions")
 	})
 }
+
+// startTurnDrain 起一条 drainStream(等价一轮 turn 的帧流),返回喂帧 channel、
+// 本轮事件出口和「关掉帧流并等 drain 退出」的收尾函数。自主续轮 / 后台 subagent
+// 活动轮与 user turn 的唯一差别就是它们不调 setOut —— 这里一律不调,复现带外轮。
+func startTurnDrain(a *claudeActive) (chan claudecode.Event, chan agentruntime.Event, func()) {
+	frames := make(chan claudecode.Event, 4)
+	evOut := make(chan agentruntime.Event, 8)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		drainStream(&ccChanStream{ch: frames}, evOut, &agentruntime.RunResult{}, a, nil)
+		close(evOut)
+	}()
+	return frames, evOut, func() {
+		close(frames)
+		<-done
+	}
+}
+
+func recvEvent(t *testing.T, ch <-chan agentruntime.Event, what string) agentruntime.Event {
+	t.Helper()
+	select {
+	case ev, ok := <-ch:
+		if !ok {
+			t.Fatalf("%s: 通道已关闭", what)
+		}
+		return ev
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s: 2s 内没等到事件", what)
+		return nil
+	}
+}
+
+// TestSubmitDecision_ResolvedEventFollowsRequestChannel 回归 sess-2425
+// 「已经审批完成了，还是显示审批状态」:
+//
+// 自主续轮 / 后台 subagent 活动轮刻意不 setOut(避免与 user turn 抢写 a.out),
+// 于是终态事件走 a.outChan() 时落到 nil / 上一轮已结束的陈旧 channel 被丢弃。
+// chat_svc 的 UserAskResolvedHandler / ToolPermissionResolvedHandler 因此永远收不到,
+// markSessionRunning 不执行,chat_sessions.agent_status 卡在 "waiting" ——
+// 侧栏「审批」胶囊要一直挂到本轮 finalize(带外轮可以跑几小时)。
+//
+// 约定:终态事件回到 **发起该 control_request 的那条事件通道**,而不是 session
+// 全局的 a.out —— 请求从哪条通道来,应答就回哪条通道。
+func TestSubmitDecision_ResolvedEventFollowsRequestChannel(t *testing.T) {
+	Convey("Given AskUserQuestion 在带外轮通道上发起(全程不 setOut), When SubmitAnswer 成功, Then UserAskResolved 回到该轮通道", t, func() {
+		r := New()
+		a := &claudeActive{handle: &fakeCCHandle{}}
+		r.cache.Put(sessionKey(2425), a)
+		frames, evOut, stop := startTurnDrain(a)
+		defer stop()
+
+		frames <- claudecode.Event{Kind: claudecode.EventControlRequest, ControlRequest: &claudecode.ControlRequestEvent{
+			RequestID: "req-ask-1",
+			ToolName:  "AskUserQuestion",
+			Input:     json.RawMessage(`{"questions":[{"question":"什么时候修？","header":"修复时机","options":[{"label":"现在修"}]}]}`),
+		}}
+		ask, ok := recvEvent(t, evOut, "UserAskRequest").(agentruntime.UserAskRequest)
+		So(ok, ShouldBeTrue)
+		So(ask.RequestID, ShouldEqual, "req-ask-1")
+
+		err := r.SubmitAnswer(context.Background(), 2425, "req-ask-1", nil,
+			[]agentruntime.AskAnswer{{QuestionIndex: 0, Labels: []string{"现在修"}}}, false)
+		So(err, ShouldBeNil)
+
+		resolved, ok := recvEvent(t, evOut, "UserAskResolved").(agentruntime.UserAskResolved)
+		So(ok, ShouldBeTrue)
+		So(resolved.RequestID, ShouldEqual, "req-ask-1")
+		So(resolved.Skipped, ShouldBeFalse)
+	})
+
+	Convey("Given 工具审批在带外轮通道上发起(全程不 setOut), When SubmitToolPermission 成功, Then ToolPermissionResolved 回到该轮通道", t, func() {
+		r := New()
+		a := &claudeActive{handle: &fakeCCHandle{}, permissionMode: "default"}
+		r.cache.Put(sessionKey(2425), a)
+		frames, evOut, stop := startTurnDrain(a)
+		defer stop()
+
+		frames <- claudecode.Event{Kind: claudecode.EventControlRequest, ControlRequest: &claudecode.ControlRequestEvent{
+			RequestID: "req-perm-1",
+			ToolName:  "Bash",
+			Input:     json.RawMessage(`{"command":"ls"}`),
+		}}
+		perm, ok := recvEvent(t, evOut, "ToolPermissionRequest").(agentruntime.ToolPermissionRequest)
+		So(ok, ShouldBeTrue)
+		So(perm.RequestID, ShouldEqual, "req-perm-1")
+
+		err := r.SubmitToolPermission(context.Background(), 2425, "req-perm-1", true, false, "")
+		So(err, ShouldBeNil)
+
+		resolved, ok := recvEvent(t, evOut, "ToolPermissionResolved").(agentruntime.ToolPermissionResolved)
+		So(ok, ShouldBeTrue)
+		So(resolved.RequestID, ShouldEqual, "req-perm-1")
+		So(resolved.Allowed, ShouldBeTrue)
+	})
+
+	// 边界:waiter 跨轮存活(register/take 不随 turn 清理),本轮 drain 退出后
+	// 通道已 close —— 迟到的应答不能往已关闭通道写(panic),只能静默丢弃。
+	Convey("Given 发起该请求的那一轮已结束, When 迟到的 SubmitAnswer 到达, Then 不 panic 也不写已关闭通道", t, func() {
+		r := New()
+		a := &claudeActive{handle: &fakeCCHandle{}}
+		r.cache.Put(sessionKey(2425), a)
+		frames, evOut, stop := startTurnDrain(a)
+
+		frames <- claudecode.Event{Kind: claudecode.EventControlRequest, ControlRequest: &claudecode.ControlRequestEvent{
+			RequestID: "req-ask-late",
+			ToolName:  "AskUserQuestion",
+			Input:     json.RawMessage(`{"questions":[{"question":"还答吗？","header":"迟到","options":[{"label":"答"}]}]}`),
+		}}
+		_, ok := recvEvent(t, evOut, "UserAskRequest").(agentruntime.UserAskRequest)
+		So(ok, ShouldBeTrue)
+		stop() // 本轮结束:drain 退出 + evOut 关闭
+
+		So(func() {
+			_ = r.SubmitAnswer(context.Background(), 2425, "req-ask-late", nil,
+				[]agentruntime.AskAnswer{{QuestionIndex: 0, Labels: []string{"答"}}}, false)
+		}, ShouldNotPanic)
+	})
+}

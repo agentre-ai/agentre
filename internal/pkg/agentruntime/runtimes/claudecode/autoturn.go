@@ -10,14 +10,10 @@ import (
 // 每个 AutoTurn 复用 drainStream(同 translator / control 协议 / tasks 聚合)。本桥接
 // 按 AutoTurn 顺序 **inline** drain —— 自主轮之间不重叠。
 //
-// **刻意不调 active.setOut(evOut)**:自主轮的事件出口只走 drainStream 显式传入的
-// evOut(同步 control_request 经 handleControlRequest(evOut) 仍能到达前端)。a.out 只
-// 由 user turn 的 Run goroutine 写(且被 chat_svc 会话锁串行化);自主轮若也抢写
-// a.out,则当 user turn 与自主轮在 runtime 层短暂重叠(用户在自主轮进行中又发消息,
-// Session FIFO 已防错位但两个 drainStream goroutine 仍可并存)时会 data race。代价:
-// 自主轮内若发生异步 tool-permission/ask 应答(emit 走 a.outChan),终态事件落到
-// nil/陈旧 channel 被丢弃 → 该卡片不实时回显,靠下一轮 reloadSession 修正(罕见,
-// 自主轮多在 acceptEdits 下自动放行)。
+// 本轮的事件出口是这里新建的 evOut:同步 control_request 经
+// handleControlRequest(evOut) 到达前端,异步应答(SubmitAnswer /
+// SubmitToolPermission)也按 waiter 记下的 evOut 回投 —— drainStream 用
+// attachOut/detachOut 圈住它的存活期,与可能并存的 user turn 通道互不干扰。
 //
 // sessionID 未 spawn / 已 evict → 返回一个立即 close 的 channel。子进程退出时底层
 // AutonomousTurns channel close,本 channel 随之 close。
@@ -77,7 +73,7 @@ func (r *Runtime) AutonomousTurns(sessionID int64) <-chan agentruntime.Autonomou
 // 每个 SubagentActivity 复用 drainStream(同 translator / control 协议 / tasks 聚合)。本桥接
 // 按活动顺序 **inline** drain —— subagent 活动轮之间不重叠。
 //
-// **刻意不调 active.setOut(evOut)**:原因与 AutonomousTurns 的注释相同。
+// 事件出口与应答回投的规则同 AutonomousTurns 的注释。
 //
 // sessionID 未 spawn / 已 evict → 返回一个立即 close 的 channel。子进程退出时底层
 // SubagentActivity channel close,本 channel 随之 close。

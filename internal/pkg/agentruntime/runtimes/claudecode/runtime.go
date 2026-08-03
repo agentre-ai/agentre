@@ -350,8 +350,6 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		LaunchPermissionMode: launchMode,
 	}
 
-	a.setOut(out)
-
 	// startup 看门狗:turn 起步后 startupTimeout 内一帧都没有 → 判定子进程卡死(典型:
 	// 群成员轮 CLI 卡在 MCP 初始化连不上 gateway),硬杀子进程让 drainStream 的
 	// stream.Next() 拿到 EOF 解阻塞、本轮以 errStartupTimeout 收尾,而不是永久挂起。
@@ -424,7 +422,6 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 			cancelDrain()
 		}
 		<-steerDone
-		a.clearOut()
 		if sid := stream.SessionID(); sid != "" {
 			result.ProviderSessionID = sid
 		}
@@ -641,7 +638,16 @@ func (r *Runtime) acquireSession(ctx context.Context, req agentruntime.RunReques
 // 永远在对应 tool_use / tool_result 之后(消费方的 mutation order 不被打破)。
 // onFirstFrame 在收到本轮第一帧时回调一次(解除 startup 看门狗) —— 子进程已吐帧
 // 即证明它没卡在起步期, 后续无论多慢都不再由看门狗管。
+//
+// out 的存活期就是本函数的执行期:attach/detach 圈在这里,user turn / 自主续轮 /
+// 后台 subagent 活动轮三条路径自动一致 —— 异步应答(SubmitAnswer /
+// SubmitToolPermission)据此判断该轮通道是否还能写。调用方在本函数返回后才
+// close(out),detach 已先摘除,不会向已关闭 channel 写入。
 func drainStream(stream ccStream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *claudeActive, onFirstFrame func()) {
+	if active != nil {
+		active.attachOut(out)
+		defer active.detachOut(out)
+	}
 	first := true
 	for stream.Next() {
 		if first {

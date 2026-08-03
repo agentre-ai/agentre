@@ -54,10 +54,13 @@ type claudeActive struct {
 	modeMu         sync.Mutex
 	permissionMode string
 
-	// outMu/out Run() 期间登记的事件出口 channel,SubmitAnswer 完成后用它
-	// emit UserAskResolved。drain 退出前清回 nil 避免向已关闭 channel 写入。
-	outMu sync.Mutex
-	out   chan<- agentruntime.Event
+	// outMu/liveOuts 当前仍在 drain 的事件出口 channel 集合。一个 session 上可以
+	// 同时有多条:user turn 一条,自主续轮 / 后台 subagent 活动轮各自一条。
+	// 异步应答(SubmitAnswer / SubmitToolPermission)按 waiter 记下的通道回投,
+	// emitTo 只往还在集合里的通道写 —— drain 退出时 detachOut 先摘除、调用方随后
+	// 才 close,因此不会向已关闭 channel 写入。
+	outMu    sync.Mutex
+	liveOuts map[chan<- agentruntime.Event]struct{}
 
 	// tasks 跨 turn 聚合 TaskCreate / TaskUpdate 工具调用为 canonical.PlanUpdate
 	// 快照流。drainStream 每帧调 observePreToolUse / observePostToolUse,变更时
@@ -88,34 +91,57 @@ func (a *claudeActive) leaveOutOfBand() { a.outOfBand.Add(-1) }
 // outOfBandActive 报告此刻是否有带外轮在流。
 func (a *claudeActive) outOfBandActive() bool { return a.outOfBand.Load() > 0 }
 
-func (a *claudeActive) setOut(out chan<- agentruntime.Event) {
+// attachOut / detachOut 由 drainStream 圈住一轮的事件出口存活期。
+func (a *claudeActive) attachOut(out chan<- agentruntime.Event) {
+	if out == nil {
+		return
+	}
 	a.outMu.Lock()
-	a.out = out
+	if a.liveOuts == nil {
+		a.liveOuts = make(map[chan<- agentruntime.Event]struct{})
+	}
+	a.liveOuts[out] = struct{}{}
 	a.outMu.Unlock()
 }
 
-func (a *claudeActive) clearOut() {
+func (a *claudeActive) detachOut(out chan<- agentruntime.Event) {
 	a.outMu.Lock()
-	a.out = nil
+	delete(a.liveOuts, out)
 	a.outMu.Unlock()
 }
 
-func (a *claudeActive) outChan() chan<- agentruntime.Event {
+// emitTo 把异步应答的终态事件投回发起该请求的那一轮的通道。通道已 detach
+// (那一轮 drain 已结束)或缓冲满时丢弃 —— 前端有乐观更新 + 历史回放兜底。
+// 持锁发送:detachOut 会等在途发送完成,调用方随后 close 才安全。
+func (a *claudeActive) emitTo(out chan<- agentruntime.Event, ev agentruntime.Event) {
+	if out == nil {
+		return
+	}
 	a.outMu.Lock()
 	defer a.outMu.Unlock()
-	return a.out
+	if _, live := a.liveOuts[out]; !live {
+		return
+	}
+	select {
+	case out <- ev:
+	default:
+	}
 }
 
-// askWaiter 单次 AskUserQuestion 调用的状态。
+// askWaiter 单次 AskUserQuestion 调用的状态。out 是发起该 control_request 的那一轮
+// 的事件出口 —— 应答必须回到同一条通道,session 上可能同时有多条(user turn +
+// 自主续轮 / 后台 subagent 活动轮)。
 type askWaiter struct {
 	questions []agentruntime.AskQuestion
 	rawInput  json.RawMessage
+	out       chan<- agentruntime.Event
 }
 
-// permWaiter 单次非-AskUserQuestion 工具审批的状态。
+// permWaiter 单次非-AskUserQuestion 工具审批的状态。out 语义同 askWaiter。
 type permWaiter struct {
 	toolName string
 	rawInput json.RawMessage
+	out      chan<- agentruntime.Event
 }
 
 // Close 释放 claudeActive 持有的所有资源。幂等。
@@ -135,13 +161,13 @@ func (a *claudeActive) Close(ctx context.Context) error {
 	return nil
 }
 
-func (a *claudeActive) registerPermWaiter(reqID, toolName string, rawInput json.RawMessage) {
+func (a *claudeActive) registerPermWaiter(reqID, toolName string, rawInput json.RawMessage, out chan<- agentruntime.Event) {
 	a.permMu.Lock()
 	defer a.permMu.Unlock()
 	if a.permWaiters == nil {
 		a.permWaiters = make(map[string]*permWaiter)
 	}
-	a.permWaiters[reqID] = &permWaiter{toolName: toolName, rawInput: rawInput}
+	a.permWaiters[reqID] = &permWaiter{toolName: toolName, rawInput: rawInput, out: out}
 	if a.pool != nil && a.poolKey != "" {
 		a.pool.MarkWaiting(a.poolKey)
 	}
@@ -160,13 +186,13 @@ func (a *claudeActive) takePermWaiter(reqID string) *permWaiter {
 	return w
 }
 
-func (a *claudeActive) registerAskWaiter(reqID string, questions []agentruntime.AskQuestion, rawInput json.RawMessage) {
+func (a *claudeActive) registerAskWaiter(reqID string, questions []agentruntime.AskQuestion, rawInput json.RawMessage, out chan<- agentruntime.Event) {
 	a.askMu.Lock()
 	defer a.askMu.Unlock()
 	if a.askWaiters == nil {
 		a.askWaiters = make(map[string]*askWaiter)
 	}
-	a.askWaiters[reqID] = &askWaiter{questions: questions, rawInput: rawInput}
+	a.askWaiters[reqID] = &askWaiter{questions: questions, rawInput: rawInput, out: out}
 	if a.pool != nil && a.poolKey != "" {
 		a.pool.MarkWaiting(a.poolKey)
 	}
