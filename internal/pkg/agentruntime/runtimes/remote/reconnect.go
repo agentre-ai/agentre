@@ -237,26 +237,45 @@ func (r *Runtime) dispatchNotification(
 	case head.Seq > ss.cursor+1:
 		cursor := ss.cursor
 		ss.mu.Unlock()
-		logger.Ctx(ctx).Warn("remote runtime: notification seq gap, pulling",
-			zap.Int64("sid", head.SessionID), zap.Int64("cursor", cursor),
-			zap.Int64("seq", head.Seq), zap.String("method", method))
-		r.scheduleGapFill(head.SessionID, ss)
+		// 只在真的起了一次拉取时打一行:一个洞后面跟着的每一条实时帧都会走到这里,
+		// 按帧打就是在通知循环里打日志(observability.md:「不要在循环内打日志」)。
+		if r.scheduleGapFill(head.SessionID, ss) {
+			logger.Ctx(ctx).Warn("remote runtime: notification seq gap, pulling",
+				zap.Int64("sid", head.SessionID), zap.Int64("cursor", cursor),
+				zap.Int64("seq", head.Seq), zap.String("method", method))
+		}
 		return nil, nil
 	}
 	res, err := h(r, ctx, raw)
 	ss.cursor = head.Seq
 	ss.mu.Unlock()
 	r.markCursorDirty(head.SessionID, head.Seq)
+	if terminalNotifyMethods[method] {
+		// 轮末这一条不能压在防抖窗口里:用户拿到答案随手关窗(2 秒内进程就没了),
+		// 库里的游标会停在这一轮的中段,下一轮的第一条实时帧对着它判成跳号,把上一轮
+		// 的尾巴整段重放进新的一轮 —— 硬不变量的「无重复」当场破掉。
+		r.flushCursors()
+	}
 	return res, err
+}
+
+// terminalNotifyMethods 是「一轮到此为止」的两类通知。它们之后不再有同轮通知,
+// 所以此刻的游标就是这一轮的终值,值得一次同步落库(每轮一次,不在热路径上)。
+var terminalNotifyMethods = map[string]bool{
+	wire.NotifyRunResultDone:      true,
+	wire.NotifyAutonomousTurnDone: true,
 }
 
 // scheduleGapFill 起一次补洞拉取。必须异步:通知在读循环里同步分发,就地发 RPC
 // 会让应答帧永远读不回来(rpc/conn.go:118 的注释写明了这条纪律)。
-func (r *Runtime) scheduleGapFill(sid int64, ss *sessionSync) {
+//
+// 同一会话任一时刻至多一次拉取;返回值告诉调用方本次是否真的起了一次(调用方据此
+// 决定要不要打日志 —— 一个洞后面的每一条实时帧都会走到这里)。
+func (r *Runtime) scheduleGapFill(sid int64, ss *sessionSync) bool {
 	ss.mu.Lock()
 	if ss.filling {
 		ss.mu.Unlock()
-		return
+		return false
 	}
 	ss.filling = true
 	ss.mu.Unlock()
@@ -272,6 +291,7 @@ func (r *Runtime) scheduleGapFill(sid int64, ss *sessionSync) {
 				zap.Int64("sid", sid), zap.Error(err))
 		}
 	}()
+	return true
 }
 
 // pullUntilCaughtUp 按游标翻页拉取并重放,直到 daemon 说没有更多。返回重放条数。
@@ -291,7 +311,7 @@ func (r *Runtime) pullUntilCaughtUp(ctx context.Context, sid int64, ss *sessionS
 			return replayed, wire.FromJSONRPCError(err)
 		}
 		for _, n := range res.Notifications {
-			delivered, err := r.replay(ctx, n)
+			delivered, err := r.replay(ctx, sid, ss, n)
 			if err != nil {
 				return replayed, err
 			}
@@ -314,13 +334,14 @@ func (r *Runtime) pullUntilCaughtUp(ctx context.Context, sid int64, ss *sessionS
 // seq=0,闸门会当成「老 daemon 不盖 seq」放行却不推进游标 —— 补齐看似成功,游标
 // 却原地不动,下一条实时帧立刻判成跳号,把刚补的这段再重放一遍(重复投递)。
 // 所以必须按 method 解成对应的帧、盖上 seq、再重新序列化。
-func (r *Runtime) replay(ctx context.Context, n wire.JournaledNotification) (bool, error) {
+func (r *Runtime) replay(ctx context.Context, sid int64, ss *sessionSync, n wire.JournaledNotification) (bool, error) {
 	h, ok := notifyHandlers[n.Method]
 	if !ok {
 		// 未知 method:新版 daemon 加了第六类通知而本客户端还不认识。跳过而不是
 		// 整段补齐失败 —— 停在这里会让后面所有已知通知也丢掉。
 		logger.Ctx(ctx).Warn("remote runtime: replay skipped unknown notification method",
 			zap.String("method", n.Method), zap.Int64("seq", n.Seq))
+		r.skipSeq(sid, ss, n.Seq)
 		return false, nil
 	}
 	raw, err := stampSeq(n.Method, n.Params, n.Seq)
@@ -331,6 +352,23 @@ func (r *Runtime) replay(ctx context.Context, n wire.JournaledNotification) (boo
 		return false, err
 	}
 	return true, nil
+}
+
+// skipSeq 让一条交付不出去的通知照样占掉它那一格游标,规则与 dispatchNotification
+// 的闸门一致(只有 seq == 游标 + 1 才推进)。
+//
+// 不推进的后果不是「少一条」而是「一条也不剩」:游标停在洞前,后面每一条已知通知
+// 都会被判成跳号丢弃,而补洞拉取又原样把这条认不得的通知再拉回来 —— 会话就此卡死
+// 在拉取死循环里,连终态帧都收不到。
+func (r *Runtime) skipSeq(sid int64, ss *sessionSync, seq int64) {
+	ss.mu.Lock()
+	if seq != ss.cursor+1 {
+		ss.mu.Unlock()
+		return
+	}
+	ss.cursor = seq
+	ss.mu.Unlock()
+	r.markCursorDirty(sid, seq)
 }
 
 // stampSeq 按 method 把日志载荷解成对应的帧、盖上 seq、再重新序列化。
@@ -508,11 +546,9 @@ func (r *Runtime) catchUpSession(ctx context.Context, sid int64) error {
 	if err := r.attachSession(ctx, sid); err != nil {
 		return err
 	}
-	ss := r.resetCursorFor(ctx, sid)
-	if ss == nil {
-		// R12:实例标识对不上(daemon 重装 / 换机 / 数据目录被清)。记录的游标指向
-		// 另一条通知日志,拿它去拉会静默跳过整段转录,只能按已中断处理。
-		return errSessionUnrecoverable
+	ss, err := r.resetCursorFor(ctx, sid)
+	if err != nil {
+		return err
 	}
 	replayed, err := r.pullUntilCaughtUp(ctx, sid, ss)
 	if err != nil {
@@ -559,11 +595,16 @@ func (r *Runtime) attachSession(ctx context.Context, sid int64) error {
 	return sentinel
 }
 
-// resetCursorFor 重新校验实例标识并取回游标。返回 nil 表示 R12 判定游标失效。
+// resetCursorFor 重新校验实例标识并取回游标。
+//
+// 两种失败要分开:实例标识对不上是 R12 的**判定**(errSessionUnrecoverable,这条
+// 会话就此收尾);读不出来只是这一次没读到(库正忙、事务冲突),交出普通错误让整轮
+// 补齐按退避表重来 —— 把它也算作失效,等于一次 sqlite busy 就杀掉一条远端还在跑的
+// 会话,正是 R4 要消灭的行为。
 //
 // 内存游标与库里的取较大者:库里的那份是防抖落库的,进程内已经消费到更远是常事,
 // 用旧值会把已经交付过的通知再重放一遍 —— 那是重复,同样破坏硬不变量。
-func (r *Runtime) resetCursorFor(ctx context.Context, sid int64) *sessionSync {
+func (r *Runtime) resetCursorFor(ctx context.Context, sid int64) (*sessionSync, error) {
 	r.stateMu.Lock()
 	ss, ok := r.sessionState[sid]
 	if !ok {
@@ -577,16 +618,18 @@ func (r *Runtime) resetCursorFor(ctx context.Context, sid int64) *sessionSync {
 		ss.mu.Lock()
 		ss.loaded = true
 		ss.mu.Unlock()
-		return ss
+		return ss, nil
 	}
 	seq, valid, err := port.LoadCursor(ctx, sid, r.fingerprint())
 	if err != nil {
 		logger.Ctx(ctx).Warn("remote runtime: load session cursor failed on reconnect",
 			zap.Int64("sid", sid), zap.Error(err))
-		return nil
+		return nil, fmt.Errorf("load session cursor: %w", err)
 	}
 	if !valid {
-		return nil
+		// R12:实例标识对不上(daemon 重装 / 换机 / 数据目录被清)。记录的游标指向
+		// 另一条通知日志,拿它去拉会静默跳过整段转录,只能按已中断处理。
+		return nil, errSessionUnrecoverable
 	}
 	ss.mu.Lock()
 	ss.loaded = true
@@ -594,7 +637,7 @@ func (r *Runtime) resetCursorFor(ctx context.Context, sid int64) *sessionSync {
 		ss.cursor = seq
 	}
 	ss.mu.Unlock()
-	return ss
+	return ss, nil
 }
 
 // ── 会话收尾 ────────────────────────────────────────────────────────────────

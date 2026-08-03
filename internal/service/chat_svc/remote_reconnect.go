@@ -35,11 +35,6 @@ func (s *chatSvc) onRemoteConnState(sessionID int64, st remote.SessionConnState)
 	})
 }
 
-// OnSessionConnState 让 *chatSvc 直接满足 remote.ConnStateObserver。
-func (s *chatSvc) OnSessionConnState(sessionID int64, st remote.SessionConnState) {
-	s.onRemoteConnState(sessionID, st)
-}
-
 // reconnectRemote 是注入给 *remote.Runtime 的重连端口:重新从池里借一条已鉴权连接,
 // 换进同一个 cache entry,并归还旧的那条。
 //

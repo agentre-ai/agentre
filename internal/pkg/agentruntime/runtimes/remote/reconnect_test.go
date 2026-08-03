@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,6 +81,18 @@ func (f *fakeConn) deliver(t *testing.T, method string, payload any) {
 	require.NoError(t, err)
 	_, err = fn(context.Background(), raw)
 	require.NoError(t, err)
+}
+
+// dispatchRaw 从**另一个 goroutine** 投递一条 server-push。刻意不碰 *testing.T:
+// require/assert 的 FailNow 只能在测试 goroutine 里调。
+func (f *fakeConn) dispatchRaw(method string, raw json.RawMessage) {
+	f.mu.Lock()
+	fn := f.handlers[method]
+	f.mu.Unlock()
+	if fn == nil {
+		return
+	}
+	_, _ = fn(context.Background(), raw)
 }
 
 func (f *fakeConn) methodCalls(method string) []fakeCall {
@@ -407,6 +420,93 @@ func TestReconnect_CatchUpReplaysJournaledNotifications(t *testing.T) {
 	assert.Equal(t, rigFingerprint, last.Fingerprint)
 }
 
+// Given 补齐正在翻页,When 一条更靠后的实时帧在同一时刻从新连接到达(attach 之后
+// daemon 立刻就把新通知推给这条连接),Then 交付顺序仍严格按 seq 递增、同一条不交付
+// 两次 —— 「补齐的尾巴」与「新到的实时帧」交接是硬不变量最容易破的那一处,而集成
+// 用例把第三阶段闸在补齐落定之后,恰恰绕开了它。
+func TestCatchUp_LiveFrameDuringReplay_KeepsOrderAndDoesNotDuplicate(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	rig.cursor.setLoad(func(int64, string) (int64, bool, error) { return 0, true, nil })
+
+	journal := []wire.JournaledNotification{
+		journaledEvent(1, "one"), journaledEvent(2, "two"),
+		journaledEvent(3, "three"), journaledEvent(4, "four"),
+		journaledDone(5, "sonnet"),
+	}
+	conn2 := newFakeConn()
+	var liveOnce sync.Once
+	conn2.script(func(method string, params, result any) error {
+		switch method {
+		case wire.MethodSessionAttach:
+			*(result.(*wire.SessionAttachResult)) = wire.SessionAttachResult{
+				SessionID: rigSessionID, LifecycleState: wire.SessionLifecycleRunning, LatestSeq: 5,
+			}
+		case wire.MethodSessionPull:
+			p := params.(wire.SessionPullParams)
+			// 第一页还在飞的时候,daemon 把 seq=4 推到这条新连接上。它比补齐进度
+			// 靠前,必须被闸门挡下,而不是插到 2/3 前面 —— 也不得在补齐拉到它时
+			// 再交付一次。
+			liveOnce.Do(func() {
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					ev, _ := json.Marshal(agentruntime.TextDelta{Text: "four"})
+					raw, _ := json.Marshal(wire.EventFrame{SessionID: rigSessionID, Event: ev, Seq: 4})
+					conn2.dispatchRaw(wire.NotifyEvent, raw)
+				}()
+				<-done
+			})
+			out := wire.SessionPullResult{Cursor: p.Cursor}
+			for _, n := range journal {
+				if n.Seq > p.Cursor && len(out.Notifications) < 2 {
+					out.Notifications = append(out.Notifications, n)
+					out.Cursor = n.Seq
+				}
+			}
+			out.HasMore = out.Cursor < 5
+			*(result.(*wire.SessionPullResult)) = out
+		}
+		return nil
+	})
+	rig.queue(conn2, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	texts := drainTexts(t, rig.events, 5*time.Second)
+	assert.Equal(t, []string{"one", "two", "three", "four"}, texts,
+		"交接期间交付必须严格按 seq 递增,且同一条不得交付两次")
+	assert.Equal(t, "sonnet", rig.result.Model)
+}
+
+// Given 日志里夹着一条本客户端还不认识的通知(新版 daemon 加了第六类通知),
+// When 重连补齐,Then 它后面的已知通知照常按序交付。
+//
+// 认不得的那条如果只是「跳过」而不占掉它那一格游标,下一条已知通知就会被闸门判成
+// 跳号丢弃,补洞拉取又会把同一条认不得的通知再拉回来 —— 每条后续通知都触发一次
+// 拉取且一条也交付不出去,会话卡死在「生成中」直到超时。
+func TestReplay_UnknownNotificationMethod_DoesNotStallCatchUp(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	rig.cursor.setLoad(func(int64, string) (int64, bool, error) { return 3, true, nil })
+	unknown := wire.JournaledNotification{
+		Seq:    4,
+		Method: "runtime.somethingTheClientDoesNotKnow",
+		Params: json.RawMessage(`{"sessionId":42}`),
+	}
+	conn2 := catchUpConn(6, []wire.JournaledNotification{
+		unknown,
+		journaledEvent(5, "after-hole"),
+		journaledDone(6, "sonnet"),
+	}, wire.SessionPendingWaitersResult{})
+	rig.queue(conn2, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	texts := drainTexts(t, rig.events, 3*time.Second)
+	assert.Equal(t, []string{"after-hole"}, texts,
+		"认不得的一条不得把它后面的已知通知一起吞掉")
+	assert.Equal(t, "sonnet", rig.result.Model, "终态帧同样要补齐得到")
+}
+
 // ── R6: 跳号补洞 / 重复丢弃 ──────────────────────────────────────────────────
 
 // Given 本地游标为 3,When 实时帧带着 seq=6 到达(跳号),Then 该帧不被消费,
@@ -472,6 +572,32 @@ func TestLiveFrame_SeqNotNewerThanCursor_Discarded(t *testing.T) {
 	assert.Empty(t, rig.conn1.methodCalls(wire.MethodSessionPull), "重复帧不该触发补洞")
 }
 
+// ── 游标落库防抖:轮末那一条不能压在里面 ─────────────────────────────────────
+
+// Given 游标落库开了防抖,When 轮末终态帧到达,Then 游标当场落库,不等防抖窗口。
+//
+// 压在防抖里的后果:用户拿到答案随手关窗(2 秒内进程就没了),库里的游标停在这一轮
+// 的中段。下一轮换了新的 *remote.Runtime,第一条实时帧对着旧游标判成跳号,从旧游标
+// 整段补齐 —— 上一轮的尾巴被重放进新的一轮,硬不变量的「无重复」当场破掉。
+func TestTerminalNotification_FlushesCursorImmediately(t *testing.T) {
+	rig := newReconnectRigWithBackoff(t, true, []time.Duration{time.Hour})
+	// 防抖窗口设成一小时:任何落库都只可能来自轮末的主动 flush。
+	rig.rt.cursorFlush = time.Hour
+
+	ev, err := json.Marshal(agentruntime.TextDelta{Text: "x"})
+	require.NoError(t, err)
+	rig.conn1.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: rigSessionID, Event: ev, Seq: 1})
+	_, ok := rig.cursor.lastSaved()
+	require.False(t, ok, "轮中的每一条不该各写一次库 —— 那正是防抖要省掉的")
+
+	rig.conn1.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{SessionID: rigSessionID, Seq: 2})
+
+	last, ok := rig.cursor.lastSaved()
+	require.True(t, ok, "轮末必须把攒下的游标落库")
+	assert.Equal(t, int64(2), last.Seq)
+	assert.Equal(t, rigFingerprint, last.Fingerprint)
+}
+
 // ── R12: 实例标识不匹配 → 游标失效 ──────────────────────────────────────────
 
 // Given 会话记录的 daemon 实例标识与重连上的这台不一致,When 重连,Then 不发起
@@ -493,6 +619,36 @@ func TestReconnect_DaemonIdentityMismatch_InvalidatesCursor(t *testing.T) {
 	assert.ErrorIs(t, rig.result.StopErr, ErrDaemonDisconnected)
 	assert.Empty(t, conn2.methodCalls(wire.MethodSessionPull), "游标失效时不得增量拉取")
 	assert.Equal(t, ConnStateLost, rig.rt.ConnState(rigSessionID))
+}
+
+// Given 重连时游标端口读失败(库正忙、事务冲突之类),When 补齐,Then 不把它当成
+// 「游标失效」收尾会话,而是按退避表再试一次 —— 读不出来不等于对不上。
+//
+// R12 说的失效只有一种:daemon 实例标识不匹配。把一次瞬时读错误也算进去,等于让一次
+// sqlite busy 就杀掉一条远端还在跑的会话,正是 R4 要消灭的行为。
+func TestReconnect_CursorLoadError_RetriesInsteadOfEndingSession(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	var loads int32
+	rig.cursor.setLoad(func(int64, string) (int64, bool, error) {
+		if atomic.AddInt32(&loads, 1) == 1 {
+			return 0, false, assertErr("database is locked")
+		}
+		return 3, true, nil
+	})
+	conn2 := catchUpConn(5, nil, wire.SessionPendingWaitersResult{})
+	conn3 := catchUpConn(5, []wire.JournaledNotification{
+		journaledEvent(4, "recovered"),
+		journaledDone(5, "sonnet"),
+	}, wire.SessionPendingWaitersResult{})
+	rig.queue(conn2, rigFingerprint, nil)
+	rig.queue(conn3, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	texts := drainTexts(t, rig.events, 3*time.Second)
+	assert.Equal(t, []string{"recovered"}, texts, "读游标失败只该让这一次补齐重来")
+	assert.Empty(t, conn2.methodCalls(wire.MethodSessionPull), "游标没读出来之前不得拉取")
+	assert.Nil(t, rig.result.StopErr, "瞬时读错误不得把会话按已中断收尾")
 }
 
 // ── R18: 老 daemon 回落 ─────────────────────────────────────────────────────

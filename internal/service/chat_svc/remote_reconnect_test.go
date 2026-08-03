@@ -11,6 +11,9 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
+	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
+	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 )
 
@@ -91,6 +94,48 @@ func TestReconnectRemote_SwapsLeaseAndKeepsCacheEntry(t *testing.T) {
 	svc.remoteMu.Unlock()
 	assert.Same(t, entry, still, "重连后 cache entry 必须还在")
 	assert.Same(t, lease2, swapped, "entry 必须持有新 lease")
+}
+
+// Given 某设备的 *remote.Runtime 已在 cache 里(第一条会话建的),When 第二条会话
+// 借用同一台设备,Then 它的执行 daemon 与实例标识**同样**要落库。
+//
+// 游标的读写守卫是 (会话, 实例标识) 这一对:第二条会话不写,它的 LoadCursor 就永远
+// 判失效 —— 断连时被当成「游标失效」直接注入 ErrDaemonDisconnected(R4/R12 双失),
+// 而且下一轮换了 *remote.Runtime 后游标从 0 起,第一条实时帧判跳号 → 从 0 整段补齐
+// → 把这条会话的全部历史通知重放进当前这一轮,违反硬不变量的「无重复」。
+func TestBorrowRemoteRuntime_CacheHit_StillRecordsExecDaemon(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	lease.EXPECT().Client().Return(&noopDaemonClient{}).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease, nil).Times(1)
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().Get(gomock.Any(), int64(7)).
+		Return(&remote_device_svc.DeviceView{ID: 7, DaemonFingerprint: "sha256:beef"}, nil).AnyTimes()
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
+	prevRepo := chat_repo.Session()
+	chat_repo.RegisterSession(sessRepo)
+	t.Cleanup(func() { chat_repo.RegisterSession(prevRepo) })
+	sessRepo.EXPECT().UpdateExecDaemon(gomock.Any(), int64(100), int64(7), "sha256:beef").Return(nil)
+	sessRepo.EXPECT().UpdateExecDaemon(gomock.Any(), int64(101), int64(7), "sha256:beef").Return(nil)
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+
+	be := &agent_backend_entity.AgentBackend{DeviceID: "7"}
+	first, err := svc.borrowRemoteRuntime(context.Background(), be, 100)
+	require.NoError(t, err)
+	second, err := svc.borrowRemoteRuntime(context.Background(), be, 101)
+	require.NoError(t, err)
+	assert.Same(t, first, second, "同一台设备共享同一个 runtime —— 这正是走 cache 命中的那条路")
 }
 
 // Given 一条远端会话的连接态发生变化,When runtime 播报,Then chat_svc 在会话级

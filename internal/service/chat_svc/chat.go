@@ -3596,6 +3596,9 @@ func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_ent
 	if entry, ok := s.remoteCache[deviceID]; ok {
 		entry.sessions[sessionID] = struct{}{}
 		s.remoteMu.Unlock()
+		// runtime 是 device 级共享的,所以同一台设备上的第二条会话走的正是这条路 ——
+		// 它自己的执行位置同样要落库,漏写它就永远没有可用游标(见下方冷路径的注释)。
+		s.recordExecDaemon(ctx, sessionID, deviceID, s.daemonFingerprint(ctx, deviceID))
 		return entry.runtime, nil
 	}
 	s.remoteMu.Unlock()
