@@ -7,11 +7,17 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
 
+	dbpkg "github.com/cago-frame/cago/database/db"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
+	daemonmigrations "github.com/agentre-ai/agentre/internal/daemon/migrations"
 	"github.com/agentre-ai/agentre/internal/daemon/notifier"
 	"github.com/agentre-ai/agentre/internal/daemon/pairing"
 	"github.com/agentre-ai/agentre/internal/daemon/remotefs"
@@ -24,6 +30,11 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/pty"
 	"github.com/agentre-ai/agentre/internal/pkg/pty/local"
 )
+
+// dbFileName 是 agentred 自己的 SQLite 库文件名,位于 Options.DataDir(=
+// paths.AgentredDataDir())根目录。与桌面端的 agentre.db 各自独立、互不引用
+// (见 internal/daemon/migrations 包注释)。
+const dbFileName = "agentred.db"
 
 // Options configures the Daemon at construction time.
 type Options struct {
@@ -49,6 +60,14 @@ type Daemon struct {
 	ratelim  *pairing.RateLimiter
 	registry *rpc.Registry
 	auth     *rpc.AuthHandlers
+
+	// db is agentred's own SQLite handle (session durability: daemon_sessions
+	// + daemon_notification_logs — see internal/daemon/migrations). Deliberately
+	// a per-instance field, never a package-level global set via db.SetDefault:
+	// integration_test.go constructs several Daemon values in one test process,
+	// and a global would make them silently share one database. Callers reach
+	// it through ctx (db.WithContextDB at the Run ctx boundary), never directly.
+	db *gorm.DB
 
 	mu  sync.RWMutex
 	lan *rpc.LANServer
@@ -88,6 +107,13 @@ func New(opts Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
+	gormDB, err := openDB(opts.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+	if err := daemonmigrations.RunMigrations(gormDB); err != nil {
+		return nil, fmt.Errorf("run migrations: %w", err)
+	}
 	reg := rpc.NewRegistry()
 
 	pmOpts := pairing.ManagerOpts{TTL: 5 * time.Minute}
@@ -106,7 +132,7 @@ func New(opts Options) (*Daemon, error) {
 	auth := rpc.NewAuthHandlers(st, pm, rl)
 
 	d := &Daemon{
-		opts: opts, state: st,
+		opts: opts, state: st, db: gormDB,
 		sessions: sessions.NewRegistry(), pairing: pm, ratelim: rl,
 		registry: reg, auth: auth,
 	}
@@ -229,6 +255,12 @@ func (d *Daemon) registerMethods() {
 // Run starts the HTTP gateway, IPC unix socket, and LAN WebSocket server,
 // blocking until ctx is canceled or a fatal error occurs.
 func (d *Daemon) Run(ctx context.Context) error {
+	// Inject this Daemon's own db handle at the ctx boundary (not db.SetDefault
+	// — see the db field's doc comment). Everything downstream derives its ctx
+	// from this one (gateway requests, IPC, per-connection RPC handlers), so a
+	// repository calling db.Ctx(ctx) anywhere below this point resolves to this
+	// instance's database, never another Daemon's.
+	ctx = dbpkg.WithContextDB(ctx, d.db)
 	if err := d.gateway.Start(ctx); err != nil {
 		return err
 	}
@@ -373,6 +405,20 @@ func jsonUnmarshal(b json.RawMessage, v any) error {
 		return nil
 	}
 	return json.Unmarshal(b, v)
+}
+
+// openDB opens agentred's own SQLite handle at <dataDir>/agentred.db (state.Load
+// already created dataDir with 0700 before this is called). Deliberately a
+// plain gorm.Open — not a cago db.Database() component — because cago's
+// database/db package only exports a package-level Default()/SetDefault();
+// there is no way to obtain a handle from it without writing that global,
+// which this package must not do (see the db field's doc comment).
+func openDB(dataDir string) (*gorm.DB, error) {
+	dbPath := filepath.Join(dataDir, dbFileName)
+	// busy_timeout mirrors internal/bootstrap/cago.go's sqliteDSN: concurrent
+	// writers otherwise hit SQLITE_BUSY near-instantly instead of waiting.
+	dsn := dbPath + "?_pragma=busy_timeout(5000)"
+	return gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 }
 
 type remoteAddrKey struct{}

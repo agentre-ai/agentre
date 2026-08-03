@@ -1,0 +1,107 @@
+// Package notification_repo 提供 agentred 侧 daemon_notification_logs 表的持久化
+// 访问——「日志的一行 = 一条本该发出的通知」:method/payload 是原样的
+// JSON-RPC (method, params),补齐就是按 seq 升序把它们重新投递给客户端。
+//
+// 会话身份是 (peerFingerprint, peerSessionID) 的组合,不是对端会话 id 单独——会话 id
+// 是各客户端本地自增的,不同客户端必然重号(R16)。本包不含会话元数据(agent id / cwd /
+// backend 类型 / 生命周期状态)的读写,那是后续任务的会话生命周期仓储的职责;本任务只
+// 覆盖「storage 层」本身:给定 (peerFingerprint, peerSessionID),一条通知能以下一个
+// seq 落库、并按游标按序读回。
+package notification_repo
+
+import (
+	"context"
+	"time"
+
+	"github.com/cago-frame/cago/database/db"
+	"gorm.io/gorm/clause"
+)
+
+//go:generate mockgen -source notification.go -destination mock_notification_repo/mock_notification.go
+
+// NotificationLog 对应 daemon_notification_logs 的一行。复合主键
+// (PeerFingerprint, PeerSessionID, Seq) 见规格「持久化数据变化 / agentred 侧」。
+type NotificationLog struct {
+	PeerFingerprint string `gorm:"column:peer_fingerprint;primaryKey"`
+	PeerSessionID   string `gorm:"column:peer_session_id;primaryKey"`
+	Seq             int64  `gorm:"column:seq;primaryKey"`
+	Method          string `gorm:"column:method"`
+	Payload         string `gorm:"column:payload"`
+	CreatedAt       int64  `gorm:"column:created_at"`
+}
+
+func (*NotificationLog) TableName() string { return "daemon_notification_logs" }
+
+// NotificationRepo 持久化并按序回放某个 (peerFingerprint, peerSessionID) 的通知日志。
+type NotificationRepo interface {
+	// NextSeq 返回 (peerFingerprint, peerSessionID) 下一条通知应使用的 seq:
+	// 已记录的最大 seq + 1(该会话还没有任何通知时为 1)。本身不落库——调用方随后
+	// 用这个值构造 NotificationLog 并调 Create。
+	NextSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
+
+	// Create 落库一条通知。对同一个 (PeerFingerprint, PeerSessionID, Seq) 主键重复
+	// 调用是幂等的:第二次调用成功返回而不报错、也不产生第二行,让「写入是否成功未
+	// 确认」时的调用方重试总是安全的。
+	Create(ctx context.Context, n *NotificationLog) error
+
+	// ListSince 返回 (peerFingerprint, peerSessionID) 下 seq > cursor 的通知,按 seq
+	// 升序,最多 limit 条,并告知这一页之后是否还有更多。
+	ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) (rows []*NotificationLog, hasMore bool, err error)
+}
+
+var defaultNotification NotificationRepo
+
+// Notification 取默认仓储单例。
+func Notification() NotificationRepo { return defaultNotification }
+
+// RegisterNotification 注入仓储实现,由 daemon 启动流程调用一次。
+func RegisterNotification(impl NotificationRepo) { defaultNotification = impl }
+
+type notificationRepo struct{}
+
+// NewNotification 构造默认 GORM 实现。
+func NewNotification() NotificationRepo { return &notificationRepo{} }
+
+func (r *notificationRepo) NextSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
+	var next int64
+	err := db.Ctx(ctx).
+		Table("daemon_notification_logs").
+		Select("COALESCE(MAX(seq), 0) + 1").
+		Where("peer_fingerprint = ? AND peer_session_id = ?", peerFingerprint, peerSessionID).
+		Row().Scan(&next)
+	if err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+func (r *notificationRepo) Create(ctx context.Context, n *NotificationLog) error {
+	if n.CreatedAt == 0 {
+		n.CreatedAt = time.Now().UnixMilli()
+	}
+	// DoNothing on a primary-key conflict makes a retried Create for the same
+	// (peer, session, seq) a safe no-op instead of surfacing a raw unique
+	// constraint error to the caller.
+	return db.Ctx(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(n).Error
+}
+
+func (r *notificationRepo) ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) ([]*NotificationLog, bool, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var rows []*NotificationLog
+	// Fetch one extra row to learn hasMore without a second COUNT query.
+	err := db.Ctx(ctx).
+		Where("peer_fingerprint = ? AND peer_session_id = ? AND seq > ?", peerFingerprint, peerSessionID, cursor).
+		Order("seq ASC").
+		Limit(limit + 1).
+		Find(&rows).Error
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	return rows, hasMore, nil
+}

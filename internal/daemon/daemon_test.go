@@ -7,12 +7,87 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	dbpkg "github.com/cago-frame/cago/database/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
 )
+
+// TestDaemon_OpensOwnDatabaseAndRunsMigrations 覆盖任务目标的第一句:agentred
+// 启动时在 DataDir(=AgentredDataDir())下开库并跑自己的迁移。
+func TestDaemon_OpensOwnDatabaseAndRunsMigrations(t *testing.T) {
+	dir := t.TempDir()
+	d, err := New(Options{DataDir: dir})
+	require.NoError(t, err)
+
+	dbPath := filepath.Join(dir, "agentred.db")
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		t.Fatalf("sqlite file %s missing: %v", dbPath, statErr)
+	}
+	require.NotNil(t, d.db)
+	assert.True(t, d.db.Migrator().HasTable("daemon_sessions"))
+	assert.True(t, d.db.Migrator().HasTable("daemon_notification_logs"))
+}
+
+// TestDaemon_DatabaseHandlesAreIsolatedPerInstance 回归:两个不同 DataDir 的
+// Daemon 各自开的是物理上独立的 SQLite 文件——用两个 Daemon 各自写一条通知,确认
+// 经由各自 db.WithContextDB(ctx, d.db) 注入的 ctx 互不可见对方的数据(会捕捉「实际
+// 打开的库路径没跟着 DataDir 走」这类 bug,例如两者都落到同一个硬编码/共享路径)。
+func TestDaemon_DatabaseHandlesAreIsolatedPerInstance(t *testing.T) {
+	d1, err := New(Options{DataDir: t.TempDir()})
+	require.NoError(t, err)
+	d2, err := New(Options{DataDir: t.TempDir()})
+	require.NoError(t, err)
+
+	require.NotNil(t, d1.db)
+	require.NotNil(t, d2.db)
+	assert.NotSame(t, d1.db, d2.db, "each Daemon must own its own *gorm.DB handle")
+
+	ctx1 := dbpkg.WithContextDB(context.Background(), d1.db)
+	require.NoError(t, notification_repo.NewNotification().Create(ctx1, &notification_repo.NotificationLog{
+		PeerFingerprint: "peer", PeerSessionID: "s1", Seq: 1, Method: "m", Payload: "{}",
+	}))
+
+	ctx2 := dbpkg.WithContextDB(context.Background(), d2.db)
+	rows, _, err := notification_repo.NewNotification().ListSince(ctx2, "peer", "s1", 0, 10)
+	require.NoError(t, err)
+	assert.Empty(t, rows, "writing through d1's handle must not be visible through d2's handle")
+}
+
+// TestDaemon_NewDoesNotLeakIntoGlobalDefaultDB 回归:New 绝不能调 db.SetDefault
+// ——那是 cago database/db 包级全局,会让 internal/daemon/integration_test.go
+// 同进程构造的多个 Daemon 静默共享同一个库(参见 db 字段注释)。写入经 d 自己的
+// db.WithContextDB(ctx, d.db) 落库,再用完全没有注入过 db 句柄的裸 ctx
+// (context.Background())去读同一个键:SetDefault 会让裸 ctx 落回全局、读到这行;
+// 正确实现下 db.Ctx 无全局可回落,该调用必须不返回这行数据(cago db.Ctx 在
+// defaultDB 未设置时对裸 ctx 的调用会 panic,recover 视为该断言的通过路径)。
+func TestDaemon_NewDoesNotLeakIntoGlobalDefaultDB(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir()})
+	require.NoError(t, err)
+
+	ctx := dbpkg.WithContextDB(context.Background(), d.db)
+	require.NoError(t, notification_repo.NewNotification().Create(ctx, &notification_repo.NotificationLog{
+		PeerFingerprint: "leak-guard-peer", PeerSessionID: "leak-guard-session", Seq: 1, Method: "m", Payload: "{}",
+	}))
+
+	func() {
+		defer func() {
+			// A panic here is the expected outcome when db.Ctx has no global
+			// default to fall back to (defaultDB was never set) — that proves
+			// New did not call db.SetDefault.
+			_ = recover()
+		}()
+		rows, _, err := notification_repo.NewNotification().ListSince(context.Background(), "leak-guard-peer", "leak-guard-session", 0, 10)
+		if err == nil {
+			assert.Empty(t, rows, "a bare ctx (never wrapped with db.WithContextDB) must not resolve to this Daemon's data — that would mean New() called db.SetDefault")
+		}
+	}()
+}
 
 func TestDaemon_BootShutdown(t *testing.T) {
 	dir := t.TempDir()
