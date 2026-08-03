@@ -23,7 +23,9 @@
 
 ### 基线事实
 
-全量命令为 `make test-backend` 与 `cd frontend && pnpm test --run`。当前 checkout 位于分支 `2026-08-01-documentation-maintenance`，工作树含 20 余个与本规格无关的文档改动，在此处采集的基线不描述实施本规格的那棵树。**基线在本轮 worktree 建立后采集**；若基线结果与本规格冲突，回到规格修订后再实施。
+全量命令为 `make test-backend` 与 `cd frontend && pnpm test --run`。本轮在分支 `feat/2026-08-01-agentred-session-durability` 上实施（不另开 worktree，用户选定）。基线在该分支上采集，两条命令**分别单独运行**均为绿：`make test-backend` 27 个包 ok、0 FAIL；前端 197 个测试文件 / 1690 条用例全过。
+
+两条命令并发运行会因 CPU 争抢让 4 条前端用例撞上 5 秒超时（`agent-backends.test.tsx` 等），单独重跑即全绿——本轮验证一律串行跑，不并发。
 
 ## 参与者与用户故事
 
