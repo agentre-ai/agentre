@@ -177,16 +177,22 @@ func (h *SessionCatchupHandlers) findOwnSession(ctx context.Context, sessionID i
 // waiter(R11)。它永远不落库 —— 落库的等待标志会活过 daemon 重启,变成一个没人能回答
 // 的问题(那一轮的子进程已经不在了)。
 func (h *SessionCatchupHandlers) waitingForInput(ctx context.Context, row SessionRecord, sessionID int64) bool {
-	if row.LifecycleState == wire.SessionLifecycleInterrupted {
-		return false
-	}
 	snap := h.pendingWaiters(ctx, row, sessionID)
 	return len(snap.ToolPermissions) > 0 || len(snap.AskUserQuestions) > 0
 }
 
 // pendingWaiters 问该会话的 backend 要一份 waiter 快照。backend 没注册、或没实现审批
 // 协议时回零值 —— 未实现者返回空列表而非报错是 R7 明写的。
+//
+// 中断态会话一律不问 backend:那一轮的子进程随上一个 daemon 进程消亡了(R10),它不可能
+// 还有活的 waiter。而 backend 的 waiter 只按**原始会话 id** 定位、不带对端,会话 id 又是
+// 各客户端本地自增的、必然重号 —— 所以此刻挂在同一个 id 下的 waiter 只可能属于别的对端
+// 那条正在跑的同号会话。交出去等于泄漏别人的审批载荷,还让对方能照着 requestID 替人回答
+// (R16:查询一律限定在调用方自己的对端范围内)。
 func (h *SessionCatchupHandlers) pendingWaiters(ctx context.Context, row SessionRecord, sessionID int64) agentruntime.WaiterSnapshot {
+	if row.LifecycleState == wire.SessionLifecycleInterrupted {
+		return agentruntime.WaiterSnapshot{}
+	}
 	rt := h.deps.RuntimeFor(agent_backend_entity.BackendType(row.BackendType))
 	if rt == nil {
 		return agentruntime.WaiterSnapshot{}

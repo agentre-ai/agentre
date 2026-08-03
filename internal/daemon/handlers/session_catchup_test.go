@@ -248,6 +248,34 @@ func TestSessionCatchup_PendingWaiters_UnknownSession_EmptyNoError(t *testing.T)
 	assert.Empty(t, got.AskUserQuestions)
 }
 
+// TestSessionCatchup_PendingWaiters_InterruptedSession_NeverConsultsTheBackend
+// 覆盖 R10 与 R16 交叉的那条边:中断态会话的那一轮子进程随上一个 daemon 进程消亡了,
+// 所以它**不可能**有活的 waiter —— 此刻 backend 内存里挂在同一个原始会话 id 下的
+// waiter 必然属于**别的对端**那条正在跑的同号会话(会话 id 是各客户端本地自增的,
+// 必然重号,而 backend 的 waiter 只按会话 id 定位、不带对端)。把它交出去等于把别人
+// 的审批载荷(工具名 + 原样 input)泄漏给一个只要配过对就能问的设备,而且对方还能照着
+// requestID 替人回答。
+//
+// 清单侧的 waitingForInput 已经这么做了(中断态直接报 false);本方法当时漏了同一条
+// 守卫,于是同一个 handler 家族对「这条中断态会话在等输入吗」给出两个答案。
+func TestSessionCatchup_PendingWaiters_InterruptedSession_NeverConsultsTheBackend(t *testing.T) {
+	blocked := &fullRT{pendingWaiters: agentruntime.WaiterSnapshot{
+		ToolPermissions: []agentruntime.PendingToolPermission{
+			{RequestID: "p-1", ToolName: "Bash", Input: json.RawMessage(`{"command":"rm -rf /"}`)},
+		},
+		AskUserQuestions: []agentruntime.PendingAskUserQuestion{{RequestID: "a-1"}},
+	}}
+	ctx, sessions, _, h := setupCatchupTest(t, blocked)
+	sessions.EXPECT().Find(gomock.Any(), "", "5").Return(&handlers.SessionRecord{
+		PeerSessionID: "5", BackendType: "claudecode", LifecycleState: wire.SessionLifecycleInterrupted,
+	}, nil)
+
+	got, err := h.PendingWaiters(ctx, wire.SessionPendingWaitersParams{SessionID: 5})
+	require.NoError(t, err)
+	assert.Equal(t, wire.SessionPendingWaitersResult{}, got,
+		"中断态会话没有自己的活 waiter,查到的必然是别人的")
+}
+
 // TestSessionCatchup_PendingWaiters_BackendWithoutApprovalProtocol_EmptyNoError
 // 覆盖 R7 的「未实现者返回空列表而非报错」。
 func TestSessionCatchup_PendingWaiters_BackendWithoutApprovalProtocol_EmptyNoError(t *testing.T) {
