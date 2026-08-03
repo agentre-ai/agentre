@@ -1,4 +1,10 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { useRef, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -18,10 +24,12 @@ function Harness({
   onSubmit,
   backendType,
   onSlashSelect,
+  mentionSources = sources,
 }: {
   onSubmit: (t: string) => void;
   backendType?: string;
   onSlashSelect?: ComponentProps<typeof AIChatInput>["onSlashSelect"];
+  mentionSources?: MentionSources;
 }) {
   const editorRef = useRef<Editor | null>(null);
   const handleRef = useRef<AIChatInputHandle>(null);
@@ -43,6 +51,27 @@ function Harness({
       </button>
       <button
         type="button"
+        data-testid="ins-a"
+        onClick={() => editorRef.current?.commands.insertContent("a")}
+      >
+        a
+      </button>
+      <button
+        type="button"
+        data-testid="same-query-update"
+        onClick={() => {
+          const current = editorRef.current;
+          if (current) {
+            current.view.dispatch(
+              current.state.tr.setSelection(current.state.selection),
+            );
+          }
+        }}
+      >
+        same query update
+      </button>
+      <button
+        type="button"
         data-testid="ins-slash"
         onClick={() => editorRef.current?.commands.insertContent("/")}
       >
@@ -59,7 +88,7 @@ function Harness({
         ref={handleRef}
         onSubmit={onSubmit}
         editorRef={editorRef}
-        mentionSources={sources}
+        mentionSources={mentionSources}
         backendType={backendType}
         onSlashSelect={onSlashSelect}
         autoFocus
@@ -101,6 +130,47 @@ describe("AIChatInput @ mention integration", () => {
     act(() => screen.getByTestId("ins-rev").click());
     await waitFor(() => expect(screen.queryByText("Web")).toBeNull());
     expect(screen.getByText("Reviewer")).toBeInTheDocument();
+  });
+
+  it("Given ranked mentions, when the normalized query changes, then the best item is selected without same-query updates stealing Arrow navigation", async () => {
+    const rankedSources: MentionSources = {
+      agents: [
+        { kind: "agent", refId: 21, label: "Beta Agent" },
+        { kind: "agent", refId: 22, label: "Alpha Agent" },
+        { kind: "agent", refId: 23, label: "Gamma Agent" },
+      ],
+      projects: [],
+    };
+    render(<Harness onSubmit={vi.fn()} mentionSources={rankedSources} />);
+
+    act(() => screen.getByTestId("ins").click());
+    await waitFor(() => screen.getByText("Beta Agent"));
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "ArrowDown" });
+    expect(screen.getByText("Alpha Agent").closest("button")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    act(() => screen.getByTestId("ins-a").click());
+    await waitFor(() =>
+      expect(screen.getByText("Alpha Agent").closest("button")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "ArrowDown" });
+    expect(screen.getByText("Beta Agent").closest("button")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    act(() => screen.getByTestId("same-query-update").click());
+    await waitFor(() =>
+      expect(screen.getByText("Beta Agent").closest("button")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
   });
 
   it("picking an agent inserts a chip that serializes to XML on submit", async () => {
