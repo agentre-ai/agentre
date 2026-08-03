@@ -1,6 +1,7 @@
 package notification_repo_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -11,36 +12,51 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
 )
 
-// TestNotificationRepo_NextSeqAndCreate_MonotonicNoGaps 覆盖测试接缝表要求的
-// 「seq 单调无洞」:对同一 (peerFingerprint, peerSessionID),连续
-// NextSeq→Create 配对必须产出连续递增、无跳号的 seq 序列。
-func TestNotificationRepo_NextSeqAndCreate_MonotonicNoGaps(t *testing.T) {
+// appendSQLPattern 是 Append 必须发出的那条 SQL:分配 seq 与写入在同一条语句里
+// 完成。分成「先 SELECT MAX(seq)+1 再 INSERT」两条语句的实现会漏掉这个模式而失败
+// ——那种实现下两个并发写者会读到同一个 MAX(seq)、其中一条通知被静默丢弃
+// (见 daemon_test.go 的并发用例)。
+const appendSQLPattern = "INSERT INTO daemon_notification_logs " +
+	"\\(peer_fingerprint, peer_session_id, seq, method, payload, created_at\\) " +
+	"SELECT \\?, \\?, COALESCE\\(MAX\\(seq\\), 0\\) \\+ 1, \\?, \\?, \\? " +
+	"FROM daemon_notification_logs WHERE peer_fingerprint = \\? AND peer_session_id = \\? " +
+	"RETURNING seq"
+
+// TestNotificationRepo_Append_AllocatesNextSeqInOneStatement 覆盖任务目标的
+// 「一条通知能以下一个 seq 落库」:Append 只发一条语句,库分配的 seq 经 RETURNING
+// 回填到入参上供调用方构造推送帧。
+func TestNotificationRepo_Append_AllocatesNextSeqInOneStatement(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := notification_repo.NewNotification()
 
-	// 第一条:日志表还没有该会话的行,MAX(seq) 为 NULL,COALESCE 落到 0+1=1。
-	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(seq\\), 0\\) \\+ 1 FROM `daemon_notification_logs` WHERE peer_fingerprint = \\? AND peer_session_id = \\?").
-		WithArgs("peerA", "s1").
-		WillReturnRows(sqlmock.NewRows([]string{"next"}).AddRow(1))
-	seq1, err := repo.NextSeq(ctx, "peerA", "s1")
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), seq1)
+	mock.ExpectQuery(appendSQLPattern).
+		WithArgs("peerA", "s1", "runtime.event", "{}", sqlmock.AnyArg(), "peerA", "s1").
+		WillReturnRows(sqlmock.NewRows([]string{"seq"}).AddRow(7))
 
-	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO `daemon_notification_logs`.*ON DUPLICATE KEY UPDATE").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-	require.NoError(t, repo.Create(ctx, &notification_repo.NotificationLog{
-		PeerFingerprint: "peerA", PeerSessionID: "s1", Seq: seq1, Method: "runtime.event", Payload: "{}",
-	}))
+	n := &notification_repo.NotificationLog{
+		PeerFingerprint: "peerA", PeerSessionID: "s1", Method: "runtime.event", Payload: "{}",
+	}
+	require.NoError(t, repo.Append(ctx, n))
+	assert.Equal(t, int64(7), n.Seq, "库分配的 seq 必须回填到入参")
+	assert.NotZero(t, n.CreatedAt, "落库时间必须被填上")
 
-	// 第二条:上一条已落库,MAX(seq)=1,下一个是 2 —— 不是 3、不是仍然 1(无洞)。
-	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(seq\\), 0\\) \\+ 1 FROM `daemon_notification_logs` WHERE peer_fingerprint = \\? AND peer_session_id = \\?").
-		WithArgs("peerA", "s1").
-		WillReturnRows(sqlmock.NewRows([]string{"next"}).AddRow(2))
-	seq2, err := repo.NextSeq(ctx, "peerA", "s1")
-	require.NoError(t, err)
-	assert.Equal(t, int64(2), seq2, "second seq must immediately follow the first, no gap")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestNotificationRepo_Append_PropagatesError 覆盖错误路径:落库失败必须冒泡给
+// 调用方(R3 靠它判断「不推进 seq、不推送」),且失败时不得回填 Seq。
+func TestNotificationRepo_Append_PropagatesError(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := notification_repo.NewNotification()
+
+	mock.ExpectQuery(appendSQLPattern).WillReturnError(errors.New("disk I/O error"))
+
+	n := &notification_repo.NotificationLog{
+		PeerFingerprint: "peerA", PeerSessionID: "s1", Method: "runtime.event", Payload: "{}",
+	}
+	err := repo.Append(ctx, n)
+	require.Error(t, err)
+	assert.Zero(t, n.Seq, "落库失败不得回填 seq")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/notifier"
 	"github.com/agentre-ai/agentre/internal/daemon/pairing"
 	"github.com/agentre-ai/agentre/internal/daemon/remotefs"
+	"github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/daemon/sessions"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
@@ -112,8 +113,14 @@ func New(opts Options) (*Daemon, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 	if err := daemonmigrations.RunMigrations(gormDB); err != nil {
+		closeDB(gormDB)
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
+	// 注入仓储默认实现,让 notification_repo.Notification() 拿到 GORM 版。New 是
+	// agentred 的组装根,位置对应桌面端 internal/bootstrap/cago.go 里 RunMigrations
+	// 之后的那批 RegisterXxx。实现本身无状态(句柄经 ctx 传),同进程多个 Daemon
+	// 注册同一个实现互不干扰。
+	notification_repo.RegisterNotification(notification_repo.NewNotification())
 	reg := rpc.NewRegistry()
 
 	pmOpts := pairing.ManagerOpts{TTL: 5 * time.Minute}
@@ -419,6 +426,17 @@ func openDB(dataDir string) (*gorm.DB, error) {
 	// writers otherwise hit SQLITE_BUSY near-instantly instead of waiting.
 	dsn := dbPath + "?_pragma=busy_timeout(5000)"
 	return gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+}
+
+// closeDB 关闭 openDB 拿到的句柄。只在 New 的失败路径上用:Daemon 构造失败时若不关,
+// 这个 sql.DB 与它的文件句柄会一直挂着(进程内重试构造会每次泄一份)。构造成功后的
+// 句柄跟随进程存活,没有单独的关闭时机。
+func closeDB(gormDB *gorm.DB) {
+	sqlDB, err := gormDB.DB()
+	if err != nil {
+		return
+	}
+	_ = sqlDB.Close()
 }
 
 type remoteAddrKey struct{}

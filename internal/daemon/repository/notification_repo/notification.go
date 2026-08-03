@@ -34,10 +34,11 @@ func (*NotificationLog) TableName() string { return "daemon_notification_logs" }
 
 // NotificationRepo 持久化并按序回放某个 (peerFingerprint, peerSessionID) 的通知日志。
 type NotificationRepo interface {
-	// NextSeq 返回 (peerFingerprint, peerSessionID) 下一条通知应使用的 seq:
-	// 已记录的最大 seq + 1(该会话还没有任何通知时为 1)。本身不落库——调用方随后
-	// 用这个值构造 NotificationLog 并调 Create。
-	NextSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
+	// Append 以该会话的下一个 seq(已记录的最大 seq + 1,该会话还没有通知时为 1)
+	// 落库一条通知,并把库分配到的 seq 回填进 n.Seq(入参里的 Seq 被忽略)。分配与
+	// 写入是同一条语句,因此同一会话的并发写者不会拿到同一个 seq:seq 在单个会话内
+	// 单调无洞,每条通知都真的落了库。
+	Append(ctx context.Context, n *NotificationLog) error
 
 	// Create 落库一条通知。对同一个 (PeerFingerprint, PeerSessionID, Seq) 主键重复
 	// 调用是幂等的:第二次调用成功返回而不报错、也不产生第二行,让「写入是否成功未
@@ -62,17 +63,32 @@ type notificationRepo struct{}
 // NewNotification 构造默认 GORM 实现。
 func NewNotification() NotificationRepo { return &notificationRepo{} }
 
-func (r *notificationRepo) NextSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
-	var next int64
-	err := db.Ctx(ctx).
-		Table("daemon_notification_logs").
-		Select("COALESCE(MAX(seq), 0) + 1").
-		Where("peer_fingerprint = ? AND peer_session_id = ?", peerFingerprint, peerSessionID).
-		Row().Scan(&next)
-	if err != nil {
-		return 0, err
+// appendSQL 在一条语句里完成「取该会话的下一个 seq」与「写入」,由 RETURNING 交回
+// 实际分配到的 seq。写成一条语句是必须的,不是优化:SQLite 对单条写语句整条持写锁,
+// 所以并发写者会被串行化,各自读到的 MAX(seq) 必然包含前一个写者刚写的行。拆成
+// 「先 SELECT MAX(seq)+1、再 INSERT」两步则两个写者会拿到同一个 seq,后写的那条被
+// Create 的幂等冲突处理静默吞掉——通知永久丢失,而调用方以为落库成功。同一会话上
+// 并发的通知生产者是现实存在的(handlers/runtime.go 的 fanout 与
+// startAutonomousFanout 是同一 sid 上两个独立 goroutine)。
+const appendSQL = "INSERT INTO daemon_notification_logs " +
+	"(peer_fingerprint, peer_session_id, seq, method, payload, created_at) " +
+	"SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? " +
+	"FROM daemon_notification_logs WHERE peer_fingerprint = ? AND peer_session_id = ? " +
+	"RETURNING seq"
+
+func (r *notificationRepo) Append(ctx context.Context, n *NotificationLog) error {
+	if n.CreatedAt == 0 {
+		n.CreatedAt = time.Now().UnixMilli()
 	}
-	return next, nil
+	var seq int64
+	if err := db.Ctx(ctx).Raw(appendSQL,
+		n.PeerFingerprint, n.PeerSessionID, n.Method, n.Payload, n.CreatedAt,
+		n.PeerFingerprint, n.PeerSessionID,
+	).Row().Scan(&seq); err != nil {
+		return err
+	}
+	n.Seq = seq
+	return nil
 }
 
 func (r *notificationRepo) Create(ctx context.Context, n *NotificationLog) error {

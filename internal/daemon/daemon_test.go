@@ -3,11 +3,13 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +34,104 @@ func TestDaemon_OpensOwnDatabaseAndRunsMigrations(t *testing.T) {
 	require.NotNil(t, d.db)
 	assert.True(t, d.db.Migrator().HasTable("daemon_sessions"))
 	assert.True(t, d.db.Migrator().HasTable("daemon_notification_logs"))
+}
+
+// TestDaemon_NewRegistersNotificationRepo 回归:New 是 agentred 的组装根,必须像
+// internal/bootstrap/cago.go 在 RunMigrations 之后注入仓储默认实现那样,把
+// notification_repo 的 GORM 实现注册进去。不注册的话 notification_repo.Notification()
+// 永远是 nil,后续任务的推送路径一调就 nil panic。
+func TestDaemon_NewRegistersNotificationRepo(t *testing.T) {
+	prev := notification_repo.Notification()
+	t.Cleanup(func() { notification_repo.RegisterNotification(prev) })
+	notification_repo.RegisterNotification(nil)
+
+	_, err := New(Options{DataDir: t.TempDir()})
+	require.NoError(t, err)
+
+	assert.NotNil(t, notification_repo.Notification(), "New must register the notification repo implementation")
+}
+
+// TestDaemon_NewFailsWhenDatabaseUnusable 错误路径:库文件存在但不是合法 SQLite 时,
+// New 必须带上下文报错返回,而不是揣着一个跑不了迁移的句柄继续启动。
+func TestDaemon_NewFailsWhenDatabaseUnusable(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agentred.db"), []byte("not a sqlite file"), 0o600))
+
+	d, err := New(Options{DataDir: dir})
+	require.Error(t, err)
+	assert.Nil(t, d)
+}
+
+// TestDaemon_NotificationJournal_ConcurrentAppendsAreLosslessAndGapFree 覆盖任务目标的
+// 「以下一个 seq 落库、seq 单调无洞」在并发写下也成立:同一会话的通知生产者不止一个
+// (handlers/runtime.go 的 fanout 与 startAutonomousFanout 是两个各自独立的 goroutine,
+// 同一 sid 上可同时推送),先读 MAX(seq) 再写入的两步实现会让两个写者拿到同一个 seq,
+// 后写的那条被幂等写静默吞掉——通知永久丢失而调用方以为落库成功。
+func TestDaemon_NotificationJournal_ConcurrentAppendsAreLosslessAndGapFree(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir()})
+	require.NoError(t, err)
+	ctx := dbpkg.WithContextDB(context.Background(), d.db)
+	repo := notification_repo.NewNotification()
+
+	const writers = 24
+	var wg sync.WaitGroup
+	errs := make([]error, writers)
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = repo.Append(ctx, &notification_repo.NotificationLog{
+				PeerFingerprint: "peerA", PeerSessionID: "s1",
+				Method:  "runtime.event",
+				Payload: fmt.Sprintf(`{"n":%d}`, i),
+			})
+		}()
+	}
+	wg.Wait()
+	for i, appendErr := range errs {
+		require.NoError(t, appendErr, "writer %d", i)
+	}
+
+	rows, hasMore, err := repo.ListSince(ctx, "peerA", "s1", 0, writers)
+	require.NoError(t, err)
+	assert.False(t, hasMore)
+	require.Len(t, rows, writers, "every appended notification must be in the log — none silently dropped")
+	seen := map[string]bool{}
+	for i, row := range rows {
+		assert.Equal(t, int64(i+1), row.Seq, "seq 必须从 1 起连续无洞、按序读回")
+		assert.False(t, seen[row.Payload], "payload %s written twice", row.Payload)
+		seen[row.Payload] = true
+	}
+
+	// R16:另一个对端持有同名会话 id 时是另一条会话,seq 空间从 1 重新开始。
+	other := &notification_repo.NotificationLog{
+		PeerFingerprint: "peerB", PeerSessionID: "s1", Method: "runtime.event", Payload: "{}",
+	}
+	require.NoError(t, repo.Append(ctx, other))
+	assert.Equal(t, int64(1), other.Seq, "another peer's same-named session must own a separate seq space")
+}
+
+// TestDaemon_NotificationJournal_DuplicateSeqWriteIsIdempotent 覆盖任务目标的
+// 「同 (会话, seq) 重复写入幂等」在真库(SQLite,生产方言)上成立:重复写不报错、
+// 也不产生第二行,且不覆盖已落库的载荷。
+func TestDaemon_NotificationJournal_DuplicateSeqWriteIsIdempotent(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir()})
+	require.NoError(t, err)
+	ctx := dbpkg.WithContextDB(context.Background(), d.db)
+	repo := notification_repo.NewNotification()
+
+	first := &notification_repo.NotificationLog{
+		PeerFingerprint: "peerA", PeerSessionID: "s1", Seq: 1, Method: "runtime.event", Payload: `{"first":true}`,
+	}
+	require.NoError(t, repo.Create(ctx, first))
+	require.NoError(t, repo.Create(ctx, &notification_repo.NotificationLog{
+		PeerFingerprint: "peerA", PeerSessionID: "s1", Seq: 1, Method: "runtime.event", Payload: `{"second":true}`,
+	}), "重复写同一 (peer, session, seq) 必须成功返回,不是唯一约束报错")
+
+	rows, _, err := repo.ListSince(ctx, "peerA", "s1", 0, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "duplicate write must not create a second row")
+	assert.Equal(t, `{"first":true}`, rows[0].Payload, "已落库的事实不被重复写覆盖")
 }
 
 // TestDaemon_DatabaseHandlesAreIsolatedPerInstance 回归:两个不同 DataDir 的

@@ -13,9 +13,8 @@ import (
 	context "context"
 	reflect "reflect"
 
-	gomock "go.uber.org/mock/gomock"
-
 	notification_repo "github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockNotificationRepo is a mock of NotificationRepo interface.
@@ -40,6 +39,20 @@ func NewMockNotificationRepo(ctrl *gomock.Controller) *MockNotificationRepo {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockNotificationRepo) EXPECT() *MockNotificationRepoMockRecorder {
 	return m.recorder
+}
+
+// Append mocks base method.
+func (m *MockNotificationRepo) Append(ctx context.Context, n *notification_repo.NotificationLog) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Append", ctx, n)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Append indicates an expected call of Append.
+func (mr *MockNotificationRepoMockRecorder) Append(ctx, n any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Append", reflect.TypeOf((*MockNotificationRepo)(nil).Append), ctx, n)
 }
 
 // Create mocks base method.
@@ -70,19 +83,4 @@ func (m *MockNotificationRepo) ListSince(ctx context.Context, peerFingerprint, p
 func (mr *MockNotificationRepoMockRecorder) ListSince(ctx, peerFingerprint, peerSessionID, cursor, limit any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListSince", reflect.TypeOf((*MockNotificationRepo)(nil).ListSince), ctx, peerFingerprint, peerSessionID, cursor, limit)
-}
-
-// NextSeq mocks base method.
-func (m *MockNotificationRepo) NextSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "NextSeq", ctx, peerFingerprint, peerSessionID)
-	ret0, _ := ret[0].(int64)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// NextSeq indicates an expected call of NextSeq.
-func (mr *MockNotificationRepoMockRecorder) NextSeq(ctx, peerFingerprint, peerSessionID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NextSeq", reflect.TypeOf((*MockNotificationRepo)(nil).NextSeq), ctx, peerFingerprint, peerSessionID)
 }
