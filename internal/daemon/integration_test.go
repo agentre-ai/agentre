@@ -442,6 +442,9 @@ type pairedTestRig struct {
 	// token 是配对拿到的 deviceToken:同一台设备再开一条连接时走 auth.connect
 	// (真机上的设备监视心跳 / 刷新探测就是这么接的),见 connectSameDevice。
 	token string
+	// stop 关掉这台 daemon(幂等,t.Cleanup 也会调一次)。daemon 重启用例要在同一个
+	// 数据目录上先停再起,所以关停必须是显式可控的。
+	stop func()
 }
 
 // rigDeviceFingerprint 是 rig 里那台「桌面端」的设备指纹。同一台桌面同时开的多条
@@ -457,6 +460,14 @@ func bootRemoteRig(t *testing.T, script []agentruntime.Event) *pairedTestRig {
 	dir, err := os.MkdirTemp("", "ard-rig")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return bootRigInDir(t, dir)
+}
+
+// bootRigInDir 在**给定的**数据目录上起一台 daemon 并配对一台桌面端。数据目录是显式
+// 参数,是为了 daemon 重启用例:同一个目录上先后起两台 daemon,第二台读到的正是第一台
+// 留下的那个库(R10 的启动清扫要扫的就是它)。
+func bootRigInDir(t *testing.T, dir string) *pairedTestRig {
+	t.Helper()
 	d, err := New(Options{
 		DataDir: dir, LANHost: "127.0.0.1", LANPort: 0,
 	})
@@ -470,14 +481,18 @@ func bootRemoteRig(t *testing.T, script []agentruntime.Event) *pairedTestRig {
 		d.mu.RUnlock()
 		return ready
 	}, 2*time.Second, 10*time.Millisecond)
-	t.Cleanup(func() {
-		dCancel()
-		select {
-		case <-dErrCh:
-		case <-time.After(3 * time.Second):
-			t.Log("daemon did not shut down within 3s")
-		}
-	})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			dCancel()
+			select {
+			case <-dErrCh:
+			case <-time.After(3 * time.Second):
+				t.Log("daemon did not shut down within 3s")
+			}
+		})
+	}
+	t.Cleanup(stop)
 
 	pairBody := readLocalPair(t, d)
 	code, _ := pairBody["code"].(string)
@@ -502,7 +517,7 @@ func bootRemoteRig(t *testing.T, script []agentruntime.Event) *pairedTestRig {
 	}, &pairResp))
 	require.NotEmpty(t, pairResp.DeviceToken)
 
-	return &pairedTestRig{dir: dir, d: d, cli: cli, runner: remote.New(cli), token: pairResp.DeviceToken}
+	return &pairedTestRig{dir: dir, d: d, cli: cli, runner: remote.New(cli), token: pairResp.DeviceToken, stop: stop}
 }
 
 // connectSameDevice 再开一条**同一台设备**的已认证连接(auth.connect,与桌面端的
@@ -1247,4 +1262,332 @@ func TestIntegration_CLIResolvePath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/fake/remote/bin/claude", resp.Path)
 	assert.True(t, resp.Found)
+}
+
+// ── 断连重连的补齐族(会话清单 / 增量拉取 / 待决策查询 / 显式接管)──────────
+//
+// 真 daemon + 真 ws + 真 client,先例 TestIntegration_RemoteRuntime_EventRoundTrip。
+// 这一族是客户端重连后的第一站,所以每个用例都以「客户端视角能不能靠它把自己接回来」
+// 为断言,而不是内部状态。
+
+// callRig 在 rig 的那条已配对连接上发一次 RPC。
+func callRig(t *testing.T, cli *client.Client, method string, params, result any) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return cli.Call(ctx, method, params, result)
+}
+
+// pairSecondDevice 再配对一台**不同指纹**的设备,并返回它自己的连接。R16 的范围断言
+// 需要一个真正的第二对端 —— 同指纹的第二条连接(connectSameDevice)是同一个对端。
+func pairSecondDevice(t *testing.T, d *Daemon, fingerprint string) *client.Client {
+	t.Helper()
+	pairBody := readLocalPair(t, d)
+	code, _ := pairBody["code"].(string)
+	require.Len(t, code, 6)
+
+	d.mu.RLock()
+	url := d.lan.URL()
+	d.mu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	cli, err := client.Dial(ctx, client.Options{URL: url})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+
+	var pairResp struct {
+		DeviceToken string `json:"deviceToken"`
+	}
+	require.NoError(t, cli.Call(ctx, "auth.pair", map[string]any{
+		"code":              code,
+		"deviceName":        "other-mac",
+		"deviceFingerprint": fingerprint,
+	}, &pairResp))
+	require.NotEmpty(t, pairResp.DeviceToken)
+	return cli
+}
+
+// TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn 覆盖补齐的主路径:
+// 跑完一轮后,客户端能列出这条会话(带生命周期状态与最新 seq)、并按游标把这一轮发出去
+// 的每一条通知按 seq 升序**逐条**重放出来 —— 补齐路径与实时路径投递的是同一批
+// (method, params),这是 R5 等价性在结构上成立的前提。
+//
+// 同时钉住三条翻页边界:起始游标 0、每页按 limit 截断且 hasMore 为真、以及起始游标
+// 追平最新 seq 后返回空页且**游标不回退**(回退会让客户端把整段日志重放一遍)。
+func TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn(t *testing.T) {
+	rig := bootRemoteRig(t, []agentruntime.Event{
+		agentruntime.TextDelta{Text: "hello"},
+		agentruntime.TextDelta{Text: " world"},
+		agentruntime.Done{},
+	})
+	events, _ := rig.startRun(t, 900)
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
+
+	// 一轮 = 3 条 runtime.event(两条 TextDelta + 一条 Done)+ 1 条 runResultDone。
+	const wantTotal = 4
+
+	var list wire.SessionListResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &list))
+	require.Len(t, list.Sessions, 1, "跑过一轮的会话必须出现在清单里")
+	got := list.Sessions[0]
+	assert.Equal(t, int64(900), got.SessionID)
+	assert.Equal(t, string(agent_backend_entity.TypeClaudeCode), got.BackendType)
+	assert.Equal(t, wire.SessionLifecycleIdle, got.LifecycleState, "轮结束后会话等待下一轮")
+	assert.False(t, got.WaitingForInput)
+	assert.Equal(t, int64(wantTotal), got.LatestSeq, "最新 seq 取自通知日志的 MAX(seq)")
+
+	// 按 limit=2 翻页拉平,把每一页的 seq / method 串起来。
+	var (
+		seqs    []int64
+		methods []string
+		cursor  int64
+		pages   int
+	)
+	for {
+		var page wire.SessionPullResult
+		require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPull,
+			wire.SessionPullParams{SessionID: 900, Cursor: cursor, Limit: 2}, &page))
+		pages++
+		require.LessOrEqual(t, len(page.Notifications), 2, "单页条数必须被 limit 截断")
+		for _, n := range page.Notifications {
+			seqs = append(seqs, n.Seq)
+			methods = append(methods, n.Method)
+			require.NotEmpty(t, n.Params, "日志行必须带上那条通知的 params 原样")
+		}
+		require.Greater(t, page.Cursor, cursor-1)
+		cursor = page.Cursor
+		if !page.HasMore {
+			break
+		}
+		require.Less(t, pages, 10, "翻页没有收敛")
+	}
+	assert.Equal(t, []int64{1, 2, 3, 4}, seqs, "seq 必须从 1 起单调无洞")
+	assert.Equal(t, []string{
+		wire.NotifyEvent, wire.NotifyEvent, wire.NotifyEvent, wire.NotifyRunResultDone,
+	}, methods, "补齐重放的就是那一轮本该发出的通知本身")
+	assert.Equal(t, 2, pages, "4 条 / 每页 2 条 = 2 页")
+	assert.Equal(t, int64(wantTotal), cursor)
+
+	// 游标已追平最新 seq:空页,游标保持不变。
+	var tail wire.SessionPullResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPull,
+		wire.SessionPullParams{SessionID: 900, Cursor: cursor}, &tail))
+	assert.Empty(t, tail.Notifications)
+	assert.False(t, tail.HasMore)
+	assert.Equal(t, cursor, tail.Cursor, "空页不得把游标回退")
+
+	// 起始游标大于最新 seq(客户端游标来自另一台 daemon 实例时会这样)同样是空页。
+	var past wire.SessionPullResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPull,
+		wire.SessionPullParams{SessionID: 900, Cursor: 9999}, &past))
+	assert.Empty(t, past.Notifications)
+	assert.False(t, past.HasMore)
+	assert.Equal(t, int64(9999), past.Cursor)
+
+	// 待决策查询:这个 backend 不实现审批协议,必须回空列表而不是报错(R7)。
+	var waiters wire.SessionPendingWaitersResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPendingWaiters,
+		wire.SessionPendingWaitersParams{SessionID: 900}, &waiters))
+	assert.Empty(t, waiters.ToolPermissions)
+	assert.Empty(t, waiters.AskUserQuestions)
+}
+
+// TestIntegration_SessionCatchup_AttachRepointsTheLiveStream 覆盖**显式接管**:
+// 补齐族不叫 runtime.*,也不走 trackSessionOwner 的隐式认领,所以只做补齐并不会让重连
+// 后的新连接成为推送目标 —— 补完仍是挂起态,实时流不恢复。runtime.session.attach 就是
+// 那个显式入口:调用它之后,这条会话此后的通知推给发起接管的那条连接。
+//
+// 这里用同一台设备的第二条连接扮演「重连后的新连接」:接管前事件落在原连接上,接管后
+// 的事件必须改落在新连接上。
+func TestIntegration_SessionCatchup_AttachRepointsTheLiveStream(t *testing.T) {
+	gate := make(chan struct{})
+	rig := bootGatedRig(t, &gatedBackendRunner{
+		before: []agentruntime.Event{agentruntime.TextDelta{Text: "before"}},
+		gate:   gate,
+		after:  []agentruntime.Event{agentruntime.TextDelta{Text: "after"}, agentruntime.Done{}},
+	})
+
+	events, _ := rig.startRun(t, 901)
+	awaitText(t, events, "before") // 推送此刻落在发起会话的那条连接上
+
+	// 「重连后的新连接」:同一台设备,自己订阅 runtime.event。
+	second := rig.connectSameDevice(t)
+	frames := make(chan wire.EventFrame, 16)
+	second.Handle(wire.NotifyEvent, func(_ context.Context, p json.RawMessage) (any, error) {
+		var f wire.EventFrame
+		if err := json.Unmarshal(p, &f); err == nil {
+			select {
+			case frames <- f:
+			default:
+			}
+		}
+		return nil, nil
+	})
+	turnDone := make(chan struct{}, 1)
+	second.Handle(wire.NotifyRunResultDone, func(_ context.Context, _ json.RawMessage) (any, error) {
+		select {
+		case turnDone <- struct{}{}:
+		default:
+		}
+		return nil, nil
+	})
+
+	var attached wire.SessionAttachResult
+	require.NoError(t, callRig(t, second, wire.MethodSessionAttach,
+		wire.SessionAttachParams{SessionID: 901}, &attached))
+	assert.Equal(t, int64(901), attached.SessionID)
+	assert.Equal(t, wire.SessionLifecycleRunning, attached.LifecycleState, "一轮还在跑")
+	assert.Positive(t, attached.LatestSeq, "接管要交回此刻的高水位供客户端接着补齐")
+
+	close(gate)
+
+	deadline := time.After(5 * time.Second)
+	var sawAfter bool
+	for !sawAfter {
+		select {
+		case f := <-frames:
+			if strings.Contains(string(f.Event), "after") {
+				assert.Positive(t, f.Seq, "推出去的帧必须带 seq")
+				sawAfter = true
+			}
+		case <-deadline:
+			t.Fatal("显式接管后的通知没有推给接管的那条连接 —— 实时流没有恢复")
+		}
+	}
+	// 等这一轮的终态帧再收尾:fanout goroutine 活过用例会让它在 t.Cleanup 删掉数据目录
+	// 之后还往库里写(表现为 readonly database),并与下一个用例构造 Daemon 撞上。
+	select {
+	case <-turnDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("接管后没有收到这一轮的终态帧")
+	}
+}
+
+// TestIntegration_SessionCatchup_AttachRestoresControlOnTheNewConnection 覆盖显式接管
+// 的另一半:接管之后,这条连接对该会话的**控制** RPC 也必须重新可用。
+//
+// RuntimeHandlers 是 per-connection 构造的,重连后拿到的是一张内存会话表为空的新
+// handler。不认下会话的话,客户端刚补齐完、正要回答断连期间产生的那条待决策时,
+// submitToolPermission 会解不出会话、再被 R8 的幂等折成「成功」—— waiter 没人回答、
+// 客户端以为答过了,叠加 R9 的不设过期就是永久挂死。这里用 runtime.abort 当探针:
+// 它在同样的 resolveSession 上,但会**如实报错**而不是被折成成功,所以测得出来。
+func TestIntegration_SessionCatchup_AttachRestoresControlOnTheNewConnection(t *testing.T) {
+	rig := bootRemoteRig(t, []agentruntime.Event{
+		agentruntime.TextDelta{Text: "hello"},
+		agentruntime.Done{},
+	})
+	events, _ := rig.startRun(t, 904)
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
+
+	second := rig.connectSameDevice(t)
+
+	var ok wire.OK
+	require.Error(t,
+		callRig(t, second, wire.MethodAbort, wire.AbortParams{SessionID: 904}, &ok),
+		"接管之前,新连接的 handler 不认识这条会话")
+
+	var attached wire.SessionAttachResult
+	require.NoError(t, callRig(t, second, wire.MethodSessionAttach,
+		wire.SessionAttachParams{SessionID: 904}, &attached))
+
+	require.NoError(t,
+		callRig(t, second, wire.MethodAbort, wire.AbortParams{SessionID: 904}, &ok),
+		"接管之后,控制 RPC 必须解得出会话并真的打到 backend")
+}
+
+// TestIntegration_SessionCatchup_ScopedToTheCallersPeer 覆盖 R16:查询与拉取一律限定
+// 在调用方自己的对端范围内。第二台**不同指纹**的已配对设备既看不到、也拉不到、更接管
+// 不了第一台的会话 —— 本规格阶段 daemon 只认 LAN 配对、没有账号概念,多个配对对端不
+// 保证属于同一个人。
+func TestIntegration_SessionCatchup_ScopedToTheCallersPeer(t *testing.T) {
+	rig := bootRemoteRig(t, []agentruntime.Event{
+		agentruntime.TextDelta{Text: "secret"},
+		agentruntime.Done{},
+	})
+	events, _ := rig.startRun(t, 902)
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
+
+	// 正主看得见。
+	var mine wire.SessionListResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &mine))
+	require.Len(t, mine.Sessions, 1)
+
+	other := pairSecondDevice(t, rig.d, "sha256:other-device")
+
+	var theirs wire.SessionListResult
+	require.NoError(t, callRig(t, other, wire.MethodSessionList, nil, &theirs))
+	assert.Empty(t, theirs.Sessions, "另一个对端不得看见别人的会话")
+
+	var page wire.SessionPullResult
+	require.NoError(t, callRig(t, other, wire.MethodSessionPull,
+		wire.SessionPullParams{SessionID: 902}, &page))
+	assert.Empty(t, page.Notifications, "另一个对端点名拉同一个会话 id 也拉不到内容")
+
+	var waiters wire.SessionPendingWaitersResult
+	require.NoError(t, callRig(t, other, wire.MethodSessionPendingWaiters,
+		wire.SessionPendingWaitersParams{SessionID: 902}, &waiters))
+	assert.Empty(t, waiters.ToolPermissions)
+	assert.Empty(t, waiters.AskUserQuestions)
+
+	var attached wire.SessionAttachResult
+	err := callRig(t, other, wire.MethodSessionAttach, wire.SessionAttachParams{SessionID: 902}, &attached)
+	require.Error(t, err, "接管改的是通知推给谁 —— 跨对端接管等于把别人的事件流引到自己连接上")
+	var rpcErr *rpc.Error
+	require.True(t, errors.As(err, &rpcErr))
+	assert.Equal(t, wire.ErrCodeSessionNotFound, rpcErr.Code)
+}
+
+// TestIntegration_SessionCatchup_DaemonRestartMarksSessionsInterrupted 覆盖 R10:
+// daemon 启动时把库里全部非终态会话标记为已中断。中断态会话的**历史仍可读**(客户端
+// 靠它把断连前的转录补完),但接不回实时流 —— 那一轮的子进程随上一个 daemon 进程消亡了,
+// 接管它等于让客户端对着一条永远不会再产出任何东西的会话无限期等下去。
+func TestIntegration_SessionCatchup_DaemonRestartMarksSessionsInterrupted(t *testing.T) {
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode,
+		&pacedBackendRunner{events: []agentruntime.Event{
+			agentruntime.TextDelta{Text: "hello"},
+			agentruntime.Done{},
+		}})
+	t.Cleanup(restore)
+
+	dir, err := os.MkdirTemp("", "ard-restart")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	// 第一台 daemon:跑一轮,留下一条非终态(idle)会话与它的通知日志。
+	first := bootRigInDir(t, dir)
+	events, _ := first.startRun(t, 903)
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
+
+	var before wire.SessionListResult
+	require.NoError(t, callRig(t, first.cli, wire.MethodSessionList, nil, &before))
+	require.Len(t, before.Sessions, 1)
+	require.Equal(t, wire.SessionLifecycleIdle, before.Sessions[0].LifecycleState)
+	wantSeq := before.Sessions[0].LatestSeq
+	require.Positive(t, wantSeq)
+
+	first.stop()
+
+	// 第二台 daemon:同一个数据目录 = 同一个库。
+	second := bootRigInDir(t, dir)
+
+	var after wire.SessionListResult
+	require.NoError(t, callRig(t, second.cli, wire.MethodSessionList, nil, &after))
+	require.Len(t, after.Sessions, 1, "重启不该让会话从清单里消失 —— 它的历史还在")
+	assert.Equal(t, wire.SessionLifecycleInterrupted, after.Sessions[0].LifecycleState)
+	assert.False(t, after.Sessions[0].WaitingForInput, "等待输入是实时叠加,重启后无人可答")
+	assert.Equal(t, wantSeq, after.Sessions[0].LatestSeq, "日志与 seq 都不因重启而变")
+
+	// 历史可读。
+	var page wire.SessionPullResult
+	require.NoError(t, callRig(t, second.cli, wire.MethodSessionPull,
+		wire.SessionPullParams{SessionID: 903}, &page))
+	assert.Len(t, page.Notifications, int(wantSeq), "中断态会话的历史必须照样拉得出来")
+
+	// 不可续跑。
+	var attached wire.SessionAttachResult
+	err = callRig(t, second.cli, wire.MethodSessionAttach, wire.SessionAttachParams{SessionID: 903}, &attached)
+	require.Error(t, err, "中断态会话不可续跑")
+	var rpcErr *rpc.Error
+	require.True(t, errors.As(err, &rpcErr))
+	assert.Equal(t, wire.ErrCodeNoActiveTurn, rpcErr.Code)
 }

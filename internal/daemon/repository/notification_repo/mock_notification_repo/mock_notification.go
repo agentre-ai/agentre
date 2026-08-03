@@ -69,6 +69,36 @@ func (mr *MockNotificationRepoMockRecorder) Create(ctx, n any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockNotificationRepo)(nil).Create), ctx, n)
 }
 
+// LatestSeq mocks base method.
+func (m *MockNotificationRepo) LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LatestSeq", ctx, peerFingerprint, peerSessionID)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LatestSeq indicates an expected call of LatestSeq.
+func (mr *MockNotificationRepoMockRecorder) LatestSeq(ctx, peerFingerprint, peerSessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LatestSeq", reflect.TypeOf((*MockNotificationRepo)(nil).LatestSeq), ctx, peerFingerprint, peerSessionID)
+}
+
+// LatestSeqByPeer mocks base method.
+func (m *MockNotificationRepo) LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LatestSeqByPeer", ctx, peerFingerprint)
+	ret0, _ := ret[0].(map[string]int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LatestSeqByPeer indicates an expected call of LatestSeqByPeer.
+func (mr *MockNotificationRepoMockRecorder) LatestSeqByPeer(ctx, peerFingerprint any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LatestSeqByPeer", reflect.TypeOf((*MockNotificationRepo)(nil).LatestSeqByPeer), ctx, peerFingerprint)
+}
+
 // ListSince mocks base method.
 func (m *MockNotificationRepo) ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) ([]*notification_repo.NotificationLog, bool, error) {
 	m.ctrl.T.Helper()

@@ -422,6 +422,85 @@ func (n *recordingOutbound) waitFor(t *testing.T, done func() bool, describe fun
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+// recordingSessions 扮演会话生命周期的写入口(handlers.SessionLifecyclePort)。它记
+// 一条有序 steps,因为生命周期的价值全在**次序**上:起手 running、轮末 idle,顺序颠倒
+// 的实现会让清单永远报错状态。
+type recordingSessions struct {
+	mu     sync.Mutex
+	starts []handlers.SessionRecord
+	log    []string
+	stepC  chan struct{}
+}
+
+func newRecordingSessions() *recordingSessions {
+	return &recordingSessions{stepC: make(chan struct{}, 64)}
+}
+
+func (s *recordingSessions) Start(_ context.Context, rec handlers.SessionRecord) error {
+	s.mu.Lock()
+	defer s.unlockAndSignal()
+	s.starts = append(s.starts, rec)
+	s.log = append(s.log, "start:"+rec.PeerSessionID)
+	return nil
+}
+
+func (s *recordingSessions) Running(_ context.Context, _, session string) error {
+	s.mu.Lock()
+	defer s.unlockAndSignal()
+	s.log = append(s.log, "running:"+session)
+	return nil
+}
+
+func (s *recordingSessions) Finish(_ context.Context, _, session string) error {
+	s.mu.Lock()
+	defer s.unlockAndSignal()
+	s.log = append(s.log, "finish:"+session)
+	return nil
+}
+
+func (s *recordingSessions) unlockAndSignal() {
+	s.mu.Unlock()
+	select {
+	case s.stepC <- struct{}{}:
+	default:
+	}
+}
+
+func (s *recordingSessions) steps() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.log...)
+}
+
+func (s *recordingSessions) started() []handlers.SessionRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]handlers.SessionRecord(nil), s.starts...)
+}
+
+func (s *recordingSessions) waitSteps(t *testing.T, want int) []string {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for len(s.steps()) < want {
+		select {
+		case <-s.stepC:
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d lifecycle steps; got %v", want, s.steps())
+		}
+	}
+	return s.steps()
+}
+
+func countStep(steps []string, want string) int {
+	n := 0
+	for _, s := range steps {
+		if s == want {
+			n++
+		}
+	}
+	return n
+}
+
 func setupRuntimeTest(t *testing.T, rt agentruntime.Runtime) (
 	context.Context,
 	*recordingOutbound,
@@ -438,6 +517,7 @@ func setupRuntimeTest(t *testing.T, rt agentruntime.Runtime) (
 	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
 		NotifyFor: notif.notifierFor,
 		Journal:   notif,
+		Sessions:  newRecordingSessions(),
 		Gateway:   gw,
 		Lookup:    lookup,
 		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
@@ -445,6 +525,28 @@ func setupRuntimeTest(t *testing.T, rt agentruntime.Runtime) (
 		},
 	})
 	return context.Background(), notif, gw, lookup, h
+}
+
+// setupRuntimeTestWithSessions 同 setupRuntimeTest,但把会话生命周期出口也交回来
+// 供断言用(其余用例不关心它,免得每个都多接一个返回值)。
+func setupRuntimeTestWithSessions(t *testing.T, rt agentruntime.Runtime) (
+	context.Context,
+	*recordingOutbound,
+	*recordingSessions,
+	*handlers.RuntimeHandlers,
+) {
+	t.Helper()
+	notif := newRecordingOutbound()
+	sess := newRecordingSessions()
+	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+		NotifyFor: notif.notifierFor,
+		Journal:   notif,
+		Sessions:  sess,
+		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
+			return rt
+		},
+	})
+	return context.Background(), notif, sess, h
 }
 
 func mustJSON(t *testing.T, v any) json.RawMessage {
@@ -1069,46 +1171,66 @@ func TestRuntime_SubmitToolPermission_Success(t *testing.T) {
 	assert.False(t, rt.submitToolPermCalls[0].allow)
 }
 
-// ── PendingWaiters (R7) ──────────────────────────────────────────────────────
+// ── 会话生命周期落库 ────────────────────────────────────────────────────────
 //
-// PendingWaiters is not a wired JSON-RPC method yet (a later task exposes it
-// as 待决策查询) — these tests exercise the plain Go method directly, the
-// seam this task promises to leave reachable.
+// daemon_sessions 的一行 = 「这条会话是谁的、在跑什么、处于哪一步」。没有它,重连的
+// 客户端拿到的会话清单永远是空的,R10 的启动清扫也没有可扫的对象。
 
-func TestRuntime_PendingWaiters_ReturnsBackendSnapshot(t *testing.T) {
-	want := agentruntime.WaiterSnapshot{
-		ToolPermissions: []agentruntime.PendingToolPermission{
-			{RequestID: "p-1", ToolName: "Bash", Input: []byte(`{"command":"ls"}`)},
-		},
-		AskUserQuestions: []agentruntime.PendingAskUserQuestion{
-			{RequestID: "a-1", Questions: []agentruntime.AskQuestion{{Question: "continue?"}}},
-		},
-	}
-	rt := &fullRT{pendingWaiters: want}
-	ctx, _, h, live := runtimeWithLiveSession(t, rt, 5)
-	defer close(live)
-
-	got := h.PendingWaiters(ctx, 5)
-	assert.Equal(t, want, got)
-}
-
-func TestRuntime_PendingWaiters_BackendUnsupported_EmptyNoError(t *testing.T) {
-	// bareRT implements only Runtime — WaiterLister assertion fails. R7:
-	// a backend without the approval protocol yields an empty snapshot,
-	// never an error.
+// TestRuntime_Run_RecordsSessionRowThenMovesItToIdleAtTurnEnd 覆盖生命周期的主链:
+// runtime.run 起手时按 (对端, 会话) 建行并置 running(带上客户端展示要用的 agent id /
+// cwd / backend 类型),轮末事件流关闭后置 idle,等待下一轮。
+func TestRuntime_Run_RecordsSessionRowThenMovesItToIdleAtTurnEnd(t *testing.T) {
 	rt := &fullRT{}
-	ctx, _, h, live := runtimeWithLiveSession(t, rt, 5)
-	defer close(live)
-	h.SwapRuntimeFor(func(_ agent_backend_entity.BackendType) agentruntime.Runtime { return bareRT{} })
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, notif, sess, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work",
+	})
+	require.NoError(t, err)
 
-	got := h.PendingWaiters(ctx, 5)
-	assert.Equal(t, agentruntime.WaiterSnapshot{}, got)
+	notif.waitFrames(t, 2) // Done + runResultDone
+	assert.Equal(t, []string{"start:5", "finish:5"}, sess.waitSteps(t, 2))
+	assert.Equal(t, []handlers.SessionRecord{{
+		PeerSessionID: "5", AgentID: 7, Cwd: "/work",
+		BackendType:    string(agent_backend_entity.TypeClaudeCode),
+		LifecycleState: wire.SessionLifecycleRunning,
+	}}, sess.started(), "起手必须建行并置 running,带上客户端展示要用的元数据")
 }
 
-func TestRuntime_PendingWaiters_NoSession_Empty(t *testing.T) {
-	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
-	got := h.PendingWaiters(ctx, 999)
-	assert.Equal(t, agentruntime.WaiterSnapshot{}, got)
+// TestRuntime_Run_AutonomousTurnMovesLifecycleBackToRunning 覆盖自主续轮:backend
+// 自发跑的一轮同样是「一轮执行中」,会话必须在这段时间报 running 而不是停在 idle ——
+// 否则重连的客户端会把一条正在产出事件的会话显示成闲置。
+func TestRuntime_Run_AutonomousTurnMovesLifecycleBackToRunning(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	rt.autoFn = func(_ int64) <-chan agentruntime.AutonomousTurn {
+		out := make(chan agentruntime.AutonomousTurn, 1)
+		evs := make(chan agentruntime.Event)
+		close(evs)
+		out <- agentruntime.AutonomousTurn{Trigger: "hook", Events: evs, Result: &agentruntime.RunResult{}}
+		close(out)
+		return out
+	}
+	ctx, _, sess, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5})
+	require.NoError(t, err)
+
+	// 主轮 start + 主轮 finish + 自主续轮 running + 自主续轮 finish;两条 fanout
+	// goroutine 交错,所以断言内容与条数而不是顺序。
+	steps := sess.waitSteps(t, 4)
+	assert.Contains(t, steps, "running:5", "自主续轮开始时会话必须回到 running")
+	assert.Equal(t, 2, countStep(steps, "finish:5"), "自主续轮结束同样要落回 idle")
 }
 
 // ── SubmitAnswer / SubmitToolPermission idempotency (R8) ────────────────────
@@ -1178,6 +1300,45 @@ func TestRuntime_SubmitToolPermission_SessionGone_IdempotentSuccess(t *testing.T
 	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
 	_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 999, RequestID: "p-1"})
 	require.NoError(t, err)
+}
+
+// TestRuntime_Submit_BackendNotRegistered_IsNotFoldedIntoSuccess 覆盖 R8 幂等的
+// **边界**:会话是活的,但它的 backend 在本 daemon 上根本没注册(接线故障)。今天这条
+// 路径与「会话不在 / 已结束」共用 ErrNoActiveTurn,于是被一并折成成功 —— 一台接错线的
+// daemon 会把每一次决策提交都报成 OK,而没有任何 waiter 被回答,叠加 R9 的不设过期
+// = 会话永久挂死,且客户端与运维两边都看不到任何异常。
+//
+// 收窄必须**不改过线错误码**:另外 7 个控制 RPC(steer / abort / setPermissionMode
+// / goal.* …)在同一条 resolveSession 上返回同一个 sentinel,换码会让桌面端的
+// errors.Is(err, ErrNoActiveTurn) 集体失效。所以这里同时钉住「报错」与「码不变」。
+func TestRuntime_Submit_BackendNotRegistered_IsNotFoldedIntoSuccess(t *testing.T) {
+	unwire := func(h *handlers.RuntimeHandlers) {
+		h.SwapRuntimeFor(func(_ agent_backend_entity.BackendType) agentruntime.Runtime { return nil })
+	}
+
+	t.Run("submitAnswer", func(t *testing.T) {
+		ctx, _, h, live := runtimeWithLiveSession(t, &fullRT{}, 5)
+		defer close(live)
+		unwire(h)
+
+		_, err := h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 5, RequestID: "r-1"})
+		require.Error(t, err, "接线故障不是 R8 的幂等场景,不能报成 OK")
+		code, ok := wire.CodeForSentinel(err)
+		require.True(t, ok, "过线错误码必须仍然是既有 sentinel")
+		assert.Equal(t, wire.ErrCodeNoActiveTurn, code, "其它 7 个控制 RPC 的错误码一字未改")
+	})
+
+	t.Run("submitToolPermission", func(t *testing.T) {
+		ctx, _, h, live := runtimeWithLiveSession(t, &fullRT{}, 6)
+		defer close(live)
+		unwire(h)
+
+		_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 6, RequestID: "p-1"})
+		require.Error(t, err)
+		code, ok := wire.CodeForSentinel(err)
+		require.True(t, ok)
+		assert.Equal(t, wire.ErrCodeNoActiveTurn, code)
+	})
 }
 
 // TestRuntime_AllEventsRoundTripThroughNotify proves every sealed Event type

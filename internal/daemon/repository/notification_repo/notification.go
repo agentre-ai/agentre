@@ -48,6 +48,16 @@ type NotificationRepo interface {
 	// ListSince 返回 (peerFingerprint, peerSessionID) 下 seq > cursor 的通知,按 seq
 	// 升序,最多 limit 条,并告知这一页之后是否还有更多。
 	ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) (rows []*NotificationLog, hasMore bool, err error)
+
+	// LatestSeq 返回该会话已记录的最大 seq,一条通知都没有时为 0。它是「最新 seq」的
+	// 唯一真相源(见包注释与 handlers.JournalPort):daemon_sessions.latest_seq 没有
+	// 写入方,读它会永远报 0。
+	LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
+
+	// LatestSeqByPeer 一次取回该对端全部会话的最大 seq(会话 id → seq)。会话清单要为
+	// 每条会话报最新 seq,按会话数发 N 条 LatestSeq 会让清单随会话数线性变慢;没有任何
+	// 通知的会话不出现在结果里,调用方按 0 处理。
+	LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error)
 }
 
 var defaultNotification NotificationRepo
@@ -120,4 +130,35 @@ func (r *notificationRepo) ListSince(ctx context.Context, peerFingerprint, peerS
 		rows = rows[:limit]
 	}
 	return rows, hasMore, nil
+}
+
+func (r *notificationRepo) LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
+	var seq int64
+	err := db.Ctx(ctx).
+		Raw("SELECT COALESCE(MAX(seq), 0) FROM daemon_notification_logs WHERE peer_fingerprint = ? AND peer_session_id = ?",
+			peerFingerprint, peerSessionID).
+		Row().Scan(&seq)
+	if err != nil {
+		return 0, err
+	}
+	return seq, nil
+}
+
+func (r *notificationRepo) LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error) {
+	var rows []struct {
+		PeerSessionID string `gorm:"column:peer_session_id"`
+		Seq           int64  `gorm:"column:seq"`
+	}
+	err := db.Ctx(ctx).
+		Raw("SELECT peer_session_id, MAX(seq) AS seq FROM daemon_notification_logs WHERE peer_fingerprint = ? GROUP BY peer_session_id",
+			peerFingerprint).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		out[row.PeerSessionID] = row.Seq
+	}
+	return out, nil
 }

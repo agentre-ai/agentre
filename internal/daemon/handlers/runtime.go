@@ -43,7 +43,10 @@ type RuntimeDeps struct {
 	// 仍指向已死的旧连接,通知就再也发不出去了(见 daemon.bindConn 注释)。
 	NotifyFor func(peerFingerprint string) NotifierPort
 	// Journal 是通知日志,Daemon 级(每个 daemon 一份),不随连接生灭。
-	Journal    JournalPort
+	Journal JournalPort
+	// Sessions 是会话生命周期的写入口,同样 Daemon 级。它落的那一行是重连客户端
+	// 拿会话清单的唯一来源,也是 daemon 启动时把非终态会话标成中断(R10)的对象。
+	Sessions   SessionLifecyclePort
 	Gateway    GatewayPort
 	Lookup     LLMProviderLookupPort
 	RuntimeFor func(agent_backend_entity.BackendType) agentruntime.Runtime
@@ -87,6 +90,22 @@ func NewRuntimeHandlers(deps RuntimeDeps) *RuntimeHandlers {
 		sessions:   map[int64]runtimeSession{},
 		runtimeFor: deps.RuntimeFor,
 	}
+}
+
+// Adopt 让这条连接的 handler 认下一条**别处发起的**会话:它此后能像自己起的那样解出
+// 会话的 backend,控制 RPC(steer / abort / submitAnswer / submitToolPermission …)因此
+// 继续可用。
+//
+// 它存在是因为 RuntimeHandlers 是 per-connection 构造的:客户端重连后拿到的是一个内存
+// 会话表为空的新 handler,断连期间产生的待决策**答不回去** —— submitToolPermission 解不出
+// 会话,再被 R8 的幂等折成「成功」,于是 waiter 没人回答、客户端以为答过了,叠加 R9 的
+// 不设过期就是永久挂死。只由显式接管(runtime.session.attach)调用,且只在 daemon 已经
+// 确认该会话属于调用方之后 —— 认下一条不属于自己的会话等于跨对端夺取控制权。
+func (h *RuntimeHandlers) Adopt(sessionID int64, backendType agent_backend_entity.BackendType) {
+	if sessionID == 0 || backendType == "" {
+		return
+	}
+	h.register(sessionID, runtimeSession{backendType: backendType})
 }
 
 // SwapRuntimeFor replaces the runtime lookup at runtime — test seam only.
@@ -207,6 +226,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	// 通知出口必须在这里建:对端指纹只有请求 ctx 上有,而 fanout /
 	// forwardAutonomousTurn 跑在脱离 ctx 的 goroutine 里(见 sessionEmitter 注释)。
 	em := h.newEmitter(ctx, p.SessionID)
+	h.startSession(em, p, bt)
 	go h.fanout(em, events, result)
 	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
 	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
@@ -214,6 +234,41 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		h.startAutonomousFanout(em, src)
 	}
 	return ack, nil
+}
+
+// ── 会话生命周期(running → idle → running,重启 → interrupted)─────────────
+//
+// 落的那一行是重连客户端拿会话清单的唯一来源,也是 R10 启动清扫的对象。写失败只记
+// 日志、不影响这一轮执行:一轮已经在跑了,拿它陪葬换不回任何东西,代价是这条会话在
+// 清单里缺席直到下一轮重新建行。
+
+// startSession 在一轮起手时建行并置 running。
+func (h *RuntimeHandlers) startSession(em *sessionEmitter, p wire.RunParams, bt agent_backend_entity.BackendType) {
+	err := h.deps.Sessions.Start(em.ctx, SessionRecord{
+		PeerFingerprint: em.peer,
+		PeerSessionID:   em.peerSessionID,
+		AgentID:         p.AgentID,
+		Cwd:             p.Cwd,
+		BackendType:     string(bt),
+		LifecycleState:  wire.SessionLifecycleRunning,
+	})
+	if err != nil {
+		log.Printf("runtime.run: record session failed sid=%d peer=%q err=%v", em.sid, em.peer, err)
+	}
+}
+
+// runningSession 把会话推回 running(自主续轮开始)。
+func (h *RuntimeHandlers) runningSession(em *sessionEmitter) {
+	if err := h.deps.Sessions.Running(em.ctx, em.peer, em.peerSessionID); err != nil {
+		log.Printf("runtime.autonomousTurn: mark session running failed sid=%d err=%v", em.sid, err)
+	}
+}
+
+// finishSession 把会话落回 idle(一轮结束,等下一轮)。
+func (h *RuntimeHandlers) finishSession(em *sessionEmitter) {
+	if err := h.deps.Sessions.Finish(em.ctx, em.peer, em.peerSessionID); err != nil {
+		log.Printf("runtime.run: mark session idle failed sid=%d err=%v", em.sid, err)
+	}
 }
 
 // fanout 把 backend events channel 抽干推到 runtime.event,channel close 后再发
@@ -245,6 +300,9 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Even
 	// 跨轮复用,寿命跟随子进程(见 sessionTokens 注释),轮末撤销会让下一轮复用
 	// 的子进程手里 token 失效。
 	h.unregister(sid)
+	// 生命周期落回 idle 必须在终态帧**之前**:终态帧是客户端得知这一轮结束的那一刻,
+	// 它随后立刻查清单时必须已经看到 idle,而不是一个正在收尾的 running。
+	h.finishSession(em)
 	em.emit(wire.NotifyRunResultDone, &frame)
 	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
 		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
@@ -261,7 +319,7 @@ func (h *RuntimeHandlers) startAutonomousFanout(em *sessionEmitter, src agentrun
 	go func() {
 		defer h.autoSubs.Delete(sid)
 		for at := range src.AutonomousTurns(sid) {
-			forwardAutonomousTurn(em, at)
+			h.forwardAutonomousTurn(em, at)
 		}
 		log.Printf("runtime.autonomousTurn: source closed sid=%d", sid)
 	}()
@@ -269,8 +327,12 @@ func (h *RuntimeHandlers) startAutonomousFanout(em *sessionEmitter, src agentrun
 
 // forwardAutonomousTurn 转发一轮自主续轮:先 Started,再逐事件 Event,最后 Done
 // 带 RunResult(复用 runResultToFrame)。语义同 fanout,但走 autonomousTurn.* 方法。
-func forwardAutonomousTurn(em *sessionEmitter, at agentruntime.AutonomousTurn) {
+//
+// 生命周期同 fanout 一样两端推进:自主续轮同样是「一轮执行中」,不这么做的话一条正在
+// 产出事件的会话会在清单里显示成闲置。
+func (h *RuntimeHandlers) forwardAutonomousTurn(em *sessionEmitter, at agentruntime.AutonomousTurn) {
 	sid := em.sid
+	h.runningSession(em)
 	em.emit(wire.NotifyAutonomousTurnStarted, &wire.AutonomousTurnStartedFrame{
 		SessionID: sid,
 		Trigger:   at.Trigger,
@@ -289,6 +351,7 @@ func forwardAutonomousTurn(em *sessionEmitter, at agentruntime.AutonomousTurn) {
 		})
 	}
 	frame := runResultToFrame(sid, at.Result)
+	h.finishSession(em) // 同 fanout:先落回 idle,再发终态帧
 	em.emit(wire.NotifyAutonomousTurnDone, &frame)
 	log.Printf("runtime.autonomousTurn: forwarded sid=%d trigger=%s events=%d", sid, at.Trigger, count)
 }
@@ -529,35 +592,29 @@ func (h *RuntimeHandlers) SubmitToolPermission(ctx context.Context, p wire.Submi
 // idempotentSubmitResult folds "waiter no longer exists" errors into a
 // success response (R8): the same requestID submitted twice (the second
 // take-and-delete misses → ErrWaiterNotFound) and a session that is no
-// longer live on this daemon (never started here, already ended, or —
-// once task 4 lands restart-interruption — marked interrupted →
-// ErrNoActiveTurn) both collapse to "nothing left to do here", not an
-// error. A reconnected client cannot tell whether its previous submission
-// already arrived, so surfacing an error here would make it misreport
-// failure to the user. Every other error (capability genuinely unsupported,
-// invalid input, a real I/O failure talking to the backend) is returned
-// unchanged.
+// longer live on this daemon (never started here, already ended, or marked
+// interrupted after a daemon restart → ErrNoActiveTurn) both collapse to
+// "nothing left to do here", not an error. A reconnected client cannot tell
+// whether its previous submission already arrived, so surfacing an error
+// here would make it misreport failure to the user. Every other error
+// (capability genuinely unsupported, invalid input, a real I/O failure
+// talking to the backend) is returned unchanged.
+//
+// errBackendUnwired 是刻意的例外:一台 backend 没接线的 daemon 会把**每一次**提交
+// 都报成 OK,而没有任何 waiter 被回答 —— 叠加 R9 的不设过期,会话就此永久挂死,客户端
+// 与运维两边都看不到任何异常。它虽然也是「这条会话此刻没有活的一轮」,但成因是接线
+// 故障而不是 R8 描述的那两种正常情况。
 func idempotentSubmitResult(err error) (wire.OK, error) {
-	if err != nil && !errors.Is(err, agentruntime.ErrNoActiveTurn) && !errors.Is(err, agentruntime.ErrWaiterNotFound) {
+	if err == nil {
+		return wire.OK{}, nil
+	}
+	if errors.Is(err, errBackendUnwired) {
 		return wire.OK{}, err
 	}
-	return wire.OK{}, nil
-}
-
-// PendingWaiters returns the snapshot of waiters currently blocked for sid
-// (R7). A backend without an approval protocol (type assertion to
-// agentruntime.WaiterLister fails) and a session unknown to this daemon
-// both yield the zero-value WaiterSnapshot — never an error, so a
-// reconnecting client can always call this and render whatever comes back.
-//
-// Not wired to a JSON-RPC method by this task; it exists so the capability
-// is reachable for the 待决策查询 RPC a later task adds.
-func (h *RuntimeHandlers) PendingWaiters(ctx context.Context, sid int64) agentruntime.WaiterSnapshot {
-	lister, err := resolveSessionCapability[agentruntime.WaiterLister](h, sid)
-	if err != nil {
-		return agentruntime.WaiterSnapshot{}
+	if errors.Is(err, agentruntime.ErrNoActiveTurn) || errors.Is(err, agentruntime.ErrWaiterNotFound) {
+		return wire.OK{}, nil
 	}
-	return lister.PendingWaiters(ctx, sid)
+	return wire.OK{}, err
 }
 
 func (h *RuntimeHandlers) GetGoal(ctx context.Context, p wire.GoalParams) (wire.GoalResult, error) {
@@ -690,6 +747,15 @@ func (h *RuntimeHandlers) lookupRuntimeByType(bt agent_backend_entity.BackendTyp
 	return fn(bt)
 }
 
+// errBackendUnwired 标记**接线故障**:会话在本 handler 上是活的,但它的 backend 在这台
+// daemon 上根本解不出 runtime(注册表没接上 / 该类型没注册)。
+//
+// 它包住 ErrNoActiveTurn,所以过线错误码不变(-32012 之外的那 7 个控制 RPC 在同一条
+// resolveSession 上仍拿到 ErrCodeNoActiveTurn,桌面端的 errors.Is 一字未改);daemon
+// 内部则据此把它与「会话不在 / 已结束」区分开 —— 后者按 R8 折成成功,前者绝不能
+// (见 idempotentSubmitResult)。
+var errBackendUnwired = fmt.Errorf("daemon: backend runtime not registered: %w", agentruntime.ErrNoActiveTurn)
+
 func (h *RuntimeHandlers) resolveSession(sid int64) (agentruntime.Runtime, error) {
 	h.mu.RLock()
 	row, ok := h.sessions[sid]
@@ -699,11 +765,11 @@ func (h *RuntimeHandlers) resolveSession(sid int64) (agentruntime.Runtime, error
 		return nil, agentruntime.ErrNoActiveTurn
 	}
 	if fn == nil {
-		return nil, agentruntime.ErrNoActiveTurn
+		return nil, errBackendUnwired
 	}
 	rt := fn(row.backendType)
 	if rt == nil {
-		return nil, agentruntime.ErrNoActiveTurn
+		return nil, errBackendUnwired
 	}
 	return rt, nil
 }

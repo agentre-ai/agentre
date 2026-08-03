@@ -38,6 +38,26 @@ const (
 	MethodSetGoal              = "runtime.goal.set"
 	MethodClearGoal            = "runtime.goal.clear"
 
+	// 断连重连的补齐族。客户端重连后的三步是 list → attach → pull(→ pendingWaiters),
+	// 每一步都限定在调用方自己的对端范围内(R16),对端身份取自那条连接的鉴权状态,
+	// 不由参数携带 —— 参数里的对端标识等于让任何已配对设备点名读别人的会话。
+	//
+	// 老版本 daemon 不认识这四个方法,会回 method-not-found;客户端据此判定该 daemon
+	// 不支持本规格并回落到「断连即终止」(R18),所以它们必须是**新增**方法而不是给
+	// 既有方法加参数。
+	MethodSessionList           = "runtime.session.list"
+	MethodSessionPull           = "runtime.session.pull"
+	MethodSessionPendingWaiters = "runtime.session.pendingWaiters"
+	// MethodSessionAttach 是**显式接管**:客户端声明「这条会话此后由我消费」,daemon
+	// 受理后才把该会话的通知推送目标改到这条连接上。
+	//
+	// 它必须独立存在,不能并进 list / pull:list 只是看一眼有哪些会话(看一眼不该改变
+	// 任何东西),pull 是只读补齐(它在补齐**完成前**就改推送目标才对,不然补齐期间的
+	// 实时通知会只落库不推送)。今天 daemon 侧的认领是隐式的 —— 任何被受理的 runtime.*
+	// 都会把流指向发起它的那条连接,哪怕那条连接根本不打算消费它。补齐族不走这条隐式
+	// 路径,所以重连的客户端需要一个不含副作用的入口明说这件事。
+	MethodSessionAttach = "runtime.session.attach"
+
 	// daemon → client 通知。
 	NotifyEvent         = "runtime.event"
 	NotifyRunResultDone = "runtime.runResultDone"
@@ -310,6 +330,109 @@ type SubmitToolPermissionParams struct {
 	Allow              bool   `json:"allow"`
 	AlwaysAllowSession bool   `json:"alwaysAllowSession,omitempty"`
 	DenyReason         string `json:"denyReason,omitempty"`
+}
+
+// ── 断连重连的补齐族 ────────────────────────────────────────────────────────
+
+// 会话在 daemon 上的生命周期取值:running(一轮执行中)→ idle(轮结束,等下一轮)
+// → 可再次 running;任一状态遇 daemon 重启 → interrupted。
+//
+// interrupted 是这条链的终点:那一轮的子进程随上一个 daemon 进程消亡了,会话的历史
+// 仍可拉取,但接不回实时流(MethodSessionAttach 拒绝它),对它提交决策按 R8 返回成功
+// 且无副作用。
+//
+// 「正在等待输入」**不在**这条链上:它是 running 之上的一层实时叠加,由 daemon 在
+// 应答时现算(SessionSummary.WaitingForInput),永不落库 —— 落库的等待标志会活过
+// daemon 重启,变成一个没人能回答的问题(R11)。
+const (
+	SessionLifecycleRunning     = "running"
+	SessionLifecycleIdle        = "idle"
+	SessionLifecycleInterrupted = "interrupted"
+)
+
+// 单次增量拉取的条数:客户端不指定时用 Default,指定值超过 Max 时按 Max 截断。上限
+// 是硬的 —— 一条跑了很久的会话日志有几万行,一次全塞进一帧 WS 会把连接顶爆,而客户端
+// 靠 SessionPullResult.HasMore 翻页本来就能拉平。
+const (
+	DefaultSessionPullLimit = 200
+	MaxSessionPullLimit     = 1000
+)
+
+// SessionSummary 是会话清单里的一条:标识 + 生命周期状态 + 是否正在等待输入 + 最新 seq。
+//
+// LatestSeq 取自 daemon 通知日志里该会话的 MAX(seq)(唯一真相源),客户端拿它与自己
+// 存的游标一比就知道断连期间落下了多少条。
+type SessionSummary struct {
+	SessionID       int64  `json:"sessionId"`
+	AgentID         int64  `json:"agentId,omitempty"`
+	Cwd             string `json:"cwd,omitempty"`
+	BackendType     string `json:"backendType,omitempty"`
+	LifecycleState  string `json:"lifecycleState"`
+	WaitingForInput bool   `json:"waitingForInput,omitempty"`
+	LatestSeq       int64  `json:"latestSeq"`
+}
+
+// SessionListResult 是 MethodSessionList 的应答:调用方自己那个对端在这台 daemon 上的
+// 全部会话。无参数 —— 范围就是「调用这条连接的对端」,不接受别的取值。
+type SessionListResult struct {
+	Sessions []SessionSummary `json:"sessions"`
+}
+
+// SessionPullParams 是 MethodSessionPull 的请求:给定会话与起始游标,取其后的通知。
+// Cursor 是**已经收到的**最后一个 seq(独占),所以首次补齐传 0。
+type SessionPullParams struct {
+	SessionID int64 `json:"sessionId"`
+	Cursor    int64 `json:"cursor"`
+	Limit     int   `json:"limit,omitempty"`
+}
+
+// JournaledNotification 是日志里的一行:那条本该发出的通知的原样 (method, params)。
+//
+// Params **不含 seq** —— 落库时 seq 还没盖上去,它是日志行自己的列。补齐的客户端必须
+// 按 method 把 Params 解成对应的帧、把这里的 Seq 盖上去、再喂进与实时同一套 handler,
+// 否则每一帧都解出 seq=0,会被「不大于游标就丢弃」的规则整段吞掉(R6)。
+type JournaledNotification struct {
+	Seq    int64           `json:"seq"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+// SessionPullResult 是一页补齐:按 seq 升序的通知、翻页用的新游标、以及是否还有更多。
+// Cursor 在空页上**保持不变**(不回退到 0),否则客户端会把整段日志重放一遍。
+type SessionPullResult struct {
+	Notifications []JournaledNotification `json:"notifications,omitempty"`
+	Cursor        int64                   `json:"cursor"`
+	HasMore       bool                    `json:"hasMore"`
+}
+
+// SessionPendingWaitersParams 是 MethodSessionPendingWaiters 的请求。
+type SessionPendingWaitersParams struct {
+	SessionID int64 `json:"sessionId"`
+}
+
+// SessionPendingWaitersResult 是某会话此刻仍在阻塞的全部待决策,载荷足以重建审批 /
+// 提问卡片。两个列表都可能为空:未实现审批协议的 backend、以及不属于调用方的会话,
+// 都回空列表而不是报错(R7)。
+type SessionPendingWaitersResult struct {
+	ToolPermissions  []agentruntime.PendingToolPermission  `json:"toolPermissions,omitempty"`
+	AskUserQuestions []agentruntime.PendingAskUserQuestion `json:"askUserQuestions,omitempty"`
+}
+
+// SessionAttachParams 是 MethodSessionAttach 的请求。
+type SessionAttachParams struct {
+	SessionID int64 `json:"sessionId"`
+}
+
+// SessionAttachResult 交回客户端接着补齐需要的东西:会话此刻的生命周期状态、backend
+// 类型,以及此刻的最新 seq(高水位)。
+//
+// 接管成功后该会话的实时通知就推给这条连接;客户端随后按自己的游标 pull 到拉平即可,
+// 接管与读高水位之间落库的那几条会在同一轮 pull 里被带出来。
+type SessionAttachResult struct {
+	SessionID      int64  `json:"sessionId"`
+	BackendType    string `json:"backendType,omitempty"`
+	LifecycleState string `json:"lifecycleState"`
+	LatestSeq      int64  `json:"latestSeq"`
 }
 
 // ── Notification frames ─────────────────────────────────────────────────────

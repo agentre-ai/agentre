@@ -254,6 +254,196 @@ func (mr *MockJournalPortMockRecorder) Append(ctx, peerFingerprint, peerSessionI
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Append", reflect.TypeOf((*MockJournalPort)(nil).Append), ctx, peerFingerprint, peerSessionID, method, payload)
 }
 
+// MockSessionLifecyclePort is a mock of SessionLifecyclePort interface.
+type MockSessionLifecyclePort struct {
+	ctrl     *gomock.Controller
+	recorder *MockSessionLifecyclePortMockRecorder
+	isgomock struct{}
+}
+
+// MockSessionLifecyclePortMockRecorder is the mock recorder for MockSessionLifecyclePort.
+type MockSessionLifecyclePortMockRecorder struct {
+	mock *MockSessionLifecyclePort
+}
+
+// NewMockSessionLifecyclePort creates a new mock instance.
+func NewMockSessionLifecyclePort(ctrl *gomock.Controller) *MockSessionLifecyclePort {
+	mock := &MockSessionLifecyclePort{ctrl: ctrl}
+	mock.recorder = &MockSessionLifecyclePortMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockSessionLifecyclePort) EXPECT() *MockSessionLifecyclePortMockRecorder {
+	return m.recorder
+}
+
+// Finish mocks base method.
+func (m *MockSessionLifecyclePort) Finish(ctx context.Context, peerFingerprint, peerSessionID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Finish", ctx, peerFingerprint, peerSessionID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Finish indicates an expected call of Finish.
+func (mr *MockSessionLifecyclePortMockRecorder) Finish(ctx, peerFingerprint, peerSessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Finish", reflect.TypeOf((*MockSessionLifecyclePort)(nil).Finish), ctx, peerFingerprint, peerSessionID)
+}
+
+// Running mocks base method.
+func (m *MockSessionLifecyclePort) Running(ctx context.Context, peerFingerprint, peerSessionID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Running", ctx, peerFingerprint, peerSessionID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Running indicates an expected call of Running.
+func (mr *MockSessionLifecyclePortMockRecorder) Running(ctx, peerFingerprint, peerSessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Running", reflect.TypeOf((*MockSessionLifecyclePort)(nil).Running), ctx, peerFingerprint, peerSessionID)
+}
+
+// Start mocks base method.
+func (m *MockSessionLifecyclePort) Start(ctx context.Context, rec handlers.SessionRecord) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Start", ctx, rec)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Start indicates an expected call of Start.
+func (mr *MockSessionLifecyclePortMockRecorder) Start(ctx, rec any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Start", reflect.TypeOf((*MockSessionLifecyclePort)(nil).Start), ctx, rec)
+}
+
+// MockSessionQueryPort is a mock of SessionQueryPort interface.
+type MockSessionQueryPort struct {
+	ctrl     *gomock.Controller
+	recorder *MockSessionQueryPortMockRecorder
+	isgomock struct{}
+}
+
+// MockSessionQueryPortMockRecorder is the mock recorder for MockSessionQueryPort.
+type MockSessionQueryPortMockRecorder struct {
+	mock *MockSessionQueryPort
+}
+
+// NewMockSessionQueryPort creates a new mock instance.
+func NewMockSessionQueryPort(ctrl *gomock.Controller) *MockSessionQueryPort {
+	mock := &MockSessionQueryPort{ctrl: ctrl}
+	mock.recorder = &MockSessionQueryPortMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockSessionQueryPort) EXPECT() *MockSessionQueryPortMockRecorder {
+	return m.recorder
+}
+
+// Find mocks base method.
+func (m *MockSessionQueryPort) Find(ctx context.Context, peerFingerprint, peerSessionID string) (*handlers.SessionRecord, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Find", ctx, peerFingerprint, peerSessionID)
+	ret0, _ := ret[0].(*handlers.SessionRecord)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Find indicates an expected call of Find.
+func (mr *MockSessionQueryPortMockRecorder) Find(ctx, peerFingerprint, peerSessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Find", reflect.TypeOf((*MockSessionQueryPort)(nil).Find), ctx, peerFingerprint, peerSessionID)
+}
+
+// List mocks base method.
+func (m *MockSessionQueryPort) List(ctx context.Context, peerFingerprint string) ([]handlers.SessionRecord, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "List", ctx, peerFingerprint)
+	ret0, _ := ret[0].([]handlers.SessionRecord)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// List indicates an expected call of List.
+func (mr *MockSessionQueryPortMockRecorder) List(ctx, peerFingerprint any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockSessionQueryPort)(nil).List), ctx, peerFingerprint)
+}
+
+// MockJournalReaderPort is a mock of JournalReaderPort interface.
+type MockJournalReaderPort struct {
+	ctrl     *gomock.Controller
+	recorder *MockJournalReaderPortMockRecorder
+	isgomock struct{}
+}
+
+// MockJournalReaderPortMockRecorder is the mock recorder for MockJournalReaderPort.
+type MockJournalReaderPortMockRecorder struct {
+	mock *MockJournalReaderPort
+}
+
+// NewMockJournalReaderPort creates a new mock instance.
+func NewMockJournalReaderPort(ctrl *gomock.Controller) *MockJournalReaderPort {
+	mock := &MockJournalReaderPort{ctrl: ctrl}
+	mock.recorder = &MockJournalReaderPortMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockJournalReaderPort) EXPECT() *MockJournalReaderPortMockRecorder {
+	return m.recorder
+}
+
+// LatestSeq mocks base method.
+func (m *MockJournalReaderPort) LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LatestSeq", ctx, peerFingerprint, peerSessionID)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LatestSeq indicates an expected call of LatestSeq.
+func (mr *MockJournalReaderPortMockRecorder) LatestSeq(ctx, peerFingerprint, peerSessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LatestSeq", reflect.TypeOf((*MockJournalReaderPort)(nil).LatestSeq), ctx, peerFingerprint, peerSessionID)
+}
+
+// LatestSeqByPeer mocks base method.
+func (m *MockJournalReaderPort) LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LatestSeqByPeer", ctx, peerFingerprint)
+	ret0, _ := ret[0].(map[string]int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LatestSeqByPeer indicates an expected call of LatestSeqByPeer.
+func (mr *MockJournalReaderPortMockRecorder) LatestSeqByPeer(ctx, peerFingerprint any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LatestSeqByPeer", reflect.TypeOf((*MockJournalReaderPort)(nil).LatestSeqByPeer), ctx, peerFingerprint)
+}
+
+// ListSince mocks base method.
+func (m *MockJournalReaderPort) ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) ([]handlers.JournalRow, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListSince", ctx, peerFingerprint, peerSessionID, cursor, limit)
+	ret0, _ := ret[0].([]handlers.JournalRow)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// ListSince indicates an expected call of ListSince.
+func (mr *MockJournalReaderPortMockRecorder) ListSince(ctx, peerFingerprint, peerSessionID, cursor, limit any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListSince", reflect.TypeOf((*MockJournalReaderPort)(nil).ListSince), ctx, peerFingerprint, peerSessionID, cursor, limit)
+}
+
 // MockGatewayPort is a mock of GatewayPort interface.
 type MockGatewayPort struct {
 	ctrl     *gomock.Controller

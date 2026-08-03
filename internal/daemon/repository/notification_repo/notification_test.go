@@ -89,6 +89,42 @@ func TestNotificationRepo_Create_DuplicateSeqIsIdempotent(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestNotificationRepo_LatestSeq_ReadsMaxSeqFromTheLog 覆盖「某会话最新的 seq」:
+// 它的唯一真相源是通知日志自己的 MAX(seq)(daemon_sessions.latest_seq 无写入方,读它
+// 会永远报 0,客户端每次重连都重拉整段日志)。会话一条通知都没有时报 0。
+func TestNotificationRepo_LatestSeq_ReadsMaxSeqFromTheLog(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := notification_repo.NewNotification()
+
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(seq\\), 0\\) FROM daemon_notification_logs WHERE peer_fingerprint = \\? AND peer_session_id = \\?").
+		WithArgs("peerA", "s1").
+		WillReturnRows(sqlmock.NewRows([]string{"seq"}).AddRow(42))
+
+	got, err := repo.LatestSeq(ctx, "peerA", "s1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), got)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestNotificationRepo_LatestSeqByPeer_GroupsPerSession 覆盖会话清单要的那份「每条
+// 会话的最新 seq」:一条 GROUP BY 查询把该对端全部会话的 MAX(seq) 一次取回,而不是按
+// 会话数发 N 条查询。没有通知的会话不出现在结果里,调用方按 0 处理。
+func TestNotificationRepo_LatestSeqByPeer_GroupsPerSession(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := notification_repo.NewNotification()
+
+	mock.ExpectQuery("SELECT peer_session_id, MAX\\(seq\\) AS seq FROM daemon_notification_logs WHERE peer_fingerprint = \\? GROUP BY peer_session_id").
+		WithArgs("peerA").
+		WillReturnRows(sqlmock.NewRows([]string{"peer_session_id", "seq"}).
+			AddRow("s1", 42).
+			AddRow("s2", 7))
+
+	got, err := repo.LatestSeqByPeer(ctx, "peerA")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int64{"s1": 42, "s2": 7}, got)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // TestNotificationRepo_ListSince_CursorBoundaries 覆盖测试接缝表要求的「增量拉取边界」:
 // 起始游标为 0、起始游标大于最新 seq、以及翻页 hasMore 标志。
 func TestNotificationRepo_ListSince_CursorBoundaries(t *testing.T) {

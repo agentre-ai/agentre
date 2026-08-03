@@ -68,6 +68,56 @@ type JournalPort interface {
 	Append(ctx context.Context, peerFingerprint, peerSessionID, method string, payload json.RawMessage) (seq int64, err error)
 }
 
+// SessionRecord 是一条会话在 daemon 上的身份与元数据。会话身份是
+// (PeerFingerprint, PeerSessionID) 的组合(R16);AgentID / Cwd / BackendType 原样透传
+// 客户端起手时报的值,供重连后的清单重建界面。
+//
+// 它**不含**「最新 seq」与「是否正在等待输入」:前者的真相源是通知日志的 MAX(seq),
+// 后者由实时 waiter 状态叠加计算、永不落库(R11)。
+type SessionRecord struct {
+	PeerFingerprint string
+	PeerSessionID   string
+	AgentID         int64
+	Cwd             string
+	BackendType     string
+	LifecycleState  string
+}
+
+// SessionLifecyclePort 记录会话生命周期的推进,由跑一轮执行的一侧调用。
+//
+// 三步对应规格「会话生命周期」的那条链:Start(起手,建行并置 running)→ Finish
+// (轮结束,置 idle)→ Running(自主续轮开始,回到 running)。daemon 重启导致的
+// interrupted 不在这里 —— 那是启动清扫一次性做的,进程内没有触发点。
+type SessionLifecyclePort interface {
+	Start(ctx context.Context, rec SessionRecord) error
+	Running(ctx context.Context, peerFingerprint, peerSessionID string) error
+	Finish(ctx context.Context, peerFingerprint, peerSessionID string) error
+}
+
+// SessionQueryPort 是会话的读出口,供重连客户端的清单 / 接管查询使用。两个方法都以
+// 对端指纹打头:查询一律限定在调用方自己的对端范围内(R16),按会话 id 单独查的入口
+// 本层不提供。
+type SessionQueryPort interface {
+	List(ctx context.Context, peerFingerprint string) ([]SessionRecord, error)
+	Find(ctx context.Context, peerFingerprint, peerSessionID string) (*SessionRecord, error)
+}
+
+// JournalRow 是通知日志里的一行。Payload 是那条通知的 params 原样、**不含 seq**
+// (见 JournalPort)。
+type JournalRow struct {
+	Seq     int64
+	Method  string
+	Payload json.RawMessage
+}
+
+// JournalReaderPort 是通知日志的读出口:增量拉取与「最新 seq」。它与 JournalPort
+// (写)分开声明是 ISP —— 跑一轮执行的一侧只写不读,补齐的一侧只读不写。
+type JournalReaderPort interface {
+	ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) (rows []JournalRow, hasMore bool, err error)
+	LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
+	LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error)
+}
+
 // GatewayPort daemon-side LLM gateway 端口：给 CLI 子进程签短 token、查 URL、回收 token。
 // 当前由 cli.* handler 使用；chat.* 走 Runner 内部直拿 *httpgateway.Gateway 没经此端口。
 // 具体实现 *httpgateway.Gateway 自然满足本接口（方法签名一致）。

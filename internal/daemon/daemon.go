@@ -23,9 +23,11 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/pairing"
 	"github.com/agentre-ai/agentre/internal/daemon/remotefs"
 	"github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
+	"github.com/agentre-ai/agentre/internal/daemon/repository/session_repo"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/daemon/sessions"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"github.com/agentre-ai/agentre/internal/pkg/ccoauth"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
@@ -74,6 +76,14 @@ type Daemon struct {
 	// journal 是通知日志的写入口,Daemon 级一份(会话日志按 (对端, 会话) 分区,不随
 	// 连接生灭 —— 断连重连不重置任何序号)。
 	journal handlers.JournalPort
+
+	// sessionStore 是会话身份与生命周期的存取口,同样 Daemon 级。
+	sessionStore daemonSessionStore
+
+	// catchup 是断连重连的补齐族 handler(清单 / 拉取 / 待决策 / 接管)。它按对端
+	// 限定、不随连接生灭,所以是 Daemon 级构造、静态注册的 —— 唯一的例外是显式接管,
+	// 它要知道是**哪条连接**在接管,见 bindConn。
+	catchup *handlers.SessionCatchupHandlers
 
 	mu  sync.RWMutex
 	lan *rpc.LANServer
@@ -385,6 +395,20 @@ func New(opts Options) (*Daemon, error) {
 	// 之后的那批 RegisterXxx。实现本身无状态(句柄经 ctx 传),同进程多个 Daemon
 	// 注册同一个实现互不干扰。
 	notification_repo.RegisterNotification(notification_repo.NewNotification())
+	session_repo.RegisterSession(session_repo.NewSession())
+	// R10:daemon 启动时把库里全部非终态会话标记为已中断。它们的子进程随上一个 daemon
+	// 进程消亡了,不扫的话客户端重连后会看到一批 running 的僵尸会话、接管上去无限期等待。
+	// 清扫失败即 New 失败:扫不动说明库本身有问题,而通知落库也走同一个库,让 daemon
+	// 带着一个坏库继续跑只会把问题推迟到看不见的地方。
+	swept, err := session_repo.Session().InterruptAll(
+		dbpkg.WithContextDB(context.Background(), gormDB), wire.SessionLifecycleInterrupted)
+	if err != nil {
+		closeDB(gormDB)
+		return nil, fmt.Errorf("interrupt stale sessions: %w", err)
+	}
+	if swept > 0 {
+		log.Printf("daemon.New: marked %d non-terminal sessions interrupted after restart", swept)
+	}
 	reg := rpc.NewRegistry()
 
 	pmOpts := pairing.ManagerOpts{TTL: 5 * time.Minute}
@@ -404,10 +428,15 @@ func New(opts Options) (*Daemon, error) {
 
 	d := &Daemon{
 		opts: opts, state: st, db: gormDB,
-		journal:  notificationJournal{db: gormDB},
-		sessions: sessions.NewRegistry(), pairing: pm, ratelim: rl,
+		journal:      notificationJournal{db: gormDB},
+		sessionStore: daemonSessionStore{db: gormDB},
+		sessions:     sessions.NewRegistry(), pairing: pm, ratelim: rl,
 		registry: reg, auth: auth,
 	}
+	d.catchup = handlers.NewSessionCatchupHandlers(handlers.SessionCatchupDeps{
+		Sessions: d.sessionStore,
+		Journal:  journalReader{db: gormDB},
+	})
 	d.gateway = httpgateway.New("127.0.0.1", 0, NewProviderLookup(st))
 	// 内置工具 MCP(org/subagent/group/workflow)隧道:daemon 上 CLI 子进程把请求打到
 	// 本机 gateway 的 /mcp/*(URL 已由 runtime.Run 改写成 daemon base),这里捕获后反向
@@ -516,6 +545,14 @@ func (d *Daemon) registerMethods() {
 	skillsH := handlers.NewSkillsHandlers()
 	d.registry.Register("skills.list", wrapGuarded(skillsH.List))
 
+	// 断连重连的补齐族(清单 / 拉取 / 待决策)。静态注册而不是随 bindConn 挂 ——
+	// 它们按**对端**限定、读的是库,与「哪条连接」无关;而且它们**不**过
+	// trackSessionOwner:看一眼有哪些会话、把历史拉回来,都不该顺带把实时流改指向自己。
+	// 改推送目标是 MethodSessionAttach 一个人的职责(见 bindConn)。
+	d.registry.Register(wire.MethodSessionList, wrapGuardedNoParams(d.catchup.List))
+	d.registry.Register(wire.MethodSessionPull, wrapGuarded(d.catchup.Pull))
+	d.registry.Register(wire.MethodSessionPendingWaiters, wrapGuarded(d.catchup.PendingWaiters))
+
 	// runtime.* RPC 族 1:1 镜像 agentruntime.Runtime + 7 个可选子接口,
 	// 把远端 agentre 当成「本地」backend 跑。Handler 在 bindConn
 	// 里按连接挂载（要 NotifierPort）。MVP 单客户端假设下 registry 是全局,
@@ -585,6 +622,7 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 		// per-conn 的,而它起的 fanout goroutine 会活过这条连接。
 		NotifyFor: d.notifierForPeer,
 		Journal:   d.journal,
+		Sessions:  d.sessionStore,
 		Gateway:   d.gateway,
 		Lookup:    NewProviderLookup(d.state),
 	})
@@ -606,6 +644,11 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	regRuntime(wire.MethodGetGoal, wrapGuardedSentinel(rh.GetGoal))
 	regRuntime(wire.MethodSetGoal, wrapGuardedSentinel(rh.SetGoal))
 	regRuntime(wire.MethodClearGoal, wrapGuardedSentinel(rh.ClearGoal))
+
+	// 显式接管。它是补齐族里唯一一个 per-conn 注册的方法,因为它的语义就是「**这条**
+	// 连接此后消费这条会话」:改推送目标要知道是哪条连接,让控制 RPC 也跟着回来要知道
+	// 是哪个 RuntimeHandlers。
+	d.registry.Register(wire.MethodSessionAttach, d.attachSession(rh))
 
 	// Terminal: local PTY backend; per-conn emitter pushes terminal.data /
 	// terminal.exit events back over this ws connection (same per-conn rationale
@@ -655,6 +698,39 @@ func (d *Daemon) trackSessionOwner(next rpc.HandlerFunc) rpc.HandlerFunc {
 			d.conns.undoClaim(ticket)
 		}
 		return res, err
+	}
+}
+
+// attachSession 是显式接管的注册:handler 先校验这条会话确实是调用方的、且还接得回去,
+// **受理之后**才真正把它交给这条连接。两件事一起发生,缺一个接管都是半截的:
+//
+//   - 推送目标改到这条连接(conns.claim)—— 否则通知继续只落库不推送,补齐完了实时流
+//     还是不通;
+//   - 这条连接的 RuntimeHandlers 认下这条会话(rh.Adopt)—— RuntimeHandlers 是
+//     per-conn 构造的,重连后那张内存会话表是空的,不认下来的话客户端刚补齐完、正要
+//     回答一条待决策,submitToolPermission 会解不出会话,再被 R8 的幂等折成「成功」:
+//     waiter 没人回答、客户端以为答过了,叠加 R9 的不设过期 = 会话永久挂死。
+//
+// 认领放在 handler **之后**(与 trackSessionOwner 的「之前认领 + 失败回滚」相反):
+// 接管不启动任何一轮执行,没有「记晚了首批事件会丢」的问题,而被拒的接管绝不能改变
+// 任何东西。接管与读高水位之间落库的那几条不会丢 —— 客户端随后按自己的游标 pull,
+// 那一轮 pull 发生在认领之后。
+func (d *Daemon) attachSession(rh *handlers.RuntimeHandlers) rpc.HandlerFunc {
+	inner := wrapGuardedSentinel(d.catchup.Attach)
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		res, err := inner(ctx, raw)
+		if err != nil {
+			return nil, err
+		}
+		attached, ok := res.(wire.SessionAttachResult)
+		if !ok {
+			return res, nil
+		}
+		rh.Adopt(attached.SessionID, agent_backend_entity.BackendType(attached.BackendType))
+		d.conns.claim(rpc.ConnFromContext(ctx), attached.SessionID)
+		log.Printf("runtime.session.attach: session taken over sid=%d state=%s latestSeq=%d",
+			attached.SessionID, attached.LifecycleState, attached.LatestSeq)
+		return res, nil
 	}
 }
 
@@ -761,6 +837,105 @@ func (j notificationJournal) Append(ctx context.Context, peerFingerprint, peerSe
 		return 0, err
 	}
 	return row.Seq, nil
+}
+
+// daemonSessionStore 同时是 handlers 的会话生命周期写入口与查询出口:两个接口在
+// handlers 那边按 ISP 分开声明(跑一轮的一侧只写,补齐的一侧只读),daemon 这边由同一
+// 个仓储实现供给,不必为此拆成两个类型。
+//
+// 与 notificationJournal 同理,它自己往 ctx 上注入本 Daemon 的 db 句柄:生命周期的写入
+// 方是脱离请求 ctx 的 fanout goroutine,而 daemon 故意不写 db.SetDefault(同进程多个
+// Daemon 会互相串库,见 Daemon.db 注释)。
+type daemonSessionStore struct{ db *gorm.DB }
+
+var (
+	_ handlers.SessionLifecyclePort = daemonSessionStore{}
+	_ handlers.SessionQueryPort     = daemonSessionStore{}
+)
+
+func (s daemonSessionStore) Start(ctx context.Context, rec handlers.SessionRecord) error {
+	return session_repo.Session().Upsert(dbpkg.WithContextDB(ctx, s.db), &session_repo.DaemonSession{
+		PeerFingerprint: rec.PeerFingerprint,
+		PeerSessionID:   rec.PeerSessionID,
+		AgentID:         rec.AgentID,
+		Cwd:             rec.Cwd,
+		BackendType:     rec.BackendType,
+		LifecycleState:  rec.LifecycleState,
+	})
+}
+
+func (s daemonSessionStore) Running(ctx context.Context, peerFingerprint, peerSessionID string) error {
+	return session_repo.Session().UpdateLifecycle(
+		dbpkg.WithContextDB(ctx, s.db), peerFingerprint, peerSessionID, wire.SessionLifecycleRunning)
+}
+
+func (s daemonSessionStore) Finish(ctx context.Context, peerFingerprint, peerSessionID string) error {
+	return session_repo.Session().UpdateLifecycle(
+		dbpkg.WithContextDB(ctx, s.db), peerFingerprint, peerSessionID, wire.SessionLifecycleIdle)
+}
+
+func (s daemonSessionStore) List(ctx context.Context, peerFingerprint string) ([]handlers.SessionRecord, error) {
+	rows, err := session_repo.Session().ListByPeer(dbpkg.WithContextDB(ctx, s.db), peerFingerprint)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]handlers.SessionRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, sessionRecordOf(row))
+	}
+	return out, nil
+}
+
+func (s daemonSessionStore) Find(ctx context.Context, peerFingerprint, peerSessionID string) (*handlers.SessionRecord, error) {
+	row, err := session_repo.Session().Find(dbpkg.WithContextDB(ctx, s.db), peerFingerprint, peerSessionID)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	rec := sessionRecordOf(row)
+	return &rec, nil
+}
+
+func sessionRecordOf(row *session_repo.DaemonSession) handlers.SessionRecord {
+	return handlers.SessionRecord{
+		PeerFingerprint: row.PeerFingerprint,
+		PeerSessionID:   row.PeerSessionID,
+		AgentID:         row.AgentID,
+		Cwd:             row.Cwd,
+		BackendType:     row.BackendType,
+		LifecycleState:  row.LifecycleState,
+	}
+}
+
+// journalReader 是通知日志的读侧(补齐用),写侧见 notificationJournal。
+type journalReader struct{ db *gorm.DB }
+
+var _ handlers.JournalReaderPort = journalReader{}
+
+func (j journalReader) ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) ([]handlers.JournalRow, bool, error) {
+	rows, hasMore, err := notification_repo.Notification().ListSince(
+		dbpkg.WithContextDB(ctx, j.db), peerFingerprint, peerSessionID, cursor, limit)
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]handlers.JournalRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, handlers.JournalRow{
+			Seq:    row.Seq,
+			Method: row.Method,
+			// 日志里存的是那条通知的 params 原样(不含 seq),原样交回客户端。
+			Payload: json.RawMessage(row.Payload),
+		})
+	}
+	return out, hasMore, nil
+}
+
+func (j journalReader) LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
+	return notification_repo.Notification().LatestSeq(
+		dbpkg.WithContextDB(ctx, j.db), peerFingerprint, peerSessionID)
+}
+
+func (j journalReader) LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error) {
+	return notification_repo.Notification().LatestSeqByPeer(dbpkg.WithContextDB(ctx, j.db), peerFingerprint)
 }
 
 // closeDB 关闭 openDB 拿到的句柄。只在 New 的失败路径上用:Daemon 构造失败时若不关,
