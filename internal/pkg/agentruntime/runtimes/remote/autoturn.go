@@ -165,17 +165,21 @@ func (r *Runtime) closeAllAutoSessions() {
 	}
 	r.mu.Unlock()
 	for _, a := range all {
-		a.mu.Lock()
-		if a.closed {
-			a.mu.Unlock()
-			continue
-		}
-		a.closed = true
-		if a.cur != nil {
-			close(a.cur.events)
-			a.cur = nil
-		}
-		close(a.out)
-		a.mu.Unlock()
+		closeAutoSession(a)
 	}
+}
+
+// closeAutoSession 拆掉一个自主续轮镜像。幂等。
+func closeAutoSession(a *autoSession) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return
+	}
+	a.closed = true
+	if a.cur != nil {
+		close(a.cur.events)
+		a.cur = nil
+	}
+	close(a.out)
 }

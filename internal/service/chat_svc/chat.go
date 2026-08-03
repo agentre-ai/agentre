@@ -3607,7 +3607,21 @@ func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_ent
 			zap.Int64("deviceID", deviceID), zap.Error(err))
 		return nil, i18n.NewError(ctx, code.RemoteRunnerDialFailed)
 	}
-	rt := remote.New(lease.Client())
+	// 会话在库里记下「跑在哪台 daemon 的哪个实例上」——游标端口的读写守卫全靠它,
+	// 不写就永远判失效,断连补齐退化成断连即终止(见 remote_reconnect.go)。
+	fp := s.daemonFingerprint(ctx, deviceID)
+	s.recordExecDaemon(ctx, sessionID, deviceID, fp)
+
+	// entry 先建出来:重连端口要往里换 lease,所以它必须先于 runtime 存在。
+	entry := &remoteRuntimeEntry{lease: lease, sessions: map[int64]struct{}{sessionID: {}}}
+	rt := remote.New(lease.Client(),
+		remote.WithDaemonFingerprint(fp),
+		remote.WithConnStateObserver(remote.ConnStateFunc(s.onRemoteConnState)),
+		remote.WithReconnect(remote.ReconnectFunc(func(rctx context.Context) (agentruntime.DaemonClientPort, string, error) {
+			return s.reconnectRemote(rctx, deviceID, entry)
+		})),
+	)
+	entry.runtime = rt
 
 	// 同步拉一次远端 backend 的 capability 矩阵缓存到本地,之后 rt.Capabilities()
 	// 直接返实际能力。失败不阻断 borrow —— Capabilities() 回退到
@@ -3627,24 +3641,25 @@ func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_ent
 		lease.Release()
 		return existing.runtime, nil
 	}
-	entry := &remoteRuntimeEntry{
-		runtime:  rt,
-		lease:    lease,
-		sessions: map[int64]struct{}{sessionID: {}},
-	}
 	s.remoteCache[deviceID] = entry
 	s.remoteMu.Unlock()
 
-	go s.watchLeaseClosed(deviceID, entry)
+	go s.watchLeaseClosed(deviceID, entry, lease)
 	return rt, nil
 }
 
-// watchLeaseClosed 监听 lease.Closed()(Pool 那侧通知 entry 失效),
-// 然后把 chat_svc 这边的 cache entry 摘掉,下次 borrow 走冷路径重建 runtime。
-func (s *chatSvc) watchLeaseClosed(deviceID int64, entry *remoteRuntimeEntry) {
-	<-entry.lease.Closed()
+// watchLeaseClosed 监听某条 lease 的 Closed()(Pool 那侧通知它失效),然后把 chat_svc
+// 这边的 cache entry 摘掉,下次 borrow 走冷路径重建 runtime。
+//
+// 只在**这条** lease 仍是该 entry 当前那条时才摘:runtime 已经自己重连换过 lease 的话
+// entry 还活着,摘掉它会让下一轮 borrow 为同一台设备造出第二个 *remote.Runtime,两个
+// runtime 在同一条池化连接上抢注同名 handler,在飞会话的事件会被路由到不认识它的那个
+// 然后静默丢弃。lease 参数因此是显式的,不能读 entry.lease —— 那是会变的。
+func (s *chatSvc) watchLeaseClosed(deviceID int64, entry *remoteRuntimeEntry, lease remote_device_svc.Lease) {
+	<-lease.Closed()
 	s.remoteMu.Lock()
-	if cur, ok := s.remoteCache[deviceID]; ok && cur == entry {
+	cur, ok := s.remoteCache[deviceID]
+	if ok && cur == entry && entry.lease == lease {
 		delete(s.remoteCache, deviceID)
 	}
 	s.remoteMu.Unlock()

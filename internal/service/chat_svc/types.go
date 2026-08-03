@@ -101,6 +101,12 @@ const (
 	// 不存在 subscribe-after-emit race。收尾在此补一发,前端据 LaunchMessageID 兜底
 	// finishStream(幂等:per-turn 已收到 done 时该流已不在,直接 no-op)。
 	StreamAutonomousFinished ChatStreamEventKind = "autonomous_finished"
+
+	// StreamConnectionState 会话与执行它那台远端 daemon 之间的**通道**状态
+	// (connected / reconnecting / lost)。它是运行态之上的一层修饰,不是第五种
+	// AgentStatus —— 会话在重连期间仍然是「运行中」,只是通道断了。走会话级的
+	// ConnStateStreamName 流,不走 per-turn 流(断连时那条流恰好没人收得到)。
+	StreamConnectionState ChatStreamEventKind = "connection_state"
 )
 
 // ChatStreamEvent 是 EventsEmit 出去的统一 payload。
@@ -134,6 +140,13 @@ type ChatStreamEvent struct {
 	// tool_use_result;codex 当前不发）。前端按工具语义解码,典型用例是 TaskCreate
 	// 用它把系统分配的 task id 喂给前端做 task-progress 关联。无 meta 时留 nil。
 	ToolResultMeta map[string]any `json:"toolResultMeta,omitempty"`
+
+	// StreamConnectionState 事件填充。ConnectionState 是通道状态取值;
+	// CaughtUpCount / PendingDecisions 只在补齐落定(connected)那一发有意义,
+	// 分别是本次补齐重放了多少条通知、补完后还有多少个待决策没回答。
+	ConnectionState  string `json:"connectionState,omitempty"`
+	CaughtUpCount    int    `json:"caughtUpCount,omitempty"`
+	PendingDecisions int    `json:"pendingDecisions,omitempty"`
 
 	// subagent 内部产生的 tool_use / tool_result 在这里附上外层 Agent.tool_use_id；
 	// 主 agent 自己的工具留空。前端据此把子 block 从主 transcript 移走，挂到父卡。

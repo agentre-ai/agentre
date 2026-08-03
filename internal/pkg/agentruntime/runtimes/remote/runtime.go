@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/agents/provider"
@@ -61,7 +62,36 @@ type Runtime struct {
 	// *之后*)。按 sessionID 持久(跨 turn / 子进程 evict 复用),conn close 时统一拆。
 	// 见 autoturn.go。
 	autoSessions map[int64]*autoSession
+
+	// ── 断连重连(reconnect.go)──
+	reconnect    ReconnectPort
+	connObserver ConnStateObserver
+	cursorPort   agentruntime.SessionCursorPort
+	backoff      []time.Duration
+	cursorFlush  time.Duration
+
+	// connMu 只保护「当前这条连接」相关的三个字段:client / daemonFP / 能力探测
+	// 结果。它与 mu 分开,是因为重连期间要在不持有会话表锁的前提下换连接。
+	connMu     sync.Mutex
+	daemonFP   string
+	durability durabilityState
+
+	// sessionState 是每条会话的补齐状态(游标 + 连接态 + 补洞串行化)。
+	// 与 sessions 分开:sessions 只活在一轮之内,游标要跨轮存活。
+	stateMu      sync.Mutex
+	sessionState map[int64]*sessionSync
+
+	// 游标落库的防抖攒批,见 markCursorDirty。
+	cursorMu    sync.Mutex
+	cursorDirty map[int64]int64
+	cursorTimer *time.Timer
+
+	stopOnce sync.Once
+	stopped  chan struct{}
 }
+
+// notifyHandler 是一条 daemon → client 通知的处理函数。
+type notifyHandler func(*Runtime, context.Context, json.RawMessage) (any, error)
 
 // New 构造一个 remote.Runtime,并把 runtime.event / runtime.runResultDone
 // 两个 server-push handler 注册到 client。调用方负责管理 client 的生命周期(通常
@@ -70,27 +100,58 @@ type Runtime struct {
 // 额外起一个 goroutine 监 client.Closed():daemon 进程崩溃 / 网络断 / TLS 失
 // 败等情况下,在飞的 run session 永远等不到 runResultDone,events channel 不
 // 关 → chat_svc.runTurn 卡在 `for ev := range events`,前端会话一直停在「生
-// 成中」。conn 关闭时给所有 live session 注入一条 ErrDaemonDisconnected 的
-// StopErr 并 close events,chat_svc 走 StreamError 解锁前端。
-func New(c agentruntime.DaemonClientPort) *Runtime {
+// 成中」。
+//
+// 装了 WithReconnect 时,断连**不**终结会话:会话转入重连态,退避重连并按游标
+// 补齐(见 reconnect.go)。没装重连端口、或对面 daemon 不认补齐族 RPC 时,才
+// 回落到给所有 live session 注入 ErrDaemonDisconnected 并 close events,
+// chat_svc 走 StreamError 解锁前端。
+func New(c agentruntime.DaemonClientPort, opts ...Option) *Runtime {
 	r := &Runtime{
 		client:       c,
 		sessions:     map[int64]*remoteSession{},
 		caps:         map[agent_backend_entity.BackendType]capability.Capabilities{},
 		autoSessions: map[int64]*autoSession{},
+		sessionState: map[int64]*sessionSync{},
+		backoff:      defaultReconnectBackoff,
+		cursorFlush:  defaultCursorFlushInterval,
+		stopped:      make(chan struct{}),
 	}
-	c.Handle(wire.NotifyEvent, r.handleEvent)
-	c.Handle(wire.NotifyRunResultDone, r.handleRunResultDone)
-	c.Handle(wire.NotifyAutonomousTurnStarted, r.handleAutonomousTurnStarted)
-	c.Handle(wire.NotifyAutonomousTurnEvent, r.handleAutonomousTurnEvent)
-	c.Handle(wire.NotifyAutonomousTurnDone, r.handleAutonomousTurnDone)
-	// daemon 上的 CLI 子进程访问内置工具 MCP(org/subagent/group/workflow)时,经此反向
-	// 请求隧道回 desktop 执行(真 /mcp/* handler 在 desktop)。见 mcpproxy.go。
-	c.Handle(wire.MethodMCPProxy, r.handleMCPProxy)
+	for _, o := range opts {
+		o(r)
+	}
+	r.registerHandlers(c)
 	if closed := c.Closed(); closed != nil {
 		go r.watchClose(closed)
 	}
 	return r
+}
+
+// registerHandlers 把五类通知 + MCP 反向隧道挂到一条连接上。重连换连接后要原样再挂
+// 一遍 —— 新连接自带一张空的 handler 表。
+//
+// 五类通知统一经 dispatchNotification 入口,补齐重放走的也是它:实时与补齐因此共用
+// 同一套 handler,R5 的等价性是结构性成立的,不只是被测试覆盖。
+func (r *Runtime) registerHandlers(c agentruntime.DaemonClientPort) {
+	for method, h := range notifyHandlers {
+		m, fn := method, h
+		c.Handle(m, func(ctx context.Context, raw json.RawMessage) (any, error) {
+			return r.dispatchNotification(ctx, m, fn, raw)
+		})
+	}
+	// daemon 上的 CLI 子进程访问内置工具 MCP(org/subagent/group/workflow)时,经此反向
+	// 请求隧道回 desktop 执行(真 /mcp/* handler 在 desktop)。见 mcpproxy.go。
+	c.Handle(wire.MethodMCPProxy, r.handleMCPProxy)
+}
+
+// notifyHandlers 是 daemon → client 五类通知的方法名 → handler 映射。补齐重放按
+// method 找回同一个 handler,所以这张表必须是**唯一**的注册来源。
+var notifyHandlers = map[string]notifyHandler{
+	wire.NotifyEvent:                 (*Runtime).handleEvent,
+	wire.NotifyRunResultDone:         (*Runtime).handleRunResultDone,
+	wire.NotifyAutonomousTurnStarted: (*Runtime).handleAutonomousTurnStarted,
+	wire.NotifyAutonomousTurnEvent:   (*Runtime).handleAutonomousTurnEvent,
+	wire.NotifyAutonomousTurnDone:    (*Runtime).handleAutonomousTurnDone,
 }
 
 // ErrDaemonDisconnected 当远端 daemon 连接断开(进程崩 / 网络断 / 主动 Close)
@@ -98,55 +159,15 @@ func New(c agentruntime.DaemonClientPort) *Runtime {
 // StreamError,前端就能解锁「生成中」并显示一条提示。
 var ErrDaemonDisconnected = errors.New("agentruntime/runtimes/remote: daemon connection closed")
 
-// watchClose 阻塞读 client.Closed(),触发时把所有未结束的 session 用
-// ErrDaemonDisconnected 收尾。幂等 - session 已经被 handleRunResultDone 关闭
-// 的不会被二次关。
-func (r *Runtime) watchClose(closed <-chan struct{}) {
-	<-closed
-	r.mu.Lock()
-	live := make([]*remoteSession, 0, len(r.sessions))
-	liveSids := make([]int64, 0, len(r.sessions))
-	for sid, sess := range r.sessions {
-		live = append(live, sess)
-		liveSids = append(liveSids, sid)
-		delete(r.sessions, sid)
-	}
-	r.mu.Unlock()
-	// 关键失败模式:daemon 进程崩 / 网络断 / TLS 失败,客户端单方面感知到 conn close,
-	// 给在飞 session 注 ErrDaemonDisconnected 解锁前端「生成中」。同步落一条 Warn
-	// 让运维事后能在日志里看到"哪几个 session 是被 daemon 断连兜底关掉的",而不是
-	// 误以为 runtime 正常收尾。空 live 列表也打一条 Debug,方便区分"daemon 主动断
-	// 但没在飞 session" 与日志缺失。
-	if len(live) > 0 {
-		// goroutine 无请求 ctx,按 CLAUDE.md 日志规范用 logger.Default()。
-		logger.Default().Warn("remote runtime: daemon disconnected, injecting StopErr to live sessions",
-			zap.Int("liveCount", len(live)),
-			zap.Int64s("sids", liveSids))
-	} else {
-		logger.Default().Debug("remote runtime: daemon disconnected, no live sessions")
-	}
-	for _, sess := range live {
-		sess.mu.Lock()
-		if !sess.closed {
-			sess.closed = true
-			if sess.result != nil && sess.result.StopErr == nil {
-				sess.result.StopErr = ErrDaemonDisconnected
-			}
-			close(sess.events)
-		}
-		sess.mu.Unlock()
-	}
-	// 自主续轮镜像也随 conn close 拆掉:close 每个 out → chat_svc 的 watcher 退出;
-	// 在飞的那轮 events 也 close,driveAutonomousTurn 干净收尾。见 autoturn.go。
-	r.closeAllAutoSessions()
-}
-
-// Close 关掉与 daemon 的 client 连接。
+// Close 关掉与 daemon 的 client 连接,并停掉重连状态机。
 func (r *Runtime) Close() error {
-	if r.client == nil {
+	r.stopOnce.Do(func() { close(r.stopped) })
+	r.flushCursors()
+	c := r.conn()
+	if c == nil {
 		return nil
 	}
-	return r.client.Close()
+	return c.Close()
 }
 
 // ── Capabilities ───────────────────────────────────────────────────────────
@@ -164,7 +185,7 @@ func (r *Runtime) Prefetch(ctx context.Context, bt agent_backend_entity.BackendT
 		return nil
 	}
 	var res wire.CapabilitiesResult
-	if err := r.client.Call(ctx, wire.MethodCapabilities, wire.CapabilitiesParams{
+	if err := r.conn().Call(ctx, wire.MethodCapabilities, wire.CapabilitiesParams{
 		BackendType: string(bt),
 	}, &res); err != nil {
 		return wire.FromJSONRPCError(err)
@@ -220,6 +241,10 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if err != nil {
 		return nil, nil, err
 	}
+	// R18:开轮前探一次这台 daemon 认不认补齐族 RPC。放在这里而不是断连时才探,
+	// 是因为断连时连接已经死了,那时候探不出任何东西 —— 会话会被吊在退避重连里,
+	// 而对老 daemon 正确的行为是立刻按今天的语义收尾。每条连接只探一次。
+	r.probeDurability(ctx)
 	sess := &remoteSession{
 		id:     req.SessionID,
 		events: make(chan agentruntime.Event, 64),
@@ -230,7 +255,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	r.mu.Unlock()
 
 	var ack wire.RunAck
-	if err := r.client.Call(ctx, wire.MethodRun, params, &ack); err != nil {
+	if err := r.conn().Call(ctx, wire.MethodRun, params, &ack); err != nil {
 		r.mu.Lock()
 		if r.sessions[req.SessionID] == sess {
 			delete(r.sessions, req.SessionID)
@@ -436,7 +461,7 @@ func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID, text str
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodSteer, wire.SteerParams{
+	return r.callSession(ctx, sessionID, wire.MethodSteer, wire.SteerParams{
 		SessionID: sessionID, QueuedID: queuedID, Text: text,
 	}, &wire.OK{})
 }
@@ -446,7 +471,7 @@ func (r *Runtime) CancelSteer(ctx context.Context, sessionID int64, queuedID str
 		return nil, agentruntime.ErrNoActiveTurn
 	}
 	var res wire.CancelSteerResult
-	if err := r.callSentinel(ctx, wire.MethodCancelSteer, wire.CancelSteerParams{
+	if err := r.callSession(ctx, sessionID, wire.MethodCancelSteer, wire.CancelSteerParams{
 		SessionID: sessionID, QueuedID: queuedID,
 	}, &res); err != nil {
 		return nil, err
@@ -459,7 +484,7 @@ func (r *Runtime) DrainPending(ctx context.Context, sessionID int64) []agentrunt
 		return nil
 	}
 	var res wire.DrainResult
-	if err := r.callSentinel(ctx, wire.MethodDrainPending, wire.DrainParams{
+	if err := r.callSession(ctx, sessionID, wire.MethodDrainPending, wire.DrainParams{
 		SessionID: sessionID,
 	}, &res); err != nil {
 		return nil
@@ -471,14 +496,14 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodAbort, wire.AbortParams{SessionID: sessionID}, &wire.OK{})
+	return r.callSession(ctx, sessionID, wire.MethodAbort, wire.AbortParams{SessionID: sessionID}, &wire.OK{})
 }
 
 func (r *Runtime) StopBackgroundTask(ctx context.Context, sessionID int64, taskID string) error {
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodStopBackgroundTask, wire.StopBackgroundTaskParams{
+	return r.callSession(ctx, sessionID, wire.MethodStopBackgroundTask, wire.StopBackgroundTaskParams{
 		SessionID: sessionID,
 		TaskID:    taskID,
 	}, &wire.OK{})
@@ -488,7 +513,7 @@ func (r *Runtime) SetPermissionMode(ctx context.Context, sessionID int64, mode s
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodSetPermissionMode, wire.SetPermissionModeParams{
+	return r.callSession(ctx, sessionID, wire.MethodSetPermissionMode, wire.SetPermissionModeParams{
 		SessionID: sessionID, Mode: mode,
 	}, &wire.OK{})
 }
@@ -497,7 +522,7 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodSubmitAnswer, wire.SubmitAnswerParams{
+	return r.callSession(ctx, sessionID, wire.MethodSubmitAnswer, wire.SubmitAnswerParams{
 		SessionID: sessionID, RequestID: requestID,
 		Questions: questions, Answers: answers, Skipped: skipped,
 	}, &wire.OK{})
@@ -507,7 +532,7 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
+	return r.callSession(ctx, sessionID, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
 		SessionID: sessionID, RequestID: requestID,
 		Allow: allow, AlwaysAllowSession: alwaysAllowSession, DenyReason: denyReason,
 	}, &wire.OK{})
@@ -580,8 +605,32 @@ func (r *Runtime) hasSession(sid int64) bool {
 }
 
 func (r *Runtime) callSentinel(ctx context.Context, method string, params, result any) error {
-	if err := r.client.Call(ctx, method, params, result); err != nil {
+	if err := r.conn().Call(ctx, method, params, result); err != nil {
 		return wire.FromJSONRPCError(err)
 	}
 	return nil
+}
+
+// callSession 是带会话身份的控制类调用。ErrNoActiveTurn 时**重新接管一次再重试**。
+//
+// 为什么必须重试:daemon 的 runtime.* 是 per-connection 注册进共享 registry 的,
+// 每条新连接都会带着一张空的会话表把它们重新注册一遍,把上一次 runtime.session.attach
+// 的接管静默还原。而桌面端同时握着 2-3 条同指纹连接(连接池 / 设备心跳 / 刷新探测),
+// 只要其中任意一条重连过,接管就没了 —— 此后提交决策会被 daemon 的幂等折叠(R8)
+// 折成 OK,会话永久停在等待输入上。所以接管必须是可反复发起的。
+func (r *Runtime) callSession(ctx context.Context, sessionID int64, method string, params, result any) error {
+	err := r.callSentinel(ctx, method, params, result)
+	// canReconnect 同时管住两件事:没装重连端口的调用方(老接线、单测)一律走今天
+	// 的路径,不会凭空多出一次 attach;已被证伪的老 daemon 也不再白试。
+	if err == nil || !errors.Is(err, agentruntime.ErrNoActiveTurn) || !r.canReconnect() {
+		return err
+	}
+	if aerr := r.attachSession(ctx, sessionID); aerr != nil {
+		logger.Ctx(ctx).Warn("remote runtime: re-attach before retry failed",
+			zap.Int64("sid", sessionID), zap.String("method", method), zap.Error(aerr))
+		return err
+	}
+	logger.Ctx(ctx).Info("remote runtime: re-attached session, retrying control call",
+		zap.Int64("sid", sessionID), zap.String("method", method))
+	return r.callSentinel(ctx, method, params, result)
 }

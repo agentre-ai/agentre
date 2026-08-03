@@ -17,6 +17,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1684,4 +1686,374 @@ func TestIntegration_SessionCatchup_DaemonRestartMarksSessionsInterrupted(t *tes
 	var rpcErr *rpc.Error
 	require.True(t, errors.As(err, &rpcErr))
 	assert.Equal(t, wire.ErrCodeNoActiveTurn, rpcErr.Code)
+}
+
+// ── 断连补齐:硬不变量 ──────────────────────────────────────────────────────
+
+// recordedNotify 是客户端**实际拿到**的一条通知:方法、它在 daemon 通知日志里的
+// 序号、以及剥掉 seq 之后的规范化载荷。实时推送与补齐拉取都归一到这个形状,
+// 两条路径因此可以逐条比对。
+type recordedNotify struct {
+	Method  string
+	Seq     int64
+	Payload string
+}
+
+// notifyRecorder 收集一次运行里客户端拿到的全部通知。
+type notifyRecorder struct {
+	mu  sync.Mutex
+	got []recordedNotify
+}
+
+// recordedNotifyMethods 是 daemon → client 的五类通知。
+var recordedNotifyMethods = map[string]struct{}{
+	wire.NotifyEvent:                 {},
+	wire.NotifyRunResultDone:         {},
+	wire.NotifyAutonomousTurnStarted: {},
+	wire.NotifyAutonomousTurnEvent:   {},
+	wire.NotifyAutonomousTurnDone:    {},
+}
+
+func (r *notifyRecorder) observeLive(t *testing.T, method string, raw json.RawMessage) {
+	seq, payload := splitSeq(t, raw)
+	r.add(recordedNotify{Method: method, Seq: seq, Payload: payload})
+}
+
+func (r *notifyRecorder) observePulled(t *testing.T, ns []wire.JournaledNotification) {
+	for _, n := range ns {
+		_, payload := splitSeq(t, n.Params)
+		r.add(recordedNotify{Method: n.Method, Seq: n.Seq, Payload: payload})
+	}
+}
+
+func (r *notifyRecorder) add(n recordedNotify) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.got = append(r.got, n)
+}
+
+// ordered 按 seq 升序去重后交出这次运行客户端**获得**的通知序列。去重是必要的:
+// 补齐期间 daemon 可能把同一条既推过来又在 pull 里带出来,R6 要求客户端丢弃后者;
+// 「同一条不被投递两次」由事件流的逐条相等去证(见用例末尾)。
+func (r *notifyRecorder) ordered() []recordedNotify {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	bySeq := map[int64]recordedNotify{}
+	seqs := make([]int64, 0, len(r.got))
+	for _, n := range r.got {
+		if n.Seq == 0 {
+			continue
+		}
+		if _, dup := bySeq[n.Seq]; dup {
+			continue
+		}
+		bySeq[n.Seq] = n
+		seqs = append(seqs, n.Seq)
+	}
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	out := make([]recordedNotify, 0, len(seqs))
+	for _, s := range seqs {
+		out = append(out, bySeq[s])
+	}
+	return out
+}
+
+// splitSeq 把一帧拆成 (seq, 剥掉 seq 的规范化载荷)。实时帧带 seq、日志载荷不带,
+// 归一后才能逐条比对同一条通知的字节。
+func splitSeq(t *testing.T, raw json.RawMessage) (int64, string) {
+	t.Helper()
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(raw, &m))
+	var seq int64
+	if v, ok := m["seq"].(float64); ok {
+		seq = int64(v)
+	}
+	delete(m, "seq")
+	canonicalJSON, err := json.Marshal(m)
+	require.NoError(t, err)
+	return seq, string(canonicalJSON)
+}
+
+// recordingClient 在客户端这一侧记账:它包住真 *client.Client,拦下五类通知的
+// handler(实时路径)与 runtime.session.pull 的应答(补齐路径)。记账点在
+// *remote.Runtime 之外,所以它记的就是「客户端拿到了什么」,不掺实现细节。
+type recordingClient struct {
+	agentruntime.DaemonClientPort
+	t   *testing.T
+	rec *notifyRecorder
+}
+
+func (c *recordingClient) Handle(method string, fn func(context.Context, json.RawMessage) (any, error)) {
+	if _, ok := recordedNotifyMethods[method]; ok {
+		inner := fn
+		fn = func(ctx context.Context, raw json.RawMessage) (any, error) {
+			c.rec.observeLive(c.t, method, raw)
+			return inner(ctx, raw)
+		}
+	}
+	c.DaemonClientPort.Handle(method, fn)
+}
+
+func (c *recordingClient) Call(ctx context.Context, method string, params, result any) error {
+	err := c.DaemonClientPort.Call(ctx, method, params, result)
+	if err == nil && method == wire.MethodSessionPull {
+		if res, ok := result.(*wire.SessionPullResult); ok {
+			c.rec.observePulled(c.t, res.Notifications)
+		}
+	}
+	return err
+}
+
+// memCursor 是桌面端游标端口的内存替身:daemon 包里没有 chat_sessions,
+// 而本用例要验的是「按游标补齐」的行为,不是它存在哪一列。
+type memCursor struct {
+	mu   sync.Mutex
+	fp   string
+	seqs map[int64]int64
+}
+
+func newMemCursor(fp string) *memCursor {
+	return &memCursor{fp: fp, seqs: map[int64]int64{}}
+}
+
+func (m *memCursor) LoadCursor(_ context.Context, sessionID int64, fp string) (int64, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fp != m.fp {
+		// R12:实例标识对不上就判游标失效。
+		return 0, false, nil
+	}
+	return m.seqs[sessionID], true, nil
+}
+
+func (m *memCursor) SaveCursor(_ context.Context, sessionID int64, fp string, seq int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fp != m.fp {
+		return nil
+	}
+	if seq > m.seqs[sessionID] {
+		m.seqs[sessionID] = seq
+	}
+	return nil
+}
+
+// durableRunner 在 rig 上造一个**带重连能力**的 *remote.Runtime:记账客户端 +
+// 重连端口(重新 auth.connect 一条同设备连接,与真桌面端连接池重拨走的是同一条路)。
+func (r *pairedTestRig) durableRunner(t *testing.T, rec *notifyRecorder, gate <-chan struct{}, states *connStateLog) *remote.Runtime {
+	t.Helper()
+	fp := rpc.DaemonFingerprint(r.d.state.DaemonInstanceUUID)
+	rt := remote.New(
+		&recordingClient{DaemonClientPort: r.cli, t: t, rec: rec},
+		remote.WithDaemonFingerprint(fp),
+		remote.WithSessionCursor(newMemCursor(fp)),
+		remote.WithCursorFlushInterval(0),
+		remote.WithConnStateObserver(states),
+		remote.WithReconnectBackoff([]time.Duration{
+			10 * time.Millisecond, 50 * time.Millisecond, 200 * time.Millisecond, time.Second,
+		}),
+		remote.WithReconnect(remote.ReconnectFunc(func(context.Context) (agentruntime.DaemonClientPort, string, error) {
+			// gate 让用例决定「什么时候才允许重连」。用它把重连推到 daemon 把整轮
+			// 都落完库之后,补齐就必然经 runtime.session.pull 拿回来 —— 否则重连
+			// 恰好赶在事件产生之前,一切照旧走实时推送,这个用例就什么也没验到。
+			if gate != nil {
+				<-gate
+			}
+			return &recordingClient{DaemonClientPort: r.connectSameDevice(t), t: t, rec: rec}, fp, nil
+		})),
+	)
+	t.Cleanup(func() { _ = rt.Close() })
+	return rt
+}
+
+func (r *pairedTestRig) startRunOn(t *testing.T, rt *remote.Runtime, sid int64) (<-chan agentruntime.Event, *agentruntime.RunResult) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	events, result, err := rt.Run(ctx, agentruntime.RunRequest{
+		Backend: &agent_backend_entity.AgentBackend{
+			Type: string(agent_backend_entity.TypeClaudeCode), ID: 1, Name: "test-backend",
+		},
+		AgentID: 1, SessionID: sid, Cwd: r.dir, UserText: "hi",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	return events, result
+}
+
+// scriptPhase 一个阶段:先等 gate(nil 不等),再把 events 逐条送进事件流。
+type scriptPhase struct {
+	gate   <-chan struct{}
+	events []agentruntime.Event
+}
+
+// phasedBackendRunner 让用例精确控制「哪些事件在断连期间产生、哪些在补齐之后产生」。
+type phasedBackendRunner struct {
+	phases []scriptPhase
+}
+
+func (*phasedBackendRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+
+func (p *phasedBackendRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event, 1)
+	go func() {
+		defer close(ch)
+		for _, ph := range p.phases {
+			if ph.gate != nil {
+				<-ph.gate
+			}
+			for _, ev := range ph.events {
+				ch <- ev
+				time.Sleep(5 * time.Millisecond) // 让 fanout 先把这一帧冲出去
+			}
+		}
+	}()
+	return ch, &agentruntime.RunResult{}, nil
+}
+
+// bootPhasedRig 起一个 rig 并把 backend 换成阶段脚本。
+func bootPhasedRig(t *testing.T, r *phasedBackendRunner) *pairedTestRig {
+	t.Helper()
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	// bootRemoteRig 自己也换过一次 backend;t.Cleanup 是后进先出,这里的还原先跑。
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, r))
+	return rig
+}
+
+// awaitJournalDepth 等 daemon 的通知日志攒够 want 条。读的是 daemon 自己的库,
+// 与补齐 RPC 同源。
+func awaitJournalDepth(t *testing.T, r *pairedTestRig, sessionID, want int64) {
+	t.Helper()
+	reader := journalReader{db: r.d.db}
+	require.Eventually(t, func() bool {
+		latest, err := reader.LatestSeq(context.Background(), rigDeviceFingerprint,
+			strconv.FormatInt(sessionID, 10))
+		return err == nil && latest >= want
+	}, 10*time.Second, 10*time.Millisecond, "daemon 应在断连期间照常落库")
+}
+
+// awaitTextCollecting 等下一条指定文本的 TextDelta,并把这期间收下的事件原样交回
+// (它们已经离开 channel,不收回来后面的逐条比对就会凭空少几条)。
+func awaitTextCollecting(t *testing.T, events <-chan agentruntime.Event, want string) []agentruntime.Event {
+	t.Helper()
+	var got []agentruntime.Event
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatalf("events channel closed while waiting for %q", want)
+			}
+			got = append(got, ev)
+			if td, isText := ev.(agentruntime.TextDelta); isText && td.Text == want {
+				return got
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %q", want)
+		}
+	}
+}
+
+// connStateLog 收集会话级连接态。用例靠它知道「补齐已经落定、回到实时了」,
+// 也顺带证明这条信号真的传得到上层(前端那一步要拿它渲染断连指示器)。
+type connStateLog struct {
+	mu  sync.Mutex
+	got map[int64][]remote.ConnState
+}
+
+func newConnStateLog() *connStateLog { return &connStateLog{got: map[int64][]remote.ConnState{}} }
+
+func (c *connStateLog) OnSessionConnState(sessionID int64, st remote.SessionConnState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.got[sessionID] = append(c.got[sessionID], st.State)
+}
+
+func (c *connStateLog) sawAfterReconnect(sessionID int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := c.got[sessionID]
+	for i := 1; i < len(seen); i++ {
+		if seen[i-1] == remote.ConnStateReconnecting && seen[i] == remote.ConnStateConnected {
+			return true
+		}
+	}
+	return false
+}
+
+// TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun 是本规格的**硬不变量**:
+// 同一次会话执行,「中途掐断连接、隔一会儿重连补齐」最终拿到的通知序列,必须与
+// 「全程不断连」逐条相等 —— method 相同、载荷字节相同、顺序相同、无重复、无遗漏。
+//
+// 真 daemon + 真 WebSocket + 真 *remote.Runtime。两次运行跑同一段三阶段脚本,唯一
+// 区别是第二次在第一阶段之后 Close 掉那条 ws,并把重连推迟到 daemon 把第二阶段全部
+// 落完库之后 —— 断连期间那几条因此只可能从 runtime.session.pull 回来。第三阶段在
+// 补齐落定**之后**才产生,用来验证会话确实回到了实时推送,而不是补完就哑了。
+//
+// 记账点在 *remote.Runtime 之外的客户端侧:实时路径记 handler 收到的帧,补齐路径记
+// runtime.session.pull 的应答,两边都剥掉 seq 后规范化,因此可以逐条比对。
+func TestIntegration_ReconnectCatchUp_MatchesUninterruptedRun(t *testing.T) {
+	const sid int64 = 100
+	phase1 := []agentruntime.Event{agentruntime.TextDelta{Text: "one"}, agentruntime.TextDelta{Text: "two"}}
+	phase2 := []agentruntime.Event{agentruntime.TextDelta{Text: "three"}, agentruntime.TextDelta{Text: "four"}}
+	phase3 := []agentruntime.Event{agentruntime.TextDelta{Text: "five"}, agentruntime.Done{}}
+
+	var baseline []recordedNotify
+	var baselineEvents []agentruntime.Event
+	var baselineResult agentruntime.RunResult
+
+	t.Run("uninterrupted", func(t *testing.T) {
+		g1, g2 := make(chan struct{}), make(chan struct{})
+		close(g1)
+		close(g2)
+		rig := bootPhasedRig(t, &phasedBackendRunner{phases: []scriptPhase{
+			{events: phase1}, {gate: g1, events: phase2}, {gate: g2, events: phase3},
+		}})
+		rec := &notifyRecorder{}
+		rt := rig.durableRunner(t, rec, nil, newConnStateLog())
+		events, result := rig.startRunOn(t, rt, sid)
+
+		baselineEvents = drainRuntimeEvents(t, events, 10*time.Second)
+		baselineResult = *result
+		baseline = rec.ordered()
+		require.NotEmpty(t, baseline, "全程不断连也该收到通知")
+	})
+
+	t.Run("disconnect_then_catch_up", func(t *testing.T) {
+		disconnected := make(chan struct{})
+		caughtUp := make(chan struct{})
+		rig := bootPhasedRig(t, &phasedBackendRunner{phases: []scriptPhase{
+			{events: phase1}, {gate: disconnected, events: phase2}, {gate: caughtUp, events: phase3},
+		}})
+		rec := &notifyRecorder{}
+		states := newConnStateLog()
+		reconnectGate := make(chan struct{})
+		rt := rig.durableRunner(t, rec, reconnectGate, states)
+		events, result := rig.startRunOn(t, rt, sid)
+
+		// 掐断:第一阶段已经实时到达,第二阶段在断连期间产生。等到的那几条要收回
+		// 序列里,它们同样是这次运行交付出去的。
+		got := awaitTextCollecting(t, events, "one")
+		require.NoError(t, rig.cli.Close())
+		close(disconnected)
+
+		// 等 daemon 把第二阶段落完库(此刻推送无人接收),再放行重连。
+		awaitJournalDepth(t, rig, sid, int64(len(phase1)+len(phase2)))
+		close(reconnectGate)
+
+		// 补齐落定 → 会话回到实时 → 第三阶段才开始产生。
+		require.Eventually(t, func() bool { return states.sawAfterReconnect(sid) },
+			10*time.Second, 10*time.Millisecond, "补齐后应回到 connected")
+		close(caughtUp)
+
+		got = append(got, drainRuntimeEvents(t, events, 15*time.Second)...)
+
+		// (a) 客户端**获得**的通知序列与不断连时逐条相等:方法、seq、载荷字节。
+		assert.Equal(t, baseline, rec.ordered(),
+			"补齐后拿到的通知序列必须与全程不断连时逐条相等")
+		// (b) 客户端**投递**出去的事件流也逐条相等 —— 这一条堵死重复投递:
+		// (a) 按 seq 去重,只有 (b) 能证明同一条没有被消费两次。
+		assert.Equal(t, baselineEvents, got, "补齐后交付的事件流不得多一条、少一条或换序")
+		assert.Equal(t, baselineResult.StopErr, result.StopErr, "断连不得把终态污染成失败")
+	})
 }
