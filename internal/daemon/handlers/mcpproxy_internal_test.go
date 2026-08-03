@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -96,9 +97,68 @@ func TestMCPTunnelHandler_ForwardsRequestAndWritesResponse(t *testing.T) {
 	require.NotContains(t, fwd.Headers, "Content-Length")
 }
 
-func TestMCPTunnelHandler_NoActiveConnReturns503(t *testing.T) {
+// TestMCPTunnelHandler_NoActiveConn_ReturnsReadableToolError covers R17: when the
+// tunnel has no live desktop connection to route to, the CLI subprocess's MCP client
+// must get back something it can hand to the model as an ordinary tool-call error —
+// not a bare HTTP 503 whose body a JSON-RPC/MCP client discards as a transport
+// failure. The response must therefore be HTTP 200 carrying a JSON-RPC error object
+// (the same shape org/subagent/hooktool's own writeRPCError uses for a real tool
+// execution failure), correlated to the request's id, whose message names the
+// unavailable capability, states the dependency on the originating client being
+// online, and tells the model not to retry.
+func TestMCPTunnelHandler_NoActiveConn_ReturnsReadableToolError(t *testing.T) {
+	h := NewMCPTunnelHandler(func() NotifierPort { return nil })
+
+	body := `{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"org_get"}}`
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp/org/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	// Not a bare transport failure: HTTP 200 + JSON-RPC error is the shape an
+	// MCP-over-HTTP client reads as an ordinary (readable) tool-call error instead
+	// of discarding the body because the status line said "infrastructure fault".
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var resp struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  json.RawMessage `json:"result"`
+		Error   *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, "2.0", resp.JSONRPC)
+	require.Equal(t, json.RawMessage("42"), resp.ID, "must echo the request id back so the MCP client correlates the response")
+	require.Nil(t, resp.Result)
+	require.NotNil(t, resp.Error, "must be a JSON-RPC error object, not a bare status-code failure")
+
+	msg := resp.Error.Message
+	require.Contains(t, msg, "org", "names which capability is unavailable")
+	require.Contains(t, msg, "offline", "states the dependency: the originating client must be online")
+	require.Contains(t, msg, "do not retry", "tells the model to proceed instead of retry-looping")
+	require.NotContains(t, rec.Body.String(), "503", "must not leak the old bare-503 wording")
+}
+
+// TestMCPTunnelHandler_NoActiveConn_UnparsableBodyStillAnswers covers the edge case
+// where the request body isn't valid JSON-RPC (or has no id): the handler must still
+// answer with a well-formed JSON-RPC error (id degrades to null) instead of panicking
+// or falling back to the old bare-503 behavior.
+func TestMCPTunnelHandler_NoActiveConn_UnparsableBodyStillAnswers(t *testing.T) {
 	h := NewMCPTunnelHandler(func() NotifierPort { return nil })
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp/org/", nil))
-	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp/org/", strings.NewReader("not json")))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp struct {
+		ID    json.RawMessage           `json:"id"`
+		Error *struct{ Message string } `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, json.RawMessage("null"), resp.ID)
+	require.NotNil(t, resp.Error)
 }

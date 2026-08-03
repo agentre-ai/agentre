@@ -967,26 +967,88 @@ func TestIntegration_MCPReverseTunnel(t *testing.T) {
 	require.Equal(t, reqBody, string(gotBody))
 }
 
-// TestIntegration_MCPReverseTunnel_NoDispatcher 验证 desktop 侧未装配 dispatcher 时,隧道
-// 不会打挂 RPC 连接,而是把 502 以 HTTP 应答回给 CLI(handleMCPProxy 的兜底)。
-func TestIntegration_MCPReverseTunnel_NoDispatcher(t *testing.T) {
-	// 显式清空 dispatcher(remote 包进程级全局),并在测后保持清空。
-	remote.RegisterMCPProxyDispatcher(nil)
-	t.Cleanup(func() { remote.RegisterMCPProxyDispatcher(nil) })
+// TestIntegration_MCPReverseTunnel_NoTarget 覆盖 R17:发起会话的桌面端彻底断开(daemon
+// 活连接表为空,tunnelTarget() 无目标可解)时,daemon 本机 /mcp/ 隧道入口不能把裸 503
+// 答回 CLI 子进程的 MCP 客户端——非 2xx 状态码会让 MCP-over-HTTP 客户端把整个应答当传输层
+// 故障丢弃,body 里的话模型永远读不到。必须换成 HTTP 200 包一个 JSON-RPC error,是 MCP
+// 客户端读作"这次工具调用失败了"的那个形状,措辞点名哪个能力不可用、说明它依赖发起端在线、
+// 且不要重试。
+//
+// 同时钉住 R4/R17 合在一起的效果:会话本身完全不受隧道无目标影响——断连发生在一轮执行
+// 中途,隧道报错之后这一轮仍然照常跑完、落到 idle,而不是被这条路径顺手挂起或打断。
+//
+// 前身 TestIntegration_MCPReverseTunnel_NoDispatcher 用一条**仍然存活**的连接、清空
+// desktop 侧 dispatcher 来触发 502——那是 handleMCPProxy 自己的兜底,走的是隧道成功
+// 送达之后 desktop 本机重放失败,和这里"隧道压根没有目标连接"是两个不同的失败点,
+// 从未覆盖过 R17。改名以准确反映验的是哪个失败点。
+func TestIntegration_MCPReverseTunnel_NoTarget(t *testing.T) {
+	gate := make(chan struct{})
+	rig := bootGatedRig(t, &gatedBackendRunner{
+		before: []agentruntime.Event{agentruntime.TextDelta{Text: "before"}},
+		gate:   gate,
+		after:  []agentruntime.Event{agentruntime.TextDelta{Text: "after"}, agentruntime.Done{}},
+	})
 
-	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	events, _ := rig.startRun(t, 950)
+	awaitText(t, events, "before") // 会话确实在跑
+
 	base := rig.d.gateway.BaseURL()
 	require.NotEmpty(t, base)
 
-	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/",
-		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	// 断开这台设备唯一的一条连接,并等 daemon 真的把它从活连接表里摘掉(bindConn 的
+	// Done 监视是异步的)——否则隧道可能还打在一条将死未死的连接上,复现不出"无目标"。
+	require.NoError(t, rig.cli.Close())
+	require.Eventually(t, func() bool {
+		rig.d.conns.mu.Lock()
+		defer rig.d.conns.mu.Unlock()
+		return len(rig.d.conns.live) == 0
+	}, 5*time.Second, 10*time.Millisecond, "daemon must drop the only connection from its live table")
+
+	// daemon 上的 CLI 子进程此刻调一个内置工具:隧道无目标。
+	reqBody := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"org_get"}}`
+	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/", strings.NewReader(reqBody))
 	require.NoError(t, err)
+	httpReq.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
 
-	// 未装配 dispatcher → desktop handleMCPProxy 回 502(而非让反向 RPC 失败打挂连接)。
-	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	// 不是裸 503:HTTP 200 + JSON-RPC error,id 对得上,body 里装的是模型能读懂的话。
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var rpcResp struct {
+		ID    json.RawMessage `json:"id"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(respBody, &rpcResp))
+	require.Equal(t, json.RawMessage("7"), rpcResp.ID)
+	require.NotNil(t, rpcResp.Error, "must be a JSON-RPC error the LLM can read, not a bare transport failure")
+	assert.Contains(t, rpcResp.Error.Message, "org")
+	assert.Contains(t, rpcResp.Error.Message, "offline")
+	assert.Contains(t, rpcResp.Error.Message, "do not retry")
+	assert.NotContains(t, string(respBody), "503", "must not leak the old bare-503 wording")
+
+	// 会话不因为隧道报错而中止:放行剩下的事件,这一轮必须照常跑完。
+	close(gate)
+
+	// 此刻用于 startRun 的那条连接已经关了(remote.Runtime 的断连 UX 会给它注
+	// ErrDaemonDisconnected 并 close events——这与"daemon 侧会话有没有继续跑"是两回事),
+	// 所以改用同设备的新连接把这条会话的日志拉出来,直接验 daemon 侧的事实:这一轮必须
+	// 落到 idle,而不是卡在 running / 被打断。
+	second := rig.connectSameDevice(t)
+	require.Eventually(t, func() bool {
+		var list wire.SessionListResult
+		require.NoError(t, callRig(t, second, wire.MethodSessionList, nil, &list))
+		for _, s := range list.Sessions {
+			if s.SessionID == 950 {
+				return s.LifecycleState == wire.SessionLifecycleIdle
+			}
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond, "session must reach idle after the tunnel error, not be aborted or left running")
 }
 
 // rigSkillDisc 替身发现器,供 skills.list 集成测试在 daemon 侧换上,免依赖真实 claude。
