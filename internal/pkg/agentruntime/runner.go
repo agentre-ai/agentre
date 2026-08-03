@@ -264,6 +264,58 @@ type AskAnswerSink interface {
 	SubmitAnswer(ctx context.Context, sessionID int64, requestID string, questions []AskQuestion, answers []AskAnswer, skipped bool) error
 }
 
+// PendingToolPermission is one still-blocked (non-AskUserQuestion) tool
+// approval waiter, carrying the same fields ToolPermissionEvent raised it
+// with the first time (RequestID / ToolName / Input) — enough for a
+// reconnecting client to rebuild the approval card without a second,
+// parallel payload shape.
+type PendingToolPermission struct {
+	RequestID string
+	ToolName  string
+	Input     []byte
+}
+
+// PendingAskUserQuestion is one still-blocked AskUserQuestion waiter,
+// carrying the same fields AskUserQuestionEvent raised it with the first
+// time (RequestID / Questions) — enough to rebuild the question card.
+type PendingAskUserQuestion struct {
+	RequestID string
+	Questions []AskQuestion
+}
+
+// WaiterSnapshot is the full set of a session's currently-blocked waiters,
+// returned by WaiterLister.PendingWaiters. Either slice may be empty; a
+// session with nothing pending returns the zero value.
+type WaiterSnapshot struct {
+	ToolPermissions  []PendingToolPermission
+	AskUserQuestions []PendingAskUserQuestion
+}
+
+// WaiterLister is implemented by backend runtimes whose control protocol can
+// enumerate its own currently-blocked waiters — the read half of
+// ToolPermissionSink / AskAnswerSink's submit-by-requestID write half.
+//
+// Declared as its own narrow interface (ISP) rather than a third method
+// bolted onto ToolPermissionSink / AskAnswerSink: the common caller only
+// ever wants to answer one already-known requestID and should not have to
+// also satisfy an enumeration method to do that, and a backend with no
+// approval protocol at all should not have to stub one out just to keep
+// implementing the sinks it does support.
+//
+// 当前只有 claudecode 实现（同 ToolPermissionSink/AskAnswerSink 的说明，见
+// runner.go:225 附近）；consumer 对未实现的 backend 做 type-assert 失败后
+// 回落空 WaiterSnapshot，不是接口本身返回错误（R7）。
+//
+// No error return: PendingWaiters is a synchronous snapshot read of
+// in-memory state (mirrors SteerDrainer.DrainPending), not an I/O call.
+// sessionID unknown to this runner (never spawned / already evicted) yields
+// the zero-value WaiterSnapshot, same as "nothing pending right now" — R9
+// forbids any waiter timeout, so there is no separate "expired" case to
+// report either.
+type WaiterLister interface {
+	PendingWaiters(ctx context.Context, sessionID int64) WaiterSnapshot
+}
+
 type PlanStep struct {
 	Step   string
 	Status string

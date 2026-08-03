@@ -42,7 +42,7 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	if waiter == nil {
 		logger.Ctx(ctx).Warn("claudecode runtime: SubmitAnswer no waiting AskUserQuestion",
 			zap.Int64("sessionID", sessionID), zap.String("requestID", requestID))
-		return fmt.Errorf("agentruntime/runtimes/claudecode: no waiting AskUserQuestion for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/claudecode: no waiting AskUserQuestion for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
 
 	if skipped {
@@ -110,7 +110,7 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 	a := v.(*claudeActive)
 	waiter := a.takePermWaiter(requestID)
 	if waiter == nil {
-		return fmt.Errorf("agentruntime/runtimes/claudecode: no waiting tool permission for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/claudecode: no waiting tool permission for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
 
 	var result claudecode.PermissionResult
@@ -153,6 +153,23 @@ func emitToolPermissionResolved(a *claudeActive, w *permWaiter, requestID string
 		AlwaysAllow: alwaysAllow,
 		DenyReason:  denyReason,
 	})
+}
+
+// PendingWaiters implements agentruntime.WaiterLister (R7): a reconnecting
+// client needs to rebuild the approval / question cards for whatever this
+// session is currently blocked on, not just answer an already-known
+// requestID. sessionID unknown to this runner (never spawned / already
+// evicted) returns the zero-value snapshot — same as "nothing pending",
+// never an error.
+func (r *Runtime) PendingWaiters(_ context.Context, sessionID int64) agentruntime.WaiterSnapshot {
+	if sessionID <= 0 {
+		return agentruntime.WaiterSnapshot{}
+	}
+	v, ok := r.cache.Get(sessionKey(sessionID))
+	if !ok {
+		return agentruntime.WaiterSnapshot{}
+	}
+	return v.(*claudeActive).pendingWaiters()
 }
 
 // handleControlRequest 按 tool_name 分派 control_request:

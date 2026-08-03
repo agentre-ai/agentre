@@ -513,23 +513,51 @@ func (h *RuntimeHandlers) SetPermissionMode(ctx context.Context, p wire.SetPermi
 func (h *RuntimeHandlers) SubmitAnswer(ctx context.Context, p wire.SubmitAnswerParams) (wire.OK, error) {
 	s, err := resolveSessionCapability[agentruntime.AskAnswerSink](h, p.SessionID)
 	if err != nil {
-		return wire.OK{}, err
+		return idempotentSubmitResult(err)
 	}
-	if err := s.SubmitAnswer(ctx, p.SessionID, p.RequestID, p.Questions, p.Answers, p.Skipped); err != nil {
-		return wire.OK{}, err
-	}
-	return wire.OK{}, nil
+	return idempotentSubmitResult(s.SubmitAnswer(ctx, p.SessionID, p.RequestID, p.Questions, p.Answers, p.Skipped))
 }
 
 func (h *RuntimeHandlers) SubmitToolPermission(ctx context.Context, p wire.SubmitToolPermissionParams) (wire.OK, error) {
 	s, err := resolveSessionCapability[agentruntime.ToolPermissionSink](h, p.SessionID)
 	if err != nil {
-		return wire.OK{}, err
+		return idempotentSubmitResult(err)
 	}
-	if err := s.SubmitToolPermission(ctx, p.SessionID, p.RequestID, p.Allow, p.AlwaysAllowSession, p.DenyReason); err != nil {
+	return idempotentSubmitResult(s.SubmitToolPermission(ctx, p.SessionID, p.RequestID, p.Allow, p.AlwaysAllowSession, p.DenyReason))
+}
+
+// idempotentSubmitResult folds "waiter no longer exists" errors into a
+// success response (R8): the same requestID submitted twice (the second
+// take-and-delete misses → ErrWaiterNotFound) and a session that is no
+// longer live on this daemon (never started here, already ended, or —
+// once task 4 lands restart-interruption — marked interrupted →
+// ErrNoActiveTurn) both collapse to "nothing left to do here", not an
+// error. A reconnected client cannot tell whether its previous submission
+// already arrived, so surfacing an error here would make it misreport
+// failure to the user. Every other error (capability genuinely unsupported,
+// invalid input, a real I/O failure talking to the backend) is returned
+// unchanged.
+func idempotentSubmitResult(err error) (wire.OK, error) {
+	if err != nil && !errors.Is(err, agentruntime.ErrNoActiveTurn) && !errors.Is(err, agentruntime.ErrWaiterNotFound) {
 		return wire.OK{}, err
 	}
 	return wire.OK{}, nil
+}
+
+// PendingWaiters returns the snapshot of waiters currently blocked for sid
+// (R7). A backend without an approval protocol (type assertion to
+// agentruntime.WaiterLister fails) and a session unknown to this daemon
+// both yield the zero-value WaiterSnapshot — never an error, so a
+// reconnecting client can always call this and render whatever comes back.
+//
+// Not wired to a JSON-RPC method by this task; it exists so the capability
+// is reachable for the 待决策查询 RPC a later task adds.
+func (h *RuntimeHandlers) PendingWaiters(ctx context.Context, sid int64) agentruntime.WaiterSnapshot {
+	lister, err := resolveSessionCapability[agentruntime.WaiterLister](h, sid)
+	if err != nil {
+		return agentruntime.WaiterSnapshot{}
+	}
+	return lister.PendingWaiters(ctx, sid)
 }
 
 func (h *RuntimeHandlers) GetGoal(ctx context.Context, p wire.GoalParams) (wire.GoalResult, error) {

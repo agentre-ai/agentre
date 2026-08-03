@@ -69,6 +69,8 @@ type fullRT struct {
 	submitToolPermErr   error
 	submitToolPermCalls []submitToolPermCall
 
+	pendingWaiters agentruntime.WaiterSnapshot
+
 	goalErr        error
 	getGoalCalls   []goalCall
 	setGoalCalls   []goalCall
@@ -203,6 +205,12 @@ func (r *fullRT) SubmitToolPermission(_ context.Context, sid int64, requestID st
 	defer r.mu.Unlock()
 	r.submitToolPermCalls = append(r.submitToolPermCalls, submitToolPermCall{sid, requestID, allow, always, deny})
 	return r.submitToolPermErr
+}
+
+func (r *fullRT) PendingWaiters(_ context.Context, _ int64) agentruntime.WaiterSnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pendingWaiters
 }
 
 func (r *fullRT) GetGoal(_ context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
@@ -1059,6 +1067,117 @@ func TestRuntime_SubmitToolPermission_Success(t *testing.T) {
 	assert.Equal(t, "p-1", rt.submitToolPermCalls[0].requestID)
 	assert.Equal(t, "nope", rt.submitToolPermCalls[0].denyReason)
 	assert.False(t, rt.submitToolPermCalls[0].allow)
+}
+
+// ── PendingWaiters (R7) ──────────────────────────────────────────────────────
+//
+// PendingWaiters is not a wired JSON-RPC method yet (a later task exposes it
+// as 待决策查询) — these tests exercise the plain Go method directly, the
+// seam this task promises to leave reachable.
+
+func TestRuntime_PendingWaiters_ReturnsBackendSnapshot(t *testing.T) {
+	want := agentruntime.WaiterSnapshot{
+		ToolPermissions: []agentruntime.PendingToolPermission{
+			{RequestID: "p-1", ToolName: "Bash", Input: []byte(`{"command":"ls"}`)},
+		},
+		AskUserQuestions: []agentruntime.PendingAskUserQuestion{
+			{RequestID: "a-1", Questions: []agentruntime.AskQuestion{{Question: "continue?"}}},
+		},
+	}
+	rt := &fullRT{pendingWaiters: want}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 5)
+	defer close(live)
+
+	got := h.PendingWaiters(ctx, 5)
+	assert.Equal(t, want, got)
+}
+
+func TestRuntime_PendingWaiters_BackendUnsupported_EmptyNoError(t *testing.T) {
+	// bareRT implements only Runtime — WaiterLister assertion fails. R7:
+	// a backend without the approval protocol yields an empty snapshot,
+	// never an error.
+	rt := &fullRT{}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 5)
+	defer close(live)
+	h.SwapRuntimeFor(func(_ agent_backend_entity.BackendType) agentruntime.Runtime { return bareRT{} })
+
+	got := h.PendingWaiters(ctx, 5)
+	assert.Equal(t, agentruntime.WaiterSnapshot{}, got)
+}
+
+func TestRuntime_PendingWaiters_NoSession_Empty(t *testing.T) {
+	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
+	got := h.PendingWaiters(ctx, 999)
+	assert.Equal(t, agentruntime.WaiterSnapshot{}, got)
+}
+
+// ── SubmitAnswer / SubmitToolPermission idempotency (R8) ────────────────────
+//
+// Neither call may ever surface an error for "already answered" or "session
+// gone" — a reconnected client cannot tell whether its previous submission
+// arrived, so an error would make it misreport to the user.
+
+func TestRuntime_SubmitAnswer_SameRequestIDTwice_SecondCallStillSucceeds(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 5)
+	defer close(live)
+
+	_, err := h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 5, RequestID: "r-1"})
+	require.NoError(t, err)
+
+	// Real backends take-and-delete the waiter on first submit; simulate
+	// the second call landing on an already-taken requestID.
+	rt.submitAnswerErr = agentruntime.ErrWaiterNotFound
+	_, err = h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 5, RequestID: "r-1"})
+	require.NoError(t, err)
+	assert.Len(t, rt.submitAnswerCalls, 2)
+}
+
+func TestRuntime_SubmitAnswer_WaiterAlreadyGone_IdempotentSuccess(t *testing.T) {
+	rt := &fullRT{submitAnswerErr: agentruntime.ErrWaiterNotFound}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 5)
+	defer close(live)
+
+	_, err := h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 5, RequestID: "vanished"})
+	require.NoError(t, err)
+}
+
+func TestRuntime_SubmitAnswer_SessionGone_IdempotentSuccess(t *testing.T) {
+	// No live session ever registered for this sid — the R10 "daemon
+	// restarted, session marked interrupted" case reduces to this same
+	// resolveSession failure at the current (non-persistent) daemon.
+	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
+	_, err := h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 999, RequestID: "r-1"})
+	require.NoError(t, err)
+}
+
+func TestRuntime_SubmitToolPermission_SameRequestIDTwice_SecondCallStillSucceeds(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 6)
+	defer close(live)
+
+	_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 6, RequestID: "p-1", Allow: true})
+	require.NoError(t, err)
+
+	rt.submitToolPermErr = agentruntime.ErrWaiterNotFound
+	_, err = h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 6, RequestID: "p-1", Allow: true})
+	require.NoError(t, err)
+	assert.Len(t, rt.submitToolPermCalls, 2)
+}
+
+func TestRuntime_SubmitToolPermission_WaiterAlreadyGone_IdempotentSuccess(t *testing.T) {
+	rt := &fullRT{submitToolPermErr: agentruntime.ErrWaiterNotFound}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 6)
+	defer close(live)
+
+	_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 6, RequestID: "vanished"})
+	require.NoError(t, err)
+}
+
+func TestRuntime_SubmitToolPermission_SessionGone_IdempotentSuccess(t *testing.T) {
+	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
+	_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 999, RequestID: "p-1"})
+	require.NoError(t, err)
 }
 
 // TestRuntime_AllEventsRoundTripThroughNotify proves every sealed Event type

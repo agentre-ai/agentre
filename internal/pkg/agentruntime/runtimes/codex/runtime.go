@@ -467,7 +467,7 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	}
 	waiter := a.askWaiter(requestID)
 	if waiter == nil {
-		return fmt.Errorf("agentruntime/runtimes/codex: no waiting request_user_input for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/codex: no waiting request_user_input for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
 	if len(questions) > 0 && len(questions) != len(waiter.questions) {
 		return fmt.Errorf("agentruntime/runtimes/codex: client supplied %d questions but waiter recorded %d", len(questions), len(waiter.questions))
@@ -506,7 +506,7 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 		return agentruntime.ErrNoActiveTurn
 	}
 	if !a.hasPermWaiter(requestID) {
-		return fmt.Errorf("agentruntime/runtimes/codex: no waiting approval for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/codex: no waiting approval for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
 	if err := a.approval.SubmitApproval(ctx, requestID, allow, alwaysAllowSession); err != nil {
 		return err

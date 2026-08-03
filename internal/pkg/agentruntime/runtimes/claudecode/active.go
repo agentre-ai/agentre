@@ -211,6 +211,41 @@ func (a *claudeActive) takeAskWaiter(reqID string) *askWaiter {
 	return w
 }
 
+// pendingWaiters snapshots every currently-blocked waiter (R7) — the read
+// half of registerAskWaiter / registerPermWaiter, whose only prior read
+// path was take-by-requestID. Order within each slice is unspecified (map
+// iteration); callers needing a stable order sort by RequestID themselves.
+func (a *claudeActive) pendingWaiters() agentruntime.WaiterSnapshot {
+	var snap agentruntime.WaiterSnapshot
+
+	a.permMu.Lock()
+	if len(a.permWaiters) > 0 {
+		snap.ToolPermissions = make([]agentruntime.PendingToolPermission, 0, len(a.permWaiters))
+		for reqID, w := range a.permWaiters {
+			snap.ToolPermissions = append(snap.ToolPermissions, agentruntime.PendingToolPermission{
+				RequestID: reqID,
+				ToolName:  w.toolName,
+				Input:     append([]byte(nil), w.rawInput...),
+			})
+		}
+	}
+	a.permMu.Unlock()
+
+	a.askMu.Lock()
+	if len(a.askWaiters) > 0 {
+		snap.AskUserQuestions = make([]agentruntime.PendingAskUserQuestion, 0, len(a.askWaiters))
+		for reqID, w := range a.askWaiters {
+			snap.AskUserQuestions = append(snap.AskUserQuestions, agentruntime.PendingAskUserQuestion{
+				RequestID: reqID,
+				Questions: append([]agentruntime.AskQuestion(nil), w.questions...),
+			})
+		}
+	}
+	a.askMu.Unlock()
+
+	return snap
+}
+
 // newUUIDv4 generates a v4 UUID without adding a dependency.
 func newUUIDv4() string {
 	var b [16]byte
