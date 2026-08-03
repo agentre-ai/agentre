@@ -12,8 +12,8 @@
 | --- | --- |
 | Color-token values, semantics, usage; the agent palette & status system | The enforced rules (shadcn `@/components/ui/*`-only, i18n, `lucide`/Iconify icons, lint, no hardcoded Chinese) → [`frontend.md`](./frontend.md) |
 | Theming mechanism, `dark:` usage, the desktop window shell | Layering / dependency direction, `internal/app` ↔ service ↔ repository, storage paths → [`architecture.md`](./architecture.md) |
-| Component palette, variants, selection guidance | TDD / SOLID / test stack / commit style → [`development.md`](./development.md) |
-| Elevation (surfaces & shadows), z-index, motion, state patterns, accessibility, page recipe | Doc fact-checking discipline → [`doc-maintenance.md`](./doc-maintenance.md) |
+| Component palette, variants, selection guidance | TDD / SOLID / commit style → [`develop.md`](./develop.md); test design → [`testing.md`](./testing.md) |
+| Elevation (surfaces & shadows), z-index, motion, state patterns, accessibility, page recipe | Doc fact-checking discipline → [`documentation.md`](./documentation.md) |
 
 This doc restates the [`frontend.md`](./frontend.md) hard rules only where needed, then links back — it does not duplicate them.
 
@@ -415,7 +415,7 @@ Scrollbars are invisible until you scroll. `useAutoHideScrollbars` ([`App.tsx`](
 
 ### No mobile — desktop only
 
-There is **no `useIsMobile`, no `MOBILE_BREAKPOINT`, no mobile re-shell.** The only responsive seam is the Settings page and the context sidebars using `lg:` (≥1024px) to switch between stacked and side-by-side — not a phone layout. Design for a resizable desktop window; don't add mobile branches.
+There is **no `useIsMobile`, no `MOBILE_BREAKPOINT`, and no mobile re-shell.** Responsive utility adaptations (`sm:` / `md:` / `lg:`) do exist across the desktop chrome and pages to manage a resizable window; they rearrange or hide secondary desktop UI, not create a phone layout. Design for the desktop minimum and resizing behavior; don't add a separate mobile branch.
 
 ### Long lists
 
@@ -444,7 +444,7 @@ Ties break by DOM/portal order, not a bespoke number. A new "always on top" need
 
 - **Fast and light:** micro-interactions `150ms` `ease-out`; small layout entrances `200ms` (`animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out`).
 - **Hover/focus via CSS pseudo-classes, not React state** — a Constraint 1 rule.
-- **Enter/leave via Radix `data-state`** — `data-[state=open]:animate-in … data-[state=closed]:animate-out` with `fade-*`/`zoom-95`/`slide-*` (see `dialog.tsx`, `dropdown-menu.tsx`, `hover-card.tsx`). Don't hand-roll show/hide with `setTimeout`.
+- **Enter/leave via Radix `data-state`** — `data-[state=open]:animate-in … data-[state=closed]:animate-out` with `fade-*`/`zoom-in-95` + `zoom-out-95`/`slide-*` (see `dialog.tsx`, `dropdown-menu.tsx`, `hover-card.tsx`). Don't hand-roll show/hide with `setTimeout`.
 - **Prefer `transition-colors`/`transition-transform` over `transition-all`** — animate only what should move. Common: chevron rotation `transition-transform duration-150`, collapse via `transition-[grid-template-rows] duration-150`.
 - **Spinners:** `animate-spin` on a `lucide` spinner (`Loader2` / `RefreshCw` / `LoaderCircle`), sized to context (`size-3.5`/`size-4` inline), usually tinted to the active status.
 - **Honor reduced motion explicitly.** Agentre does **not** rely on a global `prefers-reduced-motion` reset — instead each animation carries a `motion-reduce:animate-none` / `motion-reduce:transition-none` (or `motion-safe:`) modifier. **Always add one** when you introduce motion; it's how this codebase stays reduced-motion-safe.
@@ -454,7 +454,7 @@ Ties break by DOM/portal order, not a bespoke number. A new "always on top" need
 | utility / pattern | Use |
 | --- | --- |
 | `animate-typing-dot` (`--animate-typing-dot`) | The chat typing/compacting indicator — three dots with staggered `[animation-delay:…]` (see `TypingIndicator` in [`transcript-row-view.tsx`](../frontend/src/components/agentre/transcript-row-view.tsx)). Keyframe `typing-dot` defined in [`globals.css`](../frontend/src/styles/globals.css). |
-| `data-[state=open]:animate-in … fade-*/zoom-95/slide-*` | Dialog / Dropdown / Popover / HoverCard enter-leave (Radix-driven) |
+| `data-[state=open]:animate-in … fade-*/zoom-in-95/zoom-out-95/slide-*` | Dialog / Dropdown / Popover / HoverCard enter-leave (Radix-driven) |
 | `animate-spin` | `Loader2` / `RefreshCw` / `LoaderCircle` spinners |
 | `transition-colors` / `transition-transform` / `duration-150` | hover/focus color, chevron rotation |
 
@@ -602,8 +602,6 @@ export default function ExamplePage() {
 - Agent color / status model → [`frontend/src/components/agentre/types.ts`](../frontend/src/components/agentre/types.ts) + [`session-avatar.ts`](../frontend/src/components/agentre/session-avatar.ts); agent/status primitives → [`primitives.tsx`](../frontend/src/components/agentre/primitives.tsx)
 - Component primitives → [`frontend/src/components/ui/`](../frontend/src/components/ui/); shadcn config → [`components.json`](../frontend/components.json); `cn()` → [`frontend/src/lib/utils.ts`](../frontend/src/lib/utils.ts)
 
-**Related docs:** UI hard rules (shadcn-only, i18n, lint, commit flow) → [`frontend.md`](./frontend.md); layering / dependency direction / storage → [`architecture.md`](./architecture.md); TDD / SOLID / test stack → [`development.md`](./development.md); doc fact-checking → [`doc-maintenance.md`](./doc-maintenance.md).
+**Related docs:** UI hard rules (shadcn-only, i18n, lint, commit flow) → [`frontend.md`](./frontend.md); layering / dependency direction / storage → [`architecture.md`](./architecture.md); TDD / SOLID → [`develop.md`](./develop.md); test design → [`testing.md`](./testing.md); doc fact-checking → [`documentation.md`](./documentation.md).
 
-> When editing this doc, follow [`doc-maintenance.md`](./doc-maintenance.md): token values, component names, and variant names track the current branch's `frontend/src/` code (if you can't `git grep` it, don't claim it); enumerate counts and lists rather than trusting memory.
-</content>
-</invoke>
+> When editing this doc, follow [`documentation.md`](./documentation.md): stage the intended change, derive `VERIFY_TREE="$(git write-tree)"`, and verify token values, component names, and variants against that proposed tree; enumerate counts and lists rather than trusting memory.

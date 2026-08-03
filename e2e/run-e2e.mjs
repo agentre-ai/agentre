@@ -1,7 +1,7 @@
 // Cross-platform e2e runner: runs `playwright test` (forwarding extra args), then cleans up
 // AFTER Playwright has fully exited (webServer torn down, app gone, db closed, vite orphaned).
 //
-// Why a Node wrapper instead of cleaning up elsewhere — see docs/e2e-harness-guide.md §7:
+// Why a Node wrapper instead of cleaning up elsewhere — see e2e/README.md §7:
 //   - globalTeardown runs while Playwright still MANAGES the webServer → killing there
 //     SIGTERMs the live server (exit 143).
 //   - a Makefile `pkill -f "wails dev …"` self-matches the recipe shell's own /proc/<pid>/cmdline

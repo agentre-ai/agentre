@@ -5,25 +5,22 @@
 > for agents (Claude / Codex) and developers.
 >
 > This doc **owns** the GUI-e2e harness. For SQLite / log / table-to-feature debugging see
-> [debugging.md](./debugging.md). The design rationale is archived in
-> [`superpowers/specs/2026-06-10-e2e-harness-hardening-design.md`](./superpowers/specs/2026-06-10-e2e-harness-hardening-design.md)
-> (current) and [`…2026-06-09-e2e-testing-design.md`](./superpowers/specs/2026-06-09-e2e-testing-design.md)
+> [debugging.md](../docs/debugging.md). The design rationale is archived in
+> [`superpowers/specs/2026-06-10-e2e-harness-hardening-design.md`](../docs/superpowers/specs/2026-06-10-e2e-harness-hardening-design.md)
+> (current) and [`…2026-06-09-e2e-testing-design.md`](../docs/superpowers/specs/2026-06-09-e2e-testing-design.md)
 > (the prior snapshot) — those are archived snapshots, not living docs; **this file** is the
 > living reference.
 
 Agentre is an IPC-only Wails desktop app — there is no HTTP API to hit. But `wails dev` exposes
 the app over a browser-accessible IPC bridge, so Playwright (Chromium) can open it like a normal
 page and drive the **real React frontend → real Wails IPC → real Go service/repository → real
-SQLite**. The one thing it does **not** run for real is the agent backend: a real turn spawns
-claude-code / codex subprocesses (slow, nondeterministic, needs external auth), so e2e replaces
-**only** the `agentruntime.Runtime` with a deterministic fake. Every other backend path
-(services, dispatcher, handlers, DB, IPC, migrations) runs for real.
+SQLite**. The external agent boundary does **not** run for real: a real turn spawns claude-code / codex subprocesses and discovers skills from those CLIs (slow, nondeterministic, needs external auth), so e2e replaces the `agentruntime.Runtime` with a deterministic fake and registers deterministic Claude/Codex skill discoverers. Every downstream app path (services, dispatcher, handlers, DB, IPC, migrations) runs for real.
 
 ## 1. Two modes — pick the right one
 
 | | **Committed core-flow suite** | **Ad-hoc functional verification** |
 |---|---|---|
-| Lives in | `e2e/tests/*.spec.ts` (committed) | `e2e/scratch/*.spec.ts` (**gitignored**) |
+| Lives in | `e2e/tests/*.spec.ts` (committed) | `e2e/scratch/**/*.spec.ts` — flat quick looks or nested scenarios (**gitignored**) |
 | Run with | `make e2e` | `make e2e-scratch` |
 | Lifetime | permanent regression guard | throwaway — write, run, observe, delete |
 | What goes here | **only core / critical flows** | "I just built X — does it work in the real app?" |
@@ -31,8 +28,8 @@ claude-code / codex subprocesses (slow, nondeterministic, needs external auth), 
 **The bar for a committed spec is high.** A committed GUI e2e spec is slow (builds + runs the
 real app, ~30 s per run even with the fake) and a maintenance liability. Only add one for a
 **core flow** (app boots, new session → send → streamed reply → idle). Everything else gets
-**verified ad-hoc** (mode 2) and thrown away. When in doubt, verify ad-hoc; promote to a
-committed spec only once the flow is clearly core and stable.
+verified ad-hoc and thrown away — **what that ad-hoc run must produce is
+[docs/verification.md](../docs/verification.md)'s**, not this file's.
 
 ## 2. Architecture
 
@@ -68,13 +65,17 @@ Real runtimes auto-register in their package `init()` (e.g. `runtimes/claudecode
 
 1. Every `internal/pkg/agentruntime/runtimes/fake/*.go` carries `//go:build e2e`, so the package
    and its imports are absent from any default build.
-2. `main()` calls `installE2EFakes(ctx)` (`main.go`) after bootstrap, before `wails.Run`. In an
-   `e2e` build that resolves to `e2e_install.go`, which calls
-   `agentruntime.RegisterRuntime(TypeClaudeCode, fakert.New())` **after** all package `init()`s,
-   so the fake wins the slot, and seeds a local backend attached to the system CEO agent.
-3. In a default build it resolves to `e2e_install_noop.go` — a no-op. `make build` / `make run`
-   compile neither the fake nor its registration; the production binary is identical to one
-   written without e2e at all.
+2. `main()` calls `fakes.Install(context.Background())` (`main.go`, right after `bootstrap.Init`
+   and before `wails.Run`). In an `e2e` build that resolves to `e2e/fakes/install.go`
+   (`//go:build e2e`), which calls `agentruntime.RegisterRuntime(TypeClaudeCode, fakert.New())`
+   **after** all package `init()`s, so the fake wins the slot, and seeds a local backend attached
+   to the system CEO agent.
+3. In a default build it resolves to `e2e/fakes/install_noop.go` (`//go:build !e2e`) — an empty
+   `Install`. Default builds compile this empty seam and the `fakes.Install(...)` call, but none of the fake runtime, skill discoverers, seeding, or registrations; production behavior and data are unchanged.
+
+> `e2e/fakes/` is a **separate Go package** living under `e2e/` deliberately: it keeps the Go
+> sources out of the same directory as the TS/Playwright toolchain while staying next to what
+> they serve.
 
 The fake (`internal/pkg/agentruntime/runtimes/fake/runtime.go`) echoes the prompt back as
 `ReplyPrefix + req.UserText` (`ReplyPrefix = "e2e-fake-reply: "`) in 8-rune `TextDelta` chunks,
@@ -87,7 +88,7 @@ A run is fully hermetic, and in particular **a running Agentre does not interfer
 
 - **Data** — DB / config / logs live under `<tmp>/agentre-e2e-data` (`agentre.db`), removed by
   `run-e2e.mjs` after a **passing** run (kept on failure for debugging — see §7). Your real
-  `~/Library/Application Support/Agentre` is never touched.
+  `~/Library/Application Support/agentre` is never touched.
 - **Single-instance lock** — set only when `!isWailsDevMode()` (`main.go`); e2e runs via
   `wails dev` (sets the `devserver` env → dev mode), so the lock is **already skipped**, and its
   id is data-dir-scoped (`singleInstanceUniqueID(dataDir)`) regardless. So an e2e run launches
@@ -110,8 +111,7 @@ cd e2e && pnpm run setup   # one-time: install deps + Chromium (skip if already 
 make e2e                   # or, equivalently: cd e2e && pnpm test
 ```
 
-Prereqs: `wails` CLI on PATH, `pnpm`, Node with the built-in `node:sqlite` (Node ≥ 22; the repo
-runs Node 24+/26). `pnpm run setup` installs the e2e deps and Chromium **once**; `make e2e` only
+Prereqs: `wails` CLI on PATH, `pnpm`, and Node 24+ with stable built-in `node:sqlite` (the E2E CI job pins Node 24). `pnpm run setup` installs the e2e deps and Chromium **once**; `make e2e` only
 runs the suite — no per-run install. The first run builds Go + Vite (~30 s) and **opens a native
 Agentre window** — expected; the test drives the `:34216` browser instance, not that window. The
 window closes when the suite ends.
@@ -122,16 +122,14 @@ orchestration and cleanup live in `e2e/run-e2e.mjs` (cross-platform Node) — th
 shell-only `pkill` / `mkdir -p` / `touch` steps. CI exercises the Linux path; the Windows reap
 branch (PowerShell CIM) is by-inspection only.
 
-**Debug loop.** The config sets `reuseExistingServer: !process.env.CI`, so locally you can leave a
-server up and re-run specs against it without rebuilding each time:
+**Debug loop.** Stay inside the real runner so frontend preparation, the temp data directory, `AGENTRE_PROXY_PORT=0`, and cleanup remain identical to an ordinary run:
 
 ```bash
-# terminal 1 — start the harness server once (env matches the config), leave it running:
-cd e2e && AGENTRE_DATA_DIR="${TMPDIR:-/tmp}/agentre-e2e-data" AGENTRE_ENV=test \
-  wails dev -tags e2e -devserver localhost:34216    # run from repo root; Ctrl-C to stop
-# terminal 2 — re-run specs against the reused server (add --debug to step, --headed to watch):
-cd e2e && pnpm exec playwright test            # or: pnpm exec playwright test --debug
+cd e2e && pnpm test --debug     # Playwright inspector
+cd e2e && pnpm test --headed    # watch the browser
 ```
+
+Do not hand-start a reusable Wails server against the fixed e2e data directory: loading the Playwright config prepares that directory for a fresh run, so a separately running app and the DB oracle can diverge.
 
 The HTML report lands at `e2e/playwright-report/` (gitignored); traces are
 `retain-on-failure`, screenshots `only-on-failure`. webServer output → `$TMPDIR/agentre-e2e-webserver.log`.
@@ -166,32 +164,24 @@ Only when the flow is genuinely core (§1). Principles, learned from the smoke s
   `fullyParallel: false` against one shared backend + one shared DB; don't write specs that
   assume isolation between them or rely on wall-clock timing.
 
-## 6. Ad-hoc functional verification — the workflow after finishing a feature
+## 6. Ad-hoc functional verification
 
-The default way to answer **"I just built X — does it work end-to-end in the real app?"** without
-committing a test. Drive the real app, then read observable side-effects (UI, DB, logs).
+Writing a throwaway spec follows §5's conventions (`data-testid` locators, auto-wait, the DB
+oracle); the difference is only that it lives under `e2e/scratch/` and is never committed.
 
-1. **Write a throwaway spec** under `e2e/scratch/` (gitignored). Same conventions as §5 —
-   `data-testid` locators, auto-wait, the DB oracle. If the feature needs a UI hook that doesn't
-   exist yet, add a `data-testid` (additive); if it surfaces a real bug, fix the producer per the
-   [Fix Discipline](./development.md).
-2. **Run it against the real app:**
-   ```bash
-   make e2e-scratch        # runs every e2e/scratch/*.spec.ts via the live harness
-   # or a single file (still through the runner, so cleanup happens):
-   cd e2e && pnpm run test:scratch scratch/<file>.spec.ts
-   ```
-   `playwright.scratch.config.ts` reuses the exact webServer / env / isolation / teardown as the
-   committed suite — only `testDir` points at `./scratch`.
-3. **Observe.** Read the spec's assertions, then corroborate: the temp `agentre.db` (query with a
-   `fixtures/db.ts` helper, or open it read-only at `$AGENTRE_DATA_DIR/agentre.db`); the app's
-   structured log under `<tmp>/agentre-e2e-data/`; the webServer's stdout at
-   `$TMPDIR/agentre-e2e-webserver.log`; on failure, Playwright's trace/screenshot under
-   `e2e/test-results/`. (Log/DB reading: see [debugging.md](./debugging.md).)
-4. **Discard.** The scratch file is gitignored — delete it when done. If the flow turns out to be
-   core and worth guarding forever, *promote* it: move it into `e2e/tests/`, harden, commit (§5).
+**The workflow itself — when driving the real app is warranted, where the evidence goes, the
+`report.md` a run owes, and how to report a bug reproduction honestly — is owned by
+[docs/verification.md](../docs/verification.md).** It is not repeated here.
 
-See [`e2e/scratch/README.md`](../e2e/scratch/README.md) for a copy-paste starter.
+Two harness facts it relies on:
+
+- `playwright.scratch.config.ts` reuses the exact webServer / env / isolation / teardown as the
+  committed suite — only `testDir` points at `./scratch`, and Playwright scans it **recursively**,
+  so `scratch/<task-name>/verify.spec.ts` is picked up.
+- While the scenario runs, assert DB side effects through `fixtures/db.ts`. After a **failed** run, the runner preserves the temp `agentre.db`, app logs, webServer log, and Playwright trace/screenshots for inspection; after success it deletes the temp DB/logs, so the report must retain the deciding assertion/output rather than promising a post-run query. (Log/DB reading: [debugging.md](../docs/debugging.md).)
+
+If the flow turns out to be core and worth guarding forever, *promote* it: move it into
+`e2e/tests/`, harden, commit (§5).
 
 ## 7. Harness engineering — hard-won lessons (symptom → root cause → fix)
 
@@ -232,13 +222,13 @@ in mind when changing it.
   **Not implemented yet** — it's the intended seam; add it red→green (with a fake-runtime unit
   test) when a spec first needs it.
 - **Fake an injected MCP tool call** → when the real backend would call an injected MCP tool, the
-  fake makes the same HTTP `tools/call` like a real CLI. **Done for the `org`/`subagent` tools**:
+  fake makes the same HTTP `tools/call` like a real CLI. **Done for the `org` / `subagent` / `hook` tools**:
   when the agent has the relevant tool enabled, the real backend injects the MCP server, so the
   fake `Run` detects it (`findGroupToolServer`) and POSTs the appropriate tool call to the gateway
   endpoint — driving the real service handler. Model any future injected-tool fidelity on this;
   it's the deterministic-fake-as-MCP-client seam.
 - **Fake another backend** (codex / builtin / remote) → add a fake package under `//go:build e2e`
-  + one more `RegisterRuntime` line in `e2e_install.go`. Never a patch to production control flow.
+  + one more `RegisterRuntime` line in `e2e/fakes/install.go`. Never a patch to production control flow.
 - **A new UI assertion target** → add a `data-testid` (additive) in the same style as §5.
 - **A new persistence oracle** → add a read-only `node:sqlite` helper to `e2e/fixtures/db.ts`.
 
@@ -250,15 +240,14 @@ in mind when changing it.
 | `e2e/playwright.config.ts` | base harness: temp dir + env + `frontend/dist` prep, webServer (`wails dev -tags e2e -devserver 34216`) | yes |
 | `e2e/playwright.scratch.config.ts` | extends base, `testDir: ./scratch` for throwaway specs | yes |
 | `e2e/fixtures/db.ts` | read-only `node:sqlite` DB oracle (`runningSessionCount`, …) | yes |
-| `e2e/tests/*.spec.ts` | committed **core-flow** specs (`smoke-chat.spec.ts`) | yes |
-| `e2e/scratch/*.spec.ts` | throwaway functional-verification specs | **no (gitignored)** |
+| `e2e/tests/*.spec.ts` | committed **core-flow** specs (chat smoke/reload plus approved org/subagent tool flows) | yes |
+| `e2e/scratch/**/*.spec.ts` | throwaway specs, either flat quick looks or `<task-name>/verify.spec.ts` scenarios | **no (gitignored)** |
 | `e2e/scratch/README.md` | scratch convention + starter template | yes |
 | `e2e/package.json` → `setup` / `test` / `test:scratch` | one-time install+Chromium / run suite / run scratch | yes |
 | `Makefile` → `e2e` / `e2e-scratch` | thin aliases for `cd e2e && pnpm test` / `pnpm run test:scratch` | yes |
-| `e2e_install.go` (`//go:build e2e`) / `e2e_install_noop.go` (`//go:build !e2e`) | register the fake + seed / no-op | yes |
+| `e2e/fakes/install.go` (`//go:build e2e`) / `install_noop.go` (`//go:build !e2e`) | register the fake + seed / no-op | yes |
 | `internal/pkg/agentruntime/runtimes/fake/` | the deterministic fake runtime (entire package `//go:build e2e`) | yes |
 
-claudecode backend only. The committed suite covers single-chat and session reload
-(the fake acts as an MCP client for injected tool servers — see §8).
+Turn execution uses the fake Claude Code runtime only; E2E also seeds a Codex backend and deterministic Claude/Codex skill discovery, but does not fake or execute Codex turns. The committed suite covers chat smoke, session reload, and the approved org/subagent injected-tool flows (the fake acts as an MCP client — see §8).
 Settings / multi-backend / codex / remote e2e remain future specs that reuse this same harness
 and the fake-runtime seam above.
