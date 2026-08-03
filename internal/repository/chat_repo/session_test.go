@@ -280,6 +280,7 @@ func TestSessionRepo_Create(t *testing.T) {
 			int64(0),  // project_id
 			"",        // purpose
 			0, "", "", // context_window, permission_mode, permission_mode_at_launch
+			int64(0), "", int64(0), // exec_device_id, exec_daemon_fingerprint, event_cursor —— 新建会话默认本机执行、无游标
 			consts.ACTIVE, sqlmock.AnyArg(), sqlmock.AnyArg(), // status, createtime, updatetime
 		).
 		WillReturnResult(sqlmock.NewResult(99, 1))
@@ -437,5 +438,38 @@ func TestSessionRepo_UpdatePermissionModeAtLaunch(t *testing.T) {
 	mock.ExpectCommit()
 
 	require.NoError(t, repo.UpdatePermissionModeAtLaunch(ctx, 42, "bypassPermissions"))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateExecDaemon 钉死「这条会话跑在哪台 daemon 上」的写入 SQL:
+// 只碰 exec_device_id / exec_daemon_fingerprint 两列(外加 updatetime),
+// 尤其不能顺手把 event_cursor 冲掉 —— 那会让已消费进度凭空回到 0。
+func TestSessionRepo_UpdateExecDaemon(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions` SET `exec_daemon_fingerprint`=\\?,`exec_device_id`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs("sha256:beef", int64(3), sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.UpdateExecDaemon(ctx, 42, 3, "sha256:beef"))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateEventCursor 钉死游标推进的写入 SQL:只动 event_cursor,
+// 不能把执行位置或实例标识一起改掉(否则游标与 daemon 的绑定关系就断了)。
+func TestSessionRepo_UpdateEventCursor(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions` SET `event_cursor`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs(int64(17), sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.UpdateEventCursor(ctx, 42, 17))
 	require.NoError(t, mock.ExpectationsWereMet())
 }

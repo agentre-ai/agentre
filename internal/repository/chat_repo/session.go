@@ -41,6 +41,12 @@ type SessionRepo interface {
 	// invoked through the user-facing SetPermissionMode IPC — that one only
 	// touches permission_mode.
 	UpdatePermissionModeAtLaunch(ctx context.Context, sessionID int64, mode string) error
+	// UpdateExecDaemon 记录执行该会话的配对 daemon(paired_agentreds.id)及其实例标识
+	// (sha256:<hex>)。deviceID=0 + 空标识表示回到本机执行。只碰这两列,不动 event_cursor。
+	UpdateExecDaemon(ctx context.Context, sessionID int64, deviceID int64, daemonFingerprint string) error
+	// UpdateEventCursor 记录桌面端已消费到的 daemon 通知 seq。只碰这一列,
+	// 执行位置与实例标识由 UpdateExecDaemon 负责。
+	UpdateEventCursor(ctx context.Context, sessionID int64, seq int64) error
 	// MarkRead 单调推进 last_read_at: 仅当 ts 严格大于当前值时写入。
 	// 避免 stream-done 与 LoadSession 乱序时把已读时间冲回旧值。
 	// 会话不存在 / 已软删 / ts 不更新 都算成功（不返回 ErrRecordNotFound）。
@@ -357,6 +363,25 @@ func (r *sessionRepo) UpdatePermissionModeAtLaunch(ctx context.Context, sessionI
 		Updates(map[string]any{
 			"permission_mode_at_launch": mode,
 			"updatetime":                time.Now().UnixMilli(),
+		}).Error
+}
+
+func (r *sessionRepo) UpdateExecDaemon(ctx context.Context, sessionID int64, deviceID int64, daemonFingerprint string) error {
+	return db.Ctx(ctx).Model(&chat_entity.Session{}).
+		Where("id = ? AND status = ?", sessionID, consts.ACTIVE).
+		Updates(map[string]any{
+			"exec_device_id":          deviceID,
+			"exec_daemon_fingerprint": daemonFingerprint,
+			"updatetime":              time.Now().UnixMilli(),
+		}).Error
+}
+
+func (r *sessionRepo) UpdateEventCursor(ctx context.Context, sessionID int64, seq int64) error {
+	return db.Ctx(ctx).Model(&chat_entity.Session{}).
+		Where("id = ? AND status = ?", sessionID, consts.ACTIVE).
+		Updates(map[string]any{
+			"event_cursor": seq,
+			"updatetime":   time.Now().UnixMilli(),
 		}).Error
 }
 

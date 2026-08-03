@@ -367,6 +367,34 @@ func (mr *MockSessionRepoMockRecorder) Update(ctx, s any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockSessionRepo)(nil).Update), ctx, s)
 }
 
+// UpdateEventCursor mocks base method.
+func (m *MockSessionRepo) UpdateEventCursor(ctx context.Context, sessionID, seq int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateEventCursor", ctx, sessionID, seq)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateEventCursor indicates an expected call of UpdateEventCursor.
+func (mr *MockSessionRepoMockRecorder) UpdateEventCursor(ctx, sessionID, seq any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateEventCursor", reflect.TypeOf((*MockSessionRepo)(nil).UpdateEventCursor), ctx, sessionID, seq)
+}
+
+// UpdateExecDaemon mocks base method.
+func (m *MockSessionRepo) UpdateExecDaemon(ctx context.Context, sessionID, deviceID int64, daemonFingerprint string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateExecDaemon", ctx, sessionID, deviceID, daemonFingerprint)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateExecDaemon indicates an expected call of UpdateExecDaemon.
+func (mr *MockSessionRepoMockRecorder) UpdateExecDaemon(ctx, sessionID, deviceID, daemonFingerprint any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateExecDaemon", reflect.TypeOf((*MockSessionRepo)(nil).UpdateExecDaemon), ctx, sessionID, deviceID, daemonFingerprint)
+}
+
 // UpdatePermissionMode mocks base method.
 func (m *MockSessionRepo) UpdatePermissionMode(ctx context.Context, sessionID int64, mode string) error {
 	m.ctrl.T.Helper()
