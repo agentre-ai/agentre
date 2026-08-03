@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -142,6 +145,28 @@ func TestMCPTunnelHandler_NoActiveConn_ReturnsReadableToolError(t *testing.T) {
 	require.Contains(t, msg, "offline", "states the dependency: the originating client must be online")
 	require.Contains(t, msg, "do not retry", "tells the model to proceed instead of retry-looping")
 	require.NotContains(t, rec.Body.String(), "503", "must not leak the old bare-503 wording")
+}
+
+// TestMCPTunnelHandler_NoActiveConn_LogsTheDegradation 钉住 observability.md 的强制
+// 埋点 3(降级 / 回落 / 重试):隧道无目标是这条路径唯一的降级分支,而它此刻**没有任何
+// 其它可见痕迹**——应答只进 CLI 子进程,发起端按定义已经离线,daemon 侧运维想事后回答
+// 「为什么 agent 说这个工具不可用」只能靠日志。对面同一跳的 desktop 侧
+// (remote.handleMCPProxy 的无 dispatcher 分支)本来就打了这条 Warn。
+func TestMCPTunnelHandler_NoActiveConn_LogsTheDegradation(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	h := NewMCPTunnelHandler(func() NotifierPort { return nil })
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp/org/",
+		strings.NewReader(`{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"org_get"}}`)))
+
+	line := buf.String()
+	require.Contains(t, line, "mcpproxy.tunnel:", "daemon 侧日志按 package.Method: 前缀,便于 grep")
+	require.Contains(t, line, "/mcp/org/", "要能看出是哪个内置工具被拒")
+	// 红线:请求 body 可能带工具入参(路径 / 内容),整包不进日志。
+	require.NotContains(t, line, "org_get", "must not log the request body")
 }
 
 // TestMCPTunnelHandler_NoActiveConn_UnparsableBodyStillAnswers covers the edge case

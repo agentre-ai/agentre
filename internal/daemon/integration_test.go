@@ -967,6 +967,38 @@ func TestIntegration_MCPReverseTunnel(t *testing.T) {
 	require.Equal(t, reqBody, string(gotBody))
 }
 
+// TestIntegration_MCPReverseTunnel_NoDispatcher 验证 desktop 侧未装配 dispatcher 时,隧道
+// 不会打挂 RPC 连接,而是把 502 以 HTTP 应答回给 CLI(handleMCPProxy 的兜底)。
+//
+// 它与下面的 _NoTarget 是**两个不同的失败点**,必须并存:这里连接仍然活着、隧道成功
+// 送达,失败在 desktop 本机重放那一步(状态码装在 MCPProxyResponse 里原路回流);
+// _NoTarget 则是 daemon 侧压根没有目标连接可解。合并任何一个都会让另一段全链路失去覆盖
+// —— 尤其是「非 2xx 的 desktop 状态码经隧道原样回到 CLI」这条,只有本例走全。
+func TestIntegration_MCPReverseTunnel_NoDispatcher(t *testing.T) {
+	// 显式清空 dispatcher(remote 包进程级全局),并在测后保持清空。
+	remote.RegisterMCPProxyDispatcher(nil)
+	t.Cleanup(func() { remote.RegisterMCPProxyDispatcher(nil) })
+
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	base := rig.d.gateway.BaseURL()
+	require.NotEmpty(t, base)
+
+	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(httpReq)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	// 未装配 dispatcher → desktop handleMCPProxy 回 502(而非让反向 RPC 失败打挂连接)。
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+
+	// 「不打挂连接」是本例名字里的承诺,直接验:同一条 RPC 连接此后仍可正常应答。
+	var list wire.SessionListResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &list),
+		"a tunnel-level 502 must not take the RPC connection down with it")
+}
+
 // TestIntegration_MCPReverseTunnel_NoTarget 覆盖 R17:发起会话的桌面端彻底断开(daemon
 // 活连接表为空,tunnelTarget() 无目标可解)时,daemon 本机 /mcp/ 隧道入口不能把裸 503
 // 答回 CLI 子进程的 MCP 客户端——非 2xx 状态码会让 MCP-over-HTTP 客户端把整个应答当传输层
@@ -977,10 +1009,10 @@ func TestIntegration_MCPReverseTunnel(t *testing.T) {
 // 同时钉住 R4/R17 合在一起的效果:会话本身完全不受隧道无目标影响——断连发生在一轮执行
 // 中途,隧道报错之后这一轮仍然照常跑完、落到 idle,而不是被这条路径顺手挂起或打断。
 //
-// 前身 TestIntegration_MCPReverseTunnel_NoDispatcher 用一条**仍然存活**的连接、清空
+// 上面的 TestIntegration_MCPReverseTunnel_NoDispatcher 用一条**仍然存活**的连接、清空
 // desktop 侧 dispatcher 来触发 502——那是 handleMCPProxy 自己的兜底,走的是隧道成功
 // 送达之后 desktop 本机重放失败,和这里"隧道压根没有目标连接"是两个不同的失败点,
-// 从未覆盖过 R17。改名以准确反映验的是哪个失败点。
+// 覆盖不了 R17;反过来本例也覆盖不了它,两个都得留着。
 func TestIntegration_MCPReverseTunnel_NoTarget(t *testing.T) {
 	gate := make(chan struct{})
 	rig := bootGatedRig(t, &gatedBackendRunner{
