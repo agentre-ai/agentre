@@ -320,9 +320,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 // bindConn is called by LANServer once per accepted WebSocket connection.
 // 挂载 runtime.* 9 个 RPC（capabilities / run / steer / cancelSteer /
 // drainPending / abort / setPermissionMode / submitAnswer /
-// submitToolPermission）到共享 registry。RuntimeHandlers 自己持有 NotifierPort
-// 把 events / runResultDone 推回到这条连接,以及 per-session backend type
-// cache,所以是 per-conn 构造的。
+// submitToolPermission）到共享 registry。RuntimeHandlers 持有 per-session backend
+// type cache,所以是 per-conn 构造的;会话通知**不**推回「这条」连接 —— 它按对端
+// 指纹在发送那一刻解析活连接(见 notifierForPeer),因为 fanout goroutine 会活过
+// 这条连接。
 func (d *Daemon) bindConn(c *rpc.Conn) {
 	n := notifier.New(c)
 	// 把这条连接登记为当前活跃连接,供 /mcp/ 隧道与会话通知推送用(单客户端 MVP)。
