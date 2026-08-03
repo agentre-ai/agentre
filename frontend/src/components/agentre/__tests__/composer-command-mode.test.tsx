@@ -1,8 +1,11 @@
 import { act, render, screen } from "@testing-library/react";
 import type { RefObject } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Editor } from "@tiptap/react";
+
+import type { LocalCommandHistoryScope } from "@/components/agentre/chat-input/local-command-history/types";
+import { localCommandHistoryStore } from "@/stores/local-command-history-store";
 
 // chat.tsx uses wailsjs runtime (OnFileDrop/OnFileDropOff via useFileDropZone)
 vi.mock("../../../../wailsjs/runtime/runtime", async () => {
@@ -17,6 +20,15 @@ vi.mock("../../../../wailsjs/runtime/runtime", async () => {
 });
 
 import { ChatComposer } from "../chat";
+
+const historyScope: LocalCommandHistoryScope = {
+  deviceId: "composer-device",
+  cwd: "/composer/repo",
+};
+
+beforeEach(() => {
+  localCommandHistoryStore.clear(historyScope);
+});
 
 describe("ChatComposer command mode", () => {
   it("shows command-mode banner when input starts with !", async () => {
@@ -93,5 +105,28 @@ describe("ChatComposer command mode", () => {
     });
 
     expect(screen.queryByText(/命令模式|Command mode/)).not.toBeInTheDocument();
+  });
+
+  it("Given an execution scope, When ! mode opens, Then ChatComposer passes that scope to the history menu", async () => {
+    localCommandHistoryStore.record(historyScope, "pnpm test", 10);
+    const editorRef: RefObject<Editor | null> = { current: null };
+
+    render(
+      <ChatComposer
+        editorRef={editorRef}
+        localCommandHistoryScope={historyScope}
+        onSubmit={() => undefined}
+        onRunCommand={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    act(() => {
+      editorRef.current!.commands.insertContent("!");
+    });
+
+    expect(
+      await screen.findByRole("option", { name: "pnpm test" }),
+    ).toBeInTheDocument();
   });
 });

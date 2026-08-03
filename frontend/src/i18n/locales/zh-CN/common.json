@@ -2225,6 +2225,10 @@
       "off": "关"
     }
   },
+  "localCommandHistory": {
+    "aria": "Shell 命令历史",
+    "clearCurrentScope": "清空当前目录历史"
+  },
   "localCommand": {
     "localChip": "本地命令",
     "notSharedWithAI": "不发送给 AI",

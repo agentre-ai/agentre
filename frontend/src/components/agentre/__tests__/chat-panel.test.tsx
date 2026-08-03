@@ -434,6 +434,24 @@ describe("ChatPanel · transcript cwd", () => {
       "/Users/codfrm/Code/agentre/agentre",
     );
   });
+
+  it("Given a remote session cwd, When the composer renders, Then its command history scope uses the stable device ID and resolved cwd", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      cwd: "/srv/agentre",
+      deviceID: "remote-device-7",
+      id: 42,
+    });
+
+    render(<ChatPanel sessionId={42} />);
+
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toEqual({
+      cwd: "/srv/agentre",
+      deviceId: "remote-device-7",
+    });
+  });
 });
 
 describe("computeTopVisibleAnchor", () => {

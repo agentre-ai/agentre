@@ -23,7 +23,11 @@ import { cn } from "@/lib/utils";
 
 import type { PlanActionStream } from "./canonical-tool/props";
 import type { Editor } from "@tiptap/react";
-import { AIChatInput, type AIChatInputHandle } from "./chat-input";
+import {
+  AIChatInput,
+  type AIChatInputHandle,
+  type LocalCommandHistoryScope,
+} from "./chat-input";
 import { CodeBlock } from "./code-block";
 import { CompactHistoryFold } from "./compact-history-fold";
 import { TranscriptCard } from "./transcript-card";
@@ -202,6 +206,8 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   ) => void;
   /** 本地命令回调:用户在命令模式下提交时调用(去掉前缀 ! 后的内容)。 */
   onRunCommand?: (command: string) => void;
+  /** 当前执行设备与 cwd 组成的 Shell 历史隔离作用域。 */
+  localCommandHistoryScope?: LocalCommandHistoryScope;
   /** 透传给内层 AIChatInput 的编辑器 ref,供测试驱动编辑器内容。 */
   editorRef?: React.RefObject<Editor | null>;
 };
@@ -461,6 +467,7 @@ function ChatComposer({
   supportsImageInput = true,
   onSlashRpc,
   onRunCommand,
+  localCommandHistoryScope,
   editorRef,
   onPasteCapture,
   ...props
@@ -778,6 +785,7 @@ function ChatComposer({
             onEmptyChange={setIsEmpty}
             onCommandModeChange={setCommandMode}
             onCommandSubmit={onRunCommand}
+            localCommandHistoryScope={localCommandHistoryScope}
             sendOnEnter
             userMessageHistory={userMessageHistory}
             placeholder={resolvedPlaceholder}

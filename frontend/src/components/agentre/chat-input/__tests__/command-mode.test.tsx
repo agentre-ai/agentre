@@ -1,20 +1,44 @@
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef, type RefObject } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Editor } from "@tiptap/react";
 
+import { useLocalCommandsStore } from "@/stores/local-commands-store";
+import { localCommandHistoryStore } from "@/stores/local-command-history-store";
+
 import { AIChatInput } from "../index";
+import type { LocalCommandHistoryScope } from "../local-command-history/types";
 import type { AIChatInputHandle } from "../types";
 
-/** 在编辑器的 contentEditable DOM 上派发一次 Enter keydown，触发 sendOnEnter 路径。 */
-function pressEnter(editor: Editor) {
+const repoScope: LocalCommandHistoryScope = {
+  deviceId: "device-command-mode",
+  cwd: "/repo/command-mode",
+};
+const otherScope: LocalCommandHistoryScope = {
+  deviceId: "device-command-mode",
+  cwd: "/repo/other",
+};
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  localCommandHistoryStore.clear(repoScope);
+  localCommandHistoryStore.clear(otherScope);
+  useLocalCommandsStore.setState({ entries: {} });
+});
+
+/** 在编辑器的 contentEditable DOM 上派发一次 keydown，驱动 TipTap 菜单/提交路径。 */
+function pressKey(editor: Editor, key: string) {
   const event = new KeyboardEvent("keydown", {
-    key: "Enter",
+    key,
     bubbles: true,
     cancelable: true,
   });
   editor.view.dom.dispatchEvent(event);
+}
+
+function pressEnter(editor: Editor) {
+  pressKey(editor, "Enter");
 }
 
 describe("AIChatInput command mode", () => {
@@ -170,5 +194,303 @@ describe("AIChatInput command mode", () => {
 
     // After clearing, should report false
     expect(onCommandModeChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("Given active-scope history, When a spaced ! query is typed, Then only ranked matches from that scope open in an accessible menu", async () => {
+    localCommandHistoryStore.record(repoScope, "git status", 10);
+    localCommandHistoryStore.record(repoScope, "git checkout main", 30);
+    localCommandHistoryStore.record(otherScope, "git checkout secret", 40);
+    const editorRef: RefObject<Editor | null> = { current: null };
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      editorRef.current!.commands.insertContent("!git ch ma");
+    });
+
+    const menu = await screen.findByRole("listbox", {
+      name: "Shell command history",
+    });
+    expect(menu).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "git checkout main" }),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("git checkout secret")).not.toBeInTheDocument();
+    expect(screen.queryByText("git status")).not.toBeInTheDocument();
+  });
+
+  it("Given history exists, When input is not in ! mode or the full query has no match, Then no empty menu is rendered", async () => {
+    localCommandHistoryStore.record(repoScope, "git status", 10);
+    const editorRef: RefObject<Editor | null> = { current: null };
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      editorRef.current!.commands.insertContent("git");
+    });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    await act(async () => {
+      editorRef.current!.commands.setContent("!no matching command");
+      editorRef.current!.commands.focus("end");
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it.each(["Enter", "Tab"])(
+    "Given ranked history, When ArrowDown and %s choose a row, Then the full ! body is replaced without execution and the next submit records before running",
+    async (selectionKey) => {
+      localCommandHistoryStore.record(repoScope, "git cherry-pick master", 10);
+      localCommandHistoryStore.record(repoScope, "git checkout main", 30);
+      const editorRef: RefObject<Editor | null> = { current: null };
+      const events: string[] = [];
+      const originalRecord = localCommandHistoryStore.record.bind(
+        localCommandHistoryStore,
+      );
+      const recordSpy = vi
+        .spyOn(localCommandHistoryStore, "record")
+        .mockImplementation((scope, command, lastUsedAt) => {
+          events.push(`record:${command}`);
+          originalRecord(scope, command, lastUsedAt);
+        });
+      const onCommandSubmit = vi.fn((command: string) => {
+        events.push(`submit:${command}`);
+      });
+      const onSubmit = vi.fn();
+
+      render(
+        <AIChatInput
+          editorRef={editorRef}
+          localCommandHistoryScope={repoScope}
+          onSubmit={onSubmit}
+          onCommandSubmit={onCommandSubmit}
+        />,
+      );
+      const editor = editorRef.current!;
+
+      act(() => {
+        editor.commands.insertContent("!git ch ma");
+      });
+      await screen.findByRole("option", { name: "git checkout main" });
+
+      act(() => {
+        pressKey(editor, "ArrowUp");
+      });
+      expect(
+        screen.getByRole("option", { name: "git cherry-pick master" }),
+      ).toHaveAttribute("aria-selected", "true");
+      act(() => {
+        pressKey(editor, "ArrowDown");
+      });
+      expect(
+        screen.getByRole("option", { name: "git checkout main" }),
+      ).toHaveAttribute("aria-selected", "true");
+      act(() => {
+        pressKey(editor, "ArrowDown");
+      });
+      expect(
+        screen.getByRole("option", { name: "git cherry-pick master" }),
+      ).toHaveAttribute("aria-selected", "true");
+
+      act(() => {
+        pressKey(editor, selectionKey);
+      });
+
+      expect(editor.getText()).toBe("!git cherry-pick master");
+      expect(editor.state.selection.$from.parentOffset).toBe(
+        editor.state.selection.$from.parent.content.size,
+      );
+      expect(onCommandSubmit).not.toHaveBeenCalled();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(recordSpy).not.toHaveBeenCalled();
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(localCommandHistoryStore.list(repoScope)[1]).toEqual({
+        command: "git cherry-pick master",
+        lastUsedAt: 10,
+      });
+
+      act(() => {
+        editor.commands.setTextSelection(1);
+        editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+      });
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+      act(() => {
+        editor.commands.setContent("!   git cherry-pick master   ");
+        editor.commands.focus("end");
+      });
+      await screen.findByRole("listbox", { name: "Shell command history" });
+      act(() => {
+        pressKey(editor, "Escape");
+      });
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      act(() => {
+        pressEnter(editor);
+      });
+
+      expect(events).toEqual([
+        "record:git cherry-pick master",
+        "submit:git cherry-pick master",
+      ]);
+      expect(onCommandSubmit).toHaveBeenCalledWith("git cherry-pick master");
+      expect(editor.getText()).toBe("");
+    },
+  );
+
+  it("Given a dismissed history menu, When the query is unchanged, Then it stays closed until the command body changes", async () => {
+    localCommandHistoryStore.record(repoScope, "git status", 10);
+    localCommandHistoryStore.record(repoScope, "git stash", 20);
+    const editorRef: RefObject<Editor | null> = { current: null };
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={vi.fn()}
+      />,
+    );
+    const editor = editorRef.current!;
+
+    act(() => {
+      editor.commands.insertContent("!git");
+    });
+    await screen.findByRole("listbox", { name: "Shell command history" });
+
+    act(() => {
+      pressKey(editor, "Escape");
+    });
+    expect(editor.getText()).toBe("!git");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    act(() => {
+      editor.commands.setTextSelection(1);
+      editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+    });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    act(() => {
+      editor.commands.insertContent(" st");
+    });
+    expect(
+      await screen.findByRole("option", { name: "git status" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Given scope-specific history, When the active device/cwd scope changes, Then the open menu switches immediately without mixing rows", async () => {
+    localCommandHistoryStore.record(repoScope, "repo command", 10);
+    localCommandHistoryStore.record(otherScope, "other command", 20);
+    const editorRef: RefObject<Editor | null> = { current: null };
+
+    const { rerender } = render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      editorRef.current!.commands.insertContent("!");
+    });
+    expect(
+      await screen.findByRole("option", { name: "repo command" }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={otherScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("option", { name: "other command" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("repo command")).not.toBeInTheDocument();
+  });
+
+  it("Given a long command and transient output, When history is hovered, picked, or cleared, Then dynamic text stays complete and clearing preserves the draft and output card", async () => {
+    const longCommand = `printf '${"x".repeat(180)}'`;
+    localCommandHistoryStore.record(repoScope, longCommand, 30);
+    localCommandHistoryStore.record(repoScope, "git status", 20);
+    localCommandHistoryStore.record(otherScope, "other command", 10);
+    useLocalCommandsStore.getState().start({
+      id: "running-command",
+      sessionId: 42,
+      command: "sleep 10",
+      createdAt: 1,
+    });
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onCommandSubmit = vi.fn();
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={onCommandSubmit}
+      />,
+    );
+    const editor = editorRef.current!;
+
+    act(() => {
+      editor.commands.insertContent("!");
+    });
+    const longOption = await screen.findByRole("option", {
+      name: longCommand,
+    });
+    expect(longOption.querySelector("span")).toHaveClass("truncate");
+
+    const statusOption = screen.getByRole("option", { name: "git status" });
+    fireEvent.mouseMove(statusOption);
+    expect(statusOption).toHaveAttribute("aria-selected", "true");
+    fireEvent.mouseDown(statusOption);
+    expect(editor.getText()).toBe("!git status");
+    expect(onCommandSubmit).not.toHaveBeenCalled();
+
+    act(() => {
+      editor.commands.insertContent(" ");
+    });
+    const historyMenu = await screen.findByRole("listbox", {
+      name: "Shell command history",
+    });
+    const clearButton = screen.getByRole("button", {
+      name: "Clear history for current directory",
+    });
+    expect(historyMenu).not.toContainElement(clearButton);
+    fireEvent.click(clearButton);
+
+    expect(editor.getText()).toBe("!git status ");
+    expect(localCommandHistoryStore.list(repoScope)).toEqual([]);
+    expect(localCommandHistoryStore.list(otherScope)).toEqual([
+      { command: "other command", lastUsedAt: 10 },
+    ]);
+    expect(
+      useLocalCommandsStore.getState().get("running-command"),
+    ).toMatchObject({
+      command: "sleep 10",
+      output: "",
+      status: "running",
+    });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 });

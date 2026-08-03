@@ -15,6 +15,7 @@ type SuggestionPopoverProps = {
   ariaLabel: string;
   testId?: string;
   className?: string;
+  footer?: React.ReactNode;
   children: (activeRef: React.Ref<HTMLButtonElement>) => React.ReactNode;
 };
 
@@ -28,6 +29,7 @@ export function SuggestionPopover({
   ariaLabel,
   testId,
   className,
+  footer,
   children,
 }: SuggestionPopoverProps): React.ReactElement | null {
   const activeRef = React.useRef<HTMLButtonElement>(null);
@@ -47,18 +49,31 @@ export function SuggestionPopover({
     zIndex: 50,
   };
 
+  const popoverClassName = cn(
+    "min-w-[14rem] max-w-[20rem] overflow-y-auto overscroll-contain rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md",
+    className,
+  );
+
+  if (!footer) {
+    return (
+      <div
+        data-testid={testId}
+        role="listbox"
+        aria-label={ariaLabel}
+        style={style}
+        className={popoverClassName}
+      >
+        {children(activeRef)}
+      </div>
+    );
+  }
+
   return (
-    <div
-      data-testid={testId}
-      role="listbox"
-      aria-label={ariaLabel}
-      style={style}
-      className={cn(
-        "min-w-[14rem] max-w-[20rem] overflow-y-auto overscroll-contain rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md",
-        className,
-      )}
-    >
-      {children(activeRef)}
+    <div data-testid={testId} style={style} className={popoverClassName}>
+      <div role="listbox" aria-label={ariaLabel}>
+        {children(activeRef)}
+      </div>
+      {footer}
     </div>
   );
 }

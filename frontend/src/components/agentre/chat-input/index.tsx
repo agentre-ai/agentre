@@ -17,6 +17,7 @@ import { Placeholder, UndoRedo } from "@tiptap/extensions";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 
 import { cn } from "@/lib/utils";
+import { localCommandHistoryStore } from "@/stores/local-command-history-store";
 
 import {
   listAvailable,
@@ -36,6 +37,8 @@ import {
   shouldIgnoreEditorShortcut,
   shouldStartInputHistory,
 } from "./keyboard";
+import { LocalCommandHistoryPopover } from "./local-command-history/history-popover";
+import { useLocalCommandHistoryMenu } from "./local-command-history/use-local-command-history-menu";
 import {
   Mention,
   MentionPopover,
@@ -43,13 +46,21 @@ import {
   type MentionItem,
   type MentionSources,
 } from "./mentions";
-import type { AIChatInputHandle, ProseMirrorLikeNode } from "./types";
+import type {
+  AIChatInputHandle,
+  LocalCommandHistoryScope,
+  ProseMirrorLikeNode,
+} from "./types";
 
 // 同 useSlashMenu 里的常量:行内 `[]` 默认值每次 render 都是新身份,会把 slash
 // 菜单的订阅 effect 变成「每次提交都重跑」。
 const EMPTY_SKILL_COMMANDS: SlashCommand[] = [];
 
-export type { AIChatInputDraft, AIChatInputHandle } from "./types";
+export type {
+  AIChatInputDraft,
+  AIChatInputHandle,
+  LocalCommandHistoryScope,
+} from "./types";
 
 export interface AIChatInputProps {
   onSubmit: (content: string) => void;
@@ -81,6 +92,8 @@ export interface AIChatInputProps {
   /** 当前 agent 最终生效的技能命令。Codex 用 $,Claude Code 用 /;
    *  与静态 slash commands 合并后由同一 popover 渲染。 */
   skillCommands?: SlashCommand[];
+  /** 当前本地命令执行目标。设备与 cwd 共同隔离持久化 Shell 历史。 */
+  localCommandHistoryScope?: LocalCommandHistoryScope;
 }
 
 const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
@@ -101,6 +114,7 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
       onSlashSelect,
       mentionSources,
       skillCommands = EMPTY_SKILL_COMMANDS,
+      localCommandHistoryScope,
     },
     ref,
   ) {
@@ -116,9 +130,14 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     const mentionKeyDownRef = useRef<(e: KeyboardEvent) => boolean>(
       () => false,
     );
+    const commandHistoryKeyDownRef = useRef<(e: KeyboardEvent) => boolean>(
+      () => false,
+    );
     const slashSelectRef = useRef(onSlashSelect);
     const onCommandModeChangeRef = useRef(onCommandModeChange);
     const onCommandSubmitRef = useRef(onCommandSubmit);
+    const localCommandHistoryScopeRef = useRef(localCommandHistoryScope);
+    localCommandHistoryScopeRef.current = localCommandHistoryScope;
     /** 命令模式去重 ref —— 避免每次 onUpdate 都触发回调 */
     const commandModeRef = useRef(false);
     useEffect(() => {
@@ -203,8 +222,9 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           // 组词中（包括 keyCode===229 的兜底）一律放行给浏览器，
           // 避免 IME 候选回车被当成消息发送。
           if (shouldIgnoreEditorShortcut(view, event)) return false;
-          // slash menu 打开时拦截 Up/Down/Enter/Tab/Esc;关闭时透明。
-          // 命令模式下不弹 slash,直接跳过。
+          // ! 历史菜单优先消费候选导航/选择；普通模式继续交给 mention/slash。
+          if (commandModeRef.current && commandHistoryKeyDownRef.current(event))
+            return true;
           if (
             !commandModeRef.current &&
             (mentionKeyDownRef.current(event) || slashKeyDownRef.current(event))
@@ -302,7 +322,11 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
         if (content.trimStart().startsWith("!")) {
           const command = content.trimStart().slice(1).trim();
           historyIndexRef.current = -1;
-          if (command) onCommandSubmitRef.current?.(command);
+          if (command) {
+            const scope = localCommandHistoryScopeRef.current;
+            if (scope) localCommandHistoryStore.record(scope, command);
+            onCommandSubmitRef.current?.(command);
+          }
           editor.commands.clearContent(true);
           editor.commands.focus();
           return;
@@ -353,6 +377,15 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
       }),
       [editor],
     );
+
+    // ── ! 本地命令历史菜单集成 ──────────────────────────────────────────────
+    const commandHistoryMenu = useLocalCommandHistoryMenu({
+      editor: editor ?? null,
+      scope: localCommandHistoryScope,
+    });
+    useEffect(() => {
+      commandHistoryKeyDownRef.current = commandHistoryMenu.onKeyDown;
+    }, [commandHistoryMenu.onKeyDown]);
 
     // ── slash command menu 集成 ─────────────────────────────────────────────
     // 只在 backendType + onSlashSelect 同时具备时启用。useSlashMenu 监听 editor
@@ -408,6 +441,12 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     return (
       <>
         <EditorContent editor={editor} />
+        <LocalCommandHistoryPopover
+          state={commandHistoryMenu.state}
+          onPick={commandHistoryMenu.pick}
+          onHover={commandHistoryMenu.setSelectedIndex}
+          onClear={commandHistoryMenu.clear}
+        />
         {slashEnabled ? (
           <SlashPopover
             state={slashMenu.state}

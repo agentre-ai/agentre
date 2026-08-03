@@ -1,6 +1,9 @@
 import type { Editor } from "@tiptap/react";
 
 import type { MentionKind } from "./mentions/xml";
+import type { LocalCommandHistoryScope } from "./local-command-history/types";
+
+export type { LocalCommandHistoryScope };
 
 export interface AIChatInputDraft {
   content: string;
