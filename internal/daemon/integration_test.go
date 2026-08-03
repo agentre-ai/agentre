@@ -643,6 +643,51 @@ func TestIntegration_RemoteRuntime_EventRoundTrip(t *testing.T) {
 	})
 }
 
+// TestIntegration_StrayConnDoesNotStealSessionNotifications 回归:一条完成 WS 升级却
+// **从不认证**的连接(LAN 扫描器 / 鉴权失败的客户端 / 掉队的重连)接入时,已配对设备
+// 上正在跑的会话必须照常收到推送。
+//
+// 旧实现在 daemon 上只留一个全局槽,而登记发生在鉴权**之前**(bindConn 是 OnConn 回调,
+// auth.pair / auth.connect 要等后续 RPC 才跑),所以野连接一进来就顶掉正主,真设备的
+// 指纹从此解析为 nil:会话照常落库、一条推不出去,而客户端既看不到错误也看不到 seq
+// 跳号,补齐永不触发,整轮无限期卡住。这里以「野连接接入后事件仍逐条到达客户端」钉死它。
+func TestIntegration_StrayConnDoesNotStealSessionNotifications(t *testing.T) {
+	rig := bootRemoteRig(t, []agentruntime.Event{
+		agentruntime.TextDelta{Text: "hello"},
+		agentruntime.TextDelta{Text: " world"},
+		agentruntime.Done{},
+	})
+
+	rig.d.mu.RLock()
+	lanURL := rig.d.lan.URL()
+	rig.d.mu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stray, err := client.Dial(ctx, client.Options{URL: lanURL})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stray.Close() })
+
+	// 先打一发必被拒的业务 RPC:既证明野连接确实没有身份,又确保 daemon 已经 bind 了
+	// 它(bindConn 在 Serve 之前同步跑,拿到应答就说明它早已跑完)—— 否则本测会与
+	// 升级握手赛跑,偶发地根本没复现出「顶掉」的时序。
+	var pong map[string]any
+	require.Error(t, stray.Call(ctx, "health.ping", nil, &pong),
+		"never-authenticated connection must be rejected by requireAuth")
+
+	events, _ := rig.startRun(t, 700)
+	got := drainRuntimeEvents(t, events, 5*time.Second)
+
+	var texts []string
+	for _, ev := range got {
+		if td, ok := ev.(agentruntime.TextDelta); ok {
+			texts = append(texts, td.Text)
+		}
+	}
+	assert.Equal(t, []string{"hello", " world"}, texts,
+		"a stray unauthenticated connection must not divert the paired device's session notifications")
+}
+
 // TestIntegration_ErrorCodeRehydration drives a control RPC against a backend
 // that does NOT implement the corresponding sub-interface, asserting that the
 // daemon returns ErrUnsupported, the wire layer maps it to JSON-RPC error

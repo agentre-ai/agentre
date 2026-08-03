@@ -77,50 +77,114 @@ type Daemon struct {
 	mu  sync.RWMutex
 	lan *rpc.LANServer
 
-	// activeNotifier 是当前活跃连接的推送 / 反向请求端口:daemon 本机 gateway 的 /mcp/
-	// 隧道靠它把 CLI 子进程的内置工具 MCP 调用反向请求回 desktop,会话通知也靠它找到
-	// 「此刻活着的那条连接」。daemon 单客户端 MVP(见 bindConn 注释):同一时刻一条
-	// 连接,后连接覆盖、断开清空。
-	// activePeer 惰性读该连接的设备指纹 —— bindConn 时还没握手,指纹要等 auth.pair /
-	// auth.connect 之后才在 rpc.AuthState 上。
-	activeMu       sync.Mutex
-	activeNotifier handlers.NotifierPort
-	activePeer     func() string
+	// conns 是按设备指纹索引的活连接表:会话通知与 MCP 反向隧道共用这一份解析,
+	// daemon 上没有第二个「当前连接」的全局。
+	conns connRegistry
 }
 
-// setActiveConn / activeConn 维护当前连接的推送端口(会话通知 + MCP 隧道共用)。
-func (d *Daemon) setActiveConn(n handlers.NotifierPort, peer func() string) {
-	d.activeMu.Lock()
-	d.activeNotifier, d.activePeer = n, peer
-	d.activeMu.Unlock()
+// connRegistry 按设备指纹索引「已认证且还活着」的连接。
+//
+// 它取代了原来那个「只记最后一条连接」的全局单槽。旧实现在 bindConn(LANServer 的
+// OnConn 回调)里登记,而 auth.pair / auth.connect 是之后才到的 RPC —— 于是任何完成
+// WS 升级却从不认证的连接(LAN 扫描器 / 鉴权失败的客户端 / 掉队的重连)都会顶掉正主,
+// 真设备的指纹从此解析为 nil:会话照常落库、一条推不出去,而客户端看不到错误也看不到
+// seq 跳号,补齐永不触发,整轮无限期卡住。
+//
+// 因此登记的唯一入口是鉴权成功那一刻(见 registerMethods 里的 auth.pair /
+// auth.connect),身份直接取连接上的 rpc.AuthState —— 不另造一套身份。
+//
+// 本轮规格的非目标仍排除「多客户端同时接入同一台 daemon」:这张表不是为了让多个
+// 客户端共享会话,只是让野连接顶不掉正主。
+type connRegistry struct {
+	mu    sync.Mutex
+	seq   uint64
+	conns map[string]registeredConn
 }
 
-func (d *Daemon) clearActiveConn(n handlers.NotifierPort) {
-	d.activeMu.Lock()
-	if d.activeNotifier == n { // 仅在仍是自己时清,避免误清后到的新连接
-		d.activeNotifier, d.activePeer = nil, nil
+// registeredConn 记住登记时那条连接本身:撤销要按**连接身份**做,不能按指纹 ——
+// 同一台设备重连后,旧连接迟到的关闭清理绝不能把新连接的登记一并撤掉。
+type registeredConn struct {
+	conn *rpc.Conn
+	n    handlers.NotifierPort
+	at   uint64
+}
+
+// add 在连接完成 auth.pair / auth.connect 之后登记它。未认证、或认证了却没有指纹的
+// 连接一律不进表(rpc/auth.go 的 HandlePair 不拒绝空 deviceFingerprint,空指纹不能
+// 构成可匹配身份,否则一条空指纹连接就能冒领所有会话的通知)。
+func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
+	if c == nil || n == nil {
+		return
 	}
-	d.activeMu.Unlock()
+	auth := c.Auth()
+	if !auth.Authenticated || auth.DeviceFingerprint == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.conns == nil {
+		r.conns = map[string]registeredConn{}
+	}
+	r.seq++
+	r.conns[auth.DeviceFingerprint] = registeredConn{conn: c, n: n, at: r.seq}
 }
 
-func (d *Daemon) activeConn() handlers.NotifierPort {
-	d.activeMu.Lock()
-	defer d.activeMu.Unlock()
-	return d.activeNotifier
+// remove 撤销这条连接的登记(连接关闭时调用)。只在表里存的仍是它自己时才删。
+func (r *connRegistry) remove(c *rpc.Conn) {
+	if c == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for fp, rc := range r.conns {
+		if rc.conn == c {
+			delete(r.conns, fp)
+		}
+	}
 }
 
-// notifierForPeer 返回「此刻活着的、且属于该对端的」推送端口,否则 nil(对端不在线:
-// 通知已经落库,等它重连后按游标补齐)。每次发送时重新解析,绝不静态捕获 —— 后一条
-// 连接会覆盖前一条(见 bindConn),捕获下来的端口在重连后指向死连接。
-// 校对指纹是为了不把一个对端的会话通知推给另一台设备(R16)。
-func (d *Daemon) notifierForPeer(peer string) handlers.NotifierPort {
-	d.activeMu.Lock()
-	n, peerOf := d.activeNotifier, d.activePeer
-	d.activeMu.Unlock()
-	if n == nil || peerOf == nil || peerOf() != peer {
+// lookup 返回「此刻活着的、且属于该对端的」推送端口,否则 nil(对端不在线:通知已经
+// 落库,等它重连后按游标补齐)。空指纹永不匹配 —— 表里根本不存在空键(见 add)。
+func (r *connRegistry) lookup(fingerprint string) handlers.NotifierPort {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rc, ok := r.conns[fingerprint]
+	if !ok {
 		return nil
 	}
-	return n
+	return rc.n
+}
+
+// latest 返回最近一条完成鉴权的连接,表空时 nil。给「请求身上没有对端标识」的解析用
+// (MCP 反向隧道:请求来自 daemon 本机的 CLI 子进程,是 HTTP 不是 RPC)。规格非目标
+// 排除多客户端同时接入,表里至多一条;真接多客户端时隧道目标要改成按会话的对端解析。
+func (r *connRegistry) latest() handlers.NotifierPort {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var newest registeredConn
+	for _, rc := range r.conns {
+		if rc.at > newest.at {
+			newest = rc
+		}
+	}
+	if newest.n == nil {
+		return nil
+	}
+	return newest.n
+}
+
+// notifierForPeer 解析某个对端的推送端口。每次发送时重新解析,绝不静态捕获 —— 断连
+// 重连会换一条连接,捕获下来的端口在重连后指向死连接。校对指纹是为了不把一个对端的
+// 会话通知推给另一台设备(R16)。
+func (d *Daemon) notifierForPeer(peer string) handlers.NotifierPort {
+	return d.conns.lookup(peer)
+}
+
+// tunnelTarget 解析 MCP 反向隧道的目标:与会话通知共用同一张活连接表,野连接因此
+// 同样顶不掉正主。隧道请求来自 daemon 本机的 CLI 子进程、身上没有对端标识,所以取表里
+// 最近完成鉴权的那条连接(见 connRegistry.latest)。
+func (d *Daemon) tunnelTarget() handlers.NotifierPort {
+	return d.conns.latest()
 }
 
 // New constructs a Daemon from Options. It loads persistent state, creates
@@ -171,7 +235,7 @@ func New(opts Options) (*Daemon, error) {
 	// 本机 gateway 的 /mcp/*(URL 已由 runtime.Run 改写成 daemon base),这里捕获后反向
 	// 请求回 desktop 执行(真 handler 在 desktop)。仅一条 catch-all,serveMCP 最长前缀
 	// 匹配下命中所有 /mcp/* 路径。
-	d.gateway.RegisterMCP(httpgateway.RouteMCPPrefix, handlers.NewMCPTunnelHandler(d.activeConn))
+	d.gateway.RegisterMCP(httpgateway.RouteMCPPrefix, handlers.NewMCPTunnelHandler(d.tunnelTarget))
 	d.registerMethods()
 	return d, nil
 }
@@ -204,6 +268,7 @@ func (d *Daemon) registerMethods() {
 				DeviceFingerprint: pp.DeviceFingerprint,
 				DeviceName:        pp.DeviceName,
 			})
+			d.conns.add(c, notifier.New(c))
 		}
 		return res, nil
 	})
@@ -221,6 +286,7 @@ func (d *Daemon) registerMethods() {
 				Authenticated:     true,
 				DeviceFingerprint: cp.DeviceFingerprint,
 			})
+			d.conns.add(c, notifier.New(c))
 		}
 		return res, nil
 	})
@@ -324,10 +390,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 // type cache,所以是 per-conn 构造的;会话通知**不**推回「这条」连接 —— 它按对端
 // 指纹在发送那一刻解析活连接(见 notifierForPeer),因为 fanout goroutine 会活过
 // 这条连接。
+//
+// bindConn 跑在鉴权**之前**(它是 OnConn 回调,auth.pair / auth.connect 是之后才到的
+// RPC),所以这里**不**把连接登记进活连接表 —— 登记只发生在鉴权成功那一刻,否则一条
+// 从不认证的连接就能顶掉正主(见 connRegistry)。
 func (d *Daemon) bindConn(c *rpc.Conn) {
 	n := notifier.New(c)
-	// 把这条连接登记为当前活跃连接,供 /mcp/ 隧道与会话通知推送用(单客户端 MVP)。
-	d.setActiveConn(n, n.Peer)
 	rh := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
 		// 会话通知的推送目标按对端在发送那一刻解析,不捕获 n:RuntimeHandlers 是
 		// per-conn 的,而它起的 fanout goroutine 会活过这条连接。
@@ -367,7 +435,9 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	go func() {
 		<-c.Done()
 		termH.CloseAll()
-		d.clearActiveConn(n) // 连接断开 → 撤销推送端口(避免对死连接推通知 / 发反向请求)
+		// 连接断开 → 撤销它的登记(避免对死连接推通知 / 发反向请求)。按连接身份撤销:
+		// 同一台设备重连后,这条迟到的清理不能把新连接的登记一并删掉。
+		d.conns.remove(c)
 	}()
 }
 

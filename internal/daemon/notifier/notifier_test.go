@@ -92,17 +92,3 @@ func TestNotifier_RequestUsesConnCall(t *testing.T) {
 	require.NoError(t, n.Request(ctx, "approval.request", map[string]string{"tool": "Bash"}, &resp))
 	assert.True(t, resp["allow"])
 }
-
-// TestNotifier_PeerReportsHandshakeFingerprintLazily 覆盖会话通知推送目标的对端校验:
-// Peer 报的是握手时写进 AuthState 的设备**指纹**(不是设备名),而且每次调用才读 ——
-// 连接刚建立时还没握手,急切捕获会永远拿到空串,会话通知就再也匹配不上任何对端。
-func TestNotifier_PeerReportsHandshakeFingerprintLazily(t *testing.T) {
-	// Peer 只读 AuthState,不碰底层 ws。
-	c := rpc.NewConn(nil, rpc.NewRegistry())
-	n := New(c)
-
-	assert.Empty(t, n.Peer(), "未握手的连接没有对端指纹")
-
-	c.SetAuth(rpc.AuthState{Authenticated: true, DeviceFingerprint: "fp-desktop-1", DeviceName: "MacBook"})
-	assert.Equal(t, "fp-desktop-1", n.Peer(), "握手之后同一个 Notifier 必须报出指纹")
-}

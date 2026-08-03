@@ -77,7 +77,8 @@ func sanitizeTunnelHeaders(h http.Header) map[string][]string {
 // NewMCPTunnelHandler 返回挂在 daemon 本机 gateway /mcp/ 上的隧道入口:把 CLI 子进程的
 // MCP HTTP 请求装包,经当前活跃连接的 NotifierPort 反向请求(MethodMCPProxy)隧道回 desktop
 // 执行,再把应答原样写回 CLI。MCP-over-HTTP 是纯请求/应答,单帧足够。notifierFn 在请求时
-// 取当前活跃连接(daemon 单客户端 MVP 下同一时刻一条);无连接 → 503。
+// 解析目标:它取的是 daemon 上**已认证**的活连接(与会话通知同一张表),完成 WS 升级却
+// 从不认证的连接不构成隧道目标;无目标 → 503。
 func NewMCPTunnelHandler(notifierFn func() NotifierPort) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := notifierFn()
