@@ -630,6 +630,54 @@ describe("ChatPanel · 补齐落定与跳转控件 (R14)", () => {
     expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
     expect(screen.getByTestId("back-to-bottom-button")).toBeInTheDocument();
   });
+
+  // 销账条件是「人回到了底部」,不是「点了那枚控件」—— 自己滚回底部同样意味着补齐
+  // 内容已经看过。不销账的话下次往上翻会撞见一枚数字早已过期的控件。
+  it("Given the jump control is showing, When the user scrolls back to the bottom themselves, Then the summary is discharged and scrolling up again brings back only the plain control", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+    catchUpLands(view, { items: 12, pending: 1 });
+    expect(screen.getByTestId("jump-to-latest-button")).toBeInTheDocument();
+
+    act(() => {
+      scroller.scrollTop = 3_520;
+      fireEvent.scroll(scroller);
+    });
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+
+    scrollUpFromBottom(scroller);
+
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+    expect(screen.getByTestId("back-to-bottom-button")).toBeInTheDocument();
+  });
+
+  // 从不断连的会话走的是同一枚控件的另一半形态:没有未看的补齐 = 原来那颗「回到底部」
+  // 圆钮。R14 把它挪进了 TranscriptJumpControl,标签与跳转这两件事得有人钉住,
+  // 否则接错 onJump / 丢了 aria-label 也照样全绿。
+  it("Given a session that never disconnected, When the user scrolls up, Then the plain back-to-bottom control keeps its label and returns to the bottom on click", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+
+    const control = screen.getByTestId("back-to-bottom-button");
+    expect(control).toHaveAccessibleName("Back to bottom");
+
+    act(() => {
+      fireEvent.click(control);
+    });
+
+    expect(scroller.scrollTop).toBe(3_520);
+    expect(screen.queryByTestId("back-to-bottom-button")).toBeNull();
+  });
 });
 
 describe("computeTopVisibleAnchor", () => {
