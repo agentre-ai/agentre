@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   LOCAL_COMMAND_HISTORY_STORAGE_KEY,
@@ -76,17 +76,40 @@ describe("local command history scope and persistence", () => {
     });
   });
 
-  it("Given exact and case-different repeats, when recorded, then exact text dedupes to MRU while case-different commands remain unique", () => {
-    const store = createLocalCommandHistoryStore({ storage: localStorage });
+  it("Given exact repeats settle out of order, when an older write follows a newer one, then timestamp, MRU order, and persistence stay on the newer case-sensitive entry", () => {
+    const setItem = vi.fn(localStorage.setItem.bind(localStorage));
+    const store = createLocalCommandHistoryStore({
+      storage: {
+        getItem: localStorage.getItem.bind(localStorage),
+        setItem,
+      },
+    });
 
     store.record(localRepo, "Git Status", 10);
-    store.record(localRepo, "git status", 20);
+    store.record(localRepo, "pnpm test", 20);
+    store.record(localRepo, "git status", 25);
     store.record(localRepo, "Git Status", 30);
 
-    expect(store.list(localRepo)).toEqual([
+    const expectedEntries = [
       { command: "Git Status", lastUsedAt: 30 },
-      { command: "git status", lastUsedAt: 20 },
-    ]);
+      { command: "git status", lastUsedAt: 25 },
+      { command: "pnpm test", lastUsedAt: 20 },
+    ];
+    const persistedBeforeStaleWrite = localStorage.getItem(
+      LOCAL_COMMAND_HISTORY_STORAGE_KEY,
+    );
+    const writesBeforeStaleWrite = setItem.mock.calls.length;
+
+    store.record(localRepo, "Git Status", 5);
+
+    expect(store.list(localRepo)).toEqual(expectedEntries);
+    expect(setItem).toHaveBeenCalledTimes(writesBeforeStaleWrite);
+    expect(localStorage.getItem(LOCAL_COMMAND_HISTORY_STORAGE_KEY)).toBe(
+      persistedBeforeStaleWrite,
+    );
+    expect(
+      createLocalCommandHistoryStore({ storage: localStorage }).list(localRepo),
+    ).toEqual(expectedEntries);
   });
 
   it("Given 101 unique commands in one scope, when the last is recorded, then only the newest 100 remain in that scope", () => {

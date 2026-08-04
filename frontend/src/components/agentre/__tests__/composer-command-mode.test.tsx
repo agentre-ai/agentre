@@ -181,6 +181,8 @@ describe("ChatComposer command mode", () => {
 
   it("Given history persistence fails, When a command is submitted, Then execution still starts", async () => {
     const editorRef: RefObject<Editor | null> = { current: null };
+    const submittedAt = 1_000;
+    vi.spyOn(Date, "now").mockReturnValue(submittedAt);
     const onRunCommand = vi.fn().mockReturnValue(resolvedRemoteProjectScope);
     const recordSpy = vi
       .spyOn(localCommandHistoryStore, "record")
@@ -205,7 +207,11 @@ describe("ChatComposer command mode", () => {
 
     expect(onRunCommand).toHaveBeenCalledWith("pwd");
     await vi.waitFor(() => {
-      expect(recordSpy).toHaveBeenCalledWith(resolvedRemoteProjectScope, "pwd");
+      expect(recordSpy).toHaveBeenCalledWith(
+        resolvedRemoteProjectScope,
+        "pwd",
+        submittedAt,
+      );
     });
   });
 });
