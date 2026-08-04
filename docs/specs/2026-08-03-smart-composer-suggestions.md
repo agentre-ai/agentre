@@ -3,11 +3,11 @@
 > Status: Approved
 > Owner: Frontend
 > Last updated: 2026-08-03
-> Amendment approved: 2026-08-03 — 使用窄化 Wails 合约解析并返回真实命令执行作用域
+> Amendments approved: 2026-08-03 — 使用窄化 Wails 合约解析并返回真实命令执行作用域；使用桌面端生成的 terminal ID 修复 agentred 远端启动订阅与取消竞态
 
 **Objective:** 用户在聊天输入框通过 `/`、`$` 或 `@` 打开目录候选时，可以用名称中段、中文拼音、拼音首字母或字符顺序模糊查询找到目标；进入 `!` 本地命令模式时，可以在当前执行设备与项目工作目录下检索并补全持久化的 Shell 命令历史。
 
-**Hard invariant:** 本轮只扩展候选的匹配、排序与 `!` 历史补全，并为准确隔离历史增加一个只读执行作用域解析调用、扩展既有 `TerminalRunCommand` 返回值；不得新增数据库、迁移、后端历史存储或额外命令执行。`/`、`$`、`@` 的触发边界和提交语义不得回退，历史候选不得自动执行 Shell 命令，`!` 命令与输出仍不得发送给 AI，历史持久化或作用域预读取失败不得阻止命令执行，现有本地命令输出卡片仍只保留在当前应用运行期。
+**Hard invariant:** 本轮只扩展候选的匹配、排序与 `!` 历史补全，并为准确隔离历史增加一个只读执行作用域解析调用、扩展既有 `TerminalRunCommand` 返回值；为保证远端命令仍满足同一 exactly-once 与可停止契约，允许对 agentred 内部终端协议增加桌面端生成的 terminal ID 和 pending-open 取消语义，但不得新增数据库、迁移、后端历史存储或额外命令执行。`/`、`$`、`@` 的触发边界和提交语义不得回退，历史候选不得自动执行 Shell 命令，`!` 命令与输出仍不得发送给 AI，历史持久化或作用域预读取失败不得阻止命令执行，现有本地命令输出卡片仍只保留在当前应用运行期。
 
 ## Problem
 
@@ -16,6 +16,7 @@
 3. **项目已有智能评分能力，但聊天输入候选没有复用。** `frontend/src/components/agentre/command-palette/score.ts:7-72` 已定义精确、前缀、包含、全拼、拼音首字母、字符顺序模糊和副标题匹配阶梯；当前 `/`、`$`、`@` 各自维护更弱的过滤逻辑，造成同一应用内搜索体验不一致。
 4. **`!` 命令模式只能执行当前输入，不能提示过去运行过的 Shell 命令。** `frontend/src/components/agentre/chat-input/index.tsx:276-305` 只检测命令模式并把非空命令交给执行回调；`frontend/src/stores/local-commands-store.ts:35-84` 只在内存中保存当前运行期的命令卡片与输出，没有持久化或候选读取能力。应用重启后，用户无法从 Agentre 找回常用的项目命令。用户于 2026-08-03 明确把“历史命令”限定为 `!` 本地 Shell 命令，并要求跨应用重启持久化。
 5. **前端现有会话快照不能可靠代表 Shell 实际执行作用域。** `internal/app/terminal.go` 会在每次命令提交时重新从会话、Agent、Backend 与项目位置解析执行设备和 cwd，而既有 `TerminalRunCommand` 的前端合约只返回 `void`。新建远端项目会话、本地自由会话以及项目位置更新后的已加载会话，都可能没有可用或持有过期的前端 cwd；等待会话详情再启动命令又会改变既有执行时序并在并发提交时丢命令。用户于 2026-08-03 批准增加窄化的执行作用域合约，以保证历史隔离与实际执行目标一致。
+6. **远端 PTY 启动缺少启动前稳定身份与取消归属。** 当前 agentred 在 `terminal.open` 内生成 terminal ID，并可能在响应抵达桌面端、桌面端建立订阅之前发送 data/exit；快速命令的事件会被当作未知 terminal 丢弃。JSON-RPC 调用超时或桌面端预启动 Stop 也只取消本地等待，不会取消 daemon 连接上下文下仍在执行的 Open，迟到 handle 可能成为无观察者、无可用 ID 的远端进程。用户于 2026-08-03 批准增加向后兼容的 agentred 内部协议身份与 pending-open 取消语义，以保持远端命令的 exactly-once、完整输出和可停止性。
 
 ## Actors and user stories
 
@@ -43,6 +44,7 @@
 | 12 | 评分能力作为前端共享纯逻辑，由 Command Palette 与聊天输入候选共同消费，不引入新依赖。 | `pinyin-pro` 已在项目中使用，共享纯函数是最小的一致性边界。Rejected: 从聊天输入模块反向依赖 Command Palette 组件目录或复制算法 — 前者耦合不相干 UI 域，后者会再次漂移。 |
 | 13 | 新增只读 `ResolveLocalCommandScope` Wails 合约，为既有 session 或尚未创建 session 的 Agent/项目目标解析当前 `{deviceId, cwd}`，且绝不创建会话。 | 新远端项目、本地自由聊天和位置变更后的会话都不能安全依赖前端快照。Rejected: 使用本地项目路径或旧 session cwd 猜测 — 会把历史写入错误机器或目录；为打开历史菜单而提前创建 session — 会改变会话生命周期。 |
 | 14 | `TerminalRunCommand` 在后端只解析一次执行目标，使用该目标启动命令，并把同一 `{deviceId, cwd}` 与可选 `startError` 返回前端；每次提交独立调用一次，不等待异步会话详情，也不共享单条 pending 槽。 | 返回真实目标才能让持久化与执行一致；把启动失败放进响应可在不丢失作用域的前提下沿用失败卡片。Rejected: 先启动后等待 `LoadChatSession` — 连续提交会互相覆盖；只使用预解析结果 — 项目位置变化时存在陈旧目标。 |
+| 15 | 远端 `terminal.open` 使用桌面端已知的唯一 terminal ID；桌面端在发送 Open 前建立该 ID 的 data/exit 订阅，daemon 在调用 PTY backend 前登记 pending open，`terminal.close` 可幂等取消 pending open 并关闭忽略取消后迟到返回的 handle。 | 同一身份贯穿订阅、Open、Stop 和迟到清理，才能消除响应前事件丢失与本地超时后的远端泄漏。字段保持可选，旧客户端未提供时 daemon 仍生成 ID。Rejected: 仅在 ClientAdapter 缓存未知事件 — 超时调用仍拿不到 daemon 生成的 ID；仅依赖 JSON-RPC ctx — 当前协议不会把调用方取消传播给 daemon handler。 |
 
 ## Shared candidate matching
 
@@ -75,6 +77,16 @@ Composer 在执行目标变化和进入 `!` 模式时异步刷新作用域；刷
 用户提交非空命令时，每次提交拥有独立异步流程：需要时先沿用现有 `EnsureChatSession` 得到 session ID，随后立即调用且只调用一次 `TerminalRunCommand`，不得等待无关的 `LoadChatSession` 详情，也不得把多个提交放进单条可覆盖的 pending 槽。后端为该调用解析一次执行目标，用同一目标调用 `OpenCommand`，并返回 `scope: {deviceId, cwd}`；若目标已解析但命令启动失败，则响应同时返回 `startError` 而不是丢弃 scope。前端先按响应 scope 记录历史，再把 `startError` 交给既有本地命令失败卡片流程。
 
 若 RPC 在返回 scope 之前失败，前端可以使用本次提交前最后一次成功预解析的同目标 scope 记录命令；若连合法预解析 scope 也不存在，则不得猜测作用域或串入其它目录，命令错误仍按既有流程展示。无论历史写入是否成功，命令提交与失败展示都继续运行。
+
+## Remote command startup protocol
+
+远端 PTY 使用调用方在当前应用运行期已经分配的唯一 terminal ID；该 ID 只用于运行期关联，不进入 Shell 历史或其它持久化数据。remote backend 必须先为该 ID 建立 data/exit 订阅，再发送 `terminal.open`。因此 daemon 即使在 Open 响应前发出快速输出或退出，事件也进入已存在的同 ID 缓冲并按 data 后 exit 的既有顺序交付，不得因“未知 terminal”丢弃。
+
+agentred 收到带 terminal ID 的 Open 后，在进入可能阻塞的 PTY backend 前登记 pending attempt。相同 ID 的活动 terminal 或 pending attempt 不得被第二次 Open 覆盖。`terminal.close` 对该 ID 的活动 handle 与 pending attempt 都是幂等终止：关闭 pending attempt 后，即使 backend 忽略 context 并迟到返回 handle，也必须在注册 pump 前关闭该 handle。为覆盖同一 WebSocket 上 Open/Close 并发 dispatch 的次序竞态，取消请求必须能在 Open attempt 尚未登记时保留有界取消归属，并由对应 Open 消费；不得以无限增长的 tombstone 存储换取正确性。
+
+桌面端 Open 等待因用户 Stop、调用方 context 或内部启动超时结束时，必须用同一 terminal ID 请求 pending-open 取消并清理预订阅；只要连接仍存活，就不得释放该 handle 的连接 lease 后留下可能迟到启动的远端 PTY。连接已经断开时沿用 daemon 的 CloseAll 和客户端 connection-lost 终结语义。旧客户端未发送 terminal ID 时，daemon 继续生成 ID 以保持协议兼容；本轮桌面端的新路径不得依赖该旧模式获得取消保证。
+
+该协议修订不增加命令启动次数、不改变 `TerminalRunCommand` 的 Wails 返回结构，也不持久化 terminal ID、输出或状态。每个非空提交仍最多调用一次 daemon `terminal.open`，订阅准备、pending 取消和迟到 handle 清理都属于同一次启动的生命周期协调，而不是额外命令执行。
 
 ## `!` Shell history flow
 
@@ -115,7 +127,7 @@ Skill 目录异步加载失败、候选源为空、描述缺失或项目路径�
 
 Shell 历史存储不存在或内容损坏时，当前作用域按空历史处理；下一次合法记录可以重建有效数据。浏览器/WebView 拒绝访问 `localStorage`、序列化失败或存储空间不足时，当前运行期仍保留内存中的历史变化，但不承诺跨重启；任何持久化异常都不得阻止命令执行，也不显示打断输入的错误弹窗。
 
-完整 Shell 命令可能含凭证、私有路径或其它敏感参数。本轮按用户确认保存原文，不做不可靠的自动脱敏；数据只保存在 Agentre 本机前端存储，不随聊天消息发送、不进入 AI 上下文。新增后端通信严格限于不携带命令正文的只读作用域解析，以及既有 `TerminalRunCommand` 返回真实 scope/startError；不得新增命令、历史或输出日志。作用域隔离和当前目录清理入口是本轮拥有的隐私边界。
+完整 Shell 命令可能含凭证、私有路径或其它敏感参数。本轮按用户确认保存原文，不做不可靠的自动脱敏；数据只保存在 Agentre 本机前端存储，不随聊天消息发送、不进入 AI 上下文。新增应用层通信严格限于不携带命令正文的只读作用域解析，以及既有 `TerminalRunCommand` 返回真实 scope/startError；agentred 内部终端协议只增加运行期 terminal ID 与 pending-open 取消归属，不新增命令、历史或输出日志。作用域隔离和当前目录清理入口是本轮拥有的隐私边界。
 
 Command Palette 迁移到共享评分逻辑后，其现有评分数值、结果顺序和匹配能力必须保持不变；本轮不借迁移改变 Command Palette 的可见行为。`/`、`$`、`@` 的命令补全、Mention XML、发送和路由协议也保持不变。
 
@@ -126,7 +138,7 @@ Command Palette 迁移到共享评分逻辑后，其现有评分数值、结果�
 - 不跨设备同步、云备份或共享 Shell 历史。
 - 不提供所有目录历史的集中管理页、导入/导出或全局清空入口。
 - 不新增触发字符，也不改变 `/`、`$`、`@` 与 `!` 的既有模式触发边界。
-- 除只读 scope 解析和既有 `TerminalRunCommand` 的返回结构外，不改变命令执行次数、自动发送、Mention XML、Agent 路由或项目引用语义。
+- 除只读 scope 解析、既有 `TerminalRunCommand` 返回结构和已批准的 agentred terminal ID/pending-open 生命周期协调外，不改变命令执行次数、自动发送、Mention XML、Agent 路由或项目引用语义。
 - 不在后端、数据库或设备间存储/同步 Shell 历史；后端只解析并回传执行作用域。
 - 不为候选搜索增加服务端索引、历史频率学习或个性化模型。
 - 不给描述和项目路径增加拼音或字符顺序模糊匹配。
@@ -144,6 +156,7 @@ Command Palette 迁移到共享评分逻辑后，其现有评分数值、结果�
 | 执行作用域服务单元测试 | 已有 session、预会话本地/远端项目、自由会话、项目位置变化与无效目标都复用同一解析器；预解析绝不创建 session | `internal/service/chat_svc/exec_target_test.go` 及现有 service mock 注入模式 |
 | Wails 命令合约测试 | `ResolveLocalCommandScope` 只返回设备/cwd；`TerminalRunCommand` 使用并返回同一 scope，`OpenCommand` 失败进入 `startError` 响应且每次提交只启动一次 | `internal/app/terminal_test.go`；Wails binding 保持 parse → service → return |
 | 前端执行编排集成 | 新远端项目和本地自由聊天在首条命令前可读取正确历史；连续提交不覆盖；位置更新不使用旧 session cwd；scope 解析失败不阻止命令；异步拒绝无未处理 Promise | `frontend/src/components/agentre/__tests__/chat-panel.test.tsx`；`frontend/src/components/agentre/chat-input/__tests__/command-mode.test.tsx` |
+| agentred 远端启动协议 | Open 前同 ID 订阅捕获响应前 data/exit；Stop/超时取消 pending open；Close 早于 Open attempt 登记仍阻止启动；忽略 context 的迟到 handle 被关闭且不启动 pump；重复 Open/Close 幂等且取消归属有界；旧客户端空 ID 仍兼容 | `internal/pkg/pty/remote/*_test.go`；`internal/daemon/handlers/terminal*_test.go`；真实 `internal/daemon/rpc` 双端 ordering/cancellation 测试 |
 | 持久化数据形状 | 新键只含版本、作用域、命令和最近时间，不含输出、退出码、会话/终端 ID 或状态；回滚时旧功能不读取该键 | `frontend/src/stores/__tests__/chat-tabs-persistence.test.ts` 提供本地存储损坏与版本化测试先例 |
 | Command Palette 既有测试 | 评分逻辑共享化不改变命令面板现有匹配分数与结果 | `frontend/src/components/agentre/command-palette/score.test.ts` 及各 source 测试 |
 | i18n 与可访问性组件测试 | 新菜单无障碍名称、清理动作中英文覆盖、长命令完整可访问且视觉可截断 | `frontend/src/__tests__/i18n.test.ts`；`frontend/src/components/agentre/slash-commands/__tests__/slash-popover.test.tsx`；`frontend/src/components/agentre/chat-input/mentions/__tests__/mention-popover.test.tsx` |
