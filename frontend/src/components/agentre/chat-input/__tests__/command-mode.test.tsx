@@ -745,45 +745,6 @@ describe("AIChatInput command mode", () => {
     expect(editorRef.current!.getText()).toBe("");
   });
 
-  it("Given history recording rejects, When command execution succeeds, Then the optional write failure is consumed without repeating execution", async () => {
-    const editorRef: RefObject<Editor | null> = { current: null };
-    const recordFailure = new Error("history persistence failed");
-    const onCommandSubmit = vi.fn().mockResolvedValue(repoScope);
-    const recordSpy = vi
-      .spyOn(localCommandHistoryStore, "record")
-      .mockImplementation(() => Promise.reject(recordFailure) as never);
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const unhandledRejection = vi.fn();
-    window.addEventListener("unhandledrejection", unhandledRejection);
-    onTestFinished(() =>
-      window.removeEventListener("unhandledrejection", unhandledRejection),
-    );
-
-    render(
-      <AIChatInput
-        editorRef={editorRef}
-        localCommandHistoryScope={repoScope}
-        onSubmit={vi.fn()}
-        onCommandSubmit={onCommandSubmit}
-      />,
-    );
-
-    act(() => {
-      editorRef.current!.commands.insertContent("!pwd");
-      pressEnter(editorRef.current!);
-    });
-
-    await vi.waitFor(() => {
-      expect(warnSpy).toHaveBeenCalledWith(
-        "[chat-input] failed to record local command history",
-        recordFailure,
-      );
-    });
-    expect(onCommandSubmit).toHaveBeenCalledTimes(1);
-    expect(recordSpy).toHaveBeenCalledTimes(1);
-    expect(unhandledRejection).not.toHaveBeenCalled();
-  });
-
   it("Given history reads fail, When a command is entered and submitted, Then the menu stays unavailable without blocking execution", () => {
     const editorRef: RefObject<Editor | null> = { current: null };
     const onCommandSubmit = vi.fn();

@@ -351,22 +351,17 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
                 void Promise.resolve(executionScope)
                   .then((scope) => {
                     if (!scope || submittedAt === undefined) return;
-                    const warnRecordFailure = (error: unknown) => {
+                    try {
+                      localCommandHistoryStore.record(
+                        scope,
+                        command,
+                        submittedAt,
+                      );
+                    } catch (error) {
                       console.warn(
                         "[chat-input] failed to record local command history",
                         error,
                       );
-                    };
-                    try {
-                      void Promise.resolve(
-                        localCommandHistoryStore.record(
-                          scope,
-                          command,
-                          submittedAt,
-                        ),
-                      ).catch(warnRecordFailure);
-                    } catch (error) {
-                      warnRecordFailure(error);
                     }
                   })
                   .catch(warnSubmissionFailure);
