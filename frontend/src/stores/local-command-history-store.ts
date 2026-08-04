@@ -238,6 +238,8 @@ export function createLocalCommandHistoryStore(
     reservationClockTimestamp(),
     maximumLastUsedAt(history),
   );
+  // Clear barriers stay in memory because in-flight frontend promises do not survive restart.
+  const clearBarriers = new Map<string, number>();
   const reserveLastUsedAt = () => {
     const reservation = ensurePersistableHistoryTimestamp(
       Math.max(lastReservedAt, reservationClockTimestamp()) + 1,
@@ -263,6 +265,9 @@ export function createLocalCommandHistoryStore(
           ? lastUsedAt
           : reserveLastUsedAt(),
       );
+      const clearBarrier = clearBarriers.get(key);
+      if (clearBarrier !== undefined && usedAt <= clearBarrier) return;
+
       const entries = history.scopes[key] ?? [];
       const existingEntry = entries.find((entry) => entry.command === command);
       if (existingEntry && existingEntry.lastUsedAt >= usedAt) return;
@@ -275,7 +280,9 @@ export function createLocalCommandHistoryStore(
       writePersistedHistory(storage, history);
     },
     clear(scope) {
-      delete history.scopes[deriveLocalCommandHistoryScopeKey(scope)];
+      const key = deriveLocalCommandHistoryScopeKey(scope);
+      delete history.scopes[key];
+      clearBarriers.set(key, lastReservedAt);
       writePersistedHistory(storage, history);
     },
   };

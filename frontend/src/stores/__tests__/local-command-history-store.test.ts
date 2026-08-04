@@ -309,6 +309,61 @@ describe("local command history scope and persistence", () => {
       { command: "make deploy", lastUsedAt: 20 },
     ]);
   });
+
+  it("Given reserved submissions settle after repeated scope clears, when records arrive out of order, then pre-clear commands stay deleted while post-clear and other-scope commands persist", () => {
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const setItem = vi.fn(localStorage.setItem.bind(localStorage));
+    const store = createLocalCommandHistoryStore({
+      storage: {
+        getItem: localStorage.getItem.bind(localStorage),
+        setItem,
+      },
+    });
+    const preClearLocal = store.reserveLastUsedAt();
+    const preClearRemote = store.reserveLastUsedAt();
+
+    store.clear(localRepo);
+    const persistedAfterClear = localStorage.getItem(
+      LOCAL_COMMAND_HISTORY_STORAGE_KEY,
+    );
+    const writesAfterClear = setItem.mock.calls.length;
+    store.record(localRepo, "private command", preClearLocal);
+
+    expect(store.list(localRepo)).toEqual([]);
+    expect(setItem).toHaveBeenCalledTimes(writesAfterClear);
+    expect(localStorage.getItem(LOCAL_COMMAND_HISTORY_STORAGE_KEY)).toBe(
+      persistedAfterClear,
+    );
+
+    store.record(remoteRepo, "remote command", preClearRemote);
+    const postClearLocal = store.reserveLastUsedAt();
+    store.record(localRepo, "new command", postClearLocal);
+    const preSecondClearLocal = store.reserveLastUsedAt();
+    store.clear(localRepo);
+    store.record(localRepo, "second private command", preSecondClearLocal);
+    const postSecondClearLocal = store.reserveLastUsedAt();
+    store.record(localRepo, "newest command", postSecondClearLocal);
+
+    expect(store.list(localRepo)).toEqual([
+      { command: "newest command", lastUsedAt: postSecondClearLocal },
+    ]);
+    expect(store.list(remoteRepo)).toEqual([
+      { command: "remote command", lastUsedAt: preClearRemote },
+    ]);
+    expect(
+      JSON.parse(localStorage.getItem(LOCAL_COMMAND_HISTORY_STORAGE_KEY)!),
+    ).toEqual({
+      version: 1,
+      scopes: {
+        [deriveLocalCommandHistoryScopeKey(localRepo)]: [
+          { command: "newest command", lastUsedAt: postSecondClearLocal },
+        ],
+        [deriveLocalCommandHistoryScopeKey(remoteRepo)]: [
+          { command: "remote command", lastUsedAt: preClearRemote },
+        ],
+      },
+    });
+  });
 });
 
 describe("local command history storage failures", () => {
