@@ -28,7 +28,7 @@ func (a *App) TerminalOpen(terminalID string, projectID int64, deviceID string, 
 func (a *App) ResolveLocalCommandScope(
 	req *chat_svc.ResolveLocalCommandScopeRequest,
 ) (*chat_svc.LocalCommandScope, error) {
-	return chat_svc.Chat().ResolveLocalCommandScope(a.ctx, req)
+	return resolveLocalCommandScope(a.ctx, req)
 }
 
 // TerminalRunCommand 在会话工作目录下,以 `$SHELL -l -c command` 跑一条本地命令(绕开 AI agent)。

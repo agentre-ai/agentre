@@ -22,6 +22,24 @@ func (a ptyBackendAdapter) Open(ctx context.Context, spec pty.Spec) (pty.Handle,
 	return a.be.Open(ctx, spec)
 }
 
+func resolveLocalCommandScope(
+	ctx context.Context,
+	req *chat_svc.ResolveLocalCommandScopeRequest,
+) (*chat_svc.LocalCommandScope, error) {
+	chat := chat_svc.Chat()
+	if chat == nil {
+		return nil, terminal_svc.ErrCommandScopeResolverNotInitialized
+	}
+	scope, err := chat.ResolveLocalCommandScope(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if scope == nil {
+		return nil, terminal_svc.ErrCommandScopeUnavailable
+	}
+	return scope, nil
+}
+
 func newTerminalService(appCtx context.Context) *terminal_svc.Service {
 	localBE := local.NewBackend()
 	remoteFactory := func(deviceIDStr string) (terminal_svc.PTYBackend, error) {
@@ -49,19 +67,12 @@ func newTerminalService(appCtx context.Context) *terminal_svc.Service {
 		ctx context.Context,
 		req terminal_svc.ResolveCommandScopeRequest,
 	) (*terminal_svc.CommandScope, error) {
-		chat := chat_svc.Chat()
-		if chat == nil {
-			return nil, terminal_svc.ErrCommandScopeResolverNotInitialized
-		}
-		scope, err := chat.ResolveLocalCommandScope(
+		scope, err := resolveLocalCommandScope(
 			ctx,
 			&chat_svc.ResolveLocalCommandScopeRequest{SessionID: req.SessionID},
 		)
 		if err != nil {
 			return nil, err
-		}
-		if scope == nil {
-			return nil, terminal_svc.ErrCommandScopeUnavailable
 		}
 		return &terminal_svc.CommandScope{DeviceID: scope.DeviceID, Cwd: scope.Cwd}, nil
 	})

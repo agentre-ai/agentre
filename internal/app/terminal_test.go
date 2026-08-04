@@ -133,6 +133,36 @@ func TestApp_ResolveLocalCommandScope_GivenResolverFailure_WhenResolved_ThenRetu
 	require.ErrorIs(t, err, resolveErr)
 }
 
+func TestApp_ResolveLocalCommandScope_GivenChatServiceUnset_WhenResolved_ThenReturnsRPCError(t *testing.T) {
+	registerTerminalChatService(t, nil)
+
+	var scope *chat_svc.LocalCommandScope
+	var err error
+	require.NotPanics(t, func() {
+		scope, err = (&App{ctx: context.Background()}).ResolveLocalCommandScope(
+			&chat_svc.ResolveLocalCommandScopeRequest{SessionID: 71},
+		)
+	})
+
+	assert.Nil(t, scope)
+	require.ErrorIs(t, err, terminal_svc.ErrCommandScopeResolverNotInitialized)
+}
+
+func TestApp_ResolveLocalCommandScope_GivenResolverReturnsNil_WhenResolved_ThenReturnsRPCError(t *testing.T) {
+	registerTerminalChatService(t, &terminalChatServiceStub{
+		resolve: func(context.Context, *chat_svc.ResolveLocalCommandScopeRequest) (*chat_svc.LocalCommandScope, error) {
+			return nil, nil
+		},
+	})
+
+	scope, err := (&App{ctx: context.Background()}).ResolveLocalCommandScope(
+		&chat_svc.ResolveLocalCommandScopeRequest{SessionID: 71},
+	)
+
+	assert.Nil(t, scope)
+	require.ErrorIs(t, err, terminal_svc.ErrCommandScopeUnavailable)
+}
+
 func TestApp_TerminalRunCommand_GivenProductionAdapterUnavailable_WhenCalled_ThenReturnsRPCErrorWithoutLaunch(t *testing.T) {
 	tests := []struct {
 		name    string
