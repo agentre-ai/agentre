@@ -42,6 +42,7 @@ const appMocks = vi.hoisted(() => ({
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),
   RegenerateChatMessage: vi.fn(),
   RenameChatSession: vi.fn(),
+  ResolveLocalCommandScope: vi.fn(),
   SendChatMessage: vi.fn(),
   SetChatGoal: vi.fn(),
   StartChatGoal: vi.fn(),
@@ -284,6 +285,7 @@ import {
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useLocalCommandsStore } from "@/stores/local-commands-store";
 
 /** 清 store streams 以避免测试间串台 */
 function resetStore() {
@@ -320,9 +322,22 @@ function resetStore() {
   appMocks.EnqueueChatMessage.mockReset();
   appMocks.EnsureChatSession.mockReset();
   appMocks.GetChatLaunchCommand.mockReset();
+  appMocks.ResolveLocalCommandScope.mockReset();
+  appMocks.ResolveLocalCommandScope.mockImplementation(
+    () => new Promise(() => undefined),
+  );
   appMocks.TerminalRunCommand.mockReset();
+  useLocalCommandsStore.setState({ entries: {} });
   sonnerMocks.toast.error.mockClear();
   sonnerMocks.toast.success.mockClear();
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function transcriptScroller(container: HTMLElement): HTMLElement {
@@ -443,43 +458,231 @@ describe("ChatPanel · transcript cwd", () => {
       "/Users/codfrm/Code/agentre/agentre",
     );
   });
+});
 
-  it("Given a remote session cwd, When the composer renders, Then its command history scope uses the stable device ID and resolved cwd", () => {
-    resetStore();
-    mockSessionStore.session = makeSession({
-      cwd: "/srv/agentre",
-      deviceID: "remote-device-7",
-      id: 42,
-    });
-
-    render(<ChatPanel sessionId={42} />);
-
-    expect(
-      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
-    ).toEqual({
-      cwd: "/srv/agentre",
-      deviceId: "remote-device-7",
-    });
-  });
-
-  it("Given an existing session target is still loading, When the composer renders, Then it exposes no local-default history scope", () => {
+describe("ChatPanel · local command scope and execution", () => {
+  it("Given a new remote project target, When the composer mounts, Then history uses only the async pre-session resolver without creating a session", async () => {
     resetStore();
     mockSessionStore.session = null;
+    const resolution = deferred<{ deviceId: string; cwd: string }>();
+    appMocks.ResolveLocalCommandScope.mockReturnValueOnce(resolution.promise);
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Remote Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            deviceID: "7",
+          } as never
+        }
+        newSessionContext={{ projectId: 2 }}
+      />,
+    );
+
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 7, projectId: 2, sessionId: 0 }),
+    );
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBeUndefined();
+
+    await act(async () => {
+      resolution.resolve({ deviceId: "7", cwd: "/home/me/proj" });
+      await resolution.promise;
+    });
+
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "7", cwd: "/home/me/proj" });
+    });
+    expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
+  });
+
+  it("Given a local free-chat target, When scope resolves, Then AgentCwd is shown instead of an empty or project-derived cwd", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "",
+      cwd: "/Users/me/agent-cwd",
+    });
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 8,
+            name: "Local Eng",
+            agentBackendId: 2,
+            backendType: "codex",
+            deviceID: "",
+          } as never
+        }
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "", cwd: "/Users/me/agent-cwd" });
+    });
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 8, projectId: 0, sessionId: 0 }),
+    );
+    expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
+  });
+
+  it("Given an existing session snapshot, When scope resolves, Then the composer uses the session-only resolver result rather than snapshot device/cwd", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      cwd: "/stale/session/cwd",
+      deviceID: "stale-device",
+      id: 42,
+    });
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "remote-device-7",
+      cwd: "/srv/current",
+    });
 
     render(<ChatPanel sessionId={42} />);
+
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "remote-device-7", cwd: "/srv/current" });
+    });
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 0, projectId: 0, sessionId: 42 }),
+    );
+  });
+
+  it("Given a resolved session target, When the target changes, Then the old scope clears before the new async resolution finishes", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "remote-7",
+      cwd: "/srv/old-target",
+    });
+    const nextTarget = deferred<{ deviceId: string; cwd: string }>();
+    appMocks.ResolveLocalCommandScope.mockReturnValueOnce(nextTarget.promise);
+    const view = render(<ChatPanel sessionId={42} />);
+
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "remote-7", cwd: "/srv/old-target" });
+    });
+
+    mockSessionStore.session = makeSession({ id: 43 });
+    view.rerender(<ChatPanel sessionId={43} />);
 
     expect(
       componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
     ).toBeUndefined();
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenLastCalledWith(
+      expect.objectContaining({ agentId: 0, projectId: 0, sessionId: 43 }),
+    );
   });
 
-  it("Given a new remote project chat, When a command creates the session, Then its resolved execution scope replaces the local project path", async () => {
+  it("Given a resolved scope, When ! mode and then session/location refresh re-resolve out of order, Then old scope clears immediately and stale responses are ignored", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ cwd: "/snapshot-a", id: 42 });
+    const initial = deferred<{ deviceId: string; cwd: string }>();
+    const commandModeRefresh = deferred<{ deviceId: string; cwd: string }>();
+    const sessionRefresh = deferred<{ deviceId: string; cwd: string }>();
+    appMocks.ResolveLocalCommandScope.mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(commandModeRefresh.promise)
+      .mockReturnValueOnce(sessionRefresh.promise);
+    const view = render(<ChatPanel sessionId={42} />);
+
+    await act(async () => {
+      initial.resolve({ deviceId: "remote-7", cwd: "/srv/old" });
+      await initial.promise;
+    });
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "remote-7", cwd: "/srv/old" });
+    });
+
+    act(() => {
+      const onCommandModeChange = componentMocks.chatComposerProps.at(-1)
+        ?.onCommandModeChange as ((active: boolean) => void) | undefined;
+      onCommandModeChange?.(true);
+    });
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBeUndefined();
+
+    mockSessionStore.session = makeSession({ cwd: "/snapshot-b", id: 42 });
+    view.rerender(<ChatPanel sessionId={42} />);
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      sessionRefresh.resolve({ deviceId: "remote-7", cwd: "/srv/current" });
+      await sessionRefresh.promise;
+    });
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "remote-7", cwd: "/srv/current" });
+    });
+
+    await act(async () => {
+      commandModeRefresh.resolve({
+        deviceId: "remote-7",
+        cwd: "/srv/stale-response",
+      });
+      await commandModeRefresh.promise;
+    });
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toEqual({ deviceId: "remote-7", cwd: "/srv/current" });
+  });
+
+  it("Given scope pre-resolution fails, When a command is submitted, Then execution still launches once and returns the terminal response scope", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.ResolveLocalCommandScope.mockRejectedValueOnce(
+      new Error("scope unavailable"),
+    );
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-9", cwd: "/srv/run" },
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    await waitFor(() => {
+      expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+    });
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("pwd")).resolves.toEqual({
+      deviceId: "remote-9",
+      cwd: "/srv/run",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
+  });
+
+  it("Given two simultaneous commands in a new chat, When session creation resolves, Then one Ensure promise is shared but both commands launch and settle independently exactly once", async () => {
     resetStore();
     mockSessionStore.session = null;
-    appMocks.EnsureChatSession.mockResolvedValue(99);
-    appMocks.TerminalRunCommand.mockResolvedValue(undefined);
+    const ensured = deferred<number>();
+    appMocks.EnsureChatSession.mockReturnValueOnce(ensured.promise);
+    appMocks.TerminalRunCommand.mockImplementation(
+      async (_terminalId, _sessionId, command) => ({
+        scope: { deviceId: "7", cwd: `/srv/${String(command)}` },
+      }),
+    );
     const onSessionCreated = vi.fn();
-    const view = render(
+    const onSidebarShouldReload = vi.fn();
+    render(
       <ChatPanel
         sessionId={0}
         newSessionAgent={
@@ -493,47 +696,99 @@ describe("ChatPanel · transcript cwd", () => {
         }
         newSessionContext={{ projectId: 2 }}
         onSessionCreated={onSessionCreated}
+        onSidebarShouldReload={onSidebarShouldReload}
       />,
     );
-    const initialComposerProps = componentMocks.chatComposerProps.at(-1);
-    const runCommand = initialComposerProps?.onRunCommand as
-      | ((command: string) => Promise<unknown>)
-      | undefined;
-    expect(runCommand).toBeDefined();
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
 
-    let executionScope: Promise<unknown> | undefined;
+    let first!: Promise<unknown>;
+    let second!: Promise<unknown>;
     act(() => {
-      executionScope = runCommand?.("pwd");
+      first = runCommand("first");
+      second = runCommand("second");
     });
-    await waitFor(() => {
-      expect(onSessionCreated).toHaveBeenCalledWith(99, 7);
+    expect(appMocks.EnsureChatSession).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalRunCommand).not.toHaveBeenCalled();
+
+    await act(async () => {
+      ensured.resolve(99);
+      await ensured.promise;
     });
 
-    expect.soft(initialComposerProps?.localCommandHistoryScope).toBeUndefined();
-    expect.soft(appMocks.TerminalRunCommand).not.toHaveBeenCalled();
-
-    mockSessionStore.session = makeSession({
-      cwd: "/home/me/proj",
-      deviceID: "7",
-      id: 99,
-      projectId: 2,
-    });
-    view.rerender(<ChatPanel sessionId={99} />);
-
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { deviceId: "7", cwd: "/srv/first" },
+      { deviceId: "7", cwd: "/srv/second" },
+    ]);
+    expect(onSessionCreated).toHaveBeenCalledTimes(1);
+    expect(onSessionCreated).toHaveBeenCalledWith(99, 7);
+    expect(onSidebarShouldReload).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(2);
     expect(
-      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
-    ).toEqual({ cwd: "/home/me/proj", deviceId: "7" });
-    await expect(executionScope).resolves.toEqual({
-      cwd: "/home/me/proj",
-      deviceId: "7",
+      appMocks.TerminalRunCommand.mock.calls.map((call) => call[2]),
+    ).toEqual(["first", "second"]);
+    expect(
+      new Set(appMocks.TerminalRunCommand.mock.calls.map((call) => call[0]))
+        .size,
+    ).toBe(2);
+    expect(
+      Object.values(useLocalCommandsStore.getState().entries).map(
+        ({ command, sessionId }) => ({ command, sessionId }),
+      ),
+    ).toEqual([
+      { command: "first", sessionId: 99 },
+      { command: "second", sessionId: 99 },
+    ]);
+  });
+
+  it("Given TerminalRunCommand returns startError with scope, When execution settles, Then the card fails but the exact returned scope remains available for history", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-11", cwd: "/srv/exact" },
+      startError: "executable not found",
     });
-    expect(appMocks.TerminalRunCommand).toHaveBeenCalledWith(
-      expect.any(String),
-      99,
-      "pwd",
-      80,
-      24,
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("missing-tool")).resolves.toEqual({
+      deviceId: "remote-11",
+      cwd: "/srv/exact",
+    });
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      command: "missing-tool",
+      exitCode: -1,
+      output: "executable not found",
+      status: "failed",
+    });
+    expect(runtimeMocks.EventsOff).toHaveBeenCalledWith(
+      `terminal:${terminalId}:data`,
     );
+    expect(runtimeMocks.EventsOff).toHaveBeenCalledWith(
+      `terminal:${terminalId}:exit`,
+    );
+  });
+
+  it("Given TerminalRunCommand rejects before returning scope, When execution settles, Then the card fails, undefined prevents history, and no rejection escapes", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.TerminalRunCommand.mockRejectedValueOnce(
+      new Error("target resolution failed"),
+    );
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("pwd")).resolves.toBeUndefined();
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      exitCode: -1,
+      output: "Error: target resolution failed",
+      status: "failed",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
   });
 });
 

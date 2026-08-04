@@ -323,19 +323,31 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           const command = content.trimStart().slice(1).trim();
           historyIndexRef.current = -1;
           if (command) {
-            const executionScope = onCommandSubmitRef.current?.(command);
-            if (executionScope) {
-              void Promise.resolve(executionScope).then((scope) => {
-                if (!scope) return;
-                try {
-                  localCommandHistoryStore.record(scope, command);
-                } catch (error) {
-                  console.warn(
-                    "[chat-input] failed to record local command history",
-                    error,
-                  );
-                }
-              });
+            const warnSubmissionFailure = (error: unknown) => {
+              console.warn(
+                "[chat-input] local command submission failed",
+                error,
+              );
+            };
+            try {
+              const executionScope = onCommandSubmitRef.current?.(command);
+              if (executionScope) {
+                void Promise.resolve(executionScope)
+                  .then((scope) => {
+                    if (!scope) return;
+                    try {
+                      localCommandHistoryStore.record(scope, command);
+                    } catch (error) {
+                      console.warn(
+                        "[chat-input] failed to record local command history",
+                        error,
+                      );
+                    }
+                  })
+                  .catch(warnSubmissionFailure);
+              }
+            } catch (error) {
+              warnSubmissionFailure(error);
             }
           }
           editor.commands.clearContent(true);

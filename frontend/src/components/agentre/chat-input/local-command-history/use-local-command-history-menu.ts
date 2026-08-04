@@ -114,10 +114,18 @@ export function useLocalCommandHistoryMenu({
         suppressedQueryRef.current = null;
       }
 
-      const items = rankLocalCommandHistory(
-        localCommandHistoryStore.list(activeScope),
-        hit.query,
-      );
+      let history: LocalCommandHistoryEntry[];
+      try {
+        history = localCommandHistoryStore.list(activeScope);
+      } catch (error) {
+        console.warn(
+          "[chat-input] failed to read local command history",
+          error,
+        );
+        setState(closedState(hit.query));
+        return;
+      }
+      const items = rankLocalCommandHistory(history, hit.query);
       if (items.length === 0) {
         setState(closedState(hit.query));
         return;

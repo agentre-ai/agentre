@@ -344,9 +344,10 @@ describe("AIChatInput command mode", () => {
       });
 
       expect(editor.getText()).toBe("!git cherry-pick master");
-      expect(editor.state.selection.$from.parentOffset).toBe(
-        editor.state.selection.$from.parent.content.size,
-      );
+      act(() => {
+        editor.commands.insertContent(" --no-verify");
+      });
+      expect(editor.getText()).toBe("!git cherry-pick master --no-verify");
       expect(onCommandSubmit).not.toHaveBeenCalled();
       expect(onSubmit).not.toHaveBeenCalled();
       expect(recordSpy).not.toHaveBeenCalled();
@@ -460,6 +461,65 @@ describe("AIChatInput command mode", () => {
       await screen.findByRole("option", { name: "other command" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("repo command")).not.toBeInTheDocument();
+  });
+
+  it("Given a rejected command handler promise, When a nonempty command is submitted, Then no history is recorded and the rejection is consumed", async () => {
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const rejection = new Error("terminal rpc failed");
+    const onCommandSubmit = vi.fn().mockRejectedValue(rejection);
+    const recordSpy = vi.spyOn(localCommandHistoryStore, "record");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={onCommandSubmit}
+      />,
+    );
+
+    act(() => {
+      editorRef.current!.commands.insertContent("!pwd");
+      pressEnter(editorRef.current!);
+    });
+
+    await vi.waitFor(() => {
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[chat-input] local command submission failed",
+        rejection,
+      );
+    });
+    expect(recordSpy).not.toHaveBeenCalled();
+    expect(editorRef.current!.getText()).toBe("");
+  });
+
+  it("Given history reads fail, When a command is entered and submitted, Then the menu stays unavailable without blocking execution", () => {
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onCommandSubmit = vi.fn();
+    vi.spyOn(localCommandHistoryStore, "list").mockImplementation(() => {
+      throw new Error("history read failed");
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={onCommandSubmit}
+      />,
+    );
+
+    act(() => {
+      editorRef.current!.commands.insertContent("!pwd");
+    });
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    act(() => {
+      pressEnter(editorRef.current!);
+    });
+    expect(onCommandSubmit).toHaveBeenCalledWith("pwd");
   });
 
   it("Given a long command and transient output, When history is hovered, picked, or cleared, Then dynamic text stays complete and clearing preserves the draft and output card", async () => {

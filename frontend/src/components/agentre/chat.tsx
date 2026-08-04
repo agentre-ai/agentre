@@ -207,6 +207,8 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   ) => void;
   /** 本地命令回调:启动命令后返回后端解析出的稳定设备与 cwd，供历史落盘。 */
   onRunCommand?: LocalCommandSubmitHandler;
+  /** 进入 ! 模式时通知上层重新解析当前执行作用域。 */
+  onCommandModeChange?: (active: boolean) => void;
   /** 当前执行设备与 cwd 组成的 Shell 历史隔离作用域。 */
   localCommandHistoryScope?: LocalCommandHistoryScope;
   /** 透传给内层 AIChatInput 的编辑器 ref,供测试驱动编辑器内容。 */
@@ -468,6 +470,7 @@ function ChatComposer({
   supportsImageInput = true,
   onSlashRpc,
   onRunCommand,
+  onCommandModeChange,
   localCommandHistoryScope,
   editorRef,
   onPasteCapture,
@@ -784,7 +787,10 @@ function ChatComposer({
             editorRef={editorRef}
             onSubmit={handleSend}
             onEmptyChange={setIsEmpty}
-            onCommandModeChange={setCommandMode}
+            onCommandModeChange={(active) => {
+              setCommandMode(active);
+              onCommandModeChange?.(active);
+            }}
             onCommandSubmit={onRunCommand}
             localCommandHistoryScope={localCommandHistoryScope}
             sendOnEnter
