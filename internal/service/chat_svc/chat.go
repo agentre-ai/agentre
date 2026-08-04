@@ -124,6 +124,9 @@ type ChatSvc interface {
 	LatestAssistantText(ctx context.Context, sessionID int64) (string, error)
 	// SessionProjectID 返回某会话所属的 project id(0=未挂项目);子 agent 工具用它继承调用方项目/cwd。
 	SessionProjectID(ctx context.Context, sessionID int64) (int64, error)
+	// CatchUpRemoteSessions 在 App 启动后按 chat_sessions.exec_device_id 连回各台配对
+	// daemon,把桌面端离线期间远端产生的转录与待决策补回来。见 remote_catchup.go。
+	CatchUpRemoteSessions(ctx context.Context) error
 }
 
 var defaultChat ChatSvc
@@ -3606,36 +3609,60 @@ func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_ent
 	if !ok {
 		return nil, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 	}
-
-	// Fast path: cache hit
-	s.remoteMu.Lock()
-	if s.remoteCache == nil {
-		s.remoteCache = map[int64]*remoteRuntimeEntry{}
-	}
-	if entry, ok := s.remoteCache[deviceID]; ok {
-		entry.sessions[sessionID] = struct{}{}
-		s.remoteMu.Unlock()
-		// runtime 是 device 级共享的,所以同一台设备上的第二条会话走的正是这条路 ——
-		// 它自己的执行位置同样要落库,漏写它就永远没有可用游标(见下方冷路径的注释)。
-		s.recordExecDaemon(ctx, sessionID, deviceID, s.daemonFingerprint(ctx, deviceID))
-		return entry.runtime, nil
-	}
-	s.remoteMu.Unlock()
-
-	// Cold path: 借 lease + wrap runtime
-	lease, err := s.pool().Borrow(ctx, deviceID)
+	rt, fp, err := s.remoteRuntimeForDevice(ctx, deviceID, []int64{sessionID})
 	if err != nil {
 		logger.Ctx(ctx).Error("borrowRemoteRuntime: pool.Borrow",
 			zap.Int64("deviceID", deviceID), zap.Error(err))
 		return nil, i18n.NewError(ctx, code.RemoteRunnerDialFailed)
 	}
 	// 会话在库里记下「跑在哪台 daemon 的哪个实例上」——游标端口的读写守卫全靠它,
-	// 不写就永远判失效,断连补齐退化成断连即终止(见 remote_reconnect.go)。
-	fp := s.daemonFingerprint(ctx, deviceID)
+	// 不写就永远判失效,断连补齐退化成断连即终止(见 remote_reconnect.go);而 App
+	// 重启后「该连谁」也全靠这一行(见 CatchUpRemoteSessions)。runtime 是 device 级
+	// 共享的,同一台设备上的第二条会话走 cache 命中那条路,它自己的执行位置同样要落库。
 	s.recordExecDaemon(ctx, sessionID, deviceID, fp)
 
+	// 同步拉一次远端 backend 的 capability 矩阵缓存到本地,之后 rt.Capabilities()
+	// 直接返实际能力。已缓存过的 backendType 直接 noop(cache 命中不会再发 RPC)。
+	// 失败不阻断 borrow —— Capabilities() 回退到 defaultCapsBeforePrefetch 占位,
+	// UI gating 不挂死。
+	if err := rt.Prefetch(ctx, agent_backend_entity.BackendType(be.Type)); err != nil {
+		logger.Ctx(ctx).Warn("borrowRemoteRuntime: capability prefetch failed",
+			zap.Int64("deviceID", deviceID),
+			zap.String("backendType", be.Type),
+			zap.Error(err))
+	}
+	return rt, nil
+}
+
+// remoteRuntimeForDevice 取(或建)某台配对 daemon 上共享的 *remote.Runtime,并把
+// sessionIDs 记进它的引用集;顺带交回该 daemon 此刻的实例标识。
+//
+// 它与 borrowRemoteRuntime 分开,是因为补齐(CatchUpRemoteSessions)手上只有
+// (设备, 会话) 而**没有 agent backend**:重启后要连回的那台 daemon 是从
+// chat_sessions.exec_device_id 读出来的,不经过 turn 的后端选择。
+func (s *chatSvc) remoteRuntimeForDevice(ctx context.Context, deviceID int64, sessionIDs []int64) (*remote.Runtime, string, error) {
+	// Fast path: cache hit
+	s.remoteMu.Lock()
+	if s.remoteCache == nil {
+		s.remoteCache = map[int64]*remoteRuntimeEntry{}
+	}
+	if entry, ok := s.remoteCache[deviceID]; ok {
+		addSessionRefs(entry, sessionIDs)
+		s.remoteMu.Unlock()
+		return entry.runtime, s.daemonFingerprint(ctx, deviceID), nil
+	}
+	s.remoteMu.Unlock()
+
+	// Cold path: 借 lease + wrap runtime
+	lease, err := s.pool().Borrow(ctx, deviceID)
+	if err != nil {
+		return nil, "", err
+	}
+	fp := s.daemonFingerprint(ctx, deviceID)
+
 	// entry 先建出来:重连端口要往里换 lease,所以它必须先于 runtime 存在。
-	entry := &remoteRuntimeEntry{lease: lease, sessions: map[int64]struct{}{sessionID: {}}}
+	entry := &remoteRuntimeEntry{lease: lease, sessions: map[int64]struct{}{}}
+	addSessionRefs(entry, sessionIDs)
 	rt := remote.New(lease.Client(),
 		remote.WithDaemonFingerprint(fp),
 		remote.WithConnStateObserver(remote.ConnStateFunc(s.onRemoteConnState)),
@@ -3645,29 +3672,26 @@ func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_ent
 	)
 	entry.runtime = rt
 
-	// 同步拉一次远端 backend 的 capability 矩阵缓存到本地,之后 rt.Capabilities()
-	// 直接返实际能力。失败不阻断 borrow —— Capabilities() 回退到
-	// defaultCapsBeforePrefetch 占位,UI gating 不挂死。
-	if err := rt.Prefetch(ctx, agent_backend_entity.BackendType(be.Type)); err != nil {
-		logger.Ctx(ctx).Warn("borrowRemoteRuntime: capability prefetch failed",
-			zap.Int64("deviceID", deviceID),
-			zap.String("backendType", be.Type),
-			zap.Error(err))
-	}
-
 	// Re-lock and insert. TOCTOU 输家:用赢家的 entry,释放自己的 lease。
 	s.remoteMu.Lock()
 	if existing, ok := s.remoteCache[deviceID]; ok {
-		existing.sessions[sessionID] = struct{}{}
+		addSessionRefs(existing, sessionIDs)
 		s.remoteMu.Unlock()
 		lease.Release()
-		return existing.runtime, nil
+		return existing.runtime, fp, nil
 	}
 	s.remoteCache[deviceID] = entry
 	s.remoteMu.Unlock()
 
 	go s.watchLeaseClosed(deviceID, entry, lease)
-	return rt, nil
+	return rt, fp, nil
+}
+
+// addSessionRefs 调用方必须持 remoteMu。
+func addSessionRefs(entry *remoteRuntimeEntry, sessionIDs []int64) {
+	for _, sid := range sessionIDs {
+		entry.sessions[sid] = struct{}{}
+	}
 }
 
 // watchLeaseClosed 监听某条 lease 的 Closed()(Pool 那侧通知它失效),然后把 chat_svc

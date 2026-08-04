@@ -598,16 +598,16 @@ func TestLiveFrame_SeqNotNewerThanCursor_Discarded(t *testing.T) {
 // ── 回放到的旧轮次终态帧不得终结当前这一轮 ───────────────────────────────────
 
 // Given 客户端关掉又重开(游标停在上一轮中段,而那之后 daemon 上又跑完了几轮),
-// When 新一轮的第一条实时帧触发补洞、回放区间里夹着**已结束轮次**的 runResultDone,
-// Then 它既不关闭新这一轮的 events、也不拿旧结果覆盖它的 RunResult,其后的帧照常
-// 交付;只有新这一轮自己的终态帧才收尾。
+// When 新一轮的第一条实时帧触发补洞、回放区间里夹着**已结束轮次**的通知,
+// Then 新这一轮只收到自己的那两条;旧轮次的事件与终态帧一条不落地进各自的补齐轮,
+// 而不是混进用户刚发出的这条消息的回答里。
 //
-// 破法是用户可见的:关掉 App、过一阵重开、发一条新消息 —— 这条消息瞬间「结束」并
-// 带着上一轮的答案,其后的实时帧全部走「未知会话」被丢弃。
+// 破法是用户可见的:关掉 App、过一阵重开、发一条新消息 —— 上一轮的字一字不差地
+// 追加在这条新回答里,而这条消息还可能瞬间「结束」并带着上一轮的结果。
 //
-// 区间里刻意放三条已结束轮次的终态帧:回放一整段历史是常态而非边角,守卫必须对整段
-// 成立,而不是只挡住紧挨着游标的那一条。
-func TestGapFill_ReplayedDoneOfEndedTurn_DoesNotEndCurrentTurn(t *testing.T) {
+// 区间里刻意放三条已结束轮次的终态帧:回放一整段历史是常态而非边角,分轮必须对整段
+// 成立 —— 三轮进三张卡片,而不是揉成一坨或只挡住紧挨着游标的那一条。
+func TestGapFill_ReplayedEndedTurns_LandInCatchUpTurns_NotTheCurrentOne(t *testing.T) {
 	// 游标停在 3;4..9 是客户端离线期间落库的三轮尾巴,9 是开新一轮那一刻的高水位;
 	// 10/11 才是新这一轮自己的通知。
 	journal := []wire.JournaledNotification{
@@ -661,6 +661,8 @@ func TestGapFill_ReplayedDoneOfEndedTurn_DoesNotEndCurrentTurn(t *testing.T) {
 		UserText:  "新一轮",
 	})
 	require.NoError(t, err)
+	// 回放上来的旧轮次没有在飞的一轮可交付,落点是合成轮;先把消费方接上。
+	turns := rt.AutonomousTurns(rigSessionID)
 
 	// 新这一轮的第一条实时帧:对着停在 3 的游标是跳号,整段区间因此被重放回来。
 	ev, err := json.Marshal(agentruntime.TextDelta{Text: "new-a"})
@@ -681,15 +683,25 @@ func TestGapFill_ReplayedDoneOfEndedTurn_DoesNotEndCurrentTurn(t *testing.T) {
 					texts = append(texts, td.Text)
 				}
 			default:
-				return len(texts) >= 5
+				return len(texts) >= 2
 			}
 		}
 	}, 3*time.Second, 5*time.Millisecond)
 
 	assert.False(t, closedEarly, "已结束轮次的终态帧不得关掉新这一轮的 events")
-	assert.Equal(t, []string{"old-a", "old-b", "old-c", "new-a", "new-b"}, texts,
-		"旧轮次的终态帧不得截断回放:它后面的帧照常按序交付")
+	assert.Equal(t, []string{"new-a", "new-b"}, texts,
+		"新这一轮只该收到自己的通知:旧轮次的字混进来就是答非所问的历史")
 	assert.Empty(t, result.Model, "旧轮次的结果不得覆盖新这一轮的 RunResult")
+
+	// 三条旧轮次各自落成一轮补齐轮:内容一条不丢,而且按轮分开。
+	for _, want := range []struct{ text, model string }{
+		{"old-a", "old-1"}, {"old-b", "old-2"}, {"old-c", "old-3"},
+	} {
+		at := takeTurn(t, turns)
+		assert.Equal(t, TriggerCatchUp, at.Trigger)
+		assert.Equal(t, []string{want.text}, drainTexts(t, at.Events, 2*time.Second))
+		assert.Equal(t, want.model, at.Result.Model, "旧轮次的终态帧收尾的是它自己那一轮")
+	}
 	assert.True(t, rt.hasSession(rigSessionID),
 		"新这一轮必须还在会话表里,否则其后的实时帧会被当作未知会话丢弃")
 

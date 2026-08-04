@@ -51,6 +51,13 @@ type SessionRepo interface {
 	// daemon 实例标识,进 WHERE 做守卫:会话已改绑后老连接迟到的写入落空(不报错,同
 	// MarkRead 的「写不进也算成功」),下次重连至多重复拉取,而不会跳过新日志的开头。
 	UpdateEventCursor(ctx context.Context, sessionID int64, daemonFingerprint string, seq int64) error
+	// ListRemoteExecSessions 列出记录了远端执行位置的活跃会话(exec_device_id > 0 且
+	// 带实例标识)。App 启动后的补齐靠它回答「该连谁」——(会话, daemon, 游标) 三者
+	// 都在这一行上,不必再回头遍历 agent / backend 才知道会话跑在哪。
+	//
+	// 实例标识为空的行一并排除:游标只在它所属的那条通知日志里有意义,标识为空时
+	// LoadCursor 一律判失效,对它发起补齐只是白跑一轮 RPC。
+	ListRemoteExecSessions(ctx context.Context) ([]*chat_entity.Session, error)
 	// MarkRead 单调推进 last_read_at: 仅当 ts 严格大于当前值时写入。
 	// 避免 stream-done 与 LoadSession 乱序时把已读时间冲回旧值。
 	// 会话不存在 / 已软删 / ts 不更新 都算成功（不返回 ErrRecordNotFound）。
@@ -383,6 +390,16 @@ func (r *sessionRepo) UpdateExecDaemon(ctx context.Context, sessionID int64, dev
 				"CASE WHEN exec_daemon_fingerprint = ? THEN event_cursor ELSE 0 END", daemonFingerprint),
 			"updatetime": time.Now().UnixMilli(),
 		}).Error
+}
+
+func (r *sessionRepo) ListRemoteExecSessions(ctx context.Context) ([]*chat_entity.Session, error) {
+	var rows []*chat_entity.Session
+	err := db.Ctx(ctx).
+		Where("exec_device_id > ? AND exec_daemon_fingerprint <> ? AND status = ?", int64(0), "", consts.ACTIVE).
+		Order("id").
+		Find(&rows).Error
+	applySessionDerivedFields(rows)
+	return rows, err
 }
 
 func (r *sessionRepo) UpdateEventCursor(ctx context.Context, sessionID int64, daemonFingerprint string, seq int64) error {

@@ -70,6 +70,10 @@ type Runtime struct {
 	// *之后*)。按 sessionID 持久(跨 turn / 子进程 evict 复用),conn close 时统一拆。
 	// 见 autoturn.go。
 	autoSessions map[int64]*autoSession
+	// tracked 是 App 启动后按 exec_device_id 找回来、要为之补齐的会话(见 catchup.go)。
+	// 它们在本进程内**没有**在飞的一轮 —— 那正是重启后的常态 —— 但断连后仍要重连补齐,
+	// 所以必须与 sessions / autoSessions 一起进补齐范围。受 mu 保护。
+	tracked map[int64]struct{}
 
 	// ── 断连重连(reconnect.go)──
 	reconnect    ReconnectPort
@@ -393,19 +397,34 @@ func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, er
 		knownSids = append(knownSids, k)
 	}
 	r.mu.RUnlock()
-	if sess == nil {
-		logger.Ctx(ctx).Warn("remote runtime: event for unknown session — dropped",
-			zap.Int64("frameSid", frame.SessionID),
-			zap.Int64s("knownSids", knownSids),
-			zap.String("event", string(frame.Event)))
-		return nil, nil
-	}
 	ev, err := agentruntime.UnmarshalEvent(frame.Event)
 	if err != nil {
 		logger.Ctx(ctx).Warn("remote runtime: UnmarshalEvent failed — dropped",
 			zap.Int64("sid", frame.SessionID),
 			zap.String("event", string(frame.Event)),
 			zap.Error(err))
+		return nil, nil
+	}
+	if sess != nil && frame.Seq > 0 && frame.Seq <= sess.startSeq {
+		// 补齐回放上来的、属于**已结束轮次**的事件:它在开轮之前就落库了。放进当前
+		// 这一轮的 events,上一轮的 TextDelta 会一字不差地追加到用户刚发出的那条消息
+		// 的回答里 —— 用户看到的是一段答非所问的历史。它归补齐轮。
+		logger.Ctx(ctx).Debug("remote runtime: event from an ended turn — routed to catch-up",
+			zap.Int64("sid", frame.SessionID), zap.Int64("seq", frame.Seq),
+			zap.Int64("turnStartSeq", sess.startSeq))
+		sess = nil
+	}
+	if sess == nil {
+		// 带 seq 的事件必定来自认得补齐族的 daemon:它要么是重放上来的历史,要么是
+		// 一条本进程还没有轮次去接的实时通知(App 刚重启)。两种都是用户没见过的
+		// 转录内容,交给补齐轮落成一轮,而不是像老 daemon 那样丢掉。
+		if frame.Seq > 0 && r.deliverToCatchUpTurn(ctx, frame.SessionID, ev) {
+			return nil, nil
+		}
+		logger.Ctx(ctx).Warn("remote runtime: event for unknown session — dropped",
+			zap.Int64("frameSid", frame.SessionID),
+			zap.Int64s("knownSids", knownSids),
+			zap.String("event", string(frame.Event)))
 		return nil, nil
 	}
 	sess.mu.Lock()
@@ -438,12 +457,15 @@ func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) 
 		// 并 close 掉它的 events —— 用户刚发出的消息瞬间「结束」并带着上一轮的答案,
 		// 其后的实时帧则全部走下面 handleEvent 的「未知会话」被丢弃。
 		//
-		// 只挡终态帧:回放上来的其余通知仍照常交付(补齐本来就是要把漏掉的转录补回来),
-		// 而其中唯有终态帧带着「这一轮到此为止」的副作用。
-		logger.Ctx(ctx).Warn("remote runtime: runResultDone from an ended turn — ignored",
+		// 它与同一轮回放上来的事件走同一个去处:补齐轮。事件在 handleEvent 里按同一条
+		// 判据分流,这一帧则是那一轮的收尾 —— 两者合起来,回放的每一轮都完整落成一张
+		// 自己的卡片,而不是揉进用户刚发起的这一轮里。
+		logger.Ctx(ctx).Warn("remote runtime: runResultDone from an ended turn — routed to catch-up",
 			zap.Int64("sid", frame.SessionID),
 			zap.Int64("seq", frame.Seq),
 			zap.Int64("turnStartSeq", sess.startSeq))
+		// 它是**那一轮**的收尾:补齐轮攒的正是那一轮的内容,到此为止。
+		r.closeCatchUpTurn(ctx, frame)
 		return nil, nil
 	}
 	if ok {
@@ -457,6 +479,8 @@ func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) 
 		zap.Int("stopErrCode", frame.StopErrCode),
 		zap.String("model", frame.Model))
 	if !ok {
+		// 本进程没有这一轮(App 重启后补齐回放的整轮就长这样):补齐轮攒到这里为止。
+		r.closeCatchUpTurn(ctx, frame)
 		return nil, nil
 	}
 	sess.result.ProviderSessionID = frame.ProviderSessionID

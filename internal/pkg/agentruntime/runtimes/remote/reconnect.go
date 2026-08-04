@@ -475,7 +475,10 @@ func (r *Runtime) canReconnect() bool {
 // 一条不必要的等待链(autoturn.go 的既有纪律是先在 r.mu 下快照,再逐个上 a.mu)。
 func (r *Runtime) hasLiveRun() bool {
 	r.mu.RLock()
-	if len(r.sessions) > 0 {
+	// tracked 是 App 启动时按 exec_device_id 找回来、正在补齐的那些会话:它们在本
+	// 进程里没有轮次,却恰恰是本轮要接住的对象 —— 不算进来,重启后断一次线就再也
+	// 接不回去了(watchClose 会走 failAllSessions 并退出循环)。
+	if len(r.sessions) > 0 || len(r.tracked) > 0 {
 		r.mu.RUnlock()
 		return true
 	}
@@ -546,9 +549,16 @@ func (r *Runtime) adoptConn(cli agentruntime.DaemonClientPort, fp string) {
 	r.registerHandlers(cli)
 }
 
-// catchUpAll 对每条本地还活着的会话跑一遍补齐三步。
+// catchUpAll 对每条本地还认得的会话跑一遍补齐三步:在飞的一轮、自主续轮镜像,以及
+// App 启动时按 exec_device_id 找回来、本进程内并没有轮次在跑的那些(见 catchup.go)。
 func (r *Runtime) catchUpAll(ctx context.Context) error {
-	for _, sid := range r.liveSessionIDs() {
+	return r.catchUpEach(ctx, r.catchUpSessionIDs())
+}
+
+// catchUpEach 逐条补齐,并按错误种类分流:整条连接不支持就整体放弃,单条会话接不
+// 回去只收尾它。
+func (r *Runtime) catchUpEach(ctx context.Context, sids []int64) error {
+	for _, sid := range sids {
 		err := r.catchUpSession(ctx, sid)
 		switch {
 		case err == nil:
@@ -750,6 +760,9 @@ func (r *Runtime) failSession(sid int64) {
 	delete(r.sessions, sid)
 	auto := r.autoSessions[sid]
 	delete(r.autoSessions, sid)
+	// 这条会话在这台 daemon 上到此为止:摘掉补齐登记,否则此后每次重连都会为一条
+	// 已经收尾的会话再 attach 一次,而每次都注定失败。
+	delete(r.tracked, sid)
 	r.mu.Unlock()
 	if sess != nil {
 		closeSessionWithErr(sess, ErrRunInterrupted)
@@ -824,17 +837,42 @@ func (r *Runtime) setSessionConnState(sid int64, st SessionConnState) {
 func (r *Runtime) liveSessionIDs() []int64 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	seen := make(map[int64]struct{}, len(r.sessions)+len(r.autoSessions))
+	return r.sessionIDsLocked(false)
+}
+
+// catchUpSessionIDs 补齐要覆盖的会话:liveSessionIDs 再并上「本进程没有轮次在跑、
+// 但 App 启动时按 exec_device_id 找回来」的那些(见 CatchUpSessions)。
+//
+// 两者必须分开:liveSessionIDs 还负责决定连接态播给谁,而只有真的有活信号要修饰的
+// 会话才该收到重连态。补齐的范围比它宽 —— 一条会话在 daemon 上跑着、在本进程里
+// 一轮都没起,正是本轮要修的那个场景。
+func (r *Runtime) catchUpSessionIDs() []int64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sessionIDsLocked(true)
+}
+
+// sessionIDsLocked 调用方必须持 r.mu(读或写)。
+func (r *Runtime) sessionIDsLocked(withTracked bool) []int64 {
+	seen := make(map[int64]struct{}, len(r.sessions)+len(r.autoSessions)+len(r.tracked))
 	out := make([]int64, 0, len(seen))
-	for sid := range r.sessions {
+	add := func(sid int64) {
+		if _, dup := seen[sid]; dup {
+			return
+		}
 		seen[sid] = struct{}{}
 		out = append(out, sid)
 	}
+	for sid := range r.sessions {
+		add(sid)
+	}
 	for sid := range r.autoSessions {
-		if _, dup := seen[sid]; dup {
-			continue
+		add(sid)
+	}
+	if withTracked {
+		for sid := range r.tracked {
+			add(sid)
 		}
-		out = append(out, sid)
 	}
 	return out
 }
@@ -868,26 +906,40 @@ func (r *Runtime) turnStartFloor(ctx context.Context, sid int64) int64 {
 	if st == durabilityUnsupported {
 		return 0
 	}
-	var res wire.SessionListResult
-	switch err := r.conn().Call(ctx, wire.MethodSessionList, struct{}{}, &res); {
-	case err == nil:
-		r.setDurability(durabilitySupported)
-	case isMethodNotFound(err):
-		logger.Ctx(ctx).Warn("remote runtime: daemon predates session durability, disconnect will end the turn")
-		r.setDurability(durabilityUnsupported)
-		return 0
-	default:
+	summaries, err := r.sessionSummaries(ctx)
+	if err != nil {
+		if errors.Is(err, errCatchUpUnsupported) {
+			logger.Ctx(ctx).Warn("remote runtime: daemon predates session durability, disconnect will end the turn")
+			return 0
+		}
 		// 网络抖动之类:留在 unknown,下一轮再探。一次拨不通不该把持久化关掉。
 		logger.Ctx(ctx).Debug("remote runtime: session list before turn inconclusive", zap.Error(err))
 		return 0
 	}
-	for _, s := range res.Sessions {
-		if s.SessionID == sid {
-			return s.LatestSeq
-		}
-	}
 	// 清单里没有这条会话:它在这台 daemon 上还一条通知都没发过,高水位就是 0。
-	return 0
+	return summaries[sid].LatestSeq
+}
+
+// sessionSummaries 是补齐三步的第一步:问一眼这个对端在这台 daemon 上有哪些会话、
+// 各自的生命周期状态、是否正在等输入、日志高水位到哪。规格明写它无副作用,所以它
+// 同时充当 R18 的能力探测入口(attach 会改推送目标、pull 会推游标,都不能拿来探)。
+//
+// 老 daemon 回 method-not-found → errCatchUpUnsupported,并就地记下证伪结果。
+func (r *Runtime) sessionSummaries(ctx context.Context) (map[int64]wire.SessionSummary, error) {
+	var res wire.SessionListResult
+	if err := r.conn().Call(ctx, wire.MethodSessionList, struct{}{}, &res); err != nil {
+		if isMethodNotFound(err) {
+			r.setDurability(durabilityUnsupported)
+			return nil, errCatchUpUnsupported
+		}
+		return nil, wire.FromJSONRPCError(err)
+	}
+	r.setDurability(durabilitySupported)
+	out := make(map[int64]wire.SessionSummary, len(res.Sessions))
+	for _, s := range res.Sessions {
+		out[s.SessionID] = s
+	}
+	return out, nil
 }
 
 func (r *Runtime) setDurability(st durabilityState) {

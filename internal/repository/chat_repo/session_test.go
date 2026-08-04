@@ -476,3 +476,32 @@ func TestSessionRepo_UpdateEventCursor(t *testing.T) {
 	require.NoError(t, repo.UpdateEventCursor(ctx, 42, "sha256:beef", 17))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestSessionRepo_ListRemoteExecSessions 钉死「App 启动后该连谁」那一问的读取 SQL。
+//
+// exec_device_id 在此之前是只写列:写进去、再没人读。桌面端因此在重启后不知道哪些
+// 会话跑在哪台 daemon 上,补齐三步无从发起 —— 用户故事「退出 App 后下次打开看到这
+// 段时间发生的全部内容」直接不成立。
+//
+// 过滤条件的两半都是硬的:exec_device_id > 0 排除本机会话(它们的真相源是本地库,
+// 没有可补齐的远端日志),exec_daemon_fingerprint <> ” 排除没有实例标识的行 ——
+// 游标只在它所属的那条通知日志里有意义,标识为空时 LoadCursor 一律判失效,拿它去
+// attach 只会白发一轮 RPC。
+func TestSessionRepo_ListRemoteExecSessions(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	mock.ExpectQuery("SELECT \\* FROM `chat_sessions` WHERE exec_device_id > \\? AND exec_daemon_fingerprint <> \\? AND status = \\? ORDER BY id").
+		WithArgs(int64(0), "", consts.ACTIVE).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "agent_id", "agent_status", "status", "exec_device_id", "exec_daemon_fingerprint", "event_cursor"}).
+			AddRow(1, 7, "running", consts.ACTIVE, 3, "sha256:beef", 17).
+			AddRow(2, 7, "idle", consts.ACTIVE, 4, "sha256:cafe", 0))
+
+	got, err := chat_repo.NewSession().ListRemoteExecSessions(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, int64(3), got[0].ExecDeviceID)
+	assert.Equal(t, "sha256:beef", got[0].ExecDaemonFingerprint)
+	assert.Equal(t, int64(17), got[0].EventCursor)
+	assert.Equal(t, int64(4), got[1].ExecDeviceID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

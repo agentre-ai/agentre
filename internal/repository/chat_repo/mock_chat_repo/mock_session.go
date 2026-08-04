@@ -310,6 +310,21 @@ func (mr *MockSessionRepoMockRecorder) ListIDsByAgentsIncludingGroups(ctx, agent
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListIDsByAgentsIncludingGroups", reflect.TypeOf((*MockSessionRepo)(nil).ListIDsByAgentsIncludingGroups), ctx, agentIDs)
 }
 
+// ListRemoteExecSessions mocks base method.
+func (m *MockSessionRepo) ListRemoteExecSessions(ctx context.Context) ([]*chat_entity.Session, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListRemoteExecSessions", ctx)
+	ret0, _ := ret[0].([]*chat_entity.Session)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListRemoteExecSessions indicates an expected call of ListRemoteExecSessions.
+func (mr *MockSessionRepoMockRecorder) ListRemoteExecSessions(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListRemoteExecSessions", reflect.TypeOf((*MockSessionRepo)(nil).ListRemoteExecSessions), ctx)
+}
+
 // MarkRead mocks base method.
 func (m *MockSessionRepo) MarkRead(ctx context.Context, sessionID, ts int64) error {
 	m.ctrl.T.Helper()
