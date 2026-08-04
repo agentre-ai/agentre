@@ -157,6 +157,17 @@ func (f *fakeCursorPort) SaveCursor(_ context.Context, sessionID int64, fp strin
 	return nil
 }
 
+// savedSeqs 交出落库过的每一个 seq(按发生顺序)。
+func (f *fakeCursorPort) savedSeqs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]int64, 0, len(f.saved))
+	for _, s := range f.saved {
+		out = append(out, s.Seq)
+	}
+	return out
+}
+
 func (f *fakeCursorPort) lastSaved() (savedCursor, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -772,6 +783,86 @@ func TestReconnect_CursorLoadError_RetriesInsteadOfEndingSession(t *testing.T) {
 	assert.Equal(t, []string{"recovered"}, texts, "读游标失败只该让这一次补齐重来")
 	assert.Empty(t, conn2.methodCalls(wire.MethodSessionPull), "游标没读出来之前不得拉取")
 	assert.Nil(t, rig.result.StopErr, "瞬时读错误不得把会话按已中断收尾")
+}
+
+// ── 游标越界:daemon 的高水位低于本地游标 ────────────────────────────────────
+
+// Given daemon 的通知日志退到了本地游标之下(agentred.db 被恢复 / 截断,而 state.json
+// 连同 TOFU 指纹还在,R12 的指纹校验因此照常放行),When 重连接管,Then 客户端拿接管
+// 交回的高水位认出游标越界,作废它(连同库里那份)并从头补齐,其后的实时帧照常交付。
+//
+// 不作废的后果不是少几条:此后每一条实时帧都满足 seq <= 游标,在 dispatchNotification
+// 的第一条规则里被静默丢弃 —— 会话没有跳号、没有错误、Debug 以上没有任何日志地冻住。
+func TestReconnect_CursorAboveDaemonHighWater_InvalidatesCursorAndCatchesUpFromScratch(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	// 本地游标停在 7,而 daemon 恢复出来的日志只到 3。
+	rig.cursor.setLoad(func(int64, string) (int64, bool, error) { return 7, true, nil })
+	conn2 := catchUpConn(3, []wire.JournaledNotification{
+		journaledEvent(1, "restored-1"),
+		journaledEvent(2, "restored-2"),
+		journaledEvent(3, "restored-3"),
+	}, wire.SessionPendingWaitersResult{})
+	rig.queue(conn2, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	// 等补齐三步跑完(pendingWaiters 是最后一步)。不能等 ConnState:会话此刻还没有
+	// 补齐状态条目,ConnState 会先答一个「已连接」。
+	require.Eventually(t, func() bool {
+		return len(conn2.methodCalls(wire.MethodSessionPendingWaiters)) > 0
+	}, 3*time.Second, 5*time.Millisecond, "补齐应完成")
+	assert.Equal(t, ConnStateConnected, rig.rt.ConnState(rigSessionID))
+
+	// 补齐落定之后 daemon 推来的下一条实时帧:高水位 3 之后就是 seq=4。
+	ev, err := json.Marshal(agentruntime.TextDelta{Text: "live-after-restore"})
+	require.NoError(t, err)
+	conn2.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: rigSessionID, Event: ev, Seq: 4})
+
+	var texts []string
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case e := <-rig.events:
+				if td, ok := e.(agentruntime.TextDelta); ok {
+					texts = append(texts, td.Text)
+				}
+			default:
+				return len(texts) >= 4
+			}
+		}
+	}, 3*time.Second, 5*time.Millisecond, "越界游标必须被作废,否则每条帧都被静默丢掉")
+
+	assert.Equal(t, []string{"restored-1", "restored-2", "restored-3", "live-after-restore"}, texts,
+		"游标越界时从头补齐,其后的实时帧照常按序交付")
+	assert.Contains(t, rig.cursor.savedSeqs(), int64(0),
+		"库里那份越界的游标也要一并作废,否则下次进程启动又从它开始丢帧")
+}
+
+// Given daemon 交回的高水位正好等于本地游标(补齐已经拉平,没有任何回退),When 重连
+// 接管,Then 游标原样保留 —— 越界守卫只在**严格大于**时开火,不能把正常的「已拉平」
+// 当成越界,那会把整段转录重放一遍(硬不变量的「无重复」当场破掉)。
+func TestReconnect_CursorEqualsDaemonHighWater_KeepsCursor(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	rig.cursor.setLoad(func(int64, string) (int64, bool, error) { return 3, true, nil })
+	conn2 := catchUpConn(3, []wire.JournaledNotification{
+		journaledEvent(1, "old-1"),
+		journaledEvent(2, "old-2"),
+		journaledEvent(3, "old-3"),
+	}, wire.SessionPendingWaitersResult{})
+	rig.queue(conn2, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	require.Eventually(t, func() bool {
+		return len(conn2.methodCalls(wire.MethodSessionPendingWaiters)) > 0
+	}, 3*time.Second, 5*time.Millisecond, "补齐应完成")
+
+	select {
+	case got := <-rig.events:
+		t.Fatalf("游标与高水位持平时不得重放任何通知,却交付了 %#v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	assert.NotContains(t, rig.cursor.savedSeqs(), int64(0), "持平不是越界,不得作废游标")
 }
 
 // ── R18: 老 daemon 回落 ─────────────────────────────────────────────────────

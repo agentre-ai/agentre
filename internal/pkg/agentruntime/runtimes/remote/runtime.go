@@ -648,7 +648,7 @@ func (r *Runtime) callSession(ctx context.Context, sessionID int64, method strin
 	if err == nil || !errors.Is(err, agentruntime.ErrNoActiveTurn) || !r.canReconnect() {
 		return err
 	}
-	if aerr := r.attachSession(ctx, sessionID); aerr != nil {
+	if _, aerr := r.attachSession(ctx, sessionID); aerr != nil {
 		logger.Ctx(ctx).Warn("remote runtime: re-attach before retry failed",
 			zap.Int64("sid", sessionID), zap.String("method", method), zap.Error(aerr))
 		return err

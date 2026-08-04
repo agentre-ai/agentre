@@ -573,10 +573,11 @@ func (r *Runtime) catchUpAll(ctx context.Context) error {
 //  3. pendingWaiters —— 断连前就已阻塞、宣告事件早在游标之前的那些待决策,
 //     只能靠这一步找回来。
 func (r *Runtime) catchUpSession(ctx context.Context, sid int64) error {
-	if err := r.attachSession(ctx, sid); err != nil {
+	highWater, err := r.attachSession(ctx, sid)
+	if err != nil {
 		return err
 	}
-	ss, err := r.resetCursorFor(ctx, sid)
+	ss, err := r.resetCursorFor(ctx, sid, highWater)
 	if err != nil {
 		return err
 	}
@@ -605,24 +606,27 @@ func (r *Runtime) catchUpSession(ctx context.Context, sid int64) error {
 // attachSession 显式接管:声明「这条会话此后由我消费」。可反复发起 —— 桌面端同时
 // 握着 2-3 条同指纹连接(连接池 / 心跳 / 刷新探测),每条新连接都会把 runtime.*
 // 重新注册进 daemon 的共享 registry 并带一张空的会话表,把上一次接管静默还原。
-func (r *Runtime) attachSession(ctx context.Context, sid int64) error {
+//
+// 返回接管时 daemon 交回的高水位(该会话通知日志里此刻的 MAX(seq)),补齐据它校验
+// 本地游标有没有越界(见 dropCursorAboveHighWater)。失败时返 0。
+func (r *Runtime) attachSession(ctx context.Context, sid int64) (int64, error) {
 	var att wire.SessionAttachResult
 	err := r.conn().Call(ctx, wire.MethodSessionAttach, wire.SessionAttachParams{SessionID: sid}, &att)
 	if err == nil {
 		r.setDurability(durabilitySupported)
-		return nil
+		return att.LatestSeq, nil
 	}
 	if isMethodNotFound(err) {
 		r.setDurability(durabilityUnsupported)
-		return errCatchUpUnsupported
+		return 0, errCatchUpUnsupported
 	}
 	r.setDurability(durabilitySupported)
 	sentinel := wire.FromJSONRPCError(err)
 	if errors.Is(sentinel, agentruntime.ErrSessionNotFound) || errors.Is(sentinel, agentruntime.ErrNoActiveTurn) {
 		// daemon 侧已把它标成中断态(进程重启),或它根本不在这台 daemon 上。
-		return errSessionUnrecoverable
+		return 0, errSessionUnrecoverable
 	}
-	return sentinel
+	return 0, sentinel
 }
 
 // resetCursorFor 重新校验实例标识并取回游标。
@@ -634,7 +638,9 @@ func (r *Runtime) attachSession(ctx context.Context, sid int64) error {
 //
 // 内存游标与库里的取较大者:库里的那份是防抖落库的,进程内已经消费到更远是常事,
 // 用旧值会把已经交付过的通知再重放一遍 —— 那是重复,同样破坏硬不变量。
-func (r *Runtime) resetCursorFor(ctx context.Context, sid int64) (*sessionSync, error) {
+//
+// highWater 是接管时 daemon 交回的高水位,取完游标后据它做一次越界校验。
+func (r *Runtime) resetCursorFor(ctx context.Context, sid, highWater int64) (*sessionSync, error) {
 	r.stateMu.Lock()
 	ss, ok := r.sessionState[sid]
 	if !ok {
@@ -648,6 +654,7 @@ func (r *Runtime) resetCursorFor(ctx context.Context, sid int64) (*sessionSync, 
 		ss.mu.Lock()
 		ss.loaded = true
 		ss.mu.Unlock()
+		r.dropCursorAboveHighWater(ctx, sid, ss, highWater)
 		return ss, nil
 	}
 	seq, valid, err := port.LoadCursor(ctx, sid, r.fingerprint())
@@ -667,7 +674,32 @@ func (r *Runtime) resetCursorFor(ctx context.Context, sid int64) (*sessionSync, 
 		ss.cursor = seq
 	}
 	ss.mu.Unlock()
+	r.dropCursorAboveHighWater(ctx, sid, ss, highWater)
 	return ss, nil
+}
+
+// dropCursorAboveHighWater 拿接管交回的高水位校验游标。游标只可能来自 daemon 发过的
+// seq,正常永远不会越过高水位;一旦越过,说明那台 daemon 的通知日志退了 —— agentred.db
+// 被恢复 / 截断而 state.json(连同 TOFU 指纹)还在,R12 的指纹校验因此照常放行。
+//
+// 不管的后果不是丢几条:此后每一条实时帧都满足 seq <= 游标,在 dispatchNotification
+// 的第一条规则里被静默丢弃,会话没有跳号、没有错误、Debug 以上没有任何日志地冻住。
+// 所以把游标归零、从头补齐,并留一条 Warn 让人看得见。
+//
+// 库里那份也要一并作废(直写而不走防抖:markCursorDirty 只留较大者,归零永远写不进去)。
+// 若只作废内存里的那份,下一次进程启动会把越界的老值原样读回来,同一个冻结重演一遍。
+func (r *Runtime) dropCursorAboveHighWater(ctx context.Context, sid int64, ss *sessionSync, highWater int64) {
+	ss.mu.Lock()
+	if ss.cursor <= highWater {
+		ss.mu.Unlock()
+		return
+	}
+	stale := ss.cursor
+	ss.cursor = 0
+	ss.mu.Unlock()
+	logger.Ctx(ctx).Warn("remote runtime: cursor beyond daemon high-water, restarting catch-up from scratch",
+		zap.Int64("sid", sid), zap.Int64("cursor", stale), zap.Int64("latestSeq", highWater))
+	r.saveCursor(sid, 0)
 }
 
 // ── 会话收尾 ────────────────────────────────────────────────────────────────
