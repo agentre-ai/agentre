@@ -114,10 +114,27 @@ func (h *handleImpl) Exit() <-chan pkgpty.ExitInfo { return h.exit }
 func (h *handleImpl) pump() {
 	dataCh := h.client.SubscribeData(h.terminalID)
 	exitCh := h.client.SubscribeExit(h.terminalID)
+	outcome := pkgpty.ExitInfo{Reason: "connection_lost"}
+	defer func() {
+		h.exit <- outcome
+		close(h.exit)
+		close(h.data)
+	}()
+
 	for {
 		select {
 		case ev, ok := <-dataCh:
 			if !ok {
+				// ClientAdapter closes the exit subscription before data after
+				// delivering a daemon exit. Prefer that authoritative outcome;
+				// otherwise the data subscription disappeared with no exit.
+				select {
+				case ev, exitOK := <-exitCh:
+					if exitOK {
+						outcome = pkgpty.ExitInfo{Code: ev.Code, Reason: ev.Reason, Msg: ev.Msg}
+					}
+				default:
+				}
 				return
 			}
 			// The daemon base64-encodes each chunk so it survives the JSON hop;
@@ -130,18 +147,16 @@ func (h *handleImpl) pump() {
 			select {
 			case h.data <- decoded:
 			case <-h.done:
+				outcome = pkgpty.ExitInfo{Reason: "killed"}
 				return
 			}
 		case ev, ok := <-exitCh:
-			if !ok {
-				h.exit <- pkgpty.ExitInfo{Reason: "connection_lost"}
-			} else {
-				h.exit <- pkgpty.ExitInfo{Code: ev.Code, Reason: ev.Reason, Msg: ev.Msg}
+			if ok {
+				outcome = pkgpty.ExitInfo{Code: ev.Code, Reason: ev.Reason, Msg: ev.Msg}
 			}
-			close(h.exit)
-			close(h.data)
 			return
 		case <-h.done:
+			outcome = pkgpty.ExitInfo{Reason: "killed"}
 			return
 		}
 	}
