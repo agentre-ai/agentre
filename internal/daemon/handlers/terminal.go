@@ -46,40 +46,137 @@ func (f EmitterFunc) Emit(ctx context.Context, name string, payload any) {
 const (
 	EventNameTerminalData = "terminal.data"
 	EventNameTerminalExit = "terminal.exit"
+
+	maxTerminalIDLength             = 128
+	terminalCancelTombstoneCapacity = 256
 )
 
-var ErrTerminalNotFound = errors.New("terminal not found")
+var (
+	ErrTerminalNotFound       = errors.New("terminal not found")
+	ErrTerminalIDInvalid      = errors.New("terminal id is invalid")
+	ErrTerminalIDInUse        = errors.New("terminal id is already active or pending")
+	ErrTerminalOpenCanceled   = errors.New("terminal open canceled")
+	ErrTerminalHandlerClosed  = errors.New("terminal handler is closed")
+	ErrTerminalCancelCapacity = errors.New("terminal pending cancellation capacity reached")
+)
+
+type pendingTerminalOpen struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	canceled bool
+}
 
 type TerminalHandlers struct {
 	be      PTYBackend
 	emitter Emitter
 
-	mu        sync.Mutex
-	terminals map[string]PTYHandle
+	mu               sync.Mutex
+	terminals        map[string]PTYHandle
+	pending          map[string]*pendingTerminalOpen
+	cancelTombstones map[string]struct{}
+	closed           bool
 }
 
 func NewTerminalHandlers(be PTYBackend, emitter Emitter) *TerminalHandlers {
 	return &TerminalHandlers{
-		be:        be,
-		emitter:   emitter,
-		terminals: map[string]PTYHandle{},
+		be:               be,
+		emitter:          emitter,
+		terminals:        map[string]PTYHandle{},
+		pending:          map[string]*pendingTerminalOpen{},
+		cancelTombstones: map[string]struct{}{},
 	}
 }
 
 func (h *TerminalHandlers) Open(ctx context.Context, p protocol.TerminalOpenParams) (protocol.TerminalOpenResult, error) {
-	hd, err := h.be.Open(ctx, pty.Spec{
-		Cwd: p.Cwd, Shell: p.Shell, Command: p.Command, Env: p.Env,
-		Cols: p.Cols, Rows: p.Rows,
-	})
+	id := p.TerminalID
+	if id == "" {
+		id = newTerminalID()
+	} else if err := validateTerminalID(id); err != nil {
+		return protocol.TerminalOpenResult{}, err
+	}
+
+	attempt, err := h.claimPendingOpen(ctx, id)
 	if err != nil {
 		return protocol.TerminalOpenResult{}, err
 	}
-	id := newTerminalID()
+	hd, openErr := h.be.Open(attempt.ctx, pty.Spec{
+		Cwd: p.Cwd, Shell: p.Shell, Command: p.Command, Env: p.Env,
+		Cols: p.Cols, Rows: p.Rows,
+	})
+
 	h.mu.Lock()
-	h.terminals[id] = hd
+	current, stillPending := h.pending[id]
+	ownsClaim := stillPending && current == attempt
+	if ownsClaim {
+		delete(h.pending, id)
+	}
+	canceled := attempt.canceled
+	closed := h.closed
+	openCtxErr := attempt.ctx.Err()
+	register := openErr == nil && hd != nil && ownsClaim && !canceled && !closed && openCtxErr == nil
+	if register {
+		h.terminals[id] = hd
+	}
 	h.mu.Unlock()
-	go h.pump(ctx, id, hd)
-	return protocol.TerminalOpenResult{TerminalID: id}, nil
+	attempt.cancel()
+
+	if register {
+		go h.pump(ctx, id, hd)
+		return protocol.TerminalOpenResult{TerminalID: id}, nil
+	}
+	if hd != nil {
+		_ = hd.Close()
+	}
+	switch {
+	case closed:
+		return protocol.TerminalOpenResult{}, ErrTerminalHandlerClosed
+	case canceled || !ownsClaim:
+		return protocol.TerminalOpenResult{}, ErrTerminalOpenCanceled
+	case openErr != nil:
+		return protocol.TerminalOpenResult{}, openErr
+	case openCtxErr != nil:
+		return protocol.TerminalOpenResult{}, openCtxErr
+	default:
+		return protocol.TerminalOpenResult{}, ErrTerminalOpenCanceled
+	}
+}
+
+func (h *TerminalHandlers) claimPendingOpen(ctx context.Context, id string) (*pendingTerminalOpen, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return nil, ErrTerminalHandlerClosed
+	}
+	if _, canceled := h.cancelTombstones[id]; canceled {
+		delete(h.cancelTombstones, id)
+		return nil, ErrTerminalOpenCanceled
+	}
+	if _, active := h.terminals[id]; active {
+		return nil, ErrTerminalIDInUse
+	}
+	if _, pending := h.pending[id]; pending {
+		return nil, ErrTerminalIDInUse
+	}
+	openCtx, cancel := context.WithCancel(ctx)
+	attempt := &pendingTerminalOpen{ctx: openCtx, cancel: cancel}
+	h.pending[id] = attempt
+	return attempt, nil
+}
+
+func validateTerminalID(id string) error {
+	if len(id) == 0 || len(id) > maxTerminalIDLength || !isTerminalIDAlphaNumeric(id[0]) {
+		return ErrTerminalIDInvalid
+	}
+	for i := 1; i < len(id); i++ {
+		if !isTerminalIDAlphaNumeric(id[i]) && id[i] != '-' && id[i] != '_' {
+			return ErrTerminalIDInvalid
+		}
+	}
+	return nil
+}
+
+func isTerminalIDAlphaNumeric(ch byte) bool {
+	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9'
 }
 
 func (h *TerminalHandlers) pump(ctx context.Context, id string, hd PTYHandle) {
@@ -211,28 +308,72 @@ func (h *TerminalHandlers) Resize(ctx context.Context, p protocol.TerminalResize
 	return TerminalAck{}, hd.Resize(p.Cols, p.Rows)
 }
 
-// CloseAll terminates every live PTY and clears the registry. The daemon
-// calls this when the owning ws connection drops so orphaned shells (and
-// whatever they are running) don't leak on the remote box.
+// CloseAll terminates every live PTY and pending open owned by this connection.
 func (h *TerminalHandlers) CloseAll() {
 	h.mu.Lock()
+	h.closed = true
 	hs := make([]PTYHandle, 0, len(h.terminals))
 	for _, hd := range h.terminals {
 		hs = append(hs, hd)
 	}
+	cancels := make([]context.CancelFunc, 0, len(h.pending))
+	for _, attempt := range h.pending {
+		attempt.canceled = true
+		cancels = append(cancels, attempt.cancel)
+	}
 	h.terminals = map[string]PTYHandle{}
+	h.pending = map[string]*pendingTerminalOpen{}
+	h.cancelTombstones = map[string]struct{}{}
 	h.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
 	for _, hd := range hs {
 		_ = hd.Close()
 	}
 }
 
 func (h *TerminalHandlers) Close(ctx context.Context, p protocol.TerminalCloseParams) (TerminalAck, error) {
+	if p.CancelPendingOpen {
+		if err := validateTerminalID(p.TerminalID); err != nil {
+			return TerminalAck{}, err
+		}
+	}
+
 	h.mu.Lock()
-	hd, ok := h.terminals[p.TerminalID]
-	h.mu.Unlock()
-	if !ok {
+	if hd, ok := h.terminals[p.TerminalID]; ok {
+		h.mu.Unlock()
+		return TerminalAck{}, hd.Close()
+	}
+	if !p.CancelPendingOpen {
+		h.mu.Unlock()
 		return TerminalAck{}, ErrTerminalNotFound
 	}
-	return TerminalAck{}, hd.Close()
+	if h.closed {
+		h.mu.Unlock()
+		return TerminalAck{}, ErrTerminalHandlerClosed
+	}
+	if attempt, ok := h.pending[p.TerminalID]; ok {
+		if !attempt.canceled {
+			attempt.canceled = true
+			cancel := attempt.cancel
+			h.mu.Unlock()
+			cancel()
+			return TerminalAck{}, nil
+		}
+		h.mu.Unlock()
+		return TerminalAck{}, nil
+	}
+	if _, ok := h.cancelTombstones[p.TerminalID]; ok {
+		h.mu.Unlock()
+		return TerminalAck{}, nil
+	}
+	if len(h.cancelTombstones) >= terminalCancelTombstoneCapacity {
+		h.mu.Unlock()
+		return TerminalAck{}, ErrTerminalCancelCapacity
+	}
+	h.cancelTombstones[p.TerminalID] = struct{}{}
+	h.mu.Unlock()
+	return TerminalAck{}, nil
 }
