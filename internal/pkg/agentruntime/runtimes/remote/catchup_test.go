@@ -41,6 +41,10 @@ func restartConn(summaries []wire.SessionSummary, journal []wire.JournaledNotifi
 			p := params.(wire.SessionPullParams)
 			out := wire.SessionPullResult{Cursor: p.Cursor}
 			for _, n := range journal {
+				// 现存最老的一行:真 daemon 报的是 MIN(seq),被回收掉的前缀不在里面。
+				if out.OldestSeq == 0 || n.Seq < out.OldestSeq {
+					out.OldestSeq = n.Seq
+				}
 				if n.Seq > p.Cursor {
 					out.Notifications = append(out.Notifications, n)
 					out.Cursor = n.Seq
@@ -112,7 +116,8 @@ func TestCatchUpSessions_NoLiveRun_ReplaysIntoSynthesizedTurn(t *testing.T) {
 	rt, cursor, _ := newRestartRuntime(t, conn, 3)
 
 	turns := rt.AutonomousTurns(rigSessionID)
-	require.NoError(t, rt.CatchUpSessions(context.Background(), []int64{rigSessionID}))
+	_, err := rt.CatchUpSessions(context.Background(), []int64{rigSessionID})
+	require.NoError(t, err)
 
 	at := takeTurn(t, turns)
 	assert.Equal(t, TriggerCatchUp, at.Trigger,
@@ -153,8 +158,11 @@ func TestCatchUpSessions_SessionListDecidesWhoNeedsPulling(t *testing.T) {
 	}, nil)
 	rt, _, _ := newRestartRuntime(t, conn, 3)
 
-	require.NoError(t, rt.CatchUpSessions(context.Background(),
-		[]int64{idleQuiet, liveQuiet, behind, unknown}))
+	live, err := rt.CatchUpSessions(context.Background(),
+		[]int64{idleQuiet, liveQuiet, behind, unknown})
+	require.NoError(t, err)
+	assert.Equal(t, []int64{liveQuiet}, live,
+		"交回的 live 只含 daemon 说还在跑的那条 —— 调用方据它判断本地哪些 running 行是重启遗孤")
 
 	calls := conn.methodCalls(wire.MethodSessionAttach)
 	attached := make([]int64, 0, len(calls))
@@ -177,7 +185,7 @@ func TestCatchUpSessions_OldDaemon_ReportsUnsupported(t *testing.T) {
 	})
 	rt, _, _ := newRestartRuntime(t, conn, 3)
 
-	err := rt.CatchUpSessions(context.Background(), []int64{rigSessionID})
+	_, err := rt.CatchUpSessions(context.Background(), []int64{rigSessionID})
 	require.ErrorIs(t, err, errCatchUpUnsupported)
 	assert.Empty(t, conn.methodCalls(wire.MethodSessionAttach),
 		"老 daemon 上不该继续发补齐族的其余方法")
@@ -213,6 +221,42 @@ func TestAutonomousTurnStarted_ClosesTheOpenTurnFirst(t *testing.T) {
 	assert.NotEqual(t, TriggerCatchUp, second.Trigger)
 }
 
+// Given 客户端离线的时间超过了 daemon 的整个日志留存窗口,它游标之后的那截尾巴已经被
+// 回收(daemon.collectJournal 只保住高水位那一行),When 它回来补齐,
+// Then 按 daemon 交回的「现存最老 seq」把游标复位,现存的那段照常重放进转录。
+//
+// 不复位的后果不是「少几条」而是这条会话就此静默冻住:每一页的第一条都比 游标+1 大,
+// 被 dispatchNotification 判成跳号丢弃并触发补洞拉取,补洞又原样拉回同一页 —— 游标
+// 永远停在那个已经不存在的位置,此后连实时通知也全被当成跳号,没有错误、没有跳号,
+// 会话就是再也不出字(与 8496c291 修的越界冻结同类)。
+func TestCatchUpSessions_ReclaimedPrefix_ResetsCursorInsteadOfFreezing(t *testing.T) {
+	// 日志曾经是 seq 1..11,留存回收掉了 10 以下的前缀:现存最老的一行是 10。
+	journal := []wire.JournaledNotification{
+		journaledEvent(10, "survivor"),
+		journaledDone(11, "sonnet"),
+	}
+	conn := restartConn([]wire.SessionSummary{{
+		SessionID:      rigSessionID,
+		LifecycleState: wire.SessionLifecycleIdle,
+		LatestSeq:      11,
+	}}, journal)
+	// 游标停在 7:那之后的 8、9 已经随留存窗口一起没了。
+	rt, cursor, _ := newRestartRuntime(t, conn, 7)
+
+	turns := rt.AutonomousTurns(rigSessionID)
+	_, err := rt.CatchUpSessions(context.Background(), []int64{rigSessionID})
+	require.NoError(t, err)
+
+	at := takeTurn(t, turns)
+	assert.Equal(t, []string{"survivor"}, drainTexts(t, at.Events, 2*time.Second),
+		"回收掉的那截拿不回来了,但**现存**的那段必须照常进转录")
+
+	saved, ok := cursor.lastSaved()
+	require.True(t, ok)
+	assert.Equal(t, int64(11), saved.Seq,
+		"游标要推到日志末尾,否则下一条实时通知仍会被判成跳号,会话继续冻着")
+}
+
 // Given daemon 进程在桌面端离线期间重启过,把这条会话按 R10 标成了中断态,
 // When App 重开后补齐,Then 中断前的历史仍然补回来,但不发 attach(已经没有推送流可
 // 接管),补完把会话按**被打断**收尾。
@@ -233,7 +277,8 @@ func TestCatchUpSessions_InterruptedSession_ReadsHistoryThenEndsAsInterrupted(t 
 	rt, _, obs := newRestartRuntime(t, conn, 3)
 
 	turns := rt.AutonomousTurns(rigSessionID)
-	require.NoError(t, rt.CatchUpSessions(context.Background(), []int64{rigSessionID}))
+	_, err := rt.CatchUpSessions(context.Background(), []int64{rigSessionID})
+	require.NoError(t, err)
 
 	assert.Empty(t, conn.methodCalls(wire.MethodSessionAttach),
 		"中断态会话没有推送流可接管")

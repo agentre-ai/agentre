@@ -978,6 +978,11 @@ func (j journalReader) LatestSeq(ctx context.Context, peerFingerprint, peerSessi
 		dbpkg.WithContextDB(ctx, j.db), peerFingerprint, peerSessionID)
 }
 
+func (j journalReader) OldestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
+	return notification_repo.Notification().OldestSeq(
+		dbpkg.WithContextDB(ctx, j.db), peerFingerprint, peerSessionID)
+}
+
 func (j journalReader) LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error) {
 	return notification_repo.Notification().LatestSeqByPeer(dbpkg.WithContextDB(ctx, j.db), peerFingerprint)
 }

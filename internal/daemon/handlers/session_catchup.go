@@ -86,10 +86,16 @@ func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResu
 	return out, nil
 }
 
-// Pull 按游标取回该会话其后的通知(seq 升序)。
+// Pull 按游标取回该会话其后的通知(seq 升序),并一并交出该会话现存最老的 seq。
 //
 // 拉取不校验会话归属:日志行本身以 (对端, 会话) 为键,别的对端拉同一个会话 id 只会
 // 拿到自己那条会话的日志(通常是空),跨对端泄漏在 SQL 层就不成立。
+//
+// 现存最老的 seq 每页都报:日志的老前缀会被留存回收(daemon.collectJournal 只保住高水位
+// 那一行),一个离线超过整个留存窗口的客户端,它的游标正落在那段已经不存在的区间里。
+// 不报下界,它拉到的每一页第一条都比 游标+1 大,只能当成跳号丢弃并再拉一次同一页 ——
+// 游标永远推不动,此后连实时通知也全被判成跳号,会话没有错误、没有跳号地冻住。
+// 读不出下界不让整页拉取失败:内容比下界重要,客户端按 0(=不知道)处理即可。
 func (h *SessionCatchupHandlers) Pull(ctx context.Context, p wire.SessionPullParams) (wire.SessionPullResult, error) {
 	peer := peerFingerprint(ctx)
 	sid := strconv.FormatInt(p.SessionID, 10)
@@ -97,8 +103,12 @@ func (h *SessionCatchupHandlers) Pull(ctx context.Context, p wire.SessionPullPar
 	if err != nil {
 		return wire.SessionPullResult{}, fmt.Errorf("pull notifications: %w", err)
 	}
+	oldest, err := h.deps.Journal.OldestSeq(ctx, peer, sid)
+	if err != nil {
+		oldest = 0
+	}
 	// 空页保持游标不变:回退到 0 会让客户端把整段日志重放一遍。
-	out := wire.SessionPullResult{Cursor: p.Cursor, HasMore: hasMore}
+	out := wire.SessionPullResult{Cursor: p.Cursor, HasMore: hasMore, OldestSeq: oldest}
 	out.Notifications = make([]wire.JournaledNotification, 0, len(rows))
 	for _, row := range rows {
 		out.Notifications = append(out.Notifications, wire.JournaledNotification{

@@ -223,3 +223,21 @@ func TestNotificationRepo_DeleteBelow_KeepsTheHighWaterRow(t *testing.T) {
 	assert.Equal(t, int64(899), deleted)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestNotificationRepo_OldestSeq_ReportsTheSurvivingFloor 覆盖回收之后「这条会话的日志
+// 从哪一格开始还在」:补齐的客户端只有拿到这个下界,才分得清「游标之后那一条还没写」
+// 与「它已经被留存回收掉了」。分不清就只能一直等,会话静默冻住。
+func TestNotificationRepo_OldestSeq_ReportsTheSurvivingFloor(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := notification_repo.NewNotification()
+
+	mock.ExpectQuery("SELECT COALESCE\\(MIN\\(seq\\), 0\\) FROM daemon_notification_logs "+
+		"WHERE peer_fingerprint = \\? AND peer_session_id = \\?").
+		WithArgs("peerA", "s1").
+		WillReturnRows(sqlmock.NewRows([]string{"seq"}).AddRow(900))
+
+	got, err := repo.OldestSeq(ctx, "peerA", "s1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(900), got)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

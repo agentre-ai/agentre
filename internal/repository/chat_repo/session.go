@@ -69,7 +69,20 @@ type SessionRepo interface {
 	// 尾的"重启遗孤",前端 sidebar 会一直亮"运行中"。该清理不能在 bootstrap.Init
 	// 里直接调用；主 Wails 实例 Startup 后再调,确保第二实例不会误伤仍在运行的 turn。
 	// 返回受影响行数,仅供日志使用。
+	//
+	// **跑在远端 daemon 上的会话(exec_device_id > 0 且带实例标识)不在清理范围内**:
+	// 它们的执行者是另一台机器上的进程,不随桌面 App 退出而消亡(R4)。在连上那台
+	// daemon 之前无从知道它是不是还在跑,翻成 error 就是报一个假失败 —— 而一条在桌面端
+	// 离线期间没产出任何新内容的会话不会被重放改写,那条假失败会永久留在界面上。
+	// 它们改由 chat_svc.CatchUpRemoteSessions 按 daemon 交回的生命周期逐条收尾
+	// (见 ResetActiveSessionsByIDs)。
 	ResetActiveSessions(ctx context.Context) (int64, error)
+	// ResetActiveSessionsByIDs 把点名的这些会话里还停在 running / waiting 的翻成
+	// 'error',返回受影响行数。空列表不发 SQL。
+	//
+	// 它是启动期清理在远端会话那一半的落点:补齐连上 daemon、拿到会话清单之后,
+	// daemon 说不在跑的那些才由它收尾。
+	ResetActiveSessionsByIDs(ctx context.Context, ids []int64) (int64, error)
 }
 
 var defaultSession SessionRepo
@@ -422,7 +435,25 @@ func (r *sessionRepo) MarkRead(ctx context.Context, sessionID int64, ts int64) e
 
 func (r *sessionRepo) ResetActiveSessions(ctx context.Context) (int64, error) {
 	res := db.Ctx(ctx).Model(&chat_entity.Session{}).
-		Where("agent_status IN ? AND status = ?", []string{"running", "waiting"}, consts.ACTIVE).
+		// 后半截把远端跑的会话排除在启动期清理之外,理由见接口注释。判据与
+		// ListRemoteExecSessions 的取材条件互补:那边取的行,这边一行不碰。
+		Where("agent_status IN ? AND status = ? AND (exec_device_id <= ? OR exec_daemon_fingerprint = ?)",
+			[]string{"running", "waiting"}, consts.ACTIVE, int64(0), "").
+		Updates(map[string]any{
+			"agent_status": "error",
+			"updatetime":   time.Now().UnixMilli(),
+		})
+	return res.RowsAffected, res.Error
+}
+
+func (r *sessionRepo) ResetActiveSessionsByIDs(ctx context.Context, ids []int64) (int64, error) {
+	if len(ids) == 0 {
+		// 空列表发出去是 WHERE id IN ()：不同方言下要么语法错、要么退化成全表更新。
+		return 0, nil
+	}
+	res := db.Ctx(ctx).Model(&chat_entity.Session{}).
+		Where("agent_status IN ? AND status = ? AND id IN ?",
+			[]string{"running", "waiting"}, consts.ACTIVE, ids).
 		Updates(map[string]any{
 			"agent_status": "error",
 			"updatetime":   time.Now().UnixMilli(),

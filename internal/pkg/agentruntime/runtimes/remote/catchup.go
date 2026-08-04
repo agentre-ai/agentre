@@ -33,16 +33,24 @@ const TriggerCatchUp = "catchup"
 // 都在同一台 daemon 上,而其中绝大多数一条新通知都没有。清单一次就把「谁落下了内容、
 // 谁已经被 daemon 重启标成中断」问清楚,后两步只对真的需要的那几条发。
 //
+// 交回 live:清单上 daemon 报「还在跑 / 正等着用户拍板」的那些会话。它是给调用方判
+// **本地那一行该不该收尾**用的 —— 桌面 App 重启后,库里的 running 既可能是这台 daemon
+// 上真的还在跑,也可能是上一个进程留下的遗孤,而只有 daemon 分得清。有内容可重放的会话
+// 由重放自己写终态;一个字都没产出的会话没有任何东西会改写它,这份名单是它唯一的判据
+// (见 chat_svc.CatchUpRemoteSessions)。出错时 live 为空:什么都不知道就按今天的语义
+// 全部收尾,而不是把它们永远留在 running 上。
+//
 // 交出 errCatchUpUnsupported 表示对面是老 daemon(R18),调用方据此回落。
-func (r *Runtime) CatchUpSessions(ctx context.Context, sessionIDs []int64) error {
+func (r *Runtime) CatchUpSessions(ctx context.Context, sessionIDs []int64) (live []int64, err error) {
 	if len(sessionIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	summaries, err := r.sessionSummaries(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	need := make([]int64, 0, len(sessionIDs))
+	live = make([]int64, 0, len(sessionIDs))
 	for _, sid := range sessionIDs {
 		sum, known := summaries[sid]
 		if !known {
@@ -56,6 +64,9 @@ func (r *Runtime) CatchUpSessions(ctx context.Context, sessionIDs []int64) error
 			r.catchUpInterrupted(ctx, sid, sum)
 			continue
 		}
+		if liveOnDaemon(sum) {
+			live = append(live, sid)
+		}
 		if !r.needsCatchUp(ctx, sid, sum) {
 			continue
 		}
@@ -65,8 +76,9 @@ func (r *Runtime) CatchUpSessions(ctx context.Context, sessionIDs []int64) error
 	// 判成「本进程没有在飞的一轮」直接收工、此后再也接不回去。
 	r.trackSessions(need)
 	logger.Ctx(ctx).Info("remote runtime: catching up sessions after restart",
-		zap.Int("requested", len(sessionIDs)), zap.Int("pulling", len(need)))
-	return r.catchUpEach(ctx, need)
+		zap.Int("requested", len(sessionIDs)), zap.Int("pulling", len(need)),
+		zap.Int("liveOnDaemon", len(live)))
+	return live, r.catchUpEach(ctx, need)
 }
 
 // needsCatchUp 清单里的 LatestSeq 与本地游标一比就知道这条会话落下了多少条。一条都
@@ -81,7 +93,7 @@ func (r *Runtime) CatchUpSessions(ctx context.Context, sessionIDs []int64) error
 //     之后才关的),日志里没有新行,但待决策清单必须重新枚举一遍,否则用户回来看到
 //     的是一条静止的会话,而远端正在等他拍板。
 func (r *Runtime) needsCatchUp(ctx context.Context, sid int64, sum wire.SessionSummary) bool {
-	if sum.LifecycleState == wire.SessionLifecycleRunning || sum.WaitingForInput {
+	if liveOnDaemon(sum) {
 		return true
 	}
 	ss := r.syncFor(ctx, sid)
@@ -91,6 +103,12 @@ func (r *Runtime) needsCatchUp(ctx context.Context, sid int64, sum wire.SessionS
 	logger.Ctx(ctx).Debug("remote runtime: session already caught up",
 		zap.Int64("sid", sid), zap.Int64("latestSeq", sum.LatestSeq))
 	return false
+}
+
+// liveOnDaemon 报告 daemon 此刻是不是还为这条会话在做事:一轮正在跑,或者一轮停在
+// 「等用户拍板」上。两者都不是终态 —— 前者随时还会出字,后者在等一个只有用户能给的答案。
+func liveOnDaemon(sum wire.SessionSummary) bool {
+	return sum.LifecycleState == wire.SessionLifecycleRunning || sum.WaitingForInput
 }
 
 // catchUpInterrupted 中断态会话(daemon 进程重启后按 R10 标的终态):没有实时推送可

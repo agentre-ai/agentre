@@ -154,6 +154,7 @@ func TestSessionCatchup_Pull_ReturnsPageAndAdvancesCursor(t *testing.T) {
 			{Seq: 1, Method: wire.NotifyEvent, Payload: json.RawMessage(`{"sessionId":5}`)},
 			{Seq: 2, Method: wire.NotifyRunResultDone, Payload: json.RawMessage(`{"sessionId":5}`)},
 		}, true, nil)
+	journal.EXPECT().OldestSeq(gomock.Any(), "", "5").Return(int64(1), nil)
 
 	got, err := h.Pull(ctx, wire.SessionPullParams{SessionID: 5, Cursor: 0})
 	require.NoError(t, err)
@@ -165,6 +166,27 @@ func TestSessionCatchup_Pull_ReturnsPageAndAdvancesCursor(t *testing.T) {
 	assert.True(t, got.HasMore)
 }
 
+// TestSessionCatchup_Pull_ReportsTheSurvivingFloor 覆盖留存回收之后的那一半:一页补齐
+// 除了内容,还要交出这条会话此刻**现存最老**的 seq。
+//
+// 日志的老前缀会被 daemon.collectJournal 回收,而一个离线超过整个留存窗口的客户端,
+// 游标正落在被回收掉的那一段里。不报下界,它拉到的每一页第一条都比 游标+1 大,只能当成
+// 跳号丢弃、再拉一次同一页 —— 游标永远推不动,此后连实时通知也全被判成跳号,会话没有
+// 错误、没有跳号地冻住。报了它,客户端就知道那截尾巴是真的没有了,复位游标接着补。
+func TestSessionCatchup_Pull_ReportsTheSurvivingFloor(t *testing.T) {
+	ctx, _, journal, h := setupCatchupTest(t, bareRT{})
+	journal.EXPECT().ListSince(gomock.Any(), "", "5", int64(7), wire.DefaultSessionPullLimit).
+		Return([]handlers.JournalRow{
+			{Seq: 10, Method: wire.NotifyEvent, Payload: json.RawMessage(`{"sessionId":5}`)},
+		}, false, nil)
+	journal.EXPECT().OldestSeq(gomock.Any(), "", "5").Return(int64(10), nil)
+
+	got, err := h.Pull(ctx, wire.SessionPullParams{SessionID: 5, Cursor: 7})
+	require.NoError(t, err)
+	assert.Equal(t, int64(10), got.OldestSeq,
+		"游标之后的 8、9 已被回收,客户端只有拿到这个下界才不会一直等它们")
+}
+
 // TestSessionCatchup_Pull_CursorPastNewestSeq_EmptyPageKeepsCursor 覆盖边界:
 // 起始游标大于最新 seq 时返回空页,游标**保持不变**(不能回退到 0),hasMore 为假。
 // 游标回退会让客户端把整段日志重放一遍,转录流里出现重复消息。
@@ -172,6 +194,7 @@ func TestSessionCatchup_Pull_CursorPastNewestSeq_EmptyPageKeepsCursor(t *testing
 	ctx, _, journal, h := setupCatchupTest(t, bareRT{})
 	journal.EXPECT().ListSince(gomock.Any(), "", "5", int64(999), wire.DefaultSessionPullLimit).
 		Return(nil, false, nil)
+	journal.EXPECT().OldestSeq(gomock.Any(), "", "5").Return(int64(1), nil)
 
 	got, err := h.Pull(ctx, wire.SessionPullParams{SessionID: 5, Cursor: 999})
 	require.NoError(t, err)
@@ -188,6 +211,7 @@ func TestSessionCatchup_Pull_LimitIsClampedToTheDaemonCap(t *testing.T) {
 		ctx, _, journal, h := setupCatchupTest(t, bareRT{})
 		journal.EXPECT().ListSince(gomock.Any(), "", "5", int64(0), wire.MaxSessionPullLimit).
 			Return(nil, false, nil)
+		journal.EXPECT().OldestSeq(gomock.Any(), "", "5").Return(int64(0), nil)
 		_, err := h.Pull(ctx, wire.SessionPullParams{SessionID: 5, Limit: wire.MaxSessionPullLimit * 10})
 		require.NoError(t, err)
 	})
@@ -195,12 +219,14 @@ func TestSessionCatchup_Pull_LimitIsClampedToTheDaemonCap(t *testing.T) {
 		ctx, _, journal, h := setupCatchupTest(t, bareRT{})
 		journal.EXPECT().ListSince(gomock.Any(), "", "5", int64(0), wire.DefaultSessionPullLimit).
 			Return(nil, false, nil)
+		journal.EXPECT().OldestSeq(gomock.Any(), "", "5").Return(int64(0), nil)
 		_, err := h.Pull(ctx, wire.SessionPullParams{SessionID: 5, Limit: 0})
 		require.NoError(t, err)
 	})
 	t.Run("低于上限的正数原样使用", func(t *testing.T) {
 		ctx, _, journal, h := setupCatchupTest(t, bareRT{})
 		journal.EXPECT().ListSince(gomock.Any(), "", "5", int64(0), 3).Return(nil, false, nil)
+		journal.EXPECT().OldestSeq(gomock.Any(), "", "5").Return(int64(0), nil)
 		_, err := h.Pull(ctx, wire.SessionPullParams{SessionID: 5, Limit: 3})
 		require.NoError(t, err)
 	})

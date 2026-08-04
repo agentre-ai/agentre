@@ -17,8 +17,9 @@ import (
 func assertResetActiveSessions(t *testing.T, ctx context.Context, mock sqlmock.Sqlmock, affectedRows int64) {
 	t.Helper()
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `chat_sessions` SET `agent_status`=\\?,`updatetime`=\\? WHERE agent_status IN \\(\\?,\\?\\) AND status = \\?").
-		WithArgs("error", sqlmock.AnyArg(), "running", "waiting", consts.ACTIVE).
+	mock.ExpectExec("UPDATE `chat_sessions` SET `agent_status`=\\?,`updatetime`=\\? WHERE agent_status IN \\(\\?,\\?\\) AND status = \\? "+
+		"AND \\(exec_device_id <= \\? OR exec_daemon_fingerprint = \\?\\)").
+		WithArgs("error", sqlmock.AnyArg(), "running", "waiting", consts.ACTIVE, int64(0), "").
 		WillReturnResult(sqlmock.NewResult(0, affectedRows))
 	mock.ExpectCommit()
 
@@ -378,6 +379,12 @@ func TestSessionRepo_SoftDelete(t *testing.T) {
 // TestSessionRepo_ResetActiveSessions 钉死启动期残留清理 SQL:任何 agent_status
 // 是 running / waiting 的未软删 session 都翻成 error。
 // 主 Wails 实例 Startup 后调一次,防止 app crash / restart 留下永远卡 RUNNING 的会话。
+//
+// **跑在远端 daemon 上的会话被排除在外**:那一轮的执行者是另一台机器上的进程,它不随
+// 桌面 App 退出而消亡(R4:断连不终止会话)。把它一并翻成 error 是在报一个假失败 ——
+// 会话此刻很可能正在远端跑着,而且如果它在桌面端离线期间什么新内容都没产出,补齐重放
+// 不会写任何状态,这条假失败就永久留在界面上。它们的去向改由补齐按 daemon 交回的
+// 生命周期逐条判定(见 chat_svc.CatchUpRemoteSessions / ResetActiveSessionsByIDs)。
 func TestSessionRepo_ResetActiveSessions(t *testing.T) {
 	t.Run("有残留时把 running / waiting 翻成 error 并返回受影响行数", func(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)
@@ -389,6 +396,39 @@ func TestSessionRepo_ResetActiveSessions(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)
 
 		assertResetActiveSessions(t, ctx, mock, 0)
+	})
+}
+
+// TestSessionRepo_ResetActiveSessionsByIDs 钉死「补齐判完之后收尾这几条」的 SQL:
+// 只动点名的那些会话,且只动其中还停在 running / waiting 的行。
+//
+// 它是启动期清理在远端那一半的落点:blanket 的 ResetActiveSessions 不再碰远端会话,
+// 因为在连上 daemon 之前根本无从知道它是不是还在跑;连上之后 daemon 说它不在跑了,
+// 才由这一条按 id 收尾。空 id 列表不发 SQL —— 那会退化成 WHERE id IN () 的全表扫描。
+func TestSessionRepo_ResetActiveSessionsByIDs(t *testing.T) {
+	t.Run("点名的会话里还在 running / waiting 的翻成 error", func(t *testing.T) {
+		ctx, _, mock := testutils.Database(t)
+
+		mock.ExpectBegin()
+		mock.ExpectExec("UPDATE `chat_sessions` SET `agent_status`=\\?,`updatetime`=\\? "+
+			"WHERE agent_status IN \\(\\?,\\?\\) AND status = \\? AND id IN \\(\\?,\\?\\)").
+			WithArgs("error", sqlmock.AnyArg(), "running", "waiting", consts.ACTIVE, int64(100), int64(101)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		n, err := chat_repo.NewSession().ResetActiveSessionsByIDs(ctx, []int64{100, 101})
+		assert.NoError(t, err)
+		assert.Equal(t, int64(1), n)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("没有点名任何会话时一条 SQL 都不发", func(t *testing.T) {
+		ctx, _, mock := testutils.Database(t)
+
+		n, err := chat_repo.NewSession().ResetActiveSessionsByIDs(ctx, nil)
+		assert.NoError(t, err)
+		assert.Zero(t, n)
+		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
 

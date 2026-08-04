@@ -134,6 +134,10 @@ func TestCatchUpRemoteSessions_ConnectsByExecDeviceAndRunsThreeSteps(t *testing.
 		sessRepo.EXPECT().Find(gomock.Any(), row.ID).Return(row, nil).AnyTimes()
 	}
 	sessRepo.EXPECT().UpdateEventCursor(gomock.Any(), gomock.Any(), fp, gomock.Any()).Return(nil).AnyTimes()
+	// daemon 说 caughtUp 那条早就空闲了,本地那行的 running 是上一个进程留下的遗孤:
+	// 它没有任何内容可重放,所以除了这一笔没有别的东西会改写它。behind 那条 daemon 说
+	// 还在跑,一行都不能碰。
+	sessRepo.EXPECT().ResetActiveSessionsByIDs(gomock.Any(), []int64{caughtUp}).Return(int64(0), nil)
 
 	agtRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
 	agtRepo.EXPECT().Find(gomock.Any(), int64(9)).
@@ -172,6 +176,99 @@ func TestCatchUpRemoteSessions_ConnectsByExecDeviceAndRunsThreeSteps(t *testing.
 	assert.True(t, watching, "补齐的会话必须先接上轮次消费方,重放内容才有落点")
 }
 
+// Given App 重启后,库里两条会话都停在 running:一条 daemon 说还在跑(且这段时间一个字
+// 都没产出),另一条 daemon 说早就空闲了,When 启动补齐,
+// Then 只有 daemon 不认它在跑的那条被收尾成 error,还在跑的那条原样留着。
+//
+// 启动期的 blanket 清理(bootstrap.ResetStaleActiveSessions)已经不碰远端会话了 ——
+// 在连上 daemon 之前无从判断,一律翻 error 就是假失败。判据只能来自 daemon 交回的
+// 生命周期,而它恰好就在补齐的第一步(会话清单)里。有内容可重放的会话由重放自己写终态;
+// 一个字都没产出的会话没有任何东西会改写它,所以这一步是它唯一的判定。
+func TestCatchUpRemoteSessions_OnlyFailsSessionsTheDaemonIsNotRunning(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	const (
+		deviceID int64 = 7
+		stillRun int64 = 100 // daemon 说还在跑:不能判失败
+		longDone int64 = 101 // daemon 说空闲且已追平:本地那条 running 是重启遗孤
+	)
+	const fp = "sha256:beef"
+
+	client := newScriptedDaemonClient(func(method string, params, result any) error {
+		switch method {
+		case wire.MethodSessionList:
+			*(result.(*wire.SessionListResult)) = wire.SessionListResult{Sessions: []wire.SessionSummary{
+				{SessionID: stillRun, LifecycleState: wire.SessionLifecycleRunning, LatestSeq: 5},
+				{SessionID: longDone, LifecycleState: wire.SessionLifecycleIdle, LatestSeq: 5},
+			}}
+		case wire.MethodSessionAttach:
+			p := params.(wire.SessionAttachParams)
+			*(result.(*wire.SessionAttachResult)) = wire.SessionAttachResult{
+				SessionID: p.SessionID, LifecycleState: wire.SessionLifecycleRunning, LatestSeq: 5,
+			}
+		case wire.MethodSessionPull:
+			p := params.(wire.SessionPullParams)
+			*(result.(*wire.SessionPullResult)) = wire.SessionPullResult{Cursor: p.Cursor, OldestSeq: 1}
+		case wire.MethodSessionPendingWaiters:
+			*(result.(*wire.SessionPendingWaitersResult)) = wire.SessionPendingWaitersResult{}
+		}
+		return nil
+	})
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	lease.EXPECT().Client().Return(client).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease.EXPECT().Release().AnyTimes()
+	pool.EXPECT().Borrow(gomock.Any(), deviceID).Return(lease, nil).Times(1)
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().Get(gomock.Any(), deviceID).
+		Return(&remote_device_svc.DeviceView{ID: deviceID, DaemonFingerprint: fp}, nil).AnyTimes()
+	rds.EXPECT().RecordDaemonOutdated(deviceID, false).AnyTimes()
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	rows := []*chat_entity.Session{
+		{ID: stillRun, AgentID: 9, AgentStatus: "running", Status: consts.ACTIVE,
+			ExecDeviceID: deviceID, ExecDaemonFingerprint: fp, EventCursor: 5},
+		{ID: longDone, AgentID: 9, AgentStatus: "running", Status: consts.ACTIVE,
+			ExecDeviceID: deviceID, ExecDaemonFingerprint: fp, EventCursor: 5},
+	}
+	sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
+	sessRepo.EXPECT().ListRemoteExecSessions(gomock.Any()).Return(rows, nil)
+	for _, row := range rows {
+		sessRepo.EXPECT().Find(gomock.Any(), row.ID).Return(row, nil).AnyTimes()
+	}
+	sessRepo.EXPECT().UpdateEventCursor(gomock.Any(), gomock.Any(), fp, gomock.Any()).Return(nil).AnyTimes()
+	sessRepo.EXPECT().ResetActiveSessionsByIDs(gomock.Any(), []int64{longDone}).Return(int64(1), nil).Times(1)
+
+	agtRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+	agtRepo.EXPECT().Find(gomock.Any(), int64(9)).
+		Return(&agent_entity.Agent{ID: 9, AgentBackendID: 3}, nil).AnyTimes()
+	beRepo := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
+	beRepo.EXPECT().Find(gomock.Any(), int64(3)).Return(&agent_backend_entity.AgentBackend{
+		ID: 3, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "7",
+	}, nil).AnyTimes()
+
+	prevSess, prevAgent, prevBE := chat_repo.Session(), agent_repo.Agent(), agent_backend_repo.AgentBackend()
+	chat_repo.RegisterSession(sessRepo)
+	agent_repo.RegisterAgent(agtRepo)
+	agent_backend_repo.RegisterAgentBackend(beRepo)
+	t.Cleanup(func() {
+		chat_repo.RegisterSession(prevSess)
+		agent_repo.RegisterAgent(prevAgent)
+		agent_backend_repo.RegisterAgentBackend(prevBE)
+	})
+
+	svc := NewChat(NoopEmitter{}).(*chatSvc)
+	svc.setConnPoolForTest(pool)
+
+	require.NoError(t, svc.CatchUpRemoteSessions(context.Background()))
+}
+
 // Given 某台配对 daemon 此刻不在线,When 启动补齐,Then 跳过它继续补别的设备,
 // 整体不报错 —— 关着的远端盒子是常态,不该让另一台上的会话跟着补不成。
 func TestCatchUpRemoteSessions_OfflineDaemonDoesNotBlockOthers(t *testing.T) {
@@ -185,6 +282,8 @@ func TestCatchUpRemoteSessions_OfflineDaemonDoesNotBlockOthers(t *testing.T) {
 	sessRepo.EXPECT().ListRemoteExecSessions(gomock.Any()).Return([]*chat_entity.Session{
 		{ID: 100, AgentID: 9, Status: consts.ACTIVE, ExecDeviceID: 7, ExecDaemonFingerprint: "sha256:beef"},
 	}, nil)
+	// 连不上就没有判据:按今天的语义收尾,不把它永远留在 running 上转圈。
+	sessRepo.EXPECT().ResetActiveSessionsByIDs(gomock.Any(), []int64{100}).Return(int64(1), nil)
 	prevSess := chat_repo.Session()
 	chat_repo.RegisterSession(sessRepo)
 	t.Cleanup(func() { chat_repo.RegisterSession(prevSess) })

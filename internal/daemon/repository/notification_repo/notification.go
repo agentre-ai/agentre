@@ -59,6 +59,14 @@ type NotificationRepo interface {
 	// 通知的会话不出现在结果里,调用方按 0 处理。
 	LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error)
 
+	// OldestSeq 返回该会话此刻**现存最老**的 seq,一条通知都没有时为 0。
+	//
+	// 它是留存回收(DeleteBelow)在读侧的对应物:回收之后 seq 1..N 不再从 1 开始,而
+	// 补齐的客户端游标可能正落在被回收掉的那一段里。少了这个下界,客户端拉到的每一页
+	// 第一条都比 游标+1 大,只能当成跳号丢弃并再拉一次同一页 —— 游标永远推不动,会话
+	// 没有错误地冻住。有了它,客户端知道那截尾巴是真的没有了,复位游标接着补。
+	OldestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
+
 	// SilentSessions 列出「最新一条通知也早于 cutoffMs」的会话及其高水位 seq,最多
 	// limit 条 —— 回收的取材面(策略本身在调用方,见 daemon.collectJournal)。
 	//
@@ -158,6 +166,18 @@ func (r *notificationRepo) LatestSeq(ctx context.Context, peerFingerprint, peerS
 	var seq int64
 	err := db.Ctx(ctx).
 		Raw("SELECT COALESCE(MAX(seq), 0) FROM daemon_notification_logs WHERE peer_fingerprint = ? AND peer_session_id = ?",
+			peerFingerprint, peerSessionID).
+		Row().Scan(&seq)
+	if err != nil {
+		return 0, err
+	}
+	return seq, nil
+}
+
+func (r *notificationRepo) OldestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
+	var seq int64
+	err := db.Ctx(ctx).
+		Raw("SELECT COALESCE(MIN(seq), 0) FROM daemon_notification_logs WHERE peer_fingerprint = ? AND peer_session_id = ?",
 			peerFingerprint, peerSessionID).
 		Row().Scan(&seq)
 	if err != nil {

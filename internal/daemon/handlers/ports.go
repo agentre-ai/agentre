@@ -132,6 +132,10 @@ type JournalReaderPort interface {
 	ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) (rows []JournalRow, hasMore bool, err error)
 	LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
 	LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error)
+	// OldestSeq 是该会话现存最老的那一行的 seq(一条都没有时 0)。日志的老前缀会被留存
+	// 回收(见 daemon.collectJournal),补齐的客户端因此需要一个下界才分得清「游标之后
+	// 那一条还没写」与「它已经不在了」——分不清就只能一直等,会话静默冻住。
+	OldestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
 }
 
 // GatewayPort daemon-side LLM gateway 端口：给 CLI 子进程签短 token、查 URL、回收 token。

@@ -60,6 +60,8 @@ func (s *chatSvc) catchUpDevice(ctx context.Context, deviceID int64, sessions []
 	if err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.catchUpDevice: daemon unreachable, skipping catch-up",
 			zap.Int64("deviceId", deviceID), zap.Int64s("sessionIds", sids), zap.Error(err))
+		// 连不上就没有判据:按今天的语义收尾,不把它们永远留在 running 上转圈。
+		s.failSessionsNotLiveOnDaemon(ctx, sids, nil)
 		return
 	}
 	// 消费方必须在补齐**之前**接上:重放出来的内容以「没有 user 行的一轮」交付,
@@ -71,12 +73,52 @@ func (s *chatSvc) catchUpDevice(ctx context.Context, deviceID int64, sessions []
 		}
 		ready = append(ready, sess.ID)
 	}
-	if len(ready) == 0 {
-		return
-	}
-	if err := rt.CatchUpSessions(ctx, ready); err != nil {
+	live, err := rt.CatchUpSessions(ctx, ready)
+	if err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.catchUpDevice: catch-up failed",
 			zap.Int64("deviceId", deviceID), zap.Int64s("sessionIds", ready), zap.Error(err))
+	}
+	s.failSessionsNotLiveOnDaemon(ctx, sids, live)
+}
+
+// failSessionsNotLiveOnDaemon 把这台 daemon 上「它自己都说不在跑」的那些会话收尾成
+// error(只动还停在 running / waiting 的行)。
+//
+// 这是启动期残留清理在远端会话那一半:bootstrap.ResetStaleActiveSessions 已经不碰远端
+// 会话了 —— 在连上 daemon 之前无从判断,一律翻 error 就是报假失败,而一条在桌面端离线
+// 期间一个字都没产出的会话不会被重放改写,那条假失败会永久留在界面上(R4:断连不终止
+// 会话)。判据只能来自 daemon 交回的生命周期。
+//
+// 顺序上放在补齐之后是有意的:有内容可重放的会话由 driveAutonomousTurn 在重放收尾时写
+// 自己的终态(idle / error),那一次写发生在这之后,是最终值;这里这一笔至多在中途把它
+// 从 running 挪到 error,再被重放的终态覆盖。反过来先写就会被半途的 running 覆盖住。
+func (s *chatSvc) failSessionsNotLiveOnDaemon(ctx context.Context, all, live []int64) {
+	if len(all) == 0 {
+		return
+	}
+	liveSet := make(map[int64]struct{}, len(live))
+	for _, sid := range live {
+		liveSet[sid] = struct{}{}
+	}
+	stale := make([]int64, 0, len(all))
+	for _, sid := range all {
+		if _, ok := liveSet[sid]; ok {
+			continue
+		}
+		stale = append(stale, sid)
+	}
+	if len(stale) == 0 {
+		return
+	}
+	n, err := chat_repo.Session().ResetActiveSessionsByIDs(ctx, stale)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.failSessionsNotLiveOnDaemon: reset failed",
+			zap.Int64s("sessionIds", stale), zap.Error(err))
+		return
+	}
+	if n > 0 {
+		logger.Ctx(ctx).Info("chat_svc.failSessionsNotLiveOnDaemon: ended sessions the daemon is not running",
+			zap.Int64s("sessionIds", stale), zap.Int64("rows", n))
 	}
 }
 
