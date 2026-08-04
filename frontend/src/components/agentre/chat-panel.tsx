@@ -948,19 +948,19 @@ function ChatPanel({
       agentId: commandScopeAgentId,
       projectId: commandScopeProjectId,
     };
-    void ResolveLocalCommandScope(request).then(
-      (scope) => {
+    void (async () => {
+      try {
+        const scope = await ResolveLocalCommandScope(request);
         if (localCommandScopeResolutionRef.current !== resolutionID) return;
         setLocalCommandHistoryScope({
           deviceId: scope.deviceId,
           cwd: scope.cwd,
         });
-      },
-      () => {
+      } catch {
         if (localCommandScopeResolutionRef.current !== resolutionID) return;
         setLocalCommandHistoryScope(undefined);
-      },
-    );
+      }
+    })();
     return () => {
       if (localCommandScopeResolutionRef.current === resolutionID) {
         localCommandScopeResolutionRef.current += 1;

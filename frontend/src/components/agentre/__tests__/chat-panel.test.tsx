@@ -670,6 +670,29 @@ describe("ChatPanel · local command scope and execution", () => {
     expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
   });
 
+  it("Given scope pre-resolution throws before returning a promise, When a command is submitted, Then the composer stays available and execution still launches once", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.ResolveLocalCommandScope.mockImplementationOnce(() => {
+      throw new Error("scope bridge unavailable");
+    });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-10", cwd: "/srv/run" },
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("pwd")).resolves.toEqual({
+      deviceId: "remote-10",
+      cwd: "/srv/run",
+    });
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
+  });
+
   it("Given two simultaneous commands in a new chat, When session creation resolves, Then one Ensure promise is shared but both commands launch and settle independently exactly once", async () => {
     resetStore();
     mockSessionStore.session = null;
