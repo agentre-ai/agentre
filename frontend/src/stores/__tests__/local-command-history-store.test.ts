@@ -16,6 +16,10 @@ const remoteRepo: LocalCommandHistoryScope = {
   deviceId: "device-1",
   cwd: "/repo",
 };
+const ECMASCRIPT_DATE_MAX_TIMESTAMP = 8_640_000_000_000_000;
+const TIMESTAMP_RESERVATION_HEADROOM = 1_000_000;
+const FIRST_TIMESTAMP_WITHOUT_RESERVATION_HEADROOM =
+  ECMASCRIPT_DATE_MAX_TIMESTAMP - TIMESTAMP_RESERVATION_HEADROOM + 1;
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -125,6 +129,11 @@ describe("local command history scope and persistence", () => {
   });
 
   it.each([
+    ["the ECMAScript Date ceiling", ECMASCRIPT_DATE_MAX_TIMESTAMP],
+    [
+      "the first timestamp without one-million-reservation headroom",
+      FIRST_TIMESTAMP_WITHOUT_RESERVATION_HEADROOM,
+    ],
     ["the safe-integer ceiling", Number.MAX_SAFE_INTEGER],
     ["an unsafe integer", Number.MAX_SAFE_INTEGER + 1],
     ["a negative integer", -1],
@@ -255,6 +264,51 @@ describe("local command history scope and persistence", () => {
 });
 
 describe("local command history storage failures", () => {
+  it.each([
+    ["the exact ECMAScript Date ceiling", ECMASCRIPT_DATE_MAX_TIMESTAMP],
+    [
+      "the first timestamp without one-million-reservation headroom",
+      FIRST_TIMESTAMP_WITHOUT_RESERVATION_HEADROOM,
+    ],
+  ])(
+    "Given persisted history at %s, when reconstructed and used again, then it is rejected before multiple reservations can poison new storage",
+    (_label, poisonTimestamp) => {
+      localStorage.setItem(
+        LOCAL_COMMAND_HISTORY_STORAGE_KEY,
+        JSON.stringify({
+          version: 1,
+          scopes: {
+            [deriveLocalCommandHistoryScopeKey(localRepo)]: [
+              { command: "must not partially survive", lastUsedAt: 40 },
+            ],
+            [deriveLocalCommandHistoryScopeKey(remoteRepo)]: [
+              { command: "poisoned", lastUsedAt: poisonTimestamp },
+            ],
+          },
+        }),
+      );
+      vi.spyOn(Date, "now").mockReturnValue(100);
+
+      const store = createLocalCommandHistoryStore({ storage: localStorage });
+
+      expect(store.list(localRepo)).toEqual([]);
+      expect(store.list(remoteRepo)).toEqual([]);
+      const reservations = Array.from({ length: 3 }, () =>
+        store.reserveLastUsedAt(),
+      );
+      expect(reservations).toEqual([101, 102, 103]);
+
+      store.record(localRepo, "safe command", reservations[2]);
+      const reconstructed = createLocalCommandHistoryStore({
+        storage: localStorage,
+      });
+      expect(reconstructed.list(localRepo)).toEqual([
+        { command: "safe command", lastUsedAt: 103 },
+      ]);
+      expect(reconstructed.reserveLastUsedAt()).toBe(104);
+    },
+  );
+
   it.each([
     ["invalid JSON", "not-json"],
     ["unknown version", JSON.stringify({ version: 99, scopes: {} })],

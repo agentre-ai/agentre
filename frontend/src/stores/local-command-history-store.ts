@@ -7,9 +7,13 @@ export const LOCAL_COMMAND_HISTORY_STORAGE_KEY = "agentre.localCommandHistory";
 
 const LOCAL_COMMAND_HISTORY_VERSION = 1;
 const MAX_ENTRIES_PER_SCOPE = 100;
-// ECMAScript Date's maximum time value leaves over 367 trillion exact +1
-// reservations before reaching Number.MAX_SAFE_INTEGER.
-const MAX_LOCAL_COMMAND_HISTORY_TIMESTAMP = 8_640_000_000_000_000;
+const MAX_ECMASCRIPT_DATE_TIMESTAMP = 8_640_000_000_000_000;
+// Persisted, explicit, and clock seed values must leave one million exact +1
+// reservations below ECMAScript Date's ceiling. Reservations fail closed if
+// that fixed budget is ever exhausted instead of returning an invalid value.
+const TIMESTAMP_RESERVATION_HEADROOM = 1_000_000;
+const MAX_TIMESTAMP_RESERVATION_SEED =
+  MAX_ECMASCRIPT_DATE_TIMESTAMP - TIMESTAMP_RESERVATION_HEADROOM;
 
 type PersistedLocalCommandHistory = {
   version: typeof LOCAL_COMMAND_HISTORY_VERSION;
@@ -87,8 +91,26 @@ function isValidHistoryTimestamp(value: unknown): value is number {
     typeof value === "number" &&
     Number.isSafeInteger(value) &&
     value >= 0 &&
-    value <= MAX_LOCAL_COMMAND_HISTORY_TIMESTAMP
+    value <= MAX_ECMASCRIPT_DATE_TIMESTAMP
   );
+}
+
+function hasTimestampReservationHeadroom(value: unknown): value is number {
+  return (
+    isValidHistoryTimestamp(value) && value <= MAX_TIMESTAMP_RESERVATION_SEED
+  );
+}
+
+function ensureValidHistoryTimestamp(value: number): number {
+  if (!isValidHistoryTimestamp(value)) {
+    throw new RangeError("Local command history timestamp budget exhausted");
+  }
+  return value;
+}
+
+function reservationClockTimestamp(): number {
+  const now = Date.now();
+  return hasTimestampReservationHeadroom(now) ? now : 0;
 }
 
 function isHistoryEntry(value: unknown): value is LocalCommandHistoryEntry {
@@ -97,7 +119,7 @@ function isHistoryEntry(value: unknown): value is LocalCommandHistoryEntry {
   return (
     typeof entry.command === "string" &&
     entry.command.length > 0 &&
-    isValidHistoryTimestamp(entry.lastUsedAt)
+    hasTimestampReservationHeadroom(entry.lastUsedAt)
   );
 }
 
@@ -207,10 +229,16 @@ export function createLocalCommandHistoryStore(
   const storage =
     "storage" in options ? (options.storage ?? null) : browserStorage();
   const history = readPersistedHistory(storage);
-  let lastReservedAt = Math.max(Date.now(), maximumLastUsedAt(history));
+  let lastReservedAt = Math.max(
+    reservationClockTimestamp(),
+    maximumLastUsedAt(history),
+  );
   const reserveLastUsedAt = () => {
-    lastReservedAt = Math.max(lastReservedAt, Date.now()) + 1;
-    return lastReservedAt;
+    const reservation = ensureValidHistoryTimestamp(
+      Math.max(lastReservedAt, reservationClockTimestamp()) + 1,
+    );
+    lastReservedAt = reservation;
+    return reservation;
   };
 
   return {
@@ -225,9 +253,11 @@ export function createLocalCommandHistoryStore(
     record(scope, command, lastUsedAt = Date.now()) {
       if (!command) return;
       const key = deriveLocalCommandHistoryScopeKey(scope);
-      const usedAt = isValidHistoryTimestamp(lastUsedAt)
-        ? lastUsedAt
-        : reserveLastUsedAt();
+      const usedAt = ensureValidHistoryTimestamp(
+        hasTimestampReservationHeadroom(lastUsedAt)
+          ? lastUsedAt
+          : reserveLastUsedAt(),
+      );
       const entries = history.scopes[key] ?? [];
       const existingEntry = entries.find((entry) => entry.command === command);
       if (existingEntry && existingEntry.lastUsedAt >= usedAt) return;
