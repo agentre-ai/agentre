@@ -17,7 +17,13 @@ const openTimeout = 5 * time.Second
 
 // ErrDaemonTimeout is returned by Backend.Open when agentred does not respond
 // within openTimeout.
-var ErrDaemonTimeout = errors.New("agentred did not respond within 5s")
+var ErrDaemonTimeout error = daemonTimeoutError{}
+
+type daemonTimeoutError struct{}
+
+func (daemonTimeoutError) Error() string   { return "agentred did not respond within 5s" }
+func (daemonTimeoutError) Timeout() bool   { return true }
+func (daemonTimeoutError) Temporary() bool { return true }
 
 // Client is the minimal subset of the agentred ws client surface needed
 // here. In production this is the existing per-device ws client; tests
@@ -131,32 +137,61 @@ func (h *handleImpl) pump() {
 				select {
 				case ev, exitOK := <-exitCh:
 					if exitOK {
-						outcome = pkgpty.ExitInfo{Code: ev.Code, Reason: ev.Reason, Msg: ev.Msg}
+						outcome = exitInfo(ev)
 					}
 				default:
 				}
 				return
 			}
-			// The daemon base64-encodes each chunk so it survives the JSON hop;
-			// decode back to raw bytes. Skip a malformed frame rather than feed
-			// the encoded text to xterm.
-			decoded, err := base64.StdEncoding.DecodeString(ev.Data)
-			if err != nil {
-				continue
-			}
-			select {
-			case h.data <- decoded:
-			case <-h.done:
+			if !h.forwardData(ev, false) {
 				outcome = pkgpty.ExitInfo{Reason: "killed"}
 				return
 			}
 		case ev, ok := <-exitCh:
 			if ok {
-				outcome = pkgpty.ExitInfo{Code: ev.Code, Reason: ev.Reason, Msg: ev.Msg}
+				outcome = exitInfo(ev)
+				h.drainDataAfterExit(dataCh)
 			}
 			return
 		case <-h.done:
 			outcome = pkgpty.ExitInfo{Reason: "killed"}
+			return
+		}
+	}
+}
+
+func exitInfo(ev protocol.TerminalExitEvent) pkgpty.ExitInfo {
+	return pkgpty.ExitInfo{Code: ev.Code, Reason: ev.Reason, Msg: ev.Msg}
+}
+
+func (h *handleImpl) forwardData(ev protocol.TerminalDataEvent, prioritizeOutput bool) bool {
+	// The daemon base64-encodes each chunk so it survives the JSON hop;
+	// decode back to raw bytes. Skip a malformed frame rather than feed
+	// the encoded text to xterm.
+	decoded, err := base64.StdEncoding.DecodeString(ev.Data)
+	if err != nil {
+		return true
+	}
+	if prioritizeOutput {
+		select {
+		case h.data <- decoded:
+			return true
+		default:
+		}
+	}
+	select {
+	case h.data <- decoded:
+		return true
+	case <-h.done:
+		return false
+	}
+}
+
+func (h *handleImpl) drainDataAfterExit(dataCh <-chan protocol.TerminalDataEvent) {
+	// ClientAdapter closes dataCh immediately after queueing the daemon exit.
+	// Range therefore drains the already-buffered final frames in FIFO order.
+	for ev := range dataCh {
+		if !h.forwardData(ev, true) {
 			return
 		}
 	}

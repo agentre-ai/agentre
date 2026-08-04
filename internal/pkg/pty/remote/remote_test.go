@@ -3,6 +3,7 @@ package remote_test
 import (
 	"context"
 	"encoding/base64"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -153,6 +154,55 @@ func TestRemoteBackend_GivenOpenSubscriptionsWhenClosedThenEmitsKilledAndClosesC
 	require.Equal(t, int32(1), fc.closeCalls.Load(), "terminal.close RPC must be sent exactly once")
 }
 
+func TestRemoteBackend_GivenBufferedFinalFramesBeforeDaemonExit_WhenPumped_ThenDrainsValidDataInOrderBeforeExit(t *testing.T) {
+	const iterations = 100
+	want := []byte("final-one/final-two")
+
+	for i := 0; i < iterations; i++ {
+		fc := &fakeClient{
+			openParams: make(chan protocol.TerminalOpenParams, 1),
+			dataPush:   make(chan protocol.TerminalDataEvent, 3),
+			exitPush:   make(chan protocol.TerminalExitEvent, 1),
+		}
+		fc.dataPush <- protocol.TerminalDataEvent{
+			TerminalID: "remote-1", Data: base64.StdEncoding.EncodeToString([]byte("final-one/")),
+		}
+		fc.dataPush <- protocol.TerminalDataEvent{TerminalID: "remote-1", Data: "malformed-base64"}
+		fc.dataPush <- protocol.TerminalDataEvent{
+			TerminalID: "remote-1", Data: base64.StdEncoding.EncodeToString([]byte("final-two")),
+		}
+		fc.exitPush <- protocol.TerminalExitEvent{
+			TerminalID: "remote-1", Code: 23, Reason: "natural", Msg: "finished",
+		}
+		close(fc.exitPush)
+		close(fc.dataPush)
+
+		h, err := remote.NewBackend(fc).Open(context.Background(), pty.Spec{Cwd: "/r"})
+		require.NoError(t, err)
+		<-fc.openParams
+
+		var got []byte
+		dataCh := h.Data()
+		for dataCh != nil {
+			select {
+			case chunk, ok := <-dataCh:
+				if !ok {
+					dataCh = nil
+					continue
+				}
+				got = append(got, chunk...)
+			case <-time.After(time.Second):
+				t.Fatalf("iteration %d: data channel did not close", i)
+			}
+		}
+
+		require.Equalf(t, want, got, "iteration %d: final output was truncated or reordered", i)
+		info := requireTerminalOutcome(t, h, "natural")
+		require.Equal(t, 23, info.Code)
+		require.Equal(t, "finished", info.Msg)
+	}
+}
+
 func TestRemoteBackend_ExitEvent_DeliveredAndChannelsClose(t *testing.T) {
 	fc := &fakeClient{
 		openParams: make(chan protocol.TerminalOpenParams, 1),
@@ -232,6 +282,8 @@ func TestRemoteBackend_GivenCloseRacingDaemonExitThenPublishesOneAuthoritativeOu
 				Code:       0,
 				Reason:     "natural",
 			}
+			close(fc.exitPush)
+			close(fc.dataPush)
 			close(daemonSent)
 		}()
 		close(start)
@@ -297,6 +349,10 @@ func TestRemoteBackend_Open_TimesOutAfter5s(t *testing.T) {
 	_, err := be.Open(context.Background(), pty.Spec{Cwd: "/r"})
 	elapsed := time.Since(start)
 	require.ErrorIs(t, err, remote.ErrDaemonTimeout)
+	require.Equal(t, "agentred did not respond within 5s", err.Error())
+	var timeoutErr net.Error
+	require.ErrorAs(t, err, &timeoutErr)
+	require.True(t, timeoutErr.Timeout())
 	// Should time out around 5s, not wait for 10s
 	require.Less(t, elapsed, 7*time.Second, "should time out near 5s, not wait full delay")
 }

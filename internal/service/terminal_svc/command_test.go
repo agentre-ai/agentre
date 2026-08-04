@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/agentre-ai/agentre/internal/pkg/pty"
+	ptyremote "github.com/agentre-ai/agentre/internal/pkg/pty/remote"
 	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 	"github.com/agentre-ai/agentre/internal/service/terminal_svc/mocks"
 )
@@ -265,6 +266,12 @@ func TestService_RunCommand_GivenStartFailure_WhenStarted_ThenLogsSafeStageAndCa
 			name:          "PTY network operation times out",
 			startStage:    "ptyOpen",
 			startErr:      &net.OpError{Op: "dial fixture-sensitive-timeout", Net: "tcp-sensitive", Err: os.ErrDeadlineExceeded},
+			errorCategory: "timeout",
+		},
+		{
+			name:          "remote daemon open times out",
+			startStage:    "ptyOpen",
+			startErr:      ptyremote.ErrDaemonTimeout,
 			errorCategory: "timeout",
 		},
 		{
