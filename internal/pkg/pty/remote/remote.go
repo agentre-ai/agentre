@@ -17,7 +17,10 @@ const openTimeout = 5 * time.Second
 
 // ErrDaemonTimeout is returned by Backend.Open when agentred does not respond
 // within openTimeout.
-var ErrDaemonTimeout error = daemonTimeoutError{}
+var (
+	ErrDaemonTimeout error = daemonTimeoutError{}
+	errOpenTimeout         = errors.New("remote terminal open timeout")
+)
 
 type daemonTimeoutError struct{}
 
@@ -41,14 +44,17 @@ type Backend struct {
 func NewBackend(c Client) *Backend { return &Backend{client: c} }
 
 func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, error) {
-	openCtx, cancel := context.WithTimeout(ctx, openTimeout)
+	openCtx, cancel := context.WithTimeoutCause(ctx, openTimeout, errOpenTimeout)
 	defer cancel()
 	var res protocol.TerminalOpenResult
 	if err := b.client.Call(openCtx, "terminal.open", protocol.TerminalOpenParams{
 		Cwd: spec.Cwd, Shell: spec.Shell, Command: spec.Command, Env: spec.Env, Cols: spec.Cols, Rows: spec.Rows,
 	}, &res); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(context.Cause(openCtx), errOpenTimeout) {
 			return nil, ErrDaemonTimeout
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
 		return nil, err
 	}
@@ -70,9 +76,15 @@ type handleImpl struct {
 	data chan []byte
 	exit chan pkgpty.ExitInfo
 
-	mu     sync.Mutex
-	closed bool
-	done   chan struct{}
+	mu        sync.Mutex
+	closed    bool
+	closeCall *closeCall
+	done      chan struct{}
+}
+
+type closeCall struct {
+	done chan struct{}
+	err  error
 }
 
 func (h *handleImpl) Write(p []byte) (int, error) {
@@ -105,13 +117,35 @@ func (h *handleImpl) Close() error {
 		h.mu.Unlock()
 		return nil
 	}
-	h.closed = true
-	close(h.done)
+	if call := h.closeCall; call != nil {
+		h.mu.Unlock()
+		<-call.done
+		return call.err
+	}
+	call := &closeCall{done: make(chan struct{})}
+	h.closeCall = call
 	h.mu.Unlock()
+
 	var ack struct{}
-	return h.client.Call(context.Background(), "terminal.close", protocol.TerminalCloseParams{
+	err := h.client.Call(context.Background(), "terminal.close", protocol.TerminalCloseParams{
 		TerminalID: h.terminalID,
 	}, &ack)
+
+	h.mu.Lock()
+	if h.closed {
+		// A daemon exit that arrived while the RPC was in flight is already
+		// authoritative, so closing is satisfied even if terminal.close raced
+		// it and reported an error.
+		err = nil
+	} else if err == nil {
+		h.closed = true
+		close(h.done)
+	}
+	call.err = err
+	h.closeCall = nil
+	close(call.done)
+	h.mu.Unlock()
+	return err
 }
 
 func (h *handleImpl) Data() <-chan []byte          { return h.data }
@@ -141,6 +175,9 @@ func (h *handleImpl) pump() {
 					}
 				default:
 				}
+				if !h.claimDaemonExit() {
+					outcome = pkgpty.ExitInfo{Reason: "killed"}
+				}
 				return
 			}
 			if !h.forwardData(ev, false) {
@@ -150,6 +187,12 @@ func (h *handleImpl) pump() {
 		case ev, ok := <-exitCh:
 			if ok {
 				outcome = exitInfo(ev)
+			}
+			if !h.claimDaemonExit() {
+				outcome = pkgpty.ExitInfo{Reason: "killed"}
+				return
+			}
+			if ok {
 				h.drainDataAfterExit(dataCh)
 			}
 			return
@@ -158,6 +201,16 @@ func (h *handleImpl) pump() {
 			return
 		}
 	}
+}
+
+func (h *handleImpl) claimDaemonExit() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return false
+	}
+	h.closed = true
+	return true
 }
 
 func exitInfo(ev protocol.TerminalExitEvent) pkgpty.ExitInfo {

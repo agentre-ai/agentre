@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,6 +60,84 @@ func TestService_Close_UnknownTerminal(t *testing.T) {
 	svc := terminal_svc.NewService(sel, terminal_svc.NoopEmitter{})
 	err := svc.Close(context.Background(), "ghost")
 	require.ErrorIs(t, err, terminal_svc.ErrTerminalNotOpen)
+}
+
+type replacementRaceHandle struct {
+	data              chan []byte
+	exit              chan pty.ExitInfo
+	blockFirstClose   bool
+	firstCloseStarted chan struct{}
+	releaseFirstClose chan struct{}
+	closeCalls        atomic.Int32
+	writeCalls        atomic.Int32
+	settle            sync.Once
+}
+
+func newReplacementRaceHandle(blockFirstClose bool) *replacementRaceHandle {
+	return &replacementRaceHandle{
+		data:              make(chan []byte),
+		exit:              make(chan pty.ExitInfo, 1),
+		blockFirstClose:   blockFirstClose,
+		firstCloseStarted: make(chan struct{}),
+		releaseFirstClose: make(chan struct{}),
+	}
+}
+
+func (h *replacementRaceHandle) Write(p []byte) (int, error) {
+	h.writeCalls.Add(1)
+	return len(p), nil
+}
+
+func (h *replacementRaceHandle) Resize(uint16, uint16) error { return nil }
+func (h *replacementRaceHandle) Data() <-chan []byte         { return h.data }
+func (h *replacementRaceHandle) Exit() <-chan pty.ExitInfo   { return h.exit }
+
+func (h *replacementRaceHandle) Close() error {
+	call := h.closeCalls.Add(1)
+	if h.blockFirstClose && call == 1 {
+		close(h.firstCloseStarted)
+		<-h.releaseFirstClose
+	}
+	h.settle.Do(func() {
+		h.exit <- pty.ExitInfo{Reason: "killed"}
+		close(h.exit)
+		close(h.data)
+	})
+	return nil
+}
+
+type replacementRaceBackend struct {
+	opens       atomic.Int32
+	old         pty.Handle
+	replacement pty.Handle
+}
+
+func (b *replacementRaceBackend) Open(context.Context, pty.Spec) (pty.Handle, error) {
+	if b.opens.Add(1) == 1 {
+		return b.old, nil
+	}
+	return b.replacement, nil
+}
+
+func TestService_GivenCloseOfOldHandleCompletesAfterReplacementWhenSettledThenKeepsReplacementByIdentity(t *testing.T) {
+	old := newReplacementRaceHandle(true)
+	replacement := newReplacementRaceHandle(false)
+	backend := &replacementRaceBackend{old: old, replacement: replacement}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), terminal_svc.NoopEmitter{})
+	t.Cleanup(svc.Shutdown)
+
+	require.NoError(t, svc.Open(context.Background(), "terminal-race", "", "/old", 80, 24))
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- svc.Close(context.Background(), "terminal-race") }()
+	<-old.firstCloseStarted
+
+	require.NoError(t, svc.Open(context.Background(), "terminal-race", "", "/replacement", 80, 24))
+	close(old.releaseFirstClose)
+	require.NoError(t, <-closeResult)
+
+	require.NoError(t, svc.Write(context.Background(), "terminal-race", "x"),
+		"completion of the old Close must not delete the replacement handle")
+	require.Equal(t, int32(1), replacement.writeCalls.Load())
 }
 
 func TestService_Open_ReOpenClosesPrevious(t *testing.T) {

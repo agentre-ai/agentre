@@ -237,9 +237,6 @@ func (s *Service) Close(ctx context.Context, terminalID string) error {
 		delete(s.inFlight, terminalID)
 	}
 	h, hadHandle := s.sessions[terminalID]
-	if hadHandle {
-		delete(s.sessions, terminalID)
-	}
 	s.mu.Unlock()
 
 	if hadInFlight {
@@ -249,9 +246,18 @@ func (s *Service) Close(ctx context.Context, terminalID string) error {
 		return ErrTerminalNotOpen
 	}
 	if hadHandle {
-		return h.Close()
+		if err := h.Close(); err != nil {
+			return err
+		}
+		// Close is an external boundary, so a new Open may have installed a
+		// replacement while it was in flight. Settle only the handle we closed.
+		s.mu.Lock()
+		if cur, exists := s.sessions[terminalID]; exists && cur == h {
+			delete(s.sessions, terminalID)
+		}
+		s.mu.Unlock()
 	}
-	return nil // only inFlight was canceled; no Handle to close
+	return nil // only inFlight was canceled, or the captured Handle settled
 }
 
 func (s *Service) Shutdown() {
