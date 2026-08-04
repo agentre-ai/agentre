@@ -74,6 +74,7 @@ const componentMocks = vi.hoisted(() => ({
   chatTranscriptProps: [] as Array<Record<string, unknown>>,
   permissionModePillProps: [] as Array<Record<string, unknown>>,
   permissionMode: "plan",
+  localCommandMenuActive: false,
   cycleMode: vi.fn(),
   setMode: vi.fn(),
   // 控制 useSessionCapabilities 桩返回的 caps;测试按 backend 切换 switchableDuringTurn。
@@ -170,6 +171,7 @@ vi.mock("../chat", async () => {
   const React = await import("react");
   return {
     ChatComposer: (props: {
+      localCommandHistoryScope?: unknown;
       onSubmit?: (text: string) => void;
       permissionModeSlot?: React.ReactNode;
       topSlot?: React.ReactNode;
@@ -180,6 +182,12 @@ vi.mock("../chat", async () => {
         null,
         props.topSlot,
         props.permissionModeSlot,
+        componentMocks.localCommandMenuActive && props.localCommandHistoryScope
+          ? React.createElement("div", {
+              "data-testid": "local-command-history-menu",
+              role: "listbox",
+            })
+          : null,
       );
     },
     ChatTranscript: (props: Record<string, unknown>) => {
@@ -312,6 +320,7 @@ function resetStore() {
   componentMocks.chatTranscriptProps.length = 0;
   componentMocks.permissionModePillProps.length = 0;
   componentMocks.permissionMode = "plan";
+  componentMocks.localCommandMenuActive = false;
   // 默认 claudecode-like caps(允许 turn 中切 mode);Codex 测试用例显式置 false。
   componentMocks.capsSwitchableDuringTurn = true;
   componentMocks.capsAllowedModes = [
@@ -586,7 +595,157 @@ describe("ChatPanel · local command scope and execution", () => {
     );
   });
 
-  it("Given a resolved session target, When the target changes, Then the old scope clears before the new async resolution finishes", async () => {
+  it("Given a resolved session scope and open history menu, When status/read/permission/display fields replace the session object, Then the scope and menu stay open without another resolution", async () => {
+    resetStore();
+    componentMocks.localCommandMenuActive = true;
+    mockSessionStore.session = makeSession({
+      agentId: 7,
+      agentName: "Eng",
+      backendType: "claudecode",
+      cwd: "/srv/project",
+      deviceID: "remote-7",
+      deviceName: "Build box",
+      id: 42,
+      projectId: 2,
+    });
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "remote-7",
+      cwd: "/srv/project",
+    });
+    const view = render(<ChatPanel sessionId={42} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("local-command-history-menu")).toBeVisible();
+    });
+    const resolvedScope =
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope;
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+
+    mockSessionStore.session = makeSession({
+      agentId: 7,
+      agentName: "Renamed Eng",
+      agentStatus: "running",
+      backendType: "claudecode",
+      contextWindow: 200_000,
+      cwd: "/srv/project",
+      deviceID: "remote-7",
+      deviceName: "Renamed build box",
+      id: 42,
+      lastReadAt: 99,
+      needsAttention: true,
+      permissionMode: "acceptEdits",
+      projectId: 2,
+      title: "Updated display title",
+    });
+    view.rerender(<ChatPanel sessionId={42} />);
+
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBe(resolvedScope);
+    expect(screen.getByTestId("local-command-history-menu")).toBeVisible();
+  });
+
+  it("Given a resolved pre-session scope and open history menu, When unrelated agent metadata replaces the agent object, Then the scope and menu stay open without another resolution", async () => {
+    resetStore();
+    componentMocks.localCommandMenuActive = true;
+    mockSessionStore.session = null;
+    const initialAgent = {
+      activeCount: 1,
+      backendType: "claudecode",
+      defaultPermissionMode: "plan",
+      deviceID: "remote-7",
+      deviceName: "Build box",
+      id: 7,
+      name: "Remote Eng",
+      online: true,
+      pinned: false,
+    } as never;
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "remote-7",
+      cwd: "/srv/project",
+    });
+    const view = render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={initialAgent}
+        newSessionContext={{ projectId: 2 }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("local-command-history-menu")).toBeVisible();
+    });
+    const resolvedScope =
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope;
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            activeCount: 8,
+            backendType: "claudecode",
+            defaultPermissionMode: "acceptEdits",
+            deviceID: "remote-7",
+            deviceName: "Renamed build box",
+            id: 7,
+            name: "Renamed Remote Eng",
+            online: false,
+            pinned: true,
+          } as never
+        }
+        newSessionContext={{ projectId: 2 }}
+      />,
+    );
+
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBe(resolvedScope);
+    expect(screen.getByTestId("local-command-history-menu")).toBeVisible();
+  });
+
+  it.each([
+    ["cwd", { cwd: "/srv/next" }],
+    ["device", { deviceID: "remote-8" }],
+    ["backend", { backendType: "codex" }],
+    ["agent", { agentId: 8 }],
+    ["project", { projectId: 3 }],
+  ] as const)(
+    "Given a resolved existing-session scope, When the %s target scalar changes, Then exactly one fresh resolution runs",
+    async (_label, targetChange) => {
+      resetStore();
+      const initialTarget = {
+        agentId: 7,
+        backendType: "claudecode",
+        cwd: "/srv/project",
+        deviceID: "remote-7",
+        id: 42,
+        projectId: 2,
+      };
+      mockSessionStore.session = makeSession(initialTarget);
+      appMocks.ResolveLocalCommandScope.mockResolvedValue({
+        deviceId: "remote-7",
+        cwd: "/srv/project",
+      });
+      const view = render(<ChatPanel sessionId={42} />);
+      await waitFor(() => {
+        expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+      });
+
+      mockSessionStore.session = makeSession({
+        ...initialTarget,
+        ...targetChange,
+      });
+      view.rerender(<ChatPanel sessionId={42} />);
+
+      expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("Given a resolved session target, When the target changes, Then the old scope clears before exactly one new async resolution finishes", async () => {
     resetStore();
     mockSessionStore.session = makeSession({ id: 42 });
     appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
@@ -612,6 +771,7 @@ describe("ChatPanel · local command scope and execution", () => {
     expect(appMocks.ResolveLocalCommandScope).toHaveBeenLastCalledWith(
       expect.objectContaining({ agentId: 0, projectId: 0, sessionId: 43 }),
     );
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(2);
   });
 
   it("Given a resolved scope, When ! mode and then session/location refresh re-resolve out of order, Then old scope clears immediately and stale responses are ignored", async () => {
@@ -640,6 +800,7 @@ describe("ChatPanel · local command scope and execution", () => {
         ?.onCommandModeChange as ((active: boolean) => void) | undefined;
       onCommandModeChange?.(true);
     });
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(2);
     expect(
       componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
     ).toBeUndefined();

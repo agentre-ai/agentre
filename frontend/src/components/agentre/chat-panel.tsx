@@ -938,6 +938,22 @@ function ChatPanel({
     commandScopeSessionId === 0 ? (newSessionAgent?.id ?? 0) : 0;
   const commandScopeProjectId =
     commandScopeSessionId === 0 ? (newSessionContext?.projectId ?? 0) : 0;
+  const commandScopeTargetAgentId =
+    commandScopeSessionId > 0 ? (session?.agentId ?? 0) : commandScopeAgentId;
+  const commandScopeTargetBackendType =
+    commandScopeSessionId > 0
+      ? (session?.backendType ?? "")
+      : (newSessionAgent?.backendType ?? "");
+  const commandScopeTargetCwd =
+    commandScopeSessionId > 0 ? (session?.cwd ?? "") : composerCwd;
+  const commandScopeTargetDeviceId =
+    commandScopeSessionId > 0
+      ? (session?.deviceID ?? "")
+      : (newSessionAgent?.deviceID ?? "");
+  const commandScopeTargetProjectId =
+    commandScopeSessionId > 0
+      ? (session?.projectId ?? 0)
+      : commandScopeProjectId;
   React.useLayoutEffect(() => {
     const resolutionID = ++localCommandScopeResolutionRef.current;
     setLocalCommandHistoryScope(undefined);
@@ -967,15 +983,17 @@ function ChatPanel({
       }
     };
   }, [
-    // These snapshots are refresh signals only. History scope is always the
-    // resolver response above, never a frontend-derived device/cwd fallback.
+    // These target scalars are refresh signals only. History scope is always
+    // the resolver response above, never a frontend-derived device/cwd fallback.
     commandScopeAgentId,
     commandScopeProjectId,
     commandScopeSessionId,
-    composerCwd,
+    commandScopeTargetAgentId,
+    commandScopeTargetBackendType,
+    commandScopeTargetCwd,
+    commandScopeTargetDeviceId,
+    commandScopeTargetProjectId,
     localCommandScopeRefreshTick,
-    newSessionAgent,
-    session,
   ]);
   const handleLocalCommandModeChange = React.useCallback((active: boolean) => {
     if (active) setLocalCommandScopeRefreshTick((tick) => tick + 1);
