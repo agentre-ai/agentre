@@ -3,6 +3,7 @@ package chat_repo_test
 import (
 	"context"
 	"database/sql/driver"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -10,6 +11,7 @@ import (
 	"github.com/cago-frame/cago/pkg/utils/testutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
@@ -549,6 +551,96 @@ func TestSessionRepo_UpdateEventCursor(t *testing.T) {
 
 	require.NoError(t, repo.UpdateEventCursor(ctx, 42, "sha256:beef", 17))
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateKeepsRemoteExecColumns 回归(R12):轮次收尾的整行回写不得
+// 抹掉轮次进行中定向写下的执行位置与游标。
+//
+// 真机复现的形态(逐 250ms 采样,两次独立运行一致):轮次进行中三列都对
+// (exec_device_id=2 / 指纹 / 游标 15→33,补齐也确实用上了),一到 running → idle
+// 收尾就一起变成 0 / 空串 / 0。收尾走的 chat_svc.persistSessionStatus 拿的是**轮次
+// 开始时**读出来的那份实体(那会儿还没 borrow 到远端,三列都是零值),而 Update 是
+// 整行 Save —— 内存里的旧零值把这中间两次定向写(UpdateExecDaemon / UpdateEventCursor)
+// 刚落库的值盖回去。
+//
+// 后果不止丢三个字段:ListRemoteExecSessions 的取材条件是 exec_device_id > 0 且
+// exec_daemon_fingerprint 非空,空闲的远端会话因此永远进不了启动补齐 ——
+// 「退出桌面 App 之后下次打开能看到这段时间里发生的全部内容」对它们完全失效。
+//
+// 所以断言落在「这一行最后是什么」,而不是收尾那条 SQL 长什么样:缺陷出在两次写
+// 之间的相互作用,单看任何一条语句都是对的。
+func TestSessionRepo_UpdateKeepsRemoteExecColumns(t *testing.T) {
+	ctx, gdb, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	// 库里那一行。sqlmock 不是真引擎、不维护行状态,这里按仓储实际发出的 SET 子句
+	// 逐列跟着改(见 captureUpdatedRow)。
+	row := map[string]any{
+		"agent_status":            "running",
+		"exec_device_id":          int64(0),
+		"exec_daemon_fingerprint": "",
+		"event_cursor":            int64(0),
+	}
+	captureUpdatedRow(t, gdb, row)
+
+	// 轮次开始时读出来的实体:还没 borrow 到远端,三列都是零值。
+	sess := &chat_entity.Session{ID: 42, AgentStatus: "running", Status: consts.ACTIVE}
+
+	// 写 1:borrow 到 daemon 2 时记下执行位置(chat_svc.recordExecDaemon)。
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.UpdateExecDaemon(ctx, 42, 2, "sha256:beef"))
+
+	// 写 2:消费到 seq 33 时推进游标(chat_svc 的游标端口 SaveCursor)。
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.UpdateEventCursor(ctx, 42, "sha256:beef", 33))
+
+	// 写 3:running → idle 收尾,用的是上面那份**没跟着变**的内存实体。
+	sess.AgentStatus = "idle"
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.Update(ctx, sess))
+
+	assert.Equal(t, int64(2), row["exec_device_id"], "收尾不得把执行位置抹回本机")
+	assert.Equal(t, "sha256:beef", row["exec_daemon_fingerprint"], "收尾不得抹掉 daemon 实例标识")
+	assert.Equal(t, int64(33), row["event_cursor"], "收尾不得把游标冲回 0")
+	assert.Equal(t, "idle", row["agent_status"], "收尾本来要写的状态照常落库")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// captureUpdatedRow 把仓储实际发出的 UPDATE 语句应用到 row 上,补出 sqlmock 没有的
+// 行状态。取的是 GORM 生成的 SET 子句本身,不预设哪条语句该写哪些列。
+func captureUpdatedRow(t *testing.T, gdb *gorm.DB, row map[string]any) {
+	t.Helper()
+	require.NoError(t, gdb.Callback().Update().After("gorm:update").
+		Register("test:capture_updated_row", func(tx *gorm.DB) {
+			applySetClause(row, tx.Statement.SQL.String(), tx.Statement.Vars)
+		}))
+}
+
+// applySetClause 解析 "UPDATE ... SET `col`=?,... WHERE ..." 的 SET 子句并赋值。
+// 右值不是单个占位符的列(UpdateExecDaemon 的 event_cursor CASE 表达式)由引擎求值,
+// 这里保持原值 —— 本用例走到那一步时 CASE 的结果与原值同为 0。
+func applySetClause(row map[string]any, sql string, vars []any) {
+	set := sql[strings.Index(sql, " SET ")+len(" SET ") : strings.Index(sql, " WHERE ")]
+	arg := 0
+	for _, assign := range strings.Split(set, ",") {
+		col, rhs, ok := strings.Cut(assign, "=")
+		if !ok {
+			continue
+		}
+		col = strings.Trim(col, "`")
+		if rhs == "?" {
+			if _, tracked := row[col]; tracked {
+				row[col] = vars[arg]
+			}
+		}
+		arg += strings.Count(rhs, "?")
+	}
 }
 
 // TestSessionRepo_ListRemoteExecSessions 钉死「App 启动后该连谁」那一问的读取 SQL。

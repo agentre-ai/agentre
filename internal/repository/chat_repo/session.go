@@ -369,11 +369,20 @@ func (r *sessionRepo) Create(ctx context.Context, s *chat_entity.Session) error 
 
 func (r *sessionRepo) Update(ctx context.Context, s *chat_entity.Session) error {
 	s.Updatetime = time.Now().UnixMilli()
-	// Both permission_mode and permission_mode_at_launch are written via
-	// dedicated single-column updates; omit them here so callers updating
-	// status/timestamps don't clobber a concurrent mode switch or the
-	// launched-mode snapshot.
-	err := db.Ctx(ctx).Omit("permission_mode", "permission_mode_at_launch").Save(s).Error
+	// Save 是整行回写:调用方通常只改了 title / agent_status / last_message_at 之类
+	// 的一两个字段,却会把手上那份实体的**每一列**都写回去。凡是由专用单列更新负责的
+	// 列都必须在这里 Omit,否则一份读得早的实体会把它们盖回旧值:
+	//   - permission_mode / permission_mode_at_launch —— 运行中切换的模式与 spawn 快照;
+	//   - exec_device_id / exec_daemon_fingerprint / event_cursor(R12)—— 轮次开始时
+	//     读出的实体这三列还是零值,轮次中途 UpdateExecDaemon / UpdateEventCursor 才把
+	//     真值写进去,收尾时的整行回写因此会把「这条会话跑在哪台 daemon 上、消费到哪」
+	//     一起抹成 0 / '' / 0,空闲的远端会话从此落在 ListRemoteExecSessions 的取材
+	//     条件之外,再也进不了启动补齐。
+	// 这三列在服务层没有任何「写实体再 Update」的路径,Omit 不会丢掉谁的写入。
+	err := db.Ctx(ctx).Omit(
+		"permission_mode", "permission_mode_at_launch",
+		"exec_device_id", "exec_daemon_fingerprint", "event_cursor",
+	).Save(s).Error
 	s.ApplyDerivedFields()
 	return err
 }
