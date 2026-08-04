@@ -38,18 +38,28 @@ type Client interface {
 }
 
 type Backend struct {
-	client Client
+	client  Client
+	release func()
 }
 
 func NewBackend(c Client) *Backend { return &Backend{client: c} }
 
+// NewBackendWithLease binds one successful daemon-client borrow to one Open.
+// Open failure releases immediately; a successful handle releases when its
+// terminal outcome is settled. The release function is guarded exactly once.
+func NewBackendWithLease(c Client, release func()) *Backend {
+	return &Backend{client: c, release: release}
+}
+
 func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, error) {
+	release := onceRelease(b.release)
 	openCtx, cancel := context.WithTimeoutCause(ctx, openTimeout, errOpenTimeout)
 	defer cancel()
 	var res protocol.TerminalOpenResult
 	if err := b.client.Call(openCtx, "terminal.open", protocol.TerminalOpenParams{
 		Cwd: spec.Cwd, Shell: spec.Shell, Command: spec.Command, Env: spec.Env, Cols: spec.Cols, Rows: spec.Rows,
 	}, &res); err != nil {
+		release()
 		if errors.Is(context.Cause(openCtx), errOpenTimeout) {
 			return nil, ErrDaemonTimeout
 		}
@@ -64,9 +74,17 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 		data:       make(chan []byte, 32),
 		exit:       make(chan pkgpty.ExitInfo, 1),
 		done:       make(chan struct{}),
+		release:    release,
 	}
 	go h.pump()
 	return h, nil
+}
+
+func onceRelease(release func()) func() {
+	if release == nil {
+		return func() {}
+	}
+	return sync.OnceFunc(release)
 }
 
 type handleImpl struct {
@@ -80,6 +98,7 @@ type handleImpl struct {
 	closed    bool
 	closeCall *closeCall
 	done      chan struct{}
+	release   func()
 }
 
 type closeCall struct {
@@ -132,7 +151,8 @@ func (h *handleImpl) Close() error {
 	}, &ack)
 
 	h.mu.Lock()
-	if h.closed {
+	settled := h.closed
+	if settled {
 		// A daemon exit that arrived while the RPC was in flight is already
 		// authoritative, so closing is satisfied even if terminal.close raced
 		// it and reported an error.
@@ -140,11 +160,15 @@ func (h *handleImpl) Close() error {
 	} else if err == nil {
 		h.closed = true
 		close(h.done)
+		settled = true
 	}
 	call.err = err
 	h.closeCall = nil
-	close(call.done)
 	h.mu.Unlock()
+	if settled {
+		h.release()
+	}
+	close(call.done)
 	return err
 }
 
@@ -159,6 +183,7 @@ func (h *handleImpl) pump() {
 		h.exit <- outcome
 		close(h.exit)
 		close(h.data)
+		h.release()
 	}()
 
 	for {

@@ -21,6 +21,7 @@ type fakeClient struct {
 	openParams chan protocol.TerminalOpenParams
 	dataPush   chan protocol.TerminalDataEvent
 	exitPush   chan protocol.TerminalExitEvent
+	openErr    error
 	closeCalls atomic.Int32
 }
 
@@ -28,6 +29,9 @@ func (f *fakeClient) Call(_ context.Context, method string, params any, out any)
 	switch method {
 	case "terminal.open":
 		f.openParams <- params.(protocol.TerminalOpenParams)
+		if f.openErr != nil {
+			return f.openErr
+		}
 		*(out.(*protocol.TerminalOpenResult)) = protocol.TerminalOpenResult{TerminalID: "remote-1"}
 	case "terminal.close":
 		f.closeCalls.Add(1)
@@ -489,6 +493,46 @@ func (s *slowClient) Call(ctx context.Context, method string, params any, out an
 		}
 	}
 	return s.fakeClient.Call(ctx, method, params, out)
+}
+
+func TestRemoteBackend_GivenLeasedOpenFailure_WhenOpened_ThenReleasesExactlyOnce(t *testing.T) {
+	openErr := errors.New("terminal.open failed")
+	fc := &fakeClient{
+		openParams: make(chan protocol.TerminalOpenParams, 1),
+		dataPush:   make(chan protocol.TerminalDataEvent),
+		exitPush:   make(chan protocol.TerminalExitEvent),
+		openErr:    openErr,
+	}
+	var releases atomic.Int32
+
+	h, err := remote.NewBackendWithLease(fc, func() { releases.Add(1) }).Open(
+		context.Background(),
+		pty.Spec{Cwd: "/r"},
+	)
+
+	require.Nil(t, h)
+	require.ErrorIs(t, err, openErr)
+	require.Equal(t, int32(1), releases.Load())
+}
+
+func TestRemoteBackend_GivenLeasedConnectionLoss_WhenSubscriptionCloses_ThenReleasesExactlyOnce(t *testing.T) {
+	fc := &fakeClient{
+		openParams: make(chan protocol.TerminalOpenParams, 1),
+		dataPush:   make(chan protocol.TerminalDataEvent),
+		exitPush:   make(chan protocol.TerminalExitEvent),
+	}
+	var releases atomic.Int32
+	be := remote.NewBackendWithLease(fc, func() { releases.Add(1) })
+	h, err := be.Open(context.Background(), pty.Spec{Cwd: "/r"})
+	require.NoError(t, err)
+	<-fc.openParams
+
+	close(fc.exitPush)
+
+	requireTerminalOutcome(t, h, "connection_lost")
+	require.Eventually(t, func() bool { return releases.Load() == 1 }, time.Second, time.Millisecond)
+	require.NoError(t, h.Close())
+	require.Equal(t, int32(1), releases.Load())
 }
 
 func TestRemoteBackend_Open_TimesOutAfter5s(t *testing.T) {
