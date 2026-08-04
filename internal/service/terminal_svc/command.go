@@ -1,6 +1,14 @@
 package terminal_svc
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var (
+	ErrCommandScopeResolverNotInitialized = errors.New("terminal command scope resolver not initialized")
+	ErrCommandScopeUnavailable            = errors.New("terminal command scope unavailable")
+)
 
 // CommandScope 是 terminal_svc 启动命令与返回 Wails 响应共享的设备/cwd 作用域。
 type CommandScope struct {
@@ -42,9 +50,16 @@ func (s *Service) SetCommandScopeResolver(resolver CommandScopeResolver) {
 
 // RunCommand 只解析一次执行作用域，并用该作用域只启动一次命令。
 func (s *Service) RunCommand(ctx context.Context, req RunCommandRequest) (*RunCommandResponse, error) {
-	scope, err := s.commandScopeResolver(ctx, ResolveCommandScopeRequest{SessionID: req.SessionID})
+	resolver := s.commandScopeResolver
+	if resolver == nil {
+		return nil, ErrCommandScopeResolverNotInitialized
+	}
+	scope, err := resolver(ctx, ResolveCommandScopeRequest{SessionID: req.SessionID})
 	if err != nil {
 		return nil, err
+	}
+	if scope == nil {
+		return nil, ErrCommandScopeUnavailable
 	}
 	response := &RunCommandResponse{Scope: *scope}
 	if err := s.OpenCommand(

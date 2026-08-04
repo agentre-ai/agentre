@@ -121,6 +121,60 @@ func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeAn
 	assert.Equal(t, 1, factoryCalls)
 }
 
+func TestService_RunCommand_GivenResolverUnavailable_WhenStarted_ThenReturnsErrorWithoutPanicOrLaunch(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*terminal_svc.Service)
+		wantErr   error
+	}{
+		{
+			name:      "resolver is not initialized",
+			configure: func(*terminal_svc.Service) {},
+			wantErr:   terminal_svc.ErrCommandScopeResolverNotInitialized,
+		},
+		{
+			name: "resolver returns no scope",
+			configure: func(svc *terminal_svc.Service) {
+				svc.SetCommandScopeResolver(func(
+					context.Context,
+					terminal_svc.ResolveCommandScopeRequest,
+				) (*terminal_svc.CommandScope, error) {
+					return nil, nil
+				})
+			},
+			wantErr: terminal_svc.ErrCommandScopeUnavailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			localBackend := mocks.NewMockPTYBackend(ctrl)
+			svc := terminal_svc.NewService(
+				terminal_svc.NewBackendSelector(localBackend, nil),
+				terminal_svc.NoopEmitter{},
+			)
+			tt.configure(svc)
+
+			var response *terminal_svc.RunCommandResponse
+			var err error
+			require.NotPanics(t, func() {
+				response, err = svc.RunCommand(context.Background(), terminal_svc.RunCommandRequest{
+					TerminalID: "terminal-unavailable",
+					SessionID:  70,
+					Command:    "private-token-command",
+					Cols:       80,
+					Rows:       24,
+				})
+			})
+			assert.Nil(t, response)
+			require.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
+
 func TestService_RunCommand_GivenResolutionFailure_WhenStarted_ThenReturnsRPCErrorWithoutScopeOrLaunch(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
