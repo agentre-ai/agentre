@@ -139,6 +139,9 @@ func (s *Service) open(
 		// Tear it down here so the PTY — and any remote daemon-side shell —
 		// does not leak.
 		_ = h.Close()
+		if lifecycle != nil {
+			return ErrCommandStartPreempted
+		}
 		return nil
 	}
 	// Log before starting the pump so even an already-exited handle preserves

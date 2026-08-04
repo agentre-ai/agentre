@@ -9,10 +9,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// CommandStartPreemptedError is the stable one-shot command outcome returned
+// when TerminalClose wins the race with a cancellation-ignoring backend Open.
+type CommandStartPreemptedError struct{}
+
+func (CommandStartPreemptedError) Error() string {
+	return "terminal command start preempted"
+}
+
 var (
 	ErrInvalidRunCommandRequest           = errors.New("invalid terminal run command request")
 	ErrCommandScopeResolverNotInitialized = errors.New("terminal command scope resolver not initialized")
 	ErrCommandScopeUnavailable            = errors.New("terminal command scope unavailable")
+	ErrCommandStartPreempted              = CommandStartPreemptedError{}
 )
 
 // CommandScope 是 terminal_svc 启动命令与返回 Wails 响应共享的设备/cwd 作用域。

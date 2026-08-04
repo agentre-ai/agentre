@@ -295,6 +295,91 @@ func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeSt
 	}
 }
 
+func TestService_RunCommand_GivenClosePreemptsCancellationIgnoringOpen_WhenBackendReturnsHandle_ThenReturnsScopedStartErrorWithoutLifecycleEvents(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	wantScope := &terminal_svc.CommandScope{
+		DeviceID: "device-9",
+		Cwd:      "/Users/alice/private-worktree",
+	}
+	sensitiveCommand := "deploy --token=fixture-sensitive-token"
+	localBackend := mocks.NewMockPTYBackend(ctrl)
+	remoteBackend := mocks.NewMockPTYBackend(ctrl)
+	handle := mocks.NewMockHandle(ctrl)
+	openCtxCh := make(chan context.Context, 1)
+	proceed := make(chan struct{})
+	remoteBackend.EXPECT().Open(gomock.Any(), pty.Spec{
+		Cwd: wantScope.Cwd, Command: sensitiveCommand, Cols: 80, Rows: 24,
+	}).DoAndReturn(func(openCtx context.Context, _ pty.Spec) (pty.Handle, error) {
+		openCtxCh <- openCtx
+		<-proceed
+		return handle, nil
+	}).Times(1)
+	handle.EXPECT().Close().Return(nil).Times(1)
+
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(localBackend,
+		func(deviceID string) (terminal_svc.PTYBackend, error) {
+			assert.Equal(t, wantScope.DeviceID, deviceID)
+			return remoteBackend, nil
+		}), emitter)
+	svc.SetCommandScopeResolver(func(
+		context.Context,
+		terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return wantScope, nil
+	})
+	defer svc.Shutdown()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	type runResult struct {
+		response *terminal_svc.RunCommandResponse
+		err      error
+	}
+	resultCh := make(chan runResult, 1)
+	go func() {
+		response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
+			TerminalID: "terminal-preempted",
+			SessionID:  72,
+			Command:    sensitiveCommand,
+			Cols:       80,
+			Rows:       24,
+		})
+		resultCh <- runResult{response: response, err: err}
+	}()
+
+	openCtx := <-openCtxCh
+	require.NoError(t, svc.Close(context.Background(), "terminal-preempted"))
+	require.ErrorIs(t, openCtx.Err(), context.Canceled)
+	close(proceed)
+	result := <-resultCh
+
+	require.NoError(t, result.err)
+	require.NotNil(t, result.response)
+	assert.Equal(t, *wantScope, result.response.Scope)
+	assert.Equal(t, terminal_svc.ErrCommandStartPreempted.Error(), result.response.StartError)
+	var preempted terminal_svc.CommandStartPreemptedError
+	assert.ErrorAs(t, terminal_svc.ErrCommandStartPreempted, &preempted)
+	assert.Empty(t, emitter.Snapshot())
+	require.Equal(t, 1, logs.Len())
+	entry := logs.All()[0]
+	assert.Equal(t, zapcore.WarnLevel, entry.Level)
+	assert.Equal(t, "terminal_svc.RunCommand: open command failed", entry.Message)
+	assert.Equal(t, map[string]any{
+		"sessionId":  int64(72),
+		"terminalId": "terminal-preempted",
+		"deviceId":   "device-9",
+		"errorClass": "terminalCommandStartFailed",
+	}, entry.ContextMap())
+	structuredLog, marshalErr := json.Marshal(entry)
+	require.NoError(t, marshalErr)
+	assert.NotContains(t, string(structuredLog), sensitiveCommand)
+	assert.NotContains(t, string(structuredLog), wantScope.Cwd)
+	assert.ErrorIs(t, svc.Write(context.Background(), "terminal-preempted", "x"), terminal_svc.ErrTerminalClosed)
+}
+
 func TestService_RunCommand_GivenResolverUnavailable_WhenStarted_ThenReturnsErrorWithoutPanicOrLaunch(t *testing.T) {
 	tests := []struct {
 		name      string

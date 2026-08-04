@@ -1426,13 +1426,11 @@ function ChatPanel({
         cleanupListeners();
       };
       const fail = (error: unknown) => {
+        cleanupListeners();
         const commands = useLocalCommandsStore.getState();
-        if (commands.get(terminalId)?.status !== "running") {
-          cleanupListeners();
-          return;
-        }
+        if (commands.get(terminalId)?.status !== "running") return;
         commands.appendOutput(terminalId, String(error));
-        settle("failed", -1);
+        commands.finish(terminalId, "failed", -1);
       };
       const decode = makeStreamDecoder();
       try {

@@ -959,6 +959,71 @@ describe("ChatPanel · local command scope and execution", () => {
     expect(onSidebarShouldReload).toHaveBeenCalledTimes(1);
   });
 
+  it("Given Stop settles a card while TerminalRunCommand is deferred, When a scoped startError arrives, Then both listeners are cleaned and the stopped card is not overwritten or settled twice", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const terminalRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+      startError?: string;
+    }>();
+    appMocks.TerminalRunCommand.mockReturnValueOnce(terminalRun.promise);
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    const result = runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const card = render(
+      <LocalCommandCard entryId={terminalId} onOpenInTerminal={vi.fn()} />,
+    );
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+        "stopped",
+      );
+    });
+    const stoppedAt = useLocalCommandsStore
+      .getState()
+      .get(terminalId)?.finishedAt;
+
+    await act(async () => {
+      terminalRun.resolve({
+        scope: { deviceId: "remote-13", cwd: "/srv/exact" },
+        startError: "terminal command start preempted",
+      });
+      await result;
+    });
+
+    await expect(result).resolves.toEqual({
+      deviceId: "remote-13",
+      cwd: "/srv/exact",
+    });
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      command: "sleep 30",
+      output: "",
+      status: "stopped",
+      finishedAt: stoppedAt,
+    });
+    expect(
+      useLocalCommandsStore.getState().get(terminalId)?.exitCode,
+    ).toBeUndefined();
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    expect(runtimeMocks.EventsOff).toHaveBeenCalledTimes(2);
+    expect(runtimeMocks.EventsOff).toHaveBeenCalledWith(
+      `terminal:${terminalId}:data`,
+    );
+    expect(runtimeMocks.EventsOff).toHaveBeenCalledWith(
+      `terminal:${terminalId}:exit`,
+    );
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledWith(terminalId);
+  });
+
   it("Given the first listener fails and TerminalRunCommand returns startError with scope, When the terminal result arrives, Then the still-running card settles failed and the exact returned scope remains available for history", async () => {
     resetStore();
     const finish = observeLocalCommandFinish();
