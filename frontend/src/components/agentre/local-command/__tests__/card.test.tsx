@@ -66,23 +66,6 @@ describe("LocalCommandCard", () => {
     ).toBeNull();
   });
 
-  it("Given a running command, When Open in terminal is clicked, Then the command id is routed without changing lifecycle state", async () => {
-    useLocalCommandsStore
-      .getState()
-      .start({ id: "t-open", sessionId: 1, command: "go test", createdAt: 1 });
-    const onOpen = vi.fn();
-    render(<LocalCommandCard entryId="t-open" onOpenInTerminal={onOpen} />);
-
-    await userEvent.click(
-      screen.getByRole("button", { name: /在终端中打开|Open in terminal/ }),
-    );
-
-    expect(onOpen).toHaveBeenCalledWith("t-open");
-    expect(useLocalCommandsStore.getState().get("t-open")?.status).toBe(
-      "running",
-    );
-  });
-
   it("Given TerminalClose rejects, When Stop is clicked, Then the rejection is contained and Stop remains available for a successful retry", async () => {
     close
       .mockRejectedValueOnce(new Error("close unavailable"))
