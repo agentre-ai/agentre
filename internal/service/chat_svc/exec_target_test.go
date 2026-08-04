@@ -33,7 +33,7 @@ type execTargetMocks struct {
 	projectLocation *mock_project_location_repo.MockProjectLocationRepo
 }
 
-func setupExecTargetTest(t *testing.T) (context.Context, *execTargetMocks, *chatSvc) {
+func setupExecTargetTest(t *testing.T) (context.Context, *execTargetMocks, ChatSvc) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	m := &execTargetMocks{
@@ -61,13 +61,7 @@ func setupExecTargetTest(t *testing.T) (context.Context, *execTargetMocks, *chat
 		RegisterCwdResolver(previousCwdResolver)
 	})
 
-	return context.Background(), m, NewChat(NoopEmitter{}).(*chatSvc)
-}
-
-func TestExecDeviceID_GivenLocalOrRemoteBackend_WhenResolved_ThenReturnsStableDeviceIdentity(t *testing.T) {
-	assert.Equal(t, "", execDeviceID(nil))
-	assert.Equal(t, "", execDeviceID(&agent_backend_entity.AgentBackend{}))
-	assert.Equal(t, "device-9", execDeviceID(&agent_backend_entity.AgentBackend{DeviceID: "device-9"}))
+	return context.Background(), m, NewChat(NoopEmitter{})
 }
 
 func TestResolveLocalCommandScope_GivenExistingLocalSession_WhenResolved_ThenReturnsCurrentCwdAndLocalDevice(t *testing.T) {
@@ -127,26 +121,20 @@ func TestResolveLocalCommandScope_GivenPreSessionLocalProject_WhenResolved_ThenU
 		Type: string(agent_backend_entity.TypeClaudeCode),
 	}
 	m.session.EXPECT().Create(gomock.Any(), gomock.Any()).Times(0)
-	m.agent.EXPECT().Find(ctx, int64(33)).Return(agent, nil).Times(2)
-	m.backend.EXPECT().Find(ctx, int64(53)).Return(backend, nil).Times(2)
+	m.agent.EXPECT().Find(ctx, int64(33)).Return(agent, nil)
+	m.backend.EXPECT().Find(ctx, int64(53)).Return(backend, nil)
 	RegisterCwdResolver(func(_ context.Context, sess *chat_entity.Session) (string, error) {
 		require.Equal(t, int64(0), sess.ID)
 		require.Equal(t, int64(33), sess.AgentID)
 		require.Equal(t, int64(43), sess.ProjectID)
 		return "/local/project-current", nil
 	})
-	unpersisted := &chat_entity.Session{AgentID: 33, ProjectID: 43}
-
-	shared, err := svc.resolveExecTarget(ctx, unpersisted)
-	require.NoError(t, err)
 	scope, err := svc.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{
 		AgentID:   33,
 		ProjectID: 43,
 	})
 	require.NoError(t, err)
-
-	assert.Equal(t, &LocalCommandScope{DeviceID: "", Cwd: "/local/project-current"}, shared)
-	assert.Equal(t, shared, scope)
+	assert.Equal(t, &LocalCommandScope{DeviceID: "", Cwd: "/local/project-current"}, scope)
 }
 
 func TestResolveLocalCommandScope_GivenPreSessionLocalFreeChat_WhenResolved_ThenUsesAgentCwdWithoutCreatingSession(t *testing.T) {
