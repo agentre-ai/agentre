@@ -1404,27 +1404,42 @@ function ChatPanel({
       });
       const dataEvent = `terminal:${terminalId}:data`;
       const exitEvent = `terminal:${terminalId}:exit`;
-      const decode = makeStreamDecoder();
-      EventsOn(dataEvent, (p: { data: string }) =>
-        useLocalCommandsStore
-          .getState()
-          .appendOutput(terminalId, decode(p.data)),
-      );
-      EventsOn(exitEvent, (p: { code: number; reason: string }) => {
-        const status =
-          p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
-        useLocalCommandsStore.getState().finish(terminalId, status, p.code);
-        EventsOff(dataEvent);
-        EventsOff(exitEvent);
-      });
+      const cleanupListeners = () => {
+        for (const event of [dataEvent, exitEvent]) {
+          try {
+            EventsOff(event);
+          } catch {
+            // Listener cleanup must never block command launch or settlement.
+          }
+        }
+      };
       const fail = (error: unknown) => {
         useLocalCommandsStore
           .getState()
           .appendOutput(terminalId, String(error));
         useLocalCommandsStore.getState().finish(terminalId, "failed", -1);
-        EventsOff(dataEvent);
-        EventsOff(exitEvent);
+        cleanupListeners();
       };
+      const decode = makeStreamDecoder();
+      try {
+        EventsOn(dataEvent, (p: { data: string }) =>
+          useLocalCommandsStore
+            .getState()
+            .appendOutput(terminalId, decode(p.data)),
+        );
+        EventsOn(exitEvent, (p: { code: number; reason: string }) => {
+          const status =
+            p.reason === "killed"
+              ? "stopped"
+              : p.code === 0
+                ? "done"
+                : "failed";
+          useLocalCommandsStore.getState().finish(terminalId, status, p.code);
+          cleanupListeners();
+        });
+      } catch (error: unknown) {
+        fail(error);
+      }
       try {
         const response = await TerminalRunCommand(
           terminalId,

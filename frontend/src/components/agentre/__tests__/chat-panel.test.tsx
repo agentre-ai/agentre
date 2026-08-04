@@ -88,7 +88,9 @@ const componentMocks = vi.hoisted(() => ({
 
 const runtimeMocks = vi.hoisted(() => ({
   EventsOff: vi.fn(),
-  EventsOn: vi.fn(() => vi.fn()),
+  EventsOn: vi.fn((_event?: string, _handler?: (...args: unknown[]) => void) =>
+    vi.fn(),
+  ),
 }));
 
 vi.mock("../../../../wailsjs/runtime/runtime", () => runtimeMocks);
@@ -292,8 +294,11 @@ function resetStore() {
   __resetChatPanelScrollStateForTesting();
   mockSessionStore.messages = [];
   useChatStreamsStore.getState().streams.clear();
+  runtimeMocks.EventsOff.mockReset();
   runtimeMocks.EventsOn.mockReset();
-  runtimeMocks.EventsOn.mockImplementation(() => vi.fn());
+  runtimeMocks.EventsOn.mockImplementation(
+    (_event?: string, _handler?: (...args: unknown[]) => void) => vi.fn(),
+  );
   setMessagesSpy.mockClear();
   reloadSpy.mockClear();
   componentMocks.chatComposerProps.length = 0;
@@ -333,11 +338,13 @@ function resetStore() {
 }
 
 function deferred<T>() {
+  let reject!: (reason?: unknown) => void;
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function transcriptScroller(container: HTMLElement): HTMLElement {
@@ -693,19 +700,75 @@ describe("ChatPanel · local command scope and execution", () => {
     expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
   });
 
-  it("Given two simultaneous commands in a new chat, When session creation resolves, Then one Ensure promise is shared but both commands launch and settle independently exactly once", async () => {
+  it.each(["data", "exit"] as const)(
+    "Given the terminal %s listener throws synchronously, When a command is submitted, Then listeners are contained, the card fails, and the terminal RPC still launches exactly once",
+    async (throwingListener) => {
+      resetStore();
+      mockSessionStore.session = makeSession({ id: 42 });
+      const listenerError = new Error(`${throwingListener} listener failed`);
+      let terminalListenerCount = 0;
+      runtimeMocks.EventsOn.mockImplementation((event?: string) => {
+        if (!event?.startsWith("terminal:")) return vi.fn();
+        terminalListenerCount += 1;
+        if (
+          (throwingListener === "data" && terminalListenerCount === 1) ||
+          (throwingListener === "exit" && terminalListenerCount === 2)
+        ) {
+          throw listenerError;
+        }
+        return vi.fn();
+      });
+      if (throwingListener === "exit") {
+        runtimeMocks.EventsOff.mockImplementationOnce(() => {
+          throw new Error("listener cleanup failed");
+        });
+      }
+      appMocks.TerminalRunCommand.mockResolvedValueOnce({
+        scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+      });
+
+      render(<ChatPanel sessionId={42} />);
+      const runCommand = componentMocks.chatComposerProps.at(-1)
+        ?.onRunCommand as (command: string) => Promise<unknown>;
+
+      await expect(runCommand("pwd")).resolves.toEqual({
+        deviceId: "remote-12",
+        cwd: "/srv/exact",
+      });
+      expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+      const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+      expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+        exitCode: -1,
+        output: String(listenerError),
+        status: "failed",
+      });
+      expect(runtimeMocks.EventsOff).toHaveBeenCalledWith(
+        `terminal:${terminalId}:data`,
+      );
+      expect(runtimeMocks.EventsOff).toHaveBeenCalledWith(
+        `terminal:${terminalId}:exit`,
+      );
+    },
+  );
+
+  it("Given two deferred commands in a new chat, When the panel unmounts and one terminal RPC rejects, Then session creation stays shared while both commands continue and settle independently exactly once", async () => {
     resetStore();
     mockSessionStore.session = null;
     const ensured = deferred<number>();
+    const firstRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+    }>();
+    const secondRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+    }>();
     appMocks.EnsureChatSession.mockReturnValueOnce(ensured.promise);
     appMocks.TerminalRunCommand.mockImplementation(
-      async (_terminalId, _sessionId, command) => ({
-        scope: { deviceId: "7", cwd: `/srv/${String(command)}` },
-      }),
+      (_terminalId, _sessionId, command) =>
+        command === "first" ? firstRun.promise : secondRun.promise,
     );
     const onSessionCreated = vi.fn();
     const onSidebarShouldReload = vi.fn();
-    render(
+    const view = render(
       <ChatPanel
         sessionId={0}
         newSessionAgent={
@@ -734,34 +797,80 @@ describe("ChatPanel · local command scope and execution", () => {
     expect(appMocks.EnsureChatSession).toHaveBeenCalledTimes(1);
     expect(appMocks.TerminalRunCommand).not.toHaveBeenCalled();
 
+    view.unmount();
     await act(async () => {
       ensured.resolve(99);
       await ensured.promise;
     });
+    await waitFor(() => {
+      expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(2);
+    });
 
-    await expect(Promise.all([first, second])).resolves.toEqual([
-      { deviceId: "7", cwd: "/srv/first" },
-      { deviceId: "7", cwd: "/srv/second" },
-    ]);
+    const calls = appMocks.TerminalRunCommand.mock.calls;
+    const firstCall = calls.find((call) => call[2] === "first");
+    const secondCall = calls.find((call) => call[2] === "second");
+    const firstTerminalId = String(firstCall?.[0]);
+    const secondTerminalId = String(secondCall?.[0]);
+    expect(firstCall).toBeDefined();
+    expect(secondCall).toBeDefined();
+    expect(firstTerminalId).not.toBe(secondTerminalId);
+    expect(calls.filter((call) => call[2] === "first")).toHaveLength(1);
+    expect(calls.filter((call) => call[2] === "second")).toHaveLength(1);
+
+    let secondSettled = false;
+    void second.then(() => {
+      secondSettled = true;
+    });
+    const firstError = new Error("first target failed");
+    await act(async () => {
+      firstRun.reject(firstError);
+      await first;
+    });
+    await expect(first).resolves.toBeUndefined();
+    expect(secondSettled).toBe(false);
+    expect(useLocalCommandsStore.getState().get(firstTerminalId)).toMatchObject(
+      {
+        exitCode: -1,
+        output: String(firstError),
+        status: "failed",
+      },
+    );
+    expect(
+      useLocalCommandsStore.getState().get(secondTerminalId),
+    ).toMatchObject({
+      command: "second",
+      sessionId: 99,
+      status: "running",
+    });
+
+    await act(async () => {
+      secondRun.resolve({
+        scope: { deviceId: "7", cwd: "/srv/second" },
+      });
+      await second;
+    });
+    await expect(second).resolves.toEqual({
+      deviceId: "7",
+      cwd: "/srv/second",
+    });
+    expect(secondSettled).toBe(true);
+
+    const secondExitListener = runtimeMocks.EventsOn.mock.calls.find(
+      (call) => call[0] === `terminal:${secondTerminalId}:exit`,
+    )?.[1] as ((payload: { code: number; reason: string }) => void) | undefined;
+    expect(secondExitListener).toBeDefined();
+    act(() => {
+      secondExitListener?.({ code: 0, reason: "exited" });
+    });
+    expect(
+      useLocalCommandsStore.getState().get(secondTerminalId),
+    ).toMatchObject({
+      exitCode: 0,
+      status: "done",
+    });
     expect(onSessionCreated).toHaveBeenCalledTimes(1);
     expect(onSessionCreated).toHaveBeenCalledWith(99, 7);
     expect(onSidebarShouldReload).toHaveBeenCalledTimes(1);
-    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(2);
-    expect(
-      appMocks.TerminalRunCommand.mock.calls.map((call) => call[2]),
-    ).toEqual(["first", "second"]);
-    expect(
-      new Set(appMocks.TerminalRunCommand.mock.calls.map((call) => call[0]))
-        .size,
-    ).toBe(2);
-    expect(
-      Object.values(useLocalCommandsStore.getState().entries).map(
-        ({ command, sessionId }) => ({ command, sessionId }),
-      ),
-    ).toEqual([
-      { command: "first", sessionId: 99 },
-      { command: "second", sessionId: 99 },
-    ]);
   });
 
   it("Given TerminalRunCommand returns startError with scope, When execution settles, Then the card fails but the exact returned scope remains available for history", async () => {
