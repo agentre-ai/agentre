@@ -1,4 +1,12 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FocusEvent as ReactFocusEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+} from "react";
 
 import type { Editor } from "@tiptap/react";
 
@@ -20,6 +28,7 @@ function closedState(query = ""): LocalCommandHistoryMenuState {
     anchorRect: null,
     items: [],
     selectedIndex: 0,
+    clearFocused: false,
     query,
   };
 }
@@ -72,12 +81,17 @@ export function useLocalCommandHistoryMenu({
   onKeyDown: (event: KeyboardEvent) => boolean;
   pick: (entry: LocalCommandHistoryEntry) => void;
   setSelectedIndex: (index: number) => void;
+  clearButtonRef: RefObject<HTMLButtonElement | null>;
   clear: () => void;
+  onClearFocus: () => void;
+  onClearBlur: (event: ReactFocusEvent<HTMLButtonElement>) => void;
+  onClearKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
 } {
   const [state, setState] = useState<LocalCommandHistoryMenuState>(() =>
     closedState(),
   );
   const suppressedQueryRef = useRef<string | null>(null);
+  const clearButtonRef = useRef<HTMLButtonElement>(null);
   const deviceId = scope?.deviceId;
   const cwd = scope?.cwd;
 
@@ -148,19 +162,15 @@ export function useLocalCommandHistoryMenu({
         const queryChanged =
           normalizeSuggestionQuery(previous.query) !==
           normalizeSuggestionQuery(hit.query);
-        const clearWasSelected =
-          previous.open &&
-          previous.items.length > 0 &&
-          previous.selectedIndex === previous.items.length;
         const selectedIndex = queryChanged
           ? 0
-          : clearWasSelected
-            ? items.length
-            : Math.min(previous.selectedIndex, items.length - 1);
+          : Math.min(previous.selectedIndex, items.length - 1);
+        const clearFocused = queryChanged ? false : previous.clearFocused;
         if (
           previous.open &&
           previous.query === hit.query &&
           previous.selectedIndex === selectedIndex &&
+          previous.clearFocused === clearFocused &&
           sameRect(previous.anchorRect, anchorRect) &&
           previous.items.length === items.length &&
           previous.items.every(
@@ -176,6 +186,7 @@ export function useLocalCommandHistoryMenu({
           anchorRect,
           items,
           selectedIndex,
+          clearFocused,
           query: hit.query,
         };
       });
@@ -218,41 +229,103 @@ export function useLocalCommandHistoryMenu({
   const setSelectedIndex = useCallback((index: number) => {
     setState((previous) => {
       if (previous.items.length === 0) return previous;
-      const selectedIndex = Math.max(0, Math.min(index, previous.items.length));
-      return selectedIndex === previous.selectedIndex
+      const selectedIndex = Math.max(
+        0,
+        Math.min(index, previous.items.length - 1),
+      );
+      return selectedIndex === previous.selectedIndex && !previous.clearFocused
         ? previous
-        : { ...previous, selectedIndex };
+        : { ...previous, selectedIndex, clearFocused: false };
     });
   }, []);
+
+  const focusClear = useCallback(() => {
+    setState((previous) =>
+      previous.open && !previous.clearFocused
+        ? { ...previous, clearFocused: true }
+        : previous,
+    );
+    clearButtonRef.current?.focus();
+  }, []);
+
+  const focusEditorOption = useCallback(
+    (index: number) => {
+      setSelectedIndex(index);
+      editor?.commands.focus();
+    },
+    [editor, setSelectedIndex],
+  );
 
   const clear = useCallback(() => {
     if (deviceId === undefined || cwd === undefined) return;
     localCommandHistoryStore.clear({ deviceId, cwd });
     dismiss(state.query);
-  }, [cwd, deviceId, dismiss, state.query]);
+    editor?.commands.focus();
+  }, [cwd, deviceId, dismiss, editor, state.query]);
+
+  const onClearFocus = useCallback(() => {
+    setState((previous) =>
+      previous.open && !previous.clearFocused
+        ? { ...previous, clearFocused: true }
+        : previous,
+    );
+  }, []);
+
+  const onClearBlur = useCallback(
+    (event: ReactFocusEvent<HTMLButtonElement>) => {
+      if (event.relatedTarget === editor?.view.dom) {
+        setSelectedIndex(state.selectedIndex);
+        return;
+      }
+      dismiss(state.query);
+    },
+    [dismiss, editor, setSelectedIndex, state.query, state.selectedIndex],
+  );
+
+  const onClearKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      switch (event.key) {
+        case "ArrowDown":
+          event.preventDefault();
+          focusEditorOption(0);
+          break;
+        case "ArrowUp":
+          event.preventDefault();
+          focusEditorOption(state.items.length - 1);
+          break;
+        case "Escape":
+          event.preventDefault();
+          dismiss(state.query);
+          editor?.commands.focus();
+          break;
+      }
+    },
+    [dismiss, editor, focusEditorOption, state.items.length, state.query],
+  );
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent): boolean => {
       if (!state.open || state.items.length === 0) return false;
-      const selectableCount = state.items.length + 1;
       switch (event.key) {
         case "ArrowDown":
           event.preventDefault();
-          setSelectedIndex((state.selectedIndex + 1) % selectableCount);
+          if (state.selectedIndex === state.items.length - 1) {
+            focusClear();
+          } else {
+            setSelectedIndex(state.selectedIndex + 1);
+          }
           return true;
         case "ArrowUp":
           event.preventDefault();
-          setSelectedIndex(
-            (state.selectedIndex - 1 + selectableCount) % selectableCount,
-          );
+          if (state.selectedIndex === 0) {
+            focusClear();
+          } else {
+            setSelectedIndex(state.selectedIndex - 1);
+          }
           return true;
         case "Enter":
         case "Tab": {
           event.preventDefault();
-          if (state.selectedIndex === state.items.length) {
-            clear();
-            return true;
-          }
           const entry = state.items[state.selectedIndex] ?? state.items[0];
           if (entry) pick(entry);
           return true;
@@ -265,8 +338,18 @@ export function useLocalCommandHistoryMenu({
           return false;
       }
     },
-    [clear, dismiss, pick, setSelectedIndex, state],
+    [dismiss, focusClear, pick, setSelectedIndex, state],
   );
 
-  return { state, onKeyDown, pick, setSelectedIndex, clear };
+  return {
+    state,
+    onKeyDown,
+    pick,
+    setSelectedIndex,
+    clearButtonRef,
+    clear,
+    onClearFocus,
+    onClearBlur,
+    onClearKeyDown,
+  };
 }

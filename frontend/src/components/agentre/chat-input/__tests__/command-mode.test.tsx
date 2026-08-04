@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createRef, type RefObject } from "react";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -254,10 +255,11 @@ describe("AIChatInput command mode", () => {
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 
-  it("Given scoped history, When keyboard navigation selects rows and Clear, Then the focused editor exposes a connected combobox and removes its relations after clearing", async () => {
+  it("Given scoped history, When arrows move between command rows and footer Clear, Then only rows are options and editor ARIA follows its focused row", async () => {
     localCommandHistoryStore.record(repoScope, "git status", 30);
     localCommandHistoryStore.record(repoScope, "git stash", 20);
     const editorRef: RefObject<Editor | null> = { current: null };
+    const user = userEvent.setup();
 
     render(
       <AIChatInput
@@ -279,51 +281,48 @@ describe("AIChatInput command mode", () => {
     });
     const firstOption = screen.getByRole("option", { name: "git status" });
     const secondOption = screen.getByRole("option", { name: "git stash" });
-    const clearOption = screen.getByRole("option", {
+    const clearButton = screen.getByRole("button", {
       name: "Clear history for current directory",
     });
     const combobox = screen.getByRole("combobox");
     const listboxId = listbox.id;
     const firstOptionId = firstOption.id;
     const secondOptionId = secondOption.id;
-    const clearOptionId = clearOption.id;
 
     expect(combobox).toHaveFocus();
     expect(listboxId).not.toBe("");
     expect(firstOptionId).not.toBe("");
     expect(secondOptionId).not.toBe("");
-    expect(clearOptionId).not.toBe("");
-    expect(new Set([firstOptionId, secondOptionId, clearOptionId]).size).toBe(
-      3,
-    );
-    expect(listbox).toContainElement(clearOption);
+    expect(firstOptionId).not.toBe(secondOptionId);
+    expect(listbox).not.toContainElement(clearButton);
+    expect(
+      screen.queryByRole("option", {
+        name: "Clear history for current directory",
+      }),
+    ).not.toBeInTheDocument();
+    expect(clearButton).not.toHaveAttribute("aria-selected");
     expect(combobox).toHaveAttribute("aria-expanded", "true");
     expect(combobox).toHaveAttribute("aria-haspopup", "listbox");
     expect(combobox).toHaveAttribute("aria-controls", listboxId);
     expect(combobox).toHaveAttribute("aria-activedescendant", firstOptionId);
     expect(firstOption).toHaveAttribute("aria-selected", "true");
-    expect(clearOption).toHaveAttribute("aria-selected", "false");
 
     act(() => pressKey(editor, "ArrowUp"));
-    expect(listbox).toHaveAttribute("id", listboxId);
-    expect(combobox).toHaveAttribute("aria-activedescendant", clearOptionId);
+    expect(clearButton).toHaveFocus();
+    expect(combobox).not.toHaveAttribute("aria-activedescendant");
     expect(firstOption).toHaveAttribute("aria-selected", "false");
-    expect(clearOption).toHaveAttribute("aria-selected", "true");
+    expect(secondOption).toHaveAttribute("aria-selected", "false");
 
-    act(() => pressKey(editor, "ArrowDown"));
-    expect(combobox).toHaveAttribute("aria-activedescendant", firstOptionId);
-    expect(firstOption).toHaveAttribute("aria-selected", "true");
-    expect(clearOption).toHaveAttribute("aria-selected", "false");
-
-    act(() => pressKey(editor, "ArrowDown"));
+    await user.keyboard("{ArrowUp}");
+    expect(combobox).toHaveFocus();
     expect(combobox).toHaveAttribute("aria-activedescendant", secondOptionId);
     expect(secondOption).toHaveAttribute("aria-selected", "true");
 
     act(() => pressKey(editor, "ArrowDown"));
-    expect(combobox).toHaveAttribute("aria-activedescendant", clearOptionId);
-    expect(clearOption).toHaveAttribute("aria-selected", "true");
-    act(() => pressKey(editor, "Enter"));
+    expect(clearButton).toHaveFocus();
+    expect(combobox).not.toHaveAttribute("aria-activedescendant");
 
+    await user.keyboard("{Escape}");
     const textbox = screen.getByRole("textbox");
     expect(textbox).toHaveFocus();
     expect(textbox).not.toHaveAttribute("aria-expanded");
@@ -549,8 +548,12 @@ describe("AIChatInput command mode", () => {
     expect(options.map((option) => option.textContent)).toEqual([
       "second command",
       "first command",
-      "Clear history for current directory",
     ]);
+    expect(
+      screen.getByRole("button", {
+        name: "Clear history for current directory",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("Given a dismissed history menu, When the query is unchanged, Then it stays closed until the command body changes", async () => {
@@ -775,15 +778,19 @@ describe("AIChatInput command mode", () => {
     expect(onCommandSubmit).toHaveBeenCalledWith("pwd");
   });
 
-  it.each(["Enter", "Tab"])(
-    "Given scoped history and an editor draft, When arrow navigation wraps to Clear and %s activates it, Then only that history is cleared without moving focus or submitting",
-    async (activationKey) => {
+  it.each([
+    { activationKey: "Enter", userInput: "{Enter}" },
+    { activationKey: "Space", userInput: " " },
+  ])(
+    "Given scoped history and an editor draft, When arrow wrap focuses Clear and native $activationKey activates it, Then only that history is cleared without submitting",
+    async ({ userInput }) => {
       localCommandHistoryStore.record(repoScope, "git status", 30);
       localCommandHistoryStore.record(repoScope, "git stash", 20);
       localCommandHistoryStore.record(otherScope, "other command", 10);
       const editorRef: RefObject<Editor | null> = { current: null };
       const onCommandSubmit = vi.fn();
       const onSubmit = vi.fn();
+      const user = userEvent.setup();
 
       render(
         <AIChatInput
@@ -799,31 +806,18 @@ describe("AIChatInput command mode", () => {
         editor.commands.insertContent("!git");
         editor.commands.focus("end");
       });
-      const firstOption = await screen.findByRole("option", {
-        name: "git status",
-      });
-      const secondOption = screen.getByRole("option", { name: "git stash" });
-      const clearOption = screen.getByRole("option", {
+      await screen.findByRole("option", { name: "git status" });
+      const clearButton = screen.getByRole("button", {
         name: "Clear history for current directory",
       });
-      const scrollIntoView = vi.fn();
-      clearOption.scrollIntoView = scrollIntoView;
-      expect(firstOption).toHaveAttribute("aria-selected", "true");
-      expect(screen.getByRole("combobox")).toHaveFocus();
 
       act(() => pressKey(editor, "ArrowUp"));
-      expect(clearOption).toHaveAttribute("aria-selected", "true");
-      expect(clearOption).toHaveClass("bg-accent", "text-accent-foreground");
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+      expect(clearButton).toHaveFocus();
+      expect(screen.getByRole("combobox")).not.toHaveAttribute(
+        "aria-activedescendant",
+      );
 
-      act(() => pressKey(editor, "ArrowDown"));
-      expect(firstOption).toHaveAttribute("aria-selected", "true");
-      act(() => pressKey(editor, "ArrowDown"));
-      expect(secondOption).toHaveAttribute("aria-selected", "true");
-      act(() => pressKey(editor, "ArrowDown"));
-      expect(clearOption).toHaveAttribute("aria-selected", "true");
-
-      act(() => pressKey(editor, activationKey));
+      await user.keyboard(userInput);
 
       expect(editor.getText()).toBe("!git");
       expect(screen.getByRole("textbox")).toHaveFocus();
@@ -841,6 +835,64 @@ describe("AIChatInput command mode", () => {
       expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     },
   );
+
+  it("Given footer Clear is focused, When Shift+Tab or Tab is pressed, Then native focus moves without clearing, filling, or submitting the draft", async () => {
+    localCommandHistoryStore.record(repoScope, "git status", 30);
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onCommandSubmit = vi.fn();
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+
+    render(
+      <>
+        <AIChatInput
+          editorRef={editorRef}
+          localCommandHistoryScope={repoScope}
+          onSubmit={onSubmit}
+          onCommandSubmit={onCommandSubmit}
+        />
+        <button type="button">After composer</button>
+      </>,
+    );
+    const editor = editorRef.current!;
+
+    act(() => {
+      editor.commands.insertContent("!git");
+      editor.commands.focus("end");
+    });
+    await screen.findByRole("listbox", { name: "Shell command history" });
+
+    const firstOption = screen.getByRole("option", { name: "git status" });
+    const clearButton = screen.getByRole("button", {
+      name: "Clear history for current directory",
+    });
+    const combobox = screen.getByRole("combobox");
+
+    act(() => pressKey(editor, "ArrowUp"));
+    expect(clearButton).toHaveFocus();
+
+    await user.tab({ shift: true });
+
+    expect(combobox).toHaveFocus();
+    expect(combobox).toHaveAttribute("aria-activedescendant", firstOption.id);
+    expect(firstOption).toHaveAttribute("aria-selected", "true");
+    expect(localCommandHistoryStore.list(repoScope)).toHaveLength(1);
+
+    act(() => pressKey(editor, "ArrowUp"));
+    expect(clearButton).toHaveFocus();
+    await user.tab();
+
+    expect(
+      screen.getByRole("button", { name: "After composer" }),
+    ).toHaveFocus();
+    expect(editor.getText()).toBe("!git");
+    expect(onCommandSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(localCommandHistoryStore.list(repoScope)).toEqual([
+      { command: "git status", lastUsedAt: 30 },
+    ]);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
 
   it("Given a long command and transient output, When history is hovered, picked, or cleared, Then dynamic text stays complete and clearing preserves the draft and output card", async () => {
     const longCommand = `printf '${"x".repeat(180)}'`;
@@ -887,11 +939,11 @@ describe("AIChatInput command mode", () => {
     const historyMenu = await screen.findByRole("listbox", {
       name: "Shell command history",
     });
-    const clearOption = screen.getByRole("option", {
+    const clearButton = screen.getByRole("button", {
       name: "Clear history for current directory",
     });
-    expect(historyMenu).toContainElement(clearOption);
-    fireEvent.click(clearOption);
+    expect(historyMenu).not.toContainElement(clearButton);
+    fireEvent.click(clearButton);
 
     expect(editor.getText()).toBe("!git status ");
     expect(localCommandHistoryStore.list(repoScope)).toEqual([]);

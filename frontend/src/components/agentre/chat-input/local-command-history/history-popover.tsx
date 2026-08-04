@@ -18,22 +18,26 @@ export function localCommandHistoryOptionId(
   return `${listboxId}-option-${index}`;
 }
 
-export function localCommandHistoryClearOptionId(listboxId: string): string {
-  return `${listboxId}-clear-option`;
-}
-
 export function LocalCommandHistoryPopover({
   state,
   listboxId,
   onPick,
   onHover,
+  clearButtonRef,
   onClear,
+  onClearFocus,
+  onClearBlur,
+  onClearKeyDown,
 }: {
   state: LocalCommandHistoryMenuState;
   listboxId: string;
   onPick: (entry: LocalCommandHistoryEntry) => void;
   onHover: (index: number) => void;
+  clearButtonRef: React.Ref<HTMLButtonElement>;
   onClear: () => void;
+  onClearFocus: () => void;
+  onClearBlur: React.FocusEventHandler<HTMLButtonElement>;
+  onClearKeyDown: React.KeyboardEventHandler<HTMLButtonElement>;
 }): React.ReactElement | null {
   const { t } = useTranslation();
 
@@ -45,40 +49,29 @@ export function LocalCommandHistoryPopover({
       itemCount={state.items.length}
       ariaLabel={t("localCommandHistory.aria")}
       listboxId={listboxId}
-      footer={(activeRef) => {
-        const active = state.selectedIndex === state.items.length;
-        return (
-          <div role="presentation" className="mt-1 border-t border-border pt-1">
-            <Button
-              id={localCommandHistoryClearOptionId(listboxId)}
-              type="button"
-              role="option"
-              variant="ghost"
-              size="sm"
-              ref={active ? activeRef : undefined}
-              tabIndex={-1}
-              aria-label={t("localCommandHistory.clearCurrentScope")}
-              aria-selected={active}
-              className={cn(
-                "h-auto w-full justify-start rounded-sm px-2 py-1.5 text-xs",
-                active
-                  ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onMouseMove={() => onHover(state.items.length)}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={onClear}
-            >
-              <Trash2 className="size-3" aria-hidden="true" />
-              {t("localCommandHistory.clearCurrentScope")}
-            </Button>
-          </div>
-        );
-      }}
+      footer={
+        <div role="presentation" className="mt-1 border-t border-border pt-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            ref={clearButtonRef}
+            aria-label={t("localCommandHistory.clearCurrentScope")}
+            className="h-auto w-full justify-start rounded-sm px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+            onFocus={onClearFocus}
+            onBlur={onClearBlur}
+            onKeyDown={onClearKeyDown}
+            onClick={onClear}
+          >
+            <Trash2 className="size-3" aria-hidden="true" />
+            {t("localCommandHistory.clearCurrentScope")}
+          </Button>
+        </div>
+      }
     >
       {(activeRef) =>
         state.items.map((entry, index) => {
-          const active = index === state.selectedIndex;
+          const active = !state.clearFocused && index === state.selectedIndex;
           return (
             <button
               id={localCommandHistoryOptionId(listboxId, index)}
@@ -86,6 +79,7 @@ export function LocalCommandHistoryPopover({
               type="button"
               role="option"
               ref={active ? activeRef : undefined}
+              tabIndex={-1}
               aria-label={entry.command}
               aria-selected={active}
               onMouseMove={() => onHover(index)}

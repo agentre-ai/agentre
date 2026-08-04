@@ -40,7 +40,6 @@ import {
   shouldStartInputHistory,
 } from "./keyboard";
 import {
-  localCommandHistoryClearOptionId,
   localCommandHistoryOptionId,
   LocalCommandHistoryPopover,
 } from "./local-command-history/history-popover";
@@ -452,23 +451,25 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
         return;
       }
 
-      const activeDescendant =
-        commandHistoryMenu.state.selectedIndex ===
-        commandHistoryMenu.state.items.length
-          ? localCommandHistoryClearOptionId(localCommandHistoryListboxId)
-          : localCommandHistoryOptionId(
-              localCommandHistoryListboxId,
-              commandHistoryMenu.state.selectedIndex,
-            );
       editorDom.setAttribute("role", "combobox");
       editorDom.setAttribute("aria-expanded", "true");
       editorDom.setAttribute("aria-controls", localCommandHistoryListboxId);
       editorDom.setAttribute("aria-haspopup", "listbox");
-      editorDom.setAttribute("aria-activedescendant", activeDescendant);
+      if (commandHistoryMenu.state.clearFocused) {
+        editorDom.removeAttribute("aria-activedescendant");
+      } else {
+        editorDom.setAttribute(
+          "aria-activedescendant",
+          localCommandHistoryOptionId(
+            localCommandHistoryListboxId,
+            commandHistoryMenu.state.selectedIndex,
+          ),
+        );
+      }
 
       return resetCombobox;
     }, [
-      commandHistoryMenu.state.items.length,
+      commandHistoryMenu.state.clearFocused,
       commandHistoryMenu.state.open,
       commandHistoryMenu.state.selectedIndex,
       editor,
@@ -534,7 +535,11 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           listboxId={localCommandHistoryListboxId}
           onPick={commandHistoryMenu.pick}
           onHover={commandHistoryMenu.setSelectedIndex}
+          clearButtonRef={commandHistoryMenu.clearButtonRef}
           onClear={commandHistoryMenu.clear}
+          onClearFocus={commandHistoryMenu.onClearFocus}
+          onClearBlur={commandHistoryMenu.onClearBlur}
+          onClearKeyDown={commandHistoryMenu.onClearKeyDown}
         />
         {slashEnabled ? (
           <SlashPopover

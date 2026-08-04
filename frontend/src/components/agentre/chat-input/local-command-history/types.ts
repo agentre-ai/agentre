@@ -17,5 +17,6 @@ export type LocalCommandHistoryMenuState = {
   } | null;
   readonly items: LocalCommandHistoryEntry[];
   readonly selectedIndex: number;
+  readonly clearFocused: boolean;
   readonly query: string;
 };
