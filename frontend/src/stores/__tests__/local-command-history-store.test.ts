@@ -310,6 +310,19 @@ describe("local command history scope and persistence", () => {
     ]);
   });
 
+  it("Given a scope was just cleared, when a direct record omits its timestamp, then it is reserved after the barrier while an explicit pre-clear record stays deleted", () => {
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+
+    store.clear(localRepo);
+    store.record(localRepo, "new command");
+    store.record(localRepo, "private command", 100);
+
+    expect(store.list(localRepo)).toEqual([
+      { command: "new command", lastUsedAt: 101 },
+    ]);
+  });
+
   it("Given reserved submissions settle after repeated scope clears, when records arrive out of order, then pre-clear commands stay deleted while post-clear and other-scope commands persist", () => {
     vi.spyOn(Date, "now").mockReturnValue(100);
     const setItem = vi.fn(localStorage.setItem.bind(localStorage));

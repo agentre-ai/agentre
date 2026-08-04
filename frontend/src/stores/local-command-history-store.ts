@@ -257,11 +257,11 @@ export function createLocalCommandHistoryStore(
       }));
     },
     reserveLastUsedAt,
-    record(scope, command, lastUsedAt = Date.now()) {
+    record(scope, command, lastUsedAt) {
       if (!command) return;
       const key = deriveLocalCommandHistoryScopeKey(scope);
       const usedAt = ensurePersistableHistoryTimestamp(
-        hasTimestampReservationHeadroom(lastUsedAt)
+        lastUsedAt !== undefined && hasTimestampReservationHeadroom(lastUsedAt)
           ? lastUsedAt
           : reserveLastUsedAt(),
       );

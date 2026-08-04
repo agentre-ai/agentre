@@ -134,10 +134,11 @@ describe("ChatComposer command mode", () => {
   });
 
   it("Given an execution scope, When ! mode opens, Then ChatComposer passes that scope to the history menu", async () => {
+    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
     localCommandHistoryStore.record(
       historyScope,
       "pnpm test",
-      localCommandHistoryStore.reserveLastUsedAt(),
+      historyBase + 10,
     );
     const editorRef: RefObject<Editor | null> = { current: null };
 
@@ -161,7 +162,8 @@ describe("ChatComposer command mode", () => {
   });
 
   it("Given ChatComposer history Clear is keyboard-focused, When Shift+Tab is pressed, Then native reverse focus bypasses permission cycling", async () => {
-    const lastUsedAt = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const lastUsedAt = historyBase + 10;
     localCommandHistoryStore.record(historyScope, "pnpm test", lastUsedAt);
     const editorRef: RefObject<Editor | null> = { current: null };
     const onShiftTab = vi.fn();
