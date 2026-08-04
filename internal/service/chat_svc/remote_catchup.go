@@ -50,7 +50,48 @@ func (s *chatSvc) CatchUpRemoteSessions(ctx context.Context) error {
 	return nil
 }
 
+// CatchUpRemoteDevice 在某台配对 daemon 重新上线时,把启动那会儿欠下的补齐补上。
+//
+// 启动补齐只跑一次(App.Startup 的一个 goroutine)。开机自启早于 Wi-Fi/VPN 就绪、或
+// daemon 恰好在重启时,那一次拨号必然失败 —— 少了这个入口,那台设备上的会话在本进程内
+// 就再也不会被补齐或接管了。重试挂在设备监视本来就在报的上线信号上(见
+// app.onRemoteDeviceOnline),不另起轮询。
+//
+// 只补「上一次没拿到判据」的设备:补成过的设备此后的断连由 remote.Runtime 自己的重连
+// 接管负责,再补一次只是白发一轮 attach。
+func (s *chatSvc) CatchUpRemoteDevice(ctx context.Context, deviceID int64) error {
+	if _, pending := s.catchUpPending.Load(deviceID); !pending {
+		return nil
+	}
+	sessions, err := chat_repo.Session().ListRemoteExecSessions(ctx)
+	if err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.CatchUpRemoteDevice: list remote sessions failed",
+			zap.Int64("deviceId", deviceID), zap.Error(err))
+		return err
+	}
+	mine := make([]*chat_entity.Session, 0, len(sessions))
+	for _, sess := range sessions {
+		if sess.ExecDeviceID == deviceID {
+			mine = append(mine, sess)
+		}
+	}
+	if len(mine) == 0 {
+		// 这台设备上已经没有待补齐的会话了(都被删了/改回本机跑了)。
+		s.catchUpPending.Delete(deviceID)
+		return nil
+	}
+	logger.Ctx(ctx).Info("chat_svc.CatchUpRemoteDevice: device back online, retrying catch-up",
+		zap.Int64("deviceId", deviceID), zap.Int("sessions", len(mine)))
+	s.catchUpDevice(ctx, deviceID, mine)
+	return nil
+}
+
 // catchUpDevice 补齐一台 daemon 上的会话。
+//
+// 拿不到判据就不下结论:拨不通、或补齐半途出错,都只把这台设备记成待补齐(等它重新
+// 上线由 CatchUpRemoteDevice 重来),一行都不碰。反过来做是个**永久**的假失败 ——
+// blanket 的 ResetStaleActiveSessions 已经不碰远端行,这条路是该状态此后唯一的写方,
+// 而一条在桌面端离线期间没产出新内容的会话也不会被重放改写。
 func (s *chatSvc) catchUpDevice(ctx context.Context, deviceID int64, sessions []*chat_entity.Session) {
 	sids := make([]int64, 0, len(sessions))
 	for _, sess := range sessions {
@@ -58,10 +99,9 @@ func (s *chatSvc) catchUpDevice(ctx context.Context, deviceID int64, sessions []
 	}
 	rt, _, err := s.remoteRuntimeForDevice(ctx, deviceID, sids)
 	if err != nil {
-		logger.Ctx(ctx).Warn("chat_svc.catchUpDevice: daemon unreachable, skipping catch-up",
+		logger.Ctx(ctx).Warn("chat_svc.catchUpDevice: daemon unreachable, deferring catch-up",
 			zap.Int64("deviceId", deviceID), zap.Int64s("sessionIds", sids), zap.Error(err))
-		// 连不上就没有判据:按今天的语义收尾,不把它们永远留在 running 上转圈。
-		s.failSessionsNotLiveOnDaemon(ctx, sids, nil)
+		s.catchUpPending.Store(deviceID, struct{}{})
 		return
 	}
 	// 消费方必须在补齐**之前**接上:重放出来的内容以「没有 user 行的一轮」交付,
@@ -75,10 +115,15 @@ func (s *chatSvc) catchUpDevice(ctx context.Context, deviceID int64, sessions []
 	}
 	live, err := rt.CatchUpSessions(ctx, ready)
 	if err != nil {
-		logger.Ctx(ctx).Warn("chat_svc.catchUpDevice: catch-up failed",
+		logger.Ctx(ctx).Warn("chat_svc.catchUpDevice: catch-up failed, deferring",
 			zap.Int64("deviceId", deviceID), zap.Int64s("sessionIds", ready), zap.Error(err))
+		s.catchUpPending.Store(deviceID, struct{}{})
+		return
 	}
-	s.failSessionsNotLiveOnDaemon(ctx, sids, live)
+	s.catchUpPending.Delete(deviceID)
+	// 判据只覆盖**真的问过 daemon 的那批**:解析不出后端的会话没进 ready,daemon 也就
+	// 没为它表过态 —— 拿全量来判等于把「我补不了它」当成「daemon 说它没在跑」。
+	s.failSessionsNotLiveOnDaemon(ctx, ready, live)
 }
 
 // failSessionsNotLiveOnDaemon 把这台 daemon 上「它自己都说不在跑」的那些会话收尾成

@@ -269,29 +269,240 @@ func TestCatchUpRemoteSessions_OnlyFailsSessionsTheDaemonIsNotRunning(t *testing
 	require.NoError(t, svc.CatchUpRemoteSessions(context.Background()))
 }
 
-// Given 某台配对 daemon 此刻不在线,When 启动补齐,Then 跳过它继续补别的设备,
-// 整体不报错 —— 关着的远端盒子是常态,不该让另一台上的会话跟着补不成。
-func TestCatchUpRemoteSessions_OfflineDaemonDoesNotBlockOthers(t *testing.T) {
+// Given 某台配对 daemon 此刻拨不通(开机自启早于 Wi-Fi/VPN 就绪,或 daemon 正在重启),
+// 而另一台是通的,When 启动补齐,Then 拨不通那台上的会话一条都不判失败 —— 没拿到判据
+// 就不下结论 —— 通的那台照常按 daemon 交回的生命周期收尾。
+//
+// 拨不通就全判 error 是一个**永久**的假失败:blanket 的 ResetStaleActiveSessions 已经
+// 不碰远端行,这条路是该状态此后唯一的写方,而补齐只跑一次;一条在桌面端离线期间没产出
+// 新内容的会话也不会被重放改写。于是「开机时 Wi-Fi 慢了两秒」= 该设备上每条远端会话
+// 永久红着,正是 F6 想消除的那个失效模式。
+func TestCatchUpRemoteSessions_DialFailureDoesNotJudgeSessions(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
-	pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(nil, assertDialErr).Times(1)
+	const (
+		offline int64 = 7 // 拨不通
+		online  int64 = 8 // 通的
+	)
+	const fp = "sha256:cafe"
 
+	client := newScriptedDaemonClient(func(method string, _, result any) error {
+		switch method {
+		case wire.MethodSessionList:
+			*(result.(*wire.SessionListResult)) = wire.SessionListResult{Sessions: []wire.SessionSummary{
+				{SessionID: 200, LifecycleState: wire.SessionLifecycleIdle, LatestSeq: 5},
+			}}
+		case wire.MethodSessionPendingWaiters:
+			*(result.(*wire.SessionPendingWaitersResult)) = wire.SessionPendingWaitersResult{}
+		}
+		return nil
+	})
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	pool.EXPECT().Borrow(gomock.Any(), offline).Return(nil, assertDialErr).Times(1)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	lease.EXPECT().Client().Return(client).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease.EXPECT().Release().AnyTimes()
+	pool.EXPECT().Borrow(gomock.Any(), online).Return(lease, nil).Times(1)
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().Get(gomock.Any(), gomock.Any()).
+		Return(&remote_device_svc.DeviceView{ID: online, DaemonFingerprint: fp}, nil).AnyTimes()
+	rds.EXPECT().RecordDaemonOutdated(gomock.Any(), gomock.Any()).AnyTimes()
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	rows := []*chat_entity.Session{
+		{ID: 100, AgentID: 9, AgentStatus: "running", Status: consts.ACTIVE,
+			ExecDeviceID: offline, ExecDaemonFingerprint: "sha256:beef", EventCursor: 5},
+		{ID: 200, AgentID: 9, AgentStatus: "running", Status: consts.ACTIVE,
+			ExecDeviceID: online, ExecDaemonFingerprint: fp, EventCursor: 5},
+	}
 	sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
-	sessRepo.EXPECT().ListRemoteExecSessions(gomock.Any()).Return([]*chat_entity.Session{
-		{ID: 100, AgentID: 9, Status: consts.ACTIVE, ExecDeviceID: 7, ExecDaemonFingerprint: "sha256:beef"},
-	}, nil)
-	// 连不上就没有判据:按今天的语义收尾,不把它永远留在 running 上转圈。
-	sessRepo.EXPECT().ResetActiveSessionsByIDs(gomock.Any(), []int64{100}).Return(int64(1), nil)
-	prevSess := chat_repo.Session()
+	sessRepo.EXPECT().ListRemoteExecSessions(gomock.Any()).Return(rows, nil)
+	for _, row := range rows {
+		sessRepo.EXPECT().Find(gomock.Any(), row.ID).Return(row, nil).AnyTimes()
+	}
+	sessRepo.EXPECT().UpdateEventCursor(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	// 通的那台上,daemon 说 200 早就空闲了 —— 它才有判据,才该收尾。100 一行都不能碰:
+	// 这里没有对它的 ResetActiveSessionsByIDs 期望,多调一次 gomock 就会失败。
+	sessRepo.EXPECT().ResetActiveSessionsByIDs(gomock.Any(), []int64{200}).Return(int64(1), nil).Times(1)
+
+	agtRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+	agtRepo.EXPECT().Find(gomock.Any(), int64(9)).
+		Return(&agent_entity.Agent{ID: 9, AgentBackendID: 3}, nil).AnyTimes()
+	beRepo := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
+	beRepo.EXPECT().Find(gomock.Any(), int64(3)).Return(&agent_backend_entity.AgentBackend{
+		ID: 3, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "8",
+	}, nil).AnyTimes()
+
+	prevSess, prevAgent, prevBE := chat_repo.Session(), agent_repo.Agent(), agent_backend_repo.AgentBackend()
 	chat_repo.RegisterSession(sessRepo)
-	t.Cleanup(func() { chat_repo.RegisterSession(prevSess) })
+	agent_repo.RegisterAgent(agtRepo)
+	agent_backend_repo.RegisterAgentBackend(beRepo)
+	t.Cleanup(func() {
+		chat_repo.RegisterSession(prevSess)
+		agent_repo.RegisterAgent(prevAgent)
+		agent_backend_repo.RegisterAgentBackend(prevBE)
+	})
 
 	svc := NewChat(NoopEmitter{}).(*chatSvc)
 	svc.setConnPoolForTest(pool)
 
-	assert.NoError(t, svc.CatchUpRemoteSessions(context.Background()))
+	assert.NoError(t, svc.CatchUpRemoteSessions(context.Background()),
+		"关着的远端盒子是常态,不该让另一台上的会话跟着补不成")
+}
+
+// Given 一条远端会话此刻的 agent backend 解析不出来(agent 行被删/后端被换掉),
+// 而 daemon 正跑着它,When 启动补齐,Then 不判它失败 —— 补不了它不等于 daemon 说它没跑。
+//
+// live 只在**发给 daemon 的那批**上算,收尾却拿全量调:解析不出后端的会话必然落在
+// live 之外,于是每次开 App 都被翻成 error,哪怕远端正一个字一个字地跑着它。
+func TestCatchUpRemoteSessions_UnresolvedBackendSessionIsNotJudged(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	const deviceID int64 = 7
+	const fp = "sha256:beef"
+
+	client := newScriptedDaemonClient(func(method string, _, result any) error {
+		if method == wire.MethodSessionList {
+			*(result.(*wire.SessionListResult)) = wire.SessionListResult{Sessions: []wire.SessionSummary{
+				{SessionID: 100, LifecycleState: wire.SessionLifecycleRunning, LatestSeq: 9},
+			}}
+		}
+		return nil
+	})
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	lease.EXPECT().Client().Return(client).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease.EXPECT().Release().AnyTimes()
+	pool.EXPECT().Borrow(gomock.Any(), deviceID).Return(lease, nil).Times(1)
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().Get(gomock.Any(), deviceID).
+		Return(&remote_device_svc.DeviceView{ID: deviceID, DaemonFingerprint: fp}, nil).AnyTimes()
+	rds.EXPECT().RecordDaemonOutdated(gomock.Any(), gomock.Any()).AnyTimes()
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	row := &chat_entity.Session{ID: 100, AgentID: 9, AgentStatus: "running", Status: consts.ACTIVE,
+		ExecDeviceID: deviceID, ExecDaemonFingerprint: fp, EventCursor: 5}
+	sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
+	sessRepo.EXPECT().ListRemoteExecSessions(gomock.Any()).Return([]*chat_entity.Session{row}, nil)
+	sessRepo.EXPECT().Find(gomock.Any(), row.ID).Return(row, nil).AnyTimes()
+	sessRepo.EXPECT().UpdateEventCursor(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	// 这里没有 ResetActiveSessionsByIDs 期望:调一次 gomock 就失败。
+
+	// agent 行没了 —— sessionBackend 返回 nil,watchCatchUpTurns 跳过这条会话。
+	agtRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+	agtRepo.EXPECT().Find(gomock.Any(), int64(9)).Return(nil, assertDialErr).AnyTimes()
+
+	prevSess, prevAgent := chat_repo.Session(), agent_repo.Agent()
+	chat_repo.RegisterSession(sessRepo)
+	agent_repo.RegisterAgent(agtRepo)
+	t.Cleanup(func() {
+		chat_repo.RegisterSession(prevSess)
+		agent_repo.RegisterAgent(prevAgent)
+	})
+
+	svc := NewChat(NoopEmitter{}).(*chatSvc)
+	svc.setConnPoolForTest(pool)
+
+	require.NoError(t, svc.CatchUpRemoteSessions(context.Background()))
+}
+
+// Given 启动补齐那一刻设备拨不通(会话因此一条都没判),When 设备监视随后报它重新上线,
+// Then 补齐重跑一遍,这次拿到判据的会话才收尾;补成了之后再上线不重复补。
+//
+// 补齐只在 App.Startup 的一个 goroutine 里跑一次,此后没有任何东西重跑它 ——
+// 开机自启早于 Wi-Fi/VPN 就绪的那一次失败因此是终局:该设备在本进程内再不会补齐或接管。
+func TestCatchUpRemoteDevice_RetriesWhenDeviceComesBackOnline(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	const deviceID int64 = 7
+	const fp = "sha256:beef"
+
+	client := newScriptedDaemonClient(func(method string, _, result any) error {
+		switch method {
+		case wire.MethodSessionList:
+			*(result.(*wire.SessionListResult)) = wire.SessionListResult{Sessions: []wire.SessionSummary{
+				{SessionID: 100, LifecycleState: wire.SessionLifecycleIdle, LatestSeq: 5},
+			}}
+		case wire.MethodSessionPendingWaiters:
+			*(result.(*wire.SessionPendingWaitersResult)) = wire.SessionPendingWaitersResult{}
+		}
+		return nil
+	})
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	lease.EXPECT().Client().Return(client).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease.EXPECT().Release().AnyTimes()
+	gomock.InOrder(
+		pool.EXPECT().Borrow(gomock.Any(), deviceID).Return(nil, assertDialErr).Times(1),
+		pool.EXPECT().Borrow(gomock.Any(), deviceID).Return(lease, nil).Times(1),
+	)
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().Get(gomock.Any(), deviceID).
+		Return(&remote_device_svc.DeviceView{ID: deviceID, DaemonFingerprint: fp}, nil).AnyTimes()
+	rds.EXPECT().RecordDaemonOutdated(gomock.Any(), gomock.Any()).AnyTimes()
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	row := &chat_entity.Session{ID: 100, AgentID: 9, AgentStatus: "running", Status: consts.ACTIVE,
+		ExecDeviceID: deviceID, ExecDaemonFingerprint: fp, EventCursor: 5}
+	sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
+	// 启动那次一遍,设备回来那次一遍;补成之后的第三次不再读库。
+	sessRepo.EXPECT().ListRemoteExecSessions(gomock.Any()).
+		Return([]*chat_entity.Session{row}, nil).Times(2)
+	sessRepo.EXPECT().Find(gomock.Any(), row.ID).Return(row, nil).AnyTimes()
+	sessRepo.EXPECT().UpdateEventCursor(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	sessRepo.EXPECT().ResetActiveSessionsByIDs(gomock.Any(), []int64{100}).Return(int64(1), nil).Times(1)
+
+	agtRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+	agtRepo.EXPECT().Find(gomock.Any(), int64(9)).
+		Return(&agent_entity.Agent{ID: 9, AgentBackendID: 3}, nil).AnyTimes()
+	beRepo := mock_agent_backend_repo.NewMockAgentBackendRepo(ctrl)
+	beRepo.EXPECT().Find(gomock.Any(), int64(3)).Return(&agent_backend_entity.AgentBackend{
+		ID: 3, Type: string(agent_backend_entity.TypeClaudeCode), DeviceID: "7",
+	}, nil).AnyTimes()
+
+	prevSess, prevAgent, prevBE := chat_repo.Session(), agent_repo.Agent(), agent_backend_repo.AgentBackend()
+	chat_repo.RegisterSession(sessRepo)
+	agent_repo.RegisterAgent(agtRepo)
+	agent_backend_repo.RegisterAgentBackend(beRepo)
+	t.Cleanup(func() {
+		chat_repo.RegisterSession(prevSess)
+		agent_repo.RegisterAgent(prevAgent)
+		agent_backend_repo.RegisterAgentBackend(prevBE)
+	})
+
+	svc := NewChat(NoopEmitter{}).(*chatSvc)
+	svc.setConnPoolForTest(pool)
+
+	ctx := context.Background()
+	require.NoError(t, svc.CatchUpRemoteSessions(ctx))
+	assert.Zero(t, client.countOf(wire.MethodSessionList), "拨号都没成,一条 RPC 也发不出去")
+
+	// 设备监视报它回来了。
+	require.NoError(t, svc.CatchUpRemoteDevice(ctx, deviceID))
+	assert.Equal(t, 1, client.countOf(wire.MethodSessionList),
+		"设备回来就补一次:会话清单是补齐的第一步")
+
+	// 补成了的设备再上线不重复补:接下来的断连由 remote.Runtime 自己的重连接管负责。
+	require.NoError(t, svc.CatchUpRemoteDevice(ctx, deviceID))
+	assert.Equal(t, 1, client.countOf(wire.MethodSessionList))
 }
 
 type dialErr string

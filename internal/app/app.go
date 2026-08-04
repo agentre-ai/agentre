@@ -88,6 +88,7 @@ func (a *App) Startup(ctx context.Context) {
 	remoteDeviceEmit := watcher.EmitterFunc(func(p watcher.StateEvent) {
 		wailsruntime.EventsEmit(a.ctx, watcher.EventName, p)
 		a.onRemoteDeviceState(p.ID, p.Online)
+		a.onRemoteDeviceOnline(p.ID, p.Online)
 	})
 	bootstrap.InitRemoteDeviceWatcher(context.Background(), remoteDeviceEmit)
 	bootstrap.RemoteDeviceWatcherBoot(context.Background())
@@ -121,6 +122,30 @@ func (a *App) catchUpRemoteSessions() {
 	if err := svc.CatchUpRemoteSessions(context.Background()); err != nil {
 		logger.Default().Warn("app startup: catch up remote sessions", zap.Error(err))
 	}
+}
+
+// onRemoteDeviceOnline 某台配对 daemon 重新上线时,补上启动那会儿没做成的补齐。
+//
+// catchUpRemoteSessions 只在 Startup 跑一次:开机自启早于 Wi-Fi/VPN 就绪、或那台 daemon
+// 恰好在重启时,那一次逐台拨号必然失败,而设备重新上线时没有任何东西重跑它 —— 该设备上
+// 的会话在本进程内就再也不会被补齐或接管。设备监视本来就在报上线/下线(配额 ticker 已经
+// 挂在同一条信号上),补齐挂上去即可,不必另起一个轮询。
+//
+// 补成过的设备再上线是 no-op(判据在 chat_svc 那侧),所以设备抖动不会变成 attach 风暴。
+func (a *App) onRemoteDeviceOnline(id int64, online bool) {
+	if !online {
+		return
+	}
+	svc := chat_svc.Chat()
+	if svc == nil {
+		return
+	}
+	// 脱离 watcher 的事件回调:补齐要逐条拨号 + 走完补齐三步,不能把回调按在这上面。
+	go func() {
+		if err := svc.CatchUpRemoteDevice(context.Background(), id); err != nil {
+			logger.Default().Warn("app: catch up remote device", zap.Int64("deviceId", id), zap.Error(err))
+		}
+	}()
 }
 
 func (a *App) resetStaleSessionsOnStartup(ctx context.Context) {

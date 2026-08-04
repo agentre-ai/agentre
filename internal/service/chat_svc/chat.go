@@ -127,6 +127,9 @@ type ChatSvc interface {
 	// CatchUpRemoteSessions 在 App 启动后按 chat_sessions.exec_device_id 连回各台配对
 	// daemon,把桌面端离线期间远端产生的转录与待决策补回来。见 remote_catchup.go。
 	CatchUpRemoteSessions(ctx context.Context) error
+	// CatchUpRemoteDevice 在某台 daemon 重新上线时补上启动那次没做成的补齐(启动补齐
+	// 只跑一次,开机自启早于网络就绪的那一次拨号失败否则就是终局)。见 remote_catchup.go。
+	CatchUpRemoteDevice(ctx context.Context, deviceID int64) error
 }
 
 var defaultChat ChatSvc
@@ -202,6 +205,10 @@ type chatSvc struct {
 	// session 重复起 watcher goroutine(每会话一个,惰性启动);watcher 在底层
 	// AutonomousTurns channel close(子进程 evict / CloseSession)时退出并清这条。
 	autoWatchers sync.Map
+	// catchUpPending：deviceID(int64) → struct{}。启动补齐时拨不通(或补齐半途出错)的
+	// 设备记在这里 —— 那一刻拿不到任何判据,会话一行都不能碰。设备监视报它重新上线时
+	// 由 CatchUpRemoteDevice 重来一次并清掉这条。
+	catchUpPending sync.Map
 	// subagentActivityWatchers：sessionID(int64) → struct{}。startSubagentActivityWatcher
 	// 用它防同一 session 重复起后台 subagent 活动 watcher(每会话一个,惰性启动);watcher
 	// 在底层 SubagentActivity channel close(子进程 evict / CloseSession)时退出并清这条。
