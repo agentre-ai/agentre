@@ -7,6 +7,9 @@ export const LOCAL_COMMAND_HISTORY_STORAGE_KEY = "agentre.localCommandHistory";
 
 const LOCAL_COMMAND_HISTORY_VERSION = 1;
 const MAX_ENTRIES_PER_SCOPE = 100;
+// ECMAScript Date's maximum time value leaves over 367 trillion exact +1
+// reservations before reaching Number.MAX_SAFE_INTEGER.
+const MAX_LOCAL_COMMAND_HISTORY_TIMESTAMP = 8_640_000_000_000_000;
 
 type PersistedLocalCommandHistory = {
   version: typeof LOCAL_COMMAND_HISTORY_VERSION;
@@ -79,14 +82,22 @@ function isHistoryScopeKey(scopeKey: string): boolean {
   );
 }
 
+function isValidHistoryTimestamp(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_LOCAL_COMMAND_HISTORY_TIMESTAMP
+  );
+}
+
 function isHistoryEntry(value: unknown): value is LocalCommandHistoryEntry {
   if (!value || typeof value !== "object") return false;
   const entry = value as Partial<LocalCommandHistoryEntry>;
   return (
     typeof entry.command === "string" &&
     entry.command.length > 0 &&
-    typeof entry.lastUsedAt === "number" &&
-    Number.isFinite(entry.lastUsedAt)
+    isValidHistoryTimestamp(entry.lastUsedAt)
   );
 }
 
@@ -197,6 +208,10 @@ export function createLocalCommandHistoryStore(
     "storage" in options ? (options.storage ?? null) : browserStorage();
   const history = readPersistedHistory(storage);
   let lastReservedAt = Math.max(Date.now(), maximumLastUsedAt(history));
+  const reserveLastUsedAt = () => {
+    lastReservedAt = Math.max(lastReservedAt, Date.now()) + 1;
+    return lastReservedAt;
+  };
 
   return {
     list(scope) {
@@ -206,14 +221,13 @@ export function createLocalCommandHistoryStore(
         lastUsedAt,
       }));
     },
-    reserveLastUsedAt() {
-      lastReservedAt = Math.max(lastReservedAt, Date.now()) + 1;
-      return lastReservedAt;
-    },
+    reserveLastUsedAt,
     record(scope, command, lastUsedAt = Date.now()) {
       if (!command) return;
       const key = deriveLocalCommandHistoryScopeKey(scope);
-      const usedAt = Number.isFinite(lastUsedAt) ? lastUsedAt : Date.now();
+      const usedAt = isValidHistoryTimestamp(lastUsedAt)
+        ? lastUsedAt
+        : reserveLastUsedAt();
       const entries = history.scopes[key] ?? [];
       const existingEntry = entries.find((entry) => entry.command === command);
       if (existingEntry && existingEntry.lastUsedAt >= usedAt) return;

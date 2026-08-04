@@ -119,7 +119,41 @@ describe("local command history scope and persistence", () => {
       { command: "new floor", lastUsedAt: 500 },
     ]);
     expect(store.reserveLastUsedAt()).toBe(502);
+    expect(Array.from({ length: 4 }, () => store.reserveLastUsedAt())).toEqual([
+      503, 504, 505, 506,
+    ]);
   });
+
+  it.each([
+    ["the safe-integer ceiling", Number.MAX_SAFE_INTEGER],
+    ["an unsafe integer", Number.MAX_SAFE_INTEGER + 1],
+    ["a negative integer", -1],
+    ["a fractional number", 100.5],
+  ])(
+    "Given %s as an explicit timestamp, when a command is recorded, then a valid monotonic timestamp is persisted without poisoning later reservations",
+    (_label, invalidTimestamp) => {
+      vi.spyOn(Date, "now").mockReturnValue(100);
+      const store = createLocalCommandHistoryStore({ storage: localStorage });
+      store.record(localRepo, "older valid command", 100);
+
+      store.record(localRepo, "invalid timestamp command", invalidTimestamp);
+
+      expect(store.list(localRepo)).toEqual([
+        { command: "invalid timestamp command", lastUsedAt: 101 },
+        { command: "older valid command", lastUsedAt: 100 },
+      ]);
+      expect([
+        store.reserveLastUsedAt(),
+        store.reserveLastUsedAt(),
+        store.reserveLastUsedAt(),
+      ]).toEqual([102, 103, 104]);
+      expect(
+        createLocalCommandHistoryStore({ storage: localStorage }).list(
+          localRepo,
+        ),
+      ).toEqual(store.list(localRepo));
+    },
+  );
 
   it("Given exact repeats settle out of order, when an older write follows a newer one, then timestamp, MRU order, and persistence stay on the newer case-sensitive entry", () => {
     const setItem = vi.fn(localStorage.setItem.bind(localStorage));
@@ -231,6 +265,20 @@ describe("local command history storage failures", () => {
         scopes: {
           [deriveLocalCommandHistoryScopeKey(localRepo)]: [
             { command: "unsafe", lastUsedAt: "yesterday" },
+          ],
+        },
+      }),
+    ],
+    [
+      "a safe-integer ceiling timestamp beside otherwise valid history",
+      JSON.stringify({
+        version: 1,
+        scopes: {
+          [deriveLocalCommandHistoryScopeKey(localRepo)]: [
+            { command: "must not partially survive", lastUsedAt: 40 },
+          ],
+          [deriveLocalCommandHistoryScopeKey(remoteRepo)]: [
+            { command: "poisoned", lastUsedAt: Number.MAX_SAFE_INTEGER },
           ],
         },
       }),
