@@ -18,8 +18,10 @@ const remoteRepo: LocalCommandHistoryScope = {
 };
 const ECMASCRIPT_DATE_MAX_TIMESTAMP = 8_640_000_000_000_000;
 const TIMESTAMP_RESERVATION_HEADROOM = 1_000_000;
+const MAX_TIMESTAMP_RESERVATION_SEED =
+  ECMASCRIPT_DATE_MAX_TIMESTAMP - TIMESTAMP_RESERVATION_HEADROOM;
 const FIRST_TIMESTAMP_WITHOUT_RESERVATION_HEADROOM =
-  ECMASCRIPT_DATE_MAX_TIMESTAMP - TIMESTAMP_RESERVATION_HEADROOM + 1;
+  MAX_TIMESTAMP_RESERVATION_SEED + 1;
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -126,6 +128,52 @@ describe("local command history scope and persistence", () => {
     expect(Array.from({ length: 4 }, () => store.reserveLastUsedAt())).toEqual([
       503, 504, 505, 506,
     ]);
+  });
+
+  it("Given history reaches the exact accepted timestamp boundary, when it is reserved and recorded, then crossing fails closed and the existing MRU reconstructs unchanged", () => {
+    vi.spyOn(Date, "now").mockReturnValue(MAX_TIMESTAMP_RESERVATION_SEED - 1);
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+    store.record(
+      localRepo,
+      "older command",
+      MAX_TIMESTAMP_RESERVATION_SEED - 2,
+    );
+
+    const boundaryReservation = store.reserveLastUsedAt();
+    expect(boundaryReservation).toBe(MAX_TIMESTAMP_RESERVATION_SEED);
+    store.record(localRepo, "boundary command", boundaryReservation);
+    const persistedAtBoundary = localStorage.getItem(
+      LOCAL_COMMAND_HISTORY_STORAGE_KEY,
+    );
+
+    expect(() => store.reserveLastUsedAt()).toThrow(
+      "Local command history timestamp budget exhausted",
+    );
+    expect(() =>
+      store.record(
+        localRepo,
+        "must not fabricate newer recency",
+        FIRST_TIMESTAMP_WITHOUT_RESERVATION_HEADROOM,
+      ),
+    ).toThrow("Local command history timestamp budget exhausted");
+    expect(localStorage.getItem(LOCAL_COMMAND_HISTORY_STORAGE_KEY)).toBe(
+      persistedAtBoundary,
+    );
+
+    const expected = [
+      {
+        command: "boundary command",
+        lastUsedAt: MAX_TIMESTAMP_RESERVATION_SEED,
+      },
+      {
+        command: "older command",
+        lastUsedAt: MAX_TIMESTAMP_RESERVATION_SEED - 2,
+      },
+    ];
+    expect(store.list(localRepo)).toEqual(expected);
+    expect(
+      createLocalCommandHistoryStore({ storage: localStorage }).list(localRepo),
+    ).toEqual(expected);
   });
 
   it.each([

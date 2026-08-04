@@ -8,9 +8,9 @@ export const LOCAL_COMMAND_HISTORY_STORAGE_KEY = "agentre.localCommandHistory";
 const LOCAL_COMMAND_HISTORY_VERSION = 1;
 const MAX_ENTRIES_PER_SCOPE = 100;
 const MAX_ECMASCRIPT_DATE_TIMESTAMP = 8_640_000_000_000_000;
-// Persisted, explicit, and clock seed values must leave one million exact +1
-// reservations below ECMAScript Date's ceiling. Reservations fail closed if
-// that fixed budget is ever exhausted instead of returning an invalid value.
+// Persisted timestamps use a ceiling one million ticks below ECMAScript Date's.
+// The decoder, explicit writes, and reservations enforce this same ceiling;
+// once reached, reservation fails closed so existing MRU stays reconstructable.
 const TIMESTAMP_RESERVATION_HEADROOM = 1_000_000;
 const MAX_TIMESTAMP_RESERVATION_SEED =
   MAX_ECMASCRIPT_DATE_TIMESTAMP - TIMESTAMP_RESERVATION_HEADROOM;
@@ -101,8 +101,8 @@ function hasTimestampReservationHeadroom(value: unknown): value is number {
   );
 }
 
-function ensureValidHistoryTimestamp(value: number): number {
-  if (!isValidHistoryTimestamp(value)) {
+function ensurePersistableHistoryTimestamp(value: number): number {
+  if (!hasTimestampReservationHeadroom(value)) {
     throw new RangeError("Local command history timestamp budget exhausted");
   }
   return value;
@@ -234,7 +234,7 @@ export function createLocalCommandHistoryStore(
     maximumLastUsedAt(history),
   );
   const reserveLastUsedAt = () => {
-    const reservation = ensureValidHistoryTimestamp(
+    const reservation = ensurePersistableHistoryTimestamp(
       Math.max(lastReservedAt, reservationClockTimestamp()) + 1,
     );
     lastReservedAt = reservation;
@@ -253,7 +253,7 @@ export function createLocalCommandHistoryStore(
     record(scope, command, lastUsedAt = Date.now()) {
       if (!command) return;
       const key = deriveLocalCommandHistoryScopeKey(scope);
-      const usedAt = ensureValidHistoryTimestamp(
+      const usedAt = ensurePersistableHistoryTimestamp(
         hasTimestampReservationHeadroom(lastUsedAt)
           ? lastUsedAt
           : reserveLastUsedAt(),

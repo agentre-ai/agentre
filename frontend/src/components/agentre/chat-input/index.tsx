@@ -337,24 +337,37 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
                 error,
               );
             };
-            const submittedAt = localCommandHistoryStore.reserveLastUsedAt();
+            let submittedAt: number | undefined;
+            try {
+              submittedAt = localCommandHistoryStore.reserveLastUsedAt();
+            } catch (error) {
+              console.warn(
+                "[chat-input] failed to reserve local command history order",
+                error,
+              );
+            }
             try {
               const executionScope = onCommandSubmitRef.current?.(command);
               if (executionScope) {
                 void Promise.resolve(executionScope)
                   .then((scope) => {
-                    if (!scope) return;
-                    try {
-                      localCommandHistoryStore.record(
-                        scope,
-                        command,
-                        submittedAt,
-                      );
-                    } catch (error) {
+                    if (!scope || submittedAt === undefined) return;
+                    const warnRecordFailure = (error: unknown) => {
                       console.warn(
                         "[chat-input] failed to record local command history",
                         error,
                       );
+                    };
+                    try {
+                      void Promise.resolve(
+                        localCommandHistoryStore.record(
+                          scope,
+                          command,
+                          submittedAt,
+                        ),
+                      ).catch(warnRecordFailure);
+                    } catch (error) {
+                      warnRecordFailure(error);
                     }
                   })
                   .catch(warnSubmissionFailure);

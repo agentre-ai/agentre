@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef, type RefObject } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import type { Editor } from "@tiptap/react";
 
@@ -658,6 +658,93 @@ describe("AIChatInput command mode", () => {
     });
     expect(recordSpy).not.toHaveBeenCalled();
     expect(editorRef.current!.getText()).toBe("");
+  });
+
+  it("Given history order reservation fails, When a nonempty command is submitted, Then execution still runs exactly once and the history failure is consumed", async () => {
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const reservationFailure = new RangeError("timestamp budget exhausted");
+    const onCommandSubmit = vi.fn().mockResolvedValue(repoScope);
+    vi.spyOn(localCommandHistoryStore, "reserveLastUsedAt").mockImplementation(
+      () => {
+        throw reservationFailure;
+      },
+    );
+    const recordSpy = vi.spyOn(localCommandHistoryStore, "record");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const unhandledRejection = vi.fn();
+    window.addEventListener("unhandledrejection", unhandledRejection);
+    onTestFinished(() =>
+      window.removeEventListener("unhandledrejection", unhandledRejection),
+    );
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={onCommandSubmit}
+      />,
+    );
+
+    expect(() => {
+      act(() => {
+        editorRef.current!.commands.insertContent("!pwd");
+        pressEnter(editorRef.current!);
+      });
+    }).not.toThrow();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onCommandSubmit).toHaveBeenCalledTimes(1);
+    expect(onCommandSubmit).toHaveBeenCalledWith("pwd");
+    expect(recordSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[chat-input] failed to reserve local command history order",
+      reservationFailure,
+    );
+    expect(unhandledRejection).not.toHaveBeenCalled();
+    expect(editorRef.current!.getText()).toBe("");
+  });
+
+  it("Given history recording rejects, When command execution succeeds, Then the optional write failure is consumed without repeating execution", async () => {
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const recordFailure = new Error("history persistence failed");
+    const onCommandSubmit = vi.fn().mockResolvedValue(repoScope);
+    const recordSpy = vi
+      .spyOn(localCommandHistoryStore, "record")
+      .mockImplementation(() => Promise.reject(recordFailure) as never);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const unhandledRejection = vi.fn();
+    window.addEventListener("unhandledrejection", unhandledRejection);
+    onTestFinished(() =>
+      window.removeEventListener("unhandledrejection", unhandledRejection),
+    );
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={onCommandSubmit}
+      />,
+    );
+
+    act(() => {
+      editorRef.current!.commands.insertContent("!pwd");
+      pressEnter(editorRef.current!);
+    });
+
+    await vi.waitFor(() => {
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[chat-input] failed to record local command history",
+        recordFailure,
+      );
+    });
+    expect(onCommandSubmit).toHaveBeenCalledTimes(1);
+    expect(recordSpy).toHaveBeenCalledTimes(1);
+    expect(unhandledRejection).not.toHaveBeenCalled();
   });
 
   it("Given history reads fail, When a command is entered and submitted, Then the menu stays unavailable without blocking execution", () => {
