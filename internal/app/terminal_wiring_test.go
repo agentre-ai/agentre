@@ -23,7 +23,6 @@ type terminalWiringDaemonClient struct {
 	handlerCalls map[string]int
 	closed       chan struct{}
 	closeOnce    sync.Once
-	nextID       int
 	openErr      error
 	closeErrors  []error
 	closeCalls   int
@@ -37,7 +36,7 @@ func newTerminalWiringDaemonClient() *terminalWiringDaemonClient {
 	}
 }
 
-func (c *terminalWiringDaemonClient) Call(_ context.Context, method string, _ any, result any) error {
+func (c *terminalWiringDaemonClient) Call(_ context.Context, method string, params any, result any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch method {
@@ -45,8 +44,7 @@ func (c *terminalWiringDaemonClient) Call(_ context.Context, method string, _ an
 		if c.openErr != nil {
 			return c.openErr
 		}
-		c.nextID++
-		result.(*protocol.TerminalOpenResult).TerminalID = "remote-" + strconv.Itoa(c.nextID)
+		result.(*protocol.TerminalOpenResult).TerminalID = params.(protocol.TerminalOpenParams).TerminalID
 	case "terminal.close":
 		c.closeCalls++
 		if c.closeCalls <= len(c.closeErrors) {
@@ -212,9 +210,11 @@ func TestTerminalProductionWiring_GivenTwoLiveTerminalsOnOneDaemonClient_WhenOpe
 	require.Zero(t, borrows, "backend selection must not borrow before PTYBackend.Open")
 	require.Zero(t, releases)
 
-	first, err := firstBackend.Open(context.Background(), pty.Spec{Cwd: "/repo"})
+	first, err := firstBackend.Open(context.Background(), pty.Spec{TerminalID: "terminal-first", Cwd: "/repo"})
 	require.NoError(t, err)
-	second, err := secondBackend.Open(context.Background(), pty.Spec{Cwd: "/repo", Command: "go test"})
+	second, err := secondBackend.Open(context.Background(), pty.Spec{
+		TerminalID: "terminal-second", Cwd: "/repo", Command: "go test",
+	})
 	require.NoError(t, err)
 	borrows, releases = borrower.counts()
 	require.Equal(t, 2, borrows)
@@ -222,10 +222,10 @@ func TestTerminalProductionWiring_GivenTwoLiveTerminalsOnOneDaemonClient_WhenOpe
 	require.Equal(t, 1, client.handlerCallCount("terminal.data"))
 	require.Equal(t, 1, client.handlerCallCount("terminal.exit"))
 
-	requireTerminalWiringData(t, client, first, "remote-1", "first")
-	requireTerminalWiringData(t, client, second, "remote-2", "second")
-	requireTerminalWiringExit(t, client, first, "remote-1")
-	requireTerminalWiringExit(t, client, second, "remote-2")
+	requireTerminalWiringData(t, client, first, "terminal-first", "first")
+	requireTerminalWiringData(t, client, second, "terminal-second", "second")
+	requireTerminalWiringExit(t, client, first, "terminal-first")
+	requireTerminalWiringExit(t, client, second, "terminal-second")
 	require.Eventually(t, func() bool {
 		_, released := borrower.counts()
 		return released == 2
@@ -249,14 +249,16 @@ func TestTerminalProductionWiring_GivenConcurrentOpensOnSharedClient_WhenStarted
 	}
 	results := make(chan openResult, opens)
 
-	for range opens {
+	for i := range opens {
 		go func() {
 			backend, err := wiring.Backend("42")
 			if err != nil {
 				results <- openResult{err: err}
 				return
 			}
-			h, err := backend.Open(context.Background(), pty.Spec{Cwd: "/repo"})
+			h, err := backend.Open(context.Background(), pty.Spec{
+				TerminalID: "terminal-" + strconv.Itoa(i), Cwd: "/repo",
+			})
 			results <- openResult{handle: h, err: err}
 		}()
 	}
@@ -308,7 +310,7 @@ func TestTerminalProductionWiring_GivenRemoteOpenFails_WhenOpened_ThenReleasesBo
 	backend, err := wiring.Backend("42")
 	require.NoError(t, err)
 
-	h, err := backend.Open(context.Background(), pty.Spec{Cwd: "/repo"})
+	h, err := backend.Open(context.Background(), pty.Spec{TerminalID: "terminal-open-failure", Cwd: "/repo"})
 
 	require.Nil(t, h)
 	require.ErrorIs(t, err, openErr)
@@ -326,7 +328,7 @@ func TestTerminalProductionWiring_GivenCloseFails_WhenRetried_ThenRetainsLeaseUn
 	wiring := newTerminalRemoteWiring(borrower.Borrow)
 	backend, err := wiring.Backend("42")
 	require.NoError(t, err)
-	h, err := backend.Open(context.Background(), pty.Spec{Cwd: "/repo"})
+	h, err := backend.Open(context.Background(), pty.Spec{TerminalID: "terminal-close-retry", Cwd: "/repo"})
 	require.NoError(t, err)
 
 	require.ErrorIs(t, h.Close(), closeErr)
@@ -355,14 +357,14 @@ func TestTerminalProductionWiring_GivenReplacementClientForSameDevice_WhenOpened
 	wiring := newTerminalRemoteWiring(borrower.Borrow)
 	oldBackend, err := wiring.Backend("42")
 	require.NoError(t, err)
-	oldHandle, err := oldBackend.Open(context.Background(), pty.Spec{Cwd: "/old"})
+	oldHandle, err := oldBackend.Open(context.Background(), pty.Spec{TerminalID: "terminal-old", Cwd: "/old"})
 	require.NoError(t, err)
-	requireTerminalWiringData(t, oldClient, oldHandle, "remote-1", "old-ready")
+	requireTerminalWiringData(t, oldClient, oldHandle, "terminal-old", "old-ready")
 
 	borrower.setClient(newClient)
 	newBackend, err := wiring.Backend("42")
 	require.NoError(t, err)
-	newHandle, err := newBackend.Open(context.Background(), pty.Spec{Cwd: "/new"})
+	newHandle, err := newBackend.Open(context.Background(), pty.Spec{TerminalID: "terminal-new", Cwd: "/new"})
 	require.NoError(t, err)
 
 	require.Equal(t, 1, oldClient.handlerCallCount("terminal.data"))
@@ -372,8 +374,8 @@ func TestTerminalProductionWiring_GivenReplacementClientForSameDevice_WhenOpened
 	cacheSize, generation := terminalWiringCachedGeneration(wiring, 42)
 	require.Equal(t, 1, cacheSize, "the cache keeps only the current generation per device")
 	require.Equal(t, (<-chan struct{})(newClient.closed), generation)
-	requireTerminalWiringData(t, oldClient, oldHandle, "remote-1", "old-still-live")
-	requireTerminalWiringData(t, newClient, newHandle, "remote-1", "new-live")
+	requireTerminalWiringData(t, oldClient, oldHandle, "terminal-old", "old-still-live")
+	requireTerminalWiringData(t, newClient, newHandle, "terminal-new", "new-live")
 
 	oldClient.closeConnection()
 	requireTerminalWiringOutcome(t, oldHandle, "connection_lost")
@@ -381,8 +383,8 @@ func TestTerminalProductionWiring_GivenReplacementClientForSameDevice_WhenOpened
 		size, current := terminalWiringCachedGeneration(wiring, 42)
 		return size == 1 && current == newClient.closed
 	}, time.Second, time.Millisecond, "closing the old generation must not evict the replacement")
-	requireTerminalWiringData(t, newClient, newHandle, "remote-1", "new-still-live")
-	requireTerminalWiringExit(t, newClient, newHandle, "remote-1")
+	requireTerminalWiringData(t, newClient, newHandle, "terminal-new", "new-still-live")
+	requireTerminalWiringExit(t, newClient, newHandle, "terminal-new")
 	require.Eventually(t, func() bool {
 		_, released := borrower.counts()
 		return released == 2

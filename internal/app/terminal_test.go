@@ -76,7 +76,7 @@ func TestApp_TerminalOpen_ResolvesProjectCwdThenOpens(t *testing.T) {
 
 	require.NoError(t, a.TerminalOpen("t1", 7, "", 80, 24))
 	// cwd came from ResolveProjectCwd (local project.Path), dims passed through.
-	assert.Equal(t, pty.Spec{Cwd: "/repo", Cols: 80, Rows: 24}, gotSpec)
+	assert.Equal(t, pty.Spec{TerminalID: "t1", Cwd: "/repo", Cols: 80, Rows: 24}, gotSpec)
 }
 
 // TestApp_TerminalOpen_PropagatesResolveErrorWithoutOpening locks that a cwd
@@ -193,7 +193,7 @@ func TestApp_TerminalRunCommand_GivenServiceResolver_WhenCalled_ThenDelegatesWit
 	mockHandle.EXPECT().Close().AnyTimes().Return(nil)
 	localBackend := mocks.NewMockPTYBackend(ctrl)
 	localBackend.EXPECT().Open(gomock.Any(), pty.Spec{
-		Cwd: "/local/current", Command: "go test ./...", Cols: 100, Rows: 30,
+		TerminalID: "terminal-1", Cwd: "/local/current", Command: "go test ./...", Cols: 100, Rows: 30,
 	}).Return(mockHandle, nil).Times(1)
 	svc := terminal_svc.NewService(
 		terminal_svc.NewBackendSelector(localBackend, nil),
