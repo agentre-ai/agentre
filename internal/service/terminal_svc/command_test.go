@@ -2,6 +2,7 @@ package terminal_svc_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -89,13 +90,17 @@ func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeSt
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	wantScope := &terminal_svc.CommandScope{DeviceID: "device-9", Cwd: "/remote/current"}
+	sensitiveCwd := "/Users/alice/private-worktree"
+	sensitiveCommand := "deploy --token=fixture-sensitive-token"
+	sensitiveShell := "/opt/private/bin/zsh"
+	wantScope := &terminal_svc.CommandScope{DeviceID: "device-9", Cwd: sensitiveCwd}
 	resolveCalls := 0
-	startErr := errors.New("shell start denied")
+	startErr := errors.New("fork/exec " + sensitiveShell + " in " + sensitiveCwd +
+		" while starting " + sensitiveCommand + ": permission denied")
 	localBackend := mocks.NewMockPTYBackend(ctrl)
 	remoteBackend := mocks.NewMockPTYBackend(ctrl)
 	remoteBackend.EXPECT().Open(gomock.Any(), pty.Spec{
-		Cwd: "/remote/current", Command: "make check", Cols: 80, Rows: 24,
+		Cwd: sensitiveCwd, Command: sensitiveCommand, Cols: 80, Rows: 24,
 	}).Return(nil, startErr).Times(1)
 	factoryCalls := 0
 	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(localBackend,
@@ -117,7 +122,7 @@ func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeSt
 	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
 		TerminalID: "terminal-2",
 		SessionID:  72,
-		Command:    "make check",
+		Command:    sensitiveCommand,
 		Cols:       80,
 		Rows:       24,
 	})
@@ -136,10 +141,14 @@ func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeSt
 		"sessionId":  int64(72),
 		"terminalId": "terminal-2",
 		"deviceId":   "device-9",
-		"error":      startErr.Error(),
+		"errorClass": "terminalCommandStartFailed",
 	}, entry.ContextMap())
-	assert.NotContains(t, entry.Message, "make check")
-	assert.NotContains(t, entry.Message, "/remote/current")
+	structuredFields, marshalErr := json.Marshal(entry.ContextMap())
+	require.NoError(t, marshalErr)
+	observedLog := entry.Message + string(structuredFields)
+	for _, sensitive := range []string{sensitiveCommand, "fixture-sensitive-token", sensitiveCwd, sensitiveShell} {
+		assert.NotContains(t, observedLog, sensitive)
+	}
 }
 
 func TestService_RunCommand_GivenResolverUnavailable_WhenStarted_ThenReturnsErrorWithoutPanicOrLaunch(t *testing.T) {

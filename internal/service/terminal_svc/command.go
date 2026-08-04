@@ -72,9 +72,9 @@ func (s *Service) RunCommand(ctx context.Context, req RunCommandRequest) (*RunCo
 			zap.Int64("sessionId", req.SessionID),
 			zap.String("terminalId", req.TerminalID),
 			zap.String("deviceId", scope.DeviceID),
-			zap.Error(err))
+			zap.String("errorClass", "terminalCommandStartFailed"))
 		response.StartError = err.Error()
-		return response, nil
+		return response, nil //nolint:nilerr // startup failure is surfaced via response.StartError, not as an RPC error
 	}
 	return response, nil
 }
