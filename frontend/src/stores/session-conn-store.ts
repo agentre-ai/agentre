@@ -26,6 +26,13 @@ type State = {
 
 type Actions = {
   setConnState: (sessionId: number, state: SessionConnectionState) => void;
+  // seed 是 LoadSession 响应的播种入口 —— 整页重载后推送流那一帧早已发过,连接态
+  // 只能随响应同步回来(补发会落在订阅建立之前而丢失,那是竞态)。
+  // 与 setConnState 的两点差别都来自"它带的是快照,不是跃迁":
+  //   1. 已有条目就不写 —— 有条目意味着 chat:conn:<sid> 的订阅者在位且写过,
+  //      订阅期内不漏帧,那份必然比响应快照新,不许被回填的旧值倒回去;
+  //   2. connected 不落条目 —— 无条目本就按已连接看待,写进去只是多一条要清的记录。
+  seed: (sessionId: number, state: SessionConnectionState) => void;
   // clear 在该会话最后一条流结束、连接态订阅随之解绑时调用:留着旧的 reconnecting
   // 会泄漏到下一轮,让一个连接正常的新 turn 顶着断连指示器跑。
   clear: (sessionId: number) => void;
@@ -41,6 +48,14 @@ export const useSessionConnStore = create<State & Actions>((set, get) => ({
   setConnState: (sessionId, state) =>
     set((prev) => {
       if (prev.conns.get(sessionId) === state) return prev;
+      const conns = new Map(prev.conns);
+      conns.set(sessionId, state);
+      return { conns };
+    }),
+
+  seed: (sessionId, state) =>
+    set((prev) => {
+      if (state === "connected" || prev.conns.has(sessionId)) return prev;
       const conns = new Map(prev.conns);
       conns.set(sessionId, state);
       return { conns };

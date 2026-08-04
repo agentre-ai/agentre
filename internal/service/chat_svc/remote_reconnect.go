@@ -25,14 +25,51 @@ func ConnStateStreamName(sessionID int64) string {
 	return fmt.Sprintf("%s:%d", ConnStateEventPrefix, sessionID)
 }
 
-// onRemoteConnState 是 remote.ConnStateObserver 的实现:把会话级连接态播到前端。
+// onRemoteConnState 是 remote.ConnStateObserver 的实现:把会话级连接态播到前端,
+// 并把最新值留一份给 LoadSession 同步读。
 func (s *chatSvc) onRemoteConnState(sessionID int64, st remote.SessionConnState) {
+	s.rememberConnState(sessionID, st.State)
 	s.emitter.Emit(context.Background(), ConnStateStreamName(sessionID), ChatStreamEvent{
 		Kind:             StreamConnectionState,
 		ConnectionState:  string(st.State),
 		CaughtUpCount:    st.Replayed,
 		PendingDecisions: st.PendingDecisions,
 	})
+}
+
+// rememberConnState 维护「每会话最新连接态」缓存。
+//
+// 缓存挂在这里而不是让 LoadSession 反向去够 agentruntime:本函数已经是
+// chat:conn:<sid> 的发布方,每一次跃迁都从它手上过,顺手留一份即可。
+//
+// 为什么 LoadSession 必须同步返回它,而不是重挂时补发一次事件:前端拿到 ActiveStream
+// **之后**才订阅 chat:conn:<sid>,补发会落在订阅建立之前而丢失 —— 那是竞态。
+//
+// connected 是缺省态、lost 是会话终结(重连放弃,已注入 ErrDaemonDisconnected 收尾),
+// 两者都摘项:缓存因此只留「此刻正在重连」的会话,既不随会话数无限长大,也不会把上一轮
+// 的终态泄漏给下一轮。
+func (s *chatSvc) rememberConnState(sessionID int64, st remote.ConnState) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if st == remote.ConnStateConnected || st == remote.ConnStateLost {
+		delete(s.connStates, sessionID)
+		return
+	}
+	if s.connStates == nil {
+		s.connStates = map[int64]remote.ConnState{}
+	}
+	s.connStates[sessionID] = st
+}
+
+// sessionConnState 返回该会话此刻的连接态;缓存空 → connected(与 remote.Runtime.ConnState
+// 的缺省一致,本地会话与从未断过的远端会话都走这一支)。
+func (s *chatSvc) sessionConnState(sessionID int64) remote.ConnState {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if st, ok := s.connStates[sessionID]; ok {
+		return st
+	}
+	return remote.ConnStateConnected
 }
 
 // reconnectRemote 是注入给 *remote.Runtime 的重连端口:重新从池里借一条已鉴权连接,

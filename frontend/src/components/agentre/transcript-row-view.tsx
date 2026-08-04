@@ -450,10 +450,12 @@ function DisconnectedIndicator() {
       aria-live="polite"
       className="flex items-center gap-2 py-1 text-aux text-muted-foreground"
     >
+      {/* 相位延迟随周期一同翻倍(0.15/0.3 → 0.3/0.6):同一条曲线放慢一倍,
+          三点之间的相位差也要按同一倍率拉开,否则三点会挤成几乎同相。 */}
       <div className="flex items-center gap-1.5">
         <span className={dotClass} />
-        <span className={cn(dotClass, "[animation-delay:0.15s]")} />
         <span className={cn(dotClass, "[animation-delay:0.3s]")} />
+        <span className={cn(dotClass, "[animation-delay:0.6s]")} />
       </div>
       <WifiOff aria-hidden className="size-3.5 shrink-0 opacity-75" />
       <span>{t("chat.disconnected.label")}</span>

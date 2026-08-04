@@ -212,6 +212,37 @@ describe("断连期间的活信号 (R13)", () => {
     }
   });
 
+  it("三点的相位延迟随周期一同翻倍,三点间的相位差才是同一条曲线", () => {
+    // 相位延迟是曲线的一部分:周期翻倍而延迟不动,三点会挤成几乎同相地一起呼吸,
+    // 那是另一条曲线,不是「同一曲线放慢一倍」(R13)。
+    const delaysOf = (dots: HTMLElement[]): number[] =>
+      dots.map((dot) => {
+        const m = /\[animation-delay:([\d.]+)s\]/.exec(dot.className);
+        return m ? Number(m[1]) : 0;
+      });
+
+    const typing = renderIndicatorHost({ reconnecting: false });
+    const fast = delaysOf(
+      Array.from(screen.getByLabelText(TYPING_ARIA).children) as HTMLElement[],
+    );
+    typing.unmount();
+
+    renderIndicatorHost({ reconnecting: true });
+    const slow = delaysOf(
+      Array.from(
+        (
+          screen.getByLabelText(DISCONNECTED_ARIA)
+            .firstElementChild as HTMLElement
+        ).children,
+      ) as HTMLElement[],
+    );
+
+    expect(fast).toHaveLength(3);
+    // 打字形态本来就有相位差(0 / 0.15 / 0.3),否则下面的等式在全 0 时也成立。
+    expect(fast.filter((d) => d > 0)).toHaveLength(2);
+    expect(slow).toEqual(fast.map((d) => d * 2));
+  });
+
   it("慢一倍是 @theme 注册的同一 keyframe,不是另起一套动效", () => {
     const css = fs.readFileSync(
       path.resolve(process.cwd(), "src/styles/globals.css"),

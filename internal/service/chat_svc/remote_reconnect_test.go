@@ -5,12 +5,16 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
+	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo/mock_chat_repo"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
@@ -158,4 +162,72 @@ func TestRemoteConnState_EmitsSessionLevelStreamEvent(t *testing.T) {
 	assert.Equal(t, string(remote.ConnStateConnected), got[1].Payload.ConnectionState)
 	assert.Equal(t, 4, got[1].Payload.CaughtUpCount)
 	assert.Equal(t, 1, got[1].Payload.PendingDecisions)
+}
+
+// registerLoadSessionRepos 给 LoadSession 装上够用的仓储 mock:会话 + 消息 + agent。
+// agent 返回 nil —— LoadSession 的 backend / provider / 设备那一大段都挂在 a != nil 下,
+// 本用例只关心连接态那一个字段,不需要把整条 detail 装配路径也搭出来。
+func registerLoadSessionRepos(t *testing.T, ctrl *gomock.Controller, sessionID int64, sess *chat_entity.Session) {
+	t.Helper()
+	sessRepo := mock_chat_repo.NewMockSessionRepo(ctrl)
+	msgRepo := mock_chat_repo.NewMockMessageRepo(ctrl)
+	agtRepo := mock_agent_repo.NewMockAgentRepo(ctrl)
+	sessRepo.EXPECT().Find(gomock.Any(), sessionID).Return(sess, nil).AnyTimes()
+	msgRepo.EXPECT().List(gomock.Any(), sessionID).Return([]*chat_entity.Message{
+		{ID: 11, SessionID: sessionID, Role: "assistant", BlocksJSON: "[]", Seq: 1},
+	}, nil).AnyTimes()
+	agtRepo.EXPECT().Find(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
+	prevSess, prevMsg, prevAgent := chat_repo.Session(), chat_repo.Message(), agent_repo.Agent()
+	chat_repo.RegisterSession(sessRepo)
+	chat_repo.RegisterMessage(msgRepo)
+	agent_repo.RegisterAgent(agtRepo)
+	t.Cleanup(func() {
+		chat_repo.RegisterSession(prevSess)
+		chat_repo.RegisterMessage(prevMsg)
+		agent_repo.RegisterAgent(prevAgent)
+	})
+}
+
+// Given 一条远端会话正处在重连态,When 用户整页重载 webview 后重新 LoadSession,
+// Then 响应必须同步带回「此刻正在重连」。
+//
+// 为什么必须随响应同步返回,而不是重挂时补发一次事件:前端拿到 ActiveStream **之后**
+// 才订阅 chat:conn:<sid>,补发会落在订阅建立之前而丢失 —— 那是竞态,不是实现细节。
+// 为什么这条会话在重载后还在跑:R4 之后断连不再终结会话,turn goroutine 活着,
+// LoadSession 照旧给出 ActiveStream,前端带着 streaming=true 重挂上来;连接态若不
+// 一并返回,整个退避窗口里用户看到的都是普通打字指示器(违背 R13)。
+func TestLoadSession_ServesCurrentConnStateForReattach(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	registerLoadSessionRepos(t, ctrl, 100, &chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "running", Status: consts.ACTIVE,
+	})
+
+	svc := NewChat(NoopEmitter{}).(*chatSvc)
+	ctx := context.Background()
+	load := func() *LoadSessionResponse {
+		t.Helper()
+		resp, err := svc.LoadSession(ctx, &LoadSessionRequest{SessionID: 100})
+		require.NoError(t, err)
+		return resp
+	}
+
+	assert.Equal(t, string(remote.ConnStateConnected), load().Session.ConnectionState,
+		"没有任何连接态记录时按已连接返回(与 remote.Runtime.ConnState 的缺省一致)")
+
+	// 通道断了:runtime 经 ConnStateObserver 播报重连态,用户此刻整页重载。
+	svc.onRemoteConnState(100, remote.SessionConnState{State: remote.ConnStateReconnecting})
+	assert.Equal(t, string(remote.ConnStateReconnecting), load().Session.ConnectionState,
+		"重连中的会话重载后必须仍看得出断连,否则退避窗口里只剩打字指示器")
+
+	// 补齐完成回到实时:连接态回落缺省。
+	svc.onRemoteConnState(100, remote.SessionConnState{State: remote.ConnStateConnected, Replayed: 3})
+	assert.Equal(t, string(remote.ConnStateConnected), load().Session.ConnectionState)
+
+	// 会话终结(重连放弃)后清项:留着终态会泄漏到这条会话的下一轮。
+	svc.onRemoteConnState(100, remote.SessionConnState{State: remote.ConnStateReconnecting})
+	svc.onRemoteConnState(100, remote.SessionConnState{State: remote.ConnStateLost})
+	assert.Equal(t, string(remote.ConnStateConnected), load().Session.ConnectionState)
 }

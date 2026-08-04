@@ -147,31 +147,10 @@ describe("会话状态沿用既有四态 (R15)", () => {
     ]);
   });
 
-  it("等待用户输入落在既有的 waiting 态", () => {
-    seedRunningRemoteSession(200);
-    act(() =>
-      useSessionStatusStore.getState().upsert(200, {
-        agentStatus: "waiting",
-        needsAttention: true,
-      }),
-    );
-    const { result } = renderHook(() => useSessionWithOverlays(200));
-    expect(result.current?.agentStatus).toBe("waiting");
-    expect(result.current?.needsAttention).toBe(true);
-  });
-
-  it("daemon 重启导致的中断落在既有的 error 态,靠文案区分而非新状态", () => {
-    seedRunningRemoteSession(201);
-    act(() => useSessionConnStore.getState().setConnState(201, "lost"));
-    act(() =>
-      useSessionStatusStore.getState().upsert(201, {
-        agentStatus: "error",
-        needsAttention: true,
-      }),
-    );
-    const { result } = renderHook(() => useSessionWithOverlays(201));
-    expect(result.current?.agentStatus).toBe("error");
-  });
+  // 注:「等待输入 → waiting」「终止性断连 → error」这两条映射由后端 runTurn 收尾那段
+  // switch 决定,前端只是照单渲染。在这里塞一个值再读回同一个值证明不了任何实现,
+  // 任何映射都能通过 —— 守卫打在 chat_svc 侧:
+  // TestSend_ActionablePlanBlockMarksSessionWaiting / TestSend_TerminalDaemonDisconnectLandsErrorStatus。
 
   it("转入重连态不改运行态:agentStatus 仍是 running,运行态 store 一个字节没动", () => {
     seedRunningRemoteSession(202);

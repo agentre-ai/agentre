@@ -221,6 +221,10 @@ type chatSvc struct {
 	// 把 entry 从 map 摘掉,下次 borrow 走冷路径重建。
 	remoteMu    sync.Mutex
 	remoteCache map[int64]*remoteRuntimeEntry
+	// connStates: sessionID(int64) → 该会话此刻偏离缺省的连接态。onRemoteConnState
+	// (chat:conn:<sid> 的发布方)维护,LoadSession 同步读。见 remote_reconnect.go。
+	connMu     sync.Mutex
+	connStates map[int64]remote.ConnState
 	// testHookPool 如果非 nil,代替 remote_device_svc.Default().Pool() 用于测试注入。
 	testHookPool remote_device_svc.ConnPool
 }
@@ -494,6 +498,9 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 	// ActiveStream 让中途打开本会话的前端重挂到 per-turn 实时流(子 agent 调用轮 / 自主轮等
 	// 非前端发起的 turn 没有 Send 响应入口)。无活跃 turn 时为空,前端不重挂。
 	resp.Session.ActiveStream = activeStreamName(activeTurn, sess.ID, msgs)
+	// 连接态随响应同步返回:重挂上来的前端要在订阅 chat:conn:<sid> 之前就知道这条会话
+	// 此刻是不是断着的,否则整个退避窗口里只剩打字指示器。
+	resp.Session.ConnectionState = string(s.sessionConnState(sess.ID))
 	if activeTurn &&
 		sess.AgentStatus != "running" && sess.AgentStatus != "waiting" {
 		logger.Ctx(ctx).Warn("chat_svc: LoadSession served non-running status while turn active",

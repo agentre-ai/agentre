@@ -452,6 +452,12 @@ type ChatSessionDetail struct {
 	// 前端 openStream 重挂到实时流。子 agent 调用轮 / 自主轮等"非前端发起"的 turn 没有 Send
 	// 响应入口,只能靠这个字段重挂。无活跃 turn 时为空(omitempty),前端不重挂。
 	ActiveStream string `json:"activeStream,omitempty"`
+	// ConnectionState 是本机与执行该会话那台远端 daemon 之间的**通道**状态
+	// (connected / reconnecting / lost),不是第五个 AgentStatus —— 断连期间远端仍在跑,
+	// 会话照旧是运行中。整页重载会清空前端的连接态 store,而 ActiveStream 仍非空
+	// (断连不再终结会话),不随本响应同步带回它,重连的整个退避窗口里用户看到的都是
+	// 普通打字指示器。补发一次事件不行:前端在本响应**之后**才订阅 chat:conn:<sid>。
+	ConnectionState string `json:"connectionState"`
 	// NeedsAttention 是由 AgentStatus=="waiting" 派生的兼容字段，不单独持久化。
 	// 前端 toolbar 同时叠 displayStatus 兜底：即便 session_status stream 事件丢失，
 	// LoadSession 拉到这个字段为 true 也能把状态翻成橙色 WAITING。
