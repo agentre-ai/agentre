@@ -76,6 +76,11 @@ import {
   type TranscriptLiveContent,
 } from "./chat";
 import { ChatContextSidebar } from "./chat-context-sidebar";
+import {
+  clearCatchUp,
+  useCatchUpSummary,
+  type CatchUpSummary,
+} from "./chat-panel-catchup-state";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
@@ -403,6 +408,74 @@ function applyStreamError(
   const updated = [...messages];
   updated[idx] = { ...updated[idx], errorText: error } as SvcChatMessage;
   return updated;
+}
+
+// TranscriptJumpControl 是转录区底部浮出的那枚控件。
+//
+// 没有未看的补齐时,它就是原来的「回到底部」圆钮;补齐把内容悄悄堆高之后,它长成
+// 一枚带文字的药丸,写明新增了多少条 —— 用户的滚动位置没被夺走,但他得看得见
+// 下面多了东西。补齐里还有没回答的待决策时再补一段「N 项待处理」:待决策一旦
+// 埋进上百条补齐内容中间,不写在这里就等于没人知道。
+// 那段必须是文字:状态色点只是修饰,颜色不能是信息的唯一载体(docs/design.md 无障碍)。
+function TranscriptJumpControl({
+  catchUp,
+  onJump,
+}: {
+  catchUp: CatchUpSummary | null;
+  onJump: () => void;
+}): React.ReactElement {
+  const { t } = useTranslation();
+  const floating =
+    "sticky bottom-4 z-20 ml-auto flex rounded-full bg-background shadow-md hover:shadow-lg dark:bg-background animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out motion-reduce:animate-none";
+
+  if (!catchUp) {
+    return (
+      <Button
+        type="button"
+        data-testid="back-to-bottom-button"
+        variant="outline"
+        size="icon-sm"
+        aria-label={t("chatPanel.scroll.backToBottom")}
+        title={t("chatPanel.scroll.backToBottom")}
+        onClick={onJump}
+        className={floating}
+      >
+        <ArrowDown data-icon="only" aria-hidden="true" />
+      </Button>
+    );
+  }
+
+  // 不加 aria-label:按钮的可访问名就是这些文字本身,条数与待处理项数因此一并被读出。
+  return (
+    <Button
+      type="button"
+      data-testid="jump-to-latest-button"
+      variant="outline"
+      size="sm"
+      title={t("chatPanel.scroll.jumpToLatest")}
+      onClick={onJump}
+      className={cn(floating, "w-fit")}
+    >
+      <ArrowDown aria-hidden="true" />
+      <span>
+        {t("chatPanel.scroll.caughtUpCount", { count: catchUp.newItems })}
+      </span>
+      {catchUp.pendingDecisions > 0 ? (
+        <span
+          data-testid="jump-to-latest-pending"
+          className="flex items-center gap-1 text-status-waiting"
+        >
+          <span
+            aria-hidden="true"
+            className="size-1.5 rounded-full bg-status-waiting"
+          />
+          {t("chatPanel.scroll.pendingCount", {
+            count: catchUp.pendingDecisions,
+          })}
+        </span>
+      ) : null}
+    </Button>
+  );
 }
 
 // ─── ChatPanel ───────────────────────────────────────────────────────────────
@@ -1192,6 +1265,17 @@ function ChatPanel({
     autoFollowRef.current = true;
     saveBottomScrollPosition(readScrollMetrics(el));
   }, [saveBottomScrollPosition]);
+
+  // ── 补齐落定后的「跳到最新」──
+  // 摘要由 ChatStreamsHost 在补齐落定那一发记下,这里只负责读与销账。
+  // 销账条件是「人回到了底部」而不是「点了控件」:自己滚回底部同样意味着补齐内容
+  // 已经看过了,不销账的话下次往上翻会撞见一枚早就过期的控件。贴底时本就沿用既有的
+  // 贴底跟随,控件也永远不出现(渲染条件与销账条件是同一个 showBackToBottom)。
+  const catchUp = useCatchUpSummary(sessionId);
+  React.useEffect(() => {
+    if (showBackToBottom || !catchUp) return;
+    clearCatchUp(sessionId);
+  }, [catchUp, sessionId, showBackToBottom]);
 
   // ── 跨路由 turn 落定后的善后 ──
   // store 在 done/error/closed 时给该 sessionId 自增 doneTick。我们只关心「当前正在
@@ -2084,18 +2168,10 @@ function ChatPanel({
                     tabStateKey={scrollStateKey}
                   />
                   {showBackToBottom ? (
-                    <Button
-                      type="button"
-                      data-testid="back-to-bottom-button"
-                      variant="outline"
-                      size="icon-sm"
-                      aria-label={t("chatPanel.scroll.backToBottom")}
-                      title={t("chatPanel.scroll.backToBottom")}
-                      onClick={handleBackToBottom}
-                      className="sticky bottom-4 z-20 ml-auto flex rounded-full bg-background shadow-md hover:shadow-lg dark:bg-background animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out motion-reduce:animate-none"
-                    >
-                      <ArrowDown data-icon="only" aria-hidden="true" />
-                    </Button>
+                    <TranscriptJumpControl
+                      catchUp={catchUp}
+                      onJump={handleBackToBottom}
+                    />
                   ) : null}
                 </section>
               )}

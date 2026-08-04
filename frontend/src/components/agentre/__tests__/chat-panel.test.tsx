@@ -269,6 +269,10 @@ vi.mock("../chat-panel-context-usage", () => ({
 
 import { ChatPanel, computeTopVisibleAnchor } from "../chat-panel";
 import {
+  __resetCatchUpStateForTesting,
+  recordCatchUp,
+} from "../chat-panel-catchup-state";
+import {
   __resetChatPanelScrollStateForTesting,
   loadTranscriptScrollState,
 } from "../chat-panel-scroll-state";
@@ -282,6 +286,7 @@ import { useSessionConnStore } from "@/stores/session-conn-store";
 /** 清 store streams 以避免测试间串台 */
 function resetStore() {
   __resetChatPanelScrollStateForTesting();
+  __resetCatchUpStateForTesting();
   mockSessionStore.messages = [];
   useChatStreamsStore.getState().streams.clear();
   useSessionConnStore.getState().__reset();
@@ -478,6 +483,152 @@ describe("ChatPanel · 断连活信号接线 (R13)", () => {
     render(<ChatPanel sessionId={42} />);
 
     expect(componentMocks.chatTranscriptProps.at(-1)?.reconnecting).toBe(false);
+  });
+});
+
+// ─── R14:补齐静默落定 + 底部跳转控件 ─────────────────────────────────────────
+//
+// 断线期间攒下的通知在重连后一次性重放,转录区会突然长出一大截。用户如果正在翻
+// 历史,位置被夺走就是最刺人的那种打扰;但内容真的多了,他也需要一条回去的路。
+// 下面每条用例各钉一句 R14:位置不动 / 非贴底且有新增才浮出 / 条数与待处理项数
+// 正确且是文字(色点不能是唯一载体)/ 点击跳到最新 / 本就贴底则照旧跟随、不出控件。
+describe("ChatPanel · 补齐落定与跳转控件 (R14)", () => {
+  function messagesBatch(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      blocks: [],
+      createtime: 0,
+      id: i + 1,
+      role: i % 2 === 0 ? "assistant" : "user",
+    }));
+  }
+
+  /** 模拟「用户从底部往上翻」:先落到底部,再往上滚 —— 只有 scrollTop 变小才算上滚。 */
+  function scrollUpFromBottom(el: HTMLElement, to = 1_240) {
+    act(() => {
+      el.scrollTop = 3_500;
+      fireEvent.scroll(el);
+    });
+    act(() => {
+      el.scrollTop = to;
+      fireEvent.scroll(el);
+    });
+  }
+
+  /** 补齐落定:后台一次性重放的内容到位 + 连接态那一发带回的条数摘要。 */
+  function catchUpLands(
+    view: { rerender: (ui: React.ReactElement) => void },
+    opts: { items: number; pending: number },
+  ) {
+    act(() => {
+      mockSessionStore.messages = messagesBatch(opts.items);
+      recordCatchUp(42, opts.items, opts.pending);
+      view.rerender(<ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />);
+    });
+  }
+
+  it("Given the user is reading history, When a catch-up batch lands, Then the scroll position does not move", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+
+    catchUpLands(view, { items: 12, pending: 0 });
+
+    expect(scroller.scrollTop).toBe(1_240);
+  });
+
+  it("Given the user is not at the bottom, When a catch-up brings new content, Then a jump control surfaces stating how many items arrived", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+
+    catchUpLands(view, { items: 12, pending: 0 });
+
+    const control = screen.getByTestId("jump-to-latest-button");
+    expect(control).toHaveTextContent("12");
+    expect(screen.queryByTestId("jump-to-latest-pending")).toBeNull();
+  });
+
+  it("Given the catch-up carries unanswered decisions, Then the same control states the pending count in TEXT, not by a status dot alone", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+
+    catchUpLands(view, { items: 12, pending: 3 });
+
+    const pending = screen.getByTestId("jump-to-latest-pending");
+    expect(pending).toHaveTextContent("3");
+    // 无障碍:待处理项数必须进可访问名,颜色/圆点只能是修饰 —— 只靠色点的实现
+    // 在这里就红:纯装饰节点 aria-hidden 后可访问名里根本没有那个 3。
+    expect(screen.getByTestId("jump-to-latest-button")).toHaveAccessibleName(
+      expect.stringContaining("3"),
+    );
+  });
+
+  it("Given the jump control is showing, When the user clicks it, Then the transcript jumps to the latest position and the control goes away", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+    catchUpLands(view, { items: 12, pending: 1 });
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("jump-to-latest-button"));
+    });
+
+    expect(scroller.scrollTop).toBe(3_520);
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+  });
+
+  it("Given the user was already at the bottom, When a catch-up lands, Then no control appears and the transcript keeps following the bottom", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    act(() => {
+      scroller.scrollTop = 3_500;
+      fireEvent.scroll(scroller);
+    });
+
+    catchUpLands(view, { items: 12, pending: 1 });
+
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+    expect(scroller.scrollTop).toBe(3_520);
+  });
+
+  it("Given the user scrolls back up after the catch-up was already seen at the bottom, Then no stale control comes back", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    act(() => {
+      scroller.scrollTop = 3_500;
+      fireEvent.scroll(scroller);
+    });
+    catchUpLands(view, { items: 12, pending: 1 });
+
+    scrollUpFromBottom(scroller);
+
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+    expect(screen.getByTestId("back-to-bottom-button")).toBeInTheDocument();
   });
 });
 

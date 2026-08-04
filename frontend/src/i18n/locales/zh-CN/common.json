@@ -575,7 +575,10 @@
       "close": "关闭提示"
     },
     "scroll": {
-      "backToBottom": "回到底部"
+      "backToBottom": "回到底部",
+      "caughtUpCount": "{{count}} 条新内容",
+      "jumpToLatest": "跳到最新",
+      "pendingCount": "{{count}} 项待处理"
     },
     "regenerateDialog": {
       "confirm": "确认重新生成",

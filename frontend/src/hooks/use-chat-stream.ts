@@ -178,6 +178,11 @@ export type ChatStreamEvent = {
   // 远端 daemon 之间连没连上,与 agentStatus 正交(重连期间远端仍在跑)。
   // 走会话级流而不是 per-turn 流:断连时 per-turn 流恰好是没人收得到的那条。
   connectionState?: SessionConnectionState;
+  // 只有补齐落定(connectionState==="connected")那一发带这两个数:本次补齐按游标
+  // 重放了多少条通知(caughtUpCount),以及补完后该会话还有多少个待决策没被回答
+  // (pendingDecisions)。转录区底部那枚跳转控件的全部文案来自它们。
+  caughtUpCount?: number;
+  pendingDecisions?: number;
 };
 
 export function useChatStream(

@@ -575,7 +575,10 @@
       "close": "Close notice"
     },
     "scroll": {
-      "backToBottom": "Back to bottom"
+      "backToBottom": "Back to bottom",
+      "caughtUpCount": "{{count}} new",
+      "jumpToLatest": "Jump to latest",
+      "pendingCount": "{{count}} pending"
     },
     "regenerateDialog": {
       "confirm": "Regenerate",

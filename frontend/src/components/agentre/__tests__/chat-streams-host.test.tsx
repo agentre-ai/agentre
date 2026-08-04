@@ -9,6 +9,10 @@ import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useSessionConnStore } from "@/stores/session-conn-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
+import {
+  __resetCatchUpStateForTesting,
+  getCatchUp,
+} from "../chat-panel-catchup-state";
 import { ChatStreamsHost } from "../chat-streams-host";
 
 import type { ChatStreamEvent } from "@/hooks/use-chat-stream";
@@ -24,6 +28,7 @@ function resetStores() {
   useChatTabsStore.setState({ tabs: [], activeTabId: null });
   useSessionStatusStore.getState().__reset();
   useSessionConnStore.getState().__reset();
+  __resetCatchUpStateForTesting();
   runtimeMocks.EventsOn.mockReset();
   runtimeMocks.EventsOn.mockImplementation(() => vi.fn());
 }
@@ -455,5 +460,62 @@ describe("ChatStreamsHost", () => {
     await waitFor(() =>
       expect(useSessionConnStore.getState().stateOf(42)).toBe("connected"),
     );
+  });
+
+  // R14 的上游一半:补齐落定那一发带着「重放了几条 / 还剩几个待决策」。它必须
+  // 在这个长存宿主上被记下来 —— 补齐可能发生在用户翻着历史、甚至切走路由的时候,
+  // 记在会随 tab 销毁的 panel 上就等于没记,用户回到转录区只看到内容凭空多了一截。
+  it("Given the channel comes back after a catch-up, When the connected frame lands, Then the host records the new-item and pending-decision counts", async () => {
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+
+    render(<ChatStreamsHost />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:conn:42",
+        expect.any(Function),
+      ),
+    );
+
+    act(() => {
+      handlerFor("chat:conn:42")({
+        kind: "connection_state",
+        connectionState: "connected",
+        caughtUpCount: 12,
+        pendingDecisions: 1,
+      });
+    });
+
+    expect(getCatchUp(42)).toEqual({ newItems: 12, pendingDecisions: 1 });
+  });
+
+  it("Given the channel merely drops, When the reconnecting frame lands, Then no catch-up summary is recorded", async () => {
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1001,
+      name: "chat:event:42:1001",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+
+    render(<ChatStreamsHost />);
+    await waitFor(() =>
+      expect(runtimeMocks.EventsOn).toHaveBeenCalledWith(
+        "chat:conn:42",
+        expect.any(Function),
+      ),
+    );
+
+    act(() => {
+      handlerFor("chat:conn:42")({
+        kind: "connection_state",
+        connectionState: "reconnecting",
+      });
+    });
+
+    expect(getCatchUp(42)).toBeNull();
   });
 });

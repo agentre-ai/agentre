@@ -11,6 +11,7 @@ import { useSessionConnStore } from "@/stores/session-conn-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { isResolvedAskState } from "./ask-event-state";
+import { recordCatchUp } from "./chat-panel-catchup-state";
 import { StreamSubscriber } from "./stream-subscriber";
 
 import type { chat_svc } from "../../../wailsjs/go/models";
@@ -410,6 +411,10 @@ export function ChatStreamsHost(): React.ReactElement | null {
 // SessionConnSubscriber 订阅一个会话的连接态流 "chat:conn:<sessionId>"
 // (后端 chat_svc.ConnStateStreamName),把 connection_state 事件翻成 store 写入。
 // 卸载(= 该会话最后一条流结束)时清掉记录:留着旧的 reconnecting 会泄漏到下一轮。
+//
+// 补齐摘要(caughtUpCount / pendingDecisions)记在这里而不是 ChatPanel 上:补齐
+// 可能发生在用户切走路由、甚至这个 tab 还没打开的时候,记在会被销毁的组件上等于没记。
+// 它也不随本组件卸载而清 —— 那份摘要要活到用户真的回到转录区底部为止。
 function SessionConnSubscriber({
   sessionId,
 }: {
@@ -424,6 +429,12 @@ function SessionConnSubscriber({
       onEvent={(ev) => {
         if (ev.kind !== "connection_state" || !ev.connectionState) return;
         setConnState(sessionId, ev.connectionState);
+        // 只有补齐落定那一发带条数;其余帧两个数都是 0,recordCatchUp 自己不留摘要。
+        recordCatchUp(
+          sessionId,
+          ev.caughtUpCount ?? 0,
+          ev.pendingDecisions ?? 0,
+        );
       }}
     />
   );
