@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useLocalCommandsStore } from "../../../../stores/local-commands-store";
@@ -13,26 +13,113 @@ vi.mock("../../../../../wailsjs/go/app/App", () => ({
 // output-terminal.test.tsx.
 vi.mock("../output-terminal", () => ({ OutputTerminal: () => null }));
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("LocalCommandCard", () => {
   beforeEach(() => {
     close.mockReset();
     useLocalCommandsStore.setState({ entries: {} });
   });
 
-  it("running shows stop + open-in-terminal; stop calls TerminalClose", async () => {
+  it("Given no exit listener and TerminalClose succeeds, When Stop is clicked, Then the transient entry settles stopped with its output preserved", async () => {
+    close.mockResolvedValueOnce(undefined);
     useLocalCommandsStore
       .getState()
       .start({ id: "t1", sessionId: 1, command: "go test", createdAt: 1 });
     useLocalCommandsStore.getState().appendOutput("t1", "=== RUN x\n");
-    const onOpen = vi.fn();
-    render(<LocalCommandCard entryId="t1" onOpenInTerminal={onOpen} />);
-    expect(screen.getByText("go test")).toBeInTheDocument();
+    render(<LocalCommandCard entryId="t1" onOpenInTerminal={vi.fn()} />);
+
     await userEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
+
     expect(close).toHaveBeenCalledWith("t1");
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get("t1")).toMatchObject({
+        output: "=== RUN x\n",
+        status: "stopped",
+      });
+    });
+    expect(screen.queryByRole("button", { name: /停止|Stop/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /在终端中打开|Open in terminal/ }),
+    ).toBeNull();
+  });
+
+  it("Given a running command, When Open in terminal is clicked, Then the command id is routed without changing lifecycle state", async () => {
+    useLocalCommandsStore
+      .getState()
+      .start({ id: "t-open", sessionId: 1, command: "go test", createdAt: 1 });
+    const onOpen = vi.fn();
+    render(<LocalCommandCard entryId="t-open" onOpenInTerminal={onOpen} />);
+
     await userEvent.click(
       screen.getByRole("button", { name: /在终端中打开|Open in terminal/ }),
     );
-    expect(onOpen).toHaveBeenCalledWith("t1");
+
+    expect(onOpen).toHaveBeenCalledWith("t-open");
+    expect(useLocalCommandsStore.getState().get("t-open")?.status).toBe(
+      "running",
+    );
+  });
+
+  it("Given TerminalClose rejects, When Stop is clicked, Then the rejection is contained and Stop remains available for a successful retry", async () => {
+    close
+      .mockRejectedValueOnce(new Error("close unavailable"))
+      .mockResolvedValueOnce(undefined);
+    useLocalCommandsStore.getState().start({
+      id: "t-retry",
+      sessionId: 1,
+      command: "sleep 30",
+      createdAt: 1,
+    });
+    render(<LocalCommandCard entryId="t-retry" onOpenInTerminal={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
+    await waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(useLocalCommandsStore.getState().get("t-retry")?.status).toBe(
+      "running",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get("t-retry")?.status).toBe(
+        "stopped",
+      );
+    });
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
+  it("Given a normal exit wins while TerminalClose is pending, When close later succeeds, Then the exit status, code, and output are preserved", async () => {
+    const closing = deferred<void>();
+    close.mockReturnValueOnce(closing.promise);
+    useLocalCommandsStore.getState().start({
+      id: "t-exit",
+      sessionId: 1,
+      command: "printf ok",
+      createdAt: 1,
+    });
+    useLocalCommandsStore.getState().appendOutput("t-exit", "ok\n");
+    render(<LocalCommandCard entryId="t-exit" onOpenInTerminal={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
+    act(() => {
+      useLocalCommandsStore.getState().finish("t-exit", "done", 0);
+    });
+    await act(async () => {
+      closing.resolve();
+      await closing.promise;
+    });
+
+    expect(useLocalCommandsStore.getState().get("t-exit")).toMatchObject({
+      exitCode: 0,
+      output: "ok\n",
+      status: "done",
+    });
   });
 
   it("after exit shows exit code and no run-time action buttons", () => {

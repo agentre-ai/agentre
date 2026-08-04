@@ -1413,12 +1413,26 @@ function ChatPanel({
           }
         }
       };
-      const fail = (error: unknown) => {
-        useLocalCommandsStore
-          .getState()
-          .appendOutput(terminalId, String(error));
-        useLocalCommandsStore.getState().finish(terminalId, "failed", -1);
+      const settle = (
+        status: "done" | "failed" | "stopped",
+        exitCode?: number,
+      ) => {
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(terminalId)?.status !== "running") {
+          cleanupListeners();
+          return;
+        }
+        commands.finish(terminalId, status, exitCode);
         cleanupListeners();
+      };
+      const fail = (error: unknown) => {
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(terminalId)?.status !== "running") {
+          cleanupListeners();
+          return;
+        }
+        commands.appendOutput(terminalId, String(error));
+        settle("failed", -1);
       };
       const decode = makeStreamDecoder();
       try {
@@ -1434,11 +1448,13 @@ function ChatPanel({
               : p.code === 0
                 ? "done"
                 : "failed";
-          useLocalCommandsStore.getState().finish(terminalId, status, p.code);
-          cleanupListeners();
+          settle(status, p.code);
         });
       } catch (error: unknown) {
-        fail(error);
+        useLocalCommandsStore
+          .getState()
+          .appendOutput(terminalId, String(error));
+        cleanupListeners();
       }
       try {
         const response = await TerminalRunCommand(

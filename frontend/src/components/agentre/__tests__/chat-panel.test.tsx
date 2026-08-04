@@ -15,7 +15,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 const sonnerMocks = vi.hoisted(() => ({
   toast: {
@@ -335,6 +335,16 @@ function resetStore() {
   useLocalCommandsStore.setState({ entries: {} });
   sonnerMocks.toast.error.mockClear();
   sonnerMocks.toast.success.mockClear();
+}
+
+function observeLocalCommandFinish() {
+  const originalFinish = useLocalCommandsStore.getState().finish;
+  const finish = vi.fn(originalFinish);
+  useLocalCommandsStore.setState({ finish });
+  onTestFinished(() =>
+    useLocalCommandsStore.setState({ finish: originalFinish }),
+  );
+  return finish;
 }
 
 function deferred<T>() {
@@ -701,9 +711,10 @@ describe("ChatPanel · local command scope and execution", () => {
   });
 
   it.each(["data", "exit"] as const)(
-    "Given the terminal %s listener throws synchronously, When a command is submitted, Then listeners are contained, the card fails, and the terminal RPC still launches exactly once",
+    "Given the terminal %s listener throws synchronously and the RPC succeeds, When a command is submitted, Then partial listeners are cleaned, the diagnostic is captured, and the card remains stop-capable after exactly one launch",
     async (throwingListener) => {
       resetStore();
+      const finish = observeLocalCommandFinish();
       mockSessionStore.session = makeSession({ id: 42 });
       const listenerError = new Error(`${throwingListener} listener failed`);
       let terminalListenerCount = 0;
@@ -738,10 +749,14 @@ describe("ChatPanel · local command scope and execution", () => {
       expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
       const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
       expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
-        exitCode: -1,
+        command: "pwd",
         output: String(listenerError),
-        status: "failed",
+        status: "running",
       });
+      expect(
+        useLocalCommandsStore.getState().get(terminalId)?.finishedAt,
+      ).toBeUndefined();
+      expect(finish).not.toHaveBeenCalled();
       expect(runtimeMocks.EventsOff).toHaveBeenCalledWith(
         `terminal:${terminalId}:data`,
       );
@@ -873,54 +888,101 @@ describe("ChatPanel · local command scope and execution", () => {
     expect(onSidebarShouldReload).toHaveBeenCalledTimes(1);
   });
 
-  it("Given TerminalRunCommand returns startError with scope, When execution settles, Then the card fails but the exact returned scope remains available for history", async () => {
+  it("Given the first listener fails and TerminalRunCommand returns startError with scope, When the terminal result arrives, Then the still-running card settles failed and the exact returned scope remains available for history", async () => {
     resetStore();
+    const finish = observeLocalCommandFinish();
     mockSessionStore.session = makeSession({ id: 42 });
-    appMocks.TerminalRunCommand.mockResolvedValueOnce({
-      scope: { deviceId: "remote-11", cwd: "/srv/exact" },
-      startError: "executable not found",
+    const listenerError = new Error("data listener failed");
+    runtimeMocks.EventsOn.mockImplementation((event?: string) => {
+      if (event?.startsWith("terminal:")) throw listenerError;
+      return vi.fn();
     });
+    const terminalRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+      startError?: string;
+    }>();
+    appMocks.TerminalRunCommand.mockReturnValueOnce(terminalRun.promise);
     render(<ChatPanel sessionId={42} />);
     const runCommand = componentMocks.chatComposerProps.at(-1)
       ?.onRunCommand as (command: string) => Promise<unknown>;
 
-    await expect(runCommand("missing-tool")).resolves.toEqual({
+    const result = runCommand("missing-tool");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      output: String(listenerError),
+      status: "running",
+    });
+
+    await act(async () => {
+      terminalRun.resolve({
+        scope: { deviceId: "remote-11", cwd: "/srv/exact" },
+        startError: "executable not found",
+      });
+      await terminalRun.promise;
+    });
+    await expect(result).resolves.toEqual({
       deviceId: "remote-11",
       cwd: "/srv/exact",
     });
-    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
     expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
       command: "missing-tool",
       exitCode: -1,
-      output: "executable not found",
       status: "failed",
     });
-    expect(runtimeMocks.EventsOff).toHaveBeenCalledWith(
-      `terminal:${terminalId}:data`,
+    expect(useLocalCommandsStore.getState().get(terminalId)?.output).toContain(
+      String(listenerError),
     );
-    expect(runtimeMocks.EventsOff).toHaveBeenCalledWith(
-      `terminal:${terminalId}:exit`,
+    expect(useLocalCommandsStore.getState().get(terminalId)?.output).toContain(
+      "executable not found",
     );
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledTimes(1);
   });
 
-  it("Given TerminalRunCommand rejects before returning scope, When execution settles, Then the card fails, undefined prevents history, and no rejection escapes", async () => {
+  it("Given the second listener fails and TerminalRunCommand rejects before returning scope, When the terminal result arrives, Then the still-running card settles failed once, undefined prevents history, and no rejection escapes", async () => {
     resetStore();
+    const finish = observeLocalCommandFinish();
     mockSessionStore.session = makeSession({ id: 42 });
-    appMocks.TerminalRunCommand.mockRejectedValueOnce(
-      new Error("target resolution failed"),
-    );
+    const listenerError = new Error("exit listener failed");
+    let terminalListenerCount = 0;
+    runtimeMocks.EventsOn.mockImplementation((event?: string) => {
+      if (!event?.startsWith("terminal:")) return vi.fn();
+      terminalListenerCount += 1;
+      if (terminalListenerCount === 2) throw listenerError;
+      return vi.fn();
+    });
+    const terminalRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+    }>();
+    appMocks.TerminalRunCommand.mockReturnValueOnce(terminalRun.promise);
     render(<ChatPanel sessionId={42} />);
     const runCommand = componentMocks.chatComposerProps.at(-1)
       ?.onRunCommand as (command: string) => Promise<unknown>;
 
-    await expect(runCommand("pwd")).resolves.toBeUndefined();
+    const result = runCommand("pwd");
     const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
     expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      output: String(listenerError),
+      status: "running",
+    });
+
+    await act(async () => {
+      terminalRun.reject(new Error("target resolution failed"));
+      await result;
+    });
+    await expect(result).resolves.toBeUndefined();
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
       exitCode: -1,
-      output: "Error: target resolution failed",
       status: "failed",
     });
+    expect(useLocalCommandsStore.getState().get(terminalId)?.output).toContain(
+      String(listenerError),
+    );
+    expect(useLocalCommandsStore.getState().get(terminalId)?.output).toContain(
+      "Error: target resolution failed",
+    );
     expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledTimes(1);
   });
 });
 

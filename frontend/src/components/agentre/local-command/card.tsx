@@ -62,6 +62,17 @@ export function LocalCommandCard({
     entry.finishedAt !== undefined
       ? formatDuration(entry.finishedAt - entry.createdAt)
       : null;
+  const stop = async () => {
+    try {
+      await TerminalClose(entryId);
+    } catch {
+      return;
+    }
+    const commands = useLocalCommandsStore.getState();
+    if (commands.get(entryId)?.status === "running") {
+      commands.finish(entryId, "stopped");
+    }
+  };
 
   const statusPill = (
     <TranscriptPill className={cfg.pill}>
@@ -197,7 +208,7 @@ export function LocalCommandCard({
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => void TerminalClose(entryId)}
+            onClick={() => void stop()}
           >
             {t("localCommand.stop")}
           </Button>
