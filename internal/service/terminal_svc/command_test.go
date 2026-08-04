@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/stretchr/testify/assert"
@@ -24,11 +25,14 @@ type completedCommandHandle struct {
 	exit <-chan pty.ExitInfo
 }
 
-func newCompletedCommandHandle() *completedCommandHandle {
-	data := make(chan []byte)
+func newCompletedCommandHandle(output []byte, exitInfo pty.ExitInfo) *completedCommandHandle {
+	data := make(chan []byte, 1)
+	if len(output) > 0 {
+		data <- output
+	}
 	close(data)
 	exit := make(chan pty.ExitInfo, 1)
-	exit <- pty.ExitInfo{}
+	exit <- exitInfo
 	close(exit)
 	return &completedCommandHandle{data: data, exit: exit}
 }
@@ -103,24 +107,31 @@ func TestService_RunCommand_GivenInvalidRequest_WhenStarted_ThenRejectsBeforeRes
 	}
 }
 
-func TestService_RunCommand_GivenResolvedTarget_WhenStarted_ThenResolvesOnceOpensOnceAndReturnsExactScope(t *testing.T) {
+func TestService_RunCommand_GivenResolvedTarget_WhenCommandExits_ThenLogsOneRedactedStartAndExit(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	wantScope := &terminal_svc.CommandScope{DeviceID: "device-9", Cwd: "/remote/current"}
+	sensitiveCwd := "/Users/alice/private-worktree"
+	sensitiveCommand := "deploy --token=fixture-sensitive-token"
+	sensitiveOutput := []byte("output with fixture-sensitive-output")
+	sensitiveExitMessage := "exit detail with fixture-sensitive-message"
+	wantScope := &terminal_svc.CommandScope{DeviceID: "device-9", Cwd: sensitiveCwd}
 	resolveCalls := 0
 	localBackend := mocks.NewMockPTYBackend(ctrl)
 	remoteBackend := mocks.NewMockPTYBackend(ctrl)
 	remoteBackend.EXPECT().Open(gomock.Any(), pty.Spec{
-		Cwd: "/remote/current", Command: "  go test ./...  ", Cols: 100, Rows: 30,
-	}).Return(newCompletedCommandHandle(), nil).Times(1)
+		Cwd: sensitiveCwd, Command: sensitiveCommand, Cols: 100, Rows: 30,
+	}).Return(newCompletedCommandHandle(sensitiveOutput, pty.ExitInfo{
+		Code: 17, Reason: "natural", Msg: sensitiveExitMessage,
+	}), nil).Times(1)
 	factoryCalls := 0
+	emitter := &recordingEmitter{}
 	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(localBackend,
 		func(deviceID string) (terminal_svc.PTYBackend, error) {
 			factoryCalls++
 			assert.Equal(t, "device-9", deviceID)
 			return remoteBackend, nil
-		}), terminal_svc.NoopEmitter{})
+		}), emitter)
 	svc.SetCommandScopeResolver(func(
 		_ context.Context,
 		req terminal_svc.ResolveCommandScopeRequest,
@@ -136,7 +147,7 @@ func TestService_RunCommand_GivenResolvedTarget_WhenStarted_ThenResolvesOnceOpen
 	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
 		TerminalID: "terminal-1",
 		SessionID:  71,
-		Command:    "  go test ./...  ",
+		Command:    sensitiveCommand,
 		Cols:       100,
 		Rows:       30,
 	})
@@ -147,7 +158,74 @@ func TestService_RunCommand_GivenResolvedTarget_WhenStarted_ThenResolvesOnceOpen
 	assert.Empty(t, response.StartError)
 	assert.Equal(t, 1, resolveCalls)
 	assert.Equal(t, 1, factoryCalls)
-	assert.Equal(t, 0, logs.Len())
+	require.Eventually(t, func() bool {
+		exitEvents := 0
+		for _, event := range emitter.Snapshot() {
+			if event.Name == terminal_svc.ExitEventName("terminal-1") {
+				exitEvents++
+			}
+		}
+		return logs.Len() == 2 && exitEvents == 1
+	}, time.Second, time.Millisecond)
+
+	entries := logs.All()
+	require.Len(t, entries, 2)
+	assert.Equal(t, zapcore.InfoLevel, entries[0].Level)
+	assert.Equal(t, "terminal_svc.RunCommand: command started", entries[0].Message)
+	assert.Equal(t, map[string]any{
+		"sessionId":  int64(71),
+		"terminalId": "terminal-1",
+		"deviceId":   "device-9",
+	}, entries[0].ContextMap())
+	assert.Equal(t, zapcore.InfoLevel, entries[1].Level)
+	assert.Equal(t, "terminal_svc.RunCommand: command exited", entries[1].Message)
+	assert.Equal(t, map[string]any{
+		"sessionId":  int64(71),
+		"terminalId": "terminal-1",
+		"deviceId":   "device-9",
+		"exitCode":   int64(17),
+		"exitReason": "natural",
+	}, entries[1].ContextMap())
+	structuredLogs, marshalErr := json.Marshal(entries)
+	require.NoError(t, marshalErr)
+	observedLogs := string(structuredLogs)
+	for _, sensitive := range []string{
+		sensitiveCommand, "fixture-sensitive-token", sensitiveCwd,
+		string(sensitiveOutput), "fixture-sensitive-output", sensitiveExitMessage, "fixture-sensitive-message",
+	} {
+		assert.NotContains(t, observedLogs, sensitive)
+	}
+}
+
+func TestService_Open_GivenInteractiveTerminal_WhenItExits_ThenLogsNoCommandLifecycle(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	localBackend := mocks.NewMockPTYBackend(ctrl)
+	localBackend.EXPECT().Open(gomock.Any(), pty.Spec{
+		Cwd: "/private/interactive-cwd", Cols: 80, Rows: 24,
+	}).Return(newCompletedCommandHandle([]byte("private interactive output"), pty.ExitInfo{
+		Code: 0, Reason: "natural", Msg: "private interactive exit detail",
+	}), nil).Times(1)
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(
+		terminal_svc.NewBackendSelector(localBackend, nil),
+		emitter,
+	)
+	defer svc.Shutdown()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	require.NoError(t, svc.Open(ctx, "interactive-1", "", "/private/interactive-cwd", 80, 24))
+	require.Eventually(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if event.Name == terminal_svc.ExitEventName("interactive-1") {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	assert.Zero(t, logs.Len())
 }
 
 func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeStartErrorAndOneRedactedWarning(t *testing.T) {
@@ -198,6 +276,8 @@ func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeSt
 	assert.Equal(t, 1, resolveCalls)
 	assert.Equal(t, 1, factoryCalls)
 	require.Equal(t, 1, logs.Len())
+	assert.Zero(t, logs.FilterMessage("terminal_svc.RunCommand: command started").Len())
+	assert.Zero(t, logs.FilterMessage("terminal_svc.RunCommand: command exited").Len())
 	entry := logs.All()[0]
 	assert.Equal(t, zapcore.WarnLevel, entry.Level)
 	assert.Equal(t, "terminal_svc.RunCommand: open command failed", entry.Message)

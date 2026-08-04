@@ -48,6 +48,28 @@ type RunCommandResponse struct {
 	StartError string       `json:"startError,omitempty"`
 }
 
+type commandLifecycle struct {
+	sessionID  int64
+	terminalID string
+	deviceID   string
+}
+
+func (l *commandLifecycle) logStarted(ctx context.Context) {
+	logger.Ctx(ctx).Info("terminal_svc.RunCommand: command started",
+		zap.Int64("sessionId", l.sessionID),
+		zap.String("terminalId", l.terminalID),
+		zap.String("deviceId", l.deviceID))
+}
+
+func (l *commandLifecycle) logExited(ctx context.Context, exitCode int, exitReason string) {
+	logger.Ctx(ctx).Info("terminal_svc.RunCommand: command exited",
+		zap.Int64("sessionId", l.sessionID),
+		zap.String("terminalId", l.terminalID),
+		zap.String("deviceId", l.deviceID),
+		zap.Int("exitCode", exitCode),
+		zap.String("exitReason", exitReason))
+}
+
 // SetCommandScopeResolver 注入 session → 命令执行作用域的只读解析器。
 func (s *Service) SetCommandScopeResolver(resolver CommandScopeResolver) {
 	s.commandScopeResolver = resolver
@@ -72,8 +94,13 @@ func (s *Service) RunCommand(ctx context.Context, req RunCommandRequest) (*RunCo
 		return nil, ErrCommandScopeUnavailable
 	}
 	response := &RunCommandResponse{Scope: *scope}
-	if err := s.OpenCommand(
-		ctx, req.TerminalID, scope.DeviceID, scope.Cwd, req.Command, req.Cols, req.Rows,
+	lifecycle := &commandLifecycle{
+		sessionID:  req.SessionID,
+		terminalID: req.TerminalID,
+		deviceID:   scope.DeviceID,
+	}
+	if err := s.openCommand(
+		ctx, req.TerminalID, scope.DeviceID, scope.Cwd, req.Command, req.Cols, req.Rows, lifecycle,
 	); err != nil {
 		logger.Ctx(ctx).Warn("terminal_svc.RunCommand: open command failed",
 			zap.Int64("sessionId", req.SessionID),

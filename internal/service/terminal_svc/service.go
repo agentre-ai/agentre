@@ -58,16 +58,36 @@ func NewService(sel *BackendSelector, emitter Emitter) *Service {
 
 // Open opens an interactive login shell (original behavior).
 func (s *Service) Open(ctx context.Context, terminalID string, deviceID string, cwd string, cols, rows uint16) error {
-	return s.open(ctx, terminalID, deviceID, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows})
+	return s.open(ctx, terminalID, deviceID, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows}, nil)
 }
 
 // OpenCommand runs a one-shot command under cwd, reusing the same
 // streaming/exit/kill machinery as Open.
 func (s *Service) OpenCommand(ctx context.Context, terminalID string, deviceID string, cwd string, command string, cols, rows uint16) error {
-	return s.open(ctx, terminalID, deviceID, pty.Spec{Cwd: cwd, Command: command, Cols: cols, Rows: rows})
+	return s.openCommand(ctx, terminalID, deviceID, cwd, command, cols, rows, nil)
 }
 
-func (s *Service) open(ctx context.Context, terminalID string, deviceID string, spec pty.Spec) error {
+func (s *Service) openCommand(
+	ctx context.Context,
+	terminalID string,
+	deviceID string,
+	cwd string,
+	command string,
+	cols, rows uint16,
+	lifecycle *commandLifecycle,
+) error {
+	return s.open(ctx, terminalID, deviceID, pty.Spec{
+		Cwd: cwd, Command: command, Cols: cols, Rows: rows,
+	}, lifecycle)
+}
+
+func (s *Service) open(
+	ctx context.Context,
+	terminalID string,
+	deviceID string,
+	spec pty.Spec,
+	lifecycle *commandLifecycle,
+) error {
 	backend, err := s.selector.Pick(deviceID)
 	if err != nil {
 		return err
@@ -119,8 +139,13 @@ func (s *Service) open(ctx context.Context, terminalID string, deviceID string, 
 		_ = h.Close()
 		return nil
 	}
+	// Log before starting the pump so even an already-exited handle preserves
+	// the command lifecycle order.
+	if lifecycle != nil {
+		lifecycle.logStarted(ctx)
+	}
 	// Use the original ctx for the pump so it survives openCtx cancellation.
-	go s.pump(ctx, terminalID, h)
+	go s.pump(ctx, terminalID, h, lifecycle)
 	return nil
 }
 
@@ -197,7 +222,12 @@ func (s *Service) lookupHandle(terminalID string) pty.Handle {
 	return s.sessions[terminalID]
 }
 
-func (s *Service) pump(ctx context.Context, terminalID string, h pty.Handle) {
+func (s *Service) pump(
+	ctx context.Context,
+	terminalID string,
+	h pty.Handle,
+	lifecycle *commandLifecycle,
+) {
 	// Data() and Exit() are independent channels with no ordering guarantee
 	// between them. We must drain every data chunk AND read the single exit
 	// value before emitting the exit event — otherwise a naive select that
@@ -266,6 +296,9 @@ stream:
 		delete(s.sessions, terminalID)
 	}
 	s.mu.Unlock()
+	if lifecycle != nil {
+		lifecycle.logExited(ctx, exitInfo.Code, exitInfo.Reason)
+	}
 	s.emitter.Emit(ctx, ExitEventName(terminalID), protocol.TerminalExitEvent{
 		Code: exitInfo.Code, Reason: exitInfo.Reason, Msg: exitInfo.Msg,
 	})
