@@ -3324,9 +3324,21 @@ func providerSessionNotFound(err error) bool {
 	return errors.Is(err, claudecode.ErrSessionNotFound) || errors.Is(err, agentruntime.ErrSessionNotFound)
 }
 
+// mapTurnError 把一轮的终止原因翻成**交到用户面前的那句话**。
+//
+// 远端的两种非失败终止在这里分道:R15 规定它们都沿用既有的 error 态、不新增第五个
+// AgentStatus 取值,「由消息文案区分其与真实错误」—— 而消息文案就是这个返回值(经
+// assistantMsg.ErrorText 持久化)。三句话必须互不相同:被打断(daemon 重启 / 会话在
+// 那台机器上已中断)、连不上了(重连彻底失败)、真的跑失败了(原样透出后端错误)。
 func (s *chatSvc) mapTurnError(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend, src error) error {
 	if src == nil {
 		return nil
+	}
+	if errors.Is(src, remote.ErrRunInterrupted) {
+		return i18n.NewError(ctx, code.ChatRemoteRunInterrupted)
+	}
+	if errors.Is(src, remote.ErrDaemonDisconnected) {
+		return i18n.NewError(ctx, code.ChatRemoteDaemonUnreachable)
 	}
 	if providerSessionNotFound(src) {
 		return s.mapProviderSessionError(ctx, sess, src)

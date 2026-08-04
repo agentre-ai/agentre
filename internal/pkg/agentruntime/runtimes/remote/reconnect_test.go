@@ -735,7 +735,8 @@ func TestTerminalNotification_FlushesCursorImmediately(t *testing.T) {
 // ── R12: 实例标识不匹配 → 游标失效 ──────────────────────────────────────────
 
 // Given 会话记录的 daemon 实例标识与重连上的这台不一致,When 重连,Then 不发起
-// 增量拉取,会话按已中断处理(注入 ErrDaemonDisconnected 并关闭 events)。
+// 增量拉取,会话按已中断处理(注入 ErrRunInterrupted 并关闭 events)—— R12 说的就是
+// 「按已中断处理」,所以它拿的是「被打断」那个理由,不是「连不上了」。
 func TestReconnect_DaemonIdentityMismatch_InvalidatesCursor(t *testing.T) {
 	rig := newReconnectRig(t, true)
 	rig.cursor.setLoad(func(_ int64, fp string) (int64, bool, error) {
@@ -750,7 +751,7 @@ func TestReconnect_DaemonIdentityMismatch_InvalidatesCursor(t *testing.T) {
 
 	texts := drainTexts(t, rig.events, 3*time.Second)
 	assert.Empty(t, texts, "游标失效时不得重放任何通知")
-	assert.ErrorIs(t, rig.result.StopErr, ErrDaemonDisconnected)
+	assert.ErrorIs(t, rig.result.StopErr, ErrRunInterrupted)
 	assert.Empty(t, conn2.methodCalls(wire.MethodSessionPull), "游标失效时不得增量拉取")
 	assert.Equal(t, ConnStateLost, rig.rt.ConnState(rigSessionID))
 }
@@ -913,6 +914,107 @@ func TestReconnect_AttemptsExhausted_InjectsDisconnected(t *testing.T) {
 	assert.ErrorIs(t, rig.result.StopErr, ErrDaemonDisconnected)
 	assert.Equal(t, 2, rig.reconnectAttempts(), "退避表有几档就试几次")
 	assert.Equal(t, ConnStateLost, rig.rt.ConnState(rigSessionID))
+}
+
+// ── R15: 「被打断」与「连不上了」是两个可区分的终止理由 ──────────────────────
+
+// Given daemon 重启后把这条会话标成了中断态(接管回 ErrNoActiveTurn),When 重连补齐,
+// Then 注入的终止理由是 ErrRunInterrupted,**不是** ErrDaemonDisconnected。
+//
+// 两者同哨兵的后果是用户可见的:上层只有 StopErr 一个信息源,折成同一个哨兵就等于折成
+// 同一句文案,「被打断」「连不上了」在会话里长得一模一样 —— R15 要求的正是「由消息文案
+// 区分」,而文案的唯一依据就是这里交出去的理由。
+func TestReconnect_DaemonRestartedInterrupt_InjectsInterruptedNotDisconnected(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	conn2 := newFakeConn()
+	conn2.script(func(method string, _, _ any) error {
+		if method == wire.MethodSessionAttach {
+			return &jsonrpc.Error{Code: wire.ErrCodeNoActiveTurn, Message: "no active turn"}
+		}
+		return nil
+	})
+	rig.queue(conn2, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	_ = drainTexts(t, rig.events, 3*time.Second)
+	assert.ErrorIs(t, rig.result.StopErr, ErrRunInterrupted,
+		"daemon 重启导致的中断要带自己的理由,上层才能给出「是被打断」的文案")
+	assert.NotErrorIs(t, rig.result.StopErr, ErrDaemonDisconnected,
+		"被打断不是连不上了:折成同一个哨兵,两种情况在会话里就长得一模一样")
+	assert.Equal(t, ConnStateLost, rig.rt.ConnState(rigSessionID))
+}
+
+// Given 只有自主续轮在飞,When 重连彻底失败(退避表用尽),Then 这一轮被标成**终止**:
+// RunResult.StopErr 带着终止理由(连不上了)。
+//
+// 这是 F3 留下的线头:放弃时 closeAllAutoSessions 只 close(cur.events) 而 StopErr 仍是
+// nil,chat_svc.driveAutonomousTurn 于是把一条**被截断的**助手消息当作正常跑完的轮次
+// 落库 —— 用户看到的是一条戛然而止却「成功」的回答。
+func TestReconnectGiveUp_AutonomousTurnInFlight_MarksTurnTerminated(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	turns := rig.rt.AutonomousTurns(rigSessionID)
+
+	// 这一轮 Run 正常收尾 —— 只剩自主轮还在跑。
+	rig.conn1.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{SessionID: rigSessionID, Seq: 1})
+	_ = drainTexts(t, rig.events, time.Second)
+
+	rig.conn1.deliver(t, wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: rigSessionID, Trigger: "background_task", Seq: 2,
+	})
+	var turn agentruntime.AutonomousTurn
+	select {
+	case turn = <-turns:
+	case <-time.After(time.Second):
+		t.Fatal("自主轮没有交付给 watcher")
+	}
+	ev, err := json.Marshal(agentruntime.TextDelta{Text: "partial"})
+	require.NoError(t, err)
+	rig.conn1.deliver(t, wire.NotifyAutonomousTurnEvent, wire.EventFrame{
+		SessionID: rigSessionID, Event: ev, Seq: 3,
+	})
+
+	rig.queue(nil, "", assertErr("dial refused"))
+	rig.queue(nil, "", assertErr("dial refused"))
+
+	_ = rig.conn1.Close()
+
+	texts := drainTexts(t, turn.Events, 3*time.Second)
+	assert.Equal(t, []string{"partial"}, texts)
+	require.NotNil(t, turn.Result)
+	assert.ErrorIs(t, turn.Result.StopErr, ErrDaemonDisconnected,
+		"放弃重连时在飞的自主轮必须被标成终止,否则一条被截断的回答会以「正常跑完」落库")
+}
+
+// Given 自主续轮在飞而这条会话在 daemon 上已经接不回去了(接管回 ErrNoActiveTurn),
+// When 补齐,Then 这一轮同样被标成终止,且理由是「被打断」而不是「连不上了」。
+func TestReconnect_AutonomousTurnUnrecoverable_MarksTurnInterrupted(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	turns := rig.rt.AutonomousTurns(rigSessionID)
+
+	rig.conn1.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{SessionID: rigSessionID, Seq: 1})
+	_ = drainTexts(t, rig.events, time.Second)
+	rig.conn1.deliver(t, wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: rigSessionID, Trigger: "background_task", Seq: 2,
+	})
+	turn := <-turns
+
+	conn2 := newFakeConn()
+	conn2.script(func(method string, _, _ any) error {
+		if method == wire.MethodSessionAttach {
+			return &jsonrpc.Error{Code: wire.ErrCodeNoActiveTurn, Message: "no active turn"}
+		}
+		return nil
+	})
+	rig.queue(conn2, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	_ = drainTexts(t, turn.Events, 3*time.Second)
+	require.NotNil(t, turn.Result)
+	assert.ErrorIs(t, turn.Result.StopErr, ErrRunInterrupted,
+		"接不回去的自主轮是被打断,不是跑失败")
+	assert.NotErrorIs(t, turn.Result.StopErr, ErrDaemonDisconnected)
 }
 
 // ── 接管可反复发起 ──────────────────────────────────────────────────────────

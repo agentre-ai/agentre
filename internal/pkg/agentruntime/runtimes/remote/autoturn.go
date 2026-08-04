@@ -155,8 +155,8 @@ func (r *Runtime) handleAutonomousTurnDone(ctx context.Context, raw json.RawMess
 
 // closeAllAutoSessions 在 conn close(watchClose)时把所有自主续轮镜像拆掉:
 // close 每个 out → chat_svc watcher 的 `for range` 退出;在飞的那轮 events 也 close,
-// 让 driveAutonomousTurn 收尾。幂等。
-func (r *Runtime) closeAllAutoSessions() {
+// 让 driveAutonomousTurn 收尾。cause 是这一轮的终止理由,见 closeAutoSession。幂等。
+func (r *Runtime) closeAllAutoSessions(cause error) {
 	r.mu.Lock()
 	all := make([]*autoSession, 0, len(r.autoSessions))
 	for sid, a := range r.autoSessions {
@@ -165,12 +165,18 @@ func (r *Runtime) closeAllAutoSessions() {
 	}
 	r.mu.Unlock()
 	for _, a := range all {
-		closeAutoSession(a)
+		closeAutoSession(a, cause)
 	}
 }
 
 // closeAutoSession 拆掉一个自主续轮镜像。幂等。
-func closeAutoSession(a *autoSession) {
+//
+// cause 是**在飞那一轮**的终止理由(ErrRunInterrupted / ErrDaemonDisconnected),写进
+// 它的 RunResult.StopErr —— 与 per-Run 的 closeSessionWithErr 同一条纪律。少了它,
+// chat_svc.driveAutonomousTurn 会把一条被截断的助手消息当作正常跑完的轮次落库:
+// errorText 空、会话翻 idle,用户看到一条戛然而止却「成功」的回答。
+// 终态帧已经到过(handleAutonomousTurnDone 填过 StopErr)时不覆盖。
+func closeAutoSession(a *autoSession, cause error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed {
@@ -178,6 +184,9 @@ func closeAutoSession(a *autoSession) {
 	}
 	a.closed = true
 	if a.cur != nil {
+		if a.cur.result != nil && a.cur.result.StopErr == nil {
+			a.cur.result.StopErr = cause
+		}
 		close(a.cur.events)
 		a.cur = nil
 	}

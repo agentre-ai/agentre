@@ -167,6 +167,15 @@ var notifyHandlers = map[string]notifyHandler{
 // StreamError,前端就能解锁「生成中」并显示一条提示。
 var ErrDaemonDisconnected = errors.New("agentruntime/runtimes/remote: daemon connection closed")
 
+// ErrRunInterrupted 这一轮在远端**被打断**了:daemon 重启后按 R10 把非终态会话标成
+// 中断态(接管回 ErrNoActiveTurn / ErrSessionNotFound),或那台 daemon 的实例标识对不上
+// 导致游标失效(R12 判「按已中断处理」)。连接本身是好的,只是这一轮接不回去了。
+//
+// 它必须与 ErrDaemonDisconnected 分开:R15 规定中断沿用既有的 error 态、**由消息文案
+// 区分其与真实错误**,而上层能拿到的唯一依据就是 StopErr。折成同一个哨兵,「被打断」
+// 与「连不上了」就是同一句话,用户分不出发生了什么。
+var ErrRunInterrupted = errors.New("agentruntime/runtimes/remote: run interrupted by daemon restart")
+
 // Close 关掉与 daemon 的 client 连接,并停掉重连状态机。
 func (r *Runtime) Close() error {
 	r.stopOnce.Do(func() { close(r.stopped) })

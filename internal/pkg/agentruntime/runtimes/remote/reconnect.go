@@ -728,16 +728,22 @@ func (r *Runtime) failAllSessions() {
 		logger.Default().Debug("remote runtime: daemon disconnected, no live sessions")
 	}
 	for i, sess := range live {
-		closeSessionWithErr(sess)
+		closeSessionWithErr(sess, ErrDaemonDisconnected)
 		r.setSessionConnState(liveSids[i], SessionConnState{State: ConnStateLost})
 	}
 	// 自主续轮镜像也随之拆掉:close 每个 out → chat_svc 的 watcher 退出;
-	// 在飞的那轮 events 也 close,driveAutonomousTurn 干净收尾。见 autoturn.go。
-	r.closeAllAutoSessions()
+	// 在飞的那轮 events 也 close 并带上同一个终止理由,driveAutonomousTurn 才能把它
+	// 落成终态而不是「正常跑完」。见 autoturn.go。
+	r.closeAllAutoSessions(ErrDaemonDisconnected)
 	r.flushCursors()
 }
 
 // failSession 只收尾一条会话(它接不回去了,但连接是好的)。
+//
+// 终止理由是 ErrRunInterrupted 而不是 ErrDaemonDisconnected:走到这里意味着 daemon
+// 重启后把它标成了中断态(R10)、它不在这台 daemon 上、或实例标识对不上导致游标失效
+// (R12 判「按已中断处理」)—— 连接明明是通的,说「连不上了」是错的。R15 要求这两种
+// 情形由消息文案区分,而文案的唯一依据就是这里交出去的哨兵。
 func (r *Runtime) failSession(sid int64) {
 	r.mu.Lock()
 	sess := r.sessions[sid]
@@ -746,15 +752,17 @@ func (r *Runtime) failSession(sid int64) {
 	delete(r.autoSessions, sid)
 	r.mu.Unlock()
 	if sess != nil {
-		closeSessionWithErr(sess)
+		closeSessionWithErr(sess, ErrRunInterrupted)
 	}
 	if auto != nil {
-		closeAutoSession(auto)
+		closeAutoSession(auto, ErrRunInterrupted)
 	}
 	r.setSessionConnState(sid, SessionConnState{State: ConnStateLost})
 }
 
-func closeSessionWithErr(sess *remoteSession) {
+// closeSessionWithErr 收尾一条在飞会话:把终止理由写进 RunResult.StopErr 再 close
+// events。cause 决定上层给出哪一句终态文案,已经有理由(终态帧到过)时不覆盖。
+func closeSessionWithErr(sess *remoteSession, cause error) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	if sess.closed {
@@ -762,7 +770,7 @@ func closeSessionWithErr(sess *remoteSession) {
 	}
 	sess.closed = true
 	if sess.result != nil && sess.result.StopErr == nil {
-		sess.result.StopErr = ErrDaemonDisconnected
+		sess.result.StopErr = cause
 	}
 	close(sess.events)
 }
