@@ -3,12 +3,14 @@ package terminal_svc
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 )
 
 var (
+	ErrInvalidRunCommandRequest           = errors.New("invalid terminal run command request")
 	ErrCommandScopeResolverNotInitialized = errors.New("terminal command scope resolver not initialized")
 	ErrCommandScopeUnavailable            = errors.New("terminal command scope unavailable")
 )
@@ -53,6 +55,11 @@ func (s *Service) SetCommandScopeResolver(resolver CommandScopeResolver) {
 
 // RunCommand 只解析一次执行作用域，并用该作用域只启动一次命令。
 func (s *Service) RunCommand(ctx context.Context, req RunCommandRequest) (*RunCommandResponse, error) {
+	if strings.TrimSpace(req.TerminalID) == "" || req.SessionID <= 0 ||
+		strings.TrimSpace(req.Command) == "" || req.Cols == 0 || req.Rows == 0 {
+		return nil, ErrInvalidRunCommandRequest
+	}
+
 	resolver := s.commandScopeResolver
 	if resolver == nil {
 		return nil, ErrCommandScopeResolverNotInitialized

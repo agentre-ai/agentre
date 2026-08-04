@@ -39,6 +39,70 @@ func (h *completedCommandHandle) Close() error                { return nil }
 func (h *completedCommandHandle) Data() <-chan []byte         { return h.data }
 func (h *completedCommandHandle) Exit() <-chan pty.ExitInfo   { return h.exit }
 
+func TestService_RunCommand_GivenInvalidRequest_WhenStarted_ThenRejectsBeforeResolutionOpenOrLogging(t *testing.T) {
+	validRequest := terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-valid",
+		SessionID:  71,
+		Command:    "go test ./...",
+		Cols:       100,
+		Rows:       30,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*terminal_svc.RunCommandRequest)
+	}{
+		{name: "empty terminal ID", mutate: func(req *terminal_svc.RunCommandRequest) { req.TerminalID = "" }},
+		{name: "whitespace terminal ID", mutate: func(req *terminal_svc.RunCommandRequest) { req.TerminalID = " \t\n" }},
+		{name: "zero session ID", mutate: func(req *terminal_svc.RunCommandRequest) { req.SessionID = 0 }},
+		{name: "negative session ID", mutate: func(req *terminal_svc.RunCommandRequest) { req.SessionID = -1 }},
+		{name: "empty command", mutate: func(req *terminal_svc.RunCommandRequest) { req.Command = "" }},
+		{name: "whitespace command", mutate: func(req *terminal_svc.RunCommandRequest) { req.Command = " \t\n" }},
+		{name: "zero columns", mutate: func(req *terminal_svc.RunCommandRequest) { req.Cols = 0 }},
+		{name: "zero rows", mutate: func(req *terminal_svc.RunCommandRequest) { req.Rows = 0 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			request := validRequest
+			tt.mutate(&request)
+			openCalls := 0
+			localBackend := mocks.NewMockPTYBackend(ctrl)
+			localBackend.EXPECT().Open(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(context.Context, pty.Spec) (pty.Handle, error) {
+					openCalls++
+					return nil, errors.New("invalid request reached Open")
+				},
+			).AnyTimes()
+			svc := terminal_svc.NewService(
+				terminal_svc.NewBackendSelector(localBackend, nil),
+				terminal_svc.NoopEmitter{},
+			)
+			resolveCalls := 0
+			svc.SetCommandScopeResolver(func(
+				context.Context,
+				terminal_svc.ResolveCommandScopeRequest,
+			) (*terminal_svc.CommandScope, error) {
+				resolveCalls++
+				return &terminal_svc.CommandScope{}, nil
+			})
+			defer svc.Shutdown()
+			core, logs := observer.New(zapcore.DebugLevel)
+			ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+			response, err := svc.RunCommand(ctx, request)
+
+			assert.Nil(t, response)
+			assert.ErrorIs(t, err, terminal_svc.ErrInvalidRunCommandRequest)
+			assert.Equal(t, 0, resolveCalls)
+			assert.Equal(t, 0, openCalls)
+			assert.Equal(t, 0, logs.Len())
+		})
+	}
+}
+
 func TestService_RunCommand_GivenResolvedTarget_WhenStarted_ThenResolvesOnceOpensOnceAndReturnsExactScope(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -48,7 +112,7 @@ func TestService_RunCommand_GivenResolvedTarget_WhenStarted_ThenResolvesOnceOpen
 	localBackend := mocks.NewMockPTYBackend(ctrl)
 	remoteBackend := mocks.NewMockPTYBackend(ctrl)
 	remoteBackend.EXPECT().Open(gomock.Any(), pty.Spec{
-		Cwd: "/remote/current", Command: "go test ./...", Cols: 100, Rows: 30,
+		Cwd: "/remote/current", Command: "  go test ./...  ", Cols: 100, Rows: 30,
 	}).Return(newCompletedCommandHandle(), nil).Times(1)
 	factoryCalls := 0
 	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(localBackend,
@@ -72,7 +136,7 @@ func TestService_RunCommand_GivenResolvedTarget_WhenStarted_ThenResolvesOnceOpen
 	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
 		TerminalID: "terminal-1",
 		SessionID:  71,
-		Command:    "go test ./...",
+		Command:    "  go test ./...  ",
 		Cols:       100,
 		Rows:       30,
 	})
