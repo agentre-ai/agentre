@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/cago-frame/cago/database/db"
-	"gorm.io/gorm/clause"
 )
 
 //go:generate mockgen -source notification.go -destination mock_notification_repo/mock_notification.go
@@ -40,18 +39,12 @@ type NotificationRepo interface {
 	// 单调无洞,每条通知都真的落了库。
 	Append(ctx context.Context, n *NotificationLog) error
 
-	// Create 落库一条通知。对同一个 (PeerFingerprint, PeerSessionID, Seq) 主键重复
-	// 调用是幂等的:第二次调用成功返回而不报错、也不产生第二行,让「写入是否成功未
-	// 确认」时的调用方重试总是安全的。
-	Create(ctx context.Context, n *NotificationLog) error
-
 	// ListSince 返回 (peerFingerprint, peerSessionID) 下 seq > cursor 的通知,按 seq
 	// 升序,最多 limit 条,并告知这一页之后是否还有更多。
 	ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) (rows []*NotificationLog, hasMore bool, err error)
 
 	// LatestSeq 返回该会话已记录的最大 seq,一条通知都没有时为 0。它是「最新 seq」的
-	// 唯一真相源(见包注释与 handlers.JournalPort):daemon_sessions.latest_seq 没有
-	// 写入方,读它会永远报 0。
+	// 唯一真相源(见包注释与 handlers.JournalPort):会话表上不存第二份冗余游标。
 	LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
 
 	// LatestSeqByPeer 一次取回该对端全部会话的最大 seq(会话 id → seq)。会话清单要为
@@ -106,10 +99,13 @@ func NewNotification() NotificationRepo { return &notificationRepo{} }
 // appendSQL 在一条语句里完成「取该会话的下一个 seq」与「写入」,由 RETURNING 交回
 // 实际分配到的 seq。写成一条语句是必须的,不是优化:SQLite 对单条写语句整条持写锁,
 // 所以并发写者会被串行化,各自读到的 MAX(seq) 必然包含前一个写者刚写的行。拆成
-// 「先 SELECT MAX(seq)+1、再 INSERT」两步则两个写者会拿到同一个 seq,后写的那条被
-// Create 的幂等冲突处理静默吞掉——通知永久丢失,而调用方以为落库成功。同一会话上
+// 「先 SELECT MAX(seq)+1、再 INSERT」两步则两个写者会拿到同一个 seq,后写的那条撞主键
+// 冲突——要么整条通知永久丢失,要么调用方拿到一个裸的唯一约束错误。同一会话上
 // 并发的通知生产者是现实存在的(handlers/runtime.go 的 fanout 与
 // startAutonomousFanout 是同一 sid 上两个独立 goroutine)。
+//
+// 入参里的 n.Seq 一律被忽略:seq 只由这条语句分配,本包不提供「按指定 seq 写入」的
+// 第二条写路径。
 const appendSQL = "INSERT INTO daemon_notification_logs " +
 	"(peer_fingerprint, peer_session_id, seq, method, payload, created_at) " +
 	"SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? " +
@@ -129,16 +125,6 @@ func (r *notificationRepo) Append(ctx context.Context, n *NotificationLog) error
 	}
 	n.Seq = seq
 	return nil
-}
-
-func (r *notificationRepo) Create(ctx context.Context, n *NotificationLog) error {
-	if n.CreatedAt == 0 {
-		n.CreatedAt = time.Now().UnixMilli()
-	}
-	// DoNothing on a primary-key conflict makes a retried Create for the same
-	// (peer, session, seq) a safe no-op instead of surfacing a raw unique
-	// constraint error to the caller.
-	return db.Ctx(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(n).Error
 }
 
 func (r *notificationRepo) ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) ([]*NotificationLog, bool, error) {

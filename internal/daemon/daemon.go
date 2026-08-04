@@ -523,10 +523,6 @@ func (d *Daemon) registerMethods() {
 	d.registry.Register("llm.delete", wrapGuarded(llmH.Delete))
 	d.registry.Register("llm.list", wrapGuardedNoParams(llmH.List))
 
-	sessH := handlers.NewSessionHandlers(d.sessions)
-	d.registry.Register("session.list", wrapGuardedNoParams(sessH.List))
-	d.registry.Register("session.get", wrapGuarded(sessH.Get))
-
 	cliH := handlers.NewCLIHandlers(d.gateway, NewProviderLookup(d.state))
 	d.registry.Register("cli.resolvePath", wrapGuarded(cliH.ResolvePath))
 	d.registry.Register("cli.probe", wrapGuarded(cliH.Probe))
@@ -553,6 +549,10 @@ func (d *Daemon) registerMethods() {
 	// 它们按**对端**限定、读的是库,与「哪条连接」无关;而且它们**不**过
 	// trackSessionOwner:看一眼有哪些会话、把历史拉回来,都不该顺带把实时流改指向自己。
 	// 改推送目标是 MethodSessionAttach 一个人的职责(见 bindConn)。
+	//
+	// MethodSessionList 是 daemon 上**唯一**的「列会话」出口。曾经还有一个基于内存
+	// sessions.Registry 的 session.list / session.get,但没有任何地方调 Registry.Register,
+	// 它恒答空清单;两个出口并存只会让读到空清单的一方以为自己的会话没了。
 	d.registry.Register(wire.MethodSessionList, wrapGuardedNoParams(d.catchup.List))
 	d.registry.Register(wire.MethodSessionPull, wrapGuarded(d.catchup.Pull))
 	d.registry.Register(wire.MethodSessionPendingWaiters, wrapGuarded(d.catchup.PendingWaiters))

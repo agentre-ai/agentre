@@ -46,7 +46,8 @@ UI
 
 - Tool approval / ask-user-question are still rendered by the desktop UI.
 - A dropped daemon connection no longer aborts the chat: the desktop client backs off and reconnects, then replays missed notifications from a cursor; an error is only injected into the turn once reconnection is abandoned (`internal/pkg/agentruntime/runtimes/remote/reconnect.go`). See [`session-lifecycle.md`](session-lifecycle.md#remote-execution) for session ownership and cursor semantics.
-- `agentred` keeps its own SQLite store (`internal/daemon/repository`, `internal/daemon/migrations`): every notification is journaled with a gap-free monotonic `seq` before being pushed, so a dead connection suspends pushing without losing the record.
+- `agentred` keeps its own SQLite store (`agentred.db` in its own data directory, schema in `internal/daemon/migrations`, access in `internal/daemon/repository`): every notification is journaled with a gap-free monotonic `seq` before being pushed, so a dead connection suspends pushing without losing the record. The journal is swept on a retention window (30 days by default) that only reclaims the prefix below the high-water mark of terminal sessions that have gone quiet for the whole window; the database's path and size are reported by `agentred status`, `/local/status` and `health.ping`.
+- Reopening the desktop app catches up on what ran while it was closed: `chat_svc.CatchUpRemoteSessions` reads the execution-position columns on `chat_sessions`, asks each paired daemon which of those sessions it is still running, and replays the journal into synthesized turns. Details — push-target ownership, cursor validity and the startup cleanup split — are in [`session-lifecycle.md`](session-lifecycle.md#remote-execution).
 - pairing / device status go through `internal/pkg/remotefs` + `remote_device_svc`.
 
 ## Layering conventions (cago framework style)

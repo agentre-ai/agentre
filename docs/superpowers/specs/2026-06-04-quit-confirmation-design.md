@@ -16,7 +16,7 @@
   - 返回 `true` 即阻止退出。
   - 平台差异:macOS 在 goroutine 里跑 `OnBeforeClose`,Windows 在主线程同步跑。**因此 `OnBeforeClose` 内必须只做一次快速 COUNT 查询、不可阻塞**(不能在里面弹原生对话框等待)。
 - 当前 `main.go` 只接了 `OnStartup` / `OnShutdown`,**没接 `OnBeforeClose`**。
-- 「活跃」判定沿用启动时 `ResetStaleActiveSessions` 的口径:`agent_status IN ('running','waiting') AND status = consts.ACTIVE`(`chat_repo/session.go:308`)。
+- 「活跃」判定是 `agent_status IN ('running','waiting') AND status = consts.ACTIVE`(外加排除子 agent 委派会话的 `nonSubagentScope`),落在 `chat_repo.SessionRepo.CountActive`。它**不再**与启动时的 `ResetStaleActiveSessions` 完全一致:后者已排除跑在远端 daemon 上的会话(`exec_device_id > 0` 且带实例标识),因为它们的执行者不随桌面 App 退出而消亡。退出确认要的正好相反 —— 远端会话此刻确实在跑,该被数进去。
 - 自动更新「重启」(`internal/app/update.go:128`)也调 `wailsruntime.Quit`——它在拉起新进程后退出旧进程,**必须跳过确认**,否则旧进程被拦、新进程撞单实例锁(`SingleInstanceLock`)→ 更新静默失败。
 - 前端常驻挂载点:`App.tsx` 的 `AppLayout` 里 `<Toaster/>` 旁(始终挂载,跨路由存活);事件订阅沿用 `EventsOn`(`wailsjs/runtime/runtime`,参考 `hooks/use-chat-stream.ts:156`)。
 - 代码库**没有 shadcn `alert-dialog`**;复用现成的 `components/agentre/app-dialog.tsx`(`AgentreDialog`,基于 `components/ui/dialog.tsx`)。
@@ -25,7 +25,7 @@
 ## 已确认的设计决策
 
 1. **确认框形式 = 应用内 shadcn 弹窗**(复用 `AgentreDialog`),走 react-i18next,和无边框自定义窗口风格一致。不用系统原生 MessageDialog。
-2. **活跃口径 = `running` + `waiting`**(任何进行中的回合;与 `ResetStaleActiveSessions` 一致)。
+2. **活跃口径 = `running` + `waiting`**(任何进行中的回合。远端执行的会话也算:`ResetStaleActiveSessions` 会跳过它们,退出确认不跳过)。
 3. **确认框带「进行中会话列表」**:每行 agent 头像 + 名称 + 项目/分支 + 状态胶囊(绿 `运行中` / 琥珀 `等待确认`)。
 4. **列表溢出**:可见行**上限 3 行**,其余折叠为一行 `还有 N 个会话`(放在可滚动区域内);**header 计数永远显示后端真实总数**。
 5. **计数以后端为准**:确认框 header 的数字来自后端 `OnBeforeClose` 的 COUNT;列表行从前端 store 派生(best-effort,store 不全时只少列几行,不影响 header 数字)。

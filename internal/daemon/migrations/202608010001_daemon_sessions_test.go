@@ -12,6 +12,9 @@ import (
 // TestMigration202608010001_CreatesTables 建表:daemon_sessions 与
 // daemon_notification_logs 两张表都存在,且带上 R16 要求的复合主键列
 // (peer_fingerprint, peer_session_id[, seq])。
+//
+// 断言的是**跑完全部迁移之后**的形状,所以列表里没有 latest_seq —— 它由补丁迁移
+// 202608040001 删掉了(它从来没有写入方)。
 func TestMigration202608010001_CreatesTables(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
@@ -31,7 +34,7 @@ func TestMigration202608010001_CreatesTables(t *testing.T) {
 	assert.True(t, hasTable("daemon_sessions"))
 	for _, col := range []string{
 		"peer_fingerprint", "peer_session_id", "agent_id", "cwd",
-		"backend_type", "lifecycle_state", "latest_seq", "created_at", "updated_at",
+		"backend_type", "lifecycle_state", "created_at", "updated_at",
 	} {
 		assert.True(t, hasCol("daemon_sessions", col), "daemon_sessions missing column %s", col)
 	}
@@ -53,16 +56,16 @@ func TestMigration202608010001_CompositePrimaryKeysEnforceUniqueness(t *testing.
 	require.NoError(t, RunMigrations(db))
 
 	require.NoError(t, db.Exec(
-		`INSERT INTO daemon_sessions (peer_fingerprint, peer_session_id, latest_seq, created_at, updated_at)
-		 VALUES ('peerA', 's1', 0, 0, 0)`).Error)
-	// 不同对端持有同一个本地会话 id 'con't collide (R16)。
+		`INSERT INTO daemon_sessions (peer_fingerprint, peer_session_id, created_at, updated_at)
+		 VALUES ('peerA', 's1', 0, 0)`).Error)
+	// 不同对端持有同一个本地会话 id 不冲突 (R16)。
 	require.NoError(t, db.Exec(
-		`INSERT INTO daemon_sessions (peer_fingerprint, peer_session_id, latest_seq, created_at, updated_at)
-		 VALUES ('peerB', 's1', 0, 0, 0)`).Error)
+		`INSERT INTO daemon_sessions (peer_fingerprint, peer_session_id, created_at, updated_at)
+		 VALUES ('peerB', 's1', 0, 0)`).Error)
 	// 同一 (对端, 会话) 重复插入必须撞主键。
 	assert.Error(t, db.Exec(
-		`INSERT INTO daemon_sessions (peer_fingerprint, peer_session_id, latest_seq, created_at, updated_at)
-		 VALUES ('peerA', 's1', 0, 0, 0)`).Error, "duplicate (peer_fingerprint, peer_session_id) should violate primary key")
+		`INSERT INTO daemon_sessions (peer_fingerprint, peer_session_id, created_at, updated_at)
+		 VALUES ('peerA', 's1', 0, 0)`).Error, "duplicate (peer_fingerprint, peer_session_id) should violate primary key")
 
 	require.NoError(t, db.Exec(
 		`INSERT INTO daemon_notification_logs (peer_fingerprint, peer_session_id, seq, method, payload, created_at)

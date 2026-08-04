@@ -9,9 +9,9 @@
 // 启动清扫):本包只负责存取,不解释状态机 —— 状态字符串同时是过线协议的一部分
 // (wire.SessionLifecycle*),把它固化进仓储会让两处定义迟早漂移。
 //
-// **本包刻意不映射 daemon_sessions.latest_seq**。「某会话最新的 seq」的唯一真相源是通知
-// 日志自己的 MAX(seq)(见 notification_repo 与 handlers.JournalPort 的说明);latest_seq
-// 是迁移里预留、至今无写入方的列,把它放进模型只会让调用方误以为它可读。
+// 「某会话最新的 seq」不在本包里:唯一真相源是通知日志自己的 MAX(seq)(见
+// notification_repo 与 handlers.JournalPort 的说明)。daemon_sessions 上曾经预留过一列
+// latest_seq,从未有写入方,已由迁移 202608040001 删掉。
 package session_repo
 
 import (

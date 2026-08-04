@@ -24,5 +24,6 @@ func RunMigrations(db *gorm.DB) error {
 func migrationList() []*gormigrate.Migration {
 	return []*gormigrate.Migration{
 		migration202608010001(), // daemon_sessions + daemon_notification_logs
+		migration202608040001(), // 删掉从无写入方的 daemon_sessions.latest_seq
 	}
 }

@@ -62,8 +62,8 @@ type NotifierPort interface {
 // 序号,见 daemon.bindConn 的注释。
 //
 // 「某会话最新的 seq」的唯一真相源是通知日志本身(该会话的 MAX(seq),仓储的原子分配语句
-// 读的就是它)。daemon_sessions.latest_seq 只是迁移里预留下来的列,没有写入者,任何地方
-// 都不要拿它当游标读 —— 两个真相源迟早对不上。
+// 读的就是它)。会话表上不存第二份:那样的冗余列一旦与日志对不上,客户端的游标就会指向
+// 一个日志里并不存在的位置。
 type JournalPort interface {
 	Append(ctx context.Context, peerFingerprint, peerSessionID, method string, payload json.RawMessage) (seq int64, err error)
 }

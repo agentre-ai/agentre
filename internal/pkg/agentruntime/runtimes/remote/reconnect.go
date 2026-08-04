@@ -172,9 +172,6 @@ type sessionSync struct {
 	loaded bool
 	// filling 补洞在飞。同一会话任一时刻至多一次拉取。
 	filling bool
-
-	stateMu sync.Mutex
-	state   ConnState
 }
 
 // cursorNow 读一眼当前游标。
@@ -189,7 +186,7 @@ func (r *Runtime) syncFor(ctx context.Context, sid int64) *sessionSync {
 	r.stateMu.Lock()
 	ss, ok := r.sessionState[sid]
 	if !ok {
-		ss = &sessionSync{state: ConnStateConnected}
+		ss = &sessionSync{}
 		r.sessionState[sid] = ss
 	}
 	r.stateMu.Unlock()
@@ -677,7 +674,7 @@ func (r *Runtime) resetCursorFor(ctx context.Context, sid, highWater int64) (*se
 	r.stateMu.Lock()
 	ss, ok := r.sessionState[sid]
 	if !ok {
-		ss = &sessionSync{state: ConnStateReconnecting}
+		ss = &sessionSync{}
 		r.sessionState[sid] = ss
 	}
 	r.stateMu.Unlock()
@@ -844,22 +841,6 @@ func closeSessionWithErr(sess *remoteSession, cause error) {
 
 // ── 连接态 ──────────────────────────────────────────────────────────────────
 
-// ConnState 返回某会话此刻的连接态。上层轮询用;推送用 ConnStateObserver。
-func (r *Runtime) ConnState(sessionID int64) ConnState {
-	r.stateMu.Lock()
-	ss, ok := r.sessionState[sessionID]
-	r.stateMu.Unlock()
-	if !ok {
-		return ConnStateConnected
-	}
-	ss.stateMu.Lock()
-	defer ss.stateMu.Unlock()
-	if ss.state == "" {
-		return ConnStateConnected
-	}
-	return ss.state
-}
-
 // enterReconnecting 把所有还活着的会话翻成重连态并播给观察者。
 func (r *Runtime) enterReconnecting() {
 	sids := r.liveSessionIDs()
@@ -871,17 +852,11 @@ func (r *Runtime) enterReconnecting() {
 	}
 }
 
+// setSessionConnState 播一次连接态变化。Runtime **不**自己留一份可查询的副本:
+// 唯一的消费方 chat_svc 维护它自己的缓存,因为那份还要按「本进程里这条会话有没有在飞的
+// turn」过滤(activeCancels),而 Runtime 这一侧看不到那个集合 —— 留第二份只会变成一个
+// 谁都不该读、读了还会答错的真相源。
 func (r *Runtime) setSessionConnState(sid int64, st SessionConnState) {
-	r.stateMu.Lock()
-	ss, ok := r.sessionState[sid]
-	if !ok {
-		ss = &sessionSync{}
-		r.sessionState[sid] = ss
-	}
-	r.stateMu.Unlock()
-	ss.stateMu.Lock()
-	ss.state = st.State
-	ss.stateMu.Unlock()
 	if r.connObserver != nil {
 		r.connObserver.OnSessionConnState(sid, st)
 	}

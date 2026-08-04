@@ -309,9 +309,10 @@ type WaiterSnapshot struct {
 // approval protocol at all should not have to stub one out just to keep
 // implementing the sinks it does support.
 //
-// 当前只有 claudecode 实现（同 ToolPermissionSink/AskAnswerSink 的说明，见
-// runner.go:225 附近）；consumer 对未实现的 backend 做 type-assert 失败后
-// 回落空 WaiterSnapshot，不是接口本身返回错误（R7）。
+// 实现者是有审批协议的那些 backend —— 今天是 claudecode（runtimes/claudecode/
+// control.go）与 codex（runtimes/codex/runtime.go）两家。没有审批协议的 backend
+// 不实现它；consumer 对它们 type-assert 失败后回落空 WaiterSnapshot，不是接口
+// 本身返回错误（R7）。
 //
 // No error return: PendingWaiters is a synchronous snapshot read of
 // in-memory state (mirrors SteerDrainer.DrainPending), not an I/O call.

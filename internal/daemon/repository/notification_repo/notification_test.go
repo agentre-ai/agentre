@@ -61,37 +61,33 @@ func TestNotificationRepo_Append_PropagatesError(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestNotificationRepo_Create_DuplicateSeqIsIdempotent 覆盖「同 (会话, seq) 重复写入
-// 幂等」:对已经落过的 (peerFingerprint, peerSessionID, seq) 再次 Create 必须成功而不
-// 报错(供调用方在未确认写入是否成功时安全重试),不能是唯一约束冲突的裸错误冒泡。
-func TestNotificationRepo_Create_DuplicateSeqIsIdempotent(t *testing.T) {
+// TestNotificationRepo_Append_IgnoresCallerSuppliedSeq 钉死「seq 只由库分配」这条唯一
+// 写路径:调用方在入参上填了 Seq 也不会被写进 SQL —— 语句里绑的仍然只有 (对端, 会话,
+// method, payload, 时间),seq 那一格由 COALESCE(MAX(seq),0)+1 现算。
+//
+// 会漏掉这个模式的实现:再开一条「按调用方给的 seq 写入」的路径。两条写路径并存时,
+// 同一会话上就有两个 seq 分配者,谁也不知道对方给出去过什么 —— 主键冲突要么把通知
+// 静默吞掉、要么把裸的唯一约束错误抛回热路径,而硬不变量要求的是单调、无洞、无重复。
+func TestNotificationRepo_Append_IgnoresCallerSuppliedSeq(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := notification_repo.NewNotification()
 
+	mock.ExpectQuery(appendSQLPattern).
+		WithArgs("peerA", "s1", "runtime.event", `{"a":1}`, sqlmock.AnyArg(), "peerA", "s1").
+		WillReturnRows(sqlmock.NewRows([]string{"seq"}).AddRow(3))
+
 	n := &notification_repo.NotificationLog{
-		PeerFingerprint: "peerA", PeerSessionID: "s1", Seq: 1, Method: "runtime.event", Payload: `{"a":1}`,
+		PeerFingerprint: "peerA", PeerSessionID: "s1", Seq: 99, Method: "runtime.event", Payload: `{"a":1}`,
 	}
-
-	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO `daemon_notification_logs`.*ON DUPLICATE KEY UPDATE").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-	require.NoError(t, repo.Create(ctx, n))
-
-	// 重复写入同一个 (peer, session, seq):第二次影响行数为 0(冲突被吞掉),但调用方
-	// 视角必须是成功,不是错误。
-	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO `daemon_notification_logs`.*ON DUPLICATE KEY UPDATE").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectCommit()
-	require.NoError(t, repo.Create(ctx, n), "duplicate (peer, session, seq) write must be idempotent, not error")
+	require.NoError(t, repo.Append(ctx, n))
+	assert.Equal(t, int64(3), n.Seq, "入参里的 seq 必须被库分配到的那个覆盖掉")
 
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 // TestNotificationRepo_LatestSeq_ReadsMaxSeqFromTheLog 覆盖「某会话最新的 seq」:
-// 它的唯一真相源是通知日志自己的 MAX(seq)(daemon_sessions.latest_seq 无写入方,读它
-// 会永远报 0,客户端每次重连都重拉整段日志)。会话一条通知都没有时报 0。
+// 它的唯一真相源是通知日志自己的 MAX(seq),不是会话表上的某个冗余列。会话一条通知都
+// 没有时报 0。
 func TestNotificationRepo_LatestSeq_ReadsMaxSeqFromTheLog(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 	repo := notification_repo.NewNotification()

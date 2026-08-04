@@ -86,8 +86,8 @@ func (s *chatSvc) rememberConnState(sessionID int64, st remote.ConnState) {
 	s.connStates[sessionID] = st
 }
 
-// sessionConnState 返回该会话此刻的连接态;缓存空 → connected(与 remote.Runtime.ConnState
-// 的缺省一致,本地会话与从未断过的远端会话都走这一支)。
+// sessionConnState 返回该会话此刻的连接态;缓存空 → connected(本地会话与从未断过的
+// 远端会话都走这一支)。
 func (s *chatSvc) sessionConnState(sessionID int64) remote.ConnState {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()

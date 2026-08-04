@@ -89,8 +89,16 @@ type Runtime struct {
 	daemonFP   string
 	durability durabilityState
 
-	// sessionState 是每条会话的补齐状态(游标 + 连接态 + 补洞串行化)。
+	// sessionState 是每条会话的补齐状态(游标 + 补洞串行化)。
 	// 与 sessions 分开:sessions 只活在一轮之内,游标要跨轮存活。
+	//
+	// 条目**故意不回收**,failSession / failAllSessions 都不删。游标是这里唯一的热副本,
+	// 而落库是防抖的(见 markCursorDirty):failSession 只收尾一条会话、并不 flushCursors
+	// (failAllSessions 才会),此刻删掉条目就把最后 cursorFlush 窗口里那截游标推进丢了
+	// —— 同一条会话下一轮起来时按库里那个旧游标补洞,已经交付过的通知会被再重放一遍,
+	// 直接破「无重复」这条硬不变量。空间是有界的:一个 *Runtime 按设备缓存,它的条目数
+	// 至多等于这台 daemon 上被本进程碰过的远端会话数,而最后一条会话引用释放时整个
+	// Runtime 连同这张表一起被丢掉(见 chat_svc.releaseRemoteRuntime)。
 	stateMu      sync.Mutex
 	sessionState map[int64]*sessionSync
 

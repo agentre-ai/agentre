@@ -157,10 +157,14 @@ func TestDaemon_NotificationJournal_ConcurrentAppendsAreLosslessAndGapFree(t *te
 	assert.Equal(t, int64(1), other.Seq, "another peer's same-named session must own a separate seq space")
 }
 
-// TestDaemon_NotificationJournal_DuplicateSeqWriteIsIdempotent 覆盖任务目标的
-// 「同 (会话, seq) 重复写入幂等」在真库(SQLite,生产方言)上成立:重复写不报错、
-// 也不产生第二行,且不覆盖已落库的载荷。
-func TestDaemon_NotificationJournal_DuplicateSeqWriteIsIdempotent(t *testing.T) {
+// TestDaemon_NotificationJournal_AppendNeverReusesASeq 在真库(SQLite,生产方言)上钉死
+// 「seq 只由库分配」:Append 是唯一写路径,入参上填了 Seq 也不作数,两次写入拿到的是两个
+// 相邻的 seq,两条通知都在日志里。
+//
+// 会漏掉它的实现:再开一条「按调用方给的 seq 写入」的路径。那种实现下两个写者会撞同一个
+// 主键——要么后到的那条被冲突处理静默吞掉(通知永久丢失,而调用方以为落库成功),要么把
+// 裸的唯一约束错误抛回通知热路径。
+func TestDaemon_NotificationJournal_AppendNeverReusesASeq(t *testing.T) {
 	d, err := New(Options{DataDir: t.TempDir()})
 	require.NoError(t, err)
 	ctx := dbpkg.WithContextDB(context.Background(), d.db)
@@ -169,15 +173,19 @@ func TestDaemon_NotificationJournal_DuplicateSeqWriteIsIdempotent(t *testing.T) 
 	first := &notification_repo.NotificationLog{
 		PeerFingerprint: "peerA", PeerSessionID: "s1", Seq: 1, Method: "runtime.event", Payload: `{"first":true}`,
 	}
-	require.NoError(t, repo.Create(ctx, first))
-	require.NoError(t, repo.Create(ctx, &notification_repo.NotificationLog{
+	require.NoError(t, repo.Append(ctx, first))
+	second := &notification_repo.NotificationLog{
 		PeerFingerprint: "peerA", PeerSessionID: "s1", Seq: 1, Method: "runtime.event", Payload: `{"second":true}`,
-	}), "重复写同一 (peer, session, seq) 必须成功返回,不是唯一约束报错")
+	}
+	require.NoError(t, repo.Append(ctx, second), "入参里的 seq 撞车不该让写入失败")
+	assert.Equal(t, int64(1), first.Seq)
+	assert.Equal(t, int64(2), second.Seq, "第二条必须拿到下一个 seq,而不是复用入参里那个")
 
 	rows, _, err := repo.ListSince(ctx, "peerA", "s1", 0, 10)
 	require.NoError(t, err)
-	require.Len(t, rows, 1, "duplicate write must not create a second row")
-	assert.Equal(t, `{"first":true}`, rows[0].Payload, "已落库的事实不被重复写覆盖")
+	require.Len(t, rows, 2, "两条通知都必须在日志里,一条也不能被冲突处理吞掉")
+	assert.Equal(t, `{"first":true}`, rows[0].Payload)
+	assert.Equal(t, `{"second":true}`, rows[1].Payload)
 }
 
 // TestDaemon_DatabaseHandlesAreIsolatedPerInstance 回归:两个不同 DataDir 的
@@ -195,8 +203,8 @@ func TestDaemon_DatabaseHandlesAreIsolatedPerInstance(t *testing.T) {
 	assert.NotSame(t, d1.db, d2.db, "each Daemon must own its own *gorm.DB handle")
 
 	ctx1 := dbpkg.WithContextDB(context.Background(), d1.db)
-	require.NoError(t, notification_repo.NewNotification().Create(ctx1, &notification_repo.NotificationLog{
-		PeerFingerprint: "peer", PeerSessionID: "s1", Seq: 1, Method: "m", Payload: "{}",
+	require.NoError(t, notification_repo.NewNotification().Append(ctx1, &notification_repo.NotificationLog{
+		PeerFingerprint: "peer", PeerSessionID: "s1", Method: "m", Payload: "{}",
 	}))
 
 	ctx2 := dbpkg.WithContextDB(context.Background(), d2.db)
@@ -217,8 +225,8 @@ func TestDaemon_NewDoesNotLeakIntoGlobalDefaultDB(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := dbpkg.WithContextDB(context.Background(), d.db)
-	require.NoError(t, notification_repo.NewNotification().Create(ctx, &notification_repo.NotificationLog{
-		PeerFingerprint: "leak-guard-peer", PeerSessionID: "leak-guard-session", Seq: 1, Method: "m", Payload: "{}",
+	require.NoError(t, notification_repo.NewNotification().Append(ctx, &notification_repo.NotificationLog{
+		PeerFingerprint: "leak-guard-peer", PeerSessionID: "leak-guard-session", Method: "m", Payload: "{}",
 	}))
 
 	func() {
@@ -725,15 +733,17 @@ func TestRecoverHandlerPanic(t *testing.T) {
 	})
 }
 
-// seedJournal 给某会话灌 n 条日志(seq 1..n),全部盖上同一个落库时间。
+// seedJournal 给某会话灌 n 条日志(Append 依次分配 seq 1..n),全部盖上同一个落库时间。
 func seedJournal(t *testing.T, ctx context.Context, peer, sid string, n int, createdAt int64) {
 	t.Helper()
 	repo := notification_repo.NewNotification()
 	for i := 1; i <= n; i++ {
-		require.NoError(t, repo.Create(ctx, &notification_repo.NotificationLog{
-			PeerFingerprint: peer, PeerSessionID: sid, Seq: int64(i),
+		row := &notification_repo.NotificationLog{
+			PeerFingerprint: peer, PeerSessionID: sid,
 			Method: wire.NotifyEvent, Payload: fmt.Sprintf(`{"seq":%d}`, i), CreatedAt: createdAt,
-		}))
+		}
+		require.NoError(t, repo.Append(ctx, row))
+		require.Equal(t, int64(i), row.Seq)
 	}
 }
 
@@ -779,8 +789,8 @@ func TestDaemon_CollectJournal_NeverReclaimsARangeThatCouldStillBeCaughtUp(t *te
 	// 老前缀 + 刚刚还在产出:一行都不能动。
 	seedSession(t, ctx, d.sessionStore, "peerA", "2", wire.SessionLifecycleIdle)
 	seedJournal(t, ctx, "peerA", "2", 3, old)
-	require.NoError(t, notification_repo.NewNotification().Create(ctx, &notification_repo.NotificationLog{
-		PeerFingerprint: "peerA", PeerSessionID: "2", Seq: 4, Method: wire.NotifyEvent, Payload: "{}", CreatedAt: fresh,
+	require.NoError(t, notification_repo.NewNotification().Append(ctx, &notification_repo.NotificationLog{
+		PeerFingerprint: "peerA", PeerSessionID: "2", Method: wire.NotifyEvent, Payload: "{}", CreatedAt: fresh,
 	}))
 	// 还在跑的会话:安静再久也不动。
 	seedSession(t, ctx, d.sessionStore, "peerA", "3", wire.SessionLifecycleRunning)

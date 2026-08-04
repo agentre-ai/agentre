@@ -206,6 +206,16 @@ func (c *connStateRecorder) states(sessionID int64) []SessionConnState {
 	return out
 }
 
+// lastState 是该会话最后一次播报的连接态,没播过时为空串。连接态只经
+// ConnStateObserver 出去(Runtime 不留可查询的副本),所以断言一律看这里。
+func (c *connStateRecorder) lastState(sessionID int64) ConnState {
+	states := c.states(sessionID)
+	if len(states) == 0 {
+		return ""
+	}
+	return states[len(states)-1].State
+}
+
 // ── rig ─────────────────────────────────────────────────────────────────────
 
 // reconnectRig 起一个带重连能力的 *Runtime:第一条连接 conn1 已在跑一轮会话 sid,
@@ -405,9 +415,9 @@ func TestDisconnect_DoesNotEndSession_EntersReconnecting(t *testing.T) {
 		t.Fatal("断连不应产生任何事件")
 	default:
 	}
-	assert.Equal(t, ConnStateReconnecting, rig.rt.ConnState(rigSessionID))
 	require.NotEmpty(t, rig.observer.states(rigSessionID))
 	assert.Equal(t, ConnStateReconnecting, rig.observer.states(rigSessionID)[0].State)
+	assert.Equal(t, ConnStateReconnecting, rig.observer.lastState(rigSessionID))
 }
 
 // ── 补齐三步 + 重放喂回同一套 handler ────────────────────────────────────────
@@ -765,7 +775,7 @@ func TestReconnect_DaemonIdentityMismatch_InvalidatesCursor(t *testing.T) {
 	assert.Empty(t, texts, "游标失效时不得重放任何通知")
 	assert.ErrorIs(t, rig.result.StopErr, ErrRunInterrupted)
 	assert.Empty(t, conn2.methodCalls(wire.MethodSessionPull), "游标失效时不得增量拉取")
-	assert.Equal(t, ConnStateLost, rig.rt.ConnState(rigSessionID))
+	assert.Equal(t, ConnStateLost, rig.observer.lastState(rigSessionID))
 }
 
 // Given 重连时游标端口读失败(库正忙、事务冲突之类),When 补齐,Then 不把它当成
@@ -819,12 +829,12 @@ func TestReconnect_CursorAboveDaemonHighWater_InvalidatesCursorAndCatchesUpFromS
 
 	_ = rig.conn1.Close()
 
-	// 等补齐三步跑完(pendingWaiters 是最后一步)。不能等 ConnState:会话此刻还没有
-	// 补齐状态条目,ConnState 会先答一个「已连接」。
+	// 等补齐三步跑完(pendingWaiters 是最后一步)。
 	require.Eventually(t, func() bool {
 		return len(conn2.methodCalls(wire.MethodSessionPendingWaiters)) > 0
 	}, 3*time.Second, 5*time.Millisecond, "补齐应完成")
-	assert.Equal(t, ConnStateConnected, rig.rt.ConnState(rigSessionID))
+	assert.Equal(t, ConnStateConnected, rig.observer.lastState(rigSessionID),
+		"补齐完成后要播回「已连接」,前端才把断连指示器换回打字指示器")
 
 	// 补齐落定之后 daemon 推来的下一条实时帧:高水位 3 之后就是 seq=4。
 	ev, err := json.Marshal(agentruntime.TextDelta{Text: "live-after-restore"})
@@ -925,7 +935,7 @@ func TestReconnect_AttemptsExhausted_InjectsDisconnected(t *testing.T) {
 	_ = drainTexts(t, rig.events, 3*time.Second)
 	assert.ErrorIs(t, rig.result.StopErr, ErrDaemonDisconnected)
 	assert.Equal(t, 2, rig.reconnectAttempts(), "退避表有几档就试几次")
-	assert.Equal(t, ConnStateLost, rig.rt.ConnState(rigSessionID))
+	assert.Equal(t, ConnStateLost, rig.observer.lastState(rigSessionID))
 }
 
 // ── R15: 「被打断」与「连不上了」是两个可区分的终止理由 ──────────────────────
@@ -954,7 +964,7 @@ func TestReconnect_DaemonRestartedInterrupt_InjectsInterruptedNotDisconnected(t 
 		"daemon 重启导致的中断要带自己的理由,上层才能给出「是被打断」的文案")
 	assert.NotErrorIs(t, rig.result.StopErr, ErrDaemonDisconnected,
 		"被打断不是连不上了:折成同一个哨兵,两种情况在会话里就长得一模一样")
-	assert.Equal(t, ConnStateLost, rig.rt.ConnState(rigSessionID))
+	assert.Equal(t, ConnStateLost, rig.observer.lastState(rigSessionID))
 }
 
 // Given 只有自主续轮在飞,When 重连彻底失败(退避表用尽),Then 这一轮被标成**终止**:
