@@ -11,7 +11,10 @@ import {
 import type { Editor } from "@tiptap/react";
 
 import { normalizeSuggestionQuery } from "@/lib/suggestion-score";
-import { localCommandHistoryStore } from "@/stores/local-command-history-store";
+import {
+  deriveLocalCommandHistoryScopeKey,
+  localCommandHistoryStore,
+} from "@/stores/local-command-history-store";
 
 import { extractPlainText } from "../content";
 import type { ProseMirrorLikeNode, TipTapDocNode } from "../types";
@@ -90,10 +93,16 @@ export function useLocalCommandHistoryMenu({
   const [state, setState] = useState<LocalCommandHistoryMenuState>(() =>
     closedState(),
   );
+  const stateRef = useRef(state);
   const suppressedQueryRef = useRef<string | null>(null);
+  const clearingRef = useRef(false);
   const clearButtonRef = useRef<HTMLButtonElement>(null);
   const deviceId = scope?.deviceId;
   const cwd = scope?.cwd;
+
+  useLayoutEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useLayoutEffect(() => {
     suppressedQueryRef.current = null;
@@ -102,6 +111,7 @@ export function useLocalCommandHistoryMenu({
       return;
     }
     const activeScope: LocalCommandHistoryScope = { deviceId, cwd };
+    const activeScopeKey = deriveLocalCommandHistoryScopeKey(activeScope);
 
     const recompute = () => {
       const { $from, empty } = editor.state.selection;
@@ -192,10 +202,22 @@ export function useLocalCommandHistoryMenu({
       });
     };
 
+    const unsubscribe = localCommandHistoryStore.subscribe((mutation) => {
+      if (mutation.scopeKey !== activeScopeKey || clearingRef.current) return;
+      if (mutation.type === "clear" && stateRef.current.open) {
+        const text = extractPlainText(
+          editor.state.doc as unknown as ProseMirrorLikeNode,
+        );
+        const hit = commandQuery(text);
+        suppressedQueryRef.current = hit?.query ?? null;
+      }
+      recompute();
+    });
     editor.on("update", recompute);
     editor.on("selectionUpdate", recompute);
     recompute();
     return () => {
+      unsubscribe();
       editor.off("update", recompute);
       editor.off("selectionUpdate", recompute);
     };
@@ -258,7 +280,12 @@ export function useLocalCommandHistoryMenu({
 
   const clear = useCallback(() => {
     if (deviceId === undefined || cwd === undefined) return;
-    localCommandHistoryStore.clear({ deviceId, cwd });
+    clearingRef.current = true;
+    try {
+      localCommandHistoryStore.clear({ deviceId, cwd });
+    } finally {
+      clearingRef.current = false;
+    }
     dismiss(state.query);
     editor?.commands.focus();
   }, [cwd, deviceId, dismiss, editor, state.query]);

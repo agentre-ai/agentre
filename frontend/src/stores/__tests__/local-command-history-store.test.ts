@@ -379,6 +379,65 @@ describe("local command history scope and persistence", () => {
   });
 });
 
+describe("local command history mutation subscriptions", () => {
+  it("Given two listeners, when accepted records and repeated clears mutate scopes, then notifications are synchronous while no-op records and unsubscribed listeners stay silent", () => {
+    vi.spyOn(Date, "now").mockReturnValue(0);
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+    const localScopeKey = deriveLocalCommandHistoryScopeKey(localRepo);
+    const remoteScopeKey = deriveLocalCommandHistoryScopeKey(remoteRepo);
+    const observedEntries: Array<{
+      type: "record" | "clear";
+      scopeKey: string;
+      commands: string[];
+    }> = [];
+    const firstListener = vi.fn(
+      (mutation: { type: "record" | "clear"; scopeKey: string }) => {
+        const scope =
+          mutation.scopeKey === localScopeKey ? localRepo : remoteRepo;
+        observedEntries.push({
+          ...mutation,
+          commands: store.list(scope).map(({ command }) => command),
+        });
+      },
+    );
+    const secondListener = vi.fn();
+    const unsubscribeFirst = store.subscribe(firstListener);
+    const unsubscribeSecond = store.subscribe(secondListener);
+
+    store.record(localRepo, "pnpm test", 10);
+    store.record(localRepo, "pnpm test", 5);
+    store.record(localRepo, "", 15);
+    store.record(remoteRepo, "make deploy", 20);
+    store.clear(localRepo);
+    store.clear(localRepo);
+
+    expect(observedEntries).toEqual([
+      {
+        type: "record",
+        scopeKey: localScopeKey,
+        commands: ["pnpm test"],
+      },
+      {
+        type: "record",
+        scopeKey: remoteScopeKey,
+        commands: ["make deploy"],
+      },
+      { type: "clear", scopeKey: localScopeKey, commands: [] },
+      { type: "clear", scopeKey: localScopeKey, commands: [] },
+    ]);
+    expect(secondListener).toHaveBeenCalledTimes(4);
+
+    unsubscribeFirst();
+    store.record(localRepo, "git status", 30);
+    expect(firstListener).toHaveBeenCalledTimes(4);
+    expect(secondListener).toHaveBeenCalledTimes(5);
+
+    unsubscribeSecond();
+    store.clear(remoteRepo);
+    expect(secondListener).toHaveBeenCalledTimes(5);
+  });
+});
+
 describe("local command history storage failures", () => {
   it.each([
     ["the exact ECMAScript Date ceiling", ECMASCRIPT_DATE_MAX_TIMESTAMP],

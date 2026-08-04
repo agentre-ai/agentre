@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type RefObject } from "react";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -664,6 +664,113 @@ describe("AIChatInput command mode", () => {
       await screen.findByRole("option", { name: "other command" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("repo command")).not.toBeInTheDocument();
+
+    act(() => {
+      localCommandHistoryStore.record(
+        repoScope,
+        "stale repo command",
+        historyBase + 30,
+      );
+    });
+    expect(screen.queryByText("stale repo command")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "other command" }),
+    ).toBeInTheDocument();
+
+    act(() => {
+      localCommandHistoryStore.record(
+        otherScope,
+        "new other command",
+        historyBase + 40,
+      );
+    });
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual(["new other command", "other command"]);
+  });
+
+  it("Given two mounted inputs share one history scope while another scope is open, When one input clears history, Then both shared menus close before a cleared row can be selected and the other menu remains", async () => {
+    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    localCommandHistoryStore.record(repoScope, "git status", historyBase + 20);
+    localCommandHistoryStore.record(
+      otherScope,
+      "other command",
+      historyBase + 10,
+    );
+    const firstRepoEditorRef: RefObject<Editor | null> = { current: null };
+    const secondRepoEditorRef: RefObject<Editor | null> = { current: null };
+    const otherEditorRef: RefObject<Editor | null> = { current: null };
+    const firstRepoSubmit = vi.fn();
+    const secondRepoSubmit = vi.fn();
+
+    render(
+      <>
+        <div data-testid="first-shared-history-input">
+          <AIChatInput
+            editorRef={firstRepoEditorRef}
+            localCommandHistoryScope={repoScope}
+            onSubmit={vi.fn()}
+            onCommandSubmit={firstRepoSubmit}
+          />
+        </div>
+        <div data-testid="second-shared-history-input">
+          <AIChatInput
+            editorRef={secondRepoEditorRef}
+            localCommandHistoryScope={repoScope}
+            onSubmit={vi.fn()}
+            onCommandSubmit={secondRepoSubmit}
+          />
+        </div>
+        <div data-testid="other-history-input">
+          <AIChatInput
+            editorRef={otherEditorRef}
+            localCommandHistoryScope={otherScope}
+            onSubmit={vi.fn()}
+            onCommandSubmit={vi.fn()}
+          />
+        </div>
+      </>,
+    );
+    const firstInput = within(screen.getByTestId("first-shared-history-input"));
+    const secondInput = within(
+      screen.getByTestId("second-shared-history-input"),
+    );
+    const otherInput = within(screen.getByTestId("other-history-input"));
+
+    act(() => {
+      firstRepoEditorRef.current!.commands.insertContent("!");
+      secondRepoEditorRef.current!.commands.insertContent("!");
+      otherEditorRef.current!.commands.insertContent("!");
+    });
+
+    await Promise.all([
+      firstInput.findByRole("option", { name: "git status" }),
+      secondInput.findByRole("option", { name: "git status" }),
+      otherInput.findByRole("option", { name: "other command" }),
+    ]);
+
+    fireEvent.click(
+      firstInput.getByRole("button", {
+        name: "Clear history for current directory",
+      }),
+    );
+
+    expect(firstInput.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(secondInput.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(
+      otherInput.getByRole("option", { name: "other command" }),
+    ).toBeInTheDocument();
+    expect(localCommandHistoryStore.list(repoScope)).toEqual([]);
+    expect(localCommandHistoryStore.list(otherScope)).toEqual([
+      { command: "other command", lastUsedAt: historyBase + 10 },
+    ]);
+
+    act(() => {
+      pressKey(secondRepoEditorRef.current!, "Tab");
+    });
+    expect(secondRepoEditorRef.current!.getText()).toBe("!");
+    expect(firstRepoSubmit).not.toHaveBeenCalled();
+    expect(secondRepoSubmit).not.toHaveBeenCalled();
   });
 
   it("Given a rejected command handler promise, When a nonempty command is submitted, Then no history is recorded and the rejection is consumed", async () => {

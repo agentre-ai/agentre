@@ -27,8 +27,16 @@ type PersistedLocalCommandHistory = {
 
 export type LocalCommandHistoryStorage = Pick<Storage, "getItem" | "setItem">;
 
+export type LocalCommandHistoryMutation = {
+  readonly type: "record" | "clear";
+  readonly scopeKey: string;
+};
+
 export type LocalCommandHistoryStore = {
   list(scope: LocalCommandHistoryScope): LocalCommandHistoryEntry[];
+  subscribe(
+    listener: (mutation: LocalCommandHistoryMutation) => void,
+  ): () => void;
   reserveLastUsedAt(): number;
   record(
     scope: LocalCommandHistoryScope,
@@ -234,6 +242,10 @@ export function createLocalCommandHistoryStore(
   const storage =
     "storage" in options ? (options.storage ?? null) : browserStorage();
   const history = readPersistedHistory(storage);
+  const listeners = new Set<(mutation: LocalCommandHistoryMutation) => void>();
+  const notify = (mutation: LocalCommandHistoryMutation) => {
+    for (const listener of [...listeners]) listener(mutation);
+  };
   let lastReservedAt = Math.max(
     reservationClockTimestamp(),
     maximumLastUsedAt(history),
@@ -255,6 +267,10 @@ export function createLocalCommandHistoryStore(
         command,
         lastUsedAt,
       }));
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
     reserveLastUsedAt,
     record(scope, command, lastUsedAt) {
@@ -278,12 +294,14 @@ export function createLocalCommandHistoryStore(
       ]);
       lastReservedAt = Math.max(lastReservedAt, usedAt);
       writePersistedHistory(storage, history);
+      notify({ type: "record", scopeKey: key });
     },
     clear(scope) {
       const key = deriveLocalCommandHistoryScopeKey(scope);
       delete history.scopes[key];
       clearBarriers.set(key, lastReservedAt);
       writePersistedHistory(storage, history);
+      notify({ type: "clear", scopeKey: key });
     },
   };
 }
