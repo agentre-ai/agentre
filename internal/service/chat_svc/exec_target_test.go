@@ -33,7 +33,7 @@ type execTargetMocks struct {
 	projectLocation *mock_project_location_repo.MockProjectLocationRepo
 }
 
-func setupExecTargetTest(t *testing.T) (context.Context, *execTargetMocks, ChatSvc) {
+func setupExecTargetTest(t *testing.T) (context.Context, *execTargetMocks, *chatSvc) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	m := &execTargetMocks{
@@ -61,7 +61,7 @@ func setupExecTargetTest(t *testing.T) (context.Context, *execTargetMocks, ChatS
 		RegisterCwdResolver(previousCwdResolver)
 	})
 
-	return context.Background(), m, NewChat(NoopEmitter{})
+	return context.Background(), m, NewChat(NoopEmitter{}).(*chatSvc)
 }
 
 func TestExecDeviceID_GivenLocalOrRemoteBackend_WhenResolved_ThenReturnsStableDeviceIdentity(t *testing.T) {
@@ -70,7 +70,7 @@ func TestExecDeviceID_GivenLocalOrRemoteBackend_WhenResolved_ThenReturnsStableDe
 	assert.Equal(t, "device-9", execDeviceID(&agent_backend_entity.AgentBackend{DeviceID: "device-9"}))
 }
 
-func TestResolveLocalCommandScope_GivenExistingLocalSession_WhenResolved_ThenMatchesLegacyExecutionTarget(t *testing.T) {
+func TestResolveLocalCommandScope_GivenExistingLocalSession_WhenResolved_ThenReturnsCurrentCwdAndLocalDevice(t *testing.T) {
 	ctx, m, svc := setupExecTargetTest(t)
 	sess := &chat_entity.Session{ID: 71, AgentID: 31, ProjectID: 41}
 	agent := &agent_entity.Agent{ID: 31, AgentBackendID: 51}
@@ -78,9 +78,9 @@ func TestResolveLocalCommandScope_GivenExistingLocalSession_WhenResolved_ThenMat
 		ID:   51,
 		Type: string(agent_backend_entity.TypeClaudeCode),
 	}
-	m.session.EXPECT().Find(ctx, int64(71)).Return(sess, nil).Times(2)
-	m.agent.EXPECT().Find(ctx, int64(31)).Return(agent, nil).Times(2)
-	m.backend.EXPECT().Find(ctx, int64(51)).Return(backend, nil).Times(2)
+	m.session.EXPECT().Find(ctx, int64(71)).Return(sess, nil)
+	m.agent.EXPECT().Find(ctx, int64(31)).Return(agent, nil)
+	m.backend.EXPECT().Find(ctx, int64(51)).Return(backend, nil)
 	RegisterCwdResolver(func(_ context.Context, got *chat_entity.Session) (string, error) {
 		require.Equal(t, sess, got)
 		return "/workspace/current-local", nil
@@ -89,11 +89,6 @@ func TestResolveLocalCommandScope_GivenExistingLocalSession_WhenResolved_ThenMat
 	scope, err := svc.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{SessionID: 71})
 	require.NoError(t, err)
 	assert.Equal(t, &LocalCommandScope{DeviceID: "", Cwd: "/workspace/current-local"}, scope)
-
-	cwd, deviceID, err := svc.ResolveSessionExecTarget(ctx, 71)
-	require.NoError(t, err)
-	assert.Equal(t, scope.Cwd, cwd)
-	assert.Equal(t, scope.DeviceID, deviceID)
 }
 
 func TestResolveLocalCommandScope_GivenExistingRemoteSession_WhenLocationChanges_ThenRereadsCurrentLocation(t *testing.T) {
@@ -142,7 +137,7 @@ func TestResolveLocalCommandScope_GivenPreSessionLocalProject_WhenResolved_ThenU
 	})
 	unpersisted := &chat_entity.Session{AgentID: 33, ProjectID: 43}
 
-	shared, err := svc.ResolveExecTarget(ctx, unpersisted)
+	shared, err := svc.resolveExecTarget(ctx, unpersisted)
 	require.NoError(t, err)
 	scope, err := svc.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{
 		AgentID:   33,

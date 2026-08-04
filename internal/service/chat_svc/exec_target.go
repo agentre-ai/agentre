@@ -22,9 +22,9 @@ func execDeviceID(be *agent_backend_entity.AgentBackend) string {
 	return ""
 }
 
-// ResolveExecTarget 解析一个 session 值对象的当前执行目标。sess 可以是已持久化
+// resolveExecTarget 解析一个 session 值对象的当前执行目标。sess 可以是已持久化
 // 会话，也可以是只带 AgentID/ProjectID 的未持久化预会话对象；该方法只读仓储。
-func (s *chatSvc) ResolveExecTarget(ctx context.Context, sess *chat_entity.Session) (*LocalCommandScope, error) {
+func (s *chatSvc) resolveExecTarget(ctx context.Context, sess *chat_entity.Session) (*LocalCommandScope, error) {
 	if sess == nil || sess.AgentID <= 0 || sess.ProjectID < 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
@@ -59,7 +59,7 @@ func (s *chatSvc) ResolveLocalCommandScope(ctx context.Context, req *ResolveLoca
 	if err != nil {
 		return nil, err
 	}
-	return s.ResolveExecTarget(ctx, sess)
+	return s.resolveExecTarget(ctx, sess)
 }
 
 func localCommandScopeSession(ctx context.Context, req *ResolveLocalCommandScopeRequest) (*chat_entity.Session, error) {
@@ -83,14 +83,4 @@ func localCommandScopeSession(ctx context.Context, req *ResolveLocalCommandScope
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 	return &chat_entity.Session{AgentID: req.AgentID, ProjectID: req.ProjectID}, nil
-}
-
-// ResolveSessionExecTarget 给定 sessionID，解析出 ! 命令的执行目标（cwd + deviceID）。
-// 保留既有调用签名，内部与预会话作用域共用 ResolveExecTarget。
-func (s *chatSvc) ResolveSessionExecTarget(ctx context.Context, sessionID int64) (string, string, error) {
-	scope, err := s.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{SessionID: sessionID})
-	if err != nil {
-		return "", "", err
-	}
-	return scope.Cwd, scope.DeviceID, nil
 }
