@@ -435,6 +435,9 @@ type recordingSessions struct {
 	stepC   chan struct{}
 	rows    map[sessionKey]handlers.SessionRecord
 	findErr error
+	// finishEntered / finishHold 让用例把 fanout 卡在轮末收尾里,见 holdFinish。
+	finishEntered chan struct{}
+	finishHold    chan struct{}
 }
 
 func newRecordingSessions() *recordingSessions {
@@ -459,11 +462,39 @@ func (s *recordingSessions) Running(_ context.Context, peer, session string) err
 }
 
 func (s *recordingSessions) Finish(_ context.Context, peer, session string) error {
+	s.awaitFinishRelease()
 	s.mu.Lock()
 	defer s.unlockAndSignal()
 	s.log = append(s.log, "finish:"+session)
 	s.setLifecycleLocked(peer, session, wire.SessionLifecycleIdle)
 	return nil
+}
+
+// holdFinish 把 fanout 卡在**轮末收尾**那一瞬间(这一轮已经结束,而生命周期行还没落回
+// idle)。这一瞬间在生产上不是一闪而过:Finish 是一次同步的 SQLite 写,与流式落库抢锁
+// 时能拖到几十毫秒以上。返回「已进入 Finish」的信号与放行函数。
+func (s *recordingSessions) holdFinish() (<-chan struct{}, func()) {
+	entered, hold := make(chan struct{}, 1), make(chan struct{})
+	s.mu.Lock()
+	s.finishEntered, s.finishHold = entered, hold
+	s.mu.Unlock()
+	return entered, sync.OnceFunc(func() { close(hold) })
+}
+
+// awaitFinishRelease 是 holdFinish 的受理侧:先报「进来了」,再等放行。没装闸时直接过。
+func (s *recordingSessions) awaitFinishRelease() {
+	s.mu.Lock()
+	entered, hold := s.finishEntered, s.finishHold
+	s.mu.Unlock()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+	}
+	if hold != nil {
+		<-hold
+	}
 }
 
 // Find / List 让 recordingSessions 同时充当**查询出口**(生产上是同一个仓储的两侧,
@@ -1503,6 +1534,43 @@ func TestRuntime_Submit_SessionNoLongerRunning_StaysIdempotent(t *testing.T) {
 		_, err = other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 22, RequestID: "p-1"})
 		require.NoError(t, err)
 	})
+}
+
+// TestRuntime_Submit_DuringTurnTeardown_StaysIdempotent 钉住轮末那一瞬间:fanout 正在
+// 收尾 —— 这一轮已经结束,而生命周期行还没落回 idle —— 而一条决策提交恰好落在这里。
+//
+// 它必须仍按 R8 幂等成功。这一瞬间的「解不出会话」是本 daemon 自己的收尾顺序造成的,
+// 不是「提交落到了一个从没拥有过这条会话的 handler」;报错等于给用户一个假失败。窗口
+// 也不是一闪而过:Finish 是一次同步的 SQLite 写,与流式落库抢锁时能拖到几十毫秒以上。
+//
+// 收尾顺序因此是:先把行落回 idle,再摘掉内存会话表 —— 两者之间落进来的提交解得出会话,
+// 照旧走到 backend,由「waiter 已经不在了」按 R8 折成成功。反过来(先摘表)那一瞬间的
+// 提交会看到「表里没有 + 行还在跑」,正是本轮新加的那条判别器判成真错误的形状。
+func TestRuntime_Submit_DuringTurnTeardown_StaysIdempotent(t *testing.T) {
+	rt := &fullRT{}
+	live := make(chan agentruntime.Event)
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		return live, &agentruntime.RunResult{}, nil
+	}
+	sess := newRecordingSessions()
+	h := newRuntimeHandlersOn(rt, sess, newRecordingOutbound())
+	runWithRT(t, h, context.Background(), 31)
+
+	entered, release := sess.holdFinish()
+	close(live) // 一轮结束 → fanout 开始收尾
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fanout 没有走到轮末收尾")
+	}
+	defer release()
+
+	_, err := h.SubmitToolPermission(context.Background(),
+		wire.SubmitToolPermissionParams{SessionID: 31, RequestID: "p-1"})
+	assert.NoError(t, err, "轮末收尾中的提交按 R8 幂等成功,不能变成假失败")
+	_, err = h.SubmitAnswer(context.Background(),
+		wire.SubmitAnswerParams{SessionID: 31, RequestID: "r-1"})
+	assert.NoError(t, err, "轮末收尾中的提交按 R8 幂等成功,不能变成假失败")
 }
 
 // TestRuntime_AllEventsRoundTripThroughNotify proves every sealed Event type

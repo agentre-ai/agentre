@@ -301,13 +301,18 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Even
 		}
 	}
 	frame := runResultToFrame(sid, result)
+	// 生命周期落回 idle 必须在终态帧**之前**:终态帧是客户端得知这一轮结束的那一刻,
+	// 它随后立刻查清单时必须已经看到 idle,而不是一个正在收尾的 running。
+	//
+	// 也必须在摘表**之前**:反过来的话,两者之间(Finish 是一次同步的 SQLite 写,与流式
+	// 落库抢锁时能拖到几十毫秒以上)落进来的决策提交会看到「内存表里没有 + 行还在跑」,
+	// 被 idempotentSubmitResult 判成真错误,给用户一个假失败。这个顺序下它解得出会话、
+	// 照旧走到 backend,由「waiter 已经不在了」按 R8 折成成功。
+	h.finishSession(em)
 	// 只清 active-turn 记录;**不撤销 gateway token** —— token 是会话级常驻,
 	// 跨轮复用,寿命跟随子进程(见 sessionTokens 注释),轮末撤销会让下一轮复用
 	// 的子进程手里 token 失效。
 	h.unregister(sid)
-	// 生命周期落回 idle 必须在终态帧**之前**:终态帧是客户端得知这一轮结束的那一刻,
-	// 它随后立刻查清单时必须已经看到 idle,而不是一个正在收尾的 running。
-	h.finishSession(em)
 	em.emit(wire.NotifyRunResultDone, &frame)
 	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
 		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
