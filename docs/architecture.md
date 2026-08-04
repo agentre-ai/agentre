@@ -13,7 +13,7 @@ internal/
                                 methods only do parse → svc.Xxx().Method(ctx, …) → return)
   bootstrap/                   (startup order: dataDir → cago memory config → logger → SQLite → migrations)
   cli/{claudecodecmd,ctlcmd}/  (subcommand implementations, compiled into the agrctl binary)
-  daemon/                      (agentred-side daemon: client / handlers / sessions / pairing / rpc / remotefs / notifier / state)
+  daemon/                      (agentred-side daemon: client / handlers / migrations / notifier / pairing / remotefs / repository / rpc / sessions / state)
   service/<domain>_svc/        (business logic; interface + singleton accessor + private implementation)
   repository/<domain>_repo/    (data access; interface + Register/accessor, uniformly going through db.Ctx(ctx))
     mock_<domain>_repo/        (mockgen output, injected into service unit tests)
@@ -45,7 +45,8 @@ UI
 ```
 
 - Tool approval / ask-user-question are still rendered by the desktop UI.
-- A disconnect aborts the entire chat.
+- A dropped daemon connection no longer aborts the chat: the desktop client backs off and reconnects, then replays missed notifications from a cursor; an error is only injected into the turn once reconnection is abandoned (`internal/pkg/agentruntime/runtimes/remote/reconnect.go`). See [`session-lifecycle.md`](session-lifecycle.md#remote-execution) for session ownership and cursor semantics.
+- `agentred` keeps its own SQLite store (`internal/daemon/repository`, `internal/daemon/migrations`): every notification is journaled with a gap-free monotonic `seq` before being pushed, so a dead connection suspends pushing without losing the record.
 - pairing / device status go through `internal/pkg/remotefs` + `remote_device_svc`.
 
 ## Layering conventions (cago framework style)
