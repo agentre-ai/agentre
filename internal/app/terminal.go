@@ -23,17 +23,45 @@ func (a *App) TerminalOpen(terminalID string, projectID int64, deviceID string, 
 	return a.terminalSvc.Open(a.ctx, terminalID, deviceID, cwd, cols, rows)
 }
 
+// ResolveLocalCommandScope 只读解析已有会话或预会话目标的命令执行设备/cwd。
+func (a *App) ResolveLocalCommandScope(
+	req *chat_svc.ResolveLocalCommandScopeRequest,
+) (*chat_svc.LocalCommandScope, error) {
+	return chat_svc.Chat().ResolveLocalCommandScope(a.ctx, req)
+}
+
+// TerminalRunCommandResponse 返回本次命令实际使用的执行作用域。命令启动错误
+// 通过 StartError 返回，使调用方仍可使用已解析的准确作用域。
+type TerminalRunCommandResponse struct {
+	Scope      chat_svc.LocalCommandScope `json:"scope"`
+	StartError string                     `json:"startError,omitempty"`
+}
+
 // TerminalRunCommand 在会话工作目录下,以 `$SHELL -l -c command` 跑一条本地命令(绕开 AI agent)。
 // terminalID 由前端生成,与普通终端一致;输出走相同的 terminal:<id>:data/exit 事件。
-func (a *App) TerminalRunCommand(terminalID string, sessionID int64, command string, cols, rows uint16) error {
+func (a *App) TerminalRunCommand(
+	terminalID string,
+	sessionID int64,
+	command string,
+	cols, rows uint16,
+) (*TerminalRunCommandResponse, error) {
 	if a.terminalSvc == nil {
-		return errTerminalSvcNotInitialized
+		return nil, errTerminalSvcNotInitialized
 	}
-	cwd, deviceID, err := chat_svc.Chat().ResolveSessionExecTarget(a.ctx, sessionID)
+	scope, err := chat_svc.Chat().ResolveLocalCommandScope(a.ctx, &chat_svc.ResolveLocalCommandScopeRequest{
+		SessionID: sessionID,
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return a.terminalSvc.OpenCommand(a.ctx, terminalID, deviceID, cwd, command, cols, rows)
+	response := &TerminalRunCommandResponse{Scope: *scope}
+	if err := a.terminalSvc.OpenCommand(
+		a.ctx, terminalID, scope.DeviceID, scope.Cwd, command, cols, rows,
+	); err != nil {
+		response.StartError = err.Error()
+		return response, nil //nolint:nilerr // caller receives the start failure with the resolved scope
+	}
+	return response, nil
 }
 
 // TerminalWrite sends input bytes (typically keystrokes) to the running PTY.
