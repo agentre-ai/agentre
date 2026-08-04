@@ -4,8 +4,8 @@ import {
   LOCAL_COMMAND_HISTORY_STORAGE_KEY,
   createLocalCommandHistoryStore,
   deriveLocalCommandHistoryScopeKey,
+  type LocalCommandHistoryScope,
 } from "../local-command-history-store";
-import type { LocalCommandHistoryScope } from "@/components/agentre/chat-input/local-command-history/types";
 
 const localRepo: LocalCommandHistoryScope = { deviceId: "", cwd: "/repo" };
 const localOtherRepo: LocalCommandHistoryScope = {

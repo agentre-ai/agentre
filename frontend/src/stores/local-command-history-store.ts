@@ -1,7 +1,12 @@
-import type {
-  LocalCommandHistoryEntry,
-  LocalCommandHistoryScope,
-} from "@/components/agentre/chat-input/local-command-history/types";
+export type LocalCommandHistoryScope = {
+  readonly deviceId: string;
+  readonly cwd: string;
+};
+
+export type LocalCommandHistoryEntry = {
+  readonly command: string;
+  readonly lastUsedAt: number;
+};
 
 export const LOCAL_COMMAND_HISTORY_STORAGE_KEY = "agentre.localCommandHistory";
 

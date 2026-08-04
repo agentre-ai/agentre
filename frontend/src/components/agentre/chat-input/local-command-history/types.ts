@@ -1,12 +1,9 @@
-export type LocalCommandHistoryScope = {
-  readonly deviceId: string;
-  readonly cwd: string;
-};
+import type {
+  LocalCommandHistoryEntry,
+  LocalCommandHistoryScope,
+} from "@/stores/local-command-history-store";
 
-export type LocalCommandHistoryEntry = {
-  readonly command: string;
-  readonly lastUsedAt: number;
-};
+export type { LocalCommandHistoryEntry, LocalCommandHistoryScope };
 
 export type LocalCommandHistoryMenuState = {
   readonly open: boolean;
