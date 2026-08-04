@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -40,6 +41,45 @@ func TestDaemon_OpensOwnDatabaseAndRunsMigrations(t *testing.T) {
 	require.NotNil(t, d.db)
 	assert.True(t, d.db.Migrator().HasTable("daemon_sessions"))
 	assert.True(t, d.db.Migrator().HasTable("daemon_notification_logs"))
+}
+
+// TestDaemon_DatabaseUsesWALSoCatchUpReadsDoNotStallTheStreamingWriter 钉死开库方式的
+// 可观察后果:通知日志的写是**每个流式事件一条**同步事务,而 session.pull 的补齐读是一段
+// 持续着的读事务。回滚日志模式下读事务持 SHARED 锁,写事务提交要 EXCLUSIVE —— 写者只能
+// 在 5s busy timeout 上干等,等不到就报 database is locked,那条通知既不落库也不推送(R3)。
+// WAL 下读写各走一份快照,互不阻塞。
+func TestDaemon_DatabaseUsesWALSoCatchUpReadsDoNotStallTheStreamingWriter(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir()})
+	require.NoError(t, err)
+	t.Cleanup(func() { closeDB(d.db) })
+
+	ctx := dbpkg.WithContextDB(context.Background(), d.db)
+	repo := notification_repo.NewNotification()
+	require.NoError(t, repo.Append(ctx, &notification_repo.NotificationLog{
+		PeerFingerprint: "peerA", PeerSessionID: "s1", Method: "runtime.event", Payload: "{}",
+	}))
+
+	// 补齐侧:一次翻页拉取是一个开着的读事务(整段期间都持有读锁)。
+	reader := d.db.Begin()
+	require.NoError(t, reader.Error)
+	t.Cleanup(func() { _ = reader.Rollback() })
+	var rows []*notification_repo.NotificationLog
+	require.NoError(t, reader.Where("peer_fingerprint = ?", "peerA").Find(&rows).Error)
+	require.Len(t, rows, 1)
+
+	// 流式侧:同一时刻的下一条通知必须照常落库。
+	done := make(chan error, 1)
+	go func() {
+		done <- repo.Append(ctx, &notification_repo.NotificationLog{
+			PeerFingerprint: "peerA", PeerSessionID: "s1", Method: "runtime.event", Payload: `{"delta":"x"}`,
+		})
+	}()
+	select {
+	case appendErr := <-done:
+		require.NoError(t, appendErr, "补齐读在飞时,流式通知仍必须落得进库")
+	case <-time.After(2 * time.Second):
+		t.Fatal("streaming append is stuck behind an open catch-up read — the daemon database must be opened in WAL mode")
+	}
 }
 
 // TestDaemon_NewRegistersNotificationRepo 回归:New 是 agentred 的组装根,必须像
@@ -590,6 +630,64 @@ func TestDaemon_IPCStatus(t *testing.T) {
 	assert.Len(t, code, 6)
 }
 
+// TestDaemon_IPCStatus_ReportsDatabasePathAndSize 覆盖规格「安全、隐私…/磁盘增长」的
+// 那一句:库文件路径与体量必须在 daemon 状态查询里看得见,用户才能自行判断何时清理。
+//
+// 断言的是可观察事实而不是「有这两个键」:路径要真的指向这个 DataDir 下的库文件,
+// 体量要跟着库一起长 —— 写进去一批通知之后报出来的字节数必须变大,不能是一个常量、
+// 也不能只报主库文件而漏掉 WAL 旁文件(WAL 模式下新写入先落在 -wal 上)。
+func TestDaemon_IPCStatus_ReportsDatabasePathAndSize(t *testing.T) {
+	// 不用 t.TempDir():它以测试名建目录,而 unix socket 的路径在 macOS 上只有 104 字节,
+	// 长测试名会让 IPC 直接绑不上。
+	dir, err := os.MkdirTemp("", "agentred-status")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	d, err := New(Options{DataDir: dir, LANHost: "127.0.0.1", LANPort: 0})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+	require.Eventually(t, func() bool {
+		_, statErr := os.Stat(d.SocketPath())
+		return statErr == nil
+	}, 2*time.Second, 10*time.Millisecond)
+
+	tr := &http.Transport{DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+		return net.Dial("unix", d.SocketPath())
+	}}
+	client := &http.Client{Transport: tr}
+	status := func() map[string]any {
+		t.Helper()
+		resp, getErr := client.Get("http://daemon/local/status")
+		require.NoError(t, getErr)
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		var v map[string]any
+		require.NoError(t, json.Unmarshal(body, &v))
+		return v
+	}
+
+	before := status()
+	assert.Equal(t, filepath.Join(dir, dbFileName), before["dbPath"],
+		"状态查询必须交出这台 daemon 真实的库文件路径")
+	sizeBefore, ok := before["dbSizeBytes"].(float64)
+	require.True(t, ok, "状态查询必须交出库文件体量")
+	assert.Positive(t, sizeBefore)
+
+	dbCtx := dbpkg.WithContextDB(context.Background(), d.db)
+	repo := notification_repo.NewNotification()
+	payload := `{"delta":"` + strings.Repeat("x", 4096) + `"}`
+	for range 200 {
+		require.NoError(t, repo.Append(dbCtx, &notification_repo.NotificationLog{
+			PeerFingerprint: "peerA", PeerSessionID: "s1", Method: wire.NotifyEvent, Payload: payload,
+		}))
+	}
+
+	sizeAfter, ok := status()["dbSizeBytes"].(float64)
+	require.True(t, ok)
+	assert.Greater(t, sizeAfter, sizeBefore, "体量必须跟着库一起长,而不是一个常量")
+}
+
 // TestRecoverHandlerPanic 验证 RPC handler panic 被吃掉,翻成
 // rpc.Error{ErrInternal} 让 daemon 进程不挂、客户端收到结构化错误,而不是
 // 看到 SIGSEGV 整个 agentred 进程死。回归 claudecode runtime nil deref 把整
@@ -625,4 +723,155 @@ func TestRecoverHandlerPanic(t *testing.T) {
 		func() { defer recoverHandlerPanic(&err) }()
 		assert.NoError(t, err)
 	})
+}
+
+// seedJournal 给某会话灌 n 条日志(seq 1..n),全部盖上同一个落库时间。
+func seedJournal(t *testing.T, ctx context.Context, peer, sid string, n int, createdAt int64) {
+	t.Helper()
+	repo := notification_repo.NewNotification()
+	for i := 1; i <= n; i++ {
+		require.NoError(t, repo.Create(ctx, &notification_repo.NotificationLog{
+			PeerFingerprint: peer, PeerSessionID: sid, Seq: int64(i),
+			Method: wire.NotifyEvent, Payload: fmt.Sprintf(`{"seq":%d}`, i), CreatedAt: createdAt,
+		}))
+	}
+}
+
+// seedSession 给某会话建一条生命周期行。
+func seedSession(t *testing.T, ctx context.Context, store daemonSessionStore, peer, sid, lifecycle string) {
+	t.Helper()
+	require.NoError(t, store.Start(ctx, handlers.SessionRecord{
+		PeerFingerprint: peer, PeerSessionID: sid, BackendType: "claudecode", LifecycleState: lifecycle,
+	}))
+}
+
+// journalSeqs 读回某会话此刻还剩哪些 seq。
+func journalSeqs(t *testing.T, ctx context.Context, peer, sid string) []int64 {
+	t.Helper()
+	rows, _, err := notification_repo.NewNotification().ListSince(ctx, peer, sid, 0, 1000)
+	require.NoError(t, err)
+	out := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.Seq)
+	}
+	return out
+}
+
+// TestDaemon_CollectJournal_NeverReclaimsARangeThatCouldStillBeCaughtUp 钉死留存策略
+// 的判据。回收只碰**整个留存窗口内一条新通知都没有**的会话,而且永远保留它的高水位那一行:
+//
+//   - 还在产出的会话一行都不动 —— 哪怕它最老的那批日志早过了窗口。那段老前缀正是一个
+//     久未上线的客户端重连后要补齐的区间(R5:补齐序列与不断连逐条相等)。
+//   - 非终态(running)的会话一行都不动:它随时可能被接管接着跑。
+//   - 库里没有会话行的日志一行都不动:身份不明时一律保守。
+func TestDaemon_CollectJournal_NeverReclaimsARangeThatCouldStillBeCaughtUp(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir(), JournalRetention: 24 * time.Hour})
+	require.NoError(t, err)
+	t.Cleanup(func() { closeDB(d.db) })
+	ctx := dbpkg.WithContextDB(context.Background(), d.db)
+
+	old := time.Now().Add(-90 * 24 * time.Hour).UnixMilli()
+	fresh := time.Now().UnixMilli()
+
+	// 安静了整个窗口的空闲会话:可回收。
+	seedSession(t, ctx, d.sessionStore, "peerA", "1", wire.SessionLifecycleIdle)
+	seedJournal(t, ctx, "peerA", "1", 5, old)
+	// 老前缀 + 刚刚还在产出:一行都不能动。
+	seedSession(t, ctx, d.sessionStore, "peerA", "2", wire.SessionLifecycleIdle)
+	seedJournal(t, ctx, "peerA", "2", 3, old)
+	require.NoError(t, notification_repo.NewNotification().Create(ctx, &notification_repo.NotificationLog{
+		PeerFingerprint: "peerA", PeerSessionID: "2", Seq: 4, Method: wire.NotifyEvent, Payload: "{}", CreatedAt: fresh,
+	}))
+	// 还在跑的会话:安静再久也不动。
+	seedSession(t, ctx, d.sessionStore, "peerA", "3", wire.SessionLifecycleRunning)
+	seedJournal(t, ctx, "peerA", "3", 4, old)
+	// 没有会话行的孤儿日志:不动。
+	seedJournal(t, ctx, "peerB", "9", 4, old)
+
+	collected, err := d.collectJournal(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), collected, "只该回收那条安静会话高水位以下的 4 行")
+
+	assert.Equal(t, []int64{5}, journalSeqs(t, ctx, "peerA", "1"),
+		"安静会话只留高水位那一行")
+	assert.Equal(t, []int64{1, 2, 3, 4}, journalSeqs(t, ctx, "peerA", "2"),
+		"还在产出的会话,连它窗口之外的老前缀也必须原封不动 —— 那正是久未上线的客户端要补齐的区间")
+	assert.Equal(t, []int64{1, 2, 3, 4}, journalSeqs(t, ctx, "peerA", "3"),
+		"非终态会话随时可能被接管接着跑,一行都不回收")
+	assert.Equal(t, []int64{1, 2, 3, 4}, journalSeqs(t, ctx, "peerB", "9"),
+		"库里没有会话行时身份不明,保守起见不回收")
+}
+
+// TestDaemon_CollectJournal_KeepsTheSeqTimelineIntact 覆盖回收之后这条会话**接得回去**:
+// 高水位不退、下一条通知接着往上排、落在高水位前一格的客户端仍拉得到那一条。
+//
+// 少了这条约束,回收就是在制造 8496c291 修掉的那种静默冻结:MAX(seq) 被抹掉后 Append
+// 从 1 重新分配,而客户端游标还停在旧高水位上,此后每一条实时通知都被当成重复丢弃 ——
+// 没有跳号、没有错误,会话就是再也不出字。
+func TestDaemon_CollectJournal_KeepsTheSeqTimelineIntact(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir(), JournalRetention: 24 * time.Hour})
+	require.NoError(t, err)
+	t.Cleanup(func() { closeDB(d.db) })
+	ctx := dbpkg.WithContextDB(context.Background(), d.db)
+	repo := notification_repo.NewNotification()
+
+	seedSession(t, ctx, d.sessionStore, "peerA", "1", wire.SessionLifecycleIdle)
+	seedJournal(t, ctx, "peerA", "1", 5, time.Now().Add(-90*24*time.Hour).UnixMilli())
+
+	_, err = d.collectJournal(context.Background())
+	require.NoError(t, err)
+
+	latest, err := repo.LatestSeq(ctx, "peerA", "1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), latest, "高水位不因回收而后退")
+
+	next := &notification_repo.NotificationLog{
+		PeerFingerprint: "peerA", PeerSessionID: "1", Method: wire.NotifyEvent, Payload: "{}",
+	}
+	require.NoError(t, repo.Append(ctx, next))
+	assert.Equal(t, int64(6), next.Seq, "回收之后 seq 接着往上排,绝不从 1 重来")
+
+	rows, _, err := repo.ListSince(ctx, "peerA", "1", 4, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "落在高水位前一格的客户端仍能按游标拉平")
+	assert.Equal(t, int64(5), rows[0].Seq)
+	assert.Equal(t, int64(6), rows[1].Seq)
+}
+
+// TestDaemon_CollectJournal_RetentionCanBeTurnedOff 覆盖留存窗口的开关:规格把
+// 「永久保留」写成了默认承诺,负数窗口因此必须让回收整个不发生(一行都不删)。
+func TestDaemon_CollectJournal_RetentionCanBeTurnedOff(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir(), JournalRetention: -1})
+	require.NoError(t, err)
+	t.Cleanup(func() { closeDB(d.db) })
+	ctx := dbpkg.WithContextDB(context.Background(), d.db)
+
+	seedSession(t, ctx, d.sessionStore, "peerA", "1", wire.SessionLifecycleIdle)
+	seedJournal(t, ctx, "peerA", "1", 5, time.Now().Add(-90*24*time.Hour).UnixMilli())
+
+	collected, err := d.collectJournal(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, collected)
+	assert.Len(t, journalSeqs(t, ctx, "peerA", "1"), 5, "关掉留存窗口时一行都不回收")
+}
+
+// TestDaemon_RunCollectsTheJournal 钉死接线:回收必须由 daemon 自己跑起来,而不是等
+// 谁来调 —— 没有调用方的回收路径等于没有回收路径,日志照旧无限增长。
+func TestDaemon_RunCollectsTheJournal(t *testing.T) {
+	dir, err := os.MkdirTemp("", "agentred-collect")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	d, err := New(Options{DataDir: dir, LANHost: "127.0.0.1", LANPort: 0, JournalRetention: time.Hour})
+	require.NoError(t, err)
+	dbCtx := dbpkg.WithContextDB(context.Background(), d.db)
+	seedSession(t, dbCtx, d.sessionStore, "peerA", "1", wire.SessionLifecycleIdle)
+	seedJournal(t, dbCtx, "peerA", "1", 5, time.Now().Add(-90*24*time.Hour).UnixMilli())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+
+	require.Eventually(t, func() bool {
+		return len(journalSeqs(t, dbCtx, "peerA", "1")) == 1
+	}, 3*time.Second, 20*time.Millisecond, "daemon 跑起来之后必须自己回收掉安静会话的日志前缀")
 }

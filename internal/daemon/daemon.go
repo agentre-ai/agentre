@@ -52,6 +52,10 @@ type Options struct {
 	// 留空 → 走 ccoauth.NewLocalFetcher()(从当前机器环境读 token + 调真实 endpoint);
 	// 集成测试传入 stub 屏蔽真实网络 / 真实 keychain。
 	CCUsageFetcher handlers.CCUsageFetcher
+
+	// JournalRetention 是通知日志的留存窗口(见 collectJournal)。
+	// 0 取 defaultJournalRetention;负数关掉回收(永久保留)。
+	JournalRetention time.Duration
 }
 
 // Daemon assembles and runs all agentred sub-systems.
@@ -527,7 +531,7 @@ func (d *Daemon) registerMethods() {
 	d.registry.Register("cli.resolvePath", wrapGuarded(cliH.ResolvePath))
 	d.registry.Register("cli.probe", wrapGuarded(cliH.Probe))
 
-	healthH := handlers.NewHealthHandlers(d.state.InstanceUUID(), d.state)
+	healthH := handlers.NewHealthHandlers(d.state.InstanceUUID(), d.state, d)
 	d.registry.Register("health.ping", wrapGuardedNoParams(healthH.Ping))
 
 	// claudecode.usage:agentred 在它自己所在机器上读 Claude Code 的 OAuth 凭证
@@ -580,6 +584,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// repository calling db.Ctx(ctx) anywhere below this point resolves to this
 	// instance's database, never another Daemon's.
 	ctx = dbpkg.WithContextDB(ctx, d.db)
+	// 通知日志的回收:起手一次,之后按间隔跑(见 collectJournal 的留存策略)。
+	go d.runJournalCollector(ctx)
 	if err := d.gateway.Start(ctx); err != nil {
 		return err
 	}
@@ -817,9 +823,44 @@ func openDB(dataDir string) (*gorm.DB, error) {
 	dbPath := filepath.Join(dataDir, dbFileName)
 	// busy_timeout mirrors internal/bootstrap/cago.go's sqliteDSN: concurrent
 	// writers otherwise hit SQLITE_BUSY near-instantly instead of waiting.
-	dsn := dbPath + "?_pragma=busy_timeout(5000)"
+	//
+	// WAL 不是调优,是这个库的工作负载本身要求的:写侧是**每个流式事件一条**同步事务
+	// (handlers/runtime.go 的 fanout 对每个 agentruntime.Event 都落一条日志),读侧是
+	// session.pull 的翻页补齐 —— 一段开着的读事务。回滚日志模式下两者互斥:读事务持
+	// SHARED,写事务提交要 EXCLUSIVE,于是流式写只能在 busy_timeout 上干等 5 秒,超时
+	// 那条通知既不落库也不推送(R3)。WAL 下读方读快照、写方追加,谁也不挡谁。
+	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	return gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 }
+
+// dbSidecarSuffixes 是 SQLite 在主库文件旁边开的两个附属文件。WAL 模式下新写入先落在
+// -wal 上(checkpoint 之后才并回主库),只统计主库文件会让「库有多大」在最该看见增长的
+// 时刻纹丝不动。
+var dbSidecarSuffixes = []string{"-wal", "-shm"}
+
+// dbPath 是这台 daemon 的库文件位置(openDB 打开的那一个)。
+func (d *Daemon) dbPath() string {
+	return filepath.Join(d.opts.DataDir, dbFileName)
+}
+
+// DBStat 交出库文件的路径与体量,喂给两处状态查询(IPC 的 /local/status 与 RPC 的
+// health.ping)。统计不到的文件按 0 计:体量是给人看的参考值,读不到某个旁文件不该
+// 让一次状态查询失败。
+func (d *Daemon) DBStat() handlers.DBStat {
+	path := d.dbPath()
+	stat := handlers.DBStat{Path: path}
+	if fi, err := os.Stat(path); err == nil {
+		stat.SizeBytes = fi.Size()
+	}
+	for _, suffix := range dbSidecarSuffixes {
+		if fi, err := os.Stat(path + suffix); err == nil {
+			stat.SizeBytes += fi.Size()
+		}
+	}
+	return stat
+}
+
+var _ handlers.DBStatPort = (*Daemon)(nil)
 
 // notificationJournal 是 handlers.JournalPort 的 daemon 级实现:把「本该发出的通知」
 // 写进本实例的 daemon_notification_logs,seq 由仓储在同一条语句里分配。
@@ -939,6 +980,124 @@ func (j journalReader) LatestSeq(ctx context.Context, peerFingerprint, peerSessi
 
 func (j journalReader) LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error) {
 	return notification_repo.Notification().LatestSeqByPeer(dbpkg.WithContextDB(ctx, j.db), peerFingerprint)
+}
+
+// ── 通知日志的留存与回收 ─────────────────────────────────────────────────────
+
+// defaultJournalRetention 是通知日志的默认留存窗口:一条会话安静满 30 天,它高水位
+// 以下的日志才进入回收范围。30 天是「合上笔记本出门一趟」的量级上限 —— 比它更短会开始
+// 吃掉真实用户回来要看的内容,更长则在共享 daemon 上留不住任何上限。
+const defaultJournalRetention = 30 * 24 * time.Hour
+
+// journalCollectInterval 两次回收之间的间隔(daemon 起来先扫一次)。回收不是热路径,
+// 扫得勤只是白占写锁。
+const journalCollectInterval = 6 * time.Hour
+
+// journalCollectBatch 一次回收最多处理多少条会话。分批是为了写锁:每条会话一条独立的
+// DELETE,批次之间流式写入随时插得进来 —— 一条横跨全库的大事务会把每个 token 一条的
+// 通知写入按在 5s busy timeout 上。
+const journalCollectBatch = 200
+
+// journalRetention 取生效的留存窗口。
+func (d *Daemon) journalRetention() time.Duration {
+	if d.opts.JournalRetention == 0 {
+		return defaultJournalRetention
+	}
+	return d.opts.JournalRetention
+}
+
+// runJournalCollector 按间隔回收通知日志,直到 ctx 结束。
+func (d *Daemon) runJournalCollector(ctx context.Context) {
+	if d.journalRetention() <= 0 {
+		log.Printf("daemon.runJournalCollector: retention disabled, notification logs are kept forever")
+		return
+	}
+	ticker := time.NewTicker(journalCollectInterval)
+	defer ticker.Stop()
+	for {
+		if _, err := d.collectJournal(ctx); err != nil {
+			log.Printf("daemon.collectJournal: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// collectJournal 回收通知日志,返回删掉的行数。
+//
+// 留存策略(一条会话的日志前缀可回收,当且仅当三条同时成立):
+//
+//  1. 它在整个留存窗口内**一条新通知都没有**(最新那一行早于 cutoff)。还在产出的会话
+//     一行都不动 —— 哪怕它最老的那批日志早过了窗口,那段老前缀正是一个久未上线的客户端
+//     重连后要按游标补齐的区间(R5:补齐的序列与全程不断连时逐条相等)。
+//  2. daemon 记着的生命周期是终态(idle / interrupted)。running 的会话随时会被接管
+//     接着跑,查不到会话行(身份不明)时同样保守不动。
+//  3. 它的**高水位那一行永远保留**。这不是省一行的问题:MAX(seq) 一旦归零,Append 会从
+//     1 重新分配 seq,而客户端游标还停在旧高水位上,此后每条实时通知都被当成重复丢弃 ——
+//     没有跳号、没有错误,会话就是再也不出字(8496c291 修的正是这类静默冻结)。保留它
+//     还让「只落后一格」的客户端仍能按游标把那一条拉平。
+//
+// 因此被回收的只可能是「一条 30 天没动静的终态会话上、客户端在这 30 天里始终没来取的
+// 那段历史」。这与规格实现决策 7 的「永久保留」是一处有意的收窄:评审 F7 认定无回收路径
+// 的稳态聊天会把共享 daemon 写到 GB 级且无法回收。窗口可经 Options.JournalRetention
+// 调整,负数把回收整个关掉,回到规格原本的承诺。
+func (d *Daemon) collectJournal(ctx context.Context) (int64, error) {
+	retention := d.journalRetention()
+	if retention <= 0 {
+		return 0, nil
+	}
+	// 生产者是脱离请求 ctx 的后台 goroutine,句柄只能从这里给(同 notificationJournal)。
+	ctx = dbpkg.WithContextDB(ctx, d.db)
+	cutoff := time.Now().Add(-retention).UnixMilli()
+	targets, err := notification_repo.Notification().SilentSessions(ctx, cutoff, journalCollectBatch)
+	if err != nil {
+		return 0, fmt.Errorf("list silent sessions: %w", err)
+	}
+	var collected int64
+	var sessions int
+	for _, target := range targets {
+		if ctx.Err() != nil { // daemon 正在关停:剩下的留给下次启动那一遍
+			break
+		}
+		if !d.sessionIsTerminal(ctx, target) {
+			continue
+		}
+		deleted, delErr := notification_repo.Notification().DeleteBelow(
+			ctx, target.PeerFingerprint, target.PeerSessionID, target.LatestSeq)
+		if delErr != nil {
+			// 一条会话回收失败不该让整轮回收停下:剩下的会话照收,下一轮再试这一条。
+			log.Printf("daemon.collectJournal: delete below seq=%d failed for session %s: %v",
+				target.LatestSeq, target.PeerSessionID, delErr)
+			continue
+		}
+		if deleted > 0 {
+			sessions++
+		}
+		collected += deleted
+	}
+	if collected > 0 {
+		log.Printf("daemon.collectJournal: reclaimed %d notification rows from %d sessions silent for %s",
+			collected, sessions, retention)
+	}
+	return collected, nil
+}
+
+// sessionIsTerminal 报告这条会话此刻是不是终态(回收的第二道闸)。读不出来、或库里
+// 根本没有这条会话行时一律按「不是」处理 —— 身份不明时不回收。
+func (d *Daemon) sessionIsTerminal(ctx context.Context, target notification_repo.SilentSession) bool {
+	rec, err := d.sessionStore.Find(ctx, target.PeerFingerprint, target.PeerSessionID)
+	if err != nil {
+		log.Printf("daemon.collectJournal: read session %s failed: %v", target.PeerSessionID, err)
+		return false
+	}
+	if rec == nil {
+		return false
+	}
+	return rec.LifecycleState == wire.SessionLifecycleIdle ||
+		rec.LifecycleState == wire.SessionLifecycleInterrupted
 }
 
 // closeDB 关闭 openDB 拿到的句柄。只在 New 的失败路径上用:Daemon 构造失败时若不关,

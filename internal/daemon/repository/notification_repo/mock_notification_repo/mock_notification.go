@@ -69,6 +69,21 @@ func (mr *MockNotificationRepoMockRecorder) Create(ctx, n any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockNotificationRepo)(nil).Create), ctx, n)
 }
 
+// DeleteBelow mocks base method.
+func (m *MockNotificationRepo) DeleteBelow(ctx context.Context, peerFingerprint, peerSessionID string, seq int64) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteBelow", ctx, peerFingerprint, peerSessionID, seq)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteBelow indicates an expected call of DeleteBelow.
+func (mr *MockNotificationRepoMockRecorder) DeleteBelow(ctx, peerFingerprint, peerSessionID, seq any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteBelow", reflect.TypeOf((*MockNotificationRepo)(nil).DeleteBelow), ctx, peerFingerprint, peerSessionID, seq)
+}
+
 // LatestSeq mocks base method.
 func (m *MockNotificationRepo) LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error) {
 	m.ctrl.T.Helper()
@@ -113,4 +128,19 @@ func (m *MockNotificationRepo) ListSince(ctx context.Context, peerFingerprint, p
 func (mr *MockNotificationRepoMockRecorder) ListSince(ctx, peerFingerprint, peerSessionID, cursor, limit any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListSince", reflect.TypeOf((*MockNotificationRepo)(nil).ListSince), ctx, peerFingerprint, peerSessionID, cursor, limit)
+}
+
+// SilentSessions mocks base method.
+func (m *MockNotificationRepo) SilentSessions(ctx context.Context, cutoffMs int64, limit int) ([]notification_repo.SilentSession, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SilentSessions", ctx, cutoffMs, limit)
+	ret0, _ := ret[0].([]notification_repo.SilentSession)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SilentSessions indicates an expected call of SilentSessions.
+func (mr *MockNotificationRepoMockRecorder) SilentSessions(ctx, cutoffMs, limit any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SilentSessions", reflect.TypeOf((*MockNotificationRepo)(nil).SilentSessions), ctx, cutoffMs, limit)
 }

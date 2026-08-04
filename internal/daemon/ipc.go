@@ -73,6 +73,9 @@ func (d *Daemon) ipcPair(w http.ResponseWriter, r *http.Request) {
 
 func (d *Daemon) ipcStatus(w http.ResponseWriter, r *http.Request) {
 	snap := d.state.Snapshot()
+	// dbPath / dbSizeBytes:远端盒子上的 transcript 是永久档案,规格要求库文件的位置与
+	// 体量在状态查询里看得见,用户据此自行判断何时该清理(见 Daemon.DBStat)。
+	dbStat := d.DBStat()
 	writeJSON(w, map[string]any{
 		"pid":              os.Getpid(),
 		"daemonUUID":       snap.DaemonInstanceUUID,
@@ -81,6 +84,8 @@ func (d *Daemon) ipcStatus(w http.ResponseWriter, r *http.Request) {
 		"pairedPeers":      summarizePeers(snap.PairedPeers),
 		"activeSessions":   len(d.sessions.List()),
 		"llmProviderCount": len(snap.LLMProviders),
+		"dbPath":           dbStat.Path,
+		"dbSizeBytes":      dbStat.SizeBytes,
 	})
 }
 

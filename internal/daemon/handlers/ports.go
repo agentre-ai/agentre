@@ -68,6 +68,22 @@ type JournalPort interface {
 	Append(ctx context.Context, peerFingerprint, peerSessionID, method string, payload json.RawMessage) (seq int64, err error)
 }
 
+// DBStat 是 agentred 自己那个库此刻的落盘事实:文件在哪、占了多少字节。
+//
+// SizeBytes 是**整个库的体量**(主库文件 + 它的 WAL / SHM 旁文件):WAL 模式下刚写进去
+// 的通知先落在 -wal 上,只报主库文件会在最该看见增长的时刻纹丝不动。
+type DBStat struct {
+	Path      string
+	SizeBytes int64
+}
+
+// DBStatPort 交出 DBStat。规格「安全、隐私、兼容性与可访问性 / 磁盘增长」要求库文件
+// 路径与体量在 daemon 状态查询里可见,用户据此自行判断何时清理。实现在 daemon 包
+// (只有它知道自己开在哪个 DataDir 下),按 DIP 声明在消费方。
+type DBStatPort interface {
+	DBStat() DBStat
+}
+
 // SessionRecord 是一条会话在 daemon 上的身份与元数据。会话身份是
 // (PeerFingerprint, PeerSessionID) 的组合(R16);AgentID / Cwd / BackendType 原样透传
 // 客户端起手时报的值,供重连后的清单重建界面。
