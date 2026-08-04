@@ -344,10 +344,19 @@ type MCPServerSpec struct {
 
 // RunRequest 一次 Send 的入参。
 type RunRequest struct {
-	Backend   *agent_backend_entity.AgentBackend
-	Provider  *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
-	AgentID   int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
-	SessionID int64                            // chat_sessions.ID；provider session resume / builtin conv id 用
+	Backend  *agent_backend_entity.AgentBackend
+	Provider *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
+	AgentID  int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
+	// SessionID 是这一轮在**本进程内**的会话身份：runner 的会话表（子进程缓存 /
+	// waiter / 自主续轮通道）全按它索引，控制类接口（Steerer / Aborter /
+	// ToolPermissionSink / WaiterLister …）收到的 sessionID 也是它。
+	//
+	// 桌面端进程里它就是 chat_sessions.ID（还兼作 provider session resume /
+	// builtin conv id 的 key）。agentred 里**不是**：那里同时服务多台设备，而会话 id
+	// 是各设备本地自增的、必然重号，daemon 因此在调 runner 前把对端指纹揉进这个值
+	// （见 internal/daemon/handlers.runtimeSessionID）。runner 只需把它当成一个不透明的
+	// 进程内唯一键，不要反解成 chat_sessions.ID、也不要拿它去查库。
+	SessionID int64
 	// Cwd 非空时直接用作 runner 工作目录；为空时各 runner 回退到 AgentCwd(AgentID)
 	// 兜底（保留老的 Agent 级目录行为）。chat_svc 在拼 RunRequest 时调
 	// project_svc.ResolveSessionCwd 解析 project 维度的 cwd 注入此字段，避免

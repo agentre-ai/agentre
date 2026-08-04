@@ -735,7 +735,7 @@ func (d *Daemon) attachSession(rh *handlers.RuntimeHandlers) rpc.HandlerFunc {
 		if !ok {
 			return res, nil
 		}
-		rh.Adopt(attached.SessionID, agent_backend_entity.BackendType(attached.BackendType))
+		rh.Adopt(ctx, attached.SessionID, agent_backend_entity.BackendType(attached.BackendType))
 		d.conns.claim(rpc.ConnFromContext(ctx), attached.SessionID)
 		log.Printf("runtime.session.attach: session taken over sid=%d state=%s latestSeq=%d",
 			attached.SessionID, attached.LifecycleState, attached.LatestSeq)

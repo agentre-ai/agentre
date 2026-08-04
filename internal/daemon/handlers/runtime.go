@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"reflect"
 	"strconv"
@@ -62,7 +63,10 @@ type RuntimeDeps struct {
 type RuntimeHandlers struct {
 	deps RuntimeDeps
 
-	mu       sync.RWMutex
+	mu sync.RWMutex
+	// sessions 与下面两张表一样,键是**按对端隔离过的 backend 会话键**
+	// (runtimeSessionID),不是客户端报的会话 id:registry 是全局一份、每条新连接都会
+	// 覆盖注册,所以这张表实际服务着所有对端,按裸 id 存放会让同号会话互相顶掉。
 	sessions map[int64]runtimeSession
 	// runtimeFor mirrors deps.RuntimeFor but is swappable at runtime via
 	// SwapRuntimeFor (used by tests that need to flip the runtime registry
@@ -106,11 +110,14 @@ func NewRuntimeHandlers(deps RuntimeDeps) *RuntimeHandlers {
 // 会话,再被 R8 的幂等折成「成功」,于是 waiter 没人回答、客户端以为答过了,叠加 R9 的
 // 不设过期就是永久挂死。只由显式接管(runtime.session.attach)调用,且只在 daemon 已经
 // 确认该会话属于调用方之后 —— 认下一条不属于自己的会话等于跨对端夺取控制权。
-func (h *RuntimeHandlers) Adopt(sessionID int64, backendType agent_backend_entity.BackendType) {
+//
+// 认下的是**这个对端**的那条会话:内存会话表与 backend 一样按隔离后的会话键存放,
+// 否则同号会话会在这张表里互相顶掉(见 runtimeSessionID)。
+func (h *RuntimeHandlers) Adopt(ctx context.Context, sessionID int64, backendType agent_backend_entity.BackendType) {
 	if sessionID == 0 || backendType == "" {
 		return
 	}
-	h.register(sessionID, runtimeSession{backendType: backendType})
+	h.register(runtimeSID(ctx, sessionID), runtimeSession{backendType: backendType})
 }
 
 // SwapRuntimeFor replaces the runtime lookup at runtime — test seam only.
@@ -148,6 +155,11 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		return wire.RunAck{}, fmt.Errorf("backend %q not registered", be.Type)
 	}
 
+	// 通知出口必须在这里建:对端指纹只有请求 ctx 上有,而 fanout / forwardAutonomousTurn
+	// 跑在脱离 ctx 的 goroutine 里(见 sessionEmitter 注释)。它同时定下这一轮的 backend
+	// 会话键 em.rid —— 交给 backend 的一律是这个按对端隔离的键,不是客户端报的裸 id。
+	em := h.newEmitter(ctx, p.SessionID)
+
 	// Provider / Gateway 由 daemon 自家解 —— wire 已不再携带客户端版本:
 	//   - APIKey 由 daemon 本机 state 读取,不让 desktop 每个 turn 越线漂移;
 	//   - GatewayURL 是 daemon 本机 127.0.0.1:<port>,对 daemon spawn 的 CLI 子
@@ -170,7 +182,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		// 会话级常驻 token:首轮签、后续轮复用同一个,**不在轮末撤销**(见
 		// sessionTokens 注释)。decode/Run 失败也不撤销 —— token 留着给下一轮重试复用,
 		// 没用上的也只是随 daemon 退出释放(有界)。
-		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, p.SessionID, &be)
+		gatewayURL, gatewayToken, terr = h.ensureSessionToken(ctx, em.rid, &be)
 		if terr != nil {
 			return wire.RunAck{}, terr
 		}
@@ -189,7 +201,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		Backend:           &be,
 		Provider:          provider,
 		AgentID:           p.AgentID,
-		SessionID:         p.SessionID,
+		SessionID:         em.rid,
 		Cwd:               p.Cwd,
 		SystemPrompt:      p.SystemPrompt,
 		ProviderSessionID: p.ProviderSessionID,
@@ -225,12 +237,11 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		}
 	}
 
-	h.register(p.SessionID, runtimeSession{backendType: bt})
-	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
-		p.SessionID, be.Type, p.AgentID, p.Cwd, len(p.UserText))
-	// 通知出口必须在这里建:对端指纹只有请求 ctx 上有,而 fanout /
-	// forwardAutonomousTurn 跑在脱离 ctx 的 goroutine 里(见 sessionEmitter 注释)。
-	em := h.newEmitter(ctx, p.SessionID)
+	h.register(em.rid, runtimeSession{backendType: bt})
+	// backendKey 是这条会话在 backend 那边的键(按对端隔离):claudecode / codex 的日志
+	// 里报的 sessionID 是它,这一行是把两边对上号的唯一地方。
+	log.Printf("runtime.run: session started sid=%d backendKey=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
+		p.SessionID, em.rid, be.Type, p.AgentID, p.Cwd, len(p.UserText))
 	h.startSession(em, p, bt)
 	go h.fanout(em, events, result)
 	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
@@ -312,7 +323,7 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Even
 	// 只清 active-turn 记录;**不撤销 gateway token** —— token 是会话级常驻,
 	// 跨轮复用,寿命跟随子进程(见 sessionTokens 注释),轮末撤销会让下一轮复用
 	// 的子进程手里 token 失效。
-	h.unregister(sid)
+	h.unregister(em.rid)
 	em.emit(wire.NotifyRunResultDone, &frame)
 	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
 		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
@@ -322,16 +333,17 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Even
 // client(每轮:Started → Event* → Done)。去重防重复订阅;AutonomousTurns(sid)
 // channel close(子进程 evict)时 goroutine 退出并清去重位。
 func (h *RuntimeHandlers) startAutonomousFanout(em *sessionEmitter, src agentruntime.AutonomousTurnSource) {
-	sid := em.sid
-	if _, loaded := h.autoSubs.LoadOrStore(sid, struct{}{}); loaded {
+	// 订阅的是 backend 那边的会话键(按对端隔离);日志里报的仍是客户端自己那个 id。
+	rid := em.rid
+	if _, loaded := h.autoSubs.LoadOrStore(rid, struct{}{}); loaded {
 		return
 	}
 	go func() {
-		defer h.autoSubs.Delete(sid)
-		for at := range src.AutonomousTurns(sid) {
+		defer h.autoSubs.Delete(rid)
+		for at := range src.AutonomousTurns(rid) {
 			h.forwardAutonomousTurn(em, at)
 		}
-		log.Printf("runtime.autonomousTurn: source closed sid=%d", sid)
+		log.Printf("runtime.autonomousTurn: source closed sid=%d", em.sid)
 	}()
 }
 
@@ -392,18 +404,25 @@ type sessionEmitter struct {
 	notifyFor     func(peerFingerprint string) NotifierPort
 	peer          string
 	peerSessionID string
-	sid           int64
+	// sid 是客户端自己那个会话 id:落库的会话身份、以及推给客户端的每一帧带的都是它。
+	sid int64
+	// rid 是同一条会话在 backend runtime 那边的会话键(按对端隔离,见
+	// runtimeSessionID)。fanout / 自主续轮订阅一律用它,它永远不过线。
+	rid int64
 }
 
-// newEmitter 在 runtime.run 处理期间构造会话通知出口,捕获对端指纹。
+// newEmitter 在 runtime.run 处理期间构造会话通知出口,捕获对端指纹并据此定下这一轮的
+// backend 会话键。
 func (h *RuntimeHandlers) newEmitter(ctx context.Context, sid int64) *sessionEmitter {
+	peer := peerFingerprint(ctx)
 	return &sessionEmitter{
 		ctx:           context.WithoutCancel(ctx),
 		journal:       h.deps.Journal,
 		notifyFor:     h.deps.NotifyFor,
-		peer:          peerFingerprint(ctx),
+		peer:          peer,
 		peerSessionID: strconv.FormatInt(sid, 10),
 		sid:           sid,
+		rid:           runtimeSessionID(peer, sid),
 	}
 }
 
@@ -462,6 +481,47 @@ func peerFingerprint(ctx context.Context) string {
 	return ""
 }
 
+// ── backend 会话键(按对端隔离)──────────────────────────────────────────────
+
+// runtimeSID 是 runtimeSessionID 在请求 ctx 上的取用形式:对端指纹取自那条连接的鉴权
+// 状态,不从参数读 —— 参数里的对端标识等于让任何已配对设备点名操作别人的会话(R16)。
+// 每一处把会话 id 交给 backend runtime 的地方都必须过它。
+func runtimeSID(ctx context.Context, sessionID int64) int64 {
+	return runtimeSessionID(peerFingerprint(ctx), sessionID)
+}
+
+// runtimeSessionID 把「客户端报的会话 id」翻成本 daemon 进程内唯一的 backend 会话键。
+//
+// 会话 id 是各客户端本地自增的主键:两台设备各自的 42 号会话是两条毫不相干的会话。而
+// backend runtime 的会话表是**进程内一份、只按这个数字索引**的(claudecode 的
+// sessionKey(id)、codex 的 r.active[sessionID]),把裸 id 交给它,两个对端的同号会话就
+// 并成了一条 —— 待决策是同一批,子进程也是同一个。表现出来就是一条跨对端的信息泄漏:
+// 一台设备读得到另一台的 requestID / 工具名 / 完整工具入参,还能照着那个 requestID 替
+// 对方提交审批。
+//
+// 所以 daemon 在**调用 backend 的那一刻**把对端指纹揉进会话键。翻译只发生在这一处:
+// 落库的会话身份仍是 (对端指纹, 客户端会话 id),推给客户端的每一帧带的也仍是客户端
+// 自己那个 id —— 客户端不知道、也不需要知道这层翻译,协议一字未改。桌面端进程内不做这层
+// 翻译:那里只有一个「对端」(本机用户),会话 id 本来就唯一。
+//
+// 两种情况原样返回:没有对端(未鉴权的直连单测)时没有可隔离的第二方;非正数会话 id
+// 要留给 backend 自己那条 "invalid sessionID" 校验去拒。
+func runtimeSessionID(peer string, sessionID int64) int64 {
+	if peer == "" || sessionID <= 0 {
+		return sessionID
+	}
+	sum := fnv.New64a()
+	_, _ = sum.Write([]byte(peer))
+	_, _ = sum.Write([]byte{0})
+	_, _ = sum.Write([]byte(strconv.FormatInt(sessionID, 10)))
+	// 右移一位清掉符号位:backend 一律拒绝非正数会话 id。0 让位给 1 —— 会话键只要求
+	// 唯一,不要求可逆。
+	if v := int64(sum.Sum64() >> 1); v > 0 {
+		return v
+	}
+	return 1
+}
+
 // isNoisyEventKind 标记单 turn 内可能上百次出现的事件类型,逐条 log 会刷屏。
 // 它们仍计入 fanout 汇总(kindHist),只是不展开。
 func isNoisyEventKind(kind string) bool {
@@ -502,39 +562,43 @@ func runResultToFrame(sid int64, r *agentruntime.RunResult) wire.RunResultDoneFr
 	return f
 }
 
-func resolveSessionCapability[T any](h *RuntimeHandlers, sessionID int64) (T, error) {
+// resolveSessionCapability 解出该会话的 backend 能力,并**一并交回要用来调用它的那个
+// 会话键**(按对端隔离,见 runtimeSessionID)。两样东西一起返回是有意的:控制 RPC 全都
+// 「先解会话,再调 backend」,分两次各取一次就有机会解的是隔离键、调的却是客户端裸 id。
+func resolveSessionCapability[T any](ctx context.Context, h *RuntimeHandlers, sessionID int64) (T, int64, error) {
 	var zero T
-	rt, err := h.resolveSession(sessionID)
+	rid := runtimeSID(ctx, sessionID)
+	rt, err := h.resolveSession(rid)
 	if err != nil {
-		return zero, err
+		return zero, rid, err
 	}
 	capability, ok := any(rt).(T)
 	if !ok {
-		return zero, agentruntime.ErrUnsupported
+		return zero, rid, agentruntime.ErrUnsupported
 	}
-	return capability, nil
+	return capability, rid, nil
 }
 
 // ── Control RPCs (Steer / CancelSteer / DrainPending / Abort / SetPM /
 //                  SubmitAnswer / SubmitToolPermission) ─────────────────────
 
 func (h *RuntimeHandlers) Steer(ctx context.Context, p wire.SteerParams) (wire.OK, error) {
-	s, err := resolveSessionCapability[agentruntime.Steerer](h, p.SessionID)
+	s, rid, err := resolveSessionCapability[agentruntime.Steerer](ctx, h, p.SessionID)
 	if err != nil {
 		return wire.OK{}, err
 	}
-	if err := s.Steer(ctx, p.SessionID, p.QueuedID, p.Text); err != nil {
+	if err := s.Steer(ctx, rid, p.QueuedID, p.Text); err != nil {
 		return wire.OK{}, err
 	}
 	return wire.OK{}, nil
 }
 
 func (h *RuntimeHandlers) CancelSteer(ctx context.Context, p wire.CancelSteerParams) (wire.CancelSteerResult, error) {
-	c, err := resolveSessionCapability[agentruntime.SteerCanceler](h, p.SessionID)
+	c, rid, err := resolveSessionCapability[agentruntime.SteerCanceler](ctx, h, p.SessionID)
 	if err != nil {
 		return wire.CancelSteerResult{}, err
 	}
-	removed, err := c.CancelSteer(ctx, p.SessionID, p.QueuedID)
+	removed, err := c.CancelSteer(ctx, rid, p.QueuedID)
 	if err != nil {
 		return wire.CancelSteerResult{}, err
 	}
@@ -542,63 +606,63 @@ func (h *RuntimeHandlers) CancelSteer(ctx context.Context, p wire.CancelSteerPar
 }
 
 func (h *RuntimeHandlers) DrainPending(ctx context.Context, p wire.DrainParams) (wire.DrainResult, error) {
-	d, err := resolveSessionCapability[agentruntime.SteerDrainer](h, p.SessionID)
+	d, rid, err := resolveSessionCapability[agentruntime.SteerDrainer](ctx, h, p.SessionID)
 	if err != nil {
 		return wire.DrainResult{}, err
 	}
-	steers := d.DrainPending(ctx, p.SessionID)
+	steers := d.DrainPending(ctx, rid)
 	return wire.DrainResult{Steers: steers}, nil
 }
 
 func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.OK, error) {
-	a, err := resolveSessionCapability[agentruntime.Aborter](h, p.SessionID)
+	a, rid, err := resolveSessionCapability[agentruntime.Aborter](ctx, h, p.SessionID)
 	if err != nil {
 		return wire.OK{}, err
 	}
-	if err := a.Abort(ctx, p.SessionID); err != nil {
+	if err := a.Abort(ctx, rid); err != nil {
 		return wire.OK{}, err
 	}
 	return wire.OK{}, nil
 }
 
 func (h *RuntimeHandlers) StopBackgroundTask(ctx context.Context, p wire.StopBackgroundTaskParams) (wire.OK, error) {
-	s, err := resolveSessionCapability[agentruntime.BackgroundTaskStopper](h, p.SessionID)
+	s, rid, err := resolveSessionCapability[agentruntime.BackgroundTaskStopper](ctx, h, p.SessionID)
 	if err != nil {
 		return wire.OK{}, err
 	}
-	if err := s.StopBackgroundTask(ctx, p.SessionID, p.TaskID); err != nil {
+	if err := s.StopBackgroundTask(ctx, rid, p.TaskID); err != nil {
 		return wire.OK{}, err
 	}
 	return wire.OK{}, nil
 }
 
 func (h *RuntimeHandlers) SetPermissionMode(ctx context.Context, p wire.SetPermissionModeParams) (wire.OK, error) {
-	m, err := resolveSessionCapability[agentruntime.PermissionModeSetter](h, p.SessionID)
+	m, rid, err := resolveSessionCapability[agentruntime.PermissionModeSetter](ctx, h, p.SessionID)
 	if err != nil {
 		return wire.OK{}, err
 	}
-	if err := m.SetPermissionMode(ctx, p.SessionID, p.Mode); err != nil {
+	if err := m.SetPermissionMode(ctx, rid, p.Mode); err != nil {
 		return wire.OK{}, err
 	}
 	return wire.OK{}, nil
 }
 
 func (h *RuntimeHandlers) SubmitAnswer(ctx context.Context, p wire.SubmitAnswerParams) (wire.OK, error) {
-	s, err := resolveSessionCapability[agentruntime.AskAnswerSink](h, p.SessionID)
+	s, rid, err := resolveSessionCapability[agentruntime.AskAnswerSink](ctx, h, p.SessionID)
 	if err != nil {
 		return h.idempotentSubmitResult(ctx, p.SessionID, err)
 	}
 	return h.idempotentSubmitResult(ctx, p.SessionID,
-		s.SubmitAnswer(ctx, p.SessionID, p.RequestID, p.Questions, p.Answers, p.Skipped))
+		s.SubmitAnswer(ctx, rid, p.RequestID, p.Questions, p.Answers, p.Skipped))
 }
 
 func (h *RuntimeHandlers) SubmitToolPermission(ctx context.Context, p wire.SubmitToolPermissionParams) (wire.OK, error) {
-	s, err := resolveSessionCapability[agentruntime.ToolPermissionSink](h, p.SessionID)
+	s, rid, err := resolveSessionCapability[agentruntime.ToolPermissionSink](ctx, h, p.SessionID)
 	if err != nil {
 		return h.idempotentSubmitResult(ctx, p.SessionID, err)
 	}
 	return h.idempotentSubmitResult(ctx, p.SessionID,
-		s.SubmitToolPermission(ctx, p.SessionID, p.RequestID, p.Allow, p.AlwaysAllowSession, p.DenyReason))
+		s.SubmitToolPermission(ctx, rid, p.RequestID, p.Allow, p.AlwaysAllowSession, p.DenyReason))
 }
 
 // idempotentSubmitResult folds "waiter no longer exists" errors into a
@@ -710,6 +774,9 @@ func (h *RuntimeHandlers) resolveGoalController(ctx context.Context, p wire.Goal
 	if err != nil {
 		return nil, agentruntime.GoalRequest{}, func() {}, err
 	}
+	// goal 也按会话键落到 backend 的会话表上(codex 的 goalSession 走的正是
+	// r.active[sessionID] / sessionKey(sessionID)),所以同样要按对端隔离。
+	req.SessionID = runtimeSID(ctx, req.SessionID)
 	if req.Backend != nil {
 		release, err := h.hydrateGoalProvider(ctx, &req)
 		if err != nil {
@@ -727,7 +794,7 @@ func (h *RuntimeHandlers) resolveGoalController(ctx context.Context, p wire.Goal
 		}
 		return g, req, release, nil
 	}
-	g, err := resolveSessionCapability[agentruntime.GoalController](h, p.SessionID)
+	g, _, err := resolveSessionCapability[agentruntime.GoalController](ctx, h, p.SessionID)
 	if err != nil {
 		return nil, agentruntime.GoalRequest{}, func() {}, err
 	}

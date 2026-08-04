@@ -184,11 +184,13 @@ func (h *SessionCatchupHandlers) waitingForInput(ctx context.Context, row Sessio
 // pendingWaiters 问该会话的 backend 要一份 waiter 快照。backend 没注册、或没实现审批
 // 协议时回零值 —— 未实现者返回空列表而非报错是 R7 明写的。
 //
+// 问的是**按对端隔离过的会话键**(runtimeSID),不是客户端报的裸数字:backend 的 waiter
+// 表是进程内一份、只按会话 id 索引,而会话 id 各客户端本地自增、必然重号。拿裸 id 去问,
+// 拿回来的可能是别的对端那条同号会话的 requestID / 工具名 / 完整工具入参 —— 交出去等于
+// 泄漏别人的审批载荷,对方还能照着 requestID 替人回答(R16)。
+//
 // 中断态会话一律不问 backend:那一轮的子进程随上一个 daemon 进程消亡了(R10),它不可能
-// 还有活的 waiter。而 backend 的 waiter 只按**原始会话 id** 定位、不带对端,会话 id 又是
-// 各客户端本地自增的、必然重号 —— 所以此刻挂在同一个 id 下的 waiter 只可能属于别的对端
-// 那条正在跑的同号会话。交出去等于泄漏别人的审批载荷,还让对方能照着 requestID 替人回答
-// (R16:查询一律限定在调用方自己的对端范围内)。
+// 还有活的 waiter,任何答案都只会是别人的。
 func (h *SessionCatchupHandlers) pendingWaiters(ctx context.Context, row SessionRecord, sessionID int64) agentruntime.WaiterSnapshot {
 	if row.LifecycleState == wire.SessionLifecycleInterrupted {
 		return agentruntime.WaiterSnapshot{}
@@ -201,7 +203,7 @@ func (h *SessionCatchupHandlers) pendingWaiters(ctx context.Context, row Session
 	if !ok {
 		return agentruntime.WaiterSnapshot{}
 	}
-	return lister.PendingWaiters(ctx, sessionID)
+	return lister.PendingWaiters(ctx, runtimeSID(ctx, sessionID))
 }
 
 // clampPullLimit 把客户端报的单页条数收进 daemon 的上限。

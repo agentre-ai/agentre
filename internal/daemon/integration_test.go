@@ -825,6 +825,139 @@ func bootApprovalRig(t *testing.T, r *approvalBackendRunner) *pairedTestRig {
 	return rig
 }
 
+// noApprovalText 让 keyedApprovalRunner 把这一轮直接跑完(不留待决策);其余 UserText
+// 的那一轮登记一个阻塞中的工具审批并停在 gate 上。
+const noApprovalText = "no-approval"
+
+// keyedApprovalRunner 是一个**按 backend 自己那把会话键索引待决策**的 fake。真实
+// backend 都是这么索引的(claudecode 的 sessionKey(id)、codex 的 r.active[sessionID]),
+// 所以「两个对端各自的同号会话会不会撞成同一条」在它身上如实反映生产行为 —— 换成一个
+// 无视会话键、对谁都回同一份快照的替身,这条泄漏就测不出来了。
+type keyedApprovalRunner struct {
+	gate <-chan struct{}
+
+	mu        sync.Mutex
+	waiters   map[int64]agentruntime.PendingToolPermission
+	delivered map[int64][]string
+}
+
+func newKeyedApprovalRunner(gate <-chan struct{}) *keyedApprovalRunner {
+	return &keyedApprovalRunner{
+		gate:      gate,
+		waiters:   map[int64]agentruntime.PendingToolPermission{},
+		delivered: map[int64][]string{},
+	}
+}
+
+func (*keyedApprovalRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{}
+}
+
+func (a *keyedApprovalRunner) Run(_ context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event, 1)
+	if req.UserText == noApprovalText {
+		go func() {
+			defer close(ch)
+			ch <- agentruntime.Done{}
+		}()
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	a.mu.Lock()
+	a.waiters[req.SessionID] = agentruntime.PendingToolPermission{
+		RequestID: "req-of-the-owner",
+		ToolName:  "Bash",
+		Input:     json.RawMessage(`{"command":"cat ~/.ssh/id_rsa"}`),
+	}
+	a.mu.Unlock()
+	go func() {
+		defer close(ch)
+		ch <- agentruntime.TextDelta{Text: "blocked"}
+		<-a.gate
+		ch <- agentruntime.Done{}
+	}()
+	return ch, &agentruntime.RunResult{}, nil
+}
+
+func (a *keyedApprovalRunner) PendingWaiters(_ context.Context, sid int64) agentruntime.WaiterSnapshot {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	w, ok := a.waiters[sid]
+	if !ok {
+		return agentruntime.WaiterSnapshot{}
+	}
+	return agentruntime.WaiterSnapshot{ToolPermissions: []agentruntime.PendingToolPermission{w}}
+}
+
+func (a *keyedApprovalRunner) SubmitToolPermission(_ context.Context, sid int64, requestID string, _, _ bool, _ string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	w, ok := a.waiters[sid]
+	if !ok || w.RequestID != requestID {
+		return agentruntime.ErrWaiterNotFound
+	}
+	delete(a.waiters, sid)
+	a.delivered[sid] = append(a.delivered[sid], requestID)
+	return nil
+}
+
+// deliveredIDs 返回真正送达 backend 的全部 requestID(不分会话键)。「daemon 报了成功」
+// 与「waiter 真被回答了」是两件事,只有这里看得到后者。
+func (a *keyedApprovalRunner) deliveredIDs() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []string
+	for _, ids := range a.delivered {
+		out = append(out, ids...)
+	}
+	return out
+}
+
+func (a *keyedApprovalRunner) waiterCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.waiters)
+}
+
+// bootKeyedApprovalRig 起一个 rig,并把 backend 换成按会话键索引待决策的 fake。
+func bootKeyedApprovalRig(t *testing.T, r *keyedApprovalRunner) *pairedTestRig {
+	t.Helper()
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, r))
+	return rig
+}
+
+// startRunAs 在给定连接上直接发一次 runtime.run(不经 *remote.Runtime)。第二台配对
+// 设备手里只有一条裸连接,而 R16 的隔离恰恰要求它也起得了自己的会话。
+func startRunAs(t *testing.T, cli *client.Client, dir string, sid int64, userText string) {
+	t.Helper()
+	be, err := json.Marshal(agent_backend_entity.AgentBackend{
+		Type: string(agent_backend_entity.TypeClaudeCode), ID: 1, Name: "test-backend",
+	})
+	require.NoError(t, err)
+	var ack wire.RunAck
+	require.NoError(t, callRig(t, cli, wire.MethodRun, wire.RunParams{
+		Backend: be, AgentID: 1, SessionID: sid, Cwd: dir, UserText: userText,
+	}, &ack))
+	require.Equal(t, sid, ack.SessionID)
+}
+
+// awaitLifecycle 等某个对端名下那条会话进入指定生命周期状态。
+func awaitLifecycle(t *testing.T, cli *client.Client, sid int64, state string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		var list wire.SessionListResult
+		if err := callRig(t, cli, wire.MethodSessionList, nil, &list); err != nil {
+			return false
+		}
+		for _, s := range list.Sessions {
+			if s.SessionID == sid {
+				return s.LifecycleState == state
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "会话 %d 没有进入 %s", sid, state)
+}
+
 // awaitText 等下一条 TextDelta 并断言文本,超时即失败(会话被推去了别处 / 挂起时就是
 // 这个表现:客户端既没有错误也没有事件,只是永远收不到)。
 func awaitText(t *testing.T, events <-chan agentruntime.Event, want string) {
@@ -1758,6 +1891,74 @@ func TestIntegration_SessionCatchup_ScopedToTheCallersPeer(t *testing.T) {
 	var rpcErr *rpc.Error
 	require.True(t, errors.As(err, &rpcErr))
 	assert.Equal(t, wire.ErrCodeSessionNotFound, rpcErr.Code)
+}
+
+// TestIntegration_SessionCatchup_PendingWaitersNeverCrossPeersOnTheSameSessionID
+// 覆盖 R16 里最难的那半:两个对端**各自持有同一个本地会话 id**。
+//
+// 会话 id 是各客户端本地自增的主键,两台设备的 42 号会话是两条毫不相干的会话。日志与
+// 游标已经按 (对端, 会话) 复合键存放,所以 List / Pull 天然隔离;待决策不在库里,它挂在
+// backend runtime 的内存里、只按会话 id 索引 —— 于是「按对端限定了行,再拿裸数字去问
+// backend」就成了一条跨对端的信息泄漏:
+//
+//   - 对端 A 只要自己也有一行 42(自己早先跑过就够),就能读到对端 B 那条正在跑的 42
+//     号会话的 requestID、工具名与**完整工具入参**;
+//   - 还能照着那个 requestID 替 B 提交审批 —— B 的子进程会当成机主本人点的允许。
+//
+// 所以这里两条断言缺一不可:A 查不到 B 的待决策,且 A 提交了也不会有任何 waiter 被回答。
+// 最后一段反过来钉住正主仍然答得了自己的那条 —— 把所有人都挡掉同样能让前两条通过。
+func TestIntegration_SessionCatchup_PendingWaitersNeverCrossPeersOnTheSameSessionID(t *testing.T) {
+	const sharedSID = 42
+
+	gate := make(chan struct{})
+	runner := newKeyedApprovalRunner(gate)
+	rig := bootKeyedApprovalRig(t, runner)
+
+	// 另一台**不同指纹**的已配对设备,先跑完自己的 42 号会话 —— 它因此有了一行 42,
+	// 但没有任何待决策。这正是泄漏的前提:findOwnSession 查得到行,于是继续去问 backend。
+	other := pairSecondDevice(t, rig.d, "sha256:other-device")
+	startRunAs(t, other, rig.dir, sharedSID, noApprovalText)
+	awaitLifecycle(t, other, sharedSID, wire.SessionLifecycleIdle)
+
+	// 正主的 42 号会话此刻正卡在一条工具审批上。
+	events, _ := rig.startRun(t, sharedSID)
+	awaitText(t, events, "blocked")
+	require.Eventually(t, func() bool { return runner.waiterCount() == 1 },
+		5*time.Second, 20*time.Millisecond, "正主那条会话应当卡在审批上")
+
+	var mine wire.SessionPendingWaitersResult
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionPendingWaiters,
+		wire.SessionPendingWaitersParams{SessionID: sharedSID}, &mine))
+	require.Len(t, mine.ToolPermissions, 1, "正主必须查得到自己那条待决策")
+
+	// ① 查询:另一个对端拿不到别人的 requestID / 工具名 / 工具入参。
+	var theirs wire.SessionPendingWaitersResult
+	require.NoError(t, callRig(t, other, wire.MethodSessionPendingWaiters,
+		wire.SessionPendingWaitersParams{SessionID: sharedSID}, &theirs))
+	assert.Empty(t, theirs.ToolPermissions,
+		"另一个对端同号会话的待决策查询泄漏了别人的审批载荷")
+	assert.Empty(t, theirs.AskUserQuestions)
+
+	// ② 提交:另一个对端替不了别人答。daemon 侧按 R8 一律回成功(重连的客户端分不清
+	// 自己上一次提交到没到),所以判据只能是「backend 那边有没有 waiter 真被回答」。
+	var ok wire.OK
+	require.NoError(t, callRig(t, other, wire.MethodSubmitToolPermission,
+		wire.SubmitToolPermissionParams{
+			SessionID: sharedSID, RequestID: "req-of-the-owner", Allow: true,
+		}, &ok))
+	assert.Empty(t, runner.deliveredIDs(),
+		"另一个对端替正主提交了审批 —— 正主的子进程会把它当成机主本人点的允许")
+
+	// ③ 正主自己仍然答得了:隔离不是把所有人都挡掉。
+	require.NoError(t, callRig(t, rig.cli, wire.MethodSubmitToolPermission,
+		wire.SubmitToolPermissionParams{
+			SessionID: sharedSID, RequestID: "req-of-the-owner", Allow: true,
+		}, &ok))
+	assert.Equal(t, []string{"req-of-the-owner"}, runner.deliveredIDs(),
+		"正主对自己那条会话的提交必须真的送达 backend")
+
+	close(gate)
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
 }
 
 // TestIntegration_SessionCatchup_DaemonRestartMarksSessionsInterrupted 覆盖 R10:

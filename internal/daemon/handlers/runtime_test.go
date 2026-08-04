@@ -1482,7 +1482,7 @@ func TestRuntime_Submit_SessionOwnedByAnotherHandler_IsNotFoldedIntoSuccess(t *t
 	// 接管之后就解得出会话了 —— 这正是客户端收到错误后走的那条路,证明报错是可行动的。
 	t.Run("adopt then retry succeeds", func(t *testing.T) {
 		rt, other, _ := newPair(t, 13)
-		other.Adopt(13, agent_backend_entity.TypeClaudeCode)
+		other.Adopt(context.Background(), 13, agent_backend_entity.TypeClaudeCode)
 		_, err := other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 13, RequestID: "p-1"})
 		require.NoError(t, err)
 		require.Len(t, rt.submitToolPermCalls, 1)
