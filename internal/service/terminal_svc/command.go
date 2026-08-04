@@ -10,7 +10,7 @@ import (
 )
 
 // CommandStartPreemptedError is the stable one-shot command outcome returned
-// when TerminalClose wins the race with a cancellation-ignoring backend Open.
+// when TerminalClose or a newer start wins before command registration.
 type CommandStartPreemptedError struct{}
 
 func (CommandStartPreemptedError) Error() string {
@@ -95,7 +95,14 @@ func (s *Service) RunCommand(ctx context.Context, req RunCommandRequest) (*RunCo
 	if resolver == nil {
 		return nil, ErrCommandScopeResolverNotInitialized
 	}
-	scope, err := resolver(ctx, ResolveCommandScopeRequest{SessionID: req.SessionID})
+
+	attempt := s.claimStart(ctx, req.TerminalID)
+	defer s.releaseStart(req.TerminalID, attempt)
+
+	scope, err := resolver(attempt.ctx, ResolveCommandScopeRequest{SessionID: req.SessionID})
+	if !s.ownsStart(req.TerminalID, attempt) {
+		return nil, ErrCommandStartPreempted
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -109,15 +116,18 @@ func (s *Service) RunCommand(ctx context.Context, req RunCommandRequest) (*RunCo
 		deviceID:   scope.DeviceID,
 	}
 	if err := s.openCommand(
-		ctx, req.TerminalID, scope.DeviceID, scope.Cwd, req.Command, req.Cols, req.Rows, lifecycle,
+		ctx, attempt, req.TerminalID, scope.DeviceID, scope.Cwd, req.Command, req.Cols, req.Rows, lifecycle,
 	); err != nil {
+		response.StartError = err.Error()
+		if errors.Is(err, ErrCommandStartPreempted) {
+			return response, nil
+		}
 		logger.Ctx(ctx).Warn("terminal_svc.RunCommand: open command failed",
 			zap.Int64("sessionId", req.SessionID),
 			zap.String("terminalId", req.TerminalID),
 			zap.String("deviceId", scope.DeviceID),
 			zap.String("errorClass", "terminalCommandStartFailed"))
-		response.StartError = err.Error()
-		return response, nil //nolint:nilerr // startup failure is surfaced via response.StartError, not as an RPC error
+		return response, nil
 	}
 	return response, nil
 }

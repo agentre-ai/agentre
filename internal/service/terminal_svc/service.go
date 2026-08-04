@@ -36,13 +36,15 @@ type Service struct {
 
 	mu       sync.Mutex
 	sessions map[string]pty.Handle
-	inFlight map[string]*openAttempt // pending Opens, keyed by terminalID
+	inFlight map[string]*openAttempt // pending starts, keyed by terminalID
 }
 
-// openAttempt tracks one in-flight backend.Open. Close cancels it; the Open
-// itself uses pointer identity to detect that it was preempted (its entry
-// removed or replaced) before registering the resulting handle.
+// openAttempt owns one terminal start continuously from the first blocking
+// boundary through backend.Open registration. Close or a newer start cancels
+// it and removes/replaces its map entry; pointer identity rejects every stale
+// result returned by a cancellation-ignoring dependency.
 type openAttempt struct {
+	ctx    context.Context
 	cancel context.CancelFunc
 }
 
@@ -60,17 +62,22 @@ func NewService(sel *BackendSelector, emitter Emitter) *Service {
 
 // Open opens an interactive login shell (original behavior).
 func (s *Service) Open(ctx context.Context, terminalID string, deviceID string, cwd string, cols, rows uint16) error {
-	return s.open(ctx, terminalID, deviceID, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows}, nil)
+	attempt := s.claimStart(ctx, terminalID)
+	defer s.releaseStart(terminalID, attempt)
+	return s.open(ctx, attempt, terminalID, deviceID, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows}, nil)
 }
 
 // OpenCommand runs a one-shot command under cwd, reusing the same
 // streaming/exit/kill machinery as Open.
 func (s *Service) OpenCommand(ctx context.Context, terminalID string, deviceID string, cwd string, command string, cols, rows uint16) error {
-	return s.openCommand(ctx, terminalID, deviceID, cwd, command, cols, rows, nil)
+	attempt := s.claimStart(ctx, terminalID)
+	defer s.releaseStart(terminalID, attempt)
+	return s.openCommand(ctx, attempt, terminalID, deviceID, cwd, command, cols, rows, nil)
 }
 
 func (s *Service) openCommand(
 	ctx context.Context,
+	attempt *openAttempt,
 	terminalID string,
 	deviceID string,
 	cwd string,
@@ -78,25 +85,35 @@ func (s *Service) openCommand(
 	cols, rows uint16,
 	lifecycle *commandLifecycle,
 ) error {
-	return s.open(ctx, terminalID, deviceID, pty.Spec{
+	return s.open(ctx, attempt, terminalID, deviceID, pty.Spec{
 		Cwd: cwd, Command: command, Cols: cols, Rows: rows,
 	}, lifecycle)
 }
 
 func (s *Service) open(
 	ctx context.Context,
+	attempt *openAttempt,
 	terminalID string,
 	deviceID string,
 	spec pty.Spec,
 	lifecycle *commandLifecycle,
 ) error {
 	backend, err := s.selector.Pick(deviceID)
+	if !s.ownsStart(terminalID, attempt) {
+		return preemptedStartError(lifecycle)
+	}
 	if err != nil {
 		return err
 	}
 
-	// 1. Evict any existing handle.
+	// Keep the attempt registered while evicting an existing handle. Handle
+	// Close is an external, non-context-aware boundary and may block; ownership
+	// must be rechecked after it returns before backend.Open can launch.
 	s.mu.Lock()
+	if s.inFlight[terminalID] != attempt {
+		s.mu.Unlock()
+		return preemptedStartError(lifecycle)
+	}
 	old, hasOld := s.sessions[terminalID]
 	if hasOld {
 		delete(s.sessions, terminalID)
@@ -104,21 +121,16 @@ func (s *Service) open(
 	s.mu.Unlock()
 	if hasOld {
 		_ = old.Close()
+		if !s.ownsStart(terminalID, attempt) {
+			return preemptedStartError(lifecycle)
+		}
 	}
 
-	// 2. Register a cancel function so Close can preempt us while we wait on
-	//    the (potentially slow) backend.Open call.
-	openCtx, cancel := context.WithCancel(ctx)
-	attempt := &openAttempt{cancel: cancel}
-	s.mu.Lock()
-	s.inFlight[terminalID] = attempt
-	s.mu.Unlock()
+	h, err := backend.Open(attempt.ctx, spec)
 
-	h, err := backend.Open(openCtx, spec)
-
-	// 3. Atomically unregister inFlight and (on success) register handle —
-	//    unless a concurrent Close (or newer Open) already removed/replaced our
-	//    attempt while backend.Open was running.
+	// Atomically hand ownership from the start attempt to the live session.
+	// A stale handle returned by a cancellation-ignoring backend is never
+	// registered and therefore never gets a listener/pump.
 	s.mu.Lock()
 	preempted := s.inFlight[terminalID] != attempt
 	if !preempted {
@@ -128,10 +140,11 @@ func (s *Service) open(
 		}
 	}
 	s.mu.Unlock()
-	// Release the cancel goroutine resources; idempotent if already canceled.
-	cancel()
 
 	if err != nil {
+		if preempted && lifecycle != nil {
+			return ErrCommandStartPreempted
+		}
 		return err
 	}
 	if preempted {
@@ -139,10 +152,7 @@ func (s *Service) open(
 		// Tear it down here so the PTY — and any remote daemon-side shell —
 		// does not leak.
 		_ = h.Close()
-		if lifecycle != nil {
-			return ErrCommandStartPreempted
-		}
-		return nil
+		return preemptedStartError(lifecycle)
 	}
 	// Log before starting the pump so even an already-exited handle preserves
 	// the command lifecycle order.
@@ -156,6 +166,43 @@ func (s *Service) open(
 		s.pump(pumpCtx, terminalID, h, lifecycle)
 		return nil
 	}, gogo.WithIgnorePanic())
+	return nil
+}
+
+func (s *Service) claimStart(ctx context.Context, terminalID string) *openAttempt {
+	attemptCtx, cancel := context.WithCancel(ctx)
+	attempt := &openAttempt{ctx: attemptCtx, cancel: cancel}
+
+	s.mu.Lock()
+	previous := s.inFlight[terminalID]
+	s.inFlight[terminalID] = attempt
+	s.mu.Unlock()
+
+	if previous != nil {
+		previous.cancel()
+	}
+	return attempt
+}
+
+func (s *Service) ownsStart(terminalID string, attempt *openAttempt) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inFlight[terminalID] == attempt
+}
+
+func (s *Service) releaseStart(terminalID string, attempt *openAttempt) {
+	s.mu.Lock()
+	if s.inFlight[terminalID] == attempt {
+		delete(s.inFlight, terminalID)
+	}
+	s.mu.Unlock()
+	attempt.cancel()
+}
+
+func preemptedStartError(lifecycle *commandLifecycle) error {
+	if lifecycle != nil {
+		return ErrCommandStartPreempted
+	}
 	return nil
 }
 
@@ -207,11 +254,10 @@ func (s *Service) Shutdown() {
 		hs = append(hs, h)
 	}
 	s.sessions = map[string]pty.Handle{}
-	// Clear and cancel in-flight Opens too: clearing inFlight makes each pending
-	// Open observe itself as preempted (so a handle returned after Shutdown is
-	// torn down, not registered), and canceling unblocks a backend.Open that is
-	// waiting on its context. Without this, a slow Open completing after Shutdown
-	// would leak a PTY and a pump goroutine past app shutdown.
+	// Clear and cancel in-flight starts too: clearing inFlight makes each pending
+	// start observe itself as preempted (so stale resolver/selector results stop,
+	// and a late handle is torn down instead of registered). Cancellation also
+	// unblocks context-aware resolver and backend boundaries.
 	attempts := make([]*openAttempt, 0, len(s.inFlight))
 	for _, a := range s.inFlight {
 		attempts = append(attempts, a)

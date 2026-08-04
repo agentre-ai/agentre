@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -363,21 +365,268 @@ func TestService_RunCommand_GivenClosePreemptsCancellationIgnoringOpen_WhenBacke
 	var preempted terminal_svc.CommandStartPreemptedError
 	assert.ErrorAs(t, terminal_svc.ErrCommandStartPreempted, &preempted)
 	assert.Empty(t, emitter.Snapshot())
-	require.Equal(t, 1, logs.Len())
-	entry := logs.All()[0]
-	assert.Equal(t, zapcore.WarnLevel, entry.Level)
-	assert.Equal(t, "terminal_svc.RunCommand: open command failed", entry.Message)
-	assert.Equal(t, map[string]any{
-		"sessionId":  int64(72),
-		"terminalId": "terminal-preempted",
-		"deviceId":   "device-9",
-		"errorClass": "terminalCommandStartFailed",
-	}, entry.ContextMap())
-	structuredLog, marshalErr := json.Marshal(entry)
-	require.NoError(t, marshalErr)
-	assert.NotContains(t, string(structuredLog), sensitiveCommand)
-	assert.NotContains(t, string(structuredLog), wantScope.Cwd)
+	assert.Zero(t, logs.Len())
 	assert.ErrorIs(t, svc.Write(context.Background(), "terminal-preempted", "x"), terminal_svc.ErrTerminalClosed)
+}
+
+// countingCommandBackend records every backend.Open boundary while returning a
+// completed handle so a regression cannot strand the test in a pump goroutine.
+type countingCommandBackend struct {
+	opens atomic.Int32
+}
+
+func (b *countingCommandBackend) Open(context.Context, pty.Spec) (pty.Handle, error) {
+	b.opens.Add(1)
+	return newCompletedCommandHandle(nil, pty.ExitInfo{Code: 0, Reason: "natural"}), nil
+}
+
+type runCommandResult struct {
+	response *terminal_svc.RunCommandResponse
+	err      error
+}
+
+func startRunCommand(
+	ctx context.Context,
+	svc *terminal_svc.Service,
+	req terminal_svc.RunCommandRequest,
+) <-chan runCommandResult {
+	resultCh := make(chan runCommandResult, 1)
+	go func() {
+		response, err := svc.RunCommand(ctx, req)
+		resultCh <- runCommandResult{response: response, err: err}
+	}()
+	return resultCh
+}
+
+func TestService_RunCommand_GivenResolverBlocks_WhenClosedBeforeScopeExists_ThenCancelsAttemptAndNeverOpensBackend(t *testing.T) {
+	backend := &countingCommandBackend{}
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(
+		terminal_svc.NewBackendSelector(backend, nil),
+		emitter,
+	)
+	resolverStarted := make(chan context.Context, 1)
+	releaseResolver := make(chan struct{})
+	svc.SetCommandScopeResolver(func(
+		resolveCtx context.Context,
+		_ terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		resolverStarted <- resolveCtx
+		<-releaseResolver // deliberately ignore cancellation
+		return &terminal_svc.CommandScope{Cwd: "/private/resolved-too-late"}, nil
+	})
+	defer svc.Shutdown()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	resultCh := startRunCommand(ctx, svc, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-resolver-stop",
+		SessionID:  81,
+		Command:    "private command",
+		Cols:       80,
+		Rows:       24,
+	})
+	resolveCtx := <-resolverStarted
+	closeErr := svc.Close(context.Background(), "terminal-resolver-stop")
+	ctxErr := resolveCtx.Err()
+	close(releaseResolver)
+	result := <-resultCh
+
+	require.NoError(t, closeErr)
+	assert.ErrorIs(t, ctxErr, context.Canceled)
+	assert.Nil(t, result.response)
+	assert.ErrorIs(t, result.err, terminal_svc.ErrCommandStartPreempted)
+	var preempted terminal_svc.CommandStartPreemptedError
+	assert.ErrorAs(t, result.err, &preempted)
+	assert.Zero(t, backend.opens.Load())
+	assert.Empty(t, emitter.Snapshot())
+	assert.Zero(t, logs.Len())
+}
+
+func TestService_RunCommand_GivenSelectorBlocks_WhenClosedAfterScopeExists_ThenReturnsScopedPreemptionWithoutBackendOpen(t *testing.T) {
+	backend := &countingCommandBackend{}
+	factoryCalls := atomic.Int32{}
+	selectorStarted := make(chan struct{})
+	releaseSelector := make(chan struct{})
+	wantScope := &terminal_svc.CommandScope{
+		DeviceID: "device-blocked-selector",
+		Cwd:      "/private/exact-scope",
+	}
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend,
+		func(string) (terminal_svc.PTYBackend, error) {
+			factoryCalls.Add(1)
+			close(selectorStarted)
+			<-releaseSelector // selector has no context boundary
+			return backend, nil
+		}), emitter)
+	svc.SetCommandScopeResolver(func(
+		context.Context,
+		terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return wantScope, nil
+	})
+	defer svc.Shutdown()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	resultCh := startRunCommand(ctx, svc, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-selector-stop",
+		SessionID:  82,
+		Command:    "private command",
+		Cols:       80,
+		Rows:       24,
+	})
+	<-selectorStarted
+	closeErr := svc.Close(context.Background(), "terminal-selector-stop")
+	close(releaseSelector)
+	result := <-resultCh
+
+	require.NoError(t, closeErr)
+	require.NoError(t, result.err)
+	require.NotNil(t, result.response)
+	assert.Equal(t, *wantScope, result.response.Scope)
+	assert.Equal(t, terminal_svc.ErrCommandStartPreempted.Error(), result.response.StartError)
+	assert.Equal(t, int32(1), factoryCalls.Load())
+	assert.Zero(t, backend.opens.Load())
+	assert.Empty(t, emitter.Snapshot())
+	assert.Zero(t, logs.Len())
+}
+
+type blockingCloseHandle struct {
+	data         chan []byte
+	exit         chan pty.ExitInfo
+	closeStarted chan struct{}
+	releaseClose chan struct{}
+	closeOnce    sync.Once
+}
+
+func newBlockingCloseHandle() *blockingCloseHandle {
+	return &blockingCloseHandle{
+		data:         make(chan []byte),
+		exit:         make(chan pty.ExitInfo, 1),
+		closeStarted: make(chan struct{}),
+		releaseClose: make(chan struct{}),
+	}
+}
+
+func (h *blockingCloseHandle) Write(p []byte) (int, error) { return len(p), nil }
+func (h *blockingCloseHandle) Resize(uint16, uint16) error { return nil }
+func (h *blockingCloseHandle) Data() <-chan []byte         { return h.data }
+func (h *blockingCloseHandle) Exit() <-chan pty.ExitInfo   { return h.exit }
+func (h *blockingCloseHandle) Close() error {
+	h.closeOnce.Do(func() {
+		close(h.closeStarted)
+		<-h.releaseClose
+		h.exit <- pty.ExitInfo{Code: 0, Reason: "closed"}
+		close(h.exit)
+		close(h.data)
+	})
+	return nil
+}
+
+type evictionBlockingBackend struct {
+	old          pty.Handle
+	commandOpens atomic.Int32
+}
+
+func (b *evictionBlockingBackend) Open(_ context.Context, spec pty.Spec) (pty.Handle, error) {
+	if spec.Command == "" {
+		return b.old, nil
+	}
+	b.commandOpens.Add(1)
+	return newCompletedCommandHandle(nil, pty.ExitInfo{Code: 0, Reason: "natural"}), nil
+}
+
+func TestService_RunCommand_GivenExistingHandleEvictionBlocks_WhenClosedInGap_ThenNeverLaunchesCommand(t *testing.T) {
+	oldHandle := newBlockingCloseHandle()
+	backend := &evictionBlockingBackend{old: oldHandle}
+	svc := terminal_svc.NewService(
+		terminal_svc.NewBackendSelector(backend, nil),
+		terminal_svc.NoopEmitter{},
+	)
+	wantScope := &terminal_svc.CommandScope{Cwd: "/private/exact-scope"}
+	svc.SetCommandScopeResolver(func(
+		context.Context,
+		terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return wantScope, nil
+	})
+	defer svc.Shutdown()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	require.NoError(t, svc.Open(ctx, "terminal-eviction-stop", "", "/private/old", 80, 24))
+	resultCh := startRunCommand(ctx, svc, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-eviction-stop",
+		SessionID:  83,
+		Command:    "private command",
+		Cols:       80,
+		Rows:       24,
+	})
+	<-oldHandle.closeStarted
+	closeErr := svc.Close(context.Background(), "terminal-eviction-stop")
+	close(oldHandle.releaseClose)
+	result := <-resultCh
+
+	require.NoError(t, closeErr)
+	require.NoError(t, result.err)
+	require.NotNil(t, result.response)
+	assert.Equal(t, *wantScope, result.response.Scope)
+	assert.Equal(t, terminal_svc.ErrCommandStartPreempted.Error(), result.response.StartError)
+	assert.Zero(t, backend.commandOpens.Load())
+	assert.Zero(t, logs.Len())
+}
+
+func TestService_RunCommand_GivenOlderResolverBlocks_WhenNewerRunClaimsSameID_ThenOnlyNewerLaunches(t *testing.T) {
+	backend := &countingCommandBackend{}
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(
+		terminal_svc.NewBackendSelector(backend, nil),
+		emitter,
+	)
+	resolverCalls := atomic.Int32{}
+	olderStarted := make(chan context.Context, 1)
+	releaseOlder := make(chan struct{})
+	wantScope := &terminal_svc.CommandScope{Cwd: "/private/exact-scope"}
+	svc.SetCommandScopeResolver(func(
+		resolveCtx context.Context,
+		_ terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		if resolverCalls.Add(1) == 1 {
+			olderStarted <- resolveCtx
+			<-releaseOlder
+		}
+		return wantScope, nil
+	})
+	defer svc.Shutdown()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+	req := terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-newer-wins",
+		SessionID:  84,
+		Command:    "private command",
+		Cols:       80,
+		Rows:       24,
+	}
+
+	olderResultCh := startRunCommand(ctx, svc, req)
+	olderCtx := <-olderStarted
+	newerResponse, newerErr := svc.RunCommand(ctx, req)
+	olderCtxErr := olderCtx.Err()
+	close(releaseOlder)
+	olderResult := <-olderResultCh
+
+	require.NoError(t, newerErr)
+	require.NotNil(t, newerResponse)
+	assert.Empty(t, newerResponse.StartError)
+	assert.ErrorIs(t, olderCtxErr, context.Canceled)
+	assert.Nil(t, olderResult.response)
+	assert.ErrorIs(t, olderResult.err, terminal_svc.ErrCommandStartPreempted)
+	assert.Equal(t, int32(1), backend.opens.Load())
+	require.Eventually(t, func() bool {
+		return logs.Len() == 2 && len(emitter.Snapshot()) == 1
+	}, time.Second, time.Millisecond)
 }
 
 func TestService_RunCommand_GivenResolverUnavailable_WhenStarted_ThenReturnsErrorWithoutPanicOrLaunch(t *testing.T) {
