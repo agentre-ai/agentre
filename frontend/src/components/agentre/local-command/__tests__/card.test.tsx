@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useLocalCommandsStore } from "../../../../stores/local-commands-store";
-import { LocalCommandCard } from "../card";
+import { isTerminalNotOpenError, LocalCommandCard } from "../card";
 
 const close = vi.fn();
 vi.mock("../../../../../wailsjs/go/app/App", () => ({
@@ -20,6 +20,22 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+describe("isTerminalNotOpenError", () => {
+  it.each([
+    [new Error("terminal not open"), true],
+    ["terminal not open", true],
+    [new Error("remote cleanup failed after terminal not open"), false],
+    ["terminal not open\n", false],
+    [{ message: "terminal not open" }, false],
+    [new Error("terminal closed"), false],
+  ])(
+    "classifies only the exact Wails terminal-not-open rejection",
+    (error, expected) => {
+      expect(isTerminalNotOpenError(error)).toBe(expected);
+    },
+  );
+});
 
 describe("LocalCommandCard", () => {
   beforeEach(() => {
@@ -77,13 +93,15 @@ describe("LocalCommandCard", () => {
       command: "sleep 30",
       createdAt: 1,
     });
+    useLocalCommandsStore.getState().appendOutput("t-retry", "partial\n");
     render(<LocalCommandCard entryId="t-retry" onOpenInTerminal={vi.fn()} />);
 
     await userEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
     await waitFor(() => expect(close).toHaveBeenCalledTimes(1));
-    expect(useLocalCommandsStore.getState().get("t-retry")?.status).toBe(
-      "running",
-    );
+    expect(useLocalCommandsStore.getState().get("t-retry")).toMatchObject({
+      output: "partial\nError: close unavailable",
+      status: "running",
+    });
 
     await userEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
     await waitFor(() => {
@@ -92,6 +110,32 @@ describe("LocalCommandCard", () => {
       );
     });
     expect(close).toHaveBeenCalledTimes(2);
+  });
+
+  it("Given TerminalClose rejects with an unrelated message containing terminal not open, When Stop is clicked, Then the diagnostic is appended and the card stays retryable", async () => {
+    close.mockRejectedValueOnce(
+      new Error("remote cleanup failed after terminal not open"),
+    );
+    useLocalCommandsStore.getState().start({
+      id: "t-unrelated",
+      sessionId: 1,
+      command: "sleep 30",
+      createdAt: 1,
+    });
+    render(
+      <LocalCommandCard entryId="t-unrelated" onOpenInTerminal={vi.fn()} />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
+
+    await waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(useLocalCommandsStore.getState().get("t-unrelated")).toMatchObject({
+      output: "Error: remote cleanup failed after terminal not open",
+      status: "running",
+    });
+    expect(
+      screen.getByRole("button", { name: /停止|Stop/ }),
+    ).toBeInTheDocument();
   });
 
   it("Given a normal exit wins while TerminalClose is pending, When close later succeeds, Then the exit status, code, and output are preserved", async () => {

@@ -12,6 +12,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as React from "react";
@@ -47,6 +48,7 @@ const appMocks = vi.hoisted(() => ({
   SetChatGoal: vi.fn(),
   StartChatGoal: vi.fn(),
   StopChatMessage: vi.fn(),
+  TerminalClose: vi.fn(),
   TerminalRunCommand: vi.fn(),
   ClearChatGoal: vi.fn(),
   GetSessionGitState: vi.fn().mockResolvedValue({
@@ -269,6 +271,10 @@ vi.mock("../task-progress/derive", () => ({
   deriveTaskProgress: () => ({ total: 0, done: 0 }),
 }));
 
+vi.mock("../local-command/output-terminal", () => ({
+  OutputTerminal: () => null,
+}));
+
 // chat-panel-context-usage 有复杂计算，桩掉
 vi.mock("../chat-panel-context-usage", () => ({
   computeComposerContextUsage: (...args: unknown[]) =>
@@ -278,6 +284,7 @@ vi.mock("../chat-panel-context-usage", () => ({
 // ── import after mocks ─────────────────────────────────────────────────────
 
 import { ChatPanel, computeTopVisibleAnchor } from "../chat-panel";
+import { LocalCommandCard } from "../local-command/card";
 import {
   __resetChatPanelScrollStateForTesting,
   loadTranscriptScrollState,
@@ -331,6 +338,7 @@ function resetStore() {
   appMocks.ResolveLocalCommandScope.mockImplementation(
     () => new Promise(() => undefined),
   );
+  appMocks.TerminalClose.mockReset();
   appMocks.TerminalRunCommand.mockReset();
   useLocalCommandsStore.setState({ entries: {} });
   sonnerMocks.toast.error.mockClear();
@@ -765,6 +773,69 @@ describe("ChatPanel · local command scope and execution", () => {
       );
     },
   );
+
+  it("Given exit-listener setup fails before a command exits naturally, When TerminalClose reports terminal not open and the user stops the card, Then the rejection is contained and the card settles stopped and dismissible after one launch", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const listenerError = new Error("exit listener failed");
+    let terminalListenerCount = 0;
+    runtimeMocks.EventsOn.mockImplementation((event?: string) => {
+      if (!event?.startsWith("terminal:")) return vi.fn();
+      terminalListenerCount += 1;
+      if (terminalListenerCount === 2) throw listenerError;
+      return vi.fn();
+    });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+    appMocks.TerminalClose.mockRejectedValueOnce(
+      new Error("terminal not open"),
+    );
+    const unhandledRejection = vi.fn();
+    window.addEventListener("unhandledrejection", unhandledRejection);
+    onTestFinished(() =>
+      window.removeEventListener("unhandledrejection", unhandledRejection),
+    );
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("printf done")).resolves.toEqual({
+      deviceId: "remote-12",
+      cwd: "/srv/exact",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      command: "printf done",
+      output: String(listenerError),
+      status: "running",
+    });
+
+    const card = render(
+      <LocalCommandCard entryId={terminalId} onOpenInTerminal={vi.fn()} />,
+    );
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+        output: String(listenerError),
+        status: "stopped",
+      });
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledWith(terminalId);
+    expect(unhandledRejection).not.toHaveBeenCalled();
+    expect(
+      within(card.container).queryByRole("button", { name: /停止|Stop/ }),
+    ).toBeNull();
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /移除|Dismiss/ }),
+    );
+    expect(useLocalCommandsStore.getState().get(terminalId)).toBeUndefined();
+  });
 
   it("Given two deferred commands in a new chat, When the panel unmounts and one terminal RPC rejects, Then session creation stays shared while both commands continue and settle independently exactly once", async () => {
     resetStore();

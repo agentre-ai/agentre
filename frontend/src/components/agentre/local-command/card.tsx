@@ -14,6 +14,15 @@ import { TranscriptPill } from "../transcript-card";
 import { formatDuration } from "./format-duration";
 import { OutputTerminal } from "./output-terminal";
 
+const TERMINAL_NOT_OPEN_ERROR = "terminal not open";
+
+export function isTerminalNotOpenError(error: unknown): boolean {
+  return (
+    error === TERMINAL_NOT_OPEN_ERROR ||
+    (error instanceof Error && error.message === TERMINAL_NOT_OPEN_ERROR)
+  );
+}
+
 // Status → visual style map (DRY — one place for all status styles).
 const STATUS_CONFIG: Record<
   LocalCommandStatus,
@@ -65,8 +74,14 @@ export function LocalCommandCard({
   const stop = async () => {
     try {
       await TerminalClose(entryId);
-    } catch {
-      return;
+    } catch (error: unknown) {
+      if (!isTerminalNotOpenError(error)) {
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(entryId)?.status === "running") {
+          commands.appendOutput(entryId, String(error));
+        }
+        return;
+      }
     }
     const commands = useLocalCommandsStore.getState();
     if (commands.get(entryId)?.status === "running") {
