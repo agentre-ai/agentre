@@ -277,12 +277,14 @@ import {
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useSessionConnStore } from "@/stores/session-conn-store";
 
 /** 清 store streams 以避免测试间串台 */
 function resetStore() {
   __resetChatPanelScrollStateForTesting();
   mockSessionStore.messages = [];
   useChatStreamsStore.getState().streams.clear();
+  useSessionConnStore.getState().__reset();
   runtimeMocks.EventsOn.mockReset();
   runtimeMocks.EventsOn.mockImplementation(() => vi.fn());
   setMessagesSpy.mockClear();
@@ -433,6 +435,49 @@ describe("ChatPanel · transcript cwd", () => {
     expect(componentMocks.chatTranscriptProps.at(-1)?.cwd).toBe(
       "/Users/codfrm/Code/agentre/agentre",
     );
+  });
+});
+
+// ─── R13:断连活信号的接线 ────────────────────────────────────────────────────
+//
+// 两端各有用例(ChatStreamsHost 把 chat:conn:<sid> 写进 store、TranscriptRowView
+// 按 prop 换形态),中间这一段 ——「按**本**会话读连接态并派给转录流」—— 没有。
+// 把它错接成另一条会话、错读成 "lost"、或干脆写死 false,整套用例仍然全绿,而用户
+// 在断连期间看到的是打字指示器,也就是 R13 要消除的那个困惑本身。
+describe("ChatPanel · 断连活信号接线 (R13)", () => {
+  it("Given the session's channel is reconnecting, When the transcript renders, Then it is told to swap in the disconnected form", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    useSessionConnStore.getState().setConnState(42, "reconnecting");
+
+    render(<ChatPanel sessionId={42} />);
+
+    expect(componentMocks.chatTranscriptProps.at(-1)?.reconnecting).toBe(true);
+  });
+
+  it("Given the channel is connected again, When the transcript re-renders, Then it goes straight back to the typing form", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    useSessionConnStore.getState().setConnState(42, "reconnecting");
+
+    render(<ChatPanel sessionId={42} />);
+    expect(componentMocks.chatTranscriptProps.at(-1)?.reconnecting).toBe(true);
+
+    act(() => {
+      useSessionConnStore.getState().setConnState(42, "connected");
+    });
+
+    expect(componentMocks.chatTranscriptProps.at(-1)?.reconnecting).toBe(false);
+  });
+
+  it("Given another session is reconnecting, When this session's transcript renders, Then it stays on the typing form", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    useSessionConnStore.getState().setConnState(7, "reconnecting");
+
+    render(<ChatPanel sessionId={42} />);
+
+    expect(componentMocks.chatTranscriptProps.at(-1)?.reconnecting).toBe(false);
   });
 });
 
