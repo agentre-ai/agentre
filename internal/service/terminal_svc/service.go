@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cago-frame/cago/pkg/gogo"
+
 	"github.com/agentre-ai/agentre/internal/pkg/pty"
 	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
@@ -144,8 +146,13 @@ func (s *Service) open(
 	if lifecycle != nil {
 		lifecycle.logStarted(ctx)
 	}
-	// Use the original ctx for the pump so it survives openCtx cancellation.
-	go s.pump(ctx, terminalID, h, lifecycle)
+	// Detach from caller cancellation while preserving logger values so exit
+	// cleanup and lifecycle events complete after Open returns.
+	pumpCtx := context.WithoutCancel(ctx)
+	gogo.Go(func() error {
+		s.pump(pumpCtx, terminalID, h, lifecycle)
+		return nil
+	}, gogo.WithIgnorePanic())
 	return nil
 }
 
