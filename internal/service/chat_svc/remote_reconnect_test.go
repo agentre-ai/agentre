@@ -12,7 +12,10 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/pkg/jsonrpc"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo/mock_agent_repo"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
@@ -288,4 +291,54 @@ func TestLoadSession_DoesNotRememberConnStateWithoutActiveTurn(t *testing.T) {
 	markTurnActive(t, svc, 100)
 	assert.Equal(t, string(remote.ConnStateConnected), load(),
 		"上一轮遗留的重连态泄漏到下一轮 = 一条连接正常的 turn 全程顶着断连指示器")
+}
+
+// Given 某台配对设备上的 daemon 版本过旧(补齐族 RPC 一律 method-not-found),
+// When 桌面端在它上面开一轮 —— 开轮前的能力探测因此落空,
+// Then 这个结论要记到该配对设备上(R18:「且配对设备状态里说明该 daemon 版本过旧」),
+// 而不是只在日志里留一行 Warn。
+//
+// 这条用例连着钉住整条通路:runtime 的探测 → chat_svc 注入的观察端口 → 设备状态。
+// 少了 remoteRuntimeForDevice 里那行注入,探测结果就永远出不了 internal/pkg。
+func TestRemoteRuntime_OldDaemon_MarksPairedDeviceOutdated(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	client := newRecordingDaemonClient()
+	client.expect(wire.MethodSessionList, func(_, _ any) error {
+		return &jsonrpc.Error{Code: jsonrpc.ErrMethodNotFound.Code, Message: "Method not found"}
+	})
+	client.expect(wire.MethodRun, func(_, result any) error {
+		*(result.(*wire.RunAck)) = wire.RunAck{SessionID: 100}
+		return nil
+	})
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease, nil).AnyTimes()
+	lease.EXPECT().Client().Return(client).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease.EXPECT().Release().AnyTimes()
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	// 指纹留空:本用例不碰游标归属,recordExecDaemon 因此不写库。
+	rds.EXPECT().Get(gomock.Any(), int64(7)).Return(&remote_device_svc.DeviceView{ID: 7}, nil).AnyTimes()
+	rds.EXPECT().RecordDaemonOutdated(int64(7), true).Times(1)
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	svc := &chatSvc{emitter: NoopEmitter{}}
+	svc.setConnPoolForTest(pool)
+
+	be := &agent_backend_entity.AgentBackend{
+		DeviceID: "7", Type: string(agent_backend_entity.TypeClaudeCode), ID: 1, Name: "x",
+	}
+	rt, err := svc.borrowRemoteRuntime(context.Background(), be, 100)
+	require.NoError(t, err)
+
+	_, _, err = rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend: be, SessionID: 100, UserText: "hi",
+	})
+	require.NoError(t, err)
 }

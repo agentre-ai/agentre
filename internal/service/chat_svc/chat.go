@@ -3666,6 +3666,9 @@ func (s *chatSvc) remoteRuntimeForDevice(ctx context.Context, deviceID int64, se
 	rt := remote.New(lease.Client(),
 		remote.WithDaemonFingerprint(fp),
 		remote.WithConnStateObserver(remote.ConnStateFunc(s.onRemoteConnState)),
+		remote.WithDurabilityObserver(remote.DurabilityFunc(func(supported bool) {
+			s.onRemoteDaemonDurability(deviceID, supported)
+		})),
 		remote.WithReconnect(remote.ReconnectFunc(func(rctx context.Context) (agentruntime.DaemonClientPort, string, error) {
 			return s.reconnectRemote(rctx, deviceID, entry)
 		})),

@@ -37,6 +37,20 @@ func (s *chatSvc) onRemoteConnState(sessionID int64, st remote.SessionConnState)
 	})
 }
 
+// onRemoteDaemonDurability 是 remote.DurabilityObserver 的实现:把 R18 的能力探测
+// 结论交给配对设备状态。
+//
+// 为什么落在设备而不是会话:daemon 版本是**设备属性**,不是会话事件 —— 同一台设备上
+// 每条会话得到的都是同一个结论,而用户要在配对设备面板上看到「这台为什么一断连整轮
+// 就没了」。回落行为(断连即结束该轮)本来就有,这里补的是那句说明。
+func (s *chatSvc) onRemoteDaemonDurability(deviceID int64, supported bool) {
+	rds := remote_device_svc.Default()
+	if rds == nil {
+		return
+	}
+	rds.RecordDaemonOutdated(deviceID, !supported)
+}
+
 // rememberConnState 维护「每会话最新连接态」缓存。
 //
 // 缓存挂在这里而不是让 LoadSession 反向去够 agentruntime:本函数已经是

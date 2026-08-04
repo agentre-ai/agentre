@@ -116,6 +116,9 @@ func TestCatchUpRemoteSessions_ConnectsByExecDeviceAndRunsThreeSteps(t *testing.
 	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
 	rds.EXPECT().Get(gomock.Any(), deviceID).
 		Return(&remote_device_svc.DeviceView{ID: deviceID, DaemonFingerprint: fp}, nil).AnyTimes()
+	// 补齐一路都要探这台 daemon 认不认补齐族 RPC(R18):这台认得,于是设备状态上
+	// 那条「版本过旧」被撤下来。
+	rds.EXPECT().RecordDaemonOutdated(deviceID, false).AnyTimes()
 	prevSvc := remote_device_svc.Default()
 	remote_device_svc.SetDefault(rds)
 	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })

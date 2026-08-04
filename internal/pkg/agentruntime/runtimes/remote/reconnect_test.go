@@ -1181,3 +1181,96 @@ func TestReconnect_PortAbandons_InjectsDisconnectedImmediately(t *testing.T) {
 	assert.ErrorIs(t, rig.result.StopErr, ErrDaemonDisconnected)
 	assert.Equal(t, 1, rig.reconnectAttempts(), "宣告放弃后不该再退避重试")
 }
+
+// ── R18:能力探测的结论要交得出去 ────────────────────────────────────────────
+
+// durabilityRecorder 收下 R18 能力探测交出来的结论。
+type durabilityRecorder struct {
+	mu  sync.Mutex
+	got []bool
+}
+
+func (d *durabilityRecorder) OnDaemonDurability(supported bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.got = append(d.got, supported)
+}
+
+func (d *durabilityRecorder) results() []bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]bool(nil), d.got...)
+}
+
+// newProbeRuntime 起一个只关心开轮探测的 runtime:supported 决定 runtime.session.list
+// 回正常结果还是回 method-not-found。
+func newProbeRuntime(t *testing.T, supported bool, obs DurabilityObserver) *Runtime {
+	t.Helper()
+	conn := newFakeConn()
+	conn.script(func(method string, _, result any) error {
+		switch method {
+		case wire.MethodSessionList:
+			if !supported {
+				return &jsonrpc.Error{Code: jsonrpc.ErrMethodNotFound.Code, Message: "Method not found"}
+			}
+			return nil
+		case wire.MethodRun:
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rigSessionID}
+			return nil
+		}
+		return nil
+	})
+	rt := New(conn,
+		WithReconnect(ReconnectFunc(func(context.Context) (agentruntime.DaemonClientPort, string, error) {
+			return nil, "", ErrReconnectAbandoned
+		})),
+		WithDaemonFingerprint(rigFingerprint),
+		WithSessionCursor(&fakeCursorPort{}),
+		WithDurabilityObserver(obs),
+		WithCursorFlushInterval(0),
+	)
+	t.Cleanup(func() { _ = rt.Close() })
+	return rt
+}
+
+// startProbeTurn 开一轮 —— 开轮前的那次 runtime.session.list 就是 R18 的能力探测。
+func startProbeTurn(t *testing.T, rt *Runtime) {
+	t.Helper()
+	_, _, err := rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode), ID: 1, Name: "x"},
+		SessionID: rigSessionID,
+		UserText:  "hi",
+	})
+	require.NoError(t, err)
+}
+
+// Given 对面 daemon 版本过旧(补齐族 RPC 回 method-not-found),When 桌面端在开轮前
+// 探测它,Then 结论必须经 DurabilityObserver 交到上层去。
+//
+// R18 除了「断连即结束该轮」的回落行为,还要求**配对设备状态里说明该 daemon 版本过旧**。
+// 探测结果只活在 *remote.Runtime 里,而 internal/pkg 是叶子层够不到设备行 —— 结论只能
+// 由消费方注入的端口带出去(DIP),否则用户能看到的就只剩一行 Warn 日志。
+func TestTurnStartProbe_OldDaemon_ReportsUnsupportedToObserver(t *testing.T) {
+	obs := &durabilityRecorder{}
+	rt := newProbeRuntime(t, false, obs)
+
+	startProbeTurn(t, rt)
+
+	assert.Equal(t, []bool{false}, obs.results(),
+		"探到老 daemon 必须播报一次「不支持」,配对设备面板才有东西可说")
+}
+
+// Given 用户把那台 daemon 升级了,When 开轮前的探测这次通过,Then 同一个端口要交出
+// 「支持」—— 否则设备面板上那条「版本过旧」再也撤不下来。
+//
+// 并且探测落在**每一轮**开轮前的热路径上:结论没翻转就不该重复播报。
+func TestTurnStartProbe_UpToDateDaemon_ReportsSupportedOnce(t *testing.T) {
+	obs := &durabilityRecorder{}
+	rt := newProbeRuntime(t, true, obs)
+
+	startProbeTurn(t, rt)
+	startProbeTurn(t, rt)
+
+	assert.Equal(t, []bool{true}, obs.results(),
+		"结论没翻转就不该再播一遍")
+}

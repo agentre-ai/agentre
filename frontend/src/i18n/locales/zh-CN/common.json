@@ -1539,6 +1539,7 @@
       "unsynced": "未同步"
     },
     "status": {
+      "daemonOutdated": "daemon 版本过旧 —— 断连会直接结束正在跑的这一轮。升级远端 agentred 后，断连期间它也能接着跑。",
       "lastConnected": "上次连接 {{time}}",
       "neverConnected": "尚未连接",
       "offline": "离线",

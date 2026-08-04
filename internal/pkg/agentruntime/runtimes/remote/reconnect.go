@@ -92,6 +92,26 @@ func WithConnStateObserver(o ConnStateObserver) Option {
 	return func(r *Runtime) { r.connObserver = o }
 }
 
+// DurabilityObserver 接收 R18 的能力探测结论:对面这台 daemon 认不认补齐族 RPC。
+//
+// 探测结果只活在 *remote.Runtime 里,而 R18 要求「配对设备状态里说明该 daemon 版本
+// 过旧」—— 设备行在 service 层,internal/pkg 是叶子层够不着它。按 DIP 在消费方声明
+// 这个窄端口,由构造 Runtime 的一方(chat_svc)注入实现,结论才出得去。
+type DurabilityObserver interface {
+	OnDaemonDurability(supported bool)
+}
+
+// DurabilityFunc 是 DurabilityObserver 的函数式实现。
+type DurabilityFunc func(supported bool)
+
+// OnDaemonDurability 实现 DurabilityObserver。
+func (f DurabilityFunc) OnDaemonDurability(supported bool) { f(supported) }
+
+// WithDurabilityObserver 注入能力探测的观察者。
+func WithDurabilityObserver(o DurabilityObserver) Option {
+	return func(r *Runtime) { r.durabilityObs = o }
+}
+
 // WithSessionCursor 覆盖游标端口(默认取 agentruntime.SessionCursor())。
 func WithSessionCursor(p agentruntime.SessionCursorPort) Option {
 	return func(r *Runtime) { r.cursorPort = p }
@@ -942,10 +962,24 @@ func (r *Runtime) sessionSummaries(ctx context.Context) (map[int64]wire.SessionS
 	return out, nil
 }
 
+// setDurability 记下能力探测的结论,并在结论**翻转**时播报给观察者(R18)。
+//
+// 只播翻转:探测落在每一轮开轮前的热路径上,结论不变时重复播报只会让上层一遍遍重写
+// 同一条设备状态。unknown 不播 —— 它是「还没探」而不是结论(adoptConn 按连接代重置
+// 它),把它当结论播会在每次重连时先把设备面板上那条说明撤下来又装回去。
+//
+// 播报在锁外:观察者是上层注入的,持着 connMu 回调它等于把 service 层的锁序拽进
+// 这条连接的临界区。
 func (r *Runtime) setDurability(st durabilityState) {
 	r.connMu.Lock()
+	prev := r.durability
 	r.durability = st
+	obs := r.durabilityObs
 	r.connMu.Unlock()
+	if obs == nil || st == durabilityUnknown || st == prev {
+		return
+	}
+	obs.OnDaemonDurability(st == durabilitySupported)
 }
 
 // isMethodNotFound 判定 daemon 回的是 JSON-RPC 标准的 -32601。

@@ -1539,6 +1539,7 @@
       "unsynced": "Not synced"
     },
     "status": {
+      "daemonOutdated": "Outdated daemon — a disconnect ends the running turn. Upgrade agentred on that machine so it keeps running while you are away.",
       "lastConnected": "Last connected {{time}}",
       "neverConnected": "Never connected",
       "offline": "Offline",

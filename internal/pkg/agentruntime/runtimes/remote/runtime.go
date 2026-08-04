@@ -76,11 +76,12 @@ type Runtime struct {
 	tracked map[int64]struct{}
 
 	// ── 断连重连(reconnect.go)──
-	reconnect    ReconnectPort
-	connObserver ConnStateObserver
-	cursorPort   agentruntime.SessionCursorPort
-	backoff      []time.Duration
-	cursorFlush  time.Duration
+	reconnect     ReconnectPort
+	connObserver  ConnStateObserver
+	durabilityObs DurabilityObserver
+	cursorPort    agentruntime.SessionCursorPort
+	backoff       []time.Duration
+	cursorFlush   time.Duration
 
 	// connMu 只保护「当前这条连接」相关的三个字段:client / daemonFP / 能力探测
 	// 结果。它与 mu 分开,是因为重连期间要在不持有会话表锁的前提下换连接。
