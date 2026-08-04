@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
@@ -108,7 +109,7 @@ func NewMCPTunnelHandler(notifierFn func() NotifierPort) http.Handler {
 			// 降级分支必须留痕(observability.md 强制埋点 3):这条应答只进 CLI 子进程,
 			// 发起端按定义已经离线,daemon 日志是事后唯一能回答「为什么 agent 说这个工具
 			// 不可用」的地方。只记路径 —— body 里可能有工具入参,整包不进日志。
-			log.Printf("mcpproxy.tunnel: no target, answered LLM-readable unavailable error path=%q", r.URL.Path)
+			log.Printf("mcpproxy.tunnel: no target, answered LLM-readable unavailable error path=%s", strconv.Quote(r.URL.Path))
 			writeMCPTunnelUnavailable(w, r.URL.Path, body)
 			return
 		}

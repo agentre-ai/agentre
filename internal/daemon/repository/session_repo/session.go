@@ -11,7 +11,7 @@
 //
 // 「某会话最新的 seq」不在本包里:唯一真相源是通知日志自己的 MAX(seq)(见
 // notification_repo 与 handlers.JournalPort 的说明)。daemon_sessions 上曾经预留过一列
-// latest_seq,从未有写入方,已由迁移 202608040001 删掉。
+// latest_seq 不在会话表维护；最新游标以通知日志的 MAX(seq) 为唯一真相源。
 package session_repo
 
 import (
