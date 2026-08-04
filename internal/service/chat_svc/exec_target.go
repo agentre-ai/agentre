@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
@@ -21,30 +22,69 @@ func execDeviceID(be *agent_backend_entity.AgentBackend) string {
 	return ""
 }
 
-// ResolveSessionExecTarget 给定 sessionID，解析出 ! 命令的执行目标（cwd + deviceID）。
-// 复用 resolveSessionCwd 的项目/自由会话/远端解析规则，绝不走库以外的旁路。
-func (s *chatSvc) ResolveSessionExecTarget(ctx context.Context, sessionID int64) (string, string, error) {
-	sess, err := chat_repo.Session().Find(ctx, sessionID)
-	if err != nil {
-		return "", "", operationFailedWithCause(ctx, err, zap.Int64("sessionId", sessionID))
-	}
-	if sess == nil {
-		return "", "", i18n.NewError(ctx, code.ChatSessionNotFound)
+// ResolveExecTarget 解析一个 session 值对象的当前执行目标。sess 可以是已持久化
+// 会话，也可以是只带 AgentID/ProjectID 的未持久化预会话对象；该方法只读仓储。
+func (s *chatSvc) ResolveExecTarget(ctx context.Context, sess *chat_entity.Session) (*LocalCommandScope, error) {
+	if sess == nil || sess.AgentID <= 0 || sess.ProjectID < 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
 	}
 	a, err := agent_repo.Agent().Find(ctx, sess.AgentID)
 	if err != nil {
-		return "", "", operationFailedWithCause(ctx, err, zap.Int64("agentId", sess.AgentID))
+		return nil, operationFailedWithCause(ctx, err, zap.Int64("agentId", sess.AgentID))
 	}
 	var be *agent_backend_entity.AgentBackend
 	if a != nil && a.AgentBackendID > 0 {
 		be, err = agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
 		if err != nil {
-			return "", "", operationFailedWithCause(ctx, err, zap.Int64("backendId", a.AgentBackendID))
+			return nil, operationFailedWithCause(ctx, err, zap.Int64("backendId", a.AgentBackendID))
 		}
 	}
 	cwd, err := resolveSessionCwd(ctx, sess, be)
 	if err != nil {
+		return nil, err
+	}
+	return &LocalCommandScope{DeviceID: execDeviceID(be), Cwd: cwd}, nil
+}
+
+// ResolveLocalCommandScope 为已有 session，或尚未创建 session 的 agent/project 目标
+// 解析当前设备/cwd。预会话分支只构造值对象，不调用 Session.Create/Ensure。
+func (s *chatSvc) ResolveLocalCommandScope(ctx context.Context, req *ResolveLocalCommandScopeRequest) (*LocalCommandScope, error) {
+	sess, err := localCommandScopeSession(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return s.ResolveExecTarget(ctx, sess)
+}
+
+func localCommandScopeSession(ctx context.Context, req *ResolveLocalCommandScopeRequest) (*chat_entity.Session, error) {
+	if req == nil || req.SessionID < 0 || req.AgentID < 0 || req.ProjectID < 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if req.SessionID > 0 {
+		if req.AgentID != 0 || req.ProjectID != 0 {
+			return nil, i18n.NewError(ctx, code.InvalidParameter)
+		}
+		sess, err := chat_repo.Session().Find(ctx, req.SessionID)
+		if err != nil {
+			return nil, operationFailedWithCause(ctx, err, zap.Int64("sessionId", req.SessionID))
+		}
+		if sess == nil {
+			return nil, i18n.NewError(ctx, code.ChatSessionNotFound)
+		}
+		return sess, nil
+	}
+	if req.AgentID <= 0 {
+		return nil, i18n.NewError(ctx, code.InvalidParameter)
+	}
+	return &chat_entity.Session{AgentID: req.AgentID, ProjectID: req.ProjectID}, nil
+}
+
+// ResolveSessionExecTarget 给定 sessionID，解析出 ! 命令的执行目标（cwd + deviceID）。
+// 保留既有调用签名，内部与预会话作用域共用 ResolveExecTarget。
+func (s *chatSvc) ResolveSessionExecTarget(ctx context.Context, sessionID int64) (string, string, error) {
+	scope, err := s.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{SessionID: sessionID})
+	if err != nil {
 		return "", "", err
 	}
-	return cwd, execDeviceID(be), nil
+	return scope.Cwd, scope.DeviceID, nil
 }

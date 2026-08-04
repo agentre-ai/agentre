@@ -541,6 +541,21 @@ type LoadSessionResponse struct {
 	Messages []ChatMessage     `json:"messages"`
 }
 
+// LocalCommandScope 是本地命令历史与命令执行共享的稳定设备/cwd 作用域。
+// DeviceID 为空表示本机；Cwd 为空表示目标设备上的默认 Agent 工作目录。
+type LocalCommandScope struct {
+	DeviceID string `json:"deviceId"`
+	Cwd      string `json:"cwd"`
+}
+
+// ResolveLocalCommandScopeRequest 接受且只接受一种目标：已有 SessionID，或尚未
+// 持久化的 AgentID + ProjectID（ProjectID=0 表示自由会话）。
+type ResolveLocalCommandScopeRequest struct {
+	SessionID int64 `json:"sessionId"`
+	AgentID   int64 `json:"agentId"`
+	ProjectID int64 `json:"projectId"`
+}
+
 // ListAgentSessionsRequest 给「查看全部 N 个会话」popover 翻页拉数据用。
 // Limit==0 时服务侧用默认页大小 20；上限 100。
 type ListAgentSessionsRequest struct {
