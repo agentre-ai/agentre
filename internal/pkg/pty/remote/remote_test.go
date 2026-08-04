@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -257,6 +258,56 @@ func TestRemoteBackend_GivenFastDataAndExitDuringOpenCallWhenOpenedThenPreSubscr
 	}
 	requireTerminalOutcome(t, h, "natural")
 	require.Equal(t, int32(1), client.subscribeCalls.Load(), "Open and pump must share one subscription pair")
+}
+
+func TestRemoteBackend_GivenMoreThanThirtyTwoFramesSynchronouslyEmittedBeforeOpenResponseWhenOpenedThenDeliversAllFIFOAndOneExit(t *testing.T) {
+	const frameCount = 128
+	client := newStubDaemonClient()
+	adapter := remote.NewClientAdapter(client)
+	t.Cleanup(func() { adapter.Abort() })
+	client.setCall(func(_ context.Context, method string, params any, out any) error {
+		if method != "terminal.open" {
+			return nil
+		}
+		op := params.(protocol.TerminalOpenParams)
+		for i := 0; i < frameCount; i++ {
+			if err := client.dispatch("terminal.data", protocol.TerminalDataEvent{
+				TerminalID: op.TerminalID,
+				Data: base64.StdEncoding.EncodeToString(
+					[]byte(fmt.Sprintf("startup-%03d", i)),
+				),
+			}); err != nil {
+				return err
+			}
+		}
+		if err := client.dispatch("terminal.exit", protocol.TerminalExitEvent{
+			TerminalID: op.TerminalID,
+			Code:       0,
+			Reason:     "natural",
+		}); err != nil {
+			return err
+		}
+		out.(*protocol.TerminalOpenResult).TerminalID = op.TerminalID
+		return nil
+	})
+
+	h, err := remote.NewBackend(adapter).Open(context.Background(), pty.Spec{
+		TerminalID: "fast-terminal-burst",
+		Cwd:        "/r",
+	})
+	require.NoError(t, err)
+
+	for i := 0; i < frameCount; i++ {
+		select {
+		case chunk, ok := <-h.Data():
+			require.Truef(t, ok, "data closed after %d of %d startup frames", i, frameCount)
+			require.Equal(t, fmt.Sprintf("startup-%03d", i), string(chunk))
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for startup frame %d of %d", i, frameCount)
+		}
+	}
+	info := requireTerminalOutcome(t, h, "natural")
+	require.Zero(t, info.Code)
 }
 
 func TestRemoteBackend_GivenEmptyRuntimeIDWhenOpenedDirectlyThenGeneratesAndSendsSafeClientID(t *testing.T) {
@@ -620,6 +671,93 @@ func TestRemoteBackend_GivenBufferedFinalFramesBeforeDaemonExit_WhenPumped_ThenD
 		require.Equal(t, 23, info.Code)
 		require.Equal(t, "finished", info.Msg)
 	}
+}
+
+func TestRemoteBackend_GivenMoreThanHandleBufferFinalFramesQueuedBeforeHandleExitWhenConsumerDrainsThenEveryFrameRemainsObservable(t *testing.T) {
+	const frameCount = 96
+	fc := &fakeClient{
+		openParams: make(chan protocol.TerminalOpenParams, 1),
+		dataPush:   make(chan protocol.TerminalDataEvent, frameCount),
+		exitPush:   make(chan protocol.TerminalExitEvent),
+	}
+	exitAccepted := make(chan struct{})
+	go func() {
+		fc.exitPush <- protocol.TerminalExitEvent{
+			TerminalID: "remote-final-burst",
+			Code:       29,
+			Reason:     "natural",
+			Msg:        "finished",
+		}
+		close(exitAccepted)
+		close(fc.exitPush)
+	}()
+
+	h, err := remote.NewBackend(fc).Open(context.Background(), pty.Spec{Cwd: "/r"})
+	require.NoError(t, err)
+	<-fc.openParams
+	select {
+	case <-exitAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("handle pump did not enter the final-frame exit drain")
+	}
+	for i := 0; i < frameCount; i++ {
+		fc.dataPush <- protocol.TerminalDataEvent{
+			TerminalID: "remote-final-burst",
+			Data: base64.StdEncoding.EncodeToString(
+				[]byte(fmt.Sprintf("final-%03d", i)),
+			),
+		}
+	}
+	close(fc.dataPush)
+
+	got := make([]string, 0, frameCount)
+	for chunk := range h.Data() {
+		got = append(got, string(chunk))
+	}
+	require.Len(t, got, frameCount, "final output was truncated at the handle buffer")
+	for i := 0; i < frameCount; i++ {
+		require.Equal(t, fmt.Sprintf("final-%03d", i), got[i])
+	}
+	info := requireTerminalOutcome(t, h, "natural")
+	require.Equal(t, 29, info.Code)
+	require.Equal(t, "finished", info.Msg)
+}
+
+func TestRemoteBackend_GivenAcceptedAdapterFramesWhenConnectionClosesThenDrainsAllBeforeConnectionLost(t *testing.T) {
+	const frameCount = 128
+	client := newStubDaemonClient()
+	adapter := remote.NewClientAdapter(client)
+	client.setCall(func(_ context.Context, method string, params any, out any) error {
+		if method == "terminal.open" {
+			op := params.(protocol.TerminalOpenParams)
+			out.(*protocol.TerminalOpenResult).TerminalID = op.TerminalID
+		}
+		return nil
+	})
+	h, err := remote.NewBackend(adapter).Open(context.Background(), pty.Spec{
+		TerminalID: "connection-lost-burst",
+		Cwd:        "/r",
+	})
+	require.NoError(t, err)
+	for i := 0; i < frameCount; i++ {
+		client.push(t, "terminal.data", protocol.TerminalDataEvent{
+			TerminalID: "connection-lost-burst",
+			Data: base64.StdEncoding.EncodeToString(
+				[]byte(fmt.Sprintf("connected-%03d", i)),
+			),
+		})
+	}
+	adapter.Abort()
+
+	got := make([]string, 0, frameCount)
+	for chunk := range h.Data() {
+		got = append(got, string(chunk))
+	}
+	require.Len(t, got, frameCount, "connection close truncated already accepted frames")
+	for i := 0; i < frameCount; i++ {
+		require.Equal(t, fmt.Sprintf("connected-%03d", i), got[i])
+	}
+	requireTerminalOutcome(t, h, "connection_lost")
 }
 
 func TestRemoteBackend_ExitEvent_DeliveredAndChannelsClose(t *testing.T) {

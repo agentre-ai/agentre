@@ -299,9 +299,9 @@ func (h *handleImpl) pump() {
 		select {
 		case ev, ok := <-dataCh:
 			if !ok {
-				// ClientAdapter closes the exit subscription before data after
-				// delivering a daemon exit. Prefer that authoritative outcome;
-				// otherwise the data subscription disappeared with no exit.
+				// ClientAdapter queues an authoritative exit before closing data.
+				// Prefer that buffered outcome; otherwise the subscription ended
+				// because the connection disappeared without terminal.exit.
 				select {
 				case ev, exitOK := <-exitCh:
 					if exitOK {
@@ -314,7 +314,7 @@ func (h *handleImpl) pump() {
 				}
 				return
 			}
-			if !h.forwardData(ev, false) {
+			if !h.forwardData(ev) {
 				outcome = pkgpty.ExitInfo{Reason: "killed"}
 				return
 			}
@@ -351,20 +351,13 @@ func exitInfo(ev protocol.TerminalExitEvent) pkgpty.ExitInfo {
 	return pkgpty.ExitInfo{Code: ev.Code, Reason: ev.Reason, Msg: ev.Msg}
 }
 
-func (h *handleImpl) forwardData(ev protocol.TerminalDataEvent, prioritizeOutput bool) bool {
+func (h *handleImpl) forwardData(ev protocol.TerminalDataEvent) bool {
 	// The daemon base64-encodes each chunk so it survives the JSON hop;
 	// decode back to raw bytes. Skip a malformed frame rather than feed
 	// the encoded text to xterm.
 	decoded, err := base64.StdEncoding.DecodeString(ev.Data)
 	if err != nil {
 		return true
-	}
-	if prioritizeOutput {
-		select {
-		case h.data <- decoded:
-			return true
-		default:
-		}
 	}
 	select {
 	case h.data <- decoded:
@@ -375,10 +368,10 @@ func (h *handleImpl) forwardData(ev protocol.TerminalDataEvent, prioritizeOutput
 }
 
 func (h *handleImpl) drainDataAfterExit(dataCh <-chan protocol.TerminalDataEvent) {
-	// ClientAdapter closes dataCh immediately after queueing the daemon exit.
-	// Range therefore drains the already-buffered final frames in FIFO order.
+	// A daemon exit is authoritative only after every earlier accepted frame
+	// has either reached the consumer or a confirmed local Close has won.
 	for ev := range dataCh {
-		if !h.forwardData(ev, true) {
+		if !h.forwardData(ev) {
 			return
 		}
 	}
