@@ -202,10 +202,10 @@ export function createLocalCommandHistoryStore(
       const existingEntry = entries.find((entry) => entry.command === command);
       if (existingEntry && existingEntry.lastUsedAt >= usedAt) return;
 
-      history.scopes[key] = [
+      history.scopes[key] = normalizeEntries([
         { command, lastUsedAt: usedAt },
-        ...entries.filter((entry) => entry.command !== command),
-      ].slice(0, MAX_ENTRIES_PER_SCOPE);
+        ...entries,
+      ]);
       writePersistedHistory(storage, history);
     },
     clear(scope) {

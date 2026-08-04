@@ -129,6 +129,31 @@ describe("local command history scope and persistence", () => {
     expect(entries.some(({ command }) => command === "command-0")).toBe(false);
   });
 
+  it("Given 101 commands submitted oldest to newest, when records settle newest to oldest, then the submission-MRU keeps the newest 100", () => {
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+    const submissions = Array.from({ length: 101 }, (_, index) => ({
+      command: `command-${index}`,
+      lastUsedAt: index + 1,
+    }));
+
+    for (const { command, lastUsedAt } of [...submissions].reverse()) {
+      store.record(localRepo, command, lastUsedAt);
+    }
+
+    const entries = store.list(localRepo);
+    const commands = entries.map(({ command }) => command);
+    expect
+      .soft({
+        newestRetained: commands.includes("command-100"),
+        oldestRetained: commands.includes("command-0"),
+      })
+      .toEqual({ newestRetained: true, oldestRetained: false });
+    expect(entries).toEqual([...submissions.slice(1)].reverse());
+    expect(
+      createLocalCommandHistoryStore({ storage: localStorage }).list(localRepo),
+    ).toEqual(entries);
+  });
+
   it("Given two populated scopes, when one scope is cleared, then its editor history is empty and the other scope survives reconstruction", () => {
     const store = createLocalCommandHistoryStore({ storage: localStorage });
     store.record(localRepo, "pnpm test", 10);
