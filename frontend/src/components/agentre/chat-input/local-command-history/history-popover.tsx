@@ -31,22 +31,34 @@ export function LocalCommandHistoryPopover({
       selectedIndex={state.selectedIndex}
       itemCount={state.items.length}
       ariaLabel={t("localCommandHistory.aria")}
-      footer={
-        <div className="mt-1 border-t border-border pt-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label={t("localCommandHistory.clearCurrentScope")}
-            className="h-auto w-full justify-start rounded-sm px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={onClear}
-          >
-            <Trash2 className="size-3" aria-hidden="true" />
-            {t("localCommandHistory.clearCurrentScope")}
-          </Button>
-        </div>
-      }
+      footer={(activeRef) => {
+        const active = state.selectedIndex === state.items.length;
+        return (
+          <div className="mt-1 border-t border-border pt-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              ref={active ? activeRef : undefined}
+              tabIndex={-1}
+              aria-label={t("localCommandHistory.clearCurrentScope")}
+              aria-current={active ? "true" : undefined}
+              className={cn(
+                "h-auto w-full justify-start rounded-sm px-2 py-1.5 text-xs",
+                active
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onMouseMove={() => onHover(state.items.length)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={onClear}
+            >
+              <Trash2 className="size-3" aria-hidden="true" />
+              {t("localCommandHistory.clearCurrentScope")}
+            </Button>
+          </div>
+        );
+      }}
     >
       {(activeRef) =>
         state.items.map((entry, index) => {

@@ -15,7 +15,7 @@ type SuggestionPopoverProps = {
   ariaLabel: string;
   testId?: string;
   className?: string;
-  footer?: React.ReactNode;
+  footer?: (activeRef: React.Ref<HTMLButtonElement>) => React.ReactNode;
   children: (activeRef: React.Ref<HTMLButtonElement>) => React.ReactNode;
 };
 
@@ -73,7 +73,7 @@ export function SuggestionPopover({
       <div role="listbox" aria-label={ariaLabel}>
         {children(activeRef)}
       </div>
-      {footer}
+      {footer(activeRef)}
     </div>
   );
 }

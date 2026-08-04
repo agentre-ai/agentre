@@ -323,13 +323,13 @@ describe("AIChatInput command mode", () => {
       await screen.findByRole("option", { name: "git checkout main" });
 
       act(() => {
-        pressKey(editor, "ArrowUp");
+        pressKey(editor, "ArrowDown");
       });
       expect(
         screen.getByRole("option", { name: "git cherry-pick master" }),
       ).toHaveAttribute("aria-selected", "true");
       act(() => {
-        pressKey(editor, "ArrowDown");
+        pressKey(editor, "ArrowUp");
       });
       expect(
         screen.getByRole("option", { name: "git checkout main" }),
@@ -607,6 +607,73 @@ describe("AIChatInput command mode", () => {
     });
     expect(onCommandSubmit).toHaveBeenCalledWith("pwd");
   });
+
+  it.each(["Enter", "Tab"])(
+    "Given scoped history and an editor draft, When arrow navigation wraps to Clear and %s activates it, Then only that history is cleared without moving focus or submitting",
+    async (activationKey) => {
+      localCommandHistoryStore.record(repoScope, "git status", 30);
+      localCommandHistoryStore.record(repoScope, "git stash", 20);
+      localCommandHistoryStore.record(otherScope, "other command", 10);
+      const editorRef: RefObject<Editor | null> = { current: null };
+      const onCommandSubmit = vi.fn();
+      const onSubmit = vi.fn();
+
+      render(
+        <AIChatInput
+          editorRef={editorRef}
+          localCommandHistoryScope={repoScope}
+          onSubmit={onSubmit}
+          onCommandSubmit={onCommandSubmit}
+        />,
+      );
+      const editor = editorRef.current!;
+
+      act(() => {
+        editor.commands.insertContent("!git");
+        editor.commands.focus("end");
+      });
+      const firstOption = await screen.findByRole("option", {
+        name: "git status",
+      });
+      const secondOption = screen.getByRole("option", { name: "git stash" });
+      const clearButton = screen.getByRole("button", {
+        name: "Clear history for current directory",
+      });
+      const scrollIntoView = vi.fn();
+      clearButton.scrollIntoView = scrollIntoView;
+      expect(firstOption).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("textbox")).toHaveFocus();
+
+      act(() => pressKey(editor, "ArrowUp"));
+      expect(clearButton).toHaveAttribute("aria-current", "true");
+      expect(clearButton).toHaveClass("bg-accent", "text-accent-foreground");
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+
+      act(() => pressKey(editor, "ArrowDown"));
+      expect(firstOption).toHaveAttribute("aria-selected", "true");
+      act(() => pressKey(editor, "ArrowDown"));
+      expect(secondOption).toHaveAttribute("aria-selected", "true");
+      act(() => pressKey(editor, "ArrowDown"));
+      expect(clearButton).toHaveAttribute("aria-current", "true");
+
+      act(() => pressKey(editor, activationKey));
+
+      expect(editor.getText()).toBe("!git");
+      expect(screen.getByRole("textbox")).toHaveFocus();
+      expect(onCommandSubmit).not.toHaveBeenCalled();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(localCommandHistoryStore.list(repoScope)).toEqual([]);
+      expect(localCommandHistoryStore.list(otherScope)).toEqual([
+        { command: "other command", lastUsedAt: 10 },
+      ]);
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+      act(() => {
+        editor.commands.insertContent("x");
+      });
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    },
+  );
 
   it("Given a long command and transient output, When history is hovered, picked, or cleared, Then dynamic text stays complete and clearing preserves the draft and output card", async () => {
     const longCommand = `printf '${"x".repeat(180)}'`;

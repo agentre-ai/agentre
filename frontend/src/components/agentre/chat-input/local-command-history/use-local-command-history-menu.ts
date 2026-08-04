@@ -148,9 +148,15 @@ export function useLocalCommandHistoryMenu({
         const queryChanged =
           normalizeSuggestionQuery(previous.query) !==
           normalizeSuggestionQuery(hit.query);
+        const clearWasSelected =
+          previous.open &&
+          previous.items.length > 0 &&
+          previous.selectedIndex === previous.items.length;
         const selectedIndex = queryChanged
           ? 0
-          : Math.min(previous.selectedIndex, items.length - 1);
+          : clearWasSelected
+            ? items.length
+            : Math.min(previous.selectedIndex, items.length - 1);
         if (
           previous.open &&
           previous.query === hit.query &&
@@ -212,10 +218,7 @@ export function useLocalCommandHistoryMenu({
   const setSelectedIndex = useCallback((index: number) => {
     setState((previous) => {
       if (previous.items.length === 0) return previous;
-      const selectedIndex = Math.max(
-        0,
-        Math.min(index, previous.items.length - 1),
-      );
+      const selectedIndex = Math.max(0, Math.min(index, previous.items.length));
       return selectedIndex === previous.selectedIndex
         ? previous
         : { ...previous, selectedIndex };
@@ -231,20 +234,25 @@ export function useLocalCommandHistoryMenu({
   const onKeyDown = useCallback(
     (event: KeyboardEvent): boolean => {
       if (!state.open || state.items.length === 0) return false;
+      const selectableCount = state.items.length + 1;
       switch (event.key) {
         case "ArrowDown":
           event.preventDefault();
-          setSelectedIndex((state.selectedIndex + 1) % state.items.length);
+          setSelectedIndex((state.selectedIndex + 1) % selectableCount);
           return true;
         case "ArrowUp":
           event.preventDefault();
           setSelectedIndex(
-            (state.selectedIndex - 1 + state.items.length) % state.items.length,
+            (state.selectedIndex - 1 + selectableCount) % selectableCount,
           );
           return true;
         case "Enter":
         case "Tab": {
           event.preventDefault();
+          if (state.selectedIndex === state.items.length) {
+            clear();
+            return true;
+          }
           const entry = state.items[state.selectedIndex] ?? state.items[0];
           if (entry) pick(entry);
           return true;
@@ -257,7 +265,7 @@ export function useLocalCommandHistoryMenu({
           return false;
       }
     },
-    [dismiss, pick, setSelectedIndex, state],
+    [clear, dismiss, pick, setSelectedIndex, state],
   );
 
   return { state, onKeyDown, pick, setSelectedIndex, clear };
