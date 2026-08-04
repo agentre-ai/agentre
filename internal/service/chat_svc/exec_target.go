@@ -32,12 +32,18 @@ func (s *chatSvc) ResolveExecTarget(ctx context.Context, sess *chat_entity.Sessi
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err, zap.Int64("agentId", sess.AgentID))
 	}
-	var be *agent_backend_entity.AgentBackend
-	if a != nil && a.AgentBackendID > 0 {
-		be, err = agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
-		if err != nil {
-			return nil, operationFailedWithCause(ctx, err, zap.Int64("backendId", a.AgentBackendID))
-		}
+	if a == nil {
+		return nil, i18n.NewError(ctx, code.AgentNotFound)
+	}
+	if a.AgentBackendID <= 0 {
+		return nil, i18n.NewError(ctx, code.ChatAgentNoBackend)
+	}
+	be, err := agent_backend_repo.AgentBackend().Find(ctx, a.AgentBackendID)
+	if err != nil {
+		return nil, operationFailedWithCause(ctx, err, zap.Int64("backendId", a.AgentBackendID))
+	}
+	if be == nil {
+		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
 	cwd, err := resolveSessionCwd(ctx, sess, be)
 	if err != nil {

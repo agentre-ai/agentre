@@ -220,6 +220,57 @@ func TestResolveLocalCommandScope_GivenPreSessionRemoteFreeChat_WhenResolved_The
 	assert.Equal(t, &LocalCommandScope{DeviceID: "device-11", Cwd: ""}, scope)
 }
 
+func TestResolveLocalCommandScope_GivenStaleAgentOrBackendTarget_WhenResolved_ThenRejectsWithoutLocalFallback(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(*execTargetMocks)
+		errorCode int
+	}{
+		{
+			name: "agent no longer exists",
+			setup: func(m *execTargetMocks) {
+				m.agent.EXPECT().Find(gomock.Any(), int64(37)).Return(nil, nil)
+			},
+			errorCode: code.AgentNotFound,
+		},
+		{
+			name: "agent no longer has a backend",
+			setup: func(m *execTargetMocks) {
+				m.agent.EXPECT().Find(gomock.Any(), int64(37)).
+					Return(&agent_entity.Agent{ID: 37}, nil)
+			},
+			errorCode: code.ChatAgentNoBackend,
+		},
+		{
+			name: "referenced backend no longer exists",
+			setup: func(m *execTargetMocks) {
+				m.agent.EXPECT().Find(gomock.Any(), int64(37)).
+					Return(&agent_entity.Agent{ID: 37, AgentBackendID: 57}, nil)
+				m.backend.EXPECT().Find(gomock.Any(), int64(57)).Return(nil, nil)
+			},
+			errorCode: code.AgentBackendNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, m, svc := setupExecTargetTest(t)
+			tt.setup(m)
+
+			scope, err := svc.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{
+				AgentID:   37,
+				ProjectID: 47,
+			})
+
+			require.Nil(t, scope)
+			require.Error(t, err)
+			var httpErr *httputils.Error
+			require.True(t, errors.As(err, &httpErr))
+			assert.Equal(t, tt.errorCode, httpErr.Code)
+		})
+	}
+}
+
 func TestResolveLocalCommandScope_GivenInvalidTargetForms_WhenResolved_ThenRejectsWithoutRepositoryAccess(t *testing.T) {
 	tests := []struct {
 		name string
