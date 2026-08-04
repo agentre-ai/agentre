@@ -180,7 +180,12 @@ export type ChatStreamEvent = {
   connectionState?: SessionConnectionState;
   // 只有补齐落定(connectionState==="connected")那一发带这两个数:本次补齐按游标
   // 重放了多少条通知(caughtUpCount),以及补完后该会话还有多少个待决策没被回答
-  // (pendingDecisions)。转录区底部那枚跳转控件的全部文案来自它们。
+  // (pendingDecisions)。
+  //
+  // caughtUpCount 是**通知**条数,不是用户眼里的条数 —— daemon 对每个 agentruntime
+  // 事件都落一行日志(TextDelta / ThinkingDelta / UsageUpdate 全在内),一条长回复
+  // 就是上千条。它只用来判「这次重连确实漏掉了东西」;跳转控件上的条数由
+  // chat-panel-catchup-state 按转录行数现算。
   caughtUpCount?: number;
   pendingDecisions?: number;
 };

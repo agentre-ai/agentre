@@ -270,6 +270,7 @@ vi.mock("../chat-panel-context-usage", () => ({
 import { ChatPanel, computeTopVisibleAnchor } from "../chat-panel";
 import {
   __resetCatchUpStateForTesting,
+  openCatchUpWindow,
   recordCatchUp,
 } from "../chat-panel-catchup-state";
 import {
@@ -347,6 +348,18 @@ function transcriptScrollerWithDynamicHeight(
     get: scrollHeight,
   });
   return el;
+}
+
+/** 模拟「用户从底部往上翻」:先落到底部,再往上滚 —— 只有 scrollTop 变小才算上滚。 */
+function scrollUpFromBottom(el: HTMLElement, to = 1_240) {
+  act(() => {
+    el.scrollTop = 3_500;
+    fireEvent.scroll(el);
+  });
+  act(() => {
+    el.scrollTop = to;
+    fireEvent.scroll(el);
+  });
 }
 
 /** 构造 ChatSessionDetail 最小形状 */
@@ -502,27 +515,23 @@ describe("ChatPanel · 补齐落定与跳转控件 (R14)", () => {
     }));
   }
 
-  /** 模拟「用户从底部往上翻」:先落到底部,再往上滚 —— 只有 scrollTop 变小才算上滚。 */
-  function scrollUpFromBottom(el: HTMLElement, to = 1_240) {
-    act(() => {
-      el.scrollTop = 3_500;
-      fireEvent.scroll(el);
-    });
-    act(() => {
-      el.scrollTop = to;
-      fireEvent.scroll(el);
-    });
-  }
-
-  /** 补齐落定:后台一次性重放的内容到位 + 连接态那一发带回的条数摘要。 */
+  /**
+   * 补齐落定:掉线开窗 → 后台一次性重放的内容到位(每条消息一行)→ 连接态那一发。
+   * 重放的通知条数刻意与行数不同量级 —— 控件报的必须是后者。
+   */
   function catchUpLands(
     view: { rerender: (ui: React.ReactElement) => void },
     opts: { items: number; pending: number },
   ) {
     act(() => {
+      openCatchUpWindow(42);
+    });
+    act(() => {
       mockSessionStore.messages = messagesBatch(opts.items);
-      recordCatchUp(42, opts.items, opts.pending);
       view.rerender(<ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />);
+    });
+    act(() => {
+      recordCatchUp(42, opts.items * 100, opts.pending);
     });
   }
 
@@ -677,6 +686,125 @@ describe("ChatPanel · 补齐落定与跳转控件 (R14)", () => {
 
     expect(scroller.scrollTop).toBe(3_520);
     expect(screen.queryByTestId("back-to-bottom-button")).toBeNull();
+  });
+});
+
+// ─── R14 修复轮:控件的计量单位是转录行,不是通知条数 ─────────────────────────
+//
+// 「N 条新内容」里的 N 早先取的是 daemon 重放的**通知**条数 —— daemon 对每个
+// agentruntime 事件都落一行日志(TextDelta / ThinkingDelta / UsageUpdate 全在内)。
+// 断网两分钟、期间 agent 流式吐一条长回复,重连后控件写着「1206 条新内容」,而用户
+// 只多了一条助手消息。用户嘴里的「一条」是转录区里的一行,下面把计量单位钉在行上。
+describe("ChatPanel · 跳转控件按转录行计数 (R14 修复轮)", () => {
+  /** 控件文案里的数字。只比数字,免得把 zh/en 文案模板抄进断言。 */
+  function digitsIn(el: HTMLElement): string {
+    return (el.textContent ?? "").replace(/\D+/g, "");
+  }
+
+  /** 一条在飞的远端会话:用户问句 + 正在流式的那条助手消息。 */
+  function streamingSession(assistantBlocks: unknown[]) {
+    mockSessionStore.session = makeSession({ id: 42 });
+    mockSessionStore.messages = [
+      {
+        blocks: [{ text: "跑一下测试", type: "text" }],
+        createtime: 1,
+        id: 1,
+        role: "user",
+      },
+      { blocks: assistantBlocks, createtime: 2, id: 2, role: "assistant" },
+    ];
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 2,
+      name: "chat:event:42:2",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+  }
+
+  /** 断连期间攒下、重连后一次性重放的那一大批通知落进流里。 */
+  function replayDeltas(count: number) {
+    const store = useChatStreamsStore.getState();
+    for (let i = 0; i < count; i++) store.appendLiveText(42, 2, "字");
+  }
+
+  function replayToolRoundTrips(ids: string[]) {
+    const store = useChatStreamsStore.getState();
+    for (const toolUseId of ids) {
+      store.appendLiveToolUse(42, 2, { toolName: "Bash", toolUseId });
+      store.appendLiveToolResult(42, 2, { text: "ok", toolUseId });
+    }
+  }
+
+  it("Given a two-minute outage while one long reply streamed, When the catch-up replays 1206 notifications that land in three new transcript rows, Then the control says three", () => {
+    resetStore();
+    streamingSession([]);
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-rows" />,
+    );
+    scrollUpFromBottom(transcriptScroller(view.container));
+
+    act(() => {
+      openCatchUpWindow(42); // 通道掉了
+    });
+    act(() => {
+      replayDeltas(1_200);
+      replayToolRoundTrips(["t1", "t2", "t3"]);
+    });
+    act(() => {
+      recordCatchUp(42, 1_206, 0); // 补齐落定那一发
+    });
+
+    // 转录区多出的是「一段文字 + 三张工具卡」,占位行被文字行顶掉 —— 净增三行。
+    expect(digitsIn(screen.getByTestId("jump-to-latest-button"))).toBe("3");
+  });
+
+  // 补齐可以只是把内容追加进**已经存在**的那一行(还在流的助手消息吃掉全部 delta)。
+  // R14 说的是「补齐产生了新内容」,不是「产生了新行」——控件照常给一条回去的路,
+  // 但一个数不出来的数字不能编。
+  it("Given the catch-up only grew a row that was already there, When it lands, Then the control still surfaces and states no count", () => {
+    resetStore();
+    streamingSession([{ text: "回复已经开了个头", type: "text" }]);
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-rows" />,
+    );
+    scrollUpFromBottom(transcriptScroller(view.container));
+
+    act(() => {
+      openCatchUpWindow(42);
+    });
+    act(() => {
+      replayDeltas(1_200);
+    });
+    act(() => {
+      recordCatchUp(42, 1_200, 0);
+    });
+
+    const control = screen.getByTestId("jump-to-latest-button");
+    expect(control).toHaveAccessibleName("New content");
+    expect(digitsIn(control)).toBe("");
+  });
+
+  // 待决策的条数与转录行数是两笔账:后者可能一行都没多,前者仍然必须报出来 ——
+  // 断连期间埋进来的待决策不写在这里就等于没人知道。
+  it("Given a catch-up with no new rows but an unanswered decision, Then the pending count still shows", () => {
+    resetStore();
+    streamingSession([{ text: "回复已经开了个头", type: "text" }]);
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-rows" />,
+    );
+    scrollUpFromBottom(transcriptScroller(view.container));
+
+    act(() => {
+      openCatchUpWindow(42);
+    });
+    act(() => {
+      replayDeltas(600);
+    });
+    act(() => {
+      recordCatchUp(42, 600, 2);
+    });
+
+    expect(screen.getByTestId("jump-to-latest-pending")).toHaveTextContent("2");
   });
 });
 

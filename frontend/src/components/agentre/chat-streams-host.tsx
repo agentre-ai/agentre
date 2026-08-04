@@ -11,7 +11,7 @@ import { useSessionConnStore } from "@/stores/session-conn-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { isResolvedAskState } from "./ask-event-state";
-import { recordCatchUp } from "./chat-panel-catchup-state";
+import { openCatchUpWindow, recordCatchUp } from "./chat-panel-catchup-state";
 import { StreamSubscriber } from "./stream-subscriber";
 
 import type { chat_svc } from "../../../wailsjs/go/models";
@@ -412,9 +412,10 @@ export function ChatStreamsHost(): React.ReactElement | null {
 // (后端 chat_svc.ConnStateStreamName),把 connection_state 事件翻成 store 写入。
 // 卸载(= 该会话最后一条流结束)时清掉记录:留着旧的 reconnecting 会泄漏到下一轮。
 //
-// 补齐摘要(caughtUpCount / pendingDecisions)记在这里而不是 ChatPanel 上:补齐
-// 可能发生在用户切走路由、甚至这个 tab 还没打开的时候,记在会被销毁的组件上等于没记。
-// 它也不随本组件卸载而清 —— 那份摘要要活到用户真的回到转录区底部为止。
+// 补齐摘要记在这里而不是 ChatPanel 上:补齐可能发生在用户切走路由、甚至这个 tab
+// 还没打开的时候,记在会被销毁的组件上等于没记。它也不随本组件卸载而清 —— 那份
+// 摘要要活到用户真的回到转录区底部为止。断连与恢复这两发都经这里,补齐窗口的开与
+// 合因此也在同一处,不用第二个组件去猜「刚才那次断连是从哪一行开始的」。
 function SessionConnSubscriber({
   sessionId,
 }: {
@@ -428,13 +429,19 @@ function SessionConnSubscriber({
       streamName={`chat:conn:${sessionId}`}
       onEvent={(ev) => {
         if (ev.kind !== "connection_state" || !ev.connectionState) return;
+        // 补齐窗口的两端都在这里:跌出 connected 那一发开窗(快照此刻的转录行数),
+        // 回到 connected 那一发落定(做差)。caughtUpCount 只当闸门 —— 它是重放的
+        // 通知条数(一条长回复上千条),控件上的数字是行数差。
+        if (ev.connectionState === "connected") {
+          recordCatchUp(
+            sessionId,
+            ev.caughtUpCount ?? 0,
+            ev.pendingDecisions ?? 0,
+          );
+        } else {
+          openCatchUpWindow(sessionId);
+        }
         setConnState(sessionId, ev.connectionState);
-        // 只有补齐落定那一发带条数;其余帧两个数都是 0,recordCatchUp 自己不留摘要。
-        recordCatchUp(
-          sessionId,
-          ev.caughtUpCount ?? 0,
-          ev.pendingDecisions ?? 0,
-        );
       }}
     />
   );

@@ -577,6 +577,7 @@
     "scroll": {
       "backToBottom": "Back to bottom",
       "caughtUpCount": "{{count}} new",
+      "caughtUpSome": "New content",
       "jumpToLatest": "Jump to latest",
       "pendingCount": "{{count}} pending"
     },

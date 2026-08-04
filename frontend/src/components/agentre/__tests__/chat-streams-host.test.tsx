@@ -12,6 +12,7 @@ import { useSessionStatusStore } from "@/stores/session-status-store";
 import {
   __resetCatchUpStateForTesting,
   getCatchUp,
+  registerTranscriptRowCounter,
 } from "../chat-panel-catchup-state";
 import { ChatStreamsHost } from "../chat-streams-host";
 
@@ -462,16 +463,22 @@ describe("ChatStreamsHost", () => {
     );
   });
 
-  // R14 的上游一半:补齐落定那一发带着「重放了几条 / 还剩几个待决策」。它必须
-  // 在这个长存宿主上被记下来 —— 补齐可能发生在用户翻着历史、甚至切走路由的时候,
-  // 记在会随 tab 销毁的 panel 上就等于没记,用户回到转录区只看到内容凭空多了一截。
-  it("Given the channel comes back after a catch-up, When the connected frame lands, Then the host records the new-item and pending-decision counts", async () => {
+  // R14 的上游一半:断连与恢复这两发都经这个长存宿主 —— 补齐可能发生在用户翻着
+  // 历史、甚至切走路由的时候,记在会随 tab 销毁的 panel 上就等于没记,用户回到
+  // 转录区只看到内容凭空多了一截。
+  //
+  // 用户看到的数字是**转录行**数:掉线那一发开窗快照行数、补齐落定那一发做差。
+  // 拿 caughtUpCount(重放的通知条数,一条长回复上千条)当数字的实现在这里就红。
+  it("Given the channel comes back after a catch-up, When the connected frame lands, Then the host records the transcript rows gained, not the notifications replayed", async () => {
     useChatStreamsStore.getState().openStream({
       assistantMessageId: 1001,
       name: "chat:event:42:1001",
       sessionId: 42,
       streamStartedAt: Date.now(),
     });
+    // 生产里这个取数口由挂载中的 ChatPanel 注册。
+    let rows = 40;
+    const unregister = registerTranscriptRowCounter(42, () => rows);
 
     render(<ChatStreamsHost />);
     await waitFor(() =>
@@ -484,13 +491,23 @@ describe("ChatStreamsHost", () => {
     act(() => {
       handlerFor("chat:conn:42")({
         kind: "connection_state",
+        connectionState: "reconnecting",
+      });
+    });
+    // 断网两分钟:agent 吐了一条长回复,daemon 逐条落库并重放 1206 条通知,
+    // 转录区因此多出三行。
+    rows = 43;
+    act(() => {
+      handlerFor("chat:conn:42")({
+        kind: "connection_state",
         connectionState: "connected",
-        caughtUpCount: 12,
+        caughtUpCount: 1_206,
         pendingDecisions: 1,
       });
     });
 
-    expect(getCatchUp(42)).toEqual({ newItems: 12, pendingDecisions: 1 });
+    expect(getCatchUp(42)).toEqual({ newRows: 3, pendingDecisions: 1 });
+    unregister();
   });
 
   it("Given the channel merely drops, When the reconnecting frame lands, Then no catch-up summary is recorded", async () => {

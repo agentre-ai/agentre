@@ -53,6 +53,7 @@ import { cn } from "@/lib/utils";
 import { useSessionAttention } from "@/stores/attention-store";
 import { useClearedBackgroundTasksStore } from "@/stores/cleared-background-tasks-store";
 import {
+  sessionStreamMap,
   streamForMessage,
   useChatStreamsStore,
   type ChatBlockData,
@@ -78,6 +79,7 @@ import {
 import { ChatContextSidebar } from "./chat-context-sidebar";
 import {
   clearCatchUp,
+  registerTranscriptRowCounter,
   useCatchUpSummary,
   type CatchUpSummary,
 } from "./chat-panel-catchup-state";
@@ -99,6 +101,7 @@ import {
 } from "./background-tasks/flip-subagent-status";
 import { deriveTaskProgress } from "./task-progress/derive";
 import { TaskProgressBar } from "./task-progress/task-progress-bar";
+import { buildTranscriptRows } from "./transcript-rows";
 import type { AgentColor, AgentStatus } from "./types";
 import { agentTextColorClassName, statusConfig } from "./types";
 
@@ -410,6 +413,31 @@ function applyStreamError(
   return updated;
 }
 
+// liveContentByMessageId 把该会话此刻在流的内容摊成「assistant 消息 id → 流式内容」。
+// 渲染路径与补齐行数快照路径共用一份 —— 后者拿的是 store 的即时快照(见
+// registerTranscriptRowCounter 处的注释),两处若各拼各的,数出来的行与画出来的行
+// 就会在某个细节上分家。
+function liveContentByMessageId(
+  sessionStreams: ReadonlyMap<number, LiveStream> | null,
+): Map<number, TranscriptLiveContent> {
+  const out = new Map<number, TranscriptLiveContent>();
+  if (!sessionStreams) return out;
+  for (const s of sessionStreams.values()) {
+    out.set(s.assistantMessageId, {
+      liveTail: s.liveDelta,
+      liveThinking: s.liveThinking,
+      liveThinkingStartedAt: s.streamStartedAt,
+      liveBlocks: s.liveBlocks,
+      liveRetry: s.liveRetry,
+    });
+  }
+  return out;
+}
+
+// EMPTY_AUTONOMOUS_IDS:行数快照不关心「哪条消息是自主续轮」——那只影响首行要不要
+// 挂 banner,不改行数。渲染路径自己会算真值。
+const EMPTY_AUTONOMOUS_IDS: ReadonlySet<number> = new Set<number>();
+
 // TranscriptJumpControl 是转录区底部浮出的那枚控件。
 //
 // 没有未看的补齐时,它就是原来的「回到底部」圆钮;补齐把内容悄悄堆高之后,它长成
@@ -417,6 +445,10 @@ function applyStreamError(
 // 下面多了东西。补齐里还有没回答的待决策时再补一段「N 项待处理」:待决策一旦
 // 埋进上百条补齐内容中间,不写在这里就等于没人知道。
 // 那段必须是文字:状态色点只是修饰,颜色不能是信息的唯一载体(docs/design.md 无障碍)。
+//
+// newRows 为 0 的那一支同样浮出控件:补齐把上千条 delta 全追加进了还在流的那一行,
+// 行数没变但内容确实多了(R14 只要求「补齐产生了新内容」)。此时报不出条数,就只说
+// 有新内容 —— 与其编一个数字,不如少说一句。
 function TranscriptJumpControl({
   catchUp,
   onJump,
@@ -458,7 +490,9 @@ function TranscriptJumpControl({
     >
       <ArrowDown aria-hidden="true" />
       <span>
-        {t("chatPanel.scroll.caughtUpCount", { count: catchUp.newItems })}
+        {catchUp.newRows > 0
+          ? t("chatPanel.scroll.caughtUpCount", { count: catchUp.newRows })
+          : t("chatPanel.scroll.caughtUpSome")}
       </span>
       {catchUp.pendingDecisions > 0 ? (
         <span
@@ -957,20 +991,10 @@ function ChatPanel({
   // 逐条 assistant 消息的流式内容表 —— 多条流并存时各渲各的,喂给 ChatTranscript。
   // 不能只喂主流:后台任务完成的自主续轮与用户轮会重叠,只喂一条会让另一条瞬间
   // 掉回持久化态(用户可见症状:「已输出内容清空回退」,sess-1950)。
-  const liveByMessageId = React.useMemo(() => {
-    const out = new Map<number, TranscriptLiveContent>();
-    if (!sessionStreams) return out;
-    for (const s of sessionStreams.values()) {
-      out.set(s.assistantMessageId, {
-        liveTail: s.liveDelta,
-        liveThinking: s.liveThinking,
-        liveThinkingStartedAt: s.streamStartedAt,
-        liveBlocks: s.liveBlocks,
-        liveRetry: s.liveRetry,
-      });
-    }
-    return out;
-  }, [sessionStreams]);
+  const liveByMessageId = React.useMemo(
+    () => liveContentByMessageId(sessionStreams),
+    [sessionStreams],
+  );
   // 全部在流的 liveBlocks 拍平 —— 后台任务面板 / task-progress 是**会话级**视图,
   // 用户轮和后台流里起的任务都要收进来。
   const allLiveBlocks = React.useMemo(() => {
@@ -1267,7 +1291,35 @@ function ChatPanel({
   }, [saveBottomScrollPosition]);
 
   // ── 补齐落定后的「跳到最新」──
-  // 摘要由 ChatStreamsHost 在补齐落定那一发记下,这里只负责读与销账。
+  // 摘要由 ChatStreamsHost 在补齐落定那一发记下,这里只负责供转录行数、读与销账。
+  //
+  // 行数取数口:补齐窗口两端各调一次(掉线时快照、落定时做差),不是每帧算,所以
+  // 现场 build 一次即可。两个数据源的取法不同:
+  //   - messages 走 ref —— 它只在 reload 落定时换,慢一拍也是同一份;
+  //   - 在流的内容直接读 store 的 getState() —— 补齐落定那一发连接态事件到达时,
+  //     重放的内容早已进了 store 但 React 还没重渲,吃渲染期的 liveByMessageId
+  //     会数到补齐前的旧值,差出来恒等于 0。
+  // 这里不复现转录区的折叠(压缩前旧消息)与本地命令行:两者在窗口两端同增同减,
+  // 做差时抵消,补齐本身也产不出它们。
+  const messagesRef = React.useRef(messages);
+  React.useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  React.useEffect(() => {
+    if (sessionId <= 0) return;
+    return registerTranscriptRowCounter(
+      sessionId,
+      () =>
+        buildTranscriptRows({
+          displayMessages: messagesRef.current,
+          autonomousIds: EMPTY_AUTONOMOUS_IDS,
+          liveByMessageId: liveContentByMessageId(
+            sessionStreamMap(useChatStreamsStore.getState(), sessionId),
+          ),
+        }).rows.length,
+    );
+  }, [sessionId]);
+
   // 销账条件是「人回到了底部」而不是「点了控件」:自己滚回底部同样意味着补齐内容
   // 已经看过了,不销账的话下次往上翻会撞见一枚早就过期的控件。贴底时本就沿用既有的
   // 贴底跟随,控件也永远不出现(渲染条件与销账条件是同一个 showBackToBottom)。
