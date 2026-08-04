@@ -387,6 +387,66 @@ describe("AIChatInput command mode", () => {
     },
   );
 
+  it("Given two commands submitted in the same millisecond, When their execution scopes resolve in reverse order, Then history MRU follows submission order", async () => {
+    let resolveFirst!: (scope: LocalCommandHistoryScope) => void;
+    let resolveSecond!: (scope: LocalCommandHistoryScope) => void;
+    const firstScope = new Promise<LocalCommandHistoryScope>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondScope = new Promise<LocalCommandHistoryScope>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const onCommandSubmit = vi
+      .fn()
+      .mockReturnValueOnce(firstScope)
+      .mockReturnValueOnce(secondScope);
+    const recordSpy = vi.spyOn(localCommandHistoryStore, "record");
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const editorRef: RefObject<Editor | null> = { current: null };
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={onCommandSubmit}
+      />,
+    );
+    const editor = editorRef.current!;
+
+    act(() => {
+      editor.commands.insertContent("!first command");
+      pressEnter(editor);
+      editor.commands.insertContent("!second command");
+      pressEnter(editor);
+    });
+
+    await act(async () => {
+      resolveSecond(repoScope);
+      await secondScope;
+      resolveFirst(repoScope);
+      await firstScope;
+    });
+
+    expect(onCommandSubmit.mock.calls).toEqual([
+      ["first command"],
+      ["second command"],
+    ]);
+    expect(recordSpy.mock.calls).toEqual([
+      [repoScope, "second command", 101],
+      [repoScope, "first command", 100],
+    ]);
+
+    act(() => {
+      editor.commands.insertContent("!");
+    });
+    const options = await screen.findAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual([
+      "second command",
+      "first command",
+    ]);
+  });
+
   it("Given a dismissed history menu, When the query is unchanged, Then it stays closed until the command body changes", async () => {
     localCommandHistoryStore.record(repoScope, "git status", 10);
     localCommandHistoryStore.record(repoScope, "git stash", 20);
