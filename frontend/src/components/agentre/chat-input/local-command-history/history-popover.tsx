@@ -11,13 +11,26 @@ import type {
   LocalCommandHistoryMenuState,
 } from "./types";
 
+export function localCommandHistoryOptionId(
+  listboxId: string,
+  index: number,
+): string {
+  return `${listboxId}-option-${index}`;
+}
+
+export function localCommandHistoryClearOptionId(listboxId: string): string {
+  return `${listboxId}-clear-option`;
+}
+
 export function LocalCommandHistoryPopover({
   state,
+  listboxId,
   onPick,
   onHover,
   onClear,
 }: {
   state: LocalCommandHistoryMenuState;
+  listboxId: string;
   onPick: (entry: LocalCommandHistoryEntry) => void;
   onHover: (index: number) => void;
   onClear: () => void;
@@ -31,18 +44,21 @@ export function LocalCommandHistoryPopover({
       selectedIndex={state.selectedIndex}
       itemCount={state.items.length}
       ariaLabel={t("localCommandHistory.aria")}
+      listboxId={listboxId}
       footer={(activeRef) => {
         const active = state.selectedIndex === state.items.length;
         return (
-          <div className="mt-1 border-t border-border pt-1">
+          <div role="presentation" className="mt-1 border-t border-border pt-1">
             <Button
+              id={localCommandHistoryClearOptionId(listboxId)}
               type="button"
+              role="option"
               variant="ghost"
               size="sm"
               ref={active ? activeRef : undefined}
               tabIndex={-1}
               aria-label={t("localCommandHistory.clearCurrentScope")}
-              aria-current={active ? "true" : undefined}
+              aria-selected={active}
               className={cn(
                 "h-auto w-full justify-start rounded-sm px-2 py-1.5 text-xs",
                 active
@@ -65,6 +81,7 @@ export function LocalCommandHistoryPopover({
           const active = index === state.selectedIndex;
           return (
             <button
+              id={localCommandHistoryOptionId(listboxId, index)}
               key={entry.command}
               type="button"
               role="option"

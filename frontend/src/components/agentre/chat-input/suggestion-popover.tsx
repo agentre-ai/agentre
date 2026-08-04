@@ -13,6 +13,7 @@ type SuggestionPopoverProps = {
   selectedIndex: number;
   itemCount: number;
   ariaLabel: string;
+  listboxId?: string;
   testId?: string;
   className?: string;
   footer?: (activeRef: React.Ref<HTMLButtonElement>) => React.ReactNode;
@@ -27,6 +28,7 @@ export function SuggestionPopover({
   selectedIndex,
   itemCount,
   ariaLabel,
+  listboxId,
   testId,
   className,
   footer,
@@ -57,6 +59,7 @@ export function SuggestionPopover({
   if (!footer) {
     return (
       <div
+        id={listboxId}
         data-testid={testId}
         role="listbox"
         aria-label={ariaLabel}
@@ -69,10 +72,15 @@ export function SuggestionPopover({
   }
 
   return (
-    <div data-testid={testId} style={style} className={popoverClassName}>
-      <div role="listbox" aria-label={ariaLabel}>
-        {children(activeRef)}
-      </div>
+    <div
+      id={listboxId}
+      data-testid={testId}
+      role="listbox"
+      aria-label={ariaLabel}
+      style={style}
+      className={popoverClassName}
+    >
+      {children(activeRef)}
       {footer(activeRef)}
     </div>
   );

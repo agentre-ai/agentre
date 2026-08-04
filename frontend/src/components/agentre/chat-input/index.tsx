@@ -3,7 +3,9 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   type RefObject,
@@ -37,7 +39,11 @@ import {
   shouldIgnoreEditorShortcut,
   shouldStartInputHistory,
 } from "./keyboard";
-import { LocalCommandHistoryPopover } from "./local-command-history/history-popover";
+import {
+  localCommandHistoryClearOptionId,
+  localCommandHistoryOptionId,
+  LocalCommandHistoryPopover,
+} from "./local-command-history/history-popover";
 import { useLocalCommandHistoryMenu } from "./local-command-history/use-local-command-history-menu";
 import {
   Mention,
@@ -120,6 +126,8 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     },
     ref,
   ) {
+    const localCommandHistoryInstanceId = useId();
+    const localCommandHistoryListboxId = `local-command-history-listbox-${localCommandHistoryInstanceId.replace(/:/g, "")}`;
     const submitRef = useRef(onSubmit);
     const sendOnEnterRef = useRef(sendOnEnter);
     const onEmptyChangeRef = useRef(onEmptyChange);
@@ -415,6 +423,45 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
       commandHistoryKeyDownRef.current = commandHistoryMenu.onKeyDown;
     }, [commandHistoryMenu.onKeyDown]);
 
+    useLayoutEffect(() => {
+      if (!editor) return;
+      const editorDom = editor.view.dom;
+      const resetCombobox = () => {
+        editorDom.setAttribute("role", "textbox");
+        editorDom.removeAttribute("aria-expanded");
+        editorDom.removeAttribute("aria-controls");
+        editorDom.removeAttribute("aria-haspopup");
+        editorDom.removeAttribute("aria-activedescendant");
+      };
+
+      if (!commandHistoryMenu.state.open) {
+        resetCombobox();
+        return;
+      }
+
+      const activeDescendant =
+        commandHistoryMenu.state.selectedIndex ===
+        commandHistoryMenu.state.items.length
+          ? localCommandHistoryClearOptionId(localCommandHistoryListboxId)
+          : localCommandHistoryOptionId(
+              localCommandHistoryListboxId,
+              commandHistoryMenu.state.selectedIndex,
+            );
+      editorDom.setAttribute("role", "combobox");
+      editorDom.setAttribute("aria-expanded", "true");
+      editorDom.setAttribute("aria-controls", localCommandHistoryListboxId);
+      editorDom.setAttribute("aria-haspopup", "listbox");
+      editorDom.setAttribute("aria-activedescendant", activeDescendant);
+
+      return resetCombobox;
+    }, [
+      commandHistoryMenu.state.items.length,
+      commandHistoryMenu.state.open,
+      commandHistoryMenu.state.selectedIndex,
+      editor,
+      localCommandHistoryListboxId,
+    ]);
+
     // ── slash command menu 集成 ─────────────────────────────────────────────
     // 只在 backendType + onSlashSelect 同时具备时启用。useSlashMenu 监听 editor
     // selectionUpdate/update,实时检测触发位置;onKeyDown 同步给上面 handleKeyDown
@@ -471,6 +518,7 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
         <EditorContent editor={editor} />
         <LocalCommandHistoryPopover
           state={commandHistoryMenu.state}
+          listboxId={localCommandHistoryListboxId}
           onPick={commandHistoryMenu.pick}
           onHover={commandHistoryMenu.setSelectedIndex}
           onClear={commandHistoryMenu.clear}
