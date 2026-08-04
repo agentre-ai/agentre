@@ -28,8 +28,9 @@ var (
 )
 
 type Service struct {
-	selector *BackendSelector
-	emitter  Emitter
+	selector             *BackendSelector
+	emitter              Emitter
+	commandScopeResolver CommandScopeResolver
 
 	mu       sync.Mutex
 	sessions map[string]pty.Handle

@@ -44,5 +44,19 @@ func newTerminalService(appCtx context.Context) *terminal_svc.Service {
 	emitter := terminal_svc.EmitterFunc(func(_ context.Context, name string, payload any) {
 		wailsruntime.EventsEmit(appCtx, name, payload)
 	})
-	return terminal_svc.NewService(selector, emitter)
+	service := terminal_svc.NewService(selector, emitter)
+	service.SetCommandScopeResolver(func(
+		ctx context.Context,
+		req terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		scope, err := chat_svc.Chat().ResolveLocalCommandScope(
+			ctx,
+			&chat_svc.ResolveLocalCommandScopeRequest{SessionID: req.SessionID},
+		)
+		if err != nil {
+			return nil, err
+		}
+		return &terminal_svc.CommandScope{DeviceID: scope.DeviceID, Cwd: scope.Cwd}, nil
+	})
+	return service
 }
