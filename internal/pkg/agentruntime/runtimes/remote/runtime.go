@@ -40,6 +40,14 @@ type remoteSession struct {
 	id     int64
 	events chan agentruntime.Event
 	result *agentruntime.RunResult
+	// startSeq 是**开轮那一刻** daemon 通知日志里这条会话的高水位:本轮自己的通知
+	// 必然都比它新。它是这一轮在 seq 时间线上的位置 —— 而 runtime.run 这条 RPC 本身
+	// 不在那条时间线上(RunAck 不带 seq,日志载荷里也没有轮次身份),少了它就分不出
+	// 补齐回放上来的一条终态帧到底是谁的。见 handleRunResultDone 与 turnStartFloor。
+	//
+	// 0 表示未知(没装重连端口 / 老 daemon / 这一次没读到),此时守卫退化成今天的行为。
+	// 发布进 r.sessions 之前赋值,之后不再改写;读方一律在 r.mu 下。
+	startSeq int64
 
 	mu     sync.Mutex
 	closed bool
@@ -241,14 +249,14 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if err != nil {
 		return nil, nil, err
 	}
-	// R18:开轮前探一次这台 daemon 认不认补齐族 RPC。放在这里而不是断连时才探,
-	// 是因为断连时连接已经死了,那时候探不出任何东西 —— 会话会被吊在退避重连里,
-	// 而对老 daemon 正确的行为是立刻按今天的语义收尾。每条连接只探一次。
-	r.probeDurability(ctx)
+	// 开轮前读一眼日志高水位(顺带完成 R18 的能力探测),把这一轮钉在 seq 时间线上:
+	// 不比它新的终态帧都属于已经结束的轮次。见 turnStartFloor。
+	floor := r.turnStartFloor(ctx, req.SessionID)
 	sess := &remoteSession{
-		id:     req.SessionID,
-		events: make(chan agentruntime.Event, 64),
-		result: &agentruntime.RunResult{},
+		id:       req.SessionID,
+		events:   make(chan agentruntime.Event, 64),
+		result:   &agentruntime.RunResult{},
+		startSeq: floor,
 	}
 	r.mu.Lock()
 	r.sessions[req.SessionID] = sess
@@ -414,6 +422,21 @@ func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) 
 	}
 	r.mu.Lock()
 	sess, ok := r.sessions[frame.SessionID]
+	if ok && frame.Seq > 0 && frame.Seq <= sess.startSeq {
+		r.mu.Unlock()
+		// 补齐回放上来的、属于**已结束轮次**的终态帧:它在开轮之前就落库了,不可能是
+		// 这一轮的结果。放它进去会删掉会话表里当前这一轮、用旧结果覆盖它的 RunResult、
+		// 并 close 掉它的 events —— 用户刚发出的消息瞬间「结束」并带着上一轮的答案,
+		// 其后的实时帧则全部走下面 handleEvent 的「未知会话」被丢弃。
+		//
+		// 只挡终态帧:回放上来的其余通知仍照常交付(补齐本来就是要把漏掉的转录补回来),
+		// 而其中唯有终态帧带着「这一轮到此为止」的副作用。
+		logger.Ctx(ctx).Warn("remote runtime: runResultDone from an ended turn — ignored",
+			zap.Int64("sid", frame.SessionID),
+			zap.Int64("seq", frame.Seq),
+			zap.Int64("turnStartSeq", sess.startSeq))
+		return nil, nil
+	}
 	if ok {
 		delete(r.sessions, frame.SessionID)
 	}

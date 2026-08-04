@@ -769,35 +769,55 @@ func (r *Runtime) liveSessionIDs() []int64 {
 	return out
 }
 
-// ── 能力探测(R18)─────────────────────────────────────────────────────────
+// ── 开轮定位 + 能力探测(R18)───────────────────────────────────────────────
 
-// probeDurability 探一次这台 daemon 认不认补齐族 RPC。用 runtime.session.list ——
-// 规格明写它无副作用,而 attach 会改推送目标、pull 会推游标,都不能拿来探测。
+// turnStartFloor 在开轮前读一眼这条会话此刻在 daemon 通知日志里的高水位,交给
+// remoteSession.startSeq 当作**本轮**在 seq 时间线上的位置:凡是不比它新的通知,
+// 都是上一轮(或更早)留下的。
 //
-// 每条连接探一次(结果按代重置),只在装了重连端口时才探:没有重连端口就没有重连,
-// 探了也无处可用,还会给每个既有调用方凭空加一次 RPC。
-func (r *Runtime) probeDurability(ctx context.Context) {
+// 为什么非问一次不可:一轮的开始是 runtime.run 这条 RPC,而它不在通知的 seq 时间线上
+// —— RunAck 不带 seq,日志载荷里也没有轮次身份(seq 是日志行自己的列)。客户端因此没有
+// 别的办法把「我刚起的这一轮」与「日志里还没读到的那些旧通知」排出先后,而补齐回放的
+// 区间里恰恰可能整段夹着上一轮的终态帧(见 handleRunResultDone)。
+//
+// 顺带完成 R18 的能力探测:runtime.session.list 规格明写无副作用,是补齐族里唯一能拿来
+// 探测与读高水位的入口(attach 会改推送目标、pull 会推游标)。探测放在开轮前而不是断连
+// 时,是因为断连时连接已经死了,那时候探不出任何东西 —— 会话会被吊在退避重连里,而对
+// 老 daemon 正确的行为是立刻按今天的语义收尾。
+//
+// 读不到就返 0(老 daemon / 这一次没拨通):守卫退化成今天的行为,绝不会因为读不到就把
+// 一轮吊死 —— 高水位只可能偏小,永远不会把本轮自己的终态帧挡在外面。没装重连端口时连
+// 调用都不发:那些调用方没有重连,凭空给每一轮加一次 RPC 只是纯开销。
+func (r *Runtime) turnStartFloor(ctx context.Context, sid int64) int64 {
 	if r.reconnect == nil {
-		return
+		return 0
 	}
 	r.connMu.Lock()
 	st := r.durability
 	r.connMu.Unlock()
-	if st != durabilityUnknown {
-		return
+	if st == durabilityUnsupported {
+		return 0
 	}
 	var res wire.SessionListResult
-	err := r.conn().Call(ctx, wire.MethodSessionList, struct{}{}, &res)
-	switch {
+	switch err := r.conn().Call(ctx, wire.MethodSessionList, struct{}{}, &res); {
 	case err == nil:
 		r.setDurability(durabilitySupported)
 	case isMethodNotFound(err):
 		logger.Ctx(ctx).Warn("remote runtime: daemon predates session durability, disconnect will end the turn")
 		r.setDurability(durabilityUnsupported)
+		return 0
 	default:
 		// 网络抖动之类:留在 unknown,下一轮再探。一次拨不通不该把持久化关掉。
-		logger.Ctx(ctx).Debug("remote runtime: durability probe inconclusive", zap.Error(err))
+		logger.Ctx(ctx).Debug("remote runtime: session list before turn inconclusive", zap.Error(err))
+		return 0
 	}
+	for _, s := range res.Sessions {
+		if s.SessionID == sid {
+			return s.LatestSeq
+		}
+	}
+	// 清单里没有这条会话:它在这台 daemon 上还一条通知都没发过,高水位就是 0。
+	return 0
 }
 
 func (r *Runtime) setDurability(st durabilityState) {

@@ -572,6 +572,117 @@ func TestLiveFrame_SeqNotNewerThanCursor_Discarded(t *testing.T) {
 	assert.Empty(t, rig.conn1.methodCalls(wire.MethodSessionPull), "重复帧不该触发补洞")
 }
 
+// ── 回放到的旧轮次终态帧不得终结当前这一轮 ───────────────────────────────────
+
+// Given 客户端关掉又重开(游标停在上一轮中段,而那之后 daemon 上又跑完了几轮),
+// When 新一轮的第一条实时帧触发补洞、回放区间里夹着**已结束轮次**的 runResultDone,
+// Then 它既不关闭新这一轮的 events、也不拿旧结果覆盖它的 RunResult,其后的帧照常
+// 交付;只有新这一轮自己的终态帧才收尾。
+//
+// 破法是用户可见的:关掉 App、过一阵重开、发一条新消息 —— 这条消息瞬间「结束」并
+// 带着上一轮的答案,其后的实时帧全部走「未知会话」被丢弃。
+//
+// 区间里刻意放三条已结束轮次的终态帧:回放一整段历史是常态而非边角,守卫必须对整段
+// 成立,而不是只挡住紧挨着游标的那一条。
+func TestGapFill_ReplayedDoneOfEndedTurn_DoesNotEndCurrentTurn(t *testing.T) {
+	// 游标停在 3;4..9 是客户端离线期间落库的三轮尾巴,9 是开新一轮那一刻的高水位;
+	// 10/11 才是新这一轮自己的通知。
+	journal := []wire.JournaledNotification{
+		journaledEvent(4, "old-a"), journaledDone(5, "old-1"),
+		journaledEvent(6, "old-b"), journaledDone(7, "old-2"),
+		journaledEvent(8, "old-c"), journaledDone(9, "old-3"),
+		journaledEvent(10, "new-a"), journaledEvent(11, "new-b"),
+	}
+	conn := newFakeConn()
+	conn.script(func(method string, params, result any) error {
+		switch method {
+		case wire.MethodSessionList:
+			*(result.(*wire.SessionListResult)) = wire.SessionListResult{
+				Sessions: []wire.SessionSummary{{
+					SessionID:      rigSessionID,
+					LifecycleState: wire.SessionLifecycleIdle,
+					LatestSeq:      9,
+				}},
+			}
+		case wire.MethodRun:
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rigSessionID}
+		case wire.MethodSessionPull:
+			p := params.(wire.SessionPullParams)
+			out := wire.SessionPullResult{Cursor: p.Cursor}
+			for _, n := range journal {
+				if n.Seq > p.Cursor {
+					out.Notifications = append(out.Notifications, n)
+					out.Cursor = n.Seq
+				}
+			}
+			*(result.(*wire.SessionPullResult)) = out
+		}
+		return nil
+	})
+	cursor := &fakeCursorPort{}
+	cursor.setLoad(func(int64, string) (int64, bool, error) { return 3, true, nil })
+	rt := New(conn,
+		WithReconnect(ReconnectFunc(func(context.Context) (agentruntime.DaemonClientPort, string, error) {
+			return nil, "", ErrReconnectAbandoned
+		})),
+		WithDaemonFingerprint(rigFingerprint),
+		WithSessionCursor(cursor),
+		WithReconnectBackoff([]time.Duration{time.Millisecond}),
+		WithCursorFlushInterval(0),
+	)
+	t.Cleanup(func() { _ = rt.Close() })
+
+	events, result, err := rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode), ID: 1, Name: "x"},
+		SessionID: rigSessionID,
+		UserText:  "新一轮",
+	})
+	require.NoError(t, err)
+
+	// 新这一轮的第一条实时帧:对着停在 3 的游标是跳号,整段区间因此被重放回来。
+	ev, err := json.Marshal(agentruntime.TextDelta{Text: "new-a"})
+	require.NoError(t, err)
+	conn.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: rigSessionID, Event: ev, Seq: 10})
+
+	var texts []string
+	closedEarly := false
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case e, ok := <-events:
+				if !ok {
+					closedEarly = true
+					return true
+				}
+				if td, isText := e.(agentruntime.TextDelta); isText {
+					texts = append(texts, td.Text)
+				}
+			default:
+				return len(texts) >= 5
+			}
+		}
+	}, 3*time.Second, 5*time.Millisecond)
+
+	assert.False(t, closedEarly, "已结束轮次的终态帧不得关掉新这一轮的 events")
+	assert.Equal(t, []string{"old-a", "old-b", "old-c", "new-a", "new-b"}, texts,
+		"旧轮次的终态帧不得截断回放:它后面的帧照常按序交付")
+	assert.Empty(t, result.Model, "旧轮次的结果不得覆盖新这一轮的 RunResult")
+	assert.True(t, rt.hasSession(rigSessionID),
+		"新这一轮必须还在会话表里,否则其后的实时帧会被当作未知会话丢弃")
+
+	// 只有新这一轮自己的终态帧才收尾。
+	conn.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: rigSessionID, Model: "new-turn", Seq: 12,
+	})
+	select {
+	case _, ok := <-events:
+		assert.False(t, ok, "本轮自己的终态帧到达后 events 必须关闭")
+	case <-time.After(time.Second):
+		t.Fatal("本轮自己的终态帧没有收尾 events")
+	}
+	assert.Equal(t, "new-turn", result.Model, "收尾的必须是本轮自己的结果")
+}
+
 // ── 游标落库防抖:轮末那一条不能压在里面 ─────────────────────────────────────
 
 // Given 游标落库开了防抖,When 轮末终态帧到达,Then 游标当场落库,不等防抖窗口。
