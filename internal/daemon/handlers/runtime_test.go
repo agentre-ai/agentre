@@ -422,18 +422,23 @@ func (n *recordingOutbound) waitFor(t *testing.T, done func() bool, describe fun
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-// recordingSessions 扮演会话生命周期的写入口(handlers.SessionLifecyclePort)。它记
-// 一条有序 steps,因为生命周期的价值全在**次序**上:起手 running、轮末 idle,顺序颠倒
-// 的实现会让清单永远报错状态。
+type sessionKey struct{ peer, session string }
+
+// recordingSessions 扮演会话生命周期的写入口(handlers.SessionLifecyclePort)与读出口
+// (handlers.SessionQueryPort)—— 生产上也是同一个仓储的两侧(daemon.daemonSessionStore)。
+// 它记一条有序 steps,因为生命周期的价值全在**次序**上:起手 running、轮末 idle,顺序
+// 颠倒的实现会让清单永远报错状态;同一批会话行也按这个次序推进,供读侧查。
 type recordingSessions struct {
-	mu     sync.Mutex
-	starts []handlers.SessionRecord
-	log    []string
-	stepC  chan struct{}
+	mu      sync.Mutex
+	starts  []handlers.SessionRecord
+	log     []string
+	stepC   chan struct{}
+	rows    map[sessionKey]handlers.SessionRecord
+	findErr error
 }
 
 func newRecordingSessions() *recordingSessions {
-	return &recordingSessions{stepC: make(chan struct{}, 64)}
+	return &recordingSessions{stepC: make(chan struct{}, 64), rows: map[sessionKey]handlers.SessionRecord{}}
 }
 
 func (s *recordingSessions) Start(_ context.Context, rec handlers.SessionRecord) error {
@@ -441,21 +446,67 @@ func (s *recordingSessions) Start(_ context.Context, rec handlers.SessionRecord)
 	defer s.unlockAndSignal()
 	s.starts = append(s.starts, rec)
 	s.log = append(s.log, "start:"+rec.PeerSessionID)
+	s.rows[sessionKey{peer: rec.PeerFingerprint, session: rec.PeerSessionID}] = rec
 	return nil
 }
 
-func (s *recordingSessions) Running(_ context.Context, _, session string) error {
+func (s *recordingSessions) Running(_ context.Context, peer, session string) error {
 	s.mu.Lock()
 	defer s.unlockAndSignal()
 	s.log = append(s.log, "running:"+session)
+	s.setLifecycleLocked(peer, session, wire.SessionLifecycleRunning)
 	return nil
 }
 
-func (s *recordingSessions) Finish(_ context.Context, _, session string) error {
+func (s *recordingSessions) Finish(_ context.Context, peer, session string) error {
 	s.mu.Lock()
 	defer s.unlockAndSignal()
 	s.log = append(s.log, "finish:"+session)
+	s.setLifecycleLocked(peer, session, wire.SessionLifecycleIdle)
 	return nil
+}
+
+// Find / List 让 recordingSessions 同时充当**查询出口**(生产上是同一个仓储的两侧,
+// 见 daemon.daemonSessionStore):Start / Running / Finish 按同样的语义推进这批行,
+// 提交决策解不出会话时读的就是它们。
+func (s *recordingSessions) Find(_ context.Context, peer, session string) (*handlers.SessionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.findErr != nil {
+		return nil, s.findErr
+	}
+	row, ok := s.rows[sessionKey{peer: peer, session: session}]
+	if !ok {
+		return nil, nil
+	}
+	return &row, nil
+}
+
+func (s *recordingSessions) List(_ context.Context, peer string) ([]handlers.SessionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []handlers.SessionRecord
+	for k, row := range s.rows {
+		if k.peer == peer {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+// setLifecycle 直接摆一条会话行的生命周期状态。interrupted 只由 daemon 启动清扫
+// 写(R10),进程内没有触发点,只能这么造。
+func (s *recordingSessions) setLifecycle(peer, session, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setLifecycleLocked(peer, session, state)
+}
+
+func (s *recordingSessions) setLifecycleLocked(peer, session, state string) {
+	k := sessionKey{peer: peer, session: session}
+	row := s.rows[k]
+	row.PeerFingerprint, row.PeerSessionID, row.LifecycleState = peer, session, state
+	s.rows[k] = row
 }
 
 func (s *recordingSessions) unlockAndSignal() {
@@ -514,12 +565,14 @@ func setupRuntimeTest(t *testing.T, rt agentruntime.Runtime) (
 	notif := newRecordingOutbound()
 	gw := mock_handlers.NewMockGatewayPort(ctrl)
 	lookup := mock_handlers.NewMockLLMProviderLookupPort(ctrl)
+	sess := newRecordingSessions()
 	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
-		NotifyFor: notif.notifierFor,
-		Journal:   notif,
-		Sessions:  newRecordingSessions(),
-		Gateway:   gw,
-		Lookup:    lookup,
+		NotifyFor:    notif.notifierFor,
+		Journal:      notif,
+		Sessions:     sess,
+		SessionQuery: sess,
+		Gateway:      gw,
+		Lookup:       lookup,
 		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
 			return rt
 		},
@@ -538,15 +591,24 @@ func setupRuntimeTestWithSessions(t *testing.T, rt agentruntime.Runtime) (
 	t.Helper()
 	notif := newRecordingOutbound()
 	sess := newRecordingSessions()
-	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
-		NotifyFor: notif.notifierFor,
-		Journal:   notif,
-		Sessions:  sess,
+	h := newRuntimeHandlersOn(rt, sess, notif)
+	return context.Background(), notif, sess, h
+}
+
+// newRuntimeHandlersOn 造一个共用**同一批会话行**、但内存会话表各自独立的 handler ——
+// 生产上每条连接的 bindConn 都这么造一个(见 daemon.bindConn),而它们背后是同一个
+// Daemon 级的会话仓储。判别「轮次真的结束了」与「这个 handler 从没拥有过它」需要的
+// 正是这个形状。
+func newRuntimeHandlersOn(rt agentruntime.Runtime, sess *recordingSessions, notif *recordingOutbound) *handlers.RuntimeHandlers {
+	return handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+		NotifyFor:    notif.notifierFor,
+		Journal:      notif,
+		Sessions:     sess,
+		SessionQuery: sess,
 		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
 			return rt
 		},
 	})
-	return context.Background(), notif, sess, h
 }
 
 func mustJSON(t *testing.T, v any) json.RawMessage {
@@ -1338,6 +1400,108 @@ func TestRuntime_Submit_BackendNotRegistered_IsNotFoldedIntoSuccess(t *testing.T
 		code, ok := wire.CodeForSentinel(err)
 		require.True(t, ok)
 		assert.Equal(t, wire.ErrCodeNoActiveTurn, code)
+	})
+}
+
+// TestRuntime_Submit_SessionOwnedByAnotherHandler 覆盖 R8 幂等的另一条**边界**:
+// 会话在本 daemon 上还在跑,但提交落到了一个从没拥有过它的 RuntimeHandlers 上。
+//
+// 生产上这不是「多客户端」才有的事:registry 是全局一份,每条新接入的连接都把 13 个
+// runtime.* 重新 Register 一遍(覆盖),而一台桌面端本来就同时握着 2-3 条连接(连接池
+// 租约 / 设备监视心跳 / 刷新探测)。折成成功的话,桌面端 callSession 的「重挂后重试」
+// 永不触发,客户端把「已送达」报给前端而没有任何 waiter 被回答 —— 叠加 R9 的不设过期
+// 就是永久挂死。所以这一条必须如实报错,且错误码不变(callSession 只认 ErrNoActiveTurn)。
+func TestRuntime_Submit_SessionOwnedByAnotherHandler_IsNotFoldedIntoSuccess(t *testing.T) {
+	// live 会话:owner 起的那一轮不结束,会话行停在 running。
+	newPair := func(t *testing.T, sid int64) (*fullRT, *handlers.RuntimeHandlers, *recordingSessions) {
+		t.Helper()
+		rt := &fullRT{}
+		live := make(chan agentruntime.Event)
+		t.Cleanup(func() { close(live) })
+		rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+			return live, &agentruntime.RunResult{}, nil
+		}
+		sess := newRecordingSessions()
+		owner := newRuntimeHandlersOn(rt, sess, newRecordingOutbound())
+		runWithRT(t, owner, context.Background(), sid)
+		// 后接入那条连接的 handler:同一批会话行,自己的内存会话表是空的。
+		return rt, newRuntimeHandlersOn(rt, sess, newRecordingOutbound()), sess
+	}
+
+	t.Run("submitAnswer", func(t *testing.T) {
+		rt, other, _ := newPair(t, 11)
+		_, err := other.SubmitAnswer(context.Background(), wire.SubmitAnswerParams{SessionID: 11, RequestID: "r-1"})
+		require.Error(t, err, "会话还在跑,提交没送达就不能报成 OK")
+		code, ok := wire.CodeForSentinel(err)
+		require.True(t, ok, "过线错误码必须仍然是既有 sentinel")
+		assert.Equal(t, wire.ErrCodeNoActiveTurn, code, "桌面端 callSession 只认它才会重挂重试")
+		assert.Empty(t, rt.submitAnswerCalls, "没有任何 waiter 被回答")
+	})
+
+	t.Run("submitToolPermission", func(t *testing.T) {
+		rt, other, _ := newPair(t, 12)
+		_, err := other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 12, RequestID: "p-1"})
+		require.Error(t, err)
+		code, ok := wire.CodeForSentinel(err)
+		require.True(t, ok)
+		assert.Equal(t, wire.ErrCodeNoActiveTurn, code)
+		assert.Empty(t, rt.submitToolPermCalls)
+	})
+
+	// 接管之后就解得出会话了 —— 这正是客户端收到错误后走的那条路,证明报错是可行动的。
+	t.Run("adopt then retry succeeds", func(t *testing.T) {
+		rt, other, _ := newPair(t, 13)
+		other.Adopt(13, agent_backend_entity.TypeClaudeCode)
+		_, err := other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 13, RequestID: "p-1"})
+		require.NoError(t, err)
+		require.Len(t, rt.submitToolPermCalls, 1)
+	})
+
+	// 判别依据读不出来时维持 R8 的幂等:证不了会话还在跑,就不拿一个坏掉的库去换
+	// 用户面前一个假失败。
+	t.Run("lifecycle unreadable stays idempotent", func(t *testing.T) {
+		_, other, sess := newPair(t, 14)
+		sess.mu.Lock()
+		sess.findErr = errors.New("database is locked")
+		sess.mu.Unlock()
+		_, err := other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 14, RequestID: "p-1"})
+		require.NoError(t, err)
+	})
+}
+
+// TestRuntime_Submit_SessionNoLongerRunning_StaysIdempotent 钉住 R8 本身:轮次确已
+// 结束(idle)、或那一轮的子进程随上一个 daemon 进程消亡(interrupted)、或这条会话
+// 根本不在本 daemon 上(查无此行),提交一律照旧幂等返回成功 —— 重连的客户端分不清
+// 自己上一次提交到没到,报错会让它对着用户误报失败。
+func TestRuntime_Submit_SessionNoLongerRunning_StaysIdempotent(t *testing.T) {
+	states := map[string]string{
+		"idle":        wire.SessionLifecycleIdle,
+		"interrupted": wire.SessionLifecycleInterrupted,
+	}
+	for name, state := range states {
+		t.Run(name, func(t *testing.T) {
+			rt := &fullRT{}
+			sess := newRecordingSessions()
+			other := newRuntimeHandlersOn(rt, sess, newRecordingOutbound())
+			// 会话行在库里,但已经不是 running。
+			sess.setLifecycle("", "21", state)
+
+			_, err := other.SubmitAnswer(context.Background(), wire.SubmitAnswerParams{SessionID: 21, RequestID: "r-1"})
+			require.NoError(t, err)
+			_, err = other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 21, RequestID: "p-1"})
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("no such session", func(t *testing.T) {
+		rt := &fullRT{}
+		sess := newRecordingSessions()
+		other := newRuntimeHandlersOn(rt, sess, newRecordingOutbound())
+
+		_, err := other.SubmitAnswer(context.Background(), wire.SubmitAnswerParams{SessionID: 22, RequestID: "r-1"})
+		require.NoError(t, err)
+		_, err = other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 22, RequestID: "p-1"})
+		require.NoError(t, err)
 	})
 }
 

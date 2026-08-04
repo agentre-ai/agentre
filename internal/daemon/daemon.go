@@ -623,8 +623,11 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 		NotifyFor: d.notifierForPeer,
 		Journal:   d.journal,
 		Sessions:  d.sessionStore,
-		Gateway:   d.gateway,
-		Lookup:    NewProviderLookup(d.state),
+		// 同一个仓储的读侧:提交决策解不出会话时,靠它区分「轮次真的结束了」与
+		// 「这个 handler 从没拥有过这条会话」(见 idempotentSubmitResult)。
+		SessionQuery: d.sessionStore,
+		Gateway:      d.gateway,
+		Lookup:       NewProviderLookup(d.state),
 	})
 	// runtime.* 全族都过 trackSessionOwner:哪条连接为某会话发了 runtime.*,该会话的
 	// 通知此后就推给它(见 connRegistry 的接管规则)。

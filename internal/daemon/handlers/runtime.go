@@ -46,10 +46,15 @@ type RuntimeDeps struct {
 	Journal JournalPort
 	// Sessions 是会话生命周期的写入口,同样 Daemon 级。它落的那一行是重连客户端
 	// 拿会话清单的唯一来源,也是 daemon 启动时把非终态会话标成中断(R10)的对象。
-	Sessions   SessionLifecyclePort
-	Gateway    GatewayPort
-	Lookup     LLMProviderLookupPort
-	RuntimeFor func(agent_backend_entity.BackendType) agentruntime.Runtime
+	Sessions SessionLifecyclePort
+	// SessionQuery 是同一批会话行的读出口(Daemon 级)。提交决策解不出会话时,它是
+	// 「这条会话是真的结束了,还是只是不在**这个** handler 手里」的判别依据 ——
+	// 内存会话表答不了,因为 registry 是全局一份、每条新连接都会用一张空表覆盖它
+	// (见 idempotentSubmitResult)。留空即无判别依据,一律按 R8 折成成功。
+	SessionQuery SessionQueryPort
+	Gateway      GatewayPort
+	Lookup       LLMProviderLookupPort
+	RuntimeFor   func(agent_backend_entity.BackendType) agentruntime.Runtime
 }
 
 // RuntimeHandlers groups the runtime.* JSON-RPC handlers and owns the
@@ -576,17 +581,19 @@ func (h *RuntimeHandlers) SetPermissionMode(ctx context.Context, p wire.SetPermi
 func (h *RuntimeHandlers) SubmitAnswer(ctx context.Context, p wire.SubmitAnswerParams) (wire.OK, error) {
 	s, err := resolveSessionCapability[agentruntime.AskAnswerSink](h, p.SessionID)
 	if err != nil {
-		return idempotentSubmitResult(err)
+		return h.idempotentSubmitResult(ctx, p.SessionID, err)
 	}
-	return idempotentSubmitResult(s.SubmitAnswer(ctx, p.SessionID, p.RequestID, p.Questions, p.Answers, p.Skipped))
+	return h.idempotentSubmitResult(ctx, p.SessionID,
+		s.SubmitAnswer(ctx, p.SessionID, p.RequestID, p.Questions, p.Answers, p.Skipped))
 }
 
 func (h *RuntimeHandlers) SubmitToolPermission(ctx context.Context, p wire.SubmitToolPermissionParams) (wire.OK, error) {
 	s, err := resolveSessionCapability[agentruntime.ToolPermissionSink](h, p.SessionID)
 	if err != nil {
-		return idempotentSubmitResult(err)
+		return h.idempotentSubmitResult(ctx, p.SessionID, err)
 	}
-	return idempotentSubmitResult(s.SubmitToolPermission(ctx, p.SessionID, p.RequestID, p.Allow, p.AlwaysAllowSession, p.DenyReason))
+	return h.idempotentSubmitResult(ctx, p.SessionID,
+		s.SubmitToolPermission(ctx, p.SessionID, p.RequestID, p.Allow, p.AlwaysAllowSession, p.DenyReason))
 }
 
 // idempotentSubmitResult folds "waiter no longer exists" errors into a
@@ -604,17 +611,54 @@ func (h *RuntimeHandlers) SubmitToolPermission(ctx context.Context, p wire.Submi
 // 都报成 OK,而没有任何 waiter 被回答 —— 叠加 R9 的不设过期,会话就此永久挂死,客户端
 // 与运维两边都看不到任何异常。它虽然也是「这条会话此刻没有活的一轮」,但成因是接线
 // 故障而不是 R8 描述的那两种正常情况。
-func idempotentSubmitResult(err error) (wire.OK, error) {
+//
+// ErrNoActiveTurn 同理不能无条件折叠:registry 是全局一份,每条新接入的连接都把 13 个
+// runtime.* 重新 Register 一遍(覆盖),所以只要桌面端的心跳 / 刷新那几条连接里任意一条
+// 在会话开跑之后接入,提交就落到一个**从没拥有过这条会话**的 RuntimeHandlers 上、解不出
+// 会话。它和「轮次真的结束了」共用同一个 sentinel,却是两件事:后者按 R8 折成成功,前者
+// 必须如实报错,桌面端 callSession 才会重挂一次再重试(不报错 = 客户端把「已送达」报给
+// 前端,而没有任何 waiter 被回答,叠加 R9 的不设过期 = 永久挂死)。
+//
+// 判别依据是 daemon 自己的会话生命周期行(sessionRunningHere):它是 Daemon 级的、
+// 不随连接生灭,正好答得了内存会话表答不了的那个问题。
+func (h *RuntimeHandlers) idempotentSubmitResult(ctx context.Context, sid int64, err error) (wire.OK, error) {
 	if err == nil {
 		return wire.OK{}, nil
 	}
 	if errors.Is(err, errBackendUnwired) {
 		return wire.OK{}, err
 	}
-	if errors.Is(err, agentruntime.ErrNoActiveTurn) || errors.Is(err, agentruntime.ErrWaiterNotFound) {
+	if errors.Is(err, agentruntime.ErrWaiterNotFound) {
+		return wire.OK{}, nil
+	}
+	if errors.Is(err, agentruntime.ErrNoActiveTurn) {
+		if h.sessionRunningHere(ctx, sid) {
+			return wire.OK{}, err
+		}
 		return wire.OK{}, nil
 	}
 	return wire.OK{}, err
+}
+
+// sessionRunningHere 回答「这条会话此刻在本 daemon 上是不是还在跑一轮」。
+//
+// 只认 running:idle(那一轮已经结束)、interrupted(子进程随上一个 daemon 进程消亡,
+// R10)、以及查无此行(从没在这台 daemon 上跑过,或属于别的对端 —— 会话 id 是各客户端
+// 本地自增的、必然重号,所以查询一律带对端指纹,R16)都是 R8 说的「没什么可做的了」。
+//
+// 无判别依据时(没接查询出口 / 读不出来)一律回 false:只有能**证明**会话仍在跑时才
+// 把错误抛给客户端,证不了就维持 R8 的幂等,不拿一个读不出来的库去换用户面前一个假失败。
+func (h *RuntimeHandlers) sessionRunningHere(ctx context.Context, sid int64) bool {
+	if h.deps.SessionQuery == nil {
+		return false
+	}
+	peer := peerFingerprint(ctx)
+	row, err := h.deps.SessionQuery.Find(ctx, peer, strconv.FormatInt(sid, 10))
+	if err != nil {
+		log.Printf("runtime.submit: read session lifecycle failed sid=%d peer=%q err=%v", sid, peer, err)
+		return false
+	}
+	return row != nil && row.LifecycleState == wire.SessionLifecycleRunning
 }
 
 func (h *RuntimeHandlers) GetGoal(ctx context.Context, p wire.GoalParams) (wire.GoalResult, error) {

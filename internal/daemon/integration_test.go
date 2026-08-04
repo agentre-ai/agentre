@@ -771,6 +771,60 @@ func bootGatedRig(t *testing.T, r *gatedBackendRunner) *pairedTestRig {
 	return rig
 }
 
+// approvalBackendRunner 是 gatedBackendRunner 再加一个**审批协议**:它记下真正送达
+// backend 的每一次工具审批提交。用它才能把「daemon 报了成功」与「waiter 真被回答了」
+// 分开看 —— 这两件事分家正是静默挂死的定义。
+type approvalBackendRunner struct {
+	before []agentruntime.Event
+	gate   <-chan struct{}
+	after  []agentruntime.Event
+
+	mu        sync.Mutex
+	delivered []string
+}
+
+func (*approvalBackendRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{}
+}
+
+func (a *approvalBackendRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event, 1)
+	go func() {
+		defer close(ch)
+		for _, ev := range a.before {
+			ch <- ev
+			time.Sleep(5 * time.Millisecond)
+		}
+		<-a.gate
+		for _, ev := range a.after {
+			ch <- ev
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	return ch, &agentruntime.RunResult{}, nil
+}
+
+func (a *approvalBackendRunner) SubmitToolPermission(_ context.Context, _ int64, requestID string, _, _ bool, _ string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.delivered = append(a.delivered, requestID)
+	return nil
+}
+
+func (a *approvalBackendRunner) deliveredIDs() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.delivered...)
+}
+
+// bootApprovalRig 起一个 rig,并把 backend 换成实现了审批协议的 approvalBackendRunner。
+func bootApprovalRig(t *testing.T, r *approvalBackendRunner) *pairedTestRig {
+	t.Helper()
+	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	t.Cleanup(agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, r))
+	return rig
+}
+
 // awaitText 等下一条 TextDelta 并断言文本,超时即失败(会话被推去了别处 / 挂起时就是
 // 这个表现:客户端既没有错误也没有事件,只是永远收不到)。
 func awaitText(t *testing.T, events <-chan agentruntime.Event, want string) {
@@ -855,7 +909,12 @@ func TestIntegration_SameDeviceConnClosingDoesNotSuspendRunningSession(t *testin
 // 否则同指纹的另一条连接随便发一条会被拒的 runtime.*(会话 id 不存在于本 daemon、
 // backend 不支持该能力、参数非法……)就能把正在跑的会话的推送整个抢过去:它不消费,
 // 发起会话的那条从此一条也收不到,既没有错误也没有 seq 跳号 —— 正是本任务要消灭的那个
-// 症状。这里用「backend 不实现 Aborter 的 runtime.abort」当那条被拒的调用。
+// 症状。
+//
+// 这里那条被拒的调用是「第二条连接对一条它从不拥有的会话发 runtime.abort」:第二条连接
+// 的 bindConn 已经把 13 个 runtime.* 重新注册进共享 registry(rpc/registry.go 的 Register
+// 是覆盖),所以 abort 派发到的是**它自己**那张空会话表的 RuntimeHandlers,解不出会话 →
+// ErrNoActiveTurn。错误码一起钉住,免得哪天派发换了目标、拒绝的理由变了而用例照旧过。
 func TestIntegration_RejectedRuntimeCallDoesNotSeizeSessionOwnership(t *testing.T) {
 	gate := make(chan struct{})
 	rig := bootGatedRig(t, &gatedBackendRunner{
@@ -871,8 +930,76 @@ func TestIntegration_RejectedRuntimeCallDoesNotSeizeSessionOwnership(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var res map[string]any
-	require.Error(t, second.Call(ctx, wire.MethodAbort, map[string]any{"sessionId": 802}, &res),
-		"gatedBackendRunner does not implement Aborter — the daemon must reject this call")
+	abortErr := second.Call(ctx, wire.MethodAbort, map[string]any{"sessionId": 802}, &res)
+	require.Error(t, abortErr,
+		"第二条连接的 handler 从不拥有 802 —— daemon 必须拒了这一条")
+	require.ErrorIs(t, wire.FromJSONRPCError(abortErr), agentruntime.ErrNoActiveTurn,
+		"拒绝的理由就是「这个 handler 解不出会话」")
+
+	close(gate)
+
+	awaitText(t, events, "after")
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
+}
+
+// TestIntegration_SubmitToolPermissionOnUnownedHandlerIsNotReportedAsDelivered 回归:
+// 提交工具审批落到一个**不拥有该会话**的 RuntimeHandlers 时,daemon 不能把它折成成功。
+//
+// 生产形态(评审在真环境证过):一台桌面端同时握着 2-3 条同指纹连接(连接池租约 /
+// 设备监视心跳 / 刷新探测)。registry 是全局一份,而每条新连接的 bindConn 都把 13 个
+// runtime.* 重新 Register 一遍(覆盖),所以只要**任意**一条连接在会话开跑之后接入,
+// 此后所有 runtime.* 就都派发到它那张空会话表的 handler 上。
+//
+// 此时 submitToolPermission 解不出会话 → ErrNoActiveTurn,若被 R8 的幂等一并折成
+// wire.OK:错误到不了 wire,桌面端 callSession 的「重挂后重试」永不触发,客户端把
+// 「已送达」报给前端,而没有任何 waiter 被回答 —— 叠加 R9 的不设过期,会话永久挂死,
+// 没有错误、没有 seq 跳号。所以这里钉住两层:daemon 那一层必须如实报错、且 backend
+// 一次也没收到;桌面端那一层(真 *remote.Runtime,重挂重试原封不动)必须因此把这条
+// 决策真的送到 waiter 手上。
+func TestIntegration_SubmitToolPermissionOnUnownedHandlerIsNotReportedAsDelivered(t *testing.T) {
+	gate := make(chan struct{})
+	be := &approvalBackendRunner{
+		before: []agentruntime.Event{agentruntime.TextDelta{Text: "before"}},
+		gate:   gate,
+		after:  []agentruntime.Event{agentruntime.TextDelta{Text: "after"}, agentruntime.Done{}},
+	}
+	rig := bootApprovalRig(t, be)
+
+	// 会话跑在一条**带重挂能力**的桌面端 runtime 上(生产上 chat_svc 就这么接:
+	// remote.New(lease.Client(), WithReconnect(...)))。连接自始至终是活的,重连端口
+	// 只是让 callSession 的重挂重试生效 —— 真被调用就说明用例走错了路。
+	rt := remote.New(rig.cli,
+		remote.WithDaemonFingerprint(rpc.DaemonFingerprint(rig.d.state.DaemonInstanceUUID)),
+		remote.WithReconnect(remote.ReconnectFunc(func(context.Context) (agentruntime.DaemonClientPort, string, error) {
+			return nil, "", errors.New("连接一直是活的,这条用例不该触发重连")
+		})),
+	)
+	t.Cleanup(func() { _ = rt.Close() })
+
+	events, _ := rig.startRunOn(t, rt, 803)
+	awaitText(t, events, "before") // 会话确实在跑,推送落在发起它的这条连接上
+
+	// 设备监视心跳那条连接接入并留着 —— 它的 bindConn 覆盖了 registry 里的 runtime.*。
+	rig.connectSameDevice(t)
+
+	// 第一层:裸 RPC 直接问 daemon 要答案。提交仍走**发起会话的那条**连接(真机上就是
+	// 连接池那条),但派发已经不在它手里了 —— daemon 必须报错,而不是静默成功。
+	var ok wire.OK
+	err := callRig(t, rig.cli, wire.MethodSubmitToolPermission,
+		wire.SubmitToolPermissionParams{SessionID: 803, RequestID: "p-0", Allow: true}, &ok)
+	require.Error(t, err,
+		"会话还在跑却没落到拥有它的 handler 上:错误必须传回客户端让重挂后重试生效,不能静默成功")
+	require.ErrorIs(t, wire.FromJSONRPCError(err), agentruntime.ErrNoActiveTurn,
+		"过线错误码必须仍是 ErrNoActiveTurn —— 桌面端 callSession 只认它才会重挂重试")
+	assert.Empty(t, be.deliveredIDs(), "报错的这一次没有任何 waiter 被回答")
+
+	// 第二层:同样的处境交给真 *remote.Runtime。它自己重挂一次再重试,所以调用方看到
+	// 成功 —— 而这一次是**真的**送到了 backend,不是 daemon 折出来的成功。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, rt.SubmitToolPermission(ctx, 803, "p-1", true, false, ""))
+	assert.Equal(t, []string{"p-1"}, be.deliveredIDs(),
+		"桌面端报了成功,waiter 就必须真的被回答 —— 这两件事分家就是那个永久挂死")
 
 	close(gate)
 
