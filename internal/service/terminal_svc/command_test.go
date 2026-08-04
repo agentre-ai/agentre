@@ -5,9 +5,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/agentre-ai/agentre/internal/pkg/pty"
 	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
@@ -61,8 +65,10 @@ func TestService_RunCommand_GivenResolvedTarget_WhenStarted_ThenResolvesOnceOpen
 		return wantScope, nil
 	})
 	defer svc.Shutdown()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
 
-	response, err := svc.RunCommand(context.Background(), terminal_svc.RunCommandRequest{
+	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
 		TerminalID: "terminal-1",
 		SessionID:  71,
 		Command:    "go test ./...",
@@ -76,9 +82,10 @@ func TestService_RunCommand_GivenResolvedTarget_WhenStarted_ThenResolvesOnceOpen
 	assert.Empty(t, response.StartError)
 	assert.Equal(t, 1, resolveCalls)
 	assert.Equal(t, 1, factoryCalls)
+	assert.Equal(t, 0, logs.Len())
 }
 
-func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeAndStartErrorWithoutRetry(t *testing.T) {
+func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeStartErrorAndOneRedactedWarning(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -104,8 +111,10 @@ func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeAn
 		return wantScope, nil
 	})
 	defer svc.Shutdown()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
 
-	response, err := svc.RunCommand(context.Background(), terminal_svc.RunCommandRequest{
+	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
 		TerminalID: "terminal-2",
 		SessionID:  72,
 		Command:    "make check",
@@ -119,6 +128,18 @@ func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeAn
 	assert.Equal(t, startErr.Error(), response.StartError)
 	assert.Equal(t, 1, resolveCalls)
 	assert.Equal(t, 1, factoryCalls)
+	require.Equal(t, 1, logs.Len())
+	entry := logs.All()[0]
+	assert.Equal(t, zapcore.WarnLevel, entry.Level)
+	assert.Equal(t, "terminal_svc.RunCommand: open command failed", entry.Message)
+	assert.Equal(t, map[string]any{
+		"sessionId":  int64(72),
+		"terminalId": "terminal-2",
+		"deviceId":   "device-9",
+		"error":      startErr.Error(),
+	}, entry.ContextMap())
+	assert.NotContains(t, entry.Message, "make check")
+	assert.NotContains(t, entry.Message, "/remote/current")
 }
 
 func TestService_RunCommand_GivenResolverUnavailable_WhenStarted_ThenReturnsErrorWithoutPanicOrLaunch(t *testing.T) {
@@ -196,8 +217,10 @@ func TestService_RunCommand_GivenResolutionFailure_WhenStarted_ThenReturnsRPCErr
 		return nil, resolveErr
 	})
 	defer svc.Shutdown()
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
 
-	response, err := svc.RunCommand(context.Background(), terminal_svc.RunCommandRequest{
+	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
 		TerminalID: "terminal-3",
 		SessionID:  73,
 		Command:    "pwd",
@@ -209,4 +232,5 @@ func TestService_RunCommand_GivenResolutionFailure_WhenStarted_ThenReturnsRPCErr
 	require.ErrorIs(t, err, resolveErr)
 	assert.Equal(t, 1, resolveCalls)
 	assert.Equal(t, 0, factoryCalls)
+	assert.Equal(t, 0, logs.Len())
 }

@@ -3,6 +3,9 @@ package terminal_svc
 import (
 	"context"
 	"errors"
+
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 )
 
 var (
@@ -65,8 +68,13 @@ func (s *Service) RunCommand(ctx context.Context, req RunCommandRequest) (*RunCo
 	if err := s.OpenCommand(
 		ctx, req.TerminalID, scope.DeviceID, scope.Cwd, req.Command, req.Cols, req.Rows,
 	); err != nil {
+		logger.Ctx(ctx).Warn("terminal_svc.RunCommand: open command failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.String("terminalId", req.TerminalID),
+			zap.String("deviceId", scope.DeviceID),
+			zap.Error(err))
 		response.StartError = err.Error()
-		return response, nil //nolint:nilerr // caller receives the start failure with the resolved scope
+		return response, nil
 	}
 	return response, nil
 }
