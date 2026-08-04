@@ -22,10 +22,11 @@ type remoteCloseClient struct {
 	closeResults []error
 }
 
-func (c *remoteCloseClient) Call(_ context.Context, method string, _ any, out any) error {
+func (c *remoteCloseClient) Call(_ context.Context, method string, params any, out any) error {
 	switch method {
 	case "terminal.open":
-		*(out.(*protocol.TerminalOpenResult)) = protocol.TerminalOpenResult{TerminalID: "daemon-terminal-1"}
+		terminalID := params.(protocol.TerminalOpenParams).TerminalID
+		*(out.(*protocol.TerminalOpenResult)) = protocol.TerminalOpenResult{TerminalID: terminalID}
 	case "terminal.close":
 		call := int(c.closeCalls.Add(1))
 		if call <= len(c.closeResults) {
@@ -35,13 +36,12 @@ func (c *remoteCloseClient) Call(_ context.Context, method string, _ any, out an
 	return nil
 }
 
-func (c *remoteCloseClient) SubscribeData(string) <-chan protocol.TerminalDataEvent {
-	return c.data
+func (c *remoteCloseClient) Subscribe(string) remote.Subscription {
+	return remote.Subscription{Data: c.data, Exit: c.exit}
 }
 
-func (c *remoteCloseClient) SubscribeExit(string) <-chan protocol.TerminalExitEvent {
-	return c.exit
-}
+func (c *remoteCloseClient) Unsubscribe(string, remote.Subscription) {}
+func (c *remoteCloseClient) Abort()                                  {}
 
 func TestService_GivenRunningRemoteCommandWhenClosedThenEmitsKilledExitAndCleansLifecycle(t *testing.T) {
 	client := &remoteCloseClient{

@@ -130,6 +130,10 @@ func (s *Service) open(
 		}
 	}
 
+	// The already-allocated desktop identity must reach a remote backend before
+	// terminal.open so it can subscribe and cancel under that same ID. Local
+	// backends intentionally ignore this runtime-only field.
+	spec.TerminalID = terminalID
 	h, err := backend.Open(attempt.ctx, spec)
 
 	// Atomically hand ownership from the start attempt to the live session.

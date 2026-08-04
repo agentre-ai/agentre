@@ -125,7 +125,8 @@ func TestService_RunCommand_GivenResolvedTarget_WhenCommandExits_ThenLogsOneReda
 	localBackend := mocks.NewMockPTYBackend(ctrl)
 	remoteBackend := mocks.NewMockPTYBackend(ctrl)
 	remoteBackend.EXPECT().Open(gomock.Any(), pty.Spec{
-		Cwd: sensitiveCwd, Command: sensitiveCommand, Cols: 100, Rows: 30,
+		TerminalID: "terminal-1",
+		Cwd:        sensitiveCwd, Command: sensitiveCommand, Cols: 100, Rows: 30,
 	}).Return(newCompletedCommandHandle(sensitiveOutput, pty.ExitInfo{
 		Code: 17, Reason: "natural", Msg: sensitiveExitMessage,
 	}), nil).Times(1)
@@ -208,7 +209,7 @@ func TestService_Open_GivenInteractiveTerminal_WhenItExits_ThenLogsNoCommandLife
 
 	localBackend := mocks.NewMockPTYBackend(ctrl)
 	localBackend.EXPECT().Open(gomock.Any(), pty.Spec{
-		Cwd: "/private/interactive-cwd", Cols: 80, Rows: 24,
+		TerminalID: "interactive-1", Cwd: "/private/interactive-cwd", Cols: 80, Rows: 24,
 	}).Return(newCompletedCommandHandle([]byte("private interactive output"), pty.ExitInfo{
 		Code: 0, Reason: "natural", Msg: "private interactive exit detail",
 	}), nil).Times(1)
@@ -300,7 +301,8 @@ func TestService_RunCommand_GivenStartFailure_WhenStarted_ThenLogsSafeStageAndCa
 			remoteBackend := mocks.NewMockPTYBackend(ctrl)
 			if tt.startStage == "ptyOpen" {
 				remoteBackend.EXPECT().Open(gomock.Any(), pty.Spec{
-					Cwd: sensitiveCwd, Command: sensitiveCommand, Cols: 80, Rows: 24,
+					TerminalID: "terminal-2",
+					Cwd:        sensitiveCwd, Command: sensitiveCommand, Cols: 80, Rows: 24,
 				}).Return(nil, tt.startErr).Times(1)
 			}
 			factoryCalls := 0
@@ -373,7 +375,8 @@ func TestService_RunCommand_GivenClosePreemptsCancellationIgnoringOpen_WhenBacke
 	openCtxCh := make(chan context.Context, 1)
 	proceed := make(chan struct{})
 	remoteBackend.EXPECT().Open(gomock.Any(), pty.Spec{
-		Cwd: wantScope.Cwd, Command: sensitiveCommand, Cols: 80, Rows: 24,
+		TerminalID: "terminal-preempted",
+		Cwd:        wantScope.Cwd, Command: sensitiveCommand, Cols: 80, Rows: 24,
 	}).DoAndReturn(func(openCtx context.Context, _ pty.Spec) (pty.Handle, error) {
 		openCtxCh <- openCtx
 		<-proceed

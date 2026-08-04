@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentre-ai/agentre/internal/pkg/jsonrpc"
 	"github.com/agentre-ai/agentre/internal/pkg/pty"
 	"github.com/agentre-ai/agentre/internal/pkg/pty/remote"
 	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
@@ -18,31 +19,156 @@ import (
 )
 
 type fakeClient struct {
-	openParams chan protocol.TerminalOpenParams
-	dataPush   chan protocol.TerminalDataEvent
-	exitPush   chan protocol.TerminalExitEvent
-	openErr    error
-	closeCalls atomic.Int32
+	openParams       chan protocol.TerminalOpenParams
+	closeParams      chan protocol.TerminalCloseParams
+	dataPush         chan protocol.TerminalDataEvent
+	exitPush         chan protocol.TerminalExitEvent
+	openErr          error
+	responseID       string
+	closeCalls       atomic.Int32
+	subscribeCalls   atomic.Int32
+	unsubscribeCalls atomic.Int32
+	abortCalls       atomic.Int32
 }
 
 func (f *fakeClient) Call(_ context.Context, method string, params any, out any) error {
 	switch method {
 	case "terminal.open":
-		f.openParams <- params.(protocol.TerminalOpenParams)
+		op := params.(protocol.TerminalOpenParams)
+		f.openParams <- op
 		if f.openErr != nil {
 			return f.openErr
 		}
-		*(out.(*protocol.TerminalOpenResult)) = protocol.TerminalOpenResult{TerminalID: "remote-1"}
+		responseID := f.responseID
+		if responseID == "" {
+			responseID = op.TerminalID
+		}
+		*(out.(*protocol.TerminalOpenResult)) = protocol.TerminalOpenResult{TerminalID: responseID}
 	case "terminal.close":
 		f.closeCalls.Add(1)
+		if f.closeParams != nil {
+			f.closeParams <- params.(protocol.TerminalCloseParams)
+		}
 	}
 	return nil
 }
-func (f *fakeClient) SubscribeData(_ string) <-chan protocol.TerminalDataEvent {
-	return f.dataPush
+
+func (f *fakeClient) Subscribe(_ string) remote.Subscription {
+	f.subscribeCalls.Add(1)
+	return remote.Subscription{Data: f.dataPush, Exit: f.exitPush}
 }
-func (f *fakeClient) SubscribeExit(_ string) <-chan protocol.TerminalExitEvent {
-	return f.exitPush
+
+func (f *fakeClient) Unsubscribe(_ string, _ remote.Subscription) {
+	f.unsubscribeCalls.Add(1)
+}
+
+func (f *fakeClient) Abort() { f.abortCalls.Add(1) }
+
+type synchronousOpenClient struct {
+	data           chan protocol.TerminalDataEvent
+	exit           chan protocol.TerminalExitEvent
+	subscribed     atomic.Bool
+	subscribeCalls atomic.Int32
+}
+
+func newSynchronousOpenClient() *synchronousOpenClient {
+	return &synchronousOpenClient{
+		data: make(chan protocol.TerminalDataEvent, 1),
+		exit: make(chan protocol.TerminalExitEvent, 1),
+	}
+}
+
+func (c *synchronousOpenClient) Call(_ context.Context, method string, params any, out any) error {
+	if method != "terminal.open" {
+		return nil
+	}
+	op := params.(protocol.TerminalOpenParams)
+	if c.subscribed.Load() {
+		c.data <- protocol.TerminalDataEvent{
+			TerminalID: op.TerminalID,
+			Data:       base64.StdEncoding.EncodeToString([]byte("fast-before-response")),
+		}
+		c.exit <- protocol.TerminalExitEvent{
+			TerminalID: op.TerminalID,
+			Code:       0,
+			Reason:     "natural",
+		}
+		close(c.exit)
+		close(c.data)
+	}
+	out.(*protocol.TerminalOpenResult).TerminalID = op.TerminalID
+	return nil
+}
+
+func (c *synchronousOpenClient) Subscribe(string) remote.Subscription {
+	c.subscribeCalls.Add(1)
+	c.subscribed.Store(true)
+	return remote.Subscription{Data: c.data, Exit: c.exit}
+}
+
+func (c *synchronousOpenClient) Unsubscribe(string, remote.Subscription) {}
+func (c *synchronousOpenClient) Abort()                                  {}
+
+type interruptedOpenClient struct {
+	started  chan struct{}
+	openErr  error
+	closeErr error
+
+	mu         sync.Mutex
+	operations []string
+	closeParam protocol.TerminalCloseParams
+}
+
+func newInterruptedOpenClient(closeErr error) *interruptedOpenClient {
+	return &interruptedOpenClient{started: make(chan struct{}), closeErr: closeErr}
+}
+
+func (c *interruptedOpenClient) record(operation string) {
+	c.mu.Lock()
+	c.operations = append(c.operations, operation)
+	c.mu.Unlock()
+}
+
+func (c *interruptedOpenClient) Call(ctx context.Context, method string, params any, _ any) error {
+	switch method {
+	case "terminal.open":
+		c.record("open")
+		close(c.started)
+		<-ctx.Done()
+		c.record("open-return")
+		if c.openErr != nil {
+			return c.openErr
+		}
+		return ctx.Err()
+	case "terminal.close":
+		c.mu.Lock()
+		c.closeParam = params.(protocol.TerminalCloseParams)
+		c.operations = append(c.operations, "close")
+		c.mu.Unlock()
+		return c.closeErr
+	default:
+		return nil
+	}
+}
+
+func (c *interruptedOpenClient) Subscribe(string) remote.Subscription {
+	c.record("subscribe")
+	return remote.Subscription{
+		Data: make(chan protocol.TerminalDataEvent),
+		Exit: make(chan protocol.TerminalExitEvent),
+	}
+}
+
+func (c *interruptedOpenClient) Unsubscribe(string, remote.Subscription) {
+	c.record("unsubscribe")
+}
+
+func (c *interruptedOpenClient) Abort() { c.record("abort") }
+
+func (c *interruptedOpenClient) snapshot() ([]string, protocol.TerminalCloseParams) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.operations...), c.closeParam
 }
 
 type scriptedCloseClient struct {
@@ -105,6 +231,136 @@ func requireTerminalOutcome(
 	return info
 }
 
+func operationIndex(operations []string, want string) int {
+	for i, operation := range operations {
+		if operation == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestRemoteBackend_GivenFastDataAndExitDuringOpenCallWhenOpenedThenPreSubscriptionCapturesBoth(t *testing.T) {
+	client := newSynchronousOpenClient()
+
+	h, err := remote.NewBackend(client).Open(context.Background(), pty.Spec{
+		TerminalID: "fast-terminal-1",
+		Cwd:        "/r",
+	})
+
+	require.NoError(t, err)
+	select {
+	case chunk := <-h.Data():
+		require.Equal(t, []byte("fast-before-response"), chunk)
+	case <-time.After(time.Second):
+		t.Fatal("data emitted before terminal.open response was lost")
+	}
+	requireTerminalOutcome(t, h, "natural")
+	require.Equal(t, int32(1), client.subscribeCalls.Load(), "Open and pump must share one subscription pair")
+}
+
+func TestRemoteBackend_GivenEmptyRuntimeIDWhenOpenedDirectlyThenGeneratesAndSendsSafeClientID(t *testing.T) {
+	client := &fakeClient{
+		openParams: make(chan protocol.TerminalOpenParams, 1),
+		dataPush:   make(chan protocol.TerminalDataEvent),
+		exitPush:   make(chan protocol.TerminalExitEvent),
+	}
+
+	h, err := remote.NewBackend(client).Open(context.Background(), pty.Spec{Cwd: "/r"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	op := <-client.openParams
+	require.NotEmpty(t, op.TerminalID)
+	require.LessOrEqual(t, len(op.TerminalID), 128)
+	for i := range len(op.TerminalID) {
+		ch := op.TerminalID[i]
+		valid := ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' ||
+			i > 0 && (ch == '-' || ch == '_')
+		require.Truef(t, valid, "unsafe terminal ID byte %q at %d", ch, i)
+	}
+}
+
+func TestRemoteBackend_GivenCallerCancellationBeforeOpenResponseWhenOpenedThenCancelsSamePendingIDBeforeUnsubscribeAndRelease(t *testing.T) {
+	client := newInterruptedOpenClient(nil)
+	client.openErr = errors.New("connection read failed after cancellation")
+	ctx, cancel := context.WithCancel(context.Background())
+	var releaseCalls atomic.Int32
+	client.record("test-start")
+	result := make(chan error, 1)
+	go func() {
+		_, err := remote.NewBackendWithLease(client, func() {
+			releaseCalls.Add(1)
+			client.record("release")
+		}).Open(ctx, pty.Spec{TerminalID: "cancel-terminal-1", Cwd: "/r"})
+		result <- err
+	}()
+	<-client.started
+	cancel()
+
+	err := <-result
+	require.Equal(t, context.Canceled, err)
+	operations, closeParam := client.snapshot()
+	require.Equal(t, protocol.TerminalCloseParams{
+		TerminalID:        "cancel-terminal-1",
+		CancelPendingOpen: true,
+	}, closeParam)
+	closeIndex := operationIndex(operations, "close")
+	require.Greater(t, closeIndex, operationIndex(operations, "open-return"))
+	require.Less(t, closeIndex, operationIndex(operations, "unsubscribe"))
+	require.Less(t, closeIndex, operationIndex(operations, "release"))
+	require.Equal(t, int32(1), releaseCalls.Load())
+	require.Equal(t, -1, operationIndex(operations, "abort"))
+}
+
+func TestRemoteBackend_GivenPendingCancelCleanupFailureWhenOpenIsCanceledThenAbortsConnectionBeforeRelease(t *testing.T) {
+	cleanupErr := errors.New("terminal.close unavailable")
+	client := newInterruptedOpenClient(cleanupErr)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := remote.NewBackendWithLease(client, func() { client.record("release") }).Open(
+			ctx,
+			pty.Spec{TerminalID: "cancel-terminal-abort", Cwd: "/r"},
+		)
+		result <- err
+	}()
+	<-client.started
+	cancel()
+
+	require.Equal(t, context.Canceled, <-result)
+	operations, closeParam := client.snapshot()
+	require.True(t, closeParam.CancelPendingOpen)
+	closeIndex := operationIndex(operations, "close")
+	abortIndex := operationIndex(operations, "abort")
+	require.Greater(t, abortIndex, closeIndex)
+	require.Less(t, abortIndex, operationIndex(operations, "unsubscribe"))
+	require.Less(t, abortIndex, operationIndex(operations, "release"))
+}
+
+func TestRemoteBackend_GivenOpenResponseIDMismatchWhenOpenedThenClosesReturnedTerminalAndRejectsHandle(t *testing.T) {
+	client := &fakeClient{
+		openParams:  make(chan protocol.TerminalOpenParams, 1),
+		closeParams: make(chan protocol.TerminalCloseParams, 1),
+		dataPush:    make(chan protocol.TerminalDataEvent),
+		exitPush:    make(chan protocol.TerminalExitEvent),
+		responseID:  "unexpected-terminal",
+	}
+	var releases atomic.Int32
+
+	h, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(
+		context.Background(),
+		pty.Spec{TerminalID: "expected-terminal", Cwd: "/r"},
+	)
+
+	require.Nil(t, h)
+	require.ErrorIs(t, err, remote.ErrTerminalIDMismatch)
+	closeParam := <-client.closeParams
+	require.Equal(t, protocol.TerminalCloseParams{TerminalID: "unexpected-terminal"}, closeParam)
+	require.Equal(t, int32(1), client.unsubscribeCalls.Load())
+	require.Equal(t, int32(1), releases.Load())
+	require.Zero(t, client.abortCalls.Load())
+}
+
 func TestRemoteBackend_Open_RPC_RoundTrip(t *testing.T) {
 	fc := &fakeClient{
 		openParams: make(chan protocol.TerminalOpenParams, 1),
@@ -113,11 +369,14 @@ func TestRemoteBackend_Open_RPC_RoundTrip(t *testing.T) {
 	}
 	be := remote.NewBackend(fc)
 
-	h, err := be.Open(context.Background(), pty.Spec{Cwd: "/r", Shell: "/bin/sh", Cols: 80, Rows: 24})
+	h, err := be.Open(context.Background(), pty.Spec{
+		TerminalID: "desktop-terminal-1", Cwd: "/r", Shell: "/bin/sh", Cols: 80, Rows: 24,
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = h.Close() })
 
 	op := <-fc.openParams
+	require.Equal(t, "desktop-terminal-1", op.TerminalID)
 	require.Equal(t, "/r", op.Cwd)
 	require.Equal(t, uint16(80), op.Cols)
 
@@ -496,7 +755,7 @@ func (s *slowClient) Call(ctx context.Context, method string, params any, out an
 }
 
 func TestRemoteBackend_GivenLeasedOpenFailure_WhenOpened_ThenReleasesExactlyOnce(t *testing.T) {
-	openErr := errors.New("terminal.open failed")
+	openErr := &jsonrpc.Error{Code: -32603, Message: "terminal.open failed"}
 	fc := &fakeClient{
 		openParams: make(chan protocol.TerminalOpenParams, 1),
 		dataPush:   make(chan protocol.TerminalDataEvent),
@@ -507,12 +766,15 @@ func TestRemoteBackend_GivenLeasedOpenFailure_WhenOpened_ThenReleasesExactlyOnce
 
 	h, err := remote.NewBackendWithLease(fc, func() { releases.Add(1) }).Open(
 		context.Background(),
-		pty.Spec{Cwd: "/r"},
+		pty.Spec{TerminalID: "generic-error-terminal", Cwd: "/r"},
 	)
 
 	require.Nil(t, h)
 	require.ErrorIs(t, err, openErr)
+	require.Equal(t, int32(0), fc.closeCalls.Load(), "authoritative RPC errors must not send pending cancellation")
+	require.Equal(t, int32(1), fc.unsubscribeCalls.Load())
 	require.Equal(t, int32(1), releases.Load())
+	require.Zero(t, fc.abortCalls.Load())
 }
 
 func TestRemoteBackend_GivenLeasedConnectionLoss_WhenSubscriptionCloses_ThenReleasesExactlyOnce(t *testing.T) {
@@ -539,20 +801,35 @@ func TestRemoteBackend_Open_TimesOutAfter5s(t *testing.T) {
 	fc := &slowClient{
 		delay: 10 * time.Second, // much longer than the 5s timeout
 		fakeClient: fakeClient{
-			openParams: make(chan protocol.TerminalOpenParams, 1),
-			dataPush:   make(chan protocol.TerminalDataEvent, 1),
-			exitPush:   make(chan protocol.TerminalExitEvent, 1),
+			openParams:  make(chan protocol.TerminalOpenParams, 1),
+			closeParams: make(chan protocol.TerminalCloseParams, 1),
+			dataPush:    make(chan protocol.TerminalDataEvent, 1),
+			exitPush:    make(chan protocol.TerminalExitEvent, 1),
 		},
 	}
-	be := remote.NewBackend(fc)
+	var releases atomic.Int32
+	var releasedBeforeClose atomic.Bool
+	be := remote.NewBackendWithLease(fc, func() {
+		if fc.closeCalls.Load() == 0 {
+			releasedBeforeClose.Store(true)
+		}
+		releases.Add(1)
+	})
 	start := time.Now()
-	_, err := be.Open(context.Background(), pty.Spec{Cwd: "/r"})
+	_, err := be.Open(context.Background(), pty.Spec{TerminalID: "timeout-terminal-1", Cwd: "/r"})
 	elapsed := time.Since(start)
 	require.ErrorIs(t, err, remote.ErrDaemonTimeout)
 	require.Equal(t, "agentred did not respond within 5s", err.Error())
 	var timeoutErr net.Error
 	require.ErrorAs(t, err, &timeoutErr)
 	require.True(t, timeoutErr.Timeout())
+	require.Equal(t, protocol.TerminalCloseParams{
+		TerminalID:        "timeout-terminal-1",
+		CancelPendingOpen: true,
+	}, <-fc.closeParams)
+	require.False(t, releasedBeforeClose.Load(), "timeout cleanup must be acknowledged before lease release")
+	require.Equal(t, int32(1), releases.Load())
+	require.Equal(t, int32(1), fc.unsubscribeCalls.Load())
 	// Should time out around 5s, not wait for 10s
 	require.Less(t, elapsed, 7*time.Second, "should time out near 5s, not wait full delay")
 }
@@ -591,12 +868,16 @@ func TestRemoteBackend_Open_GivenEarlierParentCancellationOrDeadlineThenPreserve
 			ctx, cancel := tt.ctx()
 			defer cancel()
 
-			_, err := remote.NewBackend(fc).Open(ctx, pty.Spec{Cwd: "/r"})
+			_, err := remote.NewBackend(fc).Open(ctx, pty.Spec{
+				TerminalID: "parent-interruption-terminal",
+				Cwd:        "/r",
+			})
 			parentErr := ctx.Err()
 			require.Error(t, parentErr)
 			require.Equal(t, parentErr, err)
 			require.ErrorIs(t, err, parentErr)
 			require.NotErrorIs(t, err, remote.ErrDaemonTimeout)
+			require.Equal(t, int32(1), fc.closeCalls.Load())
 		})
 	}
 }

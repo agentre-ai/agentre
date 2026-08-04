@@ -18,15 +18,16 @@ type DaemonClient interface {
 	Closed() <-chan struct{}
 }
 
-// ClientAdapter wraps a single daemon client and demuxes per-terminal
-// push events. Construction registers terminal.data and terminal.exit
-// handlers exactly once on the wrapped client. SubscribeData/SubscribeExit
-// allocate per-terminalID channel records on first call.
+// ClientAdapter wraps a single daemon client and demuxes per-terminal push
+// events. Each Subscribe call atomically installs one data/exit generation;
+// replacement, delivery, exit, unsubscribe, and connection close all serialize
+// under mu so no goroutine can send on a channel another goroutine just closed.
 type ClientAdapter struct {
 	client DaemonClient
 
-	mu   sync.Mutex
-	subs map[string]*terminalSubscription
+	mu     sync.Mutex
+	subs   map[string]*terminalSubscription
+	closed bool
 }
 
 type terminalSubscription struct {
@@ -36,9 +37,8 @@ type terminalSubscription struct {
 
 // NewClientAdapter wires up the push-event demux. Spawns one goroutine for
 // connection-close detection. The handler registrations are register-once;
-// constructing a second ClientAdapter against the same client would
-// overwrite them — callers are expected to keep at most one adapter per
-// client instance.
+// constructing a second ClientAdapter against the same client would overwrite
+// them, so callers keep at most one adapter per client instance.
 func NewClientAdapter(c DaemonClient) *ClientAdapter {
 	a := &ClientAdapter{client: c, subs: map[string]*terminalSubscription{}}
 	c.Handle("terminal.data", a.handleData)
@@ -54,31 +54,63 @@ func (a *ClientAdapter) Call(ctx context.Context, method string, params any, out
 	return a.client.Call(ctx, method, params, out)
 }
 
-// SubscribeData returns the read end of the data channel for a given
-// terminalID. Channel is buffered (cap 32) so a slow consumer doesn't
-// drop chunks unless we're truly behind.
-func (a *ClientAdapter) SubscribeData(terminalID string) <-chan protocol.TerminalDataEvent {
-	return a.ensureSubscription(terminalID).data
-}
-
-// SubscribeExit returns the read end of the exit channel for a given
-// terminalID. Channel is cap 1; per protocol exit fires at most once.
-func (a *ClientAdapter) SubscribeExit(terminalID string) <-chan protocol.TerminalExitEvent {
-	return a.ensureSubscription(terminalID).exit
-}
-
-func (a *ClientAdapter) ensureSubscription(terminalID string) *terminalSubscription {
+// Subscribe atomically creates and registers one data/exit channel pair for a
+// terminal ID. A newer registration replaces and closes the older generation;
+// its later Unsubscribe cannot remove the replacement because identity is
+// checked against both exact channel references.
+func (a *ClientAdapter) Subscribe(terminalID string) Subscription {
+	sub := newTerminalSubscription()
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	sub, ok := a.subs[terminalID]
-	if !ok {
-		sub = &terminalSubscription{
-			data: make(chan protocol.TerminalDataEvent, 32),
-			exit: make(chan protocol.TerminalExitEvent, 1),
-		}
-		a.subs[terminalID] = sub
+	if a.closed {
+		closeTerminalSubscription(sub)
+		a.mu.Unlock()
+		return subscriptionView(sub)
 	}
-	return sub
+	previous := a.subs[terminalID]
+	a.subs[terminalID] = sub
+	if previous != nil {
+		closeTerminalSubscription(previous)
+	}
+	a.mu.Unlock()
+	return subscriptionView(sub)
+}
+
+// Unsubscribe removes and closes only the exact generation returned by
+// Subscribe. It is safe after exit, connection loss, or replacement.
+func (a *ClientAdapter) Unsubscribe(terminalID string, subscription Subscription) {
+	a.mu.Lock()
+	sub := a.subs[terminalID]
+	if sub != nil && sub.data == subscription.Data && sub.exit == subscription.Exit {
+		delete(a.subs, terminalID)
+		closeTerminalSubscription(sub)
+	}
+	a.mu.Unlock()
+}
+
+// Abort closes the wrapped shared connection when a pending-open cleanup RPC
+// cannot be acknowledged. Production daemon clients implement Close; keeping
+// it as an optional narrow assertion avoids coupling this demux interface to
+// unrelated client operations.
+func (a *ClientAdapter) Abort() {
+	if closer, ok := a.client.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
+}
+
+func newTerminalSubscription() *terminalSubscription {
+	return &terminalSubscription{
+		data: make(chan protocol.TerminalDataEvent, 32),
+		exit: make(chan protocol.TerminalExitEvent, 1),
+	}
+}
+
+func subscriptionView(sub *terminalSubscription) Subscription {
+	return Subscription{Data: sub.data, Exit: sub.exit}
+}
+
+func closeTerminalSubscription(sub *terminalSubscription) {
+	close(sub.exit)
+	close(sub.data)
 }
 
 func (a *ClientAdapter) handleData(_ context.Context, raw json.RawMessage) (any, error) {
@@ -88,15 +120,14 @@ func (a *ClientAdapter) handleData(_ context.Context, raw json.RawMessage) (any,
 	}
 	a.mu.Lock()
 	sub := a.subs[ev.TerminalID]
+	if sub != nil {
+		select {
+		case sub.data <- ev:
+		default:
+			// Drop on full buffer; matches the existing slow-consumer tradeoff.
+		}
+	}
 	a.mu.Unlock()
-	if sub == nil {
-		return nil, nil
-	}
-	select {
-	case sub.data <- ev:
-	default:
-		// drop on full buffer; matches "slow consumer = lost chunks" tradeoff
-	}
 	return nil, nil
 }
 
@@ -109,32 +140,28 @@ func (a *ClientAdapter) handleExit(_ context.Context, raw json.RawMessage) (any,
 	sub := a.subs[ev.TerminalID]
 	if sub != nil {
 		delete(a.subs, ev.TerminalID)
+		select {
+		case sub.exit <- ev:
+		default:
+		}
+		closeTerminalSubscription(sub)
 	}
 	a.mu.Unlock()
-	if sub == nil {
-		return nil, nil
-	}
-	select {
-	case sub.exit <- ev:
-	default:
-	}
-	close(sub.exit)
-	close(sub.data)
 	return nil, nil
 }
 
 func (a *ClientAdapter) watchClose(closed <-chan struct{}) {
 	<-closed
 	a.mu.Lock()
+	a.closed = true
 	subs := a.subs
 	a.subs = map[string]*terminalSubscription{}
-	a.mu.Unlock()
 	for _, sub := range subs {
-		// close exit unbuffered-style so the per-handle pump sees !ok and
-		// synthesizes ExitInfo{Reason: "connection_lost"} (see remote.go pump)
-		close(sub.exit)
-		close(sub.data)
+		// Close exit before data so the per-handle pump sees a missing
+		// authoritative outcome and synthesizes connection_lost.
+		closeTerminalSubscription(sub)
 	}
+	a.mu.Unlock()
 }
 
 // Compile-time assertion: ClientAdapter satisfies remote.Client.

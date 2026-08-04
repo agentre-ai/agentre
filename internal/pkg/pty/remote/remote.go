@@ -4,22 +4,30 @@ package remote
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
+	"github.com/agentre-ai/agentre/internal/pkg/jsonrpc"
 	pkgpty "github.com/agentre-ai/agentre/internal/pkg/pty"
 	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
 
-const openTimeout = 5 * time.Second
+const (
+	openTimeout        = 5 * time.Second
+	openCleanupTimeout = time.Second
+)
 
 // ErrDaemonTimeout is returned by Backend.Open when agentred does not respond
 // within openTimeout.
 var (
-	ErrDaemonTimeout error = daemonTimeoutError{}
-	errOpenTimeout         = errors.New("remote terminal open timeout")
+	ErrDaemonTimeout      error = daemonTimeoutError{}
+	ErrTerminalIDMismatch       = errors.New("agentred returned a mismatched terminal id")
+	errOpenTimeout              = errors.New("remote terminal open timeout")
 )
 
 type daemonTimeoutError struct{}
@@ -28,13 +36,21 @@ func (daemonTimeoutError) Error() string   { return "agentred did not respond wi
 func (daemonTimeoutError) Timeout() bool   { return true }
 func (daemonTimeoutError) Temporary() bool { return true }
 
-// Client is the minimal subset of the agentred ws client surface needed
-// here. In production this is the existing per-device ws client; tests
-// stub it.
+// Subscription is one atomic terminal event generation. Data and Exit always
+// come from the same registration and remain the exact references consumed by
+// the handle pump.
+type Subscription struct {
+	Data <-chan protocol.TerminalDataEvent
+	Exit <-chan protocol.TerminalExitEvent
+}
+
+// Client is the minimal subset of the agentred ws client surface needed here.
+// Abort is the safety fallback when pending-open cleanup cannot be acknowledged.
 type Client interface {
 	Call(ctx context.Context, method string, params any, out any) error
-	SubscribeData(terminalID string) <-chan protocol.TerminalDataEvent
-	SubscribeExit(terminalID string) <-chan protocol.TerminalExitEvent
+	Subscribe(terminalID string) Subscription
+	Unsubscribe(terminalID string, subscription Subscription)
+	Abort()
 }
 
 type Backend struct {
@@ -53,31 +69,122 @@ func NewBackendWithLease(c Client, release func()) *Backend {
 
 func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, error) {
 	release := onceRelease(b.release)
+	terminalID, err := terminalIDForOpen(spec.TerminalID)
+	if err != nil {
+		release()
+		return nil, err
+	}
+
+	// Register both event channels under the stable desktop identity before the
+	// request can make agentred spawn or emit anything.
+	subscription := b.client.Subscribe(terminalID)
+	settleFailure := func() {
+		b.client.Unsubscribe(terminalID, subscription)
+		release()
+	}
+
 	openCtx, cancel := context.WithTimeoutCause(ctx, openTimeout, errOpenTimeout)
 	defer cancel()
 	var res protocol.TerminalOpenResult
-	if err := b.client.Call(openCtx, "terminal.open", protocol.TerminalOpenParams{
-		Cwd: spec.Cwd, Shell: spec.Shell, Command: spec.Command, Env: spec.Env, Cols: spec.Cols, Rows: spec.Rows,
-	}, &res); err != nil {
-		release()
-		if errors.Is(context.Cause(openCtx), errOpenTimeout) {
-			return nil, ErrDaemonTimeout
+	err = b.client.Call(openCtx, "terminal.open", protocol.TerminalOpenParams{
+		TerminalID: terminalID,
+		Cwd:        spec.Cwd,
+		Shell:      spec.Shell,
+		Command:    spec.Command,
+		Env:        spec.Env,
+		Cols:       spec.Cols,
+		Rows:       spec.Rows,
+	}, &res)
+	if err != nil {
+		if returned, interrupted := interruptedOpenError(ctx, openCtx, err); interrupted {
+			b.cancelPendingOpen(ctx, terminalID)
+			settleFailure()
+			return nil, returned
 		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
+		// A generic terminal.open RPC error is an authoritative rejection: no
+		// pending PTY needs an extra cancellation request.
+		settleFailure()
 		return nil, err
 	}
+	if res.TerminalID != terminalID {
+		b.cleanupMismatchedOpen(ctx, res.TerminalID)
+		settleFailure()
+		return nil, fmt.Errorf("%w: expected %q, got %q", ErrTerminalIDMismatch, terminalID, res.TerminalID)
+	}
+
 	h := &handleImpl{
-		client:     b.client,
-		terminalID: res.TerminalID,
-		data:       make(chan []byte, 32),
-		exit:       make(chan pkgpty.ExitInfo, 1),
-		done:       make(chan struct{}),
-		release:    release,
+		client:       b.client,
+		terminalID:   terminalID,
+		subscription: subscription,
+		data:         make(chan []byte, 32),
+		exit:         make(chan pkgpty.ExitInfo, 1),
+		done:         make(chan struct{}),
+		release:      release,
 	}
 	go h.pump()
 	return h, nil
+}
+
+func terminalIDForOpen(supplied string) (string, error) {
+	if supplied != "" {
+		return supplied, nil
+	}
+	var id [12]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", fmt.Errorf("generate remote terminal id: %w", err)
+	}
+	return hex.EncodeToString(id[:]), nil
+}
+
+func interruptedOpenError(
+	ctx context.Context,
+	openCtx context.Context,
+	callErr error,
+) (error, bool) {
+	// A JSON-RPC error frame is an authoritative terminal.open rejection even
+	// if caller cancellation raced its arrival. Transport/context failures have
+	// no such authority and must preserve the desktop interruption outcome.
+	var rpcErr *jsonrpc.Error
+	if errors.As(callErr, &rpcErr) {
+		return nil, false
+	}
+	if errors.Is(context.Cause(openCtx), errOpenTimeout) {
+		return ErrDaemonTimeout, true
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr, true
+	}
+	if openCtx.Err() != nil &&
+		(errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)) {
+		return callErr, true
+	}
+	return nil, false
+}
+
+func (b *Backend) cancelPendingOpen(ctx context.Context, terminalID string) {
+	b.cleanupTerminal(ctx, protocol.TerminalCloseParams{
+		TerminalID:        terminalID,
+		CancelPendingOpen: true,
+	})
+}
+
+func (b *Backend) cleanupMismatchedOpen(ctx context.Context, terminalID string) {
+	if terminalID == "" {
+		b.client.Abort()
+		return
+	}
+	b.cleanupTerminal(ctx, protocol.TerminalCloseParams{TerminalID: terminalID})
+}
+
+func (b *Backend) cleanupTerminal(ctx context.Context, params protocol.TerminalCloseParams) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openCleanupTimeout)
+	defer cancel()
+	var ack struct{}
+	if err := b.client.Call(cleanupCtx, "terminal.close", params, &ack); err != nil {
+		// A failed acknowledgement leaves connection ownership suspect. Abort it
+		// synchronously so agentred's connection-scoped CloseAll owns cleanup.
+		b.client.Abort()
+	}
 }
 
 func onceRelease(release func()) func() {
@@ -88,8 +195,9 @@ func onceRelease(release func()) func() {
 }
 
 type handleImpl struct {
-	client     Client
-	terminalID string
+	client       Client
+	terminalID   string
+	subscription Subscription
 
 	data chan []byte
 	exit chan pkgpty.ExitInfo
@@ -176,13 +284,14 @@ func (h *handleImpl) Data() <-chan []byte          { return h.data }
 func (h *handleImpl) Exit() <-chan pkgpty.ExitInfo { return h.exit }
 
 func (h *handleImpl) pump() {
-	dataCh := h.client.SubscribeData(h.terminalID)
-	exitCh := h.client.SubscribeExit(h.terminalID)
+	dataCh := h.subscription.Data
+	exitCh := h.subscription.Exit
 	outcome := pkgpty.ExitInfo{Reason: "connection_lost"}
 	defer func() {
 		h.exit <- outcome
 		close(h.exit)
 		close(h.data)
+		h.client.Unsubscribe(h.terminalID, h.subscription)
 		h.release()
 	}()
 

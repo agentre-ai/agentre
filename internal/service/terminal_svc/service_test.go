@@ -25,7 +25,9 @@ func TestService_Open_Local_RegistersHandle(t *testing.T) {
 	mockH := mocks.NewMockHandle(ctrl)
 	mockH.EXPECT().Data().AnyTimes().Return(make(chan []byte))
 	mockH.EXPECT().Exit().AnyTimes().Return(make(chan pty.ExitInfo))
-	mockBE.EXPECT().Open(gomock.Any(), pty.Spec{Cwd: "/tmp", Cols: 80, Rows: 24}).Return(mockH, nil)
+	mockBE.EXPECT().Open(gomock.Any(), pty.Spec{
+		TerminalID: "t1", Cwd: "/tmp", Cols: 80, Rows: 24,
+	}).Return(mockH, nil)
 
 	sel := terminal_svc.NewBackendSelector(mockBE, func(string) (terminal_svc.PTYBackend, error) {
 		t.Fatal("should not call remote factory for local")
@@ -263,7 +265,9 @@ func TestService_OpenCommand_PassesCommandToBackend(t *testing.T) {
 	mockH.EXPECT().Data().AnyTimes().Return(make(chan []byte))
 	mockH.EXPECT().Exit().AnyTimes().Return(make(chan pty.ExitInfo))
 	mockBE.EXPECT().
-		Open(gomock.Any(), pty.Spec{Cwd: "/tmp", Command: "go test ./...", Cols: 80, Rows: 24}).
+		Open(gomock.Any(), pty.Spec{
+			TerminalID: "t1", Cwd: "/tmp", Command: "go test ./...", Cols: 80, Rows: 24,
+		}).
 		Return(mockH, nil)
 
 	sel := terminal_svc.NewBackendSelector(mockBE, func(string) (terminal_svc.PTYBackend, error) {
