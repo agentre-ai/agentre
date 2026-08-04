@@ -146,7 +146,10 @@ func TestBorrowRemoteRuntime_CacheHit_StillRecordsExecDaemon(t *testing.T) {
 // 流上 emit 一条 connection_state —— 连接态是运行态之上的修饰,不进 AgentStatus。
 func TestRemoteConnState_EmitsSessionLevelStreamEvent(t *testing.T) {
 	rec := &recordingEmitter{}
-	svc := &chatSvc{emitter: rec}
+	// 走 NewChat 而不是结构体字面量:播报路径要读 activeCancels(只记有在飞 turn 的
+	// 会话,见 rememberConnState),那份 sync.Map 由 NewChat 装配。
+	svc := NewChat(rec).(*chatSvc)
+	markTurnActive(t, svc, 100)
 
 	svc.onRemoteConnState(100, remote.SessionConnState{State: remote.ConnStateReconnecting})
 	svc.onRemoteConnState(100, remote.SessionConnState{
@@ -189,6 +192,19 @@ func registerLoadSessionRepos(t *testing.T, ctrl *gomock.Controller, sessionID i
 	})
 }
 
+// markTurnActive 把该会话标成「有在飞 turn」。LoadSession 用同一份 activeCancels 判定
+// ActiveStream,而重挂上来的前端只在拿得到 ActiveStream 时才播种连接态 —— 「重连中的
+// 会话」这个场景在真实系统里必然带着一个在飞 turn。
+func markTurnActive(t *testing.T, svc *chatSvc, sessionID int64) {
+	t.Helper()
+	_, cancel := context.WithCancel(context.Background())
+	svc.activeCancels.Store(sessionID, cancel)
+	t.Cleanup(func() {
+		svc.activeCancels.Delete(sessionID)
+		cancel()
+	})
+}
+
 // Given 一条远端会话正处在重连态,When 用户整页重载 webview 后重新 LoadSession,
 // Then 响应必须同步带回「此刻正在重连」。
 //
@@ -206,6 +222,9 @@ func TestLoadSession_ServesCurrentConnStateForReattach(t *testing.T) {
 	})
 
 	svc := NewChat(NoopEmitter{}).(*chatSvc)
+	// 这条会话有在飞 turn:断连不再终结会话,turn goroutine 活着,LoadSession 因此
+	// 给得出 ActiveStream,前端才有那条要被修饰的活信号。
+	markTurnActive(t, svc, 100)
 	ctx := context.Background()
 	load := func() *LoadSessionResponse {
 		t.Helper()
@@ -230,4 +249,43 @@ func TestLoadSession_ServesCurrentConnStateForReattach(t *testing.T) {
 	svc.onRemoteConnState(100, remote.SessionConnState{State: remote.ConnStateReconnecting})
 	svc.onRemoteConnState(100, remote.SessionConnState{State: remote.ConnStateLost})
 	assert.Equal(t, string(remote.ConnStateConnected), load().Session.ConnectionState)
+}
+
+// Given 一条**没有在飞 turn** 的会话(上一轮早已收尾,只剩自主续轮镜像还挂在 runtime
+// 上),When 通道断开、runtime 把「还活着」的会话一并翻成重连态,Then 这一帧不得进缓存。
+//
+// remote.Runtime.enterReconnecting 按 liveSessionIDs()(sessions ∪ autoSessions)播
+// reconnecting,而收尾只走 failAllSessions / failSession —— 两者都只覆盖 sessions。
+// 只剩自主续轮镜像的会话因此收得到 reconnecting、永远收不到 connected/lost(已用
+// remote 包的重连 rig 实测:重连全部失败时,活跃会话拿到 reconnecting→lost,只有镜像
+// 的那条只拿到 reconnecting)。记住它就是记一条永远清不掉的旧态:等这条会话下一轮真的
+// 跑起来,LoadSession 把它交给重挂上来的前端,一条连接完全正常的 turn 从头到尾顶着断连
+// 指示器 —— 正是 session-conn-store.clear 要消灭的那个泄漏,只不过泄漏点挪到了 Go 侧,
+// 前端再也清不掉。
+func TestLoadSession_DoesNotRememberConnStateWithoutActiveTurn(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	registerLoadSessionRepos(t, ctrl, 100, &chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	})
+
+	svc := NewChat(NoopEmitter{}).(*chatSvc)
+	ctx := context.Background()
+	load := func() string {
+		t.Helper()
+		resp, err := svc.LoadSession(ctx, &LoadSessionRequest{SessionID: 100})
+		require.NoError(t, err)
+		return resp.Session.ConnectionState
+	}
+
+	// 上一轮早已收尾,此刻没有在飞 turn;通道断了,这条会话被一并播成重连态。
+	svc.onRemoteConnState(100, remote.SessionConnState{State: remote.ConnStateReconnecting})
+	assert.Equal(t, string(remote.ConnStateConnected), load(),
+		"没有在飞 turn 就没有可修饰的活信号,而这一帧永远等不到收尾帧,不该被记住")
+
+	// 下一轮真的跑起来,连接完全正常:上一轮的旧态不得翻出来。
+	markTurnActive(t, svc, 100)
+	assert.Equal(t, string(remote.ConnStateConnected), load(),
+		"上一轮遗留的重连态泄漏到下一轮 = 一条连接正常的 turn 全程顶着断连指示器")
 }

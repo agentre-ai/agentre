@@ -48,11 +48,22 @@ func (s *chatSvc) onRemoteConnState(sessionID int64, st remote.SessionConnState)
 // connected 是缺省态、lost 是会话终结(重连放弃,已注入 ErrDaemonDisconnected 收尾),
 // 两者都摘项:缓存因此只留「此刻正在重连」的会话,既不随会话数无限长大,也不会把上一轮
 // 的终态泄漏给下一轮。
+//
+// 且只记「此刻确有在飞 turn」的会话 —— 与 LoadSession 判定 ActiveStream 用的是同一份
+// activeCancels:没有在飞 turn 就没有那条要被修饰的活信号,前端也不会播种。更要紧的是
+// 这类帧永远等不到收尾帧:remote.Runtime 按 liveSessionIDs()(sessions ∪ 自主续轮镜像)
+// 播 reconnecting,而收尾只走 failAllSessions / failSession,两者都只覆盖 sessions ——
+// 只剩镜像的那条会话收得到 reconnecting、收不到 connected/lost。记住它就是记一条永远
+// 清不掉的旧态,等这条会话下一轮真的跑起来,它会让一条连接完全正常的 turn 全程顶着
+// 断连指示器。
 func (s *chatSvc) rememberConnState(sessionID int64, st remote.ConnState) {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 	if st == remote.ConnStateConnected || st == remote.ConnStateLost {
 		delete(s.connStates, sessionID)
+		return
+	}
+	if _, activeTurn := s.activeCancels.Load(sessionID); !activeTurn {
 		return
 	}
 	if s.connStates == nil {
