@@ -340,6 +340,18 @@ func journaledDone(seq int64, model string) wire.JournaledNotification {
 	return wire.JournaledNotification{Seq: seq, Method: wire.NotifyRunResultDone, Params: params}
 }
 
+// journaledAutoEvent / journaledAutoDone 是自主续轮那两类通知的日志行。
+func journaledAutoEvent(seq int64, text string) wire.JournaledNotification {
+	ev, _ := json.Marshal(agentruntime.TextDelta{Text: text})
+	params, _ := json.Marshal(wire.EventFrame{SessionID: rigSessionID, Event: ev})
+	return wire.JournaledNotification{Seq: seq, Method: wire.NotifyAutonomousTurnEvent, Params: params}
+}
+
+func journaledAutoDone(seq int64, model string) wire.JournaledNotification {
+	params, _ := json.Marshal(wire.RunResultDoneFrame{SessionID: rigSessionID, Model: model})
+	return wire.JournaledNotification{Seq: seq, Method: wire.NotifyAutonomousTurnDone, Params: params}
+}
+
 // drainTexts 读到 channel 关闭为止,收集 TextDelta 文本。
 func drainTexts(t *testing.T, ch <-chan agentruntime.Event, deadline time.Duration) []string {
 	t.Helper()
@@ -878,6 +890,77 @@ func TestDisconnect_NoLiveRun_DoesNotReconnect(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, 0, rig.reconnectAttempts(), "没有在飞会话就不该重连")
+}
+
+// Given 一轮 Run 已经收尾、而 CLI 发起的自主续轮(后台任务续轮)正在流,When 连接断开,
+// Then 同样走退避重连与补齐:自主轮的 events 不在中途关闭,断连期间 daemon 已经落库的
+// 尾巴照常补回来。
+//
+// 破法是用户可见的:events 被中途 close 而 result.StopErr 仍是 nil,chat_svc.
+// driveAutonomousTurn 于是把一条**被截断的**助手消息当作正常完成的轮次持久化,
+// 远端已经产出并落库的尾巴永远不会被回放。
+func TestDisconnect_AutonomousTurnInFlight_ReconnectsInsteadOfTruncating(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	turns := rig.rt.AutonomousTurns(rigSessionID)
+
+	// 这一轮 Run 正常收尾 —— r.sessions 就此清空,只剩自主轮还在跑。
+	rig.conn1.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{SessionID: rigSessionID, Seq: 1})
+	_ = drainTexts(t, rig.events, time.Second)
+
+	rig.conn1.deliver(t, wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: rigSessionID, Trigger: "background_task", Seq: 2,
+	})
+	var turn agentruntime.AutonomousTurn
+	select {
+	case turn = <-turns:
+	case <-time.After(time.Second):
+		t.Fatal("自主轮没有交付给 watcher")
+	}
+	ev, err := json.Marshal(agentruntime.TextDelta{Text: "partial"})
+	require.NoError(t, err)
+	rig.conn1.deliver(t, wire.NotifyAutonomousTurnEvent, wire.EventFrame{
+		SessionID: rigSessionID, Event: ev, Seq: 3,
+	})
+
+	conn2 := catchUpConn(5, []wire.JournaledNotification{
+		journaledAutoEvent(4, "tail"),
+		journaledAutoDone(5, "sonnet"),
+	}, wire.SessionPendingWaitersResult{})
+	rig.queue(conn2, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	texts := drainTexts(t, turn.Events, 3*time.Second)
+	assert.Equal(t, []string{"partial", "tail"}, texts, "自主轮的尾巴要补回来,而不是被中途截断")
+	assert.Equal(t, "sonnet", turn.Result.Model, "补齐到的终态帧要落进这一轮的 RunResult")
+	assert.Positive(t, rig.reconnectAttempts(), "只有自主轮在跑时断连,同样要重连")
+}
+
+// Given 会话订阅过自主续轮、而此刻没有任何一轮在跑(上一轮已收到 done),When 池化连接
+// 被 idle 回收,Then 不重连。
+//
+// autoSessions 的条目在订阅时创建、直到 conn close 才删,天真地按「有没有条目」设闸会让
+// 运行时在空闲之后永远重连下去,每次都再借一条谁也不会归还的连接 —— 闸必须看的是那条
+// 自主会话上有没有**在飞的一轮**。
+func TestDisconnect_AutonomousTurnFinished_DoesNotReconnect(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	turns := rig.rt.AutonomousTurns(rigSessionID)
+
+	rig.conn1.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{SessionID: rigSessionID, Seq: 1})
+	_ = drainTexts(t, rig.events, time.Second)
+	rig.conn1.deliver(t, wire.NotifyAutonomousTurnStarted, wire.AutonomousTurnStartedFrame{
+		SessionID: rigSessionID, Trigger: "background_task", Seq: 2,
+	})
+	turn := <-turns
+	rig.conn1.deliver(t, wire.NotifyAutonomousTurnDone, wire.RunResultDoneFrame{
+		SessionID: rigSessionID, Model: "sonnet", Seq: 3,
+	})
+	_ = drainTexts(t, turn.Events, time.Second)
+
+	_ = rig.conn1.Close()
+
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 0, rig.reconnectAttempts(), "订阅本身不算在飞的一轮")
 }
 
 // Given 用户在重连期间解除了配对,When 重连端口宣告放弃,Then 立刻注入

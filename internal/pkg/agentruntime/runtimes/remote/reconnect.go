@@ -457,12 +457,42 @@ func (r *Runtime) canReconnect() bool {
 	return r.durability != durabilityUnsupported
 }
 
-// hasLiveRun 有没有在飞的一轮。没有就不值得重连:连接池在 refcount 归零后会主动
-// idle 回收连接,那时重连只会再借一条谁也不会归还的连接,把套接字永久钉住。
+// hasLiveRun 有没有在飞的一轮 —— per-Run 的那一轮,或某条会话上正在流的自主续轮。
+// 没有就不值得重连:连接池在 refcount 归零后会主动 idle 回收连接,那时重连只会再借
+// 一条谁也不会归还的连接,把套接字永久钉住。
+//
+// 自主续轮必须算进来:r.sessions 在 runResultDone 时就清空了,而 CLI 发起的自主轮
+// (后台任务续轮)整段都发生在那之后 —— 只看 r.sessions 会让这类断连直接走
+// failAllSessions → closeAllAutoSessions,在流中途 close(cur.events) 且 StopErr
+// 仍是 nil,chat_svc 于是把一条**被截断的**助手消息当作正常完成的轮次持久化。
+// 这也正是 liveSessionIDs 为 enterReconnecting / catchUpAll 并上 autoSessions 的理由。
+//
+// 但看的必须是「有没有在飞的那一轮」(a.cur)而不是「有没有条目」:autoSessions 的
+// 条目在订阅(AutonomousTurns)时创建、直到 conn close 才删,按条目设闸会让运行时在
+// 空闲之后永远重连下去。
+//
+// 快照后再取 a.mu:持 r.mu 期间去拿 a.mu,会与「持 a.mu 投递事件」的通知路径叠成
+// 一条不必要的等待链(autoturn.go 的既有纪律是先在 r.mu 下快照,再逐个上 a.mu)。
 func (r *Runtime) hasLiveRun() bool {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return len(r.sessions) > 0
+	if len(r.sessions) > 0 {
+		r.mu.RUnlock()
+		return true
+	}
+	autos := make([]*autoSession, 0, len(r.autoSessions))
+	for _, a := range r.autoSessions {
+		autos = append(autos, a)
+	}
+	r.mu.RUnlock()
+	for _, a := range autos {
+		a.mu.Lock()
+		live := a.cur != nil
+		a.mu.Unlock()
+		if live {
+			return true
+		}
+	}
+	return false
 }
 
 // reconnectAndCatchUp 按退避表重连并补齐。成功返回新连接的 Closed() 通道。
