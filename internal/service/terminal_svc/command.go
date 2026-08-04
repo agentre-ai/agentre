@@ -3,6 +3,8 @@ package terminal_svc
 import (
 	"context"
 	"errors"
+	"net"
+	"os"
 	"strings"
 
 	"github.com/cago-frame/cago/pkg/logger"
@@ -22,6 +24,38 @@ var (
 	ErrCommandScopeResolverNotInitialized = errors.New("terminal command scope resolver not initialized")
 	ErrCommandScopeUnavailable            = errors.New("terminal command scope unavailable")
 	ErrCommandStartPreempted              = CommandStartPreemptedError{}
+)
+
+type commandStartStage string
+
+const (
+	commandStartStageUnknown       commandStartStage = "unknown"
+	commandStartStageBackendSelect commandStartStage = "backendSelect"
+	commandStartStagePTYOpen       commandStartStage = "ptyOpen"
+)
+
+type commandStartError struct {
+	stage commandStartStage
+	cause error
+}
+
+func (e *commandStartError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *commandStartError) Unwrap() error {
+	return e.cause
+}
+
+type commandStartErrorCategory string
+
+const (
+	commandStartErrorCategoryNotFound         commandStartErrorCategory = "notFound"
+	commandStartErrorCategoryPermissionDenied commandStartErrorCategory = "permissionDenied"
+	commandStartErrorCategoryTimeout          commandStartErrorCategory = "timeout"
+	commandStartErrorCategoryNetwork          commandStartErrorCategory = "network"
+	commandStartErrorCategoryUnavailable      commandStartErrorCategory = "unavailable"
+	commandStartErrorCategoryUnknown          commandStartErrorCategory = "unknown"
 )
 
 // CommandScope 是 terminal_svc 启动命令与返回 Wails 响应共享的设备/cwd 作用域。
@@ -126,8 +160,44 @@ func (s *Service) RunCommand(ctx context.Context, req RunCommandRequest) (*RunCo
 			zap.Int64("sessionId", req.SessionID),
 			zap.String("terminalId", req.TerminalID),
 			zap.String("deviceId", scope.DeviceID),
+			zap.String("startStage", string(commandStartStageOf(err))),
+			zap.String("errorCategory", string(classifyCommandStartError(err))),
 			zap.String("errorClass", "terminalCommandStartFailed"))
 		return response, nil
 	}
 	return response, nil
+}
+
+func annotateCommandStartError(stage commandStartStage, cause error) error {
+	return &commandStartError{stage: stage, cause: cause}
+}
+
+func commandStartStageOf(err error) commandStartStage {
+	var startErr *commandStartError
+	if errors.As(err, &startErr) {
+		return startErr.stage
+	}
+	return commandStartStageUnknown
+}
+
+func classifyCommandStartError(err error) commandStartErrorCategory {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return commandStartErrorCategoryNotFound
+	case errors.Is(err, os.ErrPermission):
+		return commandStartErrorCategoryPermissionDenied
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
+		return commandStartErrorCategoryTimeout
+	case errors.Is(err, context.Canceled), errors.Is(err, net.ErrClosed), errors.Is(err, os.ErrClosed):
+		return commandStartErrorCategoryUnavailable
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return commandStartErrorCategoryTimeout
+		}
+		return commandStartErrorCategoryNetwork
+	}
+	return commandStartErrorCategoryUnknown
 }

@@ -64,7 +64,7 @@ func NewService(sel *BackendSelector, emitter Emitter) *Service {
 func (s *Service) Open(ctx context.Context, terminalID string, deviceID string, cwd string, cols, rows uint16) error {
 	attempt := s.claimStart(ctx, terminalID)
 	defer s.releaseStart(terminalID, attempt)
-	return s.open(ctx, attempt, terminalID, deviceID, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows}, nil)
+	return s.open(ctx, attempt, terminalID, deviceID, pty.Spec{Cwd: cwd, Cols: cols, Rows: rows}, nil, false)
 }
 
 // OpenCommand runs a one-shot command under cwd, reusing the same
@@ -87,7 +87,7 @@ func (s *Service) openCommand(
 ) error {
 	return s.open(ctx, attempt, terminalID, deviceID, pty.Spec{
 		Cwd: cwd, Command: command, Cols: cols, Rows: rows,
-	}, lifecycle)
+	}, lifecycle, true)
 }
 
 func (s *Service) open(
@@ -97,12 +97,16 @@ func (s *Service) open(
 	deviceID string,
 	spec pty.Spec,
 	lifecycle *commandLifecycle,
+	annotateStartFailure bool,
 ) error {
 	backend, err := s.selector.Pick(deviceID)
 	if !s.ownsStart(terminalID, attempt) {
 		return preemptedStartError(lifecycle)
 	}
 	if err != nil {
+		if annotateStartFailure {
+			return annotateCommandStartError(commandStartStageBackendSelect, err)
+		}
 		return err
 	}
 
@@ -144,6 +148,9 @@ func (s *Service) open(
 	if err != nil {
 		if preempted && lifecycle != nil {
 			return ErrCommandStartPreempted
+		}
+		if annotateStartFailure {
+			return annotateCommandStartError(commandStartStagePTYOpen, err)
 		}
 		return err
 	}

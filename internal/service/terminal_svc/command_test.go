@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -230,70 +232,122 @@ func TestService_Open_GivenInteractiveTerminal_WhenItExits_ThenLogsNoCommandLife
 	assert.Zero(t, logs.Len())
 }
 
-func TestService_RunCommand_GivenOpenFailure_WhenStarted_ThenReturnsExactScopeStartErrorAndOneRedactedWarning(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+func TestService_RunCommand_GivenStartFailure_WhenStarted_ThenLogsSafeStageAndCategoryAndReturnsExactError(t *testing.T) {
+	tests := []struct {
+		name          string
+		startStage    string
+		startErr      error
+		errorCategory string
+	}{
+		{
+			name:       "backend selector path is not found",
+			startStage: "backendSelect",
+			startErr: &os.PathError{
+				Op: "select fixture-sensitive-selector", Path: "/fixture-sensitive/missing.sock", Err: os.ErrNotExist,
+			},
+			errorCategory: "notFound",
+		},
+		{
+			name:       "PTY executable path is permission denied",
+			startStage: "ptyOpen",
+			startErr: &os.PathError{
+				Op: "fork fixture-sensitive-shell", Path: "/fixture-sensitive/private/zsh", Err: os.ErrPermission,
+			},
+			errorCategory: "permissionDenied",
+		},
+		{
+			name:          "PTY network operation fails",
+			startStage:    "ptyOpen",
+			startErr:      &net.OpError{Op: "dial fixture-sensitive-host", Net: "tcp-sensitive", Err: errors.New("fixture-sensitive-network-cause")},
+			errorCategory: "network",
+		},
+		{
+			name:          "PTY network operation times out",
+			startStage:    "ptyOpen",
+			startErr:      &net.OpError{Op: "dial fixture-sensitive-timeout", Net: "tcp-sensitive", Err: os.ErrDeadlineExceeded},
+			errorCategory: "timeout",
+		},
+		{
+			name:          "backend selector becomes unavailable",
+			startStage:    "backendSelect",
+			startErr:      errors.Join(context.Canceled, errors.New("fixture-sensitive-canceled-selection")),
+			errorCategory: "unavailable",
+		},
+		{
+			name:          "backend selector returns an unknown error",
+			startStage:    "backendSelect",
+			startErr:      errors.New("fixture-sensitive-generic-selection-failure"),
+			errorCategory: "unknown",
+		},
+	}
 
-	sensitiveCwd := "/Users/alice/private-worktree"
-	sensitiveCommand := "deploy --token=fixture-sensitive-token"
-	sensitiveShell := "/opt/private/bin/zsh"
-	wantScope := &terminal_svc.CommandScope{DeviceID: "device-9", Cwd: sensitiveCwd}
-	resolveCalls := 0
-	startErr := errors.New("fork/exec " + sensitiveShell + " in " + sensitiveCwd +
-		" while starting " + sensitiveCommand + ": permission denied")
-	localBackend := mocks.NewMockPTYBackend(ctrl)
-	remoteBackend := mocks.NewMockPTYBackend(ctrl)
-	remoteBackend.EXPECT().Open(gomock.Any(), pty.Spec{
-		Cwd: sensitiveCwd, Command: sensitiveCommand, Cols: 80, Rows: 24,
-	}).Return(nil, startErr).Times(1)
-	factoryCalls := 0
-	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(localBackend,
-		func(string) (terminal_svc.PTYBackend, error) {
-			factoryCalls++
-			return remoteBackend, nil
-		}), terminal_svc.NoopEmitter{})
-	svc.SetCommandScopeResolver(func(
-		context.Context,
-		terminal_svc.ResolveCommandScopeRequest,
-	) (*terminal_svc.CommandScope, error) {
-		resolveCalls++
-		return wantScope, nil
-	})
-	defer svc.Shutdown()
-	core, logs := observer.New(zapcore.DebugLevel)
-	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
-		TerminalID: "terminal-2",
-		SessionID:  72,
-		Command:    sensitiveCommand,
-		Cols:       80,
-		Rows:       24,
-	})
+			sensitiveCwd := "/fixture-sensitive/private-worktree"
+			sensitiveCommand := "deploy --token=fixture-sensitive-token"
+			wantScope := &terminal_svc.CommandScope{DeviceID: "device-9", Cwd: sensitiveCwd}
+			localBackend := mocks.NewMockPTYBackend(ctrl)
+			remoteBackend := mocks.NewMockPTYBackend(ctrl)
+			if tt.startStage == "ptyOpen" {
+				remoteBackend.EXPECT().Open(gomock.Any(), pty.Spec{
+					Cwd: sensitiveCwd, Command: sensitiveCommand, Cols: 80, Rows: 24,
+				}).Return(nil, tt.startErr).Times(1)
+			}
+			factoryCalls := 0
+			svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(localBackend,
+				func(string) (terminal_svc.PTYBackend, error) {
+					factoryCalls++
+					if tt.startStage == "backendSelect" {
+						return nil, tt.startErr
+					}
+					return remoteBackend, nil
+				}), terminal_svc.NoopEmitter{})
+			svc.SetCommandScopeResolver(func(
+				context.Context,
+				terminal_svc.ResolveCommandScopeRequest,
+			) (*terminal_svc.CommandScope, error) {
+				return wantScope, nil
+			})
+			defer svc.Shutdown()
+			core, logs := observer.New(zapcore.DebugLevel)
+			ctx := logger.WithContextLogger(context.Background(), zap.New(core))
 
-	require.NoError(t, err)
-	require.NotNil(t, response)
-	assert.Equal(t, *wantScope, response.Scope)
-	assert.Equal(t, startErr.Error(), response.StartError)
-	assert.Equal(t, 1, resolveCalls)
-	assert.Equal(t, 1, factoryCalls)
-	require.Equal(t, 1, logs.Len())
-	assert.Zero(t, logs.FilterMessage("terminal_svc.RunCommand: command started").Len())
-	assert.Zero(t, logs.FilterMessage("terminal_svc.RunCommand: command exited").Len())
-	entry := logs.All()[0]
-	assert.Equal(t, zapcore.WarnLevel, entry.Level)
-	assert.Equal(t, "terminal_svc.RunCommand: open command failed", entry.Message)
-	assert.Equal(t, map[string]any{
-		"sessionId":  int64(72),
-		"terminalId": "terminal-2",
-		"deviceId":   "device-9",
-		"errorClass": "terminalCommandStartFailed",
-	}, entry.ContextMap())
-	structuredFields, marshalErr := json.Marshal(entry.ContextMap())
-	require.NoError(t, marshalErr)
-	observedLog := entry.Message + string(structuredFields)
-	for _, sensitive := range []string{sensitiveCommand, "fixture-sensitive-token", sensitiveCwd, sensitiveShell} {
-		assert.NotContains(t, observedLog, sensitive)
+			response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
+				TerminalID: "terminal-2",
+				SessionID:  72,
+				Command:    sensitiveCommand,
+				Cols:       80,
+				Rows:       24,
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, response)
+			assert.Equal(t, *wantScope, response.Scope)
+			assert.Equal(t, tt.startErr.Error(), response.StartError)
+			assert.Equal(t, 1, factoryCalls)
+			require.Equal(t, 1, logs.Len())
+			assert.Zero(t, logs.FilterMessage("terminal_svc.RunCommand: command started").Len())
+			assert.Zero(t, logs.FilterMessage("terminal_svc.RunCommand: command exited").Len())
+			entry := logs.All()[0]
+			assert.Equal(t, zapcore.WarnLevel, entry.Level)
+			assert.Equal(t, "terminal_svc.RunCommand: open command failed", entry.Message)
+			assert.Equal(t, map[string]any{
+				"sessionId":     int64(72),
+				"terminalId":    "terminal-2",
+				"deviceId":      "device-9",
+				"startStage":    tt.startStage,
+				"errorCategory": tt.errorCategory,
+				"errorClass":    "terminalCommandStartFailed",
+			}, entry.ContextMap())
+			structuredEntry, marshalErr := json.Marshal(entry)
+			require.NoError(t, marshalErr)
+			observedLog := string(structuredEntry)
+			assert.NotContains(t, observedLog, "fixture-sensitive")
+			assert.NotContains(t, observedLog, tt.startErr.Error())
+		})
 	}
 }
 
