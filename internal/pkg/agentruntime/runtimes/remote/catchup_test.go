@@ -136,6 +136,72 @@ func TestCatchUpSessions_NoLiveRun_ReplaysIntoSynthesizedTurn(t *testing.T) {
 	assert.Equal(t, int64(6), saved.Seq, "补齐完游标要推到日志末尾,否则下次开 App 再重放一遍")
 }
 
+// Given 补齐把一条会话补完,而 daemon 说它已经空闲(此后不会再有推送),When 补齐返回,
+// Then 补齐登记与自主轮镜像一并收摊:轮次流关掉(上层 watcher goroutine 随之退出)、
+// liveSessionIDs 不再含它、hasLiveRun 归假。
+//
+// 不收摊的代价按会话数累加,且到进程退出都不还:
+//   - tracked 只在 failSession 删,于是 hasLiveRun() 永远为真 —— 此后每次断连都要为
+//     早就结束的会话跑完整退避 + 重接管;
+//   - autoSessions 条目只由 closeAllAutoSessions 关,于是每条补齐过的会话留下一个
+//     常驻 goroutine,还撑大 liveSessionIDs(),让之后每次重连把它们全部重新接管。
+func TestCatchUpSessions_FinishedSession_ReleasesTrackingAndWatcher(t *testing.T) {
+	journal := []wire.JournaledNotification{
+		journaledEvent(4, "away-a"),
+		journaledDone(5, "sonnet"),
+	}
+	conn := restartConn([]wire.SessionSummary{{
+		SessionID:      rigSessionID,
+		LifecycleState: wire.SessionLifecycleIdle,
+		LatestSeq:      5,
+	}}, journal)
+	rt, _, _ := newRestartRuntime(t, conn, 3)
+
+	turns := rt.AutonomousTurns(rigSessionID)
+	live, err := rt.CatchUpSessions(context.Background(), []int64{rigSessionID})
+	require.NoError(t, err)
+	require.Empty(t, live)
+
+	at := takeTurn(t, turns)
+	assert.Equal(t, []string{"away-a"}, drainTexts(t, at.Events, 2*time.Second),
+		"收摊不能吃掉补齐到的内容")
+
+	select {
+	case _, ok := <-turns:
+		assert.False(t, ok, "轮次流必须关掉,上层的 watcher goroutine 才收得了工")
+	case <-time.After(2 * time.Second):
+		t.Fatal("轮次流没关:每条补齐过的会话都留下一个常驻 goroutine")
+	}
+	assert.Empty(t, rt.liveSessionIDs(),
+		"补完就结束的会话不该再进重连接管的名单")
+	assert.False(t, rt.hasLiveRun(),
+		"手上一轮都没有了:再断连不值得重连,否则会借回一条谁也不会归还的连接")
+}
+
+// Given daemon 说这条会话还在跑,When 补齐跑完,Then 登记与镜像都留着 —— 它接下来的
+// 推送要落在这里,断一次线也必须重连接回去。收摊只针对已经结束的那些。
+func TestCatchUpSessions_StillRunningSession_KeepsTrackingForReconnect(t *testing.T) {
+	conn := restartConn([]wire.SessionSummary{{
+		SessionID:      rigSessionID,
+		LifecycleState: wire.SessionLifecycleRunning,
+		LatestSeq:      3,
+	}}, nil)
+	rt, _, _ := newRestartRuntime(t, conn, 3)
+
+	turns := rt.AutonomousTurns(rigSessionID)
+	live, err := rt.CatchUpSessions(context.Background(), []int64{rigSessionID})
+	require.NoError(t, err)
+	assert.Equal(t, []int64{rigSessionID}, live)
+
+	select {
+	case _, ok := <-turns:
+		t.Fatalf("还在跑的会话不能收摊(closed=%v):它接下来的推送就没有落点了", !ok)
+	case <-time.After(50 * time.Millisecond):
+	}
+	assert.Equal(t, []int64{rigSessionID}, rt.liveSessionIDs())
+	assert.True(t, rt.hasLiveRun())
+}
+
 // Given daemon 交回的会话清单里,一条会话的最新 seq 与本地游标相等(断连期间它什么
 // 都没产生),另一条落下了一大段,而本地还认得第三条根本不在这台 daemon 上,
 // When 跑补齐,Then 只有真正落下内容的那条才发起 attach + pull。

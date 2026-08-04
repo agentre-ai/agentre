@@ -78,7 +78,51 @@ func (r *Runtime) CatchUpSessions(ctx context.Context, sessionIDs []int64) (live
 	logger.Ctx(ctx).Info("remote runtime: catching up sessions after restart",
 		zap.Int("requested", len(sessionIDs)), zap.Int("pulling", len(need)),
 		zap.Int("liveOnDaemon", len(live)))
-	return live, r.catchUpEach(ctx, need)
+	err = r.catchUpEach(ctx, need)
+	// 补完就收摊 —— 但只收 daemon 说不在跑的那些。放在这里(而不是 defer 到每条返回
+	// 路径)是有意的:清单都没问到时手上没有任何判据,把还在流的会话镜像关掉会让上层
+	// 把一条半截的回答按「正常跑完」落库。
+	r.releaseCaughtUp(sessionIDs, live)
+	return live, err
+}
+
+// releaseCaughtUp 把「补齐做完、daemon 那侧也不会再有推送」的会话就地收摊:摘掉补齐
+// 登记、关掉并摘掉自主轮镜像(上层挂在 out 上的 watcher goroutine 随之退出)。
+//
+// 不收摊的代价按会话数累加,且到进程退出都不还:tracked 只在 failSession 删,hasLiveRun()
+// 于是永远为真 —— 此后每次断连都要为早就结束的会话跑完整退避 + 重接管;autoSessions 条目
+// 只由 closeAllAutoSessions 关,于是每条补齐过的会话常驻一个 goroutine,还撑大
+// liveSessionIDs(),让之后每次重连把它们全部重新接管。
+//
+// 两类会话一条都不碰:daemon 说还在跑/等拍板的(推送还要落在这里,断线也必须重连接回去),
+// 以及本进程里正跑着一轮的(那一轮的收尾归 Run 自己)。
+//
+// 终止理由是 nil:daemon 说这条会话没在跑了,补齐的内容按重放区间天然完整 —— 说
+// 「被打断」或「连不上了」都是错的(R15 靠这个哨兵分文案)。
+func (r *Runtime) releaseCaughtUp(all, live []int64) {
+	liveSet := make(map[int64]struct{}, len(live))
+	for _, sid := range live {
+		liveSet[sid] = struct{}{}
+	}
+	r.mu.Lock()
+	autos := make([]*autoSession, 0, len(all))
+	for _, sid := range all {
+		if _, isLive := liveSet[sid]; isLive {
+			continue
+		}
+		if _, running := r.sessions[sid]; running {
+			continue
+		}
+		delete(r.tracked, sid)
+		if a, ok := r.autoSessions[sid]; ok {
+			autos = append(autos, a)
+			delete(r.autoSessions, sid)
+		}
+	}
+	r.mu.Unlock()
+	for _, a := range autos {
+		closeAutoSession(a, nil)
+	}
 }
 
 // needsCatchUp 清单里的 LatestSeq 与本地游标一比就知道这条会话落下了多少条。一条都

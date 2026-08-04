@@ -2,6 +2,7 @@ package chat_repo_test
 
 import (
 	"context"
+	"database/sql/driver"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -422,6 +423,39 @@ func TestSessionRepo_ResetActiveSessionsByIDs(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 
+	t.Run("id 多到超过 SQLite 参数上限时分批发,不塞进一条 IN ?", func(t *testing.T) {
+		ctx, _, mock := testutils.Database(t)
+
+		ids := make([]int64, 0, 900)
+		for i := 0; i < 900; i++ {
+			ids = append(ids, int64(1000+i))
+		}
+		// SQLite 的预编译参数上限最保守是 999(SQLITE_MAX_VARIABLE_NUMBER):一条
+		// 900 个 id 的 IN ? 再加上 SET 与其余 WHERE,整条语句直接被拒 —— 用户攒够
+		// 会话之后,启动补齐的收尾这一步就永远报错,判定结果一条都落不了库。
+		// 每批一条独立的语句(而不是一条横跨全部 id 的大事务):批次之间别的写入插得
+		// 进来,不会把流式写入按在 SQLite 的 busy timeout 上。
+		for start := 0; start < len(ids); start += 400 {
+			end := min(start+400, len(ids))
+			args := make([]driver.Value, 0, 5+end-start)
+			args = append(args, "error", sqlmock.AnyArg(), "running", "waiting", consts.ACTIVE)
+			for _, id := range ids[start:end] {
+				args = append(args, id)
+			}
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE `chat_sessions` SET `agent_status`=\\?,`updatetime`=\\? " +
+				"WHERE agent_status IN \\(\\?,\\?\\) AND status = \\? AND id IN ").
+				WithArgs(args...).
+				WillReturnResult(sqlmock.NewResult(0, int64(end-start)))
+			mock.ExpectCommit()
+		}
+
+		n, err := chat_repo.NewSession().ResetActiveSessionsByIDs(ctx, ids)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(900), n, "受影响行数是各批之和")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
 	t.Run("没有点名任何会话时一条 SQL 都不发", func(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)
 
@@ -527,11 +561,19 @@ func TestSessionRepo_UpdateEventCursor(t *testing.T) {
 // 没有可补齐的远端日志),exec_daemon_fingerprint <> ” 排除没有实例标识的行 ——
 // 游标只在它所属的那条通知日志里有意义,标识为空时 LoadCursor 一律判失效,拿它去
 // attach 只会白发一轮 RPC。
+//
+// 取材还必须**有界**:补齐会为每条会话装一个消费方、加一份池连接引用、开一条自主轮
+// 监视,而这条查询原本返回「历史上曾远端执行过的每一条」会话 —— 用得久了就是几千条。
+// 两个上界都有依据:daemon 的通知日志只留 30 天(daemon.defaultJournalRetention),
+// 更老的会话补齐能拿回来的是空的;仍停在 running / waiting 的行不受时间窗限制并排在
+// 最前 —— 只有 daemon 能给它们判据,漏掉它们就是界面上一条永远转圈的会话。
 func TestSessionRepo_ListRemoteExecSessions(t *testing.T) {
 	ctx, _, mock := testutils.Database(t)
 
-	mock.ExpectQuery("SELECT \\* FROM `chat_sessions` WHERE exec_device_id > \\? AND exec_daemon_fingerprint <> \\? AND status = \\? ORDER BY id").
-		WithArgs(int64(0), "", consts.ACTIVE).
+	mock.ExpectQuery("SELECT \\* FROM `chat_sessions` WHERE exec_device_id > \\? AND exec_daemon_fingerprint <> \\? AND status = \\? "+
+		"AND \\(agent_status IN \\(\\?,\\?\\) OR updatetime >= \\?\\) "+
+		"ORDER BY CASE WHEN agent_status IN \\('running','waiting'\\) THEN 0 ELSE 1 END, updatetime DESC, id DESC LIMIT \\?").
+		WithArgs(int64(0), "", consts.ACTIVE, "running", "waiting", sqlmock.AnyArg(), 200).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "agent_id", "agent_status", "status", "exec_device_id", "exec_daemon_fingerprint", "event_cursor"}).
 			AddRow(1, 7, "running", consts.ACTIVE, 3, "sha256:beef", 17).
 			AddRow(2, 7, "idle", consts.ACTIVE, 4, "sha256:cafe", 0))

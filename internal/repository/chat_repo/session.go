@@ -57,6 +57,11 @@ type SessionRepo interface {
 	//
 	// 实例标识为空的行一并排除:游标只在它所属的那条通知日志里有意义,标识为空时
 	// LoadCursor 一律判失效,对它发起补齐只是白跑一轮 RPC。
+	//
+	// 取材是**有界**的(见 catchUpWindow / catchUpLimit):补齐会为每条会话装一个轮次
+	// 消费方、加一份池连接引用、开一条自主轮监视,所以它不能返回「历史上曾远端执行过的
+	// 每一条」。落在界外的会话不会被补齐、也不会被判定(一行都不碰),下次用户在它上面
+	// 发消息时照常走 borrow → attach,该拉的日志一条不少。
 	ListRemoteExecSessions(ctx context.Context) ([]*chat_entity.Session, error)
 	// MarkRead 单调推进 last_read_at: 仅当 ts 严格大于当前值时写入。
 	// 避免 stream-done 与 LoadSession 乱序时把已读时间冲回旧值。
@@ -78,7 +83,8 @@ type SessionRepo interface {
 	// (见 ResetActiveSessionsByIDs)。
 	ResetActiveSessions(ctx context.Context) (int64, error)
 	// ResetActiveSessionsByIDs 把点名的这些会话里还停在 running / waiting 的翻成
-	// 'error',返回受影响行数。空列表不发 SQL。
+	// 'error',返回受影响行数。空列表不发 SQL;id 多了按 resetIDChunk 分批发,
+	// 一条塞满的 IN ? 会撞上 SQLite 的预编译参数上限。
 	//
 	// 它是启动期清理在远端会话那一半的落点:补齐连上 daemon、拿到会话清单之后,
 	// daemon 说不在跑的那些才由它收尾。
@@ -405,11 +411,29 @@ func (r *sessionRepo) UpdateExecDaemon(ctx context.Context, sessionID int64, dev
 		}).Error
 }
 
+// catchUpWindow 启动补齐回头看多久。与 daemon 的通知日志留存窗口对齐
+// (internal/daemon 的 defaultJournalRetention = 30 天):一条会话安静满 30 天,它高
+// 水位以下的日志已经被 daemon 回收,再对它发补齐拿回来的是空的。
+const catchUpWindow = 30 * 24 * time.Hour
+
+// catchUpLimit 一次启动补齐最多认领多少条会话。补齐会为**每条**会话装一个轮次消费方、
+// 加一份池连接引用、开一条自主轮监视 goroutine,所以取材必须有上界;200 条已经远超
+// 「一台 daemon 上还可能有新内容的会话」的实际量级,同时把收尾那一步的 id 数压在
+// SQLite 最保守的参数上限(999)以内。
+const catchUpLimit = 200
+
 func (r *sessionRepo) ListRemoteExecSessions(ctx context.Context) ([]*chat_entity.Session, error) {
 	var rows []*chat_entity.Session
+	cutoff := time.Now().Add(-catchUpWindow).UnixMilli()
 	err := db.Ctx(ctx).
-		Where("exec_device_id > ? AND exec_daemon_fingerprint <> ? AND status = ?", int64(0), "", consts.ACTIVE).
-		Order("id").
+		// 时间窗之外的会话没有可补的日志了;但仍停在 running / waiting 的行不受它限制
+		// —— 只有 daemon 能给它们判据,漏掉一条就是界面上一条永远转圈的会话。
+		Where("exec_device_id > ? AND exec_daemon_fingerprint <> ? AND status = ? "+
+			"AND (agent_status IN ? OR updatetime >= ?)",
+			int64(0), "", consts.ACTIVE, []string{"running", "waiting"}, cutoff).
+		// 排序决定上限砍掉谁:等判据的排最前,其余按最近活动。
+		Order("CASE WHEN agent_status IN ('running','waiting') THEN 0 ELSE 1 END, updatetime DESC, id DESC").
+		Limit(catchUpLimit).
 		Find(&rows).Error
 	applySessionDerivedFields(rows)
 	return rows, err
@@ -446,19 +470,29 @@ func (r *sessionRepo) ResetActiveSessions(ctx context.Context) (int64, error) {
 	return res.RowsAffected, res.Error
 }
 
+// resetIDChunk 一条 IN ? 最多塞多少个 id。SQLite 的预编译参数上限最保守是 999
+// (SQLITE_MAX_VARIABLE_NUMBER),SET 与其余 WHERE 还要占几个 —— 攒够会话之后整条
+// 语句会被直接拒掉,补齐判定的结果一条都落不了库。
+const resetIDChunk = 400
+
 func (r *sessionRepo) ResetActiveSessionsByIDs(ctx context.Context, ids []int64) (int64, error) {
-	if len(ids) == 0 {
-		// 空列表发出去是 WHERE id IN ()：不同方言下要么语法错、要么退化成全表更新。
-		return 0, nil
+	// 空列表发出去是 WHERE id IN ()：不同方言下要么语法错、要么退化成全表更新。
+	// 下面的循环对空列表天然一条 SQL 都不发。
+	var affected int64
+	for start := 0; start < len(ids); start += resetIDChunk {
+		res := db.Ctx(ctx).Model(&chat_entity.Session{}).
+			Where("agent_status IN ? AND status = ? AND id IN ?",
+				[]string{"running", "waiting"}, consts.ACTIVE, ids[start:min(start+resetIDChunk, len(ids))]).
+			Updates(map[string]any{
+				"agent_status": "error",
+				"updatetime":   time.Now().UnixMilli(),
+			})
+		if res.Error != nil {
+			return affected, res.Error
+		}
+		affected += res.RowsAffected
 	}
-	res := db.Ctx(ctx).Model(&chat_entity.Session{}).
-		Where("agent_status IN ? AND status = ? AND id IN ?",
-			[]string{"running", "waiting"}, consts.ACTIVE, ids).
-		Updates(map[string]any{
-			"agent_status": "error",
-			"updatetime":   time.Now().UnixMilli(),
-		})
-	return res.RowsAffected, res.Error
+	return affected, nil
 }
 
 func (r *sessionRepo) SoftDelete(ctx context.Context, id int64) error {

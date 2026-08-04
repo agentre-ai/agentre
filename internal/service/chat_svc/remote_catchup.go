@@ -124,6 +124,33 @@ func (s *chatSvc) catchUpDevice(ctx context.Context, deviceID int64, sessions []
 	// 判据只覆盖**真的问过 daemon 的那批**:解析不出后端的会话没进 ready,daemon 也就
 	// 没为它表过态 —— 拿全量来判等于把「我补不了它」当成「daemon 说它没在跑」。
 	s.failSessionsNotLiveOnDaemon(ctx, ready, live)
+	s.releaseCatchUpRefs(deviceID, sids, live)
+}
+
+// releaseCatchUpRefs 把补齐借的池连接引用还回去 —— daemon 说还在跑的那些除外。
+//
+// 引用是 remoteRuntimeForDevice 按会话逐条加的,而唯一的减引用 releaseRemoteRuntime
+// 只从 runTurn 的 defer 调:补齐出来的会话永远不跑 turn,不还就是 entry.sessions 永不
+// 清空、lease.Release() 永不发生 —— 那条 daemon 连接在整个进程存活期内都不能被空闲回收,
+// 开销还随「历史上远端跑过的会话数」线性增长。
+//
+// 两类会话不还:daemon 说还在跑/等拍板的(补齐为它接管了推送流,连接一旦被回收,它此后
+// 推的每一条通知就都没有目标),以及本进程里正跑着一轮的(那一份引用归 runTurn 的 defer
+// 还,这里抢着还会把它脚下的连接抽走)。
+func (s *chatSvc) releaseCatchUpRefs(deviceID int64, all, live []int64) {
+	liveSet := make(map[int64]struct{}, len(live))
+	for _, sid := range live {
+		liveSet[sid] = struct{}{}
+	}
+	for _, sid := range all {
+		if _, isLive := liveSet[sid]; isLive {
+			continue
+		}
+		if _, busy := s.activeCancels.Load(sid); busy {
+			continue
+		}
+		s.releaseRemoteRuntime(deviceID, sid)
+	}
 }
 
 // failSessionsNotLiveOnDaemon 把这台 daemon 上「它自己都说不在跑」的那些会话收尾成
