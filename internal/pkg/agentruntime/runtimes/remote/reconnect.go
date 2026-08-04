@@ -265,12 +265,14 @@ func (r *Runtime) dispatchNotification(
 	}
 	res, err := h(r, ctx, raw)
 	ss.cursor = head.Seq
+	// 待落库值与内存游标在同一把 ss.mu 之下更新,见 recordCursor。
+	r.recordCursor(head.SessionID, head.Seq)
 	ss.mu.Unlock()
-	r.markCursorDirty(head.SessionID, head.Seq)
-	if terminalNotifyMethods[method] {
-		// 轮末这一条不能压在防抖窗口里:用户拿到答案随手关窗(2 秒内进程就没了),
-		// 库里的游标会停在这一轮的中段,下一轮的第一条实时帧对着它判成跳号,把上一轮
-		// 的尾巴整段重放进新的一轮 —— 硬不变量的「无重复」当场破掉。
+	// cursorFlush<=0 是同步落库模式(测试用)。轮末那一条则不能压在防抖窗口里:用户
+	// 拿到答案随手关窗(2 秒内进程就没了),库里的游标会停在这一轮的中段,下一轮的第
+	// 一条实时帧对着它判成跳号,把上一轮的尾巴整段重放进新的一轮 —— 硬不变量的
+	// 「无重复」当场破掉。
+	if r.cursorFlush <= 0 || terminalNotifyMethods[method] {
 		r.flushCursors()
 	}
 	return res, err
@@ -387,8 +389,11 @@ func (r *Runtime) skipSeq(sid int64, ss *sessionSync, seq int64) {
 		return
 	}
 	ss.cursor = seq
+	r.recordCursor(sid, seq)
 	ss.mu.Unlock()
-	r.markCursorDirty(sid, seq)
+	if r.cursorFlush <= 0 { // 同步落库模式(测试用)
+		r.flushCursors()
+	}
 }
 
 // stampSeq 按 method 把日志载荷解成对应的帧、盖上 seq、再重新序列化。
@@ -597,20 +602,25 @@ func (r *Runtime) catchUpEach(ctx context.Context, sids []int64) error {
 }
 
 // catchUpSession 是补齐三步。顺序是硬的:
+//  0. 钉游标 —— 校验实例标识并读回游标,**必须在 attach 之前**(见 pinCursorFor:
+//     接管一受理,daemon 就把实时帧推到这条连接上并并发推进游标,越界守卫要比对的
+//     是接管那一刻的值)。这一步只读桌面库、不发 RPC,期间 daemon 落下的通知照常
+//     进日志,随后的 pull 一条不落地取回来;
 //  1. attach —— 认领实时推送流 **与** 控制面(少了它,补齐完仍收不到实时通知,
 //     提交决策还会被 daemon 的幂等折叠吞掉,会话永久挂起);
-//  2. 校验实例标识 + 按游标翻页拉取并重放;
+//  2. 按游标翻页拉取并重放;
 //  3. pendingWaiters —— 断连前就已阻塞、宣告事件早在游标之前的那些待决策,
 //     只能靠这一步找回来。
 func (r *Runtime) catchUpSession(ctx context.Context, sid int64) error {
+	ss, pinned, err := r.pinCursorFor(ctx, sid)
+	if err != nil {
+		return err
+	}
 	highWater, err := r.attachSession(ctx, sid)
 	if err != nil {
 		return err
 	}
-	ss, err := r.resetCursorFor(ctx, sid, highWater)
-	if err != nil {
-		return err
-	}
+	r.dropCursorAboveHighWater(ctx, sid, ss, pinned, highWater)
 	replayed, err := r.pullUntilCaughtUp(ctx, sid, ss)
 	if err != nil {
 		return err
@@ -659,7 +669,15 @@ func (r *Runtime) attachSession(ctx context.Context, sid int64) (int64, error) {
 	return 0, sentinel
 }
 
-// resetCursorFor 重新校验实例标识并取回游标。
+// pinCursorFor 在**接管之前**把这条会话的游标钉住:校验实例标识、读回持久化游标、与
+// 内存里的取较大者,交回钉住的那个值(越界守卫唯一该比对的东西)。
+//
+// 为什么非在接管之前不可:daemon 在 Attach 受理之后**立刻**把本连接认领为该会话的推送
+// 目标(daemon.go:739),此后的实时帧由读循环消费并推进 ss.cursor —— 一条已经完全补齐、
+// 仍在流式输出的会话(游标 == 高水位)重连时,认领后紧跟着的那一条就会把游标推过高水位。
+// 越界守卫若比对这个被并发推进过的值,就把一次**正常的实时推进**判成日志回退:整本重放、
+// 用户正在看的回答被再追加一遍、库里还落一个 0 让下次启动照做一遍。接管之前 daemon 还没
+// 认领本连接,这条会话一条实时帧也进不来,钉在这里的值没人能并发推进它。
 //
 // 两种失败要分开:实例标识对不上是 R12 的**判定**(errSessionUnrecoverable,这条
 // 会话就此收尾);读不出来只是这一次没读到(库正忙、事务冲突),交出普通错误让整轮
@@ -668,9 +686,7 @@ func (r *Runtime) attachSession(ctx context.Context, sid int64) (int64, error) {
 //
 // 内存游标与库里的取较大者:库里的那份是防抖落库的,进程内已经消费到更远是常事,
 // 用旧值会把已经交付过的通知再重放一遍 —— 那是重复,同样破坏硬不变量。
-//
-// highWater 是接管时 daemon 交回的高水位,取完游标后据它做一次越界校验。
-func (r *Runtime) resetCursorFor(ctx context.Context, sid, highWater int64) (*sessionSync, error) {
+func (r *Runtime) pinCursorFor(ctx context.Context, sid int64) (*sessionSync, int64, error) {
 	r.stateMu.Lock()
 	ss, ok := r.sessionState[sid]
 	if !ok {
@@ -683,53 +699,57 @@ func (r *Runtime) resetCursorFor(ctx context.Context, sid, highWater int64) (*se
 	if port == nil {
 		ss.mu.Lock()
 		ss.loaded = true
+		pinned := ss.cursor
 		ss.mu.Unlock()
-		r.dropCursorAboveHighWater(ctx, sid, ss, highWater)
-		return ss, nil
+		return ss, pinned, nil
 	}
 	seq, valid, err := port.LoadCursor(ctx, sid, r.fingerprint())
 	if err != nil {
 		logger.Ctx(ctx).Warn("remote runtime: load session cursor failed on reconnect",
 			zap.Int64("sid", sid), zap.Error(err))
-		return nil, fmt.Errorf("load session cursor: %w", err)
+		return nil, 0, fmt.Errorf("load session cursor: %w", err)
 	}
 	if !valid {
 		// R12:实例标识对不上(daemon 重装 / 换机 / 数据目录被清)。记录的游标指向
 		// 另一条通知日志,拿它去拉会静默跳过整段转录,只能按已中断处理。
-		return nil, errSessionUnrecoverable
+		return nil, 0, errSessionUnrecoverable
 	}
 	ss.mu.Lock()
 	ss.loaded = true
 	if seq > ss.cursor {
 		ss.cursor = seq
 	}
+	pinned := ss.cursor
 	ss.mu.Unlock()
-	r.dropCursorAboveHighWater(ctx, sid, ss, highWater)
-	return ss, nil
+	return ss, pinned, nil
 }
 
 // dropCursorAboveHighWater 拿接管交回的高水位校验游标。游标只可能来自 daemon 发过的
 // seq,正常永远不会越过高水位;一旦越过,说明那台 daemon 的通知日志退了 —— agentred.db
 // 被恢复 / 截断而 state.json(连同 TOFU 指纹)还在,R12 的指纹校验因此照常放行。
 //
+// 比对的是 pinned —— pinCursorFor 在接管之前钉住的那个快照,**不是**此刻的 ss.cursor:
+// 接管一受理,daemon 就开始把实时帧推到这条连接上,读循环对每条顺序帧都推进 ss.cursor,
+// 拿它去比等于把「日志正常地长出了下一条」判成「日志退了」。
+//
 // 不管的后果不是丢几条:此后每一条实时帧都满足 seq <= 游标,在 dispatchNotification
 // 的第一条规则里被静默丢弃,会话没有跳号、没有错误、Debug 以上没有任何日志地冻住。
 // 所以把游标归零、从头补齐,并留一条 Warn 让人看得见。
 //
-// 库里那份也要一并作废(直写而不走防抖:markCursorDirty 只留较大者,归零永远写不进去)。
-// 若只作废内存里的那份,下一次进程启动会把越界的老值原样读回来,同一个冻结重演一遍。
-func (r *Runtime) dropCursorAboveHighWater(ctx context.Context, sid int64, ss *sessionSync, highWater int64) {
-	ss.mu.Lock()
-	if ss.cursor <= highWater {
-		ss.mu.Unlock()
+// 库里那份也要一并作废,否则下一次进程启动会把越界的老值原样读回来,同一个冻结重演
+// 一遍。记(在 ss.mu 之下)+ 立刻 flush:防抖表里可能正压着一条更大的推进,只作废内存
+// 那份会让它随后落库,把刚作废掉的值又写回去(见 recordCursor / flushCursors)。
+func (r *Runtime) dropCursorAboveHighWater(ctx context.Context, sid int64, ss *sessionSync, pinned, highWater int64) {
+	if pinned <= highWater {
 		return
 	}
-	stale := ss.cursor
+	ss.mu.Lock()
 	ss.cursor = 0
+	r.recordCursor(sid, 0)
 	ss.mu.Unlock()
 	logger.Ctx(ctx).Warn("remote runtime: cursor beyond daemon high-water, restarting catch-up from scratch",
-		zap.Int64("sid", sid), zap.Int64("cursor", stale), zap.Int64("latestSeq", highWater))
-	r.saveCursor(sid, 0)
+		zap.Int64("sid", sid), zap.Int64("cursor", pinned), zap.Int64("latestSeq", highWater))
+	r.flushCursors()
 }
 
 // dropCursorBelowOldest 把落在「已被回收掉的那一段」里的游标抬到现存最老的一行之前。
@@ -757,10 +777,11 @@ func (r *Runtime) dropCursorBelowOldest(ctx context.Context, sid int64, ss *sess
 	}
 	stale := ss.cursor
 	ss.cursor = oldest - 1
+	r.recordCursor(sid, oldest-1)
 	ss.mu.Unlock()
 	logger.Ctx(ctx).Warn("remote runtime: cursor below daemon's oldest surviving seq, that range was reclaimed",
 		zap.Int64("sid", sid), zap.Int64("cursor", stale), zap.Int64("oldestSeq", oldest))
-	r.saveCursor(sid, oldest-1)
+	r.flushCursors()
 }
 
 // ── 会话收尾 ────────────────────────────────────────────────────────────────
@@ -999,31 +1020,40 @@ func isMethodNotFound(err error) bool {
 
 // ── 游标落库(防抖)─────────────────────────────────────────────────────────
 
-// markCursorDirty 记下待落库的游标。SaveCursor 一次一个事务且 bump updatetime,
-// 而这里是每条通知都会走的热路径 —— 按 cursorFlush 合并写。
-func (r *Runtime) markCursorDirty(sid, seq int64) {
+// recordCursor 记下待落库的游标。SaveCursor 一次一个事务且 bump updatetime,而这里是
+// 每条通知都会走的热路径 —— 只记不写,真正落库交给 flushCursors 按 cursorFlush 合并。
+//
+// 纪律:**调用方必须持 ss.mu**。待落库值与内存游标必须在同一把锁下更新,否则「顺序帧
+// 推进」与「守卫作废」各自记各自的,谁后落库由调度说了算 —— 库里那份就会与内存对不上
+// (作废归零之后又被一条更早的推进覆盖回去,下次启动照着它把整段转录再重放一遍)。
+//
+// 也因此这里覆盖而不是取较大者:两条作废路径本来就是要把一个更小的值写下去,取较大者
+// 会让它永远写不进库;定序由 ss.mu 给出 —— 最后记下的那个,就是最后写进内存游标的那个。
+func (r *Runtime) recordCursor(sid, seq int64) {
 	if r.cursor() == nil {
-		return
-	}
-	if r.cursorFlush <= 0 {
-		r.saveCursor(sid, seq)
 		return
 	}
 	r.cursorMu.Lock()
 	if r.cursorDirty == nil {
 		r.cursorDirty = map[int64]int64{}
 	}
-	if cur, ok := r.cursorDirty[sid]; !ok || seq > cur {
-		r.cursorDirty[sid] = seq
-	}
-	if r.cursorTimer == nil {
+	r.cursorDirty[sid] = seq
+	if r.cursorFlush > 0 && r.cursorTimer == nil {
 		r.cursorTimer = time.AfterFunc(r.cursorFlush, r.flushCursors)
 	}
 	r.cursorMu.Unlock()
 }
 
-// flushCursors 把攒下的游标一次性落库。断连、放弃、Close 时都会主动调一次。
+// flushCursors 把攒下的游标一次性落库。断连、放弃、Close、游标作废时都会主动调一次。
+//
+// 取走脏表与真正落库合在 cursorFlushMu 之下:两次并发 flush 各自取走一份快照后,落库
+// 先后由调度决定,后写的那次可能拿的是更早取走的那份 —— 库里于是停在一个已经被覆盖掉
+// 的值上。串起来之后「最后一次落库写的就是最后记下的那个值」才成立。
+//
+// 写库在 cursorMu 之外:它是一次事务,压在攒批锁里会把持 ss.mu 的通知热路径按在库上。
 func (r *Runtime) flushCursors() {
+	r.cursorFlushMu.Lock()
+	defer r.cursorFlushMu.Unlock()
 	r.cursorMu.Lock()
 	if r.cursorTimer != nil {
 		r.cursorTimer.Stop()

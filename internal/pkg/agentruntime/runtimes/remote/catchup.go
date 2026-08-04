@@ -118,8 +118,9 @@ func liveOnDaemon(sum wire.SessionSummary) bool {
 // 按中断收尾:失败理由用 ErrRunInterrupted 而不是 ErrDaemonDisconnected,连接明明是
 // 通的,说「连不上了」是错的(R15 要求这两种情形由文案区分)。
 func (r *Runtime) catchUpInterrupted(ctx context.Context, sid int64, sum wire.SessionSummary) {
-	ss, err := r.resetCursorFor(ctx, sid, sum.LatestSeq)
+	ss, pinned, err := r.pinCursorFor(ctx, sid)
 	if err == nil {
+		r.dropCursorAboveHighWater(ctx, sid, ss, pinned, sum.LatestSeq)
 		var replayed int
 		if replayed, err = r.pullUntilCaughtUp(ctx, sid, ss); err == nil {
 			logger.Ctx(ctx).Info("remote runtime: interrupted session history caught up",

@@ -888,6 +888,138 @@ func TestReconnect_CursorEqualsDaemonHighWater_KeepsCursor(t *testing.T) {
 	assert.NotContains(t, rig.cursor.savedSeqs(), int64(0), "持平不是越界,不得作废游标")
 }
 
+// deliverLiveTexts 按 seq 1..n 依次投递实时事件帧,把会话的游标推到 n。
+func deliverLiveTexts(t *testing.T, c *fakeConn, texts []string) {
+	t.Helper()
+	for i, text := range texts {
+		ev, err := json.Marshal(agentruntime.TextDelta{Text: text})
+		require.NoError(t, err)
+		c.deliver(t, wire.NotifyEvent, wire.EventFrame{
+			SessionID: rigSessionID, Event: ev, Seq: int64(i + 1),
+		})
+	}
+}
+
+// attachPushingLiveFrame 造一条重连后的连接:接管**受理之后、应答回到客户端之前**,
+// daemon 已经把本连接认领为该会话的推送目标(daemon.go:739),认领后落下的第一条通知
+// 因此可以先于 attach 应答被读循环处理 —— 而此刻 catchUpSession 正阻塞在这次 Call 上。
+//
+// 用一条真 goroutine(读循环的替身)复现这个交错,再用 channel 把它钉死:交错是确定的,
+// 但 dispatchNotification 与 attach/复位序列确实跑在两条 goroutine 上,-race 看得见。
+func attachPushingLiveFrame(
+	highWater int64, live wire.JournaledNotification, journal []wire.JournaledNotification,
+) *fakeConn {
+	c := newFakeConn()
+	var once sync.Once
+	c.script(func(method string, params, result any) error {
+		switch method {
+		case wire.MethodSessionAttach:
+			once.Do(func() {
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					raw, err := stampSeq(live.Method, live.Params, live.Seq)
+					if err != nil {
+						return
+					}
+					c.dispatchRaw(live.Method, raw)
+				}()
+				<-done
+			})
+			*(result.(*wire.SessionAttachResult)) = wire.SessionAttachResult{
+				SessionID: rigSessionID, LifecycleState: wire.SessionLifecycleRunning,
+				LatestSeq: highWater,
+			}
+		case wire.MethodSessionPull:
+			p := params.(wire.SessionPullParams)
+			out := wire.SessionPullResult{Cursor: p.Cursor}
+			for _, n := range journal {
+				if n.Seq > p.Cursor {
+					out.Notifications = append(out.Notifications, n)
+					out.Cursor = n.Seq
+				}
+			}
+			*(result.(*wire.SessionPullResult)) = out
+		}
+		return nil
+	})
+	return c
+}
+
+// Given 一条已完全补齐、仍在流式输出的会话(游标 3 == daemon 高水位 3)重连,
+// When daemon 在接管受理后立刻推来 seq=4,读循环在客户端还没读完自己的游标时就消费了它,
+// Then 越界守卫不得把这次**正常的实时推进**当成游标越界。
+//
+// 越界守卫比对的必须是接管快照那一刻的游标,而不是被实时派发并发推进过的那个。比错了
+// 就是:游标归零 → 整本日志重放 → 用户正在看的那段回答被再追加一遍,库里还落下一个 0,
+// 下次启动照着 0 再来一遍。既有的 TestReconnect_CursorAboveDaemonHighWater_* 全序执行,
+// 结构上看不见这一条。
+func TestReconnect_LiveFrameDuringAttach_DoesNotInvalidateCursor(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	// 断连前:一轮正在流式输出,游标已经被实时帧推到 3。
+	deliverLiveTexts(t, rig.conn1, []string{"one", "two", "three"})
+	rig.cursor.setLoad(func(int64, string) (int64, bool, error) { return 3, true, nil })
+
+	// daemon 侧接管快照是 3;认领之后紧接着落下并推来 seq=4(它也进了日志)。
+	journal := []wire.JournaledNotification{
+		journaledEvent(1, "one"), journaledEvent(2, "two"),
+		journaledEvent(3, "three"), journaledEvent(4, "live-four"),
+	}
+	conn2 := attachPushingLiveFrame(3, journaledEvent(4, "live-four"), journal)
+	rig.queue(conn2, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	require.Eventually(t, func() bool {
+		return len(conn2.methodCalls(wire.MethodSessionPendingWaiters)) > 0
+	}, 3*time.Second, 5*time.Millisecond, "补齐应完成")
+	conn2.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{SessionID: rigSessionID, Seq: 5})
+
+	texts := drainTexts(t, rig.events, 3*time.Second)
+	assert.Equal(t, []string{"one", "two", "three", "live-four"}, texts,
+		"接管期间到达的实时帧不是越界:整本重放会把用户正在看的回答再追加一遍")
+	assert.NotContains(t, rig.cursor.savedSeqs(), int64(0),
+		"不得把 0 写进库,否则下次启动照着它再重放一遍")
+	for _, c := range conn2.methodCalls(wire.MethodSessionPull) {
+		assert.NotEqual(t, int64(0), c.Params.(wire.SessionPullParams).Cursor,
+			"不得从头拉整本日志")
+	}
+}
+
+// Given 游标推进还压在防抖窗口里(库里那份落后于内存),When 越界守卫把游标连同库里
+// 那份一起作废,Then 之后任何一次 flush 都不得把作废掉的旧游标写回库。
+//
+// 作废走的是直写、推进走的是防抖攒批,两条路径谁先落库由定时器说了算:脏条目晚一步
+// 落下去,库里就停在一个已经被作废的值上,而内存里是 0 —— 下次启动读回那个值,同一段
+// 转录再重放一遍(F11 顺带要收的那条未证疑点)。
+func TestCursorInvalidation_OutlivesPendingDebouncedWrite(t *testing.T) {
+	rig := newReconnectRig(t, true)
+	// 防抖窗口设成一小时:落库只可能来自主动 flush,攒批与作废的定序因此是确定的。
+	rig.rt.cursorFlush = time.Hour
+
+	deliverLiveTexts(t, rig.conn1, []string{"a", "b", "c", "d", "e", "f", "g"})
+	require.Empty(t, rig.cursor.savedSeqs(), "轮中的每一条不该各写一次库")
+	rig.cursor.setLoad(func(int64, string) (int64, bool, error) { return 7, true, nil })
+
+	// daemon 的日志被恢复成空(高水位 0),接管后又推来一条 seq=8 —— 它把一个新的脏
+	// 条目记进防抖表,而紧接着的越界守卫要把游标作废掉。
+	conn2 := attachPushingLiveFrame(0, journaledEvent(8, "live-eight"), nil)
+	rig.queue(conn2, rigFingerprint, nil)
+
+	_ = rig.conn1.Close()
+
+	require.Eventually(t, func() bool {
+		return len(conn2.methodCalls(wire.MethodSessionPendingWaiters)) > 0
+	}, 3*time.Second, 5*time.Millisecond, "补齐应完成")
+	// 关窗 / 定时器到点 / 轮末 —— 任何一次 flush 都不得把作废前的旧游标写回去。
+	rig.rt.flushCursors()
+
+	saved := rig.cursor.savedSeqs()
+	require.NotEmpty(t, saved)
+	assert.Equal(t, int64(0), saved[len(saved)-1],
+		"作废之后不得再把旧游标写回库,否则下次启动重放整段")
+}
+
 // ── R18: 老 daemon 回落 ─────────────────────────────────────────────────────
 
 // Given 一台不认识补齐族 RPC 的老 daemon,When 连接断开,Then 立即回落到今天的
