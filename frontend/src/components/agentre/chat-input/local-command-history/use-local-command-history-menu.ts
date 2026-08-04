@@ -350,8 +350,21 @@ export function useLocalCommandHistoryMenu({
             setSelectedIndex(state.selectedIndex - 1);
           }
           return true;
-        case "Enter":
+        case "Enter": {
+          event.preventDefault();
+          const entry = state.items[state.selectedIndex] ?? state.items[0];
+          if (entry) pick(entry);
+          return true;
+        }
         case "Tab": {
+          if (
+            event.shiftKey ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey
+          ) {
+            return false;
+          }
           event.preventDefault();
           const entry = state.items[state.selectedIndex] ?? state.items[0];
           if (entry) pick(entry);

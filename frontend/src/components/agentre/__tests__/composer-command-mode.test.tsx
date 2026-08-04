@@ -42,12 +42,13 @@ beforeEach(() => {
   localCommandHistoryStore.clear(resolvedRemoteProjectScope);
 });
 
-function pressKey(editor: Editor, key: string) {
+function pressKey(editor: Editor, key: string, init: KeyboardEventInit = {}) {
   editor.view.dom.dispatchEvent(
     new KeyboardEvent("keydown", {
       key,
       bubbles: true,
       cancelable: true,
+      ...init,
     }),
   );
 }
@@ -159,6 +160,109 @@ describe("ChatComposer command mode", () => {
     expect(
       await screen.findByRole("option", { name: "pnpm test" }),
     ).toBeInTheDocument();
+  });
+
+  it("Given open history in ChatComposer, When Shift+Tab is pressed from the focused combobox, Then the draft, selection, highlighted row, and history stay intact while permission cycles exactly once", async () => {
+    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    localCommandHistoryStore.record(
+      historyScope,
+      "pnpm test --filter composer",
+      historyBase + 20,
+    );
+    localCommandHistoryStore.record(
+      historyScope,
+      "pnpm test",
+      historyBase + 10,
+    );
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onSubmit = vi.fn();
+    const onRunCommand = vi.fn();
+    const onShiftTab = vi.fn();
+
+    render(
+      <ChatComposer
+        editorRef={editorRef}
+        localCommandHistoryScope={historyScope}
+        onSubmit={onSubmit}
+        onRunCommand={onRunCommand}
+        onShiftTab={onShiftTab}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    act(() => {
+      editorRef.current!.commands.insertContent("!pnpm");
+      editorRef.current!.commands.focus("end");
+    });
+    await screen.findByRole("option", {
+      name: "pnpm test --filter composer",
+    });
+    act(() => pressKey(editorRef.current!, "ArrowDown"));
+    const highlightedOption = screen.getByRole("option", {
+      name: "pnpm test",
+    });
+    expect(highlightedOption).toHaveAttribute("aria-selected", "true");
+    const selectionBefore = {
+      from: editorRef.current!.state.selection.from,
+      to: editorRef.current!.state.selection.to,
+    };
+
+    act(() => pressKey(editorRef.current!, "Tab", { shiftKey: true }));
+
+    expect(onShiftTab).toHaveBeenCalledTimes(1);
+    expect(editorRef.current!.getText()).toBe("!pnpm");
+    expect(editorRef.current!.state.selection).toMatchObject(selectionBefore);
+    expect(highlightedOption).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.getByRole("listbox", { name: "Shell command history" }),
+    ).toBeInTheDocument();
+    expect(localCommandHistoryStore.list(historyScope)).toEqual([
+      {
+        command: "pnpm test --filter composer",
+        lastUsedAt: historyBase + 20,
+      },
+      { command: "pnpm test", lastUsedAt: historyBase + 10 },
+    ]);
+    expect(onRunCommand).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("Given a child control consumes Shift+Tab, When the event bubbles through ChatComposer, Then permission cycling is not invoked", async () => {
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onShiftTab = vi.fn();
+
+    render(
+      <ChatComposer
+        editorRef={editorRef}
+        onSubmit={() => undefined}
+        onShiftTab={onShiftTab}
+        permissionModeSlot={
+          <button
+            type="button"
+            data-testid="consuming-control"
+            onKeyDown={(event) => event.preventDefault()}
+          >
+            Mode
+          </button>
+        }
+      />,
+    );
+
+    const consumingControl = await screen.findByTestId("consuming-control");
+    consumingControl.focus();
+    act(() => {
+      consumingControl.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(onShiftTab).not.toHaveBeenCalled();
+    expect(consumingControl).toHaveFocus();
   });
 
   it("Given ChatComposer history Clear is keyboard-focused, When Shift+Tab is pressed, Then native reverse focus bypasses permission cycling", async () => {

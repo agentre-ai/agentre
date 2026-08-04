@@ -643,6 +643,7 @@ function ChatComposer({
   // （TipTap editor / 普通按钮）时都会冒泡到 form，preventDefault 拦掉默认 tab 切换。
   // 历史 Clear footer 保留原生反向焦点；编辑模式也不消费 Shift+Tab。
   function handleFormKeyDown(event: React.KeyboardEvent<HTMLFormElement>) {
+    if (event.defaultPrevented) return;
     if (
       !editing &&
       isEmpty &&

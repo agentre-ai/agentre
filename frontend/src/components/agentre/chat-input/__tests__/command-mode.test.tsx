@@ -29,13 +29,15 @@ beforeEach(() => {
 });
 
 /** 在编辑器的 contentEditable DOM 上派发一次 keydown，驱动 TipTap 菜单/提交路径。 */
-function pressKey(editor: Editor, key: string) {
+function pressKey(editor: Editor, key: string, init: KeyboardEventInit = {}) {
   const event = new KeyboardEvent("keydown", {
     key,
     bubbles: true,
     cancelable: true,
+    ...init,
   });
   editor.view.dom.dispatchEvent(event);
+  return event;
 }
 
 function pressEnter(editor: Editor) {
@@ -373,6 +375,74 @@ describe("AIChatInput command mode", () => {
 
     expect(onCommandSubmit).toHaveBeenCalledWith("git");
     expect(editor.getText()).toBe("");
+  });
+
+  it("Given open ranked history, When Shift+Tab is pressed and then plain Tab is pressed, Then Shift+Tab preserves the draft, selection, and menu while plain Tab only fills the highlighted command", async () => {
+    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    localCommandHistoryStore.record(
+      repoScope,
+      "git cherry-pick master",
+      historyBase + 10,
+    );
+    localCommandHistoryStore.record(
+      repoScope,
+      "git checkout main",
+      historyBase + 30,
+    );
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onCommandSubmit = vi.fn();
+    const onSubmit = vi.fn();
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={onSubmit}
+        onCommandSubmit={onCommandSubmit}
+      />,
+    );
+    const editor = editorRef.current!;
+
+    act(() => {
+      editor.commands.insertContent("!git ch ma");
+      editor.commands.focus("end");
+    });
+    await screen.findByRole("option", { name: "git checkout main" });
+    act(() => pressKey(editor, "ArrowDown"));
+    const highlightedOption = screen.getByRole("option", {
+      name: "git cherry-pick master",
+    });
+    expect(highlightedOption).toHaveAttribute("aria-selected", "true");
+    const selectionBefore = {
+      from: editor.state.selection.from,
+      to: editor.state.selection.to,
+    };
+
+    let shiftTabEvent!: KeyboardEvent;
+    act(() => {
+      shiftTabEvent = pressKey(editor, "Tab", { shiftKey: true });
+    });
+
+    expect(shiftTabEvent.defaultPrevented).toBe(false);
+    expect(editor.getText()).toBe("!git ch ma");
+    expect(editor.state.selection).toMatchObject(selectionBefore);
+    expect(highlightedOption).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.getByRole("listbox", { name: "Shell command history" }),
+    ).toBeInTheDocument();
+    expect(localCommandHistoryStore.list(repoScope)).toEqual([
+      { command: "git checkout main", lastUsedAt: historyBase + 30 },
+      { command: "git cherry-pick master", lastUsedAt: historyBase + 10 },
+    ]);
+    expect(onCommandSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    act(() => pressKey(editor, "Tab"));
+
+    expect(editor.getText()).toBe("!git cherry-pick master");
+    expect(onCommandSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 
   it.each(["Enter", "Tab"])(
