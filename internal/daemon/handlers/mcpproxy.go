@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -144,27 +143,10 @@ func NewMCPTunnelHandler(notifierFn func() NotifierPort) http.Handler {
 	})
 }
 
-// mcpUnavailableErrorCode 是隧道无目标时用的 JSON-RPC「server error」码,复用
-// org/subagent/hooktool_svc 的 writeRPCError 已经在用的 -32000(工具执行期失败的通用码,
-// 落在 JSON-RPC 保留的 -32000~-32099 应用错误段)——让这条从 daemon 代答的应答,在 MCP
-// 客户端眼里与「真服务器执行工具时失败了」的应答别无二致。
-const mcpUnavailableErrorCode = -32000
-
-// mcpTunnelRequestID 尽力从 MCP 请求 body 里取出 JSON-RPC 的 "id",让代答的错误应答能
-// 对上号(MCP-over-HTTP 客户端按 id 关联请求/应答)。body 不是合法 JSON 或没带 id 时退化
-// 成 JSON null —— 仍是一个格式合法的 JSON-RPC id,只是关联不上而已,好过直接不回。
-func mcpTunnelRequestID(body []byte) json.RawMessage {
-	var env struct {
-		ID json.RawMessage `json:"id"`
-	}
-	if err := json.Unmarshal(body, &env); err != nil || len(env.ID) == 0 {
-		return json.RawMessage("null")
-	}
-	return env.ID
-}
-
 // mcpTunnelUnavailableLabel 从隧道路径 "/mcp/<name>/..." 里取出 server 名,拼成
-// 「哪个能力不可用」那半句话的主语。取不出时退化成一个通用短语而不是拼出个畸形句子。
+// 「哪个能力不可用」那半句话的主语,只用于下面那行日志——让日志里的指代与答给模型的那句话
+// 对得上。答给模型的那句话由 wire.MCPTunnelUnavailableResponse 独家构造(桌面端那一跳共用
+// 同一份),这里不重复拼装它。取不出 server 名时退化成一个通用短语而不是拼出个畸形句子。
 func mcpTunnelUnavailableLabel(path string) string {
 	parts := strings.SplitN(strings.Trim(path, "/"), "/", 3)
 	if len(parts) >= 2 && parts[0] == "mcp" && parts[1] != "" {
@@ -173,24 +155,17 @@ func mcpTunnelUnavailableLabel(path string) string {
 	return "this built-in tool"
 }
 
-// writeMCPTunnelUnavailable 见 NewMCPTunnelHandler 顶部注释:HTTP 200 + JSON-RPC error,
-// 措辞把三件事都讲给模型听——哪个能力不可用、它依赖发起会话的那台桌面端在线、以及这不是
-// 瞬时故障,不要重试,绕过去或留到之后。纯英文措辞,理由见调用方文档:这段字符串喂给 LLM,
-// 不进 UI,不受 AGENTS.md 的前端 i18n 规则约束(该规则管的是 react-i18next 的可见 UI 文案)。
+// writeMCPTunnelUnavailable 见 NewMCPTunnelHandler 顶部注释:HTTP 200 + JSON-RPC error。
+// 应答由 wire.MCPTunnelUnavailableResponse 构造 —— 隧道的另一跳(桌面端收到了却重放不了,
+// 见 remote.handleMCPProxy)答的是同一份,CLI 里的 MCP 客户端分不出是哪一跳失败的,两边
+// 各拼一份措辞就会漂移成两种说法。这里只负责把它写成 HTTP 应答。
 func writeMCPTunnelUnavailable(w http.ResponseWriter, path string, body []byte) {
-	msg := fmt.Sprintf(
-		"%s is unavailable: it depends on the desktop client that started this session, "+
-			"and that client is offline right now. This is not a transient failure — do not "+
-			"retry; proceed without it, or leave this for later until the client reconnects.",
-		mcpTunnelUnavailableLabel(path),
-	)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      mcpTunnelRequestID(body),
-		"error": map[string]any{
-			"code":    mcpUnavailableErrorCode,
-			"message": msg,
-		},
-	})
+	resp := wire.MCPTunnelUnavailableResponse(path, body)
+	for k, vs := range resp.Headers {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.Status)
+	_, _ = w.Write(resp.Body)
 }

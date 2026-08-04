@@ -1229,13 +1229,16 @@ func TestIntegration_MCPReverseTunnel(t *testing.T) {
 	require.Equal(t, reqBody, string(gotBody))
 }
 
-// TestIntegration_MCPReverseTunnel_NoDispatcher 验证 desktop 侧未装配 dispatcher 时,隧道
-// 不会打挂 RPC 连接,而是把 502 以 HTTP 应答回给 CLI(handleMCPProxy 的兜底)。
+// TestIntegration_MCPReverseTunnel_NoDispatcher 覆盖 R17 的第三个失败点,也是唯一发生在
+// **桌面端那一跳**的:连接仍然活着、隧道成功送达,失败在 desktop 本机重放那一步(未装配
+// dispatcher)。它与 _NoTarget / _TargetLostMidCall 必须并存 —— 后两者失败在 daemon 侧,
+// 合并任何一个都会让另一段全链路失去覆盖;尤其是「桌面端合成的应答经隧道原样回到 CLI」
+// 这条,只有本例走全。
 //
-// 它与下面的 _NoTarget 是**两个不同的失败点**,必须并存:这里连接仍然活着、隧道成功
-// 送达,失败在 desktop 本机重放那一步(状态码装在 MCPProxyResponse 里原路回流);
-// _NoTarget 则是 daemon 侧压根没有目标连接可解。合并任何一个都会让另一段全链路失去覆盖
-// —— 尤其是「非 2xx 的 desktop 状态码经隧道原样回到 CLI」这条,只有本例走全。
+// 三个失败点对模型来说是同一件事(这次工具调用够不着发起端),所以答给 CLI 的形状也必须
+// 一样:HTTP 200 + JSON-RPC error,而不是桌面端旧的
+// `502 mcp proxy: desktop dispatcher unavailable` —— 那是 R17 禁止的裸非 2xx,只是产生在
+// 更远的一跳上,daemon 原样透传后模型同样只拿到一句读不懂的基础设施错误。
 func TestIntegration_MCPReverseTunnel_NoDispatcher(t *testing.T) {
 	// 显式清空 dispatcher(remote 包进程级全局),并在测后保持清空。
 	remote.RegisterMCPProxyDispatcher(nil)
@@ -1246,19 +1249,36 @@ func TestIntegration_MCPReverseTunnel_NoDispatcher(t *testing.T) {
 	require.NotEmpty(t, base)
 
 	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/",
-		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"org_get"}}`))
 	require.NoError(t, err)
+	httpReq.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(httpReq)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
 
-	// 未装配 dispatcher → desktop handleMCPProxy 回 502(而非让反向 RPC 失败打挂连接)。
-	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	// 不是裸 502:HTTP 200 + JSON-RPC error,id 对得上,body 里装的是模型能读懂的话。
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+	var rpcResp struct {
+		ID    json.RawMessage `json:"id"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(respBody, &rpcResp))
+	require.Equal(t, json.RawMessage("7"), rpcResp.ID)
+	require.NotNil(t, rpcResp.Error, "must be a JSON-RPC error the LLM can read, not a bare transport failure")
+	assert.Contains(t, rpcResp.Error.Message, "org")
+	assert.Contains(t, rpcResp.Error.Message, "offline")
+	assert.Contains(t, rpcResp.Error.Message, "do not retry")
+	assert.NotContains(t, string(respBody), "mcp proxy:", "must not leak the old bare-502 wording")
 
 	// 「不打挂连接」是本例名字里的承诺,直接验:同一条 RPC 连接此后仍可正常应答。
 	var list wire.SessionListResult
 	require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &list),
-		"a tunnel-level 502 must not take the RPC connection down with it")
+		"a tunnel-level tool error must not take the RPC connection down with it")
 }
 
 // TestIntegration_MCPReverseTunnel_NoTarget 覆盖 R17:发起会话的桌面端彻底断开(daemon
