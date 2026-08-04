@@ -1422,55 +1422,95 @@ function ChatPanel({
       });
       const dataEvent = `terminal:${terminalId}:data`;
       const exitEvent = `terminal:${terminalId}:exit`;
-      const cleanupListeners = () => {
-        for (const event of [dataEvent, exitEvent]) {
+      type ListenerRegistration = {
+        event: string;
+        off?: () => void;
+        cleaned: boolean;
+      };
+      let activeListeners: ListenerRegistration[] = [];
+      const cleanupListeners = (listeners = activeListeners): boolean => {
+        let cleaned = true;
+        for (const listener of listeners) {
+          if (listener.cleaned) continue;
           try {
-            EventsOff(event);
+            if (listener.off) listener.off();
+            else EventsOff(listener.event);
+            listener.cleaned = true;
           } catch {
-            // Listener cleanup must never block command launch or settlement.
+            try {
+              EventsOff(listener.event);
+              listener.cleaned = true;
+            } catch {
+              cleaned = false;
+            }
           }
         }
+        return cleaned;
       };
+      const cleanupListenersWithRetry = (
+        listeners = activeListeners,
+      ): boolean => cleanupListeners(listeners) || cleanupListeners(listeners);
       const settle = (
         status: "done" | "failed" | "stopped",
         exitCode?: number,
       ) => {
         const commands = useLocalCommandsStore.getState();
         if (commands.get(terminalId)?.status !== "running") {
-          cleanupListeners();
+          cleanupListenersWithRetry();
           return;
         }
         commands.finish(terminalId, status, exitCode);
-        cleanupListeners();
+        cleanupListenersWithRetry();
       };
       const fail = (error: unknown) => {
-        cleanupListeners();
+        cleanupListenersWithRetry();
         const commands = useLocalCommandsStore.getState();
         if (commands.get(terminalId)?.status !== "running") return;
         commands.appendOutput(terminalId, String(error));
         commands.finish(terminalId, "failed", -1);
       };
       const decode = makeStreamDecoder();
-      try {
-        EventsOn(dataEvent, (p: { data: string }) =>
-          useLocalCommandsStore
-            .getState()
-            .appendOutput(terminalId, decode(p.data)),
-        );
-        EventsOn(exitEvent, (p: { code: number; reason: string }) => {
-          const status =
-            p.reason === "killed"
-              ? "stopped"
-              : p.code === 0
-                ? "done"
-                : "failed";
-          settle(status, p.code);
-        });
-      } catch (error: unknown) {
+      const handleData = (p: { data: string }) =>
         useLocalCommandsStore
           .getState()
-          .appendOutput(terminalId, String(error));
-        cleanupListeners();
+          .appendOutput(terminalId, decode(p.data));
+      const handleExit = (p: { code: number; reason: string }) => {
+        const status =
+          p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
+        settle(status, p.code);
+      };
+      let observerError: unknown;
+      let observersReady = false;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const attemptListeners: ListenerRegistration[] = [];
+        try {
+          const dataListener: ListenerRegistration = {
+            event: dataEvent,
+            cleaned: false,
+          };
+          attemptListeners.push(dataListener);
+          dataListener.off = EventsOn(dataEvent, handleData);
+          const exitListener: ListenerRegistration = {
+            event: exitEvent,
+            cleaned: false,
+          };
+          attemptListeners.push(exitListener);
+          exitListener.off = EventsOn(exitEvent, handleExit);
+          activeListeners = attemptListeners;
+          observersReady = true;
+          break;
+        } catch (error: unknown) {
+          observerError = error;
+          if (!cleanupListenersWithRetry(attemptListeners)) break;
+        }
+      }
+      if (!observersReady) {
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(terminalId)?.status === "running") {
+          commands.appendOutput(terminalId, String(observerError));
+          commands.finish(terminalId, "failed", -1);
+        }
+        return undefined;
       }
       try {
         const response = await TerminalRunCommand(
