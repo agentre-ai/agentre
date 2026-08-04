@@ -57,6 +57,7 @@ import { useProjectList } from "@/hooks/use-project-list";
 import { ChatReadDroppedImages } from "../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../wailsjs/go/models";
 import { buildMentionSources } from "./chat-input/mentions/build-sources";
+import { LOCAL_COMMAND_HISTORY_CLEAR_SELECTOR } from "./chat-input/local-command-history/history-popover";
 import { resolveDroppedPaths } from "./chat-input/drop";
 import { useFileDropZone } from "./chat-input/use-file-drop";
 import { useAgentSkillCommands } from "./slash-commands";
@@ -639,8 +640,8 @@ function ChatComposer({
   // 非编辑态下不消费，让默认行为走。
   //
   // Shift+Tab 循环切换 permission mode —— 对齐 Claude TUI；focus 在 composer 内
-  // （TipTap editor / 按钮）时都会冒泡到 form，preventDefault 拦掉默认 tab 切换。
-  // 编辑模式下不消费 Shift+Tab，让无障碍 tab 反向焦点正常工作。
+  // （TipTap editor / 普通按钮）时都会冒泡到 form，preventDefault 拦掉默认 tab 切换。
+  // 历史 Clear footer 保留原生反向焦点；编辑模式也不消费 Shift+Tab。
   function handleFormKeyDown(event: React.KeyboardEvent<HTMLFormElement>) {
     if (
       !editing &&
@@ -671,6 +672,12 @@ function ChatComposer({
       !event.ctrlKey &&
       !event.altKey
     ) {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(LOCAL_COMMAND_HISTORY_CLEAR_SELECTOR)
+      ) {
+        return;
+      }
       event.preventDefault();
       onShiftTab();
     }

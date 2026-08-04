@@ -1,4 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { RefObject } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -41,14 +42,18 @@ beforeEach(() => {
   localCommandHistoryStore.clear(resolvedRemoteProjectScope);
 });
 
-function pressEnter(editor: Editor) {
+function pressKey(editor: Editor, key: string) {
   editor.view.dom.dispatchEvent(
     new KeyboardEvent("keydown", {
-      key: "Enter",
+      key,
       bubbles: true,
       cancelable: true,
     }),
   );
+}
+
+function pressEnter(editor: Editor) {
+  pressKey(editor, "Enter");
 }
 
 describe("ChatComposer command mode", () => {
@@ -129,7 +134,11 @@ describe("ChatComposer command mode", () => {
   });
 
   it("Given an execution scope, When ! mode opens, Then ChatComposer passes that scope to the history menu", async () => {
-    localCommandHistoryStore.record(historyScope, "pnpm test", 10);
+    localCommandHistoryStore.record(
+      historyScope,
+      "pnpm test",
+      localCommandHistoryStore.reserveLastUsedAt(),
+    );
     const editorRef: RefObject<Editor | null> = { current: null };
 
     render(
@@ -149,6 +158,78 @@ describe("ChatComposer command mode", () => {
     expect(
       await screen.findByRole("option", { name: "pnpm test" }),
     ).toBeInTheDocument();
+  });
+
+  it("Given ChatComposer history Clear is keyboard-focused, When Shift+Tab is pressed, Then native reverse focus bypasses permission cycling", async () => {
+    const lastUsedAt = localCommandHistoryStore.reserveLastUsedAt();
+    localCommandHistoryStore.record(historyScope, "pnpm test", lastUsedAt);
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onShiftTab = vi.fn();
+    const user = userEvent.setup();
+
+    render(
+      <ChatComposer
+        editorRef={editorRef}
+        localCommandHistoryScope={historyScope}
+        onSubmit={() => undefined}
+        onRunCommand={vi.fn()}
+        onShiftTab={onShiftTab}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    act(() => {
+      editorRef.current!.commands.insertContent("!");
+      editorRef.current!.commands.focus("end");
+    });
+    await screen.findByRole("option", { name: "pnpm test" });
+
+    act(() => pressKey(editorRef.current!, "ArrowUp"));
+    const clearButton = document.querySelector<HTMLButtonElement>(
+      "[data-local-command-history-clear]",
+    );
+    expect(clearButton).not.toBeNull();
+    expect(clearButton).toHaveFocus();
+
+    await user.tab({ shift: true });
+
+    expect(onShiftTab).not.toHaveBeenCalled();
+    expect(screen.getByRole("combobox")).toHaveFocus();
+    expect(localCommandHistoryStore.list(historyScope)).toEqual([
+      { command: "pnpm test", lastUsedAt },
+    ]);
+  });
+
+  it("Given Shift+Tab starts from the editor or an ordinary composer control, When permission cycling is enabled, Then ChatComposer still cycles mode", async () => {
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const onShiftTab = vi.fn();
+    const user = userEvent.setup();
+
+    render(
+      <ChatComposer
+        editorRef={editorRef}
+        onSubmit={() => undefined}
+        onShiftTab={onShiftTab}
+        permissionModeSlot={
+          <button type="button" data-testid="permission-control">
+            Mode
+          </button>
+        }
+        supportsImageInput={false}
+      />,
+    );
+
+    await screen.findByRole("textbox");
+    act(() => editorRef.current!.commands.focus("end"));
+    await user.tab({ shift: true });
+    expect(onShiftTab).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("textbox")).toHaveFocus();
+
+    const permissionControl = screen.getByTestId("permission-control");
+    permissionControl.focus();
+    await user.tab({ shift: true });
+    expect(onShiftTab).toHaveBeenCalledTimes(2);
+    expect(permissionControl).toHaveFocus();
   });
 
   it("Given a new remote project chat, When command execution resolves its scope, Then history records the resolved execution cwd instead of the local project path", async () => {

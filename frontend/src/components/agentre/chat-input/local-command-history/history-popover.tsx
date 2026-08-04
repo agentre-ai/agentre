@@ -11,6 +11,9 @@ import type {
   LocalCommandHistoryMenuState,
 } from "./types";
 
+export const LOCAL_COMMAND_HISTORY_CLEAR_SELECTOR =
+  "[data-local-command-history-clear]";
+
 export function localCommandHistoryOptionId(
   listboxId: string,
   index: number,
@@ -56,6 +59,7 @@ export function LocalCommandHistoryPopover({
             variant="ghost"
             size="sm"
             ref={clearButtonRef}
+            data-local-command-history-clear="true"
             aria-label={t("localCommandHistory.clearCurrentScope")}
             className="h-auto w-full justify-start rounded-sm px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground"
             onFocus={onClearFocus}
