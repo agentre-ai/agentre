@@ -49,12 +49,19 @@ func newTerminalService(appCtx context.Context) *terminal_svc.Service {
 		ctx context.Context,
 		req terminal_svc.ResolveCommandScopeRequest,
 	) (*terminal_svc.CommandScope, error) {
-		scope, err := chat_svc.Chat().ResolveLocalCommandScope(
+		chat := chat_svc.Chat()
+		if chat == nil {
+			return nil, terminal_svc.ErrCommandScopeResolverNotInitialized
+		}
+		scope, err := chat.ResolveLocalCommandScope(
 			ctx,
 			&chat_svc.ResolveLocalCommandScopeRequest{SessionID: req.SessionID},
 		)
 		if err != nil {
 			return nil, err
+		}
+		if scope == nil {
+			return nil, terminal_svc.ErrCommandScopeUnavailable
 		}
 		return &terminal_svc.CommandScope{DeviceID: scope.DeviceID, Cwd: scope.Cwd}, nil
 	})

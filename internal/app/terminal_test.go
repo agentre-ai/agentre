@@ -31,10 +31,10 @@ func (s *terminalChatServiceStub) ResolveLocalCommandScope(
 	return s.resolve(ctx, req)
 }
 
-func registerTerminalChatService(t *testing.T, stub *terminalChatServiceStub) {
+func registerTerminalChatService(t *testing.T, service chat_svc.ChatSvc) {
 	t.Helper()
 	previous := chat_svc.Chat()
-	chat_svc.RegisterChat(stub)
+	chat_svc.RegisterChat(service)
 	t.Cleanup(func() { chat_svc.RegisterChat(previous) })
 }
 
@@ -131,6 +131,48 @@ func TestApp_ResolveLocalCommandScope_GivenResolverFailure_WhenResolved_ThenRetu
 
 	assert.Nil(t, got)
 	require.ErrorIs(t, err, resolveErr)
+}
+
+func TestApp_TerminalRunCommand_GivenProductionAdapterUnavailable_WhenCalled_ThenReturnsRPCErrorWithoutLaunch(t *testing.T) {
+	tests := []struct {
+		name    string
+		service chat_svc.ChatSvc
+		wantErr error
+	}{
+		{
+			name:    "chat service is not initialized",
+			wantErr: terminal_svc.ErrCommandScopeResolverNotInitialized,
+		},
+		{
+			name: "chat service returns no scope",
+			service: &terminalChatServiceStub{
+				resolve: func(context.Context, *chat_svc.ResolveLocalCommandScopeRequest) (*chat_svc.LocalCommandScope, error) {
+					return nil, nil
+				},
+			},
+			wantErr: terminal_svc.ErrCommandScopeUnavailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registerTerminalChatService(t, tt.service)
+			svc := newTerminalService(context.Background())
+			defer svc.Shutdown()
+			a := &App{ctx: context.Background(), terminalSvc: svc}
+
+			var response *terminal_svc.RunCommandResponse
+			var err error
+			require.NotPanics(t, func() {
+				response, err = a.TerminalRunCommand(
+					"terminal-unavailable", 70, "private-token-command", 80, 24,
+				)
+			})
+			assert.Nil(t, response)
+			require.ErrorIs(t, err, tt.wantErr)
+			require.ErrorIs(t, svc.Close(context.Background(), "terminal-unavailable"), terminal_svc.ErrTerminalNotOpen)
+		})
+	}
 }
 
 func TestApp_TerminalRunCommand_GivenServiceResolver_WhenCalled_ThenDelegatesWithoutBindingResolution(t *testing.T) {
