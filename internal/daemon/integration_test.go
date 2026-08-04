@@ -1345,6 +1345,63 @@ func TestIntegration_MCPReverseTunnel_NoTarget(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond, "session must reach idle after the tunnel error, not be aborted or left running")
 }
 
+// TestIntegration_MCPReverseTunnel_TargetLostMidCall 覆盖 R17 的另一个失败点:目标
+// 在隧道调用**途中**没了。请求已经经 WS 送到桌面端,桌面端还没答就死了(这里用它在
+// dispatcher 里关掉自己的连接来复现进程被杀 / 链路被 RST),daemon 侧等应答的那次
+// Call 拿到 rpc.ErrConnClosed。
+//
+// 它与上面两个用例是第三个失败点,三个都得留着:_NoDispatcher 是隧道成功送达、桌面端
+// 本机重放失败(状态码装在 MCPProxyResponse 里原路回流);_NoTarget 是发请求之前就解不
+// 出目标;本例是解出了目标、请求也发出去了,回程才断。对模型来说后两者是同一件事
+// ——发起端不在线——所以答给 CLI 的形状必须一样:HTTP 200 + JSON-RPC error,而不是真机
+// 上复现到的 `502 text/plain: mcp tunnel: rpc: connection closed`。
+func TestIntegration_MCPReverseTunnel_TargetLostMidCall(t *testing.T) {
+	var (
+		rig   *pairedTestRig
+		ready = make(chan struct{})
+	)
+	// 桌面端在收到隧道请求后、答复之前死掉:关掉自己这条连接,应答永远回不去。
+	remote.RegisterMCPProxyDispatcher(func(_ context.Context, _ wire.MCPProxyRequest) (wire.MCPProxyResponse, error) {
+		<-ready
+		_ = rig.cli.Close()
+		return wire.MCPProxyResponse{}, errors.New("desktop died mid-call")
+	})
+	t.Cleanup(func() { remote.RegisterMCPProxyDispatcher(nil) })
+
+	rig = bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	close(ready)
+
+	base := rig.d.gateway.BaseURL()
+	require.NotEmpty(t, base)
+
+	reqBody := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"org_get"}}`
+	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/", strings.NewReader(reqBody))
+	require.NoError(t, err)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(httpReq)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	// 不是裸 502:HTTP 200 + JSON-RPC error,id 对得上,body 里装的是模型能读懂的话。
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var rpcResp struct {
+		ID    json.RawMessage `json:"id"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(respBody, &rpcResp))
+	require.Equal(t, json.RawMessage("7"), rpcResp.ID)
+	require.NotNil(t, rpcResp.Error, "must be a JSON-RPC error the LLM can read, not a bare transport failure")
+	assert.Contains(t, rpcResp.Error.Message, "org")
+	assert.Contains(t, rpcResp.Error.Message, "offline")
+	assert.Contains(t, rpcResp.Error.Message, "do not retry")
+	assert.NotContains(t, string(respBody), "rpc: connection closed",
+		"传输层错误原文不该糊到模型脸上")
+}
+
 // rigSkillDisc 替身发现器,供 skills.list 集成测试在 daemon 侧换上,免依赖真实 claude。
 type rigSkillDisc struct{ packs []agentskill.SkillPack }
 

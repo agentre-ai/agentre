@@ -89,7 +89,9 @@ func sanitizeTunnelHeaders(h http.Header) map[string][]string {
 // 了),所以隧道只能定位到「跑着会话的那台设备」;好在 desktop 侧的隧道 handler 是无状态的
 // (把请求重放到它本机 gateway),同一台设备的哪条连接送达都等价。
 //
-// 无目标(发起会话的桌面端不在线)时,不能回裸 HTTP 503 —— 非 2xx 状态码会让 CLI 内嵌的
+// 隧道够不着发起会话的桌面端时,不能回裸 HTTP 错误。够不着有两种:调用之前就解不出目标
+// (桌面端已离线),以及解出了目标、请求也发出去了,桌面端却在答复之前死掉(rpc.ErrConnClosed)
+// —— 对模型来说是同一件事,因此答的也是同一句话。裸 HTTP 之所以不行:非 2xx 状态码会让 CLI 内嵌的
 // MCP 客户端把整条应答当传输层故障丢弃,body 里的话模型永远读不到,会话也因此白白等一个
 // 读不出语义的错误(R17)。改为 HTTP 200 包一个 JSON-RPC error:这正是本仓库其余几个内置
 // 工具 MCP server(org/subagent/hooktool_svc 的 writeRPCError)在工具执行失败时使用的
@@ -119,7 +121,14 @@ func NewMCPTunnelHandler(notifierFn func() NotifierPort) http.Handler {
 		}
 		var resp wire.MCPProxyResponse
 		if err := n.Request(r.Context(), wire.MethodMCPProxy, req, &resp); err != nil {
-			http.Error(w, "mcp tunnel: "+err.Error(), http.StatusBadGateway)
+			// 目标是解出来了,请求也发出去了,但这一趟没走完(桌面端在调用途中被杀 /
+			// 链路被 RST → rpc.ErrConnClosed,或对端答不了这个方法)。对模型来说这与
+			// 「调用之前就没有目标」是同一件事:发起端此刻够不着,这次工具调用没结果。
+			// 所以答的是同一句话,而不是把传输层错误糊成裸 HTTP —— 非 2xx 会让 MCP 客户端
+			// 把整条应答当传输层故障丢弃(R17)。真实原因只留在下面这行日志里。
+			log.Printf("mcpproxy.tunnel: target lost mid-call, answered LLM-readable unavailable error for %s err=%v",
+				mcpTunnelUnavailableLabel(r.URL.Path), err)
+			writeMCPTunnelUnavailable(w, r.URL.Path, body)
 			return
 		}
 		for k, vs := range resp.Headers {

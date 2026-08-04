@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 )
@@ -166,6 +167,63 @@ func TestMCPTunnelHandler_NoActiveConn_LogsTheDegradation(t *testing.T) {
 	require.Contains(t, line, "mcpproxy.tunnel:", "daemon 侧日志按 package.Method: 前缀,便于 grep")
 	require.Contains(t, line, "/mcp/org/", "要能看出是哪个内置工具被拒")
 	// 红线:请求 body 可能带工具入参(路径 / 内容),整包不进日志。
+	require.NotContains(t, line, "org_get", "must not log the request body")
+}
+
+// TestMCPTunnelHandler_TargetLostMidCall_ReturnsReadableToolError 覆盖 R17 的第二个
+// 失败点:目标连接是在隧道调用**途中**没的(桌面端进程被杀 / 链路被 RST,daemon 侧
+// 等应答的那次 Call 拿到 rpc.ErrConnClosed)。对模型来说这与「调用之前就没有目标」
+// 是同一件事——发起端不在线——所以答回 CLI 的必须是同一个可读形状。
+//
+// 真机复现里这里回的是 `502 text/plain: mcp tunnel: rpc: connection closed`,正是
+// R17 明令禁止的裸 HTTP 形状:非 2xx 会让 CLI 内嵌的 MCP 客户端把整条应答当传输层
+// 故障丢弃,模型最后只拿到一句读不懂的基础设施错误。
+func TestMCPTunnelHandler_TargetLostMidCall_ReturnsReadableToolError(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	fn := &fakeTunnelNotifier{err: rpc.ErrConnClosed}
+	h := NewMCPTunnelHandler(func() NotifierPort { return fn })
+
+	body := `{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"org_get"}}`
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/mcp/org/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "不能回裸 HTTP 错误:body 里的话模型就读不到了")
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var resp struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  json.RawMessage `json:"result"`
+		Error   *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, "2.0", resp.JSONRPC)
+	require.Equal(t, json.RawMessage("42"), resp.ID, "must echo the request id back so the MCP client correlates the response")
+	require.Nil(t, resp.Result)
+	require.NotNil(t, resp.Error, "must be a JSON-RPC error object, not a bare status-code failure")
+
+	msg := resp.Error.Message
+	require.Contains(t, msg, "org", "names which capability is unavailable")
+	require.Contains(t, msg, "offline", "states the dependency: the originating client must be online")
+	require.Contains(t, msg, "do not retry", "tells the model to proceed instead of retry-looping")
+	require.NotContains(t, rec.Body.String(), "rpc: connection closed",
+		"传输层错误原文不糊到模型脸上——它对模型不可读,也不构成可执行的建议")
+
+	// 降级留痕(observability.md 埋点 3):真实原因(那条连接怎么没的)只剩日志知道,
+	// 应答里已经换成给模型看的话。红线同无目标分支:body 可能带工具入参,不进日志。
+	line := buf.String()
+	require.Contains(t, line, "mcpproxy.tunnel:", "daemon 侧日志按 package.Method: 前缀,便于 grep")
+	require.Contains(t, line, `"org"`, "要能看出是哪个内置工具被拒")
+	require.Contains(t, line, "connection closed", "真实失败原因留在 daemon 日志里")
 	require.NotContains(t, line, "org_get", "must not log the request body")
 }
 
