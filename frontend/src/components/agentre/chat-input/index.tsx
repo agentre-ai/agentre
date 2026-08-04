@@ -125,7 +125,6 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     const onEmptyChangeRef = useRef(onEmptyChange);
     const historyRef = useRef(userMessageHistory);
     const historyIndexRef = useRef(-1);
-    const lastCommandSubmittedAtRef = useRef(Number.NEGATIVE_INFINITY);
     const applyingHistoryRef = useRef(false);
     const lastIsEmptyRef = useRef<boolean | null>(null);
     const triggerSubmitRef = useRef<() => void>(() => {});
@@ -324,17 +323,13 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           const command = content.trimStart().slice(1).trim();
           historyIndexRef.current = -1;
           if (command) {
-            const submittedAt = Math.max(
-              Date.now(),
-              lastCommandSubmittedAtRef.current + 1,
-            );
-            lastCommandSubmittedAtRef.current = submittedAt;
             const warnSubmissionFailure = (error: unknown) => {
               console.warn(
                 "[chat-input] local command submission failed",
                 error,
               );
             };
+            const submittedAt = localCommandHistoryStore.reserveLastUsedAt();
             try {
               const executionScope = onCommandSubmitRef.current?.(command);
               if (executionScope) {

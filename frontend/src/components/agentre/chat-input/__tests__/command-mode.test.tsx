@@ -108,9 +108,10 @@ describe("AIChatInput command mode", () => {
     expect(onCommandSubmit).not.toHaveBeenCalled();
   });
 
-  it("does not call onCommandSubmit for bare ! (empty command)", () => {
+  it("does not call onCommandSubmit or reserve history order for bare ! (empty command)", () => {
     const onCommandSubmit = vi.fn();
     const onSubmit = vi.fn();
+    const reserveSpy = vi.spyOn(localCommandHistoryStore, "reserveLastUsedAt");
     const editorRef: RefObject<Editor | null> = { current: null };
 
     render(
@@ -134,6 +135,7 @@ describe("AIChatInput command mode", () => {
 
     expect(onCommandSubmit).not.toHaveBeenCalled();
     expect(onSubmit).not.toHaveBeenCalled();
+    expect(reserveSpy).not.toHaveBeenCalled();
     // Content should be cleared
     expect(editor.getText()).toBe("");
   });
@@ -387,7 +389,7 @@ describe("AIChatInput command mode", () => {
     },
   );
 
-  it("Given two commands submitted in the same millisecond, When their execution scopes resolve in reverse order, Then history MRU follows submission order", async () => {
+  it("Given two nonempty command submissions, When their execution scopes resolve in reverse order, Then each reserves singleton history order immediately before its handler and MRU follows submission order", async () => {
     let resolveFirst!: (scope: LocalCommandHistoryScope) => void;
     let resolveSecond!: (scope: LocalCommandHistoryScope) => void;
     const firstScope = new Promise<LocalCommandHistoryScope>((resolve) => {
@@ -396,12 +398,28 @@ describe("AIChatInput command mode", () => {
     const secondScope = new Promise<LocalCommandHistoryScope>((resolve) => {
       resolveSecond = resolve;
     });
+    const events: string[] = [];
+    const reserveSpy = vi
+      .spyOn(localCommandHistoryStore, "reserveLastUsedAt")
+      .mockImplementationOnce(() => {
+        events.push("reserve:100");
+        return 100;
+      })
+      .mockImplementationOnce(() => {
+        events.push("reserve:101");
+        return 101;
+      });
     const onCommandSubmit = vi
       .fn()
-      .mockReturnValueOnce(firstScope)
-      .mockReturnValueOnce(secondScope);
+      .mockImplementationOnce((command: string) => {
+        events.push(`submit:${command}`);
+        return firstScope;
+      })
+      .mockImplementationOnce((command: string) => {
+        events.push(`submit:${command}`);
+        return secondScope;
+      });
     const recordSpy = vi.spyOn(localCommandHistoryStore, "record");
-    vi.spyOn(Date, "now").mockReturnValue(100);
     const editorRef: RefObject<Editor | null> = { current: null };
 
     render(
@@ -420,6 +438,14 @@ describe("AIChatInput command mode", () => {
       editor.commands.insertContent("!second command");
       pressEnter(editor);
     });
+
+    expect(events).toEqual([
+      "reserve:100",
+      "submit:first command",
+      "reserve:101",
+      "submit:second command",
+    ]);
+    expect(reserveSpy).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       resolveSecond(repoScope);

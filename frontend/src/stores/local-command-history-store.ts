@@ -17,6 +17,7 @@ export type LocalCommandHistoryStorage = Pick<Storage, "getItem" | "setItem">;
 
 export type LocalCommandHistoryStore = {
   list(scope: LocalCommandHistoryScope): LocalCommandHistoryEntry[];
+  reserveLastUsedAt(): number;
   record(
     scope: LocalCommandHistoryScope,
     command: string,
@@ -148,6 +149,16 @@ function decodePersistedHistory(
   return { version: LOCAL_COMMAND_HISTORY_VERSION, scopes };
 }
 
+function maximumLastUsedAt(history: PersistedLocalCommandHistory): number {
+  let maximum = Number.NEGATIVE_INFINITY;
+  for (const entries of Object.values(history.scopes)) {
+    for (const { lastUsedAt } of entries) {
+      maximum = Math.max(maximum, lastUsedAt);
+    }
+  }
+  return maximum;
+}
+
 function readPersistedHistory(
   storage: LocalCommandHistoryStorage | null,
 ): PersistedLocalCommandHistory {
@@ -185,6 +196,7 @@ export function createLocalCommandHistoryStore(
   const storage =
     "storage" in options ? (options.storage ?? null) : browserStorage();
   const history = readPersistedHistory(storage);
+  let lastReservedAt = Math.max(Date.now(), maximumLastUsedAt(history));
 
   return {
     list(scope) {
@@ -193,6 +205,10 @@ export function createLocalCommandHistoryStore(
         command,
         lastUsedAt,
       }));
+    },
+    reserveLastUsedAt() {
+      lastReservedAt = Math.max(lastReservedAt, Date.now()) + 1;
+      return lastReservedAt;
     },
     record(scope, command, lastUsedAt = Date.now()) {
       if (!command) return;
@@ -206,6 +222,7 @@ export function createLocalCommandHistoryStore(
         { command, lastUsedAt: usedAt },
         ...entries,
       ]);
+      lastReservedAt = Math.max(lastReservedAt, usedAt);
       writePersistedHistory(storage, history);
     },
     clear(scope) {

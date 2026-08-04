@@ -18,6 +18,7 @@ const remoteRepo: LocalCommandHistoryScope = {
 };
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   localStorage.clear();
 });
 
@@ -74,6 +75,50 @@ describe("local command history scope and persistence", () => {
         ],
       },
     });
+  });
+
+  it("Given persisted timestamps across scopes and a rolled-back clock, when submission order is reserved after reconstruction, then every reservation stays above persisted history and prior reservations", () => {
+    localStorage.setItem(
+      LOCAL_COMMAND_HISTORY_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        scopes: {
+          [deriveLocalCommandHistoryScopeKey(localRepo)]: [
+            { command: "pnpm test", lastUsedAt: 900 },
+          ],
+          [deriveLocalCommandHistoryScopeKey(remoteRepo)]: [
+            { command: "make deploy", lastUsedAt: 1_200 },
+          ],
+        },
+      }),
+    );
+    vi.spyOn(Date, "now").mockReturnValue(500);
+
+    const reconstructed = createLocalCommandHistoryStore({
+      storage: localStorage,
+    });
+    const firstReservation = reconstructed.reserveLastUsedAt();
+    vi.mocked(Date.now).mockReturnValue(100);
+
+    expect(firstReservation).toBe(1_201);
+    expect(reconstructed.reserveLastUsedAt()).toBe(1_202);
+  });
+
+  it("Given repeated reservations and a newer explicit record, when the clock does not advance, then reservations are cross-call monotonic and the accepted record advances their floor", () => {
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+
+    expect(store.reserveLastUsedAt()).toBe(101);
+    expect(store.reserveLastUsedAt()).toBe(102);
+
+    store.record(localRepo, "new floor", 500);
+    expect(store.reserveLastUsedAt()).toBe(501);
+
+    store.record(localRepo, "new floor", 400);
+    expect(store.list(localRepo)).toEqual([
+      { command: "new floor", lastUsedAt: 500 },
+    ]);
+    expect(store.reserveLastUsedAt()).toBe(502);
   });
 
   it("Given exact repeats settle out of order, when an older write follows a newer one, then timestamp, MRU order, and persistence stay on the newer case-sensitive entry", () => {
