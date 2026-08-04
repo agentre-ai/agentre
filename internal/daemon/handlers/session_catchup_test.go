@@ -187,6 +187,40 @@ func TestSessionCatchup_Pull_ReportsTheSurvivingFloor(t *testing.T) {
 		"游标之后的 8、9 已被回收,客户端只有拿到这个下界才不会一直等它们")
 }
 
+// TestSessionCatchup_Pull_FloorNeverExceedsTheRowsInTheSamePage 钉死两次读之间跑了一轮
+// 留存回收时的那一半:交出去的下界不得高于**同一页里**的行。
+//
+// 客户端拿 oldestSeq 复位游标,而复位跑在这一页重放**之前**(否则第一条当场被判成跳号)。
+// 下界若是回收之后的那个高水位,而页里还留着更低的行,这些已经拿到手的行就会被当成重复
+// 全部丢掉 —— 一整页转录凭空消失,而它们本来是读得到的。所以下界要先读:先读的下界只会
+// 偏小,偏小最多让客户端少复位一次,不会丢内容。
+func TestSessionCatchup_Pull_FloorNeverExceedsTheRowsInTheSamePage(t *testing.T) {
+	ctx, _, journal, h := setupCatchupTest(t, bareRT{})
+	// 回收恰好在这两次读之间跑:读页之后,现存最老的一行已经涨到 20。
+	swept := false
+	journal.EXPECT().ListSince(gomock.Any(), "", "5", int64(7), wire.DefaultSessionPullLimit).
+		DoAndReturn(func(context.Context, string, string, int64, int) ([]handlers.JournalRow, bool, error) {
+			swept = true
+			return []handlers.JournalRow{
+				{Seq: 10, Method: wire.NotifyEvent, Payload: json.RawMessage(`{"sessionId":5}`)},
+				{Seq: 20, Method: wire.NotifyEvent, Payload: json.RawMessage(`{"sessionId":5}`)},
+			}, false, nil
+		})
+	journal.EXPECT().OldestSeq(gomock.Any(), "", "5").
+		DoAndReturn(func(context.Context, string, string) (int64, error) {
+			if swept {
+				return 20, nil
+			}
+			return 10, nil
+		})
+
+	got, err := h.Pull(ctx, wire.SessionPullParams{SessionID: 5, Cursor: 7})
+	require.NoError(t, err)
+	require.Len(t, got.Notifications, 2)
+	assert.LessOrEqual(t, got.OldestSeq, got.Notifications[0].Seq,
+		"下界高过同一页里的行,客户端会把已经拿到手的那截当重复丢掉")
+}
+
 // TestSessionCatchup_Pull_CursorPastNewestSeq_EmptyPageKeepsCursor 覆盖边界:
 // 起始游标大于最新 seq 时返回空页,游标**保持不变**(不能回退到 0),hasMore 为假。
 // 游标回退会让客户端把整段日志重放一遍,转录流里出现重复消息。

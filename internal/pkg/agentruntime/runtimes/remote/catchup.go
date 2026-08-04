@@ -40,7 +40,7 @@ const TriggerCatchUp = "catchup"
 // (见 chat_svc.CatchUpRemoteSessions)。出错时 live 为空:什么都不知道就按今天的语义
 // 全部收尾,而不是把它们永远留在 running 上。
 //
-// 交出 errCatchUpUnsupported 表示对面是老 daemon(R18),调用方据此回落。
+// 交出 ErrCatchUpUnsupported 表示对面是老 daemon(R18),调用方据此回落。
 func (r *Runtime) CatchUpSessions(ctx context.Context, sessionIDs []int64) (live []int64, err error) {
 	if len(sessionIDs) == 0 {
 		return nil, nil

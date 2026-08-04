@@ -88,6 +88,9 @@ type Runtime struct {
 	connMu     sync.Mutex
 	daemonFP   string
 	durability durabilityState
+	// connGen 是「第几条连接」的代号,adoptConn 每换一条连接 +1。开轮位置的探测结果
+	// 按它作废(见 turnStartFloor):同一条连接上探一次就够,换了连接必须重探。
+	connGen int64
 
 	// sessionState 是每条会话的补齐状态(游标 + 补洞串行化)。
 	// 与 sessions 分开:sessions 只活在一轮之内,游标要跨轮存活。
@@ -136,6 +139,7 @@ func New(c agentruntime.DaemonClientPort, opts ...Option) *Runtime {
 		caps:         map[agent_backend_entity.BackendType]capability.Capabilities{},
 		autoSessions: map[int64]*autoSession{},
 		sessionState: map[int64]*sessionSync{},
+		connGen:      1, // 0 留给 sessionSync 的零值:那表示「这条会话还没探过」
 		backoff:      defaultReconnectBackoff,
 		cursorFlush:  defaultCursorFlushInterval,
 		stopped:      make(chan struct{}),

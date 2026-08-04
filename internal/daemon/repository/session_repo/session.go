@@ -56,6 +56,14 @@ type SessionRepo interface {
 	// ListByPeer 列出某个对端在本 daemon 上的全部会话,最近活动的在前。
 	ListByPeer(ctx context.Context, peerFingerprint string) ([]*DaemonSession, error)
 
+	// CountByLifecycle 数一数此刻停在某个生命周期上的会话有几条。
+	//
+	// 它服务的是本机状态查询(`agentred status` 的「活跃会话数」):daemon 记着的
+	// 生命周期就是「这台机器此刻在为谁干活」的真相源 —— 一轮起手置 running、轮末
+	// 置 idle、进程重启把非终态一律标 interrupted。数 COUNT 而不是把行查出来在内存
+	// 里数:这一列只用来印一个数字,没有理由把整张表搬出库。
+	CountByLifecycle(ctx context.Context, state string) (int64, error)
+
 	// InterruptAll 把库中所有还不是 interruptedState 的会话一次改成该状态,返回受影响
 	// 行数(R10 的启动清扫)。它按状态而不是按对端 / 会话枚举:daemon 刚起时内存里一条
 	// 会话都没有,库里的行就是唯一的来源。
@@ -123,6 +131,17 @@ func (r *sessionRepo) ListByPeer(ctx context.Context, peerFingerprint string) ([
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (r *sessionRepo) CountByLifecycle(ctx context.Context, state string) (int64, error) {
+	var n int64
+	err := db.Ctx(ctx).Model(&DaemonSession{}).
+		Where("lifecycle_state = ?", state).
+		Count(&n).Error
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (r *sessionRepo) InterruptAll(ctx context.Context, interruptedState string) (int64, error) {

@@ -135,3 +135,23 @@ func TestSessionRepo_InterruptAll_SweepsEveryNonTerminalRow(t *testing.T) {
 	assert.Equal(t, int64(3), n, "受影响行数要回给调用方,启动日志据此说明清扫了几条")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestSessionRepo_CountByLifecycle_CountsOnlyThatState 覆盖 `agentred status` 的
+// 「活跃会话数」:它数的是库里此刻停在某个生命周期上的行(daemon 自己记的那份真相),
+// 一次 COUNT 拿到,而不是把行全查出来在内存里数。
+//
+// 这一列曾经答的是一张没有任何写入方的内存表,于是有轮次在跑时也恒印 0 —— 读的人
+// 据此以为自己的会话没了。
+func TestSessionRepo_CountByLifecycle_CountsOnlyThatState(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := session_repo.NewSession()
+
+	mock.ExpectQuery("SELECT count\\(\\*\\) FROM `daemon_sessions` WHERE lifecycle_state = \\?").
+		WithArgs("running").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	n, err := repo.CountByLifecycle(ctx, "running")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

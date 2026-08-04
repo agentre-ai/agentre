@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -17,23 +18,34 @@ type stubDBStat struct{ stat handlers.DBStat }
 
 func (s stubDBStat) DBStat() handlers.DBStat { return s.stat }
 
-// TestHealth_Ping_ReportsDatabasePathAndSize 覆盖规格「磁盘增长」那一句在 RPC 侧的一半:
-// 探活应答里要带上 daemon 库文件的路径与体量,用户(与桌面端)据此判断何时该清理。
+// TestHealth_Ping_ReportsDatabaseSizeButNotItsPath 覆盖规格「磁盘增长」那一句在 LAN
+// 侧的一半:探活应答带上 daemon 库的体量,让桌面端能说出这台盒子上的档案有多大。
+//
+// **路径不出这台机器**。绝对路径通常带着宿主机的 OS 用户名(/Users/<name>/… 或
+// /home/<name>/…),而这条应答发给每一个已配对的对端。规格只要求「路径与体量在 daemon
+// 状态查询里可见」,而那份查询是本机 IPC(/local/status 与 `agentred status`),那里
+// 两样都在;LAN 这一侧留体量就够了。
+//
 // 没有注入库统计口时不编造零值 —— 那会在界面上显示成「库是空的」。
-func TestHealth_Ping_ReportsDatabasePathAndSize(t *testing.T) {
-	Convey("Ping 交出库文件路径与体量", t, func() {
+func TestHealth_Ping_ReportsDatabaseSizeButNotItsPath(t *testing.T) {
+	Convey("Ping 交出库体量", t, func() {
 		h := handlers.NewHealthHandlers("inst", state.NewDefault("inst"),
-			stubDBStat{stat: handlers.DBStat{Path: "/var/agentred/agentred.db", SizeBytes: 4096}})
+			stubDBStat{stat: handlers.DBStat{Path: "/Users/someone/Library/agentred.db", SizeBytes: 4096}})
 		res, err := h.Ping(context.Background())
 		So(err, ShouldBeNil)
-		So(res.DBPath, ShouldEqual, "/var/agentred/agentred.db")
 		So(res.DBSizeBytes, ShouldEqual, int64(4096))
 
-		Convey("没有库统计口时两个字段留空", func() {
+		Convey("应答里没有任何字段带着库文件的绝对路径", func() {
+			raw, marshalErr := json.Marshal(res)
+			So(marshalErr, ShouldBeNil)
+			So(string(raw), ShouldNotContainSubstring, "someone")
+			So(string(raw), ShouldNotContainSubstring, "agentred.db")
+		})
+
+		Convey("没有库统计口时体量留空", func() {
 			bare := handlers.NewHealthHandlers("inst", state.NewDefault("inst"), nil)
 			bareRes, bareErr := bare.Ping(context.Background())
 			So(bareErr, ShouldBeNil)
-			So(bareRes.DBPath, ShouldBeEmpty)
 			So(bareRes.DBSizeBytes, ShouldEqual, int64(0))
 		})
 	})

@@ -153,8 +153,12 @@ const (
 // 「重连中」多吊几十秒。返回它(或 wrap 它)会立刻走「注入 ErrDaemonDisconnected」。
 var ErrReconnectAbandoned = errors.New("agentruntime/runtimes/remote: reconnect abandoned")
 
-// errCatchUpUnsupported 补齐族 RPC 回 method-not-found —— 对面是老 daemon(R18)。
-var errCatchUpUnsupported = errors.New("agentruntime/runtimes/remote: daemon does not support session catch-up")
+// ErrCatchUpUnsupported 补齐族 RPC 回 method-not-found —— 对面是老 daemon(R18)。
+//
+// 它是导出的:CatchUpSessions 的调用方(chat_svc)必须把它与「这一次没问到」分开 ——
+// 后者等设备回来再问一遍就有答案,而这台 daemon 这辈子都答不了,那些会话只能当场按
+// R18 的回落收尾(老 daemon 上断连即结束该轮)。
+var ErrCatchUpUnsupported = errors.New("agentruntime/runtimes/remote: daemon does not support session catch-up")
 
 // errSessionUnrecoverable 这条会话接不回去了(daemon 侧已中断 / 不存在 / 游标失效),
 // 但连接本身是好的:只收尾这一条会话,别的会话照常补齐。
@@ -172,6 +176,31 @@ type sessionSync struct {
 	loaded bool
 	// filling 补洞在飞。同一会话任一时刻至多一次拉取。
 	filling bool
+	// floorSeq / floorGen 是「这条会话的日志高水位在**哪一代连接**上探到过、探到多少」
+	// (见 turnStartFloor)。按连接代作废:换了连接就可能错过了 daemon 在断连期间新增
+	// 的行,那时候的旧值会偏小。
+	floorSeq int64
+	floorGen int64
+}
+
+// floorOnConn 交出这条会话在 gen 这代连接上已知的日志高水位:探到过的那个值与游标取
+// 较大者 —— 游标只由 daemon 真的发过的 seq 推进,它本身就是一份「日志至少长到这里」的
+// 证据,而且比探测那一刻更新。本代还没探过时 ok 为 false。
+func (s *sessionSync) floorOnConn(gen int64) (int64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.floorGen != gen {
+		return 0, false
+	}
+	return max(s.floorSeq, s.cursor), true
+}
+
+// rememberFloor 记下这一代连接上探到的高水位,并交出与游标取较大者后的开轮位置。
+func (s *sessionSync) rememberFloor(gen, seq int64) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.floorGen, s.floorSeq = gen, seq
+	return max(seq, s.cursor)
 }
 
 // cursorNow 读一眼当前游标。
@@ -181,15 +210,21 @@ func (s *sessionSync) cursorNow() int64 {
 	return s.cursor
 }
 
-// syncFor 取(或建)某会话的补齐状态,并保证游标已从端口读过一次。
-func (r *Runtime) syncFor(ctx context.Context, sid int64) *sessionSync {
+// stateFor 取(或建)某会话的补齐状态,**不**碰游标端口。
+func (r *Runtime) stateFor(sid int64) *sessionSync {
 	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
 	ss, ok := r.sessionState[sid]
 	if !ok {
 		ss = &sessionSync{}
 		r.sessionState[sid] = ss
 	}
-	r.stateMu.Unlock()
+	return ss
+}
+
+// syncFor 取(或建)某会话的补齐状态,并保证游标已从端口读过一次。
+func (r *Runtime) syncFor(ctx context.Context, sid int64) *sessionSync {
+	ss := r.stateFor(sid)
 	r.ensureCursorLoaded(ctx, sid, ss)
 	return ss
 }
@@ -341,9 +376,15 @@ func (r *Runtime) pullUntilCaughtUp(ctx context.Context, sid int64, ss *sessionS
 				replayed++
 			}
 		}
-		// 空页、没有更多、或游标根本没前进(载荷坏了 / daemon 一直交同一页)都停:
-		// 继续翻只会死循环。
-		if !res.HasMore || len(res.Notifications) == 0 || ss.cursorNow() <= before {
+		// 这一页有没有真的消费掉:游标停在页尾那一条上就是消费掉了。停在它之前只有一种
+		// 可能 —— 复位把游标抬到了这一页某些行之上(daemon 读下界与读行之间跑了一轮留存
+		// 回收,下界因此偏低而行更靠后),那些行在闸门里被判成跳号丢掉了。此时还得接着
+		// 拉:不拉就带着 oldest-1 的游标收工,存活的那截要等下一条实时帧再触发一次补洞
+		// 才补得上,而终态会话根本不会再有实时帧。
+		pageConsumed := ss.cursorNow() >= res.Cursor
+		// 空页、daemon 说没有更多且这一页也消费完了、或游标根本没前进(载荷坏了 / daemon
+		// 一直交同一页)都停。最后一条同时是防死循环的闸:每一圈都必须把游标推前。
+		if len(res.Notifications) == 0 || (!res.HasMore && pageConsumed) || ss.cursorNow() <= before {
 			return replayed, nil
 		}
 	}
@@ -543,7 +584,7 @@ func (r *Runtime) reconnectAndCatchUp() (<-chan struct{}, bool) {
 		}
 		r.adoptConn(cli, fp)
 		if err := r.catchUpAll(ctx); err != nil {
-			if errors.Is(err, errCatchUpUnsupported) {
+			if errors.Is(err, ErrCatchUpUnsupported) {
 				logger.Default().Warn("remote runtime: daemon has no catch-up RPCs, ending turn on disconnect")
 				return nil, false
 			}
@@ -570,6 +611,9 @@ func (r *Runtime) adoptConn(cli agentruntime.DaemonClientPort, fp string) {
 		r.daemonFP = fp
 	}
 	r.durability = durabilityUnknown
+	// 连接代 +1:开轮位置的那份已知(sessionSync.floorSeq)只在探到它的那条连接上作数
+	// —— 断连期间 daemon 可能又落了几行,旧值会偏小(见 turnStartFloor)。
+	r.connGen++
 	r.connMu.Unlock()
 	r.registerHandlers(cli)
 }
@@ -587,7 +631,7 @@ func (r *Runtime) catchUpEach(ctx context.Context, sids []int64) error {
 		err := r.catchUpSession(ctx, sid)
 		switch {
 		case err == nil:
-		case errors.Is(err, errCatchUpUnsupported):
+		case errors.Is(err, ErrCatchUpUnsupported):
 			return err
 		case errors.Is(err, errSessionUnrecoverable):
 			// 只这一条接不回去:按今天的语义收尾它,别的会话照常补齐。
@@ -658,7 +702,7 @@ func (r *Runtime) attachSession(ctx context.Context, sid int64) (int64, error) {
 	}
 	if isMethodNotFound(err) {
 		r.setDurability(durabilityUnsupported)
-		return 0, errCatchUpUnsupported
+		return 0, ErrCatchUpUnsupported
 	}
 	r.setDurability(durabilitySupported)
 	sentinel := wire.FromJSONRPCError(err)
@@ -946,19 +990,31 @@ func (r *Runtime) sessionIDsLocked(withTracked bool) []int64 {
 // 读不到就返 0(老 daemon / 这一次没拨通):守卫退化成今天的行为,绝不会因为读不到就把
 // 一轮吊死 —— 高水位只可能偏小,永远不会把本轮自己的终态帧挡在外面。没装重连端口时连
 // 调用都不发:那些调用方没有重连,凭空给每一轮加一次 RPC 只是纯开销。
+//
+// 一条会话在**同一代连接**上只问一次,之后由游标接着跟(见 floorOnConn):清单在 daemon
+// 侧是一次 LatestSeqByPeer 的 GROUP BY 加上对该对端**每条**会话的 PendingWaiters 探测,
+// 成本随这个对端历史上跑过的会话数增长,而这里唯一消费的只是这条会话的 LatestSeq。
+// 探过之后游标追得上高水位:本连接是该会话的推送属主,daemon 新增的每一行都推给它,
+// 推不动的那一刻这条连接就死了 —— 而换代重连(adoptConn)会把这份已知作废、重新探。
 func (r *Runtime) turnStartFloor(ctx context.Context, sid int64) int64 {
 	if r.reconnect == nil {
 		return 0
 	}
 	r.connMu.Lock()
-	st := r.durability
+	st, gen := r.durability, r.connGen
 	r.connMu.Unlock()
 	if st == durabilityUnsupported {
 		return 0
 	}
+	// 只取状态、不惰性读库:这里要的是「本连接上探过没有」,而游标该由谁读、什么时候读
+	// 自有它的路径(第一条通知 / 补齐前的 pinCursorFor)。
+	ss := r.stateFor(sid)
+	if floor, known := ss.floorOnConn(gen); known {
+		return floor
+	}
 	summaries, err := r.sessionSummaries(ctx)
 	if err != nil {
-		if errors.Is(err, errCatchUpUnsupported) {
+		if errors.Is(err, ErrCatchUpUnsupported) {
 			logger.Ctx(ctx).Warn("remote runtime: daemon predates session durability, disconnect will end the turn")
 			return 0
 		}
@@ -967,20 +1023,20 @@ func (r *Runtime) turnStartFloor(ctx context.Context, sid int64) int64 {
 		return 0
 	}
 	// 清单里没有这条会话:它在这台 daemon 上还一条通知都没发过,高水位就是 0。
-	return summaries[sid].LatestSeq
+	return ss.rememberFloor(gen, summaries[sid].LatestSeq)
 }
 
 // sessionSummaries 是补齐三步的第一步:问一眼这个对端在这台 daemon 上有哪些会话、
 // 各自的生命周期状态、是否正在等输入、日志高水位到哪。规格明写它无副作用,所以它
 // 同时充当 R18 的能力探测入口(attach 会改推送目标、pull 会推游标,都不能拿来探)。
 //
-// 老 daemon 回 method-not-found → errCatchUpUnsupported,并就地记下证伪结果。
+// 老 daemon 回 method-not-found → ErrCatchUpUnsupported,并就地记下证伪结果。
 func (r *Runtime) sessionSummaries(ctx context.Context) (map[int64]wire.SessionSummary, error) {
 	var res wire.SessionListResult
 	if err := r.conn().Call(ctx, wire.MethodSessionList, struct{}{}, &res); err != nil {
 		if isMethodNotFound(err) {
 			r.setDurability(durabilityUnsupported)
-			return nil, errCatchUpUnsupported
+			return nil, ErrCatchUpUnsupported
 		}
 		return nil, wire.FromJSONRPCError(err)
 	}

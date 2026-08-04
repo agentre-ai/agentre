@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -252,7 +253,7 @@ func TestCatchUpSessions_OldDaemon_ReportsUnsupported(t *testing.T) {
 	rt, _, _ := newRestartRuntime(t, conn, 3)
 
 	_, err := rt.CatchUpSessions(context.Background(), []int64{rigSessionID})
-	require.ErrorIs(t, err, errCatchUpUnsupported)
+	require.ErrorIs(t, err, ErrCatchUpUnsupported)
 	assert.Empty(t, conn.methodCalls(wire.MethodSessionAttach),
 		"老 daemon 上不该继续发补齐族的其余方法")
 }
@@ -321,6 +322,68 @@ func TestCatchUpSessions_ReclaimedPrefix_ResetsCursorInsteadOfFreezing(t *testin
 	require.True(t, ok)
 	assert.Equal(t, int64(11), saved.Seq,
 		"游标要推到日志末尾,否则下一条实时通知仍会被判成跳号,会话继续冻着")
+}
+
+// Given 留存回收恰好跑在 daemon 为这一页读下界与读行之间(下界还是回收前的那个,页里
+// 却只剩回收之后存活的那截),When 客户端按下界复位后发现这一页一条也交付不出去,
+// Then 它从复位后的游标再拉一页,把存活的那段取回来 —— 而不是带着 oldest-1 的游标收工、
+// 等下一条实时帧再触发一次补洞。
+//
+// 终态会话上没有「下一条实时帧」:那一页不补回来,这段转录就要等到用户下次开新一轮才
+// 露面(而开新一轮时它又会以「已结束轮次」的身份被分走)。
+func TestCatchUpSessions_PageEntirelyBelowTheNewFloor_PullsAgain(t *testing.T) {
+	// 日志此刻只剩 30、31:下界读到的却还是回收前的 10。
+	journal := []wire.JournaledNotification{
+		journaledEvent(30, "survivor"),
+		journaledDone(31, "sonnet"),
+	}
+	// 重放里那条被判成跳号的行会另起一次补洞拉取,计数器因此有并发写者。
+	var pulls atomic.Int64
+	conn := newFakeConn()
+	conn.script(func(method string, params, result any) error {
+		switch method {
+		case wire.MethodSessionList:
+			*(result.(*wire.SessionListResult)) = wire.SessionListResult{Sessions: []wire.SessionSummary{{
+				SessionID: rigSessionID, LifecycleState: wire.SessionLifecycleIdle, LatestSeq: 31,
+			}}}
+		case wire.MethodSessionAttach:
+			*(result.(*wire.SessionAttachResult)) = wire.SessionAttachResult{
+				SessionID: rigSessionID, LifecycleState: wire.SessionLifecycleIdle, LatestSeq: 31,
+			}
+		case wire.MethodSessionPull:
+			p := params.(wire.SessionPullParams)
+			out := wire.SessionPullResult{Cursor: p.Cursor}
+			// 第一页交出回收**之前**的下界(daemon 先读它,回收随后才跑)。
+			out.OldestSeq = 30
+			if pulls.Add(1) == 1 {
+				out.OldestSeq = 10
+			}
+			for _, n := range journal {
+				if n.Seq > p.Cursor {
+					out.Notifications = append(out.Notifications, n)
+					out.Cursor = n.Seq
+				}
+			}
+			*(result.(*wire.SessionPullResult)) = out
+		case wire.MethodSessionPendingWaiters:
+			*(result.(*wire.SessionPendingWaitersResult)) = wire.SessionPendingWaitersResult{}
+		}
+		return nil
+	})
+	rt, cursor, _ := newRestartRuntime(t, conn, 7)
+
+	turns := rt.AutonomousTurns(rigSessionID)
+	_, err := rt.CatchUpSessions(context.Background(), []int64{rigSessionID})
+	require.NoError(t, err)
+
+	at := takeTurn(t, turns)
+	assert.Equal(t, []string{"survivor"}, drainTexts(t, at.Events, 2*time.Second),
+		"复位之后这一页一条也交付不出去,就得再拉一页把存活的那截取回来")
+	assert.GreaterOrEqual(t, pulls.Load(), int64(2), "复位没能消费掉这一页时必须接着拉")
+
+	saved, ok := cursor.lastSaved()
+	require.True(t, ok)
+	assert.Equal(t, int64(31), saved.Seq, "游标要推到日志末尾,否则下次还是从洞里开始")
 }
 
 // Given daemon 进程在桌面端离线期间重启过,把这条会话按 R10 标成了中断态,

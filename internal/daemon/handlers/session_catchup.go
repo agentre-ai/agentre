@@ -99,13 +99,17 @@ func (h *SessionCatchupHandlers) List(ctx context.Context) (wire.SessionListResu
 func (h *SessionCatchupHandlers) Pull(ctx context.Context, p wire.SessionPullParams) (wire.SessionPullResult, error) {
 	peer := peerFingerprint(ctx)
 	sid := strconv.FormatInt(p.SessionID, 10)
-	rows, hasMore, err := h.deps.Journal.ListSince(ctx, peer, sid, p.Cursor, clampPullLimit(p.Limit))
-	if err != nil {
-		return wire.SessionPullResult{}, fmt.Errorf("pull notifications: %w", err)
-	}
+	// 下界先读:两次读之间随时可能跑一轮留存回收。先读页、后读下界,回收就会让下界涨到
+	// 页里那些行**之上** —— 客户端拿它复位游标(复位跑在重放之前),这一整页已经拿到手
+	// 的行会被当成重复全部丢掉,一段本来读得到的转录凭空消失。反过来先读下界只会偏小,
+	// 偏小最多让客户端少复位一次,拉下一页时自然拿到新的下界。
 	oldest, err := h.deps.Journal.OldestSeq(ctx, peer, sid)
 	if err != nil {
 		oldest = 0
+	}
+	rows, hasMore, err := h.deps.Journal.ListSince(ctx, peer, sid, p.Cursor, clampPullLimit(p.Limit))
+	if err != nil {
+		return wire.SessionPullResult{}, fmt.Errorf("pull notifications: %w", err)
 	}
 	// 空页保持游标不变:回退到 0 会让客户端把整段日志重放一遍。
 	out := wire.SessionPullResult{Cursor: p.Cursor, HasMore: hasMore, OldestSeq: oldest}

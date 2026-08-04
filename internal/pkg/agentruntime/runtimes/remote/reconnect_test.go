@@ -1402,10 +1402,108 @@ func TestTurnStartProbe_OldDaemon_ReportsUnsupportedToObserver(t *testing.T) {
 		"探到老 daemon 必须播报一次「不支持」,配对设备面板才有东西可说")
 }
 
+// Given 同一条连接上连开两轮,When 第二轮开轮,Then 不再发第二次 runtime.session.list,
+// 而这一轮的开轮位置仍然正确 —— 回放上来的、属于已结束轮次的终态帧照样被挡住。
+//
+// 那条 RPC 在 daemon 侧是一次 LatestSeqByPeer 的 GROUP BY,外加对该对端**每条**会话的
+// PendingWaiters 探测,成本随这个对端历史上跑过的会话数增长;而开轮唯一消费的只有这条
+// 会话的 LatestSeq。把它钉在每一轮的启动热路径上是纯开销:高水位在本连接上探过一次之后
+// 就由游标接着跟(daemon 为这条会话新增的每一行都推给属主连接,推不动的那一刻这条连接
+// 也就死了,换代重连会重新探)。
+func TestTurnStartFloor_SecondTurnOnSameConn_DoesNotRelist(t *testing.T) {
+	// 游标停在 3;4..9 是上一次离线期间落库的三轮尾巴(9 是开轮那一刻的高水位),
+	// 10/11 才是当前这一轮自己的通知。
+	journal := []wire.JournaledNotification{
+		journaledEvent(4, "old-a"), journaledDone(5, "old-1"),
+		journaledEvent(6, "old-b"), journaledDone(7, "old-2"),
+		journaledEvent(8, "old-c"), journaledDone(9, "old-3"),
+		journaledEvent(10, "new-a"), journaledEvent(11, "new-b"),
+	}
+	conn := newFakeConn()
+	conn.script(func(method string, params, result any) error {
+		switch method {
+		case wire.MethodSessionList:
+			*(result.(*wire.SessionListResult)) = wire.SessionListResult{
+				Sessions: []wire.SessionSummary{{
+					SessionID:      rigSessionID,
+					LifecycleState: wire.SessionLifecycleIdle,
+					LatestSeq:      9,
+				}},
+			}
+		case wire.MethodRun:
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rigSessionID}
+		case wire.MethodSessionPull:
+			p := params.(wire.SessionPullParams)
+			out := wire.SessionPullResult{Cursor: p.Cursor}
+			for _, n := range journal {
+				if n.Seq > p.Cursor {
+					out.Notifications = append(out.Notifications, n)
+					out.Cursor = n.Seq
+				}
+			}
+			*(result.(*wire.SessionPullResult)) = out
+		}
+		return nil
+	})
+	cursor := &fakeCursorPort{}
+	cursor.setLoad(func(int64, string) (int64, bool, error) { return 3, true, nil })
+	rt := New(conn,
+		WithReconnect(ReconnectFunc(func(context.Context) (agentruntime.DaemonClientPort, string, error) {
+			return nil, "", ErrReconnectAbandoned
+		})),
+		WithDaemonFingerprint(rigFingerprint),
+		WithSessionCursor(cursor),
+		WithCursorFlushInterval(0),
+	)
+	t.Cleanup(func() { _ = rt.Close() })
+
+	startProbeTurn(t, rt)
+	events, result, err := rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode), ID: 1, Name: "x"},
+		SessionID: rigSessionID,
+		UserText:  "第二轮",
+	})
+	require.NoError(t, err)
+
+	assert.Len(t, conn.methodCalls(wire.MethodSessionList), 1,
+		"同一条连接上的第二轮不该再问一次会话清单")
+
+	// 第二轮的第一条实时帧对着停在 3 的游标是跳号,整段区间因此被重放回来:4..9 是
+	// 三条已结束的轮次(各自进补齐轮),10/11 才是这一轮自己的。
+	ev, err := json.Marshal(agentruntime.TextDelta{Text: "new-a"})
+	require.NoError(t, err)
+	conn.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: rigSessionID, Event: ev, Seq: 10})
+
+	var texts []string
+	closedEarly := false
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case e, ok := <-events:
+				if !ok {
+					closedEarly = true
+					return true
+				}
+				if td, isText := e.(agentruntime.TextDelta); isText {
+					texts = append(texts, td.Text)
+				}
+			default:
+				return len(texts) >= 2
+			}
+		}
+	}, 3*time.Second, 5*time.Millisecond)
+
+	assert.False(t, closedEarly,
+		"省掉那次 RPC 不等于丢掉开轮位置:已结束轮次的终态帧仍不得关掉这一轮")
+	assert.Equal(t, []string{"new-a", "new-b"}, texts,
+		"这一轮只该收到自己的通知:开轮位置若丢了,旧轮次的字会混进它的回答里")
+	assert.Empty(t, result.Model, "旧轮次的结果不得覆盖这一轮的 RunResult")
+}
+
 // Given 用户把那台 daemon 升级了,When 开轮前的探测这次通过,Then 同一个端口要交出
 // 「支持」—— 否则设备面板上那条「版本过旧」再也撤不下来。
 //
-// 并且探测落在**每一轮**开轮前的热路径上:结论没翻转就不该重复播报。
+// 并且结论没翻转就不该重复播报(每条连接第一轮探一次,此后由游标接着跟)。
 func TestTurnStartProbe_UpToDateDaemon_ReportsSupportedOnce(t *testing.T) {
 	obs := &durabilityRecorder{}
 	rt := newProbeRuntime(t, true, obs)

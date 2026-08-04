@@ -41,6 +41,21 @@ func (m *MockSessionRepo) EXPECT() *MockSessionRepoMockRecorder {
 	return m.recorder
 }
 
+// CountByLifecycle mocks base method.
+func (m *MockSessionRepo) CountByLifecycle(ctx context.Context, state string) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CountByLifecycle", ctx, state)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CountByLifecycle indicates an expected call of CountByLifecycle.
+func (mr *MockSessionRepoMockRecorder) CountByLifecycle(ctx, state any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CountByLifecycle", reflect.TypeOf((*MockSessionRepo)(nil).CountByLifecycle), ctx, state)
+}
+
 // Find mocks base method.
 func (m *MockSessionRepo) Find(ctx context.Context, peerFingerprint, peerSessionID string) (*session_repo.DaemonSession, error) {
 	m.ctrl.T.Helper()

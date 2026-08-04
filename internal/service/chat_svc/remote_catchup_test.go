@@ -15,6 +15,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/pkg/jsonrpc"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
@@ -679,6 +680,66 @@ func TestCatchUpRemoteDevice_RetriesWhenDeviceComesBackOnline(t *testing.T) {
 	// 补成了的设备再上线不重复补:接下来的断连由 remote.Runtime 自己的重连接管负责。
 	require.NoError(t, svc.CatchUpRemoteDevice(ctx, deviceID))
 	assert.Equal(t, 1, client.countOf(wire.MethodSessionList))
+}
+
+// Given 那台 daemon 版本过旧(补齐族 RPC 回 method-not-found),When 启动补齐,
+// Then 它上面的会话**当场收尾**,而不是记成待补齐等设备回来 —— 并且不留待补齐标记,
+// 那台设备再上线也不重来。
+//
+// 「拿不到判据就不下结论」只适用于**这一次**没问到:拨不通、RPC 抖动,设备回来再问
+// 一遍就有答案。老 daemon 不是这一类 —— 它这辈子都答不了,记成待补齐等于把那些会话
+// 永久钉在 running 上:没有任何东西会再改写它们(blanket 的 ResetStaleActiveSessions
+// 不碰远端行,重放也不会发生)。R18 议定的回落正相反:老 daemon 上断连即结束该轮。
+func TestCatchUpRemoteSessions_OldDaemonSettlesSessionsInsteadOfDeferring(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	const deviceID int64 = 7
+	const fp = "sha256:beef"
+
+	// 老 daemon:补齐族的每一个方法都回 -32601。
+	client := newScriptedDaemonClient(func(string, any, any) error {
+		return &jsonrpc.Error{Code: jsonrpc.ErrMethodNotFound.Code, Message: "Method not found"}
+	})
+
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	lease.EXPECT().Client().Return(client).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease.EXPECT().Release().Times(1)
+	// 只借一次:第二次上线信号不该再拨一次。
+	pool.EXPECT().Borrow(gomock.Any(), deviceID).Return(lease, nil).Times(1)
+
+	rds := mock_remote_device_svc.NewMockRemoteDeviceSvc(ctrl)
+	rds.EXPECT().Get(gomock.Any(), deviceID).
+		Return(&remote_device_svc.DeviceView{ID: deviceID, DaemonFingerprint: fp}, nil).AnyTimes()
+	// R18:探测结论落到设备行上,配对设备面板据此说明「daemon 版本过旧」。
+	rds.EXPECT().RecordDaemonOutdated(deviceID, true).MinTimes(1)
+	prevSvc := remote_device_svc.Default()
+	remote_device_svc.SetDefault(rds)
+	t.Cleanup(func() { remote_device_svc.SetDefault(prevSvc) })
+
+	rows := []*chat_entity.Session{
+		{ID: 100, AgentID: 9, AgentStatus: "running", Status: consts.ACTIVE,
+			ExecDeviceID: deviceID, ExecDaemonFingerprint: fp, EventCursor: 5},
+		{ID: 101, AgentID: 9, AgentStatus: "running", Status: consts.ACTIVE,
+			ExecDeviceID: deviceID, ExecDaemonFingerprint: fp, EventCursor: 5},
+	}
+	registerCatchUpRepos(t, ctrl, rows, func(sessRepo *mock_chat_repo.MockSessionRepo) {
+		sessRepo.EXPECT().ResetActiveSessionsByIDs(gomock.Any(), []int64{100, 101}).
+			Return(int64(2), nil).Times(1)
+	})
+
+	svc := NewChat(NoopEmitter{}).(*chatSvc)
+	svc.setConnPoolForTest(pool)
+
+	ctx := context.Background()
+	require.NoError(t, svc.CatchUpRemoteSessions(ctx))
+
+	// 设备监视报它上线:老 daemon 不该被重试,重试一万次也是同一个答案。
+	require.NoError(t, svc.CatchUpRemoteDevice(ctx, deviceID))
+	assert.Zero(t, svc.remoteRuntimeCount(deviceID),
+		"这台答不了的 daemon 上没有会话要接管了,池连接的引用要还干净")
 }
 
 type dialErr string

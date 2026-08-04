@@ -696,6 +696,53 @@ func TestDaemon_IPCStatus_ReportsDatabasePathAndSize(t *testing.T) {
 	assert.Greater(t, sizeAfter, sizeBefore, "体量必须跟着库一起长,而不是一个常量")
 }
 
+// TestDaemon_IPCStatus_CountsSessionsRunningRightNow 钉死状态查询里的「活跃会话数」:
+// 它必须来自 daemon 自己记着的生命周期(一轮起手 running、轮末 idle、重启标 interrupted),
+// 而不是一张没有任何写入方的内存表 —— 那样的话有轮次正在跑时 `agentred status` 照样
+// 印 Active sessions: 0,读的人据此以为自己的会话没了。
+func TestDaemon_IPCStatus_CountsSessionsRunningRightNow(t *testing.T) {
+	// 不用 t.TempDir():它以测试名建目录,而 unix socket 的路径在 macOS 上只有 104 字节。
+	dir, err := os.MkdirTemp("", "agentred-active")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	d, err := New(Options{DataDir: dir, LANHost: "127.0.0.1", LANPort: 0})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+	require.Eventually(t, func() bool {
+		_, statErr := os.Stat(d.SocketPath())
+		return statErr == nil
+	}, 2*time.Second, 10*time.Millisecond)
+
+	tr := &http.Transport{DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+		return net.Dial("unix", d.SocketPath())
+	}}
+	client := &http.Client{Transport: tr}
+	activeSessions := func() float64 {
+		t.Helper()
+		resp, getErr := client.Get("http://daemon/local/status")
+		require.NoError(t, getErr)
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		var v map[string]any
+		require.NoError(t, json.Unmarshal(body, &v))
+		n, ok := v["activeSessions"].(float64)
+		require.True(t, ok, "状态查询必须交出活跃会话数")
+		return n
+	}
+
+	assert.Zero(t, activeSessions(), "一轮都没跑过时是 0")
+
+	dbCtx := dbpkg.WithContextDB(context.Background(), d.db)
+	seedSession(t, dbCtx, d.sessionStore, "peerA", "1", wire.SessionLifecycleRunning)
+	seedSession(t, dbCtx, d.sessionStore, "peerA", "2", wire.SessionLifecycleIdle)
+	seedSession(t, dbCtx, d.sessionStore, "peerB", "1", wire.SessionLifecycleRunning)
+
+	assert.Equal(t, float64(2), activeSessions(),
+		"数的是此刻真的在跑的那些:空闲会话不算,别的对端在跑的算")
+}
+
 // TestRecoverHandlerPanic 验证 RPC handler panic 被吃掉,翻成
 // rpc.Error{ErrInternal} 让 daemon 进程不挂、客户端收到结构化错误,而不是
 // 看到 SIGSEGV 整个 agentred 进程死。回归 claudecode runtime nil deref 把整

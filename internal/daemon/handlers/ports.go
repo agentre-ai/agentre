@@ -24,23 +24,6 @@ type StatePort interface {
 	Snapshot() state.State
 }
 
-// SessionHandle is what the registry stores per active chat session.
-type SessionHandle struct {
-	SessionID   string
-	BackendType string
-	Workdir     string
-	StartedAt   int64
-	Cancel      func()
-}
-
-// SessionRegistryPort is the in-mem session map.
-type SessionRegistryPort interface {
-	Register(sessionID string, h SessionHandle)
-	Lookup(sessionID string) (SessionHandle, bool)
-	Remove(sessionID string)
-	List() []SessionHandle
-}
-
 // NotifierPort sends server-initiated notifications and reverse-direction
 // requests back to the connected client (e.g. chat.event, approval.request).
 type NotifierPort interface {
@@ -80,6 +63,9 @@ type DBStat struct {
 // DBStatPort 交出 DBStat。规格「安全、隐私、兼容性与可访问性 / 磁盘增长」要求库文件
 // 路径与体量在 daemon 状态查询里可见,用户据此自行判断何时清理。实现在 daemon 包
 // (只有它知道自己开在哪个 DataDir 下),按 DIP 声明在消费方。
+//
+// Path 只喂给本机 IPC 的状态查询;经 LAN 发给对端的 health.ping 只带体量(见
+// HealthPingResult)。
 type DBStatPort interface {
 	DBStat() DBStat
 }

@@ -25,7 +25,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
 	"github.com/agentre-ai/agentre/internal/daemon/repository/session_repo"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
-	"github.com/agentre-ai/agentre/internal/daemon/sessions"
 	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
@@ -63,7 +62,6 @@ type Daemon struct {
 	opts     Options
 	state    *state.State
 	gateway  *httpgateway.Gateway
-	sessions *sessions.Registry
 	pairing  *pairing.Manager
 	ratelim  *pairing.RateLimiter
 	registry *rpc.Registry
@@ -434,7 +432,7 @@ func New(opts Options) (*Daemon, error) {
 		opts: opts, state: st, db: gormDB,
 		journal:      notificationJournal{db: gormDB},
 		sessionStore: daemonSessionStore{db: gormDB},
-		sessions:     sessions.NewRegistry(), pairing: pm, ratelim: rl,
+		pairing:      pm, ratelim: rl,
 		registry: reg, auth: auth,
 	}
 	d.catchup = handlers.NewSessionCatchupHandlers(handlers.SessionCatchupDeps{
@@ -550,9 +548,9 @@ func (d *Daemon) registerMethods() {
 	// trackSessionOwner:看一眼有哪些会话、把历史拉回来,都不该顺带把实时流改指向自己。
 	// 改推送目标是 MethodSessionAttach 一个人的职责(见 bindConn)。
 	//
-	// MethodSessionList 是 daemon 上**唯一**的「列会话」出口。曾经还有一个基于内存
-	// sessions.Registry 的 session.list / session.get,但没有任何地方调 Registry.Register,
-	// 它恒答空清单;两个出口并存只会让读到空清单的一方以为自己的会话没了。
+	// MethodSessionList 是 daemon 上**唯一**的「列会话」出口。曾经还有一对基于内存
+	// 会话表的 session.list / session.get,但那张表没有任何写入方,它恒答空清单;
+	// 两个出口并存只会让读到空清单的一方以为自己的会话没了。
 	d.registry.Register(wire.MethodSessionList, wrapGuardedNoParams(d.catchup.List))
 	d.registry.Register(wire.MethodSessionPull, wrapGuarded(d.catchup.Pull))
 	d.registry.Register(wire.MethodSessionPendingWaiters, wrapGuarded(d.catchup.PendingWaiters))
@@ -918,6 +916,13 @@ func (s daemonSessionStore) Finish(ctx context.Context, peerFingerprint, peerSes
 		dbpkg.WithContextDB(ctx, s.db), peerFingerprint, peerSessionID, wire.SessionLifecycleIdle)
 }
 
+// CountRunning 数一数这台 daemon 此刻正在跑的会话(本机状态查询用,见 ipcStatus)。
+// 只服务本机 IPC,不经 LAN 出去,因此不按对端限定 —— 它答的是「这台机器忙不忙」。
+func (s daemonSessionStore) CountRunning(ctx context.Context) (int64, error) {
+	return session_repo.Session().CountByLifecycle(
+		dbpkg.WithContextDB(ctx, s.db), wire.SessionLifecycleRunning)
+}
+
 func (s daemonSessionStore) List(ctx context.Context, peerFingerprint string) ([]handlers.SessionRecord, error) {
 	rows, err := session_repo.Session().ListByPeer(dbpkg.WithContextDB(ctx, s.db), peerFingerprint)
 	if err != nil {
@@ -1046,9 +1051,9 @@ func (d *Daemon) runJournalCollector(ctx context.Context) {
 //     还让「只落后一格」的客户端仍能按游标把那一条拉平。
 //
 // 因此被回收的只可能是「一条 30 天没动静的终态会话上、客户端在这 30 天里始终没来取的
-// 那段历史」。这与规格实现决策 7 的「永久保留」是一处有意的收窄:评审 F7 认定无回收路径
-// 的稳态聊天会把共享 daemon 写到 GB 级且无法回收。窗口可经 Options.JournalRetention
-// 调整,负数把回收整个关掉,回到规格原本的承诺。
+// 那段历史」——这正是规格实现决策 7 定下的回收条件(默认保留 30 天,只碰安静满整个窗口
+// 的终态会话,高水位那一行永不删)。窗口可经 Options.JournalRetention 调整,负数把回收
+// 整个关掉(永久保留)。
 func (d *Daemon) collectJournal(ctx context.Context) (int64, error) {
 	retention := d.journalRetention()
 	if retention <= 0 {
