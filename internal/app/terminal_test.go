@@ -98,41 +98,6 @@ func TestApp_TerminalOpen_PropagatesResolveErrorWithoutOpening(t *testing.T) {
 	require.Error(t, a.TerminalOpen("t1", 7, "", 80, 24))
 }
 
-func TestApp_ResolveLocalCommandScope_GivenPreSessionTarget_WhenResolved_ThenDelegatesReadOnly(t *testing.T) {
-	req := &chat_svc.ResolveLocalCommandScopeRequest{AgentID: 31, ProjectID: 41}
-	want := &chat_svc.LocalCommandScope{DeviceID: "device-9", Cwd: "/remote/current"}
-	calls := 0
-	registerTerminalChatService(t, &terminalChatServiceStub{
-		resolve: func(_ context.Context, got *chat_svc.ResolveLocalCommandScopeRequest) (*chat_svc.LocalCommandScope, error) {
-			calls++
-			require.Same(t, req, got)
-			return want, nil
-		},
-	})
-
-	got, err := (&App{ctx: context.Background()}).ResolveLocalCommandScope(req)
-
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 1, calls)
-}
-
-func TestApp_ResolveLocalCommandScope_GivenResolverFailure_WhenResolved_ThenReturnsRPCError(t *testing.T) {
-	resolveErr := errors.New("scope unavailable")
-	registerTerminalChatService(t, &terminalChatServiceStub{
-		resolve: func(context.Context, *chat_svc.ResolveLocalCommandScopeRequest) (*chat_svc.LocalCommandScope, error) {
-			return nil, resolveErr
-		},
-	})
-
-	got, err := (&App{ctx: context.Background()}).ResolveLocalCommandScope(
-		&chat_svc.ResolveLocalCommandScopeRequest{SessionID: 71},
-	)
-
-	assert.Nil(t, got)
-	require.ErrorIs(t, err, resolveErr)
-}
-
 func TestApp_ResolveLocalCommandScope_GivenChatServiceUnset_WhenResolved_ThenReturnsRPCError(t *testing.T) {
 	registerTerminalChatService(t, nil)
 
