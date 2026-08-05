@@ -9,6 +9,9 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/agentre-ai/agentre/internal/pkg/pty"
 	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
@@ -49,6 +52,7 @@ const (
 
 	maxTerminalIDLength             = 128
 	terminalCancelTombstoneCapacity = 256
+	detachedCleanupKindLateOpen     = "lateOpen"
 )
 
 var (
@@ -135,7 +139,18 @@ func (h *TerminalHandlers) Open(ctx context.Context, p protocol.TerminalOpenPara
 		return protocol.TerminalOpenResult{TerminalID: id}, nil
 	}
 	if hd != nil {
-		_ = hd.Close()
+		if closeErr := hd.Close(); closeErr != nil {
+			guardianCtx := context.WithoutCancel(ctx)
+			logger.Ctx(guardianCtx).Warn("handlers.TerminalHandlers.Open: detached cleanup guardian started",
+				zap.String("terminalId", id),
+				zap.String("cleanupKind", detachedCleanupKindLateOpen))
+			pty.StartDetachedCleanup(hd, func(outcome pty.DetachedCleanupOutcome) {
+				logger.Ctx(guardianCtx).Info("handlers.TerminalHandlers.Open: detached cleanup guardian settled",
+					zap.String("terminalId", id),
+					zap.String("cleanupKind", detachedCleanupKindLateOpen),
+					zap.String("outcome", string(outcome)))
+			})
+		}
 	}
 	switch {
 	case closed:

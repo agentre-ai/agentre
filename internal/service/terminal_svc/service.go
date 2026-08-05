@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/cago-frame/cago/pkg/gogo"
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/agentre-ai/agentre/internal/pkg/pty"
 	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
@@ -21,8 +23,9 @@ import (
 // reorders events and desyncs xterm's parser into the garbled output this fixes.
 // Mirrors the opskat terminal pipeline.
 const (
-	flushInterval  = 10 * time.Millisecond
-	flushThreshold = 32 * 1024
+	flushInterval                    = 10 * time.Millisecond
+	flushThreshold                   = 32 * 1024
+	detachedCleanupKindPreemptedOpen = "preemptedOpen"
 )
 
 var (
@@ -284,9 +287,23 @@ func (s *Service) open(
 	}
 	if preempted {
 		// Close already returned to the caller, so it never saw this handle.
-		// Tear it down here so the PTY — and any remote daemon-side shell —
-		// does not leak.
-		_ = h.Close()
+		// A failed first close transfers the exact handle to one detached
+		// guardian, which drains output and retains any remote lease until close
+		// retry or natural exit supplies cleanup authority.
+		if closeErr := h.Close(); closeErr != nil {
+			guardianCtx := context.WithoutCancel(ctx)
+			logger.Ctx(guardianCtx).Warn("terminal_svc.open: detached cleanup guardian started",
+				zap.String("terminalId", terminalID),
+				zap.String("deviceId", deviceID),
+				zap.String("cleanupKind", detachedCleanupKindPreemptedOpen))
+			pty.StartDetachedCleanup(h, func(outcome pty.DetachedCleanupOutcome) {
+				logger.Ctx(guardianCtx).Info("terminal_svc.open: detached cleanup guardian settled",
+					zap.String("terminalId", terminalID),
+					zap.String("deviceId", deviceID),
+					zap.String("cleanupKind", detachedCleanupKindPreemptedOpen),
+					zap.String("outcome", string(outcome)))
+			})
+		}
 		return preemptedStartError(lifecycle)
 	}
 	// Log before starting the pump so even an already-exited handle preserves
