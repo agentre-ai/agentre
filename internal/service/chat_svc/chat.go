@@ -1238,7 +1238,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		}
 	}
 
-	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, nil /*rollbackTxHook*/, "" /*forkAnchor*/, turnExtras{
+	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, nil /*replacement*/, "" /*forkAnchor*/, turnExtras{
 		emitTurnStartedBypass: req.EmitTurnStartedBypass,
 	})
 }
@@ -2057,15 +2057,16 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	// preTx 在同一事务里先截掉 user 锚点（含）开始的全部历史，
 	// 然后 startTurn 的标准路径会以新的 NextSeq 写回 user + assistant。
 	anchorSeq := userAnchor.Seq
+	var replacement *transcriptReplacementLifecycle
 	preTx := func(txCtx context.Context) error {
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	var rollbackTx func(context.Context) error
 	if be.IsPiAgent() {
-		rollbackTx = transcriptRollback(sess, all, anchorSeq)
+		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq)
+		preTx = replacement.stage
 	}
-	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, rollbackTx, forkAnchor, turnExtras{})
+	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, replacement, forkAnchor, turnExtras{})
 }
 
 // Edit 编辑历史 user 消息后用新文本重跑 turn。截到目标 user 消息（含）开始的全部
@@ -2125,17 +2126,14 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 	}
 
 	anchorSeq := target.Seq
+	var replacement *transcriptReplacementLifecycle
 	preTx := func(txCtx context.Context) error {
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	var rollbackTx func(context.Context) error
 	if be.IsPiAgent() {
-		messages, err := chat_repo.Message().List(ctx, sess.ID)
-		if err != nil {
-			return nil, operationFailedWithCause(ctx, err)
-		}
-		rollbackTx = transcriptRollback(sess, messages, anchorSeq)
+		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq)
+		preTx = replacement.stage
 	}
 	return s.startTurn(
 		ctx,
@@ -2145,7 +2143,7 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		prov,
 		replaceTextPreserveImages(text, targetBlocks),
 		preTx,
-		rollbackTx,
+		replacement,
 		forkAnchor,
 		turnExtras{},
 	)
@@ -2166,40 +2164,64 @@ func replaceTextPreserveImages(text string, old []blocks.ContentBlock) []blocks.
 	return out
 }
 
-func transcriptRollback(
-	sess *chat_entity.Session,
-	messages []*chat_entity.Message,
-	fromSeq int,
-) func(context.Context) error {
-	if sess == nil {
+// transcriptReplacementLifecycle stages only the speculative Pi replacement
+// under a private session ID. The original transcript stays canonical until a
+// post-start transaction atomically swaps the staged pair into its place.
+type transcriptReplacementLifecycle struct {
+	sessionID      int64
+	stageSessionID int64
+	fromSeq        int
+}
+
+func newTranscriptReplacementLifecycle(sessionID int64, fromSeq int) *transcriptReplacementLifecycle {
+	return &transcriptReplacementLifecycle{
+		sessionID:      sessionID,
+		stageSessionID: chat_repo.ReplacementStageSessionID(sessionID),
+		fromSeq:        fromSeq,
+	}
+}
+
+func (r *transcriptReplacementLifecycle) stage(txCtx context.Context) error {
+	if r == nil {
 		return nil
 	}
-	sessionBefore := *sess
-	originals := make([]chat_entity.Message, 0, len(messages))
-	for _, message := range messages {
-		if message == nil || message.Seq < fromSeq {
-			continue
-		}
-		originals = append(originals, *message)
-	}
-	return func(txCtx context.Context) error {
-		if _, err := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, fromSeq); err != nil {
-			return err
-		}
-		for i := range originals {
-			message := originals[i]
-			if err := chat_repo.Message().Create(txCtx, &message); err != nil {
-				return err
-			}
-		}
-		sessionRestore := sessionBefore
-		sessionRestore.ProviderSessionID = sess.ProviderSessionID
-		if err := chat_repo.Session().Update(txCtx, &sessionRestore); err != nil {
-			return err
-		}
-		*sess = sessionRestore
+	_, err := chat_repo.Message().DeleteFromSeq(txCtx, r.stageSessionID, 0)
+	return err
+}
+
+func (r *transcriptReplacementLifecycle) activate(
+	txCtx context.Context,
+	userMsg, assistantMsg *chat_entity.Message,
+) error {
+	if r == nil {
 		return nil
 	}
+	if _, err := chat_repo.Message().DeleteFromSeq(txCtx, r.sessionID, r.fromSeq); err != nil {
+		return err
+	}
+	if err := chat_repo.Message().Update(txCtx, userMsg); err != nil {
+		return err
+	}
+	if err := chat_repo.Message().Update(txCtx, assistantMsg); err != nil {
+		return err
+	}
+	_, err := chat_repo.Message().DeleteFromSeq(txCtx, r.stageSessionID, 0)
+	return err
+}
+
+func (s *chatSvc) discardTranscriptReplacement(
+	ctx context.Context,
+	replacement *transcriptReplacementLifecycle,
+) error {
+	discardCtx := context.WithoutCancel(ctx)
+	return db.Ctx(discardCtx).Transaction(func(tx *gorm.DB) error {
+		_, err := chat_repo.Message().DeleteFromSeq(
+			db.WithContextDB(discardCtx, tx),
+			replacement.stageSessionID,
+			0,
+		)
+		return err
+	})
 }
 
 func messageHasImage(m *chat_entity.Message) bool {
@@ -2339,9 +2361,9 @@ func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Ses
 // session's actual agent (Send for new sessions, Regenerate for in-place
 // rewind). userBlocks is the user message body that will be re-played to the runtime.
 //
-// preTx, if non-nil, runs at the very top of the transaction — before NextSeq —
-// so it can free up seq numbers by truncating older rows. Returning a non-nil
-// error from preTx aborts the whole turn (and unlocks).
+// preTx, if non-nil, runs at the very top of the transaction. Normal rewinds
+// use it to free seq numbers; prepared Pi replacements use it to clear a stale
+// private stage. Returning an error aborts the whole turn (and unlocks).
 // turnExtras 是从 SendRequest 透传到 runTurn 的领域无关可选项;普通会话一律零值。
 // 在同一会话的自动续轮(auto-continue)里需要保持不变,所以随 runTurn 一路携带。
 type turnExtras struct {
@@ -2358,7 +2380,7 @@ func (s *chatSvc) startTurn(
 	prov *llm_provider_entity.LLMProvider,
 	userBlocks []blocks.ContentBlock,
 	preTx func(txCtx context.Context) error,
-	rollbackTx func(txCtx context.Context) error,
+	replacement *transcriptReplacementLifecycle,
 	forkAnchor string,
 	extras turnExtras,
 ) (*SendResponse, error) {
@@ -2403,10 +2425,10 @@ func (s *chatSvc) startTurn(
 			startupCancelRegistered = false
 		}
 	}
-	// Pi prepares/restores and forks its RPC process before the transaction, but
-	// deliberately withholds the prompt. Register cancellation before preflight so
-	// Stop and request cancellation reach both preflight and post-commit Start.
-	if preTx != nil && be.IsPiAgent() && sess.HasProviderSession() && strings.TrimSpace(forkAnchor) != "" {
+	// Pi prepares/restores its RPC process and, when requested, forks before the
+	// transaction, but deliberately withholds the prompt. Register cancellation
+	// before preflight so Stop and request cancellation reach both phases.
+	if replacement != nil && be.IsPiAgent() {
 		runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
 		turnCtx, cancel = context.WithCancel(runCtx)
 		stopRequestCancel = context.AfterFunc(ctx, cancel)
@@ -2427,9 +2449,12 @@ func (s *chatSvc) startTurn(
 		}
 	}
 
-	// running 随下方事务内的 Session().Update 原子落库:事务失败(SQLITE_BUSY 等)
-	// 即回滚,不残留 running(回归: dev sess-21 事务外预写后失败,DB 永久卡 running)。
-	sess.AgentStatus = "running"
+	// Normal turns persist running with their messages. A prepared Pi replacement
+	// persists only its hidden staged pair; the original transcript and prior
+	// session status stay canonical until provider startup succeeds.
+	if replacement == nil {
+		sess.AgentStatus = "running"
+	}
 	if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(ctx, tx)
 		if preTx != nil {
@@ -2437,9 +2462,17 @@ func (s *chatSvc) startTurn(
 				return err
 			}
 		}
-		nextSeq, err := chat_repo.Message().NextSeq(txCtx, sess.ID)
-		if err != nil {
-			return err
+		nextSeq := 0
+		if replacement != nil {
+			nextSeq = replacement.fromSeq
+			userMsg.SessionID = replacement.stageSessionID
+			assistantMsg.SessionID = replacement.stageSessionID
+		} else {
+			var err error
+			nextSeq, err = chat_repo.Message().NextSeq(txCtx, sess.ID)
+			if err != nil {
+				return err
+			}
 		}
 		userMsg.Seq = nextSeq
 		if err := chat_repo.Message().Create(txCtx, userMsg); err != nil {
@@ -2448,6 +2481,9 @@ func (s *chatSvc) startTurn(
 		assistantMsg.Seq = nextSeq + 1
 		if err := chat_repo.Message().Create(txCtx, assistantMsg); err != nil {
 			return err
+		}
+		if replacement != nil {
+			return nil
 		}
 		sess.LastMessageAt = time.Now().UnixMilli()
 		return chat_repo.Session().Update(txCtx, sess)
@@ -2470,14 +2506,9 @@ func (s *chatSvc) startTurn(
 			err = s.mapTurnError(ctx, sess, be, err)
 			clearSynchronousTurn()
 			s.discardPreparedTurn(sess.ID, prepared)
-			if rollbackTx != nil {
-				// Compensation must survive the timeout/cancellation that caused Start
-				// to fail, otherwise the committed replacement can outlive the prompt.
-				rollbackCtx := context.WithoutCancel(ctx)
-				if rollbackErr := db.Ctx(rollbackCtx).Transaction(func(tx *gorm.DB) error {
-					return rollbackTx(db.WithContextDB(rollbackCtx, tx))
-				}); rollbackErr != nil {
-					err = errors.Join(err, fmt.Errorf("restore Pi transcript: %w", rollbackErr))
+			if replacement != nil {
+				if discardErr := s.discardTranscriptReplacement(ctx, replacement); discardErr != nil {
+					err = errors.Join(err, fmt.Errorf("discard staged Pi transcript: %w", discardErr))
 				}
 			}
 			lock.Unlock()
@@ -2488,6 +2519,36 @@ func (s *chatSvc) startTurn(
 				zap.String("forkAnchor", forkAnchor),
 				zap.String("errorType", fmt.Sprintf("%T", err)))
 			return nil, err
+		}
+		if replacement != nil {
+			activeUser := *userMsg
+			activeUser.SessionID = sess.ID
+			activeAssistant := *assistantMsg
+			activeAssistant.SessionID = sess.ID
+			runningSession := *sess
+			runningSession.AgentStatus = "running"
+			runningSession.LastMessageAt = time.Now().UnixMilli()
+			if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+				txCtx := db.WithContextDB(ctx, tx)
+				if err := replacement.activate(txCtx, &activeUser, &activeAssistant); err != nil {
+					return err
+				}
+				return chat_repo.Session().Update(txCtx, &runningSession)
+			}); err != nil {
+				clearSynchronousTurn()
+				s.discardPreparedTurn(sess.ID, prepared)
+				if discardErr := s.discardTranscriptReplacement(ctx, replacement); discardErr != nil {
+					err = errors.Join(err, fmt.Errorf("discard staged Pi transcript: %w", discardErr))
+				}
+				lock.Unlock()
+				return nil, operationFailedWithCause(ctx, err,
+					zap.Int64("sessionId", sess.ID),
+					zap.Int64("agentId", a.ID),
+					zap.String("backendType", be.Type))
+			}
+			*userMsg = activeUser
+			*assistantMsg = activeAssistant
+			*sess = runningSession
 		}
 		if stopRequestCancel != nil {
 			stopRequestCancel()

@@ -177,8 +177,8 @@ func TestMessageRepo_List(t *testing.T) {
 			AddRow(2, 3, "assistant", `[]`, 2))
 
 	got, err := chat_repo.NewMessage().List(ctx, 3)
-	assert.NoError(t, err)
-	assert.Len(t, got, 2)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
 	assert.Equal(t, "user", got[0].Role)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -214,6 +214,32 @@ func TestMessageRepo_Create(t *testing.T) {
 	err := chat_repo.NewMessage().Create(ctx, m)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(42), m.ID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMessageRepo_CreateReplacementStage(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO `chat_messages`").
+		WithArgs(
+			chat_repo.ReplacementStageSessionID(3), "", "user", "[]", "",
+			0, 0, 0, 0, 0, 0, 0,
+			"", "", 5,
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+		).
+		WillReturnResult(sqlmock.NewResult(52, 1))
+	mock.ExpectCommit()
+
+	message := &chat_entity.Message{
+		SessionID:  chat_repo.ReplacementStageSessionID(3),
+		Role:       "user",
+		BlocksJSON: "[]",
+		Seq:        5,
+	}
+	err := chat_repo.NewMessage().Create(ctx, message)
+	require.NoError(t, err)
+	assert.Equal(t, int64(52), message.ID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

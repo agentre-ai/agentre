@@ -83,6 +83,13 @@ func NewMessage() MessageRepo          { return &messageRepo{} }
 
 type messageRepo struct{}
 
+// ReplacementStageSessionID returns the private storage namespace used while
+// a Pi replacement turn is durable but not yet activated. Chat session IDs are
+// positive, so the negated ID cannot collide with a user-visible session.
+func ReplacementStageSessionID(sessionID int64) int64 {
+	return -sessionID
+}
+
 func (r *messageRepo) List(ctx context.Context, sessionID int64) ([]*chat_entity.Message, error) {
 	var rows []*chat_entity.Message
 	err := db.Ctx(ctx).
