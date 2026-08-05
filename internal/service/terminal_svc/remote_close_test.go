@@ -2,6 +2,7 @@ package terminal_svc_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -43,7 +44,7 @@ func (c *remoteCloseClient) Subscribe(string) remote.Subscription {
 func (c *remoteCloseClient) Unsubscribe(string, remote.Subscription) {}
 func (c *remoteCloseClient) Abort() error                            { return nil }
 
-func TestService_GivenRunningRemoteCommandWhenClosedThenEmitsKilledExitAndCleansLifecycle(t *testing.T) {
+func TestService_GivenRunningRemoteCommandWhenCloseSucceedsThenPreventsFuturePumpEmissions(t *testing.T) {
 	client := &remoteCloseClient{
 		data: make(chan protocol.TerminalDataEvent),
 		exit: make(chan protocol.TerminalExitEvent),
@@ -62,21 +63,11 @@ func TestService_GivenRunningRemoteCommandWhenClosedThenEmitsKilledExitAndCleans
 		context.Background(), "terminal-1", "device-1", "/remote", "go test ./...", 80, 24,
 	))
 	require.NoError(t, svc.Close(context.Background(), "terminal-1"))
-
-	require.Eventually(t, func() bool {
-		exitEvents := 0
-		for _, event := range emitter.Snapshot() {
-			if event.Name != terminal_svc.ExitEventName("terminal-1") {
-				continue
-			}
-			exitEvents++
-			exitEvent, ok := event.Payload.(protocol.TerminalExitEvent)
-			if !ok || exitEvent.Reason != "killed" {
-				return false
-			}
-		}
-		return exitEvents == 1
-	}, time.Second, time.Millisecond)
+	settledEvents := len(emitter.Snapshot())
+	require.Never(t, func() bool {
+		return len(emitter.Snapshot()) > settledEvents
+	}, 100*time.Millisecond, time.Millisecond,
+		"a confirmed Close must retire the captured entry before late pump output")
 	assert.ErrorIs(t, svc.Write(context.Background(), "terminal-1", "x"), terminal_svc.ErrTerminalClosed)
 	assert.Equal(t, int32(1), client.closeCalls.Load())
 }
@@ -103,22 +94,22 @@ func TestService_GivenRemoteCloseRPCFailsWhenRetriedThenRetainsSameSessionUntilS
 	require.ErrorIs(t, svc.Close(context.Background(), "terminal-retry"), rpcErr)
 	require.NoError(t, svc.Write(context.Background(), "terminal-retry", "x"),
 		"failed close must retain the same live remote handle for retry")
+	client.data <- protocol.TerminalDataEvent{
+		TerminalID: "terminal-retry",
+		Data:       base64.StdEncoding.EncodeToString([]byte("still-active")),
+	}
+	require.Eventually(t, func() bool {
+		return len(emitter.Snapshot()) == 1
+	}, time.Second, time.Millisecond,
+		"failed Close must retain active pump emissions")
+	require.Equal(t, []byte("still-active"), recordedData(t, emitter.Snapshot()[0]))
 
 	require.NoError(t, svc.Close(context.Background(), "terminal-retry"))
-	require.Eventually(t, func() bool {
-		exitEvents := 0
-		for _, event := range emitter.Snapshot() {
-			if event.Name != terminal_svc.ExitEventName("terminal-retry") {
-				continue
-			}
-			exitEvents++
-			exitEvent, ok := event.Payload.(protocol.TerminalExitEvent)
-			if !ok || exitEvent.Reason != "killed" {
-				return false
-			}
-		}
-		return exitEvents == 1
-	}, time.Second, time.Millisecond)
+	settledEvents := len(emitter.Snapshot())
+	require.Never(t, func() bool {
+		return len(emitter.Snapshot()) > settledEvents
+	}, 100*time.Millisecond, time.Millisecond,
+		"successful retry must retire the entry before late killed exit")
 	assert.ErrorIs(t, svc.Write(context.Background(), "terminal-retry", "x"), terminal_svc.ErrTerminalClosed)
 	assert.Equal(t, int32(2), client.closeCalls.Load())
 }

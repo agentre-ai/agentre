@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cago-frame/cago/pkg/gogo"
@@ -42,8 +43,54 @@ type Service struct {
 // sessionEntry is the comparable ownership token for one live terminal. Handle
 // itself is intentionally never compared because an interface may contain a
 // valid non-comparable dynamic value.
+//
+// Lock contract: Service.mu only protects ownership maps. Retirement may mark
+// active=false while Service.mu is held, but it waits for emissionMu only after
+// releasing Service.mu. emitter/logger boundaries run under emissionMu, and
+// Handle.Close runs without either mutex, so no external boundary can block the
+// service ownership lock.
 type sessionEntry struct {
 	handle pty.Handle
+
+	emissionMu sync.Mutex
+	active     atomic.Bool
+}
+
+func newSessionEntry(handle pty.Handle) *sessionEntry {
+	entry := &sessionEntry{handle: handle}
+	entry.active.Store(true)
+	return entry
+}
+
+func (e *sessionEntry) beginRetirement() {
+	e.active.Store(false)
+}
+
+func (e *sessionEntry) drainRetirement() {
+	e.emissionMu.Lock()
+	e.active.Store(false)
+	e.emissionMu.Unlock()
+}
+
+func (e *sessionEntry) emitIfActive(emit func()) bool {
+	e.emissionMu.Lock()
+	defer e.emissionMu.Unlock()
+	if !e.active.Load() {
+		return false
+	}
+	emit()
+	return true
+}
+
+func (e *sessionEntry) emitFinalIfActive(emit func()) bool {
+	e.emissionMu.Lock()
+	defer e.emissionMu.Unlock()
+	if !e.active.Load() {
+		return false
+	}
+	emit()
+	e.active.Store(false)
+	return true
 }
 
 // openAttempt owns one terminal start continuously from the first blocking
@@ -117,22 +164,32 @@ func (s *Service) open(
 		return err
 	}
 
-	// Keep the attempt registered while evicting an existing handle. Handle
-	// Close is an external, non-context-aware boundary and may block; ownership
-	// must be rechecked after it returns before backend.Open can launch.
+	// Keep the retired entry visible while draining its emission gate, so every
+	// concurrent same-ID start observes the same barrier. Only after all old
+	// emitter/logger calls finish may Handle.Close run and the entry detach;
+	// backend.Open therefore cannot make replacement ownership observable while
+	// a stale emission is still in progress.
 	s.mu.Lock()
 	if s.inFlight[terminalID] != attempt {
 		s.mu.Unlock()
 		return preemptedStartError(lifecycle)
 	}
-	old, hasOld := s.sessions[terminalID]
-	if hasOld {
-		delete(s.sessions, terminalID)
+	old := s.sessions[terminalID]
+	if old != nil {
+		old.beginRetirement()
 	}
 	s.mu.Unlock()
-	if hasOld {
+	if old != nil {
+		old.drainRetirement()
 		_ = old.handle.Close()
-		if !s.ownsStart(terminalID, attempt) {
+
+		s.mu.Lock()
+		preempted := s.inFlight[terminalID] != attempt
+		if !preempted && s.sessions[terminalID] == old {
+			delete(s.sessions, terminalID)
+		}
+		s.mu.Unlock()
+		if preempted {
 			return preemptedStartError(lifecycle)
 		}
 	}
@@ -144,7 +201,7 @@ func (s *Service) open(
 	h, err := backend.Open(attempt.ctx, spec)
 	var entry *sessionEntry
 	if err == nil {
-		entry = &sessionEntry{handle: h}
+		entry = newSessionEntry(h)
 	}
 
 	// Atomically hand ownership from the start attempt to one live session
@@ -177,9 +234,10 @@ func (s *Service) open(
 		return preemptedStartError(lifecycle)
 	}
 	// Log before starting the pump so even an already-exited handle preserves
-	// the command lifecycle order.
+	// the command lifecycle order. The entry gate also suppresses this start if
+	// a replacement retired the just-registered handle first.
 	if lifecycle != nil {
-		lifecycle.logStarted(ctx)
+		entry.emitIfActive(func() { lifecycle.logStarted(ctx) })
 	}
 	// Detach from caller cancellation while preserving logger values so exit
 	// cleanup and lifecycle events complete after Open returns.
@@ -252,6 +310,7 @@ func (s *Service) Close(ctx context.Context, terminalID string) error {
 		delete(s.inFlight, terminalID)
 	}
 	entry, hadHandle := s.sessions[terminalID]
+	activeHandle := hadHandle && entry.active.Load()
 	s.mu.Unlock()
 
 	if hadInFlight {
@@ -260,28 +319,43 @@ func (s *Service) Close(ctx context.Context, terminalID string) error {
 	if !hadHandle && !hadInFlight {
 		return ErrTerminalNotOpen
 	}
-	if hadHandle {
+	if activeHandle {
 		if err := entry.handle.Close(); err != nil {
 			return err
 		}
-		// Close is an external boundary, so a new Open may have installed a
-		// replacement while it was in flight. Settle only the entry we captured.
+		// A failed Close leaves the current entry active for output and retry. A
+		// confirmed Close retires only the exact entry still owning this ID, then
+		// drains any emission already in progress before detaching it.
 		s.mu.Lock()
-		if s.sessions[terminalID] == entry {
-			delete(s.sessions, terminalID)
+		current := s.sessions[terminalID] == entry
+		if current {
+			entry.beginRetirement()
 		}
 		s.mu.Unlock()
+		if current {
+			entry.drainRetirement()
+			s.mu.Lock()
+			if s.sessions[terminalID] == entry {
+				delete(s.sessions, terminalID)
+			}
+			s.mu.Unlock()
+		}
 	}
 	return nil // only inFlight was canceled, or the captured entry settled
 }
 
 func (s *Service) Shutdown() {
-	s.mu.Lock()
-	hs := make([]pty.Handle, 0, len(s.sessions))
-	for _, entry := range s.sessions {
-		hs = append(hs, entry.handle)
+	type ownedSession struct {
+		terminalID string
+		entry      *sessionEntry
 	}
-	s.sessions = map[string]*sessionEntry{}
+
+	s.mu.Lock()
+	sessions := make([]ownedSession, 0, len(s.sessions))
+	for terminalID, entry := range s.sessions {
+		entry.beginRetirement()
+		sessions = append(sessions, ownedSession{terminalID: terminalID, entry: entry})
+	}
 	// Clear and cancel in-flight starts too: clearing inFlight makes each pending
 	// start observe itself as preempted (so stale resolver/selector results stop,
 	// and a late handle is torn down instead of registered). Cancellation also
@@ -295,8 +369,14 @@ func (s *Service) Shutdown() {
 	for _, a := range attempts {
 		a.cancel()
 	}
-	for _, h := range hs {
-		_ = h.Close()
+	for _, session := range sessions {
+		session.entry.drainRetirement()
+		_ = session.entry.handle.Close()
+		s.mu.Lock()
+		if s.sessions[session.terminalID] == session.entry {
+			delete(s.sessions, session.terminalID)
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -304,7 +384,7 @@ func (s *Service) lookupHandle(terminalID string) pty.Handle {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry := s.sessions[terminalID]
-	if entry == nil {
+	if entry == nil || !entry.active.Load() {
 		return nil
 	}
 	return entry.handle
@@ -333,8 +413,10 @@ func (s *Service) pump(
 		if len(pending) == 0 {
 			return
 		}
-		s.emitter.Emit(ctx, DataEventName(terminalID),
-			map[string]string{"data": base64.StdEncoding.EncodeToString(pending)})
+		entry.emitIfActive(func() {
+			s.emitter.Emit(ctx, DataEventName(terminalID),
+				map[string]string{"data": base64.StdEncoding.EncodeToString(pending)})
+		})
 		pending = pending[:0]
 	}
 
@@ -379,15 +461,22 @@ stream:
 	// Flush whatever remains so no trailing output arrives after the exit event.
 	flush()
 
-	s.mu.Lock()
-	if s.sessions[terminalID] == entry {
-		delete(s.sessions, terminalID)
-	}
-	s.mu.Unlock()
-	if lifecycle != nil {
-		lifecycle.logExited(ctx, exitInfo.Code, exitInfo.Reason)
-	}
-	s.emitter.Emit(ctx, ExitEventName(terminalID), protocol.TerminalExitEvent{
-		Code: exitInfo.Code, Reason: exitInfo.Reason, Msg: exitInfo.Msg,
+	// Lifecycle finish and terminal exit are one generation boundary. A
+	// replacement either waits for both to finish or retires this entry before
+	// either starts; it can never observe only half of the old final sequence.
+	finished := entry.emitFinalIfActive(func() {
+		if lifecycle != nil {
+			lifecycle.logExited(ctx, exitInfo.Code, exitInfo.Reason)
+		}
+		s.emitter.Emit(ctx, ExitEventName(terminalID), protocol.TerminalExitEvent{
+			Code: exitInfo.Code, Reason: exitInfo.Reason, Msg: exitInfo.Msg,
+		})
 	})
+	if finished {
+		s.mu.Lock()
+		if s.sessions[terminalID] == entry {
+			delete(s.sessions, terminalID)
+		}
+		s.mu.Unlock()
+	}
 }

@@ -2,6 +2,7 @@ package terminal_svc_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net"
@@ -23,6 +24,7 @@ import (
 	ptyremote "github.com/agentre-ai/agentre/internal/pkg/pty/remote"
 	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 	"github.com/agentre-ai/agentre/internal/service/terminal_svc/mocks"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 )
 
 type completedCommandHandle struct {
@@ -201,6 +203,75 @@ func TestService_RunCommand_GivenResolvedTarget_WhenCommandExits_ThenLogsOneReda
 	} {
 		assert.NotContains(t, observedLogs, sensitive)
 	}
+}
+
+func TestService_RunCommand_GivenSameIDReplacementWhenOldChannelsSettleLateThenOnlyReplacementFinishes(t *testing.T) {
+	old := newReplacementRaceHandle(false, false)
+	replacement := newReplacementRaceHandle(false, false)
+	backend := &replacementRaceBackend{old: old, replacement: replacement}
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), emitter)
+	svc.SetCommandScopeResolver(func(
+		_ context.Context,
+		req terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return &terminal_svc.CommandScope{Cwd: map[int64]string{91: "/old", 92: "/replacement"}[req.SessionID]}, nil
+	})
+	t.Cleanup(svc.Shutdown)
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	for _, req := range []terminal_svc.RunCommandRequest{
+		{TerminalID: "terminal-replaced", SessionID: 91, Command: "old command", Cols: 80, Rows: 24},
+		{TerminalID: "terminal-replaced", SessionID: 92, Command: "replacement command", Cols: 80, Rows: 24},
+	} {
+		response, err := svc.RunCommand(ctx, req)
+		require.NoError(t, err)
+		require.Empty(t, response.StartError)
+	}
+
+	old.data <- []byte("stale")
+	old.finish(pty.ExitInfo{Code: 41, Reason: "stale"})
+	replacement.data <- []byte("fresh")
+	replacement.finish(pty.ExitInfo{Code: 7, Reason: "replacement"})
+	require.Eventually(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			exitEvent, ok := event.Payload.(protocol.TerminalExitEvent)
+			if ok && exitEvent.Reason == "replacement" {
+				return logs.FilterMessage("terminal_svc.RunCommand: command exited").Len() >= 1
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+
+	staleData := base64.StdEncoding.EncodeToString([]byte("stale"))
+	require.Never(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if payload, ok := event.Payload.(map[string]string); ok && payload["data"] == staleData {
+				return true
+			}
+			if payload, ok := event.Payload.(protocol.TerminalExitEvent); ok && payload.Reason == "stale" {
+				return true
+			}
+		}
+		for _, entry := range logs.FilterMessage("terminal_svc.RunCommand: command exited").All() {
+			if entry.ContextMap()["sessionId"] == int64(91) {
+				return true
+			}
+		}
+		return false
+	}, 100*time.Millisecond, time.Millisecond,
+		"retired command must not emit stale data, terminal exit, or lifecycle finish")
+
+	events := emitter.Snapshot()
+	require.Len(t, events, 2)
+	require.Equal(t, []byte("fresh"), recordedData(t, events[0]))
+	require.Equal(t, protocol.TerminalExitEvent{Code: 7, Reason: "replacement"}, events[1].Payload)
+	entries := logs.All()
+	require.Len(t, entries, 3)
+	require.Equal(t, int64(91), entries[0].ContextMap()["sessionId"])
+	require.Equal(t, int64(92), entries[1].ContextMap()["sessionId"])
+	require.Equal(t, int64(92), entries[2].ContextMap()["sessionId"])
 }
 
 func TestService_Open_GivenInteractiveTerminal_WhenItExits_ThenLogsNoCommandLifecycle(t *testing.T) {

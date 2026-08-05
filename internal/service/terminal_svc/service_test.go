@@ -2,6 +2,7 @@ package terminal_svc_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/pty"
 	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 	"github.com/agentre-ai/agentre/internal/service/terminal_svc/mocks"
+	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -174,7 +176,7 @@ type replacementRaceHandle struct {
 
 func newReplacementRaceHandle(blockFirstClose bool, settleOnClose bool) *replacementRaceHandle {
 	return &replacementRaceHandle{
-		data:              make(chan []byte),
+		data:              make(chan []byte, 4),
 		exit:              make(chan pty.ExitInfo, 1),
 		blockFirstClose:   blockFirstClose,
 		settleOnClose:     settleOnClose,
@@ -225,13 +227,44 @@ func (b *replacementRaceBackend) Open(context.Context, pty.Spec) (pty.Handle, er
 	return b.replacement, nil
 }
 
-func TestService_GivenCloseAndPumpOfOldHandleCompleteAfterReplacementThenTheyKeepReplacementByIdentity(t *testing.T) {
+type routedRaceBackend struct {
+	mu      sync.Mutex
+	handles map[string][]pty.Handle
+	opens   map[string]int
+}
+
+func (b *routedRaceBackend) Open(_ context.Context, spec pty.Spec) (pty.Handle, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	queue := b.handles[spec.TerminalID]
+	if len(queue) == 0 {
+		return nil, errors.New("no routed test handle")
+	}
+	b.handles[spec.TerminalID] = queue[1:]
+	b.opens[spec.TerminalID]++
+	return queue[0], nil
+}
+
+func (b *routedRaceBackend) openCount(terminalID string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.opens[terminalID]
+}
+
+func TestService_GivenCloseAndPumpOfOldHandleCompleteAfterReplacementThenOnlyReplacementEmits(t *testing.T) {
 	old := newReplacementRaceHandle(true, false)
-	replacement := newReplacementRaceHandle(false, true)
+	replacement := newReplacementRaceHandle(false, false)
 	backend := &replacementRaceBackend{old: old, replacement: replacement}
 	emitter := &recordingEmitter{}
 	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), emitter)
 	t.Cleanup(svc.Shutdown)
+	t.Cleanup(func() {
+		select {
+		case <-old.releaseFirstClose:
+		default:
+			close(old.releaseFirstClose)
+		}
+	})
 
 	require.NoError(t, svc.Open(context.Background(), "terminal-race", "", "/old", 80, 24))
 	closeResult := make(chan error, 1)
@@ -239,15 +272,10 @@ func TestService_GivenCloseAndPumpOfOldHandleCompleteAfterReplacementThenTheyKee
 	<-old.firstCloseStarted
 
 	require.NoError(t, svc.Open(context.Background(), "terminal-race", "", "/replacement", 80, 24))
-	old.finish(pty.ExitInfo{Reason: "killed"})
-	require.Eventually(t, func() bool {
-		for _, event := range emitter.Snapshot() {
-			if event.Name == terminal_svc.ExitEventName("terminal-race") {
-				return true
-			}
-		}
-		return false
-	}, time.Second, time.Millisecond, "the stale pump must finish after replacement registration")
+	old.data <- []byte("stale")
+	old.finish(pty.ExitInfo{Code: 41, Reason: "stale"})
+	require.Never(t, func() bool { return len(emitter.Snapshot()) != 0 }, 100*time.Millisecond, time.Millisecond,
+		"a retired pump must not emit data or exit after replacement registration")
 	require.NoError(t, svc.Write(context.Background(), "terminal-race", "pump-finished"),
 		"completion of the old pump must not delete the replacement handle")
 
@@ -256,6 +284,109 @@ func TestService_GivenCloseAndPumpOfOldHandleCompleteAfterReplacementThenTheyKee
 	require.NoError(t, svc.Write(context.Background(), "terminal-race", "close-finished"),
 		"completion of the old Close must not delete the replacement handle")
 	require.Equal(t, int32(2), replacement.writeCalls.Load())
+
+	replacement.data <- []byte("fresh")
+	replacement.finish(pty.ExitInfo{Code: 7, Reason: "replacement"})
+	require.Eventually(t, func() bool { return len(emitter.Snapshot()) == 2 }, time.Second, time.Millisecond)
+	events := emitter.Snapshot()
+	require.Equal(t, terminal_svc.DataEventName("terminal-race"), events[0].Name)
+	require.Equal(t, []byte("fresh"), recordedData(t, events[0]))
+	require.Equal(t, terminal_svc.ExitEventName("terminal-race"), events[1].Name)
+	require.Equal(t, protocol.TerminalExitEvent{Code: 7, Reason: "replacement"}, events[1].Payload)
+}
+
+func TestService_GivenRetirementRacesBlockedEmissionThenReplacementWaitsAndNoStaleEmissionFollows(t *testing.T) {
+	old := newReplacementRaceHandle(false, false)
+	replacement := newReplacementRaceHandle(false, false)
+	distinct := newReplacementRaceHandle(false, false)
+	backend := &routedRaceBackend{
+		handles: map[string][]pty.Handle{
+			"terminal-gate-race": {old, replacement},
+			"terminal-distinct":  {distinct},
+		},
+		opens: map[string]int{},
+	}
+	emitter := newBlockingRecordingEmitter()
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), emitter)
+	t.Cleanup(svc.Shutdown)
+	t.Cleanup(emitter.unblock)
+
+	require.NoError(t, svc.Open(context.Background(), "terminal-gate-race", "", "/old", 80, 24))
+	old.data <- []byte("in-progress")
+	<-emitter.blocked
+
+	distinctResult := make(chan error, 1)
+	go func() {
+		distinctResult <- svc.Open(
+			context.Background(), "terminal-distinct", "", "/distinct", 80, 24,
+		)
+	}()
+	select {
+	case err := <-distinctResult:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("a blocked emission for one terminal ID held the service lock across an unrelated Open")
+	}
+
+	replacementResult := make(chan error, 1)
+	go func() {
+		replacementResult <- svc.Open(
+			context.Background(), "terminal-gate-race", "", "/replacement", 80, 24,
+		)
+	}()
+	require.Never(t, func() bool { return backend.openCount("terminal-gate-race") == 2 }, 100*time.Millisecond, time.Millisecond,
+		"replacement backend.Open must wait for the old in-progress emission boundary")
+
+	emitter.unblock()
+	require.NoError(t, <-replacementResult)
+	require.Equal(t, 2, backend.openCount("terminal-gate-race"))
+	require.NoError(t, svc.Close(context.Background(), "terminal-distinct"))
+	distinct.finish(pty.ExitInfo{Reason: "closed"})
+
+	old.data <- []byte("post-replacement-stale")
+	old.finish(pty.ExitInfo{Code: 42, Reason: "stale"})
+	replacement.data <- []byte("replacement")
+	replacement.finish(pty.ExitInfo{Code: 0, Reason: "natural"})
+	require.Eventually(t, func() bool { return len(emitter.Snapshot()) == 3 }, time.Second, time.Millisecond)
+	require.Never(t, func() bool { return len(emitter.Snapshot()) > 3 }, 100*time.Millisecond, time.Millisecond)
+
+	events := emitter.Snapshot()
+	require.Equal(t, []byte("in-progress"), recordedData(t, events[0]))
+	require.Equal(t, []byte("replacement"), recordedData(t, events[1]))
+	require.Equal(t, protocol.TerminalExitEvent{Code: 0, Reason: "natural"}, events[2].Payload)
+}
+
+func recordedData(t *testing.T, event recordedEvent) []byte {
+	t.Helper()
+	payload, ok := event.Payload.(map[string]string)
+	require.Truef(t, ok, "data payload should be map[string]string, got %T", event.Payload)
+	data, err := base64.StdEncoding.DecodeString(payload["data"])
+	require.NoError(t, err)
+	return data
+}
+
+type blockingRecordingEmitter struct {
+	recordingEmitter
+	blocked     chan struct{}
+	release     chan struct{}
+	blockOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func newBlockingRecordingEmitter() *blockingRecordingEmitter {
+	return &blockingRecordingEmitter{blocked: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (e *blockingRecordingEmitter) Emit(ctx context.Context, name string, payload any) {
+	e.blockOnce.Do(func() {
+		close(e.blocked)
+		<-e.release
+	})
+	e.recordingEmitter.Emit(ctx, name, payload)
+}
+
+func (e *blockingRecordingEmitter) unblock() {
+	e.releaseOnce.Do(func() { close(e.release) })
 }
 
 func TestService_Open_ReOpenClosesPrevious(t *testing.T) {
