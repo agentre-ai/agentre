@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -1017,6 +1016,48 @@ func TestSend_ImageInput(t *testing.T) {
 	})
 }
 
+type preparedRecordingPiRunner struct {
+	requests          chan agentruntime.RunRequest
+	providerSessionID string
+}
+
+func (*preparedRecordingPiRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*preparedRecordingPiRunner) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("prepared recording Pi runner must use PrepareRun")
+}
+
+func (r *preparedRecordingPiRunner) PrepareRun(_ context.Context, req agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	if r.requests != nil {
+		r.requests <- req
+	}
+	return &preparedRecordingPiRun{runner: r}, nil
+}
+
+type preparedRecordingPiRun struct {
+	runner *preparedRecordingPiRunner
+}
+
+func (p *preparedRecordingPiRun) ProviderSessionID() string {
+	if p.runner.providerSessionID != "" {
+		return p.runner.providerSessionID
+	}
+	return "pi-session-new"
+}
+
+func (p *preparedRecordingPiRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	events := make(chan agentruntime.Event, 1)
+	events <- agentruntime.Done{}
+	close(events)
+	return events, &agentruntime.RunResult{ProviderSessionID: p.ProviderSessionID()}, nil
+}
+
+func (*preparedRecordingPiRun) Close(context.Context) error { return nil }
+
 type forkStartupFailRunner struct {
 	err error
 }
@@ -1035,23 +1076,10 @@ func (r *forkStartupFailRunner) PrepareRun(_ context.Context, _ agentruntime.Run
 	return nil, r.err
 }
 
-type deferredStartupFailRunner struct {
-	err error
-}
-
-func (*deferredStartupFailRunner) Capabilities() capability.Capabilities {
-	return capability.Capabilities{Set: map[capability.Capability]bool{
-		capability.CapForkSession: true,
-	}}
-}
-
-func (r *deferredStartupFailRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
-	return nil, nil, r.err
-}
-
 type preparedStartupFailRunner struct {
-	err     error
-	onStart func()
+	err               error
+	onStart           func()
+	providerSessionID string
 
 	mu           sync.Mutex
 	prepareCalls int
@@ -1084,6 +1112,13 @@ func (r *preparedStartupFailRunner) Counts() (prepare, start, prompt int) {
 
 type preparedStartupFailure struct {
 	runner *preparedStartupFailRunner
+}
+
+func (p *preparedStartupFailure) ProviderSessionID() string {
+	if p.runner.providerSessionID != "" {
+		return p.runner.providerSessionID
+	}
+	return "pi-session-new"
 }
 
 func (p *preparedStartupFailure) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
@@ -1120,6 +1155,10 @@ func (r *preparedAcknowledgedRunner) PrepareRun(_ context.Context, _ agentruntim
 
 type preparedAcknowledgedStart struct {
 	runner *preparedAcknowledgedRunner
+}
+
+func (p *preparedAcknowledgedStart) ProviderSessionID() string {
+	return p.runner.providerSessionID
 }
 
 func (p *preparedAcknowledgedStart) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
@@ -1173,10 +1212,11 @@ func (r *blockingPiPreflightRunner) PrepareRun(ctx context.Context, _ agentrunti
 }
 
 type blockingPiPreparedStartRunner struct {
-	startEntered chan struct{}
-	closed       chan struct{}
-	startOnce    sync.Once
-	closeOnce    sync.Once
+	startEntered      chan struct{}
+	closed            chan struct{}
+	providerSessionID string
+	startOnce         sync.Once
+	closeOnce         sync.Once
 
 	mu           sync.Mutex
 	prepareCalls int
@@ -1214,6 +1254,13 @@ type blockingPiPreparedStart struct {
 	runner *blockingPiPreparedStartRunner
 }
 
+func (p *blockingPiPreparedStart) ProviderSessionID() string {
+	if p.runner.providerSessionID != "" {
+		return p.runner.providerSessionID
+	}
+	return "pi-session-new"
+}
+
 func (p *blockingPiPreparedStart) Start(ctx context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
 	p.runner.startOnce.Do(func() { close(p.runner.startEntered) })
 	select {
@@ -1232,6 +1279,63 @@ func (p *blockingPiPreparedStart) Close(context.Context) error {
 	return nil
 }
 
+type generationSafePreparedRunner struct {
+	mu           sync.Mutex
+	prepareCalls int
+	closeCalls   int
+	abortCalls   int
+}
+
+func (*generationSafePreparedRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*generationSafePreparedRunner) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("generation-safe runner must use PrepareRun")
+}
+
+func (r *generationSafePreparedRunner) PrepareRun(context.Context, agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prepareCalls++
+	if r.prepareCalls > 1 {
+		return nil, errors.New("second prepared generation reached")
+	}
+	return &generationSafePreparedRun{runner: r}, nil
+}
+
+func (r *generationSafePreparedRunner) Abort(context.Context, int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.abortCalls++
+	return nil
+}
+
+func (r *generationSafePreparedRunner) Counts() (prepare, closed, abort int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.prepareCalls, r.closeCalls, r.abortCalls
+}
+
+type generationSafePreparedRun struct {
+	runner *generationSafePreparedRunner
+}
+
+func (*generationSafePreparedRun) ProviderSessionID() string { return "" }
+
+func (*generationSafePreparedRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("empty prepared identity must stop before Start")
+}
+
+func (p *generationSafePreparedRun) Close(context.Context) error {
+	p.runner.mu.Lock()
+	defer p.runner.mu.Unlock()
+	p.runner.closeCalls++
+	return nil
+}
+
 type promptCountingRunner struct {
 	mu          sync.Mutex
 	promptCalls int
@@ -1243,14 +1347,30 @@ func (*promptCountingRunner) Capabilities() capability.Capabilities {
 	}}
 }
 
-func (r *promptCountingRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
-	r.mu.Lock()
-	r.promptCalls++
-	r.mu.Unlock()
+func (*promptCountingRunner) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("prompt-counting runner must use PrepareRun")
+}
+
+func (r *promptCountingRunner) PrepareRun(context.Context, agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	return &promptCountingPreparedRun{runner: r}, nil
+}
+
+type promptCountingPreparedRun struct {
+	runner *promptCountingRunner
+}
+
+func (*promptCountingPreparedRun) ProviderSessionID() string { return "pi-session-new" }
+
+func (p *promptCountingPreparedRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	p.runner.mu.Lock()
+	p.runner.promptCalls++
+	p.runner.mu.Unlock()
 	events := make(chan agentruntime.Event)
 	close(events)
 	return events, &agentruntime.RunResult{ProviderSessionID: "pi-session-new"}, nil
 }
+
+func (*promptCountingPreparedRun) Close(context.Context) error { return nil }
 
 func (r *promptCountingRunner) PromptCalls() int {
 	r.mu.Lock()
@@ -4916,7 +5036,10 @@ func TestPiRestart_PassesExactStoredAnchorToRunner(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			m := setupChatTest(t)
-			runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+			runner := &preparedRecordingPiRunner{
+				requests:          make(chan agentruntime.RunRequest, 1),
+				providerSessionID: "pi-session-new",
+			}
 			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
 			t.Cleanup(restore)
 
@@ -4930,26 +5053,7 @@ func TestPiRestart_PassesExactStoredAnchorToRunner(t *testing.T) {
 			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 				ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
 			}, nil)
-			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
-			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
-
-			m.dbMock.ExpectBegin()
-			m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(0), nil)
-			newIDs := []int64{2000, 2001}
-			var calls int
-			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
-				DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
-					assert.Equal(t, int64(-100), msg.SessionID)
-					assert.Equal(t, tc.anchorSeq+calls, msg.Seq)
-					msg.ID = newIDs[calls]
-					calls++
-					return nil
-				}).Times(2)
-			m.dbMock.ExpectCommit()
-			m.dbMock.ExpectBegin()
-			m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), tc.anchorSeq).Return(int64(2), nil)
-			m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(0), nil)
-			m.dbMock.ExpectCommit()
+			expectAcknowledgedPiReplacement(m, tc.anchorSeq, 3000, 2000, 2001)
 
 			resp, err := tc.invoke(m.svc, m.ctx)
 			require.NoError(t, err)
@@ -5131,6 +5235,45 @@ func TestPiRestart_ForkStartupFailurePreservesExistingHistory(t *testing.T) {
 	}
 }
 
+func TestPiRestart_OldPreparedCleanupDoesNotUseSessionWideAbortBeforeRetry(t *testing.T) {
+	m := setupChatTest(t)
+	runner := &generationSafePreparedRunner{}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
+	}
+	originalAssistant := &chat_entity.Message{
+		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer"),
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil).AnyTimes()
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(originalAssistant, nil).Times(2)
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+		{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: "pi-user-entry"},
+		originalAssistant,
+	}, nil).AnyTimes()
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil).AnyTimes()
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+
+	firstResp, firstErr := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+	require.Nil(t, firstResp)
+	require.ErrorContains(t, firstErr, "empty pre-prompt identity")
+	secondResp, secondErr := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+	require.Nil(t, secondResp)
+	require.ErrorContains(t, secondErr, "second prepared generation reached")
+
+	prepareCalls, closeCalls, abortCalls := runner.Counts()
+	assert.Equal(t, 2, prepareCalls)
+	assert.Equal(t, 1, closeCalls, "the old exact prepared process must be closed once")
+	assert.Zero(t, abortCalls,
+		"old prepared cleanup must not issue a session-wide abort that can hit an immediate retry")
+}
+
 func TestPiRestart_TranscriptFailureDoesNotSendPrompt(t *testing.T) {
 	m := setupChatTest(t)
 	runner := &promptCountingRunner{}
@@ -5155,8 +5298,18 @@ func TestPiRestart_TranscriptFailureDoesNotSendPrompt(t *testing.T) {
 	}, nil)
 
 	m.dbMock.ExpectBegin()
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(0), errors.New("transcript write failed"))
+	m.dbMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(int64(-6001)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(int64(-6001), int64(100), 1).
+		WillReturnError(errors.New("transcript write failed"))
 	m.dbMock.ExpectRollback()
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, message *chat_entity.Message) error {
+			message.ID = 3000
+			return nil
+		}).Times(1)
 
 	resp, err := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
 
@@ -5166,140 +5319,69 @@ func TestPiRestart_TranscriptFailureDoesNotSendPrompt(t *testing.T) {
 	assert.Zero(t, runner.PromptCalls(), "Pi must not receive the prompt before the transcript transaction commits")
 }
 
-type failingRecoveryMessageRepo struct {
-	*mock_chat_repo.MockMessageRepo
-
-	mu          sync.Mutex
-	messages    map[int64]chat_entity.Message
-	nextID      int64
-	deleteCalls int
-	recoveryErr error
-}
-
-func (r *failingRecoveryMessageRepo) List(_ context.Context, sessionID int64) ([]*chat_entity.Message, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	messages := make([]*chat_entity.Message, 0)
-	for _, message := range r.messages {
-		if message.SessionID != sessionID {
-			continue
-		}
-		cloned := message
-		messages = append(messages, &cloned)
-	}
-	sort.Slice(messages, func(i, j int) bool { return messages[i].Seq < messages[j].Seq })
-	return messages, nil
-}
-
-func (r *failingRecoveryMessageRepo) Find(_ context.Context, id int64) (*chat_entity.Message, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	message, ok := r.messages[id]
-	if !ok {
-		return nil, nil
-	}
-	cloned := message
-	return &cloned, nil
-}
-
-func (r *failingRecoveryMessageRepo) NextSeq(_ context.Context, sessionID int64) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	next := 1
-	for _, message := range r.messages {
-		if message.SessionID == sessionID && message.Seq >= next {
-			next = message.Seq + 1
-		}
-	}
-	return next, nil
-}
-
-func (r *failingRecoveryMessageRepo) Create(_ context.Context, message *chat_entity.Message) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if message.ID == 0 {
-		message.ID = r.nextID
-		r.nextID++
-	}
-	r.messages[message.ID] = *message
-	return nil
-}
-
-func (r *failingRecoveryMessageRepo) Update(_ context.Context, message *chat_entity.Message) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.messages[message.ID] = *message
-	return nil
-}
-
-func (r *failingRecoveryMessageRepo) DeleteFromSeq(_ context.Context, sessionID int64, fromSeq int) (int64, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.deleteCalls++
-	if r.deleteCalls == 2 {
-		return 0, r.recoveryErr
-	}
-	var deleted int64
-	for id, message := range r.messages {
-		if message.SessionID == sessionID && message.Seq >= fromSeq {
-			delete(r.messages, id)
-			deleted++
-		}
-	}
-	return deleted, nil
-}
-
-func (r *failingRecoveryMessageRepo) DeleteCalls() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.deleteCalls
-}
-
-type recordingSessionRepo struct {
-	*mock_chat_repo.MockSessionRepo
-
-	mu        sync.Mutex
-	persisted chat_entity.Session
-}
-
-func (r *recordingSessionRepo) Update(_ context.Context, session *chat_entity.Session) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.persisted = *session
-	return nil
-}
-
-func (r *recordingSessionRepo) Persisted() chat_entity.Session {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.persisted
-}
-
-func TestPiRestart_FirstRecoveryFailureKeepsOriginalTranscriptAndSessionStopped(t *testing.T) {
+func TestPiRestart_RecoveryNamespaceCollisionIsNonDestructive(t *testing.T) {
 	m := setupChatTest(t)
-	originalUser := chat_entity.Message{
-		ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: "pi-user-entry",
-	}
-	originalAssistant := chat_entity.Message{
-		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer"),
-	}
-	messageRepo := &failingRecoveryMessageRepo{
-		MockMessageRepo: m.message,
-		messages: map[int64]chat_entity.Message{
-			originalUser.ID:      originalUser,
-			originalAssistant.ID: originalAssistant,
-		},
-		nextID:      2000,
-		recoveryErr: errors.New("first recovery write failed"),
-	}
-	chat_repo.RegisterMessage(messageRepo)
+	runner := &promptCountingRunner{}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
 
 	sess := &chat_entity.Session{
 		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
 	}
-	sessionRepo := &recordingSessionRepo{MockSessionRepo: m.session, persisted: *sess}
-	chat_repo.RegisterSession(sessionRepo)
+	originalAssistant := &chat_entity.Message{
+		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer"),
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(originalAssistant, nil)
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+		{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: "pi-user-entry"},
+		originalAssistant,
+	}, nil).AnyTimes()
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+	}, nil)
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(int64(-6001)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	m.dbMock.ExpectRollback()
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, marker *chat_entity.Message) error {
+			marker.ID = 3000
+			return nil
+		}).Times(1)
+
+	resp, err := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+	require.Nil(t, resp)
+	require.ErrorContains(t, err, chat_repo.ErrReplacementNamespaceCollision.Error())
+	assert.Zero(t, runner.PromptCalls())
+	assert.Equal(t, "pi-session-old", sess.ProviderSessionID)
+	assert.Equal(t, "idle", sess.AgentStatus)
+	assert.NoError(t, m.dbMock.ExpectationsWereMet())
+}
+
+func TestPiRestart_FirstRestoreFailureRecoversExactRowsAndSessionOnRetry(t *testing.T) {
+	m := setupChatTest(t)
+	const recoverySessionID = int64(-6001)
+	originalUser := &chat_entity.Message{
+		ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: "pi-user-entry",
+	}
+	originalAssistant := &chat_entity.Message{
+		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer"),
+	}
+	hiddenAssistant := *originalAssistant
+	hiddenAssistant.SessionID = recoverySessionID
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
+	}
 	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil).AnyTimes()
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(originalAssistant, nil)
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&hiddenAssistant, nil)
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{originalUser, originalAssistant}, nil).AnyTimes()
 	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
 		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
 	}, nil).AnyTimes()
@@ -5308,73 +5390,258 @@ func TestPiRestart_FirstRecoveryFailureKeepsOriginalTranscriptAndSessionStopped(
 	}, nil).AnyTimes()
 
 	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(recoverySessionID, int64(100), 1).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 	m.dbMock.ExpectCommit()
-	stageDurableBeforeStart := false
-	recoveryAttempt := 0
-	runner := &preparedStartupFailRunner{err: errors.New("prepared prompt startup failed")}
-	runner.onStart = func() {
-		stageErr := m.dbMock.ExpectationsWereMet()
-		stageDurableBeforeStart = stageErr == nil
-		if stageErr != nil {
-			t.Errorf("prepared prompt started before replacement commit: %v", stageErr)
-		}
-		recoveryAttempt++
-		m.dbMock.ExpectBegin()
-		if recoveryAttempt == 1 {
-			m.dbMock.ExpectRollback()
-		} else {
-			m.dbMock.ExpectCommit()
-		}
+	createCalls := 0
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, message *chat_entity.Message) error {
+			switch createCalls {
+			case 0:
+				message.ID = 3000
+			case 1:
+				message.ID = 2000
+			case 2:
+				message.ID = 2001
+			}
+			createCalls++
+			return nil
+		}).Times(3)
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).Times(1)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, session *chat_entity.Session) error {
+			assert.Equal(t, "pi-session-new", session.ProviderSessionID)
+			assert.Equal(t, "running", session.AgentStatus)
+			return nil
+		}).Times(1)
+
+	activationDurableBeforeStart := false
+	runner := &preparedStartupFailRunner{
+		err:               errors.New("prepared prompt startup failed"),
+		providerSessionID: "pi-session-new",
 	}
-	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
-	t.Cleanup(restore)
+	runner.onStart = func() {
+		activationErr := m.dbMock.ExpectationsWereMet()
+		activationDurableBeforeStart = activationErr == nil
+		if activationErr != nil {
+			t.Errorf("prepared prompt started before replacement activation commit: %v", activationErr)
+		}
+		m.dbMock.ExpectBegin()
+		m.dbMock.ExpectExec("UPDATE `chat_sessions` SET `provider_session_id`=\\?,`agent_status`=\\?,`last_message_at`=\\?,`updatetime`=\\? WHERE id = \\? AND provider_session_id = \\?").
+			WithArgs("pi-session-old", "idle", int64(0), sqlmock.AnyArg(), int64(100), "pi-session-new").
+			WillReturnError(errors.New("first restore write failed"))
+		m.dbMock.ExpectRollback()
+	}
+	restoreRuntime := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
 
 	resp, err := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
-
 	require.Nil(t, resp)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "prepared prompt startup failed")
-	assert.ErrorContains(t, err, "first recovery write failed")
-	assert.True(t, stageDurableBeforeStart, "the prepared prompt must not start before replacement state commits")
-	prepareCalls, startCalls, promptCalls := runner.Counts()
-	assert.Equal(t, 1, prepareCalls, "Pi fork preflight must complete once")
-	assert.Equal(t, 1, startCalls, "the prepared same-process run must attempt startup once")
-	assert.Zero(t, promptCalls, "provider-start failure must not send a prompt")
-	assert.Equal(t, 2, messageRepo.DeleteCalls(), "the first recovery write must be the injected failure")
-
-	visible, listErr := messageRepo.List(m.ctx, 100)
-	require.NoError(t, listErr)
-	require.Len(t, visible, 2)
-	assert.Equal(t, originalUser, *visible[0])
-	assert.Equal(t, originalAssistant, *visible[1])
-	storedUser, findUserErr := messageRepo.Find(m.ctx, originalUser.ID)
-	require.NoError(t, findUserErr)
-	require.NotNil(t, storedUser)
-	assert.Equal(t, int64(100), storedUser.SessionID, "the original must remain canonical, not require a later read-time fallback")
-	storedAssistant, findAssistantErr := messageRepo.Find(m.ctx, originalAssistant.ID)
-	require.NoError(t, findAssistantErr)
-	require.NotNil(t, storedAssistant)
-	assert.Equal(t, int64(100), storedAssistant.SessionID, "the original must remain canonical, not require a later read-time fallback")
-	assert.Equal(t, "idle", sessionRepo.Persisted().AgentStatus)
-	assert.Equal(t, "idle", sess.AgentStatus)
+	assert.ErrorContains(t, err, "first restore write failed")
+	assert.True(t, activationDurableBeforeStart)
+	assert.Equal(t, "pi-session-new", sess.ProviderSessionID,
+		"a failed restore must leave the generation marker and active ownership intact for retry")
+	assert.Equal(t, "running", sess.AgentStatus)
 	assert.NoError(t, m.dbMock.ExpectationsWereMet())
 
+	recovery := &chat_repo.ReplacementRecovery{
+		MarkerID:             3000,
+		RecoverySessionID:    recoverySessionID,
+		SessionID:            100,
+		FromSeq:              1,
+		RequestMessageID:     1001,
+		UserMessageID:        2000,
+		AssistantMessageID:   2001,
+		OldProviderSessionID: "pi-session-old",
+		NewProviderSessionID: "pi-session-new",
+		OldAgentStatus:       "idle",
+		State:                chat_repo.ReplacementRecoveryPending,
+	}
+	marker, markerErr := chat_repo.NewReplacementRecoveryMarker(recovery)
+	require.NoError(t, markerErr)
+	marker.ID = recovery.MarkerID
+	marker.SessionID = recovery.RecoverySessionID
+	m.dbMock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY id ASC").
+		WithArgs(recoverySessionID, marker.Role).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "session_id", "device_id", "role", "blocks_json", "model", "seq",
+		}).AddRow(marker.ID, marker.SessionID, marker.DeviceID, marker.Role, marker.BlocksJSON, marker.Model, marker.Seq))
 	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectExec("UPDATE `chat_sessions` SET `provider_session_id`=\\?,`agent_status`=\\?,`last_message_at`=\\?,`updatetime`=\\? WHERE id = \\? AND provider_session_id = \\?").
+		WithArgs("pi-session-old", "idle", int64(0), sqlmock.AnyArg(), int64(100), "pi-session-new").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\? AND id IN \\(\\?,\\?\\)").
+		WithArgs(int64(100), int64(2000), int64(2001)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(int64(100), recoverySessionID, 1).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	m.dbMock.ExpectCommit()
+
+	restoreRuntime()
+	secondRuntimeRestore := agentruntime.SwapRuntimeForTest(
+		agent_backend_entity.TypePiAgent,
+		&forkStartupFailRunner{err: errors.New("second preflight reached after recovery")},
+	)
+	defer secondRuntimeRestore()
 	secondResp, secondErr := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
 	require.Nil(t, secondResp)
-	require.ErrorContains(t, secondErr, "prepared prompt startup failed")
-	assert.NotContains(t, secondErr.Error(), "first recovery write failed")
-	prepareCalls, startCalls, promptCalls = runner.Counts()
-	assert.Equal(t, 2, prepareCalls, "a retry must reuse the same deterministic staging lifecycle")
-	assert.Equal(t, 2, startCalls)
-	assert.Zero(t, promptCalls)
-	assert.Equal(t, 4, messageRepo.DeleteCalls(), "the retry must clear stale staging and then discard its own stage")
-	staged, stagedErr := messageRepo.List(m.ctx, -100)
-	require.NoError(t, stagedErr)
-	assert.Empty(t, staged)
-	assert.Equal(t, "idle", sessionRepo.Persisted().AgentStatus)
+	require.ErrorContains(t, secondErr, "second preflight reached after recovery")
+	assert.Equal(t, int64(100), hiddenAssistant.SessionID,
+		"the exact original row must return to the visible session before retry preflight")
+	assert.Equal(t, "pi-session-old", sess.ProviderSessionID)
 	assert.Equal(t, "idle", sess.AgentStatus)
+	assert.NoError(t, m.dbMock.ExpectationsWereMet())
+}
+
+func TestPiRestart_CrashRecoveryFindsPendingGenerationFromActiveMessage(t *testing.T) {
+	m := setupChatTest(t)
+	const recoverySessionID = int64(-6001)
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-new", AgentStatus: "running", Status: consts.ACTIVE,
+	}
+	activeUser := &chat_entity.Message{
+		ID: 2000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("replacement"),
+	}
+	activeAssistant := &chat_entity.Message{
+		ID: 2001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: "[]",
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.message.EXPECT().Find(gomock.Any(), int64(2001)).Return(activeAssistant, nil)
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{activeUser, activeAssistant}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+	}, nil)
+
+	recovery := &chat_repo.ReplacementRecovery{
+		MarkerID:             3000,
+		RecoverySessionID:    recoverySessionID,
+		SessionID:            100,
+		FromSeq:              1,
+		RequestMessageID:     1001,
+		UserMessageID:        2000,
+		AssistantMessageID:   2001,
+		OldProviderSessionID: "pi-session-old",
+		NewProviderSessionID: "pi-session-new",
+		OldAgentStatus:       "idle",
+		OldLastMessageAt:     99,
+		State:                chat_repo.ReplacementRecoveryPending,
+	}
+	marker, markerErr := chat_repo.NewReplacementRecoveryMarker(recovery)
+	require.NoError(t, markerErr)
+	marker.ID = recovery.MarkerID
+	marker.SessionID = recovery.RecoverySessionID
+	m.dbMock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE role = \\? AND device_id = \\? ORDER BY id ASC").
+		WithArgs(marker.Role, "100").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "session_id", "device_id", "role", "blocks_json", "model", "seq",
+		}).AddRow(marker.ID, marker.SessionID, marker.DeviceID, marker.Role, marker.BlocksJSON, marker.Model, marker.Seq))
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectExec("UPDATE `chat_sessions` SET `provider_session_id`=\\?,`agent_status`=\\?,`last_message_at`=\\?,`updatetime`=\\? WHERE id = \\? AND provider_session_id = \\?").
+		WithArgs("pi-session-old", "idle", int64(99), sqlmock.AnyArg(), int64(100), "pi-session-new").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\? AND id IN \\(\\?,\\?\\)").
+		WithArgs(int64(100), int64(2000), int64(2001)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(int64(100), recoverySessionID, 1).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	m.dbMock.ExpectCommit()
+
+	runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
+	resp, err := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 2001})
+	require.Nil(t, resp)
+	var httpErr *httputils.Error
+	require.ErrorAs(t, err, &httpErr)
+	assert.Equal(t, code.ChatMessageNotFound, httpErr.Code)
+	assert.Equal(t, "pi-session-old", sess.ProviderSessionID)
+	assert.Equal(t, "idle", sess.AgentStatus)
+	assert.Equal(t, int64(99), sess.LastMessageAt)
+	select {
+	case req := <-runner.requests:
+		t.Fatalf("crash recovery must finish before starting a new Pi generation: %+v", req)
+	default:
+	}
+	assert.NoError(t, m.dbMock.ExpectationsWereMet())
+}
+
+func TestPiRestart_AcknowledgedCleanupFailureRetriesWithoutRestoringActiveGeneration(t *testing.T) {
+	m := setupChatTest(t)
+	const recoverySessionID = int64(-6001)
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-new", AgentStatus: "running", Status: consts.ACTIVE,
+	}
+	hiddenAssistant := &chat_entity.Message{
+		ID: 1001, SessionID: recoverySessionID, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer"),
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil).Times(2)
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(hiddenAssistant, nil).Times(2)
+
+	recovery := &chat_repo.ReplacementRecovery{
+		MarkerID:             3000,
+		RecoverySessionID:    recoverySessionID,
+		SessionID:            100,
+		FromSeq:              1,
+		RequestMessageID:     1001,
+		UserMessageID:        2000,
+		AssistantMessageID:   2001,
+		OldProviderSessionID: "pi-session-old",
+		NewProviderSessionID: "pi-session-new",
+		OldAgentStatus:       "idle",
+		State:                chat_repo.ReplacementRecoveryAcknowledged,
+	}
+	marker, markerErr := chat_repo.NewReplacementRecoveryMarker(recovery)
+	require.NoError(t, markerErr)
+	marker.ID = recovery.MarkerID
+	marker.SessionID = recovery.RecoverySessionID
+	m.dbMock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY id ASC").
+		WithArgs(recoverySessionID, marker.Role).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "session_id", "device_id", "role", "blocks_json", "model", "seq",
+		}).AddRow(marker.ID, marker.SessionID, marker.DeviceID, marker.Role, marker.BlocksJSON, marker.Model, marker.Seq))
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnError(errors.New("first cleanup write failed"))
+	m.dbMock.ExpectRollback()
+	m.dbMock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE session_id = \\? AND role = \\? ORDER BY id ASC").
+		WithArgs(recoverySessionID, marker.Role).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "session_id", "device_id", "role", "blocks_json", "model", "seq",
+		}).AddRow(marker.ID, marker.SessionID, marker.DeviceID, marker.Role, marker.BlocksJSON, marker.Model, marker.Seq))
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+	m.dbMock.ExpectCommit()
+
+	firstResp, firstErr := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+	require.Nil(t, firstResp)
+	require.ErrorContains(t, firstErr, "first cleanup write failed")
+	secondResp, secondErr := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+	require.Nil(t, secondResp)
+	var httpErr *httputils.Error
+	require.ErrorAs(t, secondErr, &httpErr)
+	assert.Equal(t, code.ChatMessageNotFound, httpErr.Code)
+	assert.Equal(t, "pi-session-new", sess.ProviderSessionID,
+		"ack cleanup must not restore the old provider identity over the active generation")
+	assert.Equal(t, "running", sess.AgentStatus)
 	assert.NoError(t, m.dbMock.ExpectationsWereMet())
 }
 
@@ -5399,60 +5666,66 @@ func TestPiRestart_AcknowledgedPromptActivatesTranscriptWithForkedSessionAtomica
 		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
 	}, nil)
 
+	const recoverySessionID = int64(-6001)
 	m.dbMock.ExpectBegin()
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(0), nil)
-	createdIDs := []int64{2000, 2001}
-	createCalls := 0
-	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, message *chat_entity.Message) error {
-			assert.Equal(t, int64(-100), message.SessionID)
-			message.ID = createdIDs[createCalls]
-			createCalls++
-			return nil
-		}).Times(2)
+	m.dbMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(recoverySessionID, int64(100), 1).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 	m.dbMock.ExpectCommit()
-
-	stageDurableBeforePrompt := false
-	streamEvents := make(chan agentruntime.Event)
-	var closeStream sync.Once
-	t.Cleanup(func() { closeStream.Do(func() { close(streamEvents) }) })
-	runner := &preparedAcknowledgedRunner{
-		providerSessionID: "pi-session-new",
-		events:            streamEvents,
-	}
-	runner.onStart = func() {
-		stageErr := m.dbMock.ExpectationsWereMet()
-		stageDurableBeforePrompt = stageErr == nil
-		if stageErr != nil {
-			t.Errorf("Pi prompt started before the staged transcript committed: %v", stageErr)
-		}
-		m.dbMock.ExpectBegin()
-		m.dbMock.ExpectCommit()
-	}
-	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
-	t.Cleanup(restore)
 
 	var (
 		activationConnPool any
-		activationUpdates  int
+		activationObserved bool
+		createCalls        int
+		markerUpdates      int
 	)
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), 1).Return(int64(2), nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(createCtx context.Context, message *chat_entity.Message) error {
+			connPool := db.Ctx(createCtx).Statement.ConnPool
+			_, inTransaction := connPool.(*sql.Tx)
+			assert.True(t, inTransaction)
+			if activationConnPool == nil {
+				activationConnPool = connPool
+			} else {
+				assert.Same(t, activationConnPool, connPool)
+			}
+			switch createCalls {
+			case 0:
+				message.ID = 3000
+				assert.Equal(t, int64(0), message.SessionID)
+			case 1:
+				message.ID = 2000
+				assert.Equal(t, int64(100), message.SessionID)
+				assert.Equal(t, "user", message.Role)
+			case 2:
+				message.ID = 2001
+				assert.Equal(t, int64(100), message.SessionID)
+				assert.Equal(t, "assistant", message.Role)
+			}
+			createCalls++
+			return nil
+		}).Times(3)
 	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(updateCtx context.Context, message *chat_entity.Message) error {
-			connPool := db.Ctx(updateCtx).Statement.ConnPool
-			if _, inTransaction := connPool.(*sql.Tx); inTransaction && (message.ID == 2000 || message.ID == 2001) {
-				assert.Equal(t, int64(100), message.SessionID)
-				activationUpdates++
-				if activationConnPool == nil {
-					activationConnPool = connPool
-				} else {
-					assert.Same(t, activationConnPool, connPool)
-				}
+			if message.ID != 3000 {
+				return nil
 			}
+			markerUpdates++
+			connPool := db.Ctx(updateCtx).Statement.ConnPool
+			assert.Same(t, activationConnPool, connPool)
+			assert.Equal(t, recoverySessionID, message.SessionID)
+			recovery, parseErr := chat_repo.ParseReplacementRecoveryMarker(message)
+			require.NoError(t, parseErr)
+			assert.Equal(t, int64(1001), recovery.RequestMessageID)
+			assert.Equal(t, int64(2000), recovery.UserMessageID)
+			assert.Equal(t, int64(2001), recovery.AssistantMessageID)
+			assert.Equal(t, "pi-session-old", recovery.OldProviderSessionID)
+			assert.Equal(t, "pi-session-new", recovery.NewProviderSessionID)
 			return nil
 		}).AnyTimes()
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(2), nil)
-	activationObserved := make(chan struct{}, 1)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(updateCtx context.Context, session *chat_entity.Session) error {
 			if session.AgentStatus == "running" {
@@ -5461,29 +5734,54 @@ func TestPiRestart_AcknowledgedPromptActivatesTranscriptWithForkedSessionAtomica
 				assert.True(t, inTransaction,
 					"the forked provider session must not depend on a later best-effort update")
 				assert.Same(t, activationConnPool, connPool,
-					"the staged messages and forked provider session must share one transaction")
-				assert.Equal(t, 2, activationUpdates,
-					"both staged messages must activate before the session row is updated")
+					"the moved originals, replacement rows, and provider session must share one transaction")
 				assert.Equal(t, "pi-session-new", session.ProviderSessionID,
 					"the canonical transcript and forked native session must activate together")
-				select {
-				case activationObserved <- struct{}{}:
-				default:
-				}
+				activationObserved = true
 			}
 			return nil
 		}).AnyTimes()
+
+	activationDurableBeforePrompt := false
+	streamEvents := make(chan agentruntime.Event)
+	var closeStream sync.Once
+	t.Cleanup(func() { closeStream.Do(func() { close(streamEvents) }) })
+	runner := &preparedAcknowledgedRunner{
+		providerSessionID: "pi-session-new",
+		events:            streamEvents,
+	}
+	runner.onStart = func() {
+		activationErr := m.dbMock.ExpectationsWereMet()
+		activationDurableBeforePrompt = activationErr == nil
+		if activationErr != nil {
+			t.Errorf("Pi prompt started before activation committed: %v", activationErr)
+		}
+		assert.True(t, activationObserved,
+			"Pi prompt started before canonical transcript and forked provider session activation")
+		assert.Equal(t, "pi-session-new", sess.ProviderSessionID,
+			"the forked provider session must be durable before Start sends the prompt")
+		m.dbMock.ExpectBegin()
+		m.dbMock.ExpectExec("UPDATE `chat_messages` SET `model`=\\?,`updatetime`=\\? WHERE id = \\? AND session_id = \\? AND role = \\?").
+			WithArgs(string(chat_repo.ReplacementRecoveryAcknowledged), sqlmock.AnyArg(), int64(3000), recoverySessionID, sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		m.dbMock.ExpectCommit()
+		m.dbMock.ExpectBegin()
+		m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\?").
+			WithArgs(recoverySessionID).
+			WillReturnResult(sqlmock.NewResult(0, 3))
+		m.dbMock.ExpectCommit()
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
 
 	resp, err := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
 
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	assert.True(t, stageDurableBeforePrompt)
-	select {
-	case <-activationObserved:
-	default:
-		t.Fatal("activation transaction did not persist the forked provider session")
-	}
+	assert.True(t, activationDurableBeforePrompt)
+	assert.True(t, activationObserved,
+		"activation transaction did not persist the forked provider session")
+	assert.Equal(t, 1, markerUpdates, "activation must persist one exact recovery marker")
 	assert.Equal(t, "pi-session-new", sess.ProviderSessionID,
 		"the immediate post-activation state must already point at the forked Pi session")
 	assert.NoError(t, m.dbMock.ExpectationsWereMet())
@@ -5492,9 +5790,13 @@ func TestPiRestart_AcknowledgedPromptActivatesTranscriptWithForkedSessionAtomica
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 }
 
-func TestPiRestart_PostCommitStartupFailureDiscardsOnlyStagedReplacement(t *testing.T) {
+func TestPiRestart_PromptRejectionRestoresOriginalRowsAndProviderIdentity(t *testing.T) {
 	m := setupChatTest(t)
-	runner := &deferredStartupFailRunner{err: errors.New("pi fork startup failed")}
+	const recoverySessionID = int64(-6001)
+	runner := &preparedStartupFailRunner{
+		err:               errors.New("Pi prompt rejected"),
+		providerSessionID: "pi-session-new",
+	}
 	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
 	t.Cleanup(restore)
 
@@ -5505,7 +5807,7 @@ func TestPiRestart_PostCommitStartupFailureDiscardsOnlyStagedReplacement(t *test
 		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer"),
 	}
 	sess := &chat_entity.Session{
-		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", LastMessageAt: 99, Status: consts.ACTIVE,
 	}
 	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
 	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(originalAssistant, nil)
@@ -5518,27 +5820,60 @@ func TestPiRestart_PostCommitStartupFailureDiscardsOnlyStagedReplacement(t *test
 	}, nil)
 
 	m.dbMock.ExpectBegin()
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(0), nil)
+	m.dbMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(recoverySessionID, int64(100), 1).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 	m.dbMock.ExpectCommit()
-	m.dbMock.ExpectBegin()
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(2), nil)
-	m.dbMock.ExpectCommit()
-
 	createCalls := 0
 	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, msg *chat_entity.Message) error {
-			assert.Equal(t, int64(-100), msg.SessionID)
+		func(_ context.Context, message *chat_entity.Message) error {
+			switch createCalls {
+			case 0:
+				message.ID = 3000
+			case 1:
+				message.ID = 2000
+			case 2:
+				message.ID = 2001
+			}
 			createCalls++
-			msg.ID = int64(1999 + createCalls)
 			return nil
-		}).Times(2)
+		}).Times(3)
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).Times(1)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, session *chat_entity.Session) error {
+			assert.Equal(t, "pi-session-new", session.ProviderSessionID)
+			assert.Equal(t, "running", session.AgentStatus)
+			return nil
+		}).Times(1)
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectExec("UPDATE `chat_sessions` SET `provider_session_id`=\\?,`agent_status`=\\?,`last_message_at`=\\?,`updatetime`=\\? WHERE id = \\? AND provider_session_id = \\?").
+		WithArgs("pi-session-old", "idle", int64(99), sqlmock.AnyArg(), int64(100), "pi-session-new").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\? AND id IN \\(\\?,\\?\\)").
+		WithArgs(int64(100), int64(2000), int64(2001)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(int64(100), recoverySessionID, 1).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	m.dbMock.ExpectCommit()
 
 	resp, err := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
 
 	require.Nil(t, resp)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pi fork startup failed")
+	require.ErrorContains(t, err, "Pi prompt rejected")
+	assert.Equal(t, "pi-session-old", sess.ProviderSessionID)
 	assert.Equal(t, "idle", sess.AgentStatus)
+	assert.Equal(t, int64(99), sess.LastMessageAt)
+	assert.Equal(t, int64(1000), originalUser.ID)
+	assert.Equal(t, int64(1001), originalAssistant.ID)
+	assert.NoError(t, m.dbMock.ExpectationsWereMet())
 }
 
 type piRestartResult struct {
@@ -5567,21 +5902,91 @@ func expectCancelablePiRegenerate(m *chatMocks) (*chat_entity.Message, *chat_ent
 	return originalUser, originalAssistant
 }
 
-func expectPiReplacementAndRollback(m *chatMocks) {
+func expectAcknowledgedPiReplacement(
+	m *chatMocks,
+	fromSeq int,
+	markerID, userMessageID, assistantMessageID int64,
+) int64 {
+	recoverySessionID, err := chat_repo.ReplacementRecoverySessionID(markerID)
+	if err != nil {
+		panic(err)
+	}
 	m.dbMock.ExpectBegin()
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(0), nil)
+	m.dbMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(recoverySessionID, int64(100), fromSeq).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 	m.dbMock.ExpectCommit()
 	m.dbMock.ExpectBegin()
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(2), nil)
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `model`=\\?,`updatetime`=\\? WHERE id = \\? AND session_id = \\? AND role = \\?").
+		WithArgs(string(chat_repo.ReplacementRecoveryAcknowledged), sqlmock.AnyArg(), markerID, recoverySessionID, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	m.dbMock.ExpectCommit()
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnResult(sqlmock.NewResult(0, 3))
 	m.dbMock.ExpectCommit()
 
 	createCalls := 0
 	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, msg *chat_entity.Message) error {
+		func(_ context.Context, message *chat_entity.Message) error {
+			switch createCalls {
+			case 0:
+				message.ID = markerID
+			case 1:
+				message.ID = userMessageID
+			case 2:
+				message.ID = assistantMessageID
+			}
 			createCalls++
-			msg.ID = int64(1999 + createCalls)
 			return nil
-		}).Times(2)
+		}).Times(3)
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	return recoverySessionID
+}
+
+func expectPiReplacementAndRollback(m *chatMocks) {
+	const markerID = int64(2000)
+	recoverySessionID, err := chat_repo.ReplacementRecoverySessionID(markerID)
+	if err != nil {
+		panic(err)
+	}
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(recoverySessionID, int64(100), 1).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	m.dbMock.ExpectCommit()
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectExec("UPDATE `chat_sessions` SET `provider_session_id`=\\?,`agent_status`=\\?,`last_message_at`=\\?,`updatetime`=\\? WHERE id = \\? AND provider_session_id = \\?").
+		WithArgs("pi-session-old", "idle", int64(0), sqlmock.AnyArg(), int64(100), "pi-session-new").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\? AND id IN \\(\\?,\\?\\)").
+		WithArgs(int64(100), int64(2001), int64(2002)).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	m.dbMock.ExpectExec("UPDATE `chat_messages` SET `session_id`=\\? WHERE session_id = \\? AND seq >= \\?").
+		WithArgs(int64(100), recoverySessionID, 1).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	m.dbMock.ExpectExec("DELETE FROM `chat_messages` WHERE session_id = \\?").
+		WithArgs(recoverySessionID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	m.dbMock.ExpectCommit()
+
+	createCalls := 0
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, message *chat_entity.Message) error {
+			message.ID = markerID + int64(createCalls)
+			createCalls++
+			return nil
+		}).Times(3)
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).Times(1)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).Times(1)
 }
 
 func startPiRegenerate(svc chat_svc.ChatSvc, ctx context.Context) <-chan piRestartResult {
@@ -5643,6 +6048,79 @@ func TestPiRestart_CancellationStopsSynchronousPreflightBeforeTranscriptMutation
 				"the per-session lock must be released after canceled preflight")
 		})
 	}
+}
+
+func TestPiRestart_StopCancelsActivationSQLBeforeDoingStopLookups(t *testing.T) {
+	m := setupChatTest(t)
+	activationEntered := make(chan struct{})
+	restartDone := make(chan struct{})
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).DoAndReturn(
+		func(context.Context, int64) (*chat_entity.Session, error) {
+			<-restartDone
+			return sess, nil
+		})
+	originalAssistant := &chat_entity.Message{
+		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer"),
+	}
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(originalAssistant, nil)
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+		{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: "pi-user-entry"},
+		originalAssistant,
+	}, nil).AnyTimes()
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil).AnyTimes()
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+
+	runner := &preparedAcknowledgedRunner{providerSessionID: "pi-session-new"}
+	runner.onStart = func() { t.Error("Start must not run after activation SQL is canceled") }
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
+
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectRollback()
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(writeCtx context.Context, message *chat_entity.Message) error {
+			message.ID = 3000
+			close(activationEntered)
+			<-writeCtx.Done()
+			return writeCtx.Err()
+		}).Times(1)
+
+	resultC := startPiRegenerate(m.svc, m.ctx)
+	select {
+	case <-activationEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Pi activation transaction did not start")
+	}
+	stopResult := make(chan error, 1)
+	go func() {
+		_, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 100})
+		stopResult <- err
+	}()
+
+	select {
+	case result := <-resultC:
+		close(restartDone)
+		require.Nil(t, result.resp)
+		require.Error(t, result.err)
+	case <-time.After(200 * time.Millisecond):
+		close(restartDone)
+		t.Fatal("Stop did not cancel the registered activation SQL before its own repository lookups")
+	}
+	select {
+	case stopErr := <-stopResult:
+		require.NoError(t, stopErr)
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not finish after activation cancellation")
+	}
+	assert.NoError(t, m.dbMock.ExpectationsWereMet())
 }
 
 func TestPiRestart_CancellationDuringPreparedStartRestoresTranscript(t *testing.T) {
@@ -5733,6 +6211,9 @@ func TestPiRestart_RejectsEmptyAnchorBeforeTruncationOrRunnerStart(t *testing.T)
 				m.message.EXPECT().Find(gomock.Any(), int64(1000)).Return(&chat_entity.Message{
 					ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"),
 				}, nil)
+				m.dbMock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE role = \\? AND device_id = \\? ORDER BY id ASC").
+					WithArgs(sqlmock.AnyArg(), "100").
+					WillReturnRows(sqlmock.NewRows([]string{"id"}))
 			},
 			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
 				return svc.Edit(ctx, &chat_svc.EditRequest{SessionID: 100, MessageID: 1000, Text: "replacement"})
@@ -5884,7 +6365,10 @@ func TestPiRestart_LostProviderSessionFailsClosed(t *testing.T) {
 
 func TestPiRestart_FailedFirstTurnCanRetryWithoutFork(t *testing.T) {
 	m := setupChatTest(t)
-	runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+	runner := &preparedRecordingPiRunner{
+		requests:          make(chan agentruntime.RunRequest, 1),
+		providerSessionID: "pi-session-new",
+	}
 	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
 	t.Cleanup(restore)
 
@@ -5905,23 +6389,7 @@ func TestPiRestart_FailedFirstTurnCanRetryWithoutFork(t *testing.T) {
 	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
 		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
 	}, nil)
-	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
-	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
-	m.dbMock.ExpectBegin()
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(0), nil)
-	newID := int64(2000)
-	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, msg *chat_entity.Message) error {
-			assert.Equal(t, int64(-100), msg.SessionID)
-			msg.ID = newID
-			newID++
-			return nil
-		}).Times(2)
-	m.dbMock.ExpectCommit()
-	m.dbMock.ExpectBegin()
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), 1).Return(int64(2), nil)
-	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(0), nil)
-	m.dbMock.ExpectCommit()
+	expectAcknowledgedPiReplacement(m, 1, 3000, 2000, 2001)
 
 	resp, err := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
 	require.NoError(t, err)
