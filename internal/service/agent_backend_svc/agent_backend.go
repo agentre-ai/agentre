@@ -419,6 +419,11 @@ func (s *agentBackendSvc) requireMatchingProvider(ctx context.Context, b *agent_
 	if !kind.ProviderTypeMatch(llm_provider_entity.ProviderType(p.Type)) {
 		return nil, i18n.NewError(ctx, code.AgentBackendProviderTypeMismatch)
 	}
+	// piagent 绑定时必须能通过 --model agentre-<key>/<model> 命中该供应商下的模型，
+	// 因此要求 provider.Model 非空；其它 kind（builtin / claudecode / codex）不要求。
+	if kind.RequiresProviderModel() && strings.TrimSpace(p.Model) == "" {
+		return nil, i18n.NewError(ctx, code.AgentBackendProviderModelRequired)
+	}
 	return p, nil
 }
 

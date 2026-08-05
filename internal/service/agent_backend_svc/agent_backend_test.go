@@ -7,12 +7,15 @@ import (
 	"time"
 
 	"github.com/cago-frame/cago/pkg/consts"
+	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
@@ -269,6 +272,91 @@ func TestCreateBackend(t *testing.T) {
 			})
 			assert.NoError(t, err)
 			assert.Equal(t, int64(47), resp.Item.ID)
+		})
+
+		convey.Convey("pi-agent 绑定三类 provider 可成功创建", func() {
+			for _, typ := range []llm_provider_entity.ProviderType{
+				llm_provider_entity.TypeAnthropic,
+				llm_provider_entity.TypeOpenAIChat,
+				llm_provider_entity.TypeOpenAIResponse,
+			} {
+				backendMock.EXPECT().FindByName(gomock.Any(), "pi").Return(nil, nil)
+				providerMock.EXPECT().FindByKey(gomock.Any(), "key-4").
+					Return(activeProviderWithType("key-4", typ), nil)
+				backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+					DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
+						assert.Equal(t, string(agent_backend_entity.TypePiAgent), b.Type)
+						assert.Equal(t, "key-4", b.LLMProviderKey)
+						b.ID = 48
+						return nil
+					})
+
+				resp, err := svc.Create(ctx, &CreateBackendRequest{
+					Type:           string(agent_backend_entity.TypePiAgent),
+					Name:           "pi",
+					LLMProviderKey: "key-4",
+				})
+				assert.NoError(t, err)
+				assert.Equal(t, int64(48), resp.Item.ID)
+			}
+		})
+
+		convey.Convey("pi-agent 绑定 provider 但 Model 为空 → AgentBackendProviderModelRequired", func() {
+			backendMock.EXPECT().FindByName(gomock.Any(), "pi").Return(nil, nil)
+			p := activeProviderWithType("key-4", llm_provider_entity.TypeOpenAIResponse)
+			p.Model = ""
+			providerMock.EXPECT().FindByKey(gomock.Any(), "key-4").Return(p, nil)
+
+			_, err := svc.Create(ctx, &CreateBackendRequest{
+				Type:           string(agent_backend_entity.TypePiAgent),
+				Name:           "pi",
+				LLMProviderKey: "key-4",
+			})
+			var httpErr *httputils.Error
+			require.ErrorAs(t, err, &httpErr)
+			assert.Equal(t, code.AgentBackendProviderModelRequired, httpErr.Code)
+		})
+
+		convey.Convey("claudecode 绑定 Model 为空的 provider 仍可创建", func() {
+			backendMock.EXPECT().FindByName(gomock.Any(), "cc").Return(nil, nil)
+			p := activeProvider("key-1")
+			p.Model = ""
+			providerMock.EXPECT().FindByKey(gomock.Any(), "key-1").Return(p, nil)
+			backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
+					assert.Equal(t, string(agent_backend_entity.TypeClaudeCode), b.Type)
+					b.ID = 49
+					return nil
+				})
+
+			resp, err := svc.Create(ctx, &CreateBackendRequest{
+				Type:           string(agent_backend_entity.TypeClaudeCode),
+				Name:           "cc",
+				LLMProviderKey: "key-1",
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, int64(49), resp.Item.ID)
+		})
+
+		convey.Convey("codex 绑定 Model 为空的 provider 仍可创建", func() {
+			backendMock.EXPECT().FindByName(gomock.Any(), "codex").Return(nil, nil)
+			p := activeProviderWithType("key-2", llm_provider_entity.TypeOpenAIResponse)
+			p.Model = ""
+			providerMock.EXPECT().FindByKey(gomock.Any(), "key-2").Return(p, nil)
+			backendMock.EXPECT().Create(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{})).
+				DoAndReturn(func(_ context.Context, b *agent_backend_entity.AgentBackend) error {
+					assert.Equal(t, string(agent_backend_entity.TypeCodex), b.Type)
+					b.ID = 50
+					return nil
+				})
+
+			resp, err := svc.Create(ctx, &CreateBackendRequest{
+				Type:           string(agent_backend_entity.TypeCodex),
+				Name:           "codex",
+				LLMProviderKey: "key-2",
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, int64(50), resp.Item.ID)
 		})
 	})
 }
