@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
@@ -91,26 +92,56 @@ type RunCommandResponse struct {
 	StartError string       `json:"startError,omitempty"`
 }
 
+const (
+	commandExitCodeUnavailable = -1
+	commandExitReasonStopped   = "stopped"
+	commandExitReasonReplaced  = "replaced"
+	commandExitReasonShutdown  = "shutdown"
+)
+
 type commandLifecycle struct {
+	ctx        context.Context
 	sessionID  int64
 	terminalID string
 	deviceID   string
+
+	started     atomic.Bool
+	finalLogged atomic.Bool
 }
 
-func (l *commandLifecycle) logStarted(ctx context.Context) {
-	logger.Ctx(ctx).Info("terminal_svc.RunCommand: command started",
+func newCommandLifecycle(
+	ctx context.Context,
+	sessionID int64,
+	terminalID string,
+	deviceID string,
+) *commandLifecycle {
+	return &commandLifecycle{
+		ctx:        context.WithoutCancel(ctx),
+		sessionID:  sessionID,
+		terminalID: terminalID,
+		deviceID:   deviceID,
+	}
+}
+
+func (l *commandLifecycle) logStarted() {
+	logger.Ctx(l.ctx).Info("terminal_svc.RunCommand: command started",
 		zap.Int64("sessionId", l.sessionID),
 		zap.String("terminalId", l.terminalID),
 		zap.String("deviceId", l.deviceID))
+	l.started.Store(true)
 }
 
-func (l *commandLifecycle) logExited(ctx context.Context, exitCode int, exitReason string) {
-	logger.Ctx(ctx).Info("terminal_svc.RunCommand: command exited",
+func (l *commandLifecycle) logExited(exitCode int, exitReason string) bool {
+	if !l.started.Load() || !l.finalLogged.CompareAndSwap(false, true) {
+		return false
+	}
+	logger.Ctx(l.ctx).Info("terminal_svc.RunCommand: command exited",
 		zap.Int64("sessionId", l.sessionID),
 		zap.String("terminalId", l.terminalID),
 		zap.String("deviceId", l.deviceID),
 		zap.Int("exitCode", exitCode),
 		zap.String("exitReason", exitReason))
+	return true
 }
 
 // SetCommandScopeResolver 注入 session → 命令执行作用域的只读解析器。
@@ -144,11 +175,7 @@ func (s *Service) RunCommand(ctx context.Context, req RunCommandRequest) (*RunCo
 		return nil, ErrCommandScopeUnavailable
 	}
 	response := &RunCommandResponse{Scope: *scope}
-	lifecycle := &commandLifecycle{
-		sessionID:  req.SessionID,
-		terminalID: req.TerminalID,
-		deviceID:   scope.DeviceID,
-	}
+	lifecycle := newCommandLifecycle(ctx, req.SessionID, req.TerminalID, scope.DeviceID)
 	if err := s.openCommand(
 		ctx, attempt, req.TerminalID, scope.DeviceID, scope.Cwd, req.Command, req.Cols, req.Rows, lifecycle,
 	); err != nil {

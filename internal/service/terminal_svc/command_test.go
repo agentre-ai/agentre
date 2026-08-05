@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -205,7 +206,66 @@ func TestService_RunCommand_GivenResolvedTarget_WhenCommandExits_ThenLogsOneReda
 	}
 }
 
-func TestService_RunCommand_GivenSameIDReplacementWhenOldChannelsSettleLateThenOnlyReplacementFinishes(t *testing.T) {
+func TestService_RunCommand_GivenStartedCommand_WhenClosedBeforePumpOutcome_ThenLogsOneStoppedExitWithoutStaleEvents(t *testing.T) {
+	handle := newReplacementRaceHandle(false, false)
+	t.Cleanup(func() { handle.finish(pty.ExitInfo{Code: 41, Reason: "fixture-sensitive-late-exit"}) })
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(
+		terminal_svc.NewBackendSelector(&replacementRaceBackend{old: handle}, nil),
+		emitter,
+	)
+	svc.SetCommandScopeResolver(func(
+		context.Context,
+		terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return &terminal_svc.CommandScope{Cwd: "/fixture-sensitive/private-cwd"}, nil
+	})
+	t.Cleanup(svc.Shutdown)
+	core, logs := observer.New(zapcore.DebugLevel)
+	requestCtx, cancel := context.WithCancel(
+		logger.WithContextLogger(context.Background(), zap.New(core)),
+	)
+
+	response, err := svc.RunCommand(requestCtx, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-stopped",
+		SessionID:  90,
+		Command:    "deploy --token=fixture-sensitive-token",
+		Cols:       80,
+		Rows:       24,
+	})
+	require.NoError(t, err)
+	require.Empty(t, response.StartError)
+	require.Eventually(t, func() bool { return logs.Len() == 1 }, time.Second, time.Millisecond)
+	cancel()
+
+	require.NoError(t, svc.Close(context.Background(), "terminal-stopped"))
+	require.Eventually(t, func() bool {
+		return len(commandExitEntriesForSession(logs, 90)) == 1
+	}, time.Second, time.Millisecond)
+	handle.data <- []byte("fixture-sensitive-stale-output")
+	handle.finish(pty.ExitInfo{Code: 41, Reason: "fixture-sensitive-late-exit"})
+	require.Never(t, func() bool { return len(emitter.Snapshot()) != 0 }, 100*time.Millisecond, time.Millisecond)
+
+	exitEntry := commandExitEntriesForSession(logs, 90)[0]
+	require.Equal(t, map[string]any{
+		"sessionId":  int64(90),
+		"terminalId": "terminal-stopped",
+		"deviceId":   "",
+		"exitCode":   int64(-1),
+		"exitReason": "stopped",
+	}, exitEntry.ContextMap())
+	structuredLogs, marshalErr := json.Marshal(logs.All())
+	require.NoError(t, marshalErr)
+	observedLogs := string(structuredLogs)
+	for _, sensitive := range []string{
+		"fixture-sensitive-token", "fixture-sensitive/private-cwd",
+		"fixture-sensitive-stale-output", "fixture-sensitive-late-exit",
+	} {
+		assert.NotContains(t, observedLogs, sensitive)
+	}
+}
+
+func TestService_RunCommand_GivenSameIDReplacementWhenOldChannelsSettleLateThenOldLogsReplacedAndOnlyNewEmits(t *testing.T) {
 	old := newReplacementRaceHandle(false, false)
 	replacement := newReplacementRaceHandle(false, false)
 	backend := &replacementRaceBackend{old: old, replacement: replacement}
@@ -233,12 +293,13 @@ func TestService_RunCommand_GivenSameIDReplacementWhenOldChannelsSettleLateThenO
 	old.data <- []byte("stale")
 	old.finish(pty.ExitInfo{Code: 41, Reason: "stale"})
 	replacement.data <- []byte("fresh")
-	replacement.finish(pty.ExitInfo{Code: 7, Reason: "replacement"})
+	replacement.finish(pty.ExitInfo{Code: 7, Reason: "natural"})
 	require.Eventually(t, func() bool {
 		for _, event := range emitter.Snapshot() {
 			exitEvent, ok := event.Payload.(protocol.TerminalExitEvent)
-			if ok && exitEvent.Reason == "replacement" {
-				return logs.FilterMessage("terminal_svc.RunCommand: command exited").Len() >= 1
+			if ok && exitEvent.Reason == "natural" {
+				return len(commandExitEntriesForSession(logs, 91)) == 1 &&
+					len(commandExitEntriesForSession(logs, 92)) == 1
 			}
 		}
 		return false
@@ -254,24 +315,145 @@ func TestService_RunCommand_GivenSameIDReplacementWhenOldChannelsSettleLateThenO
 				return true
 			}
 		}
-		for _, entry := range logs.FilterMessage("terminal_svc.RunCommand: command exited").All() {
-			if entry.ContextMap()["sessionId"] == int64(91) {
-				return true
-			}
-		}
 		return false
 	}, 100*time.Millisecond, time.Millisecond,
-		"retired command must not emit stale data, terminal exit, or lifecycle finish")
+		"retired command must not emit stale data or a stale terminal exit")
 
 	events := emitter.Snapshot()
 	require.Len(t, events, 2)
 	require.Equal(t, []byte("fresh"), recordedData(t, events[0]))
-	require.Equal(t, protocol.TerminalExitEvent{Code: 7, Reason: "replacement"}, events[1].Payload)
-	entries := logs.All()
-	require.Len(t, entries, 3)
-	require.Equal(t, int64(91), entries[0].ContextMap()["sessionId"])
-	require.Equal(t, int64(92), entries[1].ContextMap()["sessionId"])
-	require.Equal(t, int64(92), entries[2].ContextMap()["sessionId"])
+	require.Equal(t, protocol.TerminalExitEvent{Code: 7, Reason: "natural"}, events[1].Payload)
+	require.Equal(t, int64(-1), commandExitEntriesForSession(logs, 91)[0].ContextMap()["exitCode"])
+	require.Equal(t, "replaced", commandExitEntriesForSession(logs, 91)[0].ContextMap()["exitReason"])
+	require.Equal(t, int64(7), commandExitEntriesForSession(logs, 92)[0].ContextMap()["exitCode"])
+	require.Equal(t, "natural", commandExitEntriesForSession(logs, 92)[0].ContextMap()["exitReason"])
+}
+
+func TestService_RunCommand_GivenStartedCommand_WhenServiceShutsDown_ThenLogsOneShutdownExitWithoutStaleEvents(t *testing.T) {
+	handle := newReplacementRaceHandle(false, false)
+	t.Cleanup(func() { handle.finish(pty.ExitInfo{Code: 42, Reason: "late"}) })
+	emitter := &recordingEmitter{}
+	backend := &replacementRaceBackend{old: handle}
+	svc := terminal_svc.NewService(
+		terminal_svc.NewBackendSelector(backend, func(string) (terminal_svc.PTYBackend, error) {
+			return backend, nil
+		}),
+		emitter,
+	)
+	svc.SetCommandScopeResolver(func(
+		context.Context,
+		terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return &terminal_svc.CommandScope{DeviceID: "device-shutdown", Cwd: "/private/shutdown"}, nil
+	})
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-shutdown",
+		SessionID:  93,
+		Command:    "private command",
+		Cols:       80,
+		Rows:       24,
+	})
+	require.NoError(t, err)
+	require.Empty(t, response.StartError)
+	require.Eventually(t, func() bool { return logs.Len() == 1 }, time.Second, time.Millisecond)
+
+	svc.Shutdown()
+	require.Eventually(t, func() bool {
+		return len(commandExitEntriesForSession(logs, 93)) == 1
+	}, time.Second, time.Millisecond)
+	handle.data <- []byte("stale")
+	handle.finish(pty.ExitInfo{Code: 42, Reason: "late"})
+	require.Never(t, func() bool { return len(emitter.Snapshot()) != 0 }, 100*time.Millisecond, time.Millisecond)
+	require.Equal(t, map[string]any{
+		"sessionId":  int64(93),
+		"terminalId": "terminal-shutdown",
+		"deviceId":   "device-shutdown",
+		"exitCode":   int64(-1),
+		"exitReason": "shutdown",
+	}, commandExitEntriesForSession(logs, 93)[0].ContextMap())
+}
+
+func TestService_RunCommand_GivenNaturalExitRacesClose_WhenBothSettle_ThenLogsExactlyOneExit(t *testing.T) {
+	const iterations = 64
+	handles := make([]pty.Handle, 0, iterations)
+	concreteHandles := make([]*replacementRaceHandle, 0, iterations)
+	for range iterations {
+		handle := newReplacementRaceHandle(false, false)
+		handles = append(handles, handle)
+		concreteHandles = append(concreteHandles, handle)
+	}
+	backend := &handleSequenceBackend{handles: handles}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), terminal_svc.NoopEmitter{})
+	svc.SetCommandScopeResolver(func(
+		context.Context,
+		terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return &terminal_svc.CommandScope{}, nil
+	})
+	t.Cleanup(svc.Shutdown)
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	for i, handle := range concreteHandles {
+		terminalID := fmt.Sprintf("terminal-natural-close-%d", i)
+		sessionID := int64(1000 + i)
+		response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
+			TerminalID: terminalID,
+			SessionID:  sessionID,
+			Command:    "command",
+			Cols:       80,
+			Rows:       24,
+		})
+		require.NoError(t, err)
+		require.Empty(t, response.StartError)
+		require.Eventually(t, func() bool {
+			for _, entry := range logs.FilterMessage("terminal_svc.RunCommand: command started").All() {
+				if entry.ContextMap()["sessionId"] == sessionID {
+					return true
+				}
+			}
+			return false
+		}, time.Second, time.Millisecond)
+
+		start := make(chan struct{})
+		closeResult := make(chan error, 1)
+		finishDone := make(chan struct{})
+		go func() {
+			<-start
+			closeResult <- svc.Close(context.Background(), terminalID)
+		}()
+		go func() {
+			defer close(finishDone)
+			<-start
+			handle.finish(pty.ExitInfo{Code: 0, Reason: "natural"})
+		}()
+		close(start)
+		closeErr := <-closeResult
+		if closeErr != nil {
+			require.ErrorIs(t, closeErr, terminal_svc.ErrTerminalNotOpen)
+		}
+		<-finishDone
+
+		require.Eventually(t, func() bool {
+			return len(commandExitEntriesForSession(logs, sessionID)) == 1
+		}, time.Second, time.Millisecond)
+		require.Never(t, func() bool {
+			return len(commandExitEntriesForSession(logs, sessionID)) > 1
+		}, 5*time.Millisecond, 100*time.Microsecond)
+	}
+}
+
+func commandExitEntriesForSession(logs *observer.ObservedLogs, sessionID int64) []observer.LoggedEntry {
+	entries := make([]observer.LoggedEntry, 0, 1)
+	for _, entry := range logs.FilterMessage("terminal_svc.RunCommand: command exited").All() {
+		if entry.ContextMap()["sessionId"] == sessionID {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }
 
 func TestService_Open_GivenInteractiveTerminal_WhenItExits_ThenLogsNoCommandLifecycle(t *testing.T) {

@@ -46,18 +46,24 @@ type Service struct {
 //
 // Lock contract: Service.mu only protects ownership maps. Retirement may mark
 // active=false while Service.mu is held, but it waits for emissionMu only after
-// releasing Service.mu. emitter/logger boundaries run under emissionMu, and
-// Handle.Close runs without either mutex, so no external boundary can block the
-// service ownership lock.
+// releasing Service.mu. Emitter boundaries run under emissionMu; retirement
+// logging and Handle.Close run without either mutex, so no external boundary can
+// block the service ownership lock.
 type sessionEntry struct {
-	handle pty.Handle
+	ctx       context.Context
+	handle    pty.Handle
+	lifecycle *commandLifecycle
 
 	emissionMu sync.Mutex
 	active     atomic.Bool
 }
 
-func newSessionEntry(handle pty.Handle) *sessionEntry {
-	entry := &sessionEntry{handle: handle}
+func newSessionEntry(ctx context.Context, handle pty.Handle, lifecycle *commandLifecycle) *sessionEntry {
+	entryCtx := context.WithoutCancel(ctx)
+	if lifecycle != nil {
+		entryCtx = lifecycle.ctx
+	}
+	entry := &sessionEntry{ctx: entryCtx, handle: handle, lifecycle: lifecycle}
 	entry.active.Store(true)
 	return entry
 }
@@ -70,6 +76,12 @@ func (e *sessionEntry) drainRetirement() {
 	e.emissionMu.Lock()
 	e.active.Store(false)
 	e.emissionMu.Unlock()
+}
+
+func (e *sessionEntry) logCommandRetirement(exitReason string) {
+	if e.lifecycle != nil {
+		e.lifecycle.logExited(commandExitCodeUnavailable, exitReason)
+	}
 }
 
 func (e *sessionEntry) emitIfActive(emit func()) bool {
@@ -181,6 +193,7 @@ func (s *Service) open(
 	s.mu.Unlock()
 	if old != nil {
 		old.drainRetirement()
+		old.logCommandRetirement(commandExitReasonReplaced)
 		_ = old.handle.Close()
 
 		s.mu.Lock()
@@ -201,7 +214,7 @@ func (s *Service) open(
 	h, err := backend.Open(attempt.ctx, spec)
 	var entry *sessionEntry
 	if err == nil {
-		entry = newSessionEntry(h)
+		entry = newSessionEntry(ctx, h, lifecycle)
 	}
 
 	// Atomically hand ownership from the start attempt to one live session
@@ -237,13 +250,10 @@ func (s *Service) open(
 	// the command lifecycle order. The entry gate also suppresses this start if
 	// a replacement retired the just-registered handle first.
 	if lifecycle != nil {
-		entry.emitIfActive(func() { lifecycle.logStarted(ctx) })
+		entry.emitIfActive(lifecycle.logStarted)
 	}
-	// Detach from caller cancellation while preserving logger values so exit
-	// cleanup and lifecycle events complete after Open returns.
-	pumpCtx := context.WithoutCancel(ctx)
 	gogo.Go(func() error {
-		s.pump(pumpCtx, terminalID, entry, lifecycle)
+		s.pump(terminalID, entry)
 		return nil
 	}, gogo.WithIgnorePanic())
 	return nil
@@ -334,6 +344,7 @@ func (s *Service) Close(ctx context.Context, terminalID string) error {
 		s.mu.Unlock()
 		if current {
 			entry.drainRetirement()
+			entry.logCommandRetirement(commandExitReasonStopped)
 			s.mu.Lock()
 			if s.sessions[terminalID] == entry {
 				delete(s.sessions, terminalID)
@@ -371,6 +382,7 @@ func (s *Service) Shutdown() {
 	}
 	for _, session := range sessions {
 		session.entry.drainRetirement()
+		session.entry.logCommandRetirement(commandExitReasonShutdown)
 		_ = session.entry.handle.Close()
 		s.mu.Lock()
 		if s.sessions[session.terminalID] == session.entry {
@@ -390,12 +402,8 @@ func (s *Service) lookupHandle(terminalID string) pty.Handle {
 	return entry.handle
 }
 
-func (s *Service) pump(
-	ctx context.Context,
-	terminalID string,
-	entry *sessionEntry,
-	lifecycle *commandLifecycle,
-) {
+func (s *Service) pump(terminalID string, entry *sessionEntry) {
+	ctx := entry.ctx
 	// Data() and Exit() are independent channels with no ordering guarantee
 	// between them. We must drain every data chunk AND read the single exit
 	// value before emitting the exit event — otherwise a naive select that
@@ -465,8 +473,8 @@ stream:
 	// replacement either waits for both to finish or retires this entry before
 	// either starts; it can never observe only half of the old final sequence.
 	finished := entry.emitFinalIfActive(func() {
-		if lifecycle != nil {
-			lifecycle.logExited(ctx, exitInfo.Code, exitInfo.Reason)
+		if entry.lifecycle != nil {
+			entry.lifecycle.logExited(exitInfo.Code, exitInfo.Reason)
 		}
 		s.emitter.Emit(ctx, ExitEventName(terminalID), protocol.TerminalExitEvent{
 			Code: exitInfo.Code, Reason: exitInfo.Reason, Msg: exitInfo.Msg,
