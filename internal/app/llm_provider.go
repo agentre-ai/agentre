@@ -29,7 +29,7 @@ func (a *App) ListLLMModels(req *llm_provider_svc.ListModelsRequest) (*llm_provi
 	return llm_provider_svc.LLMProvider().ListModels(a.ctx, req)
 }
 
-// PreviewLLMModels 在 provider 尚未落库时按表单凭证拉取模型列表，供「新建供应商」时下拉选择。
+// PreviewLLMModels 按表单草稿凭证拉取模型列表；编辑时空 apiKey 沿用已保存值。
 func (a *App) PreviewLLMModels(req *llm_provider_svc.PreviewModelsRequest) (*llm_provider_svc.PreviewModelsResponse, error) {
 	return llm_provider_svc.LLMProvider().PreviewModels(a.ctx, req)
 }

@@ -5,11 +5,7 @@
 > for agents (Claude / Codex) and developers.
 >
 > This doc **owns** the GUI-e2e harness. For SQLite / log / table-to-feature debugging see
-> [debugging.md](../docs/debugging.md). The design rationale is archived in
-> [`superpowers/specs/2026-06-10-e2e-harness-hardening-design.md`](../docs/superpowers/specs/2026-06-10-e2e-harness-hardening-design.md)
-> (current) and [`…2026-06-09-e2e-testing-design.md`](../docs/superpowers/specs/2026-06-09-e2e-testing-design.md)
-> (the prior snapshot) — those are archived snapshots, not living docs; **this file** is the
-> living reference.
+> [debugging.md](../docs/debugging.md). This file is the living reference for the harness.
 
 Agentre is an IPC-only Wails desktop app — there is no HTTP API to hit. But `wails dev` exposes
 the app over a browser-accessible IPC bridge, so Playwright (Chromium) can open it like a normal

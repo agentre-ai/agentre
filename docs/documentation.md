@@ -45,10 +45,9 @@ Stage the files intended for the commit, then set `VERIFY_TREE="$(git write-tree
 | [`verification.md`](./verification.md) | What a real-app verification run must **leave behind**: when it is warranted, the `e2e/scratch/<task-name>/` evidence layout, `report.md` created before the run, choosing the evidence form, honest reporting, and the one-place-only verdict table for spec acceptance. Defers all harness mechanics to [`../e2e/README.md`](../e2e/README.md). |
 | [`references/verification-report-template.md`](./references/verification-report-template.md) | The `report.md` shape itself — copied verbatim into a scenario directory. Filling-in discipline and embedding rules; the *when / where* is [`verification.md`](./verification.md)'s. |
 | [`documentation.md`](./documentation.md) | This guide: doc organization rules + fact-checking / anti-drift discipline. |
-| [`specs/*`](./specs) | Approved executable behavior specs for active changes: requirements, non-goals, implementation decisions, test seams, and traceable acceptance criteria. |
 | [`README_zh.md`](./README_zh.md) / [`../README.md`](../README.md) | The user-facing Chinese / English project README — **not** a docs index; don't stuff contributor conventions into it. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) / [`CONTRIBUTING_ZH.md`](./CONTRIBUTING_ZH.md) | The contributor guide (English / Chinese): setup, the GitHub fork / branch / PR workflow, a summary of the ground rules, commit style, PR checklist. It **links into** `AGENTS.md` / `docs/*` for the details — keep it a pointer, don't let facts fork from the docs that own them. |
-| `superpowers/{plans,specs}/*` | Date-archived historical plan / spec snapshots, **not updated alongside the code**; when referencing one, note that it is the archived snapshot of some design, not a living doc. |
+| `superpowers/plans/*` | Date-archived historical plan snapshots, **not updated alongside the code**; when referencing one, note that it is the archived snapshot of some design, not a living doc. |
 
 **Agentre has no `docs/README.md` index file** — the docs index role is played by the **"Development Conventions (required reading)" section of `AGENTS.md`**.
 When you add / move / delete `docs/*`, keep that section and the "Doc Set and Responsibilities" table above in sync.

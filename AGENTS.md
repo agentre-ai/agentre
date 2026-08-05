@@ -73,8 +73,6 @@ Before writing code / fixing bugs / writing tests, read these docs first — the
 - [e2e/README.md](e2e/README.md) — the Playwright + fake-runtime e2e harness (root `e2e/` package): how to run (`make e2e` / `make e2e-scratch`), ad-hoc **feature verification** via throwaway specs in the gitignored `e2e/scratch/` (vs. the small committed `e2e/tests/` core suite), the cross-platform `run-e2e.mjs` runner, the build-tag seam that keeps the fake out of production builds, the `node:sqlite` DB oracle, data isolation / seeding, and how to write or extend a spec.
 - [docs/verification.md](docs/verification.md) — what a verification run has to **leave behind**: when driving the real app is warranted at all, the one-scenario-one-directory evidence layout under `e2e/scratch/<task-name>/`, creating `report.md` **before** the run, picking the evidence form by what was verified, reporting honestly (never describing red as green), and the one-place-only verdict table for spec acceptance. The template it copies is [docs/references/verification-report-template.md](docs/references/verification-report-template.md).
 - [docs/documentation.md](docs/documentation.md) — required reading before changing any contributor doc (`AGENTS.md` / `CLAUDE.md` / `docs/*`): git-aware fact-checking, fixing or deleting stale facts directly (leaving no deprecation comments), doc organization rules, and the one-command verification script.
-- [docs/specs/*](docs/specs) — approved executable behavior specs for active changes: requirements, non-goals, implementation decisions, test seams, and traceable acceptance criteria.
-
 > See the cago skill (`/cago`) for details — complete controller / service / repo / cron / queue unit-test examples.
 
 ## Key constraints (essential facts)

@@ -70,7 +70,7 @@ e2e/scratch/<task-name>/
 ```
 
 `<task-name>` is a lowercase hyphenated slug. **When the run is wrap-up acceptance against an
-approved spec in [`specs/`](./specs), `<task-name>` is that spec's own slug** (e.g.
+approved local spec in `docs/specs/`, `<task-name>` is that spec's own slug** (e.g.
 `2026-07-31-subagent-model-badge`) — that is what keeps one round's evidence in one place.
 
 **A directory with no `screenshots/` is not missing evidence.** A backend / daemon / migration
@@ -138,7 +138,7 @@ is something a single word absorbs.
 
 ## Wrapping Up Acceptance Against a Spec
 
-When the round works from an approved spec in [`specs/`](./specs), the report additionally carries
+When the round works from an approved local spec in `docs/specs/`, the report additionally carries
 **one verdict line per acceptance criterion** — `holds` / `does not hold` / `not observed`, each
 with how it was checked and a command the reader can run themselves.
 
