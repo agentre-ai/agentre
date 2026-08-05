@@ -193,7 +193,7 @@ type appThreadItem struct {
 	Text string `json:"text,omitempty"`
 	// Codex 0.131.0 represents userMessage text as content[] rather than a
 	// top-level text field. Keep Text above for older app-server builds.
-	Content []appUserInput `json:"content,omitempty"`
+	Content appItemContent `json:"content,omitempty"`
 
 	Command          string          `json:"command,omitempty"`
 	Cwd              string          `json:"cwd,omitempty"`
@@ -225,6 +225,43 @@ func (i *appThreadItem) UnmarshalJSON(data []byte) error {
 type appUserInput struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+}
+
+// appItemContent normalizes the two app-server content shapes at the protocol
+// boundary: userMessage uses an input-item array, while compatible Responses
+// providers can surface completed agentMessage content as a plain string.
+type appItemContent []appUserInput
+
+func (c *appItemContent) UnmarshalJSON(data []byte) error {
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(data, &rawItems); err == nil {
+		items := make(appItemContent, 0, len(rawItems))
+		for _, raw := range rawItems {
+			var item appUserInput
+			if err := json.Unmarshal(raw, &item); err == nil {
+				if item.Type == "" && item.Text != "" {
+					item.Type = "text"
+				}
+				items = append(items, item)
+				continue
+			}
+
+			var text string
+			if err := json.Unmarshal(raw, &text); err != nil {
+				return err
+			}
+			items = append(items, appUserInput{Type: "text", Text: text})
+		}
+		*c = items
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return err
+	}
+	*c = appItemContent{{Type: "text", Text: text}}
+	return nil
 }
 
 type appFileChange struct {
@@ -358,7 +395,7 @@ func turnStartParamsInput(thread appThreadStartResult, input []UserInput, mode C
 	return params, nil
 }
 
-func userTextForItem(item *appThreadItem) string {
+func textForItem(item *appThreadItem) string {
 	if item == nil {
 		return ""
 	}
