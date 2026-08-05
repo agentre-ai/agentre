@@ -17,8 +17,7 @@ import (
 func addToolUse(a *turn.Accumulator, b blocks.ContentBlock) { a.AddToolUse(b, "") }
 func addBlock(a *turn.Accumulator, b blocks.ContentBlock)   { a.AddBlock(b, "") }
 
-// Persistence snapshot baselines —— characterization 安全网
-// 参见 docs/superpowers/plans/2026-05-22-agentruntime-refactor-plan-a-backend.md。
+// Persistence snapshot baselines —— characterization 安全网。
 //
 // 8 个 snapshot 覆盖各 backend × 各 control event 组合的 chat_messages.blocks_json
 // 落库形态。重构 acc / block 类型 / 投影路径时若产生字节级 drift,本测试 fail。
