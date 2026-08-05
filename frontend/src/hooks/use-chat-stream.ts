@@ -23,6 +23,9 @@ export type ChatStreamUsage = {
   // totalInputTokens runtime translator 按 family 聚合好的本次 API call 输入总量;
   // 前端按它读「已用上下文」,不做 family-specific 加法。
   totalInputTokens?: number;
+  // contextWindow 与 usage 同帧携带，保证任一收到的 usage 快照都有对应分母；
+  // 避免独立 session_status 事件在 per-turn 订阅建立前丢失。
+  contextWindow?: number;
 };
 
 // ChatStreamEvent mirrors backend chat_svc.ChatStreamEvent. Fields are optional

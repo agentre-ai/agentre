@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/llmurl"
 )
 
 // ProviderLookup 抽象 llm_provider 仓储依赖，方便单测注入 mock。
@@ -192,21 +192,7 @@ func rewriteModelField(body []byte, newModel string) ([]byte, error) {
 // 类型兜底：openai-chat 走 chat/completions，openai-response 走 responses；
 // anthropic 仅识别 /v1/messages；若 BaseURL 已带 /v1 后缀会被剥掉再拼，避免重复。
 func buildTargetURL(baseURL, path string, _ llm_provider_entity.ProviderType) (*url.URL, error) {
-	base := strings.TrimSpace(baseURL)
-	if base == "" {
-		return nil, errors.New("provider base url is empty")
-	}
-	base = strings.TrimRight(base, "/")
-	base = strings.TrimSuffix(base, "/v1")
-	full := base + path
-	u, err := url.Parse(full)
-	if err != nil {
-		return nil, err
-	}
-	if u.Scheme == "" || u.Host == "" {
-		return nil, errors.New("invalid upstream URL: " + full)
-	}
-	return u, nil
+	return llmurl.Build(baseURL, path)
 }
 
 // writeJSONError 输出 `{"error":"..."}` 的 JSON 错误响应。

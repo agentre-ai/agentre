@@ -13,8 +13,10 @@ type SuggestionPopoverProps = {
   selectedIndex: number;
   itemCount: number;
   ariaLabel: string;
+  listboxId?: string;
   testId?: string;
   className?: string;
+  footer?: React.ReactNode;
   children: (activeRef: React.Ref<HTMLButtonElement>) => React.ReactNode;
 };
 
@@ -26,8 +28,10 @@ export function SuggestionPopover({
   selectedIndex,
   itemCount,
   ariaLabel,
+  listboxId,
   testId,
   className,
+  footer,
   children,
 }: SuggestionPopoverProps): React.ReactElement | null {
   const activeRef = React.useRef<HTMLButtonElement>(null);
@@ -47,18 +51,41 @@ export function SuggestionPopover({
     zIndex: 50,
   };
 
+  const popoverClassName = cn(
+    "min-w-[14rem] max-w-[20rem] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md",
+    className,
+  );
+
+  if (!footer) {
+    return (
+      <div
+        id={listboxId}
+        data-testid={testId}
+        role="listbox"
+        aria-label={ariaLabel}
+        style={style}
+        className={cn(popoverClassName, "overflow-y-auto overscroll-contain")}
+      >
+        {children(activeRef)}
+      </div>
+    );
+  }
+
   return (
     <div
       data-testid={testId}
-      role="listbox"
-      aria-label={ariaLabel}
       style={style}
-      className={cn(
-        "min-w-[14rem] max-w-[20rem] overflow-y-auto overscroll-contain rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md",
-        className,
-      )}
+      className={cn(popoverClassName, "flex flex-col overflow-hidden")}
     >
-      {children(activeRef)}
+      <div
+        id={listboxId}
+        role="listbox"
+        aria-label={ariaLabel}
+        className="min-h-0 overflow-y-auto overscroll-contain"
+      >
+        {children(activeRef)}
+      </div>
+      {footer}
     </div>
   );
 }

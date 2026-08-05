@@ -159,16 +159,16 @@
       "clearTitle": "清除（走 CLI 自身登录）",
       "cliLogin": "走 CLI 自身登录",
       "label": "LLM 供应商",
+      "modelRequiredDescription": "该供应商未配置默认 Model，Pi 无法通过 --model 选中它。请先在「LLM 供应商」页面为其设置默认模型，再回来保存。",
+      "modelRequiredTitle": "该供应商未配置默认模型",
       "noMatchClaude": "未关联将走 claude CLI 自身登录态；如需通过本机代理转发请先新增 anthropic 类型供应商。",
       "noMatchCodex": "未关联将走 codex CLI 自身登录态；如需通过本机代理转发请先新增 openai-response 类型供应商。",
+      "noMatchPiAgent": "未关联将走 pi CLI 自身登录态；如需绑定自定义供应商请先新增 LLM 供应商。",
       "noMatchTitle": "没有匹配类型的 LLM 供应商",
       "noModel": "（未选模型）",
       "noneDescription": "请先到「LLM 供应商」页面新增一个，再回来配置后端。",
       "noneTitle": "暂无 LLM 供应商",
       "optionalSuffix": "· 可选",
-      "piAgentDescription": "Pi Agent 会读取本机 Pi 配置与认证，不关联 Agentre LLM Provider。",
-      "piAgentSource": "使用 ~/.pi/agent",
-      "piAgentTitle": "Pi Agent 独立配置",
       "placeholderOptional": "不关联（走 CLI 自身登录）",
       "placeholderRequired": "请选择 LLM 供应商",
       "selectProvider": "选择供应商",
@@ -458,6 +458,7 @@
       "label": "连接中断,重连中 · 远端仍在运行"
     },
     "errorCard": {
+      "continue": "继续",
       "message": "Agent 调用失败：{{text}}",
       "regenerate": "↻ 重新生成"
     },
@@ -583,7 +584,7 @@
     },
     "regenerateDialog": {
       "confirm": "确认重新生成",
-      "description": "这条回复及它之后的所有消息会被丢弃，agent 会基于上一条 user 消息重新生成新的回复。",
+      "description": "重新生成会永久丢失这条回复及之后的所有会话内容，且无法恢复。agent 会基于上一条 user 消息生成新的回复。",
       "title": "重新生成回复"
     },
     "renameDialog": {
@@ -2233,6 +2234,11 @@
       "on": "开",
       "off": "关"
     }
+  },
+  "localCommandHistory": {
+    "aria": "Shell 命令历史",
+    "clearCurrentScope": "清空当前目录历史",
+    "clearFailed": "无法清空命令历史，请重试。"
   },
   "localCommand": {
     "localChip": "本地命令",

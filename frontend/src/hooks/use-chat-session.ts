@@ -46,7 +46,23 @@ export function useChatSession(sessionId: number) {
     setLoading(true);
     setError(null);
     try {
-      const resp = await LoadChatSession({ sessionId });
+      const startedDoneTick =
+        useSessionStatusStore.getState().statuses.get(sessionId)?.doneTick ?? 0;
+      let resp = await LoadChatSession({ sessionId });
+      const returnedDoneTick =
+        useSessionStatusStore.getState().statuses.get(sessionId)?.doneTick ?? 0;
+      if (returnedDoneTick > startedDoneTick) {
+        clientLog.warn(
+          "use-chat-session",
+          "reloading session because a turn finished during LoadChatSession",
+          {
+            sessionId,
+            startedDoneTick,
+            returnedDoneTick,
+          },
+        );
+        resp = await LoadChatSession({ sessionId });
+      }
       setSession(resp.session);
       // loadedMessages 可能在下方 activeStream 分支被替换(剥离 overlay pending
       // tool_approval 块),setMessages 统一挪到该分支之后执行。

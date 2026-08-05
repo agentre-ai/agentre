@@ -76,6 +76,7 @@ describe("ChatTranscript live re-render isolation", () => {
         agentColor="agent-1"
         agentName="A"
         messages={messages}
+        onStopLocalCommand={() => undefined}
         streaming
       />
     );

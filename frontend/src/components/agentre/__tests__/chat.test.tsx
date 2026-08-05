@@ -38,6 +38,7 @@ import {
   formatResetIn,
 } from "@/components/agentre/chat";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
+import { useLocalCommandsStore } from "@/stores/local-commands-store";
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
 function renderTranscriptWithSubagent() {
@@ -409,6 +410,35 @@ describe("ChatComposer context meter", () => {
     const fill = progress.firstElementChild;
     expect(fill).toHaveClass("bg-status-waiting");
     expect(fill).toHaveStyle({ width: "80%" });
+  });
+});
+
+describe("ChatTranscript local command lifecycle controls", () => {
+  it("Given ChatPanel supplies a stop callback, When a local-command row renders, Then the card delegates its terminal id through transcript context", () => {
+    const onStopLocalCommand = vi.fn();
+    useLocalCommandsStore.getState().start({
+      id: "terminal-local-1",
+      sessionId: 1,
+      command: "sleep 30",
+      createdAt: 1,
+    });
+    try {
+      render(
+        <ChatTranscript
+          agentColor="agent-1"
+          agentName="A"
+          messages={[]}
+          onStopLocalCommand={onStopLocalCommand}
+          sessionId={1}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
+      expect(onStopLocalCommand).toHaveBeenCalledTimes(1);
+      expect(onStopLocalCommand).toHaveBeenCalledWith("terminal-local-1");
+    } finally {
+      useLocalCommandsStore.setState({ entries: {} });
+    }
   });
 });
 
@@ -1193,8 +1223,9 @@ describe("ChatTranscript block-level virtualization", () => {
 // 特征化测试:钉住 transcript 行模型重构会触碰、但此前无直接覆盖的现状行为
 // (ErrorCard / RetryNoticeCard / 虚拟化路径下的 indicator·banner·空占位行)。
 describe("ChatTranscript message tail attachments", () => {
-  it("Given an assistant message with errorText, When rendered, Then the ErrorCard shows and regenerate passes the message id", () => {
+  it("Given an assistant message with errorText, When rendered, Then the ErrorCard offers regenerate and continue actions", () => {
     const calls: number[] = [];
+    const continueCalls: number[] = [];
     const failed = {
       ...textMessage(7, "assistant", "partial output"),
       errorText: "api timeout",
@@ -1205,6 +1236,7 @@ describe("ChatTranscript message tail attachments", () => {
         agentColor="agent-1"
         agentName="A"
         messages={[failed]}
+        onContinue={(messageId) => continueCalls.push(messageId)}
         onRerun={(messageId) => calls.push(messageId)}
       />,
     );
@@ -1214,6 +1246,8 @@ describe("ChatTranscript message tail attachments", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Regenerate/ }));
     expect(calls).toEqual([7]);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(continueCalls).toEqual([7]);
   });
 
   it("Given an errorText assistant on the virtualized path, When its row mounts, Then the ErrorCard mounts with it", async () => {

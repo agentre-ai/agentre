@@ -52,6 +52,23 @@ describe("chat-streams-store", () => {
     expect(s!.liveBlocks).toEqual([]);
   });
 
+  it("patchLiveUsage atomically applies the context window carried by usage", () => {
+    const { openStream, patchLiveUsage } = useChatStreamsStore.getState();
+    openStream(baseStream(7));
+
+    const usage = {
+      messageId: 1,
+      promptTokens: 1200,
+      totalInputTokens: 3600,
+      contextWindow: 258000,
+    };
+    patchLiveUsage(7, 1, usage);
+
+    const s = live(7)!;
+    expect(s.liveUsage).toEqual(usage);
+    expect(s.liveContextWindow).toBe(258000);
+  });
+
   it("appendLiveText appends to liveDelta (not yet frozen)", () => {
     const { openStream, appendLiveText } = useChatStreamsStore.getState();
     openStream(baseStream(7));

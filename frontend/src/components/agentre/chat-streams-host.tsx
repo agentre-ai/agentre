@@ -319,8 +319,8 @@ export function ChatStreamsHost(): React.ReactElement | null {
           return;
         }
         case "usage":
-          // turn 内每次模型 API call 边界后端推一条 per-call usage 快照；写到
-          // LiveStream.liveUsage 上让 Composer 进度条实时刷新。不动 liveRetry：
+          // turn 内每次模型 API call 边界后端推一条 per-call usage 快照；store
+          // 原子写 liveUsage + 可选 contextWindow，让 Composer 实时刷新。不动 liveRetry：
           // usage 帧本身不算「正在重试」的成功信号（chunk/tool_use 才算）。
           if (!ev.usage) return;
           patchLiveUsage(sessionId, assistantMessageId, ev.usage);

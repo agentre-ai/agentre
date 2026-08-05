@@ -1075,21 +1075,10 @@ func TestIntegration_RejectedRuntimeCallDoesNotSeizeSessionOwnership(t *testing.
 	_ = drainRuntimeEvents(t, events, 5*time.Second)
 }
 
-// TestIntegration_SubmitToolPermissionOnUnownedHandlerIsNotReportedAsDelivered 回归:
-// 提交工具审批落到一个**不拥有该会话**的 RuntimeHandlers 时,daemon 不能把它折成成功。
-//
-// 生产形态(评审在真环境证过):一台桌面端同时握着 2-3 条同指纹连接(连接池租约 /
-// 设备监视心跳 / 刷新探测)。registry 是全局一份,而每条新连接的 bindConn 都把 13 个
-// runtime.* 重新 Register 一遍(覆盖),所以只要**任意**一条连接在会话开跑之后接入,
-// 此后所有 runtime.* 就都派发到它那张空会话表的 handler 上。
-//
-// 此时 submitToolPermission 解不出会话 → ErrNoActiveTurn,若被 R8 的幂等一并折成
-// wire.OK:错误到不了 wire,桌面端 callSession 的「重挂后重试」永不触发,客户端把
-// 「已送达」报给前端,而没有任何 waiter 被回答 —— 叠加 R9 的不设过期,会话永久挂死,
-// 没有错误、没有 seq 跳号。所以这里钉住两层:daemon 那一层必须如实报错、且 backend
-// 一次也没收到;桌面端那一层(真 *remote.Runtime,重挂重试原封不动)必须因此把这条
-// 决策真的送到 waiter 手上。
-func TestIntegration_SubmitToolPermissionOnUnownedHandlerIsNotReportedAsDelivered(t *testing.T) {
+// TestIntegration_SameDeviceHeartbeatDoesNotStealRuntimeHandler 回归:一台桌面端同时握着
+// 连接池租约 / 设备监视心跳等多条同指纹连接时,后接入的连接有自己的私有 registry,
+// 不能覆盖发起会话那条连接的 RuntimeHandlers。工具审批仍须由原连接真正送到 waiter。
+func TestIntegration_SameDeviceHeartbeatDoesNotStealRuntimeHandler(t *testing.T) {
 	gate := make(chan struct{})
 	be := &approvalBackendRunner{
 		before: []agentruntime.Event{agentruntime.TextDelta{Text: "before"}},
@@ -1112,26 +1101,22 @@ func TestIntegration_SubmitToolPermissionOnUnownedHandlerIsNotReportedAsDelivere
 	events, _ := rig.startRunOn(t, rt, 803)
 	awaitText(t, events, "before") // 会话确实在跑,推送落在发起它的这条连接上
 
-	// 设备监视心跳那条连接接入并留着 —— 它的 bindConn 覆盖了 registry 里的 runtime.*。
+	// 设备监视心跳那条连接接入并留着；它的 bindConn 只改自己的私有 registry。
 	rig.connectSameDevice(t)
 
-	// 第一层:裸 RPC 直接问 daemon 要答案。提交仍走**发起会话的那条**连接(真机上就是
-	// 连接池那条),但派发已经不在它手里了 —— daemon 必须报错,而不是静默成功。
+	// 裸 RPC 仍走发起会话的连接，必须落到原 RuntimeHandlers 并真正回答 waiter。
 	var ok wire.OK
 	err := callRig(t, rig.cli, wire.MethodSubmitToolPermission,
 		wire.SubmitToolPermissionParams{SessionID: 803, RequestID: "p-0", Allow: true}, &ok)
-	require.Error(t, err,
-		"会话还在跑却没落到拥有它的 handler 上:错误必须传回客户端让重挂后重试生效,不能静默成功")
-	require.ErrorIs(t, wire.FromJSONRPCError(err), agentruntime.ErrNoActiveTurn,
-		"过线错误码必须仍是 ErrNoActiveTurn —— 桌面端 callSession 只认它才会重挂重试")
-	assert.Empty(t, be.deliveredIDs(), "报错的这一次没有任何 waiter 被回答")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"p-0"}, be.deliveredIDs(),
+		"后接入的同设备连接不得偷走原连接的 runtime handler")
 
-	// 第二层:同样的处境交给真 *remote.Runtime。它自己重挂一次再重试,所以调用方看到
-	// 成功 —— 而这一次是**真的**送到了 backend,不是 daemon 折出来的成功。
+	// 真 *remote.Runtime 也沿用同一连接直接送达，不应触发重挂。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	require.NoError(t, rt.SubmitToolPermission(ctx, 803, "p-1", true, false, ""))
-	assert.Equal(t, []string{"p-1"}, be.deliveredIDs(),
+	assert.Equal(t, []string{"p-0", "p-1"}, be.deliveredIDs(),
 		"桌面端报了成功,waiter 就必须真的被回答 —— 这两件事分家就是那个永久挂死")
 
 	close(gate)

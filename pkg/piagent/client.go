@@ -14,6 +14,8 @@ import (
 	"github.com/cago-frame/agents/provider"
 )
 
+const maxRPCFrameBytes = 16 << 20
+
 type Client struct {
 	binary       string
 	cwd          string
@@ -63,13 +65,26 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	if err != nil {
 		return nil, err
 	}
-	sessionID, err := readSessionID(ctx, proc, c.session)
+	state, err := readSessionState(ctx, proc, c.session)
 	if err != nil {
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
 	}
 	stream := newStream(proc, c.killGrace)
-	stream.setSessionID(sessionID)
+	stream.setSessionID(state.SessionID)
+	if state.Model != nil {
+		stream.setContextWindow(state.Model.ContextWindow)
+	}
+	// Ask Pi for its authoritative model window before the first prompt. The
+	// response is optional and intentionally not awaited: older/degraded RPC
+	// implementations must not delay or block the actual turn.
+	stream.markInitialSessionStatsPending()
+	if err := stream.send(ctx, map[string]any{
+		"id": initialSessionStatsRequestID, "type": "get_session_stats",
+	}); err != nil {
+		_ = stream.Close(context.Background())
+		return nil, err
+	}
 	frame := map[string]any{"type": "prompt", "message": prompt}
 	if imgs := imagesToWire(spec.images); len(imgs) > 0 {
 		frame["images"] = imgs
@@ -114,13 +129,13 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	sessionID, err := readSessionID(ctx, proc, c.session)
+	state, err := readSessionState(ctx, proc, c.session)
 	if err != nil {
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
 	}
 	stream := newStream(proc, c.killGrace)
-	stream.setSessionID(sessionID)
+	stream.setSessionID(state.SessionID)
 	if err := stream.send(ctx, map[string]any{"type": "compact"}); err != nil {
 		_ = stream.Close(context.Background())
 		return nil, err
@@ -131,10 +146,10 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 
 func (c *Client) Close(_ context.Context) error { return nil }
 
-func readSessionID(ctx context.Context, proc *rpcProcess, expected string) (string, error) {
+func readSessionState(ctx context.Context, proc *rpcProcess, expected string) (sessionStateWire, error) {
 	const requestID = "session-state"
 	if err := proc.writeJSON(map[string]any{"id": requestID, "type": "get_state"}); err != nil {
-		return "", err
+		return sessionStateWire{}, err
 	}
 	for proc.lines.Scan() {
 		if proc.rawSink != nil {
@@ -142,7 +157,7 @@ func readSessionID(ctx context.Context, proc *rpcProcess, expected string) (stri
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return sessionStateWire{}, ctx.Err()
 		default:
 		}
 		var response rpcResponse
@@ -153,23 +168,23 @@ func readSessionID(ctx context.Context, proc *rpcProcess, expected string) (stri
 			continue
 		}
 		if !response.Success {
-			return "", failureResponseError(response)
+			return sessionStateWire{}, failureResponseError(response)
 		}
 		var state sessionStateWire
 		if err := json.Unmarshal(response.Data, &state); err != nil {
-			return "", fmt.Errorf("piagent decode get_state data: %w", err)
+			return sessionStateWire{}, fmt.Errorf("piagent decode get_state data: %w", err)
 		}
-		sessionID := strings.TrimSpace(state.SessionID)
-		if sessionID == "" {
-			return "", errors.New("piagent: get_state returned empty session id")
+		state.SessionID = strings.TrimSpace(state.SessionID)
+		if state.SessionID == "" {
+			return sessionStateWire{}, errors.New("piagent: get_state returned empty session id")
 		}
 		expected = strings.TrimSpace(expected)
-		if expected != "" && !looksLikeSessionPath(expected) && sessionID != expected {
-			return "", fmt.Errorf("piagent: get_state returned unexpected session id %q, want %q", sessionID, expected)
+		if expected != "" && !looksLikeSessionPath(expected) && state.SessionID != expected {
+			return sessionStateWire{}, fmt.Errorf("piagent: get_state returned unexpected session id %q, want %q", state.SessionID, expected)
 		}
-		return sessionID, nil
+		return state, nil
 	}
-	return "", awaitProcessExitOrScanError(ctx, proc)
+	return sessionStateWire{}, awaitProcessExitOrScanError(ctx, proc)
 }
 
 func looksLikeSessionPath(value string) bool {
@@ -195,7 +210,7 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 		stderrDone: make(chan struct{}),
 		done:       make(chan struct{}),
 	}
-	p.lines.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	p.lines.Buffer(make([]byte, 0, 64*1024), maxRPCFrameBytes)
 	go func() {
 		defer close(p.stderrDone)
 		_, _ = io.Copy(p.stderr, h.Stderr())

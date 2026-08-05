@@ -129,10 +129,12 @@ type LookupModelResponse struct {
 	MaxOutput     int    `json:"maxOutput"`
 }
 
-// PreviewModelsRequest 在 provider 尚未落库时按用户填写的临时凭证拉取模型列表。
+// PreviewModelsRequest 按用户填写的临时凭证拉取模型列表。
 //
-// 用途：新建表单里点「获取模型」时，立刻给用户一个可选择的下拉。
+// ID 非零表示编辑已有 provider；此时 APIKey 留空会沿用已保存凭证，其余草稿
+// 字段仍按当前表单值请求，供保存前验证。
 type PreviewModelsRequest struct {
+	ID      int64  `json:"id"`
 	Type    string `json:"type" binding:"required"`
 	APIKey  string `json:"apiKey"`
 	BaseURL string `json:"baseUrl"`

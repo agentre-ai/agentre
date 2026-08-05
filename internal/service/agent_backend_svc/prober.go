@@ -3,6 +3,7 @@ package agent_backend_svc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentprovider"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/cliprober"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 )
@@ -122,6 +124,10 @@ func (cliProber) Run(ctx context.Context, b *agent_backend_entity.AgentBackend, 
 		return "", err
 	}
 	model := resolveCLIProbeModel(b, deps)
+	extensions, env, model, err := buildPiAgentProviderProbe(ctx, b, env, model)
+	if err != nil {
+		return "", err
+	}
 	resp, err := cliprober.Probe(ctx, cliprober.ProbeRequest{
 		Type:         b.Type,
 		CLIPath:      b.CLIPath,
@@ -130,11 +136,47 @@ func (cliProber) Run(ctx context.Context, b *agent_backend_entity.AgentBackend, 
 		Model:        model,
 		Env:          env,
 		CodexConfigs: configs,
+		Extensions:   extensions,
 	})
 	if err != nil {
 		return "", err
 	}
 	return resp.Text, nil
+}
+
+// buildPiAgentProviderProbe 为绑定供应商的 piagent 装配连通性探测参数（设计决策 #6 /
+// agent-backend.md §2.3 不变量：Test 与 chat run 同一装配规则，不漂移）：
+//   - provider 必须存在且 active（仿 builtinProber 的校验）；
+//   - 物化 provider 扩展（piagent.MaterializeProviderExtension，与 chat run 同源）；
+//   - env 在 buildPiAgentEnv 产出的 base 之上叠加 AGENTRE_PI_API_KEY_*；
+//   - --model 覆盖为 agentre-<key>/<model>（盖掉 buildPiAgentProbeModel 的 ""）。
+//
+// 未绑定供应商的 piagent 保持现状：原样返回入参，不注入任何东西。
+func buildPiAgentProviderProbe(ctx context.Context, b *agent_backend_entity.AgentBackend, env map[string]string, model string) (extensions []string, envOut map[string]string, modelOut string, err error) {
+	if b == nil || !b.IsPiAgent() || b.LLMProviderKey == "" {
+		return nil, env, model, nil
+	}
+	p, err := llm_provider_repo.LLMProvider().FindByKey(ctx, b.LLMProviderKey)
+	if err != nil {
+		return nil, env, model, err
+	}
+	if p == nil || !p.IsActive() {
+		return nil, env, model, errors.New("llm provider missing or inactive")
+	}
+	// APIKey 空 → 配置错误（与 runtime.go 的检查一致：Test 与 chat run 同一失败路径，
+	// 不 spawn Pi；消息只含 provider key，不含密钥）。
+	if strings.TrimSpace(p.APIKey) == "" {
+		return nil, env, model, fmt.Errorf("llm provider %q has empty APIKey", p.ProviderKey)
+	}
+	extPath, err := piagent.MaterializeProviderExtension(p)
+	if err != nil {
+		return nil, env, model, err
+	}
+	providerModel, err := agentruntime.PiAgentProviderModelName(p)
+	if err != nil {
+		return nil, env, model, err
+	}
+	return []string{extPath}, agentruntime.BuildPiAgentProviderEnv(env, p), providerModel, nil
 }
 
 func buildPiAgentProbeModel(*agent_backend_entity.AgentBackend) string {
@@ -144,7 +186,9 @@ func buildPiAgentProbeModel(*agent_backend_entity.AgentBackend) string {
 // resolveCLIProbeModel 选 Test 连通性下发给 CLI 的模型,与 chat-path
 // claudecode/session.go::ccBuildClientOpts 同优先级,避免 Test 与实际 chat run 漂移
 // (agent-backend.md §2.3 不变量):provider/gateway 模型(deps.Model) → claudecode 后端
-// DefaultModel(走 CLI 登录态时的自定义模型) → ""(CLI 默认)。piagent 走自己的解析。
+// DefaultModel(走 CLI 登录态时的自定义模型) → ""(CLI 默认)。piagent 未绑定时返回空
+// (走 CLI 默认);绑定供应商时 --model 由 buildPiAgentProviderProbe 覆盖为
+// agentre-<key>/<model>。
 func resolveCLIProbeModel(b *agent_backend_entity.AgentBackend, deps ProbeDeps) string {
 	if b.IsPiAgent() {
 		return buildPiAgentProbeModel(b)

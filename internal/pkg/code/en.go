@@ -37,6 +37,7 @@ var enUS = map[int]string{
 	AgentBackendGatewayUnavailable:     "Local HTTP gateway is not running; please enable it in settings",
 	AgentBackendInvalidReasoningEffort: "Invalid reasoning effort; must be one of low / medium / high / xhigh / max, or empty",
 	AgentBackendInvalidDevice:          "The device this Agent backend is bound to does not exist or is offline",
+	AgentBackendProviderModelRequired:  "The bound LLM provider must have a default Model set",
 
 	AppSettingNotFound:      "App setting not found",
 	AppSettingInvalidPort:   "Port must be an integer between 0 and 65535",

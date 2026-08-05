@@ -557,8 +557,7 @@ func (d *Daemon) registerMethods() {
 
 	// runtime.* RPC 族 1:1 镜像 agentruntime.Runtime + 7 个可选子接口,
 	// 把远端 agentre 当成「本地」backend 跑。Handler 在 bindConn
-	// 里按连接挂载（要 NotifierPort）。MVP 单客户端假设下 registry 是全局,
-	// 多客户端时切 per-Conn registry。
+	// 里按连接挂载到 LANServer 为每条连接克隆的私有 registry（要 NotifierPort）。
 
 	// remotefs.Register 接受已构造好的 rpc.HandlerFunc,泛型 wrapGuarded[Req,Res] 的
 	// 签名约束与其不匹配,改用 WrapFunc 闭包注入 requireAuth。
@@ -611,7 +610,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 // bindConn is called by LANServer once per accepted WebSocket connection.
-// 挂载 runtime.* 13 个 RPC 到共享 registry。RuntimeHandlers 持有 per-session backend
+// 挂载 runtime.* 13 个 RPC 到这条连接的私有 registry。RuntimeHandlers 持有 per-session backend
 // type cache,所以是 per-conn 构造的;会话通知**不**推回「这条」连接 —— 它在发送那一刻
 // 按会话解析属主连接(见 notifierForPeer / connRegistry),因为 fanout goroutine 会活过
 // 这条连接。
@@ -620,6 +619,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 // RPC),所以这里**不**把连接登记成推送目标 —— 登记只发生在鉴权成功那一刻,会话认领
 // 更要等到它真为某条会话发 runtime.*,否则一条从不认证的连接就能顶掉正主。
 func (d *Daemon) bindConn(c *rpc.Conn) {
+	reg := c.Registry()
 	n := notifier.New(c)
 	rh := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
 		// 会话通知的推送目标在发送那一刻按会话解析,不捕获 n:RuntimeHandlers 是
@@ -636,7 +636,7 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	// runtime.* 全族都过 trackSessionOwner:哪条连接为某会话发了 runtime.*,该会话的
 	// 通知此后就推给它(见 connRegistry 的接管规则)。
 	regRuntime := func(method string, h rpc.HandlerFunc) {
-		d.registry.Register(method, d.trackSessionOwner(h))
+		reg.Register(method, d.trackSessionOwner(h))
 	}
 	regRuntime(wire.MethodCapabilities, wrapGuarded(rh.Capabilities))
 	regRuntime(wire.MethodRun, wrapGuarded(rh.Run))
@@ -655,7 +655,7 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	// 显式接管。它是补齐族里唯一一个 per-conn 注册的方法,因为它的语义就是「**这条**
 	// 连接此后消费这条会话」:改推送目标要知道是哪条连接,让控制 RPC 也跟着回来要知道
 	// 是哪个 RuntimeHandlers。
-	d.registry.Register(wire.MethodSessionAttach, d.attachSession(rh))
+	reg.Register(wire.MethodSessionAttach, d.attachSession(rh))
 
 	// Terminal: local PTY backend; per-conn emitter pushes terminal.data /
 	// terminal.exit events back over this ws connection (same per-conn rationale
@@ -665,10 +665,10 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 		_ = n.Notify(name, payload)
 	})
 	termH := handlers.NewTerminalHandlers(termBackend, termEmitter)
-	d.registry.Register("terminal.open", wrapGuarded(termH.Open))
-	d.registry.Register("terminal.write", wrapGuarded(termH.Write))
-	d.registry.Register("terminal.resize", wrapGuarded(termH.Resize))
-	d.registry.Register("terminal.close", wrapGuarded(termH.Close))
+	reg.Register("terminal.open", wrapGuarded(termH.Open))
+	reg.Register("terminal.write", wrapGuarded(termH.Write))
+	reg.Register("terminal.resize", wrapGuarded(termH.Resize))
+	reg.Register("terminal.close", wrapGuarded(termH.Close))
 	// When this connection drops, kill the PTYs it opened — otherwise the
 	// remote shells (and whatever they run) leak until daemon shutdown.
 	go func() {

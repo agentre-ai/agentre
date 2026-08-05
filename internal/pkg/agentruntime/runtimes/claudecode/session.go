@@ -249,6 +249,7 @@ func ccBuildClientOpts(spec ccLaunchSpec, binary string) []claudecode.Option {
 		claudecode.WithBinary(binary),
 		claudecode.WithCwd(spec.Cwd),
 		claudecode.WithEnv(env),
+		claudecode.WithSettingsEnv(env),
 		claudecode.WithSystemPrompt(spec.Req.SystemPrompt),
 		// 启用 stdio control protocol:把 AskUserQuestion 这种交互式工具的
 		// permission gate 从 CLI 的 TUI 拉到 agentre UI;headless 下不开

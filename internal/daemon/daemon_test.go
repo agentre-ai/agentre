@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/daemon/notifier"
 	"github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
@@ -595,6 +596,85 @@ func TestDaemon_BootShutdown(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not return after cancel")
 	}
+}
+
+func TestDaemon_TwoConnectionsKeepTerminalHandlersIsolated(t *testing.T) {
+	dataDir, err := os.MkdirTemp("", "agentred-isolation-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dataDir) })
+	d, err := New(Options{DataDir: dataDir, LANHost: "127.0.0.1", LANPort: 0})
+	require.NoError(t, err)
+	daemonCtx, stopDaemon := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(daemonCtx) }()
+	defer func() {
+		stopDaemon()
+		select {
+		case runErr := <-errCh:
+			assert.NoError(t, runErr)
+		case <-time.After(3 * time.Second):
+			t.Error("daemon did not stop within 3s")
+		}
+	}()
+	require.Eventually(t, func() bool {
+		d.mu.RLock()
+		ready := d.lan != nil && d.lan.Addr() != ""
+		d.mu.RUnlock()
+		return ready
+	}, 2*time.Second, 10*time.Millisecond)
+
+	pairBody := readLocalPair(t, d)
+	pairCode, _ := pairBody["code"].(string)
+	require.Len(t, pairCode, 6)
+
+	d.mu.RLock()
+	lanURL := d.lan.URL()
+	d.mu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	clientA, err := client.Dial(ctx, client.Options{URL: lanURL})
+	require.NoError(t, err)
+	defer func() { _ = clientA.Close() }()
+	var pairResp rpc.PairResult
+	require.NoError(t, clientA.Call(ctx, "auth.pair", rpc.PairParams{
+		Code:              pairCode,
+		DeviceName:        "connection-a",
+		DeviceFingerprint: "sha256:shared-device",
+	}, &pairResp))
+
+	clientB, err := client.Dial(ctx, client.Options{URL: lanURL})
+	require.NoError(t, err)
+	defer func() { _ = clientB.Close() }()
+	require.NoError(t, clientB.Call(ctx, "auth.connect", rpc.ConnectParams{
+		DeviceFingerprint:         "sha256:shared-device",
+		DeviceToken:               pairResp.DeviceToken,
+		ExpectedDaemonFingerprint: pairResp.DaemonFingerprint,
+	}, nil))
+
+	require.NoError(t, clientA.Call(ctx, "health.ping", nil, nil))
+	require.NoError(t, clientB.Call(ctx, "health.ping", nil, nil))
+
+	// Filling A's bounded pending-close tombstones exercises A's
+	// TerminalHandlers without opening a real platform PTY. B must retain a
+	// fresh handler set even after A reaches its own capacity and disconnects.
+	var capacityErr error
+	for i := 0; i < 1024 && capacityErr == nil; i++ {
+		capacityErr = clientA.Call(ctx, "terminal.close", map[string]any{
+			"terminalId":        fmt.Sprintf("connection-a-%d", i),
+			"cancelPendingOpen": true,
+		}, nil)
+	}
+	require.Error(t, capacityErr)
+	require.Contains(t, capacityErr.Error(), "capacity")
+	require.NoError(t, clientA.Close())
+	require.NoError(t, clientB.Call(ctx, "terminal.close", map[string]any{
+		"terminalId":        "connection-b-after-a-close",
+		"cancelPendingOpen": true,
+	}, nil))
+
+	_, err = d.registry.Dispatch(context.Background(), "terminal.close", nil)
+	require.ErrorIs(t, err, rpc.ErrMethodNotFound, "bindConn must not mutate the bootstrap registry")
 }
 
 func TestDaemon_IPCStatus(t *testing.T) {
