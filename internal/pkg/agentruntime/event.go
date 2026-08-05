@@ -32,6 +32,7 @@ type ToolCall struct {
 	Input            json.RawMessage
 	Canonical        canonical.CanonicalTool
 	ParentToolCallID string
+	SubagentRunID    string
 }
 
 // ToolResult 工具调用结果。Meta 携带 backend 在 tool_result 旁吐的结构化元数据
@@ -45,6 +46,7 @@ type ToolResult struct {
 	Content          string
 	IsError          bool
 	ParentToolCallID string
+	SubagentRunID    string
 	Meta             json.RawMessage
 }
 

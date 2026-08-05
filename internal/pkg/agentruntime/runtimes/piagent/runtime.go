@@ -198,6 +198,7 @@ func (a *activeSession) consumePendingSteer(text string) (agentruntime.ConsumedS
 func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s stream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *activeSession) {
 	var usage *provider.Usage
 	var stopErr error
+	trackers := make(map[string]*subagentTracker)
 	for s.Next() {
 		raw := s.Event()
 		if raw.Kind == pkgpi.EventUserMessage {
@@ -222,6 +223,9 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 		if raw.Kind == pkgpi.EventDone {
 			// pkg/piagent 用 EventDone 标记底层流终止；runtime 在 loop 结束后统一
 			// emit agentruntime.Done，避免向 chat_svc 重复发送 message_end。
+			continue
+		}
+		if handleSubagentToolEvent(raw, out, trackers) {
 			continue
 		}
 		if raw.Model != "" {
@@ -258,6 +262,57 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 	}
 	logger.Ctx(ctx).Info("piagent runtime: turn done", piTurnLogFields(req, cwd, result, nil)...)
 	out <- agentruntime.Done{}
+}
+
+func handleSubagentToolEvent(raw pkgpi.Event, out chan<- agentruntime.Event, trackers map[string]*subagentTracker) bool {
+	switch raw.Kind {
+	case pkgpi.EventPreToolUse:
+		tracker, spawn := defaultSubagentSelector.selectCandidate(raw.Tool.Name, raw.Tool.ID, raw.Tool.Input)
+		call := agentruntime.ToolCall{
+			ID: raw.Tool.ID, Name: raw.Tool.Name, Input: raw.Tool.Input,
+			Canonical: recognizeCanonical(raw.Tool.Name, raw.Tool.Input),
+		}
+		if tracker != nil {
+			call.Canonical = *spawn
+			trackers[raw.Tool.ID] = tracker
+		}
+		out <- call
+		if tracker != nil {
+			out <- agentruntime.SubagentStarted{ToolCallID: raw.Tool.ID, Info: tracker.info()}
+		}
+		return true
+	case pkgpi.EventToolUseUpdate:
+		tracker := trackers[raw.Tool.ID]
+		if tracker == nil {
+			return true
+		}
+		events, changed := tracker.consumeUpdate(raw.Tool.PartialResult)
+		for _, event := range events {
+			out <- event
+		}
+		if changed {
+			out <- agentruntime.SubagentProgress{ToolCallID: raw.Tool.ID, Info: tracker.info()}
+		}
+		return true
+	case pkgpi.EventPostToolUse:
+		tracker := trackers[raw.Tool.ID]
+		if tracker == nil {
+			return false
+		}
+		events, changed := tracker.consumeFinal(raw.Tool.Details, raw.Tool.IsError, raw.Tool.Content)
+		for _, event := range events {
+			out <- event
+		}
+		if changed {
+			out <- agentruntime.SubagentProgress{ToolCallID: raw.Tool.ID, Info: tracker.info()}
+		}
+		out <- agentruntime.SubagentDone{ToolCallID: raw.Tool.ID, Info: tracker.info()}
+		delete(trackers, raw.Tool.ID)
+		out <- agentruntime.ToolResult{ToolCallID: raw.Tool.ID, Content: raw.Tool.Content, IsError: raw.Tool.IsError}
+		return true
+	default:
+		return false
+	}
 }
 
 func mapSessionError(err error) error {

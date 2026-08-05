@@ -89,6 +89,7 @@ type ToolUseEvent struct {
 	Name             string
 	Input            []byte
 	ParentToolCallID string
+	SubagentRunID    string
 	Subagent         *SubagentInfo
 }
 
@@ -102,6 +103,7 @@ type ToolResultEvent struct {
 	Content          string
 	IsError          bool
 	ParentToolCallID string
+	SubagentRunID    string
 	ResultMeta       []byte
 }
 
@@ -110,16 +112,36 @@ type ToolResultEvent struct {
 //
 // 字段含义见 claudecode.SubagentMeta。
 type SubagentInfo struct {
-	TaskID          string
-	SubagentType    string
-	Kind            string // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
-	TaskDescription string
-	Prompt          string
-	LastToolName    string
-	ToolUses        int
-	TotalTokens     int
-	DurationMs      int
-	Status          string // running | completed | failed | canceled (canceled 由 chat_svc 在 turn abort 收尾时推断,runtime 层不主动产出)
+	TaskID          string        `json:"taskId,omitempty"`
+	SubagentType    string        `json:"subagentType,omitempty"`
+	Kind            string        `json:"kind,omitempty"` // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
+	TaskDescription string        `json:"taskDescription,omitempty"`
+	Prompt          string        `json:"prompt,omitempty"`
+	LastToolName    string        `json:"lastToolName,omitempty"`
+	ToolUses        int           `json:"toolUses,omitempty"`
+	TotalTokens     int           `json:"totalTokens,omitempty"`
+	DurationMs      int           `json:"durationMs,omitempty"`
+	Status          string        `json:"status,omitempty"` // waiting | running | completed | failed | canceled | skipped | unknown
+	Mode            string        `json:"mode,omitempty"`
+	Runs            []SubagentRun `json:"runs,omitempty"`
+}
+
+// SubagentRun is one normalized child execution scoped by the outer tool call.
+// Legacy Claude producers may leave SubagentInfo.Runs empty.
+type SubagentRun struct {
+	ID             string `json:"id"`
+	Index          int    `json:"index"`
+	Agent          string `json:"agent,omitempty"`
+	Profile        string `json:"profile,omitempty"`
+	AgentSource    string `json:"agentSource,omitempty"`
+	Task           string `json:"task"`
+	RequestedModel string `json:"requestedModel,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Status         string `json:"status"`
+	LastToolName   string `json:"lastToolName,omitempty"`
+	ToolUses       int    `json:"toolUses,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	ErrorMessage   string `json:"errorMessage,omitempty"`
 }
 
 // ConsumedSteer is a queued mid-turn user message that the backend has now

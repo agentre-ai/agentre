@@ -40,7 +40,7 @@ func TestEvent_RoundTrip(t *testing.T) {
 		}},
 		{"tool_call_parent_subagent", ToolCall{
 			ID: "tu_3", Name: "Read",
-			ParentToolCallID: "tu_parent",
+			ParentToolCallID: "tu_parent", SubagentRunID: "run-0",
 		}},
 
 		// ToolResult
@@ -49,8 +49,8 @@ func TestEvent_RoundTrip(t *testing.T) {
 		}},
 		{"tool_result_error", ToolResult{
 			ToolCallID: "tu_1", Content: "oops", IsError: true,
-			ParentToolCallID: "tu_parent",
-			Meta:             json.RawMessage(`{"exitCode":1}`),
+			ParentToolCallID: "tu_parent", SubagentRunID: "run-0",
+			Meta: json.RawMessage(`{"exitCode":1}`),
 		}},
 
 		// SteerConsumed
@@ -105,6 +105,12 @@ func TestEvent_RoundTrip(t *testing.T) {
 			ToolCallID: "tu_task",
 			Info: SubagentInfo{
 				TaskID: "t1", LastToolName: "Read", ToolUses: 3, Status: "running",
+				Mode: "single",
+				Runs: []SubagentRun{{
+					ID: "run-0", Index: 0, Profile: "read-only", Task: "inspect",
+					RequestedModel: "requested", Model: "observed", Status: "running",
+					LastToolName: "Read", ToolUses: 3,
+				}},
 			},
 		}},
 		{"subagent_done", SubagentDone{
@@ -292,6 +298,24 @@ func TestSubagentStarted_KindRoundTrip(t *testing.T) {
 	got, err := UnmarshalEvent(b)
 	require.NoError(t, err)
 	assert.Equal(t, "local_bash", got.(SubagentStarted).Info.Kind)
+}
+
+func TestSubagentRuntimeContractsUseLowerCamelWireFields(t *testing.T) {
+	ev := SubagentProgress{ToolCallID: "outer", Info: SubagentInfo{
+		Mode: "single",
+		Runs: []SubagentRun{{ID: "run-0", Task: "inspect", Status: "running"}},
+	}}
+	b, err := json.Marshal(ev)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"kind":"subagent_progress",
+		"toolCallId":"outer",
+		"info":{"mode":"single","runs":[{"id":"run-0","index":0,"task":"inspect","status":"running"}]}
+	}`, string(b))
+
+	callBytes, err := json.Marshal(ToolCall{ID: "inner", ParentToolCallID: "outer", SubagentRunID: "run-0"})
+	require.NoError(t, err)
+	assert.Contains(t, string(callBytes), `"subagentRunId":"run-0"`)
 }
 
 // TestSubagentModel_KindRoundTrip 独立事件类型透传（不复用 SubagentProgress，见
