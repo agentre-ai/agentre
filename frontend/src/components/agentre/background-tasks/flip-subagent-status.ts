@@ -1,5 +1,7 @@
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
+type ChatBlockSubagentData = Omit<chat_svc.ChatBlockSubagent, "convertValues">;
+
 // flipSubagentStatusInMessages 在已持久化的 messages 里就地翻转 tool_use block 的
 // subagent.status(+ summary)。后台任务的完成是跨轮的(autonomous 轮携带
 // completedTask):完成事件到达时,发起它的主轮早已结束,那条 tool_use block 已从
@@ -27,15 +29,14 @@ export function flipSubagentStatusInMessages(
 // 的派遣卡早已从 liveBlocks 落进 messages —— store 的 mergeSubagentMeta 只翻 liveBlocks,
 // 合并必然落空,卡片上的工具数 / token 会一直停在派遣那一刻。
 //
-// 合并语义与 store 侧一致:后端 meta 字段全是 omitempty,这一帧没带的字段在 JSON 里直接
-// 缺席 → 展开时不会把已有值抹成 0/空。
+// 合并语义与 store 侧一致:runs 是完整快照，出现时整段替换；undefined/省略时保留旧值。
 //
 // 不可变更新:命中才返回新数组/新消息/新块引用,未命中(或空参)原样返回同一引用,
 // 让 React setState 跳过无谓 re-render。
 export function mergeSubagentMetaInMessages(
   messages: chat_svc.ChatMessage[],
   toolUseId: string,
-  meta: chat_svc.ChatBlockSubagent,
+  meta: ChatBlockSubagentData,
 ): chat_svc.ChatMessage[] {
   if (!toolUseId || !meta) return messages;
 
@@ -47,9 +48,14 @@ export function mergeSubagentMetaInMessages(
         return b;
       }
       blockHit = true;
+      const { runs, ...patch } = meta;
       return {
         ...b,
-        subagent: { ...b.subagent, ...meta },
+        subagent: {
+          ...b.subagent,
+          ...patch,
+          ...(runs !== undefined ? { runs } : {}),
+        },
       } as chat_svc.ChatBlock;
     });
     if (!blockHit) return m;

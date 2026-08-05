@@ -1,6 +1,7 @@
 // transcript-rows: chat transcript 的「block → 渲染项 → 虚拟行」纯函数层,零 React 依赖。
 // renderMessageBlocks 的配对状态机抽取到这里,让行级虚拟化(每个 RenderItem 一个
 // 虚拟行)能在不碰 JSX 的前提下单测配对 / 合并 / skip / FIFO / 归集 / key 稳定性。
+import type { AgentSpawnChildBlocks } from "@/components/agentre/canonical-tool/props";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
 import type { LocalCommandEntry } from "@/stores/local-commands-store";
 import type { chat_svc } from "../../../wailsjs/go/models";
@@ -34,6 +35,10 @@ export function isRenderablePlanBlock(block: ChatBlockData): boolean {
   return text.trim().length > 0 && steps.length === 0;
 }
 
+type MutableAgentSpawnChildBlocks = Omit<AgentSpawnChildBlocks, "byRun"> & {
+  byRun: Map<string, ChatBlockData[]>;
+};
+
 export type RenderItem =
   // streaming=true 标记这是「流式途中正在生长」的文本项 —— 用 StreamingMarkdown
   // 增量渲染(已定稿 block memo 跳过、只重解析活跃尾巴);持久化文本仍走整段 MarkdownText。
@@ -50,8 +55,8 @@ export type RenderItem =
       permissionBlock?: ChatBlockData;
       resultBlock?: ChatBlockData;
       toolBlock?: ChatBlockData;
-      // childBlocks 仅 canonical.agent.spawn 需要(parent-child 归集),其它工具留空。
-      childBlocks?: ChatBlockData[];
+      // childBlocks 仅 canonical.agent.spawn 需要(parent → run 归集),其它工具留空。
+      childBlocks?: AgentSpawnChildBlocks;
       type: "tool";
     }
   | {
@@ -97,14 +102,25 @@ export function buildRenderItems({
   liveThinkingStartedAt,
   liveBlocks = [],
 }: BuildRenderItemsArgs): VisibleRenderItem[] {
-  // 预扫一遍把 subagent 内部 block 归集到外层 Agent.tool_use_id;
-  // 主流程遇到 parentToolUseId 非空就 skip,避免被同级渲染。
-  const childrenByParent = new Map<string, ChatBlockData[]>();
+  // 预扫一遍把 subagent 内部 block 先按外层 tool_use_id,再按 run id 归集;
+  // 缺失 run id 的块进入 fallback,主流程仍会 skip,避免被同级渲染。
+  const childrenByParent = new Map<string, MutableAgentSpawnChildBlocks>();
   const collectChildren = (b: ChatBlockData) => {
     if (!b.parentToolUseId) return;
-    const arr = childrenByParent.get(b.parentToolUseId) ?? [];
-    arr.push(b);
-    childrenByParent.set(b.parentToolUseId, arr);
+    const grouped = childrenByParent.get(b.parentToolUseId) ?? {
+      all: [],
+      byRun: new Map<string, ChatBlockData[]>(),
+      fallback: [],
+    };
+    grouped.all.push(b);
+    if (b.subagentRunId) {
+      const runBlocks = grouped.byRun.get(b.subagentRunId) ?? [];
+      runBlocks.push(b);
+      grouped.byRun.set(b.subagentRunId, runBlocks);
+    } else {
+      grouped.fallback.push(b);
+    }
+    childrenByParent.set(b.parentToolUseId, grouped);
   };
   blocks.forEach(collectChildren);
   liveBlocks.forEach(collectChildren);
@@ -177,8 +193,12 @@ export function buildRenderItems({
           // 由 parent-child 归集传过去(AgentSpawnCard 内部渲染 STEPS 段)。
           const item: RenderItem = {
             childBlocks: b.toolUseId
-              ? (childrenByParent.get(b.toolUseId) ?? [])
-              : [],
+              ? (childrenByParent.get(b.toolUseId) ?? {
+                  all: [],
+                  byRun: new Map(),
+                  fallback: [],
+                })
+              : { all: [], byRun: new Map(), fallback: [] },
             toolBlock: b,
             type: "tool",
           };

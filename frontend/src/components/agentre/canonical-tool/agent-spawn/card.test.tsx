@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect } from "vitest";
 
 import { AgentSpawnCard, shortenModelName } from "./card";
@@ -512,6 +513,491 @@ describe("AgentSpawnCard", () => {
     const { container } = render(<AgentSpawnCard toolBlock={block} />);
     const details = expandCard(container);
     expect(within(details).queryByTestId("agent-spawn-meta-row")).toBeNull();
+  });
+});
+
+function normalizedSpawnBlock({
+  mode = "parallel",
+  runs,
+  status = "running",
+}: {
+  mode?: "single" | "parallel" | "chain";
+  runs: Record<string, unknown>[];
+  status?: string;
+}): ChatBlockData {
+  return {
+    type: "tool_use",
+    toolName: "subagent",
+    toolUseId: "toolu-parent",
+    canonical: {
+      kind: "agent.spawn",
+      agentSpawn: {
+        taskId: "toolu-parent",
+        mode,
+        runs: runs.map(
+          ({
+            id,
+            index,
+            agent,
+            profile,
+            agentSource,
+            task,
+            requestedModel,
+          }) => ({
+            id,
+            index,
+            agent,
+            profile,
+            agentSource,
+            task,
+            requestedModel,
+          }),
+        ),
+      },
+    },
+    subagent: { mode, runs, status },
+  } as unknown as ChatBlockData;
+}
+
+function groupedChildren(
+  entries: Array<{
+    runId?: string;
+    toolName: string;
+    toolUseId: string;
+    result?: string;
+    isError?: boolean;
+  }>,
+) {
+  const all: ChatBlockData[] = [];
+  const byRun = new Map<string, ChatBlockData[]>();
+  const fallback: ChatBlockData[] = [];
+  for (const entry of entries) {
+    const target = entry.runId ? (byRun.get(entry.runId) ?? []) : fallback;
+    const toolBlock = {
+      type: "tool_use",
+      toolName: entry.toolName,
+      toolUseId: entry.toolUseId,
+      subagentRunId: entry.runId,
+    } as ChatBlockData;
+    target.push(toolBlock);
+    all.push(toolBlock);
+    if (entry.result !== undefined) {
+      const resultBlock = {
+        type: "tool_result",
+        toolUseId: entry.toolUseId,
+        text: entry.result,
+        isError: entry.isError,
+        subagentRunId: entry.runId,
+      } as ChatBlockData;
+      target.push(resultBlock);
+      all.push(resultBlock);
+    }
+    if (entry.runId) byRun.set(entry.runId, target);
+  }
+  return { all, byRun, fallback };
+}
+
+describe("AgentSpawnCard normalized runs", () => {
+  it("Given one normalized run, When rendered, Then the legacy visual structure is reused with profile separate and observed model preferred", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [
+        {
+          id: "run-one",
+          index: 0,
+          profile: "review-profile",
+          task: "Review the authentication flow",
+          requestedModel: "haiku",
+          model: "claude-sonnet-4-5-20260101",
+          status: "completed",
+          summary: "Review complete",
+        },
+      ],
+    });
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={block}
+        resultBlock={
+          { type: "tool_result", text: "Top-level summary" } as ChatBlockData
+        }
+        childBlocks={groupedChildren([])}
+      />,
+    );
+
+    expect(screen.getByText("Agent")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-spawn-profile-badge")).toHaveTextContent(
+      "review-profile",
+    );
+    expect(screen.getByTestId("agent-spawn-model-badge")).toHaveTextContent(
+      "sonnet-4-5",
+    );
+    expect(
+      screen.queryByText("review-profile", {
+        selector: "[data-testid='agent-spawn-role-badge']",
+      }),
+    ).toBeNull();
+
+    const details = expandCard(container);
+    expect(within(details).getByText("TASK PROMPT")).toBeInTheDocument();
+    expect(
+      within(details).getByText("Review the authentication flow"),
+    ).toBeInTheDocument();
+    expect(within(details).getByText("Top-level summary")).toBeInTheDocument();
+    expect(within(details).queryByText("Review complete")).toBeNull();
+  });
+
+  it("Given a normalized single snapshot omits per-run status but has terminal outer status, When rendered, Then the card settles instead of falling back to running", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [
+        {
+          id: "run-one",
+          index: 0,
+          agent: "reviewer",
+          task: "Review",
+        },
+      ],
+    });
+    render(<AgentSpawnCard toolBlock={block} />);
+
+    expect(screen.getByText("DONE")).toBeInTheDocument();
+    expect(screen.queryByText("RUNNING")).toBeNull();
+    expect(
+      screen.getByTestId("agent-spawn-card").querySelector(".animate-spin"),
+    ).toBeNull();
+  });
+
+  it("Given a normalized single run without an outer result, When expanded, Then its observed output supplies the summary instead of an invented empty state", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [
+        {
+          id: "run-one",
+          index: 0,
+          agent: "reviewer",
+          task: "Review the authentication flow",
+          status: "completed",
+          summary: "Observed child output",
+        },
+      ],
+    });
+    const { container } = render(<AgentSpawnCard toolBlock={block} />);
+
+    const details = expandCard(container);
+    expect(
+      within(details).getByText("Observed child output"),
+    ).toBeInTheDocument();
+    expect(within(details).queryByText("No summary")).toBeNull();
+  });
+
+  it("Given parallel runs and fallback children, When expanded, Then ordered isolated groups expose translated statuses, badges, output and fallback steps", () => {
+    const block = normalizedSpawnBlock({
+      status: "partial",
+      runs: [
+        {
+          id: "run-wait",
+          index: 0,
+          agent: "scout",
+          agentSource: "project",
+          profile: "repo-reader",
+          task: "Inspect models",
+          requestedModel: "haiku",
+          status: "waiting",
+        },
+        {
+          id: "run-live",
+          index: 1,
+          agent: "reviewer",
+          agentSource: "user",
+          task: "Run tests",
+          requestedModel: "sonnet",
+          model: "claude-opus-5-20260101",
+          status: "running",
+        },
+        {
+          id: "run-done",
+          index: 2,
+          agent: "writer",
+          task: "Summarize",
+          status: "completed",
+          summary: "Found the relevant models.",
+        },
+        {
+          id: "run-failed",
+          index: 3,
+          agent: "checker",
+          task: "Check edge cases",
+          status: "failed",
+          errorMessage: "Tests failed",
+        },
+        {
+          id: "run-skipped",
+          index: 4,
+          agent: "planner",
+          task: "Plan follow-up",
+          status: "skipped",
+        },
+        {
+          id: "run-unknown",
+          index: 5,
+          agent: "auditor",
+          task: "Audit result",
+          status: "unknown",
+        },
+      ],
+    });
+    const children = groupedChildren([
+      {
+        runId: "run-live",
+        toolName: "Bash",
+        toolUseId: "shared-call",
+      },
+      {
+        runId: "run-done",
+        toolName: "Read",
+        toolUseId: "shared-call",
+        result: "read done",
+      },
+      { toolName: "Glob", toolUseId: "missing-run" },
+      { runId: "not-declared", toolName: "Grep", toolUseId: "unknown-run" },
+    ]);
+    const { container } = render(
+      <AgentSpawnCard toolBlock={block} childBlocks={children} />,
+    );
+
+    expect(screen.getByText("Agents")).toBeInTheDocument();
+    expect(screen.getByText("Parallel")).toBeInTheDocument();
+    expect(screen.getByText("4/6")).toBeInTheDocument();
+    expect(screen.getByText("PARTIAL")).toBeInTheDocument();
+
+    const details = expandCard(container);
+    const groups = within(details).getAllByTestId("agent-spawn-run-group");
+    expect(groups.map((group) => group.getAttribute("data-run-id"))).toEqual([
+      "run-wait",
+      "run-live",
+      "run-done",
+      "run-failed",
+      "run-skipped",
+      "run-unknown",
+    ]);
+    expect(within(groups[0]).getByText("project")).toBeInTheDocument();
+    expect(within(groups[0]).getByText("repo-reader")).toBeInTheDocument();
+    expect(within(groups[1]).getByText("opus-5")).toBeInTheDocument();
+    expect(
+      within(groups[2]).getByText("Found the relevant models."),
+    ).toBeInTheDocument();
+    expect(within(groups[3]).getByText("Tests failed")).toBeInTheDocument();
+    expect(within(groups[4]).getByText("SKIPPED")).toBeInTheDocument();
+    expect(within(groups[5]).getByText("UNKNOWN")).toBeInTheDocument();
+    expect(within(groups[1]).getByText("Bash")).toBeInTheDocument();
+    expect(within(groups[2]).getByText("Read")).toBeInTheDocument();
+    expect(within(groups[1]).queryByText("Read")).toBeNull();
+    const fallback = within(details).getByTestId("agent-spawn-fallback-steps");
+    expect(within(fallback).getByText("Glob")).toBeInTheDocument();
+    expect(within(fallback).getByText("Grep")).toBeInTheDocument();
+    expect(
+      within(fallback).getAllByTestId("agent-spawn-step-status"),
+    ).toHaveLength(2);
+    for (const fallbackStatus of within(fallback).getAllByTestId(
+      "agent-spawn-step-status",
+    )) {
+      expect(fallbackStatus).toHaveTextContent("UNKNOWN");
+    }
+    expect(fallback.querySelector(".animate-spin")).toBeNull();
+  });
+
+  it("Given chain runs complete, fail and skip in declaration order, When rendered, Then sequence and skipped work remain explicit without invented fields", () => {
+    const block = normalizedSpawnBlock({
+      mode: "chain",
+      status: "failed",
+      runs: [
+        {
+          id: "run-third",
+          index: 2,
+          agent: "planner",
+          task: "Plan follow-up",
+          status: "skipped",
+        },
+        {
+          id: "run-first",
+          index: 0,
+          agent: "scout",
+          task: "Inspect",
+          status: "completed",
+          summary: "Inspected",
+        },
+        {
+          id: "run-second",
+          index: 1,
+          agent: "reviewer",
+          task: "Review",
+          status: "failed",
+          errorMessage: "Review failed",
+        },
+      ],
+    });
+    const { container } = render(<AgentSpawnCard toolBlock={block} />);
+
+    expect(screen.getByText("Chain")).toBeInTheDocument();
+    const details = expandCard(container);
+    const groups = within(details).getAllByTestId("agent-spawn-run-group");
+    expect(groups.map((group) => group.getAttribute("data-run-id"))).toEqual([
+      "run-first",
+      "run-second",
+      "run-third",
+    ]);
+    expect(within(groups[0]).getByText("DONE")).toBeInTheDocument();
+    expect(within(groups[1]).getByText("FAILED")).toBeInTheDocument();
+    expect(within(groups[2]).getByText("SKIPPED")).toBeInTheDocument();
+    expect(within(groups[2]).queryByTestId("agent-spawn-run-model")).toBeNull();
+    expect(within(groups[2]).queryByText("Inspected")).toBeNull();
+    expect(within(groups[2]).queryByText("Review failed")).toBeNull();
+  });
+
+  it.each([
+    ["failed", "FAILED"],
+    ["canceled", "STOPPED"],
+    ["completed", "UNKNOWN"],
+    ["unknown", "UNKNOWN"],
+  ])(
+    "Given an unmatched child call in a %s run, When rendered, Then it settles as %s without invented result text",
+    (runStatus, expectedStepStatus) => {
+      const block = normalizedSpawnBlock({
+        status: runStatus,
+        runs: [
+          {
+            id: "run-one",
+            index: 0,
+            agent: "worker",
+            task: "Do work",
+            status: runStatus,
+          },
+        ],
+      });
+      const { container } = render(
+        <AgentSpawnCard
+          toolBlock={block}
+          childBlocks={groupedChildren([
+            {
+              runId: "run-one",
+              toolName: "Bash",
+              toolUseId: "unmatched",
+            },
+          ])}
+        />,
+      );
+      const details = expandCard(container);
+      const group = within(details).getByTestId("agent-spawn-run-group");
+      expect(
+        within(group).getByTestId("agent-spawn-step-status"),
+      ).toHaveTextContent(expectedStepStatus);
+      expect(group.querySelector(".animate-spin")).toBeNull();
+      const runToggle = within(group).getByRole("button", { name: /worker/i });
+      if (runToggle.getAttribute("aria-expanded") === "false") {
+        fireEvent.click(runToggle);
+      }
+      fireEvent.click(within(group).getByRole("button", { name: /Bash/i }));
+      const stepResult = within(group).getByTestId("agent-spawn-step-result");
+      expect(stepResult).toHaveTextContent("");
+      expect(stepResult).not.toHaveTextContent("(empty result)");
+    },
+  );
+
+  it("Given a child result with empty text, When rendered, Then the known result settles with the existing empty-result treatment", () => {
+    const block = normalizedSpawnBlock({
+      status: "completed",
+      runs: [
+        {
+          id: "run-one",
+          index: 0,
+          agent: "worker",
+          task: "Do work",
+          status: "completed",
+        },
+      ],
+    });
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={block}
+        childBlocks={groupedChildren([
+          {
+            runId: "run-one",
+            toolName: "Read",
+            toolUseId: "empty-result",
+            result: "",
+          },
+        ])}
+      />,
+    );
+    const details = expandCard(container);
+    const group = within(details).getByTestId("agent-spawn-run-group");
+    fireEvent.click(within(group).getByRole("button", { name: /worker/i }));
+    fireEvent.click(within(group).getByRole("button", { name: /Read/i }));
+    expect(
+      within(group).getByTestId("agent-spawn-step-result"),
+    ).toHaveTextContent("(empty result)");
+  });
+
+  it("Given untouched and manually collapsed run toggles, When progress arrives, Then only untouched activity auto-opens and controls remain keyboard accessible", async () => {
+    const user = userEvent.setup();
+    const waitingRuns = [
+      {
+        id: "run-auto",
+        index: 0,
+        agent: "auto",
+        task: "Auto opens",
+        status: "waiting",
+      },
+      {
+        id: "run-user",
+        index: 1,
+        agent: "manual",
+        task: "Stay collapsed",
+        status: "waiting",
+      },
+    ];
+    const { container, rerender } = render(
+      <AgentSpawnCard
+        toolBlock={normalizedSpawnBlock({ runs: waitingRuns })}
+        childBlocks={groupedChildren([])}
+      />,
+    );
+    expandCard(container);
+    const manualToggle = screen.getByRole("button", {
+      name: /manual/i,
+      expanded: false,
+    });
+    manualToggle.focus();
+    await user.keyboard("{Enter}");
+    expect(manualToggle).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Enter}");
+    expect(manualToggle).toHaveAttribute("aria-expanded", "false");
+
+    const progressedRuns = waitingRuns.map((run) => ({
+      ...run,
+      status: "running",
+    }));
+    rerender(
+      <AgentSpawnCard
+        toolBlock={normalizedSpawnBlock({ runs: progressedRuns })}
+        childBlocks={groupedChildren([
+          { runId: "run-auto", toolName: "Read", toolUseId: "auto-call" },
+          { runId: "run-user", toolName: "Bash", toolUseId: "user-call" },
+        ])}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /auto/i })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: /manual/i })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
   });
 });
 

@@ -247,7 +247,11 @@
     },
     "agentSpawn": {
       "aria": "Subagent {{name}}",
+      "groupedAria": "Subagents in {{mode}} mode",
       "defaultName": "Agent",
+      "groupedName": "Agents",
+      "runToggle": "Toggle run {{index}}: {{name}}",
+      "stepToggle": "Toggle {{tool}} step details",
       "stop": "Stop",
       "emptyPrompt": "No prompt",
       "emptyResult": "(empty result)",
@@ -260,6 +264,16 @@
         "tokens": "Tokens",
         "duration": "Duration"
       },
+      "mode": {
+        "single": "Single",
+        "parallel": "Parallel",
+        "chain": "Chain"
+      },
+      "source": {
+        "project": "project",
+        "user": "user",
+        "both": "project + user"
+      },
       "progressAria": {
         "tools": "{{count}} tools",
         "tools_one": "{{count}} tool",
@@ -268,15 +282,22 @@
       },
       "sections": {
         "prompt": "TASK PROMPT",
+        "tasks": "TASKS",
         "steps": "STEPS",
+        "output": "OUTPUT",
         "summary": "SUMMARY"
       },
       "status": {
         "done": "DONE",
         "error": "ERROR",
         "fail": "FAIL",
+        "failed": "FAILED",
+        "partial": "PARTIAL",
         "running": "RUNNING",
         "runningLower": "running",
+        "waiting": "WAITING",
+        "skipped": "SKIPPED",
+        "unknown": "UNKNOWN",
         "stopped": "STOPPED",
         "withDuration": "{{status}} · {{duration}}"
       },

@@ -28,8 +28,14 @@ import {
 import { statusConfig, type AgentStatus } from "../../types";
 import { useTranscriptBooleanState } from "../../transcript-ui-state";
 import { summarizeRawTool } from "../raw/summary";
-import type { CanonicalCardProps } from "../props";
-import type { AgentSpawnDTO, CanonicalDTO } from "../types";
+import type { AgentSpawnChildBlocks, CanonicalCardProps } from "../props";
+import type {
+  AgentSpawnDTO,
+  AgentSpawnMode,
+  AgentSpawnRunDTO,
+  AgentSpawnStatus,
+  CanonicalDTO,
+} from "../types";
 
 // readSpawn 合并 canonical.agentSpawn(translator 算的静态字段:description/subagentType/
 // prompt/taskId)与 toolBlock.subagent(SubagentStarted/Progress/Done 经 mergeSubagentMeta
@@ -49,9 +55,31 @@ function readSpawn(toolBlock: ChatBlockData): AgentSpawnDTO | undefined {
     totalTokens: meta.totalTokens ?? base.totalTokens,
     durationMs: meta.durationMs ?? base.durationMs,
     status: narrowSpawnStatus(meta.status) ?? base.status,
+    mode: narrowSpawnMode(meta.mode) ?? base.mode,
+    runs: mergeSpawnRuns(
+      base.runs,
+      meta.runs as AgentSpawnRunDTO[] | undefined,
+    ),
     // 子代理首帧的实际模型覆盖派遣瞬间的入参别名(R2);两者都缺时 model 仍是 undefined。
     model: meta.model || base.model,
   };
+}
+
+function mergeSpawnRuns(
+  declared: AgentSpawnRunDTO[] | undefined,
+  snapshot: AgentSpawnRunDTO[] | undefined,
+): AgentSpawnRunDTO[] | undefined {
+  if (snapshot === undefined) return declared;
+  const declaredByID = new Map((declared ?? []).map((run) => [run.id, run]));
+  const declaredByIndex = new Map(
+    (declared ?? []).map((run) => [run.index, run]),
+  );
+  return snapshot
+    .map((run) => ({
+      ...(declaredByID.get(run.id) ?? declaredByIndex.get(run.index) ?? {}),
+      ...run,
+    }))
+    .sort((a, b) => a.index - b.index);
 }
 
 // shortenModelName 归一化模型短名供头部徽标显示(R7):只剥 "claude-" 前缀与结尾
@@ -68,12 +96,20 @@ export function shortenModelName(model: string): string {
 function narrowSpawnStatus(
   s: string | undefined,
 ): AgentSpawnDTO["status"] | undefined {
-  return s === "running" ||
+  return s === "waiting" ||
+    s === "running" ||
     s === "completed" ||
     s === "failed" ||
-    s === "canceled"
+    s === "canceled" ||
+    s === "skipped" ||
+    s === "unknown" ||
+    s === "partial"
     ? s
     : undefined;
+}
+
+function narrowSpawnMode(s: string | undefined): AgentSpawnMode | undefined {
+  return s === "single" || s === "parallel" || s === "chain" ? s : undefined;
 }
 
 // isBashLikeTool 子调用 step 选 Terminal icon。
@@ -112,9 +148,9 @@ function statusFromSpawn(
   resultBlock: ChatBlockData | undefined,
 ): AgentStatus {
   if (resultBlock?.isError || spawn.status === "failed") return "error";
-  if (spawn.status === "completed" || spawn.status === "canceled")
-    return "idle";
   if (spawn.status === "running") return "running";
+  if (spawn.status === "waiting") return "waiting";
+  if (spawn.status) return "idle";
   if (resultBlock) return "idle";
   return "running";
 }
@@ -216,16 +252,40 @@ function buildProgressAriaLabel(
   return parts.join(", ");
 }
 
-// AgentSpawnCard 渲染 canonical.agent.spawn — 替代 SubagentInvocationCard。
-// 数据形态:toolBlock(外层 Agent.tool_use,canonical.agentSpawn 由 translator 算好);
-// resultBlock(外层 Agent.tool_result,content 为 SUMMARY 文本);
-// childBlocks(subagent 内部 tool_use/tool_result,parentToolUseId 归集后传入)。
-// 展开后:TASK PROMPT / STEPS(子调用) / SUMMARY 三段。
+const EMPTY_CHILD_BLOCKS: AgentSpawnChildBlocks = {
+  all: [],
+  byRun: new Map(),
+  fallback: [],
+};
+
+function allChildBlocks(children: AgentSpawnChildBlocks): ChatBlockData[] {
+  return children.all;
+}
+
+function runStatus(
+  run: AgentSpawnRunDTO,
+  mode: AgentSpawnMode | undefined,
+): AgentSpawnStatus {
+  if (run.status) return run.status;
+  if (mode === "parallel") return "waiting";
+  return run.index === 0 ? "running" : "waiting";
+}
+
+function isGroupedSpawn(spawn: AgentSpawnDTO): boolean {
+  return (
+    spawn.mode === "parallel" ||
+    spawn.mode === "chain" ||
+    (spawn.runs?.length ?? 0) > 1
+  );
+}
+
+// AgentSpawnCard remains the single production renderer. Legacy/no-runs data keeps
+// the existing layout; normalized parallel/chain state branches into grouped runs.
 export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
   toolBlock,
   resultBlock,
   cwd,
-  childBlocks = [],
+  childBlocks = EMPTY_CHILD_BLOCKS,
   uiStateKey,
   onStopSubagent,
 }) => {
@@ -235,31 +295,79 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
 
   if (!spawn) return null;
 
-  const status = statusFromSpawn(spawn, resultBlock);
+  if (isGroupedSpawn(spawn)) {
+    return (
+      <GroupedAgentSpawnCard
+        spawn={spawn}
+        toolBlock={toolBlock}
+        resultBlock={resultBlock}
+        cwd={cwd}
+        childBlocks={childBlocks}
+        expanded={expanded}
+        setExpanded={setExpanded}
+        uiStateKey={uiStateKey}
+        onStopSubagent={onStopSubagent}
+      />
+    );
+  }
+
+  const normalizedRun = spawn.runs?.length === 1 ? spawn.runs[0] : undefined;
+  const normalizedStatus = normalizedRun
+    ? (normalizedRun.status ?? spawn.status)
+    : undefined;
+  const singleSpawn: AgentSpawnDTO = normalizedRun
+    ? {
+        ...spawn,
+        taskDescription: normalizedRun.task || spawn.taskDescription,
+        prompt: normalizedRun.task || spawn.prompt,
+        model:
+          normalizedRun.model || normalizedRun.requestedModel || spawn.model,
+        status: normalizedStatus,
+      }
+    : spawn;
+  const status = normalizedStatus
+    ? statusAgentState(normalizedStatus)
+    : statusFromSpawn(singleSpawn, resultBlock);
   const { pillClassName } = statusConfig[status];
   const StatusIcon =
     status === "error"
       ? TriangleAlert
-      : spawn.status === "canceled"
+      : singleSpawn.status === "canceled"
         ? CircleSlash
         : status === "running" || status === "waiting"
           ? LoaderCircle
           : Check;
-  const statusLabel = buildStatusLabel(
-    status,
-    spawn.status,
-    t,
-    spawn.durationMs,
-  );
+  const statusLabel =
+    normalizedRun && normalizedStatus
+      ? buildNormalizedStatusLabel(normalizedStatus, t, singleSpawn.durationMs)
+      : buildStatusLabel(status, singleSpawn.status, t, singleSpawn.durationMs);
 
-  const description = spawn.taskDescription || "";
-  const subagentType = spawn.subagentType || "";
-  const modelBadge = spawn.model ? shortenModelName(spawn.model) : "";
-  const prompt = spawn.prompt || "";
-  const steps = pairChildBlocks(childBlocks);
-  const toolUses = spawn.toolUses ?? steps.length;
-  const totalTokens = spawn.totalTokens ?? 0;
-  const durationMs = spawn.durationMs ?? 0;
+  const description = singleSpawn.taskDescription || "";
+  const displayName =
+    normalizedRun?.agent || t("canonical.agentSpawn.defaultName");
+  const subagentType = normalizedRun ? "" : singleSpawn.subagentType || "";
+  const profile = normalizedRun?.profile || "";
+  const modelBadge = singleSpawn.model
+    ? shortenModelName(singleSpawn.model)
+    : "";
+  const prompt = singleSpawn.prompt || "";
+  const normalizedOutput =
+    normalizedRun?.summary || normalizedRun?.errorMessage || "";
+  const summaryResultBlock =
+    resultBlock?.text || !normalizedOutput
+      ? resultBlock
+      : ({
+          type: "tool_result",
+          text: normalizedOutput,
+          isError: normalizedRun?.status === "failed",
+        } as ChatBlockData);
+  // Legacy and normalized single both attach every child, including missing or
+  // unknown run IDs, to their sole STEPS list.
+  const steps = pairChildBlocks(allChildBlocks(childBlocks));
+  const toolUses =
+    singleSpawn.toolUses ?? normalizedRun?.toolUses ?? steps.length;
+  const totalTokens = singleSpawn.totalTokens ?? 0;
+  const durationMs = singleSpawn.durationMs ?? 0;
   // R9:极简进度只在运行态渲染,完成/取消/出错都不再显示。
   const isRunningState = status === "running" || status === "waiting";
   const progressTick = isRunningState
@@ -270,14 +378,13 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
     : "";
   // R8:展开区 meta 行独立于运行状态存在,只要有值就列出;模型用未裁剪原值。
   const hasMetaRow =
-    !!spawn.model || toolUses > 0 || totalTokens > 0 || durationMs > 0;
+    !!singleSpawn.model || toolUses > 0 || totalTokens > 0 || durationMs > 0;
 
   return (
     <TranscriptCard
       data-testid="agent-spawn-card"
       aria-label={t("canonical.agentSpawn.aria", {
-        name:
-          description || subagentType || t("canonical.agentSpawn.defaultName"),
+        name: description || displayName,
       })}
       data-selectable-text="true"
       tone={status === "error" ? "error" : "default"}
@@ -305,7 +412,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
           data-copyable-control-text="true"
           className="shrink-0 font-semibold text-primary-text"
         >
-          {t("canonical.agentSpawn.defaultName")}
+          {displayName}
         </span>
         {description ? (
           <>
@@ -329,6 +436,15 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
             className="ml-1 inline-flex shrink-0 items-center rounded-sm bg-secondary px-1.5 py-0.5 text-meta font-medium text-foreground"
           >
             {subagentType}
+          </span>
+        ) : null}
+        {profile ? (
+          <span
+            data-testid="agent-spawn-profile-badge"
+            data-copyable-control-text="true"
+            className="ml-1 inline-flex shrink-0 items-center rounded-sm bg-secondary px-1.5 py-0.5 text-meta font-medium text-foreground"
+          >
+            {profile}
           </span>
         ) : null}
         {modelBadge ? (
@@ -368,7 +484,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
           </span>
         ) : null}
         {(status === "running" || status === "waiting") &&
-          spawn.taskId &&
+          singleSpawn.taskId &&
           onStopSubagent &&
           toolBlock.toolUseId && (
             <button
@@ -379,9 +495,9 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
               }}
               aria-label={t("canonical.agentSpawn.stop")}
               title={t("canonical.agentSpawn.stop")}
-              className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+              className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <Square className="size-2.5 fill-current" />
+              <Square className="size-2.5 fill-current" aria-hidden="true" />
             </button>
           )}
         <TranscriptPill
@@ -391,7 +507,8 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
           <StatusIcon
             className={cn(
               "size-2.5",
-              (status === "running" || status === "waiting") && "animate-spin",
+              (status === "running" || status === "waiting") &&
+                "animate-spin motion-reduce:animate-none",
             )}
             aria-hidden="true"
           />
@@ -411,11 +528,11 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
                 data-testid="agent-spawn-meta-row"
                 className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-meta"
               >
-                {spawn.model ? (
+                {singleSpawn.model ? (
                   <AgentSpawnMetaItem
                     testId="agent-spawn-meta-model"
                     label={t("canonical.agentSpawn.meta.model")}
-                    value={spawn.model}
+                    value={singleSpawn.model}
                   />
                 ) : null}
                 {toolUses > 0 ? (
@@ -488,7 +605,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
             <AgentSpawnSection
               label={t("canonical.agentSpawn.sections.summary")}
             >
-              {renderSummary(status, t, resultBlock)}
+              {renderSummary(status, t, summaryResultBlock)}
             </AgentSpawnSection>
           </div>
         </div>
@@ -496,6 +613,456 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
     </TranscriptCard>
   );
 };
+
+type GroupedAgentSpawnCardProps = {
+  spawn: AgentSpawnDTO;
+  toolBlock: ChatBlockData;
+  resultBlock?: ChatBlockData;
+  cwd?: string;
+  childBlocks: AgentSpawnChildBlocks;
+  expanded: boolean;
+  setExpanded: React.Dispatch<React.SetStateAction<boolean>>;
+  uiStateKey?: string;
+  onStopSubagent?: (toolUseId: string) => void;
+};
+
+function isTerminalRunStatus(status: AgentSpawnStatus): boolean {
+  return status !== "waiting" && status !== "running" && status !== "partial";
+}
+
+function statusLabel(status: AgentSpawnStatus, t: TFunction): string {
+  switch (status) {
+    case "waiting":
+      return t("canonical.agentSpawn.status.waiting");
+    case "completed":
+      return t("canonical.agentSpawn.status.done");
+    case "failed":
+      return t("canonical.agentSpawn.status.failed");
+    case "canceled":
+      return t("canonical.agentSpawn.status.stopped");
+    case "skipped":
+      return t("canonical.agentSpawn.status.skipped");
+    case "unknown":
+      return t("canonical.agentSpawn.status.unknown");
+    case "partial":
+      return t("canonical.agentSpawn.status.partial");
+    case "running":
+    default:
+      return t("canonical.agentSpawn.status.running");
+  }
+}
+
+function buildNormalizedStatusLabel(
+  status: AgentSpawnStatus,
+  t: TFunction,
+  durationMs?: number,
+): string {
+  const label = statusLabel(status, t);
+  return durationMs
+    ? t("canonical.agentSpawn.status.withDuration", {
+        status: label,
+        duration: formatDuration(durationMs),
+      })
+    : label;
+}
+
+function unmatchedFallbackStatus(
+  status: AgentSpawnStatus,
+): AgentSpawnStatus | undefined {
+  if (status === "running" || status === "waiting") return undefined;
+  if (status === "failed" || status === "canceled") return status;
+  return "unknown";
+}
+
+function statusAgentState(status: AgentSpawnStatus): AgentStatus {
+  if (status === "failed") return "error";
+  if (status === "running") return "running";
+  if (status === "waiting") return "waiting";
+  return "idle";
+}
+
+function statusPillClass(status: AgentSpawnStatus): string {
+  if (status === "partial") return statusConfig.waiting.pillClassName;
+  return statusConfig[statusAgentState(status)].pillClassName;
+}
+
+function StatusGlyph({ status }: { status: AgentSpawnStatus }) {
+  const Icon =
+    status === "failed"
+      ? TriangleAlert
+      : status === "canceled" || status === "skipped"
+        ? CircleSlash
+        : status === "running" || status === "waiting"
+          ? LoaderCircle
+          : Check;
+  return (
+    <Icon
+      className={cn(
+        "size-2.5",
+        (status === "running" || status === "waiting") &&
+          "animate-spin motion-reduce:animate-none",
+      )}
+      aria-hidden="true"
+    />
+  );
+}
+
+function modeLabel(mode: AgentSpawnMode | undefined, t: TFunction): string {
+  if (mode === "chain") return t("canonical.agentSpawn.mode.chain");
+  if (mode === "single") return t("canonical.agentSpawn.mode.single");
+  return t("canonical.agentSpawn.mode.parallel");
+}
+
+function sourceLabel(source: string | undefined, t: TFunction): string {
+  if (source === "project") return t("canonical.agentSpawn.source.project");
+  if (source === "user") return t("canonical.agentSpawn.source.user");
+  if (source === "both") return t("canonical.agentSpawn.source.both");
+  return "";
+}
+
+function GroupedAgentSpawnCard({
+  spawn,
+  toolBlock,
+  resultBlock,
+  cwd,
+  childBlocks,
+  expanded,
+  setExpanded,
+  uiStateKey,
+  onStopSubagent,
+}: GroupedAgentSpawnCardProps): React.ReactElement {
+  const { t } = useTranslation();
+  const runs = (spawn.runs ?? []).slice().sort((a, b) => a.index - b.index);
+  const outerStatus = spawn.status ?? "running";
+  const terminalCount = runs.filter((run) =>
+    isTerminalRunStatus(runStatus(run, spawn.mode)),
+  ).length;
+  const declaredRunIDs = new Set(runs.map((run) => run.id));
+  const fallbackBlocks = childBlocks.all.filter(
+    (block) => !block.subagentRunId || !declaredRunIDs.has(block.subagentRunId),
+  );
+  const fallbackSteps = pairChildBlocks(fallbackBlocks);
+  const summaryAgentStatus =
+    outerStatus === "running"
+      ? "running"
+      : outerStatus === "waiting"
+        ? "waiting"
+        : outerStatus === "failed"
+          ? "error"
+          : "idle";
+
+  return (
+    <TranscriptCard
+      data-testid="agent-spawn-card"
+      aria-label={t("canonical.agentSpawn.groupedAria", {
+        mode: modeLabel(spawn.mode, t),
+      })}
+      data-selectable-text="true"
+      tone={outerStatus === "failed" ? "error" : "default"}
+      className="font-mono text-aux"
+    >
+      <TranscriptCardHeader
+        onClick={(event) => {
+          if (shouldIgnoreClickForSelection(event)) return;
+          setExpanded((value) => !value);
+        }}
+        aria-expanded={expanded}
+      >
+        <ChevronRight
+          className={cn(
+            "size-3 shrink-0 text-muted-foreground transition-transform duration-150 ease-out motion-reduce:transition-none",
+            expanded && "rotate-90",
+          )}
+          aria-hidden="true"
+        />
+        <Users
+          className="size-3.5 shrink-0 text-primary-text"
+          aria-hidden="true"
+        />
+        <span
+          data-copyable-control-text="true"
+          className="shrink-0 font-semibold text-primary-text"
+        >
+          {t("canonical.agentSpawn.groupedName")}
+        </span>
+        <span className="text-muted-foreground">·</span>
+        <span
+          data-copyable-control-text="true"
+          className="shrink-0 text-muted-foreground"
+        >
+          {modeLabel(spawn.mode, t)}
+        </span>
+        <span className="text-muted-foreground">·</span>
+        <span
+          data-copyable-control-text="true"
+          className="shrink-0 text-muted-foreground"
+        >
+          {terminalCount}/{runs.length}
+        </span>
+        <span className="min-w-0 flex-1" />
+        {outerStatus === "running" &&
+          spawn.taskId &&
+          onStopSubagent &&
+          toolBlock.toolUseId && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onStopSubagent(toolBlock.toolUseId!);
+              }}
+              aria-label={t("canonical.agentSpawn.stop")}
+              title={t("canonical.agentSpawn.stop")}
+              className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <Square className="size-2.5 fill-current" aria-hidden="true" />
+            </button>
+          )}
+        <TranscriptPill className={statusPillClass(outerStatus)}>
+          <StatusGlyph status={outerStatus} />
+          {statusLabel(outerStatus, t)}
+        </TranscriptPill>
+      </TranscriptCardHeader>
+      <div
+        data-slot="agent-spawn-details"
+        aria-hidden={!expanded}
+        className="grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none"
+        style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className="flex flex-col gap-3 border-t border-border px-3 py-3">
+            <AgentSpawnSection label={t("canonical.agentSpawn.sections.tasks")}>
+              <div className="flex flex-col gap-2">
+                {runs.map((run) => (
+                  <AgentSpawnRunGroup
+                    key={run.id || run.index}
+                    run={run}
+                    mode={spawn.mode}
+                    blocks={childBlocks.byRun.get(run.id) ?? []}
+                    cwd={cwd}
+                    uiStateKey={
+                      uiStateKey
+                        ? `${uiStateKey}:run:${run.id || run.index}`
+                        : undefined
+                    }
+                  />
+                ))}
+              </div>
+            </AgentSpawnSection>
+            {fallbackSteps.length > 0 ? (
+              <div data-testid="agent-spawn-fallback-steps">
+                <AgentSpawnSection
+                  label={t("canonical.agentSpawn.sections.steps")}
+                >
+                  <div className="flex flex-col gap-2">
+                    {fallbackSteps.map((step, index) => (
+                      <AgentSpawnStepCard
+                        key={step.tool.toolUseId || index}
+                        step={step}
+                        cwd={cwd}
+                        terminalFallbackStatus={unmatchedFallbackStatus(
+                          outerStatus,
+                        )}
+                        uiStateKey={
+                          uiStateKey
+                            ? `${uiStateKey}:fallback:${step.tool.toolUseId || index}`
+                            : undefined
+                        }
+                      />
+                    ))}
+                  </div>
+                </AgentSpawnSection>
+              </div>
+            ) : null}
+            <AgentSpawnSection
+              label={t("canonical.agentSpawn.sections.summary")}
+            >
+              {renderSummary(summaryAgentStatus, t, resultBlock)}
+            </AgentSpawnSection>
+          </div>
+        </div>
+      </div>
+    </TranscriptCard>
+  );
+}
+
+function AgentSpawnRunGroup({
+  run,
+  mode,
+  blocks,
+  cwd,
+  uiStateKey,
+}: {
+  run: AgentSpawnRunDTO;
+  mode: AgentSpawnMode | undefined;
+  blocks: ChatBlockData[];
+  cwd?: string;
+  uiStateKey?: string;
+}): React.ReactElement {
+  const { t } = useTranslation();
+  const status = runStatus(run, mode);
+  const steps = pairChildBlocks(blocks);
+  const hasActivity =
+    steps.length > 0 || (status !== "waiting" && status !== "skipped");
+  const defaultExpanded = status === "running" || status === "failed";
+  const [expanded, setExpanded] = useTranscriptBooleanState(
+    uiStateKey,
+    defaultExpanded,
+  );
+  const userTouched = React.useRef(false);
+  const previousActivity = React.useRef(hasActivity);
+  React.useEffect(() => {
+    if (!userTouched.current && hasActivity && !previousActivity.current) {
+      setExpanded(true);
+    }
+    previousActivity.current = hasActivity;
+  }, [hasActivity, setExpanded]);
+
+  const name = run.agent || t("canonical.agentSpawn.defaultName");
+  const source = sourceLabel(run.agentSource, t);
+  const model = run.model || run.requestedModel || "";
+  const output = run.summary || run.errorMessage || "";
+  const terminal = isTerminalRunStatus(status);
+
+  return (
+    <div
+      data-testid="agent-spawn-run-group"
+      data-run-id={run.id}
+      className={cn(
+        "overflow-hidden rounded-lg border bg-background",
+        status === "failed"
+          ? "border-status-error/50 border-l-2 border-l-status-error"
+          : status === "running"
+            ? "border-status-running/50 border-l-2 border-l-status-running"
+            : status === "waiting" || status === "partial"
+              ? "border-status-waiting/50 border-l-2 border-l-status-waiting"
+              : "border-border border-l-2 border-l-border",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => {
+          userTouched.current = true;
+          setExpanded((value) => !value);
+        }}
+        aria-expanded={expanded}
+        aria-label={t("canonical.agentSpawn.runToggle", {
+          index: run.index + 1,
+          name,
+        })}
+        className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-muted/30 focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        <ChevronRight
+          className={cn(
+            "size-2.5 shrink-0 text-muted-foreground transition-transform duration-150 ease-out motion-reduce:transition-none",
+            expanded && "rotate-90",
+          )}
+          aria-hidden="true"
+        />
+        <span className="shrink-0 text-meta text-subtle-foreground">
+          {run.index + 1}
+        </span>
+        <span
+          data-copyable-control-text="true"
+          className="shrink-0 font-semibold text-foreground"
+        >
+          {name}
+        </span>
+        {source ? <RunBadge>{source}</RunBadge> : null}
+        {run.profile ? <RunBadge>{run.profile}</RunBadge> : null}
+        {run.task ? (
+          <>
+            <span className="text-muted-foreground">·</span>
+            <span
+              data-copyable-control-text="true"
+              className="min-w-0 truncate text-muted-foreground"
+            >
+              {run.task}
+            </span>
+          </>
+        ) : null}
+        {model ? (
+          <RunBadge testId="agent-spawn-run-model">
+            {shortenModelName(model)}
+          </RunBadge>
+        ) : null}
+        <span className="min-w-0 flex-1" />
+        <TranscriptPill className={statusPillClass(status)}>
+          <StatusGlyph status={status} />
+          {statusLabel(status, t)}
+        </TranscriptPill>
+      </button>
+      <div
+        aria-hidden={!expanded}
+        className="grid transition-[grid-template-rows] duration-150 ease-out motion-reduce:transition-none"
+        style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className="flex flex-col gap-2 border-t border-border px-2.5 py-2">
+            <AgentSpawnSection label={t("canonical.agentSpawn.sections.steps")}>
+              {steps.length > 0 ? (
+                <div className="flex flex-col gap-2">
+                  {steps.map((step, index) => (
+                    <AgentSpawnStepCard
+                      key={step.tool.toolUseId || index}
+                      step={step}
+                      cwd={cwd}
+                      terminalFallbackStatus={terminal ? status : undefined}
+                      uiStateKey={
+                        uiStateKey
+                          ? `${uiStateKey}:step:${step.tool.toolUseId || index}`
+                          : undefined
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-sm bg-muted/30 px-2.5 py-2 text-muted-foreground">
+                  {status === "running"
+                    ? t("canonical.agentSpawn.emptyStepsRunning")
+                    : t("canonical.agentSpawn.emptySteps")}
+                </div>
+              )}
+            </AgentSpawnSection>
+            {terminal ? (
+              <AgentSpawnSection
+                label={t("canonical.agentSpawn.sections.output")}
+              >
+                <div
+                  className={cn(
+                    "max-h-[220px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm px-2.5 py-2",
+                    status === "failed"
+                      ? "bg-destructive-soft text-status-error"
+                      : "bg-muted/40 text-foreground",
+                  )}
+                >
+                  {output || t("canonical.agentSpawn.emptyResult")}
+                </div>
+              </AgentSpawnSection>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunBadge({
+  children,
+  testId,
+}: {
+  children: React.ReactNode;
+  testId?: string;
+}) {
+  return (
+    <span
+      data-testid={testId}
+      data-copyable-control-text="true"
+      className="inline-flex min-w-0 shrink-0 items-center rounded-sm border border-border-strong px-1.5 py-0.5 text-meta text-muted-foreground"
+    >
+      <span className="truncate">{children}</span>
+    </span>
+  );
+}
 
 // AgentSpawnMetaItem 渲染展开区 meta 行的单个「标签 值」项(R8)。value 只放在
 // 独立的 testId 节点上,不与标签共用一个 textContent——下沉数字与调用方(测试/
@@ -549,10 +1116,12 @@ function AgentSpawnSection({
 function AgentSpawnStepCard({
   cwd,
   step,
+  terminalFallbackStatus,
   uiStateKey,
 }: {
   cwd?: string;
   step: StepRow;
+  terminalFallbackStatus?: AgentSpawnStatus;
   uiStateKey?: string;
 }): React.ReactElement {
   const { t } = useTranslation();
@@ -562,7 +1131,14 @@ function AgentSpawnStepCard({
   const toolName = tool.toolName || "tool";
   const summary = summarizeRawTool(toolName, tool.toolInput, { cwd });
   const isError = !!result?.isError;
-  const isRunning = !result;
+  const isUnmatchedTerminal = !result && !!terminalFallbackStatus;
+  const isRunning = !result && !isUnmatchedTerminal;
+  const unmatchedStatus =
+    terminalFallbackStatus === "failed"
+      ? "failed"
+      : terminalFallbackStatus === "canceled"
+        ? "canceled"
+        : "unknown";
   const toolNameLower = toolName.toLowerCase();
   const StepIcon = isBashLikeTool(toolName)
     ? Terminal
@@ -578,21 +1154,27 @@ function AgentSpawnStepCard({
           toolNameLower === "edit"
         ? FileText
         : Wrench;
-  const stepStatus: AgentStatus = isError
-    ? "error"
-    : isRunning
-      ? "running"
-      : "idle";
-  const StepStatusIcon = isError
-    ? TriangleAlert
-    : isRunning
-      ? LoaderCircle
-      : Check;
+  const stepStatus: AgentStatus =
+    isError || unmatchedStatus === "failed"
+      ? "error"
+      : isRunning
+        ? "running"
+        : "idle";
+  const StepStatusIcon =
+    isError || unmatchedStatus === "failed"
+      ? TriangleAlert
+      : unmatchedStatus === "canceled"
+        ? CircleSlash
+        : isRunning
+          ? LoaderCircle
+          : Check;
   const stepLabel = isError
     ? t("canonical.agentSpawn.status.fail")
     : isRunning
       ? t("canonical.agentSpawn.status.runningLower")
-      : t("canonical.agentSpawn.status.done");
+      : isUnmatchedTerminal
+        ? statusLabel(unmatchedStatus, t)
+        : t("canonical.agentSpawn.status.done");
 
   return (
     <div
@@ -612,7 +1194,8 @@ function AgentSpawnStepCard({
           setExpanded((v) => !v);
         }}
         aria-expanded={expanded}
-        className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-muted/30"
+        aria-label={t("canonical.agentSpawn.stepToggle", { tool: toolName })}
+        className="flex w-full min-w-0 cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-muted/30 focus-visible:ring-2 focus-visible:ring-ring/50"
       >
         <ChevronRight
           className={cn(
@@ -644,11 +1227,15 @@ function AgentSpawnStepCard({
         ) : null}
         <span className="min-w-0 flex-1" />
         <TranscriptPill
+          data-testid="agent-spawn-step-status"
           data-copyable-control-text="true"
           className={statusConfig[stepStatus].pillClassName}
         >
           <StepStatusIcon
-            className={cn("size-2.5", isRunning && "animate-spin")}
+            className={cn(
+              "size-2.5",
+              isRunning && "animate-spin motion-reduce:animate-none",
+            )}
             aria-hidden="true"
           />
           {stepLabel}
@@ -662,6 +1249,7 @@ function AgentSpawnStepCard({
         <div className="min-h-0 overflow-hidden">
           <div className="border-t border-border px-2.5 py-1.5">
             <div
+              data-testid="agent-spawn-step-result"
               className={cn(
                 "max-h-[180px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm px-2 py-1.5 text-foreground",
                 isError
@@ -673,9 +1261,9 @@ function AgentSpawnStepCard({
                 <span>{result.text}</span>
               ) : isRunning ? (
                 "—"
-              ) : (
+              ) : result ? (
                 t("canonical.agentSpawn.emptyResult")
-              )}
+              ) : null}
             </div>
           </div>
         </div>

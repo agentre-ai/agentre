@@ -11,6 +11,12 @@ export type PlanActionStream = {
   stream: string;
 };
 
+export type AgentSpawnChildBlocks = {
+  all: ChatBlockData[];
+  byRun: ReadonlyMap<string, ChatBlockData[]>;
+  fallback: ChatBlockData[];
+};
+
 export type CanonicalCardProps = {
   toolBlock: ChatBlockData;
   resultBlock?: ChatBlockData;
@@ -26,7 +32,7 @@ export type CanonicalCardProps = {
   uiStateKey?: string;
   /** Stable mounted chat tab key for UI drafts that must survive route/tab remounts. */
   tabStateKey?: string;
-  // childBlocks 仅 agent.spawn 用 — 父 Agent/Task 工具下挂的内层 tool_use / tool_result
-  // (parentToolUseId 已经在 chat.tsx 归集);AgentSpawnCard 展开后渲染为 STEPS 段。
-  childBlocks?: ChatBlockData[];
+  // childBlocks 仅 agent.spawn 用 — 父工具下的子调用先按 parentToolUseId,
+  // 再按 subagentRunId 分组；缺失 run id 的块保留在 fallback。
+  childBlocks?: AgentSpawnChildBlocks;
 };
