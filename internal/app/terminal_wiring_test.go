@@ -142,20 +142,21 @@ func requireTerminalWiringData(
 ) {
 	t.Helper()
 	encoded := base64.StdEncoding.EncodeToString([]byte(data))
-	require.Eventually(t, func() bool {
-		if err := client.dispatch("terminal.data", protocol.TerminalDataEvent{
-			TerminalID: terminalID,
-			Data:       encoded,
-		}); err != nil {
-			return false
-		}
-		select {
-		case got := <-h.Data():
-			return string(got) == data
-		default:
-			return false
-		}
-	}, time.Second, time.Millisecond)
+	require.NoError(t, client.dispatch("terminal.data", protocol.TerminalDataEvent{
+		TerminalID: terminalID,
+		Data:       encoded,
+	}))
+	select {
+	case got := <-h.Data():
+		require.Equal(t, data, string(got))
+	case <-time.After(time.Second):
+		t.Fatal("terminal data not delivered")
+	}
+	select {
+	case extra := <-h.Data():
+		t.Fatalf("terminal data delivered more than once: %q", string(extra))
+	case <-time.After(25 * time.Millisecond):
+	}
 }
 
 func requireTerminalWiringOutcome(t *testing.T, h pty.Handle, reason string) {
