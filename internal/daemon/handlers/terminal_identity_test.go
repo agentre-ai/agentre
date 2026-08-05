@@ -2,7 +2,10 @@ package handlers_test
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,6 +65,91 @@ func (h *trackedTerminalHandle) Exit() <-chan pty.ExitInfo {
 	return h.exit
 }
 
+type controlledTerminalHandle struct {
+	data chan []byte
+	exit chan pty.ExitInfo
+
+	finishOnce   sync.Once
+	closeCalls   atomic.Int32
+	dataCalls    atomic.Int32
+	exitCalls    atomic.Int32
+	writeCalls   atomic.Int32
+	closeErrors  []error
+	closeStarted chan struct{}
+	closeRelease <-chan struct{}
+}
+
+func newControlledTerminalHandle(closeErrors ...error) *controlledTerminalHandle {
+	return &controlledTerminalHandle{
+		data:        make(chan []byte, 1),
+		exit:        make(chan pty.ExitInfo, 1),
+		closeErrors: closeErrors,
+	}
+}
+
+func (h *controlledTerminalHandle) Write(p []byte) (int, error) {
+	h.writeCalls.Add(1)
+	return len(p), nil
+}
+
+func (h *controlledTerminalHandle) Resize(_, _ uint16) error { return nil }
+
+func (h *controlledTerminalHandle) Close() error {
+	call := int(h.closeCalls.Add(1))
+	if h.closeStarted != nil {
+		select {
+		case h.closeStarted <- struct{}{}:
+		default:
+		}
+	}
+	if h.closeRelease != nil {
+		<-h.closeRelease
+	}
+	if call <= len(h.closeErrors) {
+		return h.closeErrors[call-1]
+	}
+	return nil
+}
+
+func (h *controlledTerminalHandle) Data() <-chan []byte {
+	h.dataCalls.Add(1)
+	return h.data
+}
+
+func (h *controlledTerminalHandle) Exit() <-chan pty.ExitInfo {
+	h.exitCalls.Add(1)
+	return h.exit
+}
+
+func (h *controlledTerminalHandle) finish(info pty.ExitInfo) {
+	h.finishOnce.Do(func() {
+		h.exit <- info
+		close(h.exit)
+		close(h.data)
+	})
+}
+
+type nonComparableTerminalHandle struct {
+	state  *controlledTerminalHandle
+	marker []byte
+}
+
+func (h nonComparableTerminalHandle) Write(p []byte) (int, error) {
+	return h.state.Write(p)
+}
+
+func (h nonComparableTerminalHandle) Resize(cols, rows uint16) error {
+	return h.state.Resize(cols, rows)
+}
+
+func (h nonComparableTerminalHandle) Close() error { return h.state.Close() }
+func (h nonComparableTerminalHandle) Data() <-chan []byte {
+	return h.state.Data()
+}
+func (h nonComparableTerminalHandle) Exit() <-chan pty.ExitInfo {
+	return h.state.Exit()
+}
+
 type terminalOpenOutcome struct {
 	result protocol.TerminalOpenResult
 	err    error
@@ -95,6 +183,73 @@ func requireTerminalContextCanceled(t *testing.T, ctx context.Context) {
 	case <-time.After(time.Second):
 		t.Fatal("pending terminal context was not canceled")
 	}
+}
+
+func terminalHandleSequence(handles ...handlers.PTYHandle) terminalBackendFunc {
+	var next atomic.Int32
+	return func(context.Context, pty.Spec) (handlers.PTYHandle, error) {
+		index := int(next.Add(1)) - 1
+		if index >= len(handles) {
+			return nil, fmt.Errorf("unexpected terminal open %d", index+1)
+		}
+		return handles[index], nil
+	}
+}
+
+func requireTerminalPumpStarted(t *testing.T, handle *controlledTerminalHandle) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return handle.dataCalls.Load() > 0 && handle.exitCalls.Load() > 0
+	}, time.Second, time.Millisecond)
+}
+
+func requireTerminalRemainsWritable(
+	t *testing.T,
+	h *handlers.TerminalHandlers,
+	id string,
+	duration time.Duration,
+) {
+	t.Helper()
+	deadline := time.Now().Add(duration)
+	for {
+		_, err := h.Write(context.Background(), protocol.TerminalWriteParams{TerminalID: id, Data: "ping"})
+		require.NoError(t, err)
+		if time.Now().After(deadline) {
+			return
+		}
+		runtime.Gosched()
+	}
+}
+
+func requireNoStaleTerminalEvents(
+	t *testing.T,
+	recorder *recordingEmitter,
+	staleData string,
+	staleReason string,
+) {
+	t.Helper()
+	encodedStaleData := base64.StdEncoding.EncodeToString([]byte(staleData))
+	for _, event := range recorder.snapshot() {
+		switch payload := event.Payload.(type) {
+		case protocol.TerminalDataEvent:
+			require.NotEqual(t, encodedStaleData, payload.Data)
+		case protocol.TerminalExitEvent:
+			require.NotEqual(t, staleReason, payload.Reason)
+		}
+	}
+}
+
+func waitForTerminalExitReason(t *testing.T, recorder *recordingEmitter, reason string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		for _, event := range recorder.snapshot() {
+			payload, ok := event.Payload.(protocol.TerminalExitEvent)
+			if ok && payload.Reason == reason {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
 }
 
 func TestTerminalOpen_GivenSuppliedIDAndFastBackendWhenOpenedWithoutSubscribersThenResultUsesSuppliedID(t *testing.T) {
@@ -275,6 +430,136 @@ func TestTerminalOpen_GivenDuplicateActiveIDWhenOpenedThenDoesNotOverwriteLiveHa
 
 	require.ErrorIs(t, err, handlers.ErrTerminalIDInUse)
 	require.Equal(t, int32(1), calls.Load())
+}
+
+func TestTerminalClose_GivenSuccessfulCloseAndNonComparableHandleWhenSameIDReopensThenOldPumpCannotAffectReplacement(t *testing.T) {
+	const id = "stable-reopen-1"
+	oldHandle := newControlledTerminalHandle()
+	replacement := newControlledTerminalHandle()
+	recorder := &recordingEmitter{}
+	h := handlers.NewTerminalHandlers(terminalHandleSequence(
+		nonComparableTerminalHandle{state: oldHandle, marker: []byte("identity")},
+		replacement,
+	), recorder)
+	t.Cleanup(func() {
+		oldHandle.finish(pty.ExitInfo{Reason: "cleanup-old"})
+		replacement.finish(pty.ExitInfo{Reason: "cleanup-replacement"})
+		h.CloseAll()
+	})
+
+	_, err := h.Open(context.Background(), protocol.TerminalOpenParams{TerminalID: id, Cols: 80, Rows: 24})
+	require.NoError(t, err)
+	requireTerminalPumpStarted(t, oldHandle)
+
+	_, err = h.Close(context.Background(), protocol.TerminalCloseParams{TerminalID: id})
+	require.NoError(t, err)
+	result, err := h.Open(context.Background(), protocol.TerminalOpenParams{TerminalID: id, Cols: 80, Rows: 24})
+	require.NoError(t, err)
+	require.Equal(t, id, result.TerminalID)
+	requireTerminalPumpStarted(t, replacement)
+
+	oldHandle.data <- []byte("stale-old-data")
+	oldHandle.finish(pty.ExitInfo{Code: 137, Reason: "stale-old-exit"})
+	require.Eventually(t, func() bool { return len(oldHandle.exit) == 0 }, time.Second, time.Millisecond)
+	requireTerminalRemainsWritable(t, h, id, 50*time.Millisecond)
+	requireNoStaleTerminalEvents(t, recorder, "stale-old-data", "stale-old-exit")
+
+	replacement.finish(pty.ExitInfo{Code: 0, Reason: "replacement-exit"})
+	waitForTerminalExitReason(t, recorder, "replacement-exit")
+	requireNoStaleTerminalEvents(t, recorder, "stale-old-data", "stale-old-exit")
+}
+
+func TestTerminalClose_GivenHandleCloseFailsWhenRetriedThenSameEntryStaysOccupiedUntilSuccess(t *testing.T) {
+	const id = "stable-close-retry-1"
+	closeErr := errors.New("close failed")
+	oldHandle := newControlledTerminalHandle(closeErr, nil)
+	replacement := newControlledTerminalHandle()
+	var backendCalls atomic.Int32
+	h := handlers.NewTerminalHandlers(terminalBackendFunc(func(context.Context, pty.Spec) (handlers.PTYHandle, error) {
+		if backendCalls.Add(1) == 1 {
+			return oldHandle, nil
+		}
+		return replacement, nil
+	}), &recordingEmitter{})
+	t.Cleanup(func() {
+		oldHandle.finish(pty.ExitInfo{Reason: "cleanup-old"})
+		replacement.finish(pty.ExitInfo{Reason: "cleanup-replacement"})
+		h.CloseAll()
+	})
+
+	_, err := h.Open(context.Background(), protocol.TerminalOpenParams{TerminalID: id, Cols: 80, Rows: 24})
+	require.NoError(t, err)
+	requireTerminalPumpStarted(t, oldHandle)
+
+	_, err = h.Close(context.Background(), protocol.TerminalCloseParams{TerminalID: id})
+	require.ErrorIs(t, err, closeErr)
+	_, err = h.Open(context.Background(), protocol.TerminalOpenParams{TerminalID: id, Cols: 80, Rows: 24})
+	require.ErrorIs(t, err, handlers.ErrTerminalIDInUse)
+	require.Equal(t, int32(1), backendCalls.Load())
+	_, err = h.Write(context.Background(), protocol.TerminalWriteParams{TerminalID: id, Data: "retryable"})
+	require.NoError(t, err)
+	require.Equal(t, int32(1), oldHandle.writeCalls.Load())
+	require.Zero(t, replacement.writeCalls.Load())
+
+	_, err = h.Close(context.Background(), protocol.TerminalCloseParams{TerminalID: id})
+	require.NoError(t, err)
+	_, err = h.Open(context.Background(), protocol.TerminalOpenParams{TerminalID: id, Cols: 80, Rows: 24})
+	require.NoError(t, err)
+	requireTerminalPumpStarted(t, replacement)
+	oldHandle.finish(pty.ExitInfo{Code: 137, Reason: "closed-old"})
+	requireTerminalRemainsWritable(t, h, id, 25*time.Millisecond)
+
+	replacement.finish(pty.ExitInfo{Code: 0, Reason: "replacement-after-retry"})
+}
+
+func TestTerminalClose_GivenCloseReopenAndPumpCleanupRaceThenReplacementKeepsStableIDOwnership(t *testing.T) {
+	const iterations = 64
+	for i := 0; i < iterations; i++ {
+		id := fmt.Sprintf("stable-race-%03d", i)
+		closeStarted := make(chan struct{}, 1)
+		closeRelease := make(chan struct{})
+		oldHandle := newControlledTerminalHandle()
+		oldHandle.closeStarted = closeStarted
+		oldHandle.closeRelease = closeRelease
+		replacement := newControlledTerminalHandle()
+		recorder := &recordingEmitter{}
+		h := handlers.NewTerminalHandlers(terminalHandleSequence(oldHandle, replacement), recorder)
+
+		_, err := h.Open(context.Background(), protocol.TerminalOpenParams{TerminalID: id, Cols: 80, Rows: 24})
+		require.NoError(t, err)
+		requireTerminalPumpStarted(t, oldHandle)
+		closeOutcome := make(chan error, 1)
+		go func() {
+			_, closeErr := h.Close(context.Background(), protocol.TerminalCloseParams{TerminalID: id})
+			closeOutcome <- closeErr
+		}()
+		receiveTerminalTestValue(t, closeStarted)
+
+		gate := make(chan struct{})
+		oldFinished := make(chan struct{})
+		go func() {
+			<-gate
+			oldHandle.finish(pty.ExitInfo{Code: 137, Reason: fmt.Sprintf("old-%03d", i)})
+			close(oldFinished)
+		}()
+		go func() {
+			<-gate
+			close(closeRelease)
+		}()
+		close(gate)
+
+		require.NoError(t, receiveTerminalTestValue(t, closeOutcome))
+		receiveTerminalTestValue(t, oldFinished)
+		_, err = h.Open(context.Background(), protocol.TerminalOpenParams{TerminalID: id, Cols: 80, Rows: 24})
+		require.NoErrorf(t, err, "iteration=%d", i)
+		requireTerminalPumpStarted(t, replacement)
+		requireTerminalRemainsWritable(t, h, id, 2*time.Millisecond)
+
+		replacementReason := fmt.Sprintf("replacement-%03d", i)
+		replacement.finish(pty.ExitInfo{Reason: replacementReason})
+		waitForTerminalExitReason(t, recorder, replacementReason)
+		h.CloseAll()
+	}
 }
 
 func TestTerminalClose_GivenCancellationTombstonesReachCapacityThenRejectsWithoutEvictionAndRecoversAfterConsumption(t *testing.T) {

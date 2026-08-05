@@ -66,12 +66,20 @@ type pendingTerminalOpen struct {
 	canceled bool
 }
 
+// terminalEntry is the identity of one active registration. The pointer, not
+// the PTYHandle interface value, owns cleanup because a handle's dynamic value
+// is not required to be comparable.
+type terminalEntry struct {
+	handle  PTYHandle
+	eventMu sync.Mutex
+}
+
 type TerminalHandlers struct {
 	be      PTYBackend
 	emitter Emitter
 
 	mu               sync.Mutex
-	terminals        map[string]PTYHandle
+	terminals        map[string]*terminalEntry
 	pending          map[string]*pendingTerminalOpen
 	cancelTombstones map[string]struct{}
 	closed           bool
@@ -81,7 +89,7 @@ func NewTerminalHandlers(be PTYBackend, emitter Emitter) *TerminalHandlers {
 	return &TerminalHandlers{
 		be:               be,
 		emitter:          emitter,
-		terminals:        map[string]PTYHandle{},
+		terminals:        map[string]*terminalEntry{},
 		pending:          map[string]*pendingTerminalOpen{},
 		cancelTombstones: map[string]struct{}{},
 	}
@@ -114,14 +122,16 @@ func (h *TerminalHandlers) Open(ctx context.Context, p protocol.TerminalOpenPara
 	closed := h.closed
 	openCtxErr := attempt.ctx.Err()
 	register := openErr == nil && hd != nil && ownsClaim && !canceled && !closed && openCtxErr == nil
+	var entry *terminalEntry
 	if register {
-		h.terminals[id] = hd
+		entry = &terminalEntry{handle: hd}
+		h.terminals[id] = entry
 	}
 	h.mu.Unlock()
 	attempt.cancel()
 
 	if register {
-		go h.pump(ctx, id, hd)
+		go h.pump(ctx, id, entry)
 		return protocol.TerminalOpenResult{TerminalID: id}, nil
 	}
 	if hd != nil {
@@ -179,8 +189,8 @@ func isTerminalIDAlphaNumeric(ch byte) bool {
 	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9'
 }
 
-func (h *TerminalHandlers) pump(ctx context.Context, id string, hd PTYHandle) {
-	// 256-cap buffered channel: pump reads from hd.Data() and forwards to
+func (h *TerminalHandlers) pump(ctx context.Context, id string, entry *terminalEntry) {
+	// 256-cap buffered channel: pump reads from entry.handle.Data() and forwards to
 	// this queue. If full, drop the oldest chunk, insert a throttle marker,
 	// then enqueue the new chunk. Avoids blocking PTY stdout under
 	// bursty/slow-consumer load.
@@ -196,9 +206,7 @@ func (h *TerminalHandlers) pump(ctx context.Context, id string, hd PTYHandle) {
 			// base64 so multibyte UTF-8 split across PTY reads survives the
 			// WebSocket JSON hop instead of being mangled to U+FFFD. The desktop
 			// remote backend decodes it back to raw bytes.
-			h.emitter.Emit(ctx, EventNameTerminalData, protocol.TerminalDataEvent{
-				TerminalID: id, Data: base64.StdEncoding.EncodeToString(data),
-			})
+			h.emitTerminalData(ctx, id, entry, data)
 		}
 	}()
 
@@ -232,8 +240,8 @@ func (h *TerminalHandlers) pump(ctx context.Context, id string, hd PTYHandle) {
 	// buffered Exit() value and drops the exit ~50% of the time (remote
 	// terminal stuck "open"), or returns on Exit() while data is still
 	// buffered and drops the trailing output.
-	dataCh := hd.Data()
-	exitCh := hd.Exit()
+	dataCh := entry.handle.Data()
+	exitCh := entry.handle.Exit()
 	var exitInfo pty.ExitInfo
 stream:
 	for {
@@ -271,12 +279,55 @@ stream:
 	close(queue)
 	<-done
 
+	h.emitTerminalExitAndDetach(ctx, id, entry, exitInfo)
+}
+
+// emitTerminalData serializes event publication with successful Close. Once
+// Close detaches the entry, queued old data cannot be attributed to a
+// replacement reusing the stable ID.
+func (h *TerminalHandlers) emitTerminalData(ctx context.Context, id string, entry *terminalEntry, data []byte) {
+	entry.eventMu.Lock()
+	defer entry.eventMu.Unlock()
+
 	h.mu.Lock()
-	delete(h.terminals, id)
+	owned := h.terminals[id] == entry
 	h.mu.Unlock()
+	if !owned {
+		return
+	}
+	h.emitter.Emit(ctx, EventNameTerminalData, protocol.TerminalDataEvent{
+		TerminalID: id, Data: base64.StdEncoding.EncodeToString(data),
+	})
+}
+
+// emitTerminalExitAndDetach keeps the entry registered until its exit event is
+// published. Therefore an old exit is either published before the stable ID is
+// reusable, or suppressed after Close detached it; it can never target a newer
+// registration with the same ID.
+func (h *TerminalHandlers) emitTerminalExitAndDetach(
+	ctx context.Context,
+	id string,
+	entry *terminalEntry,
+	exitInfo pty.ExitInfo,
+) {
+	entry.eventMu.Lock()
+	defer entry.eventMu.Unlock()
+
+	h.mu.Lock()
+	owned := h.terminals[id] == entry
+	h.mu.Unlock()
+	if !owned {
+		return
+	}
 	h.emitter.Emit(ctx, EventNameTerminalExit, protocol.TerminalExitEvent{
 		TerminalID: id, Code: exitInfo.Code, Reason: exitInfo.Reason, Msg: exitInfo.Msg,
 	})
+
+	h.mu.Lock()
+	if h.terminals[id] == entry {
+		delete(h.terminals, id)
+	}
+	h.mu.Unlock()
 }
 
 func newTerminalID() string {
@@ -289,23 +340,23 @@ type TerminalAck struct{}
 
 func (h *TerminalHandlers) Write(ctx context.Context, p protocol.TerminalWriteParams) (TerminalAck, error) {
 	h.mu.Lock()
-	hd, ok := h.terminals[p.TerminalID]
+	entry, ok := h.terminals[p.TerminalID]
 	h.mu.Unlock()
 	if !ok {
 		return TerminalAck{}, ErrTerminalNotFound
 	}
-	_, err := hd.Write([]byte(p.Data))
+	_, err := entry.handle.Write([]byte(p.Data))
 	return TerminalAck{}, err
 }
 
 func (h *TerminalHandlers) Resize(ctx context.Context, p protocol.TerminalResizeParams) (TerminalAck, error) {
 	h.mu.Lock()
-	hd, ok := h.terminals[p.TerminalID]
+	entry, ok := h.terminals[p.TerminalID]
 	h.mu.Unlock()
 	if !ok {
 		return TerminalAck{}, ErrTerminalNotFound
 	}
-	return TerminalAck{}, hd.Resize(p.Cols, p.Rows)
+	return TerminalAck{}, entry.handle.Resize(p.Cols, p.Rows)
 }
 
 // CloseAll terminates every live PTY and pending open owned by this connection.
@@ -313,15 +364,15 @@ func (h *TerminalHandlers) CloseAll() {
 	h.mu.Lock()
 	h.closed = true
 	hs := make([]PTYHandle, 0, len(h.terminals))
-	for _, hd := range h.terminals {
-		hs = append(hs, hd)
+	for _, entry := range h.terminals {
+		hs = append(hs, entry.handle)
 	}
 	cancels := make([]context.CancelFunc, 0, len(h.pending))
 	for _, attempt := range h.pending {
 		attempt.canceled = true
 		cancels = append(cancels, attempt.cancel)
 	}
-	h.terminals = map[string]PTYHandle{}
+	h.terminals = map[string]*terminalEntry{}
 	h.pending = map[string]*pendingTerminalOpen{}
 	h.cancelTombstones = map[string]struct{}{}
 	h.mu.Unlock()
@@ -342,9 +393,20 @@ func (h *TerminalHandlers) Close(ctx context.Context, p protocol.TerminalClosePa
 	}
 
 	h.mu.Lock()
-	if hd, ok := h.terminals[p.TerminalID]; ok {
+	if entry, ok := h.terminals[p.TerminalID]; ok {
 		h.mu.Unlock()
-		return TerminalAck{}, hd.Close()
+		if err := entry.handle.Close(); err != nil {
+			return TerminalAck{}, err
+		}
+
+		entry.eventMu.Lock()
+		h.mu.Lock()
+		if h.terminals[p.TerminalID] == entry {
+			delete(h.terminals, p.TerminalID)
+		}
+		h.mu.Unlock()
+		entry.eventMu.Unlock()
+		return TerminalAck{}, nil
 	}
 	if !p.CancelPendingOpen {
 		h.mu.Unlock()
