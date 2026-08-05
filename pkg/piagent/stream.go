@@ -14,12 +14,15 @@ type Stream struct {
 	killGrace time.Duration
 	events    chan Event
 
-	mu          sync.RWMutex
-	sessionID   string
-	model       string
-	err         error
-	diagnostics StreamDiagnostics
-	cur         Event
+	mu                 sync.RWMutex
+	sessionID          string
+	userAnchorBoundary string
+	userAnchor         string
+	captureUserAnchor  bool
+	model              string
+	err                error
+	diagnostics        StreamDiagnostics
+	cur                Event
 
 	closeOnce sync.Once
 
@@ -82,6 +85,25 @@ func (s *Stream) SessionID() string {
 func (s *Stream) setSessionID(sessionID string) {
 	s.mu.Lock()
 	s.sessionID = strings.TrimSpace(sessionID)
+	s.mu.Unlock()
+}
+
+func (s *Stream) UserAnchor() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.userAnchor
+}
+
+func (s *Stream) setUserAnchorBoundary(leafID string) {
+	s.mu.Lock()
+	s.captureUserAnchor = true
+	s.userAnchorBoundary = strings.TrimSpace(leafID)
+	s.mu.Unlock()
+}
+
+func (s *Stream) setUserAnchor(anchor string) {
+	s.mu.Lock()
+	s.userAnchor = strings.TrimSpace(anchor)
 	s.mu.Unlock()
 }
 
@@ -180,7 +202,11 @@ func (s *Stream) drain(ctx context.Context) {
 }
 
 func (s *Stream) finish(ctx context.Context) {
-	s.emitSessionStats(ctx)
+	if s.captureUserAnchor {
+		s.emitTrackedSessionMetadata(ctx)
+	} else {
+		s.emitSessionStats(ctx)
+	}
 	s.emit(Event{Kind: EventDone})
 }
 
@@ -263,6 +289,161 @@ func (s *Stream) readSessionStatsContextWindow() int {
 		return contextWindowFromSessionStats(resp.Data)
 	}
 	return 0
+}
+
+type trackedSessionMetadata struct {
+	userAnchor    string
+	contextWindow int
+	entriesSeen   bool
+	statsSeen     bool
+}
+
+func (s *Stream) emitTrackedSessionMetadata(ctx context.Context) {
+	if s == nil || s.proc == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	const entriesRequestID = "session-entries-after"
+	if err := s.send(ctx, map[string]any{"id": entriesRequestID, "type": "get_entries"}); err != nil {
+		return
+	}
+	wantStats := s.send(ctx, map[string]any{"type": "get_session_stats"}) == nil
+
+	updates := make(chan trackedSessionMetadata, 2)
+	go func() {
+		s.readTrackedSessionMetadata(entriesRequestID, wantStats, updates)
+		close(updates)
+	}()
+
+	metadata := trackedSessionMetadata{statsSeen: !wantStats}
+	timer := time.NewTimer(sessionStatsTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			s.applyTrackedSessionMetadata(metadata)
+			return
+		case update, ok := <-updates:
+			if !ok {
+				s.applyTrackedSessionMetadata(metadata)
+				return
+			}
+			metadata = update
+			if metadata.entriesSeen && metadata.statsSeen {
+				s.applyTrackedSessionMetadata(metadata)
+				return
+			}
+		}
+	}
+}
+
+func (s *Stream) applyTrackedSessionMetadata(metadata trackedSessionMetadata) {
+	s.setUserAnchor(metadata.userAnchor)
+	if metadata.contextWindow > 0 {
+		s.emit(Event{Kind: EventContextWindow, ContextWindow: metadata.contextWindow})
+	}
+}
+
+func (s *Stream) readTrackedSessionMetadata(
+	entriesRequestID string,
+	wantStats bool,
+	updates chan<- trackedSessionMetadata,
+) {
+	metadata := trackedSessionMetadata{statsSeen: !wantStats}
+	for s.proc.lines.Scan() {
+		if s.proc.rawSink != nil {
+			s.proc.rawSink(s.proc.lines.Bytes())
+		}
+		line := strings.TrimSpace(s.proc.lines.Text())
+		if line == "" {
+			continue
+		}
+		var response rpcResponse
+		if err := json.Unmarshal([]byte(line), &response); err != nil || response.Type != "response" {
+			continue
+		}
+		switch {
+		case response.Command == "get_entries" && response.ID == entriesRequestID && !metadata.entriesSeen:
+			metadata.entriesSeen = true
+			if response.Success {
+				var entries sessionEntriesWire
+				if err := json.Unmarshal(response.Data, &entries); err == nil {
+					metadata.userAnchor = firstUserEntryAfterBoundary(
+						entries.Entries,
+						s.userAnchorBoundary,
+						entries.LeafID,
+					)
+				}
+			}
+			updates <- metadata
+		case response.Command == "get_session_stats" && !metadata.statsSeen:
+			metadata.statsSeen = true
+			if response.Success {
+				metadata.contextWindow = contextWindowFromSessionStats(response.Data)
+			}
+			updates <- metadata
+		}
+		if metadata.entriesSeen && metadata.statsSeen {
+			return
+		}
+	}
+}
+
+func firstUserEntryAfterBoundary(entries []sessionEntryWire, boundaryLeafID, currentLeafID string) string {
+	boundaryLeafID = strings.TrimSpace(boundaryLeafID)
+	currentLeafID = strings.TrimSpace(currentLeafID)
+	if currentLeafID == "" || currentLeafID == boundaryLeafID {
+		return ""
+	}
+
+	byID := make(map[string]sessionEntryWire, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := byID[id]; duplicate {
+			return ""
+		}
+		entry.ID = id
+		entry.ParentID = strings.TrimSpace(entry.ParentID)
+		byID[id] = entry
+	}
+
+	path := make([]sessionEntryWire, 0)
+	seen := make(map[string]struct{})
+	for currentLeafID != boundaryLeafID {
+		if currentLeafID == "" {
+			if boundaryLeafID != "" {
+				return ""
+			}
+			break
+		}
+		if _, cycle := seen[currentLeafID]; cycle {
+			return ""
+		}
+		seen[currentLeafID] = struct{}{}
+		entry, ok := byID[currentLeafID]
+		if !ok {
+			return ""
+		}
+		path = append(path, entry)
+		currentLeafID = entry.ParentID
+	}
+
+	for i := len(path) - 1; i >= 0; i-- {
+		entry := path[i]
+		if entry.Type == "message" && entry.Message.Role == "user" {
+			return entry.ID
+		}
+	}
+	return ""
 }
 
 func contextWindowFromSessionStats(raw json.RawMessage) int {

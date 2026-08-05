@@ -68,8 +68,32 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
 	}
+	if forkAnchor := strings.TrimSpace(spec.forkAnchor); forkAnchor != "" {
+		if err := forkSession(ctx, proc, forkAnchor); err != nil {
+			_ = proc.terminate(context.Background(), c.killGrace)
+			return nil, err
+		}
+		forkedSessionID, err := readSessionID(ctx, proc, "")
+		if err != nil {
+			_ = proc.terminate(context.Background(), c.killGrace)
+			return nil, err
+		}
+		if forkedSessionID == sessionID {
+			_ = proc.terminate(context.Background(), c.killGrace)
+			return nil, fmt.Errorf("piagent: fork did not change session id %q", sessionID)
+		}
+		sessionID = forkedSessionID
+	}
 	stream := newStream(proc, c.killGrace)
 	stream.setSessionID(sessionID)
+	if spec.captureUserAnchor {
+		entries, err := readSessionEntries(ctx, proc, "session-entries-before")
+		if err != nil {
+			_ = stream.Close(context.Background())
+			return nil, err
+		}
+		stream.setUserAnchorBoundary(entries.LeafID)
+	}
 	frame := map[string]any{"type": "prompt", "message": prompt}
 	if imgs := imagesToWire(spec.images); len(imgs) > 0 {
 		frame["images"] = imgs
@@ -133,8 +157,77 @@ func (c *Client) Close(_ context.Context) error { return nil }
 
 func readSessionID(ctx context.Context, proc *rpcProcess, expected string) (string, error) {
 	const requestID = "session-state"
-	if err := proc.writeJSON(map[string]any{"id": requestID, "type": "get_state"}); err != nil {
+	response, err := callRPC(ctx, proc, map[string]any{"id": requestID, "type": "get_state"}, "get_state", requestID)
+	if err != nil {
 		return "", err
+	}
+	var state sessionStateWire
+	if err := json.Unmarshal(response.Data, &state); err != nil {
+		return "", fmt.Errorf("piagent decode get_state data: %w", err)
+	}
+	sessionID := strings.TrimSpace(state.SessionID)
+	if sessionID == "" {
+		return "", errors.New("piagent: get_state returned empty session id")
+	}
+	expected = strings.TrimSpace(expected)
+	if expected != "" && !looksLikeSessionPath(expected) && sessionID != expected {
+		return "", fmt.Errorf("piagent: get_state returned unexpected session id %q, want %q", sessionID, expected)
+	}
+	return sessionID, nil
+}
+
+func forkSession(ctx context.Context, proc *rpcProcess, entryID string) error {
+	const requestID = "session-fork"
+	response, err := callRPC(
+		ctx,
+		proc,
+		map[string]any{"id": requestID, "type": "fork", "entryId": entryID},
+		"fork",
+		requestID,
+	)
+	if err != nil {
+		return err
+	}
+	var result forkResultWire
+	if err := json.Unmarshal(response.Data, &result); err != nil {
+		return fmt.Errorf("piagent decode fork data: %w", err)
+	}
+	if result.Canceled == nil {
+		return errors.New("piagent: fork response omitted cancellation state")
+	}
+	if *result.Canceled {
+		return errors.New("piagent: fork was canceled")
+	}
+	return nil
+}
+
+func readSessionEntries(ctx context.Context, proc *rpcProcess, requestID string) (sessionEntriesWire, error) {
+	response, err := callRPC(
+		ctx,
+		proc,
+		map[string]any{"id": requestID, "type": "get_entries"},
+		"get_entries",
+		requestID,
+	)
+	if err != nil {
+		return sessionEntriesWire{}, err
+	}
+	var entries sessionEntriesWire
+	if err := json.Unmarshal(response.Data, &entries); err != nil {
+		return sessionEntriesWire{}, fmt.Errorf("piagent decode get_entries data: %w", err)
+	}
+	return entries, nil
+}
+
+func callRPC(
+	ctx context.Context,
+	proc *rpcProcess,
+	request map[string]any,
+	command string,
+	requestID string,
+) (rpcResponse, error) {
+	if err := proc.writeJSON(request); err != nil {
+		return rpcResponse{}, err
 	}
 	for proc.lines.Scan() {
 		if proc.rawSink != nil {
@@ -142,34 +235,22 @@ func readSessionID(ctx context.Context, proc *rpcProcess, expected string) (stri
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return rpcResponse{}, ctx.Err()
 		default:
 		}
 		var response rpcResponse
 		if err := json.Unmarshal(proc.lines.Bytes(), &response); err != nil {
 			continue
 		}
-		if response.Type != "response" || response.Command != "get_state" || response.ID != requestID {
+		if response.Type != "response" || response.Command != command || response.ID != requestID {
 			continue
 		}
 		if !response.Success {
-			return "", failureResponseError(response)
+			return rpcResponse{}, failureResponseError(response)
 		}
-		var state sessionStateWire
-		if err := json.Unmarshal(response.Data, &state); err != nil {
-			return "", fmt.Errorf("piagent decode get_state data: %w", err)
-		}
-		sessionID := strings.TrimSpace(state.SessionID)
-		if sessionID == "" {
-			return "", errors.New("piagent: get_state returned empty session id")
-		}
-		expected = strings.TrimSpace(expected)
-		if expected != "" && !looksLikeSessionPath(expected) && sessionID != expected {
-			return "", fmt.Errorf("piagent: get_state returned unexpected session id %q, want %q", sessionID, expected)
-		}
-		return sessionID, nil
+		return response, nil
 	}
-	return "", awaitProcessExitOrScanError(ctx, proc)
+	return rpcResponse{}, awaitProcessExitOrScanError(ctx, proc)
 }
 
 func looksLikeSessionPath(value string) bool {
