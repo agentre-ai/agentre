@@ -2,7 +2,11 @@ package piagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"strings"
 	"testing"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
@@ -16,6 +20,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/cliprocess"
 	pkgpiagent "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
@@ -29,6 +34,7 @@ func TestPiAgentCapabilities(t *testing.T) {
 			So(caps.Has(capability.CapImageInput), ShouldBeTrue)
 			So(caps.Has(capability.CapCompact), ShouldBeTrue)
 			So(caps.Has(capability.CapReportContextWindow), ShouldBeTrue)
+			So(caps.Has(capability.CapForkSession), ShouldBeTrue)
 			So(caps.Has(capability.CapSetPermission), ShouldBeFalse)
 			So(caps.Has(capability.CapCancelSteer), ShouldBeFalse)
 			So(caps.Has(capability.CapDrainSteer), ShouldBeFalse)
@@ -50,6 +56,78 @@ func TestPiAgentCapabilities(t *testing.T) {
 			So(setter, ShouldEqual, caps.Has(capability.CapSetPermission))
 			So(canceler, ShouldEqual, caps.Has(capability.CapCancelSteer))
 			So(drainer, ShouldEqual, caps.Has(capability.CapDrainSteer))
+		})
+	})
+}
+
+func TestRun_ForksAndReturnsNativeSessionState(t *testing.T) {
+	Convey("Given a resumed Pi session and an exact user-entry fork anchor", t, func() {
+		proc := newRuntimeRPCProcess(true, false)
+		restore := SetSessionFactoryForTest(runtimeRPCSessionFactory(proc))
+		defer restore()
+
+		Convey("When the runtime runs the prompt Then it forks first and returns the new session and user anchor", func() {
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID:         1,
+				ProviderSessionID: "session-old",
+				ForkAnchor:        "fork-user",
+				Cwd:               t.TempDir(),
+				UserText:          "repeat",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.ProviderSessionID, ShouldEqual, "session-new")
+			So(result.UserAnchor, ShouldEqual, "new-user")
+			So(proc.commands(), ShouldResemble, []string{
+				"get_state", "fork", "get_state", "get_entries", "prompt", "get_entries", "get_session_stats",
+			})
+			So(proc.forkEntryID(), ShouldEqual, "fork-user")
+		})
+	})
+}
+
+func TestRun_PreservesCompletedAnswerWhenUserAnchorMetadataFails(t *testing.T) {
+	Convey("Given Pi completes the assistant answer but final user-anchor metadata is unavailable", t, func() {
+		proc := newRuntimeRPCProcess(false, true)
+		restore := SetSessionFactoryForTest(runtimeRPCSessionFactory(proc))
+		defer restore()
+
+		Convey("When the runtime drains Then it keeps Done and leaves the user anchor empty", func() {
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID:         2,
+				ProviderSessionID: "session-old",
+				Cwd:               t.TempDir(),
+				UserText:          "hello",
+			})
+			So(err, ShouldBeNil)
+
+			var text strings.Builder
+			done := false
+			failed := false
+			for event := range events {
+				switch event := event.(type) {
+				case agentruntime.TextDelta:
+					text.WriteString(event.Text)
+				case agentruntime.Done:
+					done = true
+				case agentruntime.ErrorEvent:
+					failed = true
+				}
+			}
+
+			So(text.String(), ShouldEqual, "completed answer")
+			So(done, ShouldBeTrue)
+			So(failed, ShouldBeFalse)
+			So(result.StopErr, ShouldBeNil)
+			So(result.ProviderSessionID, ShouldEqual, "session-old")
+			So(result.UserAnchor, ShouldBeEmpty)
+			So(proc.commands(), ShouldResemble, []string{
+				"get_state", "get_entries", "prompt", "get_entries", "get_session_stats",
+			})
 		})
 	})
 }
@@ -104,6 +182,7 @@ func TestRun_MapsMissingNativeSession(t *testing.T) {
 				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
 				SessionID:         1,
 				ProviderSessionID: "pi-native-gone",
+				ForkAnchor:        "fork-user",
 				Cwd:               t.TempDir(),
 				UserText:          "hello",
 			})
@@ -111,6 +190,7 @@ func TestRun_MapsMissingNativeSession(t *testing.T) {
 			So(events, ShouldBeNil)
 			So(result, ShouldBeNil)
 			So(errors.Is(err, agentruntime.ErrSessionNotFound), ShouldBeTrue)
+			So(sess.gotForkAnchor, ShouldEqual, "fork-user")
 			So(sess.closed, ShouldBeTrue)
 		})
 	})
@@ -268,15 +348,16 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 }
 
 type fakeSession struct {
-	stream       stream
-	sid          string
-	gotImages    []pkgpiagent.Image
-	gotPrompt    string
-	streamCall   int
-	streamErr    error
-	closed       bool
-	closeStarted chan struct{}
-	allowClose   <-chan struct{}
+	stream        stream
+	sid           string
+	gotImages     []pkgpiagent.Image
+	gotPrompt     string
+	gotForkAnchor string
+	streamCall    int
+	streamErr     error
+	closed        bool
+	closeStarted  chan struct{}
+	allowClose    <-chan struct{}
 }
 
 func (s *fakeSession) Close(context.Context) error {
@@ -295,6 +376,10 @@ func (s *fakeSession) Stream(_ context.Context, prompt, _ string, images []pkgpi
 	s.gotPrompt = prompt
 	s.gotImages = images
 	return s.stream, s.streamErr
+}
+func (s *fakeSession) StreamTurn(ctx context.Context, prompt, mode string, images []pkgpiagent.Image, turn turnSpec) (stream, error) {
+	s.gotForkAnchor = turn.forkAnchor
+	return s.Stream(ctx, prompt, mode, images)
 }
 func (s *fakeSession) Compact(context.Context) (stream, error)          { return s.stream, s.streamErr }
 func (s *fakeSession) RewindTo(context.Context, string) (string, error) { return s.sid, nil }
@@ -326,3 +411,107 @@ func (s *scriptedStream) Next() bool {
 func (s *scriptedStream) Event() pkgpiagent.Event { return s.events[s.idx-1] }
 func (s *scriptedStream) SessionID() string       { return s.sid }
 func (s *scriptedStream) Err() error              { return s.err }
+
+type runtimeRPCRunner struct {
+	proc cliprocess.Handle
+}
+
+func (r *runtimeRPCRunner) Start(context.Context, cliprocess.Options) (cliprocess.Handle, error) {
+	return r.proc, nil
+}
+
+type runtimeRPCProcess struct {
+	stdin  *cliprocess.LockedBuffer
+	stdout io.Reader
+	done   chan error
+}
+
+func newRuntimeRPCProcess(forked, metadataFailed bool) *runtimeRPCProcess {
+	lines := []string{
+		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-old"}}`,
+	}
+	if forked {
+		lines = append(lines,
+			`{"id":"session-fork","type":"response","command":"fork","success":true,"data":{"cancelled":false}}`, //nolint:misspell // Pi RPC field uses British spelling.
+			`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-new"}}`,
+		)
+	}
+	lines = append(lines,
+		`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"before-leaf","parentId":null,"message":{"role":"assistant"}}],"leafId":"before-leaf"}}`,
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"completed answer"}}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+	)
+	if metadataFailed {
+		lines = append(lines, `{"id":"session-entries-after","type":"response","command":"get_entries","success":false,"error":"metadata unavailable"}`)
+	} else {
+		lines = append(lines, `{"id":"session-entries-after","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"before-leaf","parentId":null,"message":{"role":"assistant"}},{"type":"message","id":"new-user","parentId":"before-leaf","message":{"role":"user","content":"repeat"}},{"type":"message","id":"new-assistant","parentId":"new-user","message":{"role":"assistant"}}],"leafId":"new-assistant"}}`)
+	}
+	lines = append(lines, `{"type":"response","command":"get_session_stats","success":true,"data":{}}`)
+	return &runtimeRPCProcess{
+		stdin:  &cliprocess.LockedBuffer{},
+		stdout: strings.NewReader(strings.Join(lines, "\n") + "\n"),
+		done:   make(chan error, 1),
+	}
+}
+
+func runtimeRPCSessionFactory(proc *runtimeRPCProcess) func(agentruntime.RunRequest, map[string]string, string) (sessionHandle, error) {
+	return func(req agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+		client := pkgpiagent.New(
+			pkgpiagent.WithRPCProcessRunnerForTesting(&runtimeRPCRunner{proc: proc}),
+			pkgpiagent.WithSession(req.ProviderSessionID),
+		)
+		return &clientAdapter{client: client, sid: req.ProviderSessionID}, nil
+	}
+}
+
+func (p *runtimeRPCProcess) Stdin() io.Writer  { return p.stdin }
+func (p *runtimeRPCProcess) Stdout() io.Reader { return p.stdout }
+func (p *runtimeRPCProcess) Stderr() io.Reader { return strings.NewReader("") }
+func (p *runtimeRPCProcess) Wait() error       { return <-p.done }
+func (p *runtimeRPCProcess) Kill() error       { return p.finish() }
+func (p *runtimeRPCProcess) Signal(os.Signal) error {
+	return p.finish()
+}
+
+func (p *runtimeRPCProcess) finish() error {
+	select {
+	case p.done <- nil:
+	default:
+	}
+	return nil
+}
+
+func (p *runtimeRPCProcess) commands() []string {
+	frames := p.stdinFrames()
+	out := make([]string, 0, len(frames))
+	for _, frame := range frames {
+		if command, ok := frame["type"].(string); ok {
+			out = append(out, command)
+		}
+	}
+	return out
+}
+
+func (p *runtimeRPCProcess) forkEntryID() string {
+	for _, frame := range p.stdinFrames() {
+		if frame["type"] == "fork" {
+			entryID, _ := frame["entryId"].(string)
+			return entryID
+		}
+	}
+	return ""
+}
+
+func (p *runtimeRPCProcess) stdinFrames() []map[string]any {
+	lines := strings.Split(strings.TrimSpace(p.stdin.String()), "\n")
+	frames := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		var frame map[string]any
+		if json.Unmarshal([]byte(line), &frame) == nil {
+			frames = append(frames, frame)
+		}
+	}
+	return frames
+}

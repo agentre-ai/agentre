@@ -20,6 +20,14 @@ type stream interface {
 	Err() error
 }
 
+type userAnchorStream interface {
+	UserAnchor() string
+}
+
+type turnSpec struct {
+	forkAnchor string
+}
+
 type steerStream interface {
 	Steer(ctx context.Context, text string) error
 }
@@ -51,9 +59,25 @@ func (a *clientAdapter) Close(ctx context.Context) error {
 }
 
 func (a *clientAdapter) Stream(ctx context.Context, prompt string, mode string, images []piagent.Image) (stream, error) {
-	// Resume 不在这里下发：会话复用走 Client 级 --session（WithSession），这里只
-	// 负责本轮 prompt + 多模态图片 + 可选 permission mode。
+	return a.startStream(ctx, prompt, mode, images, nil)
+}
+
+func (a *clientAdapter) StreamTurn(ctx context.Context, prompt string, mode string, images []piagent.Image, turn turnSpec) (stream, error) {
+	return a.startStream(ctx, prompt, mode, images, &turn)
+}
+
+func (a *clientAdapter) startStream(ctx context.Context, prompt string, mode string, images []piagent.Image, turn *turnSpec) (stream, error) {
+	// Resume 不在这里下发：会话复用走 Client 级 --session（WithSession）。每个
+	// runtime turn 都记录原生 user anchor；分叉 turn 由同一个 per-turn option
+	// 在当前 RPC 进程里先 fork，再发送 prompt。
 	var opts []piagent.RunOption
+	if turn != nil {
+		if anchor := strings.TrimSpace(turn.forkAnchor); anchor != "" {
+			opts = append(opts, piagent.RunForkAnchor(anchor))
+		} else {
+			opts = append(opts, piagent.RunCaptureUserAnchor())
+		}
+	}
 	if strings.TrimSpace(mode) != "" {
 		opts = append(opts, piagent.RunPermissionMode(piagent.PermissionMode(strings.TrimSpace(mode))))
 	}
@@ -109,6 +133,7 @@ type sessionHandle interface {
 	Close(context.Context) error
 	ID() string
 	Stream(ctx context.Context, prompt string, mode string, images []piagent.Image) (stream, error)
+	StreamTurn(ctx context.Context, prompt string, mode string, images []piagent.Image, turn turnSpec) (stream, error)
 	Compact(ctx context.Context) (stream, error)
 	RewindTo(ctx context.Context, anchor string) (string, error)
 	ActiveStream() steerStream

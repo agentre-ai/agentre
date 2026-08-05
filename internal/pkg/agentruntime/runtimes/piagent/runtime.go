@@ -46,6 +46,7 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 			capability.CapImageInput:          true,
 			capability.CapCompact:             true,
 			capability.CapReportContextWindow: true,
+			capability.CapForkSession:         true,
 			capability.CapMCPTools:            true,
 		},
 	}
@@ -78,7 +79,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if req.Compact {
 		s, err = sess.Compact(ctx)
 	} else {
-		s, err = sess.Stream(ctx, req.UserText, req.CollaborationMode, extractImages(req.UserBlocks))
+		s, err = sess.StreamTurn(ctx, req.UserText, req.CollaborationMode, extractImages(req.UserBlocks), turnSpec{forkAnchor: req.ForkAnchor})
 	}
 	if err != nil {
 		_ = sess.Close(context.Background())
@@ -239,6 +240,9 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 		if err != nil {
 			stopErr = err
 		}
+	}
+	if anchorStream, ok := s.(userAnchorStream); ok {
+		result.UserAnchor = anchorStream.UserAnchor()
 	}
 	if err := s.Err(); err != nil && stopErr == nil {
 		stopErr = err
