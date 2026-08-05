@@ -880,8 +880,13 @@ describe("ChatPanel · local command scope and execution", () => {
   });
 
   it.each(["data", "exit"] as const)(
-    "Given the terminal %s listener registration fails once, When retry installs the complete pair and the command exits naturally, Then it launches once, settles, and cleans every listener without duplicate data",
+    "Given the terminal %s listener registration fails once, When retry installs the complete pair and the command exits naturally, Then it launches once, settles, and cleans every listener without duplicate data or a guardian timer",
     async (throwingListener) => {
+      vi.useFakeTimers();
+      onTestFinished(() => {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      });
       resetStore();
       const finish = observeLocalCommandFinish();
       mockSessionStore.session = makeSession({ id: 42 });
@@ -959,6 +964,7 @@ describe("ChatPanel · local command scope and execution", () => {
       expect(activeListeners.get(exitEvent)?.size ?? 0).toBe(0);
       expect(finish).toHaveBeenCalledTimes(1);
       expect(finish).toHaveBeenCalledWith(terminalId, "done", 0);
+      expect(vi.getTimerCount()).toBe(0);
     },
   );
 
@@ -1020,7 +1026,12 @@ describe("ChatPanel · local command scope and execution", () => {
     },
   );
 
-  it("Given exit registration fails and partial-listener cleanup stays unavailable after its bounded retry, When a command is submitted, Then the error is contained and no unobservable command launches", async () => {
+  it("Given partial terminal cleanup throws before removal, When the runtime recovers after the panel unmounts, Then one guardian removes the retained listener without launching the command or settling twice", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
     resetStore();
     const finish = observeLocalCommandFinish();
     mockSessionStore.session = makeSession({ id: 42 });
@@ -1030,11 +1041,12 @@ describe("ChatPanel · local command scope and execution", () => {
       string,
       Set<(...args: unknown[]) => void>
     >();
+    let cleanupRecovered = false;
     const exactCleanup = vi.fn((event: string, handler: unknown) => {
+      if (!cleanupRecovered) throw cleanupError;
       activeListeners
         .get(event)
         ?.delete(handler as (...args: unknown[]) => void);
-      throw cleanupError;
     });
     runtimeMocks.EventsOn.mockImplementation((event, handler) => {
       if (!event?.startsWith("terminal:") || !handler) return vi.fn();
@@ -1045,14 +1057,14 @@ describe("ChatPanel · local command scope and execution", () => {
       return vi.fn(() => exactCleanup(event, handler));
     });
     runtimeMocks.EventsOff.mockImplementation((event?: string) => {
+      if (!cleanupRecovered) throw cleanupError;
       if (event) activeListeners.delete(event);
-      throw cleanupError;
     });
     appMocks.TerminalRunCommand.mockResolvedValueOnce({
       scope: { deviceId: "remote-12", cwd: "/srv/exact" },
     });
 
-    render(<ChatPanel sessionId={42} />);
+    const view = render(<ChatPanel sessionId={42} />);
     const runCommand = componentMocks.chatComposerProps.at(-1)
       ?.onRunCommand as (command: string) => Promise<unknown>;
 
@@ -1067,17 +1079,32 @@ describe("ChatPanel · local command scope and execution", () => {
       status: "failed",
     });
     const terminalId = entries[0].id;
+    const dataEvent = `terminal:${terminalId}:data`;
     expect(
       runtimeMocks.EventsOn.mock.calls.filter(([event]) =>
         event?.startsWith(`terminal:${terminalId}:`),
       ),
     ).toHaveLength(2);
     expect(exactCleanup).toHaveBeenCalledTimes(2);
-    expect(activeListeners.get(`terminal:${terminalId}:data`)?.size ?? 0).toBe(
-      0,
-    );
+    expect(
+      runtimeMocks.EventsOff.mock.calls.filter(
+        ([event]) => event === dataEvent,
+      ),
+    ).toHaveLength(2);
+    expect(activeListeners.get(dataEvent)?.size ?? 0).toBe(1);
     expect(finish).toHaveBeenCalledTimes(1);
     expect(finish).toHaveBeenCalledWith(terminalId, "failed", -1);
+    expect(vi.getTimerCount()).toBe(1);
+
+    view.unmount();
+    cleanupRecovered = true;
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+
+    expect(activeListeners.get(dataEvent)?.size ?? 0).toBe(0);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("Given two deferred commands in a new chat, When the panel unmounts and one terminal RPC rejects, Then session creation stays shared while both commands continue and settle independently exactly once", async () => {

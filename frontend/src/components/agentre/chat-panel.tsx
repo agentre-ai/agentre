@@ -1422,15 +1422,22 @@ function ChatPanel({
       });
       const dataEvent = `terminal:${terminalId}:data`;
       const exitEvent = `terminal:${terminalId}:exit`;
+      const cleanupRetryInitialDelayMs = 100;
+      const cleanupRetryMaxDelayMs = 5_000;
       type ListenerRegistration = {
         event: string;
         off?: () => void;
         cleaned: boolean;
       };
-      let activeListeners: ListenerRegistration[] = [];
-      const cleanupListeners = (listeners = activeListeners): boolean => {
+      type ListenerGeneration = {
+        listeners: ListenerRegistration[];
+        guardianTimer?: number;
+        retryDelayMs: number;
+      };
+      let activeGeneration: ListenerGeneration | undefined;
+      const cleanupListeners = (generation: ListenerGeneration): boolean => {
         let cleaned = true;
-        for (const listener of listeners) {
+        for (const listener of generation.listeners) {
           if (listener.cleaned) continue;
           try {
             if (listener.off) listener.off();
@@ -1447,23 +1454,51 @@ function ChatPanel({
         }
         return cleaned;
       };
-      const cleanupListenersWithRetry = (
-        listeners = activeListeners,
-      ): boolean => cleanupListeners(listeners) || cleanupListeners(listeners);
+      const cleanupListenersSynchronously = (
+        generation: ListenerGeneration,
+      ): boolean =>
+        cleanupListeners(generation) || cleanupListeners(generation);
+      const stopCleanupGuardian = (generation: ListenerGeneration) => {
+        if (generation.guardianTimer === undefined) return;
+        window.clearTimeout(generation.guardianTimer);
+        generation.guardianTimer = undefined;
+      };
+      const scheduleCleanupGuardian = (generation: ListenerGeneration) => {
+        if (generation.guardianTimer !== undefined) return;
+        // Keep ownership outside React lifecycle so panel unmount cannot abandon a Wails listener.
+        generation.guardianTimer = window.setTimeout(() => {
+          generation.guardianTimer = undefined;
+          if (cleanupListenersSynchronously(generation)) return;
+          generation.retryDelayMs = Math.min(
+            generation.retryDelayMs * 2,
+            cleanupRetryMaxDelayMs,
+          );
+          scheduleCleanupGuardian(generation);
+        }, generation.retryDelayMs);
+      };
+      const ensureListenersCleaned = (
+        generation = activeGeneration,
+      ): boolean => {
+        if (!generation) return true;
+        const cleaned = cleanupListenersSynchronously(generation);
+        if (cleaned) stopCleanupGuardian(generation);
+        else scheduleCleanupGuardian(generation);
+        return cleaned;
+      };
       const settle = (
         status: "done" | "failed" | "stopped",
         exitCode?: number,
       ) => {
         const commands = useLocalCommandsStore.getState();
         if (commands.get(terminalId)?.status !== "running") {
-          cleanupListenersWithRetry();
+          ensureListenersCleaned();
           return;
         }
         commands.finish(terminalId, status, exitCode);
-        cleanupListenersWithRetry();
+        ensureListenersCleaned();
       };
       const fail = (error: unknown) => {
-        cleanupListenersWithRetry();
+        ensureListenersCleaned();
         const commands = useLocalCommandsStore.getState();
         if (commands.get(terminalId)?.status !== "running") return;
         commands.appendOutput(terminalId, String(error));
@@ -1482,26 +1517,29 @@ function ChatPanel({
       let observerError: unknown;
       let observersReady = false;
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const attemptListeners: ListenerRegistration[] = [];
+        const attemptGeneration: ListenerGeneration = {
+          listeners: [],
+          retryDelayMs: cleanupRetryInitialDelayMs,
+        };
         try {
           const dataListener: ListenerRegistration = {
             event: dataEvent,
             cleaned: false,
           };
-          attemptListeners.push(dataListener);
+          attemptGeneration.listeners.push(dataListener);
           dataListener.off = EventsOn(dataEvent, handleData);
           const exitListener: ListenerRegistration = {
             event: exitEvent,
             cleaned: false,
           };
-          attemptListeners.push(exitListener);
+          attemptGeneration.listeners.push(exitListener);
           exitListener.off = EventsOn(exitEvent, handleExit);
-          activeListeners = attemptListeners;
+          activeGeneration = attemptGeneration;
           observersReady = true;
           break;
         } catch (error: unknown) {
           observerError = error;
-          if (!cleanupListenersWithRetry(attemptListeners)) break;
+          if (!ensureListenersCleaned(attemptGeneration)) break;
         }
       }
       if (!observersReady) {
