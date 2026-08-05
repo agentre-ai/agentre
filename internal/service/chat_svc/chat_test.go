@@ -46,6 +46,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc"
 	"github.com/agentre-ai/agentre/internal/service/remote_device_svc/mock_remote_device_svc"
 	"github.com/agentre-ai/agentre/pkg/claudecode"
+	pkgpiagent "github.com/agentre-ai/agentre/pkg/piagent"
 )
 
 type chatMocks struct {
@@ -1377,13 +1378,19 @@ func TestSend_PersistsProviderSessionIDBeforeStreamDrains(t *testing.T) {
 	assert.True(t, persistedBeforeDrain, "provider session id must be persisted before the runtime event stream drains")
 }
 
-type streamErrorRunner struct{}
+type streamErrorRunner struct {
+	err error
+}
 
 func (streamErrorRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
 func (r streamErrorRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	err := r.err
+	if err == nil {
+		err = errors.New("upstream failed")
+	}
 	events := make(chan agentruntime.Event, 2)
 	events <- agentruntime.TextDelta{Text: "partial answer"}
-	events <- agentruntime.ErrorEvent{Err: errors.New("upstream failed")}
+	events <- agentruntime.ErrorEvent{Err: err}
 	close(events)
 	return events, &agentruntime.RunResult{}, nil
 }
@@ -2794,62 +2801,105 @@ func TestSend_CodexPlanEmptyTurnPersistsFallbackText(t *testing.T) {
 }
 
 func TestSend_StreamErrorEventCarriesFinalAssistantMessage(t *testing.T) {
-	// Given 当前会话开始一轮回复
-	// When runtime 流中断并返回 EventError
-	// Then error 事件必须携带带 errorText 的最终 assistant 消息，让前端无需切换会话即可刷新当前 transcript。
-	m := setupChatTest(t)
-	ctx := m.ctx
-	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, streamErrorRunner{})
-	t.Cleanup(restore)
-
-	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
-		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
-	}, nil)
-	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
-		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
-	}, nil)
-	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
-		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
-	}, nil)
-	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
-		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
-	}, nil)
-	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
-
-	m.dbMock.ExpectBegin()
-	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
-	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
-			if msg.Role == "user" {
-				msg.ID = 1000
-			} else {
-				msg.ID = 1001
-			}
-			return nil
-		}).Times(2)
-	m.dbMock.ExpectCommit()
-
-	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
-	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
-
-	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
-	assert.NoError(t, err)
-	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
-
-	var errorEvent *chat_svc.ChatStreamEvent
-	for _, ev := range m.events {
-		payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
-		if ok && payload.Kind == chat_svc.StreamError {
-			cp := payload
-			errorEvent = &cp
-			break
-		}
+	// Given a runtime stream fails, when chat finalizes the assistant row, then
+	// the error event carries the final snapshot. Pi process failures additionally
+	// keep prompt, credential, and stderr payloads out of persisted/displayed copy.
+	piSecrets := []string{
+		"private user prompt: inspect payroll",
+		"Authorization: Bearer private-chat-token",
+		"stderr private session-entry payload",
 	}
-	if assert.NotNil(t, errorEvent) && assert.NotNil(t, errorEvent.Message) {
-		assert.Equal(t, "upstream failed", errorEvent.Error)
-		assert.Equal(t, int64(1001), errorEvent.Message.ID)
-		assert.Equal(t, "upstream failed", errorEvent.Message.ErrorText)
-		assert.Equal(t, "partial answer", errorEvent.Message.Blocks[0].Text)
+	tests := []struct {
+		name         string
+		backendType  agent_backend_entity.BackendType
+		runtimeError error
+		wantError    string
+		secrets      []string
+	}{
+		{
+			name:        "Given a generic runtime error, then the final assistant snapshot retains its useful message",
+			backendType: agent_backend_entity.TypeBuiltin,
+			wantError:   "upstream failed",
+		},
+		{
+			name:        "Given a Pi process error with private payloads, then chat displays only the stable process classification",
+			backendType: agent_backend_entity.TypePiAgent,
+			runtimeError: &pkgpiagent.ExitError{
+				Err:    errors.New("command failed with " + piSecrets[0]),
+				Stderr: piSecrets[1] + " | " + piSecrets[2],
+			},
+			wantError: "piagent: process exited: process failure",
+			secrets:   piSecrets,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			ctx := m.ctx
+			restore := agentruntime.SwapRuntimeForTest(tt.backendType, streamErrorRunner{err: tt.runtimeError})
+			t.Cleanup(restore)
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			backend := &agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(tt.backendType), Status: consts.ACTIVE,
+			}
+			if tt.backendType == agent_backend_entity.TypeBuiltin {
+				backend.LLMProviderKey = "key-21"
+			}
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
+			if tt.backendType == agent_backend_entity.TypeBuiltin {
+				m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+					ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+				}, nil)
+			}
+			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+			m.dbMock.ExpectBegin()
+			m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						msg.ID = 1000
+					} else {
+						msg.ID = 1001
+					}
+					return nil
+				}).Times(2)
+			m.dbMock.ExpectCommit()
+
+			m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+			resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+			require.NoError(t, err)
+			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+			var errorEvent *chat_svc.ChatStreamEvent
+			for _, ev := range m.events {
+				payload, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+				if ok && payload.Kind == chat_svc.StreamError {
+					cp := payload
+					errorEvent = &cp
+					break
+				}
+			}
+			if assert.NotNil(t, errorEvent) && assert.NotNil(t, errorEvent.Message) {
+				assert.Equal(t, tt.wantError, errorEvent.Error)
+				assert.Equal(t, int64(1001), errorEvent.Message.ID)
+				assert.Equal(t, tt.wantError, errorEvent.Message.ErrorText)
+				assert.Equal(t, "partial answer", errorEvent.Message.Blocks[0].Text)
+				for _, secret := range tt.secrets {
+					assert.NotContains(t, errorEvent.Error, secret)
+					assert.NotContains(t, errorEvent.Message.ErrorText, secret)
+				}
+			}
+		})
 	}
 }
 

@@ -2,6 +2,7 @@ package piagent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +12,10 @@ import (
 	"testing"
 
 	cagoblocks "github.com/cago-frame/agents/agent/blocks"
-	"github.com/cago-frame/agents/provider"
 	"github.com/cago-frame/cago/pkg/logger"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -343,77 +345,150 @@ func TestRun_ForwardsUserBlockImagesToStream(t *testing.T) {
 	})
 }
 
-func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
-	Convey("Given a pi-agent stream that fails after reporting model and usage", t, func() {
-		const redactionMarker = "private-payload-marker"
-		boom := errors.New("piagent: terminated " + redactionMarker)
-		sess := &fakeSession{
-			stream: &scriptedStream{events: []pkgpiagent.Event{
-				{Kind: pkgpiagent.EventUsage, Model: "gpt-5.5(xhigh)", Usage: provider.Usage{
-					PromptTokens:        4017,
-					CompletionTokens:    128,
-					CachedTokens:        69632,
-					CacheCreationTokens: 0,
-				}},
-				{Kind: pkgpiagent.EventContextWindow, ContextWindow: 1050000},
-				{Kind: pkgpiagent.EventError, Err: boom},
-			}, err: boom, sid: "pi-session-689", diagnostics: pkgpiagent.StreamDiagnostics{
-				FinalErrorEventType:  "agent_end",
-				FinalErrorStopReason: "error",
-				FinalErrorMessage:    "provider failed " + redactionMarker,
-				FinalErrorFrame:      `{"type":"agent_end","messages":[{"content":"` + redactionMarker + `"}]}`,
-				StderrTail:           "stderr " + redactionMarker,
-			}},
-			sid: "pi-session-689",
-		}
-		restoreFactory := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
-			return sess, nil
-		})
-		defer restoreFactory()
-		core, logs := observer.New(zapcore.DebugLevel)
-		ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+func TestRun_PiFailuresStayRedactedDownstream(t *testing.T) {
+	secrets := []string{
+		"private user prompt: inspect acquisition payroll",
+		"PRIVATE_IMAGE_SESSION_BYTES",
+		"session-entry-private-history",
+		"Authorization: Bearer private-provider-token",
+		"stderr private process payload",
+		"command failed with private process arguments",
+	}
+	imageWire := base64.StdEncoding.EncodeToString([]byte(secrets[1]))
+	commonStartup := []string{
+		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-session-689"}}`,
+		`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"before-leaf","parentId":null,"message":{"role":"user","content":"` + secrets[2] + `"}}],"leafId":"before-leaf"}}`,
+	}
+	tests := []struct {
+		name            string
+		lines           []string
+		stderr          string
+		waitErr         error
+		wantDiagnostics bool
+		wantUsage       bool
+		wantErrorType   string
+	}{
+		{
+			name: "RPC failure payload",
+			lines: append(append([]string{}, commonStartup...),
+				`{"type":"response","command":"prompt","success":false,"error":"`+secrets[0]+` | `+secrets[3]+`","data":{"message":"`+secrets[2]+`"}}`,
+			),
+		},
+		{
+			name: "terminal event failure payload",
+			lines: append(append([]string{}, commonStartup...),
+				`{"type":"response","command":"prompt","success":true}`,
+				`{"type":"message_end","message":{"role":"assistant","content":"`+secrets[2]+`","model":"gpt-5.5(xhigh)","usage":{"input":4017,"output":128,"cacheRead":69632,"cacheWrite":0}}}`,
+				`{"type":"agent_end","messages":[{"role":"assistant","content":"`+secrets[2]+`","stopReason":"error","errorMessage":"`+secrets[0]+` | `+secrets[3]+`"}],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+				`{"id":"session-entries-after","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"before-leaf","parentId":null,"message":{"role":"user"}},{"type":"message","id":"turn-user","parentId":"before-leaf","message":{"role":"user","content":"`+secrets[0]+`","images":[{"data":"`+imageWire+`"}]}}],"leafId":"turn-user"}}`,
+				`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"contextWindow":1050000}}}`,
+			),
+			stderr:          secrets[4],
+			wantDiagnostics: true,
+			wantUsage:       true,
+			wantErrorType:   "*errors.errorString",
+		},
+		{
+			name: "process exit and stderr payload",
+			lines: append(append([]string{}, commonStartup...),
+				`{"type":"response","command":"prompt","success":true}`,
+			),
+			stderr:  secrets[4] + " | " + secrets[3],
+			waitErr: errors.New(secrets[5]),
+		},
+	}
 
-		Convey("When the turn drains Then runtime logs enough fields to diagnose future Pi terminated failures", func() {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := &runtimeRPCProcess{
+				stdin:  &cliprocess.LockedBuffer{},
+				stdout: strings.NewReader(strings.Join(tt.lines, "\n") + "\n"),
+				stderr: strings.NewReader(tt.stderr),
+				done:   make(chan error, 1),
+			}
+			if tt.waitErr != nil {
+				proc.done <- tt.waitErr
+			}
+			restoreFactory := SetSessionFactoryForTest(runtimeRPCSessionFactory(proc))
+			defer restoreFactory()
+			core, logs := observer.New(zapcore.DebugLevel)
+			ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
 			events, result, err := New().Run(ctx, agentruntime.RunRequest{
-				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
-				SessionID: 689,
-				AgentID:   8,
-				Cwd:       t.TempDir(),
-				UserText:  "检查一下pi agent能否支持mcp，实现群聊功能",
+				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID:         689,
+				AgentID:           8,
+				ProviderSessionID: "pi-session-689",
+				Cwd:               t.TempDir(),
+				UserText:          secrets[0],
+				UserBlocks: []cagoblocks.ContentBlock{
+					cagoblocks.TextBlock{Text: secrets[0]},
+					cagoblocks.ImageBlock{MediaType: "image/png", Source: cagoblocks.BlobSource{Inline: []byte(secrets[1])}},
+				},
 			})
-			So(err, ShouldBeNil)
-			for range events {
+			require.NoError(t, err)
+
+			var downstreamErr error
+			for event := range events {
+				if failure, ok := event.(agentruntime.ErrorEvent); ok {
+					downstreamErr = failure.Err
+				}
+			}
+			require.Error(t, downstreamErr)
+			require.Error(t, result.StopErr)
+			assert.Equal(t, downstreamErr.Error(), result.StopErr.Error())
+			for _, secret := range append(secrets, imageWire) {
+				assert.NotContains(t, downstreamErr.Error(), secret)
+				assert.NotContains(t, result.StopErr.Error(), secret)
+			}
+			if tt.waitErr != nil {
+				var exitErr *pkgpiagent.ExitError
+				require.ErrorAs(t, result.StopErr, &exitErr)
+				assert.Empty(t, exitErr.Stderr)
+				for _, secret := range secrets {
+					assert.NotContains(t, exitErr.Err.Error(), secret)
+				}
 			}
 
-			So(result.StopErr, ShouldEqual, boom)
 			for _, entry := range logs.All() {
 				for _, value := range entry.ContextMap() {
-					So(fmt.Sprint(value), ShouldNotContainSubstring, redactionMarker)
+					for _, secret := range append(secrets, imageWire) {
+						assert.NotContains(t, fmt.Sprint(value), secret)
+					}
 				}
 			}
 			matches := logs.FilterMessage("piagent runtime: turn failed").All()
-			So(matches, ShouldHaveLength, 1)
+			require.Len(t, matches, 1)
 			fields := matches[0].ContextMap()
-			So(fields["sessionID"], ShouldEqual, int64(689))
-			So(fields["agentID"], ShouldEqual, int64(8))
-			So(fields["providerSessionID"], ShouldEqual, "pi-session-689")
-			So(fields["model"], ShouldEqual, "gpt-5.5(xhigh)")
-			So(fields["contextWindow"], ShouldEqual, int64(1050000))
-			So(fields["promptTokens"], ShouldEqual, int64(4017))
-			So(fields["completionTokens"], ShouldEqual, int64(128))
-			So(fields["cachedTokens"], ShouldEqual, int64(69632))
-			So(fields["cacheCreationTokens"], ShouldEqual, int64(0))
-			So(fields["totalInputTokens"], ShouldEqual, int64(73649))
-			So(fields["errorType"], ShouldEqual, "*errors.errorString")
+			assert.Equal(t, int64(689), fields["sessionID"])
+			assert.Equal(t, int64(8), fields["agentID"])
+			assert.Equal(t, "pi-session-689", fields["providerSessionID"])
 			_, hasRawError := fields["error"]
-			So(hasRawError, ShouldBeFalse)
+			assert.False(t, hasRawError)
+			if tt.wantErrorType != "" {
+				assert.Equal(t, tt.wantErrorType, fields["errorType"])
+			}
+			if tt.wantUsage {
+				assert.Equal(t, "gpt-5.5(xhigh)", fields["model"])
+				assert.Equal(t, int64(1050000), fields["contextWindow"])
+				assert.Equal(t, int64(4017), fields["promptTokens"])
+				assert.Equal(t, int64(128), fields["completionTokens"])
+				assert.Equal(t, int64(69632), fields["cachedTokens"])
+				assert.Equal(t, int64(0), fields["cacheCreationTokens"])
+				assert.Equal(t, int64(73649), fields["totalInputTokens"])
+			}
 			diagnostics := logs.FilterMessage("piagent runtime: turn failed diagnostics").All()
-			So(diagnostics, ShouldHaveLength, 1)
-			diagnosticFields := diagnostics[0].ContextMap()
-			So(diagnosticFields["piEventType"], ShouldEqual, "agent_end")
-			So(diagnosticFields["piStopReason"], ShouldEqual, "error")
+			if tt.wantDiagnostics {
+				require.Len(t, diagnostics, 1)
+				diagnosticFields := diagnostics[0].ContextMap()
+				assert.Equal(t, "agent_end", diagnosticFields["piEventType"])
+				assert.Equal(t, "error", diagnosticFields["piStopReason"])
+			} else {
+				assert.Empty(t, diagnostics)
+			}
 		})
-	})
+	}
 }
 
 type fakeSession struct {
@@ -498,6 +573,7 @@ func (r *runtimeRPCRunner) Start(context.Context, cliprocess.Options) (cliproces
 type runtimeRPCProcess struct {
 	stdin  *cliprocess.LockedBuffer
 	stdout io.Reader
+	stderr io.Reader
 	done   chan error
 }
 
@@ -531,9 +607,14 @@ func runtimeRPCSessionFactory(proc *runtimeRPCProcess) func(agentruntime.RunRequ
 
 func (p *runtimeRPCProcess) Stdin() io.Writer  { return p.stdin }
 func (p *runtimeRPCProcess) Stdout() io.Reader { return p.stdout }
-func (p *runtimeRPCProcess) Stderr() io.Reader { return strings.NewReader("") }
-func (p *runtimeRPCProcess) Wait() error       { return <-p.done }
-func (p *runtimeRPCProcess) Kill() error       { return p.finish() }
+func (p *runtimeRPCProcess) Stderr() io.Reader {
+	if p.stderr != nil {
+		return p.stderr
+	}
+	return strings.NewReader("")
+}
+func (p *runtimeRPCProcess) Wait() error { return <-p.done }
+func (p *runtimeRPCProcess) Kill() error { return p.finish() }
 func (p *runtimeRPCProcess) Signal(os.Signal) error {
 	return p.finish()
 }

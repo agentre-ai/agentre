@@ -502,7 +502,7 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 		Env:    buildEnv(c.env),
 	})
 	if err != nil {
-		return nil, err
+		return nil, processBoundaryError("start", "request", err)
 	}
 	lines := newAsyncRPCLineScanner(h.Stdout())
 	p := &rpcProcess{
@@ -642,13 +642,16 @@ func (p *rpcProcess) waitResult() error {
 func (p *rpcProcess) writeJSON(v any) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	command := requestCommand(v)
 	buf, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return processBoundaryError("encode", command, err)
 	}
 	buf = append(buf, '\n')
-	_, err = p.stdin.Write(buf)
-	return err
+	if _, err = p.stdin.Write(buf); err != nil {
+		return processBoundaryError("write", command, err)
+	}
+	return nil
 }
 
 func (p *rpcProcess) terminate(ctx context.Context, grace time.Duration) error {
@@ -677,11 +680,13 @@ func wrapExitError(err error, stderr string) error {
 	if err == nil {
 		return nil
 	}
-	trimmed := strings.TrimSpace(stderr)
-	if strings.Contains(strings.ToLower(trimmed), "no session found matching") {
-		return fmt.Errorf("%w: %s", ErrSessionNotFound, trimmed)
+	if sessionID, missing := missingSessionIdentity(stderr); missing {
+		if sessionID == "" {
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 	}
-	return &ExitError{Err: err, Stderr: stderr}
+	return &ExitError{Err: normalizeProcessExitCause(err)}
 }
 
 func wrapTerminateExitError(err error, stderr string) error {
@@ -699,41 +704,57 @@ func isInterruptExit(err error) bool {
 }
 
 func failureResponseError(r rpcResponse) error {
-	msg := strings.TrimSpace(r.Error)
-	if msg == "" {
-		msg = string(r.Data)
+	command := safeRPCCommand(r.Command)
+	// Pi does not expose stable machine-readable failure codes. Keep only the
+	// command classification; Error and Data are untrusted payloads that can echo
+	// prompts, session entries, images, credentials, or provider response bodies.
+	switch command {
+	case "fork":
+		return errors.New("piagent rpc fork failed: Invalid entry ID for forking")
+	case "get_commands":
+		return errors.New("piagent rpc get_commands failed: unavailable")
+	default:
+		return fmt.Errorf("piagent rpc %s failed", command)
 	}
-	if msg == "" {
-		msg = "unknown rpc failure"
-	}
-	return fmt.Errorf("piagent rpc %s failed: %s", r.Command, msg)
 }
 
 func processDeadOrScanError(p *rpcProcess) error {
-	if err := p.lines.Err(); err != nil {
-		return err
+	scanErr := p.lines.Err()
+	if isFrameSafetyLimitError(scanErr) {
+		return processBoundaryError("read", "request", scanErr)
 	}
 	select {
 	case <-p.done:
 		if p.waitErr == nil {
+			if scanErr != nil {
+				return processBoundaryError("read", "request", scanErr)
+			}
 			return ErrProcessDead
 		}
 		return wrapExitError(p.waitErr, p.stderr.String())
 	case <-time.After(100 * time.Millisecond):
+		if scanErr != nil {
+			return processBoundaryError("read", "request", scanErr)
+		}
 		return ErrProcessDead
 	}
 }
 
 func awaitProcessExitOrScanError(ctx context.Context, p *rpcProcess) error {
-	if err := p.lines.Err(); err != nil {
-		return err
+	scanErr := p.lines.Err()
+	if isFrameSafetyLimitError(scanErr) {
+		return processBoundaryError("read", "request", scanErr)
 	}
-	// During the startup handshake, stdout EOF can arrive before Wait and stderr
-	// collection finish. Their result is authoritative for classifying a missing
-	// resumed session, so wait unless the startup context is canceled.
+	// During the startup handshake, stdout EOF or a close-related scanner error
+	// can arrive before Wait and stderr collection finish. Their result is
+	// authoritative for classifying a missing resumed session, so wait unless the
+	// startup context is canceled.
 	select {
 	case <-p.done:
 		if p.waitErr == nil {
+			if scanErr != nil {
+				return processBoundaryError("read", "request", scanErr)
+			}
 			return ErrProcessDead
 		}
 		return wrapExitError(p.waitErr, p.stderr.String())

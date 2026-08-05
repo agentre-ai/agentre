@@ -3,7 +3,7 @@ package piagent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -487,7 +487,9 @@ func (s *Stream) handleRPCEvent(ev rpcEvent) {
 	case "compaction_end":
 		s.emit(Event{Kind: EventCompactBoundary})
 	case "auto_retry_start":
-		s.emit(Event{Kind: EventRuntimeStatus, Text: strings.TrimSpace(ev.ErrorMessage)})
+		// errorMessage is an untrusted provider payload and can echo prompt or
+		// credentials. The retry state itself is the useful downstream signal.
+		s.emit(Event{Kind: EventRuntimeStatus, Text: "retrying"})
 	}
 }
 
@@ -502,7 +504,9 @@ func (s *Stream) handleAssistantDelta(delta assistantDelta) {
 	// toolCallId），PreToolUse 只从 tool_execution_start 出，避免下游工具卡重复。
 	case "error":
 		if s.pendingAgentEndError == nil {
-			s.pendingAssistantDeltaError = fmt.Errorf("piagent: %s", strings.TrimSpace(delta.Reason))
+			// reason is an untrusted provider failure string. Preserve only the
+			// stable stream-failure classification until agent_end settles it.
+			s.pendingAssistantDeltaError = errors.New("piagent: assistant stream failed")
 		}
 	}
 }
@@ -555,7 +559,7 @@ func classifyFinalAgentEnd(ev rpcEvent) agentEndOutcome {
 	case "stop", "length", "toolUse":
 		return agentEndOutcome{kind: agentEndOutcomeSuccess}
 	case "error":
-		return agentEndFailure(msg, "unknown error")
+		return agentEndFailure(msg, "error")
 	case "aborted":
 		return agentEndFailure(msg, "aborted")
 	default:
@@ -563,15 +567,25 @@ func classifyFinalAgentEnd(ev rpcEvent) agentEndOutcome {
 	}
 }
 
-func agentEndFailure(msg *assistantMessage, fallback string) agentEndOutcome {
-	errMsg := strings.TrimSpace(msg.ErrorMessage)
-	if errMsg == "" {
-		errMsg = fallback
+func agentEndFailure(msg *assistantMessage, classification string) agentEndOutcome {
+	var err error
+	switch classification {
+	case "aborted":
+		if strings.TrimSpace(msg.ErrorMessage) == "" {
+			err = errors.New("piagent: aborted")
+		} else {
+			err = errors.New("piagent: user requested abort")
+		}
+	case "error":
+		if strings.EqualFold(strings.TrimSpace(msg.ErrorMessage), "terminated") {
+			err = errors.New("piagent: terminated")
+		} else {
+			err = errors.New("piagent: final provider failure")
+		}
+	default:
+		err = errors.New("piagent: agent failed")
 	}
-	return agentEndOutcome{
-		kind: agentEndOutcomeFailure,
-		err:  fmt.Errorf("piagent: %s", errMsg),
-	}
+	return agentEndOutcome{kind: agentEndOutcomeFailure, err: err}
 }
 
 func (s *Stream) emit(ev Event) {
