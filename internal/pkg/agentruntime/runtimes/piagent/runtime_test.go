@@ -384,6 +384,13 @@ func TestProviderRunConfig(t *testing.T) {
 			So(model, ShouldEqual, "")
 			So(extPath, ShouldEqual, "")
 		})
+
+		Convey("When the provider type is unsupported Then an error is returned instead of silently running unbound", func() {
+			_, _, err := providerRunConfig(&llm_provider_entity.LLMProvider{
+				ProviderKey: "provabc", Model: "deepseek-v3", Type: "deepseek",
+			})
+			So(err, ShouldNotBeNil)
+		})
 	})
 
 	Convey("Given a failing extension writer", t, func() {

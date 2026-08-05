@@ -132,12 +132,14 @@ func piRawFrameSink(sessionID int64, providerSessionID string) func([]byte) {
 // Run 层完成，见 runtime.go）：返回 --model 值（Provider.Model 非空时为
 // "agentre-<key>/<model>"）与物化后的 provider 扩展绝对路径。Provider.Model 为空
 // （保存时已拦截，此处仅兜底）时沿用现状：返回零值不报错，不注入模型也不物化扩展。
+// 模型名（Type 不可识别 / Model 空）出错一律显式返回，不静默吞掉后走无绑定运行。
 func providerRunConfig(p *llm_provider_entity.LLMProvider) (model string, extPath string, err error) {
 	if p == nil || strings.TrimSpace(p.Model) == "" {
 		return "", "", nil
 	}
-	if pModel, mErr := agentruntime.PiAgentProviderModelName(p); mErr == nil {
-		model = pModel
+	model, err = agentruntime.PiAgentProviderModelName(p)
+	if err != nil {
+		return "", "", err
 	}
 	extPath, err = MaterializeProviderExtension(p)
 	if err != nil {
