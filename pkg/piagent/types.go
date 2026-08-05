@@ -58,8 +58,13 @@ type usageWire struct {
 }
 
 type sessionStateWire struct {
-	SessionID   string `json:"sessionId"`
-	SessionFile string `json:"sessionFile,omitempty"`
+	SessionID   string            `json:"sessionId"`
+	SessionFile string            `json:"sessionFile,omitempty"`
+	Model       *sessionModelWire `json:"model,omitempty"`
+}
+
+type sessionModelWire struct {
+	ContextWindow int `json:"contextWindow"`
 }
 
 type sessionStatsWire struct {

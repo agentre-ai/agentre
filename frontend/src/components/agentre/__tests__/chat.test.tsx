@@ -1193,8 +1193,9 @@ describe("ChatTranscript block-level virtualization", () => {
 // 特征化测试:钉住 transcript 行模型重构会触碰、但此前无直接覆盖的现状行为
 // (ErrorCard / RetryNoticeCard / 虚拟化路径下的 indicator·banner·空占位行)。
 describe("ChatTranscript message tail attachments", () => {
-  it("Given an assistant message with errorText, When rendered, Then the ErrorCard shows and regenerate passes the message id", () => {
+  it("Given an assistant message with errorText, When rendered, Then the ErrorCard offers regenerate and continue actions", () => {
     const calls: number[] = [];
+    const continueCalls: number[] = [];
     const failed = {
       ...textMessage(7, "assistant", "partial output"),
       errorText: "api timeout",
@@ -1205,6 +1206,7 @@ describe("ChatTranscript message tail attachments", () => {
         agentColor="agent-1"
         agentName="A"
         messages={[failed]}
+        onContinue={(messageId) => continueCalls.push(messageId)}
         onRerun={(messageId) => calls.push(messageId)}
       />,
     );
@@ -1214,6 +1216,8 @@ describe("ChatTranscript message tail attachments", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Regenerate/ }));
     expect(calls).toEqual([7]);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(continueCalls).toEqual([7]);
   });
 
   it("Given an errorText assistant on the virtualized path, When its row mounts, Then the ErrorCard mounts with it", async () => {

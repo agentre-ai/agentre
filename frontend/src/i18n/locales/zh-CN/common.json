@@ -454,6 +454,7 @@
       "unknownBlock": "(debug) 未实现 block 类型：{{type}}"
     },
     "errorCard": {
+      "continue": "继续",
       "message": "Agent 调用失败：{{text}}",
       "regenerate": "↻ 重新生成"
     },
@@ -575,7 +576,7 @@
     },
     "regenerateDialog": {
       "confirm": "确认重新生成",
-      "description": "这条回复及它之后的所有消息会被丢弃，agent 会基于上一条 user 消息重新生成新的回复。",
+      "description": "重新生成会永久丢失这条回复及之后的所有会话内容，且无法恢复。agent 会基于上一条 user 消息生成新的回复。",
       "title": "重新生成回复"
     },
     "renameDialog": {

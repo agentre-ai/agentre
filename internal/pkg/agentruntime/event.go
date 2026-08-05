@@ -127,15 +127,19 @@ type Retry struct {
 // UsageUpdate per-API-call usage 上报。TotalInputTokens 由各 runtime translator
 // 按 family 聚合(Anthropic = prompt + cached + cacheCreation;OpenAI = prompt),
 // 供 chat_svc 直接 patch assistantMsg 与 emit StreamUsage,前端不再做家族判断。
+// ContextWindow 可选；runtime 已探到时与 usage 同帧携带，避免独立窗口事件在
+// 前端订阅建立前丢失后留下「有 usage、无分母」的状态。
 type UsageUpdate struct {
 	Usage            *provider.Usage
 	TotalInputTokens int
+	ContextWindow    int
 }
 
 // ContextWindowUpdated runtime 探到模型实际可用窗口大小变化时 emit。
 // Codex 读 app-server modelContextWindow；Claude Code 用模型 id 查 llmcatalog；
-// Pi Agent 只读 Pi RPC get_session_stats.contextUsage.contextWindow，避免自定义
-// provider 复用公共模型名时误套 catalog 元数据。Tokens=0 视为"未探到"。
+// Pi Agent 用 Pi RPC get_state.model.contextWindow 启动，并由
+// get_session_stats.contextUsage.contextWindow 校正，避免自定义 provider 复用公共
+// 模型名时误套 catalog 元数据。Tokens=0 视为"未探到"。
 type ContextWindowUpdated struct{ Tokens int }
 
 // PlanUpdated runtime 上报的计划更新(claudecode TodoWrite / codex update_plan +

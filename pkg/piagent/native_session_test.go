@@ -32,10 +32,11 @@ func TestStreamDiscoversNativeSessionBeforePrompt(t *testing.T) {
 
 	assert.Equal(t, "pi-native-123", stream.SessionID())
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 3)
+	require.Len(t, frames, 4)
 	assert.Equal(t, "get_state", frames[0]["type"])
-	assert.Equal(t, "prompt", frames[1]["type"])
-	assert.Equal(t, "get_session_stats", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	assert.Equal(t, "prompt", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[3]["type"])
 }
 
 func TestCompactDiscoversNativeSessionBeforeCommand(t *testing.T) {

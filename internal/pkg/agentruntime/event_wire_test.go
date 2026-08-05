@@ -130,6 +130,7 @@ func TestEvent_RoundTrip(t *testing.T) {
 				CachedTokens: 10, CacheCreationTokens: 5, TotalTokens: 190,
 			},
 			TotalInputTokens: 115,
+			ContextWindow:    258000,
 		}},
 		{"usage_update_nil_usage", UsageUpdate{TotalInputTokens: 0}},
 
@@ -208,6 +209,19 @@ func TestEvent_RoundTrip(t *testing.T) {
 // must marshal to a kind string equal to the EventKind constant the runtime
 // pipeline already uses. Catches accidental typo / drift between MarshalJSON
 // and the switch in UnmarshalEvent.
+func TestUsageUpdate_ContextWindowWireRoundTrip(t *testing.T) {
+	raw := []byte(`{"kind":"usage","usage":{"promptTokens":10},"totalInputTokens":10,"contextWindow":258000}`)
+
+	ev, err := UnmarshalEvent(raw)
+	require.NoError(t, err)
+	encoded, err := json.Marshal(ev)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &got))
+	assert.Equal(t, float64(258000), got["contextWindow"])
+}
+
 func TestEvent_WireKindMatchesType(t *testing.T) {
 	pairs := []struct {
 		kind EventKind
