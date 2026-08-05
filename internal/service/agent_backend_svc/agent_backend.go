@@ -249,7 +249,9 @@ func (s *agentBackendSvc) Test(ctx context.Context, req *TestBackendRequest) (*T
 	deps := ProbeDeps{}
 	// claudecode / codex 且关联了 provider → 经 gateway 走临时 token；
 	// 未关联 provider → 不签 token，让 CLI 直接用 claude/codex login 状态。
-	if !entity.IsBuiltin() && entity.LLMProviderKey != "" {
+	// piagent 不走 gateway（直接连 provider BaseURL，见 buildPiAgentProviderProbe），
+	// 即使绑定供应商也不进此分支。
+	if !entity.IsBuiltin() && !entity.IsPiAgent() && entity.LLMProviderKey != "" {
 		if s.gateway == nil {
 			return &TestBackendResponse{OK: false, Message: i18n.NewError(ctx, code.AgentBackendGatewayUnavailable).Error()}, nil
 		}
@@ -418,6 +420,11 @@ func (s *agentBackendSvc) requireMatchingProvider(ctx context.Context, b *agent_
 	}
 	if !kind.ProviderTypeMatch(llm_provider_entity.ProviderType(p.Type)) {
 		return nil, i18n.NewError(ctx, code.AgentBackendProviderTypeMismatch)
+	}
+	// piagent 绑定时必须能通过 --model agentre-<key>/<model> 命中该供应商下的模型，
+	// 因此要求 provider.Model 非空；其它 kind（builtin / claudecode / codex）不要求。
+	if kind.RequiresProviderModel() && strings.TrimSpace(p.Model) == "" {
+		return nil, i18n.NewError(ctx, code.AgentBackendProviderModelRequired)
 	}
 	return p, nil
 }

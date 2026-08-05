@@ -207,7 +207,7 @@ function matchingProviders(t: BackendType, providers: Provider[]) {
     return providers.filter((p) => p.type === "anthropic");
   if (t === "codex")
     return providers.filter((p) => p.type === "openai-response");
-  if (t === "piagent") return [];
+  // piagent 三类全收（anthropic / openai-chat / openai-response）：直接全列。
   return providers;
 }
 
@@ -1224,8 +1224,15 @@ function BackendEditor({
   const strictLabel = strictMatchLabel(type, selectedProvider?.type);
   // builtin 必须有 provider；claudecode / codex 允许未关联（CLI 自身登录）。
   const providerOptional = isCliBackend(type);
+  // piagent 绑定了 Model 为空的供应商时后端保存会报 AgentBackendProviderModelRequired；
+  // 前端先行提示并禁用保存/测试，避免落库失败后再绕圈。
+  const piAgentModelMissing =
+    type === "piagent" &&
+    effectiveLlmProviderKey !== "" &&
+    !selectedProvider?.model;
   const submitDisabled =
     submitting ||
+    piAgentModelMissing ||
     (!providerOptional &&
       (filteredProviders.length === 0 || effectiveLlmProviderKey === "")) ||
     reservedOffenders.length > 0;
@@ -1268,7 +1275,9 @@ function BackendEditor({
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={submitting || syncingProvider}
+                  disabled={
+                    submitting || syncingProvider || piAgentModelMissing
+                  }
                   onClick={handleTest}
                   className="gap-1.5"
                 >
@@ -1359,6 +1368,7 @@ function BackendEditor({
           value={effectiveLlmProviderKey}
           onChange={setLlmProviderKey}
           strictLabel={strictLabel}
+          piAgentModelMissing={piAgentModelMissing}
           editing={!!editing}
         />
 
@@ -1601,6 +1611,7 @@ function LlmProviderField({
   value,
   onChange,
   strictLabel,
+  piAgentModelMissing,
   editing,
 }: {
   type: BackendType;
@@ -1608,10 +1619,11 @@ function LlmProviderField({
   value: string;
   onChange: (v: string) => void;
   strictLabel: string | null;
+  piAgentModelMissing: boolean;
   editing: boolean;
 }) {
   const { t } = useTranslation();
-  // claudecode / codex 允许「不关联」走 CLI 自身登录；builtin 必填。
+  // claudecode / codex / piagent 允许「不关联」走 CLI 自身登录；builtin 必填。
   const optional = isCliBackend(type);
   // Match by providerKey (preferred) or fall back to string id for legacy data.
   const matchesProvider = (p: Provider) =>
@@ -1621,33 +1633,6 @@ function LlmProviderField({
   const selected = providers.some(matchesProvider);
   // Resolve which key to use for a provider: prefer providerKey, fall back to id.
   const providerSelectValue = (p: Provider) => p.providerKey || String(p.id);
-
-  if (type === "piagent") {
-    return (
-      <div className="flex flex-col gap-1.5 text-xs">
-        <div className="flex items-center justify-between">
-          <span className="font-medium">
-            {t("agentBackends.provider.label")}
-          </span>
-          <Badge
-            variant="secondary"
-            className="rounded-sm bg-secondary px-1.5 py-0 font-mono text-2xs text-muted-foreground"
-          >
-            {t("agentBackends.provider.piAgentSource")}
-          </Badge>
-        </div>
-        <Alert className="border-border bg-secondary text-xs">
-          <AlertCircle className="size-4" aria-hidden="true" />
-          <AlertTitle className="text-xs">
-            {t("agentBackends.provider.piAgentTitle")}
-          </AlertTitle>
-          <AlertDescription className="text-2xs">
-            {t("agentBackends.provider.piAgentDescription")}
-          </AlertDescription>
-        </Alert>
-      </div>
-    );
-  }
 
   if (empty && !optional) {
     return (
@@ -1714,7 +1699,9 @@ function LlmProviderField({
           <AlertDescription className="text-2xs">
             {type === "claudecode"
               ? t("agentBackends.provider.noMatchClaude")
-              : t("agentBackends.provider.noMatchCodex")}
+              : type === "piagent"
+                ? t("agentBackends.provider.noMatchPiAgent")
+                : t("agentBackends.provider.noMatchCodex")}
           </AlertDescription>
         </Alert>
       ) : (
@@ -1763,6 +1750,17 @@ function LlmProviderField({
           ) : null}
         </div>
       )}
+      {piAgentModelMissing ? (
+        <Alert className="border-status-waiting/40 bg-status-waiting-bg text-xs">
+          <AlertCircle className="size-4" aria-hidden="true" />
+          <AlertTitle className="text-xs">
+            {t("agentBackends.provider.modelRequiredTitle")}
+          </AlertTitle>
+          <AlertDescription className="text-2xs">
+            {t("agentBackends.provider.modelRequiredDescription")}
+          </AlertDescription>
+        </Alert>
+      ) : null}
     </div>
   );
 }

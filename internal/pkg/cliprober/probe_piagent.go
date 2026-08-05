@@ -29,6 +29,11 @@ func probePiAgent(ctx context.Context, req ProbeRequest) (*ProbeResponse, error)
 	if model := strings.TrimSpace(req.Model); model != "" {
 		opts = append(opts, piagent.WithModel(model))
 	}
+	// 绑定供应商时上层把物化好的 provider 扩展塞进 Extensions，与 chat run
+	// 同一 --extension 注入通道（mcpbridge / provider 扩展并列）。
+	for _, ext := range req.Extensions {
+		opts = append(opts, piagent.WithExtension(ext))
+	}
 	r := piagent.New(opts...)
 	defer func() { _ = r.Close(ctx) }()
 	text, err := r.Text(ctx, fixedTestPrompt)
