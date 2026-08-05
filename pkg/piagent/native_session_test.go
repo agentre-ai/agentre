@@ -3,7 +3,10 @@ package piagent
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -133,6 +136,178 @@ func TestStreamWaitsForMissingNativeSessionExitClassification(t *testing.T) {
 
 	assert.Nil(t, stream)
 	require.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+type silentStartupRunner struct {
+	process processHandle
+}
+
+func (r *silentStartupRunner) Start(context.Context, procOptions) (processHandle, error) {
+	return r.process, nil
+}
+
+type silentStartupProcess struct {
+	stdin   lockedBuffer
+	stdoutR *io.PipeReader
+	stdoutW *io.PipeWriter
+	exited  chan struct{}
+
+	once    sync.Once
+	waitErr error
+}
+
+func newSilentStartupProcess(prefix string) *silentStartupProcess {
+	stdoutR, stdoutW := io.Pipe()
+	proc := &silentStartupProcess{
+		stdoutR: stdoutR,
+		stdoutW: stdoutW,
+		exited:  make(chan struct{}),
+	}
+	if prefix != "" {
+		go func() {
+			_, _ = io.WriteString(stdoutW, prefix)
+		}()
+	}
+	return proc
+}
+
+func (p *silentStartupProcess) Stdin() io.Writer  { return &p.stdin }
+func (p *silentStartupProcess) Stdout() io.Reader { return p.stdoutR }
+func (p *silentStartupProcess) Stderr() io.Reader { return strings.NewReader("") }
+func (p *silentStartupProcess) Wait() error {
+	<-p.exited
+	return p.waitErr
+}
+func (p *silentStartupProcess) Kill() error {
+	p.finish(errors.New("signal: killed"))
+	return nil
+}
+func (p *silentStartupProcess) Signal(os.Signal) error {
+	p.finish(errors.New("signal: interrupt"))
+	return nil
+}
+func (p *silentStartupProcess) finish(err error) {
+	p.once.Do(func() {
+		p.waitErr = err
+		_ = p.stdoutW.Close()
+		close(p.exited)
+	})
+}
+
+func TestPrepareStreamStartupHonorsCallerDeadlineWhilePiIsSilent(t *testing.T) {
+	tests := []struct {
+		name      string
+		prefix    string
+		runOption RunOption
+		wantTypes []string
+	}{
+		{
+			name:      "Given get_state stays silent, when the startup deadline expires, then startup stops before prompt",
+			wantTypes: []string{"get_state"},
+		},
+		{
+			name:      "Given fork stays silent, when the startup deadline expires, then startup stops before prompt",
+			prefix:    `{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-old"}}` + "\n",
+			runOption: RunForkAnchor("fork-user"),
+			wantTypes: []string{"get_state", "fork"},
+		},
+		{
+			name:      "Given get_entries stays silent, when the startup deadline expires, then startup stops before prompt",
+			prefix:    `{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-old"}}` + "\n",
+			runOption: RunCaptureUserAnchor(),
+			wantTypes: []string{"get_state", "get_entries"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := newSilentStartupProcess(tt.prefix)
+			client := New(
+				WithRPCProcessRunnerForTesting(&silentStartupRunner{process: proc}),
+				WithSession("session-old"),
+				WithKillGrace(50*time.Millisecond),
+			)
+			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+			defer cancel()
+
+			type startupResult struct {
+				prepared *PreparedStream
+				err      error
+			}
+			resultC := make(chan startupResult, 1)
+			go func() {
+				var opts []RunOption
+				if tt.runOption != nil {
+					opts = append(opts, tt.runOption)
+				}
+				prepared, err := client.PrepareStream(ctx, "must not be sent", opts...)
+				resultC <- startupResult{prepared: prepared, err: err}
+			}()
+
+			var result startupResult
+			select {
+			case result = <-resultC:
+			case <-time.After(250 * time.Millisecond):
+				t.Error("Pi startup remained blocked after its caller deadline")
+				_ = proc.Signal(interruptSignal())
+				result = <-resultC
+			}
+
+			assert.Nil(t, result.prepared)
+			require.ErrorIs(t, result.err, context.DeadlineExceeded)
+			frames := stdinFrames(t, proc.stdin.String())
+			require.Len(t, frames, len(tt.wantTypes))
+			for i, wantType := range tt.wantTypes {
+				assert.Equal(t, wantType, frames[i]["type"])
+			}
+			for _, frame := range frames {
+				assert.NotEqual(t, "prompt", frame["type"])
+			}
+			select {
+			case <-proc.exited:
+			case <-time.After(time.Second):
+				t.Fatal("Pi startup process was not released after cancellation")
+			}
+		})
+	}
+}
+
+func TestPrepareStreamUsesBoundedStartupTimeoutWithoutCallerDeadline(t *testing.T) {
+	proc := newSilentStartupProcess("")
+	client := New(
+		WithRPCProcessRunnerForTesting(&silentStartupRunner{process: proc}),
+		WithKillGrace(50*time.Millisecond),
+	)
+	client.startupTimeout = 40 * time.Millisecond
+
+	type startupResult struct {
+		prepared *PreparedStream
+		err      error
+	}
+	resultC := make(chan startupResult, 1)
+	go func() {
+		prepared, err := client.PrepareStream(context.Background(), "must not be sent")
+		resultC <- startupResult{prepared: prepared, err: err}
+	}()
+
+	var result startupResult
+	select {
+	case result = <-resultC:
+	case <-time.After(250 * time.Millisecond):
+		t.Error("Pi startup ignored its bounded default timeout")
+		_ = proc.Signal(interruptSignal())
+		result = <-resultC
+	}
+	assert.Nil(t, result.prepared)
+	require.ErrorIs(t, result.err, context.DeadlineExceeded)
+	frames := stdinFrames(t, proc.stdin.String())
+	require.Len(t, frames, 1)
+	assert.Equal(t, "get_state", frames[0]["type"])
+	select {
+	case <-proc.exited:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out Pi startup process was not released")
+	}
 }
 
 func TestStreamRejectsEmptyNativeSessionBeforePrompt(t *testing.T) {

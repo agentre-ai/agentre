@@ -2383,20 +2383,39 @@ func (s *chatSvc) startTurn(
 	}
 
 	var (
-		prepared *preparedTurnRun
-		turnCtx  context.Context
-		cancel   context.CancelFunc
+		prepared                *preparedTurnRun
+		turnCtx                 context.Context
+		cancel                  context.CancelFunc
+		stopRequestCancel       func() bool
+		startupCancelRegistered bool
 	)
+	clearSynchronousTurn := func() {
+		if stopRequestCancel != nil {
+			stopRequestCancel()
+			stopRequestCancel = nil
+		}
+		if cancel != nil {
+			cancel()
+		}
+		if startupCancelRegistered {
+			s.activeCancels.Delete(sess.ID)
+			s.aborted.Delete(sess.ID)
+			startupCancelRegistered = false
+		}
+	}
 	// Pi prepares/restores and forks its RPC process before the transaction, but
-	// deliberately withholds the prompt. A stale/canceled anchor therefore leaves
-	// history intact, while a later transaction failure cannot race tool execution.
+	// deliberately withholds the prompt. Register cancellation before preflight so
+	// Stop and request cancellation reach both preflight and post-commit Start.
 	if preTx != nil && be.IsPiAgent() && sess.HasProviderSession() && strings.TrimSpace(forkAnchor) != "" {
 		runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
 		turnCtx, cancel = context.WithCancel(runCtx)
+		stopRequestCancel = context.AfterFunc(ctx, cancel)
+		s.activeCancels.Store(sess.ID, cancel)
+		startupCancelRegistered = true
 		var err error
 		prepared, err = s.prepareTurnRun(turnCtx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, false, true)
 		if err != nil {
-			cancel()
+			clearSynchronousTurn()
 			lock.Unlock()
 			logger.Ctx(ctx).Warn("chat_svc.startTurn: pi fork startup failed",
 				zap.Int64("sessionId", sess.ID),
@@ -2434,7 +2453,7 @@ func (s *chatSvc) startTurn(
 		return chat_repo.Session().Update(txCtx, sess)
 	}); err != nil {
 		if prepared != nil {
-			cancel()
+			clearSynchronousTurn()
 			s.discardPreparedTurn(sess.ID, prepared)
 		}
 		lock.Unlock()
@@ -2449,11 +2468,14 @@ func (s *chatSvc) startTurn(
 	if prepared != nil {
 		if err := prepared.start(turnCtx); err != nil {
 			err = s.mapTurnError(ctx, sess, be, err)
-			cancel()
+			clearSynchronousTurn()
 			s.discardPreparedTurn(sess.ID, prepared)
 			if rollbackTx != nil {
-				if rollbackErr := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
-					return rollbackTx(db.WithContextDB(ctx, tx))
+				// Compensation must survive the timeout/cancellation that caused Start
+				// to fail, otherwise the committed replacement can outlive the prompt.
+				rollbackCtx := context.WithoutCancel(ctx)
+				if rollbackErr := db.Ctx(rollbackCtx).Transaction(func(tx *gorm.DB) error {
+					return rollbackTx(db.WithContextDB(rollbackCtx, tx))
 				}); rollbackErr != nil {
 					err = errors.Join(err, fmt.Errorf("restore Pi transcript: %w", rollbackErr))
 				}
@@ -2466,6 +2488,10 @@ func (s *chatSvc) startTurn(
 				zap.String("forkAnchor", forkAnchor),
 				zap.String("errorType", fmt.Sprintf("%T", err)))
 			return nil, err
+		}
+		if stopRequestCancel != nil {
+			stopRequestCancel()
+			stopRequestCancel = nil
 		}
 	}
 
@@ -2487,10 +2513,11 @@ func (s *chatSvc) startTurn(
 	if prepared == nil {
 		runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
 		turnCtx, cancel = context.WithCancel(runCtx)
+		// Non-prepared turns become cancellable immediately before async dispatch.
+		s.activeCancels.Store(sess.ID, cancel)
 	}
-	// turnCtx：Stop 用它 cancel；activeCancels 必须在 gogo.Go **之前** store —— 用户
-	// 可能在 goroutine 调度起来之前就点了「停止」。
-	s.activeCancels.Store(sess.ID, cancel)
+	// Prepared Pi turns were registered before synchronous preflight; all other
+	// turns are registered above. Either way Stop can cancel before gogo.Go runs.
 	gogo.Go(func() error {
 		// defer 顺序：LIFO。先注册 unlock，最后释放；中间的 cancel cleanup
 		// 跑在 lock 还持有期间，新 turn 起不来 → 直接 Delete 安全。

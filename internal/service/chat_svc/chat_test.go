@@ -1045,6 +1045,101 @@ func (r *deferredStartupFailRunner) Run(_ context.Context, _ agentruntime.RunReq
 	return nil, nil, r.err
 }
 
+type blockingPiPreflightRunner struct {
+	entered chan struct{}
+	once    sync.Once
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (*blockingPiPreflightRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapForkSession: true,
+	}}
+}
+
+func (r *blockingPiPreflightRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("blocking Pi preflight runner must be prepared")
+}
+
+func (r *blockingPiPreflightRunner) PrepareRun(ctx context.Context, _ agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	r.mu.Lock()
+	r.calls++
+	call := r.calls
+	r.mu.Unlock()
+	if call > 1 {
+		return nil, errors.New("second Pi preflight reached")
+	}
+	r.once.Do(func() { close(r.entered) })
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(750 * time.Millisecond):
+		return nil, errors.New("Pi preflight was not canceled")
+	}
+}
+
+type blockingPiPreparedStartRunner struct {
+	startEntered chan struct{}
+	closed       chan struct{}
+	startOnce    sync.Once
+	closeOnce    sync.Once
+
+	mu           sync.Mutex
+	prepareCalls int
+	promptCalls  int
+}
+
+func (*blockingPiPreparedStartRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapForkSession: true,
+	}}
+}
+
+func (r *blockingPiPreparedStartRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("blocking Pi prepared-start runner must be prepared")
+}
+
+func (r *blockingPiPreparedStartRunner) PrepareRun(_ context.Context, _ agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	r.mu.Lock()
+	r.prepareCalls++
+	call := r.prepareCalls
+	r.mu.Unlock()
+	if call > 1 {
+		return nil, errors.New("second Pi preflight reached")
+	}
+	return &blockingPiPreparedStart{runner: r}, nil
+}
+
+func (r *blockingPiPreparedStartRunner) PromptCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.promptCalls
+}
+
+type blockingPiPreparedStart struct {
+	runner *blockingPiPreparedStartRunner
+}
+
+func (p *blockingPiPreparedStart) Start(ctx context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	p.runner.startOnce.Do(func() { close(p.runner.startEntered) })
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case <-time.After(750 * time.Millisecond):
+		p.runner.mu.Lock()
+		p.runner.promptCalls++
+		p.runner.mu.Unlock()
+		return nil, nil, errors.New("Pi prompt started after cancellation was requested")
+	}
+}
+
+func (p *blockingPiPreparedStart) Close(context.Context) error {
+	p.runner.closeOnce.Do(func() { close(p.runner.closed) })
+	return nil
+}
+
 type promptCountingRunner struct {
 	mu          sync.Mutex
 	promptCalls int
@@ -5000,6 +5095,182 @@ func TestPiRestart_PostCommitStartupFailureRestoresExistingHistory(t *testing.T)
 	require.Len(t, restored, 2)
 	assert.Equal(t, *originalUser, restored[0])
 	assert.Equal(t, *originalAssistant, restored[1])
+}
+
+type piRestartResult struct {
+	resp *chat_svc.SendResponse
+	err  error
+}
+
+func expectCancelablePiRegenerate(m *chatMocks) (*chat_entity.Message, *chat_entity.Message) {
+	originalUser := &chat_entity.Message{
+		ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: "pi-user-entry",
+	}
+	originalAssistant := &chat_entity.Message{
+		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer"),
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(originalAssistant, nil).AnyTimes()
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{originalUser, originalAssistant}, nil).AnyTimes()
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil).AnyTimes()
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+	}, nil).AnyTimes()
+	return originalUser, originalAssistant
+}
+
+func expectPiReplacementAndRollback(m *chatMocks) *[]chat_entity.Message {
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), 1).Return(int64(2), nil).Times(2)
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.dbMock.ExpectCommit()
+	m.dbMock.ExpectBegin()
+	m.dbMock.ExpectCommit()
+
+	restored := &[]chat_entity.Message{}
+	createCalls := 0
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			createCalls++
+			if createCalls <= 2 {
+				msg.ID = int64(1999 + createCalls)
+			} else {
+				*restored = append(*restored, *msg)
+			}
+			return nil
+		}).Times(4)
+	return restored
+}
+
+func startPiRegenerate(svc chat_svc.ChatSvc, ctx context.Context) <-chan piRestartResult {
+	resultC := make(chan piRestartResult, 1)
+	go func() {
+		resp, err := svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+		resultC <- piRestartResult{resp: resp, err: err}
+	}()
+	return resultC
+}
+
+func TestPiRestart_CancellationStopsSynchronousPreflightBeforeTranscriptMutation(t *testing.T) {
+	tests := []struct {
+		name          string
+		cancelRequest bool
+	}{
+		{name: "Given Stop during Pi preflight, then startup is canceled before transcript mutation"},
+		{name: "Given request cancellation during Pi preflight, then startup is canceled before transcript mutation", cancelRequest: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			runner := &blockingPiPreflightRunner{entered: make(chan struct{})}
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+			t.Cleanup(restore)
+			expectCancelablePiRegenerate(m)
+
+			requestCtx, cancelRequest := context.WithCancel(m.ctx)
+			defer cancelRequest()
+			resultC := startPiRegenerate(m.svc, requestCtx)
+			select {
+			case <-runner.entered:
+			case <-time.After(time.Second):
+				t.Fatal("Pi preflight did not start")
+			}
+			if tt.cancelRequest {
+				cancelRequest()
+			} else {
+				stopResp, stopErr := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 100})
+				require.NoError(t, stopErr)
+				require.NotNil(t, stopResp)
+				assert.True(t, stopResp.Stopped)
+			}
+
+			var result piRestartResult
+			select {
+			case result = <-resultC:
+			case <-time.After(200 * time.Millisecond):
+				t.Error("cancellation did not reach synchronous Pi preflight")
+				result = <-resultC
+			}
+			assert.Nil(t, result.resp)
+			require.ErrorIs(t, result.err, context.Canceled)
+
+			secondResp, secondErr := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+			assert.Nil(t, secondResp)
+			require.ErrorContains(t, secondErr, "second Pi preflight reached",
+				"the per-session lock must be released after canceled preflight")
+		})
+	}
+}
+
+func TestPiRestart_CancellationDuringPreparedStartRestoresTranscript(t *testing.T) {
+	tests := []struct {
+		name          string
+		cancelRequest bool
+	}{
+		{name: "Given Stop during post-commit Pi prepared start, then prompt is withheld and transcript is restored"},
+		{name: "Given request cancellation during post-commit Pi prepared start, then prompt is withheld and transcript is restored", cancelRequest: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			runner := &blockingPiPreparedStartRunner{
+				startEntered: make(chan struct{}),
+				closed:       make(chan struct{}),
+			}
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+			t.Cleanup(restore)
+			originalUser, originalAssistant := expectCancelablePiRegenerate(m)
+			restored := expectPiReplacementAndRollback(m)
+
+			requestCtx, cancelRequest := context.WithCancel(m.ctx)
+			defer cancelRequest()
+			resultC := startPiRegenerate(m.svc, requestCtx)
+			select {
+			case <-runner.startEntered:
+			case <-time.After(time.Second):
+				t.Fatal("Pi prepared start did not begin after transcript commit")
+			}
+			if tt.cancelRequest {
+				cancelRequest()
+			} else {
+				stopResp, stopErr := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 100})
+				require.NoError(t, stopErr)
+				require.NotNil(t, stopResp)
+				assert.True(t, stopResp.Stopped)
+			}
+
+			var result piRestartResult
+			select {
+			case result = <-resultC:
+			case <-time.After(200 * time.Millisecond):
+				t.Error("cancellation did not stop post-commit Pi prepared start")
+				result = <-resultC
+			}
+			assert.Nil(t, result.resp)
+			require.ErrorIs(t, result.err, context.Canceled)
+			assert.Zero(t, runner.PromptCalls(), "cancellation before prompt must not start the replacement turn")
+			select {
+			case <-runner.closed:
+			case <-time.After(time.Second):
+				t.Fatal("canceled prepared Pi process was not released")
+			}
+			require.Len(t, *restored, 2)
+			assert.Equal(t, *originalUser, (*restored)[0])
+			assert.Equal(t, *originalAssistant, (*restored)[1])
+
+			secondResp, secondErr := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+			assert.Nil(t, secondResp)
+			require.ErrorContains(t, secondErr, "second Pi preflight reached",
+				"the per-session lock must be released after canceled prepared start")
+		})
+	}
 }
 
 func TestPiRestart_RejectsEmptyAnchorBeforeTruncationOrRunnerStart(t *testing.T) {

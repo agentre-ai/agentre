@@ -15,7 +15,12 @@ import (
 	"github.com/cago-frame/agents/provider"
 )
 
-const rpcFrameSafetyLimit = 64 * 1024 * 1024
+const (
+	rpcFrameSafetyLimit = 64 * 1024 * 1024
+	// Startup may include a 64 MiB get_entries response, so use the existing
+	// 30-second RPC/probe boundary rather than the optional 2-second stats window.
+	rpcStartupTimeout = 30 * time.Second
+)
 
 type Client struct {
 	binary       string
@@ -33,9 +38,10 @@ type Client struct {
 	session string
 	// extensions 透传给 pi 的 --extension（可多次）。Agentre 用它加载内嵌的
 	// MCP 桥扩展，把注入的 HTTP MCP server 翻成 pi 一等工具。
-	extensions []string
-	killGrace  time.Duration
-	runner     processRunner
+	extensions     []string
+	killGrace      time.Duration
+	startupTimeout time.Duration
+	runner         processRunner
 
 	// rawSink 若非 nil,子进程 stdout JSON-RPC 帧会先投影成不含 prompt、图片、
 	// Session 内容或凭证的诊断摘要，再同步回调一次。debug 协议诊断用。
@@ -44,9 +50,10 @@ type Client struct {
 
 func New(opts ...Option) *Client {
 	c := &Client{
-		binary:    "pi",
-		killGrace: 10 * time.Second,
-		runner:    execProcessRunner{},
+		binary:         "pi",
+		killGrace:      10 * time.Second,
+		startupTimeout: rpcStartupTimeout,
+		runner:         execProcessRunner{},
 	}
 	for _, o := range opts {
 		o(c)
@@ -84,17 +91,19 @@ func (c *Client) PrepareStream(ctx context.Context, prompt string, opts ...RunOp
 	if err != nil {
 		return nil, err
 	}
-	sessionID, err := readSessionID(ctx, proc, c.session)
+	startupCtx, cancelStartup := c.startupContext(ctx)
+	defer cancelStartup()
+	sessionID, err := readSessionID(startupCtx, proc, c.session)
 	if err != nil {
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
 	}
 	if forkAnchor := strings.TrimSpace(spec.forkAnchor); forkAnchor != "" {
-		if err := forkSession(ctx, proc, forkAnchor); err != nil {
+		if err := forkSession(startupCtx, proc, forkAnchor); err != nil {
 			_ = proc.terminate(context.Background(), c.killGrace)
 			return nil, err
 		}
-		forkedSessionID, err := readSessionID(ctx, proc, "")
+		forkedSessionID, err := readSessionID(startupCtx, proc, "")
 		if err != nil {
 			_ = proc.terminate(context.Background(), c.killGrace)
 			return nil, err
@@ -108,7 +117,7 @@ func (c *Client) PrepareStream(ctx context.Context, prompt string, opts ...RunOp
 	stream := newStream(proc, c.killGrace)
 	stream.setSessionID(sessionID)
 	if spec.captureUserAnchor {
-		entries, err := readSessionEntries(ctx, proc, "session-entries-before")
+		entries, err := readSessionEntries(startupCtx, proc, "session-entries-before")
 		if err != nil {
 			_ = stream.Close(context.Background())
 			return nil, err
@@ -189,7 +198,9 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	sessionID, err := readSessionID(ctx, proc, c.session)
+	startupCtx, cancelStartup := c.startupContext(ctx)
+	defer cancelStartup()
+	sessionID, err := readSessionID(startupCtx, proc, c.session)
 	if err != nil {
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
@@ -280,7 +291,7 @@ func callRPC(
 	if err := proc.writeJSON(request); err != nil {
 		return rpcResponse{}, err
 	}
-	for proc.lines.Scan() {
+	for scanRPCLine(ctx, proc.lines) {
 		line := proc.lines.Bytes()
 		select {
 		case <-ctx.Done():
@@ -317,6 +328,18 @@ func callRPC(
 		return response, nil
 	}
 	return rpcResponse{}, awaitProcessExitOrScanError(ctx, proc)
+}
+
+func scanRPCLine(ctx context.Context, scanner rpcLineScanner) bool {
+	if scanner == nil {
+		return false
+	}
+	if contextual, ok := scanner.(interface {
+		ScanContext(context.Context) bool
+	}); ok {
+		return contextual.ScanContext(ctx)
+	}
+	return scanner.Scan()
 }
 
 func validSessionEntriesLeaf(entries sessionEntriesWire) (string, bool) {
@@ -464,6 +487,13 @@ func looksLikeSessionPath(value string) bool {
 	return strings.ContainsAny(value, `/\\`) || strings.HasSuffix(value, ".jsonl")
 }
 
+func (c *Client) startupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c.startupTimeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, c.startupTimeout)
+}
+
 func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 	h, err := c.runner.Start(ctx, procOptions{
 		Binary: c.binary,
@@ -474,16 +504,17 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 	if err != nil {
 		return nil, err
 	}
+	lines := newAsyncRPCLineScanner(h.Stdout())
 	p := &rpcProcess{
 		handle:     h,
 		stdin:      h.Stdin(),
-		lines:      bufio.NewScanner(h.Stdout()),
+		lines:      lines,
+		linesDone:  lines.Done(),
 		rawSink:    c.rawSink,
 		stderr:     &lockedBuffer{},
 		stderrDone: make(chan struct{}),
 		done:       make(chan struct{}),
 	}
-	p.lines.Buffer(make([]byte, 0, 64*1024), rpcFrameSafetyLimit)
 	go func() {
 		defer close(p.stderrDone)
 		_, _ = io.Copy(p.stderr, h.Stderr())
@@ -492,10 +523,100 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 	return p, nil
 }
 
+type rpcLineScanner interface {
+	Scan() bool
+	Bytes() []byte
+	Text() string
+	Err() error
+}
+
+type asyncRPCLineScanner struct {
+	lines       chan []byte
+	stop        chan struct{}
+	done        chan struct{}
+	closeReader func()
+
+	stopOnce sync.Once
+	current  []byte
+	ctxErr   error
+	scanErr  error
+}
+
+func newAsyncRPCLineScanner(reader io.Reader) *asyncRPCLineScanner {
+	s := &asyncRPCLineScanner{
+		lines: make(chan []byte),
+		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
+	}
+	switch closer := reader.(type) {
+	case io.Closer:
+		s.closeReader = func() { _ = closer.Close() }
+	case interface{ Close() }:
+		s.closeReader = closer.Close
+	}
+	go s.scan(reader)
+	return s
+}
+
+func (s *asyncRPCLineScanner) scan(reader io.Reader) {
+	defer close(s.done)
+	defer close(s.lines)
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), rpcFrameSafetyLimit)
+	for scanner.Scan() {
+		line := append([]byte(nil), scanner.Bytes()...)
+		select {
+		case s.lines <- line:
+		case <-s.stop:
+			return
+		}
+	}
+	s.scanErr = scanner.Err()
+}
+
+func (s *asyncRPCLineScanner) Scan() bool {
+	return s.ScanContext(context.Background())
+}
+
+func (s *asyncRPCLineScanner) ScanContext(ctx context.Context) bool {
+	select {
+	case line, ok := <-s.lines:
+		if !ok {
+			s.current = nil
+			return false
+		}
+		s.current = line
+		return true
+	case <-ctx.Done():
+		s.ctxErr = ctx.Err()
+		s.Stop()
+		return false
+	}
+}
+
+func (s *asyncRPCLineScanner) Bytes() []byte { return s.current }
+func (s *asyncRPCLineScanner) Text() string  { return string(s.current) }
+func (s *asyncRPCLineScanner) Err() error {
+	if s.ctxErr != nil {
+		return s.ctxErr
+	}
+	return s.scanErr
+}
+func (s *asyncRPCLineScanner) Stop() {
+	s.stopOnce.Do(func() {
+		close(s.stop)
+		if s.closeReader != nil {
+			s.closeReader()
+		}
+	})
+}
+func (s *asyncRPCLineScanner) Done() <-chan struct{} { return s.done }
+
 type rpcProcess struct {
 	handle     processHandle
 	stdin      io.Writer
-	lines      *bufio.Scanner
+	lines      rpcLineScanner
+	linesDone  <-chan struct{}
 	rawSink    func([]byte) // 非 nil时回调不含敏感 payload 的 stdout 诊断摘要
 	stderr     *lockedBuffer
 	stderrDone chan struct{}
@@ -507,6 +628,9 @@ type rpcProcess struct {
 func (p *rpcProcess) awaitExit() {
 	p.waitErr = p.handle.Wait()
 	<-p.stderrDone
+	if p.linesDone != nil {
+		<-p.linesDone
+	}
 	close(p.done)
 }
 
@@ -530,6 +654,9 @@ func (p *rpcProcess) writeJSON(v any) error {
 func (p *rpcProcess) terminate(ctx context.Context, grace time.Duration) error {
 	if p == nil || p.handle == nil {
 		return nil
+	}
+	if stopper, ok := p.lines.(interface{ Stop() }); ok {
+		stopper.Stop()
 	}
 	_ = p.handle.Signal(interruptSignal())
 	timer := time.NewTimer(grace)
