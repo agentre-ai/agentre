@@ -217,7 +217,8 @@ func (e UsageUpdate) MarshalJSON() ([]byte, error) {
 		Kind             EventKind  `json:"kind"`
 		Usage            *usageWire `json:"usage,omitempty"`
 		TotalInputTokens int        `json:"totalInputTokens,omitempty"`
-	}{EventUsage, toUsageWire(e.Usage), e.TotalInputTokens})
+		ContextWindow    int        `json:"contextWindow,omitempty"`
+	}{EventUsage, toUsageWire(e.Usage), e.TotalInputTokens, e.ContextWindow})
 }
 
 func (e ContextWindowUpdated) MarshalJSON() ([]byte, error) {
@@ -485,11 +486,16 @@ func UnmarshalEvent(data []byte) (Event, error) {
 		var w struct {
 			Usage            *usageWire `json:"usage"`
 			TotalInputTokens int        `json:"totalInputTokens"`
+			ContextWindow    int        `json:"contextWindow"`
 		}
 		if err := json.Unmarshal(data, &w); err != nil {
 			return nil, err
 		}
-		return UsageUpdate{Usage: w.Usage.toUsage(), TotalInputTokens: w.TotalInputTokens}, nil
+		return UsageUpdate{
+			Usage:            w.Usage.toUsage(),
+			TotalInputTokens: w.TotalInputTokens,
+			ContextWindow:    w.ContextWindow,
+		}, nil
 	case EventContextWindowUpdated:
 		var w struct {
 			Tokens int `json:"tokens"`

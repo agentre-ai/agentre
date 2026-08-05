@@ -55,9 +55,9 @@ export type LiveStream = {
   // stream 结束销毁 entry 后回落到 messages-based 计算（持久化 token 列已是
   // 最终值）。
   liveUsage: ChatStreamUsage | null;
-  // liveContextWindow 是 Codex runtime 从 token usage notification 里探到的
-  // modelContextWindow。首轮 CLI login / provider 未配置时，LoadSession 初始
-  // contextWindow 可能为 0；这里让 Composer 在 turn 内立即显示真实窗口。
+  // liveContextWindow 是 runtime 在 turn 内探到的模型窗口。usage 事件可与
+  // liveUsage 原子写入；独立 session_status patch 仍用于非 usage 来源与轮末刷新。
+  // LoadSession 初始 contextWindow 可能为 0；这里让 Composer 在 turn 内显示真实窗口。
   liveContextWindow: number;
   // liveCompacting 由后端 runtime_status 事件驱动:claudecode CLI 在 /compact 启动
   // (manual 或 auto) 时推 status:"compacting",chat_svc 翻译成 RuntimeStatus
@@ -194,10 +194,10 @@ type Actions = {
     assistantMessageId: number,
     payload: ToolApprovalData,
   ) => void;
-  // patchLiveUsage 把后端推来的 per-call usage 快照写到 LiveStream.liveUsage 上。
-  // Composer 进度条用它在 turn 内随工具循环实时刷新「已用上下文」，turn 结束
-  // entry 被销毁后回落到 messages 扫描。无 stream entry 时静默丢弃（极端 race：
-  // usage 帧先于 openStream 到达 —— 下一帧或者 reload 都能兜回来）。
+  // patchLiveUsage 把后端推来的 per-call usage 快照写到 LiveStream.liveUsage 上；
+  // usage.contextWindow>0 时同一次 state 更新写入 liveContextWindow，保证收到的任一
+  // usage 都有匹配分母。turn 结束 entry 被销毁后回落到 messages 扫描。无 stream
+  // entry 时静默丢弃；Pi 会在每个 usage 快照重带 contextWindow，后续帧可兜回。
   patchLiveUsage: (
     sessionId: number,
     assistantMessageId: number,
@@ -414,6 +414,9 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
         // 同值短路：所有 token 字段一致就不重建 Map，避免 zustand 触发多余重渲染。
         // 消息 id 也比一下 —— turn 内换 assistant 段（steer_consumed）时它会变。
         const prev = cur.liveUsage;
+        const contextWindow = usage.contextWindow ?? 0;
+        const nextContextWindow =
+          contextWindow > 0 ? contextWindow : cur.liveContextWindow;
         if (
           prev &&
           prev.messageId === usage.messageId &&
@@ -421,11 +424,18 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
           prev.completionTokens === usage.completionTokens &&
           prev.cachedTokens === usage.cachedTokens &&
           prev.cacheCreationTokens === usage.cacheCreationTokens &&
-          prev.reasoningTokens === usage.reasoningTokens
+          prev.reasoningTokens === usage.reasoningTokens &&
+          prev.totalInputTokens === usage.totalInputTokens &&
+          prev.contextWindow === usage.contextWindow &&
+          cur.liveContextWindow === nextContextWindow
         ) {
           return null;
         }
-        return { ...cur, liveUsage: usage };
+        return {
+          ...cur,
+          liveUsage: usage,
+          liveContextWindow: nextContextWindow,
+        };
       }),
     ),
 

@@ -53,6 +53,8 @@ export type TranscriptRenderContextValue = {
   onStopSubagent?: (toolUseId: string) => void;
   /** 只读模式下不传；有值时才渲染「重新生成」按钮。 */
   onRerun?: (messageId: number) => void;
+  /** 只读模式下不传；有值时错误卡渲染「继续」按钮。 */
+  onContinue?: (messageId: number) => void;
   /** 只读模式下不传；有值时才渲染「编辑」按钮。 */
   onEdit?: (messageId: number) => void;
 };
@@ -313,7 +315,15 @@ function UserMessageActions({ onEdit }: { onEdit: () => void }) {
   );
 }
 
-function ErrorCard({ text, onRerun }: { text: string; onRerun?: () => void }) {
+function ErrorCard({
+  text,
+  onContinue,
+  onRerun,
+}: {
+  text: string;
+  onContinue?: () => void;
+  onRerun?: () => void;
+}) {
   const { t } = useTranslation();
   return (
     <section
@@ -327,11 +337,23 @@ function ErrorCard({ text, onRerun }: { text: string; onRerun?: () => void }) {
       <span className="min-w-0 flex-1 text-aux text-status-error">
         {t("chat.errorCard.message", { text })}
       </span>
-      {onRerun ? (
-        <Button type="button" size="xs" variant="outline" onClick={onRerun}>
-          {t("chat.errorCard.regenerate")}
-        </Button>
-      ) : null}
+      <div className="flex shrink-0 items-center gap-2">
+        {onContinue ? (
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            onClick={onContinue}
+          >
+            {t("chat.errorCard.continue")}
+          </Button>
+        ) : null}
+        {onRerun ? (
+          <Button type="button" size="xs" variant="outline" onClick={onRerun}>
+            {t("chat.errorCard.regenerate")}
+          </Button>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -658,6 +680,8 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
   // 每条 assistant 都允许重新生成；只读模式下 ctx.onRerun 为 undefined 时不渲染按钮。
   const rerunHandler =
     isAssistant && ctx?.onRerun ? () => ctx.onRerun!(m.id) : undefined;
+  const continueHandler =
+    isAssistant && ctx?.onContinue ? () => ctx.onContinue!(m.id) : undefined;
   const copyText =
     isAssistant && row.isLastOfMessage
       ? extractAssistantOutputText(m.blocks ?? [], liveBlocks ?? [], liveTail)
@@ -674,7 +698,11 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
         )
       ) : null}
       {isAssistant && m.errorText ? (
-        <ErrorCard text={m.errorText} onRerun={rerunHandler} />
+        <ErrorCard
+          text={m.errorText}
+          onContinue={continueHandler}
+          onRerun={rerunHandler}
+        />
       ) : null}
     </>
   ) : null;

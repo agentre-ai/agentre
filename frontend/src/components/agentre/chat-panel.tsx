@@ -2070,6 +2070,12 @@ function ChatPanel({
                     liveByMessageId={liveByMessageId}
                     streaming={streaming}
                     liveCompacting={liveCompacting}
+                    onContinue={() => {
+                      if (!session) return;
+                      void doSend(session.id, session.agentId, {
+                        text: "continue",
+                      });
+                    }}
                     onRerun={(messageId) => void handleRegenerate(messageId)}
                     onEdit={(messageId) => handleEdit(messageId)}
                     onPlanActionStarted={handlePlanActionStarted}
