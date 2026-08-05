@@ -73,7 +73,7 @@ func (s *service) Add(ctx context.Context, req AddRequest) (*DeviceView, error) 
 	if s.watcher != nil {
 		_ = s.watcher.Start(ctx, row.ID)
 	}
-	return toView(row), nil
+	return s.toView(row), nil
 }
 
 func validateAddRequest(ctx context.Context, req AddRequest) error {

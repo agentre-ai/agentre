@@ -53,6 +53,7 @@ import { cn } from "@/lib/utils";
 import { useSessionAttention } from "@/stores/attention-store";
 import { useClearedBackgroundTasksStore } from "@/stores/cleared-background-tasks-store";
 import {
+  sessionStreamMap,
   streamForMessage,
   useChatStreamsStore,
   type ChatBlockData,
@@ -60,6 +61,7 @@ import {
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useQueuedMessagesStore } from "@/stores/queued-messages-store";
+import { useSessionConnectionState } from "@/stores/session-conn-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 import {
@@ -80,6 +82,12 @@ import {
 } from "./chat";
 import type { LocalCommandHistoryScope } from "./chat-input";
 import { ChatContextSidebar } from "./chat-context-sidebar";
+import {
+  clearCatchUp,
+  registerTranscriptRowCounter,
+  useCatchUpSummary,
+  type CatchUpSummary,
+} from "./chat-panel-catchup-state";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
@@ -98,6 +106,7 @@ import {
 } from "./background-tasks/flip-subagent-status";
 import { deriveTaskProgress } from "./task-progress/derive";
 import { TaskProgressBar } from "./task-progress/task-progress-bar";
+import { buildTranscriptRows } from "./transcript-rows";
 import type { AgentColor, AgentStatus } from "./types";
 import { agentTextColorClassName, statusConfig } from "./types";
 
@@ -418,6 +427,105 @@ function applyStreamError(
   const updated = [...messages];
   updated[idx] = { ...updated[idx], errorText: error } as SvcChatMessage;
   return updated;
+}
+
+// liveContentByMessageId 把该会话此刻在流的内容摊成「assistant 消息 id → 流式内容」。
+// 渲染路径与补齐行数快照路径共用一份 —— 后者拿的是 store 的即时快照(见
+// registerTranscriptRowCounter 处的注释),两处若各拼各的,数出来的行与画出来的行
+// 就会在某个细节上分家。
+function liveContentByMessageId(
+  sessionStreams: ReadonlyMap<number, LiveStream> | null,
+): Map<number, TranscriptLiveContent> {
+  const out = new Map<number, TranscriptLiveContent>();
+  if (!sessionStreams) return out;
+  for (const s of sessionStreams.values()) {
+    out.set(s.assistantMessageId, {
+      liveTail: s.liveDelta,
+      liveThinking: s.liveThinking,
+      liveThinkingStartedAt: s.streamStartedAt,
+      liveBlocks: s.liveBlocks,
+      liveRetry: s.liveRetry,
+    });
+  }
+  return out;
+}
+
+// EMPTY_AUTONOMOUS_IDS:行数快照不关心「哪条消息是自主续轮」——那只影响首行要不要
+// 挂 banner,不改行数。渲染路径自己会算真值。
+const EMPTY_AUTONOMOUS_IDS: ReadonlySet<number> = new Set<number>();
+
+// TranscriptJumpControl 是转录区底部浮出的那枚控件。
+//
+// 没有未看的补齐时,它就是原来的「回到底部」圆钮;补齐把内容悄悄堆高之后,它长成
+// 一枚带文字的药丸,写明新增了多少条 —— 用户的滚动位置没被夺走,但他得看得见
+// 下面多了东西。补齐里还有没回答的待决策时再补一段「N 项待处理」:待决策一旦
+// 埋进上百条补齐内容中间,不写在这里就等于没人知道。
+// 那段必须是文字:状态色点只是修饰,颜色不能是信息的唯一载体(docs/design.md 无障碍)。
+//
+// newRows 为 0 的那一支同样浮出控件:补齐把上千条 delta 全追加进了还在流的那一行,
+// 行数没变但内容确实多了(R14 只要求「补齐产生了新内容」)。此时报不出条数,就只说
+// 有新内容 —— 与其编一个数字,不如少说一句。
+function TranscriptJumpControl({
+  catchUp,
+  onJump,
+}: {
+  catchUp: CatchUpSummary | null;
+  onJump: () => void;
+}): React.ReactElement {
+  const { t } = useTranslation();
+  const floating =
+    "sticky bottom-4 z-20 ml-auto flex rounded-full bg-background shadow-md hover:shadow-lg dark:bg-background animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out motion-reduce:animate-none";
+
+  if (!catchUp) {
+    return (
+      <Button
+        type="button"
+        data-testid="back-to-bottom-button"
+        variant="outline"
+        size="icon-sm"
+        aria-label={t("chatPanel.scroll.backToBottom")}
+        title={t("chatPanel.scroll.backToBottom")}
+        onClick={onJump}
+        className={floating}
+      >
+        <ArrowDown data-icon="only" aria-hidden="true" />
+      </Button>
+    );
+  }
+
+  // 不加 aria-label:按钮的可访问名就是这些文字本身,条数与待处理项数因此一并被读出。
+  return (
+    <Button
+      type="button"
+      data-testid="jump-to-latest-button"
+      variant="outline"
+      size="sm"
+      title={t("chatPanel.scroll.jumpToLatest")}
+      onClick={onJump}
+      className={cn(floating, "w-fit")}
+    >
+      <ArrowDown aria-hidden="true" />
+      <span>
+        {catchUp.newRows > 0
+          ? t("chatPanel.scroll.caughtUpCount", { count: catchUp.newRows })
+          : t("chatPanel.scroll.caughtUpSome")}
+      </span>
+      {catchUp.pendingDecisions > 0 ? (
+        <span
+          data-testid="jump-to-latest-pending"
+          className="flex items-center gap-1 text-status-waiting"
+        >
+          <span
+            aria-hidden="true"
+            className="size-1.5 rounded-full bg-status-waiting"
+          />
+          {t("chatPanel.scroll.pendingCount", {
+            count: catchUp.pendingDecisions,
+          })}
+        </span>
+      ) : null}
+    </Button>
+  );
 }
 
 // ─── ChatPanel ───────────────────────────────────────────────────────────────
@@ -921,20 +1029,10 @@ function ChatPanel({
   // 逐条 assistant 消息的流式内容表 —— 多条流并存时各渲各的,喂给 ChatTranscript。
   // 不能只喂主流:后台任务完成的自主续轮与用户轮会重叠,只喂一条会让另一条瞬间
   // 掉回持久化态(用户可见症状:「已输出内容清空回退」,sess-1950)。
-  const liveByMessageId = React.useMemo(() => {
-    const out = new Map<number, TranscriptLiveContent>();
-    if (!sessionStreams) return out;
-    for (const s of sessionStreams.values()) {
-      out.set(s.assistantMessageId, {
-        liveTail: s.liveDelta,
-        liveThinking: s.liveThinking,
-        liveThinkingStartedAt: s.streamStartedAt,
-        liveBlocks: s.liveBlocks,
-        liveRetry: s.liveRetry,
-      });
-    }
-    return out;
-  }, [sessionStreams]);
+  const liveByMessageId = React.useMemo(
+    () => liveContentByMessageId(sessionStreams),
+    [sessionStreams],
+  );
   // 全部在流的 liveBlocks 拍平 —— 后台任务面板 / task-progress 是**会话级**视图,
   // 用户轮和后台流里起的任务都要收进来。
   const allLiveBlocks = React.useMemo(() => {
@@ -946,6 +1044,9 @@ function ChatPanel({
   const liveContextWindow = currentStream?.liveContextWindow ?? 0;
   const liveCompacting = currentStream?.liveCompacting ?? false;
   const streaming = currentStream !== null;
+  // 连接态是会话级的(不挂在某条流上),由 ChatStreamsHost 订阅 chat:conn:<sid> 写入。
+  // 断连期间会话仍然是「运行中」—— 这里只换活信号的形态,不碰 agentStatus。
+  const reconnecting = useSessionConnectionState(sessionId) === "reconnecting";
 
   // CLI mode 控件：claudecode 使用 permission mode，codex 使用 collaboration
   // mode 的 default/plan 子集。DB 是 source-of-truth；新会话还没有 sessionId
@@ -1296,6 +1397,45 @@ function ChatPanel({
     autoFollowRef.current = true;
     saveBottomScrollPosition(readScrollMetrics(el));
   }, [saveBottomScrollPosition]);
+
+  // ── 补齐落定后的「跳到最新」──
+  // 摘要由 ChatStreamsHost 在补齐落定那一发记下,这里只负责供转录行数、读与销账。
+  //
+  // 行数取数口:补齐窗口两端各调一次(掉线时快照、落定时做差),不是每帧算,所以
+  // 现场 build 一次即可。两个数据源的取法不同:
+  //   - messages 走 ref —— 它只在 reload 落定时换,慢一拍也是同一份;
+  //   - 在流的内容直接读 store 的 getState() —— 补齐落定那一发连接态事件到达时,
+  //     重放的内容早已进了 store 但 React 还没重渲,吃渲染期的 liveByMessageId
+  //     会数到补齐前的旧值,差出来恒等于 0。
+  // 这里不复现转录区的折叠(压缩前旧消息)与本地命令行:两者在窗口两端同增同减,
+  // 做差时抵消,补齐本身也产不出它们。
+  const messagesRef = React.useRef(messages);
+  React.useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  React.useEffect(() => {
+    if (sessionId <= 0) return;
+    return registerTranscriptRowCounter(
+      sessionId,
+      () =>
+        buildTranscriptRows({
+          displayMessages: messagesRef.current,
+          autonomousIds: EMPTY_AUTONOMOUS_IDS,
+          liveByMessageId: liveContentByMessageId(
+            sessionStreamMap(useChatStreamsStore.getState(), sessionId),
+          ),
+        }).rows.length,
+    );
+  }, [sessionId]);
+
+  // 销账条件是「人回到了底部」而不是「点了控件」:自己滚回底部同样意味着补齐内容
+  // 已经看过了,不销账的话下次往上翻会撞见一枚早就过期的控件。贴底时本就沿用既有的
+  // 贴底跟随,控件也永远不出现(渲染条件与销账条件是同一个 showBackToBottom)。
+  const catchUp = useCatchUpSummary(sessionId);
+  React.useEffect(() => {
+    if (showBackToBottom || !catchUp) return;
+    clearCatchUp(sessionId);
+  }, [catchUp, sessionId, showBackToBottom]);
 
   // ── 跨路由 turn 落定后的善后 ──
   // store 在 done/error/closed 时给该 sessionId 自增 doneTick。我们只关心「当前正在
@@ -2445,6 +2585,7 @@ function ChatPanel({
                     liveByMessageId={liveByMessageId}
                     streaming={streaming}
                     liveCompacting={liveCompacting}
+                    reconnecting={reconnecting}
                     onContinue={() => {
                       if (!session) return;
                       void doSend(session.id, session.agentId, {
@@ -2461,18 +2602,10 @@ function ChatPanel({
                     tabStateKey={scrollStateKey}
                   />
                   {showBackToBottom ? (
-                    <Button
-                      type="button"
-                      data-testid="back-to-bottom-button"
-                      variant="outline"
-                      size="icon-sm"
-                      aria-label={t("chatPanel.scroll.backToBottom")}
-                      title={t("chatPanel.scroll.backToBottom")}
-                      onClick={handleBackToBottom}
-                      className="sticky bottom-4 z-20 ml-auto flex rounded-full bg-background shadow-md hover:shadow-lg dark:bg-background animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out motion-reduce:animate-none"
-                    >
-                      <ArrowDown data-icon="only" aria-hidden="true" />
-                    </Button>
+                    <TranscriptJumpControl
+                      catchUp={catchUp}
+                      onJump={handleBackToBottom}
+                    />
                   ) : null}
                 </section>
               )}

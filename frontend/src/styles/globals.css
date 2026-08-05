@@ -301,6 +301,9 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
   --animate-typing-dot: typing-dot 1.2s ease-in-out infinite;
+  /* 断连指示器:同一 keyframe、同一曲线,周期慢一倍。"网络在等" 与 "agent 在想"
+     因此一眼可分,而不必再造一套动效或第五个状态色。 */
+  --animate-typing-dot-slow: typing-dot 2.4s ease-in-out infinite;
 }
 
 @layer base {

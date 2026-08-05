@@ -53,11 +53,12 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 		return nil, err
 	}
 	h := &handleImpl{
-		cmd:  cmd,
-		file: f,
-		data: make(chan []byte, 32),
-		exit: make(chan pkgpty.ExitInfo, 1),
-		done: make(chan struct{}),
+		cmd:        cmd,
+		file:       f,
+		data:       make(chan []byte, 32),
+		exit:       make(chan pkgpty.ExitInfo, 1),
+		done:       make(chan struct{}),
+		stopReader: make(chan struct{}),
 	}
 	go h.reader()
 	go h.reaper()
@@ -74,6 +75,8 @@ type handleImpl struct {
 	mu     sync.Mutex
 	closed bool
 	done   chan struct{}
+
+	stopReader chan struct{}
 }
 
 func (h *handleImpl) Write(p []byte) (int, error) {
@@ -97,6 +100,7 @@ func (h *handleImpl) Close() error {
 		return nil
 	}
 	h.closed = true
+	close(h.stopReader)
 	h.mu.Unlock()
 
 	if h.cmd.Process != nil {
@@ -129,7 +133,7 @@ func (h *handleImpl) reader() {
 			copy(out, buf[:n])
 			select {
 			case h.data <- out:
-			case <-h.done:
+			case <-h.stopReader:
 				return
 			}
 		}
@@ -141,8 +145,12 @@ func (h *handleImpl) reader() {
 
 func (h *handleImpl) reaper() {
 	err := h.cmd.Wait()
-	close(h.done)
+	// Closing the PTY releases a reader blocked in Read. Natural process exit is
+	// deliberately not sent through stopReader: if Read already returned the
+	// final bytes, reader must publish them instead of randomly selecting a
+	// process-completion cancellation branch and discarding them.
 	_ = h.file.Close()
+	close(h.done)
 
 	info := pkgpty.ExitInfo{}
 	if err == nil {

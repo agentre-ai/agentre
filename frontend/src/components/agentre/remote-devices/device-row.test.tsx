@@ -18,6 +18,7 @@ const baseDevice: DeviceView = {
   lastSeenAt: 0,
   lastError: "",
   online: false,
+  daemonOutdated: false,
 };
 
 describe("DeviceRow", () => {
@@ -77,6 +78,37 @@ describe("DeviceRow", () => {
       screen.getByText(/identity fingerprint changed/),
     ).toBeInTheDocument();
   });
+  // R18：daemon 版本过旧时，说明落在这台设备自己那一行 —— 它是设备属性，
+  // 不是会话事件，也不是浮在聊天上的横幅。
+  it("explains an outdated daemon on the device row", () => {
+    const d = { ...baseDevice, daemonOutdated: true };
+    render(
+      <DeviceRow
+        device={d}
+        now={1_000_000}
+        onRefresh={() => {}}
+        onRename={() => {}}
+        onEditTLS={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    expect(screen.getByText(/Outdated daemon/)).toBeInTheDocument();
+  });
+
+  it("says nothing about the version when the daemon is current", () => {
+    render(
+      <DeviceRow
+        device={baseDevice}
+        now={1_000_000}
+        onRefresh={() => {}}
+        onRename={() => {}}
+        onEditTLS={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/Outdated daemon/)).not.toBeInTheDocument();
+  });
+
   it("fires onRemove from action menu", async () => {
     const user = userEvent.setup();
     const onRemove = vi.fn();

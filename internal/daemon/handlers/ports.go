@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/agentre-ai/agentre/internal/daemon/state"
@@ -23,28 +24,104 @@ type StatePort interface {
 	Snapshot() state.State
 }
 
-// SessionHandle is what the registry stores per active chat session.
-type SessionHandle struct {
-	SessionID   string
-	BackendType string
-	Workdir     string
-	StartedAt   int64
-	Cancel      func()
-}
-
-// SessionRegistryPort is the in-mem session map.
-type SessionRegistryPort interface {
-	Register(sessionID string, h SessionHandle)
-	Lookup(sessionID string) (SessionHandle, bool)
-	Remove(sessionID string)
-	List() []SessionHandle
-}
-
 // NotifierPort sends server-initiated notifications and reverse-direction
 // requests back to the connected client (e.g. chat.event, approval.request).
 type NotifierPort interface {
 	Notify(method string, params any) error
 	Request(ctx context.Context, method string, params any, result any) error
+}
+
+// JournalPort 落库一条「本该发给客户端的通知」,返回库为它分配的 seq。
+//
+// 它是 R1「先落库,后推送」的接缝:会话通知的发送方先调 Append 拿到 seq,成功后才推送。
+// Append 返回 error 时 seq 不推进、该条通知也不推送(R3),因此日志里的 seq 连续无洞 ——
+// 客户端拉到的连续 seq 就是完整序列。
+//
+// 会话身份是 (peerFingerprint, peerSessionID) 的组合:会话 id 是各客户端本地自增的,
+// 不同客户端必然重号(R16)。payload 是那条通知的 params 原样、且**不含 seq**;seq 是
+// 日志行自己的属性,推送时(实时与重连补齐同样)才盖到帧上。
+//
+// 实现挂在 Daemon 级(一个 daemon 一份库),不是 per-connection —— 断连重连不该重置任何
+// 序号,见 daemon.bindConn 的注释。
+//
+// 「某会话最新的 seq」的唯一真相源是通知日志本身(该会话的 MAX(seq),仓储的原子分配语句
+// 读的就是它)。会话表上不存第二份:那样的冗余列一旦与日志对不上,客户端的游标就会指向
+// 一个日志里并不存在的位置。
+type JournalPort interface {
+	Append(ctx context.Context, peerFingerprint, peerSessionID, method string, payload json.RawMessage) (seq int64, err error)
+}
+
+// DBStat 是 agentred 自己那个库此刻的落盘事实:文件在哪、占了多少字节。
+//
+// SizeBytes 是**整个库的体量**(主库文件 + 它的 WAL / SHM 旁文件):WAL 模式下刚写进去
+// 的通知先落在 -wal 上,只报主库文件会在最该看见增长的时刻纹丝不动。
+type DBStat struct {
+	Path      string
+	SizeBytes int64
+}
+
+// DBStatPort 交出 DBStat。规格「安全、隐私、兼容性与可访问性 / 磁盘增长」要求库文件
+// 路径与体量在 daemon 状态查询里可见,用户据此自行判断何时清理。实现在 daemon 包
+// (只有它知道自己开在哪个 DataDir 下),按 DIP 声明在消费方。
+//
+// Path 只喂给本机 IPC 的状态查询;经 LAN 发给对端的 health.ping 只带体量(见
+// HealthPingResult)。
+type DBStatPort interface {
+	DBStat() DBStat
+}
+
+// SessionRecord 是一条会话在 daemon 上的身份与元数据。会话身份是
+// (PeerFingerprint, PeerSessionID) 的组合(R16);AgentID / Cwd / BackendType 原样透传
+// 客户端起手时报的值,供重连后的清单重建界面。
+//
+// 它**不含**「最新 seq」与「是否正在等待输入」:前者的真相源是通知日志的 MAX(seq),
+// 后者由实时 waiter 状态叠加计算、永不落库(R11)。
+type SessionRecord struct {
+	PeerFingerprint string
+	PeerSessionID   string
+	AgentID         int64
+	Cwd             string
+	BackendType     string
+	LifecycleState  string
+}
+
+// SessionLifecyclePort 记录会话生命周期的推进,由跑一轮执行的一侧调用。
+//
+// 三步对应规格「会话生命周期」的那条链:Start(起手,建行并置 running)→ Finish
+// (轮结束,置 idle)→ Running(自主续轮开始,回到 running)。daemon 重启导致的
+// interrupted 不在这里 —— 那是启动清扫一次性做的,进程内没有触发点。
+type SessionLifecyclePort interface {
+	Start(ctx context.Context, rec SessionRecord) error
+	Running(ctx context.Context, peerFingerprint, peerSessionID string) error
+	Finish(ctx context.Context, peerFingerprint, peerSessionID string) error
+}
+
+// SessionQueryPort 是会话的读出口,供重连客户端的清单 / 接管查询使用。两个方法都以
+// 对端指纹打头:查询一律限定在调用方自己的对端范围内(R16),按会话 id 单独查的入口
+// 本层不提供。
+type SessionQueryPort interface {
+	List(ctx context.Context, peerFingerprint string) ([]SessionRecord, error)
+	Find(ctx context.Context, peerFingerprint, peerSessionID string) (*SessionRecord, error)
+}
+
+// JournalRow 是通知日志里的一行。Payload 是那条通知的 params 原样、**不含 seq**
+// (见 JournalPort)。
+type JournalRow struct {
+	Seq     int64
+	Method  string
+	Payload json.RawMessage
+}
+
+// JournalReaderPort 是通知日志的读出口:增量拉取与「最新 seq」。它与 JournalPort
+// (写)分开声明是 ISP —— 跑一轮执行的一侧只写不读,补齐的一侧只读不写。
+type JournalReaderPort interface {
+	ListSince(ctx context.Context, peerFingerprint, peerSessionID string, cursor int64, limit int) (rows []JournalRow, hasMore bool, err error)
+	LatestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
+	LatestSeqByPeer(ctx context.Context, peerFingerprint string) (map[string]int64, error)
+	// OldestSeq 是该会话现存最老的那一行的 seq(一条都没有时 0)。日志的老前缀会被留存
+	// 回收(见 daemon.collectJournal),补齐的客户端因此需要一个下界才分得清「游标之后
+	// 那一条还没写」与「它已经不在了」——分不清就只能一直等,会话静默冻住。
+	OldestSeq(ctx context.Context, peerFingerprint, peerSessionID string) (int64, error)
 }
 
 // GatewayPort daemon-side LLM gateway 端口：给 CLI 子进程签短 token、查 URL、回收 token。

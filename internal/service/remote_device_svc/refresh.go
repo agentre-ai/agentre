@@ -26,13 +26,13 @@ func (s *service) Refresh(ctx context.Context, id int64) (*DeviceView, error) {
 	if err != nil || token == "" {
 		_ = s.repo.UpdateLastSeen(ctx, id, row.LastSeenAt, "unauthorized")
 		row.LastError = "unauthorized"
-		return toView(row), nil //nolint:nilerr // keychain miss is surfaced via row.LastError, not as an RPC error
+		return s.toView(row), nil //nolint:nilerr // keychain miss is surfaced via row.LastError, not as an RPC error
 	}
 	fp, err := s.keychain.Get(accountForDeviceFingerprint)
 	if err != nil || fp == "" {
 		_ = s.repo.UpdateLastSeen(ctx, id, row.LastSeenAt, "unauthorized")
 		row.LastError = "unauthorized"
-		return toView(row), nil //nolint:nilerr // keychain miss is surfaced via row.LastError, not as an RPC error
+		return s.toView(row), nil //nolint:nilerr // keychain miss is surfaced via row.LastError, not as an RPC error
 	}
 
 	_, err = s.dial.Connect(ctx, ConnectArgs{
@@ -46,19 +46,19 @@ func (s *service) Refresh(ctx context.Context, id int64) (*DeviceView, error) {
 		_ = s.repo.UpdateLastSeen(ctx, id, ts, "")
 		row.LastSeenAt = ts
 		row.LastError = ""
-		return toView(row), nil
+		return s.toView(row), nil
 	case errors.Is(err, ErrTOFUMismatch):
 		_ = s.repo.UpdateLastSeen(ctx, id, row.LastSeenAt, "tofu_mismatch")
 		row.LastError = "tofu_mismatch"
-		return toView(row), nil
+		return s.toView(row), nil
 	case errors.Is(err, ErrUnauthorized):
 		_ = s.repo.UpdateLastSeen(ctx, id, row.LastSeenAt, "unauthorized")
 		row.LastError = "unauthorized"
-		return toView(row), nil
+		return s.toView(row), nil
 	default:
 		msg := "dial_failed:" + err.Error()
 		_ = s.repo.UpdateLastSeen(ctx, id, row.LastSeenAt, msg)
 		row.LastError = msg
-		return toView(row), nil
+		return s.toView(row), nil
 	}
 }

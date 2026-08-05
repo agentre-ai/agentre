@@ -955,6 +955,10 @@ type ChatTranscriptProps = {
   /** claudecode CLI 正在跑 /compact 时为 true;末尾 assistant 的 typing indicator 替换为
    *  "正在压缩上下文…" chip,让用户知道这段时间在做什么。compact_boundary 到达自动清空。*/
   liveCompacting?: boolean;
+  /** 与执行该会话那台远端 daemon 的通道断了、正在退避重连时为 true;末尾 assistant 的
+   *  typing indicator 替换为断连形态,让"网断了"与"agent 在想"一眼可分。连接恢复即换回。
+   *  它是运行态之上的修饰,不改 agentStatus。*/
+  reconnecting?: boolean;
   onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void;
   /** 停掉某张 AgentSpawn 卡对应的正在运行的子 agent / 后台任务(按 tool_use_id 下发 stop_task)。
    *  仅 backend 支持时由 ChatPanel 传入;未传 = 卡片不显示停止按钮。 */
@@ -1019,6 +1023,7 @@ const ChatTranscript = React.forwardRef<
     tabStateKey,
     streaming = false,
     liveCompacting = false,
+    reconnecting = false,
   },
   ref,
 ) {
@@ -1221,10 +1226,11 @@ const ChatTranscript = React.forwardRef<
           liveRetry={isLiveTail ? (live?.liveRetry ?? null) : null}
           showIndicator={showIndicator}
           compacting={showIndicator && isLiveTail && liveCompacting}
+          reconnecting={showIndicator && reconnecting}
         />
       );
     },
-    [lastAssistantId, liveByMessageId, liveCompacting, streaming],
+    [lastAssistantId, liveByMessageId, liveCompacting, reconnecting, streaming],
   );
 
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual intentionally owns mutable measurement callbacks.

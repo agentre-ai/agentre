@@ -294,6 +294,11 @@ vi.mock("../chat-panel-context-usage", () => ({
 import { ChatPanel, computeTopVisibleAnchor } from "../chat-panel";
 import { LocalCommandCard } from "../local-command/card";
 import {
+  __resetCatchUpStateForTesting,
+  openCatchUpWindow,
+  recordCatchUp,
+} from "../chat-panel-catchup-state";
+import {
   __resetChatPanelScrollStateForTesting,
   loadTranscriptScrollState,
 } from "../chat-panel-scroll-state";
@@ -302,14 +307,17 @@ import {
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useSessionConnStore } from "@/stores/session-conn-store";
 import { localCommandRuntimeStore } from "@/stores/local-command-runtime-store";
 import { useLocalCommandsStore } from "@/stores/local-commands-store";
 
 /** 清 store streams 以避免测试间串台 */
 function resetStore() {
   __resetChatPanelScrollStateForTesting();
+  __resetCatchUpStateForTesting();
   mockSessionStore.messages = [];
   useChatStreamsStore.getState().streams.clear();
+  useSessionConnStore.getState().__reset();
   runtimeMocks.EventsOff.mockReset();
   runtimeMocks.EventsOn.mockReset();
   runtimeMocks.EventsOn.mockImplementation(
@@ -483,6 +491,18 @@ function transcriptScrollerWithDynamicHeight(
   return el;
 }
 
+/** 模拟「用户从底部往上翻」:先落到底部,再往上滚 —— 只有 scrollTop 变小才算上滚。 */
+function scrollUpFromBottom(el: HTMLElement, to = 1_240) {
+  act(() => {
+    el.scrollTop = 3_500;
+    fireEvent.scroll(el);
+  });
+  act(() => {
+    el.scrollTop = to;
+    fireEvent.scroll(el);
+  });
+}
+
 /** 构造 ChatSessionDetail 最小形状 */
 function makeSession(overrides: Record<string, unknown>) {
   return {
@@ -574,6 +594,358 @@ describe("ChatPanel · transcript cwd", () => {
     expect(componentMocks.chatTranscriptProps.at(-1)?.cwd).toBe(
       "/Users/codfrm/Code/agentre/agentre",
     );
+  });
+});
+
+// ─── R13:断连活信号的接线 ────────────────────────────────────────────────────
+//
+// 两端各有用例(ChatStreamsHost 把 chat:conn:<sid> 写进 store、TranscriptRowView
+// 按 prop 换形态),中间这一段 ——「按**本**会话读连接态并派给转录流」—— 没有。
+// 把它错接成另一条会话、错读成 "lost"、或干脆写死 false,整套用例仍然全绿,而用户
+// 在断连期间看到的是打字指示器,也就是 R13 要消除的那个困惑本身。
+describe("ChatPanel · 断连活信号接线 (R13)", () => {
+  it("Given the session's channel is reconnecting, When the transcript renders, Then it is told to swap in the disconnected form", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    useSessionConnStore.getState().setConnState(42, "reconnecting");
+
+    render(<ChatPanel sessionId={42} />);
+
+    expect(componentMocks.chatTranscriptProps.at(-1)?.reconnecting).toBe(true);
+  });
+
+  it("Given the channel is connected again, When the transcript re-renders, Then it goes straight back to the typing form", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    useSessionConnStore.getState().setConnState(42, "reconnecting");
+
+    render(<ChatPanel sessionId={42} />);
+    expect(componentMocks.chatTranscriptProps.at(-1)?.reconnecting).toBe(true);
+
+    act(() => {
+      useSessionConnStore.getState().setConnState(42, "connected");
+    });
+
+    expect(componentMocks.chatTranscriptProps.at(-1)?.reconnecting).toBe(false);
+  });
+
+  it("Given another session is reconnecting, When this session's transcript renders, Then it stays on the typing form", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    useSessionConnStore.getState().setConnState(7, "reconnecting");
+
+    render(<ChatPanel sessionId={42} />);
+
+    expect(componentMocks.chatTranscriptProps.at(-1)?.reconnecting).toBe(false);
+  });
+});
+
+// ─── R14:补齐静默落定 + 底部跳转控件 ─────────────────────────────────────────
+//
+// 断线期间攒下的通知在重连后一次性重放,转录区会突然长出一大截。用户如果正在翻
+// 历史,位置被夺走就是最刺人的那种打扰;但内容真的多了,他也需要一条回去的路。
+// 下面每条用例各钉一句 R14:位置不动 / 非贴底且有新增才浮出 / 条数与待处理项数
+// 正确且是文字(色点不能是唯一载体)/ 点击跳到最新 / 本就贴底则照旧跟随、不出控件。
+describe("ChatPanel · 补齐落定与跳转控件 (R14)", () => {
+  function messagesBatch(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      blocks: [],
+      createtime: 0,
+      id: i + 1,
+      role: i % 2 === 0 ? "assistant" : "user",
+    }));
+  }
+
+  /**
+   * 补齐落定:掉线开窗 → 后台一次性重放的内容到位(每条消息一行)→ 连接态那一发。
+   * 重放的通知条数刻意与行数不同量级 —— 控件报的必须是后者。
+   */
+  function catchUpLands(
+    view: { rerender: (ui: React.ReactElement) => void },
+    opts: { items: number; pending: number },
+  ) {
+    act(() => {
+      openCatchUpWindow(42);
+    });
+    act(() => {
+      mockSessionStore.messages = messagesBatch(opts.items);
+      view.rerender(<ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />);
+    });
+    act(() => {
+      recordCatchUp(42, opts.items * 100, opts.pending);
+    });
+  }
+
+  it("Given the user is reading history, When a catch-up batch lands, Then the scroll position does not move", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+
+    catchUpLands(view, { items: 12, pending: 0 });
+
+    expect(scroller.scrollTop).toBe(1_240);
+  });
+
+  it("Given the user is not at the bottom, When a catch-up brings new content, Then a jump control surfaces stating how many items arrived", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+
+    catchUpLands(view, { items: 12, pending: 0 });
+
+    const control = screen.getByTestId("jump-to-latest-button");
+    expect(control).toHaveTextContent("12");
+    expect(screen.queryByTestId("jump-to-latest-pending")).toBeNull();
+  });
+
+  it("Given the catch-up carries unanswered decisions, Then the same control states the pending count in TEXT, not by a status dot alone", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+
+    catchUpLands(view, { items: 12, pending: 3 });
+
+    const pending = screen.getByTestId("jump-to-latest-pending");
+    expect(pending).toHaveTextContent("3");
+    // 无障碍:待处理项数必须进可访问名,颜色/圆点只能是修饰 —— 只靠色点的实现
+    // 在这里就红:纯装饰节点 aria-hidden 后可访问名里根本没有那个 3。
+    expect(screen.getByTestId("jump-to-latest-button")).toHaveAccessibleName(
+      expect.stringContaining("3"),
+    );
+  });
+
+  it("Given the jump control is showing, When the user clicks it, Then the transcript jumps to the latest position and the control goes away", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+    catchUpLands(view, { items: 12, pending: 1 });
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("jump-to-latest-button"));
+    });
+
+    expect(scroller.scrollTop).toBe(3_520);
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+  });
+
+  it("Given the user was already at the bottom, When a catch-up lands, Then no control appears and the transcript keeps following the bottom", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    act(() => {
+      scroller.scrollTop = 3_500;
+      fireEvent.scroll(scroller);
+    });
+
+    catchUpLands(view, { items: 12, pending: 1 });
+
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+    expect(scroller.scrollTop).toBe(3_520);
+  });
+
+  it("Given the user scrolls back up after the catch-up was already seen at the bottom, Then no stale control comes back", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    act(() => {
+      scroller.scrollTop = 3_500;
+      fireEvent.scroll(scroller);
+    });
+    catchUpLands(view, { items: 12, pending: 1 });
+
+    scrollUpFromBottom(scroller);
+
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+    expect(screen.getByTestId("back-to-bottom-button")).toBeInTheDocument();
+  });
+
+  // 销账条件是「人回到了底部」,不是「点了那枚控件」—— 自己滚回底部同样意味着补齐
+  // 内容已经看过。不销账的话下次往上翻会撞见一枚数字早已过期的控件。
+  it("Given the jump control is showing, When the user scrolls back to the bottom themselves, Then the summary is discharged and scrolling up again brings back only the plain control", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+    catchUpLands(view, { items: 12, pending: 1 });
+    expect(screen.getByTestId("jump-to-latest-button")).toBeInTheDocument();
+
+    act(() => {
+      scroller.scrollTop = 3_520;
+      fireEvent.scroll(scroller);
+    });
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+
+    scrollUpFromBottom(scroller);
+
+    expect(screen.queryByTestId("jump-to-latest-button")).toBeNull();
+    expect(screen.getByTestId("back-to-bottom-button")).toBeInTheDocument();
+  });
+
+  // 从不断连的会话走的是同一枚控件的另一半形态:没有未看的补齐 = 原来那颗「回到底部」
+  // 圆钮。R14 把它挪进了 TranscriptJumpControl,标签与跳转这两件事得有人钉住,
+  // 否则接错 onJump / 丢了 aria-label 也照样全绿。
+  it("Given a session that never disconnected, When the user scrolls up, Then the plain back-to-bottom control keeps its label and returns to the bottom on click", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-r14" />,
+    );
+    const scroller = transcriptScroller(view.container);
+    scrollUpFromBottom(scroller);
+
+    const control = screen.getByTestId("back-to-bottom-button");
+    expect(control).toHaveAccessibleName("Back to bottom");
+
+    act(() => {
+      fireEvent.click(control);
+    });
+
+    expect(scroller.scrollTop).toBe(3_520);
+    expect(screen.queryByTestId("back-to-bottom-button")).toBeNull();
+  });
+});
+
+// ─── R14 修复轮:控件的计量单位是转录行,不是通知条数 ─────────────────────────
+//
+// 「N 条新内容」里的 N 早先取的是 daemon 重放的**通知**条数 —— daemon 对每个
+// agentruntime 事件都落一行日志(TextDelta / ThinkingDelta / UsageUpdate 全在内)。
+// 断网两分钟、期间 agent 流式吐一条长回复,重连后控件写着「1206 条新内容」,而用户
+// 只多了一条助手消息。用户嘴里的「一条」是转录区里的一行,下面把计量单位钉在行上。
+describe("ChatPanel · 跳转控件按转录行计数 (R14 修复轮)", () => {
+  /** 控件文案里的数字。只比数字,免得把 zh/en 文案模板抄进断言。 */
+  function digitsIn(el: HTMLElement): string {
+    return (el.textContent ?? "").replace(/\D+/g, "");
+  }
+
+  /** 一条在飞的远端会话:用户问句 + 正在流式的那条助手消息。 */
+  function streamingSession(assistantBlocks: unknown[]) {
+    mockSessionStore.session = makeSession({ id: 42 });
+    mockSessionStore.messages = [
+      {
+        blocks: [{ text: "跑一下测试", type: "text" }],
+        createtime: 1,
+        id: 1,
+        role: "user",
+      },
+      { blocks: assistantBlocks, createtime: 2, id: 2, role: "assistant" },
+    ];
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 2,
+      name: "chat:event:42:2",
+      sessionId: 42,
+      streamStartedAt: Date.now(),
+    });
+  }
+
+  /** 断连期间攒下、重连后一次性重放的那一大批通知落进流里。 */
+  function replayDeltas(count: number) {
+    const store = useChatStreamsStore.getState();
+    for (let i = 0; i < count; i++) store.appendLiveText(42, 2, "字");
+  }
+
+  function replayToolRoundTrips(ids: string[]) {
+    const store = useChatStreamsStore.getState();
+    for (const toolUseId of ids) {
+      store.appendLiveToolUse(42, 2, { toolName: "Bash", toolUseId });
+      store.appendLiveToolResult(42, 2, { text: "ok", toolUseId });
+    }
+  }
+
+  it("Given a two-minute outage while one long reply streamed, When the catch-up replays 1206 notifications that land in three new transcript rows, Then the control says three", () => {
+    resetStore();
+    streamingSession([]);
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-rows" />,
+    );
+    scrollUpFromBottom(transcriptScroller(view.container));
+
+    act(() => {
+      openCatchUpWindow(42); // 通道掉了
+    });
+    act(() => {
+      replayDeltas(1_200);
+      replayToolRoundTrips(["t1", "t2", "t3"]);
+    });
+    act(() => {
+      recordCatchUp(42, 1_206, 0); // 补齐落定那一发
+    });
+
+    // 转录区多出的是「一段文字 + 三张工具卡」,占位行被文字行顶掉 —— 净增三行。
+    expect(digitsIn(screen.getByTestId("jump-to-latest-button"))).toBe("3");
+  });
+
+  // 补齐可以只是把内容追加进**已经存在**的那一行(还在流的助手消息吃掉全部 delta)。
+  // R14 说的是「补齐产生了新内容」,不是「产生了新行」——控件照常给一条回去的路,
+  // 但一个数不出来的数字不能编。
+  it("Given the catch-up only grew a row that was already there, When it lands, Then the control still surfaces and states no count", () => {
+    resetStore();
+    streamingSession([{ text: "回复已经开了个头", type: "text" }]);
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-rows" />,
+    );
+    scrollUpFromBottom(transcriptScroller(view.container));
+
+    act(() => {
+      openCatchUpWindow(42);
+    });
+    act(() => {
+      replayDeltas(1_200);
+    });
+    act(() => {
+      recordCatchUp(42, 1_200, 0);
+    });
+
+    const control = screen.getByTestId("jump-to-latest-button");
+    expect(control).toHaveAccessibleName("New content");
+    expect(digitsIn(control)).toBe("");
+  });
+
+  // 待决策的条数与转录行数是两笔账:后者可能一行都没多,前者仍然必须报出来 ——
+  // 断连期间埋进来的待决策不写在这里就等于没人知道。
+  it("Given a catch-up with no new rows but an unanswered decision, Then the pending count still shows", () => {
+    resetStore();
+    streamingSession([{ text: "回复已经开了个头", type: "text" }]);
+    const view = render(
+      <ChatPanel sessionId={42} scrollStateKey="chat-tab-rows" />,
+    );
+    scrollUpFromBottom(transcriptScroller(view.container));
+
+    act(() => {
+      openCatchUpWindow(42);
+    });
+    act(() => {
+      replayDeltas(600);
+    });
+    act(() => {
+      recordCatchUp(42, 600, 2);
+    });
+
+    expect(screen.getByTestId("jump-to-latest-pending")).toHaveTextContent("2");
   });
 });
 

@@ -474,6 +474,10 @@
     "debug": {
       "unknownBlock": "(debug) 未实现 block 类型：{{type}}"
     },
+    "disconnected": {
+      "aria": "连接中断,重连中",
+      "label": "连接中断,重连中 · 远端仍在运行"
+    },
     "errorCard": {
       "continue": "继续",
       "message": "Agent 调用失败：{{text}}",
@@ -593,7 +597,11 @@
       "close": "关闭提示"
     },
     "scroll": {
-      "backToBottom": "回到底部"
+      "backToBottom": "回到底部",
+      "caughtUpCount": "{{count}} 条新内容",
+      "caughtUpSome": "有新内容",
+      "jumpToLatest": "跳到最新",
+      "pendingCount": "{{count}} 项待处理"
     },
     "regenerateDialog": {
       "confirm": "确认重新生成",
@@ -1553,6 +1561,7 @@
       "unsynced": "未同步"
     },
     "status": {
+      "daemonOutdated": "daemon 版本过旧 —— 断连会直接结束正在跑的这一轮。升级远端 agentred 后，断连期间它也能接着跑。",
       "lastConnected": "上次连接 {{time}}",
       "neverConnected": "尚未连接",
       "offline": "离线",

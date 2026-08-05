@@ -4,6 +4,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/agents/provider"
@@ -287,6 +288,65 @@ type AskAnswerSink interface {
 	SubmitAnswer(ctx context.Context, sessionID int64, requestID string, questions []AskQuestion, answers []AskAnswer, skipped bool) error
 }
 
+// PendingToolPermission is one still-blocked (non-AskUserQuestion) tool
+// approval waiter, carrying the same fields ToolPermissionRequest raised it
+// with the first time (RequestID / ToolName / Input) — enough for a
+// reconnecting client to rebuild the approval card without a second,
+// parallel payload shape.
+//
+// Input is json.RawMessage, not []byte, for the same reason
+// ToolPermissionRequest.Input is: encoding/json renders []byte as base64,
+// so the reconnect payload would carry the tool input in a different shape
+// than the live event frame and the client would need two parsers for one
+// card.
+type PendingToolPermission struct {
+	RequestID string
+	ToolName  string
+	Input     json.RawMessage
+}
+
+// PendingAskUserQuestion is one still-blocked AskUserQuestion waiter,
+// carrying the same fields AskUserQuestionEvent raised it with the first
+// time (RequestID / Questions) — enough to rebuild the question card.
+type PendingAskUserQuestion struct {
+	RequestID string
+	Questions []AskQuestion
+}
+
+// WaiterSnapshot is the full set of a session's currently-blocked waiters,
+// returned by WaiterLister.PendingWaiters. Either slice may be empty; a
+// session with nothing pending returns the zero value.
+type WaiterSnapshot struct {
+	ToolPermissions  []PendingToolPermission
+	AskUserQuestions []PendingAskUserQuestion
+}
+
+// WaiterLister is implemented by backend runtimes whose control protocol can
+// enumerate its own currently-blocked waiters — the read half of
+// ToolPermissionSink / AskAnswerSink's submit-by-requestID write half.
+//
+// Declared as its own narrow interface (ISP) rather than a third method
+// bolted onto ToolPermissionSink / AskAnswerSink: the common caller only
+// ever wants to answer one already-known requestID and should not have to
+// also satisfy an enumeration method to do that, and a backend with no
+// approval protocol at all should not have to stub one out just to keep
+// implementing the sinks it does support.
+//
+// 实现者是有审批协议的那些 backend —— 今天是 claudecode（runtimes/claudecode/
+// control.go）与 codex（runtimes/codex/runtime.go）两家。没有审批协议的 backend
+// 不实现它；consumer 对它们 type-assert 失败后回落空 WaiterSnapshot，不是接口
+// 本身返回错误（R7）。
+//
+// No error return: PendingWaiters is a synchronous snapshot read of
+// in-memory state (mirrors SteerDrainer.DrainPending), not an I/O call.
+// sessionID unknown to this runner (never spawned / already evicted) yields
+// the zero-value WaiterSnapshot, same as "nothing pending right now" — R9
+// forbids any waiter timeout, so there is no separate "expired" case to
+// report either.
+type WaiterLister interface {
+	PendingWaiters(ctx context.Context, sessionID int64) WaiterSnapshot
+}
+
 type PlanStep struct {
 	Step   string
 	Status string
@@ -308,10 +368,19 @@ type MCPServerSpec struct {
 
 // RunRequest 一次 Send 的入参。
 type RunRequest struct {
-	Backend   *agent_backend_entity.AgentBackend
-	Provider  *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
-	AgentID   int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
-	SessionID int64                            // chat_sessions.ID；provider session resume / builtin conv id 用
+	Backend  *agent_backend_entity.AgentBackend
+	Provider *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
+	AgentID  int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
+	// SessionID 是这一轮在**本进程内**的会话身份：runner 的会话表（子进程缓存 /
+	// waiter / 自主续轮通道）全按它索引，控制类接口（Steerer / Aborter /
+	// ToolPermissionSink / WaiterLister …）收到的 sessionID 也是它。
+	//
+	// 桌面端进程里它就是 chat_sessions.ID（还兼作 provider session resume /
+	// builtin conv id 的 key）。agentred 里**不是**：那里同时服务多台设备，而会话 id
+	// 是各设备本地自增的、必然重号，daemon 因此在调 runner 前把对端指纹揉进这个值
+	// （见 internal/daemon/handlers.runtimeSessionID）。runner 只需把它当成一个不透明的
+	// 进程内唯一键，不要反解成 chat_sessions.ID、也不要拿它去查库。
+	SessionID int64
 	// Cwd 非空时直接用作 runner 工作目录；为空时各 runner 回退到 AgentCwd(AgentID)
 	// 兜底（保留老的 Agent 级目录行为）。chat_svc 在拼 RunRequest 时调
 	// project_svc.ResolveSessionCwd 解析 project 维度的 cwd 注入此字段，避免
