@@ -350,7 +350,7 @@ func (r *streamingRPCReader) Close() {
 
 func newStreamingCaptureClient(reader io.Reader) (*Client, *captureProc) {
 	if streaming, ok := reader.(*streamingRPCReader); ok {
-		streaming.Push(`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"test-native-session"}}`)
+		streaming.Push(`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"test-native-session","model":{"contextWindow":258000}}}`)
 	}
 	proc := &captureProc{
 		stdin:  &lockedBuffer{},

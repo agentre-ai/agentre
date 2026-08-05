@@ -48,7 +48,7 @@ func (r *captureRunner) Start(context.Context, procOptions) (processHandle, erro
 
 func newCaptureClient(stdout string) (*Client, *captureProc) {
 	if !strings.Contains(stdout, `"command":"get_state"`) {
-		stdout = `{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"test-native-session"}}` + "\n" + stdout
+		stdout = `{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"test-native-session","model":{"contextWindow":258000}}}` + "\n" + stdout
 	}
 	proc := &captureProc{
 		stdin:  &lockedBuffer{},

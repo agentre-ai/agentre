@@ -24,7 +24,6 @@ func TestStreamEmitsInitialContextWindowBeforeFirstTurnUsage(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	reader.Push(
-		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":0,"contextWindow":258000,"percent":0}}}`,
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"working"}}`,
 	)
@@ -34,14 +33,27 @@ func TestStreamEmitsInitialContextWindowBeforeFirstTurnUsage(t *testing.T) {
 
 	reader.Push(
 		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"working"}],"model":"gpt-5.6-sol","usage":{"input":1200,"output":20,"cacheRead":2400,"cacheWrite":0},"stopReason":"toolUse"}}`,
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"finished"}],"model":"gpt-5.6-sol","usage":{"input":1400,"output":30,"cacheRead":3600,"cacheWrite":0},"stopReason":"stop"}}`,
+		`{"id":"initial-session-stats","type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":0,"contextWindow":258000,"percent":0}}}`,
 		`{"type":"agent_end","messages":[],"willRetry":false}`,
 		`{"type":"agent_settled"}`,
 		`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
 	)
 	remaining := collectUntilTerminal(t, s)
 	kinds := eventKinds(remaining)
-	require.GreaterOrEqual(t, len(kinds), 2)
-	assert.Equal(t, []EventKind{EventContextWindow, EventUsage}, kinds[:2])
+	require.Contains(t, kinds, EventContextWindow,
+		"the compatibility event remains for older desktop consumers")
+	var usages []Event
+	for _, ev := range remaining {
+		if ev.Kind == EventUsage {
+			usages = append(usages, ev)
+		}
+	}
+	require.Len(t, usages, 2)
+	assert.Equal(t, 258000, usages[0].ContextWindow,
+		"get_state model metadata must cover usage even when get_session_stats is delayed")
+	assert.Equal(t, 258000, usages[1].ContextWindow,
+		"a later usage must recover the denominator when an earlier Wails event was missed")
 
 	frames := stdinFrames(t, proc.stdin.String())
 	require.Len(t, frames, 4)
@@ -49,6 +61,30 @@ func TestStreamEmitsInitialContextWindowBeforeFirstTurnUsage(t *testing.T) {
 	assert.Equal(t, "get_session_stats", frames[1]["type"])
 	assert.Equal(t, "prompt", frames[2]["type"])
 	assert.Equal(t, "get_session_stats", frames[3]["type"])
+}
+
+// Given usage already consumed the get_state window, when the pre-prompt stats
+// response later corrects that value, then the correction is surfaced even if
+// there is no subsequent usage and the final refresh is empty.
+func TestStreamSurfacesLateInitialContextCorrectionAfterLastUsage(t *testing.T) {
+	reader := newStreamingRPCReader()
+	client, _ := newStreamingCaptureClient(reader)
+	t.Cleanup(reader.Close)
+
+	s, err := client.Stream(context.Background(), "correct the context window")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	reader.Push(
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"model":"gpt-5.6-sol","usage":{"input":1200,"output":20,"cacheRead":2400,"cacheWrite":0},"stopReason":"stop"}}`,
+		`{"id":"initial-session-stats","type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":3600,"contextWindow":300000,"percent":1.2}}}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+		`{"id":"final-session-stats","type":"response","command":"get_session_stats","success":true,"data":{}}`,
+	)
+	events := collectUntilTerminal(t, s)
+	assert.Equal(t, []int{258000, 300000}, contextWindows(events))
 }
 
 func nextContextWindowTestEvent(t *testing.T, s *Stream) Event {
@@ -70,29 +106,49 @@ func nextContextWindowTestEvent(t *testing.T, s *Stream) Event {
 // Given the initial stats response is delayed until after settlement, when Pi
 // returns the final stats response, then the stale pre-prompt value is ignored.
 func TestStreamFinalStatsIgnoresDelayedInitialResponse(t *testing.T) {
-	reader := newStreamingRPCReader()
-	client, proc := newStreamingCaptureClient(reader)
-	t.Cleanup(reader.Close)
+	tests := []struct {
+		name      string
+		responses []string
+	}{
+		{
+			name: "correlated responses",
+			responses: []string{
+				`{"id":"initial-session-stats","type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":10,"contextWindow":111111,"percent":0.01}}}`,
+				`{"id":"final-session-stats","type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":20,"contextWindow":222222,"percent":0.02}}}`,
+			},
+		},
+		{
+			name: "missing initial response with no-id final fallback",
+			responses: []string{
+				`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":20,"contextWindow":222222,"percent":0.02}}}`,
+			},
+		},
+	}
 
-	s, err := client.Stream(context.Background(), "finish with authoritative stats")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := newStreamingRPCReader()
+			client, proc := newStreamingCaptureClient(reader)
+			t.Cleanup(reader.Close)
 
-	reader.Push(
-		`{"type":"response","command":"prompt","success":true}`,
-		`{"type":"agent_end","messages":[],"willRetry":false}`,
-		`{"type":"agent_settled"}`,
-	)
-	frames := waitForContextWindowTestFrames(t, proc, 4)
-	assert.Equal(t, "initial-session-stats", frames[1]["id"])
-	assert.Equal(t, "final-session-stats", frames[3]["id"])
+			s, err := client.Stream(context.Background(), "finish with authoritative stats")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = s.Close(context.Background()) })
 
-	reader.Push(
-		`{"id":"initial-session-stats","type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":10,"contextWindow":111111,"percent":0.01}}}`,
-		`{"id":"final-session-stats","type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":20,"contextWindow":222222,"percent":0.02}}}`,
-	)
-	events := collectUntilTerminal(t, s)
-	assert.Equal(t, []int{222222}, contextWindows(events))
+			reader.Push(
+				`{"type":"response","command":"prompt","success":true}`,
+				`{"type":"agent_end","messages":[],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			)
+			frames := waitForContextWindowTestFrames(t, proc, 4)
+			assert.Equal(t, "initial-session-stats", frames[1]["id"])
+			assert.Equal(t, "final-session-stats", frames[3]["id"])
+
+			reader.Push(tt.responses...)
+			events := collectUntilTerminal(t, s)
+			assert.Equal(t, []int{222222}, contextWindows(events))
+		})
+	}
 }
 
 func waitForContextWindowTestFrames(t *testing.T, proc *captureProc, count int) []map[string]any {
@@ -155,7 +211,7 @@ func TestStreamEmitsContextWindowFromSessionStats(t *testing.T) {
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"agent_end","messages":[],"willRetry":false}`,
 		`{"type":"agent_settled"}`,
-		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":1234,"contextWindow":1050000,"percent":0.12}}}`,
+		`{"id":"final-session-stats","type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":1234,"contextWindow":1050000,"percent":0.12}}}`,
 		"",
 	}, "\n")
 	client, proc := newCaptureClient(script)

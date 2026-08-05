@@ -37,6 +37,30 @@ func TestDrainStream_PiContextWindowIsAuthoritative(t *testing.T) {
 	assert.Equal(t, []int{258000}, cws)
 }
 
+func TestDrainStream_RetainsContextWindowCarriedByUsage(t *testing.T) {
+	result := &agentruntime.RunResult{}
+	out := make(chan agentruntime.Event, 16)
+	drainStream(context.Background(), agentruntime.RunRequest{}, "", &scriptStream{events: []pkgpi.Event{
+		{
+			Kind:          pkgpi.EventUsage,
+			Usage:         provider.Usage{PromptTokens: 10, CompletionTokens: 2},
+			Model:         "gpt-5.6-sol",
+			ContextWindow: 258000,
+		},
+		{Kind: pkgpi.EventDone},
+	}}, out, result, nil)
+	close(out)
+
+	assert.Equal(t, 258000, result.ContextWindow)
+	var usage agentruntime.UsageUpdate
+	for ev := range out {
+		if u, ok := ev.(agentruntime.UsageUpdate); ok {
+			usage = u
+		}
+	}
+	assert.Equal(t, 258000, usage.ContextWindow)
+}
+
 func TestDrainStream_DoesNotGuessContextWindowFromModelName(t *testing.T) {
 	result := &agentruntime.RunResult{}
 	out := make(chan agentruntime.Event, 16)

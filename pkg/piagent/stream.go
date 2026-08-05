@@ -14,13 +14,15 @@ type Stream struct {
 	killGrace time.Duration
 	events    chan Event
 
-	mu                   sync.RWMutex
-	sessionID            string
-	model                string
-	pendingContextWindow int
-	err                  error
-	diagnostics          StreamDiagnostics
-	cur                  Event
+	mu                  sync.RWMutex
+	sessionID           string
+	model               string
+	contextWindow       int
+	usageObserved       bool
+	initialStatsPending bool
+	err                 error
+	diagnostics         StreamDiagnostics
+	cur                 Event
 
 	closeOnce sync.Once
 
@@ -86,6 +88,35 @@ func (s *Stream) setSessionID(sessionID string) {
 	s.mu.Unlock()
 }
 
+func (s *Stream) setContextWindow(contextWindow int) (changed, usageObserved bool) {
+	if contextWindow <= 0 {
+		return false, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed = s.contextWindow != contextWindow
+	if changed {
+		s.contextWindow = contextWindow
+	}
+	return changed, s.usageObserved
+}
+
+func (s *Stream) markInitialSessionStatsPending() {
+	s.mu.Lock()
+	s.initialStatsPending = true
+	s.mu.Unlock()
+}
+
+func (s *Stream) consumeInitialSessionStatsPending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.initialStatsPending {
+		return false
+	}
+	s.initialStatsPending = false
+	return true
+}
+
 func (s *Stream) Err() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -146,14 +177,17 @@ func (s *Stream) drain(ctx context.Context) {
 				if resp.ID != "" && resp.ID != initialSessionStatsRequestID {
 					continue
 				}
-				// Initial stats are optional capability data. Hold a valid
-				// authoritative window until the first usage boundary, but never fail
-				// the prompt when an older or degraded Pi RPC rejects the request.
+				// Initial stats are optional capability data. Retain a valid
+				// authoritative window for each usage snapshot, but never fail the
+				// prompt when an older or degraded Pi RPC rejects the request.
+				s.consumeInitialSessionStatsPending()
 				if resp.Success {
-					if cw := contextWindowFromSessionStats(resp.Data); cw > 0 {
-						s.mu.Lock()
-						s.pendingContextWindow = cw
-						s.mu.Unlock()
+					cw := contextWindowFromSessionStats(resp.Data)
+					if changed, usageObserved := s.setContextWindow(cw); changed && usageObserved {
+						// A late pre-prompt correction arrived after the last usage.
+						// Surface it immediately so runtime/session state cannot stay stale
+						// when the round-end refresh is absent.
+						s.emit(Event{Kind: EventContextWindow, ContextWindow: cw})
 					}
 				}
 				continue
@@ -166,6 +200,11 @@ func (s *Stream) drain(ctx context.Context) {
 			}
 			if isAcceptedPromptResponse(resp) {
 				promptAccepted = true
+				// Pi guarantees correlated command responses. If the optional
+				// initial stats response was omitted, prompt acceptance closes that
+				// outstanding compatibility slot so a later no-ID final response is
+				// not discarded as stale.
+				s.consumeInitialSessionStatsPending()
 			}
 			// compact turn 不发 agent_end —— compact response 即终止信号。
 			if resp.Command == "compact" {
@@ -281,10 +320,20 @@ func (s *Stream) readSessionStatsContextWindow() int {
 			continue
 		}
 		// A delayed pre-prompt response must not be mistaken for the
-		// authoritative round-end refresh. Empty IDs remain accepted for RPC
-		// implementations that do not echo request correlation IDs.
-		if resp.ID == initialSessionStatsRequestID ||
-			(resp.ID != "" && resp.ID != finalSessionStatsRequestID) {
+		// authoritative round-end refresh. Correlated responses are explicit;
+		// for ID-stripping implementations, command order identifies the first
+		// outstanding no-ID response as the initial request.
+		switch resp.ID {
+		case initialSessionStatsRequestID:
+			s.consumeInitialSessionStatsPending()
+			continue
+		case finalSessionStatsRequestID:
+			// Authoritative response; decode below.
+		case "":
+			if s.consumeInitialSessionStatsPending() {
+				continue
+			}
+		default:
 			continue
 		}
 		if !resp.Success {
@@ -366,20 +415,20 @@ func (s *Stream) recordAssistantMessage(msg *assistantMessage) {
 		s.model = strings.TrimSpace(msg.Model)
 	}
 	u := usageFromMessage(msg)
-	contextWindow := 0
-	if u.PromptTokens > 0 || u.CompletionTokens > 0 {
-		contextWindow = s.pendingContextWindow
-		s.pendingContextWindow = 0
+	contextWindow := s.contextWindow
+	hasUsage := u.PromptTokens > 0 || u.CompletionTokens > 0
+	if hasUsage {
+		s.usageObserved = true
 	}
 	s.mu.Unlock()
-	if u.PromptTokens > 0 || u.CompletionTokens > 0 {
+	if hasUsage {
+		// Keep the standalone event for older desktop consumers, then carry the
+		// same denominator atomically on usage for current clients. Both repeat at
+		// each API-call boundary so a later snapshot repairs an earlier Wails miss.
 		if contextWindow > 0 {
-			// Couple the denominator with the first usage boundary instead of
-			// emitting during the startup handshake, which can race ahead of the
-			// frontend's per-turn stream subscription.
 			s.emit(Event{Kind: EventContextWindow, ContextWindow: contextWindow})
 		}
-		s.emit(Event{Kind: EventUsage, Usage: u, Model: msg.Model})
+		s.emit(Event{Kind: EventUsage, Usage: u, Model: msg.Model, ContextWindow: contextWindow})
 	}
 }
 

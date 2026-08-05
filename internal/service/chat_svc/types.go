@@ -222,9 +222,9 @@ type ChatRuntimeStatus struct {
 	Compacting bool   `json:"compacting,omitempty"`
 }
 
-// ChatStreamUsage 是 StreamUsage 事件 payload。字段与 ChatMessage 上的 token 列同名，
-// 前端按 backend / provider 家族决定如何聚合（Anthropic 系叠加 cached + cacheCreation，
-// OpenAI 系仅看 promptTokens）—— 与 computeComposerContextUsage 现有口径一致。
+// ChatStreamUsage 是 StreamUsage 事件 payload。字段与 ChatMessage 上的 token 列同名；
+// runtime translator 已按 provider 家族算好 TotalInputTokens，前端直接使用。
+// ContextWindow 可与 token 快照同帧到达，供 Composer 原子更新分子与分母。
 type ChatStreamUsage struct {
 	MessageID           int64 `json:"messageId,omitempty"`
 	PromptTokens        int   `json:"promptTokens,omitempty"`
@@ -235,6 +235,9 @@ type ChatStreamUsage struct {
 	// TotalInputTokens runtime translator 按 family 聚合的本次 API call 输入大小。
 	// 前端不再做 family 判断,直接读这个值显示 "已用上下文"。
 	TotalInputTokens int `json:"totalInputTokens,omitempty"`
+	// ContextWindow 与 usage 同帧携带的模型窗口分母。0 表示 runtime 尚未探到；
+	// 非零时前端与 liveUsage 原子写入，避免独立事件的订阅竞态。
+	ContextWindow int `json:"contextWindow,omitempty"`
 }
 
 // ChatSessionStatusPatch 是 StreamSessionStatus 事件的 payload。
