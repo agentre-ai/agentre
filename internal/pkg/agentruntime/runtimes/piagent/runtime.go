@@ -214,7 +214,7 @@ func (a *activeSession) consumePendingSteer(text string) (agentruntime.ConsumedS
 	return agentruntime.ConsumedSteer{}, false
 }
 
-func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s stream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *activeSession) {
+func drainStream(ctx context.Context, req agentruntime.RunRequest, _ string, s stream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *activeSession) {
 	var usage *provider.Usage
 	var stopErr error
 	trackers := make(map[string]*subagentTracker)
@@ -280,12 +280,12 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 		if errors.Is(stopErr, agentruntime.ErrAborted) {
 			finalizeAbortedSubagents(out, trackers)
 		}
-		logPiFailureDiagnostics(ctx, req, cwd, s)
-		logger.Ctx(ctx).Warn("piagent runtime: turn failed", piTurnLogFields(req, cwd, result, stopErr)...)
+		logPiFailureDiagnostics(ctx, req, s)
+		logger.Ctx(ctx).Warn("piagent.drainStream: turn failed", piTurnLogFields(req, result, stopErr)...)
 		out <- agentruntime.ErrorEvent{Err: stopErr}
 		return
 	}
-	logger.Ctx(ctx).Info("piagent runtime: turn done", piTurnLogFields(req, cwd, result, nil)...)
+	logger.Ctx(ctx).Info("piagent.drainStream: turn done", piTurnLogFields(req, result, nil)...)
 	out <- agentruntime.Done{}
 }
 
@@ -367,19 +367,18 @@ type diagnosticsStream interface {
 	Diagnostics() pkgpi.StreamDiagnostics
 }
 
-func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, cwd string, s stream) {
+func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, s stream) {
 	ds, ok := s.(diagnosticsStream)
 	if !ok {
 		return
 	}
 	d := ds.Diagnostics()
-	if d.FinalErrorFrame == "" && d.StderrTail == "" {
+	if d.FinalErrorMessage == "" && d.FinalErrorFrame == "" && d.StderrTail == "" {
 		return
 	}
 	fields := []zap.Field{
 		zap.Int64("sessionID", req.SessionID),
 		zap.Int64("agentID", req.AgentID),
-		zap.String("cwd", cwd),
 		zap.Bool("compact", req.Compact),
 	}
 	if d.FinalErrorEventType != "" {
@@ -389,28 +388,26 @@ func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, c
 		fields = append(fields, zap.String("piStopReason", d.FinalErrorStopReason))
 	}
 	if d.FinalErrorMessage != "" {
-		fields = append(fields, zap.String("piErrorMessage", d.FinalErrorMessage))
+		fields = append(fields, zap.Int("piErrorMessageBytes", len(d.FinalErrorMessage)))
 	}
 	if d.FinalErrorFrame != "" {
-		fields = append(fields, zap.String("piFinalErrorFrame", d.FinalErrorFrame))
+		fields = append(fields, zap.Int("piFinalErrorFrameBytes", len(d.FinalErrorFrame)))
 	}
 	if d.StderrTail != "" {
-		fields = append(fields, zap.String("piStderrTail", d.StderrTail))
+		fields = append(fields, zap.Int("piStderrBytes", len(d.StderrTail)))
 	}
-	logger.Ctx(ctx).Debug("piagent runtime: turn failed diagnostics", fields...)
+	logger.Ctx(ctx).Debug("piagent.logPiFailureDiagnostics: turn failed diagnostics", fields...)
 }
 
-func piTurnLogFields(req agentruntime.RunRequest, cwd string, result *agentruntime.RunResult, err error) []zap.Field {
+func piTurnLogFields(req agentruntime.RunRequest, result *agentruntime.RunResult, err error) []zap.Field {
 	fields := []zap.Field{
 		zap.Int64("sessionID", req.SessionID),
 		zap.Int64("agentID", req.AgentID),
-		zap.String("cwd", cwd),
 		zap.Bool("compact", req.Compact),
 	}
 	if result != nil {
 		fields = append(fields,
 			zap.String("providerSessionID", result.ProviderSessionID),
-			zap.String("model", result.Model),
 			zap.Int("contextWindow", result.ContextWindow),
 		)
 		if result.Usage != nil {
@@ -424,7 +421,10 @@ func piTurnLogFields(req agentruntime.RunRequest, cwd string, result *agentrunti
 		}
 	}
 	if err != nil {
-		fields = append(fields, zap.Error(err))
+		fields = append(fields,
+			zap.String("errorClass", fmt.Sprintf("%T", err)),
+			zap.Int("errorBytes", len(err.Error())),
+		)
 	}
 	return fields
 }

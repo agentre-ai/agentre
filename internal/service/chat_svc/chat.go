@@ -23,6 +23,7 @@ import (
 	"github.com/cago-frame/cago/pkg/gogo"
 	"github.com/cago-frame/cago/pkg/i18n"
 	"github.com/cago-frame/cago/pkg/logger"
+	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
@@ -2547,11 +2548,14 @@ func (s *chatSvc) runTurn(
 		// 真错(RemoteRunnerDialFailed / AgentBackendInvalidDevice / AgentBackendInvalidType)
 		// 必须透传给 failTurn,否则前端永远只看到误导的 "unsupported backend type: X",
 		// 远端 daemon 离线 / DeviceID 失效 / 类型未注册三种情况无法区分。
-		logger.Ctx(ctx).Error("runTurn: selectRunner failed",
+		fields := make([]zap.Field, 0, 6)
+		fields = append(fields,
 			zap.Int64("sessionID", sess.ID),
 			zap.String("backendType", be.Type),
 			zap.String("deviceID", be.DeviceID),
-			zap.Error(err))
+		)
+		fields = append(fields, chatRuntimeErrorLogFields(err)...)
+		logger.Ctx(ctx).Error("chat_svc.runTurn: selectRunner failed", fields...)
 		s.failTurn(ctx, sess, assistantMsg, stream, err)
 		return
 	}
@@ -2682,11 +2686,14 @@ func (s *chatSvc) runTurn(
 	for ev := range events {
 		if streamStopErr != nil {
 			if eventShowsProgressAfterError(ev) {
-				logger.Ctx(ctx).Info("chat_svc: streamStopErr cleared by progress event",
+				fields := make([]zap.Field, 0, 6)
+				fields = append(fields,
 					zap.Int64("sessionId", sess.ID),
 					zap.Int64("assistantMsgId", assistantMsg.ID),
 					zap.String("clearedBy", fmt.Sprintf("%T", ev)),
-					zap.Error(streamStopErr))
+				)
+				fields = append(fields, chatRuntimeErrorLogFields(streamStopErr)...)
+				logger.Ctx(ctx).Info("chat_svc.runTurn: stream error cleared by progress event", fields...)
 				streamStopErr = nil
 			} else {
 				continue
@@ -2722,11 +2729,14 @@ func (s *chatSvc) runTurn(
 			continue
 		case agentruntime.ErrorEvent:
 			if e.Err != nil {
-				logger.Ctx(ctx).Warn("chat_svc: ErrorEvent intercepted, streamStopErr set",
+				fields := make([]zap.Field, 0, 6)
+				fields = append(fields,
 					zap.Int64("sessionId", sess.ID),
 					zap.Int64("assistantMsgId", assistantMsg.ID),
 					zap.String("stream", stream),
-					zap.Error(e.Err))
+				)
+				fields = append(fields, chatRuntimeErrorLogFields(e.Err)...)
+				logger.Ctx(ctx).Warn("chat_svc.runTurn: ErrorEvent intercepted", fields...)
 				streamStopErr = e.Err
 			}
 			continue
@@ -2790,11 +2800,14 @@ func (s *chatSvc) runTurn(
 		}
 		if stopErr == nil && result.StopErr != nil {
 			stopErr = s.mapTurnError(ctx, sess, be, result.StopErr)
-			logger.Ctx(ctx).Warn("chat_svc: stopErr promoted from RunResult.StopErr",
+			fields := make([]zap.Field, 0, 6)
+			fields = append(fields,
 				zap.Int64("sessionId", sess.ID),
 				zap.Int64("assistantMsgId", assistantMsg.ID),
 				zap.String("stream", stream),
-				zap.Error(stopErr))
+			)
+			fields = append(fields, chatRuntimeErrorLogFields(stopErr)...)
+			logger.Ctx(ctx).Warn("chat_svc.runTurn: stopErr promoted from RunResult.StopErr", fields...)
 		}
 		// Send 时 sess 之前没有 session id，runner 返回新 id 落库；
 		// Regenerate-fork 时 sess 有旧 id 但 runner 返回 fork 出来的新 id，必须覆盖。
@@ -2897,7 +2910,8 @@ func (s *chatSvc) runTurn(
 	// LiveStream 生命周期驱动，tab/toolbar/sidebar 由 session-status-store 驱动；若
 	// idle 只靠 done 后异步 reload 回填，两套视图必然存在不一致窗口。
 	if len(pending) == 0 {
-		logger.Ctx(finalCtx).Info("chat_svc: session_status emit",
+		fields := make([]zap.Field, 0, 11)
+		fields = append(fields,
 			zap.Int64("sessionId", sess.ID),
 			zap.Int64("assistantMsgId", assistantMsg.ID),
 			zap.String("stream", stream),
@@ -2905,8 +2919,10 @@ func (s *chatSvc) runTurn(
 			zap.Bool("needsAttention", sess.NeedsAttention),
 			zap.Bool("aborted", aborted),
 			zap.Bool("awaitingPlanAction", awaitingPlanAction),
-			zap.Error(stopErr),
-			zap.String("source", "finalize"))
+			zap.String("source", "finalize"),
+		)
+		fields = append(fields, chatRuntimeErrorLogFields(stopErr)...)
+		logger.Ctx(finalCtx).Info("chat_svc.runTurn: session status emit", fields...)
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 			Kind: StreamSessionStatus,
 			SessionStatus: &ChatSessionStatusPatch{
@@ -3371,16 +3387,38 @@ func (s *chatSvc) mapTurnError(ctx context.Context, sess *chat_entity.Session, b
 	return src
 }
 
+func chatRuntimeErrorLogFields(err error) []zap.Field {
+	if err == nil {
+		return nil
+	}
+	fields := []zap.Field{
+		zap.String("errorClass", fmt.Sprintf("%T", err)),
+		zap.Int("errorBytes", len(err.Error())),
+	}
+	var appErr *httputils.Error
+	if errors.As(err, &appErr) {
+		return append(fields, zap.Int("errorCode", appErr.Code))
+	}
+	var rpcErr *daemonrpc.Error
+	if errors.As(err, &rpcErr) {
+		return append(fields, zap.Int("errorCode", rpcErr.Code))
+	}
+	return fields
+}
+
 func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *chat_entity.Message, stream string, err error) {
 	// 一次落地点收所有 turn 级别错误(selectRunner / resolveSessionCwd / runner.Run /
-	// stream loop streamStopErr 等),给运维一条结构化日志带 session / message / stream
-	// 三个定位用 ID,前端只看到 ErrorText 文案,真错的 message 在这里留底。
-	logger.Ctx(ctx).Warn("chat_svc: turn failed",
+	// stream loop streamStopErr 等),给运维保留安全分类与定位 ID；完整错误仅继续走
+	// 既有前端 StreamError 与持久化 ErrorText 边界。
+	fields := make([]zap.Field, 0, 7)
+	fields = append(fields,
 		zap.Int64("sessionId", sess.ID),
 		zap.Int64("messageId", msg.ID),
 		zap.String("stream", stream),
 		zap.String("agentStatus", sess.AgentStatus),
-		zap.Error(err))
+	)
+	fields = append(fields, chatRuntimeErrorLogFields(err)...)
+	logger.Ctx(ctx).Warn("chat_svc.failTurn: turn failed", fields...)
 	msg.ErrorText = err.Error()
 	_ = chat_repo.Message().Update(ctx, msg)
 	sess.AgentStatus = "error"

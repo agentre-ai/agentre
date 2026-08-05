@@ -2,6 +2,7 @@ package piagent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 
@@ -115,15 +116,53 @@ type sessionHandle interface {
 	ActiveInterruptor() interruptable
 }
 
-// piRawFrameSink 返回一个把 pi-agent 每行原始 stdout 帧打到 debug 日志的回调。
-// 语义同 claudecode 的 ccRawFrameSink:由「Debug Logging」开关热控(关时 zap 直接丢弃,
-// 近零开销),用 logger.Default() 取当前全局 logger 故热重载即时生效。
+// piRawFrameSink reports only safe metadata for each pi-agent stdout frame.
+// The callback remains controlled by Debug Logging through logger.Default(), but
+// complete RPC frames never enter the operational log sink.
 func piRawFrameSink(sessionID int64, providerSessionID string) func([]byte) {
 	return func(line []byte) {
-		logger.Default().Debug("piagent runtime: raw frame",
+		fields := []zap.Field{
 			zap.Int64("sessionID", sessionID),
 			zap.String("providerSessionID", providerSessionID),
-			zap.ByteString("frame", line))
+			zap.Int("frameBytes", len(line)),
+		}
+		var head struct {
+			Type    string `json:"type"`
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(line, &head); err != nil {
+			fields = append(fields, zap.Bool("parseFailed", true))
+		} else {
+			if frameType, ok := safePiFrameType(head.Type); ok {
+				fields = append(fields, zap.String("frameType", frameType))
+			}
+			if command, ok := safePiResponseCommand(head.Command); ok {
+				fields = append(fields, zap.String("responseCommand", command))
+			}
+		}
+		logger.Default().Debug("piagent.piRawFrameSink: frame observed", fields...)
+	}
+}
+
+func safePiFrameType(frameType string) (string, bool) {
+	switch frameType {
+	case "response",
+		"message_start", "message_update", "message_end",
+		"agent_end", "agent_settled",
+		"tool_execution_start", "tool_execution_update", "tool_execution_end",
+		"compaction_start", "compaction_end", "auto_retry_start":
+		return frameType, true
+	default:
+		return "", false
+	}
+}
+
+func safePiResponseCommand(command string) (string, bool) {
+	switch command {
+	case "get_state", "prompt", "get_session_stats", "compact", "get_commands":
+		return command, true
+	default:
+		return "", false
 	}
 }
 
