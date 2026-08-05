@@ -64,10 +64,107 @@ func TestService_Close_UnknownTerminal(t *testing.T) {
 	require.ErrorIs(t, err, terminal_svc.ErrTerminalNotOpen)
 }
 
+type nonComparableHandleState struct {
+	data          chan []byte
+	exit          chan pty.ExitInfo
+	settleOnClose bool
+	closeCalls    atomic.Int32
+	writeCalls    atomic.Int32
+	settle        sync.Once
+}
+
+func newNonComparableHandleState(settleOnClose bool) *nonComparableHandleState {
+	return &nonComparableHandleState{
+		data:          make(chan []byte),
+		exit:          make(chan pty.ExitInfo, 1),
+		settleOnClose: settleOnClose,
+	}
+}
+
+func (s *nonComparableHandleState) finish(info pty.ExitInfo) {
+	s.settle.Do(func() {
+		s.exit <- info
+		close(s.exit)
+		close(s.data)
+	})
+}
+
+type nonComparableHandle struct {
+	marker []byte
+	state  *nonComparableHandleState
+}
+
+func newNonComparableHandle(state *nonComparableHandleState) pty.Handle {
+	return nonComparableHandle{marker: []byte("valid but non-comparable"), state: state}
+}
+
+func (h nonComparableHandle) Write(p []byte) (int, error) {
+	h.state.writeCalls.Add(1)
+	return len(p), nil
+}
+
+func (h nonComparableHandle) Resize(uint16, uint16) error { return nil }
+func (h nonComparableHandle) Data() <-chan []byte         { return h.state.data }
+func (h nonComparableHandle) Exit() <-chan pty.ExitInfo   { return h.state.exit }
+func (h nonComparableHandle) Close() error {
+	h.state.closeCalls.Add(1)
+	if h.state.settleOnClose {
+		h.state.finish(pty.ExitInfo{Reason: "killed"})
+	}
+	return nil
+}
+
+type handleSequenceBackend struct {
+	opens   atomic.Int32
+	handles []pty.Handle
+}
+
+func (b *handleSequenceBackend) Open(context.Context, pty.Spec) (pty.Handle, error) {
+	return b.handles[int(b.opens.Add(1))-1], nil
+}
+
+func TestService_GivenNonComparableHandleWhenCloseSucceedsThenItClosesWithoutPanic(t *testing.T) {
+	state := newNonComparableHandleState(false)
+	t.Cleanup(func() { state.finish(pty.ExitInfo{Reason: "killed"}) })
+	backend := &handleSequenceBackend{handles: []pty.Handle{newNonComparableHandle(state)}}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), terminal_svc.NoopEmitter{})
+
+	require.NoError(t, svc.Open(context.Background(), "terminal-non-comparable-close", "", "/tmp", 80, 24))
+	var closeErr error
+	require.NotPanics(t, func() {
+		closeErr = svc.Close(context.Background(), "terminal-non-comparable-close")
+	})
+	require.NoError(t, closeErr)
+	require.ErrorIs(t, svc.Write(context.Background(), "terminal-non-comparable-close", "x"), terminal_svc.ErrTerminalClosed)
+	require.Equal(t, int32(1), state.closeCalls.Load())
+}
+
+func TestService_GivenNonComparableHandleWhenPumpExitsNaturallyThenItCleansUpWithoutPanic(t *testing.T) {
+	state := newNonComparableHandleState(false)
+	backend := &handleSequenceBackend{handles: []pty.Handle{newNonComparableHandle(state)}}
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), emitter)
+
+	require.NoError(t, svc.Open(context.Background(), "terminal-non-comparable-pump", "", "/tmp", 80, 24))
+	state.finish(pty.ExitInfo{Code: 0, Reason: "natural"})
+
+	require.Eventually(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if event.Name == terminal_svc.ExitEventName("terminal-non-comparable-pump") {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	require.ErrorIs(t, svc.Write(context.Background(), "terminal-non-comparable-pump", "x"), terminal_svc.ErrTerminalClosed)
+	require.Zero(t, state.closeCalls.Load())
+}
+
 type replacementRaceHandle struct {
 	data              chan []byte
 	exit              chan pty.ExitInfo
 	blockFirstClose   bool
+	settleOnClose     bool
 	firstCloseStarted chan struct{}
 	releaseFirstClose chan struct{}
 	closeCalls        atomic.Int32
@@ -75,11 +172,12 @@ type replacementRaceHandle struct {
 	settle            sync.Once
 }
 
-func newReplacementRaceHandle(blockFirstClose bool) *replacementRaceHandle {
+func newReplacementRaceHandle(blockFirstClose bool, settleOnClose bool) *replacementRaceHandle {
 	return &replacementRaceHandle{
 		data:              make(chan []byte),
 		exit:              make(chan pty.ExitInfo, 1),
 		blockFirstClose:   blockFirstClose,
+		settleOnClose:     settleOnClose,
 		firstCloseStarted: make(chan struct{}),
 		releaseFirstClose: make(chan struct{}),
 	}
@@ -100,12 +198,18 @@ func (h *replacementRaceHandle) Close() error {
 		close(h.firstCloseStarted)
 		<-h.releaseFirstClose
 	}
+	if h.settleOnClose {
+		h.finish(pty.ExitInfo{Reason: "killed"})
+	}
+	return nil
+}
+
+func (h *replacementRaceHandle) finish(info pty.ExitInfo) {
 	h.settle.Do(func() {
-		h.exit <- pty.ExitInfo{Reason: "killed"}
+		h.exit <- info
 		close(h.exit)
 		close(h.data)
 	})
-	return nil
 }
 
 type replacementRaceBackend struct {
@@ -121,11 +225,12 @@ func (b *replacementRaceBackend) Open(context.Context, pty.Spec) (pty.Handle, er
 	return b.replacement, nil
 }
 
-func TestService_GivenCloseOfOldHandleCompletesAfterReplacementWhenSettledThenKeepsReplacementByIdentity(t *testing.T) {
-	old := newReplacementRaceHandle(true)
-	replacement := newReplacementRaceHandle(false)
+func TestService_GivenCloseAndPumpOfOldHandleCompleteAfterReplacementThenTheyKeepReplacementByIdentity(t *testing.T) {
+	old := newReplacementRaceHandle(true, false)
+	replacement := newReplacementRaceHandle(false, true)
 	backend := &replacementRaceBackend{old: old, replacement: replacement}
-	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), terminal_svc.NoopEmitter{})
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), emitter)
 	t.Cleanup(svc.Shutdown)
 
 	require.NoError(t, svc.Open(context.Background(), "terminal-race", "", "/old", 80, 24))
@@ -134,12 +239,23 @@ func TestService_GivenCloseOfOldHandleCompletesAfterReplacementWhenSettledThenKe
 	<-old.firstCloseStarted
 
 	require.NoError(t, svc.Open(context.Background(), "terminal-race", "", "/replacement", 80, 24))
+	old.finish(pty.ExitInfo{Reason: "killed"})
+	require.Eventually(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if event.Name == terminal_svc.ExitEventName("terminal-race") {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond, "the stale pump must finish after replacement registration")
+	require.NoError(t, svc.Write(context.Background(), "terminal-race", "pump-finished"),
+		"completion of the old pump must not delete the replacement handle")
+
 	close(old.releaseFirstClose)
 	require.NoError(t, <-closeResult)
-
-	require.NoError(t, svc.Write(context.Background(), "terminal-race", "x"),
+	require.NoError(t, svc.Write(context.Background(), "terminal-race", "close-finished"),
 		"completion of the old Close must not delete the replacement handle")
-	require.Equal(t, int32(1), replacement.writeCalls.Load())
+	require.Equal(t, int32(2), replacement.writeCalls.Load())
 }
 
 func TestService_Open_ReOpenClosesPrevious(t *testing.T) {

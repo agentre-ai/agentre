@@ -35,8 +35,15 @@ type Service struct {
 	commandScopeResolver CommandScopeResolver
 
 	mu       sync.Mutex
-	sessions map[string]pty.Handle
+	sessions map[string]*sessionEntry
 	inFlight map[string]*openAttempt // pending starts, keyed by terminalID
+}
+
+// sessionEntry is the comparable ownership token for one live terminal. Handle
+// itself is intentionally never compared because an interface may contain a
+// valid non-comparable dynamic value.
+type sessionEntry struct {
+	handle pty.Handle
 }
 
 // openAttempt owns one terminal start continuously from the first blocking
@@ -55,7 +62,7 @@ func NewService(sel *BackendSelector, emitter Emitter) *Service {
 	return &Service{
 		selector: sel,
 		emitter:  emitter,
-		sessions: map[string]pty.Handle{},
+		sessions: map[string]*sessionEntry{},
 		inFlight: map[string]*openAttempt{},
 	}
 }
@@ -124,7 +131,7 @@ func (s *Service) open(
 	}
 	s.mu.Unlock()
 	if hasOld {
-		_ = old.Close()
+		_ = old.handle.Close()
 		if !s.ownsStart(terminalID, attempt) {
 			return preemptedStartError(lifecycle)
 		}
@@ -135,16 +142,20 @@ func (s *Service) open(
 	// backends intentionally ignore this runtime-only field.
 	spec.TerminalID = terminalID
 	h, err := backend.Open(attempt.ctx, spec)
+	var entry *sessionEntry
+	if err == nil {
+		entry = &sessionEntry{handle: h}
+	}
 
-	// Atomically hand ownership from the start attempt to the live session.
-	// A stale handle returned by a cancellation-ignoring backend is never
+	// Atomically hand ownership from the start attempt to one live session
+	// entry. A stale handle returned by a cancellation-ignoring backend is never
 	// registered and therefore never gets a listener/pump.
 	s.mu.Lock()
 	preempted := s.inFlight[terminalID] != attempt
 	if !preempted {
 		delete(s.inFlight, terminalID)
 		if err == nil {
-			s.sessions[terminalID] = h
+			s.sessions[terminalID] = entry
 		}
 	}
 	s.mu.Unlock()
@@ -174,7 +185,7 @@ func (s *Service) open(
 	// cleanup and lifecycle events complete after Open returns.
 	pumpCtx := context.WithoutCancel(ctx)
 	gogo.Go(func() error {
-		s.pump(pumpCtx, terminalID, h, lifecycle)
+		s.pump(pumpCtx, terminalID, entry, lifecycle)
 		return nil
 	}, gogo.WithIgnorePanic())
 	return nil
@@ -240,7 +251,7 @@ func (s *Service) Close(ctx context.Context, terminalID string) error {
 	if hadInFlight {
 		delete(s.inFlight, terminalID)
 	}
-	h, hadHandle := s.sessions[terminalID]
+	entry, hadHandle := s.sessions[terminalID]
 	s.mu.Unlock()
 
 	if hadInFlight {
@@ -250,27 +261,27 @@ func (s *Service) Close(ctx context.Context, terminalID string) error {
 		return ErrTerminalNotOpen
 	}
 	if hadHandle {
-		if err := h.Close(); err != nil {
+		if err := entry.handle.Close(); err != nil {
 			return err
 		}
 		// Close is an external boundary, so a new Open may have installed a
-		// replacement while it was in flight. Settle only the handle we closed.
+		// replacement while it was in flight. Settle only the entry we captured.
 		s.mu.Lock()
-		if cur, exists := s.sessions[terminalID]; exists && cur == h {
+		if s.sessions[terminalID] == entry {
 			delete(s.sessions, terminalID)
 		}
 		s.mu.Unlock()
 	}
-	return nil // only inFlight was canceled, or the captured Handle settled
+	return nil // only inFlight was canceled, or the captured entry settled
 }
 
 func (s *Service) Shutdown() {
 	s.mu.Lock()
 	hs := make([]pty.Handle, 0, len(s.sessions))
-	for _, h := range s.sessions {
-		hs = append(hs, h)
+	for _, entry := range s.sessions {
+		hs = append(hs, entry.handle)
 	}
-	s.sessions = map[string]pty.Handle{}
+	s.sessions = map[string]*sessionEntry{}
 	// Clear and cancel in-flight starts too: clearing inFlight makes each pending
 	// start observe itself as preempted (so stale resolver/selector results stop,
 	// and a late handle is torn down instead of registered). Cancellation also
@@ -292,13 +303,17 @@ func (s *Service) Shutdown() {
 func (s *Service) lookupHandle(terminalID string) pty.Handle {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sessions[terminalID]
+	entry := s.sessions[terminalID]
+	if entry == nil {
+		return nil
+	}
+	return entry.handle
 }
 
 func (s *Service) pump(
 	ctx context.Context,
 	terminalID string,
-	h pty.Handle,
+	entry *sessionEntry,
 	lifecycle *commandLifecycle,
 ) {
 	// Data() and Exit() are independent channels with no ordering guarantee
@@ -307,8 +322,8 @@ func (s *Service) pump(
 	// returns on a closed Data() channel races the buffered Exit() value and
 	// drops the exit ~50% of the time (terminal stuck "open"), or returns on
 	// Exit() while data is still buffered and drops the trailing output.
-	dataCh := h.Data()
-	exitCh := h.Exit()
+	dataCh := entry.handle.Data()
+	exitCh := entry.handle.Exit()
 
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
@@ -365,7 +380,7 @@ stream:
 	flush()
 
 	s.mu.Lock()
-	if cur, exists := s.sessions[terminalID]; exists && cur == h {
+	if s.sessions[terminalID] == entry {
 		delete(s.sessions, terminalID)
 	}
 	s.mu.Unlock()
