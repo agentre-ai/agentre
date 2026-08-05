@@ -605,6 +605,28 @@ func TestTestBackend_NoProvider(t *testing.T) {
 	})
 }
 
+func TestTestBackend_PiAgentBoundSkipsGateway(t *testing.T) {
+	convey.Convey("piagent 绑 provider 且 gateway 未注入 → 不进 gateway 分支，直接调 prober（piagent 不走 gateway，连通性测真实 provider）", t, func() {
+		ctx, _, providerMock, _, proberMock, svc := setupSvcTest(t)
+		// gateway 保持 nil；旧逻辑会在 `!IsBuiltin() && LLMProviderKey != ""`
+		// 分支报 GatewayUnavailable，piagent 绑定后应不再进该分支。
+		providerMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(activeProvider("key-pi"), nil)
+		proberMock.EXPECT().
+			Run(gomock.Any(), gomock.AssignableToTypeOf(&agent_backend_entity.AgentBackend{}), gomock.Any()).
+			Return("pong", nil)
+
+		res, err := svc.Test(ctx, &TestBackendRequest{
+			Type:           string(agent_backend_entity.TypePiAgent),
+			Name:           "pi",
+			LLMProviderKey: "key-pi",
+		})
+
+		assert.NoError(t, err)
+		assert.NotNil(t, res)
+		assert.True(t, res.OK)
+	})
+}
+
 func TestTestBackend_Validation(t *testing.T) {
 	convey.Convey("Test backend validation failures", t, func() {
 		ctx, backendMock, providerMock, _, _, svc := setupSvcTest(t)

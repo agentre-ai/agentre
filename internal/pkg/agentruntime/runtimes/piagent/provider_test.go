@@ -36,13 +36,9 @@ func TestMaterializeProviderExtension_WritesContentHashedFile(t *testing.T) {
 	}
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			source, err := agentruntime.PiAgentProviderExtension(tc.p)
+			path, err := MaterializeProviderExtension(tc.p)
 			if err != nil {
-				t.Fatalf("PiAgentProviderExtension: %v", err)
-			}
-			path, err := materializeProviderExtension(source)
-			if err != nil {
-				t.Fatalf("materializeProviderExtension: %v", err)
+				t.Fatalf("MaterializeProviderExtension: %v", err)
 			}
 			wantDir := filepath.Join(dataDir, "piagent", "ext")
 			if !strings.HasPrefix(path, wantDir) {
@@ -52,9 +48,13 @@ func TestMaterializeProviderExtension_WritesContentHashedFile(t *testing.T) {
 			if !strings.HasPrefix(base, "agentre-provider-") || !strings.HasSuffix(base, ".mjs") {
 				t.Fatalf("unexpected filename: %s", base)
 			}
-			raw, err := os.ReadFile(path) //nolint:gosec // path returned by materializeProviderExtension, constrained to the test temp data dir.
+			raw, err := os.ReadFile(path) //nolint:gosec // path returned by MaterializeProviderExtension, constrained to the test temp data dir.
 			if err != nil {
 				t.Fatalf("read: %v", err)
+			}
+			source, err := agentruntime.PiAgentProviderExtension(tc.p)
+			if err != nil {
+				t.Fatalf("PiAgentProviderExtension: %v", err)
 			}
 			if string(raw) != source {
 				t.Fatalf("file content != rendered source")
@@ -69,15 +69,18 @@ func TestMaterializeProviderExtension_WritesContentHashedFile(t *testing.T) {
 
 func TestMaterializeProviderExtension_Idempotent(t *testing.T) {
 	t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
-	source := "export default function (pi) { pi.registerProvider(\"x\", {}) }"
-	p1, err := materializeProviderExtension(source)
+	p := &llm_provider_entity.LLMProvider{
+		ProviderKey: "prov-x", Name: "ProvX", BaseURL: "https://x.example",
+		Type: string(llm_provider_entity.TypeOpenAIChat), Model: "gpt-4o", APIKey: "tok-xx",
+	}
+	p1, err := MaterializeProviderExtension(p)
 	if err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
 	if _, err := os.Stat(p1); err != nil {
 		t.Fatalf("file missing: %v", err)
 	}
-	p2, err := materializeProviderExtension(source)
+	p2, err := MaterializeProviderExtension(p)
 	if err != nil || p2 != p1 {
 		t.Fatalf("not idempotent: p1=%s p2=%s err=%v", p1, p2, err)
 	}
@@ -85,11 +88,17 @@ func TestMaterializeProviderExtension_Idempotent(t *testing.T) {
 
 func TestMaterializeProviderExtension_DifferentSourceDifferentPath(t *testing.T) {
 	t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
-	p1, err := materializeProviderExtension("source one")
+	base := func(model string) *llm_provider_entity.LLMProvider {
+		return &llm_provider_entity.LLMProvider{
+			ProviderKey: "prov-y", Name: "ProvY", BaseURL: "https://y.example",
+			Type: string(llm_provider_entity.TypeOpenAIResponse), Model: model, APIKey: "tok-yy",
+		}
+	}
+	p1, err := MaterializeProviderExtension(base("model-one"))
 	if err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
-	p2, err := materializeProviderExtension("source two")
+	p2, err := MaterializeProviderExtension(base("model-two"))
 	if err != nil {
 		t.Fatalf("materialize: %v", err)
 	}

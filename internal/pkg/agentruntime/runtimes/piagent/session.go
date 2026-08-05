@@ -139,11 +139,7 @@ func providerRunConfig(p *llm_provider_entity.LLMProvider) (model string, extPat
 	if pModel, mErr := agentruntime.PiAgentProviderModelName(p); mErr == nil {
 		model = pModel
 	}
-	source, err := agentruntime.PiAgentProviderExtension(p)
-	if err != nil {
-		return "", "", err
-	}
-	extPath, err = providerExtensionWriter(source)
+	extPath, err = MaterializeProviderExtension(p)
 	if err != nil {
 		return "", "", err
 	}
