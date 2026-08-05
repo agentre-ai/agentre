@@ -957,6 +957,8 @@ type ChatTranscriptProps = {
   /** 停掉某张 AgentSpawn 卡对应的正在运行的子 agent / 后台任务(按 tool_use_id 下发 stop_task)。
    *  仅 backend 支持时由 ChatPanel 传入;未传 = 卡片不显示停止按钮。 */
   onStopSubagent?: (toolUseId: string) => void;
+  /** 停掉 ChatPanel 启动并持有生命周期的本地命令；只读调用方不传。 */
+  onStopLocalCommand?: (terminalId: string) => void | Promise<void>;
   /** Stable mounted chat tab key for UI drafts that survive route/tab remounts. */
   tabStateKey?: string;
 };
@@ -1010,6 +1012,7 @@ const ChatTranscript = React.forwardRef<
     onEdit,
     onPlanActionStarted,
     onStopSubagent,
+    onStopLocalCommand,
     tabStateKey,
     streaming = false,
     liveCompacting = false,
@@ -1075,11 +1078,13 @@ const ChatTranscript = React.forwardRef<
   const onEditRef = React.useRef(onEdit);
   const onPlanActionStartedRef = React.useRef(onPlanActionStarted);
   const onStopSubagentRef = React.useRef(onStopSubagent);
+  const onStopLocalCommandRef = React.useRef(onStopLocalCommand);
   React.useEffect(() => {
     onRerunRef.current = onRerun;
     onEditRef.current = onEdit;
     onPlanActionStartedRef.current = onPlanActionStarted;
     onStopSubagentRef.current = onStopSubagent;
+    onStopLocalCommandRef.current = onStopLocalCommand;
   });
   const stableOnRerun = React.useCallback((id: number) => {
     onRerunRef.current?.(id);
@@ -1096,6 +1101,10 @@ const ChatTranscript = React.forwardRef<
   const stableOnStopSubagent = React.useCallback((toolUseId: string) => {
     onStopSubagentRef.current?.(toolUseId);
   }, []);
+  const stableOnStopLocalCommand = React.useCallback((terminalId: string) => {
+    return onStopLocalCommandRef.current?.(terminalId);
+  }, []);
+  const hasStopLocalCommand = onStopLocalCommand !== undefined;
 
   // displayMessages → 虚拟行。persisted 消息的行缓存在实例级 WeakMap(引用稳定
   // → 行组件 memo 恒命中);live 消息每 chunk 现场重建,重渲上限 = 可见窗口行数。
@@ -1128,6 +1137,9 @@ const ChatTranscript = React.forwardRef<
       // 此处有条件地传入稳定代理，让行视图能用 ctx?.onEdit 作存在性门控。
       onEdit: onEdit ? stableOnEdit : undefined,
       onPlanActionStarted: stableOnPlanActionStarted,
+      onStopLocalCommand: hasStopLocalCommand
+        ? stableOnStopLocalCommand
+        : undefined,
       onStopSubagent: onStopSubagent ? stableOnStopSubagent : undefined,
       onRerun: onRerun ? stableOnRerun : undefined,
       sessionId: sessionId ?? 0,
@@ -1137,12 +1149,14 @@ const ChatTranscript = React.forwardRef<
       agentColor,
       agentName,
       cwd,
+      hasStopLocalCommand,
       onEdit,
       onRerun,
       onStopSubagent,
       sessionId,
       stableOnEdit,
       stableOnPlanActionStarted,
+      stableOnStopLocalCommand,
       stableOnStopSubagent,
       stableOnRerun,
       tabStateKey,

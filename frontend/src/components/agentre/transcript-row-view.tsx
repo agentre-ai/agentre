@@ -51,6 +51,8 @@ export type TranscriptRenderContextValue = {
   onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void;
   /** 停掉 AgentSpawn 卡对应的正在运行子 agent(按 tool_use_id);只读/不支持时不传。 */
   onStopSubagent?: (toolUseId: string) => void;
+  /** 停掉本地命令；ChatPanel 是生命周期 owner，只读模式不传。 */
+  onStopLocalCommand?: (terminalId: string) => void | Promise<void>;
   /** 只读模式下不传；有值时才渲染「重新生成」按钮。 */
   onRerun?: (messageId: number) => void;
   /** 只读模式下不传；有值时才渲染「编辑」按钮。 */
@@ -648,6 +650,7 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
             .getState()
             .attachTerminal({ terminalId: id, command: entry.command })
         }
+        onStop={ctx?.onStopLocalCommand}
       />
     );
   }

@@ -116,6 +116,7 @@ import {
   StartChatGoal,
   StopBackgroundTask,
   StopChatMessage,
+  TerminalClose,
   TerminalRunCommand,
 } from "../../../wailsjs/go/app/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
@@ -241,6 +242,19 @@ function isChatStopNoActiveError(msg: string): boolean {
     msg.includes(i18n.t("chatPanel.errors.noActiveTurnToStop", { lng: "en" }))
   );
 }
+
+const TERMINAL_NOT_OPEN_ERROR = "terminal not open";
+
+function isTerminalNotOpenError(error: unknown): boolean {
+  return (
+    error === TERMINAL_NOT_OPEN_ERROR ||
+    (error instanceof Error && error.message === TERMINAL_NOT_OPEN_ERROR)
+  );
+}
+
+type LocalCommandController = {
+  stop: () => Promise<void>;
+};
 
 function isExactCompactCommand(text: string): boolean {
   return text.trim() === "/compact";
@@ -524,6 +538,12 @@ function ChatPanel({
     requestId: number;
   } | null>(null);
   const ensuredLocalCommandSessionRequestRef = React.useRef(0);
+  const localCommandControllersRef = React.useRef(
+    new Map<string, LocalCommandController>(),
+  );
+  const handleStopLocalCommand = React.useCallback((terminalId: string) => {
+    return localCommandControllersRef.current.get(terminalId)?.stop();
+  }, []);
 
   const { reason: attentionReason } = useSessionAttention(sessionId);
 
@@ -1414,12 +1434,7 @@ function ChatPanel({
       command: string,
     ): Promise<LocalCommandHistoryScope | undefined> => {
       const terminalId = crypto.randomUUID();
-      useLocalCommandsStore.getState().start({
-        id: terminalId,
-        sessionId: sid,
-        command,
-        createdAt: Date.now(),
-      });
+      const controllers = localCommandControllersRef.current;
       const dataEvent = `terminal:${terminalId}:data`;
       const exitEvent = `terminal:${terminalId}:exit`;
       const cleanupRetryInitialDelayMs = 100;
@@ -1435,6 +1450,8 @@ function ChatPanel({
         retryDelayMs: number;
       };
       let activeGeneration: ListenerGeneration | undefined;
+      let settled = false;
+      let stopPromise: Promise<void> | undefined;
       const cleanupListeners = (generation: ListenerGeneration): boolean => {
         let cleaned = true;
         for (const listener of generation.listeners) {
@@ -1489,31 +1506,81 @@ function ChatPanel({
         status: "done" | "failed" | "stopped",
         exitCode?: number,
       ) => {
-        const commands = useLocalCommandsStore.getState();
-        if (commands.get(terminalId)?.status !== "running") {
+        if (settled) {
           ensureListenersCleaned();
           return;
         }
-        commands.finish(terminalId, status, exitCode);
+        settled = true;
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(terminalId)?.status === "running") {
+          if (exitCode === undefined) commands.finish(terminalId, status);
+          else commands.finish(terminalId, status, exitCode);
+        }
         ensureListenersCleaned();
+        removeController();
       };
       const fail = (error: unknown) => {
-        ensureListenersCleaned();
+        if (settled) {
+          ensureListenersCleaned();
+          return;
+        }
         const commands = useLocalCommandsStore.getState();
-        if (commands.get(terminalId)?.status !== "running") return;
-        commands.appendOutput(terminalId, String(error));
-        commands.finish(terminalId, "failed", -1);
+        if (commands.get(terminalId)?.status === "running") {
+          commands.appendOutput(terminalId, String(error));
+        }
+        settle("failed", -1);
       };
       const decode = makeStreamDecoder();
-      const handleData = (p: { data: string }) =>
+      const handleData = (p: { data: string }) => {
+        if (settled) return;
         useLocalCommandsStore
           .getState()
           .appendOutput(terminalId, decode(p.data));
+      };
       const handleExit = (p: { code: number; reason: string }) => {
         const status =
           p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
         settle(status, p.code);
       };
+      const controller: LocalCommandController = {
+        stop: () => {
+          if (settled) return Promise.resolve();
+          if (stopPromise) return stopPromise;
+          const pending = (async () => {
+            try {
+              await TerminalClose(terminalId);
+            } catch (error: unknown) {
+              if (!isTerminalNotOpenError(error)) {
+                if (!settled) {
+                  const commands = useLocalCommandsStore.getState();
+                  if (commands.get(terminalId)?.status === "running") {
+                    commands.appendOutput(terminalId, String(error));
+                  }
+                }
+                return;
+              }
+            }
+            settle("stopped");
+          })();
+          stopPromise = pending;
+          void pending.finally(() => {
+            if (stopPromise === pending) stopPromise = undefined;
+          });
+          return pending;
+        },
+      };
+      const removeController = () => {
+        if (controllers.get(terminalId) === controller) {
+          controllers.delete(terminalId);
+        }
+      };
+      controllers.set(terminalId, controller);
+      useLocalCommandsStore.getState().start({
+        id: terminalId,
+        sessionId: sid,
+        command,
+        createdAt: Date.now(),
+      });
       let observerError: unknown;
       let observersReady = false;
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1543,11 +1610,7 @@ function ChatPanel({
         }
       }
       if (!observersReady) {
-        const commands = useLocalCommandsStore.getState();
-        if (commands.get(terminalId)?.status === "running") {
-          commands.appendOutput(terminalId, String(observerError));
-          commands.finish(terminalId, "failed", -1);
-        }
+        fail(observerError);
         return undefined;
       }
       try {
@@ -2330,6 +2393,7 @@ function ChatPanel({
                     onStopSubagent={
                       canStopBackgroundTask ? handleStopSubagent : undefined
                     }
+                    onStopLocalCommand={handleStopLocalCommand}
                     tabStateKey={scrollStateKey}
                   />
                   {showBackToBottom ? (

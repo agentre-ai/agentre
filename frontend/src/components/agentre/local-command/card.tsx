@@ -3,7 +3,6 @@ import { SquareTerminal, X, ChevronRight, ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
-import { TerminalClose } from "../../../../wailsjs/go/app/App";
 import {
   useLocalCommandsStore,
   isCollapsed,
@@ -13,15 +12,6 @@ import { shouldIgnoreClickForSelection } from "../copyable-text";
 import { TranscriptPill } from "../transcript-card";
 import { formatDuration } from "./format-duration";
 import { OutputTerminal } from "./output-terminal";
-
-const TERMINAL_NOT_OPEN_ERROR = "terminal not open";
-
-export function isTerminalNotOpenError(error: unknown): boolean {
-  return (
-    error === TERMINAL_NOT_OPEN_ERROR ||
-    (error instanceof Error && error.message === TERMINAL_NOT_OPEN_ERROR)
-  );
-}
 
 // Status → visual style map (DRY — one place for all status styles).
 const STATUS_CONFIG: Record<
@@ -53,9 +43,11 @@ const STATUS_CONFIG: Record<
 export function LocalCommandCard({
   entryId,
   onOpenInTerminal,
+  onStop,
 }: {
   entryId: string;
   onOpenInTerminal: (id: string) => void;
+  onStop?: (id: string) => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const entry = useLocalCommandsStore((s) => s.entries[entryId]);
@@ -71,23 +63,6 @@ export function LocalCommandCard({
     entry.finishedAt !== undefined
       ? formatDuration(entry.finishedAt - entry.createdAt)
       : null;
-  const stop = async () => {
-    try {
-      await TerminalClose(entryId);
-    } catch (error: unknown) {
-      if (!isTerminalNotOpenError(error)) {
-        const commands = useLocalCommandsStore.getState();
-        if (commands.get(entryId)?.status === "running") {
-          commands.appendOutput(entryId, String(error));
-        }
-        return;
-      }
-    }
-    const commands = useLocalCommandsStore.getState();
-    if (commands.get(entryId)?.status === "running") {
-      commands.finish(entryId, "stopped");
-    }
-  };
 
   const statusPill = (
     <TranscriptPill className={cfg.pill}>
@@ -219,14 +194,16 @@ export function LocalCommandCard({
       {isRunning && (
         <div className="flex items-center gap-2 border-t border-border px-3.5 py-2.5">
           <div className="flex-1" />
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void stop()}
-          >
-            {t("localCommand.stop")}
-          </Button>
+          {onStop ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void onStop(entryId)}
+            >
+              {t("localCommand.stop")}
+            </Button>
+          ) : null}
           <Button
             type="button"
             size="sm"
