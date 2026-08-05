@@ -169,6 +169,31 @@ const renameTitleMaxRunes = 200
 
 type activeTurnControl struct {
 	cancel context.CancelFunc
+
+	mu            sync.RWMutex
+	gracefulAbort agentruntime.Aborter
+}
+
+func (c *activeTurnControl) setGracefulAbort(aborter agentruntime.Aborter) {
+	if c == nil || aborter == nil {
+		return
+	}
+	c.mu.Lock()
+	c.gracefulAbort = aborter
+	c.mu.Unlock()
+}
+
+func (c *activeTurnControl) abortBeforeCancel(ctx context.Context, sessionID int64) (bool, error) {
+	if c == nil {
+		return false, nil
+	}
+	c.mu.RLock()
+	aborter := c.gracefulAbort
+	c.mu.RUnlock()
+	if aborter == nil {
+		return false, nil
+	}
+	return true, aborter.Abort(ctx, sessionID)
 }
 
 type chatSvc struct {
@@ -1521,9 +1546,10 @@ func (s *chatSvc) Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueRes
 //     已自然完成 / 还没起 / 已被另一个 Stop 拉走，返 ChatStopNoActive。
 //  2. Store aborted flag —— runTurn 收尾 LoadAndDelete 看到就走 StreamAborted 路径
 //     并跳过 DrainPending 自动接续。
-//  3. 先 cancel turnCtx，再尽力 runner.Abort —— cancel 立即停止嵌套 DB / select，
-//     不被 Stop 自己的仓储查询延迟；Abort 再解 runner I/O（claudecode 写
-//     control_request、codex 发 turn/interrupt）。Abort 失败不致命。
+//  3. 已绑定的本地 Pi turn 先直接写 abort，再 cancel turnCtx，让同一 RPC scanner
+//     在自己的小窗口内读取 settlement / 精确 user anchor；其它后端仍先 cancel，
+//     再尽力通过仓储解析 runner.Abort。启动期还没绑定 aborter 时也保持 cancel-first，
+//     不让 Stop 的仓储查询延迟同步 preflight / SQL 取消。
 func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, error) {
 	if req == nil || req.SessionID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
@@ -1543,26 +1569,36 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 	s.aborted.Store(req.SessionID, struct{}{})
 	logger.Ctx(ctx).Info("chat_svc.Stop: aborting turn",
 		zap.Int64("sessionId", req.SessionID))
-	// Cancel first: activation/staging SQL and prepared Start already carry this
-	// registered context. Stop's own repository lookups must not delay it.
+
+	gracefulAbort, abortErr := control.abortBeforeCancel(ctx, req.SessionID)
+	if abortErr != nil && !errors.Is(abortErr, agentruntime.ErrNoActiveTurn) {
+		logger.Ctx(ctx).Warn("chat_svc.Stop: local Pi abort failed",
+			zap.Int64("sessionId", req.SessionID),
+			zap.String("backendType", string(agent_backend_entity.TypePiAgent)),
+			zap.Error(abortErr))
+	}
+	// Activation/staging SQL and prepared Start already carry this registered
+	// context. The direct local-Pi abort above is in-memory and does not delay it.
 	if control != nil && control.cancel != nil {
 		control.cancel()
 	}
 
-	// runner.Abort：尽力派发，失败不阻塞 cancel
-	if sess, err := chat_repo.Session().Find(ctx, req.SessionID); err == nil && sess != nil {
-		if _, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID); berr == nil && be != nil {
-			if runner, rerr := s.selectRunner(ctx, be, sess.ID); rerr == nil {
-				if ab, ok := runner.(agentruntime.Aborter); ok {
-					if aerr := ab.Abort(ctx, req.SessionID); aerr != nil &&
-						!errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
-						// Abort 失败不致命(后面还要 cancel ctx 兜底),但要留底
-						// 方便追"按了停止仍持续 10s 才退"的 issue。ErrNoActiveTurn
-						// 是 runner 自然完成 / 已被清理的正常竞态,不打。
-						logger.Ctx(ctx).Warn("chat_svc.Stop: runner.Abort failed",
-							zap.Int64("sessionId", req.SessionID),
-							zap.String("backendType", be.Type),
-							zap.Error(aerr))
+	// Other backends keep the prior best-effort runner.Abort lookup after cancel.
+	// A bound local Pi aborter is generation-specific and must not be redispatched
+	// through the global runtime after its active control has been removed.
+	if !gracefulAbort {
+		if sess, err := chat_repo.Session().Find(ctx, req.SessionID); err == nil && sess != nil {
+			if _, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID); berr == nil && be != nil {
+				if runner, rerr := s.selectRunner(ctx, be, sess.ID); rerr == nil {
+					if ab, ok := runner.(agentruntime.Aborter); ok {
+						if aerr := ab.Abort(ctx, req.SessionID); aerr != nil &&
+							!errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
+							// Abort 失败不致命(前面已 cancel ctx 兜底),但要留底。
+							logger.Ctx(ctx).Warn("chat_svc.Stop: runner.Abort failed",
+								zap.Int64("sessionId", req.SessionID),
+								zap.String("backendType", be.Type),
+								zap.Error(aerr))
+						}
 					}
 				}
 			}
@@ -2053,7 +2089,8 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		return nil, err
 	}
 
-	if be.IsPiAgent() && sess.HasProviderSession() && strings.TrimSpace(userAnchor.ForkAnchor) == "" &&
+	_, hasPiForkAnchor := normalizedPiForkAnchor(userAnchor)
+	if be.IsPiAgent() && sess.HasProviderSession() && !hasPiForkAnchor &&
 		strings.TrimSpace(target.ErrorText) == "" && strings.TrimSpace(target.BlocksJSON) == "[]" {
 		restored, err := s.recoverActiveTranscriptReplacement(ctx, sess, be, target.ID)
 		if err != nil {
@@ -2138,7 +2175,8 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		return nil, err
 	}
 
-	if be.IsPiAgent() && sess.HasProviderSession() && strings.TrimSpace(target.ForkAnchor) == "" {
+	_, hasPiForkAnchor := normalizedPiForkAnchor(target)
+	if be.IsPiAgent() && sess.HasProviderSession() && !hasPiForkAnchor {
 		restored, err := s.recoverActiveTranscriptReplacement(ctx, sess, be, target.ID)
 		if err != nil {
 			return nil, operationFailedWithCause(ctx, err)
@@ -2489,10 +2527,11 @@ func (s *chatSvc) backendForkAnchor(
 	case agent_backend_entity.TypeCodex:
 		return s.codexRollbackAnchor(ctx, sess, userMsg)
 	case agent_backend_entity.TypePiAgent:
-		if userMsg.ForkAnchor == "" {
+		anchor, ok := normalizedPiForkAnchor(userMsg)
+		if !ok {
 			return "", i18n.NewError(ctx, code.ChatRegenerateNoUserAnchor)
 		}
-		return userMsg.ForkAnchor, nil
+		return anchor, nil
 	default:
 		runner := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
 		if _, ok := runner.(agentruntime.Rewinder); !ok {
@@ -2502,12 +2541,22 @@ func (s *chatSvc) backendForkAnchor(
 	}
 }
 
+func normalizedPiForkAnchor(userMsg *chat_entity.Message) (string, bool) {
+	if userMsg == nil || strings.TrimSpace(userMsg.ForkAnchor) == "" {
+		return "", false
+	}
+	// Entry IDs are opaque native Pi identities. Whitespace decides presence but
+	// must never rewrite or guess a nonblank persisted value.
+	return userMsg.ForkAnchor, true
+}
+
 func (s *chatSvc) isFailedFirstPiTurn(
 	ctx context.Context,
 	sess *chat_entity.Session,
 	userMsg *chat_entity.Message,
 ) (bool, error) {
-	if sess == nil || userMsg == nil || strings.TrimSpace(userMsg.ForkAnchor) != "" {
+	_, hasForkAnchor := normalizedPiForkAnchor(userMsg)
+	if sess == nil || userMsg == nil || hasForkAnchor {
 		return false, nil
 	}
 	messages, err := chat_repo.Message().List(ctx, sess.ID)
@@ -3060,6 +3109,7 @@ func (s *chatSvc) prepareTurnRun(
 			zap.Error(err))
 		return nil, err
 	}
+	s.bindLocalPiAbort(sess.ID, be, runner)
 	fail := func(err error) (*preparedTurnRun, error) {
 		release()
 		return nil, err
@@ -3148,11 +3198,40 @@ func (s *chatSvc) prepareTurnRun(
 	return prepared, nil
 }
 
-func (s *chatSvc) persistUserAnchor(ctx context.Context, userMsg *chat_entity.Message, anchor string) error {
+func (s *chatSvc) bindLocalPiAbort(
+	sessionID int64,
+	be *agent_backend_entity.AgentBackend,
+	runner agentruntime.Runtime,
+) {
+	if be == nil || !be.IsPiAgent() || be.IsRemote() || runner == nil {
+		return
+	}
+	aborter, ok := runner.(agentruntime.Aborter)
+	if !ok {
+		return
+	}
+	raw, ok := s.activeCancels.Load(sessionID)
+	if !ok {
+		return
+	}
+	control, _ := raw.(*activeTurnControl)
+	control.setGracefulAbort(aborter)
+}
+
+func (s *chatSvc) persistUserAnchor(
+	ctx context.Context,
+	userMsg *chat_entity.Message,
+	anchor string,
+	hardFailure bool,
+) error {
 	if userMsg == nil || strings.TrimSpace(anchor) == "" {
 		return nil
 	}
-	userMsg.ForkAnchor = strings.TrimSpace(anchor)
+	userMsg.ForkAnchor = anchor
+	if !hardFailure {
+		_ = chat_repo.Message().Update(ctx, userMsg)
+		return nil
+	}
 	if err := chat_repo.Message().Update(ctx, userMsg); err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.persistUserAnchor: message update failed, retrying",
 			zap.Int64("sessionId", userMsg.SessionID),
@@ -3370,7 +3449,12 @@ func (s *chatSvc) runTurn(
 		}
 		// Runtime 抽到的本轮 user anchor 必须可靠落库；短暂写失败重试一次，
 		// 持续失败则保留已生成回答但把 turn 标成 error，不能伪装成可继续分叉的成功轮。
-		if err := s.persistUserAnchor(context.WithoutCancel(ctx), userMsg, result.UserAnchor); err != nil && stopErr == nil {
+		if err := s.persistUserAnchor(
+			context.WithoutCancel(ctx),
+			userMsg,
+			result.UserAnchor,
+			be.IsPiAgent(),
+		); err != nil && stopErr == nil {
 			stopErr = err
 		}
 		// codex app-server 上报的 modelContextWindow 落到 session 字段，下次

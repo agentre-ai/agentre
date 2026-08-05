@@ -25,6 +25,8 @@ type Stream struct {
 	cur                Event
 
 	closeOnce sync.Once
+	abortMu   sync.Mutex
+	abortSent bool
 
 	pendingAgentEndError       *agentEndError
 	pendingAssistantDeltaError error
@@ -62,7 +64,24 @@ func (s *Stream) send(ctx context.Context, cmd map[string]any) error {
 		return ctx.Err()
 	default:
 	}
-	return s.proc.writeJSON(cmd)
+	command, _ := cmd["type"].(string)
+	if command != "abort" {
+		return s.proc.writeJSON(cmd)
+	}
+
+	// Stop may reach the runtime interruptor just before or just after the turn
+	// context is canceled. Serialize those paths so the accepted process receives
+	// one abort frame, while a late duplicate remains idempotent even after exit.
+	s.abortMu.Lock()
+	defer s.abortMu.Unlock()
+	if s.abortSent {
+		return nil
+	}
+	if err := s.proc.writeJSON(cmd); err != nil {
+		return err
+	}
+	s.abortSent = true
+	return nil
 }
 
 func (s *Stream) Next() bool {
@@ -153,26 +172,79 @@ func (s *Stream) awaitPromptAcknowledgement(ctx context.Context) ([][]byte, erro
 	return nil, awaitProcessExitOrScanError(ctx, s.proc)
 }
 
+const abortSettlementGrace = 500 * time.Millisecond
+
 func (s *Stream) drain(ctx context.Context, pendingFrames ...[][]byte) {
 	defer close(s.events)
+	drainCtx, stopSettlementWindow := boundedSettlementContext(ctx, abortSettlementGrace, func() {
+		_ = s.send(context.Background(), map[string]any{"type": "abort"})
+	})
+	defer stopSettlementWindow()
+
 	var pending [][]byte
 	if len(pendingFrames) > 0 {
 		pending = pendingFrames[0]
 	}
 	for _, line := range pending {
-		if !s.drainLine(ctx, line, false) {
+		if !s.drainLine(drainCtx, line, false) {
+			s.terminateCanceledProcess(ctx)
 			return
 		}
 	}
-	for s.proc.lines.Scan() {
+	for scanRPCLine(drainCtx, s.proc.lines) {
 		line := append([]byte(nil), s.proc.lines.Bytes()...)
-		if !s.drainLine(ctx, line, true) {
+		if !s.drainLine(drainCtx, line, true) {
+			s.terminateCanceledProcess(ctx)
 			return
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		s.terminateCanceledProcess(ctx)
+		s.setErr(err)
+		s.emit(Event{Kind: EventError, Err: err})
+		return
 	}
 	if err := processDeadOrScanError(s.proc); err != nil {
 		s.setErr(err)
 		s.emit(Event{Kind: EventError, Err: err})
+	}
+}
+
+func (s *Stream) terminateCanceledProcess(ctx context.Context) {
+	if s == nil || s.proc == nil || ctx.Err() == nil {
+		return
+	}
+	// Settlement has either completed or exhausted its bound. Kill the whole
+	// process group now rather than applying the ordinary graceful Close delay,
+	// so descendant tool work cannot continue beyond the Stop window.
+	_ = s.proc.terminate(context.Background(), 0)
+}
+
+func boundedSettlementContext(ctx context.Context, grace time.Duration, onCancel func()) (context.Context, func()) {
+	settlementCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if onCancel != nil {
+				go onCancel()
+			}
+			timer := time.NewTimer(grace)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				cancel()
+			case <-done:
+			}
+		case <-done:
+		}
+	}()
+	var once sync.Once
+	return settlementCtx, func() {
+		once.Do(func() {
+			close(done)
+			cancel()
+		})
 	}
 }
 
@@ -248,7 +320,9 @@ func (s *Stream) emitTerminalMetadata(ctx context.Context) {
 
 func (s *Stream) emitFailedTurnAnchorMetadata(ctx context.Context) {
 	if s.captureUserAnchor {
-		s.emitTrackedSessionMetadata(context.WithoutCancel(ctx))
+		// drain already replaced the canceled turn context with one bounded
+		// settlement context. Keep that bound while using the same scanner/process.
+		s.emitTrackedSessionMetadata(ctx)
 	}
 }
 
@@ -369,6 +443,7 @@ func (s *Stream) emitTrackedSessionMetadata(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			s.applyTrackedSessionMetadata(metadata)
 			return
 		case <-timer.C:
 			s.applyTrackedSessionMetadata(metadata)

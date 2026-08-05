@@ -1393,6 +1393,50 @@ func (*anchorResultRunner) Run(_ context.Context, req agentruntime.RunRequest) (
 	}, nil
 }
 
+type stopOrderPiRunner struct {
+	started chan struct{}
+
+	mu               sync.Mutex
+	runCtx           context.Context
+	abortCalls       int
+	abortSawCanceled bool
+}
+
+func (*stopOrderPiRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{capability.CapAbort: true}}
+}
+
+func (r *stopOrderPiRunner) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	r.mu.Lock()
+	r.runCtx = ctx
+	r.mu.Unlock()
+	close(r.started)
+	events := make(chan agentruntime.Event)
+	go func() {
+		<-ctx.Done()
+		close(events)
+	}()
+	return events, &agentruntime.RunResult{ProviderSessionID: req.ProviderSessionID}, nil
+}
+
+func (r *stopOrderPiRunner) Abort(context.Context, int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.abortCalls++
+	select {
+	case <-r.runCtx.Done():
+		r.abortSawCanceled = true
+	default:
+	}
+	return nil
+}
+
+func (r *stopOrderPiRunner) stopObservation() (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.abortCalls, r.abortSawCanceled
+}
+
 type compactRecordingRunner struct {
 	*recordingRunner
 }
@@ -5253,6 +5297,88 @@ func TestSend_PiUserAnchorPersistenceRetriesAndSurfacesPermanentFailure(t *testi
 	}
 }
 
+func TestSend_NonPiUserAnchorPersistenceFailureKeepsCompletedTurn(t *testing.T) {
+	for _, backendType := range []agent_backend_entity.BackendType{
+		agent_backend_entity.TypeClaudeCode,
+		agent_backend_entity.TypeCodex,
+		agent_backend_entity.TypeBuiltin,
+	} {
+		t.Run(string(backendType), func(t *testing.T) {
+			m := setupChatTest(t)
+			restore := agentruntime.SwapRuntimeForTest(backendType, &anchorResultRunner{})
+			t.Cleanup(restore)
+
+			sess := &chat_entity.Session{
+				ID: 100, AgentID: 7, ProviderSessionID: "existing-session", AgentStatus: "idle", Status: consts.ACTIVE,
+			}
+			backend := &agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(backendType), Status: consts.ACTIVE,
+			}
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Agent", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(backend, nil)
+			if backendType == agent_backend_entity.TypeBuiltin {
+				backend.LLMProviderKey = "provider-key"
+				m.provider.EXPECT().FindByKey(gomock.Any(), "provider-key").Return(&llm_provider_entity.LLMProvider{
+					ID: 11, Type: string(llm_provider_entity.TypeOpenAIChat), Model: "test-model", Status: consts.ACTIVE,
+				}, nil)
+				m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+			}
+			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+			var userMsg *chat_entity.Message
+			m.dbMock.ExpectBegin()
+			m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						msg.ID = 2000
+						userMsg = msg
+					} else {
+						msg.ID = 2001
+					}
+					return nil
+				}).Times(2)
+			m.dbMock.ExpectCommit()
+
+			userUpdateCalls := 0
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						userUpdateCalls++
+						return errors.New("best-effort anchor update failed")
+					}
+					return nil
+				}).AnyTimes()
+
+			resp, err := m.svc.Send(m.ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hello"})
+			require.NoError(t, err)
+			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+			require.NotNil(t, userMsg)
+			assert.Equal(t, "pi-user-entry-new", userMsg.ForkAnchor)
+			assert.Equal(t, 1, userUpdateCalls, "non-Pi anchor persistence remains one best-effort update")
+			var gotDone, gotError bool
+			for _, recorded := range m.events {
+				event, ok := recorded.Payload.(chat_svc.ChatStreamEvent)
+				if !ok {
+					continue
+				}
+				switch event.Kind {
+				case chat_svc.StreamDone:
+					gotDone = true
+				case chat_svc.StreamError:
+					gotError = true
+				}
+			}
+			assert.True(t, gotDone, "completed non-Pi answer must retain its prior success semantics")
+			assert.False(t, gotError, "best-effort anchor persistence must not turn a non-Pi completion into StreamError")
+		})
+	}
+}
+
 func TestPiRestart_ForkStartupFailurePreservesExistingHistory(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -6328,17 +6454,34 @@ func TestPiRestart_CancellationDuringPreparedStartRestoresTranscript(t *testing.
 func TestPiRestart_RejectsEmptyAnchorBeforeTruncationOrRunnerStart(t *testing.T) {
 	tests := []struct {
 		name    string
-		arrange func(*chatMocks)
+		anchor  string
+		arrange func(*chatMocks, string)
 		invoke  func(chat_svc.ChatSvc, context.Context) (*chat_svc.SendResponse, error)
 	}{
 		{
 			name: "Given an old Pi assistant reply whose user anchor is empty, when Regenerate runs, then it fails without truncating or starting the runner",
-			arrange: func(m *chatMocks) {
+			arrange: func(m *chatMocks, anchor string) {
 				m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
 					ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1"),
 				}, nil)
 				m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
-					{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original")},
+					{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: anchor},
+					{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1")},
+				}, nil)
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+			},
+		},
+		{
+			name:   "Given an old Pi assistant reply whose user anchor is whitespace, when Regenerate runs, then it fails without truncating or sending a no-fork prompt",
+			anchor: " \t\n ",
+			arrange: func(m *chatMocks, anchor string) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
+					ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1"),
+				}, nil)
+				m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+					{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: anchor},
 					{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1")},
 				}, nil)
 			},
@@ -6348,9 +6491,24 @@ func TestPiRestart_RejectsEmptyAnchorBeforeTruncationOrRunnerStart(t *testing.T)
 		},
 		{
 			name: "Given an old Pi user message whose anchor is empty, when Edit runs, then it fails without truncating or starting the runner",
-			arrange: func(m *chatMocks) {
+			arrange: func(m *chatMocks, anchor string) {
 				m.message.EXPECT().Find(gomock.Any(), int64(1000)).Return(&chat_entity.Message{
-					ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"),
+					ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: anchor,
+				}, nil)
+				m.dbMock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE role = \\? AND device_id = \\? ORDER BY id ASC").
+					WithArgs(sqlmock.AnyArg(), "100").
+					WillReturnRows(sqlmock.NewRows([]string{"id"}))
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Edit(ctx, &chat_svc.EditRequest{SessionID: 100, MessageID: 1000, Text: "replacement"})
+			},
+		},
+		{
+			name:   "Given an old Pi user message whose anchor is whitespace, when Edit runs, then it fails without truncating or sending a no-fork prompt",
+			anchor: " \r\n ",
+			arrange: func(m *chatMocks, anchor string) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1000)).Return(&chat_entity.Message{
+					ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: anchor,
 				}, nil)
 				m.dbMock.ExpectQuery("SELECT \\* FROM `chat_messages` WHERE role = \\? AND device_id = \\? ORDER BY id ASC").
 					WithArgs(sqlmock.AnyArg(), "100").
@@ -6373,7 +6531,7 @@ func TestPiRestart_RejectsEmptyAnchorBeforeTruncationOrRunnerStart(t *testing.T)
 			}
 
 			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
-			tc.arrange(m)
+			tc.arrange(m, tc.anchor)
 			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
 				ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
 			}, nil)
@@ -7215,6 +7373,55 @@ func TestCancelQueued_SessionNotFound(t *testing.T) {
 		_, err := m.svc.CancelQueued(ctx, &chat_svc.CancelQueuedRequest{SessionID: 999, QueuedID: ""})
 		assert.Error(t, err)
 	})
+}
+
+func TestStop_LocalPiAbortsBeforeCancelingAcceptedTurn(t *testing.T) {
+	m := setupChatTest(t)
+	runner := &stopOrderPiRunner{started: make(chan struct{})}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session", AgentStatus: "idle", Status: consts.ACTIVE,
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 2000
+			} else {
+				msg.ID = 2001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	resp, err := m.svc.Send(m.ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hello"})
+	require.NoError(t, err)
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("Pi runtime did not accept the turn")
+	}
+
+	stopped, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 100})
+	require.NoError(t, err)
+	require.NotNil(t, stopped)
+	assert.True(t, stopped.Stopped)
+	abortCalls, abortSawCanceled := runner.stopObservation()
+	assert.Equal(t, 1, abortCalls)
+	assert.False(t, abortSawCanceled, "accepted local Pi must receive abort before its turn context is canceled")
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 }
 
 func TestStop_NoActiveTurnReturnsError(t *testing.T) {
