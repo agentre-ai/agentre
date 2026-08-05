@@ -593,8 +593,6 @@ OpenClaw is the reference for a Gateway-native backend whose authentication cann
 6. **Frontend** — settings use `OpenClawBackendFields`; transcript rendering uses the dedicated OpenClaw exec approval card. Both use production shadcn/design-system primitives and bilingual i18n, not `frontend/src/mockups`.
 7. **Remote boundary** — approval event codecs are wire-compatible, but the daemon does not register the runtime because there is no daemon-local secret enrollment/reference. `RunParams` contains no OpenClaw secret; remote execution reports capability unavailable.
 
-The detailed RPC/data/test record and current limitations are maintained in [the OpenClaw implementation record](superpowers/specs/2026-07-24-openclaw-agent-backend-design.md).
-
 ---
 
 ## 3. Extra considerations for remote execution (`agentred`)
