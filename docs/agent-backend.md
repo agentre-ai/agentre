@@ -486,20 +486,25 @@ agentruntime.PlanUpdated{Plan: canonical.PlanUpdate{
 - the frontend PlanCard renders the full text; `TaskProgressBar` reads `steps[].status` for the progress bar
 - multiple PlanUpdated within the same turn go through mutate (overwriting by PlanBlock key), without repeatedly landing new blocks
 
-##### H. Subagent lifecycle — claudecode Task-tool-specific
+##### H. Subagent lifecycle — normalized runtime contract
 
-Interface shape (**one-way emit, 3 events**):
+Interface shape (**one-way emit, 3 lifecycle events plus nested tool events**):
 
 ```go
-agentruntime.SubagentStarted{ToolCallID, Info: SubagentInfo{...}}
-agentruntime.SubagentProgress{ToolCallID, Info: SubagentInfo{TotalTokens, LastToolName, ToolUses}}
-agentruntime.SubagentDone{ToolCallID, Info: SubagentInfo{Status: "completed"|"failed", DurationMs, TotalTokens}}
+agentruntime.SubagentStarted{ToolCallID, Info: SubagentInfo{Mode, Runs}}
+agentruntime.SubagentProgress{ToolCallID, Info: SubagentInfo{Mode, Runs}}
+agentruntime.SubagentDone{ToolCallID, Info: SubagentInfo{Mode, Runs}}
+agentruntime.ToolCall{ParentToolCallID, SubagentRunID, ...}
+agentruntime.ToolResult{ParentToolCallID, SubagentRunID, ...}
 ```
 
-- **ToolCallID** = the tool_use id of the outer parent `Task` / Agent tool.
-- **Info.Status**: the runtime only produces `running` / `completed` / `failed`; `canceled` is inferred by `handlers.MarkRunningSubagentsCancelled` during turn-abort cleanup (after the CLI is interrupted, Done will not arrive, and leaving it running would make the frontend AgentSpawnCard spin forever).
-- **The ParentToolCallID field of ToolCall / ToolResult**: tools called inside the subagent fill in the outer Task tool_use id, so the frontend groups the child cards under the parent SubagentInvocationCard.
-- **codex / builtin / piagent currently do not emit these** — only claudecode has a native subagent protocol. Consider onboarding this set of events when a new backend has a similar fork-execute tool.
+- **ToolCallID** is the tool-use ID of the outer parent `Task` / Agent / subagent tool. `SubagentInfo.Runs` is a full snapshot; legacy single-run producers may leave `Mode` / `Runs` empty.
+- **Pi is stateful at the drain boundary**: `runtimes/piagent/translator.go` remains a pure RPC-event mapper, while `drainStream` owns one turn-local tracker per recognized outer subagent call. The Pi-only candidate gate first requires a case-insensitive tool name containing `subagent`, then accepts official single / parallel / chain or generic flat-single inputs without broadening global canonical recognition. Parallel alone is capped at eight input runs; a valid chain is not.
+- **Run identity comes from the input slot** (`run-0`, `run-1`, ...), not mutable result text or agent name. Nested calls/results carry both `ParentToolCallID` and `SubagentRunID`; Pi generates their runtime tool-call IDs from an unambiguous `(outer, run, inner)` encoding so equal inner IDs in sibling runs cannot collide.
+- **The tracker consumes cumulative snapshots**: per-run call/result identities dedupe repeated updates, orphan results wait for their matching call, final details recover boundaries missed during updates, and sibling boundaries use valid message timestamps with input-index/message-index fallback while preserving order inside each run.
+- **Lifecycle ordering is fixed**: outer `ToolCall` precedes `SubagentStarted`; newly recovered nested events precede any full `SubagentProgress` caused by the same snapshot; final nested events and progress precede `SubagentDone`; the outer `ToolResult` closes that subagent lifecycle. On a whole-turn abort with no end frame, the drain emits a terminal snapshot that changes only non-terminal runs to `canceled`, preserves terminal siblings, then discards the tracker.
+- **Grouped status remains explicit**: parallel mixed success/failure is `partial`; a failed chain marks untouched later input slots `skipped`; incomplete terminal evidence becomes `unknown` rather than fabricated success. Official `stopReason=aborted` is a failed run, while whole-turn abort cleanup is canceled.
+- **claudecode** continues to emit its legacy single-run lifecycle and nested `ParentToolCallID`; **codex / builtin** currently do not emit this lifecycle.
 
 ##### I. AutonomousTurnSource — the forward turn (backend→host)
 

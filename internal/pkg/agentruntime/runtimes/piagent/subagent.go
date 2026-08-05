@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
@@ -60,7 +61,7 @@ func (s subagentSelector) selectCandidate(name, outerToolCallID string, input []
 		return nil, nil
 	}
 	inv, ok := s.classify(input)
-	if !ok || inv.Mode != subagentModeSingle {
+	if !ok {
 		return nil, nil
 	}
 	tracker := s.newTracker(outerToolCallID, inv)
@@ -224,6 +225,7 @@ type trackedRun struct {
 	emittedResults    map[string]bool
 	pendingResults    map[string]trackedResult
 	lastAssistantText string
+	activity          bool
 }
 
 type trackedResult struct {
@@ -232,11 +234,12 @@ type trackedResult struct {
 }
 
 type subagentTracker struct {
-	outerToolCallID string
-	invocation      subagentInvocation
-	envelope        envelopeKind
-	runs            []trackedRun
-	activity        bool
+	outerToolCallID   string
+	invocation        subagentInvocation
+	envelope          envelopeKind
+	runs              []trackedRun
+	activity          bool
+	aggregateOverride string
 }
 
 func newSubagentTracker(outerToolCallID string, inv subagentInvocation) *subagentTracker {
@@ -244,7 +247,7 @@ func newSubagentTracker(outerToolCallID string, inv subagentInvocation) *subagen
 	t.runs = make([]trackedRun, len(inv.Runs))
 	for i, run := range inv.Runs {
 		status := "running"
-		if inv.Mode != subagentModeSingle {
+		if inv.Mode == subagentModeParallel || inv.Mode == subagentModeChain && i > 0 {
 			status = "waiting"
 		}
 		t.runs[i] = trackedRun{
@@ -292,19 +295,23 @@ func (t *subagentTracker) info() agentruntime.SubagentInfo {
 		}
 	}
 	first := runs[0]
+	status := t.aggregateStatus(runs)
+	if t.aggregateOverride != "" {
+		status = t.aggregateOverride
+	}
 	return agentruntime.SubagentInfo{
 		SubagentType:    first.Agent,
 		TaskDescription: first.Task,
 		Prompt:          first.Task,
 		LastToolName:    lastToolName,
 		ToolUses:        toolUses,
-		Status:          aggregateSingleStatus(runs),
+		Status:          status,
 		Mode:            string(t.invocation.Mode),
 		Runs:            runs,
 	}
 }
 
-func aggregateSingleStatus(runs []agentruntime.SubagentRun) string {
+func (t *subagentTracker) aggregateStatus(runs []agentruntime.SubagentRun) string {
 	if len(runs) == 0 {
 		return "unknown"
 	}
@@ -312,14 +319,60 @@ func aggregateSingleStatus(runs []agentruntime.SubagentRun) string {
 		return runs[0].Status
 	}
 	for _, run := range runs {
-		if run.Status == "running" || run.Status == "waiting" {
+		if !isTerminalStatus(run.Status) {
 			return "running"
 		}
-		if run.Status == "failed" {
-			return "failed"
-		}
 	}
-	return "unknown"
+
+	has := func(status string) bool {
+		for _, run := range runs {
+			if run.Status == status {
+				return true
+			}
+		}
+		return false
+	}
+	all := func(status string) bool {
+		for _, run := range runs {
+			if run.Status != status {
+				return false
+			}
+		}
+		return true
+	}
+
+	switch t.invocation.Mode {
+	case subagentModeParallel:
+		switch {
+		case has("canceled"):
+			return "canceled"
+		case has("unknown"):
+			return "unknown"
+		case all("completed"):
+			return "completed"
+		case all("failed"):
+			return "failed"
+		case has("completed") && has("failed"):
+			return "partial"
+		default:
+			return "unknown"
+		}
+	case subagentModeChain:
+		switch {
+		case has("canceled"):
+			return "canceled"
+		case has("failed"):
+			return "failed"
+		case has("unknown"):
+			return "unknown"
+		case all("completed"):
+			return "completed"
+		default:
+			return "unknown"
+		}
+	default:
+		return runs[0].Status
+	}
 }
 
 func (t *subagentTracker) consumeUpdate(partialResult []byte) ([]agentruntime.Event, bool) {
@@ -332,6 +385,21 @@ func (t *subagentTracker) consumeUpdate(partialResult []byte) ([]agentruntime.Ev
 
 func (t *subagentTracker) consumeFinal(details []byte, outerError bool, _ string) ([]agentruntime.Event, bool) {
 	return t.consumeDetails(details, true, outerError)
+}
+
+func (t *subagentTracker) abort() bool {
+	before := t.info()
+	canceled := false
+	for index := range t.runs {
+		if !isTerminalStatus(t.runs[index].info.Status) {
+			t.runs[index].info.Status = "canceled"
+			canceled = true
+		}
+	}
+	if canceled {
+		t.aggregateOverride = "canceled"
+	}
+	return !reflect.DeepEqual(before, t.info())
 }
 
 func unwrapPartialDetails(partial []byte) ([]byte, bool) {
@@ -359,11 +427,21 @@ func (t *subagentTracker) consumeDetails(details []byte, final, outerError bool)
 	before := t.info()
 	snapshots, usable := t.decode(details)
 	events := make([]agentruntime.Event, 0)
+
+	for _, message := range orderedSnapshotMessages(snapshots, len(t.runs)) {
+		run := &t.runs[message.runIndex]
+		messageEvents, activity := t.applyMessage(run, message.raw, final)
+		if activity {
+			t.markRunActive(run)
+			t.activity = true
+		}
+		events = append(events, messageEvents...)
+	}
 	for index, snapshot := range snapshots {
 		if index >= len(t.runs) {
 			break
 		}
-		events = append(events, t.applySnapshot(index, snapshot, final)...)
+		t.applySnapshotMetadata(index, snapshot, final)
 	}
 
 	if final {
@@ -371,6 +449,77 @@ func (t *subagentTracker) consumeDetails(details []byte, final, outerError bool)
 	}
 	after := t.info()
 	return events, !reflect.DeepEqual(before, after)
+}
+
+type orderedSnapshotMessage struct {
+	runIndex     int
+	messageIndex int
+	raw          json.RawMessage
+	timestamp    float64
+	hasTimestamp bool
+}
+
+func orderedSnapshotMessages(snapshots []decodedSnapshot, runCount int) []orderedSnapshotMessage {
+	limit := min(len(snapshots), runCount)
+	queues := make([][]orderedSnapshotMessage, limit)
+	for runIndex := 0; runIndex < limit; runIndex++ {
+		queues[runIndex] = make([]orderedSnapshotMessage, len(snapshots[runIndex].messages))
+		for messageIndex, raw := range snapshots[runIndex].messages {
+			timestamp, ok := messageTimestamp(raw)
+			queues[runIndex][messageIndex] = orderedSnapshotMessage{
+				runIndex: runIndex, messageIndex: messageIndex, raw: raw,
+				timestamp: timestamp, hasTimestamp: ok,
+			}
+		}
+	}
+
+	cursors := make([]int, limit)
+	ordered := make([]orderedSnapshotMessage, 0)
+	for {
+		chosen := -1
+		for runIndex := range queues {
+			if cursors[runIndex] >= len(queues[runIndex]) {
+				continue
+			}
+			if chosen < 0 || snapshotMessageBefore(queues[runIndex][cursors[runIndex]], queues[chosen][cursors[chosen]]) {
+				chosen = runIndex
+			}
+		}
+		if chosen < 0 {
+			return ordered
+		}
+		ordered = append(ordered, queues[chosen][cursors[chosen]])
+		cursors[chosen]++
+	}
+}
+
+func snapshotMessageBefore(left, right orderedSnapshotMessage) bool {
+	if left.hasTimestamp && right.hasTimestamp && left.timestamp != right.timestamp {
+		return left.timestamp < right.timestamp
+	}
+	if left.runIndex != right.runIndex {
+		return left.runIndex < right.runIndex
+	}
+	return left.messageIndex < right.messageIndex
+}
+
+func messageTimestamp(raw json.RawMessage) (float64, bool) {
+	var message map[string]json.RawMessage
+	if json.Unmarshal(raw, &message) != nil || message == nil {
+		return 0, false
+	}
+	rawTimestamp := message["timestamp"]
+	var number json.Number
+	if json.Unmarshal(rawTimestamp, &number) == nil {
+		value, err := strconv.ParseFloat(number.String(), 64)
+		return value, err == nil
+	}
+	var text string
+	if json.Unmarshal(rawTimestamp, &text) != nil {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(text, 64)
+	return value, err == nil
 }
 
 func (t *subagentTracker) decode(details []byte) ([]decodedSnapshot, bool) {
@@ -501,28 +650,20 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (t *subagentTracker) applySnapshot(index int, snapshot decodedSnapshot, final bool) []agentruntime.Event {
+func (t *subagentTracker) applySnapshotMetadata(index int, snapshot decodedSnapshot, final bool) {
 	run := &t.runs[index]
-	if !snapshot.emptyOfficial {
+	if snapshotHasActivity(snapshot) {
+		t.markRunActive(run)
 		t.activity = true
 	}
 	if snapshot.agentSource != "" && run.info.AgentSource == "" {
 		run.info.AgentSource = snapshot.agentSource
 	}
-
-	var events []agentruntime.Event
-	for _, rawMessage := range snapshot.messages {
-		messageEvents, activity := t.applyMessage(run, rawMessage, final)
-		if activity {
-			t.activity = true
-		}
-		events = append(events, messageEvents...)
-	}
 	if snapshot.model != "" && run.info.Model == "" {
 		run.info.Model = snapshot.model
 	}
 	t.applyStopReason(run, snapshot.stopReason)
-	if snapshot.status == "failed" || snapshot.status == "canceled" {
+	if snapshot.stopReason == "" && (snapshot.status == "failed" || snapshot.status == "canceled") {
 		run.info.Status = snapshot.status
 	}
 	if snapshot.errorMessage != "" {
@@ -536,7 +677,25 @@ func (t *subagentTracker) applySnapshot(index int, snapshot decodedSnapshot, fin
 			run.info.Summary = run.lastAssistantText
 		}
 	}
-	return events
+}
+
+func snapshotHasActivity(snapshot decodedSnapshot) bool {
+	if snapshot.emptyOfficial || len(snapshot.messages) > 0 {
+		return len(snapshot.messages) > 0
+	}
+	statusActivity := snapshot.status != "" && snapshot.status != "waiting" && snapshot.status != "pending"
+	if snapshot.model != "" || snapshot.agentSource != "" || snapshot.stopReason != "" ||
+		statusActivity || snapshot.errorMessage != "" || snapshot.summary != "" {
+		return true
+	}
+	return snapshot.exitCode != nil && *snapshot.exitCode != -1
+}
+
+func (t *subagentTracker) markRunActive(run *trackedRun) {
+	run.activity = true
+	if run.info.Status == "waiting" {
+		run.info.Status = "running"
+	}
 }
 
 func (t *subagentTracker) applyMessage(run *trackedRun, raw json.RawMessage, final bool) ([]agentruntime.Event, bool) {
@@ -724,6 +883,11 @@ func (t *subagentTracker) finalize(snapshots []decodedSnapshot, usable, outerErr
 		return
 	}
 
+	if t.invocation.Mode != subagentModeSingle {
+		t.finalizeGrouped(snapshots, usable, outerError)
+		return
+	}
+
 	for index := range t.runs {
 		run := &t.runs[index]
 		if !usable {
@@ -750,6 +914,50 @@ func (t *subagentTracker) finalize(snapshots []decodedSnapshot, usable, outerErr
 		} else {
 			run.info.Status = "unknown"
 		}
+	}
+}
+
+func (t *subagentTracker) finalizeGrouped(snapshots []decodedSnapshot, usable, outerError bool) {
+	incomplete := !usable
+	for index := range t.runs {
+		run := &t.runs[index]
+		if isTerminalStatus(run.info.Status) {
+			continue
+		}
+		if usable && index < len(snapshots) {
+			if terminal := terminalStatus(t.envelope, snapshots[index]); terminal != "" {
+				run.info.Status = terminal
+				continue
+			}
+		}
+		incomplete = true
+	}
+
+	if t.invocation.Mode == subagentModeChain {
+		failedIndex := -1
+		for index := range t.runs {
+			if t.runs[index].info.Status == "failed" {
+				failedIndex = index
+				break
+			}
+		}
+		if failedIndex >= 0 {
+			for index := failedIndex + 1; index < len(t.runs); index++ {
+				run := &t.runs[index]
+				if !run.activity && !isTerminalStatus(run.info.Status) {
+					run.info.Status = "skipped"
+				}
+			}
+		}
+	}
+
+	for index := range t.runs {
+		if !isTerminalStatus(t.runs[index].info.Status) {
+			t.runs[index].info.Status = "unknown"
+		}
+	}
+	if outerError && incomplete {
+		t.aggregateOverride = "failed"
 	}
 }
 

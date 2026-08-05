@@ -25,7 +25,8 @@ type ThinkingDelta struct{ Text string }
 
 // ToolCall 携带原始工具名 + input;Canonical 在 translator 识别成功时填,nil 表示
 // 非 canonical (走 raw tool_use 路径)。同 ToolCallID 多次 emit 视为增量更新
-// (canonical 增量),accumulator 用 mutateIndex 覆盖。
+// (canonical 增量),accumulator 用 mutateIndex 覆盖。subagent 子调用同时携带外层
+// ParentToolCallID 与稳定的 SubagentRunID；两者为空表示主 agent 自己的工具。
 type ToolCall struct {
 	ID               string
 	Name             string
@@ -40,7 +41,7 @@ type ToolCall struct {
 // chat_svc 落 ChatBlock,前端按工具语义 Unmarshal。无 meta 留 nil。
 //
 // ParentToolCallID:当前 tool_result 属于 subagent 内部工具时指向外层 Agent.tool_use_id;
-// 主 agent 自己的工具留空。前端据此把子卡归集到父 SubagentInvocationCard。
+// SubagentRunID 再区分同一外层 parallel/chain 的输入槽。主 agent 自己的工具都留空。
 type ToolResult struct {
 	ToolCallID       string
 	Content          string
@@ -93,8 +94,9 @@ type ToolPermissionResolved struct {
 // PermissionModeChanged CLI 通报自身 permission_mode 已变更。
 type PermissionModeChanged struct{ Mode string }
 
-// SubagentStarted / Progress / Done claudecode subagent 生命周期。ToolCallID 指向
-// 外层 Task / Agent 工具的调用 id。Info 携带 SubagentInfo 元数据镜像。
+// SubagentStarted / Progress / Done 是 backend-neutral subagent 生命周期。ToolCallID
+// 指向外层 Task / Agent 工具调用；Info 可携带 legacy 单运行元数据，或 Pi runtime
+// 维护的 mode + runs 全量快照。
 type SubagentStarted struct {
 	ToolCallID string
 	Info       SubagentInfo

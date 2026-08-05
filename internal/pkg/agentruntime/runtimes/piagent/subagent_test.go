@@ -2,6 +2,8 @@ package piagent
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -74,16 +76,26 @@ func TestClassifySubagentInvocation_SingleAndFlatContracts(t *testing.T) {
 		assert.Empty(t, inv.Runs[0].Agent)
 	})
 
-	t.Run("official grouped modes classify without entering the single runtime slice", func(t *testing.T) {
-		parallel, ok := classifySubagentInvocation([]byte(`{"tasks":[{"agent":"a","task":"one"}]}`))
+	t.Run("official grouped modes classify and enter the stateful runtime slice", func(t *testing.T) {
+		parallelInput := []byte(`{"tasks":[{"agent":"a","task":"one"}]}`)
+		parallel, ok := classifySubagentInvocation(parallelInput)
 		require.True(t, ok)
 		assert.Equal(t, subagentModeParallel, parallel.Mode)
 		assert.Equal(t, envelopeOfficial, parallel.Envelope)
+		parallelTracker, parallelSpawn := defaultSubagentSelector.selectCandidate("subagent", "outer-parallel", parallelInput)
+		require.NotNil(t, parallelTracker)
+		require.NotNil(t, parallelSpawn)
+		assert.Equal(t, "parallel", parallelSpawn.Mode)
 
-		chain, ok := classifySubagentInvocation([]byte(`{"chain":[{"agent":"a","task":"one"},{"agent":"b","task":"two"}]}`))
+		chainInput := []byte(`{"chain":[{"agent":"a","task":"one"},{"agent":"b","task":"two"}]}`)
+		chain, ok := classifySubagentInvocation(chainInput)
 		require.True(t, ok)
 		assert.Equal(t, subagentModeChain, chain.Mode)
 		require.Len(t, chain.Runs, 2)
+		chainTracker, chainSpawn := defaultSubagentSelector.selectCandidate("subagent", "outer-chain", chainInput)
+		require.NotNil(t, chainTracker)
+		require.NotNil(t, chainSpawn)
+		assert.Equal(t, "chain", chainSpawn.Mode)
 	})
 
 	for name, input := range map[string]string{
@@ -160,6 +172,227 @@ func TestSubagentTracker_PendingEnvelopeLocksOnceAndStreamsOfficialStepsExactlyO
 	assert.Empty(t, events)
 	assert.False(t, changed)
 	assert.Equal(t, envelopeOfficial, tracker.envelope)
+}
+
+func TestSubagentTracker_ParallelIsolationOrderingAndCumulativeDedupe(t *testing.T) {
+	// Given an official parallel invocation whose sibling runs reuse an inner ID
+	// and advance in timestamp order different from input order.
+	inv, ok := classifySubagentInvocation([]byte(`{"tasks":[
+		{"agent":"first","task":"one"},
+		{"agent":"second","task":"two"},
+		{"agent":"third","task":"three"}
+	]}`))
+	require.True(t, ok)
+	tracker := newSubagentTracker("outer:parallel", inv)
+
+	initial := tracker.info()
+	assert.Equal(t, "parallel", initial.Mode)
+	assert.Equal(t, "running", initial.Status)
+	assert.Equal(t, []string{"waiting", "waiting", "waiting"}, []string{
+		initial.Runs[0].Status, initial.Runs[1].Status, initial.Runs[2].Status,
+	})
+
+	mismatched := []byte(`{"details":{"mode":"chain","results":[{"messages":[{"role":"assistant","content":[{"type":"toolCall","id":"ignored","name":"read","arguments":{}}]}]}]}}`)
+	events, changed := tracker.consumeUpdate(mismatched)
+	assert.Empty(t, events)
+	assert.False(t, changed, "official grouped mode is fixed by the input and cannot be remapped by snapshots")
+
+	update := []byte(`{"details":{"mode":"parallel","results":[
+		{"agent":"second","task":"changed","messages":[{"role":"assistant","timestamp":200,"model":"model-first","content":[{"type":"toolCall","id":"shared","name":"read","arguments":{"path":"one.go"}}],"stopReason":"toolUse"}]},
+		{"agent":"first","task":"changed","messages":[{"role":"assistant","timestamp":100,"model":"model-second","content":[{"type":"toolCall","id":"shared","name":"bash","arguments":{"command":"pwd"}}],"stopReason":"toolUse"}]},
+		{"messages":"malformed"}
+	]}}`)
+	events, changed = tracker.consumeUpdate(update)
+	require.True(t, changed)
+	require.Len(t, events, 2)
+	secondCall := events[0].(agentruntime.ToolCall)
+	firstCall := events[1].(agentruntime.ToolCall)
+	assert.Equal(t, "run-1", secondCall.SubagentRunID, "valid timestamps order newly discovered sibling boundaries")
+	assert.Equal(t, "run-0", firstCall.SubagentRunID)
+	assert.NotEqual(t, firstCall.ID, secondCall.ID, "outer+run+inner identity must isolate equal inner IDs")
+	assert.Equal(t, "outer:parallel", firstCall.ParentToolCallID)
+	assert.Equal(t, "first", tracker.info().Runs[0].Agent, "result values cannot replace input-slot identity")
+	assert.Equal(t, "one", tracker.info().Runs[0].Task)
+	assert.Equal(t, "second", tracker.info().Runs[1].Agent)
+	assert.Equal(t, "model-first", tracker.info().Runs[0].Model)
+	assert.Equal(t, "model-second", tracker.info().Runs[1].Model)
+	assert.Empty(t, tracker.info().Runs[2].Model, "one malformed run must not suppress or contaminate siblings")
+
+	// When the next cumulative snapshot repeats both calls and adds their results,
+	// then only the new result boundaries are emitted, in deterministic timestamp order.
+	cumulative := []byte(`{"details":{"mode":"parallel","results":[
+		{"messages":[
+			{"role":"assistant","timestamp":200,"model":"model-first","content":[{"type":"toolCall","id":"shared","name":"read","arguments":{"path":"one.go"}}],"stopReason":"toolUse"},
+			{"role":"toolResult","timestamp":400,"toolCallId":"shared","content":[{"type":"text","text":"one"}]}
+		]},
+		{"messages":[
+			{"role":"assistant","timestamp":100,"model":"model-second","content":[{"type":"toolCall","id":"shared","name":"bash","arguments":{"command":"pwd"}}],"stopReason":"toolUse"},
+			{"role":"toolResult","timestamp":300,"toolCallId":"shared","content":[{"type":"text","text":"two"}]}
+		]},
+		{"messages":[]}
+	]}}`)
+	events, changed = tracker.consumeUpdate(cumulative)
+	assert.False(t, changed, "child results without metadata changes do not require a progress snapshot")
+	require.Len(t, events, 2)
+	secondResult := events[0].(agentruntime.ToolResult)
+	firstResult := events[1].(agentruntime.ToolResult)
+	assert.Equal(t, secondCall.ID, secondResult.ToolCallID)
+	assert.Equal(t, firstCall.ID, firstResult.ToolCallID)
+
+	events, changed = tracker.consumeUpdate(cumulative)
+	assert.Empty(t, events)
+	assert.False(t, changed, "repeated cumulative snapshots must be idempotent")
+}
+
+func TestSubagentTracker_ParallelFallbackOrderingIsDeterministic(t *testing.T) {
+	for name, timestamps := range map[string][2]string{
+		"missing": {``, `,"timestamp":100`},
+		"equal":   {`,"timestamp":100`, `,"timestamp":100`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inv, ok := classifySubagentInvocation([]byte(`{"tasks":[{"agent":"a","task":"one"},{"agent":"b","task":"two"}]}`))
+			require.True(t, ok)
+			tracker := newSubagentTracker("outer", inv)
+			details := []byte(fmt.Sprintf(`{"details":{"mode":"parallel","results":[
+				{"messages":[{"role":"assistant"%s,"content":[{"type":"toolCall","id":"a","name":"read","arguments":{}}]}]},
+				{"messages":[{"role":"assistant"%s,"content":[{"type":"toolCall","id":"b","name":"read","arguments":{}}]}]}
+			]}}`, timestamps[0], timestamps[1]))
+			events, _ := tracker.consumeUpdate(details)
+			require.Len(t, events, 2)
+			assert.Equal(t, "run-0", events[0].(agentruntime.ToolCall).SubagentRunID)
+			assert.Equal(t, "run-1", events[1].(agentruntime.ToolCall).SubagentRunID)
+		})
+	}
+}
+
+func TestSubagentTracker_ParallelFinalizationAndAggregateStatus(t *testing.T) {
+	newTracker := func(t *testing.T) *subagentTracker {
+		t.Helper()
+		inv, ok := classifySubagentInvocation([]byte(`{"tasks":[
+			{"agent":"a","task":"one"},
+			{"agent":"b","task":"two"},
+			{"agent":"c","task":"three"}
+		]}`))
+		require.True(t, ok)
+		return newSubagentTracker("outer", inv)
+	}
+
+	t.Run("running exit zero is not terminal without stop evidence", func(t *testing.T) {
+		tracker := newTracker(t)
+		_, changed := tracker.consumeUpdate([]byte(`{"details":{"mode":"parallel","results":[
+			{"exitCode":0,"messages":[]},{"exitCode":-1,"status":"waiting","messages":[]},{"exitCode":-1,"status":"pending","messages":[]}
+		]}}`))
+		assert.True(t, changed)
+		assert.Equal(t, "running", tracker.info().Runs[0].Status)
+		assert.Equal(t, "waiting", tracker.info().Runs[1].Status)
+		assert.Equal(t, "running", tracker.info().Status)
+	})
+
+	t.Run("mixed terminal outcomes become partial", func(t *testing.T) {
+		tracker := newTracker(t)
+		_, _ = tracker.consumeFinal([]byte(`{"mode":"parallel","results":[
+			{"exitCode":0,"messages":[],"output":"first done"},
+			{"exitCode":2,"messages":[],"error":"second failed"},
+			{"exitCode":0,"messages":[]}
+		]}`), true, "outer failed")
+		info := tracker.info()
+		assert.Equal(t, []string{"completed", "failed", "completed"}, []string{
+			info.Runs[0].Status, info.Runs[1].Status, info.Runs[2].Status,
+		})
+		assert.Equal(t, "partial", info.Status, "complete grouped evidence is authoritative over outer isError")
+		assert.Equal(t, "first done", info.Runs[0].Summary)
+	})
+
+	t.Run("incomplete success is unknown and outer error only changes aggregate", func(t *testing.T) {
+		success := newTracker(t)
+		_, _ = success.consumeFinal([]byte(`{"mode":"parallel","results":[{"exitCode":0,"messages":[]}]}`), false, "outer")
+		assert.Equal(t, []string{"completed", "unknown", "unknown"}, []string{
+			success.info().Runs[0].Status, success.info().Runs[1].Status, success.info().Runs[2].Status,
+		})
+		assert.Equal(t, "unknown", success.info().Status)
+
+		failedOuter := newTracker(t)
+		_, _ = failedOuter.consumeFinal(nil, true, "outer failed")
+		assert.Equal(t, []string{"unknown", "unknown", "unknown"}, []string{
+			failedOuter.info().Runs[0].Status, failedOuter.info().Runs[1].Status, failedOuter.info().Runs[2].Status,
+		})
+		assert.Equal(t, "failed", failedOuter.info().Status)
+	})
+}
+
+func TestSubagentTracker_ChainSequencingFinalizationAndUnboundedLength(t *testing.T) {
+	items := make([]string, 9)
+	for i := range items {
+		items[i] = `{"agent":"worker","task":"step"}`
+	}
+	input := []byte(`{"chain":[` + strings.Join(items, ",") + `]}`)
+	inv, ok := classifySubagentInvocation(input)
+	require.True(t, ok, "the parallel-only eight-item cap must not reject a valid chain")
+	require.Len(t, inv.Runs, 9)
+	tracker, spawn := defaultSubagentSelector.selectCandidate("subagent", "outer-chain", input)
+	require.NotNil(t, tracker)
+	require.NotNil(t, spawn)
+	assert.Equal(t, "chain", spawn.Mode)
+	require.Len(t, spawn.Runs, 9)
+
+	initial := tracker.info()
+	assert.Equal(t, "running", initial.Runs[0].Status)
+	for index := 1; index < len(initial.Runs); index++ {
+		assert.Equal(t, "waiting", initial.Runs[index].Status)
+	}
+
+	// Given the second represented run fails, when partial final details arrive,
+	// then untouched later input slots are skipped without invented child activity.
+	events, _ := tracker.consumeFinal([]byte(`{"mode":"chain","results":[
+		{"exitCode":0,"messages":[{"role":"assistant","content":[{"type":"text","text":"first done"}],"stopReason":"stop"}]},
+		{"exitCode":1,"messages":[],"error":"second failed"}
+	]}`), true, "outer failed")
+	assert.Empty(t, events)
+	info := tracker.info()
+	assert.Equal(t, "completed", info.Runs[0].Status)
+	assert.Equal(t, "failed", info.Runs[1].Status)
+	for index := 2; index < len(info.Runs); index++ {
+		assert.Equal(t, "skipped", info.Runs[index].Status)
+		assert.Zero(t, info.Runs[index].ToolUses)
+		assert.Empty(t, info.Runs[index].Model)
+		assert.Empty(t, info.Runs[index].Summary)
+	}
+	assert.Equal(t, "failed", info.Status)
+}
+
+func TestDrainStream_AbortFinalizesNonTerminalParallelRuns(t *testing.T) {
+	stream := &scriptedStream{events: []pkgpi.Event{
+		{Kind: pkgpi.EventPreToolUse, Tool: pkgpi.ToolEvent{
+			ID: "outer", Name: "subagent",
+			Input: []byte(`{"tasks":[{"agent":"a","task":"one"},{"agent":"b","task":"two"}]}`),
+		}},
+		{Kind: pkgpi.EventToolUseUpdate, Tool: pkgpi.ToolEvent{
+			ID: "outer", Name: "subagent",
+			PartialResult: []byte(`{"details":{"mode":"parallel","results":[
+				{"messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop"}]},
+				{"messages":[{"role":"assistant","content":[{"type":"toolCall","id":"inner","name":"read","arguments":{}}],"stopReason":"toolUse"}]}
+			]}}`),
+		}},
+	}}
+	active := &activeSession{}
+	active.setAbortRequested(true)
+
+	got := drainForTestWithActive(t, stream, active)
+	require.GreaterOrEqual(t, len(got), 7)
+	started := got[1].(agentruntime.SubagentStarted)
+	assert.Equal(t, "parallel", started.Info.Mode)
+
+	var final *agentruntime.SubagentDone
+	for _, event := range got {
+		if done, ok := event.(agentruntime.SubagentDone); ok {
+			final = &done
+		}
+	}
+	require.NotNil(t, final, "stateful drain must expose a terminal snapshot before abort error")
+	assert.Equal(t, "completed", final.Info.Runs[0].Status, "already terminal siblings are preserved")
+	assert.Equal(t, "canceled", final.Info.Runs[1].Status)
+	assert.Equal(t, "canceled", final.Info.Status)
+	assert.IsType(t, agentruntime.ErrorEvent{}, got[len(got)-1])
 }
 
 func TestSubagentTracker_ResultBeforeCallAndFinalRecovery(t *testing.T) {
@@ -259,6 +492,38 @@ func TestDrainStream_SubagentOrderingAndUnsupportedFallback(t *testing.T) {
 		assert.Equal(t, "outer result", outerResult.Content)
 	})
 
+	t.Run("official parallel final recovery emits grouped children before aggregate completion", func(t *testing.T) {
+		stream := &scriptedStream{events: []pkgpi.Event{
+			{Kind: pkgpi.EventPreToolUse, Tool: pkgpi.ToolEvent{ID: "outer", Name: "subagent", Input: []byte(`{"tasks":[{"agent":"a","task":"one"},{"agent":"b","task":"two"}]}`)}},
+			{Kind: pkgpi.EventPostToolUse, Tool: pkgpi.ToolEvent{ID: "outer", Name: "subagent", Content: "parallel done", Details: []byte(`{"mode":"parallel","results":[
+				{"exitCode":0,"messages":[
+					{"role":"assistant","timestamp":200,"content":[{"type":"toolCall","id":"same","name":"read","arguments":{}}],"stopReason":"toolUse"},
+					{"role":"toolResult","timestamp":210,"toolCallId":"same","content":[{"type":"text","text":"one"}]},
+					{"role":"assistant","timestamp":220,"content":[{"type":"text","text":"first"}],"stopReason":"stop"}
+				]},
+				{"exitCode":0,"messages":[
+					{"role":"assistant","timestamp":100,"content":[{"type":"toolCall","id":"same","name":"bash","arguments":{}}],"stopReason":"toolUse"},
+					{"role":"toolResult","timestamp":110,"toolCallId":"same","content":[{"type":"text","text":"two"}]},
+					{"role":"assistant","timestamp":120,"content":[{"type":"text","text":"second"}],"stopReason":"stop"}
+				]}
+			]}`)}},
+		}}
+		got := drainForTest(t, stream)
+		require.Len(t, got, 10)
+		assert.IsType(t, agentruntime.ToolCall{}, got[0])
+		assert.IsType(t, agentruntime.SubagentStarted{}, got[1])
+		assert.Equal(t, "run-1", got[2].(agentruntime.ToolCall).SubagentRunID)
+		assert.Equal(t, "run-1", got[3].(agentruntime.ToolResult).SubagentRunID)
+		assert.Equal(t, "run-0", got[4].(agentruntime.ToolCall).SubagentRunID)
+		assert.Equal(t, "run-0", got[5].(agentruntime.ToolResult).SubagentRunID)
+		progress := got[6].(agentruntime.SubagentProgress)
+		assert.Equal(t, "completed", progress.Info.Status)
+		done := got[7].(agentruntime.SubagentDone)
+		assert.Equal(t, "completed", done.Info.Status)
+		assert.Equal(t, "parallel done", got[8].(agentruntime.ToolResult).Content)
+		assert.IsType(t, agentruntime.Done{}, got[9])
+	})
+
 	t.Run("nonmatching name stays ordinary even with valid details", func(t *testing.T) {
 		stream := &scriptedStream{events: []pkgpi.Event{
 			{Kind: pkgpi.EventPreToolUse, Tool: pkgpi.ToolEvent{ID: "outer", Name: "delegate_task", Input: []byte(`{"task":"inspect","profile":"read-only"}`)}},
@@ -278,9 +543,14 @@ func TestDrainStream_SubagentOrderingAndUnsupportedFallback(t *testing.T) {
 
 func drainForTest(t *testing.T, stream *scriptedStream) []agentruntime.Event {
 	t.Helper()
+	return drainForTestWithActive(t, stream, nil)
+}
+
+func drainForTestWithActive(t *testing.T, stream *scriptedStream, active *activeSession) []agentruntime.Event {
+	t.Helper()
 	out := make(chan agentruntime.Event, 32)
 	result := &agentruntime.RunResult{}
-	drainStream(context.Background(), agentruntime.RunRequest{}, "", stream, out, result, nil)
+	drainStream(context.Background(), agentruntime.RunRequest{}, "", stream, out, result, active)
 	close(out)
 	var got []agentruntime.Event
 	for event := range out {

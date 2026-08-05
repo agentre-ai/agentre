@@ -302,20 +302,37 @@ func TestSubagentStarted_KindRoundTrip(t *testing.T) {
 
 func TestSubagentRuntimeContractsUseLowerCamelWireFields(t *testing.T) {
 	ev := SubagentProgress{ToolCallID: "outer", Info: SubagentInfo{
-		Mode: "single",
-		Runs: []SubagentRun{{ID: "run-0", Task: "inspect", Status: "running"}},
+		Mode: "parallel",
+		Runs: []SubagentRun{
+			{ID: "run-0", Index: 0, Agent: "a", Task: "inspect", Model: "model-a", Status: "completed"},
+			{ID: "run-1", Index: 1, Agent: "b", Task: "test", Status: "failed", ErrorMessage: "boom"},
+		},
 	}}
 	b, err := json.Marshal(ev)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{
 		"kind":"subagent_progress",
 		"toolCallId":"outer",
-		"info":{"mode":"single","runs":[{"id":"run-0","index":0,"task":"inspect","status":"running"}]}
+		"info":{"mode":"parallel","runs":[
+			{"id":"run-0","index":0,"agent":"a","task":"inspect","model":"model-a","status":"completed"},
+			{"id":"run-1","index":1,"agent":"b","task":"test","status":"failed","errorMessage":"boom"}
+		]}
 	}`, string(b))
-
-	callBytes, err := json.Marshal(ToolCall{ID: "inner", ParentToolCallID: "outer", SubagentRunID: "run-0"})
+	decoded, err := UnmarshalEvent(b)
 	require.NoError(t, err)
-	assert.Contains(t, string(callBytes), `"subagentRunId":"run-0"`)
+	assert.Equal(t, ev, decoded)
+
+	for _, event := range []Event{
+		ToolCall{ID: "child-call", ParentToolCallID: "outer", SubagentRunID: "run-0"},
+		ToolResult{ToolCallID: "child-call", ParentToolCallID: "outer", SubagentRunID: "run-0", Content: "ok"},
+	} {
+		wire, marshalErr := json.Marshal(event)
+		require.NoError(t, marshalErr)
+		assert.Contains(t, string(wire), `"subagentRunId":"run-0"`)
+		roundTrip, unmarshalErr := UnmarshalEvent(wire)
+		require.NoError(t, unmarshalErr)
+		assert.Equal(t, event, roundTrip)
+	}
 }
 
 // TestSubagentModel_KindRoundTrip 独立事件类型透传（不复用 SubagentProgress，见

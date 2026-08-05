@@ -22,9 +22,9 @@ const (
 	EventToolUseEnd    EventKind = "tool_use_end"
 	EventToolResult    EventKind = "tool_result"
 	EventSteerConsumed EventKind = "steer_consumed"
-	// subagent 生命周期（仅 claudecode backend 当前产生；codex 不发）。
-	// chat_svc 把元数据 merge 到对应的外层 Agent ChatBlock 的 Subagent 字段上，
-	// 并 emit StreamSubagent* 给前端做卡片态切换。
+	// subagent 生命周期（claudecode 与 Pi runtime 产生；codex 不发）。
+	// Pi 的 stateful drain 在这里承载 parallel/chain 的 mode + runs 全量快照；
+	// claudecode 的 legacy 单运行生产者可继续不填 Runs。
 	EventSubagentStarted  EventKind = "subagent_started"
 	EventSubagentProgress EventKind = "subagent_progress"
 	EventSubagentDone     EventKind = "subagent_done"
@@ -80,7 +80,7 @@ const (
 // ToolUseEvent EventToolUseStart / End 携带。Input 是原始 JSON；chat_svc 自己 unmarshal 到 map。
 //
 // ParentToolCallID：当前 tool_use 是 subagent 内部调用时指向外层 Agent.tool_use_id；
-// 主 agent 自己的工具留空。前端据此把子卡归集到父 SubagentInvocationCard。
+// SubagentRunID：同一外层 parallel/chain 中稳定的输入槽 ID。主 agent 自己的工具留空。
 // 注:JSON wire 字段仍叫 parentToolUseId（来自 Anthropic CLI 协议），仅 Go field 重命名。
 //
 // Subagent：仅外层 Agent / Task 父调用上填，透传 claudecode.SubagentMeta 元数据。
@@ -107,10 +107,9 @@ type ToolResultEvent struct {
 	ResultMeta       []byte
 }
 
-// SubagentInfo 是 claudecode.SubagentMeta 在 runtime 层的镜像，由
-// EventSubagent* 事件以及外层 Agent 工具的 ToolUseEvent 携带。
-//
-// 字段含义见 claudecode.SubagentMeta。
+// SubagentInfo 是 runtime 层的 backend-neutral subagent 快照，由 EventSubagent*
+// 事件以及外层 Agent 工具的 ToolUseEvent 携带。legacy 字段镜像
+// claudecode.SubagentMeta；Mode/Runs 承载 Pi 的 normalized 单/并行/链式运行模型。
 type SubagentInfo struct {
 	TaskID          string        `json:"taskId,omitempty"`
 	SubagentType    string        `json:"subagentType,omitempty"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -25,10 +26,11 @@ func init() {
 }
 
 type activeSession struct {
-	mu          sync.Mutex
-	stream      steerStream
-	interrupter interruptable
-	pending     []agentruntime.ConsumedSteer
+	mu             sync.Mutex
+	stream         steerStream
+	interrupter    interruptable
+	pending        []agentruntime.ConsumedSteer
+	abortRequested bool
 }
 
 type Runtime struct {
@@ -126,7 +128,12 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 	if a == nil || a.interrupter == nil {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return a.interrupter.Interrupt(ctx)
+	a.setAbortRequested(true)
+	if err := a.interrupter.Interrupt(ctx); err != nil {
+		a.setAbortRequested(false)
+		return err
+	}
+	return nil
 }
 
 func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID string, text string) error {
@@ -160,6 +167,18 @@ func (r *Runtime) unregister(sessionID int64) {
 	r.mu.Lock()
 	delete(r.active, sessionID)
 	r.mu.Unlock()
+}
+
+func (a *activeSession) setAbortRequested(requested bool) {
+	a.mu.Lock()
+	a.abortRequested = requested
+	a.mu.Unlock()
+}
+
+func (a *activeSession) wasAbortRequested() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.abortRequested
 }
 
 func (a *activeSession) addPending(id, text string) {
@@ -249,12 +268,18 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 	if err := s.Err(); err != nil && stopErr == nil {
 		stopErr = err
 	}
+	if active != nil && active.wasAbortRequested() {
+		stopErr = agentruntime.ErrAborted
+	}
 	if usage != nil {
 		result.Usage = usage
 	}
 	if stopErr != nil {
 		stopErr = mapSessionError(stopErr)
 		result.StopErr = stopErr
+		if errors.Is(stopErr, agentruntime.ErrAborted) {
+			finalizeAbortedSubagents(out, trackers)
+		}
 		logPiFailureDiagnostics(ctx, req, cwd, s)
 		logger.Ctx(ctx).Warn("piagent runtime: turn failed", piTurnLogFields(req, cwd, result, stopErr)...)
 		out <- agentruntime.ErrorEvent{Err: stopErr}
@@ -262,6 +287,22 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 	}
 	logger.Ctx(ctx).Info("piagent runtime: turn done", piTurnLogFields(req, cwd, result, nil)...)
 	out <- agentruntime.Done{}
+}
+
+func finalizeAbortedSubagents(out chan<- agentruntime.Event, trackers map[string]*subagentTracker) {
+	toolCallIDs := make([]string, 0, len(trackers))
+	for toolCallID := range trackers {
+		toolCallIDs = append(toolCallIDs, toolCallID)
+	}
+	sort.Strings(toolCallIDs)
+	for _, toolCallID := range toolCallIDs {
+		tracker := trackers[toolCallID]
+		if tracker.abort() {
+			out <- agentruntime.SubagentProgress{ToolCallID: toolCallID, Info: tracker.info()}
+		}
+		out <- agentruntime.SubagentDone{ToolCallID: toolCallID, Info: tracker.info()}
+		delete(trackers, toolCallID)
+	}
 }
 
 func handleSubagentToolEvent(raw pkgpi.Event, out chan<- agentruntime.Event, trackers map[string]*subagentTracker) bool {

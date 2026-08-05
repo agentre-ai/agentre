@@ -1,7 +1,8 @@
 package canonical
 
 // AgentSpawn 子代理派遣;前端 AgentSpawnCard 渲染。
-// 来源:claudecode Task 工具 + subagent frames / codex collabAgentToolCall。
+// 来源:claudecode Task/Agent、codex collabAgentToolCall，以及 Pi runtime 在
+// 名称/input 契约确认后的 official single/parallel/chain 或 flat-single 调用。
 type AgentSpawn struct {
 	TaskID          string          `json:"taskId"`
 	SubagentType    string          `json:"subagentType,omitempty"`
@@ -18,7 +19,8 @@ type AgentSpawn struct {
 	Status       string `json:"status,omitempty"` // waiting | running | completed | failed | canceled | skipped | unknown
 }
 
-// AgentSpawnRun carries normalized static invocation data. Dynamic status,
+// AgentSpawnRun carries one input-slot's normalized static invocation data.
+// Index remains authoritative for parallel/chain identity; dynamic status,
 // observed model and child-tool counters travel in agentruntime.SubagentInfo.
 type AgentSpawnRun struct {
 	ID             string `json:"id"`
