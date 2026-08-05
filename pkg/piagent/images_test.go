@@ -84,8 +84,8 @@ func TestStreamPromptCarriesImagesWithoutText(t *testing.T) {
 		} `json:"images"`
 	}
 	frames := strings.Split(strings.TrimSpace(proc.stdin.String()), "\n")
-	require.GreaterOrEqual(t, len(frames), 2)
-	require.NoError(t, json.Unmarshal([]byte(frames[1]), &frame))
+	require.GreaterOrEqual(t, len(frames), 3)
+	require.NoError(t, json.Unmarshal([]byte(frames[2]), &frame))
 
 	assert.Equal(t, "prompt", frame.Type)
 	assert.Empty(t, frame.Message)
@@ -110,6 +110,6 @@ func TestStreamPromptWithoutImagesOmitsField(t *testing.T) {
 	}
 
 	frames := strings.Split(strings.TrimSpace(proc.stdin.String()), "\n")
-	require.GreaterOrEqual(t, len(frames), 2)
-	assert.NotContains(t, frames[1], "images")
+	require.GreaterOrEqual(t, len(frames), 3)
+	assert.NotContains(t, frames[2], "images")
 }

@@ -31,12 +31,12 @@ func TestStreamWaitsForSettledAfterCompaction(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	reader.Push(
+		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":1111,"contextWindow":111111,"percent":0.11}}}`,
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"before compact"}],"stopReason":"stop"}],"willRetry":false}`,
 		`{"type":"compaction_start","reason":"threshold"}`,
 		`{"type":"compaction_end","reason":"threshold","result":{"summary":"condensed"}}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"after compact"}}`,
-		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":1111,"contextWindow":111111,"percent":0.11}}}`,
 		preSettlementBarrierFrame(),
 	)
 	preSettled := assertPreSettlementBarrier(t, s, proc, []EventKind{
@@ -76,13 +76,13 @@ func TestStreamConsumesContinuationAfterSettlingBoundary(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	reader.Push(
+		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":2222,"contextWindow":222222,"percent":0.21}}}`,
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"first step"}],"stopReason":"stop"}],"willRetry":false}`,
 		`{"type":"tool_execution_start","toolCallId":"call_2","toolName":"bash","args":{"command":"echo continued"}}`,
 		`{"type":"tool_execution_end","toolCallId":"call_2","toolName":"bash","result":{"content":[{"type":"text","text":"continued"}]},"isError":false}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"final continuation"}}`,
 		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"final continuation"}],"stopReason":"stop"}],"willRetry":false}`,
-		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":2222,"contextWindow":222222,"percent":0.21}}}`,
 		preSettlementBarrierFrame(),
 	)
 	preSettled := assertPreSettlementBarrier(t, s, proc, []EventKind{
@@ -128,13 +128,13 @@ func TestStreamSuppressesRetriedAgentEndErrorUntilSettled(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	reader.Push(
+		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":2222,"contextWindow":333333,"percent":0.21}}}`,
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"error","reason":"provider overloaded"}}`,
 		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"temporary failure"}],"stopReason":"error","errorMessage":"provider overloaded"}],"willRetry":true}`,
 		`{"type":"auto_retry_start","errorMessage":"provider overloaded"}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"retry succeeded"}}`,
 		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"retry succeeded"}],"stopReason":"stop"}],"willRetry":false}`,
-		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":2222,"contextWindow":333333,"percent":0.21}}}`,
 		preSettlementBarrierFrame(),
 	)
 	preSettled := assertPreSettlementBarrier(t, s, proc, []EventKind{
@@ -172,10 +172,10 @@ func TestStreamReportsSettledFinalAgentEndError(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 
 	reader.Push(
+		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":3333,"contextWindow":444444,"percent":0.32}}}`,
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"intermediate"}],"stopReason":"stop"}],"willRetry":false}`,
 		finalFrame,
-		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":3333,"contextWindow":444444,"percent":0.32}}}`,
 		preSettlementBarrierFrame(),
 	)
 	preSettled := assertPreSettlementBarrier(t, s, proc, []EventKind{})
@@ -259,10 +259,11 @@ func TestStreamReportsSettledAbortedAgentEnd(t *testing.T) {
 			assert.JSONEq(t, finalFrame, diagnostics.FinalErrorFrame)
 
 			frames := stdinFrames(t, proc.stdin.String())
-			require.Len(t, frames, 3)
+			require.Len(t, frames, 4)
 			assert.Equal(t, "get_state", frames[0]["type"])
-			assert.Equal(t, "prompt", frames[1]["type"])
-			assert.Equal(t, "abort", frames[2]["type"])
+			assert.Equal(t, "get_session_stats", frames[1]["type"])
+			assert.Equal(t, "prompt", frames[2]["type"])
+			assert.Equal(t, "abort", frames[3]["type"])
 		})
 	}
 }
@@ -370,11 +371,18 @@ func assertPreSettlementBarrier(t *testing.T, s *Stream, proc *captureProc, want
 	assert.Equal(t, preSettlementBarrier, events[len(events)-1].Text)
 	assert.Equal(t, append(append([]EventKind{}, wantKinds...), EventThinkingDelta), eventKinds(events),
 		"pre-settlement frames must be processed in order")
-	for _, frame := range stdinFrames(t, proc.stdin.String()) {
+	frames := stdinFrames(t, proc.stdin.String())
+	require.GreaterOrEqual(t, len(frames), 3)
+	assert.Equal(t, "get_state", frames[0]["type"])
+	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	assert.Equal(t, "prompt", frames[2]["type"])
+	statsRequests := 0
+	for _, frame := range frames {
 		if frame["type"] == "get_session_stats" {
-			t.Fatalf("agent_settled gate: session stats requested before pre-settlement barrier")
+			statsRequests++
 		}
 	}
+	assert.Equal(t, 1, statsRequests, "final session stats must wait for agent_settled")
 	return events
 }
 
@@ -428,10 +436,11 @@ func collectUntilTerminal(t *testing.T, s *Stream) []Event {
 func assertStatsRequestedAfterSettlement(t *testing.T, proc *captureProc) {
 	t.Helper()
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 3)
+	require.Len(t, frames, 4)
 	assert.Equal(t, "get_state", frames[0]["type"])
-	assert.Equal(t, "prompt", frames[1]["type"])
-	assert.Equal(t, "get_session_stats", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	assert.Equal(t, "prompt", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[3]["type"])
 }
 
 func contextWindows(events []Event) []int {

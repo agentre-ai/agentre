@@ -14,6 +14,8 @@ import (
 	"github.com/cago-frame/agents/provider"
 )
 
+const maxRPCFrameBytes = 16 << 20
+
 type Client struct {
 	binary       string
 	cwd          string
@@ -70,6 +72,15 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	}
 	stream := newStream(proc, c.killGrace)
 	stream.setSessionID(sessionID)
+	// Ask Pi for its authoritative model window before the first prompt. The
+	// response is optional and intentionally not awaited: older/degraded RPC
+	// implementations must not delay or block the actual turn.
+	if err := stream.send(ctx, map[string]any{
+		"id": initialSessionStatsRequestID, "type": "get_session_stats",
+	}); err != nil {
+		_ = stream.Close(context.Background())
+		return nil, err
+	}
 	frame := map[string]any{"type": "prompt", "message": prompt}
 	if imgs := imagesToWire(spec.images); len(imgs) > 0 {
 		frame["images"] = imgs
@@ -195,7 +206,7 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 		stderrDone: make(chan struct{}),
 		done:       make(chan struct{}),
 	}
-	p.lines.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	p.lines.Buffer(make([]byte, 0, 64*1024), maxRPCFrameBytes)
 	go func() {
 		defer close(p.stderrDone)
 		_, _ = io.Copy(p.stderr, h.Stderr())

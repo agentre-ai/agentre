@@ -14,12 +14,13 @@ type Stream struct {
 	killGrace time.Duration
 	events    chan Event
 
-	mu          sync.RWMutex
-	sessionID   string
-	model       string
-	err         error
-	diagnostics StreamDiagnostics
-	cur         Event
+	mu                   sync.RWMutex
+	sessionID            string
+	model                string
+	pendingContextWindow int
+	err                  error
+	diagnostics          StreamDiagnostics
+	cur                  Event
 
 	closeOnce sync.Once
 
@@ -141,6 +142,22 @@ func (s *Stream) drain(ctx context.Context) {
 			if err := json.Unmarshal([]byte(line), &resp); err != nil {
 				continue
 			}
+			if resp.Command == "get_session_stats" {
+				if resp.ID != "" && resp.ID != initialSessionStatsRequestID {
+					continue
+				}
+				// Initial stats are optional capability data. Hold a valid
+				// authoritative window until the first usage boundary, but never fail
+				// the prompt when an older or degraded Pi RPC rejects the request.
+				if resp.Success {
+					if cw := contextWindowFromSessionStats(resp.Data); cw > 0 {
+						s.mu.Lock()
+						s.pendingContextWindow = cw
+						s.mu.Unlock()
+					}
+				}
+				continue
+			}
 			if !resp.Success {
 				err := failureResponseError(resp)
 				s.setErr(err)
@@ -199,7 +216,11 @@ func (s *Stream) settle(ctx context.Context) {
 	s.finish(ctx)
 }
 
-const sessionStatsTimeout = 2 * time.Second
+const (
+	initialSessionStatsRequestID = "initial-session-stats"
+	finalSessionStatsRequestID   = "final-session-stats"
+	sessionStatsTimeout          = 2 * time.Second
+)
 
 func (s *Stream) emitSessionStats(ctx context.Context) {
 	if s == nil || s.proc == nil {
@@ -210,7 +231,9 @@ func (s *Stream) emitSessionStats(ctx context.Context) {
 		return
 	default:
 	}
-	if err := s.send(ctx, map[string]any{"type": "get_session_stats"}); err != nil {
+	if err := s.send(ctx, map[string]any{
+		"id": finalSessionStatsRequestID, "type": "get_session_stats",
+	}); err != nil {
 		return
 	}
 
@@ -255,6 +278,13 @@ func (s *Stream) readSessionStatsContextWindow() int {
 			continue
 		}
 		if resp.Type != "response" || resp.Command != "get_session_stats" {
+			continue
+		}
+		// A delayed pre-prompt response must not be mistaken for the
+		// authoritative round-end refresh. Empty IDs remain accepted for RPC
+		// implementations that do not echo request correlation IDs.
+		if resp.ID == initialSessionStatsRequestID ||
+			(resp.ID != "" && resp.ID != finalSessionStatsRequestID) {
 			continue
 		}
 		if !resp.Success {
@@ -336,8 +366,19 @@ func (s *Stream) recordAssistantMessage(msg *assistantMessage) {
 		s.model = strings.TrimSpace(msg.Model)
 	}
 	u := usageFromMessage(msg)
+	contextWindow := 0
+	if u.PromptTokens > 0 || u.CompletionTokens > 0 {
+		contextWindow = s.pendingContextWindow
+		s.pendingContextWindow = 0
+	}
 	s.mu.Unlock()
 	if u.PromptTokens > 0 || u.CompletionTokens > 0 {
+		if contextWindow > 0 {
+			// Couple the denominator with the first usage boundary instead of
+			// emitting during the startup handshake, which can race ahead of the
+			// frontend's per-turn stream subscription.
+			s.emit(Event{Kind: EventContextWindow, ContextWindow: contextWindow})
+		}
 		s.emit(Event{Kind: EventUsage, Usage: u, Model: msg.Model})
 	}
 }

@@ -5,10 +5,150 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Given a fresh Pi session whose authoritative context window is available before
+// the first prompt, when the first assistant usage arrives, then Agentre has
+// already surfaced the denominator needed by the live context meter.
+func TestStreamEmitsInitialContextWindowBeforeFirstTurnUsage(t *testing.T) {
+	reader := newStreamingRPCReader()
+	client, proc := newStreamingCaptureClient(reader)
+	t.Cleanup(reader.Close)
+
+	s, err := client.Stream(context.Background(), "inspect the project")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	reader.Push(
+		`{"type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":0,"contextWindow":258000,"percent":0}}}`,
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"working"}}`,
+	)
+	first := nextContextWindowTestEvent(t, s)
+	assert.Equal(t, EventTextDelta, first.Kind,
+		"initial stats must be held until usage so it cannot race ahead of the frontend stream subscription")
+
+	reader.Push(
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"working"}],"model":"gpt-5.6-sol","usage":{"input":1200,"output":20,"cacheRead":2400,"cacheWrite":0},"stopReason":"toolUse"}}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+		`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+	)
+	remaining := collectUntilTerminal(t, s)
+	kinds := eventKinds(remaining)
+	require.GreaterOrEqual(t, len(kinds), 2)
+	assert.Equal(t, []EventKind{EventContextWindow, EventUsage}, kinds[:2])
+
+	frames := stdinFrames(t, proc.stdin.String())
+	require.Len(t, frames, 4)
+	assert.Equal(t, "get_state", frames[0]["type"])
+	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	assert.Equal(t, "prompt", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[3]["type"])
+}
+
+func nextContextWindowTestEvent(t *testing.T, s *Stream) Event {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case ev, ok := <-s.events:
+		if !ok {
+			t.Fatal("stream closed before the first event")
+		}
+		return ev
+	case <-timer.C:
+		t.Fatal("timed out waiting for the first event")
+	}
+	return Event{}
+}
+
+// Given the initial stats response is delayed until after settlement, when Pi
+// returns the final stats response, then the stale pre-prompt value is ignored.
+func TestStreamFinalStatsIgnoresDelayedInitialResponse(t *testing.T) {
+	reader := newStreamingRPCReader()
+	client, proc := newStreamingCaptureClient(reader)
+	t.Cleanup(reader.Close)
+
+	s, err := client.Stream(context.Background(), "finish with authoritative stats")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	reader.Push(
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+	)
+	frames := waitForContextWindowTestFrames(t, proc, 4)
+	assert.Equal(t, "initial-session-stats", frames[1]["id"])
+	assert.Equal(t, "final-session-stats", frames[3]["id"])
+
+	reader.Push(
+		`{"id":"initial-session-stats","type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":10,"contextWindow":111111,"percent":0.01}}}`,
+		`{"id":"final-session-stats","type":"response","command":"get_session_stats","success":true,"data":{"contextUsage":{"tokens":20,"contextWindow":222222,"percent":0.02}}}`,
+	)
+	events := collectUntilTerminal(t, s)
+	assert.Equal(t, []int{222222}, contextWindows(events))
+}
+
+func waitForContextWindowTestFrames(t *testing.T, proc *captureProc, count int) []map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		frames := stdinFrames(t, proc.stdin.String())
+		if len(frames) >= count {
+			return frames
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d RPC frames", count)
+	return nil
+}
+
+// Given an older or degraded Pi RPC that rejects the optional initial stats
+// request, when a prompt starts, then the turn continues instead of failing.
+func TestStreamContinuesWhenInitialSessionStatsUnavailable(t *testing.T) {
+	script := strings.Join([]string{
+		`{"type":"response","command":"get_session_stats","success":false,"error":"unsupported command"}`,
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"still running"}}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+		`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+		"",
+	}, "\n")
+	client, proc := newCaptureClient(script)
+
+	s, err := client.Stream(context.Background(), "continue without stats")
+	require.NoError(t, err)
+
+	var text string
+	var done bool
+	for s.Next() {
+		ev := s.Event()
+		switch ev.Kind {
+		case EventTextDelta:
+			text += ev.Text
+		case EventDone:
+			done = true
+		}
+	}
+
+	assert.Equal(t, "still running", text)
+	assert.True(t, done)
+	assert.NoError(t, s.Err())
+
+	frames := stdinFrames(t, proc.stdin.String())
+	require.Len(t, frames, 4)
+	assert.Equal(t, "get_state", frames[0]["type"])
+	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	assert.Equal(t, "prompt", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[3]["type"])
+}
 
 func TestStreamEmitsContextWindowFromSessionStats(t *testing.T) {
 	script := strings.Join([]string{
@@ -38,10 +178,11 @@ func TestStreamEmitsContextWindowFromSessionStats(t *testing.T) {
 	assert.Equal(t, []int{1_050_000}, windows)
 
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 3)
+	require.Len(t, frames, 4)
 	assert.Equal(t, "get_state", frames[0]["type"])
-	assert.Equal(t, "prompt", frames[1]["type"])
-	assert.Equal(t, "get_session_stats", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	assert.Equal(t, "prompt", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[3]["type"])
 }
 
 func TestCompactStreamEmitsContextWindowFromSessionStats(t *testing.T) {
