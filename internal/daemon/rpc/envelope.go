@@ -1,7 +1,6 @@
 // Package rpc owns the JSON-RPC 2.0 transport — envelope marshaling,
 // auth gate, method dispatch, and the WS/Unix-socket transports.
 // Business handlers live in daemon/handlers and consume *Conn.
-// Spec reference: docs/superpowers/specs/2026-05-21-agentred-mvp-design.md §3.
 //
 // Error / Frame.Error 的数据类型已下沉到 internal/pkg/jsonrpc,本包通过 type alias
 // 暴露,让上层(agentruntime/runtimes/remote/wire、remotefs/wire)只依赖纯协议
