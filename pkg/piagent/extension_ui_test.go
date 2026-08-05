@@ -41,8 +41,8 @@ func TestStreamCancelsBlockingExtensionUIDialogsExactlyOnce(t *testing.T) {
 		}
 		id, _ := frame["id"].(string)
 		responses[id]++
-		assert.Equal(t, true, frame["cancelled"])
-		assert.Len(t, frame, 3, "dialog response must contain only type, id, and cancelled")
+		assert.Equal(t, true, frame["cancelled"]) //nolint:misspell // Pin the required Pi RPC wire key.
+		assert.Len(t, frame, 3, "dialog response must contain only type, id, and the cancellation flag")
 	}
 	assert.Equal(t, map[string]int{
 		"confirm-1": 1,

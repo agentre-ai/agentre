@@ -381,7 +381,7 @@ func (s *Stream) handleRPCEvent(ctx context.Context, ev rpcEvent) error {
 	case "extension_ui_request":
 		if isBlockingExtensionUIMethod(ev.Method) {
 			if err := s.send(ctx, map[string]any{
-				"type": "extension_ui_response", "id": ev.ID, "cancelled": true,
+				"type": "extension_ui_response", "id": ev.ID, "cancelled": true, //nolint:misspell // Pi RPC wire contract requires this JSON key.
 			}); err != nil {
 				return err
 			}
