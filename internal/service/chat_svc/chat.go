@@ -2528,6 +2528,9 @@ func (s *chatSvc) startTurn(
 			runningSession := *sess
 			runningSession.AgentStatus = "running"
 			runningSession.LastMessageAt = time.Now().UnixMilli()
+			if prepared.result != nil && strings.TrimSpace(prepared.result.ProviderSessionID) != "" {
+				runningSession.SetProviderSession(prepared.result.ProviderSessionID)
+			}
 			if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 				txCtx := db.WithContextDB(ctx, tx)
 				if err := replacement.activate(txCtx, &activeUser, &activeAssistant); err != nil {

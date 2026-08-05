@@ -130,62 +130,43 @@ func (s *Stream) Close(ctx context.Context) error {
 	return s.Err()
 }
 
-func (s *Stream) drain(ctx context.Context) {
-	defer close(s.events)
-	promptAccepted := false
-	for s.proc.lines.Scan() {
-		emitRawFrame(s.proc, s.proc.lines.Bytes())
+func (s *Stream) awaitPromptAcknowledgement(ctx context.Context) ([][]byte, error) {
+	pending := make([][]byte, 0)
+	for scanRPCLine(ctx, s.proc.lines) {
+		line := append([]byte(nil), s.proc.lines.Bytes()...)
+		emitRawFrame(s.proc, line)
 		select {
 		case <-ctx.Done():
-			s.setErr(ctx.Err())
-			s.emit(Event{Kind: EventError, Err: ctx.Err()})
-			return
+			return nil, ctx.Err()
 		default:
 		}
-		line := strings.TrimSpace(s.proc.lines.Text())
-		if line == "" {
+		var response rpcResponse
+		if err := json.Unmarshal(line, &response); err != nil || !isPromptResponse(response) {
+			pending = append(pending, line)
 			continue
 		}
-		var probe struct {
-			Type string `json:"type"`
+		if err := promptResponseError(response); err != nil {
+			return nil, err
 		}
-		if err := json.Unmarshal([]byte(line), &probe); err != nil {
-			continue
+		return pending, nil
+	}
+	return nil, awaitProcessExitOrScanError(ctx, s.proc)
+}
+
+func (s *Stream) drain(ctx context.Context, pendingFrames ...[][]byte) {
+	defer close(s.events)
+	var pending [][]byte
+	if len(pendingFrames) > 0 {
+		pending = pendingFrames[0]
+	}
+	for _, line := range pending {
+		if !s.drainLine(ctx, line, false) {
+			return
 		}
-		if probe.Type == "response" {
-			var resp rpcResponse
-			if err := json.Unmarshal([]byte(line), &resp); err != nil {
-				continue
-			}
-			if !resp.Success {
-				err := failureResponseError(resp)
-				s.setErr(err)
-				s.emit(Event{Kind: EventError, Err: err})
-				return
-			}
-			if isAcceptedPromptResponse(resp) {
-				promptAccepted = true
-			}
-			// compact turn 不发 agent_end —— compact response 即终止信号。
-			if resp.Command == "compact" {
-				s.finish(ctx)
-				return
-			}
-			continue
-		}
-		if !promptAccepted && probe.Type != "extension_ui_request" {
-			// Pi can emit startup UI notifications before prompt response. Other events
-			// before prompt acceptance are still safe to process, so this is only a marker.
-			promptAccepted = true
-		}
-		var ev rpcEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue
-		}
-		s.handleRPCEvent(ev)
-		s.observeAgentEnd(ev, line)
-		if isTerminalEvent(ev) {
-			s.settle(ctx)
+	}
+	for s.proc.lines.Scan() {
+		line := append([]byte(nil), s.proc.lines.Bytes()...)
+		if !s.drainLine(ctx, line, true) {
 			return
 		}
 	}
@@ -193,6 +174,63 @@ func (s *Stream) drain(ctx context.Context) {
 		s.setErr(err)
 		s.emit(Event{Kind: EventError, Err: err})
 	}
+}
+
+func (s *Stream) drainLine(ctx context.Context, rawLine []byte, emitDiagnostic bool) bool {
+	if emitDiagnostic {
+		emitRawFrame(s.proc, rawLine)
+	}
+	select {
+	case <-ctx.Done():
+		s.setErr(ctx.Err())
+		s.emit(Event{Kind: EventError, Err: ctx.Err()})
+		return false
+	default:
+	}
+	line := strings.TrimSpace(string(rawLine))
+	if line == "" {
+		return true
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(rawLine, &probe); err != nil {
+		return true
+	}
+	if probe.Type == "response" {
+		var resp rpcResponse
+		if err := json.Unmarshal(rawLine, &resp); err != nil {
+			return true
+		}
+		var responseErr error
+		if isPromptResponse(resp) {
+			responseErr = promptResponseError(resp)
+		} else if !resp.Success {
+			responseErr = failureResponseError(resp)
+		}
+		if responseErr != nil {
+			s.setErr(responseErr)
+			s.emit(Event{Kind: EventError, Err: responseErr})
+			return false
+		}
+		// compact turn 不发 agent_end —— compact response 即终止信号。
+		if resp.Command == "compact" {
+			s.finish(ctx)
+			return false
+		}
+		return true
+	}
+	var ev rpcEvent
+	if err := json.Unmarshal(rawLine, &ev); err != nil {
+		return true
+	}
+	s.handleRPCEvent(ev)
+	s.observeAgentEnd(ev, line)
+	if isTerminalEvent(ev) {
+		s.settle(ctx)
+		return false
+	}
+	return true
 }
 
 func (s *Stream) finish(ctx context.Context) {

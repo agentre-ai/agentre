@@ -62,8 +62,9 @@ func New(opts ...Option) *Client {
 }
 
 type PreparedStream struct {
-	stream *Stream
-	frame  map[string]any
+	stream         *Stream
+	frame          map[string]any
+	startupTimeout time.Duration
 
 	mu      sync.Mutex
 	started bool
@@ -74,7 +75,9 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	if err != nil {
 		return nil, err
 	}
-	return prepared.Start(ctx)
+	// Ordinary turns retain the streaming API's asynchronous startup contract;
+	// callers that stage durable state use PreparedStream.Start as the ack gate.
+	return prepared.start(ctx, false)
 }
 
 // PrepareStream starts/restores the Pi RPC process, completes any requested
@@ -130,10 +133,14 @@ func (c *Client) PrepareStream(ctx context.Context, prompt string, opts ...RunOp
 	if imgs := imagesToWire(spec.images); len(imgs) > 0 {
 		frame["images"] = imgs
 	}
-	return &PreparedStream{stream: stream, frame: frame}, nil
+	return &PreparedStream{stream: stream, frame: frame, startupTimeout: c.startupTimeout}, nil
 }
 
 func (p *PreparedStream) Start(ctx context.Context) (*Stream, error) {
+	return p.start(ctx, true)
+}
+
+func (p *PreparedStream) start(ctx context.Context, waitForAcknowledgement bool) (*Stream, error) {
 	if p == nil || p.stream == nil {
 		return nil, errStreamClosed
 	}
@@ -144,11 +151,27 @@ func (p *PreparedStream) Start(ctx context.Context) (*Stream, error) {
 	}
 	p.started = true
 	p.mu.Unlock()
-	if err := p.stream.send(ctx, p.frame); err != nil {
+
+	startupCtx := ctx
+	cancelStartup := func() {}
+	if waitForAcknowledgement {
+		startupCtx, cancelStartup = startupContextWithTimeout(ctx, p.startupTimeout)
+	}
+	defer cancelStartup()
+	if err := p.stream.send(startupCtx, p.frame); err != nil {
 		_ = p.stream.Close(context.Background())
 		return nil, err
 	}
-	go p.stream.drain(ctx)
+	if !waitForAcknowledgement {
+		go p.stream.drain(ctx, nil)
+		return p.stream, nil
+	}
+	pending, err := p.stream.awaitPromptAcknowledgement(startupCtx)
+	if err != nil {
+		_ = p.stream.Close(context.Background())
+		return nil, err
+	}
+	go p.stream.drain(ctx, pending)
 	return p.stream, nil
 }
 
@@ -211,7 +234,7 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 		_ = stream.Close(context.Background())
 		return nil, err
 	}
-	go stream.drain(ctx)
+	go stream.drain(ctx, nil)
 	return stream, nil
 }
 
@@ -402,10 +425,8 @@ func sanitizeDiagnosticFrame(line []byte) []byte {
 			Canceled     *bool             `json:"cancelled"` //nolint:misspell // Pi RPC field uses British spelling.
 			ContextUsage *contextUsageWire `json:"contextUsage"`
 		} `json:"data"`
-		Method  string `json:"method"`
-		Message struct {
-			Role string `json:"role"`
-		} `json:"message"`
+		Method   string          `json:"method"`
+		Message  json.RawMessage `json:"message"`
 		Messages []struct {
 			Role       string `json:"role"`
 			StopReason string `json:"stopReason"`
@@ -449,8 +470,11 @@ func sanitizeDiagnosticFrame(line []byte) []byte {
 			out["method"] = envelope.Method
 		}
 	case "message_start", "message_end":
-		if envelope.Message.Role != "" {
-			out["role"] = envelope.Message.Role
+		var message struct {
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(envelope.Message, &message) == nil && message.Role != "" {
+			out["role"] = message.Role
 		}
 	case "message_update":
 		if envelope.AssistantMessageEvent.Type != "" {
@@ -488,10 +512,14 @@ func looksLikeSessionPath(value string) bool {
 }
 
 func (c *Client) startupContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if c.startupTimeout <= 0 {
+	return startupContextWithTimeout(ctx, c.startupTimeout)
+}
+
+func startupContextWithTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeout(ctx, c.startupTimeout)
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
@@ -763,8 +791,21 @@ func awaitProcessExitOrScanError(ctx context.Context, p *rpcProcess) error {
 	}
 }
 
-func isAcceptedPromptResponse(r rpcResponse) bool {
-	return r.Type == "response" && r.Command == "prompt" && r.Success
+func isPromptResponse(r rpcResponse) bool {
+	return r.Type == "response" && r.Command == "prompt"
+}
+
+func promptResponseError(r rpcResponse) error {
+	if !r.Success {
+		return failureResponseError(r)
+	}
+	var result struct {
+		Canceled *bool `json:"cancelled"` //nolint:misspell // Pi RPC field uses British spelling.
+	}
+	if len(r.Data) > 0 && json.Unmarshal(r.Data, &result) == nil && result.Canceled != nil && *result.Canceled {
+		return errors.New("piagent: prompt was canceled")
+	}
+	return nil
 }
 
 func isTerminalEvent(ev rpcEvent) bool {

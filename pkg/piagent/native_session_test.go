@@ -41,6 +41,123 @@ func TestStreamDiscoversNativeSessionBeforePrompt(t *testing.T) {
 	assert.Equal(t, "get_session_stats", frames[2]["type"])
 }
 
+func TestPreparedStreamStartRequiresAcceptedPromptResponse(t *testing.T) {
+	tests := []struct {
+		name      string
+		response  string
+		wantError string
+	}{
+		{
+			name:      "Given Pi rejects the prompt, when the prepared stream starts, then startup fails without exposing the payload",
+			response:  `{"type":"response","command":"prompt","success":false,"error":"secret prompt rejected","data":{"token":"private-token"}}`,
+			wantError: "piagent rpc prompt failed",
+		},
+		{
+			name:      "Given Pi cancels the prompt, when the prepared stream starts, then startup fails explicitly",
+			response:  `{"type":"response","command":"prompt","success":true,"data":{"cancelled":true,"message":"secret prompt"}}`, //nolint:misspell // Pi RPC field uses British spelling.
+			wantError: "piagent: prompt was canceled",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, proc := newCaptureClient(tt.response + "\n")
+			prepared, err := client.PrepareStream(context.Background(), "private prompt")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = prepared.Close(context.Background()) })
+
+			stream, startErr := prepared.Start(context.Background())
+
+			assert.Nil(t, stream)
+			require.EqualError(t, startErr, tt.wantError)
+			assert.NotContains(t, startErr.Error(), "secret")
+			assert.NotContains(t, startErr.Error(), "private-token")
+			frames := stdinFrames(t, proc.stdin.String())
+			require.Len(t, frames, 2)
+			assert.Equal(t, "prompt", frames[1]["type"])
+		})
+	}
+}
+
+func TestPreparedStreamStartReturnsSanitizedProcessExitBeforeAcknowledgement(t *testing.T) {
+	proc := &captureProc{
+		stdin:  &lockedBuffer{},
+		stdout: strings.NewReader(`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-native-exit"}}` + "\n"),
+		stderr: strings.NewReader("private-token from provider stderr"),
+		done:   make(chan error, 1),
+	}
+	proc.done <- errors.New("exit status 17")
+	client := New(WithRPCProcessRunnerForTesting(&captureRunner{proc: proc}))
+	prepared, err := client.PrepareStream(context.Background(), "private prompt")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = prepared.Close(context.Background()) })
+
+	stream, startErr := prepared.Start(context.Background())
+
+	assert.Nil(t, stream)
+	var exitErr *ExitError
+	require.ErrorAs(t, startErr, &exitErr)
+	assert.NotContains(t, startErr.Error(), "private-token")
+	assert.Empty(t, exitErr.Stderr)
+	frames := stdinFrames(t, proc.stdin.String())
+	require.Len(t, frames, 2)
+	assert.Equal(t, "prompt", frames[1]["type"])
+}
+
+func TestPreparedStreamStartHandsPreAcknowledgementEventsToDrain(t *testing.T) {
+	script := strings.Join([]string{
+		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-native-handoff"}}`,
+		`{"type":"extension_ui_request","id":"notify-before-ack","method":"notify","message":"private extension payload"}`,
+		`{"type":"message_start","message":{"role":"user","content":"queued before ack"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"before ack"}}`,
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":" after ack"}}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+		`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+		"",
+	}, "\n")
+	client, _ := newCaptureClient(script)
+	var (
+		rawMu     sync.Mutex
+		rawFrames []string
+	)
+	client.rawSink = func(frame []byte) {
+		rawMu.Lock()
+		rawFrames = append(rawFrames, string(frame))
+		rawMu.Unlock()
+	}
+	prepared, err := client.PrepareStream(context.Background(), "handoff")
+	require.NoError(t, err)
+
+	stream, err := prepared.Start(context.Background())
+	require.NoError(t, err)
+	var (
+		kinds []EventKind
+		texts []string
+	)
+	for stream.Next() {
+		event := stream.Event()
+		kinds = append(kinds, event.Kind)
+		if event.Text != "" {
+			texts = append(texts, event.Text)
+		}
+	}
+
+	assert.Equal(t, []EventKind{EventUserMessage, EventTextDelta, EventTextDelta, EventDone}, kinds)
+	assert.Equal(t, []string{"queued before ack", "before ack", " after ack"}, texts)
+	rawMu.Lock()
+	defer rawMu.Unlock()
+	var extensionFrames int
+	for _, frame := range rawFrames {
+		if strings.Contains(frame, `"type":"extension_ui_request"`) {
+			extensionFrames++
+		}
+	}
+	assert.Equal(t, 1, extensionFrames, "acknowledgement handoff must neither lose nor double-read extension frames: %v", rawFrames)
+	assert.NotContains(t, strings.Join(rawFrames, "\n"), "private extension payload")
+}
+
 func TestCompactDiscoversNativeSessionBeforeCommand(t *testing.T) {
 	// Given an existing native Pi session is opened for compaction,
 	// When Agentre starts the compact stream,
@@ -146,8 +263,26 @@ func (r *silentStartupRunner) Start(context.Context, procOptions) (processHandle
 	return r.process, nil
 }
 
+type promptNotifyingBuffer struct {
+	lockedBuffer
+	promptWritten chan struct{}
+	once          sync.Once
+}
+
+func newPromptNotifyingBuffer() *promptNotifyingBuffer {
+	return &promptNotifyingBuffer{promptWritten: make(chan struct{})}
+}
+
+func (b *promptNotifyingBuffer) Write(p []byte) (int, error) {
+	n, err := b.lockedBuffer.Write(p)
+	if strings.Contains(string(p), `"type":"prompt"`) {
+		b.once.Do(func() { close(b.promptWritten) })
+	}
+	return n, err
+}
+
 type silentStartupProcess struct {
-	stdin   lockedBuffer
+	stdin   *promptNotifyingBuffer
 	stdoutR *io.PipeReader
 	stdoutW *io.PipeWriter
 	exited  chan struct{}
@@ -159,6 +294,7 @@ type silentStartupProcess struct {
 func newSilentStartupProcess(prefix string) *silentStartupProcess {
 	stdoutR, stdoutW := io.Pipe()
 	proc := &silentStartupProcess{
+		stdin:   newPromptNotifyingBuffer(),
 		stdoutR: stdoutR,
 		stdoutW: stdoutW,
 		exited:  make(chan struct{}),
@@ -171,7 +307,7 @@ func newSilentStartupProcess(prefix string) *silentStartupProcess {
 	return proc
 }
 
-func (p *silentStartupProcess) Stdin() io.Writer  { return &p.stdin }
+func (p *silentStartupProcess) Stdin() io.Writer  { return p.stdin }
 func (p *silentStartupProcess) Stdout() io.Reader { return p.stdoutR }
 func (p *silentStartupProcess) Stderr() io.Reader { return strings.NewReader("") }
 func (p *silentStartupProcess) Wait() error {
@@ -267,6 +403,83 @@ func TestPrepareStreamStartupHonorsCallerDeadlineWhilePiIsSilent(t *testing.T) {
 			case <-proc.exited:
 			case <-time.After(time.Second):
 				t.Fatal("Pi startup process was not released after cancellation")
+			}
+		})
+	}
+}
+
+func TestPreparedStreamStartHonorsPromptAcknowledgementCancellationAndTimeout(t *testing.T) {
+	tests := []struct {
+		name       string
+		cancel     bool
+		wantError  error
+		startLimit time.Duration
+	}{
+		{
+			name:       "Given Pi accepts the prompt frame but stays silent, when the caller cancels, then prepared startup stops",
+			cancel:     true,
+			wantError:  context.Canceled,
+			startLimit: time.Second,
+		},
+		{
+			name:       "Given Pi accepts the prompt frame but stays silent, when the startup timeout expires, then prepared startup stops",
+			wantError:  context.DeadlineExceeded,
+			startLimit: 40 * time.Millisecond,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := newSilentStartupProcess(
+				`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-old"}}` + "\n",
+			)
+			client := New(
+				WithRPCProcessRunnerForTesting(&silentStartupRunner{process: proc}),
+				WithSession("session-old"),
+				WithKillGrace(50*time.Millisecond),
+			)
+			client.startupTimeout = tt.startLimit
+			prepared, err := client.PrepareStream(context.Background(), "accepted by stdin")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = prepared.Close(context.Background()) })
+
+			startCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			type startResult struct {
+				stream *Stream
+				err    error
+			}
+			resultC := make(chan startResult, 1)
+			go func() {
+				stream, startErr := prepared.Start(startCtx)
+				resultC <- startResult{stream: stream, err: startErr}
+			}()
+
+			select {
+			case <-proc.stdin.promptWritten:
+			case <-time.After(time.Second):
+				t.Fatal("prepared stream did not send the prompt frame")
+			}
+			if tt.cancel {
+				cancel()
+			}
+
+			var result startResult
+			select {
+			case result = <-resultC:
+			case <-time.After(250 * time.Millisecond):
+				t.Fatal("prepared startup remained blocked after cancellation or timeout")
+			}
+			assert.Nil(t, result.stream)
+			require.ErrorIs(t, result.err, tt.wantError)
+			frames := stdinFrames(t, proc.stdin.String())
+			require.Len(t, frames, 2)
+			assert.Equal(t, "get_state", frames[0]["type"])
+			assert.Equal(t, "prompt", frames[1]["type"])
+			select {
+			case <-proc.exited:
+			case <-time.After(time.Second):
+				t.Fatal("failed prepared startup did not release the Pi process")
 			}
 		})
 	}
