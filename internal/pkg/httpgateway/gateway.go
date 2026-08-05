@@ -1,8 +1,6 @@
 // Package httpgateway 暴露一个本地 HTTP 转发服务：把 claude / codex CLI 子进程的
 // LLM 请求按 Bearer token 路由到目标 LLMProvider。token 仅在内存中维护，App 退出即失效；
 // MCP 服务通过 RegisterMCP 在同一端口暴露。
-//
-// 设计要点见 docs/superpowers/specs/2026-05-15-claudecode-codex-backend-design.md。
 package httpgateway
 
 import (

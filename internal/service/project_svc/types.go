@@ -1,7 +1,6 @@
 // Package project_svc 提供 Project 模块的业务逻辑层。
 //
 // Project 是「工作上下文」一等公民：名字 + 本地路径 + 成员 Agent。
-// 详细设计见 docs/superpowers/specs/2026-05-19-project-module-design.md。
 package project_svc
 
 import "github.com/agentre-ai/agentre/internal/model/entity/project_entity"

@@ -496,8 +496,7 @@ func isCompactingStatusFrame(f rawFrame) bool {
 //     故走到这里的 task_notification 一律非后台型。
 //
 // 注意:Phase 1 止血仅丢弃这类帧;Phase 2(当前)改为经 subagentCh 路由进独立活动轮,
-// 按 parent_tool_use_id 嵌套渲染回发起 subagent 的那张卡
-// (见 docs/superpowers/plans/2026-06-23-bg-subagent-live-nesting.md)。
+// 按 parent_tool_use_id 嵌套渲染回发起 subagent 的那张卡。
 func isIdleBackgroundSubagentFrame(f rawFrame) bool {
 	if (f.Type == "assistant" || f.Type == "user") && f.ParentToolUseID != "" {
 		return true

@@ -47,7 +47,6 @@ Stage the files intended for the commit, then set `VERIFY_TREE="$(git write-tree
 | [`documentation.md`](./documentation.md) | This guide: doc organization rules + fact-checking / anti-drift discipline. |
 | [`README_zh.md`](./README_zh.md) / [`../README.md`](../README.md) | The user-facing Chinese / English project README — **not** a docs index; don't stuff contributor conventions into it. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) / [`CONTRIBUTING_ZH.md`](./CONTRIBUTING_ZH.md) | The contributor guide (English / Chinese): setup, the GitHub fork / branch / PR workflow, a summary of the ground rules, commit style, PR checklist. It **links into** `AGENTS.md` / `docs/*` for the details — keep it a pointer, don't let facts fork from the docs that own them. |
-| `superpowers/plans/*` | Date-archived historical plan snapshots, **not updated alongside the code**; when referencing one, note that it is the archived snapshot of some design, not a living doc. |
 
 **Agentre has no `docs/README.md` index file** — the docs index role is played by the **"Development Conventions (required reading)" section of `AGENTS.md`**.
 When you add / move / delete `docs/*`, keep that section and the "Doc Set and Responsibilities" table above in sync.
@@ -127,7 +126,7 @@ Repository-internal sources and targets come from Git's index; out-of-repository
 
 ```bash
 git ls-files --cached -- AGENTS.md CLAUDE.md CONTRIBUTING.md 'docs/*.md' 'docs/**/*.md' \
-  e2e/README.md e2e/scratch/README.md | grep -v '^docs/superpowers/' | while IFS= read -r doc; do
+  e2e/README.md e2e/scratch/README.md | while IFS= read -r doc; do
   git show ":$doc" >/dev/null 2>&1 || { echo "BROKEN staged source $doc"; continue; }
   # Strip fenced blocks and inline code first: sample paths are not links.
   git show ":$doc" | sed '/^```/,/^```/d' | sed -E 's/`[^`]*`//g' \

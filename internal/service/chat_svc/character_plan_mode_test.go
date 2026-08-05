@@ -10,7 +10,6 @@ import (
 )
 
 // §1.12 Plan mode 空 turn 兜底 — characterization test
-// 参见 docs/superpowers/specs/2026-05-22-agentruntime-canonical-refactor-design.md §"TDD/BDD §1.12"。
 //
 // 关键 pin: plan mode 下 LLM 可能空 turn(无 text / 无 tool_use)。chat.go 收尾时
 // 若 acc.Empty() 真则追加兜底文本 "Plan mode completed without executable changes.",
