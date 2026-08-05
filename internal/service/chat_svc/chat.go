@@ -1996,6 +1996,7 @@ func newQueuedID() string {
 //   - builtin: history 每轮从 chat_messages 重建，删 DB 即足够。
 //   - claudecode: 透传 ForkAnchor 给 runner，由 CLI fork 到新 session。
 //   - codex: 根据目标 user 到末尾的 user 消息数计算 thread/rollback 的 numTurns。
+//   - piagent: 透传持久化的精确 user entry ID；旧空 anchor 显式拒绝。
 func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error) {
 	if req == nil || req.SessionID <= 0 || req.MessageID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
@@ -2161,8 +2162,8 @@ func messageHasImage(m *chat_entity.Message) bool {
 }
 
 // backendForkAnchor 是 Regenerate / Edit 共享的"按后端类型决定 fork 锚点"分流逻辑。
-// 副作用：claudecode 首轮 user msg 没有 anchor 时会清空 sess.ProviderSessionID，
-// 让上层 startTurn → runner 当作新建会话发起。
+// claudecode 首轮 user msg 没有 anchor 时会清空 sess.ProviderSessionID，让上层
+// startTurn → runner 当作新建会话发起；Pi 已有 provider session 时则要求精确 anchor。
 func (s *chatSvc) backendForkAnchor(
 	ctx context.Context,
 	sess *chat_entity.Session,
@@ -2184,7 +2185,10 @@ func (s *chatSvc) backendForkAnchor(
 	case agent_backend_entity.TypeCodex:
 		return s.codexRollbackAnchor(ctx, sess, userMsg)
 	case agent_backend_entity.TypePiAgent:
-		return "", i18n.NewError(ctx, code.ChatRegenerateUnsupported)
+		if userMsg.ForkAnchor == "" {
+			return "", i18n.NewError(ctx, code.ChatRegenerateNoUserAnchor)
+		}
+		return userMsg.ForkAnchor, nil
 	default:
 		runner := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
 		if _, ok := runner.(agentruntime.Rewinder); !ok {

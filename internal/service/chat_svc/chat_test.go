@@ -15,6 +15,7 @@ import (
 	"github.com/cago-frame/agents/provider"
 	"github.com/cago-frame/agents/provider/providertest"
 	"github.com/cago-frame/cago/pkg/consts"
+	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"github.com/cago-frame/cago/pkg/utils/testutils"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
@@ -29,6 +30,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
+	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
@@ -4554,6 +4556,169 @@ func TestRegenerate_CodexRollsBackProviderTurns(t *testing.T) {
 		}
 		chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 	})
+}
+
+func TestPiRestart_PassesExactStoredAnchorToRunner(t *testing.T) {
+	tests := []struct {
+		name      string
+		arrange   func(*chatMocks)
+		invoke    func(chat_svc.ChatSvc, context.Context) (*chat_svc.SendResponse, error)
+		wantText  string
+		anchorSeq int
+	}{
+		{
+			name: "Given a Pi assistant reply with a stored user anchor, when Regenerate runs, then it restarts from that exact anchor",
+			arrange: func(m *chatMocks) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
+					ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1"),
+				}, nil)
+				m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+					{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: "pi-user-entry-exact"},
+					{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1")},
+				}, nil).AnyTimes()
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+			},
+			wantText:  "original",
+			anchorSeq: 1,
+		},
+		{
+			name: "Given a Pi user message with a stored anchor, when Edit runs, then it sends the replacement from that exact anchor",
+			arrange: func(m *chatMocks) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1000)).Return(&chat_entity.Message{
+					ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"),
+					ForkAnchor: "pi-user-entry-exact",
+				}, nil)
+				m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{}, nil).AnyTimes()
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Edit(ctx, &chat_svc.EditRequest{SessionID: 100, MessageID: 1000, Text: "replacement"})
+			},
+			wantText:  "replacement",
+			anchorSeq: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+			t.Cleanup(restore)
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
+			}, nil)
+			tc.arrange(m)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+			}, nil)
+			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+			m.dbMock.ExpectBegin()
+			m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), tc.anchorSeq).Return(int64(2), nil)
+			m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(tc.anchorSeq, nil)
+			newIDs := []int64{2000, 2001}
+			var calls int
+			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+					msg.ID = newIDs[calls]
+					calls++
+					return nil
+				}).Times(2)
+			m.dbMock.ExpectCommit()
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+			resp, err := tc.invoke(m.svc, m.ctx)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+
+			select {
+			case req := <-runner.requests:
+				assert.Equal(t, tc.wantText, req.UserText)
+				assert.Equal(t, "pi-session-old", req.ProviderSessionID)
+				assert.Equal(t, "pi-user-entry-exact", req.ForkAnchor)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Pi runtime never received the restarted turn")
+			}
+			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+		})
+	}
+}
+
+func TestPiRestart_RejectsEmptyAnchorBeforeTruncationOrRunnerStart(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(*chatMocks)
+		invoke  func(chat_svc.ChatSvc, context.Context) (*chat_svc.SendResponse, error)
+	}{
+		{
+			name: "Given an old Pi assistant reply whose user anchor is empty, when Regenerate runs, then it fails without truncating or starting the runner",
+			arrange: func(m *chatMocks) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
+					ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1"),
+				}, nil)
+				m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+					{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original")},
+					{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1")},
+				}, nil)
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+			},
+		},
+		{
+			name: "Given an old Pi user message whose anchor is empty, when Edit runs, then it fails without truncating or starting the runner",
+			arrange: func(m *chatMocks) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1000)).Return(&chat_entity.Message{
+					ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"),
+				}, nil)
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Edit(ctx, &chat_svc.EditRequest{SessionID: 100, MessageID: 1000, Text: "replacement"})
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			runner := &recordingRunner{requests: make(chan agentruntime.RunRequest, 1)}
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+			t.Cleanup(restore)
+			sess := &chat_entity.Session{
+				ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
+			}
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+			tc.arrange(m)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+			}, nil)
+
+			// Intentionally omit transaction, DeleteFromSeq, and persistence expectations:
+			// any history mutation before the anchor rejection is an immediate mock failure.
+			resp, err := tc.invoke(m.svc, m.ctx)
+			require.Nil(t, resp)
+			var httpErr *httputils.Error
+			require.ErrorAs(t, err, &httpErr)
+			assert.Equal(t, code.ChatRegenerateNoUserAnchor, httpErr.Code)
+			assert.Equal(t, "pi-session-old", sess.ProviderSessionID)
+
+			select {
+			case <-runner.requests:
+				t.Fatal("Pi runtime started despite the missing anchor")
+			case <-time.After(50 * time.Millisecond):
+			}
+		})
+	}
 }
 
 func TestRegenerate_ClaudeCodeForksViaAnchor(t *testing.T) {
