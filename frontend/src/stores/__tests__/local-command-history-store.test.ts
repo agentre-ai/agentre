@@ -295,7 +295,7 @@ describe("local command history scope and persistence", () => {
     store.record(localRepo, "pnpm test", 10);
     store.record(remoteRepo, "make deploy", 20);
 
-    store.clear(localRepo);
+    expect(store.clear(localRepo)).toBe(true);
 
     expect(store.list(localRepo)).toEqual([]);
     expect(store.list(remoteRepo)).toEqual([
@@ -318,7 +318,8 @@ describe("local command history scope and persistence", () => {
       cwd: `/dynamic/cwd/${index}`,
     }));
 
-    for (const scope of unseenScopes) store.clear(scope);
+    expect(store.clear(unseenScopes[0]!)).toBe(true);
+    for (const scope of unseenScopes.slice(1)) store.clear(scope);
     for (const [index, scope] of unseenScopes.entries()) {
       store.record(scope, `command-${index}`, 0);
     }
@@ -671,7 +672,7 @@ describe("local command history storage failures", () => {
     });
   });
 
-  it("Given unavailable reads and failing writes, when commands are recorded and cleared, then callers never receive an error and current-run memory remains usable", () => {
+  it("Given unavailable reads and failing writes, when commands are recorded, then callers never receive an error and current-run memory remains usable", () => {
     const failingStorage = {
       getItem(): string | null {
         throw new Error("private mode");
@@ -689,7 +690,44 @@ describe("local command history storage failures", () => {
     expect(store.list(localRepo)).toEqual([
       { command: "pnpm test", lastUsedAt: 10 },
     ]);
-    expect(() => store.clear(localRepo)).not.toThrow();
-    expect(store.list(localRepo)).toEqual([]);
+  });
+
+  it("Given durable scoped history and a pending reservation, when deletion persistence fails, then clear rolls back without a privacy boundary or mutation notification", () => {
+    const seeded = createLocalCommandHistoryStore({ storage: localStorage });
+    seeded.record(localRepo, "sensitive command", 10);
+    const rawBeforeClear = localStorage.getItem(
+      LOCAL_COMMAND_HISTORY_STORAGE_KEY,
+    );
+    const setItem = vi.fn(() => {
+      throw new Error("private storage path quota failure");
+    });
+    const store = createLocalCommandHistoryStore({
+      storage: {
+        getItem: localStorage.getItem.bind(localStorage),
+        setItem,
+      },
+    });
+    const preClearReservation = store.reserveLastUsedAt();
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    expect(store.clear(localRepo)).toBe(false);
+
+    expect(store.list(localRepo)).toEqual([
+      { command: "sensitive command", lastUsedAt: 10 },
+    ]);
+    expect(listener).not.toHaveBeenCalled();
+    expect(localStorage.getItem(LOCAL_COMMAND_HISTORY_STORAGE_KEY)).toBe(
+      rawBeforeClear,
+    );
+    expect(
+      createLocalCommandHistoryStore({ storage: localStorage }).list(localRepo),
+    ).toEqual([{ command: "sensitive command", lastUsedAt: 10 }]);
+
+    store.record(localRepo, "reservation still valid", preClearReservation);
+    expect(store.list(localRepo)).toEqual([
+      { command: "reservation still valid", lastUsedAt: preClearReservation },
+      { command: "sensitive command", lastUsedAt: 10 },
+    ]);
   });
 });

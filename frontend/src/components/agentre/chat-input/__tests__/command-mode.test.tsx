@@ -3,6 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { createRef, type RefObject } from "react";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
+const sonnerMocks = vi.hoisted(() => ({
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+  },
+}));
+
+vi.mock("sonner", () => sonnerMocks);
+
 import type { Editor } from "@tiptap/react";
 
 import { useLocalCommandsStore } from "@/stores/local-commands-store";
@@ -25,6 +34,8 @@ const releaseReservedTimestamp =
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  sonnerMocks.toast.error.mockClear();
+  sonnerMocks.toast.success.mockClear();
   localCommandHistoryStore.clear(repoScope);
   localCommandHistoryStore.clear(otherScope);
   useLocalCommandsStore.setState({ entries: {} });
@@ -1091,6 +1102,55 @@ describe("AIChatInput command mode", () => {
     expect(onCommandSubmit).toHaveBeenCalledWith("pwd");
   });
 
+  it("Given scoped history and a focused Clear action, when durable deletion fails, then a privacy-safe toast appears while the menu, draft, history, and focus remain intact", async () => {
+    const historyBase = reserveReleasedHistoryBase();
+    localCommandHistoryStore.record(repoScope, "git status", historyBase + 20);
+    const clearSpy = vi
+      .spyOn(localCommandHistoryStore, "clear")
+      .mockReturnValue(false);
+    const editorRef: RefObject<Editor | null> = { current: null };
+    const user = userEvent.setup();
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={vi.fn()}
+      />,
+    );
+    const editor = editorRef.current!;
+
+    act(() => {
+      editor.commands.insertContent("!git");
+      editor.commands.focus("end");
+    });
+    await screen.findByRole("option", { name: "git status" });
+    const clearButton = screen.getByRole("button", {
+      name: "Clear history for current directory",
+    });
+    act(() => pressKey(editor, "ArrowUp"));
+    expect(clearButton).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+
+    expect(clearSpy).toHaveBeenCalledWith(repoScope);
+    expect(sonnerMocks.toast.error).toHaveBeenCalledWith(
+      "Couldn’t clear command history. Try again.",
+    );
+    expect(editor.getText()).toBe("!git");
+    expect(clearButton).toHaveFocus();
+    expect(
+      screen.getByRole("listbox", { name: "Shell command history" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "git status" }),
+    ).toBeInTheDocument();
+    expect(localCommandHistoryStore.list(repoScope)).toEqual([
+      { command: "git status", lastUsedAt: historyBase + 20 },
+    ]);
+  });
+
   it.each([
     { activationKey: "Enter", userInput: "{Enter}" },
     { activationKey: "Space", userInput: " " },
@@ -1150,6 +1210,7 @@ describe("AIChatInput command mode", () => {
         { command: "other command", lastUsedAt: historyBase + 10 },
       ]);
       expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(sonnerMocks.toast.error).not.toHaveBeenCalled();
 
       act(() => {
         editor.commands.insertContent("x");

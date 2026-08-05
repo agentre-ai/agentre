@@ -44,7 +44,7 @@ export type LocalCommandHistoryStore = {
     command: string,
     lastUsedAt?: number,
   ): void;
-  clear(scope: LocalCommandHistoryScope): void;
+  clear(scope: LocalCommandHistoryScope): boolean;
 };
 
 type CreateLocalCommandHistoryStoreOptions = {
@@ -222,12 +222,14 @@ function readPersistedHistory(
 function writePersistedHistory(
   storage: LocalCommandHistoryStorage | null,
   history: PersistedLocalCommandHistory,
-): void {
-  if (!storage) return;
+): boolean {
+  if (!storage) return true;
   try {
     storage.setItem(LOCAL_COMMAND_HISTORY_STORAGE_KEY, JSON.stringify(history));
+    return true;
   } catch {
-    // Quota, private-mode, and serialization failures intentionally stay in memory.
+    // Record writes stay best-effort; authoritative clears use the result to roll back.
+    return false;
   }
 }
 
@@ -337,14 +339,22 @@ export function createLocalCommandHistoryStore(
     },
     clear(scope) {
       const key = deriveLocalCommandHistoryScopeKey(scope);
-      delete history.scopes[key];
+      const nextScopes = { ...history.scopes };
+      delete nextScopes[key];
+      const nextHistory: PersistedLocalCommandHistory = {
+        version: LOCAL_COMMAND_HISTORY_VERSION,
+        scopes: nextScopes,
+      };
+      if (!writePersistedHistory(storage, nextHistory)) return false;
+
+      history.scopes = nextScopes;
       if (minimumOutstandingReservation() <= lastReservedAt) {
         clearBarriers.set(key, lastReservedAt);
       } else {
         clearBarriers.delete(key);
       }
-      writePersistedHistory(storage, history);
       notify({ type: "clear", scopeKey: key });
+      return true;
     },
   };
 }

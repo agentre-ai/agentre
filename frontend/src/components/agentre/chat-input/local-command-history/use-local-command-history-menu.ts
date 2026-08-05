@@ -9,6 +9,8 @@ import {
 } from "react";
 
 import type { Editor } from "@tiptap/react";
+import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 
 import { normalizeSuggestionQuery } from "@/lib/suggestion-score";
 import {
@@ -90,6 +92,7 @@ export function useLocalCommandHistoryMenu({
   onClearBlur: (event: ReactFocusEvent<HTMLButtonElement>) => void;
   onClearKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => void;
 } {
+  const { t } = useTranslation();
   const [state, setState] = useState<LocalCommandHistoryMenuState>(() =>
     closedState(),
   );
@@ -280,15 +283,20 @@ export function useLocalCommandHistoryMenu({
 
   const clear = useCallback(() => {
     if (deviceId === undefined || cwd === undefined) return;
+    let cleared: boolean;
     clearingRef.current = true;
     try {
-      localCommandHistoryStore.clear({ deviceId, cwd });
+      cleared = localCommandHistoryStore.clear({ deviceId, cwd });
     } finally {
       clearingRef.current = false;
     }
+    if (!cleared) {
+      toast.error(t("localCommandHistory.clearFailed"));
+      return;
+    }
     dismiss(state.query);
     editor?.commands.focus();
-  }, [cwd, deviceId, dismiss, editor, state.query]);
+  }, [cwd, deviceId, dismiss, editor, state.query, t]);
 
   const onClearFocus = useCallback(() => {
     setState((previous) =>
