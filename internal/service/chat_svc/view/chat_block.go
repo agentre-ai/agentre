@@ -21,6 +21,7 @@ type ChatBlock struct {
 	ToolResult       string         `json:"toolResult,omitempty"`
 	IsError          bool           `json:"isError,omitempty"`
 	ParentToolCallID string         `json:"parentToolCallId,omitempty"`
+	SubagentRunID    string         `json:"subagentRunId,omitempty"`
 
 	// Canonical: 工具调用走 canonical 识别成功时填,与 raw input 并存。
 	Canonical *CanonicalDTO `json:"canonical,omitempty"`

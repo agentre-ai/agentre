@@ -26,7 +26,9 @@ type ThinkingDelta struct{ Text string }
 // ToolCall 携带原始工具名 + input;Canonical 在 translator 识别成功时填,nil 表示
 // 非 canonical (走 raw tool_use 路径)。同 ToolCallID 多次 emit 视为增量更新
 // (canonical 增量),accumulator 用 mutateIndex 覆盖。subagent 子调用同时携带外层
-// ParentToolCallID 与稳定的 SubagentRunID；两者为空表示主 agent 自己的工具。
+// ParentToolCallID 与可选稳定 SubagentRunID；缺失 run ID 仍须保留为父调用 fallback
+// step，两者都为空才表示主 agent 自己的工具。Input 仅跨 runtime wire、UI block 与
+// blocks_json 边界流转，禁止作为 operational log 字段记录。
 type ToolCall struct {
 	ID               string
 	Name             string
@@ -41,7 +43,9 @@ type ToolCall struct {
 // chat_svc 落 ChatBlock,前端按工具语义 Unmarshal。无 meta 留 nil。
 //
 // ParentToolCallID:当前 tool_result 属于 subagent 内部工具时指向外层 Agent.tool_use_id;
-// SubagentRunID 再区分同一外层 parallel/chain 的输入槽。主 agent 自己的工具都留空。
+// SubagentRunID 再区分同一外层 parallel/chain 的输入槽；缺失时保持为空并由 UI fallback
+// 分组，不能丢弃或猜测归属。Content/Meta 只供 wire、UI/persistence 与正常模型工具语义
+// 使用，不得复制到 operational logs。
 type ToolResult struct {
 	ToolCallID       string
 	Content          string
@@ -96,7 +100,8 @@ type PermissionModeChanged struct{ Mode string }
 
 // SubagentStarted / Progress / Done 是 backend-neutral subagent 生命周期。ToolCallID
 // 指向外层 Task / Agent 工具调用；Info 可携带 legacy 单运行元数据，或 Pi runtime
-// 维护的 mode + runs 全量快照。
+// 维护的 mode + runs 全量快照。Info 中的 task/summary/error 等内容只进入 runtime
+// wire 与 UI/persistence 边界，不得序列化进 operational logs。
 type SubagentStarted struct {
 	ToolCallID string
 	Info       SubagentInfo

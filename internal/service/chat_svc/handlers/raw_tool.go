@@ -26,7 +26,8 @@ func (ToolCallHandler) Apply(ctx context.Context, ev agentruntime.Event, acc *tu
 	if tc2.ParentToolCallID != "" {
 		// Subagent 内层 tool:NestedToolUseBlock (ToUI, 不喂 LLM)
 		acc.AddToolUse(&blocks.NestedToolUseBlock{
-			ID: tc2.ID, Name: tc2.Name, Input: input, ParentToolCallID: tc2.ParentToolCallID,
+			ID: tc2.ID, Name: tc2.Name, Input: input,
+			ParentToolCallID: tc2.ParentToolCallID, SubagentRunID: tc2.SubagentRunID,
 		}, "tool_use:"+tc2.ID)
 	} else {
 		// 外层 cago.ToolUseBlock (ToAll)
@@ -48,6 +49,7 @@ func (ToolCallHandler) Apply(ctx context.Context, ev agentruntime.Event, acc *tu
 			"toolName":         tc2.Name,
 			"toolInput":        input,
 			"parentToolCallId": tc2.ParentToolCallID,
+			"subagentRunId":    tc2.SubagentRunID,
 			"canonicalKind":    string(canonical.KindOf(tc2.Canonical)),
 			"canonical":        tc2.Canonical,
 		})
@@ -82,6 +84,7 @@ func (ToolResultHandler) Apply(ctx context.Context, ev agentruntime.Event, acc *
 			Content:          tr.Content,
 			IsError:          tr.IsError,
 			ParentToolCallID: tr.ParentToolCallID,
+			SubagentRunID:    tr.SubagentRunID,
 		})
 	} else {
 		acc.AddToolResult(&cagoblocks.ToolResultBlock{
@@ -102,6 +105,7 @@ func (ToolResultHandler) Apply(ctx context.Context, ev agentruntime.Event, acc *
 			"toolResult":       tr.Content,
 			"isError":          tr.IsError,
 			"parentToolCallId": tr.ParentToolCallID,
+			"subagentRunId":    tr.SubagentRunID,
 			"toolResultMeta":   meta,
 		})
 	}

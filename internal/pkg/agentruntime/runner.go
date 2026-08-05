@@ -110,6 +110,8 @@ type ToolResultEvent struct {
 // SubagentInfo 是 runtime 层的 backend-neutral subagent 快照，由 EventSubagent*
 // 事件以及外层 Agent 工具的 ToolUseEvent 携带。legacy 字段镜像
 // claudecode.SubagentMeta；Mode/Runs 承载 Pi 的 normalized 单/并行/链式运行模型。
+// Runs 是全量快照：消费者在非 nil 时整片替换，nil 表示 legacy 事件省略、不得清空
+// 已有 runs。Status 是所有 runs 的 aggregate 状态，单个 run 状态保存在 Runs[i]。
 type SubagentInfo struct {
 	TaskID          string        `json:"taskId,omitempty"`
 	SubagentType    string        `json:"subagentType,omitempty"`
@@ -120,7 +122,7 @@ type SubagentInfo struct {
 	ToolUses        int           `json:"toolUses,omitempty"`
 	TotalTokens     int           `json:"totalTokens,omitempty"`
 	DurationMs      int           `json:"durationMs,omitempty"`
-	Status          string        `json:"status,omitempty"` // waiting | running | completed | failed | canceled | skipped | unknown
+	Status          string        `json:"status,omitempty"` // aggregate: waiting | running | completed | failed | canceled | skipped | unknown
 	Mode            string        `json:"mode,omitempty"`
 	Runs            []SubagentRun `json:"runs,omitempty"`
 }

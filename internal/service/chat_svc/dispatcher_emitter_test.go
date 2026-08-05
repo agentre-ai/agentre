@@ -2,6 +2,7 @@ package chat_svc
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -303,6 +304,59 @@ func TestDispatcherEmitter_Subagent_AttachesAgentSpawn(t *testing.T) {
 // TestDispatcherEmitter_SubagentModel 验证 kind=subagent_model 只透传 toolUseId +
 // model,不像 subagent_started/progress/done 那样走 subagentInfoMapToChatBlock 的
 // 整份快照投影(R4:避免混进 toolUses/totalTokens/status 等累计态字段)。
+func TestDispatcherEmitter_SubagentNormalizedRunsAndChildGrouping(t *testing.T) {
+	Convey("normalized subagent snapshot exposes mode/runs in both state DTO and canonical AgentSpawn", t, func() {
+		de, em := newTestDispatcherEmitter()
+		de.Emit(context.Background(), "s", map[string]any{
+			"kind":      "subagent_progress",
+			"toolUseId": "outer",
+			"info": map[string]any{
+				"mode": "parallel",
+				"runs": []map[string]any{
+					{"id": "run-0", "index": 0, "task": "inspect", "requestedModel": "small", "model": "observed", "status": "completed"},
+					{"id": "run-1", "index": 1, "task": "test", "status": "running"},
+				},
+				"status": "running",
+			},
+		})
+		So(em.events, ShouldHaveLength, 1)
+		ev := em.events[0]
+		So(ev.Subagent, ShouldNotBeNil)
+		So(ev.Subagent.Mode, ShouldEqual, "parallel")
+		So(ev.Subagent.Runs, ShouldHaveLength, 2)
+		So(ev.Subagent.Runs[0].Model, ShouldEqual, "observed")
+		So(ev.Canonical, ShouldNotBeNil)
+		So(ev.Canonical.AgentSpawn, ShouldNotBeNil)
+		So(ev.Canonical.AgentSpawn.Mode, ShouldEqual, "parallel")
+		So(ev.Canonical.AgentSpawn.Runs, ShouldHaveLength, 2)
+		So(ev.Canonical.AgentSpawn.Runs[0].RequestedModel, ShouldEqual, "small")
+	})
+
+	Convey("nested tool use/result stream DTOs retain run ID while omission stays optional", t, func() {
+		de, em := newTestDispatcherEmitter()
+		de.Emit(context.Background(), "s", map[string]any{
+			"kind": "tool_use", "toolUseId": "child-1", "parentToolCallId": "outer", "subagentRunId": "run-1",
+		})
+		de.Emit(context.Background(), "s", map[string]any{
+			"kind": "tool_result", "toolUseId": "child-1", "parentToolCallId": "outer", "subagentRunId": "run-1",
+		})
+		de.Emit(context.Background(), "s", map[string]any{
+			"kind": "tool_use", "toolUseId": "child-unknown", "parentToolCallId": "outer",
+		})
+		So(em.events, ShouldHaveLength, 3)
+		So(em.events[0].SubagentRunID, ShouldEqual, "run-1")
+		So(em.events[1].SubagentRunID, ShouldEqual, "run-1")
+		So(em.events[2].SubagentRunID, ShouldEqual, "")
+
+		encoded, err := json.Marshal(em.events[0])
+		So(err, ShouldBeNil)
+		So(string(encoded), ShouldContainSubstring, `"subagentRunId":"run-1"`)
+		encoded, err = json.Marshal(em.events[2])
+		So(err, ShouldBeNil)
+		So(string(encoded), ShouldNotContainSubstring, "subagentRunId")
+	})
+}
+
 func TestDispatcherEmitter_SubagentModel(t *testing.T) {
 	Convey("kind=subagent_model → ChatStreamEvent{ToolUseID, Model},Subagent 保持 nil", t, func() {
 		de, em := newTestDispatcherEmitter()

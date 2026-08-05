@@ -711,13 +711,13 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		case blocks.ToolUseBlock:
 			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
 			if sb := subByParent[tb.ID]; sb != nil {
-				cb.Subagent = subagentStateToChatBlockSubagent(sb)
+				attachSubagentStateToChatBlock(&cb, tb.Name, sb)
 			}
 			out.Blocks = append(out.Blocks, cb)
 		case *blocks.ToolUseBlock:
 			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
 			if sb := subByParent[tb.ID]; sb != nil {
-				cb.Subagent = subagentStateToChatBlockSubagent(sb)
+				attachSubagentStateToChatBlock(&cb, tb.Name, sb)
 			}
 			out.Blocks = append(out.Blocks, cb)
 		case blocks.ToolResultBlock:
@@ -809,8 +809,42 @@ func subagentStateToChatBlockSubagent(sb *chatblocks.SubagentStateBlock) *ChatBl
 		DurationMs:      sb.DurationMs,
 		Status:          sb.Status,
 		Summary:         sb.Summary,
+		Mode:            sb.Mode,
+		Runs:            cloneSubagentRunSnapshot(sb.Runs),
 		Model:           sb.Model,
 	}
+}
+
+func attachSubagentStateToChatBlock(cb *ChatBlock, toolName string, sb *chatblocks.SubagentStateBlock) {
+	cb.Subagent = subagentStateToChatBlockSubagent(sb)
+	if cb.Canonical != nil || !isNormalizedPiSubagentReplay(toolName, sb) {
+		return
+	}
+	cb.Canonical = view.FromCanonical(canonical.AgentSpawn{
+		TaskID:          sb.TaskID,
+		TaskDescription: sb.Description,
+		Mode:            sb.Mode,
+		Runs:            agentSpawnRunsFromRuntime(sb.Runs),
+		LastToolName:    sb.LastToolName,
+		ToolUses:        sb.ToolUses,
+		TotalTokens:     sb.TotalTokens,
+		DurationMs:      sb.DurationMs,
+		Status:          sb.Status,
+	})
+}
+
+func isNormalizedPiSubagentReplay(toolName string, sb *chatblocks.SubagentStateBlock) bool {
+	return sb != nil && sb.Mode != "" && len(sb.Runs) > 0 &&
+		strings.Contains(strings.ToLower(toolName), "subagent")
+}
+
+func cloneSubagentRunSnapshot(runs []agentruntime.SubagentRun) []agentruntime.SubagentRun {
+	if runs == nil {
+		return nil
+	}
+	out := make([]agentruntime.SubagentRun, len(runs))
+	copy(out, runs)
+	return out
 }
 
 func imageBlockToChatBlock(img blocks.ImageBlock) ChatBlock {
@@ -824,8 +858,8 @@ func imageBlockToChatBlock(img blocks.ImageBlock) ChatBlock {
 }
 
 // nestedToolUseToChatBlock 把 subagent 内层 ToolUse 投影到 wire ChatBlock。
-// 与外层 toolUseToChatBlock 的差别仅在于带 ParentToolCallID(json: parentToolUseId),
-// 前端 chat.tsx collectChildren 据此把它从主流程移走、挂到外层 AgentSpawnCard.childBlocks。
+// 与外层 toolUseToChatBlock 的差别在于带 ParentToolCallID(json: parentToolUseId) +
+// 可选 SubagentRunID；前端据此先挂到外层 AgentSpawnCard，再按 normalized run 分组。
 // canonical 故意不算 —— 内层是被父 agent.spawn 包住的 step,不需要独立 canonical 路由。
 func nestedToolUseToChatBlock(b *chatblocks.NestedToolUseBlock) ChatBlock {
 	cb := ChatBlock{
@@ -833,6 +867,7 @@ func nestedToolUseToChatBlock(b *chatblocks.NestedToolUseBlock) ChatBlock {
 		ToolUseID:        b.ID,
 		ToolName:         b.Name,
 		ParentToolCallID: b.ParentToolCallID,
+		SubagentRunID:    b.SubagentRunID,
 	}
 	if len(b.Input) > 0 {
 		cb.ToolInput = b.Input
@@ -841,7 +876,7 @@ func nestedToolUseToChatBlock(b *chatblocks.NestedToolUseBlock) ChatBlock {
 }
 
 // nestedToolResultToChatBlock 镜像 nestedToolUseToChatBlock —— 内层 tool_result
-// 带 ParentToolCallID,Content 已经是拍平字符串(NestedToolResultBlock 不嵌套 ContentBlock)。
+// 保留 ParentToolCallID/SubagentRunID，Content 已经是拍平字符串。
 func nestedToolResultToChatBlock(b *chatblocks.NestedToolResultBlock) ChatBlock {
 	return ChatBlock{
 		Type:             "tool_result",
@@ -849,6 +884,7 @@ func nestedToolResultToChatBlock(b *chatblocks.NestedToolResultBlock) ChatBlock 
 		Text:             b.Content,
 		IsError:          b.IsError,
 		ParentToolCallID: b.ParentToolCallID,
+		SubagentRunID:    b.SubagentRunID,
 	}
 }
 
