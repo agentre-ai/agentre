@@ -62,6 +62,10 @@ import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useQueuedMessagesStore } from "@/stores/queued-messages-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
+import {
+  localCommandRuntimeStore,
+  type LocalCommandRuntimeController,
+} from "@/stores/local-command-runtime-store";
 
 import { useBackendCapabilities } from "./capability/use-backend-capabilities";
 import { useSessionCapabilities } from "./capability/use-session-capabilities";
@@ -251,10 +255,6 @@ function isTerminalNotOpenError(error: unknown): boolean {
     (error instanceof Error && error.message === TERMINAL_NOT_OPEN_ERROR)
   );
 }
-
-type LocalCommandController = {
-  stop: () => Promise<void>;
-};
 
 function isExactCompactCommand(text: string): boolean {
   return text.trim() === "/compact";
@@ -538,12 +538,21 @@ function ChatPanel({
     requestId: number;
   } | null>(null);
   const ensuredLocalCommandSessionRequestRef = React.useRef(0);
-  const localCommandControllersRef = React.useRef(
-    new Map<string, LocalCommandController>(),
+  const handleStopLocalCommand = React.useCallback(
+    async (terminalId: string) => {
+      const delegated = await localCommandRuntimeStore.stop(terminalId);
+      if (
+        !delegated &&
+        useLocalCommandsStore.getState().get(terminalId)?.status === "running"
+      ) {
+        console.error(
+          "[chat] stop local command failed: runtime controller missing",
+          { terminalId },
+        );
+      }
+    },
+    [],
   );
-  const handleStopLocalCommand = React.useCallback((terminalId: string) => {
-    return localCommandControllersRef.current.get(terminalId)?.stop();
-  }, []);
 
   const { reason: attentionReason } = useSessionAttention(sessionId);
 
@@ -1434,7 +1443,6 @@ function ChatPanel({
       command: string,
     ): Promise<LocalCommandHistoryScope | undefined> => {
       const terminalId = crypto.randomUUID();
-      const controllers = localCommandControllersRef.current;
       const dataEvent = `terminal:${terminalId}:data`;
       const exitEvent = `terminal:${terminalId}:exit`;
       const cleanupRetryInitialDelayMs = 100;
@@ -1517,7 +1525,7 @@ function ChatPanel({
           else commands.finish(terminalId, status, exitCode);
         }
         ensureListenersCleaned();
-        removeController();
+        localCommandRuntimeStore.unregister(terminalId, controller);
       };
       const fail = (error: unknown) => {
         if (settled) {
@@ -1542,7 +1550,7 @@ function ChatPanel({
           p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
         settle(status, p.code);
       };
-      const controller: LocalCommandController = {
+      const controller: LocalCommandRuntimeController = {
         stop: () => {
           if (settled) return Promise.resolve();
           if (stopPromise) return stopPromise;
@@ -1569,12 +1577,7 @@ function ChatPanel({
           return pending;
         },
       };
-      const removeController = () => {
-        if (controllers.get(terminalId) === controller) {
-          controllers.delete(terminalId);
-        }
-      };
-      controllers.set(terminalId, controller);
+      localCommandRuntimeStore.register(terminalId, controller);
       useLocalCommandsStore.getState().start({
         id: terminalId,
         sessionId: sid,

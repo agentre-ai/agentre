@@ -302,6 +302,7 @@ import {
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { localCommandRuntimeStore } from "@/stores/local-command-runtime-store";
 import { useLocalCommandsStore } from "@/stores/local-commands-store";
 
 /** 清 store streams 以避免测试间串台 */
@@ -349,6 +350,7 @@ function resetStore() {
   );
   appMocks.TerminalClose.mockReset();
   appMocks.TerminalRunCommand.mockReset();
+  localCommandRuntimeStore.resetForTesting();
   useLocalCommandsStore.setState({ entries: {} });
   sonnerMocks.toast.error.mockClear();
   sonnerMocks.toast.success.mockClear();
@@ -907,6 +909,123 @@ describe("ChatPanel · local command scope and execution", () => {
     expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
     expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
     expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
+  });
+
+  it("Given a running legacy card has no runtime controller, When Stop is clicked, Then the missing authority is reported without issuing an unowned duplicate close", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const terminalId = "legacy-running-terminal";
+    useLocalCommandsStore.getState().start({
+      id: terminalId,
+      sessionId: 42,
+      command: "sleep 30",
+      createdAt: 1,
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => error.mockRestore());
+
+    render(<ChatPanel sessionId={42} />);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+
+    expect(error).toHaveBeenCalledWith(
+      "[chat] stop local command failed: runtime controller missing",
+      { terminalId },
+    );
+    expect(appMocks.TerminalClose).not.toHaveBeenCalled();
+    expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+      "running",
+    );
+  });
+
+  it("Given panel A launched a running command and unmounted, When panel B reopens the same session and Stop is clicked through its transcript card, Then the original controller closes and settles exactly once", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+
+    const panelA = render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+    await runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const cleanups = terminalListenerCleanups(terminalId);
+    panelA.unmount();
+
+    render(<ChatPanel sessionId={42} />);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+        "stopped",
+      );
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledWith(terminalId);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    for (const cleanup of cleanups) expect(cleanup).toHaveBeenCalledTimes(1);
+    await expect(localCommandRuntimeStore.stop(terminalId)).resolves.toBe(
+      false,
+    );
+  });
+
+  it("Given panel A unmounted with a running command and panel B receives a close failure, When Stop is retried through B, Then the original controller remains retryable until the second close succeeds", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+    appMocks.TerminalClose.mockRejectedValueOnce(
+      new Error("remote cleanup failed after terminal not open"),
+    );
+    appMocks.TerminalClose.mockResolvedValueOnce(undefined);
+
+    const panelA = render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+    await runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const cleanups = terminalListenerCleanups(terminalId);
+    panelA.unmount();
+
+    render(<ChatPanel sessionId={42} />);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    const stopButton = () =>
+      within(card.container).getByRole("button", { name: /停止|Stop/ });
+
+    await userEvent.click(stopButton());
+    await waitFor(() =>
+      expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1),
+    );
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      output: "Error: remote cleanup failed after terminal not open",
+      status: "running",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    for (const cleanup of cleanups) expect(cleanup).not.toHaveBeenCalled();
+
+    await userEvent.click(stopButton());
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+        "stopped",
+      );
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(2);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    for (const cleanup of cleanups) expect(cleanup).toHaveBeenCalledTimes(1);
+    await expect(localCommandRuntimeStore.stop(terminalId)).resolves.toBe(
+      false,
+    );
   });
 
   it("Given a started command with no exit event, When Stop is clicked through the transcript card, Then close, stopped settlement, and both listener cleanups happen exactly once immediately", async () => {
