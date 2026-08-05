@@ -51,6 +51,59 @@ func (h *completedCommandHandle) Close() error                { return nil }
 func (h *completedCommandHandle) Data() <-chan []byte         { return h.data }
 func (h *completedCommandHandle) Exit() <-chan pty.ExitInfo   { return h.exit }
 
+type scriptedCloseCommandHandle struct {
+	data              chan []byte
+	exit              chan pty.ExitInfo
+	closeResults      []error
+	blockFirstClose   bool
+	firstCloseStarted chan struct{}
+	releaseFirstClose chan struct{}
+	closeCalls        atomic.Int32
+	settle            sync.Once
+}
+
+func newScriptedCloseCommandHandle(closeResults ...error) *scriptedCloseCommandHandle {
+	return &scriptedCloseCommandHandle{
+		data:              make(chan []byte, 8),
+		exit:              make(chan pty.ExitInfo, 1),
+		closeResults:      closeResults,
+		firstCloseStarted: make(chan struct{}),
+		releaseFirstClose: make(chan struct{}),
+	}
+}
+
+func (h *scriptedCloseCommandHandle) Write(p []byte) (int, error) { return len(p), nil }
+func (h *scriptedCloseCommandHandle) Resize(uint16, uint16) error { return nil }
+func (h *scriptedCloseCommandHandle) Data() <-chan []byte         { return h.data }
+func (h *scriptedCloseCommandHandle) Exit() <-chan pty.ExitInfo   { return h.exit }
+func (h *scriptedCloseCommandHandle) Close() error {
+	call := int(h.closeCalls.Add(1))
+	if h.blockFirstClose && call == 1 {
+		close(h.firstCloseStarted)
+		<-h.releaseFirstClose
+	}
+	if call <= len(h.closeResults) {
+		return h.closeResults[call-1]
+	}
+	return nil
+}
+
+func (h *scriptedCloseCommandHandle) finish(info pty.ExitInfo) {
+	h.settle.Do(func() {
+		h.exit <- info
+		close(h.exit)
+		close(h.data)
+	})
+}
+
+func (h *scriptedCloseCommandHandle) unblockFirstClose() {
+	select {
+	case <-h.releaseFirstClose:
+	default:
+		close(h.releaseFirstClose)
+	}
+}
+
 func TestService_RunCommand_GivenInvalidRequest_WhenStarted_ThenRejectsBeforeResolutionOpenOrLogging(t *testing.T) {
 	validRequest := terminal_svc.RunCommandRequest{
 		TerminalID: "terminal-valid",
@@ -265,6 +318,245 @@ func TestService_RunCommand_GivenStartedCommand_WhenClosedBeforePumpOutcome_Then
 	}
 }
 
+func TestService_RunCommand_GivenReplacementCloseFails_WhenStartingSameID_ThenKeepsOldAuthorityAndSurfacesStartFailure(t *testing.T) {
+	sensitiveCloseErr := errors.New("fixture-sensitive replacement close failure: token=secret")
+	old := newScriptedCloseCommandHandle(sensitiveCloseErr, nil)
+	replacement := newReplacementRaceHandle(false, false)
+	backend := &handleSequenceBackend{handles: []pty.Handle{old, replacement}}
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), emitter)
+	svc.SetCommandScopeResolver(func(
+		context.Context,
+		terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return &terminal_svc.CommandScope{}, nil
+	})
+	t.Cleanup(func() { old.finish(pty.ExitInfo{Code: 0, Reason: "closed"}) })
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	oldResponse, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-replacement-close-failure",
+		SessionID:  191,
+		Command:    "old command",
+		Cols:       80,
+		Rows:       24,
+	})
+	require.NoError(t, err)
+	require.Empty(t, oldResponse.StartError)
+
+	replacementResponse, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-replacement-close-failure",
+		SessionID:  192,
+		Command:    "replacement command",
+		Cols:       80,
+		Rows:       24,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, replacementResponse)
+	require.Equal(t, sensitiveCloseErr.Error(), replacementResponse.StartError)
+	require.Equal(t, int32(1), backend.opens.Load(), "replacement backend.Open must wait for confirmed old-handle close")
+	require.Empty(t, commandExitEntriesForSession(logs, 191), "failed close has no retirement authority")
+
+	old.data <- []byte("old-still-authoritative")
+	require.Eventually(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if event.Name == terminal_svc.DataEventName("terminal-replacement-close-failure") {
+				return recordedDataEquals(event, "old-still-authoritative")
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	require.NoError(t, svc.Close(context.Background(), "terminal-replacement-close-failure"),
+		"the retained old handle must remain Close-retryable")
+	require.Equal(t, int32(2), old.closeCalls.Load())
+	require.Eventually(t, func() bool {
+		return len(commandExitEntriesForSession(logs, 191)) == 1
+	}, time.Second, time.Millisecond)
+	require.Equal(t, "stopped", commandExitEntriesForSession(logs, 191)[0].ContextMap()["exitReason"])
+
+	failedOpenLogs := logs.FilterMessage("terminal_svc.RunCommand: open command failed").All()
+	require.Len(t, failedOpenLogs, 1)
+	require.Equal(t, map[string]any{
+		"sessionId":     int64(192),
+		"terminalId":    "terminal-replacement-close-failure",
+		"deviceId":      "",
+		"startStage":    "replacementClose",
+		"errorCategory": "unknown",
+		"errorClass":    "terminalCommandStartFailed",
+	}, failedOpenLogs[0].ContextMap())
+	structuredLogs, marshalErr := json.Marshal(logs.All())
+	require.NoError(t, marshalErr)
+	require.NotContains(t, string(structuredLogs), sensitiveCloseErr.Error())
+	require.NotContains(t, string(structuredLogs), "token=secret")
+}
+
+func TestService_RunCommand_GivenReplacementCloseBlocks_WhenStartingSameID_ThenOldEmitsUntilCloseAuthority(t *testing.T) {
+	old := newScriptedCloseCommandHandle(nil)
+	old.blockFirstClose = true
+	replacement := newReplacementRaceHandle(false, false)
+	backend := &handleSequenceBackend{handles: []pty.Handle{old, replacement}}
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), emitter)
+	svc.SetCommandScopeResolver(func(
+		context.Context,
+		terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return &terminal_svc.CommandScope{}, nil
+	})
+	t.Cleanup(old.unblockFirstClose)
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-replacement-close-gate",
+		SessionID:  193,
+		Command:    "old command",
+		Cols:       80,
+		Rows:       24,
+	})
+	require.NoError(t, err)
+	require.Empty(t, response.StartError)
+
+	resultCh := startRunCommand(ctx, svc, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-replacement-close-gate",
+		SessionID:  194,
+		Command:    "replacement command",
+		Cols:       80,
+		Rows:       24,
+	})
+	<-old.firstCloseStarted
+	require.Equal(t, int32(1), backend.opens.Load())
+	old.data <- []byte("valid-before-close-authority")
+	require.Eventually(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if event.Name == terminal_svc.DataEventName("terminal-replacement-close-gate") {
+				return recordedDataEquals(event, "valid-before-close-authority")
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	require.Empty(t, commandExitEntriesForSession(logs, 193))
+
+	old.unblockFirstClose()
+	result := <-resultCh
+	require.NoError(t, result.err)
+	require.Empty(t, result.response.StartError)
+	require.Equal(t, int32(2), backend.opens.Load())
+	require.Eventually(t, func() bool {
+		return len(commandExitEntriesForSession(logs, 193)) == 1
+	}, time.Second, time.Millisecond)
+	require.Equal(t, "replaced", commandExitEntriesForSession(logs, 193)[0].ContextMap()["exitReason"])
+
+	old.data <- []byte("invalid-after-retirement")
+	old.finish(pty.ExitInfo{Code: 41, Reason: "stale"})
+	replacement.finish(pty.ExitInfo{Code: 0, Reason: "natural"})
+	require.Eventually(t, func() bool {
+		return len(commandExitEntriesForSession(logs, 194)) == 1
+	}, time.Second, time.Millisecond)
+	invalidData := base64.StdEncoding.EncodeToString([]byte("invalid-after-retirement"))
+	require.Never(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if payload, ok := event.Payload.(map[string]string); ok && payload["data"] == invalidData {
+				return true
+			}
+		}
+		return false
+	}, 100*time.Millisecond, time.Millisecond)
+}
+
+func TestService_RunCommand_GivenFailedReplacementCloseIsPreempted_WhenNewerStartWaits_ThenUsesPreemptionPolicyAndKeepsOldActive(t *testing.T) {
+	sensitiveCloseErr := errors.New("fixture-sensitive preempted close failure")
+	old := newScriptedCloseCommandHandle(sensitiveCloseErr, nil)
+	old.blockFirstClose = true
+	replacement := newReplacementRaceHandle(false, false)
+	backend := &handleSequenceBackend{handles: []pty.Handle{old, replacement}}
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), emitter)
+	newerResolverStarted := make(chan struct{})
+	releaseNewerResolver := make(chan struct{})
+	svc.SetCommandScopeResolver(func(
+		_ context.Context,
+		req terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		if req.SessionID == 197 {
+			close(newerResolverStarted)
+			<-releaseNewerResolver
+		}
+		return &terminal_svc.CommandScope{}, nil
+	})
+	t.Cleanup(old.unblockFirstClose)
+	t.Cleanup(func() {
+		select {
+		case <-releaseNewerResolver:
+		default:
+			close(releaseNewerResolver)
+		}
+	})
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-replacement-close-preempted",
+		SessionID:  195,
+		Command:    "old command",
+		Cols:       80,
+		Rows:       24,
+	})
+	require.NoError(t, err)
+	require.Empty(t, response.StartError)
+
+	olderResultCh := startRunCommand(ctx, svc, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-replacement-close-preempted",
+		SessionID:  196,
+		Command:    "older replacement",
+		Cols:       80,
+		Rows:       24,
+	})
+	<-old.firstCloseStarted
+	newerResultCh := startRunCommand(ctx, svc, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-replacement-close-preempted",
+		SessionID:  197,
+		Command:    "newer replacement",
+		Cols:       80,
+		Rows:       24,
+	})
+	<-newerResolverStarted
+	old.unblockFirstClose()
+	olderResult := <-olderResultCh
+
+	require.NoError(t, olderResult.err)
+	require.Equal(t, terminal_svc.ErrCommandStartPreempted.Error(), olderResult.response.StartError)
+	require.Empty(t, logs.FilterMessage("terminal_svc.RunCommand: open command failed").All())
+	require.Empty(t, commandExitEntriesForSession(logs, 195),
+		"a preempted failed close has no retirement authority")
+	old.data <- []byte("old-valid-after-preempted-close-failure")
+	require.Eventually(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if event.Name == terminal_svc.DataEventName("terminal-replacement-close-preempted") {
+				return recordedDataEquals(event, "old-valid-after-preempted-close-failure")
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+
+	close(releaseNewerResolver)
+	newerResult := <-newerResultCh
+	require.NoError(t, newerResult.err)
+	require.Empty(t, newerResult.response.StartError)
+	require.Equal(t, int32(2), backend.opens.Load())
+	require.Eventually(t, func() bool {
+		return len(commandExitEntriesForSession(logs, 195)) == 1
+	}, time.Second, time.Millisecond)
+	require.Equal(t, "replaced", commandExitEntriesForSession(logs, 195)[0].ContextMap()["exitReason"])
+	old.finish(pty.ExitInfo{Code: 41, Reason: "stale"})
+	replacement.finish(pty.ExitInfo{Code: 0, Reason: "natural"})
+	require.Eventually(t, func() bool {
+		return len(commandExitEntriesForSession(logs, 197)) == 1
+	}, time.Second, time.Millisecond)
+}
+
 func TestService_RunCommand_GivenSameIDReplacementWhenOldChannelsSettleLateThenOldLogsReplacedAndOnlyNewEmits(t *testing.T) {
 	old := newReplacementRaceHandle(false, false)
 	replacement := newReplacementRaceHandle(false, false)
@@ -374,6 +666,84 @@ func TestService_RunCommand_GivenStartedCommand_WhenServiceShutsDown_ThenLogsOne
 		"exitCode":   int64(-1),
 		"exitReason": "shutdown",
 	}, commandExitEntriesForSession(logs, 93)[0].ContextMap())
+}
+
+func TestService_RunCommand_GivenShutdownCloseFails_WhenOldLaterExitsNaturally_ThenWarnsSafelyAndDefersFinalAuthority(t *testing.T) {
+	sensitiveCloseErr := errors.New("fixture-sensitive shutdown close failure: command=secret cwd=/private")
+	handle := newScriptedCloseCommandHandle(sensitiveCloseErr)
+	backend := &handleSequenceBackend{handles: []pty.Handle{handle}}
+	emitter := &recordingEmitter{}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend,
+		func(string) (terminal_svc.PTYBackend, error) { return backend, nil }), emitter)
+	svc.SetCommandScopeResolver(func(
+		context.Context,
+		terminal_svc.ResolveCommandScopeRequest,
+	) (*terminal_svc.CommandScope, error) {
+		return &terminal_svc.CommandScope{DeviceID: "device-shutdown-failure", Cwd: "/fixture-sensitive/private-cwd"}, nil
+	})
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	response, err := svc.RunCommand(ctx, terminal_svc.RunCommandRequest{
+		TerminalID: "terminal-shutdown-close-failure",
+		SessionID:  198,
+		Command:    "fixture-sensitive private command",
+		Cols:       80,
+		Rows:       24,
+	})
+	require.NoError(t, err)
+	require.Empty(t, response.StartError)
+
+	svc.Shutdown()
+	require.Equal(t, int32(1), handle.closeCalls.Load())
+	require.Empty(t, commandExitEntriesForSession(logs, 198),
+		"failed Close must not claim shutdown final authority")
+	warnEntries := logs.FilterMessage("terminal_svc.Shutdown: command close failed").All()
+	require.Len(t, warnEntries, 1)
+	require.Equal(t, zapcore.WarnLevel, warnEntries[0].Level)
+	require.Equal(t, map[string]any{
+		"sessionId":  int64(198),
+		"terminalId": "terminal-shutdown-close-failure",
+		"deviceId":   "device-shutdown-failure",
+		"errorClass": "terminalCommandShutdownCloseFailed",
+	}, warnEntries[0].ContextMap())
+
+	handle.data <- []byte("still-authoritative-after-shutdown-close-failure")
+	require.Eventually(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if event.Name == terminal_svc.DataEventName("terminal-shutdown-close-failure") {
+				return recordedDataEquals(event, "still-authoritative-after-shutdown-close-failure")
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	handle.finish(pty.ExitInfo{Code: 23, Reason: "connectionLost", Msg: "fixture-sensitive exit detail"})
+	require.Eventually(t, func() bool {
+		return len(commandExitEntriesForSession(logs, 198)) == 1
+	}, time.Second, time.Millisecond)
+	require.Equal(t, map[string]any{
+		"sessionId":  int64(198),
+		"terminalId": "terminal-shutdown-close-failure",
+		"deviceId":   "device-shutdown-failure",
+		"exitCode":   int64(23),
+		"exitReason": "connectionLost",
+	}, commandExitEntriesForSession(logs, 198)[0].ContextMap())
+	require.Eventually(t, func() bool {
+		for _, event := range emitter.Snapshot() {
+			if exitEvent, ok := event.Payload.(protocol.TerminalExitEvent); ok {
+				return exitEvent.Code == 23 && exitEvent.Reason == "connectionLost"
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	structuredLogs, marshalErr := json.Marshal(logs.All())
+	require.NoError(t, marshalErr)
+	observedLogs := string(structuredLogs)
+	for _, sensitive := range []string{
+		sensitiveCloseErr.Error(), "command=secret", "/private", "fixture-sensitive",
+	} {
+		require.NotContains(t, observedLogs, sensitive)
+	}
 }
 
 func TestService_RunCommand_GivenNaturalExitRacesClose_WhenBothSettle_ThenLogsExactlyOneExit(t *testing.T) {
@@ -863,10 +1233,12 @@ func TestService_RunCommand_GivenExistingHandleEvictionBlocks_WhenClosedInGap_Th
 		terminal_svc.NoopEmitter{},
 	)
 	wantScope := &terminal_svc.CommandScope{Cwd: "/private/exact-scope"}
+	attemptCtxCh := make(chan context.Context, 1)
 	svc.SetCommandScopeResolver(func(
-		context.Context,
-		terminal_svc.ResolveCommandScopeRequest,
+		resolveCtx context.Context,
+		_ terminal_svc.ResolveCommandScopeRequest,
 	) (*terminal_svc.CommandScope, error) {
+		attemptCtxCh <- resolveCtx
 		return wantScope, nil
 	})
 	defer svc.Shutdown()
@@ -882,8 +1254,14 @@ func TestService_RunCommand_GivenExistingHandleEvictionBlocks_WhenClosedInGap_Th
 		Rows:       24,
 	})
 	<-oldHandle.closeStarted
-	closeErr := svc.Close(context.Background(), "terminal-eviction-stop")
+	attemptCtx := <-attemptCtxCh
+	closeResultCh := make(chan error, 1)
+	go func() {
+		closeResultCh <- svc.Close(context.Background(), "terminal-eviction-stop")
+	}()
+	<-attemptCtx.Done()
 	close(oldHandle.releaseClose)
+	closeErr := <-closeResultCh
 	result := <-resultCh
 
 	require.NoError(t, closeErr)

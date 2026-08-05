@@ -30,9 +30,10 @@ var (
 type commandStartStage string
 
 const (
-	commandStartStageUnknown       commandStartStage = "unknown"
-	commandStartStageBackendSelect commandStartStage = "backendSelect"
-	commandStartStagePTYOpen       commandStartStage = "ptyOpen"
+	commandStartStageUnknown          commandStartStage = "unknown"
+	commandStartStageBackendSelect    commandStartStage = "backendSelect"
+	commandStartStageReplacementClose commandStartStage = "replacementClose"
+	commandStartStagePTYOpen          commandStartStage = "ptyOpen"
 )
 
 type commandStartError struct {
@@ -105,8 +106,9 @@ type commandLifecycle struct {
 	terminalID string
 	deviceID   string
 
-	started     atomic.Bool
-	finalLogged atomic.Bool
+	started                    atomic.Bool
+	finalLogged                atomic.Bool
+	shutdownCloseFailureLogged atomic.Bool
 }
 
 func newCommandLifecycle(
@@ -142,6 +144,17 @@ func (l *commandLifecycle) logExited(exitCode int, exitReason string) bool {
 		zap.Int("exitCode", exitCode),
 		zap.String("exitReason", exitReason))
 	return true
+}
+
+func (l *commandLifecycle) logShutdownCloseFailure() {
+	if !l.started.Load() || !l.shutdownCloseFailureLogged.CompareAndSwap(false, true) {
+		return
+	}
+	logger.Ctx(l.ctx).Warn("terminal_svc.Shutdown: command close failed",
+		zap.Int64("sessionId", l.sessionID),
+		zap.String("terminalId", l.terminalID),
+		zap.String("deviceId", l.deviceID),
+		zap.String("errorClass", "terminalCommandShutdownCloseFailed"))
 }
 
 // SetCommandScopeResolver 注入 session → 命令执行作用域的只读解析器。

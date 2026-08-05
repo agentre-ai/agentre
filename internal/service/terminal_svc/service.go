@@ -44,18 +44,19 @@ type Service struct {
 // itself is intentionally never compared because an interface may contain a
 // valid non-comparable dynamic value.
 //
-// Lock contract: Service.mu only protects ownership maps. Retirement may mark
-// active=false while Service.mu is held, but it waits for emissionMu only after
-// releasing Service.mu. Emitter boundaries run under emissionMu; retirement
-// logging and Handle.Close run without either mutex, so no external boundary can
-// block the service ownership lock.
+// Lock contract: Service.mu only protects ownership maps. terminationMu
+// serializes one entry's Close/final-retirement authority without blocking data
+// emissions. Retirement may mark active=false while Service.mu is held, but it
+// waits for emissionMu only after releasing Service.mu. Handle.Close, lifecycle
+// logging, and emitter boundaries therefore never run under Service.mu.
 type sessionEntry struct {
 	ctx       context.Context
 	handle    pty.Handle
 	lifecycle *commandLifecycle
 
-	emissionMu sync.Mutex
-	active     atomic.Bool
+	terminationMu sync.Mutex
+	emissionMu    sync.Mutex
+	active        atomic.Bool
 }
 
 func newSessionEntry(ctx context.Context, handle pty.Handle, lifecycle *commandLifecycle) *sessionEntry {
@@ -82,6 +83,36 @@ func (e *sessionEntry) logCommandRetirement(exitReason string) {
 	if e.lifecycle != nil {
 		e.lifecycle.logExited(commandExitCodeUnavailable, exitReason)
 	}
+}
+
+func (e *sessionEntry) logShutdownCloseFailure() {
+	if e.lifecycle != nil {
+		e.lifecycle.logShutdownCloseFailure()
+	}
+}
+
+// retireCurrentSession requires entry.terminationMu. It claims final authority
+// only for the exact active entry, drains emissions outside Service.mu, logs the
+// retirement milestone once, and detaches only that ownership token.
+func (s *Service) retireCurrentSession(terminalID string, entry *sessionEntry, exitReason string) bool {
+	s.mu.Lock()
+	current := s.sessions[terminalID] == entry && entry.active.Load()
+	if current {
+		entry.beginRetirement()
+	}
+	s.mu.Unlock()
+	if !current {
+		return false
+	}
+
+	entry.drainRetirement()
+	entry.logCommandRetirement(exitReason)
+	s.mu.Lock()
+	if s.sessions[terminalID] == entry {
+		delete(s.sessions, terminalID)
+	}
+	s.mu.Unlock()
+	return true
 }
 
 func (e *sessionEntry) emitIfActive(emit func()) bool {
@@ -176,32 +207,44 @@ func (s *Service) open(
 		return err
 	}
 
-	// Keep the retired entry visible while draining its emission gate, so every
-	// concurrent same-ID start observes the same barrier. Only after all old
-	// emitter/logger calls finish may Handle.Close run and the entry detach;
-	// backend.Open therefore cannot make replacement ownership observable while
-	// a stale emission is still in progress.
+	// A replacement has no retirement authority until the old Handle.Close is
+	// confirmed. Keep the exact old entry current and active while Close blocks
+	// or fails, so its output remains valid and a failed close can be retried.
 	s.mu.Lock()
 	if s.inFlight[terminalID] != attempt {
 		s.mu.Unlock()
 		return preemptedStartError(lifecycle)
 	}
 	old := s.sessions[terminalID]
-	if old != nil {
-		old.beginRetirement()
-	}
 	s.mu.Unlock()
 	if old != nil {
-		old.drainRetirement()
-		old.logCommandRetirement(commandExitReasonReplaced)
-		_ = old.handle.Close()
-
+		old.terminationMu.Lock()
 		s.mu.Lock()
 		preempted := s.inFlight[terminalID] != attempt
-		if !preempted && s.sessions[terminalID] == old {
-			delete(s.sessions, terminalID)
-		}
+		current := s.sessions[terminalID] == old && old.active.Load()
 		s.mu.Unlock()
+		if preempted {
+			old.terminationMu.Unlock()
+			return preemptedStartError(lifecycle)
+		}
+		if current {
+			closeErr := old.handle.Close()
+			if closeErr != nil {
+				preempted = !s.ownsStart(terminalID, attempt)
+				old.terminationMu.Unlock()
+				if preempted {
+					return preemptedStartError(lifecycle)
+				}
+				if annotateStartFailure {
+					return annotateCommandStartError(commandStartStageReplacementClose, closeErr)
+				}
+				return closeErr
+			}
+
+			s.retireCurrentSession(terminalID, old, commandExitReasonReplaced)
+		}
+		preempted = !s.ownsStart(terminalID, attempt)
+		old.terminationMu.Unlock()
 		if preempted {
 			return preemptedStartError(lifecycle)
 		}
@@ -330,27 +373,23 @@ func (s *Service) Close(ctx context.Context, terminalID string) error {
 		return ErrTerminalNotOpen
 	}
 	if activeHandle {
+		entry.terminationMu.Lock()
+		s.mu.Lock()
+		current := s.sessions[terminalID] == entry && entry.active.Load()
+		s.mu.Unlock()
+		if !current {
+			entry.terminationMu.Unlock()
+			return nil
+		}
 		if err := entry.handle.Close(); err != nil {
+			entry.terminationMu.Unlock()
 			return err
 		}
 		// A failed Close leaves the current entry active for output and retry. A
 		// confirmed Close retires only the exact entry still owning this ID, then
 		// drains any emission already in progress before detaching it.
-		s.mu.Lock()
-		current := s.sessions[terminalID] == entry
-		if current {
-			entry.beginRetirement()
-		}
-		s.mu.Unlock()
-		if current {
-			entry.drainRetirement()
-			entry.logCommandRetirement(commandExitReasonStopped)
-			s.mu.Lock()
-			if s.sessions[terminalID] == entry {
-				delete(s.sessions, terminalID)
-			}
-			s.mu.Unlock()
-		}
+		s.retireCurrentSession(terminalID, entry, commandExitReasonStopped)
+		entry.terminationMu.Unlock()
 	}
 	return nil // only inFlight was canceled, or the captured entry settled
 }
@@ -364,7 +403,6 @@ func (s *Service) Shutdown() {
 	s.mu.Lock()
 	sessions := make([]ownedSession, 0, len(s.sessions))
 	for terminalID, entry := range s.sessions {
-		entry.beginRetirement()
 		sessions = append(sessions, ownedSession{terminalID: terminalID, entry: entry})
 	}
 	// Clear and cancel in-flight starts too: clearing inFlight makes each pending
@@ -381,14 +419,22 @@ func (s *Service) Shutdown() {
 		a.cancel()
 	}
 	for _, session := range sessions {
-		session.entry.drainRetirement()
-		session.entry.logCommandRetirement(commandExitReasonShutdown)
-		_ = session.entry.handle.Close()
+		entry := session.entry
+		entry.terminationMu.Lock()
 		s.mu.Lock()
-		if s.sessions[session.terminalID] == session.entry {
-			delete(s.sessions, session.terminalID)
-		}
+		current := s.sessions[session.terminalID] == entry && entry.active.Load()
 		s.mu.Unlock()
+		if !current {
+			entry.terminationMu.Unlock()
+			continue
+		}
+		if err := entry.handle.Close(); err != nil {
+			entry.logShutdownCloseFailure()
+			entry.terminationMu.Unlock()
+			continue
+		}
+		s.retireCurrentSession(session.terminalID, entry, commandExitReasonShutdown)
+		entry.terminationMu.Unlock()
 	}
 }
 
@@ -472,6 +518,7 @@ stream:
 	// Lifecycle finish and terminal exit are one generation boundary. A
 	// replacement either waits for both to finish or retires this entry before
 	// either starts; it can never observe only half of the old final sequence.
+	entry.terminationMu.Lock()
 	finished := entry.emitFinalIfActive(func() {
 		if entry.lifecycle != nil {
 			entry.lifecycle.logExited(exitInfo.Code, exitInfo.Reason)
@@ -487,4 +534,5 @@ stream:
 		}
 		s.mu.Unlock()
 	}
+	entry.terminationMu.Unlock()
 }

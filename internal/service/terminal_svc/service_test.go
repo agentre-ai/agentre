@@ -251,7 +251,7 @@ func (b *routedRaceBackend) openCount(terminalID string) int {
 	return b.opens[terminalID]
 }
 
-func TestService_GivenCloseAndPumpOfOldHandleCompleteAfterReplacementThenOnlyReplacementEmits(t *testing.T) {
+func TestService_GivenCloseOfOldHandleBlocksReplacementThenOldRemainsValidUntilCloseAndCannotDeleteReplacement(t *testing.T) {
 	old := newReplacementRaceHandle(true, false)
 	replacement := newReplacementRaceHandle(false, false)
 	backend := &replacementRaceBackend{old: old, replacement: replacement}
@@ -271,28 +271,37 @@ func TestService_GivenCloseAndPumpOfOldHandleCompleteAfterReplacementThenOnlyRep
 	go func() { closeResult <- svc.Close(context.Background(), "terminal-race") }()
 	<-old.firstCloseStarted
 
-	require.NoError(t, svc.Open(context.Background(), "terminal-race", "", "/replacement", 80, 24))
-	old.data <- []byte("stale")
-	old.finish(pty.ExitInfo{Code: 41, Reason: "stale"})
-	require.Never(t, func() bool { return len(emitter.Snapshot()) != 0 }, 100*time.Millisecond, time.Millisecond,
-		"a retired pump must not emit data or exit after replacement registration")
-	require.NoError(t, svc.Write(context.Background(), "terminal-race", "pump-finished"),
-		"completion of the old pump must not delete the replacement handle")
+	replacementResult := make(chan error, 1)
+	go func() {
+		replacementResult <- svc.Open(context.Background(), "terminal-race", "", "/replacement", 80, 24)
+	}()
+	require.Never(t, func() bool { return backend.opens.Load() == 2 }, 100*time.Millisecond, time.Millisecond,
+		"replacement backend.Open must wait for confirmed old-handle close")
+	old.data <- []byte("valid-before-close-authority")
+	require.Eventually(t, func() bool { return len(emitter.Snapshot()) == 1 }, time.Second, time.Millisecond)
+	require.Equal(t, []byte("valid-before-close-authority"), recordedData(t, emitter.Snapshot()[0]))
 
 	close(old.releaseFirstClose)
 	require.NoError(t, <-closeResult)
-	require.NoError(t, svc.Write(context.Background(), "terminal-race", "close-finished"),
-		"completion of the old Close must not delete the replacement handle")
+	require.NoError(t, <-replacementResult)
+	require.NoError(t, svc.Write(context.Background(), "terminal-race", "replacement-current"))
+
+	old.data <- []byte("stale")
+	old.finish(pty.ExitInfo{Code: 41, Reason: "stale"})
+	require.Never(t, func() bool { return len(emitter.Snapshot()) != 1 }, 100*time.Millisecond, time.Millisecond,
+		"the retired old pump must not emit data or exit after replacement registration")
+	require.NoError(t, svc.Write(context.Background(), "terminal-race", "old-pump-finished"),
+		"completion of the old pump must not delete the replacement handle")
 	require.Equal(t, int32(2), replacement.writeCalls.Load())
 
 	replacement.data <- []byte("fresh")
 	replacement.finish(pty.ExitInfo{Code: 7, Reason: "replacement"})
-	require.Eventually(t, func() bool { return len(emitter.Snapshot()) == 2 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return len(emitter.Snapshot()) == 3 }, time.Second, time.Millisecond)
 	events := emitter.Snapshot()
-	require.Equal(t, terminal_svc.DataEventName("terminal-race"), events[0].Name)
-	require.Equal(t, []byte("fresh"), recordedData(t, events[0]))
-	require.Equal(t, terminal_svc.ExitEventName("terminal-race"), events[1].Name)
-	require.Equal(t, protocol.TerminalExitEvent{Code: 7, Reason: "replacement"}, events[1].Payload)
+	require.Equal(t, terminal_svc.DataEventName("terminal-race"), events[1].Name)
+	require.Equal(t, []byte("fresh"), recordedData(t, events[1]))
+	require.Equal(t, terminal_svc.ExitEventName("terminal-race"), events[2].Name)
+	require.Equal(t, protocol.TerminalExitEvent{Code: 7, Reason: "replacement"}, events[2].Payload)
 }
 
 func TestService_GivenRetirementRacesBlockedEmissionThenReplacementWaitsAndNoStaleEmissionFollows(t *testing.T) {
@@ -365,6 +374,15 @@ func recordedData(t *testing.T, event recordedEvent) []byte {
 	return data
 }
 
+func recordedDataEquals(event recordedEvent, want string) bool {
+	payload, ok := event.Payload.(map[string]string)
+	if !ok {
+		return false
+	}
+	data, err := base64.StdEncoding.DecodeString(payload["data"])
+	return err == nil && string(data) == want
+}
+
 type blockingRecordingEmitter struct {
 	recordingEmitter
 	blocked     chan struct{}
@@ -387,6 +405,31 @@ func (e *blockingRecordingEmitter) Emit(ctx context.Context, name string, payloa
 
 func (e *blockingRecordingEmitter) unblock() {
 	e.releaseOnce.Do(func() { close(e.release) })
+}
+
+func TestService_GivenReplacementCloseFailsWhenOpeningSameIDThenReturnsErrorAndRetainsOldForRetry(t *testing.T) {
+	closeErr := errors.New("replacement close failed")
+	old := newScriptedCloseCommandHandle(closeErr, nil)
+	replacement := newReplacementRaceHandle(false, false)
+	backend := &handleSequenceBackend{handles: []pty.Handle{old, replacement}}
+	svc := terminal_svc.NewService(terminal_svc.NewBackendSelector(backend, nil), terminal_svc.NoopEmitter{})
+	t.Cleanup(func() {
+		old.finish(pty.ExitInfo{Reason: "closed"})
+		replacement.finish(pty.ExitInfo{Reason: "closed"})
+	})
+
+	require.NoError(t, svc.Open(context.Background(), "terminal-open-close-failure", "", "/old", 80, 24))
+	require.ErrorIs(t,
+		svc.Open(context.Background(), "terminal-open-close-failure", "", "/replacement", 80, 24),
+		closeErr,
+	)
+	require.Equal(t, int32(1), backend.opens.Load())
+	require.NoError(t, svc.Write(context.Background(), "terminal-open-close-failure", "old-current"))
+
+	require.NoError(t, svc.Open(context.Background(), "terminal-open-close-failure", "", "/replacement", 80, 24))
+	require.Equal(t, int32(2), backend.opens.Load())
+	require.NoError(t, svc.Write(context.Background(), "terminal-open-close-failure", "replacement-current"))
+	require.Equal(t, int32(2), old.closeCalls.Load())
 }
 
 func TestService_Open_ReOpenClosesPrevious(t *testing.T) {
