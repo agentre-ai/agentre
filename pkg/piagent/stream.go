@@ -148,9 +148,7 @@ func (s *Stream) drain(ctx context.Context) {
 	defer close(s.events)
 	promptAccepted := false
 	for s.proc.lines.Scan() {
-		if s.proc.rawSink != nil {
-			s.proc.rawSink(s.proc.lines.Bytes())
-		}
+		s.proc.captureRawFrame(s.proc.lines.Bytes())
 		select {
 		case <-ctx.Done():
 			s.setErr(ctx.Err())
@@ -222,7 +220,11 @@ func (s *Stream) drain(ctx context.Context) {
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			continue
 		}
-		s.handleRPCEvent(ev)
+		if err := s.handleRPCEvent(ctx, ev); err != nil {
+			s.setErr(err)
+			s.emit(Event{Kind: EventError, Err: err})
+			return
+		}
 		s.observeAgentEnd(ev, line)
 		if isTerminalEvent(ev) {
 			s.settle(ctx)
@@ -305,9 +307,7 @@ func (s *Stream) emitSessionStats(ctx context.Context) {
 
 func (s *Stream) readSessionStatsContextWindow() int {
 	for s.proc.lines.Scan() {
-		if s.proc.rawSink != nil {
-			s.proc.rawSink(s.proc.lines.Bytes())
-		}
+		s.proc.captureRawFrame(s.proc.lines.Bytes())
 		line := strings.TrimSpace(s.proc.lines.Text())
 		if line == "" {
 			continue
@@ -355,7 +355,7 @@ func contextWindowFromSessionStats(raw json.RawMessage) int {
 	return stats.ContextUsage.ContextWindow
 }
 
-func (s *Stream) handleRPCEvent(ev rpcEvent) {
+func (s *Stream) handleRPCEvent(ctx context.Context, ev rpcEvent) error {
 	switch ev.Type {
 	case "message_start":
 		// 只有 user 消息回显才 surface（首条 prompt + mid-turn steer 注入）；
@@ -373,15 +373,35 @@ func (s *Stream) handleRPCEvent(ev rpcEvent) {
 		}
 	case "tool_execution_start":
 		s.emit(Event{Kind: EventPreToolUse, Tool: ToolEvent{ID: ev.ToolCallID, Name: ev.ToolName, Input: ev.Args}})
+	case "tool_execution_update":
+		s.emit(Event{Kind: EventToolUseUpdate, Tool: ToolEvent{ID: ev.ToolCallID, Name: ev.ToolName, PartialResult: ev.PartialResult}})
 	case "tool_execution_end":
-		content := toolResultText(ev.Result)
-		s.emit(Event{Kind: EventPostToolUse, Tool: ToolEvent{ID: ev.ToolCallID, Name: ev.ToolName, Content: content, IsError: ev.IsError}})
+		content, details := toolResult(ev.Result)
+		s.emit(Event{Kind: EventPostToolUse, Tool: ToolEvent{ID: ev.ToolCallID, Name: ev.ToolName, Content: content, Details: details, IsError: ev.IsError}})
+	case "extension_ui_request":
+		if isBlockingExtensionUIMethod(ev.Method) {
+			if err := s.send(ctx, map[string]any{
+				"type": "extension_ui_response", "id": ev.ID, "cancelled": true,
+			}); err != nil {
+				return err
+			}
+		}
 	case "compaction_start":
 		s.emit(Event{Kind: EventRuntimeStatus, Text: "compacting"})
 	case "compaction_end":
 		s.emit(Event{Kind: EventCompactBoundary})
 	case "auto_retry_start":
 		s.emit(Event{Kind: EventRuntimeStatus, Text: strings.TrimSpace(ev.ErrorMessage)})
+	}
+	return nil
+}
+
+func isBlockingExtensionUIMethod(method string) bool {
+	switch strings.TrimSpace(method) {
+	case "confirm", "select", "input", "editor":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -517,15 +537,16 @@ func tailString(s string, limit int) string {
 	return s[len(s)-limit:]
 }
 
-func toolResultText(raw json.RawMessage) string {
+func toolResult(raw json.RawMessage) (string, json.RawMessage) {
 	if len(raw) == 0 {
-		return ""
+		return "", nil
 	}
 	var obj struct {
-		Content []contentBlock `json:"content"`
+		Content []contentBlock  `json:"content"`
+		Details json.RawMessage `json:"details"`
 	}
 	if err := json.Unmarshal(raw, &obj); err != nil {
-		return string(raw)
+		return string(raw), nil
 	}
 	var b strings.Builder
 	for _, c := range obj.Content {
@@ -533,5 +554,5 @@ func toolResultText(raw json.RawMessage) string {
 			b.WriteString(c.Text)
 		}
 	}
-	return b.String()
+	return b.String(), obj.Details
 }
