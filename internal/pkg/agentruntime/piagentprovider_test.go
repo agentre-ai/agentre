@@ -90,6 +90,9 @@ func TestPiAgentProviderExtension_AllThreeTypesAPIMapping(t *testing.T) {
 			assert.True(t, strings.HasPrefix(src, "export default function (pi) { "))
 			assert.Contains(t, src, `pi.registerProvider("agentre-`+testProviderKey+`", {`)
 			assert.Contains(t, src, `api: "`+tc.api+`"`)
+			// 每个 model 都必须带 cost，避免绑定模型 id 与用户 ~/.pi/agent 撞名时
+			// pi 0.83.0 模型合并崩溃（provider-composer.js applyModelOverride 读 model.cost.tiers）。
+			assert.Contains(t, src, `cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }`)
 		})
 	}
 }
@@ -110,7 +113,7 @@ func TestPiAgentProviderExtension_FullShape(t *testing.T) {
 	assert.Contains(t, src, `baseUrl: "https://proxy.example.com"`)
 	assert.Contains(t, src, `api: "anthropic-messages"`)
 	assert.Contains(t, src, `apiKey: "$AGENTRE_PI_API_KEY_9a3b2c1d4e5f6a7b8c9d0e1f2a3b4c5d"`)
-	assert.Contains(t, src, `models: [{ id: "claude-sonnet-4", name: "claude-sonnet-4", reasoning: true, input: ["text","image"], contextWindow: 200000, maxTokens: 8192 }]`)
+	assert.Contains(t, src, `models: [{ id: "claude-sonnet-4", name: "claude-sonnet-4", reasoning: true, input: ["text","image"], contextWindow: 200000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }]`)
 	// 密钥只进 env，绝不落进扩展源。
 	assert.NotContains(t, src, "sk-plaintext-secret")
 }
@@ -124,7 +127,7 @@ func TestPiAgentProviderExtension_ZeroWindowTokensOmitted(t *testing.T) {
 		Model:       "qwen",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, src, `models: [{ id: "qwen", name: "qwen", reasoning: true, input: ["text","image"] }]`)
+	assert.Contains(t, src, `models: [{ id: "qwen", name: "qwen", reasoning: true, input: ["text","image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }]`)
 	assert.NotContains(t, src, "contextWindow")
 	assert.NotContains(t, src, "maxTokens")
 }

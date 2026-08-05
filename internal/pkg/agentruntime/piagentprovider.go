@@ -60,7 +60,9 @@ func PiAgentProviderModelName(p *llm_provider_entity.LLMProvider) (string, error
 
 // PiAgentProviderExtension 渲染注入 Pi 的 provider 扩展源码（纯文本 JS）：
 // 调用 pi.registerProvider 注册 "agentre-<key>"，APIKey 只以 $ENV_VAR 引用，
-// 密钥本身绝不落入扩展源。contextWindow / maxTokens 为 0 时省略字段。
+// 密钥本身绝不落入扩展源。contextWindow / maxTokens 为 0 时省略字段；
+// 每个 model 固定带 cost（全 0），避免绑定模型 id 与用户 ~/.pi/agent 撞名时
+// pi 0.83.0 模型合并崩溃（provider-composer.js applyModelOverride 读 model.cost.tiers）。
 func PiAgentProviderExtension(p *llm_provider_entity.LLMProvider) (string, error) {
 	if p == nil {
 		return "", fmt.Errorf("agentruntime: provider is nil")
@@ -82,7 +84,7 @@ func PiAgentProviderExtension(p *llm_provider_entity.LLMProvider) (string, error
 	if p.MaxOutput > 0 {
 		modelObj += fmt.Sprintf(", maxTokens: %d", p.MaxOutput)
 	}
-	modelObj += " }"
+	modelObj += ", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }"
 
 	return fmt.Sprintf(
 		"export default function (pi) { pi.registerProvider(%s, { name: %s, baseUrl: %s, api: %s, apiKey: %s, models: [%s] }) }",
