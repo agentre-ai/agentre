@@ -1459,7 +1459,11 @@ function ChatPanel({
       };
       let activeGeneration: ListenerGeneration | undefined;
       let settled = false;
-      let stopPromise: Promise<void> | undefined;
+      let closePromise: Promise<void> | undefined;
+      let automaticCloseRequired = false;
+      let automaticCloseGuardianTimer: number | undefined;
+      let automaticCloseRetryDelayMs = cleanupRetryInitialDelayMs;
+      let userStopRequested = false;
       const cleanupListeners = (generation: ListenerGeneration): boolean => {
         let cleaned = true;
         for (const listener of generation.listeners) {
@@ -1510,6 +1514,22 @@ function ChatPanel({
         else scheduleCleanupGuardian(generation);
         return cleaned;
       };
+      const clearAutomaticCloseTimer = () => {
+        if (automaticCloseGuardianTimer === undefined) return;
+        window.clearTimeout(automaticCloseGuardianTimer);
+        automaticCloseGuardianTimer = undefined;
+      };
+      const stopAutomaticCloseGuardian = () => {
+        automaticCloseRequired = false;
+        clearAutomaticCloseTimer();
+      };
+      const appendFailure = (error: unknown) => {
+        if (settled) return;
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(terminalId)?.status === "running") {
+          commands.appendOutput(terminalId, String(error));
+        }
+      };
       const settle = (
         status: "done" | "failed" | "stopped",
         exitCode?: number,
@@ -1519,6 +1539,7 @@ function ChatPanel({
           return;
         }
         settled = true;
+        stopAutomaticCloseGuardian();
         const commands = useLocalCommandsStore.getState();
         if (commands.get(terminalId)?.status === "running") {
           if (exitCode === undefined) commands.finish(terminalId, status);
@@ -1532,11 +1553,65 @@ function ChatPanel({
           ensureListenersCleaned();
           return;
         }
-        const commands = useLocalCommandsStore.getState();
-        if (commands.get(terminalId)?.status === "running") {
-          commands.appendOutput(terminalId, String(error));
-        }
+        appendFailure(error);
         settle("failed", -1);
+      };
+      const scheduleAutomaticCloseGuardian = () => {
+        if (
+          settled ||
+          !automaticCloseRequired ||
+          automaticCloseGuardianTimer !== undefined
+        ) {
+          return;
+        }
+        const retryDelayMs = automaticCloseRetryDelayMs;
+        automaticCloseRetryDelayMs = Math.min(
+          automaticCloseRetryDelayMs * 2,
+          cleanupRetryMaxDelayMs,
+        );
+        automaticCloseGuardianTimer = window.setTimeout(() => {
+          automaticCloseGuardianTimer = undefined;
+          void requestTerminalClose("automatic");
+        }, retryDelayMs);
+      };
+      const requestTerminalClose = (
+        ownership: "automatic" | "user",
+      ): Promise<void> => {
+        if (ownership === "user") {
+          userStopRequested = true;
+          clearAutomaticCloseTimer();
+        }
+        if (settled) return Promise.resolve();
+        if (closePromise) return closePromise;
+        const pending = (async () => {
+          let authoritative = false;
+          try {
+            await TerminalClose(terminalId);
+            authoritative = true;
+          } catch (error: unknown) {
+            if (isTerminalNotOpenError(error)) authoritative = true;
+            else if (!automaticCloseRequired) appendFailure(error);
+          }
+          if (authoritative) {
+            if (userStopRequested) settle("stopped");
+            else settle("failed", -1);
+            return;
+          }
+          scheduleAutomaticCloseGuardian();
+        })();
+        closePromise = pending;
+        void pending.finally(() => {
+          if (closePromise === pending) closePromise = undefined;
+        });
+        return pending;
+      };
+      const startAutomaticCloseGuardian = () => {
+        if (settled) return;
+        if (!automaticCloseRequired) {
+          automaticCloseRetryDelayMs = cleanupRetryInitialDelayMs;
+        }
+        automaticCloseRequired = true;
+        void requestTerminalClose("automatic");
       };
       const decode = makeStreamDecoder();
       const handleData = (p: { data: string }) => {
@@ -1551,31 +1626,7 @@ function ChatPanel({
         settle(status, p.code);
       };
       const controller: LocalCommandRuntimeController = {
-        stop: () => {
-          if (settled) return Promise.resolve();
-          if (stopPromise) return stopPromise;
-          const pending = (async () => {
-            try {
-              await TerminalClose(terminalId);
-            } catch (error: unknown) {
-              if (!isTerminalNotOpenError(error)) {
-                if (!settled) {
-                  const commands = useLocalCommandsStore.getState();
-                  if (commands.get(terminalId)?.status === "running") {
-                    commands.appendOutput(terminalId, String(error));
-                  }
-                }
-                return;
-              }
-            }
-            settle("stopped");
-          })();
-          stopPromise = pending;
-          void pending.finally(() => {
-            if (stopPromise === pending) stopPromise = undefined;
-          });
-          return pending;
-        },
+        stop: () => requestTerminalClose("user"),
       };
       localCommandRuntimeStore.register(terminalId, controller);
       useLocalCommandsStore.getState().start({
@@ -1612,10 +1663,6 @@ function ChatPanel({
           if (!ensureListenersCleaned(attemptGeneration)) break;
         }
       }
-      if (!observersReady) {
-        fail(observerError);
-        return undefined;
-      }
       try {
         const response = await TerminalRunCommand(
           terminalId,
@@ -1625,12 +1672,20 @@ function ChatPanel({
           24,
         );
         if (response.startError) fail(response.startError);
+        else if (!observersReady) {
+          appendFailure(observerError);
+          startAutomaticCloseGuardian();
+        }
         return {
           deviceId: response.scope.deviceId,
           cwd: response.scope.cwd,
         };
       } catch (error: unknown) {
-        fail(error);
+        if (observersReady) fail(error);
+        else {
+          appendFailure(error);
+          startAutomaticCloseGuardian();
+        }
         return undefined;
       }
     },
