@@ -92,15 +92,15 @@ func TestResolveLocalCommandScope_GivenExistingRemoteSession_WhenLocationChanges
 	backend := &agent_backend_entity.AgentBackend{
 		ID:       52,
 		Type:     string(agent_backend_entity.TypeClaudeCode),
-		DeviceID: "device-9",
+		DeviceID: "9",
 	}
 	m.session.EXPECT().Find(ctx, int64(72)).Return(sess, nil).Times(2)
 	m.agent.EXPECT().Find(ctx, int64(32)).Return(agent, nil).Times(2)
 	m.backend.EXPECT().Find(ctx, int64(52)).Return(backend, nil).Times(2)
 	gomock.InOrder(
-		m.projectLocation.EXPECT().FindByProjectAndDevice(ctx, int64(42), "device-9").
+		m.projectLocation.EXPECT().FindByProjectAndDevice(ctx, int64(42), "9").
 			Return(&project_location_entity.ProjectLocation{Path: "/remote/old"}, nil),
-		m.projectLocation.EXPECT().FindByProjectAndDevice(ctx, int64(42), "device-9").
+		m.projectLocation.EXPECT().FindByProjectAndDevice(ctx, int64(42), "9").
 			Return(&project_location_entity.ProjectLocation{Path: "/remote/current"}, nil),
 	)
 
@@ -109,8 +109,8 @@ func TestResolveLocalCommandScope_GivenExistingRemoteSession_WhenLocationChanges
 	second, err := svc.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{SessionID: 72})
 	require.NoError(t, err)
 
-	assert.Equal(t, &LocalCommandScope{DeviceID: "device-9", Cwd: "/remote/old"}, first)
-	assert.Equal(t, &LocalCommandScope{DeviceID: "device-9", Cwd: "/remote/current"}, second)
+	assert.Equal(t, &LocalCommandScope{DeviceID: "9", Cwd: "/remote/old"}, first)
+	assert.Equal(t, &LocalCommandScope{DeviceID: "9", Cwd: "/remote/current"}, second)
 }
 
 func TestResolveLocalCommandScope_GivenPreSessionLocalProject_WhenResolved_ThenUsesUnpersistedSessionWithoutCreatingOne(t *testing.T) {
@@ -164,12 +164,12 @@ func TestResolveLocalCommandScope_GivenPreSessionRemoteProject_WhenResolved_Then
 	backend := &agent_backend_entity.AgentBackend{
 		ID:       55,
 		Type:     string(agent_backend_entity.TypeClaudeCode),
-		DeviceID: "device-10",
+		DeviceID: "10",
 	}
 	m.session.EXPECT().Create(gomock.Any(), gomock.Any()).Times(0)
 	m.agent.EXPECT().Find(ctx, int64(35)).Return(agent, nil)
 	m.backend.EXPECT().Find(ctx, int64(55)).Return(backend, nil)
-	m.projectLocation.EXPECT().FindByProjectAndDevice(ctx, int64(45), "device-10").
+	m.projectLocation.EXPECT().FindByProjectAndDevice(ctx, int64(45), "10").
 		Return(&project_location_entity.ProjectLocation{Path: "/remote/project-current"}, nil)
 
 	scope, err := svc.ResolveLocalCommandScope(ctx, &ResolveLocalCommandScopeRequest{
@@ -178,7 +178,7 @@ func TestResolveLocalCommandScope_GivenPreSessionRemoteProject_WhenResolved_Then
 	})
 	require.NoError(t, err)
 	assert.Equal(t, &LocalCommandScope{
-		DeviceID: "device-10",
+		DeviceID: "10",
 		Cwd:      "/remote/project-current",
 	}, scope)
 }
@@ -189,7 +189,7 @@ func TestResolveLocalCommandScope_GivenPreSessionRemoteFreeChat_WhenResolved_The
 	backend := &agent_backend_entity.AgentBackend{
 		ID:       56,
 		Type:     string(agent_backend_entity.TypeClaudeCode),
-		DeviceID: "device-11",
+		DeviceID: "11",
 	}
 	m.session.EXPECT().Create(gomock.Any(), gomock.Any()).Times(0)
 	m.agent.EXPECT().Find(ctx, int64(36)).Return(agent, nil)
@@ -200,7 +200,67 @@ func TestResolveLocalCommandScope_GivenPreSessionRemoteFreeChat_WhenResolved_The
 		ProjectID: 0,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, &LocalCommandScope{DeviceID: "device-11", Cwd: ""}, scope)
+	assert.Equal(t, &LocalCommandScope{DeviceID: "11", Cwd: ""}, scope)
+}
+
+func TestResolveLocalCommandScope_GivenInvalidRemoteDevice_WhenResolved_ThenRejectsBeforeCwdResolution(t *testing.T) {
+	tests := []struct {
+		name     string
+		req      *ResolveLocalCommandScopeRequest
+		sess     *chat_entity.Session
+		agentID  int64
+		deviceID string
+	}{
+		{
+			name:     "existing session with malformed device",
+			req:      &ResolveLocalCommandScopeRequest{SessionID: 73},
+			sess:     &chat_entity.Session{ID: 73, AgentID: 37, ProjectID: 47},
+			agentID:  37,
+			deviceID: "device-9",
+		},
+		{
+			name:     "pre-session free chat with zero device",
+			req:      &ResolveLocalCommandScopeRequest{AgentID: 38, ProjectID: 0},
+			agentID:  38,
+			deviceID: "0",
+		},
+		{
+			name:     "pre-session project with negative device",
+			req:      &ResolveLocalCommandScopeRequest{AgentID: 39, ProjectID: 49},
+			agentID:  39,
+			deviceID: "-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, m, svc := setupExecTargetTest(t)
+			backendID := tt.agentID + 20
+			if tt.sess != nil {
+				m.session.EXPECT().Find(ctx, tt.req.SessionID).Return(tt.sess, nil)
+			}
+			m.agent.EXPECT().Find(ctx, tt.agentID).
+				Return(&agent_entity.Agent{ID: tt.agentID, AgentBackendID: backendID}, nil)
+			m.backend.EXPECT().Find(ctx, backendID).
+				Return(&agent_backend_entity.AgentBackend{
+					ID:       backendID,
+					Type:     string(agent_backend_entity.TypeClaudeCode),
+					DeviceID: tt.deviceID,
+				}, nil)
+			RegisterCwdResolver(func(context.Context, *chat_entity.Session) (string, error) {
+				t.Fatal("invalid remote device must not fall back to local cwd resolution")
+				return "", nil
+			})
+
+			scope, err := svc.ResolveLocalCommandScope(ctx, tt.req)
+
+			require.Nil(t, scope)
+			require.Error(t, err)
+			var httpErr *httputils.Error
+			require.True(t, errors.As(err, &httpErr))
+			assert.Equal(t, code.AgentBackendInvalidDevice, httpErr.Code)
+		})
+	}
 }
 
 func TestResolveLocalCommandScope_GivenStaleAgentOrBackendTarget_WhenResolved_ThenRejectsWithoutLocalFallback(t *testing.T) {

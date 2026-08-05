@@ -45,6 +45,12 @@ func (s *chatSvc) resolveExecTarget(ctx context.Context, sess *chat_entity.Sessi
 	if be == nil {
 		return nil, i18n.NewError(ctx, code.AgentBackendNotFound)
 	}
+	if be.IsRemote() {
+		deviceID, ok := be.DeviceIDInt()
+		if !ok || deviceID <= 0 {
+			return nil, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
+		}
+	}
 	cwd, err := resolveSessionCwd(ctx, sess, be)
 	if err != nil {
 		return nil, err
