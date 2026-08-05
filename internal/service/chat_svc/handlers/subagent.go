@@ -10,20 +10,48 @@ import (
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/turn"
 )
 
-// MarkRunningSubagentsCancelled 在 turn abort 收尾时把仍 running 的 SubagentStateBlock
-// 改成 "canceled"。SubagentDoneHandler 是唯一改 Status 的正常路径,但 CLI 被
-// interrupt 后 Done 事件不会到,导致 status 留在 "running" 被原样落 DB → 前端
-// AgentSpawnCard 永远 spin。仅命中 *SubagentStateBlock(acc.AddBlock 加进来的
-// 始终是指针;反序列化得到的 value 形态此处不出现)。已 completed/failed 的不动。
+// MarkRunningSubagentsCancelled 在 turn abort 收尾时把外层累计态和 normalized runs
+// 中仍未终止的 waiting/running 状态改成 canceled。已完成、失败、取消、跳过或 unknown
+// 的证据原样保留，避免 abort 覆盖已经到达的终态。
 func MarkRunningSubagentsCancelled(finalBlocks []cagoblocks.ContentBlock) {
 	for _, b := range finalBlocks {
 		sb, ok := b.(*blocks.SubagentStateBlock)
 		if !ok {
 			continue
 		}
-		if sb.Status == "running" {
+		if isNonTerminalSubagentStatus(sb.Status) {
 			sb.Status = "canceled"
 		}
+		for i := range sb.Runs {
+			if isNonTerminalSubagentStatus(sb.Runs[i].Status) {
+				sb.Runs[i].Status = "canceled"
+			}
+		}
+	}
+}
+
+func isNonTerminalSubagentStatus(status string) bool {
+	return status == "waiting" || status == "running"
+}
+
+func cloneSubagentRuns(runs []agentruntime.SubagentRun) []agentruntime.SubagentRun {
+	if runs == nil {
+		return nil
+	}
+	out := make([]agentruntime.SubagentRun, len(runs))
+	copy(out, runs)
+	return out
+}
+
+func mergeNormalizedSnapshot(b *blocks.SubagentStateBlock, info agentruntime.SubagentInfo) {
+	if info.Mode != "" {
+		b.Mode = info.Mode
+	}
+	if info.Runs != nil {
+		b.Runs = cloneSubagentRuns(info.Runs)
+	}
+	if info.Status != "" {
+		b.Status = info.Status
 	}
 }
 
@@ -55,12 +83,18 @@ func (SubagentStartedHandler) Apply(ctx context.Context, ev agentruntime.Event, 
 	if !trackSubagentState(acc, r.ToolCallID, r.Info.Kind) {
 		return nil // 前台 bash:不建 overlay,也不 emit(后续 progress/done 经 Mutate 未命中自然静默)
 	}
+	status := r.Info.Status
+	if status == "" {
+		status = "running"
+	}
 	blk := &blocks.SubagentStateBlock{
 		ParentToolCallID: r.ToolCallID,
 		TaskID:           r.Info.TaskID, // CLI task_id,供 StopBackgroundTask 下发 stop_task 定位
 		Kind:             r.Info.Kind,
 		Description:      r.Info.TaskDescription,
-		Status:           "running",
+		Status:           status,
+		Mode:             r.Info.Mode,
+		Runs:             cloneSubagentRuns(r.Info.Runs),
 	}
 	acc.AddBlock(blk, "subagent_state:"+r.ToolCallID)
 
@@ -81,6 +115,7 @@ func (SubagentProgressHandler) Apply(ctx context.Context, ev agentruntime.Event,
 	// task_progress 帧不带 task_type,无法自己判前台/后台;靠 Mutate 是否命中既有
 	// overlay 来判定 —— 前台 bash 在 Started 已被跳过,这里命中不到 → 不 emit 孤儿事件。
 	hit := turn.Mutate[blocks.SubagentStateBlock](acc, "subagent_state:"+r.ToolCallID, func(b *blocks.SubagentStateBlock) {
+		mergeNormalizedSnapshot(b, r.Info)
 		// R4/R10:TotalTokens/ToolUses/DurationMs 三者来自同一个 CLI usage 对象
 		// (taskUsage,值类型无存在性区分)。task_progress 帧偶尔缺 usage,解码成
 		// 零值后若无条件赋值,会把已经攒起来的 token 数 / 工具数 / 耗时抹回 0——
@@ -162,11 +197,10 @@ func (SubagentDoneHandler) Apply(ctx context.Context, ev agentruntime.Event, acc
 	// 同 Progress:命中不到既有 overlay(前台 bash)→ 不 emit 孤儿事件。后台 bash 的
 	// 完成是跨轮的(autonomous turn 经 FlipSubagentStatus 定向翻转),不走这条 handler。
 	hit := turn.Mutate[blocks.SubagentStateBlock](acc, "subagent_state:"+r.ToolCallID, func(b *blocks.SubagentStateBlock) {
-		status := r.Info.Status
-		if status == "" {
-			status = "completed"
+		mergeNormalizedSnapshot(b, r.Info)
+		if r.Info.Status == "" {
+			b.Status = "completed"
 		}
-		b.Status = status
 		// 与 SubagentProgressHandler 同一守卫(R4):0 值不覆盖已记录值。一帧不带
 		// usage 对象的 task_notification 解码成零值 taskUsage{},若无条件赋值会把
 		// Progress 阶段已累计的 token 数 / 工具数 / 耗时清零。

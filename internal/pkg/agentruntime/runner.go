@@ -22,9 +22,9 @@ const (
 	EventToolUseEnd    EventKind = "tool_use_end"
 	EventToolResult    EventKind = "tool_result"
 	EventSteerConsumed EventKind = "steer_consumed"
-	// subagent 生命周期（仅 claudecode backend 当前产生；codex 不发）。
-	// chat_svc 把元数据 merge 到对应的外层 Agent ChatBlock 的 Subagent 字段上，
-	// 并 emit StreamSubagent* 给前端做卡片态切换。
+	// subagent 生命周期（claudecode 与 Pi runtime 产生；codex 不发）。
+	// Pi 的 stateful drain 在这里承载 parallel/chain 的 mode + runs 全量快照；
+	// claudecode 的 legacy 单运行生产者可继续不填 Runs。
 	EventSubagentStarted  EventKind = "subagent_started"
 	EventSubagentProgress EventKind = "subagent_progress"
 	EventSubagentDone     EventKind = "subagent_done"
@@ -80,7 +80,7 @@ const (
 // ToolUseEvent EventToolUseStart / End 携带。Input 是原始 JSON；chat_svc 自己 unmarshal 到 map。
 //
 // ParentToolCallID：当前 tool_use 是 subagent 内部调用时指向外层 Agent.tool_use_id；
-// 主 agent 自己的工具留空。前端据此把子卡归集到父 SubagentInvocationCard。
+// SubagentRunID：同一外层 parallel/chain 中稳定的输入槽 ID。主 agent 自己的工具留空。
 // 注:JSON wire 字段仍叫 parentToolUseId（来自 Anthropic CLI 协议），仅 Go field 重命名。
 //
 // Subagent：仅外层 Agent / Task 父调用上填，透传 claudecode.SubagentMeta 元数据。
@@ -89,6 +89,7 @@ type ToolUseEvent struct {
 	Name             string
 	Input            []byte
 	ParentToolCallID string
+	SubagentRunID    string
 	Subagent         *SubagentInfo
 }
 
@@ -102,24 +103,46 @@ type ToolResultEvent struct {
 	Content          string
 	IsError          bool
 	ParentToolCallID string
+	SubagentRunID    string
 	ResultMeta       []byte
 }
 
-// SubagentInfo 是 claudecode.SubagentMeta 在 runtime 层的镜像，由
-// EventSubagent* 事件以及外层 Agent 工具的 ToolUseEvent 携带。
-//
-// 字段含义见 claudecode.SubagentMeta。
+// SubagentInfo 是 runtime 层的 backend-neutral subagent 快照，由 EventSubagent*
+// 事件以及外层 Agent 工具的 ToolUseEvent 携带。legacy 字段镜像
+// claudecode.SubagentMeta；Mode/Runs 承载 Pi 的 normalized 单/并行/链式运行模型。
+// Runs 是全量快照：消费者在非 nil 时整片替换，nil 表示 legacy 事件省略、不得清空
+// 已有 runs。Status 是所有 runs 的 aggregate 状态，单个 run 状态保存在 Runs[i]。
 type SubagentInfo struct {
-	TaskID          string
-	SubagentType    string
-	Kind            string // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
-	TaskDescription string
-	Prompt          string
-	LastToolName    string
-	ToolUses        int
-	TotalTokens     int
-	DurationMs      int
-	Status          string // running | completed | failed | canceled (canceled 由 chat_svc 在 turn abort 收尾时推断,runtime 层不主动产出)
+	TaskID          string        `json:"taskId,omitempty"`
+	SubagentType    string        `json:"subagentType,omitempty"`
+	Kind            string        `json:"kind,omitempty"` // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
+	TaskDescription string        `json:"taskDescription,omitempty"`
+	Prompt          string        `json:"prompt,omitempty"`
+	LastToolName    string        `json:"lastToolName,omitempty"`
+	ToolUses        int           `json:"toolUses,omitempty"`
+	TotalTokens     int           `json:"totalTokens,omitempty"`
+	DurationMs      int           `json:"durationMs,omitempty"`
+	Status          string        `json:"status,omitempty"` // aggregate: waiting | running | completed | partial | failed | canceled | skipped | unknown
+	Mode            string        `json:"mode,omitempty"`
+	Runs            []SubagentRun `json:"runs,omitempty"`
+}
+
+// SubagentRun is one normalized child execution scoped by the outer tool call.
+// Legacy Claude producers may leave SubagentInfo.Runs empty.
+type SubagentRun struct {
+	ID             string `json:"id"`
+	Index          int    `json:"index"`
+	Agent          string `json:"agent,omitempty"`
+	Profile        string `json:"profile,omitempty"`
+	AgentSource    string `json:"agentSource,omitempty"`
+	Task           string `json:"task"`
+	RequestedModel string `json:"requestedModel,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Status         string `json:"status"`
+	LastToolName   string `json:"lastToolName,omitempty"`
+	ToolUses       int    `json:"toolUses,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	ErrorMessage   string `json:"errorMessage,omitempty"`
 }
 
 // ConsumedSteer is a queued mid-turn user message that the backend has now

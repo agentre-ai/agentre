@@ -3,8 +3,13 @@ package chat_svc
 import (
 	"testing"
 
+	cagoblocks "github.com/cago-frame/agents/agent/blocks"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 )
@@ -87,6 +92,90 @@ func TestReplay_ToolPermissionExitPlanModeSetsCanonicalPlanApprove(t *testing.T)
 		So(cb.Canonical.ToolPermission.Resolved, ShouldBeTrue)
 		So(cb.Canonical.ToolPermission.Allowed, ShouldBeTrue)
 	})
+}
+
+func TestReplay_PiAgentSpawnClassificationNeedsNameAndNormalizedState(t *testing.T) {
+	tests := []struct {
+		name      string
+		toolName  string
+		state     blocks.SubagentStateBlock
+		canonical bool
+	}{
+		{
+			name:     "mixed-case subagent name plus mode and runs classifies",
+			toolName: "MCP__Vendor__SubAgent",
+			state: blocks.SubagentStateBlock{Mode: "single", Runs: []agentruntime.SubagentRun{
+				{ID: "run-0", Index: 0, Task: "inspect", Status: "completed"},
+			}},
+			canonical: true,
+		},
+		{
+			name:     "name only remains raw",
+			toolName: "mcp__x__subagent",
+			state:    blocks.SubagentStateBlock{Status: "completed"},
+		},
+		{
+			name:     "normalized state without subagent name remains raw",
+			toolName: "local_bash",
+			state: blocks.SubagentStateBlock{Mode: "single", Runs: []agentruntime.SubagentRun{
+				{ID: "run-0", Index: 0, Task: "inspect", Status: "completed"},
+			}},
+		},
+		{
+			name:     "mode without runs remains raw",
+			toolName: "custom_subagent",
+			state:    blocks.SubagentStateBlock{Mode: "single"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
+			state := tc.state
+			state.ParentToolCallID = "outer"
+			require.NoError(t, m.SetBlocks([]cagoblocks.ContentBlock{
+				cagoblocks.ToolUseBlock{ID: "outer", Name: tc.toolName, Input: map[string]any{"task": "inspect"}},
+				state,
+			}))
+			got, err := toChatMessage(m)
+			require.NoError(t, err)
+			require.Len(t, got.Blocks, 1)
+			if tc.canonical {
+				require.NotNil(t, got.Blocks[0].Canonical)
+				require.NotNil(t, got.Blocks[0].Canonical.AgentSpawn)
+				assert.Equal(t, "single", got.Blocks[0].Canonical.AgentSpawn.Mode)
+				return
+			}
+			assert.Nil(t, got.Blocks[0].Canonical)
+		})
+	}
+
+	_, globallyRecognized := canonical.FromToolUse("mcp__x__subagent", map[string]any{"task": "inspect"})
+	assert.False(t, globallyRecognized, "history proof must not broaden global canonical matching")
+}
+
+func TestReplay_LegacyClaudeAgentAndLocalBashStayCompatible(t *testing.T) {
+	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
+	require.NoError(t, m.SetBlocks([]cagoblocks.ContentBlock{
+		cagoblocks.ToolUseBlock{ID: "claude", Name: "Agent", Input: map[string]any{
+			"description": "find bug", "subagent_type": "Explore", "prompt": "inspect", "model": "haiku",
+		}},
+		blocks.SubagentStateBlock{ParentToolCallID: "claude", Kind: "local_agent", Status: "completed", Model: "observed"},
+		cagoblocks.ToolUseBlock{ID: "bash", Name: "Bash", Input: map[string]any{"command": "sleep 1", "run_in_background": true}},
+		blocks.SubagentStateBlock{ParentToolCallID: "bash", Kind: "local_bash", Status: "running"},
+	}))
+
+	got, err := toChatMessage(m)
+	require.NoError(t, err)
+	require.Len(t, got.Blocks, 2)
+	require.NotNil(t, got.Blocks[0].Canonical)
+	require.NotNil(t, got.Blocks[0].Canonical.AgentSpawn)
+	assert.Equal(t, "find bug", got.Blocks[0].Canonical.AgentSpawn.TaskDescription)
+	assert.Equal(t, "Explore", got.Blocks[0].Canonical.AgentSpawn.SubagentType)
+	assert.Equal(t, "inspect", got.Blocks[0].Canonical.AgentSpawn.Prompt)
+	assert.Empty(t, got.Blocks[0].Canonical.AgentSpawn.Mode)
+	assert.Empty(t, got.Blocks[0].Canonical.AgentSpawn.Runs)
+	assert.Nil(t, got.Blocks[1].Canonical, "legacy local_bash state alone must not prove AgentSpawn")
 }
 
 func TestReplay_PlanBlockSetsCanonicalPlanUpdate(t *testing.T) {
