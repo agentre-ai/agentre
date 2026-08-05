@@ -2,6 +2,7 @@ package remote_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -21,6 +22,7 @@ type stubDaemonClient struct {
 	callFn    func(context.Context, string, any, any) error
 	closed    chan struct{}
 	closeOnce sync.Once
+	closeErr  error
 }
 
 func newStubDaemonClient() *stubDaemonClient {
@@ -55,8 +57,20 @@ func (s *stubDaemonClient) Handle(method string, fn func(context.Context, json.R
 func (s *stubDaemonClient) Closed() <-chan struct{} { return s.closed }
 
 func (s *stubDaemonClient) Close() error {
+	s.mu.Lock()
+	closeErr := s.closeErr
+	s.mu.Unlock()
+	if closeErr != nil {
+		return closeErr
+	}
 	s.closeOnce.Do(func() { close(s.closed) })
 	return nil
+}
+
+func (s *stubDaemonClient) setCloseError(err error) {
+	s.mu.Lock()
+	s.closeErr = err
+	s.mu.Unlock()
 }
 
 func (s *stubDaemonClient) dispatch(method string, payload any) error {
@@ -79,10 +93,21 @@ func (s *stubDaemonClient) push(t *testing.T, method string, payload any) {
 	require.NoError(t, s.dispatch(method, payload))
 }
 
+func TestClientAdapter_GivenWrappedConnectionCloseFailureWhenAbortedThenReportsFailure(t *testing.T) {
+	closeErr := fmt.Errorf("websocket close failed")
+	c := newStubDaemonClient()
+	c.setCloseError(closeErr)
+	a := remote.NewClientAdapter(c)
+
+	require.ErrorIs(t, a.Abort(), closeErr)
+	c.setCloseError(nil)
+	require.NoError(t, a.Abort())
+}
+
 func TestClientAdapter_GivenAtomicSubscriptionsWhenDataArrivesThenDemuxesByTerminalID(t *testing.T) {
 	c := newStubDaemonClient()
 	a := remote.NewClientAdapter(c)
-	t.Cleanup(func() { a.Abort() })
+	t.Cleanup(func() { _ = a.Abort() })
 	subA := a.Subscribe("term-a")
 	subB := a.Subscribe("term-b")
 
@@ -107,7 +132,7 @@ func TestClientAdapter_GivenFastStartupBurstBeforeConsumerStartsWhenExitArrivesT
 	const frameCount = 128
 	c := newStubDaemonClient()
 	a := remote.NewClientAdapter(c)
-	t.Cleanup(func() { a.Abort() })
+	t.Cleanup(func() { _ = a.Abort() })
 	sub := a.Subscribe("term-fast-startup")
 
 	producerDone := make(chan error, 1)
@@ -166,10 +191,85 @@ func TestClientAdapter_GivenFastStartupBurstBeforeConsumerStartsWhenExitArrivesT
 	require.False(t, ok, "exit channel must close after exactly one outcome")
 }
 
+func TestClientAdapter_GivenBlockedConsumerAndOverCapBurstWhenExitArrivesThenBoundsFIFOWithOneThrottleMarkerAndNewestTail(t *testing.T) {
+	const (
+		queueCapacity = 256
+		frameCount    = queueCapacity * 4
+	)
+	c := newStubDaemonClient()
+	a := remote.NewClientAdapter(c)
+	t.Cleanup(func() { _ = a.Abort() })
+	sub := a.Subscribe("term-over-cap")
+
+	producerDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < frameCount; i++ {
+			if err := c.dispatch("terminal.data", protocol.TerminalDataEvent{
+				TerminalID: "term-over-cap",
+				Data:       fmt.Sprintf("frame-%04d", i),
+			}); err != nil {
+				producerDone <- err
+				return
+			}
+		}
+		producerDone <- c.dispatch("terminal.exit", protocol.TerminalExitEvent{
+			TerminalID: "term-over-cap",
+			Code:       0,
+			Reason:     "natural",
+		})
+	}()
+
+	select {
+	case err := <-producerDone:
+		require.NoError(t, err, "over-cap notification handlers must not wait for the consumer")
+	case <-time.After(time.Second):
+		t.Fatal("over-cap notification handlers blocked on an unread subscription")
+	}
+
+	var events []protocol.TerminalDataEvent
+	for ev := range sub.Data {
+		events = append(events, ev)
+	}
+	require.LessOrEqual(t, len(events), queueCapacity+1,
+		"the bounded queue may have at most one frame already handed to its worker")
+	require.NotEmpty(t, events)
+
+	throttleData := base64.StdEncoding.EncodeToString([]byte("\r\n[--- output throttled ---]\r\n"))
+	markerCount := 0
+	markerIndex := -1
+	lastFrame := -1
+	for i, ev := range events {
+		if ev.Data == throttleData {
+			markerCount++
+			markerIndex = i
+			continue
+		}
+		var frame int
+		_, err := fmt.Sscanf(ev.Data, "frame-%04d", &frame)
+		require.NoError(t, err)
+		require.Greater(t, frame, lastFrame, "retained data must stay FIFO around the marker")
+		lastFrame = frame
+	}
+	require.Equal(t, 1, markerCount, "one overload episode must not create a marker storm")
+	require.GreaterOrEqual(t, markerIndex, 0)
+	require.Less(t, markerIndex, len(events)-1, "the marker must precede retained newest data")
+	require.Equal(t, frameCount-1, lastFrame, "the newest output tail must be retained")
+
+	select {
+	case ev, ok := <-sub.Exit:
+		require.True(t, ok, "exit channel closed without the daemon outcome")
+		require.Equal(t, "natural", ev.Reason)
+	case <-time.After(time.Second):
+		t.Fatal("exit did not follow the bounded data queue")
+	}
+	_, ok := <-sub.Exit
+	require.False(t, ok, "exit channel must close after exactly one outcome")
+}
+
 func TestClientAdapter_GivenExitWhenDeliveredThenClosesTheSameGenerationPair(t *testing.T) {
 	c := newStubDaemonClient()
 	a := remote.NewClientAdapter(c)
-	t.Cleanup(func() { a.Abort() })
+	t.Cleanup(func() { _ = a.Abort() })
 	sub := a.Subscribe("term-x")
 
 	c.push(t, "terminal.exit", protocol.TerminalExitEvent{TerminalID: "term-x", Code: 0, Reason: "natural"})
@@ -189,7 +289,7 @@ func TestClientAdapter_GivenExitWhenDeliveredThenClosesTheSameGenerationPair(t *
 func TestClientAdapter_GivenStaleUnsubscribeWhenANewGenerationExistsThenKeepsNewPairRegistered(t *testing.T) {
 	c := newStubDaemonClient()
 	a := remote.NewClientAdapter(c)
-	t.Cleanup(func() { a.Abort() })
+	t.Cleanup(func() { _ = a.Abort() })
 	first := a.Subscribe("term-generation")
 	second := a.Subscribe("term-generation")
 	require.NotEqual(t, first.Data, second.Data)
@@ -219,7 +319,7 @@ func TestClientAdapter_GivenConnectionCloseWhenSubscriptionsExistThenClosesAllAn
 	sub1 := a.Subscribe("t1")
 	sub2 := a.Subscribe("t2")
 
-	a.Abort()
+	require.NoError(t, a.Abort())
 
 	for _, ch := range []<-chan protocol.TerminalExitEvent{sub1.Exit, sub2.Exit} {
 		select {
@@ -244,7 +344,7 @@ func TestClientAdapter_GivenUnknownTerminalFloodWhenDeliveredThenDoesNotReplayOr
 	const unknownCount = 1000
 	c := newStubDaemonClient()
 	a := remote.NewClientAdapter(c)
-	t.Cleanup(func() { a.Abort() })
+	t.Cleanup(func() { _ = a.Abort() })
 	for i := 0; i < unknownCount; i++ {
 		terminalID := fmt.Sprintf("ghost-%04d", i)
 		c.push(t, "terminal.data", protocol.TerminalDataEvent{TerminalID: terminalID, Data: "ignored"})
@@ -268,7 +368,7 @@ func TestClientAdapter_GivenUnreadSpoolWhenUnsubscribedThenCancelsWorkerAndDisca
 	const frameCount = 128
 	c := newStubDaemonClient()
 	a := remote.NewClientAdapter(c)
-	t.Cleanup(func() { a.Abort() })
+	t.Cleanup(func() { _ = a.Abort() })
 	sub := a.Subscribe("term-unsubscribe")
 	for i := 0; i < frameCount; i++ {
 		c.push(t, "terminal.data", protocol.TerminalDataEvent{
@@ -311,7 +411,7 @@ func TestClientAdapter_GivenAcceptedBurstWhenConnectionClosesThenDrainsDataBefor
 		})
 	}
 
-	a.Abort()
+	require.NoError(t, a.Abort())
 	probe := a.Subscribe("connection-close-probe")
 	select {
 	case _, ok := <-probe.Exit:
@@ -350,8 +450,8 @@ func TestClientAdapter_GivenAcceptedBurstWhenConnectionClosesThenDrainsDataBefor
 
 func TestClientAdapter_GivenDeliveryExitUnsubscribeAndWatchCloseRacesThenNeverUsesOrLeaksClosedGeneration(t *testing.T) {
 	const (
-		iterations     = 300
-		framesPerBurst = 64
+		iterations     = 120
+		framesPerBurst = 512
 	)
 	c := newStubDaemonClient()
 	a := remote.NewClientAdapter(c)
@@ -364,7 +464,7 @@ func TestClientAdapter_GivenDeliveryExitUnsubscribeAndWatchCloseRacesThenNeverUs
 
 	var operations sync.WaitGroup
 	var consumers sync.WaitGroup
-	errs := make(chan error, iterations*2)
+	errs := make(chan error, iterations*2+1)
 	for i := 0; i < iterations; i++ {
 		id := fmt.Sprintf("race-%03d", i)
 		sub := a.Subscribe(id)
@@ -405,7 +505,9 @@ func TestClientAdapter_GivenDeliveryExitUnsubscribeAndWatchCloseRacesThenNeverUs
 	operations.Add(1)
 	go func() {
 		defer operations.Done()
-		a.Abort()
+		if err := a.Abort(); err != nil {
+			errs <- err
+		}
 	}()
 	operations.Wait()
 	close(errs)

@@ -2,7 +2,9 @@ package remote
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"sync"
 
 	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
@@ -18,10 +20,25 @@ type DaemonClient interface {
 	Closed() <-chan struct{}
 }
 
+const (
+	// terminalQueueCapacity mirrors the daemon-side throttle queue. With the
+	// daemon's 8 KiB PTY reads, 256 pending base64 frames cap one terminal near
+	// 2.7 MiB, plus at most one frame already handed to the delivery worker.
+	terminalQueueCapacity = 256
+	terminalQueueLowWater = terminalQueueCapacity / 2
+)
+
+var (
+	terminalThrottleData = base64.StdEncoding.EncodeToString(
+		[]byte("\r\n[--- output throttled ---]\r\n"),
+	)
+	errAbortUnsupported = errors.New("remote terminal client does not support abort")
+)
+
 // ClientAdapter wraps a single daemon client and demuxes per-terminal push
 // events. Each Subscribe call atomically installs one data/exit generation.
-// Notification handlers only append to that generation's FIFO under mu; its
-// sole delivery worker owns channel sends and closure.
+// Notification handlers only append to that generation's bounded FIFO under
+// mu; its sole delivery worker owns channel sends and closure.
 type ClientAdapter struct {
 	client DaemonClient
 
@@ -37,18 +54,22 @@ type terminalSubscription struct {
 	cancel chan struct{}
 	done   chan struct{}
 
-	head *terminalDataNode
-	tail *terminalDataNode
+	head   *terminalDataNode
+	tail   *terminalDataNode
+	queued int
 
-	ending    bool
-	canceled  bool
-	hasExit   bool
-	exitEvent protocol.TerminalExitEvent
+	throttled    bool
+	markerQueued bool
+	ending       bool
+	canceled     bool
+	hasExit      bool
+	exitEvent    protocol.TerminalExitEvent
 }
 
 type terminalDataNode struct {
-	event protocol.TerminalDataEvent
-	next  *terminalDataNode
+	event  protocol.TerminalDataEvent
+	marker bool
+	next   *terminalDataNode
 }
 
 type deliveryState uint8
@@ -126,14 +147,16 @@ func (a *ClientAdapter) Unsubscribe(terminalID string, subscription Subscription
 	}
 }
 
-// Abort closes the wrapped shared connection when a pending-open cleanup RPC
-// cannot be acknowledged. Production daemon clients implement Close; keeping
-// it as an optional narrow assertion avoids coupling this demux interface to
-// unrelated client operations.
-func (a *ClientAdapter) Abort() {
-	if closer, ok := a.client.(interface{ Close() error }); ok {
-		_ = closer.Close()
+// Abort closes the wrapped shared connection when an RPC cannot be
+// acknowledged. Production daemon clients implement Close; keeping it as an
+// optional narrow assertion avoids coupling the demux interface to unrelated
+// client operations while still reporting whether the safety fallback ran.
+func (a *ClientAdapter) Abort() error {
+	closer, ok := a.client.(interface{ Close() error })
+	if !ok {
+		return errAbortUnsupported
 	}
+	return closer.Close()
 }
 
 func newTerminalSubscription() *terminalSubscription {
@@ -158,13 +181,7 @@ func (a *ClientAdapter) handleData(_ context.Context, raw json.RawMessage) (any,
 	a.mu.Lock()
 	sub := a.subs[ev.TerminalID]
 	if sub != nil && !sub.ending && !sub.canceled {
-		node := &terminalDataNode{event: ev}
-		if sub.tail == nil {
-			sub.head = node
-		} else {
-			sub.tail.next = node
-		}
-		sub.tail = node
+		enqueueTerminalData(sub, ev)
 		signalSubscription(sub)
 	}
 	a.mu.Unlock()
@@ -197,6 +214,62 @@ func (a *ClientAdapter) watchClose(closed <-chan struct{}) {
 	a.mu.Unlock()
 }
 
+func enqueueTerminalData(sub *terminalSubscription, ev protocol.TerminalDataEvent) {
+	if sub.queued == terminalQueueCapacity {
+		if !sub.throttled {
+			// Preserve FIFO around one explicit marker: retained older data stays
+			// before it and the newest frame is appended after it. Two old data
+			// frames make room for marker + newest without exceeding the cap.
+			dropOldestTerminalData(sub)
+			dropOldestTerminalData(sub)
+			appendTerminalData(sub, protocol.TerminalDataEvent{
+				TerminalID: ev.TerminalID,
+				Data:       terminalThrottleData,
+			}, true)
+			sub.throttled = true
+			sub.markerQueued = true
+		} else {
+			// A queued or recently delivered marker already represents this
+			// sustained overload episode. Retain it and replace the oldest data
+			// with the newest frame rather than creating marker storms.
+			dropOldestTerminalData(sub)
+		}
+	}
+	appendTerminalData(sub, ev, false)
+}
+
+func appendTerminalData(sub *terminalSubscription, ev protocol.TerminalDataEvent, marker bool) {
+	node := &terminalDataNode{event: ev, marker: marker}
+	if sub.tail == nil {
+		sub.head = node
+	} else {
+		sub.tail.next = node
+	}
+	sub.tail = node
+	sub.queued++
+}
+
+func dropOldestTerminalData(sub *terminalSubscription) {
+	var previous *terminalDataNode
+	for node := sub.head; node != nil; node = node.next {
+		if node.marker {
+			previous = node
+			continue
+		}
+		if previous == nil {
+			sub.head = node.next
+		} else {
+			previous.next = node.next
+		}
+		if sub.tail == node {
+			sub.tail = previous
+		}
+		node.next = nil
+		sub.queued--
+		return
+	}
+}
+
 func signalSubscription(sub *terminalSubscription) {
 	select {
 	case sub.wake <- struct{}{}:
@@ -226,6 +299,8 @@ func (a *ClientAdapter) cancelSubscriptionLocked(sub *terminalSubscription) {
 	sub.canceled = true
 	sub.head = nil
 	sub.tail = nil
+	sub.queued = 0
+	sub.markerQueued = false
 	close(sub.cancel)
 }
 
@@ -285,6 +360,14 @@ func (a *ClientAdapter) nextDelivery(
 		if sub.head == nil {
 			sub.tail = nil
 		}
+		sub.queued--
+		if node.marker {
+			sub.markerQueued = false
+		}
+		if !sub.markerQueued && sub.queued <= terminalQueueLowWater {
+			sub.throttled = false
+		}
+		node.next = nil
 		return deliveryData, node.event, false, protocol.TerminalExitEvent{}
 	}
 	if sub.ending {

@@ -20,6 +20,10 @@ import (
 const (
 	openTimeout        = 5 * time.Second
 	openCleanupTimeout = time.Second
+	// terminalOperationTimeout bounds small terminal mutations on the shared
+	// LAN RPC connection without treating ordinary short network jitter as a
+	// failed connection.
+	terminalOperationTimeout = 5 * time.Second
 )
 
 // ErrDaemonTimeout is returned by Backend.Open when agentred does not respond
@@ -45,26 +49,33 @@ type Subscription struct {
 }
 
 // Client is the minimal subset of the agentred ws client surface needed here.
-// Abort is the safety fallback when pending-open cleanup cannot be acknowledged.
+// Abort reports whether the shared-connection safety fallback was initiated.
 type Client interface {
 	Call(ctx context.Context, method string, params any, out any) error
 	Subscribe(terminalID string) Subscription
 	Unsubscribe(terminalID string, subscription Subscription)
-	Abort()
+	Abort() error
 }
 
 type Backend struct {
-	client  Client
-	release func()
+	client           Client
+	release          func()
+	operationTimeout time.Duration
 }
 
-func NewBackend(c Client) *Backend { return &Backend{client: c} }
+func NewBackend(c Client) *Backend {
+	return newBackend(c, nil, terminalOperationTimeout)
+}
 
 // NewBackendWithLease binds one successful daemon-client borrow to one Open.
 // Open failure releases immediately; a successful handle releases when its
 // terminal outcome is settled. The release function is guarded exactly once.
 func NewBackendWithLease(c Client, release func()) *Backend {
-	return &Backend{client: c, release: release}
+	return newBackend(c, release, terminalOperationTimeout)
+}
+
+func newBackend(c Client, release func(), operationTimeout time.Duration) *Backend {
+	return &Backend{client: c, release: release, operationTimeout: operationTimeout}
 }
 
 func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, error) {
@@ -113,13 +124,14 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 	}
 
 	h := &handleImpl{
-		client:       b.client,
-		terminalID:   terminalID,
-		subscription: subscription,
-		data:         make(chan []byte, 32),
-		exit:         make(chan pkgpty.ExitInfo, 1),
-		done:         make(chan struct{}),
-		release:      release,
+		client:           b.client,
+		terminalID:       terminalID,
+		subscription:     subscription,
+		data:             make(chan []byte, 32),
+		exit:             make(chan pkgpty.ExitInfo, 1),
+		done:             make(chan struct{}),
+		release:          release,
+		operationTimeout: b.operationTimeout,
 	}
 	go h.pump()
 	return h, nil
@@ -170,7 +182,7 @@ func (b *Backend) cancelPendingOpen(ctx context.Context, terminalID string) {
 
 func (b *Backend) cleanupMismatchedOpen(ctx context.Context, terminalID string) {
 	if terminalID == "" {
-		b.client.Abort()
+		_ = b.client.Abort()
 		return
 	}
 	b.cleanupTerminal(ctx, protocol.TerminalCloseParams{TerminalID: terminalID})
@@ -183,7 +195,7 @@ func (b *Backend) cleanupTerminal(ctx context.Context, params protocol.TerminalC
 	if err := b.client.Call(cleanupCtx, "terminal.close", params, &ack); err != nil {
 		// A failed acknowledgement leaves connection ownership suspect. Abort it
 		// synchronously so agentred's connection-scoped CloseAll owns cleanup.
-		b.client.Abort()
+		_ = b.client.Abort()
 	}
 }
 
@@ -202,11 +214,13 @@ type handleImpl struct {
 	data chan []byte
 	exit chan pkgpty.ExitInfo
 
-	mu        sync.Mutex
-	closed    bool
-	closeCall *closeCall
-	done      chan struct{}
-	release   func()
+	mu                sync.Mutex
+	closed            bool
+	authoritativeExit bool
+	closeCall         *closeCall
+	done              chan struct{}
+	release           func()
+	operationTimeout  time.Duration
 }
 
 type closeCall struct {
@@ -221,8 +235,10 @@ func (h *handleImpl) Write(p []byte) (int, error) {
 		return 0, errors.New("remote pty closed")
 	}
 	h.mu.Unlock()
+	operationCtx, cancel := context.WithTimeout(context.Background(), h.operationTimeout)
+	defer cancel()
 	var ack struct{}
-	err := h.client.Call(context.Background(), "terminal.write", protocol.TerminalWriteParams{
+	err := h.client.Call(operationCtx, "terminal.write", protocol.TerminalWriteParams{
 		TerminalID: h.terminalID, Data: string(p),
 	}, &ack)
 	if err != nil {
@@ -232,51 +248,84 @@ func (h *handleImpl) Write(p []byte) (int, error) {
 }
 
 func (h *handleImpl) Resize(cols, rows uint16) error {
+	operationCtx, cancel := context.WithTimeout(context.Background(), h.operationTimeout)
+	defer cancel()
 	var ack struct{}
-	return h.client.Call(context.Background(), "terminal.resize", protocol.TerminalResizeParams{
+	return h.client.Call(operationCtx, "terminal.resize", protocol.TerminalResizeParams{
 		TerminalID: h.terminalID, Cols: cols, Rows: rows,
 	}, &ack)
 }
 
 func (h *handleImpl) Close() error {
 	h.mu.Lock()
-	if h.closed {
-		h.mu.Unlock()
-		return nil
-	}
 	if call := h.closeCall; call != nil {
 		h.mu.Unlock()
 		<-call.done
 		return call.err
 	}
+	if h.closed {
+		h.mu.Unlock()
+		return nil
+	}
 	call := &closeCall{done: make(chan struct{})}
 	h.closeCall = call
 	h.mu.Unlock()
 
+	operationCtx, cancel := context.WithTimeout(context.Background(), h.operationTimeout)
 	var ack struct{}
-	err := h.client.Call(context.Background(), "terminal.close", protocol.TerminalCloseParams{
+	err := h.client.Call(operationCtx, "terminal.close", protocol.TerminalCloseParams{
 		TerminalID: h.terminalID,
 	}, &ack)
+	timedOut := errors.Is(operationCtx.Err(), context.DeadlineExceeded) &&
+		errors.Is(err, context.DeadlineExceeded)
+	cancel()
+
+	settledBeforeAbort := false
+	abortAttempted := false
+	var abortErr error
+	if timedOut {
+		h.mu.Lock()
+		settledBeforeAbort = h.closed
+		h.mu.Unlock()
+		if !settledBeforeAbort {
+			// A half-open terminal.close leaves every session on this shared
+			// connection suspect. Abort synchronously so agentred's CloseAll is
+			// the safety owner before local state or the lease is settled.
+			abortAttempted = true
+			abortErr = h.client.Abort()
+		}
+	}
 
 	h.mu.Lock()
 	settled := h.closed
-	if settled {
-		// A daemon exit that arrived while the RPC was in flight is already
-		// authoritative, so closing is satisfied even if terminal.close raced
-		// it and reported an error.
-		err = nil
-	} else if err == nil {
+	switch {
+	case settled:
+		// A real terminal.exit remains authoritative. A connection-lost outcome
+		// caused by our successful timeout abort still returns the deadline that
+		// triggered the fallback to every coalesced caller.
+		if !timedOut || settledBeforeAbort || h.authoritativeExit || abortErr != nil {
+			err = nil
+		}
+	case err == nil:
 		h.closed = true
 		close(h.done)
 		settled = true
+	case timedOut && abortAttempted && abortErr == nil:
+		h.closed = true
+		close(h.done)
+		settled = true
+	case timedOut && abortAttempted:
+		err = errors.Join(err, fmt.Errorf("abort shared remote terminal connection: %w", abortErr))
 	}
 	call.err = err
-	h.closeCall = nil
 	h.mu.Unlock()
 	if settled {
 		h.release()
 	}
+	h.mu.Lock()
+	h.closeCall = nil
 	close(call.done)
+	h.mu.Unlock()
 	return err
 }
 
@@ -302,14 +351,16 @@ func (h *handleImpl) pump() {
 				// ClientAdapter queues an authoritative exit before closing data.
 				// Prefer that buffered outcome; otherwise the subscription ended
 				// because the connection disappeared without terminal.exit.
+				authoritative := false
 				select {
 				case ev, exitOK := <-exitCh:
+					authoritative = exitOK
 					if exitOK {
 						outcome = exitInfo(ev)
 					}
 				default:
 				}
-				if !h.claimDaemonExit() {
+				if !h.claimDaemonExit(authoritative) {
 					outcome = pkgpty.ExitInfo{Reason: "killed"}
 				}
 				return
@@ -322,7 +373,7 @@ func (h *handleImpl) pump() {
 			if ok {
 				outcome = exitInfo(ev)
 			}
-			if !h.claimDaemonExit() {
+			if !h.claimDaemonExit(ok) {
 				outcome = pkgpty.ExitInfo{Reason: "killed"}
 				return
 			}
@@ -337,13 +388,14 @@ func (h *handleImpl) pump() {
 	}
 }
 
-func (h *handleImpl) claimDaemonExit() bool {
+func (h *handleImpl) claimDaemonExit(authoritative bool) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
 		return false
 	}
 	h.closed = true
+	h.authoritativeExit = authoritative
 	return true
 }
 

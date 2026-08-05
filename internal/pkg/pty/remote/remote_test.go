@@ -63,7 +63,10 @@ func (f *fakeClient) Unsubscribe(_ string, _ remote.Subscription) {
 	f.unsubscribeCalls.Add(1)
 }
 
-func (f *fakeClient) Abort() { f.abortCalls.Add(1) }
+func (f *fakeClient) Abort() error {
+	f.abortCalls.Add(1)
+	return nil
+}
 
 type synchronousOpenClient struct {
 	data           chan protocol.TerminalDataEvent
@@ -108,7 +111,7 @@ func (c *synchronousOpenClient) Subscribe(string) remote.Subscription {
 }
 
 func (c *synchronousOpenClient) Unsubscribe(string, remote.Subscription) {}
-func (c *synchronousOpenClient) Abort()                                  {}
+func (c *synchronousOpenClient) Abort() error                            { return nil }
 
 type interruptedOpenClient struct {
 	started  chan struct{}
@@ -164,7 +167,10 @@ func (c *interruptedOpenClient) Unsubscribe(string, remote.Subscription) {
 	c.record("unsubscribe")
 }
 
-func (c *interruptedOpenClient) Abort() { c.record("abort") }
+func (c *interruptedOpenClient) Abort() error {
+	c.record("abort")
+	return nil
+}
 
 func (c *interruptedOpenClient) snapshot() ([]string, protocol.TerminalCloseParams) {
 	c.mu.Lock()
@@ -264,7 +270,7 @@ func TestRemoteBackend_GivenMoreThanThirtyTwoFramesSynchronouslyEmittedBeforeOpe
 	const frameCount = 128
 	client := newStubDaemonClient()
 	adapter := remote.NewClientAdapter(client)
-	t.Cleanup(func() { adapter.Abort() })
+	t.Cleanup(func() { _ = adapter.Abort() })
 	client.setCall(func(_ context.Context, method string, params any, out any) error {
 		if method != "terminal.open" {
 			return nil
@@ -747,7 +753,7 @@ func TestRemoteBackend_GivenAcceptedAdapterFramesWhenConnectionClosesThenDrainsA
 			),
 		})
 	}
-	adapter.Abort()
+	require.NoError(t, adapter.Abort())
 
 	got := make([]string, 0, frameCount)
 	for chunk := range h.Data() {

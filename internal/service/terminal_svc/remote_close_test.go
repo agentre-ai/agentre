@@ -41,7 +41,7 @@ func (c *remoteCloseClient) Subscribe(string) remote.Subscription {
 }
 
 func (c *remoteCloseClient) Unsubscribe(string, remote.Subscription) {}
-func (c *remoteCloseClient) Abort()                                  {}
+func (c *remoteCloseClient) Abort() error                            { return nil }
 
 func TestService_GivenRunningRemoteCommandWhenClosedThenEmitsKilledExitAndCleansLifecycle(t *testing.T) {
 	client := &remoteCloseClient{
