@@ -127,7 +127,7 @@ Repository-internal sources and targets come from Git's index; out-of-repository
 
 ```bash
 git ls-files --cached -- AGENTS.md CLAUDE.md CONTRIBUTING.md 'docs/*.md' 'docs/**/*.md' \
-  e2e/README.md e2e/scratch/README.md | grep -v '^docs/superpowers/' | while IFS= read -r doc; do
+  e2e/README.md e2e/scratch/README.md | while IFS= read -r doc; do
   git show ":$doc" >/dev/null 2>&1 || { echo "BROKEN staged source $doc"; continue; }
   # Strip fenced blocks and inline code first: sample paths are not links.
   git show ":$doc" | sed '/^```/,/^```/d' | sed -E 's/`[^`]*`//g' \

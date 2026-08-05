@@ -1,6 +1,5 @@
 // Package pairing implements one-shot pairing-code generation, deviceToken
 // minting, and per-IP rate-limiting for agentred's auth handshake.
-// Spec reference: docs/superpowers/specs/2026-05-21-agentred-mvp-design.md §4.3.
 package pairing
 
 import (

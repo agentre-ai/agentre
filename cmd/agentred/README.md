@@ -4,8 +4,6 @@ Headless agent compute daemon for Agentre — a stateless executor that runs
 claude-code / codex subprocesses on behalf of remote desktops over a
 JSON-RPC over WebSocket control API on the local network.
 
-Spec: `docs/superpowers/specs/2026-05-21-agentred-mvp-design.md`
-
 ## Quickstart
 
 ```bash
@@ -106,6 +104,3 @@ Override the data dir for testing or ops with `AGENTRED_DATA_DIR=/tmp/...`.
   Anthropic / OpenAI requests with keys loaded from daemon state.
 - Subprocess: dispatches to `internal/pkg/agentruntime`'s BackendRunner registry
   (claudecode / codex backends; builtin not supported).
-
-For protocol-level detail, method table, error codes, and TLS trust contract,
-read the design spec at `docs/superpowers/specs/2026-05-21-agentred-mvp-design.md`.

@@ -10,7 +10,6 @@ import (
 )
 
 // §1.5 Audience 边界 — characterization tests
-// 参见 docs/superpowers/specs/2026-05-22-agentruntime-canonical-refactor-design.md §"TDD/BDD §1.5"。
 //
 // 关键 pin: agentre 自定义控制 block 必须 Audience=ToUI(不能让 LLM 看到自己的
 // 控制平面 metadata,否则模型把它当上下文回写、导致 hallucination 与 turn loop)。
