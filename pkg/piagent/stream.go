@@ -115,12 +115,8 @@ func (s *Stream) Err() error {
 
 func (s *Stream) Diagnostics() StreamDiagnostics {
 	s.mu.RLock()
-	out := s.diagnostics
-	s.mu.RUnlock()
-	if s.proc != nil && s.proc.stderr != nil {
-		out.StderrTail = tailString(strings.TrimSpace(s.proc.stderr.String()), diagnosticStderrTailLimit)
-	}
-	return out
+	defer s.mu.RUnlock()
+	return s.diagnostics
 }
 
 func (s *Stream) Close(ctx context.Context) error {
@@ -594,26 +590,17 @@ func (s *Stream) setErr(err error) {
 	}
 }
 
-const diagnosticStderrTailLimit = 4 * 1024
-
 func (s *Stream) recordFinalErrorDiagnostics(ev rpcEvent, rawLine string) {
 	msg := lastAssistantFromAgentEnd(ev.Messages)
 	if msg == nil {
 		return
 	}
+	safeFrame := sanitizeDiagnosticFrame([]byte(rawLine))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.diagnostics.FinalErrorEventType = ev.Type
 	s.diagnostics.FinalErrorStopReason = strings.TrimSpace(msg.StopReason)
-	s.diagnostics.FinalErrorMessage = strings.TrimSpace(msg.ErrorMessage)
-	s.diagnostics.FinalErrorFrame = strings.TrimSpace(rawLine)
-}
-
-func tailString(s string, limit int) string {
-	if limit <= 0 || len(s) <= limit {
-		return s
-	}
-	return s[len(s)-limit:]
+	s.diagnostics.FinalErrorFrame = string(safeFrame)
 }
 
 func toolResultText(raw json.RawMessage) string {

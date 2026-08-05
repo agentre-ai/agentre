@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -87,6 +88,53 @@ func TestRun_ForksAndReturnsNativeSessionState(t *testing.T) {
 			So(sess.gotForkAnchor, ShouldEqual, "fork-user")
 			So(result.ProviderSessionID, ShouldEqual, "session-new")
 			So(result.UserAnchor, ShouldEqual, "new-user")
+		})
+	})
+}
+
+func TestPrepareRunWithholdsPromptUntilStart(t *testing.T) {
+	Convey("Given a resumed Pi session with a fork anchor", t, func() {
+		lines := []string{
+			`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-old"}}`,
+			`{"id":"session-fork","type":"response","command":"fork","success":true,"data":{"cancelled":false}}`, //nolint:misspell // Pi RPC field uses British spelling.
+			`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-new"}}`,
+			`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":{"entries":[],"leafId":null}}`,
+			`{"type":"response","command":"prompt","success":true}`,
+			`{"type":"agent_end","messages":[],"willRetry":false}`,
+			`{"type":"agent_settled"}`,
+			`{"id":"session-entries-after","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"turn-user","parentId":null,"message":{"role":"user"}}],"leafId":"turn-user"}}`,
+			`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+		}
+		proc := &runtimeRPCProcess{
+			stdin:  &cliprocess.LockedBuffer{},
+			stdout: strings.NewReader(strings.Join(lines, "\n") + "\n"),
+			done:   make(chan error, 1),
+		}
+		restore := SetSessionFactoryForTest(runtimeRPCSessionFactory(proc))
+		defer restore()
+		runtime := New()
+
+		Convey("When the service preflights Then fork completes but prompt waits for Start", func() {
+			prepared, err := runtime.PrepareRun(context.Background(), agentruntime.RunRequest{
+				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				SessionID:         3,
+				ProviderSessionID: "session-old",
+				ForkAnchor:        "fork-user",
+				Cwd:               t.TempDir(),
+				UserText:          "commit first",
+			})
+			So(err, ShouldBeNil)
+			So(proc.commands(), ShouldResemble, []string{"get_state", "fork", "get_state", "get_entries"})
+
+			events, result, err := prepared.Start(context.Background())
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			So(result.ProviderSessionID, ShouldEqual, "session-new")
+			So(result.UserAnchor, ShouldEqual, "turn-user")
+			So(proc.commands(), ShouldResemble, []string{
+				"get_state", "fork", "get_state", "get_entries", "prompt", "get_entries", "get_session_stats",
+			})
 		})
 	})
 }
@@ -297,7 +345,8 @@ func TestRun_ForwardsUserBlockImagesToStream(t *testing.T) {
 
 func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 	Convey("Given a pi-agent stream that fails after reporting model and usage", t, func() {
-		boom := errors.New("piagent: terminated")
+		const secret = "credential-secret-token"
+		boom := errors.New("piagent: terminated " + secret)
 		sess := &fakeSession{
 			stream: &scriptedStream{events: []pkgpiagent.Event{
 				{Kind: pkgpiagent.EventUsage, Model: "gpt-5.5(xhigh)", Usage: provider.Usage{
@@ -308,7 +357,13 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 				}},
 				{Kind: pkgpiagent.EventContextWindow, ContextWindow: 1050000},
 				{Kind: pkgpiagent.EventError, Err: boom},
-			}, err: boom, sid: "pi-session-689"},
+			}, err: boom, sid: "pi-session-689", diagnostics: pkgpiagent.StreamDiagnostics{
+				FinalErrorEventType:  "agent_end",
+				FinalErrorStopReason: "error",
+				FinalErrorMessage:    "provider failed " + secret,
+				FinalErrorFrame:      `{"type":"agent_end","messages":[{"content":"` + secret + `"}]}`,
+				StderrTail:           "stderr " + secret,
+			}},
 			sid: "pi-session-689",
 		}
 		restoreFactory := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
@@ -331,6 +386,11 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 			}
 
 			So(result.StopErr, ShouldEqual, boom)
+			for _, entry := range logs.All() {
+				for _, value := range entry.ContextMap() {
+					So(fmt.Sprint(value), ShouldNotContainSubstring, secret)
+				}
+			}
 			matches := logs.FilterMessage("piagent runtime: turn failed").All()
 			So(matches, ShouldHaveLength, 1)
 			fields := matches[0].ContextMap()
@@ -344,7 +404,14 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 			So(fields["cachedTokens"], ShouldEqual, int64(69632))
 			So(fields["cacheCreationTokens"], ShouldEqual, int64(0))
 			So(fields["totalInputTokens"], ShouldEqual, int64(73649))
-			So(fields["error"], ShouldEqual, "piagent: terminated")
+			So(fields["errorType"], ShouldEqual, "*errors.errorString")
+			_, hasRawError := fields["error"]
+			So(hasRawError, ShouldBeFalse)
+			diagnostics := logs.FilterMessage("piagent runtime: turn failed diagnostics").All()
+			So(diagnostics, ShouldHaveLength, 1)
+			diagnosticFields := diagnostics[0].ContextMap()
+			So(diagnosticFields["piEventType"], ShouldEqual, "agent_end")
+			So(diagnosticFields["piStopReason"], ShouldEqual, "error")
 		})
 	})
 }
@@ -396,11 +463,12 @@ func (*emptyStream) SessionID() string       { return "" }
 func (*emptyStream) Err() error              { return nil }
 
 type scriptedStream struct {
-	events []pkgpiagent.Event
-	idx    int
-	err    error
-	sid    string
-	anchor string
+	events      []pkgpiagent.Event
+	idx         int
+	err         error
+	sid         string
+	anchor      string
+	diagnostics pkgpiagent.StreamDiagnostics
 }
 
 func (s *scriptedStream) Next() bool {
@@ -415,6 +483,9 @@ func (s *scriptedStream) Event() pkgpiagent.Event { return s.events[s.idx-1] }
 func (s *scriptedStream) SessionID() string       { return s.sid }
 func (s *scriptedStream) Err() error              { return s.err }
 func (s *scriptedStream) UserAnchor() string      { return s.anchor }
+func (s *scriptedStream) Diagnostics() pkgpiagent.StreamDiagnostics {
+	return s.diagnostics
+}
 
 type runtimeRPCRunner struct {
 	proc cliprocess.Handle

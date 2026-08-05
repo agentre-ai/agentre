@@ -191,9 +191,10 @@ func TestStreamReportsSettledFinalAgentEndError(t *testing.T) {
 	diagnostics := s.Diagnostics()
 	assert.Equal(t, "agent_end", diagnostics.FinalErrorEventType)
 	assert.Equal(t, "error", diagnostics.FinalErrorStopReason)
-	assert.Equal(t, "final provider failure", diagnostics.FinalErrorMessage)
-	assert.JSONEq(t, finalFrame, diagnostics.FinalErrorFrame)
-	assert.Equal(t, "pi stderr tail", diagnostics.StderrTail)
+	assert.Empty(t, diagnostics.FinalErrorMessage)
+	assert.JSONEq(t, `{"type":"agent_end","stopReason":"error","willRetry":false}`, diagnostics.FinalErrorFrame)
+	assert.Empty(t, diagnostics.StderrTail)
+	assert.NotContains(t, diagnostics.FinalErrorFrame, "final provider failure")
 }
 
 // Given Pi's documented aborted stream sequence, when the assistant's
@@ -255,8 +256,11 @@ func TestStreamReportsSettledAbortedAgentEnd(t *testing.T) {
 			diagnostics := s.Diagnostics()
 			assert.Equal(t, "agent_end", diagnostics.FinalErrorEventType)
 			assert.Equal(t, "aborted", diagnostics.FinalErrorStopReason)
-			assert.Equal(t, tt.wantDiagnosticText, diagnostics.FinalErrorMessage)
-			assert.JSONEq(t, finalFrame, diagnostics.FinalErrorFrame)
+			assert.Empty(t, diagnostics.FinalErrorMessage)
+			assert.JSONEq(t, `{"type":"agent_end","stopReason":"aborted","willRetry":false}`, diagnostics.FinalErrorFrame)
+			if tt.wantDiagnosticText != "" {
+				assert.NotContains(t, diagnostics.FinalErrorFrame, tt.wantDiagnosticText)
+			}
 
 			frames := stdinFrames(t, proc.stdin.String())
 			require.Len(t, frames, 3)

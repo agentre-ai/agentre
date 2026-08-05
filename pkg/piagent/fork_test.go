@@ -31,6 +31,45 @@ func newSingleProcessCaptureClient(stdout string) (*Client, *captureProc, *singl
 	return New(WithRPCProcessRunnerForTesting(runner)), proc, runner
 }
 
+func TestPrepareStreamForksWithoutSendingPromptUntilStart(t *testing.T) {
+	// Given an existing native session and fork anchor,
+	// When the caller prepares the stream before its transcript transaction,
+	// Then fork completes in the retained process but the prompt is withheld until Start.
+	script := strings.Join([]string{
+		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-old"}}`,
+		`{"id":"session-fork","type":"response","command":"fork","success":true,"data":{"cancelled":false}}`, //nolint:misspell // Pi RPC field uses British spelling.
+		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-new"}}`,
+		`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":{"entries":[],"leafId":null}}`,
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+		`{"id":"session-entries-after","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"new-user","parentId":null,"message":{"role":"user"}}],"leafId":"new-user"}}`,
+		`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+		"",
+	}, "\n")
+	client, proc, runner := newSingleProcessCaptureClient(script)
+	client.session = "session-old"
+
+	prepared, err := client.PrepareStream(context.Background(), "commit first", RunForkAnchor("fork-user"))
+	require.NoError(t, err)
+	assert.Equal(t, "session-new", prepared.SessionID())
+	assert.Equal(t, 1, runner.starts)
+	beforeStart := stdinFrames(t, proc.stdin.String())
+	require.Len(t, beforeStart, 4)
+	for _, frame := range beforeStart {
+		assert.NotEqual(t, "prompt", frame["type"])
+	}
+
+	stream, err := prepared.Start(context.Background())
+	require.NoError(t, err)
+	for stream.Next() {
+	}
+	frames := stdinFrames(t, proc.stdin.String())
+	require.Len(t, frames, 7)
+	assert.Equal(t, "prompt", frames[4]["type"])
+	assert.Equal(t, "new-user", stream.UserAnchor())
+}
+
 func TestStreamForksBeforePromptInTheSameRPCProcess(t *testing.T) {
 	// Given an existing Pi session and a native user-entry anchor,
 	// When a prompt stream starts from that anchor,

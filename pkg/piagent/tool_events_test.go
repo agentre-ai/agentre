@@ -115,7 +115,7 @@ func TestStreamEmitsErrorFromFinalAgentEnd(t *testing.T) {
 	assert.EqualError(t, s.Err(), "piagent: terminated")
 }
 
-func TestStreamDiagnosticsIncludeFinalErrorFrameAndStderrTail(t *testing.T) {
+func TestStreamDiagnosticsSanitizeFinalErrorFrameAndOmitStderr(t *testing.T) {
 	finalFrame := `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":""}],"stopReason":"error","errorMessage":"terminated","model":"gpt-5.5(xhigh)"}],"willRetry":false}`
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
@@ -136,12 +136,14 @@ func TestStreamDiagnosticsIncludeFinalErrorFrameAndStderrTail(t *testing.T) {
 	d := s.Diagnostics()
 	assert.Equal(t, "agent_end", d.FinalErrorEventType)
 	assert.Equal(t, "error", d.FinalErrorStopReason)
-	assert.Equal(t, "terminated", d.FinalErrorMessage)
-	assert.JSONEq(t, finalFrame, d.FinalErrorFrame)
-	assert.Equal(t, "first stderr line\nlast stderr line", d.StderrTail)
+	assert.Empty(t, d.FinalErrorMessage)
+	assert.JSONEq(t, `{"type":"agent_end","stopReason":"error","willRetry":false}`, d.FinalErrorFrame)
+	assert.Empty(t, d.StderrTail)
+	assert.NotContains(t, d.FinalErrorFrame, "thinking")
+	assert.NotContains(t, d.FinalErrorFrame, "terminated")
 }
 
-func TestStreamDiagnosticsTruncateLongStderrTail(t *testing.T) {
+func TestStreamDiagnosticsOmitLongStderr(t *testing.T) {
 	script := strings.Join([]string{
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"terminated"}],"willRetry":false}`,
@@ -149,7 +151,7 @@ func TestStreamDiagnosticsTruncateLongStderrTail(t *testing.T) {
 		"",
 	}, "\n")
 	client, proc := newCaptureClient(script)
-	proc.stderr = strings.NewReader(strings.Repeat("a", diagnosticStderrTailLimit+16))
+	proc.stderr = strings.NewReader(strings.Repeat("a", 4*1024+16))
 
 	s, err := client.Stream(context.Background(), "research pi rpc")
 	require.NoError(t, err)
@@ -159,6 +161,5 @@ func TestStreamDiagnosticsTruncateLongStderrTail(t *testing.T) {
 	<-s.proc.stderrDone
 
 	d := s.Diagnostics()
-	assert.Len(t, d.StderrTail, diagnosticStderrTailLimit)
-	assert.Equal(t, strings.Repeat("a", diagnosticStderrTailLimit), d.StderrTail)
+	assert.Empty(t, d.StderrTail)
 }

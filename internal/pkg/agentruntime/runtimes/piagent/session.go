@@ -36,6 +36,16 @@ type interruptable interface {
 	Interrupt(ctx context.Context) error
 }
 
+type preparedTurnStream interface {
+	Start(context.Context) (stream, error)
+	SessionID() string
+	Close(context.Context) error
+}
+
+type turnStreamPreparer interface {
+	PrepareStreamTurn(ctx context.Context, prompt string, mode string, images []piagent.Image, turn turnSpec) (preparedTurnStream, error)
+}
+
 type clientAdapter struct {
 	client *piagent.Client
 	sid    string
@@ -67,6 +77,30 @@ func (a *clientAdapter) StreamTurn(ctx context.Context, prompt string, mode stri
 }
 
 func (a *clientAdapter) startStream(ctx context.Context, prompt string, mode string, images []piagent.Image, turn *turnSpec) (stream, error) {
+	s, err := a.client.Stream(ctx, prompt, turnRunOptions(mode, images, turn)...)
+	if err != nil {
+		return nil, err
+	}
+	a.setActiveStream(s)
+	return s, nil
+}
+
+func (a *clientAdapter) PrepareStreamTurn(
+	ctx context.Context,
+	prompt string,
+	mode string,
+	images []piagent.Image,
+	turn turnSpec,
+) (preparedTurnStream, error) {
+	prepared, err := a.client.PrepareStream(ctx, prompt, turnRunOptions(mode, images, &turn)...)
+	if err != nil {
+		return nil, err
+	}
+	a.sid = prepared.SessionID()
+	return &clientPreparedTurn{adapter: a, prepared: prepared}, nil
+}
+
+func turnRunOptions(mode string, images []piagent.Image, turn *turnSpec) []piagent.RunOption {
 	// Resume 不在这里下发：会话复用走 Client 级 --session（WithSession）。每个
 	// runtime turn 都记录原生 user anchor；分叉 turn 由同一个 per-turn option
 	// 在当前 RPC 进程里先 fork，再发送 prompt。
@@ -84,15 +118,33 @@ func (a *clientAdapter) startStream(ctx context.Context, prompt string, mode str
 	if len(images) > 0 {
 		opts = append(opts, piagent.WithImages(images))
 	}
-	s, err := a.client.Stream(ctx, prompt, opts...)
-	if err != nil {
-		return nil, err
-	}
+	return opts
+}
+
+func (a *clientAdapter) setActiveStream(s *piagent.Stream) {
 	a.sid = s.SessionID()
 	a.streamMu.Lock()
 	a.stream = s
 	a.streamMu.Unlock()
+}
+
+type clientPreparedTurn struct {
+	adapter  *clientAdapter
+	prepared *piagent.PreparedStream
+}
+
+func (p *clientPreparedTurn) Start(ctx context.Context) (stream, error) {
+	s, err := p.prepared.Start(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.adapter.setActiveStream(s)
 	return s, nil
+}
+
+func (p *clientPreparedTurn) SessionID() string { return p.prepared.SessionID() }
+func (p *clientPreparedTurn) Close(ctx context.Context) error {
+	return p.prepared.Close(ctx)
 }
 
 func (a *clientAdapter) Compact(ctx context.Context) (stream, error) {
@@ -140,9 +192,9 @@ type sessionHandle interface {
 	ActiveInterruptor() interruptable
 }
 
-// piRawFrameSink 返回一个把 pkg/piagent 已过滤的原始 stdout 帧打到 debug 日志的回调。
-// get_entries payload 不会进入这里；其它帧由「Debug Logging」开关热控(关时 zap 直接
-// 丢弃,近零开销),用 logger.Default() 取当前全局 logger 故热重载即时生效。
+// piRawFrameSink 返回一个把 pkg/piagent 已脱敏的 stdout 诊断摘要打到 debug 日志的回调。
+// prompt、图片、Session 内容和凭证不会进入这里；摘要由「Debug Logging」开关热控
+// (关时 zap 直接丢弃,近零开销),用 logger.Default() 取当前全局 logger 故热重载即时生效。
 func piRawFrameSink(sessionID int64, providerSessionID string) func([]byte) {
 	return func(line []byte) {
 		logger.Default().Debug("piagent runtime: raw frame",

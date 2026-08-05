@@ -36,6 +36,28 @@ type Runtime struct {
 	active map[int64]*activeSession
 }
 
+type PreparedRun interface {
+	Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error)
+	Close(context.Context) error
+}
+
+type RunPreparer interface {
+	PrepareRun(context.Context, agentruntime.RunRequest) (PreparedRun, error)
+}
+
+type preparedRun struct {
+	runtime  *Runtime
+	req      agentruntime.RunRequest
+	sess     sessionHandle
+	prepared preparedTurnStream
+	cwd      string
+	modelID  string
+
+	startMu sync.Mutex
+	started bool
+	close   sync.Once
+}
+
 func New() *Runtime { return &Runtime{active: map[int64]*activeSession{}} }
 
 func (r *Runtime) Capabilities() capability.Capabilities {
@@ -53,71 +75,129 @@ func (r *Runtime) Capabilities() capability.Capabilities {
 }
 
 func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	prepared, err := r.PrepareRun(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return prepared.Start(ctx)
+}
+
+func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (PreparedRun, error) {
 	if req.Backend == nil {
-		return nil, nil, fmt.Errorf("agentruntime/runtimes/piagent: nil backend")
+		return nil, fmt.Errorf("agentruntime/runtimes/piagent: nil backend")
 	}
 	cwd := req.Cwd
 	if cwd == "" {
 		var err error
 		cwd, err = agentruntime.AgentCwd(req.AgentID)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
 	env, err := BuildPiAgentEnv(req.Backend)
 	if err != nil {
 		logger.Ctx(ctx).Error("piagent runtime: BuildPiAgentEnv failed", zap.Int64("sessionID", req.SessionID), zap.Error(err))
-		return nil, nil, err
+		return nil, err
 	}
 	sess, err := sessionFactory(req, env, cwd)
 	if err != nil {
 		logger.Ctx(ctx).Error("piagent runtime: session factory failed", zap.Int64("sessionID", req.SessionID), zap.String("cwd", cwd), zap.Error(err))
-		return nil, nil, err
+		return nil, err
 	}
-
-	var s stream
-	if req.Compact {
-		s, err = sess.Compact(ctx)
-	} else {
-		s, err = sess.StreamTurn(ctx, req.UserText, req.CollaborationMode, extractImages(req.UserBlocks), turnSpec{forkAnchor: req.ForkAnchor})
-	}
-	if err != nil {
-		_ = sess.Close(context.Background())
-		if len(req.MCPServers) > 0 {
-			_ = mcpbridge.RemoveConfig(req.SessionID)
-		}
-		return nil, nil, mapSessionError(err)
-	}
-	active := &activeSession{stream: sess.ActiveStream(), interrupter: sess.ActiveInterruptor()}
-	r.register(req.SessionID, active)
-
-	out := make(chan agentruntime.Event, 32)
 	modelID := defaultModelForBackend(req.Backend)
 	if req.Provider != nil && strings.TrimSpace(req.Provider.Model) != "" {
 		modelID = strings.TrimSpace(req.Provider.Model)
 	}
-	result := &agentruntime.RunResult{ProviderSessionID: sess.ID(), Model: modelID}
+	prepared := &preparedRun{runtime: r, req: req, sess: sess, cwd: cwd, modelID: modelID}
+	if !req.Compact {
+		if preparer, ok := sess.(turnStreamPreparer); ok {
+			preparedStream, err := preparer.PrepareStreamTurn(
+				ctx,
+				req.UserText,
+				req.CollaborationMode,
+				extractImages(req.UserBlocks),
+				turnSpec{forkAnchor: req.ForkAnchor},
+			)
+			if err != nil {
+				_ = prepared.Close(context.Background())
+				return nil, mapSessionError(err)
+			}
+			prepared.prepared = preparedStream
+		}
+	}
+	return prepared, nil
+}
+
+func (p *preparedRun) Start(ctx context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	p.startMu.Lock()
+	if p.started {
+		p.startMu.Unlock()
+		return nil, nil, errors.New("piagent runtime: prepared run already started")
+	}
+	p.started = true
+	p.startMu.Unlock()
+
+	var (
+		s   stream
+		err error
+	)
+	switch {
+	case p.req.Compact:
+		s, err = p.sess.Compact(ctx)
+	case p.prepared != nil:
+		s, err = p.prepared.Start(ctx)
+	default:
+		s, err = p.sess.StreamTurn(
+			ctx,
+			p.req.UserText,
+			p.req.CollaborationMode,
+			extractImages(p.req.UserBlocks),
+			turnSpec{forkAnchor: p.req.ForkAnchor},
+		)
+	}
+	if err != nil {
+		_ = p.Close(context.Background())
+		return nil, nil, mapSessionError(err)
+	}
+	active := &activeSession{stream: p.sess.ActiveStream(), interrupter: p.sess.ActiveInterruptor()}
+	p.runtime.register(p.req.SessionID, active)
+
+	out := make(chan agentruntime.Event, 32)
+	result := &agentruntime.RunResult{ProviderSessionID: p.sess.ID(), Model: p.modelID}
 	logger.Ctx(ctx).Info("piagent runtime: turn starting",
-		zap.Int64("sessionID", req.SessionID),
-		zap.Int64("agentID", req.AgentID),
-		zap.String("cwd", cwd),
+		zap.Int64("sessionID", p.req.SessionID),
+		zap.Int64("agentID", p.req.AgentID),
+		zap.String("cwd", p.cwd),
 		zap.String("providerSessionID", result.ProviderSessionID),
 		zap.String("model", result.Model),
-		zap.Bool("compact", req.Compact),
+		zap.Bool("compact", p.req.Compact),
 	)
 
 	go func() {
 		defer close(out)
-		defer r.unregister(req.SessionID)
-		// turn 结束、pi 子进程退出后删除含 token 的会话配置（仅注入过才需要），
-		// 避免凭证文件随会话数累积。注册在 sess.Close 之前 → LIFO 后于 Close 执行。
-		if len(req.MCPServers) > 0 {
-			defer func() { _ = mcpbridge.RemoveConfig(req.SessionID) }()
-		}
-		defer func() { _ = sess.Close(context.Background()) }()
-		drainStream(ctx, req, cwd, s, out, result, active)
+		defer p.runtime.unregister(p.req.SessionID)
+		defer func() { _ = p.Close(context.Background()) }()
+		drainStream(ctx, p.req, p.cwd, s, out, result, active)
 	}()
 	return out, result, nil
+}
+
+func (p *preparedRun) Close(ctx context.Context) error {
+	var closeErr error
+	p.close.Do(func() {
+		if p.prepared != nil {
+			closeErr = p.prepared.Close(ctx)
+		}
+		if err := p.sess.Close(ctx); closeErr == nil && err != nil {
+			closeErr = err
+		}
+		if len(p.req.MCPServers) > 0 {
+			if err := mcpbridge.RemoveConfig(p.req.SessionID); closeErr == nil && err != nil {
+				closeErr = err
+			}
+		}
+	})
+	return closeErr
 }
 
 func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
@@ -279,7 +359,7 @@ func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, c
 		return
 	}
 	d := ds.Diagnostics()
-	if d.FinalErrorFrame == "" && d.StderrTail == "" {
+	if d.FinalErrorEventType == "" && d.FinalErrorStopReason == "" {
 		return
 	}
 	fields := []zap.Field{
@@ -293,15 +373,6 @@ func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, c
 	}
 	if d.FinalErrorStopReason != "" {
 		fields = append(fields, zap.String("piStopReason", d.FinalErrorStopReason))
-	}
-	if d.FinalErrorMessage != "" {
-		fields = append(fields, zap.String("piErrorMessage", d.FinalErrorMessage))
-	}
-	if d.FinalErrorFrame != "" {
-		fields = append(fields, zap.String("piFinalErrorFrame", d.FinalErrorFrame))
-	}
-	if d.StderrTail != "" {
-		fields = append(fields, zap.String("piStderrTail", d.StderrTail))
 	}
 	logger.Ctx(ctx).Debug("piagent runtime: turn failed diagnostics", fields...)
 }
@@ -330,7 +401,7 @@ func piTurnLogFields(req agentruntime.RunRequest, cwd string, result *agentrunti
 		}
 	}
 	if err != nil {
-		fields = append(fields, zap.Error(err))
+		fields = append(fields, zap.String("errorType", fmt.Sprintf("%T", err)))
 	}
 	return fields
 }

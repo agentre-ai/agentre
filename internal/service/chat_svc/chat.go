@@ -42,7 +42,7 @@ import (
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/builtin"
 	claudecodert "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
 	codexrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/codex"
-	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
+	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
@@ -1238,7 +1238,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		}
 	}
 
-	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, "" /*forkAnchor*/, turnExtras{
+	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, nil /*rollbackTxHook*/, "" /*forkAnchor*/, turnExtras{
 		emitTurnStartedBypass: req.EmitTurnStartedBypass,
 	})
 }
@@ -2061,7 +2061,11 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, forkAnchor, turnExtras{})
+	var rollbackTx func(context.Context) error
+	if be.IsPiAgent() {
+		rollbackTx = transcriptRollback(sess, all, anchorSeq)
+	}
+	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, rollbackTx, forkAnchor, turnExtras{})
 }
 
 // Edit 编辑历史 user 消息后用新文本重跑 turn。截到目标 user 消息（含）开始的全部
@@ -2125,7 +2129,26 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, replaceTextPreserveImages(text, targetBlocks), preTx, forkAnchor, turnExtras{})
+	var rollbackTx func(context.Context) error
+	if be.IsPiAgent() {
+		messages, err := chat_repo.Message().List(ctx, sess.ID)
+		if err != nil {
+			return nil, operationFailedWithCause(ctx, err)
+		}
+		rollbackTx = transcriptRollback(sess, messages, anchorSeq)
+	}
+	return s.startTurn(
+		ctx,
+		sess,
+		a,
+		be,
+		prov,
+		replaceTextPreserveImages(text, targetBlocks),
+		preTx,
+		rollbackTx,
+		forkAnchor,
+		turnExtras{},
+	)
 }
 
 func replaceTextPreserveImages(text string, old []blocks.ContentBlock) []blocks.ContentBlock {
@@ -2141,6 +2164,42 @@ func replaceTextPreserveImages(text string, old []blocks.ContentBlock) []blocks.
 		}
 	}
 	return out
+}
+
+func transcriptRollback(
+	sess *chat_entity.Session,
+	messages []*chat_entity.Message,
+	fromSeq int,
+) func(context.Context) error {
+	if sess == nil {
+		return nil
+	}
+	sessionBefore := *sess
+	originals := make([]chat_entity.Message, 0, len(messages))
+	for _, message := range messages {
+		if message == nil || message.Seq < fromSeq {
+			continue
+		}
+		originals = append(originals, *message)
+	}
+	return func(txCtx context.Context) error {
+		if _, err := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, fromSeq); err != nil {
+			return err
+		}
+		for i := range originals {
+			message := originals[i]
+			if err := chat_repo.Message().Create(txCtx, &message); err != nil {
+				return err
+			}
+		}
+		sessionRestore := sessionBefore
+		sessionRestore.ProviderSessionID = sess.ProviderSessionID
+		if err := chat_repo.Session().Update(txCtx, &sessionRestore); err != nil {
+			return err
+		}
+		*sess = sessionRestore
+		return nil
+	}
 }
 
 func messageHasImage(m *chat_entity.Message) bool {
@@ -2163,7 +2222,8 @@ func messageHasImage(m *chat_entity.Message) bool {
 
 // backendForkAnchor 是 Regenerate / Edit 共享的"按后端类型决定 fork 锚点"分流逻辑。
 // claudecode 首轮 user msg 没有 anchor 时会清空 sess.ProviderSessionID，让上层
-// startTurn → runner 当作新建会话发起；Pi 已有 provider session 时则要求精确 anchor。
+// startTurn → runner 当作新建会话发起；Pi 只有明确失败且从未建立原生会话的首轮
+// 才能无 fork 重试，已经建立过上下文的会话丢失 provider ID 后必须 fail closed。
 func (s *chatSvc) backendForkAnchor(
 	ctx context.Context,
 	sess *chat_entity.Session,
@@ -2171,6 +2231,15 @@ func (s *chatSvc) backendForkAnchor(
 	userMsg *chat_entity.Message,
 ) (string, error) {
 	if !sess.HasProviderSession() {
+		if be.IsPiAgent() {
+			failedFirstTurn, err := s.isFailedFirstPiTurn(ctx, sess, userMsg)
+			if err != nil {
+				return "", err
+			}
+			if !failedFirstTurn {
+				return "", i18n.NewError(ctx, code.ChatProviderSessionGone)
+			}
+		}
 		return "", nil
 	}
 	switch agent_backend_entity.BackendType(be.Type) {
@@ -2196,6 +2265,49 @@ func (s *chatSvc) backendForkAnchor(
 		}
 		return "", nil
 	}
+}
+
+func (s *chatSvc) isFailedFirstPiTurn(
+	ctx context.Context,
+	sess *chat_entity.Session,
+	userMsg *chat_entity.Message,
+) (bool, error) {
+	if sess == nil || userMsg == nil || strings.TrimSpace(userMsg.ForkAnchor) != "" {
+		return false, nil
+	}
+	messages, err := chat_repo.Message().List(ctx, sess.ID)
+	if err != nil {
+		return false, operationFailedWithCause(ctx, err)
+	}
+	if len(messages) != 2 {
+		return false, nil
+	}
+	var firstUser, failedAssistant *chat_entity.Message
+	for _, message := range messages {
+		switch message.Role {
+		case "user":
+			if firstUser != nil {
+				return false, nil
+			}
+			firstUser = message
+		case "assistant":
+			if failedAssistant != nil {
+				return false, nil
+			}
+			failedAssistant = message
+		default:
+			return false, nil
+		}
+	}
+	if firstUser == nil || failedAssistant == nil || firstUser.ID != userMsg.ID ||
+		firstUser.Seq >= failedAssistant.Seq || strings.TrimSpace(failedAssistant.ErrorText) == "" {
+		return false, nil
+	}
+	assistantBlocks, err := failedAssistant.GetBlocks()
+	if err != nil || len(assistantBlocks) != 0 {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Session, userMsg *chat_entity.Message) (string, error) {
@@ -2243,6 +2355,7 @@ func (s *chatSvc) startTurn(
 	prov *llm_provider_entity.LLMProvider,
 	userBlocks []blocks.ContentBlock,
 	preTx func(txCtx context.Context) error,
+	rollbackTx func(txCtx context.Context) error,
 	forkAnchor string,
 	extras turnExtras,
 ) (*SendResponse, error) {
@@ -2271,14 +2384,14 @@ func (s *chatSvc) startTurn(
 		turnCtx  context.Context
 		cancel   context.CancelFunc
 	)
-	// Pi confirms a native fork synchronously in Runtime.Run before returning its
-	// event stream. For Regenerate/Edit, do that handshake before the transaction
-	// truncates the local transcript; a stale/canceled anchor then leaves history intact.
+	// Pi prepares/restores and forks its RPC process before the transaction, but
+	// deliberately withholds the prompt. A stale/canceled anchor therefore leaves
+	// history intact, while a later transaction failure cannot race tool execution.
 	if preTx != nil && be.IsPiAgent() && sess.HasProviderSession() && strings.TrimSpace(forkAnchor) != "" {
 		runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
 		turnCtx, cancel = context.WithCancel(runCtx)
 		var err error
-		prepared, err = s.prepareTurnRun(turnCtx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, false)
+		prepared, err = s.prepareTurnRun(turnCtx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, false, true)
 		if err != nil {
 			cancel()
 			lock.Unlock()
@@ -2287,7 +2400,7 @@ func (s *chatSvc) startTurn(
 				zap.Int64("agentId", a.ID),
 				zap.String("backendType", be.Type),
 				zap.String("forkAnchor", forkAnchor),
-				zap.Error(err))
+				zap.String("errorType", fmt.Sprintf("%T", err)))
 			return nil, err
 		}
 	}
@@ -2328,6 +2441,29 @@ func (s *chatSvc) startTurn(
 			zap.Int64("sessionId", sess.ID),
 			zap.Int64("agentId", a.ID),
 			zap.String("backendType", be.Type))
+	}
+
+	if prepared != nil {
+		if err := prepared.start(turnCtx); err != nil {
+			err = s.mapTurnError(ctx, sess, be, err)
+			cancel()
+			s.discardPreparedTurn(sess.ID, prepared)
+			if rollbackTx != nil {
+				if rollbackErr := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+					return rollbackTx(db.WithContextDB(ctx, tx))
+				}); rollbackErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore Pi transcript: %w", rollbackErr))
+				}
+			}
+			lock.Unlock()
+			logger.Ctx(ctx).Warn("chat_svc.startTurn: pi prompt startup failed",
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("agentId", a.ID),
+				zap.String("backendType", be.Type),
+				zap.String("forkAnchor", forkAnchor),
+				zap.String("errorType", fmt.Sprintf("%T", err)))
+			return nil, err
+		}
 	}
 
 	stream := StreamName(sess.ID, assistantMsg.ID)
@@ -2377,17 +2513,20 @@ func (s *chatSvc) discardPreparedTurn(sessionID int64, prepared *preparedTurnRun
 	if prepared == nil {
 		return
 	}
+	if prepared.deferred != nil {
+		_ = prepared.deferred.Close(context.Background())
+	}
 	if aborter, ok := prepared.runner.(agentruntime.Aborter); ok {
 		_ = aborter.Abort(context.Background(), sessionID)
 	}
 	if prepared.events == nil {
-		prepared.release()
+		prepared.releaseResources()
 		return
 	}
 	gogo.Go(func() error {
 		for range prepared.events {
 		}
-		prepared.release()
+		prepared.releaseResources()
 		return nil
 	}, gogo.WithIgnorePanic())
 }
@@ -2547,11 +2686,35 @@ func (s *chatSvc) persistSessionStatus(ctx context.Context, sess *chat_entity.Se
 }
 
 type preparedTurnRun struct {
-	runner  agentruntime.Runtime
-	events  <-chan agentruntime.Event
-	result  *agentruntime.RunResult
-	req     agentruntime.RunRequest
-	release func()
+	runner     agentruntime.Runtime
+	events     <-chan agentruntime.Event
+	result     *agentruntime.RunResult
+	req        agentruntime.RunRequest
+	deferred   piagentrt.PreparedRun
+	deferStart bool
+	release    func()
+	releaseOne sync.Once
+}
+
+func (p *preparedTurnRun) start(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	var err error
+	switch {
+	case p.deferred != nil:
+		p.events, p.result, err = p.deferred.Start(ctx)
+	case p.deferStart:
+		p.events, p.result, err = p.runner.Run(ctx, p.req)
+	}
+	return err
+}
+
+func (p *preparedTurnRun) releaseResources() {
+	if p == nil {
+		return
+	}
+	p.releaseOne.Do(p.release)
 }
 
 func (s *chatSvc) prepareTurnRun(
@@ -2563,6 +2726,7 @@ func (s *chatSvc) prepareTurnRun(
 	userMsg, assistantMsg *chat_entity.Message,
 	forkAnchor string,
 	compact bool,
+	deferPrompt bool,
 ) (*preparedTurnRun, error) {
 	runner, err := s.selectRunner(ctx, be, sess.ID)
 	if err != nil {
@@ -2644,11 +2808,27 @@ func (s *chatSvc) prepareTurnRun(
 		req.CollaborationMode = normalizeStoredPermissionMode(agent_backend_entity.TypeCodex, sess.PermissionMode)
 	}
 
+	prepared := &preparedTurnRun{runner: runner, req: req, release: release}
+	if deferPrompt {
+		if preparer, ok := runner.(piagentrt.RunPreparer); ok {
+			deferred, err := preparer.PrepareRun(ctx, req)
+			if err != nil {
+				return fail(s.mapTurnError(ctx, sess, be, err))
+			}
+			prepared.deferred = deferred
+		} else {
+			prepared.deferStart = true
+		}
+		return prepared, nil
+	}
+
 	events, result, err := runner.Run(ctx, req)
 	if err != nil {
 		return fail(s.mapTurnError(ctx, sess, be, err))
 	}
-	return &preparedTurnRun{runner: runner, events: events, result: result, req: req, release: release}, nil
+	prepared.events = events
+	prepared.result = result
+	return prepared, nil
 }
 
 func (s *chatSvc) persistUserAnchor(ctx context.Context, userMsg *chat_entity.Message, anchor string) error {
@@ -2691,13 +2871,13 @@ func (s *chatSvc) runTurn(
 
 	if prepared == nil {
 		var err error
-		prepared, err = s.prepareTurnRun(ctx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, compact)
+		prepared, err = s.prepareTurnRun(ctx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, compact, false)
 		if err != nil {
 			s.failTurn(ctx, sess, assistantMsg, stream, err)
 			return
 		}
 	}
-	defer prepared.release()
+	defer prepared.releaseResources()
 	runner := prepared.runner
 	events := prepared.events
 	result := prepared.result

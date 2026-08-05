@@ -2,6 +2,7 @@ package piagent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/cago-frame/agents/provider"
 )
+
+const rpcFrameSafetyLimit = 64 * 1024 * 1024
 
 type Client struct {
 	binary       string
@@ -34,8 +37,8 @@ type Client struct {
 	killGrace  time.Duration
 	runner     processRunner
 
-	// rawSink 若非 nil,子进程普通 stdout JSON-RPC 帧会同步回调一次；含完整
-	// Session 内容的 get_entries response 在边界处过滤。debug 原始帧转储用。
+	// rawSink 若非 nil,子进程 stdout JSON-RPC 帧会先投影成不含 prompt、图片、
+	// Session 内容或凭证的诊断摘要，再同步回调一次。debug 协议诊断用。
 	rawSink func([]byte)
 }
 
@@ -51,7 +54,26 @@ func New(opts ...Option) *Client {
 	return c
 }
 
+type PreparedStream struct {
+	stream *Stream
+	frame  map[string]any
+
+	mu      sync.Mutex
+	started bool
+}
+
 func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (*Stream, error) {
+	prepared, err := c.PrepareStream(ctx, prompt, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return prepared.Start(ctx)
+}
+
+// PrepareStream starts/restores the Pi RPC process, completes any requested
+// native fork, and captures the pre-prompt leaf without sending the prompt.
+// Start must be called only after the caller has durably recorded the turn.
+func (c *Client) PrepareStream(ctx context.Context, prompt string, opts ...RunOption) (*PreparedStream, error) {
 	spec := runSpec{}
 	for _, o := range opts {
 		o(&spec)
@@ -99,12 +121,40 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	if imgs := imagesToWire(spec.images); len(imgs) > 0 {
 		frame["images"] = imgs
 	}
-	if err := stream.send(ctx, frame); err != nil {
-		_ = stream.Close(context.Background())
+	return &PreparedStream{stream: stream, frame: frame}, nil
+}
+
+func (p *PreparedStream) Start(ctx context.Context) (*Stream, error) {
+	if p == nil || p.stream == nil {
+		return nil, errStreamClosed
+	}
+	p.mu.Lock()
+	if p.started {
+		p.mu.Unlock()
+		return nil, errors.New("piagent: prepared stream already started")
+	}
+	p.started = true
+	p.mu.Unlock()
+	if err := p.stream.send(ctx, p.frame); err != nil {
+		_ = p.stream.Close(context.Background())
 		return nil, err
 	}
-	go stream.drain(ctx)
-	return stream, nil
+	go p.stream.drain(ctx)
+	return p.stream, nil
+}
+
+func (p *PreparedStream) SessionID() string {
+	if p == nil || p.stream == nil {
+		return ""
+	}
+	return p.stream.SessionID()
+}
+
+func (p *PreparedStream) Close(ctx context.Context) error {
+	if p == nil || p.stream == nil {
+		return nil
+	}
+	return p.stream.Close(ctx)
 }
 
 func (c *Client) Text(ctx context.Context, prompt string, opts ...RunOption) (string, error) {
@@ -305,15 +355,109 @@ func emitRawFrame(proc *rpcProcess, line []byte) {
 	if proc == nil || proc.rawSink == nil {
 		return
 	}
+	if diagnostic := sanitizeDiagnosticFrame(line); len(diagnostic) > 0 {
+		proc.rawSink(diagnostic)
+	}
+}
+
+func sanitizeDiagnosticFrame(line []byte) []byte {
+	// get_entries can legitimately carry tens of MiB of base64 image/session data.
+	// Recognize and replace it before JSON decoding so diagnostics do not duplicate
+	// that payload in memory merely to report the command name.
+	if bytes.Contains(line, []byte(`"type":"response"`)) &&
+		bytes.Contains(line, []byte(`"command":"get_entries"`)) {
+		return []byte(`{"command":"get_entries","payload":"redacted","type":"response"}`)
+	}
+
 	var envelope struct {
+		ID      string `json:"id"`
 		Type    string `json:"type"`
 		Command string `json:"command"`
+		Success bool   `json:"success"`
+		Data    struct {
+			SessionID    string            `json:"sessionId"`
+			Canceled     *bool             `json:"cancelled"` //nolint:misspell // Pi RPC field uses British spelling.
+			ContextUsage *contextUsageWire `json:"contextUsage"`
+		} `json:"data"`
+		Method  string `json:"method"`
+		Message struct {
+			Role string `json:"role"`
+		} `json:"message"`
+		Messages []struct {
+			Role       string `json:"role"`
+			StopReason string `json:"stopReason"`
+		} `json:"messages"`
+		AssistantMessageEvent struct {
+			Type string `json:"type"`
+		} `json:"assistantMessageEvent"`
+		ToolCallID string `json:"toolCallId"`
+		ToolName   string `json:"toolName"`
+		IsError    bool   `json:"isError"`
+		WillRetry  bool   `json:"willRetry"`
 	}
-	if json.Unmarshal(line, &envelope) == nil &&
-		envelope.Type == "response" && envelope.Command == "get_entries" {
-		return
+	if err := json.Unmarshal(line, &envelope); err != nil || strings.TrimSpace(envelope.Type) == "" {
+		return nil
 	}
-	proc.rawSink(line)
+
+	out := map[string]any{"type": envelope.Type}
+	if envelope.ID != "" {
+		out["id"] = envelope.ID
+	}
+	switch envelope.Type {
+	case "response":
+		out["command"] = envelope.Command
+		out["success"] = envelope.Success
+		switch envelope.Command {
+		case "get_state":
+			if sessionID := strings.TrimSpace(envelope.Data.SessionID); sessionID != "" {
+				out["sessionId"] = sessionID
+			}
+		case "fork":
+			if envelope.Data.Canceled != nil {
+				out["cancelled"] = *envelope.Data.Canceled //nolint:misspell // Pi RPC field uses British spelling.
+			}
+		case "get_session_stats":
+			if envelope.Data.ContextUsage != nil && envelope.Data.ContextUsage.ContextWindow > 0 {
+				out["contextWindow"] = envelope.Data.ContextUsage.ContextWindow
+			}
+		}
+	case "extension_ui_request":
+		if envelope.Method != "" {
+			out["method"] = envelope.Method
+		}
+	case "message_start", "message_end":
+		if envelope.Message.Role != "" {
+			out["role"] = envelope.Message.Role
+		}
+	case "message_update":
+		if envelope.AssistantMessageEvent.Type != "" {
+			out["assistantEventType"] = envelope.AssistantMessageEvent.Type
+		}
+	case "tool_execution_start", "tool_execution_end":
+		if envelope.ToolCallID != "" {
+			out["toolCallId"] = envelope.ToolCallID
+		}
+		if envelope.ToolName != "" {
+			out["toolName"] = envelope.ToolName
+		}
+		if envelope.Type == "tool_execution_end" {
+			out["isError"] = envelope.IsError
+		}
+	case "agent_end":
+		out["willRetry"] = envelope.WillRetry
+		for i := len(envelope.Messages) - 1; i >= 0; i-- {
+			message := envelope.Messages[i]
+			if message.Role == "assistant" && message.StopReason != "" {
+				out["stopReason"] = message.StopReason
+				break
+			}
+		}
+	}
+	diagnostic, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return diagnostic
 }
 
 func looksLikeSessionPath(value string) bool {
@@ -339,7 +483,7 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 		stderrDone: make(chan struct{}),
 		done:       make(chan struct{}),
 	}
-	p.lines.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	p.lines.Buffer(make([]byte, 0, 64*1024), rpcFrameSafetyLimit)
 	go func() {
 		defer close(p.stderrDone)
 		_, _ = io.Copy(p.stderr, h.Stderr())
@@ -352,7 +496,7 @@ type rpcProcess struct {
 	handle     processHandle
 	stdin      io.Writer
 	lines      *bufio.Scanner
-	rawSink    func([]byte) // 非 nil 时回调已过滤 get_entries 的原始 stdout 帧
+	rawSink    func([]byte) // 非 nil时回调不含敏感 payload 的 stdout 诊断摘要
 	stderr     *lockedBuffer
 	stderrDone chan struct{}
 	done       chan struct{} // closed when waitErr is available to every observer
