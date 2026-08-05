@@ -12,6 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cago-frame/cago/pkg/logger"
+	"go.uber.org/zap"
+
 	"github.com/agentre-ai/agentre/internal/pkg/jsonrpc"
 	pkgpty "github.com/agentre-ai/agentre/internal/pkg/pty"
 	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
@@ -64,6 +67,22 @@ type Client interface {
 type closedClient interface {
 	Closed() <-chan struct{}
 }
+
+type openCleanupKind string
+
+const (
+	openCleanupPendingOpen    openCleanupKind = "pendingOpen"
+	openCleanupMismatchedOpen openCleanupKind = "mismatchedOpen"
+)
+
+type cleanupAuthorityOutcome string
+
+const (
+	cleanupAuthorityPending           cleanupAuthorityOutcome = ""
+	cleanupAuthorityCloseAcknowledged cleanupAuthorityOutcome = "closeAcknowledged"
+	cleanupAuthorityConnectionAborted cleanupAuthorityOutcome = "connectionAborted"
+	cleanupAuthorityConnectionClosed  cleanupAuthorityOutcome = "connectionClosed"
+)
 
 type Backend struct {
 	client           Client
@@ -122,7 +141,7 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 				TerminalID:        terminalID,
 				CancelPendingOpen: true,
 			}
-			b.settleFailedOpen(ctx, &params, settleFailure)
+			b.settleFailedOpen(ctx, terminalID, openCleanupPendingOpen, &params, settleFailure)
 			return nil, returned
 		}
 		// A generic terminal.open RPC error is an authoritative rejection: no
@@ -141,7 +160,7 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 		if res.TerminalID != "" {
 			params = &protocol.TerminalCloseParams{TerminalID: res.TerminalID}
 		}
-		b.settleFailedOpen(ctx, params, settleFailure)
+		b.settleFailedOpen(ctx, terminalID, openCleanupMismatchedOpen, params, settleFailure)
 		return nil, mismatchErr
 	}
 
@@ -197,63 +216,82 @@ func interruptedOpenError(
 
 func (b *Backend) settleFailedOpen(
 	ctx context.Context,
+	terminalID string,
+	cleanupKind openCleanupKind,
 	params *protocol.TerminalCloseParams,
 	settle func(),
 ) {
-	if b.cleanupTerminal(ctx, params) {
+	guardianCtx := context.WithoutCancel(ctx)
+	if outcome := b.cleanupTerminal(guardianCtx, params); outcome != cleanupAuthorityPending {
 		settle()
 		return
 	}
-	go b.guardOpenCleanup(params, settle) //nolint:gosec // G118: guardian must outlive the canceled Open context until ownership is authoritative
+	logger.Ctx(guardianCtx).Warn("remote.Backend.Open: cleanup guardian started",
+		zap.String("terminalId", terminalID),
+		zap.String("cleanupKind", string(cleanupKind)))
+	go b.guardOpenCleanup(guardianCtx, terminalID, cleanupKind, params, settle)
 }
 
-// cleanupTerminal reports whether remote terminal ownership is authoritative:
-// either terminal.close was acknowledged or the shared connection is known to
-// be closed. A successful Abort transfers ownership to the daemon's CloseAll.
+// cleanupTerminal reports the bounded authority outcome for remote terminal
+// ownership. A terminal.close acknowledgement, successful shared-connection
+// Abort, or observed connection closure each transfers cleanup authority.
 func (b *Backend) cleanupTerminal(
 	ctx context.Context,
 	params *protocol.TerminalCloseParams,
-) bool {
+) cleanupAuthorityOutcome {
 	closed := clientClosed(b.client)
 	if channelClosed(closed) {
-		return true
+		return cleanupAuthorityConnectionClosed
 	}
 	if params != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openCleanupTimeout)
+		cleanupCtx, cancel := context.WithTimeout(ctx, openCleanupTimeout)
 		var ack struct{}
 		err := b.client.Call(cleanupCtx, "terminal.close", *params, &ack)
 		cancel()
-		if err == nil || channelClosed(closed) {
-			return true
+		if err == nil {
+			return cleanupAuthorityCloseAcknowledged
+		}
+		if channelClosed(closed) {
+			return cleanupAuthorityConnectionClosed
 		}
 	}
 	if err := b.client.Abort(); err == nil {
-		return true
+		return cleanupAuthorityConnectionAborted
 	}
-	return channelClosed(closed)
+	if channelClosed(closed) {
+		return cleanupAuthorityConnectionClosed
+	}
+	return cleanupAuthorityPending
 }
 
 func (b *Backend) guardOpenCleanup(
+	ctx context.Context,
+	terminalID string,
+	cleanupKind openCleanupKind,
 	params *protocol.TerminalCloseParams,
 	settle func(),
 ) {
-	defer settle()
 	closed := clientClosed(b.client)
+	outcome := cleanupAuthorityPending
 	if channelClosed(closed) {
-		return
-	}
-	ticker := time.NewTicker(openCleanupRetryInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-closed:
-			return
-		case <-ticker.C:
-			if b.cleanupTerminal(context.Background(), params) {
-				return
+		outcome = cleanupAuthorityConnectionClosed
+	} else {
+		ticker := time.NewTicker(openCleanupRetryInterval)
+		defer ticker.Stop()
+		for outcome == cleanupAuthorityPending {
+			select {
+			case <-closed:
+				outcome = cleanupAuthorityConnectionClosed
+			case <-ticker.C:
+				outcome = b.cleanupTerminal(ctx, params)
 			}
 		}
 	}
+	logger.Ctx(ctx).Info("remote.Backend.Open: cleanup guardian settled",
+		zap.String("terminalId", terminalID),
+		zap.String("cleanupKind", string(cleanupKind)),
+		zap.String("outcome", string(outcome)))
+	settle()
 }
 
 func clientClosed(client Client) <-chan struct{} {

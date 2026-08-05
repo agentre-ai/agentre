@@ -3,6 +3,7 @@ package remote_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -16,7 +17,11 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/pty/remote"
 	"github.com/agentre-ai/agentre/pkg/agentred/protocol"
 
+	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type fakeClient struct {
@@ -191,6 +196,7 @@ type openCleanupOwnershipClient struct {
 	startedOnce sync.Once
 	closedOnce  sync.Once
 	closeAck    atomic.Bool
+	abortAck    atomic.Bool
 
 	mu             sync.Mutex
 	lastCloseParam protocol.TerminalCloseParams
@@ -252,6 +258,9 @@ func (c *openCleanupOwnershipClient) Unsubscribe(string, remote.Subscription) {
 
 func (c *openCleanupOwnershipClient) Abort() error {
 	c.abortCalls.Add(1)
+	if c.abortAck.Load() {
+		return nil
+	}
 	return c.abortErr
 }
 
@@ -265,6 +274,70 @@ func (c *openCleanupOwnershipClient) closeParam() protocol.TerminalCloseParams {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.lastCloseParam
+}
+
+const (
+	sensitiveGuardianCommand      = "deploy --token=guardian-sensitive-command"
+	sensitiveGuardianCwd          = "/private/guardian-sensitive-cwd"
+	sensitiveGuardianCleanupError = "guardian-sensitive-cleanup-error"
+	sensitiveGuardianAbortError   = "guardian-sensitive-abort-error"
+)
+
+func observeGuardianOpen(
+	client *openCleanupOwnershipClient,
+	terminalID string,
+) (context.Context, pty.Spec, *observer.ObservedLogs, []string) {
+	client.cleanupErr = errors.New(sensitiveGuardianCleanupError)
+	client.abortErr = errors.New(sensitiveGuardianAbortError)
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+	return ctx, pty.Spec{
+			TerminalID: terminalID,
+			Cwd:        sensitiveGuardianCwd,
+			Command:    sensitiveGuardianCommand,
+		}, logs, []string{
+			sensitiveGuardianCommand,
+			sensitiveGuardianCwd,
+			sensitiveGuardianCleanupError,
+			sensitiveGuardianAbortError,
+		}
+}
+
+func requireGuardianLogs(
+	t *testing.T,
+	logs *observer.ObservedLogs,
+	terminalID string,
+	cleanupKind string,
+	outcome string,
+	sensitive []string,
+) {
+	t.Helper()
+	entries := logs.All()
+	wantEntries := 1
+	if outcome != "" {
+		wantEntries++
+	}
+	require.Len(t, entries, wantEntries)
+	require.Equal(t, zapcore.WarnLevel, entries[0].Level)
+	require.Equal(t, "remote.Backend.Open: cleanup guardian started", entries[0].Message)
+	require.Equal(t, map[string]any{
+		"terminalId":  terminalID,
+		"cleanupKind": cleanupKind,
+	}, entries[0].ContextMap())
+	if outcome != "" {
+		require.Equal(t, zapcore.InfoLevel, entries[1].Level)
+		require.Equal(t, "remote.Backend.Open: cleanup guardian settled", entries[1].Message)
+		require.Equal(t, map[string]any{
+			"terminalId":  terminalID,
+			"cleanupKind": cleanupKind,
+			"outcome":     outcome,
+		}, entries[1].ContextMap())
+	}
+	observed, err := json.Marshal(entries)
+	require.NoError(t, err)
+	for _, value := range sensitive {
+		require.NotContains(t, string(observed), value)
+	}
 }
 
 type scriptedCloseClient struct {
@@ -492,14 +565,18 @@ func TestRemoteBackend_GivenPendingCancelCleanupFailureWhenOpenIsCanceledThenAbo
 func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenRetryIsAcknowledgedThenGuardianRetainsOwnershipUntilSettled(t *testing.T) {
 	client := newOpenCleanupOwnershipClient(true, "")
 	t.Cleanup(client.closeConnection)
-	ctx, cancel := context.WithCancel(context.Background())
+	loggerCtx, spec, logs, sensitive := observeGuardianOpen(client, "guardian-cancel-retry")
+	ctx, cancel := context.WithCancel(loggerCtx)
 	var releases atomic.Int32
+	var releasedBeforeSettlementLog atomic.Bool
 	result := make(chan error, 1)
 	go func() {
-		_, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(
-			ctx,
-			pty.Spec{TerminalID: "guardian-cancel-retry", Cwd: "/r"},
-		)
+		_, err := remote.NewBackendWithLease(client, func() {
+			if logs.Len() != 2 {
+				releasedBeforeSettlementLog.Store(true)
+			}
+			releases.Add(1)
+		}).Open(ctx, spec)
 		result <- err
 	}()
 	<-client.started
@@ -514,17 +591,25 @@ func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenRetryIsAck
 		t.Fatal("Open did not promptly return its original cancellation error")
 	}
 	require.Less(t, time.Since(cancelStarted), 250*time.Millisecond)
+	require.GreaterOrEqual(t, client.closeCalls.Load(), int32(1))
+	require.GreaterOrEqual(t, client.abortCalls.Load(), int32(1))
 	require.Zero(t, releases.Load(), "failed cleanup and abort must retain the lease")
 	require.Zero(t, client.unsubscribeCalls.Load(), "failed cleanup and abort must retain the subscription")
 	require.Equal(t, protocol.TerminalCloseParams{
 		TerminalID:        "guardian-cancel-retry",
 		CancelPendingOpen: true,
 	}, client.closeParam())
+	requireGuardianLogs(t, logs, "guardian-cancel-retry", "pendingOpen", "", sensitive)
 
+	require.Eventually(t, func() bool { return client.closeCalls.Load() >= 3 },
+		500*time.Millisecond, time.Millisecond, "guardian did not periodically retry terminal.close")
+	requireGuardianLogs(t, logs, "guardian-cancel-retry", "pendingOpen", "", sensitive)
 	client.closeAck.Store(true)
 	require.Eventually(t, func() bool {
-		return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1 && client.closeCalls.Load() >= 2
+		return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1
 	}, time.Second, time.Millisecond)
+	requireGuardianLogs(t, logs, "guardian-cancel-retry", "pendingOpen", "closeAcknowledged", sensitive)
+	require.False(t, releasedBeforeSettlementLog.Load(), "guardian must log settlement before releasing ownership")
 	closeCalls := client.closeCalls.Load()
 	abortCalls := client.abortCalls.Load()
 	time.Sleep(150 * time.Millisecond)
@@ -537,14 +622,12 @@ func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenRetryIsAck
 func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenConnectionClosesThenGuardianSettlesExactlyOnceAndExits(t *testing.T) {
 	client := newOpenCleanupOwnershipClient(true, "")
 	t.Cleanup(client.closeConnection)
-	ctx, cancel := context.WithCancel(context.Background())
+	loggerCtx, spec, logs, sensitive := observeGuardianOpen(client, "guardian-cancel-closed")
+	ctx, cancel := context.WithCancel(loggerCtx)
 	var releases atomic.Int32
 	result := make(chan error, 1)
 	go func() {
-		_, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(
-			ctx,
-			pty.Spec{TerminalID: "guardian-cancel-closed", Cwd: "/r"},
-		)
+		_, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(ctx, spec)
 		result <- err
 	}()
 	<-client.started
@@ -553,6 +636,7 @@ func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenConnection
 	require.Equal(t, context.Canceled, <-result)
 	require.Zero(t, releases.Load())
 	require.Zero(t, client.unsubscribeCalls.Load())
+	requireGuardianLogs(t, logs, "guardian-cancel-closed", "pendingOpen", "", sensitive)
 	require.Eventually(t, func() bool { return client.closeCalls.Load() >= 3 },
 		500*time.Millisecond, time.Millisecond, "guardian did not periodically retry terminal.close")
 	closeCallsBeforeWait := client.closeCalls.Load()
@@ -563,10 +647,12 @@ func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenConnection
 		"each failed close retry must make one shared-connection abort attempt")
 	require.Zero(t, releases.Load(), "repeated failures must retain the lease")
 	require.Zero(t, client.unsubscribeCalls.Load(), "repeated failures must retain the subscription")
+	requireGuardianLogs(t, logs, "guardian-cancel-closed", "pendingOpen", "", sensitive)
 	client.closeConnection()
 	require.Eventually(t, func() bool {
 		return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1
 	}, time.Second, time.Millisecond)
+	requireGuardianLogs(t, logs, "guardian-cancel-closed", "pendingOpen", "connectionClosed", sensitive)
 	closeCalls := client.closeCalls.Load()
 	abortCalls := client.abortCalls.Load()
 	time.Sleep(150 * time.Millisecond)
@@ -576,15 +662,44 @@ func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenConnection
 	require.Equal(t, int32(1), client.unsubscribeCalls.Load())
 }
 
+func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenRetryAbortSucceedsThenGuardianLogsOneSettlement(t *testing.T) {
+	client := newOpenCleanupOwnershipClient(true, "")
+	t.Cleanup(client.closeConnection)
+	loggerCtx, spec, logs, sensitive := observeGuardianOpen(client, "guardian-cancel-aborted")
+	ctx, cancel := context.WithCancel(loggerCtx)
+	var releases atomic.Int32
+	result := make(chan error, 1)
+	go func() {
+		_, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(ctx, spec)
+		result <- err
+	}()
+	<-client.started
+	cancel()
+
+	require.Equal(t, context.Canceled, <-result)
+	require.Zero(t, releases.Load())
+	require.Zero(t, client.unsubscribeCalls.Load())
+	requireGuardianLogs(t, logs, "guardian-cancel-aborted", "pendingOpen", "", sensitive)
+	require.Eventually(t, func() bool { return client.abortCalls.Load() >= 3 },
+		500*time.Millisecond, time.Millisecond, "guardian did not periodically retry connection abort")
+	requireGuardianLogs(t, logs, "guardian-cancel-aborted", "pendingOpen", "", sensitive)
+
+	client.abortAck.Store(true)
+	require.Eventually(t, func() bool {
+		return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1
+	}, time.Second, time.Millisecond)
+	requireGuardianLogs(t, logs, "guardian-cancel-aborted", "pendingOpen", "connectionAborted", sensitive)
+	require.Equal(t, int32(1), releases.Load())
+	require.Equal(t, int32(1), client.unsubscribeCalls.Load())
+}
+
 func TestRemoteBackend_GivenMismatchedOpenCleanupAndAbortFailuresWhenRetryIsAcknowledgedThenPreservesErrorAndSettlesGuardian(t *testing.T) {
 	client := newOpenCleanupOwnershipClient(false, "guardian-unexpected-terminal")
 	t.Cleanup(client.closeConnection)
+	ctx, spec, logs, sensitive := observeGuardianOpen(client, "guardian-expected-terminal")
 	var releases atomic.Int32
 
-	h, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(
-		context.Background(),
-		pty.Spec{TerminalID: "guardian-expected-terminal", Cwd: "/r"},
-	)
+	h, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(ctx, spec)
 
 	require.Nil(t, h)
 	require.ErrorIs(t, err, remote.ErrTerminalIDMismatch)
@@ -595,11 +710,13 @@ func TestRemoteBackend_GivenMismatchedOpenCleanupAndAbortFailuresWhenRetryIsAckn
 	require.Zero(t, releases.Load(), "failed mismatch cleanup and abort must retain the lease")
 	require.Zero(t, client.unsubscribeCalls.Load(), "failed mismatch cleanup and abort must retain the subscription")
 	require.Equal(t, protocol.TerminalCloseParams{TerminalID: "guardian-unexpected-terminal"}, client.closeParam())
+	requireGuardianLogs(t, logs, "guardian-expected-terminal", "mismatchedOpen", "", sensitive)
 
 	client.closeAck.Store(true)
 	require.Eventually(t, func() bool {
-		return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1 && client.closeCalls.Load() >= 2
+		return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1
 	}, time.Second, time.Millisecond)
+	requireGuardianLogs(t, logs, "guardian-expected-terminal", "mismatchedOpen", "closeAcknowledged", sensitive)
 	require.Equal(t, int32(1), releases.Load())
 	require.Equal(t, int32(1), client.unsubscribeCalls.Load())
 }
