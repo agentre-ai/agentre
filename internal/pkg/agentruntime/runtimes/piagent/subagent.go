@@ -118,7 +118,7 @@ func classifySubagentInvocation(input []byte) (subagentInvocation, bool) {
 	confirmPresent := false
 	if raw, exists := fields["confirmProjectAgents"]; exists {
 		confirmPresent = true
-		if err := json.Unmarshal(raw, &confirmProjectAgents); err != nil {
+		if isJSONNull(raw) || json.Unmarshal(raw, &confirmProjectAgents) != nil {
 			return subagentInvocation{}, false
 		}
 	}
@@ -174,10 +174,14 @@ func readOptionalString(fields map[string]json.RawMessage, key string) (string, 
 		return "", false, true
 	}
 	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
+	if isJSONNull(raw) || json.Unmarshal(raw, &value) != nil {
 		return "", true, false
 	}
 	return value, true, true
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 func readInvocationRuns(fields map[string]json.RawMessage, key string, limit int) ([]invocationRun, bool, bool) {
@@ -607,7 +611,7 @@ func decodeSnapshotMap(object map[string]json.RawMessage, messages []json.RawMes
 	snapshot.stopReason = readTrimmedString(object["stopReason"])
 	snapshot.status = readTrimmedString(object["status"])
 	snapshot.model = readTrimmedString(object["model"])
-	snapshot.agentSource = readTrimmedString(object["agentSource"])
+	snapshot.agentSource = readAgentSource(object["agentSource"])
 	snapshot.errorMessage = firstNonEmpty(
 		readTrimmedString(object["errorMessage"]),
 		readTrimmedString(object["error"]),
@@ -620,7 +624,7 @@ func decodeSnapshotMap(object map[string]json.RawMessage, messages []json.RawMes
 }
 
 func readOptionalInt(raw json.RawMessage) *int {
-	if len(raw) == 0 {
+	if len(raw) == 0 || isJSONNull(raw) {
 		return nil
 	}
 	var value int
@@ -639,6 +643,15 @@ func readTrimmedString(raw json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(value)
+}
+
+func readAgentSource(raw json.RawMessage) string {
+	switch source := readTrimmedString(raw); source {
+	case "user", "project":
+		return source
+	default:
+		return ""
+	}
 }
 
 func firstNonEmpty(values ...string) string {
@@ -684,8 +697,8 @@ func snapshotHasActivity(snapshot decodedSnapshot) bool {
 		return len(snapshot.messages) > 0
 	}
 	statusActivity := snapshot.status != "" && snapshot.status != "waiting" && snapshot.status != "pending"
-	if snapshot.model != "" || snapshot.agentSource != "" || snapshot.stopReason != "" ||
-		statusActivity || snapshot.errorMessage != "" || snapshot.summary != "" {
+	if snapshot.model != "" || snapshot.stopReason != "" || statusActivity ||
+		snapshot.errorMessage != "" || snapshot.summary != "" {
 		return true
 	}
 	return snapshot.exitCode != nil && *snapshot.exitCode != -1
@@ -787,7 +800,7 @@ func objectRaw(raw json.RawMessage) json.RawMessage {
 }
 
 func toolResultContent(raw json.RawMessage) (string, bool) {
-	if len(raw) == 0 {
+	if len(raw) == 0 || isJSONNull(raw) {
 		return "", false
 	}
 	var text string
@@ -898,15 +911,15 @@ func (t *subagentTracker) finalize(snapshots []decodedSnapshot, usable, outerErr
 			}
 			continue
 		}
-		if isTerminalStatus(run.info.Status) {
-			continue
-		}
 		var snapshot decodedSnapshot
 		if index < len(snapshots) {
 			snapshot = snapshots[index]
 		}
-		if terminal := terminalStatus(t.envelope, snapshot); terminal != "" {
+		if terminal := finalSnapshotTerminalStatus(t.envelope, snapshot, run.info.Status); terminal != "" {
 			run.info.Status = terminal
+			continue
+		}
+		if isTerminalStatus(run.info.Status) {
 			continue
 		}
 		if outerError {
@@ -921,14 +934,14 @@ func (t *subagentTracker) finalizeGrouped(snapshots []decodedSnapshot, usable, o
 	incomplete := !usable
 	for index := range t.runs {
 		run := &t.runs[index]
-		if isTerminalStatus(run.info.Status) {
-			continue
-		}
 		if usable && index < len(snapshots) {
-			if terminal := terminalStatus(t.envelope, snapshots[index]); terminal != "" {
+			if terminal := finalSnapshotTerminalStatus(t.envelope, snapshots[index], run.info.Status); terminal != "" {
 				run.info.Status = terminal
 				continue
 			}
+		}
+		if isTerminalStatus(run.info.Status) {
+			continue
 		}
 		incomplete = true
 	}
@@ -961,10 +974,20 @@ func (t *subagentTracker) finalizeGrouped(snapshots []decodedSnapshot, usable, o
 	}
 }
 
+func finalSnapshotTerminalStatus(envelope envelopeKind, snapshot decodedSnapshot, current string) string {
+	status := terminalStatus(envelope, snapshot)
+	if status != "completed" || snapshot.stopReason != "" || snapshot.status != "" || snapshot.errorMessage != "" ||
+		snapshot.exitCode == nil || *snapshot.exitCode != 0 {
+		return status
+	}
+	if current == "failed" || current == "canceled" {
+		return ""
+	}
+	return status
+}
+
 func terminalStatus(envelope envelopeKind, snapshot decodedSnapshot) string {
 	switch snapshot.stopReason {
-	case "stop", "length":
-		return "completed"
 	case "error":
 		return "failed"
 	case "aborted":
@@ -973,22 +996,25 @@ func terminalStatus(envelope envelopeKind, snapshot decodedSnapshot) string {
 		}
 		return "canceled"
 	}
-	switch snapshot.status {
-	case "completed", "failed", "canceled":
-		return snapshot.status
-	}
 	if snapshot.errorMessage != "" {
 		return "failed"
 	}
-	if snapshot.exitCode != nil {
-		switch *snapshot.exitCode {
-		case 0:
-			return "completed"
-		case -1:
-			return ""
-		default:
-			return "failed"
-		}
+	switch snapshot.status {
+	case "failed", "canceled":
+		return snapshot.status
+	}
+	if snapshot.exitCode != nil && *snapshot.exitCode != 0 && *snapshot.exitCode != -1 {
+		return "failed"
+	}
+	switch snapshot.stopReason {
+	case "stop", "length":
+		return "completed"
+	}
+	if snapshot.status == "completed" {
+		return "completed"
+	}
+	if snapshot.exitCode != nil && *snapshot.exitCode == 0 {
+		return "completed"
 	}
 	return ""
 }

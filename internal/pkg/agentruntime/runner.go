@@ -122,7 +122,7 @@ type SubagentInfo struct {
 	ToolUses        int           `json:"toolUses,omitempty"`
 	TotalTokens     int           `json:"totalTokens,omitempty"`
 	DurationMs      int           `json:"durationMs,omitempty"`
-	Status          string        `json:"status,omitempty"` // aggregate: waiting | running | completed | failed | canceled | skipped | unknown
+	Status          string        `json:"status,omitempty"` // aggregate: waiting | running | completed | partial | failed | canceled | skipped | unknown
 	Mode            string        `json:"mode,omitempty"`
 	Runs            []SubagentRun `json:"runs,omitempty"`
 }

@@ -693,6 +693,85 @@ describe("AgentSpawnCard normalized runs", () => {
     expect(within(details).queryByText("No summary")).toBeNull();
   });
 
+  it("Given an unmatched child call in a terminal normalized single run, When rendered, Then the step stops spinning as UNKNOWN without a synthetic result", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [
+        {
+          id: "run-one",
+          index: 0,
+          agent: "reviewer",
+          task: "Review",
+          status: "completed",
+        },
+      ],
+    });
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={block}
+        childBlocks={groupedChildren([
+          {
+            runId: "run-one",
+            toolName: "Bash",
+            toolUseId: "unmatched-single",
+          },
+        ])}
+      />,
+    );
+
+    const details = expandCard(container);
+    expect(
+      within(details).getByTestId("agent-spawn-step-status"),
+    ).toHaveTextContent("UNKNOWN");
+    expect(details.querySelector(".animate-spin")).toBeNull();
+    fireEvent.click(within(details).getByRole("button", { name: /Bash/i }));
+    expect(
+      within(details).getByTestId("agent-spawn-step-result"),
+    ).toHaveTextContent("");
+  });
+
+  it("Given partial and unknown normalized statuses, When rendered, Then their icons are warning and neutral rather than success checks", () => {
+    const partial = normalizedSpawnBlock({
+      status: "partial",
+      runs: [
+        {
+          id: "run-done",
+          index: 0,
+          agent: "done",
+          task: "Done",
+          status: "completed",
+        },
+        {
+          id: "run-failed",
+          index: 1,
+          agent: "failed",
+          task: "Failed",
+          status: "failed",
+        },
+        {
+          id: "run-unknown",
+          index: 2,
+          agent: "unknown",
+          task: "Unknown",
+          status: "unknown",
+        },
+      ],
+    });
+    render(<AgentSpawnCard toolBlock={partial} />);
+
+    expect(
+      screen
+        .getByText("PARTIAL")
+        .parentElement?.querySelector(".lucide-triangle-alert"),
+    ).not.toBeNull();
+    expect(
+      screen
+        .getByText("UNKNOWN")
+        .parentElement?.querySelector(".lucide-circle-help"),
+    ).not.toBeNull();
+  });
+
   it("Given parallel runs and fallback children, When expanded, Then ordered isolated groups expose translated statuses, badges, output and fallback steps", () => {
     const block = normalizedSpawnBlock({
       status: "partial",

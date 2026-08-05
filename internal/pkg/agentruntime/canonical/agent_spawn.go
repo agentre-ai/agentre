@@ -16,7 +16,7 @@ type AgentSpawn struct {
 	ToolUses     int    `json:"toolUses,omitempty"`
 	TotalTokens  int    `json:"totalTokens,omitempty"`
 	DurationMs   int    `json:"durationMs,omitempty"`
-	Status       string `json:"status,omitempty"` // waiting | running | completed | failed | canceled | skipped | unknown
+	Status       string `json:"status,omitempty"` // waiting | running | completed | partial | failed | canceled | skipped | unknown
 }
 
 // AgentSpawnRun carries one input-slot's normalized static invocation data.

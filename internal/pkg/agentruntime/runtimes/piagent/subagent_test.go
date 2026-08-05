@@ -99,13 +99,16 @@ func TestClassifySubagentInvocation_SingleAndFlatContracts(t *testing.T) {
 	})
 
 	for name, input := range map[string]string{
-		"malformed json":        `{`,
-		"non object":            `[]`,
-		"control only":          `{"task_id":"x","action":"stop"}`,
-		"known poison":          `{"agent":"worker","task":"inspect","agentScope":42}`,
-		"ambiguous official":    `{"agent":"worker","task":"inspect","tasks":[{"agent":"other","task":"other"}]}`,
-		"oversized parallel":    `{"tasks":[{"agent":"a","task":"1"},{"agent":"a","task":"2"},{"agent":"a","task":"3"},{"agent":"a","task":"4"},{"agent":"a","task":"5"},{"agent":"a","task":"6"},{"agent":"a","task":"7"},{"agent":"a","task":"8"},{"agent":"a","task":"9"}]}`,
-		"task without identity": `{"task":"inspect"}`,
+		"malformed json":                `{`,
+		"non object":                    `[]`,
+		"control only":                  `{"task_id":"x","action":"stop"}`,
+		"known poison":                  `{"agent":"worker","task":"inspect","agentScope":42}`,
+		"null optional string poison":   `{"agent":"worker","task":"inspect","model":null}`,
+		"null unused string poison":     `{"tasks":[{"agent":"worker","task":"inspect"}],"profile":null}`,
+		"null confirmation bool poison": `{"agent":"worker","task":"inspect","confirmProjectAgents":null}`,
+		"ambiguous official":            `{"agent":"worker","task":"inspect","tasks":[{"agent":"other","task":"other"}]}`,
+		"oversized parallel":            `{"tasks":[{"agent":"a","task":"1"},{"agent":"a","task":"2"},{"agent":"a","task":"3"},{"agent":"a","task":"4"},{"agent":"a","task":"5"},{"agent":"a","task":"6"},{"agent":"a","task":"7"},{"agent":"a","task":"8"},{"agent":"a","task":"9"}]}`,
+		"task without identity":         `{"task":"inspect"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, ok := classifySubagentInvocation([]byte(input))
@@ -288,6 +291,22 @@ func TestSubagentTracker_ParallelFinalizationAndAggregateStatus(t *testing.T) {
 		assert.Equal(t, "running", tracker.info().Status)
 	})
 
+	t.Run("parallel placeholder source metadata does not prove activity and unknown source stays absent", func(t *testing.T) {
+		tracker := newTracker(t)
+		_, changed := tracker.consumeUpdate([]byte(`{"details":{"mode":"parallel","results":[
+			{"exitCode":-1,"agentSource":"unknown","messages":[]},
+			{"exitCode":-1,"agentSource":"project","messages":[]},
+			{"exitCode":-1,"messages":[]}
+		]}}`))
+
+		assert.True(t, changed, "known project source enriches metadata")
+		assert.Equal(t, []string{"waiting", "waiting", "waiting"}, []string{
+			tracker.info().Runs[0].Status, tracker.info().Runs[1].Status, tracker.info().Runs[2].Status,
+		})
+		assert.Empty(t, tracker.info().Runs[0].AgentSource)
+		assert.Equal(t, "project", tracker.info().Runs[1].AgentSource)
+	})
+
 	t.Run("mixed terminal outcomes become partial", func(t *testing.T) {
 		tracker := newTracker(t)
 		_, _ = tracker.consumeFinal([]byte(`{"mode":"parallel","results":[
@@ -301,6 +320,23 @@ func TestSubagentTracker_ParallelFinalizationAndAggregateStatus(t *testing.T) {
 		})
 		assert.Equal(t, "partial", info.Status, "complete grouped evidence is authoritative over outer isError")
 		assert.Equal(t, "first done", info.Runs[0].Summary)
+	})
+
+	t.Run("authoritative final nonzero exit overrides update-time completion", func(t *testing.T) {
+		tracker := newTracker(t)
+		_, _ = tracker.consumeUpdate([]byte(`{"details":{"mode":"parallel","results":[
+			{"messages":[{"role":"assistant","content":[],"stopReason":"stop"}]},
+			{"messages":[]},{"messages":[]}
+		]}}`))
+		assert.Equal(t, "completed", tracker.info().Runs[0].Status)
+
+		_, _ = tracker.consumeFinal([]byte(`{"mode":"parallel","results":[
+			{"exitCode":2,"stopReason":"stop","messages":[{"role":"assistant","content":[],"stopReason":"stop"}]},
+			{"exitCode":0,"messages":[]},{"exitCode":0,"messages":[]}
+		]}`), false, "outer")
+
+		assert.Equal(t, "failed", tracker.info().Runs[0].Status)
+		assert.Equal(t, "partial", tracker.info().Status)
 	})
 
 	t.Run("incomplete success is unknown and outer error only changes aggregate", func(t *testing.T) {
@@ -422,6 +458,21 @@ func TestSubagentTracker_ResultBeforeCallAndFinalRecovery(t *testing.T) {
 	assert.Equal(t, "completed", info.Runs[0].Status)
 }
 
+func TestSubagentTracker_NullToolResultContentIsMalformedRatherThanEmpty(t *testing.T) {
+	inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
+	require.True(t, ok)
+	tracker := newSubagentTracker("outer", inv)
+
+	events, _ := tracker.consumeUpdate([]byte(`{"details":{"messages":[
+		{"role":"assistant","content":[{"type":"toolCall","id":"child","name":"bash","arguments":{}}],"stopReason":"toolUse"},
+		{"role":"toolResult","toolCallId":"child","content":null}
+	]}}`))
+
+	require.Len(t, events, 1)
+	assert.IsType(t, agentruntime.ToolCall{}, events[0])
+	assert.False(t, tracker.runs[0].emittedResults["child"])
+}
+
 func TestSubagentTracker_FinalStatusFallbacksAndProjectConfirmationCancellation(t *testing.T) {
 	t.Run("usable flat envelope without terminal evidence becomes unknown on outer success", func(t *testing.T) {
 		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
@@ -442,6 +493,17 @@ func TestSubagentTracker_FinalStatusFallbacksAndProjectConfirmationCancellation(
 		tracker = newSubagentTracker("outer", inv)
 		_, _ = tracker.consumeFinal(nil, true, "outer")
 		assert.Equal(t, "failed", tracker.info().Runs[0].Status)
+	})
+
+	t.Run("null exit code is malformed terminal evidence rather than success", func(t *testing.T) {
+		inv, ok := classifySubagentInvocation([]byte(`{"task":"inspect","profile":"read-only"}`))
+		require.True(t, ok)
+		tracker := newSubagentTracker("outer", inv)
+
+		_, _ = tracker.consumeFinal([]byte(`{"messages":[],"exitCode":null}`), false, "outer")
+
+		assert.Equal(t, "unknown", tracker.info().Status)
+		assert.Equal(t, "unknown", tracker.info().Runs[0].Status)
 	})
 
 	t.Run("official aborted fails while flat aborted cancels", func(t *testing.T) {

@@ -4,6 +4,7 @@ import type { TFunction } from "i18next";
 import {
   Check,
   ChevronRight,
+  CircleHelp,
   CircleSlash,
   Clock,
   FileText,
@@ -330,13 +331,15 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
     : statusFromSpawn(singleSpawn, resultBlock);
   const { pillClassName } = statusConfig[status];
   const StatusIcon =
-    status === "error"
+    status === "error" || singleSpawn.status === "partial"
       ? TriangleAlert
       : singleSpawn.status === "canceled"
         ? CircleSlash
-        : status === "running" || status === "waiting"
-          ? LoaderCircle
-          : Check;
+        : singleSpawn.status === "unknown"
+          ? CircleHelp
+          : status === "running" || status === "waiting"
+            ? LoaderCircle
+            : Check;
   const statusLabel =
     normalizedRun && normalizedStatus
       ? buildNormalizedStatusLabel(normalizedStatus, t, singleSpawn.durationMs)
@@ -592,6 +595,13 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
                       key={s.tool.toolUseId || s.tool.text || ""}
                       step={s}
                       cwd={cwd}
+                      terminalFallbackStatus={
+                        normalizedRun &&
+                        normalizedStatus &&
+                        isTerminalRunStatus(normalizedStatus)
+                          ? normalizedStatus
+                          : undefined
+                      }
                       uiStateKey={
                         uiStateKey
                           ? `${uiStateKey}:step:${s.tool.toolUseId || idx}`
@@ -688,13 +698,15 @@ function statusPillClass(status: AgentSpawnStatus): string {
 
 function StatusGlyph({ status }: { status: AgentSpawnStatus }) {
   const Icon =
-    status === "failed"
+    status === "failed" || status === "partial"
       ? TriangleAlert
       : status === "canceled" || status === "skipped"
         ? CircleSlash
-        : status === "running" || status === "waiting"
-          ? LoaderCircle
-          : Check;
+        : status === "unknown"
+          ? CircleHelp
+          : status === "running" || status === "waiting"
+            ? LoaderCircle
+            : Check;
   return (
     <Icon
       className={cn(
