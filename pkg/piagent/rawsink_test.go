@@ -105,7 +105,7 @@ func TestStream_RawSinkSanitizesSensitiveFrames(t *testing.T) {
 		assert.NotContains(t, joined, secret)
 	}
 	assert.Contains(t, joined, `"command":"fork"`)
-	assert.Contains(t, joined, `"cancelled":false`)
+	assert.Contains(t, joined, `"cancelled":false`) //nolint:misspell // Pi RPC field uses British spelling.
 	assert.Contains(t, joined, `"type":"message_start"`)
 	assert.Contains(t, joined, `"role":"user"`)
 	assert.Contains(t, joined, `"type":"message_update"`)

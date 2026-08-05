@@ -2304,7 +2304,10 @@ func (s *chatSvc) isFailedFirstPiTurn(
 		return false, nil
 	}
 	assistantBlocks, err := failedAssistant.GetBlocks()
-	if err != nil || len(assistantBlocks) != 0 {
+	if err != nil {
+		return false, i18n.NewError(ctx, code.ChatBlocksMalformed)
+	}
+	if len(assistantBlocks) != 0 {
 		return false, nil
 	}
 	return true, nil

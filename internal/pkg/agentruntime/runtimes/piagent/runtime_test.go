@@ -345,8 +345,8 @@ func TestRun_ForwardsUserBlockImagesToStream(t *testing.T) {
 
 func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 	Convey("Given a pi-agent stream that fails after reporting model and usage", t, func() {
-		const secret = "credential-secret-token"
-		boom := errors.New("piagent: terminated " + secret)
+		const redactionMarker = "private-payload-marker"
+		boom := errors.New("piagent: terminated " + redactionMarker)
 		sess := &fakeSession{
 			stream: &scriptedStream{events: []pkgpiagent.Event{
 				{Kind: pkgpiagent.EventUsage, Model: "gpt-5.5(xhigh)", Usage: provider.Usage{
@@ -360,9 +360,9 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 			}, err: boom, sid: "pi-session-689", diagnostics: pkgpiagent.StreamDiagnostics{
 				FinalErrorEventType:  "agent_end",
 				FinalErrorStopReason: "error",
-				FinalErrorMessage:    "provider failed " + secret,
-				FinalErrorFrame:      `{"type":"agent_end","messages":[{"content":"` + secret + `"}]}`,
-				StderrTail:           "stderr " + secret,
+				FinalErrorMessage:    "provider failed " + redactionMarker,
+				FinalErrorFrame:      `{"type":"agent_end","messages":[{"content":"` + redactionMarker + `"}]}`,
+				StderrTail:           "stderr " + redactionMarker,
 			}},
 			sid: "pi-session-689",
 		}
@@ -388,7 +388,7 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 			So(result.StopErr, ShouldEqual, boom)
 			for _, entry := range logs.All() {
 				for _, value := range entry.ContextMap() {
-					So(fmt.Sprint(value), ShouldNotContainSubstring, secret)
+					So(fmt.Sprint(value), ShouldNotContainSubstring, redactionMarker)
 				}
 			}
 			matches := logs.FilterMessage("piagent runtime: turn failed").All()

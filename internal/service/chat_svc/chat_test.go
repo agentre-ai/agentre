@@ -5075,9 +5075,10 @@ func TestPiRestart_RejectsEmptyAnchorBeforeTruncationOrRunnerStart(t *testing.T)
 
 func TestPiRestart_LostProviderSessionFailsClosed(t *testing.T) {
 	tests := []struct {
-		name    string
-		arrange func(*chatMocks)
-		invoke  func(chat_svc.ChatSvc, context.Context) (*chat_svc.SendResponse, error)
+		name     string
+		arrange  func(*chatMocks)
+		invoke   func(chat_svc.ChatSvc, context.Context) (*chat_svc.SendResponse, error)
+		wantCode int
 	}{
 		{
 			name: "Given an established Pi assistant turn whose provider session ID was lost, when Regenerate runs, then it fails closed without restarting blank",
@@ -5093,6 +5094,7 @@ func TestPiRestart_LostProviderSessionFailsClosed(t *testing.T) {
 			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
 				return svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
 			},
+			wantCode: code.ChatProviderSessionGone,
 		},
 		{
 			name: "Given Pi accepted a first prompt before failing but its provider session ID and anchor were lost, when Regenerate runs, then it does not treat that partial turn as a startup failure",
@@ -5108,6 +5110,23 @@ func TestPiRestart_LostProviderSessionFailsClosed(t *testing.T) {
 			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
 				return svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
 			},
+			wantCode: code.ChatProviderSessionGone,
+		},
+		{
+			name: "Given a failed first Pi turn whose assistant blocks are malformed, when Regenerate runs, then it reports the malformed transcript without restarting blank",
+			arrange: func(m *chatMocks) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
+					ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: "{", ErrorText: "startup failed",
+				}, nil)
+				m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+					{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original")},
+					{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: "{", ErrorText: "startup failed"},
+				}, nil).AnyTimes()
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+			},
+			wantCode: code.ChatBlocksMalformed,
 		},
 		{
 			name: "Given an established Pi user turn whose provider session ID was lost, when Edit runs, then it fails closed without restarting blank",
@@ -5119,6 +5138,7 @@ func TestPiRestart_LostProviderSessionFailsClosed(t *testing.T) {
 			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
 				return svc.Edit(ctx, &chat_svc.EditRequest{SessionID: 100, MessageID: 1000, Text: "replacement"})
 			},
+			wantCode: code.ChatProviderSessionGone,
 		},
 	}
 
@@ -5147,7 +5167,7 @@ func TestPiRestart_LostProviderSessionFailsClosed(t *testing.T) {
 			require.Nil(t, resp)
 			var httpErr *httputils.Error
 			require.ErrorAs(t, err, &httpErr)
-			assert.Equal(t, code.ChatProviderSessionGone, httpErr.Code)
+			assert.Equal(t, tc.wantCode, httpErr.Code)
 
 			select {
 			case req := <-runner.requests:
