@@ -36,6 +36,10 @@ type DeviceView struct {
 	LastSeenAt        int64  `json:"lastSeenAt"`
 	LastError         string `json:"lastError"`
 	Online            bool   `json:"online"`
+	// DaemonOutdated 说明这台设备上的 agentred 版本过旧:它不认识会话持久化那组 RPC,
+	// 所以断连会直接结束当前这一轮(R18)。由桌面端连上后的能力探测得出,不落库 ——
+	// 它描述的是**当前这个 daemon 进程**,重启桌面后重新探。
+	DaemonOutdated bool `json:"daemonOutdated"`
 }
 
 // RemoteDeviceSvc 单例接口。
@@ -59,6 +63,10 @@ type RemoteDeviceSvc interface {
 	// ListDeviceProviders returns the cached provider list for deviceID.
 	// Returns nil if no data has been recorded yet. Safe for concurrent use.
 	ListDeviceProviders(deviceID int64) []ProviderSummary
+	// RecordDaemonOutdated 记下 R18 能力探测的结论:这台设备上的 daemon 认不认会话
+	// 持久化那组 RPC。结论随后出现在该设备的 DeviceView.DaemonOutdated 上。
+	// 由 chat_svc 在探测结论翻转时调用。
+	RecordDaemonOutdated(deviceID int64, outdated bool)
 	// SyncProvider copies one local LLM provider to the remote daemon state.
 	// The raw API key is sent only for this explicit sync operation.
 	SyncProvider(ctx context.Context, deviceID int64, providerKey string) error

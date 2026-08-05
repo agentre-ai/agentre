@@ -42,7 +42,7 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	if waiter == nil {
 		logger.Ctx(ctx).Warn("claudecode runtime: SubmitAnswer no waiting AskUserQuestion",
 			zap.Int64("sessionID", sessionID), zap.String("requestID", requestID))
-		return fmt.Errorf("agentruntime/runtimes/claudecode: no waiting AskUserQuestion for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/claudecode: no waiting AskUserQuestion for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
 
 	if skipped {
@@ -52,7 +52,7 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 		}); err != nil {
 			return err
 		}
-		emitUserAskResolved(a, requestID, true, nil)
+		emitUserAskResolved(a, waiter, requestID, true, nil)
 		return nil
 	}
 
@@ -76,26 +76,20 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	}); err != nil {
 		return err
 	}
-	emitUserAskResolved(a, requestID, false, answers)
+	emitUserAskResolved(a, waiter, requestID, false, answers)
 	return nil
 }
 
-// emitUserAskResolved 把答案终态 emit 给 drain 通道。out nil(turn 已结束) 或
-// channel 满时不阻塞 —— 前端有乐观更新 + 历史回放 fallback,丢一帧不致命。
-func emitUserAskResolved(a *claudeActive, requestID string, skipped bool, answers []agentruntime.AskAnswer) {
-	out := a.outChan()
-	if out == nil {
-		return
-	}
-	ev := agentruntime.UserAskResolved{
+// emitUserAskResolved 把答案终态 emit 回 **发起该请求的那一轮** 的 drain 通道
+// (waiter.out)。用 session 全局的单槽出口做不到:自主续轮 / 后台 subagent 活动轮
+// 与 user turn 各有各的通道,投错通道 = 事件被丢 = chat_svc 收不到 UserAskResolved,
+// 会话永久停在 waiting(sess-2425)。那一轮已结束时 emitTo 静默丢弃。
+func emitUserAskResolved(a *claudeActive, w *askWaiter, requestID string, skipped bool, answers []agentruntime.AskAnswer) {
+	a.emitTo(w.out, agentruntime.UserAskResolved{
 		RequestID: requestID,
 		Skipped:   skipped,
 		Answers:   answers,
-	}
-	select {
-	case out <- ev:
-	default:
-	}
+	})
 }
 
 // SubmitToolPermission 实现非-AskUserQuestion 的工具审批反向投回。
@@ -116,7 +110,7 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 	a := v.(*claudeActive)
 	waiter := a.takePermWaiter(requestID)
 	if waiter == nil {
-		return fmt.Errorf("agentruntime/runtimes/claudecode: no waiting tool permission for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/claudecode: no waiting tool permission for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
 
 	var result claudecode.PermissionResult
@@ -145,27 +139,37 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 	if err := a.handle.RespondToControl(ctx, requestID, result); err != nil {
 		return err
 	}
-	emitToolPermissionResolved(a, requestID, allow, alwaysAllowSession, denyReason)
+	emitToolPermissionResolved(a, waiter, requestID, allow, alwaysAllowSession, denyReason)
 	return nil
 }
 
-// emitToolPermissionResolved 把决策终态 emit 给 drain 通道。DenyReason 透传
-// (review finding #11 修复后,新 sealed Event 携带 DenyReason)。
-func emitToolPermissionResolved(a *claudeActive, requestID string, allowed, alwaysAllow bool, denyReason string) {
-	out := a.outChan()
-	if out == nil {
-		return
-	}
-	ev := agentruntime.ToolPermissionResolved{
+// emitToolPermissionResolved 把决策终态 emit 回发起该请求的那一轮的 drain 通道
+// (理由同 emitUserAskResolved)。DenyReason 透传(review finding #11 修复后,
+// 新 sealed Event 携带 DenyReason)。
+func emitToolPermissionResolved(a *claudeActive, w *permWaiter, requestID string, allowed, alwaysAllow bool, denyReason string) {
+	a.emitTo(w.out, agentruntime.ToolPermissionResolved{
 		RequestID:   requestID,
 		Allowed:     allowed,
 		AlwaysAllow: alwaysAllow,
 		DenyReason:  denyReason,
+	})
+}
+
+// PendingWaiters implements agentruntime.WaiterLister (R7): a reconnecting
+// client needs to rebuild the approval / question cards for whatever this
+// session is currently blocked on, not just answer an already-known
+// requestID. sessionID unknown to this runner (never spawned / already
+// evicted) returns the zero-value snapshot — same as "nothing pending",
+// never an error.
+func (r *Runtime) PendingWaiters(_ context.Context, sessionID int64) agentruntime.WaiterSnapshot {
+	if sessionID <= 0 {
+		return agentruntime.WaiterSnapshot{}
 	}
-	select {
-	case out <- ev:
-	default:
+	v, ok := r.cache.Get(sessionKey(sessionID))
+	if !ok {
+		return agentruntime.WaiterSnapshot{}
 	}
+	return v.(*claudeActive).pendingWaiters()
 }
 
 // handleControlRequest 按 tool_name 分派 control_request:
@@ -204,7 +208,7 @@ func handleControlRequest(req *claudecode.ControlRequestEvent, active *claudeAct
 		return
 	}
 
-	active.registerPermWaiter(req.RequestID, req.ToolName, req.Input)
+	active.registerPermWaiter(req.RequestID, req.ToolName, req.Input, out)
 	out <- agentruntime.ToolPermissionRequest{
 		RequestID:  req.RequestID,
 		ToolCallID: "", // claudecode CLI 在 control_request 里不直接给 tool_use_id;前端按 RequestID merge
@@ -226,7 +230,7 @@ func handleAskUserQuestion(req *claudecode.ControlRequestEvent, active *claudeAc
 		}()
 		return
 	}
-	active.registerAskWaiter(req.RequestID, questions, req.Input)
+	active.registerAskWaiter(req.RequestID, questions, req.Input, out)
 	out <- agentruntime.UserAskRequest{
 		RequestID: req.RequestID,
 		Questions: questions,

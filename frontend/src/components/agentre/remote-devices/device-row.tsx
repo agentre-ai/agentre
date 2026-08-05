@@ -113,6 +113,12 @@ export function DeviceRow({
           {friendlyErr}
         </div>
       ) : null}
+      {/* R18：daemon 版本过旧是这台设备的固有属性，说明就落在这台设备这一行。 */}
+      {device.daemonOutdated ? (
+        <div className="text-xs text-status-waiting">
+          {t("remoteDevices.status.daemonOutdated")}
+        </div>
+      ) : null}
       {showProviders ? <DeviceProvidersSync deviceId={device.id} /> : null}
     </div>
   );

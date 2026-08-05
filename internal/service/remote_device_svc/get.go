@@ -22,5 +22,5 @@ func (s *service) Get(ctx context.Context, id int64) (*DeviceView, error) {
 	if row == nil {
 		return nil, i18n.NewError(ctx, code.RemoteDeviceNotFound)
 	}
-	return toView(row), nil
+	return s.toView(row), nil
 }

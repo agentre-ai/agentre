@@ -275,7 +275,7 @@ func TestBuildPiAgentProviderProbe(t *testing.T) {
 			ext := exts[0]
 			So(filepath.Base(ext), ShouldStartWith, "agentre-provider-")
 			So(filepath.Base(ext), ShouldEndWith, ".mjs")
-			_, statErr := os.Stat(ext) //nolint:gosec // path returned by the materializer under the test temp data dir
+			_, statErr := os.Stat(ext)
 			So(statErr, ShouldBeNil)
 			// env 在 buildPiAgentEnv 产出的 base 之上叠加 APIKey，不改入参 map。
 			So(envOut["BASE"], ShouldEqual, "1")

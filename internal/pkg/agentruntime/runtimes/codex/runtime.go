@@ -4,6 +4,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -44,7 +45,7 @@ type codexActive struct {
 	approval    cxApprovalStream
 	pending     []agentruntime.ConsumedSteer
 	askWaiters  map[string]codexAskWaiter
-	permWaiters map[string]struct{}
+	permWaiters map[string]codexPermWaiter
 	pool        *agentruntime.CLISessionPool
 	poolKey     string
 	outMu       sync.Mutex
@@ -53,6 +54,14 @@ type codexActive struct {
 
 type codexAskWaiter struct {
 	questions []agentruntime.AskQuestion
+}
+
+// codexPermWaiter 记录审批 waiter 重建卡片所需的载荷:PendingWaiters(R7)要把
+// 它还原成与实时 ToolPermissionRequest 帧同形的内容,所以 requestID 之外还要
+// 留住 tool_name 与原始 input 字节。
+type codexPermWaiter struct {
+	toolName string
+	rawInput json.RawMessage
 }
 
 // Runtime codex runtime 实现。
@@ -467,7 +476,7 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	}
 	waiter := a.askWaiter(requestID)
 	if waiter == nil {
-		return fmt.Errorf("agentruntime/runtimes/codex: no waiting request_user_input for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/codex: no waiting request_user_input for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
 	if len(questions) > 0 && len(questions) != len(waiter.questions) {
 		return fmt.Errorf("agentruntime/runtimes/codex: client supplied %d questions but waiter recorded %d", len(questions), len(waiter.questions))
@@ -506,7 +515,7 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 		return agentruntime.ErrNoActiveTurn
 	}
 	if !a.hasPermWaiter(requestID) {
-		return fmt.Errorf("agentruntime/runtimes/codex: no waiting approval for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/codex: no waiting approval for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
 	if err := a.approval.SubmitApproval(ctx, requestID, allow, alwaysAllowSession); err != nil {
 		return err
@@ -514,6 +523,53 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 	a.removePermWaiter(requestID)
 	emitToolPermissionResolved(a, requestID, allow, alwaysAllowSession)
 	return nil
+}
+
+// PendingWaiters 实现 agentruntime.WaiterLister(R7):codex 的 app-server 协议
+// 同时有 requestApproval 与 request_user_input 两类阻塞点,断连期间产生的待决策
+// 要能被重连的客户端枚举出来重建审批/提问卡,而不只是按已知 requestID 回答。
+// sessionID 不在 active 表里(未起轮 / 已结束)返回零值快照 —— 与「此刻没有待
+// 决策」同义,不是错误。
+func (r *Runtime) PendingWaiters(_ context.Context, sessionID int64) agentruntime.WaiterSnapshot {
+	if sessionID <= 0 {
+		return agentruntime.WaiterSnapshot{}
+	}
+	r.mu.Lock()
+	a := r.active[sessionID]
+	r.mu.Unlock()
+	if a == nil {
+		return agentruntime.WaiterSnapshot{}
+	}
+	return a.pendingWaiters()
+}
+
+// pendingWaiters 在 a.mu 下快照两张 waiter 表。切片内顺序不定(map 迭代),需要
+// 稳定顺序的调用方自己按 RequestID 排序。
+func (a *codexActive) pendingWaiters() agentruntime.WaiterSnapshot {
+	var snap agentruntime.WaiterSnapshot
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if len(a.permWaiters) > 0 {
+		snap.ToolPermissions = make([]agentruntime.PendingToolPermission, 0, len(a.permWaiters))
+		for reqID, w := range a.permWaiters {
+			snap.ToolPermissions = append(snap.ToolPermissions, agentruntime.PendingToolPermission{
+				RequestID: reqID,
+				ToolName:  w.toolName,
+				Input:     append(json.RawMessage(nil), w.rawInput...),
+			})
+		}
+	}
+	if len(a.askWaiters) > 0 {
+		snap.AskUserQuestions = make([]agentruntime.PendingAskUserQuestion, 0, len(a.askWaiters))
+		for reqID, w := range a.askWaiters {
+			snap.AskUserQuestions = append(snap.AskUserQuestions, agentruntime.PendingAskUserQuestion{
+				RequestID: reqID,
+				Questions: append([]agentruntime.AskQuestion(nil), w.questions...),
+			})
+		}
+	}
+	return snap
 }
 
 // drainStream 与顶层 drainCodexStream 同构,emit 类型升级到 sealed Event。
@@ -545,7 +601,7 @@ func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentru
 				active.registerAskWaiter(uar.RequestID, uar.Questions)
 			}
 			if tpr, ok := t.(agentruntime.ToolPermissionRequest); ok && active != nil {
-				active.registerPermWaiter(tpr.RequestID)
+				active.registerPermWaiter(tpr.RequestID, tpr.ToolName, tpr.Input)
 			}
 			out <- t
 		}
@@ -576,16 +632,19 @@ func codexEventShowsProgressAfterError(kind codex.EventKind) bool {
 	}
 }
 
-func (a *codexActive) registerPermWaiter(requestID string) {
+func (a *codexActive) registerPermWaiter(requestID, toolName string, rawInput json.RawMessage) {
 	if a == nil || strings.TrimSpace(requestID) == "" {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.permWaiters == nil {
-		a.permWaiters = map[string]struct{}{}
+		a.permWaiters = map[string]codexPermWaiter{}
 	}
-	a.permWaiters[requestID] = struct{}{}
+	a.permWaiters[requestID] = codexPermWaiter{
+		toolName: toolName,
+		rawInput: append(json.RawMessage(nil), rawInput...),
+	}
 	if a.pool != nil && a.poolKey != "" {
 		a.pool.MarkWaiting(a.poolKey)
 	}

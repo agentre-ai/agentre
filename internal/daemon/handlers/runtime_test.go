@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -69,6 +70,8 @@ type fullRT struct {
 
 	submitToolPermErr   error
 	submitToolPermCalls []submitToolPermCall
+
+	pendingWaiters agentruntime.WaiterSnapshot
 
 	goalErr        error
 	getGoalCalls   []goalCall
@@ -206,6 +209,12 @@ func (r *fullRT) SubmitToolPermission(_ context.Context, sid int64, requestID st
 	return r.submitToolPermErr
 }
 
+func (r *fullRT) PendingWaiters(_ context.Context, _ int64) agentruntime.WaiterSnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pendingWaiters
+}
+
 func (r *fullRT) GetGoal(_ context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -237,10 +246,24 @@ func (bareRT) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentrun
 	return ch, &agentruntime.RunResult{}, nil
 }
 
-// recordingNotifier collects every notify call so tests can assert ordering.
-type recordingNotifier struct {
+// recordingOutbound 扮演会话通知出口的两半:通知日志(handlers.JournalPort)与推送
+// (handlers.NotifierPort)。两半合在一个 fake 里是为了共用一份有序 steps —— 「先落库
+// 后推送」只有在同一条时间线上才证得了:每条 notify 之前必须有它自己那条 append。
+type recordingOutbound struct {
 	mu      sync.Mutex
 	frames  []notifyFrame
+	rows    []journalRow
+	steps   []string
+	resolve []string // NotifyFor 每次解析推送目标时收到的对端指纹
+	nextSeq map[string]int64
+
+	// appendFail 返回非 nil 时该条通知落库失败:不记行、不分配 seq。
+	appendFail func(method string, payload json.RawMessage) error
+	// notifyFail 返回非 nil 时该条通知推送失败(连接已死 / 写超时)。
+	notifyFail func(method string) error
+	// offline 为真时解析不到活连接(对端不在线),推送无目标。
+	offline bool
+
 	notifyC chan struct{}
 }
 
@@ -249,24 +272,106 @@ type notifyFrame struct {
 	params any
 }
 
-func newRecordingNotifier() *recordingNotifier {
-	return &recordingNotifier{notifyC: make(chan struct{}, 64)}
+// journalRow 是 fake 日志里的一行,形状对齐 daemon_notification_logs。
+type journalRow struct {
+	peer    string
+	session string
+	method  string
+	payload string
+	seq     int64
 }
 
-func (n *recordingNotifier) Notify(method string, params any) error {
+func newRecordingOutbound() *recordingOutbound {
+	return &recordingOutbound{notifyC: make(chan struct{}, 64), nextSeq: map[string]int64{}}
+}
+
+// Append 模拟仓储的原子 seq 分配:每个 (对端, 会话) 从 1 起递增,失败时不推进。
+func (n *recordingOutbound) Append(_ context.Context, peer, session, method string, payload json.RawMessage) (int64, error) {
 	n.mu.Lock()
+	defer n.unlockAndSignal()
+	if n.appendFail != nil {
+		if err := n.appendFail(method, payload); err != nil {
+			n.steps = append(n.steps, "append-failed:"+method)
+			return 0, err
+		}
+	}
+	key := peer + "|" + session
+	n.nextSeq[key]++
+	seq := n.nextSeq[key]
+	n.rows = append(n.rows, journalRow{peer: peer, session: session, method: method, payload: string(payload), seq: seq})
+	n.steps = append(n.steps, stepKey("append", method, seq))
+	return seq, nil
+}
+
+// notifierFor 是注入给 handlers.RuntimeDeps.NotifyFor 的解析函数。
+func (n *recordingOutbound) notifierFor(peer string) handlers.NotifierPort {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.resolve = append(n.resolve, peer)
+	if n.offline {
+		return nil
+	}
+	return n
+}
+
+// resolvedPeers 返回 NotifyFor 每次被调用时收到的对端指纹,按调用顺序。
+func (n *recordingOutbound) resolvedPeers() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.resolve...)
+}
+
+func (n *recordingOutbound) setOffline(off bool) {
+	n.mu.Lock()
+	n.offline = off
+	n.mu.Unlock()
+}
+
+func (n *recordingOutbound) Notify(method string, params any) error {
+	n.mu.Lock()
+	defer n.unlockAndSignal()
+	if n.notifyFail != nil {
+		if err := n.notifyFail(method); err != nil {
+			n.steps = append(n.steps, stepKey("notify-failed", method, frameSeq(params)))
+			return err
+		}
+	}
 	n.frames = append(n.frames, notifyFrame{method, params})
+	n.steps = append(n.steps, stepKey("notify", method, frameSeq(params)))
+	return nil
+}
+
+func (*recordingOutbound) Request(_ context.Context, _ string, _ any, _ any) error { return nil }
+
+// unlockAndSignal 解锁并唤醒 waitFrames / waitSteps 的等待者(非阻塞)。
+func (n *recordingOutbound) unlockAndSignal() {
 	n.mu.Unlock()
 	select {
 	case n.notifyC <- struct{}{}:
 	default:
 	}
-	return nil
 }
 
-func (*recordingNotifier) Request(_ context.Context, _ string, _ any, _ any) error { return nil }
+// stepKey 把一步记成 "<动作>:<method>#<seq>",让 R1 的顺序断言能按 (method, seq)
+// 精确配对,而不是只数条数。
+func stepKey(action, method string, seq int64) string {
+	return fmt.Sprintf("%s:%s#%d", action, method, seq)
+}
 
-func (n *recordingNotifier) snapshot() []notifyFrame {
+// frameSeq 读出推送帧上盖的 seq。三个通知帧都以指针形式推送(SetSeq 是指针接收者)。
+func frameSeq(params any) int64 {
+	switch f := params.(type) {
+	case *wire.EventFrame:
+		return f.Seq
+	case *wire.RunResultDoneFrame:
+		return f.Seq
+	case *wire.AutonomousTurnStartedFrame:
+		return f.Seq
+	}
+	return -1
+}
+
+func (n *recordingOutbound) snapshot() []notifyFrame {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	out := make([]notifyFrame, len(n.frames))
@@ -274,24 +379,211 @@ func (n *recordingNotifier) snapshot() []notifyFrame {
 	return out
 }
 
+func (n *recordingOutbound) journalRows() []journalRow {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make([]journalRow, len(n.rows))
+	copy(out, n.rows)
+	return out
+}
+
+func (n *recordingOutbound) stepLog() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.steps...)
+}
+
 // waitFrames blocks until n.snapshot() yields at least want frames, or test fails.
-func (n *recordingNotifier) waitFrames(t *testing.T, want int) []notifyFrame {
+func (n *recordingOutbound) waitFrames(t *testing.T, want int) []notifyFrame {
+	t.Helper()
+	n.waitFor(t, func() bool { return len(n.snapshot()) >= want },
+		func() string { return fmt.Sprintf("%d notify frames; got %d", want, len(n.snapshot())) })
+	return n.snapshot()
+}
+
+// waitSteps 等到出口上至少发生了 want 步(落库 / 推送,含失败),用于推送必然失败、
+// 等不到 frame 的场景。
+func (n *recordingOutbound) waitSteps(t *testing.T, want int) []string {
+	t.Helper()
+	n.waitFor(t, func() bool { return len(n.stepLog()) >= want },
+		func() string { return fmt.Sprintf("%d outbound steps; got %v", want, n.stepLog()) })
+	return n.stepLog()
+}
+
+func (n *recordingOutbound) waitFor(t *testing.T, done func() bool, describe func() string) {
 	t.Helper()
 	deadline := time.After(2 * time.Second)
-	for {
-		got := n.snapshot()
-		if len(got) >= want {
-			return got
-		}
+	for !done() {
 		select {
 		case <-n.notifyC:
 		case <-deadline:
-			t.Fatalf("timed out waiting for %d notify frames; got %d", want, len(got))
+			t.Fatalf("timed out waiting for %s", describe())
 		}
 	}
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+
+type sessionKey struct{ peer, session string }
+
+// recordingSessions 扮演会话生命周期的写入口(handlers.SessionLifecyclePort)与读出口
+// (handlers.SessionQueryPort)—— 生产上也是同一个仓储的两侧(daemon.daemonSessionStore)。
+// 它记一条有序 steps,因为生命周期的价值全在**次序**上:起手 running、轮末 idle,顺序
+// 颠倒的实现会让清单永远报错状态;同一批会话行也按这个次序推进,供读侧查。
+type recordingSessions struct {
+	mu      sync.Mutex
+	starts  []handlers.SessionRecord
+	log     []string
+	stepC   chan struct{}
+	rows    map[sessionKey]handlers.SessionRecord
+	findErr error
+	// finishEntered / finishHold 让用例把 fanout 卡在轮末收尾里,见 holdFinish。
+	finishEntered chan struct{}
+	finishHold    chan struct{}
+}
+
+func newRecordingSessions() *recordingSessions {
+	return &recordingSessions{stepC: make(chan struct{}, 64), rows: map[sessionKey]handlers.SessionRecord{}}
+}
+
+func (s *recordingSessions) Start(_ context.Context, rec handlers.SessionRecord) error {
+	s.mu.Lock()
+	defer s.unlockAndSignal()
+	s.starts = append(s.starts, rec)
+	s.log = append(s.log, "start:"+rec.PeerSessionID)
+	s.rows[sessionKey{peer: rec.PeerFingerprint, session: rec.PeerSessionID}] = rec
+	return nil
+}
+
+func (s *recordingSessions) Running(_ context.Context, peer, session string) error {
+	s.mu.Lock()
+	defer s.unlockAndSignal()
+	s.log = append(s.log, "running:"+session)
+	s.setLifecycleLocked(peer, session, wire.SessionLifecycleRunning)
+	return nil
+}
+
+func (s *recordingSessions) Finish(_ context.Context, peer, session string) error {
+	s.awaitFinishRelease()
+	s.mu.Lock()
+	defer s.unlockAndSignal()
+	s.log = append(s.log, "finish:"+session)
+	s.setLifecycleLocked(peer, session, wire.SessionLifecycleIdle)
+	return nil
+}
+
+// holdFinish 把 fanout 卡在**轮末收尾**那一瞬间(这一轮已经结束,而生命周期行还没落回
+// idle)。这一瞬间在生产上不是一闪而过:Finish 是一次同步的 SQLite 写,与流式落库抢锁
+// 时能拖到几十毫秒以上。返回「已进入 Finish」的信号与放行函数。
+func (s *recordingSessions) holdFinish() (<-chan struct{}, func()) {
+	entered, hold := make(chan struct{}, 1), make(chan struct{})
+	s.mu.Lock()
+	s.finishEntered, s.finishHold = entered, hold
+	s.mu.Unlock()
+	return entered, sync.OnceFunc(func() { close(hold) })
+}
+
+// awaitFinishRelease 是 holdFinish 的受理侧:先报「进来了」,再等放行。没装闸时直接过。
+func (s *recordingSessions) awaitFinishRelease() {
+	s.mu.Lock()
+	entered, hold := s.finishEntered, s.finishHold
+	s.mu.Unlock()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+	}
+	if hold != nil {
+		<-hold
+	}
+}
+
+// Find / List 让 recordingSessions 同时充当**查询出口**(生产上是同一个仓储的两侧,
+// 见 daemon.daemonSessionStore):Start / Running / Finish 按同样的语义推进这批行,
+// 提交决策解不出会话时读的就是它们。
+func (s *recordingSessions) Find(_ context.Context, peer, session string) (*handlers.SessionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.findErr != nil {
+		return nil, s.findErr
+	}
+	row, ok := s.rows[sessionKey{peer: peer, session: session}]
+	if !ok {
+		return nil, nil
+	}
+	return &row, nil
+}
+
+func (s *recordingSessions) List(_ context.Context, peer string) ([]handlers.SessionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []handlers.SessionRecord
+	for k, row := range s.rows {
+		if k.peer == peer {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+// setLifecycle 直接摆一条会话行的生命周期状态。interrupted 只由 daemon 启动清扫
+// 写(R10),进程内没有触发点,只能这么造。
+func (s *recordingSessions) setLifecycle(peer, session, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setLifecycleLocked(peer, session, state)
+}
+
+func (s *recordingSessions) setLifecycleLocked(peer, session, state string) {
+	k := sessionKey{peer: peer, session: session}
+	row := s.rows[k]
+	row.PeerFingerprint, row.PeerSessionID, row.LifecycleState = peer, session, state
+	s.rows[k] = row
+}
+
+func (s *recordingSessions) unlockAndSignal() {
+	s.mu.Unlock()
+	select {
+	case s.stepC <- struct{}{}:
+	default:
+	}
+}
+
+func (s *recordingSessions) steps() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.log...)
+}
+
+func (s *recordingSessions) started() []handlers.SessionRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]handlers.SessionRecord(nil), s.starts...)
+}
+
+func (s *recordingSessions) waitSteps(t *testing.T, want int) []string {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for len(s.steps()) < want {
+		select {
+		case <-s.stepC:
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d lifecycle steps; got %v", want, s.steps())
+		}
+	}
+	return s.steps()
+}
+
+func countStep(steps []string, want string) int {
+	n := 0
+	for _, s := range steps {
+		if s == want {
+			n++
+		}
+	}
+	return n
+}
 
 type lockedLogBuffer struct {
 	mu sync.Mutex
@@ -329,7 +621,7 @@ func captureRuntimeLogs(t *testing.T) *lockedLogBuffer {
 
 func setupRuntimeTest(t *testing.T, rt agentruntime.Runtime) (
 	context.Context,
-	*recordingNotifier,
+	*recordingOutbound,
 	*mock_handlers.MockGatewayPort,
 	*mock_handlers.MockLLMProviderLookupPort,
 	*handlers.RuntimeHandlers,
@@ -337,18 +629,53 @@ func setupRuntimeTest(t *testing.T, rt agentruntime.Runtime) (
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
-	notif := newRecordingNotifier()
+	notif := newRecordingOutbound()
 	gw := mock_handlers.NewMockGatewayPort(ctrl)
 	lookup := mock_handlers.NewMockLLMProviderLookupPort(ctrl)
+	sess := newRecordingSessions()
 	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
-		Notify:  notif,
-		Gateway: gw,
-		Lookup:  lookup,
+		NotifyFor:    notif.notifierFor,
+		Journal:      notif,
+		Sessions:     sess,
+		SessionQuery: sess,
+		Gateway:      gw,
+		Lookup:       lookup,
 		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
 			return rt
 		},
 	})
 	return context.Background(), notif, gw, lookup, h
+}
+
+// setupRuntimeTestWithSessions 同 setupRuntimeTest,但把会话生命周期出口也交回来
+// 供断言用(其余用例不关心它,免得每个都多接一个返回值)。
+func setupRuntimeTestWithSessions(t *testing.T, rt agentruntime.Runtime) (
+	context.Context,
+	*recordingOutbound,
+	*recordingSessions,
+	*handlers.RuntimeHandlers,
+) {
+	t.Helper()
+	notif := newRecordingOutbound()
+	sess := newRecordingSessions()
+	h := newRuntimeHandlersOn(rt, sess, notif)
+	return context.Background(), notif, sess, h
+}
+
+// newRuntimeHandlersOn 造一个共用**同一批会话行**、但内存会话表各自独立的 handler ——
+// 生产上每条连接的 bindConn 都这么造一个(见 daemon.bindConn),而它们背后是同一个
+// Daemon 级的会话仓储。判别「轮次真的结束了」与「这个 handler 从没拥有过它」需要的
+// 正是这个形状。
+func newRuntimeHandlersOn(rt agentruntime.Runtime, sess *recordingSessions, notif *recordingOutbound) *handlers.RuntimeHandlers {
+	return handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+		NotifyFor:    notif.notifierFor,
+		Journal:      notif,
+		Sessions:     sess,
+		SessionQuery: sess,
+		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
+			return rt
+		},
+	})
 }
 
 func mustJSON(t *testing.T, v any) json.RawMessage {
@@ -520,14 +847,14 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 	assert.Equal(t, wire.NotifyRunResultDone, frames[2].method)
 
 	// First event frame must carry sessionId 42 and a text_delta event payload.
-	ef0, ok := frames[0].params.(wire.EventFrame)
+	ef0, ok := frames[0].params.(*wire.EventFrame)
 	require.True(t, ok, "expected wire.EventFrame, got %T", frames[0].params)
 	assert.Equal(t, int64(42), ef0.SessionID)
 	assert.Contains(t, string(ef0.Event), `"kind":"text_delta"`)
 	assert.Contains(t, string(ef0.Event), `"text":"hi"`)
 
 	// Final frame carries the RunResult fields.
-	done, ok := frames[2].params.(wire.RunResultDoneFrame)
+	done, ok := frames[2].params.(*wire.RunResultDoneFrame)
 	require.True(t, ok, "expected wire.RunResultDoneFrame, got %T", frames[2].params)
 	assert.Equal(t, int64(42), done.SessionID)
 	assert.Equal(t, "psid-1", done.ProviderSessionID)
@@ -590,7 +917,11 @@ func TestRuntime_Run_ForwardsContentBearingEventsWithoutLoggingPayload(t *testin
 		switch params := frame.params.(type) {
 		case wire.EventFrame:
 			forwarded.Write(params.Event)
+		case *wire.EventFrame:
+			forwarded.Write(params.Event)
 		case wire.RunResultDoneFrame:
+			forwarded.WriteString(params.StopErrMsg)
+		case *wire.RunResultDoneFrame:
 			forwarded.WriteString(params.StopErrMsg)
 		}
 	}
@@ -650,7 +981,11 @@ func TestRuntime_Run_AutonomousPayloadAndStopErrorRemainForwardedButNotLogged(t 
 		switch params := frame.params.(type) {
 		case wire.EventFrame:
 			forwarded.Write(params.Event)
+		case *wire.EventFrame:
+			forwarded.Write(params.Event)
 		case wire.RunResultDoneFrame:
+			forwarded.WriteString(params.StopErrMsg)
+		case *wire.RunResultDoneFrame:
 			forwarded.WriteString(params.StopErrMsg)
 		}
 	}
@@ -711,16 +1046,13 @@ func TestRuntime_Run_ForwardsAutonomousTurn(t *testing.T) {
 		switch f.method {
 		case wire.NotifyAutonomousTurnStarted:
 			order = append(order, "started")
-			fr := f.params.(wire.AutonomousTurnStartedFrame)
-			started = &fr
+			started = f.params.(*wire.AutonomousTurnStartedFrame)
 		case wire.NotifyAutonomousTurnEvent:
 			order = append(order, "event")
-			fr := f.params.(wire.EventFrame)
-			autoEvent = &fr
+			autoEvent = f.params.(*wire.EventFrame)
 		case wire.NotifyAutonomousTurnDone:
 			order = append(order, "done")
-			fr := f.params.(wire.RunResultDoneFrame)
-			autoDone = &fr
+			autoDone = f.params.(*wire.RunResultDoneFrame)
 		}
 	}
 	require.NotNil(t, started)
@@ -843,7 +1175,7 @@ func TestRuntime_Run_StopErrAborted_RehydratesCode(t *testing.T) {
 	require.NoError(t, err)
 
 	frames := notif.waitFrames(t, 1)
-	done, ok := frames[0].params.(wire.RunResultDoneFrame)
+	done, ok := frames[0].params.(*wire.RunResultDoneFrame)
 	require.True(t, ok)
 	assert.Equal(t, wire.ErrCodeAborted, done.StopErrCode)
 	assert.Equal(t, agentruntime.ErrAborted.Error(), done.StopErrMsg)
@@ -866,7 +1198,7 @@ func runWithRT(t *testing.T, h *handlers.RuntimeHandlers, ctx context.Context, s
 // given sid; the runtime's events channel stays open so the row stays alive.
 func runtimeWithLiveSession(t *testing.T, rt *fullRT, sid int64) (
 	context.Context,
-	*recordingNotifier,
+	*recordingOutbound,
 	*handlers.RuntimeHandlers,
 	chan agentruntime.Event,
 ) {
@@ -1099,6 +1431,315 @@ func TestRuntime_SubmitToolPermission_Success(t *testing.T) {
 	assert.False(t, rt.submitToolPermCalls[0].allow)
 }
 
+// ── 会话生命周期落库 ────────────────────────────────────────────────────────
+//
+// daemon_sessions 的一行 = 「这条会话是谁的、在跑什么、处于哪一步」。没有它,重连的
+// 客户端拿到的会话清单永远是空的,R10 的启动清扫也没有可扫的对象。
+
+// TestRuntime_Run_RecordsSessionRowThenMovesItToIdleAtTurnEnd 覆盖生命周期的主链:
+// runtime.run 起手时按 (对端, 会话) 建行并置 running(带上客户端展示要用的 agent id /
+// cwd / backend 类型),轮末事件流关闭后置 idle,等待下一轮。
+func TestRuntime_Run_RecordsSessionRowThenMovesItToIdleAtTurnEnd(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, notif, sess, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 5, AgentID: 7, Cwd: "/work",
+	})
+	require.NoError(t, err)
+
+	notif.waitFrames(t, 2) // Done + runResultDone
+	assert.Equal(t, []string{"start:5", "finish:5"}, sess.waitSteps(t, 2))
+	assert.Equal(t, []handlers.SessionRecord{{
+		PeerSessionID: "5", AgentID: 7, Cwd: "/work",
+		BackendType:    string(agent_backend_entity.TypeClaudeCode),
+		LifecycleState: wire.SessionLifecycleRunning,
+	}}, sess.started(), "起手必须建行并置 running,带上客户端展示要用的元数据")
+}
+
+// TestRuntime_Run_AutonomousTurnMovesLifecycleBackToRunning 覆盖自主续轮:backend
+// 自发跑的一轮同样是「一轮执行中」,会话必须在这段时间报 running 而不是停在 idle ——
+// 否则重连的客户端会把一条正在产出事件的会话显示成闲置。
+func TestRuntime_Run_AutonomousTurnMovesLifecycleBackToRunning(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	rt.autoFn = func(_ int64) <-chan agentruntime.AutonomousTurn {
+		out := make(chan agentruntime.AutonomousTurn, 1)
+		evs := make(chan agentruntime.Event)
+		close(evs)
+		out <- agentruntime.AutonomousTurn{Trigger: "hook", Events: evs, Result: &agentruntime.RunResult{}}
+		close(out)
+		return out
+	}
+	ctx, _, sess, h := setupRuntimeTestWithSessions(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 5})
+	require.NoError(t, err)
+
+	// 主轮 start + 主轮 finish + 自主续轮 running + 自主续轮 finish;两条 fanout
+	// goroutine 交错,所以断言内容与条数而不是顺序。
+	steps := sess.waitSteps(t, 4)
+	assert.Contains(t, steps, "running:5", "自主续轮开始时会话必须回到 running")
+	assert.Equal(t, 2, countStep(steps, "finish:5"), "自主续轮结束同样要落回 idle")
+}
+
+// ── SubmitAnswer / SubmitToolPermission idempotency (R8) ────────────────────
+//
+// Neither call may ever surface an error for "already answered" or "session
+// gone" — a reconnected client cannot tell whether its previous submission
+// arrived, so an error would make it misreport to the user.
+
+func TestRuntime_SubmitAnswer_SameRequestIDTwice_SecondCallStillSucceeds(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 5)
+	defer close(live)
+
+	_, err := h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 5, RequestID: "r-1"})
+	require.NoError(t, err)
+
+	// Real backends take-and-delete the waiter on first submit; simulate
+	// the second call landing on an already-taken requestID.
+	rt.submitAnswerErr = agentruntime.ErrWaiterNotFound
+	_, err = h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 5, RequestID: "r-1"})
+	require.NoError(t, err)
+	assert.Len(t, rt.submitAnswerCalls, 2)
+}
+
+func TestRuntime_SubmitAnswer_WaiterAlreadyGone_IdempotentSuccess(t *testing.T) {
+	rt := &fullRT{submitAnswerErr: agentruntime.ErrWaiterNotFound}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 5)
+	defer close(live)
+
+	_, err := h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 5, RequestID: "vanished"})
+	require.NoError(t, err)
+}
+
+func TestRuntime_SubmitAnswer_SessionGone_IdempotentSuccess(t *testing.T) {
+	// No live session ever registered for this sid — the R10 "daemon
+	// restarted, session marked interrupted" case reduces to this same
+	// resolveSession failure at the current (non-persistent) daemon.
+	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
+	_, err := h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 999, RequestID: "r-1"})
+	require.NoError(t, err)
+}
+
+func TestRuntime_SubmitToolPermission_SameRequestIDTwice_SecondCallStillSucceeds(t *testing.T) {
+	rt := &fullRT{}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 6)
+	defer close(live)
+
+	_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 6, RequestID: "p-1", Allow: true})
+	require.NoError(t, err)
+
+	rt.submitToolPermErr = agentruntime.ErrWaiterNotFound
+	_, err = h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 6, RequestID: "p-1", Allow: true})
+	require.NoError(t, err)
+	assert.Len(t, rt.submitToolPermCalls, 2)
+}
+
+func TestRuntime_SubmitToolPermission_WaiterAlreadyGone_IdempotentSuccess(t *testing.T) {
+	rt := &fullRT{submitToolPermErr: agentruntime.ErrWaiterNotFound}
+	ctx, _, h, live := runtimeWithLiveSession(t, rt, 6)
+	defer close(live)
+
+	_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 6, RequestID: "vanished"})
+	require.NoError(t, err)
+}
+
+func TestRuntime_SubmitToolPermission_SessionGone_IdempotentSuccess(t *testing.T) {
+	ctx, _, _, _, h := setupRuntimeTest(t, &fullRT{})
+	_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 999, RequestID: "p-1"})
+	require.NoError(t, err)
+}
+
+// TestRuntime_Submit_BackendNotRegistered_IsNotFoldedIntoSuccess 覆盖 R8 幂等的
+// **边界**:会话是活的,但它的 backend 在本 daemon 上根本没注册(接线故障)。今天这条
+// 路径与「会话不在 / 已结束」共用 ErrNoActiveTurn,于是被一并折成成功 —— 一台接错线的
+// daemon 会把每一次决策提交都报成 OK,而没有任何 waiter 被回答,叠加 R9 的不设过期
+// = 会话永久挂死,且客户端与运维两边都看不到任何异常。
+//
+// 收窄必须**不改过线错误码**:另外 7 个控制 RPC(steer / abort / setPermissionMode
+// / goal.* …)在同一条 resolveSession 上返回同一个 sentinel,换码会让桌面端的
+// errors.Is(err, ErrNoActiveTurn) 集体失效。所以这里同时钉住「报错」与「码不变」。
+func TestRuntime_Submit_BackendNotRegistered_IsNotFoldedIntoSuccess(t *testing.T) {
+	unwire := func(h *handlers.RuntimeHandlers) {
+		h.SwapRuntimeFor(func(_ agent_backend_entity.BackendType) agentruntime.Runtime { return nil })
+	}
+
+	t.Run("submitAnswer", func(t *testing.T) {
+		ctx, _, h, live := runtimeWithLiveSession(t, &fullRT{}, 5)
+		defer close(live)
+		unwire(h)
+
+		_, err := h.SubmitAnswer(ctx, wire.SubmitAnswerParams{SessionID: 5, RequestID: "r-1"})
+		require.Error(t, err, "接线故障不是 R8 的幂等场景,不能报成 OK")
+		code, ok := wire.CodeForSentinel(err)
+		require.True(t, ok, "过线错误码必须仍然是既有 sentinel")
+		assert.Equal(t, wire.ErrCodeNoActiveTurn, code, "其它 7 个控制 RPC 的错误码一字未改")
+	})
+
+	t.Run("submitToolPermission", func(t *testing.T) {
+		ctx, _, h, live := runtimeWithLiveSession(t, &fullRT{}, 6)
+		defer close(live)
+		unwire(h)
+
+		_, err := h.SubmitToolPermission(ctx, wire.SubmitToolPermissionParams{SessionID: 6, RequestID: "p-1"})
+		require.Error(t, err)
+		code, ok := wire.CodeForSentinel(err)
+		require.True(t, ok)
+		assert.Equal(t, wire.ErrCodeNoActiveTurn, code)
+	})
+}
+
+// TestRuntime_Submit_SessionOwnedByAnotherHandler 覆盖 R8 幂等的另一条**边界**:
+// 会话在本 daemon 上还在跑,但提交落到了一个从没拥有过它的 RuntimeHandlers 上。
+//
+// 生产上这不是「多客户端」才有的事:registry 是全局一份,每条新接入的连接都把 13 个
+// runtime.* 重新 Register 一遍(覆盖),而一台桌面端本来就同时握着 2-3 条连接(连接池
+// 租约 / 设备监视心跳 / 刷新探测)。折成成功的话,桌面端 callSession 的「重挂后重试」
+// 永不触发,客户端把「已送达」报给前端而没有任何 waiter 被回答 —— 叠加 R9 的不设过期
+// 就是永久挂死。所以这一条必须如实报错,且错误码不变(callSession 只认 ErrNoActiveTurn)。
+func TestRuntime_Submit_SessionOwnedByAnotherHandler_IsNotFoldedIntoSuccess(t *testing.T) {
+	// live 会话:owner 起的那一轮不结束,会话行停在 running。
+	newPair := func(t *testing.T, sid int64) (*fullRT, *handlers.RuntimeHandlers, *recordingSessions) {
+		t.Helper()
+		rt := &fullRT{}
+		live := make(chan agentruntime.Event)
+		t.Cleanup(func() { close(live) })
+		rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+			return live, &agentruntime.RunResult{}, nil
+		}
+		sess := newRecordingSessions()
+		owner := newRuntimeHandlersOn(rt, sess, newRecordingOutbound())
+		runWithRT(t, owner, context.Background(), sid)
+		// 后接入那条连接的 handler:同一批会话行,自己的内存会话表是空的。
+		return rt, newRuntimeHandlersOn(rt, sess, newRecordingOutbound()), sess
+	}
+
+	t.Run("submitAnswer", func(t *testing.T) {
+		rt, other, _ := newPair(t, 11)
+		_, err := other.SubmitAnswer(context.Background(), wire.SubmitAnswerParams{SessionID: 11, RequestID: "r-1"})
+		require.Error(t, err, "会话还在跑,提交没送达就不能报成 OK")
+		code, ok := wire.CodeForSentinel(err)
+		require.True(t, ok, "过线错误码必须仍然是既有 sentinel")
+		assert.Equal(t, wire.ErrCodeNoActiveTurn, code, "桌面端 callSession 只认它才会重挂重试")
+		assert.Empty(t, rt.submitAnswerCalls, "没有任何 waiter 被回答")
+	})
+
+	t.Run("submitToolPermission", func(t *testing.T) {
+		rt, other, _ := newPair(t, 12)
+		_, err := other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 12, RequestID: "p-1"})
+		require.Error(t, err)
+		code, ok := wire.CodeForSentinel(err)
+		require.True(t, ok)
+		assert.Equal(t, wire.ErrCodeNoActiveTurn, code)
+		assert.Empty(t, rt.submitToolPermCalls)
+	})
+
+	// 接管之后就解得出会话了 —— 这正是客户端收到错误后走的那条路,证明报错是可行动的。
+	t.Run("adopt then retry succeeds", func(t *testing.T) {
+		rt, other, _ := newPair(t, 13)
+		other.Adopt(context.Background(), 13, agent_backend_entity.TypeClaudeCode)
+		_, err := other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 13, RequestID: "p-1"})
+		require.NoError(t, err)
+		require.Len(t, rt.submitToolPermCalls, 1)
+	})
+
+	// 判别依据读不出来时维持 R8 的幂等:证不了会话还在跑,就不拿一个坏掉的库去换
+	// 用户面前一个假失败。
+	t.Run("lifecycle unreadable stays idempotent", func(t *testing.T) {
+		_, other, sess := newPair(t, 14)
+		sess.mu.Lock()
+		sess.findErr = errors.New("database is locked")
+		sess.mu.Unlock()
+		_, err := other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 14, RequestID: "p-1"})
+		require.NoError(t, err)
+	})
+}
+
+// TestRuntime_Submit_SessionNoLongerRunning_StaysIdempotent 钉住 R8 本身:轮次确已
+// 结束(idle)、或那一轮的子进程随上一个 daemon 进程消亡(interrupted)、或这条会话
+// 根本不在本 daemon 上(查无此行),提交一律照旧幂等返回成功 —— 重连的客户端分不清
+// 自己上一次提交到没到,报错会让它对着用户误报失败。
+func TestRuntime_Submit_SessionNoLongerRunning_StaysIdempotent(t *testing.T) {
+	states := map[string]string{
+		"idle":        wire.SessionLifecycleIdle,
+		"interrupted": wire.SessionLifecycleInterrupted,
+	}
+	for name, state := range states {
+		t.Run(name, func(t *testing.T) {
+			rt := &fullRT{}
+			sess := newRecordingSessions()
+			other := newRuntimeHandlersOn(rt, sess, newRecordingOutbound())
+			// 会话行在库里,但已经不是 running。
+			sess.setLifecycle("", "21", state)
+
+			_, err := other.SubmitAnswer(context.Background(), wire.SubmitAnswerParams{SessionID: 21, RequestID: "r-1"})
+			require.NoError(t, err)
+			_, err = other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 21, RequestID: "p-1"})
+			require.NoError(t, err)
+		})
+	}
+
+	t.Run("no such session", func(t *testing.T) {
+		rt := &fullRT{}
+		sess := newRecordingSessions()
+		other := newRuntimeHandlersOn(rt, sess, newRecordingOutbound())
+
+		_, err := other.SubmitAnswer(context.Background(), wire.SubmitAnswerParams{SessionID: 22, RequestID: "r-1"})
+		require.NoError(t, err)
+		_, err = other.SubmitToolPermission(context.Background(), wire.SubmitToolPermissionParams{SessionID: 22, RequestID: "p-1"})
+		require.NoError(t, err)
+	})
+}
+
+// TestRuntime_Submit_DuringTurnTeardown_StaysIdempotent 钉住轮末那一瞬间:fanout 正在
+// 收尾 —— 这一轮已经结束,而生命周期行还没落回 idle —— 而一条决策提交恰好落在这里。
+//
+// 它必须仍按 R8 幂等成功。这一瞬间的「解不出会话」是本 daemon 自己的收尾顺序造成的,
+// 不是「提交落到了一个从没拥有过这条会话的 handler」;报错等于给用户一个假失败。窗口
+// 也不是一闪而过:Finish 是一次同步的 SQLite 写,与流式落库抢锁时能拖到几十毫秒以上。
+//
+// 收尾顺序因此是:先把行落回 idle,再摘掉内存会话表 —— 两者之间落进来的提交解得出会话,
+// 照旧走到 backend,由「waiter 已经不在了」按 R8 折成成功。反过来(先摘表)那一瞬间的
+// 提交会看到「表里没有 + 行还在跑」,正是本轮新加的那条判别器判成真错误的形状。
+func TestRuntime_Submit_DuringTurnTeardown_StaysIdempotent(t *testing.T) {
+	rt := &fullRT{}
+	live := make(chan agentruntime.Event)
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		return live, &agentruntime.RunResult{}, nil
+	}
+	sess := newRecordingSessions()
+	h := newRuntimeHandlersOn(rt, sess, newRecordingOutbound())
+	runWithRT(t, h, context.Background(), 31)
+
+	entered, release := sess.holdFinish()
+	close(live) // 一轮结束 → fanout 开始收尾
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fanout 没有走到轮末收尾")
+	}
+	defer release()
+
+	_, err := h.SubmitToolPermission(context.Background(),
+		wire.SubmitToolPermissionParams{SessionID: 31, RequestID: "p-1"})
+	assert.NoError(t, err, "轮末收尾中的提交按 R8 幂等成功,不能变成假失败")
+	_, err = h.SubmitAnswer(context.Background(),
+		wire.SubmitAnswerParams{SessionID: 31, RequestID: "r-1"})
+	assert.NoError(t, err, "轮末收尾中的提交按 R8 幂等成功,不能变成假失败")
+}
+
 // TestRuntime_AllEventsRoundTripThroughNotify proves every sealed Event type
 // can be pumped through the notify fanout (i.e. the JSON marshal step in
 // the Run handler tolerates all 19 kinds without panic / silent drop).
@@ -1136,7 +1777,7 @@ func TestRuntime_AllEventsRoundTripThroughNotify(t *testing.T) {
 	for i := range events {
 		f := frames[i]
 		assert.Equal(t, wire.NotifyEvent, f.method)
-		ef, ok := f.params.(wire.EventFrame)
+		ef, ok := f.params.(*wire.EventFrame)
 		require.True(t, ok, "frame %d: expected EventFrame, got %T", i, f.params)
 		assert.Equal(t, int64(100), ef.SessionID)
 		var head struct {
@@ -1145,4 +1786,235 @@ func TestRuntime_AllEventsRoundTripThroughNotify(t *testing.T) {
 		require.NoError(t, json.Unmarshal(ef.Event, &head))
 		assert.NotEmpty(t, head.Kind, "frame %d kind must be present", i)
 	}
+}
+
+// ── 会话通知出口:先落库,后推送 ───────────────────────────────────────────
+
+// assertJournaledBeforePushed 断言时间线上每条推送都排在它自己那条落库之后(R1),
+// 且没有任何一条通知是没落库就推出去的。按 (method, seq) 精确配对,不只数条数。
+func assertJournaledBeforePushed(t *testing.T, steps []string) {
+	t.Helper()
+	appendedAt := map[string]int{}
+	for i, s := range steps {
+		if key, ok := strings.CutPrefix(s, "append:"); ok {
+			appendedAt[key] = i
+		}
+	}
+	for i, s := range steps {
+		key, ok := strings.CutPrefix(s, "notify:")
+		if !ok {
+			continue
+		}
+		at, journaled := appendedAt[key]
+		require.Truef(t, journaled, "推送了一条没落库的通知 %s;时间线 %v", key, steps)
+		assert.Lessf(t, at, i, "通知 %s 的推送排在它自己的落库之前;时间线 %v", key, steps)
+	}
+}
+
+func journalSeqs(rows []journalRow) []int64 {
+	out := make([]int64, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.seq)
+	}
+	return out
+}
+
+func journalMethods(rows []journalRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.method)
+	}
+	return out
+}
+
+// TestRuntime_Run_JournalsEveryNotificationBeforePushingWithSeq 覆盖 R1 与 R6 的 daemon
+// 半边:五类会话通知(runtime.event / runtime.runResultDone / autonomousTurn.started /
+// .event / .done)每一条都先以下一个 seq 落进通知日志,落库成功之后才带着这个 seq 推出去。
+// 日志里存的是不含 seq 的帧原样,seq 是行自己的属性。
+// 会拒绝的错误实现:直接推不落库;落了库但帧上不盖 seq;推完再补落库;只覆盖 run 流的
+// 两类而漏掉自主续轮的三类。
+func TestRuntime_Run_JournalsEveryNotificationBeforePushingWithSeq(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.TextDelta{Text: "hi"}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid-1"}, nil
+	}
+	rt.autoFn = func(_ int64) <-chan agentruntime.AutonomousTurn {
+		out := make(chan agentruntime.AutonomousTurn, 1)
+		evs := make(chan agentruntime.Event, 1)
+		evs <- agentruntime.TextDelta{Text: "autonomous"}
+		close(evs)
+		out <- agentruntime.AutonomousTurn{Events: evs, Result: &agentruntime.RunResult{}, Trigger: "background_task"}
+		close(out)
+		return out
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypeClaudeCode), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42, Cwd: "/tmp", UserText: "hi"})
+	require.NoError(t, err)
+
+	// run 流 2 条(event + runResultDone)+ 自主续轮 3 条(started + event + done)。
+	frames := notif.waitFrames(t, 5)
+	rows := notif.journalRows()
+
+	require.Len(t, rows, 5, "五类通知每条都必须落库")
+	assert.ElementsMatch(t, []int64{1, 2, 3, 4, 5}, journalSeqs(rows), "seq 从 1 起单调无洞")
+	assert.ElementsMatch(t, []string{
+		wire.NotifyEvent,
+		wire.NotifyRunResultDone,
+		wire.NotifyAutonomousTurnStarted,
+		wire.NotifyAutonomousTurnEvent,
+		wire.NotifyAutonomousTurnDone,
+	}, journalMethods(rows), "五类通知一条都不能漏")
+
+	bySeq := map[int64]journalRow{}
+	for _, r := range rows {
+		bySeq[r.seq] = r
+		assert.Equal(t, "42", r.session, "会话身份的后半段是对端会话 id")
+		assert.NotContains(t, r.payload, `"seq"`, "日志里存的是不含 seq 的帧原样,seq 是行自己的列")
+	}
+
+	// 每条推出去的帧都盖着它那条日志行的 seq,且 method 与该行一致。
+	pushedSeqs := make([]int64, 0, len(frames))
+	for _, f := range frames {
+		seq := frameSeq(f.params)
+		row, ok := bySeq[seq]
+		require.Truef(t, ok, "推送帧带的 seq=%d 在日志里不存在(method=%s)", seq, f.method)
+		assert.Equal(t, row.method, f.method)
+		pushedSeqs = append(pushedSeqs, seq)
+	}
+	assert.ElementsMatch(t, []int64{1, 2, 3, 4, 5}, pushedSeqs, "每条推送都带自己的 seq")
+
+	assertJournaledBeforePushed(t, notif.stepLog())
+
+	// 落库与推送必须用同一个对端身份 —— 单测的 ctx 上没有连接,指纹为空串,这里钉的是
+	// 「两边取的是同一个值」,真实指纹的捕获由带真连接的集成路径覆盖。
+	resolved := notif.resolvedPeers()
+	require.NotEmpty(t, resolved, "推送目标必须在发送时解析")
+	for _, peer := range resolved {
+		assert.Equal(t, rows[0].peer, peer)
+	}
+}
+
+// TestRuntime_Run_PushFailureLeavesJournalIntact 覆盖 R2:推送失败(连接已死 / 写超时)
+// 时该条通知已经落库、seq 已经推进,daemon 记日志后继续处理下一条 —— 不回滚、不重试、
+// 不阻塞后续通知。会拒绝的错误实现:推送失败就删日志行 / 重试 / 中断 fanout。
+func TestRuntime_Run_PushFailureLeavesJournalIntact(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 2)
+		ch <- agentruntime.TextDelta{Text: "one"}
+		ch <- agentruntime.TextDelta{Text: "two"}
+		close(ch)
+		return ch, &agentruntime.RunResult{ProviderSessionID: "psid-1"}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	notif.notifyFail = func(string) error { return errors.New("connection reset by peer") }
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypePiAgent), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42})
+	require.NoError(t, err)
+
+	// 2 条 event + 1 条 runResultDone,每条一次落库 + 一次失败推送 = 6 步。
+	steps := notif.waitSteps(t, 6)
+
+	rows := notif.journalRows()
+	require.Len(t, rows, 3, "推送失败不影响落库")
+	assert.Equal(t, []int64{1, 2, 3}, journalSeqs(rows), "推送失败不回滚 seq,后续通知照常推进")
+	assert.Equal(t, []string{wire.NotifyEvent, wire.NotifyEvent, wire.NotifyRunResultDone}, journalMethods(rows),
+		"第一条推送失败后,后面的通知仍然继续落库")
+	assert.Empty(t, notif.snapshot(), "推送全失败时不该有任何帧被记下")
+
+	attempts := 0
+	for _, s := range steps {
+		if strings.HasPrefix(s, "notify-failed:") {
+			attempts++
+		}
+	}
+	assert.Equal(t, 3, attempts, "每条通知只尝试推一次,不重试")
+}
+
+// TestRuntime_Run_JournalFailureSkipsPushAndDoesNotAdvanceSeq 覆盖 R3:落库失败时该条
+// 通知不推送,seq 也不推进 —— 后面那条通知拿到的是紧接着的 seq,客户端看到的连续 seq
+// 因此仍是完整序列。会拒绝的错误实现:落库失败照样推;或 handler 自己维护一个计数器当
+// seq(那样后一条会带 3 而不是 2,客户端会误判丢了一条并触发无谓补洞)。
+func TestRuntime_Run_JournalFailureSkipsPushAndDoesNotAdvanceSeq(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 3)
+		ch <- agentruntime.TextDelta{Text: "ok-1"}
+		ch <- agentruntime.TextDelta{Text: "boom"}
+		ch <- agentruntime.TextDelta{Text: "ok-2"}
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	notif.appendFail = func(_ string, payload json.RawMessage) error {
+		if strings.Contains(string(payload), "boom") {
+			return errors.New("disk I/O error")
+		}
+		return nil
+	}
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypePiAgent), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42})
+	require.NoError(t, err)
+
+	// 落库成功的 3 条(ok-1 / ok-2 / runResultDone)会被推出去;失败那条不推。
+	frames := notif.waitFrames(t, 3)
+	require.Len(t, frames, 3)
+
+	for _, f := range frames {
+		if ef, ok := f.params.(*wire.EventFrame); ok {
+			assert.NotContains(t, string(ef.Event), "boom", "落库失败的通知不得推送")
+		}
+	}
+	assert.Equal(t, []int64{1, 2, 3}, []int64{
+		frameSeq(frames[0].params), frameSeq(frames[1].params), frameSeq(frames[2].params),
+	}, "落库失败不推进 seq:后一条拿到的是紧接着的 seq,不是跳号")
+
+	rows := notif.journalRows()
+	require.Len(t, rows, 3, "失败那条不落行")
+	assert.Equal(t, []int64{1, 2, 3}, journalSeqs(rows))
+	assert.Contains(t, notif.stepLog(), "append-failed:"+wire.NotifyEvent)
+}
+
+// TestRuntime_Run_OfflinePeerJournalsAndResumesPushingOnReconnect 覆盖断连场景下的出口
+// 行为:对端不在线时通知照样落库(重连后才补得齐),而推送目标是**发送那一刻**才解析的
+// —— 对端回来之后,同一轮里后续的通知立刻又推得出去。会拒绝的错误实现:把推送端口在
+// runtime.run 期间静态捕获(重连后所有通知永远发往那条死连接),或对端不在线时干脆不落库。
+func TestRuntime_Run_OfflinePeerJournalsAndResumesPushingOnReconnect(t *testing.T) {
+	rt := &fullRT{}
+	live := make(chan agentruntime.Event)
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		return live, &agentruntime.RunResult{}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	notif.setOffline(true) // 客户端此刻断开着
+
+	be := agent_backend_entity.AgentBackend{ID: 1, Type: string(agent_backend_entity.TypePiAgent), Name: "x"}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 42})
+	require.NoError(t, err)
+
+	live <- agentruntime.TextDelta{Text: "while-offline"}
+	notif.waitSteps(t, 1)
+	require.Len(t, notif.journalRows(), 1, "对端不在线也必须落库")
+	assert.Empty(t, notif.snapshot(), "没有活连接时不推送")
+
+	notif.setOffline(false) // 客户端重连
+	live <- agentruntime.TextDelta{Text: "after-reconnect"}
+	frames := notif.waitFrames(t, 1)
+	require.Len(t, frames, 1)
+	assert.Equal(t, int64(2), frameSeq(frames[0].params), "断连期间那条已经占了 seq=1")
+
+	close(live)
+	frames = notif.waitFrames(t, 2)
+	assert.Equal(t, wire.NotifyRunResultDone, frames[1].method)
+	assert.Equal(t, int64(3), frameSeq(frames[1].params))
+	assert.Equal(t, []int64{1, 2, 3}, journalSeqs(notif.journalRows()))
+	assert.Len(t, notif.resolvedPeers(), 3,
+		"每条通知都要重新解析一次推送目标(解析一次就缓存下来的实现会一直推给旧连接)")
 }

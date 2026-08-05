@@ -9,7 +9,7 @@ func (s *service) List(ctx context.Context) ([]*DeviceView, error) {
 	}
 	out := make([]*DeviceView, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, toView(r))
+		out = append(out, s.toView(r))
 	}
 	return out, nil
 }

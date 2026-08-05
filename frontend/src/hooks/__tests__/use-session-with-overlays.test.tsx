@@ -2,10 +2,13 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { useSessionConnStore } from "@/stores/session-conn-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 import { useSessionWithOverlays } from "../use-session-with-overlays";
+
+import type { AgentStatus } from "@/stores/types";
 
 describe("useSessionWithOverlays", () => {
   beforeEach(() => {
@@ -97,5 +100,87 @@ describe("useSessionWithOverlays", () => {
     act(() => useSessionReadStore.getState().markRead(103, 30)); // override 比 server 小
     const { result } = renderHook(() => useSessionWithOverlays(103));
     expect(result.current?.lastReadAt).toBe(50); // server wins
+  });
+});
+
+// ─── R15:会话状态沿用既有四态 ───────────────────────────────────────────────
+//
+// 连接态是运行态之上的**修饰**,不是第五种运行状态 —— 远端此刻可能正在全速跑,
+// 断的只是本机与远端之间的通道。把它做成第五个取值会让所有既有的状态判定点
+// (退出确认的活跃态集合、侧边栏计数、工具栏禁用逻辑)全部错误归类。
+describe("会话状态沿用既有四态 (R15)", () => {
+  beforeEach(() => {
+    useSessionMetaStore.getState().__reset();
+    useSessionStatusStore.getState().__reset();
+    useSessionConnStore.getState().__reset();
+  });
+
+  function seedRunningRemoteSession(sid: number): void {
+    useSessionMetaStore.getState().setMeta(sid, {
+      agentId: 10,
+      agentName: "A",
+      agentColor: "agent-1",
+      projectId: 0,
+      title: "t",
+      lastMessageAt: 100,
+    });
+    useSessionStatusStore.getState().upsert(sid, {
+      agentStatus: "running",
+      needsAttention: false,
+    });
+  }
+
+  it("守卫:AgentStatus 仍只有四个取值", () => {
+    // Record<AgentStatus, true> 让编译期漏掉新取值直接报错(tsc -b --noEmit),
+    // 下面的键集合断言让运行期多出的取值也拦得住。
+    const all: Record<AgentStatus, true> = {
+      idle: true,
+      running: true,
+      waiting: true,
+      error: true,
+    };
+    expect(Object.keys(all).sort()).toEqual([
+      "error",
+      "idle",
+      "running",
+      "waiting",
+    ]);
+  });
+
+  // 注:「等待输入 → waiting」「终止性断连 → error」这两条映射由后端 runTurn 收尾那段
+  // switch 决定,前端只是照单渲染。在这里塞一个值再读回同一个值证明不了任何实现,
+  // 任何映射都能通过 —— 守卫打在 chat_svc 侧:
+  // TestSend_ActionablePlanBlockMarksSessionWaiting / TestSend_TerminalDaemonDisconnectLandsErrorStatus。
+
+  it("转入重连态不改运行态:agentStatus 仍是 running,运行态 store 一个字节没动", () => {
+    seedRunningRemoteSession(202);
+    const { result } = renderHook(() => useSessionWithOverlays(202));
+    const statusBefore = useSessionStatusStore.getState().statuses.get(202);
+
+    act(() => useSessionConnStore.getState().setConnState(202, "reconnecting"));
+
+    expect(useSessionConnStore.getState().stateOf(202)).toBe("reconnecting");
+    expect(result.current?.agentStatus).toBe("running");
+    expect(result.current?.needsAttention).toBe(false);
+    // 同一引用 = 连接态没有经由运行态 store 落地。
+    expect(useSessionStatusStore.getState().statuses.get(202)).toBe(
+      statusBefore,
+    );
+  });
+
+  it("连接恢复后连接态回到 connected,运行态自始至终没被碰过", () => {
+    seedRunningRemoteSession(203);
+    const { result } = renderHook(() => useSessionWithOverlays(203));
+    const viewBefore = result.current;
+
+    act(() => useSessionConnStore.getState().setConnState(203, "reconnecting"));
+    act(() => useSessionConnStore.getState().setConnState(203, "connected"));
+
+    expect(useSessionConnStore.getState().stateOf(203)).toBe("connected");
+    expect(result.current).toBe(viewBefore);
+  });
+
+  it("没有连接态记录的会话默认按已连接看待(本地会话不受影响)", () => {
+    expect(useSessionConnStore.getState().stateOf(9999)).toBe("connected");
   });
 });

@@ -69,9 +69,20 @@ type Session struct {
 	// 写入，运行时切换不会动它。前端用它决定 pill 上的 bypass 选项是否还可点：
 	// 只有以 bypass 启动的 session 才能在运行时来回切回 bypass（CLI 约束）。
 	PermissionModeAtLaunch string `gorm:"column:permission_mode_at_launch;type:text;not null;default:''"`
-	Status                 int    `gorm:"column:status;type:int;not null;default:1"`
-	Createtime             int64  `gorm:"column:createtime;type:bigint;not null;default:0"`
-	Updatetime             int64  `gorm:"column:updatetime;type:bigint;not null;default:0"`
+	// ExecDeviceID 执行该会话的配对 daemon(paired_agentreds.id)。0 = 本机执行 ——
+	// 也是老数据的默认值，语义与远端执行落地前完全一致。
+	ExecDeviceID int64 `gorm:"column:exec_device_id;type:bigint;not null;default:0"`
+	// ExecDaemonFingerprint 是上面那台 daemon 的实例标识：daemon 由自己的 instance
+	// uuid 派生出的 "sha256:<hex>"(见 internal/daemon/rpc.DaemonFingerprint)，与
+	// paired_agentreds.daemon_fingerprint 同值、与 auth.connect 的 TOFU pin 同一个身份。
+	// daemon 重装 / 换机 / 数据目录被清后它会变，届时 EventCursor 指向的是另一条通知日志。
+	ExecDaemonFingerprint string `gorm:"column:exec_daemon_fingerprint;type:text;not null;default:''"`
+	// EventCursor 桌面端已消费到的 daemon 通知 seq(daemon 侧 journal 里单调递增)。
+	// 0 = 尚未消费。只有配合 ExecDaemonFingerprint 一起看才有意义，见 CursorValidFor。
+	EventCursor int64 `gorm:"column:event_cursor;type:bigint;not null;default:0"`
+	Status      int   `gorm:"column:status;type:int;not null;default:1"`
+	Createtime  int64 `gorm:"column:createtime;type:bigint;not null;default:0"`
+	Updatetime  int64 `gorm:"column:updatetime;type:bigint;not null;default:0"`
 }
 
 func (*Session) TableName() string { return "chat_sessions" }
@@ -104,6 +115,16 @@ func (s *Session) SetProviderSession(id string) {
 		return
 	}
 	s.ProviderSessionID = id
+}
+
+// RanOnDaemon 会话是否记录了远端执行位置。ExecDeviceID 为 0 表示本机执行(含老数据)。
+func (s *Session) RanOnDaemon() bool { return s != nil && s.ExecDeviceID > 0 }
+
+// CursorValidFor 判断 EventCursor 相对当前连上的这台 daemon 是否仍然有效。
+// daemonFingerprint 是本次连接上的 daemon 实例标识；与会话记录的不一致(daemon 重装、
+// 换机、数据目录被清)时，记录的游标指向的是另一条通知日志，必须判为失效而不是拿去拉。
+func (s *Session) CursorValidFor(daemonFingerprint string) bool {
+	return s != nil && daemonFingerprint != "" && s.ExecDaemonFingerprint == daemonFingerprint
 }
 
 func (s *Session) Check(ctx context.Context) error {

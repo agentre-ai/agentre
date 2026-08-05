@@ -230,8 +230,11 @@ type rpcProcess struct {
 }
 
 func (p *rpcProcess) awaitExit() {
-	p.waitErr = p.handle.Wait()
+	// StdoutPipe/StderrPipe 的契约要求 Wait 不能与管道读取并发：Wait 会在
+	// 进程退出后关闭管道。先让 stderr reader 读到 EOF，避免短命进程的最后一行
+	// 被 "file already closed" 抢走，进而丢失可分类的退出原因。
 	<-p.stderrDone
+	p.waitErr = p.handle.Wait()
 	close(p.done)
 }
 
@@ -337,18 +340,21 @@ func processDeadOrScanError(p *rpcProcess) error {
 }
 
 func awaitProcessExitOrScanError(ctx context.Context, p *rpcProcess) error {
-	if err := p.lines.Err(); err != nil {
-		return err
-	}
+	scanErr := p.lines.Err()
 	// During the startup handshake, stdout EOF can arrive before Wait and stderr
-	// collection finish. Their result is authoritative for classifying a missing
-	// resumed session, so wait unless the startup context is canceled.
+	// collection finish. A short-lived process can also make Wait close stdout
+	// while Scanner is returning, producing os.ErrClosed. The process result and
+	// captured stderr are authoritative for classifying that exit; use scanErr
+	// only when the process itself exited successfully.
 	select {
 	case <-p.done:
-		if p.waitErr == nil {
-			return ErrProcessDead
+		if p.waitErr != nil {
+			return wrapExitError(p.waitErr, p.stderr.String())
 		}
-		return wrapExitError(p.waitErr, p.stderr.String())
+		if scanErr != nil {
+			return scanErr
+		}
+		return ErrProcessDead
 	case <-ctx.Done():
 		return ctx.Err()
 	}

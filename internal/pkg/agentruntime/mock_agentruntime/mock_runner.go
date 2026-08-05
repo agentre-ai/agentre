@@ -93,6 +93,44 @@ func (mr *MockAskAnswerSinkMockRecorder) SubmitAnswer(ctx, sessionID, requestID,
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubmitAnswer", reflect.TypeOf((*MockAskAnswerSink)(nil).SubmitAnswer), ctx, sessionID, requestID, questions, answers, skipped)
 }
 
+// MockWaiterLister is a mock of WaiterLister interface.
+type MockWaiterLister struct {
+	ctrl     *gomock.Controller
+	recorder *MockWaiterListerMockRecorder
+	isgomock struct{}
+}
+
+// MockWaiterListerMockRecorder is the mock recorder for MockWaiterLister.
+type MockWaiterListerMockRecorder struct {
+	mock *MockWaiterLister
+}
+
+// NewMockWaiterLister creates a new mock instance.
+func NewMockWaiterLister(ctrl *gomock.Controller) *MockWaiterLister {
+	mock := &MockWaiterLister{ctrl: ctrl}
+	mock.recorder = &MockWaiterListerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockWaiterLister) EXPECT() *MockWaiterListerMockRecorder {
+	return m.recorder
+}
+
+// PendingWaiters mocks base method.
+func (m *MockWaiterLister) PendingWaiters(ctx context.Context, sessionID int64) agentruntime.WaiterSnapshot {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PendingWaiters", ctx, sessionID)
+	ret0, _ := ret[0].(agentruntime.WaiterSnapshot)
+	return ret0
+}
+
+// PendingWaiters indicates an expected call of PendingWaiters.
+func (mr *MockWaiterListerMockRecorder) PendingWaiters(ctx, sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PendingWaiters", reflect.TypeOf((*MockWaiterLister)(nil).PendingWaiters), ctx, sessionID)
+}
+
 // MockSteerer is a mock of Steerer interface.
 type MockSteerer struct {
 	ctrl     *gomock.Controller
