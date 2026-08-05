@@ -2351,6 +2351,91 @@ func (*capturingDaemonClient) Handle(_ string, _ func(context.Context, json.RawM
 func (*capturingDaemonClient) Closed() <-chan struct{} { return nil }
 func (*capturingDaemonClient) Close() error            { return nil }
 
+type preparedRemotePiClient struct {
+	mu        sync.Mutex
+	handlers  map[string]func(context.Context, json.RawMessage) (any, error)
+	runParams []wire.RunParams
+	activated func() bool
+}
+
+func newPreparedRemotePiClient(activated func() bool) *preparedRemotePiClient {
+	return &preparedRemotePiClient{
+		handlers:  map[string]func(context.Context, json.RawMessage) (any, error){},
+		activated: activated,
+	}
+}
+
+func (c *preparedRemotePiClient) Call(_ context.Context, method string, params, result any) error {
+	switch method {
+	case wire.MethodCapabilities:
+		out := result.(*wire.CapabilitiesResult)
+		out.Capabilities = capability.Capabilities{Set: map[capability.Capability]bool{
+			capability.CapAbort:       true,
+			capability.CapForkSession: true,
+		}}
+		return nil
+	case wire.MethodRun:
+		rp := params.(wire.RunParams)
+		c.mu.Lock()
+		c.runParams = append(c.runParams, rp)
+		call := len(c.runParams)
+		doneHandler := c.handlers[wire.NotifyRunResultDone]
+		c.mu.Unlock()
+		switch call {
+		case 1:
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			return nil
+		case 2:
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-session-new"}
+			return nil
+		case 3:
+			if c.activated == nil || !c.activated() {
+				return errors.New("remote Pi prompt started before durable transcript activation")
+			}
+			if rp.ProviderSessionID != "pi-session-new" {
+				return fmt.Errorf("remote Pi Start used provider session %q", rp.ProviderSessionID)
+			}
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-session-new"}
+			if doneHandler == nil {
+				return errors.New("runtime.runResultDone handler not registered")
+			}
+			raw, err := json.Marshal(wire.RunResultDoneFrame{
+				SessionID: rp.SessionID, ProviderSessionID: "pi-session-new", UserAnchor: "pi-entry-new",
+			})
+			if err != nil {
+				return err
+			}
+			_, err = doneHandler(context.Background(), raw)
+			return err
+		default:
+			return fmt.Errorf("unexpected runtime.run call %d", call)
+		}
+	case wire.MethodAbort:
+		return nil
+	default:
+		return nil
+	}
+}
+
+func (*preparedRemotePiClient) Notify(_ string, _ any) error { return nil }
+
+func (c *preparedRemotePiClient) Handle(method string, fn func(context.Context, json.RawMessage) (any, error)) {
+	c.mu.Lock()
+	c.handlers[method] = fn
+	c.mu.Unlock()
+}
+
+func (*preparedRemotePiClient) Closed() <-chan struct{} { return nil }
+func (*preparedRemotePiClient) Close() error            { return nil }
+
+func (c *preparedRemotePiClient) runs() []wire.RunParams {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]wire.RunParams, len(c.runParams))
+	copy(out, c.runParams)
+	return out
+}
+
 // TestSend_ClaudeCodeRemoteSkipsClientGatewayDeps 回归用户报告:
 //   - agentred 部署在 local-coding,desktop 把本机 gateway URL (127.0.0.1:52401)
 //     和明文 Provider 实体发给远端 claudecode 子进程,导致子进程拨自己的 loopback
@@ -5233,6 +5318,62 @@ func TestPiRestart_ForkStartupFailurePreservesExistingHistory(t *testing.T) {
 			assert.Contains(t, err.Error(), "pi fork rejected")
 		})
 	}
+}
+
+func TestPiRestart_RemotePreparationPersistsForkIdentityBeforePromptStart(t *testing.T) {
+	m := setupChatTest(t)
+	activated := false
+	client := newPreparedRemotePiClient(func() bool { return activated })
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	pool := mock_remote_device_svc.NewMockConnPool(ctrl)
+	lease := mock_remote_device_svc.NewMockLease(ctrl)
+	pool.EXPECT().Borrow(gomock.Any(), int64(7)).Return(lease, nil)
+	lease.EXPECT().Client().Return(client).AnyTimes()
+	lease.EXPECT().Closed().Return(make(chan struct{})).AnyTimes()
+	lease.EXPECT().Release().Times(1)
+	chat_svc.SetConnPoolForTest(m.svc, pool)
+	t.Cleanup(func() { chat_svc.SetConnPoolForTest(m.svc, nil) })
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
+	}
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
+	m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
+		ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer"),
+	}, nil)
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+		{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: "pi-entry-old"},
+		{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("answer")},
+	}, nil).AnyTimes()
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Pi Remote", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypePiAgent), DeviceID: "7", Status: consts.ACTIVE,
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Cond(func(value any) bool {
+		session, ok := value.(*chat_entity.Session)
+		return ok && session.ProviderSessionID == "pi-session-new" && session.AgentStatus == "running"
+	})).DoAndReturn(func(_ context.Context, _ *chat_entity.Session) error {
+		activated = true
+		return nil
+	}).Times(1)
+	expectAcknowledgedPiReplacement(m, 1, 3000, 2000, 2001)
+
+	resp, err := m.svc.Regenerate(m.ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	runs := client.runs()
+	require.Len(t, runs, 3)
+	assert.Equal(t, "pi-session-old", runs[0].ProviderSessionID)
+	assert.Equal(t, "pi-entry-old", runs[0].ForkAnchor)
+	assert.Equal(t, "pi-session-old", runs[1].ProviderSessionID)
+	assert.Equal(t, "pi-session-new", runs[2].ProviderSessionID)
+	assert.True(t, activated)
 }
 
 func TestPiRestart_OldPreparedCleanupDoesNotUseSessionWideAbortBeforeRetry(t *testing.T) {

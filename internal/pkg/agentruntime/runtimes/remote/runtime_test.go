@@ -4,19 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/mock_agentruntime"
+	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 )
 
@@ -34,6 +40,7 @@ var (
 	_ agentruntime.AskAnswerSink        = (*Runtime)(nil)
 	_ agentruntime.ToolPermissionSink   = (*Runtime)(nil)
 	_ agentruntime.GoalController       = (*Runtime)(nil)
+	_ piagentrt.RunPreparer             = (*Runtime)(nil)
 )
 
 // handlerCapture grabs the Handle("runtime.event"|"runtime.runResultDone")
@@ -90,20 +97,379 @@ func setupRemote(t *testing.T) (
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 
-func TestRun_Success_DispatchesEventsThenCloses(t *testing.T) {
+func TestPrepareRun_PiExposesIdentityBeforePromptAndStartsThroughExistingRunRPC(t *testing.T) {
 	_, cli, capture, rt := setupRemote(t)
+
+	var (
+		mu       sync.Mutex
+		runCalls []wire.RunParams
+	)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			rp := params.(wire.RunParams)
+			mu.Lock()
+			runCalls = append(runCalls, rp)
+			call := len(runCalls)
+			mu.Unlock()
+			switch call {
+			case 1:
+				assert.Equal(t, "pi-session-old", rp.ProviderSessionID)
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			case 2:
+				assert.Equal(t, "pi-session-old", rp.ProviderSessionID)
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-session-new"}
+			case 3:
+				assert.Equal(t, "pi-session-new", rp.ProviderSessionID,
+					"Start must identify the exact prepared generation through the existing provider-session form")
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-session-new"}
+			default:
+				t.Fatalf("unexpected runtime.run call %d", call)
+			}
+			return nil
+		}).Times(3)
+
+	prepared, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+		Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+		SessionID:         42,
+		ProviderSessionID: "pi-session-old",
+		ForkAnchor:        "pi-entry-1",
+		UserText:          "replacement",
+	})
+	require.NoError(t, err)
+	identity, ok := prepared.(piagentrt.PreparedRunIdentity)
+	require.True(t, ok)
+	assert.Equal(t, "pi-session-new", identity.ProviderSessionID())
+	mu.Lock()
+	assert.Len(t, runCalls, 2, "registration + preparation must return before the prompt-start RPC")
+	mu.Unlock()
+
+	events, result, err := prepared.Start(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "pi-session-new", result.ProviderSessionID)
+	mu.Lock()
+	assert.Len(t, runCalls, 3)
+	require.NotEmpty(t, runCalls[0].PermissionMode)
+	assert.Equal(t, runCalls[0].PermissionMode, runCalls[1].PermissionMode)
+	assert.Equal(t, runCalls[1].PermissionMode, runCalls[2].PermissionMode)
+	mu.Unlock()
+
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: 42, ProviderSessionID: "pi-session-new",
+	})
+	_, ok = <-events
+	assert.False(t, ok)
+}
+
+func TestPrepareRun_StopDuringRegistrationWaitsForOwnerAckThenAborts(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	registrationEntered := make(chan struct{})
+	allowRegistration := make(chan struct{})
+	abortCalled := make(chan struct{})
 
 	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			close(registrationEntered)
+			<-allowRegistration
+			rp := params.(wire.RunParams)
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			return nil
+		})
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, wire.AbortParams{SessionID: 72}, gomock.Any()).
+		DoAndReturn(func(context.Context, string, any, any) error {
+			close(abortCalled)
+			return nil
+		})
+
+	prepareErrC := make(chan error, 1)
+	go func() {
+		_, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+			SessionID: 72,
+		})
+		prepareErrC <- err
+	}()
+	<-registrationEntered
+
+	abortStarted := make(chan struct{})
+	abortErrC := make(chan error, 1)
+	go func() {
+		close(abortStarted)
+		abortErrC <- rt.Abort(context.Background(), 72)
+	}()
+	<-abortStarted
+	select {
+	case <-abortCalled:
+		t.Fatal("Abort reached agentred before the registration owner was acknowledged")
+	default:
+	}
+	close(allowRegistration)
+
+	require.NoError(t, <-abortErrC)
+	require.ErrorIs(t, <-prepareErrC, context.Canceled)
+	<-abortCalled
+}
+
+func TestPrepareRun_PendingPiAbortCancelsTheRegisteredGeneration(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	entered := make(chan struct{})
+	call := 0
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ string, params any, result any) error {
+			call++
+			rp := params.(wire.RunParams)
+			if call == 1 {
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+				return nil
+			}
+			close(entered)
+			<-ctx.Done()
+			return ctx.Err()
+		}).Times(2)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, wire.AbortParams{SessionID: 73}, gomock.Any()).
+		Return(nil)
+
+	errC := make(chan error, 1)
+	go func() {
+		_, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+			SessionID: 73,
+		})
+		errC <- err
+	}()
+	<-entered
+
+	require.NoError(t, rt.Abort(context.Background(), 73))
+	require.ErrorIs(t, <-errC, context.Canceled)
+	assert.ErrorIs(t, rt.Abort(context.Background(), 73), agentruntime.ErrNoActiveTurn)
+}
+
+func TestPrepareRun_RequestCancellationAbortsPendingDaemonGeneration(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	entered := make(chan struct{})
+	abortCalled := make(chan struct{})
+	call := 0
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ string, params any, result any) error {
+			call++
+			rp := params.(wire.RunParams)
+			if call == 1 {
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+				return nil
+			}
+			close(entered)
+			<-ctx.Done()
+			return ctx.Err()
+		}).Times(2)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, wire.AbortParams{SessionID: 74}, gomock.Any()).
+		DoAndReturn(func(context.Context, string, any, any) error {
+			close(abortCalled)
+			return nil
+		})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errC := make(chan error, 1)
+	go func() {
+		_, err := rt.PrepareRun(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+			SessionID: 74,
+		})
+		errC <- err
+	}()
+	<-entered
+	cancel()
+
+	require.ErrorIs(t, <-errC, context.Canceled)
+	<-abortCalled
+	assert.ErrorIs(t, rt.Abort(context.Background(), 74), agentruntime.ErrNoActiveTurn)
+}
+
+func TestPrepareRun_StartCancellationAbortsPromptAcknowledgement(t *testing.T) {
+	_, cli, _, rt := setupRemote(t)
+	startEntered := make(chan struct{})
+	abortCalled := make(chan struct{})
+	call := 0
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ string, params any, result any) error {
+			call++
+			rp := params.(wire.RunParams)
+			switch call {
+			case 1:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+				return nil
+			case 2:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-session-new"}
+				return nil
+			default:
+				close(startEntered)
+				<-ctx.Done()
+				return ctx.Err()
+			}
+		}).Times(3)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, wire.AbortParams{SessionID: 75}, gomock.Any()).
+		DoAndReturn(func(context.Context, string, any, any) error {
+			close(abortCalled)
+			return nil
+		})
+
+	prepared, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+		SessionID: 75,
+	})
+	require.NoError(t, err)
+	startCtx, cancelStart := context.WithCancel(context.Background())
+	startErrC := make(chan error, 1)
+	go func() {
+		_, _, err := prepared.Start(startCtx)
+		startErrC <- err
+	}()
+	<-startEntered
+	cancelStart()
+
+	require.ErrorIs(t, <-startErrC, context.Canceled)
+	<-abortCalled
+	assert.ErrorIs(t, rt.Abort(context.Background(), 75), agentruntime.ErrNoActiveTurn)
+}
+
+func TestPrepareRun_LatePiFramesCannotAffectNewerGeneration(t *testing.T) {
+	_, cli, capture, rt := setupRemote(t)
+
+	call := 0
+	var generationTokens []string
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			call++
+			rp := params.(wire.RunParams)
+			generationTokens = append(generationTokens, rp.PermissionMode)
+			switch call {
+			case 1, 4:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			case 2, 3:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-generation-1"}
+			case 5:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "pi-generation-2"}
+			default:
+				t.Fatalf("unexpected runtime.run call %d", call)
+			}
+			return nil
+		}).Times(5)
+	cli.EXPECT().Call(gomock.Any(), wire.MethodAbort, wire.AbortParams{SessionID: 81}, gomock.Any()).Return(nil).Times(2)
+
+	first, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+		SessionID: 81,
+	})
+	require.NoError(t, err)
+	firstEvents, _, err := first.Start(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, first.Close(context.Background()))
+	_, open := <-firstEvents
+	assert.False(t, open, "closing the exact prepared generation must settle its local event stream")
+
+	second, err := rt.PrepareRun(context.Background(), agentruntime.RunRequest{
+		Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)},
+		SessionID:         81,
+		ProviderSessionID: "pi-generation-1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "pi-generation-2", second.(piagentrt.PreparedRunIdentity).ProviderSessionID())
+
+	lateEvent, err := json.Marshal(agentruntime.TextDelta{Text: "late-secret-payload"})
+	require.NoError(t, err)
+	capture.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: 81, Event: lateEvent})
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: 81, ProviderSessionID: "pi-generation-1",
+	})
+
+	require.NoError(t, second.Close(context.Background()),
+		"late cleanup from generation 1 must not delete generation 2")
+	require.Len(t, generationTokens, 5)
+	assert.Equal(t, generationTokens[0], generationTokens[1])
+	assert.Equal(t, generationTokens[1], generationTokens[2])
+	assert.Equal(t, generationTokens[3], generationTokens[4])
+	assert.NotEqual(t, generationTokens[0], generationTokens[3])
+}
+
+func TestHandleEvent_UnknownAndMalformedFramesNeverLogPayload(t *testing.T) {
+	_, _, _, rt := setupRemote(t)
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+	const secret = "private-prompt-and-image-payload"
+
+	unknown, err := json.Marshal(wire.EventFrame{
+		SessionID: 901,
+		Event:     mustRawFrame(t, agentruntime.TextDelta{Text: secret}),
+	})
+	require.NoError(t, err)
+	_, err = rt.handleEvent(ctx, unknown)
+	require.NoError(t, err)
+
+	rt.mu.Lock()
+	rt.sessions[902] = &remoteSession{id: 902, events: make(chan agentruntime.Event, 1), result: &agentruntime.RunResult{}}
+	rt.mu.Unlock()
+	malformed, err := json.Marshal(wire.EventFrame{
+		SessionID: 902,
+		Event:     json.RawMessage(fmt.Sprintf(`{"kind":"not_real","detail":%q}`, secret)),
+	})
+	require.NoError(t, err)
+	_, err = rt.handleEvent(ctx, malformed)
+	require.NoError(t, err)
+
+	for _, entry := range logs.All() {
+		assert.NotContains(t, entry.Message, secret)
+		for _, value := range entry.ContextMap() {
+			assert.NotContains(t, fmt.Sprint(value), secret)
+		}
+	}
+}
+
+func TestHandleRunResultDone_LateFrameNeverLogsStopPayload(t *testing.T) {
+	_, _, _, rt := setupRemote(t)
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+	const secret = "private-late-error-payload"
+
+	raw, err := json.Marshal(wire.RunResultDoneFrame{
+		SessionID: 903, StopErrMsg: secret, StopErrCode: wire.ErrCodeAborted,
+	})
+	require.NoError(t, err)
+	_, err = rt.handleRunResultDone(ctx, raw)
+	require.NoError(t, err)
+
+	for _, entry := range logs.All() {
+		assert.NotContains(t, entry.Message, secret)
+		for _, value := range entry.ContextMap() {
+			assert.NotContains(t, fmt.Sprint(value), secret)
+		}
+	}
+}
+
+func TestRun_Success_DispatchesEventsThenCloses(t *testing.T) {
+	_, cli, capture, rt := setupRemote(t)
+
+	runCalls := 0
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			runCalls++
 			rp, ok := params.(wire.RunParams)
 			require.True(t, ok, "expected wire.RunParams, got %T", params)
 			assert.Equal(t, int64(42), rp.SessionID)
 			assert.Equal(t, "hello", rp.UserText)
 			assert.True(t, rp.Compact)
-			// echo chat id and the provider-native session discovered before event drain.
-			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "psid-early"}
+			switch runCalls {
+			case 1:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID}
+			case 2:
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "psid-early"}
+			case 3:
+				assert.Equal(t, "psid-early", rp.ProviderSessionID)
+				*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "psid-early"}
+			}
 			return nil
-		})
+		}).Times(3)
 
 	events, runResult, err := rt.Run(context.Background(), agentruntime.RunRequest{
 		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), ID: 1, Name: "x"},
@@ -120,7 +486,7 @@ func TestRun_Success_DispatchesEventsThenCloses(t *testing.T) {
 	capture.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: 42, Event: textJSON})
 	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
 		SessionID:         42,
-		ProviderSessionID: "psid-1",
+		ProviderSessionID: "psid-early",
 		Model:             "claude-sonnet-4-6",
 		ContextWindow:     200000,
 		Usage:             &wire.UsageWire{PromptTokens: 10, TotalTokens: 10},
@@ -145,7 +511,7 @@ func TestRun_Success_DispatchesEventsThenCloses(t *testing.T) {
 	}
 
 	// RunResult fields hydrated.
-	assert.Equal(t, "psid-1", runResult.ProviderSessionID)
+	assert.Equal(t, "psid-early", runResult.ProviderSessionID)
 	assert.Equal(t, "claude-sonnet-4-6", runResult.Model)
 	assert.Equal(t, 200000, runResult.ContextWindow)
 	require.NotNil(t, runResult.Usage)

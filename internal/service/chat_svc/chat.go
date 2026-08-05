@@ -3042,7 +3042,16 @@ func (s *chatSvc) prepareTurnRun(
 	compact bool,
 	deferPrompt bool,
 ) (*preparedTurnRun, error) {
-	runner, err := s.selectRunner(ctx, be, sess.ID)
+	var (
+		runner  agentruntime.Runtime
+		release = func() {}
+		err     error
+	)
+	if be.IsRemote() {
+		runner, release, err = s.borrowRemoteRuntimeForTurn(ctx, be, sess.ID)
+	} else {
+		runner, err = s.selectRunner(ctx, be, sess.ID)
+	}
 	if err != nil {
 		logger.Ctx(ctx).Error("chat_svc.prepareTurnRun: selectRunner failed",
 			zap.Int64("sessionId", sess.ID),
@@ -3050,12 +3059,6 @@ func (s *chatSvc) prepareTurnRun(
 			zap.String("deviceID", be.DeviceID),
 			zap.Error(err))
 		return nil, err
-	}
-	release := func() {}
-	if be.IsRemote() {
-		if deviceID, ok := be.DeviceIDInt(); ok {
-			release = func() { s.releaseRemoteRuntime(deviceID, sess.ID) }
-		}
 	}
 	fail := func(err error) (*preparedTurnRun, error) {
 		release()
@@ -4161,8 +4164,13 @@ func uniqueProviderKeys(backends map[int64]*agent_backend_entity.AgentBackend) [
 type remoteRuntimeEntry struct {
 	runtime  *remote.Runtime
 	lease    remote_device_svc.Lease
-	sessions map[int64]struct{}
+	sessions map[int64]*remoteRuntimeGeneration
 }
+
+// remoteRuntimeGeneration is the exact lease owner for one turn. A stale
+// release compares this pointer before deleting the session reference, so it
+// cannot release the device lease after a newer same-SessionID retry begins.
+type remoteRuntimeGeneration struct{}
 
 // pool 返回当前生效的 ConnPool。测试通过 setConnPoolForTest 注入 mock。
 func (s *chatSvc) pool() remote_device_svc.ConnPool {
@@ -4179,18 +4187,53 @@ func (s *chatSvc) pool() remote_device_svc.ConnPool {
 //
 // 同 sessionID 多次 borrow 对 sessions set 幂等。
 func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64) (*remote.Runtime, error) {
+	return s.borrowRemoteRuntimeOwned(ctx, be, sessionID, nil)
+}
+
+func (s *chatSvc) borrowRemoteRuntimeForTurn(
+	ctx context.Context,
+	be *agent_backend_entity.AgentBackend,
+	sessionID int64,
+) (*remote.Runtime, func(), error) {
+	deviceID, ok := be.DeviceIDInt()
+	if !ok {
+		return nil, func() {}, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
+	}
+	generation := &remoteRuntimeGeneration{}
+	rt, err := s.borrowRemoteRuntimeOwned(ctx, be, sessionID, generation)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return rt, func() { s.releaseRemoteRuntimeGeneration(deviceID, sessionID, generation) }, nil
+}
+
+func (s *chatSvc) borrowRemoteRuntimeOwned(
+	ctx context.Context,
+	be *agent_backend_entity.AgentBackend,
+	sessionID int64,
+	generation *remoteRuntimeGeneration,
+) (*remote.Runtime, error) {
 	deviceID, ok := be.DeviceIDInt()
 	if !ok {
 		return nil, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 	}
+	owner := generation
+	if owner == nil {
+		owner = &remoteRuntimeGeneration{}
+	}
 
-	// Fast path: cache hit
+	// Fast path: cache hit. Control-path borrows preserve the current turn owner;
+	// a turn borrow installs its fresh generation token.
 	s.remoteMu.Lock()
 	if s.remoteCache == nil {
 		s.remoteCache = map[int64]*remoteRuntimeEntry{}
 	}
 	if entry, ok := s.remoteCache[deviceID]; ok {
-		entry.sessions[sessionID] = struct{}{}
+		if generation != nil {
+			entry.sessions[sessionID] = owner
+		} else if entry.sessions[sessionID] == nil {
+			entry.sessions[sessionID] = owner
+		}
 		s.remoteMu.Unlock()
 		return entry.runtime, nil
 	}
@@ -4218,7 +4261,11 @@ func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_ent
 	// Re-lock and insert. TOCTOU 输家:用赢家的 entry,释放自己的 lease。
 	s.remoteMu.Lock()
 	if existing, ok := s.remoteCache[deviceID]; ok {
-		existing.sessions[sessionID] = struct{}{}
+		if generation != nil {
+			existing.sessions[sessionID] = owner
+		} else if existing.sessions[sessionID] == nil {
+			existing.sessions[sessionID] = owner
+		}
 		s.remoteMu.Unlock()
 		lease.Release()
 		return existing.runtime, nil
@@ -4226,7 +4273,7 @@ func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_ent
 	entry := &remoteRuntimeEntry{
 		runtime:  rt,
 		lease:    lease,
-		sessions: map[int64]struct{}{sessionID: {}},
+		sessions: map[int64]*remoteRuntimeGeneration{sessionID: owner},
 	}
 	s.remoteCache[deviceID] = entry
 	s.remoteMu.Unlock()
@@ -4253,6 +4300,23 @@ func (s *chatSvc) releaseRemoteRuntime(deviceID, sessionID int64) {
 	s.remoteMu.Lock()
 	entry, ok := s.remoteCache[deviceID]
 	if !ok {
+		s.remoteMu.Unlock()
+		return
+	}
+	generation := entry.sessions[sessionID]
+	s.remoteMu.Unlock()
+	if generation != nil {
+		s.releaseRemoteRuntimeGeneration(deviceID, sessionID, generation)
+	}
+}
+
+func (s *chatSvc) releaseRemoteRuntimeGeneration(
+	deviceID, sessionID int64,
+	generation *remoteRuntimeGeneration,
+) {
+	s.remoteMu.Lock()
+	entry, ok := s.remoteCache[deviceID]
+	if !ok || entry.sessions[sessionID] != generation {
 		s.remoteMu.Unlock()
 		return
 	}

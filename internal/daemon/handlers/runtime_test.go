@@ -1,9 +1,11 @@
 package handlers_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 )
 
@@ -234,7 +237,165 @@ func (bareRT) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentrun
 	return ch, &agentruntime.RunResult{}, nil
 }
 
+type blockingPreparedPiRT struct {
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (*blockingPreparedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (r *blockingPreparedPiRT) Run(ctx context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	r.once.Do(func() { close(r.entered) })
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+func (r *blockingPreparedPiRT) PrepareRun(ctx context.Context, _ agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	r.once.Do(func() { close(r.entered) })
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type blockingStartPreparedPiRT struct {
+	prepared *blockingStartPreparedPiRun
+}
+
+func newBlockingStartPreparedPiRT() *blockingStartPreparedPiRT {
+	return &blockingStartPreparedPiRT{prepared: &blockingStartPreparedPiRun{
+		entered: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}}
+}
+
+func (*blockingStartPreparedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*blockingStartPreparedPiRT) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("blocking-start Pi runtime must use PrepareRun")
+}
+
+func (r *blockingStartPreparedPiRT) PrepareRun(context.Context, agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	return r.prepared, nil
+}
+
+type blockingStartPreparedPiRun struct {
+	entered   chan struct{}
+	closed    chan struct{}
+	enterOnce sync.Once
+	closeOnce sync.Once
+}
+
+func (*blockingStartPreparedPiRun) ProviderSessionID() string { return "pi-session-new" }
+
+func (p *blockingStartPreparedPiRun) Start(ctx context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	p.enterOnce.Do(func() { close(p.entered) })
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+func (p *blockingStartPreparedPiRun) Close(context.Context) error {
+	p.closeOnce.Do(func() { close(p.closed) })
+	return nil
+}
+
+type scriptedPreparedPiRT struct {
+	mu       sync.Mutex
+	prepared []*scriptedPreparedPiRun
+	requests []agentruntime.RunRequest
+}
+
+func newScriptedPreparedPiRT(ids ...string) *scriptedPreparedPiRT {
+	r := &scriptedPreparedPiRT{}
+	for _, id := range ids {
+		r.prepared = append(r.prepared, &scriptedPreparedPiRun{
+			providerSessionID: id,
+			events:            make(chan agentruntime.Event),
+			result:            &agentruntime.RunResult{ProviderSessionID: id},
+		})
+	}
+	return r
+}
+
+func (*scriptedPreparedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*scriptedPreparedPiRT) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("scripted Pi runtime must use PrepareRun")
+}
+
+func (r *scriptedPreparedPiRT) PrepareRun(_ context.Context, req agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.requests = append(r.requests, req)
+	idx := len(r.requests) - 1
+	if idx >= len(r.prepared) {
+		return nil, errors.New("unexpected Pi preparation")
+	}
+	return r.prepared[idx], nil
+}
+
+type scriptedPreparedPiRun struct {
+	mu                sync.Mutex
+	providerSessionID string
+	events            chan agentruntime.Event
+	result            *agentruntime.RunResult
+	startCalls        int
+	closeCalls        int
+}
+
+func (p *scriptedPreparedPiRun) ProviderSessionID() string { return p.providerSessionID }
+
+func (p *scriptedPreparedPiRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	p.mu.Lock()
+	p.startCalls++
+	p.mu.Unlock()
+	return p.events, p.result, nil
+}
+
+func (p *scriptedPreparedPiRun) Close(context.Context) error {
+	p.mu.Lock()
+	p.closeCalls++
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *scriptedPreparedPiRun) counts() (start, closed int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.startCalls, p.closeCalls
+}
+
 // recordingNotifier collects every notify call so tests can assert ordering.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 type recordingNotifier struct {
 	mu      sync.Mutex
 	frames  []notifyFrame
@@ -442,6 +603,162 @@ func TestRuntime_GoalMissingBackendReturnsNoActiveTurn(t *testing.T) {
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────
+
+func TestRuntime_PiPendingGenerationIsAbortableBeforePreparationReturns(t *testing.T) {
+	rt := &blockingPreparedPiRT{entered: make(chan struct{})}
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 41, PermissionMode: "generation-41"}
+	_, err := h.Run(runCtx, params)
+	require.NoError(t, err)
+	errC := make(chan error, 1)
+	go func() {
+		_, err := h.Run(runCtx, params)
+		errC <- err
+	}()
+	<-rt.entered
+
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 41})
+	require.NoError(t, err)
+	require.ErrorIs(t, <-errC, context.Canceled)
+}
+
+func TestRuntime_PiAbortDuringPromptAcknowledgementClosesExactPreparedProcess(t *testing.T) {
+	rt := newBlockingStartPreparedPiRT()
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 44, ProviderSessionID: "pi-session-old", PermissionMode: "generation-44",
+	}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	startErrC := make(chan error, 1)
+	go func() {
+		_, err := h.Run(ctx, params)
+		startErrC <- err
+	}()
+	<-rt.prepared.entered
+
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 44})
+	require.NoError(t, err)
+	require.ErrorIs(t, <-startErrC, context.Canceled)
+	<-rt.prepared.closed
+}
+
+func TestRuntime_PiPrepareReturnsIdentityBeforeSecondRunStartsPrompt(t *testing.T) {
+	rt := newScriptedPreparedPiRT("pi-session-new")
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{
+		Backend:           backendJSON(t, be),
+		SessionID:         42,
+		ProviderSessionID: "pi-session-old",
+		ForkAnchor:        "pi-entry-1",
+		UserText:          "replacement",
+		PermissionMode:    "generation-42",
+	}
+
+	registrationAck, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	assert.Empty(t, registrationAck.ProviderSessionID)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	assert.Equal(t, "pi-session-new", ack.ProviderSessionID)
+	require.Len(t, rt.requests, 1)
+	assert.Empty(t, rt.requests[0].PermissionMode, "transport generation ownership must not reach Pi runtime")
+	assert.Equal(t, "pi-session-old", rt.requests[0].ProviderSessionID)
+	assert.Equal(t, "pi-entry-1", rt.requests[0].ForkAnchor)
+	startCalls, _ := rt.prepared[0].counts()
+	assert.Zero(t, startCalls, "the preparation response must precede prompt Start")
+	assert.Empty(t, notif.snapshot(), "registration and preparation must not emit turn events")
+
+	params.ProviderSessionID = ack.ProviderSessionID
+	startAck, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	assert.Equal(t, "pi-session-new", startAck.ProviderSessionID)
+	startCalls, _ = rt.prepared[0].counts()
+	assert.Equal(t, 1, startCalls)
+
+	close(rt.prepared[0].events)
+	frames := notif.waitFrames(t, 1)
+	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
+}
+
+func TestRuntime_StalePiFanoutCannotUnregisterNewerGeneration(t *testing.T) {
+	rt := newScriptedPreparedPiRT("pi-generation-1", "pi-generation-2")
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 55, PermissionMode: "generation-55-1"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	firstAck, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = firstAck.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 55})
+	require.NoError(t, err)
+
+	params.ProviderSessionID = firstAck.ProviderSessionID
+	params.PermissionMode = "generation-55-2"
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+	staleParams := params
+	staleParams.PermissionMode = "generation-55-1"
+	_, err = h.Run(ctx, staleParams)
+	require.ErrorContains(t, err, "stale Pi generation")
+	rt.mu.Lock()
+	assert.Len(t, rt.requests, 1, "a delayed old preparation request must not prepare the retry")
+	rt.mu.Unlock()
+	secondAck, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	assert.Equal(t, "pi-generation-2", secondAck.ProviderSessionID)
+
+	close(rt.prepared[0].events)
+	frames := notif.waitFrames(t, 1)
+	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method,
+		"the old generation completion frame is the deterministic cleanup barrier")
+
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 55})
+	require.NoError(t, err, "old fanout cleanup must preserve the newer pending generation")
+	_, firstClosed := rt.prepared[0].counts()
+	_, secondClosed := rt.prepared[1].counts()
+	assert.Equal(t, 1, firstClosed)
+	assert.Equal(t, 1, secondClosed)
+}
+
+func TestRuntime_FanoutLogsEventClassificationWithoutSerializedPayload(t *testing.T) {
+	const secret = "secret-tool-input-and-private-prompt"
+	var logs lockedBuffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.ErrorEvent{Err: errors.New(secret)}
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 66})
+	require.NoError(t, err)
+	_ = notif.waitFrames(t, 2)
+
+	assert.Contains(t, logs.String(), "kind=ErrorEvent")
+	assert.NotContains(t, logs.String(), secret)
+	assert.NotContains(t, logs.String(), "payload=")
+}
 
 func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 	rt := &fullRT{}

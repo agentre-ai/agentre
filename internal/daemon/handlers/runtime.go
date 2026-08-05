@@ -5,9 +5,10 @@
 // method either delegates straight to the backend runtime or returns the
 // agentruntime sentinel that the wire codec maps to the client.
 //
-// 单连接寿命内会有多个 sessionID（每个 chat session 一个）。runtime.run 启动一
-// 个长连 fanout goroutine 把 backend events 推到 runtime.event notification,
-// channel close 后再发 runtime.runResultDone 终态帧;之后 session 从 sessions
+// 单连接寿命内会有多个 sessionID（每个 chat session 一个）。非 Pi runtime.run
+// 直接启动 fanout；Pi 复用同一方法依次注册 generation、PrepareRun、Start。启动后
+// fanout 把 backend events 推到 runtime.event notification，channel close 后再发
+// runtime.runResultDone 终态帧;之后 session 从 sessions
 // map 摘除,gateway token revoke。所有控制方法（Steer / Abort / ...）按
 // sessionID 查 backendType,再 type-assert backend runtime 拿对应的子接口,
 // 没实现就返 ErrUnsupported,session 不在就返 ErrNoActiveTurn —— 两者都被
@@ -21,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +32,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
+	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 )
 
@@ -48,7 +51,7 @@ type RuntimeHandlers struct {
 	deps RuntimeDeps
 
 	mu       sync.RWMutex
-	sessions map[int64]runtimeSession
+	sessions map[int64]*runtimeSession
 	// runtimeFor mirrors deps.RuntimeFor but is swappable at runtime via
 	// SwapRuntimeFor (used by tests that need to flip the runtime registry
 	// after a session is already live).
@@ -68,6 +71,17 @@ type RuntimeHandlers struct {
 
 type runtimeSession struct {
 	backendType agent_backend_entity.BackendType
+	ctx         context.Context
+	cancel      context.CancelFunc
+
+	mu                sync.Mutex
+	prepared          piagentrt.PreparedRun
+	providerSessionID string
+	generationToken   string
+	preparing         bool
+	started           bool
+	aborted           bool
+	abortErr          error
 }
 
 // NewRuntimeHandlers wires the dependencies and prepares the session map.
@@ -77,7 +91,7 @@ func NewRuntimeHandlers(deps RuntimeDeps) *RuntimeHandlers {
 	}
 	return &RuntimeHandlers{
 		deps:       deps,
-		sessions:   map[int64]runtimeSession{},
+		sessions:   map[int64]*runtimeSession{},
 		runtimeFor: deps.RuntimeFor,
 	}
 }
@@ -115,6 +129,25 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	rt := h.lookupRuntimeByType(bt)
 	if rt == nil {
 		return wire.RunAck{}, fmt.Errorf("backend %q not registered", be.Type)
+	}
+	var (
+		piPreparer piagentrt.RunPreparer
+		piOwner    *runtimeSession
+	)
+	if be.IsPiAgent() {
+		if preparer, ok := rt.(piagentrt.RunPreparer); ok {
+			piPreparer = preparer
+			piOwner = h.lookupSession(p.SessionID)
+			if piOwner == nil {
+				return h.registerPiGeneration(ctx, p, &be)
+			}
+			piOwner.mu.Lock()
+			ownsGeneration := piOwner.generationToken == strings.TrimSpace(p.PermissionMode)
+			piOwner.mu.Unlock()
+			if !ownsGeneration {
+				return wire.RunAck{}, errors.New("runtime.run: stale Pi generation request")
+			}
+		}
 	}
 
 	// Provider / Gateway 由 daemon 自家解 —— wire 已不再携带客户端版本:
@@ -177,15 +210,28 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		MCPServers:     rewriteMCPServersForDaemon(p.MCPServers, func() string { return daemonGatewayBase(h.deps.Gateway) }),
 		EnabledPlugins: p.EnabledPlugins,
 	}
+	if piPreparer != nil {
+		// PermissionMode carries only the remote transport generation owner for
+		// Pi. Pi has no permission-mode capability, so never pass it to runtime.
+		req.PermissionMode = ""
+	}
+
+	if piPreparer != nil {
+		piOwner.mu.Lock()
+		prepared := piOwner.prepared != nil
+		piOwner.mu.Unlock()
+		if prepared {
+			return h.startPreparedPi(ctx, p, &be, piOwner)
+		}
+		return h.preparePi(ctx, p, &be, piOwner, piPreparer, req)
+	}
 
 	events, result, err := rt.Run(ctx, req)
 	if err != nil {
 		return wire.RunAck{}, err
 	}
-
-	// Pi 在首个 prompt 前已通过 get_state 确认原生 Session ID；同步放进 ack，
-	// desktop 才能在远端事件流结束前持久化。其它 runtime 的终态身份仍由
-	// runtime.runResultDone 回传，避免读取它们可能在 drain 中变化的结果字段。
+	owner := &runtimeSession{backendType: bt}
+	h.register(p.SessionID, owner)
 	ack := wire.RunAck{SessionID: p.SessionID}
 	if result != nil {
 		ack.LaunchPermissionMode = result.LaunchPermissionMode
@@ -193,11 +239,9 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 			ack.ProviderSessionID = result.ProviderSessionID
 		}
 	}
-
-	h.register(p.SessionID, runtimeSession{backendType: bt})
 	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
 		p.SessionID, be.Type, p.AgentID, p.Cwd, len(p.UserText))
-	go h.fanout(p.SessionID, events, result)
+	go h.fanout(owner, p.SessionID, events, result)
 	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
 	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
 	if src, ok := rt.(agentruntime.AutonomousTurnSource); ok {
@@ -206,41 +250,198 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	return ack, nil
 }
 
+func (h *RuntimeHandlers) registerPiGeneration(
+	ctx context.Context,
+	p wire.RunParams,
+	be *agent_backend_entity.AgentBackend,
+) (wire.RunAck, error) {
+	generationToken := strings.TrimSpace(p.PermissionMode)
+	if generationToken == "" {
+		return wire.RunAck{}, errors.New("runtime.run: Pi generation owner is empty")
+	}
+	generationCtx, cancel := context.WithCancel(ctx)
+	owner := &runtimeSession{
+		backendType:     agent_backend_entity.TypePiAgent,
+		ctx:             generationCtx,
+		cancel:          cancel,
+		generationToken: generationToken,
+	}
+	if !h.registerIfAbsent(p.SessionID, owner) {
+		cancel()
+		return wire.RunAck{}, errors.New("runtime.run: session already has an active generation")
+	}
+	log.Printf("runtime.run: Pi generation registered sid=%d backend=%s", p.SessionID, be.Type)
+	return wire.RunAck{SessionID: p.SessionID}, nil
+}
+
+func (h *RuntimeHandlers) preparePi(
+	ctx context.Context,
+	p wire.RunParams,
+	be *agent_backend_entity.AgentBackend,
+	owner *runtimeSession,
+	preparer piagentrt.RunPreparer,
+	req agentruntime.RunRequest,
+) (wire.RunAck, error) {
+	owner.mu.Lock()
+	if owner.backendType != agent_backend_entity.TypePiAgent || owner.aborted || owner.preparing ||
+		owner.started || owner.prepared != nil || !h.isCurrent(p.SessionID, owner) {
+		owner.mu.Unlock()
+		return wire.RunAck{}, errors.New("runtime.run: Pi preparation does not own the registered generation")
+	}
+	owner.preparing = true
+	generationCtx := owner.ctx
+	owner.mu.Unlock()
+
+	prepared, err := preparer.PrepareRun(generationCtx, req)
+	if err != nil {
+		owner.mu.Lock()
+		owner.preparing = false
+		owner.mu.Unlock()
+		h.unregister(p.SessionID, owner)
+		if owner.cancel != nil {
+			owner.cancel()
+		}
+		return wire.RunAck{}, err
+	}
+	identity, ok := prepared.(piagentrt.PreparedRunIdentity)
+	if !ok {
+		owner.mu.Lock()
+		owner.preparing = false
+		owner.mu.Unlock()
+		if owner.cancel != nil {
+			owner.cancel()
+		}
+		_ = prepared.Close(context.Background())
+		h.unregister(p.SessionID, owner)
+		return wire.RunAck{}, errors.New("runtime.run: prepared Pi generation has no pre-prompt identity")
+	}
+	providerSessionID := strings.TrimSpace(identity.ProviderSessionID())
+	if providerSessionID == "" {
+		owner.mu.Lock()
+		owner.preparing = false
+		owner.mu.Unlock()
+		if owner.cancel != nil {
+			owner.cancel()
+		}
+		_ = prepared.Close(context.Background())
+		h.unregister(p.SessionID, owner)
+		return wire.RunAck{}, errors.New("runtime.run: prepared Pi generation returned empty provider session id")
+	}
+
+	owner.mu.Lock()
+	owner.preparing = false
+	aborted := owner.aborted
+	if !aborted {
+		owner.prepared = prepared
+		owner.providerSessionID = providerSessionID
+	}
+	owner.mu.Unlock()
+	if aborted || !h.isCurrent(p.SessionID, owner) {
+		if owner.cancel != nil {
+			owner.cancel()
+		}
+		_ = prepared.Close(context.Background())
+		h.unregister(p.SessionID, owner)
+		return wire.RunAck{}, context.Canceled
+	}
+	log.Printf("runtime.run: Pi generation prepared sid=%d backend=%s providerSessionId=%s",
+		p.SessionID, be.Type, providerSessionID)
+	return wire.RunAck{SessionID: p.SessionID, ProviderSessionID: providerSessionID}, nil
+}
+
+func (h *RuntimeHandlers) startPreparedPi(
+	ctx context.Context,
+	p wire.RunParams,
+	be *agent_backend_entity.AgentBackend,
+	owner *runtimeSession,
+) (wire.RunAck, error) {
+	owner.mu.Lock()
+	providerSessionID := owner.providerSessionID
+	prepared := owner.prepared
+	if owner.backendType != agent_backend_entity.TypePiAgent || owner.aborted || owner.started || prepared == nil ||
+		strings.TrimSpace(p.ProviderSessionID) != providerSessionID {
+		owner.mu.Unlock()
+		return wire.RunAck{}, errors.New("runtime.run: Pi start does not own the prepared generation")
+	}
+	owner.started = true
+	owner.mu.Unlock()
+
+	events, result, err := prepared.Start(owner.ctx)
+	if err != nil {
+		if abortErr := owner.abort(context.Background()); abortErr != nil {
+			log.Printf("runtime.run: close failed sid=%d backend=%s errorType=%T", p.SessionID, be.Type, abortErr)
+		}
+		h.unregister(p.SessionID, owner)
+		return wire.RunAck{}, err
+	}
+	ack := wire.RunAck{SessionID: p.SessionID, ProviderSessionID: providerSessionID}
+	if result != nil {
+		ack.LaunchPermissionMode = result.LaunchPermissionMode
+		if strings.TrimSpace(result.ProviderSessionID) != "" {
+			ack.ProviderSessionID = strings.TrimSpace(result.ProviderSessionID)
+		}
+	}
+	log.Printf("runtime.run: Pi generation started sid=%d backend=%s providerSessionId=%s",
+		p.SessionID, be.Type, ack.ProviderSessionID)
+	go h.fanout(owner, p.SessionID, events, result)
+	return ack, nil
+}
+
+func (s *runtimeSession) abort(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.aborted {
+		return s.abortErr
+	}
+	s.aborted = true
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.prepared != nil {
+		s.abortErr = s.prepared.Close(ctx)
+	}
+	return s.abortErr
+}
+
 // fanout 把 backend events channel 抽干推到 runtime.event,channel close 后再发
 // runtime.runResultDone 终态帧。日志按事件 kind 计数,turn 结束时打一条汇总,
 // 排查 stuck-turn / 漏事件时方便对账 client 端实际收到几条。
-func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result *agentruntime.RunResult) {
+func (h *RuntimeHandlers) fanout(owner *runtimeSession, sid int64, ch <-chan agentruntime.Event, result *agentruntime.RunResult) {
 	count := 0
 	kindHist := map[string]int{}
 	for ev := range ch {
 		raw, err := json.Marshal(ev)
 		if err != nil {
-			log.Printf("runtime.event: marshal failed sid=%d kind=%T err=%v", sid, ev, err)
+			log.Printf("runtime.event: marshal failed sid=%d kind=%T errorType=%T", sid, ev, err)
 			continue
 		}
 		count++
 		kind := reflect.TypeOf(ev).Name()
 		kindHist[kind]++
+		if !h.isCurrent(sid, owner) {
+			log.Printf("runtime.event: stale generation dropped sid=%d n=%d kind=%s", sid, count, kind)
+			continue
+		}
 		if perr := h.deps.Notify.Notify(wire.NotifyEvent, wire.EventFrame{
 			SessionID: sid,
 			Event:     json.RawMessage(raw),
 		}); perr != nil {
-			log.Printf("runtime.event: notify failed sid=%d n=%d kind=%s err=%v", sid, count, kind, perr)
+			log.Printf("runtime.event: notify failed sid=%d n=%d kind=%s errorType=%T", sid, count, kind, perr)
 		} else if !isNoisyEventKind(kind) {
-			// text/thinking/usage 频率极高,kindHist 汇总即可,不逐条 log。
-			log.Printf("runtime.event: sid=%d n=%d kind=%s payload=%s", sid, count, kind, string(raw))
+			// Complete event payloads are forbidden in logs. Identity + kind + ordinal
+			// is sufficient to classify delivery without exposing prompt/tool data.
+			log.Printf("runtime.event: delivered sid=%d n=%d kind=%s", sid, count, kind)
 		}
 	}
 	frame := runResultToFrame(sid, result)
-	// 只清 active-turn 记录;**不撤销 gateway token** —— token 是会话级常驻,
-	// 跨轮复用,寿命跟随子进程(见 sessionTokens 注释),轮末撤销会让下一轮复用
-	// 的子进程手里 token 失效。
-	h.unregister(sid)
+	// Exact-owner removal prevents an old aborted fanout from deleting a newer
+	// retry registered under the same chat SessionID.
+	removed := h.unregister(sid, owner)
 	if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
-		log.Printf("runtime.runResultDone: notify failed sid=%d err=%v", sid, perr)
+		log.Printf("runtime.runResultDone: notify failed sid=%d currentGeneration=%t errorType=%T", sid, removed, perr)
 	}
-	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
-		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
+	log.Printf("runtime.run: session ended sid=%d currentGeneration=%t totalEvents=%d kinds=%v stopErrCode=%d",
+		sid, removed, count, kindHist, frame.StopErrCode)
 }
 
 // startAutonomousFanout 每会话起一个 goroutine,把真实 runtime 的自主续轮转发到
@@ -379,6 +580,17 @@ func (h *RuntimeHandlers) DrainPending(ctx context.Context, p wire.DrainParams) 
 }
 
 func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.OK, error) {
+	owner := h.lookupSession(p.SessionID)
+	if owner == nil {
+		return wire.OK{}, agentruntime.ErrNoActiveTurn
+	}
+	if owner.backendType == agent_backend_entity.TypePiAgent && owner.ctx != nil {
+		if err := owner.abort(ctx); err != nil {
+			return wire.OK{}, err
+		}
+		h.unregister(p.SessionID, owner)
+		return wire.OK{}, nil
+	}
 	a, err := resolveSessionCapability[agentruntime.Aborter](h, p.SessionID)
 	if err != nil {
 		return wire.OK{}, err
@@ -613,18 +825,42 @@ func (h *RuntimeHandlers) ensureSessionToken(ctx context.Context, sid int64, be 
 	return url, tok, nil
 }
 
-func (h *RuntimeHandlers) register(sid int64, row runtimeSession) {
+func (h *RuntimeHandlers) lookupSession(sid int64) *runtimeSession {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.sessions[sid]
+}
+
+func (h *RuntimeHandlers) isCurrent(sid int64, owner *runtimeSession) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.sessions[sid] == owner
+}
+
+func (h *RuntimeHandlers) register(sid int64, row *runtimeSession) {
 	h.mu.Lock()
 	h.sessions[sid] = row
 	h.mu.Unlock()
 }
 
-func (h *RuntimeHandlers) unregister(sid int64) (runtimeSession, bool) {
+func (h *RuntimeHandlers) registerIfAbsent(sid int64, row *runtimeSession) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	row, ok := h.sessions[sid]
+	if h.sessions[sid] != nil {
+		return false
+	}
+	h.sessions[sid] = row
+	return true
+}
+
+func (h *RuntimeHandlers) unregister(sid int64, owner *runtimeSession) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sessions[sid] != owner {
+		return false
+	}
 	delete(h.sessions, sid)
-	return row, ok
+	return true
 }
 
 // decodeHistory turns wire HistoryMessage frames back into the agentruntime
