@@ -158,6 +158,28 @@ func TestPreparedStreamStartHandsPreAcknowledgementEventsToDrain(t *testing.T) {
 	assert.NotContains(t, strings.Join(rawFrames, "\n"), "private extension payload")
 }
 
+func TestPreparedStreamCloseBeforeStartSendsNoPrompt(t *testing.T) {
+	// Given preparation has explicit ownership of a live Pi process,
+	// When the owner closes it before Start,
+	// Then repeated cleanup is safe and a later Start cannot send the prompt.
+	client, proc := newCaptureClient(
+		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-native-abandoned"}}` + "\n",
+	)
+	prepared, err := client.PrepareStream(context.Background(), "must not be sent")
+	require.NoError(t, err)
+	assert.Equal(t, "pi-native-abandoned", prepared.SessionID())
+
+	require.NoError(t, prepared.Close(context.Background()))
+	require.NoError(t, prepared.Close(context.Background()))
+	stream, startErr := prepared.Start(context.Background())
+
+	assert.Nil(t, stream)
+	require.ErrorIs(t, startErr, errStreamClosed)
+	frames := stdinFrames(t, proc.stdin.String())
+	require.Len(t, frames, 1)
+	assert.Equal(t, "get_state", frames[0]["type"])
+}
+
 func TestCompactDiscoversNativeSessionBeforeCommand(t *testing.T) {
 	// Given an existing native Pi session is opened for compaction,
 	// When Agentre starts the compact stream,

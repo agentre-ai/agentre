@@ -45,16 +45,26 @@ type RunPreparer interface {
 	PrepareRun(context.Context, agentruntime.RunRequest) (PreparedRun, error)
 }
 
+// PreparedRunIdentity is the optional pre-prompt identity boundary implemented
+// by Pi prepared runs. Callers can persist the validated native session before
+// Start transmits the prompt without widening the generic runtime contract.
+type PreparedRunIdentity interface {
+	PreparedRun
+	ProviderSessionID() string
+}
+
 type preparedRun struct {
-	runtime  *Runtime
-	req      agentruntime.RunRequest
-	sess     sessionHandle
-	prepared preparedTurnStream
-	cwd      string
-	modelID  string
+	runtime           *Runtime
+	req               agentruntime.RunRequest
+	sess              sessionHandle
+	prepared          preparedTurnStream
+	cwd               string
+	modelID           string
+	providerSessionID string
 
 	startMu sync.Mutex
 	started bool
+	closed  bool
 	close   sync.Once
 }
 
@@ -108,7 +118,14 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 	if req.Provider != nil && strings.TrimSpace(req.Provider.Model) != "" {
 		modelID = strings.TrimSpace(req.Provider.Model)
 	}
-	prepared := &preparedRun{runtime: r, req: req, sess: sess, cwd: cwd, modelID: modelID}
+	prepared := &preparedRun{
+		runtime:           r,
+		req:               req,
+		sess:              sess,
+		cwd:               cwd,
+		modelID:           modelID,
+		providerSessionID: strings.TrimSpace(sess.ID()),
+	}
 	if !req.Compact {
 		if preparer, ok := sess.(turnStreamPreparer); ok {
 			preparedStream, err := preparer.PrepareStreamTurn(
@@ -123,13 +140,29 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 				return nil, mapSessionError(err)
 			}
 			prepared.prepared = preparedStream
+			prepared.providerSessionID = strings.TrimSpace(preparedStream.SessionID())
+			if prepared.providerSessionID == "" {
+				_ = prepared.Close(context.Background())
+				return nil, errors.New("piagent runtime: prepared stream returned empty provider session id")
+			}
 		}
 	}
 	return prepared, nil
 }
 
+func (p *preparedRun) ProviderSessionID() string {
+	if p == nil {
+		return ""
+	}
+	return p.providerSessionID
+}
+
 func (p *preparedRun) Start(ctx context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
 	p.startMu.Lock()
+	if p.closed {
+		p.startMu.Unlock()
+		return nil, nil, errors.New("piagent runtime: prepared run closed")
+	}
 	if p.started {
 		p.startMu.Unlock()
 		return nil, nil, errors.New("piagent runtime: prepared run already started")
@@ -163,7 +196,11 @@ func (p *preparedRun) Start(ctx context.Context) (<-chan agentruntime.Event, *ag
 	p.runtime.register(p.req.SessionID, active)
 
 	out := make(chan agentruntime.Event, 32)
-	result := &agentruntime.RunResult{ProviderSessionID: p.sess.ID(), Model: p.modelID}
+	providerSessionID := p.providerSessionID
+	if providerSessionID == "" {
+		providerSessionID = strings.TrimSpace(p.sess.ID())
+	}
+	result := &agentruntime.RunResult{ProviderSessionID: providerSessionID, Model: p.modelID}
 	logger.Ctx(ctx).Info("piagent runtime: turn starting",
 		zap.Int64("sessionID", p.req.SessionID),
 		zap.Int64("agentID", p.req.AgentID),
@@ -183,6 +220,12 @@ func (p *preparedRun) Start(ctx context.Context) (<-chan agentruntime.Event, *ag
 }
 
 func (p *preparedRun) Close(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	p.startMu.Lock()
+	p.closed = true
+	p.startMu.Unlock()
 	var closeErr error
 	p.close.Do(func() {
 		if p.prepared != nil {

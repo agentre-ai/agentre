@@ -68,6 +68,7 @@ type PreparedStream struct {
 
 	mu      sync.Mutex
 	started bool
+	closed  bool
 }
 
 func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (*Stream, error) {
@@ -145,6 +146,10 @@ func (p *PreparedStream) start(ctx context.Context, waitForAcknowledgement bool)
 		return nil, errStreamClosed
 	}
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, errStreamClosed
+	}
 	if p.started {
 		p.mu.Unlock()
 		return nil, errors.New("piagent: prepared stream already started")
@@ -159,7 +164,7 @@ func (p *PreparedStream) start(ctx context.Context, waitForAcknowledgement bool)
 	}
 	defer cancelStartup()
 	if err := p.stream.send(startupCtx, p.frame); err != nil {
-		_ = p.stream.Close(context.Background())
+		_ = p.Close(context.Background())
 		return nil, err
 	}
 	if !waitForAcknowledgement {
@@ -168,7 +173,7 @@ func (p *PreparedStream) start(ctx context.Context, waitForAcknowledgement bool)
 	}
 	pending, err := p.stream.awaitPromptAcknowledgement(startupCtx)
 	if err != nil {
-		_ = p.stream.Close(context.Background())
+		_ = p.Close(context.Background())
 		return nil, err
 	}
 	go p.stream.drain(ctx, pending)
@@ -186,6 +191,9 @@ func (p *PreparedStream) Close(ctx context.Context) error {
 	if p == nil || p.stream == nil {
 		return nil
 	}
+	p.mu.Lock()
+	p.closed = true
+	p.mu.Unlock()
 	return p.stream.Close(ctx)
 }
 

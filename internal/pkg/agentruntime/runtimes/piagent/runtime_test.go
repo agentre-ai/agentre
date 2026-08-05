@@ -116,7 +116,7 @@ func TestPrepareRunWithholdsPromptUntilStart(t *testing.T) {
 		defer restore()
 		runtime := New()
 
-		Convey("When the service preflights Then fork completes but prompt waits for Start", func() {
+		Convey("When the service preflights Then the forked ID is available while prompt waits for Start", func() {
 			prepared, err := runtime.PrepareRun(context.Background(), agentruntime.RunRequest{
 				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
 				SessionID:         3,
@@ -126,17 +126,57 @@ func TestPrepareRunWithholdsPromptUntilStart(t *testing.T) {
 				UserText:          "commit first",
 			})
 			So(err, ShouldBeNil)
+			identity, ok := prepared.(PreparedRunIdentity)
+			So(ok, ShouldBeTrue)
+			So(identity.ProviderSessionID(), ShouldEqual, "session-new")
 			So(proc.commands(), ShouldResemble, []string{"get_state", "fork", "get_state", "get_entries"})
 
 			events, result, err := prepared.Start(context.Background())
 			So(err, ShouldBeNil)
 			for range events {
 			}
-			So(result.ProviderSessionID, ShouldEqual, "session-new")
+			So(result.ProviderSessionID, ShouldEqual, identity.ProviderSessionID())
 			So(result.UserAnchor, ShouldEqual, "turn-user")
 			So(proc.commands(), ShouldResemble, []string{
 				"get_state", "fork", "get_state", "get_entries", "prompt", "get_entries", "get_session_stats",
 			})
+		})
+	})
+}
+
+func TestPreparedRunCloseBeforeStartSendsNoPrompt(t *testing.T) {
+	Convey("Given a prepared Pi fork whose caller abandons ownership", t, func() {
+		lines := []string{
+			`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-old"}}`,
+			`{"id":"session-fork","type":"response","command":"fork","success":true,"data":{"cancelled":false}}`, //nolint:misspell // Pi RPC field uses British spelling.
+			`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-new"}}`,
+			`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":{"entries":[],"leafId":null}}`,
+		}
+		proc := &runtimeRPCProcess{
+			stdin:  &cliprocess.LockedBuffer{},
+			stdout: strings.NewReader(strings.Join(lines, "\n") + "\n"),
+			done:   make(chan error, 1),
+		}
+		restore := SetSessionFactoryForTest(runtimeRPCSessionFactory(proc))
+		defer restore()
+		prepared, err := New().PrepareRun(context.Background(), agentruntime.RunRequest{
+			Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+			SessionID:         4,
+			ProviderSessionID: "session-old",
+			ForkAnchor:        "fork-user",
+			Cwd:               t.TempDir(),
+			UserText:          "must not be sent",
+		})
+		So(err, ShouldBeNil)
+
+		Convey("When Close wins before Start Then cleanup is idempotent and Start stays prompt-free", func() {
+			So(prepared.Close(context.Background()), ShouldBeNil)
+			So(prepared.Close(context.Background()), ShouldBeNil)
+			events, result, startErr := prepared.Start(context.Background())
+			So(startErr, ShouldNotBeNil)
+			So(events, ShouldBeNil)
+			So(result, ShouldBeNil)
+			So(proc.commands(), ShouldResemble, []string{"get_state", "fork", "get_state", "get_entries"})
 		})
 	})
 }
