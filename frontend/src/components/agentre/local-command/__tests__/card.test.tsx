@@ -1,13 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useLocalCommandsStore } from "../../../../stores/local-commands-store";
 import { LocalCommandCard } from "../card";
 
-const close = vi.fn();
-vi.mock("../../../../../wailsjs/go/app/App", () => ({
-  TerminalClose: (...a: unknown[]) => close(...a),
-}));
 // Output is rendered by a read-only xterm; stub it so this test stays focused on
 // card chrome (status / buttons / dismiss). Terminal rendering is covered by
 // output-terminal.test.tsx.
@@ -15,24 +11,44 @@ vi.mock("../output-terminal", () => ({ OutputTerminal: () => null }));
 
 describe("LocalCommandCard", () => {
   beforeEach(() => {
-    close.mockReset();
     useLocalCommandsStore.setState({ entries: {} });
   });
 
-  it("running shows stop + open-in-terminal; stop calls TerminalClose", async () => {
+  it("Given a running command, When Stop is clicked, Then the card delegates the terminal id without owning settlement", async () => {
+    const onStop = vi.fn();
     useLocalCommandsStore
       .getState()
       .start({ id: "t1", sessionId: 1, command: "go test", createdAt: 1 });
-    useLocalCommandsStore.getState().appendOutput("t1", "=== RUN x\n");
-    const onOpen = vi.fn();
-    render(<LocalCommandCard entryId="t1" onOpenInTerminal={onOpen} />);
-    expect(screen.getByText("go test")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
-    expect(close).toHaveBeenCalledWith("t1");
-    await userEvent.click(
-      screen.getByRole("button", { name: /在终端中打开|Open in terminal/ }),
+    render(
+      <LocalCommandCard
+        entryId="t1"
+        onOpenInTerminal={vi.fn()}
+        onStop={onStop}
+      />,
     );
-    expect(onOpen).toHaveBeenCalledWith("t1");
+
+    await userEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
+
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(onStop).toHaveBeenCalledWith("t1");
+    expect(useLocalCommandsStore.getState().get("t1")?.status).toBe("running");
+  });
+
+  it("Given a read-only caller without onStop, When a command is running, Then the card omits the Stop control", () => {
+    useLocalCommandsStore.getState().start({
+      id: "t-readonly",
+      sessionId: 1,
+      command: "sleep 30",
+      createdAt: 1,
+    });
+    render(
+      <LocalCommandCard entryId="t-readonly" onOpenInTerminal={vi.fn()} />,
+    );
+
+    expect(screen.queryByRole("button", { name: /停止|Stop/ })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /在终端中打开|Open in terminal/ }),
+    ).toBeInTheDocument();
   });
 
   it("after exit shows exit code and no run-time action buttons", () => {

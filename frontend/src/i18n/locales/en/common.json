@@ -2247,6 +2247,11 @@
       "off": "Off"
     }
   },
+  "localCommandHistory": {
+    "aria": "Shell command history",
+    "clearCurrentScope": "Clear history for current directory",
+    "clearFailed": "Couldn’t clear command history. Try again."
+  },
   "localCommand": {
     "localChip": "Local command",
     "notSharedWithAI": "Not sent to AI",

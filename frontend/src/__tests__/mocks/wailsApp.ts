@@ -1,6 +1,16 @@
-import { vi } from "vitest";
+import { vi, type Mock } from "vitest";
 
 type AnyFn = (...args: unknown[]) => unknown;
+type LocalCommandScope = { deviceId: string; cwd: string };
+type ResolveLocalCommandScopeRequest = {
+  agentId: number;
+  projectId: number;
+  sessionId: number;
+};
+type TerminalRunCommandResponse = {
+  scope: LocalCommandScope;
+  startError?: string;
+};
 
 function windowBackedMock(
   name: string,
@@ -12,6 +22,24 @@ function windowBackedMock(
     return fallback(...args);
   });
   return mock;
+}
+
+function typedWindowBackedMock<TArgs extends unknown[], TResult>(
+  name: string,
+  fallback: (...args: TArgs) => TResult,
+): Mock<(...args: TArgs) => TResult> {
+  const mock = vi.fn((...args: TArgs) => {
+    const fn = window.go?.app?.App?.[name];
+    if (typeof fn === "function" && fn !== (mock as unknown as typeof fn)) {
+      return fn(...args) as TResult;
+    }
+    return fallback(...args);
+  }) as Mock<(...args: TArgs) => TResult>;
+  return mock;
+}
+
+function missingWailsBinding(name: string): Promise<never> {
+  return Promise.reject(new Error(`Wails binding ${name} not available`));
 }
 
 export const Greet = vi.fn((name: string) =>
@@ -142,6 +170,26 @@ export const LoadChatSession = windowBackedMock("LoadChatSession", () =>
 export const MarkChatSessionRead = windowBackedMock("MarkChatSessionRead", () =>
   Promise.resolve({}),
 );
+export const ResolveLocalCommandScope = typedWindowBackedMock<
+  [request: ResolveLocalCommandScopeRequest],
+  Promise<LocalCommandScope>
+>("ResolveLocalCommandScope", () =>
+  missingWailsBinding("ResolveLocalCommandScope"),
+);
+export const EnsureChatSession = typedWindowBackedMock<
+  [agentId: number, projectId: number],
+  Promise<number>
+>("EnsureChatSession", () => Promise.resolve(0));
+export const TerminalRunCommand = typedWindowBackedMock<
+  [
+    terminalId: string,
+    sessionId: number,
+    command: string,
+    cols: number,
+    rows: number,
+  ],
+  Promise<TerminalRunCommandResponse>
+>("TerminalRunCommand", () => missingWailsBinding("TerminalRunCommand"));
 export const ProjectListTree = windowBackedMock("ProjectListTree", () =>
   Promise.resolve([]),
 );

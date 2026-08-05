@@ -79,9 +79,8 @@ type ChatSvc interface {
 	LoadSession(ctx context.Context, req *LoadSessionRequest) (*LoadSessionResponse, error)
 	GetLaunchCommand(ctx context.Context, req *LaunchCommandRequest) (*LaunchCommandResponse, error)
 	GetSessionGitState(ctx context.Context, req *GetSessionGitStateRequest) (*GetSessionGitStateResponse, error)
-	// ResolveSessionExecTarget 解析 ! 命令的执行目标：cwd 来自项目/自由会话规则，
-	// deviceID 在远端后端时为 backend.DeviceID，本地后端为空串。
-	ResolveSessionExecTarget(ctx context.Context, sessionID int64) (cwd string, deviceID string, err error)
+	// ResolveLocalCommandScope 为已有 session 或未持久化的 agent/project 目标解析历史作用域。
+	ResolveLocalCommandScope(ctx context.Context, req *ResolveLocalCommandScopeRequest) (*LocalCommandScope, error)
 	Send(ctx context.Context, req *SendRequest) (*SendResponse, error)
 	Compact(ctx context.Context, req *CompactRequest) (*CompactResponse, error)
 	GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error)

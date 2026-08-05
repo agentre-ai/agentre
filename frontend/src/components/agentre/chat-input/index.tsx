@@ -3,7 +3,9 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   type RefObject,
@@ -17,6 +19,7 @@ import { Placeholder, UndoRedo } from "@tiptap/extensions";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 
 import { cn } from "@/lib/utils";
+import { localCommandHistoryStore } from "@/stores/local-command-history-store";
 
 import {
   listAvailable,
@@ -37,27 +40,42 @@ import {
   shouldStartInputHistory,
 } from "./keyboard";
 import {
+  localCommandHistoryOptionId,
+  LocalCommandHistoryPopover,
+} from "./local-command-history/history-popover";
+import { useLocalCommandHistoryMenu } from "./local-command-history/use-local-command-history-menu";
+import {
   Mention,
   MentionPopover,
   useMentionMenu,
   type MentionItem,
   type MentionSources,
 } from "./mentions";
-import type { AIChatInputHandle, ProseMirrorLikeNode } from "./types";
+import type {
+  AIChatInputHandle,
+  LocalCommandHistoryScope,
+  LocalCommandSubmitHandler,
+  ProseMirrorLikeNode,
+} from "./types";
 
 // 同 useSlashMenu 里的常量:行内 `[]` 默认值每次 render 都是新身份,会把 slash
 // 菜单的订阅 effect 变成「每次提交都重跑」。
 const EMPTY_SKILL_COMMANDS: SlashCommand[] = [];
 
-export type { AIChatInputDraft, AIChatInputHandle } from "./types";
+export type {
+  AIChatInputDraft,
+  AIChatInputHandle,
+  LocalCommandHistoryScope,
+  LocalCommandSubmitHandler,
+} from "./types";
 
 export interface AIChatInputProps {
   onSubmit: (content: string) => void;
   onEmptyChange?: (empty: boolean) => void;
   /** 编辑器内容以 ! 开头时进入命令模式,回调通知父组件切换 UI(横幅/按钮)。 */
   onCommandModeChange?: (active: boolean) => void;
-  /** 命令模式下按 Enter/Run 时触发,参数为去掉首个 ! 并 trim 后的命令字符串。 */
-  onCommandSubmit?: (command: string) => void;
+  /** 命令模式下按 Enter/Run 时触发；返回实际执行作用域后才写入 Shell 历史。 */
+  onCommandSubmit?: LocalCommandSubmitHandler;
   sendOnEnter?: boolean;
   userMessageHistory?: string[];
   placeholder?: string;
@@ -81,6 +99,8 @@ export interface AIChatInputProps {
   /** 当前 agent 最终生效的技能命令。Codex 用 $,Claude Code 用 /;
    *  与静态 slash commands 合并后由同一 popover 渲染。 */
   skillCommands?: SlashCommand[];
+  /** 当前本地命令执行目标。设备与 cwd 共同隔离持久化 Shell 历史。 */
+  localCommandHistoryScope?: LocalCommandHistoryScope;
 }
 
 const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
@@ -101,9 +121,12 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
       onSlashSelect,
       mentionSources,
       skillCommands = EMPTY_SKILL_COMMANDS,
+      localCommandHistoryScope,
     },
     ref,
   ) {
+    const localCommandHistoryInstanceId = useId();
+    const localCommandHistoryListboxId = `local-command-history-listbox-${localCommandHistoryInstanceId.replace(/:/g, "")}`;
     const submitRef = useRef(onSubmit);
     const sendOnEnterRef = useRef(sendOnEnter);
     const onEmptyChangeRef = useRef(onEmptyChange);
@@ -114,6 +137,9 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     const triggerSubmitRef = useRef<() => void>(() => {});
     const slashKeyDownRef = useRef<(e: KeyboardEvent) => boolean>(() => false);
     const mentionKeyDownRef = useRef<(e: KeyboardEvent) => boolean>(
+      () => false,
+    );
+    const commandHistoryKeyDownRef = useRef<(e: KeyboardEvent) => boolean>(
       () => false,
     );
     const slashSelectRef = useRef(onSlashSelect);
@@ -203,8 +229,9 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
           // 组词中（包括 keyCode===229 的兜底）一律放行给浏览器，
           // 避免 IME 候选回车被当成消息发送。
           if (shouldIgnoreEditorShortcut(view, event)) return false;
-          // slash menu 打开时拦截 Up/Down/Enter/Tab/Esc;关闭时透明。
-          // 命令模式下不弹 slash,直接跳过。
+          // ! 历史菜单优先消费候选导航/选择；普通模式继续交给 mention/slash。
+          if (commandModeRef.current && commandHistoryKeyDownRef.current(event))
+            return true;
           if (
             !commandModeRef.current &&
             (mentionKeyDownRef.current(event) || slashKeyDownRef.current(event))
@@ -302,7 +329,55 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
         if (content.trimStart().startsWith("!")) {
           const command = content.trimStart().slice(1).trim();
           historyIndexRef.current = -1;
-          if (command) onCommandSubmitRef.current?.(command);
+          if (command) {
+            const warnSubmissionFailure = (error: unknown) => {
+              console.warn(
+                "[chat-input] local command submission failed",
+                error,
+              );
+            };
+            let submittedAt: number | undefined;
+            try {
+              submittedAt = localCommandHistoryStore.reserveLastUsedAt();
+            } catch (error) {
+              console.warn(
+                "[chat-input] failed to reserve local command history order",
+                error,
+              );
+            }
+            const releaseHistoryReservation = () => {
+              if (submittedAt === undefined) return;
+              localCommandHistoryStore.releaseLastUsedAt(submittedAt);
+            };
+            try {
+              const executionScope = onCommandSubmitRef.current?.(command);
+              if (!executionScope) {
+                releaseHistoryReservation();
+              } else {
+                void Promise.resolve(executionScope)
+                  .then((scope) => {
+                    if (!scope || submittedAt === undefined) return;
+                    try {
+                      localCommandHistoryStore.record(
+                        scope,
+                        command,
+                        submittedAt,
+                      );
+                    } catch (error) {
+                      console.warn(
+                        "[chat-input] failed to record local command history",
+                        error,
+                      );
+                    }
+                  })
+                  .catch(warnSubmissionFailure)
+                  .finally(releaseHistoryReservation);
+              }
+            } catch (error) {
+              warnSubmissionFailure(error);
+              releaseHistoryReservation();
+            }
+          }
           editor.commands.clearContent(true);
           editor.commands.focus();
           return;
@@ -353,6 +428,56 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
       }),
       [editor],
     );
+
+    // ── ! 本地命令历史菜单集成 ──────────────────────────────────────────────
+    const commandHistoryMenu = useLocalCommandHistoryMenu({
+      editor: editor ?? null,
+      scope: localCommandHistoryScope,
+    });
+    useEffect(() => {
+      commandHistoryKeyDownRef.current = commandHistoryMenu.onKeyDown;
+    }, [commandHistoryMenu.onKeyDown]);
+
+    useLayoutEffect(() => {
+      if (!editor) return;
+      const editorDom = editor.view.dom;
+      const resetCombobox = () => {
+        editorDom.setAttribute("role", "textbox");
+        editorDom.removeAttribute("aria-expanded");
+        editorDom.removeAttribute("aria-controls");
+        editorDom.removeAttribute("aria-haspopup");
+        editorDom.removeAttribute("aria-activedescendant");
+      };
+
+      if (!commandHistoryMenu.state.open) {
+        resetCombobox();
+        return;
+      }
+
+      editorDom.setAttribute("role", "combobox");
+      editorDom.setAttribute("aria-expanded", "true");
+      editorDom.setAttribute("aria-controls", localCommandHistoryListboxId);
+      editorDom.setAttribute("aria-haspopup", "listbox");
+      if (commandHistoryMenu.state.clearFocused) {
+        editorDom.removeAttribute("aria-activedescendant");
+      } else {
+        editorDom.setAttribute(
+          "aria-activedescendant",
+          localCommandHistoryOptionId(
+            localCommandHistoryListboxId,
+            commandHistoryMenu.state.selectedIndex,
+          ),
+        );
+      }
+
+      return resetCombobox;
+    }, [
+      commandHistoryMenu.state.clearFocused,
+      commandHistoryMenu.state.open,
+      commandHistoryMenu.state.selectedIndex,
+      editor,
+      localCommandHistoryListboxId,
+    ]);
 
     // ── slash command menu 集成 ─────────────────────────────────────────────
     // 只在 backendType + onSlashSelect 同时具备时启用。useSlashMenu 监听 editor
@@ -408,6 +533,17 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
     return (
       <>
         <EditorContent editor={editor} />
+        <LocalCommandHistoryPopover
+          state={commandHistoryMenu.state}
+          listboxId={localCommandHistoryListboxId}
+          onPick={commandHistoryMenu.pick}
+          onHover={commandHistoryMenu.setSelectedIndex}
+          clearButtonRef={commandHistoryMenu.clearButtonRef}
+          onClear={commandHistoryMenu.clear}
+          onClearFocus={commandHistoryMenu.onClearFocus}
+          onClearBlur={commandHistoryMenu.onClearBlur}
+          onClearKeyDown={commandHistoryMenu.onClearKeyDown}
+        />
         {slashEnabled ? (
           <SlashPopover
             state={slashMenu.state}
