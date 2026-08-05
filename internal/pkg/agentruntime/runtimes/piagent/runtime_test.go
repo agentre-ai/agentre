@@ -345,7 +345,7 @@ func TestRun_ForwardsUserBlockImagesToStream(t *testing.T) {
 	})
 }
 
-func TestRun_PiFailuresStayRedactedDownstream(t *testing.T) {
+func TestRun_PiFailuresStayRedactedAtStartupAndDownstream(t *testing.T) {
 	secrets := []string{
 		"private user prompt: inspect acquisition payroll",
 		"PRIVATE_IMAGE_SESSION_BYTES",
@@ -364,6 +364,7 @@ func TestRun_PiFailuresStayRedactedDownstream(t *testing.T) {
 		lines           []string
 		stderr          string
 		waitErr         error
+		startupError    bool
 		wantDiagnostics bool
 		wantUsage       bool
 		wantErrorType   string
@@ -373,6 +374,7 @@ func TestRun_PiFailuresStayRedactedDownstream(t *testing.T) {
 			lines: append(append([]string{}, commonStartup...),
 				`{"type":"response","command":"prompt","success":false,"error":"`+secrets[0]+` | `+secrets[3]+`","data":{"message":"`+secrets[2]+`"}}`,
 			),
+			startupError: true,
 		},
 		{
 			name: "terminal event failure payload",
@@ -427,27 +429,37 @@ func TestRun_PiFailuresStayRedactedDownstream(t *testing.T) {
 					cagoblocks.ImageBlock{MediaType: "image/png", Source: cagoblocks.BlobSource{Inline: []byte(secrets[1])}},
 				},
 			})
-			require.NoError(t, err)
-
-			var downstreamErr error
-			for event := range events {
-				if failure, ok := event.(agentruntime.ErrorEvent); ok {
-					downstreamErr = failure.Err
+			if tt.startupError {
+				require.Error(t, err)
+				assert.Nil(t, events)
+				assert.Nil(t, result)
+				assert.Equal(t, "piagent rpc prompt failed", err.Error())
+				for _, secret := range append(secrets, imageWire) {
+					assert.NotContains(t, err.Error(), secret)
 				}
-			}
-			require.Error(t, downstreamErr)
-			require.Error(t, result.StopErr)
-			assert.Equal(t, downstreamErr.Error(), result.StopErr.Error())
-			for _, secret := range append(secrets, imageWire) {
-				assert.NotContains(t, downstreamErr.Error(), secret)
-				assert.NotContains(t, result.StopErr.Error(), secret)
-			}
-			if tt.waitErr != nil {
-				var exitErr *pkgpiagent.ExitError
-				require.ErrorAs(t, result.StopErr, &exitErr)
-				assert.Empty(t, exitErr.Stderr)
-				for _, secret := range secrets {
-					assert.NotContains(t, exitErr.Err.Error(), secret)
+			} else {
+				require.NoError(t, err)
+
+				var downstreamErr error
+				for event := range events {
+					if failure, ok := event.(agentruntime.ErrorEvent); ok {
+						downstreamErr = failure.Err
+					}
+				}
+				require.Error(t, downstreamErr)
+				require.Error(t, result.StopErr)
+				assert.Equal(t, downstreamErr.Error(), result.StopErr.Error())
+				for _, secret := range append(secrets, imageWire) {
+					assert.NotContains(t, downstreamErr.Error(), secret)
+					assert.NotContains(t, result.StopErr.Error(), secret)
+				}
+				if tt.waitErr != nil {
+					var exitErr *pkgpiagent.ExitError
+					require.ErrorAs(t, result.StopErr, &exitErr)
+					assert.Empty(t, exitErr.Stderr)
+					for _, secret := range secrets {
+						assert.NotContains(t, exitErr.Err.Error(), secret)
+					}
 				}
 			}
 
@@ -459,6 +471,12 @@ func TestRun_PiFailuresStayRedactedDownstream(t *testing.T) {
 				}
 			}
 			matches := logs.FilterMessage("piagent runtime: turn failed").All()
+			diagnostics := logs.FilterMessage("piagent runtime: turn failed diagnostics").All()
+			if tt.startupError {
+				assert.Empty(t, matches, "a rejected prompt must fail before a turn is registered")
+				assert.Empty(t, diagnostics)
+				return
+			}
 			require.Len(t, matches, 1)
 			fields := matches[0].ContextMap()
 			assert.Equal(t, int64(689), fields["sessionID"])
@@ -478,7 +496,6 @@ func TestRun_PiFailuresStayRedactedDownstream(t *testing.T) {
 				assert.Equal(t, int64(0), fields["cacheCreationTokens"])
 				assert.Equal(t, int64(73649), fields["totalInputTokens"])
 			}
-			diagnostics := logs.FilterMessage("piagent runtime: turn failed diagnostics").All()
 			if tt.wantDiagnostics {
 				require.Len(t, diagnostics, 1)
 				diagnosticFields := diagnostics[0].ContextMap()

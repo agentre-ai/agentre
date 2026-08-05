@@ -2,6 +2,7 @@ package chat_svc_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/agents/provider"
 	"github.com/cago-frame/agents/provider/providertest"
+	"github.com/cago-frame/cago/database/db"
 	"github.com/cago-frame/cago/pkg/consts"
 	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"github.com/cago-frame/cago/pkg/utils/testutils"
@@ -1099,6 +1101,7 @@ func (*preparedStartupFailure) Close(context.Context) error { return nil }
 type preparedAcknowledgedRunner struct {
 	onStart           func()
 	providerSessionID string
+	events            chan agentruntime.Event
 }
 
 func (*preparedAcknowledgedRunner) Capabilities() capability.Capabilities {
@@ -1123,9 +1126,12 @@ func (p *preparedAcknowledgedStart) Start(context.Context) (<-chan agentruntime.
 	if p.runner.onStart != nil {
 		p.runner.onStart()
 	}
-	events := make(chan agentruntime.Event, 1)
-	events <- agentruntime.Done{}
-	close(events)
+	events := p.runner.events
+	if events == nil {
+		events = make(chan agentruntime.Event, 1)
+		events <- agentruntime.Done{}
+		close(events)
+	}
 	return events, &agentruntime.RunResult{ProviderSessionID: p.runner.providerSessionID}, nil
 }
 
@@ -5407,7 +5413,13 @@ func TestPiRestart_AcknowledgedPromptActivatesTranscriptWithForkedSessionAtomica
 	m.dbMock.ExpectCommit()
 
 	stageDurableBeforePrompt := false
-	runner := &preparedAcknowledgedRunner{providerSessionID: "pi-session-new"}
+	streamEvents := make(chan agentruntime.Event)
+	var closeStream sync.Once
+	t.Cleanup(func() { closeStream.Do(func() { close(streamEvents) }) })
+	runner := &preparedAcknowledgedRunner{
+		providerSessionID: "pi-session-new",
+		events:            streamEvents,
+	}
 	runner.onStart = func() {
 		stageErr := m.dbMock.ExpectationsWereMet()
 		stageDurableBeforePrompt = stageErr == nil
@@ -5420,22 +5432,44 @@ func TestPiRestart_AcknowledgedPromptActivatesTranscriptWithForkedSessionAtomica
 	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
 	t.Cleanup(restore)
 
+	var (
+		activationConnPool any
+		activationUpdates  int
+	)
 	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), 1).Return(int64(2), nil)
 	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, message *chat_entity.Message) error {
-			if message.ID == 2000 || message.ID == 2001 {
+		func(updateCtx context.Context, message *chat_entity.Message) error {
+			connPool := db.Ctx(updateCtx).Statement.ConnPool
+			if _, inTransaction := connPool.(*sql.Tx); inTransaction && (message.ID == 2000 || message.ID == 2001) {
 				assert.Equal(t, int64(100), message.SessionID)
+				activationUpdates++
+				if activationConnPool == nil {
+					activationConnPool = connPool
+				} else {
+					assert.Same(t, activationConnPool, connPool)
+				}
 			}
 			return nil
 		}).AnyTimes()
 	m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(-100), 0).Return(int64(2), nil)
-	activationObserved := false
+	activationObserved := make(chan struct{}, 1)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, session *chat_entity.Session) error {
+		func(updateCtx context.Context, session *chat_entity.Session) error {
 			if session.AgentStatus == "running" {
-				activationObserved = true
+				connPool := db.Ctx(updateCtx).Statement.ConnPool
+				_, inTransaction := connPool.(*sql.Tx)
+				assert.True(t, inTransaction,
+					"the forked provider session must not depend on a later best-effort update")
+				assert.Same(t, activationConnPool, connPool,
+					"the staged messages and forked provider session must share one transaction")
+				assert.Equal(t, 2, activationUpdates,
+					"both staged messages must activate before the session row is updated")
 				assert.Equal(t, "pi-session-new", session.ProviderSessionID,
-					"the canonical transcript and forked native session must activate in one transaction")
+					"the canonical transcript and forked native session must activate together")
+				select {
+				case activationObserved <- struct{}{}:
+				default:
+				}
 			}
 			return nil
 		}).AnyTimes()
@@ -5444,11 +5478,18 @@ func TestPiRestart_AcknowledgedPromptActivatesTranscriptWithForkedSessionAtomica
 
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 	assert.True(t, stageDurableBeforePrompt)
-	assert.True(t, activationObserved)
-	assert.Equal(t, "pi-session-new", sess.ProviderSessionID)
+	select {
+	case <-activationObserved:
+	default:
+		t.Fatal("activation transaction did not persist the forked provider session")
+	}
+	assert.Equal(t, "pi-session-new", sess.ProviderSessionID,
+		"the immediate post-activation state must already point at the forked Pi session")
 	assert.NoError(t, m.dbMock.ExpectationsWereMet())
+
+	closeStream.Do(func() { close(streamEvents) })
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
 }
 
 func TestPiRestart_PostCommitStartupFailureDiscardsOnlyStagedReplacement(t *testing.T) {
