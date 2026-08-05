@@ -23,11 +23,16 @@ func probeClaudeCode(ctx context.Context, req ProbeRequest) (*ProbeResponse, err
 	}
 	defer func() { _ = os.RemoveAll(cwd) }()
 
-	r := claudecode.New(
+	opts := []claudecode.Option{
 		claudecode.WithBinary(binary),
 		claudecode.WithCwd(cwd),
 		claudecode.WithEnv(req.Env),
-	)
+		claudecode.WithSettingsEnv(req.Env),
+	}
+	if model := strings.TrimSpace(req.Model); model != "" {
+		opts = append(opts, claudecode.WithModel(model))
+	}
+	r := claudecode.New(opts...)
 	defer func() { _ = r.Close(ctx) }()
 	text, err := r.Text(ctx, fixedTestPrompt, claudecode.MaxTurns(1))
 	if err != nil {
