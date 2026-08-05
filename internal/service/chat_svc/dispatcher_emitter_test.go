@@ -328,6 +328,7 @@ func TestDispatcherEmitter_Usage(t *testing.T) {
 			"usage": map[string]any{
 				"promptTokens":     100,
 				"totalInputTokens": 130,
+				"contextWindow":    258000,
 			},
 		})
 		So(em.events, ShouldHaveLength, 1)
@@ -336,6 +337,7 @@ func TestDispatcherEmitter_Usage(t *testing.T) {
 		So(ev.Usage, ShouldNotBeNil)
 		So(ev.Usage.PromptTokens, ShouldEqual, 100)
 		So(ev.Usage.TotalInputTokens, ShouldEqual, 130)
+		So(ev.Usage.ContextWindow, ShouldEqual, 258000)
 	})
 }
 

@@ -26,6 +26,15 @@ func WithSessionID(uuid string) Option { return func(c *Client) { c.sessionID = 
 // CLI 原生兼容两种形态 (`--settings <file-or-json>`)。
 func WithSettings(value string) Option { return func(c *Client) { c.settings = value } }
 
+// WithSettingsEnv writes env into a private temporary settings file passed via
+// --settings. Claude gives this source precedence over the user's global
+// settings, which keeps an AgentRE-selected provider from being replaced by a
+// user-level ANTHROPIC_BASE_URL or credential. The values never enter argv and
+// the temporary file is removed when the Stream or Session closes.
+func WithSettingsEnv(env map[string]string) Option {
+	return func(c *Client) { c.settingsEnv = env }
+}
+
 // WithMcpConfig 下发 --mcp-config <json-or-file>。claude CLI 原生兼容 JSON 串
 // 或文件路径，用来注入额外的 MCP tool server（如编排的 dispatch）。注入的
 // tool 还需经 WithAllowedTools 放进 --allowedTools 才会被 CLI 实际暴露。

@@ -454,6 +454,7 @@
       "unknownBlock": "(debug) unimplemented block type: {{type}}"
     },
     "errorCard": {
+      "continue": "Continue",
       "message": "Agent call failed: {{text}}",
       "regenerate": "↻ Regenerate"
     },
@@ -575,7 +576,7 @@
     },
     "regenerateDialog": {
       "confirm": "Regenerate",
-      "description": "This reply and every message after it will be discarded. The agent will generate a new response from the previous user message.",
+      "description": "Regenerating permanently discards this reply and all later conversation history. The agent will generate a new response from the previous user message.",
       "title": "Regenerate Reply"
     },
     "renameDialog": {

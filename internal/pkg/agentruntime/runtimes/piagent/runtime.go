@@ -209,13 +209,15 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 			}
 			continue
 		}
-		if raw.Kind == pkgpi.EventContextWindow {
-			if raw.ContextWindow > 0 && raw.ContextWindow != result.ContextWindow {
-				result.ContextWindow = raw.ContextWindow
-			} else {
-				// Context window 未变化时不重复向前端 emit patch。
-				raw.ContextWindow = 0
-			}
+		contextWindowChanged := raw.ContextWindow > 0 && raw.ContextWindow != result.ContextWindow
+		if contextWindowChanged {
+			// Usage snapshots also carry the authoritative Pi window so it survives
+			// a missing/failed round-end stats refresh and is persisted by chat_svc.
+			result.ContextWindow = raw.ContextWindow
+		}
+		if raw.Kind == pkgpi.EventContextWindow && !contextWindowChanged {
+			// Context window 未变化时不重复向前端 emit patch。
+			raw.ContextWindow = 0
 		}
 		if raw.Kind == pkgpi.EventDone {
 			// pkg/piagent 用 EventDone 标记底层流终止；runtime 在 loop 结束后统一
@@ -225,8 +227,8 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 		if raw.Model != "" {
 			// Pi 在 usage 帧上报真实模型 id；piagent 不绑 provider，靠这里把模型回
 			// 吐给 chat_svc（result.Model → assistantMsg.Model）。上下文窗口只采用
-			// Pi RPC get_session_stats 返回值，避免自定义 provider 复用公共模型名时
-			// 被 Agentre catalog 的同名模型元数据错误覆盖。
+			// Pi RPC get_state / get_session_stats 返回值，避免自定义 provider 复用
+			// 公共模型名时被 Agentre catalog 的同名模型元数据错误覆盖。
 			result.Model = raw.Model
 		}
 		events, u, err := translate(raw)

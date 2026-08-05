@@ -946,6 +946,8 @@ type ChatTranscriptProps = {
   liveByMessageId?: ReadonlyMap<number, TranscriptLiveContent>;
   /** 用户点某条 assistant 上的「重新生成」时回调，参数是目标 assistant 的消息 id。 */
   onRerun?: (messageId: number) => void;
+  /** 错误卡点击「继续」时回调，参数是失败的 assistant 消息 id。 */
+  onContinue?: (messageId: number) => void;
   /** 用户点某条 user 消息上的「编辑」时回调，参数是 user 消息 id。 */
   onEdit?: (messageId: number) => void;
   /** stream 是否进行中。true 时在末尾 assistant 内挂 typing 指示器，覆盖首 chunk 前 / 工具返回后的空窗期。 */
@@ -1008,6 +1010,7 @@ const ChatTranscript = React.forwardRef<
     active = true,
     messages,
     liveByMessageId,
+    onContinue,
     onRerun,
     onEdit,
     onPlanActionStarted,
@@ -1075,12 +1078,14 @@ const ChatTranscript = React.forwardRef<
   // React.memo / TranscriptRenderContext 不会被 ChatPanel 传入的 inline lambda 击穿。
   // 父侧每次重渲都换新函数,但 ref 内部更新后稳定代理捕获最新值,语义不变。
   const onRerunRef = React.useRef(onRerun);
+  const onContinueRef = React.useRef(onContinue);
   const onEditRef = React.useRef(onEdit);
   const onPlanActionStartedRef = React.useRef(onPlanActionStarted);
   const onStopSubagentRef = React.useRef(onStopSubagent);
   const onStopLocalCommandRef = React.useRef(onStopLocalCommand);
   React.useEffect(() => {
     onRerunRef.current = onRerun;
+    onContinueRef.current = onContinue;
     onEditRef.current = onEdit;
     onPlanActionStartedRef.current = onPlanActionStarted;
     onStopSubagentRef.current = onStopSubagent;
@@ -1088,6 +1093,9 @@ const ChatTranscript = React.forwardRef<
   });
   const stableOnRerun = React.useCallback((id: number) => {
     onRerunRef.current?.(id);
+  }, []);
+  const stableOnContinue = React.useCallback((id: number) => {
+    onContinueRef.current?.(id);
   }, []);
   const stableOnEdit = React.useCallback((id: number) => {
     onEditRef.current?.(id);
@@ -1136,6 +1144,7 @@ const ChatTranscript = React.forwardRef<
       // 只读调用方不传 onEdit/onRerun 时，上游 ref 为 undefined；
       // 此处有条件地传入稳定代理，让行视图能用 ctx?.onEdit 作存在性门控。
       onEdit: onEdit ? stableOnEdit : undefined,
+      onContinue: onContinue ? stableOnContinue : undefined,
       onPlanActionStarted: stableOnPlanActionStarted,
       onStopLocalCommand: hasStopLocalCommand
         ? stableOnStopLocalCommand
@@ -1151,10 +1160,12 @@ const ChatTranscript = React.forwardRef<
       cwd,
       hasStopLocalCommand,
       onEdit,
+      onContinue,
       onRerun,
       onStopSubagent,
       sessionId,
       stableOnEdit,
+      stableOnContinue,
       stableOnPlanActionStarted,
       stableOnStopLocalCommand,
       stableOnStopSubagent,

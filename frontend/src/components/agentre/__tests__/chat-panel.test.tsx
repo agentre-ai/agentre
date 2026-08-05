@@ -336,6 +336,7 @@ function resetStore() {
   componentMocks.setMode.mockClear();
   ccUsageMock.calls.length = 0;
   appMocks.SendChatMessage.mockReset();
+  appMocks.RegenerateChatMessage.mockReset();
   appMocks.SetChatGoal.mockReset();
   appMocks.GetChatGoal.mockReset();
   appMocks.ClearChatGoal.mockReset();
@@ -405,6 +406,56 @@ function deferred<T>() {
   });
   return { promise, reject, resolve };
 }
+
+describe("ChatPanel error recovery actions", () => {
+  it("Given a failed turn, When Continue is clicked, Then it sends the literal continue message", async () => {
+    mockSessionStore.session = makeSession({ id: 42, agentId: 9 });
+    appMocks.SendChatMessage.mockResolvedValue({
+      assistantMessageId: 102,
+      sessionId: 42,
+      stream: "chat:42:102",
+      userMessageId: 101,
+    });
+
+    render(<ChatPanel active sessionId={42} />);
+    const onContinue = componentMocks.chatTranscriptProps.at(-1)?.onContinue as
+      | (() => void)
+      | undefined;
+
+    expect(onContinue).toBeTypeOf("function");
+    act(() => onContinue?.());
+
+    await waitFor(() =>
+      expect(appMocks.SendChatMessage).toHaveBeenCalledOnce(),
+    );
+    expect(appMocks.SendChatMessage.mock.calls[0]?.[0]).toMatchObject({
+      agentId: 9,
+      sessionId: 42,
+      text: "continue",
+    });
+  });
+
+  it("Given a failed turn, When Regenerate is clicked, Then it waits for confirmation and warns that later conversation is lost", () => {
+    mockSessionStore.session = makeSession({ id: 42, agentId: 9 });
+    mockSessionStore.messages = [
+      { blocks: [{ text: "try it", type: "text" }], id: 1, role: "user" },
+      { blocks: [], errorText: "boom", id: 2, role: "assistant" },
+    ];
+
+    render(<ChatPanel active sessionId={42} />);
+    const onRerun = componentMocks.chatTranscriptProps.at(-1)?.onRerun as
+      | ((messageId: number) => void)
+      | undefined;
+    act(() => onRerun?.(2));
+
+    expect(appMocks.RegenerateChatMessage).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        /permanently discards this reply and all later conversation history/i,
+      ),
+    ).toBeInTheDocument();
+  });
+});
 
 function transcriptScroller(container: HTMLElement): HTMLElement {
   const el = container.querySelector("section");

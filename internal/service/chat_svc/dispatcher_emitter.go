@@ -340,5 +340,6 @@ func usageFromMap(raw any) *ChatStreamUsage {
 		CacheCreationTokens: intOf(m, "cacheCreationTokens"),
 		ReasoningTokens:     intOf(m, "reasoningTokens"),
 		TotalInputTokens:    intOf(m, "totalInputTokens"),
+		ContextWindow:       intOf(m, "contextWindow"),
 	}
 }
