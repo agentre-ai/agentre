@@ -14,6 +14,8 @@ import (
 	"github.com/cago-frame/agents/provider"
 )
 
+const maxRPCFrameBytes = 16 << 20
+
 type Client struct {
 	binary       string
 	cwd          string
@@ -34,9 +36,9 @@ type Client struct {
 	killGrace  time.Duration
 	runner     processRunner
 
-	// rawSink 若非 nil,子进程每读到一行原始 stdout(未解析的 JSON-RPC 帧)就同步回调
-	// 一次。debug 级原始帧转储用;经 startRPC 注入 rpcProcess,由 drain /
-	// readSessionStatsContextWindow 两个读点调用。
+	// rawSink 若非 nil,子进程每读到一行可记录的原始 stdout JSON-RPC 帧就同步回调
+	// 一次；extension_ui_request 含敏感交互文案，始终排除。debug 级原始帧转储用；
+	// 经 startRPC 注入 rpcProcess,由各 stdout 读点调用。
 	rawSink func([]byte)
 }
 
@@ -63,13 +65,26 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	if err != nil {
 		return nil, err
 	}
-	sessionID, err := readSessionID(ctx, proc, c.session)
+	state, err := readSessionState(ctx, proc, c.session)
 	if err != nil {
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
 	}
 	stream := newStream(proc, c.killGrace)
-	stream.setSessionID(sessionID)
+	stream.setSessionID(state.SessionID)
+	if state.Model != nil {
+		stream.setContextWindow(state.Model.ContextWindow)
+	}
+	// Ask Pi for its authoritative model window before the first prompt. The
+	// response is optional and intentionally not awaited: older/degraded RPC
+	// implementations must not delay or block the actual turn.
+	stream.markInitialSessionStatsPending()
+	if err := stream.send(ctx, map[string]any{
+		"id": initialSessionStatsRequestID, "type": "get_session_stats",
+	}); err != nil {
+		_ = stream.Close(context.Background())
+		return nil, err
+	}
 	frame := map[string]any{"type": "prompt", "message": prompt}
 	if imgs := imagesToWire(spec.images); len(imgs) > 0 {
 		frame["images"] = imgs
@@ -114,13 +129,13 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	sessionID, err := readSessionID(ctx, proc, c.session)
+	state, err := readSessionState(ctx, proc, c.session)
 	if err != nil {
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
 	}
 	stream := newStream(proc, c.killGrace)
-	stream.setSessionID(sessionID)
+	stream.setSessionID(state.SessionID)
 	if err := stream.send(ctx, map[string]any{"type": "compact"}); err != nil {
 		_ = stream.Close(context.Background())
 		return nil, err
@@ -131,18 +146,16 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 
 func (c *Client) Close(_ context.Context) error { return nil }
 
-func readSessionID(ctx context.Context, proc *rpcProcess, expected string) (string, error) {
+func readSessionState(ctx context.Context, proc *rpcProcess, expected string) (sessionStateWire, error) {
 	const requestID = "session-state"
 	if err := proc.writeJSON(map[string]any{"id": requestID, "type": "get_state"}); err != nil {
-		return "", err
+		return sessionStateWire{}, err
 	}
 	for proc.lines.Scan() {
-		if proc.rawSink != nil {
-			proc.rawSink(proc.lines.Bytes())
-		}
+		proc.captureRawFrame(proc.lines.Bytes())
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return sessionStateWire{}, ctx.Err()
 		default:
 		}
 		var response rpcResponse
@@ -153,23 +166,23 @@ func readSessionID(ctx context.Context, proc *rpcProcess, expected string) (stri
 			continue
 		}
 		if !response.Success {
-			return "", failureResponseError(response)
+			return sessionStateWire{}, failureResponseError(response)
 		}
 		var state sessionStateWire
 		if err := json.Unmarshal(response.Data, &state); err != nil {
-			return "", fmt.Errorf("piagent decode get_state data: %w", err)
+			return sessionStateWire{}, fmt.Errorf("piagent decode get_state data: %w", err)
 		}
-		sessionID := strings.TrimSpace(state.SessionID)
-		if sessionID == "" {
-			return "", errors.New("piagent: get_state returned empty session id")
+		state.SessionID = strings.TrimSpace(state.SessionID)
+		if state.SessionID == "" {
+			return sessionStateWire{}, errors.New("piagent: get_state returned empty session id")
 		}
 		expected = strings.TrimSpace(expected)
-		if expected != "" && !looksLikeSessionPath(expected) && sessionID != expected {
-			return "", fmt.Errorf("piagent: get_state returned unexpected session id %q, want %q", sessionID, expected)
+		if expected != "" && !looksLikeSessionPath(expected) && state.SessionID != expected {
+			return sessionStateWire{}, fmt.Errorf("piagent: get_state returned unexpected session id %q, want %q", state.SessionID, expected)
 		}
-		return sessionID, nil
+		return state, nil
 	}
-	return "", awaitProcessExitOrScanError(ctx, proc)
+	return sessionStateWire{}, awaitProcessExitOrScanError(ctx, proc)
 }
 
 func looksLikeSessionPath(value string) bool {
@@ -195,7 +208,7 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 		stderrDone: make(chan struct{}),
 		done:       make(chan struct{}),
 	}
-	p.lines.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	p.lines.Buffer(make([]byte, 0, 64*1024), maxRPCFrameBytes)
 	go func() {
 		defer close(p.stderrDone)
 		_, _ = io.Copy(p.stderr, h.Stderr())
@@ -208,7 +221,7 @@ type rpcProcess struct {
 	handle     processHandle
 	stdin      io.Writer
 	lines      *bufio.Scanner
-	rawSink    func([]byte) // 非 nil 时每行原始 stdout 同步回调一次(debug 原始帧转储)
+	rawSink    func([]byte) // 非 nil 时同步回调可安全记录的原始 stdout 帧
 	stderr     *lockedBuffer
 	stderrDone chan struct{}
 	done       chan struct{} // closed when waitErr is available to every observer
@@ -225,6 +238,20 @@ func (p *rpcProcess) awaitExit() {
 func (p *rpcProcess) waitResult() error {
 	<-p.done
 	return p.waitErr
+}
+
+func (p *rpcProcess) captureRawFrame(frame []byte) {
+	if p.rawSink == nil || isExtensionUIRequestFrame(frame) {
+		return
+	}
+	p.rawSink(frame)
+}
+
+func isExtensionUIRequestFrame(frame []byte) bool {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(frame, &probe) == nil && probe.Type == "extension_ui_request"
 }
 
 func (p *rpcProcess) writeJSON(v any) error {

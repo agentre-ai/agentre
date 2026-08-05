@@ -509,15 +509,9 @@ describe("AgentBackendsPanel", () => {
       expect(
         within(dialog).queryByText(/original LLM provider is disabled/),
       ).not.toBeInTheDocument();
-      if (type === "piagent") {
-        expect(
-          within(dialog).getByText(/Pi Agent standalone config/),
-        ).toBeInTheDocument();
-      } else {
-        expect(
-          within(dialog).getByText(/No link \(use CLI login\)/),
-        ).toBeInTheDocument();
-      }
+      expect(
+        within(dialog).getByText(/No link \(use CLI login\)/),
+      ).toBeInTheDocument();
     },
   );
 
@@ -546,8 +540,9 @@ describe("AgentBackendsPanel", () => {
       "/usr/local/bin/pi",
     ) as HTMLInputElement;
     await waitFor(() => expect(input.value).toBe("/opt/homebrew/bin/pi"));
+    // piagent 现在显示可选的 provider 选择器（默认未关联走 CLI 自身登录）。
     expect(
-      within(dialog).getByText(/Pi Agent standalone config/),
+      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
     ).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -562,6 +557,150 @@ describe("AgentBackendsPanel", () => {
         }),
       );
     });
+  });
+
+  it("piagent 编辑器列出三类 LLM 供应商，可选其一保存绑定", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Anthropic",
+              providerKey: "k-anthropic",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "claude-sonnet-4-6",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+            {
+              id: 2,
+              type: "openai-chat",
+              name: "OpenAI Chat",
+              providerKey: "k-chat",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "gpt-5",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+            {
+              id: 3,
+              type: "openai-response",
+              name: "OpenAI Response",
+              providerKey: "k-response",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "gpt-5-codex",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
+      { target: { value: "Pi 绑供应商" } },
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: /Pi Agent CLI/ }),
+    );
+
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
+    );
+    // piagent 三类全收：anthropic / openai-chat / openai-response 都要列出来。
+    expect(
+      screen.getByRole("option", { name: /Anthropic/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /OpenAI Chat/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /OpenAI Response/ }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /OpenAI Response/ }));
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(mocks.CreateAgentBackend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "piagent",
+          name: "Pi 绑供应商",
+          llmProviderKey: "k-response",
+        }),
+      );
+    });
+  });
+
+  it("piagent 绑定 Model 为空的供应商时显示校验提示并阻止保存", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Anthropic",
+              providerKey: "k-empty-model",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
+      { target: { value: "Pi 空模型" } },
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: /Pi Agent CLI/ }),
+    );
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
+    );
+    await user.click(screen.getByRole("option", { name: /Anthropic/ }));
+
+    // 选中的供应商 Model 为空 → 可见校验提示 + Save 被禁用。
+    expect(
+      within(dialog).getByText("Provider has no default model"),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(mocks.CreateAgentBackend).not.toHaveBeenCalled();
   });
 
   it("新建 claudecode 时允许不选 provider 提交 llmProviderKey 空串", async () => {

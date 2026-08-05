@@ -19,6 +19,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/llmcatalog"
+	"github.com/agentre-ai/agentre/internal/pkg/llmurl"
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo"
 )
 
@@ -200,11 +201,18 @@ func (s *llmProviderSvc) LookupModel(_ context.Context, req *LookupModelRequest)
 }
 
 func (s *llmProviderSvc) PreviewModels(ctx context.Context, req *PreviewModelsRequest) (*PreviewModelsResponse, error) {
-	probe := &llm_provider_entity.LLMProvider{
-		Type:    strings.TrimSpace(req.Type),
-		APIKey:  strings.TrimSpace(req.APIKey),
-		BaseURL: strings.TrimSpace(req.BaseURL),
+	var saved *llm_provider_entity.LLMProvider
+	if req.ID > 0 {
+		p, err := llm_provider_repo.LLMProvider().Find(ctx, req.ID)
+		if err != nil {
+			return nil, err
+		}
+		if p == nil {
+			return nil, i18n.NewError(ctx, code.LLMProviderNotFound)
+		}
+		saved = p
 	}
+	probe := mergeProviderDraft(saved, req.Type, req.APIKey, req.BaseURL)
 	ids, err := s.fetchModelIDs(ctx, probe)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", i18n.NewError(ctx, code.LLMProviderFetchModels), err)
@@ -248,18 +256,23 @@ func (s *llmProviderSvc) providerForTest(ctx context.Context, req *TestConnectio
 }
 
 func mergeTestDraft(saved *llm_provider_entity.LLMProvider, req *TestConnectionRequest) *llm_provider_entity.LLMProvider {
+	out := mergeProviderDraft(saved, req.Type, req.APIKey, req.BaseURL)
+	out.Model = strings.TrimSpace(req.Model)
+	return out
+}
+
+func mergeProviderDraft(saved *llm_provider_entity.LLMProvider, typ, apiKey, baseURL string) *llm_provider_entity.LLMProvider {
 	out := &llm_provider_entity.LLMProvider{}
 	if saved != nil {
 		*out = *saved
 	}
-	if typ := strings.TrimSpace(req.Type); typ != "" {
+	if typ := strings.TrimSpace(typ); typ != "" {
 		out.Type = typ
 	}
-	if key := strings.TrimSpace(req.APIKey); key != "" || saved == nil {
+	if key := strings.TrimSpace(apiKey); key != "" || saved == nil {
 		out.APIKey = key
 	}
-	out.BaseURL = strings.TrimSpace(req.BaseURL)
-	out.Model = strings.TrimSpace(req.Model)
+	out.BaseURL = strings.TrimSpace(baseURL)
 	return out
 }
 
@@ -278,16 +291,22 @@ func (s *llmProviderSvc) fetchModelIDs(ctx context.Context, p *llm_provider_enti
 }
 
 func (s *llmProviderSvc) fetchAnthropicModels(ctx context.Context, p *llm_provider_entity.LLMProvider) ([]string, error) {
-	base := strings.TrimRight(firstNonEmpty(p.BaseURL, defaultAnthropicBaseURL), "/")
-	return s.fetchModelList(ctx, base+"/v1/models", func(h http.Header) {
+	endpoint, err := llmurl.Build(firstNonEmpty(p.BaseURL, defaultAnthropicBaseURL), "/v1/models")
+	if err != nil {
+		return nil, err
+	}
+	return s.fetchModelList(ctx, endpoint.String(), func(h http.Header) {
 		h.Set("x-api-key", p.APIKey)
 		h.Set("anthropic-version", anthropicVersion)
 	})
 }
 
 func (s *llmProviderSvc) fetchOpenAIModels(ctx context.Context, p *llm_provider_entity.LLMProvider) ([]string, error) {
-	base := strings.TrimRight(firstNonEmpty(p.BaseURL, defaultOpenAIBaseURL), "/")
-	return s.fetchModelList(ctx, base+"/models", func(h http.Header) {
+	endpoint, err := llmurl.Build(firstNonEmpty(p.BaseURL, defaultOpenAIBaseURL), "/models")
+	if err != nil {
+		return nil, err
+	}
+	return s.fetchModelList(ctx, endpoint.String(), func(h http.Header) {
 		if p.APIKey != "" {
 			h.Set("Authorization", "Bearer "+p.APIKey)
 		}
@@ -312,7 +331,10 @@ func (s *llmProviderSvc) sendTestMessage(ctx context.Context, p *llm_provider_en
 }
 
 func (s *llmProviderSvc) sendAnthropicTestMessage(ctx context.Context, p *llm_provider_entity.LLMProvider) error {
-	base := strings.TrimRight(firstNonEmpty(p.BaseURL, defaultAnthropicBaseURL), "/")
+	endpoint, err := llmurl.Build(firstNonEmpty(p.BaseURL, defaultAnthropicBaseURL), "/v1/messages")
+	if err != nil {
+		return err
+	}
 	payload := struct {
 		Model     string `json:"model"`
 		MaxTokens int    `json:"max_tokens"`
@@ -330,7 +352,7 @@ func (s *llmProviderSvc) sendAnthropicTestMessage(ctx context.Context, p *llm_pr
 			{Role: "user", Content: testConnectionPrompt},
 		},
 	}
-	req, err := newJSONRequest(ctx, base+"/v1/messages", payload)
+	req, err := newJSONRequest(ctx, endpoint.String(), payload)
 	if err != nil {
 		return err
 	}
@@ -354,7 +376,10 @@ func (s *llmProviderSvc) sendAnthropicTestMessage(ctx context.Context, p *llm_pr
 }
 
 func (s *llmProviderSvc) sendOpenAITestMessage(ctx context.Context, p *llm_provider_entity.LLMProvider) error {
-	base := strings.TrimRight(firstNonEmpty(p.BaseURL, defaultOpenAIBaseURL), "/")
+	endpoint, err := llmurl.Build(firstNonEmpty(p.BaseURL, defaultOpenAIBaseURL), "/chat/completions")
+	if err != nil {
+		return err
+	}
 	payload := struct {
 		Model    string `json:"model"`
 		Messages []struct {
@@ -370,7 +395,7 @@ func (s *llmProviderSvc) sendOpenAITestMessage(ctx context.Context, p *llm_provi
 			{Role: "user", Content: testConnectionPrompt},
 		},
 	}
-	req, err := newJSONRequest(ctx, base+"/chat/completions", payload)
+	req, err := newJSONRequest(ctx, endpoint.String(), payload)
 	if err != nil {
 		return err
 	}
@@ -400,7 +425,10 @@ func (s *llmProviderSvc) sendOpenAITestMessage(ctx context.Context, p *llm_provi
 // 请求体只带 model + input（字符串形式），最大输出限到 testConnectionMaxTokens 减少花费。
 // 响应里 output[].content[].text 是模型回答；空回也认为成功（part of empty 200）。
 func (s *llmProviderSvc) sendOpenAIResponseTestMessage(ctx context.Context, p *llm_provider_entity.LLMProvider) error {
-	base := strings.TrimRight(firstNonEmpty(p.BaseURL, defaultOpenAIBaseURL), "/")
+	endpoint, err := llmurl.Build(firstNonEmpty(p.BaseURL, defaultOpenAIBaseURL), "/responses")
+	if err != nil {
+		return err
+	}
 	payload := struct {
 		Model           string `json:"model"`
 		Input           string `json:"input"`
@@ -410,7 +438,7 @@ func (s *llmProviderSvc) sendOpenAIResponseTestMessage(ctx context.Context, p *l
 		Input:           testConnectionPrompt,
 		MaxOutputTokens: testConnectionMaxTokens,
 	}
-	req, err := newJSONRequest(ctx, base+"/responses", payload)
+	req, err := newJSONRequest(ctx, endpoint.String(), payload)
 	if err != nil {
 		return err
 	}

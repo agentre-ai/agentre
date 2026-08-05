@@ -12,10 +12,11 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 const sonnerMocks = vi.hoisted(() => ({
   toast: {
@@ -34,6 +35,7 @@ const appMocks = vi.hoisted(() => ({
   DeleteChatSession: vi.fn(),
   EditChatMessage: vi.fn(),
   EnqueueChatMessage: vi.fn(),
+  EnsureChatSession: vi.fn(),
   GetCCUsage: vi.fn().mockResolvedValue({ reason: "" }),
   GetChatLaunchCommand: vi.fn(),
   GetChatGoal: vi.fn(),
@@ -41,10 +43,13 @@ const appMocks = vi.hoisted(() => ({
   MarkChatSessionRead: vi.fn().mockResolvedValue({}),
   RegenerateChatMessage: vi.fn(),
   RenameChatSession: vi.fn(),
+  ResolveLocalCommandScope: vi.fn(),
   SendChatMessage: vi.fn(),
   SetChatGoal: vi.fn(),
   StartChatGoal: vi.fn(),
   StopChatMessage: vi.fn(),
+  TerminalClose: vi.fn(),
+  TerminalRunCommand: vi.fn(),
   ClearChatGoal: vi.fn(),
   GetSessionGitState: vi.fn().mockResolvedValue({
     state: {
@@ -69,6 +74,7 @@ const componentMocks = vi.hoisted(() => ({
   chatTranscriptProps: [] as Array<Record<string, unknown>>,
   permissionModePillProps: [] as Array<Record<string, unknown>>,
   permissionMode: "plan",
+  localCommandMenuActive: false,
   cycleMode: vi.fn(),
   setMode: vi.fn(),
   // 控制 useSessionCapabilities 桩返回的 caps;测试按 backend 切换 switchableDuringTurn。
@@ -85,7 +91,9 @@ const componentMocks = vi.hoisted(() => ({
 
 const runtimeMocks = vi.hoisted(() => ({
   EventsOff: vi.fn(),
-  EventsOn: vi.fn(() => vi.fn()),
+  EventsOn: vi.fn((_event?: string, _handler?: (...args: unknown[]) => void) =>
+    vi.fn(),
+  ),
 }));
 
 vi.mock("../../../../wailsjs/runtime/runtime", () => runtimeMocks);
@@ -99,7 +107,12 @@ vi.mock("@/hooks/use-project-tree", () => ({
         project: { id: 1, name: "Agentre" },
         children: [
           {
-            project: { id: 2, name: "backend", color: "agent-5" },
+            project: {
+              id: 2,
+              name: "backend",
+              color: "agent-5",
+              path: "/local/repo",
+            },
             children: [],
           },
         ],
@@ -158,6 +171,7 @@ vi.mock("../chat", async () => {
   const React = await import("react");
   return {
     ChatComposer: (props: {
+      localCommandHistoryScope?: unknown;
       onSubmit?: (text: string) => void;
       permissionModeSlot?: React.ReactNode;
       topSlot?: React.ReactNode;
@@ -168,6 +182,12 @@ vi.mock("../chat", async () => {
         null,
         props.topSlot,
         props.permissionModeSlot,
+        componentMocks.localCommandMenuActive && props.localCommandHistoryScope
+          ? React.createElement("div", {
+              "data-testid": "local-command-history-menu",
+              role: "listbox",
+            })
+          : null,
       );
     },
     ChatTranscript: (props: Record<string, unknown>) => {
@@ -259,6 +279,10 @@ vi.mock("../task-progress/derive", () => ({
   deriveTaskProgress: () => ({ total: 0, done: 0 }),
 }));
 
+vi.mock("../local-command/output-terminal", () => ({
+  OutputTerminal: () => null,
+}));
+
 // chat-panel-context-usage 有复杂计算，桩掉
 vi.mock("../chat-panel-context-usage", () => ({
   computeComposerContextUsage: (...args: unknown[]) =>
@@ -268,6 +292,7 @@ vi.mock("../chat-panel-context-usage", () => ({
 // ── import after mocks ─────────────────────────────────────────────────────
 
 import { ChatPanel, computeTopVisibleAnchor } from "../chat-panel";
+import { LocalCommandCard } from "../local-command/card";
 import {
   __resetChatPanelScrollStateForTesting,
   loadTranscriptScrollState,
@@ -277,20 +302,26 @@ import {
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { localCommandRuntimeStore } from "@/stores/local-command-runtime-store";
+import { useLocalCommandsStore } from "@/stores/local-commands-store";
 
 /** 清 store streams 以避免测试间串台 */
 function resetStore() {
   __resetChatPanelScrollStateForTesting();
   mockSessionStore.messages = [];
   useChatStreamsStore.getState().streams.clear();
+  runtimeMocks.EventsOff.mockReset();
   runtimeMocks.EventsOn.mockReset();
-  runtimeMocks.EventsOn.mockImplementation(() => vi.fn());
+  runtimeMocks.EventsOn.mockImplementation(
+    (_event?: string, _handler?: (...args: unknown[]) => void) => vi.fn(),
+  );
   setMessagesSpy.mockClear();
   reloadSpy.mockClear();
   componentMocks.chatComposerProps.length = 0;
   componentMocks.chatTranscriptProps.length = 0;
   componentMocks.permissionModePillProps.length = 0;
   componentMocks.permissionMode = "plan";
+  componentMocks.localCommandMenuActive = false;
   // 默认 claudecode-like caps(允许 turn 中切 mode);Codex 测试用例显式置 false。
   componentMocks.capsSwitchableDuringTurn = true;
   componentMocks.capsAllowedModes = [
@@ -305,16 +336,126 @@ function resetStore() {
   componentMocks.setMode.mockClear();
   ccUsageMock.calls.length = 0;
   appMocks.SendChatMessage.mockReset();
+  appMocks.RegenerateChatMessage.mockReset();
   appMocks.SetChatGoal.mockReset();
   appMocks.GetChatGoal.mockReset();
   appMocks.ClearChatGoal.mockReset();
   appMocks.StartChatGoal.mockReset();
   appMocks.CompactChatSession.mockReset();
   appMocks.EnqueueChatMessage.mockReset();
+  appMocks.EnsureChatSession.mockReset();
   appMocks.GetChatLaunchCommand.mockReset();
+  appMocks.ResolveLocalCommandScope.mockReset();
+  appMocks.ResolveLocalCommandScope.mockImplementation(
+    () => new Promise(() => undefined),
+  );
+  appMocks.TerminalClose.mockReset();
+  appMocks.TerminalRunCommand.mockReset();
+  localCommandRuntimeStore.resetForTesting();
+  useLocalCommandsStore.setState({ entries: {} });
   sonnerMocks.toast.error.mockClear();
   sonnerMocks.toast.success.mockClear();
 }
+
+function observeLocalCommandFinish() {
+  const originalFinish = useLocalCommandsStore.getState().finish;
+  const finish = vi.fn(originalFinish);
+  useLocalCommandsStore.setState({ finish });
+  onTestFinished(() =>
+    useLocalCommandsStore.setState({ finish: originalFinish }),
+  );
+  return finish;
+}
+
+type StopLocalCommand = (terminalId: string) => void | Promise<void>;
+
+const TestLocalCommandCard = LocalCommandCard as React.ComponentType<
+  React.ComponentProps<typeof LocalCommandCard> & {
+    onStop?: StopLocalCommand;
+  }
+>;
+
+function renderLocalCommandCardFromTranscript(terminalId: string) {
+  const onStop = componentMocks.chatTranscriptProps.at(-1)
+    ?.onStopLocalCommand as StopLocalCommand | undefined;
+  return render(
+    <TestLocalCommandCard
+      entryId={terminalId}
+      onOpenInTerminal={vi.fn()}
+      onStop={onStop ?? (() => undefined)}
+    />,
+  );
+}
+
+function terminalListenerCleanups(terminalId: string) {
+  return runtimeMocks.EventsOn.mock.calls.flatMap(([event], index) => {
+    const cleanup = runtimeMocks.EventsOn.mock.results[index]?.value;
+    return event?.startsWith(`terminal:${terminalId}:`) &&
+      typeof cleanup === "function"
+      ? [cleanup as ReturnType<typeof vi.fn>]
+      : [];
+  });
+}
+
+function deferred<T>() {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
+describe("ChatPanel error recovery actions", () => {
+  it("Given a failed turn, When Continue is clicked, Then it sends the literal continue message", async () => {
+    mockSessionStore.session = makeSession({ id: 42, agentId: 9 });
+    appMocks.SendChatMessage.mockResolvedValue({
+      assistantMessageId: 102,
+      sessionId: 42,
+      stream: "chat:42:102",
+      userMessageId: 101,
+    });
+
+    render(<ChatPanel active sessionId={42} />);
+    const onContinue = componentMocks.chatTranscriptProps.at(-1)?.onContinue as
+      | (() => void)
+      | undefined;
+
+    expect(onContinue).toBeTypeOf("function");
+    act(() => onContinue?.());
+
+    await waitFor(() =>
+      expect(appMocks.SendChatMessage).toHaveBeenCalledOnce(),
+    );
+    expect(appMocks.SendChatMessage.mock.calls[0]?.[0]).toMatchObject({
+      agentId: 9,
+      sessionId: 42,
+      text: "continue",
+    });
+  });
+
+  it("Given a failed turn, When Regenerate is clicked, Then it waits for confirmation and warns that later conversation is lost", () => {
+    mockSessionStore.session = makeSession({ id: 42, agentId: 9 });
+    mockSessionStore.messages = [
+      { blocks: [{ text: "try it", type: "text" }], id: 1, role: "user" },
+      { blocks: [], errorText: "boom", id: 2, role: "assistant" },
+    ];
+
+    render(<ChatPanel active sessionId={42} />);
+    const onRerun = componentMocks.chatTranscriptProps.at(-1)?.onRerun as
+      | ((messageId: number) => void)
+      | undefined;
+    act(() => onRerun?.(2));
+
+    expect(appMocks.RegenerateChatMessage).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        /permanently discards this reply and all later conversation history/i,
+      ),
+    ).toBeInTheDocument();
+  });
+});
 
 function transcriptScroller(container: HTMLElement): HTMLElement {
   const el = container.querySelector("section");
@@ -433,6 +574,1392 @@ describe("ChatPanel · transcript cwd", () => {
     expect(componentMocks.chatTranscriptProps.at(-1)?.cwd).toBe(
       "/Users/codfrm/Code/agentre/agentre",
     );
+  });
+});
+
+describe("ChatPanel · local command scope and execution", () => {
+  it("Given a new remote project target, When the composer mounts, Then history uses only the async pre-session resolver without creating a session", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    const resolution = deferred<{ deviceId: string; cwd: string }>();
+    appMocks.ResolveLocalCommandScope.mockReturnValueOnce(resolution.promise);
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Remote Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            deviceID: "7",
+          } as never
+        }
+        newSessionContext={{ projectId: 2 }}
+      />,
+    );
+
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 7, projectId: 2, sessionId: 0 }),
+    );
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBeUndefined();
+
+    await act(async () => {
+      resolution.resolve({ deviceId: "7", cwd: "/home/me/proj" });
+      await resolution.promise;
+    });
+
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "7", cwd: "/home/me/proj" });
+    });
+    expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
+  });
+
+  it("Given a local free-chat target, When scope resolves, Then AgentCwd is shown instead of an empty or project-derived cwd", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "",
+      cwd: "/Users/me/agent-cwd",
+    });
+
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 8,
+            name: "Local Eng",
+            agentBackendId: 2,
+            backendType: "codex",
+            deviceID: "",
+          } as never
+        }
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "", cwd: "/Users/me/agent-cwd" });
+    });
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 8, projectId: 0, sessionId: 0 }),
+    );
+    expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
+  });
+
+  it("Given an existing session snapshot, When scope resolves, Then the composer uses the session-only resolver result rather than snapshot device/cwd", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      cwd: "/stale/session/cwd",
+      deviceID: "stale-device",
+      id: 42,
+    });
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "remote-device-7",
+      cwd: "/srv/current",
+    });
+
+    render(<ChatPanel sessionId={42} />);
+
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "remote-device-7", cwd: "/srv/current" });
+    });
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 0, projectId: 0, sessionId: 42 }),
+    );
+  });
+
+  it("Given a resolved session scope and open history menu, When status/read/permission/display fields replace the session object, Then the scope and menu stay open without another resolution", async () => {
+    resetStore();
+    componentMocks.localCommandMenuActive = true;
+    mockSessionStore.session = makeSession({
+      agentId: 7,
+      agentName: "Eng",
+      backendType: "claudecode",
+      cwd: "/srv/project",
+      deviceID: "remote-7",
+      deviceName: "Build box",
+      id: 42,
+      projectId: 2,
+    });
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "remote-7",
+      cwd: "/srv/project",
+    });
+    const view = render(<ChatPanel sessionId={42} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("local-command-history-menu")).toBeVisible();
+    });
+    const resolvedScope =
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope;
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+
+    mockSessionStore.session = makeSession({
+      agentId: 7,
+      agentName: "Renamed Eng",
+      agentStatus: "running",
+      backendType: "claudecode",
+      contextWindow: 200_000,
+      cwd: "/srv/project",
+      deviceID: "remote-7",
+      deviceName: "Renamed build box",
+      id: 42,
+      lastReadAt: 99,
+      needsAttention: true,
+      permissionMode: "acceptEdits",
+      projectId: 2,
+      title: "Updated display title",
+    });
+    view.rerender(<ChatPanel sessionId={42} />);
+
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBe(resolvedScope);
+    expect(screen.getByTestId("local-command-history-menu")).toBeVisible();
+  });
+
+  it("Given a resolved pre-session scope and open history menu, When unrelated agent metadata replaces the agent object, Then the scope and menu stay open without another resolution", async () => {
+    resetStore();
+    componentMocks.localCommandMenuActive = true;
+    mockSessionStore.session = null;
+    const initialAgent = {
+      activeCount: 1,
+      backendType: "claudecode",
+      defaultPermissionMode: "plan",
+      deviceID: "remote-7",
+      deviceName: "Build box",
+      id: 7,
+      name: "Remote Eng",
+      online: true,
+      pinned: false,
+    } as never;
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "remote-7",
+      cwd: "/srv/project",
+    });
+    const view = render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={initialAgent}
+        newSessionContext={{ projectId: 2 }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("local-command-history-menu")).toBeVisible();
+    });
+    const resolvedScope =
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope;
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            activeCount: 8,
+            backendType: "claudecode",
+            defaultPermissionMode: "acceptEdits",
+            deviceID: "remote-7",
+            deviceName: "Renamed build box",
+            id: 7,
+            name: "Renamed Remote Eng",
+            online: false,
+            pinned: true,
+          } as never
+        }
+        newSessionContext={{ projectId: 2 }}
+      />,
+    );
+
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBe(resolvedScope);
+    expect(screen.getByTestId("local-command-history-menu")).toBeVisible();
+  });
+
+  it.each([
+    ["cwd", { cwd: "/srv/next" }],
+    ["device", { deviceID: "remote-8" }],
+    ["backend", { backendType: "codex" }],
+    ["agent", { agentId: 8 }],
+    ["project", { projectId: 3 }],
+  ] as const)(
+    "Given a resolved existing-session scope, When the %s target scalar changes, Then exactly one fresh resolution runs",
+    async (_label, targetChange) => {
+      resetStore();
+      const initialTarget = {
+        agentId: 7,
+        backendType: "claudecode",
+        cwd: "/srv/project",
+        deviceID: "remote-7",
+        id: 42,
+        projectId: 2,
+      };
+      mockSessionStore.session = makeSession(initialTarget);
+      appMocks.ResolveLocalCommandScope.mockResolvedValue({
+        deviceId: "remote-7",
+        cwd: "/srv/project",
+      });
+      const view = render(<ChatPanel sessionId={42} />);
+      await waitFor(() => {
+        expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+      });
+
+      mockSessionStore.session = makeSession({
+        ...initialTarget,
+        ...targetChange,
+      });
+      view.rerender(<ChatPanel sessionId={42} />);
+
+      expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("Given a resolved session target, When the target changes, Then the old scope clears before exactly one new async resolution finishes", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.ResolveLocalCommandScope.mockResolvedValueOnce({
+      deviceId: "remote-7",
+      cwd: "/srv/old-target",
+    });
+    const nextTarget = deferred<{ deviceId: string; cwd: string }>();
+    appMocks.ResolveLocalCommandScope.mockReturnValueOnce(nextTarget.promise);
+    const view = render(<ChatPanel sessionId={42} />);
+
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "remote-7", cwd: "/srv/old-target" });
+    });
+
+    mockSessionStore.session = makeSession({ id: 43 });
+    view.rerender(<ChatPanel sessionId={43} />);
+
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBeUndefined();
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenLastCalledWith(
+      expect.objectContaining({ agentId: 0, projectId: 0, sessionId: 43 }),
+    );
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(2);
+  });
+
+  it("Given a resolved scope, When ! mode and then session/location refresh re-resolve out of order, Then old scope clears immediately and stale responses are ignored", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ cwd: "/snapshot-a", id: 42 });
+    const initial = deferred<{ deviceId: string; cwd: string }>();
+    const commandModeRefresh = deferred<{ deviceId: string; cwd: string }>();
+    const sessionRefresh = deferred<{ deviceId: string; cwd: string }>();
+    appMocks.ResolveLocalCommandScope.mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(commandModeRefresh.promise)
+      .mockReturnValueOnce(sessionRefresh.promise);
+    const view = render(<ChatPanel sessionId={42} />);
+
+    await act(async () => {
+      initial.resolve({ deviceId: "remote-7", cwd: "/srv/old" });
+      await initial.promise;
+    });
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "remote-7", cwd: "/srv/old" });
+    });
+
+    act(() => {
+      const onCommandModeChange = componentMocks.chatComposerProps.at(-1)
+        ?.onCommandModeChange as ((active: boolean) => void) | undefined;
+      onCommandModeChange?.(true);
+    });
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(2);
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toBeUndefined();
+
+    mockSessionStore.session = makeSession({ cwd: "/snapshot-b", id: 42 });
+    view.rerender(<ChatPanel sessionId={42} />);
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      sessionRefresh.resolve({ deviceId: "remote-7", cwd: "/srv/current" });
+      await sessionRefresh.promise;
+    });
+    await waitFor(() => {
+      expect(
+        componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+      ).toEqual({ deviceId: "remote-7", cwd: "/srv/current" });
+    });
+
+    await act(async () => {
+      commandModeRefresh.resolve({
+        deviceId: "remote-7",
+        cwd: "/srv/stale-response",
+      });
+      await commandModeRefresh.promise;
+    });
+    expect(
+      componentMocks.chatComposerProps.at(-1)?.localCommandHistoryScope,
+    ).toEqual({ deviceId: "remote-7", cwd: "/srv/current" });
+  });
+
+  it("Given scope pre-resolution fails, When a command is submitted, Then execution still launches once and returns the terminal response scope", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.ResolveLocalCommandScope.mockRejectedValueOnce(
+      new Error("scope unavailable"),
+    );
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-9", cwd: "/srv/run" },
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    await waitFor(() => {
+      expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+    });
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("pwd")).resolves.toEqual({
+      deviceId: "remote-9",
+      cwd: "/srv/run",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
+  });
+
+  it("Given scope pre-resolution throws before returning a promise, When a command is submitted, Then the composer stays available and execution still launches once", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.ResolveLocalCommandScope.mockImplementationOnce(() => {
+      throw new Error("scope bridge unavailable");
+    });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-10", cwd: "/srv/run" },
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("pwd")).resolves.toEqual({
+      deviceId: "remote-10",
+      cwd: "/srv/run",
+    });
+    expect(appMocks.ResolveLocalCommandScope).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(appMocks.EnsureChatSession).not.toHaveBeenCalled();
+  });
+
+  it("Given a running legacy card has no runtime controller, When Stop is clicked, Then the missing authority is reported without issuing an unowned duplicate close", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const terminalId = "legacy-running-terminal";
+    useLocalCommandsStore.getState().start({
+      id: terminalId,
+      sessionId: 42,
+      command: "sleep 30",
+      createdAt: 1,
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => error.mockRestore());
+
+    render(<ChatPanel sessionId={42} />);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+
+    expect(error).toHaveBeenCalledWith(
+      "[chat] stop local command failed: runtime controller missing",
+      { terminalId },
+    );
+    expect(appMocks.TerminalClose).not.toHaveBeenCalled();
+    expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+      "running",
+    );
+  });
+
+  it("Given panel A launched a running command and unmounted, When panel B reopens the same session and Stop is clicked through its transcript card, Then the original controller closes and settles exactly once", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+
+    const panelA = render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+    await runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const cleanups = terminalListenerCleanups(terminalId);
+    panelA.unmount();
+
+    render(<ChatPanel sessionId={42} />);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+        "stopped",
+      );
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledWith(terminalId);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    for (const cleanup of cleanups) expect(cleanup).toHaveBeenCalledTimes(1);
+    await expect(localCommandRuntimeStore.stop(terminalId)).resolves.toBe(
+      false,
+    );
+  });
+
+  it("Given panel A unmounted with a running command and panel B receives a close failure, When Stop is retried through B, Then the original controller remains retryable until the second close succeeds", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+    appMocks.TerminalClose.mockRejectedValueOnce(
+      new Error("remote cleanup failed after terminal not open"),
+    );
+    appMocks.TerminalClose.mockResolvedValueOnce(undefined);
+
+    const panelA = render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+    await runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const cleanups = terminalListenerCleanups(terminalId);
+    panelA.unmount();
+
+    render(<ChatPanel sessionId={42} />);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    const stopButton = () =>
+      within(card.container).getByRole("button", { name: /停止|Stop/ });
+
+    await userEvent.click(stopButton());
+    await waitFor(() =>
+      expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1),
+    );
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      output: "Error: remote cleanup failed after terminal not open",
+      status: "running",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    for (const cleanup of cleanups) expect(cleanup).not.toHaveBeenCalled();
+
+    await userEvent.click(stopButton());
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+        "stopped",
+      );
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(2);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    for (const cleanup of cleanups) expect(cleanup).toHaveBeenCalledTimes(1);
+    await expect(localCommandRuntimeStore.stop(terminalId)).resolves.toBe(
+      false,
+    );
+  });
+
+  it("Given a started command with no exit event, When Stop is clicked through the transcript card, Then close, stopped settlement, and both listener cleanups happen exactly once immediately", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("sleep 30")).resolves.toEqual({
+      deviceId: "remote-12",
+      cwd: "/srv/exact",
+    });
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const cleanups = terminalListenerCleanups(terminalId);
+    expect(cleanups).toHaveLength(2);
+    for (const cleanup of cleanups) expect(cleanup).not.toHaveBeenCalled();
+
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+        "stopped",
+      );
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledWith(terminalId);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    for (const cleanup of cleanups) expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("Given TerminalClose reports exact terminal not open, When Stop is clicked, Then the result is authoritative success and listeners settle immediately", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+    appMocks.TerminalClose.mockRejectedValueOnce(
+      new Error("terminal not open"),
+    );
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+    await runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const cleanups = terminalListenerCleanups(terminalId);
+
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+        output: "",
+        status: "stopped",
+      });
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    for (const cleanup of cleanups) expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("Given TerminalClose fails, When Stop is retried after the first failure, Then the command and listeners stay active until the retry succeeds", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+    appMocks.TerminalClose.mockRejectedValueOnce(
+      new Error("remote cleanup failed after terminal not open"),
+    );
+    appMocks.TerminalClose.mockResolvedValueOnce(undefined);
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+    await runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const cleanups = terminalListenerCleanups(terminalId);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    const stopButton = () =>
+      within(card.container).getByRole("button", { name: /停止|Stop/ });
+
+    await userEvent.click(stopButton());
+    await waitFor(() =>
+      expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1),
+    );
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      output: "Error: remote cleanup failed after terminal not open",
+      status: "running",
+    });
+    expect(finish).not.toHaveBeenCalled();
+    for (const cleanup of cleanups) expect(cleanup).not.toHaveBeenCalled();
+
+    await userEvent.click(stopButton());
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+        "stopped",
+      );
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(2);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    for (const cleanup of cleanups) expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("Given TerminalClose is pending, When Stop is clicked concurrently, Then both clicks share one close and one settlement", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const closing = deferred<void>();
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+    appMocks.TerminalClose.mockReturnValue(closing.promise);
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+    await runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const cleanups = terminalListenerCleanups(terminalId);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    const stopButton = within(card.container).getByRole("button", {
+      name: /停止|Stop/,
+    });
+
+    fireEvent.click(stopButton);
+    fireEvent.click(stopButton);
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+      "running",
+    );
+
+    await act(async () => {
+      closing.resolve();
+      await closing.promise;
+    });
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+        "stopped",
+      );
+    });
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    for (const cleanup of cleanups) expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["data", "exit"] as const)(
+    "Given the terminal %s listener registration fails once, When retry installs the complete pair and the command exits naturally, Then it launches once, settles, and cleans every listener without duplicate data or a guardian timer",
+    async (throwingListener) => {
+      vi.useFakeTimers();
+      onTestFinished(() => {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      });
+      resetStore();
+      const finish = observeLocalCommandFinish();
+      mockSessionStore.session = makeSession({ id: 42 });
+      const listenerError = new Error(`${throwingListener} listener failed`);
+      const activeListeners = new Map<
+        string,
+        Set<(...args: unknown[]) => void>
+      >();
+      let failureCount = 0;
+      runtimeMocks.EventsOn.mockImplementation((event, handler) => {
+        if (!event?.startsWith("terminal:") || !handler) return vi.fn();
+        if (event.endsWith(`:${throwingListener}`) && failureCount === 0) {
+          failureCount += 1;
+          throw listenerError;
+        }
+        const listeners = activeListeners.get(event) ?? new Set();
+        listeners.add(handler);
+        activeListeners.set(event, listeners);
+        return vi.fn(() => listeners.delete(handler));
+      });
+      runtimeMocks.EventsOff.mockImplementation((event?: string) => {
+        if (event) activeListeners.delete(event);
+      });
+      appMocks.TerminalRunCommand.mockResolvedValueOnce({
+        scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+      });
+
+      render(<ChatPanel sessionId={42} />);
+      const runCommand = componentMocks.chatComposerProps.at(-1)
+        ?.onRunCommand as (command: string) => Promise<unknown>;
+
+      await expect(runCommand("printf done")).resolves.toEqual({
+        deviceId: "remote-12",
+        cwd: "/srv/exact",
+      });
+      expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+      const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+      const dataEvent = `terminal:${terminalId}:data`;
+      const exitEvent = `terminal:${terminalId}:exit`;
+      expect(activeListeners.get(dataEvent)?.size).toBe(1);
+      expect(activeListeners.get(exitEvent)?.size).toBe(1);
+      const terminalRegistrations = runtimeMocks.EventsOn.mock.calls.filter(
+        ([event]) => event?.startsWith(`terminal:${terminalId}:`),
+      );
+      expect(terminalRegistrations).toHaveLength(
+        throwingListener === "data" ? 3 : 4,
+      );
+      expect(terminalRegistrations.slice(-2).map(([event]) => event)).toEqual([
+        dataEvent,
+        exitEvent,
+      ]);
+
+      act(() => {
+        for (const handler of activeListeners.get(dataEvent) ?? []) {
+          handler({ data: "ZG9uZQo=" });
+        }
+      });
+      expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+        command: "printf done",
+        output: "done\n",
+        status: "running",
+      });
+
+      act(() => {
+        for (const handler of activeListeners.get(exitEvent) ?? []) {
+          handler({ code: 0, reason: "exited" });
+        }
+      });
+      expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+        exitCode: 0,
+        output: "done\n",
+        status: "done",
+      });
+      expect(activeListeners.get(dataEvent)?.size ?? 0).toBe(0);
+      expect(activeListeners.get(exitEvent)?.size ?? 0).toBe(0);
+      expect(finish).toHaveBeenCalledTimes(1);
+      expect(finish).toHaveBeenCalledWith(terminalId, "done", 0);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(["data", "exit"] as const)(
+    "Given the terminal %s listener registration remains unavailable after one retry, When the command starts, Then it launches once, returns the real scope, and fails only after one automatic close",
+    async (throwingListener) => {
+      resetStore();
+      const finish = observeLocalCommandFinish();
+      mockSessionStore.session = makeSession({ id: 42 });
+      const listenerError = new Error(`${throwingListener} listener failed`);
+      const activeListeners = new Map<
+        string,
+        Set<(...args: unknown[]) => void>
+      >();
+      runtimeMocks.EventsOn.mockImplementation((event, handler) => {
+        if (!event?.startsWith("terminal:") || !handler) return vi.fn();
+        if (event.endsWith(`:${throwingListener}`)) throw listenerError;
+        const listeners = activeListeners.get(event) ?? new Set();
+        listeners.add(handler);
+        activeListeners.set(event, listeners);
+        return vi.fn(() => listeners.delete(handler));
+      });
+      runtimeMocks.EventsOff.mockImplementation((event?: string) => {
+        if (event) activeListeners.delete(event);
+      });
+      appMocks.TerminalRunCommand.mockResolvedValueOnce({
+        scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+      });
+      appMocks.TerminalClose.mockResolvedValueOnce(undefined);
+
+      render(<ChatPanel sessionId={42} />);
+      const runCommand = componentMocks.chatComposerProps.at(-1)
+        ?.onRunCommand as (command: string) => Promise<unknown>;
+
+      await expect(runCommand("pwd")).resolves.toEqual({
+        deviceId: "remote-12",
+        cwd: "/srv/exact",
+      });
+      expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+      const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+      await waitFor(() => {
+        expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+          command: "pwd",
+          exitCode: -1,
+          output: String(listenerError),
+          status: "failed",
+        });
+      });
+      const terminalRegistrations = runtimeMocks.EventsOn.mock.calls.filter(
+        ([event]) => event?.startsWith(`terminal:${terminalId}:`),
+      );
+      expect(terminalRegistrations).toHaveLength(
+        throwingListener === "data" ? 2 : 4,
+      );
+      expect(
+        activeListeners.get(`terminal:${terminalId}:data`)?.size ?? 0,
+      ).toBe(0);
+      expect(
+        activeListeners.get(`terminal:${terminalId}:exit`)?.size ?? 0,
+      ).toBe(0);
+      expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+      expect(appMocks.TerminalClose).toHaveBeenCalledWith(terminalId);
+      expect(finish).toHaveBeenCalledTimes(1);
+      expect(finish).toHaveBeenCalledWith(terminalId, "failed", -1);
+      await expect(localCommandRuntimeStore.stop(terminalId)).resolves.toBe(
+        false,
+      );
+    },
+  );
+
+  it("Given observers stay unavailable and TerminalRunCommand returns startError with scope, When the response arrives, Then the card fails once without an unnecessary close and the real scope remains available for history", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const listenerError = new Error("data listener failed");
+    runtimeMocks.EventsOn.mockImplementation((event) => {
+      if (event?.startsWith("terminal:")) throw listenerError;
+      return vi.fn();
+    });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+      startError: "executable not found",
+    });
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("missing-tool")).resolves.toEqual({
+      deviceId: "remote-12",
+      cwd: "/srv/exact",
+    });
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      command: "missing-tool",
+      exitCode: -1,
+      output: "executable not found",
+      status: "failed",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).not.toHaveBeenCalled();
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "failed", -1);
+  });
+
+  it("Given automatic close keeps failing after a successful unobservable start, When its app-lifetime guardian survives panel reopen, Then paced retries settle failed only on exact close authority", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const listenerError = new Error("data listener failed");
+    runtimeMocks.EventsOn.mockImplementation((event) => {
+      if (event?.startsWith("terminal:")) throw listenerError;
+      return vi.fn();
+    });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+    appMocks.TerminalClose.mockRejectedValueOnce(
+      new Error("close unavailable"),
+    );
+    appMocks.TerminalClose.mockRejectedValueOnce(
+      new Error("close still unavailable"),
+    );
+    appMocks.TerminalClose.mockRejectedValueOnce(
+      new Error("terminal not open"),
+    );
+
+    const panel = render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("pwd")).resolves.toEqual({
+      deviceId: "remote-12",
+      cwd: "/srv/exact",
+    });
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      output: String(listenerError),
+      status: "running",
+    });
+    expect(finish).not.toHaveBeenCalled();
+
+    panel.unmount();
+    render(<ChatPanel sessionId={42} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(99);
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(2);
+    expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+      "running",
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(199);
+    });
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(3);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      exitCode: -1,
+      output: String(listenerError),
+      status: "failed",
+    });
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "failed", -1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("Given observers are unavailable and TerminalRunCommand rejects before scope, When defensive close is pending, Then submission returns undefined promptly and failure waits for close authority", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const listenerError = new Error("data listener failed");
+    const runError = new Error("target resolution failed");
+    const closing = deferred<void>();
+    runtimeMocks.EventsOn.mockImplementation((event) => {
+      if (event?.startsWith("terminal:")) throw listenerError;
+      return vi.fn();
+    });
+    appMocks.TerminalRunCommand.mockRejectedValueOnce(runError);
+    appMocks.TerminalClose.mockReturnValueOnce(closing.promise);
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("pwd")).resolves.toBeUndefined();
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledWith(terminalId);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      output: String(runError),
+      status: "running",
+    });
+    expect(finish).not.toHaveBeenCalled();
+
+    await act(async () => {
+      closing.resolve();
+      await closing.promise;
+    });
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      exitCode: -1,
+      output: String(runError),
+      status: "failed",
+    });
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "failed", -1);
+  });
+
+  it("Given Stop owns close while an unobservable TerminalRunCommand response is pending, When the successful response starts automatic cleanup, Then both paths share one close and settle stopped once", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const listenerError = new Error("exit listener failed");
+    const terminalRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+    }>();
+    const closing = deferred<void>();
+    runtimeMocks.EventsOn.mockImplementation((event, handler) => {
+      if (!event?.startsWith("terminal:") || !handler) return vi.fn();
+      if (event.endsWith(":exit")) throw listenerError;
+      return vi.fn();
+    });
+    appMocks.TerminalRunCommand.mockReturnValueOnce(terminalRun.promise);
+    appMocks.TerminalClose.mockReturnValueOnce(closing.promise);
+
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    const result = runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    fireEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      terminalRun.resolve({
+        scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+      });
+      await result;
+    });
+    await expect(result).resolves.toEqual({
+      deviceId: "remote-12",
+      cwd: "/srv/exact",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      output: String(listenerError),
+      status: "running",
+    });
+
+    await act(async () => {
+      closing.resolve();
+      await closing.promise;
+    });
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      output: String(listenerError),
+      status: "stopped",
+    });
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Given partial terminal cleanup throws before removal, When automatic close succeeds and the runtime recovers after panel unmount, Then the retained listener guardian still cleans without settling twice", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    });
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const listenerError = new Error("exit listener failed");
+    const cleanupError = new Error("listener cleanup failed");
+    const activeListeners = new Map<
+      string,
+      Set<(...args: unknown[]) => void>
+    >();
+    let cleanupRecovered = false;
+    const exactCleanup = vi.fn((event: string, handler: unknown) => {
+      if (!cleanupRecovered) throw cleanupError;
+      activeListeners
+        .get(event)
+        ?.delete(handler as (...args: unknown[]) => void);
+    });
+    runtimeMocks.EventsOn.mockImplementation((event, handler) => {
+      if (!event?.startsWith("terminal:") || !handler) return vi.fn();
+      if (event.endsWith(":exit")) throw listenerError;
+      const listeners = activeListeners.get(event) ?? new Set();
+      listeners.add(handler);
+      activeListeners.set(event, listeners);
+      return vi.fn(() => exactCleanup(event, handler));
+    });
+    runtimeMocks.EventsOff.mockImplementation((event?: string) => {
+      if (!cleanupRecovered) throw cleanupError;
+      if (event) activeListeners.delete(event);
+    });
+    appMocks.TerminalRunCommand.mockResolvedValueOnce({
+      scope: { deviceId: "remote-12", cwd: "/srv/exact" },
+    });
+    appMocks.TerminalClose.mockResolvedValueOnce(undefined);
+
+    const view = render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    await expect(runCommand("pwd")).resolves.toEqual({
+      deviceId: "remote-12",
+      cwd: "/srv/exact",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const dataEvent = `terminal:${terminalId}:data`;
+    expect(
+      runtimeMocks.EventsOn.mock.calls.filter(([event]) =>
+        event?.startsWith(`terminal:${terminalId}:`),
+      ),
+    ).toHaveLength(2);
+    expect(exactCleanup).toHaveBeenCalledTimes(2);
+    expect(
+      runtimeMocks.EventsOff.mock.calls.filter(
+        ([event]) => event === dataEvent,
+      ),
+    ).toHaveLength(2);
+    expect(activeListeners.get(dataEvent)?.size ?? 0).toBe(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      command: "pwd",
+      exitCode: -1,
+      output: String(listenerError),
+      status: "failed",
+    });
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "failed", -1);
+    expect(vi.getTimerCount()).toBe(1);
+
+    view.unmount();
+    cleanupRecovered = true;
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+
+    expect(activeListeners.get(dataEvent)?.size ?? 0).toBe(0);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("Given two deferred commands in a new chat, When the panel unmounts and one terminal RPC rejects, Then session creation stays shared while both commands continue and settle independently exactly once", async () => {
+    resetStore();
+    mockSessionStore.session = null;
+    const ensured = deferred<number>();
+    const firstRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+    }>();
+    const secondRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+    }>();
+    appMocks.EnsureChatSession.mockReturnValueOnce(ensured.promise);
+    appMocks.TerminalRunCommand.mockImplementation(
+      (_terminalId, _sessionId, command) =>
+        command === "first" ? firstRun.promise : secondRun.promise,
+    );
+    const onSessionCreated = vi.fn();
+    const onSidebarShouldReload = vi.fn();
+    const view = render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 7,
+            name: "Remote Eng",
+            agentBackendId: 1,
+            backendType: "claudecode",
+            deviceID: "7",
+          } as never
+        }
+        newSessionContext={{ projectId: 2 }}
+        onSessionCreated={onSessionCreated}
+        onSidebarShouldReload={onSidebarShouldReload}
+      />,
+    );
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    let first!: Promise<unknown>;
+    let second!: Promise<unknown>;
+    act(() => {
+      first = runCommand("first");
+      second = runCommand("second");
+    });
+    expect(appMocks.EnsureChatSession).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalRunCommand).not.toHaveBeenCalled();
+
+    view.unmount();
+    await act(async () => {
+      ensured.resolve(99);
+      await ensured.promise;
+    });
+    await waitFor(() => {
+      expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(2);
+    });
+
+    const calls = appMocks.TerminalRunCommand.mock.calls;
+    const firstCall = calls.find((call) => call[2] === "first");
+    const secondCall = calls.find((call) => call[2] === "second");
+    const firstTerminalId = String(firstCall?.[0]);
+    const secondTerminalId = String(secondCall?.[0]);
+    expect(firstCall).toBeDefined();
+    expect(secondCall).toBeDefined();
+    expect(firstTerminalId).not.toBe(secondTerminalId);
+    expect(calls.filter((call) => call[2] === "first")).toHaveLength(1);
+    expect(calls.filter((call) => call[2] === "second")).toHaveLength(1);
+
+    let secondSettled = false;
+    void second.then(() => {
+      secondSettled = true;
+    });
+    const firstError = new Error("first target failed");
+    await act(async () => {
+      firstRun.reject(firstError);
+      await first;
+    });
+    await expect(first).resolves.toBeUndefined();
+    expect(secondSettled).toBe(false);
+    expect(useLocalCommandsStore.getState().get(firstTerminalId)).toMatchObject(
+      {
+        exitCode: -1,
+        output: String(firstError),
+        status: "failed",
+      },
+    );
+    expect(
+      useLocalCommandsStore.getState().get(secondTerminalId),
+    ).toMatchObject({
+      command: "second",
+      sessionId: 99,
+      status: "running",
+    });
+
+    await act(async () => {
+      secondRun.resolve({
+        scope: { deviceId: "7", cwd: "/srv/second" },
+      });
+      await second;
+    });
+    await expect(second).resolves.toEqual({
+      deviceId: "7",
+      cwd: "/srv/second",
+    });
+    expect(secondSettled).toBe(true);
+
+    const secondExitListener = runtimeMocks.EventsOn.mock.calls.find(
+      (call) => call[0] === `terminal:${secondTerminalId}:exit`,
+    )?.[1] as ((payload: { code: number; reason: string }) => void) | undefined;
+    expect(secondExitListener).toBeDefined();
+    act(() => {
+      secondExitListener?.({ code: 0, reason: "exited" });
+    });
+    expect(
+      useLocalCommandsStore.getState().get(secondTerminalId),
+    ).toMatchObject({
+      exitCode: 0,
+      status: "done",
+    });
+    expect(onSessionCreated).toHaveBeenCalledTimes(1);
+    expect(onSessionCreated).toHaveBeenCalledWith(99, 7);
+    expect(onSidebarShouldReload).toHaveBeenCalledTimes(1);
+  });
+
+  it("Given Stop settles a card while TerminalRunCommand is deferred, When a scoped startError arrives, Then both listeners are cleaned and the stopped card is not overwritten or settled twice", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const terminalRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+      startError?: string;
+    }>();
+    appMocks.TerminalRunCommand.mockReturnValueOnce(terminalRun.promise);
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    const result = runCommand("sleep 30");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    const card = renderLocalCommandCardFromTranscript(terminalId);
+    await userEvent.click(
+      within(card.container).getByRole("button", { name: /停止|Stop/ }),
+    );
+    await waitFor(() => {
+      expect(useLocalCommandsStore.getState().get(terminalId)?.status).toBe(
+        "stopped",
+      );
+    });
+    const stoppedAt = useLocalCommandsStore
+      .getState()
+      .get(terminalId)?.finishedAt;
+
+    await act(async () => {
+      terminalRun.resolve({
+        scope: { deviceId: "remote-13", cwd: "/srv/exact" },
+        startError: "terminal command start preempted",
+      });
+      await result;
+    });
+
+    await expect(result).resolves.toEqual({
+      deviceId: "remote-13",
+      cwd: "/srv/exact",
+    });
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      command: "sleep 30",
+      output: "",
+      status: "stopped",
+      finishedAt: stoppedAt,
+    });
+    expect(
+      useLocalCommandsStore.getState().get(terminalId)?.exitCode,
+    ).toBeUndefined();
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "stopped");
+    const listenerCleanups = runtimeMocks.EventsOn.mock.calls.flatMap(
+      ([event], index) => {
+        const cleanup = runtimeMocks.EventsOn.mock.results[index]?.value;
+        return event?.startsWith(`terminal:${terminalId}:`) &&
+          typeof cleanup === "function"
+          ? [cleanup]
+          : [];
+      },
+    );
+    expect(listenerCleanups).toHaveLength(2);
+    for (const cleanup of listenerCleanups) {
+      expect(cleanup).toHaveBeenCalledTimes(1);
+    }
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledTimes(1);
+    expect(appMocks.TerminalClose).toHaveBeenCalledWith(terminalId);
+  });
+
+  it("Given TerminalRunCommand returns startError with scope after observers are installed, When the terminal result arrives, Then the card fails once and the exact returned scope remains available for history", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const terminalRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+      startError?: string;
+    }>();
+    appMocks.TerminalRunCommand.mockReturnValueOnce(terminalRun.promise);
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    const result = runCommand("missing-tool");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      command: "missing-tool",
+      output: "",
+      status: "running",
+    });
+
+    await act(async () => {
+      terminalRun.resolve({
+        scope: { deviceId: "remote-11", cwd: "/srv/exact" },
+        startError: "executable not found",
+      });
+      await terminalRun.promise;
+    });
+    await expect(result).resolves.toEqual({
+      deviceId: "remote-11",
+      cwd: "/srv/exact",
+    });
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      command: "missing-tool",
+      exitCode: -1,
+      output: "executable not found",
+      status: "failed",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "failed", -1);
+  });
+
+  it("Given TerminalRunCommand rejects after observers are installed, When the terminal result arrives, Then the card fails once, undefined prevents history, and no rejection escapes", async () => {
+    resetStore();
+    const finish = observeLocalCommandFinish();
+    mockSessionStore.session = makeSession({ id: 42 });
+    const terminalRun = deferred<{
+      scope: { deviceId: string; cwd: string };
+    }>();
+    appMocks.TerminalRunCommand.mockReturnValueOnce(terminalRun.promise);
+    render(<ChatPanel sessionId={42} />);
+    const runCommand = componentMocks.chatComposerProps.at(-1)
+      ?.onRunCommand as (command: string) => Promise<unknown>;
+
+    const result = runCommand("pwd");
+    const terminalId = String(appMocks.TerminalRunCommand.mock.calls[0]?.[0]);
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      command: "pwd",
+      output: "",
+      status: "running",
+    });
+
+    await act(async () => {
+      terminalRun.reject(new Error("target resolution failed"));
+      await result;
+    });
+    await expect(result).resolves.toBeUndefined();
+    expect(useLocalCommandsStore.getState().get(terminalId)).toMatchObject({
+      exitCode: -1,
+      output: "Error: target resolution failed",
+      status: "failed",
+    });
+    expect(appMocks.TerminalRunCommand).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith(terminalId, "failed", -1);
   });
 });
 

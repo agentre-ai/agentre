@@ -2,7 +2,7 @@
 
 This is the path, the change points, the constraints, and the pitfalls you must walk through when adding a new Agent backend (for example a CLI, in-process SDK, or Gateway-native protocol). Read all of it before writing code — the `agentruntime.Runtime` interface looks narrow, but the supporting pieces you have to fill in are spread across entity / repo / service / runtime / wire / daemon / frontend layers.
 
-> Prerequisite reading: [architecture.md](architecture.md) (layering conventions), [development.md](development.md) (TDD/BDD + Fix Discipline).
+> Prerequisite reading: [architecture.md](architecture.md) (layering conventions), [develop.md](develop.md) (TDD/BDD + Fix Discipline).
 
 ---
 
@@ -25,7 +25,7 @@ The repository currently has five backend types, with clearly distinct roles. **
 - **builtin** — runs cago `app/coding` in-process, directly consuming the `llm_provider` config. Its role is "lightweight built-in"; it exposes steer / cancel / abort / image input — the capabilities that an in-process single-provider mode naturally supports — without CLI subprocess overhead, and without advanced protocols like plan / tool approval.
 - **claudecode** — wraps the local `claude` CLI (Anthropic family), communicating bidirectionally via stdout JSONL + `control_request` frames, with the subprocess long-lived and the session reused via LRU. The most fully featured: it can run plan / `can_use_tool` / `AskUserQuestion` / Subagent / fork-session / mid-turn permission-mode switching / image input.
 - **codex** — wraps the local `codex` CLI (OpenAI family), interacting via the JSON-RPC-over-stdio app-server protocol, starting a new process per turn (fire-and-forget). Natively supports context-window reporting, native compact turns, image input, and tool approval via the app-server `requestApproval` protocol (allow/deny + remember-for-session, though with **no DenyReason feedback** and no `can_use_tool`-shaped control frames), but cannot switch permission mode mid-turn and does not emit Subagent events.
-- **piagent** — wraps the local `pi` CLI (Pi coding agent RPC mode); it is not bound to an Agentre `LLMProvider`, but reads Pi's own `~/.pi/agent` config and auth. Supports steer / abort / compact / image input / context-window reporting; Pi owns the Session storage location, while Agentre persists the native Session ID returned by RPC and resumes with `--session <id>`. It does not support tool approval, reverse Q&A, fork-session, or permission mode meta.
+- **piagent** — wraps the local `pi` CLI (Pi coding agent RPC mode); it is not bound to an Agentre `LLMProvider`, but reads Pi's own `~/.pi/agent` config and auth. Supports steer / abort / compact / image input / context-window reporting plus structured official/flat-single extension subagent streaming and replay; Pi owns the Session storage location, while Agentre persists the native Session ID returned by RPC and resumes with `--session <id>`. It does not support tool approval, reverse Q&A, fork-session, or permission mode meta.
 - **openclaw** — connects directly to OpenClaw Gateway WebSocket RPC protocol 4. It is not a CLI/ACP/HTTP adapter and is not bound to an Agentre `LLMProvider`. It supports local Gateway discovery, stable per-chat session keys, streamed text/thinking/tool/usage events, abort, reconnect reconciliation, and a dedicated exec-approval lifecycle. Remote `agentred` execution is intentionally unavailable until a daemon-local secret enrollment/reference mechanism exists.
 
 > The repository also has `runtimes/remote/`, which is **not a standalone backend** — it is the proxy used when the desktop calls a remote `agentred` daemon. Its capability is synced from the daemon-side real backend via `Prefetch`, so it is not listed separately in this section.
@@ -51,7 +51,7 @@ Each row is a **reverse channel** (host→backend), **except the final `CapAuton
 | `CapToolPermission` / `"tool_permission_gate"` | `ToolPermissionSink` | ❌ | ✅ `can_use_tool` | ✅ `requestApproval` | ❌ | ❌ | allow/deny approval before tool execution + "Remember for session" (alwaysAllowSession). claudecode goes through the `can_use_tool` control_request and feeds DenyReason back to the LLM as a tool_result; codex goes through the app-server `requestApproval` protocol — it carries allow/deny + remember-for-session but has **no DenyReason feedback** (the deny-message param is ignored, the protocol has no deny field). piagent has no equivalent protocol; OpenClaw exec approval is deliberately separate |
 | `CapExecApproval` / `"exec_approval"` | `ExecApprovalSink` | ❌ | ❌ | ❌ | ❌ | ✅ | Gateway `exec.approval.*`, dynamic decisions, expiry/race convergence, and reconnect list reconciliation; resolution is not tool completion |
 | `CapForkSession` / `"fork_session"` | `RunRequest.ForkAnchor` built in | ❌ | ✅ `--fork-session` | ✅ `thread/rollback` | ❌ | ❌ | "Regenerate" derives a new session from a given provider anchor and reruns; OpenClaw does not expose fork semantics |
-| `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ✅ | ✅ | ✅ | ❌ | the runtime emits after probing the model's actual context-window size, for the frontend usage bar; the claudecode SDK does not report the window itself, so the translator looks it up in `llmcatalog` on the `system.init` frame as a fallback; piagent exclusively uses the Pi RPC `get_session_stats.contextUsage.contextWindow` reported at the end of each round, because a custom Pi provider may reuse a public model ID with a different configured window. OpenClaw reports usage only |
+| `CapReportContextWindow` / `"report_context_window"` | emit `ContextWindowUpdated` | ❌ | ✅ | ✅ | ✅ | ❌ | the runtime emits after probing the model's actual context-window size, for the frontend usage bar; the claudecode SDK does not report the window itself, so the translator looks it up in `llmcatalog` on the `system.init` frame as a fallback; piagent exclusively uses Pi RPC metadata: `get_state.model.contextWindow` supplies the synchronous startup denominator, `get_session_stats.contextUsage.contextWindow` corrects it before/after the round, and every usage snapshot carries the latest value because a custom Pi provider may reuse a public model ID with a different configured window. OpenClaw reports usage only |
 | `CapCompact` / `"compact"` | `RunRequest.Compact=true` | ❌ | ❌ | ✅ | ✅ | ❌ | native compact turn — have the LLM summarize history and then clear the occupied space; piagent goes through Pi RPC compact; OpenClaw does not claim native compaction |
 | `CapImageInput` / `"image_input"` | `RunRequest.UserBlocks` contains `blocks.ImageBlock` | ✅ | ✅ | ✅ | ✅ | ❌ | the user message can carry PNG / JPEG / WebP images. builtin passes cago blocks through directly; claudecode encodes inline images into a base64 `image` content block of the stream-json user frame (image first, text after — natively supported by the CLI); codex materializes inline images into temporary local files and then goes through the app-server `localImage`; piagent passes the RPC image content through; OpenClaw MVP submits text only |
 | `CapGoal` / `"goal"` | `GoalController` | ❌ | ❌ | ✅ | ❌ | ❌ | session/thread-level **objective** state: the host reads/sets/clears a persistent goal (`Objective` + `Status` + optional `TokenBudget`, plus `TokensUsed` / `TimeUsedSeconds` counters) bound to the provider thread. Only codex has it natively (app-server thread-goal protocol, `runtimes/codex/runtime.go` `GetGoal/SetGoal/ClearGoal`); chat_svc surfaces it via `GetGoal` / `SetGoal` / `StartGoal` / `ClearGoal`, and `remote.Runtime` forwards it over `runtime.goal.{get,set,clear}`. builtin / claudecode / piagent / OpenClaw don't declare it, so chat_svc returns `ErrUnsupported` |
@@ -70,10 +70,10 @@ This table answers "what does it look like when it runs" — process shape, sess
 | Run shape | in-process (cago app/coding + LLMProvider) | CLI subprocess (stdout JSONL) | CLI subprocess (JSON-RPC over stdio app-server) | CLI subprocess (Pi RPC mode) | Gateway WebSocket RPC 4 | determines the Prober / cli_path validation / transport ownership path |
 | ProviderType binding | any LLM provider | Anthropic family (incl. gateway proxy) | OpenAI / Codex family | not bound to a provider; reads `~/.pi/agent` | Gateway-owned agent/model/auth | the entity `BackendKind.ProviderTypeMatch` implementation; piagent and OpenClaw always return false |
 | Session mode | turn-scoped cago `Runner`, destroyed when the turn ends | long-lived subprocess + LRU cache reuse, reusing the session across turns | new process per turn, no local reuse | new Pi client per turn; Pi stores native JSONL in its configured/default root and Agentre resumes by the persisted native Session ID | stable `agentre:<backendID>:<sessionID>` key | reuse means managing idle evict / abort unlocking / cross-turn state; OpenClaw returns the stable key as `ProviderSessionID` |
-| Translator | pure function (cago events → sealed) | pure function + `task_aggregator` maintaining the Subagent list across turns | pure function | pure function (Pi RPC events → sealed) | run/session/seq filter + payload translator | state aggregation is uniformly done in the `Run` drain loop; OpenClaw reconnect aggregation belongs in the runtime, not service/repository |
+| Translator | pure function (cago events → sealed) | pure function + `task_aggregator` maintaining the Subagent list across turns | pure function | pure RPC mapper + turn-local subagent tracker in the `Run` drain loop | run/session/seq filter + payload translator | state aggregation stays at the drain boundary and the translator itself must remain independently table-testable; OpenClaw reconnect aggregation belongs in the runtime, not service/repository |
 | Plan source | does not emit | `TodoWrite` tool inline (canonical) + `Task*` incremental aggregation (PlanUpdated snapshot) | `turn/plan/updated` (Steps) + `item/plan/delta` (Text) merged into a single PlanUpdated | does not emit | does not emit | what downstream chat_svc sees is the same sealed `agentruntime.PlanUpdated`; OpenClaw plan capability is not claimed |
 | Reverse Q&A | not supported | control_request `can_use_tool` + `AskUserQuestion` tool | app-server `item/tool/requestUserInput` JSON-RPC | not supported | not supported | claudecode uses the question text as the key, codex uses the question ID as the key; OpenClaw ask-user is unavailable |
-| Subagent events | ❌ | ✅ `SubagentStarted/Progress/Done` | ❌ | ❌ | ❌ | only claudecode has a native `Task` tool protocol; OpenClaw MVP does not map subagent events |
+| Subagent events | ❌ | ✅ `SubagentStarted/Progress/Done` | ❌ | ✅ official bundled + flat-single extension snapshots | ❌ | claudecode translates its native `Task` protocol; Pi recognizes supported extension envelopes at the stateful drain boundary; OpenClaw MVP does not map subagent events |
 | Remote daemon | ✅ | ✅ | ✅ | ✅ | ❌ | the runtime must not depend on desktop-only services (chat_repo / GUI); OpenClaw is blocked by missing daemon-local secret enrollment/reference |
 
 ### PermissionModeMeta
@@ -225,7 +225,7 @@ Implement according to the Capabilities declaration (**if you declared cap=true,
 | `CapAnswerUserAsk` | `AskAnswerSink` | handle reverse ask_user_question |
 | `CapToolPermission` | `ToolPermissionSink` | handle the `can_use_tool` protocol |
 | `CapForkSession` | `RunRequest.ForkAnchor` built-in semantics | "Regenerate" goes through fork |
-| `CapReportContextWindow` | emit `ContextWindowUpdated` | the runtime can probe the model's actual window (codex has it natively in the protocol; claudecode falls back via `llmcatalog.Lookup(model)`; piagent exclusively reads the Pi RPC `get_session_stats.contextUsage.contextWindow`, so custom-provider model metadata remains authoritative) |
+| `CapReportContextWindow` | emit `ContextWindowUpdated` | the runtime can probe the model's actual window (codex has it natively in the protocol; claudecode falls back via `llmcatalog.Lookup(model)`; piagent exclusively reads Pi RPC metadata (`get_state.model.contextWindow` at startup plus `get_session_stats.contextUsage.contextWindow` refreshes), carrying the live value on usage snapshots so custom-provider model metadata remains authoritative) |
 | `CapCompact` | `RunRequest.Compact=true` built-in semantics | native compact turn |
 | `CapImageInput` | `RunRequest.UserBlocks` image blocks | supports multimodal user input; when unsupported, chat_svc rejects an image-carrying turn before calling the runtime |
 | `CapGoal` | `GoalController` | exposes a session/thread-level objective the host can get / set / clear (codex thread goal; remote-forwarded) |
@@ -488,26 +488,31 @@ agentruntime.PlanUpdated{Plan: canonical.PlanUpdate{
 - the frontend PlanCard renders the full text; `TaskProgressBar` reads `steps[].status` for the progress bar
 - multiple PlanUpdated within the same turn go through mutate (overwriting by PlanBlock key), without repeatedly landing new blocks
 
-##### H. Subagent lifecycle — claudecode Task-tool-specific
+##### H. Subagent lifecycle — normalized runtime contract
 
-Interface shape (**one-way emit, 3 events**):
+Interface shape (**one-way emit, 3 lifecycle events plus nested tool events**):
 
 ```go
-agentruntime.SubagentStarted{ToolCallID, Info: SubagentInfo{...}}
-agentruntime.SubagentProgress{ToolCallID, Info: SubagentInfo{TotalTokens, LastToolName, ToolUses}}
-agentruntime.SubagentDone{ToolCallID, Info: SubagentInfo{Status: "completed"|"failed", DurationMs, TotalTokens}}
+agentruntime.SubagentStarted{ToolCallID, Info: SubagentInfo{Mode, Runs}}
+agentruntime.SubagentProgress{ToolCallID, Info: SubagentInfo{Mode, Runs}}
+agentruntime.SubagentDone{ToolCallID, Info: SubagentInfo{Mode, Runs}}
+agentruntime.ToolCall{ParentToolCallID, SubagentRunID, ...}
+agentruntime.ToolResult{ParentToolCallID, SubagentRunID, ...}
 ```
 
-- **ToolCallID** = the tool_use id of the outer parent `Task` / Agent tool.
-- **Info.Status**: the runtime only produces `running` / `completed` / `failed`; `canceled` is inferred by `handlers.MarkRunningSubagentsCancelled` during turn-abort cleanup (after the CLI is interrupted, Done will not arrive, and leaving it running would make the frontend AgentSpawnCard spin forever).
-- **The ParentToolCallID field of ToolCall / ToolResult**: tools called inside the subagent fill in the outer Task tool_use id, so the frontend groups the child cards under the parent SubagentInvocationCard.
-- **codex / builtin / piagent currently do not emit these** — only claudecode has a native subagent protocol. Consider onboarding this set of events when a new backend has a similar fork-execute tool.
+- **ToolCallID** is the tool-use ID of the outer parent `Task` / Agent / subagent tool. `SubagentInfo.Runs` is a full snapshot; legacy single-run producers may leave `Mode` / `Runs` empty.
+- **Pi is stateful at the drain boundary**: `runtimes/piagent/translator.go` remains a pure RPC-event mapper, while `drainStream` owns one turn-local tracker per recognized outer subagent call. The Pi-only candidate gate first requires a case-insensitive tool name containing `subagent`, then accepts official single / parallel / chain or generic flat-single inputs without broadening global canonical recognition. Parallel alone is capped at eight input runs; a valid chain is not.
+- **Run identity comes from the input slot** (`run-0`, `run-1`, ...), not mutable result text or agent name. Nested calls/results carry both `ParentToolCallID` and `SubagentRunID`; Pi generates their runtime tool-call IDs from an unambiguous `(outer, run, inner)` encoding so equal inner IDs in sibling runs cannot collide.
+- **The tracker consumes cumulative snapshots**: per-run call/result identities dedupe repeated updates, orphan results wait for their matching call, final details recover boundaries missed during updates, and sibling boundaries use valid message timestamps with input-index/message-index fallback while preserving order inside each run.
+- **Lifecycle ordering is fixed**: outer `ToolCall` precedes `SubagentStarted`; newly recovered nested events precede any full `SubagentProgress` caused by the same snapshot; final nested events and progress precede `SubagentDone`; the outer `ToolResult` closes that subagent lifecycle. On a whole-turn abort with no end frame, the drain emits a terminal snapshot that changes only non-terminal runs to `canceled`, preserves terminal siblings, then discards the tracker.
+- **Grouped status remains explicit**: parallel mixed success/failure is `partial`; a failed chain marks untouched later input slots `skipped`; incomplete terminal evidence becomes `unknown` rather than fabricated success. Official `stopReason=aborted` is a failed run, while whole-turn abort cleanup is canceled.
+- **claudecode** continues to emit its legacy single-run lifecycle and nested `ParentToolCallID`; **codex / builtin** currently do not emit this lifecycle.
 
 ##### I. AutonomousTurnSource — the forward turn (backend→host)
 
 This is the **only forward channel**: every other sub-interface is the host reaching into the backend, but here the backend tells the host "I just ran a whole turn on my own." Today only claudecode needs it.
 
-**Why it exists**: when a turn ends with a `run_in_background` Bash task still running, the claude CLI emits `result` to close the turn but keeps the subprocess alive; when the task finishes it **autonomously** injects a `<task-notification>` and runs a *complete* second turn (init → text/tools → a second `result`) without any new stdin. The old per-turn reader stopped at the first `result`, so those autonomous frames sat unread and desynced every later turn ("can't continue the conversation"). See the design spec `docs/superpowers/specs/2026-06-04-claudecode-background-task-autonomous-turn-design.md`.
+**Why it exists**: when a turn ends with a `run_in_background` Bash task still running, the claude CLI emits `result` to close the turn but keeps the subprocess alive; when the task finishes it **autonomously** injects a `<task-notification>` and runs a *complete* second turn (init → text/tools → a second `result`) without any new stdin. The old per-turn reader stopped at the first `result`, so those autonomous frames sat unread and desynced every later turn ("can't continue the conversation").
 
 Interface signature (`internal/pkg/agentruntime/runner.go`):
 
@@ -574,6 +579,7 @@ Only touch this when adding new fields:
 - `make generate` regenerates the `frontend/wailsjs/` bindings.
 - Editor UI (`frontend/src/components/agentre/agent-backends.tsx` + `agent-backends-utils.ts`): add the type option and new-field form controls — **use shadcn `@/components/ui/*` uniformly**, and do not add a native `<select>`.
 - Capability gating: the frontend hooks `useBackendCapabilities` / `useSessionCapabilities` (`frontend/src/components/agentre/capability/`) call the Wails bindings `GetBackendCapabilities` / `GetSessionCapabilities` (`internal/app/chat.go` → `chat_svc/ipc/capability.go`), returning `Capabilities.Set` + `PermissionModeMeta`. The component reads `caps.has("steer")` / `caps.has("set_permission_mode")` etc. to gate the steer chip / abort button / permission mode pill / ask_user_question card. After adding a new cap to the capability enum, there is no need to change the hook — only change the consuming end.
+- Session changed-file surfacing: the chat context sidebar's Files view is derived from persisted `ChatMessage.blocks` in `frontend/src/components/agentre/chat-context-sidebar/derive.ts`. Those blocks use the generated Wails field names `toolName` / `toolInput` (not backend-protocol names such as `name` / `input`). A backend that edits files must register its exact mutating tool name and path shape there and cover it with a fixture using the real `ChatBlock` wire shape; current mappings include Claude Code `Edit` / `Write` / `MultiEdit` with `file_path`, Codex `file_change` with `changes[].path` (plus legacy `apply_patch`), and Pi `edit` / `write` with `path`.
 
 ### 2.8 OpenClaw Gateway backend (implemented reference)
 
@@ -614,7 +620,7 @@ To make this path work:
 
 ## 4. The mandatory TDD / BDD test checklist
 
-**In the Red phase, write, run, and see the test fail first, then implement.** Do not write implementation code without a failing test — this is the hard rule of [development.md](development.md) §0.
+**In the Red phase, write, run, and see the test fail first, then implement.** Do not write implementation code without a failing test — this is the hard rule of [develop.md](develop.md#tdd--bdd-workflow).
 
 | Test | Location | What it verifies |
 | --- | --- | --- |
@@ -629,9 +635,10 @@ To make this path work:
 | Prober | `agent_backend_svc/prober_test.go` | provider missing / network error / normal tool loop all translate to an appropriate reply/err |
 | Wire round-trip | `runtimes/remote/wire/wire_test.go` | the new Event / new sentinel codec is symmetric |
 | Daemon registry | `daemon/runtime_imports_test.go` | the new backend appears in `RegisteredRuntimes()` |
+| Frontend changed-file derivation | `frontend/src/components/agentre/chat-context-sidebar/__tests__/derive.test.ts` | mutating tool blocks use the generated `toolName` / `toolInput` shape and surface every edited path in the Files view |
 | Service create/update/delete | `agent_backend_svc/agent_backend_test.go` | mockgen mock repo, verifying validation + persisted fields |
 
-repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a real SQLite** — see [development.md](development.md) §test stack.
+repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a real SQLite** — see [testing.md](testing.md) §test stack.
 
 ---
 
@@ -646,7 +653,7 @@ repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a re
 7. **Do not invent your own error to express `ErrNoActiveTurn` / `ErrUnsupported`**. These sentinels are transparent across processes; an invented string would leave chat_svc unable to translate it.
 8. **Do not let the runtime reverse-depend on repository / chat_svc**. The daemon process did not bootstrap the repo — one call would nil-panic. State is returned via `RunResult`.
 9. **Do not ignore ctx**. After the ctx received by `Run` is canceled, it must unblock all I/O — this is the prerequisite for chat_svc to implement the "Stop" button (claudecode via control_request, codex via turn/interrupt, builtin via canceling turnCtx).
-10. **Do not do a drive-by refactor in the same commit that adds a capability**. The diff only touches the producer + its tests. When you see unrelated dirty data, flag it first — see CLAUDE.md / AGENTS.md §3 / [development.md](development.md) §Fix Discipline.
+10. **Do not do a drive-by refactor in the same commit that adds a capability**. The diff only touches the producer + its tests. When you see unrelated dirty data, flag it first — see [AGENTS.md](../AGENTS.md#high-priority-constraints-mandatory-non-negotiable) and [develop.md](develop.md#fix-discipline-hard-constraint).
 
 ---
 
@@ -666,14 +673,14 @@ repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a re
 - [ ] Remote: the `runtime_imports.go` blank import has been added; the new Event / sentinel has the wire codec + round-trip test added
 - [ ] The Wails type's new fields have stable json tags; `make generate` has regenerated `frontend/wailsjs/`
 - [ ] The Prober has been registered in `proberRegistry`; the CLI-kind backend's env wiring is in `agentruntime/clienv.go` and shared with the chat path
-- [ ] Key flows are logged: `logger.Ctx(ctx)`, message uses the lowercase `package.Method:` prefix, fields use `zap.Xxx` (see [development.md](development.md) §logging)
+- [ ] Key flows are logged: `logger.Ctx(ctx)`, message uses the lowercase `package.Method:` prefix, fields use `zap.Xxx` (see [observability.md](observability.md))
 - [ ] `make check` (lint + test) all passes; the new package's service/repository layer coverage ≥80%
 
 ---
 
 ## 7. 技能包（Skill Pack / plugin）注入 —— `CapSkills`
 
-> 已落地，`CapSkills` 已并入 §0.5 矩阵。代码：`internal/pkg/agentskill`（leaf 目录域）+ `internal/service/skill_svc`（组合服务）+ `chat_svc/turn_skills.go`（注入接缝）+ `runtimes/claudecode/skills.go`（`--settings` 渲染）+ `runtimes/codex/session.go`（`--config plugins.*.enabled` 渲染）。设计 / CLI 实测快照见 `superpowers/specs/2026-06-12-agent-skills-tools-design.md` 与 `superpowers/plans/2026-06-12-agent-skills-pr1-backend.md`（归档稿，不随代码更新）。
+> 已落地，`CapSkills` 已并入 §0.5 矩阵。代码：`internal/pkg/agentskill`（leaf 目录域）+ `internal/service/skill_svc`（组合服务）+ `chat_svc/turn_skills.go`（注入接缝）+ `runtimes/claudecode/skills.go`（`--settings` 渲染）+ `runtimes/codex/session.go`（`--config plugins.*.enabled` 渲染）。
 >
 > 给 agent 按 **plugin / skill-pack** 粒度配技能，是与 `CapMCPTools` 同构的 launch-time 注入：per-agent 配置 → spawn 时 CLI 配置覆盖 → 每会话子进程独立。
 

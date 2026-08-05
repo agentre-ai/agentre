@@ -1459,6 +1459,56 @@ func TestStream_UserMessageContentItemEmitsTextEvent(t *testing.T) {
 	}
 }
 
+func TestStream_AgentMessageStringContentEmitsTextEvent(t *testing.T) {
+	// Given Codex app-server completes an agentMessage with content encoded as a
+	// string (observed with DeepSeek Responses through the AgentRE gateway),
+	// when the notification is handled, then the string is normalized to text.
+	s := &Stream{events: make(chan Event, 1)}
+	seen := map[string]struct{}{}
+	raw := json.RawMessage(`{"threadId":"thr-1","item":{"type":"agentMessage","id":"agent-1","content":"deepseek reply"}}`)
+
+	done := s.handleInbound(context.Background(), appInbound{
+		Kind:   appInboundNotification,
+		Method: appMethodItemCompleted,
+		Params: raw,
+	}, seen)
+	require.False(t, done)
+
+	select {
+	case ev := <-s.events:
+		assert.Equal(t, EventTextDelta, ev.Kind)
+		assert.Equal(t, "deepseek reply", ev.Text)
+		assert.Equal(t, "thr-1", ev.SessionID)
+	default:
+		t.Fatal("missing agent message text event")
+	}
+}
+
+func TestStream_AgentMessageStringArrayContentEmitsTextEvent(t *testing.T) {
+	// Given the same compatible provider emits agentMessage content as an
+	// array of strings, then each element is normalized without rejecting the
+	// entire app-server notification.
+	s := &Stream{events: make(chan Event, 1)}
+	seen := map[string]struct{}{}
+	raw := json.RawMessage(`{"threadId":"thr-1","item":{"type":"agentMessage","id":"agent-1","content":["deepseek ","reply"]}}`)
+
+	done := s.handleInbound(context.Background(), appInbound{
+		Kind:   appInboundNotification,
+		Method: appMethodItemCompleted,
+		Params: raw,
+	}, seen)
+	require.False(t, done)
+
+	select {
+	case ev := <-s.events:
+		assert.Equal(t, EventTextDelta, ev.Kind)
+		assert.Equal(t, "deepseek reply", ev.Text)
+		assert.Equal(t, "thr-1", ev.SessionID)
+	default:
+		t.Fatal("missing agent message text event")
+	}
+}
+
 func TestStream_CompactBoundaryDedupesContextCompactionNotifications(t *testing.T) {
 	s := &Stream{
 		events:         make(chan Event, 4),

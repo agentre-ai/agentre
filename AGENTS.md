@@ -9,10 +9,11 @@ This file provides unified guidance for all AI coding agents (Claude Code, Codex
 - The Go module path is `github.com/agentre-ai/agentre`.
 - Frontend-backend IPC only goes through the Wails bindings in `internal/app`; the generated bindings live in `frontend/wailsjs`; **do not add HTTP-style app APIs**.
 
-This repository produces two binaries:
+This repository produces three binaries:
 
-- **`agentre`** (root `main.go`) — the desktop app. It also doubles as a CLI shim: `agentre claudecode …` short-circuits to `internal/cli/claudecodecmd` before booting wails/cago (used by Claude Code hook subprocesses).
+- **`agentre`** (root `main.go`) — the desktop app, **GUI-only**. It no longer routes any CLI subcommand; the hook shim moved out (see `agrctl`).
 - **`agentred`** (`cmd/agentred/`) — a headless daemon that executes claude-code / codex subprocesses on behalf of a paired desktop over JSON-RPC-over-WebSocket on the LAN. The daemon-side handlers live in `internal/daemon/`.
+- **`agrctl`** (`cmd/agrctl/`, `make agrctl`) — a small companion CLI carrying the `claudecode` hook shim (`internal/cli/claudecodecmd`) and the `ctl` control CLI (`internal/cli/ctlcmd`). The app installs it under `<AppDataDir>/bin` and points the Claude Code hooks at it, so a hook subprocess never boots the GUI binary.
 
 ## High-Priority Constraints (mandatory, non-negotiable)
 
@@ -20,7 +21,7 @@ The following are hard rules. If the current task conflicts with them, **stop an
 
 1. **Strict TDD / BDD: Red → Green → Refactor, no exceptions.**
    - For a new feature, first write a BDD-style behavior spec (`Given … When … Then …` or goconvey `Convey("when X, then Y")`) covering the happy path plus at least one boundary/error case, **then write the implementation**.
-   - Do not write implementation code without a failing test. See [docs/development.md](docs/development.md) for details.
+   - Do not write implementation code without a failing test. See [docs/develop.md](docs/develop.md) for details.
 2. **Verify the bug exists before fixing it.**
    - Write a regression test that reproduces the failure, **run it and watch it fail** (and fail for the right reason), then start patching.
    - If the bug genuinely cannot be reproduced in a test, **tell the user explicitly**, and then discuss the patch approach. Do not silently "this is probably how to fix it" and change code.
@@ -52,36 +53,37 @@ Run every new package / type / function through this before merging:
 
 **High cohesion** — one set of packages per domain (`<domain>_entity` / `<domain>_repo` / `<domain>_svc`); open a new package for a new domain, and don't stuff unrelated functionality into a vaguely related old package. Put single-entity validation / state / serialization in the rich domain entity (`Check` / `IsActive` / `GetXxx`); the service only does cross-entity coordination and external-dependency orchestration, without piling on rules. Wails bindings are one file per domain (`internal/app/<domain>.go`), and methods only parse → `svc.Xxx().Method` → return. Put cross-cutting concerns in `internal/pkg/<concern>` (each package single-responsibility and self-contained), not scattered into domains.
 
-**Low coupling** — dependencies flow one way: `internal/app → service → repository → model/entity`; `internal/pkg` is a leaf cross-cutting layer, referenced by every layer but **never reverse-importing** service / repository (currently zero reverse dependencies — hold that line). A service depends only on the repository **interface** (DIP); the implementation is wired up via `RegisterXxx(impl)` in bootstrap/main — this is the prerequisite for mock unit tests. Cross-package collaboration only goes through accessors (`xxx_repo.Xxx()` / `xxx_svc.Default()`); do not `new` someone else's implementation or directly `db.Ctx` into another domain's tables. Don't skip layers: `internal/app` does not touch repository / db, and a service does not bypass its own repo to hand-write raw SQL. Frontend-backend only goes through the Wails binding (no HTTP-style app API added), and remote-execution details are locked behind the `internal/daemon/client` interface.
+**Low coupling** — dependencies flow one way: `internal/app → service → repository → model/entity`; `internal/pkg` is a leaf cross-cutting layer, referenced by every layer but **never reverse-importing** service / repository (currently zero reverse dependencies — hold that line). A service depends only on the repository **interface** (DIP); the implementation is wired up via `RegisterXxx(impl)` in bootstrap/main — this is the prerequisite for mock unit tests. Cross-package collaboration only goes through accessors (`xxx_repo.Xxx()` / `xxx_svc.Default()`); do not `new` someone else's implementation or directly `db.Ctx` into another domain's tables. Don't skip layers: `internal/app` does not **query** through repository / db to serve a request (importing a repo there purely to wire `RegisterXxx` / `RegisterDeps` is the composition root, and is fine), and a service does not bypass its own repo to hand-write raw SQL. Frontend-backend only goes through the Wails binding (no HTTP-style app API added), and remote-execution details are locked behind the `internal/daemon/client` interface.
 
-> The above are the key points; for more concrete examples see [docs/development.md](docs/development.md), and for layering and dependency direction see [docs/architecture.md](docs/architecture.md).
+> The above are the key points; for more concrete examples see [docs/develop.md](docs/develop.md), and for layering and dependency direction see [docs/architecture.md](docs/architecture.md).
 
 ## Development conventions (required reading)
 
 Before writing code / fixing bugs / writing tests, read these docs first — the rules are in them:
 
-- [docs/architecture.md](docs/architecture.md) — repository layout, cago layering conventions (entity / repo / service / wails binding), remote-execution architecture, the `AppDataDir` storage path, the `AGENTRE_DATA_DIR` / `AGENTRE_ENV` environment variables (Debug logging is now controlled by the "Settings → Version & Update" toggle), the database and migration flow, and the list of generated files.
-- [docs/development.md](docs/development.md) — Red→Green→Refactor, SOLID, high cohesion / low coupling, Fix Discipline, the test stack (`testutils.Database(t)` + sqlmock + mockgen + goconvey), commit style, logging conventions, and `.golangci.yml` exceptions.
-- [docs/frontend.md](docs/frontend.md) — the mandatory shadcn `@/components/ui/*` convention, pnpm, formatting / lint (`make lint` / `gofmt` / `goimports`), commit style, and the module path.
-- [docs/DESIGN.md](docs/DESIGN.md) — the frontend **design-system reference**: color tokens (full light/dark values), the 16-color agent palette + run-status system, theming, the desktop window shell, the component palette, motion, state patterns, accessibility, and the new-page recipe. The visual-language companion to `frontend.md` (which owns the enforced shadcn / i18n / lint rules).
+- [docs/architecture.md](docs/architecture.md) — repository layout, cago layering conventions (entity / repo / service / wails binding), remote-execution architecture, the `AppDataDir` storage path, the `AGENTRE_DATA_DIR` / `AGENTRE_ENV` environment variables (Debug logging is now controlled by the "Settings → Version & Updates" toggle), the database and migration flow, and the list of generated files.
+- [docs/develop.md](docs/develop.md) — Red→Green→Refactor, SOLID, high cohesion / low coupling, Fix Discipline, code style, the **enforced-rules table** (every convention that has a real mechanical check, with its guard test and exemption), the persistent-data process, commit / PR flow, and the CI gate.
+- [docs/testing.md](docs/testing.md) — how a test is **designed**: the applicability gate, choosing a boundary, covering the behavior space, the test stack (`testutils.Database(t)` + sqlmock + mockgen + goconvey + vitest), guard tests, what not to write, cleanup boundaries, and `//nolint` exceptions.
+- [docs/observability.md](docs/observability.md) — the logging convention: the single `cago/pkg/logger` entry point, level selection, the five mandatory instrumentation points, the `package.Method:` prefix with **camelCase** `zap` fields, and the never-log red line. (No metrics/tracing in this project.)
+- [docs/frontend.md](docs/frontend.md) — the mandatory shadcn `@/components/ui/*` convention, pnpm, formatting / lint (`make lint` / `gofmt` / `goimports`), and the module path.
+- [docs/design.md](docs/design.md) — the frontend **design-system reference**: color tokens (full light/dark values), the 16-color agent palette + run-status system, theming, the desktop window shell, the component palette, motion, state patterns, accessibility, and the new-page recipe. The visual-language companion to `frontend.md` (which owns the enforced shadcn / i18n / lint rules).
 - [docs/debugging.md](docs/debugging.md) — sqlite3 / jq / log-filtering commands, the table-to-feature mapping, the command checklist for reproducing production bugs, and common pitfalls (on macOS the `Application Support` path must be quoted).
 - [docs/agent-backend.md](docs/agent-backend.md) — the full path for wiring up a new AI agent backend (entity / migration / runtime / translator / capability / daemon import / frontend gating), including the TDD test checklist and common anti-patterns.
 - [docs/session-lifecycle.md](docs/session-lifecycle.md) — rules for creating and reusing `chat_sessions`, including future issue/hook dispatch and remote-execution ownership.
-- [docs/e2e-harness-guide.md](docs/e2e-harness-guide.md) — the Playwright + fake-runtime e2e harness (root `e2e/` package): how to run (`make e2e` / `make e2e-scratch`), ad-hoc **feature verification** via throwaway specs in the gitignored `e2e/scratch/` (vs. the small committed `e2e/tests/` core suite), the cross-platform `run-e2e.mjs` runner, the build-tag seam that keeps the fake out of production builds, the `node:sqlite` DB oracle, data isolation / seeding, and how to write or extend a spec.
+- [e2e/README.md](e2e/README.md) — the Playwright + fake-runtime e2e harness (root `e2e/` package): how to run (`make e2e` / `make e2e-scratch`), ad-hoc **feature verification** via throwaway specs in the gitignored `e2e/scratch/` (vs. the small committed `e2e/tests/` core suite), the cross-platform `run-e2e.mjs` runner, the build-tag seam that keeps the fake out of production builds, the `node:sqlite` DB oracle, data isolation / seeding, and how to write or extend a spec.
 - [docs/codex-backend-eval.md](docs/codex-backend-eval.md) — the deterministic, token-free Codex app-server behavior eval, state-machine invariants, machine-readable command, scenario rubric, and optional real-CLI test boundary.
-- [docs/doc-maintenance.md](docs/doc-maintenance.md) — required reading before changing any contributor doc (`AGENTS.md` / `CLAUDE.md` / `docs/*`): git-aware fact-checking, fixing or deleting stale facts directly (leaving no deprecation comments), doc organization rules, and the one-command verification script.
-- [docs/specs/*](docs/specs) — approved executable behavior specs for active changes: requirements, non-goals, implementation decisions, test seams, and traceable acceptance criteria.
-
+- [docs/verification.md](docs/verification.md) — what a verification run has to **leave behind**: when driving the real app is warranted at all, the one-scenario-one-directory evidence layout under `e2e/scratch/<task-name>/`, creating `report.md` **before** the run, picking the evidence form by what was verified, reporting honestly (never describing red as green), and the one-place-only verdict table for spec acceptance. The template it copies is [docs/references/verification-report-template.md](docs/references/verification-report-template.md).
+- [docs/documentation.md](docs/documentation.md) — required reading before changing any contributor doc (`AGENTS.md` / `CLAUDE.md` / `docs/*`): git-aware fact-checking, fixing or deleting stale facts directly (leaving no deprecation comments), doc organization rules, and the one-command verification script.
 > See the cago skill (`/cago`) for details — complete controller / service / repo / cron / queue unit-test examples.
 
 ## Key constraints (essential facts)
 
 - **The Wails binding layer only does parse → svc.Xxx().Method → return**; business logic stuffed into the `App` struct will be missed by go test.
 - **Fixing a bug must start with a failing regression test**; do not add a guard at the consumer to mask a producer bug; do not smuggle a drive-by refactor / formatter pass into the same commit.
-- **Repository unit tests always use `testutils.Database(t)` + sqlmock**; spinning up a real SQLite is forbidden (the migrations themselves and `internal/bootstrap/cago_test.go` are the only exceptions).
-- **Service unit tests** generate a repo mock via `mockgen` + inject it via `RegisterXxx`, and **do not connect to a DB**.
+- **Repository unit tests always use `testutils.Database(t)` + sqlmock**; spinning up a real SQLite is forbidden (the migrations themselves and `internal/bootstrap/cago_test.go` are the only exceptions). See [docs/testing.md](docs/testing.md).
+- **New or modified service unit tests** generate a repo mock via `mockgen`, inject it via `RegisterXxx`, and **do not connect to a DB**. Legacy sqlmock-backed service tests are migration debt; do not copy or expand them.
 - **Append new migrations to the end of `migrationList()`**; modifying an existing migration is forbidden; prefer native SQL for DDL, avoid relying on `AutoMigrate`.
-- **Critical flows must log**: use `logger.Ctx(ctx)`, with a lowercase `package.Method:` prefix in the message, and dynamic values passed through `zap.Xxx(...)` fields.
+- **Critical flows must log**: use `logger.Ctx(ctx)`, with a lowercase `package.Method:` prefix in the message, and dynamic values passed through **camelCase** `zap.Xxx(...)` fields. See [docs/observability.md](docs/observability.md).
 - **Frontend form controls uniformly use shadcn `@/components/ui/*`**; adding a native `<select>` is forbidden.
 - **New visible frontend UI copy must go through i18n**: use `react-i18next`'s `t(...)` and `frontend/src/i18n/locales/{zh-CN,en}/common.json`, do not add hardcoded Chinese; `i18next/no-literal-string` blocks hardcoded Chinese UI copy in JSX. Do not introduce a side-channel text-rewrite mechanism. Do not translate dynamic content such as agent / user / terminal / markdown. See [docs/frontend.md](docs/frontend.md) for details.
 
@@ -103,6 +105,9 @@ make check            # lint + test
 make mock             # go generate ./... (go.uber.org/mock)
 make clean            # rm build/bin frontend/dist coverage.*
 
+# agrctl companion CLI (claudecode hook shim + ctl control CLI)
+make agrctl                  # build → build/bin/agrctl (the app installs it into <AppDataDir>/bin)
+
 # agentred daemon (remote execution box)
 make agentred                # build local-platform binary → build/bin/agentred
 make agentred-linux          # cross-build linux/amd64 (override via AGENTRED_GOOS/ARCH)
@@ -113,6 +118,7 @@ go test -race -run TestName ./internal/service/chat_svc/...
 go test -race ./internal/repository/llm_provider_repo -run TestName
 go test -race ./pkg/codex -run TestName
 cd frontend && pnpm test -- path/to/file.test.tsx
+cd frontend && pnpm exec tsc -b --noEmit     # typecheck — vitest does NOT check types
 cd frontend && pnpm install                  # pnpm is source of truth, not npm
 ```
 

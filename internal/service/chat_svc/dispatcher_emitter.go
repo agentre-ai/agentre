@@ -47,6 +47,7 @@ func (d *dispatcherEmitter) Emit(ctx context.Context, stream string, raw any) {
 		ev.ToolName = stringOf(m, "toolName")
 		ev.ToolInput = mapOf(m, "toolInput")
 		ev.ParentToolCallID = stringOf(m, "parentToolCallId")
+		ev.SubagentRunID = stringOf(m, "subagentRunId")
 		// Canonical: runtime translator 算出的统一识别;handler 走 raw_tool.go 透传
 		// (m["canonical"] = tc2.Canonical, 类型 canonical.CanonicalTool)。
 		if c, ok := m["canonical"].(canonical.CanonicalTool); ok {
@@ -58,6 +59,7 @@ func (d *dispatcherEmitter) Emit(ctx context.Context, stream string, raw any) {
 		ev.ToolResult, _ = m["toolResult"].(string)
 		ev.IsError, _ = m["isError"].(bool)
 		ev.ParentToolCallID = stringOf(m, "parentToolCallId")
+		ev.SubagentRunID = stringOf(m, "subagentRunId")
 		ev.ToolResultMeta = mapOf(m, "toolResultMeta")
 
 	case string(StreamAskUserQuestion):
@@ -129,6 +131,8 @@ func (d *dispatcherEmitter) Emit(ctx context.Context, stream string, raw any) {
 				TotalTokens:     ev.Subagent.TotalTokens,
 				DurationMs:      ev.Subagent.DurationMs,
 				Status:          ev.Subagent.Status,
+				Mode:            ev.Subagent.Mode,
+				Runs:            agentSpawnRunsFromRuntime(ev.Subagent.Runs),
 			})
 		}
 
@@ -345,5 +349,6 @@ func usageFromMap(raw any) *ChatStreamUsage {
 		CacheCreationTokens: intOf(m, "cacheCreationTokens"),
 		ReasoningTokens:     intOf(m, "reasoningTokens"),
 		TotalInputTokens:    intOf(m, "totalInputTokens"),
+		ContextWindow:       intOf(m, "contextWindow"),
 	}
 }

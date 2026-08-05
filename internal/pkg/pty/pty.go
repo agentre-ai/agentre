@@ -8,12 +8,13 @@ import "context"
 
 // Spec is the parameters needed to spawn a PTY.
 type Spec struct {
-	Cwd     string
-	Shell   string   // empty → backend decides (typically $SHELL else /bin/sh)
-	Command string   // empty → interactive login shell; non-empty → run `$SHELL -l -c <Command>`
-	Env     []string // appended to base env; "TERM=xterm-256color" is injected by backend
-	Cols    uint16
-	Rows    uint16
+	TerminalID string // runtime-only correlation identity; never persisted
+	Cwd        string
+	Shell      string   // empty → backend decides (typically $SHELL else /bin/sh)
+	Command    string   // empty → interactive login shell; non-empty → run `$SHELL -l -c <Command>`
+	Env        []string // appended to base env; "TERM=xterm-256color" is injected by backend
+	Cols       uint16
+	Rows       uint16
 }
 
 // ExitInfo is delivered exactly once on Handle.Exit() when the PTY dies.

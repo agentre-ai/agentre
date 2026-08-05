@@ -3,7 +3,6 @@
 Desktop UI for pairing and managing agentred LAN devices.
 
 Spec: `docs/superpowers/specs/2026-05-21-desktop-remote-device-mvp-design.md`
-Plan: `docs/superpowers/plans/2026-05-21-desktop-remote-device.md`
 
 ## Components
 

@@ -9,12 +9,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +24,86 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLAN_GivenOverlappingConnections_WhenSecondRegistersSameMethod_ThenEachKeepsPrivateHandler(t *testing.T) {
+	bootstrap := NewRegistry()
+	bootstrap.Register("static.identity", func(context.Context, json.RawMessage) (any, error) {
+		return "bootstrap", nil
+	})
+
+	accepted := make(chan *Conn, 2)
+	var nextID atomic.Int32
+	srv := NewLANServer(LANOpts{
+		Host:     "127.0.0.1",
+		Port:     0,
+		Registry: bootstrap,
+		OnConn: func(c *Conn) {
+			identity := fmt.Sprintf("connection-%d", nextID.Add(1))
+			c.Registry().Register("connection.identity", func(context.Context, json.RawMessage) (any, error) {
+				return identity, nil
+			})
+			accepted <- c
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Run(ctx) }()
+	require.Eventually(t, func() bool { return srv.Addr() != "" }, time.Second, 10*time.Millisecond)
+
+	clientA := dialLANClient(t, srv.URL())
+	serverConnA := <-accepted
+	assert.JSONEq(t, `"bootstrap"`, string(callLANRPC(t, clientA, 1, "static.identity").Result))
+	assert.JSONEq(t, `"connection-1"`, string(callLANRPC(t, clientA, 2, "connection.identity").Result))
+
+	clientB := dialLANClient(t, srv.URL())
+	serverConnB := <-accepted
+	assert.JSONEq(t, `"bootstrap"`, string(callLANRPC(t, clientB, 1, "static.identity").Result))
+	assert.JSONEq(t, `"connection-1"`, string(callLANRPC(t, clientA, 3, "connection.identity").Result))
+	assert.JSONEq(t, `"connection-2"`, string(callLANRPC(t, clientB, 2, "connection.identity").Result))
+
+	_, err := bootstrap.Dispatch(context.Background(), "connection.identity", nil)
+	require.ErrorIs(t, err, ErrMethodNotFound, "OnConn must not mutate the bootstrap registry")
+
+	require.NoError(t, clientA.Close())
+	require.Eventually(t, func() bool {
+		select {
+		case <-serverConnA.Done():
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+	select {
+	case <-serverConnB.Done():
+		t.Fatal("closing connection A must not close connection B")
+	default:
+	}
+	assert.JSONEq(t, `"connection-2"`, string(callLANRPC(t, clientB, 3, "connection.identity").Result))
+}
+
+func dialLANClient(t *testing.T, rawURL string) *websocket.Conn {
+	t.Helper()
+	c, hsResp, err := websocket.DefaultDialer.Dial(rawURL, nil)
+	require.NoError(t, err)
+	if hsResp != nil {
+		_ = hsResp.Body.Close()
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+func callLANRPC(t *testing.T, c *websocket.Conn, id int, method string) Frame {
+	t.Helper()
+	require.NoError(t, c.WriteJSON(Frame{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage(fmt.Sprintf("%d", id)),
+		Method:  method,
+	}))
+	var resp Frame
+	require.NoError(t, c.ReadJSON(&resp))
+	require.Nil(t, resp.Error)
+	return resp
+}
 
 func TestLAN_ServerAcceptsWS(t *testing.T) {
 	reg := NewRegistry()

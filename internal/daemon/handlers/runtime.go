@@ -198,8 +198,8 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	}
 
 	h.register(p.SessionID, runtimeSession{backendType: bt})
-	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
-		p.SessionID, be.Type, p.AgentID, p.Cwd, len(p.UserText))
+	log.Printf("runtime.run: session started sid=%d backend=%s agentId=%d userTextBytes=%d",
+		p.SessionID, be.Type, p.AgentID, len(p.UserText))
 	go h.fanout(p.SessionID, events, result)
 	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
 	// AutonomousTurns(sid) 推到 client。session 已 spawn,此刻订阅才拿得到 channel。
@@ -218,7 +218,8 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 	for ev := range ch {
 		raw, err := json.Marshal(ev)
 		if err != nil {
-			log.Printf("runtime.event: marshal failed sid=%d kind=%T err=%v", sid, ev, err)
+			log.Printf("runtime.event: marshal failed sid=%d kind=%T errClass=%T errBytes=%d",
+				sid, ev, err, len(err.Error()))
 			continue
 		}
 		count++
@@ -228,10 +229,11 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 			SessionID: sid,
 			Event:     json.RawMessage(raw),
 		}); perr != nil {
-			log.Printf("runtime.event: notify failed sid=%d n=%d kind=%s err=%v", sid, count, kind, perr)
+			log.Printf("runtime.event: notify failed sid=%d n=%d kind=%s eventBytes=%d errClass=%T errBytes=%d",
+				sid, count, kind, len(raw), perr, len(perr.Error()))
 		} else if !isNoisyEventKind(kind) {
 			// text/thinking/usage 频率极高,kindHist 汇总即可,不逐条 log。
-			log.Printf("runtime.event: sid=%d n=%d kind=%s payload=%s", sid, count, kind, string(raw))
+			log.Printf("runtime.event: sid=%d n=%d kind=%s eventBytes=%d", sid, count, kind, len(raw))
 		}
 	}
 	frame := runResultToFrame(sid, result)
@@ -240,10 +242,11 @@ func (h *RuntimeHandlers) fanout(sid int64, ch <-chan agentruntime.Event, result
 	// 的子进程手里 token 失效。
 	h.unregister(sid)
 	if perr := h.deps.Notify.Notify(wire.NotifyRunResultDone, frame); perr != nil {
-		log.Printf("runtime.runResultDone: notify failed sid=%d err=%v", sid, perr)
+		log.Printf("runtime.runResultDone: notify failed sid=%d errClass=%T errBytes=%d",
+			sid, perr, len(perr.Error()))
 	}
-	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
-		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
+	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v hasStopErr=%t stopErrBytes=%d stopErrCode=%d",
+		sid, count, kindHist, frame.StopErrMsg != "", len(frame.StopErrMsg), frame.StopErrCode)
 }
 
 // startAutonomousFanout 每会话起一个 goroutine,把真实 runtime 的自主续轮转发到
@@ -269,28 +272,34 @@ func (h *RuntimeHandlers) forwardAutonomousTurn(sid int64, at agentruntime.Auton
 		SessionID: sid,
 		Trigger:   at.Trigger,
 	}); perr != nil {
-		log.Printf("runtime.autonomousTurn.started: notify failed sid=%d err=%v", sid, perr)
+		log.Printf("runtime.autonomousTurn.started: notify failed sid=%d errClass=%T errBytes=%d",
+			sid, perr, len(perr.Error()))
 	}
 	count := 0
 	for ev := range at.Events {
 		raw, err := json.Marshal(ev)
 		if err != nil {
-			log.Printf("runtime.autonomousTurn.event: marshal failed sid=%d kind=%T err=%v", sid, ev, err)
+			log.Printf("runtime.autonomousTurn.event: marshal failed sid=%d kind=%T errClass=%T errBytes=%d",
+				sid, ev, err, len(err.Error()))
 			continue
 		}
 		count++
+		kind := reflect.TypeOf(ev).Name()
 		if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnEvent, wire.EventFrame{
 			SessionID: sid,
 			Event:     json.RawMessage(raw),
 		}); perr != nil {
-			log.Printf("runtime.autonomousTurn.event: notify failed sid=%d n=%d err=%v", sid, count, perr)
+			log.Printf("runtime.autonomousTurn.event: notify failed sid=%d n=%d kind=%s eventBytes=%d errClass=%T errBytes=%d",
+				sid, count, kind, len(raw), perr, len(perr.Error()))
 		}
 	}
 	frame := runResultToFrame(sid, at.Result)
 	if perr := h.deps.Notify.Notify(wire.NotifyAutonomousTurnDone, frame); perr != nil {
-		log.Printf("runtime.autonomousTurn.done: notify failed sid=%d err=%v", sid, perr)
+		log.Printf("runtime.autonomousTurn.done: notify failed sid=%d errClass=%T errBytes=%d",
+			sid, perr, len(perr.Error()))
 	}
-	log.Printf("runtime.autonomousTurn: forwarded sid=%d trigger=%s events=%d", sid, at.Trigger, count)
+	log.Printf("runtime.autonomousTurn: forwarded sid=%d trigger=%s events=%d hasStopErr=%t stopErrBytes=%d stopErrCode=%d",
+		sid, at.Trigger, count, frame.StopErrMsg != "", len(frame.StopErrMsg), frame.StopErrCode)
 }
 
 // isNoisyEventKind 标记单 turn 内可能上百次出现的事件类型,逐条 log 会刷屏。

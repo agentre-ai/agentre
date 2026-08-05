@@ -33,7 +33,7 @@ const triggerBackgroundTask = "background_task"
 // user 帧(ParentToolUseID==ToolUseID)、子 agent 的 task_progress/task_updated 等。
 //
 // 消费方(chat_svc)据 ToolUseID 定位发起 subagent 的那条「发起消息」,把事件嵌套渲染回那张
-// AgentSpawnCard(见 docs/superpowers/plans/2026-06-23-bg-subagent-live-nesting.md)。
+// AgentSpawnCard。
 type SubagentActivity struct {
 	ToolUseID string
 	Events    <-chan Event

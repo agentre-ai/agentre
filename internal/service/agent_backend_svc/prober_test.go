@@ -3,6 +3,8 @@ package agent_backend_svc
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -239,6 +241,127 @@ func TestBuiltinProber_PassesProviderModelToAgent(t *testing.T) {
 		assert.Equal(t, "pong", strings.TrimSpace(reply))
 		assert.Equal(t, "claude-sonnet-4-6", capture.Model(),
 			"builtinProber 必须把 LLMProvider.Model 注入 coding.WithModel；空 model 会让真实 LLM 调用以 400 失败")
+	})
+}
+
+func TestBuildPiAgentProviderProbe(t *testing.T) {
+	Convey("Given a piagent backend bound to an active provider", t, func() {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		repoMock := mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl)
+		llm_provider_repo.RegisterLLMProvider(repoMock)
+		t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+
+		p := &llm_provider_entity.LLMProvider{
+			ProviderKey: "key-pi",
+			Type:        string(llm_provider_entity.TypeOpenAIChat),
+			Name:        "PiProvider",
+			Model:       "deepseek-v3",
+			APIKey:      "sk-pi-1",
+			BaseURL:     "https://pi.example",
+			Status:      consts.ACTIVE,
+		}
+		repoMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(p, nil)
+
+		Convey("When assembling the probe params Then the provider extension is materialized, env gets the API key and model is agentre-<key>/<model>", func() {
+			exts, envOut, modelOut, err := buildPiAgentProviderProbe(context.Background(), &agent_backend_entity.AgentBackend{
+				Type:           string(agent_backend_entity.TypePiAgent),
+				LLMProviderKey: "key-pi",
+			}, map[string]string{"BASE": "1"}, "")
+
+			So(err, ShouldBeNil)
+			So(modelOut, ShouldEqual, "agentre-key-pi/deepseek-v3")
+			So(len(exts), ShouldEqual, 1)
+			ext := exts[0]
+			So(filepath.Base(ext), ShouldStartWith, "agentre-provider-")
+			So(filepath.Base(ext), ShouldEndWith, ".mjs")
+			_, statErr := os.Stat(ext) //nolint:gosec // path returned by the materializer under the test temp data dir
+			So(statErr, ShouldBeNil)
+			// env 在 buildPiAgentEnv 产出的 base 之上叠加 APIKey，不改入参 map。
+			So(envOut["BASE"], ShouldEqual, "1")
+			So(envOut["AGENTRE_PI_API_KEY_keypi"], ShouldEqual, "sk-pi-1")
+			// 决策 #4：扩展文件只含 $ENV_VAR 引用，绝不含明文 APIKey。
+			raw, readErr := os.ReadFile(ext) //nolint:gosec // test-owned temp path
+			So(readErr, ShouldBeNil)
+			So(strings.Contains(string(raw), "sk-pi-1"), ShouldBeFalse)
+		})
+	})
+
+	Convey("Given an unbound piagent backend", t, func() {
+		Convey("When assembling the probe params Then everything stays as today: no extensions, no API key env, model untouched", func() {
+			env := map[string]string{"BASE": "1"}
+			exts, envOut, modelOut, err := buildPiAgentProviderProbe(context.Background(), &agent_backend_entity.AgentBackend{
+				Type: string(agent_backend_entity.TypePiAgent),
+			}, env, "")
+
+			So(err, ShouldBeNil)
+			So(exts, ShouldBeNil)
+			So(modelOut, ShouldEqual, "")
+			So(envOut, ShouldResemble, env)
+		})
+	})
+
+	Convey("Given a piagent backend bound to a missing or inactive provider", t, func() {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		repoMock := mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl)
+		llm_provider_repo.RegisterLLMProvider(repoMock)
+		t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+
+		Convey("When the provider is missing Then an error is returned", func() {
+			repoMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(nil, nil)
+			_, _, _, err := buildPiAgentProviderProbe(context.Background(), &agent_backend_entity.AgentBackend{
+				Type:           string(agent_backend_entity.TypePiAgent),
+				LLMProviderKey: "key-pi",
+			}, map[string]string{}, "")
+			So(err, ShouldNotBeNil)
+		})
+
+		Convey("When the provider is inactive Then an error is returned", func() {
+			inactive := &llm_provider_entity.LLMProvider{
+				ProviderKey: "key-pi",
+				Type:        string(llm_provider_entity.TypeOpenAIChat),
+				Name:        "PiProvider",
+				Model:       "deepseek-v3",
+				APIKey:      "sk-pi-1",
+				BaseURL:     "https://pi.example",
+				Status:      consts.DELETE,
+			}
+			repoMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(inactive, nil)
+			_, _, _, err := buildPiAgentProviderProbe(context.Background(), &agent_backend_entity.AgentBackend{
+				Type:           string(agent_backend_entity.TypePiAgent),
+				LLMProviderKey: "key-pi",
+			}, map[string]string{}, "")
+			So(err, ShouldNotBeNil)
+		})
+	})
+
+	Convey("Given a piagent backend bound to a provider with an empty APIKey", t, func() {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		repoMock := mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl)
+		llm_provider_repo.RegisterLLMProvider(repoMock)
+		t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+
+		p := &llm_provider_entity.LLMProvider{
+			ProviderKey: "key-pi",
+			Type:        string(llm_provider_entity.TypeOpenAIChat),
+			Name:        "PiProvider",
+			Model:       "deepseek-v3",
+			APIKey:      "",
+			BaseURL:     "https://pi.example",
+			Status:      consts.ACTIVE,
+		}
+		repoMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(p, nil)
+
+		Convey("When assembling the probe params Then a config error naming the provider is returned (no spawn, mirrors runtime)", func() {
+			_, _, _, err := buildPiAgentProviderProbe(context.Background(), &agent_backend_entity.AgentBackend{
+				Type:           string(agent_backend_entity.TypePiAgent),
+				LLMProviderKey: "key-pi",
+			}, map[string]string{}, "")
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "key-pi")
+		})
 	})
 }
 

@@ -128,6 +128,7 @@ func TestToChatMessage_NestedToolUse(t *testing.T) {
 			Name:             "Read",
 			Input:            map[string]any{"file_path": "/x.go"},
 			ParentToolCallID: "task-outer-1",
+			SubagentRunID:    "run-1",
 		},
 	}))
 
@@ -139,6 +140,7 @@ func TestToChatMessage_NestedToolUse(t *testing.T) {
 	assert.Equal(t, "Read", cm.Blocks[0].ToolName)
 	assert.Equal(t, "/x.go", cm.Blocks[0].ToolInput["file_path"])
 	assert.Equal(t, "task-outer-1", cm.Blocks[0].ParentToolCallID)
+	assert.Equal(t, "run-1", cm.Blocks[0].SubagentRunID)
 	assert.Nil(t, cm.Blocks[0].Canonical, "内层 step 不走 canonical 路由,由父 agent.spawn 接管")
 }
 
@@ -152,6 +154,7 @@ func TestToChatMessage_NestedToolResult(t *testing.T) {
 			Content:          "hello\n",
 			IsError:          true,
 			ParentToolCallID: "task-outer-1",
+			SubagentRunID:    "run-1",
 		},
 	}))
 
@@ -163,6 +166,7 @@ func TestToChatMessage_NestedToolResult(t *testing.T) {
 	assert.Equal(t, "hello\n", cm.Blocks[0].Text)
 	assert.True(t, cm.Blocks[0].IsError)
 	assert.Equal(t, "task-outer-1", cm.Blocks[0].ParentToolCallID)
+	assert.Equal(t, "run-1", cm.Blocks[0].SubagentRunID)
 }
 
 // TestToChatMessage_SkipsSubagentStateAndPermissionModeChange pins 两个无 UI 元素
@@ -248,6 +252,53 @@ func TestToChatMessage_SubagentStateWithNoMatchingToolUse(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, cm.Blocks, 1, "无匹配 tool_use 时 SubagentStateBlock 仍 skip")
 	assert.Equal(t, "text", cm.Blocks[0].Type)
+}
+
+func TestToChatMessage_NormalizedPiReplayPreservesGrouping(t *testing.T) {
+	m := &chat_entity.Message{ID: 1, SessionID: 9, Role: "assistant"}
+	runs := []agentruntime.SubagentRun{
+		{ID: "run-0", Index: 0, Agent: "scout", Task: "inspect", RequestedModel: "small", Model: "observed", Status: "completed", Summary: "done"},
+		{ID: "run-1", Index: 1, Agent: "worker", Task: "test", Status: "running", LastToolName: "bash"},
+	}
+	require.NoError(t, m.SetBlocks([]blocks.ContentBlock{
+		blocks.ToolUseBlock{ID: "outer", Name: "Vendor__SubAgent", Input: map[string]any{"tasks": []any{}}},
+		chatblocks.SubagentStateBlock{ParentToolCallID: "outer", Mode: "parallel", Runs: runs, Status: "running"},
+		chatblocks.NestedToolUseBlock{ID: "child-0", Name: "Read", ParentToolCallID: "outer", SubagentRunID: "run-0"},
+		chatblocks.NestedToolUseBlock{ID: "child-unknown", Name: "Bash", ParentToolCallID: "outer"},
+	}))
+
+	cm, err := toChatMessage(m)
+	require.NoError(t, err)
+	require.Len(t, cm.Blocks, 3)
+	outer := cm.Blocks[0]
+	require.NotNil(t, outer.Subagent)
+	assert.Equal(t, "parallel", outer.Subagent.Mode)
+	assert.Equal(t, runs, outer.Subagent.Runs)
+	require.NotNil(t, outer.Canonical)
+	require.NotNil(t, outer.Canonical.AgentSpawn)
+	assert.Equal(t, "parallel", outer.Canonical.AgentSpawn.Mode)
+	require.Len(t, outer.Canonical.AgentSpawn.Runs, 2)
+	assert.Equal(t, "small", outer.Canonical.AgentSpawn.Runs[0].RequestedModel)
+	assert.Equal(t, "run-0", cm.Blocks[1].SubagentRunID)
+	assert.Empty(t, cm.Blocks[2].SubagentRunID, "missing run ID must survive as an unassigned fallback step")
+}
+
+func TestConvertOldEventToNew_PreservesSubagentRunID(t *testing.T) {
+	call := convertOldEventToNew(agentruntime.RuntimeEvent{
+		Kind: agentruntime.EventToolUseStart,
+		ToolUse: &agentruntime.ToolUseEvent{
+			ID: "child", ParentToolCallID: "outer", SubagentRunID: "run-1",
+		},
+	}).(agentruntime.ToolCall)
+	assert.Equal(t, "run-1", call.SubagentRunID)
+
+	result := convertOldEventToNew(agentruntime.RuntimeEvent{
+		Kind: agentruntime.EventToolResult,
+		ToolResult: &agentruntime.ToolResultEvent{
+			ToolUseID: "child", ParentToolCallID: "outer", SubagentRunID: "run-1",
+		},
+	}).(agentruntime.ToolResult)
+	assert.Equal(t, "run-1", result.SubagentRunID)
 }
 
 func TestToChatMessage_UnknownBlockFallback(t *testing.T) {

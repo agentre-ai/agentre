@@ -132,6 +132,60 @@ done`)
 	assert.NotContains(t, args, "--session-dir")
 }
 
+func TestProbe_PiAgentForwardsExtensionPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary not portable to windows")
+	}
+	// 绑定供应商的 piagent：prober 把物化后的 provider 扩展透传给 pi client
+	// （--extension <path>，与 chat run 同一 --extension 注入通道）。claudecode /
+	// codex 不消费 Extensions 字段，此处只验证 piagent 分支透传。
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	fake := writeExecutable(t, dir, "pi", `
+printf '%s\n' "$@" > "$AGENTRE_TEST_PI_ARGS"
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"get_state"'*)
+      printf '%s\n' '{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"ephemeral-probe"}}'
+      ;;
+    *'"type":"prompt"'*)
+      printf '%s\n' '{"type":"response","command":"prompt","success":true}'
+      printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"pong"}}'
+      printf '%s\n' '{"type":"agent_end","messages":[],"willRetry":false}'
+      printf '%s\n' '{"type":"agent_settled"}'
+      ;;
+    *'"type":"get_session_stats"'*)
+      printf '%s\n' '{"type":"response","command":"get_session_stats","success":true,"data":{}}'
+      ;;
+  esac
+done`)
+
+	exts := []string{"/ext/agentre-provider-aaa.mjs", "/ext/agentre-provider-bbb.mjs"}
+	resp, err := Probe(context.Background(), ProbeRequest{
+		Type:       "piagent",
+		CLIPath:    fake,
+		Env:        map[string]string{"AGENTRE_TEST_PI_ARGS": argsFile},
+		Extensions: exts,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "pong", resp.Text)
+	argsRaw, err := os.ReadFile(argsFile) //nolint:gosec // test-owned temp path
+	require.NoError(t, err)
+	args := strings.Split(strings.TrimSpace(string(argsRaw)), "\n")
+	extCount := 0
+	for _, a := range args {
+		if a == "--extension" {
+			extCount++
+		}
+	}
+	assert.Equal(t, 2, extCount, "每个 Extensions 路径都应以 --extension 透传给 pi client")
+	for _, ext := range exts {
+		assert.Contains(t, args, ext)
+	}
+}
+
 func TestProbe_ClaudeCode_FakeCLI_ExitNonZero(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake binary not portable to windows")
@@ -146,4 +200,67 @@ func TestProbe_ClaudeCode_FakeCLI_ExitNonZero(t *testing.T) {
 		Env:     map[string]string{"PATH": filepath.Dir(fake)},
 	})
 	require.Error(t, err)
+}
+
+func TestProbe_ClaudeCode_CustomProviderSettingsOverrideUserEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary not portable to windows")
+	}
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	settingsPathFile := filepath.Join(dir, "settings-path.txt")
+	fake := writeExecutable(t, dir, "claude", `
+printf '%s\n' "$@" > "$AGENTRE_TEST_ARGS_FILE"
+settings=''
+model=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --settings)
+      settings="$2"
+      shift 2
+      ;;
+    --model)
+      model="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+[ -n "$settings" ] || { printf '%s\n' 'missing --settings' >&2; exit 17; }
+[ -f "$settings" ] || { printf '%s\n' 'settings is not a file' >&2; exit 18; }
+[ "$model" = 'glm-test-model' ] || { printf '%s\n' 'missing custom model' >&2; exit 19; }
+grep -q 'http://gateway.test' "$settings" || { printf '%s\n' 'missing gateway URL override' >&2; exit 20; }
+grep -q 'gateway-test-token' "$settings" || { printf '%s\n' 'missing gateway token override' >&2; exit 21; }
+printf '%s\n' "$settings" > "$AGENTRE_TEST_SETTINGS_PATH_FILE"
+IFS= read -r _line
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"probe-session","model":"glm-test-model"}'
+printf '%s\n' '{"type":"assistant","session_id":"probe-session","message":{"content":[{"type":"text","text":"pong"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","session_id":"probe-session","usage":{"input_tokens":1,"output_tokens":1}}'
+`)
+
+	resp, err := Probe(context.Background(), ProbeRequest{
+		Type:    "claudecode",
+		CLIPath: fake,
+		Model:   "glm-test-model",
+		Env: map[string]string{
+			"AGENTRE_TEST_ARGS_FILE":          argsFile,
+			"AGENTRE_TEST_SETTINGS_PATH_FILE": settingsPathFile,
+			"ANTHROPIC_BASE_URL":              "http://gateway.test",
+			"ANTHROPIC_AUTH_TOKEN":            "gateway-test-token",
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "pong", resp.Text)
+	args, readErr := os.ReadFile(argsFile) //nolint:gosec // test-owned temp path
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(args), "gateway-test-token", "gateway credential must not appear in argv")
+	settingsPathRaw, readErr := os.ReadFile(settingsPathFile) //nolint:gosec // test-owned temp path
+	require.NoError(t, readErr)
+	settingsPath := strings.TrimSpace(string(settingsPathRaw))
+	_, statErr := os.Stat(settingsPath) //nolint:gosec // path is emitted by the test-owned fake CLI from a temporary settings file.
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "temporary settings file must be removed after the probe")
 }

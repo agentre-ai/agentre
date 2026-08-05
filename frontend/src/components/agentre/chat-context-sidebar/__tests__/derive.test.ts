@@ -25,8 +25,8 @@ function userMsg(id: number, text: string, t = 0): Msg {
 function assistantWithEdits(id: number, files: string[], errored = false): Msg {
   const blocks = files.map((p) => ({
     type: "tool_use",
-    name: "Edit",
-    input: { file_path: p },
+    toolName: "Edit",
+    toolInput: { file_path: p },
   }));
   return {
     id,
@@ -99,6 +99,36 @@ describe("deriveFiles", () => {
     expect(b.lastTurn).toBe(1);
   });
 
+  it("Given Claude mutation blocks, When files are derived, Then Edit, Write, and MultiEdit paths are listed", () => {
+    const toolNames = ["Edit", "Write", "MultiEdit"];
+    const msgs = [
+      userMsg(1, "u1"),
+      {
+        id: 2,
+        role: "assistant",
+        sessionId: 1,
+        blocks: toolNames.map((toolName, index) => ({
+          type: "tool_use",
+          toolName,
+          toolInput: { file_path: `${index}.go` },
+        })),
+        model: "",
+        promptTokens: 0,
+        completionTokens: 0,
+        durationMs: 0,
+        errorText: "",
+        seq: 0,
+        createtime: 0,
+      } as unknown as Msg,
+    ];
+
+    expect(deriveFiles(msgs).map((f) => f.path)).toEqual([
+      "0.go",
+      "1.go",
+      "2.go",
+    ]);
+  });
+
   it("sorts files by edits desc, ties broken by recency (lastTurn desc)", () => {
     const msgs = [
       userMsg(1, "u1"),
@@ -110,7 +140,7 @@ describe("deriveFiles", () => {
     expect(files[0].path).toBe("b.go"); // tie on edits, b.go more recent
   });
 
-  it("counts pi agent lowercase edit/write tools (they use `path`, not `file_path`)", () => {
+  it("Given a Codex file_change block, When files are derived, Then every changed path is listed", () => {
     const msgs = [
       userMsg(1, "u1"),
       {
@@ -118,9 +148,50 @@ describe("deriveFiles", () => {
         role: "assistant",
         sessionId: 1,
         blocks: [
-          { type: "tool_use", name: "edit", input: { path: "a.go" } },
-          { type: "tool_use", name: "write", input: { path: "b.go" } },
-          { type: "tool_use", name: "read", input: { path: "a.go" } },
+          {
+            type: "tool_use",
+            toolName: "file_change",
+            toolInput: {
+              changes: [{ path: "a.go" }, { path: "b.go" }],
+            },
+          },
+        ],
+        model: "",
+        promptTokens: 0,
+        completionTokens: 0,
+        durationMs: 0,
+        errorText: "",
+        seq: 0,
+        createtime: 0,
+      } as unknown as Msg,
+    ];
+
+    expect(deriveFiles(msgs).map((f) => f.path)).toEqual(["a.go", "b.go"]);
+  });
+
+  it("Given Pi edit/write/read blocks, When files are derived, Then edits and reads use the path field", () => {
+    const msgs = [
+      userMsg(1, "u1"),
+      {
+        id: 2,
+        role: "assistant",
+        sessionId: 1,
+        blocks: [
+          {
+            type: "tool_use",
+            toolName: "edit",
+            toolInput: { path: "a.go" },
+          },
+          {
+            type: "tool_use",
+            toolName: "write",
+            toolInput: { path: "b.go" },
+          },
+          {
+            type: "tool_use",
+            toolName: "read",
+            toolInput: { path: "a.go" },
+          },
         ],
         model: "",
         promptTokens: 0,

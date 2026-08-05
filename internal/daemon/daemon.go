@@ -53,9 +53,8 @@ type Daemon struct {
 	mu  sync.RWMutex
 	lan *rpc.LANServer
 
-	// mcpNotifier 是当前活跃连接的反向请求端口,供 daemon 本机 gateway 的 /mcp/ 隧道
-	// 把 CLI 子进程的内置工具 MCP 调用反向请求回 desktop。daemon 单客户端 MVP(见
-	// bindConn 注释):同一时刻一条连接,后连接覆盖、断开清空。
+	// mcpNotifier 是 gateway /mcp/ 隧道当前使用的反向请求端口。HTTP 隧道请求
+	// 不携带 WebSocket 连接身份,因此最新连接成为活动路由；旧连接断开时只清自己。
 	mcpNotifierMu sync.Mutex
 	mcpNotifier   handlers.NotifierPort
 }
@@ -208,10 +207,9 @@ func (d *Daemon) registerMethods() {
 	skillsH := handlers.NewSkillsHandlers()
 	d.registry.Register("skills.list", wrapGuarded(skillsH.List))
 
-	// runtime.* RPC 族 1:1 镜像 agentruntime.Runtime + 7 个可选子接口,
-	// 把远端 agentre 当成「本地」backend 跑。Handler 在 bindConn
-	// 里按连接挂载（要 NotifierPort）。MVP 单客户端假设下 registry 是全局,
-	// 多客户端时切 per-Conn registry。
+	// runtime.* RPC 族镜像 agentruntime.Runtime 及可选子接口,把远端 agentre
+	// 当成「本地」backend 跑。Handler 需要连接自己的 NotifierPort,因此由
+	// bindConn 挂到 LANServer 为每条连接克隆的私有 registry。
 
 	// remotefs.Register 接受已构造好的 rpc.HandlerFunc,泛型 wrapGuarded[Req,Res] 的
 	// 签名约束与其不匹配,改用 WrapFunc 闭包注入 requireAuth。
@@ -256,33 +254,32 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 // bindConn is called by LANServer once per accepted WebSocket connection.
-// 挂载 runtime.* 9 个 RPC（capabilities / run / steer / cancelSteer /
-// drainPending / abort / setPermissionMode / submitAnswer /
-// submitToolPermission）到共享 registry。RuntimeHandlers 自己持有 NotifierPort
-// 把 events / runResultDone 推回到这条连接,以及 per-session backend type
-// cache,所以是 per-conn 构造的。
+// Runtime and terminal handlers own connection-specific notifier/session state,
+// so every handler is registered only on this connection's private registry.
 func (d *Daemon) bindConn(c *rpc.Conn) {
+	reg := c.Registry()
 	n := notifier.New(c)
-	// 把这条连接的反向请求端口登记为当前活跃端口,供 /mcp/ 隧道用(单客户端 MVP)。
+	// The gateway's connection-agnostic /mcp/ tunnel uses the newest live
+	// notifier; this does not change ownership of handlers in reg.
 	d.setActiveNotifier(n)
 	rh := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
 		Notify:  n,
 		Gateway: d.gateway,
 		Lookup:  NewProviderLookup(d.state),
 	})
-	d.registry.Register(wire.MethodCapabilities, wrapGuarded(rh.Capabilities))
-	d.registry.Register(wire.MethodRun, wrapGuarded(rh.Run))
-	d.registry.Register(wire.MethodSteer, wrapGuardedSentinel(rh.Steer))
-	d.registry.Register(wire.MethodCancelSteer, wrapGuardedSentinel(rh.CancelSteer))
-	d.registry.Register(wire.MethodDrainPending, wrapGuarded(rh.DrainPending))
-	d.registry.Register(wire.MethodAbort, wrapGuardedSentinel(rh.Abort))
-	d.registry.Register(wire.MethodStopBackgroundTask, wrapGuardedSentinel(rh.StopBackgroundTask))
-	d.registry.Register(wire.MethodSetPermissionMode, wrapGuardedSentinel(rh.SetPermissionMode))
-	d.registry.Register(wire.MethodSubmitAnswer, wrapGuardedSentinel(rh.SubmitAnswer))
-	d.registry.Register(wire.MethodSubmitToolPermission, wrapGuardedSentinel(rh.SubmitToolPermission))
-	d.registry.Register(wire.MethodGetGoal, wrapGuardedSentinel(rh.GetGoal))
-	d.registry.Register(wire.MethodSetGoal, wrapGuardedSentinel(rh.SetGoal))
-	d.registry.Register(wire.MethodClearGoal, wrapGuardedSentinel(rh.ClearGoal))
+	reg.Register(wire.MethodCapabilities, wrapGuarded(rh.Capabilities))
+	reg.Register(wire.MethodRun, wrapGuarded(rh.Run))
+	reg.Register(wire.MethodSteer, wrapGuardedSentinel(rh.Steer))
+	reg.Register(wire.MethodCancelSteer, wrapGuardedSentinel(rh.CancelSteer))
+	reg.Register(wire.MethodDrainPending, wrapGuarded(rh.DrainPending))
+	reg.Register(wire.MethodAbort, wrapGuardedSentinel(rh.Abort))
+	reg.Register(wire.MethodStopBackgroundTask, wrapGuardedSentinel(rh.StopBackgroundTask))
+	reg.Register(wire.MethodSetPermissionMode, wrapGuardedSentinel(rh.SetPermissionMode))
+	reg.Register(wire.MethodSubmitAnswer, wrapGuardedSentinel(rh.SubmitAnswer))
+	reg.Register(wire.MethodSubmitToolPermission, wrapGuardedSentinel(rh.SubmitToolPermission))
+	reg.Register(wire.MethodGetGoal, wrapGuardedSentinel(rh.GetGoal))
+	reg.Register(wire.MethodSetGoal, wrapGuardedSentinel(rh.SetGoal))
+	reg.Register(wire.MethodClearGoal, wrapGuardedSentinel(rh.ClearGoal))
 
 	// Terminal: local PTY backend; per-conn emitter pushes terminal.data /
 	// terminal.exit events back over this ws connection (same per-conn rationale
@@ -292,10 +289,10 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 		_ = n.Notify(name, payload)
 	})
 	termH := handlers.NewTerminalHandlers(termBackend, termEmitter)
-	d.registry.Register("terminal.open", wrapGuarded(termH.Open))
-	d.registry.Register("terminal.write", wrapGuarded(termH.Write))
-	d.registry.Register("terminal.resize", wrapGuarded(termH.Resize))
-	d.registry.Register("terminal.close", wrapGuarded(termH.Close))
+	reg.Register("terminal.open", wrapGuarded(termH.Open))
+	reg.Register("terminal.write", wrapGuarded(termH.Write))
+	reg.Register("terminal.resize", wrapGuarded(termH.Resize))
+	reg.Register("terminal.close", wrapGuarded(termH.Close))
 	// When this connection drops, kill the PTYs it opened — otherwise the
 	// remote shells (and whatever they run) leak until daemon shutdown.
 	go func() {

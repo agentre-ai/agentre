@@ -96,6 +96,34 @@ export type PlanApproveRequestDTO = {
   actions?: PlanActionDTO[];
 };
 
+export type AgentSpawnMode = "single" | "parallel" | "chain";
+export type AgentSpawnStatus =
+  | "waiting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "skipped"
+  | "unknown"
+  | "partial";
+
+export type AgentSpawnRunDTO = {
+  id: string;
+  index: number;
+  agent?: string;
+  profile?: string;
+  agentSource?: string;
+  task: string;
+  requestedModel?: string;
+  // The following fields are supplied by ChatBlockSubagent.runs full snapshots.
+  model?: string;
+  status?: AgentSpawnStatus;
+  lastToolName?: string;
+  toolUses?: number;
+  summary?: string;
+  errorMessage?: string;
+};
+
 export type AgentSpawnDTO = {
   taskId: string;
   subagentType?: string;
@@ -105,11 +133,13 @@ export type AgentSpawnDTO = {
   // (运行时,如 "claude-haiku-4-5-20251001")。card.tsx 的 readSpawn 用既有
   // 「运行时非空覆盖静态」语义在渲染前解出最终值,这里只存原值,不做归一化。
   model?: string;
+  mode?: AgentSpawnMode;
+  runs?: AgentSpawnRunDTO[];
   lastToolName?: string;
   toolUses?: number;
   totalTokens?: number;
   durationMs?: number;
-  status?: "running" | "completed" | "failed" | "canceled";
+  status?: AgentSpawnStatus;
 };
 
 export type ToolPermissionDTO = {

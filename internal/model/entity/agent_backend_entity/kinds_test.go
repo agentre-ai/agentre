@@ -51,7 +51,10 @@ func TestProviderTypeMatch(t *testing.T) {
 		{"codex rejects openai-chat", codexKind{}, llm_provider_entity.TypeOpenAIChat, false},
 		{"codex matches openai-response", codexKind{}, llm_provider_entity.TypeOpenAIResponse, true},
 		{"codex rejects anthropic", codexKind{}, llm_provider_entity.TypeAnthropic, false},
-		{"piagent rejects anthropic", piAgentKind{}, llm_provider_entity.TypeAnthropic, false},
+		{"piagent matches anthropic", piAgentKind{}, llm_provider_entity.TypeAnthropic, true},
+		{"piagent matches openai-chat", piAgentKind{}, llm_provider_entity.TypeOpenAIChat, true},
+		{"piagent matches openai-response", piAgentKind{}, llm_provider_entity.TypeOpenAIResponse, true},
+		{"piagent rejects unknown type", piAgentKind{}, llm_provider_entity.ProviderType("custom"), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,6 +75,29 @@ func TestAllowsCLIPath(t *testing.T) {
 	assert.True(t, claudeCodeKind{}.AllowsCLIPath())
 	assert.True(t, codexKind{}.AllowsCLIPath())
 	assert.True(t, piAgentKind{}.AllowsCLIPath())
+}
+
+func TestRequiresProviderModel(t *testing.T) {
+	assert.False(t, builtinKind{}.RequiresProviderModel())
+	assert.False(t, claudeCodeKind{}.RequiresProviderModel())
+	assert.False(t, codexKind{}.RequiresProviderModel())
+	assert.True(t, piAgentKind{}.RequiresProviderModel())
+}
+
+func TestPiAgentValidateExtra(t *testing.T) {
+	ctx := context.Background()
+
+	// 全空 → 合法（未绑定供应商，走 pi 自带 ~/.pi/agent 配置）。
+	assert.NoError(t, piAgentKind{}.ValidateExtra(ctx, &AgentBackend{}))
+	// LLMProviderKey 非空 → 放行（本功能核心：piagent 可绑定自定义供应商）。
+	assert.NoError(t, piAgentKind{}.ValidateExtra(ctx, &AgentBackend{LLMProviderKey: "key-1"}))
+
+	// 其它独有字段非默认值 → 仍拒绝（沿用 InvalidParameter 风格）。
+	assert.Error(t, piAgentKind{}.ValidateExtra(ctx, &AgentBackend{ModelRoutes: `{"OPUS":"x"}`}))
+	assert.Error(t, piAgentKind{}.ValidateExtra(ctx, &AgentBackend{Sandbox: "read-only"}))
+	assert.Error(t, piAgentKind{}.ValidateExtra(ctx, &AgentBackend{Approval: "on-request"}))
+	assert.Error(t, piAgentKind{}.ValidateExtra(ctx, &AgentBackend{DefaultPermissionMode: "plan"}))
+	assert.Error(t, piAgentKind{}.ValidateExtra(ctx, &AgentBackend{DefaultModel: "gpt-5"}))
 }
 
 func TestIsReservedEnvKey(t *testing.T) {

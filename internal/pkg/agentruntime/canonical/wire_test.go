@@ -50,6 +50,12 @@ func TestMarshalTool_RoundTrip(t *testing.T) {
 			TaskID: "t2", LastToolName: "Read", ToolUses: 5,
 			TotalTokens: 1234, DurationMs: 9000, Status: "completed",
 		}},
+		{"agent_spawn_normalized_single", AgentSpawn{
+			Prompt: "inspect", Model: "requested", Mode: "single",
+			Runs: []AgentSpawnRun{{
+				ID: "run-0", Index: 0, Profile: "read-only", Task: "inspect", RequestedModel: "requested",
+			}},
+		}},
 		{"tool_permission_request", ToolPermission{
 			RequestID: "tp1", ToolName: "Bash",
 			ToolInput: map[string]any{"cmd": "ls"},

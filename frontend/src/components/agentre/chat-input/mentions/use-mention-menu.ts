@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Node as PMNode } from "@tiptap/pm/model";
 import type { Editor } from "@tiptap/react";
 
 import { MENTION_NODE_NAME } from "./mention-node";
+import { rankMentionItems } from "./rank-items";
 import { detectAtTrigger } from "./trigger";
 import type { MentionItem, MentionMenuState, MentionSources } from "./types";
 
@@ -18,10 +19,8 @@ function leafText(node: PMNode): string {
   return node.type.name === "hardBreak" ? "\n" : "￼";
 }
 
-function filterItems(all: MentionItem[], query: string): MentionItem[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return all;
-  return all.filter((i) => i.label.toLowerCase().includes(q));
+function normalizeQuery(query: string): string {
+  return query.trim().toLowerCase();
 }
 
 export function useMentionMenu({
@@ -46,21 +45,25 @@ export function useMentionMenu({
   >(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // agents 在前、projects 在后 —— MentionPopover 按此顺序分组。
-  const available = useMemo(
-    () => [...sources.agents, ...sources.projects],
-    [sources.agents, sources.projects],
-  );
+  // rankMentionItems 分组评分并保持 agents 在前、projects 在后。
   const items = useMemo(
-    () => filterItems(available, query),
-    [available, query],
+    () => rankMentionItems(sources, query),
+    [sources, query],
   );
+  const sourceCount = sources.agents.length + sources.projects.length;
+  const normalizedQuery = normalizeQuery(query);
+  const previousNormalizedQuery = useRef(normalizedQuery);
 
   useEffect(() => {
+    if (previousNormalizedQuery.current !== normalizedQuery) {
+      previousNormalizedQuery.current = normalizedQuery;
+      setSelectedIndex(0);
+      return;
+    }
     if (selectedIndex >= items.length) {
       setSelectedIndex(items.length > 0 ? items.length - 1 : 0);
     }
-  }, [items.length, selectedIndex]);
+  }, [items.length, normalizedQuery, selectedIndex]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -72,7 +75,7 @@ export function useMentionMenu({
   useEffect(() => {
     if (!editor) return;
     const recompute = () => {
-      if (available.length === 0) {
+      if (sourceCount === 0) {
         if (open) close();
         return;
       }
@@ -110,7 +113,7 @@ export function useMentionMenu({
       editor.off("update", recompute);
       editor.off("selectionUpdate", recompute);
     };
-  }, [editor, available, open, close]);
+  }, [editor, sourceCount, open, close]);
 
   const confirm = useCallback(
     (item: MentionItem) => {

@@ -1,5 +1,6 @@
 // Package blocks: NestedToolUseBlock / NestedToolResultBlock 与 cago.ToolUseBlock 形态相似,
-// 但 Audience=ToUI(防 subagent 内部工具流泄漏给外层 LLM)且带 ParentToolCallID。
+// 但 Audience=ToUI(防 subagent 内部工具流泄漏给外层 LLM)，并以 ParentToolCallID +
+// 可选 SubagentRunID 保留父调用和 normalized run 分组。
 package blocks
 
 import cagoblocks "github.com/cago-frame/agents/agent/blocks"
@@ -9,6 +10,7 @@ type NestedToolUseBlock struct {
 	Name             string         `json:"name"`
 	Input            map[string]any `json:"input,omitempty"`
 	ParentToolCallID string         `json:"parent_tool_call_id"`
+	SubagentRunID    string         `json:"subagent_run_id,omitempty"`
 }
 
 func (NestedToolUseBlock) Type() string                      { return "nested_tool_use" }
@@ -19,6 +21,7 @@ type NestedToolResultBlock struct {
 	Content          string `json:"content"`
 	IsError          bool   `json:"is_error,omitempty"`
 	ParentToolCallID string `json:"parent_tool_call_id"`
+	SubagentRunID    string `json:"subagent_run_id,omitempty"`
 }
 
 func (NestedToolResultBlock) Type() string                      { return "nested_tool_result" }

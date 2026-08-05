@@ -98,6 +98,26 @@ func TestCCBuildClientOpts_ProviderModelDownToCLI(t *testing.T) {
 	})
 }
 
+func TestCCBuildClientOpts_EnvironmentDownToSettings(t *testing.T) {
+	Convey("Given the runtime selected a provider, when Claude client options are built, then the routing environment also has settings precedence", t, func() {
+		env := map[string]string{
+			"ANTHROPIC_BASE_URL":   "http://gateway.test",
+			"ANTHROPIC_AUTH_TOKEN": "gateway-test-token",
+		}
+		spec := ccLaunchSpec{
+			Env: env,
+			Req: agentruntime.RunRequest{
+				Backend:  &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)},
+				Provider: &llm_provider_entity.LLMProvider{Model: "glm-test-model"},
+			},
+		}
+
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+
+		So(c.SettingsEnv(), ShouldResemble, env)
+	})
+}
+
 // TestCCBuildClientOpts_BackendDefaultModel 锁住 CLI 登录态(无 provider)下的自定义
 // 模型:backend.DefaultModel 在 provider.Model 为空时兜底下发成 --model;provider.Model
 // 非空时仍优先,DefaultModel 被忽略(绑 provider 行为不变)。

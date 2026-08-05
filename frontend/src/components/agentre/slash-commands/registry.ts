@@ -11,6 +11,7 @@
 //   - builtin / 其它: 暂不参与 slash 命令。
 
 import i18n from "@/i18n";
+import { scoreSuggestion } from "@/lib/suggestion-score";
 
 export type SlashExec =
   | {
@@ -153,17 +154,30 @@ export function listAvailable(
   });
 }
 
-// filterByQuery 在 listAvailable 基础上按用户输入的 query 做前缀匹配
-// (大小写不敏感)。空 query 显示全部。
+// filterByQuery 在 listAvailable 基础上隔离当前 trigger，再按共享相关度评分。
+// 空 query 全部保留且维持源顺序；同分候选也维持源顺序。
 export function filterByQuery(
   commands: SlashCommand[],
   query: string,
   trigger?: "/" | "$",
 ): SlashCommand[] {
-  const q = query.trim().toLowerCase();
-  return commands.filter(
-    (c) =>
-      (!trigger || c.trigger === trigger) &&
-      (!q || c.name.toLowerCase().startsWith(q)),
-  );
+  return commands
+    .map((command, sourceIndex) => ({
+      command,
+      sourceIndex,
+      score:
+        !trigger || command.trigger === trigger
+          ? scoreSuggestion({
+              query,
+              title: command.name,
+              subtitle: command.description,
+            })
+          : 0,
+    }))
+    .filter(({ score }) => score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score || left.sourceIndex - right.sourceIndex,
+    )
+    .map(({ command }) => command);
 }

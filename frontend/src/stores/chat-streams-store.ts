@@ -10,6 +10,13 @@ import { useQueuedMessagesStore } from "./queued-messages-store";
 // convertValues 方法，方便前端用对象字面量构造 / 在 store 内拼装。Wails 实际下行的
 // ChatBlock 实例（含 convertValues）也结构性满足这个类型，因此渲染路径同时接受两者。
 export type ChatBlockData = Omit<chat_svc.ChatBlock, "convertValues">;
+export type ChatBlockSubagentData = Omit<
+  chat_svc.ChatBlockSubagent,
+  "convertValues"
+>;
+type LiveToolUseInput = Omit<ChatBlockData, "type" | "subagent"> & {
+  subagent?: ChatBlockSubagentData;
+};
 
 // ToolApprovalData 是 agent 内置写工具(org / workflow 等)审批卡片的纯
 // 数据形态,逐字对齐后端 chat_svc.ChatBlockToolApproval(去掉 wails 注入的 convertValues)。
@@ -62,9 +69,9 @@ export type LiveStream = {
   // stream 结束销毁 entry 后回落到 messages-based 计算（持久化 token 列已是
   // 最终值）。
   liveUsage: ChatStreamUsage | null;
-  // liveContextWindow 是 Codex runtime 从 token usage notification 里探到的
-  // modelContextWindow。首轮 CLI login / provider 未配置时，LoadSession 初始
-  // contextWindow 可能为 0；这里让 Composer 在 turn 内立即显示真实窗口。
+  // liveContextWindow 是 runtime 在 turn 内探到的模型窗口。usage 事件可与
+  // liveUsage 原子写入；独立 session_status patch 仍用于非 usage 来源与轮末刷新。
+  // LoadSession 初始 contextWindow 可能为 0；这里让 Composer 在 turn 内显示真实窗口。
   liveContextWindow: number;
   // liveCompacting 由后端 runtime_status 事件驱动:claudecode CLI 在 /compact 启动
   // (manual 或 auto) 时推 status:"compacting",chat_svc 翻译成 RuntimeStatus
@@ -121,7 +128,7 @@ type Actions = {
   appendLiveToolUse: (
     sessionId: number,
     assistantMessageId: number,
-    block: Omit<ChatBlockData, "type">,
+    block: LiveToolUseInput,
   ) => void;
   appendLiveToolResult: (
     sessionId: number,
@@ -139,14 +146,13 @@ type Actions = {
   ) => void;
   // mergeSubagentMeta 把 subagent_started/progress/done/model 事件携带的元数据合并到
   // 对应外层 Agent tool_use block 上（按 toolUseId 匹配 liveBlocks 里最近一个）。
-  // 字段做浅 merge：新事件未带的字段保留旧值（task_progress 不带 prompt 不会清掉它；
-  // subagent_model 只带 model 一个字段，调用方必须只传这一个字段，不能拼一个带空值
-  // 其它字段的对象再 spread 进来，否则会把已累计的 status/toolUses 覆盖成空）。
+  // 字段做浅 merge；runs 是完整快照，出现时整段替换，undefined/省略时保留旧值。
+  // subagent_model 只带 model 一个字段，避免其它空字段清掉已累计进度。
   mergeSubagentMeta: (
     sessionId: number,
     assistantMessageId: number,
     toolUseId: string,
-    meta: chat_svc.ChatBlockSubagent,
+    meta: ChatBlockSubagentData,
   ) => void;
   // appendLiveAskUserQuestion 在 stream 上插入 AskUserQuestion 卡片：与 tool_use
   // 类似先 flush liveDelta 把文字定型，再追加一个 type:"ask_user_question" block。
@@ -213,10 +219,10 @@ type Actions = {
     assistantMessageId: number,
     payload: ExecApprovalData,
   ) => void;
-  // patchLiveUsage 把后端推来的 per-call usage 快照写到 LiveStream.liveUsage 上。
-  // Composer 进度条用它在 turn 内随工具循环实时刷新「已用上下文」，turn 结束
-  // entry 被销毁后回落到 messages 扫描。无 stream entry 时静默丢弃（极端 race：
-  // usage 帧先于 openStream 到达 —— 下一帧或者 reload 都能兜回来）。
+  // patchLiveUsage 把后端推来的 per-call usage 快照写到 LiveStream.liveUsage 上；
+  // usage.contextWindow>0 时同一次 state 更新写入 liveContextWindow，保证收到的任一
+  // usage 都有匹配分母。turn 结束 entry 被销毁后回落到 messages 扫描。无 stream
+  // entry 时静默丢弃；Pi 会在每个 usage 快照重带 contextWindow，后续帧可兜回。
   patchLiveUsage: (
     sessionId: number,
     assistantMessageId: number,
@@ -433,6 +439,9 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
         // 同值短路：所有 token 字段一致就不重建 Map，避免 zustand 触发多余重渲染。
         // 消息 id 也比一下 —— turn 内换 assistant 段（steer_consumed）时它会变。
         const prev = cur.liveUsage;
+        const contextWindow = usage.contextWindow ?? 0;
+        const nextContextWindow =
+          contextWindow > 0 ? contextWindow : cur.liveContextWindow;
         if (
           prev &&
           prev.messageId === usage.messageId &&
@@ -440,11 +449,18 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
           prev.completionTokens === usage.completionTokens &&
           prev.cachedTokens === usage.cachedTokens &&
           prev.cacheCreationTokens === usage.cacheCreationTokens &&
-          prev.reasoningTokens === usage.reasoningTokens
+          prev.reasoningTokens === usage.reasoningTokens &&
+          prev.totalInputTokens === usage.totalInputTokens &&
+          prev.contextWindow === usage.contextWindow &&
+          cur.liveContextWindow === nextContextWindow
         ) {
           return null;
         }
-        return { ...cur, liveUsage: usage };
+        return {
+          ...cur,
+          liveUsage: usage,
+          liveContextWindow: nextContextWindow,
+        };
       }),
     ),
 
@@ -487,7 +503,10 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
         const flushed = flushLiveDelta(cur);
         return {
           ...flushed,
-          liveBlocks: [...flushed.liveBlocks, { ...block, type: "tool_use" }],
+          liveBlocks: [
+            ...flushed.liveBlocks,
+            { ...block, type: "tool_use" } as ChatBlockData,
+          ],
         };
       }),
     ),
@@ -815,9 +834,14 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
         );
         if (targetIdx < 0) return null;
         const target = cur.liveBlocks[targetIdx];
+        const { runs, ...patch } = meta;
         const merged: ChatBlockData = {
           ...target,
-          subagent: { ...(target.subagent ?? {}), ...meta },
+          subagent: {
+            ...(target.subagent ?? {}),
+            ...patch,
+            ...(runs !== undefined ? { runs } : {}),
+          } as chat_svc.ChatBlockSubagent,
         };
         return {
           ...cur,

@@ -34,7 +34,8 @@ var claudeStartupCheckTimeout = 200 * time.Millisecond
 // pkg 内两套并存：probe / 简单一次性问答继续用 Stream；chat_svc 这类需要长会话
 // 的走 Session。
 type Session struct {
-	proc *process
+	proc            *process
+	cleanupSettings func()
 
 	scanner *bufio.Scanner
 
@@ -122,6 +123,11 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 	if spec.resumeSessionAtUUID != "" && !spec.forkSession {
 		return nil, errors.New("claudecode: ResumeSessionAt requires ForkSession (would destructively rewind source session)")
 	}
+	settings, cleanupSettings, err := prepareSettings(spec.settings, c.settingsEnv)
+	if err != nil {
+		return nil, err
+	}
+	spec.settings = settings
 
 	p, err := c.spawn(ctx, processSpec{
 		binary: c.binary,
@@ -130,6 +136,7 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 		env:    c.env,
 	})
 	if err != nil {
+		cleanupSettings()
 		return nil, err
 	}
 
@@ -144,16 +151,19 @@ func (c *Client) OpenSession(ctx context.Context, opts ...RunOption) (*Session, 
 			// exit 0 但根本没 frame —— 不太可能但兜底一下。
 			exitErr = errors.New("claudecode: subprocess exited during OpenSession without emitting init frame")
 		}
+		cleanupSettings()
 		return nil, exitErr
 	case <-time.After(claudeStartupCheckTimeout):
 		// 进程仍存活 → 视为健康，由后续 Turn 接管 stdout。
 	case <-ctx.Done():
 		// 调用方取消（极少见）→ 关 stdin 触发 CLI 退出，再返 ctx.Err。
 		_ = p.stdin.Close()
+		cleanupSettings()
 		return nil, ctx.Err()
 	}
 
 	s := newSession(p, c.rawSink, spec.sessionID)
+	s.cleanupSettings = cleanupSettings
 	go s.readLoop()
 	return s, nil
 }
@@ -486,8 +496,7 @@ func isCompactingStatusFrame(f rawFrame) bool {
 //     故走到这里的 task_notification 一律非后台型。
 //
 // 注意:Phase 1 止血仅丢弃这类帧;Phase 2(当前)改为经 subagentCh 路由进独立活动轮,
-// 按 parent_tool_use_id 嵌套渲染回发起 subagent 的那张卡
-// (见 docs/superpowers/plans/2026-06-23-bg-subagent-live-nesting.md)。
+// 按 parent_tool_use_id 嵌套渲染回发起 subagent 的那张卡。
 func isIdleBackgroundSubagentFrame(f rawFrame) bool {
 	if (f.Type == "assistant" || f.Type == "user") && f.ParentToolUseID != "" {
 		return true
@@ -974,6 +983,7 @@ func (s *Session) Kill() {
 	s.closed = true
 	s.stdinMu.Unlock()
 	s.proc.kill()
+	s.removeSettings()
 }
 
 // Close 关 stdin（触发 CLI exit）并 wait 子进程。
@@ -982,11 +992,13 @@ func (s *Session) Close(ctx context.Context) error {
 	s.stdinMu.Lock()
 	if s.closed {
 		s.stdinMu.Unlock()
+		s.removeSettings()
 		return nil
 	}
 	s.closed = true
 	stdin := s.proc.stdin
 	s.stdinMu.Unlock()
+	defer s.removeSettings()
 
 	if stdin != nil {
 		_ = stdin.Close()
@@ -994,6 +1006,12 @@ func (s *Session) Close(ctx context.Context) error {
 	_ = s.proc.stdout.Close()
 	_, err := s.proc.wait(ctx)
 	return err
+}
+
+func (s *Session) removeSettings() {
+	if s.cleanupSettings != nil {
+		s.cleanupSettings()
+	}
 }
 
 // parseAssistantContentWithUsage 把 assistant 帧 inner message 解码成 Event 列表，

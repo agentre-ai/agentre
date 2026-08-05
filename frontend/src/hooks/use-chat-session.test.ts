@@ -426,6 +426,85 @@ describe("useChatSession", () => {
     );
   });
 
+  it("Given a session load started before a fast turn finished, When the stale empty snapshot resolves after done, Then it reloads the persisted final blocks", async () => {
+    let resolveStale!: (value: unknown) => void;
+    const stale = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    loadChatSession.mockReturnValueOnce(stale).mockResolvedValueOnce({
+      session: {
+        id: 9,
+        agentId: 1,
+        agentName: "Pi",
+        title: "read marker",
+        agentStatus: "idle",
+        lastMessageAt: 2,
+        createtime: 0,
+      },
+      messages: [
+        { id: 40, sessionId: 9, role: "user", blocks: [], seq: 1 },
+        {
+          id: 42,
+          sessionId: 9,
+          role: "assistant",
+          blocks: [
+            { type: "tool_use", toolUseId: "tool-1", toolName: "read" },
+            {
+              type: "tool_result",
+              toolUseId: "tool-1",
+              content: "AGENTRE_DEEPSEEK_V4_PI_20260805",
+            },
+          ],
+          seq: 2,
+        },
+      ],
+    });
+    act(() => {
+      useChatStreamsStore.getState().openStream({
+        name: "chat:event:9:42",
+        sessionId: 9,
+        assistantMessageId: 42,
+        streamStartedAt: 123,
+      });
+    });
+
+    const { result } = renderHook(() => useChatSession(9));
+    await waitFor(() => expect(loadChatSession).toHaveBeenCalledOnce());
+
+    act(() => {
+      useChatStreamsStore.getState().finishStream(9, 42, {
+        kind: "done",
+      });
+      resolveStale({
+        session: {
+          id: 9,
+          agentId: 1,
+          agentName: "Pi",
+          title: "read marker",
+          agentStatus: "running",
+          activeStream: "chat:event:9:42",
+          lastMessageAt: 1,
+          createtime: 0,
+        },
+        messages: [
+          { id: 40, sessionId: 9, role: "user", blocks: [], seq: 1 },
+          { id: 42, sessionId: 9, role: "assistant", blocks: [], seq: 2 },
+        ],
+      });
+    });
+
+    await waitFor(() => expect(loadChatSession).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(result.current.messages.at(-1)?.blocks).toEqual([
+        expect.objectContaining({ type: "tool_use" }),
+        expect.objectContaining({
+          type: "tool_result",
+          content: "AGENTRE_DEEPSEEK_V4_PI_20260805",
+        }),
+      ]),
+    );
+  });
+
   it("returns null when sessionId is 0", async () => {
     const { result } = renderHook(() => useChatSession(0));
     await waitFor(() => expect(result.current.loading).toBe(false));

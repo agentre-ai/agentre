@@ -1,9 +1,12 @@
 package handlers_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -290,6 +293,40 @@ func (n *recordingNotifier) waitFrames(t *testing.T, want int) []notifyFrame {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+type lockedLogBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *lockedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *lockedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+func captureRuntimeLogs(t *testing.T) *lockedLogBuffer {
+	t.Helper()
+	oldWriter := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	captured := &lockedLogBuffer{}
+	log.SetOutput(captured)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	})
+	return captured
+}
+
 func setupRuntimeTest(t *testing.T, rt agentruntime.Runtime) (
 	context.Context,
 	*recordingNotifier,
@@ -506,6 +543,129 @@ func TestRuntime_Run_NoProvider_EmitsEventsAndDone(t *testing.T) {
 		assert.Error(c, err)
 	}, time.Second, 10*time.Millisecond)
 	assert.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
+func TestRuntime_Run_ForwardsContentBearingEventsWithoutLoggingPayload(t *testing.T) {
+	const (
+		inputSentinel   = "SENTINEL_DAEMON_TOOL_INPUT"
+		resultSentinel  = "SENTINEL_DAEMON_TOOL_RESULT"
+		metaSentinel    = "SENTINEL_DAEMON_TOOL_META"
+		taskSentinel    = "SENTINEL_DAEMON_SUBAGENT_TASK"
+		summarySentinel = "SENTINEL_DAEMON_SUBAGENT_SUMMARY"
+		runErrSentinel  = "SENTINEL_DAEMON_SUBAGENT_RUN_ERROR"
+		stopErrSentinel = "SENTINEL_DAEMON_STOP_ERROR"
+	)
+	events := []agentruntime.Event{
+		agentruntime.ToolCall{ID: "outer-safe-id", Name: "subagent", Input: json.RawMessage(`{"task":"` + inputSentinel + `"}`)},
+		agentruntime.ToolResult{ToolCallID: "outer-safe-id", Content: resultSentinel, Meta: json.RawMessage(`{"detail":"` + metaSentinel + `"}`)},
+		agentruntime.SubagentStarted{ToolCallID: "outer-safe-id", Info: agentruntime.SubagentInfo{
+			Mode: "parallel", Runs: []agentruntime.SubagentRun{{ID: "run-safe-1", Task: taskSentinel, Status: "running"}},
+		}},
+		agentruntime.SubagentProgress{ToolCallID: "outer-safe-id", Info: agentruntime.SubagentInfo{
+			Mode: "parallel", Runs: []agentruntime.SubagentRun{{ID: "run-safe-1", Task: taskSentinel, Status: "completed", Summary: summarySentinel}},
+		}},
+		agentruntime.SubagentDone{ToolCallID: "outer-safe-id", Info: agentruntime.SubagentInfo{
+			Mode: "parallel", Runs: []agentruntime.SubagentRun{{ID: "run-safe-1", Task: taskSentinel, Status: "failed", Summary: summarySentinel, ErrorMessage: runErrSentinel}},
+		}},
+	}
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, len(events))
+		for _, event := range events {
+			ch <- event
+		}
+		close(ch)
+		return ch, &agentruntime.RunResult{StopErr: errors.New(stopErrSentinel)}, nil
+	}
+	captured := captureRuntimeLogs(t)
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 142})
+	require.NoError(t, err)
+	frames := notif.waitFrames(t, len(events)+1)
+
+	var forwarded strings.Builder
+	for _, frame := range frames {
+		switch params := frame.params.(type) {
+		case wire.EventFrame:
+			forwarded.Write(params.Event)
+		case wire.RunResultDoneFrame:
+			forwarded.WriteString(params.StopErrMsg)
+		}
+	}
+	for _, sentinel := range []string{inputSentinel, resultSentinel, metaSentinel, taskSentinel, summarySentinel, runErrSentinel, stopErrSentinel} {
+		assert.Contains(t, forwarded.String(), sentinel, "wire forwarding must remain lossless")
+	}
+	require.Eventually(t, func() bool {
+		logs := captured.String()
+		return strings.Contains(logs, "runtime.run: session ended") &&
+			strings.Contains(logs, "runtime.autonomousTurn: source closed")
+	}, time.Second, 10*time.Millisecond)
+	for _, sentinel := range []string{inputSentinel, resultSentinel, metaSentinel, taskSentinel, summarySentinel, runErrSentinel, stopErrSentinel} {
+		assert.NotContains(t, captured.String(), sentinel)
+	}
+}
+
+func TestRuntime_Run_AutonomousPayloadAndStopErrorRemainForwardedButNotLogged(t *testing.T) {
+	const (
+		resultSentinel  = "SENTINEL_DAEMON_AUTONOMOUS_RESULT"
+		metaSentinel    = "SENTINEL_DAEMON_AUTONOMOUS_META"
+		stopErrSentinel = "SENTINEL_DAEMON_AUTONOMOUS_STOP_ERROR"
+	)
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event, 1)
+		ch <- agentruntime.Done{}
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	rt.autoFn = func(_ int64) <-chan agentruntime.AutonomousTurn {
+		out := make(chan agentruntime.AutonomousTurn, 1)
+		events := make(chan agentruntime.Event, 1)
+		events <- agentruntime.ToolResult{
+			ToolCallID: "autonomous-safe-id",
+			Content:    resultSentinel,
+			Meta:       json.RawMessage(`{"detail":"` + metaSentinel + `"}`),
+		}
+		close(events)
+		out <- agentruntime.AutonomousTurn{
+			Events:  events,
+			Result:  &agentruntime.RunResult{StopErr: errors.New(stopErrSentinel)},
+			Trigger: "background_task",
+		}
+		close(out)
+		return out
+	}
+	captured := captureRuntimeLogs(t)
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{Backend: backendJSON(t, be), SessionID: 143})
+	require.NoError(t, err)
+	frames := notif.waitFrames(t, 5)
+
+	var forwarded strings.Builder
+	for _, frame := range frames {
+		switch params := frame.params.(type) {
+		case wire.EventFrame:
+			forwarded.Write(params.Event)
+		case wire.RunResultDoneFrame:
+			forwarded.WriteString(params.StopErrMsg)
+		}
+	}
+	for _, sentinel := range []string{resultSentinel, metaSentinel, stopErrSentinel} {
+		assert.Contains(t, forwarded.String(), sentinel, "autonomous wire forwarding must remain lossless")
+	}
+	require.Eventually(t, func() bool {
+		logs := captured.String()
+		return strings.Contains(logs, "runtime.autonomousTurn: forwarded") &&
+			strings.Contains(logs, "runtime.autonomousTurn: source closed") &&
+			strings.Contains(logs, "runtime.run: session ended")
+	}, time.Second, 10*time.Millisecond)
+	for _, sentinel := range []string{resultSentinel, metaSentinel, stopErrSentinel} {
+		assert.NotContains(t, captured.String(), sentinel)
+	}
 }
 
 func TestRuntime_Run_ForwardsAutonomousTurn(t *testing.T) {

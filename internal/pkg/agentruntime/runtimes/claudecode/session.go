@@ -232,8 +232,7 @@ func resolveLaunchMode(perTurn, backendDefault string) string {
 func ccBuildClientOpts(spec ccLaunchSpec, binary string) []claudecode.Option {
 	env := spec.Env
 	// 注入 MCP server 时拉长 CLI 的 MCP 工具调用超时:orgtool 写操作会同步挂起
-	// 等用户审批(approvalTimeout=4min),默认 60s 撑不住。值为毫秒。spike 实测见
-	// docs/superpowers/plans/2026-06-11-agent-org-tool.md Task 0。
+	// 等用户审批(approvalTimeout=4min),默认 60s 撑不住。值为毫秒。
 	if len(spec.Req.MCPServers) > 0 {
 		merged := make(map[string]string, len(env)+2)
 		maps.Copy(merged, env)
@@ -249,6 +248,7 @@ func ccBuildClientOpts(spec ccLaunchSpec, binary string) []claudecode.Option {
 		claudecode.WithBinary(binary),
 		claudecode.WithCwd(spec.Cwd),
 		claudecode.WithEnv(env),
+		claudecode.WithSettingsEnv(env),
 		claudecode.WithSystemPrompt(spec.Req.SystemPrompt),
 		// 启用 stdio control protocol:把 AskUserQuestion 这种交互式工具的
 		// permission gate 从 CLI 的 TUI 拉到 agentre UI;headless 下不开

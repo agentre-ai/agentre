@@ -233,9 +233,54 @@ describe("buildRenderItems", () => {
       toolBlock: { toolUseId: "toolu-parent" },
       resultBlock: { text: "Raw output" },
     });
-    expect(items[0].type === "tool" ? items[0].childBlocks : []).toHaveLength(
-      2,
-    );
+    const children = items[0].type === "tool" ? items[0].childBlocks : null;
+    expect(children?.all).toHaveLength(2);
+    expect(children?.byRun.size).toBe(0);
+  });
+
+  it("Given interleaved child blocks with reused call IDs, When rows are built, Then children group by parent and run while missing run IDs remain available to the parent", () => {
+    const items = buildRenderItems({
+      messageId: 1,
+      blocks: [
+        toolUse("toolu-parent", "subagent", {
+          canonical: {
+            kind: "agent.spawn",
+            agentSpawn: { mode: "parallel", runs: [] },
+          },
+        } as unknown as Partial<ChatBlockData>),
+        toolUse("shared", "Read", {
+          parentToolUseId: "toolu-parent",
+          subagentRunId: "run-a",
+        }),
+        toolUse("shared", "Bash", {
+          parentToolUseId: "toolu-parent",
+          subagentRunId: "run-b",
+        }),
+        toolResult("shared", "read done", {
+          parentToolUseId: "toolu-parent",
+          subagentRunId: "run-a",
+        }),
+        toolUse("unknown", "Glob", {
+          parentToolUseId: "toolu-parent",
+        }),
+      ],
+    });
+
+    expect(items).toHaveLength(1);
+    const children = items[0].type === "tool" ? items[0].childBlocks : null;
+    expect(children?.byRun.get("run-a")).toMatchObject([
+      { type: "tool_use", toolName: "Read" },
+      { type: "tool_result", text: "read done" },
+    ]);
+    expect(children?.byRun.get("run-b")).toMatchObject([
+      { type: "tool_use", toolName: "Bash" },
+    ]);
+    expect(children?.all.map((block) => block.toolName ?? block.text)).toEqual([
+      "Read",
+      "Bash",
+      "read done",
+      "Glob",
+    ]);
   });
 
   it("合成顺序:persisted → liveThinking → liveBlocks → liveTail;thinking 的 streaming 只在无后续输出时为 true", () => {

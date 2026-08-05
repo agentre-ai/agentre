@@ -35,6 +35,7 @@ func TestUsageUpdateHandler(t *testing.T) {
 			agentruntime.UsageUpdate{
 				Usage:            &provider.Usage{PromptTokens: 100, CachedTokens: 30},
 				TotalInputTokens: 130,
+				ContextWindow:    258000,
 			},
 			acc, emit, nil, tc)
 		So(err, ShouldBeNil)
@@ -47,6 +48,7 @@ func TestUsageUpdateHandler(t *testing.T) {
 		usage := p["usage"].(map[string]any)
 		So(usage["promptTokens"], ShouldEqual, 100)
 		So(usage["totalInputTokens"], ShouldEqual, 130)
+		So(usage["contextWindow"], ShouldEqual, 258000)
 	})
 }
 

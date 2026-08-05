@@ -12,6 +12,7 @@ type Client struct {
 	binary               string
 	cwd                  string
 	env                  map[string]string
+	settingsEnv          map[string]string
 	model                string
 	systemPrompt         string
 	permissionMode       string
@@ -72,6 +73,11 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	if spec.resumeSessionAtUUID != "" && !spec.forkSession {
 		return nil, errors.New("claudecode: ResumeSessionAt requires ForkSession (would destructively rewind source session)")
 	}
+	settings, cleanupSettings, err := prepareSettings(spec.settings, c.settingsEnv)
+	if err != nil {
+		return nil, err
+	}
+	spec.settings = settings
 
 	args := buildArgs(spec)
 	p, err := c.spawn(ctx, processSpec{
@@ -81,6 +87,7 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 		env:    c.env,
 	})
 	if err != nil {
+		cleanupSettings()
 		return nil, err
 	}
 
@@ -91,11 +98,13 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	if err != nil {
 		_ = p.stdin.Close()
 		_, _ = p.wait(ctx)
+		cleanupSettings()
 		return nil, err
 	}
 	if _, err := fmt.Fprintf(p.stdin, "%s\n", enc); err != nil {
 		_ = p.stdin.Close()
 		_, _ = p.wait(ctx)
+		cleanupSettings()
 		return nil, err
 	}
 	// stdin 保持开：为常驻模式 / 多轮复用同一子进程留出空间。result 帧本身不依赖
@@ -103,7 +112,7 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 	// frame。Close 时统一关闭 stdin。
 	dec := newFrameDecoder(p.stdout)
 	dec.rawSink = c.rawSink
-	return &Stream{proc: p, dec: dec}, nil
+	return &Stream{proc: p, dec: dec, cleanup: cleanupSettings}, nil
 }
 
 // Text 一次性 prompt → assistant 完整文本：起 Stream、串接所有 EventTextDelta、
@@ -155,11 +164,16 @@ func (c *Client) AllowedTools() []string { return c.allowedTools }
 // 供单测断言 ccBuildClientOpts 注入的环境变量（如 MCP_TIMEOUT）进了 Client。
 func (c *Client) Env() map[string]string { return c.env }
 
+// SettingsEnv returns the environment that will be merged into the private
+// --settings file for CLI-precedence routing.
+func (c *Client) SettingsEnv() map[string]string { return c.settingsEnv }
+
 // Stream 一次 turn 的事件流 + 子进程句柄。
 type Stream struct {
-	proc *process
-	dec  *frameDecoder
-	err  error
+	proc    *process
+	dec     *frameDecoder
+	err     error
+	cleanup func()
 }
 
 func (s *Stream) Next() bool {
@@ -176,6 +190,7 @@ func (s *Stream) SessionID() string { return s.dec.SessionID() }
 
 // Close 关闭 stdin/stdout pipe 并 wait 子进程，回收 stderr 错误诊断。
 func (s *Stream) Close(ctx context.Context) error {
+	defer s.cleanupSettings()
 	if s.proc != nil {
 		if s.proc.stdin != nil {
 			_ = s.proc.stdin.Close()
@@ -187,4 +202,10 @@ func (s *Stream) Close(ctx context.Context) error {
 		}
 	}
 	return s.err
+}
+
+func (s *Stream) cleanupSettings() {
+	if s.cleanup != nil {
+		s.cleanup()
+	}
 }

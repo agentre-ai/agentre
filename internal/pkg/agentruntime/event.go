@@ -26,13 +26,17 @@ type ThinkingDelta struct{ Text string }
 
 // ToolCall 携带原始工具名 + input;Canonical 在 translator 识别成功时填,nil 表示
 // 非 canonical (走 raw tool_use 路径)。同 ToolCallID 多次 emit 视为增量更新
-// (canonical 增量),accumulator 用 mutateIndex 覆盖。
+// (canonical 增量),accumulator 用 mutateIndex 覆盖。subagent 子调用同时携带外层
+// ParentToolCallID 与可选稳定 SubagentRunID；缺失 run ID 仍须保留为父调用 fallback
+// step，两者都为空才表示主 agent 自己的工具。Input 仅跨 runtime wire、UI block 与
+// blocks_json 边界流转，禁止作为 operational log 字段记录。
 type ToolCall struct {
 	ID               string
 	Name             string
 	Input            json.RawMessage
 	Canonical        canonical.CanonicalTool
 	ParentToolCallID string
+	SubagentRunID    string
 }
 
 // ToolResult 工具调用结果。Meta 携带 backend 在 tool_result 旁吐的结构化元数据
@@ -40,12 +44,15 @@ type ToolCall struct {
 // chat_svc 落 ChatBlock,前端按工具语义 Unmarshal。无 meta 留 nil。
 //
 // ParentToolCallID:当前 tool_result 属于 subagent 内部工具时指向外层 Agent.tool_use_id;
-// 主 agent 自己的工具留空。前端据此把子卡归集到父 SubagentInvocationCard。
+// SubagentRunID 再区分同一外层 parallel/chain 的输入槽；缺失时保持为空并由 UI fallback
+// 分组，不能丢弃或猜测归属。Content/Meta 只供 wire、UI/persistence 与正常模型工具语义
+// 使用，不得复制到 operational logs。
 type ToolResult struct {
 	ToolCallID       string
 	Content          string
 	IsError          bool
 	ParentToolCallID string
+	SubagentRunID    string
 	Meta             json.RawMessage
 }
 
@@ -118,8 +125,10 @@ type ExecApprovalResolved struct {
 // PermissionModeChanged CLI 通报自身 permission_mode 已变更。
 type PermissionModeChanged struct{ Mode string }
 
-// SubagentStarted / Progress / Done claudecode subagent 生命周期。ToolCallID 指向
-// 外层 Task / Agent 工具的调用 id。Info 携带 SubagentInfo 元数据镜像。
+// SubagentStarted / Progress / Done 是 backend-neutral subagent 生命周期。ToolCallID
+// 指向外层 Task / Agent 工具调用；Info 可携带 legacy 单运行元数据，或 Pi runtime
+// 维护的 mode + runs 全量快照。Info 中的 task/summary/error 等内容只进入 runtime
+// wire 与 UI/persistence 边界，不得序列化进 operational logs。
 type SubagentStarted struct {
 	ToolCallID string
 	Info       SubagentInfo
@@ -154,15 +163,19 @@ type Retry struct {
 // UsageUpdate per-API-call usage 上报。TotalInputTokens 由各 runtime translator
 // 按 family 聚合(Anthropic = prompt + cached + cacheCreation;OpenAI = prompt),
 // 供 chat_svc 直接 patch assistantMsg 与 emit StreamUsage,前端不再做家族判断。
+// ContextWindow 可选；runtime 已探到时与 usage 同帧携带，避免独立窗口事件在
+// 前端订阅建立前丢失后留下「有 usage、无分母」的状态。
 type UsageUpdate struct {
 	Usage            *provider.Usage
 	TotalInputTokens int
+	ContextWindow    int
 }
 
 // ContextWindowUpdated runtime 探到模型实际可用窗口大小变化时 emit。
 // Codex 读 app-server modelContextWindow；Claude Code 用模型 id 查 llmcatalog；
-// Pi Agent 只读 Pi RPC get_session_stats.contextUsage.contextWindow，避免自定义
-// provider 复用公共模型名时误套 catalog 元数据。Tokens=0 视为"未探到"。
+// Pi Agent 用 Pi RPC get_state.model.contextWindow 启动，并由
+// get_session_stats.contextUsage.contextWindow 校正，避免自定义 provider 复用公共
+// 模型名时误套 catalog 元数据。Tokens=0 视为"未探到"。
 type ContextWindowUpdated struct{ Tokens int }
 
 // PlanUpdated runtime 上报的计划更新(claudecode TodoWrite / codex update_plan +
