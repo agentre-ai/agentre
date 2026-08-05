@@ -55,6 +55,11 @@ const (
 	AgentBackendInvalidDevice                         // device_id 引用的远端设备不存在或已下线
 )
 
+// Agent 后端 12019~（piagent 绑定自定义供应商）
+const (
+	AgentBackendProviderModelRequired = iota + 12019 // 绑定供应商的 backend 要求 provider.Model 非空（--model 必须能选中模型）
+)
+
 // App 设置 15000~15999
 const (
 	AppSettingNotFound      = iota + 15000 // 设置项不存在

@@ -9,6 +9,7 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent/mcpbridge"
 	"github.com/agentre-ai/agentre/pkg/piagent"
@@ -166,21 +167,46 @@ func safePiResponseCommand(command string) (string, bool) {
 	}
 }
 
+// providerRunConfig 装配绑定供应商时的 provider 会话参数（APIKey 校验与 env 注入在
+// Run 层完成，见 runtime.go）：返回 --model 值（Provider.Model 非空时为
+// "agentre-<key>/<model>"）与物化后的 provider 扩展绝对路径。Provider.Model 为空
+// （保存时已拦截，此处仅兜底）时沿用现状：返回零值不报错，不注入模型也不物化扩展。
+// 模型名（Type 不可识别 / Model 空）出错一律显式返回，不静默吞掉后走无绑定运行。
+func providerRunConfig(p *llm_provider_entity.LLMProvider) (model string, extPath string, err error) {
+	if p == nil || strings.TrimSpace(p.Model) == "" {
+		return "", "", nil
+	}
+	model, err = agentruntime.PiAgentProviderModelName(p)
+	if err != nil {
+		return "", "", err
+	}
+	extPath, err = MaterializeProviderExtension(p)
+	if err != nil {
+		return "", "", err
+	}
+	return model, extPath, nil
+}
+
 var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cwd string) (sessionHandle, error) {
 	binary := strings.TrimSpace(req.Backend.CLIPath)
 	if binary == "" {
 		binary = DefaultBinary()
 	}
 	model := ""
+	var providerExtPath string
 	if req.Provider != nil {
-		model = strings.TrimSpace(req.Provider.Model)
+		var err error
+		model, providerExtPath, err = providerRunConfig(req.Provider)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if model == "" {
 		model = defaultModelForBackend(req.Backend)
 	}
 	// MCP 注入：有 RunRequest.MCPServers 时，materialize 内嵌桥扩展 + 渲染会话私有
 	// config，扩展路径走 --extension、config 路径走 AGENTRE_PI_MCP_CONFIG env。
-	var extPath string
+	var extPaths []string
 	if len(req.MCPServers) > 0 {
 		p, err := mcpbridge.Materialize()
 		if err != nil {
@@ -190,8 +216,13 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 		if err != nil {
 			return nil, err
 		}
-		extPath = p
+		extPaths = append(extPaths, p)
 		env = withEnv(env, mcpbridge.ConfigEnvVar, cfgPath)
+	}
+	// 绑定供应商时：物化 provider 扩展（pi.registerProvider，内容哈希无密钥），
+	// 与 MCP 桥扩展并列追加 --extension。
+	if providerExtPath != "" {
+		extPaths = append(extPaths, providerExtPath)
 	}
 	opts := []piagent.Option{
 		piagent.WithBinary(binary),
@@ -202,8 +233,8 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 		piagent.WithThinking(req.Backend.ReasoningEffort),
 		piagent.WithRawSink(piRawFrameSink(req.SessionID, req.ProviderSessionID)),
 	}
-	if extPath != "" {
-		opts = append(opts, piagent.WithExtension(extPath))
+	for _, ep := range extPaths {
+		opts = append(opts, piagent.WithExtension(ep))
 	}
 	// 跨 turn 上下文由 Pi 原生 Session ID 绑定。首轮不下发任何 Session flag，
 	// 让 Pi 遵循自己的默认/用户配置存储；后续轮仅用 --session <native-id> 恢复。

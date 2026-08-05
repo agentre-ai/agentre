@@ -27,6 +27,7 @@ type ProbeRequest struct {
 	Model        string            // codex
 	Env          map[string]string // 已装好的最终 env
 	CodexConfigs []string          // codex -c 覆盖项，仅 codex 使用
+	Extensions   []string          // pi 扩展绝对路径（--extension），仅 piagent 消费；claudecode/codex 忽略
 }
 
 // ProbeResponse Probe 成功路径的返回。

@@ -55,7 +55,6 @@ import { cn } from "@/lib/utils";
 import {
   CreateLLMProvider,
   DeleteLLMProvider,
-  ListLLMModels,
   ListLLMProviders,
   LookupLLMModel,
   PreviewLLMModels,
@@ -840,23 +839,17 @@ function ProviderForm({ editor, onCancel, onSubmit }: ProviderFormProps) {
     setModelsLoading(true);
     setModelsError(null);
     try {
-      const items = isEdit
-        ? ((
-            await ListLLMModels(
-              new llm_provider_svc.ListModelsRequest({
-                id: editor.provider.id,
-              }),
-            )
-          ).items ?? [])
-        : ((
-            await PreviewLLMModels(
-              new llm_provider_svc.PreviewModelsRequest({
-                type: values.type,
-                apiKey: values.apiKey.trim(),
-                baseUrl: values.baseUrl.trim(),
-              }),
-            )
-          ).items ?? []);
+      const items =
+        (
+          await PreviewLLMModels(
+            new llm_provider_svc.PreviewModelsRequest({
+              id: isEdit ? editor.provider.id : 0,
+              type: values.type,
+              apiKey: values.apiKey.trim(),
+              baseUrl: values.baseUrl.trim(),
+            }),
+          )
+        ).items ?? [];
       setModelOptions(items);
       setFetchedOnce(true);
       // 拉到列表后如果当前 model 命中且用户限额仍为 0，顺手填上 enriched 数据。

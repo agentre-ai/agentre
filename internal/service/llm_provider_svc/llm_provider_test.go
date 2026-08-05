@@ -192,6 +192,73 @@ func TestListModelsAnthropic(t *testing.T) {
 	})
 }
 
+func TestAnthropicCustomBaseURLKeepsSingleV1Prefix(t *testing.T) {
+	t.Run("Given a base URL ending in /v1, when models are fetched, then /v1 is not duplicated", func(t *testing.T) {
+		ctx, mockRepo, doer, svc := setupSvcTest(t)
+		mockRepo.EXPECT().Find(gomock.Any(), int64(21)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+			ID:      21,
+			Type:    "anthropic",
+			APIKey:  "test-anthropic-key",
+			BaseURL: "https://glm.example/v1",
+			Status:  1,
+		}, nil)
+		doer.respond(200, `{"data":[{"id":"glm-test-model"}]}`)
+
+		resp, err := svc.ListModels(ctx, &ListModelsRequest{ID: 21})
+
+		assert.NoError(t, err)
+		assert.Len(t, resp.Items, 1)
+		assert.Equal(t, "https://glm.example/v1/models", doer.last.URL.String())
+	})
+
+	t.Run("Given a base URL ending in /v1/, when a test message is sent, then /v1 is not duplicated", func(t *testing.T) {
+		ctx, mockRepo, doer, svc := setupSvcTest(t)
+		mockRepo.EXPECT().Find(gomock.Any(), int64(22)).Return(&llm_provider_entity.LLMProvider{ //nolint:gosec // credential-shaped API key is a test fixture.
+			ID:      22,
+			Type:    "anthropic",
+			APIKey:  "test-anthropic-key",
+			BaseURL: "https://glm.example/v1/",
+			Model:   "glm-test-model",
+			Status:  1,
+		}, nil)
+		doer.respond(200, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`)
+
+		resp, err := svc.TestConnection(ctx, &TestConnectionRequest{ID: 22})
+
+		assert.NoError(t, err)
+		assert.True(t, resp.OK)
+		assert.Equal(t, "https://glm.example/v1/messages", doer.last.URL.String())
+	})
+}
+
+func TestPreviewModelsDraftEditKeepsSavedAPIKey(t *testing.T) {
+	t.Run("Given an edited provider and an empty draft key, when models are fetched, then the draft URL and saved key are used", func(t *testing.T) {
+		ctx, mockRepo, doer, svc := setupSvcTest(t)
+		mockRepo.EXPECT().Find(gomock.Any(), int64(23)).Return(&llm_provider_entity.LLMProvider{
+			ID:      23,
+			Type:    "anthropic",
+			APIKey:  "test-saved-key",
+			BaseURL: "https://old.example/v1",
+			Status:  1,
+		}, nil)
+		doer.respond(200, `{"data":[{"id":"glm-test-model"}]}`)
+
+		var req PreviewModelsRequest
+		assert.NoError(t, json.Unmarshal([]byte(`{
+			"id": 23,
+			"type": "anthropic",
+			"apiKey": "",
+			"baseUrl": "https://new.example/v1"
+		}`), &req))
+		resp, err := svc.PreviewModels(ctx, &req)
+
+		assert.NoError(t, err)
+		assert.Len(t, resp.Items, 1)
+		assert.Equal(t, "https://new.example/v1/models", doer.last.URL.String())
+		assert.Equal(t, "test-saved-key", doer.last.Header.Get("x-api-key"))
+	})
+}
+
 func TestListModelsOpenAIUsesCustomBaseURL(t *testing.T) {
 	ctx, mockRepo, doer, svc := setupSvcTest(t)
 	mockRepo.EXPECT().Find(gomock.Any(), int64(5)).Return(&llm_provider_entity.LLMProvider{

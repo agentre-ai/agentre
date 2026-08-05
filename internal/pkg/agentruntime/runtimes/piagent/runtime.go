@@ -70,9 +70,17 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		logger.Ctx(ctx).Error("piagent runtime: BuildPiAgentEnv failed", zap.Int64("sessionID", req.SessionID), zap.Error(err))
 		return nil, nil, err
 	}
+	// 绑定供应商：APIKey 空视为配置错误（消息只含 provider key，不含密钥）；
+	// 否则把 AGENTRE_PI_API_KEY_* 注入本次子进程 env（密钥永不落盘）。
+	if req.Provider != nil {
+		if strings.TrimSpace(req.Provider.APIKey) == "" {
+			return nil, nil, fmt.Errorf("piagent runtime: provider %q has empty APIKey", req.Provider.ProviderKey)
+		}
+		env = agentruntime.BuildPiAgentProviderEnv(env, req.Provider)
+	}
 	sess, err := sessionFactory(req, env, cwd)
 	if err != nil {
-		logger.Ctx(ctx).Error("piagent runtime: session factory failed", zap.Int64("sessionID", req.SessionID), zap.String("cwd", cwd), zap.Error(err))
+		logger.Ctx(ctx).Error("piagent runtime: session factory failed", zap.Int64("sessionID", req.SessionID), zap.String("cwd", cwd), providerKeyField(req), zap.Error(err))
 		return nil, nil, err
 	}
 
@@ -98,7 +106,8 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		modelID = strings.TrimSpace(req.Provider.Model)
 	}
 	result := &agentruntime.RunResult{ProviderSessionID: sess.ID(), Model: modelID}
-	logger.Ctx(ctx).Info("piagent runtime: turn starting",
+	logFields := make([]zap.Field, 0, 7)
+	logFields = append(logFields,
 		zap.Int64("sessionID", req.SessionID),
 		zap.Int64("agentID", req.AgentID),
 		zap.String("cwd", cwd),
@@ -106,6 +115,8 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		zap.String("model", result.Model),
 		zap.Bool("compact", req.Compact),
 	)
+	logFields = append(logFields, providerKeyField(req))
+	logger.Ctx(ctx).Info("piagent runtime: turn starting", logFields...)
 
 	go func() {
 		defer close(out)
@@ -414,12 +425,20 @@ func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, s
 	logger.Ctx(ctx).Debug("piagent.logPiFailureDiagnostics: turn failed diagnostics", fields...)
 }
 
+func providerKeyField(req agentruntime.RunRequest) zap.Field {
+	if req.Provider != nil {
+		return zap.String("providerKey", req.Provider.ProviderKey)
+	}
+	return zap.Skip()
+}
+
 func piTurnLogFields(req agentruntime.RunRequest, result *agentruntime.RunResult, err error) []zap.Field {
 	fields := []zap.Field{
 		zap.Int64("sessionID", req.SessionID),
 		zap.Int64("agentID", req.AgentID),
 		zap.Bool("compact", req.Compact),
 	}
+	fields = append(fields, providerKeyField(req))
 	if result != nil {
 		fields = append(fields,
 			zap.String("providerSessionID", result.ProviderSessionID),
