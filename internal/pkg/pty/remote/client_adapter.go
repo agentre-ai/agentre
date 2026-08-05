@@ -40,7 +40,8 @@ var (
 // Notification handlers only append to that generation's bounded FIFO under
 // mu; its sole delivery worker owns channel sends and closure.
 type ClientAdapter struct {
-	client DaemonClient
+	client           DaemonClient
+	connectionClosed <-chan struct{}
 
 	mu     sync.Mutex
 	subs   map[string]*terminalSubscription
@@ -86,10 +87,15 @@ const (
 // constructing a second ClientAdapter against the same client would overwrite
 // them, so callers keep at most one adapter per client instance.
 func NewClientAdapter(c DaemonClient) *ClientAdapter {
-	a := &ClientAdapter{client: c, subs: map[string]*terminalSubscription{}}
+	closed := c.Closed()
+	a := &ClientAdapter{
+		client:           c,
+		connectionClosed: closed,
+		subs:             map[string]*terminalSubscription{},
+	}
 	c.Handle("terminal.data", a.handleData)
 	c.Handle("terminal.exit", a.handleExit)
-	if closed := c.Closed(); closed != nil {
+	if closed != nil {
 		go a.watchClose(closed)
 	}
 	return a
@@ -98,6 +104,12 @@ func NewClientAdapter(c DaemonClient) *ClientAdapter {
 // Call passes through to the underlying client.
 func (a *ClientAdapter) Call(ctx context.Context, method string, params any, out any) error {
 	return a.client.Call(ctx, method, params, out)
+}
+
+// Closed exposes the stable connection-generation signal used by cleanup
+// guardians to retain ownership until the shared daemon connection is gone.
+func (a *ClientAdapter) Closed() <-chan struct{} {
+	return a.connectionClosed
 }
 
 // Subscribe atomically creates and registers one data/exit channel pair for a
@@ -376,5 +388,7 @@ func (a *ClientAdapter) nextDelivery(
 	return deliveryWait, protocol.TerminalDataEvent{}, false, protocol.TerminalExitEvent{}
 }
 
-// Compile-time assertion: ClientAdapter satisfies remote.Client.
+// Compile-time assertions: ClientAdapter satisfies the terminal RPC and
+// connection-lifecycle seams consumed by Backend.
 var _ Client = (*ClientAdapter)(nil)
+var _ closedClient = (*ClientAdapter)(nil)

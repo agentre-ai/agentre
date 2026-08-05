@@ -104,6 +104,24 @@ func TestClientAdapter_GivenWrappedConnectionCloseFailureWhenAbortedThenReportsF
 	require.NoError(t, a.Abort())
 }
 
+func TestClientAdapter_GivenWrappedConnectionWhenObservedThenExposesItsStableClosedSignal(t *testing.T) {
+	c := newStubDaemonClient()
+	a := remote.NewClientAdapter(c)
+
+	require.Equal(t, c.Closed(), a.Closed())
+	select {
+	case <-a.Closed():
+		t.Fatal("adapter reported the connection closed before its wrapped client")
+	default:
+	}
+	require.NoError(t, a.Abort())
+	select {
+	case <-a.Closed():
+	case <-time.After(time.Second):
+		t.Fatal("adapter did not expose the wrapped connection close")
+	}
+}
+
 func TestClientAdapter_GivenAtomicSubscriptionsWhenDataArrivesThenDemuxesByTerminalID(t *testing.T) {
 	c := newStubDaemonClient()
 	a := remote.NewClientAdapter(c)

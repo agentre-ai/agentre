@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	openTimeout        = 5 * time.Second
-	openCleanupTimeout = time.Second
+	openTimeout              = 5 * time.Second
+	openCleanupTimeout       = time.Second
+	openCleanupRetryInterval = 50 * time.Millisecond
 	// terminalOperationTimeout bounds small terminal mutations on the shared
 	// LAN RPC connection without treating ordinary short network jitter as a
 	// failed connection.
@@ -57,6 +58,13 @@ type Client interface {
 	Abort() error
 }
 
+// closedClient is the narrow connection-lifecycle extension used by cleanup
+// guardians. ClientAdapter supplies it in production; basic Client fakes and
+// compatibility callers need not implement it when Abort is authoritative.
+type closedClient interface {
+	Closed() <-chan struct{}
+}
+
 type Backend struct {
 	client           Client
 	release          func()
@@ -68,8 +76,10 @@ func NewBackend(c Client) *Backend {
 }
 
 // NewBackendWithLease binds one successful daemon-client borrow to one Open.
-// Open failure releases immediately; a successful handle releases when its
-// terminal outcome is settled. The release function is guarded exactly once.
+// Authoritatively rejected opens release immediately; uncertain interrupted or
+// mismatched opens retain the lease until cleanup ownership is confirmed. A
+// successful handle releases when its terminal outcome is settled. The release
+// function is guarded exactly once.
 func NewBackendWithLease(c Client, release func()) *Backend {
 	return newBackend(c, release, terminalOperationTimeout)
 }
@@ -89,10 +99,10 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 	// Register both event channels under the stable desktop identity before the
 	// request can make agentred spawn or emit anything.
 	subscription := b.client.Subscribe(terminalID)
-	settleFailure := func() {
+	settleFailure := sync.OnceFunc(func() {
 		b.client.Unsubscribe(terminalID, subscription)
 		release()
-	}
+	})
 
 	openCtx, cancel := context.WithTimeoutCause(ctx, openTimeout, errOpenTimeout)
 	defer cancel()
@@ -108,8 +118,11 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 	}, &res)
 	if err != nil {
 		if returned, interrupted := interruptedOpenError(ctx, openCtx, err); interrupted {
-			b.cancelPendingOpen(ctx, terminalID)
-			settleFailure()
+			params := protocol.TerminalCloseParams{
+				TerminalID:        terminalID,
+				CancelPendingOpen: true,
+			}
+			b.settleFailedOpen(ctx, &params, settleFailure)
 			return nil, returned
 		}
 		// A generic terminal.open RPC error is an authoritative rejection: no
@@ -118,9 +131,18 @@ func (b *Backend) Open(ctx context.Context, spec pkgpty.Spec) (pkgpty.Handle, er
 		return nil, err
 	}
 	if res.TerminalID != terminalID {
-		b.cleanupMismatchedOpen(ctx, res.TerminalID)
-		settleFailure()
-		return nil, fmt.Errorf("%w: expected %q, got %q", ErrTerminalIDMismatch, terminalID, res.TerminalID)
+		mismatchErr := fmt.Errorf(
+			"%w: expected %q, got %q",
+			ErrTerminalIDMismatch,
+			terminalID,
+			res.TerminalID,
+		)
+		var params *protocol.TerminalCloseParams
+		if res.TerminalID != "" {
+			params = &protocol.TerminalCloseParams{TerminalID: res.TerminalID}
+		}
+		b.settleFailedOpen(ctx, params, settleFailure)
+		return nil, mismatchErr
 	}
 
 	h := &handleImpl{
@@ -173,29 +195,81 @@ func interruptedOpenError(
 	return nil, false
 }
 
-func (b *Backend) cancelPendingOpen(ctx context.Context, terminalID string) {
-	b.cleanupTerminal(ctx, protocol.TerminalCloseParams{
-		TerminalID:        terminalID,
-		CancelPendingOpen: true,
-	})
-}
-
-func (b *Backend) cleanupMismatchedOpen(ctx context.Context, terminalID string) {
-	if terminalID == "" {
-		_ = b.client.Abort()
+func (b *Backend) settleFailedOpen(
+	ctx context.Context,
+	params *protocol.TerminalCloseParams,
+	settle func(),
+) {
+	if b.cleanupTerminal(ctx, params) {
+		settle()
 		return
 	}
-	b.cleanupTerminal(ctx, protocol.TerminalCloseParams{TerminalID: terminalID})
+	go b.guardOpenCleanup(params, settle) //nolint:gosec // G118: guardian must outlive the canceled Open context until ownership is authoritative
 }
 
-func (b *Backend) cleanupTerminal(ctx context.Context, params protocol.TerminalCloseParams) {
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openCleanupTimeout)
-	defer cancel()
-	var ack struct{}
-	if err := b.client.Call(cleanupCtx, "terminal.close", params, &ack); err != nil {
-		// A failed acknowledgement leaves connection ownership suspect. Abort it
-		// synchronously so agentred's connection-scoped CloseAll owns cleanup.
-		_ = b.client.Abort()
+// cleanupTerminal reports whether remote terminal ownership is authoritative:
+// either terminal.close was acknowledged or the shared connection is known to
+// be closed. A successful Abort transfers ownership to the daemon's CloseAll.
+func (b *Backend) cleanupTerminal(
+	ctx context.Context,
+	params *protocol.TerminalCloseParams,
+) bool {
+	closed := clientClosed(b.client)
+	if channelClosed(closed) {
+		return true
+	}
+	if params != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openCleanupTimeout)
+		var ack struct{}
+		err := b.client.Call(cleanupCtx, "terminal.close", *params, &ack)
+		cancel()
+		if err == nil || channelClosed(closed) {
+			return true
+		}
+	}
+	if err := b.client.Abort(); err == nil {
+		return true
+	}
+	return channelClosed(closed)
+}
+
+func (b *Backend) guardOpenCleanup(
+	params *protocol.TerminalCloseParams,
+	settle func(),
+) {
+	defer settle()
+	closed := clientClosed(b.client)
+	if channelClosed(closed) {
+		return
+	}
+	ticker := time.NewTicker(openCleanupRetryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-closed:
+			return
+		case <-ticker.C:
+			if b.cleanupTerminal(context.Background(), params) {
+				return
+			}
+		}
+	}
+}
+
+func clientClosed(client Client) <-chan struct{} {
+	observer, ok := client.(closedClient)
+	if !ok {
+		return nil
+	}
+	return observer.Closed()
+}
+
+func channelClosed(closed <-chan struct{}) bool {
+	select {
+	case <-closed:
+		return true
+	default:
+		return false
 	}
 }
 

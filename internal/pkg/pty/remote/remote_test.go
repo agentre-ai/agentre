@@ -178,6 +178,95 @@ func (c *interruptedOpenClient) snapshot() ([]string, protocol.TerminalClosePara
 	return append([]string(nil), c.operations...), c.closeParam
 }
 
+type openCleanupOwnershipClient struct {
+	interruptOpen bool
+	responseID    string
+	cleanupErr    error
+	abortErr      error
+
+	started     chan struct{}
+	closed      chan struct{}
+	data        chan protocol.TerminalDataEvent
+	exit        chan protocol.TerminalExitEvent
+	startedOnce sync.Once
+	closedOnce  sync.Once
+	closeAck    atomic.Bool
+
+	mu             sync.Mutex
+	lastCloseParam protocol.TerminalCloseParams
+
+	closeCalls       atomic.Int32
+	abortCalls       atomic.Int32
+	unsubscribeCalls atomic.Int32
+}
+
+func newOpenCleanupOwnershipClient(interruptOpen bool, responseID string) *openCleanupOwnershipClient {
+	return &openCleanupOwnershipClient{
+		interruptOpen: interruptOpen,
+		responseID:    responseID,
+		cleanupErr:    errors.New("terminal.close unavailable"),
+		abortErr:      errors.New("websocket close failed"),
+		started:       make(chan struct{}),
+		closed:        make(chan struct{}),
+		data:          make(chan protocol.TerminalDataEvent),
+		exit:          make(chan protocol.TerminalExitEvent),
+	}
+}
+
+func (c *openCleanupOwnershipClient) Call(
+	ctx context.Context,
+	method string,
+	params any,
+	out any,
+) error {
+	switch method {
+	case "terminal.open":
+		c.startedOnce.Do(func() { close(c.started) })
+		if c.interruptOpen {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		out.(*protocol.TerminalOpenResult).TerminalID = c.responseID
+		return nil
+	case "terminal.close":
+		c.closeCalls.Add(1)
+		c.mu.Lock()
+		c.lastCloseParam = params.(protocol.TerminalCloseParams)
+		c.mu.Unlock()
+		if c.closeAck.Load() {
+			return nil
+		}
+		return c.cleanupErr
+	default:
+		return nil
+	}
+}
+
+func (c *openCleanupOwnershipClient) Subscribe(string) remote.Subscription {
+	return remote.Subscription{Data: c.data, Exit: c.exit}
+}
+
+func (c *openCleanupOwnershipClient) Unsubscribe(string, remote.Subscription) {
+	c.unsubscribeCalls.Add(1)
+}
+
+func (c *openCleanupOwnershipClient) Abort() error {
+	c.abortCalls.Add(1)
+	return c.abortErr
+}
+
+func (c *openCleanupOwnershipClient) Closed() <-chan struct{} { return c.closed }
+
+func (c *openCleanupOwnershipClient) closeConnection() {
+	c.closedOnce.Do(func() { close(c.closed) })
+}
+
+func (c *openCleanupOwnershipClient) closeParam() protocol.TerminalCloseParams {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastCloseParam
+}
+
 type scriptedCloseClient struct {
 	fakeClient
 	closeCalls   atomic.Int32
@@ -392,6 +481,176 @@ func TestRemoteBackend_GivenPendingCancelCleanupFailureWhenOpenIsCanceledThenAbo
 	require.Greater(t, abortIndex, closeIndex)
 	require.Less(t, abortIndex, operationIndex(operations, "unsubscribe"))
 	require.Less(t, abortIndex, operationIndex(operations, "release"))
+	require.Equal(t, []string{
+		"subscribe", "open", "open-return", "close", "abort", "unsubscribe", "release",
+	}, operations)
+	time.Sleep(125 * time.Millisecond)
+	after, _ := client.snapshot()
+	require.Equal(t, operations, after, "successful abort must settle immediately without a guardian")
+}
+
+func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenRetryIsAcknowledgedThenGuardianRetainsOwnershipUntilSettled(t *testing.T) {
+	client := newOpenCleanupOwnershipClient(true, "")
+	t.Cleanup(client.closeConnection)
+	ctx, cancel := context.WithCancel(context.Background())
+	var releases atomic.Int32
+	result := make(chan error, 1)
+	go func() {
+		_, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(
+			ctx,
+			pty.Spec{TerminalID: "guardian-cancel-retry", Cwd: "/r"},
+		)
+		result <- err
+	}()
+	<-client.started
+	cancelStarted := time.Now()
+	cancel()
+
+	select {
+	case err := <-result:
+		require.Equal(t, context.Canceled, err)
+		require.Equal(t, "context canceled", err.Error())
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Open did not promptly return its original cancellation error")
+	}
+	require.Less(t, time.Since(cancelStarted), 250*time.Millisecond)
+	require.Zero(t, releases.Load(), "failed cleanup and abort must retain the lease")
+	require.Zero(t, client.unsubscribeCalls.Load(), "failed cleanup and abort must retain the subscription")
+	require.Equal(t, protocol.TerminalCloseParams{
+		TerminalID:        "guardian-cancel-retry",
+		CancelPendingOpen: true,
+	}, client.closeParam())
+
+	client.closeAck.Store(true)
+	require.Eventually(t, func() bool {
+		return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1 && client.closeCalls.Load() >= 2
+	}, time.Second, time.Millisecond)
+	closeCalls := client.closeCalls.Load()
+	abortCalls := client.abortCalls.Load()
+	time.Sleep(150 * time.Millisecond)
+	require.Equal(t, closeCalls, client.closeCalls.Load(), "settled guardian must stop retrying")
+	require.Equal(t, abortCalls, client.abortCalls.Load(), "settled guardian must stop aborting")
+	require.Equal(t, int32(1), releases.Load())
+	require.Equal(t, int32(1), client.unsubscribeCalls.Load())
+}
+
+func TestRemoteBackend_GivenInterruptedOpenCleanupAndAbortFailuresWhenConnectionClosesThenGuardianSettlesExactlyOnceAndExits(t *testing.T) {
+	client := newOpenCleanupOwnershipClient(true, "")
+	t.Cleanup(client.closeConnection)
+	ctx, cancel := context.WithCancel(context.Background())
+	var releases atomic.Int32
+	result := make(chan error, 1)
+	go func() {
+		_, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(
+			ctx,
+			pty.Spec{TerminalID: "guardian-cancel-closed", Cwd: "/r"},
+		)
+		result <- err
+	}()
+	<-client.started
+	cancel()
+
+	require.Equal(t, context.Canceled, <-result)
+	require.Zero(t, releases.Load())
+	require.Zero(t, client.unsubscribeCalls.Load())
+	require.Eventually(t, func() bool { return client.closeCalls.Load() >= 3 },
+		500*time.Millisecond, time.Millisecond, "guardian did not periodically retry terminal.close")
+	closeCallsBeforeWait := client.closeCalls.Load()
+	time.Sleep(125 * time.Millisecond)
+	require.LessOrEqual(t, client.closeCalls.Load()-closeCallsBeforeWait, int32(4),
+		"guardian retried in a busy loop")
+	require.Equal(t, client.closeCalls.Load(), client.abortCalls.Load(),
+		"each failed close retry must make one shared-connection abort attempt")
+	require.Zero(t, releases.Load(), "repeated failures must retain the lease")
+	require.Zero(t, client.unsubscribeCalls.Load(), "repeated failures must retain the subscription")
+	client.closeConnection()
+	require.Eventually(t, func() bool {
+		return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1
+	}, time.Second, time.Millisecond)
+	closeCalls := client.closeCalls.Load()
+	abortCalls := client.abortCalls.Load()
+	time.Sleep(150 * time.Millisecond)
+	require.Equal(t, closeCalls, client.closeCalls.Load(), "connection-settled guardian must exit")
+	require.Equal(t, abortCalls, client.abortCalls.Load(), "connection-settled guardian must exit")
+	require.Equal(t, int32(1), releases.Load())
+	require.Equal(t, int32(1), client.unsubscribeCalls.Load())
+}
+
+func TestRemoteBackend_GivenMismatchedOpenCleanupAndAbortFailuresWhenRetryIsAcknowledgedThenPreservesErrorAndSettlesGuardian(t *testing.T) {
+	client := newOpenCleanupOwnershipClient(false, "guardian-unexpected-terminal")
+	t.Cleanup(client.closeConnection)
+	var releases atomic.Int32
+
+	h, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(
+		context.Background(),
+		pty.Spec{TerminalID: "guardian-expected-terminal", Cwd: "/r"},
+	)
+
+	require.Nil(t, h)
+	require.ErrorIs(t, err, remote.ErrTerminalIDMismatch)
+	require.Equal(t,
+		"agentred returned a mismatched terminal id: expected \"guardian-expected-terminal\", got \"guardian-unexpected-terminal\"",
+		err.Error(),
+	)
+	require.Zero(t, releases.Load(), "failed mismatch cleanup and abort must retain the lease")
+	require.Zero(t, client.unsubscribeCalls.Load(), "failed mismatch cleanup and abort must retain the subscription")
+	require.Equal(t, protocol.TerminalCloseParams{TerminalID: "guardian-unexpected-terminal"}, client.closeParam())
+
+	client.closeAck.Store(true)
+	require.Eventually(t, func() bool {
+		return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1 && client.closeCalls.Load() >= 2
+	}, time.Second, time.Millisecond)
+	require.Equal(t, int32(1), releases.Load())
+	require.Equal(t, int32(1), client.unsubscribeCalls.Load())
+}
+
+func TestRemoteBackend_GivenGuardianCloseAcknowledgementRacesConnectionClosureThenReleasesAndUnsubscribesExactlyOnce(t *testing.T) {
+	const iterations = 100
+	type outcome struct {
+		client   *openCleanupOwnershipClient
+		releases *atomic.Int32
+	}
+	outcomes := make([]outcome, 0, iterations)
+
+	for i := 0; i < iterations; i++ {
+		client := newOpenCleanupOwnershipClient(false, fmt.Sprintf("guardian-race-returned-%d", i))
+		releases := &atomic.Int32{}
+		h, err := remote.NewBackendWithLease(client, func() { releases.Add(1) }).Open(
+			context.Background(),
+			pty.Spec{TerminalID: fmt.Sprintf("guardian-race-expected-%d", i), Cwd: "/r"},
+		)
+		require.Nil(t, h)
+		require.ErrorIs(t, err, remote.ErrTerminalIDMismatch)
+		require.Zero(t, releases.Load())
+		require.Zero(t, client.unsubscribeCalls.Load())
+
+		start := make(chan struct{})
+		var race sync.WaitGroup
+		race.Add(2)
+		go func() {
+			defer race.Done()
+			<-start
+			client.closeAck.Store(true)
+		}()
+		go func() {
+			defer race.Done()
+			<-start
+			client.closeConnection()
+		}()
+		close(start)
+		race.Wait()
+		require.Eventuallyf(t, func() bool {
+			return releases.Load() == 1 && client.unsubscribeCalls.Load() == 1
+		}, time.Second, time.Millisecond, "iteration %d guardian did not settle", i)
+		outcomes = append(outcomes, outcome{client: client, releases: releases})
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	for i, result := range outcomes {
+		require.Equalf(t, int32(1), result.releases.Load(), "iteration %d released more than once", i)
+		require.Equalf(t, int32(1), result.client.unsubscribeCalls.Load(),
+			"iteration %d unsubscribed more than once", i)
+	}
 }
 
 func TestRemoteBackend_GivenOpenResponseIDMismatchWhenOpenedThenClosesReturnedTerminalAndRejectsHandle(t *testing.T) {
