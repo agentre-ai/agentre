@@ -132,6 +132,60 @@ done`)
 	assert.NotContains(t, args, "--session-dir")
 }
 
+func TestProbe_PiAgentForwardsExtensionPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake binary not portable to windows")
+	}
+	// 绑定供应商的 piagent：prober 把物化后的 provider 扩展透传给 pi client
+	// （--extension <path>，与 chat run 同一 --extension 注入通道）。claudecode /
+	// codex 不消费 Extensions 字段，此处只验证 piagent 分支透传。
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	fake := writeExecutable(t, dir, "pi", `
+printf '%s\n' "$@" > "$AGENTRE_TEST_PI_ARGS"
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"get_state"'*)
+      printf '%s\n' '{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"ephemeral-probe"}}'
+      ;;
+    *'"type":"prompt"'*)
+      printf '%s\n' '{"type":"response","command":"prompt","success":true}'
+      printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"pong"}}'
+      printf '%s\n' '{"type":"agent_end","messages":[],"willRetry":false}'
+      printf '%s\n' '{"type":"agent_settled"}'
+      ;;
+    *'"type":"get_session_stats"'*)
+      printf '%s\n' '{"type":"response","command":"get_session_stats","success":true,"data":{}}'
+      ;;
+  esac
+done`)
+
+	exts := []string{"/ext/agentre-provider-aaa.mjs", "/ext/agentre-provider-bbb.mjs"}
+	resp, err := Probe(context.Background(), ProbeRequest{
+		Type:       "piagent",
+		CLIPath:    fake,
+		Env:        map[string]string{"AGENTRE_TEST_PI_ARGS": argsFile},
+		Extensions: exts,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "pong", resp.Text)
+	argsRaw, err := os.ReadFile(argsFile) //nolint:gosec // test-owned temp path
+	require.NoError(t, err)
+	args := strings.Split(strings.TrimSpace(string(argsRaw)), "\n")
+	extCount := 0
+	for _, a := range args {
+		if a == "--extension" {
+			extCount++
+		}
+	}
+	assert.Equal(t, 2, extCount, "每个 Extensions 路径都应以 --extension 透传给 pi client")
+	for _, ext := range exts {
+		assert.Contains(t, args, ext)
+	}
+}
+
 func TestProbe_ClaudeCode_FakeCLI_ExitNonZero(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake binary not portable to windows")

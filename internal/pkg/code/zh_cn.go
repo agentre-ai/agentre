@@ -37,6 +37,7 @@ var zhCN = map[int]string{
 	AgentBackendGatewayUnavailable:     "本地 HTTP 代理未启动，请先在设置中启用",
 	AgentBackendInvalidReasoningEffort: "思考力度取值不合法，仅支持 low / medium / high / xhigh / max 或留空",
 	AgentBackendInvalidDevice:          "Agent 后端绑定的设备不存在或已下线",
+	AgentBackendProviderModelRequired:  "所选 LLM 供应商未配置默认 Model，请先在供应商设置中补充",
 
 	AppSettingNotFound:      "设置项不存在",
 	AppSettingInvalidPort:   "端口必须是 0~65535 之间的整数",
