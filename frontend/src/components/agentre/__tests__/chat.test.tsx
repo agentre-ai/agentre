@@ -38,6 +38,7 @@ import {
   formatResetIn,
 } from "@/components/agentre/chat";
 import type { ChatBlockData } from "@/stores/chat-streams-store";
+import { useLocalCommandsStore } from "@/stores/local-commands-store";
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
 function renderTranscriptWithSubagent() {
@@ -409,6 +410,35 @@ describe("ChatComposer context meter", () => {
     const fill = progress.firstElementChild;
     expect(fill).toHaveClass("bg-status-waiting");
     expect(fill).toHaveStyle({ width: "80%" });
+  });
+});
+
+describe("ChatTranscript local command lifecycle controls", () => {
+  it("Given ChatPanel supplies a stop callback, When a local-command row renders, Then the card delegates its terminal id through transcript context", () => {
+    const onStopLocalCommand = vi.fn();
+    useLocalCommandsStore.getState().start({
+      id: "terminal-local-1",
+      sessionId: 1,
+      command: "sleep 30",
+      createdAt: 1,
+    });
+    try {
+      render(
+        <ChatTranscript
+          agentColor="agent-1"
+          agentName="A"
+          messages={[]}
+          onStopLocalCommand={onStopLocalCommand}
+          sessionId={1}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
+      expect(onStopLocalCommand).toHaveBeenCalledTimes(1);
+      expect(onStopLocalCommand).toHaveBeenCalledWith("terminal-local-1");
+    } finally {
+      useLocalCommandsStore.setState({ entries: {} });
+    }
   });
 });
 

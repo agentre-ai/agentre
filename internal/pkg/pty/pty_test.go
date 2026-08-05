@@ -8,8 +8,8 @@ import (
 
 func TestSpec_ZeroValueValid(t *testing.T) {
 	s := pty.Spec{}
-	if s.Cols != 0 || s.Rows != 0 {
-		t.Fatalf("zero Spec must have zero cols/rows")
+	if s.TerminalID != "" || s.Cols != 0 || s.Rows != 0 {
+		t.Fatalf("zero Spec must have no runtime terminal ID and zero cols/rows")
 	}
 }
 
