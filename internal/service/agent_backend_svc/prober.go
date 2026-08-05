@@ -3,6 +3,7 @@ package agent_backend_svc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -161,6 +162,11 @@ func buildPiAgentProviderProbe(ctx context.Context, b *agent_backend_entity.Agen
 	}
 	if p == nil || !p.IsActive() {
 		return nil, env, model, errors.New("llm provider missing or inactive")
+	}
+	// APIKey 空 → 配置错误（与 runtime.go 的检查一致：Test 与 chat run 同一失败路径，
+	// 不 spawn Pi；消息只含 provider key，不含密钥）。
+	if strings.TrimSpace(p.APIKey) == "" {
+		return nil, env, model, fmt.Errorf("llm provider %q has empty APIKey", p.ProviderKey)
 	}
 	extPath, err := piagent.MaterializeProviderExtension(p)
 	if err != nil {

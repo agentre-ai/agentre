@@ -335,6 +335,34 @@ func TestBuildPiAgentProviderProbe(t *testing.T) {
 			So(err, ShouldNotBeNil)
 		})
 	})
+
+	Convey("Given a piagent backend bound to a provider with an empty APIKey", t, func() {
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+		repoMock := mock_llm_provider_repo.NewMockLLMProviderRepo(ctrl)
+		llm_provider_repo.RegisterLLMProvider(repoMock)
+		t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+
+		p := &llm_provider_entity.LLMProvider{
+			ProviderKey: "key-pi",
+			Type:        string(llm_provider_entity.TypeOpenAIChat),
+			Name:        "PiProvider",
+			Model:       "deepseek-v3",
+			APIKey:      "",
+			BaseURL:     "https://pi.example",
+			Status:      consts.ACTIVE,
+		}
+		repoMock.EXPECT().FindByKey(gomock.Any(), "key-pi").Return(p, nil)
+
+		Convey("When assembling the probe params Then a config error naming the provider is returned (no spawn, mirrors runtime)", func() {
+			_, _, _, err := buildPiAgentProviderProbe(context.Background(), &agent_backend_entity.AgentBackend{
+				Type:           string(agent_backend_entity.TypePiAgent),
+				LLMProviderKey: "key-pi",
+			}, map[string]string{}, "")
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldContainSubstring, "key-pi")
+		})
+	})
 }
 
 func TestBuildCodexEnv(t *testing.T) {
