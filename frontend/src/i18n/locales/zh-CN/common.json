@@ -247,7 +247,11 @@
     },
     "agentSpawn": {
       "aria": "Subagent {{name}}",
+      "groupedAria": "{{mode}}模式的多个 Subagent",
       "defaultName": "Agent",
+      "groupedName": "多个 Agent",
+      "runToggle": "展开或收起第 {{index}} 个运行：{{name}}",
+      "stepToggle": "展开或收起 {{tool}} 步骤详情",
       "stop": "停止",
       "emptyPrompt": "无 prompt",
       "emptyResult": "(empty result)",
@@ -260,6 +264,16 @@
         "tokens": "用量",
         "duration": "耗时"
       },
+      "mode": {
+        "single": "单个",
+        "parallel": "并行",
+        "chain": "串行"
+      },
+      "source": {
+        "project": "项目",
+        "user": "用户",
+        "both": "项目 + 用户"
+      },
       "progressAria": {
         "tools": "{{count}} 个工具",
         "tools_one": "{{count}} 个工具",
@@ -268,15 +282,22 @@
       },
       "sections": {
         "prompt": "TASK PROMPT",
+        "tasks": "TASKS",
         "steps": "STEPS",
+        "output": "OUTPUT",
         "summary": "SUMMARY"
       },
       "status": {
         "done": "DONE",
         "error": "ERROR",
         "fail": "FAIL",
+        "failed": "FAILED",
+        "partial": "PARTIAL",
         "running": "RUNNING",
         "runningLower": "running",
+        "waiting": "WAITING",
+        "skipped": "SKIPPED",
+        "unknown": "UNKNOWN",
         "stopped": "STOPPED",
         "withDuration": "{{status}} · {{duration}}"
       },

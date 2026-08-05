@@ -57,9 +57,9 @@ func translate(ev pkgpi.Event) (events []agentruntime.Event, usage *provider.Usa
 // claudecode / codex 不重名(read/bash/edit/write/grep/find/ls),这里只认会改文件
 // 的两个;其余内置工具与注入的 MCP 工具一律走 raw 工具卡。
 //
-// 刻意不整表交给 canonical.FromToolUse:那条 switch 还认 task/agent(大小写不敏感)
-// 的 subagent 派遣形状,而 Pi 没有原生 subagent 协议,同名 MCP 工具会被误渲成
-// AgentSpawnCard。
+// 刻意不整表交给 canonical.FromToolUse:Pi extension subagent 必须先经过 drain
+// boundary 的名称门槛、invocation classifier 与 stateful envelope tracker；在这个纯
+// canonical helper 里按 task/agent 形状直接识别，会绕过协议校验并误分类同名 MCP 工具。
 var piCanonicalToolNames = map[string]bool{"edit": true, "write": true}
 
 // recognizeCanonical 按工具名 + raw input JSON 识别 pi 文件工具的 canonical 形状。

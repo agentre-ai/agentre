@@ -122,6 +122,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
             toolInput: ev.toolInput,
             canonical: ev.canonical,
             parentToolUseId: ev.parentToolUseId,
+            subagentRunId: ev.subagentRunId,
             subagent: ev.subagent,
           });
           return;
@@ -137,6 +138,7 @@ export function ChatStreamsHost(): React.ReactElement | null {
             text: ev.toolResult ?? "",
             isError: !!ev.isError,
             parentToolUseId: ev.parentToolUseId,
+            subagentRunId: ev.subagentRunId,
             toolResultMeta: ev.toolResultMeta,
           });
           return;

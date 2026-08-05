@@ -8,6 +8,7 @@ const (
 	EventTextDelta       EventKind = "text_delta"
 	EventThinkingDelta   EventKind = "thinking_delta"
 	EventPreToolUse      EventKind = "pre_tool_use"
+	EventToolUseUpdate   EventKind = "tool_use_update"
 	EventPostToolUse     EventKind = "post_tool_use"
 	EventUsage           EventKind = "usage"
 	EventContextWindow   EventKind = "context_window"
@@ -41,9 +42,11 @@ type StreamDiagnostics struct {
 }
 
 type ToolEvent struct {
-	ID      string
-	Name    string
-	Input   []byte
-	Content string
-	IsError bool
+	ID            string
+	Name          string
+	Input         []byte
+	PartialResult []byte
+	Content       string
+	Details       []byte
+	IsError       bool
 }

@@ -15,11 +15,15 @@ import (
 	"github.com/cago-frame/agents/provider"
 	"github.com/cago-frame/agents/provider/providertest"
 	"github.com/cago-frame/cago/pkg/consts"
+	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/cago-frame/cago/pkg/utils/testutils"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
@@ -1206,15 +1210,29 @@ func TestSend_PersistsProviderSessionIDBeforeStreamDrains(t *testing.T) {
 	assert.True(t, persistedBeforeDrain, "provider session id must be persisted before the runtime event stream drains")
 }
 
-type streamErrorRunner struct{}
+type streamErrorRunner struct{ err error }
 
 func (streamErrorRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
 func (r streamErrorRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	streamErr := r.err
+	if streamErr == nil {
+		streamErr = errors.New("upstream failed")
+	}
 	events := make(chan agentruntime.Event, 2)
 	events <- agentruntime.TextDelta{Text: "partial answer"}
-	events <- agentruntime.ErrorEvent{Err: errors.New("upstream failed")}
+	events <- agentruntime.ErrorEvent{Err: streamErr}
 	close(events)
 	return events, &agentruntime.RunResult{}, nil
+}
+
+type resultStopErrorRunner struct{ err error }
+
+func (resultStopErrorRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+func (r resultStopErrorRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	events := make(chan agentruntime.Event, 1)
+	events <- agentruntime.TextDelta{Text: "partial answer"}
+	close(events)
+	return events, &agentruntime.RunResult{StopErr: r.err}, nil
 }
 
 type streamErrorThenRecoverRunner struct{}
@@ -2620,6 +2638,123 @@ func TestSend_CodexPlanEmptyTurnPersistsFallbackText(t *testing.T) {
 	require.GreaterOrEqual(t, idleIdx, 0, "正常收尾缺 session_status(idle)")
 	require.GreaterOrEqual(t, doneIdx, 0, "正常收尾缺 StreamDone")
 	assert.Less(t, idleIdx, doneIdx, "session_status(idle) 必须先于 StreamDone")
+}
+
+func TestSend_RuntimeErrorsStayVisibleAndPersistedWithoutEnteringLogs(t *testing.T) {
+	tests := []struct {
+		name       string
+		sentinel   string
+		runner     agentruntime.Runtime
+		logMessage string
+	}{
+		{
+			name:       "ErrorEvent",
+			sentinel:   "SENTINEL_CHAT_ERROR_EVENT",
+			runner:     streamErrorRunner{err: errors.New("SENTINEL_CHAT_ERROR_EVENT")},
+			logMessage: "chat_svc.runTurn: ErrorEvent intercepted",
+		},
+		{
+			name:       "RunResult StopErr",
+			sentinel:   "SENTINEL_CHAT_RESULT_STOP_ERROR",
+			runner:     resultStopErrorRunner{err: errors.New("SENTINEL_CHAT_RESULT_STOP_ERROR")},
+			logMessage: "chat_svc.runTurn: stopErr promoted from RunResult.StopErr",
+		},
+		{
+			name:       "runner failure",
+			sentinel:   "SENTINEL_CHAT_RUN_ERROR",
+			runner:     failRunner{err: errors.New("SENTINEL_CHAT_RUN_ERROR")},
+			logMessage: "chat_svc.failTurn: turn failed",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			core, logs := observer.New(zapcore.DebugLevel)
+			capturingLogger := zap.New(core)
+			oldLogger := logger.Default()
+			logger.SetLogger(capturingLogger)
+			t.Cleanup(func() { logger.SetLogger(oldLogger) })
+			ctx := logger.WithContextLogger(m.ctx, capturingLogger)
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, test.runner)
+			t.Cleanup(restore)
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+			}, nil)
+			m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+				ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+			}, nil)
+			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+			m.dbMock.ExpectBegin()
+			m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						msg.ID = 1000
+					} else {
+						msg.ID = 1001
+					}
+					return nil
+				}).Times(2)
+			m.dbMock.ExpectCommit()
+
+			m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+			var persistedMu sync.Mutex
+			persistedErrorText := ""
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+					if msg != nil && msg.ErrorText != "" {
+						persistedMu.Lock()
+						persistedErrorText = msg.ErrorText
+						persistedMu.Unlock()
+					}
+					return nil
+				}).AnyTimes()
+
+			resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+			require.NoError(t, err)
+			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+			var errorEvent *chat_svc.ChatStreamEvent
+			for _, emitted := range m.events {
+				payload, ok := emitted.Payload.(chat_svc.ChatStreamEvent)
+				if ok && payload.Kind == chat_svc.StreamError {
+					payloadCopy := payload
+					errorEvent = &payloadCopy
+					break
+				}
+			}
+			require.NotNil(t, errorEvent)
+			assert.Equal(t, test.sentinel, errorEvent.Error)
+			require.NotNil(t, errorEvent.Message)
+			assert.Equal(t, test.sentinel, errorEvent.Message.ErrorText)
+			persistedMu.Lock()
+			assert.Equal(t, test.sentinel, persistedErrorText)
+			persistedMu.Unlock()
+
+			captured := observedChatLogText(logs)
+			assert.NotContains(t, captured, test.sentinel)
+			matches := logs.FilterMessage(test.logMessage).All()
+			require.Len(t, matches, 1)
+			assert.Equal(t, "*errors.errorString", matches[0].ContextMap()["errorClass"])
+			assert.Equal(t, int64(len(test.sentinel)), matches[0].ContextMap()["errorBytes"])
+		})
+	}
+}
+
+func observedChatLogText(logs *observer.ObservedLogs) string {
+	var out strings.Builder
+	for _, entry := range logs.All() {
+		_, _ = fmt.Fprintf(&out, "%s %v\n", entry.Message, entry.ContextMap())
+	}
+	return out.String()
 }
 
 func TestSend_StreamErrorEventCarriesFinalAssistantMessage(t *testing.T) {

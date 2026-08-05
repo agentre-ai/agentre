@@ -10,6 +10,13 @@ import { useQueuedMessagesStore } from "./queued-messages-store";
 // convertValues 方法，方便前端用对象字面量构造 / 在 store 内拼装。Wails 实际下行的
 // ChatBlock 实例（含 convertValues）也结构性满足这个类型，因此渲染路径同时接受两者。
 export type ChatBlockData = Omit<chat_svc.ChatBlock, "convertValues">;
+export type ChatBlockSubagentData = Omit<
+  chat_svc.ChatBlockSubagent,
+  "convertValues"
+>;
+type LiveToolUseInput = Omit<ChatBlockData, "type" | "subagent"> & {
+  subagent?: ChatBlockSubagentData;
+};
 
 // ToolApprovalData 是 agent 内置写工具(org / workflow 等)审批卡片的纯
 // 数据形态,逐字对齐后端 chat_svc.ChatBlockToolApproval(去掉 wails 注入的 convertValues)。
@@ -114,7 +121,7 @@ type Actions = {
   appendLiveToolUse: (
     sessionId: number,
     assistantMessageId: number,
-    block: Omit<ChatBlockData, "type">,
+    block: LiveToolUseInput,
   ) => void;
   appendLiveToolResult: (
     sessionId: number,
@@ -132,14 +139,13 @@ type Actions = {
   ) => void;
   // mergeSubagentMeta 把 subagent_started/progress/done/model 事件携带的元数据合并到
   // 对应外层 Agent tool_use block 上（按 toolUseId 匹配 liveBlocks 里最近一个）。
-  // 字段做浅 merge：新事件未带的字段保留旧值（task_progress 不带 prompt 不会清掉它；
-  // subagent_model 只带 model 一个字段，调用方必须只传这一个字段，不能拼一个带空值
-  // 其它字段的对象再 spread 进来，否则会把已累计的 status/toolUses 覆盖成空）。
+  // 字段做浅 merge；runs 是完整快照，出现时整段替换，undefined/省略时保留旧值。
+  // subagent_model 只带 model 一个字段，避免其它空字段清掉已累计进度。
   mergeSubagentMeta: (
     sessionId: number,
     assistantMessageId: number,
     toolUseId: string,
-    meta: chat_svc.ChatBlockSubagent,
+    meta: ChatBlockSubagentData,
   ) => void;
   // appendLiveAskUserQuestion 在 stream 上插入 AskUserQuestion 卡片：与 tool_use
   // 类似先 flush liveDelta 把文字定型，再追加一个 type:"ask_user_question" block。
@@ -478,7 +484,10 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
         const flushed = flushLiveDelta(cur);
         return {
           ...flushed,
-          liveBlocks: [...flushed.liveBlocks, { ...block, type: "tool_use" }],
+          liveBlocks: [
+            ...flushed.liveBlocks,
+            { ...block, type: "tool_use" } as ChatBlockData,
+          ],
         };
       }),
     ),
@@ -747,9 +756,14 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
         );
         if (targetIdx < 0) return null;
         const target = cur.liveBlocks[targetIdx];
+        const { runs, ...patch } = meta;
         const merged: ChatBlockData = {
           ...target,
-          subagent: { ...(target.subagent ?? {}), ...meta },
+          subagent: {
+            ...(target.subagent ?? {}),
+            ...patch,
+            ...(runs !== undefined ? { runs } : {}),
+          } as chat_svc.ChatBlockSubagent,
         };
         return {
           ...cur,

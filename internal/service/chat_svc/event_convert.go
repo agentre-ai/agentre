@@ -32,6 +32,7 @@ func convertOldEventToNew(ev agentruntime.RuntimeEvent) agentruntime.Event {
 			Name:             ev.ToolUse.Name,
 			Input:            cloneBytesForConvert(ev.ToolUse.Input),
 			ParentToolCallID: ev.ToolUse.ParentToolCallID,
+			SubagentRunID:    ev.ToolUse.SubagentRunID,
 		}
 		if len(tc.Input) > 0 {
 			var input map[string]any
@@ -54,6 +55,7 @@ func convertOldEventToNew(ev agentruntime.RuntimeEvent) agentruntime.Event {
 			Content:          ev.ToolResult.Content,
 			IsError:          ev.ToolResult.IsError,
 			ParentToolCallID: ev.ToolResult.ParentToolCallID,
+			SubagentRunID:    ev.ToolResult.SubagentRunID,
 			Meta:             cloneBytesForConvert(ev.ToolResult.ResultMeta),
 		}
 	case agentruntime.EventSteerConsumed:
@@ -147,6 +149,25 @@ func cloneBytesForConvert(b []byte) []byte {
 	}
 	out := make([]byte, len(b))
 	copy(out, b)
+	return out
+}
+
+func agentSpawnRunsFromRuntime(runs []agentruntime.SubagentRun) []canonical.AgentSpawnRun {
+	if runs == nil {
+		return nil
+	}
+	out := make([]canonical.AgentSpawnRun, len(runs))
+	for i, run := range runs {
+		out[i] = canonical.AgentSpawnRun{
+			ID:             run.ID,
+			Index:          run.Index,
+			Agent:          run.Agent,
+			Profile:        run.Profile,
+			AgentSource:    run.AgentSource,
+			Task:           run.Task,
+			RequestedModel: run.RequestedModel,
+		}
+	}
 	return out
 }
 

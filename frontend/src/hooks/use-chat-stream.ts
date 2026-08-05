@@ -87,7 +87,8 @@ export type ChatStreamEvent = {
   // subagent_* 事件携带 toolUseId（指向外层 Agent）+ subagent meta，前端按 toolUseId 把
   // meta merge 到对应 ChatBlock 的 subagent 字段。
   parentToolUseId?: string;
-  subagent?: chat_svc.ChatBlockSubagent;
+  subagentRunId?: string;
+  subagent?: Omit<chat_svc.ChatBlockSubagent, "convertValues">;
 
   // subagent_model: ToolUseID(复用上方字段)关联到对应派遣,model 是子代理内部帧解析出的
   // 实际模型(R2 覆盖 R1 的入参别名,R3 first-wins)。只带这一个字段,不复用上面的整份

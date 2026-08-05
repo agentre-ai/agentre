@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
+import {
+  streamForMessage,
+  useChatStreamsStore,
+} from "@/stores/chat-streams-store";
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
 import {
@@ -144,5 +148,80 @@ describe("mergeSubagentMetaInMessages", () => {
         undefined as unknown as chat_svc.ChatBlockSubagent,
       ),
     ).toBe(messages);
+  });
+
+  it("Given a persisted full run snapshot, When a newer snapshot arrives, Then runs replace atomically and omission preserves the latest snapshot", () => {
+    const initialRuns = [
+      { id: "run-a", index: 0, status: "running", task: "A" },
+      { id: "run-b", index: 1, status: "waiting", task: "B" },
+    ];
+    const replacementRuns = [
+      { id: "run-a", index: 0, status: "completed", task: "A" },
+    ];
+    const messages = [
+      msg(1, [toolUse("tu-agent", { runs: initialRuns, status: "running" })]),
+    ];
+
+    const replaced = mergeSubagentMetaInMessages(messages, "tu-agent", {
+      runs: replacementRuns,
+      status: "partial",
+    } as unknown as chat_svc.ChatBlockSubagent);
+    expect(replaced[0].blocks[0].subagent?.runs).toEqual(replacementRuns);
+
+    const omitted = mergeSubagentMetaInMessages(replaced, "tu-agent", {
+      runs: undefined,
+      status: "completed",
+    } as unknown as chat_svc.ChatBlockSubagent);
+    expect(omitted[0].blocks[0].subagent?.runs).toEqual(replacementRuns);
+    expect(omitted[0].blocks[0].subagent?.status).toBe("completed");
+  });
+});
+
+describe("live mergeSubagentMeta run snapshots", () => {
+  beforeEach(() => {
+    useChatStreamsStore.setState({ streams: new Map() });
+  });
+
+  it("Given a live full run snapshot, When replacement and omission updates arrive, Then replacement is atomic and omission does not clear runs", () => {
+    const initialRuns = [
+      { id: "run-a", index: 0, status: "running", task: "A" },
+      { id: "run-b", index: 1, status: "waiting", task: "B" },
+    ];
+    const replacementRuns = [
+      { id: "run-b", index: 1, status: "failed", task: "B" },
+    ];
+    const store = useChatStreamsStore.getState();
+    store.openStream({
+      assistantMessageId: 1,
+      name: "chat:event:7:1",
+      sessionId: 7,
+      streamStartedAt: 1,
+    });
+    store.appendLiveToolUse(7, 1, {
+      toolName: "subagent",
+      toolUseId: "tu-agent",
+      subagent: {
+        runs: initialRuns,
+        status: "running",
+      } as unknown as chat_svc.ChatBlockSubagent,
+    });
+
+    store.mergeSubagentMeta(7, 1, "tu-agent", {
+      runs: replacementRuns,
+      status: "failed",
+    } as unknown as chat_svc.ChatBlockSubagent);
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 7, 1)?.liveBlocks[0]
+        .subagent?.runs,
+    ).toEqual(replacementRuns);
+
+    store.mergeSubagentMeta(7, 1, "tu-agent", {
+      runs: undefined,
+      summary: "settled",
+    } as unknown as chat_svc.ChatBlockSubagent);
+    const subagent = streamForMessage(useChatStreamsStore.getState(), 7, 1)
+      ?.liveBlocks[0].subagent;
+    expect(subagent?.runs).toEqual(replacementRuns);
+    expect(subagent?.summary).toBe("settled");
   });
 });
