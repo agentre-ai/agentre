@@ -214,8 +214,10 @@ func (s *Stream) handleItemCompleted(n appNotification, raw json.RawMessage, pre
 	case appItemUserMessage:
 		s.emitUserMessageIfMissing(item, raw, preSeen)
 	case appItemAgentMessage:
-		if _, partial := preSeen["partial:"+item.ID]; !partial && item.Text != "" {
-			s.emit(Event{Kind: EventTextDelta, SessionID: s.SessionID(), Text: item.Text, Raw: raw})
+		if text := textForItem(item); text != "" {
+			if _, partial := preSeen["partial:"+item.ID]; !partial {
+				s.emit(Event{Kind: EventTextDelta, SessionID: s.SessionID(), Text: text, Raw: raw})
+			}
 		}
 	case appItemPlan:
 		if strings.TrimSpace(item.Text) != "" {
@@ -304,7 +306,7 @@ func (s *Stream) emitUserMessageIfMissing(item *appThreadItem, raw json.RawMessa
 	if item == nil || item.ID == "" {
 		return
 	}
-	text := userTextForItem(item)
+	text := textForItem(item)
 	if strings.TrimSpace(text) == "" {
 		return
 	}
