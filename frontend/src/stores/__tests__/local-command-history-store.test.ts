@@ -310,16 +310,129 @@ describe("local command history scope and persistence", () => {
     ]);
   });
 
-  it("Given a scope was just cleared, when a direct record omits its timestamp, then it is reserved after the barrier while an explicit pre-clear record stays deleted", () => {
+  it("Given thousands of unseen scopes and no outstanding reservations, when each is cleared, then no lasting barrier rejects a later explicit record", () => {
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const store = createLocalCommandHistoryStore({ storage: null });
+    const unseenScopes = Array.from({ length: 2_000 }, (_, index) => ({
+      deviceId: `dynamic-device-${index}`,
+      cwd: `/dynamic/cwd/${index}`,
+    }));
+
+    for (const scope of unseenScopes) store.clear(scope);
+    for (const [index, scope] of unseenScopes.entries()) {
+      store.record(scope, `command-${index}`, 0);
+    }
+
+    expect(
+      unseenScopes.every(
+        (scope, index) => store.list(scope)[0]?.command === `command-${index}`,
+      ),
+    ).toBe(true);
+  });
+
+  it("Given a tracked pre-clear reservation, when it records after clear, then it stays deleted and consuming it removes the obsolete barrier", () => {
     vi.spyOn(Date, "now").mockReturnValue(100);
     const store = createLocalCommandHistoryStore({ storage: localStorage });
+    const preClear = store.reserveLastUsedAt();
+
+    store.clear(localRepo);
+    store.record(localRepo, "private command", preClear);
+
+    expect(store.list(localRepo)).toEqual([]);
+
+    store.record(localRepo, "allowed after settlement", preClear);
+    expect(store.list(localRepo)).toEqual([
+      { command: "allowed after settlement", lastUsedAt: preClear },
+    ]);
+  });
+
+  it("Given two pre-clear reservations, when one records another scope, then the barrier remains until the other is released", () => {
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+    const firstPending = store.reserveLastUsedAt();
+    const secondPending = store.reserveLastUsedAt();
+
+    store.clear(localRepo);
+    store.record(remoteRepo, "remote command", firstPending);
+    store.record(localRepo, "still private", firstPending);
+
+    expect(store.list(localRepo)).toEqual([]);
+    expect(store.list(remoteRepo)).toEqual([
+      { command: "remote command", lastUsedAt: firstPending },
+    ]);
+
+    store.releaseLastUsedAt(secondPending);
+    store.record(localRepo, "allowed after both settle", firstPending);
+    expect(store.list(localRepo)).toEqual([
+      { command: "allowed after both settle", lastUsedAt: firstPending },
+    ]);
+  });
+
+  it("Given a tracked reservation becomes an older duplicate, when its record is a no-op, then it still releases the last protected barrier", () => {
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+    const olderDuplicate = store.reserveLastUsedAt();
+    store.record(localRepo, "duplicate command", olderDuplicate + 1);
+
+    store.clear(remoteRepo);
+    store.record(localRepo, "duplicate command", olderDuplicate);
+    store.record(remoteRepo, "allowed after no-op", olderDuplicate);
+
+    expect(store.list(localRepo)).toEqual([
+      {
+        command: "duplicate command",
+        lastUsedAt: olderDuplicate + 1,
+      },
+    ]);
+    expect(store.list(remoteRepo)).toEqual([
+      { command: "allowed after no-op", lastUsedAt: olderDuplicate },
+    ]);
+  });
+
+  it("Given a reserved submission is rejected after clear, when its timestamp is released repeatedly, then the barrier is pruned idempotently", () => {
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+    const rejectedSubmission = store.reserveLastUsedAt();
+
+    store.clear(localRepo);
+    store.releaseLastUsedAt(rejectedSubmission);
+    store.releaseLastUsedAt(rejectedSubmission);
+    store.record(localRepo, "allowed after rejection", rejectedSubmission);
+
+    expect(store.list(localRepo)).toEqual([
+      {
+        command: "allowed after rejection",
+        lastUsedAt: rejectedSubmission,
+      },
+    ]);
+  });
+
+  it("Given a pre-clear reservation remains pending, when a post-clear reservation records, then only the newer command is accepted", () => {
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+    const preClear = store.reserveLastUsedAt();
+
+    store.clear(localRepo);
+    const postClear = store.reserveLastUsedAt();
+    store.record(localRepo, "new command", postClear);
+    store.record(localRepo, "private command", preClear);
+
+    expect(store.list(localRepo)).toEqual([
+      { command: "new command", lastUsedAt: postClear },
+    ]);
+  });
+
+  it("Given a scope was cleared behind a pending reservation, when a direct record omits its timestamp, then it is reserved after the barrier while the tracked pre-clear record stays deleted", () => {
+    vi.spyOn(Date, "now").mockReturnValue(100);
+    const store = createLocalCommandHistoryStore({ storage: localStorage });
+    const preClear = store.reserveLastUsedAt();
 
     store.clear(localRepo);
     store.record(localRepo, "new command");
-    store.record(localRepo, "private command", 100);
+    store.record(localRepo, "private command", preClear);
 
     expect(store.list(localRepo)).toEqual([
-      { command: "new command", lastUsedAt: 101 },
+      { command: "new command", lastUsedAt: preClear + 1 },
     ]);
   });
 

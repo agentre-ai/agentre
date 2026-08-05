@@ -10,7 +10,7 @@ import { localCommandHistoryStore } from "@/stores/local-command-history-store";
 
 import { AIChatInput } from "../index";
 import type { LocalCommandHistoryScope } from "../local-command-history/types";
-import type { AIChatInputHandle } from "../types";
+import type { AIChatInputHandle, LocalCommandSubmitHandler } from "../types";
 
 const repoScope: LocalCommandHistoryScope = {
   deviceId: "device-command-mode",
@@ -20,6 +20,8 @@ const otherScope: LocalCommandHistoryScope = {
   deviceId: "device-command-mode",
   cwd: "/repo/other",
 };
+const releaseReservedTimestamp =
+  localCommandHistoryStore.releaseLastUsedAt.bind(localCommandHistoryStore);
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -44,11 +46,18 @@ function pressEnter(editor: Editor) {
   pressKey(editor, "Enter");
 }
 
+function reserveReleasedHistoryBase() {
+  const timestamp = localCommandHistoryStore.reserveLastUsedAt();
+  releaseReservedTimestamp(timestamp);
+  return timestamp;
+}
+
 describe("AIChatInput command mode", () => {
   it("toggles command mode on leading ! and strips it on submit", () => {
     const onCommandModeChange = vi.fn();
     const onCommandSubmit = vi.fn();
     const onSubmit = vi.fn();
+    vi.spyOn(localCommandHistoryStore, "reserveLastUsedAt").mockReturnValue(1);
     const editorRef: RefObject<Editor | null> = { current: null };
     const handleRef = createRef<AIChatInputHandle>();
 
@@ -143,6 +152,138 @@ describe("AIChatInput command mode", () => {
     expect(editor.getText()).toBe("");
   });
 
+  it.each<{
+    label: string;
+    onCommandSubmit?: LocalCommandSubmitHandler;
+  }>([
+    { label: "the callback is missing" },
+    {
+      label: "the callback returns an undefined execution scope",
+      onCommandSubmit: () => undefined,
+    },
+    {
+      label: "the callback throws synchronously",
+      onCommandSubmit: () => {
+        throw new Error("sync launch failed");
+      },
+    },
+    {
+      label: "the callback promise rejects",
+      onCommandSubmit: () => Promise.reject(new Error("async launch failed")),
+    },
+    {
+      label: "the callback promise resolves without an execution scope",
+      onCommandSubmit: () => Promise.resolve(undefined),
+    },
+  ])(
+    "Given $label, when a command reservation is followed by Clear, then it is released exactly once without recording or retaining the cleared scope",
+    async ({ onCommandSubmit }) => {
+      const editorRef: RefObject<Editor | null> = { current: null };
+      const reserveSpy = vi.spyOn(
+        localCommandHistoryStore,
+        "reserveLastUsedAt",
+      );
+      const releaseSpy = vi.spyOn(
+        localCommandHistoryStore,
+        "releaseLastUsedAt",
+      );
+      const recordSpy = vi.spyOn(localCommandHistoryStore, "record");
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      render(
+        <AIChatInput
+          editorRef={editorRef}
+          localCommandHistoryScope={repoScope}
+          onSubmit={vi.fn()}
+          onCommandSubmit={onCommandSubmit}
+        />,
+      );
+
+      act(() => {
+        editorRef.current!.commands.insertContent("!pwd");
+        pressEnter(editorRef.current!);
+      });
+      const submittedAt = reserveSpy.mock.results[0]?.value as number;
+      onTestFinished(() => releaseReservedTimestamp(submittedAt));
+
+      act(() => localCommandHistoryStore.clear(repoScope));
+
+      await vi.waitFor(() => {
+        expect(releaseSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(releaseSpy).toHaveBeenCalledWith(submittedAt);
+      expect(recordSpy).not.toHaveBeenCalled();
+      expect(localCommandHistoryStore.list(repoScope)).toEqual([]);
+
+      act(() => {
+        localCommandHistoryStore.record(
+          repoScope,
+          "allowed after settlement",
+          submittedAt,
+        );
+      });
+      expect(localCommandHistoryStore.list(repoScope)).toEqual([
+        {
+          command: "allowed after settlement",
+          lastUsedAt: submittedAt,
+        },
+      ]);
+    },
+  );
+
+  it("Given a successful command scope resolves after Clear, when history rejects the pre-clear reservation, then final release is idempotent and the command is not resurrected", async () => {
+    const editorRef: RefObject<Editor | null> = { current: null };
+    let resolveScope!: (scope: LocalCommandHistoryScope) => void;
+    const executionScope = new Promise<LocalCommandHistoryScope>((resolve) => {
+      resolveScope = resolve;
+    });
+    const reserveSpy = vi.spyOn(localCommandHistoryStore, "reserveLastUsedAt");
+    const releaseSpy = vi.spyOn(localCommandHistoryStore, "releaseLastUsedAt");
+    const recordSpy = vi.spyOn(localCommandHistoryStore, "record");
+
+    render(
+      <AIChatInput
+        editorRef={editorRef}
+        localCommandHistoryScope={repoScope}
+        onSubmit={vi.fn()}
+        onCommandSubmit={() => executionScope}
+      />,
+    );
+
+    act(() => {
+      editorRef.current!.commands.insertContent("!private command");
+      pressEnter(editorRef.current!);
+    });
+    const submittedAt = reserveSpy.mock.results[0]?.value as number;
+    onTestFinished(() => releaseReservedTimestamp(submittedAt));
+    act(() => localCommandHistoryStore.clear(repoScope));
+
+    await act(async () => {
+      resolveScope(repoScope);
+      await executionScope;
+    });
+    await vi.waitFor(() => {
+      expect(recordSpy).toHaveBeenCalledWith(
+        repoScope,
+        "private command",
+        submittedAt,
+      );
+      expect(releaseSpy).toHaveBeenCalledTimes(1);
+    });
+    expect(localCommandHistoryStore.list(repoScope)).toEqual([]);
+
+    act(() => {
+      localCommandHistoryStore.record(
+        repoScope,
+        "allowed after settlement",
+        submittedAt,
+      );
+    });
+    expect(localCommandHistoryStore.list(repoScope)).toEqual([
+      { command: "allowed after settlement", lastUsedAt: submittedAt },
+    ]);
+  });
+
   it("dedupes onCommandModeChange — does not re-fire when already in command mode", () => {
     const onCommandModeChange = vi.fn();
     const editorRef: RefObject<Editor | null> = { current: null };
@@ -202,7 +343,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it("Given active-scope history, When a spaced ! query is typed, Then only ranked matches from that scope open in an accessible menu", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     localCommandHistoryStore.record(repoScope, "git status", historyBase + 10);
     localCommandHistoryStore.record(
       repoScope,
@@ -241,7 +382,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it("Given history exists, When input is not in ! mode or the full query has no match, Then no empty menu is rendered", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     localCommandHistoryStore.record(repoScope, "git status", historyBase + 10);
     const editorRef: RefObject<Editor | null> = { current: null };
 
@@ -268,7 +409,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it("Given scoped history, When arrows move between command rows and footer Clear, Then only rows are options and editor ARIA follows its focused row", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     localCommandHistoryStore.record(repoScope, "git status", historyBase + 30);
     localCommandHistoryStore.record(repoScope, "git stash", historyBase + 20);
     const editorRef: RefObject<Editor | null> = { current: null };
@@ -346,7 +487,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it("Given cursor coordinates are unavailable, When Enter submits a matching ! query, Then no hidden history row consumes the command", () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     localCommandHistoryStore.record(repoScope, "git status", historyBase + 10);
     const editorRef: RefObject<Editor | null> = { current: null };
     const onCommandSubmit = vi.fn();
@@ -378,7 +519,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it("Given open ranked history, When Shift+Tab is pressed and then plain Tab is pressed, Then Shift+Tab preserves the draft, selection, and menu while plain Tab only fills the highlighted command", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     localCommandHistoryStore.record(
       repoScope,
       "git cherry-pick master",
@@ -448,7 +589,7 @@ describe("AIChatInput command mode", () => {
   it.each(["Enter", "Tab"])(
     "Given ranked history, When ArrowDown and %s choose a row, Then the full ! body is replaced without execution and the next submit records under the returned execution scope",
     async (selectionKey) => {
-      const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+      const historyBase = reserveReleasedHistoryBase();
       localCommandHistoryStore.record(
         repoScope,
         "git cherry-pick master",
@@ -559,7 +700,7 @@ describe("AIChatInput command mode", () => {
   );
 
   it("Given two nonempty command submissions, When their execution scopes resolve in reverse order, Then each reserves singleton history order immediately before its handler and MRU follows submission order", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     const firstSubmittedAt = historyBase + 1;
     const secondSubmittedAt = historyBase + 2;
     let resolveFirst!: (scope: LocalCommandHistoryScope) => void;
@@ -651,7 +792,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it("Given a dismissed history menu, When the query is unchanged, Then it stays closed until the command body changes", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     localCommandHistoryStore.record(repoScope, "git status", historyBase + 10);
     localCommandHistoryStore.record(repoScope, "git stash", historyBase + 20);
     const editorRef: RefObject<Editor | null> = { current: null };
@@ -692,7 +833,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it("Given scope-specific history, When the active device/cwd scope changes, Then the open menu switches immediately without mixing rows", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     localCommandHistoryStore.record(
       repoScope,
       "repo command",
@@ -760,7 +901,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it("Given two mounted inputs share one history scope while another scope is open, When one input clears history, Then both shared menus close before a cleared row can be selected and the other menu remains", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     localCommandHistoryStore.record(repoScope, "git status", historyBase + 20);
     localCommandHistoryStore.record(
       otherScope,
@@ -956,7 +1097,7 @@ describe("AIChatInput command mode", () => {
   ])(
     "Given scoped history and an editor draft, When arrow wrap focuses Clear and native $activationKey activates it, Then only that history is cleared without submitting",
     async ({ userInput }) => {
-      const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+      const historyBase = reserveReleasedHistoryBase();
       localCommandHistoryStore.record(
         repoScope,
         "git status",
@@ -1018,7 +1159,7 @@ describe("AIChatInput command mode", () => {
   );
 
   it("Given footer Clear is focused, When Shift+Tab or Tab is pressed, Then native focus moves without clearing, filling, or submitting the draft", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     localCommandHistoryStore.record(repoScope, "git status", historyBase + 30);
     const editorRef: RefObject<Editor | null> = { current: null };
     const onCommandSubmit = vi.fn();
@@ -1077,7 +1218,7 @@ describe("AIChatInput command mode", () => {
   });
 
   it("Given a long command and transient output, When history is hovered, picked, or cleared, Then dynamic text stays complete and clearing preserves the draft and output card", async () => {
-    const historyBase = localCommandHistoryStore.reserveLastUsedAt();
+    const historyBase = reserveReleasedHistoryBase();
     const longCommand = `printf '${"x".repeat(180)}'`;
     localCommandHistoryStore.record(repoScope, longCommand, historyBase + 30);
     localCommandHistoryStore.record(repoScope, "git status", historyBase + 20);

@@ -38,6 +38,7 @@ export type LocalCommandHistoryStore = {
     listener: (mutation: LocalCommandHistoryMutation) => void,
   ): () => void;
   reserveLastUsedAt(): number;
+  releaseLastUsedAt(timestamp: number): void;
   record(
     scope: LocalCommandHistoryScope,
     command: string,
@@ -250,14 +251,33 @@ export function createLocalCommandHistoryStore(
     reservationClockTimestamp(),
     maximumLastUsedAt(history),
   );
-  // Clear barriers stay in memory because in-flight frontend promises do not survive restart.
+  // Barriers only protect reservations that can still resolve in this renderer lifetime.
   const clearBarriers = new Map<string, number>();
+  const outstandingReservations = new Set<number>();
+  const minimumOutstandingReservation = () => {
+    let minimum = Number.POSITIVE_INFINITY;
+    for (const reservation of outstandingReservations) {
+      minimum = Math.min(minimum, reservation);
+    }
+    return minimum;
+  };
+  const pruneClearBarriers = () => {
+    const minimumReservation = minimumOutstandingReservation();
+    for (const [scopeKey, barrier] of clearBarriers) {
+      if (minimumReservation > barrier) clearBarriers.delete(scopeKey);
+    }
+  };
   const reserveLastUsedAt = () => {
     const reservation = ensurePersistableHistoryTimestamp(
       Math.max(lastReservedAt, reservationClockTimestamp()) + 1,
     );
     lastReservedAt = reservation;
+    outstandingReservations.add(reservation);
     return reservation;
+  };
+  const releaseLastUsedAt = (timestamp: number) => {
+    outstandingReservations.delete(timestamp);
+    pruneClearBarriers();
   };
 
   return {
@@ -273,33 +293,56 @@ export function createLocalCommandHistoryStore(
       return () => listeners.delete(listener);
     },
     reserveLastUsedAt,
+    releaseLastUsedAt,
     record(scope, command, lastUsedAt) {
-      if (!command) return;
-      const key = deriveLocalCommandHistoryScopeKey(scope);
-      const usedAt = ensurePersistableHistoryTimestamp(
-        lastUsedAt !== undefined && hasTimestampReservationHeadroom(lastUsedAt)
+      let reservationToRelease =
+        lastUsedAt !== undefined && outstandingReservations.has(lastUsedAt)
           ? lastUsedAt
-          : reserveLastUsedAt(),
-      );
-      const clearBarrier = clearBarriers.get(key);
-      if (clearBarrier !== undefined && usedAt <= clearBarrier) return;
+          : undefined;
+      try {
+        if (!command) return;
+        const key = deriveLocalCommandHistoryScopeKey(scope);
+        let usedAt: number;
+        if (
+          lastUsedAt !== undefined &&
+          hasTimestampReservationHeadroom(lastUsedAt)
+        ) {
+          usedAt = lastUsedAt;
+        } else {
+          usedAt = reserveLastUsedAt();
+          reservationToRelease = usedAt;
+        }
+        ensurePersistableHistoryTimestamp(usedAt);
+        const clearBarrier = clearBarriers.get(key);
+        if (clearBarrier !== undefined && usedAt <= clearBarrier) return;
 
-      const entries = history.scopes[key] ?? [];
-      const existingEntry = entries.find((entry) => entry.command === command);
-      if (existingEntry && existingEntry.lastUsedAt >= usedAt) return;
+        const entries = history.scopes[key] ?? [];
+        const existingEntry = entries.find(
+          (entry) => entry.command === command,
+        );
+        if (existingEntry && existingEntry.lastUsedAt >= usedAt) return;
 
-      history.scopes[key] = normalizeEntries([
-        { command, lastUsedAt: usedAt },
-        ...entries,
-      ]);
-      lastReservedAt = Math.max(lastReservedAt, usedAt);
-      writePersistedHistory(storage, history);
-      notify({ type: "record", scopeKey: key });
+        history.scopes[key] = normalizeEntries([
+          { command, lastUsedAt: usedAt },
+          ...entries,
+        ]);
+        lastReservedAt = Math.max(lastReservedAt, usedAt);
+        writePersistedHistory(storage, history);
+        notify({ type: "record", scopeKey: key });
+      } finally {
+        if (reservationToRelease !== undefined) {
+          releaseLastUsedAt(reservationToRelease);
+        }
+      }
     },
     clear(scope) {
       const key = deriveLocalCommandHistoryScopeKey(scope);
       delete history.scopes[key];
-      clearBarriers.set(key, lastReservedAt);
+      if (minimumOutstandingReservation() <= lastReservedAt) {
+        clearBarriers.set(key, lastReservedAt);
+      } else {
+        clearBarriers.delete(key);
+      }
       writePersistedHistory(storage, history);
       notify({ type: "clear", scopeKey: key });
     },

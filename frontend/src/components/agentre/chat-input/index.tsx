@@ -345,9 +345,15 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
                 error,
               );
             }
+            const releaseHistoryReservation = () => {
+              if (submittedAt === undefined) return;
+              localCommandHistoryStore.releaseLastUsedAt(submittedAt);
+            };
             try {
               const executionScope = onCommandSubmitRef.current?.(command);
-              if (executionScope) {
+              if (!executionScope) {
+                releaseHistoryReservation();
+              } else {
                 void Promise.resolve(executionScope)
                   .then((scope) => {
                     if (!scope || submittedAt === undefined) return;
@@ -364,10 +370,12 @@ const AIChatInputComponent = forwardRef<AIChatInputHandle, AIChatInputProps>(
                       );
                     }
                   })
-                  .catch(warnSubmissionFailure);
+                  .catch(warnSubmissionFailure)
+                  .finally(releaseHistoryReservation);
               }
             } catch (error) {
               warnSubmissionFailure(error);
+              releaseHistoryReservation();
             }
           }
           editor.commands.clearContent(true);
