@@ -102,6 +102,87 @@ func TestStreamKeepsAnchorWhenOnlySessionStatsTimesOut(t *testing.T) {
 	require.NoError(t, stream.Close(context.Background()))
 }
 
+func TestStreamRecordsUserAnchorForAcceptedTurnsThatEndWithErrorOrAbort(t *testing.T) {
+	for _, stopReason := range []string{"error", "aborted"} {
+		t.Run(stopReason, func(t *testing.T) {
+			// Given Pi accepted and appended the user prompt before the assistant failed or was aborted,
+			// When the turn settles,
+			// Then post-turn entries still identify the appended user while the stream remains failed.
+			script := strings.Join([]string{
+				`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-1"}}`,
+				`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"before-leaf","parentId":null,"message":{"role":"assistant"}}],"leafId":"before-leaf"}}`,
+				`{"type":"response","command":"prompt","success":true}`,
+				`{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"` + stopReason + `","errorMessage":"turn stopped"}],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+				`{"id":"session-entries-after","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"before-leaf","parentId":null,"message":{"role":"assistant"}},{"type":"message","id":"turn-user","parentId":"before-leaf","message":{"role":"user","content":"hello"}},{"type":"message","id":"turn-assistant","parentId":"turn-user","message":{"role":"assistant"}}],"leafId":"turn-assistant"}}`,
+				`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+				"",
+			}, "\n")
+			client, proc, _ := newSingleProcessCaptureClient(script)
+
+			stream, err := client.Stream(context.Background(), "hello", RunCaptureUserAnchor())
+			require.NoError(t, err)
+			var kinds []EventKind
+			for stream.Next() {
+				kinds = append(kinds, stream.Event().Kind)
+			}
+
+			assert.Equal(t, "turn-user", stream.UserAnchor())
+			assert.Error(t, stream.Err())
+			assert.Contains(t, kinds, EventError)
+			assert.NotContains(t, kinds, EventDone)
+			frames := stdinFrames(t, proc.stdin.String())
+			require.GreaterOrEqual(t, len(frames), 2)
+			assert.Equal(t, "get_entries", frames[len(frames)-2]["type"])
+		})
+	}
+}
+
+func TestStreamLeavesAnchorEmptyWhenPrePromptLeafIsMissingOrInvalid(t *testing.T) {
+	tests := []struct {
+		name          string
+		beforeEntries string
+		beforeLeaf    string
+	}{
+		{
+			name:          "missing leaf with existing entries",
+			beforeEntries: `[{"type":"message","id":"history-user","parentId":null,"message":{"role":"user"}}]`,
+			beforeLeaf:    `null`,
+		},
+		{
+			name:          "leaf absent from the pre-prompt snapshot",
+			beforeEntries: `[{"type":"message","id":"history-user","parentId":null,"message":{"role":"user"}}]`,
+			beforeLeaf:    `"missing-from-pre"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Given pre-prompt entries cannot prove a valid active leaf,
+			// When the post-turn tree contains historical and current user entries,
+			// Then anchor capture fails closed instead of treating history as a root boundary.
+			script := strings.Join([]string{
+				`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-1"}}`,
+				`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":{"entries":` + tt.beforeEntries + `,"leafId":` + tt.beforeLeaf + `}}`,
+				`{"type":"response","command":"prompt","success":true}`,
+				`{"type":"agent_end","messages":[],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+				`{"id":"session-entries-after","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"history-user","parentId":null,"message":{"role":"user"}},{"type":"message","id":"missing-from-pre","parentId":"history-user","message":{"role":"assistant"}},{"type":"message","id":"turn-user","parentId":"missing-from-pre","message":{"role":"user"}},{"type":"message","id":"turn-assistant","parentId":"turn-user","message":{"role":"assistant"}}],"leafId":"turn-assistant"}}`,
+				`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+				"",
+			}, "\n")
+			client, _, _ := newSingleProcessCaptureClient(script)
+
+			stream, err := client.Stream(context.Background(), "hello", RunCaptureUserAnchor())
+			require.NoError(t, err)
+			for stream.Next() {
+			}
+
+			assert.Empty(t, stream.UserAnchor())
+		})
+	}
+}
+
 func TestStreamPreservesCompletedAnswerWhenAnchorMetadataFails(t *testing.T) {
 	// Given Pi has completed the assistant answer but terminal entry metadata fails,
 	// When the stream settles,

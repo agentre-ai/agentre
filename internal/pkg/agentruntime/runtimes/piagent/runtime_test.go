@@ -62,11 +62,16 @@ func TestPiAgentCapabilities(t *testing.T) {
 
 func TestRun_ForksAndReturnsNativeSessionState(t *testing.T) {
 	Convey("Given a resumed Pi session and an exact user-entry fork anchor", t, func() {
-		proc := newRuntimeRPCProcess(true, false)
-		restore := SetSessionFactoryForTest(runtimeRPCSessionFactory(proc))
+		sess := &fakeSession{
+			stream: &scriptedStream{anchor: "new-user"},
+			sid:    "session-new",
+		}
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+			return sess, nil
+		})
 		defer restore()
 
-		Convey("When the runtime runs the prompt Then it forks first and returns the new session and user anchor", func() {
+		Convey("When the runtime runs the prompt Then it forwards the anchor and returns native session state", func() {
 			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
 				Backend:           &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
 				SessionID:         1,
@@ -79,19 +84,16 @@ func TestRun_ForksAndReturnsNativeSessionState(t *testing.T) {
 			for range events {
 			}
 
+			So(sess.gotForkAnchor, ShouldEqual, "fork-user")
 			So(result.ProviderSessionID, ShouldEqual, "session-new")
 			So(result.UserAnchor, ShouldEqual, "new-user")
-			So(proc.commands(), ShouldResemble, []string{
-				"get_state", "fork", "get_state", "get_entries", "prompt", "get_entries", "get_session_stats",
-			})
-			So(proc.forkEntryID(), ShouldEqual, "fork-user")
 		})
 	})
 }
 
 func TestRun_PreservesCompletedAnswerWhenUserAnchorMetadataFails(t *testing.T) {
 	Convey("Given Pi completes the assistant answer but final user-anchor metadata is unavailable", t, func() {
-		proc := newRuntimeRPCProcess(false, true)
+		proc := newRuntimeRPCProcessWithMetadataFailure()
 		restore := SetSessionFactoryForTest(runtimeRPCSessionFactory(proc))
 		defer restore()
 
@@ -398,6 +400,7 @@ type scriptedStream struct {
 	idx    int
 	err    error
 	sid    string
+	anchor string
 }
 
 func (s *scriptedStream) Next() bool {
@@ -411,6 +414,7 @@ func (s *scriptedStream) Next() bool {
 func (s *scriptedStream) Event() pkgpiagent.Event { return s.events[s.idx-1] }
 func (s *scriptedStream) SessionID() string       { return s.sid }
 func (s *scriptedStream) Err() error              { return s.err }
+func (s *scriptedStream) UserAnchor() string      { return s.anchor }
 
 type runtimeRPCRunner struct {
 	proc cliprocess.Handle
@@ -426,29 +430,17 @@ type runtimeRPCProcess struct {
 	done   chan error
 }
 
-func newRuntimeRPCProcess(forked, metadataFailed bool) *runtimeRPCProcess {
+func newRuntimeRPCProcessWithMetadataFailure() *runtimeRPCProcess {
 	lines := []string{
 		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-old"}}`,
-	}
-	if forked {
-		lines = append(lines,
-			`{"id":"session-fork","type":"response","command":"fork","success":true,"data":{"cancelled":false}}`, //nolint:misspell // Pi RPC field uses British spelling.
-			`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-new"}}`,
-		)
-	}
-	lines = append(lines,
 		`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"before-leaf","parentId":null,"message":{"role":"assistant"}}],"leafId":"before-leaf"}}`,
 		`{"type":"response","command":"prompt","success":true}`,
 		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"completed answer"}}`,
 		`{"type":"agent_end","messages":[],"willRetry":false}`,
 		`{"type":"agent_settled"}`,
-	)
-	if metadataFailed {
-		lines = append(lines, `{"id":"session-entries-after","type":"response","command":"get_entries","success":false,"error":"metadata unavailable"}`)
-	} else {
-		lines = append(lines, `{"id":"session-entries-after","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"before-leaf","parentId":null,"message":{"role":"assistant"}},{"type":"message","id":"new-user","parentId":"before-leaf","message":{"role":"user","content":"repeat"}},{"type":"message","id":"new-assistant","parentId":"new-user","message":{"role":"assistant"}}],"leafId":"new-assistant"}}`)
+		`{"id":"session-entries-after","type":"response","command":"get_entries","success":false,"error":"metadata unavailable"}`,
+		`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
 	}
-	lines = append(lines, `{"type":"response","command":"get_session_stats","success":true,"data":{}}`)
 	return &runtimeRPCProcess{
 		stdin:  &cliprocess.LockedBuffer{},
 		stdout: strings.NewReader(strings.Join(lines, "\n") + "\n"),
@@ -492,16 +484,6 @@ func (p *runtimeRPCProcess) commands() []string {
 		}
 	}
 	return out
-}
-
-func (p *runtimeRPCProcess) forkEntryID() string {
-	for _, frame := range p.stdinFrames() {
-		if frame["type"] == "fork" {
-			entryID, _ := frame["entryId"].(string)
-			return entryID
-		}
-	}
-	return ""
 }
 
 func (p *runtimeRPCProcess) stdinFrames() []map[string]any {

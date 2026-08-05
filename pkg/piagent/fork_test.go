@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,6 +96,36 @@ func TestStreamWithEmptyForkAnchorKeepsNormalPromptFlow(t *testing.T) {
 	assert.Equal(t, "get_state", frames[0]["type"])
 	assert.Equal(t, "prompt", frames[1]["type"])
 	assert.Equal(t, "get_session_stats", frames[2]["type"])
+}
+
+func TestStreamForkFailsExplicitlyWhenExtensionRequestsBlockingUI(t *testing.T) {
+	// Given a session_before_fork extension asks for confirmation over the generic UI bridge,
+	// When Agentre starts a fork without implementing that bridge,
+	// Then startup fails explicitly before prompt instead of waiting for the request forever.
+	script := strings.Join([]string{
+		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-old"}}`,
+		`{"type":"extension_ui_request","id":"ui-before-fork","method":"confirm","title":"Fork session?","message":"session_before_fork requires confirmation"}`,
+		"",
+	}, "\n")
+	client, proc, _ := newSingleProcessCaptureClient(script)
+	client.session = "session-old"
+	var rawFrames []string
+	client.rawSink = func(line []byte) { rawFrames = append(rawFrames, string(line)) }
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	stream, err := client.Stream(ctx, "must not be sent", RunForkAnchor("fork-user"))
+
+	assert.Nil(t, stream)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, context.DeadlineExceeded)
+	assert.Contains(t, err.Error(), "extension UI")
+	assert.Contains(t, err.Error(), "confirm")
+	frames := stdinFrames(t, proc.stdin.String())
+	require.Len(t, frames, 2)
+	assert.Equal(t, "get_state", frames[0]["type"])
+	assert.Equal(t, "fork", frames[1]["type"])
+	assert.NotContains(t, strings.Join(rawFrames, "\n"), "session_before_fork requires confirmation")
 }
 
 func TestStreamForkFailuresStopBeforePrompt(t *testing.T) {

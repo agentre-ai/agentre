@@ -34,9 +34,8 @@ type Client struct {
 	killGrace  time.Duration
 	runner     processRunner
 
-	// rawSink 若非 nil,子进程每读到一行原始 stdout(未解析的 JSON-RPC 帧)就同步回调
-	// 一次。debug 级原始帧转储用;经 startRPC 注入 rpcProcess,由 drain /
-	// readSessionStatsContextWindow 两个读点调用。
+	// rawSink 若非 nil,子进程普通 stdout JSON-RPC 帧会同步回调一次；含完整
+	// Session 内容的 get_entries response 在边界处过滤。debug 原始帧转储用。
 	rawSink func([]byte)
 }
 
@@ -92,7 +91,9 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) (
 			_ = stream.Close(context.Background())
 			return nil, err
 		}
-		stream.setUserAnchorBoundary(entries.LeafID)
+		if leafID, ok := validSessionEntriesLeaf(entries); ok {
+			stream.setUserAnchorBoundary(leafID)
+		}
 	}
 	frame := map[string]any{"type": "prompt", "message": prompt}
 	if imgs := imagesToWire(spec.images); len(imgs) > 0 {
@@ -230,16 +231,31 @@ func callRPC(
 		return rpcResponse{}, err
 	}
 	for proc.lines.Scan() {
-		if proc.rawSink != nil {
-			proc.rawSink(proc.lines.Bytes())
-		}
+		line := proc.lines.Bytes()
 		select {
 		case <-ctx.Done():
 			return rpcResponse{}, ctx.Err()
 		default:
 		}
+		var envelope struct {
+			Type   string `json:"type"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			emitRawFrame(proc, line)
+			continue
+		}
+		if command == "fork" && envelope.Type == "extension_ui_request" && extensionUIRequiresResponse(envelope.Method) {
+			// A session_before_fork dialog may contain selected prompt text. Return
+			// only the method name and keep the full request out of diagnostics.
+			return rpcResponse{}, fmt.Errorf(
+				"piagent rpc fork requires unsupported extension UI response for method %q",
+				envelope.Method,
+			)
+		}
+		emitRawFrame(proc, line)
 		var response rpcResponse
-		if err := json.Unmarshal(proc.lines.Bytes(), &response); err != nil {
+		if err := json.Unmarshal(line, &response); err != nil {
 			continue
 		}
 		if response.Type != "response" || response.Command != command || response.ID != requestID {
@@ -251,6 +267,53 @@ func callRPC(
 		return response, nil
 	}
 	return rpcResponse{}, awaitProcessExitOrScanError(ctx, proc)
+}
+
+func validSessionEntriesLeaf(entries sessionEntriesWire) (string, bool) {
+	leafID := strings.TrimSpace(entries.LeafID)
+	if len(entries.Entries) == 0 {
+		return leafID, leafID == ""
+	}
+	if leafID == "" {
+		return "", false
+	}
+	seen := make(map[string]struct{}, len(entries.Entries))
+	for _, entry := range entries.Entries {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return "", false
+		}
+		seen[id] = struct{}{}
+	}
+	_, ok := seen[leafID]
+	return leafID, ok
+}
+
+func extensionUIRequiresResponse(method string) bool {
+	switch strings.TrimSpace(method) {
+	case "select", "confirm", "input", "editor":
+		return true
+	default:
+		return false
+	}
+}
+
+func emitRawFrame(proc *rpcProcess, line []byte) {
+	if proc == nil || proc.rawSink == nil {
+		return
+	}
+	var envelope struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(line, &envelope) == nil &&
+		envelope.Type == "response" && envelope.Command == "get_entries" {
+		return
+	}
+	proc.rawSink(line)
 }
 
 func looksLikeSessionPath(value string) bool {
@@ -289,7 +352,7 @@ type rpcProcess struct {
 	handle     processHandle
 	stdin      io.Writer
 	lines      *bufio.Scanner
-	rawSink    func([]byte) // 非 nil 时每行原始 stdout 同步回调一次(debug 原始帧转储)
+	rawSink    func([]byte) // 非 nil 时回调已过滤 get_entries 的原始 stdout 帧
 	stderr     *lockedBuffer
 	stderrDone chan struct{}
 	done       chan struct{} // closed when waitErr is available to every observer

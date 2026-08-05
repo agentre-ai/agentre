@@ -140,9 +140,9 @@ type sessionHandle interface {
 	ActiveInterruptor() interruptable
 }
 
-// piRawFrameSink 返回一个把 pi-agent 每行原始 stdout 帧打到 debug 日志的回调。
-// 语义同 claudecode 的 ccRawFrameSink:由「Debug Logging」开关热控(关时 zap 直接丢弃,
-// 近零开销),用 logger.Default() 取当前全局 logger 故热重载即时生效。
+// piRawFrameSink 返回一个把 pkg/piagent 已过滤的原始 stdout 帧打到 debug 日志的回调。
+// get_entries payload 不会进入这里；其它帧由「Debug Logging」开关热控(关时 zap 直接
+// 丢弃,近零开销),用 logger.Default() 取当前全局 logger 故热重载即时生效。
 func piRawFrameSink(sessionID int64, providerSessionID string) func([]byte) {
 	return func(line []byte) {
 		logger.Default().Debug("piagent runtime: raw frame",

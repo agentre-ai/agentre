@@ -1012,6 +1012,35 @@ func TestSend_ImageInput(t *testing.T) {
 	})
 }
 
+type forkStartupFailRunner struct {
+	err error
+}
+
+func (*forkStartupFailRunner) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapForkSession: true,
+	}}
+}
+
+func (r *forkStartupFailRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, r.err
+}
+
+type anchorResultRunner struct{}
+
+func (*anchorResultRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+
+func (*anchorResultRunner) Run(_ context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	events := make(chan agentruntime.Event, 2)
+	events <- agentruntime.TextDelta{Text: "completed answer"}
+	events <- agentruntime.Done{}
+	close(events)
+	return events, &agentruntime.RunResult{
+		ProviderSessionID: req.ProviderSessionID,
+		UserAnchor:        "pi-user-entry-new",
+	}, nil
+}
+
 type compactRecordingRunner struct {
 	*recordingRunner
 }
@@ -4646,6 +4675,189 @@ func TestPiRestart_PassesExactStoredAnchorToRunner(t *testing.T) {
 				t.Fatal("Pi runtime never received the restarted turn")
 			}
 			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+		})
+	}
+}
+
+func TestSend_PiUserAnchorPersistenceRetriesAndSurfacesPermanentFailure(t *testing.T) {
+	tests := []struct {
+		name           string
+		updateFailures int
+		wantDone       bool
+		wantError      bool
+	}{
+		{
+			name:           "Given the first user-anchor update fails, when Pi completes the turn, then persistence retries and the turn remains successful",
+			updateFailures: 1,
+			wantDone:       true,
+		},
+		{
+			name:           "Given user-anchor updates keep failing, when Pi completes the turn, then the answer is preserved but the turn reports an error",
+			updateFailures: 2,
+			wantError:      true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, &anchorResultRunner{})
+			t.Cleanup(restore)
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID: 100, AgentID: 7, ProviderSessionID: "pi-session", AgentStatus: "idle", Status: consts.ACTIVE,
+			}, nil)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+			}, nil)
+			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+			var userMsg *chat_entity.Message
+			m.dbMock.ExpectBegin()
+			m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						msg.ID = 2000
+						userMsg = msg
+					} else {
+						msg.ID = 2001
+					}
+					return nil
+				}).Times(2)
+			m.dbMock.ExpectCommit()
+
+			userUpdateCalls := 0
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						userUpdateCalls++
+						if userUpdateCalls <= tc.updateFailures {
+							return errors.New("anchor update failed")
+						}
+					}
+					return nil
+				}).AnyTimes()
+
+			resp, err := m.svc.Send(m.ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hello"})
+			require.NoError(t, err)
+			chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+			require.NotNil(t, userMsg)
+			assert.Equal(t, "pi-user-entry-new", userMsg.ForkAnchor)
+			assert.Equal(t, 2, userUpdateCalls)
+			var gotDone, gotError bool
+			var errorMessage *chat_svc.ChatMessage
+			for _, recorded := range m.events {
+				event, ok := recorded.Payload.(chat_svc.ChatStreamEvent)
+				if !ok {
+					continue
+				}
+				switch event.Kind {
+				case chat_svc.StreamDone:
+					gotDone = true
+				case chat_svc.StreamError:
+					gotError = true
+					errorMessage = event.Message
+				}
+			}
+			assert.Equal(t, tc.wantDone, gotDone)
+			assert.Equal(t, tc.wantError, gotError)
+			if tc.wantError {
+				require.NotNil(t, errorMessage)
+				require.NotEmpty(t, errorMessage.Blocks)
+				assert.Equal(t, "completed answer", errorMessage.Blocks[0].Text)
+			}
+		})
+	}
+}
+
+func TestPiRestart_ForkStartupFailurePreservesExistingHistory(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(*chatMocks)
+		invoke  func(chat_svc.ChatSvc, context.Context) (*chat_svc.SendResponse, error)
+	}{
+		{
+			name: "Given a Pi regenerate fork is rejected, when Regenerate starts, then existing history is not truncated",
+			arrange: func(m *chatMocks) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1001)).Return(&chat_entity.Message{
+					ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1"),
+				}, nil)
+				m.message.EXPECT().List(gomock.Any(), int64(100)).Return([]*chat_entity.Message{
+					{ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"), ForkAnchor: "pi-user-entry-exact"},
+					{ID: 1001, SessionID: 100, Role: "assistant", Seq: 2, BlocksJSON: encodeText("v1")},
+				}, nil).AnyTimes()
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Regenerate(ctx, &chat_svc.RegenerateRequest{SessionID: 100, MessageID: 1001})
+			},
+		},
+		{
+			name: "Given a Pi edit fork is rejected, when Edit starts, then existing history is not truncated",
+			arrange: func(m *chatMocks) {
+				m.message.EXPECT().Find(gomock.Any(), int64(1000)).Return(&chat_entity.Message{
+					ID: 1000, SessionID: 100, Role: "user", Seq: 1, BlocksJSON: encodeText("original"),
+					ForkAnchor: "pi-user-entry-exact",
+				}, nil)
+			},
+			invoke: func(svc chat_svc.ChatSvc, ctx context.Context) (*chat_svc.SendResponse, error) {
+				return svc.Edit(ctx, &chat_svc.EditRequest{SessionID: 100, MessageID: 1000, Text: "replacement"})
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupChatTest(t)
+			runner := &forkStartupFailRunner{err: errors.New("pi fork rejected")}
+			restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
+			t.Cleanup(restore)
+
+			m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+				ID: 100, AgentID: 7, ProviderSessionID: "pi-session-old", AgentStatus: "idle", Status: consts.ACTIVE,
+			}, nil)
+			tc.arrange(m)
+			m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+				ID: 7, Name: "Pi", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+			}, nil)
+			m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+				ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
+			}, nil)
+			m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+			m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+
+			deleteCalls := 0
+			m.dbMock.ExpectBegin()
+			m.message.EXPECT().DeleteFromSeq(gomock.Any(), int64(100), 1).
+				DoAndReturn(func(context.Context, int64, int) (int64, error) {
+					deleteCalls++
+					return 2, nil
+				}).AnyTimes()
+			m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil).AnyTimes()
+			m.message.EXPECT().Create(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, msg *chat_entity.Message) error {
+					if msg.Role == "user" {
+						msg.ID = 2000
+					} else {
+						msg.ID = 2001
+					}
+					return nil
+				}).AnyTimes()
+			m.dbMock.ExpectCommit()
+
+			resp, err := tc.invoke(m.svc, m.ctx)
+			if resp != nil {
+				chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+			}
+
+			assert.Nil(t, resp)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "pi fork rejected")
+			assert.Zero(t, deleteCalls)
 		})
 	}
 }

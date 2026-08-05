@@ -16,10 +16,10 @@ type Option func(*Client)
 
 func WithBinary(path string) Option { return func(c *Client) { c.binary = path } }
 
-// WithRawSink 注册一个原始行回调:子进程每读到一行原始 stdout(未解析的 JSON-RPC 帧)
-// 就同步调用一次。用于 debug 级原始帧转储 —— runtime 层把它接到 logger.Debug,由
-// 「Debug Logging」开关热控。回调收到的 []byte 是 scanner 复用缓冲,**不得跨调用留存**。
-// nil(默认)= 零采样开销。
+// WithRawSink 注册一个原始行回调:子进程读取普通 stdout JSON-RPC 帧后同步调用。
+// 含完整 Session prompt/image 内容的 get_entries response 永不进入该回调。runtime 层
+// 把其它帧接到 logger.Debug,由「Debug Logging」开关热控。回调收到的 []byte 是
+// scanner 复用缓冲,**不得跨调用留存**。nil(默认)=零采样开销。
 func WithRawSink(sink func([]byte)) Option { return func(c *Client) { c.rawSink = sink } }
 
 func WithCwd(path string) Option { return func(c *Client) { c.cwd = path } }

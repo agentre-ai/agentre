@@ -138,9 +138,7 @@ func (s *Stream) drain(ctx context.Context) {
 	defer close(s.events)
 	promptAccepted := false
 	for s.proc.lines.Scan() {
-		if s.proc.rawSink != nil {
-			s.proc.rawSink(s.proc.lines.Bytes())
-		}
+		emitRawFrame(s.proc, s.proc.lines.Bytes())
 		select {
 		case <-ctx.Done():
 			s.setErr(ctx.Err())
@@ -202,22 +200,36 @@ func (s *Stream) drain(ctx context.Context) {
 }
 
 func (s *Stream) finish(ctx context.Context) {
+	s.emitTerminalMetadata(ctx)
+	s.emit(Event{Kind: EventDone})
+}
+
+func (s *Stream) emitTerminalMetadata(ctx context.Context) {
 	if s.captureUserAnchor {
 		s.emitTrackedSessionMetadata(ctx)
 	} else {
 		s.emitSessionStats(ctx)
 	}
-	s.emit(Event{Kind: EventDone})
+}
+
+func (s *Stream) emitFailedTurnAnchorMetadata(ctx context.Context) {
+	if s.captureUserAnchor {
+		s.emitTrackedSessionMetadata(context.WithoutCancel(ctx))
+	}
 }
 
 func (s *Stream) settle(ctx context.Context) {
 	if candidate := s.pendingAgentEndError; candidate != nil {
+		// Pi appends the accepted user entry before an assistant error/abort. Capture
+		// that post-turn boundary even when the caller canceled its turn context.
+		s.emitFailedTurnAnchorMetadata(ctx)
 		s.recordFinalErrorDiagnostics(candidate.event, candidate.rawLine)
 		s.setErr(candidate.err)
 		s.emit(Event{Kind: EventError, Err: candidate.err})
 		return
 	}
 	if err := s.pendingAssistantDeltaError; err != nil {
+		s.emitFailedTurnAnchorMetadata(ctx)
 		s.setErr(err)
 		s.emit(Event{Kind: EventError, Err: err})
 		return
@@ -269,9 +281,7 @@ func (s *Stream) emitSessionStats(ctx context.Context) {
 
 func (s *Stream) readSessionStatsContextWindow() int {
 	for s.proc.lines.Scan() {
-		if s.proc.rawSink != nil {
-			s.proc.rawSink(s.proc.lines.Bytes())
-		}
+		emitRawFrame(s.proc, s.proc.lines.Bytes())
 		line := strings.TrimSpace(s.proc.lines.Text())
 		if line == "" {
 			continue
@@ -357,9 +367,7 @@ func (s *Stream) readTrackedSessionMetadata(
 ) {
 	metadata := trackedSessionMetadata{statsSeen: !wantStats}
 	for s.proc.lines.Scan() {
-		if s.proc.rawSink != nil {
-			s.proc.rawSink(s.proc.lines.Bytes())
-		}
+		emitRawFrame(s.proc, s.proc.lines.Bytes())
 		line := strings.TrimSpace(s.proc.lines.Text())
 		if line == "" {
 			continue

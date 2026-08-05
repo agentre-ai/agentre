@@ -2251,10 +2251,6 @@ func (s *chatSvc) startTurn(
 		return nil, i18n.NewError(ctx, code.ChatSendInFlight)
 	}
 
-	// running 随下方事务内的 Session().Update 原子落库:事务失败(SQLITE_BUSY 等)
-	// 即回滚,不残留 running(回归: dev sess-21 事务外预写后失败,DB 永久卡 running)。
-	sess.AgentStatus = "running"
-
 	userMsg := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
 	_ = userMsg.SetBlocks(userBlocks)
 
@@ -2270,6 +2266,35 @@ func (s *chatSvc) startTurn(
 		Model:      model,
 	}
 
+	var (
+		prepared *preparedTurnRun
+		turnCtx  context.Context
+		cancel   context.CancelFunc
+	)
+	// Pi confirms a native fork synchronously in Runtime.Run before returning its
+	// event stream. For Regenerate/Edit, do that handshake before the transaction
+	// truncates the local transcript; a stale/canceled anchor then leaves history intact.
+	if preTx != nil && be.IsPiAgent() && sess.HasProviderSession() && strings.TrimSpace(forkAnchor) != "" {
+		runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
+		turnCtx, cancel = context.WithCancel(runCtx)
+		var err error
+		prepared, err = s.prepareTurnRun(turnCtx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, false)
+		if err != nil {
+			cancel()
+			lock.Unlock()
+			logger.Ctx(ctx).Warn("chat_svc.startTurn: pi fork startup failed",
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("agentId", a.ID),
+				zap.String("backendType", be.Type),
+				zap.String("forkAnchor", forkAnchor),
+				zap.Error(err))
+			return nil, err
+		}
+	}
+
+	// running 随下方事务内的 Session().Update 原子落库:事务失败(SQLITE_BUSY 等)
+	// 即回滚,不残留 running(回归: dev sess-21 事务外预写后失败,DB 永久卡 running)。
+	sess.AgentStatus = "running"
 	if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := db.WithContextDB(ctx, tx)
 		if preTx != nil {
@@ -2292,6 +2317,10 @@ func (s *chatSvc) startTurn(
 		sess.LastMessageAt = time.Now().UnixMilli()
 		return chat_repo.Session().Update(txCtx, sess)
 	}); err != nil {
+		if prepared != nil {
+			cancel()
+			s.discardPreparedTurn(sess.ID, prepared)
+		}
 		lock.Unlock()
 		// 持久化失败比较罕见(SQLite 锁 / disk full)。cause 随 Error() 透到前端,
 		// sessionId/agentId/backendType 一并进日志供事后排查。
@@ -2316,10 +2345,12 @@ func (s *chatSvc) startTurn(
 	}
 
 	s.markStreamRunningForTest(assistantMsg.ID)
-	runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
+	if prepared == nil {
+		runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
+		turnCtx, cancel = context.WithCancel(runCtx)
+	}
 	// turnCtx：Stop 用它 cancel；activeCancels 必须在 gogo.Go **之前** store —— 用户
 	// 可能在 goroutine 调度起来之前就点了「停止」。
-	turnCtx, cancel := context.WithCancel(runCtx)
 	s.activeCancels.Store(sess.ID, cancel)
 	gogo.Go(func() error {
 		// defer 顺序：LIFO。先注册 unlock，最后释放；中间的 cancel cleanup
@@ -2330,7 +2361,7 @@ func (s *chatSvc) startTurn(
 			s.activeCancels.Delete(sess.ID)
 			cancel() // 兜底：runTurn 自己没 cancel（正常完成路径）也补一刀，无副作用
 		}()
-		s.runTurn(turnCtx, sess, a, be, prov, userMsg, assistantMsg, stream, forkAnchor, false, extras)
+		s.runTurn(turnCtx, sess, a, be, prov, userMsg, assistantMsg, stream, forkAnchor, false, prepared, extras)
 		return nil
 	}, gogo.WithIgnorePanic())
 
@@ -2340,6 +2371,25 @@ func (s *chatSvc) startTurn(
 		AssistantMessageID: assistantMsg.ID,
 		Stream:             stream,
 	}, nil
+}
+
+func (s *chatSvc) discardPreparedTurn(sessionID int64, prepared *preparedTurnRun) {
+	if prepared == nil {
+		return
+	}
+	if aborter, ok := prepared.runner.(agentruntime.Aborter); ok {
+		_ = aborter.Abort(context.Background(), sessionID)
+	}
+	if prepared.events == nil {
+		prepared.release()
+		return
+	}
+	gogo.Go(func() error {
+		for range prepared.events {
+		}
+		prepared.release()
+		return nil
+	}, gogo.WithIgnorePanic())
 }
 
 func (s *chatSvc) startCompactTurn(
@@ -2400,7 +2450,7 @@ func (s *chatSvc) startCompactTurn(
 			s.activeCancels.Delete(sess.ID)
 			cancel()
 		}()
-		s.runTurn(turnCtx, sess, a, be, prov, nil, assistantMsg, stream, "", true, turnExtras{})
+		s.runTurn(turnCtx, sess, a, be, prov, nil, assistantMsg, stream, "", true, nil, turnExtras{})
 		return nil
 	}, gogo.WithIgnorePanic())
 
@@ -2496,47 +2546,50 @@ func (s *chatSvc) persistSessionStatus(ctx context.Context, sess *chat_entity.Se
 	return nil
 }
 
-func (s *chatSvc) runTurn(
+type preparedTurnRun struct {
+	runner  agentruntime.Runtime
+	events  <-chan agentruntime.Event
+	result  *agentruntime.RunResult
+	req     agentruntime.RunRequest
+	release func()
+}
+
+func (s *chatSvc) prepareTurnRun(
 	ctx context.Context,
 	sess *chat_entity.Session,
 	a *agent_entity.Agent,
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
 	userMsg, assistantMsg *chat_entity.Message,
-	stream string,
 	forkAnchor string,
 	compact bool,
-	extras turnExtras,
-) {
-	startedAt := time.Now()
-
+) (*preparedTurnRun, error) {
 	runner, err := s.selectRunner(ctx, be, sess.ID)
 	if err != nil {
-		// 真错(RemoteRunnerDialFailed / AgentBackendInvalidDevice / AgentBackendInvalidType)
-		// 必须透传给 failTurn,否则前端永远只看到误导的 "unsupported backend type: X",
-		// 远端 daemon 离线 / DeviceID 失效 / 类型未注册三种情况无法区分。
-		logger.Ctx(ctx).Error("runTurn: selectRunner failed",
-			zap.Int64("sessionID", sess.ID),
+		logger.Ctx(ctx).Error("chat_svc.prepareTurnRun: selectRunner failed",
+			zap.Int64("sessionId", sess.ID),
 			zap.String("backendType", be.Type),
 			zap.String("deviceID", be.DeviceID),
 			zap.Error(err))
-		s.failTurn(ctx, sess, assistantMsg, stream, err)
-		return
+		return nil, err
 	}
+	release := func() {}
 	if be.IsRemote() {
 		if deviceID, ok := be.DeviceIDInt(); ok {
-			defer s.releaseRemoteRuntime(deviceID, sess.ID)
+			release = func() { s.releaseRemoteRuntime(deviceID, sess.ID) }
 		}
 	}
+	fail := func(err error) (*preparedTurnRun, error) {
+		release()
+		return nil, err
+	}
 	if userMsg != nil && messageHasImage(userMsg) && !runner.Capabilities().Has(capability.CapImageInput) {
-		s.failTurn(ctx, sess, assistantMsg, stream, agentruntime.ErrUnsupported)
-		return
+		return fail(agentruntime.ErrUnsupported)
 	}
 
-	cwd, cwdErr := resolveSessionCwd(ctx, sess, be)
-	if cwdErr != nil {
-		s.failTurn(ctx, sess, assistantMsg, stream, cwdErr)
-		return
+	cwd, err := resolveSessionCwd(ctx, sess, be)
+	if err != nil {
+		return fail(err)
 	}
 	req := agentruntime.RunRequest{
 		Backend:           be,
@@ -2561,8 +2614,7 @@ func (s *chatSvc) runTurn(
 		// builtin 没有持久化 session — 把历史从 chat_messages 重建后透传。
 		msgs, err := chat_repo.Message().List(ctx, sess.ID)
 		if err != nil {
-			s.failTurn(ctx, sess, assistantMsg, stream, err)
-			return
+			return fail(err)
 		}
 		history := make([]agentruntime.HistoryMessage, 0, len(msgs))
 		for _, m := range msgs {
@@ -2576,17 +2628,13 @@ func (s *chatSvc) runTurn(
 	}
 	if be.IsRemote() {
 		// 远端 backend: daemon 自家有 ProviderLookup + Gateway,该自家解。
-		//  - GatewayURL/Token: desktop 本机 127.0.0.1 在 daemon 主机上不可达,
-		//    必须由 daemon 端 handlers/runtime.go 用 h.deps.Gateway.URL() 填。
-		//  - Provider: 含明文 APIKey,不该每个 turn 越线漂移到远端机器;daemon
-		//    自家 ProviderLookup 会按 LLMProviderKey 从本机 keychain 解出。
-		// 注:LLMProviderKey 已对齐 (UUID, 双方各自配同一 provider 即可)。
+		// GatewayURL/Token 是 desktop 的 127.0.0.1，Provider 又含明文 APIKey，
+		// 都不跨机器；daemon 按 LLMProviderKey 从自己的配置解析。
 		req.LLMProviderKey = be.LLMProviderKey
 		req.Provider = nil
 	} else if shouldSignChatGateway(be) {
-		// Claude Code local 仍需要 gateway token 给 PostToolUse hook 访问
-		// /hook/v1/inbox；Codex local 没有 hook，不能注入 gateway，否则会覆盖
-		// codex login 并把模型请求误打到本地 /v1/responses。
+		// Claude Code local 需要 gateway token 给 PostToolUse hook；Codex local
+		// 没有 hook，不能覆盖其原生 login 并误打到本地 gateway。
 		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID)
 	}
 	switch agent_backend_entity.BackendType(be.Type) {
@@ -2598,9 +2646,62 @@ func (s *chatSvc) runTurn(
 
 	events, result, err := runner.Run(ctx, req)
 	if err != nil {
-		s.failTurn(ctx, sess, assistantMsg, stream, s.mapTurnError(ctx, sess, be, err))
-		return
+		return fail(s.mapTurnError(ctx, sess, be, err))
 	}
+	return &preparedTurnRun{runner: runner, events: events, result: result, req: req, release: release}, nil
+}
+
+func (s *chatSvc) persistUserAnchor(ctx context.Context, userMsg *chat_entity.Message, anchor string) error {
+	if userMsg == nil || strings.TrimSpace(anchor) == "" {
+		return nil
+	}
+	userMsg.ForkAnchor = strings.TrimSpace(anchor)
+	if err := chat_repo.Message().Update(ctx, userMsg); err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.persistUserAnchor: message update failed, retrying",
+			zap.Int64("sessionId", userMsg.SessionID),
+			zap.Int64("messageId", userMsg.ID),
+			zap.String("forkAnchor", userMsg.ForkAnchor),
+			zap.Error(err))
+		if retryErr := chat_repo.Message().Update(ctx, userMsg); retryErr != nil {
+			logger.Ctx(ctx).Error("chat_svc.persistUserAnchor: message update failed after retry",
+				zap.Int64("sessionId", userMsg.SessionID),
+				zap.Int64("messageId", userMsg.ID),
+				zap.String("forkAnchor", userMsg.ForkAnchor),
+				zap.Error(retryErr))
+			return fmt.Errorf("persist user anchor: %w", retryErr)
+		}
+	}
+	return nil
+}
+
+func (s *chatSvc) runTurn(
+	ctx context.Context,
+	sess *chat_entity.Session,
+	a *agent_entity.Agent,
+	be *agent_backend_entity.AgentBackend,
+	prov *llm_provider_entity.LLMProvider,
+	userMsg, assistantMsg *chat_entity.Message,
+	stream string,
+	forkAnchor string,
+	compact bool,
+	prepared *preparedTurnRun,
+	extras turnExtras,
+) {
+	startedAt := time.Now()
+
+	if prepared == nil {
+		var err error
+		prepared, err = s.prepareTurnRun(ctx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, compact)
+		if err != nil {
+			s.failTurn(ctx, sess, assistantMsg, stream, err)
+			return
+		}
+	}
+	defer prepared.release()
+	runner := prepared.runner
+	events := prepared.events
+	result := prepared.result
+	req := prepared.req
 	// 登记本 turn 的活跃流名,供工具审批(BeginToolApproval)把审批卡路由到此流。
 	// stream 在 SteerConsumed 分段时不变(同 turn 一个流名),Store 一次即可;收尾时清掉。
 	s.activeTurnStreams.Store(sess.ID, stream)
@@ -2770,13 +2871,10 @@ func (s *chatSvc) runTurn(
 		if result.ProviderSessionID != "" {
 			sess.SetProviderSession(result.ProviderSessionID)
 		}
-		// claudecode 后端从 JSONL 抽到了本轮 user prompt 的 anchor（parentUuid）。
-		// 写到 user msg 上，下次"重新生成 assistant"时 chat_svc.Regenerate 会读它。
-		// 用 context.WithoutCancel 确保 abort 后这里仍能写 —— 已经流出去的内容
-		// 应当持久化，下一轮即便重发也要能用 anchor 反查。
-		if result.UserAnchor != "" && userMsg != nil {
-			userMsg.ForkAnchor = result.UserAnchor
-			_ = chat_repo.Message().Update(context.WithoutCancel(ctx), userMsg)
+		// Runtime 抽到的本轮 user anchor 必须可靠落库；短暂写失败重试一次，
+		// 持续失败则保留已生成回答但把 turn 标成 error，不能伪装成可继续分叉的成功轮。
+		if err := s.persistUserAnchor(context.WithoutCancel(ctx), userMsg, result.UserAnchor); err != nil && stopErr == nil {
+			stopErr = err
 		}
 		// codex app-server 上报的 modelContextWindow 落到 session 字段，下次
 		// LoadSession 用 resolveContextWindowWithRuntime 优先读这个值——比
@@ -2898,7 +2996,7 @@ func (s *chatSvc) runTurn(
 			// assistant 切到 nextAssistant。
 			// 自动续轮沿用本轮 extras:群成员会话的 MCP 注入 + 群上下文 suffix
 			// 需要在同一会话的整个生命周期内保持,而非只在首轮生效。
-			s.runTurn(ctx, sess, a, be, prov, nextUser, nextAssistant, stream, "", false, extras)
+			s.runTurn(ctx, sess, a, be, prov, nextUser, nextAssistant, stream, "", false, nil, extras)
 			return
 		}
 		// 写新轮失败 → pending 已经从 SteerInbox drain 走，无法回滚，只能丢。
