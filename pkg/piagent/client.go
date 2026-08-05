@@ -36,9 +36,9 @@ type Client struct {
 	killGrace  time.Duration
 	runner     processRunner
 
-	// rawSink 若非 nil,子进程每读到一行原始 stdout(未解析的 JSON-RPC 帧)就同步回调
-	// 一次。debug 级原始帧转储用;经 startRPC 注入 rpcProcess,由 drain /
-	// readSessionStatsContextWindow 两个读点调用。
+	// rawSink 若非 nil,子进程每读到一行可记录的原始 stdout JSON-RPC 帧就同步回调
+	// 一次；extension_ui_request 含敏感交互文案，始终排除。debug 级原始帧转储用；
+	// 经 startRPC 注入 rpcProcess,由各 stdout 读点调用。
 	rawSink func([]byte)
 }
 
@@ -152,9 +152,7 @@ func readSessionState(ctx context.Context, proc *rpcProcess, expected string) (s
 		return sessionStateWire{}, err
 	}
 	for proc.lines.Scan() {
-		if proc.rawSink != nil {
-			proc.rawSink(proc.lines.Bytes())
-		}
+		proc.captureRawFrame(proc.lines.Bytes())
 		select {
 		case <-ctx.Done():
 			return sessionStateWire{}, ctx.Err()
@@ -223,7 +221,7 @@ type rpcProcess struct {
 	handle     processHandle
 	stdin      io.Writer
 	lines      *bufio.Scanner
-	rawSink    func([]byte) // 非 nil 时每行原始 stdout 同步回调一次(debug 原始帧转储)
+	rawSink    func([]byte) // 非 nil 时同步回调可安全记录的原始 stdout 帧
 	stderr     *lockedBuffer
 	stderrDone chan struct{}
 	done       chan struct{} // closed when waitErr is available to every observer
@@ -243,6 +241,20 @@ func (p *rpcProcess) awaitExit() {
 func (p *rpcProcess) waitResult() error {
 	<-p.done
 	return p.waitErr
+}
+
+func (p *rpcProcess) captureRawFrame(frame []byte) {
+	if p.rawSink == nil || isExtensionUIRequestFrame(frame) {
+		return
+	}
+	p.rawSink(frame)
+}
+
+func isExtensionUIRequestFrame(frame []byte) bool {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(frame, &probe) == nil && probe.Type == "extension_ui_request"
 }
 
 func (p *rpcProcess) writeJSON(v any) error {

@@ -414,10 +414,101 @@ func TestSubagentDoneHandler_ZeroTotalTokensAndToolUsesDoesNotClobber(t *testing
 	})
 }
 
-// MarkRunningSubagentsCancelled 是 turn abort 收尾的补救：用户 Stop 后 CLI 被
-// interrupt → 不会再来 SubagentDone 事件,running 状态会被原样落 DB,前端 spin
-// 不止。这里把 finalBlocks 里所有 *SubagentStateBlock.Status == "running" 的
-// 改成 "canceled",已经 completed/failed 的不动。
+// MarkRunningSubagentsCancelled 是 turn abort 收尾的补救：用户 Stop 后 runtime 不会
+// 再来 SubagentDone，外层累计态和 normalized runs 的 waiting/running 都必须落为
+// canceled；已经 terminal 的证据保持不动。
+func TestSubagentLifecycle_NormalizedSnapshotsReplaceAtomically(t *testing.T) {
+	Convey("Given a normalized two-run snapshot, When progress and done snapshots arrive, Then runs replace as whole snapshots and omitted legacy runs do not clear them", t, func() {
+		acc := turn.New()
+		startedRuns := []agentruntime.SubagentRun{
+			{ID: "run-0", Index: 0, Task: "inspect", Status: "running"},
+			{ID: "run-1", Index: 1, Task: "test", Status: "waiting"},
+		}
+		_ = SubagentStartedHandler{}.Apply(context.Background(), agentruntime.SubagentStarted{
+			ToolCallID: "outer",
+			Info:       agentruntime.SubagentInfo{Mode: "parallel", Runs: startedRuns, Status: "running"},
+		}, acc, nil, nil, nil)
+
+		state := acc.Finalize()[0].(*blocks.SubagentStateBlock)
+		So(state.Mode, ShouldEqual, "parallel")
+		So(state.Runs, ShouldResemble, startedRuns)
+		startedRuns[0].Status = "failed"
+		So(state.Runs[0].Status, ShouldEqual, "running")
+
+		progressRuns := []agentruntime.SubagentRun{
+			{ID: "run-0", Index: 0, Task: "inspect", Status: "completed", Summary: "done"},
+			{ID: "run-1", Index: 1, Task: "test", Status: "running", LastToolName: "bash"},
+		}
+		_ = SubagentProgressHandler{}.Apply(context.Background(), agentruntime.SubagentProgress{
+			ToolCallID: "outer",
+			Info:       agentruntime.SubagentInfo{Mode: "parallel", Runs: progressRuns, Status: "running"},
+		}, acc, nil, nil, nil)
+		So(state.Runs, ShouldResemble, progressRuns)
+		progressRuns[1].Status = "failed"
+		So(state.Runs[1].Status, ShouldEqual, "running")
+		progressRuns[1].Status = "running"
+
+		_ = SubagentProgressHandler{}.Apply(context.Background(), agentruntime.SubagentProgress{
+			ToolCallID: "outer",
+			Info:       agentruntime.SubagentInfo{ToolUses: 9},
+		}, acc, nil, nil, nil)
+		So(state.Mode, ShouldEqual, "parallel")
+		So(state.Runs, ShouldResemble, progressRuns)
+
+		emptyRuns := make([]agentruntime.SubagentRun, 0)
+		_ = SubagentProgressHandler{}.Apply(context.Background(), agentruntime.SubagentProgress{
+			ToolCallID: "outer",
+			Info:       agentruntime.SubagentInfo{Runs: emptyRuns},
+		}, acc, nil, nil, nil)
+		So(state.Runs, ShouldNotBeNil)
+		So(state.Runs, ShouldHaveLength, 0)
+		_ = SubagentProgressHandler{}.Apply(context.Background(), agentruntime.SubagentProgress{
+			ToolCallID: "outer",
+			Info:       agentruntime.SubagentInfo{Runs: progressRuns},
+		}, acc, nil, nil, nil)
+
+		doneRuns := []agentruntime.SubagentRun{
+			{ID: "run-0", Index: 0, Task: "inspect", Status: "completed", Summary: "done"},
+			{ID: "run-1", Index: 1, Task: "test", Status: "failed", ErrorMessage: "boom"},
+		}
+		_ = SubagentDoneHandler{}.Apply(context.Background(), agentruntime.SubagentDone{
+			ToolCallID: "outer",
+			Info:       agentruntime.SubagentInfo{Mode: "parallel", Runs: doneRuns, Status: "failed"},
+		}, acc, nil, nil, nil)
+		So(state.Status, ShouldEqual, "failed")
+		So(state.Runs, ShouldResemble, doneRuns)
+	})
+}
+
+func TestMarkRunningSubagentsCancelled_NormalizedRuns(t *testing.T) {
+	Convey("abort cancels only waiting/running normalized runs and preserves terminal evidence", t, func() {
+		state := &blocks.SubagentStateBlock{
+			ParentToolCallID: "outer",
+			Status:           "running",
+			Mode:             "parallel",
+			Runs: []agentruntime.SubagentRun{
+				{ID: "waiting", Status: "waiting"},
+				{ID: "running", Status: "running"},
+				{ID: "completed", Status: "completed"},
+				{ID: "failed", Status: "failed"},
+				{ID: "canceled", Status: "canceled"},
+				{ID: "skipped", Status: "skipped"},
+				{ID: "unknown", Status: "unknown"},
+			},
+		}
+		MarkRunningSubagentsCancelled([]cagoblocks.ContentBlock{state})
+
+		So(state.Status, ShouldEqual, "canceled")
+		So(state.Runs[0].Status, ShouldEqual, "canceled")
+		So(state.Runs[1].Status, ShouldEqual, "canceled")
+		So(state.Runs[2].Status, ShouldEqual, "completed")
+		So(state.Runs[3].Status, ShouldEqual, "failed")
+		So(state.Runs[4].Status, ShouldEqual, "canceled")
+		So(state.Runs[5].Status, ShouldEqual, "skipped")
+		So(state.Runs[6].Status, ShouldEqual, "unknown")
+	})
+}
+
 func TestMarkRunningSubagentsCancelled(t *testing.T) {
 	Convey("abort 时将 running 改成 canceled,其它终态不动", t, func() {
 		acc := turn.New()

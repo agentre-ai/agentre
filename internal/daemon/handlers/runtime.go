@@ -240,8 +240,8 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 	h.register(em.rid, runtimeSession{backendType: bt})
 	// backendKey 是这条会话在 backend 那边的键(按对端隔离):claudecode / codex 的日志
 	// 里报的 sessionID 是它,这一行是把两边对上号的唯一地方。
-	log.Printf("runtime.run: session started sid=%d backendKey=%d backend=%s agentId=%d cwd=%q userTextLen=%d",
-		p.SessionID, em.rid, be.Type, p.AgentID, p.Cwd, len(p.UserText))
+	log.Printf("runtime.run: session started sid=%d backendKey=%d backend=%s agentId=%d userTextBytes=%d",
+		p.SessionID, em.rid, be.Type, p.AgentID, len(p.UserText))
 	h.startSession(em, p, bt)
 	go h.fanout(em, events, result)
 	// 真实 runtime 若支持自主续轮(claudecode),起每会话一个转发 goroutine 把
@@ -297,7 +297,8 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Even
 	for ev := range ch {
 		raw, err := json.Marshal(ev)
 		if err != nil {
-			log.Printf("runtime.event: marshal failed sid=%d kind=%T err=%v", sid, ev, err)
+			log.Printf("runtime.event: marshal failed sid=%d kind=%T errClass=%T errBytes=%d",
+				sid, ev, err, len(err.Error()))
 			continue
 		}
 		count++
@@ -308,7 +309,7 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Even
 			Event:     json.RawMessage(raw),
 		}) && !isNoisyEventKind(kind) {
 			// text/thinking/usage 频率极高,kindHist 汇总即可,不逐条 log。
-			log.Printf("runtime.event: sid=%d n=%d kind=%s payload=%s", sid, count, kind, string(raw))
+			log.Printf("runtime.event: sid=%d n=%d kind=%s eventBytes=%d", sid, count, kind, len(raw))
 		}
 	}
 	frame := runResultToFrame(sid, result)
@@ -325,8 +326,8 @@ func (h *RuntimeHandlers) fanout(em *sessionEmitter, ch <-chan agentruntime.Even
 	// 的子进程手里 token 失效。
 	h.unregister(em.rid)
 	em.emit(wire.NotifyRunResultDone, &frame)
-	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v stopErrMsg=%q stopErrCode=%d",
-		sid, count, kindHist, frame.StopErrMsg, frame.StopErrCode)
+	log.Printf("runtime.run: session ended sid=%d totalEvents=%d kinds=%v hasStopErr=%t stopErrBytes=%d stopErrCode=%d",
+		sid, count, kindHist, frame.StopErrMsg != "", len(frame.StopErrMsg), frame.StopErrCode)
 }
 
 // startAutonomousFanout 每会话起一个 goroutine,把真实 runtime 的自主续轮转发到
@@ -363,7 +364,8 @@ func (h *RuntimeHandlers) forwardAutonomousTurn(em *sessionEmitter, at agentrunt
 	for ev := range at.Events {
 		raw, err := json.Marshal(ev)
 		if err != nil {
-			log.Printf("runtime.autonomousTurn.event: marshal failed sid=%d kind=%T err=%v", sid, ev, err)
+			log.Printf("runtime.autonomousTurn.event: marshal failed sid=%d kind=%T errClass=%T errBytes=%d",
+				sid, ev, err, len(err.Error()))
 			continue
 		}
 		count++
@@ -375,7 +377,8 @@ func (h *RuntimeHandlers) forwardAutonomousTurn(em *sessionEmitter, at agentrunt
 	frame := runResultToFrame(sid, at.Result)
 	h.finishSession(em) // 同 fanout:先落回 idle,再发终态帧
 	em.emit(wire.NotifyAutonomousTurnDone, &frame)
-	log.Printf("runtime.autonomousTurn: forwarded sid=%d trigger=%s events=%d", sid, at.Trigger, count)
+	log.Printf("runtime.autonomousTurn: forwarded sid=%d trigger=%s events=%d hasStopErr=%t stopErrBytes=%d stopErrCode=%d",
+		sid, at.Trigger, count, frame.StopErrMsg != "", len(frame.StopErrMsg), frame.StopErrCode)
 }
 
 // ── 会话通知出口(先落库,后推送)────────────────────────────────────────────

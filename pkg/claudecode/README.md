@@ -20,7 +20,6 @@ agentre 自维护的 Anthropic Claude Code CLI 子进程封装。
 - 完整 MCP bridge
 - 应用层 steer / hook 编排
   - runtime 集成见 `internal/pkg/agentruntime/runtimes/claudecode`
-  - headless 模式 steer 调研与 PreToolUse hook 软 steer 方案见 `docs/superpowers/specs/2026-05-18-claudecode-headless-steer-design.md`
 
 ## 怎么扩 flag
 

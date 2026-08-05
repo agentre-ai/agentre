@@ -25,7 +25,7 @@ The repository currently has four built-in backends, with clearly distinct roles
 - **builtin** — runs cago `app/coding` in-process, directly consuming the `llm_provider` config. Its role is "lightweight built-in"; it exposes steer / cancel / abort / image input — the capabilities that an in-process single-provider mode naturally supports — without CLI subprocess overhead, and without advanced protocols like plan / tool approval.
 - **claudecode** — wraps the local `claude` CLI (Anthropic family), communicating bidirectionally via stdout JSONL + `control_request` frames, with the subprocess long-lived and the session reused via LRU. The most fully featured: it can run plan / `can_use_tool` / `AskUserQuestion` / Subagent / fork-session / mid-turn permission-mode switching / image input.
 - **codex** — wraps the local `codex` CLI (OpenAI family), interacting via the JSON-RPC-over-stdio app-server protocol, starting a new process per turn (fire-and-forget). Natively supports context-window reporting, native compact turns, image input, and tool approval via the app-server `requestApproval` protocol (allow/deny + remember-for-session, though with **no DenyReason feedback** and no `can_use_tool`-shaped control frames), but cannot switch permission mode mid-turn and does not emit Subagent events.
-- **piagent** — wraps the local `pi` CLI (Pi coding agent RPC mode); it is not bound to an Agentre `LLMProvider`, but reads Pi's own `~/.pi/agent` config and auth. Supports steer / abort / compact / image input / context-window reporting; Pi owns the Session storage location, while Agentre persists the native Session ID returned by RPC and resumes with `--session <id>`. It does not support tool approval, reverse Q&A, fork-session, or permission mode meta.
+- **piagent** — wraps the local `pi` CLI (Pi coding agent RPC mode); it is not bound to an Agentre `LLMProvider`, but reads Pi's own `~/.pi/agent` config and auth. Supports steer / abort / compact / image input / context-window reporting plus structured official/flat-single extension subagent streaming and replay; Pi owns the Session storage location, while Agentre persists the native Session ID returned by RPC and resumes with `--session <id>`. It does not support tool approval, reverse Q&A, fork-session, or permission mode meta.
 
 > The repository also has `runtimes/remote/`, which is **not a standalone backend** — it is the proxy used when the desktop calls a remote `agentred` daemon. Its capability is synced from the daemon-side real backend via `Prefetch`, so it is not listed separately in this section.
 
@@ -68,10 +68,10 @@ This table answers "what does it look like when it runs" — process shape, sess
 | Run shape | in-process (cago app/coding + LLMProvider) | CLI subprocess (stdout JSONL) | CLI subprocess (JSON-RPC over stdio app-server) | CLI subprocess (Pi RPC mode) | determines the Prober / cli_path validation / env assembly path |
 | ProviderType binding | any LLM provider | Anthropic family (incl. gateway proxy) | OpenAI / Codex family | not bound to a provider; reads `~/.pi/agent` | the entity `BackendKind.ProviderTypeMatch` implementation; piagent always false |
 | Session mode | turn-scoped cago `Runner`, destroyed when the turn ends | long-lived subprocess + LRU cache reuse, reusing the session across turns | new process per turn, no local reuse | new Pi client per turn; Pi stores native JSONL in its configured/default root and Agentre resumes by the persisted native Session ID | reuse means managing idle evict / abort unlocking / cross-turn state |
-| Translator | pure function (cago events → sealed) | pure function + `task_aggregator` maintaining the Subagent list across turns | pure function | pure function (Pi RPC events → sealed) | state aggregation is uniformly done in the `Run` drain loop; the translator must be able to run independently in a table-driven test |
+| Translator | pure function (cago events → sealed) | pure function + `task_aggregator` maintaining the Subagent list across turns | pure function | pure RPC mapper + turn-local subagent tracker in the `Run` drain loop | state aggregation stays at the drain boundary; the translator itself must remain independently table-testable |
 | Plan source | does not emit | `TodoWrite` tool inline (canonical) + `Task*` incremental aggregation (PlanUpdated snapshot) | `turn/plan/updated` (Steps) + `item/plan/delta` (Text) merged into a single PlanUpdated | does not emit | what downstream chat_svc sees is the same sealed `agentruntime.PlanUpdated` |
 | Reverse Q&A | not supported | control_request `can_use_tool` + `AskUserQuestion` tool | app-server `item/tool/requestUserInput` JSON-RPC | not supported | claudecode uses the question text as the key, codex uses the question ID as the key |
-| Subagent events | ❌ | ✅ `SubagentStarted/Progress/Done` | ❌ | ❌ | only claudecode has a native `Task` tool protocol |
+| Subagent events | ❌ | ✅ `SubagentStarted/Progress/Done` | ❌ | ✅ official bundled + flat-single extension snapshots | claudecode translates its native `Task` protocol; Pi recognizes supported extension envelopes at the stateful drain boundary |
 | Remote daemon | ✅ | ✅ | ✅ | ✅ | the runtime must not depend on desktop-only services (chat_repo / GUI); state is returned via `RunResult` |
 
 ### PermissionModeMeta
@@ -486,20 +486,25 @@ agentruntime.PlanUpdated{Plan: canonical.PlanUpdate{
 - the frontend PlanCard renders the full text; `TaskProgressBar` reads `steps[].status` for the progress bar
 - multiple PlanUpdated within the same turn go through mutate (overwriting by PlanBlock key), without repeatedly landing new blocks
 
-##### H. Subagent lifecycle — claudecode Task-tool-specific
+##### H. Subagent lifecycle — normalized runtime contract
 
-Interface shape (**one-way emit, 3 events**):
+Interface shape (**one-way emit, 3 lifecycle events plus nested tool events**):
 
 ```go
-agentruntime.SubagentStarted{ToolCallID, Info: SubagentInfo{...}}
-agentruntime.SubagentProgress{ToolCallID, Info: SubagentInfo{TotalTokens, LastToolName, ToolUses}}
-agentruntime.SubagentDone{ToolCallID, Info: SubagentInfo{Status: "completed"|"failed", DurationMs, TotalTokens}}
+agentruntime.SubagentStarted{ToolCallID, Info: SubagentInfo{Mode, Runs}}
+agentruntime.SubagentProgress{ToolCallID, Info: SubagentInfo{Mode, Runs}}
+agentruntime.SubagentDone{ToolCallID, Info: SubagentInfo{Mode, Runs}}
+agentruntime.ToolCall{ParentToolCallID, SubagentRunID, ...}
+agentruntime.ToolResult{ParentToolCallID, SubagentRunID, ...}
 ```
 
-- **ToolCallID** = the tool_use id of the outer parent `Task` / Agent tool.
-- **Info.Status**: the runtime only produces `running` / `completed` / `failed`; `canceled` is inferred by `handlers.MarkRunningSubagentsCancelled` during turn-abort cleanup (after the CLI is interrupted, Done will not arrive, and leaving it running would make the frontend AgentSpawnCard spin forever).
-- **The ParentToolCallID field of ToolCall / ToolResult**: tools called inside the subagent fill in the outer Task tool_use id, so the frontend groups the child cards under the parent SubagentInvocationCard.
-- **codex / builtin / piagent currently do not emit these** — only claudecode has a native subagent protocol. Consider onboarding this set of events when a new backend has a similar fork-execute tool.
+- **ToolCallID** is the tool-use ID of the outer parent `Task` / Agent / subagent tool. `SubagentInfo.Runs` is a full snapshot; legacy single-run producers may leave `Mode` / `Runs` empty.
+- **Pi is stateful at the drain boundary**: `runtimes/piagent/translator.go` remains a pure RPC-event mapper, while `drainStream` owns one turn-local tracker per recognized outer subagent call. The Pi-only candidate gate first requires a case-insensitive tool name containing `subagent`, then accepts official single / parallel / chain or generic flat-single inputs without broadening global canonical recognition. Parallel alone is capped at eight input runs; a valid chain is not.
+- **Run identity comes from the input slot** (`run-0`, `run-1`, ...), not mutable result text or agent name. Nested calls/results carry both `ParentToolCallID` and `SubagentRunID`; Pi generates their runtime tool-call IDs from an unambiguous `(outer, run, inner)` encoding so equal inner IDs in sibling runs cannot collide.
+- **The tracker consumes cumulative snapshots**: per-run call/result identities dedupe repeated updates, orphan results wait for their matching call, final details recover boundaries missed during updates, and sibling boundaries use valid message timestamps with input-index/message-index fallback while preserving order inside each run.
+- **Lifecycle ordering is fixed**: outer `ToolCall` precedes `SubagentStarted`; newly recovered nested events precede any full `SubagentProgress` caused by the same snapshot; final nested events and progress precede `SubagentDone`; the outer `ToolResult` closes that subagent lifecycle. On a whole-turn abort with no end frame, the drain emits a terminal snapshot that changes only non-terminal runs to `canceled`, preserves terminal siblings, then discards the tracker.
+- **Grouped status remains explicit**: parallel mixed success/failure is `partial`; a failed chain marks untouched later input slots `skipped`; incomplete terminal evidence becomes `unknown` rather than fabricated success. Official `stopReason=aborted` is a failed run, while whole-turn abort cleanup is canceled.
+- **claudecode** continues to emit its legacy single-run lifecycle and nested `ParentToolCallID`; **codex / builtin** currently do not emit this lifecycle.
 
 ##### I. AutonomousTurnSource — the forward turn (backend→host)
 
@@ -658,7 +663,7 @@ repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a re
 
 ## 7. 技能包（Skill Pack / plugin）注入 —— `CapSkills`
 
-> 已落地，`CapSkills` 已并入 §0.5 矩阵。代码：`internal/pkg/agentskill`（leaf 目录域）+ `internal/service/skill_svc`（组合服务）+ `chat_svc/turn_skills.go`（注入接缝）+ `runtimes/claudecode/skills.go`（`--settings` 渲染）+ `runtimes/codex/session.go`（`--config plugins.*.enabled` 渲染）。实现计划快照见 `superpowers/plans/2026-06-12-agent-skills-pr1-backend.md`（归档稿，不随代码更新）。
+> 已落地，`CapSkills` 已并入 §0.5 矩阵。代码：`internal/pkg/agentskill`（leaf 目录域）+ `internal/service/skill_svc`（组合服务）+ `chat_svc/turn_skills.go`（注入接缝）+ `runtimes/claudecode/skills.go`（`--settings` 渲染）+ `runtimes/codex/session.go`（`--config plugins.*.enabled` 渲染）。
 >
 > 给 agent 按 **plugin / skill-pack** 粒度配技能，是与 `CapMCPTools` 同构的 launch-time 注入：per-agent 配置 → spawn 时 CLI 配置覆盖 → 每会话子进程独立。
 

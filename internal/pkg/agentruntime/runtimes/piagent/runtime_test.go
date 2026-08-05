@@ -3,6 +3,7 @@ package piagent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/cago-frame/agents/provider"
 	"github.com/cago-frame/cago/pkg/logger"
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -215,9 +218,44 @@ func TestRun_ForwardsUserBlockImagesToStream(t *testing.T) {
 	})
 }
 
+func TestPiRawFrameSinkRedactsPayload(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	oldLogger := logger.Default()
+	logger.SetLogger(zap.New(core))
+	t.Cleanup(func() { logger.SetLogger(oldLogger) })
+
+	sink := piRawFrameSink(689, "pi-session-689")
+	validFrame := []byte(`{"type":"tool_execution_start","toolCallId":"outer-safe-id","args":{"secret":"SENTINEL_PI_RAW_FRAME"}}`)
+	malformedFrame := []byte(`{"type":"message_update","payload":"SENTINEL_PI_MALFORMED_FRAME"`)
+	untrustedKindFrame := []byte(`{"type":"SENTINEL_PI_UNTRUSTED_KIND","payload":"ignored"}`)
+	sink(validFrame)
+	sink(malformedFrame)
+	sink(untrustedKindFrame)
+
+	captured := observedPiLogText(logs)
+	assert.NotContains(t, captured, "SENTINEL_PI_RAW_FRAME")
+	assert.NotContains(t, captured, "SENTINEL_PI_MALFORMED_FRAME")
+	assert.NotContains(t, captured, "SENTINEL_PI_UNTRUSTED_KIND")
+	entries := logs.FilterMessage("piagent.piRawFrameSink: frame observed").All()
+	require.Len(t, entries, 3)
+	assert.Equal(t, "tool_execution_start", entries[0].ContextMap()["frameType"])
+	assert.Equal(t, int64(len(validFrame)), entries[0].ContextMap()["frameBytes"])
+	assert.Equal(t, true, entries[1].ContextMap()["parseFailed"])
+	assert.Equal(t, int64(len(malformedFrame)), entries[1].ContextMap()["frameBytes"])
+	assert.NotContains(t, entries[2].ContextMap(), "frameType")
+	assert.Equal(t, int64(len(untrustedKindFrame)), entries[2].ContextMap()["frameBytes"])
+}
+
 func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
-	Convey("Given a pi-agent stream that fails after reporting model and usage", t, func() {
-		boom := errors.New("piagent: terminated")
+	Convey("Given a pi-agent stream that fails with payload-bearing diagnostics", t, func() {
+		boom := errors.New("SENTINEL_PI_RUN_ERROR")
+		diagnostics := pkgpiagent.StreamDiagnostics{
+			FinalErrorEventType:  "agent_end",
+			FinalErrorStopReason: "error",
+			FinalErrorMessage:    "SENTINEL_PI_FINAL_ERROR_MESSAGE",
+			FinalErrorFrame:      `{"type":"agent_end","payload":"SENTINEL_PI_FINAL_ERROR_FRAME"}`,
+			StderrTail:           "SENTINEL_PI_STDERR_TAIL",
+		}
 		sess := &fakeSession{
 			stream: &scriptedStream{events: []pkgpiagent.Event{
 				{Kind: pkgpiagent.EventUsage, Model: "gpt-5.5(xhigh)", Usage: provider.Usage{
@@ -228,7 +266,7 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 				}},
 				{Kind: pkgpiagent.EventContextWindow, ContextWindow: 1050000},
 				{Kind: pkgpiagent.EventError, Err: boom},
-			}, err: boom, sid: "pi-session-689"},
+			}, err: boom, sid: "pi-session-689", diagnostics: diagnostics},
 			sid: "pi-session-689",
 		}
 		restoreFactory := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
@@ -238,7 +276,7 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 		core, logs := observer.New(zapcore.DebugLevel)
 		ctx := logger.WithContextLogger(context.Background(), zap.New(core))
 
-		Convey("When the turn drains Then runtime logs enough fields to diagnose future Pi terminated failures", func() {
+		Convey("When the turn drains Then diagnostics remain available to the result stream but not operational logs", func() {
 			events, result, err := New().Run(ctx, agentruntime.RunRequest{
 				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
 				SessionID: 689,
@@ -247,26 +285,55 @@ func TestRun_LogsPiStreamFailureDiagnostics(t *testing.T) {
 				UserText:  "检查一下pi agent能否支持mcp，实现群聊功能",
 			})
 			So(err, ShouldBeNil)
-			for range events {
+			var streamedErr error
+			for event := range events {
+				if errorEvent, ok := event.(agentruntime.ErrorEvent); ok {
+					streamedErr = errorEvent.Err
+				}
 			}
 
 			So(result.StopErr, ShouldEqual, boom)
-			matches := logs.FilterMessage("piagent runtime: turn failed").All()
+			So(result.Model, ShouldEqual, "gpt-5.5(xhigh)")
+			So(streamedErr, ShouldEqual, boom)
+			matches := logs.FilterMessage("piagent.drainStream: turn failed").All()
 			So(matches, ShouldHaveLength, 1)
 			fields := matches[0].ContextMap()
 			So(fields["sessionID"], ShouldEqual, int64(689))
 			So(fields["agentID"], ShouldEqual, int64(8))
 			So(fields["providerSessionID"], ShouldEqual, "pi-session-689")
-			So(fields["model"], ShouldEqual, "gpt-5.5(xhigh)")
 			So(fields["contextWindow"], ShouldEqual, int64(1050000))
 			So(fields["promptTokens"], ShouldEqual, int64(4017))
 			So(fields["completionTokens"], ShouldEqual, int64(128))
 			So(fields["cachedTokens"], ShouldEqual, int64(69632))
 			So(fields["cacheCreationTokens"], ShouldEqual, int64(0))
 			So(fields["totalInputTokens"], ShouldEqual, int64(73649))
-			So(fields["error"], ShouldEqual, "piagent: terminated")
+			So(fields["errorClass"], ShouldEqual, "*errors.errorString")
+			So(fields["errorBytes"], ShouldEqual, int64(len(boom.Error())))
+
+			diagnosticMatches := logs.FilterMessage("piagent.logPiFailureDiagnostics: turn failed diagnostics").All()
+			So(diagnosticMatches, ShouldHaveLength, 1)
+			diagnosticFields := diagnosticMatches[0].ContextMap()
+			So(diagnosticFields["piEventType"], ShouldEqual, "agent_end")
+			So(diagnosticFields["piStopReason"], ShouldEqual, "error")
+			So(diagnosticFields["piErrorMessageBytes"], ShouldEqual, int64(len(diagnostics.FinalErrorMessage)))
+			So(diagnosticFields["piFinalErrorFrameBytes"], ShouldEqual, int64(len(diagnostics.FinalErrorFrame)))
+			So(diagnosticFields["piStderrBytes"], ShouldEqual, int64(len(diagnostics.StderrTail)))
+
+			captured := observedPiLogText(logs)
+			assert.NotContains(t, captured, boom.Error())
+			assert.NotContains(t, captured, diagnostics.FinalErrorMessage)
+			assert.NotContains(t, captured, "SENTINEL_PI_FINAL_ERROR_FRAME")
+			assert.NotContains(t, captured, diagnostics.StderrTail)
 		})
 	})
+}
+
+func observedPiLogText(logs *observer.ObservedLogs) string {
+	var out strings.Builder
+	for _, entry := range logs.All() {
+		_, _ = fmt.Fprintf(&out, "%s %v\n", entry.Message, entry.ContextMap())
+	}
+	return out.String()
 }
 
 func TestRun_ProviderInjectsAPIKeyEnvAndBareModel(t *testing.T) {
@@ -451,10 +518,11 @@ func (*emptyStream) SessionID() string       { return "" }
 func (*emptyStream) Err() error              { return nil }
 
 type scriptedStream struct {
-	events []pkgpiagent.Event
-	idx    int
-	err    error
-	sid    string
+	events      []pkgpiagent.Event
+	idx         int
+	err         error
+	sid         string
+	diagnostics pkgpiagent.StreamDiagnostics
 }
 
 func (s *scriptedStream) Next() bool {
@@ -465,6 +533,7 @@ func (s *scriptedStream) Next() bool {
 	return true
 }
 
-func (s *scriptedStream) Event() pkgpiagent.Event { return s.events[s.idx-1] }
-func (s *scriptedStream) SessionID() string       { return s.sid }
-func (s *scriptedStream) Err() error              { return s.err }
+func (s *scriptedStream) Event() pkgpiagent.Event                   { return s.events[s.idx-1] }
+func (s *scriptedStream) SessionID() string                         { return s.sid }
+func (s *scriptedStream) Err() error                                { return s.err }
+func (s *scriptedStream) Diagnostics() pkgpiagent.StreamDiagnostics { return s.diagnostics }

@@ -34,19 +34,36 @@ func TestToolCallHandler_Outer(t *testing.T) {
 }
 
 func TestToolCallHandler_Nested(t *testing.T) {
-	Convey("内层 ToolCall (ParentToolCallID 非空) → NestedToolUseBlock", t, func() {
+	Convey("内层 ToolCall (ParentToolCallID 非空) → 带运行分组的 NestedToolUseBlock + stream", t, func() {
+		acc := turn.New()
+		emit := &fakeEmit{}
+		err := ToolCallHandler{}.Apply(
+			context.Background(),
+			agentruntime.ToolCall{ID: "n-1", Name: "Read", ParentToolCallID: "task-1", SubagentRunID: "run-1"},
+			acc, emit, nil, nil,
+		)
+		So(err, ShouldBeNil)
+		final := acc.Finalize()
+		So(final, ShouldHaveLength, 1)
+		nested, isNested := final[0].(*blocks.NestedToolUseBlock)
+		So(isNested, ShouldBeTrue)
+		So(nested.SubagentRunID, ShouldEqual, "run-1")
+		payload := emit.events[0].payload.(map[string]any)
+		So(payload["subagentRunId"], ShouldEqual, "run-1")
+	})
+
+	Convey("缺失运行 ID 的内层 ToolCall 保留为 fallback step 且不合成结果", t, func() {
 		acc := turn.New()
 		err := ToolCallHandler{}.Apply(
 			context.Background(),
-			agentruntime.ToolCall{ID: "n-1", Name: "Read", ParentToolCallID: "task-1"},
+			agentruntime.ToolCall{ID: "n-unknown", Name: "Read", ParentToolCallID: "task-1"},
 			acc, nil, nil, nil,
 		)
 		So(err, ShouldBeNil)
-		// Finalize 检查 block 类型确是 nested
 		final := acc.Finalize()
 		So(final, ShouldHaveLength, 1)
-		_, isNested := final[0].(*blocks.NestedToolUseBlock)
-		So(isNested, ShouldBeTrue)
+		nested := final[0].(*blocks.NestedToolUseBlock)
+		So(nested.SubagentRunID, ShouldEqual, "")
 	})
 }
 
@@ -153,5 +170,24 @@ func TestToolResultHandler_WithPriorToolUse(t *testing.T) {
 		So(isUse, ShouldBeTrue)
 		_, isResult := final[1].(*cagoblocks.ToolResultBlock)
 		So(isResult, ShouldBeTrue)
+	})
+
+	Convey("内层 ToolResult 保留父调用与运行分组到 block 和 stream", t, func() {
+		acc := turn.New()
+		emit := &fakeEmit{}
+		err := ToolResultHandler{}.Apply(
+			context.Background(),
+			agentruntime.ToolResult{
+				ToolCallID: "n-1", Content: "ok", ParentToolCallID: "task-1", SubagentRunID: "run-1",
+			},
+			acc, emit, nil, nil,
+		)
+		So(err, ShouldBeNil)
+		final := acc.Finalize()
+		So(final, ShouldHaveLength, 1)
+		nested := final[0].(*blocks.NestedToolResultBlock)
+		So(nested.SubagentRunID, ShouldEqual, "run-1")
+		payload := emit.events[0].payload.(map[string]any)
+		So(payload["subagentRunId"], ShouldEqual, "run-1")
 	})
 }

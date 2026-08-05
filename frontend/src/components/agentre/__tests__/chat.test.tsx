@@ -15,6 +15,11 @@ const sonnerMocks = vi.hoisted(() => ({
     success: vi.fn(),
   },
 }));
+const runtimeMocks = vi.hoisted(() => ({
+  EventsOn: vi.fn((_name: string, _handler: (event: unknown) => void) =>
+    vi.fn(),
+  ),
+}));
 
 vi.mock("sonner", () => sonnerMocks);
 
@@ -26,6 +31,7 @@ vi.mock("../../../../wailsjs/runtime/runtime", async () => {
   >("../../../../wailsjs/runtime/runtime");
   return {
     ...actual,
+    EventsOn: runtimeMocks.EventsOn,
     OnFileDrop: vi.fn(),
     OnFileDropOff: vi.fn(),
   };
@@ -37,7 +43,12 @@ import {
   type ChatTranscriptHandle,
   formatResetIn,
 } from "@/components/agentre/chat";
-import type { ChatBlockData } from "@/stores/chat-streams-store";
+import { ChatStreamsHost } from "@/components/agentre/chat-streams-host";
+import {
+  streamForMessage,
+  useChatStreamsStore,
+  type ChatBlockData,
+} from "@/stores/chat-streams-store";
 import { useLocalCommandsStore } from "@/stores/local-commands-store";
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
@@ -2077,6 +2088,54 @@ describe("ChatTranscript thinking blocks", () => {
 
     expect(screen.getByText("Thought complete")).toBeInTheDocument();
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+  });
+});
+
+describe("ChatStreamsHost subagent run identity", () => {
+  it("Given run-scoped live child events, When the host stores them, Then tool use and result retain the run ID for grouped rendering", async () => {
+    useChatStreamsStore.setState({ streams: new Map() });
+    runtimeMocks.EventsOn.mockClear();
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1,
+      name: "chat:event:7:1",
+      sessionId: 7,
+      streamStartedAt: 1,
+    });
+    render(<ChatStreamsHost />);
+    await waitFor(() => expect(runtimeMocks.EventsOn).toHaveBeenCalled());
+    const handler = runtimeMocks.EventsOn.mock
+      .calls[0]?.[1] as unknown as (event: {
+      kind: "tool_use" | "tool_result";
+      toolUseId: string;
+      toolName?: string;
+      toolResult?: string;
+      parentToolUseId: string;
+      subagentRunId: string;
+    }) => void;
+
+    act(() => {
+      handler({
+        kind: "tool_use",
+        toolUseId: "shared-call",
+        toolName: "Read",
+        parentToolUseId: "toolu-parent",
+        subagentRunId: "run-a",
+      });
+      handler({
+        kind: "tool_result",
+        toolUseId: "shared-call",
+        toolResult: "done",
+        parentToolUseId: "toolu-parent",
+        subagentRunId: "run-a",
+      });
+    });
+
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 7, 1)?.liveBlocks.map(
+        (block) => block.subagentRunId,
+      ),
+    ).toEqual(["run-a", "run-a"]);
+    useChatStreamsStore.setState({ streams: new Map() });
   });
 });
 

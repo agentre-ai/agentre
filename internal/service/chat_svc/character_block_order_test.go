@@ -11,7 +11,6 @@ import (
 )
 
 // §1.6 ContentBlock 顺序约束 — characterization tests
-// 参见 docs/superpowers/specs/2026-05-22-agentruntime-canonical-refactor-design.md §"TDD/BDD §1.6"。
 //
 // 关键 pin (turn.Accumulator):
 //   - thinking 必须在 turn 最前(index 0) —— Anthropic 协议要求

@@ -14,7 +14,6 @@ import (
 )
 
 // §1.4 WithoutCancel 抗 abort — characterization tests
-// 参见 docs/superpowers/specs/2026-05-22-agentruntime-canonical-refactor-design.md §"TDD/BDD §1.4"。
 //
 // 关键 pin: 用户点 Stop → turnCtx 被 cancel。但「等待状态」(AgentStatus=waiting / NeedsAttention)
 // 仍必须落库,否则下次 LoadSession 显示旧的 running 态、sidebar attention 也丢。

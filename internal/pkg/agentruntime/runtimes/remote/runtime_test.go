@@ -4,13 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/cago-frame/cago/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
@@ -56,13 +62,18 @@ func (h *handlerCapture) record(method string, fn func(context.Context, json.Raw
 
 func (h *handlerCapture) deliver(t *testing.T, method string, payload any) {
 	t.Helper()
+	h.deliverContext(t, context.Background(), method, payload)
+}
+
+func (h *handlerCapture) deliverContext(t *testing.T, ctx context.Context, method string, payload any) {
+	t.Helper()
 	h.mu.Lock()
 	fn, ok := h.funcs[method]
 	h.mu.Unlock()
 	require.True(t, ok, "no handler captured for %s", method)
 	raw, err := json.Marshal(payload)
 	require.NoError(t, err)
-	_, err = fn(context.Background(), raw)
+	_, err = fn(ctx, raw)
 	require.NoError(t, err)
 }
 
@@ -407,6 +418,95 @@ func TestRun_EventForUnknownSession_DroppedSilently(t *testing.T) {
 	// nor produce an error from the handler.
 	textJSON, _ := json.Marshal(agentruntime.TextDelta{Text: "noise"})
 	capture.deliver(t, wire.NotifyEvent, wire.EventFrame{SessionID: 999, Event: textJSON})
+}
+
+func TestRuntimeNotificationLogsRedactFramesWhileDeliveryAndStopErrorStayLossless(t *testing.T) {
+	const (
+		unknownSentinel    = "SENTINEL_REMOTE_UNKNOWN_EVENT"
+		untrustedKindValue = "SENTINEL_REMOTE_UNTRUSTED_KIND"
+		malformedSentinel  = "SENTINEL_REMOTE_MALFORMED_EVENT"
+		resultSentinel     = "SENTINEL_REMOTE_TOOL_RESULT"
+		metaSentinel       = "SENTINEL_REMOTE_TOOL_META"
+		stopErrSentinel    = "SENTINEL_REMOTE_STOP_ERROR"
+	)
+	_, cli, capture, rt := setupRemote(t)
+	core, logs := observer.New(zapcore.DebugLevel)
+	ctx := logger.WithContextLogger(context.Background(), zap.New(core))
+
+	unknownEvent, err := json.Marshal(agentruntime.ToolCall{
+		ID: "unknown-safe-id", Name: "subagent", Input: json.RawMessage(`{"task":"` + unknownSentinel + `"}`),
+	})
+	require.NoError(t, err)
+	capture.deliverContext(t, ctx, wire.NotifyEvent, wire.EventFrame{SessionID: 999, Event: unknownEvent})
+	untrustedKindEvent := json.RawMessage(`{"kind":"` + untrustedKindValue + `","payload":"ignored"}`)
+	capture.deliverContext(t, ctx, wire.NotifyEvent, wire.EventFrame{SessionID: 998, Event: untrustedKindEvent})
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ any, result any) error {
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: 7}
+			return nil
+		})
+	events, runResult, err := rt.Run(ctx, agentruntime.RunRequest{
+		Backend: &agent_backend_entity.AgentBackend{Type: "claudecode"}, SessionID: 7,
+	})
+	require.NoError(t, err)
+
+	malformedEvent := json.RawMessage(`{"kind":"tool_use_start","id":"bad-safe-id","name":"subagent","input":{"payload":"` + malformedSentinel + `"},"canonical":{"kind":"file_write","path":{"invalid":true}}}`)
+	capture.deliverContext(t, ctx, wire.NotifyEvent, wire.EventFrame{SessionID: 7, Event: malformedEvent})
+
+	forwardedEvent, err := json.Marshal(agentruntime.ToolResult{
+		ToolCallID: "result-safe-id",
+		Content:    resultSentinel,
+		Meta:       json.RawMessage(`{"detail":"` + metaSentinel + `"}`),
+	})
+	require.NoError(t, err)
+	capture.deliverContext(t, ctx, wire.NotifyEvent, wire.EventFrame{SessionID: 7, Event: forwardedEvent})
+	select {
+	case event := <-events:
+		result, ok := event.(agentruntime.ToolResult)
+		require.True(t, ok, "got %T", event)
+		assert.Equal(t, resultSentinel, result.Content)
+		assert.Contains(t, string(result.Meta), metaSentinel)
+	case <-time.After(time.Second):
+		t.Fatal("forwarded event was not delivered")
+	}
+
+	capture.deliverContext(t, ctx, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID: 7, StopErrMsg: stopErrSentinel,
+	})
+	select {
+	case _, ok := <-events:
+		assert.False(t, ok)
+	case <-time.After(time.Second):
+		t.Fatal("events channel did not close")
+	}
+	require.EqualError(t, runResult.StopErr, stopErrSentinel)
+
+	captured := observedRemoteLogText(logs)
+	for _, sentinel := range []string{unknownSentinel, untrustedKindValue, malformedSentinel, resultSentinel, metaSentinel, stopErrSentinel} {
+		assert.NotContains(t, captured, sentinel)
+	}
+	unknownLogs := logs.FilterMessage("remote.handleEvent: event for unknown session dropped").All()
+	require.Len(t, unknownLogs, 2)
+	assert.Equal(t, "tool_use_start", unknownLogs[0].ContextMap()["eventKind"])
+	assert.Equal(t, int64(len(unknownEvent)), unknownLogs[0].ContextMap()["eventBytes"])
+	assert.NotContains(t, unknownLogs[1].ContextMap(), "eventKind")
+	assert.Equal(t, int64(len(untrustedKindEvent)), unknownLogs[1].ContextMap()["eventBytes"])
+	malformedLogs := logs.FilterMessage("remote.handleEvent: event decode failed").All()
+	require.Len(t, malformedLogs, 1)
+	assert.Equal(t, "tool_use_start", malformedLogs[0].ContextMap()["eventKind"])
+	assert.Equal(t, int64(len(malformedEvent)), malformedLogs[0].ContextMap()["eventBytes"])
+	resultLogs := logs.FilterMessage("remote.handleRunResultDone: session ended").All()
+	require.Len(t, resultLogs, 1)
+	assert.Equal(t, int64(len(stopErrSentinel)), resultLogs[0].ContextMap()["stopErrBytes"])
+}
+
+func observedRemoteLogText(logs *observer.ObservedLogs) string {
+	var out strings.Builder
+	for _, entry := range logs.All() {
+		_, _ = fmt.Fprintf(&out, "%s %v\n", entry.Message, entry.ContextMap())
+	}
+	return out.String()
 }
 
 // ── Steer ───────────────────────────────────────────────────────────────────

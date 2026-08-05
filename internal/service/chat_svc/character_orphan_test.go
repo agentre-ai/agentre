@@ -10,7 +10,6 @@ import (
 )
 
 // §1.2 孤儿事件丢弃 — characterization tests
-// 参见 docs/superpowers/specs/2026-05-22-agentruntime-canonical-refactor-design.md §"TDD/BDD §1.2"。
 //
 // 关键 pin:
 //  1. acc.HasToolUse(id) 对未知 id 返 false —— dispatcher 据此过滤孤儿 ToolResult,

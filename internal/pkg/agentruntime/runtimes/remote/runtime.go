@@ -303,8 +303,10 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 			close(sess.events)
 		}
 		sess.mu.Unlock()
-		logger.Ctx(ctx).Error("remote runtime: Run RPC failed",
-			zap.Int64("requestedSid", req.SessionID), zap.Error(err))
+		fields := make([]zap.Field, 0, 3)
+		fields = append(fields, zap.Int64("requestedSid", req.SessionID))
+		fields = append(fields, remoteErrorLogFields(err)...)
+		logger.Ctx(ctx).Error("remote.Run: RPC failed", fields...)
 		return nil, nil, wire.FromJSONRPCError(err)
 	}
 
@@ -398,11 +400,67 @@ func usageFromWire(u *wire.UsageWire) *provider.Usage {
 
 // ── server-push handlers ───────────────────────────────────────────────────
 
+func remoteEventLogFields(raw json.RawMessage) []zap.Field {
+	fields := []zap.Field{zap.Int("eventBytes", len(raw))}
+	var head struct {
+		Kind agentruntime.EventKind `json:"kind"`
+	}
+	if err := json.Unmarshal(raw, &head); err == nil {
+		if eventKind, ok := safeRemoteEventKind(head.Kind); ok {
+			fields = append(fields, zap.String("eventKind", eventKind))
+		}
+	}
+	return fields
+}
+
+func safeRemoteEventKind(kind agentruntime.EventKind) (string, bool) {
+	switch kind {
+	case agentruntime.EventTextDelta,
+		agentruntime.EventThinkingDelta,
+		agentruntime.EventToolUseStart,
+		agentruntime.EventToolUseEnd,
+		agentruntime.EventToolResult,
+		agentruntime.EventSteerConsumed,
+		agentruntime.EventSubagentStarted,
+		agentruntime.EventSubagentProgress,
+		agentruntime.EventSubagentDone,
+		agentruntime.EventSubagentModel,
+		agentruntime.EventAskUserQuestion,
+		agentruntime.EventAskUserQuestionAnswered,
+		agentruntime.EventPlanUpdated,
+		agentruntime.EventToolPermissionRequest,
+		agentruntime.EventToolPermissionResolved,
+		agentruntime.EventPermissionModeChanged,
+		agentruntime.EventRetry,
+		agentruntime.EventUsage,
+		agentruntime.EventCompactBoundary,
+		agentruntime.EventRuntimeStatus,
+		agentruntime.EventContextWindowUpdated,
+		agentruntime.EventError,
+		agentruntime.EventDone:
+		return string(kind), true
+	default:
+		return "", false
+	}
+}
+
+func remoteErrorLogFields(err error) []zap.Field {
+	if err == nil {
+		return nil
+	}
+	return []zap.Field{
+		zap.String("errorClass", fmt.Sprintf("%T", err)),
+		zap.Int("errorBytes", len(err.Error())),
+	}
+}
+
 func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, error) {
 	var frame wire.EventFrame
 	if err := json.Unmarshal(raw, &frame); err != nil {
-		logger.Ctx(ctx).Warn("remote runtime: event frame unmarshal failed",
-			zap.Int("rawBytes", len(raw)), zap.Error(err))
+		fields := make([]zap.Field, 0, 3)
+		fields = append(fields, zap.Int("rawBytes", len(raw)))
+		fields = append(fields, remoteErrorLogFields(err)...)
+		logger.Ctx(ctx).Warn("remote.handleEvent: event frame unmarshal failed", fields...)
 		return nil, nil
 	}
 	r.mu.RLock()
@@ -412,12 +470,26 @@ func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, er
 		knownSids = append(knownSids, k)
 	}
 	r.mu.RUnlock()
+	if sess == nil && frame.Seq <= 0 {
+		// Legacy/live frames without a replay sequence cannot belong to a catch-up
+		// turn. Drop them before decoding, while logging only bounded metadata from
+		// the untrusted payload.
+		fields := make([]zap.Field, 0, 4)
+		fields = append(fields,
+			zap.Int64("frameSid", frame.SessionID),
+			zap.Int64s("knownSids", knownSids),
+		)
+		fields = append(fields, remoteEventLogFields(frame.Event)...)
+		logger.Ctx(ctx).Warn("remote.handleEvent: event for unknown session dropped", fields...)
+		return nil, nil
+	}
 	ev, err := agentruntime.UnmarshalEvent(frame.Event)
 	if err != nil {
-		logger.Ctx(ctx).Warn("remote runtime: UnmarshalEvent failed — dropped",
-			zap.Int64("sid", frame.SessionID),
-			zap.String("event", string(frame.Event)),
-			zap.Error(err))
+		fields := make([]zap.Field, 0, 5)
+		fields = append(fields, zap.Int64("sid", frame.SessionID))
+		fields = append(fields, remoteEventLogFields(frame.Event)...)
+		fields = append(fields, remoteErrorLogFields(err)...)
+		logger.Ctx(ctx).Warn("remote.handleEvent: event decode failed", fields...)
 		return nil, nil
 	}
 	if sess != nil && frame.Seq > 0 && frame.Seq <= sess.startSeq {
@@ -436,21 +508,24 @@ func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, er
 		if frame.Seq > 0 && r.deliverToCatchUpTurn(ctx, frame.SessionID, ev) {
 			return nil, nil
 		}
-		logger.Ctx(ctx).Warn("remote runtime: event for unknown session — dropped",
+		fields := make([]zap.Field, 0, 4)
+		fields = append(fields,
 			zap.Int64("frameSid", frame.SessionID),
 			zap.Int64s("knownSids", knownSids),
-			zap.String("event", string(frame.Event)))
+		)
+		fields = append(fields, remoteEventLogFields(frame.Event)...)
+		logger.Ctx(ctx).Warn("remote.handleEvent: event for unknown session dropped", fields...)
 		return nil, nil
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	if sess.closed {
-		logger.Ctx(ctx).Warn("remote runtime: event after session close — dropped",
+		logger.Ctx(ctx).Warn("remote.handleEvent: event after session close dropped",
 			zap.Int64("sid", frame.SessionID),
 			zap.String("eventType", fmt.Sprintf("%T", ev)))
 		return nil, nil
 	}
-	logger.Ctx(ctx).Debug("remote runtime: event delivered",
+	logger.Ctx(ctx).Debug("remote.handleEvent: event delivered",
 		zap.Int64("sid", frame.SessionID),
 		zap.String("eventType", fmt.Sprintf("%T", ev)))
 	sess.events <- ev
@@ -460,7 +535,10 @@ func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, er
 func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) (any, error) {
 	var frame wire.RunResultDoneFrame
 	if err := json.Unmarshal(raw, &frame); err != nil {
-		logger.Ctx(ctx).Warn("remote runtime: runResultDone unmarshal failed", zap.Error(err))
+		fields := make([]zap.Field, 0, 3)
+		fields = append(fields, zap.Int("rawBytes", len(raw)))
+		fields = append(fields, remoteErrorLogFields(err)...)
+		logger.Ctx(ctx).Warn("remote.handleRunResultDone: frame unmarshal failed", fields...)
 		return nil, nil
 	}
 	r.mu.Lock()
@@ -487,12 +565,12 @@ func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) 
 		delete(r.sessions, frame.SessionID)
 	}
 	r.mu.Unlock()
-	logger.Ctx(ctx).Info("remote runtime: session ended",
+	logger.Ctx(ctx).Info("remote.handleRunResultDone: session ended",
 		zap.Int64("sid", frame.SessionID),
 		zap.Bool("sessionFound", ok),
-		zap.String("stopErrMsg", frame.StopErrMsg),
-		zap.Int("stopErrCode", frame.StopErrCode),
-		zap.String("model", frame.Model))
+		zap.Bool("hasStopErr", frame.StopErrMsg != ""),
+		zap.Int("stopErrBytes", len(frame.StopErrMsg)),
+		zap.Int("stopErrCode", frame.StopErrCode))
 	if !ok {
 		// 本进程没有这一轮(App 重启后补齐回放的整轮就长这样):补齐轮攒到这里为止。
 		r.closeCatchUpTurn(ctx, frame)
