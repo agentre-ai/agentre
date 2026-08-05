@@ -42,22 +42,22 @@ func ProjectMessageBlocks(bs []cagoblocks.ContentBlock) []ChatBlock {
 		case *blocks.NestedToolUseBlock:
 			out = append(out, ChatBlock{
 				Type: "tool_use", ToolUseID: t.ID, ToolName: t.Name, ToolInput: t.Input,
-				ParentToolCallID: t.ParentToolCallID, SubagentRunID: t.SubagentRunID,
+				ParentToolCallID: t.ParentToolCallID,
 			})
 		case blocks.NestedToolUseBlock:
 			out = append(out, ChatBlock{
 				Type: "tool_use", ToolUseID: t.ID, ToolName: t.Name, ToolInput: t.Input,
-				ParentToolCallID: t.ParentToolCallID, SubagentRunID: t.SubagentRunID,
+				ParentToolCallID: t.ParentToolCallID,
 			})
 		case *blocks.NestedToolResultBlock:
 			out = append(out, ChatBlock{
 				Type: "tool_result", ToolUseID: t.ToolCallID, IsError: t.IsError,
-				ToolResult: t.Content, ParentToolCallID: t.ParentToolCallID, SubagentRunID: t.SubagentRunID,
+				ToolResult: t.Content, ParentToolCallID: t.ParentToolCallID,
 			})
 		case blocks.NestedToolResultBlock:
 			out = append(out, ChatBlock{
 				Type: "tool_result", ToolUseID: t.ToolCallID, IsError: t.IsError,
-				ToolResult: t.Content, ParentToolCallID: t.ParentToolCallID, SubagentRunID: t.SubagentRunID,
+				ToolResult: t.Content, ParentToolCallID: t.ParentToolCallID,
 			})
 		case *blocks.UserAskBlock:
 			out = append(out, ChatBlock{Type: "user_ask", UserAsk: t})

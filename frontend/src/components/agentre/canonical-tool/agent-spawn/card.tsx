@@ -256,7 +256,6 @@ function buildProgressAriaLabel(
 const EMPTY_CHILD_BLOCKS: AgentSpawnChildBlocks = {
   all: [],
   byRun: new Map(),
-  fallback: [],
 };
 
 function allChildBlocks(children: AgentSpawnChildBlocks): ChatBlockData[] {

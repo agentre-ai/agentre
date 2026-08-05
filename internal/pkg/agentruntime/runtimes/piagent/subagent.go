@@ -210,15 +210,26 @@ func readInvocationRuns(fields map[string]json.RawMessage, key string, limit int
 		if !ok {
 			return nil, true, false
 		}
+		model, _, modelOK := readOptionalString(entry, "model")
+		if !modelOK {
+			return nil, true, false
+		}
+		if _, _, thinkingOK := readOptionalString(entry, "thinking"); !thinkingOK {
+			return nil, true, false
+		}
 		if _, _, cwdOK := readOptionalString(entry, "cwd"); !cwdOK {
 			return nil, true, false
 		}
 		agent = strings.TrimSpace(agent)
 		task = strings.TrimSpace(task)
+		model = strings.TrimSpace(model)
 		if !presentAgent || !presentTask || agent == "" || task == "" {
 			return nil, true, false
 		}
-		runs = append(runs, invocationRun{ID: fmt.Sprintf("run-%d", index), Index: index, Agent: agent, Task: task})
+		runs = append(runs, invocationRun{
+			ID: fmt.Sprintf("run-%d", index), Index: index,
+			Agent: agent, Task: task, RequestedModel: model,
+		})
 	}
 	return runs, true, true
 }
@@ -402,6 +413,21 @@ func (t *subagentTracker) abort() bool {
 	}
 	if canceled {
 		t.aggregateOverride = "canceled"
+	}
+	return !reflect.DeepEqual(before, t.info())
+}
+
+func (t *subagentTracker) finishIncomplete(turnFailed bool) bool {
+	before := t.info()
+	incomplete := false
+	for index := range t.runs {
+		if !isTerminalStatus(t.runs[index].info.Status) {
+			t.runs[index].info.Status = "unknown"
+			incomplete = true
+		}
+	}
+	if turnFailed && incomplete {
+		t.aggregateOverride = "failed"
 	}
 	return !reflect.DeepEqual(before, t.info())
 }

@@ -208,11 +208,11 @@ describe("buildRenderItems", () => {
       resultBlock: { text: "Raw output" },
     });
     const children = items[0].type === "tool" ? items[0].childBlocks : null;
-    expect(children?.fallback).toHaveLength(2);
+    expect(children?.all).toHaveLength(2);
     expect(children?.byRun.size).toBe(0);
   });
 
-  it("Given interleaved child blocks with reused call IDs, When rows are built, Then children group by parent and run while missing run IDs remain in fallback", () => {
+  it("Given interleaved child blocks with reused call IDs, When rows are built, Then children group by parent and run while missing run IDs remain available to the parent", () => {
     const items = buildRenderItems({
       messageId: 1,
       blocks: [
@@ -248,9 +248,6 @@ describe("buildRenderItems", () => {
     ]);
     expect(children?.byRun.get("run-b")).toMatchObject([
       { type: "tool_use", toolName: "Bash" },
-    ]);
-    expect(children?.fallback).toMatchObject([
-      { type: "tool_use", toolName: "Glob" },
     ]);
     expect(children?.all.map((block) => block.toolName ?? block.text)).toEqual([
       "Read",

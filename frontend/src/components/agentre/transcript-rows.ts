@@ -103,22 +103,19 @@ export function buildRenderItems({
   liveBlocks = [],
 }: BuildRenderItemsArgs): VisibleRenderItem[] {
   // 预扫一遍把 subagent 内部 block 先按外层 tool_use_id,再按 run id 归集;
-  // 缺失 run id 的块进入 fallback,主流程仍会 skip,避免被同级渲染。
+  // 缺失 run id 的块仍保留在 all 中,主流程会 skip,由父卡作为 unmatched step 渲染。
   const childrenByParent = new Map<string, MutableAgentSpawnChildBlocks>();
   const collectChildren = (b: ChatBlockData) => {
     if (!b.parentToolUseId) return;
     const grouped = childrenByParent.get(b.parentToolUseId) ?? {
       all: [],
       byRun: new Map<string, ChatBlockData[]>(),
-      fallback: [],
     };
     grouped.all.push(b);
     if (b.subagentRunId) {
       const runBlocks = grouped.byRun.get(b.subagentRunId) ?? [];
       runBlocks.push(b);
       grouped.byRun.set(b.subagentRunId, runBlocks);
-    } else {
-      grouped.fallback.push(b);
     }
     childrenByParent.set(b.parentToolUseId, grouped);
   };
@@ -196,9 +193,8 @@ export function buildRenderItems({
               ? (childrenByParent.get(b.toolUseId) ?? {
                   all: [],
                   byRun: new Map(),
-                  fallback: [],
                 })
-              : { all: [], byRun: new Map(), fallback: [] },
+              : { all: [], byRun: new Map() },
             toolBlock: b,
             type: "tool",
           };

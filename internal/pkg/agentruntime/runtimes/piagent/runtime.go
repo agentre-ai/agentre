@@ -279,17 +279,32 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, _ string, s s
 		result.StopErr = stopErr
 		if errors.Is(stopErr, agentruntime.ErrAborted) {
 			finalizeAbortedSubagents(out, trackers)
+		} else {
+			finalizeIncompleteSubagents(out, trackers, true)
 		}
 		logPiFailureDiagnostics(ctx, req, s)
 		logger.Ctx(ctx).Warn("piagent.drainStream: turn failed", piTurnLogFields(req, result, stopErr)...)
 		out <- agentruntime.ErrorEvent{Err: stopErr}
 		return
 	}
+	finalizeIncompleteSubagents(out, trackers, false)
 	logger.Ctx(ctx).Info("piagent.drainStream: turn done", piTurnLogFields(req, result, nil)...)
 	out <- agentruntime.Done{}
 }
 
 func finalizeAbortedSubagents(out chan<- agentruntime.Event, trackers map[string]*subagentTracker) {
+	finalizeTrackedSubagents(out, trackers, func(tracker *subagentTracker) bool {
+		return tracker.abort()
+	})
+}
+
+func finalizeIncompleteSubagents(out chan<- agentruntime.Event, trackers map[string]*subagentTracker, turnFailed bool) {
+	finalizeTrackedSubagents(out, trackers, func(tracker *subagentTracker) bool {
+		return tracker.finishIncomplete(turnFailed)
+	})
+}
+
+func finalizeTrackedSubagents(out chan<- agentruntime.Event, trackers map[string]*subagentTracker, finalize func(*subagentTracker) bool) {
 	toolCallIDs := make([]string, 0, len(trackers))
 	for toolCallID := range trackers {
 		toolCallIDs = append(toolCallIDs, toolCallID)
@@ -297,7 +312,7 @@ func finalizeAbortedSubagents(out chan<- agentruntime.Event, trackers map[string
 	sort.Strings(toolCallIDs)
 	for _, toolCallID := range toolCallIDs {
 		tracker := trackers[toolCallID]
-		if tracker.abort() {
+		if finalize(tracker) {
 			out <- agentruntime.SubagentProgress{ToolCallID: toolCallID, Info: tracker.info()}
 		}
 		out <- agentruntime.SubagentDone{ToolCallID: toolCallID, Info: tracker.info()}

@@ -76,16 +76,20 @@ func TestClassifySubagentInvocation_SingleAndFlatContracts(t *testing.T) {
 		assert.Empty(t, inv.Runs[0].Agent)
 	})
 
-	t.Run("official grouped modes classify and enter the stateful runtime slice", func(t *testing.T) {
-		parallelInput := []byte(`{"tasks":[{"agent":"a","task":"one"}]}`)
+	t.Run("official grouped modes preserve per-run options and enter the stateful runtime slice", func(t *testing.T) {
+		parallelInput := []byte(`{"tasks":[{"agent":"a","task":"one","model":" requested-model ","thinking":"high","cwd":"/tmp/work"}]}`)
 		parallel, ok := classifySubagentInvocation(parallelInput)
 		require.True(t, ok)
 		assert.Equal(t, subagentModeParallel, parallel.Mode)
 		assert.Equal(t, envelopeOfficial, parallel.Envelope)
+		require.Len(t, parallel.Runs, 1)
+		assert.Equal(t, "requested-model", parallel.Runs[0].RequestedModel)
 		parallelTracker, parallelSpawn := defaultSubagentSelector.selectCandidate("subagent", "outer-parallel", parallelInput)
 		require.NotNil(t, parallelTracker)
 		require.NotNil(t, parallelSpawn)
 		assert.Equal(t, "parallel", parallelSpawn.Mode)
+		require.Len(t, parallelSpawn.Runs, 1)
+		assert.Equal(t, "requested-model", parallelSpawn.Runs[0].RequestedModel)
 
 		chainInput := []byte(`{"chain":[{"agent":"a","task":"one"},{"agent":"b","task":"two"}]}`)
 		chain, ok := classifySubagentInvocation(chainInput)
@@ -105,6 +109,7 @@ func TestClassifySubagentInvocation_SingleAndFlatContracts(t *testing.T) {
 		"known poison":                  `{"agent":"worker","task":"inspect","agentScope":42}`,
 		"null optional string poison":   `{"agent":"worker","task":"inspect","model":null}`,
 		"null unused string poison":     `{"tasks":[{"agent":"worker","task":"inspect"}],"profile":null}`,
+		"null grouped model poison":     `{"tasks":[{"agent":"worker","task":"inspect","model":null}]}`,
 		"null confirmation bool poison": `{"agent":"worker","task":"inspect","confirmProjectAgents":null}`,
 		"ambiguous official":            `{"agent":"worker","task":"inspect","tasks":[{"agent":"other","task":"other"}]}`,
 		"oversized parallel":            `{"tasks":[{"agent":"a","task":"1"},{"agent":"a","task":"2"},{"agent":"a","task":"3"},{"agent":"a","task":"4"},{"agent":"a","task":"5"},{"agent":"a","task":"6"},{"agent":"a","task":"7"},{"agent":"a","task":"8"},{"agent":"a","task":"9"}]}`,
@@ -394,6 +399,28 @@ func TestSubagentTracker_ChainSequencingFinalizationAndUnboundedLength(t *testin
 		assert.Empty(t, info.Runs[index].Summary)
 	}
 	assert.Equal(t, "failed", info.Status)
+}
+
+func TestDrainStream_NormalCompletionFinalizesIncompleteSubagentsAsUnknown(t *testing.T) {
+	stream := &scriptedStream{events: []pkgpi.Event{
+		{Kind: pkgpi.EventPreToolUse, Tool: pkgpi.ToolEvent{
+			ID: "outer", Name: "subagent",
+			Input: []byte(`{"tasks":[{"agent":"a","task":"one"},{"agent":"b","task":"two"}]}`),
+		}},
+	}}
+
+	got := drainForTest(t, stream)
+	require.Len(t, got, 5)
+	assert.IsType(t, agentruntime.ToolCall{}, got[0])
+	assert.IsType(t, agentruntime.SubagentStarted{}, got[1])
+	progress := got[2].(agentruntime.SubagentProgress)
+	assert.Equal(t, "unknown", progress.Info.Status)
+	assert.Equal(t, []string{"unknown", "unknown"}, []string{
+		progress.Info.Runs[0].Status, progress.Info.Runs[1].Status,
+	})
+	done := got[3].(agentruntime.SubagentDone)
+	assert.Equal(t, progress.Info, done.Info)
+	assert.IsType(t, agentruntime.Done{}, got[4])
 }
 
 func TestDrainStream_AbortFinalizesNonTerminalParallelRuns(t *testing.T) {

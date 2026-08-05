@@ -38,14 +38,11 @@ func TestProjectMessageBlocks_ToolUseAndResult(t *testing.T) {
 }
 
 func TestProjectMessageBlocks_NestedTool(t *testing.T) {
-	Convey("Nested tool 带 ParentToolCallID 和 SubagentRunID", t, func() {
+	Convey("Nested tool 带 ParentToolCallID", t, func() {
 		out := ProjectMessageBlocks([]cagoblocks.ContentBlock{
-			&blocks.NestedToolUseBlock{ID: "n-1", Name: "Read", ParentToolCallID: "task-1", SubagentRunID: "run-1"},
-			&blocks.NestedToolResultBlock{ToolCallID: "n-1", ParentToolCallID: "task-1", SubagentRunID: "run-1"},
+			&blocks.NestedToolUseBlock{ID: "n-1", Name: "Read", ParentToolCallID: "task-1"},
 		})
 		So(out[0].ParentToolCallID, ShouldEqual, "task-1")
-		So(out[0].SubagentRunID, ShouldEqual, "run-1")
-		So(out[1].SubagentRunID, ShouldEqual, "run-1")
 	})
 }
 
