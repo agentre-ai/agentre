@@ -3,7 +3,6 @@ import { SquareTerminal, X, ChevronRight, ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
-import { TerminalClose } from "../../../../wailsjs/go/app/App";
 import {
   useLocalCommandsStore,
   isCollapsed,
@@ -44,9 +43,11 @@ const STATUS_CONFIG: Record<
 export function LocalCommandCard({
   entryId,
   onOpenInTerminal,
+  onStop,
 }: {
   entryId: string;
   onOpenInTerminal: (id: string) => void;
+  onStop?: (id: string) => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const entry = useLocalCommandsStore((s) => s.entries[entryId]);
@@ -193,14 +194,16 @@ export function LocalCommandCard({
       {isRunning && (
         <div className="flex items-center gap-2 border-t border-border px-3.5 py-2.5">
           <div className="flex-1" />
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void TerminalClose(entryId)}
-          >
-            {t("localCommand.stop")}
-          </Button>
+          {onStop ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void onStop(entryId)}
+            >
+              {t("localCommand.stop")}
+            </Button>
+          ) : null}
           <Button
             type="button"
             size="sm"

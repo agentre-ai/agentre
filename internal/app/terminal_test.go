@@ -55,7 +55,7 @@ func TestApp_TerminalOpen_ResolvesProjectCwdThenOpens(t *testing.T) {
 
 	require.NoError(t, a.TerminalOpen("t1", 7, "", 80, 24))
 	// cwd came from ResolveProjectCwd (local project.Path), dims passed through.
-	assert.Equal(t, pty.Spec{Cwd: "/repo", Cols: 80, Rows: 24}, gotSpec)
+	assert.Equal(t, pty.Spec{TerminalID: "t1", Cwd: "/repo", Cols: 80, Rows: 24}, gotSpec)
 }
 
 // TestApp_TerminalOpen_PropagatesResolveErrorWithoutOpening locks that a cwd

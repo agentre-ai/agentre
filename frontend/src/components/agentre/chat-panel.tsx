@@ -62,6 +62,10 @@ import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useQueuedMessagesStore } from "@/stores/queued-messages-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
+import {
+  localCommandRuntimeStore,
+  type LocalCommandRuntimeController,
+} from "@/stores/local-command-runtime-store";
 
 import { useBackendCapabilities } from "./capability/use-backend-capabilities";
 import { useSessionCapabilities } from "./capability/use-session-capabilities";
@@ -74,6 +78,7 @@ import {
   type ChatImageAttachment,
   type TranscriptLiveContent,
 } from "./chat";
+import type { LocalCommandHistoryScope } from "./chat-input";
 import { ChatContextSidebar } from "./chat-context-sidebar";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
@@ -109,11 +114,13 @@ import {
   EnsureChatSession,
   RegenerateChatMessage,
   RenameChatSession,
+  ResolveLocalCommandScope,
   SendChatMessage,
   SetChatGoal,
   StartChatGoal,
   StopBackgroundTask,
   StopChatMessage,
+  TerminalClose,
   TerminalRunCommand,
 } from "../../../wailsjs/go/app/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
@@ -237,6 +244,15 @@ function isChatStopNoActiveError(msg: string): boolean {
       i18n.t("chatPanel.errors.noActiveTurnToStop", { lng: "zh-CN" }),
     ) ||
     msg.includes(i18n.t("chatPanel.errors.noActiveTurnToStop", { lng: "en" }))
+  );
+}
+
+const TERMINAL_NOT_OPEN_ERROR = "terminal not open";
+
+function isTerminalNotOpenError(error: unknown): boolean {
+  return (
+    error === TERMINAL_NOT_OPEN_ERROR ||
+    (error instanceof Error && error.message === TERMINAL_NOT_OPEN_ERROR)
   );
 }
 
@@ -515,6 +531,28 @@ function ChatPanel({
     error: sessionError,
     reload: reloadSession,
   } = useChatSession(sessionId);
+  const ensuredLocalCommandSessionRef = React.useRef<{
+    agentId: number;
+    projectId: number;
+    promise: Promise<number>;
+    requestId: number;
+  } | null>(null);
+  const ensuredLocalCommandSessionRequestRef = React.useRef(0);
+  const handleStopLocalCommand = React.useCallback(
+    async (terminalId: string) => {
+      const delegated = await localCommandRuntimeStore.stop(terminalId);
+      if (
+        !delegated &&
+        useLocalCommandsStore.getState().get(terminalId)?.status === "running"
+      ) {
+        console.error(
+          "[chat] stop local command failed: runtime controller missing",
+          { terminalId },
+        );
+      }
+    },
+    [],
+  );
 
   const { reason: attentionReason } = useSessionAttention(sessionId);
 
@@ -919,6 +957,76 @@ function ChatPanel({
   // (已存在的会话),sessionId=0 新建态回退到 newSessionAgent —— 否则远端 agent 起的
   // 新会话还没发送时,quotaDeviceKey 会落到 "local" 把桌面本机配额错画上去。
   const activeDeviceID = session?.deviceID ?? newSessionAgent?.deviceID ?? "";
+  const [localCommandHistoryScope, setLocalCommandHistoryScope] =
+    React.useState<LocalCommandHistoryScope>();
+  const [localCommandScopeRefreshTick, setLocalCommandScopeRefreshTick] =
+    React.useState(0);
+  const localCommandScopeResolutionRef = React.useRef(0);
+  const commandScopeSessionId = sessionId > 0 ? sessionId : 0;
+  const commandScopeAgentId =
+    commandScopeSessionId === 0 ? (newSessionAgent?.id ?? 0) : 0;
+  const commandScopeProjectId =
+    commandScopeSessionId === 0 ? (newSessionContext?.projectId ?? 0) : 0;
+  const commandScopeTargetAgentId =
+    commandScopeSessionId > 0 ? (session?.agentId ?? 0) : commandScopeAgentId;
+  const commandScopeTargetBackendType =
+    commandScopeSessionId > 0
+      ? (session?.backendType ?? "")
+      : (newSessionAgent?.backendType ?? "");
+  const commandScopeTargetCwd =
+    commandScopeSessionId > 0 ? (session?.cwd ?? "") : composerCwd;
+  const commandScopeTargetDeviceId =
+    commandScopeSessionId > 0
+      ? (session?.deviceID ?? "")
+      : (newSessionAgent?.deviceID ?? "");
+  const commandScopeTargetProjectId =
+    commandScopeSessionId > 0
+      ? (session?.projectId ?? 0)
+      : commandScopeProjectId;
+  React.useLayoutEffect(() => {
+    const resolutionID = ++localCommandScopeResolutionRef.current;
+    setLocalCommandHistoryScope(undefined);
+    if (commandScopeSessionId <= 0 && commandScopeAgentId <= 0) return;
+
+    const request: chat_svc.ResolveLocalCommandScopeRequest = {
+      sessionId: commandScopeSessionId,
+      agentId: commandScopeAgentId,
+      projectId: commandScopeProjectId,
+    };
+    void (async () => {
+      try {
+        const scope = await ResolveLocalCommandScope(request);
+        if (localCommandScopeResolutionRef.current !== resolutionID) return;
+        setLocalCommandHistoryScope({
+          deviceId: scope.deviceId,
+          cwd: scope.cwd,
+        });
+      } catch {
+        if (localCommandScopeResolutionRef.current !== resolutionID) return;
+        setLocalCommandHistoryScope(undefined);
+      }
+    })();
+    return () => {
+      if (localCommandScopeResolutionRef.current === resolutionID) {
+        localCommandScopeResolutionRef.current += 1;
+      }
+    };
+  }, [
+    // These target scalars are refresh signals only. History scope is always
+    // the resolver response above, never a frontend-derived device/cwd fallback.
+    commandScopeAgentId,
+    commandScopeProjectId,
+    commandScopeSessionId,
+    commandScopeTargetAgentId,
+    commandScopeTargetBackendType,
+    commandScopeTargetCwd,
+    commandScopeTargetDeviceId,
+    commandScopeTargetProjectId,
+    localCommandScopeRefreshTick,
+  ]);
+  const handleLocalCommandModeChange = React.useCallback((active: boolean) => {
+    if (active) setLocalCommandScopeRefreshTick((tick) => tick + 1);
+  }, []);
   const activeDeviceName =
     session?.deviceName ?? newSessionAgent?.deviceName ?? "";
   const quotaDeviceKey =
@@ -1329,58 +1437,325 @@ function ChatPanel({
     }
   }
 
-  async function runLocalCommand(targetSessionId: number, command: string) {
-    // 新会话占位态(还没 sessionId):先坐实一个普通用户会话, 命令才有 cwd 可解析、
-    // 卡片有 transcript 可渲染。坐实后切到新会话并刷新侧栏(与普通发消息同款)。
-    let sid = targetSessionId;
-    if (!sid && newSessionAgent) {
-      try {
-        sid = await EnsureChatSession(
-          newSessionAgent.id,
-          newSessionContext?.projectId ?? 0,
+  const launchLocalCommand = React.useCallback(
+    async (
+      sid: number,
+      command: string,
+    ): Promise<LocalCommandHistoryScope | undefined> => {
+      const terminalId = crypto.randomUUID();
+      const dataEvent = `terminal:${terminalId}:data`;
+      const exitEvent = `terminal:${terminalId}:exit`;
+      const cleanupRetryInitialDelayMs = 100;
+      const cleanupRetryMaxDelayMs = 5_000;
+      type ListenerRegistration = {
+        event: string;
+        off?: () => void;
+        cleaned: boolean;
+      };
+      type ListenerGeneration = {
+        listeners: ListenerRegistration[];
+        guardianTimer?: number;
+        retryDelayMs: number;
+      };
+      let activeGeneration: ListenerGeneration | undefined;
+      let settled = false;
+      let closePromise: Promise<void> | undefined;
+      let automaticCloseRequired = false;
+      let automaticCloseGuardianTimer: number | undefined;
+      let automaticCloseRetryDelayMs = cleanupRetryInitialDelayMs;
+      let userStopRequested = false;
+      const cleanupListeners = (generation: ListenerGeneration): boolean => {
+        let cleaned = true;
+        for (const listener of generation.listeners) {
+          if (listener.cleaned) continue;
+          try {
+            if (listener.off) listener.off();
+            else EventsOff(listener.event);
+            listener.cleaned = true;
+          } catch {
+            try {
+              EventsOff(listener.event);
+              listener.cleaned = true;
+            } catch {
+              cleaned = false;
+            }
+          }
+        }
+        return cleaned;
+      };
+      const cleanupListenersSynchronously = (
+        generation: ListenerGeneration,
+      ): boolean =>
+        cleanupListeners(generation) || cleanupListeners(generation);
+      const stopCleanupGuardian = (generation: ListenerGeneration) => {
+        if (generation.guardianTimer === undefined) return;
+        window.clearTimeout(generation.guardianTimer);
+        generation.guardianTimer = undefined;
+      };
+      const scheduleCleanupGuardian = (generation: ListenerGeneration) => {
+        if (generation.guardianTimer !== undefined) return;
+        // Keep ownership outside React lifecycle so panel unmount cannot abandon a Wails listener.
+        generation.guardianTimer = window.setTimeout(() => {
+          generation.guardianTimer = undefined;
+          if (cleanupListenersSynchronously(generation)) return;
+          generation.retryDelayMs = Math.min(
+            generation.retryDelayMs * 2,
+            cleanupRetryMaxDelayMs,
+          );
+          scheduleCleanupGuardian(generation);
+        }, generation.retryDelayMs);
+      };
+      const ensureListenersCleaned = (
+        generation = activeGeneration,
+      ): boolean => {
+        if (!generation) return true;
+        const cleaned = cleanupListenersSynchronously(generation);
+        if (cleaned) stopCleanupGuardian(generation);
+        else scheduleCleanupGuardian(generation);
+        return cleaned;
+      };
+      const clearAutomaticCloseTimer = () => {
+        if (automaticCloseGuardianTimer === undefined) return;
+        window.clearTimeout(automaticCloseGuardianTimer);
+        automaticCloseGuardianTimer = undefined;
+      };
+      const stopAutomaticCloseGuardian = () => {
+        automaticCloseRequired = false;
+        clearAutomaticCloseTimer();
+      };
+      const appendFailure = (error: unknown) => {
+        if (settled) return;
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(terminalId)?.status === "running") {
+          commands.appendOutput(terminalId, String(error));
+        }
+      };
+      const settle = (
+        status: "done" | "failed" | "stopped",
+        exitCode?: number,
+      ) => {
+        if (settled) {
+          ensureListenersCleaned();
+          return;
+        }
+        settled = true;
+        stopAutomaticCloseGuardian();
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(terminalId)?.status === "running") {
+          if (exitCode === undefined) commands.finish(terminalId, status);
+          else commands.finish(terminalId, status, exitCode);
+        }
+        ensureListenersCleaned();
+        localCommandRuntimeStore.unregister(terminalId, controller);
+      };
+      const fail = (error: unknown) => {
+        if (settled) {
+          ensureListenersCleaned();
+          return;
+        }
+        appendFailure(error);
+        settle("failed", -1);
+      };
+      const scheduleAutomaticCloseGuardian = () => {
+        if (
+          settled ||
+          !automaticCloseRequired ||
+          automaticCloseGuardianTimer !== undefined
+        ) {
+          return;
+        }
+        const retryDelayMs = automaticCloseRetryDelayMs;
+        automaticCloseRetryDelayMs = Math.min(
+          automaticCloseRetryDelayMs * 2,
+          cleanupRetryMaxDelayMs,
         );
+        automaticCloseGuardianTimer = window.setTimeout(() => {
+          automaticCloseGuardianTimer = undefined;
+          void requestTerminalClose("automatic");
+        }, retryDelayMs);
+      };
+      const requestTerminalClose = (
+        ownership: "automatic" | "user",
+      ): Promise<void> => {
+        if (ownership === "user") {
+          userStopRequested = true;
+          clearAutomaticCloseTimer();
+        }
+        if (settled) return Promise.resolve();
+        if (closePromise) return closePromise;
+        const pending = (async () => {
+          let authoritative = false;
+          try {
+            await TerminalClose(terminalId);
+            authoritative = true;
+          } catch (error: unknown) {
+            if (isTerminalNotOpenError(error)) authoritative = true;
+            else if (!automaticCloseRequired) appendFailure(error);
+          }
+          if (authoritative) {
+            if (userStopRequested) settle("stopped");
+            else settle("failed", -1);
+            return;
+          }
+          scheduleAutomaticCloseGuardian();
+        })();
+        closePromise = pending;
+        void pending.finally(() => {
+          if (closePromise === pending) closePromise = undefined;
+        });
+        return pending;
+      };
+      const startAutomaticCloseGuardian = () => {
+        if (settled) return;
+        if (!automaticCloseRequired) {
+          automaticCloseRetryDelayMs = cleanupRetryInitialDelayMs;
+        }
+        automaticCloseRequired = true;
+        void requestTerminalClose("automatic");
+      };
+      const decode = makeStreamDecoder();
+      const handleData = (p: { data: string }) => {
+        if (settled) return;
+        useLocalCommandsStore
+          .getState()
+          .appendOutput(terminalId, decode(p.data));
+      };
+      const handleExit = (p: { code: number; reason: string }) => {
+        const status =
+          p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
+        settle(status, p.code);
+      };
+      const controller: LocalCommandRuntimeController = {
+        stop: () => requestTerminalClose("user"),
+      };
+      localCommandRuntimeStore.register(terminalId, controller);
+      useLocalCommandsStore.getState().start({
+        id: terminalId,
+        sessionId: sid,
+        command,
+        createdAt: Date.now(),
+      });
+      let observerError: unknown;
+      let observersReady = false;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const attemptGeneration: ListenerGeneration = {
+          listeners: [],
+          retryDelayMs: cleanupRetryInitialDelayMs,
+        };
+        try {
+          const dataListener: ListenerRegistration = {
+            event: dataEvent,
+            cleaned: false,
+          };
+          attemptGeneration.listeners.push(dataListener);
+          dataListener.off = EventsOn(dataEvent, handleData);
+          const exitListener: ListenerRegistration = {
+            event: exitEvent,
+            cleaned: false,
+          };
+          attemptGeneration.listeners.push(exitListener);
+          exitListener.off = EventsOn(exitEvent, handleExit);
+          activeGeneration = attemptGeneration;
+          observersReady = true;
+          break;
+        } catch (error: unknown) {
+          observerError = error;
+          if (!ensureListenersCleaned(attemptGeneration)) break;
+        }
+      }
+      try {
+        const response = await TerminalRunCommand(
+          terminalId,
+          sid,
+          command,
+          80,
+          24,
+        );
+        if (response.startError) fail(response.startError);
+        else if (!observersReady) {
+          appendFailure(observerError);
+          startAutomaticCloseGuardian();
+        }
+        return {
+          deviceId: response.scope.deviceId,
+          cwd: response.scope.cwd,
+        };
+      } catch (error: unknown) {
+        if (observersReady) fail(error);
+        else {
+          appendFailure(error);
+          startAutomaticCloseGuardian();
+        }
+        return undefined;
+      }
+    },
+    [],
+  );
+
+  React.useEffect(() => {
+    if (
+      sessionId > 0 ||
+      !newSessionAgent ||
+      ensuredLocalCommandSessionRef.current?.agentId !== newSessionAgent.id ||
+      ensuredLocalCommandSessionRef.current?.projectId !==
+        (newSessionContext?.projectId ?? 0)
+    ) {
+      ensuredLocalCommandSessionRef.current = null;
+    }
+  }, [newSessionAgent, newSessionContext?.projectId, sessionId]);
+
+  function ensureLocalCommandSession(): Promise<number> {
+    if (!newSessionAgent) return Promise.resolve(0);
+    const agentId = newSessionAgent.id;
+    const projectId = newSessionContext?.projectId ?? 0;
+    const current = ensuredLocalCommandSessionRef.current;
+    if (current?.agentId === agentId && current.projectId === projectId) {
+      return current.promise;
+    }
+
+    const requestId = ++ensuredLocalCommandSessionRequestRef.current;
+    const promise = (async () => {
+      try {
+        const sid = await EnsureChatSession(agentId, projectId);
+        if (!sid) {
+          if (ensuredLocalCommandSessionRef.current?.requestId === requestId) {
+            ensuredLocalCommandSessionRef.current = null;
+          }
+          return 0;
+        }
+        onSessionCreated?.(sid, agentId);
+        onSidebarShouldReload?.();
+        return sid;
       } catch (e: unknown) {
+        if (ensuredLocalCommandSessionRef.current?.requestId === requestId) {
+          ensuredLocalCommandSessionRef.current = null;
+        }
         const { msg, detail } = splitErrorDetail(e);
         setNotice({
           kind: "error",
           text: t("chatPanel.errors.send", { msg }),
           detail,
         });
-        return;
+        return 0;
       }
-      onSessionCreated?.(sid, newSessionAgent.id);
-      onSidebarShouldReload?.();
-    }
-    if (!sid) return; // 既无会话也无 newSessionAgent —— 无处可跑。
+    })();
+    ensuredLocalCommandSessionRef.current = {
+      agentId,
+      projectId,
+      promise,
+      requestId,
+    };
+    return promise;
+  }
 
-    const terminalId = crypto.randomUUID();
-    useLocalCommandsStore.getState().start({
-      id: terminalId,
-      sessionId: sid,
-      command,
-      createdAt: Date.now(),
-    });
-    const dataEvent = `terminal:${terminalId}:data`;
-    const exitEvent = `terminal:${terminalId}:exit`;
-    const decode = makeStreamDecoder();
-    EventsOn(dataEvent, (p: { data: string }) =>
-      useLocalCommandsStore.getState().appendOutput(terminalId, decode(p.data)),
-    );
-    EventsOn(exitEvent, (p: { code: number; reason: string }) => {
-      const status =
-        p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
-      useLocalCommandsStore.getState().finish(terminalId, status, p.code);
-      EventsOff(dataEvent);
-      EventsOff(exitEvent);
-    });
-    void TerminalRunCommand(terminalId, sid, command, 80, 24).catch(
-      (e: unknown) => {
-        useLocalCommandsStore.getState().appendOutput(terminalId, String(e));
-        useLocalCommandsStore.getState().finish(terminalId, "failed", -1);
-        EventsOff(dataEvent);
-        EventsOff(exitEvent);
-      },
-    );
+  async function runLocalCommand(
+    targetSessionId: number,
+    command: string,
+  ): Promise<LocalCommandHistoryScope | undefined> {
+    let sid = targetSessionId;
+    if (!sid) sid = await ensureLocalCommandSession();
+    if (!sid) return undefined;
+    return launchLocalCommand(sid, command);
   }
 
   async function doCompact(sid: number) {
@@ -2082,6 +2457,7 @@ function ChatPanel({
                     onStopSubagent={
                       canStopBackgroundTask ? handleStopSubagent : undefined
                     }
+                    onStopLocalCommand={handleStopLocalCommand}
                     tabStateKey={scrollStateKey}
                   />
                   {showBackToBottom ? (
@@ -2289,6 +2665,8 @@ function ChatPanel({
                 backendType={activeBackendType}
                 agentId={session?.agentId ?? newSessionAgent?.id ?? 0}
                 cwd={composerCwd}
+                localCommandHistoryScope={localCommandHistoryScope}
+                onCommandModeChange={handleLocalCommandModeChange}
                 supportsImageInput={supportsImageInput}
                 onRunCommand={(command) => runLocalCommand(sessionId, command)}
                 onSlashRpc={(cmd) => {

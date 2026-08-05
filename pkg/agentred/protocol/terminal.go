@@ -1,18 +1,20 @@
 package protocol
 
-// TerminalOpenParams is the terminal.open RPC request.
+// TerminalOpenParams is the terminal.open RPC request. TerminalID is optional
+// for legacy clients; when supplied, the daemon claims and returns that identity.
 type TerminalOpenParams struct {
-	SessionID int64    `json:"sessionId"`
-	Cwd       string   `json:"cwd"`
-	Shell     string   `json:"shell,omitempty"`
-	Command   string   `json:"command,omitempty"`
-	Env       []string `json:"env,omitempty"`
-	Cols      uint16   `json:"cols"`
-	Rows      uint16   `json:"rows"`
+	TerminalID string   `json:"terminalId,omitempty"`
+	SessionID  int64    `json:"sessionId"`
+	Cwd        string   `json:"cwd"`
+	Shell      string   `json:"shell,omitempty"`
+	Command    string   `json:"command,omitempty"`
+	Env        []string `json:"env,omitempty"`
+	Cols       uint16   `json:"cols"`
+	Rows       uint16   `json:"rows"`
 }
 
-// TerminalOpenResult returns the daemon-side PTY id which the desktop
-// uses opaquely for subsequent write/resize/close calls.
+// TerminalOpenResult returns the claimed PTY id which the desktop uses
+// opaquely for subsequent write/resize/close calls.
 type TerminalOpenResult struct {
 	TerminalID string `json:"terminalId"`
 }
@@ -29,7 +31,8 @@ type TerminalResizeParams struct {
 }
 
 type TerminalCloseParams struct {
-	TerminalID string `json:"terminalId"`
+	TerminalID        string `json:"terminalId"`
+	CancelPendingOpen bool   `json:"cancelPendingOpen,omitempty"`
 }
 
 // TerminalDataEvent is the daemon→client push for stdout chunks. Data is

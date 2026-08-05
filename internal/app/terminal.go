@@ -5,6 +5,7 @@ import (
 
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 	"github.com/agentre-ai/agentre/internal/service/project_svc"
+	"github.com/agentre-ai/agentre/internal/service/terminal_svc"
 )
 
 var errTerminalSvcNotInitialized = errors.New("terminal service not initialized")
@@ -23,17 +24,31 @@ func (a *App) TerminalOpen(terminalID string, projectID int64, deviceID string, 
 	return a.terminalSvc.Open(a.ctx, terminalID, deviceID, cwd, cols, rows)
 }
 
+// ResolveLocalCommandScope 只读解析已有会话或预会话目标的命令执行设备/cwd。
+func (a *App) ResolveLocalCommandScope(
+	req *chat_svc.ResolveLocalCommandScopeRequest,
+) (*chat_svc.LocalCommandScope, error) {
+	return resolveLocalCommandScope(a.ctx, req)
+}
+
 // TerminalRunCommand 在会话工作目录下,以 `$SHELL -l -c command` 跑一条本地命令(绕开 AI agent)。
 // terminalID 由前端生成,与普通终端一致;输出走相同的 terminal:<id>:data/exit 事件。
-func (a *App) TerminalRunCommand(terminalID string, sessionID int64, command string, cols, rows uint16) error {
+func (a *App) TerminalRunCommand(
+	terminalID string,
+	sessionID int64,
+	command string,
+	cols, rows uint16,
+) (*terminal_svc.RunCommandResponse, error) {
 	if a.terminalSvc == nil {
-		return errTerminalSvcNotInitialized
+		return nil, errTerminalSvcNotInitialized
 	}
-	cwd, deviceID, err := chat_svc.Chat().ResolveSessionExecTarget(a.ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	return a.terminalSvc.OpenCommand(a.ctx, terminalID, deviceID, cwd, command, cols, rows)
+	return a.terminalSvc.RunCommand(a.ctx, terminal_svc.RunCommandRequest{
+		TerminalID: terminalID,
+		SessionID:  sessionID,
+		Command:    command,
+		Cols:       cols,
+		Rows:       rows,
+	})
 }
 
 // TerminalWrite sends input bytes (typically keystrokes) to the running PTY.

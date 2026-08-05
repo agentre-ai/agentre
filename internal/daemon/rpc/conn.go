@@ -62,6 +62,10 @@ func NewConn(ws *websocket.Conn, reg *Registry) *Conn {
 	}
 }
 
+// Registry returns the registry explicitly supplied to NewConn. Transport
+// composition uses it to attach connection-owned handlers before Serve starts.
+func (c *Conn) Registry() *Registry { return c.reg }
+
 // ErrConnClosed is returned by Call when the connection closes (peer
 // disconnect / Close / read-loop EOF) while a request is still awaiting its
 // response. Without it, Call would block until the caller's own ctx deadline

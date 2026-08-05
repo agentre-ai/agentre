@@ -23,7 +23,12 @@ import { cn } from "@/lib/utils";
 
 import type { PlanActionStream } from "./canonical-tool/props";
 import type { Editor } from "@tiptap/react";
-import { AIChatInput, type AIChatInputHandle } from "./chat-input";
+import {
+  AIChatInput,
+  type AIChatInputHandle,
+  type LocalCommandHistoryScope,
+  type LocalCommandSubmitHandler,
+} from "./chat-input";
 import { CodeBlock } from "./code-block";
 import { CompactHistoryFold } from "./compact-history-fold";
 import { TranscriptCard } from "./transcript-card";
@@ -52,6 +57,7 @@ import { useProjectList } from "@/hooks/use-project-list";
 import { ChatReadDroppedImages } from "../../../wailsjs/go/app/App";
 import { chat_svc } from "../../../wailsjs/go/models";
 import { buildMentionSources } from "./chat-input/mentions/build-sources";
+import { LOCAL_COMMAND_HISTORY_CLEAR_SELECTOR } from "./chat-input/local-command-history/history-popover";
 import { resolveDroppedPaths } from "./chat-input/drop";
 import { useFileDropZone } from "./chat-input/use-file-drop";
 import { useAgentSkillCommands } from "./slash-commands";
@@ -200,8 +206,12 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
     cmd: import("./slash-commands").SlashCommand,
     exec: Extract<import("./slash-commands").SlashExec, { kind: "rpc" }>,
   ) => void;
-  /** 本地命令回调:用户在命令模式下提交时调用(去掉前缀 ! 后的内容)。 */
-  onRunCommand?: (command: string) => void;
+  /** 本地命令回调:启动命令后返回后端解析出的稳定设备与 cwd，供历史落盘。 */
+  onRunCommand?: LocalCommandSubmitHandler;
+  /** 进入 ! 模式时通知上层重新解析当前执行作用域。 */
+  onCommandModeChange?: (active: boolean) => void;
+  /** 当前执行设备与 cwd 组成的 Shell 历史隔离作用域。 */
+  localCommandHistoryScope?: LocalCommandHistoryScope;
   /** 透传给内层 AIChatInput 的编辑器 ref,供测试驱动编辑器内容。 */
   editorRef?: React.RefObject<Editor | null>;
 };
@@ -461,6 +471,8 @@ function ChatComposer({
   supportsImageInput = true,
   onSlashRpc,
   onRunCommand,
+  onCommandModeChange,
+  localCommandHistoryScope,
   editorRef,
   onPasteCapture,
   ...props
@@ -628,8 +640,8 @@ function ChatComposer({
   // 非编辑态下不消费，让默认行为走。
   //
   // Shift+Tab 循环切换 permission mode —— 对齐 Claude TUI；focus 在 composer 内
-  // （TipTap editor / 按钮）时都会冒泡到 form，preventDefault 拦掉默认 tab 切换。
-  // 编辑模式下不消费 Shift+Tab，让无障碍 tab 反向焦点正常工作。
+  // （TipTap editor / 普通按钮）时都会冒泡到 form，preventDefault 拦掉默认 tab 切换。
+  // 历史 Clear footer 保留原生反向焦点；编辑模式也不消费 Shift+Tab。
   function handleFormKeyDown(event: React.KeyboardEvent<HTMLFormElement>) {
     if (
       !editing &&
@@ -652,6 +664,7 @@ function ChatComposer({
       return;
     }
     if (
+      !event.defaultPrevented &&
       !editing &&
       onShiftTab &&
       event.key === "Tab" &&
@@ -660,6 +673,12 @@ function ChatComposer({
       !event.ctrlKey &&
       !event.altKey
     ) {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(LOCAL_COMMAND_HISTORY_CLEAR_SELECTOR)
+      ) {
+        return;
+      }
       event.preventDefault();
       onShiftTab();
     }
@@ -776,8 +795,12 @@ function ChatComposer({
             editorRef={editorRef}
             onSubmit={handleSend}
             onEmptyChange={setIsEmpty}
-            onCommandModeChange={setCommandMode}
+            onCommandModeChange={(active) => {
+              setCommandMode(active);
+              onCommandModeChange?.(active);
+            }}
             onCommandSubmit={onRunCommand}
+            localCommandHistoryScope={localCommandHistoryScope}
             sendOnEnter
             userMessageHistory={userMessageHistory}
             placeholder={resolvedPlaceholder}
@@ -936,6 +959,8 @@ type ChatTranscriptProps = {
   /** 停掉某张 AgentSpawn 卡对应的正在运行的子 agent / 后台任务(按 tool_use_id 下发 stop_task)。
    *  仅 backend 支持时由 ChatPanel 传入;未传 = 卡片不显示停止按钮。 */
   onStopSubagent?: (toolUseId: string) => void;
+  /** 停掉 ChatPanel 启动并持有生命周期的本地命令；只读调用方不传。 */
+  onStopLocalCommand?: (terminalId: string) => void | Promise<void>;
   /** Stable mounted chat tab key for UI drafts that survive route/tab remounts. */
   tabStateKey?: string;
 };
@@ -990,6 +1015,7 @@ const ChatTranscript = React.forwardRef<
     onEdit,
     onPlanActionStarted,
     onStopSubagent,
+    onStopLocalCommand,
     tabStateKey,
     streaming = false,
     liveCompacting = false,
@@ -1056,12 +1082,14 @@ const ChatTranscript = React.forwardRef<
   const onEditRef = React.useRef(onEdit);
   const onPlanActionStartedRef = React.useRef(onPlanActionStarted);
   const onStopSubagentRef = React.useRef(onStopSubagent);
+  const onStopLocalCommandRef = React.useRef(onStopLocalCommand);
   React.useEffect(() => {
     onRerunRef.current = onRerun;
     onContinueRef.current = onContinue;
     onEditRef.current = onEdit;
     onPlanActionStartedRef.current = onPlanActionStarted;
     onStopSubagentRef.current = onStopSubagent;
+    onStopLocalCommandRef.current = onStopLocalCommand;
   });
   const stableOnRerun = React.useCallback((id: number) => {
     onRerunRef.current?.(id);
@@ -1081,6 +1109,10 @@ const ChatTranscript = React.forwardRef<
   const stableOnStopSubagent = React.useCallback((toolUseId: string) => {
     onStopSubagentRef.current?.(toolUseId);
   }, []);
+  const stableOnStopLocalCommand = React.useCallback((terminalId: string) => {
+    return onStopLocalCommandRef.current?.(terminalId);
+  }, []);
+  const hasStopLocalCommand = onStopLocalCommand !== undefined;
 
   // displayMessages → 虚拟行。persisted 消息的行缓存在实例级 WeakMap(引用稳定
   // → 行组件 memo 恒命中);live 消息每 chunk 现场重建,重渲上限 = 可见窗口行数。
@@ -1114,6 +1146,9 @@ const ChatTranscript = React.forwardRef<
       onEdit: onEdit ? stableOnEdit : undefined,
       onContinue: onContinue ? stableOnContinue : undefined,
       onPlanActionStarted: stableOnPlanActionStarted,
+      onStopLocalCommand: hasStopLocalCommand
+        ? stableOnStopLocalCommand
+        : undefined,
       onStopSubagent: onStopSubagent ? stableOnStopSubagent : undefined,
       onRerun: onRerun ? stableOnRerun : undefined,
       sessionId: sessionId ?? 0,
@@ -1123,6 +1158,7 @@ const ChatTranscript = React.forwardRef<
       agentColor,
       agentName,
       cwd,
+      hasStopLocalCommand,
       onEdit,
       onContinue,
       onRerun,
@@ -1131,6 +1167,7 @@ const ChatTranscript = React.forwardRef<
       stableOnEdit,
       stableOnContinue,
       stableOnPlanActionStarted,
+      stableOnStopLocalCommand,
       stableOnStopSubagent,
       stableOnRerun,
       tabStateKey,

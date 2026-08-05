@@ -23,14 +23,16 @@ type LANOpts struct {
 	Port        int
 	TLSCertFile string
 	TLSKeyFile  string
-	Registry    *Registry
-	// OnConn is invoked once per accepted connection so daemon.go can attach
-	// per-connection state (notifier, auth bindings) before Serve starts.
+	// Registry contains immutable/bootstrap handlers. The LAN accept path
+	// snapshots it into a private registry for each connection.
+	Registry *Registry
+	// OnConn is invoked with that private registry so daemon.go can attach
+	// connection-owned handlers before Serve starts.
 	OnConn func(*Conn)
 }
 
 // LANServer accepts WebSocket connections at /rpc and runs one *Conn per
-// peer through the registry.
+// peer through a private snapshot of the bootstrap registry.
 type LANServer struct {
 	opts LANOpts
 
@@ -67,7 +69,7 @@ func (s *LANServer) Run(ctx context.Context) error {
 		if err != nil {
 			return
 		}
-		c := NewConn(ws, s.opts.Registry)
+		c := NewConn(ws, s.opts.Registry.Clone())
 		if s.opts.OnConn != nil {
 			s.opts.OnConn(c)
 		}
