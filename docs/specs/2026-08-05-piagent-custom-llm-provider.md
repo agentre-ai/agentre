@@ -28,6 +28,7 @@
 | 3 | **绑定供应商时校验默认 Model 非空** | `--model` 必须能选中该供应商下的模型；Model 为空无法保证命中该 provider（可能落到 pi 默认）。已拒绝：Model 空时走 pi 默认 —— 用户意图不明确且大概率打错供应商。 |
 | 4 | **密钥永不落盘**：APIKey 只出现在本次子进程 env（`AGENTRE_PI_API_KEY_<sanitizedKey>`），扩展文件只含 `baseUrl` / `api` / 模型元数据 / `apiKey: "$AGENTRE_PI_API_KEY_..."` env 引用 | `registerProvider` 的 `apiKey` 与 models.json 同款 `$ENV_VAR` 解析；codex 后端已有「token 只进 env 不进 argv/config」的先例。已拒绝：把明文密钥写进扩展文件 —— 密钥落盘，删除后端后仍残留。 |
 | 5 | **远端（agentred）纳入本轮** | daemon 已通过 `ProviderLookup.FindByKey` 把完整 `req.Provider` 填给 runtime（`handlers/runtime.go`），扩展物化在运行进程的 AppDataDir 内，两端同一处代码，几乎零额外成本。已拒绝：本轮排除远端 —— 与其它后端能力不一致。 |
+| 6 | **Test 连通性对齐绑定供应商**：prober 对绑定供应商的 piagent 用与 runtime 同一渲染逻辑物化扩展 + env 密钥 + `--model`，使 Test 结果反映绑定供应商的真实连通性；`cliprober.ProbeRequest` 增加扩展注入。 | agent-backend.md §2.3 不变量：Test 与 chat path 必须共享同一装配规则，否则对绑定供应商的 Test 会测到 Pi 自身 `~/.pi/agent`，给出误导性结果。已拒绝：Test 保持现状 —— 与 chat run 漂移，用户点了 Test 得到假阳性。 |
 
 ## 用户流程
 
@@ -51,6 +52,12 @@
 ### 运行时（未绑定供应商）
 
 与现状完全一致：不传 `--provider` / `--model`（或沿用 `defaultModelForBackend` 的空回退），Pi 使用自己的 `~/.pi/agent` 配置。
+
+### 测试连通性（Test connectivity）
+
+1. 用户在 agent-backends 编辑器对绑定供应商的 piagent 点 "Test connectivity"。
+2. prober 用与 runtime 完全相同的渲染逻辑物化 provider 扩展、注入 env 密钥、构造 `--model`（同一 `agentruntime` 纯函数），再 spawn Pi 跑固定 ping。
+3. 结果反映绑定供应商的真实连通性；失败路径与运行时一致（APIKey 空 / 扩展物化失败 / Pi 找不到注入 provider）。
 
 ## 边界与失败处理
 
@@ -84,6 +91,7 @@
 | Entity `piAgentKind` | `ProviderTypeMatch` 对三类 true / 其它 false；`ValidateExtra` 放行非空 `LLMProviderKey` 但仍拒绝 `ModelRoutes` / `Sandbox` / `Approval` / `DefaultPermissionMode` / `DefaultModel` | `kinds.go` 旁 `*_test.go` |
 | Runtime 集成（fake session factory） | `req.Provider != nil` 时 env 含 `AGENTRE_PI_API_KEY_*`、`--extension` 含 provider 扩展路径、`--model` 为 `agentre-<key>/<model>`；`Provider == nil` 时无这些注入；绑定 + APIKey 空返回配置错误 | `runtime_test.go` 的 `SetSessionFactoryForTest` 模式 |
 | 前端 provider 选择器 | piagent 显示三类供应商、可保存绑定、Model 空校验提示 | `agent-backends` 现有测试 + `i18n.test.ts` |
+| prober 对齐 | 绑定供应商的 piagent：prober 物化同一扩展 + env 密钥 + `--model`，与 chat run 同源不漂移 | `prober_test.go` + `cliprober/probe_test.go` |
 | 远端 | daemon 已解 `req.Provider`，沿用 `runtime_imports_test.go` 能力协议测试；不新增 wire 字段 | `runtime_imports_test.go` |
 
 无法自动化的部分：真实 Pi CLI 对注入 provider 的端到端调用（baseUrl 连通性 / 模型可用性）由本地人工跑一轮绑定聊天验证；wrap-up 时以源码审查 + 一次真实运行快照覆盖。
