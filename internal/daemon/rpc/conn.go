@@ -40,7 +40,9 @@ type Conn struct {
 	auth   AuthState
 
 	done      chan struct{}
+	closed    atomic.Bool
 	closeOnce sync.Once
+	closeErr  error
 }
 
 // AuthState captures who is on the other end of this connection after the
@@ -78,8 +80,6 @@ var ErrConnClosed = errors.New("rpc: connection closed")
 // exits (read loop EOF). Multiple consumers may receive on it.
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
-func (c *Conn) markDone() { c.closeOnce.Do(func() { close(c.done) }) }
-
 func (c *Conn) Auth() AuthState {
 	c.authMu.RLock()
 	defer c.authMu.RUnlock()
@@ -107,8 +107,12 @@ func (c *Conn) SetAuth(a AuthState) {
 // Notification handlers MUST therefore be non-blocking (or bounded) —
 // they share back-pressure with the read loop.
 func (c *Conn) Serve(ctx context.Context) {
-	defer c.markDone()
-	defer func() { _ = c.ws.Close() }()
+	// Dial/upgrade callers commonly use ctx only as a handshake deadline. The
+	// concrete WebSocket, not that caller deadline, owns dispatched request
+	// lifetime; daemon shutdown closes tracked connections explicitly.
+	requestCtx, cancelRequests := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelRequests()
+	defer func() { _ = c.Close() }()
 	for {
 		var f Frame
 		if err := c.ws.ReadJSON(&f); err != nil {
@@ -118,9 +122,9 @@ func (c *Conn) Serve(ctx context.Context) {
 		case f.IsResponse():
 			c.deliverResponse(f)
 		case f.IsRequest():
-			go c.handleRequest(ctx, f)
+			go c.handleRequest(requestCtx, f)
 		case f.IsNotification():
-			nctx := context.WithValue(ctx, connCtxKey{}, c)
+			nctx := context.WithValue(requestCtx, connCtxKey{}, c)
 			_, _ = c.reg.Dispatch(nctx, f.Method, f.Params)
 		}
 	}
@@ -151,7 +155,16 @@ func (c *Conn) handleRequest(ctx context.Context, f Frame) {
 func (c *Conn) write(f Frame) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return c.ws.WriteJSON(f)
+	if c.closed.Load() {
+		return ErrConnClosed
+	}
+	if err := c.ws.WriteJSON(f); err != nil {
+		if c.closed.Load() {
+			return ErrConnClosed
+		}
+		return err
+	}
+	return nil
 }
 
 // Notify sends a fire-and-forget JSON-RPC notification to the peer.
@@ -213,9 +226,15 @@ func (c *Conn) deliverResponse(f Frame) {
 	}
 }
 
-// Close closes the underlying WS connection.
+// Close closes the underlying WS connection. It is idempotent and marks the
+// connection closed before touching the socket so later notifications cannot
+// begin a write to a dead peer.
 func (c *Conn) Close() error {
-	err := c.ws.Close()
-	c.markDone()
-	return err
+	c.closeOnce.Do(func() {
+		c.closed.Store(true)
+		c.closeErr = c.ws.Close()
+		close(c.done)
+	})
+	<-c.done
+	return c.closeErr
 }

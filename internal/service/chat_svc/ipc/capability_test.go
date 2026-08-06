@@ -66,6 +66,16 @@ func TestGetBackendCapabilities_Codex(t *testing.T) {
 	})
 }
 
+func TestGetBackendCapabilities_PiAgent(t *testing.T) {
+	Convey("Given the Pi backend When querying capabilities Then fork_session is advertised", t, func() {
+		resp, err := GetBackendCapabilities(context.Background(), &GetBackendCapabilitiesRequest{
+			BackendType: string(agent_backend_entity.TypePiAgent),
+		})
+		So(err, ShouldBeNil)
+		So(resp.Capabilities, ShouldContain, string(capability.CapForkSession))
+	})
+}
+
 func TestGetBackendCapabilities_EmptyType(t *testing.T) {
 	Convey("空 backendType 报参数错误（前端 sessionId<=0 且未选 backend 时不该调）", t, func() {
 		_, err := GetBackendCapabilities(context.Background(), &GetBackendCapabilitiesRequest{

@@ -104,7 +104,7 @@ func (s *chatSvc) catchUpDevice(ctx context.Context, deviceID int64, sessions []
 	for _, sess := range sessions {
 		sids = append(sids, sess.ID)
 	}
-	rt, _, err := s.remoteRuntimeForDevice(ctx, deviceID, sids)
+	rt, _, err := s.remoteRuntimeForDevice(ctx, deviceID, sids, nil)
 	if err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.catchUpDevice: daemon unreachable, deferring catch-up",
 			zap.Int64("deviceId", deviceID), zap.Int64s("sessionIds", sids), zap.Error(err))

@@ -71,6 +71,15 @@ func TestConn_Done_ClosedOnServeExit(t *testing.T) {
 	}
 }
 
+func TestConn_NotifyAfterCloseReturnsConnClosedWithoutWriting(t *testing.T) {
+	_, c, cleanup := dialPair(t)
+	defer cleanup()
+	require.NoError(t, c.Close())
+
+	err := c.Notify("runtime.event", map[string]any{"sessionId": 1})
+	require.ErrorIs(t, err, rpc.ErrConnClosed)
+}
+
 // TestConn_Call_UnblocksOnConnClose 回归:对端永不回应 + 永不超时的 ctx 发 Call,
 // 连接关闭时 Call 必须及时返回 ErrConnClosed,而不是挂到 ctx deadline。旧实现 select
 // 只看 ch / ctx.Done,反向隧道(MCP tunnel)的 Call 携 CLI 的 ~285s HTTP ctx,WS 中途
