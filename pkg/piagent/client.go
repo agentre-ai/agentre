@@ -16,8 +16,16 @@ import (
 )
 
 const (
-	rpcFrameSafetyLimit = 64 * 1024 * 1024
-	// Startup may include a 64 MiB get_entries response, so use the existing
+	// rpcFrameSafetyLimit is the explicit bound on a single Pi RPC line. Session
+	// entries carry base64 image data, so a get_entries response for a session at
+	// Agentre's supported image limits (≤ 4 images of ≤ 5 MiB per turn, inflated
+	// 4/3 by base64) grows by roughly 27 MiB per image-heavy turn. The bound is
+	// kept well beyond three such turns so valid pre/post-turn anchor metadata
+	// keeps working, while still capping the memory a single frame can claim.
+	// Past the bound the optional post-answer anchor metadata degrades (empty
+	// anchor, completed answer preserved) instead of failing the turn.
+	rpcFrameSafetyLimit = 128 * 1024 * 1024
+	// Startup may include a 128 MiB get_entries response, so use the existing
 	// 30-second RPC/probe boundary rather than the optional 2-second stats window.
 	rpcStartupTimeout = 30 * time.Second
 )

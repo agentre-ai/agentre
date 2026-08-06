@@ -260,6 +260,51 @@ func TestStreamLeavesAnchorEmptyWhenPrePromptLeafIsMissingOrInvalid(t *testing.T
 	}
 }
 
+func TestStreamPreservesCompletedAnswerWhenPostAnswerMetadataExceedsFrameBound(t *testing.T) {
+	// Given Pi completes the assistant answer but the post-turn get_entries frame
+	// exceeds the bounded frame safety limit,
+	// When the stream settles,
+	// Then the answer and Done event survive while the anchor degrades to empty.
+	prefix := strings.Join([]string{
+		`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"session-1"}}`,
+		`{"id":"session-entries-before","type":"response","command":"get_entries","success":true,"data":{"entries":[],"leafId":null}}`,
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"completed answer"}}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+		`{"id":"session-entries-after","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"turn-user","parentId":null,"message":{"role":"user","images":[{"data":"`,
+	}, "\n")
+	oversized := io.MultiReader(
+		strings.NewReader(prefix),
+		&repeatingByteReader{remaining: rpcFrameSafetyLimit + 1, value: 'A'},
+		strings.NewReader(`"}]}}],"leafId":"turn-user"}}`+"\n"),
+	)
+	proc := &captureProc{
+		stdin:  &lockedBuffer{},
+		stdout: oversized,
+		done:   make(chan error, 1),
+	}
+	client := New(WithRPCProcessRunnerForTesting(&captureRunner{proc: proc}))
+
+	stream, err := client.Stream(context.Background(), "hello", RunCaptureUserAnchor())
+	require.NoError(t, err)
+	var text strings.Builder
+	var kinds []EventKind
+	for stream.Next() {
+		event := stream.Event()
+		kinds = append(kinds, event.Kind)
+		if event.Kind == EventTextDelta {
+			text.WriteString(event.Text)
+		}
+	}
+
+	assert.Equal(t, "completed answer", text.String())
+	assert.Empty(t, stream.UserAnchor())
+	require.NotEmpty(t, kinds)
+	assert.Equal(t, EventDone, kinds[len(kinds)-1])
+	assert.NotContains(t, kinds, EventError)
+}
+
 func TestStreamPreservesCompletedAnswerWhenAnchorMetadataFails(t *testing.T) {
 	// Given Pi has completed the assistant answer but terminal entry metadata fails,
 	// When the stream settles,
