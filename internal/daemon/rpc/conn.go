@@ -68,7 +68,7 @@ type Conn struct {
 }
 
 // AuthState captures who is on the other end of this connection after the
-// handshake completes (Mode A pair or Mode B connect).
+// handshake completes (Mode A pair, Mode B connect, or Mode C account).
 type AuthState struct {
 	Authenticated     bool
 	DeviceFingerprint string

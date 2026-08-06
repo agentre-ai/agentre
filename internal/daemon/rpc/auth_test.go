@@ -2,8 +2,15 @@ package rpc
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"testing"
 	"time"
@@ -23,6 +30,107 @@ func setupAuthTest(t *testing.T) (*AuthHandlers, *state.State, *pairing.Manager)
 	pm := pairing.NewManager(pairing.ManagerOpts{TTL: time.Minute})
 	rl := pairing.NewRateLimiter(pairing.RateLimitOpts{MaxAttempts: 3, Window: time.Minute})
 	return NewAuthHandlers(st, pm, rl), st, pm
+}
+
+func TestAuth_AccountCredential_GivenClaimedDaemon_WhenValidCredential_ThenAuthenticates(t *testing.T) {
+	ah, st, _ := setupAuthTest(t)
+	privateKey, publicKeyPEM := testRSAKeyPair(t)
+	st.Claim("42", publicKeyPEM, state.AccountCredential{})
+	credential := testAccountCredential(t, privateKey, int64(42), time.Now().Add(time.Hour))
+
+	result, err := ah.HandleAccount(context.Background(), AccountParams{
+		Credential:        credential,
+		DeviceFingerprint: "sha256:account-client",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, &ConnectResult{OK: true, InstanceUUID: st.DaemonInstanceUUID}, result)
+}
+
+func TestAuth_AccountCredential_GivenCredentialWithinClockSkew_WhenAuthenticating_ThenAuthenticates(t *testing.T) {
+	ah, st, _ := setupAuthTest(t)
+	privateKey, publicKeyPEM := testRSAKeyPair(t)
+	st.Claim("42", publicKeyPEM, state.AccountCredential{})
+	credential := testAccountCredential(t, privateKey, int64(42), time.Now().Add(-30*time.Second))
+
+	result, err := ah.HandleAccount(context.Background(), AccountParams{Credential: credential, DeviceFingerprint: "sha256:account-client"})
+
+	require.NoError(t, err)
+	assert.Equal(t, &ConnectResult{OK: true, InstanceUUID: st.DaemonInstanceUUID}, result)
+}
+
+func TestAuth_AccountCredential_GivenExpiredCredential_WhenAuthenticating_ThenRejectsExpiry(t *testing.T) {
+	ah, st, _ := setupAuthTest(t)
+	privateKey, publicKeyPEM := testRSAKeyPair(t)
+	st.Claim("42", publicKeyPEM, state.AccountCredential{})
+	credential := testAccountCredential(t, privateKey, int64(42), time.Now().Add(-61*time.Second))
+
+	_, err := ah.HandleAccount(context.Background(), AccountParams{Credential: credential, DeviceFingerprint: "sha256:account-client"})
+
+	assertAccountCredentialRejection(t, err, "account credential expired")
+}
+
+func TestAuth_AccountCredential_GivenWrongSignature_WhenAuthenticating_ThenRejectsSignature(t *testing.T) {
+	ah, st, _ := setupAuthTest(t)
+	_, publicKeyPEM := testRSAKeyPair(t)
+	wrongPrivateKey, _ := testRSAKeyPair(t)
+	st.Claim("42", publicKeyPEM, state.AccountCredential{})
+	credential := testAccountCredential(t, wrongPrivateKey, int64(42), time.Now().Add(time.Hour))
+
+	_, err := ah.HandleAccount(context.Background(), AccountParams{Credential: credential, DeviceFingerprint: "sha256:account-client"})
+
+	assertAccountCredentialRejection(t, err, "account credential signature invalid")
+}
+
+func TestAuth_AccountCredential_GivenDifferentAccount_WhenAuthenticating_ThenRejectsMismatch(t *testing.T) {
+	ah, st, _ := setupAuthTest(t)
+	privateKey, publicKeyPEM := testRSAKeyPair(t)
+	st.Claim("42", publicKeyPEM, state.AccountCredential{})
+	credential := testAccountCredential(t, privateKey, int64(99), time.Now().Add(time.Hour))
+
+	_, err := ah.HandleAccount(context.Background(), AccountParams{Credential: credential, DeviceFingerprint: "sha256:account-client"})
+
+	assertAccountCredentialRejection(t, err, "account credential account mismatch")
+}
+
+func TestAuth_AccountCredential_GivenUnclaimedDaemon_WhenAuthenticating_ThenRejectsMissingCachedKey(t *testing.T) {
+	ah, _, _ := setupAuthTest(t)
+	privateKey, _ := testRSAKeyPair(t)
+	credential := testAccountCredential(t, privateKey, int64(42), time.Now().Add(time.Hour))
+
+	_, err := ah.HandleAccount(context.Background(), AccountParams{Credential: credential, DeviceFingerprint: "sha256:account-client"})
+
+	assertAccountCredentialRejection(t, err, "account credential rejected: cached verification key unavailable")
+}
+
+func assertAccountCredentialRejection(t *testing.T, err error, reason string) {
+	t.Helper()
+	var rpcErr *Error
+	require.ErrorAs(t, err, &rpcErr)
+	assert.Equal(t, ErrUnauthorized.Code, rpcErr.Code)
+	assert.Equal(t, reason, rpcErr.Message)
+}
+
+func testRSAKeyPair(t *testing.T) (*rsa.PrivateKey, string) {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	require.NoError(t, err)
+	return privateKey, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}
+
+func testAccountCredential(t *testing.T, privateKey *rsa.PrivateKey, accountID any, expiresAt time.Time) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	claims, err := json.Marshal(map[string]any{"uid": accountID, "exp": expiresAt.Unix()})
+	require.NoError(t, err)
+	payload := base64.RawURLEncoding.EncodeToString(claims)
+	signingInput := header + "." + payload
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	require.NoError(t, err)
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func TestAuth_PairThenConnect(t *testing.T) {

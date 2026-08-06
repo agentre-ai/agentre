@@ -103,7 +103,7 @@ type sessionKey struct {
 }
 
 // connRegistry 记录 daemon 此刻能把通知推给谁,两张互补的表:
-//   - live:已认证且还活着的连接。登记只发生在 auth.pair / auth.connect 成功那一刻
+//   - live:已认证且还活着的连接。登记只发生在 auth.pair / auth.connect / auth.account 成功那一刻
 //     (bindConn 是 LANServer 的 OnConn 回调,跑在鉴权**之前**),所以完成 WS 升级却
 //     从不认证的连接(LAN 扫描器 / 鉴权失败的客户端 / 掉队的重连)根本进不来;
 //   - claims:每条会话的推送目标 —— **发起该会话的那条连接**。
@@ -169,7 +169,7 @@ func connClosed(c *rpc.Conn) bool {
 	}
 }
 
-// add 在连接完成 auth.pair / auth.connect 之后登记它。同一条连接改认另一个指纹时,
+// add 在连接完成 auth.pair / auth.connect / auth.account 之后登记它。同一条连接改认另一个指纹时,
 // 它先前以旧指纹认领的会话一并作废 —— 否则旧对端的会话通知会推给一条已经属于别人的连接。
 func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
 	if n == nil {
@@ -450,7 +450,7 @@ func New(opts Options) (*Daemon, error) {
 }
 
 // requireAuth returns ErrUnauthorized when the calling connection has not
-// completed auth.pair / auth.connect. Called by every non-auth handler.
+// completed auth.pair / auth.connect / auth.account. Called by every non-auth handler.
 func requireAuth(ctx context.Context) error {
 	c := rpc.ConnFromContext(ctx)
 	if c == nil || !c.Auth().Authenticated {
@@ -502,6 +502,27 @@ func (d *Daemon) registerMethods() {
 			c.SetAuth(rpc.AuthState{
 				Authenticated:     true,
 				DeviceFingerprint: cp.DeviceFingerprint,
+			})
+			d.conns.add(c, notifier.New(c))
+		}
+		return res, nil
+	})
+	d.registry.Register("auth.account", func(ctx context.Context, p json.RawMessage) (any, error) {
+		var ap rpc.AccountParams
+		if err := jsonUnmarshal(p, &ap); err != nil {
+			return nil, rpc.ErrInvalidParams
+		}
+		if ap.DeviceFingerprint == "" {
+			return nil, rpc.ErrInvalidParams
+		}
+		res, err := d.auth.HandleAccount(ctx, ap)
+		if err != nil {
+			return nil, err
+		}
+		if c := rpc.ConnFromContext(ctx); c != nil {
+			c.SetAuth(rpc.AuthState{
+				Authenticated:     true,
+				DeviceFingerprint: ap.DeviceFingerprint,
 			})
 			d.conns.add(c, notifier.New(c))
 		}
@@ -615,7 +636,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 // 按会话解析属主连接(见 notifierForPeer / connRegistry),因为 fanout goroutine 会活过
 // 这条连接。
 //
-// bindConn 跑在鉴权**之前**(它是 OnConn 回调,auth.pair / auth.connect 是之后才到的
+// bindConn 跑在鉴权**之前**(它是 OnConn 回调,auth.pair / auth.connect / auth.account 是之后才到的
 // RPC),所以这里**不**把连接登记成推送目标 —— 登记只发生在鉴权成功那一刻,会话认领
 // 更要等到它真为某条会话发 runtime.*,否则一条从不认证的连接就能顶掉正主。
 func (d *Daemon) bindConn(c *rpc.Conn) {
