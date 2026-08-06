@@ -1082,6 +1082,237 @@ func TestDaemon_RunCollectsTheJournal(t *testing.T) {
 	}, 3*time.Second, 20*time.Millisecond, "daemon 跑起来之后必须自己回收掉安静会话的日志前缀")
 }
 
+// TestDaemon_RevocationPoll_GivenServerList_WhenPulled_ThenPersistedAndSurvivesRestart
+// 覆盖 R4 的 daemon 一半:在线时按固定间隔(须显著短于 15m 的 access TTL)拉取账号的
+// 吊销列表,列表与 as_of 经 state.Mutate/Save 落盘 —— 之后 daemon 离线重启,列表照样
+// 在,吊销才不会被一次重启抹掉。
+func TestDaemon_RevocationPoll_GivenServerList_WhenPulled_ThenPersistedAndSurvivesRestart(t *testing.T) {
+	var polls atomic.Int32
+	auths := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/devices/revocations" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		polls.Add(1)
+		select {
+		case auths <- r.Header.Get("Authorization"):
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"revoked_jti":["jti-a","jti-b"],"as_of":1716000000123}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "access-1"})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	poller := &revocationPoller{
+		state:       st,
+		serverURL:   server.URL,
+		httpClient:  server.Client(),
+		accessToken: func() string { return st.Snapshot().Credential.AccessToken },
+		interval:    defaultRevocationPollInterval,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			<-loopCtx.Done()
+			return loopCtx.Err()
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+	}
+	go poller.run(ctx)
+
+	select {
+	case delay := <-requested:
+		assert.Equal(t, time.Minute, delay, "轮询间隔须显著短于 15m 的 access TTL 才有意义")
+	case <-time.After(2 * time.Second):
+		t.Fatal("poller never pulled the revocation list")
+	}
+	assert.Equal(t, "Bearer access-1", <-auths, "拉取吊销列表用的是 HubLink 一直在续期的那份设备凭据")
+
+	snapshot := st.Snapshot()
+	assert.Equal(t, []string{"jti-a", "jti-b"}, snapshot.RevokedJTIs)
+	assert.Equal(t, int64(1716000000123), snapshot.RevocationsAsOf)
+
+	// 重启:重新从磁盘 Load 出来的 state 必须仍然带着这份列表。
+	reloaded, err := state.Load(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"jti-a", "jti-b"}, reloaded.RevokedJTIs, "吊销列表必须挺过一次 daemon 重启")
+	assert.Equal(t, int64(1716000000123), reloaded.RevocationsAsOf)
+	assert.Equal(t, int32(1), polls.Load(), "一个间隔内只拉一次")
+}
+
+// TestDaemon_RevocationPoll_GivenPullFails_WhenRetrying_ThenKeepsLastListAndBacksOff
+// 覆盖离线/拉取失败:上一次的列表原样保留并继续本地生效(这正是 R4 承认的吊销延迟,
+// 不是 bug),重试按退避而不是按固定间隔,循环自己扛住失败、恢复后继续替换列表。
+func TestDaemon_RevocationPoll_GivenPullFails_WhenRetrying_ThenKeepsLastListAndBacksOff(t *testing.T) {
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if polls.Add(1) <= 2 {
+			http.Error(w, "boom", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"revoked_jti":["jti-fresh"],"as_of":1716000060000}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "access-1"})
+	st.Mutate(func(s *state.State) {
+		s.RevokedJTIs = []string{"jti-known"}
+		s.RevocationsAsOf = 1716000000000
+	})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	poller := &revocationPoller{
+		state:       st,
+		serverURL:   server.URL,
+		httpClient:  server.Client(),
+		accessToken: func() string { return st.Snapshot().Credential.AccessToken },
+		interval:    defaultRevocationPollInterval,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			select {
+			case <-release:
+				return nil
+			case <-loopCtx.Done():
+				return loopCtx.Err()
+			}
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+	}
+	go poller.run(ctx)
+
+	nextDelay := func() time.Duration {
+		t.Helper()
+		select {
+		case delay := <-requested:
+			return delay
+		case <-time.After(2 * time.Second):
+			t.Fatal("poller stopped scheduling")
+			return 0
+		}
+	}
+
+	assert.Equal(t, time.Second, nextDelay(), "拉取失败后按退避重试,而不是等满一个轮询间隔")
+	kept := st.Snapshot()
+	assert.Equal(t, []string{"jti-known"}, kept.RevokedJTIs, "拉取失败时必须保留上一次的列表继续生效")
+	assert.Equal(t, int64(1716000000000), kept.RevocationsAsOf, "失败的拉取不得推进 as_of")
+	release <- struct{}{}
+
+	assert.Equal(t, 2*time.Second, nextDelay(), "连续失败时退避必须加倍")
+	assert.Equal(t, []string{"jti-known"}, st.Snapshot().RevokedJTIs, "第二次失败同样保留旧列表")
+	release <- struct{}{}
+
+	assert.Equal(t, time.Minute, nextDelay(), "恢复之后回到固定轮询间隔")
+	recovered := st.Snapshot()
+	assert.Equal(t, []string{"jti-fresh"}, recovered.RevokedJTIs, "循环必须扛住失败并在恢复后继续替换列表")
+	assert.Equal(t, int64(1716000060000), recovered.RevocationsAsOf)
+	reloaded, err := state.Load(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"jti-fresh"}, reloaded.RevokedJTIs)
+}
+
+// TestDaemon_RevocationPoll_GivenPayloadWithoutAsOf_WhenPulled_ThenKeepsLastList
+// 守住「失败要失败在安全的一侧」:一个语法合法、却不是契约形状的 200(中间设备塞
+// 回来的空 JSON 是最常见的一种)绝不能把吊销列表洗成空的 —— 契约里 as_of 恒有值,
+// 拿不到就当这次拉取失败,保留上一次的列表继续生效。
+func TestDaemon_RevocationPoll_GivenPayloadWithoutAsOf_WhenPulled_ThenKeepsLastList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "access-1"})
+	st.Mutate(func(s *state.State) {
+		s.RevokedJTIs = []string{"jti-known"}
+		s.RevocationsAsOf = 1716000000000
+	})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	poller := &revocationPoller{
+		state:       st,
+		serverURL:   server.URL,
+		httpClient:  server.Client(),
+		accessToken: func() string { return st.Snapshot().Credential.AccessToken },
+		interval:    defaultRevocationPollInterval,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			<-loopCtx.Done()
+			return loopCtx.Err()
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+	}
+	go poller.run(ctx)
+
+	select {
+	case delay := <-requested:
+		assert.Equal(t, time.Second, delay, "不成形的响应算拉取失败,按退避重试")
+	case <-time.After(2 * time.Second):
+		t.Fatal("poller stopped scheduling")
+	}
+	kept := st.Snapshot()
+	assert.Equal(t, []string{"jti-known"}, kept.RevokedJTIs, "不成形的响应绝不能把吊销列表洗空")
+	assert.Equal(t, int64(1716000000000), kept.RevocationsAsOf)
+}
+
+// TestDaemon_RunStartsRevocationPolling 钉死接线:拉取必须由 daemon 自己跑起来。
+// 没有调用方的拉取路径等于没有吊销机制 —— 握手期只查缓存(R3 零网络往返),缓存
+// 没人更新就永远是空的。
+func TestDaemon_RunStartsRevocationPolling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/devices/revocations" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"revoked_jti":["jti-wired"],"as_of":1716000000123}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir, err := os.MkdirTemp("", "agentred-revocations-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "device-access-token"})
+	require.NoError(t, st.Save())
+
+	d, err := New(Options{DataDir: dir, LANHost: "127.0.0.1", LANPort: 0, HubServerURL: server.URL})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+
+	require.Eventually(t, func() bool {
+		return len(d.state.Snapshot().RevokedJTIs) == 1
+	}, 3*time.Second, 20*time.Millisecond, "daemon 跑起来之后必须自己把吊销列表拉下来")
+	assert.Equal(t, []string{"jti-wired"}, d.state.Snapshot().RevokedJTIs)
+}
+
 // refreshTestClock is the injectable clock for the credential refresh loop: the
 // loop asks how much to wait, the test releases it and advances the clock by
 // exactly that delay, so the refresh fires at a fully deterministic time.

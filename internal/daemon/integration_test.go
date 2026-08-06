@@ -1893,11 +1893,16 @@ func TestIntegration_RelayInitiatedChannelServesAccountRuntimeAndCleansUp(t *tes
 	var relayAttempts atomic.Int32
 	upgrader := websocket.Upgrader{}
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 同一台 fake server 也会收到 daemon 的吊销列表轮询(R4)。它与本测试无关,
+		// 但绝不能占掉下面「只接受第一次中转拨号」的那个计数。
+		if r.URL.Path != "/v1/relay/daemon" {
+			http.NotFound(w, r)
+			return
+		}
 		if relayAttempts.Add(1) > 1 {
 			http.Error(w, "relay closed", http.StatusServiceUnavailable)
 			return
 		}
-		require.Equal(t, "/v1/relay/daemon", r.URL.Path)
 		require.Equal(t, "Bearer relay-access-token", r.Header.Get("Authorization"))
 		ws, upgradeErr := upgrader.Upgrade(w, r, nil)
 		if upgradeErr != nil {

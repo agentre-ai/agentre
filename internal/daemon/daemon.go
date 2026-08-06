@@ -667,6 +667,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		// doomed relay is not kept alive forever (R4/R14). It never propagates
 		// to Run — local sessions and LAN stay healthy either way.
 		go d.runCredentialRefresh(ctx, hubCancel)
+		// R4 的另一半:定期把账号的吊销列表拉到本地。挂在 hubCtx 上是因为它与中转
+		// 链路共用同一份设备凭据 —— 凭据永久失效时两者一起停,最后拉到的那份列表
+		// 留在 state.json 里继续本地生效(R19 承认的延迟),本地会话与 LAN 直连
+		// 全程不受影响。
+		go d.runRevocationPoll(hubCtx)
 	}
 	if d.mux != nil {
 		defer d.mux.Close()
@@ -707,6 +712,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 // dead connection forever. Local sessions and the LAN server are unaffected.
 func (d *Daemon) runCredentialRefresh(ctx context.Context, stopRelay context.CancelFunc) {
 	newCredentialRefresher(d.state, d.opts.HubServerURL).run(ctx, stopRelay)
+}
+
+// runRevocationPoll launches the R4 revocation-list poller for the daemon's
+// relay lifetime. Nothing it does can fail the daemon: a pull failure keeps the
+// previously cached list, logs, and retries with backoff.
+func (d *Daemon) runRevocationPoll(ctx context.Context) {
+	newRevocationPoller(d.state, d.opts.HubServerURL, d.currentAccessToken).run(ctx)
 }
 
 // defaultRefreshMargin is how long before AccessTokenExpiresAt the daemon
@@ -871,14 +883,14 @@ func (r *credentialRefresher) refreshOnce(ctx context.Context, refreshToken stri
 			Code        string `json:"error"`
 			Description string `json:"error_description"`
 		}
-		if decodeRefreshResponse(payload, &oauthErr) == nil && oauthErr.Code != "" {
+		if decodeServerEnvelope(payload, &oauthErr) == nil && oauthErr.Code != "" {
 			return nil, oauthErr.Code == "invalid_grant",
 				fmt.Errorf("refresh rejected: %s: %s", oauthErr.Code, oauthErr.Description)
 		}
 		return nil, false, fmt.Errorf("refresh endpoint returned %s", resp.Status)
 	}
 	var token refreshTokenResponse
-	if err := decodeRefreshResponse(payload, &token); err != nil {
+	if err := decodeServerEnvelope(payload, &token); err != nil {
 		return nil, false, fmt.Errorf("parse refresh response: %w", err)
 	}
 	if token.AccessToken == "" || token.RefreshToken == "" || token.ExpiresIn <= 0 || token.RefreshExpiresIn <= 0 {
@@ -887,10 +899,10 @@ func (r *credentialRefresher) refreshOnce(ctx context.Context, refreshToken stri
 	return &token, false, nil
 }
 
-// decodeRefreshResponse handles both the raw JSON payload and cago's
+// decodeServerEnvelope handles both the raw JSON payload and cago's
 // {data: ...} response envelope, mirroring the login flow's decoder. Agentre
 // must not import agentre-server; this keeps the daemon-side contract in sync.
-func decodeRefreshResponse(payload []byte, target any) error {
+func decodeServerEnvelope(payload []byte, target any) error {
 	var envelope struct {
 		Data json.RawMessage `json:"data"`
 	}
@@ -912,6 +924,134 @@ func waitForRefresh(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+// defaultRevocationPollInterval is how often a claimed daemon pulls its account's
+// revocation list. It has to stay well under the server's 15m access TTL for the
+// pull to add anything: a credential revoked right after a pull is refused
+// locally at most one interval later, and its short expiry is the backstop (R4).
+const defaultRevocationPollInterval = time.Minute
+
+// revocationsResponse mirrors agentre-server's GET /v1/devices/revocations body
+// (device JWT bearer). RevokedJTI is every revoked access-token jti under the
+// caller device's account that was issued inside the server's access-TTL window;
+// older ones are omitted because expiry alone already invalidates them.
+type revocationsResponse struct {
+	RevokedJTI []string `json:"revoked_jti"`
+	AsOf       int64    `json:"as_of"`
+}
+
+// revocationPoller keeps the daemon's cached copy of that list fresh (R4
+// consumer). The account handshake is verified entirely from cached material
+// with zero network round trips (R3), so this loop is the only thing that can
+// make a revocation take effect on this machine. A failed or offline pull
+// deliberately keeps the previous list and keeps enforcing it — that is R4's
+// acknowledged revocation delay (R19), not a fallback — and it never touches
+// local sessions or LAN serving.
+type revocationPoller struct {
+	state       *state.State
+	serverURL   string
+	httpClient  *http.Client
+	accessToken func() string
+
+	interval time.Duration
+	// wait is the clock seam shared with the credential refresher: the loop asks
+	// for a delay, production sleeps it out, a test releases it immediately.
+	wait    func(context.Context, time.Duration) error
+	backoff func(int) time.Duration
+	logf    func(format string, args ...any)
+}
+
+func newRevocationPoller(st *state.State, serverURL string, accessToken func() string) *revocationPoller {
+	return &revocationPoller{
+		state:       st,
+		serverURL:   serverURL,
+		httpClient:  &http.Client{Timeout: 15 * time.Second},
+		accessToken: accessToken,
+		interval:    defaultRevocationPollInterval,
+		wait:        waitForRefresh,
+		backoff:     defaultRefreshBackoff, // the daemon's shared transient-retry ladder
+		logf:        log.Printf,
+	}
+}
+
+// run pulls until ctx is canceled, starting with an immediate pull so a daemon
+// that was offline (or just restarted) re-syncs as soon as it can reach server.
+func (p *revocationPoller) run(ctx context.Context) {
+	failures := 0
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		list, err := p.pullOnce(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			kept := p.state.Snapshot()
+			p.logf("daemon.revocations: pull failed; keeping the last list: revokedCount=%d asOf=%d err=%v",
+				len(kept.RevokedJTIs), kept.RevocationsAsOf, err)
+			if err := p.wait(ctx, p.backoff(failures)); err != nil {
+				return
+			}
+			failures++
+			continue
+		}
+		failures = 0
+		p.state.Mutate(func(s *state.State) {
+			s.RevokedJTIs = list.RevokedJTI
+			s.RevocationsAsOf = list.AsOf
+		})
+		// Persisted on every pull: the check has to survive a restart, and it is
+		// the only copy an offline daemon has left to enforce.
+		if err := p.state.Save(); err != nil {
+			p.logf("daemon.revocations: persist revocation list: revokedCount=%d err=%v",
+				len(list.RevokedJTI), err)
+		}
+		if err := p.wait(ctx, p.interval); err != nil {
+			return
+		}
+	}
+}
+
+// pullOnce fetches the account's revocation list with the daemon's device
+// credential. Every failure — including the 401 a revoked device itself gets —
+// is transient here: the caller keeps the last list and retries with backoff.
+func (p *revocationPoller) pullOnce(ctx context.Context) (*revocationsResponse, error) {
+	token := p.accessToken()
+	if token == "" {
+		return nil, errors.New("no account access token")
+	}
+	endpoint := strings.TrimRight(p.serverURL, "/") + "/v1/devices/revocations"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build revocations request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("revocations request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read revocations response: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("revocations endpoint returned %s", resp.Status)
+	}
+	var list revocationsResponse
+	if err := decodeServerEnvelope(payload, &list); err != nil {
+		return nil, fmt.Errorf("parse revocations response: %w", err)
+	}
+	// as_of is always set by the endpoint, so its absence means this is not the
+	// contract's payload (a captive portal or proxy answering 200, say). Treat
+	// it as a failed pull: replacing the cached list with an empty one would
+	// silently un-revoke everything.
+	if list.AsOf <= 0 {
+		return nil, errors.New("revocations endpoint returned a payload without as_of")
+	}
+	return &list, nil
 }
 
 // serveRelayChannels turns server-initiated virtual channels into the same

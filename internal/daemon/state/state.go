@@ -138,6 +138,7 @@ func (s *State) Snapshot() State {
 	for k, v := range s.LLMProviders {
 		out.LLMProviders[k] = v
 	}
+	out.RevokedJTIs = append([]string(nil), s.RevokedJTIs...)
 	return out
 }
 

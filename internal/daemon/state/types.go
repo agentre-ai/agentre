@@ -16,6 +16,14 @@ type State struct {
 	VerificationPublicKeyPEM string                     `json:"verificationPublicKeyPEM,omitempty"`
 	Credential               AccountCredential          `json:"credential,omitempty"`
 
+	// RevokedJTIs is the account's revoked access-token jti list as last pulled
+	// from the account server, and RevocationsAsOf is when the server generated
+	// it (unix ms). They are persisted because the check must keep working while
+	// the daemon is offline and across restarts: revocation takes effect locally
+	// from this cached list alone, never from a lookup at handshake time (R3/R4).
+	RevokedJTIs     []string `json:"revokedJTIs,omitempty"`
+	RevocationsAsOf int64    `json:"revocationsAsOf,omitempty"`
+
 	mu  *sync.RWMutex `json:"-"`
 	dir string        `json:"-"`
 }

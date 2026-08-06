@@ -60,6 +60,7 @@ const (
 	accountCredentialExpired        = "account credential expired"
 	accountCredentialSignature      = "account credential signature invalid"
 	accountCredentialMismatch       = "account credential account mismatch"
+	accountCredentialRevoked        = "account credential revoked"
 
 	accountCredentialClockSkew = time.Minute
 )
@@ -143,7 +144,8 @@ func (a *AuthHandlers) HandleConnect(ctx context.Context, p ConnectParams) (*Con
 }
 
 // HandleAccount implements Mode C. It verifies an account credential entirely
-// from the daemon's cached public key, without contacting agentre-server.
+// from the daemon's cached public key and cached revocation list, without
+// contacting agentre-server.
 func (a *AuthHandlers) HandleAccount(ctx context.Context, p AccountParams) (*ConnectResult, error) {
 	snapshot := a.st.Snapshot()
 	if snapshot.AccountID == "" || snapshot.VerificationPublicKeyPEM == "" {
@@ -153,14 +155,33 @@ func (a *AuthHandlers) HandleAccount(ctx context.Context, p AccountParams) (*Con
 	if err != nil {
 		return nil, accountCredentialError(accountCredentialKeyUnavailable)
 	}
-	accountID, err := verifyAccountCredential(p.Credential, publicKey)
+	accountID, jti, err := verifyAccountCredential(p.Credential, publicKey)
 	if err != nil {
 		return nil, err
 	}
 	if accountID != snapshot.AccountID {
 		return nil, accountCredentialError(accountCredentialMismatch)
 	}
+	// The revocation list is consulted from the cached snapshot only. A jti the
+	// daemon has not pulled yet still authenticates — that is R4's acknowledged
+	// delay (R19), and it is what keeps the handshake free of network round
+	// trips when the account server is unreachable (R3).
+	if isRevokedCredential(jti, snapshot.RevokedJTIs) {
+		return nil, accountCredentialError(accountCredentialRevoked)
+	}
 	return &ConnectResult{OK: true, InstanceUUID: snapshot.DaemonInstanceUUID}, nil
+}
+
+func isRevokedCredential(jti string, revoked []string) bool {
+	if jti == "" {
+		return false
+	}
+	for _, candidate := range revoked {
+		if candidate == jti {
+			return true
+		}
+	}
+	return false
 }
 
 func accountCredentialError(reason string) *Error {
@@ -183,44 +204,66 @@ func accountPublicKey(publicKeyPEM string) (*rsa.PublicKey, error) {
 	return publicKey, nil
 }
 
-func verifyAccountCredential(credential string, publicKey *rsa.PublicKey) (string, error) {
+// verifyAccountCredential returns the credential's account id and its jti (the
+// identity the account's revocation list refers to) once signature and expiry
+// hold. Verification is purely local — see HandleAccount.
+func verifyAccountCredential(credential string, publicKey *rsa.PublicKey) (string, string, error) {
 	parts := strings.Split(credential, ".")
 	if len(parts) != 3 {
-		return "", accountCredentialError(accountCredentialInvalid)
+		return "", "", accountCredentialError(accountCredentialInvalid)
 	}
 	var header map[string]json.RawMessage
 	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil || json.Unmarshal(headerJSON, &header) != nil {
-		return "", accountCredentialError(accountCredentialInvalid)
+		return "", "", accountCredentialError(accountCredentialInvalid)
 	}
 	var algorithm string
 	if json.Unmarshal(header["alg"], &algorithm) != nil || algorithm != "RS256" {
-		return "", accountCredentialError(accountCredentialInvalid)
+		return "", "", accountCredentialError(accountCredentialInvalid)
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", accountCredentialError(accountCredentialInvalid)
+		return "", "", accountCredentialError(accountCredentialInvalid)
 	}
 	var claims map[string]json.RawMessage
 	if json.Unmarshal(payload, &claims) != nil {
-		return "", accountCredentialError(accountCredentialInvalid)
+		return "", "", accountCredentialError(accountCredentialInvalid)
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return "", accountCredentialError(accountCredentialInvalid)
+		return "", "", accountCredentialError(accountCredentialInvalid)
 	}
 	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 	if rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature) != nil {
-		return "", accountCredentialError(accountCredentialSignature)
+		return "", "", accountCredentialError(accountCredentialSignature)
 	}
 	expiresAt, err := accountCredentialExpiry(claims)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if time.Now().After(expiresAt.Add(accountCredentialClockSkew)) {
-		return "", accountCredentialError(accountCredentialExpired)
+		return "", "", accountCredentialError(accountCredentialExpired)
 	}
-	return accountIDFromCredentialClaims(claims)
+	accountID, err := accountIDFromCredentialClaims(claims)
+	if err != nil {
+		return "", "", err
+	}
+	return accountID, accountCredentialJTI(claims), nil
+}
+
+// accountCredentialJTI reads the standard JWT jti claim (agentre-server signs a
+// ULID there). A credential without one is simply never on the revocation list;
+// its short expiry remains the only thing that ends it.
+func accountCredentialJTI(claims map[string]json.RawMessage) string {
+	rawJTI, ok := claims["jti"]
+	if !ok {
+		return ""
+	}
+	var jti string
+	if json.Unmarshal(rawJTI, &jti) != nil {
+		return ""
+	}
+	return jti
 }
 
 func accountCredentialExpiry(claims map[string]json.RawMessage) (time.Time, error) {
