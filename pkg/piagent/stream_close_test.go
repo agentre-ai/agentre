@@ -84,8 +84,9 @@ func TestPiWritesAreInterruptedByCallerCancellation(t *testing.T) {
 			},
 		},
 		{
-			name:    "prompt write",
-			blockAt: 2,
+			name: "prompt write",
+			// get_state, the optional pre-prompt get_session_stats, then the prompt.
+			blockAt: 3,
 			run: func(ctx context.Context, client *Client) error {
 				prepared, err := client.PrepareStream(context.Background(), strings.Repeat("x", 8*1024*1024))
 				if err != nil {
@@ -126,7 +127,8 @@ func TestPiWritesAreInterruptedByCallerCancellation(t *testing.T) {
 }
 
 func TestPreparedStreamCloseInterruptsBlockedPromptWrite(t *testing.T) {
-	writer := newBlockingWriteCloser(2)
+	// get_state, the optional pre-prompt get_session_stats, then the prompt.
+	writer := newBlockingWriteCloser(3)
 	proc := newBlockedWriteProcess(writer)
 	client := New(WithRPCProcessRunnerForTesting(&blockedWriteRunner{proc: proc}))
 	prepared, err := client.PrepareStream(context.Background(), strings.Repeat("x", 8*1024*1024))

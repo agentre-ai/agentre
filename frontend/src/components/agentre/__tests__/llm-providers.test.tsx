@@ -307,4 +307,66 @@ describe("LlmProvidersPanel", () => {
 
     expect(dialog).not.toHaveTextContent("Save failed");
   });
+
+  it("uses the edited draft with an empty API key when refreshing models", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 7,
+              type: "anthropic",
+              name: "GLM",
+              providerKey: "provider-7",
+              baseUrl: "https://old.example/anthropic",
+              maskedApiKey: "configured-redacted",
+              hasApiKey: true,
+              model: "glm-old",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+      PreviewLLMModels: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: "glm-new",
+              vendor: "anthropic",
+              contextWindow: 0,
+              maxOutput: 0,
+              modalities: [],
+              thinking: false,
+              knownInCago: false,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<LlmProvidersPanel />);
+
+    await user.click(await screen.findByRole("button", { name: /Edit GLM/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(
+      within(dialog).getByDisplayValue("https://old.example/anthropic"),
+      { target: { value: "https://new.example/anthropic" } },
+    );
+    await user.click(within(dialog).getByTitle("Fetch provider models"));
+
+    await waitFor(() => {
+      expect(mocks.PreviewLLMModels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 7,
+          type: "anthropic",
+          apiKey: "",
+          baseUrl: "https://new.example/anthropic",
+        }),
+      );
+    });
+    expect(mocks.ListLLMModels).not.toHaveBeenCalled();
+  });
 });

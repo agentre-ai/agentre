@@ -20,6 +20,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/mock_agentruntime"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc"
 )
 
@@ -180,6 +181,84 @@ func TestDriveAutonomousTurn_PersistsPureAssistantTurn(t *testing.T) {
 			assert.Equal(t, chat_svc.AutonomousStreamName(100), finName, "兜底终态必须走会话级流")
 			assert.Equal(t, int64(2001), finLaunch, "应携带收尾 assistant 消息 id")
 			assert.Greater(t, finIdx, closedIdx, "兜底终态在 per-turn StreamClosed 之后补发")
+		})
+	})
+}
+
+// TestDriveAutonomousTurn_TruncatedTurn_PersistsTerminatedNotCompleted 锁定 F3 留下的
+// 线头:远端断连时 remote.Runtime 会 close 在飞自主轮的 events 并把终止理由放进
+// RunResult.StopErr,而 driveAutonomousTurn 此前完全不看 StopErr —— 一条**被截断**的
+// 助手消息于是以「正常跑完」的样子落库(errorText 空、会话翻 idle、emit StreamDone),
+// 用户看到的是一条戛然而止却「成功」的回答,分不出这是打断还是答完了。
+func TestDriveAutonomousTurn_TruncatedTurn_PersistsTerminatedNotCompleted(t *testing.T) {
+	convey.Convey("被打断的自主轮落成终态,而不是正常完成", t, func() {
+		m := setupChatTest(t)
+		ctx := m.ctx
+
+		sess := &chat_entity.Session{ID: 100, AgentID: 7, AgentStatus: "idle", ProviderSessionID: "sess-abc"}
+		be := &agent_backend_entity.AgentBackend{ID: 12, Type: "claudecode"}
+
+		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil).AnyTimes()
+
+		m.dbMock.ExpectBegin()
+		m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(5, nil)
+		m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+				msg.ID = 2001
+				return nil
+			}).Times(1)
+		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		m.dbMock.ExpectCommit()
+
+		var final *chat_entity.Message
+		m.message.EXPECT().Update(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+				cp := *msg
+				final = &cp
+				return nil
+			}).AnyTimes()
+
+		evs := make(chan agentruntime.Event, 1)
+		evs <- agentruntime.TextDelta{Text: "half a sen"}
+		close(evs)
+		at := agentruntime.AutonomousTurn{
+			Events:  evs,
+			Result:  &agentruntime.RunResult{StopErr: remote.ErrRunInterrupted},
+			Trigger: "background_task",
+		}
+
+		chat_svc.DriveAutonomousTurnForTest(ctx, m.svc, 100, be, at)
+
+		convey.Convey("终止理由留在消息文案里,而不是一条空 errorText 的「成功」消息", func() {
+			require.NotNil(t, final)
+			assert.NotEmpty(t, final.ErrorText,
+				"被截断的自主轮必须留下终态文案,否则与正常答完无法区分")
+			assert.NotContains(t, final.ErrorText, "agentruntime/runtimes/remote:",
+				"终态文案是给用户看的,不是 Go 哨兵字符串")
+		})
+
+		convey.Convey("会话落既有的 error 态,而不是 idle", func() {
+			assert.Equal(t, "error", sess.AgentStatus)
+			assert.False(t, sess.NeedsAttention)
+		})
+
+		convey.Convey("收尾 emit StreamError 而不是 StreamDone", func() {
+			var sawErr, sawDone bool
+			for _, ev := range m.events {
+				p, ok := ev.Payload.(chat_svc.ChatStreamEvent)
+				if !ok {
+					continue
+				}
+				switch p.Kind {
+				case chat_svc.StreamError:
+					sawErr = true
+					assert.NotEmpty(t, p.Error)
+				case chat_svc.StreamDone:
+					sawDone = true
+				}
+			}
+			assert.True(t, sawErr, "被打断的自主轮收尾必须 emit StreamError")
+			assert.False(t, sawDone, "被打断的一轮不是正常完成,不得 emit StreamDone")
 		})
 	})
 }

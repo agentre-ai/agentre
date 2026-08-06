@@ -4,6 +4,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/cago-frame/agents/agent/blocks"
 	"github.com/cago-frame/agents/provider"
@@ -22,9 +23,9 @@ const (
 	EventToolUseEnd    EventKind = "tool_use_end"
 	EventToolResult    EventKind = "tool_result"
 	EventSteerConsumed EventKind = "steer_consumed"
-	// subagent 生命周期（仅 claudecode backend 当前产生；codex 不发）。
-	// chat_svc 把元数据 merge 到对应的外层 Agent ChatBlock 的 Subagent 字段上，
-	// 并 emit StreamSubagent* 给前端做卡片态切换。
+	// subagent 生命周期（claudecode 与 Pi runtime 产生；codex 不发）。
+	// Pi 的 stateful drain 在这里承载 parallel/chain 的 mode + runs 全量快照；
+	// claudecode 的 legacy 单运行生产者可继续不填 Runs。
 	EventSubagentStarted  EventKind = "subagent_started"
 	EventSubagentProgress EventKind = "subagent_progress"
 	EventSubagentDone     EventKind = "subagent_done"
@@ -58,6 +59,10 @@ const (
 	// service 把终态 patch 回 acc 里那条 ToolPermissionRequestBlock，并 forward
 	// 一条 StreamToolPermissionResolved 给前端做兜底 merge。
 	EventToolPermissionResolved EventKind = "tool_permission_resolved"
+	// EventExecApprovalRequested / Resolved model the OpenClaw Gateway exec
+	// approval lifecycle. Approval resolution is not tool execution completion.
+	EventExecApprovalRequested EventKind = "exec_approval_requested"
+	EventExecApprovalResolved  EventKind = "exec_approval_resolved"
 	// EventPermissionModeChanged claudecode CLI 通报自身 permission mode 已变更
 	// （被动 ExitPlanMode 流程 / 主动 set_permission_mode 回执）。
 	// chat_svc 接住后落 chat_sessions.permission_mode 并推 StreamSessionStatus patch。
@@ -80,7 +85,7 @@ const (
 // ToolUseEvent EventToolUseStart / End 携带。Input 是原始 JSON；chat_svc 自己 unmarshal 到 map。
 //
 // ParentToolCallID：当前 tool_use 是 subagent 内部调用时指向外层 Agent.tool_use_id；
-// 主 agent 自己的工具留空。前端据此把子卡归集到父 SubagentInvocationCard。
+// SubagentRunID：同一外层 parallel/chain 中稳定的输入槽 ID。主 agent 自己的工具留空。
 // 注:JSON wire 字段仍叫 parentToolUseId（来自 Anthropic CLI 协议），仅 Go field 重命名。
 //
 // Subagent：仅外层 Agent / Task 父调用上填，透传 claudecode.SubagentMeta 元数据。
@@ -89,6 +94,7 @@ type ToolUseEvent struct {
 	Name             string
 	Input            []byte
 	ParentToolCallID string
+	SubagentRunID    string
 	Subagent         *SubagentInfo
 }
 
@@ -102,24 +108,46 @@ type ToolResultEvent struct {
 	Content          string
 	IsError          bool
 	ParentToolCallID string
+	SubagentRunID    string
 	ResultMeta       []byte
 }
 
-// SubagentInfo 是 claudecode.SubagentMeta 在 runtime 层的镜像，由
-// EventSubagent* 事件以及外层 Agent 工具的 ToolUseEvent 携带。
-//
-// 字段含义见 claudecode.SubagentMeta。
+// SubagentInfo 是 runtime 层的 backend-neutral subagent 快照，由 EventSubagent*
+// 事件以及外层 Agent 工具的 ToolUseEvent 携带。legacy 字段镜像
+// claudecode.SubagentMeta；Mode/Runs 承载 Pi 的 normalized 单/并行/链式运行模型。
+// Runs 是全量快照：消费者在非 nil 时整片替换，nil 表示 legacy 事件省略、不得清空
+// 已有 runs。Status 是所有 runs 的 aggregate 状态，单个 run 状态保存在 Runs[i]。
 type SubagentInfo struct {
-	TaskID          string
-	SubagentType    string
-	Kind            string // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
-	TaskDescription string
-	Prompt          string
-	LastToolName    string
-	ToolUses        int
-	TotalTokens     int
-	DurationMs      int
-	Status          string // running | completed | failed | canceled (canceled 由 chat_svc 在 turn abort 收尾时推断,runtime 层不主动产出)
+	TaskID          string        `json:"taskId,omitempty"`
+	SubagentType    string        `json:"subagentType,omitempty"`
+	Kind            string        `json:"kind,omitempty"` // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
+	TaskDescription string        `json:"taskDescription,omitempty"`
+	Prompt          string        `json:"prompt,omitempty"`
+	LastToolName    string        `json:"lastToolName,omitempty"`
+	ToolUses        int           `json:"toolUses,omitempty"`
+	TotalTokens     int           `json:"totalTokens,omitempty"`
+	DurationMs      int           `json:"durationMs,omitempty"`
+	Status          string        `json:"status,omitempty"` // aggregate: waiting | running | completed | partial | failed | canceled | skipped | unknown
+	Mode            string        `json:"mode,omitempty"`
+	Runs            []SubagentRun `json:"runs,omitempty"`
+}
+
+// SubagentRun is one normalized child execution scoped by the outer tool call.
+// Legacy Claude producers may leave SubagentInfo.Runs empty.
+type SubagentRun struct {
+	ID             string `json:"id"`
+	Index          int    `json:"index"`
+	Agent          string `json:"agent,omitempty"`
+	Profile        string `json:"profile,omitempty"`
+	AgentSource    string `json:"agentSource,omitempty"`
+	Task           string `json:"task"`
+	RequestedModel string `json:"requestedModel,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Status         string `json:"status"`
+	LastToolName   string `json:"lastToolName,omitempty"`
+	ToolUses       int    `json:"toolUses,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	ErrorMessage   string `json:"errorMessage,omitempty"`
 }
 
 // ConsumedSteer is a queued mid-turn user message that the backend has now
@@ -264,6 +292,65 @@ type AskAnswerSink interface {
 	SubmitAnswer(ctx context.Context, sessionID int64, requestID string, questions []AskQuestion, answers []AskAnswer, skipped bool) error
 }
 
+// PendingToolPermission is one still-blocked (non-AskUserQuestion) tool
+// approval waiter, carrying the same fields ToolPermissionRequest raised it
+// with the first time (RequestID / ToolName / Input) — enough for a
+// reconnecting client to rebuild the approval card without a second,
+// parallel payload shape.
+//
+// Input is json.RawMessage, not []byte, for the same reason
+// ToolPermissionRequest.Input is: encoding/json renders []byte as base64,
+// so the reconnect payload would carry the tool input in a different shape
+// than the live event frame and the client would need two parsers for one
+// card.
+type PendingToolPermission struct {
+	RequestID string
+	ToolName  string
+	Input     json.RawMessage
+}
+
+// PendingAskUserQuestion is one still-blocked AskUserQuestion waiter,
+// carrying the same fields AskUserQuestionEvent raised it with the first
+// time (RequestID / Questions) — enough to rebuild the question card.
+type PendingAskUserQuestion struct {
+	RequestID string
+	Questions []AskQuestion
+}
+
+// WaiterSnapshot is the full set of a session's currently-blocked waiters,
+// returned by WaiterLister.PendingWaiters. Either slice may be empty; a
+// session with nothing pending returns the zero value.
+type WaiterSnapshot struct {
+	ToolPermissions  []PendingToolPermission
+	AskUserQuestions []PendingAskUserQuestion
+}
+
+// WaiterLister is implemented by backend runtimes whose control protocol can
+// enumerate its own currently-blocked waiters — the read half of
+// ToolPermissionSink / AskAnswerSink's submit-by-requestID write half.
+//
+// Declared as its own narrow interface (ISP) rather than a third method
+// bolted onto ToolPermissionSink / AskAnswerSink: the common caller only
+// ever wants to answer one already-known requestID and should not have to
+// also satisfy an enumeration method to do that, and a backend with no
+// approval protocol at all should not have to stub one out just to keep
+// implementing the sinks it does support.
+//
+// 实现者是有审批协议的那些 backend —— 今天是 claudecode（runtimes/claudecode/
+// control.go）与 codex（runtimes/codex/runtime.go）两家。没有审批协议的 backend
+// 不实现它；consumer 对它们 type-assert 失败后回落空 WaiterSnapshot，不是接口
+// 本身返回错误（R7）。
+//
+// No error return: PendingWaiters is a synchronous snapshot read of
+// in-memory state (mirrors SteerDrainer.DrainPending), not an I/O call.
+// sessionID unknown to this runner (never spawned / already evicted) yields
+// the zero-value WaiterSnapshot, same as "nothing pending right now" — R9
+// forbids any waiter timeout, so there is no separate "expired" case to
+// report either.
+type WaiterLister interface {
+	PendingWaiters(ctx context.Context, sessionID int64) WaiterSnapshot
+}
+
 type PlanStep struct {
 	Step   string
 	Status string
@@ -285,10 +372,19 @@ type MCPServerSpec struct {
 
 // RunRequest 一次 Send 的入参。
 type RunRequest struct {
-	Backend   *agent_backend_entity.AgentBackend
-	Provider  *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
-	AgentID   int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
-	SessionID int64                            // chat_sessions.ID；provider session resume / builtin conv id 用
+	Backend  *agent_backend_entity.AgentBackend
+	Provider *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
+	AgentID  int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
+	// SessionID 是这一轮在**本进程内**的会话身份：runner 的会话表（子进程缓存 /
+	// waiter / 自主续轮通道）全按它索引，控制类接口（Steerer / Aborter /
+	// ToolPermissionSink / WaiterLister …）收到的 sessionID 也是它。
+	//
+	// 桌面端进程里它就是 chat_sessions.ID（还兼作 provider session resume /
+	// builtin conv id 的 key）。agentred 里**不是**：那里同时服务多台设备，而会话 id
+	// 是各设备本地自增的、必然重号，daemon 因此在调 runner 前把对端指纹揉进这个值
+	// （见 internal/daemon/handlers.runtimeSessionID）。runner 只需把它当成一个不透明的
+	// 进程内唯一键，不要反解成 chat_sessions.ID、也不要拿它去查库。
+	SessionID int64
 	// Cwd 非空时直接用作 runner 工作目录；为空时各 runner 回退到 AgentCwd(AgentID)
 	// 兜底（保留老的 Agent 级目录行为）。chat_svc 在拼 RunRequest 时调
 	// project_svc.ResolveSessionCwd 解析 project 维度的 cwd 注入此字段，避免
@@ -366,8 +462,9 @@ type RunResult struct {
 	// ContextWindow 是 runtime 上报的模型上下文窗口大小（tokens）：
 	//   - codex：从 thread/tokenUsage/updated 通知的 modelContextWindow 字段抓（部分版本 codex
 	//     app-server 会推这个值）；
-	//   - piagent：只读 Pi RPC get_session_stats.contextUsage.contextWindow，避免
-	//     自定义 provider 复用公共模型名时误套 llmcatalog 元数据；
+	//   - piagent：用 Pi RPC get_state.model.contextWindow 启动，再由
+	//     get_session_stats.contextUsage.contextWindow 校正，避免自定义 provider
+	//     复用公共模型名时误套 llmcatalog 元数据；
 	//   - claudecode：通过 ContextWindowUpdated 事件实时上报，RunResult 通常留 0；
 	//   - builtin：不报。
 	// 0 表示 runner 没探到，chat_svc 用 provider.ContextWindow > cago catalog 兜底。

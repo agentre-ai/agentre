@@ -13,6 +13,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/app_setting_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
+	openclawrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/openclaw"
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentskill/claudeskill"  // 触发 discoverer init 注册
@@ -136,6 +137,7 @@ func Init(ctx context.Context) (*Runtime, error) {
 	if err := InitRemoteDevice(ctx); err != nil {
 		return nil, fmt.Errorf("init remote device: %w", err)
 	}
+	openclawrt.RegisterConfigResolver(openclawrt.ConfigResolverFunc(agent_backend_svc.ResolveOpenClawRuntimeConfig))
 
 	// 装配本地 HTTP 代理。启动失败软降级——只记日志、不阻断 App。
 	host, port := loadProxyAddr(ctx)

@@ -8,6 +8,15 @@
 // AgentStatus: session 级运行态 token。唯一定义；components/agentre/types.ts re-exports 此类型。
 export type AgentStatus = "idle" | "running" | "waiting" | "error";
 
+// SessionConnectionState: 本机与执行该会话那台远端 daemon 之间的**通道**状态
+// （后端 remote.ConnState / chat_svc StreamConnectionState 事件的 connectionState）。
+//
+// 它**不是**第五个 AgentStatus:断连期间远端可能正在全速跑,会话仍然是「运行中」,
+// 断的只是通道。做成第五个运行态取值会污染整套状态语言,并让所有既有的状态判定点
+// (退出确认的活跃态集合、侧边栏计数、工具栏禁用逻辑)错误归类。因此它单独成型,
+// 由 session-conn-store 持有,只用来改变转录流里活信号的**形态**。
+export type SessionConnectionState = "connected" | "reconnecting" | "lost";
+
 // SessionMetaSnapshot: session-meta-store 持有的静态字段快照。
 // 等同于 session-meta-store.ts 的 SessionMeta，此处做 re-export 别名。
 //

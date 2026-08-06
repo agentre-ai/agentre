@@ -55,6 +55,11 @@ const (
 	AgentBackendInvalidDevice                         // device_id 引用的远端设备不存在或已下线
 )
 
+// Agent 后端 12019~（piagent 绑定自定义供应商）
+const (
+	AgentBackendProviderModelRequired = iota + 12019 // 绑定供应商的 backend 要求 provider.Model 非空（--model 必须能选中模型）
+)
+
 // App 设置 15000~15999
 const (
 	AppSettingNotFound      = iota + 15000 // 设置项不存在
@@ -130,6 +135,8 @@ const (
 	ChatProviderSessionGone                        // CLI 的 provider 原生 Session 已不存在，本会话已重置
 	ChatRemoteProviderNotConfigured                // 远端 agentred 未配置该 provider key
 	ChatAgentNoBackend                             // Agent 还没配置后端，对话前请先选择
+	ChatRemoteRunInterrupted                       // 远端 agentred 重启/会话已中断，本轮被打断（不是运行失败）
+	ChatRemoteDaemonUnreachable                    // 与远端 agentred 断连且重连未成功，本轮到此为止
 )
 
 // Chat 排队消息（Enqueue / Steer / Cancel）17050~ 留段

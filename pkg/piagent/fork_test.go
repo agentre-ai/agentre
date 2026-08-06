@@ -55,7 +55,7 @@ func TestPrepareStreamForksWithoutSendingPromptUntilStart(t *testing.T) {
 	assert.Equal(t, "session-new", prepared.SessionID())
 	assert.Equal(t, 1, runner.starts)
 	beforeStart := stdinFrames(t, proc.stdin.String())
-	require.Len(t, beforeStart, 4)
+	require.Len(t, beforeStart, 5)
 	for _, frame := range beforeStart {
 		assert.NotEqual(t, "prompt", frame["type"])
 	}
@@ -65,8 +65,8 @@ func TestPrepareStreamForksWithoutSendingPromptUntilStart(t *testing.T) {
 	for stream.Next() {
 	}
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 7)
-	assert.Equal(t, "prompt", frames[4]["type"])
+	require.Len(t, frames, 8)
+	assert.Equal(t, "prompt", frames[5]["type"])
 	assert.Equal(t, "new-user", stream.UserAnchor())
 }
 
@@ -98,15 +98,16 @@ func TestStreamForksBeforePromptInTheSameRPCProcess(t *testing.T) {
 	assert.Equal(t, "session-new", stream.SessionID())
 	assert.Equal(t, "new-user", stream.UserAnchor())
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 7)
+	require.Len(t, frames, 8)
 	assert.Equal(t, "get_state", frames[0]["type"])
 	assert.Equal(t, "fork", frames[1]["type"])
 	assert.Equal(t, "fork-user", frames[1]["entryId"])
 	assert.Equal(t, "get_state", frames[2]["type"])
 	assert.Equal(t, "get_entries", frames[3]["type"])
-	assert.Equal(t, "prompt", frames[4]["type"])
-	assert.Equal(t, "get_entries", frames[5]["type"])
-	assert.Equal(t, "get_session_stats", frames[6]["type"])
+	assert.Equal(t, "get_session_stats", frames[4]["type"])
+	assert.Equal(t, "prompt", frames[5]["type"])
+	assert.Equal(t, "get_entries", frames[6]["type"])
+	assert.Equal(t, "get_session_stats", frames[7]["type"])
 }
 
 func TestStreamWithEmptyForkAnchorKeepsNormalPromptFlow(t *testing.T) {
@@ -131,10 +132,11 @@ func TestStreamWithEmptyForkAnchorKeepsNormalPromptFlow(t *testing.T) {
 
 	assert.Equal(t, "session-existing", stream.SessionID())
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 3)
+	require.Len(t, frames, 4)
 	assert.Equal(t, "get_state", frames[0]["type"])
-	assert.Equal(t, "prompt", frames[1]["type"])
-	assert.Equal(t, "get_session_stats", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	assert.Equal(t, "prompt", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[3]["type"])
 }
 
 func TestStreamForkFailsExplicitlyWhenExtensionRequestsBlockingUI(t *testing.T) {

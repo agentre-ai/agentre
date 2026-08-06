@@ -2,6 +2,8 @@ package chat_repo_test
 
 import (
 	"context"
+	"database/sql/driver"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -9,6 +11,7 @@ import (
 	"github.com/cago-frame/cago/pkg/utils/testutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/repository/chat_repo"
@@ -17,8 +20,9 @@ import (
 func assertResetActiveSessions(t *testing.T, ctx context.Context, mock sqlmock.Sqlmock, affectedRows int64) {
 	t.Helper()
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE `chat_sessions` SET `agent_status`=\\?,`updatetime`=\\? WHERE agent_status IN \\(\\?,\\?\\) AND status = \\?").
-		WithArgs("error", sqlmock.AnyArg(), "running", "waiting", consts.ACTIVE).
+	mock.ExpectExec("UPDATE `chat_sessions` SET `agent_status`=\\?,`updatetime`=\\? WHERE agent_status IN \\(\\?,\\?\\) AND status = \\? "+
+		"AND \\(exec_device_id <= \\? OR exec_daemon_fingerprint = \\?\\)").
+		WithArgs("error", sqlmock.AnyArg(), "running", "waiting", consts.ACTIVE, int64(0), "").
 		WillReturnResult(sqlmock.NewResult(0, affectedRows))
 	mock.ExpectCommit()
 
@@ -280,6 +284,7 @@ func TestSessionRepo_Create(t *testing.T) {
 			int64(0),  // project_id
 			"",        // purpose
 			0, "", "", // context_window, permission_mode, permission_mode_at_launch
+			int64(0), "", int64(0), // exec_device_id, exec_daemon_fingerprint, event_cursor —— 新建会话默认本机执行、无游标
 			consts.ACTIVE, sqlmock.AnyArg(), sqlmock.AnyArg(), // status, createtime, updatetime
 		).
 		WillReturnResult(sqlmock.NewResult(99, 1))
@@ -377,6 +382,12 @@ func TestSessionRepo_SoftDelete(t *testing.T) {
 // TestSessionRepo_ResetActiveSessions 钉死启动期残留清理 SQL:任何 agent_status
 // 是 running / waiting 的未软删 session 都翻成 error。
 // 主 Wails 实例 Startup 后调一次,防止 app crash / restart 留下永远卡 RUNNING 的会话。
+//
+// **跑在远端 daemon 上的会话被排除在外**:那一轮的执行者是另一台机器上的进程,它不随
+// 桌面 App 退出而消亡(R4:断连不终止会话)。把它一并翻成 error 是在报一个假失败 ——
+// 会话此刻很可能正在远端跑着,而且如果它在桌面端离线期间什么新内容都没产出,补齐重放
+// 不会写任何状态,这条假失败就永久留在界面上。它们的去向改由补齐按 daemon 交回的
+// 生命周期逐条判定(见 chat_svc.CatchUpRemoteSessions / ResetActiveSessionsByIDs)。
 func TestSessionRepo_ResetActiveSessions(t *testing.T) {
 	t.Run("有残留时把 running / waiting 翻成 error 并返回受影响行数", func(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)
@@ -388,6 +399,72 @@ func TestSessionRepo_ResetActiveSessions(t *testing.T) {
 		ctx, _, mock := testutils.Database(t)
 
 		assertResetActiveSessions(t, ctx, mock, 0)
+	})
+}
+
+// TestSessionRepo_ResetActiveSessionsByIDs 钉死「补齐判完之后收尾这几条」的 SQL:
+// 只动点名的那些会话,且只动其中还停在 running / waiting 的行。
+//
+// 它是启动期清理在远端那一半的落点:blanket 的 ResetActiveSessions 不再碰远端会话,
+// 因为在连上 daemon 之前根本无从知道它是不是还在跑;连上之后 daemon 说它不在跑了,
+// 才由这一条按 id 收尾。空 id 列表不发 SQL —— 那会退化成 WHERE id IN () 的全表扫描。
+func TestSessionRepo_ResetActiveSessionsByIDs(t *testing.T) {
+	t.Run("点名的会话里还在 running / waiting 的翻成 error", func(t *testing.T) {
+		ctx, _, mock := testutils.Database(t)
+
+		mock.ExpectBegin()
+		mock.ExpectExec("UPDATE `chat_sessions` SET `agent_status`=\\?,`updatetime`=\\? "+
+			"WHERE agent_status IN \\(\\?,\\?\\) AND status = \\? AND id IN \\(\\?,\\?\\)").
+			WithArgs("error", sqlmock.AnyArg(), "running", "waiting", consts.ACTIVE, int64(100), int64(101)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+
+		n, err := chat_repo.NewSession().ResetActiveSessionsByIDs(ctx, []int64{100, 101})
+		assert.NoError(t, err)
+		assert.Equal(t, int64(1), n)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("id 多到超过 SQLite 参数上限时分批发,不塞进一条 IN ?", func(t *testing.T) {
+		ctx, _, mock := testutils.Database(t)
+
+		ids := make([]int64, 0, 900)
+		for i := 0; i < 900; i++ {
+			ids = append(ids, int64(1000+i))
+		}
+		// SQLite 的预编译参数上限最保守是 999(SQLITE_MAX_VARIABLE_NUMBER):一条
+		// 900 个 id 的 IN ? 再加上 SET 与其余 WHERE,整条语句直接被拒 —— 用户攒够
+		// 会话之后,启动补齐的收尾这一步就永远报错,判定结果一条都落不了库。
+		// 每批一条独立的语句(而不是一条横跨全部 id 的大事务):批次之间别的写入插得
+		// 进来,不会把流式写入按在 SQLite 的 busy timeout 上。
+		for start := 0; start < len(ids); start += 400 {
+			end := min(start+400, len(ids))
+			args := make([]driver.Value, 0, 5+end-start)
+			args = append(args, "error", sqlmock.AnyArg(), "running", "waiting", consts.ACTIVE)
+			for _, id := range ids[start:end] {
+				args = append(args, id)
+			}
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE `chat_sessions` SET `agent_status`=\\?,`updatetime`=\\? " +
+				"WHERE agent_status IN \\(\\?,\\?\\) AND status = \\? AND id IN ").
+				WithArgs(args...).
+				WillReturnResult(sqlmock.NewResult(0, int64(end-start)))
+			mock.ExpectCommit()
+		}
+
+		n, err := chat_repo.NewSession().ResetActiveSessionsByIDs(ctx, ids)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(900), n, "受影响行数是各批之和")
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("没有点名任何会话时一条 SQL 都不发", func(t *testing.T) {
+		ctx, _, mock := testutils.Database(t)
+
+		n, err := chat_repo.NewSession().ResetActiveSessionsByIDs(ctx, nil)
+		assert.NoError(t, err)
+		assert.Zero(t, n)
+		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
 
@@ -438,4 +515,167 @@ func TestSessionRepo_UpdatePermissionModeAtLaunch(t *testing.T) {
 
 	require.NoError(t, repo.UpdatePermissionModeAtLaunch(ctx, 42, "bypassPermissions"))
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateExecDaemon 钉死「这条会话跑在哪台 daemon 上」的写入 SQL。
+// 关键不变式:(实例标识, 游标) 必须始终是同一条通知日志上的一对 —— 改绑到另一台
+// daemon 时,老游标指的是老 daemon 日志里的位置,必须在同一条语句里归零;换成两次
+// 写(先改绑再清游标)会留下一个「游标看起来对新 daemon 有效」的崩溃窗口。
+func TestSessionRepo_UpdateExecDaemon(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions` SET `event_cursor`=CASE WHEN exec_daemon_fingerprint = \\? THEN event_cursor ELSE 0 END,`exec_daemon_fingerprint`=\\?,`exec_device_id`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\?").
+		WithArgs("sha256:beef", "sha256:beef", int64(3), sqlmock.AnyArg(), int64(42), consts.ACTIVE).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.UpdateExecDaemon(ctx, 42, 3, "sha256:beef"))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateEventCursor 钉死游标推进的写入 SQL:只动 event_cursor,
+// 不能把执行位置或实例标识一起改掉(否则游标与 daemon 的绑定关系就断了);
+// 且 WHERE 必须带上实例标识 —— 会话已改绑到别的 daemon 后,老连接上迟到的一条
+// 通知不得把老日志的 seq 写到新 daemon 的记录上。
+func TestSessionRepo_UpdateEventCursor(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions` SET `event_cursor`=\\?,`updatetime`=\\? WHERE id = \\? AND status = \\? AND exec_daemon_fingerprint = \\?").
+		WithArgs(int64(17), sqlmock.AnyArg(), int64(42), consts.ACTIVE, "sha256:beef").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.UpdateEventCursor(ctx, 42, "sha256:beef", 17))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSessionRepo_UpdateKeepsRemoteExecColumns 回归(R12):轮次收尾的整行回写不得
+// 抹掉轮次进行中定向写下的执行位置与游标。
+//
+// 真机复现的形态(逐 250ms 采样,两次独立运行一致):轮次进行中三列都对
+// (exec_device_id=2 / 指纹 / 游标 15→33,补齐也确实用上了),一到 running → idle
+// 收尾就一起变成 0 / 空串 / 0。收尾走的 chat_svc.persistSessionStatus 拿的是**轮次
+// 开始时**读出来的那份实体(那会儿还没 borrow 到远端,三列都是零值),而 Update 是
+// 整行 Save —— 内存里的旧零值把这中间两次定向写(UpdateExecDaemon / UpdateEventCursor)
+// 刚落库的值盖回去。
+//
+// 后果不止丢三个字段:ListRemoteExecSessions 的取材条件是 exec_device_id > 0 且
+// exec_daemon_fingerprint 非空,空闲的远端会话因此永远进不了启动补齐 ——
+// 「退出桌面 App 之后下次打开能看到这段时间里发生的全部内容」对它们完全失效。
+//
+// 所以断言落在「这一行最后是什么」,而不是收尾那条 SQL 长什么样:缺陷出在两次写
+// 之间的相互作用,单看任何一条语句都是对的。
+func TestSessionRepo_UpdateKeepsRemoteExecColumns(t *testing.T) {
+	ctx, gdb, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	// 库里那一行。sqlmock 不是真引擎、不维护行状态,这里按仓储实际发出的 SET 子句
+	// 逐列跟着改(见 captureUpdatedRow)。
+	row := map[string]any{
+		"agent_status":            "running",
+		"exec_device_id":          int64(0),
+		"exec_daemon_fingerprint": "",
+		"event_cursor":            int64(0),
+	}
+	captureUpdatedRow(t, gdb, row)
+
+	// 轮次开始时读出来的实体:还没 borrow 到远端,三列都是零值。
+	sess := &chat_entity.Session{ID: 42, AgentStatus: "running", Status: consts.ACTIVE}
+
+	// 写 1:borrow 到 daemon 2 时记下执行位置(chat_svc.recordExecDaemon)。
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.UpdateExecDaemon(ctx, 42, 2, "sha256:beef"))
+
+	// 写 2:消费到 seq 33 时推进游标(chat_svc 的游标端口 SaveCursor)。
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.UpdateEventCursor(ctx, 42, "sha256:beef", 33))
+
+	// 写 3:running → idle 收尾,用的是上面那份**没跟着变**的内存实体。
+	sess.AgentStatus = "idle"
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.Update(ctx, sess))
+
+	assert.Equal(t, int64(2), row["exec_device_id"], "收尾不得把执行位置抹回本机")
+	assert.Equal(t, "sha256:beef", row["exec_daemon_fingerprint"], "收尾不得抹掉 daemon 实例标识")
+	assert.Equal(t, int64(33), row["event_cursor"], "收尾不得把游标冲回 0")
+	assert.Equal(t, "idle", row["agent_status"], "收尾本来要写的状态照常落库")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// captureUpdatedRow 把仓储实际发出的 UPDATE 语句应用到 row 上,补出 sqlmock 没有的
+// 行状态。取的是 GORM 生成的 SET 子句本身,不预设哪条语句该写哪些列。
+func captureUpdatedRow(t *testing.T, gdb *gorm.DB, row map[string]any) {
+	t.Helper()
+	require.NoError(t, gdb.Callback().Update().After("gorm:update").
+		Register("test:capture_updated_row", func(tx *gorm.DB) {
+			applySetClause(row, tx.Statement.SQL.String(), tx.Statement.Vars)
+		}))
+}
+
+// applySetClause 解析 "UPDATE ... SET `col`=?,... WHERE ..." 的 SET 子句并赋值。
+// 右值不是单个占位符的列(UpdateExecDaemon 的 event_cursor CASE 表达式)由引擎求值,
+// 这里保持原值 —— 本用例走到那一步时 CASE 的结果与原值同为 0。
+func applySetClause(row map[string]any, sql string, vars []any) {
+	set := sql[strings.Index(sql, " SET ")+len(" SET ") : strings.Index(sql, " WHERE ")]
+	arg := 0
+	for _, assign := range strings.Split(set, ",") {
+		col, rhs, ok := strings.Cut(assign, "=")
+		if !ok {
+			continue
+		}
+		col = strings.Trim(col, "`")
+		if rhs == "?" {
+			if _, tracked := row[col]; tracked {
+				row[col] = vars[arg]
+			}
+		}
+		arg += strings.Count(rhs, "?")
+	}
+}
+
+// TestSessionRepo_ListRemoteExecSessions 钉死「App 启动后该连谁」那一问的读取 SQL。
+//
+// exec_device_id 在此之前是只写列:写进去、再没人读。桌面端因此在重启后不知道哪些
+// 会话跑在哪台 daemon 上,补齐三步无从发起 —— 用户故事「退出 App 后下次打开看到这
+// 段时间发生的全部内容」直接不成立。
+//
+// 过滤条件的两半都是硬的:exec_device_id > 0 排除本机会话(它们的真相源是本地库,
+// 没有可补齐的远端日志),exec_daemon_fingerprint <> ” 排除没有实例标识的行 ——
+// 游标只在它所属的那条通知日志里有意义,标识为空时 LoadCursor 一律判失效,拿它去
+// attach 只会白发一轮 RPC。
+//
+// 取材还必须**有界**:补齐会为每条会话装一个消费方、加一份池连接引用、开一条自主轮
+// 监视,而这条查询原本返回「历史上曾远端执行过的每一条」会话 —— 用得久了就是几千条。
+// 两个上界都有依据:daemon 的通知日志只留 30 天(daemon.defaultJournalRetention),
+// 更老的会话补齐能拿回来的是空的;仍停在 running / waiting 的行不受时间窗限制并排在
+// 最前 —— 只有 daemon 能给它们判据,漏掉它们就是界面上一条永远转圈的会话。
+func TestSessionRepo_ListRemoteExecSessions(t *testing.T) {
+	ctx, _, mock := testutils.Database(t)
+
+	mock.ExpectQuery("SELECT \\* FROM `chat_sessions` WHERE exec_device_id > \\? AND exec_daemon_fingerprint <> \\? AND status = \\? "+
+		"AND \\(agent_status IN \\(\\?,\\?\\) OR updatetime >= \\?\\) "+
+		"ORDER BY CASE WHEN agent_status IN \\('running','waiting'\\) THEN 0 ELSE 1 END, updatetime DESC, id DESC LIMIT \\?").
+		WithArgs(int64(0), "", consts.ACTIVE, "running", "waiting", sqlmock.AnyArg(), 200).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "agent_id", "agent_status", "status", "exec_device_id", "exec_daemon_fingerprint", "event_cursor"}).
+			AddRow(1, 7, "running", consts.ACTIVE, 3, "sha256:beef", 17).
+			AddRow(2, 7, "idle", consts.ACTIVE, 4, "sha256:cafe", 0))
+
+	got, err := chat_repo.NewSession().ListRemoteExecSessions(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, int64(3), got[0].ExecDeviceID)
+	assert.Equal(t, "sha256:beef", got[0].ExecDaemonFingerprint)
+	assert.Equal(t, int64(17), got[0].EventCursor)
+	assert.Equal(t, int64(4), got[1].ExecDeviceID)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -22,7 +22,8 @@ import (
 type MCPProxyDispatcher func(ctx context.Context, req wire.MCPProxyRequest) (wire.MCPProxyResponse, error)
 
 // mcpProxyDispatcher 是进程级注入点(单 desktop 进程一份),与 chat_svc.RegisterGateway
-// 同款 bootstrap 接线风格。nil = 未装配(理论上不该发生,handler 回 502 让 CLI 看到错误)。
+// 同款 bootstrap 接线风格。nil = 未装配(理论上不该发生,handler 答一条面向 LLM 可读的
+// 工具错误让 CLI 与模型看懂,见 handleMCPProxy)。
 var mcpProxyDispatcher MCPProxyDispatcher
 
 // RegisterMCPProxyDispatcher bootstrap 接线入口;传 nil 清空(测试用)。
@@ -77,8 +78,15 @@ func NewLocalGatewayDispatcher(baseURL func() string, client *http.Client) MCPPr
 
 // handleMCPProxy 处理 daemon 经 MethodMCPProxy 反向请求过来的 MCP HTTP 调用:解包 →
 // 用注入的 dispatcher 在 desktop 本机重放 → 把应答原路返回(成为该 JSON-RPC 请求的 result)。
-// 返回的 error 才会让 daemon 侧 Request 失败;能装进 MCPProxyResponse 的错误(含未装配 /
-// 重放失败)都以 HTTP 状态码回给 CLI,避免一个工具调用打挂整条 RPC 连接。
+// 返回的 error 才会让 daemon 侧 Request 失败;能装进 MCPProxyResponse 的错误都以应答形式
+// 回给 CLI,避免一个工具调用打挂整条 RPC 连接。
+//
+// 这一跳失败(未装配 dispatcher / 本机重放失败)时不能回裸非 2xx:daemon 收到
+// MCPProxyResponse 后原样透传给 CLI 子进程,非 2xx 会让 CLI 内嵌的 MCP 客户端把整条应答
+// 当传输层故障丢弃,body 里的话模型永远读不到(R17)。对模型来说这与 daemon 侧解不出目标
+// 是同一件事——这次工具调用够不着发起端——所以答的是同一句话:
+// wire.MCPTunnelUnavailableResponse,与 daemon 侧共用一份构造,免得两跳的措辞漂移。
+// 真实原因只留在下面这几行日志里。
 func (r *Runtime) handleMCPProxy(ctx context.Context, raw json.RawMessage) (any, error) {
 	var req wire.MCPProxyRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -89,13 +97,13 @@ func (r *Runtime) handleMCPProxy(ctx context.Context, raw json.RawMessage) (any,
 	if d == nil {
 		logger.Ctx(ctx).Warn("remote runtime: mcpProxy with no dispatcher registered",
 			zap.String("path", req.Path))
-		return wire.MCPProxyResponse{Status: 502, Body: []byte("mcp proxy: desktop dispatcher unavailable")}, nil
+		return wire.MCPTunnelUnavailableResponse(req.Path, req.Body), nil
 	}
 	resp, err := d(ctx, req)
 	if err != nil {
 		logger.Ctx(ctx).Warn("remote runtime: mcpProxy dispatch failed",
 			zap.String("path", req.Path), zap.Error(err))
-		return wire.MCPProxyResponse{Status: 502, Body: []byte("mcp proxy: " + err.Error())}, nil
+		return wire.MCPTunnelUnavailableResponse(req.Path, req.Body), nil
 	}
 	return resp, nil
 }

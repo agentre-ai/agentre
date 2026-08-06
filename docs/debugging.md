@@ -50,7 +50,7 @@ tail -n 200 "$ERR" | jq -c '{ts,caller,msg,error}'
 # Filter by package/caller
 grep -F '"caller":"hook_svc' "$LOG" | tail -n 50 | jq -c .
 
-# Filter by a chat session (structured fields are camelCase)
+# Filter by a chat session (structured fields are camelCase) — desktop log only
 jq -c 'select(.sessionId == 42)' "$LOG"
 ```
 
@@ -91,6 +91,8 @@ diff <(sqlite3 "$DB" "SELECT id FROM migrations ORDER BY id;") \
 ```
 Missing ids ⇒ relaunch the app to run `RunMigrations`; never hand-insert into `migrations`.
 
+**"A remote session on `agentred` produced nothing"** → the daemon writes plain `log.Printf` lines to stderr (wherever the operator redirected them), not into `agentre.log`, and it does **not** hand your chat session id to the backend: session ids are each client's own local primary key, so the daemon folds the peer's device fingerprint into that number before calling claude-code / codex. Grepping the daemon's output for the chat session id therefore finds only the daemon's own frames, never the backend's. The one line that joins both sides is `runtime.run: session started`, which prints `sid=` (the desktop's `chat_sessions.id`) next to `backendKey=` (what the backend's own `sessionID` field reports); grep that once, then follow `backendKey`. For the journal side, `agentred status` prints the daemon's database path and size.
+
 **"App won't start"** → read `error.log` last 50 lines first. Mostly `mkdir … file exists` or `database is locked` style messages from root `main.go` and `internal/bootstrap/`.
 
 ## Common Mistakes
@@ -100,4 +102,4 @@ Missing ids ⇒ relaunch the app to run `RunMigrations`; never hand-insert into 
 - **Editing rows directly to "fix" a bug.** That hides the producer-side bug ([develop.md](./develop.md#fix-discipline-hard-constraint)). Reproduce, then fix the Go code + add a regression test against sqlmock.
 - **Trusting `agentre.log` after a crash.** zap may buffer the last few lines. Prefer `error.log` for fatals, or turn on **Debug Logging** (Settings → Version & Updates) and reproduce.
 - **Greppping with single quotes on a JSON field.** `grep '"caller":"hook_svc'` works; `grep "caller":"hook_svc"` does not (shell eats the quotes). Use `-F` for fixed strings.
-- **Confusing this DB with test DBs.** Repository/service unit tests use mocks (sqlmock uses a MySQL dialect) and never touch `$DB`; migration tests and `internal/bootstrap/cago_test.go` may create isolated temporary SQLite databases, not this runtime DB. Bugs you reproduce here are real runtime state, not test fixtures.
+- **Confusing this DB with test DBs.** Repository/service unit tests use mocks (sqlmock uses a MySQL dialect) and never touch `$DB`; the three exemptions in [testing.md](./testing.md#test-stack) (migration tests, `internal/bootstrap/cago_test.go`, `internal/daemon/daemon_test.go`) create isolated temporary SQLite databases, not this runtime DB. Bugs you reproduce here are real runtime state, not test fixtures.

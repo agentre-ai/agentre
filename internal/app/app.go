@@ -88,9 +88,17 @@ func (a *App) Startup(ctx context.Context) {
 	remoteDeviceEmit := watcher.EmitterFunc(func(p watcher.StateEvent) {
 		wailsruntime.EventsEmit(a.ctx, watcher.EventName, p)
 		a.onRemoteDeviceState(p.ID, p.Online)
+		a.onRemoteDeviceOnline(p.ID, p.Online)
 	})
 	bootstrap.InitRemoteDeviceWatcher(context.Background(), remoteDeviceEmit)
 	bootstrap.RemoteDeviceWatcherBoot(context.Background())
+
+	// 远端会话补齐:按 chat_sessions.exec_device_id 连回各台配对 daemon,把桌面端
+	// 离线期间产生的转录与待决策接回来(「关掉 App,下次打开看到这段时间的全部内容」)。
+	// 必须在 InitRemoteDevice 之后(要连接池)、且脱离 startup ctx 起 goroutine ——
+	// 它会逐台 daemon 拨号,不能把窗口显示卡在这上面。
+	//nolint:gosec // G118: startup catch-up deliberately outlives the startup context
+	go a.catchUpRemoteSessions()
 
 	// Claude Code OAuth usage HUD:启动后台 60s 轮询,wails event "cc_usage:update"
 	// 推送给前端 QuotaMeter。Shutdown 时停所有 ticker。
@@ -102,6 +110,42 @@ func (a *App) Startup(ctx context.Context) {
 	go a.startAutoUpdateCheck()
 
 	logger.Default().Info("app startup", zap.Any("info", a.Info()))
+}
+
+// catchUpRemoteSessions 补齐所有记录了远端执行位置的会话。失败只记日志:某台 daemon
+// 关着是常态,不该影响 App 启动。
+func (a *App) catchUpRemoteSessions() {
+	svc := chat_svc.Chat()
+	if svc == nil {
+		return
+	}
+	if err := svc.CatchUpRemoteSessions(context.Background()); err != nil {
+		logger.Default().Warn("app startup: catch up remote sessions", zap.Error(err))
+	}
+}
+
+// onRemoteDeviceOnline 某台配对 daemon 重新上线时,补上启动那会儿没做成的补齐。
+//
+// catchUpRemoteSessions 只在 Startup 跑一次:开机自启早于 Wi-Fi/VPN 就绪、或那台 daemon
+// 恰好在重启时,那一次逐台拨号必然失败,而设备重新上线时没有任何东西重跑它 —— 该设备上
+// 的会话在本进程内就再也不会被补齐或接管。设备监视本来就在报上线/下线(配额 ticker 已经
+// 挂在同一条信号上),补齐挂上去即可,不必另起一个轮询。
+//
+// 补成过的设备再上线是 no-op(判据在 chat_svc 那侧),所以设备抖动不会变成 attach 风暴。
+func (a *App) onRemoteDeviceOnline(id int64, online bool) {
+	if !online {
+		return
+	}
+	svc := chat_svc.Chat()
+	if svc == nil {
+		return
+	}
+	// 脱离 watcher 的事件回调:补齐要逐条拨号 + 走完补齐三步,不能把回调按在这上面。
+	go func() {
+		if err := svc.CatchUpRemoteDevice(context.Background(), id); err != nil {
+			logger.Default().Warn("app: catch up remote device", zap.Int64("deviceId", id), zap.Error(err))
+		}
+	}()
 }
 
 func (a *App) resetStaleSessionsOnStartup(ctx context.Context) {

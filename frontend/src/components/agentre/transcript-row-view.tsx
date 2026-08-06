@@ -10,6 +10,7 @@ import {
   Pencil,
   RefreshCw,
   TriangleAlert,
+  WifiOff,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -33,6 +34,7 @@ import { CompactBoundaryDivider } from "./compact-boundary-divider";
 import { LocalCommandCard } from "./local-command/card";
 import { MarkdownText, StreamingMarkdown } from "./markdown-text";
 import { MessageRow, MessageCopyButton } from "./message-row";
+import { OpenClawExecApprovalCard } from "./openclaw-exec-approval/card";
 import { ToolApprovalCard } from "./tool-approval/card";
 import { ThinkingBlock } from "./thinking-block";
 import type { TranscriptRow, TranscriptRowItem } from "./transcript-rows";
@@ -51,8 +53,12 @@ export type TranscriptRenderContextValue = {
   onPlanActionStarted?: (stream: PlanActionStream, userText: string) => void;
   /** 停掉 AgentSpawn 卡对应的正在运行子 agent(按 tool_use_id);只读/不支持时不传。 */
   onStopSubagent?: (toolUseId: string) => void;
+  /** 停掉本地命令；ChatPanel 是生命周期 owner，只读模式不传。 */
+  onStopLocalCommand?: (terminalId: string) => void | Promise<void>;
   /** 只读模式下不传；有值时才渲染「重新生成」按钮。 */
   onRerun?: (messageId: number) => void;
+  /** 只读模式下不传；有值时错误卡渲染「继续」按钮。 */
+  onContinue?: (messageId: number) => void;
   /** 只读模式下不传；有值时才渲染「编辑」按钮。 */
   onEdit?: (messageId: number) => void;
 };
@@ -152,19 +158,36 @@ function MessageMeta({
 }: MessageMetaProps) {
   const { t } = useTranslation();
   const durationLabel = `${(durationMs / 1000).toFixed(1)}s`;
+  // 后端一个 token 数都没上报时（如 OpenClaw 网关不发 usage 帧），渲染「↑0 ↓0」
+  // 等于把「没上报」说成「用了 0 个 token」。这种情况整块隐藏计数，只留耗时。
+  const hasUsage =
+    promptTokens > 0 ||
+    completionTokens > 0 ||
+    cachedTokens > 0 ||
+    cacheCreationTokens > 0 ||
+    reasoningTokens > 0;
 
   // tooltip 里需要拆分展示，所以这里给一个稳定的 row 渲染器避免重复。
   const rows: { label: string; value: string }[] = [
     { label: t("chat.meta.model"), value: model || "—" },
-    {
-      label: t("chat.meta.prompt"),
-      value: promptTokens.toLocaleString(),
-    },
-    {
-      label: t("chat.meta.completion"),
-      value: completionTokens.toLocaleString(),
-    },
   ];
+  if (hasUsage) {
+    rows.push(
+      {
+        label: t("chat.meta.prompt"),
+        value: promptTokens.toLocaleString(),
+      },
+      {
+        label: t("chat.meta.completion"),
+        value: completionTokens.toLocaleString(),
+      },
+    );
+  } else {
+    rows.push({
+      label: t("chat.meta.usage"),
+      value: t("chat.meta.usageUnavailable"),
+    });
+  }
   if (cachedTokens > 0) {
     rows.push({
       label: t("chat.meta.cacheHit"),
@@ -200,15 +223,22 @@ function MessageMeta({
                 <span className="text-border-strong">·</span>
               </>
             ) : null}
-            <span className="inline-flex items-center gap-0.5">
-              <ArrowUp className="size-2.5" aria-hidden="true" />
-              {promptTokens.toLocaleString()}
-            </span>
-            <span className="inline-flex items-center gap-0.5">
-              <ArrowDown className="size-2.5" aria-hidden="true" />
-              {completionTokens.toLocaleString()}
-            </span>
-            <span className="text-border-strong">·</span>
+            {hasUsage ? (
+              <span
+                data-testid="message-token-counts"
+                className="inline-flex items-center gap-1.5"
+              >
+                <span className="inline-flex items-center gap-0.5">
+                  <ArrowUp className="size-2.5" aria-hidden="true" />
+                  {promptTokens.toLocaleString()}
+                </span>
+                <span className="inline-flex items-center gap-0.5">
+                  <ArrowDown className="size-2.5" aria-hidden="true" />
+                  {completionTokens.toLocaleString()}
+                </span>
+                <span className="text-border-strong">·</span>
+              </span>
+            ) : null}
             <span>{durationLabel}</span>
           </button>
         </TooltipTrigger>
@@ -313,7 +343,15 @@ function UserMessageActions({ onEdit }: { onEdit: () => void }) {
   );
 }
 
-function ErrorCard({ text, onRerun }: { text: string; onRerun?: () => void }) {
+function ErrorCard({
+  text,
+  onContinue,
+  onRerun,
+}: {
+  text: string;
+  onContinue?: () => void;
+  onRerun?: () => void;
+}) {
   const { t } = useTranslation();
   return (
     <section
@@ -327,11 +365,23 @@ function ErrorCard({ text, onRerun }: { text: string; onRerun?: () => void }) {
       <span className="min-w-0 flex-1 text-aux text-status-error">
         {t("chat.errorCard.message", { text })}
       </span>
-      {onRerun ? (
-        <Button type="button" size="xs" variant="outline" onClick={onRerun}>
-          {t("chat.errorCard.regenerate")}
-        </Button>
-      ) : null}
+      <div className="flex shrink-0 items-center gap-2">
+        {onContinue ? (
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            onClick={onContinue}
+          >
+            {t("chat.errorCard.continue")}
+          </Button>
+        ) : null}
+        {onRerun ? (
+          <Button type="button" size="xs" variant="outline" onClick={onRerun}>
+            {t("chat.errorCard.regenerate")}
+          </Button>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -426,6 +476,38 @@ function CompactingIndicator() {
         <span className={cn(dotClass, "[animation-delay:0.3s]")} />
       </div>
       <span>{t("chat.compacting.label")}</span>
+    </div>
+  );
+}
+
+// DisconnectedIndicator 是 TypingIndicator / CompactingIndicator 的第三个兄弟:
+// 本机与执行该会话那台远端 daemon 之间的通道断了、客户端正在退避重连时,它顶替
+// 打字指示器出现在转录流里同一个位置(随内容滚动,不是横幅、不常驻)。
+//
+// 断连不改会话的运行态取值 —— 远端此刻可能正在全速跑,所以文案要说清「远端仍在
+// 运行」。同一组点尺寸、同一 typing-dot keyframe,只把周期放慢一倍(--animate-
+// typing-dot-slow),让"网络在等"与"agent 在想"一眼可分。降级(prefers-reduced-
+// motion)时停动画、点降到低透明度,标签与图形都还在,信息不丢。
+function DisconnectedIndicator() {
+  const { t } = useTranslation();
+  const dotClass =
+    "size-1.5 rounded-full bg-muted-foreground animate-typing-dot-slow motion-reduce:animate-none motion-reduce:opacity-55";
+  return (
+    <div
+      aria-label={t("chat.disconnected.aria")}
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-2 py-1 text-aux text-muted-foreground"
+    >
+      {/* 相位延迟随周期一同翻倍(0.15/0.3 → 0.3/0.6):同一条曲线放慢一倍,
+          三点之间的相位差也要按同一倍率拉开,否则三点会挤成几乎同相。 */}
+      <div className="flex items-center gap-1.5">
+        <span className={dotClass} />
+        <span className={cn(dotClass, "[animation-delay:0.3s]")} />
+        <span className={cn(dotClass, "[animation-delay:0.6s]")} />
+      </div>
+      <WifiOff aria-hidden className="size-3.5 shrink-0 opacity-75" />
+      <span>{t("chat.disconnected.label")}</span>
     </div>
   );
 }
@@ -588,6 +670,13 @@ function RenderItemView({
           sessionId={ctx?.sessionId ?? 0}
         />
       ) : null;
+    case "exec_approval":
+      return item.block.execApproval ? (
+        <OpenClawExecApprovalCard
+          approval={item.block.execApproval}
+          sessionId={ctx?.sessionId ?? 0}
+        />
+      ) : null;
     case "compact_boundary": {
       const trig = item.block.compact?.trigger;
       const trigger: "auto" | "manual" | undefined =
@@ -624,6 +713,9 @@ export type TranscriptRowViewProps = {
   showIndicator: boolean;
   /** showIndicator && compacting → 渲染 CompactingIndicator 替代 TypingIndicator。*/
   compacting: boolean;
+  /** showIndicator && reconnecting → 渲染 DisconnectedIndicator。通道断了就先说通道:
+   *  压缩与否此刻都观察不到,断连形态优先于压缩形态。*/
+  reconnecting: boolean;
 };
 
 // 行级 memo 是流式期间的重渲边界:persisted 消息的行对象来自 WeakMap 缓存(引用
@@ -635,6 +727,7 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
   liveRetry,
   showIndicator,
   compacting,
+  reconnecting,
 }: TranscriptRowViewProps) {
   const ctx = React.useContext(TranscriptRenderContext);
   // local_command 行无 message 引用,独立成卡(无头像/footer chrome)在此提前返回。
@@ -648,6 +741,7 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
             .getState()
             .attachTerminal({ terminalId: id, command: entry.command })
         }
+        onStop={ctx?.onStopLocalCommand}
       />
     );
   }
@@ -658,6 +752,8 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
   // 每条 assistant 都允许重新生成；只读模式下 ctx.onRerun 为 undefined 时不渲染按钮。
   const rerunHandler =
     isAssistant && ctx?.onRerun ? () => ctx.onRerun!(m.id) : undefined;
+  const continueHandler =
+    isAssistant && ctx?.onContinue ? () => ctx.onContinue!(m.id) : undefined;
   const copyText =
     isAssistant && row.isLastOfMessage
       ? extractAssistantOutputText(m.blocks ?? [], liveBlocks ?? [], liveTail)
@@ -667,14 +763,20 @@ export const TranscriptRowView = React.memo(function TranscriptRowView({
     <>
       {liveRetry ? <RetryNoticeCard retry={liveRetry} /> : null}
       {showIndicator ? (
-        compacting ? (
+        reconnecting ? (
+          <DisconnectedIndicator />
+        ) : compacting ? (
           <CompactingIndicator />
         ) : (
           <TypingIndicator />
         )
       ) : null}
       {isAssistant && m.errorText ? (
-        <ErrorCard text={m.errorText} onRerun={rerunHandler} />
+        <ErrorCard
+          text={m.errorText}
+          onContinue={continueHandler}
+          onRerun={rerunHandler}
+        />
       ) : null}
     </>
   ) : null;

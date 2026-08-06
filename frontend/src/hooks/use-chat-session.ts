@@ -8,13 +8,14 @@ import {
   streamForMessage,
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
+import { useSessionConnStore } from "@/stores/session-conn-store";
 import { useSessionMetaStore } from "@/stores/session-meta-store";
 import {
   normalizeSessionSnapshot,
   useSessionStatusStore,
 } from "@/stores/session-status-store";
 import { useSessionWithOverlays } from "./use-session-with-overlays";
-import type { AgentStatus } from "@/stores/types";
+import type { AgentStatus, SessionConnectionState } from "@/stores/types";
 
 export type ChatSessionDetail = chat_svc.ChatSessionDetail & {
   deviceID?: string;
@@ -45,7 +46,23 @@ export function useChatSession(sessionId: number) {
     setLoading(true);
     setError(null);
     try {
-      const resp = await LoadChatSession({ sessionId });
+      const startedDoneTick =
+        useSessionStatusStore.getState().statuses.get(sessionId)?.doneTick ?? 0;
+      let resp = await LoadChatSession({ sessionId });
+      const returnedDoneTick =
+        useSessionStatusStore.getState().statuses.get(sessionId)?.doneTick ?? 0;
+      if (returnedDoneTick > startedDoneTick) {
+        clientLog.warn(
+          "use-chat-session",
+          "reloading session because a turn finished during LoadChatSession",
+          {
+            sessionId,
+            startedDoneTick,
+            returnedDoneTick,
+          },
+        );
+        resp = await LoadChatSession({ sessionId });
+      }
       setSession(resp.session);
       // loadedMessages 可能在下方 activeStream 分支被替换(剥离 overlay pending
       // tool_approval 块),setMessages 统一挪到该分支之后执行。
@@ -134,12 +151,17 @@ export function useChatSession(sessionId: number) {
           const pendingApprovals = (lastAssistant.blocks ?? []).filter(
             isPendingToolApproval,
           );
-          if (pendingApprovals.length > 0) {
+          const isPendingExecApproval = (b: chat_svc.ChatBlock) =>
+            b.type === "exec_approval" && b.execApproval?.status === "pending";
+          const pendingExecApprovals = (lastAssistant.blocks ?? []).filter(
+            isPendingExecApproval,
+          );
+          if (pendingApprovals.length > 0 || pendingExecApprovals.length > 0) {
             loadedMessages = loadedMessages.slice();
             loadedMessages[lastAssistantIdx] = {
               ...lastAssistant,
               blocks: (lastAssistant.blocks ?? []).filter(
-                (b) => !isPendingToolApproval(b),
+                (b) => !isPendingToolApproval(b) && !isPendingExecApproval(b),
               ),
             } as ChatMessage;
           }
@@ -174,7 +196,43 @@ export function useChatSession(sessionId: number) {
                 .appendLiveToolApproval(sessionId, lastAssistant.id, approval);
             }
           }
+          for (const block of pendingExecApprovals) {
+            const approval = block.execApproval;
+            if (!approval?.id) continue;
+            const liveNow = streamForMessage(
+              useChatStreamsStore.getState(),
+              sessionId,
+              lastAssistant.id,
+            );
+            const exists = liveNow?.liveBlocks.some(
+              (b) =>
+                b.type === "exec_approval" &&
+                b.execApproval?.id === approval.id,
+            );
+            if (!exists) {
+              useChatStreamsStore
+                .getState()
+                .appendLiveExecApproval(sessionId, lastAssistant.id, approval);
+            }
+          }
         }
+      }
+      // 连接态播种。整页重载会清空 session-conn-store,而这条会话可能正卡在退避
+      // 窗口中间(断连不再终结会话,上面的 activeStream 分支照旧把流重挂起来):
+      // 不播种,用户在整个窗口里看到的都是普通打字指示器,分不清 agent 在想还是网断了。
+      // 只在会话确有活跃流时落笔 —— 断连形态是活信号的一种形态,没有活信号就没有
+      // 可修饰的对象;更要紧的是清条目的责任在 chat:conn:<sid> 的订阅者手上,
+      // 而它只跟着活跃流挂载,给没有流的会话写条目就是写一条永远清不掉的记录。
+      if (
+        resp.session.connectionState &&
+        hasSessionStream(useChatStreamsStore.getState(), sessionId)
+      ) {
+        useSessionConnStore
+          .getState()
+          .seed(
+            sessionId,
+            resp.session.connectionState as SessionConnectionState,
+          );
       }
       setMessages(loadedMessages);
       // 注:不在这里 MarkRead。语义上"用户已读到 lastMessageAt"只能由

@@ -28,6 +28,11 @@ type BackendKind interface {
 	// ProviderTypeMatch 判断 LLMProvider.type 是否与本 kind 严格匹配；alias provider 同集合。
 	ProviderTypeMatch(t llm_provider_entity.ProviderType) bool
 
+	// RequiresProviderModel 是否要求绑定的 LLMProvider.Model 非空。
+	// piagent 绑定时必须能通过 --model agentre-<key>/<model> 命中模型（spec 决策 #3），
+	// 其它 kind（builtin / claudecode / codex）不要求，Model 空时走 CLI 自身解析。
+	RequiresProviderModel() bool
+
 	// AllowsCLIPath 是否允许 cli_path 字段非空；builtin 不允许，claudecode/codex 允许。
 	AllowsCLIPath() bool
 
@@ -43,6 +48,7 @@ var backendKinds = map[BackendType]BackendKind{
 	TypeClaudeCode: claudeCodeKind{},
 	TypeCodex:      codexKind{},
 	TypePiAgent:    piAgentKind{},
+	TypeOpenClaw:   openClawKind{},
 }
 
 // KindFor 查表，找不到返 nil。Service 在 Test/Create/Update 前用它分派 Prober。
@@ -86,6 +92,7 @@ type builtinKind struct{}
 func (builtinKind) Type() BackendType                                         { return TypeBuiltin }
 func (builtinKind) KnownAliases() []string                                    { return nil }
 func (builtinKind) ProviderTypeMatch(t llm_provider_entity.ProviderType) bool { return true }
+func (builtinKind) RequiresProviderModel() bool                               { return false }
 func (builtinKind) AllowsCLIPath() bool                                       { return false }
 
 func (builtinKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
@@ -115,7 +122,8 @@ func (claudeCodeKind) KnownAliases() []string { return []string{"OPUS", "SONNET"
 func (claudeCodeKind) ProviderTypeMatch(t llm_provider_entity.ProviderType) bool {
 	return t == llm_provider_entity.TypeAnthropic
 }
-func (claudeCodeKind) AllowsCLIPath() bool { return true }
+func (claudeCodeKind) RequiresProviderModel() bool { return false }
+func (claudeCodeKind) AllowsCLIPath() bool         { return true }
 
 func (claudeCodeKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
 	// LLMProviderKey == "" 表示不关联供应商，走 claude CLI 自身的登录态（claude login）。
@@ -137,7 +145,8 @@ func (codexKind) KnownAliases() []string { return nil }
 func (codexKind) ProviderTypeMatch(t llm_provider_entity.ProviderType) bool {
 	return t == llm_provider_entity.TypeOpenAIResponse
 }
-func (codexKind) AllowsCLIPath() bool { return true }
+func (codexKind) RequiresProviderModel() bool { return false }
+func (codexKind) AllowsCLIPath() bool         { return true }
 
 func (codexKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
 	// LLMProviderKey == "" 表示不关联供应商，走 codex CLI 自身的登录态（codex login）。
@@ -159,24 +168,64 @@ func (codexKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
 	return nil
 }
 
-// piAgentKind 走 Pi coding agent RPC mode。Pi 自己读取 ~/.pi/agent 的模型与认证配置，
-// Agentre 不把它绑定到 LLMProvider gateway。
+// piAgentKind 走 Pi coding agent RPC mode。
+// 可绑定 Agentre 自定义 LLM 供应商：三类 Type（anthropic / openai-chat / openai-response）全收，
+// 对应 Pi 原生 API 形状 anthropic-messages / openai-completions / openai-responses。
+// 未绑定供应商时 Pi 自己读取 ~/.pi/agent 的模型与认证配置，Agentre 不干预。
 type piAgentKind struct{}
 
 func (piAgentKind) Type() BackendType      { return TypePiAgent }
 func (piAgentKind) KnownAliases() []string { return nil }
-func (piAgentKind) ProviderTypeMatch(llm_provider_entity.ProviderType) bool {
-	return false
+func (piAgentKind) ProviderTypeMatch(t llm_provider_entity.ProviderType) bool {
+	return t == llm_provider_entity.TypeAnthropic ||
+		t == llm_provider_entity.TypeOpenAIChat ||
+		t == llm_provider_entity.TypeOpenAIResponse
 }
-func (piAgentKind) AllowsCLIPath() bool { return true }
+func (piAgentKind) RequiresProviderModel() bool { return true }
+func (piAgentKind) AllowsCLIPath() bool         { return true }
 
 func (piAgentKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
-	if strings.TrimSpace(b.LLMProviderKey) != "" ||
-		!isEmptyJSONObject(b.ModelRoutes) ||
+	// LLMProviderKey 非空 → 放行（本功能核心：piagent 可绑定自定义供应商）。
+	// ModelRoutes / Sandbox / Approval / DefaultPermissionMode / DefaultModel 对 piagent 无意义，
+	// 非默认值即报错（沿用 InvalidParameter 风格）。
+	if !isEmptyJSONObject(b.ModelRoutes) ||
 		strings.TrimSpace(b.Sandbox) != "" ||
 		strings.TrimSpace(b.Approval) != "" ||
 		strings.TrimSpace(b.DefaultPermissionMode) != "" ||
 		strings.TrimSpace(b.DefaultModel) != "" {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	return nil
+}
+
+// openClawKind 仅保存 Gateway-native 的非敏感配置。token/device private key
+// 由专用 keychain 管理，不进入 entity 或通用 env_json。
+type openClawKind struct{}
+
+func (openClawKind) Type() BackendType      { return TypeOpenClaw }
+func (openClawKind) KnownAliases() []string { return nil }
+func (openClawKind) ProviderTypeMatch(llm_provider_entity.ProviderType) bool {
+	return false
+}
+func (openClawKind) RequiresProviderModel() bool { return false }
+func (openClawKind) AllowsCLIPath() bool         { return false }
+
+func (openClawKind) ValidateExtra(ctx context.Context, b *AgentBackend) error {
+	if strings.TrimSpace(b.LLMProviderKey) != "" ||
+		strings.TrimSpace(b.CLIPath) != "" ||
+		!isEmptyJSONObject(b.ModelRoutes) ||
+		strings.TrimSpace(b.Sandbox) != "" ||
+		strings.TrimSpace(b.Approval) != "" ||
+		!isEmptyJSONObject(b.EnvJSON) ||
+		strings.TrimSpace(b.ReasoningEffort) != "" ||
+		strings.TrimSpace(b.DefaultPermissionMode) != "" ||
+		strings.TrimSpace(b.DefaultModel) != "" {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if _, err := NormalizeOpenClawGatewayURL(b.OpenClawGatewayURL); err != nil {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	if strings.TrimSpace(b.OpenClawSessionMode) != OpenClawSessionPerAgentRESession {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
 	return nil
@@ -195,7 +244,7 @@ func validateSandbox(ctx context.Context, v string) error {
 // validateApproval 校验 codex approval policy 枚举；空字符串表示 never。
 func validateApproval(ctx context.Context, v string) error {
 	switch strings.TrimSpace(v) {
-	case "", "untrusted", "on-failure", "on-request", "never":
+	case "", "untrusted", "on-request", "never":
 		return nil
 	default:
 		return i18n.NewError(ctx, code.AgentBackendInvalidApproval)

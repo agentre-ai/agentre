@@ -40,15 +40,14 @@ Stage the files intended for the commit, then set `VERIFY_TREE="$(git write-tree
 | [`debugging.md`](./debugging.md) | Diagnosing runtime issues: SQLite / log commands, table → feature mapping, reproduction commands, common pitfalls. |
 | [`agent-backend.md`](./agent-backend.md) | The full path to wiring in a new AI Agent backend (entity / migration / runtime / translator / capability / daemon import / frontend gating). |
 | [`session-lifecycle.md`](./session-lifecycle.md) | Rules for creating and reusing `chat_sessions`, including future issue/hook dispatch and remote-execution ownership. |
+| [`codex-backend-eval.md`](./codex-backend-eval.md) | The deterministic, token-free Codex app-server behavior eval: machine-readable command, state-machine invariants, scenario rubric, independent judge guidance, and the optional real-CLI boundary. |
 | [`../e2e/README.md`](../e2e/README.md) | The Playwright + fake-runtime e2e **harness** (root `e2e/` package): the committed-vs-scratch split, `make e2e` / `make e2e-scratch`, the architecture and IPC bridge, the `e2e` build-tag seam that keeps the fake out of production builds, isolation guarantees (ports 34216 / 52401, the single-instance lock), writing a committed core-flow spec, hard-won harness engineering lessons, extension seams, and the file map. Owns the **machine**; what an ad-hoc run must produce is [`verification.md`](./verification.md)'s. |
 | [`../e2e/scratch/README.md`](../e2e/scratch/README.md) | The throwaway-spec convention + starter template, and when a scenario earns its own directory. |
 | [`verification.md`](./verification.md) | What a real-app verification run must **leave behind**: when it is warranted, the `e2e/scratch/<task-name>/` evidence layout, `report.md` created before the run, choosing the evidence form, honest reporting, and the one-place-only verdict table for spec acceptance. Defers all harness mechanics to [`../e2e/README.md`](../e2e/README.md). |
 | [`references/verification-report-template.md`](./references/verification-report-template.md) | The `report.md` shape itself — copied verbatim into a scenario directory. Filling-in discipline and embedding rules; the *when / where* is [`verification.md`](./verification.md)'s. |
 | [`documentation.md`](./documentation.md) | This guide: doc organization rules + fact-checking / anti-drift discipline. |
-| [`specs/*`](./specs) | Approved executable behavior specs for active changes: requirements, non-goals, implementation decisions, test seams, and traceable acceptance criteria. |
 | [`README_zh.md`](./README_zh.md) / [`../README.md`](../README.md) | The user-facing Chinese / English project README — **not** a docs index; don't stuff contributor conventions into it. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) / [`CONTRIBUTING_ZH.md`](./CONTRIBUTING_ZH.md) | The contributor guide (English / Chinese): setup, the GitHub fork / branch / PR workflow, a summary of the ground rules, commit style, PR checklist. It **links into** `AGENTS.md` / `docs/*` for the details — keep it a pointer, don't let facts fork from the docs that own them. |
-| `superpowers/{plans,specs}/*` | Date-archived historical plan / spec snapshots, **not updated alongside the code**; when referencing one, note that it is the archived snapshot of some design, not a living doc. |
 
 **Agentre has no `docs/README.md` index file** — the docs index role is played by the **"Development Conventions (required reading)" section of `AGENTS.md`**.
 When you add / move / delete `docs/*`, keep that section and the "Doc Set and Responsibilities" table above in sync.
@@ -128,7 +127,7 @@ Repository-internal sources and targets come from Git's index; out-of-repository
 
 ```bash
 git ls-files --cached -- AGENTS.md CLAUDE.md CONTRIBUTING.md 'docs/*.md' 'docs/**/*.md' \
-  e2e/README.md e2e/scratch/README.md | grep -v '^docs/superpowers/' | while IFS= read -r doc; do
+  e2e/README.md e2e/scratch/README.md | while IFS= read -r doc; do
   git show ":$doc" >/dev/null 2>&1 || { echo "BROKEN staged source $doc"; continue; }
   # Strip fenced blocks and inline code first: sample paths are not links.
   git show ":$doc" | sed '/^```/,/^```/d' | sed -E 's/`[^`]*`//g' \

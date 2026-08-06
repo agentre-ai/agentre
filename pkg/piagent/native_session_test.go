@@ -35,10 +35,11 @@ func TestStreamDiscoversNativeSessionBeforePrompt(t *testing.T) {
 
 	assert.Equal(t, "pi-native-123", stream.SessionID())
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 3)
+	require.Len(t, frames, 4)
 	assert.Equal(t, "get_state", frames[0]["type"])
-	assert.Equal(t, "prompt", frames[1]["type"])
-	assert.Equal(t, "get_session_stats", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[1]["type"])
+	assert.Equal(t, "prompt", frames[2]["type"])
+	assert.Equal(t, "get_session_stats", frames[3]["type"])
 }
 
 func TestPrepareStreamRejectsInvalidPrePromptTreeBoundary(t *testing.T) {
@@ -126,8 +127,8 @@ func TestPreparedStreamStartRequiresAcceptedPromptResponse(t *testing.T) {
 			assert.NotContains(t, startErr.Error(), "secret")
 			assert.NotContains(t, startErr.Error(), "private-token")
 			frames := stdinFrames(t, proc.stdin.String())
-			require.Len(t, frames, 2)
-			assert.Equal(t, "prompt", frames[1]["type"])
+			require.Len(t, frames, 3)
+			assert.Equal(t, "prompt", frames[2]["type"])
 		})
 	}
 }
@@ -153,8 +154,8 @@ func TestPreparedStreamStartReturnsSanitizedProcessExitBeforeAcknowledgement(t *
 	assert.NotContains(t, startErr.Error(), "private-token")
 	assert.Empty(t, exitErr.Stderr)
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 2)
-	assert.Equal(t, "prompt", frames[1]["type"])
+	require.Len(t, frames, 3)
+	assert.Equal(t, "prompt", frames[2]["type"])
 }
 
 func TestPreparedStreamStartHandsPreAcknowledgementEventsToDrain(t *testing.T) {
@@ -201,14 +202,16 @@ func TestPreparedStreamStartHandsPreAcknowledgementEventsToDrain(t *testing.T) {
 	assert.Equal(t, []string{"queued before ack", "before ack", " after ack"}, texts)
 	rawMu.Lock()
 	defer rawMu.Unlock()
-	var extensionFrames int
+	var preAckFrames int
 	for _, frame := range rawFrames {
-		if strings.Contains(frame, `"type":"extension_ui_request"`) {
-			extensionFrames++
+		if strings.Contains(frame, `"type":"message_start"`) {
+			preAckFrames++
 		}
 	}
-	assert.Equal(t, 1, extensionFrames, "acknowledgement handoff must neither lose nor double-read extension frames: %v", rawFrames)
-	assert.NotContains(t, strings.Join(rawFrames, "\n"), "private extension payload")
+	assert.Equal(t, 1, preAckFrames, "acknowledgement handoff must neither lose nor double-read pre-ack frames: %v", rawFrames)
+	joined := strings.Join(rawFrames, "\n")
+	assert.NotContains(t, joined, `"type":"extension_ui_request"`, "extension dialogs are excluded from diagnostics entirely")
+	assert.NotContains(t, joined, "private extension payload")
 }
 
 func TestPreparedStreamCloseBeforeStartSendsNoPrompt(t *testing.T) {
@@ -229,8 +232,9 @@ func TestPreparedStreamCloseBeforeStartSendsNoPrompt(t *testing.T) {
 	assert.Nil(t, stream)
 	require.ErrorIs(t, startErr, errStreamClosed)
 	frames := stdinFrames(t, proc.stdin.String())
-	require.Len(t, frames, 1)
+	require.Len(t, frames, 2)
 	assert.Equal(t, "get_state", frames[0]["type"])
+	assert.Equal(t, "get_session_stats", frames[1]["type"])
 }
 
 func TestCompactDiscoversNativeSessionBeforeCommand(t *testing.T) {
@@ -548,9 +552,10 @@ func TestPreparedStreamStartHonorsPromptAcknowledgementCancellationAndTimeout(t 
 			assert.Nil(t, result.stream)
 			require.ErrorIs(t, result.err, tt.wantError)
 			frames := stdinFrames(t, proc.stdin.String())
-			require.Len(t, frames, 2)
+			require.Len(t, frames, 3)
 			assert.Equal(t, "get_state", frames[0]["type"])
-			assert.Equal(t, "prompt", frames[1]["type"])
+			assert.Equal(t, "get_session_stats", frames[1]["type"])
+			assert.Equal(t, "prompt", frames[2]["type"])
 			select {
 			case <-proc.exited:
 			case <-time.After(time.Second):

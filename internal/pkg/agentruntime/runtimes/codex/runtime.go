@@ -4,6 +4,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -44,7 +45,7 @@ type codexActive struct {
 	approval    cxApprovalStream
 	pending     []agentruntime.ConsumedSteer
 	askWaiters  map[string]codexAskWaiter
-	permWaiters map[string]struct{}
+	permWaiters map[string]codexPermWaiter
 	pool        *agentruntime.CLISessionPool
 	poolKey     string
 	outMu       sync.Mutex
@@ -53,6 +54,14 @@ type codexActive struct {
 
 type codexAskWaiter struct {
 	questions []agentruntime.AskQuestion
+}
+
+// codexPermWaiter 记录审批 waiter 重建卡片所需的载荷:PendingWaiters(R7)要把
+// 它还原成与实时 ToolPermissionRequest 帧同形的内容,所以 requestID 之外还要
+// 留住 tool_name 与原始 input 字节。
+type codexPermWaiter struct {
+	toolName string
+	rawInput json.RawMessage
 }
 
 // Runtime codex runtime 实现。
@@ -216,21 +225,27 @@ func goalFromCodex(goal *codex.Goal) *agentruntime.Goal {
 	}
 }
 
-func (r *Runtime) register(sessionID int64, a *codexActive) {
+func (r *Runtime) register(sessionID int64, a *codexActive) error {
 	if sessionID <= 0 {
-		return
+		return nil
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active[sessionID] != nil {
+		return fmt.Errorf("agentruntime/runtimes/codex: session %d already has an active turn", sessionID)
+	}
 	r.active[sessionID] = a
-	r.mu.Unlock()
+	return nil
 }
 
-func (r *Runtime) unregister(sessionID int64) {
+func (r *Runtime) unregister(sessionID int64, expected *codexActive) {
 	if sessionID <= 0 {
 		return
 	}
 	r.mu.Lock()
-	delete(r.active, sessionID)
+	if r.active[sessionID] == expected {
+		delete(r.active, sessionID)
+	}
 	r.mu.Unlock()
 }
 
@@ -259,6 +274,16 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 			zap.Int64("sessionID", req.SessionID), zap.Error(err))
 		return nil, nil, err
 	}
+	active := &codexActive{}
+	if err := r.register(req.SessionID, active); err != nil {
+		return nil, nil, err
+	}
+	releaseClaim := true
+	defer func() {
+		if releaseClaim {
+			r.unregister(req.SessionID, active)
+		}
+	}()
 
 	sess, err := r.acquireSession(req, env, cwd)
 	if err != nil {
@@ -294,7 +319,11 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		stream, err = sess.Stream(ctx, req.UserText, req.CollaborationMode)
 	}
 	if err != nil {
-		closeEphemeralSession(req, sess)
+		if requiresEphemeralSession(req) {
+			closeEphemeralSession(req, sess)
+		} else if req.SessionID > 0 {
+			r.pool.Remove(sessionKey(req.SessionID))
+		}
 		logger.Ctx(ctx).Error("codex runtime: session run failed",
 			zap.Int64("sessionID", req.SessionID),
 			zap.Bool("compact", req.Compact),
@@ -310,12 +339,11 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if req.SessionID > 0 && !requiresEphemeralSession(req) {
 		key = sessionKey(req.SessionID)
 	}
-	active := &codexActive{
-		stream:      sess.ActiveStream(),
-		interrupter: sess.ActiveInterruptor(),
-		pool:        r.pool,
-		poolKey:     key,
-	}
+	active.mu.Lock()
+	active.stream = sess.ActiveStream()
+	active.interrupter = sess.ActiveInterruptor()
+	active.pool = r.pool
+	active.poolKey = key
 	if st, ok := stream.(cxSteerStream); ok {
 		active.stream = st
 	}
@@ -328,8 +356,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	if ap, ok := stream.(cxApprovalStream); ok {
 		active.approval = ap
 	}
-	r.register(req.SessionID, active)
-
+	active.mu.Unlock()
 	out := make(chan agentruntime.Event, 32)
 	active.setOut(out)
 
@@ -353,16 +380,22 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		if cleanupInputs != nil {
 			defer cleanupInputs()
 		}
-		defer r.unregister(req.SessionID)
+		defer r.unregister(req.SessionID, active)
 		defer active.setOut(nil)
 		drainStream(stream, out, result, active, req.CollaborationMode)
+		active.clearWaiters()
 		if sid := stream.SessionID(); sid != "" {
 			result.ProviderSessionID = sid
 		}
 		if key != "" {
-			r.pool.MarkIdle(key)
+			if codexStreamReusable(stream, result.StopErr) {
+				r.pool.MarkIdle(key)
+			} else {
+				r.pool.Remove(key)
+			}
 		}
 	}()
+	releaseClaim = false
 	return out, result, nil
 }
 
@@ -435,11 +468,17 @@ func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID string, t
 	r.mu.Lock()
 	a := r.active[sessionID]
 	r.mu.Unlock()
-	if a == nil || a.stream == nil {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.mu.Lock()
+	stream := a.stream
+	a.mu.Unlock()
+	if stream == nil {
 		return agentruntime.ErrNoActiveTurn
 	}
 	a.addPendingSteer(queuedID, text)
-	if err := a.stream.Steer(ctx, text); err != nil {
+	if err := stream.Steer(ctx, text); err != nil {
 		a.removePendingSteer(queuedID)
 		if errors.Is(err, codex.ErrNoActiveTurn) {
 			return agentruntime.ErrNoActiveTurn
@@ -462,34 +501,38 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	r.mu.Lock()
 	a := r.active[sessionID]
 	r.mu.Unlock()
-	if a == nil || a.userInput == nil {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.mu.Lock()
+	userInput := a.userInput
+	a.mu.Unlock()
+	if userInput == nil {
 		return agentruntime.ErrNoActiveTurn
 	}
 	waiter := a.askWaiter(requestID)
 	if waiter == nil {
-		return fmt.Errorf("agentruntime/runtimes/codex: no waiting request_user_input for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/codex: no waiting request_user_input for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
 	if len(questions) > 0 && len(questions) != len(waiter.questions) {
 		return fmt.Errorf("agentruntime/runtimes/codex: client supplied %d questions but waiter recorded %d", len(questions), len(waiter.questions))
 	}
 	if skipped {
-		if err := a.userInput.SubmitUserInput(ctx, requestID, map[string][]string{}); err != nil {
-			return err
-		}
-		a.removeAskWaiter(requestID)
-		emitUserAskResolved(a, requestID, true, nil)
-		return nil
+		return a.submitResolved(
+			func() error { return userInput.SubmitUserInput(ctx, requestID, map[string][]string{}) },
+			agentruntime.UserAskResolved{RequestID: requestID, Skipped: true},
+			func() { a.removeAskWaiter(requestID) },
+		)
 	}
 	payload, err := buildUserInputAnswers(waiter.questions, answers)
 	if err != nil {
 		return err
 	}
-	if err := a.userInput.SubmitUserInput(ctx, requestID, payload); err != nil {
-		return err
-	}
-	a.removeAskWaiter(requestID)
-	emitUserAskResolved(a, requestID, false, answers)
-	return nil
+	return a.submitResolved(
+		func() error { return userInput.SubmitUserInput(ctx, requestID, payload) },
+		agentruntime.UserAskResolved{RequestID: requestID, Answers: answers},
+		func() { a.removeAskWaiter(requestID) },
+	)
 }
 
 func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, requestID string, allow, alwaysAllowSession bool, _ string) error {
@@ -502,24 +545,86 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 	r.mu.Lock()
 	a := r.active[sessionID]
 	r.mu.Unlock()
-	if a == nil || a.approval == nil {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.mu.Lock()
+	approval := a.approval
+	a.mu.Unlock()
+	if approval == nil {
 		return agentruntime.ErrNoActiveTurn
 	}
 	if !a.hasPermWaiter(requestID) {
-		return fmt.Errorf("agentruntime/runtimes/codex: no waiting approval for requestID %s", requestID)
+		return fmt.Errorf("agentruntime/runtimes/codex: no waiting approval for requestID %s: %w", requestID, agentruntime.ErrWaiterNotFound)
 	}
-	if err := a.approval.SubmitApproval(ctx, requestID, allow, alwaysAllowSession); err != nil {
-		return err
+	return a.submitResolved(
+		func() error { return approval.SubmitApproval(ctx, requestID, allow, alwaysAllowSession) },
+		agentruntime.ToolPermissionResolved{
+			RequestID:   requestID,
+			Allowed:     allow,
+			AlwaysAllow: alwaysAllowSession,
+		},
+		func() { a.removePermWaiter(requestID) },
+	)
+}
+
+// PendingWaiters 实现 agentruntime.WaiterLister(R7):codex 的 app-server 协议
+// 同时有 requestApproval 与 request_user_input 两类阻塞点,断连期间产生的待决策
+// 要能被重连的客户端枚举出来重建审批/提问卡,而不只是按已知 requestID 回答。
+// sessionID 不在 active 表里(未起轮 / 已结束)返回零值快照 —— 与「此刻没有待
+// 决策」同义,不是错误。
+func (r *Runtime) PendingWaiters(_ context.Context, sessionID int64) agentruntime.WaiterSnapshot {
+	if sessionID <= 0 {
+		return agentruntime.WaiterSnapshot{}
 	}
-	a.removePermWaiter(requestID)
-	emitToolPermissionResolved(a, requestID, allow, alwaysAllowSession)
-	return nil
+	r.mu.Lock()
+	a := r.active[sessionID]
+	r.mu.Unlock()
+	if a == nil {
+		return agentruntime.WaiterSnapshot{}
+	}
+	return a.pendingWaiters()
+}
+
+// pendingWaiters 在 a.mu 下快照两张 waiter 表。切片内顺序不定(map 迭代),需要
+// 稳定顺序的调用方自己按 RequestID 排序。
+func (a *codexActive) pendingWaiters() agentruntime.WaiterSnapshot {
+	var snap agentruntime.WaiterSnapshot
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if len(a.permWaiters) > 0 {
+		snap.ToolPermissions = make([]agentruntime.PendingToolPermission, 0, len(a.permWaiters))
+		for reqID, w := range a.permWaiters {
+			snap.ToolPermissions = append(snap.ToolPermissions, agentruntime.PendingToolPermission{
+				RequestID: reqID,
+				ToolName:  w.toolName,
+				Input:     append(json.RawMessage(nil), w.rawInput...),
+			})
+		}
+	}
+	if len(a.askWaiters) > 0 {
+		snap.AskUserQuestions = make([]agentruntime.PendingAskUserQuestion, 0, len(a.askWaiters))
+		for reqID, w := range a.askWaiters {
+			snap.AskUserQuestions = append(snap.AskUserQuestions, agentruntime.PendingAskUserQuestion{
+				RequestID: reqID,
+				Questions: append([]agentruntime.AskQuestion(nil), w.questions...),
+			})
+		}
+	}
+	return snap
 }
 
 // drainStream 与顶层 drainCodexStream 同构,emit 类型升级到 sealed Event。
 func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *codexActive, collaborationMode string) {
 	for stream.Next() {
 		ev := stream.Event()
+		if ev.Kind == codex.EventRequestResolved && ev.RequestResolved != nil {
+			if active != nil {
+				active.resolveServerRequest(*ev.RequestResolved)
+			}
+			continue
+		}
 		if result.StopErr != nil && codexEventShowsProgressAfterError(ev.Kind) {
 			result.StopErr = nil
 		}
@@ -545,7 +650,7 @@ func drainStream(stream cxStream, out chan<- agentruntime.Event, result *agentru
 				active.registerAskWaiter(uar.RequestID, uar.Questions)
 			}
 			if tpr, ok := t.(agentruntime.ToolPermissionRequest); ok && active != nil {
-				active.registerPermWaiter(tpr.RequestID)
+				active.registerPermWaiter(tpr.RequestID, tpr.ToolName, tpr.Input)
 			}
 			out <- t
 		}
@@ -576,16 +681,19 @@ func codexEventShowsProgressAfterError(kind codex.EventKind) bool {
 	}
 }
 
-func (a *codexActive) registerPermWaiter(requestID string) {
+func (a *codexActive) registerPermWaiter(requestID, toolName string, rawInput json.RawMessage) {
 	if a == nil || strings.TrimSpace(requestID) == "" {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.permWaiters == nil {
-		a.permWaiters = map[string]struct{}{}
+		a.permWaiters = map[string]codexPermWaiter{}
 	}
-	a.permWaiters[requestID] = struct{}{}
+	a.permWaiters[requestID] = codexPermWaiter{
+		toolName: toolName,
+		rawInput: append(json.RawMessage(nil), rawInput...),
+	}
 	if a.pool != nil && a.poolKey != "" {
 		a.pool.MarkWaiting(a.poolKey)
 	}
@@ -709,47 +817,98 @@ func (a *codexActive) setOut(out chan<- agentruntime.Event) {
 	a.outMu.Unlock()
 }
 
-func (a *codexActive) outChan() chan<- agentruntime.Event {
-	if a == nil {
-		return nil
-	}
-	a.outMu.Lock()
-	defer a.outMu.Unlock()
-	return a.out
-}
-
-// emitUserAskResolved 把答案终态 emit 给 drain 通道。out nil 或 channel 满时
-// 不阻塞(前端有乐观更新)。
-func emitUserAskResolved(a *codexActive, requestID string, skipped bool, answers []agentruntime.AskAnswer) {
-	out := a.outChan()
-	if out == nil {
-		return
-	}
+// emitUserAskResolved serializes terminal request events with setOut(nil), so
+// an accepted response cannot be silently dropped or race a channel close.
+func emitUserAskResolved(a *codexActive, requestID string, skipped bool, answers []agentruntime.AskAnswer) error {
 	ev := agentruntime.UserAskResolved{
 		RequestID: requestID,
 		Skipped:   skipped,
 		Answers:   answers,
 	}
-	select {
-	case out <- ev:
-	default:
-	}
+	return a.emitResolved(ev)
 }
 
-func emitToolPermissionResolved(a *codexActive, requestID string, allowed, alwaysAllow bool) {
-	out := a.outChan()
-	if out == nil {
-		return
-	}
+func emitToolPermissionResolved(a *codexActive, requestID string, allowed, alwaysAllow bool, denyReason ...string) error {
 	ev := agentruntime.ToolPermissionResolved{
 		RequestID:   requestID,
 		Allowed:     allowed,
 		AlwaysAllow: alwaysAllow,
 	}
-	select {
-	case out <- ev:
-	default:
+	if len(denyReason) > 0 {
+		ev.DenyReason = denyReason[0]
 	}
+	return a.emitResolved(ev)
+}
+
+func (a *codexActive) emitResolved(ev agentruntime.Event) error {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	if a.out == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.out <- ev
+	return nil
+}
+
+func (a *codexActive) submitResolved(submit func() error, ev agentruntime.Event, onSuccess func()) error {
+	if a == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	if a.out == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	if err := submit(); err != nil {
+		return err
+	}
+	if onSuccess != nil {
+		onSuccess()
+	}
+	a.out <- ev
+	return nil
+}
+
+func (a *codexActive) resolveServerRequest(resolved codex.RequestResolvedEvent) {
+	switch resolved.Kind {
+	case codex.RequestKindUserInput:
+		if a.askWaiter(resolved.RequestID) == nil {
+			return
+		}
+		a.removeAskWaiter(resolved.RequestID)
+		_ = emitUserAskResolved(a, resolved.RequestID, true, nil)
+	case codex.RequestKindApproval:
+		if !a.hasPermWaiter(resolved.RequestID) {
+			return
+		}
+		a.removePermWaiter(resolved.RequestID)
+		_ = emitToolPermissionResolved(a, resolved.RequestID, false, false, "approval request resolved by Codex app-server without a decision")
+	}
+}
+
+func (a *codexActive) clearWaiters() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	clear(a.askWaiters)
+	clear(a.permWaiters)
+	a.pending = nil
+	a.mu.Unlock()
+}
+
+func codexStreamReusable(stream cxStream, stopErr error) bool {
+	if reusable, ok := stream.(interface{ Reusable() bool }); ok && !reusable.Reusable() {
+		return false
+	}
+	if errors.Is(stopErr, codex.ErrProcessDead) || errors.Is(stopErr, codex.ErrProtocol) {
+		return false
+	}
+	var exitErr *codex.ExitError
+	return !errors.As(stopErr, &exitErr)
 }
 
 // buildUserInputAnswers 把前端 AskAnswer 列表拼成 codex 期望的

@@ -1,19 +1,19 @@
-// Package sessions is the in-memory map of active chat sessions. Each
-// registered session corresponds to one live agentruntime subprocess.
+// Package sessions owns the daemon-level ownership of in-flight runtime
+// generations. A generation is one prepared/started backend turn on this
+// daemon; it belongs to the exact WebSocket connection and opaque generation
+// token that created it, so a reconnect can never take over — or be swept by —
+// another connection's cleanup that only knows the Agentre session id.
 package sessions
 
 import (
 	"sync"
 
-	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
 )
 
-// Registry implements handlers.SessionRegistryPort via a sync.RWMutex-
-// guarded map.
+// Registry is the sync.Mutex-guarded generation ownership table.
 type Registry struct {
-	mu                 sync.RWMutex
-	m                  map[string]handlers.SessionHandle
+	mu                 sync.Mutex
 	runtimeGenerations map[int64]runtimeGenerationOwner
 }
 
@@ -24,38 +24,8 @@ type runtimeGenerationOwner struct {
 
 func NewRegistry() *Registry {
 	return &Registry{
-		m:                  map[string]handlers.SessionHandle{},
 		runtimeGenerations: map[int64]runtimeGenerationOwner{},
 	}
-}
-
-func (r *Registry) Register(id string, h handlers.SessionHandle) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.m[id] = h
-}
-
-func (r *Registry) Lookup(id string) (handlers.SessionHandle, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	h, ok := r.m[id]
-	return h, ok
-}
-
-func (r *Registry) Remove(id string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.m, id)
-}
-
-func (r *Registry) List() []handlers.SessionHandle {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]handlers.SessionHandle, 0, len(r.m))
-	for _, h := range r.m {
-		out = append(out, h)
-	}
-	return out
 }
 
 // ClaimRuntimeGeneration reserves one Agentre session for the exact WebSocket

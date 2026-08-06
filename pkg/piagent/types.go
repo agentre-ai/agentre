@@ -21,9 +21,12 @@ type rpcEvent struct {
 	Message               json.RawMessage `json:"message,omitempty"`
 	Messages              json.RawMessage `json:"messages,omitempty"`
 	AssistantMessageEvent assistantDelta  `json:"assistantMessageEvent,omitempty"`
+	ID                    string          `json:"id,omitempty"`
+	Method                string          `json:"method,omitempty"`
 	ToolCallID            string          `json:"toolCallId,omitempty"`
 	ToolName              string          `json:"toolName,omitempty"`
 	Args                  json.RawMessage `json:"args,omitempty"`
+	PartialResult         json.RawMessage `json:"partialResult,omitempty"`
 	Result                json.RawMessage `json:"result,omitempty"`
 	IsError               bool            `json:"isError,omitempty"`
 	Reason                string          `json:"reason,omitempty"`
@@ -58,8 +61,13 @@ type usageWire struct {
 }
 
 type sessionStateWire struct {
-	SessionID   string `json:"sessionId"`
-	SessionFile string `json:"sessionFile,omitempty"`
+	SessionID   string            `json:"sessionId"`
+	SessionFile string            `json:"sessionFile,omitempty"`
+	Model       *sessionModelWire `json:"model,omitempty"`
+}
+
+type sessionModelWire struct {
+	ContextWindow int `json:"contextWindow"`
 }
 
 type forkResultWire struct {

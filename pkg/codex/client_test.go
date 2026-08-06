@@ -403,6 +403,7 @@ func TestClientCompact_SendsThreadCompactStartRPC(t *testing.T) {
 	assert.Equal(t, "thread-old", events[0].SessionID)
 	assert.Equal(t, EventDone, events[1].Kind)
 	assert.Equal(t, "thread-old", stream.SessionID())
+	assert.Equal(t, TurnStateCompleted, stream.State())
 }
 
 func TestClientGoal_SendsThreadGoalRPCs(t *testing.T) {
@@ -852,10 +853,12 @@ func TestClientStream_EmitsCompletedPlanItemAsPlanText(t *testing.T) {
 	}
 	require.NoError(t, stream.Close(ctx))
 
-	require.Len(t, events, 2)
+	require.Len(t, events, 3)
 	assert.Equal(t, EventPlanUpdated, events[0].Kind)
-	assert.Equal(t, "# Plan\n\n1. Inspect files\n2. Report findings\n", events[0].PlanText)
-	assert.Equal(t, EventDone, events[1].Kind)
+	assert.Equal(t, "# Plan\n", events[0].PlanText)
+	assert.Equal(t, EventPlanUpdated, events[1].Kind)
+	assert.Equal(t, "# Plan\n\n1. Inspect files\n2. Report findings\n", events[1].PlanText)
+	assert.Equal(t, EventDone, events[2].Kind)
 }
 
 func TestClientForkThread(t *testing.T) {
@@ -1453,6 +1456,56 @@ func TestStream_UserMessageContentItemEmitsTextEvent(t *testing.T) {
 		assert.Equal(t, "thr-1", ev.SessionID)
 	default:
 		t.Fatal("missing user message event")
+	}
+}
+
+func TestStream_AgentMessageStringContentEmitsTextEvent(t *testing.T) {
+	// Given Codex app-server completes an agentMessage with content encoded as a
+	// string (observed with DeepSeek Responses through the AgentRE gateway),
+	// when the notification is handled, then the string is normalized to text.
+	s := &Stream{events: make(chan Event, 1)}
+	seen := map[string]struct{}{}
+	raw := json.RawMessage(`{"threadId":"thr-1","item":{"type":"agentMessage","id":"agent-1","content":"deepseek reply"}}`)
+
+	done := s.handleInbound(context.Background(), appInbound{
+		Kind:   appInboundNotification,
+		Method: appMethodItemCompleted,
+		Params: raw,
+	}, seen)
+	require.False(t, done)
+
+	select {
+	case ev := <-s.events:
+		assert.Equal(t, EventTextDelta, ev.Kind)
+		assert.Equal(t, "deepseek reply", ev.Text)
+		assert.Equal(t, "thr-1", ev.SessionID)
+	default:
+		t.Fatal("missing agent message text event")
+	}
+}
+
+func TestStream_AgentMessageStringArrayContentEmitsTextEvent(t *testing.T) {
+	// Given the same compatible provider emits agentMessage content as an
+	// array of strings, then each element is normalized without rejecting the
+	// entire app-server notification.
+	s := &Stream{events: make(chan Event, 1)}
+	seen := map[string]struct{}{}
+	raw := json.RawMessage(`{"threadId":"thr-1","item":{"type":"agentMessage","id":"agent-1","content":["deepseek ","reply"]}}`)
+
+	done := s.handleInbound(context.Background(), appInbound{
+		Kind:   appInboundNotification,
+		Method: appMethodItemCompleted,
+		Params: raw,
+	}, seen)
+	require.False(t, done)
+
+	select {
+	case ev := <-s.events:
+		assert.Equal(t, EventTextDelta, ev.Kind)
+		assert.Equal(t, "deepseek reply", ev.Text)
+		assert.Equal(t, "thr-1", ev.SessionID)
+	default:
+		t.Fatal("missing agent message text event")
 	}
 }
 

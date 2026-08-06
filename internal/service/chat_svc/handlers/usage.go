@@ -48,6 +48,7 @@ func (h UsageUpdateHandler) Apply(ctx context.Context, ev agentruntime.Event, _ 
 				"cacheCreationTokens": u.Usage.CacheCreationTokens,
 				"reasoningTokens":     u.Usage.ReasoningTokens,
 				"totalInputTokens":    u.TotalInputTokens,
+				"contextWindow":       u.ContextWindow,
 			},
 		})
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -25,10 +26,11 @@ func init() {
 }
 
 type activeSession struct {
-	mu          sync.Mutex
-	stream      steerStream
-	interrupter interruptable
-	pending     []agentruntime.ConsumedSteer
+	mu             sync.Mutex
+	stream         steerStream
+	interrupter    interruptable
+	pending        []agentruntime.ConsumedSteer
+	abortRequested bool
 }
 
 type Runtime struct {
@@ -115,9 +117,17 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 		logger.Ctx(ctx).Error("piagent runtime: BuildPiAgentEnv failed", zap.Int64("sessionID", req.SessionID), zap.Error(err))
 		return nil, err
 	}
+	// 绑定供应商：APIKey 空视为配置错误（消息只含 provider key，不含密钥）；
+	// 否则把 AGENTRE_PI_API_KEY_* 注入本次子进程 env（密钥永不落盘）。
+	if req.Provider != nil {
+		if strings.TrimSpace(req.Provider.APIKey) == "" {
+			return nil, fmt.Errorf("piagent runtime: provider %q has empty APIKey", req.Provider.ProviderKey)
+		}
+		env = agentruntime.BuildPiAgentProviderEnv(env, req.Provider)
+	}
 	sess, err := sessionFactory(req, env, cwd)
 	if err != nil {
-		logger.Ctx(ctx).Error("piagent runtime: session factory failed", zap.Int64("sessionID", req.SessionID), zap.String("cwd", cwd), zap.Error(err))
+		logger.Ctx(ctx).Error("piagent runtime: session factory failed", zap.Int64("sessionID", req.SessionID), zap.String("cwd", cwd), providerKeyField(req), zap.Error(err))
 		return nil, err
 	}
 	modelID := defaultModelForBackend(req.Backend)
@@ -208,7 +218,8 @@ func (p *preparedRun) Start(ctx context.Context) (<-chan agentruntime.Event, *ag
 		providerSessionID = strings.TrimSpace(p.sess.ID())
 	}
 	result := &agentruntime.RunResult{ProviderSessionID: providerSessionID, Model: p.modelID}
-	logger.Ctx(ctx).Info("piagent runtime: turn starting",
+	logFields := make([]zap.Field, 0, 7)
+	logFields = append(logFields,
 		zap.Int64("sessionID", p.req.SessionID),
 		zap.Int64("agentID", p.req.AgentID),
 		zap.String("cwd", p.cwd),
@@ -216,6 +227,8 @@ func (p *preparedRun) Start(ctx context.Context) (<-chan agentruntime.Event, *ag
 		zap.String("model", result.Model),
 		zap.Bool("compact", p.req.Compact),
 	)
+	logFields = append(logFields, providerKeyField(p.req))
+	logger.Ctx(ctx).Info("piagent runtime: turn starting", logFields...)
 
 	go func() {
 		defer close(out)
@@ -258,7 +271,12 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 	if a == nil || a.interrupter == nil {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return a.interrupter.Interrupt(ctx)
+	a.setAbortRequested(true)
+	if err := a.interrupter.Interrupt(ctx); err != nil {
+		a.setAbortRequested(false)
+		return err
+	}
+	return nil
 }
 
 func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID string, text string) error {
@@ -318,6 +336,18 @@ func (r *Runtime) unregisterPrepared(sessionID int64, owner *preparedRun) bool {
 	return true
 }
 
+func (a *activeSession) setAbortRequested(requested bool) {
+	a.mu.Lock()
+	a.abortRequested = requested
+	a.mu.Unlock()
+}
+
+func (a *activeSession) wasAbortRequested() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.abortRequested
+}
+
 func (a *activeSession) addPending(id, text string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -351,9 +381,10 @@ func (a *activeSession) consumePendingSteer(text string) (agentruntime.ConsumedS
 	return agentruntime.ConsumedSteer{}, false
 }
 
-func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s stream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *activeSession) {
+func drainStream(ctx context.Context, req agentruntime.RunRequest, _ string, s stream, out chan<- agentruntime.Event, result *agentruntime.RunResult, active *activeSession) {
 	var usage *provider.Usage
 	var stopErr error
+	trackers := make(map[string]*subagentTracker)
 	for s.Next() {
 		raw := s.Event()
 		if raw.Kind == pkgpi.EventUserMessage {
@@ -365,24 +396,29 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 			}
 			continue
 		}
-		if raw.Kind == pkgpi.EventContextWindow {
-			if raw.ContextWindow > 0 && raw.ContextWindow != result.ContextWindow {
-				result.ContextWindow = raw.ContextWindow
-			} else {
-				// Context window 未变化时不重复向前端 emit patch。
-				raw.ContextWindow = 0
-			}
+		contextWindowChanged := raw.ContextWindow > 0 && raw.ContextWindow != result.ContextWindow
+		if contextWindowChanged {
+			// Usage snapshots also carry the authoritative Pi window so it survives
+			// a missing/failed round-end stats refresh and is persisted by chat_svc.
+			result.ContextWindow = raw.ContextWindow
+		}
+		if raw.Kind == pkgpi.EventContextWindow && !contextWindowChanged {
+			// Context window 未变化时不重复向前端 emit patch。
+			raw.ContextWindow = 0
 		}
 		if raw.Kind == pkgpi.EventDone {
 			// pkg/piagent 用 EventDone 标记底层流终止；runtime 在 loop 结束后统一
 			// emit agentruntime.Done，避免向 chat_svc 重复发送 message_end。
 			continue
 		}
+		if handleSubagentToolEvent(raw, out, trackers) {
+			continue
+		}
 		if raw.Model != "" {
 			// Pi 在 usage 帧上报真实模型 id；piagent 不绑 provider，靠这里把模型回
 			// 吐给 chat_svc（result.Model → assistantMsg.Model）。上下文窗口只采用
-			// Pi RPC get_session_stats 返回值，避免自定义 provider 复用公共模型名时
-			// 被 Agentre catalog 的同名模型元数据错误覆盖。
+			// Pi RPC get_state / get_session_stats 返回值，避免自定义 provider 复用
+			// 公共模型名时被 Agentre catalog 的同名模型元数据错误覆盖。
 			result.Model = raw.Model
 		}
 		events, u, err := translate(raw)
@@ -402,19 +438,107 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, cwd string, s
 	if err := s.Err(); err != nil && stopErr == nil {
 		stopErr = err
 	}
+	if active != nil && active.wasAbortRequested() {
+		stopErr = agentruntime.ErrAborted
+	}
 	if usage != nil {
 		result.Usage = usage
 	}
 	if stopErr != nil {
 		stopErr = mapSessionError(stopErr)
 		result.StopErr = stopErr
-		logPiFailureDiagnostics(ctx, req, cwd, s)
-		logger.Ctx(ctx).Warn("piagent runtime: turn failed", piTurnLogFields(req, cwd, result, stopErr)...)
+		if errors.Is(stopErr, agentruntime.ErrAborted) {
+			finalizeAbortedSubagents(out, trackers)
+		} else {
+			finalizeIncompleteSubagents(out, trackers, true)
+		}
+		logPiFailureDiagnostics(ctx, req, s)
+		logger.Ctx(ctx).Warn("piagent.drainStream: turn failed", piTurnLogFields(req, result, stopErr)...)
 		out <- agentruntime.ErrorEvent{Err: stopErr}
 		return
 	}
-	logger.Ctx(ctx).Info("piagent runtime: turn done", piTurnLogFields(req, cwd, result, nil)...)
+	finalizeIncompleteSubagents(out, trackers, false)
+	logger.Ctx(ctx).Info("piagent.drainStream: turn done", piTurnLogFields(req, result, nil)...)
 	out <- agentruntime.Done{}
+}
+
+func finalizeAbortedSubagents(out chan<- agentruntime.Event, trackers map[string]*subagentTracker) {
+	finalizeTrackedSubagents(out, trackers, func(tracker *subagentTracker) bool {
+		return tracker.abort()
+	})
+}
+
+func finalizeIncompleteSubagents(out chan<- agentruntime.Event, trackers map[string]*subagentTracker, turnFailed bool) {
+	finalizeTrackedSubagents(out, trackers, func(tracker *subagentTracker) bool {
+		return tracker.finishIncomplete(turnFailed)
+	})
+}
+
+func finalizeTrackedSubagents(out chan<- agentruntime.Event, trackers map[string]*subagentTracker, finalize func(*subagentTracker) bool) {
+	toolCallIDs := make([]string, 0, len(trackers))
+	for toolCallID := range trackers {
+		toolCallIDs = append(toolCallIDs, toolCallID)
+	}
+	sort.Strings(toolCallIDs)
+	for _, toolCallID := range toolCallIDs {
+		tracker := trackers[toolCallID]
+		if finalize(tracker) {
+			out <- agentruntime.SubagentProgress{ToolCallID: toolCallID, Info: tracker.info()}
+		}
+		out <- agentruntime.SubagentDone{ToolCallID: toolCallID, Info: tracker.info()}
+		delete(trackers, toolCallID)
+	}
+}
+
+func handleSubagentToolEvent(raw pkgpi.Event, out chan<- agentruntime.Event, trackers map[string]*subagentTracker) bool {
+	switch raw.Kind {
+	case pkgpi.EventPreToolUse:
+		tracker, spawn := defaultSubagentSelector.selectCandidate(raw.Tool.Name, raw.Tool.ID, raw.Tool.Input)
+		call := agentruntime.ToolCall{
+			ID: raw.Tool.ID, Name: raw.Tool.Name, Input: raw.Tool.Input,
+			Canonical: recognizeCanonical(raw.Tool.Name, raw.Tool.Input),
+		}
+		if tracker != nil {
+			call.Canonical = *spawn
+			trackers[raw.Tool.ID] = tracker
+		}
+		out <- call
+		if tracker != nil {
+			out <- agentruntime.SubagentStarted{ToolCallID: raw.Tool.ID, Info: tracker.info()}
+		}
+		return true
+	case pkgpi.EventToolUseUpdate:
+		tracker := trackers[raw.Tool.ID]
+		if tracker == nil {
+			return true
+		}
+		events, changed := tracker.consumeUpdate(raw.Tool.PartialResult)
+		for _, event := range events {
+			out <- event
+		}
+		if changed {
+			out <- agentruntime.SubagentProgress{ToolCallID: raw.Tool.ID, Info: tracker.info()}
+		}
+		return true
+	case pkgpi.EventPostToolUse:
+		tracker := trackers[raw.Tool.ID]
+		if tracker == nil {
+			return false
+		}
+		events, changed := tracker.consumeFinal(raw.Tool.Details, raw.Tool.IsError, raw.Tool.Content)
+		for _, event := range events {
+			out <- event
+		}
+		if changed {
+			out <- agentruntime.SubagentProgress{ToolCallID: raw.Tool.ID, Info: tracker.info()}
+		}
+		out <- agentruntime.SubagentDone{ToolCallID: raw.Tool.ID, Info: tracker.info()}
+		delete(trackers, raw.Tool.ID)
+		out <- agentruntime.ToolResult{ToolCallID: raw.Tool.ID, Content: raw.Tool.Content, IsError: raw.Tool.IsError}
+		return true
+	default:
+		return false
+	}
 }
 
 func mapSessionError(err error) error {
@@ -428,19 +552,18 @@ type diagnosticsStream interface {
 	Diagnostics() pkgpi.StreamDiagnostics
 }
 
-func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, cwd string, s stream) {
+func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, s stream) {
 	ds, ok := s.(diagnosticsStream)
 	if !ok {
 		return
 	}
 	d := ds.Diagnostics()
-	if d.FinalErrorEventType == "" && d.FinalErrorStopReason == "" {
+	if d.FinalErrorEventType == "" && d.FinalErrorStopReason == "" && d.FinalErrorFrame == "" {
 		return
 	}
 	fields := []zap.Field{
 		zap.Int64("sessionID", req.SessionID),
 		zap.Int64("agentID", req.AgentID),
-		zap.String("cwd", cwd),
 		zap.Bool("compact", req.Compact),
 	}
 	if d.FinalErrorEventType != "" {
@@ -449,20 +572,30 @@ func logPiFailureDiagnostics(ctx context.Context, req agentruntime.RunRequest, c
 	if d.FinalErrorStopReason != "" {
 		fields = append(fields, zap.String("piStopReason", d.FinalErrorStopReason))
 	}
-	logger.Ctx(ctx).Debug("piagent runtime: turn failed diagnostics", fields...)
+	// pkg/piagent 已把最终错误帧脱敏,这里只报体量,不复制内容。
+	if d.FinalErrorFrame != "" {
+		fields = append(fields, zap.Int("piFinalErrorFrameBytes", len(d.FinalErrorFrame)))
+	}
+	logger.Ctx(ctx).Debug("piagent.logPiFailureDiagnostics: turn failed diagnostics", fields...)
 }
 
-func piTurnLogFields(req agentruntime.RunRequest, cwd string, result *agentruntime.RunResult, err error) []zap.Field {
+func providerKeyField(req agentruntime.RunRequest) zap.Field {
+	if req.Provider != nil {
+		return zap.String("providerKey", req.Provider.ProviderKey)
+	}
+	return zap.Skip()
+}
+
+func piTurnLogFields(req agentruntime.RunRequest, result *agentruntime.RunResult, err error) []zap.Field {
 	fields := []zap.Field{
 		zap.Int64("sessionID", req.SessionID),
 		zap.Int64("agentID", req.AgentID),
-		zap.String("cwd", cwd),
 		zap.Bool("compact", req.Compact),
 	}
+	fields = append(fields, providerKeyField(req))
 	if result != nil {
 		fields = append(fields,
 			zap.String("providerSessionID", result.ProviderSessionID),
-			zap.String("model", result.Model),
 			zap.Int("contextWindow", result.ContextWindow),
 		)
 		if result.Usage != nil {
@@ -476,7 +609,10 @@ func piTurnLogFields(req agentruntime.RunRequest, cwd string, result *agentrunti
 		}
 	}
 	if err != nil {
-		fields = append(fields, zap.String("errorType", fmt.Sprintf("%T", err)))
+		fields = append(fields,
+			zap.String("errorClass", fmt.Sprintf("%T", err)),
+			zap.Int("errorBytes", len(err.Error())),
+		)
 	}
 	return fields
 }

@@ -12,6 +12,26 @@ import {
 } from "./transcript-card";
 import { useTranscriptBooleanState } from "./transcript-ui-state";
 
+// STREAMING_TAIL_MAX_CHARS 限制 streaming 视图实际渲染的思考文本长度。streaming body
+// 本就是 max-h-[132px] overflow-hidden 并贴底显示 —— 头部永远看不见。若把整段 text 都
+// 塞进 DOM,每个 chunk 都要 O(n) 重排 whitespace-pre-wrap 文本块,一整轮流式下来是
+// O(n²),长思考流会卡死主线程(用户可见症状:app 卡死/卡顿)。只渲染末尾一个窗口量级
+// 的尾巴,单 chunk 渲染降到 O(1)。完整 text 仍由 store 累积,done/落库态照常使用全文。
+const STREAMING_TAIL_MAX_CHARS = 1200;
+
+// streamingTail 取 text 末尾不超过 STREAMING_TAIL_MAX_CHARS 的一段。cut 落在代理对
+// 后半时回退一格,避免开头出现半个代理对被渲染成替换符。
+function streamingTail(text: string): string {
+  if (text.length <= STREAMING_TAIL_MAX_CHARS) return text;
+  const cut = text.length - STREAMING_TAIL_MAX_CHARS;
+  let start = cut;
+  if (start > 0) {
+    const code = text.charCodeAt(start);
+    if (code >= 0xdc00 && code <= 0xdfff) start -= 1;
+  }
+  return text.slice(start);
+}
+
 type ThinkingBlockProps = {
   text: string;
   /** 该 block 是否正处在流式输出中。父组件根据 stream 上下文判断后传入。 */
@@ -172,9 +192,10 @@ export function ThinkingBlock({
             {streaming ? (
               <div
                 ref={streamingBodyRef}
+                data-slot="thinking-streaming-body"
                 className="max-h-[132px] overflow-hidden whitespace-pre-wrap break-words px-3.5 py-3 text-aux italic text-muted-foreground"
               >
-                {text}
+                {streamingTail(text)}
               </div>
             ) : (
               <div className="whitespace-pre-wrap break-words px-3.5 py-3 text-aux italic text-muted-foreground">

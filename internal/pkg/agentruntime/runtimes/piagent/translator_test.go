@@ -126,6 +126,7 @@ func TestTranslate_Usage(t *testing.T) {
 			CachedTokens:        2,
 			CacheCreationTokens: 4,
 		},
+		ContextWindow: 258000,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, usage)
@@ -134,6 +135,7 @@ func TestTranslate_Usage(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 16, update.TotalInputTokens)
 	assert.Equal(t, 3, update.Usage.CompletionTokens)
+	assert.Equal(t, 258000, update.ContextWindow)
 }
 
 func TestTranslate_ContextWindow(t *testing.T) {

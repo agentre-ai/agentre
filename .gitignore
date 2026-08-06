@@ -1,4 +1,5 @@
 .superpowers/
+/docs/superpowers/
 
 # dev-kit runtime: plans, verification evidence and reports, isolated workspaces — local
 # working state, not committed

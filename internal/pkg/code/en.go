@@ -37,6 +37,7 @@ var enUS = map[int]string{
 	AgentBackendGatewayUnavailable:     "Local HTTP gateway is not running; please enable it in settings",
 	AgentBackendInvalidReasoningEffort: "Invalid reasoning effort; must be one of low / medium / high / xhigh / max, or empty",
 	AgentBackendInvalidDevice:          "The device this Agent backend is bound to does not exist or is offline",
+	AgentBackendProviderModelRequired:  "The bound LLM provider must have a default Model set",
 
 	AppSettingNotFound:      "App setting not found",
 	AppSettingInvalidPort:   "Port must be an integer between 0 and 65535",
@@ -100,6 +101,8 @@ var enUS = map[int]string{
 	ChatProviderSessionGone:         "The CLI conversation no longer exists. The session has been reset — please resend your message.",
 	ChatRemoteProviderNotConfigured: "Remote agentred does not have the LLM provider required by this Agent backend (provider key: %s). Sync it to the remote first, or run agentred llm add --key=%s --name=<NAME> --type=<TYPE> --api-key=<API_KEY> on the remote",
 	ChatAgentNoBackend:              "This agent does not have a backend configured. Please select an Agent backend on the org chart page first.",
+	ChatRemoteRunInterrupted:        "This turn was interrupted here: the remote agentred restarted and the session was cut short — it did not fail. Everything above is kept; send a message to start a new turn.",
+	ChatRemoteDaemonUnreachable:     "This turn stops here: the remote agentred is unreachable and every reconnect attempt failed — it did not fail. Everything above is kept; you can continue once it is back.",
 
 	ChatSteerNoActive:     "No in-flight conversation to enqueue into",
 	ChatSteerUnsupported:  "This backend does not support enqueueing during a turn",

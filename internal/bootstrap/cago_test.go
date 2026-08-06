@@ -266,3 +266,65 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, row.id, 1, row.status, row.status, 1, now, now).E
 		t.Fatalf("statuses after reset = %#v, want running/waiting error and idle unchanged", got)
 	}
 }
+
+// TestResetStaleActiveSessionsLeavesRemoteSessionsAlone 钉死启动期清理的边界:跑在
+// 远端 daemon 上的会话不归它管。
+//
+// 那一轮的执行者是另一台机器上的进程,它不随桌面 App 退出而消亡(R4:断连不终止会话)。
+// 在连上那台 daemon 之前无从知道它是不是还在跑,一律翻成 error 就是报一个假失败;而一条
+// 在桌面端离线期间没产出任何新内容的远端会话不会被补齐重放改写,那条假失败会**永久**
+// 留在界面上 —— 恰好推翻「关掉 App 再打开,看得到这段时间远端跑出来的全部内容」。
+// 远端会话的去向改由 chat_svc.CatchUpRemoteSessions 按 daemon 交回的生命周期逐条判定。
+func TestResetStaleActiveSessionsLeavesRemoteSessionsAlone(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTRE_DATA_DIR", dataDir)
+	t.Setenv("AGENTRE_ENV", "test")
+
+	runtime, err := Init(context.Background())
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(runtime.Close)
+
+	gdb := db.Default()
+	now := time.Now().UnixMilli()
+	rows := []struct {
+		id       int64
+		deviceID int64
+		fp       string
+	}{
+		{9201, 7, "sha256:beef"}, // 远端跑着:不动
+		{9202, 0, ""},            // 本机:照旧翻 error
+		{9203, 7, ""},            // 记了设备却没有实例标识:游标无从校验,按本机处理
+	}
+	for _, row := range rows {
+		if err := gdb.Exec(`INSERT INTO chat_sessions (id, agent_id, title, agent_status, status, exec_device_id, exec_daemon_fingerprint, createtime, updatetime)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, row.id, 1, "t", "running", 1, row.deviceID, row.fp, now, now).Error; err != nil {
+			t.Fatalf("insert session %d: %v", row.id, err)
+		}
+	}
+
+	if err := ResetStaleActiveSessions(context.Background()); err != nil {
+		t.Fatalf("ResetStaleActiveSessions() error = %v", err)
+	}
+
+	type row struct {
+		ID          int64
+		AgentStatus string
+	}
+	var out []row
+	if err := db.Default().Table("chat_sessions").Select("id, agent_status").
+		Where("id IN ?", []int64{9201, 9202, 9203}).Scan(&out).Error; err != nil {
+		t.Fatalf("load statuses: %v", err)
+	}
+	got := map[int64]string{}
+	for _, r := range out {
+		got[r.ID] = r.AgentStatus
+	}
+	if got[9201] != "running" {
+		t.Fatalf("remote session status = %q, want running (the daemon may still be running it)", got[9201])
+	}
+	if got[9202] != "error" || got[9203] != "error" {
+		t.Fatalf("local session statuses = %#v, want both error", got)
+	}
+}

@@ -40,7 +40,7 @@ func TestEvent_RoundTrip(t *testing.T) {
 		}},
 		{"tool_call_parent_subagent", ToolCall{
 			ID: "tu_3", Name: "Read",
-			ParentToolCallID: "tu_parent",
+			ParentToolCallID: "tu_parent", SubagentRunID: "run-0",
 		}},
 
 		// ToolResult
@@ -49,8 +49,8 @@ func TestEvent_RoundTrip(t *testing.T) {
 		}},
 		{"tool_result_error", ToolResult{
 			ToolCallID: "tu_1", Content: "oops", IsError: true,
-			ParentToolCallID: "tu_parent",
-			Meta:             json.RawMessage(`{"exitCode":1}`),
+			ParentToolCallID: "tu_parent", SubagentRunID: "run-0",
+			Meta: json.RawMessage(`{"exitCode":1}`),
 		}},
 
 		// SteerConsumed
@@ -90,6 +90,18 @@ func TestEvent_RoundTrip(t *testing.T) {
 			RequestID: "p2", Allowed: false, DenyReason: "no thanks",
 		}},
 
+		// OpenClaw exec approval lifecycle is intentionally separate from tool
+		// completion. The available decisions come from the Gateway verbatim.
+		{"exec_approval_requested", ExecApprovalRequested{
+			ID: "approval-1", CommandText: "rm -rf build", CommandPreview: "rm -rf build",
+			AllowedDecisions: []string{"allow-once", "deny"}, Host: "gateway",
+			AgentID: "main", SessionKey: "agentre:12:34", CreatedAtMs: 100, ExpiresAtMs: 200,
+		}},
+		{"exec_approval_resolved", ExecApprovalResolved{
+			ID: "approval-1", Status: "resolved", Decision: "deny", ResolvedBy: "device-2", ResolvedAtMs: 150,
+		}},
+		{"exec_approval_expired", ExecApprovalResolved{ID: "approval-2", Status: "expired"}},
+
 		// PermissionModeChanged
 		{"permission_mode_changed", PermissionModeChanged{Mode: "bypassPermissions"}},
 
@@ -105,6 +117,12 @@ func TestEvent_RoundTrip(t *testing.T) {
 			ToolCallID: "tu_task",
 			Info: SubagentInfo{
 				TaskID: "t1", LastToolName: "Read", ToolUses: 3, Status: "running",
+				Mode: "single",
+				Runs: []SubagentRun{{
+					ID: "run-0", Index: 0, Profile: "read-only", Task: "inspect",
+					RequestedModel: "requested", Model: "observed", Status: "running",
+					LastToolName: "Read", ToolUses: 3,
+				}},
 			},
 		}},
 		{"subagent_done", SubagentDone{
@@ -130,6 +148,7 @@ func TestEvent_RoundTrip(t *testing.T) {
 				CachedTokens: 10, CacheCreationTokens: 5, TotalTokens: 190,
 			},
 			TotalInputTokens: 115,
+			ContextWindow:    258000,
 		}},
 		{"usage_update_nil_usage", UsageUpdate{TotalInputTokens: 0}},
 
@@ -208,6 +227,19 @@ func TestEvent_RoundTrip(t *testing.T) {
 // must marshal to a kind string equal to the EventKind constant the runtime
 // pipeline already uses. Catches accidental typo / drift between MarshalJSON
 // and the switch in UnmarshalEvent.
+func TestUsageUpdate_ContextWindowWireRoundTrip(t *testing.T) {
+	raw := []byte(`{"kind":"usage","usage":{"promptTokens":10},"totalInputTokens":10,"contextWindow":258000}`)
+
+	ev, err := UnmarshalEvent(raw)
+	require.NoError(t, err)
+	encoded, err := json.Marshal(ev)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &got))
+	assert.Equal(t, float64(258000), got["contextWindow"])
+}
+
 func TestEvent_WireKindMatchesType(t *testing.T) {
 	pairs := []struct {
 		kind EventKind
@@ -222,6 +254,8 @@ func TestEvent_WireKindMatchesType(t *testing.T) {
 		{EventAskUserQuestionAnswered, UserAskResolved{}},
 		{EventToolPermissionRequest, ToolPermissionRequest{}},
 		{EventToolPermissionResolved, ToolPermissionResolved{}},
+		{EventExecApprovalRequested, ExecApprovalRequested{}},
+		{EventExecApprovalResolved, ExecApprovalResolved{}},
 		{EventPermissionModeChanged, PermissionModeChanged{}},
 		{EventSubagentStarted, SubagentStarted{}},
 		{EventSubagentProgress, SubagentProgress{}},
@@ -258,6 +292,7 @@ func TestUnmarshalEvent_AllKindsCovered(t *testing.T) {
 		TextDelta{}, ThinkingDelta{}, ToolCall{}, ToolResult{}, SteerConsumed{},
 		UserAskRequest{}, UserAskResolved{},
 		ToolPermissionRequest{}, ToolPermissionResolved{},
+		ExecApprovalRequested{}, ExecApprovalResolved{},
 		PermissionModeChanged{},
 		SubagentStarted{}, SubagentProgress{}, SubagentDone{}, SubagentModel{},
 		Retry{}, UsageUpdate{}, ContextWindowUpdated{}, CompactBoundary{}, RuntimeStatus{}, PlanUpdated{},
@@ -278,6 +313,41 @@ func TestSubagentStarted_KindRoundTrip(t *testing.T) {
 	got, err := UnmarshalEvent(b)
 	require.NoError(t, err)
 	assert.Equal(t, "local_bash", got.(SubagentStarted).Info.Kind)
+}
+
+func TestSubagentRuntimeContractsUseLowerCamelWireFields(t *testing.T) {
+	ev := SubagentProgress{ToolCallID: "outer", Info: SubagentInfo{
+		Mode: "parallel",
+		Runs: []SubagentRun{
+			{ID: "run-0", Index: 0, Agent: "a", Task: "inspect", Model: "model-a", Status: "completed"},
+			{ID: "run-1", Index: 1, Agent: "b", Task: "test", Status: "failed", ErrorMessage: "boom"},
+		},
+	}}
+	b, err := json.Marshal(ev)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"kind":"subagent_progress",
+		"toolCallId":"outer",
+		"info":{"mode":"parallel","runs":[
+			{"id":"run-0","index":0,"agent":"a","task":"inspect","model":"model-a","status":"completed"},
+			{"id":"run-1","index":1,"agent":"b","task":"test","status":"failed","errorMessage":"boom"}
+		]}
+	}`, string(b))
+	decoded, err := UnmarshalEvent(b)
+	require.NoError(t, err)
+	assert.Equal(t, ev, decoded)
+
+	for _, event := range []Event{
+		ToolCall{ID: "child-call", ParentToolCallID: "outer", SubagentRunID: "run-0"},
+		ToolResult{ToolCallID: "child-call", ParentToolCallID: "outer", SubagentRunID: "run-0", Content: "ok"},
+	} {
+		wire, marshalErr := json.Marshal(event)
+		require.NoError(t, marshalErr)
+		assert.Contains(t, string(wire), `"subagentRunId":"run-0"`)
+		roundTrip, unmarshalErr := UnmarshalEvent(wire)
+		require.NoError(t, unmarshalErr)
+		assert.Equal(t, event, roundTrip)
+	}
 }
 
 // TestSubagentModel_KindRoundTrip 独立事件类型透传（不复用 SubagentProgress，见

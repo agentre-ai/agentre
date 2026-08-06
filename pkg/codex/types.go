@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -51,6 +52,7 @@ const (
 	appMethodThreadTokenUsageUpdated       = "thread/tokenUsage/updated"
 	appMethodThreadCompacted               = "thread/compacted"
 	appMethodTurnPlanUpdated               = "turn/plan/updated"
+	appMethodServerRequestResolved         = "serverRequest/resolved"
 	appMethodError                         = "error"
 
 	appItemUserMessage       = "userMessage"
@@ -63,6 +65,14 @@ const (
 	appItemDynamicToolCall   = "dynamicToolCall"
 	appItemCollabAgentTool   = "collabAgentToolCall"
 	appItemContextCompaction = "contextCompaction"
+	appItemWebSearch         = "webSearch"
+	appItemImageView         = "imageView"
+	appItemSleep             = "sleep"
+	appItemImageGeneration   = "imageGeneration"
+	appItemSubAgentActivity  = "subAgentActivity"
+	appItemHookPrompt        = "hookPrompt"
+	appItemEnteredReviewMode = "enteredReviewMode"
+	appItemExitedReviewMode  = "exitedReviewMode"
 
 	appStatusCompleted   = "completed"
 	appStatusInterrupted = "interrupted"
@@ -169,6 +179,7 @@ type appNotification struct {
 	Error     *appNotifyError `json:"error"`
 	Item      *appThreadItem  `json:"item"`
 	ItemID    string          `json:"itemId"`
+	RequestID json.RawMessage `json:"requestId"`
 	Delta     string          `json:"delta"`
 	Usage     *appTokenUsage  `json:"tokenUsage"`
 	Turn      *appTurn        `json:"turn"`
@@ -193,7 +204,7 @@ type appThreadItem struct {
 	Text string `json:"text,omitempty"`
 	// Codex 0.131.0 represents userMessage text as content[] rather than a
 	// top-level text field. Keep Text above for older app-server builds.
-	Content []appUserInput `json:"content,omitempty"`
+	Content appItemContent `json:"content,omitempty"`
 
 	Command          string          `json:"command,omitempty"`
 	Cwd              string          `json:"cwd,omitempty"`
@@ -225,6 +236,43 @@ func (i *appThreadItem) UnmarshalJSON(data []byte) error {
 type appUserInput struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+}
+
+// appItemContent normalizes the two app-server content shapes at the protocol
+// boundary: userMessage uses an input-item array, while compatible Responses
+// providers can surface completed agentMessage content as a plain string.
+type appItemContent []appUserInput
+
+func (c *appItemContent) UnmarshalJSON(data []byte) error {
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(data, &rawItems); err == nil {
+		items := make(appItemContent, 0, len(rawItems))
+		for _, raw := range rawItems {
+			var item appUserInput
+			if err := json.Unmarshal(raw, &item); err == nil {
+				if item.Type == "" && item.Text != "" {
+					item.Type = "text"
+				}
+				items = append(items, item)
+				continue
+			}
+
+			var text string
+			if err := json.Unmarshal(raw, &text); err != nil {
+				return err
+			}
+			items = append(items, appUserInput{Type: "text", Text: text})
+		}
+		*c = items
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return err
+	}
+	*c = appItemContent{{Type: "text", Text: text}}
+	return nil
 }
 
 type appFileChange struct {
@@ -358,7 +406,7 @@ func turnStartParamsInput(thread appThreadStartResult, input []UserInput, mode C
 	return params, nil
 }
 
-func userTextForItem(item *appThreadItem) string {
+func textForItem(item *appThreadItem) string {
 	if item == nil {
 		return ""
 	}
@@ -444,13 +492,21 @@ func appUsageToProvider(u *appTokenUsage) provider.Usage {
 }
 
 func appTurnErr(turn *appTurn) error {
-	if turn == nil || turn.Error == nil {
+	if turn == nil {
 		return nil
 	}
-	if turn.Error.AdditionalDetails != "" {
-		return fmt.Errorf("codex: %s: %s", turn.Error.Message, turn.Error.AdditionalDetails)
+	if turn.Error == nil {
+		if turn.Status == appStatusFailed {
+			return errors.New("codex: turn failed without error details")
+		}
+		return nil
 	}
-	return fmt.Errorf("codex: %s", turn.Error.Message)
+	message := sanitizeDiagnostic(turn.Error.Message)
+	details := sanitizeDiagnostic(turn.Error.AdditionalDetails)
+	if turn.Error.AdditionalDetails != "" {
+		return fmt.Errorf("codex: %s: %s", message, details)
+	}
+	return fmt.Errorf("codex: %s", message)
 }
 
 var appRetryCountRE = regexp.MustCompile(`(\d+)\s*/\s*(\d+)`)
@@ -458,8 +514,8 @@ var appRetryCountRE = regexp.MustCompile(`(\d+)\s*/\s*(\d+)`)
 func appRetryEvent(n appNotification) *RetryEvent {
 	retry := &RetryEvent{}
 	if n.Error != nil {
-		retry.Message = n.Error.Message
-		retry.AdditionalDetails = n.Error.AdditionalDetails
+		retry.Message = sanitizeDiagnostic(n.Error.Message)
+		retry.AdditionalDetails = sanitizeDiagnostic(n.Error.AdditionalDetails)
 	}
 	if m := appRetryCountRE.FindStringSubmatch(retry.Message); len(m) == 3 {
 		if attempt, err := strconv.Atoi(m[1]); err == nil {

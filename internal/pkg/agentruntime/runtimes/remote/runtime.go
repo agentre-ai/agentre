@@ -48,6 +48,14 @@ type remoteSession struct {
 	result      *agentruntime.RunResult
 	ctx         context.Context
 	cancel      context.CancelFunc
+	// startSeq 是**开轮那一刻** daemon 通知日志里这条会话的高水位:本轮自己的通知
+	// 必然都比它新。它是这一轮在 seq 时间线上的位置 —— 而 runtime.run 这条 RPC 本身
+	// 不在那条时间线上(RunAck 不带 seq,日志载荷里也没有轮次身份),少了它就分不出
+	// 补齐回放上来的一条终态帧到底是谁的。见 handleRunResultDone 与 turnStartFloor。
+	//
+	// 0 表示未知(没装重连端口 / 老 daemon / 这一次没读到),此时守卫退化成今天的行为。
+	// 发布进 r.sessions 之前赋值,之后不再改写;读方一律在 r.mu 下。
+	startSeq int64
 
 	mu                sync.Mutex
 	providerSessionID string
@@ -78,12 +86,59 @@ type Runtime struct {
 	// 见 autoturn.go。
 	autoSessions    map[int64]*autoSession
 	piGenerationSeq atomic.Uint64
+	// tracked 是 App 启动后按 exec_device_id 找回来、要为之补齐的会话(见 catchup.go)。
+	// 它们在本进程内**没有**在飞的一轮 —— 那正是重启后的常态 —— 但断连后仍要重连补齐,
+	// 所以必须与 sessions / autoSessions 一起进补齐范围。受 mu 保护。
+	tracked map[int64]struct{}
+
+	// ── 断连重连(reconnect.go)──
+	reconnect     ReconnectPort
+	connObserver  ConnStateObserver
+	durabilityObs DurabilityObserver
+	cursorPort    agentruntime.SessionCursorPort
+	backoff       []time.Duration
+	cursorFlush   time.Duration
+
+	// connMu 只保护「当前这条连接」相关的三个字段:client / daemonFP / 能力探测
+	// 结果。它与 mu 分开,是因为重连期间要在不持有会话表锁的前提下换连接。
+	connMu     sync.Mutex
+	daemonFP   string
+	durability durabilityState
+	// connGen 是「第几条连接」的代号,adoptConn 每换一条连接 +1。开轮位置的探测结果
+	// 按它作废(见 turnStartFloor):同一条连接上探一次就够,换了连接必须重探。
+	connGen int64
+
+	// sessionState 是每条会话的补齐状态(游标 + 补洞串行化)。
+	// 与 sessions 分开:sessions 只活在一轮之内,游标要跨轮存活。
+	//
+	// 条目**故意不回收**,failSession / failAllSessions 都不删。游标是这里唯一的热副本,
+	// 而落库是防抖的(见 recordCursor):failSession 只收尾一条会话、并不 flushCursors
+	// (failAllSessions 才会),此刻删掉条目就把最后 cursorFlush 窗口里那截游标推进丢了
+	// —— 同一条会话下一轮起来时按库里那个旧游标补洞,已经交付过的通知会被再重放一遍,
+	// 直接破「无重复」这条硬不变量。空间是有界的:一个 *Runtime 按设备缓存,它的条目数
+	// 至多等于这台 daemon 上被本进程碰过的远端会话数,而最后一条会话引用释放时整个
+	// Runtime 连同这张表一起被丢掉(见 chat_svc.releaseRemoteRuntime)。
+	stateMu      sync.Mutex
+	sessionState map[int64]*sessionSync
+
+	// 游标落库的防抖攒批,见 recordCursor。cursorFlushMu 把「取走脏表 + 落库」串起来,
+	// 让并发的两次 flush 不会把更早的那份快照后写进库(见 flushCursors)。
+	cursorMu      sync.Mutex
+	cursorDirty   map[int64]int64
+	cursorTimer   *time.Timer
+	cursorFlushMu sync.Mutex
+
+	stopOnce sync.Once
+	stopped  chan struct{}
 }
 
 type generationGate struct {
 	mu   sync.Mutex
 	refs int
 }
+
+// notifyHandler 是一条 daemon → client 通知的处理函数。
+type notifyHandler func(*Runtime, context.Context, json.RawMessage) (any, error)
 
 // New 构造一个 remote.Runtime,并把 runtime.event / runtime.runResultDone
 // 两个 server-push handler 注册到 client。调用方负责管理 client 的生命周期(通常
@@ -92,28 +147,60 @@ type generationGate struct {
 // 额外起一个 goroutine 监 client.Closed():daemon 进程崩溃 / 网络断 / TLS 失
 // 败等情况下,在飞的 run session 永远等不到 runResultDone,events channel 不
 // 关 → chat_svc.runTurn 卡在 `for ev := range events`,前端会话一直停在「生
-// 成中」。conn 关闭时给所有 live session 注入一条 ErrDaemonDisconnected 的
-// StopErr 并 close events,chat_svc 走 StreamError 解锁前端。
-func New(c agentruntime.DaemonClientPort) *Runtime {
+// 成中」。
+//
+// 装了 WithReconnect 时,断连**不**终结会话:会话转入重连态,退避重连并按游标
+// 补齐(见 reconnect.go)。没装重连端口、或对面 daemon 不认补齐族 RPC 时,才
+// 回落到给所有 live session 注入 ErrDaemonDisconnected 并 close events,
+// chat_svc 走 StreamError 解锁前端。
+func New(c agentruntime.DaemonClientPort, opts ...Option) *Runtime {
 	r := &Runtime{
 		client:          c,
 		sessions:        map[int64]*remoteSession{},
 		generationGates: map[int64]*generationGate{},
 		caps:            map[agent_backend_entity.BackendType]capability.Capabilities{},
 		autoSessions:    map[int64]*autoSession{},
+		sessionState:    map[int64]*sessionSync{},
+		connGen:         1, // 0 留给 sessionSync 的零值:那表示「这条会话还没探过」
+		backoff:         defaultReconnectBackoff,
+		cursorFlush:     defaultCursorFlushInterval,
+		stopped:         make(chan struct{}),
 	}
-	c.Handle(wire.NotifyEvent, r.handleEvent)
-	c.Handle(wire.NotifyRunResultDone, r.handleRunResultDone)
-	c.Handle(wire.NotifyAutonomousTurnStarted, r.handleAutonomousTurnStarted)
-	c.Handle(wire.NotifyAutonomousTurnEvent, r.handleAutonomousTurnEvent)
-	c.Handle(wire.NotifyAutonomousTurnDone, r.handleAutonomousTurnDone)
-	// daemon 上的 CLI 子进程访问内置工具 MCP(org/subagent/group/workflow)时,经此反向
-	// 请求隧道回 desktop 执行(真 /mcp/* handler 在 desktop)。见 mcpproxy.go。
-	c.Handle(wire.MethodMCPProxy, r.handleMCPProxy)
+	for _, o := range opts {
+		o(r)
+	}
+	r.registerHandlers(c)
 	if closed := c.Closed(); closed != nil {
 		go r.watchClose(closed)
 	}
 	return r
+}
+
+// registerHandlers 把五类通知 + MCP 反向隧道挂到一条连接上。重连换连接后要原样再挂
+// 一遍 —— 新连接自带一张空的 handler 表。
+//
+// 五类通知统一经 dispatchNotification 入口,补齐重放走的也是它:实时与补齐因此共用
+// 同一套 handler,R5 的等价性是结构性成立的,不只是被测试覆盖。
+func (r *Runtime) registerHandlers(c agentruntime.DaemonClientPort) {
+	for method, h := range notifyHandlers {
+		m, fn := method, h
+		c.Handle(m, func(ctx context.Context, raw json.RawMessage) (any, error) {
+			return r.dispatchNotification(ctx, m, fn, raw)
+		})
+	}
+	// daemon 上的 CLI 子进程访问内置工具 MCP(org/subagent/group/workflow)时,经此反向
+	// 请求隧道回 desktop 执行(真 /mcp/* handler 在 desktop)。见 mcpproxy.go。
+	c.Handle(wire.MethodMCPProxy, r.handleMCPProxy)
+}
+
+// notifyHandlers 是 daemon → client 五类通知的方法名 → handler 映射。补齐重放按
+// method 找回同一个 handler,所以这张表必须是**唯一**的注册来源。
+var notifyHandlers = map[string]notifyHandler{
+	wire.NotifyEvent:                 (*Runtime).handleEvent,
+	wire.NotifyRunResultDone:         (*Runtime).handleRunResultDone,
+	wire.NotifyAutonomousTurnStarted: (*Runtime).handleAutonomousTurnStarted,
+	wire.NotifyAutonomousTurnEvent:   (*Runtime).handleAutonomousTurnEvent,
+	wire.NotifyAutonomousTurnDone:    (*Runtime).handleAutonomousTurnDone,
 }
 
 // ErrDaemonDisconnected 当远端 daemon 连接断开(进程崩 / 网络断 / 主动 Close)
@@ -134,58 +221,24 @@ const eventChannelBound = 128
 
 const generationControlTimeout = 5 * time.Second
 
-// watchClose 阻塞读 client.Closed(),触发时把所有未结束的 session 用
-// ErrDaemonDisconnected 收尾。幂等 - session 已经被 handleRunResultDone 关闭
-// 的不会被二次关。
-func (r *Runtime) watchClose(closed <-chan struct{}) {
-	<-closed
-	r.mu.Lock()
-	live := make([]*remoteSession, 0, len(r.sessions))
-	liveSids := make([]int64, 0, len(r.sessions))
-	for sid, sess := range r.sessions {
-		live = append(live, sess)
-		liveSids = append(liveSids, sid)
-		delete(r.sessions, sid)
-	}
-	r.mu.Unlock()
-	// 关键失败模式:daemon 进程崩 / 网络断 / TLS 失败,客户端单方面感知到 conn close,
-	// 给在飞 session 注 ErrDaemonDisconnected 解锁前端「生成中」。同步落一条 Warn
-	// 让运维事后能在日志里看到"哪几个 session 是被 daemon 断连兜底关掉的",而不是
-	// 误以为 runtime 正常收尾。空 live 列表也打一条 Debug,方便区分"daemon 主动断
-	// 但没在飞 session" 与日志缺失。
-	if len(live) > 0 {
-		// goroutine 无请求 ctx,按 CLAUDE.md 日志规范用 logger.Default()。
-		logger.Default().Warn("remote runtime: daemon disconnected, injecting StopErr to live sessions",
-			zap.Int("liveCount", len(live)),
-			zap.Int64s("sids", liveSids))
-	} else {
-		logger.Default().Debug("remote runtime: daemon disconnected, no live sessions")
-	}
-	for _, sess := range live {
-		sess.mu.Lock()
-		if sess.cancel != nil {
-			sess.cancel()
-		}
-		if !sess.closed {
-			sess.closed = true
-			if sess.result != nil && sess.result.StopErr == nil {
-				sess.result.StopErr = ErrDaemonDisconnected
-			}
-			close(sess.events)
-		}
-		sess.mu.Unlock()
-	}
-	// 自主续轮镜像也随 conn close 拆掉:close 每个 out → chat_svc 的 watcher 退出;
-	// 在飞的那轮 events 也 close,driveAutonomousTurn 干净收尾。见 autoturn.go。
-	r.closeAllAutoSessions()
-}
+// ErrRunInterrupted 这一轮在远端**被打断**了:daemon 重启后按 R10 把非终态会话标成
+// 中断态(接管回 ErrNoActiveTurn / ErrSessionNotFound),或那台 daemon 的实例标识对不上
+// 导致游标失效(R12 判「按已中断处理」)。连接本身是好的,只是这一轮接不回去了。
+//
+// 它必须与 ErrDaemonDisconnected 分开:R15 规定中断沿用既有的 error 态、**由消息文案
+// 区分其与真实错误**,而上层能拿到的唯一依据就是 StopErr。折成同一个哨兵,「被打断」
+// 与「连不上了」就是同一句话,用户分不出发生了什么。
+var ErrRunInterrupted = errors.New("agentruntime/runtimes/remote: run interrupted by daemon restart")
 
-// Close 关掉与 daemon 的 client 连接。
+// Close 关掉与 daemon 的 client 连接,并停掉重连状态机。
 func (r *Runtime) Close() error {
-	if r.client == nil {
+	r.stopOnce.Do(func() { close(r.stopped) })
+	r.flushCursors()
+	c := r.conn()
+	if c == nil {
 		return nil
 	}
-	return r.client.Close()
+	return c.Close()
 }
 
 // ── Capabilities ───────────────────────────────────────────────────────────
@@ -203,7 +256,7 @@ func (r *Runtime) Prefetch(ctx context.Context, bt agent_backend_entity.BackendT
 		return nil
 	}
 	var res wire.CapabilitiesResult
-	if err := r.client.Call(ctx, wire.MethodCapabilities, wire.CapabilitiesParams{
+	if err := r.conn().Call(ctx, wire.MethodCapabilities, wire.CapabilitiesParams{
 		BackendType: string(bt),
 	}, &res); err != nil {
 		return wire.FromJSONRPCError(err)
@@ -306,7 +359,7 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 
 	registrationCtx, stopRegistration := context.WithTimeout(context.WithoutCancel(ctx), generationControlTimeout)
 	var registrationAck wire.RunAck
-	registrationErr := r.client.Call(registrationCtx, wire.MethodRun, params, &registrationAck)
+	registrationErr := r.conn().Call(registrationCtx, wire.MethodRun, params, &registrationAck)
 	stopRegistration()
 	sess.registrationOnce.Do(func() { close(sess.registrationDone) })
 	releaseGenerationGate()
@@ -324,7 +377,7 @@ func (r *Runtime) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (
 	}
 
 	var ack wire.RunAck
-	if err := r.client.Call(generationCtx, wire.MethodRun, params, &ack); err != nil {
+	if err := r.conn().Call(generationCtx, wire.MethodRun, params, &ack); err != nil {
 		_ = r.abortGeneration(ctx, sess)
 		logger.Ctx(ctx).Warn("remote runtime: Pi preparation RPC failed",
 			zap.Int64("sessionId", req.SessionID),
@@ -394,7 +447,7 @@ func (p *remotePreparedRun) Start(ctx context.Context) (<-chan agentruntime.Even
 		cancelStart()
 	}()
 	var ack wire.RunAck
-	if err := p.runtime.client.Call(startCtx, wire.MethodRun, p.params, &ack); err != nil {
+	if err := p.runtime.conn().Call(startCtx, wire.MethodRun, p.params, &ack); err != nil {
 		_ = p.runtime.abortGeneration(ctx, p.session)
 		return nil, nil, wire.FromJSONRPCError(err)
 	}
@@ -427,6 +480,9 @@ func (r *Runtime) runDirect(ctx context.Context, req agentruntime.RunRequest) (<
 		return nil, nil, err
 	}
 	generationCtx, cancel := context.WithCancel(ctx)
+	// 开轮前读一眼日志高水位(顺带完成 R18 的能力探测),把这一轮钉在 seq 时间线上:
+	// 不比它新的终态帧都属于已经结束的轮次。见 turnStartFloor。
+	floor := r.turnStartFloor(ctx, req.SessionID)
 	sess := &remoteSession{
 		id:          req.SessionID,
 		backendType: agent_backend_entity.BackendType(req.Backend.Type),
@@ -435,16 +491,19 @@ func (r *Runtime) runDirect(ctx context.Context, req agentruntime.RunRequest) (<
 		ctx:         generationCtx,
 		cancel:      cancel,
 		started:     true,
+		startSeq:    floor,
 	}
 	r.mu.Lock()
 	r.sessions[req.SessionID] = sess
 	r.mu.Unlock()
 
 	var ack wire.RunAck
-	if err := r.client.Call(generationCtx, wire.MethodRun, params, &ack); err != nil {
+	if err := r.conn().Call(generationCtx, wire.MethodRun, params, &ack); err != nil {
 		r.finishSession(sess, nil)
-		logger.Ctx(ctx).Error("remote runtime: Run RPC failed",
-			zap.Int64("requestedSid", req.SessionID), zap.Error(err))
+		fields := make([]zap.Field, 0, 3)
+		fields = append(fields, zap.Int64("requestedSid", req.SessionID))
+		fields = append(fields, remoteErrorLogFields(err)...)
+		logger.Ctx(ctx).Error("remote.Run: RPC failed", fields...)
 		return nil, nil, wire.FromJSONRPCError(err)
 	}
 
@@ -539,46 +598,135 @@ func usageFromWire(u *wire.UsageWire) *provider.Usage {
 
 // ── server-push handlers ───────────────────────────────────────────────────
 
+func remoteEventLogFields(raw json.RawMessage) []zap.Field {
+	fields := []zap.Field{zap.Int("eventBytes", len(raw))}
+	var head struct {
+		Kind agentruntime.EventKind `json:"kind"`
+	}
+	if err := json.Unmarshal(raw, &head); err == nil {
+		if eventKind, ok := safeRemoteEventKind(head.Kind); ok {
+			fields = append(fields, zap.String("eventKind", eventKind))
+		}
+	}
+	return fields
+}
+
+func safeRemoteEventKind(kind agentruntime.EventKind) (string, bool) {
+	switch kind {
+	case agentruntime.EventTextDelta,
+		agentruntime.EventThinkingDelta,
+		agentruntime.EventToolUseStart,
+		agentruntime.EventToolUseEnd,
+		agentruntime.EventToolResult,
+		agentruntime.EventSteerConsumed,
+		agentruntime.EventSubagentStarted,
+		agentruntime.EventSubagentProgress,
+		agentruntime.EventSubagentDone,
+		agentruntime.EventSubagentModel,
+		agentruntime.EventAskUserQuestion,
+		agentruntime.EventAskUserQuestionAnswered,
+		agentruntime.EventPlanUpdated,
+		agentruntime.EventToolPermissionRequest,
+		agentruntime.EventToolPermissionResolved,
+		agentruntime.EventPermissionModeChanged,
+		agentruntime.EventRetry,
+		agentruntime.EventUsage,
+		agentruntime.EventCompactBoundary,
+		agentruntime.EventRuntimeStatus,
+		agentruntime.EventContextWindowUpdated,
+		agentruntime.EventError,
+		agentruntime.EventDone:
+		return string(kind), true
+	default:
+		return "", false
+	}
+}
+
+func remoteErrorLogFields(err error) []zap.Field {
+	if err == nil {
+		return nil
+	}
+	return []zap.Field{
+		zap.String("errorClass", fmt.Sprintf("%T", err)),
+		zap.Int("errorBytes", len(err.Error())),
+	}
+}
+
 func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, error) {
 	var frame wire.EventFrame
 	if err := json.Unmarshal(raw, &frame); err != nil {
-		logger.Ctx(ctx).Warn("remote runtime: event frame unmarshal failed",
-			zap.Int("rawBytes", len(raw)), zap.String("errorType", fmt.Sprintf("%T", err)))
+		fields := make([]zap.Field, 0, 3)
+		fields = append(fields, zap.Int("rawBytes", len(raw)))
+		fields = append(fields, remoteErrorLogFields(err)...)
+		logger.Ctx(ctx).Warn("remote.handleEvent: event frame unmarshal failed", fields...)
 		return nil, nil
 	}
 	r.mu.RLock()
 	sess := r.sessions[frame.SessionID]
-	knownCount := len(r.sessions)
+	knownSids := make([]int64, 0, len(r.sessions))
+	for k := range r.sessions {
+		knownSids = append(knownSids, k)
+	}
 	r.mu.RUnlock()
-	kind := eventKind(frame.Event)
-	if sess == nil {
-		logger.Ctx(ctx).Warn("remote runtime: event for unknown session dropped",
-			zap.Int64("sessionId", frame.SessionID),
-			zap.Int("knownSessionCount", knownCount),
-			zap.String("eventKind", kind))
+	if sess == nil && frame.Seq <= 0 {
+		// Legacy/live frames without a replay sequence cannot belong to a catch-up
+		// turn. Drop them before decoding, while logging only bounded metadata from
+		// the untrusted payload.
+		fields := make([]zap.Field, 0, 4)
+		fields = append(fields,
+			zap.Int64("frameSid", frame.SessionID),
+			zap.Int64s("knownSids", knownSids),
+		)
+		fields = append(fields, remoteEventLogFields(frame.Event)...)
+		logger.Ctx(ctx).Warn("remote.handleEvent: event for unknown session dropped", fields...)
 		return nil, nil
 	}
 	ev, err := agentruntime.UnmarshalEvent(frame.Event)
 	if err != nil {
-		logger.Ctx(ctx).Warn("remote runtime: event decode failed and was dropped",
-			zap.Int64("sessionId", frame.SessionID),
-			zap.String("eventKind", kind),
-			zap.Int("eventBytes", len(frame.Event)),
-			zap.String("errorType", fmt.Sprintf("%T", err)))
+		fields := make([]zap.Field, 0, 5)
+		fields = append(fields, zap.Int64("sid", frame.SessionID))
+		fields = append(fields, remoteEventLogFields(frame.Event)...)
+		fields = append(fields, remoteErrorLogFields(err)...)
+		logger.Ctx(ctx).Warn("remote.handleEvent: event decode failed", fields...)
+		return nil, nil
+	}
+	if sess != nil && frame.Seq > 0 && frame.Seq <= sess.startSeq {
+		// 补齐回放上来的、属于**已结束轮次**的事件:它在开轮之前就落库了。放进当前
+		// 这一轮的 events,上一轮的 TextDelta 会一字不差地追加到用户刚发出的那条消息
+		// 的回答里 —— 用户看到的是一段答非所问的历史。它归补齐轮。
+		logger.Ctx(ctx).Debug("remote runtime: event from an ended turn — routed to catch-up",
+			zap.Int64("sid", frame.SessionID), zap.Int64("seq", frame.Seq),
+			zap.Int64("turnStartSeq", sess.startSeq))
+		sess = nil
+	}
+	if sess == nil {
+		// 带 seq 的事件必定来自认得补齐族的 daemon:它要么是重放上来的历史,要么是
+		// 一条本进程还没有轮次去接的实时通知(App 刚重启)。两种都是用户没见过的
+		// 转录内容,交给补齐轮落成一轮,而不是像老 daemon 那样丢掉。
+		if frame.Seq > 0 && r.deliverToCatchUpTurn(ctx, frame.SessionID, ev) {
+			return nil, nil
+		}
+		fields := make([]zap.Field, 0, 4)
+		fields = append(fields,
+			zap.Int64("frameSid", frame.SessionID),
+			zap.Int64s("knownSids", knownSids),
+		)
+		fields = append(fields, remoteEventLogFields(frame.Event)...)
+		logger.Ctx(ctx).Warn("remote.handleEvent: event for unknown session dropped", fields...)
 		return nil, nil
 	}
 	sess.mu.Lock()
 	if !sess.started {
 		sess.mu.Unlock()
-		logger.Ctx(ctx).Warn("remote runtime: event before prepared generation start dropped",
-			zap.Int64("sessionId", frame.SessionID),
+		logger.Ctx(ctx).Warn("remote.handleEvent: event before prepared generation start dropped",
+			zap.Int64("sid", frame.SessionID),
 			zap.String("eventType", fmt.Sprintf("%T", ev)))
 		return nil, nil
 	}
 	if sess.closed {
 		sess.mu.Unlock()
-		logger.Ctx(ctx).Warn("remote runtime: event after session close dropped",
-			zap.Int64("sessionId", frame.SessionID),
+		logger.Ctx(ctx).Warn("remote.handleEvent: event after session close dropped",
+			zap.Int64("sid", frame.SessionID),
 			zap.String("eventType", fmt.Sprintf("%T", ev)))
 		return nil, nil
 	}
@@ -589,8 +737,8 @@ func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, er
 	select {
 	case sess.events <- ev:
 		sess.mu.Unlock()
-		logger.Ctx(ctx).Debug("remote runtime: event delivered",
-			zap.Int64("sessionId", frame.SessionID),
+		logger.Ctx(ctx).Debug("remote.handleEvent: event delivered",
+			zap.Int64("sid", frame.SessionID),
 			zap.String("eventType", fmt.Sprintf("%T", ev)))
 		return nil, nil
 	default:
@@ -606,9 +754,10 @@ func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, er
 		sess.cancel()
 	}
 	sess.mu.Unlock()
-	logger.Ctx(ctx).Warn("remote runtime: event delivery exceeded bounded buffer",
-		zap.Int64("sessionId", frame.SessionID),
-		zap.String("eventKind", kind))
+	overflowFields := make([]zap.Field, 0, 3)
+	overflowFields = append(overflowFields, zap.Int64("sid", frame.SessionID))
+	overflowFields = append(overflowFields, remoteEventLogFields(frame.Event)...)
+	logger.Ctx(ctx).Warn("remote.handleEvent: event delivery exceeded bounded buffer", overflowFields...)
 	// Remove from the session map so subsequent events for this generation are
 	// dropped as unknown, and trigger the daemon-side Abort asynchronously so
 	// the read loop is never blocked on an RPC.
@@ -628,17 +777,38 @@ func (r *Runtime) handleEvent(ctx context.Context, raw json.RawMessage) (any, er
 func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) (any, error) {
 	var frame wire.RunResultDoneFrame
 	if err := json.Unmarshal(raw, &frame); err != nil {
-		logger.Ctx(ctx).Warn("remote runtime: runResultDone unmarshal failed",
-			zap.Int("rawBytes", len(raw)), zap.String("errorType", fmt.Sprintf("%T", err)))
+		fields := make([]zap.Field, 0, 3)
+		fields = append(fields, zap.Int("rawBytes", len(raw)))
+		fields = append(fields, remoteErrorLogFields(err)...)
+		logger.Ctx(ctx).Warn("remote.handleRunResultDone: frame unmarshal failed", fields...)
 		return nil, nil
 	}
 	r.mu.RLock()
 	sess, ok := r.sessions[frame.SessionID]
 	r.mu.RUnlock()
+	if ok && frame.Seq > 0 && frame.Seq <= sess.startSeq {
+		// 补齐回放上来的、属于**已结束轮次**的终态帧:它在开轮之前就落库了,不可能是
+		// 这一轮的结果。放它进去会删掉会话表里当前这一轮、用旧结果覆盖它的 RunResult、
+		// 并 close 掉它的 events —— 用户刚发出的消息瞬间「结束」并带着上一轮的答案,
+		// 其后的实时帧则全部走 handleEvent 的「未知会话」被丢弃。
+		//
+		// 它与同一轮回放上来的事件走同一个去处:补齐轮。事件在 handleEvent 里按同一条
+		// 判据分流,这一帧则是那一轮的收尾 —— 两者合起来,回放的每一轮都完整落成一张
+		// 自己的卡片,而不是揉进用户刚发起的这一轮里。
+		logger.Ctx(ctx).Warn("remote runtime: runResultDone from an ended turn — routed to catch-up",
+			zap.Int64("sid", frame.SessionID),
+			zap.Int64("seq", frame.Seq),
+			zap.Int64("turnStartSeq", sess.startSeq))
+		// 它是**那一轮**的收尾:补齐轮攒的正是那一轮的内容,到此为止。
+		r.closeCatchUpTurn(ctx, frame)
+		return nil, nil
+	}
 	if !ok {
-		logger.Ctx(ctx).Warn("remote runtime: late runResultDone for unknown generation dropped",
-			zap.Int64("sessionId", frame.SessionID),
+		logger.Ctx(ctx).Info("remote.handleRunResultDone: no live generation for terminal frame",
+			zap.Int64("sid", frame.SessionID),
 			zap.Int("stopErrCode", frame.StopErrCode))
+		// 本进程没有这一轮(App 重启后补齐回放的整轮就长这样):补齐轮攒到这里为止。
+		r.closeCatchUpTurn(ctx, frame)
 		return nil, nil
 	}
 	// The provider session identity only discriminates stale generations for Pi
@@ -653,18 +823,16 @@ func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) 
 	sess.mu.Unlock()
 	if piGeneration && expectedProviderSessionID != "" && frame.ProviderSessionID != "" &&
 		frame.ProviderSessionID != expectedProviderSessionID {
-		logger.Ctx(ctx).Warn("remote runtime: stale runResultDone generation dropped",
-			zap.Int64("sessionId", frame.SessionID),
-			zap.String("expectedProviderSessionId", expectedProviderSessionID),
-			zap.String("frameProviderSessionId", frame.ProviderSessionID),
+		logger.Ctx(ctx).Warn("remote.handleRunResultDone: stale generation dropped",
+			zap.Int64("sid", frame.SessionID),
 			zap.Int("stopErrCode", frame.StopErrCode))
 		return nil, nil
 	}
 	r.mu.Lock()
 	if r.sessions[frame.SessionID] != sess {
 		r.mu.Unlock()
-		logger.Ctx(ctx).Warn("remote runtime: replaced runResultDone generation dropped",
-			zap.Int64("sessionId", frame.SessionID),
+		logger.Ctx(ctx).Warn("remote.handleRunResultDone: replaced generation dropped",
+			zap.Int64("sid", frame.SessionID),
 			zap.Int("stopErrCode", frame.StopErrCode))
 		return nil, nil
 	}
@@ -689,10 +857,11 @@ func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) 
 		close(sess.events)
 	}
 	sess.mu.Unlock()
-	logger.Ctx(ctx).Info("remote runtime: session ended",
-		zap.Int64("sessionId", frame.SessionID),
-		zap.Int("stopErrCode", frame.StopErrCode),
-		zap.String("model", frame.Model))
+	logger.Ctx(ctx).Info("remote.handleRunResultDone: session ended",
+		zap.Int64("sid", frame.SessionID),
+		zap.Bool("hasStopErr", frame.StopErrMsg != ""),
+		zap.Int("stopErrBytes", len(frame.StopErrMsg)),
+		zap.Int("stopErrCode", frame.StopErrCode))
 	return nil, nil
 }
 
@@ -712,7 +881,7 @@ func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID, text str
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodSteer, wire.SteerParams{
+	return r.callSession(ctx, sessionID, wire.MethodSteer, wire.SteerParams{
 		SessionID: sessionID, QueuedID: queuedID, Text: text,
 	}, &wire.OK{})
 }
@@ -722,7 +891,7 @@ func (r *Runtime) CancelSteer(ctx context.Context, sessionID int64, queuedID str
 		return nil, agentruntime.ErrNoActiveTurn
 	}
 	var res wire.CancelSteerResult
-	if err := r.callSentinel(ctx, wire.MethodCancelSteer, wire.CancelSteerParams{
+	if err := r.callSession(ctx, sessionID, wire.MethodCancelSteer, wire.CancelSteerParams{
 		SessionID: sessionID, QueuedID: queuedID,
 	}, &res); err != nil {
 		return nil, err
@@ -735,7 +904,7 @@ func (r *Runtime) DrainPending(ctx context.Context, sessionID int64) []agentrunt
 		return nil
 	}
 	var res wire.DrainResult
-	if err := r.callSentinel(ctx, wire.MethodDrainPending, wire.DrainParams{
+	if err := r.callSession(ctx, sessionID, wire.MethodDrainPending, wire.DrainParams{
 		SessionID: sessionID,
 	}, &res); err != nil {
 		return nil
@@ -753,14 +922,14 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 	if sess.backendType == agent_backend_entity.TypePiAgent {
 		return r.abortGeneration(ctx, sess)
 	}
-	return r.callSentinel(ctx, wire.MethodAbort, wire.AbortParams{SessionID: sessionID}, &wire.OK{})
+	return r.callSession(ctx, sessionID, wire.MethodAbort, wire.AbortParams{SessionID: sessionID}, &wire.OK{})
 }
 
 func (r *Runtime) StopBackgroundTask(ctx context.Context, sessionID int64, taskID string) error {
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodStopBackgroundTask, wire.StopBackgroundTaskParams{
+	return r.callSession(ctx, sessionID, wire.MethodStopBackgroundTask, wire.StopBackgroundTaskParams{
 		SessionID: sessionID,
 		TaskID:    taskID,
 	}, &wire.OK{})
@@ -770,7 +939,7 @@ func (r *Runtime) SetPermissionMode(ctx context.Context, sessionID int64, mode s
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodSetPermissionMode, wire.SetPermissionModeParams{
+	return r.callSession(ctx, sessionID, wire.MethodSetPermissionMode, wire.SetPermissionModeParams{
 		SessionID: sessionID, Mode: mode,
 	}, &wire.OK{})
 }
@@ -779,7 +948,7 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodSubmitAnswer, wire.SubmitAnswerParams{
+	return r.callSession(ctx, sessionID, wire.MethodSubmitAnswer, wire.SubmitAnswerParams{
 		SessionID: sessionID, RequestID: requestID,
 		Questions: questions, Answers: answers, Skipped: skipped,
 	}, &wire.OK{})
@@ -789,7 +958,7 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSentinel(ctx, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
+	return r.callSession(ctx, sessionID, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
 		SessionID: sessionID, RequestID: requestID,
 		Allow: allow, AlwaysAllowSession: alwaysAllowSession, DenyReason: denyReason,
 	}, &wire.OK{})
@@ -853,47 +1022,6 @@ func goalParams(req agentruntime.GoalRequest) (wire.GoalParams, error) {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
-
-// knownEventKinds is the set of canonical event kinds safe to log verbatim.
-// Any other kind is reported as "unknown" so a malformed or adversarial frame
-// can never smuggle payload into diagnostics through the kind field (R6).
-var knownEventKinds = map[agentruntime.EventKind]struct{}{
-	agentruntime.EventTextDelta:               {},
-	agentruntime.EventThinkingDelta:           {},
-	agentruntime.EventToolUseStart:            {},
-	agentruntime.EventToolUseEnd:              {},
-	agentruntime.EventToolResult:              {},
-	agentruntime.EventSteerConsumed:           {},
-	agentruntime.EventSubagentStarted:         {},
-	agentruntime.EventSubagentProgress:        {},
-	agentruntime.EventSubagentDone:            {},
-	agentruntime.EventSubagentModel:           {},
-	agentruntime.EventAskUserQuestion:         {},
-	agentruntime.EventAskUserQuestionAnswered: {},
-	agentruntime.EventPlanUpdated:             {},
-	agentruntime.EventToolPermissionRequest:   {},
-	agentruntime.EventToolPermissionResolved:  {},
-	agentruntime.EventPermissionModeChanged:   {},
-	agentruntime.EventRetry:                   {},
-	agentruntime.EventUsage:                   {},
-	agentruntime.EventCompactBoundary:         {},
-	agentruntime.EventRuntimeStatus:           {},
-	agentruntime.EventError:                   {},
-	agentruntime.EventDone:                    {},
-}
-
-func eventKind(raw json.RawMessage) string {
-	var head struct {
-		Kind string `json:"kind"`
-	}
-	if err := json.Unmarshal(raw, &head); err != nil || strings.TrimSpace(head.Kind) == "" {
-		return "unknown"
-	}
-	if _, ok := knownEventKinds[agentruntime.EventKind(head.Kind)]; !ok {
-		return "unknown"
-	}
-	return head.Kind
-}
 
 func (r *Runtime) abortGeneration(ctx context.Context, sess *remoteSession) error {
 	if sess == nil {
@@ -1014,8 +1142,32 @@ func (r *Runtime) hasSession(sid int64) bool {
 }
 
 func (r *Runtime) callSentinel(ctx context.Context, method string, params, result any) error {
-	if err := r.client.Call(ctx, method, params, result); err != nil {
+	if err := r.conn().Call(ctx, method, params, result); err != nil {
 		return wire.FromJSONRPCError(err)
 	}
 	return nil
+}
+
+// callSession 是带会话身份的控制类调用。ErrNoActiveTurn 时**重新接管一次再重试**。
+//
+// 为什么必须重试:daemon 的 runtime.* 是 per-connection 注册进共享 registry 的,
+// 每条新连接都会带着一张空的会话表把它们重新注册一遍,把上一次 runtime.session.attach
+// 的接管静默还原。而桌面端同时握着 2-3 条同指纹连接(连接池 / 设备心跳 / 刷新探测),
+// 只要其中任意一条重连过,接管就没了 —— 此后提交决策会被 daemon 的幂等折叠(R8)
+// 折成 OK,会话永久停在等待输入上。所以接管必须是可反复发起的。
+func (r *Runtime) callSession(ctx context.Context, sessionID int64, method string, params, result any) error {
+	err := r.callSentinel(ctx, method, params, result)
+	// canReconnect 同时管住两件事:没装重连端口的调用方(老接线、单测)一律走今天
+	// 的路径,不会凭空多出一次 attach;已被证伪的老 daemon 也不再白试。
+	if err == nil || !errors.Is(err, agentruntime.ErrNoActiveTurn) || !r.canReconnect() {
+		return err
+	}
+	if _, aerr := r.attachSession(ctx, sessionID); aerr != nil {
+		logger.Ctx(ctx).Warn("remote runtime: re-attach before retry failed",
+			zap.Int64("sid", sessionID), zap.String("method", method), zap.Error(aerr))
+		return err
+	}
+	logger.Ctx(ctx).Info("remote runtime: re-attached session, retrying control call",
+		zap.Int64("sid", sessionID), zap.String("method", method))
+	return r.callSentinel(ctx, method, params, result)
 }

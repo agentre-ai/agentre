@@ -114,30 +114,39 @@ func (c *Client) prepareStream(ctx context.Context, prompt string, requireExactB
 	}
 	startupCtx, cancelStartup := c.startupContext(ctx)
 	defer cancelStartup()
-	sessionID, err := readSessionID(startupCtx, proc, c.session)
+	state, err := readSessionState(startupCtx, proc, c.session)
 	if err != nil {
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
 	}
+	sessionID := state.SessionID
 	if spec.forkAnchor != "" {
 		if err := forkSession(startupCtx, proc, spec.forkAnchor); err != nil {
 			_ = proc.terminate(context.Background(), c.killGrace)
 			return nil, err
 		}
-		forkedSessionID, err := readSessionID(startupCtx, proc, "")
+		forkedState, err := readSessionState(startupCtx, proc, "")
 		if err != nil {
 			_ = proc.terminate(context.Background(), c.killGrace)
 			return nil, err
 		}
-		if forkedSessionID == sessionID {
+		if forkedState.SessionID == sessionID {
 			_ = proc.terminate(context.Background(), c.killGrace)
 			return nil, fmt.Errorf("piagent: fork did not change session id %q", sessionID)
 		}
-		sessionID = forkedSessionID
+		sessionID = forkedState.SessionID
+		if forkedState.Model != nil {
+			state.Model = forkedState.Model
+		}
 	}
 	stream := newStream(proc, c.killGrace)
 	stream.setSessionID(sessionID)
+	if state.Model != nil {
+		stream.setContextWindow(state.Model.ContextWindow)
+	}
 	if spec.captureUserAnchor {
+		// The anchor boundary is read straight off the process scanner, so it has
+		// to settle before the stream owns the reader via the optional stats probe.
 		entries, err := readSessionEntries(startupCtx, proc, "session-entries-before")
 		if err != nil {
 			_ = stream.Close(context.Background())
@@ -152,6 +161,16 @@ func (c *Client) prepareStream(ctx context.Context, prompt string, requireExactB
 		} else {
 			stream.setUserAnchorBoundary(leafID)
 		}
+	}
+	// Ask Pi for its authoritative model window before the first prompt. The
+	// response is optional and intentionally not awaited: older/degraded RPC
+	// implementations must not delay or block the actual turn.
+	stream.markInitialSessionStatsPending()
+	if err := stream.send(startupCtx, map[string]any{
+		"id": initialSessionStatsRequestID, "type": "get_session_stats",
+	}); err != nil {
+		_ = stream.Close(context.Background())
+		return nil, err
 	}
 	frame := map[string]any{"type": "prompt", "message": prompt}
 	if imgs := imagesToWire(spec.images); len(imgs) > 0 {
@@ -254,13 +273,13 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 	}
 	startupCtx, cancelStartup := c.startupContext(ctx)
 	defer cancelStartup()
-	sessionID, err := readSessionID(startupCtx, proc, c.session)
+	state, err := readSessionState(startupCtx, proc, c.session)
 	if err != nil {
 		_ = proc.terminate(context.Background(), c.killGrace)
 		return nil, err
 	}
 	stream := newStream(proc, c.killGrace)
-	stream.setSessionID(sessionID)
+	stream.setSessionID(state.SessionID)
 	if err := stream.send(ctx, map[string]any{"type": "compact"}); err != nil {
 		_ = stream.Close(context.Background())
 		return nil, err
@@ -271,25 +290,25 @@ func (c *Client) Compact(ctx context.Context, _ string) (*Stream, error) {
 
 func (c *Client) Close(_ context.Context) error { return nil }
 
-func readSessionID(ctx context.Context, proc *rpcProcess, expected string) (string, error) {
+func readSessionState(ctx context.Context, proc *rpcProcess, expected string) (sessionStateWire, error) {
 	const requestID = "session-state"
 	response, err := callRPC(ctx, proc, map[string]any{"id": requestID, "type": "get_state"}, "get_state", requestID)
 	if err != nil {
-		return "", err
+		return sessionStateWire{}, err
 	}
 	var state sessionStateWire
 	if err := json.Unmarshal(response.Data, &state); err != nil {
-		return "", fmt.Errorf("piagent decode get_state data: %w", err)
+		return sessionStateWire{}, fmt.Errorf("piagent decode get_state data: %w", err)
 	}
-	sessionID := strings.TrimSpace(state.SessionID)
-	if sessionID == "" {
-		return "", errors.New("piagent: get_state returned empty session id")
+	state.SessionID = strings.TrimSpace(state.SessionID)
+	if state.SessionID == "" {
+		return sessionStateWire{}, errors.New("piagent: get_state returned empty session id")
 	}
 	expected = strings.TrimSpace(expected)
-	if expected != "" && !looksLikeSessionPath(expected) && sessionID != expected {
-		return "", fmt.Errorf("piagent: get_state returned unexpected session id %q, want %q", sessionID, expected)
+	if expected != "" && !looksLikeSessionPath(expected) && state.SessionID != expected {
+		return sessionStateWire{}, fmt.Errorf("piagent: get_state returned unexpected session id %q, want %q", state.SessionID, expected)
 	}
-	return sessionID, nil
+	return state, nil
 }
 
 func forkSession(ctx context.Context, proc *rpcProcess, entryID string) error {
@@ -419,6 +438,13 @@ func validSessionEntriesLeaf(entries sessionEntriesWire) (string, bool) {
 	return leafID, ok
 }
 
+func isExtensionUIRequestFrame(frame []byte) bool {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(frame, &probe) == nil && probe.Type == "extension_ui_request"
+}
+
 func extensionUIRequiresResponse(method string) bool {
 	switch strings.TrimSpace(method) {
 	case "select", "confirm", "input", "editor":
@@ -444,6 +470,11 @@ func sanitizeDiagnosticFrame(line []byte) []byte {
 	if bytes.Contains(line, []byte(`"type":"response"`)) &&
 		bytes.Contains(line, []byte(`"command":"get_entries"`)) {
 		return []byte(`{"command":"get_entries","payload":"redacted","type":"response"}`)
+	}
+	// extension_ui_request carries interaction copy the user typed or was shown.
+	// It is excluded from diagnostics entirely, not projected.
+	if isExtensionUIRequestFrame(line) {
+		return nil
 	}
 
 	var envelope struct {
@@ -495,10 +526,6 @@ func sanitizeDiagnosticFrame(line []byte) []byte {
 			if envelope.Data.ContextUsage != nil && envelope.Data.ContextUsage.ContextWindow > 0 {
 				out["contextWindow"] = envelope.Data.ContextUsage.ContextWindow
 			}
-		}
-	case "extension_ui_request":
-		if envelope.Method != "" {
-			out["method"] = envelope.Method
 		}
 	case "message_start", "message_end":
 		var message struct {
@@ -692,8 +719,11 @@ type rpcProcess struct {
 }
 
 func (p *rpcProcess) awaitExit() {
-	p.waitErr = p.handle.Wait()
+	// StdoutPipe/StderrPipe 的契约要求 Wait 不能与管道读取并发：Wait 会在
+	// 进程退出后关闭管道。先让 stderr reader 读到 EOF，避免短命进程的最后一行
+	// 被 "file already closed" 抢走，进而丢失可分类的退出原因。
 	<-p.stderrDone
+	p.waitErr = p.handle.Wait()
 	if p.linesDone != nil {
 		<-p.linesDone
 	}
@@ -750,7 +780,7 @@ func (p *rpcProcess) writeJSON(v any, contexts ...context.Context) error {
 	select {
 	case err := <-writeDone:
 		if err != nil {
-			return processBoundaryError("write", command, err)
+			return p.classifyDeadWrite(command, err)
 		}
 		return nil
 	case <-ctx.Done():
@@ -758,12 +788,33 @@ func (p *rpcProcess) writeJSON(v any, contexts ...context.Context) error {
 		<-writeDone
 		return ctx.Err()
 	case <-p.writerStop:
+		// A deliberate local shutdown (Close / terminate) already explains the
+		// failed write; classifying it against process exit would only stall.
 		err := <-writeDone
 		if err != nil {
 			return processBoundaryError("write", command, err)
 		}
 		return processBoundaryError("write", command, io.ErrClosedPipe)
 	}
+}
+
+// deadWriteProbeTimeout 限制 classifyDeadWrite 等待一个已关管道的进程退出多久。
+// 正常情况下 broken pipe 意味着对端正在退出,p.done 在毫秒级关闭;这个超时只是
+// 防御对端关了 stdin 却不退出的病态情形,避免写路径无限挂起。
+const deadWriteProbeTimeout = 5 * time.Second
+
+// classifyDeadWrite 在一次失败的 stdin 写之后,等 RPC 进程退出并按 stderr 分类
+// 退出原因,把 "broken pipe" 翻译成调用方能据以行动的错误(如 ErrSessionNotFound)。
+// 分类不出东西(进程没在窗口内退出 / 退出码 0)时回退规范化后的写边界错误。
+func (p *rpcProcess) classifyDeadWrite(command string, writeErr error) error {
+	select {
+	case <-p.done:
+		if p.waitErr != nil {
+			return wrapExitError(p.waitErr, p.stderr.String())
+		}
+	case <-time.After(deadWriteProbeTimeout):
+	}
+	return processBoundaryError("write", command, writeErr)
 }
 
 func (p *rpcProcess) ensureWriter() {

@@ -22,8 +22,8 @@ type processSpec struct {
 // 收完 exit 后把分类后的错误存到 exitErr，最后 close(exit)。后续的 wait /
 // hasExited / exitErrIfDone 都从这份 cached 状态读，幂等。
 //
-// 注意：cmd.Wait 在退出时会关 parent-side stdout pipe；scanner 如果 mid-read，
-// 会被动拿到 EOF —— 这正是 Session 在子进程死亡时希望的清理路径。
+// stdout 先由内部 goroutine 转发并读到 EOF，reaper 再调用 cmd.Wait；这样既遵守
+// os/exec 的 StdoutPipe 生命周期约束，也保证 Session 看到完整输出和稳定的 EOF。
 type process struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
@@ -59,16 +59,25 @@ func startProcess(ctx context.Context, spec processSpec) (*process, error) {
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	cmdStdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
+	stdout, stdoutWriter := io.Pipe()
 	stderrBuf := newBoundedBuffer(maxStderrBytes)
 	cmd.Stderr = stderrBuf
 
 	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return nil, classifyExecErr(err)
 	}
+	stdoutDone := make(chan struct{})
+	go func() {
+		_, copyErr := io.Copy(stdoutWriter, cmdStdout)
+		_ = stdoutWriter.CloseWithError(copyErr)
+		close(stdoutDone)
+	}()
 	p := &process{
 		cmd:       cmd,
 		stdin:     stdin,
@@ -79,6 +88,10 @@ func startProcess(ctx context.Context, spec processSpec) (*process, error) {
 	// reaper：阻塞等子进程退出，分类 stderr，存到 process 然后 close(exit)。
 	// 多次 wait / hasExited / exitErrIfDone 从这份 cached 结果读。
 	go func() {
+		// StdoutPipe requires all reads to finish before Wait. Waiting for the
+		// forwarding reader prevents cmd.Wait from closing the OS pipe under an
+		// in-flight caller read and turning a clean EOF into os.ErrClosed.
+		<-stdoutDone
 		werr := cmd.Wait()
 		exit := 0
 		if ee, ok := werr.(*exec.ExitError); ok {

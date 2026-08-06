@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Node as PMNode } from "@tiptap/pm/model";
 import type { Editor } from "@tiptap/react";
+
+import { normalizeSuggestionQuery } from "@/lib/suggestion-score";
 
 import {
   filterByQuery,
@@ -105,13 +107,21 @@ export function useSlashMenu({
     () => filterByQuery(available, query, trigger),
     [available, query, trigger],
   );
+  const normalizedQuery = normalizeSuggestionQuery(query);
+  const previousNormalizedQuery = useRef(normalizedQuery);
 
-  // items 变化时把 selectedIndex 拉回有效范围。
+  // 规范化查询变化时默认选中最高分；同一查询的编辑器重复事件不抢回高亮。
+  // 候选源变化但查询不变时，只把 selectedIndex 拉回有效范围。
   useEffect(() => {
+    if (previousNormalizedQuery.current !== normalizedQuery) {
+      previousNormalizedQuery.current = normalizedQuery;
+      setSelectedIndex(0);
+      return;
+    }
     if (selectedIndex >= items.length) {
       setSelectedIndex(items.length > 0 ? items.length - 1 : 0);
     }
-  }, [items.length, selectedIndex]);
+  }, [items.length, normalizedQuery, selectedIndex]);
 
   const close = useCallback(() => {
     setOpen(false);

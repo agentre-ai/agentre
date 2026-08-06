@@ -3,6 +3,7 @@ package chat_svc
 
 import (
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/blocks"
 	"github.com/agentre-ai/agentre/internal/service/chat_svc/view"
 )
@@ -56,6 +57,9 @@ const (
 	// 时 emit。前端渲染审批卡片，用户决策后调 AnswerToolPermission 回灌。
 	// Resolved=true 的事件代表"已审批"态切换（按 RequestID 找到既有 block 更新）。
 	StreamToolPermissionRequest ChatStreamEventKind = "tool_permission_request"
+	// StreamExecApproval carries OpenClaw Gateway approval requested/resolved
+	// cards. A resolved card is not an exec/tool completion event.
+	StreamExecApproval ChatStreamEventKind = "exec_approval"
 	// StreamSessionStatus 推送 session 级 status patch（agentStatus + needsAttention）。
 	// 用于 turn 进行中遇到 ask / 审批等待时把 toolbar 翻成橙色 WAITING，应答后翻回
 	// RUNNING。前端按 stream name 已知 sessionId，patch 体只带新状态。
@@ -101,6 +105,12 @@ const (
 	// 不存在 subscribe-after-emit race。收尾在此补一发,前端据 LaunchMessageID 兜底
 	// finishStream(幂等:per-turn 已收到 done 时该流已不在,直接 no-op)。
 	StreamAutonomousFinished ChatStreamEventKind = "autonomous_finished"
+
+	// StreamConnectionState 会话与执行它那台远端 daemon 之间的**通道**状态
+	// (connected / reconnecting / lost)。它是运行态之上的一层修饰,不是第五种
+	// AgentStatus —— 会话在重连期间仍然是「运行中」,只是通道断了。走会话级的
+	// ConnStateStreamName 流,不走 per-turn 流(断连时那条流恰好没人收得到)。
+	StreamConnectionState ChatStreamEventKind = "connection_state"
 )
 
 // ChatStreamEvent 是 EventsEmit 出去的统一 payload。
@@ -135,9 +145,19 @@ type ChatStreamEvent struct {
 	// 用它把系统分配的 task id 喂给前端做 task-progress 关联。无 meta 时留 nil。
 	ToolResultMeta map[string]any `json:"toolResultMeta,omitempty"`
 
+	// StreamConnectionState 事件填充。ConnectionState 是通道状态取值;
+	// CaughtUpCount / PendingDecisions 只在补齐落定(connected)那一发有意义,
+	// 分别是本次补齐重放了多少条通知、补完后还有多少个待决策没回答。
+	ConnectionState  string `json:"connectionState,omitempty"`
+	CaughtUpCount    int    `json:"caughtUpCount,omitempty"`
+	PendingDecisions int    `json:"pendingDecisions,omitempty"`
+
 	// subagent 内部产生的 tool_use / tool_result 在这里附上外层 Agent.tool_use_id；
 	// 主 agent 自己的工具留空。前端据此把子 block 从主 transcript 移走，挂到父卡。
 	ParentToolCallID string `json:"parentToolUseId,omitempty"`
+	// SubagentRunID 在同一父调用的 normalized parallel/chain runs 间分组；
+	// 缺失时前端保留为父卡 fallback step，不得丢弃或猜测归属。
+	SubagentRunID string `json:"subagentRunId,omitempty"`
 
 	// StreamSubagent* 事件填充：外层 Agent.tool_use_id + 元数据快照。
 	// 前端按 ToolUseID 找到对应的 ChatBlock 并 merge Subagent 字段。
@@ -154,6 +174,7 @@ type ChatStreamEvent struct {
 
 	// StreamToolPermissionRequest 事件填充：审批载荷或审批后的状态切换。
 	ToolPermission *ChatBlockToolPermission `json:"toolPermission,omitempty"`
+	ExecApproval   *ChatBlockExecApproval   `json:"execApproval,omitempty"`
 
 	// StreamRetry 事件填充：后端/上游的非终态重试通知。本轮 turn 继续运行。
 	RetryAttempt     int    `json:"retryAttempt,omitempty"`
@@ -222,9 +243,9 @@ type ChatRuntimeStatus struct {
 	Compacting bool   `json:"compacting,omitempty"`
 }
 
-// ChatStreamUsage 是 StreamUsage 事件 payload。字段与 ChatMessage 上的 token 列同名，
-// 前端按 backend / provider 家族决定如何聚合（Anthropic 系叠加 cached + cacheCreation，
-// OpenAI 系仅看 promptTokens）—— 与 computeComposerContextUsage 现有口径一致。
+// ChatStreamUsage 是 StreamUsage 事件 payload。字段与 ChatMessage 上的 token 列同名；
+// runtime translator 已按 provider 家族算好 TotalInputTokens，前端直接使用。
+// ContextWindow 可与 token 快照同帧到达，供 Composer 原子更新分子与分母。
 type ChatStreamUsage struct {
 	MessageID           int64 `json:"messageId,omitempty"`
 	PromptTokens        int   `json:"promptTokens,omitempty"`
@@ -235,6 +256,9 @@ type ChatStreamUsage struct {
 	// TotalInputTokens runtime translator 按 family 聚合的本次 API call 输入大小。
 	// 前端不再做 family 判断,直接读这个值显示 "已用上下文"。
 	TotalInputTokens int `json:"totalInputTokens,omitempty"`
+	// ContextWindow 与 usage 同帧携带的模型窗口分母。0 表示 runtime 尚未探到；
+	// 非零时前端与 liveUsage 原子写入，避免独立事件的订阅竞态。
+	ContextWindow int `json:"contextWindow,omitempty"`
 }
 
 // ChatSessionStatusPatch 是 StreamSessionStatus 事件的 payload。
@@ -277,6 +301,8 @@ type ChatBlock struct {
 	// 当前 block 是 subagent 内部产生时，指向外层 Agent.tool_use_id；
 	// 主 agent 自己的 block 留空。前端按它把子 block 归集到父 SubagentInvocationCard。
 	ParentToolCallID string `json:"parentToolUseId,omitempty"`
+	// SubagentRunID 可选；空值表示 runtime/remote peer 未提供，仍作为父卡 fallback step 下行。
+	SubagentRunID string `json:"subagentRunId,omitempty"`
 
 	// 仅外层 Agent / Task 工具的 tool_use block 上填，缓存 subagent 元数据快照
 	// （subagent_type / 累计 token / last_tool_name / status 等）。
@@ -287,6 +313,9 @@ type ChatBlock struct {
 
 	// tool_permission_request block 专用：工具审批载荷与决策状态。
 	ToolPermission *ChatBlockToolPermission `json:"toolPermission,omitempty"`
+
+	// exec_approval block 专用：OpenClaw Gateway exec 审批生命周期。
+	ExecApproval *ChatBlockExecApproval `json:"execApproval,omitempty"`
 
 	// tool_approval block 专用：agent 内置工具(org / hook 等)写操作审批卡。
 	ToolApproval *ChatBlockToolApproval `json:"toolApproval,omitempty"`
@@ -353,6 +382,22 @@ type ChatBlockToolPermission struct {
 	AlwaysAllow bool           `json:"alwaysAllow,omitempty"`
 }
 
+type ChatBlockExecApproval struct {
+	ID               string   `json:"id"`
+	CommandText      string   `json:"commandText"`
+	CommandPreview   string   `json:"commandPreview,omitempty"`
+	AllowedDecisions []string `json:"allowedDecisions,omitempty"`
+	Host             string   `json:"host,omitempty"`
+	NodeID           string   `json:"nodeId,omitempty"`
+	AgentID          string   `json:"agentId,omitempty"`
+	Status           string   `json:"status"`
+	Decision         string   `json:"decision,omitempty"`
+	ResolvedBy       string   `json:"resolvedBy,omitempty"`
+	CreatedAtMs      int64    `json:"createdAtMs,omitempty"`
+	ExpiresAtMs      int64    `json:"expiresAtMs,omitempty"`
+	ResolvedAtMs     int64    `json:"resolvedAtMs,omitempty"`
+}
+
 // ChatBlockToolApproval agent 内置工具(org / hook 等)写操作审批卡的前端投影。
 // ToolKey 标识来源工具,前端据此选标题/文案与 approved 后处理。
 type ChatBlockToolApproval struct {
@@ -369,17 +414,19 @@ type ChatBlockToolApproval struct {
 // task_started 给到完整 prompt / subagent_type；task_progress 阶段性带 last_tool_name + cumulative usage；
 // task_notification 给 status + 最终 usage。所有字段对老数据自动为零值，向前兼容。
 type ChatBlockSubagent struct {
-	TaskID          string `json:"taskId,omitempty"`
-	Kind            string `json:"kind,omitempty"` // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
-	SubagentType    string `json:"subagentType,omitempty"`
-	TaskDescription string `json:"taskDescription,omitempty"`
-	Prompt          string `json:"prompt,omitempty"`
-	LastToolName    string `json:"lastToolName,omitempty"`
-	ToolUses        int    `json:"toolUses,omitempty"`
-	TotalTokens     int    `json:"totalTokens,omitempty"`
-	DurationMs      int    `json:"durationMs,omitempty"`
-	Status          string `json:"status,omitempty"`  // running | completed | failed
-	Summary         string `json:"summary,omitempty"` // CLI task_notification.summary（如退出码说明）
+	TaskID          string                     `json:"taskId,omitempty"`
+	Kind            string                     `json:"kind,omitempty"` // local_bash | local_agent（区分后台 bash 与 subagent；空=未知/旧帧）
+	SubagentType    string                     `json:"subagentType,omitempty"`
+	TaskDescription string                     `json:"taskDescription,omitempty"`
+	Prompt          string                     `json:"prompt,omitempty"`
+	LastToolName    string                     `json:"lastToolName,omitempty"`
+	ToolUses        int                        `json:"toolUses,omitempty"`
+	TotalTokens     int                        `json:"totalTokens,omitempty"`
+	DurationMs      int                        `json:"durationMs,omitempty"`
+	Status          string                     `json:"status,omitempty"`  // waiting | running | completed | failed | canceled | skipped | unknown
+	Summary         string                     `json:"summary,omitempty"` // CLI task_notification.summary（如退出码说明）
+	Mode            string                     `json:"mode,omitempty"`
+	Runs            []agentruntime.SubagentRun `json:"runs,omitempty"`
 	// Model 是子代理内部 assistant 帧解析出的实际模型(R2),first-wins(R3)。镜像
 	// blocks.SubagentStateBlock.Model；空值表示尚未有内部帧到达 / 老会话数据。
 	Model string `json:"model,omitempty"`
@@ -439,6 +486,12 @@ type ChatSessionDetail struct {
 	// 前端 openStream 重挂到实时流。子 agent 调用轮 / 自主轮等"非前端发起"的 turn 没有 Send
 	// 响应入口,只能靠这个字段重挂。无活跃 turn 时为空(omitempty),前端不重挂。
 	ActiveStream string `json:"activeStream,omitempty"`
+	// ConnectionState 是本机与执行该会话那台远端 daemon 之间的**通道**状态
+	// (connected / reconnecting / lost),不是第五个 AgentStatus —— 断连期间远端仍在跑,
+	// 会话照旧是运行中。整页重载会清空前端的连接态 store,而 ActiveStream 仍非空
+	// (断连不再终结会话),不随本响应同步带回它,重连的整个退避窗口里用户看到的都是
+	// 普通打字指示器。补发一次事件不行:前端在本响应**之后**才订阅 chat:conn:<sid>。
+	ConnectionState string `json:"connectionState"`
 	// NeedsAttention 是由 AgentStatus=="waiting" 派生的兼容字段，不单独持久化。
 	// 前端 toolbar 同时叠 displayStatus 兜底：即便 session_status stream 事件丢失，
 	// LoadSession 拉到这个字段为 true 也能把状态翻成橙色 WAITING。
@@ -539,6 +592,21 @@ type LoadSessionRequest struct {
 type LoadSessionResponse struct {
 	Session  ChatSessionDetail `json:"session"`
 	Messages []ChatMessage     `json:"messages"`
+}
+
+// LocalCommandScope 是本地命令历史与命令执行共享的稳定设备/cwd 作用域。
+// DeviceID 为空表示本机；Cwd 为空表示目标设备上的默认 Agent 工作目录。
+type LocalCommandScope struct {
+	DeviceID string `json:"deviceId"`
+	Cwd      string `json:"cwd"`
+}
+
+// ResolveLocalCommandScopeRequest 接受且只接受一种目标：已有 SessionID，或尚未
+// 持久化的 AgentID + ProjectID（ProjectID=0 表示自由会话）。
+type ResolveLocalCommandScopeRequest struct {
+	SessionID int64 `json:"sessionId"`
+	AgentID   int64 `json:"agentId"`
+	ProjectID int64 `json:"projectId"`
 }
 
 // ListAgentSessionsRequest 给「查看全部 N 个会话」popover 翻页拉数据用。

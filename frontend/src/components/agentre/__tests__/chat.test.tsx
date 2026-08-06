@@ -15,6 +15,11 @@ const sonnerMocks = vi.hoisted(() => ({
     success: vi.fn(),
   },
 }));
+const runtimeMocks = vi.hoisted(() => ({
+  EventsOn: vi.fn((_name: string, _handler: (event: unknown) => void) =>
+    vi.fn(),
+  ),
+}));
 
 vi.mock("sonner", () => sonnerMocks);
 
@@ -26,6 +31,7 @@ vi.mock("../../../../wailsjs/runtime/runtime", async () => {
   >("../../../../wailsjs/runtime/runtime");
   return {
     ...actual,
+    EventsOn: runtimeMocks.EventsOn,
     OnFileDrop: vi.fn(),
     OnFileDropOff: vi.fn(),
   };
@@ -37,7 +43,13 @@ import {
   type ChatTranscriptHandle,
   formatResetIn,
 } from "@/components/agentre/chat";
-import type { ChatBlockData } from "@/stores/chat-streams-store";
+import { ChatStreamsHost } from "@/components/agentre/chat-streams-host";
+import {
+  streamForMessage,
+  useChatStreamsStore,
+  type ChatBlockData,
+} from "@/stores/chat-streams-store";
+import { useLocalCommandsStore } from "@/stores/local-commands-store";
 import type { chat_svc } from "../../../../wailsjs/go/models";
 
 function renderTranscriptWithSubagent() {
@@ -409,6 +421,35 @@ describe("ChatComposer context meter", () => {
     const fill = progress.firstElementChild;
     expect(fill).toHaveClass("bg-status-waiting");
     expect(fill).toHaveStyle({ width: "80%" });
+  });
+});
+
+describe("ChatTranscript local command lifecycle controls", () => {
+  it("Given ChatPanel supplies a stop callback, When a local-command row renders, Then the card delegates its terminal id through transcript context", () => {
+    const onStopLocalCommand = vi.fn();
+    useLocalCommandsStore.getState().start({
+      id: "terminal-local-1",
+      sessionId: 1,
+      command: "sleep 30",
+      createdAt: 1,
+    });
+    try {
+      render(
+        <ChatTranscript
+          agentColor="agent-1"
+          agentName="A"
+          messages={[]}
+          onStopLocalCommand={onStopLocalCommand}
+          sessionId={1}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /停止|Stop/ }));
+      expect(onStopLocalCommand).toHaveBeenCalledTimes(1);
+      expect(onStopLocalCommand).toHaveBeenCalledWith("terminal-local-1");
+    } finally {
+      useLocalCommandsStore.setState({ entries: {} });
+    }
   });
 });
 
@@ -1193,8 +1234,9 @@ describe("ChatTranscript block-level virtualization", () => {
 // 特征化测试:钉住 transcript 行模型重构会触碰、但此前无直接覆盖的现状行为
 // (ErrorCard / RetryNoticeCard / 虚拟化路径下的 indicator·banner·空占位行)。
 describe("ChatTranscript message tail attachments", () => {
-  it("Given an assistant message with errorText, When rendered, Then the ErrorCard shows and regenerate passes the message id", () => {
+  it("Given an assistant message with errorText, When rendered, Then the ErrorCard offers regenerate and continue actions", () => {
     const calls: number[] = [];
+    const continueCalls: number[] = [];
     const failed = {
       ...textMessage(7, "assistant", "partial output"),
       errorText: "api timeout",
@@ -1205,6 +1247,7 @@ describe("ChatTranscript message tail attachments", () => {
         agentColor="agent-1"
         agentName="A"
         messages={[failed]}
+        onContinue={(messageId) => continueCalls.push(messageId)}
         onRerun={(messageId) => calls.push(messageId)}
       />,
     );
@@ -1214,6 +1257,8 @@ describe("ChatTranscript message tail attachments", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Regenerate/ }));
     expect(calls).toEqual([7]);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(continueCalls).toEqual([7]);
   });
 
   it("Given an errorText assistant on the virtualized path, When its row mounts, Then the ErrorCard mounts with it", async () => {
@@ -1950,10 +1995,10 @@ describe("ChatTranscript thinking blocks", () => {
     expect(screen.getByText("正在分析问题…")).toBeInTheDocument();
   });
 
-  it("renders liveThinking before liveBlocks (tool cards) in DOM order", () => {
-    // 防御回归:Anthropic 协议里 thinking 永远在 turn 开头,但 store 把 liveThinking
-    // 当成一个游离字段。早期实现把它 push 到 items 末尾,造成本轮一旦触发了 tool_use,
-    // 思考卡片就被挤到工具卡之后,出现「思考 still 14s,工具却已经在上面」的视觉错乱。
+  it("renders current-round liveThinking AFTER liveBlocks (chronological order)", () => {
+    // 回归 guard:liveBlocks 已含前一轮冻结的 tool_use 时,当前轮未冻结的
+    // liveThinking 是它的「第 2 轮思考」,必须排在工具卡之后 —— 否则工具循环里
+    // 后几轮的思考会被全堆到最顶(「思考完成过程都在最顶部叠加」)。
     render(
       <ChatTranscript
         liveByMessageId={
@@ -1961,7 +2006,7 @@ describe("ChatTranscript thinking blocks", () => {
             [
               2,
               {
-                liveThinking: "先看一下目录结构",
+                liveThinking: "再看一下结果",
                 liveBlocks: [
                   {
                     toolInput: { path: "." },
@@ -1981,12 +2026,11 @@ describe("ChatTranscript thinking blocks", () => {
       />,
     );
 
-    // tool_use 已经进入 liveBlocks → 思考阶段算结束,文案是「Thought complete」。
-    const thinking = screen.getByText("Thought complete");
-    // Plan C 后,非 canonical 工具走 RawToolCard(data-testid=raw-tool-card)。
+    // liveTail 空 → 当前轮思考仍在进行,文案是「Thinking…」;它排在工具卡之后。
+    const thinking = screen.getByText("Thinking…");
     const tool = screen.getByTestId("raw-tool-card");
     expect(
-      thinking.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING,
+      tool.compareDocumentPosition(thinking) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
@@ -2010,10 +2054,11 @@ describe("ChatTranscript thinking blocks", () => {
     expect(screen.getByText("结果是")).toBeInTheDocument();
   });
 
-  it("liveThinking collapses to done when a tool_use enters liveBlocks (even before any text delta)", () => {
-    // Regression: 早期实现只用 !liveTail 判定 streaming,导致「思考完成 → 直接发起一个 Bash
-    // 工具」的瞬间(liveBlocks 已经有 tool_use 但 liveDelta 还是空)思考徽标一直 pulse、计时
-    // 卡住不动。tool_use 本身已经是「思考之后的输出」,理应把思考收为「思考完成」。
+  it("flushed thinking block in liveBlocks renders as done before the tool that follows it", () => {
+    // 回归 guard:store 在 tool_use 边界把已完成的 liveThinking 冻成 thinking block
+    // 推进 liveBlocks。渲染层要把这块 thinking 按「思考完成」渲染,且排在紧随其后
+    // 的 tool_use 之前(时间顺序) —— 取代旧模型「liveThinking + tool_use 共存时
+    // thinking 靠 liveTail 判 streaming」的回归位。
     render(
       <ChatTranscript
         liveByMessageId={
@@ -2021,8 +2066,11 @@ describe("ChatTranscript thinking blocks", () => {
             [
               2,
               {
-                liveThinking: "先看一下目录结构",
                 liveBlocks: [
+                  {
+                    text: "先看一下目录结构",
+                    type: "thinking",
+                  } as ChatBlockData,
                   {
                     toolInput: { command: "ls" },
                     toolName: "Bash",
@@ -2043,6 +2091,59 @@ describe("ChatTranscript thinking blocks", () => {
 
     expect(screen.getByText("Thought complete")).toBeInTheDocument();
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    const thinking = screen.getByText("Thought complete");
+    const tool = screen.getByTestId("raw-tool-card");
+    expect(
+      thinking.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});
+
+describe("ChatStreamsHost subagent run identity", () => {
+  it("Given run-scoped live child events, When the host stores them, Then tool use and result retain the run ID for grouped rendering", async () => {
+    useChatStreamsStore.setState({ streams: new Map() });
+    runtimeMocks.EventsOn.mockClear();
+    useChatStreamsStore.getState().openStream({
+      assistantMessageId: 1,
+      name: "chat:event:7:1",
+      sessionId: 7,
+      streamStartedAt: 1,
+    });
+    render(<ChatStreamsHost />);
+    await waitFor(() => expect(runtimeMocks.EventsOn).toHaveBeenCalled());
+    const handler = runtimeMocks.EventsOn.mock
+      .calls[0]?.[1] as unknown as (event: {
+      kind: "tool_use" | "tool_result";
+      toolUseId: string;
+      toolName?: string;
+      toolResult?: string;
+      parentToolUseId: string;
+      subagentRunId: string;
+    }) => void;
+
+    act(() => {
+      handler({
+        kind: "tool_use",
+        toolUseId: "shared-call",
+        toolName: "Read",
+        parentToolUseId: "toolu-parent",
+        subagentRunId: "run-a",
+      });
+      handler({
+        kind: "tool_result",
+        toolUseId: "shared-call",
+        toolResult: "done",
+        parentToolUseId: "toolu-parent",
+        subagentRunId: "run-a",
+      });
+    });
+
+    expect(
+      streamForMessage(useChatStreamsStore.getState(), 7, 1)?.liveBlocks.map(
+        (block) => block.subagentRunId,
+      ),
+    ).toEqual(["run-a", "run-a"]);
+    useChatStreamsStore.setState({ streams: new Map() });
   });
 });
 

@@ -12,9 +12,8 @@ import (
 // dispatcher passes the code through verbatim).
 type HandlerFunc func(ctx context.Context, params json.RawMessage) (any, error)
 
-// Registry maps method name → handler. Safe for concurrent registration
-// during bootstrap (called from the main goroutine) and concurrent Dispatch
-// at runtime.
+// Registry maps method name → handler. Registration, dispatch, and cloning
+// are safe to use concurrently.
 type Registry struct {
 	mu       sync.RWMutex
 	handlers map[string]HandlerFunc
@@ -22,6 +21,19 @@ type Registry struct {
 
 func NewRegistry() *Registry {
 	return &Registry{handlers: map[string]HandlerFunc{}}
+}
+
+// Clone returns an independent registry containing a shallow snapshot of the
+// handlers installed when Clone acquired the read lock. Later registrations
+// on either registry do not affect the other.
+func (r *Registry) Clone() *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	clone := NewRegistry()
+	for method, handler := range r.handlers {
+		clone.handlers[method] = handler
+	}
+	return clone
 }
 
 // Register installs (or overwrites) the handler for a method.

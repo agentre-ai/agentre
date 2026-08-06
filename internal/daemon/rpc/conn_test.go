@@ -43,6 +43,19 @@ func dialClient(t *testing.T, url string) *websocket.Conn {
 	return c
 }
 
+func TestConn_GivenExplicitRegistry_WhenConstructed_ThenKeepsExactRegistry(t *testing.T) {
+	reg := NewRegistry()
+	c := NewConn(nil, reg)
+
+	require.Same(t, reg, c.Registry())
+	c.Registry().Register("direct", func(context.Context, json.RawMessage) (any, error) {
+		return "explicit", nil
+	})
+	got, err := reg.Dispatch(context.Background(), "direct", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "explicit", got)
+}
+
 func TestConn_RequestResponse(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register("ping", func(ctx context.Context, p json.RawMessage) (any, error) {

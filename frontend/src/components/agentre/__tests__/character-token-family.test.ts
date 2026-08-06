@@ -1,5 +1,4 @@
 // §1.8 Token family addition — characterization PIN (post-Plan C)
-// 参见 docs/superpowers/specs/2026-05-22-agentruntime-canonical-refactor-design.md §"TDD/BDD §1.8"。
 //
 // Plan C 前:前端按 backendType 做 family-specific 加法(Anthropic 系 = prompt
 // +cached+cacheCreation, OpenAI 系 = prompt-only)。

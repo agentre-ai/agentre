@@ -23,6 +23,7 @@ import (
 	"github.com/cago-frame/cago/pkg/gogo"
 	"github.com/cago-frame/cago/pkg/i18n"
 	"github.com/cago-frame/cago/pkg/logger"
+	"github.com/cago-frame/cago/pkg/utils/httputils"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
@@ -42,6 +43,7 @@ import (
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/builtin"
 	claudecodert "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
 	codexrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/codex"
+	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/openclaw"
 	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
@@ -79,9 +81,8 @@ type ChatSvc interface {
 	LoadSession(ctx context.Context, req *LoadSessionRequest) (*LoadSessionResponse, error)
 	GetLaunchCommand(ctx context.Context, req *LaunchCommandRequest) (*LaunchCommandResponse, error)
 	GetSessionGitState(ctx context.Context, req *GetSessionGitStateRequest) (*GetSessionGitStateResponse, error)
-	// ResolveSessionExecTarget 解析 ! 命令的执行目标：cwd 来自项目/自由会话规则，
-	// deviceID 在远端后端时为 backend.DeviceID，本地后端为空串。
-	ResolveSessionExecTarget(ctx context.Context, sessionID int64) (cwd string, deviceID string, err error)
+	// ResolveLocalCommandScope 为已有 session 或未持久化的 agent/project 目标解析历史作用域。
+	ResolveLocalCommandScope(ctx context.Context, req *ResolveLocalCommandScopeRequest) (*LocalCommandScope, error)
 	Send(ctx context.Context, req *SendRequest) (*SendResponse, error)
 	Compact(ctx context.Context, req *CompactRequest) (*CompactResponse, error)
 	GetGoal(ctx context.Context, req *GoalRequest) (*GoalResponse, error)
@@ -100,6 +101,7 @@ type ChatSvc interface {
 	MarkSessionRead(ctx context.Context, req *MarkSessionReadRequest) (*MarkSessionReadResponse, error)
 	AnswerUserQuestion(ctx context.Context, req *AnswerUserQuestionRequest) (*AnswerUserQuestionResponse, error)
 	AnswerToolPermission(ctx context.Context, req *AnswerToolPermissionRequest) (*AnswerToolPermissionResponse, error)
+	ResolveExecApproval(ctx context.Context, req *ResolveExecApprovalRequest) (*ResolveExecApprovalResponse, error)
 	ResolvePlanAction(ctx context.Context, req *ResolvePlanActionRequest) (*ResolvePlanActionResponse, error)
 	// EnsureSession 是 chat_sessions 的统一创建/复用边界。其它 domain 不直接写 chat_repo.Session().Create。
 	EnsureSession(ctx context.Context, req *EnsureSessionRequest) (*EnsureSessionResponse, error)
@@ -125,6 +127,12 @@ type ChatSvc interface {
 	LatestAssistantText(ctx context.Context, sessionID int64) (string, error)
 	// SessionProjectID 返回某会话所属的 project id(0=未挂项目);子 agent 工具用它继承调用方项目/cwd。
 	SessionProjectID(ctx context.Context, sessionID int64) (int64, error)
+	// CatchUpRemoteSessions 在 App 启动后按 chat_sessions.exec_device_id 连回各台配对
+	// daemon,把桌面端离线期间远端产生的转录与待决策补回来。见 remote_catchup.go。
+	CatchUpRemoteSessions(ctx context.Context) error
+	// CatchUpRemoteDevice 在某台 daemon 重新上线时补上启动那次没做成的补齐(启动补齐
+	// 只跑一次,开机自启早于网络就绪的那一次拨号失败否则就是终局)。见 remote_catchup.go。
+	CatchUpRemoteDevice(ctx context.Context, deviceID int64) error
 }
 
 var defaultChat ChatSvc
@@ -224,6 +232,10 @@ type chatSvc struct {
 	// session 重复起 watcher goroutine(每会话一个,惰性启动);watcher 在底层
 	// AutonomousTurns channel close(子进程 evict / CloseSession)时退出并清这条。
 	autoWatchers sync.Map
+	// catchUpPending：deviceID(int64) → struct{}。启动补齐时拨不通(或补齐半途出错)的
+	// 设备记在这里 —— 那一刻拿不到任何判据,会话一行都不能碰。设备监视报它重新上线时
+	// 由 CatchUpRemoteDevice 重来一次并清掉这条。
+	catchUpPending sync.Map
 	// subagentActivityWatchers：sessionID(int64) → struct{}。startSubagentActivityWatcher
 	// 用它防同一 session 重复起后台 subagent 活动 watcher(每会话一个,惰性启动);watcher
 	// 在底层 SubagentActivity channel close(子进程 evict / CloseSession)时退出并清这条。
@@ -246,6 +258,10 @@ type chatSvc struct {
 	// 把 entry 从 map 摘掉,下次 borrow 走冷路径重建。
 	remoteMu    sync.Mutex
 	remoteCache map[int64]*remoteRuntimeEntry
+	// connStates: sessionID(int64) → 该会话此刻偏离缺省的连接态。onRemoteConnState
+	// (chat:conn:<sid> 的发布方)维护,LoadSession 同步读。见 remote_reconnect.go。
+	connMu     sync.Mutex
+	connStates map[int64]remote.ConnState
 	// testHookPool 如果非 nil,代替 remote_device_svc.Default().Pool() 用于测试注入。
 	testHookPool remote_device_svc.ConnPool
 }
@@ -368,6 +384,12 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 					item.Chattable = true
 				} else if s.gateway == nil || s.gateway.Status().State != "running" {
 					item.ChattableHint = "本地网关未启动，CLI 后端暂不可用"
+				} else {
+					item.Chattable = true
+				}
+			case agent_backend_entity.TypeOpenClaw:
+				if be.IsRemote() {
+					item.ChattableHint = "远端 OpenClaw 暂不可用：agentred 尚无安全的 secret enrollment/reference"
 				} else {
 					item.Chattable = true
 				}
@@ -519,6 +541,9 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 	// ActiveStream 让中途打开本会话的前端重挂到 per-turn 实时流(子 agent 调用轮 / 自主轮等
 	// 非前端发起的 turn 没有 Send 响应入口)。无活跃 turn 时为空,前端不重挂。
 	resp.Session.ActiveStream = activeStreamName(activeTurn, sess.ID, msgs)
+	// 连接态随响应同步返回:重挂上来的前端要在订阅 chat:conn:<sid> 之前就知道这条会话
+	// 此刻是不是断着的,否则整个退避窗口里只剩打字指示器。
+	resp.Session.ConnectionState = string(s.sessionConnState(sess.ID))
 	if activeTurn &&
 		sess.AgentStatus != "running" && sess.AgentStatus != "waiting" {
 		logger.Ctx(ctx).Warn("chat_svc: LoadSession served non-running status while turn active",
@@ -736,13 +761,13 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		case blocks.ToolUseBlock:
 			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
 			if sb := subByParent[tb.ID]; sb != nil {
-				cb.Subagent = subagentStateToChatBlockSubagent(sb)
+				attachSubagentStateToChatBlock(&cb, tb.Name, sb)
 			}
 			out.Blocks = append(out.Blocks, cb)
 		case *blocks.ToolUseBlock:
 			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
 			if sb := subByParent[tb.ID]; sb != nil {
-				cb.Subagent = subagentStateToChatBlockSubagent(sb)
+				attachSubagentStateToChatBlock(&cb, tb.Name, sb)
 			}
 			out.Blocks = append(out.Blocks, cb)
 		case blocks.ToolResultBlock:
@@ -790,6 +815,12 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 			if tb != nil {
 				out.Blocks = append(out.Blocks, toolPermissionBlockToChatBlock(*tb))
 			}
+		case chatblocks.ExecApprovalBlock:
+			out.Blocks = append(out.Blocks, execApprovalBlockToChatBlock(tb))
+		case *chatblocks.ExecApprovalBlock:
+			if tb != nil {
+				out.Blocks = append(out.Blocks, execApprovalBlockToChatBlock(*tb))
+			}
 		case chatblocks.ToolApprovalBlock:
 			out.Blocks = append(out.Blocks, toolApprovalBlockToChatBlock(tb))
 		case *chatblocks.ToolApprovalBlock:
@@ -834,8 +865,42 @@ func subagentStateToChatBlockSubagent(sb *chatblocks.SubagentStateBlock) *ChatBl
 		DurationMs:      sb.DurationMs,
 		Status:          sb.Status,
 		Summary:         sb.Summary,
+		Mode:            sb.Mode,
+		Runs:            cloneSubagentRunSnapshot(sb.Runs),
 		Model:           sb.Model,
 	}
+}
+
+func attachSubagentStateToChatBlock(cb *ChatBlock, toolName string, sb *chatblocks.SubagentStateBlock) {
+	cb.Subagent = subagentStateToChatBlockSubagent(sb)
+	if cb.Canonical != nil || !isNormalizedPiSubagentReplay(toolName, sb) {
+		return
+	}
+	cb.Canonical = view.FromCanonical(canonical.AgentSpawn{
+		TaskID:          sb.TaskID,
+		TaskDescription: sb.Description,
+		Mode:            sb.Mode,
+		Runs:            agentSpawnRunsFromRuntime(sb.Runs),
+		LastToolName:    sb.LastToolName,
+		ToolUses:        sb.ToolUses,
+		TotalTokens:     sb.TotalTokens,
+		DurationMs:      sb.DurationMs,
+		Status:          sb.Status,
+	})
+}
+
+func isNormalizedPiSubagentReplay(toolName string, sb *chatblocks.SubagentStateBlock) bool {
+	return sb != nil && sb.Mode != "" && len(sb.Runs) > 0 &&
+		strings.Contains(strings.ToLower(toolName), "subagent")
+}
+
+func cloneSubagentRunSnapshot(runs []agentruntime.SubagentRun) []agentruntime.SubagentRun {
+	if runs == nil {
+		return nil
+	}
+	out := make([]agentruntime.SubagentRun, len(runs))
+	copy(out, runs)
+	return out
 }
 
 func imageBlockToChatBlock(img blocks.ImageBlock) ChatBlock {
@@ -849,8 +914,8 @@ func imageBlockToChatBlock(img blocks.ImageBlock) ChatBlock {
 }
 
 // nestedToolUseToChatBlock 把 subagent 内层 ToolUse 投影到 wire ChatBlock。
-// 与外层 toolUseToChatBlock 的差别仅在于带 ParentToolCallID(json: parentToolUseId),
-// 前端 chat.tsx collectChildren 据此把它从主流程移走、挂到外层 AgentSpawnCard.childBlocks。
+// 与外层 toolUseToChatBlock 的差别在于带 ParentToolCallID(json: parentToolUseId) +
+// 可选 SubagentRunID；前端据此先挂到外层 AgentSpawnCard，再按 normalized run 分组。
 // canonical 故意不算 —— 内层是被父 agent.spawn 包住的 step,不需要独立 canonical 路由。
 func nestedToolUseToChatBlock(b *chatblocks.NestedToolUseBlock) ChatBlock {
 	cb := ChatBlock{
@@ -858,6 +923,7 @@ func nestedToolUseToChatBlock(b *chatblocks.NestedToolUseBlock) ChatBlock {
 		ToolUseID:        b.ID,
 		ToolName:         b.Name,
 		ParentToolCallID: b.ParentToolCallID,
+		SubagentRunID:    b.SubagentRunID,
 	}
 	if len(b.Input) > 0 {
 		cb.ToolInput = b.Input
@@ -866,7 +932,7 @@ func nestedToolUseToChatBlock(b *chatblocks.NestedToolUseBlock) ChatBlock {
 }
 
 // nestedToolResultToChatBlock 镜像 nestedToolUseToChatBlock —— 内层 tool_result
-// 带 ParentToolCallID,Content 已经是拍平字符串(NestedToolResultBlock 不嵌套 ContentBlock)。
+// 保留 ParentToolCallID/SubagentRunID，Content 已经是拍平字符串。
 func nestedToolResultToChatBlock(b *chatblocks.NestedToolResultBlock) ChatBlock {
 	return ChatBlock{
 		Type:             "tool_result",
@@ -874,6 +940,7 @@ func nestedToolResultToChatBlock(b *chatblocks.NestedToolResultBlock) ChatBlock 
 		Text:             b.Content,
 		IsError:          b.IsError,
 		ParentToolCallID: b.ParentToolCallID,
+		SubagentRunID:    b.SubagentRunID,
 	}
 }
 
@@ -1454,6 +1521,10 @@ func (s *chatSvc) resolveAgentBackend(ctx context.Context, agentID int64) (
 			}
 		}
 		// LLMProviderKey == "" → CLI 自身 login 状态生效，不强制 gateway。
+	case agent_backend_entity.TypeOpenClaw:
+		if be.IsRemote() {
+			return nil, nil, nil, fmt.Errorf("openclaw remote secret enrollment is unavailable")
+		}
 	default:
 		return nil, nil, nil, i18n.NewError(ctx, code.AgentBackendInvalidType)
 	}
@@ -3224,11 +3295,18 @@ func (s *chatSvc) prepareTurnRun(
 		runner, err = s.selectRunner(ctx, be, sess.ID)
 	}
 	if err != nil {
-		logger.Ctx(ctx).Error("chat_svc.prepareTurnRun: selectRunner failed",
-			zap.Int64("sessionId", sess.ID),
+		// 真错(RemoteRunnerDialFailed / AgentBackendInvalidDevice / AgentBackendInvalidType)
+		// 必须透传给调用方交给 failTurn,否则前端永远只看到误导的
+		// "unsupported backend type: X",远端 daemon 离线 / DeviceID 失效 /
+		// 类型未注册三种情况无法区分。
+		fields := make([]zap.Field, 0, 6)
+		fields = append(fields,
+			zap.Int64("sessionID", sess.ID),
 			zap.String("backendType", be.Type),
 			zap.String("deviceID", be.DeviceID),
-			zap.Error(err))
+		)
+		fields = append(fields, chatRuntimeErrorLogFields(err)...)
+		logger.Ctx(ctx).Error("chat_svc.prepareTurnRun: selectRunner failed", fields...)
 		return nil, err
 	}
 	s.bindLocalPiAbort(sess.ID, be, runner)
@@ -3313,12 +3391,21 @@ func (s *chatSvc) prepareTurnRun(
 
 	events, result, err := runner.Run(ctx, req)
 	if err != nil {
+		// 用户在 Run 返回前就点了停止(网关型后端要先握手,这个窗口是真实存在的):
+		// 这是中止而不是故障,交给调用方按 idle 收敛,别让会话卡在 running / 弹错误卡。
+		if s.turnAbortedByUser(sess.ID, err) {
+			return fail(errTurnAbortedBeforeStream)
+		}
 		return fail(s.mapTurnError(ctx, sess, be, err))
 	}
 	prepared.events = events
 	prepared.result = result
 	return prepared, nil
 }
+
+// errTurnAbortedBeforeStream 表示这一轮在 runner.Run 返回之前就被用户点了停止。
+// 它不是故障:调用方走 abortTurnBeforeStream 按 idle 收敛,而不是 failTurn。
+var errTurnAbortedBeforeStream = errors.New("chat_svc: turn aborted before stream")
 
 func (s *chatSvc) bindLocalPiAbort(
 	sessionID int64,
@@ -3391,6 +3478,10 @@ func (s *chatSvc) runTurn(
 		var err error
 		prepared, err = s.prepareTurnRun(ctx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, compact, false)
 		if err != nil {
+			if errors.Is(err, errTurnAbortedBeforeStream) {
+				s.abortTurnBeforeStream(ctx, sess, assistantMsg, stream)
+				return
+			}
 			s.failTurn(ctx, sess, assistantMsg, stream, err)
 			return
 		}
@@ -3449,11 +3540,14 @@ func (s *chatSvc) runTurn(
 	for ev := range events {
 		if streamStopErr != nil {
 			if eventShowsProgressAfterError(ev) {
-				logger.Ctx(ctx).Info("chat_svc: streamStopErr cleared by progress event",
+				fields := make([]zap.Field, 0, 6)
+				fields = append(fields,
 					zap.Int64("sessionId", sess.ID),
 					zap.Int64("assistantMsgId", assistantMsg.ID),
 					zap.String("clearedBy", fmt.Sprintf("%T", ev)),
-					zap.Error(streamStopErr))
+				)
+				fields = append(fields, chatRuntimeErrorLogFields(streamStopErr)...)
+				logger.Ctx(ctx).Info("chat_svc.runTurn: stream error cleared by progress event", fields...)
 				streamStopErr = nil
 			} else {
 				continue
@@ -3489,11 +3583,14 @@ func (s *chatSvc) runTurn(
 			continue
 		case agentruntime.ErrorEvent:
 			if e.Err != nil {
-				logger.Ctx(ctx).Warn("chat_svc: ErrorEvent intercepted, streamStopErr set",
+				fields := make([]zap.Field, 0, 6)
+				fields = append(fields,
 					zap.Int64("sessionId", sess.ID),
 					zap.Int64("assistantMsgId", assistantMsg.ID),
 					zap.String("stream", stream),
-					zap.Error(e.Err))
+				)
+				fields = append(fields, chatRuntimeErrorLogFields(e.Err)...)
+				logger.Ctx(ctx).Warn("chat_svc.runTurn: ErrorEvent intercepted", fields...)
 				streamStopErr = e.Err
 			}
 			continue
@@ -3507,6 +3604,7 @@ func (s *chatSvc) runTurn(
 			s.checkpointAssistantNew(ctx, assistantMsg, acc)
 		}
 	}
+	turnCtx.ClearWaits()
 
 	if req.CollaborationMode == permissionModePlan && !compact && acc.Empty() {
 		acc.AddText("Plan mode completed without executable changes.")
@@ -3558,11 +3656,14 @@ func (s *chatSvc) runTurn(
 		}
 		if stopErr == nil && result.StopErr != nil {
 			stopErr = s.mapTurnError(ctx, sess, be, result.StopErr)
-			logger.Ctx(ctx).Warn("chat_svc: stopErr promoted from RunResult.StopErr",
+			fields := make([]zap.Field, 0, 6)
+			fields = append(fields,
 				zap.Int64("sessionId", sess.ID),
 				zap.Int64("assistantMsgId", assistantMsg.ID),
 				zap.String("stream", stream),
-				zap.Error(stopErr))
+			)
+			fields = append(fields, chatRuntimeErrorLogFields(stopErr)...)
+			logger.Ctx(ctx).Warn("chat_svc.runTurn: stopErr promoted from RunResult.StopErr", fields...)
 		}
 		// Send 时 sess 之前没有 session id，runner 返回新 id 落库；
 		// Regenerate-fork 时 sess 有旧 id 但 runner 返回 fork 出来的新 id，必须覆盖。
@@ -3668,7 +3769,8 @@ func (s *chatSvc) runTurn(
 	// LiveStream 生命周期驱动，tab/toolbar/sidebar 由 session-status-store 驱动；若
 	// idle 只靠 done 后异步 reload 回填，两套视图必然存在不一致窗口。
 	if len(pending) == 0 {
-		logger.Ctx(finalCtx).Info("chat_svc: session_status emit",
+		fields := make([]zap.Field, 0, 11)
+		fields = append(fields,
 			zap.Int64("sessionId", sess.ID),
 			zap.Int64("assistantMsgId", assistantMsg.ID),
 			zap.String("stream", stream),
@@ -3676,8 +3778,10 @@ func (s *chatSvc) runTurn(
 			zap.Bool("needsAttention", sess.NeedsAttention),
 			zap.Bool("aborted", aborted),
 			zap.Bool("awaitingPlanAction", awaitingPlanAction),
-			zap.Error(stopErr),
-			zap.String("source", "finalize"))
+			zap.String("source", "finalize"),
+		)
+		fields = append(fields, chatRuntimeErrorLogFields(stopErr)...)
+		logger.Ctx(finalCtx).Info("chat_svc.runTurn: session status emit", fields...)
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 			Kind: StreamSessionStatus,
 			SessionStatus: &ChatSessionStatusPatch{
@@ -3749,7 +3853,6 @@ func (s *chatSvc) runTurn(
 	default:
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
 	}
-	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
 	// turn 正常收尾(含 abort)的唯一终态回灌点。错误路径走 failTurn 后 return,
 	// 自动接续路径在递归 runTurn 的 finalize 回灌(本帧 len(pending)>0 已提前 return)。
 	s.publishTurnResult(sess.ID, TurnResult{
@@ -4130,9 +4233,21 @@ func providerSessionNotFound(err error) bool {
 	return errors.Is(err, claudecode.ErrSessionNotFound) || errors.Is(err, agentruntime.ErrSessionNotFound)
 }
 
+// mapTurnError 把一轮的终止原因翻成**交到用户面前的那句话**。
+//
+// 远端的两种非失败终止在这里分道:R15 规定它们都沿用既有的 error 态、不新增第五个
+// AgentStatus 取值,「由消息文案区分其与真实错误」—— 而消息文案就是这个返回值(经
+// assistantMsg.ErrorText 持久化)。三句话必须互不相同:被打断(daemon 重启 / 会话在
+// 那台机器上已中断)、连不上了(重连彻底失败)、真的跑失败了(原样透出后端错误)。
 func (s *chatSvc) mapTurnError(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend, src error) error {
 	if src == nil {
 		return nil
+	}
+	if errors.Is(src, remote.ErrRunInterrupted) {
+		return i18n.NewError(ctx, code.ChatRemoteRunInterrupted)
+	}
+	if errors.Is(src, remote.ErrDaemonDisconnected) {
+		return i18n.NewError(ctx, code.ChatRemoteDaemonUnreachable)
 	}
 	if providerSessionNotFound(src) {
 		return s.mapProviderSessionError(ctx, sess, src)
@@ -4148,32 +4263,64 @@ func (s *chatSvc) mapTurnError(ctx context.Context, sess *chat_entity.Session, b
 	return src
 }
 
+func chatRuntimeErrorLogFields(err error) []zap.Field {
+	if err == nil {
+		return nil
+	}
+	fields := []zap.Field{
+		zap.String("errorClass", fmt.Sprintf("%T", err)),
+		zap.Int("errorBytes", len(err.Error())),
+	}
+	var appErr *httputils.Error
+	if errors.As(err, &appErr) {
+		return append(fields, zap.Int("errorCode", appErr.Code))
+	}
+	var rpcErr *daemonrpc.Error
+	if errors.As(err, &rpcErr) {
+		return append(fields, zap.Int("errorCode", rpcErr.Code))
+	}
+	return fields
+}
+
 func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *chat_entity.Message, stream string, err error) {
 	// 一次落地点收所有 turn 级别错误(selectRunner / resolveSessionCwd / runner.Run /
-	// stream loop streamStopErr 等),给运维一条结构化日志带 session / message / stream
-	// 三个定位用 ID,前端只看到 ErrorText 文案,真错的 message 在这里留底。
-	logger.Ctx(ctx).Warn("chat_svc: turn failed",
+	// stream loop streamStopErr 等),给运维保留安全分类与定位 ID；完整错误仅继续走
+	// 既有前端 StreamError 与持久化 ErrorText 边界。
+	fields := make([]zap.Field, 0, 7)
+	fields = append(fields,
 		zap.Int64("sessionId", sess.ID),
 		zap.Int64("messageId", msg.ID),
 		zap.String("stream", stream),
 		zap.String("agentStatus", sess.AgentStatus),
-		zap.Error(err))
+	)
+	fields = append(fields, chatRuntimeErrorLogFields(err)...)
+	logger.Ctx(ctx).Warn("chat_svc.failTurn: turn failed", fields...)
+	// 终态一律用 WithoutCancel 落库:失败路径最常见的触发方式就是用户点「停止」把
+	// turnCtx cancel 掉,若沿用同一个 ctx,这两条 Update 会被 DB 层直接拒掉,结果
+	// agent_status 永远停在 running、error_text 也写不进去(前端既不报错也停不掉)。
+	finalCtx := context.WithoutCancel(ctx)
 	msg.ErrorText = err.Error()
-	_ = chat_repo.Message().Update(ctx, msg)
+	if uerr := chat_repo.Message().Update(finalCtx, msg); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.failTurn: persist error text failed",
+			zap.Int64("messageId", msg.ID), zap.Error(uerr))
+	}
 	sess.AgentStatus = "error"
 	sess.NeedsAttention = false
-	_ = chat_repo.Session().Update(ctx, sess)
+	if uerr := chat_repo.Session().Update(finalCtx, sess); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.failTurn: persist session status failed",
+			zap.Int64("sessionId", sess.ID), zap.Error(uerr))
+	}
 	// session_status 必须先于 StreamError emit:前端 chat-streams-host 收到 error
 	// 立刻 finishStream 删 LiveStream entry → StreamSubscriber 紧接着 unmount,后到
 	// 的 session_status 永远收不到。后台 session 出错时只靠 bumpDone 不会翻 tab 红点。
-	logger.Ctx(ctx).Info("chat_svc: session_status emit",
+	logger.Ctx(finalCtx).Info("chat_svc: session_status emit",
 		zap.Int64("sessionId", sess.ID),
 		zap.Int64("assistantMsgId", msg.ID),
 		zap.String("stream", stream),
 		zap.String("agentStatus", sess.AgentStatus),
 		zap.Bool("needsAttention", sess.NeedsAttention),
 		zap.String("source", "failTurn"))
-	s.emitter.Emit(ctx, stream, ChatStreamEvent{
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 		Kind: StreamSessionStatus,
 		SessionStatus: &ChatSessionStatusPatch{
 			AgentStatus:    sess.AgentStatus,
@@ -4181,18 +4328,74 @@ func (s *chatSvc) failTurn(ctx context.Context, sess *chat_entity.Session, msg *
 			BgRunning:      s.bgRunningActive(sess.ID),
 		},
 	})
-	s.emitter.Emit(ctx, stream, ChatStreamEvent{
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
 		Kind:    StreamError,
 		Error:   err.Error(),
 		Message: chatMessageForEvent(sess, msg),
 	})
-	s.emitter.Emit(ctx, stream, ChatStreamEvent{Kind: StreamClosed})
 	// 错误路径的唯一终态回灌点。failTurn 直线到此(无内部 early return),尾端单点
 	// publish 即覆盖全部退出路径;与 finalize 互斥(调用方 failTurn 后立即 return)。
 	s.publishTurnResult(sess.ID, TurnResult{
 		SessionID:          sess.ID,
 		AssistantMessageID: msg.ID,
 		Err:                err,
+	})
+}
+
+// turnAbortedByUser 判定「runner.Run 返回的这个错误其实是用户点了停止」。
+// 只认两种信号:runtime 显式回 ErrAborted,或本会话已被 Stop 标记且错误确实是
+// ctx 取消。普通故障(拨号失败等)即使碰巧带着 abort 标记也仍按错误处理,免得把
+// 真故障伪装成"用户停的"。
+func (s *chatSvc) turnAbortedByUser(sessionID int64, err error) bool {
+	if errors.Is(err, agentruntime.ErrAborted) {
+		s.aborted.LoadAndDelete(sessionID)
+		return true
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if _, ok := s.aborted.Load(sessionID); !ok {
+		return false
+	}
+	s.aborted.LoadAndDelete(sessionID)
+	return true
+}
+
+// abortTurnBeforeStream 收敛「Run 还没返回就被 Stop」的那一轮。此时 runtime 侧
+// 还没注册 activeTurn(OpenClaw 要先跟网关握手),既没有流也没有产出,但会话已经是
+// running —— 必须在这里落回 idle,否则侧栏一直转圈、且只有重启 app 才洗得掉。
+// 与流式中途 abort 对齐:发 StreamAborted 而不是 StreamError,不写 ErrorText。
+func (s *chatSvc) abortTurnBeforeStream(ctx context.Context, sess *chat_entity.Session, msg *chat_entity.Message, stream string) {
+	finalCtx := context.WithoutCancel(ctx)
+	logger.Ctx(finalCtx).Info("chat_svc: turn aborted before stream started",
+		zap.Int64("sessionId", sess.ID),
+		zap.Int64("assistantMsgId", msg.ID),
+		zap.String("stream", stream))
+	if uerr := chat_repo.Message().Update(finalCtx, msg); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.abortTurnBeforeStream: persist message failed",
+			zap.Int64("messageId", msg.ID), zap.Error(uerr))
+	}
+	sess.AgentStatus = "idle"
+	sess.NeedsAttention = false
+	if uerr := chat_repo.Session().Update(finalCtx, sess); uerr != nil {
+		logger.Ctx(finalCtx).Error("chat_svc.abortTurnBeforeStream: persist session status failed",
+			zap.Int64("sessionId", sess.ID), zap.Error(uerr))
+	}
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+		Kind: StreamSessionStatus,
+		SessionStatus: &ChatSessionStatusPatch{
+			AgentStatus:    sess.AgentStatus,
+			NeedsAttention: sess.NeedsAttention,
+			BgRunning:      s.bgRunningActive(sess.ID),
+		},
+	})
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+		Kind:    StreamAborted,
+		Message: chatMessageForEvent(sess, msg),
+	})
+	s.publishTurnResult(sess.ID, TurnResult{
+		SessionID:          sess.ID,
+		AssistantMessageID: msg.ID,
 	})
 }
 
@@ -4210,8 +4413,7 @@ func (t *trylockMutex) Unlock()       { t.mu.Unlock() }
 var mentionXMLRe = regexp.MustCompile(`<(agent|project)\b[^>]*>([\s\S]*?)</(?:agent|project)>`)
 
 // sessionTitleFromFirstMessage 从首条用户消息派生会话标题。
-// @ 提及会把 `<agent id="1">名字</agent>` 这类 XML 写进消息正文(设计见
-// docs/superpowers/specs/2026-07-14-chat-mention-references-design.md),正文里是对的,
+// @ 提及会把 `<agent id="1">名字</agent>` 这类 XML 写进消息正文，正文里是对的，
 // 但标题会显示在 tab / 侧栏 / 标题栏 —— 直接用会露出一坨裸 XML。这里把标签还原成可读的 `@名字`。
 func sessionTitleFromFirstMessage(text string) string {
 	out := mentionXMLRe.ReplaceAllStringFunc(text, func(m string) string {
@@ -4431,77 +4633,122 @@ func (s *chatSvc) borrowRemoteRuntimeOwned(
 	if !ok {
 		return nil, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 	}
-	owner := generation
-	if owner == nil {
-		owner = &remoteRuntimeGeneration{}
-	}
-
-	// Fast path: cache hit. Control-path borrows preserve the current turn owner;
-	// a turn borrow installs its fresh generation token.
-	s.remoteMu.Lock()
-	if s.remoteCache == nil {
-		s.remoteCache = map[int64]*remoteRuntimeEntry{}
-	}
-	if entry, ok := s.remoteCache[deviceID]; ok {
-		if generation != nil {
-			entry.sessions[sessionID] = owner
-		} else if entry.sessions[sessionID] == nil {
-			entry.sessions[sessionID] = owner
-		}
-		s.remoteMu.Unlock()
-		return entry.runtime, nil
-	}
-	s.remoteMu.Unlock()
-
-	// Cold path: 借 lease + wrap runtime
-	lease, err := s.pool().Borrow(ctx, deviceID)
+	rt, fp, err := s.remoteRuntimeForDevice(ctx, deviceID, []int64{sessionID}, generation)
 	if err != nil {
 		logger.Ctx(ctx).Error("borrowRemoteRuntime: pool.Borrow",
 			zap.Int64("deviceID", deviceID), zap.Error(err))
 		return nil, i18n.NewError(ctx, code.RemoteRunnerDialFailed)
 	}
-	rt := remote.New(lease.Client())
+	// 会话在库里记下「跑在哪台 daemon 的哪个实例上」——游标端口的读写守卫全靠它,
+	// 不写就永远判失效,断连补齐退化成断连即终止(见 remote_reconnect.go);而 App
+	// 重启后「该连谁」也全靠这一行(见 CatchUpRemoteSessions)。runtime 是 device 级
+	// 共享的,同一台设备上的第二条会话走 cache 命中那条路,它自己的执行位置同样要落库。
+	s.recordExecDaemon(ctx, sessionID, deviceID, fp)
 
 	// 同步拉一次远端 backend 的 capability 矩阵缓存到本地,之后 rt.Capabilities()
-	// 直接返实际能力。失败不阻断 borrow —— Capabilities() 回退到
-	// defaultCapsBeforePrefetch 占位,UI gating 不挂死。
+	// 直接返实际能力。已缓存过的 backendType 直接 noop(cache 命中不会再发 RPC)。
+	// 失败不阻断 borrow —— Capabilities() 回退到 defaultCapsBeforePrefetch 占位,
+	// UI gating 不挂死。
 	if err := rt.Prefetch(ctx, agent_backend_entity.BackendType(be.Type)); err != nil {
 		logger.Ctx(ctx).Warn("borrowRemoteRuntime: capability prefetch failed",
 			zap.Int64("deviceID", deviceID),
 			zap.String("backendType", be.Type),
 			zap.Error(err))
 	}
+	return rt, nil
+}
+
+// remoteRuntimeForDevice 取(或建)某台配对 daemon 上共享的 *remote.Runtime,并把
+// sessionIDs 记进它的引用集;顺带交回该 daemon 此刻的实例标识。
+//
+// 它与 borrowRemoteRuntime 分开,是因为补齐(CatchUpRemoteSessions)手上只有
+// (设备, 会话) 而**没有 agent backend**:重启后要连回的那台 daemon 是从
+// chat_sessions.exec_device_id 读出来的,不经过 turn 的后端选择。
+// owner 非 nil 时这次借用带着一轮自己的 generation token(见 remoteRuntimeGeneration):
+// 迟到的旧 release 比对指针后不会顶掉同会话新一轮的引用。控制路径(owner==nil)只在
+// 引用缺失时补一个占位,不覆盖当前轮的 owner。
+func (s *chatSvc) remoteRuntimeForDevice(
+	ctx context.Context,
+	deviceID int64,
+	sessionIDs []int64,
+	owner *remoteRuntimeGeneration,
+) (*remote.Runtime, string, error) {
+	// Fast path: cache hit
+	s.remoteMu.Lock()
+	if s.remoteCache == nil {
+		s.remoteCache = map[int64]*remoteRuntimeEntry{}
+	}
+	if entry, ok := s.remoteCache[deviceID]; ok {
+		addSessionRefs(entry, sessionIDs, owner)
+		s.remoteMu.Unlock()
+		return entry.runtime, s.daemonFingerprint(ctx, deviceID), nil
+	}
+	s.remoteMu.Unlock()
+
+	// Cold path: 借 lease + wrap runtime
+	lease, err := s.pool().Borrow(ctx, deviceID)
+	if err != nil {
+		return nil, "", err
+	}
+	fp := s.daemonFingerprint(ctx, deviceID)
+
+	// entry 先建出来:重连端口要往里换 lease,所以它必须先于 runtime 存在。
+	entry := &remoteRuntimeEntry{lease: lease, sessions: map[int64]*remoteRuntimeGeneration{}}
+	addSessionRefs(entry, sessionIDs, owner)
+	rt := remote.New(lease.Client(),
+		remote.WithDaemonFingerprint(fp),
+		remote.WithConnStateObserver(remote.ConnStateFunc(s.onRemoteConnState)),
+		remote.WithDurabilityObserver(remote.DurabilityFunc(func(supported bool) {
+			s.onRemoteDaemonDurability(deviceID, supported)
+		})),
+		remote.WithReconnect(remote.ReconnectFunc(func(rctx context.Context) (agentruntime.DaemonClientPort, string, error) {
+			return s.reconnectRemote(rctx, deviceID, entry)
+		})),
+	)
+	entry.runtime = rt
 
 	// Re-lock and insert. TOCTOU 输家:用赢家的 entry,释放自己的 lease。
 	s.remoteMu.Lock()
 	if existing, ok := s.remoteCache[deviceID]; ok {
-		if generation != nil {
-			existing.sessions[sessionID] = owner
-		} else if existing.sessions[sessionID] == nil {
-			existing.sessions[sessionID] = owner
-		}
+		addSessionRefs(existing, sessionIDs, owner)
 		s.remoteMu.Unlock()
 		lease.Release()
-		return existing.runtime, nil
-	}
-	entry := &remoteRuntimeEntry{
-		runtime:  rt,
-		lease:    lease,
-		sessions: map[int64]*remoteRuntimeGeneration{sessionID: owner},
+		return existing.runtime, fp, nil
 	}
 	s.remoteCache[deviceID] = entry
 	s.remoteMu.Unlock()
 
-	go s.watchLeaseClosed(deviceID, entry)
-	return rt, nil
+	go s.watchLeaseClosed(deviceID, entry, lease)
+	return rt, fp, nil
 }
 
-// watchLeaseClosed 监听 lease.Closed()(Pool 那侧通知 entry 失效),
-// 然后把 chat_svc 这边的 cache entry 摘掉,下次 borrow 走冷路径重建 runtime。
-func (s *chatSvc) watchLeaseClosed(deviceID int64, entry *remoteRuntimeEntry) {
-	<-entry.lease.Closed()
+// addSessionRefs 调用方必须持 remoteMu。owner 非 nil = 这一轮的 generation token,
+// 直接安装(它接管这条会话的引用);owner 为 nil 的控制路径只在引用缺失时补占位,
+// 不覆盖当前轮的 owner —— 覆盖了的话那一轮的 release 就比不上指针、永远释放不掉。
+func addSessionRefs(entry *remoteRuntimeEntry, sessionIDs []int64, owner *remoteRuntimeGeneration) {
+	for _, sid := range sessionIDs {
+		if owner != nil {
+			entry.sessions[sid] = owner
+			continue
+		}
+		if entry.sessions[sid] == nil {
+			entry.sessions[sid] = &remoteRuntimeGeneration{}
+		}
+	}
+}
+
+// watchLeaseClosed 监听某条 lease 的 Closed()(Pool 那侧通知它失效),然后把 chat_svc
+// 这边的 cache entry 摘掉,下次 borrow 走冷路径重建 runtime。
+//
+// 只在**这条** lease 仍是该 entry 当前那条时才摘:runtime 已经自己重连换过 lease 的话
+// entry 还活着,摘掉它会让下一轮 borrow 为同一台设备造出第二个 *remote.Runtime,两个
+// runtime 在同一条池化连接上抢注同名 handler,在飞会话的事件会被路由到不认识它的那个
+// 然后静默丢弃。lease 参数因此是显式的,不能读 entry.lease —— 那是会变的。
+func (s *chatSvc) watchLeaseClosed(deviceID int64, entry *remoteRuntimeEntry, lease remote_device_svc.Lease) {
+	<-lease.Closed()
 	s.remoteMu.Lock()
-	if cur, ok := s.remoteCache[deviceID]; ok && cur == entry {
+	cur, ok := s.remoteCache[deviceID]
+	if ok && cur == entry && entry.lease == lease {
 		delete(s.remoteCache, deviceID)
 	}
 	s.remoteMu.Unlock()

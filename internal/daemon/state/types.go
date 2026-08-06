@@ -5,7 +5,6 @@ package state
 import "sync"
 
 // State is the on-disk shape persisted to <AppDataDir>/state.json.
-// Spec reference: docs/superpowers/specs/2026-05-21-agentred-mvp-design.md §5.2.
 type State struct {
 	SchemaVersion      int                        `json:"schemaVersion"`
 	DaemonInstanceUUID string                     `json:"daemonInstanceUUID"`

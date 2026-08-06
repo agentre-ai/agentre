@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -73,15 +74,35 @@ func (d *Daemon) ipcPair(w http.ResponseWriter, r *http.Request) {
 
 func (d *Daemon) ipcStatus(w http.ResponseWriter, r *http.Request) {
 	snap := d.state.Snapshot()
+	// dbPath / dbSizeBytes:远端盒子上的 transcript 是永久档案,规格要求库文件的位置与
+	// 体量在状态查询里看得见,用户据此自行判断何时该清理(见 Daemon.DBStat)。
+	dbStat := d.DBStat()
 	writeJSON(w, map[string]any{
 		"pid":              os.Getpid(),
 		"daemonUUID":       snap.DaemonInstanceUUID,
 		"listenURLs":       lanURLs(d),
 		"socketPath":       d.SocketPath(),
 		"pairedPeers":      summarizePeers(snap.PairedPeers),
-		"activeSessions":   len(d.sessions.List()),
+		"activeSessions":   d.activeSessionCount(r.Context()),
 		"llmProviderCount": len(snap.LLMProviders),
+		"dbPath":           dbStat.Path,
+		"dbSizeBytes":      dbStat.SizeBytes,
 	})
+}
+
+// activeSessionCount 是「这台 daemon 此刻在为几条会话干活」,取自它自己记着的生命周期
+// (一轮起手 running、轮末 idle、进程重启把非终态一律标 interrupted)—— 那是 daemon
+// 上唯一知道这件事的地方。
+//
+// 读不出来返 0 并留一行日志:状态查询不该因为库忙而整个失败,但也不能让一个读失败
+// 冒充「没有会话在跑」而不留痕迹。
+func (d *Daemon) activeSessionCount(ctx context.Context) int64 {
+	n, err := d.sessionStore.CountRunning(ctx)
+	if err != nil {
+		log.Printf("daemon.ipcStatus: count running sessions failed: %v", err)
+		return 0
+	}
+	return n
 }
 
 func (d *Daemon) ipcLLM(w http.ResponseWriter, r *http.Request) {

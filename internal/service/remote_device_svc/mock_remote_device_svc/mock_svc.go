@@ -114,6 +114,18 @@ func (mr *MockRemoteDeviceSvcMockRecorder) Pool() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Pool", reflect.TypeOf((*MockRemoteDeviceSvc)(nil).Pool))
 }
 
+// RecordDaemonOutdated mocks base method.
+func (m *MockRemoteDeviceSvc) RecordDaemonOutdated(deviceID int64, outdated bool) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RecordDaemonOutdated", deviceID, outdated)
+}
+
+// RecordDaemonOutdated indicates an expected call of RecordDaemonOutdated.
+func (mr *MockRemoteDeviceSvcMockRecorder) RecordDaemonOutdated(deviceID, outdated any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordDaemonOutdated", reflect.TypeOf((*MockRemoteDeviceSvc)(nil).RecordDaemonOutdated), deviceID, outdated)
+}
+
 // RecordDeviceProviders mocks base method.
 func (m *MockRemoteDeviceSvc) RecordDeviceProviders(deviceID int64, ps []remote_device_svc.ProviderSummary) {
 	m.ctrl.T.Helper()

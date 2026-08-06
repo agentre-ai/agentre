@@ -53,6 +53,7 @@ import { cn } from "@/lib/utils";
 import { useSessionAttention } from "@/stores/attention-store";
 import { useClearedBackgroundTasksStore } from "@/stores/cleared-background-tasks-store";
 import {
+  sessionStreamMap,
   streamForMessage,
   useChatStreamsStore,
   type ChatBlockData,
@@ -60,8 +61,13 @@ import {
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
 import { useQueuedMessagesStore } from "@/stores/queued-messages-store";
+import { useSessionConnectionState } from "@/stores/session-conn-store";
 import { useSessionReadStore } from "@/stores/session-read-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
+import {
+  localCommandRuntimeStore,
+  type LocalCommandRuntimeController,
+} from "@/stores/local-command-runtime-store";
 
 import { useBackendCapabilities } from "./capability/use-backend-capabilities";
 import { useSessionCapabilities } from "./capability/use-session-capabilities";
@@ -74,7 +80,14 @@ import {
   type ChatImageAttachment,
   type TranscriptLiveContent,
 } from "./chat";
+import type { LocalCommandHistoryScope } from "./chat-input";
 import { ChatContextSidebar } from "./chat-context-sidebar";
+import {
+  clearCatchUp,
+  registerTranscriptRowCounter,
+  useCatchUpSummary,
+  type CatchUpSummary,
+} from "./chat-panel-catchup-state";
 import { computeComposerContextUsage } from "./chat-panel-context-usage";
 import { PermissionModePill, usePermissionMode } from "./permission-mode";
 import { useChatSidebarStore } from "@/stores/chat-sidebar-store";
@@ -93,6 +106,7 @@ import {
 } from "./background-tasks/flip-subagent-status";
 import { deriveTaskProgress } from "./task-progress/derive";
 import { TaskProgressBar } from "./task-progress/task-progress-bar";
+import { buildTranscriptRows } from "./transcript-rows";
 import type { AgentColor, AgentStatus } from "./types";
 import { agentTextColorClassName, statusConfig } from "./types";
 
@@ -109,11 +123,13 @@ import {
   EnsureChatSession,
   RegenerateChatMessage,
   RenameChatSession,
+  ResolveLocalCommandScope,
   SendChatMessage,
   SetChatGoal,
   StartChatGoal,
   StopBackgroundTask,
   StopChatMessage,
+  TerminalClose,
   TerminalRunCommand,
 } from "../../../wailsjs/go/app/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime/runtime";
@@ -237,6 +253,15 @@ function isChatStopNoActiveError(msg: string): boolean {
       i18n.t("chatPanel.errors.noActiveTurnToStop", { lng: "zh-CN" }),
     ) ||
     msg.includes(i18n.t("chatPanel.errors.noActiveTurnToStop", { lng: "en" }))
+  );
+}
+
+const TERMINAL_NOT_OPEN_ERROR = "terminal not open";
+
+function isTerminalNotOpenError(error: unknown): boolean {
+  return (
+    error === TERMINAL_NOT_OPEN_ERROR ||
+    (error instanceof Error && error.message === TERMINAL_NOT_OPEN_ERROR)
   );
 }
 
@@ -404,6 +429,105 @@ function applyStreamError(
   return updated;
 }
 
+// liveContentByMessageId 把该会话此刻在流的内容摊成「assistant 消息 id → 流式内容」。
+// 渲染路径与补齐行数快照路径共用一份 —— 后者拿的是 store 的即时快照(见
+// registerTranscriptRowCounter 处的注释),两处若各拼各的,数出来的行与画出来的行
+// 就会在某个细节上分家。
+function liveContentByMessageId(
+  sessionStreams: ReadonlyMap<number, LiveStream> | null,
+): Map<number, TranscriptLiveContent> {
+  const out = new Map<number, TranscriptLiveContent>();
+  if (!sessionStreams) return out;
+  for (const s of sessionStreams.values()) {
+    out.set(s.assistantMessageId, {
+      liveTail: s.liveDelta,
+      liveThinking: s.liveThinking,
+      liveThinkingStartedAt: s.streamStartedAt,
+      liveBlocks: s.liveBlocks,
+      liveRetry: s.liveRetry,
+    });
+  }
+  return out;
+}
+
+// EMPTY_AUTONOMOUS_IDS:行数快照不关心「哪条消息是自主续轮」——那只影响首行要不要
+// 挂 banner,不改行数。渲染路径自己会算真值。
+const EMPTY_AUTONOMOUS_IDS: ReadonlySet<number> = new Set<number>();
+
+// TranscriptJumpControl 是转录区底部浮出的那枚控件。
+//
+// 没有未看的补齐时,它就是原来的「回到底部」圆钮;补齐把内容悄悄堆高之后,它长成
+// 一枚带文字的药丸,写明新增了多少条 —— 用户的滚动位置没被夺走,但他得看得见
+// 下面多了东西。补齐里还有没回答的待决策时再补一段「N 项待处理」:待决策一旦
+// 埋进上百条补齐内容中间,不写在这里就等于没人知道。
+// 那段必须是文字:状态色点只是修饰,颜色不能是信息的唯一载体(docs/design.md 无障碍)。
+//
+// newRows 为 0 的那一支同样浮出控件:补齐把上千条 delta 全追加进了还在流的那一行,
+// 行数没变但内容确实多了(R14 只要求「补齐产生了新内容」)。此时报不出条数,就只说
+// 有新内容 —— 与其编一个数字,不如少说一句。
+function TranscriptJumpControl({
+  catchUp,
+  onJump,
+}: {
+  catchUp: CatchUpSummary | null;
+  onJump: () => void;
+}): React.ReactElement {
+  const { t } = useTranslation();
+  const floating =
+    "sticky bottom-4 z-20 ml-auto flex rounded-full bg-background shadow-md hover:shadow-lg dark:bg-background animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out motion-reduce:animate-none";
+
+  if (!catchUp) {
+    return (
+      <Button
+        type="button"
+        data-testid="back-to-bottom-button"
+        variant="outline"
+        size="icon-sm"
+        aria-label={t("chatPanel.scroll.backToBottom")}
+        title={t("chatPanel.scroll.backToBottom")}
+        onClick={onJump}
+        className={floating}
+      >
+        <ArrowDown data-icon="only" aria-hidden="true" />
+      </Button>
+    );
+  }
+
+  // 不加 aria-label:按钮的可访问名就是这些文字本身,条数与待处理项数因此一并被读出。
+  return (
+    <Button
+      type="button"
+      data-testid="jump-to-latest-button"
+      variant="outline"
+      size="sm"
+      title={t("chatPanel.scroll.jumpToLatest")}
+      onClick={onJump}
+      className={cn(floating, "w-fit")}
+    >
+      <ArrowDown aria-hidden="true" />
+      <span>
+        {catchUp.newRows > 0
+          ? t("chatPanel.scroll.caughtUpCount", { count: catchUp.newRows })
+          : t("chatPanel.scroll.caughtUpSome")}
+      </span>
+      {catchUp.pendingDecisions > 0 ? (
+        <span
+          data-testid="jump-to-latest-pending"
+          className="flex items-center gap-1 text-status-waiting"
+        >
+          <span
+            aria-hidden="true"
+            className="size-1.5 rounded-full bg-status-waiting"
+          />
+          {t("chatPanel.scroll.pendingCount", {
+            count: catchUp.pendingDecisions,
+          })}
+        </span>
+      ) : null}
+    </Button>
+  );
+}
+
 // ─── ChatPanel ───────────────────────────────────────────────────────────────
 
 type NewSessionContext = {
@@ -515,6 +639,28 @@ function ChatPanel({
     error: sessionError,
     reload: reloadSession,
   } = useChatSession(sessionId);
+  const ensuredLocalCommandSessionRef = React.useRef<{
+    agentId: number;
+    projectId: number;
+    promise: Promise<number>;
+    requestId: number;
+  } | null>(null);
+  const ensuredLocalCommandSessionRequestRef = React.useRef(0);
+  const handleStopLocalCommand = React.useCallback(
+    async (terminalId: string) => {
+      const delegated = await localCommandRuntimeStore.stop(terminalId);
+      if (
+        !delegated &&
+        useLocalCommandsStore.getState().get(terminalId)?.status === "running"
+      ) {
+        console.error(
+          "[chat] stop local command failed: runtime controller missing",
+          { terminalId },
+        );
+      }
+    },
+    [],
+  );
 
   const { reason: attentionReason } = useSessionAttention(sessionId);
 
@@ -883,20 +1029,10 @@ function ChatPanel({
   // 逐条 assistant 消息的流式内容表 —— 多条流并存时各渲各的,喂给 ChatTranscript。
   // 不能只喂主流:后台任务完成的自主续轮与用户轮会重叠,只喂一条会让另一条瞬间
   // 掉回持久化态(用户可见症状:「已输出内容清空回退」,sess-1950)。
-  const liveByMessageId = React.useMemo(() => {
-    const out = new Map<number, TranscriptLiveContent>();
-    if (!sessionStreams) return out;
-    for (const s of sessionStreams.values()) {
-      out.set(s.assistantMessageId, {
-        liveTail: s.liveDelta,
-        liveThinking: s.liveThinking,
-        liveThinkingStartedAt: s.streamStartedAt,
-        liveBlocks: s.liveBlocks,
-        liveRetry: s.liveRetry,
-      });
-    }
-    return out;
-  }, [sessionStreams]);
+  const liveByMessageId = React.useMemo(
+    () => liveContentByMessageId(sessionStreams),
+    [sessionStreams],
+  );
   // 全部在流的 liveBlocks 拍平 —— 后台任务面板 / task-progress 是**会话级**视图,
   // 用户轮和后台流里起的任务都要收进来。
   const allLiveBlocks = React.useMemo(() => {
@@ -908,6 +1044,9 @@ function ChatPanel({
   const liveContextWindow = currentStream?.liveContextWindow ?? 0;
   const liveCompacting = currentStream?.liveCompacting ?? false;
   const streaming = currentStream !== null;
+  // 连接态是会话级的(不挂在某条流上),由 ChatStreamsHost 订阅 chat:conn:<sid> 写入。
+  // 断连期间会话仍然是「运行中」—— 这里只换活信号的形态,不碰 agentStatus。
+  const reconnecting = useSessionConnectionState(sessionId) === "reconnecting";
 
   // CLI mode 控件：claudecode 使用 permission mode，codex 使用 collaboration
   // mode 的 default/plan 子集。DB 是 source-of-truth；新会话还没有 sessionId
@@ -919,6 +1058,76 @@ function ChatPanel({
   // (已存在的会话),sessionId=0 新建态回退到 newSessionAgent —— 否则远端 agent 起的
   // 新会话还没发送时,quotaDeviceKey 会落到 "local" 把桌面本机配额错画上去。
   const activeDeviceID = session?.deviceID ?? newSessionAgent?.deviceID ?? "";
+  const [localCommandHistoryScope, setLocalCommandHistoryScope] =
+    React.useState<LocalCommandHistoryScope>();
+  const [localCommandScopeRefreshTick, setLocalCommandScopeRefreshTick] =
+    React.useState(0);
+  const localCommandScopeResolutionRef = React.useRef(0);
+  const commandScopeSessionId = sessionId > 0 ? sessionId : 0;
+  const commandScopeAgentId =
+    commandScopeSessionId === 0 ? (newSessionAgent?.id ?? 0) : 0;
+  const commandScopeProjectId =
+    commandScopeSessionId === 0 ? (newSessionContext?.projectId ?? 0) : 0;
+  const commandScopeTargetAgentId =
+    commandScopeSessionId > 0 ? (session?.agentId ?? 0) : commandScopeAgentId;
+  const commandScopeTargetBackendType =
+    commandScopeSessionId > 0
+      ? (session?.backendType ?? "")
+      : (newSessionAgent?.backendType ?? "");
+  const commandScopeTargetCwd =
+    commandScopeSessionId > 0 ? (session?.cwd ?? "") : composerCwd;
+  const commandScopeTargetDeviceId =
+    commandScopeSessionId > 0
+      ? (session?.deviceID ?? "")
+      : (newSessionAgent?.deviceID ?? "");
+  const commandScopeTargetProjectId =
+    commandScopeSessionId > 0
+      ? (session?.projectId ?? 0)
+      : commandScopeProjectId;
+  React.useLayoutEffect(() => {
+    const resolutionID = ++localCommandScopeResolutionRef.current;
+    setLocalCommandHistoryScope(undefined);
+    if (commandScopeSessionId <= 0 && commandScopeAgentId <= 0) return;
+
+    const request: chat_svc.ResolveLocalCommandScopeRequest = {
+      sessionId: commandScopeSessionId,
+      agentId: commandScopeAgentId,
+      projectId: commandScopeProjectId,
+    };
+    void (async () => {
+      try {
+        const scope = await ResolveLocalCommandScope(request);
+        if (localCommandScopeResolutionRef.current !== resolutionID) return;
+        setLocalCommandHistoryScope({
+          deviceId: scope.deviceId,
+          cwd: scope.cwd,
+        });
+      } catch {
+        if (localCommandScopeResolutionRef.current !== resolutionID) return;
+        setLocalCommandHistoryScope(undefined);
+      }
+    })();
+    return () => {
+      if (localCommandScopeResolutionRef.current === resolutionID) {
+        localCommandScopeResolutionRef.current += 1;
+      }
+    };
+  }, [
+    // These target scalars are refresh signals only. History scope is always
+    // the resolver response above, never a frontend-derived device/cwd fallback.
+    commandScopeAgentId,
+    commandScopeProjectId,
+    commandScopeSessionId,
+    commandScopeTargetAgentId,
+    commandScopeTargetBackendType,
+    commandScopeTargetCwd,
+    commandScopeTargetDeviceId,
+    commandScopeTargetProjectId,
+    localCommandScopeRefreshTick,
+  ]);
+  const handleLocalCommandModeChange = React.useCallback((active: boolean) => {
+    if (active) setLocalCommandScopeRefreshTick((tick) => tick + 1);
+  }, []);
   const activeDeviceName =
     session?.deviceName ?? newSessionAgent?.deviceName ?? "";
   const quotaDeviceKey =
@@ -1189,6 +1398,45 @@ function ChatPanel({
     saveBottomScrollPosition(readScrollMetrics(el));
   }, [saveBottomScrollPosition]);
 
+  // ── 补齐落定后的「跳到最新」──
+  // 摘要由 ChatStreamsHost 在补齐落定那一发记下,这里只负责供转录行数、读与销账。
+  //
+  // 行数取数口:补齐窗口两端各调一次(掉线时快照、落定时做差),不是每帧算,所以
+  // 现场 build 一次即可。两个数据源的取法不同:
+  //   - messages 走 ref —— 它只在 reload 落定时换,慢一拍也是同一份;
+  //   - 在流的内容直接读 store 的 getState() —— 补齐落定那一发连接态事件到达时,
+  //     重放的内容早已进了 store 但 React 还没重渲,吃渲染期的 liveByMessageId
+  //     会数到补齐前的旧值,差出来恒等于 0。
+  // 这里不复现转录区的折叠(压缩前旧消息)与本地命令行:两者在窗口两端同增同减,
+  // 做差时抵消,补齐本身也产不出它们。
+  const messagesRef = React.useRef(messages);
+  React.useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  React.useEffect(() => {
+    if (sessionId <= 0) return;
+    return registerTranscriptRowCounter(
+      sessionId,
+      () =>
+        buildTranscriptRows({
+          displayMessages: messagesRef.current,
+          autonomousIds: EMPTY_AUTONOMOUS_IDS,
+          liveByMessageId: liveContentByMessageId(
+            sessionStreamMap(useChatStreamsStore.getState(), sessionId),
+          ),
+        }).rows.length,
+    );
+  }, [sessionId]);
+
+  // 销账条件是「人回到了底部」而不是「点了控件」:自己滚回底部同样意味着补齐内容
+  // 已经看过了,不销账的话下次往上翻会撞见一枚早就过期的控件。贴底时本就沿用既有的
+  // 贴底跟随,控件也永远不出现(渲染条件与销账条件是同一个 showBackToBottom)。
+  const catchUp = useCatchUpSummary(sessionId);
+  React.useEffect(() => {
+    if (showBackToBottom || !catchUp) return;
+    clearCatchUp(sessionId);
+  }, [catchUp, sessionId, showBackToBottom]);
+
   // ── 跨路由 turn 落定后的善后 ──
   // store 在 done/error/closed 时给该 sessionId 自增 doneTick。我们只关心「当前正在
   // 显示」的会话:抓最新的 lastDoneEvent,reload 一次 useChatSession 把后端写好的
@@ -1329,58 +1577,325 @@ function ChatPanel({
     }
   }
 
-  async function runLocalCommand(targetSessionId: number, command: string) {
-    // 新会话占位态(还没 sessionId):先坐实一个普通用户会话, 命令才有 cwd 可解析、
-    // 卡片有 transcript 可渲染。坐实后切到新会话并刷新侧栏(与普通发消息同款)。
-    let sid = targetSessionId;
-    if (!sid && newSessionAgent) {
-      try {
-        sid = await EnsureChatSession(
-          newSessionAgent.id,
-          newSessionContext?.projectId ?? 0,
+  const launchLocalCommand = React.useCallback(
+    async (
+      sid: number,
+      command: string,
+    ): Promise<LocalCommandHistoryScope | undefined> => {
+      const terminalId = crypto.randomUUID();
+      const dataEvent = `terminal:${terminalId}:data`;
+      const exitEvent = `terminal:${terminalId}:exit`;
+      const cleanupRetryInitialDelayMs = 100;
+      const cleanupRetryMaxDelayMs = 5_000;
+      type ListenerRegistration = {
+        event: string;
+        off?: () => void;
+        cleaned: boolean;
+      };
+      type ListenerGeneration = {
+        listeners: ListenerRegistration[];
+        guardianTimer?: number;
+        retryDelayMs: number;
+      };
+      let activeGeneration: ListenerGeneration | undefined;
+      let settled = false;
+      let closePromise: Promise<void> | undefined;
+      let automaticCloseRequired = false;
+      let automaticCloseGuardianTimer: number | undefined;
+      let automaticCloseRetryDelayMs = cleanupRetryInitialDelayMs;
+      let userStopRequested = false;
+      const cleanupListeners = (generation: ListenerGeneration): boolean => {
+        let cleaned = true;
+        for (const listener of generation.listeners) {
+          if (listener.cleaned) continue;
+          try {
+            if (listener.off) listener.off();
+            else EventsOff(listener.event);
+            listener.cleaned = true;
+          } catch {
+            try {
+              EventsOff(listener.event);
+              listener.cleaned = true;
+            } catch {
+              cleaned = false;
+            }
+          }
+        }
+        return cleaned;
+      };
+      const cleanupListenersSynchronously = (
+        generation: ListenerGeneration,
+      ): boolean =>
+        cleanupListeners(generation) || cleanupListeners(generation);
+      const stopCleanupGuardian = (generation: ListenerGeneration) => {
+        if (generation.guardianTimer === undefined) return;
+        window.clearTimeout(generation.guardianTimer);
+        generation.guardianTimer = undefined;
+      };
+      const scheduleCleanupGuardian = (generation: ListenerGeneration) => {
+        if (generation.guardianTimer !== undefined) return;
+        // Keep ownership outside React lifecycle so panel unmount cannot abandon a Wails listener.
+        generation.guardianTimer = window.setTimeout(() => {
+          generation.guardianTimer = undefined;
+          if (cleanupListenersSynchronously(generation)) return;
+          generation.retryDelayMs = Math.min(
+            generation.retryDelayMs * 2,
+            cleanupRetryMaxDelayMs,
+          );
+          scheduleCleanupGuardian(generation);
+        }, generation.retryDelayMs);
+      };
+      const ensureListenersCleaned = (
+        generation = activeGeneration,
+      ): boolean => {
+        if (!generation) return true;
+        const cleaned = cleanupListenersSynchronously(generation);
+        if (cleaned) stopCleanupGuardian(generation);
+        else scheduleCleanupGuardian(generation);
+        return cleaned;
+      };
+      const clearAutomaticCloseTimer = () => {
+        if (automaticCloseGuardianTimer === undefined) return;
+        window.clearTimeout(automaticCloseGuardianTimer);
+        automaticCloseGuardianTimer = undefined;
+      };
+      const stopAutomaticCloseGuardian = () => {
+        automaticCloseRequired = false;
+        clearAutomaticCloseTimer();
+      };
+      const appendFailure = (error: unknown) => {
+        if (settled) return;
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(terminalId)?.status === "running") {
+          commands.appendOutput(terminalId, String(error));
+        }
+      };
+      const settle = (
+        status: "done" | "failed" | "stopped",
+        exitCode?: number,
+      ) => {
+        if (settled) {
+          ensureListenersCleaned();
+          return;
+        }
+        settled = true;
+        stopAutomaticCloseGuardian();
+        const commands = useLocalCommandsStore.getState();
+        if (commands.get(terminalId)?.status === "running") {
+          if (exitCode === undefined) commands.finish(terminalId, status);
+          else commands.finish(terminalId, status, exitCode);
+        }
+        ensureListenersCleaned();
+        localCommandRuntimeStore.unregister(terminalId, controller);
+      };
+      const fail = (error: unknown) => {
+        if (settled) {
+          ensureListenersCleaned();
+          return;
+        }
+        appendFailure(error);
+        settle("failed", -1);
+      };
+      const scheduleAutomaticCloseGuardian = () => {
+        if (
+          settled ||
+          !automaticCloseRequired ||
+          automaticCloseGuardianTimer !== undefined
+        ) {
+          return;
+        }
+        const retryDelayMs = automaticCloseRetryDelayMs;
+        automaticCloseRetryDelayMs = Math.min(
+          automaticCloseRetryDelayMs * 2,
+          cleanupRetryMaxDelayMs,
         );
+        automaticCloseGuardianTimer = window.setTimeout(() => {
+          automaticCloseGuardianTimer = undefined;
+          void requestTerminalClose("automatic");
+        }, retryDelayMs);
+      };
+      const requestTerminalClose = (
+        ownership: "automatic" | "user",
+      ): Promise<void> => {
+        if (ownership === "user") {
+          userStopRequested = true;
+          clearAutomaticCloseTimer();
+        }
+        if (settled) return Promise.resolve();
+        if (closePromise) return closePromise;
+        const pending = (async () => {
+          let authoritative = false;
+          try {
+            await TerminalClose(terminalId);
+            authoritative = true;
+          } catch (error: unknown) {
+            if (isTerminalNotOpenError(error)) authoritative = true;
+            else if (!automaticCloseRequired) appendFailure(error);
+          }
+          if (authoritative) {
+            if (userStopRequested) settle("stopped");
+            else settle("failed", -1);
+            return;
+          }
+          scheduleAutomaticCloseGuardian();
+        })();
+        closePromise = pending;
+        void pending.finally(() => {
+          if (closePromise === pending) closePromise = undefined;
+        });
+        return pending;
+      };
+      const startAutomaticCloseGuardian = () => {
+        if (settled) return;
+        if (!automaticCloseRequired) {
+          automaticCloseRetryDelayMs = cleanupRetryInitialDelayMs;
+        }
+        automaticCloseRequired = true;
+        void requestTerminalClose("automatic");
+      };
+      const decode = makeStreamDecoder();
+      const handleData = (p: { data: string }) => {
+        if (settled) return;
+        useLocalCommandsStore
+          .getState()
+          .appendOutput(terminalId, decode(p.data));
+      };
+      const handleExit = (p: { code: number; reason: string }) => {
+        const status =
+          p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
+        settle(status, p.code);
+      };
+      const controller: LocalCommandRuntimeController = {
+        stop: () => requestTerminalClose("user"),
+      };
+      localCommandRuntimeStore.register(terminalId, controller);
+      useLocalCommandsStore.getState().start({
+        id: terminalId,
+        sessionId: sid,
+        command,
+        createdAt: Date.now(),
+      });
+      let observerError: unknown;
+      let observersReady = false;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const attemptGeneration: ListenerGeneration = {
+          listeners: [],
+          retryDelayMs: cleanupRetryInitialDelayMs,
+        };
+        try {
+          const dataListener: ListenerRegistration = {
+            event: dataEvent,
+            cleaned: false,
+          };
+          attemptGeneration.listeners.push(dataListener);
+          dataListener.off = EventsOn(dataEvent, handleData);
+          const exitListener: ListenerRegistration = {
+            event: exitEvent,
+            cleaned: false,
+          };
+          attemptGeneration.listeners.push(exitListener);
+          exitListener.off = EventsOn(exitEvent, handleExit);
+          activeGeneration = attemptGeneration;
+          observersReady = true;
+          break;
+        } catch (error: unknown) {
+          observerError = error;
+          if (!ensureListenersCleaned(attemptGeneration)) break;
+        }
+      }
+      try {
+        const response = await TerminalRunCommand(
+          terminalId,
+          sid,
+          command,
+          80,
+          24,
+        );
+        if (response.startError) fail(response.startError);
+        else if (!observersReady) {
+          appendFailure(observerError);
+          startAutomaticCloseGuardian();
+        }
+        return {
+          deviceId: response.scope.deviceId,
+          cwd: response.scope.cwd,
+        };
+      } catch (error: unknown) {
+        if (observersReady) fail(error);
+        else {
+          appendFailure(error);
+          startAutomaticCloseGuardian();
+        }
+        return undefined;
+      }
+    },
+    [],
+  );
+
+  React.useEffect(() => {
+    if (
+      sessionId > 0 ||
+      !newSessionAgent ||
+      ensuredLocalCommandSessionRef.current?.agentId !== newSessionAgent.id ||
+      ensuredLocalCommandSessionRef.current?.projectId !==
+        (newSessionContext?.projectId ?? 0)
+    ) {
+      ensuredLocalCommandSessionRef.current = null;
+    }
+  }, [newSessionAgent, newSessionContext?.projectId, sessionId]);
+
+  function ensureLocalCommandSession(): Promise<number> {
+    if (!newSessionAgent) return Promise.resolve(0);
+    const agentId = newSessionAgent.id;
+    const projectId = newSessionContext?.projectId ?? 0;
+    const current = ensuredLocalCommandSessionRef.current;
+    if (current?.agentId === agentId && current.projectId === projectId) {
+      return current.promise;
+    }
+
+    const requestId = ++ensuredLocalCommandSessionRequestRef.current;
+    const promise = (async () => {
+      try {
+        const sid = await EnsureChatSession(agentId, projectId);
+        if (!sid) {
+          if (ensuredLocalCommandSessionRef.current?.requestId === requestId) {
+            ensuredLocalCommandSessionRef.current = null;
+          }
+          return 0;
+        }
+        onSessionCreated?.(sid, agentId);
+        onSidebarShouldReload?.();
+        return sid;
       } catch (e: unknown) {
+        if (ensuredLocalCommandSessionRef.current?.requestId === requestId) {
+          ensuredLocalCommandSessionRef.current = null;
+        }
         const { msg, detail } = splitErrorDetail(e);
         setNotice({
           kind: "error",
           text: t("chatPanel.errors.send", { msg }),
           detail,
         });
-        return;
+        return 0;
       }
-      onSessionCreated?.(sid, newSessionAgent.id);
-      onSidebarShouldReload?.();
-    }
-    if (!sid) return; // 既无会话也无 newSessionAgent —— 无处可跑。
+    })();
+    ensuredLocalCommandSessionRef.current = {
+      agentId,
+      projectId,
+      promise,
+      requestId,
+    };
+    return promise;
+  }
 
-    const terminalId = crypto.randomUUID();
-    useLocalCommandsStore.getState().start({
-      id: terminalId,
-      sessionId: sid,
-      command,
-      createdAt: Date.now(),
-    });
-    const dataEvent = `terminal:${terminalId}:data`;
-    const exitEvent = `terminal:${terminalId}:exit`;
-    const decode = makeStreamDecoder();
-    EventsOn(dataEvent, (p: { data: string }) =>
-      useLocalCommandsStore.getState().appendOutput(terminalId, decode(p.data)),
-    );
-    EventsOn(exitEvent, (p: { code: number; reason: string }) => {
-      const status =
-        p.reason === "killed" ? "stopped" : p.code === 0 ? "done" : "failed";
-      useLocalCommandsStore.getState().finish(terminalId, status, p.code);
-      EventsOff(dataEvent);
-      EventsOff(exitEvent);
-    });
-    void TerminalRunCommand(terminalId, sid, command, 80, 24).catch(
-      (e: unknown) => {
-        useLocalCommandsStore.getState().appendOutput(terminalId, String(e));
-        useLocalCommandsStore.getState().finish(terminalId, "failed", -1);
-        EventsOff(dataEvent);
-        EventsOff(exitEvent);
-      },
-    );
+  async function runLocalCommand(
+    targetSessionId: number,
+    command: string,
+  ): Promise<LocalCommandHistoryScope | undefined> {
+    let sid = targetSessionId;
+    if (!sid) sid = await ensureLocalCommandSession();
+    if (!sid) return undefined;
+    return launchLocalCommand(sid, command);
   }
 
   async function doCompact(sid: number) {
@@ -2070,27 +2585,27 @@ function ChatPanel({
                     liveByMessageId={liveByMessageId}
                     streaming={streaming}
                     liveCompacting={liveCompacting}
+                    reconnecting={reconnecting}
+                    onContinue={() => {
+                      if (!session) return;
+                      void doSend(session.id, session.agentId, {
+                        text: "continue",
+                      });
+                    }}
                     onRerun={(messageId) => void handleRegenerate(messageId)}
                     onEdit={(messageId) => handleEdit(messageId)}
                     onPlanActionStarted={handlePlanActionStarted}
                     onStopSubagent={
                       canStopBackgroundTask ? handleStopSubagent : undefined
                     }
+                    onStopLocalCommand={handleStopLocalCommand}
                     tabStateKey={scrollStateKey}
                   />
                   {showBackToBottom ? (
-                    <Button
-                      type="button"
-                      data-testid="back-to-bottom-button"
-                      variant="outline"
-                      size="icon-sm"
-                      aria-label={t("chatPanel.scroll.backToBottom")}
-                      title={t("chatPanel.scroll.backToBottom")}
-                      onClick={handleBackToBottom}
-                      className="sticky bottom-4 z-20 ml-auto flex rounded-full bg-background shadow-md hover:shadow-lg dark:bg-background animate-in fade-in slide-in-from-bottom-1 duration-200 ease-out motion-reduce:animate-none"
-                    >
-                      <ArrowDown data-icon="only" aria-hidden="true" />
-                    </Button>
+                    <TranscriptJumpControl
+                      catchUp={catchUp}
+                      onJump={handleBackToBottom}
+                    />
                   ) : null}
                 </section>
               )}
@@ -2283,6 +2798,8 @@ function ChatPanel({
                 backendType={activeBackendType}
                 agentId={session?.agentId ?? newSessionAgent?.id ?? 0}
                 cwd={composerCwd}
+                localCommandHistoryScope={localCommandHistoryScope}
+                onCommandModeChange={handleLocalCommandModeChange}
                 supportsImageInput={supportsImageInput}
                 onRunCommand={(command) => runLocalCommand(sessionId, command)}
                 onSlashRpc={(cmd) => {
@@ -2297,6 +2814,8 @@ function ChatPanel({
                 sessionId={session?.id ?? 0}
                 messages={messages}
                 activeMessageId={activeMessageId}
+                cwd={session?.cwd ?? ""}
+                remote={Boolean(session?.deviceID)}
                 onJumpToMessage={(mid) => {
                   transcriptHandleRef.current?.scrollToMessage(mid);
                 }}

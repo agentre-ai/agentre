@@ -14,15 +14,18 @@ type Stream struct {
 	killGrace time.Duration
 	events    chan Event
 
-	mu                 sync.RWMutex
-	sessionID          string
-	userAnchorBoundary string
-	userAnchor         string
-	captureUserAnchor  bool
-	model              string
-	err                error
-	diagnostics        StreamDiagnostics
-	cur                Event
+	mu                  sync.RWMutex
+	sessionID           string
+	userAnchorBoundary  string
+	userAnchor          string
+	captureUserAnchor   bool
+	model               string
+	contextWindow       int
+	usageObserved       bool
+	initialStatsPending bool
+	err                 error
+	diagnostics         StreamDiagnostics
+	cur                 Event
 
 	closeOnce sync.Once
 	abortMu   sync.Mutex
@@ -125,6 +128,35 @@ func (s *Stream) setUserAnchor(anchor string) {
 	s.mu.Unlock()
 }
 
+func (s *Stream) setContextWindow(contextWindow int) (changed, usageObserved bool) {
+	if contextWindow <= 0 {
+		return false, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed = s.contextWindow != contextWindow
+	if changed {
+		s.contextWindow = contextWindow
+	}
+	return changed, s.usageObserved
+}
+
+func (s *Stream) markInitialSessionStatsPending() {
+	s.mu.Lock()
+	s.initialStatsPending = true
+	s.mu.Unlock()
+}
+
+func (s *Stream) consumeInitialSessionStatsPending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.initialStatsPending {
+		return false
+	}
+	s.initialStatsPending = false
+	return true
+}
+
 func (s *Stream) Err() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -166,6 +198,8 @@ func (s *Stream) awaitPromptAcknowledgement(ctx context.Context) ([][]byte, erro
 		if err := promptResponseError(response); err != nil {
 			return nil, err
 		}
+		// Prompt acceptance closes the optional initial-stats slot; see drainLine.
+		s.consumeInitialSessionStatsPending()
 		return pending, nil
 	}
 	return nil, awaitProcessExitOrScanError(ctx, s.proc)
@@ -273,9 +307,35 @@ func (s *Stream) drainLine(ctx context.Context, rawLine []byte, emitDiagnostic b
 		if err := json.Unmarshal(rawLine, &resp); err != nil {
 			return true
 		}
+		if resp.Command == "get_session_stats" {
+			if resp.ID != "" && resp.ID != initialSessionStatsRequestID {
+				return true
+			}
+			// Initial stats are optional capability data. Retain a valid
+			// authoritative window for each usage snapshot, but never fail the
+			// prompt when an older or degraded Pi RPC rejects the request.
+			s.consumeInitialSessionStatsPending()
+			if resp.Success {
+				cw := contextWindowFromSessionStats(resp.Data)
+				if changed, usageObserved := s.setContextWindow(cw); changed && usageObserved {
+					// A late pre-prompt correction arrived after the last usage.
+					// Surface it immediately so runtime/session state cannot stay stale
+					// when the round-end refresh is absent.
+					s.emit(Event{Kind: EventContextWindow, ContextWindow: cw})
+				}
+			}
+			return true
+		}
 		var responseErr error
 		if isPromptResponse(resp) {
 			responseErr = promptResponseError(resp)
+			if responseErr == nil {
+				// Pi guarantees correlated command responses. If the optional
+				// initial stats response was omitted, prompt acceptance closes that
+				// outstanding compatibility slot so a later no-ID final response is
+				// not discarded as stale.
+				s.consumeInitialSessionStatsPending()
+			}
 		} else if !resp.Success {
 			responseErr = failureResponseError(resp)
 		}
@@ -295,7 +355,11 @@ func (s *Stream) drainLine(ctx context.Context, rawLine []byte, emitDiagnostic b
 	if err := json.Unmarshal(rawLine, &ev); err != nil {
 		return true
 	}
-	s.handleRPCEvent(ev)
+	if err := s.handleRPCEvent(ctx, ev); err != nil {
+		s.setErr(err)
+		s.emit(Event{Kind: EventError, Err: err})
+		return false
+	}
 	s.observeAgentEnd(ev, line)
 	if isTerminalEvent(ev) {
 		s.settle(ctx)
@@ -344,7 +408,11 @@ func (s *Stream) settle(ctx context.Context) {
 	s.finish(ctx)
 }
 
-const sessionStatsTimeout = 2 * time.Second
+const (
+	initialSessionStatsRequestID = "initial-session-stats"
+	finalSessionStatsRequestID   = "final-session-stats"
+	sessionStatsTimeout          = 2 * time.Second
+)
 
 func (s *Stream) emitSessionStats(ctx context.Context) {
 	if s == nil || s.proc == nil {
@@ -355,7 +423,9 @@ func (s *Stream) emitSessionStats(ctx context.Context) {
 		return
 	default:
 	}
-	if err := s.send(ctx, map[string]any{"type": "get_session_stats"}); err != nil {
+	if err := s.send(ctx, map[string]any{
+		"id": finalSessionStatsRequestID, "type": "get_session_stats",
+	}); err != nil {
 		return
 	}
 
@@ -381,6 +451,23 @@ func (s *Stream) readSessionStatsContextWindow(ctx context.Context) int {
 			continue
 		}
 		if resp.Type != "response" || resp.Command != "get_session_stats" {
+			continue
+		}
+		// A delayed pre-prompt response must not be mistaken for the
+		// authoritative round-end refresh. Correlated responses are explicit;
+		// for ID-stripping implementations, command order identifies the first
+		// outstanding no-ID response as the initial request.
+		switch resp.ID {
+		case initialSessionStatsRequestID:
+			s.consumeInitialSessionStatsPending()
+			continue
+		case finalSessionStatsRequestID:
+			// Authoritative response; decode below.
+		case "":
+			if s.consumeInitialSessionStatsPending() {
+				continue
+			}
+		default:
 			continue
 		}
 		if !resp.Success {
@@ -411,7 +498,9 @@ func (s *Stream) emitTrackedSessionMetadata(ctx context.Context) {
 	if err := s.send(ctx, map[string]any{"id": entriesRequestID, "type": "get_entries"}); err != nil {
 		return
 	}
-	wantStats := s.send(ctx, map[string]any{"type": "get_session_stats"}) == nil
+	wantStats := s.send(ctx, map[string]any{
+		"id": finalSessionStatsRequestID, "type": "get_session_stats",
+	}) == nil
 
 	metadataCtx, cancel := context.WithTimeout(ctx, sessionStatsTimeout)
 	defer cancel()
@@ -455,6 +544,15 @@ func (s *Stream) readTrackedSessionMetadata(
 				}
 			}
 		case response.Command == "get_session_stats" && !metadata.statsSeen:
+			// A delayed pre-prompt response must not stand in for the round-end
+			// refresh; see readSessionStatsContextWindow for the same correlation.
+			if response.ID == initialSessionStatsRequestID ||
+				(response.ID == "" && s.consumeInitialSessionStatsPending()) {
+				continue
+			}
+			if response.ID != "" && response.ID != finalSessionStatsRequestID {
+				continue
+			}
 			metadata.statsSeen = true
 			if response.Success {
 				metadata.contextWindow = contextWindowFromSessionStats(response.Data)
@@ -529,7 +627,7 @@ func contextWindowFromSessionStats(raw json.RawMessage) int {
 	return stats.ContextUsage.ContextWindow
 }
 
-func (s *Stream) handleRPCEvent(ev rpcEvent) {
+func (s *Stream) handleRPCEvent(ctx context.Context, ev rpcEvent) error {
 	switch ev.Type {
 	case "message_start":
 		// 只有 user 消息回显才 surface（首条 prompt + mid-turn steer 注入）；
@@ -547,9 +645,19 @@ func (s *Stream) handleRPCEvent(ev rpcEvent) {
 		}
 	case "tool_execution_start":
 		s.emit(Event{Kind: EventPreToolUse, Tool: ToolEvent{ID: ev.ToolCallID, Name: ev.ToolName, Input: ev.Args}})
+	case "tool_execution_update":
+		s.emit(Event{Kind: EventToolUseUpdate, Tool: ToolEvent{ID: ev.ToolCallID, Name: ev.ToolName, PartialResult: ev.PartialResult}})
 	case "tool_execution_end":
-		content := toolResultText(ev.Result)
-		s.emit(Event{Kind: EventPostToolUse, Tool: ToolEvent{ID: ev.ToolCallID, Name: ev.ToolName, Content: content, IsError: ev.IsError}})
+		content, details := toolResult(ev.Result)
+		s.emit(Event{Kind: EventPostToolUse, Tool: ToolEvent{ID: ev.ToolCallID, Name: ev.ToolName, Content: content, Details: details, IsError: ev.IsError}})
+	case "extension_ui_request":
+		if isBlockingExtensionUIMethod(ev.Method) {
+			if err := s.send(ctx, map[string]any{
+				"type": "extension_ui_response", "id": ev.ID, "cancelled": true, //nolint:misspell // Pi RPC wire contract requires this JSON key.
+			}); err != nil {
+				return err
+			}
+		}
 	case "compaction_start":
 		s.emit(Event{Kind: EventRuntimeStatus, Text: "compacting"})
 	case "compaction_end":
@@ -558,6 +666,16 @@ func (s *Stream) handleRPCEvent(ev rpcEvent) {
 		// errorMessage is an untrusted provider payload and can echo prompt or
 		// credentials. The retry state itself is the useful downstream signal.
 		s.emit(Event{Kind: EventRuntimeStatus, Text: "retrying"})
+	}
+	return nil
+}
+
+func isBlockingExtensionUIMethod(method string) bool {
+	switch strings.TrimSpace(method) {
+	case "confirm", "select", "input", "editor":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -593,9 +711,20 @@ func (s *Stream) recordAssistantMessage(msg *assistantMessage) {
 		s.model = strings.TrimSpace(msg.Model)
 	}
 	u := usageFromMessage(msg)
+	contextWindow := s.contextWindow
+	hasUsage := u.PromptTokens > 0 || u.CompletionTokens > 0
+	if hasUsage {
+		s.usageObserved = true
+	}
 	s.mu.Unlock()
-	if u.PromptTokens > 0 || u.CompletionTokens > 0 {
-		s.emit(Event{Kind: EventUsage, Usage: u, Model: msg.Model})
+	if hasUsage {
+		// Keep the standalone event for older desktop consumers, then carry the
+		// same denominator atomically on usage for current clients. Both repeat at
+		// each API-call boundary so a later snapshot repairs an earlier Wails miss.
+		if contextWindow > 0 {
+			s.emit(Event{Kind: EventContextWindow, ContextWindow: contextWindow})
+		}
+		s.emit(Event{Kind: EventUsage, Usage: u, Model: msg.Model, ContextWindow: contextWindow})
 	}
 }
 
@@ -685,15 +814,16 @@ func (s *Stream) recordFinalErrorDiagnostics(ev rpcEvent, rawLine string) {
 	s.diagnostics.FinalErrorFrame = string(safeFrame)
 }
 
-func toolResultText(raw json.RawMessage) string {
+func toolResult(raw json.RawMessage) (string, json.RawMessage) {
 	if len(raw) == 0 {
-		return ""
+		return "", nil
 	}
 	var obj struct {
-		Content []contentBlock `json:"content"`
+		Content []contentBlock  `json:"content"`
+		Details json.RawMessage `json:"details"`
 	}
 	if err := json.Unmarshal(raw, &obj); err != nil {
-		return string(raw)
+		return string(raw), nil
 	}
 	var b strings.Builder
 	for _, c := range obj.Content {
@@ -701,5 +831,5 @@ func toolResultText(raw json.RawMessage) string {
 			b.WriteString(c.Text)
 		}
 	}
-	return b.String()
+	return b.String(), obj.Details
 }

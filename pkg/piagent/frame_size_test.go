@@ -169,3 +169,23 @@ func (r *repeatingByteReader) Read(p []byte) (int, error) {
 	r.remaining -= len(p)
 	return len(p), nil
 }
+
+func TestTextAcceptsLargeRPCFrame(t *testing.T) {
+	// Pi repeats the accumulated partial assistant message on message_update
+	// frames. A large tool-call patch can therefore make one valid JSONL frame
+	// exceed the historical 4 MiB scanner limit.
+	largePartial := strings.Repeat("x", 5<<20)
+	script := strings.Join([]string{
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"done","partial":"` + largePartial + `"}}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+		"",
+	}, "\n")
+	client, _ := newCaptureClient(script)
+
+	text, err := client.Text(context.Background(), "handle a large patch")
+
+	require.NoError(t, err)
+	assert.Equal(t, "done", text)
+}

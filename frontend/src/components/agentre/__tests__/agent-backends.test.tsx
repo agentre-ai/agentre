@@ -13,6 +13,7 @@ import { truncateFlashText } from "../agent-backends-utils";
 const appMocks = vi.hoisted(() => ({
   CancelTestAgentBackend: vi.fn(),
   CreateAgentBackend: vi.fn(),
+  CreateOpenClawAgentBackend: vi.fn(),
   DeleteAgentBackend: vi.fn(),
   GetGatewayStatus: vi.fn(),
   ListAgentBackends: vi.fn(),
@@ -22,7 +23,9 @@ const appMocks = vi.hoisted(() => ({
   RemoteDeviceSyncProvider: vi.fn(),
   ResolveAgentBackendCLIPath: vi.fn(),
   TestAgentBackend: vi.fn(),
+  TestOpenClawAgentBackend: vi.fn(),
   UpdateAgentBackend: vi.fn(),
+  UpdateOpenClawAgentBackend: vi.fn(),
 }));
 
 vi.mock("../../../../wailsjs/go/app/App", () => appMocks);
@@ -35,9 +38,12 @@ type AppMockShape = {
   ListAgentBackends: AnyFn;
   ListLLMProviders: AnyFn;
   CreateAgentBackend?: AnyFn;
+  CreateOpenClawAgentBackend?: AnyFn;
   UpdateAgentBackend?: AnyFn;
+  UpdateOpenClawAgentBackend?: AnyFn;
   DeleteAgentBackend?: AnyFn;
   TestAgentBackend?: AnyFn;
+  TestOpenClawAgentBackend?: AnyFn;
   CancelTestAgentBackend?: AnyFn;
   GetGatewayStatus?: AnyFn;
   ResolveAgentBackendCLIPath?: AnyFn;
@@ -89,10 +95,35 @@ function installAppMock(overrides: Partial<AppMockShape> = {}) {
       }),
     ),
     CreateAgentBackend: vi.fn(() => Promise.resolve({ item: { id: 2 } })),
+    CreateOpenClawAgentBackend: vi.fn(() =>
+      Promise.resolve({ item: { id: 3 } }),
+    ),
     UpdateAgentBackend: vi.fn(() => Promise.resolve({ item: { id: 1 } })),
+    UpdateOpenClawAgentBackend: vi.fn(() =>
+      Promise.resolve({ item: { id: 3 } }),
+    ),
     DeleteAgentBackend: vi.fn(() => Promise.resolve({})),
     TestAgentBackend: vi.fn(() =>
       Promise.resolve({ ok: true, latencyMs: 0, message: "" }),
+    ),
+    TestOpenClawAgentBackend: vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        code: "",
+        message: "",
+        latencyMs: 3,
+        gatewayVersion: "2026.7.1-2",
+        protocol: 4,
+        grantedScopes: [
+          "operator.read",
+          "operator.write",
+          "operator.approvals",
+        ],
+        methods: [],
+        events: [],
+        openClawAgents: [],
+        openClawModels: [],
+      }),
     ),
     CancelTestAgentBackend: vi.fn(() => Promise.resolve({ canceled: true })),
     GetGatewayStatus: vi.fn(() =>
@@ -478,15 +509,9 @@ describe("AgentBackendsPanel", () => {
       expect(
         within(dialog).queryByText(/original LLM provider is disabled/),
       ).not.toBeInTheDocument();
-      if (type === "piagent") {
-        expect(
-          within(dialog).getByText(/Pi Agent standalone config/),
-        ).toBeInTheDocument();
-      } else {
-        expect(
-          within(dialog).getByText(/No link \(use CLI login\)/),
-        ).toBeInTheDocument();
-      }
+      expect(
+        within(dialog).getByText(/No link \(use CLI login\)/),
+      ).toBeInTheDocument();
     },
   );
 
@@ -515,8 +540,9 @@ describe("AgentBackendsPanel", () => {
       "/usr/local/bin/pi",
     ) as HTMLInputElement;
     await waitFor(() => expect(input.value).toBe("/opt/homebrew/bin/pi"));
+    // piagent 现在显示可选的 provider 选择器（默认未关联走 CLI 自身登录）。
     expect(
-      within(dialog).getByText(/Pi Agent standalone config/),
+      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
     ).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -531,6 +557,150 @@ describe("AgentBackendsPanel", () => {
         }),
       );
     });
+  });
+
+  it("piagent 编辑器列出三类 LLM 供应商，可选其一保存绑定", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Anthropic",
+              providerKey: "k-anthropic",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "claude-sonnet-4-6",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+            {
+              id: 2,
+              type: "openai-chat",
+              name: "OpenAI Chat",
+              providerKey: "k-chat",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "gpt-5",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+            {
+              id: 3,
+              type: "openai-response",
+              name: "OpenAI Response",
+              providerKey: "k-response",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "gpt-5-codex",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
+      { target: { value: "Pi 绑供应商" } },
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: /Pi Agent CLI/ }),
+    );
+
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
+    );
+    // piagent 三类全收：anthropic / openai-chat / openai-response 都要列出来。
+    expect(
+      screen.getByRole("option", { name: /Anthropic/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /OpenAI Chat/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /OpenAI Response/ }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /OpenAI Response/ }));
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(mocks.CreateAgentBackend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "piagent",
+          name: "Pi 绑供应商",
+          llmProviderKey: "k-response",
+        }),
+      );
+    });
+  });
+
+  it("piagent 绑定 Model 为空的供应商时显示校验提示并阻止保存", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListLLMProviders: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 1,
+              type: "anthropic",
+              name: "Anthropic",
+              providerKey: "k-empty-model",
+              baseUrl: "",
+              maskedApiKey: "sk-•••",
+              hasApiKey: true,
+              model: "",
+              maxOutput: 0,
+              contextWindow: 0,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(
+      within(dialog).getByPlaceholderText("Example: Local · Claude Code"),
+      { target: { value: "Pi 空模型" } },
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: /Pi Agent CLI/ }),
+    );
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "LLM Provider" }),
+    );
+    await user.click(screen.getByRole("option", { name: /Anthropic/ }));
+
+    // 选中的供应商 Model 为空 → 可见校验提示 + Save 被禁用。
+    expect(
+      within(dialog).getByText("Provider has no default model"),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(mocks.CreateAgentBackend).not.toHaveBeenCalled();
   });
 
   it("新建 claudecode 时允许不选 provider 提交 llmProviderKey 空串", async () => {
@@ -979,6 +1149,33 @@ describe("AgentBackendsPanel", () => {
     });
   });
 
+  it("Codex approval options match codex-cli 0.145.0 and omit on-failure", async () => {
+    const user = userEvent.setup();
+    installAppMock();
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /Codex CLI/ }));
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "Approval Policy" }),
+    );
+
+    expect(
+      screen.getByRole("option", { name: /trusted tools/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /model requests/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /Never ask/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: /tool fails/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("codex 思考力度开放 xhigh，保存时透传 reasoningEffort=xhigh", async () => {
     const user = userEvent.setup();
     const mocks = installAppMock();
@@ -1252,6 +1449,184 @@ describe("AgentBackendsPanel", () => {
     expect(
       within(dialog).queryByRole("button", { name: /Add IS_SANDBOX=1/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it("creates an OpenClaw backend through dedicated Wails bindings and loads probe discovery", async () => {
+    const user = userEvent.setup();
+    const credential = "t".repeat(48);
+    const mocks = installAppMock({
+      TestOpenClawAgentBackend: vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          code: "",
+          message: "",
+          latencyMs: 9,
+          gatewayVersion: "2026.7.1-2",
+          protocol: 4,
+          grantedScopes: [
+            "operator.read",
+            "operator.write",
+            "operator.approvals",
+          ],
+          methods: ["agent", "agent.wait"],
+          events: ["agent", "exec.approval.requested"],
+          openClawAgents: [
+            {
+              id: "main",
+              name: "Main",
+              primaryModel: "anthropic/claude-sonnet-4-6",
+              fallbacks: [],
+              default: true,
+            },
+          ],
+          openClawModels: [
+            {
+              id: "anthropic/claude-sonnet-4-6",
+              name: "Claude Sonnet 4.6",
+              provider: "anthropic",
+              available: true,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: "OpenClaw Gateway" }),
+    );
+
+    await user.clear(within(dialog).getByLabelText("Name"));
+    await user.type(within(dialog).getByLabelText("Name"), "Local OpenClaw");
+    await user.type(within(dialog).getByLabelText("Gateway token"), credential);
+    await user.click(
+      within(dialog).getByRole("button", { name: "Test Connection" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.TestOpenClawAgentBackend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "openclaw",
+          openClawGatewayUrl: "ws://127.0.0.1:18789",
+          openClawSessionMode: "per-agentre-session",
+        }),
+        credential,
+      );
+    });
+    expect(within(dialog).getByText("2026.7.1-2")).toBeInTheDocument();
+    expect(within(dialog).getByText("Protocol 4")).toBeInTheDocument();
+    expect(within(dialog).getByText("operator.approvals")).toBeInTheDocument();
+    expect(within(dialog).getAllByText(/Main/).length).toBeGreaterThan(0);
+    expect(
+      within(dialog).getAllByText(/Claude Sonnet 4.6/).length,
+    ).toBeGreaterThan(0);
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(mocks.CreateOpenClawAgentBackend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "openclaw",
+          name: "Local OpenClaw",
+          openClawGatewayUrl: "ws://127.0.0.1:18789",
+          openClawAgentId: "main",
+          openClawDefaultModel: "anthropic/claude-sonnet-4-6",
+          openClawSessionMode: "per-agentre-session",
+        }),
+        credential,
+      );
+    });
+    expect(mocks.CreateAgentBackend).not.toHaveBeenCalled();
+  });
+
+  it("does not echo a saved OpenClaw token and supports explicit clearing", async () => {
+    const user = userEvent.setup();
+    const mocks = installAppMock({
+      ListAgentBackends: vi.fn(() =>
+        Promise.resolve({
+          items: [
+            {
+              id: 8,
+              type: "openclaw",
+              name: "OpenClaw Local",
+              openClawGatewayUrl: "ws://127.0.0.1:18789",
+              openClawAgentId: "main",
+              openClawDefaultModel: "anthropic/claude-sonnet-4-6",
+              openClawSessionMode: "per-agentre-session",
+              hasToken: true,
+              deviceId: "",
+              agentCount: 1,
+              createtime: 0,
+              updatetime: 0,
+            },
+          ],
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    const row = (await screen.findByText("OpenClaw Local")).closest(
+      "tr",
+    ) as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: /Edit/ }));
+    const dialog = await screen.findByRole("dialog");
+    const token = within(dialog).getByLabelText("Gateway token");
+    expect(token).toHaveValue("");
+    expect(token).toHaveAttribute(
+      "placeholder",
+      "Token is stored securely. Enter a new value to replace it.",
+    );
+
+    await user.click(
+      within(dialog).getByRole("switch", { name: "Clear stored token" }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(mocks.UpdateOpenClawAgentBackend).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 8, name: "OpenClaw Local" }),
+        "",
+        true,
+      );
+    });
+    expect(mocks.UpdateAgentBackend).not.toHaveBeenCalled();
+  });
+
+  it("maps structured OpenClaw scope errors and explains the remote boundary", async () => {
+    const user = userEvent.setup();
+    installAppMock({
+      TestOpenClawAgentBackend: vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          code: "OPENCLAW_SCOPE_MISSING",
+          message: "missing scope",
+          latencyMs: 1,
+        }),
+      ),
+    });
+    render(<AgentBackendsPanel />);
+
+    await screen.findByRole("table", { name: "Agent backend list" });
+    await user.click(screen.getByRole("button", { name: /New Backend/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: "OpenClaw Gateway" }),
+    );
+    expect(
+      within(dialog).getByText(
+        "Remote agentred support is unavailable until secure secret enrollment is implemented.",
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Test Connection" }),
+    );
+    expect(
+      await within(dialog).findByText(
+        "The Gateway did not grant all required operator scopes.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("dialog 测试连接 shows error message inside the dialog", async () => {

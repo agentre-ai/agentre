@@ -44,6 +44,90 @@ func TestStreamEmitsSingleToolCallPerExecution(t *testing.T) {
 	assert.Equal(t, "hi", post[0].Tool.Content)
 }
 
+// Given Pi reports a partial tool result update, when the RPC frame is decoded,
+// then the wrapper surfaces the tool identity and preserves the raw partialResult.
+func TestStreamPreservesToolExecutionUpdatePartialResult(t *testing.T) {
+	script := strings.Join([]string{
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"tool_execution_update","toolCallId":"call_update","toolName":"subagent","partialResult":{"content":[{"type":"text","text":"working"}],"details":{"results":[{"status":"running"}]}}}`,
+		`{"type":"agent_settled"}`,
+		`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+		"",
+	}, "\n")
+	client, _ := newCaptureClient(script)
+
+	s, err := client.Stream(context.Background(), "delegate")
+	require.NoError(t, err)
+
+	var updates []Event
+	for s.Next() {
+		if s.Event().Kind == EventToolUseUpdate {
+			updates = append(updates, s.Event())
+		}
+	}
+
+	require.Len(t, updates, 1, "tool_execution_update must survive the RPC boundary")
+	assert.Equal(t, "call_update", updates[0].Tool.ID)
+	assert.Equal(t, "subagent", updates[0].Tool.Name)
+	assert.JSONEq(t, `{"content":[{"type":"text","text":"working"}],"details":{"results":[{"status":"running"}]}}`, string(updates[0].Tool.PartialResult))
+}
+
+// Given Pi reports a final result with structured details, when the RPC frame is
+// decoded, then details remain recoverable without changing outer text/error.
+func TestStreamPreservesToolExecutionEndDetails(t *testing.T) {
+	script := strings.Join([]string{
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"tool_execution_end","toolCallId":"call_final","toolName":"subagent","result":{"content":[{"type":"text","text":"outer result"}],"details":{"results":[{"status":"completed","messages":[]}]}} ,"isError":true}`,
+		`{"type":"agent_settled"}`,
+		`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+		"",
+	}, "\n")
+	client, _ := newCaptureClient(script)
+
+	s, err := client.Stream(context.Background(), "delegate")
+	require.NoError(t, err)
+
+	var results []Event
+	for s.Next() {
+		if s.Event().Kind == EventPostToolUse {
+			results = append(results, s.Event())
+		}
+	}
+
+	require.Len(t, results, 1)
+	assert.Equal(t, "outer result", results[0].Tool.Content)
+	assert.True(t, results[0].Tool.IsError)
+	assert.JSONEq(t, `{"results":[{"status":"completed","messages":[]}]}`, string(results[0].Tool.Details))
+}
+
+// Given details has an unsupported shape, when the final result is decoded,
+// then the raw value remains available and ordinary outer text stays intact.
+func TestStreamKeepsMalformedToolDetailsNonFatal(t *testing.T) {
+	script := strings.Join([]string{
+		`{"type":"response","command":"prompt","success":true}`,
+		`{"type":"tool_execution_end","toolCallId":"call_malformed","toolName":"subagent","result":{"content":[{"type":"text","text":"still visible"}],"details":"not-an-object"},"isError":false}`,
+		`{"type":"agent_settled"}`,
+		`{"type":"response","command":"get_session_stats","success":true,"data":{}}`,
+		"",
+	}, "\n")
+	client, _ := newCaptureClient(script)
+
+	s, err := client.Stream(context.Background(), "delegate")
+	require.NoError(t, err)
+
+	var result Event
+	for s.Next() {
+		if s.Event().Kind == EventPostToolUse {
+			result = s.Event()
+		}
+	}
+
+	require.Equal(t, EventPostToolUse, result.Kind)
+	assert.Equal(t, "still visible", result.Tool.Content)
+	assert.JSONEq(t, `"not-an-object"`, string(result.Tool.Details))
+	assert.NoError(t, s.Err())
+}
+
 // Pi 0.81.1 can emit agent_end after an assistant message whose stopReason is
 // toolUse. Like every agent_end, that frame only closes one low-level run; the
 // RPC stream may continue with tool results and another assistant message until
