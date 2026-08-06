@@ -309,3 +309,123 @@ func TestPool_Borrow_RelayConfigured_BothFail_ReportsBothReasons(t *testing.T) {
 		So(err.Error(), ShouldContainSubstring, "relay path: relay down")
 	})
 }
+
+// stubAccountCredential 是 AccountCredentialPort 的假替身:返回固定的账号凭据
+// (生产实现是 server_svc,未登录时返回空串)。
+type stubAccountCredential struct{ value string }
+
+func (s stubAccountCredential) AccessToken() string { return s.value }
+
+// 直连路径的凭据优先级:本机对这台 daemon 没有配对、但账号已登录时,直连出示
+// 账号凭据(auth.account)而不是配对令牌 —— 这才让 R3「server 不可用时 daemon
+// 用缓存公钥离线验签、照常接受同账号客户端」在直连上真实发生。
+func TestPool_Borrow_NoLocalPairing_WithAccountCredential_DialsAccountHandshake(t *testing.T) {
+	Convey("no local pairing but an account credential: the direct dial presents auth.account", t, func() {
+		f := newPoolFixture(t, remote_device_svc.WithAccountCredential(stubAccountCredential{value: "acct-jwt"}))
+		_ = f.kc.Delete("agentre-daemon-token-42")
+		c := stubClient()
+		var got remote_device_svc.AccountArgs
+		f.repo.EXPECT().Get(gomock.Any(), int64(42)).Return(f.device, nil)
+		// dial.Open 没有 EXPECT:配对握手若还被调到,gomock 直接判失败(R2 的反面)。
+		f.dial.EXPECT().OpenAccount(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, args remote_device_svc.AccountArgs) (*client.Client, error) {
+				got = args
+				return c, nil
+			})
+
+		lease, err := f.pool.Borrow(context.Background(), 42)
+		So(err, ShouldBeNil)
+		So(lease.Client(), ShouldNotBeNil)
+		So(got.Credential, ShouldEqual, "acct-jwt")
+		So(got.URL, ShouldEqual, "wss://example/rpc")
+		So(got.TLSMode, ShouldEqual, "skip-verify")
+		// R5 硬不变量:账号路径复用 keychain 里的 LAN 配对指纹,不另生成。
+		So(got.DeviceFingerprint, ShouldEqual, "fp-x")
+		So(got.ExpectedDaemonFingerprint, ShouldEqual, "sha256:abc")
+	})
+}
+
+// R2 硬约束:已配对的对端继续走 auth.connect,账号凭据在场也不改路。
+func TestPool_Borrow_LocalPairing_KeepsConnectHandshake(t *testing.T) {
+	Convey("a locally paired daemon keeps using auth.connect even when an account credential exists", t, func() {
+		f := newPoolFixture(t, remote_device_svc.WithAccountCredential(stubAccountCredential{value: "acct-jwt"}))
+		c := stubClient()
+		var got remote_device_svc.ConnectArgs
+		f.repo.EXPECT().Get(gomock.Any(), int64(42)).Return(f.device, nil)
+		// dial.OpenAccount 没有 EXPECT:账号握手若被调到就是 R2 回归。
+		f.dial.EXPECT().Open(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, args remote_device_svc.ConnectArgs) (*client.Client, error) {
+				got = args
+				return c, nil
+			})
+
+		lease, err := f.pool.Borrow(context.Background(), 42)
+		So(err, ShouldBeNil)
+		So(lease.Client(), ShouldNotBeNil)
+		So(got.DeviceToken, ShouldEqual, "tok-42")
+		So(got.DeviceFingerprint, ShouldEqual, "fp-x")
+		So(got.ExpectedDaemonFingerprint, ShouldEqual, "sha256:abc")
+	})
+}
+
+// 既无配对令牌、账号也未登录(AccessToken 空)→ 无从出示身份,维持既有拒绝。
+func TestPool_Borrow_NoLocalPairing_NoAccountCredential_StaysUnauthorized(t *testing.T) {
+	Convey("no pairing and no account credential → ErrDeviceUnauthorized, nothing is dialed", t, func() {
+		f := newPoolFixture(t, remote_device_svc.WithAccountCredential(stubAccountCredential{value: ""}))
+		_ = f.kc.Delete("agentre-daemon-token-42")
+		f.repo.EXPECT().Get(gomock.Any(), int64(42)).Return(f.device, nil)
+
+		_, err := f.pool.Borrow(context.Background(), 42)
+		So(errors.Is(err, remote_device_svc.ErrDeviceUnauthorized), ShouldBeTrue)
+	})
+}
+
+// 账号握手被 daemon 拒(凭据过期 / 被吊销 / 账号不符)同样是终止条件:
+// chat_svc.terminalBorrowError 靠 ErrDeviceUnauthorized 判定「重试也没用」,
+// 同时保留 R6 要求的两条路径各自原因。
+func TestPool_Borrow_NoLocalPairing_AccountRejected_StaysDeviceUnauthorized(t *testing.T) {
+	Convey("account handshake rejected: still ErrDeviceUnauthorized, both path reasons kept", t, func() {
+		f := newPoolFixture(t,
+			remote_device_svc.WithAccountCredential(stubAccountCredential{value: "acct-jwt"}),
+			remote_device_svc.WithRelayDial(stubRelayDial{open: func(_ context.Context, _, _ string) (*client.Client, error) {
+				return nil, errors.New("relay down")
+			}}))
+		_ = f.kc.Delete("agentre-daemon-token-42")
+		f.repo.EXPECT().Get(gomock.Any(), int64(42)).Return(f.device, nil)
+		f.dial.EXPECT().OpenAccount(gomock.Any(), gomock.Any()).Return(nil, remote_device_svc.ErrUnauthorized)
+
+		_, err := f.pool.Borrow(context.Background(), 42)
+		So(errors.Is(err, remote_device_svc.ErrDeviceUnauthorized), ShouldBeTrue)
+		So(err.Error(), ShouldContainSubstring, "direct path: unauthorized")
+		So(err.Error(), ShouldContainSubstring, "relay path: relay down")
+	})
+}
+
+// R5:未配对时两条路径并发,直连的 auth.account 与中转的 auth.account 呈现的
+// 是同一个对端标识 —— 路径切换不会在 daemon 眼里变成另一个对端。
+func TestPool_Borrow_NoLocalPairing_BothPathsPresentSamePeerIdentity(t *testing.T) {
+	Convey("account credential on both paths: direct and relay present the same peer fingerprint", t, func() {
+		var relayPeerFP string
+		f := newPoolFixture(t,
+			remote_device_svc.WithAccountCredential(stubAccountCredential{value: "acct-jwt"}),
+			remote_device_svc.WithRelayDial(stubRelayDial{open: func(_ context.Context, _, peerFP string) (*client.Client, error) {
+				relayPeerFP = peerFP
+				return nil, errors.New("relay down")
+			}}))
+		_ = f.kc.Delete("agentre-daemon-token-42")
+		c := stubClient()
+		var directPeerFP string
+		f.repo.EXPECT().Get(gomock.Any(), int64(42)).Return(f.device, nil)
+		f.dial.EXPECT().OpenAccount(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, args remote_device_svc.AccountArgs) (*client.Client, error) {
+				directPeerFP = args.DeviceFingerprint
+				return c, nil
+			})
+
+		lease, err := f.pool.Borrow(context.Background(), 42)
+		So(err, ShouldBeNil)
+		So(lease.Client(), ShouldNotBeNil)
+		So(directPeerFP, ShouldEqual, "fp-x")
+		So(relayPeerFP, ShouldEqual, directPeerFP)
+	})
+}

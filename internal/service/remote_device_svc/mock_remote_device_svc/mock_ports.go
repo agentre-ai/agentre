@@ -72,6 +72,21 @@ func (mr *MockDaemonDialPortMockRecorder) Open(ctx, args any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Open", reflect.TypeOf((*MockDaemonDialPort)(nil).Open), ctx, args)
 }
 
+// OpenAccount mocks base method.
+func (m *MockDaemonDialPort) OpenAccount(ctx context.Context, args remote_device_svc.AccountArgs) (*client.Client, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "OpenAccount", ctx, args)
+	ret0, _ := ret[0].(*client.Client)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// OpenAccount indicates an expected call of OpenAccount.
+func (mr *MockDaemonDialPortMockRecorder) OpenAccount(ctx, args any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OpenAccount", reflect.TypeOf((*MockDaemonDialPort)(nil).OpenAccount), ctx, args)
+}
+
 // Pair mocks base method.
 func (m *MockDaemonDialPort) Pair(ctx context.Context, args remote_device_svc.PairArgs) (remote_device_svc.PairResult, error) {
 	m.ctrl.T.Helper()
@@ -124,6 +139,44 @@ func (m *MockRelayDialPort) Open(ctx context.Context, daemonFingerprint, peerFin
 func (mr *MockRelayDialPortMockRecorder) Open(ctx, daemonFingerprint, peerFingerprint any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Open", reflect.TypeOf((*MockRelayDialPort)(nil).Open), ctx, daemonFingerprint, peerFingerprint)
+}
+
+// MockAccountCredentialPort is a mock of AccountCredentialPort interface.
+type MockAccountCredentialPort struct {
+	ctrl     *gomock.Controller
+	recorder *MockAccountCredentialPortMockRecorder
+	isgomock struct{}
+}
+
+// MockAccountCredentialPortMockRecorder is the mock recorder for MockAccountCredentialPort.
+type MockAccountCredentialPortMockRecorder struct {
+	mock *MockAccountCredentialPort
+}
+
+// NewMockAccountCredentialPort creates a new mock instance.
+func NewMockAccountCredentialPort(ctrl *gomock.Controller) *MockAccountCredentialPort {
+	mock := &MockAccountCredentialPort{ctrl: ctrl}
+	mock.recorder = &MockAccountCredentialPortMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockAccountCredentialPort) EXPECT() *MockAccountCredentialPortMockRecorder {
+	return m.recorder
+}
+
+// AccessToken mocks base method.
+func (m *MockAccountCredentialPort) AccessToken() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AccessToken")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// AccessToken indicates an expected call of AccessToken.
+func (mr *MockAccountCredentialPortMockRecorder) AccessToken() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AccessToken", reflect.TypeOf((*MockAccountCredentialPort)(nil).AccessToken))
 }
 
 // MockKeychainPort is a mock of KeychainPort interface.

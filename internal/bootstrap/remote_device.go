@@ -37,7 +37,11 @@ func InitRemoteDevice(_ context.Context) error {
 	kc := keychain.Default()
 	opts := []remote_device_svc.Option{remote_device_svc.WithIdleTimeout(30 * time.Second)}
 	if svc := server_svc.Server(); svc != nil {
-		opts = append(opts, remote_device_svc.WithRelayDial(relayDialAdapter{inner: svc}))
+		opts = append(opts,
+			remote_device_svc.WithRelayDial(relayDialAdapter{inner: svc}),
+			// server_svc.AccessToken 即 AccountCredentialPort:没有本地配对的
+			// daemon,直连改出示账号凭据(auth.account)。
+			remote_device_svc.WithAccountCredential(svc))
 	}
 	pool := remote_device_svc.NewConnPool(repo, kc, dial, opts...)
 	remote_device_svc.SetDefault(remote_device_svc.New(repo, dial, kc, pool))

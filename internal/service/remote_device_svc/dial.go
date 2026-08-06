@@ -82,6 +82,34 @@ func (realDial) Open(ctx context.Context, args ConnectArgs) (*client.Client, err
 	return c, nil
 }
 
+// OpenAccount 与 Open 一样是长连接语义，但出示账号凭据走 auth.account：本机对
+// 这台 daemon 没有配对时的直连握手。daemon 只用缓存的公钥与吊销列表本地判定，
+// 整个握手是一次 RPC、零网络往返（R3）——server 不可达也照常接受。
+// 握手成功后按返回的 instanceUUID 复核 TOFU 指纹，避免把「另一台 daemon」当成
+// 本地登记的那台缓存进 ConnPool。
+func (realDial) OpenAccount(ctx context.Context, args AccountArgs) (*client.Client, error) {
+	tlsCfg, err := client.BuildTLSConfig(client.TLSMode(args.TLSMode), args.TLSCertPEM)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrTLSConfig, err)
+	}
+	c, err := client.Dial(ctx, client.Options{URL: args.URL, TLSConfig: tlsCfg})
+	if err != nil {
+		return nil, err
+	}
+	var res rpc.ConnectResult
+	if err := c.Call(ctx, "auth.account", rpc.AccountParams{
+		Credential: args.Credential, DeviceFingerprint: args.DeviceFingerprint,
+	}, &res); err != nil {
+		_ = c.Close()
+		return nil, translateAccountRPCError(err)
+	}
+	if rpc.DaemonFingerprint(res.InstanceUUID) != args.ExpectedDaemonFingerprint {
+		_ = c.Close()
+		return nil, ErrTOFUMismatch
+	}
+	return c, nil
+}
+
 // translatePairRPCError maps daemon JSON-RPC error codes to the svc-internal
 // sentinels consumed by Add's translatePairError. Unmapped errors pass through
 // and are caught by the default branch (RemoteDeviceDialFailed).
@@ -111,6 +139,19 @@ func translateConnectRPCError(err error) error {
 			}
 			return ErrUnauthorized
 		}
+	}
+	return err
+}
+
+// translateAccountRPCError maps the daemon's auth.account rejection to
+// ErrUnauthorized so ConnPool keeps classifying it as terminal. HandleAccount
+// has six distinguishable reasons (expired / bad signature / account mismatch /
+// revoked / missing key / malformed) and returns them all under -32001 — the
+// desktop classifies by code, never by message.
+func translateAccountRPCError(err error) error {
+	var rpcErr *rpc.Error
+	if errors.As(err, &rpcErr) && rpcErr.Code == -32001 {
+		return ErrUnauthorized
 	}
 	return err
 }
