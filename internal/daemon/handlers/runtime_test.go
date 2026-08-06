@@ -348,6 +348,46 @@ type settlingAcceptedPiRun struct {
 	closeCalls int
 }
 
+type blockingAbortAcceptedPiRT struct {
+	prepared     *settlingAcceptedPiRun
+	abortEntered chan struct{}
+	allowAbort   chan struct{}
+	abortOnce    sync.Once
+}
+
+func newBlockingAbortAcceptedPiRT() *blockingAbortAcceptedPiRT {
+	return &blockingAbortAcceptedPiRT{
+		prepared: &settlingAcceptedPiRun{
+			events: make(chan agentruntime.Event),
+			result: &agentruntime.RunResult{ProviderSessionID: "pi-session-concurrent"},
+		},
+		abortEntered: make(chan struct{}),
+		allowAbort:   make(chan struct{}),
+	}
+}
+
+func (*blockingAbortAcceptedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*blockingAbortAcceptedPiRT) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("blocking-abort Pi runtime must use PrepareRun")
+}
+
+func (r *blockingAbortAcceptedPiRT) PrepareRun(context.Context, agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	return r.prepared, nil
+}
+
+func (r *blockingAbortAcceptedPiRT) Abort(context.Context, int64) error {
+	r.abortOnce.Do(func() { close(r.abortEntered) })
+	<-r.allowAbort
+	r.prepared.finish()
+	return nil
+}
+
 func (*settlingAcceptedPiRun) ProviderSessionID() string { return "pi-session-accepted" }
 
 func (p *settlingAcceptedPiRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
@@ -453,6 +493,7 @@ func (p *scriptedPreparedPiRun) Close(context.Context) error {
 	p.mu.Lock()
 	p.closeCalls++
 	p.mu.Unlock()
+	p.finish()
 	return nil
 }
 
@@ -729,6 +770,110 @@ func TestRuntime_PiPendingGenerationIsAbortableBeforePreparationReturns(t *testi
 	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 41})
 	require.NoError(t, err)
 	require.ErrorIs(t, <-errC, context.Canceled)
+}
+
+func TestRuntime_ConnectionCloseCancelsPendingPiPreparation(t *testing.T) {
+	rt := &blockingPreparedPiRT{entered: make(chan struct{})}
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 141, PermissionMode: "generation-141"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	prepareErrC := make(chan error, 1)
+	go func() {
+		_, prepareErr := h.Run(ctx, params)
+		prepareErrC <- prepareErr
+	}()
+	<-rt.entered
+
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+	defer cancelCleanup()
+	require.NoError(t, h.Close(cleanupCtx))
+	require.ErrorIs(t, <-prepareErrC, context.Canceled)
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 141})
+	require.ErrorIs(t, err, agentruntime.ErrNoActiveTurn)
+}
+
+func TestRuntime_ConnectionCloseClosesPreparedPiResourcesBeforeStart(t *testing.T) {
+	rt := newScriptedPreparedPiRT("pi-session-prepared")
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 142, PermissionMode: "generation-142"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+	defer cancelCleanup()
+	require.NoError(t, h.Close(cleanupCtx))
+	started, closed := rt.prepared[0].counts()
+	assert.Zero(t, started)
+	assert.Equal(t, 1, closed, "disconnect must close the exact prepared Pi process")
+	assert.Empty(t, notif.snapshot(), "prepared cleanup must not emit terminal frames to the closed connection")
+}
+
+func TestRuntime_ConnectionCloseClosesRunningPiResourcesWithoutTerminalNotify(t *testing.T) {
+	rt := newScriptedPreparedPiRT("pi-session-running")
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 143, PermissionMode: "generation-143"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+	defer cancelCleanup()
+	require.NoError(t, h.Close(cleanupCtx))
+	started, closed := rt.prepared[0].counts()
+	assert.Equal(t, 1, started)
+	assert.Equal(t, 1, closed, "disconnect must close the running Pi process/tool tree")
+	assert.Empty(t, notif.snapshot(), "disconnect cleanup must suppress terminal fanout to the closed connection")
+}
+
+func TestRuntime_ConnectionCloseWaitsForConcurrentExplicitAbortWithoutDeadlock(t *testing.T) {
+	rt := newBlockingAbortAcceptedPiRT()
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 144, PermissionMode: "generation-144"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+
+	abortErrC := make(chan error, 1)
+	go func() {
+		_, abortErr := h.Abort(ctx, wire.AbortParams{SessionID: 144})
+		abortErrC <- abortErr
+	}()
+	<-rt.abortEntered
+
+	cleanupErrC := make(chan error, 1)
+	go func() {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Second)
+		defer cancelCleanup()
+		cleanupErrC <- h.Close(cleanupCtx)
+	}()
+	require.Eventually(t, func() bool { return rt.prepared.closes() == 1 }, time.Second, 10*time.Millisecond,
+		"disconnect cleanup must close the exact prepared resource while Stop is in flight")
+	assert.Empty(t, notif.snapshot(), "disconnect must suppress terminal fanout before Stop settles")
+	close(rt.allowAbort)
+
+	require.NoError(t, <-abortErrC)
+	require.NoError(t, <-cleanupErrC)
+	assert.Equal(t, 1, rt.prepared.closes())
+	assert.Empty(t, notif.snapshot(), "concurrent Stop and disconnect must not emit to the closed connection")
 }
 
 func TestRuntime_PiAbortDuringPromptAcknowledgementClosesExactPreparedProcess(t *testing.T) {

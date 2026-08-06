@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -58,7 +59,12 @@ type Daemon struct {
 	// bindConn 注释):同一时刻一条连接,后连接覆盖、断开清空。
 	mcpNotifierMu sync.Mutex
 	mcpNotifier   handlers.NotifierPort
+
+	runtimeMu       sync.RWMutex
+	runtimeHandlers map[*rpc.Conn]*handlers.RuntimeHandlers
 }
+
+const daemonConnectionCleanupTimeout = 3 * time.Second
 
 // setActiveNotifier / activeNotifier 维护当前连接的反向请求端口(MCP 隧道用)。
 func (d *Daemon) setActiveNotifier(n handlers.NotifierPort) {
@@ -109,6 +115,7 @@ func New(opts Options) (*Daemon, error) {
 		opts: opts, state: st,
 		sessions: sessions.NewRegistry(), pairing: pm, ratelim: rl,
 		registry: reg, auth: auth,
+		runtimeHandlers: map[*rpc.Conn]*handlers.RuntimeHandlers{},
 	}
 	d.gateway = httpgateway.New("127.0.0.1", 0, NewProviderLookup(st))
 	// 内置工具 MCP(org/subagent/group/workflow)隧道:daemon 上 CLI 子进程把请求打到
@@ -208,10 +215,22 @@ func (d *Daemon) registerMethods() {
 	skillsH := handlers.NewSkillsHandlers()
 	d.registry.Register("skills.list", wrapGuarded(skillsH.List))
 
-	// runtime.* RPC 族 1:1 镜像 agentruntime.Runtime + 7 个可选子接口,
-	// 把远端 agentre 当成「本地」backend 跑。Handler 在 bindConn
-	// 里按连接挂载（要 NotifierPort）。MVP 单客户端假设下 registry 是全局,
-	// 多客户端时切 per-Conn registry。
+	// runtime.* RPC 族 1:1 镜像 agentruntime.Runtime + 可选控制接口。共享 RPC
+	// registry 只注册一次路由器；每次 dispatch 都从 ctx 中的具体 *rpc.Conn 解出
+	// 它自己的 RuntimeHandlers，避免后连接覆盖前连接的 generation owner。
+	d.registry.Register(wire.MethodCapabilities, wrapOwnedRuntime(d, (*handlers.RuntimeHandlers).Capabilities))
+	d.registry.Register(wire.MethodRun, wrapOwnedRuntime(d, (*handlers.RuntimeHandlers).Run))
+	d.registry.Register(wire.MethodSteer, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).Steer))
+	d.registry.Register(wire.MethodCancelSteer, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).CancelSteer))
+	d.registry.Register(wire.MethodDrainPending, wrapOwnedRuntime(d, (*handlers.RuntimeHandlers).DrainPending))
+	d.registry.Register(wire.MethodAbort, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).Abort))
+	d.registry.Register(wire.MethodStopBackgroundTask, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).StopBackgroundTask))
+	d.registry.Register(wire.MethodSetPermissionMode, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).SetPermissionMode))
+	d.registry.Register(wire.MethodSubmitAnswer, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).SubmitAnswer))
+	d.registry.Register(wire.MethodSubmitToolPermission, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).SubmitToolPermission))
+	d.registry.Register(wire.MethodGetGoal, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).GetGoal))
+	d.registry.Register(wire.MethodSetGoal, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).SetGoal))
+	d.registry.Register(wire.MethodClearGoal, wrapOwnedRuntimeSentinel(d, (*handlers.RuntimeHandlers).ClearGoal))
 
 	// remotefs.Register 接受已构造好的 rpc.HandlerFunc,泛型 wrapGuarded[Req,Res] 的
 	// 签名约束与其不匹配,改用 WrapFunc 闭包注入 requireAuth。
@@ -252,7 +271,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.mu.Lock()
 	d.lan = lan
 	d.mu.Unlock()
-	return lan.Run(ctx)
+	runErr := lan.Run(ctx)
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), daemonConnectionCleanupTimeout)
+	defer cancelCleanup()
+	if err := d.closeRuntimeConnections(cleanupCtx); err != nil {
+		log.Printf("daemon.Run: connection cleanup failed errorType=%T", err)
+	}
+	return runErr
 }
 
 // bindConn is called by LANServer once per accepted WebSocket connection.
@@ -266,23 +291,14 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	// 把这条连接的反向请求端口登记为当前活跃端口,供 /mcp/ 隧道用(单客户端 MVP)。
 	d.setActiveNotifier(n)
 	rh := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
-		Notify:  n,
-		Gateway: d.gateway,
-		Lookup:  NewProviderLookup(d.state),
+		Notify:             n,
+		Gateway:            d.gateway,
+		Lookup:             NewProviderLookup(d.state),
+		GenerationRegistry: d.sessions,
 	})
-	d.registry.Register(wire.MethodCapabilities, wrapGuarded(rh.Capabilities))
-	d.registry.Register(wire.MethodRun, wrapGuarded(rh.Run))
-	d.registry.Register(wire.MethodSteer, wrapGuardedSentinel(rh.Steer))
-	d.registry.Register(wire.MethodCancelSteer, wrapGuardedSentinel(rh.CancelSteer))
-	d.registry.Register(wire.MethodDrainPending, wrapGuarded(rh.DrainPending))
-	d.registry.Register(wire.MethodAbort, wrapGuardedSentinel(rh.Abort))
-	d.registry.Register(wire.MethodStopBackgroundTask, wrapGuardedSentinel(rh.StopBackgroundTask))
-	d.registry.Register(wire.MethodSetPermissionMode, wrapGuardedSentinel(rh.SetPermissionMode))
-	d.registry.Register(wire.MethodSubmitAnswer, wrapGuardedSentinel(rh.SubmitAnswer))
-	d.registry.Register(wire.MethodSubmitToolPermission, wrapGuardedSentinel(rh.SubmitToolPermission))
-	d.registry.Register(wire.MethodGetGoal, wrapGuardedSentinel(rh.GetGoal))
-	d.registry.Register(wire.MethodSetGoal, wrapGuardedSentinel(rh.SetGoal))
-	d.registry.Register(wire.MethodClearGoal, wrapGuardedSentinel(rh.ClearGoal))
+	d.runtimeMu.Lock()
+	d.runtimeHandlers[c] = rh
+	d.runtimeMu.Unlock()
 
 	// Terminal: local PTY backend; per-conn emitter pushes terminal.data /
 	// terminal.exit events back over this ws connection (same per-conn rationale
@@ -296,13 +312,109 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 	d.registry.Register("terminal.write", wrapGuarded(termH.Write))
 	d.registry.Register("terminal.resize", wrapGuarded(termH.Resize))
 	d.registry.Register("terminal.close", wrapGuarded(termH.Close))
-	// When this connection drops, kill the PTYs it opened — otherwise the
-	// remote shells (and whatever they run) leak until daemon shutdown.
+	// When this connection drops, keep the existing PTY cleanup and also close
+	// every exact Pi generation owned by this handler. Cleanup is bounded and
+	// owner-scoped, so an old socket cannot sweep a reconnect by SessionID.
 	go func() {
 		<-c.Done()
 		termH.CloseAll()
 		d.clearActiveNotifier(n) // 连接断开 → 撤销 MCP 隧道端口(避免对死连接发反向请求)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), daemonConnectionCleanupTimeout)
+		defer cancel()
+		if err := rh.Close(cleanupCtx); err != nil {
+			log.Printf("daemon.bindConn: runtime cleanup failed errorType=%T", err)
+		}
+		d.runtimeMu.Lock()
+		if d.runtimeHandlers[c] == rh {
+			delete(d.runtimeHandlers, c)
+		}
+		d.runtimeMu.Unlock()
 	}()
+}
+
+func (d *Daemon) runtimeHandler(ctx context.Context) (*handlers.RuntimeHandlers, error) {
+	connection := rpc.ConnFromContext(ctx)
+	if connection == nil {
+		return nil, rpc.ErrConnClosed
+	}
+	d.runtimeMu.RLock()
+	runtimeHandler := d.runtimeHandlers[connection]
+	d.runtimeMu.RUnlock()
+	if runtimeHandler == nil {
+		return nil, rpc.ErrConnClosed
+	}
+	return runtimeHandler, nil
+}
+
+func (d *Daemon) closeRuntimeConnections(ctx context.Context) error {
+	type ownedRuntime struct {
+		connection *rpc.Conn
+		handler    *handlers.RuntimeHandlers
+	}
+	d.runtimeMu.RLock()
+	owned := make([]ownedRuntime, 0, len(d.runtimeHandlers))
+	for connection, runtimeHandler := range d.runtimeHandlers {
+		owned = append(owned, ownedRuntime{connection: connection, handler: runtimeHandler})
+	}
+	d.runtimeMu.RUnlock()
+	for _, current := range owned {
+		_ = current.connection.Close()
+	}
+	results := make(chan error, len(owned))
+	for _, current := range owned {
+		go func(runtimeHandler *handlers.RuntimeHandlers) {
+			results <- runtimeHandler.Close(ctx)
+		}(current.handler)
+	}
+	var cleanupErr error
+	for range owned {
+		select {
+		case err := <-results:
+			if err != nil {
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
+		case <-ctx.Done():
+			return errors.Join(cleanupErr, ctx.Err())
+		}
+	}
+	return cleanupErr
+}
+
+func wrapOwnedRuntime[Req any, Res any](
+	d *Daemon,
+	fn func(*handlers.RuntimeHandlers, context.Context, Req) (Res, error),
+) rpc.HandlerFunc {
+	return func(ctx context.Context, raw json.RawMessage) (res any, err error) {
+		defer recoverHandlerPanic(&err)
+		if err := requireAuth(ctx); err != nil {
+			return nil, err
+		}
+		runtimeHandler, err := d.runtimeHandler(ctx)
+		if err != nil {
+			return nil, err
+		}
+		var req Req
+		if err := jsonUnmarshal(raw, &req); err != nil {
+			return nil, rpc.ErrInvalidParams
+		}
+		return fn(runtimeHandler, ctx, req)
+	}
+}
+
+func wrapOwnedRuntimeSentinel[Req any, Res any](
+	d *Daemon,
+	fn func(*handlers.RuntimeHandlers, context.Context, Req) (Res, error),
+) rpc.HandlerFunc {
+	wrapped := wrapOwnedRuntime(d, fn)
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		res, err := wrapped(ctx, raw)
+		if err != nil {
+			if mapped := wire.ToJSONRPCError(err); mapped != nil {
+				return nil, mapped
+			}
+		}
+		return res, err
+	}
 }
 
 // wrapGuarded is wrap + requireAuth check. Use for any method except auth.*.
@@ -323,23 +435,6 @@ func wrapGuarded[Req any, Res any](fn func(context.Context, Req) (Res, error)) r
 			return nil, rpc.ErrInvalidParams
 		}
 		return fn(ctx, req)
-	}
-}
-
-// wrapGuardedSentinel 同 wrapGuarded,但额外把 handler 返回的 agentruntime
-// sentinel(ErrNoActiveTurn / ErrSteerNotFound / ErrUnsupported / ErrAborted)
-// 翻成稳定 JSON-RPC error code,客户端 wire.FromJSONRPCError 反向 rehydrate
-// 让 errors.Is(err, agentruntime.ErrXxx) 跨进程继续工作。
-func wrapGuardedSentinel[Req any, Res any](fn func(context.Context, Req) (Res, error)) rpc.HandlerFunc {
-	wrapped := wrapGuarded(fn)
-	return func(ctx context.Context, raw json.RawMessage) (any, error) {
-		res, err := wrapped(ctx, raw)
-		if err != nil {
-			if mapped := wire.ToJSONRPCError(err); mapped != nil {
-				return nil, mapped
-			}
-		}
-		return res, err
 	}
 }
 
