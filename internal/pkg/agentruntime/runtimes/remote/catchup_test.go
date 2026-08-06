@@ -81,6 +81,22 @@ func newRestartRuntime(t *testing.T, conn *fakeConn, cursorAt int64) (*Runtime, 
 	return rt, cursor, obs
 }
 
+// catchUpRequest 抽出一次补齐族请求的 (sessionID, peerFingerprint)。
+func catchUpRequest(t *testing.T, c fakeCall) (int64, string) {
+	t.Helper()
+	switch p := c.Params.(type) {
+	case wire.SessionAttachParams:
+		return p.SessionID, p.PeerFingerprint
+	case wire.SessionPullParams:
+		return p.SessionID, p.PeerFingerprint
+	case wire.SessionPendingWaitersParams:
+		return p.SessionID, p.PeerFingerprint
+	default:
+		t.Fatalf("unexpected catch-up params type %T for %s", c.Params, c.Method)
+		return 0, ""
+	}
+}
+
 // takeTurn 取下一轮合成/自主轮;没有就让用例失败(而不是永久阻塞)。
 func takeTurn(t *testing.T, turns <-chan agentruntime.AutonomousTurn) agentruntime.AutonomousTurn {
 	t.Helper()
@@ -91,6 +107,45 @@ func takeTurn(t *testing.T, turns <-chan agentruntime.AutonomousTurn) agentrunti
 	case <-time.After(2 * time.Second):
 		t.Fatal("等不到轮次:补齐到的内容没有落点")
 		return agentruntime.AutonomousTurn{}
+	}
+}
+
+// Given 一台已认领的 daemon 交回账号级会话清单(每条都带它的发起对端 PeerFingerprint,
+// 本客户端自己的会话为空),When 对它们跑补齐三步,Then attach / pull / pendingWaiters
+// 请求把清单里的 PeerFingerprint 原样带过去 —— 同账号客户端因此能按 origin 操作别的对端
+// 发起的会话(R12 桌面侧);origin 为空的会话则省略该字段(未认领 daemon / 自己对端,
+// 行为与今天完全一致)。
+func TestCatchUpSessions_PeerOrigin_CarriedIntoRequests(t *testing.T) {
+	const (
+		peerSession int64 = 77 // 对端 A 发起
+		ownSession  int64 = 78 // 本客户端自己的会话,清单里 origin 为空
+	)
+	conn := restartConn([]wire.SessionSummary{
+		{SessionID: peerSession, PeerFingerprint: "peer-A",
+			LifecycleState: wire.SessionLifecycleRunning},
+		{SessionID: ownSession, LifecycleState: wire.SessionLifecycleRunning},
+	}, nil)
+	rt, _, _ := newRestartRuntime(t, conn, 0)
+
+	live, err := rt.CatchUpSessions(context.Background(), []int64{peerSession, ownSession})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []int64{peerSession, ownSession}, live)
+
+	for _, method := range []string{
+		wire.MethodSessionAttach, wire.MethodSessionPull, wire.MethodSessionPendingWaiters,
+	} {
+		calls := conn.methodCalls(method)
+		require.Len(t, calls, 2, "每条运行中的会话都要发一次 %s", method)
+		peerSid, peerFP := catchUpRequest(t, calls[0])
+		ownSid, ownFP := catchUpRequest(t, calls[1])
+		// 调用顺序不保证,按 sessionID 归位。
+		if peerSid != peerSession {
+			peerSid, ownSid, peerFP, ownFP = ownSid, peerSid, ownFP, peerFP
+		}
+		assert.Equal(t, peerSession, peerSid)
+		assert.Equal(t, ownSession, ownSid)
+		assert.Equal(t, "peer-A", peerFP, "%s 必须把对端 origin 原样带进请求", method)
+		assert.Empty(t, ownFP, "%s 对空 origin 的会话必须省略该字段(向后兼容)", method)
 	}
 }
 

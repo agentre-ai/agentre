@@ -360,7 +360,7 @@ func (r *Runtime) pullUntilCaughtUp(ctx context.Context, sid int64, ss *sessionS
 		// 发 RPC 时绝不持 ss.mu,见 sessionSync 的纪律注释。
 		var res wire.SessionPullResult
 		if err := r.conn().Call(ctx, wire.MethodSessionPull, wire.SessionPullParams{
-			SessionID: sid, Cursor: before,
+			SessionID: sid, Cursor: before, PeerFingerprint: r.originFor(sid),
 		}, &res); err != nil {
 			return replayed, wire.FromJSONRPCError(err)
 		}
@@ -671,7 +671,7 @@ func (r *Runtime) catchUpSession(ctx context.Context, sid int64) error {
 	}
 	var pend wire.SessionPendingWaitersResult
 	if err := r.conn().Call(ctx, wire.MethodSessionPendingWaiters,
-		wire.SessionPendingWaitersParams{SessionID: sid}, &pend); err != nil {
+		wire.SessionPendingWaitersParams{SessionID: sid, PeerFingerprint: r.originFor(sid)}, &pend); err != nil {
 		// 待决策查询失败不推翻已经补齐的转录:重放已经落定,卡片最差是少一张,
 		// 用户仍可看到全部历史。
 		logger.Ctx(ctx).Warn("remote runtime: pending waiters query failed",
@@ -695,7 +695,9 @@ func (r *Runtime) catchUpSession(ctx context.Context, sid int64) error {
 // 本地游标有没有越界(见 dropCursorAboveHighWater)。失败时返 0。
 func (r *Runtime) attachSession(ctx context.Context, sid int64) (int64, error) {
 	var att wire.SessionAttachResult
-	err := r.conn().Call(ctx, wire.MethodSessionAttach, wire.SessionAttachParams{SessionID: sid}, &att)
+	err := r.conn().Call(ctx, wire.MethodSessionAttach, wire.SessionAttachParams{
+		SessionID: sid, PeerFingerprint: r.originFor(sid),
+	}, &att)
 	if err == nil {
 		r.setDurability(durabilitySupported)
 		return att.LatestSeq, nil
@@ -1044,8 +1046,27 @@ func (r *Runtime) sessionSummaries(ctx context.Context) (map[int64]wire.SessionS
 	out := make(map[int64]wire.SessionSummary, len(res.Sessions))
 	for _, s := range res.Sessions {
 		out[s.SessionID] = s
+		r.rememberOrigin(s.SessionID, s.PeerFingerprint)
 	}
 	return out, nil
+}
+
+// rememberOrigin 记下清单里学到的会话发起对端(R12 桌面侧)。下游的 attach / pull /
+// pendingWaiters / 控制请求都要按它把 PeerFingerprint 原样带过去,daemon 据此解析到
+// 发起对端;记到空值 = 未认领 daemon / 自己对端,请求省略该字段(向后兼容)。
+func (r *Runtime) rememberOrigin(sid int64, fp string) {
+	r.originMu.Lock()
+	r.origins[sid] = fp
+	r.originMu.Unlock()
+}
+
+// originFor 交出这条会话学到的发起对端;没学过(本地 Run 起的会话、清单还没含它)返
+// 空串,调用方据此省略 PeerFingerprint —— 空 origin 在 daemon 侧解析为调用方自己对端,
+// 正好是自己发的会话,天然向后兼容。
+func (r *Runtime) originFor(sid int64) string {
+	r.originMu.Lock()
+	defer r.originMu.Unlock()
+	return r.origins[sid]
 }
 
 // setDurability 记下能力探测的结论,并在结论**翻转**时播报给观察者(R18)。

@@ -112,6 +112,13 @@ type Runtime struct {
 	cursorTimer   *time.Timer
 	cursorFlushMu sync.Mutex
 
+	// originMu / origins 记录每条会话的发起对端 —— sessionSummaries 从清单里学到的
+	// SessionSummary.PeerFingerprint(R12 桌面侧)。已认领 daemon 上同账号客户端要操作
+	// 别的对端发起的会话,attach / pull / pendingWaiters / 控制请求必须把 origin 原样
+	// 带过去;空 = 自己对端(未认领 daemon 恒空),省略该字段即向后兼容。
+	originMu sync.Mutex
+	origins  map[int64]string
+
 	stopOnce sync.Once
 	stopped  chan struct{}
 }
@@ -139,6 +146,7 @@ func New(c agentruntime.DaemonClientPort, opts ...Option) *Runtime {
 		caps:         map[agent_backend_entity.BackendType]capability.Capabilities{},
 		autoSessions: map[int64]*autoSession{},
 		sessionState: map[int64]*sessionSync{},
+		origins:      map[int64]string{},
 		connGen:      1, // 0 留给 sessionSync 的零值:那表示「这条会话还没探过」
 		backoff:      defaultReconnectBackoff,
 		cursorFlush:  defaultCursorFlushInterval,
@@ -611,7 +619,8 @@ func (r *Runtime) Steer(ctx context.Context, sessionID int64, queuedID, text str
 		return agentruntime.ErrNoActiveTurn
 	}
 	return r.callSession(ctx, sessionID, wire.MethodSteer, wire.SteerParams{
-		SessionID: sessionID, QueuedID: queuedID, Text: text,
+		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID),
+		QueuedID: queuedID, Text: text,
 	}, &wire.OK{})
 }
 
@@ -621,7 +630,7 @@ func (r *Runtime) CancelSteer(ctx context.Context, sessionID int64, queuedID str
 	}
 	var res wire.CancelSteerResult
 	if err := r.callSession(ctx, sessionID, wire.MethodCancelSteer, wire.CancelSteerParams{
-		SessionID: sessionID, QueuedID: queuedID,
+		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID), QueuedID: queuedID,
 	}, &res); err != nil {
 		return nil, err
 	}
@@ -634,7 +643,7 @@ func (r *Runtime) DrainPending(ctx context.Context, sessionID int64) []agentrunt
 	}
 	var res wire.DrainResult
 	if err := r.callSession(ctx, sessionID, wire.MethodDrainPending, wire.DrainParams{
-		SessionID: sessionID,
+		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID),
 	}, &res); err != nil {
 		return nil
 	}
@@ -645,7 +654,9 @@ func (r *Runtime) Abort(ctx context.Context, sessionID int64) error {
 	if !r.hasSession(sessionID) {
 		return agentruntime.ErrNoActiveTurn
 	}
-	return r.callSession(ctx, sessionID, wire.MethodAbort, wire.AbortParams{SessionID: sessionID}, &wire.OK{})
+	return r.callSession(ctx, sessionID, wire.MethodAbort, wire.AbortParams{
+		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID),
+	}, &wire.OK{})
 }
 
 func (r *Runtime) StopBackgroundTask(ctx context.Context, sessionID int64, taskID string) error {
@@ -653,8 +664,8 @@ func (r *Runtime) StopBackgroundTask(ctx context.Context, sessionID int64, taskI
 		return agentruntime.ErrNoActiveTurn
 	}
 	return r.callSession(ctx, sessionID, wire.MethodStopBackgroundTask, wire.StopBackgroundTaskParams{
-		SessionID: sessionID,
-		TaskID:    taskID,
+		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID),
+		TaskID: taskID,
 	}, &wire.OK{})
 }
 
@@ -663,7 +674,7 @@ func (r *Runtime) SetPermissionMode(ctx context.Context, sessionID int64, mode s
 		return agentruntime.ErrNoActiveTurn
 	}
 	return r.callSession(ctx, sessionID, wire.MethodSetPermissionMode, wire.SetPermissionModeParams{
-		SessionID: sessionID, Mode: mode,
+		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID), Mode: mode,
 	}, &wire.OK{})
 }
 
@@ -672,7 +683,7 @@ func (r *Runtime) SubmitAnswer(ctx context.Context, sessionID int64, requestID s
 		return agentruntime.ErrNoActiveTurn
 	}
 	return r.callSession(ctx, sessionID, wire.MethodSubmitAnswer, wire.SubmitAnswerParams{
-		SessionID: sessionID, RequestID: requestID,
+		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID), RequestID: requestID,
 		Questions: questions, Answers: answers, Skipped: skipped,
 	}, &wire.OK{})
 }
@@ -682,14 +693,14 @@ func (r *Runtime) SubmitToolPermission(ctx context.Context, sessionID int64, req
 		return agentruntime.ErrNoActiveTurn
 	}
 	return r.callSession(ctx, sessionID, wire.MethodSubmitToolPermission, wire.SubmitToolPermissionParams{
-		SessionID: sessionID, RequestID: requestID,
+		SessionID: sessionID, PeerFingerprint: r.originFor(sessionID), RequestID: requestID,
 		Allow: allow, AlwaysAllowSession: alwaysAllowSession, DenyReason: denyReason,
 	}, &wire.OK{})
 }
 
 func (r *Runtime) GetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
 	var res wire.GoalResult
-	params, err := goalParams(req)
+	params, err := r.goalParams(req)
 	if err != nil {
 		return nil, err
 	}
@@ -701,7 +712,7 @@ func (r *Runtime) GetGoal(ctx context.Context, req agentruntime.GoalRequest) (*a
 
 func (r *Runtime) SetGoal(ctx context.Context, req agentruntime.GoalRequest) (*agentruntime.Goal, error) {
 	var res wire.GoalResult
-	params, err := goalParams(req)
+	params, err := r.goalParams(req)
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +724,7 @@ func (r *Runtime) SetGoal(ctx context.Context, req agentruntime.GoalRequest) (*a
 
 func (r *Runtime) ClearGoal(ctx context.Context, req agentruntime.GoalRequest) (bool, error) {
 	var res wire.GoalClearResult
-	params, err := goalParams(req)
+	params, err := r.goalParams(req)
 	if err != nil {
 		return false, err
 	}
@@ -723,7 +734,7 @@ func (r *Runtime) ClearGoal(ctx context.Context, req agentruntime.GoalRequest) (
 	return res.Cleared, nil
 }
 
-func goalParams(req agentruntime.GoalRequest) (wire.GoalParams, error) {
+func (r *Runtime) goalParams(req agentruntime.GoalRequest) (wire.GoalParams, error) {
 	var backendJSON json.RawMessage
 	if req.Backend != nil {
 		raw, err := json.Marshal(req.Backend)
@@ -734,6 +745,7 @@ func goalParams(req agentruntime.GoalRequest) (wire.GoalParams, error) {
 	}
 	return wire.GoalParams{
 		SessionID:         req.SessionID,
+		PeerFingerprint:   r.originFor(req.SessionID),
 		AgentID:           req.AgentID,
 		ProviderSessionID: req.ProviderSessionID,
 		Backend:           backendJSON,
@@ -748,8 +760,18 @@ func goalParams(req agentruntime.GoalRequest) (wire.GoalParams, error) {
 
 func (r *Runtime) hasSession(sid int64) bool {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	_, ok := r.sessions[sid]
-	r.mu.RUnlock()
+	if ok {
+		return true
+	}
+	// 已认领 daemon 上同账号客户端要操作别的对端发起的会话(R12):那条会话没有本地
+	// Run,是经补齐被接管进 tracked / autoSessions 的。不把它们算进来,控制请求就会
+	// 被 ErrNoActiveTurn 拦在本地 —— 用户能看到那条会话却发不了指令。
+	if _, ok = r.autoSessions[sid]; ok {
+		return true
+	}
+	_, ok = r.tracked[sid]
 	return ok
 }
 
