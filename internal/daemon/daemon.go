@@ -126,8 +126,8 @@ type sessionKey struct {
 //
 // 不变量:claims 里的连接必然同时在 live 里(remove 在同一把锁下一起清)。
 //
-// 本轮规格的非目标仍排除「多客户端同时接入同一台 daemon」:这两张表不做会话共享、
-// 不向多个客户端扇出,每条会话在任一时刻只有一个推送目标。
+// 多客户端可同时存在:每条会话仍只有一个推送目标(发起 / 已授权接管它的连接),
+// 但 claims 按 (peer, session) 键独立，因此一个客户端不会覆盖另一个客户端的会话。
 type connRegistry struct {
 	mu     sync.Mutex
 	seq    uint64
@@ -135,17 +135,18 @@ type connRegistry struct {
 	claims map[sessionKey]sessionClaim
 }
 
-// liveConn 是一条已认证活连接的推送端口 + 它完成鉴权的次序(隧道回落用)。
-type liveConn struct {
-	n  handlers.NotifierPort
-	at uint64
-}
+// liveConn is an authenticated connection's push port.
+type liveConn struct{ n handlers.NotifierPort }
 
 // sessionClaim 记住会话此刻的属主连接本身:撤销要按**连接身份**做,不能按指纹 ——
 // 同一台设备的另一条连接来去,不得影响正在跑的会话。
 type sessionClaim struct {
-	conn *rpc.Conn
-	at   uint64
+	// conn receives this session's notifications and may change on an authorized
+	// attach/control request. mcpConn remains the connection of the peer that
+	// initiated the session, so a cross-account control cannot reroute tools.
+	conn    *rpc.Conn
+	mcpConn *rpc.Conn
+	at      uint64
 }
 
 // peerIdentity 取连接的对端身份(设备指纹)。身份是鉴权成功那一刻才成立的,报了指纹
@@ -191,8 +192,7 @@ func (r *connRegistry) add(c *rpc.Conn, n handlers.NotifierPort) {
 	if r.live == nil {
 		r.live = map[*rpc.Conn]liveConn{}
 	}
-	r.seq++
-	r.live[c] = liveConn{n: n, at: r.seq}
+	r.live[c] = liveConn{n: n}
 }
 
 // claimTicket 是一次认领的回执,交给 undoClaim 还原用(见 trackSessionOwner:认领跑在
@@ -204,11 +204,20 @@ type claimTicket struct {
 	ok   bool
 }
 
-// claim 把会话的推送目标记成这条连接(发起 / 接管该会话的那条)。只有已登记的活连接
-// 认得了,且认领的必然是它自己指纹下的那条会话 —— 跨对端接管在 key 上就不成立。
+// claim records a caller's own-peer session target. Account-authorized cross-peer
+// operations use claimFor after their origin discriminator has been checked.
 func (r *connRegistry) claim(c *rpc.Conn, sid int64) claimTicket {
 	peer, ok := peerIdentity(c)
-	if !ok || sid == 0 {
+	if !ok {
+		return claimTicket{}
+	}
+	return r.claimFor(c, peer, sid)
+}
+
+// claimFor records an already-authorized target peer. Normal callers use
+// claim; account-level controls reach this only after ResolveSessionPeer.
+func (r *connRegistry) claimFor(c *rpc.Conn, peer string, sid int64) claimTicket {
+	if peer == "" || sid == 0 {
 		return claimTicket{}
 	}
 	r.mu.Lock()
@@ -226,7 +235,18 @@ func (r *connRegistry) claim(c *rpc.Conn, sid int64) claimTicket {
 	r.seq++
 	k := sessionKey{peer: peer, sid: sid}
 	prev := r.claims[k]
-	r.claims[k] = sessionClaim{conn: c, at: r.seq}
+	mcpConn := prev.mcpConn
+	if _, live := r.live[mcpConn]; !live {
+		// A session run arrives from its own peer and pins that exact connection.
+		// A cross-peer attach/control may never substitute its caller: use an
+		// already-live connection of the persisted origin or leave it unavailable.
+		if callerPeer, ok := peerIdentity(c); ok && callerPeer == peer {
+			mcpConn = c
+		} else {
+			mcpConn = r.liveForPeerLocked(peer)
+		}
+	}
+	r.claims[k] = sessionClaim{conn: c, mcpConn: mcpConn, at: r.seq}
 	return claimTicket{key: k, at: r.seq, prev: prev, ok: true}
 }
 
@@ -236,6 +256,15 @@ func (r *connRegistry) claim(c *rpc.Conn, sid int64) claimTicket {
 //   - 前主此刻已经不在活连接表里(处理期间掉线 / 改认了别的指纹)→ 不写回去,
 //     否则表里留下一条指向死连接、或指向已属于别人的连接的条目;
 //   - 认领自己已经被撤销(属主连接刚关)→ 前主仍在线时把它还原回来,它才是属主。
+func (r *connRegistry) liveForPeerLocked(peer string) *rpc.Conn {
+	for c := range r.live {
+		if fingerprint, ok := peerIdentity(c); ok && fingerprint == peer {
+			return c
+		}
+	}
+	return nil
+}
+
 func (r *connRegistry) undoClaim(t claimTicket) {
 	if !t.ok {
 		return
@@ -302,31 +331,20 @@ func (r *connRegistry) routerFor(peer string) handlers.NotifierPort {
 	return nil
 }
 
-// tunnelTarget 解析 MCP 反向隧道的目标。隧道请求来自 daemon 本机的 CLI 子进程(是 HTTP
-// 不是 RPC),身上只有 desktop 签的不透明 MCP token,没有会话标识,所以这里按「最近被
-// 认领的那条会话的属主连接」定目标 —— 跑着会话的那台设备就是这些子进程的发起端。
-// 一条会话都还没被认领时(daemon 刚起、或客户端刚重连还没发 runtime.*)回落到最近完成
-// 鉴权的活连接:desktop 侧的隧道 handler 是无状态的(把请求重放到它本机 gateway),
-// 同一台设备的哪条连接送达都等价。表空 → nil(无目标的应答由 handlers 决定)。
-func (r *connRegistry) tunnelTarget() handlers.NotifierPort {
+// tunnelTargetFor resolves the exact session origin carried in the daemon-local
+// MCP URL. There is intentionally no newest-connection fallback: a missing
+// originating peer is an unavailable tool, not permission to cross-route it.
+func (r *connRegistry) tunnelTargetFor(peer string, sid int64) handlers.NotifierPort {
+	if peer == "" || sid <= 0 {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var owner sessionClaim
-	for _, cl := range r.claims {
-		if cl.at > owner.at {
-			owner = cl
-		}
+	claim, ok := r.claims[sessionKey{peer: peer, sid: sid}]
+	if !ok {
+		return nil
 	}
-	if owner.conn != nil {
-		return r.live[owner.conn].n
-	}
-	var newest liveConn
-	for _, lc := range r.live {
-		if lc.at > newest.at {
-			newest = lc
-		}
-	}
-	return newest.n
+	return r.live[claim.mcpConn].n
 }
 
 // sessionRouter 是某个对端的会话通知出口:按帧上的 sessionId 把每条通知交给发起该会话
@@ -351,7 +369,8 @@ func (s sessionRouter) Notify(method string, params any) error {
 }
 
 func (s sessionRouter) Request(context.Context, string, any, any) error {
-	// 反向请求(MCP 隧道)不经这里:它的请求身上没有会话标识,由 tunnelTarget 解析。
+	// Reverse requests (the MCP tunnel) resolve their explicit peer/session URL
+	// discriminator through connRegistry.tunnelTargetFor instead.
 	return errors.New("daemon: reverse requests are not routable per session")
 }
 
@@ -376,10 +395,13 @@ func (d *Daemon) notifierForPeer(peer string) handlers.NotifierPort {
 	return d.conns.routerFor(peer)
 }
 
-// tunnelTarget 解析 MCP 反向隧道的目标(见 connRegistry.tunnelTarget)。
-func (d *Daemon) tunnelTarget() handlers.NotifierPort {
-	return d.conns.tunnelTarget()
+// tunnelTargetFor resolves a daemon-local MCP request to its originating
+// session owner; no global active-connection heuristic is permitted.
+func (d *Daemon) tunnelTargetFor(peer string, sid int64) handlers.NotifierPort {
+	return d.conns.tunnelTargetFor(peer, sid)
 }
+
+func (d *Daemon) claimedAccountID() string { return d.state.Snapshot().AccountID }
 
 // New constructs a Daemon from Options. It loads persistent state, creates
 // sub-systems, and registers all static (non-per-conn) RPC methods.
@@ -447,15 +469,16 @@ func New(opts Options) (*Daemon, error) {
 		})
 	}
 	d.catchup = handlers.NewSessionCatchupHandlers(handlers.SessionCatchupDeps{
-		Sessions: d.sessionStore,
-		Journal:  journalReader{db: gormDB},
+		Sessions:         d.sessionStore,
+		Journal:          journalReader{db: gormDB},
+		ClaimedAccountID: d.claimedAccountID,
 	})
 	d.gateway = httpgateway.New("127.0.0.1", 0, NewProviderLookup(st))
 	// 内置工具 MCP(org/subagent/group/workflow)隧道:daemon 上 CLI 子进程把请求打到
 	// 本机 gateway 的 /mcp/*(URL 已由 runtime.Run 改写成 daemon base),这里捕获后反向
 	// 请求回 desktop 执行(真 handler 在 desktop)。仅一条 catch-all,serveMCP 最长前缀
 	// 匹配下命中所有 /mcp/* 路径。
-	d.gateway.RegisterMCP(httpgateway.RouteMCPPrefix, handlers.NewMCPTunnelHandler(d.tunnelTarget))
+	d.gateway.RegisterMCP(httpgateway.RouteMCPPrefix, handlers.NewMCPTunnelHandler(d.tunnelTargetFor))
 	d.registerMethods()
 	return d, nil
 }
@@ -534,6 +557,7 @@ func (d *Daemon) registerMethods() {
 			c.SetAuth(rpc.AuthState{
 				Authenticated:     true,
 				DeviceFingerprint: ap.DeviceFingerprint,
+				AccountID:         d.claimedAccountID(),
 			})
 			d.conns.add(c, notifier.New(c))
 		}
@@ -667,9 +691,10 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 		Sessions:  d.sessionStore,
 		// 同一个仓储的读侧:提交决策解不出会话时,靠它区分「轮次真的结束了」与
 		// 「这个 handler 从没拥有过这条会话」(见 idempotentSubmitResult)。
-		SessionQuery: d.sessionStore,
-		Gateway:      d.gateway,
-		Lookup:       NewProviderLookup(d.state),
+		SessionQuery:     d.sessionStore,
+		Gateway:          d.gateway,
+		Lookup:           NewProviderLookup(d.state),
+		ClaimedAccountID: d.claimedAccountID,
 	})
 	// runtime.* 全族都过 trackSessionOwner:哪条连接为某会话发了 runtime.*,该会话的
 	// 通知此后就推给它(见 connRegistry 的接管规则)。
@@ -732,11 +757,16 @@ func (d *Daemon) bindConn(c *rpc.Conn) {
 func (d *Daemon) trackSessionOwner(next rpc.HandlerFunc) rpc.HandlerFunc {
 	return func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var p struct {
-			SessionID int64 `json:"sessionId"`
+			SessionID       int64  `json:"sessionId"`
+			PeerFingerprint string `json:"peerFingerprint"`
 		}
 		var ticket claimTicket
 		if err := jsonUnmarshal(raw, &p); err == nil {
-			ticket = d.conns.claim(rpc.ConnFromContext(ctx), p.SessionID)
+			peer, peerErr := handlers.ResolveSessionPeer(ctx, p.PeerFingerprint, d.claimedAccountID)
+			if peerErr != nil {
+				return nil, peerErr
+			}
+			ticket = d.conns.claimFor(rpc.ConnFromContext(ctx), peer, p.SessionID)
 		}
 		res, err := next(ctx, raw)
 		if err != nil {
@@ -763,6 +793,14 @@ func (d *Daemon) trackSessionOwner(next rpc.HandlerFunc) rpc.HandlerFunc {
 func (d *Daemon) attachSession(rh *handlers.RuntimeHandlers) rpc.HandlerFunc {
 	inner := wrapGuardedSentinel(d.catchup.Attach)
 	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var p wire.SessionAttachParams
+		if err := jsonUnmarshal(raw, &p); err != nil {
+			return nil, rpc.ErrInvalidParams
+		}
+		peer, err := handlers.ResolveSessionPeer(ctx, p.PeerFingerprint, d.claimedAccountID)
+		if err != nil {
+			return nil, err
+		}
 		res, err := inner(ctx, raw)
 		if err != nil {
 			return nil, err
@@ -771,8 +809,8 @@ func (d *Daemon) attachSession(rh *handlers.RuntimeHandlers) rpc.HandlerFunc {
 		if !ok {
 			return res, nil
 		}
-		rh.Adopt(ctx, attached.SessionID, agent_backend_entity.BackendType(attached.BackendType))
-		d.conns.claim(rpc.ConnFromContext(ctx), attached.SessionID)
+		rh.AdoptForPeer(peer, attached.SessionID, agent_backend_entity.BackendType(attached.BackendType))
+		d.conns.claimFor(rpc.ConnFromContext(ctx), peer, attached.SessionID)
 		log.Printf("runtime.session.attach: session taken over sid=%d state=%s latestSeq=%d",
 			attached.SessionID, attached.LifecycleState, attached.LatestSeq)
 		return res, nil
@@ -963,6 +1001,18 @@ func (s daemonSessionStore) CountRunning(ctx context.Context) (int64, error) {
 
 func (s daemonSessionStore) List(ctx context.Context, peerFingerprint string) ([]handlers.SessionRecord, error) {
 	rows, err := session_repo.Session().ListByPeer(dbpkg.WithContextDB(ctx, s.db), peerFingerprint)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]handlers.SessionRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, sessionRecordOf(row))
+	}
+	return out, nil
+}
+
+func (s daemonSessionStore) ListAll(ctx context.Context) ([]handlers.SessionRecord, error) {
+	rows, err := session_repo.Session().ListAll(dbpkg.WithContextDB(ctx, s.db))
 	if err != nil {
 		return nil, err
 	}

@@ -435,7 +435,7 @@ func TestConnRegistry_UnauthenticatedConnNeverEnters(t *testing.T) {
 	assert.Nil(t, r.routerFor(""), "空指纹不是可匹配身份")
 	assert.Nil(t, r.ownerOf(sessionKey{peer: "", sid: 7}))
 	assertTarget(t, nDesktop, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}), "野连接顶不掉正主")
-	assertTarget(t, nDesktop, r.tunnelTarget(), "MCP 反向隧道的目标同样只在已认证连接里取")
+	assertTarget(t, nDesktop, r.tunnelTargetFor("fp-desktop", 7), "MCP 反向隧道的目标同样只在已认证连接里取")
 }
 
 // TestConnRegistry_ReauthDropsClaimsOfThePreviousFingerprint 回归:一条连接先认证 fp-a
@@ -467,7 +467,7 @@ func TestConnRegistry_ClosedConnLeavesNoStaleEntry(t *testing.T) {
 
 	assert.Nil(t, r.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}), "已关闭的连接不得成为会话目标")
 	assert.Nil(t, r.routerFor("fp-desktop"))
-	assert.Nil(t, r.tunnelTarget(), "MCP 反向隧道同样不得指向一条已关闭的连接")
+	assert.Nil(t, r.tunnelTargetFor("fp-desktop", 7), "MCP 反向隧道同样不得指向一条已关闭的连接")
 }
 
 // recordingNotifier 记下推给它的通知,用来观察一条通知**实际落到了哪条连接**。
@@ -508,23 +508,30 @@ func TestSessionRouter_RoutesByFrameSessionID(t *testing.T) {
 	assert.Equal(t, []string{wire.NotifyRunResultDone}, nB.got, "更不能改推给同设备的另一条连接")
 }
 
-// TestConnRegistry_TunnelTargetFollowsTheSessionOwner 覆盖 MCP 反向隧道的解析:隧道请求
-// 来自 daemon 本机的 CLI 子进程(HTTP,身上没有会话标识),所以取最近被认领的那条会话的
-// 属主连接 —— 跑着会话的那台设备就是这些子进程的发起端。一条会话都没被认领时回落到最近
-// 完成鉴权的活连接(desktop 侧隧道 handler 无状态,同设备哪条连接送达都等价);表空 → nil。
-func TestConnRegistry_TunnelTargetFollowsTheSessionOwner(t *testing.T) {
+// TestConnRegistry_TunnelTargetForSession_RoutesOnlyToTheOriginatingPeer covers R11:
+// simultaneous peers each own their session's MCP reverse tunnel; neither can
+// override the other by authenticating or claiming later.
+func TestConnRegistry_TunnelTargetForSession_RoutesOnlyToTheOriginatingPeer(t *testing.T) {
 	var r connRegistry
-	assert.Nil(t, r.tunnelTarget(), "一条连接都没有时没有隧道目标")
+	peerA, notifierA := registerAuthed(&r, "fp-a")
+	peerB, notifierB := registerAuthed(&r, "fp-b")
+	r.claim(peerA, 7)
+	r.claim(peerB, 7)
 
-	runner, nRunner := registerAuthed(&r, "fp-desktop")
-	assertTarget(t, nRunner, r.tunnelTarget(), "还没有会话时回落到最近完成鉴权的活连接")
+	assertTarget(t, notifierA, r.tunnelTargetFor("fp-a", 7),
+		"peer A's local MCP request must return to peer A")
+	assertTarget(t, notifierB, r.tunnelTargetFor("fp-b", 7),
+		"peer B's same numeric session must return to peer B")
 
-	r.claim(runner, 7)
-	_, nLater := registerAuthed(&r, "fp-other") // 另一台设备后认证,但没跑会话
-	assertTarget(t, nRunner, r.tunnelTarget(), "隧道目标跟着会话属主走,不被后认证的设备顶掉")
-
-	r.remove(runner)
-	assertTarget(t, nLater, r.tunnelTarget(), "属主离线后回落到仍在线的连接")
+	// A same-account client may take over B's notification/control path, but
+	// the local CLI process still belongs to B's originating session.
+	r.claimFor(peerA, "fp-b", 7)
+	assertTarget(t, notifierB, r.tunnelTargetFor("fp-b", 7),
+		"an authorized cross-peer control must not reroute B's MCP tunnel to A")
+	r.remove(peerB)
+	assert.Nil(t, r.tunnelTargetFor("fp-b", 7),
+		"the initiating peer offline remains unavailable even when the controller is live")
+	assert.Nil(t, r.tunnelTargetFor("fp-a", 8), "an unclaimed session has no fallback target")
 }
 
 // TestDaemon_BindConnDoesNotMakeUnauthenticatedConnATarget 钉死接线:bindConn 跑在鉴权
@@ -548,7 +555,7 @@ func TestDaemon_BindConnDoesNotMakeUnauthenticatedConnATarget(t *testing.T) {
 	require.NotNil(t, router, "野连接接入后,正主的会话仍必须有推送出口")
 	assertTarget(t, nDesktop, d.conns.ownerOf(sessionKey{peer: "fp-desktop", sid: 7}),
 		"野连接接入后,会话仍解析到发起它的那条连接")
-	assertTarget(t, nDesktop, d.tunnelTarget(), "MCP 反向隧道目标同样不得被野连接顶掉")
+	assertTarget(t, nDesktop, d.tunnelTargetFor("fp-desktop", 7), "MCP 反向隧道目标同样不得被野连接顶掉")
 	assert.Nil(t, d.notifierForPeer(""), "空指纹不是可匹配身份")
 }
 

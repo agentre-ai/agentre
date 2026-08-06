@@ -86,6 +86,21 @@ func (mr *MockSessionRepoMockRecorder) InterruptAll(ctx, interruptedState any) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InterruptAll", reflect.TypeOf((*MockSessionRepo)(nil).InterruptAll), ctx, interruptedState)
 }
 
+// ListAll mocks base method.
+func (m *MockSessionRepo) ListAll(ctx context.Context) ([]*session_repo.DaemonSession, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListAll", ctx)
+	ret0, _ := ret[0].([]*session_repo.DaemonSession)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListAll indicates an expected call of ListAll.
+func (mr *MockSessionRepoMockRecorder) ListAll(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListAll", reflect.TypeOf((*MockSessionRepo)(nil).ListAll), ctx)
+}
+
 // ListByPeer mocks base method.
 func (m *MockSessionRepo) ListByPeer(ctx context.Context, peerFingerprint string) ([]*session_repo.DaemonSession, error) {
 	m.ctrl.T.Helper()

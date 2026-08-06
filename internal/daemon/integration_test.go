@@ -2,11 +2,15 @@ package daemon
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -27,6 +31,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/daemon/handlers"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
@@ -1183,8 +1188,10 @@ func TestIntegration_MCPReverseTunnel(t *testing.T) {
 	t.Cleanup(func() { remote.RegisterMCPProxyDispatcher(nil) })
 
 	// 真 daemon + 真 WS 客户端;remote.New(cli) 已在 rig 内注册 MethodMCPProxy 反向 handler。
-	// script 仅 Done:本测不跑 runtime.run,只验隧道(此刻 daemon 已记下活跃 notifier)。
 	rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+	// The rewritten local MCP URL identifies a real originating session.
+	events, _ := rig.startRun(t, 601)
+	_ = drainRuntimeEvents(t, events, 5*time.Second)
 
 	// daemon 本机 gateway 的隧道入口(真机上 CLI 子进程被改写后打的就是这个 base)。
 	base := rig.d.gateway.BaseURL()
@@ -1192,7 +1199,7 @@ func TestIntegration_MCPReverseTunnel(t *testing.T) {
 
 	// 模拟 daemon 上的 CLI 子进程:POST /mcp/org/,带 desktop 轮起手时签的 token。
 	reqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
-	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/", strings.NewReader(reqBody))
+	httpReq, err := http.NewRequest(http.MethodPost, base+"/mcp/org/?peerFingerprint="+rigDeviceFingerprint+"&sessionId=601", strings.NewReader(reqBody))
 	require.NoError(t, err)
 	httpReq.Header.Set("Authorization", "Bearer desktop-signed-tok")
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -1267,7 +1274,7 @@ func TestIntegration_MCPReverseTunnel_NoDispatcher(t *testing.T) {
 }
 
 // TestIntegration_MCPReverseTunnel_NoTarget 覆盖 R17:发起会话的桌面端彻底断开(daemon
-// 活连接表为空,tunnelTarget() 无目标可解)时,daemon 本机 /mcp/ 隧道入口不能把裸 503
+// 无法为 URL 中那对 (peerFingerprint, sessionId) 解出活连接)时,daemon 本机 /mcp/ 隧道入口不能把裸 503
 // 答回 CLI 子进程的 MCP 客户端——非 2xx 状态码会让 MCP-over-HTTP 客户端把整个应答当传输层
 // 故障丢弃,body 里的话模型永远读不到。必须换成 HTTP 200 包一个 JSON-RPC error,是 MCP
 // 客户端读作"这次工具调用失败了"的那个形状,措辞点名哪个能力不可用、说明它依赖发起端在线、
@@ -1723,6 +1730,126 @@ func pairSecondDevice(t *testing.T, d *Daemon, fingerprint string) *client.Clien
 	}, &pairResp))
 	require.NotEmpty(t, pairResp.DeviceToken)
 	return cli
+}
+
+func claimDaemonForIntegration(t *testing.T, d *Daemon, accountID string) string {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	require.NoError(t, err)
+	d.state.Claim(accountID, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), state.AccountCredential{})
+	require.NoError(t, d.state.Save())
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	claims, err := json.Marshal(map[string]any{"uid": accountID, "exp": time.Now().Add(time.Hour).Unix()})
+	require.NoError(t, err)
+	payload := base64.RawURLEncoding.EncodeToString(claims)
+	signingInput := header + "." + payload
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	require.NoError(t, err)
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func accountClientForIntegration(t *testing.T, d *Daemon, fingerprint, credential string) *client.Client {
+	t.Helper()
+	d.mu.RLock()
+	url := d.lan.URL()
+	d.mu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	cli, err := client.Dial(ctx, client.Options{URL: url})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+
+	var result map[string]any
+	require.NoError(t, cli.Call(ctx, "auth.account", rpc.AccountParams{
+		Credential: credential, DeviceFingerprint: fingerprint,
+	}, &result))
+	require.True(t, result["ok"].(bool))
+	return cli
+}
+
+// TestIntegration_MultiClientVisibility_GatesAllPeerAccessByClaimedAccount covers R10–R13:
+// two peers stay connected concurrently; unclaimed daemons keep both isolated, while two
+// same-account auth.account peers on a claimed daemon see and may target both origins.
+func TestIntegration_MultiClientVisibility_GatesAllPeerAccessByClaimedAccount(t *testing.T) {
+	t.Run("unclaimed daemon remains peer-scoped and rejects an explicit foreign origin", func(t *testing.T) {
+		rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+		other := pairSecondDevice(t, rig.d, "sha256:peer-b")
+		startRunAs(t, rig.cli, rig.dir, 101, "from-a")
+		startRunAs(t, other, rig.dir, 202, "from-b")
+		awaitLifecycle(t, rig.cli, 101, wire.SessionLifecycleIdle)
+		awaitLifecycle(t, other, 202, wire.SessionLifecycleIdle)
+
+		var fromA, fromB wire.SessionListResult
+		require.NoError(t, callRig(t, rig.cli, wire.MethodSessionList, nil, &fromA))
+		require.NoError(t, callRig(t, other, wire.MethodSessionList, nil, &fromB))
+		require.Equal(t, []int64{101}, sessionIDs(fromA.Sessions))
+		require.Equal(t, []int64{202}, sessionIDs(fromB.Sessions))
+		require.Empty(t, fromA.Sessions[0].PeerFingerprint)
+		require.Empty(t, fromB.Sessions[0].PeerFingerprint)
+
+		var page wire.SessionPullResult
+		err := callRig(t, other, wire.MethodSessionPull, wire.SessionPullParams{
+			SessionID: 101, PeerFingerprint: rigDeviceFingerprint,
+		}, &page)
+		require.Error(t, err, "a paired peer on an unclaimed daemon must not name another origin")
+	})
+
+	t.Run("claimed daemon shares sessions only with same-account authenticated peers", func(t *testing.T) {
+		rig := bootRemoteRig(t, []agentruntime.Event{agentruntime.Done{}})
+		credential := claimDaemonForIntegration(t, rig.d, "account-42")
+		peerA := accountClientForIntegration(t, rig.d, "sha256:account-peer-a", credential)
+		peerB := accountClientForIntegration(t, rig.d, "sha256:account-peer-b", credential)
+		startRunAs(t, peerA, rig.dir, 301, "from-a")
+		startRunAs(t, peerB, rig.dir, 302, "from-b")
+		awaitLifecycle(t, peerA, 301, wire.SessionLifecycleIdle)
+		awaitLifecycle(t, peerB, 302, wire.SessionLifecycleIdle)
+
+		var fromA, fromB wire.SessionListResult
+		require.NoError(t, callRig(t, peerA, wire.MethodSessionList, nil, &fromA))
+		require.NoError(t, callRig(t, peerB, wire.MethodSessionList, nil, &fromB))
+		require.Equal(t, []int64{301, 302}, sessionIDs(fromA.Sessions))
+		require.Equal(t, []int64{301, 302}, sessionIDs(fromB.Sessions))
+		require.Equal(t, map[int64]string{301: "sha256:account-peer-a", 302: "sha256:account-peer-b"}, sessionOrigins(fromA.Sessions))
+		require.Equal(t, sessionOrigins(fromA.Sessions), sessionOrigins(fromB.Sessions))
+
+		var page wire.SessionPullResult
+		require.NoError(t, callRig(t, peerA, wire.MethodSessionPull, wire.SessionPullParams{
+			SessionID: 302, PeerFingerprint: "sha256:account-peer-b",
+		}, &page), "same-account peer must be able to target the other origin")
+		require.Error(t, callRig(t, rig.cli, wire.MethodSessionPull, wire.SessionPullParams{
+			SessionID: 302, PeerFingerprint: "sha256:account-peer-b",
+		}, &page), "a pairing-authenticated connection remains peer-scoped on a claimed daemon")
+
+		var attached wire.SessionAttachResult
+		require.NoError(t, callRig(t, peerA, wire.MethodSessionAttach, wire.SessionAttachParams{
+			SessionID: 302, PeerFingerprint: "sha256:account-peer-b",
+		}, &attached), "same-account peer must be able to attach the other origin")
+		var ok wire.OK
+		require.NoError(t, callRig(t, peerA, wire.MethodAbort, wire.AbortParams{
+			SessionID: 302, PeerFingerprint: "sha256:account-peer-b",
+		}, &ok), "control resolution must use the named origin's runtime session key")
+	})
+}
+
+func sessionIDs(sessions []wire.SessionSummary) []int64 {
+	ids := make([]int64, 0, len(sessions))
+	for _, session := range sessions {
+		ids = append(ids, session.SessionID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func sessionOrigins(sessions []wire.SessionSummary) map[int64]string {
+	origins := make(map[int64]string, len(sessions))
+	for _, session := range sessions {
+		origins[session.SessionID] = session.PeerFingerprint
+	}
+	return origins
 }
 
 // TestIntegration_SessionCatchup_ListAndPullReplayTheWholeTurn 覆盖补齐的主路径:

@@ -73,6 +73,9 @@ type AuthState struct {
 	Authenticated     bool
 	DeviceFingerprint string
 	DeviceName        string
+	// AccountID is set only by a successful auth.account handshake. Pairing
+	// and device-token authentication intentionally remain peer-scoped.
+	AccountID string
 }
 
 // NewConn wraps an already-open frame transport. The caller owns the
