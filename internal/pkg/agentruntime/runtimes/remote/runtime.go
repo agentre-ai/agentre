@@ -366,6 +366,7 @@ func buildRunParams(req agentruntime.RunRequest) (wire.RunParams, error) {
 		MCPServers:        req.MCPServers,
 		EnabledPlugins:    req.EnabledPlugins,
 		LLMProviderKey:    req.LLMProviderKey,
+		ModelOverride:     req.ModelOverride,
 	}, nil
 }
 

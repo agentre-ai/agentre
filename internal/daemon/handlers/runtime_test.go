@@ -1098,6 +1098,27 @@ func TestRuntime_Run_UnknownBackendType_Errors(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestRuntime_Run_ForwardsModelOverride 钉死 daemon 侧组装 RunRequest 时把
+// wire.RunParams.ModelOverride 回填到 req.ModelOverride(远端会话换模型生效)。
+func TestRuntime_Run_ForwardsModelOverride(t *testing.T) {
+	rt := &fullRT{}
+	rt.runFn = func(_ context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+		ch := make(chan agentruntime.Event)
+		close(ch)
+		return ch, &agentruntime.RunResult{}, nil
+	}
+	ctx, _, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode)}
+	_, err := h.Run(ctx, wire.RunParams{
+		Backend:       backendJSON(t, be),
+		SessionID:     42,
+		ModelOverride: "claude-haiku-4-5",
+	})
+	require.NoError(t, err)
+	require.Len(t, rt.runReqs, 1)
+	assert.Equal(t, "claude-haiku-4-5", rt.runReqs[0].req.ModelOverride)
+}
+
 func TestRuntime_Run_ProviderLookupMissing_ReturnsProviderMissingCode(t *testing.T) {
 	rt := &fullRT{}
 	ctx, _, _, lookup, h := setupRuntimeTest(t, rt)

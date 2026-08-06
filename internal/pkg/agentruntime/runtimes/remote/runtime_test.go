@@ -919,6 +919,35 @@ func TestBuildRunParams_ForwardsEnabledPlugins(t *testing.T) {
 	}
 }
 
+// TestBuildRunParams_ForwardsModelOverride 钉死 buildRunParams 把
+// RunRequest.ModelOverride 透传到 wire.RunParams,且 JSON round-trip 保留该字段
+// (远端会话换模型:override 随 wire 过线,daemon 侧组装 req 时回填)。
+func TestBuildRunParams_ForwardsModelOverride(t *testing.T) {
+	params, err := buildRunParams(agentruntime.RunRequest{
+		Backend:       &agent_backend_entity.AgentBackend{},
+		SessionID:     9,
+		ModelOverride: "claude-haiku-4-5",
+	})
+	if err != nil {
+		t.Fatalf("buildRunParams: %v", err)
+	}
+	if params.ModelOverride != "claude-haiku-4-5" {
+		t.Fatalf("buildRunParams dropped ModelOverride: %+v", params)
+	}
+
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out wire.RunParams
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.ModelOverride != "claude-haiku-4-5" {
+		t.Fatalf("ModelOverride not preserved across wire JSON: %+v", out)
+	}
+}
+
 func TestGoal_DispatchesWireRPCsWithBackendMetadata(t *testing.T) {
 	_, cli, _, rt := setupRemote(t)
 	objective := "ship goal rpc"
