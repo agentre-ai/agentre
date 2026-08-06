@@ -73,6 +73,31 @@ func TestDefaultModelForBackend(t *testing.T) {
 	})
 }
 
+func TestPiModelFallback(t *testing.T) {
+	Convey("Given 未绑 provider(CLI 登录态)的 pi-agent 后端", t, func() {
+		Convey("When ModelOverride 非空 Then --model 用裸 override 下发", func() {
+			m := piModelFallback(agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:            string(agent_backend_entity.TypePiAgent),
+					ReasoningEffort: "high",
+				},
+				ModelOverride: "gpt-5.6-terra",
+			})
+			So(m, ShouldEqual, "gpt-5.6-terra")
+		})
+
+		Convey("When ModelOverride 空白 Then 回落默认(空 = pi 用自身配置)", func() {
+			m := piModelFallback(agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:            string(agent_backend_entity.TypePiAgent),
+					ReasoningEffort: "high",
+				},
+			})
+			So(m, ShouldEqual, "")
+		})
+	})
+}
+
 func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 	Convey("Given pi-agent CLI login runtime", t, func() {
 		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
@@ -430,14 +455,31 @@ func TestProviderRunConfig(t *testing.T) {
 		Convey("When assembling the session config Then model is agentre-<key>/<model> and extension path is returned", func() {
 			model, extPath, err := providerRunConfig(&llm_provider_entity.LLMProvider{
 				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
-			})
+			}, "")
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "agentre-provabc/deepseek-v3")
 			So(extPath, ShouldEqual, "/ext/agentre-provider-abc.mjs")
 		})
 
+		Convey("When ModelOverride is set Then --model is agentre-<key>/<override> (override replaces provider model)", func() {
+			model, extPath, err := providerRunConfig(&llm_provider_entity.LLMProvider{
+				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
+			}, "deepseek-r1")
+			So(err, ShouldBeNil)
+			So(model, ShouldEqual, "agentre-provabc/deepseek-r1")
+			So(extPath, ShouldEqual, "/ext/agentre-provider-abc.mjs")
+		})
+
+		Convey("When ModelOverride is blank Then provider model is used", func() {
+			model, _, err := providerRunConfig(&llm_provider_entity.LLMProvider{
+				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
+			}, "   ")
+			So(err, ShouldBeNil)
+			So(model, ShouldEqual, "agentre-provabc/deepseek-v3")
+		})
+
 		Convey("When the provider is nil Then zero values are returned without error", func() {
-			model, extPath, err := providerRunConfig(nil)
+			model, extPath, err := providerRunConfig(nil, "")
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "")
 			So(extPath, ShouldEqual, "")
@@ -446,7 +488,7 @@ func TestProviderRunConfig(t *testing.T) {
 		Convey("When the provider model is empty Then no model or extension is produced", func() {
 			model, extPath, err := providerRunConfig(&llm_provider_entity.LLMProvider{
 				ProviderKey: "provabc", Type: string(llm_provider_entity.TypeOpenAIChat),
-			})
+			}, "")
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "")
 			So(extPath, ShouldEqual, "")
@@ -455,7 +497,7 @@ func TestProviderRunConfig(t *testing.T) {
 		Convey("When the provider type is unsupported Then an error is returned instead of silently running unbound", func() {
 			_, _, err := providerRunConfig(&llm_provider_entity.LLMProvider{
 				ProviderKey: "provabc", Model: "deepseek-v3", Type: "deepseek",
-			})
+			}, "")
 			So(err, ShouldNotBeNil)
 		})
 	})
@@ -469,7 +511,7 @@ func TestProviderRunConfig(t *testing.T) {
 		Convey("When materializing Then the error propagates", func() {
 			_, _, err := providerRunConfig(&llm_provider_entity.LLMProvider{
 				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
-			})
+			}, "")
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "disk full")
 		})

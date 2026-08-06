@@ -168,15 +168,27 @@ func safePiResponseCommand(command string) (string, bool) {
 }
 
 // providerRunConfig 装配绑定供应商时的 provider 会话参数（APIKey 校验与 env 注入在
-// Run 层完成，见 runtime.go）：返回 --model 值（Provider.Model 非空时为
-// "agentre-<key>/<model>"）与物化后的 provider 扩展绝对路径。Provider.Model 为空
-// （保存时已拦截，此处仅兜底）时沿用现状：返回零值不报错，不注入模型也不物化扩展。
-// 模型名（Type 不可识别 / Model 空）出错一律显式返回，不静默吞掉后走无绑定运行。
-func providerRunConfig(p *llm_provider_entity.LLMProvider) (model string, extPath string, err error) {
-	if p == nil || strings.TrimSpace(p.Model) == "" {
+// Run 层完成，见 runtime.go）：返回 --model 值（effectiveModel = firstNonEmpty(
+// modelOverride, p.Model) 非空时为 "agentre-<key>/<model>"）与物化后的 provider
+// 扩展绝对路径。Provider.Model 与 override 均为空（保存时已拦截，此处仅兜底）时沿用
+// 现状：返回零值不报错，不注入模型也不物化扩展。
+// 模型名（Type 不可识别 / 模型空）出错一律显式返回，不静默吞掉后走无绑定运行。
+func providerRunConfig(p *llm_provider_entity.LLMProvider, modelOverride string) (model string, extPath string, err error) {
+	if p == nil {
 		return "", "", nil
 	}
-	model, err = agentruntime.PiAgentProviderModelName(p)
+	m := strings.TrimSpace(modelOverride)
+	if m == "" {
+		m = strings.TrimSpace(p.Model)
+	}
+	if m == "" {
+		return "", "", nil
+	}
+	// 复用 PiAgentProviderModelName 的 "agentre-<key>/<model>" 拼装 + Type 校验；
+	// override 替换 provider.Model 时用浅拷贝避免改共享实体。
+	q := *p
+	q.Model = m
+	model, err = agentruntime.PiAgentProviderModelName(&q)
 	if err != nil {
 		return "", "", err
 	}
@@ -185,6 +197,17 @@ func providerRunConfig(p *llm_provider_entity.LLMProvider) (model string, extPat
 		return "", "", err
 	}
 	return model, extPath, nil
+}
+
+// piModelFallback 未绑 provider（或 provider.Model 空）时的 --model 兜底：
+// effectiveModel = firstNonEmpty(req.ModelOverride, defaultModelForBackend)。
+// override 是裸 CLI 模型 id，直接作 --model 下发（走 pi 自身登录/配置），不经 agentre
+// 网关（specs §模型解析与各后端生效 - 未绑 provider 路径）。
+func piModelFallback(req agentruntime.RunRequest) string {
+	if m := strings.TrimSpace(req.ModelOverride); m != "" {
+		return m
+	}
+	return defaultModelForBackend(req.Backend)
 }
 
 var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cwd string) (sessionHandle, error) {
@@ -196,13 +219,13 @@ var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cw
 	var providerExtPath string
 	if req.Provider != nil {
 		var err error
-		model, providerExtPath, err = providerRunConfig(req.Provider)
+		model, providerExtPath, err = providerRunConfig(req.Provider, req.ModelOverride)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if model == "" {
-		model = defaultModelForBackend(req.Backend)
+		model = piModelFallback(req)
 	}
 	// MCP 注入：有 RunRequest.MCPServers 时，materialize 内嵌桥扩展 + 渲染会话私有
 	// config，扩展路径走 --extension、config 路径走 AGENTRE_PI_MCP_CONFIG env。

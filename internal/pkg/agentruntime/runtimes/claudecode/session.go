@@ -229,6 +229,22 @@ func resolveLaunchMode(perTurn, backendDefault string) string {
 // 独立函数是为了让单测在不 spawn 真子进程的前提下断言「绑了 provider 的后端
 // 会下发 --model」这条不变量(spec §B token contract;Bug 1 防回归)。
 // binary 由 caller 决定:真路径走 ccSessionFactory 解析,测试可以传 stub 串。
+// claudeEffectiveModel 统一模型解析规则:effectiveModel = firstNonEmpty(
+// req.ModelOverride, req.Provider.Model, req.Backend.DefaultModel),TrimSpace 后返回。
+// 四个 runtime 各自在现有模型消费点套用同一规则(见 specs §模型解析与各后端生效)。
+// claudecode 的 backend 默认是 DefaultModel(仅 claudecode 使用,CLI 登录态自定义模型)。
+func claudeEffectiveModel(req agentruntime.RunRequest) string {
+	if m := strings.TrimSpace(req.ModelOverride); m != "" {
+		return m
+	}
+	if req.Provider != nil {
+		if pm := strings.TrimSpace(req.Provider.Model); pm != "" {
+			return pm
+		}
+	}
+	return strings.TrimSpace(req.Backend.DefaultModel)
+}
+
 func ccBuildClientOpts(spec ccLaunchSpec, binary string) []claudecode.Option {
 	env := spec.Env
 	// 注入 MCP server 时拉长 CLI 的 MCP 工具调用超时:orgtool 写操作会同步挂起
@@ -256,19 +272,14 @@ func ccBuildClientOpts(spec ccLaunchSpec, binary string) []claudecode.Option {
 		claudecode.WithPermissionPromptTool("stdio"),
 		claudecode.WithRawSink(ccRawFrameSink(spec.Req.SessionID, spec.SessionUUID)),
 	}
-	// --model 取值优先级:provider.Model(绑了 LLM provider,如 GLM / openrouter 等
-	// 非 Anthropic 直连场景,必须下发才能让 CLI 在 system.init 帧报真实模型 id) →
-	// backend.DefaultModel(走 CLI 登录态、未绑 provider 时的自定义模型,如
-	// claude-fable-5) → 不下发(CLI 落到本地登录态默认 model)。绑 provider 的行为
-	// 不变;只在 provider.Model 为空时用后端字段兜底,顺带让 CLI 登录态下
+	// --model 取值优先级(req.ModelOverride → provider.Model → backend.DefaultModel,见
+	// claudeEffectiveModel):override 是会话级模型覆盖(决策 1/2);provider.Model 是绑
+	// 了 LLM provider(如 GLM / openrouter 等非 Anthropic 直连场景,必须下发才能让
+	// CLI 在 system.init 帧报真实模型 id);backend.DefaultModel 兜底 CLI 登录态、未绑
+	// provider 时的自定义模型(如 claude-fable-5)。三者全空 → 不下发,CLI 落到本地登录
+	// 态默认 model。绑 provider 的行为不变;顺带让 CLI 登录态下
 	// result.Model → assistantMsg.Model 链也能写对。
-	model := strings.TrimSpace(spec.Req.Backend.DefaultModel)
-	if spec.Req.Provider != nil {
-		if pm := strings.TrimSpace(spec.Req.Provider.Model); pm != "" {
-			model = pm
-		}
-	}
-	if model != "" {
+	if model := claudeEffectiveModel(spec.Req); model != "" {
 		opts = append(opts, claudecode.WithModel(model))
 	}
 	if spec.SessionUUID != "" {

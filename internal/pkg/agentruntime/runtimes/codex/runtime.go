@@ -360,13 +360,10 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	out := make(chan agentruntime.Event, 32)
 	active.setOut(out)
 
-	modelID := ""
-	if req.Provider != nil {
-		modelID = strings.TrimSpace(req.Provider.Model)
-	}
-	if modelID == "" {
-		modelID = strings.TrimSpace(sess.Model())
-	}
+	// RunResult.Model 上报线程实际模型(sess.Model()),而非启动请求模型(设计决策 9):
+	// codex 的 thread/resume 返回线程当前 model,override 经 --model 生效后 sess.Model()
+	// 即实际运行模型 —— 偏离提示(决策 5)依赖这个信号;无 override 时两者同值,不回归。
+	modelID := strings.TrimSpace(sess.Model())
 	if modelID == "" {
 		modelID = defaultModelID
 	}

@@ -154,7 +154,7 @@ func TestRun_ModelResolution(t *testing.T) {
 			So(result.Model, ShouldEqual, "gpt-5.5")
 		})
 
-		Convey("Given provider model is configured, when app-server reports a different model, then provider model wins", func() {
+		Convey("Given provider model is configured, when app-server reports a different model, then thread actual model (sess.Model) wins (design decision 9)", func() {
 			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
 				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-provider", model: "gpt-5.6-sol"}, nil
 			})
@@ -174,7 +174,31 @@ func TestRun_ModelResolution(t *testing.T) {
 			for range events {
 			}
 
-			So(result.Model, ShouldEqual, "gpt-5.4")
+			So(result.Model, ShouldEqual, "gpt-5.6-sol")
+		})
+
+		Convey("Given ModelOverride resumes the thread onto a new model, then RunResult.Model reports the thread actual (sess.Model)", func() {
+			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-override", model: "gpt-5.5"}, nil
+			})
+			defer restore()
+
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				ModelOverride: "gpt-5.5",
+				SessionID:     1,
+				Cwd:           t.TempDir(),
+				UserText:      "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.Model, ShouldEqual, "gpt-5.5")
 		})
 	})
 }

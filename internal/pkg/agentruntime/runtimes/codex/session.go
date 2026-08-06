@@ -367,6 +367,11 @@ func buildLaunchSpec(req agentruntime.RunRequest, env map[string]string, cwd str
 	if req.Provider != nil {
 		spec.model = strings.TrimSpace(req.Provider.Model)
 	}
+	// 会话级模型覆盖优先:effectiveModel = firstNonEmpty(override, providerModel)。
+	// codex 无 backend 默认模型字段(DefaultModel 仅 claudecode 用),所以规则只取前两项。
+	if om := strings.TrimSpace(req.ModelOverride); om != "" {
+		spec.model = om
+	}
 	if sb := strings.TrimSpace(req.Backend.Sandbox); sb != "" {
 		spec.sandbox = codex.SandboxMode(sb)
 	}
