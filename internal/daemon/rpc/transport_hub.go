@@ -37,8 +37,15 @@ type HubFrame struct {
 
 // HubLinkOptions configures a daemon-owned outbound relay connection.
 type HubLinkOptions struct {
-	ServerURL         string
-	AccessToken       string
+	ServerURL   string
+	AccessToken string
+	// AccessTokenProvider re-resolves the bearer token at every dial. When set
+	// it takes precedence over the static AccessToken field. The daemon uses it
+	// to hand HubLink the freshest refreshed access token across reconnects
+	// without the link itself knowing how tokens are renewed (R4/R14): a token
+	// that expires mid-connection is replaced by the fresh one on the next dial.
+	AccessTokenProvider func() string
+
 	HeartbeatInterval time.Duration
 	RetryInitial      time.Duration
 	RetryMax          time.Duration
@@ -218,8 +225,12 @@ func (l *HubLink) dial(ctx context.Context) (*websocket.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	token := l.opts.AccessToken
+	if l.opts.AccessTokenProvider != nil {
+		token = l.opts.AccessTokenProvider()
+	}
 	headers := make(http.Header)
-	headers.Set("Authorization", "Bearer "+l.opts.AccessToken)
+	headers.Set("Authorization", "Bearer "+token)
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, endpoint, headers)
 	if err != nil {
 		return nil, fmt.Errorf("dial relay websocket: %w", err)

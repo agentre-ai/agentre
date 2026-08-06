@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -115,4 +116,79 @@ func TestHubLink_GivenRelayDropsAndRecovers_WhenRunning_ThenReconnectsRenewsAndE
 	case <-time.After(time.Second):
 		t.Fatal("hub link did not send a heartbeat to renew the relay registration")
 	}
+}
+
+// TestHubLink_GivenAccessTokenProvider_WhenRunning_ThenEachDialReResolvesTheToken
+// pins the R4/R14 seam that lets the daemon own state while HubLink stays
+// transport-only: the provider is consulted at every dial, so an access token
+// that expires mid-connection is replaced by the fresh one on the next reconnect.
+func TestHubLink_GivenAccessTokenProvider_WhenRunning_ThenEachDialReResolvesTheToken(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		authHeaders []string
+	)
+	upgrader := websocket.Upgrader{}
+	conns := make(chan *websocket.Conn, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		mu.Unlock()
+
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conns <- ws
+		// Keep the connection open until the test (or the peer) closes it.
+		for {
+			if _, _, err := ws.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var token atomic.Value
+	token.Store("token-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	link := NewHubLink(HubLinkOptions{
+		ServerURL:           server.URL,
+		AccessToken:         "token-0", // stale static fallback; the provider must win
+		AccessTokenProvider: func() string { return token.Load().(string) },
+		HeartbeatInterval:   100 * time.Millisecond,
+		RetryInitial:        time.Second,
+		RetryMax:            4 * time.Second,
+		RetryWait:           func(context.Context, time.Duration) error { return nil },
+		Random:              func() float64 { return 1 },
+	})
+	runDone := make(chan error, 1)
+	go func() { runDone <- link.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		require.NoError(t, <-runDone)
+	})
+
+	var first *websocket.Conn
+	select {
+	case first = <-conns:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first relay dial never happened")
+	}
+	mu.Lock()
+	assert.Equal(t, "Bearer token-1", authHeaders[0], "the provider value is used for the first dial")
+	mu.Unlock()
+
+	// Rotate the token while the first connection is still up, then drop it:
+	// the reconnect must re-resolve the provider and dial with the fresh token.
+	token.Store("token-2")
+	_ = first.Close()
+	select {
+	case <-conns:
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay did not reconnect after the connection was dropped")
+	}
+	mu.Lock()
+	assert.Equal(t, "Bearer token-2", authHeaders[1], "each dial must re-resolve the token provider")
+	mu.Unlock()
 }

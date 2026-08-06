@@ -1,15 +1,19 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -404,6 +408,13 @@ func (d *Daemon) tunnelTargetFor(peer string, sid int64) handlers.NotifierPort {
 
 func (d *Daemon) claimedAccountID() string { return d.state.Snapshot().AccountID }
 
+// currentAccessToken returns the daemon's freshest stored access token. HubLink
+// re-resolves it at every dial (via HubLinkOptions.AccessTokenProvider), so a
+// token refreshed mid-connection is picked up by the next reconnect (R4/R14).
+func (d *Daemon) currentAccessToken() string {
+	return d.state.Snapshot().Credential.AccessToken
+}
+
 // New constructs a Daemon from Options. It loads persistent state, creates
 // sub-systems, and registers all static (non-per-conn) RPC methods.
 func New(opts Options) (*Daemon, error) {
@@ -465,8 +476,9 @@ func New(opts Options) (*Daemon, error) {
 	if st.IsClaimed() && opts.HubServerURL != "" {
 		credential := st.Snapshot().Credential
 		d.hub = rpc.NewHubLink(rpc.HubLinkOptions{
-			ServerURL:   opts.HubServerURL,
-			AccessToken: credential.AccessToken,
+			ServerURL:           opts.HubServerURL,
+			AccessToken:         credential.AccessToken,
+			AccessTokenProvider: d.currentAccessToken,
 		})
 		d.mux = rpc.NewMultiplexer(d.hub)
 	}
@@ -643,7 +655,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// running sessions. HubLink owns logging, heartbeats, and retry for Run's
 	// whole lifetime; the multiplexer consumes its raw-frame seam separately.
 	if d.hub != nil {
-		go func() { _ = d.hub.Run(ctx) }()
+		hubCtx, hubCancel := context.WithCancel(ctx)
+		go func() { _ = d.hub.Run(hubCtx) }()
+		// The credential refresher keeps the minute-lived access token ahead of
+		// expiry; a permanently dead refresh token cancels the hub link so a
+		// doomed relay is not kept alive forever (R4/R14). It never propagates
+		// to Run — local sessions and LAN stay healthy either way.
+		go d.runCredentialRefresh(ctx, hubCancel)
 	}
 	if d.mux != nil {
 		defer d.mux.Close()
@@ -675,6 +693,220 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.lan = lan
 	d.mu.Unlock()
 	return lan.Run(ctx)
+}
+
+// runCredentialRefresh launches the R4/R14 credential refresher for the daemon's
+// lifetime. stopRelay is invoked only when the refresh token is permanently dead
+// (expired or revoked): the relay link is doomed because the access token can no
+// longer be renewed, so the hub link is canceled rather than kept retrying a
+// dead connection forever. Local sessions and the LAN server are unaffected.
+func (d *Daemon) runCredentialRefresh(ctx context.Context, stopRelay context.CancelFunc) {
+	newCredentialRefresher(d.state, d.opts.HubServerURL).run(ctx, stopRelay)
+}
+
+// defaultRefreshMargin is how long before AccessTokenExpiresAt the daemon
+// proactively refreshes. Task 16 makes the access TTL minute-level; a two-minute
+// margin keeps the relay link comfortably ahead of expiry.
+const defaultRefreshMargin = 2 * time.Minute
+
+const (
+	refreshRetryInitial = time.Second
+	refreshRetryMax     = time.Minute
+)
+
+func defaultRefreshBackoff(failures int) time.Duration {
+	delay := refreshRetryInitial
+	for range failures {
+		if delay >= refreshRetryMax/2 {
+			delay = refreshRetryMax
+			break
+		}
+		delay *= 2
+	}
+	return delay
+}
+
+// credentialRefresher keeps the account relay link alive (R4/R14): the access
+// token is minute-lived and must be renewed well before it expires or the hub
+// link dies permanently. It exchanges the stored refresh token at the server's
+// refresh endpoint, persists the rotated credential, and lets the HubLink
+// re-resolve the freshest access token at each dial. Refresh failures never
+// propagate to the daemon run loop — the loop logs and retries with backoff.
+type credentialRefresher struct {
+	state      *state.State
+	serverURL  string
+	httpClient *http.Client
+
+	now     func() time.Time
+	wait    func(context.Context, time.Duration) error
+	backoff func(int) time.Duration
+	margin  time.Duration
+	logf    func(format string, args ...any)
+}
+
+func newCredentialRefresher(st *state.State, serverURL string) *credentialRefresher {
+	return &credentialRefresher{
+		state:      st,
+		serverURL:  serverURL,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+		now:        time.Now,
+		wait:       waitForRefresh,
+		backoff:    defaultRefreshBackoff,
+		margin:     defaultRefreshMargin,
+		logf:       log.Printf,
+	}
+}
+
+// run refreshes until ctx is canceled or the refresh token is permanently dead.
+func (r *credentialRefresher) run(ctx context.Context, stopRelay context.CancelFunc) {
+	failures := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		credential := r.state.Snapshot().Credential
+		now := r.now()
+		if credential.RefreshToken == "" {
+			// Legacy/edge credential with nothing to refresh. Leave the hub alone
+			// (it keeps using whatever access token it has) rather than tearing
+			// down a link that may still work.
+			r.logf("daemon.refresh: no refresh token; relay renewal disabled")
+			return
+		}
+		if credential.RefreshTokenExpiresAt > 0 && now.Unix() >= credential.RefreshTokenExpiresAt {
+			r.logf("daemon.refresh: refresh token expired at %d; relay renewal stopped (LAN unaffected)",
+				credential.RefreshTokenExpiresAt)
+			stopRelay()
+			return
+		}
+		delay := r.nextRefreshIn(credential, now)
+		if err := r.wait(ctx, delay); err != nil {
+			return
+		}
+
+		// Retry transient failures with backoff without re-entering the schedule
+		// wait: the access token is still due until a refresh succeeds. Only a
+		// permanent grant rejection (invalid_grant) stops the loop.
+		token, permanent, err := r.refreshOnce(ctx, credential.RefreshToken)
+		for err != nil && !permanent {
+			r.logf("daemon.refresh: refresh failed; retrying: %v", err)
+			if err := r.wait(ctx, r.backoff(failures)); err != nil {
+				return
+			}
+			failures++
+			token, permanent, err = r.refreshOnce(ctx, credential.RefreshToken)
+		}
+		if err != nil {
+			r.logf("daemon.refresh: refresh token rejected by server; relay renewal stopped (LAN unaffected): %v", err)
+			stopRelay()
+			return
+		}
+		failures = 0
+		rotated := state.AccountCredential{
+			DeviceID:              credential.DeviceID,
+			AccessToken:           token.AccessToken,
+			AccessTokenExpiresAt:  r.now().Add(time.Duration(token.ExpiresIn) * time.Second).Unix(),
+			RefreshToken:          token.RefreshToken,
+			RefreshTokenExpiresAt: r.now().Add(time.Duration(token.RefreshExpiresIn) * time.Second).Unix(),
+		}
+		r.state.Mutate(func(s *state.State) { s.Credential = rotated })
+		if err := r.state.Save(); err != nil {
+			r.logf("daemon.refresh: persist refreshed credential: %v", err)
+		}
+	}
+}
+
+// nextRefreshIn schedules the next proactive refresh well before the access
+// token expires (defaultRefreshMargin). An already-due token refreshes now.
+func (r *credentialRefresher) nextRefreshIn(credential state.AccountCredential, now time.Time) time.Duration {
+	if credential.AccessTokenExpiresAt <= 0 {
+		return r.margin
+	}
+	remaining := time.Unix(credential.AccessTokenExpiresAt, 0).Sub(now)
+	delay := remaining - r.margin
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+type refreshTokenResponse struct {
+	AccessToken      string `json:"access_token"`
+	ExpiresIn        int    `json:"expires_in"`
+	RefreshToken     string `json:"refresh_token"`
+	RefreshExpiresIn int    `json:"refresh_expires_in"`
+}
+
+// refreshOnce exchanges a refresh token for a fresh access token plus a rotated
+// refresh token. permanent reports an unrecoverable grant failure (expired /
+// revoked / replay) — the loop must stop, not retry, and the relay is dead.
+// Network errors and server 5xx are transient and retried by the caller.
+func (r *credentialRefresher) refreshOnce(ctx context.Context, refreshToken string) (*refreshTokenResponse, bool, error) {
+	body, err := json.Marshal(map[string]string{"refresh_token": refreshToken})
+	if err != nil {
+		return nil, false, fmt.Errorf("encode refresh request: %w", err)
+	}
+	endpoint := strings.TrimRight(r.serverURL, "/") + "/v1/oauth/token/refresh"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, false, fmt.Errorf("build refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("refresh request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, false, fmt.Errorf("read refresh response: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		var oauthErr struct {
+			Code        string `json:"error"`
+			Description string `json:"error_description"`
+		}
+		if decodeRefreshResponse(payload, &oauthErr) == nil && oauthErr.Code != "" {
+			return nil, oauthErr.Code == "invalid_grant",
+				fmt.Errorf("refresh rejected: %s: %s", oauthErr.Code, oauthErr.Description)
+		}
+		return nil, false, fmt.Errorf("refresh endpoint returned %s", resp.Status)
+	}
+	var token refreshTokenResponse
+	if err := decodeRefreshResponse(payload, &token); err != nil {
+		return nil, false, fmt.Errorf("parse refresh response: %w", err)
+	}
+	if token.AccessToken == "" || token.RefreshToken == "" || token.ExpiresIn <= 0 || token.RefreshExpiresIn <= 0 {
+		return nil, false, fmt.Errorf("refresh endpoint returned an invalid token payload")
+	}
+	return &token, false, nil
+}
+
+// decodeRefreshResponse handles both the raw JSON payload and cago's
+// {data: ...} response envelope, mirroring the login flow's decoder. Agentre
+// must not import agentre-server; this keeps the daemon-side contract in sync.
+func decodeRefreshResponse(payload []byte, target any) error {
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return err
+	}
+	if len(envelope.Data) != 0 && string(envelope.Data) != "null" {
+		return json.Unmarshal(envelope.Data, target)
+	}
+	return json.Unmarshal(payload, target)
+}
+
+func waitForRefresh(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // serveRelayChannels turns server-initiated virtual channels into the same

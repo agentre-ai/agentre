@@ -1081,3 +1081,267 @@ func TestDaemon_RunCollectsTheJournal(t *testing.T) {
 		return len(journalSeqs(t, dbCtx, "peerA", "1")) == 1
 	}, 3*time.Second, 20*time.Millisecond, "daemon 跑起来之后必须自己回收掉安静会话的日志前缀")
 }
+
+// refreshTestClock is the injectable clock for the credential refresh loop: the
+// loop asks how much to wait, the test releases it and advances the clock by
+// exactly that delay, so the refresh fires at a fully deterministic time.
+type refreshTestClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *refreshTestClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *refreshTestClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// TestDaemon_RefreshLoop_RefreshesBeforeExpiryAndRelayDialUsesFreshToken is the
+// R4/R14 happy path: with a minute-level access token the daemon must refresh
+// well before expiry, rotate both tokens back into state.json, and hand the
+// relay link the freshest access token at its next dial.
+func TestDaemon_RefreshLoop_RefreshesBeforeExpiryAndRelayDialUsesFreshToken(t *testing.T) {
+	clock := &refreshTestClock{now: time.Unix(1_700_000_000, 0)}
+
+	var refreshCalls atomic.Int32
+	sentRefresh := make(chan string, 1)
+	dialAuth := make(chan string, 4)
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/oauth/token/refresh":
+			refreshCalls.Add(1)
+			body, _ := io.ReadAll(r.Body)
+			var req struct {
+				RefreshToken string `json:"refresh_token"`
+			}
+			_ = json.Unmarshal(body, &req)
+			sentRefresh <- req.RefreshToken
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"access-2","expires_in":900,"refresh_token":"refresh-2","refresh_expires_in":3600}`))
+		case "/v1/relay/daemon":
+			dialAuth <- r.Header.Get("Authorization")
+			ws, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer func() { _ = ws.Close() }()
+			for {
+				if _, _, err := ws.ReadMessage(); err != nil {
+					return
+				}
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{
+		DeviceID:              7,
+		AccessToken:           "access-1",
+		AccessTokenExpiresAt:  clock.Now().Add(15 * time.Minute).Unix(),
+		RefreshToken:          "refresh-1",
+		RefreshTokenExpiresAt: clock.Now().Add(24 * time.Hour).Unix(),
+	})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stopped atomic.Bool
+	refresher := &credentialRefresher{
+		state:      st,
+		serverURL:  server.URL,
+		httpClient: server.Client(),
+		now:        clock.Now,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			select {
+			case <-release:
+				clock.Advance(delay)
+				return nil
+			case <-loopCtx.Done():
+				return loopCtx.Err()
+			}
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+		margin:  2 * time.Minute,
+	}
+	go refresher.run(ctx, func() { stopped.Store(true) })
+
+	select {
+	case delay := <-requested:
+		assert.Equal(t, 13*time.Minute, delay, "the refresh must be scheduled well before the access token expires")
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresher never scheduled a pre-expiry refresh")
+	}
+
+	release <- struct{}{} // let the first refresh fire
+	require.Eventually(t, func() bool { return refreshCalls.Load() == 1 }, 2*time.Second, 10*time.Millisecond)
+	select {
+	case rt := <-sentRefresh:
+		assert.Equal(t, "refresh-1", rt, "the refresh request must present the stored refresh token")
+	case <-time.After(time.Second):
+		t.Fatal("refresh endpoint never received the refresh token")
+	}
+
+	updated := st.Snapshot().Credential
+	assert.Equal(t, "access-2", updated.AccessToken, "state must hold the refreshed access token")
+	assert.Equal(t, "refresh-2", updated.RefreshToken, "state must hold the rotated refresh token")
+	// The refresh fired at now+13m; the server granted a 15m access and 1h refresh TTL.
+	assert.Equal(t, clock.Now().Add(15*time.Minute).Unix(), updated.AccessTokenExpiresAt)
+	assert.Equal(t, clock.Now().Add(time.Hour).Unix(), updated.RefreshTokenExpiresAt)
+	assert.Equal(t, int64(7), updated.DeviceID, "DeviceID must survive a refresh")
+	assert.False(t, stopped.Load(), "a successful refresh must not stop relay renewal")
+
+	// A relay link whose token provider reads the same state must dial with the
+	// refreshed access token, not the one captured at construction.
+	relayCtx, relayCancel := context.WithCancel(context.Background())
+	defer relayCancel()
+	link := rpc.NewHubLink(rpc.HubLinkOptions{
+		ServerURL:           server.URL,
+		AccessToken:         "access-1", // stale static fallback; the provider must win
+		AccessTokenProvider: func() string { return st.Snapshot().Credential.AccessToken },
+		RetryWait:           func(context.Context, time.Duration) error { return nil },
+		Random:              func() float64 { return 0.5 },
+	})
+	go func() { _ = link.Run(relayCtx) }()
+
+	select {
+	case auth := <-dialAuth:
+		assert.Equal(t, "Bearer access-2", auth, "the relay dial must use the freshly refreshed access token")
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay link did not dial with the fresh token")
+	}
+}
+
+// TestDaemon_RefreshLoop_ExpiredRefreshTokenStopsWithoutServerCall covers the
+// R4 stop path: an already-expired refresh token must not hit the server, must
+// stop relay renewal (no dead link kept alive forever), and must leave local
+// sessions untouched.
+func TestDaemon_RefreshLoop_ExpiredRefreshTokenStopsWithoutServerCall(t *testing.T) {
+	clock := &refreshTestClock{now: time.Unix(1_700_000_000, 0)}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "pk", state.AccountCredential{
+		AccessToken:           "access-1",
+		AccessTokenExpiresAt:  clock.Now().Add(10 * time.Minute).Unix(),
+		RefreshToken:          "refresh-1",
+		RefreshTokenExpiresAt: clock.Now().Add(-time.Minute).Unix(), // already expired
+	})
+	require.NoError(t, st.Save())
+
+	refresher := &credentialRefresher{
+		state:      st,
+		serverURL:  server.URL,
+		httpClient: server.Client(),
+		now:        clock.Now,
+		wait:       func(context.Context, time.Duration) error { return nil },
+		backoff:    defaultRefreshBackoff,
+		logf:       t.Logf,
+		margin:     2 * time.Minute,
+	}
+	stopped := false
+	refresher.run(context.Background(), func() { stopped = true })
+
+	assert.True(t, stopped, "an expired refresh token must stop relay renewal")
+	assert.Zero(t, calls.Load(), "an expired refresh token must not hit the server")
+}
+
+// TestDaemon_RefreshLoop_GivenTransientRefreshFailure_WhenRetrySucceeds_ThenCredentialRotated
+// covers the "log + retry with backoff" half of R14: a 5xx refresh failure is
+// transient, retried on the configured backoff, and must never propagate to the
+// daemon run loop.
+func TestDaemon_RefreshLoop_GivenTransientRefreshFailure_WhenRetrySucceeds_ThenCredentialRotated(t *testing.T) {
+	clock := &refreshTestClock{now: time.Unix(1_700_000_000, 0)}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "boom", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"access-2","expires_in":900,"refresh_token":"refresh-2","refresh_expires_in":3600}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "pk", state.AccountCredential{
+		AccessToken:           "access-1",
+		AccessTokenExpiresAt:  clock.Now().Add(time.Minute).Unix(), // due before the margin
+		RefreshToken:          "refresh-1",
+		RefreshTokenExpiresAt: clock.Now().Add(24 * time.Hour).Unix(),
+	})
+	require.NoError(t, st.Save())
+
+	requested := make(chan time.Duration, 8)
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	refresher := &credentialRefresher{
+		state:      st,
+		serverURL:  server.URL,
+		httpClient: server.Client(),
+		now:        clock.Now,
+		wait: func(loopCtx context.Context, delay time.Duration) error {
+			requested <- delay
+			select {
+			case <-release:
+				clock.Advance(delay)
+				return nil
+			case <-loopCtx.Done():
+				return loopCtx.Err()
+			}
+		},
+		backoff: defaultRefreshBackoff,
+		logf:    t.Logf,
+		margin:  2 * time.Minute,
+	}
+	go refresher.run(ctx, func() {})
+
+	// The access token is already inside the margin, so the first wait is zero.
+	select {
+	case delay := <-requested:
+		assert.Zero(t, delay, "an already-due access token must refresh immediately")
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresher never attempted a refresh")
+	}
+	release <- struct{}{}
+	require.Eventually(t, func() bool { return calls.Load() == 1 }, 2*time.Second, 10*time.Millisecond)
+
+	// The failed refresh must back off before retrying.
+	select {
+	case delay := <-requested:
+		assert.Equal(t, time.Second, delay, "the first retry must wait the initial backoff")
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresher never backed off after a transient failure")
+	}
+	release <- struct{}{}
+	require.Eventually(t, func() bool { return calls.Load() == 2 }, 2*time.Second, 10*time.Millisecond)
+
+	updated := st.Snapshot().Credential
+	assert.Equal(t, "access-2", updated.AccessToken, "a transient failure must not prevent the eventual refresh")
+	assert.Equal(t, "refresh-2", updated.RefreshToken)
+}
