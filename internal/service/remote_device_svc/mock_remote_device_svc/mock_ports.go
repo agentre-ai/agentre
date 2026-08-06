@@ -87,6 +87,45 @@ func (mr *MockDaemonDialPortMockRecorder) Pair(ctx, args any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Pair", reflect.TypeOf((*MockDaemonDialPort)(nil).Pair), ctx, args)
 }
 
+// MockRelayDialPort is a mock of RelayDialPort interface.
+type MockRelayDialPort struct {
+	ctrl     *gomock.Controller
+	recorder *MockRelayDialPortMockRecorder
+	isgomock struct{}
+}
+
+// MockRelayDialPortMockRecorder is the mock recorder for MockRelayDialPort.
+type MockRelayDialPortMockRecorder struct {
+	mock *MockRelayDialPort
+}
+
+// NewMockRelayDialPort creates a new mock instance.
+func NewMockRelayDialPort(ctrl *gomock.Controller) *MockRelayDialPort {
+	mock := &MockRelayDialPort{ctrl: ctrl}
+	mock.recorder = &MockRelayDialPortMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockRelayDialPort) EXPECT() *MockRelayDialPortMockRecorder {
+	return m.recorder
+}
+
+// Open mocks base method.
+func (m *MockRelayDialPort) Open(ctx context.Context, daemonFingerprint, peerFingerprint string) (*client.Client, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Open", ctx, daemonFingerprint, peerFingerprint)
+	ret0, _ := ret[0].(*client.Client)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Open indicates an expected call of Open.
+func (mr *MockRelayDialPortMockRecorder) Open(ctx, daemonFingerprint, peerFingerprint any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Open", reflect.TypeOf((*MockRelayDialPort)(nil).Open), ctx, daemonFingerprint, peerFingerprint)
+}
+
 // MockKeychainPort is a mock of KeychainPort interface.
 type MockKeychainPort struct {
 	ctrl     *gomock.Controller

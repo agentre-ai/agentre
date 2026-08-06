@@ -11,6 +11,7 @@ import (
 	"github.com/cago-frame/cago/pkg/logger"
 	"go.uber.org/zap"
 
+	"github.com/agentre-ai/agentre/internal/daemon/client"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/repository/remote_device_repo"
 )
@@ -58,6 +59,12 @@ func WithIdleTimeout(d time.Duration) Option {
 	return func(p *pool) { p.idleTimeout = d }
 }
 
+// WithRelayDial 注入账号中转拨号端口。注入后 Borrow 会并发发起直连与中转两条
+// 尝试、先到者胜（R6），任一路径不可用不构成失败；未注入时保持纯 LAN 行为。
+func WithRelayDial(relay RelayDialPort) Option {
+	return func(p *pool) { p.relay = relay }
+}
+
 // NewConnPool 构造一个生产 ConnPool。
 //   - repo: 查 device row(URL / TLS / fingerprint)
 //   - kc:   读 keychain 的 token + device fingerprint(用本包窄接口 KeychainPort)
@@ -87,6 +94,7 @@ type pool struct {
 	repo        remote_device_repo.PairedAgentredRepo
 	kc          KeychainPort
 	dial        DaemonDialPort
+	relay       RelayDialPort // 可空:未注入时 Borrow 纯 LAN
 	idleTimeout time.Duration
 
 	mu      sync.Mutex
@@ -185,7 +193,7 @@ func (p *pool) Borrow(ctx context.Context, deviceID int64) (Lease, error) {
 	if err != nil || fp == "" {
 		return nil, ErrDeviceUnauthorized
 	}
-	c, err := p.dial.Open(ctx, ConnectArgs{
+	c, err := p.openAny(ctx, ConnectArgs{
 		URL:                       row.URL,
 		TLSMode:                   row.TLSMode,
 		TLSCertPEM:                row.TLSCertPEM,
@@ -194,7 +202,7 @@ func (p *pool) Borrow(ctx context.Context, deviceID int64) (Lease, error) {
 		ExpectedDaemonFingerprint: row.DaemonFingerprint,
 	})
 	if err != nil {
-		if errors.Is(err, ErrUnauthorized) {
+		if p.relay == nil && errors.Is(err, ErrUnauthorized) {
 			return nil, ErrDeviceUnauthorized
 		}
 		return nil, err
@@ -226,6 +234,31 @@ func (p *pool) Borrow(ctx context.Context, deviceID int64) (Lease, error) {
 	logger.Ctx(ctx).Info("conn pool: new entry, dialed daemon",
 		zap.Int64("deviceID", deviceID))
 	return &lease{e: e, pool: p}, nil
+}
+
+// openAny 拨一台 daemon：未注入 relay 时只走 LAN 直连；注入了 relay 时并发发起
+// 直连与中转两条路径、先到者胜（R6）。两条路径解析出的对端标识（DeviceFingerprint）
+// 相同——该硬不变量由 client.Race 守卫。
+func (p *pool) openAny(ctx context.Context, args ConnectArgs) (*client.Client, error) {
+	if p.relay == nil {
+		return p.dial.Open(ctx, args)
+	}
+	return client.Race(ctx,
+		client.Path{
+			Name:        "direct",
+			Fingerprint: args.DeviceFingerprint,
+			Dial: func(ctx context.Context) (*client.Client, error) {
+				return p.dial.Open(ctx, args)
+			},
+		},
+		client.Path{
+			Name:        "relay",
+			Fingerprint: args.DeviceFingerprint,
+			Dial: func(ctx context.Context) (*client.Client, error) {
+				return p.relay.Open(ctx, args.ExpectedDaemonFingerprint, args.DeviceFingerprint)
+			},
+		},
+	)
 }
 
 // watchClient 在 entry 建好后启,监听底层 conn 死亡 → evict。

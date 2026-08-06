@@ -3,7 +3,9 @@ package server_svc
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"runtime"
 
@@ -19,6 +21,11 @@ import (
 // keychainAccountName 是 hub refresh_token 在 OS keychain 中挂的账号名。
 // 桌面端一台机器只有一份联机凭证，所以全局共用一个常量。
 const keychainAccountName = "agentre.server.refresh_token"
+
+// accountForDeviceFingerprint 是桌面端唯一设备指纹的 keychain 账号,与
+// remote_device_svc.accountForDeviceFingerprint（及 watcher_svc 的
+// keychainFingerprintAccount）必须一致——R5 决策 8:账号侧不得另生成指纹。
+const accountForDeviceFingerprint = "agentre-device-fingerprint"
 
 // ---- request / response DTOs（私有，只在本包内用）----
 
@@ -94,8 +101,15 @@ func (s *service) StartLogin(ctx context.Context, serverURL string) (*StartLogin
 	if row == nil {
 		row = &server_state_entity.ServerState{ID: 1}
 	}
-	if row.DeviceFingerprint == "" {
-		row.DeviceFingerprint = newFingerprint()
+	// R5 决策 8:桌面端指纹一律复用 LAN 配对 keychain 指纹,不另生成随机值。
+	// server_state 里的指纹必须与 keychain 一致(硬不变量),因此旧安装遗留的
+	// 随机指纹在此被覆盖为 keychain 值。
+	fp, err := s.ensureDeviceFingerprint()
+	if err != nil {
+		return nil, err
+	}
+	if row.DeviceFingerprint != fp {
+		row.DeviceFingerprint = fp
 		// Persist eagerly so a later Save failure doesn't cause the next StartLogin
 		// to generate a different fingerprint (which would orphan the hub's pending
 		// authorization).
@@ -218,12 +232,28 @@ func (s *service) markLoginDone() {
 	s.mu.Unlock()
 }
 
-// newFingerprint creates a stable per-machine fingerprint (random hex). The value
-// is persisted to server_state so it survives logout/login cycles — that's intentional.
-func newFingerprint() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+// ensureDeviceFingerprint returns the desktop's canonical device fingerprint,
+// creating it on first use with the same pattern remote_device_svc uses
+// (add.go ensureDeviceFingerprint): keychain read → generate sha256 → persist.
+// The generated value therefore matches the LAN pairing fingerprint byte-for-byte.
+func (s *service) ensureDeviceFingerprint() (string, error) {
+	fp, err := keychain.Default().Get(accountForDeviceFingerprint)
+	if err == nil && fp != "" {
+		return fp, nil
+	}
+	if err != nil && !errors.Is(err, keychain.ErrNotFound) {
+		return "", err
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	newFP := "sha256:" + hex.EncodeToString(sum[:])
+	if err := keychain.Default().Set(accountForDeviceFingerprint, newFP); err != nil {
+		return "", err
+	}
+	return newFP, nil
 }
 
 // runtimePlatform returns "<GOOS>/<GOARCH>" for the device_authorize payload.

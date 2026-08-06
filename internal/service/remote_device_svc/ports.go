@@ -55,6 +55,14 @@ type ConnectResult struct {
 	ActualFingerprint string
 }
 
+// RelayDialPort 提供账号中转（relay）路径的拨号（R6）。真实现由 server_svc 提供
+// （bootstrap 注入），消费方只有 ConnPool。
+type RelayDialPort interface {
+	// Open 经账号中转连接指定指纹的 daemon，并在该通道上完成 auth.account 握手，
+	// 呈现 peerFingerprint——与 LAN 路径 auth.connect 呈现的是同一值（R5）。
+	Open(ctx context.Context, daemonFingerprint, peerFingerprint string) (*client.Client, error)
+}
+
 // KeychainPort 抽象 OS keychain（internal/pkg/keychain 接口的窄子集）。
 type KeychainPort interface {
 	Get(account string) (string, error)

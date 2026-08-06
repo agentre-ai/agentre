@@ -226,3 +226,67 @@ func TestPool_Borrow_ColdStart(t *testing.T) {
 		assert.NotNil(t, c)
 	})
 }
+
+// stubRelayDial 是一个可控的 RelayDialPort 假替身,用于验证 Borrow 的并发选路。
+// 未提供 open 时固定失败。
+type stubRelayDial struct {
+	open func(ctx context.Context, daemonFP, peerFP string) (*client.Client, error)
+}
+
+func (s stubRelayDial) Open(ctx context.Context, daemonFP, peerFP string) (*client.Client, error) {
+	if s.open == nil {
+		return nil, errors.New("relay not stubbed")
+	}
+	return s.open(ctx, daemonFP, peerFP)
+}
+
+func TestPool_Borrow_RelayConfigured_LANWinsWhenRelayUnavailable(t *testing.T) {
+	Convey("relay configured but unavailable: LAN path wins (one path down is not failure, R6)", t, func() {
+		var gotDaemonFP, gotPeerFP string
+		f := newPoolFixture(t, remote_device_svc.WithRelayDial(stubRelayDial{open: func(_ context.Context, daemonFP, peerFP string) (*client.Client, error) {
+			gotDaemonFP, gotPeerFP = daemonFP, peerFP
+			return nil, errors.New("relay unreachable")
+		}}))
+		c := stubClient()
+		f.repo.EXPECT().Get(gomock.Any(), int64(42)).Return(f.device, nil)
+		f.dial.EXPECT().Open(gomock.Any(), gomock.Any()).Return(c, nil)
+
+		lease, err := f.pool.Borrow(context.Background(), 42)
+		So(err, ShouldBeNil)
+		So(lease, ShouldNotBeNil)
+		So(lease.Client(), ShouldNotBeNil)
+		// R5 硬不变量:relay 目标 = daemon 指纹;对端标识 = 桌面端 keychain 指纹。
+		So(gotDaemonFP, ShouldEqual, "sha256:abc")
+		So(gotPeerFP, ShouldEqual, "fp-x")
+	})
+}
+
+func TestPool_Borrow_RelayConfigured_RelayWinsWhenLANUnavailable(t *testing.T) {
+	Convey("relay configured and LAN down: relay path wins", t, func() {
+		relayClient := stubClient()
+		f := newPoolFixture(t, remote_device_svc.WithRelayDial(stubRelayDial{open: func(_ context.Context, _, _ string) (*client.Client, error) {
+			return relayClient, nil
+		}}))
+		f.repo.EXPECT().Get(gomock.Any(), int64(42)).Return(f.device, nil)
+		f.dial.EXPECT().Open(gomock.Any(), gomock.Any()).Return(nil, errors.New("LAN down"))
+
+		lease, err := f.pool.Borrow(context.Background(), 42)
+		So(err, ShouldBeNil)
+		So(lease.Client(), ShouldNotBeNil)
+	})
+}
+
+func TestPool_Borrow_RelayConfigured_BothFail_ReportsBothReasons(t *testing.T) {
+	Convey("both paths fail: error names each path's reason (R6)", t, func() {
+		f := newPoolFixture(t, remote_device_svc.WithRelayDial(stubRelayDial{open: func(_ context.Context, _, _ string) (*client.Client, error) {
+			return nil, errors.New("relay down")
+		}}))
+		f.repo.EXPECT().Get(gomock.Any(), int64(42)).Return(f.device, nil)
+		f.dial.EXPECT().Open(gomock.Any(), gomock.Any()).Return(nil, errors.New("LAN down"))
+
+		_, err := f.pool.Borrow(context.Background(), 42)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "direct path: LAN down")
+		So(err.Error(), ShouldContainSubstring, "relay path: relay down")
+	})
+}
