@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,6 +104,37 @@ func TestAuth_AccountCredential_GivenUnclaimedDaemon_WhenAuthenticating_ThenReje
 
 	assertAccountCredentialRejection(t, err, "account credential rejected: cached verification key unavailable")
 }
+
+// R3:「上述验签在 daemon 与 server 之间零网络往返」。这是离线可用性的支点 ——
+// 一旦验签路径上混进任何一次 HTTP 调用,server 挂掉时内网就连不上了,而这在
+// 单测里表现为「照样通过」,只有把 transport 换成绊线才拦得住。
+func TestAuth_AccountCredential_WhenVerifying_ThenMakesNoNetworkRoundTrip(t *testing.T) {
+	ah, st, _ := setupAuthTest(t)
+	privateKey, publicKeyPEM := testRSAKeyPair(t)
+	st.Claim("42", publicKeyPEM, state.AccountCredential{})
+	credential := testAccountCredential(t, privateKey, int64(42), time.Now().Add(time.Hour))
+
+	originalTransport := http.DefaultTransport
+	var networkCalls atomic.Int32
+	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		networkCalls.Add(1)
+		return nil, errors.New("network is not allowed during account credential verification")
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	result, err := ah.HandleAccount(context.Background(), AccountParams{
+		Credential:        credential,
+		DeviceFingerprint: "sha256:account-client",
+	})
+
+	require.NoError(t, err)
+	assert.True(t, result.OK)
+	assert.Zero(t, networkCalls.Load(), "account credential verification must not contact the server")
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func assertAccountCredentialRejection(t *testing.T, err error, reason string) {
 	t.Helper()

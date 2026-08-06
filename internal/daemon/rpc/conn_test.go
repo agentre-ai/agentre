@@ -415,6 +415,49 @@ func TestMultiplexer_GivenInboundChannel_WhenItsFirstEnvelopeArrives_ThenAccepts
 	}
 }
 
+// 一个中转客户端断开时,server 只能通过「空载荷信封」告诉 daemon 那条虚拟通道没了 ——
+// 共享的 relay websocket 还开着,整链路的 onDisconnect 不会触发。收不到这个信号,
+// connRegistry 里会留下一个幽灵对端:MCP 隧道(R11)会把工具请求发给一条永远不会
+// 回应的通道,Conn.Call 只能干等调用方 ctx(CLI 的 HTTP ctx ~285s)而不是立刻拿到
+// 「发起端不在线」的语义错误。
+func TestMultiplexer_GivenEmptyEnvelope_WhenItArrivesForAChannel_ThenClosesOnlyThatChannel(t *testing.T) {
+	link := newMultiplexerHubStub()
+	mux := newMultiplexer(link)
+	t.Cleanup(mux.Close)
+	link.dial()
+
+	departing, err := mux.Open()
+	require.NoError(t, err)
+	surviving, err := mux.Open()
+	require.NoError(t, err)
+
+	link.frames <- HubFrame{MessageType: websocket.BinaryMessage, Payload: marshalRelayEnvelope(departing.ID(), nil)}
+
+	assertChannelClosed(t, departing.Done())
+	assertChannelOpen(t, surviving.Done())
+	assert.True(t, link.Connected(), "a single channel close must not drop the shared relay")
+
+	var discarded Frame
+	assert.ErrorIs(t, departing.ReadFrame(&discarded), io.EOF)
+}
+
+// 通道关闭信号不得凭空造出一条通道 —— 否则一个迟到的 close 会在 Accept() 上
+// 冒出一条刚生就死的连接。
+func TestMultiplexer_GivenEmptyEnvelope_WhenChannelIsUnknown_ThenAcceptsNothing(t *testing.T) {
+	link := newMultiplexerHubStub()
+	mux := newMultiplexer(link)
+	t.Cleanup(mux.Close)
+	link.dial()
+
+	link.frames <- HubFrame{MessageType: websocket.BinaryMessage, Payload: marshalRelayEnvelope("never-seen", nil)}
+
+	select {
+	case created := <-mux.Accept():
+		t.Fatalf("channel close signal created a virtual channel %q", created.ID())
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestMultiplexer_GivenOneClosedChannel_WhenAnotherChannelUsesRelay_ThenRelayAndOtherChannelStayOpen(t *testing.T) {
 	link := newMultiplexerHubStub()
 	mux := newMultiplexer(link)

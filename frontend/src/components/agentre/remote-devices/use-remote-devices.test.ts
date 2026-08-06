@@ -71,6 +71,7 @@ const accountDevice = (
   Capabilities: {},
   LastSeenAt: 1_700_000_000_000,
   Status: 1, // ACTIVE
+  Online: true, // 中继在线登记(R20)
   IsThisDevice: false,
   ...over,
 });
@@ -125,15 +126,44 @@ describe("mergeDeviceSources (R15)", () => {
     expect(rows[0].unclaimed).toBe(false);
   });
 
-  it("treats a non-active account device (revoked) as a dead relay path", () => {
+  it("treats a daemon with no relay presence as a dead relay path", () => {
     const rows = mergeDeviceSources([lanDevice()], {
       known: true,
-      devices: [accountDevice({ Status: 2 })],
+      devices: [accountDevice({ Online: false })],
     });
     expect(rows[0].viaRelay).toBe(false);
     expect(rows[0].paths).toEqual([
       { kind: "lan", state: "in-use" },
       { kind: "relay", state: "dead" },
+    ]);
+  });
+
+  // R15:「该行呈现它的可达路径而非凭据来源」。账号侧的 Status 是授权标志
+  // (ACTIVE / REVOKED),不是可达性 —— 一台关机的机器账号行仍是 ACTIVE,
+  // 拿 Status 当路径状态会让面板宣称一条通向关机机器的中转路径。
+  it("does not claim a relay path from the account authorization flag alone", () => {
+    const rows = mergeDeviceSources([lanDevice({ online: false })], {
+      known: true,
+      devices: [accountDevice({ Status: 1, Online: false })],
+    });
+    expect(rows[0].viaRelay).toBe(false);
+    expect(rows[0].paths).toEqual([
+      { kind: "lan", state: "dead" },
+      { kind: "relay", state: "dead" },
+    ]);
+  });
+
+  // 反向:授权已撤销但机器此刻仍挂在中转上 —— 路径标记跟随可达性,
+  // 撤销后 daemon 无法续期在线登记,Online 自然落回 false。
+  it("reports a reachable relay path even when the account row is not ACTIVE", () => {
+    const rows = mergeDeviceSources([lanDevice({ online: false })], {
+      known: true,
+      devices: [accountDevice({ Status: 2, Online: true })],
+    });
+    expect(rows[0].viaRelay).toBe(true);
+    expect(rows[0].paths).toEqual([
+      { kind: "lan", state: "dead" },
+      { kind: "relay", state: "in-use" },
     ]);
   });
 

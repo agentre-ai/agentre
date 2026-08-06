@@ -5,6 +5,7 @@ package remote_device_svc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -202,8 +203,13 @@ func (p *pool) Borrow(ctx context.Context, deviceID int64) (Lease, error) {
 		ExpectedDaemonFingerprint: row.DaemonFingerprint,
 	})
 	if err != nil {
-		if p.relay == nil && errors.Is(err, ErrUnauthorized) {
-			return nil, ErrDeviceUnauthorized
+		if errors.Is(err, ErrUnauthorized) {
+			// 直连的 auth.connect 明确拒绝了凭据(设备令牌被撤销 / 已解除配对)。
+			// 这是终止条件:上层(chat_svc.terminalBorrowError / remote_fs_svc /
+			// sync_provider)靠这个 sentinel 判定「重试也没用」,少了它重连循环会
+			// 永远重试一台再也不会接受自己的 daemon。包一层而不是直接返回 sentinel,
+			// 是为了保住 R6 要求的「两条路径各自的失败原因」。
+			return nil, fmt.Errorf("%w: %w", ErrDeviceUnauthorized, err)
 		}
 		return nil, err
 	}

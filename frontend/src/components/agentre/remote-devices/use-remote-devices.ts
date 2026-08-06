@@ -49,9 +49,6 @@ export type DeviceRowModel = DeviceView & {
   viaRelay: boolean;
 };
 
-/** hub devices.status 的 ACTIVE 值。 */
-const RELAY_ACTIVE_STATUS = 1;
-
 export function mergeDeviceSources(
   lan: DeviceView[],
   account: AccountSource,
@@ -70,11 +67,14 @@ export function mergeDeviceSources(
     ];
     let relayInUse = false;
     if (acc) {
-      const active = acc.Status === RELAY_ACTIVE_STATUS;
-      relayInUse = active && !online;
+      // 中转路径是否可达,取 daemon 在 server 上的中继在线登记(R20),
+      // 而不是账号侧的授权标志 —— R15 要求这一行呈现「可达路径」而非
+      // 「凭据来源」。授权被撤销的机器无法再续期在线登记,Online 会自行落回 false。
+      const relayReachable = acc.Online;
+      relayInUse = relayReachable && !online;
       paths.push({
         kind: "relay",
-        state: active ? (online ? "available" : "in-use") : "dead",
+        state: relayReachable ? (online ? "available" : "in-use") : "dead",
       });
     }
     return {

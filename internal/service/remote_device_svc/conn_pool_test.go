@@ -276,6 +276,25 @@ func TestPool_Borrow_RelayConfigured_RelayWinsWhenLANUnavailable(t *testing.T) {
 	})
 }
 
+// 生产装配总是注入 relay(bootstrap.InitRemoteDevice),所以「LAN 的 auth.connect 被拒」
+// 这条既有判定必须在 relay 已注入时依然成立 —— 否则设备令牌被撤销/解除配对后,
+// chat_svc.terminalBorrowError 认不出终止条件,重连循环会永远重试一台再也不会接受
+// 自己的 daemon。R6 要求的「两条路径各自的原因」同时保留。
+func TestPool_Borrow_RelayConfigured_LANUnauthorized_StaysDeviceUnauthorized(t *testing.T) {
+	Convey("relay configured and LAN rejects credentials: still ErrDeviceUnauthorized, both reasons kept", t, func() {
+		f := newPoolFixture(t, remote_device_svc.WithRelayDial(stubRelayDial{open: func(_ context.Context, _, _ string) (*client.Client, error) {
+			return nil, errors.New("relay down")
+		}}))
+		f.repo.EXPECT().Get(gomock.Any(), int64(42)).Return(f.device, nil)
+		f.dial.EXPECT().Open(gomock.Any(), gomock.Any()).Return(nil, remote_device_svc.ErrUnauthorized)
+
+		_, err := f.pool.Borrow(context.Background(), 42)
+		So(errors.Is(err, remote_device_svc.ErrDeviceUnauthorized), ShouldBeTrue)
+		So(err.Error(), ShouldContainSubstring, "direct path: unauthorized")
+		So(err.Error(), ShouldContainSubstring, "relay path: relay down")
+	})
+}
+
 func TestPool_Borrow_RelayConfigured_BothFail_ReportsBothReasons(t *testing.T) {
 	Convey("both paths fail: error names each path's reason (R6)", t, func() {
 		f := newPoolFixture(t, remote_device_svc.WithRelayDial(stubRelayDial{open: func(_ context.Context, _, _ string) (*client.Client, error) {

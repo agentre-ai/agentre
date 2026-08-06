@@ -148,6 +148,16 @@ func (m *Multiplexer) dispatch(frame HubFrame) {
 		m.mu.Unlock()
 		return
 	}
+	// 空载荷 = 对端(server)通知这条虚拟通道已经没了。共享链路还活着,所以只关这一条,
+	// 且绝不为一个未知通道凭空建连接。
+	if len(payload) == 0 {
+		channel := m.channels[channelID]
+		m.mu.Unlock()
+		if channel != nil {
+			m.closeChannel(channel)
+		}
+		return
+	}
 	channel := m.channels[channelID]
 	created := channel == nil
 	if created {
@@ -319,8 +329,8 @@ func unmarshalRelayEnvelope(payload []byte) (string, []byte, error) {
 		return "", nil, errors.New("relay envelope has an invalid channel ID length")
 	}
 	frameStart := relayEnvelopeHeaderSize + channelIDLength
-	if len(payload) <= frameStart {
-		return "", nil, errors.New("relay envelope is missing its JSON-RPC frame")
+	if len(payload) < frameStart {
+		return "", nil, errors.New("relay envelope is truncated before its JSON-RPC frame")
 	}
 	channelIDBytes := payload[relayEnvelopeHeaderSize:frameStart]
 	if !utf8.Valid(channelIDBytes) {
