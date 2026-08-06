@@ -2814,6 +2814,8 @@ function ChatPanel({
                 sessionId={session?.id ?? 0}
                 messages={messages}
                 activeMessageId={activeMessageId}
+                cwd={session?.cwd ?? ""}
+                remote={Boolean(session?.deviceID)}
                 onJumpToMessage={(mid) => {
                   transcriptHandleRef.current?.scrollToMessage(mid);
                 }}

@@ -525,7 +525,11 @@
   "chatContext": {
     "files": {
       "empty": "No files have been changed in this session",
-      "label": "Files"
+      "label": "Files",
+      "openFile": "Open file",
+      "openFailed": "Failed to open file: {{error}}",
+      "expandFolder": "Expand {{name}}",
+      "collapseFolder": "Collapse {{name}}"
     },
     "outline": {
       "empty": "No messages in this session",
