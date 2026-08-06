@@ -279,10 +279,11 @@ type ChatSessionStatusPatch struct {
 }
 
 // ChatBlock 是 backend → 前端的简化投影：把 cago/agents StoredBlock 拍平。
-// 已支持的 Type：text / thinking / tool_use / tool_result / ask_user_question / unknown（兜底）。
+// 已支持的 Type：text / thinking / tool_use / tool_result / notice / ask_user_question / unknown（兜底）。
 type ChatBlock struct {
 	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"` // text / thinking / tool_result 文本
+	Text  string          `json:"text,omitempty"`  // text / thinking / tool_result / notice 文本
+	Level string          `json:"level,omitempty"` // notice 级别
 	Image *ChatBlockImage `json:"image,omitempty"`
 
 	// tool_use:
@@ -478,9 +479,11 @@ type ChatSessionDetail struct {
 	// openai-response）。前端用它和 BackendType 一起判定 Usage 字段语义：Anthropic 系
 	// 的 PromptTokens 只含未缓存输入，要叠加 CachedTokens + CacheCreationTokens 才是
 	// 总上下文；OpenAI 系的 PromptTokens 已是总数。空串表示后端未绑定 provider（CLI 登录态）。
-	LLMProviderType string `json:"llmProviderType"`
-	Title           string `json:"title"`
-	AgentStatus     string `json:"agentStatus"`
+	LLMProviderType      string `json:"llmProviderType"`
+	ModelOverride        string `json:"modelOverride"`
+	ProviderDefaultModel string `json:"providerDefaultModel"`
+	Title                string `json:"title"`
+	AgentStatus          string `json:"agentStatus"`
 	// ActiveStream 仅在 LoadSession 时填:该会话有正在跑的 turn 时,给出其 per-turn
 	// wails 事件名("chat:event:<sessionID>:<assistantMessageID>"),让中途打开本会话的
 	// 前端 openStream 重挂到实时流。子 agent 调用轮 / 自主轮等"非前端发起"的 turn 没有 Send
@@ -659,6 +662,8 @@ type SendRequest struct {
 	//   - codex: default / plan
 	// 空串表示不改已有会话；新建 codex 会话空串按 default 落库。
 	PermissionMode string `json:"permissionMode,omitempty"`
+	// ModelOverride 仅新建会话时生效；已有会话通过 SetSessionModel 切换。
+	ModelOverride string `json:"modelOverride,omitempty"`
 	// EmitTurnStartedBypass 表示本轮由"非查看者"发起(子 agent 调用经 subagent_svc
 	// 阻塞起轮),需经会话级旁路 chat:autonomous:<sessionId> 把 per-turn 流名推给该会话
 	// 已打开(可能在后台)的 ChatPanel, 让它翻 running + openStream —— 否则只有发起者

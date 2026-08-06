@@ -93,6 +93,7 @@ type ChatSvc interface {
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
 	StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error)
 	SetPermissionMode(ctx context.Context, req *SetPermissionModeRequest) (*SetPermissionModeResponse, error)
+	SetSessionModel(sessionID int64, model string) error
 	Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error)
 	Edit(ctx context.Context, req *EditRequest) (*SendResponse, error)
 	Rename(ctx context.Context, req *RenameRequest) (*RenameResponse, error)
@@ -495,6 +496,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		Session: ChatSessionDetail{
 			ID:                     sess.ID,
 			AgentID:                sess.AgentID,
+			ModelOverride:          sess.ModelOverride,
 			Title:                  sess.Title,
 			AgentStatus:            sess.AgentStatus,
 			NeedsAttention:         sess.IsWaitingForUser(),
@@ -553,6 +555,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		}
 		if prov != nil {
 			resp.Session.LLMProviderType = prov.Type
+			resp.Session.ProviderDefaultModel = strings.TrimSpace(prov.Model)
 		}
 		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, prov, msgs)
 
@@ -679,6 +682,18 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	return &LaunchCommandResponse{Command: cmd, BackendType: be.Type}, nil
 }
 
+func modelDeviationNotice(override, actual string) *blocks.NoticeBlock {
+	override = strings.TrimSpace(override)
+	actual = strings.TrimSpace(actual)
+	if override == "" || actual == "" || override == actual {
+		return nil
+	}
+	return &blocks.NoticeBlock{
+		Level: "info",
+		Text:  fmt.Sprintf("所选模型 %s 未生效，实际使用 %s", override, actual),
+	}
+}
+
 func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 	bs, err := m.GetBlocks()
 	if err != nil {
@@ -733,6 +748,12 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "thinking", Text: tb.Text})
 		case *blocks.ThinkingBlock:
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "thinking", Text: tb.Text})
+		case blocks.NoticeBlock:
+			out.Blocks = append(out.Blocks, ChatBlock{Type: "notice", Level: tb.Level, Text: tb.Text})
+		case *blocks.NoticeBlock:
+			if tb != nil {
+				out.Blocks = append(out.Blocks, ChatBlock{Type: "notice", Level: tb.Level, Text: tb.Text})
+			}
 		case blocks.ToolUseBlock:
 			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
 			if sb := subByParent[tb.ID]; sb != nil {
@@ -1269,6 +1290,10 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	}
 
 	if req.SessionID == 0 {
+		modelOverride, merr := normalizeModelOverride(ctx, req.ModelOverride)
+		if merr != nil {
+			return nil, merr
+		}
 		// 项目上下文（可选）：仅在新建会话时生效；已存在的会话不再换项目。
 		projectID, perr := s.resolveProjectContext(ctx, req.ProjectID, targetAgentID)
 		if perr != nil {
@@ -1286,6 +1311,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 			// 抢跑——前端拿到空串后 messages.length>0 时会把 bypass pill 错灰。
 			// runtime 后续仍按 resolveLaunchMode 结果幂等覆盖,处理后端默认值回落。
 			PermissionModeAtLaunch: permissionMode,
+			ModelOverride:          modelOverride,
 			Title:                  sessionTitleFromFirstMessage(text),
 			// idle 落库;running 由 startTurn 事务内的 Update 原子翻转 —— 事务失败
 			// 时不残留 running(否则空会话永久卡 running,还会 block 退出)。
@@ -1953,6 +1979,46 @@ func (s *chatSvc) refreshPermissionModeForAutoContinue(ctx context.Context, sess
 	sess.PermissionMode = fresh.PermissionMode
 }
 
+func normalizeModelOverride(ctx context.Context, model string) (string, error) {
+	if model == "" {
+		return "", nil
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", i18n.NewError(ctx, code.InvalidParameter)
+	}
+	return model, nil
+}
+
+// SetSessionModel sets or clears the persisted model override for an existing session.
+// Model ids are intentionally not checked against the provider catalog: CLI-login
+// sessions and provider-compatible custom ids are valid inputs at this service boundary.
+func (s *chatSvc) SetSessionModel(sessionID int64, model string) error {
+	ctx := context.Background()
+	if sessionID <= 0 {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	model, err := normalizeModelOverride(ctx, model)
+	if err != nil {
+		return err
+	}
+	sess, err := chat_repo.Session().Find(ctx, sessionID)
+	if err != nil {
+		return operationFailedWithCause(ctx, err)
+	}
+	if sess == nil {
+		return i18n.NewError(ctx, code.ChatSessionNotFound)
+	}
+	sess.ModelOverride = model
+	if err := chat_repo.Session().Update(ctx, sess); err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.SetSessionModel: persist model override failed",
+			zap.Int64("sessionId", sessionID),
+			zap.Error(err))
+		return operationFailedWithCause(ctx, err)
+	}
+	return nil
+}
+
 // SetPermissionMode 让前端把 CLI 会话切到指定 mode。
 //
 // claudecode 使用 Claude permission mode；codex 使用 Codex collaboration mode
@@ -2611,6 +2677,7 @@ func (s *chatSvc) runTurn(
 	req := agentruntime.RunRequest{
 		Backend:           be,
 		Provider:          prov,
+		ModelOverride:     strings.TrimSpace(sess.ModelOverride),
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,
@@ -2819,7 +2886,6 @@ func (s *chatSvc) runTurn(
 	// takeToolApprovals 同模式标 expired：落库让 reload 可见，下方 finalCtx 就绪后
 	// 对被标记的 block emit 锁定 patch，让在屏活卡不用 reload 立即锁。
 	expiredAsks := handlers.MarkUnansweredUserAsksExpired(finalBlocks)
-	_ = assistantMsg.SetBlocks(finalBlocks)
 
 	assistantMsg.DurationMs = int(time.Since(segmentStart).Milliseconds())
 	stopErr := streamStopErr
@@ -2872,6 +2938,12 @@ func (s *chatSvc) runTurn(
 			sess.ContextWindow = result.ContextWindow
 		}
 	}
+	if result != nil {
+		if notice := modelDeviationNotice(req.ModelOverride, result.Model); notice != nil {
+			finalBlocks = append(finalBlocks, *notice)
+		}
+	}
+	_ = assistantMsg.SetBlocks(finalBlocks)
 	// aborted 已在 acc.Finalize() 之后取出(见上方 MarkRunningSubagentsCancelled 调用)；
 	// 这里的判定决定 StreamAborted vs StreamError/Done,以及 abort 路径跳过自动接续。
 	awaitingPlanAction := stopErr == nil && !aborted &&

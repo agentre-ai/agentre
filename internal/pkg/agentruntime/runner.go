@@ -372,9 +372,10 @@ type MCPServerSpec struct {
 
 // RunRequest 一次 Send 的入参。
 type RunRequest struct {
-	Backend  *agent_backend_entity.AgentBackend
-	Provider *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
-	AgentID  int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
+	Backend       *agent_backend_entity.AgentBackend
+	Provider      *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
+	ModelOverride string                           `json:"modelOverride,omitempty"`
+	AgentID       int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
 	// SessionID 是这一轮在**本进程内**的会话身份：runner 的会话表（子进程缓存 /
 	// waiter / 自主续轮通道）全按它索引，控制类接口（Steerer / Aborter /
 	// ToolPermissionSink / WaiterLister …）收到的 sessionID 也是它。

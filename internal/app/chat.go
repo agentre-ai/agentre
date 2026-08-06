@@ -123,6 +123,12 @@ func (a *App) SetChatPermissionMode(req *chat_svc.SetPermissionModeRequest) (*ch
 	return chat_svc.Chat().SetPermissionMode(a.ctx, req)
 }
 
+// SetChatSessionModel sets or clears the model override for an existing chat session.
+// An empty model follows the provider default again.
+func (a *App) SetChatSessionModel(sessionID int64, model string) error {
+	return chat_svc.Chat().SetSessionModel(sessionID, model)
+}
+
 // RegenerateChatMessage 截掉指定 assistant 消息之前的 user 锚点后，用同一段
 // user 文本重新走一遍 turn。Step 1：仅 builtin 后端实际工作；CLI 后端在 runner
 // 接入 Rewinder 之前返回 ChatRegenerateUnsupported。
