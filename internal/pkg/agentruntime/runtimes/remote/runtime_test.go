@@ -1548,3 +1548,43 @@ func TestGoal_DispatchesWireRPCsWithBackendMetadata(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, cleared)
 }
+
+func TestRun_DirectForkTurnAcceptsChangedProviderSessionID(t *testing.T) {
+	_, cli, capture, rt := setupRemote(t)
+
+	cli.EXPECT().Call(gomock.Any(), wire.MethodRun, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, params any, result any) error {
+			rp, ok := params.(wire.RunParams)
+			require.True(t, ok, "expected wire.RunParams, got %T", params)
+			assert.Equal(t, int64(42), rp.SessionID)
+			// A direct (non-Pi) run carries the resumed identity in the ack...
+			*(result.(*wire.RunAck)) = wire.RunAck{SessionID: rp.SessionID, ProviderSessionID: "orig-session"}
+			return nil
+		}).Times(1)
+
+	events, runResult, err := rt.Run(context.Background(), agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypeClaudeCode), ID: 1, Name: "cc"},
+		SessionID: 42,
+		UserText:  "hello",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, runResult)
+	assert.Equal(t, "orig-session", runResult.ProviderSessionID)
+
+	// A claudecode fork (Regenerate) legitimately changes the provider session
+	// identity during the turn: the ack carries the resumed session and the final
+	// runResultDone carries the forked session. That final frame must still
+	// finalize the run instead of being dropped as a stale generation.
+	capture.deliver(t, wire.NotifyRunResultDone, wire.RunResultDoneFrame{
+		SessionID:         42,
+		ProviderSessionID: "forked-session",
+	})
+
+	select {
+	case _, ok := <-events:
+		assert.False(t, ok, "events channel must close after runResultDone")
+	case <-time.After(time.Second):
+		t.Fatal("events channel never closed: fork runResultDone was dropped")
+	}
+	assert.Equal(t, "forked-session", runResult.ProviderSessionID)
+}

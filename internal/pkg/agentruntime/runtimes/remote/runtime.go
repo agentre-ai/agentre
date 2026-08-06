@@ -641,10 +641,17 @@ func (r *Runtime) handleRunResultDone(ctx context.Context, raw json.RawMessage) 
 			zap.Int("stopErrCode", frame.StopErrCode))
 		return nil, nil
 	}
+	// The provider session identity only discriminates stale generations for Pi
+	// prepared runs, where the pre-prompt fork fixes it before Start. Direct runs
+	// (e.g. a claudecode fork on Regenerate) legitimately change the provider
+	// session during the turn, so comparing it would drop the real terminal frame
+	// and leave the events channel open forever; the map-identity check below
+	// already guards against a replaced generation for those runs.
 	sess.mu.Lock()
+	piGeneration := sess.backendType == agent_backend_entity.TypePiAgent
 	expectedProviderSessionID := sess.providerSessionID
 	sess.mu.Unlock()
-	if expectedProviderSessionID != "" && frame.ProviderSessionID != "" &&
+	if piGeneration && expectedProviderSessionID != "" && frame.ProviderSessionID != "" &&
 		frame.ProviderSessionID != expectedProviderSessionID {
 		logger.Ctx(ctx).Warn("remote runtime: stale runResultDone generation dropped",
 			zap.Int64("sessionId", frame.SessionID),
