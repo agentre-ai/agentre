@@ -260,7 +260,9 @@ func drainStream(ctx context.Context, req agentruntime.RunRequest, _ string, s s
 			// 吐给 chat_svc（result.Model → assistantMsg.Model）。上下文窗口只采用
 			// Pi RPC get_state / get_session_stats 返回值，避免自定义 provider 复用
 			// 公共模型名时被 Agentre catalog 的同名模型元数据错误覆盖。
-			result.Model = raw.Model
+			// 绑 provider 时上报值带 "agentre-<key>/" 前缀，剥掉后再吐给 chat_svc，
+			// 让偏离提示的 override/actual 同语义（见 piUserModelID）。
+			result.Model = piUserModelID(req, raw.Model)
 		}
 		events, u, err := translate(raw)
 		for _, ev := range events {

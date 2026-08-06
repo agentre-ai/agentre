@@ -140,6 +140,34 @@ func TestPiResultModelPlaceholder(t *testing.T) {
 	})
 }
 
+func TestPiUserModelID_StripsProviderPrefix(t *testing.T) {
+	Convey("Given pi-agent 绑 provider 且用户设了会话级 override", t, func() {
+		bound := agentruntime.RunRequest{
+			Provider: &llm_provider_entity.LLMProvider{ProviderKey: "provabc", Model: "deepseek-v3"},
+		}
+
+		Convey("When pi 上报的模型带 agentre-<key>/ 前缀 Then 归一为原始模型 id", func() {
+			So(piUserModelID(bound, "agentre-provabc/deepseek-r1"), ShouldEqual, "deepseek-r1")
+		})
+
+		Convey("When pi 上报的模型不带前缀(裸 id) Then 原样返回", func() {
+			So(piUserModelID(bound, "deepseek-r1"), ShouldEqual, "deepseek-r1")
+		})
+
+		Convey("When 上报空模型 Then 原样返回空(不产偏离)", func() {
+			So(piUserModelID(bound, ""), ShouldEqual, "")
+		})
+
+		Convey("When 未绑 provider 但模型恰好以 agentre- 开头 Then 不剥前缀(避免误伤 CLI 登录态模型名)", func() {
+			So(piUserModelID(agentruntime.RunRequest{}, "agentre-custom/foo"), ShouldEqual, "agentre-custom/foo")
+		})
+
+		Convey("When 前缀匹配其它 provider 的 key Then 不剥前缀", func() {
+			So(piUserModelID(bound, "agentre-otherkey/deepseek-r1"), ShouldEqual, "agentre-otherkey/deepseek-r1")
+		})
+	})
+}
+
 func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 	Convey("Given pi-agent CLI login runtime", t, func() {
 		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {

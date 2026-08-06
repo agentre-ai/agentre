@@ -75,8 +75,19 @@ type Runtime struct {
 	// 绑定在 Client 创建时),app-server 进程又会被池跨轮复用 —— 模型变了必须 evict +
 	// 重 spawn(镜像 claudecode 的 launchedEffort/launchedModel 先例),否则下一轮
 	// 复用旧模型进程,会话级切换不生效(RunResult.Model 仍旧模型,偏离提示误报)。
+	//
+	// 池按 LRU 上限(MarkIdle 的 prune)逐出空闲会话时不会回调这里,故条目可能只增不减
+	// (逐出后该 key 再 spawn 会被 recordLaunchedModel 覆盖)。为防长驻进程里 map 随
+	// 会话累积无界增长,recordLaunchedModel 用 FIFO 上限裁剪:被裁掉的 key 若日后回到
+	// 池,modelChanged 只会把它当成「未记录」,最多导致一次无谓重 spawn,绝不产生错误结果。
 	launchedModel map[string]string
+	// launchedModelOrder 是 launchedModel 的 FIFO 插入序,用于容量裁剪。
+	launchedModelOrder []string
 }
+
+// maxTrackedLaunchedModels 是 launchedModel 的上限。池空闲容量 8,同时活跃的 key
+// 远小于此;超过上限的多是已被池逐出的死 key,裁掉只省内存、不影响判定。
+const maxTrackedLaunchedModels = 512
 
 func New() *Runtime {
 	return NewWithPool(agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap))
@@ -86,7 +97,12 @@ func NewWithPool(pool *agentruntime.CLISessionPool) *Runtime {
 	if pool == nil {
 		pool = agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap)
 	}
-	return &Runtime{active: map[int64]*codexActive{}, pool: pool, launchedModel: map[string]string{}}
+	return &Runtime{
+		active:             map[int64]*codexActive{},
+		pool:               pool,
+		launchedModel:      map[string]string{},
+		launchedModelOrder: []string{},
+	}
 }
 
 // modelChanged 报告该会话已 spawn 的 effectiveModel 是否与新一轮不同。
@@ -98,10 +114,20 @@ func (r *Runtime) modelChanged(key, effective string) bool {
 }
 
 // recordLaunchedModel 在 spawn 成功后记录本次下发的 effectiveModel。
+// 超过 maxTrackedLaunchedModels 时按 FIFO 裁掉最旧条目(池逐出会话不回调本包,
+// 必须在这里兜底防 map 无界增长)。
 func (r *Runtime) recordLaunchedModel(key, effective string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, exists := r.launchedModel[key]; !exists {
+		r.launchedModelOrder = append(r.launchedModelOrder, key)
+	}
 	r.launchedModel[key] = effective
+	for len(r.launchedModelOrder) > maxTrackedLaunchedModels {
+		oldest := r.launchedModelOrder[0]
+		r.launchedModelOrder = r.launchedModelOrder[1:]
+		delete(r.launchedModel, oldest)
+	}
 }
 
 // forgetLaunchedModel 在池逐出会话时清理记录,避免只增不减。
@@ -109,6 +135,17 @@ func (r *Runtime) forgetLaunchedModel(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.launchedModel, key)
+	r.launchedModelOrder = removeOrderKey(r.launchedModelOrder, key)
+}
+
+// removeOrderKey 从 FIFO 序里剔除 key(可空切片,返回新切片)。
+func removeOrderKey(order []string, key string) []string {
+	for i, k := range order {
+		if k == key {
+			return append(order[:i], order[i+1:]...)
+		}
+	}
+	return order
 }
 
 // Capabilities 返回 codex runtime 的能力矩阵。
@@ -483,6 +520,7 @@ func (r *Runtime) CloseAllSessions(_ context.Context) {
 	r.pool.RemoveAll()
 	r.mu.Lock()
 	r.launchedModel = map[string]string{}
+	r.launchedModelOrder = []string{}
 	r.mu.Unlock()
 }
 

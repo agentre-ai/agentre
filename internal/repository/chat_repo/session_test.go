@@ -612,6 +612,49 @@ func TestSessionRepo_UpdateKeepsRemoteExecColumns(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestSessionRepo_UpdateKeepsModelOverride 钉死「会话级模型切换不能在轮次收尾被整行
+// Save 抹掉」。
+//
+// 场景:用户在某会话跑着的一轮里调 SetChatSessionModel 换模型 —— 轮次开始时 runTurn
+// 读出的实体还带着旧 override(""),收尾时 persistSessionStatus 拿这份旧实体做整行
+// Save;若 model_override 不在 Omit 里,这条 Save 会把刚落库的新 override 盖回旧值,
+// 用户下一轮看到的还是旧模型(切换"成功"却未生效)。
+//
+// 断言落在「这一行最后是什么」而不是收尾 SQL 长什么样:缺陷出在两次写之间的相互作用,
+// 单看任何一条语句都是对的(同 TestSessionRepo_UpdateKeepsRemoteExecColumns)。
+func TestSessionRepo_UpdateKeepsModelOverride(t *testing.T) {
+	ctx, gdb, mock := testutils.Database(t)
+	repo := chat_repo.NewSession()
+
+	// 库里那一行。sqlmock 不是真引擎、不维护行状态,这里按仓储实际发出的 SET 子句
+	// 逐列跟着改(见 captureUpdatedRow)。
+	row := map[string]any{
+		"agent_status":   "running",
+		"model_override": "",
+	}
+	captureUpdatedRow(t, gdb, row)
+
+	// 轮次开始时读出来的实体:还没切换,override 是旧值空串。
+	sess := &chat_entity.Session{ID: 42, AgentStatus: "running", Status: consts.ACTIVE}
+
+	// 写 1:用户在轮次中途调 SetChatSessionModel(chat_svc.SetSessionModel)换模型。
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.UpdateModelOverride(ctx, 42, "claude-sonnet-4-5"))
+
+	// 写 2:running → idle 收尾,用的是上面那份**没跟着变**的内存实体。
+	sess.AgentStatus = "idle"
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE `chat_sessions`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, repo.Update(ctx, sess))
+
+	assert.Equal(t, "claude-sonnet-4-5", row["model_override"], "收尾不得把会话级模型覆盖抹回空串")
+	assert.Equal(t, "idle", row["agent_status"], "收尾本来要写的状态照常落库")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // captureUpdatedRow 把仓储实际发出的 UPDATE 语句应用到 row 上,补出 sqlmock 没有的
 // 行状态。取的是 GORM 生成的 SET 子句本身,不预设哪条语句该写哪些列。
 func captureUpdatedRow(t *testing.T, gdb *gorm.DB, row map[string]any) {

@@ -65,28 +65,17 @@ func TestSetSessionModel_PersistsTrimmedValueAndClears(t *testing.T) {
 		m := setupChatTestWithoutDatabase(t)
 		sess := &chat_entity.Session{ID: 100, AgentID: 7, ModelOverride: "old-model", Status: consts.ACTIVE}
 		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
-		var updated *chat_entity.Session
-		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
-			func(_ context.Context, got *chat_entity.Session) error {
-				updated = got
-				return nil
-			})
+		m.session.EXPECT().UpdateModelOverride(gomock.Any(), int64(100), "model-not-in-provider-list")
 
 		err := m.svc.SetSessionModel(100, "  model-not-in-provider-list  ")
 		require.NoError(t, err)
-		require.NotNil(t, updated)
-		assert.Equal(t, "model-not-in-provider-list", updated.ModelOverride)
 	})
 
 	t.Run("empty clears the override", func(t *testing.T) {
 		m := setupChatTestWithoutDatabase(t)
 		sess := &chat_entity.Session{ID: 100, AgentID: 7, ModelOverride: "old-model", Status: consts.ACTIVE}
 		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
-		m.session.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
-			func(_ context.Context, got *chat_entity.Session) error {
-				assert.Empty(t, got.ModelOverride)
-				return nil
-			})
+		m.session.EXPECT().UpdateModelOverride(gomock.Any(), int64(100), "")
 
 		require.NoError(t, m.svc.SetSessionModel(100, ""))
 	})

@@ -2037,6 +2037,36 @@ func normalizeModelOverride(ctx context.Context, model string) (string, error) {
 	return model, nil
 }
 
+// modelOverrideSwitchable 报告该后端是否消费会话级模型覆盖(v1 有实测依据的四类:
+// builtin / claudecode / codex / piagent,与前端 ModelPill 的 modelSwitchable 同一集合)。
+// openclaw 切换是 follow-up,不在 v1 范围 —— 若给这类会话下发 override,openclaw runtime
+// 会忽略它,而 runTurn 又拿 req.ModelOverride 跟 result.Model 比对产出偏离提示,每轮都会
+// 误报「所选 X 未生效,实际 Y」。门禁放在 runTurn(而非 SetSessionModel):会话的 agent 可能
+// 在设了 override 之后改绑到非 v1 后端,落库的 override 不该在新后端上继续生效。
+func modelOverrideSwitchable(be *agent_backend_entity.AgentBackend) bool {
+	if be == nil {
+		return false
+	}
+	switch agent_backend_entity.BackendType(be.Type) {
+	case agent_backend_entity.TypeBuiltin,
+		agent_backend_entity.TypeClaudeCode,
+		agent_backend_entity.TypeCodex,
+		agent_backend_entity.TypePiAgent:
+		return true
+	default:
+		return false
+	}
+}
+
+// modelOverrideForBackend 返回本轮到 runtime 下发的会话级模型覆盖。仅 v1 可切换后端
+// 透传;其它后端一律空串,防止 override 被忽略后逐轮误报偏离提示。
+func modelOverrideForBackend(sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) string {
+	if !modelOverrideSwitchable(be) {
+		return ""
+	}
+	return strings.TrimSpace(sess.ModelOverride)
+}
+
 // SetSessionModel sets or clears the persisted model override for an existing session.
 // Model ids are intentionally not checked against the provider catalog: CLI-login
 // sessions and provider-compatible custom ids are valid inputs at this service boundary.
@@ -2056,8 +2086,9 @@ func (s *chatSvc) SetSessionModel(sessionID int64, model string) error {
 	if sess == nil {
 		return i18n.NewError(ctx, code.ChatSessionNotFound)
 	}
-	sess.ModelOverride = model
-	if err := chat_repo.Session().Update(ctx, sess); err != nil {
+	// 单列写入:model_override 在整行 Save 里被 Omit(见 sessionRepo.Update),只能通过
+	// 专用方法写 —— 否则用户在轮次中途换的模型会被该轮收尾的整行 Save 盖回旧值。
+	if err := chat_repo.Session().UpdateModelOverride(ctx, sessionID, model); err != nil {
 		logger.Ctx(ctx).Warn("chat_svc.SetSessionModel: persist model override failed",
 			zap.Int64("sessionId", sessionID),
 			zap.Error(err))
@@ -2724,7 +2755,7 @@ func (s *chatSvc) runTurn(
 	req := agentruntime.RunRequest{
 		Backend:           be,
 		Provider:          prov,
-		ModelOverride:     strings.TrimSpace(sess.ModelOverride),
+		ModelOverride:     modelOverrideForBackend(sess, be),
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,

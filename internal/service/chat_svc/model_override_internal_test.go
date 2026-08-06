@@ -103,6 +103,55 @@ func setupDirectModelOverrideTest(t *testing.T) (*chatSvc, *directModelOverrideM
 	return NewChat(NoopEmitter{}).(*chatSvc), m, context.Background()
 }
 
+// TestRunTurn_NonSwitchableBackendIgnoresOverride 锁住 openclaw 等非 v1 后端的会话级
+// 模型覆盖门禁:这类后端不消费 override,若 runTurn 仍把 sess.ModelOverride 塞进
+// RunRequest,openclaw runtime 会忽略它且每轮误报「所选 X 未生效,实际 Y」偏离提示 ——
+// override 必须被拦在 runTurn,不落 wire、不产出偏离 notice。
+func TestRunTurn_NonSwitchableBackendIgnoresOverride(t *testing.T) {
+	_, m, ctx := setupDirectModelOverrideTest(t)
+	s := NewChat(NoopEmitter{}).(*chatSvc)
+	runner := &directModelOverrideRunner{
+		request:     make(chan agentruntime.RunRequest, 1),
+		actualModel: "actual-model",
+	}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeOpenClaw, runner)
+	t.Cleanup(restore)
+
+	sess := &chat_entity.Session{
+		ID: 100, AgentID: 7, ModelOverride: "selected-model", Status: consts.ACTIVE,
+	}
+	a := &agent_entity.Agent{ID: 7, AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`}
+	be := &agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeOpenClaw), LLMProviderKey: "provider-key", Status: consts.ACTIVE,
+	}
+	prov := &llm_provider_entity.LLMProvider{
+		ProviderKey: "provider-key", Type: string(llm_provider_entity.TypeAnthropic), Model: "provider-default", Status: consts.ACTIVE,
+	}
+	assistant := &chat_entity.Message{ID: 1001, SessionID: 100, Role: "assistant", BlocksJSON: "[]"}
+
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	var persisted *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			msgCopy := *msg
+			persisted = &msgCopy
+			return nil
+		}).AnyTimes()
+
+	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, turnExtras{})
+
+	select {
+	case req := <-runner.request:
+		assert.Empty(t, req.ModelOverride, "非 v1 后端不得透传会话级模型覆盖")
+	default:
+		t.Fatal("runtime did not receive a request")
+	}
+	require.NotNil(t, persisted)
+	persistedBlocks, err := persisted.GetBlocks()
+	require.NoError(t, err)
+	require.Len(t, persistedBlocks, 0, "非 v1 后端忽略 override,不得产出偏离 notice")
+}
+
 func TestRunTurn_ModelOverrideReachesRunnerAndPersistsDeviationNotice(t *testing.T) {
 	_, m, ctx := setupDirectModelOverrideTest(t)
 	var streamEvents []ChatStreamEvent

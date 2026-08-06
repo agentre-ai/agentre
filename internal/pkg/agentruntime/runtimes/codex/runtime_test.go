@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,6 +23,41 @@ import (
 // TestCodexCapabilities 钉死 codex runtime 的能力矩阵 + permission mode 元数据。
 // 与 claudecode 的关键差异:CapCancelSteer/CapDrainSteer=false;
 // CapReportContextWindow=true;PermissionModeMeta 仅 default/plan,SwitchableDuringTurn=false。
+// TestRecordLaunchedModel_Bounded 锁住 launchedModel 的容量裁剪:池按 LRU 上限逐出
+// 空闲会话时不回调本包,若不加上限,map 会随进程内用过的会话数无界增长。裁掉的是
+// 最旧的 key —— 它若日后回池,modelChanged 只会误判一次无谓重 spawn,不产错误结果。
+func TestRecordLaunchedModel_Bounded(t *testing.T) {
+	Convey("Given 一个 codex runtime", t, func() {
+		r := New()
+
+		Convey("When 记录超过上限的会话数 Then map 被 FIFO 裁剪到上限以内", func() {
+			for i := 0; i < maxTrackedLaunchedModels+64; i++ {
+				r.recordLaunchedModel(fmt.Sprintf("sess-%d", i), "gpt-5.5")
+			}
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			So(len(r.launchedModel), ShouldBeLessThanOrEqualTo, maxTrackedLaunchedModels)
+			So(len(r.launchedModelOrder), ShouldEqual, len(r.launchedModel))
+			// 最旧 64 个被裁掉,最新 512 个保留。
+			_, evicted := r.launchedModel["sess-0"]
+			_, kept := r.launchedModel[fmt.Sprintf("sess-%d", maxTrackedLaunchedModels+63)]
+			So(evicted, ShouldBeFalse)
+			So(kept, ShouldBeTrue)
+		})
+
+		Convey("When forgetLaunchedModel 剔除已记录 key Then map 与 FIFO 序同步删除", func() {
+			r.recordLaunchedModel("a", "m1")
+			r.recordLaunchedModel("b", "m2")
+			r.forgetLaunchedModel("a")
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			_, aGone := r.launchedModel["a"]
+			So(aGone, ShouldBeFalse)
+			So(r.launchedModelOrder, ShouldResemble, []string{"b"})
+		})
+	})
+}
+
 func TestCodexCapabilities(t *testing.T) {
 	Convey("codex Capabilities 矩阵", t, func() {
 		r := New()

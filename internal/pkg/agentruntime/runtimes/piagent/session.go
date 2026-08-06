@@ -227,6 +227,24 @@ func piResultModelPlaceholder(req agentruntime.RunRequest) string {
 	return defaultModelForBackend(req.Backend)
 }
 
+// piUserModelID 把 pi 上报的模型 id 归一为面向用户的原始模型 id。
+// 绑 provider 时 pi 实际运行的是 "agentre-<key>/<model>"(PiAgentProviderModelName 拼装
+// 的 --model 值),usage 帧上报的模型也带这个前缀 —— 若直接吐给 chat_svc,偏离提示会把
+// 「所选 X 未生效,实际 agentre-<key>/X」误报成真偏差(前缀两边对不上)。剥掉与当前
+// provider 匹配的前缀后,上报值才与 override 同语义。未绑 provider / 前缀不匹配时原样
+// 返回,不误伤 CLI 登录态的裸模型名。
+func piUserModelID(req agentruntime.RunRequest, reported string) string {
+	reported = strings.TrimSpace(reported)
+	if reported == "" || req.Provider == nil {
+		return reported
+	}
+	prefix := "agentre-" + req.Provider.ProviderKey + "/"
+	if strings.HasPrefix(reported, prefix) {
+		return strings.TrimPrefix(reported, prefix)
+	}
+	return reported
+}
+
 var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cwd string) (sessionHandle, error) {
 	binary := strings.TrimSpace(req.Backend.CLIPath)
 	if binary == "" {
