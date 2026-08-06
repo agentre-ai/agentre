@@ -19,6 +19,8 @@ type Props = {
   messages: Msg[];
   activeMessageId: number | null;
   onJumpToMessage: (messageId: number) => void;
+  cwd?: string;
+  remote?: boolean;
 };
 
 export function ChatContextSidebar({
@@ -26,6 +28,8 @@ export function ChatContextSidebar({
   messages,
   activeMessageId,
   onJumpToMessage,
+  cwd = "",
+  remote = false,
 }: Props) {
   const { t } = useTranslation();
   const activeTab = useChatSidebarStore((s) => s.activeTab);
@@ -100,6 +104,8 @@ export function ChatContextSidebar({
         ) : (
           <FilesView
             files={files}
+            cwd={cwd}
+            remote={remote}
             onJumpToTurn={(turn) => {
               const mid = turnToMessageId.get(turn);
               if (mid != null) onJumpToMessage(mid);

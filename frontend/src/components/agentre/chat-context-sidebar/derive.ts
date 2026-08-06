@@ -15,10 +15,14 @@ export type OutlineItem = {
 
 export type FileEntry = {
   path: string;
-  edits: number;
-  reads: number;
+  plus: number;
+  minus: number;
   lastTurn: number;
 };
+
+export type FileTreeNode =
+  | { kind: "dir"; name: string; children: FileTreeNode[] }
+  | { kind: "file"; entry: FileEntry };
 
 // 工具名按后端各自的原样大小写收录:claudecode 用 PascalCase,codex 用
 // file_change(历史消息可能仍是 apply_patch),pi agent 全小写(edit / write / read)。
@@ -40,6 +44,32 @@ function textOf(m: Msg): string {
     }
   }
   return "";
+}
+
+// 从 block.canonical 汇总某条 tool_use 的 plus/minus（producer 已算好行数，前端不重复解析）。
+// file.edit 按 fileEdit.files[].path 汇总 plus/minus；file.write 把 fileWrite.lines 计入 plus。
+function canonicalDeltas(
+  block: chat_svc.ChatBlock,
+): Array<{ path: string; plus: number; minus: number }> {
+  const canonical = block.canonical;
+  if (!canonical) return [];
+  if (canonical.kind === "file.edit") {
+    return (canonical.fileEdit?.files ?? []).map((f) => ({
+      path: f.path,
+      plus: f.plus ?? 0,
+      minus: f.minus ?? 0,
+    }));
+  }
+  if (canonical.kind === "file.write" && canonical.fileWrite?.path) {
+    return [
+      {
+        path: canonical.fileWrite.path,
+        plus: canonical.fileWrite.lines ?? 0,
+        minus: 0,
+      },
+    ];
+  }
+  return [];
 }
 
 function extractToolPaths(
@@ -102,21 +132,86 @@ export function deriveFiles(messages: Msg[]): FileEntry[] {
     }
     for (const block of m.blocks ?? []) {
       const ext = extractToolPaths(block);
-      if (!ext) continue;
-      const isEdit = EDIT_TOOLS.has(ext.name);
-      const isRead = READ_TOOLS.has(ext.name);
-      if (!isEdit && !isRead) continue;
-      for (const p of ext.paths) {
-        const cur = map.get(p) ?? { path: p, edits: 0, reads: 0, lastTurn: 0 };
-        if (isEdit) cur.edits += 1;
-        if (isRead) cur.reads += 1;
+      if (ext) {
+        const isEdit = EDIT_TOOLS.has(ext.name);
+        const isRead = READ_TOOLS.has(ext.name);
+        if (isEdit || isRead) {
+          for (const p of ext.paths) {
+            const cur = map.get(p) ?? {
+              path: p,
+              plus: 0,
+              minus: 0,
+              lastTurn: 0,
+            };
+            cur.lastTurn = Math.max(cur.lastTurn, turn);
+            map.set(p, cur);
+          }
+        }
+      }
+      // canonical 路径可能与 toolInput 的 path 不同（如 apply_patch），两者取并集。
+      for (const d of canonicalDeltas(block)) {
+        const cur = map.get(d.path) ?? {
+          path: d.path,
+          plus: 0,
+          minus: 0,
+          lastTurn: 0,
+        };
+        cur.plus += d.plus;
+        cur.minus += d.minus;
         cur.lastTurn = Math.max(cur.lastTurn, turn);
-        map.set(p, cur);
+        map.set(d.path, cur);
       }
     }
   }
   return [...map.values()].sort((a, b) => {
-    if (b.edits !== a.edits) return b.edits - a.edits;
+    const da = a.plus + a.minus;
+    const db = b.plus + b.minus;
+    if (db !== da) return db - da;
     return b.lastTurn - a.lastTurn;
   });
+}
+
+// 按 "/" 分段把扁平文件列表组织成目录树：目录节点字母序、文件节点保持传入顺序、
+// 根目录下的文件成为根级 file 节点；同一层目录排在文件之前。空输入返回空数组。
+export function deriveFileTree(files: FileEntry[]): FileTreeNode[] {
+  if (files.length === 0) return [];
+
+  const root: FileTreeNode[] = [];
+  const dirByPath = new Map<string, Extract<FileTreeNode, { kind: "dir" }>>();
+
+  for (const entry of files) {
+    const segs = entry.path.split("/").filter(Boolean);
+    let dirPath = "";
+    let container = root;
+    for (let i = 0; i < segs.length - 1; i++) {
+      const parentPath = dirPath;
+      dirPath = dirPath ? `${dirPath}/${segs[i]}` : segs[i];
+      let dir = dirByPath.get(dirPath);
+      if (!dir) {
+        dir = { kind: "dir", name: segs[i], children: [] };
+        dirByPath.set(dirPath, dir);
+        if (parentPath === "") {
+          root.push(dir);
+        } else {
+          dirByPath.get(parentPath)!.children.push(dir);
+        }
+      }
+      container = dir.children;
+    }
+    container.push({ kind: "file", entry });
+  }
+
+  const sortDir = (node: FileTreeNode) => {
+    if (node.kind !== "dir") return;
+    node.children.sort((a, b) => {
+      if (a.kind === "dir" && b.kind === "dir")
+        return a.name.localeCompare(b.name);
+      if (a.kind === "dir") return -1;
+      if (b.kind === "dir") return 1;
+      return 0; // 文件保持输入顺序（稳定排序）
+    });
+    node.children.forEach(sortDir);
+  };
+  sortDir({ kind: "dir", name: "", children: root });
+  return root;
 }
