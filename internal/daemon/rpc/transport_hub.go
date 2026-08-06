@@ -65,6 +65,14 @@ type HubLink struct {
 	conn    *websocket.Conn
 	writeMu sync.Mutex
 	frames  chan HubFrame
+
+	lifecycleMu        sync.RWMutex
+	lifecycleListeners []hubLifecycleListener
+}
+
+type hubLifecycleListener struct {
+	onDial       func()
+	onDisconnect func(error)
 }
 
 // NewHubLink creates an outbound relay manager. Run starts its lifetime.
@@ -113,22 +121,19 @@ func (l *HubLink) Run(ctx context.Context) error {
 		}
 
 		l.setConn(conn)
-		if l.opts.OnDial != nil {
-			l.opts.OnDial()
-		}
+		l.notifyDial()
 		var renewed bool
 		err, renewed = l.serve(ctx, conn)
 		l.clearConn(conn)
 		_ = conn.Close()
 		if ctx.Err() != nil {
+			l.notifyDisconnect(ctx.Err())
 			return nil
 		}
 		if renewed {
 			failures = 0
 		}
-		if l.opts.OnDisconnect != nil {
-			l.opts.OnDisconnect(err)
-		}
+		l.notifyDisconnect(err)
 		log.Printf("rpc.HubLink: relay disconnected; retrying: %v", err)
 		if err := l.wait(ctx, failures); err != nil {
 			return nil
@@ -157,6 +162,56 @@ func (l *HubLink) Send(messageType int, payload []byte) error {
 // reconnect; callers use lifecycle hooks or their parent context to delimit a
 // particular physical connection.
 func (l *HubLink) Receive() <-chan HubFrame { return l.frames }
+
+// Connected reports whether the relay currently has a physical WebSocket.
+func (l *HubLink) Connected() bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.conn != nil
+}
+
+// AddLifecycleListener registers a transport observer without replacing the
+// composition-root callbacks supplied in HubLinkOptions. A listener added
+// after a successful dial is immediately told about that live connection.
+func (l *HubLink) AddLifecycleListener(onDial func(), onDisconnect func(error)) {
+	l.lifecycleMu.Lock()
+	defer l.lifecycleMu.Unlock()
+	l.lifecycleListeners = append(l.lifecycleListeners, hubLifecycleListener{
+		onDial:       onDial,
+		onDisconnect: onDisconnect,
+	})
+	if onDial != nil && l.Connected() {
+		onDial()
+	}
+}
+
+func (l *HubLink) notifyDial() {
+	if l.opts.OnDial != nil {
+		l.opts.OnDial()
+	}
+	l.lifecycleMu.RLock()
+	listeners := append([]hubLifecycleListener(nil), l.lifecycleListeners...)
+	l.lifecycleMu.RUnlock()
+	for _, listener := range listeners {
+		if listener.onDial != nil {
+			listener.onDial()
+		}
+	}
+}
+
+func (l *HubLink) notifyDisconnect(err error) {
+	if l.opts.OnDisconnect != nil {
+		l.opts.OnDisconnect(err)
+	}
+	l.lifecycleMu.RLock()
+	listeners := append([]hubLifecycleListener(nil), l.lifecycleListeners...)
+	l.lifecycleMu.RUnlock()
+	for _, listener := range listeners {
+		if listener.onDisconnect != nil {
+			listener.onDisconnect(err)
+		}
+	}
+}
 
 func (l *HubLink) dial(ctx context.Context) (*websocket.Conn, error) {
 	endpoint, err := hubEndpoint(l.opts.ServerURL)
