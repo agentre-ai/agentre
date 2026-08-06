@@ -194,6 +194,75 @@ func TestCancelSteer_ClearAll(t *testing.T) {
 	assert.Equal(t, []string{"a", "b"}, ids)
 }
 
+// TestRun_ModelOverride_ReachesProvider 锁住 builtin 的会话级模型覆盖:override
+// 优先于 provider.Model,经 coding.WithModel 下发给 provider(进程内每轮重建,无
+// 子进程/缓存问题),RunResult.Model 同步为 effectiveModel。override 为空时退回
+// provider.Model(行为不回归)。
+func TestRun_ModelOverride_ReachesProvider(t *testing.T) {
+	t.Setenv("AGENTRE_DATA_DIR", t.TempDir())
+
+	t.Run("override 优先于 provider.Model", func(t *testing.T) {
+		fp := providertest.New().
+			QueueStream(provider.StreamChunk{FinishReason: provider.FinishStop, Usage: &provider.Usage{PromptTokens: 1, CompletionTokens: 1}})
+		SetBuiltinProviderBuilderForTest(func(_ *llm_provider_entity.LLMProvider) (provider.Provider, error) {
+			return fp, nil
+		})
+		t.Cleanup(ResetBuiltinProviderBuilderForTest)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		r := New()
+		events, result, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:       &agent_backend_entity.AgentBackend{ID: 7, Type: "builtin", LLMProviderKey: "key-11"},
+			Provider:      &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-test"},
+			ModelOverride: "claude-opus-4-8",
+			AgentID:       99,
+			SessionID:     42,
+			UserText:      "ping",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		for range events {
+		}
+
+		assert.Equal(t, "claude-opus-4-8", result.Model)
+		reqs := fp.Received()
+		require.Len(t, reqs, 1)
+		assert.Equal(t, "claude-opus-4-8", reqs[0].Model)
+	})
+
+	t.Run("override 空时退回 provider.Model", func(t *testing.T) {
+		fp := providertest.New().
+			QueueStream(provider.StreamChunk{FinishReason: provider.FinishStop, Usage: &provider.Usage{PromptTokens: 1, CompletionTokens: 1}})
+		SetBuiltinProviderBuilderForTest(func(_ *llm_provider_entity.LLMProvider) (provider.Provider, error) {
+			return fp, nil
+		})
+		t.Cleanup(ResetBuiltinProviderBuilderForTest)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		r := New()
+		events, result, err := r.Run(ctx, agentruntime.RunRequest{
+			Backend:   &agent_backend_entity.AgentBackend{ID: 7, Type: "builtin", LLMProviderKey: "key-11"},
+			Provider:  &llm_provider_entity.LLMProvider{ID: 11, Type: string(llm_provider_entity.TypeAnthropic), Model: "claude-test"},
+			AgentID:   99,
+			SessionID: 42,
+			UserText:  "ping",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		for range events {
+		}
+
+		assert.Equal(t, "claude-test", result.Model)
+		reqs := fp.Received()
+		require.Len(t, reqs, 1)
+		assert.Equal(t, "claude-test", reqs[0].Model)
+	})
+}
+
 type fakeSteerable struct {
 	steerErr     error
 	removeOK     map[string]bool

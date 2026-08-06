@@ -285,6 +285,101 @@ func TestDefaultModelForBackend(t *testing.T) {
 	})
 }
 
+func TestPiModelFallback(t *testing.T) {
+	Convey("Given 未绑 provider(CLI 登录态)的 pi-agent 后端", t, func() {
+		Convey("When ModelOverride 非空 Then --model 用裸 override 下发", func() {
+			m := piModelFallback(agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:            string(agent_backend_entity.TypePiAgent),
+					ReasoningEffort: "high",
+				},
+				ModelOverride: "gpt-5.6-terra",
+			})
+			So(m, ShouldEqual, "gpt-5.6-terra")
+		})
+
+		Convey("When ModelOverride 空白 Then 回落默认(空 = pi 用自身配置)", func() {
+			m := piModelFallback(agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:            string(agent_backend_entity.TypePiAgent),
+					ReasoningEffort: "high",
+				},
+			})
+			So(m, ShouldEqual, "")
+		})
+	})
+}
+
+// TestPiResultModelPlaceholder 锁住 result.Model 在 pi 真实 usage 帧上报前的占位:
+// effectiveModel = firstNonEmpty(override, provider.Model, backendDefault)。pi 不报
+// 模型(极少)时若沿用 provider.Model 而用户设了 override,会误报偏离提示 —— 占位必须
+// 优先 override。
+func TestPiResultModelPlaceholder(t *testing.T) {
+	Convey("Given pi-agent runtime 且 pi 不报模型(无 usage 帧)", t, func() {
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+			return &fakeSession{stream: &emptyStream{}, sid: "pi-session"}, nil
+		})
+		defer restore()
+
+		Convey("When override 非空且绑 provider Then 占位 = override,不误报偏离", func() {
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:       &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4", Type: string(llm_provider_entity.TypeOpenAIChat), ProviderKey: "provabc", APIKey: "tok-super-secret"},
+				ModelOverride: "gpt-5.6-terra",
+				SessionID:     1,
+				Cwd:           t.TempDir(),
+				UserText:      "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			So(result.Model, ShouldEqual, "gpt-5.6-terra")
+		})
+
+		Convey("When override 空白且绑 provider Then 占位 = provider.Model(行为不回归)", func() {
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				Provider:  &llm_provider_entity.LLMProvider{Model: "gpt-5.4", Type: string(llm_provider_entity.TypeOpenAIChat), ProviderKey: "provabc", APIKey: "tok-super-secret"},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			So(result.Model, ShouldEqual, "gpt-5.4")
+		})
+	})
+}
+
+func TestPiUserModelID_StripsProviderPrefix(t *testing.T) {
+	Convey("Given pi-agent 绑 provider 且用户设了会话级 override", t, func() {
+		bound := agentruntime.RunRequest{
+			Provider: &llm_provider_entity.LLMProvider{ProviderKey: "provabc", Model: "deepseek-v3"},
+		}
+
+		Convey("When pi 上报的模型带 agentre-<key>/ 前缀 Then 归一为原始模型 id", func() {
+			So(piUserModelID(bound, "agentre-provabc/deepseek-r1"), ShouldEqual, "deepseek-r1")
+		})
+
+		Convey("When pi 上报的模型不带前缀(裸 id) Then 原样返回", func() {
+			So(piUserModelID(bound, "deepseek-r1"), ShouldEqual, "deepseek-r1")
+		})
+
+		Convey("When 上报空模型 Then 原样返回空(不产偏离)", func() {
+			So(piUserModelID(bound, ""), ShouldEqual, "")
+		})
+
+		Convey("When 未绑 provider 但模型恰好以 agentre- 开头 Then 不剥前缀(避免误伤 CLI 登录态模型名)", func() {
+			So(piUserModelID(agentruntime.RunRequest{}, "agentre-custom/foo"), ShouldEqual, "agentre-custom/foo")
+		})
+
+		Convey("When 前缀匹配其它 provider 的 key Then 不剥前缀", func() {
+			So(piUserModelID(bound, "agentre-otherkey/deepseek-r1"), ShouldEqual, "agentre-otherkey/deepseek-r1")
+		})
+	})
+}
+
 func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 	Convey("Given pi-agent CLI login runtime", t, func() {
 		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
@@ -911,14 +1006,75 @@ func TestProviderRunConfig(t *testing.T) {
 		Convey("When assembling the session config Then model is agentre-<key>/<model> and extension path is returned", func() {
 			model, extPath, err := providerRunConfig(&llm_provider_entity.LLMProvider{
 				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
-			})
+			}, "")
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "agentre-provabc/deepseek-v3")
 			So(extPath, ShouldEqual, "/ext/agentre-provider-abc.mjs")
 		})
 
+		Convey("When ModelOverride is set Then --model is agentre-<key>/<override> (override replaces provider model)", func() {
+			model, extPath, err := providerRunConfig(&llm_provider_entity.LLMProvider{
+				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
+			}, "deepseek-r1")
+			So(err, ShouldBeNil)
+			So(model, ShouldEqual, "agentre-provabc/deepseek-r1")
+			So(extPath, ShouldEqual, "/ext/agentre-provider-abc.mjs")
+		})
+
+		Convey("When ModelOverride is blank Then provider model is used", func() {
+			model, _, err := providerRunConfig(&llm_provider_entity.LLMProvider{
+				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
+			}, "   ")
+			So(err, ShouldBeNil)
+			So(model, ShouldEqual, "agentre-provabc/deepseek-v3")
+		})
+	})
+
+	// 注入 pi 的 provider 扩展只 registerProvider 一个 models 条目(见
+	// agentruntime.PiAgentProviderExtension)。--model 与扩展的 models 列表必须来自
+	// **同一个** effectiveModel:若 --model 用 override 而扩展仍注册 provider.Model,
+	// pi 收到的是一个自己没注册过的 model id,绑 provider 的会话级切换整个用不了。
+	Convey("Given a bound provider whose extension source is captured", t, func() {
+		var source string
+		restore := SetProviderExtensionWriterForTest(func(s string) (string, error) {
+			source = s
+			return "/ext/agentre-provider-abc.mjs", nil
+		})
+		defer restore()
+
+		prov := func() *llm_provider_entity.LLMProvider {
+			return &llm_provider_entity.LLMProvider{
+				ProviderKey: "provabc", Model: "deepseek-v3",
+				Type: string(llm_provider_entity.TypeOpenAIChat), ContextWindow: 128000,
+			}
+		}
+
+		Convey("When ModelOverride is set Then the extension registers the override model, matching --model", func() {
+			model, _, err := providerRunConfig(prov(), "deepseek-r1")
+			So(err, ShouldBeNil)
+			So(model, ShouldEqual, "agentre-provabc/deepseek-r1")
+			So(source, ShouldContainSubstring, `id: "deepseek-r1"`)
+			So(source, ShouldNotContainSubstring, "deepseek-v3")
+			// provider 的其余元数据(contextWindow 等)仍随扩展下发。
+			So(source, ShouldContainSubstring, "contextWindow: 128000")
+		})
+
+		Convey("When ModelOverride is blank Then the extension still registers provider.Model", func() {
+			model, _, err := providerRunConfig(prov(), "")
+			So(err, ShouldBeNil)
+			So(model, ShouldEqual, "agentre-provabc/deepseek-v3")
+			So(source, ShouldContainSubstring, `id: "deepseek-v3"`)
+		})
+	})
+
+	Convey("Given a bound provider and a stubbed extension writer", t, func() {
+		restore := SetProviderExtensionWriterForTest(func(string) (string, error) {
+			return "/ext/agentre-provider-abc.mjs", nil
+		})
+		defer restore()
+
 		Convey("When the provider is nil Then zero values are returned without error", func() {
-			model, extPath, err := providerRunConfig(nil)
+			model, extPath, err := providerRunConfig(nil, "")
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "")
 			So(extPath, ShouldEqual, "")
@@ -927,7 +1083,7 @@ func TestProviderRunConfig(t *testing.T) {
 		Convey("When the provider model is empty Then no model or extension is produced", func() {
 			model, extPath, err := providerRunConfig(&llm_provider_entity.LLMProvider{
 				ProviderKey: "provabc", Type: string(llm_provider_entity.TypeOpenAIChat),
-			})
+			}, "")
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "")
 			So(extPath, ShouldEqual, "")
@@ -936,7 +1092,7 @@ func TestProviderRunConfig(t *testing.T) {
 		Convey("When the provider type is unsupported Then an error is returned instead of silently running unbound", func() {
 			_, _, err := providerRunConfig(&llm_provider_entity.LLMProvider{
 				ProviderKey: "provabc", Model: "deepseek-v3", Type: "deepseek",
-			})
+			}, "")
 			So(err, ShouldNotBeNil)
 		})
 	})
@@ -950,7 +1106,7 @@ func TestProviderRunConfig(t *testing.T) {
 		Convey("When materializing Then the error propagates", func() {
 			_, _, err := providerRunConfig(&llm_provider_entity.LLMProvider{
 				ProviderKey: "provabc", Model: "deepseek-v3", Type: string(llm_provider_entity.TypeOpenAIChat),
-			})
+			}, "")
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "disk full")
 		})

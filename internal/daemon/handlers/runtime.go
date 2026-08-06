@@ -368,6 +368,7 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		// desktop 执行。Headers(desktop 签的 token)/ Tools / Name 原样保留。
 		MCPServers:     rewriteMCPServersForDaemon(p.MCPServers, func() string { return daemonGatewayBase(h.deps.Gateway) }),
 		EnabledPlugins: p.EnabledPlugins,
+		ModelOverride:  p.ModelOverride,
 	}
 	if piPreparer != nil {
 		// PermissionMode carries only the remote transport generation owner for

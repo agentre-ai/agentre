@@ -6,6 +6,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_backend_entity"
+	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 )
 
@@ -48,6 +49,45 @@ func TestBuildLaunchSpec_MCPServers(t *testing.T) {
 			for _, cfg := range spec.config {
 				So(cfg, ShouldNotStartWith, "mcp_servers.")
 			}
+		})
+	})
+}
+
+func TestBuildLaunchSpec_ModelOverride(t *testing.T) {
+	Convey("Given RunRequest 带 ModelOverride", t, func() {
+		Convey("Then spec.model = override, 优先于 provider.Model", func() {
+			spec := buildLaunchSpec(agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				ModelOverride: "gpt-5.5",
+			}, nil, "/tmp/work")
+			So(spec.model, ShouldEqual, "gpt-5.5")
+		})
+
+		Convey("Then override 空白时退回 provider.Model", func() {
+			spec := buildLaunchSpec(agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				ModelOverride: "   ",
+			}, nil, "/tmp/work")
+			So(spec.model, ShouldEqual, "gpt-5.4")
+		})
+
+		Convey("Then provider = nil 时 override 仍作为裸模型下发(CLI 登录态)", func() {
+			spec := buildLaunchSpec(agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				ModelOverride: "gpt-5.6-terra",
+			}, nil, "/tmp/work")
+			So(spec.model, ShouldEqual, "gpt-5.6-terra")
 		})
 	})
 }

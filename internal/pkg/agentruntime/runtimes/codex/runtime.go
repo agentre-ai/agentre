@@ -69,7 +69,25 @@ type Runtime struct {
 	mu     sync.Mutex
 	active map[int64]*codexActive
 	pool   *agentruntime.CLISessionPool
+
+	// launchedModel 记录每个 chat 会话(spawn 时)下发的 effectiveModel,
+	// key 与 CLISessionPool 一致(sessionKey)。--model 是启动期 flag(WithModel
+	// 绑定在 Client 创建时),app-server 进程又会被池跨轮复用 —— 模型变了必须 evict +
+	// 重 spawn(镜像 claudecode 的 launchedEffort/launchedModel 先例),否则下一轮
+	// 复用旧模型进程,会话级切换不生效(RunResult.Model 仍旧模型,偏离提示误报)。
+	//
+	// 池按 LRU 上限(MarkIdle 的 prune)逐出空闲会话时不会回调这里,故条目可能只增不减
+	// (逐出后该 key 再 spawn 会被 recordLaunchedModel 覆盖)。为防长驻进程里 map 随
+	// 会话累积无界增长,recordLaunchedModel 用 FIFO 上限裁剪:被裁掉的 key 若日后回到
+	// 池,modelChanged 只会把它当成「未记录」,最多导致一次无谓重 spawn,绝不产生错误结果。
+	launchedModel map[string]string
+	// launchedModelOrder 是 launchedModel 的 FIFO 插入序,用于容量裁剪。
+	launchedModelOrder []string
 }
+
+// maxTrackedLaunchedModels 是 launchedModel 的上限。池空闲容量 8,同时活跃的 key
+// 远小于此;超过上限的多是已被池逐出的死 key,裁掉只省内存、不影响判定。
+const maxTrackedLaunchedModels = 512
 
 func New() *Runtime {
 	return NewWithPool(agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap))
@@ -79,7 +97,55 @@ func NewWithPool(pool *agentruntime.CLISessionPool) *Runtime {
 	if pool == nil {
 		pool = agentruntime.NewCLISessionPool(agentruntime.DefaultCLISessionIdleCap)
 	}
-	return &Runtime{active: map[int64]*codexActive{}, pool: pool}
+	return &Runtime{
+		active:             map[int64]*codexActive{},
+		pool:               pool,
+		launchedModel:      map[string]string{},
+		launchedModelOrder: []string{},
+	}
+}
+
+// modelChanged 报告该会话已 spawn 的 effectiveModel 是否与新一轮不同。
+// 新会话(未记录过)视为未变化,正常创建。
+func (r *Runtime) modelChanged(key, effective string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.launchedModel[key] != effective
+}
+
+// recordLaunchedModel 在 spawn 成功后记录本次下发的 effectiveModel。
+// 超过 maxTrackedLaunchedModels 时按 FIFO 裁掉最旧条目(池逐出会话不回调本包,
+// 必须在这里兜底防 map 无界增长)。
+func (r *Runtime) recordLaunchedModel(key, effective string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.launchedModel[key]; !exists {
+		r.launchedModelOrder = append(r.launchedModelOrder, key)
+	}
+	r.launchedModel[key] = effective
+	for len(r.launchedModelOrder) > maxTrackedLaunchedModels {
+		oldest := r.launchedModelOrder[0]
+		r.launchedModelOrder = r.launchedModelOrder[1:]
+		delete(r.launchedModel, oldest)
+	}
+}
+
+// forgetLaunchedModel 在池逐出会话时清理记录,避免只增不减。
+func (r *Runtime) forgetLaunchedModel(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.launchedModel, key)
+	r.launchedModelOrder = removeOrderKey(r.launchedModelOrder, key)
+}
+
+// removeOrderKey 从 FIFO 序里剔除 key(可空切片,返回新切片)。
+func removeOrderKey(order []string, key string) []string {
+	for i, k := range order {
+		if k == key {
+			return append(order[:i], order[i+1:]...)
+		}
+	}
+	return order
 }
 
 // Capabilities 返回 codex runtime 的能力矩阵。
@@ -322,7 +388,9 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 		if requiresEphemeralSession(req) {
 			closeEphemeralSession(req, sess)
 		} else if req.SessionID > 0 {
-			r.pool.Remove(sessionKey(req.SessionID))
+			key := sessionKey(req.SessionID)
+			r.pool.Remove(key)
+			r.forgetLaunchedModel(key)
 		}
 		logger.Ctx(ctx).Error("codex runtime: session run failed",
 			zap.Int64("sessionID", req.SessionID),
@@ -360,12 +428,17 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	out := make(chan agentruntime.Event, 32)
 	active.setOut(out)
 
-	modelID := ""
-	if req.Provider != nil {
-		modelID = strings.TrimSpace(req.Provider.Model)
-	}
+	// RunResult.Model 上报线程实际模型(sess.Model()),而非启动请求模型(设计决策 9):
+	// codex 的 thread/resume 返回线程当前 model,override 经 --model 生效后 sess.Model()
+	// 即实际运行模型 —— 偏离提示(决策 5)依赖这个信号;无 override 时两者同值,不回归。
+	modelID := strings.TrimSpace(sess.Model())
 	if modelID == "" {
-		modelID = strings.TrimSpace(sess.Model())
+		// app-server 没在 thread start/resume 结果里带 model 时 sess.Model() 为空 ——
+		// 此时「观测不到」不等于「跑的是 defaultModelID」:直接落死常量会把一个从没跑过
+		// 的 model id 写进 assistantMsg.Model,还会让 chat_svc 的偏离提示每轮误报
+		// 「所选 X 未生效,实际 gpt-5.5」。回落到本轮请求的 effectiveModel(override →
+		// provider.Model),观测不到就按「请求值已生效」处理。
+		modelID = codexEffectiveModel(req)
 	}
 	if modelID == "" {
 		modelID = defaultModelID
@@ -392,6 +465,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 				r.pool.MarkIdle(key)
 			} else {
 				r.pool.Remove(key)
+				r.forgetLaunchedModel(key)
 			}
 		}
 	}()
@@ -406,8 +480,15 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 	if req.SessionID > 0 {
 		key := sessionKey(req.SessionID)
 		if v, ok := r.pool.Get(key); ok {
-			r.pool.MarkActive(key)
-			return v.(cxSessionHandle), nil
+			// 模型是启动期 flag:effectiveModel 变化 → evict + 重 spawn(镜像 claudecode
+			// launchedEffort/launchedModel 先例)。模型未变则复用池内 app-server。
+			if r.modelChanged(key, codexEffectiveModel(req)) {
+				r.pool.Remove(key)
+				r.forgetLaunchedModel(key)
+			} else {
+				r.pool.MarkActive(key)
+				return v.(cxSessionHandle), nil
+			}
 		}
 	}
 	sess, err := cxSessionFactory(req, env, cwd)
@@ -418,6 +499,7 @@ func (r *Runtime) acquireSession(req agentruntime.RunRequest, env map[string]str
 		key := sessionKey(req.SessionID)
 		r.pool.Put(key, sess)
 		r.pool.MarkActive(key)
+		r.recordLaunchedModel(key, codexEffectiveModel(req))
 	}
 	return sess, nil
 }
@@ -437,11 +519,17 @@ func (r *Runtime) CloseSession(_ context.Context, sessionID int64) {
 	if sessionID <= 0 {
 		return
 	}
-	r.pool.Remove(sessionKey(sessionID))
+	key := sessionKey(sessionID)
+	r.pool.Remove(key)
+	r.forgetLaunchedModel(key)
 }
 
 func (r *Runtime) CloseAllSessions(_ context.Context) {
 	r.pool.RemoveAll()
+	r.mu.Lock()
+	r.launchedModel = map[string]string{}
+	r.launchedModelOrder = []string{}
+	r.mu.Unlock()
 }
 
 // Abort 软中断当前 turn。语义同顶层 codex.go.Abort。

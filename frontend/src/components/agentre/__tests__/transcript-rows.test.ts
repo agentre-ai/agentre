@@ -188,6 +188,26 @@ describe("buildRenderItems", () => {
     });
   });
 
+  it("notice block 产出一个 notice 渲染项(结构化模型 id 透传)", () => {
+    const noticeBlock = {
+      type: "notice",
+      level: "info",
+      selectedModel: "selected-model",
+      actualModel: "actual-model",
+    } as unknown as ChatBlockData;
+
+    const items = buildRenderItems({
+      messageId: 8,
+      blocks: [noticeBlock],
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("notice");
+    const block = (items[0] as { block: ChatBlockData }).block;
+    expect(block.selectedModel).toBe("selected-model");
+    expect(block.actualModel).toBe("actual-model");
+  });
+
   it("OpenClaw exec_approval block keeps its own lifecycle and stable approval identity", () => {
     const items = buildRenderItems({
       messageId: 9,

@@ -31,6 +31,20 @@ func TestSession_Check(t *testing.T) {
 	}
 }
 
+func TestSession_ModelOverride(t *testing.T) {
+	t.Run("默认值为空串", func(t *testing.T) {
+		assert.Equal(t, "", (&Session{}).ModelOverride, "未设置的 model_override 应为空串(跟随供应商默认)")
+	})
+	t.Run("空串可过 Check", func(t *testing.T) {
+		err := (&Session{AgentID: 1, AgentStatus: "idle", ModelOverride: ""}).Check(context.Background())
+		assert.NoError(t, err, "空串 override 代表不覆盖,应放行")
+	})
+	t.Run("非空 override 也可过 Check", func(t *testing.T) {
+		err := (&Session{AgentID: 1, AgentStatus: "idle", ModelOverride: "claude-sonnet-4-5"}).Check(context.Background())
+		assert.NoError(t, err)
+	})
+}
+
 func TestSession_IsActive(t *testing.T) {
 	assert.True(t, (&Session{Status: consts.ACTIVE}).IsActive())
 	assert.False(t, (&Session{Status: 0}).IsActive())

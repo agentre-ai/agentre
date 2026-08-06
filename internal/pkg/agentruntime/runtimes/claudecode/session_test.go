@@ -163,6 +163,55 @@ func TestCCBuildClientOpts_BackendDefaultModel(t *testing.T) {
 	})
 }
 
+// TestCCBuildClientOpts_ModelOverride 锁住会话级模型覆盖:req.ModelOverride 非空时
+// 优先于 provider.Model / backend.DefaultModel,作为 --model 下发(统一规则
+// effectiveModel = firstNonEmpty(override, providerModel, backendDefault))。
+func TestCCBuildClientOpts_ModelOverride(t *testing.T) {
+	Convey("ModelOverride 非空 → 优先于 provider.Model", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:         string(agent_backend_entity.TypeClaudeCode),
+					DefaultModel: "claude-fable-5",
+				},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "glm-5.1"},
+				ModelOverride: "claude-haiku-4-5",
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+		So(c.Model(), ShouldEqual, "claude-haiku-4-5")
+	})
+
+	Convey("ModelOverride 非空 + provider = nil(CLI 登录态) → 裸模型 id 直接下发", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:         string(agent_backend_entity.TypeClaudeCode),
+					DefaultModel: "claude-fable-5",
+				},
+				ModelOverride: "claude-opus-4-8",
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+		So(c.Model(), ShouldEqual, "claude-opus-4-8")
+	})
+
+	Convey("ModelOverride 只有空白 → 退回 provider.Model", t, func() {
+		spec := ccLaunchSpec{
+			Req: agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:         string(agent_backend_entity.TypeClaudeCode),
+					DefaultModel: "claude-fable-5",
+				},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "glm-5.1"},
+				ModelOverride: "   ",
+			},
+		}
+		c := claudecode.New(ccBuildClientOpts(spec, "claude")...)
+		So(c.Model(), ShouldEqual, "glm-5.1")
+	})
+}
+
 // TestCCBuildClientOpts_MCPTimeoutEnv 锁住:有 MCPServers 时注入 MCP_TIMEOUT /
 // MCP_TOOL_TIMEOUT env(均为 600000 ms);无 MCPServers 时不注入;caller 显式配
 // 置同名 key 时不覆盖。
