@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -13,16 +14,25 @@ import (
 
 func newRunCmd() *cobra.Command {
 	var (
-		tlsCert string
-		tlsKey  string
-		host    string
-		port    int
+		tlsCert   string
+		tlsKey    string
+		host      string
+		port      int
+		serverURL string
 	)
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Boot the daemon (foreground; SIGINT/SIGTERM to stop)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			serverURL = strings.TrimSpace(serverURL)
+			if serverURL != "" {
+				var err error
+				serverURL, err = validServerURL(serverURL)
+				if err != nil {
+					return err
+				}
+			}
 			dir, err := paths.AgentredDataDir()
 			if err != nil {
 				return err
@@ -31,11 +41,12 @@ func newRunCmd() *cobra.Command {
 				return err
 			}
 			d, err := daemon.New(daemon.Options{
-				DataDir:     dir,
-				LANHost:     host,
-				LANPort:     port,
-				TLSCertFile: tlsCert,
-				TLSKeyFile:  tlsKey,
+				DataDir:      dir,
+				LANHost:      host,
+				LANPort:      port,
+				TLSCertFile:  tlsCert,
+				TLSKeyFile:   tlsKey,
+				HubServerURL: serverURL,
 			})
 			if err != nil {
 				return err
@@ -49,5 +60,6 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "PEM private key path; required with --tls-cert")
 	cmd.Flags().StringVar(&host, "host", "0.0.0.0", "LAN listen host")
 	cmd.Flags().IntVar(&port, "port", 7456, "LAN listen port")
+	cmd.Flags().StringVar(&serverURL, "server", strings.TrimSpace(os.Getenv("AGENTRED_SERVER_URL")), "account server base URL (or AGENTRED_SERVER_URL)")
 	return cmd
 }

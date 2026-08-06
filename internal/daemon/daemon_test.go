@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/daemon/notifier"
 	"github.com/agentre-ai/agentre/internal/daemon/repository/notification_repo"
 	"github.com/agentre-ai/agentre/internal/daemon/rpc"
+	"github.com/agentre-ai/agentre/internal/daemon/state"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 )
 
@@ -569,6 +571,54 @@ func TestDaemon_AuthRejectsEmptyDeviceFingerprint(t *testing.T) {
 	_, err = d.registry.Dispatch(context.Background(), "auth.connect",
 		json.RawMessage(`{"deviceFingerprint":"","deviceToken":"whatever"}`))
 	require.Error(t, err, "auth.connect must reject an empty deviceFingerprint")
+}
+
+// TestDaemon_GivenClaimedAndUnavailableRelay_WhenRunning_ThenLANKeepsServing
+// covers R14's degradation boundary: a relay failure must stay in the outbound
+// background loop rather than preventing the daemon's direct LAN server from starting.
+func TestDaemon_GivenClaimedAndUnavailableRelay_WhenRunning_ThenLANKeepsServing(t *testing.T) {
+	var requests atomic.Int32
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer device-access-token", r.Header.Get("Authorization"))
+		requests.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(relay.Close)
+
+	dir, err := os.MkdirTemp("", "agentred-hub-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Claim("account-42", "cached-public-key", state.AccountCredential{AccessToken: "device-access-token"})
+	require.NoError(t, st.Save())
+
+	d, err := New(Options{
+		DataDir:      dir,
+		LANHost:      "127.0.0.1",
+		LANPort:      0,
+		HubServerURL: relay.URL,
+	})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-errCh:
+			require.NoError(t, runErr)
+		case <-time.After(3 * time.Second):
+			t.Error("Run did not return after cancel")
+		}
+	})
+
+	require.Eventually(t, func() bool {
+		d.mu.RLock()
+		ready := d.lan != nil && d.lan.Addr() != ""
+		d.mu.RUnlock()
+		return ready && requests.Load() > 0
+	}, 2*time.Second, 10*time.Millisecond, "the LAN server must run while the claimed daemon retries the relay")
 }
 
 func TestDaemon_BootShutdown(t *testing.T) {

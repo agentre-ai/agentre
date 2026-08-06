@@ -46,6 +46,9 @@ type Options struct {
 	LANPort     int
 	TLSCertFile string
 	TLSKeyFile  string
+	// HubServerURL is the account server base URL used for the daemon's
+	// outbound relay connection. An empty URL leaves LAN-only operation intact.
+	HubServerURL string
 
 	// CCUsageFetcher 注入 claudecode.usage handler 用的 OAuth 拉取函数。
 	// 留空 → 走 ccoauth.NewLocalFetcher()(从当前机器环境读 token + 调真实 endpoint);
@@ -89,6 +92,7 @@ type Daemon struct {
 
 	mu  sync.RWMutex
 	lan *rpc.LANServer
+	hub *rpc.HubLink
 
 	// conns 是 daemon 的推送路由表:会话通知按**会话**解析到发起它的那条连接,
 	// MCP 反向隧道从同一份状态里解析目标,daemon 上没有第二个「当前连接」的全局。
@@ -435,6 +439,13 @@ func New(opts Options) (*Daemon, error) {
 		pairing:      pm, ratelim: rl,
 		registry: reg, auth: auth,
 	}
+	if st.IsClaimed() && opts.HubServerURL != "" {
+		credential := st.Snapshot().Credential
+		d.hub = rpc.NewHubLink(rpc.HubLinkOptions{
+			ServerURL:   opts.HubServerURL,
+			AccessToken: credential.AccessToken,
+		})
+	}
 	d.catchup = handlers.NewSessionCatchupHandlers(handlers.SessionCatchupDeps{
 		Sessions: d.sessionStore,
 		Journal:  journalReader{db: gormDB},
@@ -602,6 +613,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// repository calling db.Ctx(ctx) anywhere below this point resolves to this
 	// instance's database, never another Daemon's.
 	ctx = dbpkg.WithContextDB(ctx, d.db)
+	// Outbound relay failures are deliberately isolated from the LAN server and
+	// running sessions. HubLink owns logging, heartbeats, and retry for Run's
+	// whole lifetime; task 5 will attach its multiplexer at this raw frame seam.
+	if d.hub != nil {
+		go func() { _ = d.hub.Run(ctx) }()
+	}
 	// 通知日志的回收:起手一次,之后按间隔跑(见 collectJournal 的留存策略)。
 	go d.runJournalCollector(ctx)
 	if err := d.gateway.Start(ctx); err != nil {

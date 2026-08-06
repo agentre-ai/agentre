@@ -93,6 +93,14 @@ func TestLoginServerFlagUsesEnvironmentFallback(t *testing.T) {
 	assert.Equal(t, "https://account.example", serverURL)
 }
 
+func TestRunServerFlagUsesEnvironmentFallback(t *testing.T) {
+	t.Setenv("AGENTRED_SERVER_URL", "https://account.example")
+	run := newRunCmd()
+	serverURL, err := run.Flags().GetString("server")
+	require.NoError(t, err)
+	assert.Equal(t, "https://account.example", serverURL)
+}
+
 func TestLLMAddRequiresUUIDKey(t *testing.T) {
 	root := newRootCmd()
 
