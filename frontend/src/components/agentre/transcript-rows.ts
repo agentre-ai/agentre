@@ -288,21 +288,22 @@ export function buildRenderItems({
   };
   blocks.forEach(consumeBlock);
 
-  // 合成 thinking 必须排在本轮 liveBlocks(tool_use/tool_result/已冻结 text)之前 —
-  // Anthropic 协议里 thinking 永远在 turn 开头,store 也是单一 liveThinking 字段不穿插。
-  // 摆错位置会出现「思考 14s 还在转,但工具卡已经在它上方」的视觉错乱。
-  // streaming 判定:本轮一旦冒出任何非思考的输出(tool_use 进 liveBlocks 或文本开始流到
-  // liveTail),思考阶段就结束;只看 liveTail 会漏掉「思考完→直接发 tool」那一帧,徽标
-  // 一直 pulse、计时定格。
+  // 合成 thinking 排在本轮 liveBlocks(含已冻结的 thinking/text/tool)之后 ——
+  // store 在 tool_use/plan/ask 等边界把上一段 liveThinking 冻进 liveBlocks,
+  // 所以 liveBlocks 里已经按真实时间顺序含了前几轮的思考;这里只剩当前轮还没
+  // 冻结的 liveThinking(thinking→text 尚未遇到下一个边界),排在末尾的 text 前。
+  // 摆错位置会出现「第 2 轮思考压在第 1 轮工具卡上方」的视觉错乱。
+  // streaming 判定:当前轮一旦冒出非思考输出(text 开始流到 liveTail),思考就
+  // 结束。liveBlocks 里有前几轮的工具不意味着本轮思考已结束,不能再用它判断。
+  liveBlocks.forEach(consumeBlock);
   if (liveThinking) {
     items.push({
       block: { text: liveThinking, type: "thinking" } as ChatBlockData,
       startedAt: liveThinkingStartedAt ?? undefined,
-      streaming: !liveTail && liveBlocks.length === 0,
+      streaming: !liveTail,
       type: "thinking",
     });
   }
-  liveBlocks.forEach(consumeBlock);
   // liveTail 是本轮仍在生长的尾巴文本 —— 标记 streaming,走 StreamingMarkdown 增量渲染。
   appendText(liveTail, true);
 
