@@ -1,8 +1,10 @@
 // Package turn 管理一轮 chat turn 的 block 累积与事件 dispatch。
 //
 // Accumulator 替代旧 chat_svc/chat.go turnBlockAccumulator:
-//   - text/thinking 累在 buf,遇 AddToolUse/AddBlock flush 成 TextBlock
-//   - thinking 总在 finalize index 0 (Anthropic 协议)
+//   - text/thinking 累在 buf,遇 AddToolUse/AddBlock flush 成块
+//   - thinking 按时间顺序穿插:每段(thinking→text)在 flush 时先落 thinking
+//     再落 text(与流序 thinking_delta...text_delta 一致),工具循环里后几轮的
+//     thinking 出现在对应 tool_result 之后,而不是全堆到 index 0。
 //   - 通过范型 Mutate[B](acc, key, func(*B)) 取代写死的 patchXxx 方法
 //
 // 与旧 acc 不同:Mutate 必须传 *B(指针),因为 mutate 语义就是 in-place patch;
@@ -52,18 +54,19 @@ func (a *Accumulator) AddToolUse(b cagoblocks.ContentBlock, mutateKey string) {
 	a.AddBlock(b, mutateKey)
 }
 
-// AddToolResult 不 flush textBuf(tool_use→tool_result 之间一般无文字)。
+// AddToolResult 不 flush buf(tool_use→tool_result 之间一般无文字)。
 func (a *Accumulator) AddToolResult(b cagoblocks.ContentBlock) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.finalBlocks = append(a.finalBlocks, b)
 }
 
-// AddBlock 任意 block 走这条;先 flush textBuf,再 push,记 mutateIndex。
+// AddBlock 任意 block 走这条;先 flush 当前段(thinking → text),再 push,
+// 记 mutateIndex。
 func (a *Accumulator) AddBlock(b cagoblocks.ContentBlock, mutateKey string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.flushTextLocked()
+	a.flushBufsLocked()
 	if mutateKey != "" {
 		a.mutateIndex[mutateKey] = len(a.finalBlocks)
 	}
@@ -119,40 +122,41 @@ func (a *Accumulator) Empty() bool {
 }
 
 // Snapshot 中途快照(checkpoint 用),不消费 buf。返回新切片。
+// thinking 排在末尾当前段内 thinking→text,与 Finalize 同一时间顺序。
 func (a *Accumulator) Snapshot() []cagoblocks.ContentBlock {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]cagoblocks.ContentBlock, 0, len(a.finalBlocks)+2)
+	out = append(out, a.finalBlocks...)
 	if a.thinkingBuf.Len() > 0 {
 		out = append(out, &cagoblocks.ThinkingBlock{Text: a.thinkingBuf.String()})
 	}
-	out = append(out, a.finalBlocks...)
 	if a.textBuf.Len() > 0 {
 		out = append(out, &cagoblocks.TextBlock{Text: a.textBuf.String()})
 	}
 	return out
 }
 
-// Finalize 收尾:flush textBuf + 把 thinking 插到 index 0。
+// Finalize 收尾:flush 剩余段(thinking → text)到末尾。thinking 不再整体
+// 提到 index 0 —— 工具循环里后几轮的思考按真实位置穿插。
 func (a *Accumulator) Finalize() []cagoblocks.ContentBlock {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.flushTextLocked()
-	if a.thinkingBuf.Len() == 0 {
-		return a.finalBlocks
-	}
-	out := make([]cagoblocks.ContentBlock, 0, len(a.finalBlocks)+1)
-	out = append(out, &cagoblocks.ThinkingBlock{Text: a.thinkingBuf.String()})
-	out = append(out, a.finalBlocks...)
-	return out
+	a.flushBufsLocked()
+	return a.finalBlocks
 }
 
-func (a *Accumulator) flushTextLocked() {
-	if a.textBuf.Len() == 0 {
-		return
+// flushBufsLocked 把当前段(thinking → text)落成块。thinking 先于 text ——
+// 与流序(thinking_delta... text_delta...)一致,同段内 thinking 永远在 text 前。
+func (a *Accumulator) flushBufsLocked() {
+	if a.thinkingBuf.Len() > 0 {
+		a.finalBlocks = append(a.finalBlocks, &cagoblocks.ThinkingBlock{Text: a.thinkingBuf.String()})
+		a.thinkingBuf.Reset()
 	}
-	a.finalBlocks = append(a.finalBlocks, &cagoblocks.TextBlock{Text: a.textBuf.String()})
-	a.textBuf.Reset()
+	if a.textBuf.Len() > 0 {
+		a.finalBlocks = append(a.finalBlocks, &cagoblocks.TextBlock{Text: a.textBuf.String()})
+		a.textBuf.Reset()
+	}
 }
 
 // Mutate[B] 范型 patch: 按 key 查 mutateIndex,断言为 *B 后调 fn。

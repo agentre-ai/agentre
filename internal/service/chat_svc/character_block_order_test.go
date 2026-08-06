@@ -13,21 +13,29 @@ import (
 // §1.6 ContentBlock 顺序约束 — characterization tests
 //
 // 关键 pin (turn.Accumulator):
-//   - thinking 必须在 turn 最前(index 0) —— Anthropic 协议要求
+//   - thinking 按时间顺序穿插:同段内 thinking 在 text 前(与流序一致),工具循环
+//     里后几轮的 thinking 出现在对应 tool_result 之后 —— 不再整体抬到 index 0
 //   - text delta 在 AddToolUse / AddBlock 时 flush(否则 tool_use 后面文字会黏前面文字)
 //   - text delta 在 AddToolResult 时 *不* flush(tool_use→tool_result 之间一般无穿插)
-func TestCharacterization_BlockOrder_ThinkingFirst(t *testing.T) {
-	Convey("§1.6 Finalize() 把 thinking 放在 index 0", t, func() {
+func TestCharacterization_BlockOrder_ThinkingInterleaved(t *testing.T) {
+	Convey("§1.6 Finalize() thinking 按时间顺序穿插,后一轮 thinking 在 tool_result 之后", t, func() {
 		acc := turn.New()
+		acc.AddThinking("thought1")
 		acc.AddText("hello ")
 		acc.AddToolUse(&blocks.ToolUseBlock{ID: "tu-1", Name: "X"}, "")
+		acc.AddToolResult(&blocks.ToolResultBlock{ToolUseID: "tu-1"})
+		acc.AddThinking("thought2")
 		acc.AddText("world")
-		acc.AddThinking("chain of thought")
 
 		final := acc.Finalize()
-		So(len(final), ShouldBeGreaterThanOrEqualTo, 3)
-		_, isThink := final[0].(*blocks.ThinkingBlock)
-		So(isThink, ShouldBeTrue)
+		So(len(final), ShouldEqual, 6)
+		// index 0 是 round 1 的 thinking(它本就是最早的内容)
+		_, isThink0 := final[0].(*blocks.ThinkingBlock)
+		So(isThink0, ShouldBeTrue)
+		// round 2 的 thinking 在 tool_result 之后,不再抬到最顶。
+		think2, isThink4 := final[4].(*blocks.ThinkingBlock)
+		So(isThink4, ShouldBeTrue)
+		So(think2.Text, ShouldEqual, "thought2")
 	})
 }
 

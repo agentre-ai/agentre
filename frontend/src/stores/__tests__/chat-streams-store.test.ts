@@ -103,6 +103,62 @@ describe("chat-streams-store", () => {
     });
   });
 
+  it("appendLiveToolUse freezes pending liveThinking into a thinking block before text", () => {
+    // 回归 guard:工具循环里第 2 轮的 thinking 必须按时间顺序冻进 liveBlocks,
+    // 而不是留在 liveThinking 里被 renderer 抬到最顶(「思考完成过程都在最顶部叠加」)。
+    const {
+      openStream,
+      appendLiveThinking,
+      appendLiveText,
+      appendLiveToolUse,
+      appendLiveToolResult,
+    } = useChatStreamsStore.getState();
+    openStream(baseStream(7));
+    // round 1: thinking → text → tool_use
+    appendLiveThinking(7, 1, "thought1 ");
+    appendLiveText(7, 1, "text1 ");
+    appendLiveToolUse(7, 1, {
+      toolName: "Bash",
+      toolUseId: "t1",
+    });
+    let s = live(7);
+    expect(s!.liveThinking).toBe(""); // 已冻结
+    expect(s!.liveBlocks.map((b) => b.type)).toEqual([
+      "thinking",
+      "text",
+      "tool_use",
+    ]);
+    expect(s!.liveBlocks[0]).toMatchObject({
+      type: "thinking",
+      text: "thought1 ",
+    });
+
+    // round 2: 新一轮 thinking,在 tool_result 之后
+    appendLiveToolResult(7, 1, { toolUseId: "t1", text: "ok" });
+    appendLiveThinking(7, 1, "thought2 ");
+    appendLiveText(7, 1, "text2 ");
+    appendLiveToolUse(7, 1, {
+      toolName: "Read",
+      toolUseId: "t2",
+    });
+    s = live(7);
+    expect(s!.liveThinking).toBe("");
+    expect(s!.liveBlocks.map((b) => b.type)).toEqual([
+      "thinking",
+      "text",
+      "tool_use",
+      "tool_result",
+      "thinking",
+      "text",
+      "tool_use",
+    ]);
+    // round 2 的 thinking 排在 round 1 的 tool_result 之后(时间顺序)。
+    expect(s!.liveBlocks[4]).toMatchObject({
+      type: "thinking",
+      text: "thought2 ",
+    });
+  });
+
   it("appendLiveToolResult does NOT flush liveDelta", () => {
     // 设计上 tool_result 紧跟 tool_use 出现,中间不会有用户可见的文字增量。
     const { openStream, appendLiveText, appendLiveToolResult } =

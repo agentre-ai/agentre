@@ -257,13 +257,25 @@ type Actions = {
   ) => void;
 };
 
-function flushLiveDelta(s: LiveStream): LiveStream {
-  if (s.liveDelta.length === 0) return s;
-  return {
-    ...s,
-    liveBlocks: [...s.liveBlocks, { type: "text", text: s.liveDelta }],
-    liveDelta: "",
-  };
+// flushLiveSegment 把当前段(thinking → text)冻成 block。thinking 先于 text ——
+// 与流序(thinking_delta... text_delta...)一致,同段内 thinking 永远在 text 前。
+// 过去只 flush liveDelta(text),liveThinking 是独立字段由 renderer 统一抬到
+// liveBlocks 前 —— 工具循环里后几轮的 thinking 被全堆到最顶(用户可见症状:
+// 「思考完成过程都在最顶部叠加」)。这里改为在 tool_use/plan/ask 等边界一并
+// 把 liveThinking 落成 thinking block,让 liveBlocks 保持真实时间顺序。
+function flushLiveSegment(s: LiveStream): LiveStream {
+  if (s.liveDelta.length === 0 && s.liveThinking.length === 0) return s;
+  const nextBlocks = [...s.liveBlocks];
+  if (s.liveThinking.length > 0) {
+    nextBlocks.push({
+      type: "thinking",
+      text: s.liveThinking,
+    } as ChatBlockData);
+  }
+  if (s.liveDelta.length > 0) {
+    nextBlocks.push({ type: "text", text: s.liveDelta } as ChatBlockData);
+  }
+  return { ...s, liveBlocks: nextBlocks, liveDelta: "", liveThinking: "" };
 }
 
 // ── 两层 Map 的读写辅助 ────────────────────────────────────────────────────────
@@ -481,7 +493,7 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
   appendLiveToolUse: (sessionId, assistantMessageId, block) =>
     set((state) =>
       updateStream(state, sessionId, assistantMessageId, (cur) => {
-        const flushed = flushLiveDelta(cur);
+        const flushed = flushLiveSegment(cur);
         return {
           ...flushed,
           liveBlocks: [
@@ -505,7 +517,7 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
   appendLiveCompactBoundary: (sessionId, assistantMessageId, compact) =>
     set((state) =>
       updateStream(state, sessionId, assistantMessageId, (cur) => {
-        const flushed = flushLiveDelta(cur);
+        const flushed = flushLiveSegment(cur);
         return {
           ...flushed,
           liveBlocks: [
@@ -534,7 +546,7 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
           ? (canonical?.planUpdate?.text ?? text)
           : text;
         if (!planText && canonical?.kind !== "plan.update") return null;
-        const flushed = flushLiveDelta(cur);
+        const flushed = flushLiveSegment(cur);
         const nextBlock: ChatBlockData = {
           type: "plan",
           text: planText,
@@ -562,7 +574,7 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
     set((state) =>
       updateStream(state, sessionId, assistantMessageId, (cur) => {
         if (!payload || !payload.requestId) return null;
-        const flushed = flushLiveDelta(cur);
+        const flushed = flushLiveSegment(cur);
         return {
           ...flushed,
           liveBlocks: [
@@ -618,7 +630,7 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
     set((state) =>
       updateStream(state, sessionId, assistantMessageId, (cur) => {
         if (!payload || !payload.requestId) return null;
-        const flushed = flushLiveDelta(cur);
+        const flushed = flushLiveSegment(cur);
         return {
           ...flushed,
           liveBlocks: [
@@ -705,7 +717,7 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
     set((state) =>
       updateStream(state, sessionId, assistantMessageId, (cur) => {
         if (!payload || !payload.requestId) return null;
-        const flushed = flushLiveDelta(cur);
+        const flushed = flushLiveSegment(cur);
         return {
           ...flushed,
           liveBlocks: [

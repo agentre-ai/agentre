@@ -55,16 +55,51 @@ func TestAccumulator_TextFlushOnAddBlock(t *testing.T) {
 	})
 }
 
-func TestAccumulator_ThinkingFirstOnFinalize(t *testing.T) {
-	Convey("Finalize 把 thinking 放到 index 0", t, func() {
+func TestAccumulator_ThinkingFlushBeforeTextOnBlock(t *testing.T) {
+	Convey("同段内 flush 时 thinking 先于 text,不再全堆 index 0", t, func() {
 		acc := New()
 		acc.AddText("text")
 		acc.AddThinking("thought")
 		acc.AddBlock(&blocks.UserAskBlock{RequestID: "r"}, "")
 
 		final := acc.Finalize()
+		// 顺序: [thinking, text, ask] —— 同段 thinking 在 text 前(与流序一致),
+		// 但不是因为"插到 index 0",而是本段 flush 顺序本就 thinking 在前。
 		_, isThink := final[0].(*cagoblocks.ThinkingBlock)
 		So(isThink, ShouldBeTrue)
+		_, isText := final[1].(*cagoblocks.TextBlock)
+		So(isText, ShouldBeTrue)
+	})
+}
+
+func TestAccumulator_MultiRoundThinkingInterleaved(t *testing.T) {
+	Convey("工具循环里后几轮 thinking 按时间顺序穿插在 tool_result 之后", t, func() {
+		acc := New()
+		// round 1: thinking → text → tool_use → tool_result
+		acc.AddThinking("thought1")
+		acc.AddText("text1")
+		acc.AddToolUse(&cagoblocks.ToolUseBlock{ID: "tu-1", Name: "Bash"}, "")
+		acc.AddToolResult(&cagoblocks.ToolResultBlock{ToolUseID: "tu-1"})
+		// round 2: thinking → text
+		acc.AddThinking("thought2")
+		acc.AddText("text2")
+
+		final := acc.Finalize()
+		So(final, ShouldHaveLength, 6)
+		_, isThink0 := final[0].(*cagoblocks.ThinkingBlock)
+		So(isThink0, ShouldBeTrue)
+		_, isText1 := final[1].(*cagoblocks.TextBlock)
+		So(isText1, ShouldBeTrue)
+		_, isUse2 := final[2].(*cagoblocks.ToolUseBlock)
+		So(isUse2, ShouldBeTrue)
+		_, isRes3 := final[3].(*cagoblocks.ToolResultBlock)
+		So(isRes3, ShouldBeTrue)
+		// round 2 的 thinking 出现在 tool_result 之后,不再抬到最顶。
+		think2, isThink4 := final[4].(*cagoblocks.ThinkingBlock)
+		So(isThink4, ShouldBeTrue)
+		So(think2.Text, ShouldEqual, "thought2")
+		_, isText5 := final[5].(*cagoblocks.TextBlock)
+		So(isText5, ShouldBeTrue)
 	})
 }
 
