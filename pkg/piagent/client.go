@@ -265,8 +265,34 @@ func (p *rpcProcess) writeJSON(v any) error {
 		return err
 	}
 	buf = append(buf, '\n')
-	_, err = p.stdin.Write(buf)
-	return err
+	if _, err := p.stdin.Write(buf); err != nil {
+		// 写失败几乎总是对端已退出(broken pipe / closed pipe)。原始 pipe 错误对
+		// 调用方无用,还会掩盖 stderr 里可分类的退出原因(如 ErrSessionNotFound)
+		// ——正是 startRPC 之后进程早夭、写还没下发就被关管道的场景。等进程退出
+		// 并按 stderr 分类(与 stdout-EOF 路径同一套 wrapExitError);分类不出东西
+		// (进程没在窗口内退出 / 退出码 0)时回退原始写错误。
+		return p.classifyDeadWrite(err)
+	}
+	return nil
+}
+
+// deadWriteProbeTimeout 限制 classifyDeadWrite 等待一个已关管道的进程退出多久。
+// 正常情况下 broken pipe 意味着对端正在退出,p.done 在毫秒级关闭;这个超时只是
+// 防御对端关了 stdin 却不退出的病态情形,避免写路径无限挂起。
+const deadWriteProbeTimeout = 5 * time.Second
+
+// classifyDeadWrite 在一次失败的 stdin 写之后,等 RPC 进程退出并按 stderr 分类
+// 退出原因,把 "broken pipe" 翻译成调用方能据以行动的错误(如 ErrSessionNotFound)。
+func (p *rpcProcess) classifyDeadWrite(writeErr error) error {
+	select {
+	case <-p.done:
+		if p.waitErr != nil {
+			return wrapExitError(p.waitErr, p.stderr.String())
+		}
+		return writeErr
+	case <-time.After(deadWriteProbeTimeout):
+		return writeErr
+	}
 }
 
 func (p *rpcProcess) terminate(ctx context.Context, grace time.Duration) error {
