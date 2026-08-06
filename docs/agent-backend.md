@@ -75,6 +75,7 @@ This table answers "what does it look like when it runs" — process shape, sess
 | Reverse Q&A | not supported | control_request `can_use_tool` + `AskUserQuestion` tool | app-server `item/tool/requestUserInput` JSON-RPC | not supported | not supported | claudecode uses the question text as the key, codex uses the question ID as the key; OpenClaw ask-user is unavailable |
 | Subagent events | ❌ | ✅ `SubagentStarted/Progress/Done` | ❌ | ✅ official bundled + flat-single extension snapshots | ❌ | claudecode translates its native `Task` protocol; Pi recognizes supported extension envelopes at the stateful drain boundary; OpenClaw MVP does not map subagent events |
 | Remote daemon | ✅ | ✅ | ✅ | ✅ | ❌ | the runtime must not depend on desktop-only services (chat_repo / GUI); OpenClaw is blocked by missing daemon-local secret enrollment/reference |
+| Session model switch | ✅ read per turn | ✅ launch flag → evict + respawn | ✅ launch flag → evict + respawn (pooled app-server) | ✅ `--model` per turn | ❌ not in v1 | `RunRequest.ModelOverride`, see [§2.4 J](#j-session-level-model-override--runrequestmodeloverride). A backend outside the allowlist never receives the field, and the frontend ModelPill does not render for it |
 
 ### PermissionModeMeta
 
@@ -547,6 +548,18 @@ agentruntime.ErrUnsupported    // the current runtime does not support this cap
 
 When a new error must have cross-process semantics, **first add the sentinel + error code in `errors.go` + `wire.go` together**; do not temporarily stringify in the daemon handler.
 
+##### J. Session-level model override — `RunRequest.ModelOverride`
+
+A session can pin its own model (`chat_sessions.model_override`, `''` = follow the provider default). `chat_svc.runTurn` fills `RunRequest.ModelOverride` per turn, but **only for backends on an allowlist** — `modelOverrideSwitchable` / `modelOverrideForBackend` (`internal/service/chat_svc/chat.go`) pass it through for builtin / claudecode / codex / piagent and drop it for everything else, so a backend that ignores the field never gets one silently persisted against it.
+
+Three things a new backend owes here:
+
+1. **Resolve it where you already read the provider model** — do not invent a second mapping. Every backend has one small function shaped `effectiveModel = firstNonEmpty(req.ModelOverride, req.Provider.Model, backendDefault)`: `builtinEffectiveModel` (`runtimes/builtin/runtime.go`), `claudeEffectiveModel` (`runtimes/claudecode/session.go`), `codexEffectiveModel` (`runtimes/codex/session.go`), `piModelFallback` (`runtimes/piagent/session.go`). The override is a **provider model id**, so the backend's existing mapping still applies (claudecode `--model`, piagent `agentre-<key>/<model>`, codex `thread {model}`, builtin `coding.WithModel`). When the backend is not bound to a provider, the override is a **bare CLI model id** handed to the CLI's own login.
+2. **If the model is a launch-time flag, a changed model must evict and respawn.** Reusing a cached subprocess silently keeps the old model. claudecode compares `cur.launchedModel != claudeEffectiveModel(req)` in `acquireSession` and re-spawns with `--resume <ProviderSessionID> --model <new>`; codex mirrors it for its pooled app-server via the `launchedModel` map. Mirror the existing `launchedEffort` precedent rather than inventing a new invalidation path.
+3. **`RunResult.Model` must be the model that actually ran**, not the one requested. `chat_svc` compares it against the override and appends a persistent deviation notice when they differ, so any per-backend decoration has to be undone before reporting: piagent strips the `agentre-<key>/` prefix in `piUserModelID` for exactly this reason, and codex reports the thread's own model. A backend that echoes back the requested model turns the notice into a permanent false negative; one that reports a decorated or version-suffixed id turns it into a per-turn false positive.
+
+Remote is transparent but not automatic: `remote.Runtime` serializes the field into `wire.RunParams.ModelOverride` and the daemon fills it back when it assembles `RunRequest` (`internal/daemon/handlers/runtime.go`) — a new field on `RunParams` needs its round-trip test like any other.
+
 ### 2.5 Daemon import (remote execution)
 
 To let a new backend run on the `agentred` daemon, change **only** `internal/daemon/runtime_imports.go`:
@@ -579,6 +592,7 @@ Only touch this when adding new fields:
 - `make generate` regenerates the `frontend/wailsjs/` bindings.
 - Editor UI (`frontend/src/components/agentre/agent-backends.tsx` + `agent-backends-utils.ts`): add the type option and new-field form controls — **use shadcn `@/components/ui/*` uniformly**, and do not add a native `<select>`.
 - Capability gating: the frontend hooks `useBackendCapabilities` / `useSessionCapabilities` (`frontend/src/components/agentre/capability/`) call the Wails bindings `GetBackendCapabilities` / `GetSessionCapabilities` (`internal/app/chat.go` → `chat_svc/ipc/capability.go`), returning `Capabilities.Set` + `PermissionModeMeta`. The component reads `caps.has("steer")` / `caps.has("set_permission_mode")` etc. to gate the steer chip / abort button / permission mode pill / ask_user_question card. After adding a new cap to the capability enum, there is no need to change the hook — only change the consuming end.
+- Session model switch gating: the composer's ModelPill is **not** capability-driven — it renders off a hardcoded backend allowlist, `modelSwitchable` in `frontend/src/components/agentre/chat-panel.tsx`, which must stay in step with the backend-side `modelOverrideSwitchable` ([§2.4 J](#j-session-level-model-override--runrequestmodeloverride)). A backend missing from the frontend list gets no pill; one missing from the backend list has its override dropped every turn. The same flag also gates the `/v1/models` fetch, so leaving a backend out of it is what keeps an unsupported backend from making a real authenticated provider request per session.
 - Session changed-file surfacing: the chat context sidebar's Files view is derived from persisted `ChatMessage.blocks` in `frontend/src/components/agentre/chat-context-sidebar/derive.ts`. Those blocks use the generated Wails field names `toolName` / `toolInput` (not backend-protocol names such as `name` / `input`). A backend that edits files must register its exact mutating tool name and path shape there and cover it with a fixture using the real `ChatBlock` wire shape; current mappings include Claude Code `Edit` / `Write` / `MultiEdit` with `file_path`, Codex `file_change` with `changes[].path` (plus legacy `apply_patch`), and Pi `edit` / `write` with `path`.
 
 ### 2.8 OpenClaw Gateway backend (implemented reference)
@@ -668,6 +682,7 @@ repo unit tests always use `testutils.Database(t)` + sqlmock, **never start a re
 - [ ] The Translator is a pure function, with table-driven tests covering the happy path + at least one boundary/error
 - [ ] `RunRequest.Cwd` is preferred when non-empty; `ForkAnchor` goes through fork when non-empty; `ctx` cancel can unblock
 - [ ] `RunResult` is **not** read before the events channel is closed; new fields (ProviderSessionID / Usage / Model / LaunchPermissionMode / ContextWindow / UserAnchor) are filled according to backend capability
+- [ ] Session model override: `req.ModelOverride` is consumed at the existing model-resolution point (no second mapping), a launch-time model flag evicts + respawns the cached process, `RunResult.Model` reports the **actually running** model undecorated, and the backend is on both allowlists (`modelOverrideSwitchable` / frontend `modelSwitchable`) or deliberately on neither
 - [ ] Remote: the `runtime_imports.go` blank import has been added; the new Event / sentinel has the wire codec + round-trip test added
 - [ ] The Wails type's new fields have stable json tags; `make generate` has regenerated `frontend/wailsjs/`
 - [ ] The Prober has been registered in `proberRegistry`; the CLI-kind backend's env wiring is in `agentruntime/clienv.go` and shared with the chat path
