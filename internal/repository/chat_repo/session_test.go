@@ -281,8 +281,8 @@ func TestSessionRepo_Create(t *testing.T) {
 	mock.ExpectExec("INSERT INTO `chat_sessions`").
 		WithArgs(
 			int64(7), "draft", "idle", int64(0), int64(0), "", // agent_id, title, agent_status, last_message_at, last_read_at, provider_session_id
-			int64(0),  // project_id
-			"",        // purpose
+			int64(0),      // project_id
+			"",            // purpose
 			0, "", "", "", // context_window, permission_mode, permission_mode_at_launch, model_override
 			int64(0), "", int64(0), // exec_device_id, exec_daemon_fingerprint, event_cursor —— 新建会话默认本机执行、无游标
 			consts.ACTIVE, sqlmock.AnyArg(), sqlmock.AnyArg(), // status, createtime, updatetime
