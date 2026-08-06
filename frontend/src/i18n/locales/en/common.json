@@ -564,6 +564,13 @@
     "message": {
       "me": "Me"
     },
+    "notice": {
+      "modelDeviation": {
+        "sentence": "Selected model {{selected}} was not applied; actually using {{actual}}",
+        "selected": "Selected model",
+        "actual": "was not applied; actually using"
+      }
+    },
     "meta": {
       "cacheHit": "Cache hit",
       "cacheWrite": "Cache write",

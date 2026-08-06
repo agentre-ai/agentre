@@ -281,10 +281,16 @@ type ChatSessionStatusPatch struct {
 // ChatBlock 是 backend → 前端的简化投影：把 cago/agents StoredBlock 拍平。
 // 已支持的 Type：text / thinking / tool_use / tool_result / notice / ask_user_question / unknown（兜底）。
 type ChatBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`  // text / thinking / tool_result / notice 文本
-	Level string          `json:"level,omitempty"` // notice 级别
-	Image *ChatBlockImage `json:"image,omitempty"`
+	Type  string `json:"type"`
+	Text  string `json:"text,omitempty"`  // text / thinking / tool_result / notice 文本
+	Level string `json:"level,omitempty"` // notice 级别
+
+	// notice 块专用:结构化偏离提示的模型 id(selected=override, actual=实际运行模型)。
+	// 持久化时编码进 cago blocks.NoticeBlock.Text 的小 JSON,投影(noticeBlockToChatBlock)
+	// 解回这里;旧的非结构化 notice 无此字段,前端回退到 Text 原样渲染。
+	SelectedModel string          `json:"selectedModel,omitempty"`
+	ActualModel   string          `json:"actualModel,omitempty"`
+	Image         *ChatBlockImage `json:"image,omitempty"`
 
 	// tool_use:
 	ToolUseID string         `json:"toolUseId,omitempty"`

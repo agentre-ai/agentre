@@ -564,6 +564,13 @@
     "message": {
       "me": "我"
     },
+    "notice": {
+      "modelDeviation": {
+        "sentence": "所选模型 {{selected}} 未生效，实际使用 {{actual}}",
+        "selected": "所选模型",
+        "actual": "未生效，实际使用"
+      }
+    },
     "meta": {
       "cacheHit": "缓存命中",
       "cacheWrite": "缓存写入",

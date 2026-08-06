@@ -2,6 +2,7 @@ package chat_svc
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/cago-frame/agents/agent/blocks"
@@ -26,31 +27,35 @@ import (
 	"github.com/agentre-ai/agentre/internal/repository/llm_provider_repo/mock_llm_provider_repo"
 )
 
-func TestModelDeviationNotice_OnlyReportsNonEmptyMismatch(t *testing.T) {
+func TestModelDeviationNotice_StructuredEmit(t *testing.T) {
+	// 结构化 emit:Text 里是 {"selected":..,"actual":..} 小 JSON,不烘死任何中文文案。
+	// 前端拿到投影后的 selectedModel/actualModel 再用 t() 渲染(见 transcript notice 分支)。
+	t.Run("mismatch encodes both ids as JSON with no baked text", func(t *testing.T) {
+		got := modelDeviationNotice("selected-model", "actual-model")
+		require.NotNil(t, got)
+		assert.Equal(t, "info", got.Level)
+		var payload struct {
+			Selected string `json:"selected"`
+			Actual   string `json:"actual"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(got.Text), &payload))
+		assert.Equal(t, "selected-model", payload.Selected)
+		assert.Equal(t, "actual-model", payload.Actual)
+		assert.NotContains(t, got.Text, "未生效")
+	})
+
 	tests := []struct {
 		name     string
 		override string
 		actual   string
-		wantText string
-		wantNil  bool
 	}{
-		{name: "mismatch", override: "selected", actual: "actual", wantText: "所选模型 selected 未生效，实际使用 actual"},
-		{name: "equal", override: "same", actual: "same", wantNil: true},
-		{name: "empty override", actual: "actual", wantNil: true},
-		{name: "empty actual", override: "selected", wantNil: true},
+		{name: "equal", override: "same", actual: "same"},
+		{name: "empty override", actual: "actual"},
+		{name: "empty actual", override: "selected"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := modelDeviationNotice(tt.override, tt.actual)
-			if tt.wantNil {
-				assert.Nil(t, got)
-				return
-			}
-			if assert.NotNil(t, got) {
-				assert.Equal(t, "info", got.Level)
-				assert.Equal(t, tt.wantText, got.Text)
-			}
+			assert.Nil(t, modelDeviationNotice(tt.override, tt.actual))
 		})
 	}
 }
@@ -150,8 +155,14 @@ func TestRunTurn_ModelOverrideReachesRunnerAndPersistsDeviationNotice(t *testing
 	notice, ok := persistedBlocks[0].(blocks.NoticeBlock)
 	require.True(t, ok)
 	assert.Equal(t, "info", notice.Level)
-	assert.Contains(t, notice.Text, "selected-model")
-	assert.Contains(t, notice.Text, "actual-model")
+	// 持久化侧:两个模型 id 以结构化小 JSON 编码进 NoticeBlock.Text。
+	var payload struct {
+		Selected string `json:"selected"`
+		Actual   string `json:"actual"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(notice.Text), &payload))
+	assert.Equal(t, "selected-model", payload.Selected)
+	assert.Equal(t, "actual-model", payload.Actual)
 
 	var liveNotice bool
 	for _, event := range streamEvents {
@@ -159,7 +170,9 @@ func TestRunTurn_ModelOverrideReachesRunnerAndPersistsDeviationNotice(t *testing
 			continue
 		}
 		for _, block := range event.Message.Blocks {
-			if block.Type == "notice" && block.Text == notice.Text {
+			// 下行侧:ChatBlock 携带结构化 selectedModel/actualModel(不含烘死文案)。
+			if block.Type == "notice" &&
+				block.SelectedModel == "selected-model" && block.ActualModel == "actual-model" {
 				liveNotice = true
 			}
 		}

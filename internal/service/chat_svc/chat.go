@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -684,6 +685,35 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	return &LaunchCommandResponse{Command: cmd, BackendType: be.Type}, nil
 }
 
+// modelDeviationPayload 是偏离提示持久化时写进 blocks.NoticeBlock.Text 的小 JSON。
+// NoticeBlock 是 cago 库的 UI-only 块,只有 Level/Text 两个字段(库类型,不能加字段),
+// 所以把 selected/actual 两个模型 id 编码进 Text;前端投影(noticeBlockToChatBlock)
+// 解回 ChatBlock.SelectedModel/ActualModel 再用 t() 渲染。该块从不发给 LLM。
+// 旧数据 / 非结构化文本的 NoticeBlock 走 Text 原样渲染兜底。
+type modelDeviationPayload struct {
+	Selected string `json:"selected"`
+	Actual   string `json:"actual"`
+}
+
+func encodeModelDeviation(override, actual string) string {
+	b, _ := json.Marshal(modelDeviationPayload{Selected: override, Actual: actual})
+	return string(b)
+}
+
+// decodeModelDeviation 把 NoticeBlock.Text 还原成 selected/actual。
+// ok=false 表示文本不是本功能产出的结构化负载(旧数据/其它来源的 notice),调用方应
+// 原样渲染 Text。
+func decodeModelDeviation(text string) (selected, actual string, ok bool) {
+	var p modelDeviationPayload
+	if err := json.Unmarshal([]byte(text), &p); err != nil {
+		return "", "", false
+	}
+	if p.Selected == "" || p.Actual == "" {
+		return "", "", false
+	}
+	return p.Selected, p.Actual, true
+}
+
 func modelDeviationNotice(override, actual string) *blocks.NoticeBlock {
 	override = strings.TrimSpace(override)
 	actual = strings.TrimSpace(actual)
@@ -692,8 +722,23 @@ func modelDeviationNotice(override, actual string) *blocks.NoticeBlock {
 	}
 	return &blocks.NoticeBlock{
 		Level: "info",
-		Text:  fmt.Sprintf("所选模型 %s 未生效，实际使用 %s", override, actual),
+		Text:  encodeModelDeviation(override, actual),
 	}
+}
+
+// noticeBlockToChatBlock 把持久化的 blocks.NoticeBlock 投影成前端 ChatBlock。
+// 结构化偏离提示(本功能产出的 {"selected":..,"actual":..} 小 JSON)解回
+// SelectedModel/ActualModel,Text 置空——前端走 t() 渲染;非结构化旧数据原样透传 Text。
+func noticeBlockToChatBlock(tb blocks.NoticeBlock) ChatBlock {
+	if selected, actual, ok := decodeModelDeviation(tb.Text); ok {
+		return ChatBlock{
+			Type:          "notice",
+			Level:         tb.Level,
+			SelectedModel: selected,
+			ActualModel:   actual,
+		}
+	}
+	return ChatBlock{Type: "notice", Level: tb.Level, Text: tb.Text}
 }
 
 func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
@@ -751,10 +796,10 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 		case *blocks.ThinkingBlock:
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "thinking", Text: tb.Text})
 		case blocks.NoticeBlock:
-			out.Blocks = append(out.Blocks, ChatBlock{Type: "notice", Level: tb.Level, Text: tb.Text})
+			out.Blocks = append(out.Blocks, noticeBlockToChatBlock(tb))
 		case *blocks.NoticeBlock:
 			if tb != nil {
-				out.Blocks = append(out.Blocks, ChatBlock{Type: "notice", Level: tb.Level, Text: tb.Text})
+				out.Blocks = append(out.Blocks, noticeBlockToChatBlock(*tb))
 			}
 		case blocks.ToolUseBlock:
 			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
