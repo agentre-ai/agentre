@@ -74,6 +74,29 @@ describe("FilesView", () => {
     ).toBeInTheDocument();
   });
 
+  it("reserves a chevron-width slot on file rows so dir/file icon and name columns align", () => {
+    render(
+      <FilesView
+        files={files}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+    // 文件行跳转按钮的第一个子元素是与目录 chevron 同宽(size-3.5)的空槽位，
+    // 使同级目录文件夹图标/文件名与文件图标/文件名在水平上对齐。
+    const fileRow = screen.getByRole("button", { name: /chat\.go/ });
+    const firstChild = fileRow.firstElementChild;
+    expect(firstChild).not.toBeNull();
+    expect(firstChild!.className).toContain("size-3.5");
+    expect(firstChild!.textContent).toBe("");
+    expect(firstChild!.getAttribute("aria-hidden")).toBe("true");
+    // 空槽位之后紧跟文件图标（FileCode svg），再是文件名。
+    const icon = fileRow.querySelector("svg");
+    expect(icon).not.toBeNull();
+    expect(icon!.nextElementSibling?.textContent).toBe("chat.go");
+  });
+
   it("renders a Windows path as folders with its basename on the file row", () => {
     const windowsFiles: FileEntry[] = [
       {
