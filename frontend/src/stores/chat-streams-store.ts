@@ -800,7 +800,7 @@ export const useChatStreamsStore = create<State & Actions>((set) => ({
             }),
           };
         }
-        const flushed = flushLiveDelta(cur);
+        const flushed = flushLiveSegment(cur);
         return {
           ...flushed,
           liveBlocks: [
