@@ -711,7 +711,7 @@ function RenderItemView({
             />
             <span className="min-w-0 flex-1 break-words">
               {t("chat.notice.modelDeviation.selected")}{" "}
-              <span className="font-mono">{selected}</span>
+              <span className="font-mono">{selected}</span>{" "}
               {t("chat.notice.modelDeviation.actual")}{" "}
               <span className="font-mono">{actual}</span>
             </span>
