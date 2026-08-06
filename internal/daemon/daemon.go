@@ -93,6 +93,7 @@ type Daemon struct {
 	mu  sync.RWMutex
 	lan *rpc.LANServer
 	hub *rpc.HubLink
+	mux *rpc.Multiplexer
 
 	// conns 是 daemon 的推送路由表:会话通知按**会话**解析到发起它的那条连接,
 	// MCP 反向隧道从同一份状态里解析目标,daemon 上没有第二个「当前连接」的全局。
@@ -467,6 +468,7 @@ func New(opts Options) (*Daemon, error) {
 			ServerURL:   opts.HubServerURL,
 			AccessToken: credential.AccessToken,
 		})
+		d.mux = rpc.NewMultiplexer(d.hub)
 	}
 	d.catchup = handlers.NewSessionCatchupHandlers(handlers.SessionCatchupDeps{
 		Sessions:         d.sessionStore,
@@ -639,9 +641,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	ctx = dbpkg.WithContextDB(ctx, d.db)
 	// Outbound relay failures are deliberately isolated from the LAN server and
 	// running sessions. HubLink owns logging, heartbeats, and retry for Run's
-	// whole lifetime; task 5 will attach its multiplexer at this raw frame seam.
+	// whole lifetime; the multiplexer consumes its raw-frame seam separately.
 	if d.hub != nil {
 		go func() { _ = d.hub.Run(ctx) }()
+	}
+	if d.mux != nil {
+		defer d.mux.Close()
+		go d.serveRelayChannels(ctx, d.mux)
 	}
 	// 通知日志的回收:起手一次,之后按间隔跑(见 collectJournal 的留存策略)。
 	go d.runJournalCollector(ctx)
@@ -671,7 +677,27 @@ func (d *Daemon) Run(ctx context.Context) error {
 	return lan.Run(ctx)
 }
 
-// bindConn is called by LANServer once per accepted WebSocket connection.
+// serveRelayChannels turns server-initiated virtual channels into the same
+// connection shape the LAN server creates. The channel ID and relay envelope
+// end at the Multiplexer boundary: Conn and every registered handler see only
+// a FrameConn.
+func (d *Daemon) serveRelayChannels(ctx context.Context, mux *rpc.Multiplexer) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case channel := <-mux.Accept():
+			if channel == nil {
+				return
+			}
+			conn := rpc.NewConn(channel, d.registry.Clone())
+			d.bindConn(conn)
+			go conn.Serve(ctx)
+		}
+	}
+}
+
+// bindConn is called once per LAN or relay connection.
 // 挂载 runtime.* 13 个 RPC 到这条连接的私有 registry。RuntimeHandlers 持有 per-session backend
 // type cache,所以是 per-conn 构造的;会话通知**不**推回「这条」连接 —— 它在发送那一刻
 // 按会话解析属主连接(见 notifierForPeer / connRegistry),因为 fanout goroutine 会活过

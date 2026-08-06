@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,6 +45,7 @@ import (
 	remotefswire "github.com/agentre-ai/agentre/internal/pkg/remotefs/wire"
 
 	"github.com/cago-frame/agents/provider"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1769,6 +1772,162 @@ func accountClientForIntegration(t *testing.T, d *Daemon, fingerprint, credentia
 	}, &result))
 	require.True(t, result["ok"].(bool))
 	return cli
+}
+
+// TestIntegration_RelayInitiatedChannelServesAccountRuntimeAndCleansUp proves
+// the daemon consumes a server-originated relay channel through the same
+// bindConn path as LAN: account auth and runtime handlers work unchanged, and
+// a relay disconnect removes its authenticated connection from the registry.
+func TestIntegration_RelayInitiatedChannelServesAccountRuntimeAndCleansUp(t *testing.T) {
+	fake := &fakeBackendRunner{}
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeClaudeCode, fake)
+	t.Cleanup(restore)
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	require.NoError(t, err)
+
+	dir, err := os.MkdirTemp("", "ard-relay")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	accountID := "relay-account"
+	st.Claim(accountID, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})),
+		state.AccountCredential{AccessToken: "relay-access-token"})
+	require.NoError(t, st.Save())
+	credential := signedAccountCredential(t, privateKey, accountID)
+
+	connections := make(chan *websocket.Conn, 1)
+	closeRelay := make(chan struct{})
+	var closeRelayOnce sync.Once
+	var relayAttempts atomic.Int32
+	upgrader := websocket.Upgrader{}
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if relayAttempts.Add(1) > 1 {
+			http.Error(w, "relay closed", http.StatusServiceUnavailable)
+			return
+		}
+		require.Equal(t, "/v1/relay/daemon", r.URL.Path)
+		require.Equal(t, "Bearer relay-access-token", r.Header.Get("Authorization"))
+		ws, upgradeErr := upgrader.Upgrade(w, r, nil)
+		if upgradeErr != nil {
+			return
+		}
+		connections <- ws
+		<-closeRelay
+		_ = ws.Close()
+	}))
+	t.Cleanup(relay.Close)
+	t.Cleanup(func() { closeRelayOnce.Do(func() { close(closeRelay) }) })
+
+	d, err := New(Options{DataDir: dir, LANHost: "127.0.0.1", LANPort: 0, HubServerURL: relay.URL})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-errCh:
+			require.NoError(t, runErr)
+		case <-time.After(3 * time.Second):
+			t.Error("relay daemon did not shut down within 3s")
+		}
+	})
+
+	var relayConn *websocket.Conn
+	select {
+	case relayConn = <-connections:
+	case <-time.After(2 * time.Second):
+		t.Fatal("claimed daemon did not connect to the relay")
+	}
+
+	channelID := "relay-client-1"
+	authResponse := relayRequest(t, relayConn, channelID, rpc.Frame{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage(`1`),
+		Method:  "auth.account",
+		Params:  mustMarshal(t, rpc.AccountParams{Credential: credential, DeviceFingerprint: "sha256:relay-client"}),
+	})
+	require.Nil(t, authResponse.Error)
+	var authResult map[string]any
+	require.NoError(t, json.Unmarshal(authResponse.Result, &authResult))
+	assert.Equal(t, true, authResult["ok"])
+
+	runtimeResponse := relayRequest(t, relayConn, channelID, rpc.Frame{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage(`2`),
+		Method:  wire.MethodCapabilities,
+		Params:  mustMarshal(t, wire.CapabilitiesParams{BackendType: "claudecode"}),
+	})
+	require.Nil(t, runtimeResponse.Error)
+	assert.NotEmpty(t, runtimeResponse.Result, "relay channel must serve the per-connection runtime handlers")
+
+	require.Eventually(t, func() bool {
+		d.conns.mu.Lock()
+		defer d.conns.mu.Unlock()
+		return len(d.conns.live) == 1
+	}, time.Second, 10*time.Millisecond, "authenticated relay connection must be registered")
+
+	closeRelayOnce.Do(func() { close(closeRelay) })
+	require.Eventually(t, func() bool {
+		d.conns.mu.Lock()
+		defer d.conns.mu.Unlock()
+		return len(d.conns.live) == 0 && len(d.conns.claims) == 0
+	}, time.Second, 10*time.Millisecond, "closed relay channel must be removed like a LAN connection")
+}
+
+func signedAccountCredential(t *testing.T, privateKey *rsa.PrivateKey, accountID string) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	claims := mustMarshal(t, map[string]any{"uid": accountID, "exp": time.Now().Add(time.Hour).Unix()})
+	payload := base64.RawURLEncoding.EncodeToString(claims)
+	signingInput := header + "." + payload
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+	require.NoError(t, err)
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func relayRequest(t *testing.T, conn *websocket.Conn, channelID string, request rpc.Frame) rpc.Frame {
+	t.Helper()
+	requestJSON := mustMarshal(t, request)
+	require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, relayEnvelope(channelID, requestJSON)))
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+	messageType, responsePayload, err := conn.ReadMessage()
+	require.NoError(t, err, "relay-initiated channel did not return a response")
+	require.Equal(t, websocket.BinaryMessage, messageType)
+	responseChannelID, responseJSON := unpackRelayEnvelope(t, responsePayload)
+	require.Equal(t, channelID, responseChannelID)
+	var response rpc.Frame
+	require.NoError(t, json.Unmarshal(responseJSON, &response))
+	return response
+}
+
+func relayEnvelope(channelID string, frame []byte) []byte {
+	payload := make([]byte, 2+len(channelID)+len(frame))
+	binary.BigEndian.PutUint16(payload, uint16(len(channelID)))
+	copy(payload[2:], channelID)
+	copy(payload[2+len(channelID):], frame)
+	return payload
+}
+
+func unpackRelayEnvelope(t *testing.T, payload []byte) (string, []byte) {
+	t.Helper()
+	require.GreaterOrEqual(t, len(payload), 2)
+	channelIDLength := int(binary.BigEndian.Uint16(payload[:2]))
+	require.Greater(t, channelIDLength, 0)
+	require.Greater(t, len(payload), 2+channelIDLength)
+	return string(payload[2 : 2+channelIDLength]), payload[2+channelIDLength:]
+}
+
+func mustMarshal(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	require.NoError(t, err)
+	return encoded
 }
 
 // TestIntegration_MultiClientVisibility_GatesAllPeerAccessByClaimedAccount covers R10–R13:

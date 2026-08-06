@@ -628,6 +628,18 @@ func TestDaemon_GivenClaimedAndUnavailableRelay_WhenRunning_ThenLANKeepsServing(
 	}, 2*time.Second, 10*time.Millisecond, "the LAN server must run while the claimed daemon retries the relay")
 }
 
+// TestDaemon_GivenUnclaimedRelayURL_WhenConstructed_ThenKeepsLANOnly ensures
+// relay construction remains gated by account ownership; an unclaimed daemon
+// must not create a hub link or a multiplexer merely because a server URL exists.
+func TestDaemon_GivenUnclaimedRelayURL_WhenConstructed_ThenKeepsLANOnly(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir(), HubServerURL: "http://relay.example"})
+	require.NoError(t, err)
+	t.Cleanup(func() { closeDB(d.db) })
+
+	assert.Nil(t, d.hub)
+	assert.Nil(t, d.mux)
+}
+
 func TestDaemon_BootShutdown(t *testing.T) {
 	dir := t.TempDir()
 	d, err := New(Options{
