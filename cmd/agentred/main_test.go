@@ -42,8 +42,9 @@ func TestRootSubcommands(t *testing.T) {
 	}
 }
 
-// TestUnclaimClearsAccountLocally covers R19: unclaim removes every account
-// credential and cached verification key exclusively through state.json. The
+// TestUnclaimClearsAccountLocally covers R19: unclaim returns the daemon to the
+// unclaimed state by removing every account-derived local cache — credential,
+// verification key, and revocation list — exclusively through state.json. The
 // default HTTP transport is a tripwire: any network request fails the test.
 func TestUnclaimClearsAccountLocally(t *testing.T) {
 	dir := t.TempDir()
@@ -56,6 +57,10 @@ func TestUnclaimClearsAccountLocally(t *testing.T) {
 		s.Credential = state.AccountCredential{
 			AccessToken: "access", RefreshToken: "refresh", DeviceID: 7,
 		}
+		// The revocation list is pulled from — and only meaningful under — the
+		// claimed account, so returning to 未认领状态 has to drop it too.
+		s.RevokedJTIs = []string{"jti-revoked-1", "jti-revoked-2"}
+		s.RevocationsAsOf = 1_716_003_600_000
 	})
 	require.NoError(t, st.Save())
 
@@ -77,6 +82,8 @@ func TestUnclaimClearsAccountLocally(t *testing.T) {
 	assert.Empty(t, got.AccountID)
 	assert.Empty(t, got.VerificationPublicKeyPEM)
 	assert.Equal(t, state.AccountCredential{}, got.Credential)
+	assert.Empty(t, got.RevokedJTIs, "the previous account's revocation list must not survive unclaim")
+	assert.Zero(t, got.RevocationsAsOf, "the previous account's revocation timestamp must not survive unclaim")
 	assert.Zero(t, networkCalls.Load(), "unclaim must not make network requests")
 
 	gotDir, err := paths.AgentredDataDir()

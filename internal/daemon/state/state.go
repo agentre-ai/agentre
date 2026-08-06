@@ -115,6 +115,12 @@ func (s *State) Unclaim() {
 		st.AccountID = ""
 		st.VerificationPublicKeyPEM = ""
 		st.Credential = AccountCredential{}
+		// The cached revocation list is pulled from the claimed account and
+		// only ever consulted for that account's credentials, so it is part of
+		// the claim: leaving it behind would keep one account's data on a
+		// daemon that has returned to the unclaimed state (R19).
+		st.RevokedJTIs = nil
+		st.RevocationsAsOf = 0
 	})
 }
 

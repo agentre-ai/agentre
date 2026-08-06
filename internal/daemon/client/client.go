@@ -160,6 +160,24 @@ func pathLabel(p Path, idx int) string {
 	return fmt.Sprintf("path %d", idx+1)
 }
 
+// The three relay dial failures R21 requires the caller to be able to tell
+// apart, because the user's next step differs for each: claim the machine,
+// power it on, or retry later. agentre-server distinguishes them on the wire
+// (404 / 409 / 502, see relay_ctr.relayError); DialRelay maps them back so the
+// distinction survives the websocket handshake instead of collapsing into
+// gorilla's generic "bad handshake".
+var (
+	// ErrRelayDaemonNotFound: the daemon was never registered under this
+	// account — the user has to claim that machine first.
+	ErrRelayDaemonNotFound = errors.New("relay: daemon is not registered under this account")
+	// ErrRelayDaemonOffline: registered, but not currently connected to the
+	// relay — the user has to power that machine on.
+	ErrRelayDaemonOffline = errors.New("relay: daemon is registered but currently offline")
+	// ErrRelayForwardFailed: online, but the server could not forward to it —
+	// transient, worth retrying.
+	ErrRelayForwardFailed = errors.New("relay: daemon is online but the relay could not forward to it")
+)
+
 // RelayOptions configures DialRelay.
 type RelayOptions struct {
 	// URL is the account relay endpoint for the target daemon, e.g.
@@ -185,9 +203,9 @@ func DialRelay(ctx context.Context, opts RelayOptions) (*Client, error) {
 	d.Subprotocols = []string{rpc.Subprotocol}
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+opts.AccessToken)
-	ws, _, err := d.DialContext(ctx, opts.URL, headers)
+	ws, resp, err := d.DialContext(ctx, opts.URL, headers)
 	if err != nil {
-		return nil, err
+		return nil, classifyRelayDialError(err, resp)
 	}
 	reg := rpc.NewRegistry()
 	c := &Client{reg: reg}
@@ -202,6 +220,27 @@ func DialRelay(ctx context.Context, opts RelayOptions) (*Client, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// classifyRelayDialError turns a failed relay handshake into one of R21's three
+// distinguishable outcomes. gorilla hands back the HTTP response alongside
+// ErrBadHandshake, and agentre-server answers the pre-upgrade cases with a
+// distinct status each; anything else (401 on a stale token, a dead TCP dial, a
+// proxy in the way) is deliberately left unclassified rather than guessed into
+// one of the three — a wrong classification sends the user down the wrong fix.
+func classifyRelayDialError(err error, resp *http.Response) error {
+	if resp == nil || !errors.Is(err, websocket.ErrBadHandshake) {
+		return err
+	}
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		return fmt.Errorf("%w: %w", ErrRelayDaemonNotFound, err)
+	case http.StatusConflict:
+		return fmt.Errorf("%w: %w", ErrRelayDaemonOffline, err)
+	case http.StatusBadGateway:
+		return fmt.Errorf("%w: %w", ErrRelayForwardFailed, err)
+	}
+	return fmt.Errorf("relay rejected the connection with %s: %w", resp.Status, err)
 }
 
 // Call invokes a server method and waits for the response.

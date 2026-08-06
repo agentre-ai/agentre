@@ -176,3 +176,62 @@ func TestDialRelay_GivenAccountToken_WhenAuthAccountSucceeds_ThenReturnsUsableCl
 	default:
 	}
 }
+
+// R21:「客户端请求连接一台 daemon 而失败时，错误需区分三种情形：该 daemon 从未
+// 登记过（不属于此账号）、登记过但当前离线、在线但转发失败。」server 已经把三者
+// 分成 404 / 409 / 502(relay_ctr.relayError),这里守的是客户端一侧——中转拨号
+// 必须把它们解析成各自可判定的错误,而不是塞回一个通用的 "bad handshake"。
+func TestDialRelay_GivenRelayRefuses_WhenClassifyingFailure_ThenDistinguishesThreeCases(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{"never registered", http.StatusNotFound, `{"code":30400,"msg":"relay daemon not found"}`, ErrRelayDaemonNotFound},
+		{"registered but offline", http.StatusConflict, `{"code":30401,"msg":"relay daemon offline"}`, ErrRelayDaemonOffline},
+		{"online but forward failed", http.StatusBadGateway, `{"code":30402,"msg":"relay forwarding failed"}`, ErrRelayForwardFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			_, err := DialRelay(context.Background(), RelayOptions{
+				URL:               "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/relay/client?daemon_fingerprint=sha256:abc",
+				AccessToken:       "relay-tok",
+				DeviceFingerprint: "sha256:desktop",
+			})
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tc.want)
+			for _, other := range []error{ErrRelayDaemonNotFound, ErrRelayDaemonOffline, ErrRelayForwardFailed} {
+				if other != tc.want {
+					assert.NotErrorIs(t, err, other, "the three relay failures must stay distinguishable from each other")
+				}
+			}
+		})
+	}
+}
+
+// 不属于 R21 三种情形的中转失败(例如鉴权 401)不得被误判成其中任何一种——
+// 「先去认领」「去把机器开起来」「稍后重试」都不是它的正确处置。
+func TestDialRelay_GivenUnrelatedHTTPFailure_WhenClassifyingFailure_ThenClaimsNoneOfTheThree(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := DialRelay(context.Background(), RelayOptions{
+		URL:               "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/relay/client?daemon_fingerprint=sha256:abc",
+		AccessToken:       "stale-tok",
+		DeviceFingerprint: "sha256:desktop",
+	})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrRelayDaemonNotFound)
+	assert.NotErrorIs(t, err, ErrRelayDaemonOffline)
+	assert.NotErrorIs(t, err, ErrRelayForwardFailed)
+}
