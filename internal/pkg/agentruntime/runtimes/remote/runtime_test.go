@@ -258,7 +258,7 @@ func TestAutonomousTurnEvent_ClosingRaceMustNotPanic(t *testing.T) {
 	// 模拟断连:watchClose → closeAllAutoSessions() 与 park 的 send 竞争。
 	closeDone := make(chan struct{})
 	go func() {
-		rt.closeAllAutoSessions()
+		rt.closeAllAutoSessions(ErrDaemonDisconnected)
 		close(closeDone)
 	}()
 	// drainer:修复后 send 持 a.mu,需 drain 一个放行让 closeAll 拿到锁;修复前 send
@@ -312,7 +312,7 @@ func TestAutonomousTurnStarted_ClosingRaceMustNotPanic(t *testing.T) {
 	// 模拟断连:watchClose → closeAllAutoSessions() 与 park 的 send 竞争。
 	closeDone := make(chan struct{})
 	go func() {
-		rt.closeAllAutoSessions()
+		rt.closeAllAutoSessions(ErrDaemonDisconnected)
 		close(closeDone)
 	}()
 	// drainer:修复后 send 持 a.mu,需 drain 放行让 closeAll 拿到锁;修复前 send 已被

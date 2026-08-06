@@ -126,6 +126,12 @@ type ChatSvc interface {
 	LatestAssistantText(ctx context.Context, sessionID int64) (string, error)
 	// SessionProjectID 返回某会话所属的 project id(0=未挂项目);子 agent 工具用它继承调用方项目/cwd。
 	SessionProjectID(ctx context.Context, sessionID int64) (int64, error)
+	// CatchUpRemoteSessions 在 App 启动后按 chat_sessions.exec_device_id 连回各台配对
+	// daemon,把桌面端离线期间远端产生的转录与待决策补回来。见 remote_catchup.go。
+	CatchUpRemoteSessions(ctx context.Context) error
+	// CatchUpRemoteDevice 在某台 daemon 重新上线时补上启动那次没做成的补齐(启动补齐
+	// 只跑一次,开机自启早于网络就绪的那一次拨号失败否则就是终局)。见 remote_catchup.go。
+	CatchUpRemoteDevice(ctx context.Context, deviceID int64) error
 }
 
 var defaultChat ChatSvc
@@ -201,6 +207,10 @@ type chatSvc struct {
 	// session 重复起 watcher goroutine(每会话一个,惰性启动);watcher 在底层
 	// AutonomousTurns channel close(子进程 evict / CloseSession)时退出并清这条。
 	autoWatchers sync.Map
+	// catchUpPending：deviceID(int64) → struct{}。启动补齐时拨不通(或补齐半途出错)的
+	// 设备记在这里 —— 那一刻拿不到任何判据,会话一行都不能碰。设备监视报它重新上线时
+	// 由 CatchUpRemoteDevice 重来一次并清掉这条。
+	catchUpPending sync.Map
 	// subagentActivityWatchers：sessionID(int64) → struct{}。startSubagentActivityWatcher
 	// 用它防同一 session 重复起后台 subagent 活动 watcher(每会话一个,惰性启动);watcher
 	// 在底层 SubagentActivity channel close(子进程 evict / CloseSession)时退出并清这条。
@@ -223,6 +233,10 @@ type chatSvc struct {
 	// 把 entry 从 map 摘掉,下次 borrow 走冷路径重建。
 	remoteMu    sync.Mutex
 	remoteCache map[int64]*remoteRuntimeEntry
+	// connStates: sessionID(int64) → 该会话此刻偏离缺省的连接态。onRemoteConnState
+	// (chat:conn:<sid> 的发布方)维护,LoadSession 同步读。见 remote_reconnect.go。
+	connMu     sync.Mutex
+	connStates map[int64]remote.ConnState
 	// testHookPool 如果非 nil,代替 remote_device_svc.Default().Pool() 用于测试注入。
 	testHookPool remote_device_svc.ConnPool
 }
@@ -502,6 +516,9 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 	// ActiveStream 让中途打开本会话的前端重挂到 per-turn 实时流(子 agent 调用轮 / 自主轮等
 	// 非前端发起的 turn 没有 Send 响应入口)。无活跃 turn 时为空,前端不重挂。
 	resp.Session.ActiveStream = activeStreamName(activeTurn, sess.ID, msgs)
+	// 连接态随响应同步返回:重挂上来的前端要在订阅 chat:conn:<sid> 之前就知道这条会话
+	// 此刻是不是断着的,否则整个退避窗口里只剩打字指示器。
+	resp.Session.ConnectionState = string(s.sessionConnState(sess.ID))
 	if activeTurn &&
 		sess.AgentStatus != "running" && sess.AgentStatus != "waiting" {
 		logger.Ctx(ctx).Warn("chat_svc: LoadSession served non-running status while turn active",
@@ -3392,9 +3409,21 @@ func providerSessionNotFound(err error) bool {
 	return errors.Is(err, claudecode.ErrSessionNotFound) || errors.Is(err, agentruntime.ErrSessionNotFound)
 }
 
+// mapTurnError 把一轮的终止原因翻成**交到用户面前的那句话**。
+//
+// 远端的两种非失败终止在这里分道:R15 规定它们都沿用既有的 error 态、不新增第五个
+// AgentStatus 取值,「由消息文案区分其与真实错误」—— 而消息文案就是这个返回值(经
+// assistantMsg.ErrorText 持久化)。三句话必须互不相同:被打断(daemon 重启 / 会话在
+// 那台机器上已中断)、连不上了(重连彻底失败)、真的跑失败了(原样透出后端错误)。
 func (s *chatSvc) mapTurnError(ctx context.Context, sess *chat_entity.Session, be *agent_backend_entity.AgentBackend, src error) error {
 	if src == nil {
 		return nil
+	}
+	if errors.Is(src, remote.ErrRunInterrupted) {
+		return i18n.NewError(ctx, code.ChatRemoteRunInterrupted)
+	}
+	if errors.Is(src, remote.ErrDaemonDisconnected) {
+		return i18n.NewError(ctx, code.ChatRemoteDaemonUnreachable)
 	}
 	if providerSessionNotFound(src) {
 		return s.mapProviderSessionError(ctx, sess, src)
@@ -3749,64 +3778,106 @@ func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_ent
 	if !ok {
 		return nil, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 	}
-
-	// Fast path: cache hit
-	s.remoteMu.Lock()
-	if s.remoteCache == nil {
-		s.remoteCache = map[int64]*remoteRuntimeEntry{}
-	}
-	if entry, ok := s.remoteCache[deviceID]; ok {
-		entry.sessions[sessionID] = struct{}{}
-		s.remoteMu.Unlock()
-		return entry.runtime, nil
-	}
-	s.remoteMu.Unlock()
-
-	// Cold path: 借 lease + wrap runtime
-	lease, err := s.pool().Borrow(ctx, deviceID)
+	rt, fp, err := s.remoteRuntimeForDevice(ctx, deviceID, []int64{sessionID})
 	if err != nil {
 		logger.Ctx(ctx).Error("borrowRemoteRuntime: pool.Borrow",
 			zap.Int64("deviceID", deviceID), zap.Error(err))
 		return nil, i18n.NewError(ctx, code.RemoteRunnerDialFailed)
 	}
-	rt := remote.New(lease.Client())
+	// 会话在库里记下「跑在哪台 daemon 的哪个实例上」——游标端口的读写守卫全靠它,
+	// 不写就永远判失效,断连补齐退化成断连即终止(见 remote_reconnect.go);而 App
+	// 重启后「该连谁」也全靠这一行(见 CatchUpRemoteSessions)。runtime 是 device 级
+	// 共享的,同一台设备上的第二条会话走 cache 命中那条路,它自己的执行位置同样要落库。
+	s.recordExecDaemon(ctx, sessionID, deviceID, fp)
 
 	// 同步拉一次远端 backend 的 capability 矩阵缓存到本地,之后 rt.Capabilities()
-	// 直接返实际能力。失败不阻断 borrow —— Capabilities() 回退到
-	// defaultCapsBeforePrefetch 占位,UI gating 不挂死。
+	// 直接返实际能力。已缓存过的 backendType 直接 noop(cache 命中不会再发 RPC)。
+	// 失败不阻断 borrow —— Capabilities() 回退到 defaultCapsBeforePrefetch 占位,
+	// UI gating 不挂死。
 	if err := rt.Prefetch(ctx, agent_backend_entity.BackendType(be.Type)); err != nil {
 		logger.Ctx(ctx).Warn("borrowRemoteRuntime: capability prefetch failed",
 			zap.Int64("deviceID", deviceID),
 			zap.String("backendType", be.Type),
 			zap.Error(err))
 	}
+	return rt, nil
+}
+
+// remoteRuntimeForDevice 取(或建)某台配对 daemon 上共享的 *remote.Runtime,并把
+// sessionIDs 记进它的引用集;顺带交回该 daemon 此刻的实例标识。
+//
+// 它与 borrowRemoteRuntime 分开,是因为补齐(CatchUpRemoteSessions)手上只有
+// (设备, 会话) 而**没有 agent backend**:重启后要连回的那台 daemon 是从
+// chat_sessions.exec_device_id 读出来的,不经过 turn 的后端选择。
+func (s *chatSvc) remoteRuntimeForDevice(ctx context.Context, deviceID int64, sessionIDs []int64) (*remote.Runtime, string, error) {
+	// Fast path: cache hit
+	s.remoteMu.Lock()
+	if s.remoteCache == nil {
+		s.remoteCache = map[int64]*remoteRuntimeEntry{}
+	}
+	if entry, ok := s.remoteCache[deviceID]; ok {
+		addSessionRefs(entry, sessionIDs)
+		s.remoteMu.Unlock()
+		return entry.runtime, s.daemonFingerprint(ctx, deviceID), nil
+	}
+	s.remoteMu.Unlock()
+
+	// Cold path: 借 lease + wrap runtime
+	lease, err := s.pool().Borrow(ctx, deviceID)
+	if err != nil {
+		return nil, "", err
+	}
+	fp := s.daemonFingerprint(ctx, deviceID)
+
+	// entry 先建出来:重连端口要往里换 lease,所以它必须先于 runtime 存在。
+	entry := &remoteRuntimeEntry{lease: lease, sessions: map[int64]struct{}{}}
+	addSessionRefs(entry, sessionIDs)
+	rt := remote.New(lease.Client(),
+		remote.WithDaemonFingerprint(fp),
+		remote.WithConnStateObserver(remote.ConnStateFunc(s.onRemoteConnState)),
+		remote.WithDurabilityObserver(remote.DurabilityFunc(func(supported bool) {
+			s.onRemoteDaemonDurability(deviceID, supported)
+		})),
+		remote.WithReconnect(remote.ReconnectFunc(func(rctx context.Context) (agentruntime.DaemonClientPort, string, error) {
+			return s.reconnectRemote(rctx, deviceID, entry)
+		})),
+	)
+	entry.runtime = rt
 
 	// Re-lock and insert. TOCTOU 输家:用赢家的 entry,释放自己的 lease。
 	s.remoteMu.Lock()
 	if existing, ok := s.remoteCache[deviceID]; ok {
-		existing.sessions[sessionID] = struct{}{}
+		addSessionRefs(existing, sessionIDs)
 		s.remoteMu.Unlock()
 		lease.Release()
-		return existing.runtime, nil
-	}
-	entry := &remoteRuntimeEntry{
-		runtime:  rt,
-		lease:    lease,
-		sessions: map[int64]struct{}{sessionID: {}},
+		return existing.runtime, fp, nil
 	}
 	s.remoteCache[deviceID] = entry
 	s.remoteMu.Unlock()
 
-	go s.watchLeaseClosed(deviceID, entry)
-	return rt, nil
+	go s.watchLeaseClosed(deviceID, entry, lease)
+	return rt, fp, nil
 }
 
-// watchLeaseClosed 监听 lease.Closed()(Pool 那侧通知 entry 失效),
-// 然后把 chat_svc 这边的 cache entry 摘掉,下次 borrow 走冷路径重建 runtime。
-func (s *chatSvc) watchLeaseClosed(deviceID int64, entry *remoteRuntimeEntry) {
-	<-entry.lease.Closed()
+// addSessionRefs 调用方必须持 remoteMu。
+func addSessionRefs(entry *remoteRuntimeEntry, sessionIDs []int64) {
+	for _, sid := range sessionIDs {
+		entry.sessions[sid] = struct{}{}
+	}
+}
+
+// watchLeaseClosed 监听某条 lease 的 Closed()(Pool 那侧通知它失效),然后把 chat_svc
+// 这边的 cache entry 摘掉,下次 borrow 走冷路径重建 runtime。
+//
+// 只在**这条** lease 仍是该 entry 当前那条时才摘:runtime 已经自己重连换过 lease 的话
+// entry 还活着,摘掉它会让下一轮 borrow 为同一台设备造出第二个 *remote.Runtime,两个
+// runtime 在同一条池化连接上抢注同名 handler,在飞会话的事件会被路由到不认识它的那个
+// 然后静默丢弃。lease 参数因此是显式的,不能读 entry.lease —— 那是会变的。
+func (s *chatSvc) watchLeaseClosed(deviceID int64, entry *remoteRuntimeEntry, lease remote_device_svc.Lease) {
+	<-lease.Closed()
 	s.remoteMu.Lock()
-	if cur, ok := s.remoteCache[deviceID]; ok && cur == entry {
+	cur, ok := s.remoteCache[deviceID]
+	if ok && cur == entry && entry.lease == lease {
 		delete(s.remoteCache, deviceID)
 	}
 	s.remoteMu.Unlock()

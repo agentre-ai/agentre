@@ -1161,3 +1161,99 @@ describe("progress accessibility label i18n (canonical.agentSpawn.progressAria)"
     expect(ariaLabel).not.toMatch(/\{\{/);
   });
 });
+
+// ─── step 列表懒挂载回归测试 ────────────────────────────────────────────────
+// 性能修复的契约:折叠的 AgentSpawnCard 不 mount 任何 step 卡 / step 结果文本。
+// 大 subagent(150-200 个嵌套工具调用)折叠时若把整列表 + 结果文本挂进 DOM,
+// transcript 在会话打开 / tab 切换 / 滚动时卡顿(实测单消息 3000+ 节点、1.7MB
+// 隐藏文本)。下面钉死:折叠 → 零 step 节点;展开卡片 → step 出现;step 结果
+// 文本仅在展开该条 step 时 mount。
+describe("AgentSpawnCard step-list laziness (perf regression)", () => {
+  const manyChildSteps = (count: number): ChatBlockData[] => {
+    const all: ChatBlockData[] = [];
+    for (let i = 0; i < count; i++) {
+      all.push({
+        type: "tool_use",
+        toolName: "Read",
+        toolUseId: `call-${i}`,
+      } as ChatBlockData);
+      all.push({
+        type: "tool_result",
+        toolUseId: `call-${i}`,
+        text: "x".repeat(10_000),
+      } as ChatBlockData);
+    }
+    return all;
+  };
+
+  it("Given a single-spawn card with many child steps, When collapsed, Then no step card or result text is mounted", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [{ id: "run-one", index: 0, status: "completed" }],
+    });
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={block}
+        childBlocks={{ all: manyChildSteps(150), byRun: new Map() }}
+      />,
+    );
+
+    // 折叠态:150 条 step 一条都不进 DOM(没有 step 状态 pill,更没有 60KB 结果文本)。
+    expect(
+      container.querySelectorAll('[data-testid="agent-spawn-step-status"]'),
+    ).toHaveLength(0);
+    expect(
+      container.querySelectorAll('[data-testid="agent-spawn-step-result"]'),
+    ).toHaveLength(0);
+    expect(container.textContent).not.toContain("xxxxx");
+  });
+
+  it("Given the same card, When expanded, Then all steps mount", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [{ id: "run-one", index: 0, status: "completed" }],
+    });
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={block}
+        childBlocks={{ all: manyChildSteps(150), byRun: new Map() }}
+      />,
+    );
+
+    expandCard(container);
+    expect(
+      container.querySelectorAll('[data-testid="agent-spawn-step-status"]'),
+    ).toHaveLength(150);
+  });
+
+  it("Given an expanded card with a collapsed step, When rendered, Then the step result text is not mounted until that step expands", () => {
+    const block = normalizedSpawnBlock({
+      mode: "single",
+      status: "completed",
+      runs: [{ id: "run-one", index: 0, status: "completed" }],
+    });
+    const { container } = render(
+      <AgentSpawnCard
+        toolBlock={block}
+        childBlocks={{ all: manyChildSteps(1), byRun: new Map() }}
+      />,
+    );
+
+    expandCard(container);
+    const details = container.querySelector(
+      '[data-slot="agent-spawn-details"]',
+    ) as HTMLElement;
+    // step 折叠:头部在,结果文本不在 DOM。
+    expect(
+      within(details).getByTestId("agent-spawn-step-status"),
+    ).toBeInTheDocument();
+    expect(within(details).queryByTestId("agent-spawn-step-result")).toBeNull();
+
+    fireEvent.click(within(details).getByRole("button", { name: /Read/i }));
+    expect(
+      within(details).getByTestId("agent-spawn-step-result"),
+    ).toHaveTextContent("xxxxx");
+  });
+});

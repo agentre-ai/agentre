@@ -41,6 +41,28 @@ type SessionRepo interface {
 	// invoked through the user-facing SetPermissionMode IPC — that one only
 	// touches permission_mode.
 	UpdatePermissionModeAtLaunch(ctx context.Context, sessionID int64, mode string) error
+	// UpdateExecDaemon 记录执行该会话的配对 daemon(paired_agentreds.id)及其实例标识
+	// (sha256:<hex>)。deviceID=0 + 空标识表示回到本机执行。实例标识变了(改绑到别的
+	// daemon / 改回本机)时,event_cursor 在同一条语句里归零 —— 游标只在它所属的那条
+	// 通知日志里有意义,不能跟着会话漂到另一台 daemon 上。标识不变则原样保留游标。
+	UpdateExecDaemon(ctx context.Context, sessionID int64, deviceID int64, daemonFingerprint string) error
+	// UpdateEventCursor 记录桌面端已消费到的 daemon 通知 seq。只碰这一列,执行位置与
+	// 实例标识由 UpdateExecDaemon 负责。daemonFingerprint 是 seq 所属的那条通知日志的
+	// daemon 实例标识,进 WHERE 做守卫:会话已改绑后老连接迟到的写入落空(不报错,同
+	// MarkRead 的「写不进也算成功」),下次重连至多重复拉取,而不会跳过新日志的开头。
+	UpdateEventCursor(ctx context.Context, sessionID int64, daemonFingerprint string, seq int64) error
+	// ListRemoteExecSessions 列出记录了远端执行位置的活跃会话(exec_device_id > 0 且
+	// 带实例标识)。App 启动后的补齐靠它回答「该连谁」——(会话, daemon, 游标) 三者
+	// 都在这一行上,不必再回头遍历 agent / backend 才知道会话跑在哪。
+	//
+	// 实例标识为空的行一并排除:游标只在它所属的那条通知日志里有意义,标识为空时
+	// LoadCursor 一律判失效,对它发起补齐只是白跑一轮 RPC。
+	//
+	// 取材是**有界**的(见 catchUpWindow / catchUpLimit):补齐会为每条会话装一个轮次
+	// 消费方、加一份池连接引用、开一条自主轮监视,所以它不能返回「历史上曾远端执行过的
+	// 每一条」。落在界外的会话不会被补齐、也不会被判定(一行都不碰),下次用户在它上面
+	// 发消息时照常走 borrow → attach,该拉的日志一条不少。
+	ListRemoteExecSessions(ctx context.Context) ([]*chat_entity.Session, error)
 	// MarkRead 单调推进 last_read_at: 仅当 ts 严格大于当前值时写入。
 	// 避免 stream-done 与 LoadSession 乱序时把已读时间冲回旧值。
 	// 会话不存在 / 已软删 / ts 不更新 都算成功（不返回 ErrRecordNotFound）。
@@ -52,7 +74,21 @@ type SessionRepo interface {
 	// 尾的"重启遗孤",前端 sidebar 会一直亮"运行中"。该清理不能在 bootstrap.Init
 	// 里直接调用；主 Wails 实例 Startup 后再调,确保第二实例不会误伤仍在运行的 turn。
 	// 返回受影响行数,仅供日志使用。
+	//
+	// **跑在远端 daemon 上的会话(exec_device_id > 0 且带实例标识)不在清理范围内**:
+	// 它们的执行者是另一台机器上的进程,不随桌面 App 退出而消亡(R4)。在连上那台
+	// daemon 之前无从知道它是不是还在跑,翻成 error 就是报一个假失败 —— 而一条在桌面端
+	// 离线期间没产出任何新内容的会话不会被重放改写,那条假失败会永久留在界面上。
+	// 它们改由 chat_svc.CatchUpRemoteSessions 按 daemon 交回的生命周期逐条收尾
+	// (见 ResetActiveSessionsByIDs)。
 	ResetActiveSessions(ctx context.Context) (int64, error)
+	// ResetActiveSessionsByIDs 把点名的这些会话里还停在 running / waiting 的翻成
+	// 'error',返回受影响行数。空列表不发 SQL;id 多了按 resetIDChunk 分批发,
+	// 一条塞满的 IN ? 会撞上 SQLite 的预编译参数上限。
+	//
+	// 它是启动期清理在远端会话那一半的落点:补齐连上 daemon、拿到会话清单之后,
+	// daemon 说不在跑的那些才由它收尾。
+	ResetActiveSessionsByIDs(ctx context.Context, ids []int64) (int64, error)
 }
 
 var defaultSession SessionRepo
@@ -333,11 +369,20 @@ func (r *sessionRepo) Create(ctx context.Context, s *chat_entity.Session) error 
 
 func (r *sessionRepo) Update(ctx context.Context, s *chat_entity.Session) error {
 	s.Updatetime = time.Now().UnixMilli()
-	// Both permission_mode and permission_mode_at_launch are written via
-	// dedicated single-column updates; omit them here so callers updating
-	// status/timestamps don't clobber a concurrent mode switch or the
-	// launched-mode snapshot.
-	err := db.Ctx(ctx).Omit("permission_mode", "permission_mode_at_launch").Save(s).Error
+	// Save 是整行回写:调用方通常只改了 title / agent_status / last_message_at 之类
+	// 的一两个字段,却会把手上那份实体的**每一列**都写回去。凡是由专用单列更新负责的
+	// 列都必须在这里 Omit,否则一份读得早的实体会把它们盖回旧值:
+	//   - permission_mode / permission_mode_at_launch —— 运行中切换的模式与 spawn 快照;
+	//   - exec_device_id / exec_daemon_fingerprint / event_cursor(R12)—— 轮次开始时
+	//     读出的实体这三列还是零值,轮次中途 UpdateExecDaemon / UpdateEventCursor 才把
+	//     真值写进去,收尾时的整行回写因此会把「这条会话跑在哪台 daemon 上、消费到哪」
+	//     一起抹成 0 / '' / 0,空闲的远端会话从此落在 ListRemoteExecSessions 的取材
+	//     条件之外,再也进不了启动补齐。
+	// 这三列在服务层没有任何「写实体再 Update」的路径,Omit 不会丢掉谁的写入。
+	err := db.Ctx(ctx).Omit(
+		"permission_mode", "permission_mode_at_launch",
+		"exec_device_id", "exec_daemon_fingerprint", "event_cursor",
+	).Save(s).Error
 	s.ApplyDerivedFields()
 	return err
 }
@@ -360,6 +405,58 @@ func (r *sessionRepo) UpdatePermissionModeAtLaunch(ctx context.Context, sessionI
 		}).Error
 }
 
+func (r *sessionRepo) UpdateExecDaemon(ctx context.Context, sessionID int64, deviceID int64, daemonFingerprint string) error {
+	return db.Ctx(ctx).Model(&chat_entity.Session{}).
+		Where("id = ? AND status = ?", sessionID, consts.ACTIVE).
+		Updates(map[string]any{
+			"exec_device_id":          deviceID,
+			"exec_daemon_fingerprint": daemonFingerprint,
+			// 换了一台 daemon 实例(含改回本机的空标识)就在同一条语句里把游标归零:
+			// 老游标指的是老 daemon 通知日志里的位置,留着会被下次 LoadCursor 当成对新
+			// daemon 有效。SQL 的 SET 右值一律读改写前的行值,所以这里比的是老标识。
+			"event_cursor": gorm.Expr(
+				"CASE WHEN exec_daemon_fingerprint = ? THEN event_cursor ELSE 0 END", daemonFingerprint),
+			"updatetime": time.Now().UnixMilli(),
+		}).Error
+}
+
+// catchUpWindow 启动补齐回头看多久。与 daemon 的通知日志留存窗口对齐
+// (internal/daemon 的 defaultJournalRetention = 30 天):一条会话安静满 30 天,它高
+// 水位以下的日志已经被 daemon 回收,再对它发补齐拿回来的是空的。
+const catchUpWindow = 30 * 24 * time.Hour
+
+// catchUpLimit 一次启动补齐最多认领多少条会话。补齐会为**每条**会话装一个轮次消费方、
+// 加一份池连接引用、开一条自主轮监视 goroutine,所以取材必须有上界;200 条已经远超
+// 「一台 daemon 上还可能有新内容的会话」的实际量级,同时把收尾那一步的 id 数压在
+// SQLite 最保守的参数上限(999)以内。
+const catchUpLimit = 200
+
+func (r *sessionRepo) ListRemoteExecSessions(ctx context.Context) ([]*chat_entity.Session, error) {
+	var rows []*chat_entity.Session
+	cutoff := time.Now().Add(-catchUpWindow).UnixMilli()
+	err := db.Ctx(ctx).
+		// 时间窗之外的会话没有可补的日志了;但仍停在 running / waiting 的行不受它限制
+		// —— 只有 daemon 能给它们判据,漏掉一条就是界面上一条永远转圈的会话。
+		Where("exec_device_id > ? AND exec_daemon_fingerprint <> ? AND status = ? "+
+			"AND (agent_status IN ? OR updatetime >= ?)",
+			int64(0), "", consts.ACTIVE, []string{"running", "waiting"}, cutoff).
+		// 排序决定上限砍掉谁:等判据的排最前,其余按最近活动。
+		Order("CASE WHEN agent_status IN ('running','waiting') THEN 0 ELSE 1 END, updatetime DESC, id DESC").
+		Limit(catchUpLimit).
+		Find(&rows).Error
+	applySessionDerivedFields(rows)
+	return rows, err
+}
+
+func (r *sessionRepo) UpdateEventCursor(ctx context.Context, sessionID int64, daemonFingerprint string, seq int64) error {
+	return db.Ctx(ctx).Model(&chat_entity.Session{}).
+		Where("id = ? AND status = ? AND exec_daemon_fingerprint = ?", sessionID, consts.ACTIVE, daemonFingerprint).
+		Updates(map[string]any{
+			"event_cursor": seq,
+			"updatetime":   time.Now().UnixMilli(),
+		}).Error
+}
+
 func (r *sessionRepo) MarkRead(ctx context.Context, sessionID int64, ts int64) error {
 	return db.Ctx(ctx).Model(&chat_entity.Session{}).
 		Where("id = ? AND status = ? AND last_read_at < ?", sessionID, consts.ACTIVE, ts).
@@ -371,12 +468,40 @@ func (r *sessionRepo) MarkRead(ctx context.Context, sessionID int64, ts int64) e
 
 func (r *sessionRepo) ResetActiveSessions(ctx context.Context) (int64, error) {
 	res := db.Ctx(ctx).Model(&chat_entity.Session{}).
-		Where("agent_status IN ? AND status = ?", []string{"running", "waiting"}, consts.ACTIVE).
+		// 后半截把远端跑的会话排除在启动期清理之外,理由见接口注释。判据与
+		// ListRemoteExecSessions 的取材条件互补:那边取的行,这边一行不碰。
+		Where("agent_status IN ? AND status = ? AND (exec_device_id <= ? OR exec_daemon_fingerprint = ?)",
+			[]string{"running", "waiting"}, consts.ACTIVE, int64(0), "").
 		Updates(map[string]any{
 			"agent_status": "error",
 			"updatetime":   time.Now().UnixMilli(),
 		})
 	return res.RowsAffected, res.Error
+}
+
+// resetIDChunk 一条 IN ? 最多塞多少个 id。SQLite 的预编译参数上限最保守是 999
+// (SQLITE_MAX_VARIABLE_NUMBER),SET 与其余 WHERE 还要占几个 —— 攒够会话之后整条
+// 语句会被直接拒掉,补齐判定的结果一条都落不了库。
+const resetIDChunk = 400
+
+func (r *sessionRepo) ResetActiveSessionsByIDs(ctx context.Context, ids []int64) (int64, error) {
+	// 空列表发出去是 WHERE id IN ()：不同方言下要么语法错、要么退化成全表更新。
+	// 下面的循环对空列表天然一条 SQL 都不发。
+	var affected int64
+	for start := 0; start < len(ids); start += resetIDChunk {
+		res := db.Ctx(ctx).Model(&chat_entity.Session{}).
+			Where("agent_status IN ? AND status = ? AND id IN ?",
+				[]string{"running", "waiting"}, consts.ACTIVE, ids[start:min(start+resetIDChunk, len(ids))]).
+			Updates(map[string]any{
+				"agent_status": "error",
+				"updatetime":   time.Now().UnixMilli(),
+			})
+		if res.Error != nil {
+			return affected, res.Error
+		}
+		affected += res.RowsAffected
+	}
+	return affected, nil
 }
 
 func (r *sessionRepo) SoftDelete(ctx context.Context, id int64) error {

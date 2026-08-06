@@ -55,6 +55,7 @@ describe("TranscriptRowView OpenClaw approval", () => {
           liveRetry={null}
           showIndicator={false}
           compacting={false}
+          reconnecting={false}
         />
       </TranscriptRenderContext.Provider>,
     );

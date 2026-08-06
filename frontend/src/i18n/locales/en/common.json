@@ -548,6 +548,10 @@
     "debug": {
       "unknownBlock": "(debug) unimplemented block type: {{type}}"
     },
+    "disconnected": {
+      "aria": "Connection lost, reconnecting",
+      "label": "Connection lost, reconnecting · the remote is still running"
+    },
     "errorCard": {
       "continue": "Continue",
       "message": "Agent call failed: {{text}}",
@@ -597,7 +601,11 @@
   "chatContext": {
     "files": {
       "empty": "No files have been changed in this session",
-      "label": "Files"
+      "label": "Files",
+      "openFile": "Open file",
+      "openFailed": "Failed to open file: {{error}}",
+      "expandFolder": "Expand {{name}}",
+      "collapseFolder": "Collapse {{name}}"
     },
     "outline": {
       "empty": "No messages in this session",
@@ -669,7 +677,11 @@
       "close": "Close notice"
     },
     "scroll": {
-      "backToBottom": "Back to bottom"
+      "backToBottom": "Back to bottom",
+      "caughtUpCount": "{{count}} new",
+      "caughtUpSome": "New content",
+      "jumpToLatest": "Jump to latest",
+      "pendingCount": "{{count}} pending"
     },
     "regenerateDialog": {
       "confirm": "Regenerate",
@@ -1632,6 +1644,7 @@
       "unsynced": "Not synced"
     },
     "status": {
+      "daemonOutdated": "Outdated daemon — a disconnect ends the running turn. Upgrade agentred on that machine so it keeps running while you are away.",
       "lastConnected": "Last connected {{time}}",
       "neverConnected": "Never connected",
       "offline": "Offline",

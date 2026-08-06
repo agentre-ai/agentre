@@ -103,7 +103,7 @@ func TestPiAgentProviderExtension_FullShape(t *testing.T) {
 		Type:          string(llm_provider_entity.TypeAnthropic),
 		Name:          "My Anthropic Compat",
 		BaseURL:       "https://proxy.example.com",
-		APIKey:        "sk-plaintext-secret",
+		APIKey:        "test-plaintext-value",
 		Model:         "claude-sonnet-4",
 		ContextWindow: 200000,
 		MaxOutput:     8192,

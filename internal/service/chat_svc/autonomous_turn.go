@@ -160,9 +160,25 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 	}
 	// finalCtx 去掉 cancel 信号但保留 DB 句柄 —— 已经流出去的内容必须落库。
 	finalCtx := context.WithoutCancel(ctx)
+	// 这一轮是被截断的(远端断连 / 会话在那台 daemon 上已中断)时,StopErr 带着终止理由。
+	// 不看它就等于把一条**半截**的回答按「正常跑完」落库:errorText 空、会话翻 idle、
+	// emit StreamDone —— 用户看到一条戛然而止却「成功」的回答,分不出发生了什么。
+	// 文案由 mapTurnError 统一给(与用户发起的那条轮次同一套),这里只负责落成终态。
+	var stopErr error
+	if at.Result != nil && at.Result.StopErr != nil {
+		stopErr = s.mapTurnError(finalCtx, sess, be, at.Result.StopErr)
+		assistantMsg.ErrorText = stopErr.Error()
+		logger.Ctx(finalCtx).Warn("chat_svc: autonomous turn terminated",
+			zap.Int64("sessionId", sessionID),
+			zap.Int64("assistantMsgId", assistantMsg.ID),
+			zap.Error(at.Result.StopErr))
+	}
 	_ = chat_repo.Message().Update(finalCtx, assistantMsg)
 
 	sess.AgentStatus = "idle"
+	if stopErr != nil {
+		sess.AgentStatus = "error"
+	}
 	sess.NeedsAttention = false
 	sess.LastMessageAt = time.Now().UnixMilli()
 	_ = s.persistSessionStatus(finalCtx, sess)
@@ -193,7 +209,14 @@ func (s *chatSvc) driveAutonomousTurn(ctx context.Context, sessionID int64, be *
 			BgRunning:      s.bgRunningActive(sess.ID),
 		},
 	})
-	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
+	if stopErr != nil {
+		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+			Kind: StreamError, Error: stopErr.Error(), Message: final,
+		})
+	} else {
+		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamDone, Message: final})
+	}
+	s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamClosed})
 	// 会话级流补发终态兜底:StreamAutonomousStarted 是前端拿 per-turn 流名的唯一入口,
 	// 前端收到才 openStream、ChatStreamsHost 才在下一 render EventsOn 订阅。若本轮很短,
 	// 上面的 per-turn StreamDone 可能赶在订阅注册前发完 → 前端漏终态 → 该

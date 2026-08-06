@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -797,7 +798,7 @@ func TestSubmitResolution_DoesNotAnswerAfterRuntimeOutputClosed(t *testing.T) {
 	Convey("Given the turn output is already closed, when approval is submitted, then backend response and waiter state stay untouched", t, func() {
 		backend := newApprovalRuntimeStream(pkgcodex.Event{})
 		active := &codexActive{approval: backend}
-		active.registerPermWaiter("approval-closed")
+		active.registerPermWaiter("approval-closed", "shell", json.RawMessage(`{}`))
 		r := New()
 		r.active[912] = active
 
@@ -1163,4 +1164,55 @@ type recordingUserInputStream struct {
 func (s *recordingUserInputStream) SubmitUserInput(context.Context, string, map[string][]string) error {
 	s.called = true
 	return nil
+}
+
+// TestCodexPendingWaiters 覆盖 R7 的 codex 一半:codex 的 Capabilities 里
+// CapToolPermission=true(app-server requestApproval 协议),drainStream 会为
+// ToolPermissionRequest / UserAskRequest 登记 waiter,所以断连期间产生的待决策
+// 必须能被重连的客户端枚举出来并重建卡片,而不是回落成空列表 —— 后者叠加 R9
+// (不设过期)就是会话永久卡在等待输入。
+func TestCodexPendingWaiters(t *testing.T) {
+	Convey("Given 一个审批和一个提问都在阻塞, When PendingWaiters, Then 快照带够重建卡片的载荷", t, func() {
+		r := New()
+		a := &codexActive{}
+		r.mu.Lock()
+		r.active[7001] = a
+		r.mu.Unlock()
+
+		a.registerPermWaiter("perm-1", "shell", json.RawMessage(`{"command":["ls"]}`))
+		a.registerAskWaiter("ask-1", []agentruntime.AskQuestion{{Question: "继续吗？"}})
+
+		snap := r.PendingWaiters(context.Background(), 7001)
+
+		So(snap.ToolPermissions, ShouldHaveLength, 1)
+		So(snap.ToolPermissions[0].RequestID, ShouldEqual, "perm-1")
+		So(snap.ToolPermissions[0].ToolName, ShouldEqual, "shell")
+		So(string(snap.ToolPermissions[0].Input), ShouldEqual, `{"command":["ls"]}`)
+
+		So(snap.AskUserQuestions, ShouldHaveLength, 1)
+		So(snap.AskUserQuestions[0].RequestID, ShouldEqual, "ask-1")
+		So(snap.AskUserQuestions[0].Questions, ShouldResemble, []agentruntime.AskQuestion{{Question: "继续吗？"}})
+	})
+
+	Convey("Given 已经回答过的 requestID, When PendingWaiters, Then 它不再出现在快照里", t, func() {
+		r := New()
+		a := &codexActive{}
+		r.mu.Lock()
+		r.active[7002] = a
+		r.mu.Unlock()
+
+		a.registerPermWaiter("perm-1", "shell", json.RawMessage(`{}`))
+		a.removePermWaiter("perm-1")
+
+		So(r.PendingWaiters(context.Background(), 7002).ToolPermissions, ShouldBeEmpty)
+	})
+
+	Convey("Given sessionID 不在 active 表里(未起轮 / 已结束), When PendingWaiters, Then 返回空快照不报错不 panic", t, func() {
+		r := New()
+		So(func() {
+			snap := r.PendingWaiters(context.Background(), 9999)
+			So(snap.ToolPermissions, ShouldBeEmpty)
+			So(snap.AskUserQuestions, ShouldBeEmpty)
+		}, ShouldNotPanic)
+	})
 }

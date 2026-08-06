@@ -80,7 +80,7 @@ Before writing code / fixing bugs / writing tests, read these docs first — the
 
 - **The Wails binding layer only does parse → svc.Xxx().Method → return**; business logic stuffed into the `App` struct will be missed by go test.
 - **Fixing a bug must start with a failing regression test**; do not add a guard at the consumer to mask a producer bug; do not smuggle a drive-by refactor / formatter pass into the same commit.
-- **Repository unit tests always use `testutils.Database(t)` + sqlmock**; spinning up a real SQLite is forbidden (the migrations themselves and `internal/bootstrap/cago_test.go` are the only exceptions). See [docs/testing.md](docs/testing.md).
+- **Repository unit tests always use `testutils.Database(t)` + sqlmock**; spinning up a real SQLite is forbidden (the migrations themselves, `internal/bootstrap/cago_test.go`, and `internal/daemon/daemon_test.go` are the only exceptions). See [docs/testing.md](docs/testing.md).
 - **New or modified service unit tests** generate a repo mock via `mockgen`, inject it via `RegisterXxx`, and **do not connect to a DB**. Legacy sqlmock-backed service tests are migration debt; do not copy or expand them.
 - **Append new migrations to the end of `migrationList()`**; modifying an existing migration is forbidden; prefer native SQL for DDL, avoid relying on `AutoMigrate`.
 - **Critical flows must log**: use `logger.Ctx(ctx)`, with a lowercase `package.Method:` prefix in the message, and dynamic values passed through **camelCase** `zap.Xxx(...)` fields. See [docs/observability.md](docs/observability.md).

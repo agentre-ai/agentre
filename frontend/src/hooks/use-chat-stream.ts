@@ -4,7 +4,10 @@ import type { chat_svc, view } from "../../wailsjs/go/models";
 
 // ChatSessionStatusPatch mirrors backend chat_svc.ChatSessionStatusPatch.
 // Type definition unified into @/stores/types (ChatSessionStatusEvent); import + re-export here.
-import type { ChatSessionStatusEvent } from "@/stores/types";
+import type {
+  ChatSessionStatusEvent,
+  SessionConnectionState,
+} from "@/stores/types";
 export type ChatSessionStatusPatch = ChatSessionStatusEvent;
 
 // ChatStreamUsage mirrors backend chat_svc.ChatStreamUsage. Carried on the
@@ -55,7 +58,8 @@ export type ChatStreamEvent = {
     | "runtime_status"
     | "autonomous_started"
     | "subagent_activity_started"
-    | "autonomous_finished";
+    | "autonomous_finished"
+    | "connection_state";
   delta?: string;
   message?: chat_svc.ChatMessage;
   error?: string;
@@ -177,6 +181,22 @@ export type ChatStreamEvent = {
   trigger?: string;
   completedTask?: { toolUseId: string; status: string; summary?: string };
   launchMessageId?: number;
+
+  // connection_state: 经会话级流 "chat:conn:<sessionId>"(后端
+  // chat_svc.ConnStateStreamName)推上来的**通道**状态 —— 本机与执行该会话那台
+  // 远端 daemon 之间连没连上,与 agentStatus 正交(重连期间远端仍在跑)。
+  // 走会话级流而不是 per-turn 流:断连时 per-turn 流恰好是没人收得到的那条。
+  connectionState?: SessionConnectionState;
+  // 只有补齐落定(connectionState==="connected")那一发带这两个数:本次补齐按游标
+  // 重放了多少条通知(caughtUpCount),以及补完后该会话还有多少个待决策没被回答
+  // (pendingDecisions)。
+  //
+  // caughtUpCount 是**通知**条数,不是用户眼里的条数 —— daemon 对每个 agentruntime
+  // 事件都落一行日志(TextDelta / ThinkingDelta / UsageUpdate 全在内),一条长回复
+  // 就是上千条。它只用来判「这次重连确实漏掉了东西」;跳转控件上的条数由
+  // chat-panel-catchup-state 按转录行数现算。
+  caughtUpCount?: number;
+  pendingDecisions?: number;
 };
 
 export function useChatStream(

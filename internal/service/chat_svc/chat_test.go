@@ -32,6 +32,7 @@ import (
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/canonical"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/capability"
+	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote/wire"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
@@ -2498,6 +2499,184 @@ func TestSend_ActionablePlanBlockMarksSessionWaiting(t *testing.T) {
 	}
 	require.Len(t, pb.Actions, 2)
 	assert.Equal(t, "plan.execute", pb.Actions[0].ID)
+}
+
+// stopErrRunner 复刻 remote.Runtime 退避超上限后的收尾形状:events 正常关闭(先前
+// 已经流出去的内容照旧落库),终止原因只经 RunResult.StopErr 交回,不走 Run 的返回错误。
+type stopErrRunner struct {
+	events []agentruntime.Event
+	stop   error
+}
+
+func (stopErrRunner) Capabilities() capability.Capabilities { return capability.Capabilities{} }
+
+func (r stopErrRunner) Run(_ context.Context, _ agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	ch := make(chan agentruntime.Event, len(r.events))
+	for _, e := range r.events {
+		ch <- e
+	}
+	close(ch)
+	return ch, &agentruntime.RunResult{StopErr: r.stop}, nil
+}
+
+// Given 一条远端会话跑到一半,通道断了且重连退避超上限(remote.Runtime 把
+// ErrDaemonDisconnected 放进 RunResult.StopErr 收尾),When 该 turn 收口,
+// Then 会话落既有的 error 态,而不是新增第五个取值、也不是被当成用户主动中止落 idle。
+//
+// 为什么这条守卫必须打在 Go 层:R15 的映射是后端 runTurn 收尾那段 switch 决定的,
+// 前端只是照单渲染。把它写成"前端 store 里塞 error 再读回 error"证明不了任何实现 ——
+// 任何映射都能通过。这里从 StopErr 一路驱动到落库的 AgentStatus,映射被改错就变红。
+func TestSend_TerminalDaemonDisconnectLandsErrorStatus(t *testing.T) {
+	m := setupChatTest(t)
+	ctx := m.ctx
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, stopErrRunner{
+		events: []agentruntime.Event{agentruntime.TextDelta{Text: "half a sentence"}},
+		stop:   remote.ErrDaemonDisconnected,
+	})
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+
+	var sessionUpdates []*chat_entity.Session
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, sess *chat_entity.Session) error {
+			cp := *sess
+			sessionUpdates = append(sessionUpdates, &cp)
+			return nil
+		}).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	var final *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			cp := *msg
+			final = &cp
+			return nil
+		}).AnyTimes()
+
+	resp, err := m.svc.Send(ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+
+	require.NotEmpty(t, sessionUpdates)
+	last := sessionUpdates[len(sessionUpdates)-1]
+	assert.Equal(t, "error", last.AgentStatus,
+		"终止性断连沿用既有 error 态:不新增第五个 AgentStatus 取值,也不能被当成主动中止落 idle")
+	assert.False(t, last.NeedsAttention, "error 态不等人,不该点亮 attention")
+
+	patches := captureSessionStatusPatches(m.events)
+	require.NotEmpty(t, patches, "终态必须 emit 一帧 session_status,否则 tab 停在运行中")
+	assert.Equal(t, "error", patches[len(patches)-1].AgentStatus)
+
+	require.NotNil(t, final)
+	assert.NotEmpty(t, final.ErrorText,
+		"落 error 的理由要留在消息文案里 —— 中断与真实错误靠文案区分,不靠新状态")
+	assert.NotContains(t, final.ErrorText, remote.ErrDaemonDisconnected.Error(),
+		"交到用户面前的是人话文案,不是 Go 哨兵字符串")
+}
+
+// runStopErrTurnErrorText 跑一轮以 RunResult.StopErr 收尾的 turn,交出落库的终态文案。
+func runStopErrTurnErrorText(t *testing.T, stop error) string {
+	t.Helper()
+	m := setupChatTest(t)
+	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypeBuiltin, stopErrRunner{
+		events: []agentruntime.Event{agentruntime.TextDelta{Text: "half a sentence"}},
+		stop:   stop,
+	})
+	t.Cleanup(restore)
+
+	m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(&chat_entity.Session{
+		ID: 100, AgentID: 7, AgentStatus: "idle", Status: consts.ACTIVE,
+	}, nil)
+	m.agent.EXPECT().Find(gomock.Any(), int64(7)).Return(&agent_entity.Agent{
+		ID: 7, Name: "Eng", AgentBackendID: 12, Status: consts.ACTIVE, PromptJSON: `[]`,
+	}, nil)
+	m.backend.EXPECT().Find(gomock.Any(), int64(12)).Return(&agent_backend_entity.AgentBackend{
+		ID: 12, Type: string(agent_backend_entity.TypeBuiltin), LLMProviderKey: "key-21", Status: consts.ACTIVE,
+	}, nil)
+	m.provider.EXPECT().FindByKey(gomock.Any(), "key-21").Return(&llm_provider_entity.LLMProvider{
+		ID: 21, Type: string(llm_provider_entity.TypeAnthropic), Status: consts.ACTIVE, Model: "claude-sonnet-4-6",
+	}, nil)
+	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	m.dbMock.ExpectBegin()
+	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
+	m.message.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			if msg.Role == "user" {
+				msg.ID = 1000
+			} else {
+				msg.ID = 1001
+			}
+			return nil
+		}).Times(2)
+	m.dbMock.ExpectCommit()
+
+	m.message.EXPECT().List(gomock.Any(), int64(100)).Return(nil, nil).AnyTimes()
+	var final *chat_entity.Message
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msg *chat_entity.Message) error {
+			cp := *msg
+			final = &cp
+			return nil
+		}).AnyTimes()
+
+	resp, err := m.svc.Send(m.ctx, &chat_svc.SendRequest{SessionID: 100, AgentID: 7, Text: "hi"})
+	require.NoError(t, err)
+	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+	require.NotNil(t, final, "终态必须落库一条 assistant 消息")
+	return final.ErrorText
+}
+
+// Given 三种终止:daemon 重启把这一轮打断了 / 连不上那台 daemon 了 / agent 真的跑失败了,
+// When 各自收口,Then 落库的终态文案两两不同 —— R15 明确「不向 AgentStatus 增加第五个
+// 取值」,三者都落在既有的 error 上,**由消息文案区分**;界面约定进一步要求「被打断」的
+// 措辞与真实运行错误分开(是被打断,不是跑失败)。
+//
+// 为什么守卫打在这里:文案是经 assistant 消息的 errorText 持久化后到达用户的,前端只是
+// 照单渲染。把区分寄托在前端就等于没有区分 —— 重开 App 后前端手里只有这一个字符串。
+func TestSend_TerminalStopErrCopy_DistinguishesInterruptedDisconnectedAndFailure(t *testing.T) {
+	interrupted := runStopErrTurnErrorText(t, remote.ErrRunInterrupted)
+	disconnected := runStopErrTurnErrorText(t, remote.ErrDaemonDisconnected)
+	failed := runStopErrTurnErrorText(t, errors.New("API error 500: upstream exploded"))
+
+	assert.NotEqual(t, disconnected, interrupted,
+		"「被打断」与「连不上了」必须是两句话,否则用户分不出远端是重启了还是网断了")
+	assert.NotEqual(t, failed, interrupted,
+		"「被打断」不能与真实运行错误同文案 —— 是被打断,不是跑失败")
+	assert.NotEqual(t, failed, disconnected)
+
+	assert.NotContains(t, interrupted, "agentruntime/runtimes/remote:",
+		"终态文案是给用户看的人话,不是 Go 哨兵字符串")
+	assert.NotContains(t, disconnected, "agentruntime/runtimes/remote:")
+	assert.Contains(t, interrupted, "打断",
+		"中断态会话的措辞要说明这是被打断")
+	assert.Equal(t, "API error 500: upstream exploded", failed,
+		"真实运行错误照原样交给用户,不得被断连文案顶掉")
 }
 
 func TestResolvePlanAction_CodexExecuteContinuesWaitingPlan(t *testing.T) {

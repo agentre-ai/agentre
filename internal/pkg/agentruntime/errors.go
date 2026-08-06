@@ -21,3 +21,10 @@ var ErrUnsupported = errors.New("agentruntime: capability unsupported by this ru
 // ErrSessionNotFound 表示 runtime 请求恢复的 provider 原生 Session 已不存在。
 // chat_svc 据此清空 provider_session_id，且当前轮失败而不是静默创建替代 Session。
 var ErrSessionNotFound = errors.New("agentruntime: provider session no longer exists")
+
+// ErrWaiterNotFound 表示 SubmitToolPermission / SubmitAnswer 按 requestID
+// 找不到阻塞中的 waiter —— 已被回答过一次(take-and-delete 已命中)、或从未
+// 在这个 runner 上登记过。daemon 侧的 handler 把它当幂等成功处理而不是报错
+// 给客户端(R8):断连重连后客户端无法判断上一次提交是否已经送达,报错只会
+// 让它误报给用户。
+var ErrWaiterNotFound = errors.New("agentruntime: no waiting request for requestID")

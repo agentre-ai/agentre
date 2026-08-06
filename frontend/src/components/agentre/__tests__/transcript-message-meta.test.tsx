@@ -54,6 +54,7 @@ function renderRow(row: TranscriptRow) {
           liveRetry={null}
           showIndicator={false}
           compacting={false}
+          reconnecting={false}
         />
       </TranscriptRenderContext.Provider>
     </TooltipProvider>,

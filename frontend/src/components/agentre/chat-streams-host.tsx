@@ -7,9 +7,11 @@ import {
   useChatStreamsStore,
 } from "@/stores/chat-streams-store";
 import { useChatTabsStore } from "@/stores/chat-tabs-store";
+import { useSessionConnStore } from "@/stores/session-conn-store";
 import { useSessionStatusStore } from "@/stores/session-status-store";
 
 import { isResolvedAskState } from "./ask-event-state";
+import { openCatchUpWindow, recordCatchUp } from "./chat-panel-catchup-state";
 import { StreamSubscriber } from "./stream-subscriber";
 
 import type { chat_svc } from "../../../wailsjs/go/models";
@@ -51,6 +53,12 @@ export function ChatStreamsHost(): React.ReactElement | null {
         ),
       ),
     ),
+  );
+  // 有流在跑的会话集合 —— 连接态订阅按会话(而不是按流)挂一条。放在这个跨路由
+  // 长存的宿主上而不是 ChatPanel:连接态每次变化只发一帧,挂在会随路由/标签页
+  // 销毁的组件上,重新挂载的转录流就只剩打字指示器,而真实情况是网断了。
+  const liveSessionIds = useChatStreamsStore(
+    useShallow((s) => Array.from(s.streams.keys())),
   );
   const appendLiveText = useChatStreamsStore((s) => s.appendLiveText);
   const appendLiveThinking = useChatStreamsStore((s) => s.appendLiveThinking);
@@ -424,6 +432,48 @@ export function ChatStreamsHost(): React.ReactElement | null {
           />
         );
       })}
+      {liveSessionIds.map((sessionId) => (
+        <SessionConnSubscriber key={sessionId} sessionId={sessionId} />
+      ))}
     </>
+  );
+}
+
+// SessionConnSubscriber 订阅一个会话的连接态流 "chat:conn:<sessionId>"
+// (后端 chat_svc.ConnStateStreamName),把 connection_state 事件翻成 store 写入。
+// 卸载(= 该会话最后一条流结束)时清掉记录:留着旧的 reconnecting 会泄漏到下一轮。
+//
+// 补齐摘要记在这里而不是 ChatPanel 上:补齐可能发生在用户切走路由、甚至这个 tab
+// 还没打开的时候,记在会被销毁的组件上等于没记。它也不随本组件卸载而清 —— 那份
+// 摘要要活到用户真的回到转录区底部为止。断连与恢复这两发都经这里,补齐窗口的开与
+// 合因此也在同一处,不用第二个组件去猜「刚才那次断连是从哪一行开始的」。
+function SessionConnSubscriber({
+  sessionId,
+}: {
+  sessionId: number;
+}): React.ReactElement | null {
+  const setConnState = useSessionConnStore((s) => s.setConnState);
+  const clear = useSessionConnStore((s) => s.clear);
+  React.useEffect(() => () => clear(sessionId), [clear, sessionId]);
+  return (
+    <StreamSubscriber
+      streamName={`chat:conn:${sessionId}`}
+      onEvent={(ev) => {
+        if (ev.kind !== "connection_state" || !ev.connectionState) return;
+        // 补齐窗口的两端都在这里:跌出 connected 那一发开窗(快照此刻的转录行数),
+        // 回到 connected 那一发落定(做差)。caughtUpCount 只当闸门 —— 它是重放的
+        // 通知条数(一条长回复上千条),控件上的数字是行数差。
+        if (ev.connectionState === "connected") {
+          recordCatchUp(
+            sessionId,
+            ev.caughtUpCount ?? 0,
+            ev.pendingDecisions ?? 0,
+          );
+        } else {
+          openCatchUpWindow(sessionId);
+        }
+        setConnState(sessionId, ev.connectionState);
+      }}
+    />
   );
 }
