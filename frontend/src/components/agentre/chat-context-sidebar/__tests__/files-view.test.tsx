@@ -124,6 +124,23 @@ describe("FilesView", () => {
     expect(screen.getByText("file.tsx")).toBeInTheDocument();
   });
 
+  it("left-aligns folder names with explicit text-left (matches the file-row pattern)", () => {
+    render(
+      <FilesView
+        files={files}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+    // 目录按钮必须显式 text-left：app 存在把 button 文字居中的全局规则，
+    // 文件行按钮原本就带 text-left 绕开；目录按钮漏掉会导致文件夹名与图标拉开大间隔。
+    for (const name of ["internal", "frontend"]) {
+      const btn = screen.getByRole("button", { name: `Collapse ${name}` });
+      expect(btn.className).toContain("text-left");
+    }
+  });
+
   it("collapses and expands a folder on row click, aria-expanded reflects state", async () => {
     render(
       <FilesView

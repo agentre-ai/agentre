@@ -108,7 +108,7 @@ export function FilesView({ files, cwd, remote, onJumpToTurn }: Props) {
               ? t("chatContext.files.expandFolder", { name: node.name })
               : t("chatContext.files.collapseFolder", { name: node.name })
           }
-          className="flex items-center gap-1.5 rounded-md py-1.5 pr-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted/50"
+          className="flex items-center gap-1.5 rounded-md py-1.5 pr-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50"
           style={indentStyle(depth)}
         >
           {isCollapsed ? (
