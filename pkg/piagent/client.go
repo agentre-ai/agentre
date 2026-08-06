@@ -319,7 +319,7 @@ func callRPC(
 	command string,
 	requestID string,
 ) (rpcResponse, error) {
-	if err := proc.writeJSON(request); err != nil {
+	if err := proc.writeJSON(request, ctx); err != nil {
 		return rpcResponse{}, err
 	}
 	for scanRPCLine(ctx, proc.lines) {
@@ -544,6 +544,7 @@ func (c *Client) startRPC(ctx context.Context) (*rpcProcess, error) {
 	p := &rpcProcess{
 		handle:     h,
 		stdin:      h.Stdin(),
+		writeCtx:   ctx,
 		lines:      lines,
 		linesDone:  lines.Done(),
 		rawSink:    c.rawSink,
@@ -651,6 +652,7 @@ func (s *asyncRPCLineScanner) Done() <-chan struct{} { return s.done }
 type rpcProcess struct {
 	handle     processHandle
 	stdin      io.Writer
+	writeCtx   context.Context
 	lines      rpcLineScanner
 	linesDone  <-chan struct{}
 	rawSink    func([]byte) // 非 nil时回调不含敏感 payload 的 stdout 诊断摘要
@@ -658,7 +660,12 @@ type rpcProcess struct {
 	stderrDone chan struct{}
 	done       chan struct{} // closed when waitErr is available to every observer
 	waitErr    error         // immutable after done is closed
-	mu         sync.Mutex
+
+	writerOnce     sync.Once
+	writerStopOnce sync.Once
+	stdinCloseOnce sync.Once
+	writeGate      chan struct{}
+	writerStop     chan struct{}
 }
 
 func (p *rpcProcess) awaitExit() {
@@ -675,33 +682,119 @@ func (p *rpcProcess) waitResult() error {
 	return p.waitErr
 }
 
-func (p *rpcProcess) writeJSON(v any) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *rpcProcess) writeJSON(v any, contexts ...context.Context) error {
+	if p == nil {
+		return errStreamClosed
+	}
 	command := requestCommand(v)
 	buf, err := json.Marshal(v)
 	if err != nil {
 		return processBoundaryError("encode", command, err)
 	}
 	buf = append(buf, '\n')
-	if _, err = p.stdin.Write(buf); err != nil {
-		return processBoundaryError("write", command, err)
+	ctx := context.Background()
+	if p.writeCtx != nil {
+		ctx = p.writeCtx
 	}
-	return nil
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
+	p.ensureWriter()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.writerStop:
+		return processBoundaryError("write", command, io.ErrClosedPipe)
+	case <-p.writeGate:
+	}
+	defer func() { p.writeGate <- struct{}{} }()
+	select {
+	case <-p.writerStop:
+		return processBoundaryError("write", command, io.ErrClosedPipe)
+	default:
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		if p.stdin == nil {
+			writeDone <- io.ErrClosedPipe
+			return
+		}
+		_, err := p.stdin.Write(buf)
+		writeDone <- err
+	}()
+
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			return processBoundaryError("write", command, err)
+		}
+		return nil
+	case <-ctx.Done():
+		p.stopWriter()
+		<-writeDone
+		return ctx.Err()
+	case <-p.writerStop:
+		err := <-writeDone
+		if err != nil {
+			return processBoundaryError("write", command, err)
+		}
+		return processBoundaryError("write", command, io.ErrClosedPipe)
+	}
+}
+
+func (p *rpcProcess) ensureWriter() {
+	p.writerOnce.Do(func() {
+		p.writeGate = make(chan struct{}, 1)
+		p.writeGate <- struct{}{}
+		p.writerStop = make(chan struct{})
+	})
+}
+
+func (p *rpcProcess) stopWriter() {
+	if p == nil {
+		return
+	}
+	p.ensureWriter()
+	p.writerStopOnce.Do(func() { close(p.writerStop) })
+	p.stdinCloseOnce.Do(func() {
+		switch closer := p.stdin.(type) {
+		case io.Closer:
+			_ = closer.Close()
+		case interface{ Close() }:
+			closer.Close()
+		}
+	})
+}
+
+func (p *rpcProcess) waitForWrites() {
+	p.ensureWriter()
+	<-p.writeGate
+	p.writeGate <- struct{}{}
 }
 
 func (p *rpcProcess) terminate(ctx context.Context, grace time.Duration) error {
-	if p == nil || p.handle == nil {
+	if p == nil {
 		return nil
 	}
 	if stopper, ok := p.lines.(interface{ Stop() }); ok {
 		stopper.Stop()
 	}
+	if p.handle == nil {
+		p.stopWriter()
+		p.waitForWrites()
+		return nil
+	}
 	_ = p.handle.Signal(interruptSignal())
+	p.stopWriter()
+	p.waitForWrites()
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
 	select {
 	case <-p.done:
+		// The group leader can exit cleanly after stdin closes while a tool child
+		// remains in the same process group. Reap the exact tree even on this branch.
+		_ = p.handle.Kill()
 		return wrapTerminateExitError(p.waitErr, p.stderr.String())
 	case <-timer.C:
 		_ = p.handle.Kill()

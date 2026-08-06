@@ -61,9 +61,10 @@ import (
 )
 
 const (
-	maxSendImages      = 4
-	maxSendImageBytes  = 5 * 1024 * 1024
-	dataURLBase64Token = ";base64,"
+	maxSendImages         = 4
+	maxSendImageBytes     = 5 * 1024 * 1024
+	dataURLBase64Token    = ";base64,"
+	piStopAbortWriteBound = 500 * time.Millisecond
 )
 
 var sendImageMediaTypes = map[string]struct{}{
@@ -183,17 +184,13 @@ func (c *activeTurnControl) setGracefulAbort(aborter agentruntime.Aborter) {
 	c.mu.Unlock()
 }
 
-func (c *activeTurnControl) abortBeforeCancel(ctx context.Context, sessionID int64) (bool, error) {
+func (c *activeTurnControl) gracefulAborter() (agentruntime.Aborter, bool) {
 	if c == nil {
-		return false, nil
+		return nil, false
 	}
 	c.mu.RLock()
-	aborter := c.gracefulAbort
-	c.mu.RUnlock()
-	if aborter == nil {
-		return false, nil
-	}
-	return true, aborter.Abort(ctx, sessionID)
+	defer c.mu.RUnlock()
+	return c.gracefulAbort, c.gracefulAbort != nil
 }
 
 type chatSvc struct {
@@ -1546,10 +1543,11 @@ func (s *chatSvc) Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueRes
 //     已自然完成 / 还没起 / 已被另一个 Stop 拉走，返 ChatStopNoActive。
 //  2. Store aborted flag —— runTurn 收尾 LoadAndDelete 看到就走 StreamAborted 路径
 //     并跳过 DrainPending 自动接续。
-//  3. 已绑定的本地 Pi turn 先直接写 abort，再 cancel turnCtx，让同一 RPC scanner
-//     在自己的小窗口内读取 settlement / 精确 user anchor；其它后端仍先 cancel，
-//     再尽力通过仓储解析 runner.Abort。启动期还没绑定 aborter 时也保持 cancel-first，
-//     不让 Stop 的仓储查询延迟同步 preflight / SQL 取消。
+//  3. 先 cancel turnCtx，让已接受的本地 Pi 流立即进入自己的 bounded settlement
+//     window；再以同一 generation 的内存 aborter 尝试写 abort。写端最多等待同一
+//     500ms 边界，不能把 Stop 卡在满管道前。其它后端仍先 cancel，再尽力通过仓储
+//     解析 runner.Abort。启动期还没绑定 aborter 时也保持 cancel-first，不给未确认
+//     prompt settlement grace，也不让 Stop 的仓储查询延迟同步 preflight / SQL 取消。
 func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, error) {
 	if req == nil || req.SessionID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
@@ -1570,17 +1568,23 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 	logger.Ctx(ctx).Info("chat_svc.Stop: aborting turn",
 		zap.Int64("sessionId", req.SessionID))
 
-	gracefulAbort, abortErr := control.abortBeforeCancel(ctx, req.SessionID)
-	if abortErr != nil && !errors.Is(abortErr, agentruntime.ErrNoActiveTurn) {
-		logger.Ctx(ctx).Warn("chat_svc.Stop: local Pi abort failed",
-			zap.Int64("sessionId", req.SessionID),
-			zap.String("backendType", string(agent_backend_entity.TypePiAgent)),
-			zap.Error(abortErr))
-	}
-	// Activation/staging SQL and prepared Start already carry this registered
-	// context. The direct local-Pi abort above is in-memory and does not delay it.
+	gracefulAborter, gracefulAbort := control.gracefulAborter()
+	// Activation/staging SQL, prepared Start, and accepted stream drain all carry
+	// this generation-specific context. Cancel first so a blocked abort write can
+	// never delay SQL/pre-prompt cancellation or the accepted stream's settlement timer.
 	if control != nil && control.cancel != nil {
 		control.cancel()
+	}
+	if gracefulAbort {
+		abortCtx, cancelAbort := context.WithTimeout(ctx, piStopAbortWriteBound)
+		abortErr := gracefulAborter.Abort(abortCtx, req.SessionID)
+		cancelAbort()
+		if abortErr != nil && !errors.Is(abortErr, agentruntime.ErrNoActiveTurn) {
+			logger.Ctx(ctx).Warn("chat_svc.Stop: local Pi abort failed",
+				zap.Int64("sessionId", req.SessionID),
+				zap.String("backendType", string(agent_backend_entity.TypePiAgent)),
+				zap.Error(abortErr))
+		}
 	}
 
 	// Other backends keep the prior best-effort runner.Abort lookup after cancel.

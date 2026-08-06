@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,6 +67,188 @@ func TestStreamCloseAfterProcessExitWasObserved(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPiWritesAreInterruptedByCallerCancellation(t *testing.T) {
+	tests := []struct {
+		name    string
+		blockAt int
+		run     func(context.Context, *Client) error
+	}{
+		{
+			name:    "command write",
+			blockAt: 1,
+			run: func(ctx context.Context, client *Client) error {
+				_, err := client.PrepareStream(ctx, "must not be sent")
+				return err
+			},
+		},
+		{
+			name:    "prompt write",
+			blockAt: 2,
+			run: func(ctx context.Context, client *Client) error {
+				prepared, err := client.PrepareStream(context.Background(), strings.Repeat("x", 8*1024*1024))
+				if err != nil {
+					return err
+				}
+				_, err = prepared.Start(ctx)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writer := newBlockingWriteCloser(tt.blockAt)
+			proc := newBlockedWriteProcess(writer)
+			client := New(WithRPCProcessRunnerForTesting(&blockedWriteRunner{proc: proc}))
+			ctx, cancel := context.WithCancel(context.Background())
+			resultC := make(chan error, 1)
+			go func() { resultC <- tt.run(ctx, client) }()
+
+			<-writer.blocked
+			cancel()
+			select {
+			case err := <-resultC:
+				require.ErrorIs(t, err, context.Canceled)
+			case <-time.After(300 * time.Millisecond):
+				_ = writer.Close()
+				<-resultC
+				t.Fatal("canceled Pi write remained blocked")
+			}
+			select {
+			case <-writer.closed:
+			case <-time.After(100 * time.Millisecond):
+				t.Fatal("canceling a blocked Pi write did not close stdin")
+			}
+		})
+	}
+}
+
+func TestPreparedStreamCloseInterruptsBlockedPromptWrite(t *testing.T) {
+	writer := newBlockingWriteCloser(2)
+	proc := newBlockedWriteProcess(writer)
+	client := New(WithRPCProcessRunnerForTesting(&blockedWriteRunner{proc: proc}))
+	prepared, err := client.PrepareStream(context.Background(), strings.Repeat("x", 8*1024*1024))
+	require.NoError(t, err)
+
+	startErrC := make(chan error, 1)
+	go func() {
+		_, startErr := prepared.Start(context.Background())
+		startErrC <- startErr
+	}()
+	<-writer.blocked
+
+	closeErrC := make(chan error, 1)
+	go func() { closeErrC <- prepared.Close(context.Background()) }()
+	select {
+	case closeErr := <-closeErrC:
+		require.NoError(t, closeErr)
+	case <-time.After(300 * time.Millisecond):
+		_ = writer.Close()
+		t.Fatal("Close remained blocked behind a prompt write")
+	}
+	select {
+	case startErr := <-startErrC:
+		require.Error(t, startErr)
+	case <-time.After(300 * time.Millisecond):
+		_ = writer.Close()
+		<-startErrC
+		t.Fatal("process Close did not interrupt the blocked prompt writer")
+	}
+	select {
+	case <-writer.closed:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("process Close did not close stdin")
+	}
+
+	repeatedClose := make(chan error, 1)
+	go func() { repeatedClose <- prepared.Close(context.Background()) }()
+	select {
+	case err := <-repeatedClose:
+		require.NoError(t, err)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("repeated Close was not idempotent and bounded")
+	}
+}
+
+type blockingWriteCloser struct {
+	mu        sync.Mutex
+	blockAt   int
+	writes    int
+	blocked   chan struct{}
+	release   chan struct{}
+	closed    chan struct{}
+	blockOnce sync.Once
+	closeOnce sync.Once
+}
+
+func newBlockingWriteCloser(blockAt int) *blockingWriteCloser {
+	return &blockingWriteCloser{
+		blockAt: blockAt,
+		blocked: make(chan struct{}),
+		release: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+}
+
+func (w *blockingWriteCloser) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.writes++
+	shouldBlock := w.writes == w.blockAt
+	w.mu.Unlock()
+	if !shouldBlock {
+		return len(p), nil
+	}
+	w.blockOnce.Do(func() { close(w.blocked) })
+	<-w.release
+	return 0, io.ErrClosedPipe
+}
+
+func (w *blockingWriteCloser) Close() error {
+	w.closeOnce.Do(func() {
+		close(w.release)
+		close(w.closed)
+	})
+	return nil
+}
+
+type blockedWriteProcess struct {
+	stdin      *blockingWriteCloser
+	stdout     io.Reader
+	done       chan struct{}
+	finishOnce sync.Once
+}
+
+func newBlockedWriteProcess(stdin *blockingWriteCloser) *blockedWriteProcess {
+	return &blockedWriteProcess{
+		stdin: stdin,
+		stdout: strings.NewReader(strings.Join([]string{
+			`{"id":"session-state","type":"response","command":"get_state","success":true,"data":{"sessionId":"blocked-write-session"}}`,
+			`{"type":"response","command":"prompt","success":true}`,
+		}, "\n") + "\n"),
+		done: make(chan struct{}),
+	}
+}
+
+func (p *blockedWriteProcess) Stdin() io.Writer  { return p.stdin }
+func (p *blockedWriteProcess) Stdout() io.Reader { return p.stdout }
+func (*blockedWriteProcess) Stderr() io.Reader   { return strings.NewReader("") }
+func (p *blockedWriteProcess) Wait() error {
+	<-p.done
+	return nil
+}
+func (p *blockedWriteProcess) finish() error {
+	p.finishOnce.Do(func() { close(p.done) })
+	return nil
+}
+func (p *blockedWriteProcess) Kill() error            { return p.finish() }
+func (p *blockedWriteProcess) Signal(os.Signal) error { return p.finish() }
+
+type blockedWriteRunner struct{ proc *blockedWriteProcess }
+
+func (r *blockedWriteRunner) Start(context.Context, procOptions) (processHandle, error) {
+	return r.proc, nil
 }
 
 func TestStreamClose(t *testing.T) {
@@ -128,10 +311,9 @@ func TestCanceledAcceptedStreamSettlesAnchorBeforeTerminatingProcessTree(t *test
 	stream, cancel, parentPID, toolPID := startAcceptedRealStream(t, true)
 
 	// Exercise the real cancellation race, not a scripted aborted frame on a live
-	// background context: even if cancellation wins before the explicit interrupt,
-	// the accepted Pi prompt keeps one scanner/process through settlement metadata.
+	// background context: cancellation and the explicit interrupt overlap without
+	// a timing sleep, while the accepted prompt keeps one scanner through settlement.
 	cancel()
-	time.Sleep(50 * time.Millisecond)
 	require.NoError(t, stream.Interrupt(context.Background()))
 
 	finished := make(chan struct{})
@@ -166,7 +348,6 @@ func TestCanceledAcceptedStreamWithoutSettlementTerminatesTreeWithinBound(t *tes
 	stream, cancel, parentPID, toolPID := startAcceptedRealStream(t, false)
 
 	cancel()
-	time.Sleep(50 * time.Millisecond)
 	require.NoError(t, stream.Interrupt(context.Background()))
 
 	finished := make(chan struct{})

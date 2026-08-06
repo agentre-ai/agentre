@@ -97,6 +97,40 @@ func TestRun_ForksAndReturnsNativeSessionState(t *testing.T) {
 	})
 }
 
+func TestRun_CanceledAcceptedTurnReturnsSettledUserAnchor(t *testing.T) {
+	stream := &acceptedStopStream{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	sess := &fakeSession{
+		stream:      stream,
+		sid:         "session-accepted",
+		interrupter: &acceptedStopInterruptor{stream: stream},
+	}
+	restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+		return sess, nil
+	})
+	defer restore()
+	runtime := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	events, result, err := runtime.Run(ctx, agentruntime.RunRequest{
+		Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+		SessionID: 2,
+		Cwd:       t.TempDir(),
+		UserText:  "stop after acceptance",
+	})
+	require.NoError(t, err)
+	<-stream.started
+
+	cancel()
+	require.NoError(t, runtime.Abort(context.Background(), 2))
+	for range events {
+	}
+
+	assert.Equal(t, "pi-user-anchor-after-stop", result.UserAnchor)
+	assert.ErrorIs(t, result.StopErr, context.Canceled)
+}
+
 func TestPrepareRunWithholdsPromptUntilStart(t *testing.T) {
 	Convey("Given a resumed Pi session with a fork anchor", t, func() {
 		lines := []string{
@@ -703,6 +737,44 @@ func (i *recordingInterruptor) Interrupt(context.Context) error {
 	case i.called <- struct{}{}:
 	default:
 	}
+	return nil
+}
+
+type acceptedStopStream struct {
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+	stopOnce  sync.Once
+	mu        sync.Mutex
+	anchor    string
+}
+
+func (s *acceptedStopStream) Next() bool {
+	s.startOnce.Do(func() { close(s.started) })
+	<-s.release
+	return false
+}
+func (*acceptedStopStream) Event() pkgpiagent.Event { return pkgpiagent.Event{} }
+func (*acceptedStopStream) SessionID() string       { return "session-accepted" }
+func (*acceptedStopStream) Err() error              { return context.Canceled }
+func (s *acceptedStopStream) UserAnchor() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.anchor
+}
+func (s *acceptedStopStream) settle() {
+	s.mu.Lock()
+	s.anchor = "pi-user-anchor-after-stop"
+	s.mu.Unlock()
+	s.stopOnce.Do(func() { close(s.release) })
+}
+
+type acceptedStopInterruptor struct {
+	stream *acceptedStopStream
+}
+
+func (i *acceptedStopInterruptor) Interrupt(context.Context) error {
+	i.stream.settle()
 	return nil
 }
 

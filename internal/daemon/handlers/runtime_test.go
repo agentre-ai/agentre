@@ -307,16 +307,83 @@ func (p *blockingStartPreparedPiRun) Close(context.Context) error {
 	return nil
 }
 
+type settlingAcceptedPiRT struct {
+	prepared *settlingAcceptedPiRun
+}
+
+func newSettlingAcceptedPiRT() *settlingAcceptedPiRT {
+	return &settlingAcceptedPiRT{prepared: &settlingAcceptedPiRun{
+		events: make(chan agentruntime.Event),
+		result: &agentruntime.RunResult{ProviderSessionID: "pi-session-accepted"},
+	}}
+}
+
+func (*settlingAcceptedPiRT) Capabilities() capability.Capabilities {
+	return capability.Capabilities{Set: map[capability.Capability]bool{
+		capability.CapAbort:       true,
+		capability.CapForkSession: true,
+	}}
+}
+
+func (*settlingAcceptedPiRT) Run(context.Context, agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return nil, nil, errors.New("settling accepted Pi runtime must use PrepareRun")
+}
+
+func (r *settlingAcceptedPiRT) PrepareRun(context.Context, agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	return r.prepared, nil
+}
+
+func (r *settlingAcceptedPiRT) Abort(context.Context, int64) error {
+	r.prepared.result.UserAnchor = "pi-user-anchor-after-stop"
+	r.prepared.result.StopErr = agentruntime.ErrAborted
+	r.prepared.finish()
+	return nil
+}
+
+type settlingAcceptedPiRun struct {
+	mu         sync.Mutex
+	events     chan agentruntime.Event
+	result     *agentruntime.RunResult
+	finishOnce sync.Once
+	closeCalls int
+}
+
+func (*settlingAcceptedPiRun) ProviderSessionID() string { return "pi-session-accepted" }
+
+func (p *settlingAcceptedPiRun) Start(context.Context) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
+	return p.events, p.result, nil
+}
+
+func (p *settlingAcceptedPiRun) Close(context.Context) error {
+	p.mu.Lock()
+	p.closeCalls++
+	p.mu.Unlock()
+	p.finish()
+	return nil
+}
+
+func (p *settlingAcceptedPiRun) finish() {
+	p.finishOnce.Do(func() { close(p.events) })
+}
+
+func (p *settlingAcceptedPiRun) closes() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closeCalls
+}
+
 type scriptedPreparedPiRT struct {
 	mu       sync.Mutex
 	prepared []*scriptedPreparedPiRun
 	requests []agentruntime.RunRequest
+	active   *scriptedPreparedPiRun
 }
 
 func newScriptedPreparedPiRT(ids ...string) *scriptedPreparedPiRT {
 	r := &scriptedPreparedPiRT{}
 	for _, id := range ids {
 		r.prepared = append(r.prepared, &scriptedPreparedPiRun{
+			owner:             r,
 			providerSessionID: id,
 			events:            make(chan agentruntime.Event),
 			result:            &agentruntime.RunResult{ProviderSessionID: id},
@@ -347,11 +414,25 @@ func (r *scriptedPreparedPiRT) PrepareRun(_ context.Context, req agentruntime.Ru
 	return r.prepared[idx], nil
 }
 
+func (r *scriptedPreparedPiRT) Abort(context.Context, int64) error {
+	r.mu.Lock()
+	active := r.active
+	r.mu.Unlock()
+	if active == nil {
+		return agentruntime.ErrNoActiveTurn
+	}
+	active.result.StopErr = agentruntime.ErrAborted
+	active.finish()
+	return nil
+}
+
 type scriptedPreparedPiRun struct {
 	mu                sync.Mutex
+	owner             *scriptedPreparedPiRT
 	providerSessionID string
 	events            chan agentruntime.Event
 	result            *agentruntime.RunResult
+	finishOnce        sync.Once
 	startCalls        int
 	closeCalls        int
 }
@@ -362,6 +443,9 @@ func (p *scriptedPreparedPiRun) Start(context.Context) (<-chan agentruntime.Even
 	p.mu.Lock()
 	p.startCalls++
 	p.mu.Unlock()
+	p.owner.mu.Lock()
+	p.owner.active = p
+	p.owner.mu.Unlock()
 	return p.events, p.result, nil
 }
 
@@ -376,6 +460,10 @@ func (p *scriptedPreparedPiRun) counts() (start, closed int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.startCalls, p.closeCalls
+}
+
+func (p *scriptedPreparedPiRun) finish() {
+	p.finishOnce.Do(func() { close(p.events) })
 }
 
 // recordingNotifier collects every notify call so tests can assert ordering.
@@ -703,9 +791,38 @@ func TestRuntime_PiPrepareReturnsIdentityBeforeSecondRunStartsPrompt(t *testing.
 	startCalls, _ = rt.prepared[0].counts()
 	assert.Equal(t, 1, startCalls)
 
-	close(rt.prepared[0].events)
+	rt.prepared[0].finish()
 	frames := notif.waitFrames(t, 1)
 	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
+}
+
+func TestRuntime_PiAbortSettlesAcceptedTurnBeforeClosingPreparedProcess(t *testing.T) {
+	rt := newSettlingAcceptedPiRT()
+	ctx, notif, _, _, h := setupRuntimeTest(t, rt)
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{
+		Backend: backendJSON(t, be), SessionID: 53, PermissionMode: "generation-53",
+	}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	ack, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	params.ProviderSessionID = ack.ProviderSessionID
+	_, err = h.Run(ctx, params)
+	require.NoError(t, err)
+
+	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 53})
+	require.NoError(t, err)
+	frames := notif.waitFrames(t, 1)
+	require.Len(t, frames, 1)
+	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
+	done := frames[0].params.(wire.RunResultDoneFrame)
+	assert.Equal(t, "pi-session-accepted", done.ProviderSessionID)
+	assert.Equal(t, "pi-user-anchor-after-stop", done.UserAnchor)
+	assert.Equal(t, wire.ErrCodeAborted, done.StopErrCode)
+	assert.Zero(t, rt.prepared.closes(),
+		"the handler must not close an accepted prepared process before runtime settlement")
 }
 
 func TestRuntime_PiAbortWaitsForClaimedTerminalNotification(t *testing.T) {
@@ -738,7 +855,7 @@ func TestRuntime_PiAbortWaitsForClaimedTerminalNotification(t *testing.T) {
 	params.ProviderSessionID = ack.ProviderSessionID
 	_, err = h.Run(ctx, params)
 	require.NoError(t, err)
-	close(rt.prepared[0].events)
+	rt.prepared[0].finish()
 	<-notif.entered
 
 	abortErrC := make(chan error, 1)
@@ -758,7 +875,7 @@ func TestRuntime_PiAbortWaitsForClaimedTerminalNotification(t *testing.T) {
 	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
 }
 
-func TestRuntime_StalePiFanoutCannotTerminateOrNotifyForNewerGeneration(t *testing.T) {
+func TestRuntime_PiAbortSettlementCannotTerminateOrNotifyForNewerGeneration(t *testing.T) {
 	rt := newScriptedPreparedPiRT("shared-native-session", "shared-native-session")
 	rt.prepared[0].result.Model = "stale-model"
 	rt.prepared[1].result.Model = "current-model"
@@ -775,6 +892,11 @@ func TestRuntime_StalePiFanoutCannotTerminateOrNotifyForNewerGeneration(t *testi
 	require.NoError(t, err)
 	_, err = h.Abort(ctx, wire.AbortParams{SessionID: 55})
 	require.NoError(t, err)
+	firstFrames := notif.waitFrames(t, 1)
+	require.Len(t, firstFrames, 1)
+	firstDone := firstFrames[0].params.(wire.RunResultDoneFrame)
+	assert.Equal(t, "stale-model", firstDone.Model)
+	assert.Equal(t, wire.ErrCodeAborted, firstDone.StopErrCode)
 
 	params.ProviderSessionID = firstAck.ProviderSessionID
 	params.PermissionMode = "generation-55-2"
@@ -794,24 +916,21 @@ func TestRuntime_StalePiFanoutCannotTerminateOrNotifyForNewerGeneration(t *testi
 	_, err = h.Run(ctx, params)
 	require.NoError(t, err)
 
-	close(rt.prepared[0].events)
-	close(rt.prepared[1].events)
+	rt.prepared[1].finish()
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		_, steerErr := h.Steer(ctx, wire.SteerParams{SessionID: 55, Text: "after completion"})
 		assert.ErrorIs(c, steerErr, agentruntime.ErrNoActiveTurn)
 	}, time.Second, 10*time.Millisecond)
 
-	frames := notif.waitFrames(t, 1)
-	require.Len(t, frames, 1, "only the current owner may emit runResultDone")
-	assert.Equal(t, wire.NotifyRunResultDone, frames[0].method)
-	done := frames[0].params.(wire.RunResultDoneFrame)
+	frames := notif.waitFrames(t, 2)
+	require.Len(t, frames, 2, "each exact generation may emit one terminal result")
+	assert.Equal(t, wire.NotifyRunResultDone, frames[1].method)
+	done := frames[1].params.(wire.RunResultDoneFrame)
 	assert.Equal(t, "current-model", done.Model)
-	assert.Never(t, func() bool { return len(notif.snapshot()) > 1 }, 100*time.Millisecond, 5*time.Millisecond,
-		"stale generation A must not emit a terminal result")
 
 	_, firstClosed := rt.prepared[0].counts()
 	_, secondClosed := rt.prepared[1].counts()
-	assert.Equal(t, 1, firstClosed)
+	assert.Zero(t, firstClosed, "accepted generation cleanup belongs to the runtime settlement path")
 	assert.Zero(t, secondClosed)
 }
 

@@ -4,11 +4,88 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTrackedMetadataCancellationReleasesTheSingleScannerOwner(t *testing.T) {
+	// Given terminal metadata owns the process scanner while Pi sends no response,
+	// When the bounded settlement context is canceled,
+	// Then the scanner call itself returns instead of leaving a detached reader goroutine.
+	scanner := newContextTrackingScanner()
+	proc := &rpcProcess{stdin: io.Discard, lines: scanner}
+	stream := newStream(proc, time.Second)
+	stream.setUserAnchorBoundary("")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		stream.emitTrackedSessionMetadata(ctx)
+		close(done)
+	}()
+
+	<-scanner.entered
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		scanner.Release()
+		<-done
+		t.Fatal("metadata settlement ignored its canceled context")
+	}
+	select {
+	case <-scanner.exited:
+	case <-time.After(100 * time.Millisecond):
+		scanner.Release()
+		<-scanner.exited
+		t.Fatal("metadata settlement returned while a detached scanner owner remained blocked")
+	}
+	_ = proc.terminate(context.Background(), 0)
+}
+
+type contextTrackingScanner struct {
+	entered   chan struct{}
+	exited    chan struct{}
+	release   chan struct{}
+	enterOnce sync.Once
+	exitOnce  sync.Once
+	closeOnce sync.Once
+}
+
+func newContextTrackingScanner() *contextTrackingScanner {
+	return &contextTrackingScanner{
+		entered: make(chan struct{}),
+		exited:  make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (s *contextTrackingScanner) Scan() bool {
+	s.enterOnce.Do(func() { close(s.entered) })
+	<-s.release
+	s.exitOnce.Do(func() { close(s.exited) })
+	return false
+}
+
+func (s *contextTrackingScanner) ScanContext(ctx context.Context) bool {
+	s.enterOnce.Do(func() { close(s.entered) })
+	select {
+	case <-ctx.Done():
+	case <-s.release:
+	}
+	s.exitOnce.Do(func() { close(s.exited) })
+	return false
+}
+
+func (*contextTrackingScanner) Bytes() []byte { return nil }
+func (*contextTrackingScanner) Text() string  { return "" }
+func (*contextTrackingScanner) Err() error    { return nil }
+func (s *contextTrackingScanner) Release() {
+	s.closeOnce.Do(func() { close(s.release) })
+}
 
 func TestStreamRecordsFirstUserEntryAfterPromptBoundary(t *testing.T) {
 	// Given history contains the same prompt text and the turn later adds a steer,

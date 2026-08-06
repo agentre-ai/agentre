@@ -1418,12 +1418,18 @@ func (*anchorResultRunner) Run(_ context.Context, req agentruntime.RunRequest) (
 }
 
 type stopOrderPiRunner struct {
-	started chan struct{}
+	started      chan struct{}
+	abortEntered chan struct{}
+	releaseAbort chan struct{}
 
 	mu               sync.Mutex
 	runCtx           context.Context
+	events           chan agentruntime.Event
+	result           *agentruntime.RunResult
 	abortCalls       int
 	abortSawCanceled bool
+	abortOnce        sync.Once
+	finishOnce       sync.Once
 }
 
 func (*stopOrderPiRunner) Capabilities() capability.Capabilities {
@@ -1433,24 +1439,34 @@ func (*stopOrderPiRunner) Capabilities() capability.Capabilities {
 func (r *stopOrderPiRunner) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan agentruntime.Event, *agentruntime.RunResult, error) {
 	r.mu.Lock()
 	r.runCtx = ctx
+	r.events = make(chan agentruntime.Event)
+	r.result = &agentruntime.RunResult{ProviderSessionID: req.ProviderSessionID}
+	events := r.events
+	result := r.result
 	r.mu.Unlock()
 	close(r.started)
-	events := make(chan agentruntime.Event)
-	go func() {
-		<-ctx.Done()
-		close(events)
-	}()
-	return events, &agentruntime.RunResult{ProviderSessionID: req.ProviderSessionID}, nil
+	return events, result, nil
 }
 
 func (r *stopOrderPiRunner) Abort(context.Context, int64) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.abortCalls++
+	runCtx := r.runCtx
+	r.mu.Unlock()
+	r.abortOnce.Do(func() { close(r.abortEntered) })
 	select {
-	case <-r.runCtx.Done():
+	case <-runCtx.Done():
+		r.mu.Lock()
 		r.abortSawCanceled = true
-	default:
+		r.result.UserAnchor = "pi-user-anchor-after-local-stop"
+		events := r.events
+		r.mu.Unlock()
+		r.finishOnce.Do(func() { close(events) })
+	case <-r.releaseAbort:
+		r.mu.Lock()
+		events := r.events
+		r.mu.Unlock()
+		r.finishOnce.Do(func() { close(events) })
 	}
 	return nil
 }
@@ -7900,9 +7916,13 @@ func TestCancelQueued_SessionNotFound(t *testing.T) {
 	})
 }
 
-func TestStop_LocalPiAbortsBeforeCancelingAcceptedTurn(t *testing.T) {
+func TestStop_LocalPiCancellationCannotHangBehindAcceptedTurnAbort(t *testing.T) {
 	m := setupChatTest(t)
-	runner := &stopOrderPiRunner{started: make(chan struct{})}
+	runner := &stopOrderPiRunner{
+		started:      make(chan struct{}),
+		abortEntered: make(chan struct{}),
+		releaseAbort: make(chan struct{}),
+	}
 	restore := agentruntime.SwapRuntimeForTest(agent_backend_entity.TypePiAgent, runner)
 	t.Cleanup(restore)
 
@@ -7917,7 +7937,14 @@ func TestStop_LocalPiAbortsBeforeCancelingAcceptedTurn(t *testing.T) {
 		ID: 12, Type: string(agent_backend_entity.TypePiAgent), Status: consts.ACTIVE,
 	}, nil)
 	m.session.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
-	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).AnyTimes()
+	var persistedAnchor string
+	m.message.EXPECT().Update(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, msg *chat_entity.Message) error {
+			if msg != nil && msg.Role == "user" {
+				persistedAnchor = msg.ForkAnchor
+			}
+			return nil
+		}).AnyTimes()
 	expectNoPiTranscriptRecovery(m, 100)
 	m.dbMock.ExpectBegin()
 	m.message.EXPECT().NextSeq(gomock.Any(), int64(100)).Return(1, nil)
@@ -7940,14 +7967,38 @@ func TestStop_LocalPiAbortsBeforeCancelingAcceptedTurn(t *testing.T) {
 		t.Fatal("Pi runtime did not accept the turn")
 	}
 
-	stopped, err := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 100})
-	require.NoError(t, err)
-	require.NotNil(t, stopped)
-	assert.True(t, stopped.Stopped)
+	type stopCallResult struct {
+		resp *chat_svc.StopResponse
+		err  error
+	}
+	stopC := make(chan stopCallResult, 1)
+	go func() {
+		stopped, stopErr := m.svc.Stop(m.ctx, &chat_svc.StopRequest{SessionID: 100})
+		stopC <- stopCallResult{resp: stopped, err: stopErr}
+	}()
+	<-runner.abortEntered
+	select {
+	case <-runner.runCtx.Done():
+	case <-time.After(200 * time.Millisecond):
+		close(runner.releaseAbort)
+		<-stopC
+		t.Fatal("accepted local Pi cancellation waited behind its abort write")
+	}
+	select {
+	case result := <-stopC:
+		require.NoError(t, result.err)
+		require.NotNil(t, result.resp)
+		assert.True(t, result.resp.Stopped)
+	case <-time.After(200 * time.Millisecond):
+		close(runner.releaseAbort)
+		<-stopC
+		t.Fatal("Stop did not remain bounded after canceling the accepted turn")
+	}
 	abortCalls, abortSawCanceled := runner.stopObservation()
 	assert.Equal(t, 1, abortCalls)
-	assert.False(t, abortSawCanceled, "accepted local Pi must receive abort before its turn context is canceled")
+	assert.True(t, abortSawCanceled, "the settlement window must start before waiting for the abort write")
 	chat_svc.WaitForStreamForTest(m.svc, resp.AssistantMessageID)
+	assert.Equal(t, "pi-user-anchor-after-local-stop", persistedAnchor)
 }
 
 func TestStop_NoActiveTurnReturnsError(t *testing.T) {

@@ -79,6 +79,7 @@ type runtimeSession struct {
 	providerSessionID string
 	generationToken   string
 	preparing         bool
+	starting          bool
 	started           bool
 	aborted           bool
 	abortErr          error
@@ -363,22 +364,36 @@ func (h *RuntimeHandlers) startPreparedPi(
 	owner.mu.Lock()
 	providerSessionID := owner.providerSessionID
 	prepared := owner.prepared
-	if owner.backendType != agent_backend_entity.TypePiAgent || owner.aborted || owner.started || prepared == nil ||
+	if owner.backendType != agent_backend_entity.TypePiAgent || owner.aborted || owner.starting || owner.started || prepared == nil ||
 		strings.TrimSpace(p.ProviderSessionID) != providerSessionID {
 		owner.mu.Unlock()
 		return wire.RunAck{}, errors.New("runtime.run: Pi start does not own the prepared generation")
 	}
-	owner.started = true
+	owner.starting = true
 	owner.mu.Unlock()
 
 	events, result, err := prepared.Start(owner.ctx)
+	owner.mu.Lock()
+	owner.starting = false
+	aborted := owner.aborted
+	if err == nil && !aborted {
+		owner.started = true
+	}
+	owner.mu.Unlock()
 	if err != nil {
-		if abortErr := owner.abort(context.Background()); abortErr != nil {
+		if abortErr := owner.abortBeforeAcknowledgement(context.Background()); abortErr != nil {
 			log.Printf("runtime.run: close failed sid=%d backend=%s errorType=%T", p.SessionID, be.Type, abortErr)
 		}
 		h.unregister(p.SessionID, owner)
 		owner.signalTerminal()
 		return wire.RunAck{}, err
+	}
+	if aborted || !h.isCurrent(p.SessionID, owner) {
+		go func() {
+			for range events {
+			}
+		}()
+		return wire.RunAck{}, context.Canceled
 	}
 	ack := wire.RunAck{SessionID: p.SessionID, ProviderSessionID: providerSessionID}
 	if result != nil {
@@ -393,20 +408,29 @@ func (h *RuntimeHandlers) startPreparedPi(
 	return ack, nil
 }
 
-func (s *runtimeSession) abort(ctx context.Context) error {
+func (s *runtimeSession) abortBeforeAcknowledgement(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.aborted {
-		return s.abortErr
+		err := s.abortErr
+		s.mu.Unlock()
+		return err
 	}
 	s.aborted = true
-	if s.cancel != nil {
-		s.cancel()
+	cancel := s.cancel
+	prepared := s.prepared
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
-	if s.prepared != nil {
-		s.abortErr = s.prepared.Close(ctx)
+	var abortErr error
+	if prepared != nil {
+		abortErr = prepared.Close(ctx)
 	}
-	return s.abortErr
+	s.mu.Lock()
+	s.abortErr = abortErr
+	s.mu.Unlock()
+	return abortErr
 }
 
 // fanout 把 backend events channel 抽干推到 runtime.event,channel close 后再发
@@ -609,7 +633,7 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 		return wire.OK{}, agentruntime.ErrNoActiveTurn
 	}
 	if owner.backendType == agent_backend_entity.TypePiAgent && owner.ctx != nil {
-		if owner.finishing {
+		if owner.finishing || owner.aborting {
 			terminalDone := owner.terminalDone
 			h.mu.Unlock()
 			select {
@@ -620,28 +644,48 @@ func (h *RuntimeHandlers) Abort(ctx context.Context, p wire.AbortParams) (wire.O
 			}
 		}
 		owner.aborting = true
+		owner.mu.Lock()
+		accepted := owner.started
+		owner.mu.Unlock()
 		h.mu.Unlock()
-		if err := owner.abort(ctx); err != nil {
-			terminalSettled := false
-			select {
-			case <-owner.terminalDone:
-				terminalSettled = true
-			default:
-			}
-			h.mu.Lock()
-			if h.sessions[p.SessionID] == owner {
-				if terminalSettled {
-					delete(h.sessions, p.SessionID)
-				} else {
+
+		if !accepted {
+			if err := owner.abortBeforeAcknowledgement(ctx); err != nil {
+				h.mu.Lock()
+				if h.sessions[p.SessionID] == owner {
 					owner.aborting = false
 				}
+				h.mu.Unlock()
+				return wire.OK{}, err
 			}
-			h.mu.Unlock()
-			return wire.OK{}, err
+			h.unregister(p.SessionID, owner)
+			owner.signalTerminal()
+			return wire.OK{}, nil
 		}
-		h.unregister(p.SessionID, owner)
-		owner.signalTerminal()
-		return wire.OK{}, nil
+
+		// An acknowledged prompt owns a live runtime drain. Cancel its generation
+		// context to start the bounded single-scanner settlement window, then send
+		// the exact runtime abort without closing PreparedRun; its own drain/Close
+		// captures metadata and terminates the process tree before fanout returns.
+		if owner.cancel != nil {
+			owner.cancel()
+		}
+		var abortErr error
+		if aborter, ok := h.lookupRuntimeByType(owner.backendType).(agentruntime.Aborter); ok {
+			abortErr = aborter.Abort(ctx, p.SessionID)
+			if errors.Is(abortErr, agentruntime.ErrNoActiveTurn) {
+				abortErr = nil
+			}
+		}
+		select {
+		case <-owner.terminalDone:
+			return wire.OK{}, nil
+		case <-ctx.Done():
+			if abortErr != nil {
+				return wire.OK{}, errors.Join(ctx.Err(), abortErr)
+			}
+			return wire.OK{}, ctx.Err()
+		}
 	}
 	h.mu.Unlock()
 	a, err := resolveSessionCapability[agentruntime.Aborter](h, p.SessionID)
@@ -919,7 +963,7 @@ func (h *RuntimeHandlers) unregister(sid int64, owner *runtimeSession) bool {
 func (h *RuntimeHandlers) claimPiTerminal(sid int64, owner *runtimeSession) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.sessions[sid] != owner || owner.aborting {
+	if h.sessions[sid] != owner {
 		return false
 	}
 	owner.finishing = true

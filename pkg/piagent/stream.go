@@ -66,22 +66,21 @@ func (s *Stream) send(ctx context.Context, cmd map[string]any) error {
 	}
 	command, _ := cmd["type"].(string)
 	if command != "abort" {
-		return s.proc.writeJSON(cmd)
+		return s.proc.writeJSON(cmd, ctx)
 	}
 
 	// Stop may reach the runtime interruptor just before or just after the turn
-	// context is canceled. Serialize those paths so the accepted process receives
-	// one abort frame, while a late duplicate remains idempotent even after exit.
+	// context is canceled. Claim the one abort frame without holding this mutex
+	// across a potentially blocked pipe write; process Close or ctx cancellation
+	// then remains able to interrupt the writer.
 	s.abortMu.Lock()
-	defer s.abortMu.Unlock()
 	if s.abortSent {
+		s.abortMu.Unlock()
 		return nil
 	}
-	if err := s.proc.writeJSON(cmd); err != nil {
-		return err
-	}
 	s.abortSent = true
-	return nil
+	s.abortMu.Unlock()
+	return s.proc.writeJSON(cmd, ctx)
 }
 
 func (s *Stream) Next() bool {
@@ -360,35 +359,18 @@ func (s *Stream) emitSessionStats(ctx context.Context) {
 		return
 	}
 
-	// get_session_stats 是增强信息，不能因为旧版/异常 Pi RPC 没有及时返回而卡住
-	// terminal Done。超时后 runtime 会照常结束 turn 并关闭进程，下面的扫描 goroutine
-	// 会随 stdout 关闭退出；它只写本地 buffered channel，不直接 emit，避免 late send 到
-	// 已关闭的 events channel。
-	resultC := make(chan int, 1)
-	go func() {
-		cw := s.readSessionStatsContextWindow()
-		select {
-		case resultC <- cw:
-		default:
-		}
-	}()
-
-	timer := time.NewTimer(sessionStatsTimeout)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return
-	case <-timer.C:
-		return
-	case cw := <-resultC:
-		if cw > 0 {
-			s.emit(Event{Kind: EventContextWindow, ContextWindow: cw})
-		}
+	// Keep scanner ownership in the drain goroutine. The async line scanner makes
+	// ScanContext interruptible, so an optional stats timeout needs no detached
+	// reader goroutine that could outlive terminal delivery.
+	statsCtx, cancel := context.WithTimeout(ctx, sessionStatsTimeout)
+	defer cancel()
+	if cw := s.readSessionStatsContextWindow(statsCtx); cw > 0 {
+		s.emit(Event{Kind: EventContextWindow, ContextWindow: cw})
 	}
 }
 
-func (s *Stream) readSessionStatsContextWindow() int {
-	for s.proc.lines.Scan() {
+func (s *Stream) readSessionStatsContextWindow(ctx context.Context) int {
+	for scanRPCLine(ctx, s.proc.lines) {
 		emitRawFrame(s.proc, s.proc.lines.Bytes())
 		line := strings.TrimSpace(s.proc.lines.Text())
 		if line == "" {
@@ -431,35 +413,9 @@ func (s *Stream) emitTrackedSessionMetadata(ctx context.Context) {
 	}
 	wantStats := s.send(ctx, map[string]any{"type": "get_session_stats"}) == nil
 
-	updates := make(chan trackedSessionMetadata, 2)
-	go func() {
-		s.readTrackedSessionMetadata(entriesRequestID, wantStats, updates)
-		close(updates)
-	}()
-
-	metadata := trackedSessionMetadata{statsSeen: !wantStats}
-	timer := time.NewTimer(sessionStatsTimeout)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			s.applyTrackedSessionMetadata(metadata)
-			return
-		case <-timer.C:
-			s.applyTrackedSessionMetadata(metadata)
-			return
-		case update, ok := <-updates:
-			if !ok {
-				s.applyTrackedSessionMetadata(metadata)
-				return
-			}
-			metadata = update
-			if metadata.entriesSeen && metadata.statsSeen {
-				s.applyTrackedSessionMetadata(metadata)
-				return
-			}
-		}
-	}
+	metadataCtx, cancel := context.WithTimeout(ctx, sessionStatsTimeout)
+	defer cancel()
+	s.applyTrackedSessionMetadata(s.readTrackedSessionMetadata(metadataCtx, entriesRequestID, wantStats))
 }
 
 func (s *Stream) applyTrackedSessionMetadata(metadata trackedSessionMetadata) {
@@ -470,12 +426,12 @@ func (s *Stream) applyTrackedSessionMetadata(metadata trackedSessionMetadata) {
 }
 
 func (s *Stream) readTrackedSessionMetadata(
+	ctx context.Context,
 	entriesRequestID string,
 	wantStats bool,
-	updates chan<- trackedSessionMetadata,
-) {
+) trackedSessionMetadata {
 	metadata := trackedSessionMetadata{statsSeen: !wantStats}
-	for s.proc.lines.Scan() {
+	for scanRPCLine(ctx, s.proc.lines) {
 		emitRawFrame(s.proc, s.proc.lines.Bytes())
 		line := strings.TrimSpace(s.proc.lines.Text())
 		if line == "" {
@@ -498,18 +454,17 @@ func (s *Stream) readTrackedSessionMetadata(
 					)
 				}
 			}
-			updates <- metadata
 		case response.Command == "get_session_stats" && !metadata.statsSeen:
 			metadata.statsSeen = true
 			if response.Success {
 				metadata.contextWindow = contextWindowFromSessionStats(response.Data)
 			}
-			updates <- metadata
 		}
 		if metadata.entriesSeen && metadata.statsSeen {
-			return
+			return metadata
 		}
 	}
+	return metadata
 }
 
 func firstUserEntryAfterBoundary(entries []sessionEntryWire, boundaryLeafID, currentLeafID string) string {
