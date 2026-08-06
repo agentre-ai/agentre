@@ -115,6 +115,11 @@ type runtimeSession struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	connection  *rpc.Conn
+	// adopted 标记这是 Adopt 放进来的**占位行**:它只为了让重连后的这条连接解得出
+	// 会话(见 Adopt),背后并没有一轮在跑。它必须与真正的 generation 属主区分开 ——
+	// 否则 Pi 那道「一条会话同时只有一个 generation」的闸门会把占位行当成在跑的一轮,
+	// 重连之后再也开不出新一轮。
+	adopted bool
 
 	prepared          piagentrt.PreparedRun
 	providerSessionID string
@@ -166,7 +171,7 @@ func (h *RuntimeHandlers) Adopt(ctx context.Context, sessionID int64, backendTyp
 	if sessionID == 0 || backendType == "" {
 		return
 	}
-	h.register(runtimeSID(ctx, sessionID), &runtimeSession{backendType: backendType})
+	h.register(runtimeSID(ctx, sessionID), &runtimeSession{backendType: backendType, adopted: true})
 }
 
 // SwapRuntimeFor replaces the runtime lookup at runtime — test seam only.
@@ -291,7 +296,9 @@ func (h *RuntimeHandlers) Run(ctx context.Context, p wire.RunParams) (wire.RunAc
 		if preparer, ok := rt.(piagentrt.RunPreparer); ok {
 			piPreparer = preparer
 			piOwner = h.lookupSession(em.rid)
-			if piOwner == nil {
+			// 占位行不是一轮:重连接管只是把这条会话认到这条连接名下,新一轮照常从
+			// 注册 generation 开始(注册时把占位行顶掉)。
+			if piOwner == nil || piOwner.adopted {
 				return h.registerPiGeneration(ctx, em, p, &be)
 			}
 			ownsGeneration := piOwner.generationToken == strings.TrimSpace(p.PermissionMode)
@@ -1337,7 +1344,11 @@ func (h *RuntimeHandlers) registerPiIfAbsent(sid int64, row *runtimeSession) boo
 	}
 
 	h.mu.Lock()
-	if h.closed || h.sessions[sid] != nil {
+	// 挡的是「真的有一轮在跑」;Adopt 留下的占位行背后没有任何一轮,直接顶掉它 ——
+	// 顶掉之后会话依旧解得出(resolveSession 只看 backendType),而且解出来的是这一轮
+	// 真正的属主。
+	existing := h.sessions[sid]
+	if h.closed || (existing != nil && !existing.adopted) {
 		h.mu.Unlock()
 		if claimed {
 			h.releaseGeneration(sid, row)

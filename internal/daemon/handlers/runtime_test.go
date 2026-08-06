@@ -2248,6 +2248,29 @@ func (r *scriptedPreparedPiRT) PrepareRun(_ context.Context, req agentruntime.Ru
 	return r.prepared[idx], nil
 }
 
+// gatedPreparedPiRT 把 PrepareRun 停在中途直到测试放行,用于制造「准备期间这条会话
+// 被别人接管」的时序。
+type gatedPreparedPiRT struct {
+	*scriptedPreparedPiRT
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newGatedPreparedPiRT(id string) *gatedPreparedPiRT {
+	return &gatedPreparedPiRT{
+		scriptedPreparedPiRT: newScriptedPreparedPiRT(id),
+		entered:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+}
+
+func (r *gatedPreparedPiRT) PrepareRun(ctx context.Context, req agentruntime.RunRequest) (piagentrt.PreparedRun, error) {
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	return r.scriptedPreparedPiRT.PrepareRun(ctx, req)
+}
+
 func (r *scriptedPreparedPiRT) Abort(context.Context, int64) error {
 	r.mu.Lock()
 	active := r.active
@@ -2304,9 +2327,6 @@ func (p *scriptedPreparedPiRun) finish() {
 	p.finishOnce.Do(func() { close(p.events) })
 }
 
-// recordingOutbound collects every notify call so tests can assert ordering.
-
-// recordingOutbound collects every notify call so tests can assert ordering.
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -2866,6 +2886,59 @@ func TestRuntime_PiAbortSettlementCannotTerminateOrNotifyForNewerGeneration(t *t
 	_, secondClosed := rt.prepared[1].counts()
 	assert.Equal(t, 1, firstClosed, "the stale generation must finalize its own resource exactly once")
 	assert.Equal(t, 1, secondClosed, "natural completion must finalize the retry resource exactly once")
+}
+
+// 断连重连后的 runtime.session.attach(Adopt)会把内存会话表里那一格换成一条新行,
+// 而 Daemon 级 generation 属主表里的预约仍然记在**被顶替的** owner 名下。preparePi
+// 返回时发现自己已经不是当前行,按 canceled 收尾 —— 这条收尾路径必须照样交还预约,
+// 否则这条会话的 generation 永久被占,之后谁都开不出新一轮。
+func TestRuntime_ReadoptedPiSessionStillReleasesTheOverwrittenGeneration(t *testing.T) {
+	rt := newGatedPreparedPiRT("pi-session-readopted")
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	notif := newRecordingOutbound()
+	sessions := newRecordingSessions()
+	registry := newTrackingGenerationRegistry()
+	h := handlers.NewRuntimeHandlers(handlers.RuntimeDeps{
+		NotifyFor:          notif.notifierFor,
+		Journal:            notif,
+		Sessions:           sessions,
+		SessionQuery:       sessions,
+		Gateway:            mock_handlers.NewMockGatewayPort(ctrl),
+		Lookup:             mock_handlers.NewMockLLMProviderLookupPort(ctrl),
+		GenerationRegistry: registry,
+		RuntimeFor: func(_ agent_backend_entity.BackendType) agentruntime.Runtime {
+			return rt
+		},
+	})
+	ctx := context.Background()
+	be := agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent)}
+	params := wire.RunParams{Backend: backendJSON(t, be), SessionID: 57, PermissionMode: "generation-57"}
+
+	_, err := h.Run(ctx, params)
+	require.NoError(t, err)
+	require.Equal(t, "generation-57", registry.owner(57))
+
+	prepareErrC := make(chan error, 1)
+	go func() {
+		_, prepareErr := h.Run(ctx, params)
+		prepareErrC <- prepareErr
+	}()
+	<-rt.entered
+	h.Adopt(ctx, 57, agent_backend_entity.TypePiAgent)
+	close(rt.release)
+
+	require.ErrorIs(t, <-prepareErrC, context.Canceled)
+	assert.Equal(t, 1, registry.releaseCount("generation-57"))
+	assert.Empty(t, registry.owner(57), "被顶替的 owner 也必须交还 generation 预约")
+	_, closed := rt.prepared[0].counts()
+	assert.Equal(t, 1, closed, "被顶替的这一轮仍要关掉自己那个 Pi 进程")
+
+	retry := params
+	retry.PermissionMode = "generation-57-retry"
+	_, err = h.Run(ctx, retry)
+	require.NoError(t, err, "预约交还后这条会话必须还能开新一轮")
+	assert.Equal(t, "generation-57-retry", registry.owner(57))
 }
 
 func TestRuntime_FanoutLogsEventClassificationWithoutSerializedPayload(t *testing.T) {
