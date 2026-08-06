@@ -54,11 +54,13 @@ function canonicalDeltas(
   const canonical = block.canonical;
   if (!canonical) return [];
   if (canonical.kind === "file.edit") {
-    return (canonical.fileEdit?.files ?? []).map((f) => ({
-      path: f.path,
-      plus: f.plus ?? 0,
-      minus: f.minus ?? 0,
-    }));
+    return (canonical.fileEdit?.files ?? [])
+      .filter((f) => f.path !== "")
+      .map((f) => ({
+        path: f.path,
+        plus: f.plus ?? 0,
+        minus: f.minus ?? 0,
+      }));
   }
   if (canonical.kind === "file.write" && canonical.fileWrite?.path) {
     return [
@@ -78,12 +80,16 @@ function extractToolPaths(
   if (block.type !== "tool_use" || !block.toolName) return null;
   const input = block.toolInput ?? {};
   const paths: string[] = [];
-  if (typeof input.file_path === "string") paths.push(input.file_path);
-  if (typeof input.path === "string") paths.push(input.path);
+  if (typeof input.file_path === "string" && input.file_path !== "") {
+    paths.push(input.file_path);
+  }
+  if (typeof input.path === "string" && input.path !== "") {
+    paths.push(input.path);
+  }
   const changes = (input as { changes?: Array<{ path?: string }> }).changes;
   if (Array.isArray(changes)) {
     for (const c of changes) {
-      if (typeof c?.path === "string") paths.push(c.path);
+      if (typeof c?.path === "string" && c.path !== "") paths.push(c.path);
     }
   }
   return paths.length > 0 ? { name: block.toolName, paths } : null;

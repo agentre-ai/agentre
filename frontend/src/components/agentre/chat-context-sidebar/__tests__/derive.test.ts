@@ -191,6 +191,35 @@ describe("deriveFiles", () => {
     expect(a.lastTurn).toBe(1);
   });
 
+  it("ignores empty raw and canonical paths so malformed tool blocks cannot create an openable project-directory row", () => {
+    const msgs = [
+      userMsg(1, "u1"),
+      assistantWithBlocks(2, [
+        {
+          type: "tool_use",
+          toolName: "Edit",
+          toolInput: { file_path: "" },
+          canonical: {
+            kind: "file.edit",
+            fileEdit: {
+              files: [
+                {
+                  kind: "patch",
+                  hunks: [],
+                  path: "",
+                  plus: 1,
+                  minus: 0,
+                },
+              ],
+            },
+          },
+        },
+      ]),
+    ];
+
+    expect(deriveFiles(msgs)).toEqual([]);
+  });
+
   it("keeps read-tool paths in the list with 0 plus/minus", () => {
     const msgs = [
       userMsg(1, "u1"),

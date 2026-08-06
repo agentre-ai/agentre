@@ -154,6 +154,31 @@ describe("FilesView", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("resets a collapsed folder when the ordered file paths change", async () => {
+    const { rerender } = render(
+      <FilesView
+        files={files}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /internal/ }));
+
+    rerender(
+      <FilesView
+        files={[...files].reverse()}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /chat\.go/ }),
+    ).toBeInTheDocument();
+  });
+
   it("file row click still jumps to lastTurn", async () => {
     const onJump = vi.fn();
     render(
