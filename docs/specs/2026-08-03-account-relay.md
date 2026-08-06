@@ -27,6 +27,12 @@
 
 全量命令：`agentre` 侧 `make test-backend` 与 `cd frontend && pnpm test --run`；`agentre-server` 侧 `make test`。**两个仓库的基线都在本轮 worktree 建立后采集**——本规格跨仓库改动，任一仓库的既有失败都必须在动手前记录在案，否则无法区分是不是本轮引入的。
 
+**本轮实测基线（2026-08-06，worktree 建立后采集）**：
+
+- agentre（`feat/2026-08-03-account-relay`，HEAD = main `3a14162f` + 规格提交）：`make test-backend` 全绿（`GOWORK=off`，因 go.work 只缝主仓库；需 `frontend/dist/.keep` 满足 `//go:embed`，与 `make dev` 同法）；前端 `pnpm test --run` 204 文件 / 1877 用例全过（需把主仓库的 `frontend/wailsjs/` 拷入——vitest 别名只盖 `go/app/App` 与 `go/models`，`wailsjs/runtime/runtime` 须真实存在；`wails generate module` 在 worktree 里因 SQLITE_BUSY 起不来，改用拷贝）。
+- agentre-server（`feat/2026-08-03-account-relay`，HEAD = main `40aeb72` + gitignore 提交）：`make test` 全绿（同样 `GOWORK=off`）——后端 21 包 ok、前端 5 文件 / 145 用例。**既有抖动**：`internal/pkg/usercode` 的 `TestGenerate_Unique` 在 32⁶≈1.07e9 空间里抽 1e4 个码，生日悖论碰撞概率 ≈4.7%/run，`-race` 下偶发失败；复跑 8 次全过。与本轮无关（worktree 零代码改动），记录在案。
+- agentre 主仓库 main 上有**与本轮无关的未提交改动**（chat/transcript：`transcript-rows.ts`、`chat-streams-store.ts`、`turn/accumulator.go` 等 8 文件），本轮未触碰，由 worktree 隔离。
+
 ## 参与者与用户故事
 
 1. 作为 **Agentre 用户**，我希望在公司也能连上家里那台跑 agent 的机器，而不是只有回到同一个 wifi 才能用。
