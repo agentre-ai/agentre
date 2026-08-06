@@ -192,7 +192,11 @@ func providerRunConfig(p *llm_provider_entity.LLMProvider, modelOverride string)
 	if err != nil {
 		return "", "", err
 	}
-	extPath, err = MaterializeProviderExtension(p)
+	// 扩展与 --model 必须出自同一个 effectiveModel(都用 q):PiAgentProviderExtension
+	// 渲染的 registerProvider 只声明 models:[<q.Model>]，若这里传原始 p，pi 拿到的
+	// --model agentre-<key>/<override> 就是一个自己没注册过的 model id，绑 provider
+	// 的会话级切换直接用不了。扩展按内容哈希落盘，不同模型天然是不同文件。
+	extPath, err = MaterializeProviderExtension(&q)
 	if err != nil {
 		return "", "", err
 	}

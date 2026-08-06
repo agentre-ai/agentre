@@ -433,6 +433,14 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	// 即实际运行模型 —— 偏离提示(决策 5)依赖这个信号;无 override 时两者同值,不回归。
 	modelID := strings.TrimSpace(sess.Model())
 	if modelID == "" {
+		// app-server 没在 thread start/resume 结果里带 model 时 sess.Model() 为空 ——
+		// 此时「观测不到」不等于「跑的是 defaultModelID」:直接落死常量会把一个从没跑过
+		// 的 model id 写进 assistantMsg.Model,还会让 chat_svc 的偏离提示每轮误报
+		// 「所选 X 未生效,实际 gpt-5.5」。回落到本轮请求的 effectiveModel(override →
+		// provider.Model),观测不到就按「请求值已生效」处理。
+		modelID = codexEffectiveModel(req)
+	}
+	if modelID == "" {
 		modelID = defaultModelID
 	}
 	result := &agentruntime.RunResult{ProviderSessionID: sess.ID(), Model: modelID}

@@ -33,12 +33,8 @@ export interface UseModelPillReturn {
   loading: boolean;
   /** 拉取失败（provider 离线等）→ 弹层底部错误行。 */
   error: string | null;
-  /** 手动重试拉取模型列表。 */
-  reloadModels: () => void;
   /** 是否已绑 provider（llmProviderKey 非空）。 */
   bound: boolean;
-  /** 是否已有会话（sessionId > 0）。 */
-  isExistingSession: boolean;
   /** 未绑 provider + 已有会话 → 灰显不可交互，不渲染弹层。 */
   unboundExisting: boolean;
   /** 弹层可交互（非未绑已有会话）。 */
@@ -156,9 +152,7 @@ export function useModelPill({
     models,
     loading,
     error,
-    reloadModels: fetchModels,
     bound,
-    isExistingSession,
     unboundExisting,
     interactive: !unboundExisting,
     providerName,

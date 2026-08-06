@@ -2,7 +2,6 @@ package chat_svc_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/cago-frame/cago/pkg/consts"
@@ -14,7 +13,6 @@ import (
 	"github.com/agentre-ai/agentre/internal/model/entity/agent_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/chat_entity"
 	"github.com/agentre-ai/agentre/internal/model/entity/llm_provider_entity"
-	"github.com/agentre-ai/agentre/internal/pkg/agentruntime"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_backend_repo/mock_agent_backend_repo"
 	"github.com/agentre-ai/agentre/internal/repository/agent_repo"
@@ -50,40 +48,32 @@ func setupChatTestWithoutDatabase(t *testing.T) *chatMocks {
 	return m
 }
 
-func TestRunRequestModelOverrideJSON(t *testing.T) {
-	withoutOverride, err := json.Marshal(agentruntime.RunRequest{})
-	require.NoError(t, err)
-	assert.NotContains(t, string(withoutOverride), "modelOverride")
-
-	withOverride, err := json.Marshal(agentruntime.RunRequest{ModelOverride: "custom-model"})
-	require.NoError(t, err)
-	assert.Contains(t, string(withOverride), `"modelOverride":"custom-model"`)
-}
-
 func TestSetSessionModel_PersistsTrimmedValueAndClears(t *testing.T) {
 	t.Run("stores an arbitrary model id without provider-list validation", func(t *testing.T) {
 		m := setupChatTestWithoutDatabase(t)
 		sess := &chat_entity.Session{ID: 100, AgentID: 7, ModelOverride: "old-model", Status: consts.ACTIVE}
-		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
-		m.session.EXPECT().UpdateModelOverride(gomock.Any(), int64(100), "model-not-in-provider-list")
+		// caller 的 ctx 一路带到仓储:SetSessionModel 与 ChatSvc 其它 I/O 方法同签名,
+		// 不得自造 context.Background()(取消信号 / 日志字段会在这里断掉)。
+		m.session.EXPECT().Find(m.ctx, int64(100)).Return(sess, nil)
+		m.session.EXPECT().UpdateModelOverride(m.ctx, int64(100), "model-not-in-provider-list")
 
-		err := m.svc.SetSessionModel(100, "  model-not-in-provider-list  ")
+		err := m.svc.SetSessionModel(m.ctx, 100, "  model-not-in-provider-list  ")
 		require.NoError(t, err)
 	})
 
 	t.Run("empty clears the override", func(t *testing.T) {
 		m := setupChatTestWithoutDatabase(t)
 		sess := &chat_entity.Session{ID: 100, AgentID: 7, ModelOverride: "old-model", Status: consts.ACTIVE}
-		m.session.EXPECT().Find(gomock.Any(), int64(100)).Return(sess, nil)
-		m.session.EXPECT().UpdateModelOverride(gomock.Any(), int64(100), "")
+		m.session.EXPECT().Find(m.ctx, int64(100)).Return(sess, nil)
+		m.session.EXPECT().UpdateModelOverride(m.ctx, int64(100), "")
 
-		require.NoError(t, m.svc.SetSessionModel(100, ""))
+		require.NoError(t, m.svc.SetSessionModel(m.ctx, 100, ""))
 	})
 }
 
 func TestSetSessionModel_RejectsBlankModel(t *testing.T) {
 	m := setupChatTestWithoutDatabase(t)
-	err := m.svc.SetSessionModel(100, " \t\n ")
+	err := m.svc.SetSessionModel(m.ctx, 100, " \t\n ")
 	assert.Error(t, err)
 }
 

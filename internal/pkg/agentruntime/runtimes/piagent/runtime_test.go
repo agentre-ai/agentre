@@ -547,6 +547,50 @@ func TestProviderRunConfig(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(model, ShouldEqual, "agentre-provabc/deepseek-v3")
 		})
+	})
+
+	// 注入 pi 的 provider 扩展只 registerProvider 一个 models 条目(见
+	// agentruntime.PiAgentProviderExtension)。--model 与扩展的 models 列表必须来自
+	// **同一个** effectiveModel:若 --model 用 override 而扩展仍注册 provider.Model,
+	// pi 收到的是一个自己没注册过的 model id,绑 provider 的会话级切换整个用不了。
+	Convey("Given a bound provider whose extension source is captured", t, func() {
+		var source string
+		restore := SetProviderExtensionWriterForTest(func(s string) (string, error) {
+			source = s
+			return "/ext/agentre-provider-abc.mjs", nil
+		})
+		defer restore()
+
+		prov := func() *llm_provider_entity.LLMProvider {
+			return &llm_provider_entity.LLMProvider{
+				ProviderKey: "provabc", Model: "deepseek-v3",
+				Type: string(llm_provider_entity.TypeOpenAIChat), ContextWindow: 128000,
+			}
+		}
+
+		Convey("When ModelOverride is set Then the extension registers the override model, matching --model", func() {
+			model, _, err := providerRunConfig(prov(), "deepseek-r1")
+			So(err, ShouldBeNil)
+			So(model, ShouldEqual, "agentre-provabc/deepseek-r1")
+			So(source, ShouldContainSubstring, `id: "deepseek-r1"`)
+			So(source, ShouldNotContainSubstring, "deepseek-v3")
+			// provider 的其余元数据(contextWindow 等)仍随扩展下发。
+			So(source, ShouldContainSubstring, "contextWindow: 128000")
+		})
+
+		Convey("When ModelOverride is blank Then the extension still registers provider.Model", func() {
+			model, _, err := providerRunConfig(prov(), "")
+			So(err, ShouldBeNil)
+			So(model, ShouldEqual, "agentre-provabc/deepseek-v3")
+			So(source, ShouldContainSubstring, `id: "deepseek-v3"`)
+		})
+	})
+
+	Convey("Given a bound provider and a stubbed extension writer", t, func() {
+		restore := SetProviderExtensionWriterForTest(func(string) (string, error) {
+			return "/ext/agentre-provider-abc.mjs", nil
+		})
+		defer restore()
 
 		Convey("When the provider is nil Then zero values are returned without error", func() {
 			model, extPath, err := providerRunConfig(nil, "")

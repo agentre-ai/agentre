@@ -1256,10 +1256,15 @@ function ChatPanel({
     activeBackendType === "codex" ||
     activeBackendType === "piagent";
 
+  // provider key 也随 modelSwitchable 门控:useModelPill 一拿到 key 就会去拉
+  // /v1/models（ListLLMModels 是对供应商的真实鉴权 HTTP 请求,不是本地目录）。
+  // 不门控的话,打开任意一个绑了 provider 的 openclaw 会话都会白打一次供应商 API,
+  // 结果没有任何 pill 能消费。
   const modelPill = useModelPill({
     sessionId,
-    llmProviderKey:
-      session?.llmProviderKey ?? newSessionAgent?.llmProviderKey ?? "",
+    llmProviderKey: modelSwitchable
+      ? (session?.llmProviderKey ?? newSessionAgent?.llmProviderKey ?? "")
+      : "",
     initialOverride: session?.modelOverride,
     providerDefaultModel: session?.providerDefaultModel,
   });

@@ -2897,6 +2897,25 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
 
     expect(screen.queryByTestId("model-pill")).not.toBeInTheDocument();
   });
+
+  it("不可切换后端（openclaw）绑了 provider 时也不拉模型列表：ListLLMModels 是对供应商 /v1/models 的真实网络请求，拉了也没有 pill 能用", async () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      backendType: "openclaw",
+      llmProviderKey: "provider-key",
+    });
+    appMocks.ListLLMProviders.mockResolvedValue({
+      items: [{ id: 11, providerKey: "provider-key", name: "Acme" }],
+    });
+
+    render(<ChatPanel sessionId={42} newSessionAgent={null} />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("model-pill")).not.toBeInTheDocument();
+    });
+    expect(appMocks.ListLLMProviders).not.toHaveBeenCalled();
+    expect(appMocks.ListLLMModels).not.toHaveBeenCalled();
+  });
 });
 
 describe("ChatPanel · 新对话空白态文案", () => {

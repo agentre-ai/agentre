@@ -84,7 +84,7 @@ type directModelOverrideMocks struct {
 	message  *mock_chat_repo.MockMessageRepo
 }
 
-func setupDirectModelOverrideTest(t *testing.T) (*chatSvc, *directModelOverrideMocks, context.Context) {
+func setupDirectModelOverrideTest(t *testing.T) (*directModelOverrideMocks, context.Context) {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -100,7 +100,7 @@ func setupDirectModelOverrideTest(t *testing.T) (*chatSvc, *directModelOverrideM
 	llm_provider_repo.RegisterLLMProvider(m.provider)
 	chat_repo.RegisterSession(m.session)
 	chat_repo.RegisterMessage(m.message)
-	return NewChat(NoopEmitter{}).(*chatSvc), m, context.Background()
+	return m, context.Background()
 }
 
 // TestRunTurn_NonSwitchableBackendIgnoresOverride 锁住 openclaw 等非 v1 后端的会话级
@@ -108,7 +108,7 @@ func setupDirectModelOverrideTest(t *testing.T) (*chatSvc, *directModelOverrideM
 // RunRequest,openclaw runtime 会忽略它且每轮误报「所选 X 未生效,实际 Y」偏离提示 ——
 // override 必须被拦在 runTurn,不落 wire、不产出偏离 notice。
 func TestRunTurn_NonSwitchableBackendIgnoresOverride(t *testing.T) {
-	_, m, ctx := setupDirectModelOverrideTest(t)
+	m, ctx := setupDirectModelOverrideTest(t)
 	s := NewChat(NoopEmitter{}).(*chatSvc)
 	runner := &directModelOverrideRunner{
 		request:     make(chan agentruntime.RunRequest, 1),
@@ -153,7 +153,7 @@ func TestRunTurn_NonSwitchableBackendIgnoresOverride(t *testing.T) {
 }
 
 func TestRunTurn_ModelOverrideReachesRunnerAndPersistsDeviationNotice(t *testing.T) {
-	_, m, ctx := setupDirectModelOverrideTest(t)
+	m, ctx := setupDirectModelOverrideTest(t)
 	var streamEvents []ChatStreamEvent
 	s := NewChat(EmitterFunc(func(_ context.Context, _ string, payload any) {
 		if event, ok := payload.(ChatStreamEvent); ok {

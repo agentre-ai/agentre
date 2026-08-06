@@ -215,6 +215,58 @@ func TestRun_ModelResolution(t *testing.T) {
 			So(result.Model, ShouldEqual, "gpt-5.6-sol")
 		})
 
+		// sess.Model() 只在 app-server 的 thread start/resume 结果里带 model 时才有值
+		// (pkg/codex ensureThread → s.model = thread.Model)。观测不到时不能拿死常量
+		// defaultModelID 冒充实际模型:那既会把一个从没跑过的模型 id 写进
+		// assistantMsg.Model,又会让 chat_svc 的偏离提示把「观测不到」误判成
+		// 「所选 X 未生效,实际 gpt-5.5」——每一轮都误报。
+		Convey("Given app-server does not report model, when a provider model is configured, then it is reported instead of the hardcoded default", func() {
+			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-silent"}, nil
+			})
+			defer restore()
+
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:  &llm_provider_entity.LLMProvider{Model: "glm-4.6"},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.Model, ShouldEqual, "glm-4.6")
+		})
+
+		Convey("Given app-server does not report model, when an override is requested, then the override is reported (no false deviation notice)", func() {
+			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-silent"}, nil
+			})
+			defer restore()
+
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4"},
+				ModelOverride: "glm-4.6",
+				SessionID:     1,
+				Cwd:           t.TempDir(),
+				UserText:      "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+
+			So(result.Model, ShouldEqual, "glm-4.6")
+		})
+
 		Convey("Given ModelOverride resumes the thread onto a new model, then RunResult.Model reports the thread actual (sess.Model)", func() {
 			restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
 				return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-override", model: "gpt-5.5"}, nil

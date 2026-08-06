@@ -126,7 +126,7 @@ func (a *App) SetChatPermissionMode(req *chat_svc.SetPermissionModeRequest) (*ch
 // SetChatSessionModel sets or clears the model override for an existing chat session.
 // An empty model follows the provider default again.
 func (a *App) SetChatSessionModel(sessionID int64, model string) error {
-	return chat_svc.Chat().SetSessionModel(sessionID, model)
+	return chat_svc.Chat().SetSessionModel(a.ctx, sessionID, model)
 }
 
 // RegenerateChatMessage 截掉指定 assistant 消息之前的 user 锚点后，用同一段

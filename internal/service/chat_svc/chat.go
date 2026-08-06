@@ -94,7 +94,7 @@ type ChatSvc interface {
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
 	StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error)
 	SetPermissionMode(ctx context.Context, req *SetPermissionModeRequest) (*SetPermissionModeResponse, error)
-	SetSessionModel(sessionID int64, model string) error
+	SetSessionModel(ctx context.Context, sessionID int64, model string) error
 	Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error)
 	Edit(ctx context.Context, req *EditRequest) (*SendResponse, error)
 	Rename(ctx context.Context, req *RenameRequest) (*RenameResponse, error)
@@ -2070,8 +2070,7 @@ func modelOverrideForBackend(sess *chat_entity.Session, be *agent_backend_entity
 // SetSessionModel sets or clears the persisted model override for an existing session.
 // Model ids are intentionally not checked against the provider catalog: CLI-login
 // sessions and provider-compatible custom ids are valid inputs at this service boundary.
-func (s *chatSvc) SetSessionModel(sessionID int64, model string) error {
-	ctx := context.Background()
+func (s *chatSvc) SetSessionModel(ctx context.Context, sessionID int64, model string) error {
 	if sessionID <= 0 {
 		return i18n.NewError(ctx, code.InvalidParameter)
 	}
@@ -3015,8 +3014,8 @@ func (s *chatSvc) runTurn(
 		if result.ContextWindow > 0 {
 			sess.ContextWindow = result.ContextWindow
 		}
-	}
-	if result != nil {
+		// 本轮请求的模型与实际运行模型不一致时补一条 UI-only 偏离提示。必须排在
+		// assistantMsg.Model 被 result.Model 覆盖之后:比对的是 runner 上报的实际值。
 		if notice := modelDeviationNotice(req.ModelOverride, result.Model); notice != nil {
 			finalBlocks = append(finalBlocks, *notice)
 		}
