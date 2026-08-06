@@ -17,6 +17,54 @@ import (
 // daemon and matched by the client.
 const Subprotocol = "agentred-jsonrpc.v1"
 
+// websocketFrameConn adapts the LAN WebSocket transport to FrameConn.
+type websocketFrameConn struct {
+	conn      *websocket.Conn
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// NewWebSocketFrameConn returns the FrameConn implementation for a LAN
+// WebSocket connection.
+func NewWebSocketFrameConn(conn *websocket.Conn) FrameConn {
+	return &websocketFrameConn{conn: conn, done: make(chan struct{})}
+}
+
+func (c *websocketFrameConn) WriteFrame(f Frame) error { return c.conn.WriteJSON(f) }
+
+func (c *websocketFrameConn) ReadFrame(f *Frame) error {
+	err := c.conn.ReadJSON(f)
+	if err != nil {
+		c.markDone()
+	}
+	return err
+}
+
+func (c *websocketFrameConn) Close() error {
+	err := c.conn.Close()
+	c.markDone()
+	return err
+}
+
+func (c *websocketFrameConn) Done() <-chan struct{} { return c.done }
+
+func (c *websocketFrameConn) markDone() { c.closeOnce.Do(func() { close(c.done) }) }
+
+// frameConnFor keeps existing direct WebSocket callers working while all new
+// Conn construction crosses the FrameConn boundary.
+func frameConnFor(transport any) FrameConn {
+	switch conn := transport.(type) {
+	case nil:
+		return newDisconnectedFrameConn()
+	case FrameConn:
+		return conn
+	case *websocket.Conn:
+		return NewWebSocketFrameConn(conn)
+	default:
+		panic(fmt.Sprintf("rpc: unsupported frame transport %T", transport))
+	}
+}
+
 // LANOpts configures the LAN-mode transport.
 type LANOpts struct {
 	Host        string
@@ -69,7 +117,7 @@ func (s *LANServer) Run(ctx context.Context) error {
 		if err != nil {
 			return
 		}
-		c := NewConn(ws, s.opts.Registry.Clone())
+		c := NewConn(NewWebSocketFrameConn(ws), s.opts.Registry.Clone())
 		if s.opts.OnConn != nil {
 			s.opts.OnConn(c)
 		}

@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
-
-	"github.com/gorilla/websocket"
 )
 
 // connCtxKey is the unexported context key used by handleRequest to attach
@@ -22,12 +21,40 @@ func ConnFromContext(ctx context.Context) *Conn {
 	return v
 }
 
-// Conn wraps one WS connection with bidirectional JSON-RPC.
+// FrameConn carries JSON-RPC frames across a bidirectional transport.
+// Done closes when the transport can no longer exchange frames.
+type FrameConn interface {
+	WriteFrame(Frame) error
+	ReadFrame(*Frame) error
+	Close() error
+	Done() <-chan struct{}
+}
+
+// disconnectedFrameConn preserves NewConn(nil, ...) for connection-free
+// tests that exercise only registry or authentication state.
+type disconnectedFrameConn struct {
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func newDisconnectedFrameConn() *disconnectedFrameConn {
+	return &disconnectedFrameConn{done: make(chan struct{})}
+}
+
+func (*disconnectedFrameConn) WriteFrame(Frame) error { return ErrConnClosed }
+func (*disconnectedFrameConn) ReadFrame(*Frame) error { return io.EOF }
+func (c *disconnectedFrameConn) Close() error {
+	c.closeOnce.Do(func() { close(c.done) })
+	return nil
+}
+func (c *disconnectedFrameConn) Done() <-chan struct{} { return c.done }
+
+// Conn wraps one frame transport with bidirectional JSON-RPC.
 // Inbound requests are dispatched through the registry; outbound Call sends
 // a request and blocks until the peer's matching response arrives.
 type Conn struct {
-	ws  *websocket.Conn
-	reg *Registry
+	transport FrameConn
+	reg       *Registry
 
 	writeMu sync.Mutex
 
@@ -38,9 +65,6 @@ type Conn struct {
 
 	authMu sync.RWMutex
 	auth   AuthState
-
-	done      chan struct{}
-	closeOnce sync.Once
 }
 
 // AuthState captures who is on the other end of this connection after the
@@ -51,14 +75,14 @@ type AuthState struct {
 	DeviceName        string
 }
 
-// NewConn wraps an already-upgraded *websocket.Conn. The caller owns the
-// goroutine running Serve.
-func NewConn(ws *websocket.Conn, reg *Registry) *Conn {
+// NewConn wraps an already-open frame transport. The caller owns the
+// goroutine running Serve. New callers must pass a FrameConn; legacy
+// transport values are adapted at their transport boundary.
+func NewConn(transport any, reg *Registry) *Conn {
 	return &Conn{
-		ws:      ws,
-		reg:     reg,
-		pending: map[string]chan Frame{},
-		done:    make(chan struct{}),
+		transport: frameConnFor(transport),
+		reg:       reg,
+		pending:   map[string]chan Frame{},
 	}
 }
 
@@ -76,9 +100,7 @@ var ErrConnClosed = errors.New("rpc: connection closed")
 
 // Done returns a channel that is closed when Close is called or when Serve
 // exits (read loop EOF). Multiple consumers may receive on it.
-func (c *Conn) Done() <-chan struct{} { return c.done }
-
-func (c *Conn) markDone() { c.closeOnce.Do(func() { close(c.done) }) }
+func (c *Conn) Done() <-chan struct{} { return c.transport.Done() }
 
 func (c *Conn) Auth() AuthState {
 	c.authMu.RLock()
@@ -92,7 +114,7 @@ func (c *Conn) SetAuth(a AuthState) {
 	c.auth = a
 }
 
-// Serve runs the read loop until the underlying WS closes or ctx is done.
+// Serve runs the read loop until the underlying frame transport closes or ctx is done.
 //
 // Requests are dispatched per-goroutine — different RPC calls have no
 // inter-call ordering semantics, so a slow handler shouldn't stall others.
@@ -107,11 +129,10 @@ func (c *Conn) SetAuth(a AuthState) {
 // Notification handlers MUST therefore be non-blocking (or bounded) —
 // they share back-pressure with the read loop.
 func (c *Conn) Serve(ctx context.Context) {
-	defer c.markDone()
-	defer func() { _ = c.ws.Close() }()
+	defer func() { _ = c.transport.Close() }()
 	for {
 		var f Frame
-		if err := c.ws.ReadJSON(&f); err != nil {
+		if err := c.transport.ReadFrame(&f); err != nil {
 			return
 		}
 		switch {
@@ -151,7 +172,7 @@ func (c *Conn) handleRequest(ctx context.Context, f Frame) {
 func (c *Conn) write(f Frame) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return c.ws.WriteJSON(f)
+	return c.transport.WriteFrame(f)
 }
 
 // Notify sends a fire-and-forget JSON-RPC notification to the peer.
@@ -196,7 +217,7 @@ func (c *Conn) Call(ctx context.Context, method string, params any, result any) 
 		return json.Unmarshal(f.Result, result)
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-c.done:
+	case <-c.Done():
 		// 连接已断(peer 掉线 / Close / read-loop EOF):响应永不会来,及时返回而
 		// 不是干等 ctx deadline。反向请求(MCP 隧道)携 CLI 的长寿命 HTTP ctx,少了
 		// 这一路 case,WS 中途断会把隧道 goroutine + pending 挂到 CLI ~285s 超时。
@@ -213,9 +234,7 @@ func (c *Conn) deliverResponse(f Frame) {
 	}
 }
 
-// Close closes the underlying WS connection.
+// Close closes the underlying frame transport.
 func (c *Conn) Close() error {
-	err := c.ws.Close()
-	c.markDone()
-	return err
+	return c.transport.Close()
 }

@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,7 +25,7 @@ func testServer(t *testing.T, reg *Registry) (*httptest.Server, string) {
 			t.Errorf("upgrade: %v", err)
 			return
 		}
-		c := NewConn(ws, reg)
+		c := NewConn(NewWebSocketFrameConn(ws), reg)
 		go c.Serve(context.Background())
 	}))
 	t.Cleanup(srv.Close)
@@ -41,6 +42,103 @@ func dialClient(t *testing.T, url string) *websocket.Conn {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+type frameConnStub struct {
+	readFrames  chan Frame
+	writeFrames chan Frame
+	done        chan struct{}
+	closeOnce   sync.Once
+}
+
+func newFrameConnStub() *frameConnStub {
+	return &frameConnStub{
+		readFrames:  make(chan Frame),
+		writeFrames: make(chan Frame, 1),
+		done:        make(chan struct{}),
+	}
+}
+
+func (c *frameConnStub) WriteFrame(f Frame) error {
+	select {
+	case c.writeFrames <- f:
+		return nil
+	case <-c.done:
+		return io.ErrClosedPipe
+	}
+}
+
+func (c *frameConnStub) ReadFrame(f *Frame) error {
+	select {
+	case frame := <-c.readFrames:
+		*f = frame
+		return nil
+	case <-c.done:
+		return io.EOF
+	}
+}
+
+func (c *frameConnStub) Close() error {
+	c.closeOnce.Do(func() { close(c.done) })
+	return nil
+}
+
+func (c *frameConnStub) Done() <-chan struct{} { return c.done }
+
+func TestConn_GivenFrameConn_WhenServing_ThenFramesFlowWithoutWebSocket(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register("echo", func(_ context.Context, params json.RawMessage) (any, error) {
+		return params, nil
+	})
+	transport := newFrameConnStub()
+	conn := NewConn(transport, reg)
+	serveDone := make(chan struct{})
+	go func() {
+		conn.Serve(t.Context())
+		close(serveDone)
+	}()
+
+	transport.readFrames <- Frame{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage(`1`),
+		Method:  "echo",
+		Params:  json.RawMessage(`"hello"`),
+	}
+	select {
+	case response := <-transport.writeFrames:
+		require.Nil(t, response.Error)
+		assert.JSONEq(t, `"hello"`, string(response.Result))
+	case <-time.After(time.Second):
+		t.Fatal("Conn did not write a response through the frame transport")
+	}
+
+	require.NoError(t, conn.Close())
+	select {
+	case <-serveDone:
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not exit after the frame transport closed")
+	}
+}
+
+func TestConn_GivenClosedFrameConn_WhenCallAwaitsResponse_ThenReturnsErrConnClosed(t *testing.T) {
+	transport := newFrameConnStub()
+	conn := NewConn(transport, NewRegistry())
+	errCh := make(chan error, 1)
+	go func() { errCh <- conn.Call(context.Background(), "never.responds", nil, nil) }()
+
+	select {
+	case <-transport.writeFrames:
+	case <-time.After(time.Second):
+		t.Fatal("Call did not write its request through the frame transport")
+	}
+	require.NoError(t, transport.Close())
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, ErrConnClosed)
+	case <-time.After(time.Second):
+		t.Fatal("Call did not unblock when the frame transport closed")
+	}
 }
 
 func TestConn_GivenExplicitRegistry_WhenConstructed_ThenKeepsExactRegistry(t *testing.T) {

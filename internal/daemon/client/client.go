@@ -48,7 +48,7 @@ func Dial(ctx context.Context, opts Options) (*Client, error) {
 	}
 	reg := rpc.NewRegistry()
 	c := &Client{reg: reg}
-	c.conn = rpc.NewConn(ws, reg)
+	c.conn = rpc.NewConn(rpc.NewWebSocketFrameConn(ws), reg)
 	go c.conn.Serve(ctx)
 	return c, nil
 }
