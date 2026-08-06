@@ -346,6 +346,32 @@ describe("deriveFileTree", () => {
     }
   });
 
+  it("splits Windows path separators into collapsible directories", () => {
+    expect(deriveFileTree([e("src\\components\\file.tsx")])).toEqual([
+      {
+        kind: "dir",
+        name: "src",
+        children: [
+          {
+            kind: "dir",
+            name: "components",
+            children: [
+              {
+                kind: "file",
+                entry: {
+                  path: "src\\components\\file.tsx",
+                  plus: 0,
+                  minus: 0,
+                  lastTurn: 1,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
   it("keeps root files as root-level file nodes", () => {
     expect(deriveFileTree([e("only.go")])).toEqual([
       {

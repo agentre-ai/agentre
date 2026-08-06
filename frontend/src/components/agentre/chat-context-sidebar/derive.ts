@@ -180,7 +180,7 @@ export function deriveFileTree(files: FileEntry[]): FileTreeNode[] {
   const dirByPath = new Map<string, Extract<FileTreeNode, { kind: "dir" }>>();
 
   for (const entry of files) {
-    const segs = entry.path.split("/").filter(Boolean);
+    const segs = entry.path.split(/[\\/]/).filter(Boolean);
     let dirPath = "";
     let container = root;
     for (let i = 0; i < segs.length - 1; i++) {

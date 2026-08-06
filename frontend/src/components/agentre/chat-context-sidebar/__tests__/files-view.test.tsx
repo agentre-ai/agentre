@@ -43,6 +43,7 @@ const CWD = "/Users/me/proj";
 
 beforeEach(() => {
   openPathMock.mockReset();
+  openPathMock.mockResolvedValue(undefined);
   sonnerMocks.toast.error.mockReset();
 });
 
@@ -73,6 +74,33 @@ describe("FilesView", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders a Windows path as folders with its basename on the file row", () => {
+    const windowsFiles: FileEntry[] = [
+      {
+        path: "src\\components\\file.tsx",
+        plus: 0,
+        minus: 0,
+        lastTurn: 1,
+      },
+    ];
+    render(
+      <FilesView
+        files={windowsFiles}
+        cwd="C:\\proj"
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Collapse src" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Collapse components" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("file.tsx")).toBeInTheDocument();
+  });
+
   it("collapses and expands a folder on row click, aria-expanded reflects state", async () => {
     render(
       <FilesView
@@ -99,6 +127,31 @@ describe("FilesView", () => {
     expect(
       screen.getByRole("button", { name: /chat\.go/ }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps a collapsed folder closed when an equivalent files array rerenders", async () => {
+    const { rerender } = render(
+      <FilesView
+        files={files}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /internal/ }));
+
+    rerender(
+      <FilesView
+        files={[...files]}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /chat\.go/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("file row click still jumps to lastTurn", async () => {
@@ -165,6 +218,36 @@ describe("FilesView", () => {
       "/Users/me/proj/internal/service/chat_svc/chat.go",
     );
     expect(onJump).not.toHaveBeenCalled();
+  });
+
+  it("opens an absolute tool path directly instead of prefixing cwd", async () => {
+    const absoluteFiles: FileEntry[] = [
+      {
+        path: "/Users/me/proj/internal/service/chat_svc/chat.go",
+        plus: 0,
+        minus: 0,
+        lastTurn: 1,
+      },
+    ];
+    render(
+      <FilesView
+        files={absoluteFiles}
+        cwd={CWD}
+        remote={false}
+        onJumpToTurn={() => {}}
+      />,
+    );
+
+    const chatGoRow = screen.getByRole("button", { name: /chat\.go/ });
+    await userEvent.click(
+      within(chatGoRow.parentElement!).getByRole("button", {
+        name: /Open file/i,
+      }),
+    );
+
+    expect(openPathMock).toHaveBeenCalledWith(
+      "/Users/me/proj/internal/service/chat_svc/chat.go",
+    );
   });
 
   it("hides open buttons when remote is true", () => {

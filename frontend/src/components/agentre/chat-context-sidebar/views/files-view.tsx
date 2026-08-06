@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { OpenPath } from "@/../wailsjs/go/app/App";
+import { classifyLink } from "@/lib/link-classify";
 
 import { deriveFileTree, type FileEntry, type FileTreeNode } from "../derive";
 
@@ -34,7 +35,7 @@ function DiffBadge({ plus, minus }: { plus: number; minus: number }) {
 }
 
 function basename(path: string): string {
-  const parts = path.split("/");
+  const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] ?? path;
 }
 
@@ -42,15 +43,24 @@ function indentStyle(depth: number): React.CSSProperties {
   return { paddingLeft: `${8 + depth * 14}px` };
 }
 
+function openTarget(path: string, cwd: string): string {
+  const link = classifyLink(path, cwd);
+  if (link.kind === "local-internal" || link.kind === "local-external") {
+    return link.fullPath;
+  }
+  return `${cwd}/${path}`;
+}
+
 export function FilesView({ files, cwd, remote, onJumpToTurn }: Props) {
   const { t } = useTranslation();
   const tree = React.useMemo(() => deriveFileTree(files), [files]);
+  const filePathsKey = files.map((file) => file.path).join("\u0000");
 
   // 展开状态仅存组件内、不持久化；文件集合变化时重置为全部展开。
   const [collapsed, setCollapsed] = React.useState<Set<string>>(new Set());
   React.useEffect(() => {
     setCollapsed(new Set());
-  }, [files]);
+  }, [filePathsKey]);
 
   const toggleCollapse = (dirPath: string) => {
     setCollapsed((prev) => {
@@ -64,7 +74,7 @@ export function FilesView({ files, cwd, remote, onJumpToTurn }: Props) {
   const canOpen = cwd !== "" && !remote;
 
   const openFile = (path: string) => {
-    OpenPath(`${cwd}/${path}`).catch((err: unknown) => {
+    OpenPath(openTarget(path, cwd)).catch((err: unknown) => {
       toast.error(
         t("chatContext.files.openFailed", {
           error: err instanceof Error ? err.message : String(err),
