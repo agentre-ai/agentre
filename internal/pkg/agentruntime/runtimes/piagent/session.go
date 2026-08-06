@@ -3,6 +3,7 @@ package piagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 
@@ -22,12 +23,30 @@ type stream interface {
 	Err() error
 }
 
+type userAnchorStream interface {
+	UserAnchor() string
+}
+
+type turnSpec struct {
+	forkAnchor string
+}
+
 type steerStream interface {
 	Steer(ctx context.Context, text string) error
 }
 
 type interruptable interface {
 	Interrupt(ctx context.Context) error
+}
+
+type preparedTurnStream interface {
+	Start(context.Context) (stream, error)
+	SessionID() string
+	Close(context.Context) error
+}
+
+type turnStreamPreparer interface {
+	PrepareStreamTurn(ctx context.Context, prompt string, mode string, images []piagent.Image, turn turnSpec) (preparedTurnStream, error)
 }
 
 type clientAdapter struct {
@@ -53,24 +72,93 @@ func (a *clientAdapter) Close(ctx context.Context) error {
 }
 
 func (a *clientAdapter) Stream(ctx context.Context, prompt string, mode string, images []piagent.Image) (stream, error) {
-	// Resume 不在这里下发：会话复用走 Client 级 --session（WithSession），这里只
-	// 负责本轮 prompt + 多模态图片 + 可选 permission mode。
+	return a.startStream(ctx, prompt, mode, images, nil)
+}
+
+func (a *clientAdapter) StreamTurn(ctx context.Context, prompt string, mode string, images []piagent.Image, turn turnSpec) (stream, error) {
+	return a.startStream(ctx, prompt, mode, images, &turn)
+}
+
+func (a *clientAdapter) startStream(ctx context.Context, prompt string, mode string, images []piagent.Image, turn *turnSpec) (stream, error) {
+	opts, err := turnRunOptions(mode, images, turn)
+	if err != nil {
+		return nil, err
+	}
+	s, err := a.client.Stream(ctx, prompt, opts...)
+	if err != nil {
+		return nil, err
+	}
+	a.setActiveStream(s)
+	return s, nil
+}
+
+func (a *clientAdapter) PrepareStreamTurn(
+	ctx context.Context,
+	prompt string,
+	mode string,
+	images []piagent.Image,
+	turn turnSpec,
+) (preparedTurnStream, error) {
+	opts, err := turnRunOptions(mode, images, &turn)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := a.client.PrepareStream(ctx, prompt, opts...)
+	if err != nil {
+		return nil, err
+	}
+	a.sid = prepared.SessionID()
+	return &clientPreparedTurn{adapter: a, prepared: prepared}, nil
+}
+
+func turnRunOptions(mode string, images []piagent.Image, turn *turnSpec) ([]piagent.RunOption, error) {
+	// Resume 不在这里下发：会话复用走 Client 级 --session（WithSession）。每个
+	// runtime turn 都记录原生 user anchor；分叉 turn 由同一个 per-turn option
+	// 在当前 RPC 进程里先 fork，再发送 prompt。
 	var opts []piagent.RunOption
+	if turn != nil {
+		switch {
+		case turn.forkAnchor == "":
+			opts = append(opts, piagent.RunCaptureUserAnchor())
+		case strings.TrimSpace(turn.forkAnchor) != turn.forkAnchor:
+			return nil, errors.New("piagent runtime: invalid fork anchor")
+		default:
+			opts = append(opts, piagent.RunForkAnchor(turn.forkAnchor))
+		}
+	}
 	if strings.TrimSpace(mode) != "" {
 		opts = append(opts, piagent.RunPermissionMode(piagent.PermissionMode(strings.TrimSpace(mode))))
 	}
 	if len(images) > 0 {
 		opts = append(opts, piagent.WithImages(images))
 	}
-	s, err := a.client.Stream(ctx, prompt, opts...)
-	if err != nil {
-		return nil, err
-	}
+	return opts, nil
+}
+
+func (a *clientAdapter) setActiveStream(s *piagent.Stream) {
 	a.sid = s.SessionID()
 	a.streamMu.Lock()
 	a.stream = s
 	a.streamMu.Unlock()
+}
+
+type clientPreparedTurn struct {
+	adapter  *clientAdapter
+	prepared *piagent.PreparedStream
+}
+
+func (p *clientPreparedTurn) Start(ctx context.Context) (stream, error) {
+	s, err := p.prepared.Start(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.adapter.setActiveStream(s)
 	return s, nil
+}
+
+func (p *clientPreparedTurn) SessionID() string { return p.prepared.SessionID() }
+func (p *clientPreparedTurn) Close(ctx context.Context) error {
+	return p.prepared.Close(ctx)
 }
 
 func (a *clientAdapter) Compact(ctx context.Context) (stream, error) {
@@ -111,6 +199,7 @@ type sessionHandle interface {
 	Close(context.Context) error
 	ID() string
 	Stream(ctx context.Context, prompt string, mode string, images []piagent.Image) (stream, error)
+	StreamTurn(ctx context.Context, prompt string, mode string, images []piagent.Image, turn turnSpec) (stream, error)
 	Compact(ctx context.Context) (stream, error)
 	RewindTo(ctx context.Context, anchor string) (string, error)
 	ActiveStream() steerStream
@@ -118,8 +207,11 @@ type sessionHandle interface {
 }
 
 // piRawFrameSink reports only safe metadata for each pi-agent stdout frame.
-// The callback remains controlled by Debug Logging through logger.Default(), but
-// complete RPC frames never enter the operational log sink.
+// pkg/piagent already hands over a sanitized diagnostic summary — prompts, images,
+// session content and credentials never reach here — and this sink narrows it
+// further to frame type/command. It stays controlled by Debug Logging through
+// logger.Default() (hot reload therefore takes effect immediately), and complete
+// RPC frames never enter the operational log sink.
 func piRawFrameSink(sessionID int64, providerSessionID string) func([]byte) {
 	return func(line []byte) {
 		fields := []zap.Field{
