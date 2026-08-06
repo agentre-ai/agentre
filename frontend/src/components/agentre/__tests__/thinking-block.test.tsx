@@ -179,6 +179,45 @@ describe("ThinkingBlock", () => {
     });
   });
 
+  // 防御性能 bug:超长思考流时,streaming 视图若把整段 text 都塞进 DOM,每个 chunk
+  // 都要 O(n) 重排 whitespace-pre-wrap 文本 → 整轮流式 O(n²) → 主线程卡死。streaming
+  // body 本就 max-h-[132px] overflow-hidden 并贴底,头部根本看不见,所以只需要渲染
+  // 末尾一段「尾巴」。这里锁定契约:streaming 时 DOM 里只含有界尾巴,头部 marker 不在;
+  // done 时仍渲染完整文本(落库/展开要用)。
+  describe("long streaming text renders only a bounded tail", () => {
+    const headMarker = "XHEAD-MARKER-X";
+
+    it("does not put the head / full text in the streaming DOM", () => {
+      const longText = headMarker + "思".repeat(20000);
+      const { container } = render(<ThinkingBlock text={longText} streaming />);
+      const body = container.querySelector(
+        '[data-slot="thinking-streaming-body"]',
+      );
+      expect(body).not.toBeNull();
+      const rendered = body?.textContent ?? "";
+      expect(rendered).not.toContain(headMarker);
+      expect(rendered.length).toBeLessThan(longText.length);
+      // 有界常数:不能只砍一半,得砍到一个固定窗口量级。
+      expect(rendered.length).toBeLessThan(2000);
+    });
+
+    it("still renders short text in full while streaming", () => {
+      render(<ThinkingBlock text="正在分析这个问题" streaming />);
+      expect(screen.getByText("正在分析这个问题")).toBeInTheDocument();
+    });
+
+    it("renders the full text in the done state", () => {
+      const longText = headMarker + "尾".repeat(20000);
+      const { container } = render(
+        <ThinkingBlock text={longText} streaming={false} />,
+      );
+      const content = container.querySelector(
+        '[data-slot="thinking-block-content"]',
+      );
+      expect(content?.textContent ?? "").toContain(headMarker);
+    });
+  });
+
   // 防御真实 bug:Claude Code CLI 把 thinking 整段一次性发出来,合成块只活几 ms,
   // 自计时只能拿到 0s。让外部传入 stream 起始时刻,从「按发送」开始算才有意义。
   describe("external startedAt", () => {
