@@ -587,7 +587,12 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
                     ? t("canonical.agentSpawn.emptyStepsRunning")
                     : t("canonical.agentSpawn.emptySteps")}
                 </div>
-              ) : (
+              ) : // 性能:步骤列表懒挂载 —— 卡片折叠态不 mount 任何 step 卡。
+              // 一个大 subagent 可带 150-200 个嵌套步骤,折叠时把整列表 mount 进
+              // DOM(0fr 网格只是视觉隐藏)会让 transcript 在会话打开 / tab 切换 /
+              // 滚动时卡顿;展开才逐条挂载。折叠态下 steps 数量仍从 steps.length
+              // 读取,头部/进度/摘要不受影响。
+              expanded ? (
                 <div className="flex flex-col gap-2">
                   {steps.map((s, idx) => (
                     <AgentSpawnStepCard
@@ -609,7 +614,7 @@ export const AgentSpawnCard: React.FC<CanonicalCardProps> = ({
                     />
                   ))}
                 </div>
-              )}
+              ) : null}
             </AgentSpawnSection>
             <AgentSpawnSection
               label={t("canonical.agentSpawn.sections.summary")}
@@ -850,6 +855,7 @@ function GroupedAgentSpawnCard({
                     mode={spawn.mode}
                     blocks={childBlocks.byRun.get(run.id) ?? []}
                     cwd={cwd}
+                    cardExpanded={expanded}
                     uiStateKey={
                       uiStateKey
                         ? `${uiStateKey}:run:${run.id || run.index}`
@@ -859,7 +865,7 @@ function GroupedAgentSpawnCard({
                 ))}
               </div>
             </AgentSpawnSection>
-            {fallbackSteps.length > 0 ? (
+            {fallbackSteps.length > 0 && expanded ? (
               <div data-testid="agent-spawn-fallback-steps">
                 <AgentSpawnSection
                   label={t("canonical.agentSpawn.sections.steps")}
@@ -901,12 +907,15 @@ function AgentSpawnRunGroup({
   mode,
   blocks,
   cwd,
+  cardExpanded,
   uiStateKey,
 }: {
   run: AgentSpawnRunDTO;
   mode: AgentSpawnMode | undefined;
   blocks: ChatBlockData[];
   cwd?: string;
+  /** 卡片级展开态 —— 折叠的卡片不 mount 任何 run 内的 step 卡(性能)。 */
+  cardExpanded: boolean;
   uiStateKey?: string;
 }): React.ReactElement {
   const { t } = useTranslation();
@@ -1011,21 +1020,26 @@ function AgentSpawnRunGroup({
           <div className="flex flex-col gap-2 border-t border-border px-2.5 py-2">
             <AgentSpawnSection label={t("canonical.agentSpawn.sections.steps")}>
               {steps.length > 0 ? (
-                <div className="flex flex-col gap-2">
-                  {steps.map((step, index) => (
-                    <AgentSpawnStepCard
-                      key={step.tool.toolUseId || index}
-                      step={step}
-                      cwd={cwd}
-                      terminalFallbackStatus={terminal ? status : undefined}
-                      uiStateKey={
-                        uiStateKey
-                          ? `${uiStateKey}:step:${step.tool.toolUseId || index}`
-                          : undefined
-                      }
-                    />
-                  ))}
-                </div>
+                // 性能:run group 的 step 列表按**卡片**展开态懒挂载 —— 折叠的卡片
+                // 不 mount 任何 step 卡。run group 自身折叠/展开只控制视觉高度,不
+                // 卸载步骤(测试契约:卡片展开后,折叠 run 的步骤仍可查询到)。
+                cardExpanded ? (
+                  <div className="flex flex-col gap-2">
+                    {steps.map((step, index) => (
+                      <AgentSpawnStepCard
+                        key={step.tool.toolUseId || index}
+                        step={step}
+                        cwd={cwd}
+                        terminalFallbackStatus={terminal ? status : undefined}
+                        uiStateKey={
+                          uiStateKey
+                            ? `${uiStateKey}:step:${step.tool.toolUseId || index}`
+                            : undefined
+                        }
+                      />
+                    ))}
+                  </div>
+                ) : null
               ) : (
                 <div className="rounded-sm bg-muted/30 px-2.5 py-2 text-muted-foreground">
                   {status === "running"
@@ -1258,25 +1272,33 @@ function AgentSpawnStepCard({
         style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
       >
         <div className="min-h-0 overflow-hidden">
-          <div className="border-t border-border px-2.5 py-1.5">
-            <div
-              data-testid="agent-spawn-step-result"
-              className={cn(
-                "max-h-[180px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm px-2 py-1.5 text-foreground",
-                isError
-                  ? "bg-destructive-soft text-status-error"
-                  : "bg-muted/40",
-              )}
-            >
-              {result?.text ? (
-                <span>{result.text}</span>
-              ) : isRunning ? (
-                "—"
-              ) : result ? (
-                t("canonical.agentSpawn.emptyResult")
-              ) : null}
-            </div>
-          </div>
+          {
+            // 性能:step 结果文本懒挂载 —— 折叠态不 mount result 文本节点。
+            // 嵌套工具结果可到几十 KB(如 read/grep 大文件输出),一个 200 步的
+            // subagent 折叠时把这些文本全挂进 DOM 就是几 MB 隐藏文本,layout/paint
+            // 全程陪跑。展开单条 step 才渲染它的结果。
+            expanded ? (
+              <div className="border-t border-border px-2.5 py-1.5">
+                <div
+                  data-testid="agent-spawn-step-result"
+                  className={cn(
+                    "max-h-[180px] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-sm px-2 py-1.5 text-foreground",
+                    isError
+                      ? "bg-destructive-soft text-status-error"
+                      : "bg-muted/40",
+                  )}
+                >
+                  {result?.text ? (
+                    <span>{result.text}</span>
+                  ) : isRunning ? (
+                    "—"
+                  ) : result ? (
+                    t("canonical.agentSpawn.emptyResult")
+                  ) : null}
+                </div>
+              </div>
+            ) : null
+          }
         </div>
       </div>
     </div>
