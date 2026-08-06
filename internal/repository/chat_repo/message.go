@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -82,6 +84,139 @@ func RegisterMessage(impl MessageRepo) { defaultMessage = impl }
 func NewMessage() MessageRepo          { return &messageRepo{} }
 
 type messageRepo struct{}
+
+// ReplacementRecoveryState is persisted on the hidden recovery marker. Pending
+// means Start has not acknowledged the prompt and must restore; acknowledged
+// means the active generation is committed and only hidden originals may be removed.
+type ReplacementRecoveryState string
+
+const (
+	ReplacementRecoveryPending      ReplacementRecoveryState = "pending"
+	ReplacementRecoveryAcknowledged ReplacementRecoveryState = "acknowledged"
+
+	replacementRecoveryRole = "__agentre_pi_recovery__"
+)
+
+var (
+	ErrReplacementNamespaceCollision = errors.New("replacement recovery namespace is already occupied")
+	ErrReplacementOwnershipLost      = errors.New("replacement recovery no longer owns the active session")
+)
+
+// ReplacementRecovery owns one exact Pi replacement generation. The original
+// rows retain their IDs and contents under RecoverySessionID until Start is
+// acknowledged; the active IDs prevent stale restoration from deleting a retry.
+type ReplacementRecovery struct {
+	MarkerID             int64
+	RecoverySessionID    int64
+	SessionID            int64
+	FromSeq              int
+	RequestMessageID     int64
+	UserMessageID        int64
+	AssistantMessageID   int64
+	OldProviderSessionID string
+	NewProviderSessionID string
+	OldAgentStatus       string
+	OldLastMessageAt     int64
+	State                ReplacementRecoveryState
+}
+
+type replacementRecoveryPayload struct {
+	SessionID            int64  `json:"sessionId"`
+	FromSeq              int    `json:"fromSeq"`
+	RequestMessageID     int64  `json:"requestMessageId"`
+	UserMessageID        int64  `json:"userMessageId"`
+	AssistantMessageID   int64  `json:"assistantMessageId"`
+	OldProviderSessionID string `json:"oldProviderSessionId"`
+	NewProviderSessionID string `json:"newProviderSessionId"`
+	OldAgentStatus       string `json:"oldAgentStatus"`
+	OldLastMessageAt     int64  `json:"oldLastMessageAt"`
+}
+
+// ReplacementStageSessionID is the legacy private staging namespace. New Pi
+// replacements use a generation-owned recovery namespace instead.
+func ReplacementStageSessionID(sessionID int64) int64 {
+	return -sessionID
+}
+
+// ReplacementRecoverySessionID maps a globally unique marker row ID into a
+// private negative namespace. The odd mapping keeps the same marker/session ID
+// from colliding with the legacy -sessionID stage.
+func ReplacementRecoverySessionID(markerID int64) (int64, error) {
+	if markerID <= 0 || markerID > (math.MaxInt64-1)/2 {
+		return 0, fmt.Errorf("invalid replacement recovery marker ID %d", markerID)
+	}
+	return -(markerID*2 + 1), nil
+}
+
+func NewReplacementRecoveryMarker(recovery *ReplacementRecovery) (*chat_entity.Message, error) {
+	if recovery == nil || recovery.SessionID <= 0 || recovery.FromSeq < 0 || recovery.RequestMessageID <= 0 {
+		return nil, errors.New("invalid replacement recovery")
+	}
+	if recovery.State != ReplacementRecoveryPending && recovery.State != ReplacementRecoveryAcknowledged {
+		return nil, errors.New("invalid replacement recovery state")
+	}
+	payload, err := json.Marshal(replacementRecoveryPayload{
+		SessionID:            recovery.SessionID,
+		FromSeq:              recovery.FromSeq,
+		RequestMessageID:     recovery.RequestMessageID,
+		UserMessageID:        recovery.UserMessageID,
+		AssistantMessageID:   recovery.AssistantMessageID,
+		OldProviderSessionID: recovery.OldProviderSessionID,
+		NewProviderSessionID: recovery.NewProviderSessionID,
+		OldAgentStatus:       recovery.OldAgentStatus,
+		OldLastMessageAt:     recovery.OldLastMessageAt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &chat_entity.Message{
+		SessionID:  recovery.RecoverySessionID,
+		DeviceID:   strconv.FormatInt(recovery.SessionID, 10),
+		Role:       replacementRecoveryRole,
+		BlocksJSON: string(payload),
+		Model:      string(recovery.State),
+		Seq:        -1,
+	}, nil
+}
+
+func ParseReplacementRecoveryMarker(marker *chat_entity.Message) (*ReplacementRecovery, error) {
+	if marker == nil || marker.ID <= 0 || marker.SessionID >= 0 || marker.Role != replacementRecoveryRole {
+		return nil, errors.New("invalid replacement recovery marker")
+	}
+	expectedSessionID, err := ReplacementRecoverySessionID(marker.ID)
+	if err != nil || marker.SessionID != expectedSessionID {
+		return nil, errors.New("replacement recovery namespace does not own marker")
+	}
+	state := ReplacementRecoveryState(marker.Model)
+	if state != ReplacementRecoveryPending && state != ReplacementRecoveryAcknowledged {
+		return nil, errors.New("invalid replacement recovery marker state")
+	}
+	var payload replacementRecoveryPayload
+	if err := json.Unmarshal([]byte(marker.BlocksJSON), &payload); err != nil {
+		return nil, fmt.Errorf("decode replacement recovery marker: %w", err)
+	}
+	markerSessionID, err := strconv.ParseInt(marker.DeviceID, 10, 64)
+	if err != nil || markerSessionID != payload.SessionID || payload.SessionID <= 0 ||
+		payload.FromSeq < 0 || payload.RequestMessageID <= 0 || payload.UserMessageID <= 0 ||
+		payload.AssistantMessageID <= 0 || payload.UserMessageID == payload.AssistantMessageID ||
+		payload.NewProviderSessionID == "" {
+		return nil, errors.New("invalid replacement recovery ownership")
+	}
+	return &ReplacementRecovery{
+		MarkerID:             marker.ID,
+		RecoverySessionID:    marker.SessionID,
+		SessionID:            payload.SessionID,
+		FromSeq:              payload.FromSeq,
+		RequestMessageID:     payload.RequestMessageID,
+		UserMessageID:        payload.UserMessageID,
+		AssistantMessageID:   payload.AssistantMessageID,
+		OldProviderSessionID: payload.OldProviderSessionID,
+		NewProviderSessionID: payload.NewProviderSessionID,
+		OldAgentStatus:       payload.OldAgentStatus,
+		OldLastMessageAt:     payload.OldLastMessageAt,
+		State:                state,
+	}, nil
+}
 
 func (r *messageRepo) List(ctx context.Context, sessionID int64) ([]*chat_entity.Message, error) {
 	var rows []*chat_entity.Message
@@ -543,4 +678,202 @@ func (r *messageRepo) DeleteFromSeq(ctx context.Context, sessionID int64, fromSe
 		return 0, res.Error
 	}
 	return res.RowsAffected, nil
+}
+
+func EnsureReplacementRecoveryNamespaceAvailable(ctx context.Context, recoverySessionID int64) error {
+	if recoverySessionID >= 0 {
+		return errors.New("invalid replacement recovery namespace")
+	}
+	var count int64
+	if err := db.Ctx(ctx).
+		Raw("SELECT COUNT(*) FROM `chat_messages` WHERE session_id = ?", recoverySessionID).
+		Row().
+		Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return ErrReplacementNamespaceCollision
+	}
+	return nil
+}
+
+// MoveMessagesFromSeq changes only row ownership. IDs, content, anchors,
+// sequence numbers, and timestamps remain byte-for-byte intact for recovery.
+func MoveMessagesFromSeq(ctx context.Context, sourceSessionID, targetSessionID int64, fromSeq int) (int64, error) {
+	res := db.Ctx(ctx).Exec(
+		"UPDATE `chat_messages` SET `session_id`=? WHERE session_id = ? AND seq >= ?",
+		targetSessionID,
+		sourceSessionID,
+		fromSeq,
+	)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
+// DeleteOwnedReplacementMessages removes only the two active rows recorded by
+// one recovery generation. A stale restore therefore cannot truncate a retry.
+func DeleteOwnedReplacementMessages(ctx context.Context, sessionID, userMessageID, assistantMessageID int64) (int64, error) {
+	res := db.Ctx(ctx).Exec(
+		"DELETE FROM `chat_messages` WHERE session_id = ? AND id IN (?,?)",
+		sessionID,
+		userMessageID,
+		assistantMessageID,
+	)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
+func FindReplacementRecovery(ctx context.Context, recoverySessionID int64) (*ReplacementRecovery, error) {
+	if recoverySessionID >= 0 {
+		return nil, nil
+	}
+	var markers []*chat_entity.Message
+	if err := db.Ctx(ctx).
+		Where("session_id = ? AND role = ?", recoverySessionID, replacementRecoveryRole).
+		Order("id ASC").
+		Find(&markers).Error; err != nil {
+		return nil, err
+	}
+	if len(markers) == 0 {
+		return nil, nil
+	}
+	if len(markers) != 1 {
+		return nil, errors.New("replacement recovery namespace has multiple markers")
+	}
+	return ParseReplacementRecoveryMarker(markers[0])
+}
+
+func FindReplacementRecoveryForSession(ctx context.Context, sessionID int64) (*ReplacementRecovery, error) {
+	if sessionID <= 0 {
+		return nil, nil
+	}
+	var markers []*chat_entity.Message
+	if err := db.Ctx(ctx).
+		Where("role = ? AND device_id = ?", replacementRecoveryRole, strconv.FormatInt(sessionID, 10)).
+		Order("id ASC").
+		Find(&markers).Error; err != nil {
+		return nil, err
+	}
+	if len(markers) == 0 {
+		return nil, nil
+	}
+	if len(markers) != 1 {
+		return nil, errors.New("session has multiple replacement recovery owners")
+	}
+	recovery, err := ParseReplacementRecoveryMarker(markers[0])
+	if err != nil {
+		return nil, err
+	}
+	if recovery.SessionID != sessionID {
+		return nil, errors.New("replacement recovery marker does not own session")
+	}
+	return recovery, nil
+}
+
+func FindReplacementRecoveryForMessage(ctx context.Context, sessionID, messageID int64) (*ReplacementRecovery, error) {
+	if messageID <= 0 {
+		return nil, nil
+	}
+	recovery, err := FindReplacementRecoveryForSession(ctx, sessionID)
+	if err != nil || recovery == nil {
+		return nil, err
+	}
+	if recovery.UserMessageID != messageID && recovery.AssistantMessageID != messageID {
+		return nil, nil
+	}
+	return recovery, nil
+}
+
+// EnsureReplacementActiveTailOwned rejects a legacy hybrid transcript before
+// restoration. FromSeq and the two active row IDs are persisted in the marker;
+// no content, timestamp, or inferred ordering is used.
+func EnsureReplacementActiveTailOwned(ctx context.Context, recovery *ReplacementRecovery) error {
+	if recovery == nil || recovery.SessionID <= 0 || recovery.FromSeq < 0 ||
+		recovery.UserMessageID <= 0 || recovery.AssistantMessageID <= 0 {
+		return errors.New("invalid replacement recovery ownership")
+	}
+	var unexpected int64
+	if err := db.Ctx(ctx).
+		Raw(
+			"SELECT COUNT(*) FROM `chat_messages` WHERE session_id = ? AND seq >= ? AND id NOT IN (?,?)",
+			recovery.SessionID,
+			recovery.FromSeq,
+			recovery.UserMessageID,
+			recovery.AssistantMessageID,
+		).
+		Row().
+		Scan(&unexpected); err != nil {
+		return err
+	}
+	if unexpected != 0 {
+		return ErrReplacementOwnershipLost
+	}
+	return nil
+}
+
+// AcknowledgeReplacementRecovery changes only the exact marker row and never
+// recreates a marker deleted by a stale finalizer.
+func AcknowledgeReplacementRecovery(ctx context.Context, recovery *ReplacementRecovery) error {
+	if recovery == nil || recovery.MarkerID <= 0 || recovery.RecoverySessionID >= 0 {
+		return errors.New("invalid replacement recovery acknowledgement")
+	}
+	res := db.Ctx(ctx).Exec(
+		"UPDATE `chat_messages` SET `model`=?,`updatetime`=? WHERE id = ? AND session_id = ? AND role = ?",
+		string(ReplacementRecoveryAcknowledged),
+		time.Now().UnixMilli(),
+		recovery.MarkerID,
+		recovery.RecoverySessionID,
+		replacementRecoveryRole,
+	)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return ErrReplacementOwnershipLost
+	}
+	recovery.State = ReplacementRecoveryAcknowledged
+	return nil
+}
+
+// DeleteReplacementRecovery is idempotent and scoped to one marker-derived
+// namespace, so an old acknowledgement cannot delete a newer retry.
+func DeleteReplacementRecovery(ctx context.Context, recoverySessionID int64) (int64, error) {
+	if recoverySessionID >= 0 {
+		return 0, errors.New("invalid replacement recovery namespace")
+	}
+	res := db.Ctx(ctx).Exec("DELETE FROM `chat_messages` WHERE session_id = ?", recoverySessionID)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
+// RestoreReplacementSession claims the generation by its forked provider
+// session ID before any transcript restoration. A stale generation therefore
+// rolls its surrounding transaction back instead of restoring over a retry.
+func RestoreReplacementSession(ctx context.Context, recovery *ReplacementRecovery) error {
+	if recovery == nil || recovery.SessionID <= 0 || recovery.NewProviderSessionID == "" {
+		return errors.New("invalid replacement recovery session")
+	}
+	res := db.Ctx(ctx).Exec(
+		"UPDATE `chat_sessions` SET `provider_session_id`=?,`agent_status`=?,`last_message_at`=?,`updatetime`=? "+
+			"WHERE id = ? AND provider_session_id = ?",
+		recovery.OldProviderSessionID,
+		recovery.OldAgentStatus,
+		recovery.OldLastMessageAt,
+		time.Now().UnixMilli(),
+		recovery.SessionID,
+		recovery.NewProviderSessionID,
+	)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return ErrReplacementOwnershipLost
+	}
+	return nil
 }

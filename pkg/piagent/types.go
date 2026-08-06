@@ -70,6 +70,24 @@ type sessionModelWire struct {
 	ContextWindow int `json:"contextWindow"`
 }
 
+type forkResultWire struct {
+	Canceled *bool `json:"cancelled"` //nolint:misspell // Pi RPC names this protocol field "cancelled".
+}
+
+type sessionEntriesWire struct {
+	Entries []sessionEntryWire `json:"entries"`
+	LeafID  string             `json:"leafId"`
+}
+
+type sessionEntryWire struct {
+	Type     string `json:"type"`
+	ID       string `json:"id"`
+	ParentID string `json:"parentId"`
+	Message  struct {
+		Role string `json:"role"`
+	} `json:"message"`
+}
+
 type sessionStatsWire struct {
 	ContextUsage *contextUsageWire `json:"contextUsage,omitempty"`
 }

@@ -45,7 +45,7 @@ import (
 	claudecodert "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/claudecode"
 	codexrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/codex"
 	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/openclaw"
-	_ "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
+	piagentrt "github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/piagent"
 	"github.com/agentre-ai/agentre/internal/pkg/agentruntime/runtimes/remote"
 	"github.com/agentre-ai/agentre/internal/pkg/code"
 	"github.com/agentre-ai/agentre/internal/pkg/httpgateway"
@@ -64,9 +64,10 @@ import (
 )
 
 const (
-	maxSendImages      = 4
-	maxSendImageBytes  = 5 * 1024 * 1024
-	dataURLBase64Token = ";base64,"
+	maxSendImages         = 4
+	maxSendImageBytes     = 5 * 1024 * 1024
+	dataURLBase64Token    = ";base64,"
+	piStopAbortWriteBound = 500 * time.Millisecond
 )
 
 var sendImageMediaTypes = map[string]struct{}{
@@ -177,6 +178,31 @@ func RegisterGateway(g httpgateway.TokenIssuer) {
 
 const renameTitleMaxRunes = 200
 
+type activeTurnControl struct {
+	cancel context.CancelFunc
+
+	mu            sync.RWMutex
+	gracefulAbort agentruntime.Aborter
+}
+
+func (c *activeTurnControl) setGracefulAbort(aborter agentruntime.Aborter) {
+	if c == nil || aborter == nil {
+		return
+	}
+	c.mu.Lock()
+	c.gracefulAbort = aborter
+	c.mu.Unlock()
+}
+
+func (c *activeTurnControl) gracefulAborter() (agentruntime.Aborter, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.gracefulAbort, c.gracefulAbort != nil
+}
+
 type chatSvc struct {
 	emitter Emitter
 	// dispatcher 是 svc-bound turn.Dispatcher,注册了带 chat_svc 适配器的 18 个 handler。
@@ -184,9 +210,8 @@ type chatSvc struct {
 	// AGENTRE_NEW_DISPATCHER=1 时 runTurn drain loop 通过它处理 Event;默认关。
 	dispatcher *turn.Dispatcher
 	locks      *sync.Map
-	// activeCancels：sessionID(int64) → context.CancelFunc。startTurn 在 gogo.Go
-	// 之前 store；runTurn 收尾 / Stop 触发时 LoadAndDelete。Stop 用它 cancel turnCtx，
-	// 给嵌套 DB / cago / select 兜底解锁。
+	// activeCancels：sessionID(int64) → *activeTurnControl。控制对象也是 generation
+	// token；旧 turn 收尾只 CompareAndDelete 自己，不能删掉即时重试的新 cancel。
 	activeCancels *sync.Map
 	// aborted：sessionID(int64) → struct{}。Stop 触发时 store；runTurn 收尾时
 	// LoadAndDelete 判定是否走 StreamAborted 路径 + 跳过 DrainPending 自动接续。
@@ -1025,6 +1050,16 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 	if err != nil {
 		return nil, err
 	}
+	gate, err := s.acquireTurnGate(ctx, sess, be)
+	if err != nil {
+		return nil, err
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			gate.lock.Unlock()
+		}
+	}()
 	// Codex and Pi Agent compact an existing provider-native session; neither may
 	// create an empty replacement session merely to satisfy an explicit compact.
 	if compactRequiresProviderSession(be) && strings.TrimSpace(sess.ProviderSessionID) == "" {
@@ -1048,7 +1083,8 @@ func (s *chatSvc) Compact(ctx context.Context, req *CompactRequest) (*CompactRes
 		releasePreflight()
 		return nil, i18n.NewError(ctx, code.ChatCompactUnsupported)
 	}
-	resp, err := s.startCompactTurn(ctx, sess, a, be, prov)
+	gateOwned = false
+	resp, err := s.startCompactTurn(ctx, sess, a, be, prov, gate.lock)
 	if err != nil {
 		releasePreflight()
 		return nil, err
@@ -1326,6 +1362,20 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	if err != nil {
 		return nil, err
 	}
+	var gate *sessionTurnGate
+	gateOwned := false
+	if req.SessionID > 0 {
+		gate, err = s.acquireTurnGate(ctx, sess, be)
+		if err != nil {
+			return nil, err
+		}
+		gateOwned = true
+		defer func() {
+			if gateOwned {
+				gate.lock.Unlock()
+			}
+		}()
+	}
 	if len(imageBlocks) > 0 && be.IsLocal() {
 		runner, err := s.selectRunner(ctx, be, req.SessionID)
 		if err != nil {
@@ -1378,9 +1428,14 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 		}
 	}
 
-	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, "" /*forkAnchor*/, turnExtras{
+	var prelocked *trylockMutex
+	if gate != nil {
+		prelocked = gate.lock
+		gateOwned = false
+	}
+	return s.startTurn(ctx, sess, a, be, prov, userBlocksForSend(text, imageBlocks), nil /*preTxHook*/, nil /*replacement*/, "" /*forkAnchor*/, turnExtras{
 		emitTurnStartedBypass: req.EmitTurnStartedBypass,
-	})
+	}, prelocked)
 }
 
 func userBlocksForSend(text string, imageBlocks []blocks.ContentBlock) []blocks.ContentBlock {
@@ -1662,9 +1717,11 @@ func (s *chatSvc) Enqueue(ctx context.Context, req *EnqueueRequest) (*EnqueueRes
 //     已自然完成 / 还没起 / 已被另一个 Stop 拉走，返 ChatStopNoActive。
 //  2. Store aborted flag —— runTurn 收尾 LoadAndDelete 看到就走 StreamAborted 路径
 //     并跳过 DrainPending 自动接续。
-//  3. runner.Abort + cancel turnCtx —— 双信号：runner 解阻塞 I/O（claudecode 写
-//     control_request、codex 发 turn/interrupt、builtin 靠 ctx），cancel 给嵌套
-//     DB / select 兜底。Abort 失败不致命，cancel 仍生效。
+//  3. 先 cancel turnCtx，让已接受的本地 Pi 流立即进入自己的 bounded settlement
+//     window；再以同一 generation 的内存 aborter 尝试写 abort。写端最多等待同一
+//     500ms 边界，不能把 Stop 卡在满管道前。其它后端仍先 cancel，再尽力通过仓储
+//     解析 runner.Abort。启动期还没绑定 aborter 时也保持 cancel-first，不给未确认
+//     prompt settlement grace，也不让 Stop 的仓储查询延迟同步 preflight / SQL 取消。
 func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, error) {
 	if req == nil || req.SessionID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
@@ -1680,32 +1737,50 @@ func (s *chatSvc) Stop(ctx context.Context, req *StopRequest) (*StopResponse, er
 		//      被前端静默吞掉 → 会话永远停不掉。这里 reconcile 回 idle 让停止生效。
 		return s.reconcileOrphanStop(ctx, req.SessionID)
 	}
-	cancel, _ := raw.(context.CancelFunc)
+	control, _ := raw.(*activeTurnControl)
 	s.aborted.Store(req.SessionID, struct{}{})
 	logger.Ctx(ctx).Info("chat_svc.Stop: aborting turn",
 		zap.Int64("sessionId", req.SessionID))
 
-	// runner.Abort：尽力派发，失败不阻塞 cancel
-	if sess, err := chat_repo.Session().Find(ctx, req.SessionID); err == nil && sess != nil {
-		if _, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID); berr == nil && be != nil {
-			if runner, rerr := s.selectRunner(ctx, be, sess.ID); rerr == nil {
-				if ab, ok := runner.(agentruntime.Aborter); ok {
-					if aerr := ab.Abort(ctx, req.SessionID); aerr != nil &&
-						!errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
-						// Abort 失败不致命(后面还要 cancel ctx 兜底),但要留底
-						// 方便追"按了停止仍持续 10s 才退"的 issue。ErrNoActiveTurn
-						// 是 runner 自然完成 / 已被清理的正常竞态,不打。
-						logger.Ctx(ctx).Warn("chat_svc.Stop: runner.Abort failed",
-							zap.Int64("sessionId", req.SessionID),
-							zap.String("backendType", be.Type),
-							zap.Error(aerr))
+	gracefulAborter, gracefulAbort := control.gracefulAborter()
+	// Activation/staging SQL, prepared Start, and accepted stream drain all carry
+	// this generation-specific context. Cancel first so a blocked abort write can
+	// never delay SQL/pre-prompt cancellation or the accepted stream's settlement timer.
+	if control != nil && control.cancel != nil {
+		control.cancel()
+	}
+	if gracefulAbort {
+		abortCtx, cancelAbort := context.WithTimeout(ctx, piStopAbortWriteBound)
+		abortErr := gracefulAborter.Abort(abortCtx, req.SessionID)
+		cancelAbort()
+		if abortErr != nil && !errors.Is(abortErr, agentruntime.ErrNoActiveTurn) {
+			logger.Ctx(ctx).Warn("chat_svc.Stop: local Pi abort failed",
+				zap.Int64("sessionId", req.SessionID),
+				zap.String("backendType", string(agent_backend_entity.TypePiAgent)),
+				zap.Error(abortErr))
+		}
+	}
+
+	// Other backends keep the prior best-effort runner.Abort lookup after cancel.
+	// A bound local Pi aborter is generation-specific and must not be redispatched
+	// through the global runtime after its active control has been removed.
+	if !gracefulAbort {
+		if sess, err := chat_repo.Session().Find(ctx, req.SessionID); err == nil && sess != nil {
+			if _, be, _, berr := s.resolveAgentBackend(ctx, sess.AgentID); berr == nil && be != nil {
+				if runner, rerr := s.selectRunner(ctx, be, sess.ID); rerr == nil {
+					if ab, ok := runner.(agentruntime.Aborter); ok {
+						if aerr := ab.Abort(ctx, req.SessionID); aerr != nil &&
+							!errors.Is(aerr, agentruntime.ErrNoActiveTurn) {
+							// Abort 失败不致命(前面已 cancel ctx 兜底),但要留底。
+							logger.Ctx(ctx).Warn("chat_svc.Stop: runner.Abort failed",
+								zap.Int64("sessionId", req.SessionID),
+								zap.String("backendType", be.Type),
+								zap.Error(aerr))
+						}
 					}
 				}
 			}
 		}
-	}
-	if cancel != nil {
-		cancel()
 	}
 	return &StopResponse{Stopped: true}, nil
 }
@@ -2128,6 +2203,19 @@ func (s *chatSvc) SetPermissionMode(ctx context.Context, req *SetPermissionModeR
 		return nil, err
 	}
 
+	// 后端变更类操作同样必须先对账未决的 Pi transcript recovery：会话可能带着 Pi
+	// 替换标记（标记把 provider session + running 态原子落库）后切换了后端，把
+	// permission mode 下发到新后端前必须先把标记恢复/清理掉，否则 provider 状态
+	// 会建立在未决恢复之上。这里不加 session turn 锁：SetPermissionMode 是允许
+	// claudecode 轮内切换的轻量操作（与 Enqueue 一致），真正在跑的轮子在其起点已
+	// 通过 gate 对账；未决标记只可能由持有锁的 Pi 轮产生，而 Pi 后端在下方
+	// supported 检查就被拒，故此处对账不会与创建标记的轮子并发。
+	if _, rerr := s.reconcileTranscriptReplacement(ctx, sess, be); rerr != nil {
+		return nil, operationFailedWithCause(ctx, rerr,
+			zap.Int64("sessionId", sess.ID),
+			zap.String("backendType", be.Type))
+	}
+
 	backendType := agent_backend_entity.BackendType(be.Type)
 	meta, supported := permissionModeMetaFor(backendType)
 	if !supported {
@@ -2210,6 +2298,7 @@ func newQueuedID() string {
 //   - builtin: history 每轮从 chat_messages 重建，删 DB 即足够。
 //   - claudecode: 透传 ForkAnchor 给 runner，由 CLI fork 到新 session。
 //   - codex: 根据目标 user 到末尾的 user 消息数计算 thread/rollback 的 numTurns。
+//   - piagent: 透传持久化的精确 user entry ID；旧空 anchor 显式拒绝。
 func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error) {
 	if req == nil || req.SessionID <= 0 || req.MessageID <= 0 {
 		return nil, i18n.NewError(ctx, code.InvalidParameter)
@@ -2227,11 +2316,41 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
-	if target == nil || target.SessionID != sess.ID {
+	if target == nil || (target.SessionID >= 0 && target.SessionID != sess.ID) {
 		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
 	}
 	if target.Role != "assistant" {
 		return nil, i18n.NewError(ctx, code.ChatRegenerateNotAssistant)
+	}
+
+	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	gate, err := s.acquireTurnGate(ctx, sess, be)
+	if err != nil {
+		return nil, err
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			gate.lock.Unlock()
+		}
+	}()
+	if gate.reconciled {
+		target, err = chat_repo.Message().Find(ctx, req.MessageID)
+		if err != nil {
+			return nil, operationFailedWithCause(ctx, err)
+		}
+		if target == nil || target.SessionID != sess.ID {
+			return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
+		}
+		if target.Role != "assistant" {
+			return nil, i18n.NewError(ctx, code.ChatRegenerateNotAssistant)
+		}
+	}
+	if target.SessionID != sess.ID {
+		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
 	}
 
 	// 找紧邻 target 之前的最后一条 user 消息（按 seq）。
@@ -2253,11 +2372,6 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
 	}
 
-	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
-	if err != nil {
-		return nil, err
-	}
-
 	forkAnchor, ferr := s.backendForkAnchor(ctx, sess, be, userAnchor)
 	if ferr != nil {
 		return nil, ferr
@@ -2270,11 +2384,17 @@ func (s *chatSvc) Regenerate(ctx context.Context, req *RegenerateRequest) (*Send
 	// preTx 在同一事务里先截掉 user 锚点（含）开始的全部历史，
 	// 然后 startTurn 的标准路径会以新的 NextSeq 写回 user + assistant。
 	anchorSeq := userAnchor.Seq
+	var replacement *transcriptReplacementLifecycle
 	preTx := func(txCtx context.Context) error {
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, forkAnchor, turnExtras{})
+	if be.IsPiAgent() {
+		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
+		preTx = nil
+	}
+	gateOwned = false
+	return s.startTurn(ctx, sess, a, be, prov, userBlocks, preTx, replacement, forkAnchor, turnExtras{}, gate.lock)
 }
 
 // Edit 编辑历史 user 消息后用新文本重跑 turn。截到目标 user 消息（含）开始的全部
@@ -2308,20 +2428,45 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 	if err != nil {
 		return nil, operationFailedWithCause(ctx, err)
 	}
-	if target == nil || target.SessionID != sess.ID {
+	if target == nil || (target.SessionID >= 0 && target.SessionID != sess.ID) {
 		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
 	}
 	if target.Role != "user" {
 		return nil, i18n.NewError(ctx, code.ChatEditNotUser)
 	}
-	targetBlocks, err := target.GetBlocks()
-	if err != nil {
-		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
-	}
 
 	a, be, prov, err := s.resolveAgentBackend(ctx, sess.AgentID)
 	if err != nil {
 		return nil, err
+	}
+	gate, err := s.acquireTurnGate(ctx, sess, be)
+	if err != nil {
+		return nil, err
+	}
+	gateOwned := true
+	defer func() {
+		if gateOwned {
+			gate.lock.Unlock()
+		}
+	}()
+	if gate.reconciled {
+		target, err = chat_repo.Message().Find(ctx, req.MessageID)
+		if err != nil {
+			return nil, operationFailedWithCause(ctx, err)
+		}
+		if target == nil || target.SessionID != sess.ID {
+			return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
+		}
+		if target.Role != "user" {
+			return nil, i18n.NewError(ctx, code.ChatEditNotUser)
+		}
+	}
+	if target.SessionID != sess.ID {
+		return nil, i18n.NewError(ctx, code.ChatMessageNotFound)
+	}
+	targetBlocks, err := target.GetBlocks()
+	if err != nil {
+		return nil, i18n.NewError(ctx, code.ChatBlocksMalformed)
 	}
 
 	forkAnchor, ferr := s.backendForkAnchor(ctx, sess, be, target)
@@ -2334,11 +2479,29 @@ func (s *chatSvc) Edit(ctx context.Context, req *EditRequest) (*SendResponse, er
 	}
 
 	anchorSeq := target.Seq
+	var replacement *transcriptReplacementLifecycle
 	preTx := func(txCtx context.Context) error {
 		_, derr := chat_repo.Message().DeleteFromSeq(txCtx, sess.ID, anchorSeq)
 		return derr
 	}
-	return s.startTurn(ctx, sess, a, be, prov, replaceTextPreserveImages(text, targetBlocks), preTx, forkAnchor, turnExtras{})
+	if be.IsPiAgent() {
+		replacement = newTranscriptReplacementLifecycle(sess.ID, anchorSeq, req.MessageID)
+		preTx = nil
+	}
+	gateOwned = false
+	return s.startTurn(
+		ctx,
+		sess,
+		a,
+		be,
+		prov,
+		replaceTextPreserveImages(text, targetBlocks),
+		preTx,
+		replacement,
+		forkAnchor,
+		turnExtras{},
+		gate.lock,
+	)
 }
 
 func replaceTextPreserveImages(text string, old []blocks.ContentBlock) []blocks.ContentBlock {
@@ -2354,6 +2517,247 @@ func replaceTextPreserveImages(text string, old []blocks.ContentBlock) []blocks.
 		}
 	}
 	return out
+}
+
+// transcriptReplacementLifecycle owns one Pi replacement generation. Its
+// marker-derived hidden namespace preserves the exact original rows until the
+// prepared process acknowledges the prompt.
+type transcriptReplacementLifecycle struct {
+	sessionID        int64
+	fromSeq          int
+	requestMessageID int64
+	recovery         *chat_repo.ReplacementRecovery
+}
+
+func newTranscriptReplacementLifecycle(sessionID int64, fromSeq int, requestMessageID int64) *transcriptReplacementLifecycle {
+	return &transcriptReplacementLifecycle{
+		sessionID:        sessionID,
+		fromSeq:          fromSeq,
+		requestMessageID: requestMessageID,
+	}
+}
+
+func (r *transcriptReplacementLifecycle) activate(
+	txCtx context.Context,
+	sess *chat_entity.Session,
+	providerSessionID string,
+	userMsg, assistantMsg *chat_entity.Message,
+) error {
+	if r == nil || sess == nil {
+		return nil
+	}
+	recovery := &chat_repo.ReplacementRecovery{
+		SessionID:            r.sessionID,
+		FromSeq:              r.fromSeq,
+		RequestMessageID:     r.requestMessageID,
+		OldProviderSessionID: sess.ProviderSessionID,
+		NewProviderSessionID: providerSessionID,
+		OldAgentStatus:       sess.AgentStatus,
+		OldLastMessageAt:     sess.LastMessageAt,
+		State:                chat_repo.ReplacementRecoveryPending,
+	}
+	marker, err := chat_repo.NewReplacementRecoveryMarker(recovery)
+	if err != nil {
+		return err
+	}
+	if err := chat_repo.Message().Create(txCtx, marker); err != nil {
+		return err
+	}
+	recovery.MarkerID = marker.ID
+	recovery.RecoverySessionID, err = chat_repo.ReplacementRecoverySessionID(marker.ID)
+	if err != nil {
+		return err
+	}
+	if err := chat_repo.EnsureReplacementRecoveryNamespaceAvailable(txCtx, recovery.RecoverySessionID); err != nil {
+		return err
+	}
+	if _, err := chat_repo.MoveMessagesFromSeq(txCtx, r.sessionID, recovery.RecoverySessionID, r.fromSeq); err != nil {
+		return err
+	}
+
+	userMsg.SessionID = r.sessionID
+	userMsg.Seq = r.fromSeq
+	if err := chat_repo.Message().Create(txCtx, userMsg); err != nil {
+		return err
+	}
+	assistantMsg.SessionID = r.sessionID
+	assistantMsg.Seq = r.fromSeq + 1
+	if err := chat_repo.Message().Create(txCtx, assistantMsg); err != nil {
+		return err
+	}
+	recovery.UserMessageID = userMsg.ID
+	recovery.AssistantMessageID = assistantMsg.ID
+	finalMarker, err := chat_repo.NewReplacementRecoveryMarker(recovery)
+	if err != nil {
+		return err
+	}
+	finalMarker.ID = marker.ID
+	finalMarker.SessionID = recovery.RecoverySessionID
+	finalMarker.Createtime = marker.Createtime
+	if err := chat_repo.Message().Update(txCtx, finalMarker); err != nil {
+		return err
+	}
+	r.recovery = recovery
+	return nil
+}
+
+const transcriptRecoveryTimeout = 5 * time.Second
+
+func replacementRecoveryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base := db.WithContextDB(context.Background(), db.Ctx(ctx))
+	return context.WithTimeout(base, transcriptRecoveryTimeout)
+}
+
+func (s *chatSvc) restoreTranscriptReplacement(
+	ctx context.Context,
+	replacement *transcriptReplacementLifecycle,
+	sess *chat_entity.Session,
+) error {
+	if replacement == nil || replacement.recovery == nil {
+		return nil
+	}
+	recoveryCtx, cancel := replacementRecoveryContext(ctx)
+	defer cancel()
+	recovery := replacement.recovery
+	if err := db.Ctx(recoveryCtx).Transaction(func(tx *gorm.DB) error {
+		txCtx := db.WithContextDB(recoveryCtx, tx)
+		if err := chat_repo.EnsureReplacementActiveTailOwned(txCtx, recovery); err != nil {
+			return err
+		}
+		if err := chat_repo.RestoreReplacementSession(txCtx, recovery); err != nil {
+			return err
+		}
+		deleted, err := chat_repo.DeleteOwnedReplacementMessages(
+			txCtx, recovery.SessionID, recovery.UserMessageID, recovery.AssistantMessageID,
+		)
+		if err != nil {
+			return err
+		}
+		if deleted != 2 {
+			return chat_repo.ErrReplacementOwnershipLost
+		}
+		moved, err := chat_repo.MoveMessagesFromSeq(
+			txCtx, recovery.RecoverySessionID, recovery.SessionID, recovery.FromSeq,
+		)
+		if err != nil {
+			return err
+		}
+		if moved == 0 {
+			return chat_repo.ErrReplacementOwnershipLost
+		}
+		deleted, err = chat_repo.DeleteReplacementRecovery(txCtx, recovery.RecoverySessionID)
+		if err != nil {
+			return err
+		}
+		if deleted != 1 {
+			return chat_repo.ErrReplacementOwnershipLost
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	sess.ProviderSessionID = recovery.OldProviderSessionID
+	sess.AgentStatus = recovery.OldAgentStatus
+	sess.LastMessageAt = recovery.OldLastMessageAt
+	sess.ApplyDerivedFields()
+	return nil
+}
+
+func (s *chatSvc) cleanupTranscriptReplacementRecovery(
+	ctx context.Context,
+	recovery *chat_repo.ReplacementRecovery,
+) error {
+	recoveryCtx, cancel := replacementRecoveryContext(ctx)
+	defer cancel()
+	return db.Ctx(recoveryCtx).Transaction(func(tx *gorm.DB) error {
+		deleted, err := chat_repo.DeleteReplacementRecovery(
+			db.WithContextDB(recoveryCtx, tx), recovery.RecoverySessionID,
+		)
+		if err != nil {
+			return err
+		}
+		if deleted == 0 {
+			return chat_repo.ErrReplacementOwnershipLost
+		}
+		return nil
+	})
+}
+
+// reconcileTranscriptReplacement is the single session-level recovery boundary
+// for a session that may still own a Pi replacement marker. Pi activation writes
+// AgentStatus=running and the new provider session atomically with the marker, so
+// that durable state keeps the gate active even if the configured backend changes.
+// Callers hold the session turn lock before entering it.
+func (s *chatSvc) reconcileTranscriptReplacement(
+	ctx context.Context,
+	sess *chat_entity.Session,
+	be *agent_backend_entity.AgentBackend,
+) (bool, error) {
+	if sess == nil || be == nil ||
+		(!be.IsPiAgent() && (sess.AgentStatus != "running" || !sess.HasProviderSession())) {
+		return false, nil
+	}
+	recovery, err := chat_repo.FindReplacementRecoveryForSession(ctx, sess.ID)
+	if err != nil || recovery == nil {
+		return false, err
+	}
+	if recovery.State == chat_repo.ReplacementRecoveryAcknowledged {
+		if sess.ProviderSessionID != recovery.NewProviderSessionID {
+			return false, chat_repo.ErrReplacementOwnershipLost
+		}
+		return true, s.cleanupTranscriptReplacementRecovery(ctx, recovery)
+	}
+	replacement := &transcriptReplacementLifecycle{
+		sessionID:        recovery.SessionID,
+		fromSeq:          recovery.FromSeq,
+		requestMessageID: recovery.RequestMessageID,
+		recovery:         recovery,
+	}
+	if err := s.restoreTranscriptReplacement(ctx, replacement, sess); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *chatSvc) finalizeTranscriptReplacement(
+	ctx context.Context,
+	replacement *transcriptReplacementLifecycle,
+) error {
+	if replacement == nil || replacement.recovery == nil {
+		return nil
+	}
+	recoveryCtx, cancel := replacementRecoveryContext(ctx)
+	defer cancel()
+	recovery := replacement.recovery
+	var acknowledgeErr error
+	for range 2 {
+		candidate := *recovery
+		acknowledgeErr = db.Ctx(recoveryCtx).Transaction(func(tx *gorm.DB) error {
+			return chat_repo.AcknowledgeReplacementRecovery(db.WithContextDB(recoveryCtx, tx), &candidate)
+		})
+		if acknowledgeErr == nil {
+			recovery.State = chat_repo.ReplacementRecoveryAcknowledged
+			break
+		}
+	}
+	if acknowledgeErr != nil {
+		return fmt.Errorf("acknowledge Pi transcript recovery: %w", acknowledgeErr)
+	}
+	if err := db.Ctx(recoveryCtx).Transaction(func(tx *gorm.DB) error {
+		deleted, err := chat_repo.DeleteReplacementRecovery(
+			db.WithContextDB(recoveryCtx, tx), recovery.RecoverySessionID,
+		)
+		if err != nil {
+			return err
+		}
+		if deleted == 0 {
+			return chat_repo.ErrReplacementOwnershipLost
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("cleanup Pi transcript recovery: %w", err)
+	}
+	return nil
 }
 
 func messageHasImage(m *chat_entity.Message) bool {
@@ -2375,8 +2779,9 @@ func messageHasImage(m *chat_entity.Message) bool {
 }
 
 // backendForkAnchor 是 Regenerate / Edit 共享的"按后端类型决定 fork 锚点"分流逻辑。
-// 副作用：claudecode 首轮 user msg 没有 anchor 时会清空 sess.ProviderSessionID，
-// 让上层 startTurn → runner 当作新建会话发起。
+// claudecode 首轮 user msg 没有 anchor 时会清空 sess.ProviderSessionID，让上层
+// startTurn → runner 当作新建会话发起；Pi 只有明确失败且从未建立原生会话的首轮
+// 才能无 fork 重试，已经建立过上下文的会话丢失 provider ID 后必须 fail closed。
 func (s *chatSvc) backendForkAnchor(
 	ctx context.Context,
 	sess *chat_entity.Session,
@@ -2384,6 +2789,15 @@ func (s *chatSvc) backendForkAnchor(
 	userMsg *chat_entity.Message,
 ) (string, error) {
 	if !sess.HasProviderSession() {
+		if be.IsPiAgent() {
+			failedFirstTurn, err := s.isFailedFirstPiTurn(ctx, sess, userMsg)
+			if err != nil {
+				return "", err
+			}
+			if !failedFirstTurn {
+				return "", i18n.NewError(ctx, code.ChatProviderSessionGone)
+			}
+		}
 		return "", nil
 	}
 	switch agent_backend_entity.BackendType(be.Type) {
@@ -2398,7 +2812,11 @@ func (s *chatSvc) backendForkAnchor(
 	case agent_backend_entity.TypeCodex:
 		return s.codexRollbackAnchor(ctx, sess, userMsg)
 	case agent_backend_entity.TypePiAgent:
-		return "", i18n.NewError(ctx, code.ChatRegenerateUnsupported)
+		anchor, ok := normalizedPiForkAnchor(userMsg)
+		if !ok {
+			return "", i18n.NewError(ctx, code.ChatRegenerateNoUserAnchor)
+		}
+		return anchor, nil
 	default:
 		runner := agentruntime.RuntimeFor(agent_backend_entity.BackendType(be.Type))
 		if _, ok := runner.(agentruntime.Rewinder); !ok {
@@ -2406,6 +2824,62 @@ func (s *chatSvc) backendForkAnchor(
 		}
 		return "", nil
 	}
+}
+
+func normalizedPiForkAnchor(userMsg *chat_entity.Message) (string, bool) {
+	if userMsg == nil || userMsg.ForkAnchor == "" || strings.TrimSpace(userMsg.ForkAnchor) != userMsg.ForkAnchor {
+		return "", false
+	}
+	// Entry IDs are opaque native Pi identities. Reject malformed persisted values
+	// instead of trimming them into a different provider identity.
+	return userMsg.ForkAnchor, true
+}
+
+func (s *chatSvc) isFailedFirstPiTurn(
+	ctx context.Context,
+	sess *chat_entity.Session,
+	userMsg *chat_entity.Message,
+) (bool, error) {
+	_, hasForkAnchor := normalizedPiForkAnchor(userMsg)
+	if sess == nil || userMsg == nil || hasForkAnchor {
+		return false, nil
+	}
+	messages, err := chat_repo.Message().List(ctx, sess.ID)
+	if err != nil {
+		return false, operationFailedWithCause(ctx, err)
+	}
+	if len(messages) != 2 {
+		return false, nil
+	}
+	var firstUser, failedAssistant *chat_entity.Message
+	for _, message := range messages {
+		switch message.Role {
+		case "user":
+			if firstUser != nil {
+				return false, nil
+			}
+			firstUser = message
+		case "assistant":
+			if failedAssistant != nil {
+				return false, nil
+			}
+			failedAssistant = message
+		default:
+			return false, nil
+		}
+	}
+	if firstUser == nil || failedAssistant == nil || firstUser.ID != userMsg.ID ||
+		firstUser.Seq >= failedAssistant.Seq || strings.TrimSpace(failedAssistant.ErrorText) == "" {
+		return false, nil
+	}
+	assistantBlocks, err := failedAssistant.GetBlocks()
+	if err != nil {
+		return false, i18n.NewError(ctx, code.ChatBlocksMalformed)
+	}
+	if len(assistantBlocks) != 0 {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Session, userMsg *chat_entity.Message) (string, error) {
@@ -2427,22 +2901,47 @@ func (s *chatSvc) codexRollbackAnchor(ctx context.Context, sess *chat_entity.Ses
 
 // startTurn is the common tail shared by Send and Regenerate: acquire the
 // per-session lock, persist a fresh user+assistant pair in a transaction (with
-// an optional pre-step running inside the same tx — e.g. deleting old
-// messages on Regenerate), then kick off the async runTurn.
+// an optional pre-step running inside the same tx), then kick off runTurn. Pi
+// replacements first prepare, then atomically activate recovery+messages+native
+// identity before Start is allowed to send the prompt.
 //
 // Caller is responsible for resolving sess/a/be/prov consistently with the
 // session's actual agent (Send for new sessions, Regenerate for in-place
 // rewind). userBlocks is the user message body that will be re-played to the runtime.
 //
-// preTx, if non-nil, runs at the very top of the transaction — before NextSeq —
-// so it can free up seq numbers by truncating older rows. Returning a non-nil
-// error from preTx aborts the whole turn (and unlocks).
+// preTx, if non-nil, runs at the very top of a normal turn transaction. Non-Pi
+// rewinds use it to free seq numbers. Pi replacement activation owns its full
+// transaction separately. Returning an error aborts the whole turn (and unlocks).
 // turnExtras 是从 SendRequest 透传到 runTurn 的领域无关可选项;普通会话一律零值。
 // 在同一会话的自动续轮(auto-continue)里需要保持不变,所以随 runTurn 一路携带。
 type turnExtras struct {
 	// emitTurnStartedBypass: 见 SendRequest.EmitTurnStartedBypass。startTurn 在建好
 	// assistant 消息后, 经会话级旁路把 per-turn 流名推给已打开的查看者。
 	emitTurnStartedBypass bool
+}
+
+type sessionTurnGate struct {
+	lock       *trylockMutex
+	reconciled bool
+}
+
+func (s *chatSvc) acquireTurnGate(
+	ctx context.Context,
+	sess *chat_entity.Session,
+	be *agent_backend_entity.AgentBackend,
+) (*sessionTurnGate, error) {
+	lock := s.lockFor(sess.ID)
+	if !lock.TryLock() {
+		return nil, i18n.NewError(ctx, code.ChatSendInFlight)
+	}
+	reconciled, err := s.reconcileTranscriptReplacement(ctx, sess, be)
+	if err != nil {
+		lock.Unlock()
+		return nil, operationFailedWithCause(ctx, err,
+			zap.Int64("sessionId", sess.ID),
+			zap.String("backendType", be.Type))
+	}
+	return &sessionTurnGate{lock: lock, reconciled: reconciled}, nil
 }
 
 func (s *chatSvc) startTurn(
@@ -2453,17 +2952,19 @@ func (s *chatSvc) startTurn(
 	prov *llm_provider_entity.LLMProvider,
 	userBlocks []blocks.ContentBlock,
 	preTx func(txCtx context.Context) error,
+	replacement *transcriptReplacementLifecycle,
 	forkAnchor string,
 	extras turnExtras,
+	prelocked *trylockMutex,
 ) (*SendResponse, error) {
-	lock := s.lockFor(sess.ID)
-	if !lock.TryLock() {
-		return nil, i18n.NewError(ctx, code.ChatSendInFlight)
+	lock := prelocked
+	if lock == nil {
+		gate, err := s.acquireTurnGate(ctx, sess, be)
+		if err != nil {
+			return nil, err
+		}
+		lock = gate.lock
 	}
-
-	// running 随下方事务内的 Session().Update 原子落库:事务失败(SQLITE_BUSY 等)
-	// 即回滚,不残留 running(回归: dev sess-21 事务外预写后失败,DB 永久卡 running)。
-	sess.AgentStatus = "running"
 
 	userMsg := &chat_entity.Message{SessionID: sess.ID, Role: "user", DeviceID: be.DeviceID}
 	_ = userMsg.SetBlocks(userBlocks)
@@ -2480,35 +2981,162 @@ func (s *chatSvc) startTurn(
 		Model:      model,
 	}
 
-	if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
-		txCtx := db.WithContextDB(ctx, tx)
-		if preTx != nil {
-			if err := preTx(txCtx); err != nil {
+	var (
+		prepared                *preparedTurnRun
+		turnCtx                 context.Context
+		cancel                  context.CancelFunc
+		stopRequestCancel       func() bool
+		turnControl             *activeTurnControl
+		startupCancelRegistered bool
+	)
+	clearSynchronousTurn := func() {
+		if stopRequestCancel != nil {
+			stopRequestCancel()
+			stopRequestCancel = nil
+		}
+		if cancel != nil {
+			cancel()
+		}
+		if startupCancelRegistered {
+			s.activeCancels.CompareAndDelete(sess.ID, turnControl)
+			s.aborted.Delete(sess.ID)
+			startupCancelRegistered = false
+		}
+	}
+	// Pi prepares/restores its RPC process and, when requested, forks before the
+	// transaction, but deliberately withholds the prompt. Register cancellation
+	// before preflight so Stop and request cancellation reach both phases.
+	if replacement != nil && be.IsPiAgent() {
+		runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
+		turnCtx, cancel = context.WithCancel(runCtx)
+		turnControl = &activeTurnControl{cancel: cancel}
+		stopRequestCancel = context.AfterFunc(ctx, cancel)
+		s.activeCancels.Store(sess.ID, turnControl)
+		startupCancelRegistered = true
+		var err error
+		prepared, err = s.prepareTurnRun(turnCtx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, false, true)
+		if err != nil {
+			clearSynchronousTurn()
+			lock.Unlock()
+			logger.Ctx(ctx).Warn("chat_svc.startTurn: pi fork startup failed",
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("agentId", a.ID),
+				zap.String("backendType", be.Type),
+				zap.String("forkAnchor", forkAnchor),
+				zap.String("errorType", fmt.Sprintf("%T", err)))
+			return nil, err
+		}
+	}
+
+	if replacement == nil {
+		sess.AgentStatus = "running"
+		if err := db.Ctx(ctx).Transaction(func(tx *gorm.DB) error {
+			txCtx := db.WithContextDB(ctx, tx)
+			if preTx != nil {
+				if err := preTx(txCtx); err != nil {
+					return err
+				}
+			}
+			nextSeq, err := chat_repo.Message().NextSeq(txCtx, sess.ID)
+			if err != nil {
 				return err
 			}
+			userMsg.Seq = nextSeq
+			if err := chat_repo.Message().Create(txCtx, userMsg); err != nil {
+				return err
+			}
+			assistantMsg.Seq = nextSeq + 1
+			if err := chat_repo.Message().Create(txCtx, assistantMsg); err != nil {
+				return err
+			}
+			sess.LastMessageAt = time.Now().UnixMilli()
+			return chat_repo.Session().Update(txCtx, sess)
+		}); err != nil {
+			lock.Unlock()
+			return nil, operationFailedWithCause(ctx, err,
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("agentId", a.ID),
+				zap.String("backendType", be.Type))
 		}
-		nextSeq, err := chat_repo.Message().NextSeq(txCtx, sess.ID)
+	} else {
+		providerSessionID, err := prepared.providerSessionIDBeforeStart()
 		if err != nil {
-			return err
+			clearSynchronousTurn()
+			s.discardPreparedTurn(sess.ID, prepared)
+			lock.Unlock()
+			return nil, operationFailedWithCause(ctx, err,
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("agentId", a.ID),
+				zap.String("backendType", be.Type))
 		}
-		userMsg.Seq = nextSeq
-		if err := chat_repo.Message().Create(txCtx, userMsg); err != nil {
-			return err
+		runningSession := *sess
+		runningSession.AgentStatus = "running"
+		runningSession.LastMessageAt = time.Now().UnixMilli()
+		runningSession.SetProviderSession(providerSessionID)
+		if err := db.Ctx(turnCtx).Transaction(func(tx *gorm.DB) error {
+			txCtx := db.WithContextDB(turnCtx, tx)
+			if err := replacement.activate(txCtx, sess, providerSessionID, userMsg, assistantMsg); err != nil {
+				return err
+			}
+			return chat_repo.Session().Update(txCtx, &runningSession)
+		}); err != nil {
+			clearSynchronousTurn()
+			s.discardPreparedTurn(sess.ID, prepared)
+			lock.Unlock()
+			return nil, operationFailedWithCause(ctx, err,
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("agentId", a.ID),
+				zap.String("backendType", be.Type))
 		}
-		assistantMsg.Seq = nextSeq + 1
-		if err := chat_repo.Message().Create(txCtx, assistantMsg); err != nil {
-			return err
+		*sess = runningSession
+	}
+
+	if prepared != nil {
+		if err := prepared.start(turnCtx); err != nil {
+			mappingSession := *sess
+			mappingSession.ProviderSessionID = ""
+			err = s.mapTurnError(ctx, &mappingSession, be, err)
+			clearSynchronousTurn()
+			s.discardPreparedTurn(sess.ID, prepared)
+			if restoreErr := s.restoreTranscriptReplacement(ctx, replacement, sess); restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore Pi transcript: %w", restoreErr))
+			}
+			lock.Unlock()
+			logger.Ctx(ctx).Warn("chat_svc.startTurn: pi prompt startup failed",
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("agentId", a.ID),
+				zap.String("backendType", be.Type),
+				zap.String("forkAnchor", forkAnchor),
+				zap.String("errorType", fmt.Sprintf("%T", err)))
+			return nil, err
 		}
-		sess.LastMessageAt = time.Now().UnixMilli()
-		return chat_repo.Session().Update(txCtx, sess)
-	}); err != nil {
-		lock.Unlock()
-		// 持久化失败比较罕见(SQLite 锁 / disk full)。cause 随 Error() 透到前端,
-		// sessionId/agentId/backendType 一并进日志供事后排查。
-		return nil, operationFailedWithCause(ctx, err,
-			zap.Int64("sessionId", sess.ID),
-			zap.Int64("agentId", a.ID),
-			zap.String("backendType", be.Type))
+		if finalizeErr := s.finalizeTranscriptReplacement(ctx, replacement); finalizeErr != nil {
+			clearSynchronousTurn()
+			s.discardPreparedTurn(sess.ID, prepared)
+			if replacement.recovery.State == chat_repo.ReplacementRecoveryPending {
+				if restoreErr := s.restoreTranscriptReplacement(ctx, replacement, sess); restoreErr != nil {
+					finalizeErr = errors.Join(finalizeErr, fmt.Errorf("restore Pi transcript: %w", restoreErr))
+				}
+			} else {
+				sess.AgentStatus = "error"
+				sess.ApplyDerivedFields()
+				recoveryCtx, cancelRecovery := replacementRecoveryContext(ctx)
+				if statusErr := chat_repo.Session().Update(recoveryCtx, sess); statusErr != nil {
+					finalizeErr = errors.Join(finalizeErr, fmt.Errorf("persist failed Pi turn status: %w", statusErr))
+				}
+				cancelRecovery()
+			}
+			lock.Unlock()
+			return nil, operationFailedWithCause(ctx, finalizeErr,
+				zap.Int64("sessionId", sess.ID),
+				zap.Int64("agentId", a.ID),
+				zap.String("backendType", be.Type),
+				zap.String("recoveryState", string(replacement.recovery.State)))
+		}
+		if stopRequestCancel != nil {
+			stopRequestCancel()
+			stopRequestCancel = nil
+		}
 	}
 
 	stream := StreamName(sess.ID, assistantMsg.ID)
@@ -2526,21 +3154,25 @@ func (s *chatSvc) startTurn(
 	}
 
 	s.markStreamRunningForTest(assistantMsg.ID)
-	runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
-	// turnCtx：Stop 用它 cancel；activeCancels 必须在 gogo.Go **之前** store —— 用户
-	// 可能在 goroutine 调度起来之前就点了「停止」。
-	turnCtx, cancel := context.WithCancel(runCtx)
-	s.activeCancels.Store(sess.ID, cancel)
+	if prepared == nil {
+		runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
+		turnCtx, cancel = context.WithCancel(runCtx)
+		turnControl = &activeTurnControl{cancel: cancel}
+		// Non-prepared turns become cancellable immediately before async dispatch.
+		s.activeCancels.Store(sess.ID, turnControl)
+	}
+	// Prepared Pi turns were registered before synchronous preflight; all other
+	// turns are registered above. Either way Stop can cancel before gogo.Go runs.
 	gogo.Go(func() error {
 		// defer 顺序：LIFO。先注册 unlock，最后释放；中间的 cancel cleanup
 		// 跑在 lock 还持有期间，新 turn 起不来 → 直接 Delete 安全。
 		defer lock.Unlock()
 		defer s.markStreamDoneForTest(assistantMsg.ID)
 		defer func() {
-			s.activeCancels.Delete(sess.ID)
+			s.activeCancels.CompareAndDelete(sess.ID, turnControl)
 			cancel() // 兜底：runTurn 自己没 cancel（正常完成路径）也补一刀，无副作用
 		}()
-		s.runTurn(turnCtx, sess, a, be, prov, userMsg, assistantMsg, stream, forkAnchor, false, extras)
+		s.runTurn(turnCtx, sess, a, be, prov, userMsg, assistantMsg, stream, forkAnchor, false, prepared, extras)
 		return nil
 	}, gogo.WithIgnorePanic())
 
@@ -2552,16 +3184,46 @@ func (s *chatSvc) startTurn(
 	}, nil
 }
 
+func (s *chatSvc) discardPreparedTurn(sessionID int64, prepared *preparedTurnRun) {
+	if prepared == nil {
+		return
+	}
+	if prepared.deferred != nil {
+		closeCtx, cancel := context.WithTimeout(context.Background(), transcriptRecoveryTimeout)
+		_ = prepared.deferred.Close(closeCtx)
+		cancel()
+	} else if prepared.events != nil {
+		if aborter, ok := prepared.runner.(agentruntime.Aborter); ok {
+			_ = aborter.Abort(context.Background(), sessionID)
+		}
+	}
+	if prepared.events == nil {
+		prepared.releaseResources()
+		return
+	}
+	gogo.Go(func() error {
+		for range prepared.events {
+		}
+		prepared.releaseResources()
+		return nil
+	}, gogo.WithIgnorePanic())
+}
+
 func (s *chatSvc) startCompactTurn(
 	ctx context.Context,
 	sess *chat_entity.Session,
 	a *agent_entity.Agent,
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
+	prelocked *trylockMutex,
 ) (*CompactResponse, error) {
-	lock := s.lockFor(sess.ID)
-	if !lock.TryLock() {
-		return nil, i18n.NewError(ctx, code.ChatSendInFlight)
+	lock := prelocked
+	if lock == nil {
+		gate, err := s.acquireTurnGate(ctx, sess, be)
+		if err != nil {
+			return nil, err
+		}
+		lock = gate.lock
 	}
 
 	model := ""
@@ -2602,15 +3264,16 @@ func (s *chatSvc) startCompactTurn(
 	s.markStreamRunningForTest(assistantMsg.ID)
 	runCtx := db.WithContextDB(context.Background(), db.Ctx(ctx))
 	turnCtx, cancel := context.WithCancel(runCtx)
-	s.activeCancels.Store(sess.ID, cancel)
+	turnControl := &activeTurnControl{cancel: cancel}
+	s.activeCancels.Store(sess.ID, turnControl)
 	gogo.Go(func() error {
 		defer lock.Unlock()
 		defer s.markStreamDoneForTest(assistantMsg.ID)
 		defer func() {
-			s.activeCancels.Delete(sess.ID)
+			s.activeCancels.CompareAndDelete(sess.ID, turnControl)
 			cancel()
 		}()
-		s.runTurn(turnCtx, sess, a, be, prov, nil, assistantMsg, stream, "", true, turnExtras{})
+		s.runTurn(turnCtx, sess, a, be, prov, nil, assistantMsg, stream, "", true, nil, turnExtras{})
 		return nil
 	}, gogo.WithIgnorePanic())
 
@@ -2706,25 +3369,79 @@ func (s *chatSvc) persistSessionStatus(ctx context.Context, sess *chat_entity.Se
 	return nil
 }
 
-func (s *chatSvc) runTurn(
+type preparedTurnRun struct {
+	runner     agentruntime.Runtime
+	events     <-chan agentruntime.Event
+	result     *agentruntime.RunResult
+	req        agentruntime.RunRequest
+	deferred   piagentrt.PreparedRun
+	deferStart bool
+	release    func()
+	releaseOne sync.Once
+}
+
+func (p *preparedTurnRun) providerSessionIDBeforeStart() (string, error) {
+	if p == nil || p.deferred == nil {
+		return "", errors.New("pi prepared run has no pre-prompt identity")
+	}
+	identity, ok := p.deferred.(piagentrt.PreparedRunIdentity)
+	if !ok {
+		return "", errors.New("pi prepared run does not expose pre-prompt identity")
+	}
+	providerSessionID := strings.TrimSpace(identity.ProviderSessionID())
+	if providerSessionID == "" {
+		return "", errors.New("pi prepared run returned an empty pre-prompt identity")
+	}
+	return providerSessionID, nil
+}
+
+func (p *preparedTurnRun) start(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	var err error
+	switch {
+	case p.deferred != nil:
+		p.events, p.result, err = p.deferred.Start(ctx)
+	case p.deferStart:
+		p.events, p.result, err = p.runner.Run(ctx, p.req)
+	}
+	return err
+}
+
+func (p *preparedTurnRun) releaseResources() {
+	if p == nil {
+		return
+	}
+	p.releaseOne.Do(p.release)
+}
+
+func (s *chatSvc) prepareTurnRun(
 	ctx context.Context,
 	sess *chat_entity.Session,
 	a *agent_entity.Agent,
 	be *agent_backend_entity.AgentBackend,
 	prov *llm_provider_entity.LLMProvider,
 	userMsg, assistantMsg *chat_entity.Message,
-	stream string,
 	forkAnchor string,
 	compact bool,
-	extras turnExtras,
-) {
-	startedAt := time.Now()
-
-	runner, err := s.selectRunner(ctx, be, sess.ID)
+	deferPrompt bool,
+) (*preparedTurnRun, error) {
+	var (
+		runner  agentruntime.Runtime
+		release = func() {}
+		err     error
+	)
+	if be.IsRemote() {
+		runner, release, err = s.borrowRemoteRuntimeForTurn(ctx, be, sess.ID)
+	} else {
+		runner, err = s.selectRunner(ctx, be, sess.ID)
+	}
 	if err != nil {
 		// 真错(RemoteRunnerDialFailed / AgentBackendInvalidDevice / AgentBackendInvalidType)
-		// 必须透传给 failTurn,否则前端永远只看到误导的 "unsupported backend type: X",
-		// 远端 daemon 离线 / DeviceID 失效 / 类型未注册三种情况无法区分。
+		// 必须透传给调用方交给 failTurn,否则前端永远只看到误导的
+		// "unsupported backend type: X",远端 daemon 离线 / DeviceID 失效 /
+		// 类型未注册三种情况无法区分。
 		fields := make([]zap.Field, 0, 6)
 		fields = append(fields,
 			zap.Int64("sessionID", sess.ID),
@@ -2732,24 +3449,21 @@ func (s *chatSvc) runTurn(
 			zap.String("deviceID", be.DeviceID),
 		)
 		fields = append(fields, chatRuntimeErrorLogFields(err)...)
-		logger.Ctx(ctx).Error("chat_svc.runTurn: selectRunner failed", fields...)
-		s.failTurn(ctx, sess, assistantMsg, stream, err)
-		return
+		logger.Ctx(ctx).Error("chat_svc.prepareTurnRun: selectRunner failed", fields...)
+		return nil, err
 	}
-	if be.IsRemote() {
-		if deviceID, ok := be.DeviceIDInt(); ok {
-			defer s.releaseRemoteRuntime(deviceID, sess.ID)
-		}
+	s.bindLocalPiAbort(sess.ID, be, runner)
+	fail := func(err error) (*preparedTurnRun, error) {
+		release()
+		return nil, err
 	}
 	if userMsg != nil && messageHasImage(userMsg) && !runner.Capabilities().Has(capability.CapImageInput) {
-		s.failTurn(ctx, sess, assistantMsg, stream, agentruntime.ErrUnsupported)
-		return
+		return fail(agentruntime.ErrUnsupported)
 	}
 
-	cwd, cwdErr := resolveSessionCwd(ctx, sess, be)
-	if cwdErr != nil {
-		s.failTurn(ctx, sess, assistantMsg, stream, cwdErr)
-		return
+	cwd, err := resolveSessionCwd(ctx, sess, be)
+	if err != nil {
+		return fail(err)
 	}
 	req := agentruntime.RunRequest{
 		Backend:           be,
@@ -2775,8 +3489,7 @@ func (s *chatSvc) runTurn(
 		// builtin 没有持久化 session — 把历史从 chat_messages 重建后透传。
 		msgs, err := chat_repo.Message().List(ctx, sess.ID)
 		if err != nil {
-			s.failTurn(ctx, sess, assistantMsg, stream, err)
-			return
+			return fail(err)
 		}
 		history := make([]agentruntime.HistoryMessage, 0, len(msgs))
 		for _, m := range msgs {
@@ -2790,17 +3503,13 @@ func (s *chatSvc) runTurn(
 	}
 	if be.IsRemote() {
 		// 远端 backend: daemon 自家有 ProviderLookup + Gateway,该自家解。
-		//  - GatewayURL/Token: desktop 本机 127.0.0.1 在 daemon 主机上不可达,
-		//    必须由 daemon 端 handlers/runtime.go 用 h.deps.Gateway.URL() 填。
-		//  - Provider: 含明文 APIKey,不该每个 turn 越线漂移到远端机器;daemon
-		//    自家 ProviderLookup 会按 LLMProviderKey 从本机 keychain 解出。
-		// 注:LLMProviderKey 已对齐 (UUID, 双方各自配同一 provider 即可)。
+		// GatewayURL/Token 是 desktop 的 127.0.0.1，Provider 又含明文 APIKey，
+		// 都不跨机器；daemon 按 LLMProviderKey 从自己的配置解析。
 		req.LLMProviderKey = be.LLMProviderKey
 		req.Provider = nil
 	} else if shouldSignChatGateway(be) {
-		// Claude Code local 仍需要 gateway token 给 PostToolUse hook 访问
-		// /hook/v1/inbox；Codex local 没有 hook，不能注入 gateway，否则会覆盖
-		// codex login 并把模型请求误打到本地 /v1/responses。
+		// Claude Code local 需要 gateway token 给 PostToolUse hook；Codex local
+		// 没有 hook，不能覆盖其原生 login 并误打到本地 gateway。
 		req.GatewayURL, req.GatewayToken = s.signChatTokenFor(ctx, be, sess.ID)
 	}
 	switch agent_backend_entity.BackendType(be.Type) {
@@ -2810,17 +3519,122 @@ func (s *chatSvc) runTurn(
 		req.CollaborationMode = normalizeStoredPermissionMode(agent_backend_entity.TypeCodex, sess.PermissionMode)
 	}
 
+	prepared := &preparedTurnRun{runner: runner, req: req, release: release}
+	if deferPrompt {
+		if preparer, ok := runner.(piagentrt.RunPreparer); ok {
+			deferred, err := preparer.PrepareRun(ctx, req)
+			if err != nil {
+				return fail(s.mapTurnError(ctx, sess, be, err))
+			}
+			prepared.deferred = deferred
+		} else {
+			prepared.deferStart = true
+		}
+		return prepared, nil
+	}
+
 	events, result, err := runner.Run(ctx, req)
 	if err != nil {
 		// 用户在 Run 返回前就点了停止(网关型后端要先握手,这个窗口是真实存在的):
-		// 这是中止而不是故障,按 idle 收敛,别让会话卡在 running / 弹错误卡。
+		// 这是中止而不是故障,交给调用方按 idle 收敛,别让会话卡在 running / 弹错误卡。
 		if s.turnAbortedByUser(sess.ID, err) {
-			s.abortTurnBeforeStream(ctx, sess, assistantMsg, stream)
-			return
+			return fail(errTurnAbortedBeforeStream)
 		}
-		s.failTurn(ctx, sess, assistantMsg, stream, s.mapTurnError(ctx, sess, be, err))
+		return fail(s.mapTurnError(ctx, sess, be, err))
+	}
+	prepared.events = events
+	prepared.result = result
+	return prepared, nil
+}
+
+// errTurnAbortedBeforeStream 表示这一轮在 runner.Run 返回之前就被用户点了停止。
+// 它不是故障:调用方走 abortTurnBeforeStream 按 idle 收敛,而不是 failTurn。
+var errTurnAbortedBeforeStream = errors.New("chat_svc: turn aborted before stream")
+
+func (s *chatSvc) bindLocalPiAbort(
+	sessionID int64,
+	be *agent_backend_entity.AgentBackend,
+	runner agentruntime.Runtime,
+) {
+	if be == nil || !be.IsPiAgent() || be.IsRemote() || runner == nil {
 		return
 	}
+	aborter, ok := runner.(agentruntime.Aborter)
+	if !ok {
+		return
+	}
+	raw, ok := s.activeCancels.Load(sessionID)
+	if !ok {
+		return
+	}
+	control, _ := raw.(*activeTurnControl)
+	control.setGracefulAbort(aborter)
+}
+
+func (s *chatSvc) persistUserAnchor(
+	ctx context.Context,
+	userMsg *chat_entity.Message,
+	anchor string,
+	hardFailure bool,
+) error {
+	if userMsg == nil || strings.TrimSpace(anchor) == "" {
+		return nil
+	}
+	userMsg.ForkAnchor = anchor
+	if !hardFailure {
+		_ = chat_repo.Message().Update(ctx, userMsg)
+		return nil
+	}
+	if err := chat_repo.Message().Update(ctx, userMsg); err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.persistUserAnchor: message update failed, retrying",
+			zap.Int64("sessionId", userMsg.SessionID),
+			zap.Int64("messageId", userMsg.ID),
+			zap.String("forkAnchor", userMsg.ForkAnchor),
+			zap.Error(err))
+		if retryErr := chat_repo.Message().Update(ctx, userMsg); retryErr != nil {
+			logger.Ctx(ctx).Error("chat_svc.persistUserAnchor: message update failed after retry",
+				zap.Int64("sessionId", userMsg.SessionID),
+				zap.Int64("messageId", userMsg.ID),
+				zap.String("forkAnchor", userMsg.ForkAnchor),
+				zap.Error(retryErr))
+			return fmt.Errorf("persist user anchor: %w", retryErr)
+		}
+	}
+	return nil
+}
+
+func (s *chatSvc) runTurn(
+	ctx context.Context,
+	sess *chat_entity.Session,
+	a *agent_entity.Agent,
+	be *agent_backend_entity.AgentBackend,
+	prov *llm_provider_entity.LLMProvider,
+	userMsg, assistantMsg *chat_entity.Message,
+	stream string,
+	forkAnchor string,
+	compact bool,
+	prepared *preparedTurnRun,
+	extras turnExtras,
+) {
+	startedAt := time.Now()
+
+	if prepared == nil {
+		var err error
+		prepared, err = s.prepareTurnRun(ctx, sess, a, be, prov, userMsg, assistantMsg, forkAnchor, compact, false)
+		if err != nil {
+			if errors.Is(err, errTurnAbortedBeforeStream) {
+				s.abortTurnBeforeStream(ctx, sess, assistantMsg, stream)
+				return
+			}
+			s.failTurn(ctx, sess, assistantMsg, stream, err)
+			return
+		}
+	}
+	defer prepared.releaseResources()
+	runner := prepared.runner
+	events := prepared.events
+	result := prepared.result
+	req := prepared.req
 	// 登记本 turn 的活跃流名,供工具审批(BeginToolApproval)把审批卡路由到此流。
 	// stream 在 SteerConsumed 分段时不变(同 turn 一个流名),Store 一次即可;收尾时清掉。
 	s.activeTurnStreams.Store(sess.ID, stream)
@@ -2966,6 +3780,7 @@ func (s *chatSvc) runTurn(
 
 	assistantMsg.DurationMs = int(time.Since(segmentStart).Milliseconds())
 	stopErr := streamStopErr
+	var anchorPersistErr error
 	if result != nil {
 		if result.Usage != nil {
 			assistantMsg.PromptTokens = result.Usage.PromptTokens
@@ -2999,13 +3814,16 @@ func (s *chatSvc) runTurn(
 		if result.ProviderSessionID != "" {
 			sess.SetProviderSession(result.ProviderSessionID)
 		}
-		// claudecode 后端从 JSONL 抽到了本轮 user prompt 的 anchor（parentUuid）。
-		// 写到 user msg 上，下次"重新生成 assistant"时 chat_svc.Regenerate 会读它。
-		// 用 context.WithoutCancel 确保 abort 后这里仍能写 —— 已经流出去的内容
-		// 应当持久化，下一轮即便重发也要能用 anchor 反查。
-		if result.UserAnchor != "" && userMsg != nil {
-			userMsg.ForkAnchor = result.UserAnchor
-			_ = chat_repo.Message().Update(context.WithoutCancel(ctx), userMsg)
+		// Runtime 抽到的本轮 user anchor 必须可靠落库；短暂写失败重试一次，
+		// 持续失败则保留已生成回答但把 turn 标成 error，不能伪装成可继续分叉的成功轮。
+		if err := s.persistUserAnchor(
+			context.WithoutCancel(ctx),
+			userMsg,
+			result.UserAnchor,
+			be.IsPiAgent(),
+		); err != nil {
+			anchorPersistErr = err
+			stopErr = errors.Join(stopErr, err)
 		}
 		// codex app-server 上报的 modelContextWindow 落到 session 字段，下次
 		// LoadSession 用 resolveContextWindowWithRuntime 优先读这个值——比
@@ -3028,7 +3846,7 @@ func (s *chatSvc) runTurn(
 		req.CollaborationMode == permissionModePlan &&
 		hasActionablePlanBlock(finalBlocks)
 
-	if stopErr != nil && !aborted {
+	if stopErr != nil && (!aborted || anchorPersistErr != nil) {
 		assistantMsg.ErrorText = stopErr.Error()
 	}
 	// finalCtx：去掉 cancel 信号但保留 DB 句柄。abort 路径下 turnCtx 已 cancel，
@@ -3064,7 +3882,7 @@ func (s *chatSvc) runTurn(
 	// 即将自动接续的中间态：不要把 session 状态打成 idle，等最终轮收尾再翻。
 	if len(pending) == 0 {
 		switch {
-		case stopErr != nil && !aborted:
+		case stopErr != nil && (!aborted || anchorPersistErr != nil):
 			sess.AgentStatus = "error"
 			sess.NeedsAttention = false
 		case awaitingPlanAction:
@@ -3136,7 +3954,7 @@ func (s *chatSvc) runTurn(
 			// assistant 切到 nextAssistant。
 			// 自动续轮沿用本轮 extras:群成员会话的 MCP 注入 + 群上下文 suffix
 			// 需要在同一会话的整个生命周期内保持,而非只在首轮生效。
-			s.runTurn(ctx, sess, a, be, prov, nextUser, nextAssistant, stream, "", false, extras)
+			s.runTurn(ctx, sess, a, be, prov, nextUser, nextAssistant, stream, "", false, nil, extras)
 			return
 		}
 		// 写新轮失败 → pending 已经从 SteerInbox drain 走，无法回滚，只能丢。
@@ -3167,6 +3985,12 @@ func (s *chatSvc) runTurn(
 
 	final := chatMessageForEvent(sess, assistantMsg)
 	switch {
+	case anchorPersistErr != nil:
+		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{
+			Kind:    StreamError,
+			Error:   stopErr.Error(),
+			Message: final,
+		})
 	case aborted:
 		s.emitter.Emit(finalCtx, stream, ChatStreamEvent{Kind: StreamAborted, Message: final})
 	case stopErr != nil:
@@ -3905,8 +4729,13 @@ func uniqueProviderKeys(backends map[int64]*agent_backend_entity.AgentBackend) [
 type remoteRuntimeEntry struct {
 	runtime  *remote.Runtime
 	lease    remote_device_svc.Lease
-	sessions map[int64]struct{}
+	sessions map[int64]*remoteRuntimeGeneration
 }
+
+// remoteRuntimeGeneration is the exact lease owner for one turn. A stale
+// release compares this pointer before deleting the session reference, so it
+// cannot release the device lease after a newer same-SessionID retry begins.
+type remoteRuntimeGeneration struct{}
 
 // pool 返回当前生效的 ConnPool。测试通过 setConnPoolForTest 注入 mock。
 func (s *chatSvc) pool() remote_device_svc.ConnPool {
@@ -3923,11 +4752,37 @@ func (s *chatSvc) pool() remote_device_svc.ConnPool {
 //
 // 同 sessionID 多次 borrow 对 sessions set 幂等。
 func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_entity.AgentBackend, sessionID int64) (*remote.Runtime, error) {
+	return s.borrowRemoteRuntimeOwned(ctx, be, sessionID, nil)
+}
+
+func (s *chatSvc) borrowRemoteRuntimeForTurn(
+	ctx context.Context,
+	be *agent_backend_entity.AgentBackend,
+	sessionID int64,
+) (*remote.Runtime, func(), error) {
+	deviceID, ok := be.DeviceIDInt()
+	if !ok {
+		return nil, func() {}, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
+	}
+	generation := &remoteRuntimeGeneration{}
+	rt, err := s.borrowRemoteRuntimeOwned(ctx, be, sessionID, generation)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return rt, func() { s.releaseRemoteRuntimeGeneration(deviceID, sessionID, generation) }, nil
+}
+
+func (s *chatSvc) borrowRemoteRuntimeOwned(
+	ctx context.Context,
+	be *agent_backend_entity.AgentBackend,
+	sessionID int64,
+	generation *remoteRuntimeGeneration,
+) (*remote.Runtime, error) {
 	deviceID, ok := be.DeviceIDInt()
 	if !ok {
 		return nil, i18n.NewError(ctx, code.AgentBackendInvalidDevice)
 	}
-	rt, fp, err := s.remoteRuntimeForDevice(ctx, deviceID, []int64{sessionID})
+	rt, fp, err := s.remoteRuntimeForDevice(ctx, deviceID, []int64{sessionID}, generation)
 	if err != nil {
 		logger.Ctx(ctx).Error("borrowRemoteRuntime: pool.Borrow",
 			zap.Int64("deviceID", deviceID), zap.Error(err))
@@ -3958,14 +4813,22 @@ func (s *chatSvc) borrowRemoteRuntime(ctx context.Context, be *agent_backend_ent
 // 它与 borrowRemoteRuntime 分开,是因为补齐(CatchUpRemoteSessions)手上只有
 // (设备, 会话) 而**没有 agent backend**:重启后要连回的那台 daemon 是从
 // chat_sessions.exec_device_id 读出来的,不经过 turn 的后端选择。
-func (s *chatSvc) remoteRuntimeForDevice(ctx context.Context, deviceID int64, sessionIDs []int64) (*remote.Runtime, string, error) {
+// owner 非 nil 时这次借用带着一轮自己的 generation token(见 remoteRuntimeGeneration):
+// 迟到的旧 release 比对指针后不会顶掉同会话新一轮的引用。控制路径(owner==nil)只在
+// 引用缺失时补一个占位,不覆盖当前轮的 owner。
+func (s *chatSvc) remoteRuntimeForDevice(
+	ctx context.Context,
+	deviceID int64,
+	sessionIDs []int64,
+	owner *remoteRuntimeGeneration,
+) (*remote.Runtime, string, error) {
 	// Fast path: cache hit
 	s.remoteMu.Lock()
 	if s.remoteCache == nil {
 		s.remoteCache = map[int64]*remoteRuntimeEntry{}
 	}
 	if entry, ok := s.remoteCache[deviceID]; ok {
-		addSessionRefs(entry, sessionIDs)
+		addSessionRefs(entry, sessionIDs, owner)
 		s.remoteMu.Unlock()
 		return entry.runtime, s.daemonFingerprint(ctx, deviceID), nil
 	}
@@ -3979,8 +4842,8 @@ func (s *chatSvc) remoteRuntimeForDevice(ctx context.Context, deviceID int64, se
 	fp := s.daemonFingerprint(ctx, deviceID)
 
 	// entry 先建出来:重连端口要往里换 lease,所以它必须先于 runtime 存在。
-	entry := &remoteRuntimeEntry{lease: lease, sessions: map[int64]struct{}{}}
-	addSessionRefs(entry, sessionIDs)
+	entry := &remoteRuntimeEntry{lease: lease, sessions: map[int64]*remoteRuntimeGeneration{}}
+	addSessionRefs(entry, sessionIDs, owner)
 	rt := remote.New(lease.Client(),
 		remote.WithDaemonFingerprint(fp),
 		remote.WithConnStateObserver(remote.ConnStateFunc(s.onRemoteConnState)),
@@ -3996,7 +4859,7 @@ func (s *chatSvc) remoteRuntimeForDevice(ctx context.Context, deviceID int64, se
 	// Re-lock and insert. TOCTOU 输家:用赢家的 entry,释放自己的 lease。
 	s.remoteMu.Lock()
 	if existing, ok := s.remoteCache[deviceID]; ok {
-		addSessionRefs(existing, sessionIDs)
+		addSessionRefs(existing, sessionIDs, owner)
 		s.remoteMu.Unlock()
 		lease.Release()
 		return existing.runtime, fp, nil
@@ -4008,10 +4871,18 @@ func (s *chatSvc) remoteRuntimeForDevice(ctx context.Context, deviceID int64, se
 	return rt, fp, nil
 }
 
-// addSessionRefs 调用方必须持 remoteMu。
-func addSessionRefs(entry *remoteRuntimeEntry, sessionIDs []int64) {
+// addSessionRefs 调用方必须持 remoteMu。owner 非 nil = 这一轮的 generation token,
+// 直接安装(它接管这条会话的引用);owner 为 nil 的控制路径只在引用缺失时补占位,
+// 不覆盖当前轮的 owner —— 覆盖了的话那一轮的 release 就比不上指针、永远释放不掉。
+func addSessionRefs(entry *remoteRuntimeEntry, sessionIDs []int64, owner *remoteRuntimeGeneration) {
 	for _, sid := range sessionIDs {
-		entry.sessions[sid] = struct{}{}
+		if owner != nil {
+			entry.sessions[sid] = owner
+			continue
+		}
+		if entry.sessions[sid] == nil {
+			entry.sessions[sid] = &remoteRuntimeGeneration{}
+		}
 	}
 }
 
@@ -4039,6 +4910,23 @@ func (s *chatSvc) releaseRemoteRuntime(deviceID, sessionID int64) {
 	s.remoteMu.Lock()
 	entry, ok := s.remoteCache[deviceID]
 	if !ok {
+		s.remoteMu.Unlock()
+		return
+	}
+	generation := entry.sessions[sessionID]
+	s.remoteMu.Unlock()
+	if generation != nil {
+		s.releaseRemoteRuntimeGeneration(deviceID, sessionID, generation)
+	}
+}
+
+func (s *chatSvc) releaseRemoteRuntimeGeneration(
+	deviceID, sessionID int64,
+	generation *remoteRuntimeGeneration,
+) {
+	s.remoteMu.Lock()
+	entry, ok := s.remoteCache[deviceID]
+	if !ok || entry.sessions[sessionID] != generation {
 		s.remoteMu.Unlock()
 		return
 	}

@@ -3,7 +3,7 @@ package piagent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +16,9 @@ type Stream struct {
 
 	mu                  sync.RWMutex
 	sessionID           string
+	userAnchorBoundary  string
+	userAnchor          string
+	captureUserAnchor   bool
 	model               string
 	contextWindow       int
 	usageObserved       bool
@@ -25,6 +28,8 @@ type Stream struct {
 	cur                 Event
 
 	closeOnce sync.Once
+	abortMu   sync.Mutex
+	abortSent bool
 
 	pendingAgentEndError       *agentEndError
 	pendingAssistantDeltaError error
@@ -62,7 +67,23 @@ func (s *Stream) send(ctx context.Context, cmd map[string]any) error {
 		return ctx.Err()
 	default:
 	}
-	return s.proc.writeJSON(cmd)
+	command, _ := cmd["type"].(string)
+	if command != "abort" {
+		return s.proc.writeJSON(cmd, ctx)
+	}
+
+	// Stop may reach the runtime interruptor just before or just after the turn
+	// context is canceled. Claim the one abort frame without holding this mutex
+	// across a potentially blocked pipe write; process Close or ctx cancellation
+	// then remains able to interrupt the writer.
+	s.abortMu.Lock()
+	if s.abortSent {
+		s.abortMu.Unlock()
+		return nil
+	}
+	s.abortSent = true
+	s.abortMu.Unlock()
+	return s.proc.writeJSON(cmd, ctx)
 }
 
 func (s *Stream) Next() bool {
@@ -85,6 +106,25 @@ func (s *Stream) SessionID() string {
 func (s *Stream) setSessionID(sessionID string) {
 	s.mu.Lock()
 	s.sessionID = strings.TrimSpace(sessionID)
+	s.mu.Unlock()
+}
+
+func (s *Stream) UserAnchor() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.userAnchor
+}
+
+func (s *Stream) setUserAnchorBoundary(leafID string) {
+	s.mu.Lock()
+	s.captureUserAnchor = true
+	s.userAnchorBoundary = strings.TrimSpace(leafID)
+	s.mu.Unlock()
+}
+
+func (s *Stream) setUserAnchor(anchor string) {
+	s.mu.Lock()
+	s.userAnchor = strings.TrimSpace(anchor)
 	s.mu.Unlock()
 }
 
@@ -125,12 +165,8 @@ func (s *Stream) Err() error {
 
 func (s *Stream) Diagnostics() StreamDiagnostics {
 	s.mu.RLock()
-	out := s.diagnostics
-	s.mu.RUnlock()
-	if s.proc != nil && s.proc.stderr != nil {
-		out.StderrTail = tailString(strings.TrimSpace(s.proc.stderr.String()), diagnosticStderrTailLimit)
-	}
-	return out
+	defer s.mu.RUnlock()
+	return s.diagnostics
 }
 
 func (s *Stream) Close(ctx context.Context) error {
@@ -144,92 +180,62 @@ func (s *Stream) Close(ctx context.Context) error {
 	return s.Err()
 }
 
-func (s *Stream) drain(ctx context.Context) {
-	defer close(s.events)
-	promptAccepted := false
-	for s.proc.lines.Scan() {
-		s.proc.captureRawFrame(s.proc.lines.Bytes())
+func (s *Stream) awaitPromptAcknowledgement(ctx context.Context) ([][]byte, error) {
+	pending := make([][]byte, 0)
+	for scanRPCLine(ctx, s.proc.lines) {
+		line := append([]byte(nil), s.proc.lines.Bytes()...)
+		emitRawFrame(s.proc, line)
 		select {
 		case <-ctx.Done():
-			s.setErr(ctx.Err())
-			s.emit(Event{Kind: EventError, Err: ctx.Err()})
-			return
+			return nil, ctx.Err()
 		default:
 		}
-		line := strings.TrimSpace(s.proc.lines.Text())
-		if line == "" {
+		var response rpcResponse
+		if err := json.Unmarshal(line, &response); err != nil || !isPromptResponse(response) {
+			pending = append(pending, line)
 			continue
 		}
-		var probe struct {
-			Type string `json:"type"`
+		if err := promptResponseError(response); err != nil {
+			return nil, err
 		}
-		if err := json.Unmarshal([]byte(line), &probe); err != nil {
-			continue
-		}
-		if probe.Type == "response" {
-			var resp rpcResponse
-			if err := json.Unmarshal([]byte(line), &resp); err != nil {
-				continue
-			}
-			if resp.Command == "get_session_stats" {
-				if resp.ID != "" && resp.ID != initialSessionStatsRequestID {
-					continue
-				}
-				// Initial stats are optional capability data. Retain a valid
-				// authoritative window for each usage snapshot, but never fail the
-				// prompt when an older or degraded Pi RPC rejects the request.
-				s.consumeInitialSessionStatsPending()
-				if resp.Success {
-					cw := contextWindowFromSessionStats(resp.Data)
-					if changed, usageObserved := s.setContextWindow(cw); changed && usageObserved {
-						// A late pre-prompt correction arrived after the last usage.
-						// Surface it immediately so runtime/session state cannot stay stale
-						// when the round-end refresh is absent.
-						s.emit(Event{Kind: EventContextWindow, ContextWindow: cw})
-					}
-				}
-				continue
-			}
-			if !resp.Success {
-				err := failureResponseError(resp)
-				s.setErr(err)
-				s.emit(Event{Kind: EventError, Err: err})
-				return
-			}
-			if isAcceptedPromptResponse(resp) {
-				promptAccepted = true
-				// Pi guarantees correlated command responses. If the optional
-				// initial stats response was omitted, prompt acceptance closes that
-				// outstanding compatibility slot so a later no-ID final response is
-				// not discarded as stale.
-				s.consumeInitialSessionStatsPending()
-			}
-			// compact turn 不发 agent_end —— compact response 即终止信号。
-			if resp.Command == "compact" {
-				s.finish(ctx)
-				return
-			}
-			continue
-		}
-		if !promptAccepted && probe.Type != "extension_ui_request" {
-			// Pi can emit startup UI notifications before prompt response. Other events
-			// before prompt acceptance are still safe to process, so this is only a marker.
-			promptAccepted = true
-		}
-		var ev rpcEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue
-		}
-		if err := s.handleRPCEvent(ctx, ev); err != nil {
-			s.setErr(err)
-			s.emit(Event{Kind: EventError, Err: err})
+		// Prompt acceptance closes the optional initial-stats slot; see drainLine.
+		s.consumeInitialSessionStatsPending()
+		return pending, nil
+	}
+	return nil, awaitProcessExitOrScanError(ctx, s.proc)
+}
+
+const abortSettlementGrace = 500 * time.Millisecond
+
+func (s *Stream) drain(ctx context.Context, pendingFrames ...[][]byte) {
+	defer close(s.events)
+	drainCtx, stopSettlementWindow := boundedSettlementContext(ctx, abortSettlementGrace, func() {
+		_ = s.send(context.Background(), map[string]any{"type": "abort"})
+	})
+	defer stopSettlementWindow()
+
+	var pending [][]byte
+	if len(pendingFrames) > 0 {
+		pending = pendingFrames[0]
+	}
+	for _, line := range pending {
+		if !s.drainLine(drainCtx, line, false) {
+			s.terminateCanceledProcess(ctx)
 			return
 		}
-		s.observeAgentEnd(ev, line)
-		if isTerminalEvent(ev) {
-			s.settle(ctx)
+	}
+	for scanRPCLine(drainCtx, s.proc.lines) {
+		line := append([]byte(nil), s.proc.lines.Bytes()...)
+		if !s.drainLine(drainCtx, line, true) {
+			s.terminateCanceledProcess(ctx)
 			return
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		s.terminateCanceledProcess(ctx)
+		s.setErr(err)
+		s.emit(Event{Kind: EventError, Err: err})
+		return
 	}
 	if err := processDeadOrScanError(s.proc); err != nil {
 		s.setErr(err)
@@ -237,19 +243,164 @@ func (s *Stream) drain(ctx context.Context) {
 	}
 }
 
+func (s *Stream) terminateCanceledProcess(ctx context.Context) {
+	if s == nil || s.proc == nil || ctx.Err() == nil {
+		return
+	}
+	// Settlement has either completed or exhausted its bound. Kill the whole
+	// process group now rather than applying the ordinary graceful Close delay,
+	// so descendant tool work cannot continue beyond the Stop window.
+	_ = s.proc.terminate(context.Background(), 0)
+}
+
+func boundedSettlementContext(ctx context.Context, grace time.Duration, onCancel func()) (context.Context, func()) {
+	settlementCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if onCancel != nil {
+				go onCancel()
+			}
+			timer := time.NewTimer(grace)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				cancel()
+			case <-done:
+			}
+		case <-done:
+		}
+	}()
+	var once sync.Once
+	return settlementCtx, func() {
+		once.Do(func() {
+			close(done)
+			cancel()
+		})
+	}
+}
+
+func (s *Stream) drainLine(ctx context.Context, rawLine []byte, emitDiagnostic bool) bool {
+	if emitDiagnostic {
+		emitRawFrame(s.proc, rawLine)
+	}
+	select {
+	case <-ctx.Done():
+		s.setErr(ctx.Err())
+		s.emit(Event{Kind: EventError, Err: ctx.Err()})
+		return false
+	default:
+	}
+	line := strings.TrimSpace(string(rawLine))
+	if line == "" {
+		return true
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(rawLine, &probe); err != nil {
+		return true
+	}
+	if probe.Type == "response" {
+		var resp rpcResponse
+		if err := json.Unmarshal(rawLine, &resp); err != nil {
+			return true
+		}
+		if resp.Command == "get_session_stats" {
+			if resp.ID != "" && resp.ID != initialSessionStatsRequestID {
+				return true
+			}
+			// Initial stats are optional capability data. Retain a valid
+			// authoritative window for each usage snapshot, but never fail the
+			// prompt when an older or degraded Pi RPC rejects the request.
+			s.consumeInitialSessionStatsPending()
+			if resp.Success {
+				cw := contextWindowFromSessionStats(resp.Data)
+				if changed, usageObserved := s.setContextWindow(cw); changed && usageObserved {
+					// A late pre-prompt correction arrived after the last usage.
+					// Surface it immediately so runtime/session state cannot stay stale
+					// when the round-end refresh is absent.
+					s.emit(Event{Kind: EventContextWindow, ContextWindow: cw})
+				}
+			}
+			return true
+		}
+		var responseErr error
+		if isPromptResponse(resp) {
+			responseErr = promptResponseError(resp)
+			if responseErr == nil {
+				// Pi guarantees correlated command responses. If the optional
+				// initial stats response was omitted, prompt acceptance closes that
+				// outstanding compatibility slot so a later no-ID final response is
+				// not discarded as stale.
+				s.consumeInitialSessionStatsPending()
+			}
+		} else if !resp.Success {
+			responseErr = failureResponseError(resp)
+		}
+		if responseErr != nil {
+			s.setErr(responseErr)
+			s.emit(Event{Kind: EventError, Err: responseErr})
+			return false
+		}
+		// compact turn 不发 agent_end —— compact response 即终止信号。
+		if resp.Command == "compact" {
+			s.finish(ctx)
+			return false
+		}
+		return true
+	}
+	var ev rpcEvent
+	if err := json.Unmarshal(rawLine, &ev); err != nil {
+		return true
+	}
+	if err := s.handleRPCEvent(ctx, ev); err != nil {
+		s.setErr(err)
+		s.emit(Event{Kind: EventError, Err: err})
+		return false
+	}
+	s.observeAgentEnd(ev, line)
+	if isTerminalEvent(ev) {
+		s.settle(ctx)
+		return false
+	}
+	return true
+}
+
 func (s *Stream) finish(ctx context.Context) {
-	s.emitSessionStats(ctx)
+	s.emitTerminalMetadata(ctx)
 	s.emit(Event{Kind: EventDone})
+}
+
+func (s *Stream) emitTerminalMetadata(ctx context.Context) {
+	if s.captureUserAnchor {
+		s.emitTrackedSessionMetadata(ctx)
+	} else {
+		s.emitSessionStats(ctx)
+	}
+}
+
+func (s *Stream) emitFailedTurnAnchorMetadata(ctx context.Context) {
+	if s.captureUserAnchor {
+		// drain already replaced the canceled turn context with one bounded
+		// settlement context. Keep that bound while using the same scanner/process.
+		s.emitTrackedSessionMetadata(ctx)
+	}
 }
 
 func (s *Stream) settle(ctx context.Context) {
 	if candidate := s.pendingAgentEndError; candidate != nil {
+		// Pi appends the accepted user entry before an assistant error/abort. Capture
+		// that post-turn boundary even when the caller canceled its turn context.
+		s.emitFailedTurnAnchorMetadata(ctx)
 		s.recordFinalErrorDiagnostics(candidate.event, candidate.rawLine)
 		s.setErr(candidate.err)
 		s.emit(Event{Kind: EventError, Err: candidate.err})
 		return
 	}
 	if err := s.pendingAssistantDeltaError; err != nil {
+		s.emitFailedTurnAnchorMetadata(ctx)
 		s.setErr(err)
 		s.emit(Event{Kind: EventError, Err: err})
 		return
@@ -278,36 +429,19 @@ func (s *Stream) emitSessionStats(ctx context.Context) {
 		return
 	}
 
-	// get_session_stats 是增强信息，不能因为旧版/异常 Pi RPC 没有及时返回而卡住
-	// terminal Done。超时后 runtime 会照常结束 turn 并关闭进程，下面的扫描 goroutine
-	// 会随 stdout 关闭退出；它只写本地 buffered channel，不直接 emit，避免 late send 到
-	// 已关闭的 events channel。
-	resultC := make(chan int, 1)
-	go func() {
-		cw := s.readSessionStatsContextWindow()
-		select {
-		case resultC <- cw:
-		default:
-		}
-	}()
-
-	timer := time.NewTimer(sessionStatsTimeout)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return
-	case <-timer.C:
-		return
-	case cw := <-resultC:
-		if cw > 0 {
-			s.emit(Event{Kind: EventContextWindow, ContextWindow: cw})
-		}
+	// Keep scanner ownership in the drain goroutine. The async line scanner makes
+	// ScanContext interruptible, so an optional stats timeout needs no detached
+	// reader goroutine that could outlive terminal delivery.
+	statsCtx, cancel := context.WithTimeout(ctx, sessionStatsTimeout)
+	defer cancel()
+	if cw := s.readSessionStatsContextWindow(statsCtx); cw > 0 {
+		s.emit(Event{Kind: EventContextWindow, ContextWindow: cw})
 	}
 }
 
-func (s *Stream) readSessionStatsContextWindow() int {
-	for s.proc.lines.Scan() {
-		s.proc.captureRawFrame(s.proc.lines.Bytes())
+func (s *Stream) readSessionStatsContextWindow(ctx context.Context) int {
+	for scanRPCLine(ctx, s.proc.lines) {
+		emitRawFrame(s.proc, s.proc.lines.Bytes())
 		line := strings.TrimSpace(s.proc.lines.Text())
 		if line == "" {
 			continue
@@ -342,6 +476,144 @@ func (s *Stream) readSessionStatsContextWindow() int {
 		return contextWindowFromSessionStats(resp.Data)
 	}
 	return 0
+}
+
+type trackedSessionMetadata struct {
+	userAnchor    string
+	contextWindow int
+	entriesSeen   bool
+	statsSeen     bool
+}
+
+func (s *Stream) emitTrackedSessionMetadata(ctx context.Context) {
+	if s == nil || s.proc == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	const entriesRequestID = "session-entries-after"
+	if err := s.send(ctx, map[string]any{"id": entriesRequestID, "type": "get_entries"}); err != nil {
+		return
+	}
+	wantStats := s.send(ctx, map[string]any{
+		"id": finalSessionStatsRequestID, "type": "get_session_stats",
+	}) == nil
+
+	metadataCtx, cancel := context.WithTimeout(ctx, sessionStatsTimeout)
+	defer cancel()
+	s.applyTrackedSessionMetadata(s.readTrackedSessionMetadata(metadataCtx, entriesRequestID, wantStats))
+}
+
+func (s *Stream) applyTrackedSessionMetadata(metadata trackedSessionMetadata) {
+	s.setUserAnchor(metadata.userAnchor)
+	if metadata.contextWindow > 0 {
+		s.emit(Event{Kind: EventContextWindow, ContextWindow: metadata.contextWindow})
+	}
+}
+
+func (s *Stream) readTrackedSessionMetadata(
+	ctx context.Context,
+	entriesRequestID string,
+	wantStats bool,
+) trackedSessionMetadata {
+	metadata := trackedSessionMetadata{statsSeen: !wantStats}
+	for scanRPCLine(ctx, s.proc.lines) {
+		emitRawFrame(s.proc, s.proc.lines.Bytes())
+		line := strings.TrimSpace(s.proc.lines.Text())
+		if line == "" {
+			continue
+		}
+		var response rpcResponse
+		if err := json.Unmarshal([]byte(line), &response); err != nil || response.Type != "response" {
+			continue
+		}
+		switch {
+		case response.Command == "get_entries" && response.ID == entriesRequestID && !metadata.entriesSeen:
+			metadata.entriesSeen = true
+			if response.Success {
+				var entries sessionEntriesWire
+				if err := json.Unmarshal(response.Data, &entries); err == nil {
+					metadata.userAnchor = firstUserEntryAfterBoundary(
+						entries.Entries,
+						s.userAnchorBoundary,
+						entries.LeafID,
+					)
+				}
+			}
+		case response.Command == "get_session_stats" && !metadata.statsSeen:
+			// A delayed pre-prompt response must not stand in for the round-end
+			// refresh; see readSessionStatsContextWindow for the same correlation.
+			if response.ID == initialSessionStatsRequestID ||
+				(response.ID == "" && s.consumeInitialSessionStatsPending()) {
+				continue
+			}
+			if response.ID != "" && response.ID != finalSessionStatsRequestID {
+				continue
+			}
+			metadata.statsSeen = true
+			if response.Success {
+				metadata.contextWindow = contextWindowFromSessionStats(response.Data)
+			}
+		}
+		if metadata.entriesSeen && metadata.statsSeen {
+			return metadata
+		}
+	}
+	return metadata
+}
+
+func firstUserEntryAfterBoundary(entries []sessionEntryWire, boundaryLeafID, currentLeafID string) string {
+	boundaryLeafID = strings.TrimSpace(boundaryLeafID)
+	currentLeafID = strings.TrimSpace(currentLeafID)
+	if currentLeafID == "" || currentLeafID == boundaryLeafID {
+		return ""
+	}
+
+	byID := make(map[string]sessionEntryWire, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := byID[id]; duplicate {
+			return ""
+		}
+		entry.ID = id
+		entry.ParentID = strings.TrimSpace(entry.ParentID)
+		byID[id] = entry
+	}
+
+	path := make([]sessionEntryWire, 0)
+	seen := make(map[string]struct{})
+	for currentLeafID != boundaryLeafID {
+		if currentLeafID == "" {
+			if boundaryLeafID != "" {
+				return ""
+			}
+			break
+		}
+		if _, cycle := seen[currentLeafID]; cycle {
+			return ""
+		}
+		seen[currentLeafID] = struct{}{}
+		entry, ok := byID[currentLeafID]
+		if !ok {
+			return ""
+		}
+		path = append(path, entry)
+		currentLeafID = entry.ParentID
+	}
+
+	for i := len(path) - 1; i >= 0; i-- {
+		entry := path[i]
+		if entry.Type == "message" && entry.Message.Role == "user" {
+			return entry.ID
+		}
+	}
+	return ""
 }
 
 func contextWindowFromSessionStats(raw json.RawMessage) int {
@@ -391,7 +663,9 @@ func (s *Stream) handleRPCEvent(ctx context.Context, ev rpcEvent) error {
 	case "compaction_end":
 		s.emit(Event{Kind: EventCompactBoundary})
 	case "auto_retry_start":
-		s.emit(Event{Kind: EventRuntimeStatus, Text: strings.TrimSpace(ev.ErrorMessage)})
+		// errorMessage is an untrusted provider payload and can echo prompt or
+		// credentials. The retry state itself is the useful downstream signal.
+		s.emit(Event{Kind: EventRuntimeStatus, Text: "retrying"})
 	}
 	return nil
 }
@@ -416,7 +690,9 @@ func (s *Stream) handleAssistantDelta(delta assistantDelta) {
 	// toolCallId），PreToolUse 只从 tool_execution_start 出，避免下游工具卡重复。
 	case "error":
 		if s.pendingAgentEndError == nil {
-			s.pendingAssistantDeltaError = fmt.Errorf("piagent: %s", strings.TrimSpace(delta.Reason))
+			// reason is an untrusted provider failure string. Preserve only the
+			// stable stream-failure classification until agent_end settles it.
+			s.pendingAssistantDeltaError = errors.New("piagent: assistant stream failed")
 		}
 	}
 }
@@ -480,7 +756,7 @@ func classifyFinalAgentEnd(ev rpcEvent) agentEndOutcome {
 	case "stop", "length", "toolUse":
 		return agentEndOutcome{kind: agentEndOutcomeSuccess}
 	case "error":
-		return agentEndFailure(msg, "unknown error")
+		return agentEndFailure(msg, "error")
 	case "aborted":
 		return agentEndFailure(msg, "aborted")
 	default:
@@ -488,15 +764,25 @@ func classifyFinalAgentEnd(ev rpcEvent) agentEndOutcome {
 	}
 }
 
-func agentEndFailure(msg *assistantMessage, fallback string) agentEndOutcome {
-	errMsg := strings.TrimSpace(msg.ErrorMessage)
-	if errMsg == "" {
-		errMsg = fallback
+func agentEndFailure(msg *assistantMessage, classification string) agentEndOutcome {
+	var err error
+	switch classification {
+	case "aborted":
+		if strings.TrimSpace(msg.ErrorMessage) == "" {
+			err = errors.New("piagent: aborted")
+		} else {
+			err = errors.New("piagent: user requested abort")
+		}
+	case "error":
+		if strings.EqualFold(strings.TrimSpace(msg.ErrorMessage), "terminated") {
+			err = errors.New("piagent: terminated")
+		} else {
+			err = errors.New("piagent: final provider failure")
+		}
+	default:
+		err = errors.New("piagent: agent failed")
 	}
-	return agentEndOutcome{
-		kind: agentEndOutcomeFailure,
-		err:  fmt.Errorf("piagent: %s", errMsg),
-	}
+	return agentEndOutcome{kind: agentEndOutcomeFailure, err: err}
 }
 
 func (s *Stream) emit(ev Event) {
@@ -515,26 +801,17 @@ func (s *Stream) setErr(err error) {
 	}
 }
 
-const diagnosticStderrTailLimit = 4 * 1024
-
 func (s *Stream) recordFinalErrorDiagnostics(ev rpcEvent, rawLine string) {
 	msg := lastAssistantFromAgentEnd(ev.Messages)
 	if msg == nil {
 		return
 	}
+	safeFrame := sanitizeDiagnosticFrame([]byte(rawLine))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.diagnostics.FinalErrorEventType = ev.Type
 	s.diagnostics.FinalErrorStopReason = strings.TrimSpace(msg.StopReason)
-	s.diagnostics.FinalErrorMessage = strings.TrimSpace(msg.ErrorMessage)
-	s.diagnostics.FinalErrorFrame = strings.TrimSpace(rawLine)
-}
-
-func tailString(s string, limit int) string {
-	if limit <= 0 || len(s) <= limit {
-		return s
-	}
-	return s[len(s)-limit:]
+	s.diagnostics.FinalErrorFrame = string(safeFrame)
 }
 
 func toolResult(raw json.RawMessage) (string, json.RawMessage) {

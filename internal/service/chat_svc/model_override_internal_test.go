@@ -138,7 +138,7 @@ func TestRunTurn_NonSwitchableBackendIgnoresOverride(t *testing.T) {
 			return nil
 		}).AnyTimes()
 
-	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, turnExtras{})
+	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, nil, turnExtras{})
 
 	select {
 	case req := <-runner.request:
@@ -189,7 +189,7 @@ func TestRunTurn_ModelOverrideReachesRunnerAndPersistsDeviationNotice(t *testing
 			return nil
 		}).AnyTimes()
 
-	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, turnExtras{})
+	s.runTurn(ctx, sess, a, be, prov, nil, assistant, "stream", "", false, nil, turnExtras{})
 
 	select {
 	case req := <-runner.request:
