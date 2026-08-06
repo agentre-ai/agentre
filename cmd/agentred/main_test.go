@@ -2,11 +2,21 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/agentre-ai/agentre/internal/daemon/state"
+	"github.com/agentre-ai/agentre/internal/pkg/paths"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 // TestRootSubcommands locks in the public CLI surface: any accidental rename
 // or removal of a subcommand here breaks the test, which is much louder than
@@ -17,7 +27,7 @@ func TestRootSubcommands(t *testing.T) {
 	for _, c := range root.Commands() {
 		got[c.Name()] = true
 	}
-	for _, want := range []string{"run", "status", "pair", "llm", "claudecode"} {
+	for _, want := range []string{"run", "status", "pair", "login", "unclaim", "llm", "claudecode"} {
 		assert.True(t, got[want], "missing subcommand %q", want)
 	}
 
@@ -30,6 +40,57 @@ func TestRootSubcommands(t *testing.T) {
 	for _, want := range []string{"list", "add", "remove"} {
 		assert.True(t, llmSubs[want], "missing llm subcommand %q", want)
 	}
+}
+
+// TestUnclaimClearsAccountLocally covers R19: unclaim removes every account
+// credential and cached verification key exclusively through state.json. The
+// default HTTP transport is a tripwire: any network request fails the test.
+func TestUnclaimClearsAccountLocally(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AGENTRED_DATA_DIR", dir)
+	st, err := state.Load(dir)
+	require.NoError(t, err)
+	st.Mutate(func(s *state.State) {
+		s.AccountID = "account-42"
+		s.VerificationPublicKeyPEM = "-----BEGIN PUBLIC KEY-----cached"
+		s.Credential = state.AccountCredential{
+			AccessToken: "access", RefreshToken: "refresh", DeviceID: 7,
+		}
+	})
+	require.NoError(t, st.Save())
+
+	originalTransport := http.DefaultTransport
+	var networkCalls atomic.Int32
+	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		networkCalls.Add(1)
+		return nil, assert.AnError
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	cmd := newUnclaimCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	require.NoError(t, cmd.Execute())
+
+	got, err := state.Load(dir)
+	require.NoError(t, err)
+	assert.Empty(t, got.AccountID)
+	assert.Empty(t, got.VerificationPublicKeyPEM)
+	assert.Equal(t, state.AccountCredential{}, got.Credential)
+	assert.Zero(t, networkCalls.Load(), "unclaim must not make network requests")
+
+	gotDir, err := paths.AgentredDataDir()
+	require.NoError(t, err)
+	assert.Equal(t, dir, gotDir)
+}
+
+func TestLoginServerFlagUsesEnvironmentFallback(t *testing.T) {
+	t.Setenv("AGENTRED_SERVER_URL", "https://account.example")
+	login, _, err := newRootCmd().Find([]string{"login"})
+	require.NoError(t, err)
+	serverURL, err := login.Flags().GetString("server")
+	require.NoError(t, err)
+	assert.Equal(t, "https://account.example", serverURL)
 }
 
 func TestLLMAddRequiresUUIDKey(t *testing.T) {

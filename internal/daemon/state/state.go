@@ -91,6 +91,33 @@ func (s *State) InstanceUUID() string {
 	return s.DaemonInstanceUUID
 }
 
+// IsClaimed reports whether this daemon belongs to an account.
+func (s *State) IsClaimed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AccountID != ""
+}
+
+// Claim records the opaque account identity, the public key used to verify its
+// credentials, and the refreshable credential obtained from the device flow.
+func (s *State) Claim(accountID, verificationPublicKeyPEM string, credential AccountCredential) {
+	s.Mutate(func(st *State) {
+		st.AccountID = accountID
+		st.VerificationPublicKeyPEM = verificationPublicKeyPEM
+		st.Credential = credential
+	})
+}
+
+// Unclaim removes all account-bound material and returns the daemon to its
+// pairing-only state. It is intentionally a state-only operation.
+func (s *State) Unclaim() {
+	s.Mutate(func(st *State) {
+		st.AccountID = ""
+		st.VerificationPublicKeyPEM = ""
+		st.Credential = AccountCredential{}
+	})
+}
+
 // Snapshot returns a deep-ish copy safe for read-only callers. Maps are
 // shallow-copied since their value types are immutable structs in this
 // codebase (PairedPeer, LLMProviderMeta) — callers must not mutate the
