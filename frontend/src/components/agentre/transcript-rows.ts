@@ -73,6 +73,7 @@ export type RenderItem =
   | { block: ChatBlockData; type: "tool_approval" }
   | { block: ChatBlockData; type: "exec_approval" }
   | { block: ChatBlockData; type: "unknown" }
+  | { block: ChatBlockData; type: "notice" }
   | { block: ChatBlockData; type: "compact_boundary" };
 
 // VisibleRenderItem = 过滤掉已 merge 审批后的渲染项 + 预计算的 uiStateKey。
@@ -287,6 +288,12 @@ export function buildRenderItems({
         // 分隔卡片;最后一条 compact_boundary 之前的所有内容会被 ChatTranscript 顶层
         // 折叠成"查看历史"按钮。
         items.push({ block: b, type: "compact_boundary" });
+        break;
+      case "notice":
+        // 偏离提示 block:结构化 selectedModel/actualModel 由后端投影填充,
+        // 渲染走 transcript-row-view 的 notice 分支(t() 文案 + 等宽模型名);
+        // 旧数据无结构化字段时同分支回退到 Text 原样渲染。
+        items.push({ block: b, type: "notice" });
         break;
       default:
         items.push({ block: b, type: "unknown" });
@@ -590,6 +597,8 @@ export function estimateRowSize(row: TranscriptRow): number {
     case "thinking":
       return scaleRowSize(40); // 45
     case "compact_boundary":
+      return scaleRowSize(48); // 54
+    case "notice":
       return scaleRowSize(48); // 54
     case "local_command":
       return scaleRowSize(120); // 135

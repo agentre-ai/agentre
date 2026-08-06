@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -94,6 +95,7 @@ type ChatSvc interface {
 	Stop(ctx context.Context, req *StopRequest) (*StopResponse, error)
 	StopBackgroundTask(ctx context.Context, req *StopBackgroundTaskRequest) (*StopBackgroundTaskResponse, error)
 	SetPermissionMode(ctx context.Context, req *SetPermissionModeRequest) (*SetPermissionModeResponse, error)
+	SetSessionModel(ctx context.Context, sessionID int64, model string) error
 	Regenerate(ctx context.Context, req *RegenerateRequest) (*SendResponse, error)
 	Edit(ctx context.Context, req *EditRequest) (*SendResponse, error)
 	Rename(ctx context.Context, req *RenameRequest) (*RenameResponse, error)
@@ -353,6 +355,7 @@ func (s *chatSvc) ListAgents(ctx context.Context, _ *ListAgentsRequest) (*ListAg
 		}
 		if be := backends[a.AgentBackendID]; be != nil {
 			item.BackendType = be.Type
+			item.LLMProviderKey = be.LLMProviderKey
 			if agent_backend_entity.BackendType(be.Type) == agent_backend_entity.TypeClaudeCode {
 				// 仅 claudecode 透出；entity.Check 限定其它后端为空串。
 				item.DefaultPermissionMode = be.DefaultPermissionMode
@@ -520,6 +523,7 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		Session: ChatSessionDetail{
 			ID:                     sess.ID,
 			AgentID:                sess.AgentID,
+			ModelOverride:          sess.ModelOverride,
 			Title:                  sess.Title,
 			AgentStatus:            sess.AgentStatus,
 			NeedsAttention:         sess.IsWaitingForUser(),
@@ -578,6 +582,8 @@ func (s *chatSvc) LoadSession(ctx context.Context, req *LoadSessionRequest) (*Lo
 		}
 		if prov != nil {
 			resp.Session.LLMProviderType = prov.Type
+			resp.Session.LLMProviderKey = be.LLMProviderKey
+			resp.Session.ProviderDefaultModel = strings.TrimSpace(prov.Model)
 		}
 		resp.Session.ContextWindow = resolveContextWindowWithRuntime(sess, prov, msgs)
 
@@ -704,6 +710,62 @@ func (s *chatSvc) GetLaunchCommand(ctx context.Context, req *LaunchCommandReques
 	return &LaunchCommandResponse{Command: cmd, BackendType: be.Type}, nil
 }
 
+// modelDeviationPayload 是偏离提示持久化时写进 blocks.NoticeBlock.Text 的小 JSON。
+// NoticeBlock 是 cago 库的 UI-only 块,只有 Level/Text 两个字段(库类型,不能加字段),
+// 所以把 selected/actual 两个模型 id 编码进 Text;前端投影(noticeBlockToChatBlock)
+// 解回 ChatBlock.SelectedModel/ActualModel 再用 t() 渲染。该块从不发给 LLM。
+// 旧数据 / 非结构化文本的 NoticeBlock 走 Text 原样渲染兜底。
+type modelDeviationPayload struct {
+	Selected string `json:"selected"`
+	Actual   string `json:"actual"`
+}
+
+func encodeModelDeviation(override, actual string) string {
+	b, _ := json.Marshal(modelDeviationPayload{Selected: override, Actual: actual})
+	return string(b)
+}
+
+// decodeModelDeviation 把 NoticeBlock.Text 还原成 selected/actual。
+// ok=false 表示文本不是本功能产出的结构化负载(旧数据/其它来源的 notice),调用方应
+// 原样渲染 Text。
+func decodeModelDeviation(text string) (selected, actual string, ok bool) {
+	var p modelDeviationPayload
+	if err := json.Unmarshal([]byte(text), &p); err != nil {
+		return "", "", false
+	}
+	if p.Selected == "" || p.Actual == "" {
+		return "", "", false
+	}
+	return p.Selected, p.Actual, true
+}
+
+func modelDeviationNotice(override, actual string) *blocks.NoticeBlock {
+	override = strings.TrimSpace(override)
+	actual = strings.TrimSpace(actual)
+	if override == "" || actual == "" || override == actual {
+		return nil
+	}
+	return &blocks.NoticeBlock{
+		Level: "info",
+		Text:  encodeModelDeviation(override, actual),
+	}
+}
+
+// noticeBlockToChatBlock 把持久化的 blocks.NoticeBlock 投影成前端 ChatBlock。
+// 结构化偏离提示(本功能产出的 {"selected":..,"actual":..} 小 JSON)解回
+// SelectedModel/ActualModel,Text 置空——前端走 t() 渲染;非结构化旧数据原样透传 Text。
+func noticeBlockToChatBlock(tb blocks.NoticeBlock) ChatBlock {
+	if selected, actual, ok := decodeModelDeviation(tb.Text); ok {
+		return ChatBlock{
+			Type:          "notice",
+			Level:         tb.Level,
+			SelectedModel: selected,
+			ActualModel:   actual,
+		}
+	}
+	return ChatBlock{Type: "notice", Level: tb.Level, Text: tb.Text}
+}
+
 func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 	bs, err := m.GetBlocks()
 	if err != nil {
@@ -758,6 +820,12 @@ func toChatMessage(m *chat_entity.Message) (ChatMessage, error) {
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "thinking", Text: tb.Text})
 		case *blocks.ThinkingBlock:
 			out.Blocks = append(out.Blocks, ChatBlock{Type: "thinking", Text: tb.Text})
+		case blocks.NoticeBlock:
+			out.Blocks = append(out.Blocks, noticeBlockToChatBlock(tb))
+		case *blocks.NoticeBlock:
+			if tb != nil {
+				out.Blocks = append(out.Blocks, noticeBlockToChatBlock(*tb))
+			}
 		case blocks.ToolUseBlock:
 			cb := toolUseToChatBlock(tb.ID, tb.Name, tb.Input)
 			if sb := subByParent[tb.ID]; sb != nil {
@@ -1319,6 +1387,10 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 	}
 
 	if req.SessionID == 0 {
+		modelOverride, merr := normalizeModelOverride(ctx, req.ModelOverride)
+		if merr != nil {
+			return nil, merr
+		}
 		// 项目上下文（可选）：仅在新建会话时生效；已存在的会话不再换项目。
 		projectID, perr := s.resolveProjectContext(ctx, req.ProjectID, targetAgentID)
 		if perr != nil {
@@ -1336,6 +1408,7 @@ func (s *chatSvc) send(ctx context.Context, req *SendRequest, opts sendOptions) 
 			// 抢跑——前端拿到空串后 messages.length>0 时会把 bypass pill 错灰。
 			// runtime 后续仍按 resolveLaunchMode 结果幂等覆盖,处理后端默认值回落。
 			PermissionModeAtLaunch: permissionMode,
+			ModelOverride:          modelOverride,
 			Title:                  sessionTitleFromFirstMessage(text),
 			// idle 落库;running 由 startTurn 事务内的 Update 原子翻转 —— 事务失败
 			// 时不残留 running(否则空会话永久卡 running,还会 block 退出)。
@@ -2026,6 +2099,76 @@ func (s *chatSvc) refreshPermissionModeForAutoContinue(ctx context.Context, sess
 		return
 	}
 	sess.PermissionMode = fresh.PermissionMode
+}
+
+func normalizeModelOverride(ctx context.Context, model string) (string, error) {
+	if model == "" {
+		return "", nil
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", i18n.NewError(ctx, code.InvalidParameter)
+	}
+	return model, nil
+}
+
+// modelOverrideSwitchable 报告该后端是否消费会话级模型覆盖(v1 有实测依据的四类:
+// builtin / claudecode / codex / piagent,与前端 ModelPill 的 modelSwitchable 同一集合)。
+// openclaw 切换是 follow-up,不在 v1 范围 —— 若给这类会话下发 override,openclaw runtime
+// 会忽略它,而 runTurn 又拿 req.ModelOverride 跟 result.Model 比对产出偏离提示,每轮都会
+// 误报「所选 X 未生效,实际 Y」。门禁放在 runTurn(而非 SetSessionModel):会话的 agent 可能
+// 在设了 override 之后改绑到非 v1 后端,落库的 override 不该在新后端上继续生效。
+func modelOverrideSwitchable(be *agent_backend_entity.AgentBackend) bool {
+	if be == nil {
+		return false
+	}
+	switch agent_backend_entity.BackendType(be.Type) {
+	case agent_backend_entity.TypeBuiltin,
+		agent_backend_entity.TypeClaudeCode,
+		agent_backend_entity.TypeCodex,
+		agent_backend_entity.TypePiAgent:
+		return true
+	default:
+		return false
+	}
+}
+
+// modelOverrideForBackend 返回本轮到 runtime 下发的会话级模型覆盖。仅 v1 可切换后端
+// 透传;其它后端一律空串,防止 override 被忽略后逐轮误报偏离提示。
+func modelOverrideForBackend(sess *chat_entity.Session, be *agent_backend_entity.AgentBackend) string {
+	if !modelOverrideSwitchable(be) {
+		return ""
+	}
+	return strings.TrimSpace(sess.ModelOverride)
+}
+
+// SetSessionModel sets or clears the persisted model override for an existing session.
+// Model ids are intentionally not checked against the provider catalog: CLI-login
+// sessions and provider-compatible custom ids are valid inputs at this service boundary.
+func (s *chatSvc) SetSessionModel(ctx context.Context, sessionID int64, model string) error {
+	if sessionID <= 0 {
+		return i18n.NewError(ctx, code.InvalidParameter)
+	}
+	model, err := normalizeModelOverride(ctx, model)
+	if err != nil {
+		return err
+	}
+	sess, err := chat_repo.Session().Find(ctx, sessionID)
+	if err != nil {
+		return operationFailedWithCause(ctx, err)
+	}
+	if sess == nil {
+		return i18n.NewError(ctx, code.ChatSessionNotFound)
+	}
+	// 单列写入:model_override 在整行 Save 里被 Omit(见 sessionRepo.Update),只能通过
+	// 专用方法写 —— 否则用户在轮次中途换的模型会被该轮收尾的整行 Save 盖回旧值。
+	if err := chat_repo.Session().UpdateModelOverride(ctx, sessionID, model); err != nil {
+		logger.Ctx(ctx).Warn("chat_svc.SetSessionModel: persist model override failed",
+			zap.Int64("sessionId", sessionID),
+			zap.Error(err))
+		return operationFailedWithCause(ctx, err)
+	}
+	return nil
 }
 
 // SetPermissionMode 让前端把 CLI 会话切到指定 mode。
@@ -3325,6 +3468,7 @@ func (s *chatSvc) prepareTurnRun(
 	req := agentruntime.RunRequest{
 		Backend:           be,
 		Provider:          prov,
+		ModelOverride:     modelOverrideForBackend(sess, be),
 		AgentID:           a.ID,
 		SessionID:         sess.ID,
 		Cwd:               cwd,
@@ -3633,7 +3777,6 @@ func (s *chatSvc) runTurn(
 	// takeToolApprovals 同模式标 expired：落库让 reload 可见，下方 finalCtx 就绪后
 	// 对被标记的 block emit 锁定 patch，让在屏活卡不用 reload 立即锁。
 	expiredAsks := handlers.MarkUnansweredUserAsksExpired(finalBlocks)
-	_ = assistantMsg.SetBlocks(finalBlocks)
 
 	assistantMsg.DurationMs = int(time.Since(segmentStart).Milliseconds())
 	stopErr := streamStopErr
@@ -3689,7 +3832,13 @@ func (s *chatSvc) runTurn(
 		if result.ContextWindow > 0 {
 			sess.ContextWindow = result.ContextWindow
 		}
+		// 本轮请求的模型与实际运行模型不一致时补一条 UI-only 偏离提示。必须排在
+		// assistantMsg.Model 被 result.Model 覆盖之后:比对的是 runner 上报的实际值。
+		if notice := modelDeviationNotice(req.ModelOverride, result.Model); notice != nil {
+			finalBlocks = append(finalBlocks, *notice)
+		}
 	}
+	_ = assistantMsg.SetBlocks(finalBlocks)
 	// aborted 已在 acc.Finalize() 之后取出(见上方 MarkRunningSubagentsCancelled 调用)；
 	// 这里的判定决定 StreamAborted vs StreamError/Done,以及 abort 路径跳过自动接续。
 	awaitingPlanAction := stopErr == nil && !aborted &&

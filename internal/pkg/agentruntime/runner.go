@@ -374,7 +374,10 @@ type MCPServerSpec struct {
 type RunRequest struct {
 	Backend  *agent_backend_entity.AgentBackend
 	Provider *llm_provider_entity.LLMProvider // 可为 nil（CLI 后端走自身 login）
-	AgentID  int64                            // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
+	// ModelOverride 是本会话的模型覆盖值（''=跟随供应商默认）。进程内传参，不过线：
+	// 远端执行的 wire 契约在 wire.RunParams.ModelOverride（见 remote/wire）。
+	ModelOverride string
+	AgentID       int64 // Agent 工作目录 key：<AppDataDir>/agents/<agentID>
 	// SessionID 是这一轮在**本进程内**的会话身份：runner 的会话表（子进程缓存 /
 	// waiter / 自主续轮通道）全按它索引，控制类接口（Steerer / Aborter /
 	// ToolPermissionSink / WaiterLister …）收到的 sessionID 也是它。

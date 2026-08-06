@@ -57,5 +57,6 @@ func migrationList() []*gormigrate.Migration {
 		migration202607240001(), // OpenClaw backend 非敏感 Gateway 配置（token/device key 仅存 keychain）
 		migration202607280001(), // Codex 0.145 移除 on-failure approval，旧值归一到 on-request
 		migration202608010001(), // 远端会话执行位置与游标:chat_sessions.exec_device_id/exec_daemon_fingerprint/event_cursor
+		migration202608060001(), // chat_sessions.model_override:会话级模型覆盖
 	}
 }

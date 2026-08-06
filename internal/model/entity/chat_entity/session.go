@@ -69,6 +69,11 @@ type Session struct {
 	// 写入，运行时切换不会动它。前端用它决定 pill 上的 bypass 选项是否还可点：
 	// 只有以 bypass 启动的 session 才能在运行时来回切回 bypass（CLI 约束）。
 	PermissionModeAtLaunch string `gorm:"column:permission_mode_at_launch;type:text;not null;default:''"`
+	// ModelOverride 是会话级模型覆盖（chat_sessions.model_override）。
+	// 空串 = 跟随供应商默认：每轮由 chat_svc 从 be.LLMProviderKey → prov.Model 解析。
+	// 非空时在 override > provider 模型 > backend 默认 的优先级中排最前，由
+	// chat_svc.SetSessionModel 落库、runTurn 启动时透传给 runtime。
+	ModelOverride string `gorm:"column:model_override;type:text;not null;default:''"`
 	// ExecDeviceID 执行该会话的配对 daemon(paired_agentreds.id)。0 = 本机执行 ——
 	// 也是老数据的默认值，语义与远端执行落地前完全一致。
 	ExecDeviceID int64 `gorm:"column:exec_device_id;type:bigint;not null;default:0"`

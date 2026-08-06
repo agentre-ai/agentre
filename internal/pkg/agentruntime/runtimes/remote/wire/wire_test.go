@@ -177,6 +177,32 @@ func TestRunParams_HasNoOpenClawSecretField(t *testing.T) {
 	}
 }
 
+// TestRunParams_ModelOverrideRoundTrip 钉死会话级模型覆盖随 wire 过线:ModelOverride
+// 以 modelOverride 键编解码 round-trip,空值因 omitempty 不出现在字节流里
+// (daemon 侧据此区分「未设置」与「设置成空串」,空串 = 跟随供应商默认)。
+func TestRunParams_ModelOverrideRoundTrip(t *testing.T) {
+	in := RunParams{
+		SessionID:     42,
+		Backend:       json.RawMessage(`{"Type":"claudecode"}`),
+		ModelOverride: "claude-haiku-4-5",
+	}
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"modelOverride":"claude-haiku-4-5"`)
+
+	var out RunParams
+	require.NoError(t, json.Unmarshal(b, &out))
+	assert.Equal(t, in.ModelOverride, out.ModelOverride)
+
+	// 空值不落字节流(omitempty),解码后仍是空串 = 默认。
+	empty, err := json.Marshal(RunParams{SessionID: 1})
+	require.NoError(t, err)
+	assert.NotContains(t, string(empty), "modelOverride")
+	var outEmpty RunParams
+	require.NoError(t, json.Unmarshal(empty, &outEmpty))
+	assert.Equal(t, "", outEmpty.ModelOverride)
+}
+
 func TestRunParams_UserBlocksRoundTrip(t *testing.T) {
 	// Given a multimodal user message crossing desktop -> agentred,
 	// when RunParams is marshaled, then text and inline image bytes survive.

@@ -186,6 +186,8 @@ type ChatComposerProps = Omit<React.ComponentProps<"form">, "onSubmit"> & {
   quotaDeviceLabel?: string;
   /** Permission mode 控件，仅在 claudecode 后端时由 chat-panel 注入。null 时整块不渲染。 */
   permissionModeSlot?: React.ReactNode;
+  /** 模型切换控件，与 permissionModeSlot 并排（模型 pill 紧随其后）。null 时不渲染。 */
+  modelSlot?: React.ReactNode;
   /** 焦点在 composer 内时按下 Shift+Tab 的钩子（用于循环切换 permission mode）。 */
   onShiftTab?: () => void;
   /** 挂载时自动 focus 输入框。新建会话场景下由 chat-panel 传 true，让用户一打开
@@ -463,6 +465,7 @@ function ChatComposer({
   quotaUsage,
   quotaDeviceLabel,
   permissionModeSlot,
+  modelSlot,
   onShiftTab,
   autoFocusOnMount = false,
   backendType,
@@ -850,8 +853,11 @@ function ChatComposer({
                 ? t("chat.composer.shortcuts.edit")
                 : t("chat.composer.shortcuts.send")}
             </span>
-            {!editing && permissionModeSlot ? (
-              <div className="flex items-center">{permissionModeSlot}</div>
+            {!editing && (permissionModeSlot || modelSlot) ? (
+              <div className="flex items-center gap-1">
+                {permissionModeSlot}
+                {modelSlot}
+              </div>
             ) : null}
             <div className="min-w-0 flex-1" />
             {!editing && !commandMode ? (
