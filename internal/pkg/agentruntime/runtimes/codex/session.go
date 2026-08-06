@@ -345,6 +345,20 @@ func gatewayDeps(req agentruntime.RunRequest) CLIDeps {
 	return CLIDeps{Token: req.GatewayToken, GatewayURL: req.GatewayURL}
 }
 
+// codexEffectiveModel 统一模型解析规则(codex 版):effectiveModel =
+// firstNonEmpty(req.ModelOverride, req.Provider.Model)。codex 无 backend 默认模型字段
+// (DefaultModel 仅 claudecode 用),所以规则只取前两项,与规格 §模型解析与各后端生效一致。
+// 它是 buildLaunchSpec 与 acquireSession 判「模型变化 → evict」的同一取值源。
+func codexEffectiveModel(req agentruntime.RunRequest) string {
+	if m := strings.TrimSpace(req.ModelOverride); m != "" {
+		return m
+	}
+	if req.Provider != nil {
+		return strings.TrimSpace(req.Provider.Model)
+	}
+	return ""
+}
+
 func buildLaunchSpec(req agentruntime.RunRequest, env map[string]string, cwd string) codexLaunchSpec {
 	binary := strings.TrimSpace(req.Backend.CLIPath)
 	if binary == "" {
@@ -364,14 +378,7 @@ func buildLaunchSpec(req agentruntime.RunRequest, env map[string]string, cwd str
 	if eff := reasoningEffortConfigValue(req.Backend.ReasoningEffort); eff != "" {
 		spec.config = append(spec.config, `model_reasoning_effort="`+eff+`"`)
 	}
-	if req.Provider != nil {
-		spec.model = strings.TrimSpace(req.Provider.Model)
-	}
-	// 会话级模型覆盖优先:effectiveModel = firstNonEmpty(override, providerModel)。
-	// codex 无 backend 默认模型字段(DefaultModel 仅 claudecode 用),所以规则只取前两项。
-	if om := strings.TrimSpace(req.ModelOverride); om != "" {
-		spec.model = om
-	}
+	spec.model = codexEffectiveModel(req)
 	if sb := strings.TrimSpace(req.Backend.Sandbox); sb != "" {
 		spec.sandbox = codex.SandboxMode(sb)
 	}

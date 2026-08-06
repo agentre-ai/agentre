@@ -1246,6 +1246,16 @@ function ChatPanel({
   // ModelPill：会话级模型覆盖。已绑 provider（llmProviderKey 非空）→ /v1/models 列表；
   // 未绑 + 已有会话 → 灰显；未绑 + 新建会话 → 自由输入。新建会话的瞬态选择经
   // doSend 的 SendRequest.ModelOverride 透传给后端落库（已有会话走 SetChatSessionModel）。
+  // 会话级模型切换 v1 只覆盖四个有实测依据的后端(builtin/claudecode/codex/piagent,
+  // 见规格决策 6);openclaw 切换记为 follow-up,不在 v1 范围 —— 不渲染 ModelPill,
+  // 否则新建 openclaw 会话会出现自由输入 pill,override 被 openclaw runtime 忽略,
+  // 每轮还会误报偏离提示。
+  const modelSwitchable =
+    activeBackendType === "builtin" ||
+    activeBackendType === "claudecode" ||
+    activeBackendType === "codex" ||
+    activeBackendType === "piagent";
+
   const modelPill = useModelPill({
     sessionId,
     llmProviderKey:
@@ -2692,7 +2702,9 @@ function ChatPanel({
                     />
                   ) : null
                 }
-                modelSlot={<ModelPill {...modelPill} />}
+                modelSlot={
+                  modelSwitchable ? <ModelPill {...modelPill} /> : null
+                }
                 onShiftTab={
                   isModeSwitchable && !modeSwitchingDisabled
                     ? permissionMode.cycleMode

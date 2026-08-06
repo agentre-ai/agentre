@@ -2865,6 +2865,38 @@ describe("ChatPanel · 新对话 PermissionModePill", () => {
       );
     });
   });
+
+  it("openclaw 新建会话不渲染 ModelPill（openclaw 切换记为 follow-up，不在 v1 范围）", () => {
+    resetStore();
+    mockSessionStore.session = null;
+    render(
+      <ChatPanel
+        sessionId={0}
+        newSessionAgent={
+          {
+            id: 8,
+            name: "Claw",
+            agentBackendId: 2,
+            backendType: "openclaw",
+            llmProviderKey: "",
+          } as never
+        }
+      />,
+    );
+
+    expect(screen.queryByTestId("model-pill")).not.toBeInTheDocument();
+  });
+
+  it("openclaw 已有会话不渲染 ModelPill（同为 follow-up 范围外）", () => {
+    resetStore();
+    mockSessionStore.session = makeSession({
+      backendType: "openclaw",
+      llmProviderKey: "",
+    });
+    render(<ChatPanel sessionId={42} newSessionAgent={null} />);
+
+    expect(screen.queryByTestId("model-pill")).not.toBeInTheDocument();
+  });
 });
 
 describe("ChatPanel · 新对话空白态文案", () => {

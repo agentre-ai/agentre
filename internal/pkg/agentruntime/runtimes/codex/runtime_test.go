@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,6 +201,61 @@ func TestRun_ModelResolution(t *testing.T) {
 			}
 
 			So(result.Model, ShouldEqual, "gpt-5.5")
+		})
+	})
+}
+
+// TestRun_ModelChangeEvictsAndRespawns 锁住会话级模型覆盖在 codex 的语义:app-server
+// 进程会被 CLISessionPool 跨轮复用,而 WithModel 绑定在 Client 创建时 —— 模型变了必须
+// 像 claudecode 的 launchedEffort/launchedModel 先例那样 evict + 重 spawn,否则下一轮
+// 复用池里旧模型进程,切换不生效(RunResult.Model 仍旧模型,偏离提示误报)。
+func TestRun_ModelChangeEvictsAndRespawns(t *testing.T) {
+	Convey("Given 同一 codex 会话两轮用不同 ModelOverride", t, func() {
+		var spawnCount int32
+		restore := SetSessionFactoryForTest(func(req agentruntime.RunRequest, _ map[string]string, _ string) (cxSessionHandle, error) {
+			atomic.AddInt32(&spawnCount, 1)
+			model := "gpt-5.5"
+			if om := strings.TrimSpace(req.ModelOverride); om != "" {
+				model = om
+			}
+			return &fakeRuntimeSession{stream: &emptyRuntimeStream{}, sid: "thread-x", model: model}, nil
+		})
+		defer restore()
+
+		r := New()
+		run := func(override string) *agentruntime.RunResult {
+			events, result, err := r.Run(context.Background(), agentruntime.RunRequest{
+				Backend: &agent_backend_entity.AgentBackend{
+					Type:    string(agent_backend_entity.TypeCodex),
+					EnvJSON: "{}",
+				},
+				SessionID:     77,
+				Cwd:           t.TempDir(),
+				UserText:      "hi",
+				ModelOverride: override,
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			return result
+		}
+
+		Convey("When 首轮 override=A, Then 线程模型为 A", func() {
+			So(run("gpt-5.5").Model, ShouldEqual, "gpt-5.5")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
+		})
+
+		Convey("When 同模型再来一轮, Then 复用不重 spawn", func() {
+			run("gpt-5.5")
+			run("gpt-5.5")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 1)
+		})
+
+		Convey("When 第二轮 override 变化为 B, Then evict + 重 spawn,线程模型为 B", func() {
+			run("gpt-5.5")
+			second := run("gpt-5.6")
+			So(second.Model, ShouldEqual, "gpt-5.6")
+			So(atomic.LoadInt32(&spawnCount), ShouldEqual, 2)
 		})
 	})
 }

@@ -98,6 +98,48 @@ func TestPiModelFallback(t *testing.T) {
 	})
 }
 
+// TestPiResultModelPlaceholder 锁住 result.Model 在 pi 真实 usage 帧上报前的占位:
+// effectiveModel = firstNonEmpty(override, provider.Model, backendDefault)。pi 不报
+// 模型(极少)时若沿用 provider.Model 而用户设了 override,会误报偏离提示 —— 占位必须
+// 优先 override。
+func TestPiResultModelPlaceholder(t *testing.T) {
+	Convey("Given pi-agent runtime 且 pi 不报模型(无 usage 帧)", t, func() {
+		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {
+			return &fakeSession{stream: &emptyStream{}, sid: "pi-session"}, nil
+		})
+		defer restore()
+
+		Convey("When override 非空且绑 provider Then 占位 = override,不误报偏离", func() {
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:       &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				Provider:      &llm_provider_entity.LLMProvider{Model: "gpt-5.4", Type: string(llm_provider_entity.TypeOpenAIChat), ProviderKey: "provabc", APIKey: "tok-super-secret"},
+				ModelOverride: "gpt-5.6-terra",
+				SessionID:     1,
+				Cwd:           t.TempDir(),
+				UserText:      "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			So(result.Model, ShouldEqual, "gpt-5.6-terra")
+		})
+
+		Convey("When override 空白且绑 provider Then 占位 = provider.Model(行为不回归)", func() {
+			events, result, err := New().Run(context.Background(), agentruntime.RunRequest{
+				Backend:   &agent_backend_entity.AgentBackend{Type: string(agent_backend_entity.TypePiAgent), EnvJSON: "{}"},
+				Provider:  &llm_provider_entity.LLMProvider{Model: "gpt-5.4", Type: string(llm_provider_entity.TypeOpenAIChat), ProviderKey: "provabc", APIKey: "tok-super-secret"},
+				SessionID: 1,
+				Cwd:       t.TempDir(),
+				UserText:  "hello",
+			})
+			So(err, ShouldBeNil)
+			for range events {
+			}
+			So(result.Model, ShouldEqual, "gpt-5.4")
+		})
+	})
+}
+
 func TestRun_DefaultModelWhenProviderMissing(t *testing.T) {
 	Convey("Given pi-agent CLI login runtime", t, func() {
 		restore := SetSessionFactoryForTest(func(_ agentruntime.RunRequest, _ map[string]string, _ string) (sessionHandle, error) {

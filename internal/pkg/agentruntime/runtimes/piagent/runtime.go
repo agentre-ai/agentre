@@ -101,10 +101,7 @@ func (r *Runtime) Run(ctx context.Context, req agentruntime.RunRequest) (<-chan 
 	r.register(req.SessionID, active)
 
 	out := make(chan agentruntime.Event, 32)
-	modelID := defaultModelForBackend(req.Backend)
-	if req.Provider != nil && strings.TrimSpace(req.Provider.Model) != "" {
-		modelID = strings.TrimSpace(req.Provider.Model)
-	}
+	modelID := piResultModelPlaceholder(req)
 	result := &agentruntime.RunResult{ProviderSessionID: sess.ID(), Model: modelID}
 	logFields := make([]zap.Field, 0, 7)
 	logFields = append(logFields,

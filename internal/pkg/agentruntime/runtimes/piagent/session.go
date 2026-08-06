@@ -210,6 +210,23 @@ func piModelFallback(req agentruntime.RunRequest) string {
 	return defaultModelForBackend(req.Backend)
 }
 
+// piResultModelPlaceholder 是 RunResult.Model 在 pi 真实 usage 帧上报前的占位：
+// effectiveModel = firstNonEmpty(override, provider.Model, backendDefault)。pi 每轮
+// 在 usage 帧上报真实模型 id 会覆盖它（runtime.go result.Model = raw.Model）；仅当 pi
+// 不报模型（极少）时落到这里 —— 若占位沿用 provider.Model 而用户设了 override，会误报
+// 「所选 X 未生效，实际 Y」偏离提示。
+func piResultModelPlaceholder(req agentruntime.RunRequest) string {
+	if m := strings.TrimSpace(req.ModelOverride); m != "" {
+		return m
+	}
+	if req.Provider != nil {
+		if pm := strings.TrimSpace(req.Provider.Model); pm != "" {
+			return pm
+		}
+	}
+	return defaultModelForBackend(req.Backend)
+}
+
 var sessionFactory = func(req agentruntime.RunRequest, env map[string]string, cwd string) (sessionHandle, error) {
 	binary := strings.TrimSpace(req.Backend.CLIPath)
 	if binary == "" {
